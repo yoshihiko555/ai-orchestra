@@ -1,7 +1,7 @@
 version: '3'
 
 vars:
-  ORCHESTRA_DIR: ~/ghq/github.com/yoshihiko555/orchestra
+  ORCHESTRA_DIR: ~/ghq/github.com/yoshihiko555/ai-orchestra
   DOTFILES_CLAUDE: ~/ghq/github.com/yoshihiko555/dotfiles/claude/.claude
   DOTFILES_CLAUDE_ONLY: ~/ghq/github.com/yoshihiko555/dotfiles/shared/skills/claude-only
   DOTFILES_ROOT: ~/ghq/github.com/yoshihiko555/dotfiles
@@ -155,4 +155,48 @@ tasks:
         find {{.DOTFILES_CLAUDE}}/agents -type l ! -exec test -e {} \; -delete 2>/dev/null || true
         find {{.DOTFILES_CLAUDE}}/hooks -type l ! -exec test -e {} \; -delete 2>/dev/null || true
         find {{.DOTFILES_CLAUDE}}/rules -type l ! -exec test -e {} \; -delete 2>/dev/null || true
+        find {{.DOTFILES_CLAUDE_ONLY}} -maxdepth 1 -type l ! -exec test -e {} \; -delete 2>/dev/null || true
+        find {{.DOTFILES_CLAUDE}}/skills -maxdepth 1 -type l ! -exec test -e {} \; -delete 2>/dev/null || true
         echo "Done"
+
+  clean:all:
+    desc: Remove all orchestra symlinks from dotfiles (for restore)
+    cmds:
+      - |
+        echo "Removing all orchestra symlinks..."
+        # agents
+        for f in {{.ORCHESTRA_DIR}}/agents/*.md; do
+          [ -e "$f" ] || continue
+          name=$(basename "$f")
+          rm -f "{{.DOTFILES_CLAUDE}}/agents/$name"
+        done
+        echo "  - agents"
+        # hooks
+        for f in {{.ORCHESTRA_DIR}}/hooks/*.py; do
+          [ -e "$f" ] || continue
+          name=$(basename "$f")
+          rm -f "{{.DOTFILES_CLAUDE}}/hooks/$name"
+        done
+        echo "  - hooks"
+        # rules
+        for f in {{.ORCHESTRA_DIR}}/rules/*.md; do
+          [ -e "$f" ] || continue
+          name=$(basename "$f")
+          rm -f "{{.DOTFILES_CLAUDE}}/rules/$name"
+        done
+        echo "  - rules"
+        # skills
+        for d in {{.ORCHESTRA_DIR}}/skills/*/; do
+          [ -d "$d" ] || continue
+          name=$(basename "$d")
+          rm -f "{{.DOTFILES_CLAUDE_ONLY}}/$name"
+          rm -f "{{.DOTFILES_CLAUDE}}/skills/$name"
+        done
+        echo "  - skills"
+        echo "Done"
+
+  restore:
+    desc: Remove and recreate all orchestra symlinks (use after path changes)
+    cmds:
+      - task: clean:all
+      - task: sync

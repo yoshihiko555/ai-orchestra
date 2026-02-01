@@ -1,11 +1,11 @@
-# Orchestra
+# AI Orchestra
 
 Claude Code用のマルチエージェントオーケストレーションシステム
 
 ## 構成
 
 ```
-orchestra/
+ai-orchestra/
 ├── agents/           # 専門エージェント定義（24種）
 ├── hooks/            # 自動ルーティング用Hooks
 ├── rules/            # コーディングルール（将来用）
@@ -67,7 +67,7 @@ orchestra/
 
 ```bash
 cd /path/to/your/project
-task -d ~/ghq/github.com/yoshihiko555/orchestra init:project
+task -d ~/ghq/github.com/yoshihiko555/ai-orchestra init:project
 ```
 
 ### 方法2: 手動
@@ -108,13 +108,13 @@ mkdir -p ~/ghq/github.com/yoshihiko555/dotfiles/claude/.claude/{agents,hooks,rul
 ```bash
 # agents
 cd ~/ghq/github.com/yoshihiko555/dotfiles/claude/.claude/agents
-for f in ~/ghq/github.com/yoshihiko555/orchestra/agents/*.md; do
+for f in ~/ghq/github.com/yoshihiko555/ai-orchestra/agents/*.md; do
   ln -sf "$f" "$(basename "$f")"
 done
 
 # hooks
 cd ~/ghq/github.com/yoshihiko555/dotfiles/claude/.claude/hooks
-for f in ~/ghq/github.com/yoshihiko555/orchestra/hooks/*.py; do
+for f in ~/ghq/github.com/yoshihiko555/ai-orchestra/hooks/*.py; do
   ln -sf "$f" "$(basename "$f")"
 done
 ```
@@ -130,16 +130,16 @@ cd ~/ghq/github.com/yoshihiko555/dotfiles && stow -R claude
 
 ### エージェント追加
 
-1. orchestraにエージェントファイルを作成
+1. ai-orchestraにエージェントファイルを作成
 ```bash
 # 例: 新しいエージェント my-agent.md を追加
-vim ~/ghq/github.com/yoshihiko555/orchestra/agents/my-agent.md
+vim ~/ghq/github.com/yoshihiko555/ai-orchestra/agents/my-agent.md
 ```
 
 2. dotfilesにシンボリックリンクを追加
 ```bash
 cd ~/ghq/github.com/yoshihiko555/dotfiles/claude/.claude/agents
-ln -sf ~/ghq/github.com/yoshihiko555/orchestra/agents/my-agent.md my-agent.md
+ln -sf ~/ghq/github.com/yoshihiko555/ai-orchestra/agents/my-agent.md my-agent.md
 ```
 
 3. stowで展開
@@ -149,15 +149,15 @@ cd ~/ghq/github.com/yoshihiko555/dotfiles && stow -R claude
 
 ### Hook追加
 
-1. orchestraにhookファイルを作成
+1. ai-orchestraにhookファイルを作成
 ```bash
-vim ~/ghq/github.com/yoshihiko555/orchestra/hooks/my-hook.py
+vim ~/ghq/github.com/yoshihiko555/ai-orchestra/hooks/my-hook.py
 ```
 
 2. dotfilesにシンボリックリンクを追加
 ```bash
 cd ~/ghq/github.com/yoshihiko555/dotfiles/claude/.claude/hooks
-ln -sf ~/ghq/github.com/yoshihiko555/orchestra/hooks/my-hook.py my-hook.py
+ln -sf ~/ghq/github.com/yoshihiko555/ai-orchestra/hooks/my-hook.py my-hook.py
 ```
 
 3. settings.jsonにhook設定を追加（必要な場合）
@@ -169,16 +169,16 @@ cd ~/ghq/github.com/yoshihiko555/dotfiles && stow -R claude
 
 ### スキル追加
 
-1. orchestraにスキルディレクトリを作成
+1. ai-orchestraにスキルディレクトリを作成
 ```bash
-mkdir -p ~/ghq/github.com/yoshihiko555/orchestra/skills/my-skill
-vim ~/ghq/github.com/yoshihiko555/orchestra/skills/my-skill/SKILL.md
+mkdir -p ~/ghq/github.com/yoshihiko555/ai-orchestra/skills/my-skill
+vim ~/ghq/github.com/yoshihiko555/ai-orchestra/skills/my-skill/SKILL.md
 ```
 
 2. shared/skills/claude-onlyにシンボリックリンクを追加
 ```bash
 cd ~/ghq/github.com/yoshihiko555/dotfiles/shared/skills/claude-only
-ln -sf ~/ghq/github.com/yoshihiko555/orchestra/skills/my-skill my-skill
+ln -sf ~/ghq/github.com/yoshihiko555/ai-orchestra/skills/my-skill my-skill
 ```
 
 3. dotfiles/claude/.claude/skillsにシンボリックリンクを追加
@@ -217,8 +217,8 @@ task clean        # 壊れたシンボリックリンクを削除
 ### ファイル追加後の同期
 
 ```bash
-# orchestraにファイルを追加した後
-cd ~/ghq/github.com/yoshihiko555/orchestra
+# ai-orchestraにファイルを追加した後
+cd ~/ghq/github.com/yoshihiko555/ai-orchestra
 task sync
 ```
 
