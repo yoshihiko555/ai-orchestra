@@ -1,0 +1,158 @@
+version: '3'
+
+vars:
+  ORCHESTRA_DIR: ~/ghq/github.com/yoshihiko555/orchestra
+  DOTFILES_CLAUDE: ~/ghq/github.com/yoshihiko555/dotfiles/claude/.claude
+  DOTFILES_CLAUDE_ONLY: ~/ghq/github.com/yoshihiko555/dotfiles/shared/skills/claude-only
+  DOTFILES_ROOT: ~/ghq/github.com/yoshihiko555/dotfiles
+
+tasks:
+  default:
+    desc: Show available tasks
+    cmds:
+      - task --list
+
+  sync:
+    desc: Sync all orchestra files to dotfiles
+    cmds:
+      - task: sync:agents
+      - task: sync:hooks
+      - task: sync:rules
+      - task: sync:skills
+      - task: stow
+
+  sync:agents:
+    desc: Sync agent files to dotfiles
+    dir: "{{.DOTFILES_CLAUDE}}/agents"
+    cmds:
+      - |
+        echo "Syncing agents..."
+        for f in {{.ORCHESTRA_DIR}}/agents/*.md; do
+          [ -e "$f" ] || continue
+          name=$(basename "$f")
+          if [ ! -L "$name" ]; then
+            ln -sf "$f" "$name"
+            echo "  + $name"
+          fi
+        done
+        echo "Done"
+
+  sync:hooks:
+    desc: Sync hook files to dotfiles
+    dir: "{{.DOTFILES_CLAUDE}}/hooks"
+    cmds:
+      - |
+        echo "Syncing hooks..."
+        for f in {{.ORCHESTRA_DIR}}/hooks/*.py; do
+          [ -e "$f" ] || continue
+          name=$(basename "$f")
+          if [ ! -L "$name" ]; then
+            ln -sf "$f" "$name"
+            echo "  + $name"
+          fi
+        done
+        echo "Done"
+
+  sync:rules:
+    desc: Sync rule files to dotfiles
+    dir: "{{.DOTFILES_CLAUDE}}/rules"
+    cmds:
+      - |
+        echo "Syncing rules..."
+        for f in {{.ORCHESTRA_DIR}}/rules/*.md; do
+          [ -e "$f" ] || continue
+          name=$(basename "$f")
+          if [ ! -L "$name" ]; then
+            ln -sf "$f" "$name"
+            echo "  + $name"
+          fi
+        done
+        echo "Done"
+
+  sync:skills:
+    desc: Sync skill directories to dotfiles
+    cmds:
+      - |
+        echo "Syncing skills to claude-only..."
+        cd {{.DOTFILES_CLAUDE_ONLY}}
+        for d in {{.ORCHESTRA_DIR}}/skills/*/; do
+          [ -d "$d" ] || continue
+          name=$(basename "$d")
+          if [ ! -L "$name" ]; then
+            ln -sf "$d" "$name"
+            echo "  + $name (claude-only)"
+          fi
+        done
+      - |
+        echo "Syncing skills to .claude/skills..."
+        cd {{.DOTFILES_CLAUDE}}/skills
+        for d in {{.ORCHESTRA_DIR}}/skills/*/; do
+          [ -d "$d" ] || continue
+          name=$(basename "$d")
+          if [ ! -L "$name" ]; then
+            ln -sf ../../../shared/skills/claude-only/$name $name
+            echo "  + $name (.claude/skills)"
+          fi
+        done
+        echo "Done"
+
+  stow:
+    desc: Run stow to deploy dotfiles
+    dir: "{{.DOTFILES_ROOT}}"
+    cmds:
+      - stow -R claude
+      - echo "Stow complete"
+
+  list:agents:
+    desc: List all agents
+    cmds:
+      - ls -1 {{.ORCHESTRA_DIR}}/agents/*.md | xargs -n1 basename | sed 's/.md$//'
+
+  list:hooks:
+    desc: List all hooks
+    cmds:
+      - ls -1 {{.ORCHESTRA_DIR}}/hooks/*.py 2>/dev/null | xargs -n1 basename || echo "No hooks"
+
+  list:skills:
+    desc: List all skills
+    cmds:
+      - ls -1 {{.ORCHESTRA_DIR}}/skills/ 2>/dev/null || echo "No skills"
+
+  add:agent:
+    desc: "Create a new agent from template (usage: task add:agent -- agent-name)"
+    cmds:
+      - cp {{.ORCHESTRA_DIR}}/templates/agent-template.md {{.ORCHESTRA_DIR}}/agents/{{.CLI_ARGS}}.md
+      - echo "Created {{.ORCHESTRA_DIR}}/agents/{{.CLI_ARGS}}.md"
+      - echo "Edit the file, then run 'task sync'"
+
+  add:skill:
+    desc: "Create a new skill from template (usage: task add:skill -- skill-name)"
+    cmds:
+      - mkdir -p {{.ORCHESTRA_DIR}}/skills/{{.CLI_ARGS}}
+      - cp {{.ORCHESTRA_DIR}}/templates/skill-template.md {{.ORCHESTRA_DIR}}/skills/{{.CLI_ARGS}}/SKILL.md
+      - echo "Created {{.ORCHESTRA_DIR}}/skills/{{.CLI_ARGS}}/SKILL.md"
+      - echo "Edit the file, then run 'task sync'"
+
+  init:project:
+    desc: "Enable orchestra in a project (run in project directory)"
+    cmds:
+      - mkdir -p .claude
+      - |
+        if [ -f .claude/settings.json ]; then
+          echo "Warning: .claude/settings.json already exists"
+          echo "Manually merge with: {{.ORCHESTRA_DIR}}/templates/project-settings.json"
+        else
+          cp {{.ORCHESTRA_DIR}}/templates/project-settings.json .claude/settings.json
+          echo "Created .claude/settings.json"
+          echo "Orchestra is now enabled for this project"
+        fi
+
+  clean:
+    desc: Remove broken symlinks from dotfiles
+    cmds:
+      - |
+        echo "Cleaning broken symlinks..."
+        find {{.DOTFILES_CLAUDE}}/agents -type l ! -exec test -e {} \; -delete 2>/dev/null || true
+        find {{.DOTFILES_CLAUDE}}/hooks -type l ! -exec test -e {} \; -delete 2>/dev/null || true
+        find {{.DOTFILES_CLAUDE}}/rules -type l ! -exec test -e {} \; -delete 2>/dev/null || true
+        echo "Done"

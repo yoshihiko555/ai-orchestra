@@ -1,0 +1,11 @@
+# 参照用リポジトリ
+claude-code-orchestra-main/
+multi-agent-shogun/
+
+# OS
+.DS_Store
+
+# Editor
+*.swp
+*.swo
+*~
