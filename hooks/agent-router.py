@@ -3,11 +3,43 @@
 UserPromptSubmit hook: Route to appropriate agent based on user intent.
 
 Analyzes user prompts and suggests the most appropriate agent
-from the orchestra agent pool.
+from the orchestra agent pool, including Codex/Gemini CLI recommendations.
 """
 
 import json
 import sys
+
+# Codex CLI triggers (deep reasoning, design, debugging)
+CODEX_TRIGGERS = {
+    "ja": [
+        "設計相談", "どう設計", "アーキテクチャ相談",
+        "なぜ動かない", "原因分析", "深く考えて",
+        "どちらがいい", "比較検討", "トレードオフ",
+        "リファクタリング相談", "設計レビュー",
+    ],
+    "en": [
+        "design consultation", "how to design",
+        "root cause", "analyze deeply", "think deeply",
+        "which is better", "compare options", "trade-off",
+        "refactoring advice", "design review",
+    ],
+}
+
+# Gemini CLI triggers (research, large context, multimodal)
+GEMINI_TRIGGERS = {
+    "ja": [
+        "調べて", "リサーチして", "調査して",
+        "PDF見て", "動画分析", "画像解析",
+        "コードベース全体", "リポジトリ全体",
+        "最新ドキュメント", "ライブラリ調査",
+    ],
+    "en": [
+        "research", "investigate", "look up",
+        "analyze pdf", "analyze video", "analyze image",
+        "entire codebase", "whole repository",
+        "latest docs", "library research",
+    ],
+}
 
 # Agent routing configuration
 AGENT_TRIGGERS = {
@@ -119,6 +151,23 @@ AGENT_TRIGGERS = {
 }
 
 
+def detect_cli_tool(prompt: str) -> tuple[str | None, str]:
+    """Detect if Codex or Gemini CLI should be suggested."""
+    prompt_lower = prompt.lower()
+
+    # Check Codex triggers
+    for trigger in CODEX_TRIGGERS.get("ja", []) + CODEX_TRIGGERS.get("en", []):
+        if trigger in prompt_lower:
+            return "codex", trigger
+
+    # Check Gemini triggers
+    for trigger in GEMINI_TRIGGERS.get("ja", []) + GEMINI_TRIGGERS.get("en", []):
+        if trigger in prompt_lower:
+            return "gemini", trigger
+
+    return None, ""
+
+
 def detect_agent(prompt: str) -> tuple[str | None, str]:
     """Detect which agent should handle this prompt."""
     prompt_lower = prompt.lower()
@@ -141,17 +190,34 @@ def main():
         if len(prompt) < 5:
             sys.exit(0)
 
-        agent, trigger = detect_agent(prompt)
+        messages = []
 
+        # Check for CLI tool suggestion
+        cli_tool, cli_trigger = detect_cli_tool(prompt)
+        if cli_tool == "codex":
+            messages.append(
+                f"[Codex CLI] Detected '{cli_trigger}' - Consider Codex for deep reasoning:\n"
+                "`codex exec --model gpt-5.2-codex --sandbox read-only --full-auto \"...\" 2>/dev/null`"
+            )
+        elif cli_tool == "gemini":
+            messages.append(
+                f"[Gemini CLI] Detected '{cli_trigger}' - Consider Gemini for research:\n"
+                "`gemini -p \"...\" 2>/dev/null`"
+            )
+
+        # Check for agent routing
+        agent, trigger = detect_agent(prompt)
         if agent:
+            messages.append(
+                f"[Agent Routing] Detected '{trigger}' - Consider using `{agent}` agent:\n"
+                f'Task(subagent_type="{agent}", prompt="...")'
+            )
+
+        if messages:
             output = {
                 "hookSpecificOutput": {
                     "hookEventName": "UserPromptSubmit",
-                    "additionalContext": (
-                        f"[Agent Routing] Detected '{trigger}' - Consider using "
-                        f"`{agent}` agent via Task tool:\n"
-                        f'Task(subagent_type="{agent}", prompt="...")'
-                    ),
+                    "additionalContext": "\n\n".join(messages),
                 }
             }
             print(json.dumps(output))
