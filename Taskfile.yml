@@ -5,6 +5,7 @@ vars:
   DOTFILES_CLAUDE: ~/ghq/github.com/yoshihiko555/dotfiles/claude/.claude
   DOTFILES_CLAUDE_ONLY: ~/ghq/github.com/yoshihiko555/dotfiles/shared/skills/claude-only
   DOTFILES_ROOT: ~/ghq/github.com/yoshihiko555/dotfiles
+  HOME_CLAUDE: $HOME/.claude
 
 tasks:
   default:
@@ -13,13 +14,13 @@ tasks:
       - task --list
 
   sync:
-    desc: Sync all orchestra files to dotfiles
+    desc: Sync all orchestra files to dotfiles and deploy to ~/.claude
     cmds:
       - task: sync:agents
       - task: sync:hooks
       - task: sync:rules
       - task: sync:skills
-      - task: stow
+      - task: deploy
 
   sync:agents:
     desc: Sync agent files to dotfiles
@@ -96,8 +97,52 @@ tasks:
         done
         echo "Done"
 
+  deploy:
+    desc: Deploy dotfiles to ~/.claude (create directory symlinks)
+    cmds:
+      - |
+        echo "Deploying to ~/.claude..."
+        mkdir -p {{.HOME_CLAUDE}}
+
+        # agents
+        if [ ! -L "{{.HOME_CLAUDE}}/agents" ]; then
+          rm -rf "{{.HOME_CLAUDE}}/agents" 2>/dev/null || true
+          ln -sf "{{.DOTFILES_CLAUDE}}/agents" "{{.HOME_CLAUDE}}/agents"
+          echo "  + agents"
+        fi
+
+        # hooks
+        if [ ! -L "{{.HOME_CLAUDE}}/hooks" ]; then
+          rm -rf "{{.HOME_CLAUDE}}/hooks" 2>/dev/null || true
+          ln -sf "{{.DOTFILES_CLAUDE}}/hooks" "{{.HOME_CLAUDE}}/hooks"
+          echo "  + hooks"
+        fi
+
+        # rules
+        if [ ! -L "{{.HOME_CLAUDE}}/rules" ]; then
+          rm -rf "{{.HOME_CLAUDE}}/rules" 2>/dev/null || true
+          ln -sf "{{.DOTFILES_CLAUDE}}/rules" "{{.HOME_CLAUDE}}/rules"
+          echo "  + rules"
+        fi
+
+        # skills
+        if [ ! -L "{{.HOME_CLAUDE}}/skills" ]; then
+          rm -rf "{{.HOME_CLAUDE}}/skills" 2>/dev/null || true
+          ln -sf "{{.DOTFILES_CLAUDE}}/skills" "{{.HOME_CLAUDE}}/skills"
+          echo "  + skills"
+        fi
+
+        # commands (if exists in dotfiles)
+        if [ -d "{{.DOTFILES_CLAUDE}}/commands" ] && [ ! -L "{{.HOME_CLAUDE}}/commands" ]; then
+          rm -rf "{{.HOME_CLAUDE}}/commands" 2>/dev/null || true
+          ln -sf "{{.DOTFILES_CLAUDE}}/commands" "{{.HOME_CLAUDE}}/commands"
+          echo "  + commands"
+        fi
+
+        echo "Done"
+
   stow:
-    desc: Run stow to deploy dotfiles
+    desc: "[Deprecated] Use 'deploy' instead. Run stow to deploy dotfiles"
     dir: "{{.DOTFILES_ROOT}}"
     cmds:
       - stow -R claude
@@ -148,10 +193,21 @@ tasks:
         fi
 
   clean:
-    desc: Remove broken symlinks from dotfiles
+    desc: Remove broken symlinks from dotfiles and ~/.claude
     cmds:
       - |
         echo "Cleaning broken symlinks..."
+
+        # Clean ~/.claude broken symlinks
+        for dir in agents hooks rules skills commands; do
+          link="{{.HOME_CLAUDE}}/$dir"
+          if [ -L "$link" ] && [ ! -e "$link" ]; then
+            rm -f "$link"
+            echo "  - ~/.claude/$dir (broken)"
+          fi
+        done
+
+        # Clean dotfiles broken symlinks
         find {{.DOTFILES_CLAUDE}}/agents -type l ! -exec test -e {} \; -delete 2>/dev/null || true
         find {{.DOTFILES_CLAUDE}}/hooks -type l ! -exec test -e {} \; -delete 2>/dev/null || true
         find {{.DOTFILES_CLAUDE}}/rules -type l ! -exec test -e {} \; -delete 2>/dev/null || true
@@ -160,31 +216,43 @@ tasks:
         echo "Done"
 
   clean:all:
-    desc: Remove all orchestra symlinks from dotfiles (for restore)
+    desc: Remove all orchestra symlinks from dotfiles and ~/.claude (for restore)
     cmds:
       - |
         echo "Removing all orchestra symlinks..."
+
+        # Remove ~/.claude directory symlinks
+        echo "Cleaning ~/.claude symlinks..."
+        for dir in agents hooks rules skills commands; do
+          if [ -L "{{.HOME_CLAUDE}}/$dir" ]; then
+            rm -f "{{.HOME_CLAUDE}}/$dir"
+            echo "  - ~/.claude/$dir"
+          fi
+        done
+
+        # Remove dotfiles symlinks
+        echo "Cleaning dotfiles symlinks..."
         # agents
         for f in {{.ORCHESTRA_DIR}}/agents/*.md; do
           [ -e "$f" ] || continue
           name=$(basename "$f")
           rm -f "{{.DOTFILES_CLAUDE}}/agents/$name"
         done
-        echo "  - agents"
+        echo "  - dotfiles agents"
         # hooks
         for f in {{.ORCHESTRA_DIR}}/hooks/*.py; do
           [ -e "$f" ] || continue
           name=$(basename "$f")
           rm -f "{{.DOTFILES_CLAUDE}}/hooks/$name"
         done
-        echo "  - hooks"
+        echo "  - dotfiles hooks"
         # rules
         for f in {{.ORCHESTRA_DIR}}/rules/*.md; do
           [ -e "$f" ] || continue
           name=$(basename "$f")
           rm -f "{{.DOTFILES_CLAUDE}}/rules/$name"
         done
-        echo "  - rules"
+        echo "  - dotfiles rules"
         # skills
         for d in {{.ORCHESTRA_DIR}}/skills/*/; do
           [ -d "$d" ] || continue
@@ -192,7 +260,7 @@ tasks:
           rm -f "{{.DOTFILES_CLAUDE_ONLY}}/$name"
           rm -f "{{.DOTFILES_CLAUDE}}/skills/$name"
         done
-        echo "  - skills"
+        echo "  - dotfiles skills"
         echo "Done"
 
   restore:
