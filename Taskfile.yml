@@ -1,10 +1,10 @@
 version: '3'
 
 vars:
-  ORCHESTRA_DIR: ~/ghq/github.com/yoshihiko555/ai-orchestra
-  DOTFILES_CLAUDE: ~/ghq/github.com/yoshihiko555/dotfiles/claude/.claude
-  DOTFILES_CLAUDE_ONLY: ~/ghq/github.com/yoshihiko555/dotfiles/shared/skills/claude-only
-  DOTFILES_ROOT: ~/ghq/github.com/yoshihiko555/dotfiles
+  ORCHESTRA_DIR: $HOME/ghq/github.com/yoshihiko555/ai-orchestra
+  DOTFILES_CLAUDE: $HOME/ghq/github.com/yoshihiko555/dotfiles/claude/.claude
+  DOTFILES_CLAUDE_ONLY: $HOME/ghq/github.com/yoshihiko555/dotfiles/shared/skills/claude-only
+  DOTFILES_ROOT: $HOME/ghq/github.com/yoshihiko555/dotfiles
   HOME_CLAUDE: $HOME/.claude
 
 tasks:
@@ -20,6 +20,8 @@ tasks:
       - task: sync:hooks
       - task: sync:rules
       - task: sync:skills
+      - task: sync:commands
+      - task: sync:templates
       - task: deploy
 
   sync:agents:
@@ -97,6 +99,62 @@ tasks:
         done
         echo "Done"
 
+  sync:commands:
+    desc: Sync command files to dotfiles
+    cmds:
+      - |
+        echo "Syncing commands..."
+        mkdir -p {{.DOTFILES_CLAUDE}}/commands
+        # Remove old non-symlink files first
+        find "{{.DOTFILES_CLAUDE}}/commands" -maxdepth 1 -type f -delete 2>/dev/null || true
+        # Create symlinks
+        for f in {{.ORCHESTRA_DIR}}/commands/*.md; do
+          [ -e "$f" ] || continue
+          name=$(basename "$f")
+          if [ ! -L "{{.DOTFILES_CLAUDE}}/commands/$name" ]; then
+            ln -sf "$f" "{{.DOTFILES_CLAUDE}}/commands/$name"
+            echo "  + $name"
+          fi
+        done
+        echo "Done"
+
+  sync:templates:
+    desc: Sync template directories to dotfiles
+    cmds:
+      - |
+        echo "Syncing templates..."
+        mkdir -p {{.DOTFILES_CLAUDE}}/templates
+
+        # project templates
+        if [ ! -L "{{.DOTFILES_CLAUDE}}/templates/project" ]; then
+          rm -rf "{{.DOTFILES_CLAUDE}}/templates/project" 2>/dev/null || true
+          ln -sf "{{.ORCHESTRA_DIR}}/templates/project" "{{.DOTFILES_CLAUDE}}/templates/project"
+          echo "  + templates/project"
+        fi
+
+        # codex templates
+        if [ ! -L "{{.DOTFILES_CLAUDE}}/templates/codex" ]; then
+          rm -rf "{{.DOTFILES_CLAUDE}}/templates/codex" 2>/dev/null || true
+          ln -sf "{{.ORCHESTRA_DIR}}/templates/codex" "{{.DOTFILES_CLAUDE}}/templates/codex"
+          echo "  + templates/codex"
+        fi
+
+        # gemini templates
+        if [ ! -L "{{.DOTFILES_CLAUDE}}/templates/gemini" ]; then
+          rm -rf "{{.DOTFILES_CLAUDE}}/templates/gemini" 2>/dev/null || true
+          ln -sf "{{.ORCHESTRA_DIR}}/templates/gemini" "{{.DOTFILES_CLAUDE}}/templates/gemini"
+          echo "  + templates/gemini"
+        fi
+
+        # project-settings.json
+        if [ ! -L "{{.DOTFILES_CLAUDE}}/templates/project-settings.json" ]; then
+          rm -f "{{.DOTFILES_CLAUDE}}/templates/project-settings.json" 2>/dev/null || true
+          ln -sf "{{.ORCHESTRA_DIR}}/templates/project-settings.json" "{{.DOTFILES_CLAUDE}}/templates/project-settings.json"
+          echo "  + templates/project-settings.json"
+        fi
+
+        echo "Done"
+
   deploy:
     desc: Deploy dotfiles to ~/.claude (create directory symlinks)
     cmds:
@@ -139,6 +197,13 @@ tasks:
           echo "  + commands"
         fi
 
+        # templates
+        if [ ! -L "{{.HOME_CLAUDE}}/templates" ]; then
+          rm -rf "{{.HOME_CLAUDE}}/templates" 2>/dev/null || true
+          ln -sf "{{.DOTFILES_CLAUDE}}/templates" "{{.HOME_CLAUDE}}/templates"
+          echo "  + templates"
+        fi
+
         echo "Done"
 
   stow:
@@ -179,18 +244,18 @@ tasks:
       - echo "Edit the file, then run 'task sync'"
 
   init:project:
-    desc: "Enable orchestra in a project (run in project directory)"
+    desc: "[Deprecated] Use '/init-orchestra' skill instead. Enable orchestra in a project"
     cmds:
-      - mkdir -p .claude
       - |
-        if [ -f .claude/settings.json ]; then
-          echo "Warning: .claude/settings.json already exists"
-          echo "Manually merge with: {{.ORCHESTRA_DIR}}/templates/project-settings.json"
-        else
-          cp {{.ORCHESTRA_DIR}}/templates/project-settings.json .claude/settings.json
-          echo "Created .claude/settings.json"
-          echo "Orchestra is now enabled for this project"
-        fi
+        echo "⚠️  This task is deprecated."
+        echo "Please use '/init-orchestra' skill in Claude Code instead."
+        echo ""
+        echo "The '/init-orchestra' skill provides:"
+        echo "  - .claude/settings.json with all hooks"
+        echo "  - CLAUDE.md template (if not exists)"
+        echo "  - .claude/docs/ structure"
+        echo "  - .codex/ configuration"
+        echo "  - .gemini/ configuration"
 
   clean:
     desc: Remove broken symlinks from dotfiles and ~/.claude
@@ -199,7 +264,7 @@ tasks:
         echo "Cleaning broken symlinks..."
 
         # Clean ~/.claude broken symlinks
-        for dir in agents hooks rules skills commands; do
+        for dir in agents hooks rules skills commands templates; do
           link="{{.HOME_CLAUDE}}/$dir"
           if [ -L "$link" ] && [ ! -e "$link" ]; then
             rm -f "$link"
@@ -223,44 +288,35 @@ tasks:
 
         # Remove ~/.claude directory symlinks
         echo "Cleaning ~/.claude symlinks..."
-        for dir in agents hooks rules skills commands; do
+        for dir in agents hooks rules skills commands templates; do
           if [ -L "{{.HOME_CLAUDE}}/$dir" ]; then
             rm -f "{{.HOME_CLAUDE}}/$dir"
             echo "  - ~/.claude/$dir"
           fi
         done
 
-        # Remove dotfiles symlinks
+        # Remove dotfiles symlinks (use find to catch all symlinks)
         echo "Cleaning dotfiles symlinks..."
-        # agents
-        for f in {{.ORCHESTRA_DIR}}/agents/*.md; do
-          [ -e "$f" ] || continue
-          name=$(basename "$f")
-          rm -f "{{.DOTFILES_CLAUDE}}/agents/$name"
-        done
+        # agents - remove all symlinks
+        find "{{.DOTFILES_CLAUDE}}/agents" -maxdepth 1 -type l -delete 2>/dev/null || true
         echo "  - dotfiles agents"
-        # hooks
-        for f in {{.ORCHESTRA_DIR}}/hooks/*.py; do
-          [ -e "$f" ] || continue
-          name=$(basename "$f")
-          rm -f "{{.DOTFILES_CLAUDE}}/hooks/$name"
-        done
+        # hooks - remove all symlinks
+        find "{{.DOTFILES_CLAUDE}}/hooks" -maxdepth 1 -type l -delete 2>/dev/null || true
         echo "  - dotfiles hooks"
-        # rules
-        for f in {{.ORCHESTRA_DIR}}/rules/*.md; do
-          [ -e "$f" ] || continue
-          name=$(basename "$f")
-          rm -f "{{.DOTFILES_CLAUDE}}/rules/$name"
-        done
+        # rules - remove all symlinks
+        find "{{.DOTFILES_CLAUDE}}/rules" -maxdepth 1 -type l -delete 2>/dev/null || true
         echo "  - dotfiles rules"
-        # skills
-        for d in {{.ORCHESTRA_DIR}}/skills/*/; do
-          [ -d "$d" ] || continue
-          name=$(basename "$d")
-          rm -f "{{.DOTFILES_CLAUDE_ONLY}}/$name"
-          rm -f "{{.DOTFILES_CLAUDE}}/skills/$name"
-        done
+        # skills - remove all symlinks (both locations)
+        find "{{.DOTFILES_CLAUDE_ONLY}}" -maxdepth 1 -type l -delete 2>/dev/null || true
+        find "{{.DOTFILES_CLAUDE}}/skills" -maxdepth 1 -type l -delete 2>/dev/null || true
         echo "  - dotfiles skills"
+        # commands - remove all symlinks AND regular files (legacy cleanup)
+        find "{{.DOTFILES_CLAUDE}}/commands" -maxdepth 1 -type l -delete 2>/dev/null || true
+        find "{{.DOTFILES_CLAUDE}}/commands" -maxdepth 1 -type f -name "*.md" -delete 2>/dev/null || true
+        echo "  - dotfiles commands"
+        # templates - remove all symlinks
+        find "{{.DOTFILES_CLAUDE}}/templates" -maxdepth 1 -type l -delete 2>/dev/null || true
+        echo "  - dotfiles templates"
         echo "Done"
 
   restore:
