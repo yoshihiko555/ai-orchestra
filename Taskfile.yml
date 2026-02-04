@@ -73,10 +73,11 @@ tasks:
         echo "Done"
 
   sync:skills:
-    desc: Sync skill directories to dotfiles
+    desc: Sync skill directories to dotfiles (claude-only)
     cmds:
       - |
         echo "Syncing skills to claude-only..."
+        mkdir -p {{.DOTFILES_CLAUDE_ONLY}}
         cd {{.DOTFILES_CLAUDE_ONLY}}
         for d in {{.ORCHESTRA_DIR}}/skills/*/; do
           [ -d "$d" ] || continue
@@ -84,17 +85,6 @@ tasks:
           if [ ! -L "$name" ]; then
             ln -sf "$d" "$name"
             echo "  + $name (claude-only)"
-          fi
-        done
-      - |
-        echo "Syncing skills to .claude/skills..."
-        cd {{.DOTFILES_CLAUDE}}/skills
-        for d in {{.ORCHESTRA_DIR}}/skills/*/; do
-          [ -d "$d" ] || continue
-          name=$(basename "$d")
-          if [ ! -L "$name" ]; then
-            ln -sf ../../../shared/skills/claude-only/$name $name
-            echo "  + $name (.claude/skills)"
           fi
         done
         echo "Done"
