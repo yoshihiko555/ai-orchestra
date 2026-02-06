@@ -1,6 +1,9 @@
-# context-loader
+---
 
-Load project context from .claude/ directory.
+name: context-loader
+description: Load project context from .claude directory
+
+---
 
 ## Trigger
 
