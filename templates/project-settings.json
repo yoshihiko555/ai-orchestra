@@ -74,19 +74,14 @@
   },
   "permissions": {
     "allow": [
-      "Bash(git *)",
-      "Bash(ruff *)",
-      "Bash(ty *)",
-      "Bash(pytest *)",
       "Bash(npm *)",
       "Bash(pnpm *)",
       "Bash(yarn *)",
+      "Bash(ruff *)",
+      "Bash(ty *)",
+      "Bash(pytest *)",
       "Bash(uv *)",
       "Bash(poe *)",
-      "Bash(ls *)",
-      "Bash(cat *)",
-      "Bash(head *)",
-      "Bash(tail *)",
       "Bash(mkdir *)",
       "Bash(cp *)",
       "Bash(mv *)",
@@ -94,13 +89,6 @@
       "Bash(codex *)",
       "Bash(gemini *)"
     ],
-    "deny": [
-      "Bash(rm -rf /)",
-      "Bash(rm -rf ~)",
-      "Bash(*> .env*)",
-      "Bash(*credentials*)",
-      "Bash(*secret*)",
-      "Bash(*password*)"
-    ]
+    "deny": []
   }
 }
