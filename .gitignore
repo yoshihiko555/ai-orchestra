@@ -1,6 +1,7 @@
 # 参照用リポジトリ
 claude-code-orchestra-main/
 multi-agent-shogun/
+docs/tech/
 
 # OS
 .DS_Store
