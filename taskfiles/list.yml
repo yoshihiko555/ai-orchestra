@@ -2,16 +2,16 @@ version: '3'
 
 tasks:
   list:agents:
-    desc: List all agents
+    desc: エージェント一覧を表示
     cmds:
       - ls -1 {{.ORCHESTRA_DIR}}/agents/*.md | xargs -n1 basename | sed 's/.md$//'
 
   list:hooks:
-    desc: List all hooks
+    desc: フック一覧を表示
     cmds:
       - ls -1 {{.ORCHESTRA_DIR}}/hooks/*.py 2>/dev/null | xargs -n1 basename || echo "No hooks"
 
   list:skills:
-    desc: List all skills
+    desc: スキル一覧を表示
     cmds:
       - ls -1 {{.ORCHESTRA_DIR}}/skills/ 2>/dev/null || echo "No skills"

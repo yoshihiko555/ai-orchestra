@@ -2,12 +2,12 @@ version: '3'
 
 tasks:
   default:
-    desc: Show available tasks
+    desc: 利用可能なタスク一覧を表示
     cmds:
       - task --list
 
   sync:
-    desc: Sync all orchestra files to dotfiles and deploy to ~/.claude
+    desc: すべての同期処理を実行し、~/.claude へ反映
     cmds:
       - task: sync:agents
       - task: sync:hooks
@@ -18,7 +18,7 @@ tasks:
       - task: deploy
 
   sync:agents:
-    desc: Sync agent files to dotfiles
+    desc: agents/*.md を dotfiles/agents に同期
     dir: "{{.DOTFILES_CLAUDE}}/agents"
     cmds:
       - |
@@ -34,7 +34,7 @@ tasks:
         echo "Done"
 
   sync:hooks:
-    desc: Sync hook files to dotfiles
+    desc: hooks/*.py を dotfiles/hooks に同期
     dir: "{{.DOTFILES_CLAUDE}}/hooks"
     cmds:
       - |
@@ -50,7 +50,7 @@ tasks:
         echo "Done"
 
   sync:rules:
-    desc: Sync rule files to dotfiles
+    desc: rules/*.md を dotfiles/rules に同期
     dir: "{{.DOTFILES_CLAUDE}}/rules"
     cmds:
       - |
@@ -66,7 +66,7 @@ tasks:
         echo "Done"
 
   sync:skills:
-    desc: Sync skill directories to dotfiles (claude-only)
+    desc: skills ディレクトリを claude-only 側に同期
     cmds:
       - |
         echo "Syncing skills to claude-only..."
@@ -83,7 +83,7 @@ tasks:
         echo "Done"
 
   sync:commands:
-    desc: Sync command files to dotfiles
+    desc: commands/*.md を dotfiles/commands に同期
     cmds:
       - |
         echo "Syncing commands..."
@@ -102,7 +102,7 @@ tasks:
         echo "Done"
 
   sync:templates:
-    desc: Sync template directories to dotfiles
+    desc: templates を dotfiles/templates に同期
     cmds:
       - |
         echo "Syncing templates..."
@@ -139,7 +139,7 @@ tasks:
         echo "Done"
 
   deploy:
-    desc: Deploy dotfiles to ~/.claude (create directory symlinks)
+    desc: dotfiles を ~/.claude にシンボリックリンクで反映
     cmds:
       - |
         echo "Deploying to ~/.claude..."
@@ -190,7 +190,7 @@ tasks:
         echo "Done"
 
   stow:
-    desc: "[Deprecated] Use 'deploy' instead. Run stow to deploy dotfiles"
+    desc: "[非推奨] 'deploy' を使用（従来の stow 反映）"
     dir: "{{.DOTFILES_ROOT}}"
     cmds:
       - stow -R claude

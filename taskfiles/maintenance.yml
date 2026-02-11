@@ -2,7 +2,7 @@ version: '3'
 
 tasks:
   clean:
-    desc: Remove broken symlinks from dotfiles and ~/.claude
+    desc: dotfiles と ~/.claude の壊れたシンボリックリンクを削除
     cmds:
       - |
         echo "Cleaning broken symlinks..."
@@ -25,7 +25,7 @@ tasks:
         echo "Done"
 
   clean:all:
-    desc: Remove all orchestra symlinks from dotfiles and ~/.claude (for restore)
+    desc: 復旧用に orchestra のシンボリックリンクを全削除
     cmds:
       - |
         echo "Removing all orchestra symlinks..."
@@ -64,7 +64,7 @@ tasks:
         echo "Done"
 
   restore:
-    desc: Remove and recreate all orchestra symlinks (use after path changes)
+    desc: orchestra のシンボリックリンクを再作成（パス変更後向け）
     cmds:
       - task: clean:all
       - task: sync
