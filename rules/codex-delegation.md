@@ -6,12 +6,12 @@
 
 以下の場面で Codex に相談する：
 
-| 場面 | トリガー（日本語） | トリガー（英語） |
-|------|------------------|-----------------|
-| 設計判断 | 「設計」「アーキテクチャ」「どう実装」 | "design", "architecture", "how to implement" |
-| デバッグ | 「エラー」「バグ」「動かない」 | "error", "bug", "not working" |
-| 比較検討 | 「どちらがいい」「比較」「トレードオフ」 | "compare", "trade-off", "which is better" |
-| レビュー | 「レビュー」「見て」「チェック」 | "review", "check" |
+| 場面     | トリガー（日本語）                       | トリガー（英語）                             |
+| -------- | ---------------------------------------- | -------------------------------------------- |
+| 設計判断 | 「設計」「アーキテクチャ」「どう実装」   | "design", "architecture", "how to implement" |
+| デバッグ | 「エラー」「バグ」「動かない」           | "error", "bug", "not working"                |
+| 比較検討 | 「どちらがいい」「比較」「トレードオフ」 | "compare", "trade-off", "which is better"    |
+| レビュー | 「レビュー」「見て」「チェック」         | "review", "check"                            |
 
 ## 呼び出し方法
 
@@ -36,18 +36,18 @@ codex exec --model gpt-5.2-codex --sandbox read-only --full-auto "{質問}" 2>/d
 
 ```bash
 # 分析（読み取り専用）
-codex exec --model gpt-5.2-codex --sandbox read-only --full-auto "{質問}" 2>/dev/null
+codex exec --model gpt-5.3-codex --sandbox read-only --full-auto "{質問}" 2>/dev/null
 
 # 実装作業（書き込み可能）
-codex exec --model gpt-5.2-codex --sandbox workspace-write --full-auto "{タスク}" 2>/dev/null
+codex exec --model gpt-5.3-codex --sandbox workspace-write --full-auto "{タスク}" 2>/dev/null
 ```
 
 ## Sandbox モード
 
-| モード | 用途 |
-|--------|------|
-| `read-only` | 設計相談、デバッグ分析、レビュー |
-| `workspace-write` | 実装、修正、リファクタリング |
+| モード            | 用途                             |
+| ----------------- | -------------------------------- |
+| `read-only`       | 設計相談、デバッグ分析、レビュー |
+| `workspace-write` | 実装、修正、リファクタリング     |
 
 ## 言語プロトコル
 
