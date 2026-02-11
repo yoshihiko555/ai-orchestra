@@ -1,0 +1,31 @@
+version: '3'
+
+tasks:
+  add:agent:
+    desc: "Create a new agent from template (usage: task add:agent -- agent-name)"
+    cmds:
+      - cp {{.ORCHESTRA_DIR}}/templates/agent-template.md {{.ORCHESTRA_DIR}}/agents/{{.CLI_ARGS}}.md
+      - echo "Created {{.ORCHESTRA_DIR}}/agents/{{.CLI_ARGS}}.md"
+      - echo "Edit the file, then run 'task sync'"
+
+  add:skill:
+    desc: "Create a new skill from template (usage: task add:skill -- skill-name)"
+    cmds:
+      - mkdir -p {{.ORCHESTRA_DIR}}/skills/{{.CLI_ARGS}}
+      - cp {{.ORCHESTRA_DIR}}/templates/skill-template.md {{.ORCHESTRA_DIR}}/skills/{{.CLI_ARGS}}/SKILL.md
+      - echo "Created {{.ORCHESTRA_DIR}}/skills/{{.CLI_ARGS}}/SKILL.md"
+      - echo "Edit the file, then run 'task sync'"
+
+  init:project:
+    desc: "[Deprecated] Use '/init-orchestra' skill instead. Enable orchestra in a project"
+    cmds:
+      - |
+        echo "⚠️  This task is deprecated."
+        echo "Please use '/init-orchestra' skill in Claude Code instead."
+        echo ""
+        echo "The '/init-orchestra' skill provides:"
+        echo "  - .claude/settings.json with all hooks"
+        echo "  - CLAUDE.md template (if not exists)"
+        echo "  - .claude/docs/ structure"
+        echo "  - .codex/ configuration"
+        echo "  - .gemini/ configuration"

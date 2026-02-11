@@ -1,0 +1,197 @@
+version: '3'
+
+tasks:
+  default:
+    desc: Show available tasks
+    cmds:
+      - task --list
+
+  sync:
+    desc: Sync all orchestra files to dotfiles and deploy to ~/.claude
+    cmds:
+      - task: sync:agents
+      - task: sync:hooks
+      - task: sync:rules
+      - task: sync:skills
+      - task: sync:commands
+      - task: sync:templates
+      - task: deploy
+
+  sync:agents:
+    desc: Sync agent files to dotfiles
+    dir: "{{.DOTFILES_CLAUDE}}/agents"
+    cmds:
+      - |
+        echo "Syncing agents..."
+        for f in {{.ORCHESTRA_DIR}}/agents/*.md; do
+          [ -e "$f" ] || continue
+          name=$(basename "$f")
+          if [ ! -L "$name" ]; then
+            ln -sf "$f" "$name"
+            echo "  + $name"
+          fi
+        done
+        echo "Done"
+
+  sync:hooks:
+    desc: Sync hook files to dotfiles
+    dir: "{{.DOTFILES_CLAUDE}}/hooks"
+    cmds:
+      - |
+        echo "Syncing hooks..."
+        for f in {{.ORCHESTRA_DIR}}/hooks/*.py; do
+          [ -e "$f" ] || continue
+          name=$(basename "$f")
+          if [ ! -L "$name" ]; then
+            ln -sf "$f" "$name"
+            echo "  + $name"
+          fi
+        done
+        echo "Done"
+
+  sync:rules:
+    desc: Sync rule files to dotfiles
+    dir: "{{.DOTFILES_CLAUDE}}/rules"
+    cmds:
+      - |
+        echo "Syncing rules..."
+        for f in {{.ORCHESTRA_DIR}}/rules/*.md; do
+          [ -e "$f" ] || continue
+          name=$(basename "$f")
+          if [ ! -L "$name" ]; then
+            ln -sf "$f" "$name"
+            echo "  + $name"
+          fi
+        done
+        echo "Done"
+
+  sync:skills:
+    desc: Sync skill directories to dotfiles (claude-only)
+    cmds:
+      - |
+        echo "Syncing skills to claude-only..."
+        mkdir -p {{.DOTFILES_CLAUDE_ONLY}}
+        cd {{.DOTFILES_CLAUDE_ONLY}}
+        for d in {{.ORCHESTRA_DIR}}/skills/*/; do
+          [ -d "$d" ] || continue
+          name=$(basename "$d")
+          if [ ! -L "$name" ]; then
+            ln -sf "$d" "$name"
+            echo "  + $name (claude-only)"
+          fi
+        done
+        echo "Done"
+
+  sync:commands:
+    desc: Sync command files to dotfiles
+    cmds:
+      - |
+        echo "Syncing commands..."
+        mkdir -p {{.DOTFILES_CLAUDE}}/commands
+        # Remove old non-symlink files first
+        find "{{.DOTFILES_CLAUDE}}/commands" -maxdepth 1 -type f -delete 2>/dev/null || true
+        # Create symlinks
+        for f in {{.ORCHESTRA_DIR}}/commands/*.md; do
+          [ -e "$f" ] || continue
+          name=$(basename "$f")
+          if [ ! -L "{{.DOTFILES_CLAUDE}}/commands/$name" ]; then
+            ln -sf "$f" "{{.DOTFILES_CLAUDE}}/commands/$name"
+            echo "  + $name"
+          fi
+        done
+        echo "Done"
+
+  sync:templates:
+    desc: Sync template directories to dotfiles
+    cmds:
+      - |
+        echo "Syncing templates..."
+        mkdir -p {{.DOTFILES_CLAUDE}}/templates
+
+        # project templates
+        if [ ! -L "{{.DOTFILES_CLAUDE}}/templates/project" ]; then
+          rm -rf "{{.DOTFILES_CLAUDE}}/templates/project" 2>/dev/null || true
+          ln -sf "{{.ORCHESTRA_DIR}}/templates/project" "{{.DOTFILES_CLAUDE}}/templates/project"
+          echo "  + templates/project"
+        fi
+
+        # codex templates
+        if [ ! -L "{{.DOTFILES_CLAUDE}}/templates/codex" ]; then
+          rm -rf "{{.DOTFILES_CLAUDE}}/templates/codex" 2>/dev/null || true
+          ln -sf "{{.ORCHESTRA_DIR}}/templates/codex" "{{.DOTFILES_CLAUDE}}/templates/codex"
+          echo "  + templates/codex"
+        fi
+
+        # gemini templates
+        if [ ! -L "{{.DOTFILES_CLAUDE}}/templates/gemini" ]; then
+          rm -rf "{{.DOTFILES_CLAUDE}}/templates/gemini" 2>/dev/null || true
+          ln -sf "{{.ORCHESTRA_DIR}}/templates/gemini" "{{.DOTFILES_CLAUDE}}/templates/gemini"
+          echo "  + templates/gemini"
+        fi
+
+        # project-settings.json
+        if [ ! -L "{{.DOTFILES_CLAUDE}}/templates/project-settings.json" ]; then
+          rm -f "{{.DOTFILES_CLAUDE}}/templates/project-settings.json" 2>/dev/null || true
+          ln -sf "{{.ORCHESTRA_DIR}}/templates/project-settings.json" "{{.DOTFILES_CLAUDE}}/templates/project-settings.json"
+          echo "  + templates/project-settings.json"
+        fi
+
+        echo "Done"
+
+  deploy:
+    desc: Deploy dotfiles to ~/.claude (create directory symlinks)
+    cmds:
+      - |
+        echo "Deploying to ~/.claude..."
+        mkdir -p {{.HOME_CLAUDE}}
+
+        # agents
+        if [ ! -L "{{.HOME_CLAUDE}}/agents" ]; then
+          rm -rf "{{.HOME_CLAUDE}}/agents" 2>/dev/null || true
+          ln -sf "{{.DOTFILES_CLAUDE}}/agents" "{{.HOME_CLAUDE}}/agents"
+          echo "  + agents"
+        fi
+
+        # hooks
+        if [ ! -L "{{.HOME_CLAUDE}}/hooks" ]; then
+          rm -rf "{{.HOME_CLAUDE}}/hooks" 2>/dev/null || true
+          ln -sf "{{.DOTFILES_CLAUDE}}/hooks" "{{.HOME_CLAUDE}}/hooks"
+          echo "  + hooks"
+        fi
+
+        # rules
+        if [ ! -L "{{.HOME_CLAUDE}}/rules" ]; then
+          rm -rf "{{.HOME_CLAUDE}}/rules" 2>/dev/null || true
+          ln -sf "{{.DOTFILES_CLAUDE}}/rules" "{{.HOME_CLAUDE}}/rules"
+          echo "  + rules"
+        fi
+
+        # skills
+        if [ ! -L "{{.HOME_CLAUDE}}/skills" ]; then
+          rm -rf "{{.HOME_CLAUDE}}/skills" 2>/dev/null || true
+          ln -sf "{{.DOTFILES_CLAUDE}}/skills" "{{.HOME_CLAUDE}}/skills"
+          echo "  + skills"
+        fi
+
+        # commands (if exists in dotfiles)
+        if [ -d "{{.DOTFILES_CLAUDE}}/commands" ] && [ ! -L "{{.HOME_CLAUDE}}/commands" ]; then
+          rm -rf "{{.HOME_CLAUDE}}/commands" 2>/dev/null || true
+          ln -sf "{{.DOTFILES_CLAUDE}}/commands" "{{.HOME_CLAUDE}}/commands"
+          echo "  + commands"
+        fi
+
+        # templates
+        if [ ! -L "{{.HOME_CLAUDE}}/templates" ]; then
+          rm -rf "{{.HOME_CLAUDE}}/templates" 2>/dev/null || true
+          ln -sf "{{.DOTFILES_CLAUDE}}/templates" "{{.HOME_CLAUDE}}/templates"
+          echo "  + templates"
+        fi
+
+        echo "Done"
+
+  stow:
+    desc: "[Deprecated] Use 'deploy' instead. Run stow to deploy dotfiles"
+    dir: "{{.DOTFILES_ROOT}}"
+    cmds:
+      - stow -R claude
+      - echo "Stow complete"

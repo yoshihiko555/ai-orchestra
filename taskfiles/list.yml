@@ -1,0 +1,17 @@
+version: '3'
+
+tasks:
+  list:agents:
+    desc: List all agents
+    cmds:
+      - ls -1 {{.ORCHESTRA_DIR}}/agents/*.md | xargs -n1 basename | sed 's/.md$//'
+
+  list:hooks:
+    desc: List all hooks
+    cmds:
+      - ls -1 {{.ORCHESTRA_DIR}}/hooks/*.py 2>/dev/null | xargs -n1 basename || echo "No hooks"
+
+  list:skills:
+    desc: List all skills
+    cmds:
+      - ls -1 {{.ORCHESTRA_DIR}}/skills/ 2>/dev/null || echo "No skills"
