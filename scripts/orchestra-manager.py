@@ -414,12 +414,18 @@ class OrchestraManager:
         installed = orch.get("installed_packages", [])
         orchestra_dir = orch.get("orchestra_dir", "")
 
-        if not orchestra_dir or not installed:
+        if not orchestra_dir:
+            return
+
+        orchestra_path = Path(orchestra_dir)
+        if not orchestra_path.is_dir():
             return
 
         packages = self.load_packages()
         claude_dir = project_dir / ".claude"
+        synced_count = 0
 
+        # パッケージ単位の同期
         for pkg_name in installed:
             if pkg_name not in packages:
                 continue
@@ -428,19 +434,44 @@ class OrchestraManager:
             for category in ("skills", "agents", "rules"):
                 file_list = getattr(pkg, category, [])
                 for rel_path in file_list:
-                    src = Path(orchestra_dir) / "packages" / pkg_name / category / rel_path
+                    src = orchestra_path / "packages" / pkg_name / category / rel_path
                     dst = claude_dir / category / rel_path
 
                     if not src.exists():
                         continue
 
                     if dry_run:
-                        print(f"[DRY-RUN] 同期: {dst} <- {src}")
+                        print(f"[DRY-RUN] 同期: {category}/{rel_path}")
                         continue
 
                     dst.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(src, dst)
-                    print(f"同期: {category}/{rel_path}")
+                    synced_count += 1
+
+        # トップレベル同期
+        if orch.get("sync_top_level", False):
+            for category in ("agents", "skills", "rules"):
+                src_dir = orchestra_path / category
+                if not src_dir.is_dir():
+                    continue
+
+                for src_file in src_dir.rglob("*"):
+                    if not src_file.is_file():
+                        continue
+
+                    rel_path = src_file.relative_to(src_dir)
+                    dst = claude_dir / category / rel_path
+
+                    if dry_run:
+                        print(f"[DRY-RUN] 同期: {category}/{rel_path}")
+                        continue
+
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(src_file, dst)
+                    synced_count += 1
+
+        if synced_count > 0:
+            print(f"{synced_count} ファイルを同期しました")
 
     def install(self, package_name: str, project: Optional[str], dry_run: bool = False) -> None:
         """パッケージをインストール"""
@@ -697,6 +728,9 @@ class OrchestraManager:
         self.register_sync_hook(settings, dry_run)
         if not dry_run:
             self.save_settings(project_dir, settings)
+
+        # 9. 初回同期（skills/agents/rules をコピー）
+        self.run_initial_sync(project_dir, dry_run)
 
         if not dry_run:
             print(f"\n✓ プロジェクトを初期化しました: {project_dir}")
