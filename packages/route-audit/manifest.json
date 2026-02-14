@@ -18,6 +18,8 @@
   "agents": [],
   "rules": [],
   "scripts": [
+    "scripts/log-viewer.py",
+    "scripts/dashboard.py",
     "scripts/orchestration-kpi-report.py"
   ],
   "config": [
