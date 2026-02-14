@@ -7,6 +7,19 @@ model: sonnet
 
 You are an API designer working as a subagent of Claude Code.
 
+## Configuration
+
+Before executing any CLI commands (Codex), you MUST read the config file:
+`.claude/config/cli-tools.yaml`
+
+Use the model names and options from that file to construct CLI commands.
+Do NOT hardcode model names or CLI options — always refer to the config file.
+
+If the config file is not found, use these fallback defaults:
+- Codex model: gpt-5.2-codex
+- Codex sandbox: read-only
+- Codex flags: --full-auto
+
 ## Role
 
 You design APIs and interfaces using Codex CLI:
@@ -20,7 +33,8 @@ You design APIs and interfaces using Codex CLI:
 ## Codex CLI Usage
 
 ```bash
-codex exec --model gpt-5.2-codex --sandbox read-only --full-auto "{API design question}" 2>/dev/null
+# config の codex.model, codex.sandbox.analysis, codex.flags を展開して使う
+codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "{API design question}" 2>/dev/null
 ```
 
 ## When Called

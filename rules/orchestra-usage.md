@@ -2,6 +2,9 @@
 
 オーケストレーションシステムの使い方。
 
+> **Note**: CLI のモデル名・オプションは `.claude/config/cli-tools.yaml` で一元管理。
+> 以下のコマンド例中のプレースホルダー（`<codex.model>` 等）は、config ファイルの値で置換して使用する。
+
 ---
 
 ## Quick Reference
@@ -16,11 +19,11 @@ Task(subagent_type="frontend-dev", prompt="実装: ログインフォーム")
 ### Codex CLI（深い推論）
 
 ```bash
-# 設計相談・デバッグ・トレードオフ分析
-codex exec --model gpt-5.2-codex --sandbox read-only --full-auto "{質問}" 2>/dev/null
+# 設計相談・デバッグ・トレードオフ分析 — config の codex.model, codex.sandbox.analysis, codex.flags を展開
+codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "{質問}" 2>/dev/null
 
-# 実装作業
-codex exec --model gpt-5.2-codex --sandbox workspace-write --full-auto "{タスク}" 2>/dev/null
+# 実装作業 — config の codex.sandbox.implementation を使用
+codex exec --model <codex.model> --sandbox <codex.sandbox.implementation> <codex.flags> "{タスク}" 2>/dev/null
 ```
 
 **使う場面:** 設計判断、デバッグ、比較検討、レビュー
@@ -28,14 +31,16 @@ codex exec --model gpt-5.2-codex --sandbox workspace-write --full-auto "{タス�
 ### Gemini CLI（リサーチ）
 
 ```bash
+# config の gemini.model を -m フラグに展開して使う
+
 # リサーチ
-gemini -p "{質問}" 2>/dev/null
+gemini -m <gemini.model> -p "{質問}" 2>/dev/null
 
 # コードベース分析
-gemini -p "{質問}" --include-directories . 2>/dev/null
+gemini -m <gemini.model> -p "{質問}" --include-directories . 2>/dev/null
 
 # マルチモーダル（PDF/動画）
-gemini -p "{プロンプト}" < /path/to/file 2>/dev/null
+gemini -m <gemini.model> -p "{プロンプト}" < /path/to/file 2>/dev/null
 ```
 
 **使う場面:** ライブラリ調査、ドキュメント検索、大規模分析、PDF/動画処理
@@ -71,7 +76,7 @@ Task(subagent_type="general-purpose", prompt="""
 Codex に設計を相談してください:
 {質問内容}
 
-codex exec --model gpt-5.2-codex --sandbox read-only --full-auto "..." 2>/dev/null
+codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "..." 2>/dev/null
 
 結果を要約して返してください。
 """)

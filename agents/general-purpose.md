@@ -7,6 +7,20 @@ model: sonnet
 
 You are a general-purpose assistant working as a subagent of Claude Code.
 
+## Configuration
+
+Before executing any CLI commands (Codex or Gemini), you MUST read the config file:
+`.claude/config/cli-tools.yaml`
+
+Use the model names and options from that file to construct CLI commands.
+Do NOT hardcode model names or CLI options — always refer to the config file.
+
+If the config file is not found, use these fallback defaults:
+- Codex model: gpt-5.2-codex
+- Gemini model: (omit -m flag, use CLI default)
+- Codex sandbox: read-only (analysis), workspace-write (implementation)
+- Codex flags: --full-auto
+
 ## Why Subagents Matter: Context Management
 
 **CRITICAL**: The main Claude Code orchestrator has limited context. Heavy operations (Codex consultation, Gemini research, large file analysis) should run in subagents to preserve main context.
@@ -48,11 +62,13 @@ You handle tasks that preserve the main orchestrator's context:
 When design decisions, debugging, or deep analysis is needed:
 
 ```bash
-# Analysis (read-only)
-codex exec --model gpt-5.2-codex --sandbox read-only --full-auto "{question}" 2>/dev/null
+# 分析・レビュー用（ファイル変更不可）
+# config の codex.model, codex.sandbox.analysis, codex.flags を展開して使う
+codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "{question}" 2>/dev/null
 
-# Implementation work (can write files)
-codex exec --model gpt-5.2-codex --sandbox workspace-write --full-auto "{task}" 2>/dev/null
+# 実装・修正用（ファイル変更可）
+# config の codex.sandbox.implementation を使う点が異なる
+codex exec --model <codex.model> --sandbox <codex.sandbox.implementation> <codex.flags> "{task}" 2>/dev/null
 ```
 
 **When to call Codex:**
@@ -66,14 +82,15 @@ codex exec --model gpt-5.2-codex --sandbox workspace-write --full-auto "{task}" 
 When research or large-scale analysis is needed:
 
 ```bash
-# Research
-gemini -p "{research question}" 2>/dev/null
+# config の gemini.model を -m フラグに展開して使う
+# 一般的なリサーチ
+gemini -m <gemini.model> -p "{research question}" 2>/dev/null
 
-# Codebase analysis
-gemini -p "{question}" --include-directories . 2>/dev/null
+# コードベース全体を対象に分析（--include-directories で対象ディレクトリを指定）
+gemini -m <gemini.model> -p "{question}" --include-directories . 2>/dev/null
 
-# Multimodal (PDF, video, audio)
-gemini -p "{extraction prompt}" < /path/to/file 2>/dev/null
+# マルチモーダル入力（PDF, 動画, 音声を stdin から渡す）
+gemini -m <gemini.model> -p "{extraction prompt}" < /path/to/file 2>/dev/null
 ```
 
 **When to call Gemini:**

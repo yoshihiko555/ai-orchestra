@@ -2,6 +2,9 @@
 
 **Gemini CLI は大規模リサーチを担当する専門家。**
 
+> **Note**: モデル名・オプションは `.claude/config/cli-tools.yaml` で一元管理。
+> 以下のコマンド例中の `<gemini.model>` 等のプレースホルダーは、config ファイルの値で置換して使用する。
+
 ## いつ Gemini を使うか
 
 以下の場面で Gemini に相談する：
@@ -26,7 +29,7 @@ Gemini でリサーチしてください：
 {リサーチ内容}
 
 Gemini CLI コマンド:
-gemini -p "{質問}" 2>/dev/null
+gemini -m <gemini.model> -p "{質問}" 2>/dev/null
 
 結果を .claude/docs/research/{topic}.md に保存し、
 要約を返してください（5-7ポイント）。
@@ -36,14 +39,16 @@ gemini -p "{質問}" 2>/dev/null
 ### 直接呼び出し（短い質問のみ）
 
 ```bash
+# config の gemini.model を -m フラグに展開して使う
+
 # リサーチ
-gemini -p "{質問}" 2>/dev/null
+gemini -m <gemini.model> -p "{質問}" 2>/dev/null
 
 # コードベース分析
-gemini -p "{質問}" --include-directories . 2>/dev/null
+gemini -m <gemini.model> -p "{質問}" --include-directories . 2>/dev/null
 
 # マルチモーダル（PDF/動画/音声）
-gemini -p "{抽出プロンプト}" < /path/to/file 2>/dev/null
+gemini -m <gemini.model> -p "{抽出プロンプト}" < /path/to/file 2>/dev/null
 ```
 
 ## Gemini の強み

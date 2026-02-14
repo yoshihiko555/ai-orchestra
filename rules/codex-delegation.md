@@ -2,6 +2,9 @@
 
 **Codex CLI は深い推論を担当する専門家。**
 
+> **Note**: モデル名・オプションは `.claude/config/cli-tools.yaml` で一元管理。
+> 以下のコマンド例中の `<codex.model>` 等のプレースホルダーは、config ファイルの値で置換して使用する。
+
 ## いつ Codex を使うか
 
 以下の場面で Codex に相談する：
@@ -26,7 +29,7 @@ Codex に以下を相談してください：
 {質問内容}
 
 Codex CLI コマンド:
-codex exec --model gpt-5.2-codex --sandbox read-only --full-auto "{質問}" 2>/dev/null
+codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "{質問}" 2>/dev/null
 
 結果を要約して返してください（5-7ポイント）。
 """)
@@ -35,11 +38,11 @@ codex exec --model gpt-5.2-codex --sandbox read-only --full-auto "{質問}" 2>/d
 ### 直接呼び出し（短い質問のみ）
 
 ```bash
-# 分析（読み取り専用）
-codex exec --model gpt-5.3-codex --sandbox read-only --full-auto "{質問}" 2>/dev/null
+# 分析（読み取り専用）— config の codex.model, codex.sandbox.analysis, codex.flags を展開
+codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "{質問}" 2>/dev/null
 
-# 実装作業（書き込み可能）
-codex exec --model gpt-5.3-codex --sandbox workspace-write --full-auto "{タスク}" 2>/dev/null
+# 実装作業（書き込み可能）— config の codex.sandbox.implementation を使用
+codex exec --model <codex.model> --sandbox <codex.sandbox.implementation> <codex.flags> "{タスク}" 2>/dev/null
 ```
 
 ## Sandbox モード
