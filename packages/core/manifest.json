@@ -5,7 +5,8 @@
   "depends": [],
   "hooks": {},
   "files": [
-    "hooks/hook_common.py"
+    "hooks/hook_common.py",
+    "hooks/log_common.py"
   ],
   "skills": [],
   "agents": [],

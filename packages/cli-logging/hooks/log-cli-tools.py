@@ -154,28 +154,20 @@ def main() -> None:
 
     log_entry(entry)
 
-    # 統一イベントログ (プロジェクトに log_common.py がある場合のみ)
+    # 統一イベントログ ($AI_ORCHESTRA_DIR/packages/core/hooks/log_common.py)
     try:
-        project_dir = os.environ.get("CLAUDE_PROJECT_DIR", "")
-        if not project_dir:
-            for parent in [cwd, *cwd.parents]:
-                if (parent / ".claude").is_dir():
-                    project_dir = str(parent)
-                    break
-        if project_dir:
-            lc_path = os.path.join(project_dir, ".claude", "hooks")
-            if os.path.isfile(os.path.join(lc_path, "log_common.py")):
-                import importlib.util
-                spec = importlib.util.spec_from_file_location("log_common", os.path.join(lc_path, "log_common.py"))
-                lc = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(lc)
-                lc.append_event(
-                    "cli_call",
-                    {"tool": tool, "model": model, "prompt": truncate_text(prompt, 200), "success": success},
-                    session_id=hook_input.get("session_id", ""),
-                    hook_name="log-cli-tools",
-                    project_dir=project_dir,
-                )
+        _orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
+        if _orchestra_dir:
+            _core_hooks = os.path.join(_orchestra_dir, "packages", "core", "hooks")
+            if _core_hooks not in sys.path:
+                sys.path.insert(0, _core_hooks)
+            from log_common import append_event
+            append_event(
+                "cli_call",
+                {"tool": tool, "model": model, "prompt": truncate_text(prompt, 200), "success": success},
+                session_id=hook_input.get("session_id", ""),
+                hook_name="log-cli-tools",
+            )
     except Exception:
         pass
 
