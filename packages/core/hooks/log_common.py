@@ -35,7 +35,7 @@ def _parents(path: str) -> list[str]:
 def get_events_log_path(project_dir: str | None = None) -> str:
     """events.jsonl のフルパスを返す。"""
     root = project_dir or find_project_root()
-    return os.path.join(root, "logs", "orchestration", "events.jsonl")
+    return os.path.join(root, ".claude", "logs", "orchestration", "events.jsonl")
 
 
 def truncate_text(text: str, max_length: int = 2000) -> str:
