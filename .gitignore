@@ -9,3 +9,5 @@ docs/tech/
 *.swp
 *.swo
 *~
+
+__pycache__
