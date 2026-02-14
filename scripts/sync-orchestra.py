@@ -7,7 +7,8 @@ SessionStart hook: ai-orchestra パッケージの skills/agents/rules を自動
 2. 各パッケージの manifest.json を読み込み → skills/agents/rules をコピー
 3. sync_top_level=true の場合、$AI_ORCHESTRA_DIR 直下の agents/skills/rules もコピー
 4. 差分があるファイルのみ .claude/{skills,agents,rules}/ にコピー（mtime 比較）
-5. last_sync タイムスタンプを更新
+5. 前回 synced_files にあって今回ないファイルを削除（ソース側で削除されたファイルの反映）
+6. synced_files リストと last_sync タイムスタンプを更新
 
 パフォーマンス: 変更なしの場合 ~70ms（Python 起動 + mtime 比較のみ）
 """
@@ -44,12 +45,12 @@ def needs_sync(src: Path, dst: Path) -> bool:
 
 
 def sync_top_level(
-    orchestra_path: Path, claude_dir: Path, existing_files: set[str]
+    orchestra_path: Path, claude_dir: Path, synced_files: set[str]
 ) -> int:
     """$AI_ORCHESTRA_DIR 直下の agents/skills/rules を .claude/ に差分コピー。
 
-    プロジェクト固有ファイル（同名）が既に存在する場合はスキップする。
-    パッケージ同期で既にコピーされたファイルもスキップする。
+    パッケージ同期で既にコピーされたファイルはスキップする。
+    同期対象ファイルは synced_files に追記される（削除判定用）。
     """
     synced = 0
 
@@ -63,13 +64,15 @@ def sync_top_level(
                 continue
 
             rel_path = src_file.relative_to(src_dir)
-            dst = claude_dir / category / rel_path
+            dst_key = f"{category}/{rel_path}"
 
             # パッケージ同期で既にコピーされたファイルはスキップ
-            dst_key = f"{category}/{rel_path}"
-            if dst_key in existing_files:
+            if dst_key in synced_files:
                 continue
 
+            synced_files.add(dst_key)
+
+            dst = claude_dir / category / rel_path
             if not needs_sync(src_file, dst):
                 continue
 
@@ -78,6 +81,32 @@ def sync_top_level(
             synced += 1
 
     return synced
+
+
+def remove_stale_files(
+    claude_dir: Path, prev_synced: list[str], current_synced: set[str]
+) -> int:
+    """前回同期したが今回は対象外になったファイルを削除する。
+
+    削除後に空になったディレクトリも再帰的に削除する。
+    """
+    removed = 0
+    for file_key in prev_synced:
+        if file_key in current_synced:
+            continue
+        target = claude_dir / file_key
+        if target.is_file():
+            target.unlink()
+            removed += 1
+            # 空ディレクトリを再帰的に削除
+            parent = target.parent
+            while parent != claude_dir and parent.is_dir():
+                try:
+                    parent.rmdir()  # 空でなければ OSError
+                    parent = parent.parent
+                except OSError:
+                    break
+    return removed
 
 
 def main() -> None:
@@ -146,9 +175,32 @@ def main() -> None:
     if orch.get("sync_top_level", False):
         synced_count += sync_top_level(orchestra_path, claude_dir, synced_files)
 
-    # last_sync を更新（同期があった場合のみ）
-    if synced_count > 0:
+    # 前回同期されたが今回は対象外のファイルを削除
+    # synced_files キーが未設定（移行初回）の場合、既存ファイルをスキャンして prev とする
+    if "synced_files" in orch:
+        prev_synced = orch["synced_files"]
+    else:
+        prev_synced = []
+        for category in ("skills", "agents", "rules"):
+            cat_dir = claude_dir / category
+            if not cat_dir.is_dir():
+                continue
+            for f in cat_dir.rglob("*"):
+                if f.is_file():
+                    prev_synced.append(f"{category}/{f.relative_to(cat_dir)}")
+    removed_count = remove_stale_files(claude_dir, prev_synced, synced_files)
+
+    # orchestra.json を更新（同期・削除があった場合、synced_files が変わった場合、または初回記録時）
+    prev_set = set(prev_synced)
+    needs_save = (
+        synced_count > 0
+        or removed_count > 0
+        or synced_files != prev_set
+        or "synced_files" not in orch
+    )
+    if needs_save:
         orch["last_sync"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        orch["synced_files"] = sorted(synced_files)
         try:
             with open(orch_path, "w", encoding="utf-8") as f:
                 json.dump(orch, f, indent=2, ensure_ascii=False)
@@ -157,8 +209,13 @@ def main() -> None:
             pass
 
     # SessionStart hook の stdout は Claude コンテキストに注入される
-    if synced_count > 0:
-        print(f"[orchestra] {synced_count} files synced")
+    if synced_count > 0 or removed_count > 0:
+        parts = []
+        if synced_count > 0:
+            parts.append(f"{synced_count} synced")
+        if removed_count > 0:
+            parts.append(f"{removed_count} removed")
+        print(f"[orchestra] {', '.join(parts)}")
 
 
 if __name__ == "__main__":
