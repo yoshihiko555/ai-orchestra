@@ -21,6 +21,17 @@
 ```json
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.claude/hooks/tmux-session-start.py\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "UserPromptSubmit": [
       {
         "matcher": "",
@@ -50,6 +61,28 @@
           {
             "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/suggest-gemini-research.py\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.claude/hooks/tmux-subagent-start.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.claude/hooks/tmux-subagent-stop.py\"",
             "timeout": 5
           }
         ]
@@ -92,6 +125,17 @@
           {
             "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/post-implementation-review.py\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.claude/hooks/tmux-session-end.py\"",
             "timeout": 5
           }
         ]
@@ -221,5 +265,65 @@
 | lint-on-save.py | PostToolUse (Edit\|Write) | Python 編集後に ruff/ty 実行 |
 | post-implementation-review.py | PostToolUse (Edit\|Write) | 大量変更後にレビュー提案 |
 | log-cli-tools.py | PostToolUse (Bash) | Codex/Gemini ログ記録 |
+| tmux-session-start.py | SessionStart | tmux 監視セッション作成 |
+| tmux-subagent-start.py | SubagentStart | tmux ペイン追加 + DONE クリーンアップ |
+| tmux-subagent-stop.py | SubagentStop | ペイン完了通知（緑ボーダー） |
+| tmux-session-end.py | SessionEnd | tmux セッション削除 |
+
+
+
+
+
+## 8. 制御決定性監査の初期設定
+
+以下を追加で作成/配置する:
+
+```
+.claude/
+├── config/
+│   ├── delegation-policy.yaml
+│   └── orchestration-flags.yaml
+├── state/
+│   └── .gitkeep
+└── logs/orchestration/
+    └── .gitkeep
+```
+
+- `~/.claude/templates/project/config/delegation-policy.yaml` を `.claude/config/delegation-policy.yaml` へコピー
+- `~/.claude/templates/project/config/orchestration-flags.yaml` を `.claude/config/orchestration-flags.yaml` へコピー
+- `.claude/settings.json` に以下フックがあることを確認
+  - `python3 "$HOME/.claude/hooks/orchestration-expected-route.py"` (UserPromptSubmit)
+  - `python3 "$HOME/.claude/hooks/orchestration-route-audit.py"` (PostToolUse)
+
+この設定で、期待ルート一致率・不要呼び出し率・再指示率を `.claude/logs/orchestration/` に記録できる。
+
+### 9. tmux サブエージェント監視（オプション）
+
+tmux がインストールされている環境では、サブエージェントの出力をリアルタイムで tmux ペインに表示できる。
+
+**有効化手順:**
+
+`.claude/config/orchestration-flags.yaml` の `tmux_monitoring.enabled` を `true` に変更:
+
+```json
+"tmux_monitoring": {
+  "enabled": true,
+  "_comment": "tmux サブエージェント監視。tmux インストール済み環境で有効化"
+}
+```
+
+**動作概要:**
+- SessionStart: tmux セッション `claude-{project}-{PID}` を作成
+- SubagentStart: ペインを追加して `tail -f` で出力を表示。DONE ペインを自動再利用
+- SubagentStop: ペインタイトルを `DONE:` に更新、ボーダーを緑に変更
+- SessionEnd: tmux セッションと関連ファイルを一括削除
+
+**前提条件:**
+- `tmux` がインストール済みであること
+- デフォルトは `false`（オプトイン）。tmux 未インストール環境ではフラグに関わらずスキップされる
+
+**確認方法:**
+- `.claude/settings.json` に SessionStart/SubagentStart/SubagentStop/SessionEnd hook があること
+- `orchestration-flags.yaml` の `tmux_monitoring.enabled` が `true` であること
 
 </init-orchestra>
