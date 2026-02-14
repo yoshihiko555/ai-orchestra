@@ -5,9 +5,9 @@
   "depends": ["core"],
   "hooks": {
     "PostToolUse": [
-      "post-implementation-review.py",
-      "post-test-analysis.py",
-      "lint-on-save.py"
+      {"file": "post-implementation-review.py", "matcher": "Edit|Write"},
+      {"file": "post-test-analysis.py", "matcher": "Bash"},
+      {"file": "lint-on-save.py", "matcher": "Edit|Write"}
     ]
   },
   "files": [

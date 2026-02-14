@@ -580,6 +580,127 @@ class OrchestraManager:
         if not dry_run:
             print(f"\n✓ パッケージ '{package_name}' をアンインストールしました")
 
+    def init(self, project: Optional[str], dry_run: bool = False) -> None:
+        """プロジェクトを初期化（ディレクトリ構造 + テンプレート配置）"""
+        project_dir = self.get_project_dir(project)
+        templates_dir = self.orchestra_dir / "templates"
+
+        # 1. 環境変数の設定
+        self.setup_env_var(dry_run)
+
+        # 2. .claude/ ディレクトリ構造
+        claude_dirs = [
+            project_dir / ".claude" / "docs",
+            project_dir / ".claude" / "docs" / "research",
+            project_dir / ".claude" / "docs" / "libraries",
+            project_dir / ".claude" / "logs",
+            project_dir / ".claude" / "logs" / "orchestration",
+            project_dir / ".claude" / "state",
+        ]
+        for d in claude_dirs:
+            if dry_run:
+                if not d.exists():
+                    print(f"[DRY-RUN] ディレクトリ作成: {d.relative_to(project_dir)}")
+            else:
+                d.mkdir(parents=True, exist_ok=True)
+
+        # 3. .claude/ テンプレートファイル（既存はスキップ）
+        project_templates = {
+            templates_dir / "project" / "docs" / "DESIGN.md":
+                project_dir / ".claude" / "docs" / "DESIGN.md",
+            templates_dir / "project" / "docs" / "libraries" / "_TEMPLATE.md":
+                project_dir / ".claude" / "docs" / "libraries" / "_TEMPLATE.md",
+            templates_dir / "project" / "docs" / "research" / ".gitkeep":
+                project_dir / ".claude" / "docs" / "research" / ".gitkeep",
+            templates_dir / "project" / "logs" / "orchestration" / ".gitkeep":
+                project_dir / ".claude" / "logs" / "orchestration" / ".gitkeep",
+            templates_dir / "project" / "state" / ".gitkeep":
+                project_dir / ".claude" / "state" / ".gitkeep",
+        }
+        for src, dst in project_templates.items():
+            if not src.exists():
+                continue
+            if dst.exists():
+                print(f"スキップ（既存）: {dst.relative_to(project_dir)}")
+                continue
+            if dry_run:
+                print(f"[DRY-RUN] テンプレート配置: {dst.relative_to(project_dir)}")
+            else:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+                print(f"テンプレート配置: {dst.relative_to(project_dir)}")
+
+        # 4. CLAUDE.md（既存はスキップ）
+        claude_md_src = templates_dir / "project" / "CLAUDE.md"
+        claude_md_dst = project_dir / "CLAUDE.md"
+        if claude_md_src.exists():
+            if claude_md_dst.exists():
+                print(f"スキップ（既存）: CLAUDE.md")
+            elif dry_run:
+                print(f"[DRY-RUN] テンプレート配置: CLAUDE.md")
+            else:
+                shutil.copy2(claude_md_src, claude_md_dst)
+                print(f"テンプレート配置: CLAUDE.md")
+
+        # 5. .codex/ テンプレート（既存はスキップ）
+        codex_src = templates_dir / "codex"
+        if codex_src.is_dir():
+            codex_dst = project_dir / ".codex"
+            for src_file in codex_src.rglob("*"):
+                if not src_file.is_file():
+                    continue
+                rel = src_file.relative_to(codex_src)
+                dst_file = codex_dst / rel
+                if dst_file.exists():
+                    print(f"スキップ（既存）: .codex/{rel}")
+                    continue
+                if dry_run:
+                    print(f"[DRY-RUN] テンプレート配置: .codex/{rel}")
+                else:
+                    dst_file.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(src_file, dst_file)
+                    print(f"テンプレート配置: .codex/{rel}")
+
+        # 6. .gemini/ テンプレート（既存はスキップ）
+        gemini_src = templates_dir / "gemini"
+        if gemini_src.is_dir():
+            gemini_dst = project_dir / ".gemini"
+            for src_file in gemini_src.rglob("*"):
+                if not src_file.is_file():
+                    continue
+                rel = src_file.relative_to(gemini_src)
+                dst_file = gemini_dst / rel
+                if dst_file.exists():
+                    print(f"スキップ（既存）: .gemini/{rel}")
+                    continue
+                if dry_run:
+                    print(f"[DRY-RUN] テンプレート配置: .gemini/{rel}")
+                else:
+                    dst_file.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(src_file, dst_file)
+                    print(f"テンプレート配置: .gemini/{rel}")
+
+        # 7. orchestra.json の初期化（sync_top_level 有効）
+        orch = self.load_orchestra_json(project_dir)
+        if not orch.get("orchestra_dir"):
+            orch["orchestra_dir"] = str(self.orchestra_dir)
+        orch.setdefault("installed_packages", [])
+        orch["sync_top_level"] = True
+        if dry_run:
+            print(f"[DRY-RUN] orchestra.json 初期化（sync_top_level: true）")
+        else:
+            self.save_orchestra_json(project_dir, orch)
+            print(f"orchestra.json 初期化（sync_top_level: true）")
+
+        # 8. sync-orchestra の SessionStart hook を登録
+        settings = self.load_settings(project_dir)
+        self.register_sync_hook(settings, dry_run)
+        if not dry_run:
+            self.save_settings(project_dir, settings)
+
+        if not dry_run:
+            print(f"\n✓ プロジェクトを初期化しました: {project_dir}")
+
     def enable(self, package_name: str, project: Optional[str], dry_run: bool = False) -> None:
         """パッケージを有効化（settings.local.json にフック登録を復元）"""
         packages = self.load_packages()
@@ -641,6 +762,11 @@ def main():
 
     subparsers = parser.add_subparsers(dest="command", help="サブコマンド")
 
+    # init コマンド
+    init_parser = subparsers.add_parser("init", help="プロジェクトを初期化")
+    init_parser.add_argument("--project", help="プロジェクトパス")
+    init_parser.add_argument("--dry-run", action="store_true", help="実行内容を表示のみ")
+
     # list コマンド
     subparsers.add_parser("list", help="パッケージ一覧を表示")
 
@@ -684,7 +810,9 @@ def main():
     manager = OrchestraManager(orchestra_dir)
 
     # コマンド実行
-    if args.command == "list":
+    if args.command == "init":
+        manager.init(args.project, args.dry_run)
+    elif args.command == "list":
         manager.list_packages()
     elif args.command == "status":
         manager.status(args.project)

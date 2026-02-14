@@ -4,8 +4,8 @@
   "description": "ファイル編集・プラン完了時の Codex 相談提案",
   "depends": ["core"],
   "hooks": {
-    "PreToolUse": ["check-codex-before-write.py"],
-    "PostToolUse": ["check-codex-after-plan.py"]
+    "PreToolUse": [{"file": "check-codex-before-write.py", "matcher": "Edit|Write"}],
+    "PostToolUse": [{"file": "check-codex-after-plan.py", "matcher": "Task"}]
   },
   "files": [
     "hooks/check-codex-before-write.py",

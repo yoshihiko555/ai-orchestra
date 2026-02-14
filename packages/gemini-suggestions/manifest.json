@@ -4,7 +4,7 @@
   "description": "Web 検索・fetch 時の Gemini リサーチ提案",
   "depends": ["core"],
   "hooks": {
-    "PreToolUse": ["suggest-gemini-research.py"]
+    "PreToolUse": [{"file": "suggest-gemini-research.py", "matcher": "WebSearch|WebFetch"}]
   },
   "files": [
     "hooks/suggest-gemini-research.py"
