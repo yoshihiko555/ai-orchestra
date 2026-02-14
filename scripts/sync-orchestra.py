@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
-SessionStart hook: ai-orchestra パッケージの skills/agents/rules を自動同期する。
+SessionStart hook: ai-orchestra パッケージの skills/agents/rules/config を自動同期する。
 
 処理フロー:
 1. .claude/orchestra.json を読み込み → インストール済みパッケージ一覧を取得
-2. 各パッケージの manifest.json を読み込み → skills/agents/rules をコピー
-3. sync_top_level=true の場合、$AI_ORCHESTRA_DIR 直下の agents/skills/rules もコピー
-4. 差分があるファイルのみ .claude/{skills,agents,rules}/ にコピー（mtime 比較）
-5. 前回 synced_files にあって今回ないファイルを削除（ソース側で削除されたファイルの反映）
-6. synced_files リストと last_sync タイムスタンプを更新
+2. 各パッケージの manifest.json を読み込み → skills/agents/rules/config をコピー
+3. sync_top_level=true の場合、$AI_ORCHESTRA_DIR 直下の agents/skills/rules/config もコピー
+4. 差分があるファイルのみ .claude/{skills,agents,rules,config}/ にコピー（mtime 比較）
+5. config/*.local.yaml はプロジェクト固有設定のため同期・削除の対象外
+6. 前回 synced_files にあって今回ないファイルを削除（ソース側で削除されたファイルの反映）
+7. synced_files リストと last_sync タイムスタンプを更新
 
 パフォーマンス: 変更なしの場合 ~70ms（Python 起動 + mtime 比較のみ）
 """
@@ -44,17 +45,23 @@ def needs_sync(src: Path, dst: Path) -> bool:
     return src.stat().st_mtime > dst.stat().st_mtime
 
 
+def is_local_override(category: str, rel_path: Path) -> bool:
+    """プロジェクト固有の上書きファイル（*.local.yaml）かどうか判定"""
+    return category == "config" and rel_path.name.endswith(".local.yaml")
+
+
 def sync_top_level(
     orchestra_path: Path, claude_dir: Path, synced_files: set[str]
 ) -> int:
-    """$AI_ORCHESTRA_DIR 直下の agents/skills/rules を .claude/ に差分コピー。
+    """$AI_ORCHESTRA_DIR 直下の agents/skills/rules/config を .claude/ に差分コピー。
 
     パッケージ同期で既にコピーされたファイルはスキップする。
+    config/*.local.yaml はプロジェクト固有設定のためスキップする。
     同期対象ファイルは synced_files に追記される（削除判定用）。
     """
     synced = 0
 
-    for category in ("agents", "skills", "rules"):
+    for category in ("agents", "skills", "rules", "config"):
         src_dir = orchestra_path / category
         if not src_dir.is_dir():
             continue
@@ -65,6 +72,10 @@ def sync_top_level(
 
             rel_path = src_file.relative_to(src_dir)
             dst_key = f"{category}/{rel_path}"
+
+            # config/*.local.yaml はプロジェクト固有設定のためスキップ
+            if is_local_override(category, rel_path):
+                continue
 
             # パッケージ同期で既にコピーされたファイルはスキップ
             if dst_key in synced_files:
@@ -93,6 +104,10 @@ def remove_stale_files(
     removed = 0
     for file_key in prev_synced:
         if file_key in current_synced:
+            continue
+        # config/*.local.yaml はプロジェクト固有設定のため削除しない
+        parts = file_key.split("/", 1)
+        if len(parts) == 2 and is_local_override(parts[0], Path(parts[1])):
             continue
         target = claude_dir / file_key
         if target.is_file():
@@ -153,7 +168,7 @@ def main() -> None:
 
         pkg_dir = orchestra_path / "packages" / pkg_name
 
-        for category in ("skills", "agents", "rules"):
+        for category in ("skills", "agents", "rules", "config"):
             file_list = manifest.get(category, [])
             for rel_path in file_list:
                 src = pkg_dir / category / rel_path
@@ -181,7 +196,7 @@ def main() -> None:
         prev_synced = orch["synced_files"]
     else:
         prev_synced = []
-        for category in ("skills", "agents", "rules"):
+        for category in ("skills", "agents", "rules", "config"):
             cat_dir = claude_dir / category
             if not cat_dir.is_dir():
                 continue

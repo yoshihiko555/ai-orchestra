@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "features": {
+    "route_audit": {
+      "enabled": true,
+      "record_input_excerpt": true,
+      "max_excerpt_chars": 160
+    },
+    "route_guard": {
+      "enabled": false,
+      "mode": "warn"
+    },
+    "quality_gate": {
+      "enabled": false,
+      "block_on_failed_test": false
+    },
+    "kpi_scorecard": {
+      "enabled": true,
+      "default_period_days": 7
+    },
+    "tmux_monitoring": {
+      "enabled": false,
+      "_comment": "tmux サブエージェント監視。tmux インストール済み環境で有効化"
+    }
+  },
+  "paths": {
+    "state_dir": ".claude/state",
+    "logs_dir": ".claude/logs/orchestration",
+    "delegation_policy": ".claude/config/delegation-policy.yaml"
+  }
+}

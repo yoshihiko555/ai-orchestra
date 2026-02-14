@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "default_route": "claude-direct",
+  "rules": [
+    {
+      "id": "research_gemini",
+      "priority": 100,
+      "keywords_any": [
+        "調査",
+        "リサーチ",
+        "最新",
+        "documentation",
+        "best practice",
+        "migration",
+        "websearch",
+        "webfetch",
+        "pdf",
+        "動画"
+      ],
+      "expected_route": "gemini"
+    },
+    {
+      "id": "architecture_codex",
+      "priority": 90,
+      "keywords_any": [
+        "設計",
+        "アーキテクチャ",
+        "トレードオフ",
+        "レビュー",
+        "デバッグ",
+        "なぜ",
+        "比較検討",
+        "refactor"
+      ],
+      "expected_route": "codex"
+    },
+    {
+      "id": "implementation_subagent",
+      "priority": 80,
+      "keywords_any": [
+        "実装",
+        "修正",
+        "追加",
+        "テスト",
+        "最適化",
+        "パッチ"
+      ],
+      "expected_route": "subagent-general-purpose"
+    }
+  ],
+  "aliases": {
+    "codex": [
+      "bash:codex"
+    ],
+    "gemini": [
+      "bash:gemini"
+    ],
+    "subagent-general-purpose": [
+      "task:general-purpose",
+      "task:agent",
+      "agent:general-purpose"
+    ]
+  }
+}

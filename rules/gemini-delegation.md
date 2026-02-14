@@ -3,6 +3,7 @@
 **Gemini CLI は大規模リサーチを担当する専門家。**
 
 > **Note**: モデル名・オプションは `.claude/config/cli-tools.yaml` で一元管理。
+> `.claude/config/cli-tools.local.yaml` が存在する場合はそちらの値を優先する（詳細は `config-loading.md` 参照）。
 > 以下のコマンド例中の `<gemini.model>` 等のプレースホルダーは、config ファイルの値で置換して使用する。
 
 ## いつ Gemini を使うか
