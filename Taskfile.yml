@@ -2,33 +2,16 @@ version: '3'
 
 vars:
   ORCHESTRA_DIR: $HOME/ghq/github.com/yoshihiko555/ai-orchestra
-  DOTFILES_CLAUDE: $HOME/ghq/github.com/yoshihiko555/dotfiles/claude/.claude
-  DOTFILES_CLAUDE_ONLY: $HOME/ghq/github.com/yoshihiko555/dotfiles/shared/skills/claude-only
-  DOTFILES_ROOT: $HOME/ghq/github.com/yoshihiko555/dotfiles
-  HOME_CLAUDE: $HOME/.claude
 
 includes:
-  sync:
-    taskfile: ./taskfiles/sync.yml
-    flatten: true
-    vars: &common_vars
-      ORCHESTRA_DIR: "{{.ORCHESTRA_DIR}}"
-      DOTFILES_CLAUDE: "{{.DOTFILES_CLAUDE}}"
-      DOTFILES_CLAUDE_ONLY: "{{.DOTFILES_CLAUDE_ONLY}}"
-      DOTFILES_ROOT: "{{.DOTFILES_ROOT}}"
-      HOME_CLAUDE: "{{.HOME_CLAUDE}}"
-
   list:
     taskfile: ./taskfiles/list.yml
     flatten: true
-    vars: *common_vars
+    vars:
+      ORCHESTRA_DIR: "{{.ORCHESTRA_DIR}}"
 
   scaffold:
     taskfile: ./taskfiles/scaffold.yml
     flatten: true
-    vars: *common_vars
-
-  maintenance:
-    taskfile: ./taskfiles/maintenance.yml
-    flatten: true
-    vars: *common_vars
+    vars:
+      ORCHESTRA_DIR: "{{.ORCHESTRA_DIR}}"

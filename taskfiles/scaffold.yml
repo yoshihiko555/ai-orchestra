@@ -16,16 +16,3 @@ tasks:
       - echo "Created {{.ORCHESTRA_DIR}}/skills/{{.CLI_ARGS}}/SKILL.md"
       - echo "Edit the file, then run 'task sync'"
 
-  init:project:
-    desc: "[非推奨] '/init-orchestra' スキルを使用（プロジェクト有効化）"
-    cmds:
-      - |
-        echo "⚠️  This task is deprecated."
-        echo "Please use '/init-orchestra' skill in Claude Code instead."
-        echo ""
-        echo "The '/init-orchestra' skill provides:"
-        echo "  - .claude/settings.json with all hooks"
-        echo "  - CLAUDE.md template (if not exists)"
-        echo "  - .claude/docs/ structure"
-        echo "  - .codex/ configuration"
-        echo "  - .gemini/ configuration"

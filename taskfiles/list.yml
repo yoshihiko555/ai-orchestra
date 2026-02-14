@@ -7,9 +7,16 @@ tasks:
       - ls -1 {{.ORCHESTRA_DIR}}/agents/*.md | xargs -n1 basename | sed 's/.md$//'
 
   list:hooks:
-    desc: フック一覧を表示
+    desc: フック一覧を表示（パッケージ別）
     cmds:
-      - ls -1 {{.ORCHESTRA_DIR}}/hooks/*.py 2>/dev/null | xargs -n1 basename || echo "No hooks"
+      - |
+        for pkg in {{.ORCHESTRA_DIR}}/packages/*/; do
+          hooks=$(ls "$pkg/hooks/"*.py 2>/dev/null | grep -v __pycache__ | grep -v _common || true)
+          if [ -n "$hooks" ]; then
+            echo "$(basename "$pkg"):"
+            echo "$hooks" | xargs -n1 basename | sed 's/^/  /'
+          fi
+        done
 
   list:skills:
     desc: スキル一覧を表示
