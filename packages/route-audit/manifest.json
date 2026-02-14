@@ -23,7 +23,7 @@
     "scripts/orchestration-kpi-report.py"
   ],
   "config": [
-    "config/delegation-policy.yaml",
-    "config/orchestration-flags.yaml"
+    "config/delegation-policy.json",
+    "config/orchestration-flags.json"
   ]
 }

@@ -46,8 +46,9 @@ def needs_sync(src: Path, dst: Path) -> bool:
 
 
 def is_local_override(category: str, rel_path: Path) -> bool:
-    """プロジェクト固有の上書きファイル（*.local.yaml）かどうか判定"""
-    return category == "config" and rel_path.name.endswith(".local.yaml")
+    """プロジェクト固有の上書きファイル（*.local.yaml / *.local.json）かどうか判定"""
+    name = rel_path.name
+    return category == "config" and (name.endswith(".local.yaml") or name.endswith(".local.json"))
 
 
 def sync_top_level(
@@ -171,13 +172,21 @@ def main() -> None:
         for category in ("skills", "agents", "rules", "config"):
             file_list = manifest.get(category, [])
             for rel_path in file_list:
-                src = pkg_dir / category / rel_path
-                dst = claude_dir / category / rel_path
+                # rel_path はカテゴリプレフィックスを含む (例: "config/flags.json")
+                src = pkg_dir / rel_path
+                if category == "config":
+                    # config はパッケージ名サブディレクトリに配置
+                    filename = Path(rel_path).name
+                    dst = claude_dir / "config" / pkg_name / filename
+                    dst_key = f"config/{pkg_name}/{filename}"
+                else:
+                    dst = claude_dir / rel_path
+                    dst_key = rel_path
 
                 if not src.exists():
                     continue
 
-                synced_files.add(f"{category}/{rel_path}")
+                synced_files.add(dst_key)
 
                 if not needs_sync(src, dst):
                     continue

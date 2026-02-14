@@ -459,8 +459,13 @@ class OrchestraManager:
             for category in ("skills", "agents", "rules", "config"):
                 file_list = getattr(pkg, category, [])
                 for rel_path in file_list:
-                    src = orchestra_path / "packages" / pkg_name / category / rel_path
-                    dst = claude_dir / category / rel_path
+                    # rel_path はカテゴリプレフィックスを含む (例: "config/flags.json")
+                    src = orchestra_path / "packages" / pkg_name / rel_path
+                    if category == "config":
+                        # config はパッケージ名サブディレクトリに配置
+                        dst = claude_dir / "config" / pkg_name / Path(rel_path).name
+                    else:
+                        dst = claude_dir / rel_path
 
                     if not src.exists():
                         continue
@@ -486,8 +491,11 @@ class OrchestraManager:
 
                     rel_path = src_file.relative_to(src_dir)
 
-                    # config/*.local.yaml はプロジェクト固有設定のためスキップ
-                    if category == "config" and rel_path.name.endswith(".local.yaml"):
+                    # config/*.local.yaml / *.local.json はプロジェクト固有設定のためスキップ
+                    if category == "config" and (
+                        rel_path.name.endswith(".local.yaml")
+                        or rel_path.name.endswith(".local.json")
+                    ):
                         continue
 
                     dst = claude_dir / category / rel_path
@@ -535,14 +543,14 @@ class OrchestraManager:
             if file_path.startswith("config/"):
                 filename = Path(file_path).name
                 source = pkg.path / file_path
-                target = project_dir / ".claude" / "config" / filename
+                target = project_dir / ".claude" / "config" / pkg.name / filename
                 target.parent.mkdir(parents=True, exist_ok=True)
 
                 if dry_run:
                     print(f"[DRY-RUN] ファイルコピー: {target} <- {source}")
                 else:
                     shutil.copy2(source, target)
-                    print(f"ファイルコピー: {target.name}")
+                    print(f"ファイルコピー: {pkg.name}/{target.name}")
 
         # 3. settings.local.json にフック登録
         settings = self.load_settings(project_dir)
@@ -618,7 +626,7 @@ class OrchestraManager:
         for file_path in pkg.config:
             if file_path.startswith("config/"):
                 filename = Path(file_path).name
-                target = project_dir / ".claude" / "config" / filename
+                target = project_dir / ".claude" / "config" / pkg.name / filename
 
                 if dry_run:
                     if target.exists():
@@ -626,7 +634,7 @@ class OrchestraManager:
                 else:
                     if target.exists():
                         target.unlink()
-                        print(f"ファイル削除: {target.name}")
+                        print(f"ファイル削除: {pkg.name}/{target.name}")
 
         # 3. 同期済みファイル削除（skills/agents/rules）
         claude_dir = project_dir / ".claude"

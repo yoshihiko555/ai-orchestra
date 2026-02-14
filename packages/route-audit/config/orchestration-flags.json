@@ -26,6 +26,6 @@
   "paths": {
     "state_dir": ".claude/state",
     "logs_dir": ".claude/logs/orchestration",
-    "delegation_policy": ".claude/config/delegation-policy.yaml"
+    "delegation_policy": ".claude/config/route-audit/delegation-policy.json"
   }
 }

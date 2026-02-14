@@ -79,7 +79,7 @@ def main() -> None:
         data = {}
 
     root = project_root(data)
-    flags = read_json(os.path.join(root, ".claude", "config", "orchestration-flags.yaml"))
+    flags = read_json(os.path.join(root, ".claude", "config", "route-audit", "orchestration-flags.json"))
     route_audit = ((flags.get("features") or {}).get("route_audit") or {})
     if not route_audit.get("enabled", True):
         sys.exit(0)
@@ -88,7 +88,7 @@ def main() -> None:
     if not prompt:
         sys.exit(0)
 
-    policy = read_json(os.path.join(root, ".claude", "config", "delegation-policy.yaml"))
+    policy = read_json(os.path.join(root, ".claude", "config", "route-audit", "delegation-policy.json"))
     expected_route, matched_rule = select_expected_route(prompt, policy)
 
     session_id = str(data.get("session_id") or "")
