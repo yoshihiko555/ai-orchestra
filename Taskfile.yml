@@ -15,3 +15,9 @@ includes:
     flatten: true
     vars:
       ORCHESTRA_DIR: "{{.ORCHESTRA_DIR}}"
+
+  dogfood:
+    taskfile: ./taskfiles/dogfood.yml
+    flatten: true
+    vars:
+      ORCHESTRA_DIR: "{{.ORCHESTRA_DIR}}"

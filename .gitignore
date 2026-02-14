@@ -11,3 +11,7 @@ docs/tech/
 *~
 
 __pycache__
+
+# ドッグフーディング実行時生成
+.claude/state/
+.claude/config/
