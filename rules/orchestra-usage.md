@@ -185,4 +185,7 @@ codex exec --model gpt-5.2-codex --sandbox read-only --full-auto "..." 2>/dev/nu
 
 ## 有効化方法
 
-プロジェクトで `/init-orchestra` を実行すると、フック設定が追加されます。
+```bash
+python3 "$AI_ORCHESTRA_DIR/scripts/orchestra-manager.py" init --project /path/to/project
+python3 "$AI_ORCHESTRA_DIR/scripts/orchestra-manager.py" install <package> --project /path/to/project
+```
