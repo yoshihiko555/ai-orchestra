@@ -98,7 +98,8 @@ def main() -> None:
     installed_packages = orch.get("installed_packages", [])
     orchestra_dir = orch.get("orchestra_dir", "")
 
-    if not orchestra_dir or not installed_packages:
+    sync_top_level_flag = orch.get("sync_top_level", False)
+    if not orchestra_dir or (not installed_packages and not sync_top_level_flag):
         return
 
     orchestra_path = Path(orchestra_dir)
