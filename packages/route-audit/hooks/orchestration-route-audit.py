@@ -10,6 +10,8 @@ import re
 import sys
 from typing import Any
 
+_hook_dir = os.path.dirname(os.path.abspath(__file__))
+
 TEST_CMD_PATTERN = re.compile(r"\b(pytest|npm\s+test|pnpm\s+test|yarn\s+test|go\s+test|cargo\s+test|ruff\s+check|mypy)\b")
 
 
@@ -129,7 +131,7 @@ def project_root(data: dict) -> str:
     return (
         data.get("cwd")
         or os.environ.get("CLAUDE_PROJECT_DIR")
-        or os.getcwd()
+        or os.path.abspath(os.path.join(_hook_dir, "..", "..", ".."))
     )
 
 
@@ -207,6 +209,25 @@ def main() -> None:
                 "passed": exit_code == 0 if exit_code is not None else None,
             },
         )
+
+    # 統一イベントログ
+    try:
+        _orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
+        if _orchestra_dir:
+            _core_hooks = os.path.join(_orchestra_dir, "packages", "core", "hooks")
+            if _core_hooks not in sys.path:
+                sys.path.insert(0, _core_hooks)
+        from log_common import append_event
+        session_id = str(data.get("session_id") or "")
+        append_event(
+            "route_audit",
+            {"expected_route": expected_route, "actual_route": actual_route, "matched": matched, "prompt_id": prompt_id},
+            session_id=session_id,
+            hook_name="route-audit",
+            project_dir=root,
+        )
+    except Exception:
+        pass
 
     sys.exit(0)
 

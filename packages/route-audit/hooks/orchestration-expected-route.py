@@ -10,6 +10,8 @@ import os
 import sys
 from typing import Any
 
+_hook_dir = os.path.dirname(os.path.abspath(__file__))
+
 
 def read_json(path: str) -> dict:
     try:
@@ -66,7 +68,7 @@ def project_root(data: dict) -> str:
     return (
         data.get("cwd")
         or os.environ.get("CLAUDE_PROJECT_DIR")
-        or os.getcwd()
+        or os.path.abspath(os.path.join(_hook_dir, "..", "..", ".."))
     )
 
 
@@ -129,6 +131,24 @@ def main() -> None:
             "matched_rule": matched_rule,
         },
     )
+
+    # 統一イベントログ
+    try:
+        _orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
+        if _orchestra_dir:
+            _core_hooks = os.path.join(_orchestra_dir, "packages", "core", "hooks")
+            if _core_hooks not in sys.path:
+                sys.path.insert(0, _core_hooks)
+        from log_common import append_event
+        append_event(
+            "expected_route",
+            {"prompt_id": prompt_id, "expected_route": expected_route, "matched_rule": matched_rule, "prompt_excerpt": excerpt},
+            session_id=session_id,
+            hook_name="expected-route",
+            project_dir=root,
+        )
+    except Exception:
+        pass
 
     sys.exit(0)
 

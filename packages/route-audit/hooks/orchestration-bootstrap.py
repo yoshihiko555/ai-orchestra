@@ -17,6 +17,8 @@ if _orchestra_dir:
 
 from hook_common import get_field, read_hook_input
 
+_hook_dir = os.path.dirname(os.path.abspath(__file__))
+
 
 def _read_json(path: str) -> dict:
     try:
@@ -42,7 +44,7 @@ def _touch(path: str) -> None:
 
 def main() -> None:
     data = read_hook_input()
-    cwd = get_field(data, "cwd") or os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())
+    cwd = get_field(data, "cwd") or os.environ.get("CLAUDE_PROJECT_DIR") or os.path.abspath(os.path.join(_hook_dir, "..", "..", ".."))
 
     state_dir = os.path.join(cwd, ".claude", "state")
     logs_dir = os.path.join(cwd, ".claude", "logs", "orchestration")
