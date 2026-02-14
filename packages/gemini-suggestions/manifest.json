@@ -1,0 +1,17 @@
+{
+  "name": "gemini-suggestions",
+  "version": "0.1.0",
+  "description": "Web 検索・fetch 時の Gemini リサーチ提案",
+  "depends": ["core"],
+  "hooks": {
+    "PreToolUse": ["suggest-gemini-research.py"]
+  },
+  "files": [
+    "hooks/suggest-gemini-research.py"
+  ],
+  "skills": [],
+  "agents": [],
+  "rules": [],
+  "scripts": [],
+  "config": []
+}

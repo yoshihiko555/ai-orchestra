@@ -1,0 +1,27 @@
+{
+  "name": "route-audit",
+  "version": "0.1.0",
+  "description": "期待ルート予測とルーティング監査",
+  "depends": ["core"],
+  "hooks": {
+    "SessionStart": ["orchestration-bootstrap.py"],
+    "UserPromptSubmit": ["orchestration-expected-route.py", "agent-router.py"],
+    "PostToolUse": ["orchestration-route-audit.py"]
+  },
+  "files": [
+    "hooks/orchestration-bootstrap.py",
+    "hooks/orchestration-expected-route.py",
+    "hooks/orchestration-route-audit.py",
+    "hooks/agent-router.py"
+  ],
+  "skills": [],
+  "agents": [],
+  "rules": [],
+  "scripts": [
+    "scripts/orchestration-kpi-report.py"
+  ],
+  "config": [
+    "config/delegation-policy.yaml",
+    "config/orchestration-flags.yaml"
+  ]
+}

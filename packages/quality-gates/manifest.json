@@ -1,0 +1,23 @@
+{
+  "name": "quality-gates",
+  "version": "0.1.0",
+  "description": "実装後レビュー・テスト分析・自動 lint の品質ゲート",
+  "depends": ["core"],
+  "hooks": {
+    "PostToolUse": [
+      "post-implementation-review.py",
+      "post-test-analysis.py",
+      "lint-on-save.py"
+    ]
+  },
+  "files": [
+    "hooks/post-implementation-review.py",
+    "hooks/post-test-analysis.py",
+    "hooks/lint-on-save.py"
+  ],
+  "skills": [],
+  "agents": [],
+  "rules": [],
+  "scripts": [],
+  "config": []
+}

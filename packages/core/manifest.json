@@ -1,0 +1,15 @@
+{
+  "name": "core",
+  "version": "0.2.0",
+  "description": "全パッケージ共通の基盤ライブラリ",
+  "depends": [],
+  "hooks": {},
+  "files": [
+    "hooks/hook_common.py"
+  ],
+  "skills": [],
+  "agents": [],
+  "rules": [],
+  "scripts": [],
+  "config": []
+}

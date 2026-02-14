@@ -1,0 +1,19 @@
+{
+  "name": "codex-suggestions",
+  "version": "0.1.0",
+  "description": "ファイル編集・プラン完了時の Codex 相談提案",
+  "depends": ["core"],
+  "hooks": {
+    "PreToolUse": ["check-codex-before-write.py"],
+    "PostToolUse": ["check-codex-after-plan.py"]
+  },
+  "files": [
+    "hooks/check-codex-before-write.py",
+    "hooks/check-codex-after-plan.py"
+  ],
+  "skills": [],
+  "agents": [],
+  "rules": [],
+  "scripts": [],
+  "config": []
+}

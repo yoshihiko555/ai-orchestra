@@ -1,0 +1,21 @@
+{
+  "name": "cli-logging",
+  "version": "0.1.0",
+  "description": "Codex/Gemini CLI 呼び出しのログ記録と分析",
+  "depends": ["core"],
+  "hooks": {
+    "PostToolUse": [
+      {"file": "log-cli-tools.py", "matcher": "Bash"}
+    ]
+  },
+  "files": [
+    "hooks/log-cli-tools.py"
+  ],
+  "skills": [],
+  "agents": [],
+  "rules": [],
+  "scripts": [
+    "scripts/analyze-cli-usage.py"
+  ],
+  "config": []
+}

@@ -2,81 +2,75 @@
 
 <update-orchestra>
 
-プロジェクトの AI Orchestra 設定ファイルを最新テンプレートに同期します。
+プロジェクトの AI Orchestra 設定を最新状態に同期します。
 プロジェクト固有データ（CLAUDE.md, research/, logs/ 等）は一切変更しません。
+
+## 更新の仕組み
+
+v2 では `$AI_ORCHESTRA_DIR` 環境変数と `sync-orchestra.py` による自動同期を採用しています。
+
+| 変更内容 | 反映方法 |
+|---------|---------|
+| Hook スクリプト修正 | `git pull` のみ（`$AI_ORCHESTRA_DIR` 経由で即反映） |
+| Skills/Agents/Rules 修正 | `git pull`（次回 Claude Code 起動時に `sync-orchestra.py` が自動同期） |
+| 新フックイベント追加 | `git pull` + `install` 再実行 |
+| 新パッケージ追加 | `git pull` + `install` |
 
 ## 実行手順
 
 ### Step 1: 前提チェック
 
 以下を確認:
-1. `.claude/settings.json` が存在するか
+1. `.claude/orchestra.json` が存在するか
    - 存在しない場合 → **「`/init-orchestra` を先に実行してください」** と伝えて終了
-2. `~/.claude/templates/` ディレクトリが存在するか
-   - 存在しない場合 → **「テンプレートディレクトリが見つかりません。ai-orchestra のセットアップを確認してください」** と伝えて終了
+2. `AI_ORCHESTRA_DIR` 環境変数が有効か
+   - `orchestra.json` の `orchestra_dir` が存在するディレクトリを指しているか確認
 
-### Step 2: バックアップ作成
+### Step 2: ai-orchestra リポジトリを更新
 
-`.claude/backup/{YYYYMMDD-HHMMSS}/` を作成し、以下をコピー:
-
-```
-.claude/backup/{timestamp}/
-├── settings.json                    ← .claude/settings.json
-├── codex/                           ← .codex/ 配下全体
-├── gemini/                          ← .gemini/ 配下全体
-└── docs/libraries/_TEMPLATE.md      ← .claude/docs/libraries/_TEMPLATE.md（存在する場合）
+```bash
+cd "$AI_ORCHESTRA_DIR" && git pull
 ```
 
-バックアップの作成を報告する。
+### Step 3: パッケージの状態確認
 
-### Step 3: `.claude/settings.json` のスマートマージ
-
-テンプレート: `~/.claude/templates/project-settings.json`
-
-#### hooks のマージロジック
-
-**フェーズ（UserPromptSubmit / PreToolUse / PostToolUse）ごとに処理する。**
-
-各フェーズ内のフックエントリは `matcher` で分類される。同じ `matcher` を持つエントリ内の個別フックは `command` フィールドのパスで識別する。
-
-1. **テンプレートにあるがプロジェクトにないフック** → 追加
-2. **両方にあるフック**（`command` パスが一致）→ テンプレートの `timeout` 値に更新
-3. **プロジェクトにあるがテンプレートにないフック** → そのまま保持（プロジェクト固有）
-
-**具体的な処理手順:**
-
-```
-テンプレートのフェーズごとに:
-  テンプレートの各エントリ（matcher 単位）に対して:
-    プロジェクトに同じ matcher のエントリがあるか？
-      ある場合:
-        テンプレートの各 hook.command に対して:
-          プロジェクトに同じ command があるか？
-            ある → timeout をテンプレートの値に更新
-            ない → プロジェクトの hooks 配列にこの hook を追加
-        プロジェクトにあるがテンプレートにない hook → 保持
-      ない場合:
-        エントリごと追加
-
-  プロジェクトにあるがテンプレートにないエントリ（matcher が一致しない） → 保持
+```bash
+python3 "$AI_ORCHESTRA_DIR/scripts/orchestra-manager.py" status --project .
 ```
 
-#### permissions のマージロジック
+これにより:
+- インストール済みパッケージの hooks が全て登録されているか確認
+- partial 状態のパッケージがあれば再インストールを提案
 
-- `allow`: テンプレートの値 ∪ プロジェクトの値（和集合、重複排除）
-- `deny`: プロジェクトのものをそのまま保持（テンプレートは空配列のため）
+### Step 4: partial / 新規パッケージの対応
 
-#### マージ結果の報告
+status で問題があるパッケージを再インストール:
 
-マージ完了後、以下を報告:
-- 追加したフック数
-- timeout を更新したフック数
-- 追加した permissions 数
-- 保持したプロジェクト固有フック数
+```bash
+# hooks が不足しているパッケージを再インストール
+python3 "$AI_ORCHESTRA_DIR/scripts/orchestra-manager.py" install <package> --project .
+```
 
-### Step 4: `.codex/` の更新（差分確認付き）
+新しいパッケージが追加されている場合は、ユーザーに提案:
 
-テンプレート: `~/.claude/templates/codex/`
+```bash
+# 全パッケージ一覧
+python3 "$AI_ORCHESTRA_DIR/scripts/orchestra-manager.py" list
+```
+
+### Step 5: Skills/Agents/Rules の即時同期
+
+通常は次回起動時に自動同期されるが、即時反映が必要な場合:
+
+```bash
+echo '{"cwd": "'$(pwd)'"}' | python3 "$AI_ORCHESTRA_DIR/scripts/sync-orchestra.py"
+```
+
+### Step 6: テンプレートファイルの更新
+
+以下のテンプレートファイルは `$AI_ORCHESTRA_DIR/templates/` から差分チェック:
+
+#### .codex/ の更新（差分確認付き）
 
 対象ファイル:
 - `config.toml`
@@ -84,62 +78,50 @@
 - `skills/context-loader/SKILL.md`
 
 **各ファイルについて:**
-
 1. テンプレートとプロジェクトの内容を比較
 2. **差分がない場合** → 「変更なし」として記録、スキップ
-3. **差分がある場合**:
-   - 差分の概要を表示（どの部分が変わるか）
-   - `AskUserQuestion` で「更新する / スキップする」をユーザーに確認
-   - 「更新する」→ テンプレートの内容で上書き
-   - 「スキップする」→ そのまま保持
-4. **プロジェクトにファイルが存在しない場合** → テンプレートからコピー（新規追加として報告）
+3. **差分がある場合** → `AskUserQuestion` で「更新する / スキップする」をユーザーに確認
+4. **存在しない場合** → テンプレートからコピー（新規追加として報告）
 
-### Step 5: `.gemini/` の更新（差分確認付き）
-
-テンプレート: `~/.claude/templates/gemini/`
+#### .gemini/ の更新（差分確認付き）
 
 対象ファイル:
 - `settings.json`
 - `GEMINI.md`
 - `skills/context-loader/SKILL.md`
 
-Step 4 と同じ方式で処理する。
+.codex/ と同じ方式で処理する。
 
-### Step 6: `.claude/docs/libraries/_TEMPLATE.md` の更新
+#### .claude/docs/libraries/_TEMPLATE.md の更新
 
-テンプレート: `~/.claude/templates/project/docs/libraries/_TEMPLATE.md`
-
-- テンプレートと比較して差分があれば更新（確認不要 — テンプレートファイルのため）
-- 差分がなければ「変更なし」として記録
-- ファイルが存在しない場合はテンプレートからコピー
+- 差分があれば更新（確認不要 — テンプレートファイルのため）
+- 差分がなければスキップ
 
 ### Step 7: 更新レポート
-
-以下の形式で最終レポートを出力:
 
 ```
 ## Orchestra 更新完了
 
-### バックアップ
-.claude/backup/{timestamp}/
+### リポジトリ更新
+git pull 実行済み
 
-### 更新したファイル
-- .claude/settings.json（新規フック N 件追加、timeout 更新 N 件）
-- .codex/AGENTS.md
-- .gemini/GEMINI.md
-- .claude/docs/libraries/_TEMPLATE.md
+### パッケージ状態
+- core: installed (0 hooks)
+- tmux-monitor: installed (4/4 hooks)
+- ...
 
-### スキップしたファイル（ユーザー選択）
-- .codex/config.toml（プロジェクト固有設定を維持）
+### 再インストールしたパッケージ
+- （なし or パッケージ名）
 
-### 変更なし
-- .gemini/settings.json（テンプレートと同一）
+### テンプレート更新
+- .codex/AGENTS.md（更新）
+- .gemini/GEMINI.md（変更なし）
+- ...
 
 ### 触れていないファイル（安全）
 - CLAUDE.md, .claude/docs/DESIGN.md, .claude/docs/research/*
 - .claude/docs/libraries/*.md（_TEMPLATE.md 以外）
 - .claude/logs/*, .claude/checkpoints/*
-- .claude/settings.local.json
 ```
 
 ---
@@ -154,14 +136,14 @@ Step 4 と同じ方式で処理する。
 | `.claude/docs/libraries/*.md`（`_TEMPLATE.md` 以外） | ライブラリ固有のドキュメント |
 | `.claude/logs/*` | CLI ツールログ |
 | `.claude/checkpoints/*` | セッションチェックポイント |
-| `.claude/settings.local.json` | プロジェクト固有のオーバーライド |
+| `.claude/settings.local.json` | orchestra-manager が管理（手動変更しない） |
+| `.claude/orchestra.json` | orchestra-manager が管理 |
 
 ## 重要な注意事項
 
-- バックアップは毎回作成する（上書きしない）
-- settings.json のマージは必ずスマートマージを使い、単純な上書きはしない
-- .codex/ と .gemini/ のファイルはユーザー確認なしに更新しない
-- テンプレートファイル（`_TEMPLATE.md`）のみ確認なしで更新可能
-- エラーが発生した場合はバックアップからの復元手順を案内する
+- hooks は `$AI_ORCHESTRA_DIR` 経由で直接参照されるため、`git pull` だけで即反映
+- skills/agents/rules は SessionStart hook で自動同期（`sync-orchestra.py`）
+- `.claude/settings.local.json` を直接編集しない（`orchestra-manager.py` で管理）
+- テンプレートファイル以外はユーザー確認なしに更新しない
 
 </update-orchestra>

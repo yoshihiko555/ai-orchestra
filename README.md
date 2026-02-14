@@ -6,11 +6,16 @@ Claude Code用のマルチエージェントオーケストレーションシス
 
 ```
 ai-orchestra/
-├── agents/           # 専門エージェント定義（24種）
-├── hooks/            # 自動ルーティング用Hooks
-├── rules/            # コーディングルール（将来用）
-└── skills/           # ワークフロースキル
-    └── review/       # レビュー一括実行スキル
+├── agents/           # 専門エージェント定義（25種）
+├── packages/         # パッケージ（hooks・scripts・config）
+│   ├── core/         # 共通基盤ライブラリ
+│   ├── tmux-monitor/ # tmux サブエージェント監視
+│   ├── cli-logging/  # Codex/Gemini ログ記録
+│   └── ...
+├── rules/            # 共通ルール（Codex/Gemini委譲、コーディング規約）
+├── scripts/          # 管理CLI（orchestra-manager, sync-orchestra）
+├── skills/           # ワークフロースキル（/review など）
+└── templates/        # テンプレート
 ```
 
 ## エージェント一覧
@@ -59,168 +64,60 @@ ai-orchestra/
 
 ---
 
-## プロジェクトでオーケストラを有効化
+## セットアップ
 
-オーケストラはプロジェクト単位で有効化します。
-
-### 方法1: taskコマンド
+### 1. リポジトリをクローン
 
 ```bash
-cd /path/to/your/project
-task -d ~/ghq/github.com/yoshihiko555/ai-orchestra init:project
+git clone https://github.com/yoshihiko555/ai-orchestra.git ~/ai-orchestra
 ```
 
-### 方法2: 手動
+### 2. パッケージをインストール
 
-プロジェクトに `.claude/settings.json` を作成：
+```bash
+# プロジェクトに tmux-monitor をインストール（core は自動依存）
+python3 ~/ai-orchestra/scripts/orchestra-manager.py install core --project /path/to/project
+python3 ~/ai-orchestra/scripts/orchestra-manager.py install tmux-monitor --project /path/to/project
+```
 
-```json
-{
-  "hooks": {
-    "UserPromptSubmit": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/agent-router.py\"",
-            "timeout": 5
-          }
-        ]
-      }
-    ]
-  }
-}
+orchestra-manager が内部で以下を実行:
+1. `~/.claude/settings.json` に `env.AI_ORCHESTRA_DIR` を設定
+2. `.claude/orchestra.json` にパッケージ情報を記録
+3. `.claude/settings.local.json` に hooks を登録（`$AI_ORCHESTRA_DIR/packages/...` 参照）
+4. `sync-orchestra.py` の SessionStart hook を登録（初回のみ）
+5. skills/agents/rules の初回同期を実行
+
+### 3. パッケージ管理コマンド
+
+```bash
+# パッケージ一覧
+python3 ~/ai-orchestra/scripts/orchestra-manager.py list
+
+# プロジェクトでの導入状況
+python3 ~/ai-orchestra/scripts/orchestra-manager.py status --project .
+
+# インストール / アンインストール
+python3 ~/ai-orchestra/scripts/orchestra-manager.py install <package> --project .
+python3 ~/ai-orchestra/scripts/orchestra-manager.py uninstall <package> --project .
+
+# 一時的な有効化 / 無効化（hooks の登録/解除のみ）
+python3 ~/ai-orchestra/scripts/orchestra-manager.py enable <package> --project .
+python3 ~/ai-orchestra/scripts/orchestra-manager.py disable <package> --project .
+
+# dry-run（変更内容を表示のみ）
+python3 ~/ai-orchestra/scripts/orchestra-manager.py install <package> --project . --dry-run
 ```
 
 ---
 
-## セットアップ手順
+## 更新フロー
 
-### 初回セットアップ
-
-1. dotfilesにディレクトリ作成（初回のみ）
-```bash
-mkdir -p ~/ghq/github.com/yoshihiko555/dotfiles/claude/.claude/{agents,hooks,rules}
-```
-
-2. シンボリックリンク作成
-```bash
-# agents
-cd ~/ghq/github.com/yoshihiko555/dotfiles/claude/.claude/agents
-for f in ~/ghq/github.com/yoshihiko555/ai-orchestra/agents/*.md; do
-  ln -sf "$f" "$(basename "$f")"
-done
-
-# hooks
-cd ~/ghq/github.com/yoshihiko555/dotfiles/claude/.claude/hooks
-for f in ~/ghq/github.com/yoshihiko555/ai-orchestra/hooks/*.py; do
-  ln -sf "$f" "$(basename "$f")"
-done
-```
-
-3. stowで展開
-```bash
-cd ~/ghq/github.com/yoshihiko555/dotfiles && stow -R claude
-```
-
----
-
-## ファイル追加時の手順
-
-### エージェント追加
-
-1. ai-orchestraにエージェントファイルを作成
-```bash
-# 例: 新しいエージェント my-agent.md を追加
-vim ~/ghq/github.com/yoshihiko555/ai-orchestra/agents/my-agent.md
-```
-
-2. dotfilesにシンボリックリンクを追加
-```bash
-cd ~/ghq/github.com/yoshihiko555/dotfiles/claude/.claude/agents
-ln -sf ~/ghq/github.com/yoshihiko555/ai-orchestra/agents/my-agent.md my-agent.md
-```
-
-3. stowで展開
-```bash
-cd ~/ghq/github.com/yoshihiko555/dotfiles && stow -R claude
-```
-
-### Hook追加
-
-1. ai-orchestraにhookファイルを作成
-```bash
-vim ~/ghq/github.com/yoshihiko555/ai-orchestra/hooks/my-hook.py
-```
-
-2. dotfilesにシンボリックリンクを追加
-```bash
-cd ~/ghq/github.com/yoshihiko555/dotfiles/claude/.claude/hooks
-ln -sf ~/ghq/github.com/yoshihiko555/ai-orchestra/hooks/my-hook.py my-hook.py
-```
-
-3. settings.jsonにhook設定を追加（必要な場合）
-
-4. stowで展開
-```bash
-cd ~/ghq/github.com/yoshihiko555/dotfiles && stow -R claude
-```
-
-### スキル追加
-
-1. ai-orchestraにスキルディレクトリを作成
-```bash
-mkdir -p ~/ghq/github.com/yoshihiko555/ai-orchestra/skills/my-skill
-vim ~/ghq/github.com/yoshihiko555/ai-orchestra/skills/my-skill/SKILL.md
-```
-
-2. shared/skills/claude-onlyにシンボリックリンクを追加
-```bash
-cd ~/ghq/github.com/yoshihiko555/dotfiles/shared/skills/claude-only
-ln -sf ~/ghq/github.com/yoshihiko555/ai-orchestra/skills/my-skill my-skill
-```
-
-3. dotfiles/claude/.claude/skillsにシンボリックリンクを追加
-```bash
-cd ~/ghq/github.com/yoshihiko555/dotfiles/claude/.claude/skills
-ln -sf ../../../shared/skills/claude-only/my-skill my-skill
-```
-
-4. stowで展開
-```bash
-cd ~/ghq/github.com/yoshihiko555/dotfiles && stow -R claude
-```
-
----
-
-## Taskコマンド
-
-[go-task](https://taskfile.dev/) を使用してタスクを管理しています。
-
-### 利用可能なタスク
-
-```bash
-task              # タスク一覧を表示
-task sync         # 全ファイルを同期（agents + hooks + rules + stow）
-task sync:agents  # agentsのみ同期
-task sync:hooks   # hooksのみ同期
-task sync:rules   # rulesのみ同期
-task stow         # stowを実行
-task list:agents  # エージェント一覧
-task list:hooks   # hook一覧
-task list:skills  # スキル一覧
-task add:agent -- name  # 新しいエージェントのテンプレート作成
-task clean        # 壊れたシンボリックリンクを削除
-```
-
-### ファイル追加後の同期
-
-```bash
-# ai-orchestraにファイルを追加した後
-cd ~/ghq/github.com/yoshihiko555/ai-orchestra
-task sync
-```
+| 変更内容 | 操作 |
+|---------|------|
+| Hook スクリプト修正 | `git pull` のみ（即反映） |
+| Skills/Agents/Rules 修正 | `git pull`（次回 Claude Code 起動時に自動同期） |
+| 新フックイベント追加 | `git pull` + `install` 再実行 |
+| CLI スクリプト修正 | `git pull` のみ（即反映） |
 
 ---
 
@@ -242,3 +139,32 @@ Task(subagent_type="code-reviewer", prompt="このコードをレビューして
 /review impl         # 実装系レビュー
 /review design       # 設計系レビュー
 ```
+
+---
+
+## アーキテクチャ
+
+```
+Claude Code (Orchestrator)
+    │
+    ├── Codex CLI    # 深い推論・設計判断・デバッグ
+    ├── Gemini CLI   # リサーチ・大規模分析・マルチモーダル
+    │
+    ├── $AI_ORCHESTRA_DIR/packages/
+    │   ├── core/          # hook_common.py（共通ユーティリティ）
+    │   ├── tmux-monitor/  # tmux リアルタイム監視
+    │   ├── cli-logging/   # Codex/Gemini ログ記録
+    │   └── ...
+    │
+    └── 25 Specialized Agents
+        ├── Planning: planner, researcher, requirements
+        ├── Design: architect, api-designer, data-modeler, auth-designer, spec-writer
+        ├── Implementation: frontend-dev, backend-*-dev, ai-*, debugger, tester
+        └── Review: code-reviewer, security-reviewer, performance-reviewer, ...
+```
+
+### 仕組み
+
+- **Hooks**: `$AI_ORCHESTRA_DIR` 環境変数で直接参照（シンボリックリンク不要）
+- **Skills/Agents/Rules**: SessionStart hook (`sync-orchestra.py`) で `$AI_ORCHESTRA_DIR` から `.claude/` に差分コピー
+- **CLI Scripts**: `$AI_ORCHESTRA_DIR/packages/{pkg}/scripts/` を直接実行
