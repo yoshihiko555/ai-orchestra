@@ -1,8 +1,6 @@
 # 参照用リポジトリ
-claude-code-orchestra-main/
-multi-agent-shogun/
-claude-code-harness/
 docs/tech/
+.claude/logs
 
 # OS
 .DS_Store
