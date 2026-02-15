@@ -122,7 +122,7 @@ orchestra-manager が内部で以下を実行:
 
 ### 3b. ログ仕様
 
-- 全ログの役割・参照先は `docs/logging.md` を参照
+- 全ログの役割・参照先は `docs/specs/logging.md` を参照
 
 ### 4. パッケージ管理コマンド
 
