@@ -124,6 +124,10 @@ orchestra-manager が内部で以下を実行:
 | `dogfood.py` | ai-orchestra 自身のドッグフーディング |
 | `analyze-cli-usage.py` | Codex/Gemini の使用状況分析 |
 
+### 3b. ログ仕様
+
+- 全ログの役割・参照先は `docs/logging.md` を参照
+
 ### 4. パッケージ管理コマンド
 
 ```bash
