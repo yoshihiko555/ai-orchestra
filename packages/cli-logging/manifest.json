@@ -11,7 +11,7 @@
   "files": [
     "hooks/log-cli-tools.py"
   ],
-  "skills": ["skills/checkpointing"],
+  "skills": [],
   "agents": [],
   "rules": [],
   "scripts": [

@@ -10,7 +10,7 @@
     "hooks/agent-router.py",
     "hooks/route_config.py"
   ],
-  "skills": ["skills/plan", "skills/startproject"],
+  "skills": [],
   "agents": [
     "agents/ai-architect.md",
     "agents/ai-dev.md",

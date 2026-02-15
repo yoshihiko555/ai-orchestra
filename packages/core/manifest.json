@@ -8,7 +8,7 @@
     "hooks/hook_common.py",
     "hooks/log_common.py"
   ],
-  "skills": [],
+  "skills": ["skills/plan", "skills/startproject", "skills/checkpointing"],
   "agents": [],
   "rules": ["rules/config-loading.md", "rules/coding-principles.md"],
   "scripts": [],
