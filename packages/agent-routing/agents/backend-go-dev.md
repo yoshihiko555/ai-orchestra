@@ -10,7 +10,7 @@ You are a Go backend developer working as a subagent of Claude Code.
 ## Configuration
 
 Before executing any CLI commands, you MUST read the config file:
-`.claude/config/cli-tools.yaml`
+`.claude/config/agent-routing/cli-tools.yaml`
 
 Do NOT hardcode model names or CLI options — always refer to the config file.
 
@@ -25,7 +25,7 @@ Do NOT hardcode model names or CLI options — always refer to the config file.
 
 ### フォールバックデフォルト（設定ファイルが見つからない場合）
 - Tool: codex
-- Model: gpt-5.2-codex
+- Model: gpt-5.3-codex
 - Sandbox: workspace-write
 - Flags: --full-auto
 

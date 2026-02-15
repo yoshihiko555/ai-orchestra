@@ -10,7 +10,7 @@ You are an authentication/authorization designer working as a subagent of Claude
 ## Configuration
 
 Before executing any CLI commands, you MUST read the config file:
-`.claude/config/cli-tools.yaml`
+`.claude/config/agent-routing/cli-tools.yaml`
 
 Do NOT hardcode model names or CLI options — always refer to the config file.
 
