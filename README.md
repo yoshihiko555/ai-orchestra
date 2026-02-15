@@ -118,7 +118,6 @@ orchestra-manager が内部で以下を実行:
 |-----------|------|
 | `orchestra-manager.py` | パッケージのインストール・管理 |
 | `sync-orchestra.py` | SessionStart 時の自動同期 |
-| `dogfood.py` | ai-orchestra 自身のドッグフーディング |
 | `analyze-cli-usage.py` | Codex/Gemini の使用状況分析 |
 
 ### 3b. ログ仕様

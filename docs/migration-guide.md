@@ -109,7 +109,7 @@ v0.3.0 でリポジトリトップレベルの `agents/`, `skills/`, `rules/` �
 ### ai-orchestra 自身の dogfooding
 
 - `.claude/` 配下のシンボリックリンク（`agents`, `skills`, `rules`, `config`）を廃止
-- `.claude/orchestra.json` を作成し、全パッケージをインストール済みとして登録
+- `dogfood.py` を廃止し、`orchestra-manager.py setup all --project .` に統一
 - SessionStart の `sync-orchestra.py` により packages/ から `.claude/` に自動同期
 
 ### `sync_top_level` の廃止

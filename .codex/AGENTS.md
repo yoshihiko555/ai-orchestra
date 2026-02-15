@@ -25,7 +25,7 @@ that integrates Claude Code + Codex CLI + Gemini CLI.
 ```
 ai-orchestra/
 ├── packages/      # 8 functional packages (hooks, agents, skills, rules, config)
-├── scripts/       # Management CLI (orchestra-manager, sync-orchestra, dogfood)
+├── scripts/       # Management CLI (orchestra-manager, sync-orchestra)
 ├── templates/     # Templates for Codex/Gemini/project setup
 ├── .claude/       # Synced agents/skills/rules/config
 ├── .codex/        # YOU ARE HERE - Codex CLI configuration
