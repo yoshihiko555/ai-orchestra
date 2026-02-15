@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import datetime
-import json
 import os
 import sys
 
@@ -15,25 +14,9 @@ if _orchestra_dir:
     if _core_hooks not in sys.path:
         sys.path.insert(0, _core_hooks)
 
-from hook_common import get_field, read_hook_input
+from hook_common import get_field, read_hook_input, read_json_safe, write_json  # noqa: E402
 
 _hook_dir = os.path.dirname(os.path.abspath(__file__))
-
-
-def _read_json(path: str) -> dict:
-    try:
-        with open(path) as f:
-            data = json.load(f)
-        if isinstance(data, dict):
-            return data
-    except (OSError, ValueError, json.JSONDecodeError):
-        pass
-    return {}
-
-
-def _write_json(path: str, data: dict) -> None:
-    with open(path, "w") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
 
 
 def _touch(path: str) -> None:
@@ -44,7 +27,11 @@ def _touch(path: str) -> None:
 
 def main() -> None:
     data = read_hook_input()
-    cwd = get_field(data, "cwd") or os.environ.get("CLAUDE_PROJECT_DIR") or os.path.abspath(os.path.join(_hook_dir, "..", "..", ".."))
+    cwd = (
+        get_field(data, "cwd")
+        or os.environ.get("CLAUDE_PROJECT_DIR")
+        or os.path.abspath(os.path.join(_hook_dir, "..", "..", ".."))
+    )
 
     state_dir = os.path.join(cwd, ".claude", "state")
     logs_dir = os.path.join(cwd, ".claude", "logs", "orchestration")
@@ -53,18 +40,18 @@ def main() -> None:
     os.makedirs(logs_dir, exist_ok=True)
 
     active_path = os.path.join(state_dir, "active.json")
-    active = _read_json(active_path)
+    active = read_json_safe(active_path)
     active.setdefault("phase", "planning")
     active.setdefault("current_week_goal", "")
     active.setdefault("expected_route", None)
     active.setdefault("last_route", None)
     active.setdefault("last_prompt_excerpt", "")
     active["updated_at"] = datetime.datetime.now(datetime.UTC).isoformat()
-    _write_json(active_path, active)
+    write_json(active_path, active)
 
     expected_path = os.path.join(state_dir, "expected-route.json")
     if not os.path.exists(expected_path):
-        _write_json(expected_path, {})
+        write_json(expected_path, {})
 
     _touch(os.path.join(state_dir, "agent-trace.jsonl"))
     _touch(os.path.join(logs_dir, "expected-routes.jsonl"))

@@ -8,79 +8,39 @@ import json
 import os
 import re
 import sys
-from typing import Any
+
+# hook_common を $AI_ORCHESTRA_DIR/packages/core/hooks/ から読み込む
+_orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
+if _orchestra_dir:
+    _core_hooks = os.path.join(_orchestra_dir, "packages", "core", "hooks")
+    if _core_hooks not in sys.path:
+        sys.path.insert(0, _core_hooks)
+
+from hook_common import (  # noqa: E402
+    append_jsonl,
+    find_first_int,
+    find_first_text,
+    read_json_safe,
+    safe_hook_execution,
+    try_append_event,
+    write_json,
+)
 
 _hook_dir = os.path.dirname(os.path.abspath(__file__))
 
-TEST_CMD_PATTERN = re.compile(r"\b(pytest|npm\s+test|pnpm\s+test|yarn\s+test|go\s+test|cargo\s+test|ruff\s+check|mypy)\b")
-
-
-def read_json(path: str) -> dict:
-    try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, dict):
-            return data
-    except (OSError, ValueError, json.JSONDecodeError):
-        pass
-    return {}
-
-
-def write_json(path: str, data: dict) -> None:
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-
-def append_jsonl(path: str, record: dict) -> None:
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(record, ensure_ascii=False) + "\n")
-
-
-def find_first_text(node: Any, keys: set[str]) -> str:
-    if isinstance(node, dict):
-        for key in keys:
-            value = node.get(key)
-            if isinstance(value, str) and value.strip():
-                return value
-        for value in node.values():
-            found = find_first_text(value, keys)
-            if found:
-                return found
-    elif isinstance(node, list):
-        for item in node:
-            found = find_first_text(item, keys)
-            if found:
-                return found
-    return ""
-
-
-def find_first_int(node: Any, keys: set[str]) -> int | None:
-    if isinstance(node, dict):
-        for key in keys:
-            value = node.get(key)
-            if isinstance(value, int):
-                return value
-            if isinstance(value, str):
-                try:
-                    return int(value)
-                except ValueError:
-                    pass
-        for value in node.values():
-            found = find_first_int(value, keys)
-            if found is not None:
-                return found
-    elif isinstance(node, list):
-        for item in node:
-            found = find_first_int(item, keys)
-            if found is not None:
-                return found
-    return None
+TEST_CMD_PATTERN = re.compile(
+    r"\b(pytest|npm\s+test|pnpm\s+test|yarn\s+test|go\s+test|cargo\s+test|ruff\s+check|mypy)\b"
+)
 
 
 def detect_route(data: dict) -> tuple[str | None, str]:
-    tool_name = str(data.get("tool_name") or find_first_text(data, {"tool_name", "tool"}))
+    tool_name = str(
+        data.get("tool_name") or find_first_text(data, {"tool_name", "tool"})
+    )
     tool_lower = tool_name.lower()
-    tool_input = data.get("tool_input") if isinstance(data.get("tool_input"), dict) else {}
+    tool_input = (
+        data.get("tool_input") if isinstance(data.get("tool_input"), dict) else {}
+    )
 
     if tool_lower == "bash":
         command = ""
@@ -121,6 +81,10 @@ def is_match(expected_route: str, actual_route: str, policy: dict) -> bool:
     if actual_route in (aliases.get(expected_route) or []):
         return True
 
+    # subagent-* 期待ルートは任意の task:* 実ルートにマッチ
+    if expected_route.startswith("subagent-") and actual_route.startswith("task:"):
+        return True
+
     return False
 
 
@@ -139,8 +103,12 @@ def main() -> None:
         data = {}
 
     root = project_root(data)
-    flags = read_json(os.path.join(root, ".claude", "config", "route-audit", "orchestration-flags.json"))
-    route_audit = ((flags.get("features") or {}).get("route_audit") or {})
+    flags = read_json_safe(
+        os.path.join(
+            root, ".claude", "config", "route-audit", "orchestration-flags.json"
+        )
+    )
+    route_audit = (flags.get("features") or {}).get("route_audit") or {}
     if not route_audit.get("enabled", True):
         sys.exit(0)
 
@@ -148,13 +116,15 @@ def main() -> None:
     if not actual_route:
         sys.exit(0)
 
-    policy = read_json(os.path.join(root, ".claude", "config", "route-audit", "delegation-policy.json"))
+    policy = read_json_safe(
+        os.path.join(root, ".claude", "config", "route-audit", "delegation-policy.json")
+    )
     state_dir = os.path.join(root, ".claude", "state")
     logs_dir = os.path.join(root, ".claude", "logs", "orchestration")
     os.makedirs(state_dir, exist_ok=True)
     os.makedirs(logs_dir, exist_ok=True)
 
-    expected = read_json(os.path.join(state_dir, "expected-route.json"))
+    expected = read_json_safe(os.path.join(state_dir, "expected-route.json"))
     expected_route = str(expected.get("expected_route") or "")
     prompt_id = str(expected.get("prompt_id") or "")
     prompt_excerpt = str(expected.get("prompt_excerpt") or "")
@@ -174,7 +144,9 @@ def main() -> None:
         "actual_route": actual_route,
         "matched": matched,
         "is_helper": is_helper,
-        "tool_name": str(data.get("tool_name") or find_first_text(data, {"tool_name", "tool"})),
+        "tool_name": str(
+            data.get("tool_name") or find_first_text(data, {"tool_name", "tool"})
+        ),
         "command_excerpt": command_excerpt,
     }
     append_jsonl(os.path.join(logs_dir, "route-audit.jsonl"), record)
@@ -192,13 +164,19 @@ def main() -> None:
     )
 
     active_path = os.path.join(state_dir, "active.json")
-    active = read_json(active_path)
+    active = read_json_safe(active_path)
     active["last_route"] = actual_route
     active["updated_at"] = now
     write_json(active_path, active)
 
-    if str(data.get("tool_name") or "").lower() == "bash" and TEST_CMD_PATTERN.search(command_excerpt):
-        tool_response = data.get("tool_response") if isinstance(data.get("tool_response"), dict) else {}
+    if str(data.get("tool_name") or "").lower() == "bash" and TEST_CMD_PATTERN.search(
+        command_excerpt
+    ):
+        tool_response = (
+            data.get("tool_response")
+            if isinstance(data.get("tool_response"), dict)
+            else {}
+        )
         exit_code = find_first_int(tool_response, {"exit_code", "code", "status"})
         append_jsonl(
             os.path.join(logs_dir, "quality-gate.jsonl"),
@@ -212,30 +190,23 @@ def main() -> None:
             },
         )
 
-    # 統一イベントログ
-    try:
-        _orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
-        if _orchestra_dir:
-            _core_hooks = os.path.join(_orchestra_dir, "packages", "core", "hooks")
-            if _core_hooks not in sys.path:
-                sys.path.insert(0, _core_hooks)
-        from log_common import append_event
-        session_id = str(data.get("session_id") or "")
-        append_event(
-            "route_audit",
-            {"expected_route": expected_route, "actual_route": actual_route, "matched": matched, "is_helper": is_helper, "prompt_id": prompt_id},
-            session_id=session_id,
-            hook_name="route-audit",
-            project_dir=root,
-        )
-    except Exception:
-        pass
+    session_id = str(data.get("session_id") or "")
+    try_append_event(
+        "route_audit",
+        {
+            "expected_route": expected_route,
+            "actual_route": actual_route,
+            "matched": matched,
+            "is_helper": is_helper,
+            "prompt_id": prompt_id,
+        },
+        session_id=session_id,
+        hook_name="route-audit",
+        project_dir=root,
+    )
 
     sys.exit(0)
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception:
-        sys.exit(0)
+    safe_hook_execution(main)()
