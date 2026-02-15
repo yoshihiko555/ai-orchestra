@@ -6,20 +6,17 @@ Claude Code用のマルチエージェントオーケストレーションシス
 
 ```
 ai-orchestra/
-├── agents/           # 専門エージェント定義（25種）
-├── packages/         # パッケージ（hooks・scripts・config）
-│   ├── core/              # 共通基盤ライブラリ（hook_common, log_common）
-│   ├── cli-logging/       # Codex/Gemini CLI 呼び出しログ記録
-│   ├── codex-suggestions/ # 計画・実装時の Codex 相談提案
-│   ├── gemini-suggestions/# リサーチ推奨時の Gemini 提案
-│   ├── quality-gates/     # lint・テスト後分析・実装後レビュー
+├── packages/         # パッケージ（hooks・scripts・agents・skills・rules・config）
+│   ├── core/              # 共通基盤ライブラリ + coding-principles / config-loading ルール
+│   ├── agent-routing/     # 25 エージェント定義 + ルーティング hooks + orchestra-usage ルール
+│   ├── cli-logging/       # Codex/Gemini CLI ログ記録 + checkpointing スキル
+│   ├── codex-suggestions/ # Codex 相談提案 + codex-delegation ルール + codex-system スキル
+│   ├── gemini-suggestions/# Gemini リサーチ提案 + gemini-delegation ルール + gemini-system スキル
+│   ├── quality-gates/     # 品質ゲート + review/tdd/simplify/design-tracker スキル
 │   ├── route-audit/       # ルーティング監査・KPIレポート
 │   └── tmux-monitor/      # tmux サブエージェント監視
-├── rules/            # 共通ルール（Codex/Gemini委譲、コーディング規約）
 ├── scripts/          # 管理CLI
-├── skills/           # ワークフロースキル（/review, /startproject など）
 ├── templates/        # テンプレート（エージェント・スキル・プロジェクト）
-├── config/           # CLI ツール設定（cli-tools.json）
 ├── tests/            # Python 単体テスト
 ├── docs/             # ドキュメント（設計・マイグレーション等）
 ├── taskfiles/        # Task CLI 用タスク定義

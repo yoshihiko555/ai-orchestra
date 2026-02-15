@@ -14,3 +14,9 @@ __pycache__
 
 # ドッグフーディング実行時生成
 .claude/state/
+
+# sync-orchestra.py により packages/ から自動同期（SessionStart で再生成）
+.claude/agents/
+.claude/skills/
+.claude/rules/
+.claude/config/

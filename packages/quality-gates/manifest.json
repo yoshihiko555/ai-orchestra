@@ -15,7 +15,7 @@
     "hooks/post-test-analysis.py",
     "hooks/lint-on-save.py"
   ],
-  "skills": [],
+  "skills": ["skills/review", "skills/tdd", "skills/simplify", "skills/design-tracker"],
   "agents": [],
   "rules": [],
   "scripts": [],

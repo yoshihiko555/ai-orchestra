@@ -11,9 +11,9 @@
     "hooks/check-codex-before-write.py",
     "hooks/check-codex-after-plan.py"
   ],
-  "skills": [],
+  "skills": ["skills/codex-system"],
   "agents": [],
-  "rules": [],
+  "rules": ["rules/codex-delegation.md"],
   "scripts": [],
   "config": []
 }

@@ -526,58 +526,43 @@ class OrchestraManager:
             if pkg_name not in packages:
                 continue
             pkg = packages[pkg_name]
+            pkg_dir = orchestra_path / "packages" / pkg_name
 
             for category in ("skills", "agents", "rules", "config"):
                 file_list = getattr(pkg, category, [])
                 for rel_path in file_list:
                     # rel_path はカテゴリプレフィックスを含む (例: "config/flags.json")
-                    src = orchestra_path / "packages" / pkg_name / rel_path
-                    if category == "config":
-                        # config はパッケージ名サブディレクトリに配置
-                        dst = claude_dir / "config" / pkg_name / Path(rel_path).name
-                    else:
-                        dst = claude_dir / rel_path
-
+                    src = pkg_dir / rel_path
                     if not src.exists():
                         continue
 
-                    if dry_run:
-                        print(f"[DRY-RUN] 同期: {category}/{rel_path}")
-                        continue
+                    if src.is_dir():
+                        # ディレクトリの場合: 中身を再帰的に展開して個別コピー
+                        for src_file in src.rglob("*"):
+                            if not src_file.is_file():
+                                continue
+                            file_rel = str(src_file.relative_to(pkg_dir))
+                            dst = claude_dir / file_rel
+                            if dry_run:
+                                print(f"[DRY-RUN] 同期: {file_rel}")
+                                continue
+                            dst.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copy2(src_file, dst)
+                            synced_count += 1
+                    else:
+                        if category == "config":
+                            # config はパッケージ名サブディレクトリに配置
+                            dst = claude_dir / "config" / pkg_name / Path(rel_path).name
+                        else:
+                            dst = claude_dir / rel_path
 
-                    dst.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(src, dst)
-                    synced_count += 1
+                        if dry_run:
+                            print(f"[DRY-RUN] 同期: {category}/{rel_path}")
+                            continue
 
-        # トップレベル同期
-        if orch.get("sync_top_level", False):
-            for category in ("agents", "skills", "rules", "config"):
-                src_dir = orchestra_path / category
-                if not src_dir.is_dir():
-                    continue
-
-                for src_file in src_dir.rglob("*"):
-                    if not src_file.is_file():
-                        continue
-
-                    rel_path = src_file.relative_to(src_dir)
-
-                    # config/*.local.yaml / *.local.json はプロジェクト固有設定のためスキップ
-                    if category == "config" and (
-                        rel_path.name.endswith(".local.yaml")
-                        or rel_path.name.endswith(".local.json")
-                    ):
-                        continue
-
-                    dst = claude_dir / category / rel_path
-
-                    if dry_run:
-                        print(f"[DRY-RUN] 同期: {category}/{rel_path}")
-                        continue
-
-                    dst.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(src_file, dst)
-                    synced_count += 1
+                        dst.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(src, dst)
+                        synced_count += 1
 
         if synced_count > 0:
             print(f"{synced_count} ファイルを同期しました")
@@ -867,17 +852,16 @@ class OrchestraManager:
                     shutil.copy2(src_file, dst_file)
                     print(f"テンプレート配置: .gemini/{rel}")
 
-        # 7. orchestra.json の初期化（sync_top_level 有効）
+        # 7. orchestra.json の初期化
         orch = self.load_orchestra_json(project_dir)
         if not orch.get("orchestra_dir"):
             orch["orchestra_dir"] = str(self.orchestra_dir)
         orch.setdefault("installed_packages", [])
-        orch["sync_top_level"] = True
         if dry_run:
-            print("[DRY-RUN] orchestra.json 初期化（sync_top_level: true）")
+            print("[DRY-RUN] orchestra.json 初期化")
         else:
             self.save_orchestra_json(project_dir, orch)
-            print("orchestra.json 初期化（sync_top_level: true）")
+            print("orchestra.json 初期化")
 
         # 8. sync-orchestra の SessionStart hook を登録
         settings = self.load_settings(project_dir)

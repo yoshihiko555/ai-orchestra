@@ -30,7 +30,7 @@ _REAL_CONFIG = hook_common.load_package_config(
     "agent-routing", "cli-tools.yaml", str(REPO_ROOT)
 )
 _AGENTS_IN_CONFIG = set(_REAL_CONFIG.get("agents", {}).keys())
-_AGENTS_DIR = REPO_ROOT / "agents"
+_AGENTS_DIR = REPO_ROOT / "packages" / "agent-routing" / "agents"
 
 
 # ---------------------------------------------------------------------------
@@ -44,7 +44,9 @@ class TestAgentMdFilesExist:
     @pytest.mark.parametrize("agent_name", sorted(_AGENTS_IN_CONFIG))
     def test_agent_md_exists(self, agent_name: str) -> None:
         md_path = _AGENTS_DIR / f"{agent_name}.md"
-        assert md_path.is_file(), f"agents/{agent_name}.md が見つかりません"
+        assert md_path.is_file(), (
+            f"packages/agent-routing/agents/{agent_name}.md が見つかりません"
+        )
 
 
 class TestNoOrphanAgentMd:
@@ -54,7 +56,7 @@ class TestNoOrphanAgentMd:
         md_files = {p.stem for p in _AGENTS_DIR.glob("*.md")}
         orphans = md_files - _AGENTS_IN_CONFIG
         assert not orphans, (
-            f"cli-tools.yaml に未定義のエージェント .md: {sorted(orphans)}"
+            f"cli-tools.yaml に未定義のエージェント .md (packages/agent-routing/agents/): {sorted(orphans)}"
         )
 
 

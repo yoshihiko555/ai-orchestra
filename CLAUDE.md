@@ -12,16 +12,18 @@ Claude Code + Codex CLI + Gemini CLI を統合したオーケストレーショ�
 
 ```
 ai-orchestra/
-├── agents/        # 25 専門エージェント定義
-├── packages/      # パッケージ（hooks・scripts・config）
-│   ├── core/      # 共通基盤（hook_common.py）
-│   ├── tmux-monitor/ # tmux サブエージェント監視
-│   └── ...
-├── rules/         # 共通ルール（Codex/Gemini委譲、コーディング規約）
+├── packages/      # パッケージ（hooks・scripts・agents・skills・rules・config）
+│   ├── core/              # 共通基盤 + coding-principles / config-loading ルール
+│   ├── agent-routing/     # 25 エージェント定義 + ルーティング hooks
+│   ├── cli-logging/       # CLI ログ + checkpointing スキル
+│   ├── codex-suggestions/ # Codex 相談提案 + codex-delegation ルール
+│   ├── gemini-suggestions/# Gemini リサーチ提案 + gemini-delegation ルール
+│   ├── quality-gates/     # 品質ゲート + review/tdd/simplify スキル
+│   ├── route-audit/       # ルーティング監査
+│   └── tmux-monitor/      # tmux サブエージェント監視
 ├── scripts/       # 管理CLI
 │   ├── orchestra-manager.py  # パッケージ管理
 │   └── sync-orchestra.py     # SessionStart 自動同期
-├── skills/        # スキル定義（/review など）
 └── templates/     # テンプレート
 ```
 
@@ -85,4 +87,4 @@ Claude Code (Orchestrator)
 ## 開発
 
 - `packages/` 内の hooks は `$AI_ORCHESTRA_DIR` 経由で直接参照される（`git pull` で即反映）
-- `skills/`, `agents/`, `rules/` は SessionStart の `sync-orchestra.py` で各プロジェクトの `.claude/` に差分同期
+- agents/skills/rules は各パッケージ内に配置され、SessionStart の `sync-orchestra.py` で `.claude/` に差分同期

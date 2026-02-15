@@ -5,11 +5,10 @@ SessionStart hook: ai-orchestra パッケージの skills/agents/rules/config �
 処理フロー:
 1. .claude/orchestra.json を読み込み → インストール済みパッケージ一覧を取得
 2. 各パッケージの manifest.json を読み込み → skills/agents/rules/config をコピー
-3. sync_top_level=true の場合、$AI_ORCHESTRA_DIR 直下の agents/skills/rules/config もコピー
-4. 差分があるファイルのみ .claude/{skills,agents,rules,config}/ にコピー（mtime 比較）
-5. config/*.local.yaml はプロジェクト固有設定のため同期・削除の対象外
-6. 前回 synced_files にあって今回ないファイルを削除（ソース側で削除されたファイルの反映）
-7. synced_files リストと last_sync タイムスタンプを更新
+3. 差分があるファイルのみ .claude/{skills,agents,rules,config}/ にコピー（mtime 比較）
+4. config/*.local.yaml はプロジェクト固有設定のため同期・削除の対象外
+5. 前回 synced_files にあって今回ないファイルを削除（ソース側で削除されたファイルの反映）
+6. synced_files リストと last_sync タイムスタンプを更新
 
 パフォーマンス: 変更なしの場合 ~70ms（Python 起動 + mtime 比較のみ）
 """
@@ -51,50 +50,6 @@ def is_local_override(category: str, rel_path: Path) -> bool:
     return category == "config" and (
         name.endswith(".local.yaml") or name.endswith(".local.json")
     )
-
-
-def sync_top_level(
-    orchestra_path: Path, claude_dir: Path, synced_files: set[str]
-) -> int:
-    """$AI_ORCHESTRA_DIR 直下の agents/skills/rules/config を .claude/ に差分コピー。
-
-    パッケージ同期で既にコピーされたファイルはスキップする。
-    config/*.local.yaml はプロジェクト固有設定のためスキップする。
-    同期対象ファイルは synced_files に追記される（削除判定用）。
-    """
-    synced = 0
-
-    for category in ("agents", "skills", "rules", "config"):
-        src_dir = orchestra_path / category
-        if not src_dir.is_dir():
-            continue
-
-        for src_file in src_dir.rglob("*"):
-            if not src_file.is_file():
-                continue
-
-            rel_path = src_file.relative_to(src_dir)
-            dst_key = f"{category}/{rel_path}"
-
-            # config/*.local.yaml はプロジェクト固有設定のためスキップ
-            if is_local_override(category, rel_path):
-                continue
-
-            # パッケージ同期で既にコピーされたファイルはスキップ
-            if dst_key in synced_files:
-                continue
-
-            synced_files.add(dst_key)
-
-            dst = claude_dir / category / rel_path
-            if not needs_sync(src_file, dst):
-                continue
-
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src_file, dst)
-            synced += 1
-
-    return synced
 
 
 def remove_stale_files(
@@ -145,8 +100,7 @@ def main() -> None:
     installed_packages = orch.get("installed_packages", [])
     orchestra_dir = orch.get("orchestra_dir", "")
 
-    sync_top_level_flag = orch.get("sync_top_level", False)
-    if not orchestra_dir or (not installed_packages and not sync_top_level_flag):
+    if not orchestra_dir or not installed_packages:
         return
 
     orchestra_path = Path(orchestra_dir)
@@ -176,30 +130,40 @@ def main() -> None:
             for rel_path in file_list:
                 # rel_path はカテゴリプレフィックスを含む (例: "config/flags.json")
                 src = pkg_dir / rel_path
-                if category == "config":
-                    # config はパッケージ名サブディレクトリに配置
-                    filename = Path(rel_path).name
-                    dst = claude_dir / "config" / pkg_name / filename
-                    dst_key = f"config/{pkg_name}/{filename}"
-                else:
-                    dst = claude_dir / rel_path
-                    dst_key = rel_path
-
                 if not src.exists():
                     continue
 
-                synced_files.add(dst_key)
+                if src.is_dir():
+                    # ディレクトリの場合: 中身を再帰的に展開して個別コピー
+                    for src_file in src.rglob("*"):
+                        if not src_file.is_file():
+                            continue
+                        file_rel = str(src_file.relative_to(pkg_dir))
+                        synced_files.add(file_rel)
+                        dst = claude_dir / file_rel
+                        if not needs_sync(src_file, dst):
+                            continue
+                        dst.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(src_file, dst)
+                        synced_count += 1
+                else:
+                    if category == "config":
+                        # config はパッケージ名サブディレクトリに配置
+                        filename = Path(rel_path).name
+                        dst = claude_dir / "config" / pkg_name / filename
+                        dst_key = f"config/{pkg_name}/{filename}"
+                    else:
+                        dst = claude_dir / rel_path
+                        dst_key = rel_path
 
-                if not needs_sync(src, dst):
-                    continue
+                    synced_files.add(dst_key)
 
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src, dst)
-                synced_count += 1
+                    if not needs_sync(src, dst):
+                        continue
 
-    # トップレベル同期（sync_top_level フラグが有効な場合）
-    if orch.get("sync_top_level", False):
-        synced_count += sync_top_level(orchestra_path, claude_dir, synced_files)
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(src, dst)
+                    synced_count += 1
 
     # 前回同期されたが今回は対象外のファイルを削除
     # synced_files キーが未設定（初回）の場合は削除しない（プロジェクト固有ファイルの誤削除を防止）

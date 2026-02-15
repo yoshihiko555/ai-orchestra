@@ -9,9 +9,9 @@
   "files": [
     "hooks/suggest-gemini-research.py"
   ],
-  "skills": [],
+  "skills": ["skills/gemini-system"],
   "agents": [],
-  "rules": [],
+  "rules": ["rules/gemini-delegation.md"],
   "scripts": [],
   "config": []
 }
