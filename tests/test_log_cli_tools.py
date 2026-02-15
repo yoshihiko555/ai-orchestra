@@ -27,6 +27,11 @@ def test_extract_gemini_prompt() -> None:
     assert log_cli_tools.extract_gemini_prompt(command) == "summarize architecture"
 
 
+def test_extract_gemini_prompt_with_model_flag() -> None:
+    command = 'gemini -m gemini-2.5-pro -p "summarize architecture" 2>/dev/null'
+    assert log_cli_tools.extract_gemini_prompt(command) == "summarize architecture"
+
+
 def test_extract_model() -> None:
     command = "codex exec --model gpt-5.3-codex --full-auto 'x'"
     assert log_cli_tools.extract_model(command) == "gpt-5.3-codex"
@@ -70,4 +75,3 @@ def test_log_entry_appends_jsonl_line(tmp_path, monkeypatch) -> None:
 
     line = output.read_text(encoding="utf-8").strip()
     assert json.loads(line) == entry
-

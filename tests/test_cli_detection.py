@@ -18,7 +18,10 @@ CODEX_EXEC_RE = re.compile(
 )
 
 GEMINI_EXEC_RE = re.compile(
-    r"(?:^|&&|\|\||;|\|)\s*gemini\s+-p\b",
+    r"(?:^|&&|\|\||;|\|)\s*"
+    r"(?:timeout\s+\d+\s+)?"
+    r"(?:\w+=\S+\s+)*gemini(?=\s|$)"
+    r"(?:(?!&&|\|\||;|\|).)*\s+-p\b",
     re.IGNORECASE,
 )
 
@@ -90,14 +93,20 @@ def test_codex_not_detected(command: str) -> None:
     [
         'gemini -p "research query" 2>/dev/null',
         "gemini -p 'What is 1+1?'",
+        'gemini -m gemini-2.5-pro -p "with model flag"',
         'gemini -p "question" --include-directories . 2>/dev/null',
+        'GEMINI_API_KEY=dummy gemini -m gemini-2.5-pro -p "env prefix"',
+        'timeout 5 gemini -m gemini-2.5-pro -p "timeout prefix"',
         'echo done && gemini -p "chained"',
         'true; gemini -p "after semicolon"',
     ],
     ids=[
         "basic_gemini",
         "single_quote",
+        "model_before_prompt",
         "with_include_dirs",
+        "env_var_prefix",
+        "timeout_prefix",
         "chained_with_and",
         "after_semicolon",
     ],
@@ -115,6 +124,7 @@ def test_gemini_detected(command: str) -> None:
         "cat /opt/homebrew/bin/gemini",
         "gemini --version",
         "gemini --help",
+        "gemini -m gemini-2.5-pro --help",
         "echo gemini is great",
         "pip install gemini-cli",
         "which gemini",
@@ -126,6 +136,7 @@ def test_gemini_detected(command: str) -> None:
         "cat_gemini_binary",
         "gemini_version",
         "gemini_help",
+        "gemini_model_without_prompt",
         "echo_gemini",
         "pip_install",
         "which_gemini",

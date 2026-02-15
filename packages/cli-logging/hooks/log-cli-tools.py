@@ -22,9 +22,12 @@ CODEX_EXEC_RE = re.compile(
     r"(?:\w+=\S+\s+)*codex\s+exec\b",
     re.IGNORECASE,
 )
-# gemini -p コマンドの検知
+# gemini -p コマンドの検知（-m などの前置フラグ、timeout/env プレフィックスも対応）
 GEMINI_EXEC_RE = re.compile(
-    r"(?:^|&&|\|\||;|\|)\s*gemini\s+-p\b",
+    r"(?:^|&&|\|\||;|\|)\s*"
+    r"(?:timeout\s+\d+\s+)?"
+    r"(?:\w+=\S+\s+)*gemini(?=\s|$)"
+    r"(?:(?!&&|\|\||;|\|).)*\s+-p\b",
     re.IGNORECASE,
 )
 
@@ -65,10 +68,10 @@ def extract_codex_prompt(command: str) -> str | None:
 
 def extract_gemini_prompt(command: str) -> str | None:
     """Extract prompt from gemini command."""
-    # Pattern: gemini -p "prompt" or gemini -p 'prompt'
+    # Pattern: gemini ... -p "prompt" or gemini ... -p 'prompt'
     patterns = [
-        r'gemini\s+-p\s+"([^"]+)"',
-        r"gemini\s+-p\s+'([^']+)'",
+        r'gemini(?=\s|$)(?:(?!&&|\|\||;|\|).)*?\s+-p\s+"([^"]+)"',
+        r"gemini(?=\s|$)(?:(?!&&|\|\||;|\|).)*?\s+-p\s+'([^']+)'",
     ]
     for pattern in patterns:
         match = re.search(pattern, command, re.DOTALL)
