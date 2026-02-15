@@ -1,4 +1,4 @@
-version: '3'
+version: "3"
 
 vars:
   ORCHESTRA_DIR: $HOME/ghq/github.com/yoshihiko555/ai-orchestra
@@ -6,12 +6,6 @@ vars:
 includes:
   list:
     taskfile: ./taskfiles/list.yml
-    flatten: true
-    vars:
-      ORCHESTRA_DIR: "{{.ORCHESTRA_DIR}}"
-
-  scaffold:
-    taskfile: ./taskfiles/scaffold.yml
     flatten: true
     vars:
       ORCHESTRA_DIR: "{{.ORCHESTRA_DIR}}"
