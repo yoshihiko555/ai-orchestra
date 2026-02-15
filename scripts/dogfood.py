@@ -2,13 +2,16 @@
 """ai-orchestra ドッグフーディング管理スクリプト
 
 ai-orchestra リポジトリ自身で orchestration システムを有効化/無効化する。
-- enable:  シンボリックリンク作成 + config コピー + hooks 登録
-- disable: シンボリックリンク削除 + config 削除 + settings 復元
+sync-orchestra.py ベースのファイル同期 + hooks 登録で動作する。
+
+- enable:  sync 実行 + config コピー + hooks 登録
+- disable: synced ファイル削除 + config 削除 + settings 復元
 - status:  現在の状態を表示
 """
 
 import json
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -17,14 +20,10 @@ ORCHESTRA_DIR = Path(__file__).resolve().parent.parent
 CLAUDE_DIR = ORCHESTRA_DIR / ".claude"
 SETTINGS_FILE = CLAUDE_DIR / "settings.local.json"
 BACKUP_FILE = CLAUDE_DIR / "settings.local.json.backup"
+ORCHESTRA_JSON = CLAUDE_DIR / "orchestra.json"
 CONFIG_DIR = CLAUDE_DIR / "config"
 PACKAGES_DIR = ORCHESTRA_DIR / "packages"
-
-# .claude/ 直下にシンボリックリンクを作成するディレクトリ
-SYMLINK_TARGETS = ["agents", "skills", "rules"]
-
-# sync-orchestra の SessionStart hook は登録しない（自分自身なので不要）
-SKIP_HOOKS = {"sync-orchestra"}
+SYNC_SCRIPT = ORCHESTRA_DIR / "scripts" / "sync-orchestra.py"
 
 
 def load_settings() -> Dict[str, Any]:
@@ -104,48 +103,52 @@ def parse_hook_entry(entry, pkg_name: str) -> tuple:
         raise ValueError(f"Unknown hook entry format in {pkg_name}: {entry}")
 
 
+def init_orchestra_json() -> None:
+    """orchestra.json を初期化（全パッケージをインストール済みとして登録）"""
+    manifests = load_all_manifests()
+    pkg_names = [m["name"] for m in manifests]
+    data = {
+        "orchestra_dir": str(ORCHESTRA_DIR),
+        "installed_packages": sorted(pkg_names),
+        "synced_files": [],
+        "last_sync": None,
+    }
+    CLAUDE_DIR.mkdir(parents=True, exist_ok=True)
+    ORCHESTRA_JSON.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+
+
 # ─── enable ──────────────────────────────────────────────
+
 
 def enable():
     print("=== ドッグフーディング有効化 ===\n")
 
-    # 1. シンボリックリンク作成
-    print("[1/4] シンボリックリンク作成")
-    CLAUDE_DIR.mkdir(parents=True, exist_ok=True)
-    for name in SYMLINK_TARGETS:
-        link = CLAUDE_DIR / name
-        target = Path("..") / name  # 相対パス
+    # 1. orchestra.json を初期化
+    print("[1/4] orchestra.json 初期化")
+    init_orchestra_json()
+    print("  OK   全パッケージを登録")
 
-        if link.is_symlink():
-            print(f"  SKIP {link} (既存シンボリックリンク)")
-            continue
-        if link.exists():
-            print(f"  ERROR {link} が既存ディレクトリとして存在します", file=sys.stderr)
-            print("  手動で削除してから再実行してください", file=sys.stderr)
-            sys.exit(1)
-
-        link.symlink_to(target)
-        print(f"  OK   {link} -> {target}")
-
-    # 2. config ファイルコピー
-    print("\n[2/4] config ファイルコピー")
-    manifests = load_all_manifests()
-    config_count = 0
-    for manifest in manifests:
-        pkg_dir = manifest["_dir"]
-        for config_path in manifest.get("config", []):
-            src = pkg_dir / config_path
-            dest = CONFIG_DIR / Path(config_path).name
-            if not src.exists():
-                print(f"  WARN {src} が見つかりません", file=sys.stderr)
-                continue
-            CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dest)
-            print(f"  OK   {dest.relative_to(ORCHESTRA_DIR)}")
-            config_count += 1
-
-    if config_count == 0:
-        print("  (コピー対象なし)")
+    # 2. sync-orchestra.py でファイル同期
+    print("\n[2/4] ファイル同期 (sync-orchestra.py)")
+    env = {
+        "AI_ORCHESTRA_DIR": str(ORCHESTRA_DIR),
+        "PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
+    }
+    result = subprocess.run(
+        [sys.executable, str(SYNC_SCRIPT)],
+        cwd=str(ORCHESTRA_DIR),
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print(f"  ERROR sync-orchestra.py 失敗:\n{result.stderr}", file=sys.stderr)
+        sys.exit(1)
+    # sync-orchestra の出力を表示
+    for line in result.stdout.strip().splitlines():
+        print(f"  {line}")
+    if not result.stdout.strip():
+        print("  OK   同期完了")
 
     # 3. バックアップ
     print("\n[3/4] settings.local.json バックアップ")
@@ -160,11 +163,10 @@ def enable():
     # 4. hooks 登録
     print("\n[4/4] hooks 登録 (manifest.json から動的読み取り)")
     settings = load_settings()
-
-    # hooks を再構築（permissions は維持）
     permissions = settings.get("permissions")
     settings["hooks"] = {}
 
+    manifests = load_all_manifests()
     hook_count = 0
     for manifest in manifests:
         pkg_name = manifest["name"]
@@ -184,23 +186,35 @@ def enable():
         settings["permissions"] = permissions
 
     save_settings(settings)
-    print(f"\n完了: シンボリックリンク {len(SYMLINK_TARGETS)} 個, config {config_count} 個, hooks {hook_count} 個")
+    print(f"\n完了: hooks {hook_count} 個登録")
 
 
 # ─── disable ─────────────────────────────────────────────
 
+
 def disable():
     print("=== ドッグフーディング無効化 ===\n")
 
-    # 1. シンボリックリンク削除
-    print("[1/3] シンボリックリンク削除")
-    for name in SYMLINK_TARGETS:
-        link = CLAUDE_DIR / name
-        if link.is_symlink():
-            link.unlink()
-            print(f"  OK   {link} を削除")
-        else:
-            print(f"  SKIP {link} (シンボリックリンクではない)")
+    # 1. synced ファイル削除
+    print("[1/3] synced ファイル削除")
+    if ORCHESTRA_JSON.exists():
+        data = json.loads(ORCHESTRA_JSON.read_text())
+        synced_files = data.get("synced_files", [])
+        removed = 0
+        for rel_path in synced_files:
+            target = CLAUDE_DIR / rel_path
+            if target.exists():
+                target.unlink()
+                removed += 1
+        # 空ディレクトリを削除
+        for category in ("agents", "skills", "rules"):
+            cat_dir = CLAUDE_DIR / category
+            if cat_dir.is_dir():
+                _remove_empty_dirs(cat_dir)
+        ORCHESTRA_JSON.unlink()
+        print(f"  OK   {removed} ファイル削除, orchestra.json 削除")
+    else:
+        print("  SKIP orchestra.json が存在しません")
 
     # 2. config ディレクトリ削除
     print("\n[2/3] config ディレクトリ削除")
@@ -217,32 +231,56 @@ def disable():
         BACKUP_FILE.unlink()
         print(f"  OK   {BACKUP_FILE.name} から復元")
     else:
-        print("  WARN バックアップが存在しません (手動復元が必要かもしれません)", file=sys.stderr)
+        print(
+            "  WARN バックアップが存在しません (手動復元が必要かもしれません)",
+            file=sys.stderr,
+        )
 
     print("\n完了: ドッグフーディングを無効化しました")
 
 
+def _remove_empty_dirs(path: Path) -> None:
+    """空のサブディレクトリを再帰的に削除する。"""
+    for child in sorted(path.iterdir(), reverse=True):
+        if child.is_dir():
+            _remove_empty_dirs(child)
+            if not any(child.iterdir()):
+                child.rmdir()
+    if path.is_dir() and not any(path.iterdir()):
+        path.rmdir()
+
+
 # ─── status ──────────────────────────────────────────────
+
 
 def status():
     print("=== ドッグフーディング状態 ===\n")
 
-    # シンボリックリンク確認
-    symlink_ok = True
-    print("[シンボリックリンク]")
-    for name in SYMLINK_TARGETS:
-        link = CLAUDE_DIR / name
-        if link.is_symlink():
-            print(f"  OK   {name} -> {link.resolve()}")
-        else:
-            print(f"  NG   {name} (未作成)")
-            symlink_ok = False
+    # synced ファイル確認
+    sync_ok = False
+    print("[synced ファイル]")
+    if ORCHESTRA_JSON.exists():
+        data = json.loads(ORCHESTRA_JSON.read_text())
+        synced = data.get("synced_files", [])
+        existing = [f for f in synced if (CLAUDE_DIR / f).exists()]
+        print(f"  同期済み: {len(existing)}/{len(synced)} ファイル")
+        missing = set(synced) - set(existing)
+        if missing:
+            for f in sorted(missing):
+                print(f"    MISSING {f}")
+        sync_ok = len(existing) == len(synced) and len(synced) > 0
+        last_sync = data.get("last_sync", "不明")
+        print(f"  最終同期: {last_sync}")
+    else:
+        print("  orchestra.json が存在しません")
 
     # config 確認
     print("\n[config ファイル]")
     if CONFIG_DIR.exists():
-        for f in sorted(CONFIG_DIR.iterdir()):
-            print(f"  OK   {f.name}")
+        config_files = list(CONFIG_DIR.rglob("*"))
+        config_files = [f for f in config_files if f.is_file()]
+        for f in sorted(config_files):
+            print(f"  OK   {f.relative_to(CLAUDE_DIR)}")
     else:
         print("  (なし)")
 
@@ -256,7 +294,6 @@ def status():
                 cmd = hook.get("command", "")
                 registered_hooks.add(cmd)
 
-    # manifest.json から期待される hooks を収集
     expected_hooks = set()
     manifests = load_all_manifests()
     for manifest in manifests:
@@ -271,10 +308,10 @@ def status():
     expected_count = len(expected_hooks)
     print(f"  登録済み: {registered_count}/{expected_count}")
 
-    missing = expected_hooks - registered_hooks
-    if missing:
+    missing_hooks = expected_hooks - registered_hooks
+    if missing_hooks:
         print("  未登録:")
-        for cmd in sorted(missing):
+        for cmd in sorted(missing_hooks):
             print(f"    - {cmd}")
 
     extra = registered_hooks - expected_hooks
@@ -283,16 +320,16 @@ def status():
         for cmd in sorted(extra):
             print(f"    - {cmd}")
 
-    # 判定
     hooks_ok = registered_count == expected_count and not extra
-    enabled = symlink_ok and hooks_ok
+    enabled = sync_ok and hooks_ok
 
     print(f"\n状態: {'有効' if enabled else '無効 (一部未設定)'}")
-    if not enabled and symlink_ok:
-        print("ヒント: `task dogfood:enable` を再実行すると hooks が最新化されます")
+    if not enabled:
+        print("ヒント: `task dogfood:enable` を再実行してください")
 
 
 # ─── main ────────────────────────────────────────────────
+
 
 def main():
     if len(sys.argv) < 2:
