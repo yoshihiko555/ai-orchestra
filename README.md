@@ -83,10 +83,27 @@ ai-orchestra/
 git clone https://github.com/yoshihiko555/ai-orchestra.git ~/ai-orchestra
 ```
 
-### 2. パッケージをインストール
+### 2. セットアップ（推奨）
 
 ```bash
-# プロジェクトに tmux-monitor をインストール（core は自動依存）
+# チームメンバー向け: 最低限のパッケージを一括インストール
+python3 ~/ai-orchestra/scripts/orchestra-manager.py setup essential --project /path/to/project
+
+# 管理者・開発者向け: 全パッケージを一括インストール
+python3 ~/ai-orchestra/scripts/orchestra-manager.py setup all --project /path/to/project
+
+# 事前確認（dry-run）
+python3 ~/ai-orchestra/scripts/orchestra-manager.py setup essential --project /path/to/project --dry-run
+```
+
+プリセットは `presets.json` で定義されています:
+- **essential** — core, route-audit, quality-gates
+- **all** — 全パッケージ
+
+### 2b. 個別インストール
+
+```bash
+# 個別にパッケージをインストールする場合
 python3 ~/ai-orchestra/scripts/orchestra-manager.py install core --project /path/to/project
 python3 ~/ai-orchestra/scripts/orchestra-manager.py install tmux-monitor --project /path/to/project
 ```
@@ -110,6 +127,10 @@ orchestra-manager が内部で以下を実行:
 ### 4. パッケージ管理コマンド
 
 ```bash
+# プリセットで一括セットアップ
+python3 ~/ai-orchestra/scripts/orchestra-manager.py setup essential --project .
+python3 ~/ai-orchestra/scripts/orchestra-manager.py setup all --project .
+
 # パッケージ一覧
 python3 ~/ai-orchestra/scripts/orchestra-manager.py list
 
@@ -133,6 +154,7 @@ python3 ~/ai-orchestra/scripts/orchestra-manager.py run route-audit dashboard
 python3 ~/ai-orchestra/scripts/orchestra-manager.py run route-audit log-viewer --project /path/to/project -- --last 10
 
 # dry-run（変更内容を表示のみ）
+python3 ~/ai-orchestra/scripts/orchestra-manager.py setup essential --project . --dry-run
 python3 ~/ai-orchestra/scripts/orchestra-manager.py install <package> --project . --dry-run
 ```
 

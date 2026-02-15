@@ -94,6 +94,63 @@ class OrchestraManager:
             packages[pkg.name] = pkg
         return packages
 
+    def load_presets(self) -> Dict[str, Any]:
+        """presets.json を読み込み、__all__ を全パッケージ名に展開"""
+        presets_path = self.orchestra_dir / "presets.json"
+        if not presets_path.exists():
+            print("エラー: presets.json が見つかりません", file=sys.stderr)
+            sys.exit(1)
+
+        with open(presets_path, "r", encoding="utf-8") as f:
+            presets = json.load(f)
+
+        all_package_names = sorted(self.load_packages().keys())
+        for preset in presets.values():
+            if preset.get("packages") == "__all__":
+                preset["packages"] = all_package_names
+
+        return presets
+
+    def resolve_install_order(self, package_names: List[str]) -> List[str]:
+        """依存関係を考慮したインストール順を返す（トポロジカルソート）"""
+        packages = self.load_packages()
+        target_set = set(package_names)
+
+        # 隣接リスト（依存先 → 依存元）と入次数を構築
+        in_degree: Dict[str, int] = {name: 0 for name in package_names}
+        dependents: Dict[str, List[str]] = {name: [] for name in package_names}
+
+        for name in package_names:
+            pkg = packages.get(name)
+            if not pkg:
+                continue
+            for dep in pkg.depends:
+                if dep in target_set:
+                    in_degree[name] += 1
+                    dependents[dep].append(name)
+
+        # Kahn のアルゴリズム
+        queue = sorted([n for n in package_names if in_degree[n] == 0])
+        result: List[str] = []
+
+        while queue:
+            node = queue.pop(0)
+            result.append(node)
+            for dependent in sorted(dependents[node]):
+                in_degree[dependent] -= 1
+                if in_degree[dependent] == 0:
+                    queue.append(dependent)
+                    queue.sort()
+
+        if len(result) != len(package_names):
+            # 循環依存がある場合は元の順序で返す
+            print(
+                "警告: 循環依存が検出されました。元の順序で実行します", file=sys.stderr
+            )
+            return package_names
+
+        return result
+
     def list_packages(self) -> None:
         """パッケージ一覧を表示"""
         packages = self.load_packages()
@@ -526,7 +583,11 @@ class OrchestraManager:
             print(f"{synced_count} ファイルを同期しました")
 
     def install(
-        self, package_name: str, project: Optional[str], dry_run: bool = False
+        self,
+        package_name: str,
+        project: Optional[str],
+        dry_run: bool = False,
+        _skip_dep_check: bool = False,
     ) -> None:
         """パッケージをインストール"""
         packages = self.load_packages()
@@ -539,15 +600,16 @@ class OrchestraManager:
         pkg = packages[package_name]
         project_dir = self.get_project_dir(project)
 
-        # 依存チェック
+        # 依存チェック（setup 経由の場合は依存順が保証されるためスキップ）
         orch = self.load_orchestra_json(project_dir)
         installed_packages = set(orch.get("installed_packages", []))
-        missing_deps = self.check_dependencies(pkg, installed_packages)
-        if missing_deps:
-            print(
-                f"警告: 依存パッケージが未インストール: {', '.join(missing_deps)}",
-                file=sys.stderr,
-            )
+        if not _skip_dep_check:
+            missing_deps = self.check_dependencies(pkg, installed_packages)
+            if missing_deps:
+                print(
+                    f"警告: 依存パッケージが未インストール: {', '.join(missing_deps)}",
+                    file=sys.stderr,
+                )
 
         # 1. 環境変数の設定
         self.setup_env_var(dry_run)
@@ -991,6 +1053,81 @@ class OrchestraManager:
         for pkg_name, short_name, display_path in rows:
             print(f"{pkg_name:<20} {short_name:<30} {display_path}")
 
+    def setup(
+        self, preset_name: str, project: Optional[str], dry_run: bool = False
+    ) -> None:
+        """プリセットを使って一括セットアップ"""
+        presets = self.load_presets()
+        if preset_name not in presets:
+            available = ", ".join(sorted(presets.keys()))
+            print(
+                f"エラー: プリセット '{preset_name}' が見つかりません\n"
+                f"利用可能: {available}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        preset = presets[preset_name]
+        package_names = preset["packages"]
+        description = preset.get("description", "")
+        ordered = self.resolve_install_order(package_names)
+
+        # インストール済みパッケージを取得
+        project_dir = self.get_project_dir(project)
+        orch = self.load_orchestra_json(project_dir)
+        already_installed = set(orch.get("installed_packages", []))
+
+        total_steps = 1 + len(ordered)  # init + パッケージ数
+
+        print(f"\n=== AI Orchestra セットアップ: {preset_name} ===")
+        if description:
+            print(description)
+        print()
+
+        if dry_run:
+            print("[DRY-RUN] 以下のパッケージをインストールします:")
+            for i, name in enumerate(ordered, 1):
+                skip = (
+                    " (スキップ: インストール済み)" if name in already_installed else ""
+                )
+                print(f"  [{i + 1}/{total_steps}] {name}{skip}")
+            print()
+
+        # 1. init
+        step = 1
+        print(f"[{step}/{total_steps}] プロジェクト初期化...")
+        self.init(project, dry_run)
+        print()
+
+        # 2. 各パッケージをインストール
+        installed_count = 0
+        skipped_count = 0
+        for i, pkg_name in enumerate(ordered):
+            step = i + 2
+            if pkg_name in already_installed:
+                print(
+                    f"[{step}/{total_steps}] {pkg_name} はインストール済み（スキップ）"
+                )
+                skipped_count += 1
+                continue
+
+            print(f"[{step}/{total_steps}] {pkg_name} をインストール中...")
+            self.install(pkg_name, project, dry_run, _skip_dep_check=True)
+            already_installed.add(pkg_name)
+            installed_count += 1
+            print()
+
+        # サマリー
+        print("=== セットアップ完了 ===")
+        all_names = ", ".join(ordered)
+        if skipped_count > 0:
+            print(
+                f"インストール済み: {all_names} ({len(ordered)} パッケージ, "
+                f"新規: {installed_count}, スキップ: {skipped_count})"
+            )
+        else:
+            print(f"インストール済み: {all_names} ({len(ordered)} パッケージ)")
+
 
 def main():
     """メインエントリポイント"""
@@ -1069,6 +1206,14 @@ def main():
     scripts_parser = subparsers.add_parser("scripts", help="スクリプト一覧を表示")
     scripts_parser.add_argument("--package", help="特定パッケージのみ表示")
 
+    # setup コマンド
+    setup_parser = subparsers.add_parser("setup", help="プリセットで一括セットアップ")
+    setup_parser.add_argument("preset", help="プリセット名（essential / all）")
+    setup_parser.add_argument("--project", help="プロジェクトパス")
+    setup_parser.add_argument(
+        "--dry-run", action="store_true", help="実行内容を表示のみ"
+    )
+
     # run コマンドの -- 以降をスクリプト引数として分離
     argv = sys.argv[1:]
     script_args: List[str] = []
@@ -1107,6 +1252,8 @@ def main():
         manager.run_script(args.package, args.script, args.project, script_args)
     elif args.command == "scripts":
         manager.list_scripts(args.package)
+    elif args.command == "setup":
+        manager.setup(args.preset, args.project, args.dry_run)
     else:
         parser.print_help()
         sys.exit(1)

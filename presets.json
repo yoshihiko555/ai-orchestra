@@ -1,0 +1,10 @@
+{
+  "essential": {
+    "description": "最低限のパッケージセット（チームメンバー向け）",
+    "packages": ["core", "route-audit", "quality-gates"]
+  },
+  "all": {
+    "description": "全パッケージ（管理者・開発者向け）",
+    "packages": "__all__"
+  }
+}
