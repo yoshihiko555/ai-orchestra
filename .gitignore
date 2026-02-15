@@ -1,18 +1,32 @@
-# 参照用リポジトリ
-docs/tech/
-.claude/logs
-
 # OS
 .DS_Store
+Thumbs.db
 
 # Editor
 *.swp
 *.swo
 *~
 
-__pycache__
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
 
-# ドッグフーディング実行時生成
+# Environment / Secrets
+.env
+.env.local
+
+# Logs
+*.log
+
+# Claude Code
+.claude/logs/
 .claude/state/
 
 # sync-orchestra.py により packages/ から自動同期（SessionStart で再生成）
@@ -20,3 +34,6 @@ __pycache__
 .claude/skills/
 .claude/rules/
 .claude/config/
+
+# Project-specific
+docs/tech/
