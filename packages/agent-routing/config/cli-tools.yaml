@@ -43,3 +43,82 @@ language:
   cli_query: english
   # ユーザーへの出力に使う言語
   user_output: japanese
+
+# エージェントルーティング
+# 各エージェントが使用するツールを定義する。
+# tool: "codex" | "gemini" | "claude-direct" | "auto"
+#   - codex: Codex CLI を使用
+#   - gemini: Gemini CLI を使用
+#   - claude-direct: 外部CLIを呼ばず自身で処理
+#   - auto: タスクに応じて codex / gemini / claude-direct を使い分け
+agents:
+  # --- レビュー・設計分析系（Claude Code 直接）---
+  architect:
+    tool: claude-direct
+  api-designer:
+    tool: claude-direct
+  architecture-reviewer:
+    tool: claude-direct
+  auth-designer:
+    tool: claude-direct
+  code-reviewer:
+    tool: claude-direct
+  data-modeler:
+    tool: claude-direct
+  performance-reviewer:
+    tool: claude-direct
+  security-reviewer:
+    tool: claude-direct
+  spec-reviewer:
+    tool: claude-direct
+  ux-reviewer:
+    tool: claude-direct
+
+  # --- 実装・開発系（Codex CLI）---
+  ai-dev:
+    tool: codex
+    sandbox: workspace-write
+  backend-go-dev:
+    tool: codex
+    sandbox: workspace-write
+  backend-python-dev:
+    tool: codex
+    sandbox: workspace-write
+  debugger:
+    tool: codex
+    sandbox: workspace-write
+  frontend-dev:
+    tool: codex
+    sandbox: workspace-write
+  rag-engineer:
+    tool: codex
+    sandbox: workspace-write
+  spec-writer:
+    tool: codex
+    sandbox: workspace-write
+  tester:
+    tool: codex
+    sandbox: workspace-write
+
+  # --- マルチツール系（状況に応じて使い分け）---
+  ai-architect:
+    tool: auto
+    model: null
+  general-purpose:
+    tool: auto
+    model: null
+
+  # --- リサーチ系（Gemini CLI）---
+  researcher:
+    tool: gemini
+    model: null
+
+  # --- その他（Claude Code 直接）---
+  docs-writer:
+    tool: claude-direct
+  planner:
+    tool: claude-direct
+  prompt-engineer:
+    tool: claude-direct
+  requirements:
+    tool: claude-direct

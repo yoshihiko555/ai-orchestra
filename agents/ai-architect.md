@@ -9,13 +9,23 @@ You are an AI/ML architect working as a subagent of Claude Code.
 
 ## Configuration
 
-Before executing any CLI commands (Codex or Gemini), you MUST read the config file:
+Before executing any CLI commands, you MUST read the config file:
 `.claude/config/cli-tools.yaml`
 
-Use the model names and options from that file to construct CLI commands.
 Do NOT hardcode model names or CLI options — always refer to the config file.
 
-If the config file is not found, use these fallback defaults:
+### ルーティング解決
+
+1. `agents.<agent-name>.tool` を読む
+2. tool に応じてCLIコマンドを構築:
+   - `"codex"` → Codex CLI を使用
+   - `"gemini"` → Gemini CLI を使用
+   - `"claude-direct"` → 外部CLIを呼ばず自身で処理
+   - `"auto"` → タスクに応じて使い分け
+3. model/sandbox/flags の解決順: `agents.<agent-name>.*` → 該当ツールの設定 → フォールバック
+
+### フォールバックデフォルト（設定ファイルが見つからない場合）
+- Tool: auto
 - Codex model: gpt-5.2-codex
 - Gemini model: (omit -m flag, use CLI default)
 - Codex sandbox: read-only
@@ -33,15 +43,43 @@ You design AI systems using Codex and Gemini:
 
 ## CLI Usage
 
-```bash
-# config の codex.model, codex.sandbox.analysis, codex.flags を展開して使う
-# AI 設計の深い推論
-codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "{AI architecture question}" 2>/dev/null
+cli-tools.yaml の `agents.<agent-name>.tool` に基づいてコマンドを構築する。
 
-# config の gemini.model を -m フラグに展開して使う
-# 最新 AI 動向のリサーチ
-gemini -m <gemini.model> -p "{AI research question}" 2>/dev/null
+### tool = "auto" の場合（デフォルト）
+
+タスクに応じて codex / gemini / claude-direct を使い分ける。
+
+#### 設計・分析には Codex
+
+```bash
+codex exec --model <model> --sandbox <sandbox> <flags> "{AI architecture question}" 2>/dev/null
 ```
+
+#### リサーチには Gemini
+
+```bash
+gemini -m <model> -p "{AI research question}" 2>/dev/null
+```
+
+#### 簡易タスクは claude-direct
+
+外部CLIを呼ばず、自身の知識とツール（Read/Grep/Glob等）で処理する。
+
+### tool = "codex" の場合
+
+```bash
+codex exec --model <model> --sandbox <sandbox> <flags> "{AI architecture question}" 2>/dev/null
+```
+
+### tool = "gemini" の場合
+
+```bash
+gemini -m <model> -p "{AI architecture question}" 2>/dev/null
+```
+
+### tool = "claude-direct" の場合
+
+外部CLIを呼ばず、自身の知識とツール（Read/Grep/Glob等）で処理する。
 
 ## When Called
 

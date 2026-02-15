@@ -158,7 +158,7 @@ def detect_agent(prompt: str) -> tuple[str | None, str]:
     for agent, triggers in AGENT_TRIGGERS.items():
         for lang_triggers in triggers.values():
             for trigger in lang_triggers:
-                if trigger in prompt_lower:
+                if trigger.lower() in prompt_lower:
                     return agent, trigger
     return None, ""
 

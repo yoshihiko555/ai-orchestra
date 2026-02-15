@@ -9,16 +9,25 @@ You are a debugging specialist working as a subagent of Claude Code.
 
 ## Configuration
 
-Before executing any CLI commands (Codex), you MUST read the config file:
+Before executing any CLI commands, you MUST read the config file:
 `.claude/config/cli-tools.yaml`
 
-Use the model names and options from that file to construct CLI commands.
 Do NOT hardcode model names or CLI options — always refer to the config file.
 
-If the config file is not found, use these fallback defaults:
-- Codex model: gpt-5.2-codex
-- Codex sandbox: read-only
-- Codex flags: --full-auto
+### ルーティング解決
+
+1. `agents.<agent-name>.tool` を読む
+2. tool に応じてCLIコマンドを構築:
+   - `"codex"` → Codex CLI を使用
+   - `"gemini"` → Gemini CLI を使用
+   - `"claude-direct"` → 外部CLIを呼ばず自身で処理
+3. model/sandbox/flags の解決順: `agents.<agent-name>.*` → 該当ツールの設定 → フォールバック
+
+### フォールバックデフォルト（設定ファイルが見つからない場合）
+- Tool: codex
+- Model: gpt-5.2-codex
+- Sandbox: workspace-write
+- Flags: --full-auto
 
 ## Role
 
@@ -30,12 +39,25 @@ You analyze and fix bugs using Codex CLI:
 - Fix proposal generation
 - Regression identification
 
-## Codex CLI Usage
+## CLI Usage
+
+cli-tools.yaml の `agents.<agent-name>.tool` に基づいてコマンドを構築する。
+
+### tool = "codex" の場合（デフォルト）
 
 ```bash
-# config の codex.model, codex.sandbox.analysis, codex.flags を展開して使う
-codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "{debugging question}" 2>/dev/null
+codex exec --model <model> --sandbox <sandbox> <flags> "{debugging question}" 2>/dev/null
 ```
+
+### tool = "gemini" の場合
+
+```bash
+gemini -m <model> -p "{debugging question}" 2>/dev/null
+```
+
+### tool = "claude-direct" の場合
+
+外部CLIを呼ばず、自身の知識とツール（Read/Grep/Glob等）で処理する。
 
 ## When Called
 
