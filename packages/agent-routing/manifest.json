@@ -1,0 +1,18 @@
+{
+  "name": "agent-routing",
+  "version": "0.1.0",
+  "description": "cli-tools.yaml 駆動のエージェントルーティング提案",
+  "depends": ["core"],
+  "hooks": {
+    "UserPromptSubmit": ["agent-router.py"]
+  },
+  "files": [
+    "hooks/agent-router.py",
+    "hooks/route_config.py"
+  ],
+  "skills": [],
+  "agents": [],
+  "rules": [],
+  "scripts": [],
+  "config": []
+}

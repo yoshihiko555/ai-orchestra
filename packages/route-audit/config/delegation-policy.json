@@ -1,82 +1,9 @@
 {
-  "version": 2,
+  "version": 3,
   "default_route": "claude-direct",
   "helper_routes": ["task:Explore", "task:Plan"],
-  "rules": [
-    {
-      "id": "research_gemini",
-      "priority": 100,
-      "keywords_any": [
-        "調査",
-        "リサーチ",
-        "最新",
-        "比較",
-        "documentation",
-        "best practice",
-        "migration",
-        "websearch",
-        "webfetch",
-        "pdf",
-        "動画",
-        "検索",
-        "ドキュメント"
-      ],
-      "expected_route": "gemini"
-    },
-    {
-      "id": "architecture_codex",
-      "priority": 90,
-      "keywords_any": [
-        "設計",
-        "アーキテクチャ",
-        "トレードオフ",
-        "レビュー",
-        "デバッグ",
-        "なぜ",
-        "比較検討",
-        "refactor",
-        "分析",
-        "原因",
-        "理由"
-      ],
-      "expected_route": "codex"
-    },
-    {
-      "id": "implementation_subagent",
-      "priority": 80,
-      "keywords_any": [
-        "実装",
-        "修正",
-        "追加",
-        "テスト",
-        "最適化",
-        "パッチ",
-        "作成",
-        "変更",
-        "更新",
-        "削除",
-        "移動",
-        "整理",
-        "導入"
-      ],
-      "expected_route": "subagent-general-purpose"
-    }
-  ],
+  "rules": [],
   "aliases": {
-    "codex": [
-      "bash:codex"
-    ],
-    "gemini": [
-      "bash:gemini"
-    ],
-    "subagent-general-purpose": [
-      "task:general-purpose",
-      "task:agent",
-      "agent:general-purpose"
-    ],
-    "claude-direct": [
-      "skill:commit",
-      "skill:memory-tidy"
-    ]
+    "claude-direct": ["skill:commit", "skill:memory-tidy"]
   }
 }

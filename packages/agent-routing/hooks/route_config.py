@@ -1,48 +1,20 @@
-#!/usr/bin/env python3
-"""
-UserPromptSubmit hook: Route to appropriate agent based on user intent.
+"""cli-tools.yaml 駆動のルーティング共有モジュール。"""
 
-Analyzes user prompts and suggests the most appropriate agent
-from the orchestra agent pool, including Codex/Gemini CLI recommendations.
-"""
+from __future__ import annotations
 
 import json
+import os
 import sys
 
-# Codex CLI triggers (deep reasoning, design, debugging)
-CODEX_TRIGGERS = {
-    "ja": [
-        "設計相談", "どう設計", "アーキテクチャ相談",
-        "なぜ動かない", "原因分析", "深く考えて",
-        "どちらがいい", "比較検討", "トレードオフ",
-        "リファクタリング相談", "設計レビュー",
-    ],
-    "en": [
-        "design consultation", "how to design",
-        "root cause", "analyze deeply", "think deeply",
-        "which is better", "compare options", "trade-off",
-        "refactoring advice", "design review",
-    ],
-}
+try:
+    import yaml
+except ImportError:
+    yaml = None  # type: ignore[assignment]
 
-# Gemini CLI triggers (research, large context, multimodal)
-GEMINI_TRIGGERS = {
-    "ja": [
-        "調べて", "リサーチして", "調査して",
-        "PDF見て", "動画分析", "画像解析",
-        "コードベース全体", "リポジトリ全体",
-        "最新ドキュメント", "ライブラリ調査",
-    ],
-    "en": [
-        "research", "investigate", "look up",
-        "analyze pdf", "analyze video", "analyze image",
-        "entire codebase", "whole repository",
-        "latest docs", "library research",
-    ],
-}
+_hook_dir = os.path.dirname(os.path.abspath(__file__))
 
-# Agent routing configuration
-AGENT_TRIGGERS = {
+# エージェントルーティング設定（25エージェント分）
+AGENT_TRIGGERS: dict[str, dict[str, list[str]]] = {
     # Planning & Research
     "planner": {
         "ja": ["計画", "タスク分解", "どう進める", "マイルストーン", "手順"],
@@ -150,84 +122,98 @@ AGENT_TRIGGERS = {
     },
 }
 
+# エージェント不一致時の Gemini フォールバックトリガー
+GEMINI_FALLBACK_TRIGGERS: dict[str, list[str]] = {
+    "ja": ["PDF見て", "動画分析", "画像解析", "コードベース全体", "リポジトリ全体"],
+    "en": ["analyze pdf", "analyze video", "analyze image", "entire codebase"],
+}
 
-def detect_cli_tool(prompt: str) -> tuple[str | None, str]:
-    """Detect if Codex or Gemini CLI should be suggested."""
-    prompt_lower = prompt.lower()
 
-    # Check Codex triggers
-    for trigger in CODEX_TRIGGERS.get("ja", []) + CODEX_TRIGGERS.get("en", []):
-        if trigger in prompt_lower:
-            return "codex", trigger
+def find_config_path(data: dict) -> str:
+    """cli-tools.yaml パス解決。$AI_ORCHESTRA_DIR > cwd > hook相対。"""
+    orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
+    if orchestra_dir:
+        p = os.path.join(orchestra_dir, "config", "cli-tools.yaml")
+        if os.path.exists(p):
+            return p
+    cwd = data.get("cwd", "")
+    if cwd:
+        p = os.path.join(cwd, ".claude", "config", "cli-tools.yaml")
+        if os.path.exists(p):
+            return p
+    p = os.path.abspath(os.path.join(_hook_dir, "..", "..", "..", "config", "cli-tools.yaml"))
+    if os.path.exists(p):
+        return p
+    return ""
 
-    # Check Gemini triggers
-    for trigger in GEMINI_TRIGGERS.get("ja", []) + GEMINI_TRIGGERS.get("en", []):
-        if trigger in prompt_lower:
-            return "gemini", trigger
 
-    return None, ""
+def load_config(data: dict) -> dict:
+    """cli-tools.yaml を読み込む。PyYAML 未インストール時は空 dict を返す。"""
+    if not yaml:
+        return {}
+    path = find_config_path(data)
+    if not path:
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+    except (OSError, yaml.YAMLError):
+        return {}
+
+
+def get_agent_tool(agent_name: str, config: dict) -> str:
+    """config から指定エージェントの tool を取得。未定義なら claude-direct。"""
+    agents = config.get("agents", {})
+    cfg = agents.get(agent_name, {})
+    return cfg.get("tool", "claude-direct") if isinstance(cfg, dict) else "claude-direct"
 
 
 def detect_agent(prompt: str) -> tuple[str | None, str]:
-    """Detect which agent should handle this prompt."""
+    """プロンプトからエージェントを検出。(agent_name, trigger) を返す。"""
     prompt_lower = prompt.lower()
-
     for agent, triggers in AGENT_TRIGGERS.items():
         for lang_triggers in triggers.values():
             for trigger in lang_triggers:
                 if trigger in prompt_lower:
                     return agent, trigger
-
     return None, ""
 
 
-def main():
-    try:
-        data = json.load(sys.stdin)
-        prompt = data.get("prompt", "")
-
-        # Skip short prompts
-        if len(prompt) < 5:
-            sys.exit(0)
-
-        messages = []
-
-        # Check for CLI tool suggestion
-        cli_tool, cli_trigger = detect_cli_tool(prompt)
-        if cli_tool == "codex":
-            messages.append(
-                f"[Codex CLI] Detected '{cli_trigger}' - Consider Codex for deep reasoning:\n"
-                "`codex exec --model gpt-5.2-codex --sandbox read-only --full-auto \"...\" 2>/dev/null`"
-            )
-        elif cli_tool == "gemini":
-            messages.append(
-                f"[Gemini CLI] Detected '{cli_trigger}' - Consider Gemini for research:\n"
-                "`gemini -p \"...\" 2>/dev/null`"
-            )
-
-        # Check for agent routing
-        agent, trigger = detect_agent(prompt)
-        if agent:
-            messages.append(
-                f"[Agent Routing] Detected '{trigger}' - Consider using `{agent}` agent:\n"
-                f'Task(subagent_type="{agent}", prompt="...")'
-            )
-
-        if messages:
-            output = {
-                "hookSpecificOutput": {
-                    "hookEventName": "UserPromptSubmit",
-                    "additionalContext": "\n\n".join(messages),
-                }
-            }
-            print(json.dumps(output))
-
-        sys.exit(0)
-
-    except Exception as e:
-        print(f"Hook error: {e}", file=sys.stderr)
-        sys.exit(0)
+def build_aliases(config: dict) -> dict[str, list[str]]:
+    """cli-tools.yaml の agents セクションから動的 aliases を構築。"""
+    aliases: dict[str, list[str]] = {
+        "codex": ["bash:codex"],
+        "gemini": ["bash:gemini"],
+        "claude-direct": [],
+        "auto": ["bash:codex", "bash:gemini"],
+    }
+    for name, cfg in config.get("agents", {}).items():
+        tool = cfg.get("tool", "claude-direct") if isinstance(cfg, dict) else "claude-direct"
+        task_alias = f"task:{name}"
+        if tool not in aliases:
+            aliases[tool] = []
+        if task_alias not in aliases[tool]:
+            aliases[tool].append(task_alias)
+    return aliases
 
 
-if __name__ == "__main__":
-    main()
+def build_cli_suggestion(tool: str, agent: str, trigger: str, config: dict) -> str | None:
+    """CLI コマンド提案文字列を構築。claude-direct の場合は None。"""
+    if tool == "codex":
+        c = config.get("codex", {})
+        model = c.get("model", "gpt-5.3-codex")
+        sandbox = c.get("sandbox", {}).get("analysis", "read-only")
+        flags = c.get("flags", "--full-auto")
+        return (
+            f"[Codex CLI] Agent '{agent}' ('{trigger}') uses Codex:\n"
+            f"`codex exec --model {model} --sandbox {sandbox} {flags} \"...\" 2>/dev/null`"
+        )
+    if tool == "gemini":
+        g = config.get("gemini", {})
+        model = g.get("model", "")
+        mf = f"-m {model} " if model else ""
+        return (
+            f"[Gemini CLI] Agent '{agent}' ('{trigger}') uses Gemini:\n"
+            f"`gemini {mf}-p \"...\" 2>/dev/null`"
+        )
+    return None

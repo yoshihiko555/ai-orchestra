@@ -84,10 +84,11 @@ def main() -> None:
     if not prompt:
         sys.exit(0)
 
+    config = load_config(data)
     policy = read_json_safe(
         os.path.join(root, ".claude", "config", "route-audit", "delegation-policy.json")
     )
-    expected_route, matched_rule = select_expected_route(prompt, policy)
+    expected_route, matched_rule = select_expected_route(prompt, config, policy)
 
     session_id = str(data.get("session_id") or "")
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()

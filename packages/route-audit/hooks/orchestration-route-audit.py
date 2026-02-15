@@ -15,6 +15,9 @@ if _orchestra_dir:
     _core_hooks = os.path.join(_orchestra_dir, "packages", "core", "hooks")
     if _core_hooks not in sys.path:
         sys.path.insert(0, _core_hooks)
+    _routing_hooks = os.path.join(_orchestra_dir, "packages", "agent-routing", "hooks")
+    if _routing_hooks not in sys.path:
+        sys.path.insert(0, _routing_hooks)
 
 from hook_common import (  # noqa: E402
     append_jsonl,
@@ -25,6 +28,7 @@ from hook_common import (  # noqa: E402
     try_append_event,
     write_json,
 )
+from route_config import build_aliases, load_config  # noqa: E402
 
 _hook_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -70,6 +74,18 @@ def detect_route(data: dict) -> tuple[str | None, str]:
     return None, ""
 
 
+def merged_aliases(config: dict, policy: dict) -> dict[str, list[str]]:
+    """動的 aliases（config）+ 静的 aliases（policy）をマージ。"""
+    dynamic = build_aliases(config)
+    static = policy.get("aliases") or {}
+    for key, values in static.items():
+        if key in dynamic:
+            dynamic[key].extend(v for v in values if v not in dynamic[key])
+        else:
+            dynamic[key] = list(values)
+    return dynamic
+
+
 def is_match(expected_route: str, actual_route: str, policy: dict) -> bool:
     if not expected_route or not actual_route:
         return False
@@ -79,10 +95,6 @@ def is_match(expected_route: str, actual_route: str, policy: dict) -> bool:
 
     aliases = policy.get("aliases") or {}
     if actual_route in (aliases.get(expected_route) or []):
-        return True
-
-    # subagent-* 期待ルートは任意の task:* 実ルートにマッチ
-    if expected_route.startswith("subagent-") and actual_route.startswith("task:"):
         return True
 
     return False
@@ -116,9 +128,11 @@ def main() -> None:
     if not actual_route:
         sys.exit(0)
 
+    config = load_config(data)
     policy = read_json_safe(
         os.path.join(root, ".claude", "config", "route-audit", "delegation-policy.json")
     )
+    all_aliases = merged_aliases(config, policy)
     state_dir = os.path.join(root, ".claude", "state")
     logs_dir = os.path.join(root, ".claude", "logs", "orchestration")
     os.makedirs(state_dir, exist_ok=True)
@@ -130,7 +144,7 @@ def main() -> None:
     prompt_excerpt = str(expected.get("prompt_excerpt") or "")
 
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    matched = is_match(expected_route, actual_route, policy)
+    matched = is_match(expected_route, actual_route, {"aliases": all_aliases})
 
     helper_routes = policy.get("helper_routes") or []
     is_helper = actual_route in helper_routes

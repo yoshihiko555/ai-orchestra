@@ -11,6 +11,11 @@ _pkg_dir = os.path.join(_tests_dir, "..")
 _hooks_dir = os.path.join(_pkg_dir, "hooks")
 _scripts_dir = os.path.join(_pkg_dir, "scripts")
 
+# agent-routing パッケージの route_config を読み込み
+_routing_hooks = os.path.join(_pkg_dir, "..", "agent-routing", "hooks")
+if _routing_hooks not in sys.path:
+    sys.path.insert(0, _routing_hooks)
+
 # orchestration-route-audit.py（ハイフン名のため importlib 使用）
 _audit_spec = importlib.util.spec_from_file_location(
     "orchestration_route_audit",
@@ -20,6 +25,9 @@ assert _audit_spec and _audit_spec.loader
 _audit_mod = importlib.util.module_from_spec(_audit_spec)
 _audit_spec.loader.exec_module(_audit_mod)
 is_match = _audit_mod.is_match  # type: ignore[attr-defined]
+merged_aliases = _audit_mod.merged_aliases  # type: ignore[attr-defined]
+
+from route_config import build_aliases  # noqa: E402
 
 # orchestration-kpi-report.py
 _kpi_spec = importlib.util.spec_from_file_location(
@@ -68,33 +76,37 @@ class TestIsMatch:
         policy: dict = {"aliases": {}}
         assert is_match("codex", "", policy) is False
 
-    def test_wildcard_removed(self) -> None:
-        """task:* ワイルドカードが廃止されたことを確認。"""
+    def test_no_wildcard_match(self) -> None:
+        """明示されていない aliases はマッチしない。"""
         policy = {
             "aliases": {
-                "subagent-general-purpose": [
-                    "task:general-purpose",
-                    "task:agent",
-                    "agent:general-purpose",
-                ]
+                "claude-direct": ["task:architect"],
             }
         }
-        assert is_match("subagent-general-purpose", "task:Explore", policy) is False
-        assert is_match("subagent-general-purpose", "task:Plan", policy) is False
+        assert is_match("claude-direct", "task:Explore", policy) is False
+        assert is_match("claude-direct", "task:Plan", policy) is False
 
-    def test_subagent_aliases_match(self) -> None:
-        """明示的な aliases でのマッチを確認。"""
-        policy = {
-            "aliases": {
-                "subagent-general-purpose": [
-                    "task:general-purpose",
-                    "task:agent",
-                    "agent:general-purpose",
-                ]
-            }
-        }
-        assert is_match("subagent-general-purpose", "task:general-purpose", policy) is True
-        assert is_match("subagent-general-purpose", "task:agent", policy) is True
+    def test_dynamic_aliases_match(self) -> None:
+        """動的 aliases（config 由来）でのマッチを確認。"""
+        config = {"agents": {"architect": {"tool": "claude-direct"}}}
+        aliases = build_aliases(config)
+        policy = {"aliases": aliases}
+        assert is_match("claude-direct", "task:architect", policy) is True
+
+    def test_merged_aliases(self) -> None:
+        """動的 + 静的 aliases のマージを確認。"""
+        config = {"agents": {"architect": {"tool": "claude-direct"}}}
+        policy = {"aliases": {"claude-direct": ["skill:commit"]}}
+        merged = merged_aliases(config, policy)
+        assert "task:architect" in merged["claude-direct"]
+        assert "skill:commit" in merged["claude-direct"]
+
+    def test_merged_aliases_no_duplicates(self) -> None:
+        """マージ時に重複エントリが発生しない。"""
+        config = {"agents": {"debugger": {"tool": "codex"}}}
+        policy = {"aliases": {"codex": ["bash:codex"]}}
+        merged = merged_aliases(config, policy)
+        assert merged["codex"].count("bash:codex") == 1
 
     def test_claude_direct_aliases(self) -> None:
         """claude-direct の aliases マッチを確認。"""
