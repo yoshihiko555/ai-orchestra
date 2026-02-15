@@ -124,6 +124,14 @@ python3 ~/ai-orchestra/scripts/orchestra-manager.py uninstall <package> --projec
 python3 ~/ai-orchestra/scripts/orchestra-manager.py enable <package> --project .
 python3 ~/ai-orchestra/scripts/orchestra-manager.py disable <package> --project .
 
+# パッケージ内スクリプトの一覧表示
+python3 ~/ai-orchestra/scripts/orchestra-manager.py scripts
+python3 ~/ai-orchestra/scripts/orchestra-manager.py scripts --package route-audit
+
+# パッケージ内スクリプトの実行（-- 以降はスクリプトにパススルー）
+python3 ~/ai-orchestra/scripts/orchestra-manager.py run route-audit dashboard
+python3 ~/ai-orchestra/scripts/orchestra-manager.py run route-audit log-viewer --project /path/to/project -- --last 10
+
 # dry-run（変更内容を表示のみ）
 python3 ~/ai-orchestra/scripts/orchestra-manager.py install <package> --project . --dry-run
 ```
