@@ -48,7 +48,9 @@ def needs_sync(src: Path, dst: Path) -> bool:
 def is_local_override(category: str, rel_path: Path) -> bool:
     """プロジェクト固有の上書きファイル（*.local.yaml / *.local.json）かどうか判定"""
     name = rel_path.name
-    return category == "config" and (name.endswith(".local.yaml") or name.endswith(".local.json"))
+    return category == "config" and (
+        name.endswith(".local.yaml") or name.endswith(".local.json")
+    )
 
 
 def sync_top_level(
@@ -200,18 +202,8 @@ def main() -> None:
         synced_count += sync_top_level(orchestra_path, claude_dir, synced_files)
 
     # 前回同期されたが今回は対象外のファイルを削除
-    # synced_files キーが未設定（移行初回）の場合、既存ファイルをスキャンして prev とする
-    if "synced_files" in orch:
-        prev_synced = orch["synced_files"]
-    else:
-        prev_synced = []
-        for category in ("skills", "agents", "rules", "config"):
-            cat_dir = claude_dir / category
-            if not cat_dir.is_dir():
-                continue
-            for f in cat_dir.rglob("*"):
-                if f.is_file():
-                    prev_synced.append(f"{category}/{f.relative_to(cat_dir)}")
+    # synced_files キーが未設定（初回）の場合は削除しない（プロジェクト固有ファイルの誤削除を防止）
+    prev_synced = orch.get("synced_files", [])
     removed_count = remove_stale_files(claude_dir, prev_synced, synced_files)
 
     # orchestra.json を更新（同期・削除があった場合、synced_files が変わった場合、または初回記録時）
