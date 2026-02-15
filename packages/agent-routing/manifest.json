@@ -38,7 +38,7 @@
     "agents/tester.md",
     "agents/ux-reviewer.md"
   ],
-  "rules": ["rules/orchestra-usage.md"],
+  "rules": ["rules/orchestra-usage.md", "rules/agent-routing-policy.md"],
   "scripts": [],
   "config": [
     "config/cli-tools.yaml"

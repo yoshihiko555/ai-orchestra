@@ -31,6 +31,7 @@ GEMINI_EXEC_RE = re.compile(
     re.IGNORECASE,
 )
 
+
 def get_log_path() -> Path:
     """Get log file path in project's .claude/logs/ directory."""
     # Try to find project root by looking for .claude/ directory
@@ -80,8 +81,14 @@ def extract_gemini_prompt(command: str) -> str | None:
     return None
 
 
-def extract_model(command: str) -> str | None:
-    """Extract model name from command."""
+def extract_model(command: str, tool: str = "codex") -> str | None:
+    """Extract model name from command.
+
+    Codex uses --model flag, Gemini uses -m flag.
+    """
+    if tool == "gemini":
+        match = re.search(r"(?:^|[\s;|&])gemini\s+.*?-m\s+(\S+)", command)
+        return match.group(1) if match else None
     match = re.search(r"--model\s+(\S+)", command)
     return match.group(1) if match else None
 
@@ -134,7 +141,7 @@ def main() -> None:
     else:
         tool = "gemini"
         prompt = extract_gemini_prompt(command)
-        model = "gemini-3-pro-preview"
+        model = extract_model(command, tool="gemini") or "gemini-unknown"
 
     if not prompt:
         # Could not extract prompt, skip logging
@@ -165,9 +172,15 @@ def main() -> None:
             if _core_hooks not in sys.path:
                 sys.path.insert(0, _core_hooks)
             from log_common import append_event
+
             append_event(
                 "cli_call",
-                {"tool": tool, "model": model, "prompt": truncate_text(prompt, 200), "success": success},
+                {
+                    "tool": tool,
+                    "model": model,
+                    "prompt": truncate_text(prompt, 200),
+                    "success": success,
+                },
                 session_id=hook_input.get("session_id", ""),
                 hook_name="log-cli-tools",
             )
