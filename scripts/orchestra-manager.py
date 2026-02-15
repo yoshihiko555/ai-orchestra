@@ -11,6 +11,7 @@ import datetime
 import json
 import os
 import shutil
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -877,6 +878,106 @@ class OrchestraManager:
             self.save_settings(project_dir, settings)
             print(f"\n✓ パッケージ '{package_name}' を無効化しました")
 
+    def resolve_script_path(self, pkg: Package, script_name: str) -> Optional[Path]:
+        """スクリプト名を解決してファイルパスを返す
+
+        manifest の scripts エントリと照合し、実ファイルのパスを返す。
+        短縮名（例: dashboard）、ファイル名（例: dashboard.py）、
+        フルパス（例: scripts/dashboard.py）のいずれも受け付ける。
+        """
+        for entry in pkg.scripts:
+            entry_path = Path(entry)
+            # エントリのファイル名部分（拡張子なし）
+            stem = entry_path.stem
+
+            if script_name in (entry, entry_path.name, stem):
+                # 実ファイルパスを構築
+                if entry_path.parts[0] == "scripts":
+                    return pkg.path / entry
+                return pkg.path / "scripts" / entry_path.name
+        return None
+
+    def run_script(
+        self,
+        package_name: str,
+        script_name: str,
+        project: Optional[str],
+        script_args: List[str],
+    ) -> None:
+        """パッケージのスクリプトを実行"""
+        packages = self.load_packages()
+        if package_name not in packages:
+            print(
+                f"エラー: パッケージ '{package_name}' が見つかりません", file=sys.stderr
+            )
+            sys.exit(1)
+
+        pkg = packages[package_name]
+        if not pkg.scripts:
+            print(
+                f"エラー: パッケージ '{package_name}' にスクリプトは定義されていません",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        script_path = self.resolve_script_path(pkg, script_name)
+        if script_path is None:
+            available = [Path(s).stem for s in pkg.scripts]
+            print(
+                f"エラー: スクリプト '{script_name}' が見つかりません\n"
+                f"利用可能: {', '.join(available)}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        if not script_path.exists():
+            print(
+                f"エラー: スクリプトファイルが存在しません: {script_path}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        project_dir = self.get_project_dir(project)
+        cmd = [sys.executable, str(script_path)] + script_args
+        result = subprocess.run(cmd, cwd=project_dir)
+        sys.exit(result.returncode)
+
+    def list_scripts(self, package_filter: Optional[str] = None) -> None:
+        """パッケージのスクリプト一覧を表示"""
+        packages = self.load_packages()
+
+        if package_filter:
+            if package_filter not in packages:
+                print(
+                    f"エラー: パッケージ '{package_filter}' が見つかりません",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            target_packages = {package_filter: packages[package_filter]}
+        else:
+            target_packages = packages
+
+        rows: List[tuple[str, str, str]] = []
+        for name in sorted(target_packages.keys()):
+            pkg = target_packages[name]
+            for entry in pkg.scripts:
+                entry_path = Path(entry)
+                short_name = entry_path.stem
+                # 表示用パス: 常に scripts/ プレフィックス付き
+                if entry_path.parts[0] == "scripts":
+                    display_path = entry
+                else:
+                    display_path = f"scripts/{entry_path.name}"
+                rows.append((name, short_name, display_path))
+
+        if not rows:
+            print("スクリプトが見つかりません")
+            return
+
+        print(f"{'PACKAGE':<20} {'SCRIPT':<30} {'PATH'}")
+        for pkg_name, short_name, display_path in rows:
+            print(f"{pkg_name:<20} {short_name:<30} {display_path}")
+
 
 def main():
     """メインエントリポイント"""
@@ -940,7 +1041,30 @@ def main():
         "--dry-run", action="store_true", help="実行内容を表示のみ"
     )
 
-    args = parser.parse_args()
+    # run コマンド
+    run_parser = subparsers.add_parser(
+        "run",
+        help="パッケージのスクリプトを実行",
+        description="パッケージに含まれるスクリプトを実行する。"
+        " -- 以降の引数はスクリプトにパススルーされる。",
+    )
+    run_parser.add_argument("package", help="パッケージ名")
+    run_parser.add_argument("script", help="スクリプト名（短縮名 or フルパス）")
+    run_parser.add_argument("--project", help="プロジェクトパス")
+
+    # scripts コマンド
+    scripts_parser = subparsers.add_parser("scripts", help="スクリプト一覧を表示")
+    scripts_parser.add_argument("--package", help="特定パッケージのみ表示")
+
+    # run コマンドの -- 以降をスクリプト引数として分離
+    argv = sys.argv[1:]
+    script_args: List[str] = []
+    if "--" in argv:
+        sep_idx = argv.index("--")
+        script_args = argv[sep_idx + 1 :]
+        argv = argv[:sep_idx]
+
+    args = parser.parse_args(argv)
 
     # orchestra_dir の決定
     if args.orchestra_dir:
@@ -966,6 +1090,10 @@ def main():
         manager.enable(args.package, args.project, args.dry_run)
     elif args.command == "disable":
         manager.disable(args.package, args.project, args.dry_run)
+    elif args.command == "run":
+        manager.run_script(args.package, args.script, args.project, script_args)
+    elif args.command == "scripts":
+        manager.list_scripts(args.package)
     else:
         parser.print_help()
         sys.exit(1)
