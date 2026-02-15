@@ -8,14 +8,22 @@ Claude Code用のマルチエージェントオーケストレーションシス
 ai-orchestra/
 ├── agents/           # 専門エージェント定義（25種）
 ├── packages/         # パッケージ（hooks・scripts・config）
-│   ├── core/         # 共通基盤ライブラリ
-│   ├── tmux-monitor/ # tmux サブエージェント監視
-│   ├── cli-logging/  # Codex/Gemini ログ記録
-│   └── ...
+│   ├── core/              # 共通基盤ライブラリ（hook_common, log_common）
+│   ├── cli-logging/       # Codex/Gemini CLI 呼び出しログ記録
+│   ├── codex-suggestions/ # 計画・実装時の Codex 相談提案
+│   ├── gemini-suggestions/# リサーチ推奨時の Gemini 提案
+│   ├── quality-gates/     # lint・テスト後分析・実装後レビュー
+│   ├── route-audit/       # ルーティング監査・KPIレポート
+│   └── tmux-monitor/      # tmux サブエージェント監視
 ├── rules/            # 共通ルール（Codex/Gemini委譲、コーディング規約）
-├── scripts/          # 管理CLI（orchestra-manager, sync-orchestra）
-├── skills/           # ワークフロースキル（/review など）
-└── templates/        # テンプレート
+├── scripts/          # 管理CLI
+├── skills/           # ワークフロースキル（/review, /startproject など）
+├── templates/        # テンプレート（エージェント・スキル・プロジェクト）
+├── config/           # CLI ツール設定（cli-tools.json）
+├── tests/            # Python 単体テスト
+├── docs/             # ドキュメント（設計・マイグレーション等）
+├── taskfiles/        # Task CLI 用タスク定義
+└── Taskfile.yml      # メインタスクファイル
 ```
 
 ## エージェント一覧
@@ -62,6 +70,9 @@ ai-orchestra/
 ### ドキュメント
 - `docs-writer` - 技術文書・手順書
 
+### ユーティリティ
+- `general-purpose` - 汎用タスク・Codex/Gemini委譲
+
 ---
 
 ## セットアップ
@@ -87,7 +98,16 @@ orchestra-manager が内部で以下を実行:
 4. `sync-orchestra.py` の SessionStart hook を登録（初回のみ）
 5. skills/agents/rules の初回同期を実行
 
-### 3. パッケージ管理コマンド
+### 3. 管理スクリプト
+
+| スクリプト | 用途 |
+|-----------|------|
+| `orchestra-manager.py` | パッケージのインストール・管理 |
+| `sync-orchestra.py` | SessionStart 時の自動同期 |
+| `dogfood.py` | ai-orchestra 自身のドッグフーディング |
+| `analyze-cli-usage.py` | Codex/Gemini の使用状況分析 |
+
+### 4. パッケージ管理コマンド
 
 ```bash
 # パッケージ一覧
@@ -130,6 +150,20 @@ Task(subagent_type="planner", prompt="このタスクを分解して")
 Task(subagent_type="code-reviewer", prompt="このコードをレビューして")
 ```
 
+### スキル一覧
+
+| スキル | 用途 |
+|--------|------|
+| `/review` | コード・セキュリティ・設計レビュー（並列実行対応） |
+| `/startproject` | マルチエージェント協調で新規開発を開始 |
+| `/codex-system` | Codex CLI への設計相談・デバッグ分析 |
+| `/gemini-system` | Gemini CLI でのリサーチ・マルチモーダル処理 |
+| `/checkpointing` | セッションコンテキストの保存・復元 |
+| `/design-tracker` | 設計決定の自動記録・追跡 |
+| `/plan` | 実装計画の策定 |
+| `/simplify` | コードの簡素化 |
+| `/tdd` | テスト駆動開発ワークフロー |
+
 ### レビュースキル
 
 ```
@@ -151,10 +185,13 @@ Claude Code (Orchestrator)
     ├── Gemini CLI   # リサーチ・大規模分析・マルチモーダル
     │
     ├── $AI_ORCHESTRA_DIR/packages/
-    │   ├── core/          # hook_common.py（共通ユーティリティ）
-    │   ├── tmux-monitor/  # tmux リアルタイム監視
-    │   ├── cli-logging/   # Codex/Gemini ログ記録
-    │   └── ...
+    │   ├── core/               # 共通ユーティリティ
+    │   ├── cli-logging/        # CLI 呼び出しログ
+    │   ├── codex-suggestions/  # Codex 相談提案
+    │   ├── gemini-suggestions/ # Gemini リサーチ提案
+    │   ├── quality-gates/      # 品質ゲート
+    │   ├── route-audit/        # ルーティング監査
+    │   └── tmux-monitor/       # tmux リアルタイム監視
     │
     └── 25 Specialized Agents
         ├── Planning: planner, researcher, requirements
