@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
-import json
 import os
 import sys
 
-try:
-    import yaml
-except ImportError:
-    yaml = None  # type: ignore[assignment]
-
 _hook_dir = os.path.dirname(os.path.abspath(__file__))
+
+# hook_common を $AI_ORCHESTRA_DIR/packages/core/hooks/ から読み込む
+_orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
+if _orchestra_dir:
+    _core_hooks = os.path.join(_orchestra_dir, "packages", "core", "hooks")
+    if _core_hooks not in sys.path:
+        sys.path.insert(0, _core_hooks)
+
+from hook_common import load_package_config  # noqa: E402, F401
 
 # エージェントルーティング設定（25エージェント分）
 AGENT_TRIGGERS: dict[str, dict[str, list[str]]] = {
@@ -129,43 +132,24 @@ GEMINI_FALLBACK_TRIGGERS: dict[str, list[str]] = {
 }
 
 
-def find_config_path(data: dict) -> str:
-    """cli-tools.yaml パス解決。$AI_ORCHESTRA_DIR > cwd > hook相対。"""
-    orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
-    if orchestra_dir:
-        p = os.path.join(orchestra_dir, "config", "cli-tools.yaml")
-        if os.path.exists(p):
-            return p
-    cwd = data.get("cwd", "")
-    if cwd:
-        p = os.path.join(cwd, ".claude", "config", "cli-tools.yaml")
-        if os.path.exists(p):
-            return p
-    p = os.path.abspath(os.path.join(_hook_dir, "..", "..", "..", "config", "cli-tools.yaml"))
-    if os.path.exists(p):
-        return p
-    return ""
+def _project_dir_from_data(data: dict) -> str:
+    """hook 入力データからプロジェクトディレクトリを取得する。"""
+    return data.get("cwd", "") or os.environ.get("CLAUDE_PROJECT_DIR", "")
 
 
 def load_config(data: dict) -> dict:
-    """cli-tools.yaml を読み込む。PyYAML 未インストール時は空 dict を返す。"""
-    if not yaml:
-        return {}
-    path = find_config_path(data)
-    if not path:
-        return {}
-    try:
-        with open(path, encoding="utf-8") as f:
-            return yaml.safe_load(f) or {}
-    except (OSError, yaml.YAMLError):
-        return {}
+    """cli-tools.yaml を読み込む（load_package_config に委譲）。"""
+    project_dir = _project_dir_from_data(data)
+    return load_package_config("agent-routing", "cli-tools.yaml", project_dir)
 
 
 def get_agent_tool(agent_name: str, config: dict) -> str:
     """config から指定エージェントの tool を取得。未定義なら claude-direct。"""
     agents = config.get("agents", {})
     cfg = agents.get(agent_name, {})
-    return cfg.get("tool", "claude-direct") if isinstance(cfg, dict) else "claude-direct"
+    return (
+        cfg.get("tool", "claude-direct") if isinstance(cfg, dict) else "claude-direct"
+    )
 
 
 def detect_agent(prompt: str) -> tuple[str | None, str]:
@@ -188,7 +172,11 @@ def build_aliases(config: dict) -> dict[str, list[str]]:
         "auto": ["bash:codex", "bash:gemini"],
     }
     for name, cfg in config.get("agents", {}).items():
-        tool = cfg.get("tool", "claude-direct") if isinstance(cfg, dict) else "claude-direct"
+        tool = (
+            cfg.get("tool", "claude-direct")
+            if isinstance(cfg, dict)
+            else "claude-direct"
+        )
         task_alias = f"task:{name}"
         if tool not in aliases:
             aliases[tool] = []
@@ -197,7 +185,9 @@ def build_aliases(config: dict) -> dict[str, list[str]]:
     return aliases
 
 
-def build_cli_suggestion(tool: str, agent: str, trigger: str, config: dict) -> str | None:
+def build_cli_suggestion(
+    tool: str, agent: str, trigger: str, config: dict
+) -> str | None:
     """CLI コマンド提案文字列を構築。claude-direct の場合は None。"""
     if tool == "codex":
         c = config.get("codex", {})
@@ -206,7 +196,7 @@ def build_cli_suggestion(tool: str, agent: str, trigger: str, config: dict) -> s
         flags = c.get("flags", "--full-auto")
         return (
             f"[Codex CLI] Agent '{agent}' ('{trigger}') uses Codex:\n"
-            f"`codex exec --model {model} --sandbox {sandbox} {flags} \"...\" 2>/dev/null`"
+            f'`codex exec --model {model} --sandbox {sandbox} {flags} "..." 2>/dev/null`'
         )
     if tool == "gemini":
         g = config.get("gemini", {})
@@ -214,6 +204,6 @@ def build_cli_suggestion(tool: str, agent: str, trigger: str, config: dict) -> s
         mf = f"-m {model} " if model else ""
         return (
             f"[Gemini CLI] Agent '{agent}' ('{trigger}') uses Gemini:\n"
-            f"`gemini {mf}-p \"...\" 2>/dev/null`"
+            f'`gemini {mf}-p "..." 2>/dev/null`'
         )
     return None

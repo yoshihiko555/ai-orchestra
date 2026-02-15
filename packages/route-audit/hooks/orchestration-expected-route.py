@@ -22,6 +22,7 @@ if _orchestra_dir:
 from hook_common import (  # noqa: E402
     append_jsonl,
     find_first_text,
+    load_package_config,
     read_json_safe,
     safe_hook_execution,
     try_append_event,
@@ -32,7 +33,9 @@ from route_config import detect_agent, get_agent_tool, load_config  # noqa: E402
 _hook_dir = os.path.dirname(os.path.abspath(__file__))
 
 
-def select_expected_route(prompt: str, config: dict, policy: dict) -> tuple[str, str | None]:
+def select_expected_route(
+    prompt: str, config: dict, policy: dict
+) -> tuple[str, str | None]:
     """config 駆動 + policy フォールバックで期待ルートを決定。"""
     # 1. Config 駆動: エージェント検出 → ツール取得
     agent, trigger = detect_agent(prompt)
@@ -71,11 +74,7 @@ def main() -> None:
         data = {}
 
     root = project_root(data)
-    flags = read_json_safe(
-        os.path.join(
-            root, ".claude", "config", "route-audit", "orchestration-flags.json"
-        )
-    )
+    flags = load_package_config("route-audit", "orchestration-flags.json", root)
     route_audit = (flags.get("features") or {}).get("route_audit") or {}
     if not route_audit.get("enabled", True):
         sys.exit(0)
@@ -85,9 +84,7 @@ def main() -> None:
         sys.exit(0)
 
     config = load_config(data)
-    policy = read_json_safe(
-        os.path.join(root, ".claude", "config", "route-audit", "delegation-policy.json")
-    )
+    policy = load_package_config("route-audit", "delegation-policy.json", root)
     expected_route, matched_rule = select_expected_route(prompt, config, policy)
 
     session_id = str(data.get("session_id") or "")

@@ -14,5 +14,7 @@
   "agents": [],
   "rules": [],
   "scripts": [],
-  "config": []
+  "config": [
+    "config/cli-tools.yaml"
+  ]
 }

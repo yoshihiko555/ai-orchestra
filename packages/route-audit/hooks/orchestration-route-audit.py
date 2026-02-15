@@ -23,6 +23,7 @@ from hook_common import (  # noqa: E402
     append_jsonl,
     find_first_int,
     find_first_text,
+    load_package_config,
     read_json_safe,
     safe_hook_execution,
     try_append_event,
@@ -115,11 +116,7 @@ def main() -> None:
         data = {}
 
     root = project_root(data)
-    flags = read_json_safe(
-        os.path.join(
-            root, ".claude", "config", "route-audit", "orchestration-flags.json"
-        )
-    )
+    flags = load_package_config("route-audit", "orchestration-flags.json", root)
     route_audit = (flags.get("features") or {}).get("route_audit") or {}
     if not route_audit.get("enabled", True):
         sys.exit(0)
@@ -129,9 +126,7 @@ def main() -> None:
         sys.exit(0)
 
     config = load_config(data)
-    policy = read_json_safe(
-        os.path.join(root, ".claude", "config", "route-audit", "delegation-policy.json")
-    )
+    policy = load_package_config("route-audit", "delegation-policy.json", root)
     all_aliases = merged_aliases(config, policy)
     state_dir = os.path.join(root, ".claude", "state")
     logs_dir = os.path.join(root, ".claude", "logs", "orchestration")
