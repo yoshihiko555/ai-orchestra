@@ -105,33 +105,35 @@ def test_bootstrap_touch(tmp_path) -> None:
 
 
 def test_expected_route_selects_rule_by_priority() -> None:
+    config = {"agents": {}}
     policy = {
         "default_route": "claude-direct",
         "rules": [
             {
                 "id": "low-priority",
                 "priority": 10,
-                "keywords_any": ["test"],
+                "keywords_any": ["batch"],
                 "expected_route": "task:tester",
             },
             {
                 "id": "high-priority",
                 "priority": 100,
-                "keywords_any": ["test"],
+                "keywords_any": ["batch"],
                 "expected_route": "task:debugger",
             },
         ],
     }
     route, rule_id = orchestration_expected_route.select_expected_route(
-        "please test this", policy
+        "run the batch job now", config, policy
     )
     assert route == "task:debugger"
     assert rule_id == "high-priority"
 
 
 def test_expected_route_returns_default_when_no_rule_matches() -> None:
+    config = {"agents": {}}
     route, rule_id = orchestration_expected_route.select_expected_route(
-        "hello world", {"default_route": "claude-direct", "rules": []}
+        "hello world", config, {"default_route": "claude-direct", "rules": []}
     )
     assert route == "claude-direct"
     assert rule_id is None
@@ -178,17 +180,16 @@ def test_route_audit_detect_route_for_bash_and_task() -> None:
     assert excerpt == "ls -la"
 
 
-def test_route_audit_is_match_supports_alias_and_subagent_wildcard() -> None:
+def test_route_audit_is_match_supports_alias() -> None:
     policy = {"aliases": {"task:tester": ["task:unit-test-agent"]}}
 
     assert orchestration_route_audit.is_match("task:tester", "task:tester", policy)
     assert orchestration_route_audit.is_match(
         "task:tester", "task:unit-test-agent", policy
     )
-    assert orchestration_route_audit.is_match(
-        "subagent-general-purpose", "task:researcher", policy
-    )
     assert not orchestration_route_audit.is_match("task:tester", "bash:codex", policy)
+    assert not orchestration_route_audit.is_match("", "task:tester", policy)
+    assert not orchestration_route_audit.is_match("task:tester", "", policy)
 
 
 def test_route_audit_project_root_precedence(monkeypatch) -> None:
