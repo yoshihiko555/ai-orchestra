@@ -15,7 +15,6 @@ from tmux_common import (
     get_field,
     is_tmux_monitoring_enabled,
     read_hook_input,
-    run_tmux,
 )
 
 
@@ -58,10 +57,8 @@ def main() -> None:
     lock_path_file = os.path.join(SESSION_INFO_DIR, f"{session_id}.lock-path")
     pid_file = os.path.join(SESSION_INFO_DIR, f"{session_id}.pid")
 
-    # 現在の session_id から tmux セッションを削除
-    tmux_session = read_file(tmux_session_file)
-    if tmux_session:
-        run_tmux("kill-session", "-t", tmux_session)
+    # tmux セッションは kill しない（/clear 時に attach 中のクライアントが切断されるため）
+    # 孤児セッションは次回 SessionStart の cleanup_orphaned_sessions() で PID 死亡を検出して掃除される
 
     lock_path = read_file(lock_path_file)
     if lock_path:

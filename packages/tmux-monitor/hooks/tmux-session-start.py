@@ -35,7 +35,7 @@ def cleanup_orphaned_sessions(project_name: str) -> None:
         for name in result.stdout.strip().splitlines():
             if not name.startswith(prefix):
                 continue
-            suffix = name[len(prefix):]
+            suffix = name[len(prefix) :]
             # suffix が数値 (PID) の場合のみチェック
             if suffix.isdigit():
                 try:
@@ -109,16 +109,26 @@ def main() -> None:
 
     # tmux セッションの作成/再利用
     if tmux_has_session(tmux_session):
-        # resume 時: 既存セッションを kill して再作成 (古いペインをクリア)
-        run_tmux("kill-session", "-t", tmux_session)
-
-    run_tmux(
-        "new-session",
-        "-d",
-        "-s",
-        tmux_session,
-        f"echo 'Waiting for sub agents...' && echo '({project_name} / PID:{session_key})' && echo '($(date))' && cat",
-    )
+        # /clear や /resume 時: セッションを維持し、古いペインだけ掃除する
+        # （kill-session すると attach 中のクライアントが切断されるため）
+        result = run_tmux("list-panes", "-t", tmux_session, "-F", "#{pane_id}")
+        if result.returncode == 0:
+            pane_ids = [p for p in result.stdout.strip().splitlines() if p]
+            if pane_ids:
+                # 最初のペインを待機画面で respawn
+                wait_cmd = f"echo 'Waiting for sub agents...' && echo '({project_name} / PID:{session_key})' && echo '($(date))' && cat"
+                run_tmux("respawn-pane", "-t", pane_ids[0], "-k", wait_cmd)
+                # 残りのペインを削除
+                for pane_id in pane_ids[1:]:
+                    run_tmux("kill-pane", "-t", pane_id)
+    else:
+        run_tmux(
+            "new-session",
+            "-d",
+            "-s",
+            tmux_session,
+            f"echo 'Waiting for sub agents...' && echo '({project_name} / PID:{session_key})' && echo '($(date))' && cat",
+        )
 
     # 共有コンテキストストアの作成
     shared_dir = f"{SHARED_STORE_PREFIX}{session_key}"
