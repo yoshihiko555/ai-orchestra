@@ -78,13 +78,15 @@ def calc_session_stats(events: list[dict]) -> dict:
 
 
 def calc_route_stats(events: list[dict]) -> dict:
-    """ルート監査統計を計算する。"""
+    """ルート監査統計を計算する（ヘルパーを除外）。"""
     audits = [e for e in events if e.get("event_type") == "route_audit"]
-    total = len(audits)
-    matched = sum(1 for a in audits if (a.get("data") or {}).get("matched", False))
+    effective = [a for a in audits if not (a.get("data") or {}).get("is_helper", False)]
+    helpers_excluded = len(audits) - len(effective)
+    total = len(effective)
+    matched = sum(1 for a in effective if (a.get("data") or {}).get("matched", False))
     rate = round((matched / total) * 100, 1) if total > 0 else 0.0
 
-    return {"total": total, "matched": matched, "rate": rate}
+    return {"total": total, "matched": matched, "rate": rate, "helpers_excluded": helpers_excluded}
 
 
 def calc_cli_stats(events: list[dict]) -> dict:

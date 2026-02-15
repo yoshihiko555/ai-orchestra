@@ -69,6 +69,7 @@ def build_scorecard(route_rows: list[dict], quality_rows: list[dict]) -> dict:
         by_prompt[prompt_id].append(row)
 
     observed_prompts = len(by_prompt)
+    helper_only_prompts = 0
     first_attempt_matches = 0
     re_instruction_prompts = 0
     unnecessary_calls = 0
@@ -76,12 +77,19 @@ def build_scorecard(route_rows: list[dict], quality_rows: list[dict]) -> dict:
 
     for prompt_rows in by_prompt.values():
         prompt_rows.sort(key=lambda r: str(r.get("timestamp") or ""))
-        first = prompt_rows[0]
+
+        # ヘルパーを除外した実効レコード
+        effective_rows = [r for r in prompt_rows if not r.get("is_helper", False)]
+        if not effective_rows:
+            helper_only_prompts += 1
+            continue
+
+        first = effective_rows[0]
         if bool(first.get("matched")):
             first_attempt_matches += 1
 
         expected = str(first.get("expected_route") or "")
-        actual_routes = [str(r.get("actual_route") or "") for r in prompt_rows]
+        actual_routes = [str(r.get("actual_route") or "") for r in effective_rows]
 
         if len(set(actual_routes)) > 1:
             re_instruction_prompts += 1
@@ -92,8 +100,9 @@ def build_scorecard(route_rows: list[dict], quality_rows: list[dict]) -> dict:
                 if expected not in {"codex", "gemini"}:
                     unnecessary_calls += 1
 
-    matched_rate = percent(first_attempt_matches, observed_prompts)
-    re_instruction_rate = percent(re_instruction_prompts, observed_prompts)
+    effective_prompts = observed_prompts - helper_only_prompts
+    matched_rate = percent(first_attempt_matches, effective_prompts)
+    re_instruction_rate = percent(re_instruction_prompts, effective_prompts)
     unnecessary_call_rate = percent(unnecessary_calls, external_calls)
 
     quality_total = len(quality_rows)
@@ -108,7 +117,7 @@ def build_scorecard(route_rows: list[dict], quality_rows: list[dict]) -> dict:
     quality_score = quality_pass_rate
     determinism_score = matched_rate
     efficiency_score = max(0.0, round(100.0 - unnecessary_call_rate, 2))
-    visibility_score = 100.0 if observed_prompts > 0 else 0.0
+    visibility_score = 100.0 if effective_prompts > 0 else 0.0
 
     composite_score = round(
         quality_score * 0.40
@@ -121,6 +130,8 @@ def build_scorecard(route_rows: list[dict], quality_rows: list[dict]) -> dict:
     return {
         "summary": {
             "observed_prompts": observed_prompts,
+            "effective_prompts": effective_prompts,
+            "helper_only_prompts": helper_only_prompts,
             "external_calls": external_calls,
             "quality_checks": quality_total,
         },
@@ -150,6 +161,8 @@ def render_markdown(card: dict, days: int) -> str:
         "",
         "## Summary",
         f"- observed_prompts: {summary['observed_prompts']}",
+        f"- effective_prompts: {summary['effective_prompts']}",
+        f"- helper_only_prompts: {summary['helper_only_prompts']}",
         f"- external_calls: {summary['external_calls']}",
         f"- quality_checks: {summary['quality_checks']}",
         "",

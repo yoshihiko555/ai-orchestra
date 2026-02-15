@@ -121,9 +121,6 @@ def is_match(expected_route: str, actual_route: str, policy: dict) -> bool:
     if actual_route in (aliases.get(expected_route) or []):
         return True
 
-    if expected_route == "subagent-general-purpose" and actual_route.startswith("task:"):
-        return True
-
     return False
 
 
@@ -165,6 +162,9 @@ def main() -> None:
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     matched = is_match(expected_route, actual_route, policy)
 
+    helper_routes = policy.get("helper_routes") or []
+    is_helper = actual_route in helper_routes
+
     record = {
         "timestamp": now,
         "session_id": str(data.get("session_id") or ""),
@@ -173,6 +173,7 @@ def main() -> None:
         "expected_route": expected_route,
         "actual_route": actual_route,
         "matched": matched,
+        "is_helper": is_helper,
         "tool_name": str(data.get("tool_name") or find_first_text(data, {"tool_name", "tool"})),
         "command_excerpt": command_excerpt,
     }
@@ -186,6 +187,7 @@ def main() -> None:
             "expected_route": expected_route,
             "actual_route": actual_route,
             "matched": matched,
+            "is_helper": is_helper,
         },
     )
 
@@ -221,7 +223,7 @@ def main() -> None:
         session_id = str(data.get("session_id") or "")
         append_event(
             "route_audit",
-            {"expected_route": expected_route, "actual_route": actual_route, "matched": matched, "prompt_id": prompt_id},
+            {"expected_route": expected_route, "actual_route": actual_route, "matched": matched, "is_helper": is_helper, "prompt_id": prompt_id},
             session_id=session_id,
             hook_name="route-audit",
             project_dir=root,

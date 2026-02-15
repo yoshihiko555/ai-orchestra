@@ -1,6 +1,7 @@
 {
-  "version": 1,
+  "version": 2,
   "default_route": "claude-direct",
+  "helper_routes": ["task:Explore", "task:Plan"],
   "rules": [
     {
       "id": "research_gemini",
@@ -9,13 +10,16 @@
         "調査",
         "リサーチ",
         "最新",
+        "比較",
         "documentation",
         "best practice",
         "migration",
         "websearch",
         "webfetch",
         "pdf",
-        "動画"
+        "動画",
+        "検索",
+        "ドキュメント"
       ],
       "expected_route": "gemini"
     },
@@ -30,7 +34,10 @@
         "デバッグ",
         "なぜ",
         "比較検討",
-        "refactor"
+        "refactor",
+        "分析",
+        "原因",
+        "理由"
       ],
       "expected_route": "codex"
     },
@@ -43,7 +50,14 @@
         "追加",
         "テスト",
         "最適化",
-        "パッチ"
+        "パッチ",
+        "作成",
+        "変更",
+        "更新",
+        "削除",
+        "移動",
+        "整理",
+        "導入"
       ],
       "expected_route": "subagent-general-purpose"
     }
@@ -59,6 +73,10 @@
       "task:general-purpose",
       "task:agent",
       "agent:general-purpose"
+    ],
+    "claude-direct": [
+      "skill:commit",
+      "skill:memory-tidy"
     ]
   }
 }
