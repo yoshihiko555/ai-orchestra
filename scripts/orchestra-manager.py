@@ -170,6 +170,16 @@ class OrchestraManager:
 
         return False
 
+    def has_installed_dependents(
+        self, pkg_name: str, installed: List[str], packages: Dict[str, "Package"]
+    ) -> bool:
+        """指定パッケージに依存するインストール済みパッケージがあるか"""
+        for inst_name in installed:
+            inst_pkg = packages.get(inst_name)
+            if inst_pkg and pkg_name in inst_pkg.depends:
+                return True
+        return False
+
     def get_package_status(
         self, pkg: Package, project_dir: Path
     ) -> tuple[str, int, int]:
@@ -200,8 +210,11 @@ class OrchestraManager:
             else:
                 return ("partial", 0, total)
 
-        # orchestra.json にないが、settings にフックがあるかもしれない (旧形式互換)
+        # orchestra.json にないが、依存元がインストール済みならライブラリとして使用中
         if not pkg.hooks:
+            packages = self.load_packages()
+            if self.has_installed_dependents(pkg.name, installed, packages):
+                return ("active", 0, 0)
             return ("not found", 0, 0)
 
         settings = self.load_settings(project_dir)
@@ -234,7 +247,7 @@ class OrchestraManager:
             status, registered, total = self.get_package_status(pkg, project_dir)
 
             if not pkg.hooks:
-                hooks_info = "(library only)"
+                hooks_info = "(dependency)" if status == "active" else "(library only)"
             elif status == "installed":
                 hooks_info = f"{registered}/{total} hooks registered"
             elif status == "partial":
