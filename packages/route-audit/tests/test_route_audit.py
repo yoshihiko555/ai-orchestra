@@ -2,52 +2,33 @@
 
 from __future__ import annotations
 
-import importlib.util
 import os
 import sys
 
-_tests_dir = os.path.dirname(os.path.abspath(__file__))
-_pkg_dir = os.path.join(_tests_dir, "..")
-_hooks_dir = os.path.join(_pkg_dir, "hooks")
-_scripts_dir = os.path.join(_pkg_dir, "scripts")
+from tests.module_loader import REPO_ROOT, load_module
 
-# agent-routing パッケージの route_config を読み込み
-_routing_hooks = os.path.join(_pkg_dir, "..", "agent-routing", "hooks")
-if _routing_hooks not in sys.path:
-    sys.path.insert(0, _routing_hooks)
+os.environ["AI_ORCHESTRA_DIR"] = str(REPO_ROOT)
+core_hooks = REPO_ROOT / "packages" / "core" / "hooks"
+if str(core_hooks) not in sys.path:
+    sys.path.insert(0, str(core_hooks))
 
-# orchestration-route-audit.py（ハイフン名のため importlib 使用）
-_audit_spec = importlib.util.spec_from_file_location(
+orchestration_route_audit = load_module(
     "orchestration_route_audit",
-    os.path.join(_hooks_dir, "orchestration-route-audit.py"),
+    "packages/route-audit/hooks/orchestration-route-audit.py",
 )
-assert _audit_spec and _audit_spec.loader
-_audit_mod = importlib.util.module_from_spec(_audit_spec)
-_audit_spec.loader.exec_module(_audit_mod)
-is_match = _audit_mod.is_match  # type: ignore[attr-defined]
-merged_aliases = _audit_mod.merged_aliases  # type: ignore[attr-defined]
+is_match = orchestration_route_audit.is_match
+merged_aliases = orchestration_route_audit.merged_aliases
 
 from route_config import build_aliases  # noqa: E402
 
-# orchestration-kpi-report.py
-_kpi_spec = importlib.util.spec_from_file_location(
+orchestration_kpi_report = load_module(
     "orchestration_kpi_report",
-    os.path.join(_scripts_dir, "orchestration-kpi-report.py"),
+    "packages/route-audit/scripts/orchestration-kpi-report.py",
 )
-assert _kpi_spec and _kpi_spec.loader
-_kpi_mod = importlib.util.module_from_spec(_kpi_spec)
-_kpi_spec.loader.exec_module(_kpi_mod)
-build_scorecard = _kpi_mod.build_scorecard  # type: ignore[attr-defined]
+build_scorecard = orchestration_kpi_report.build_scorecard
 
-# dashboard.py
-_dash_spec = importlib.util.spec_from_file_location(
-    "dashboard",
-    os.path.join(_scripts_dir, "dashboard.py"),
-)
-assert _dash_spec and _dash_spec.loader
-_dash_mod = importlib.util.module_from_spec(_dash_spec)
-_dash_spec.loader.exec_module(_dash_mod)
-calc_route_stats = _dash_mod.calc_route_stats  # type: ignore[attr-defined]
+dashboard = load_module("dashboard", "packages/route-audit/scripts/dashboard.py")
+calc_route_stats = dashboard.calc_route_stats
 
 
 # ========== is_match テスト ==========
@@ -110,11 +91,7 @@ class TestIsMatch:
 
     def test_claude_direct_aliases(self) -> None:
         """claude-direct の aliases マッチを確認。"""
-        policy = {
-            "aliases": {
-                "claude-direct": ["skill:commit", "skill:memory-tidy"]
-            }
-        }
+        policy = {"aliases": {"claude-direct": ["skill:commit", "skill:memory-tidy"]}}
         assert is_match("claude-direct", "skill:commit", policy) is True
         assert is_match("claude-direct", "skill:memory-tidy", policy) is True
         assert is_match("claude-direct", "skill:unknown", policy) is False
@@ -129,9 +106,30 @@ class TestBuildScorecard:
     def test_helper_excluded_from_match_rate(self) -> None:
         """is_helper: true のレコードは一致率の判定から除外される。"""
         route_rows = [
-            {"prompt_id": "p1", "timestamp": "2026-01-01T00:00:00", "actual_route": "task:Explore", "expected_route": "codex", "matched": False, "is_helper": True},
-            {"prompt_id": "p1", "timestamp": "2026-01-01T00:00:01", "actual_route": "bash:codex", "expected_route": "codex", "matched": True, "is_helper": False},
-            {"prompt_id": "p2", "timestamp": "2026-01-01T00:00:02", "actual_route": "task:Explore", "expected_route": "gemini", "matched": False, "is_helper": True},
+            {
+                "prompt_id": "p1",
+                "timestamp": "2026-01-01T00:00:00",
+                "actual_route": "task:Explore",
+                "expected_route": "codex",
+                "matched": False,
+                "is_helper": True,
+            },
+            {
+                "prompt_id": "p1",
+                "timestamp": "2026-01-01T00:00:01",
+                "actual_route": "bash:codex",
+                "expected_route": "codex",
+                "matched": True,
+                "is_helper": False,
+            },
+            {
+                "prompt_id": "p2",
+                "timestamp": "2026-01-01T00:00:02",
+                "actual_route": "task:Explore",
+                "expected_route": "gemini",
+                "matched": False,
+                "is_helper": True,
+            },
         ]
         card = build_scorecard(route_rows, [])
 
@@ -143,8 +141,22 @@ class TestBuildScorecard:
     def test_helper_only_prompt_excluded_from_denominator(self) -> None:
         """ヘルパーのみのプロンプトは分母から除外。"""
         route_rows = [
-            {"prompt_id": "p1", "timestamp": "2026-01-01T00:00:00", "actual_route": "task:Plan", "expected_route": "codex", "matched": False, "is_helper": True},
-            {"prompt_id": "p2", "timestamp": "2026-01-01T00:00:01", "actual_route": "task:Plan", "expected_route": "gemini", "matched": False, "is_helper": True},
+            {
+                "prompt_id": "p1",
+                "timestamp": "2026-01-01T00:00:00",
+                "actual_route": "task:Plan",
+                "expected_route": "codex",
+                "matched": False,
+                "is_helper": True,
+            },
+            {
+                "prompt_id": "p2",
+                "timestamp": "2026-01-01T00:00:01",
+                "actual_route": "task:Plan",
+                "expected_route": "gemini",
+                "matched": False,
+                "is_helper": True,
+            },
         ]
         card = build_scorecard(route_rows, [])
 
@@ -156,8 +168,20 @@ class TestBuildScorecard:
     def test_no_helper_records(self) -> None:
         """is_helper フィールドが無い（旧ログ）場合は全て実効扱い。"""
         route_rows = [
-            {"prompt_id": "p1", "timestamp": "2026-01-01T00:00:00", "actual_route": "bash:codex", "expected_route": "codex", "matched": True},
-            {"prompt_id": "p2", "timestamp": "2026-01-01T00:00:01", "actual_route": "bash:gemini", "expected_route": "codex", "matched": False},
+            {
+                "prompt_id": "p1",
+                "timestamp": "2026-01-01T00:00:00",
+                "actual_route": "bash:codex",
+                "expected_route": "codex",
+                "matched": True,
+            },
+            {
+                "prompt_id": "p2",
+                "timestamp": "2026-01-01T00:00:01",
+                "actual_route": "bash:gemini",
+                "expected_route": "codex",
+                "matched": False,
+            },
         ]
         card = build_scorecard(route_rows, [])
 
@@ -169,10 +193,38 @@ class TestBuildScorecard:
     def test_effective_prompts_count(self) -> None:
         """effective_prompts = observed_prompts - helper_only_prompts。"""
         route_rows = [
-            {"prompt_id": "p1", "timestamp": "2026-01-01T00:00:00", "actual_route": "task:Explore", "expected_route": "codex", "matched": False, "is_helper": True},
-            {"prompt_id": "p1", "timestamp": "2026-01-01T00:00:01", "actual_route": "bash:codex", "expected_route": "codex", "matched": True, "is_helper": False},
-            {"prompt_id": "p2", "timestamp": "2026-01-01T00:00:02", "actual_route": "task:Explore", "expected_route": "gemini", "matched": False, "is_helper": True},
-            {"prompt_id": "p3", "timestamp": "2026-01-01T00:00:03", "actual_route": "bash:gemini", "expected_route": "gemini", "matched": True, "is_helper": False},
+            {
+                "prompt_id": "p1",
+                "timestamp": "2026-01-01T00:00:00",
+                "actual_route": "task:Explore",
+                "expected_route": "codex",
+                "matched": False,
+                "is_helper": True,
+            },
+            {
+                "prompt_id": "p1",
+                "timestamp": "2026-01-01T00:00:01",
+                "actual_route": "bash:codex",
+                "expected_route": "codex",
+                "matched": True,
+                "is_helper": False,
+            },
+            {
+                "prompt_id": "p2",
+                "timestamp": "2026-01-01T00:00:02",
+                "actual_route": "task:Explore",
+                "expected_route": "gemini",
+                "matched": False,
+                "is_helper": True,
+            },
+            {
+                "prompt_id": "p3",
+                "timestamp": "2026-01-01T00:00:03",
+                "actual_route": "bash:gemini",
+                "expected_route": "gemini",
+                "matched": True,
+                "is_helper": False,
+            },
         ]
         card = build_scorecard(route_rows, [])
 
@@ -190,9 +242,18 @@ class TestCalcRouteStats:
     def test_helpers_excluded(self) -> None:
         """is_helper: true のイベントは集計から除外。"""
         events = [
-            {"event_type": "route_audit", "data": {"matched": False, "is_helper": True}},
-            {"event_type": "route_audit", "data": {"matched": True, "is_helper": False}},
-            {"event_type": "route_audit", "data": {"matched": False, "is_helper": False}},
+            {
+                "event_type": "route_audit",
+                "data": {"matched": False, "is_helper": True},
+            },
+            {
+                "event_type": "route_audit",
+                "data": {"matched": True, "is_helper": False},
+            },
+            {
+                "event_type": "route_audit",
+                "data": {"matched": False, "is_helper": False},
+            },
         ]
         result = calc_route_stats(events)
 
@@ -217,7 +278,10 @@ class TestCalcRouteStats:
     def test_all_helpers(self) -> None:
         """全てヘルパーの場合、total=0 で rate=0。"""
         events = [
-            {"event_type": "route_audit", "data": {"matched": False, "is_helper": True}},
+            {
+                "event_type": "route_audit",
+                "data": {"matched": False, "is_helper": True},
+            },
         ]
         result = calc_route_stats(events)
 
