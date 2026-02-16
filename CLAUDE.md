@@ -44,6 +44,15 @@ orchestra-manager が以下を自動実行:
 3. `.claude/orchestra.json` にパッケージ情報を記録
 4. SessionStart hook で skills/agents/rules を自動同期
 
+### セットアップ完了条件
+
+以下を満たしたらセットアップ完了です。
+
+- `~/.claude/settings.json` に `env.AI_ORCHESTRA_DIR` が設定されている
+- `.claude/settings.local.json` に AI Orchestra の hooks が登録されている
+- `.claude/orchestra.json` が存在し、インストール済みパッケージが記録されている
+- Claude Code の次回起動時に SessionStart hook が走り、`.claude/` 配下へ差分同期される
+
 ### 更新
 
 ```bash
@@ -51,11 +60,19 @@ orchestra-manager が以下を自動実行:
 git pull
 ```
 
+### 運用ルール（更新後チェック）
+
+`git pull` 後は以下を確認してください。
+
+- hooks 変更は即時反映される（`$AI_ORCHESTRA_DIR/packages/.../hooks` を直接参照）
+- agents/skills/rules/config の変更は次回 Claude Code 起動時の SessionStart で同期される
+- 同期結果は `.claude/` 配下に反映される（差分があるファイルのみ更新）
+
 ---
 
 ## 使い方
 
-→ `rules/orchestra-usage.md` を参照
+→ `packages/agent-routing/rules/orchestra-usage.md` を参照
 
 または、Claude Code で以下を実行：
 
@@ -88,3 +105,15 @@ Claude Code (Orchestrator)
 
 - `packages/` 内の hooks は `$AI_ORCHESTRA_DIR` 経由で直接参照される（`git pull` で即反映）
 - agents/skills/rules は各パッケージ内に配置され、SessionStart の `sync-orchestra.py` で `.claude/` に差分同期
+
+---
+
+## References
+
+必須（上から優先）:
+1. `packages/agent-routing/rules/orchestra-usage.md`
+2. `packages/agent-routing/config/cli-tools.yaml`
+
+任意:
+- `scripts/orchestra-manager.py`
+- `scripts/sync-orchestra.py`
