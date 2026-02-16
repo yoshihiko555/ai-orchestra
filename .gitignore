@@ -7,6 +7,9 @@ Thumbs.db
 *.swo
 *~
 
+# Test
+pytest-of-*/
+
 # Python
 __pycache__/
 *.pyc
