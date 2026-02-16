@@ -11,7 +11,7 @@
   ],
   "skills": ["skills/gemini-system"],
   "agents": [],
-  "rules": ["rules/gemini-delegation.md"],
+  "rules": ["rules/gemini-delegation.md", "rules/gemini-suggestion-compliance.md"],
   "scripts": [],
   "config": []
 }

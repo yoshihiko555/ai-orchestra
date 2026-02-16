@@ -10,7 +10,7 @@
   ],
   "skills": ["skills/plan", "skills/startproject", "skills/checkpointing"],
   "agents": [],
-  "rules": ["rules/config-loading.md", "rules/coding-principles.md"],
+  "rules": ["rules/config-loading.md", "rules/coding-principles.md", "rules/skill-review-policy.md"],
   "scripts": [],
   "config": []
 }
