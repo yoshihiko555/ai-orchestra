@@ -28,6 +28,7 @@ GEMINI_EXEC_RE = re.compile(
 
 # --- codex exec: 検知すべきケース ---
 
+
 @pytest.mark.parametrize(
     "command",
     [
@@ -56,6 +57,7 @@ def test_codex_detected(command: str) -> None:
 
 
 # --- codex: 検知してはいけないケース ---
+
 
 @pytest.mark.parametrize(
     "command",
@@ -88,6 +90,7 @@ def test_codex_not_detected(command: str) -> None:
 
 # --- gemini -p: 検知すべきケース ---
 
+
 @pytest.mark.parametrize(
     "command",
     [
@@ -116,6 +119,7 @@ def test_gemini_detected(command: str) -> None:
 
 
 # --- gemini: 検知してはいけないケース ---
+
 
 @pytest.mark.parametrize(
     "command",
@@ -149,6 +153,7 @@ def test_gemini_not_detected(command: str) -> None:
 
 
 # --- is_codex が True のとき is_gemini は False になる ---
+
 
 def test_codex_takes_priority_over_gemini() -> None:
     """codex exec コマンドに gemini が含まれていても、codex として検知される。"""

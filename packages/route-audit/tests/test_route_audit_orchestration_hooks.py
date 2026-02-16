@@ -70,10 +70,7 @@ def test_find_first_text_from_nested_data() -> None:
         "a": {"message": ""},
         "b": [{"x": 1}, {"text": "  selected prompt  "}],
     }
-    assert (
-        hook_common.find_first_text(payload, {"prompt", "text"})
-        == "  selected prompt  "
-    )
+    assert hook_common.find_first_text(payload, {"prompt", "text"}) == "  selected prompt  "
 
 
 def test_find_first_text_and_int() -> None:
@@ -142,10 +139,7 @@ def test_expected_route_returns_default_when_no_rule_matches() -> None:
 def test_expected_route_project_root_precedence(monkeypatch) -> None:
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", "/env/project")
 
-    assert (
-        orchestration_expected_route.project_root({"cwd": "/data/project"})
-        == "/data/project"
-    )
+    assert orchestration_expected_route.project_root({"cwd": "/data/project"}) == "/data/project"
     assert orchestration_expected_route.project_root({}) == "/env/project"
 
 
@@ -184,9 +178,7 @@ def test_route_audit_is_match_supports_alias() -> None:
     policy = {"aliases": {"task:tester": ["task:unit-test-agent"]}}
 
     assert orchestration_route_audit.is_match("task:tester", "task:tester", policy)
-    assert orchestration_route_audit.is_match(
-        "task:tester", "task:unit-test-agent", policy
-    )
+    assert orchestration_route_audit.is_match("task:tester", "task:unit-test-agent", policy)
     assert not orchestration_route_audit.is_match("task:tester", "bash:codex", policy)
     assert not orchestration_route_audit.is_match("", "task:tester", policy)
     assert not orchestration_route_audit.is_match("task:tester", "", policy)
@@ -195,8 +187,5 @@ def test_route_audit_is_match_supports_alias() -> None:
 def test_route_audit_project_root_precedence(monkeypatch) -> None:
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", "/env/project")
 
-    assert (
-        orchestration_route_audit.project_root({"cwd": "/data/project"})
-        == "/data/project"
-    )
+    assert orchestration_route_audit.project_root({"cwd": "/data/project"}) == "/data/project"
     assert orchestration_route_audit.project_root({}) == "/env/project"

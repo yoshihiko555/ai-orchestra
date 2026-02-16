@@ -21,9 +21,7 @@ hook_common = load_module("hook_common", "packages/core/hooks/hook_common.py")
 
 # route_config は hook_common を import するため sys.path を設定
 sys.path.insert(0, str(REPO_ROOT / "packages" / "core" / "hooks"))
-route_config = load_module(
-    "route_config", "packages/agent-routing/hooks/route_config.py"
-)
+route_config = load_module("route_config", "packages/agent-routing/hooks/route_config.py")
 
 
 # =========================================================================
@@ -74,9 +72,7 @@ class TestFindPackageConfig:
         assert path.endswith("packages/route-audit/config/orchestration-flags.json")
         assert os.path.isfile(path)
 
-    def test_finds_from_project_dir(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_finds_from_project_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("AI_ORCHESTRA_DIR", raising=False)
         config_dir = tmp_path / ".claude" / "config" / "test-pkg"
         config_dir.mkdir(parents=True)
@@ -98,13 +94,9 @@ class TestFindPackageConfig:
         )
         assert path == str(config_file)
 
-    def test_returns_empty_when_not_found(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_returns_empty_when_not_found(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("AI_ORCHESTRA_DIR", raising=False)
-        path = hook_common.find_package_config(
-            "nonexistent", "nope.json", "/nonexistent"
-        )
+        path = hook_common.find_package_config("nonexistent", "nope.json", "/nonexistent")
         assert path == ""
 
 
@@ -154,13 +146,9 @@ class TestLoadPackageConfig:
         monkeypatch.delenv("AI_ORCHESTRA_DIR", raising=False)
         config_dir = tmp_path / ".claude" / "config" / "mypkg"
         config_dir.mkdir(parents=True)
-        (config_dir / "settings.json").write_text(
-            json.dumps({"a": 1, "b": {"x": 10, "y": 20}})
-        )
+        (config_dir / "settings.json").write_text(json.dumps({"a": 1, "b": {"x": 10, "y": 20}}))
         (config_dir / "settings.local.json").write_text(json.dumps({"b": {"x": 99}}))
-        result = hook_common.load_package_config(
-            "mypkg", "settings.json", str(tmp_path)
-        )
+        result = hook_common.load_package_config("mypkg", "settings.json", str(tmp_path))
         assert result == {"a": 1, "b": {"x": 99, "y": 20}}
 
     def test_loads_yaml_with_local_override(
@@ -169,17 +157,13 @@ class TestLoadPackageConfig:
         monkeypatch.delenv("AI_ORCHESTRA_DIR", raising=False)
         config_dir = tmp_path / ".claude" / "config" / "mypkg"
         config_dir.mkdir(parents=True)
-        (config_dir / "tools.yaml").write_text(
-            "codex:\n  model: gpt-5\n  flags: --auto\n"
-        )
+        (config_dir / "tools.yaml").write_text("codex:\n  model: gpt-5\n  flags: --auto\n")
         (config_dir / "tools.local.yaml").write_text("codex:\n  model: o3-pro\n")
         result = hook_common.load_package_config("mypkg", "tools.yaml", str(tmp_path))
         assert result["codex"]["model"] == "o3-pro"
         assert result["codex"]["flags"] == "--auto"
 
-    def test_loads_without_local(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_loads_without_local(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("AI_ORCHESTRA_DIR", raising=False)
         config_dir = tmp_path / ".claude" / "config" / "mypkg"
         config_dir.mkdir(parents=True)
@@ -187,9 +171,7 @@ class TestLoadPackageConfig:
         result = hook_common.load_package_config("mypkg", "conf.json", str(tmp_path))
         assert result == {"only": "base"}
 
-    def test_returns_empty_when_not_found(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_returns_empty_when_not_found(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("AI_ORCHESTRA_DIR", raising=False)
         result = hook_common.load_package_config("nope", "nope.json", "/nonexistent")
         assert result == {}
@@ -246,9 +228,7 @@ class TestRealConfigFiles:
         assert isinstance(policy["rules"], list)
 
     def test_cli_tools_yaml(self) -> None:
-        config = hook_common.load_package_config(
-            "agent-routing", "cli-tools.yaml", str(REPO_ROOT)
-        )
+        config = hook_common.load_package_config("agent-routing", "cli-tools.yaml", str(REPO_ROOT))
         assert "codex" in config
         assert "gemini" in config
         assert "agents" in config

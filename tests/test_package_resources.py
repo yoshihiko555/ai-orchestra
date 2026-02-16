@@ -18,7 +18,7 @@ PACKAGES_DIR = REPO_ROOT / "packages"
 # 全パッケージの manifest をロード
 _MANIFESTS: dict[str, dict] = {}
 for _manifest_path in sorted(PACKAGES_DIR.glob("*/manifest.json")):
-    with open(_manifest_path, "r", encoding="utf-8") as _f:
+    with open(_manifest_path, encoding="utf-8") as _f:
         _MANIFESTS[_manifest_path.parent.name] = json.load(_f)
 
 
@@ -91,9 +91,7 @@ def _collect_manifest_resources(manifest: dict) -> set[str]:
 
 
 _PACKAGES_WITH_RESOURCES = [
-    pkg_name
-    for pkg_name, manifest in _MANIFESTS.items()
-    if _collect_actual_resources(pkg_name)
+    pkg_name for pkg_name, manifest in _MANIFESTS.items() if _collect_actual_resources(pkg_name)
 ]
 
 
@@ -105,6 +103,4 @@ class TestNoOrphanResources:
         actual = _collect_actual_resources(pkg_name)
         registered = _collect_manifest_resources(_MANIFESTS[pkg_name])
         orphans = actual - registered
-        assert not orphans, (
-            f"packages/{pkg_name} に manifest 未登録のリソース: {sorted(orphans)}"
-        )
+        assert not orphans, f"packages/{pkg_name} に manifest 未登録のリソース: {sorted(orphans)}"

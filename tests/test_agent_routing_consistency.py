@@ -20,15 +20,11 @@ from tests.module_loader import REPO_ROOT, load_module
 
 sys.path.insert(0, str(REPO_ROOT / "packages" / "core" / "hooks"))
 hook_common = load_module("hook_common", "packages/core/hooks/hook_common.py")
-route_config = load_module(
-    "route_config", "packages/agent-routing/hooks/route_config.py"
-)
+route_config = load_module("route_config", "packages/agent-routing/hooks/route_config.py")
 
 # 実 config を読み込む
 os.environ["AI_ORCHESTRA_DIR"] = str(REPO_ROOT)
-_REAL_CONFIG = hook_common.load_package_config(
-    "agent-routing", "cli-tools.yaml", str(REPO_ROOT)
-)
+_REAL_CONFIG = hook_common.load_package_config("agent-routing", "cli-tools.yaml", str(REPO_ROOT))
 _AGENTS_IN_CONFIG = set(_REAL_CONFIG.get("agents", {}).keys())
 _AGENTS_DIR = REPO_ROOT / "packages" / "agent-routing" / "agents"
 
@@ -44,9 +40,7 @@ class TestAgentMdFilesExist:
     @pytest.mark.parametrize("agent_name", sorted(_AGENTS_IN_CONFIG))
     def test_agent_md_exists(self, agent_name: str) -> None:
         md_path = _AGENTS_DIR / f"{agent_name}.md"
-        assert md_path.is_file(), (
-            f"packages/agent-routing/agents/{agent_name}.md が見つかりません"
-        )
+        assert md_path.is_file(), f"packages/agent-routing/agents/{agent_name}.md が見つかりません"
 
 
 class TestNoOrphanAgentMd:
@@ -73,9 +67,7 @@ class TestAgentTriggersCompleteness:
         # general-purpose は汎用エージェントでトリガー不要の場合がある
         config_agents = _AGENTS_IN_CONFIG - {"general-purpose"}
         missing = config_agents - triggers_agents
-        assert not missing, (
-            f"AGENT_TRIGGERS に定義がないエージェント: {sorted(missing)}"
-        )
+        assert not missing, f"AGENT_TRIGGERS に定義がないエージェント: {sorted(missing)}"
 
     def test_no_orphan_triggers(self) -> None:
         triggers_agents = set(route_config.AGENT_TRIGGERS.keys())

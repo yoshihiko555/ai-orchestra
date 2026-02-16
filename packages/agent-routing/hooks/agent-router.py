@@ -35,9 +35,8 @@ def main():
             )
         else:
             prompt_lower = prompt.lower()
-            for trig in (
-                GEMINI_FALLBACK_TRIGGERS.get("ja", [])
-                + GEMINI_FALLBACK_TRIGGERS.get("en", [])
+            for trig in GEMINI_FALLBACK_TRIGGERS.get("ja", []) + GEMINI_FALLBACK_TRIGGERS.get(
+                "en", []
             ):
                 if trig in prompt_lower:
                     cli_msg = build_cli_suggestion("gemini", "researcher", trig, config)

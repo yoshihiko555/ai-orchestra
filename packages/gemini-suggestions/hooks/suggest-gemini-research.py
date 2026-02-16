@@ -82,7 +82,7 @@ def main():
                         f"[Gemini Suggestion] {reason}. "
                         "For comprehensive research, consider Gemini CLI (1M token context):\n"
                         "`gemini -p '...' 2>/dev/null`"
-                    )
+                    ),
                 }
             }
             print(json.dumps(output))

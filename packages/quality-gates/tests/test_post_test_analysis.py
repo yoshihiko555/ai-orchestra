@@ -60,4 +60,3 @@ def test_extract_failure_summary_returns_top_3_lines() -> None:
 
 def test_extract_failure_summary_returns_default_when_no_match() -> None:
     assert post_test_analysis.extract_failure_summary("all passed") == "Test failure detected"
-

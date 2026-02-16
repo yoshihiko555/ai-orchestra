@@ -130,7 +130,7 @@ def _format_data(event_type: str, data: dict) -> str:
     if event_type == "expected_route":
         route = data.get("expected_route", "")
         excerpt = data.get("prompt_excerpt", "")[:40]
-        return f"route={route} prompt=\"{excerpt}\""
+        return f'route={route} prompt="{excerpt}"'
     if event_type == "route_audit":
         expected = data.get("expected_route", "")
         actual = data.get("actual_route", "")
@@ -200,7 +200,7 @@ def main() -> None:
     events = filter_events(events, event_type=args.event_type, since=since, session_id=args.session)
 
     if args.last > 0:
-        events = events[-args.last:]
+        events = events[-args.last :]
 
     if args.json:
         for ev in events:

@@ -33,9 +33,7 @@ from route_config import detect_agent, get_agent_tool, load_config  # noqa: E402
 _hook_dir = os.path.dirname(os.path.abspath(__file__))
 
 
-def select_expected_route(
-    prompt: str, config: dict, policy: dict
-) -> tuple[str, str | None]:
+def select_expected_route(prompt: str, config: dict, policy: dict) -> tuple[str, str | None]:
     """config 駆動 + policy フォールバックで期待ルートを決定。"""
     # 1. Config 駆動: エージェント検出 → ツール取得
     agent, trigger = detect_agent(prompt)
@@ -45,9 +43,7 @@ def select_expected_route(
 
     # 2. フォールバック: delegation-policy.json の keyword rules
     prompt_lower = prompt.lower()
-    rules = sorted(
-        policy.get("rules") or [], key=lambda x: x.get("priority", 0), reverse=True
-    )
+    rules = sorted(policy.get("rules") or [], key=lambda x: x.get("priority", 0), reverse=True)
 
     for rule in rules:
         keywords = rule.get("keywords_any") or []
@@ -88,10 +84,8 @@ def main() -> None:
     expected_route, matched_rule = select_expected_route(prompt, config, policy)
 
     session_id = str(data.get("session_id") or "")
-    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    excerpt = prompt.strip().replace("\n", " ")[
-        : int(route_audit.get("max_excerpt_chars", 160))
-    ]
+    now = datetime.datetime.now(datetime.UTC).isoformat()
+    excerpt = prompt.strip().replace("\n", " ")[: int(route_audit.get("max_excerpt_chars", 160))]
     seed = f"{session_id}:{now}:{excerpt}"
     prompt_id = hashlib.sha1(seed.encode("utf-8")).hexdigest()[:12]
 

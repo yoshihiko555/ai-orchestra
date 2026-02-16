@@ -8,7 +8,6 @@ for design decisions, complex implementations, or architectural changes.
 
 import json
 import sys
-from pathlib import Path
 
 # Input validation constants
 MAX_PATH_LENGTH = 4096
@@ -116,7 +115,7 @@ def main():
                         f"[Codex Suggestion] {reason}. "
                         "Consider consulting Codex before this change:\n"
                         "`codex exec --model gpt-5.2-codex --sandbox read-only --full-auto '...'`"
-                    )
+                    ),
                 }
             }
             print(json.dumps(output))

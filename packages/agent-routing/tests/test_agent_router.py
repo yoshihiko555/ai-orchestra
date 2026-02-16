@@ -14,9 +14,7 @@ import sys
 from tests.module_loader import REPO_ROOT, load_module
 
 sys.path.insert(0, str(REPO_ROOT / "packages" / "core" / "hooks"))
-route_config = load_module(
-    "route_config", "packages/agent-routing/hooks/route_config.py"
-)
+route_config = load_module("route_config", "packages/agent-routing/hooks/route_config.py")
 
 
 # ---------------------------------------------------------------------------
@@ -60,17 +58,13 @@ def test_detect_agent_detects_planner() -> None:
 
 
 def test_detect_agent_detects_api_designer_from_english_prompt() -> None:
-    agent, trigger = route_config.detect_agent(
-        "please help with api design and endpoint naming"
-    )
+    agent, trigger = route_config.detect_agent("please help with api design and endpoint naming")
     assert agent == "api-designer"
     assert trigger in {"api design", "endpoint"}
 
 
 def test_detect_agent_detects_frontend_dev_from_english_prompt() -> None:
-    agent, trigger = route_config.detect_agent(
-        "build a react component for the dashboard"
-    )
+    agent, trigger = route_config.detect_agent("build a react component for the dashboard")
     assert agent == "frontend-dev"
     assert trigger.lower() == "react"
 
@@ -160,9 +154,7 @@ def test_build_aliases_follows_config_change() -> None:
     v2 = {"agents": {"architect": {"tool": "codex"}}}
     assert "task:architect" in route_config.build_aliases(v1)["claude-direct"]
     assert "task:architect" in route_config.build_aliases(v2)["codex"]
-    assert "task:architect" not in route_config.build_aliases(v2).get(
-        "claude-direct", []
-    )
+    assert "task:architect" not in route_config.build_aliases(v2).get("claude-direct", [])
 
 
 def test_build_aliases_base_aliases_present() -> None:
@@ -213,7 +205,5 @@ def test_build_cli_suggestion_gemini_no_model() -> None:
 
 def test_build_cli_suggestion_claude_direct_returns_none() -> None:
     config = {}
-    result = route_config.build_cli_suggestion(
-        "claude-direct", "planner", "計画", config
-    )
+    result = route_config.build_cli_suggestion("claude-direct", "planner", "計画", config)
     assert result is None

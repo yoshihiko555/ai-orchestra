@@ -39,13 +39,9 @@ TEST_CMD_PATTERN = re.compile(
 
 
 def detect_route(data: dict) -> tuple[str | None, str]:
-    tool_name = str(
-        data.get("tool_name") or find_first_text(data, {"tool_name", "tool"})
-    )
+    tool_name = str(data.get("tool_name") or find_first_text(data, {"tool_name", "tool"}))
     tool_lower = tool_name.lower()
-    tool_input = (
-        data.get("tool_input") if isinstance(data.get("tool_input"), dict) else {}
-    )
+    tool_input = data.get("tool_input") if isinstance(data.get("tool_input"), dict) else {}
 
     if tool_lower == "bash":
         command = ""
@@ -138,7 +134,7 @@ def main() -> None:
     prompt_id = str(expected.get("prompt_id") or "")
     prompt_excerpt = str(expected.get("prompt_excerpt") or "")
 
-    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    now = datetime.datetime.now(datetime.UTC).isoformat()
     matched = is_match(expected_route, actual_route, {"aliases": all_aliases})
 
     helper_routes = policy.get("helper_routes") or []
@@ -153,9 +149,7 @@ def main() -> None:
         "actual_route": actual_route,
         "matched": matched,
         "is_helper": is_helper,
-        "tool_name": str(
-            data.get("tool_name") or find_first_text(data, {"tool_name", "tool"})
-        ),
+        "tool_name": str(data.get("tool_name") or find_first_text(data, {"tool_name", "tool"})),
         "command_excerpt": command_excerpt,
     }
     append_jsonl(os.path.join(logs_dir, "route-audit.jsonl"), record)
@@ -182,9 +176,7 @@ def main() -> None:
         command_excerpt
     ):
         tool_response = (
-            data.get("tool_response")
-            if isinstance(data.get("tool_response"), dict)
-            else {}
+            data.get("tool_response") if isinstance(data.get("tool_response"), dict) else {}
         )
         exit_code = find_first_int(tool_response, {"exit_code", "code", "status"})
         append_jsonl(

@@ -2,9 +2,7 @@ import json
 
 from tests.module_loader import load_module
 
-log_cli_tools = load_module(
-    "log_cli_tools", "packages/cli-logging/hooks/log-cli-tools.py"
-)
+log_cli_tools = load_module("log_cli_tools", "packages/cli-logging/hooks/log-cli-tools.py")
 
 
 def test_extract_codex_prompt_from_full_auto_double_quote() -> None:

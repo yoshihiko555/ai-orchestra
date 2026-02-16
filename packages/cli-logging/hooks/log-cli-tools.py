@@ -12,7 +12,7 @@ import json
 import os
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 # codex exec コマンドの検知（timeout やenv変数プレフィックス付きも対応）
@@ -153,7 +153,7 @@ def main() -> None:
 
     # Create log entry
     entry = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "tool": tool,
         "model": model,
         "prompt": truncate_text(prompt),

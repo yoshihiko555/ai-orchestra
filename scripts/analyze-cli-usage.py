@@ -10,6 +10,7 @@ Usage:
     python scripts/analyze-cli-usage.py --json       # JSON output
     python scripts/analyze-cli-usage.py --export     # Export to CSV
 """
+
 from __future__ import annotations
 
 import argparse
@@ -17,10 +18,9 @@ import csv
 import json
 import re
 from collections import Counter, defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
-
 
 PROJECT_ROOT = Path(__file__).parent.parent
 LOG_FILE = PROJECT_ROOT / "logs" / "cli-tools.jsonl"
@@ -41,9 +41,7 @@ def load_logs(since: datetime | None = None) -> list[dict[str, Any]]:
             try:
                 entry = json.loads(line)
                 if since:
-                    ts = datetime.fromisoformat(
-                        entry["timestamp"].replace("Z", "+00:00")
-                    )
+                    ts = datetime.fromisoformat(entry["timestamp"].replace("Z", "+00:00"))
                     if ts < since:
                         continue
                 entries.append(entry)
@@ -100,10 +98,7 @@ def format_report(entries: list[dict[str, Any]], period_days: int | None) -> str
     lines.append("")
 
     # Period
-    timestamps = [
-        datetime.fromisoformat(e["timestamp"].replace("Z", "+00:00"))
-        for e in entries
-    ]
+    timestamps = [datetime.fromisoformat(e["timestamp"].replace("Z", "+00:00")) for e in entries]
     start_date = min(timestamps).strftime("%Y-%m-%d")
     end_date = max(timestamps).strftime("%Y-%m-%d")
     lines.append(f"Period: {start_date} ~ {end_date}")
@@ -126,8 +121,7 @@ def format_report(entries: list[dict[str, Any]], period_days: int | None) -> str
     gemini_pct = (gemini_count / total * 100) if total > 0 else 0
 
     lines.append(
-        f"  Codex:  {create_bar(codex_count, max_count)} "
-        f"{codex_count:3d} calls ({codex_pct:.0f}%)"
+        f"  Codex:  {create_bar(codex_count, max_count)} {codex_count:3d} calls ({codex_pct:.0f}%)"
     )
     lines.append(
         f"  Gemini: {create_bar(gemini_count, max_count)} "
@@ -146,9 +140,7 @@ def format_report(entries: list[dict[str, Any]], period_days: int | None) -> str
     if daily:
         lines.append("## Daily Trend")
         lines.append("")
-        max_daily = max(
-            sum(d.values()) for d in daily.values()
-        ) if daily else 1
+        max_daily = max(sum(d.values()) for d in daily.values()) if daily else 1
 
         for date in sorted(daily.keys())[-14:]:  # Last 14 days
             data = daily[date]
@@ -220,14 +212,16 @@ def export_to_csv(entries: list[dict[str, Any]]) -> Path:
         )
         writer.writeheader()
         for entry in entries:
-            writer.writerow({
-                "timestamp": entry.get("timestamp", ""),
-                "tool": entry.get("tool", ""),
-                "model": entry.get("model", ""),
-                "success": entry.get("success", ""),
-                "prompt": entry.get("prompt", "")[:500],
-                "response": entry.get("response", "")[:500],
-            })
+            writer.writerow(
+                {
+                    "timestamp": entry.get("timestamp", ""),
+                    "tool": entry.get("tool", ""),
+                    "model": entry.get("model", ""),
+                    "success": entry.get("success", ""),
+                    "prompt": entry.get("prompt", "")[:500],
+                    "response": entry.get("response", "")[:500],
+                }
+            )
 
     return csv_file
 
@@ -288,7 +282,7 @@ def main() -> None:
     # Calculate since date
     since = None
     if args.days:
-        since = datetime.now(timezone.utc) - timedelta(days=args.days)
+        since = datetime.now(UTC) - timedelta(days=args.days)
 
     # Load logs
     entries = load_logs(since)

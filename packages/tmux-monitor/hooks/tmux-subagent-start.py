@@ -81,9 +81,7 @@ def main() -> None:
     # DONE ペインのクリーンアップ + 再利用
     respawned = False
     if tmux_has_session(tmux_session):
-        result = run_tmux(
-            "list-panes", "-t", tmux_session, "-F", "#{pane_id}\t#{pane_title}"
-        )
+        result = run_tmux("list-panes", "-t", tmux_session, "-F", "#{pane_id}\t#{pane_title}")
         if result.returncode == 0:
             lines = [l for l in result.stdout.strip().splitlines() if l]
             pane_count = len(lines)

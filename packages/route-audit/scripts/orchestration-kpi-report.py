@@ -206,7 +206,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--out",
-        default="docs/comparisons/[WIP]2026-02-14-orchestration-kpi-scorecard.md",
+        default=".claude/logs/orchestration/scorecard.md",
         help="Markdown 出力先",
     )
     parser.add_argument(

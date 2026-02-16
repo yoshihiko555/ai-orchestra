@@ -26,7 +26,7 @@ import argparse
 import json
 import re
 import subprocess
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 
@@ -68,7 +68,7 @@ def parse_logs(since: str | None = None) -> list[dict]:
     entries = []
     since_dt = None
     if since:
-        since_dt = datetime.fromisoformat(since).replace(tzinfo=timezone.utc)
+        since_dt = datetime.fromisoformat(since).replace(tzinfo=UTC)
 
     with open(LOG_FILE, encoding="utf-8") as f:
         for line in f:
@@ -121,11 +121,13 @@ def get_git_commits(since: str | None = None) -> list[dict]:
             continue
         parts = line.split("|", 2)
         if len(parts) == 3:
-            commits.append({
-                "hash": parts[0][:7],
-                "date": parts[1],
-                "message": parts[2],
-            })
+            commits.append(
+                {
+                    "hash": parts[0][:7],
+                    "date": parts[1],
+                    "message": parts[2],
+                }
+            )
     return commits
 
 
@@ -216,11 +218,13 @@ def summarize_entries(entries: list[dict]) -> dict[str, list[dict]]:
             by_date[date] = {"codex": [], "gemini": []}
 
         if tool in by_date[date]:
-            by_date[date][tool].append({
-                "prompt": entry.get("prompt", "")[:200],
-                "response_preview": entry.get("response", "")[:300],
-                "success": entry.get("success", False),
-            })
+            by_date[date][tool].append(
+                {
+                    "prompt": entry.get("prompt", "")[:200],
+                    "response_preview": entry.get("response", "")[:300],
+                    "success": entry.get("success", False),
+                }
+            )
 
     return by_date
 
@@ -279,7 +283,7 @@ def update_context_file(file_path: Path, session_history: str) -> bool:
 
 def generate_full_checkpoint(since: str | None = None) -> Path | None:
     """Generate a comprehensive checkpoint file."""
-    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H%M%S")
+    timestamp = datetime.now(UTC).strftime("%Y-%m-%d-%H%M%S")
     checkpoint_file = CHECKPOINTS_DIR / f"{timestamp}.md"
 
     # Ensure checkpoints directory exists
@@ -299,16 +303,14 @@ def generate_full_checkpoint(since: str | None = None) -> Path | None:
     lines: list[str] = []
 
     # Header
-    lines.append(f"# Checkpoint: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC")
+    lines.append(f"# Checkpoint: {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S')} UTC")
     lines.append("")
 
     # Summary
     lines.append("## Summary")
     lines.append("")
     total_files = (
-        len(file_changes["created"])
-        + len(file_changes["modified"])
-        + len(file_changes["deleted"])
+        len(file_changes["created"]) + len(file_changes["modified"]) + len(file_changes["deleted"])
     )
     lines.append(f"- **Commits**: {len(commits)}")
     lines.append(
@@ -415,7 +417,7 @@ def generate_full_checkpoint(since: str | None = None) -> Path | None:
 
 def generate_skill_analysis_prompt(checkpoint_content: str) -> str:
     """Generate a prompt for AI to analyze checkpoint and suggest skills."""
-    return f'''Analyze the following checkpoint and identify reusable work patterns that could become skills.
+    return f"""Analyze the following checkpoint and identify reusable work patterns that could become skills.
 
 A "skill" is a repeatable workflow pattern that can be triggered by specific phrases and executed consistently.
 
@@ -472,7 +474,7 @@ A "skill" is a repeatable workflow pattern that can be triggered by specific phr
    - Focus on multi-step workflows that save time when repeated
    - Consider what would be valuable to automate in future sessions
 
-Provide your analysis:'''
+Provide your analysis:"""
 
 
 def save_skill_suggestions(checkpoint_file: Path, suggestions: str) -> Path:
@@ -530,13 +532,13 @@ Examples:
                 prompt_file = checkpoint_file.with_suffix(".analyze-prompt.md")
                 prompt_file.write_text(prompt, encoding="utf-8")
 
-                print(f"\n{'='*60}")
+                print(f"\n{'=' * 60}")
                 print("SKILL ANALYSIS MODE")
-                print(f"{'='*60}")
+                print(f"{'=' * 60}")
                 print(f"\nAnalysis prompt saved to: {prompt_file}")
                 print("\nNext step: Use a subagent to analyze and suggest skills:")
-                print(f'  Read the prompt file and pass it to a subagent for analysis.')
-                print(f"\nThe subagent will identify reusable patterns and suggest new skills.")
+                print("  Read the prompt file and pass it to a subagent for analysis.")
+                print("\nThe subagent will identify reusable patterns and suggest new skills.")
         else:
             print("Failed to create checkpoint.")
         return

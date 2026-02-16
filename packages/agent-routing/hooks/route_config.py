@@ -147,9 +147,7 @@ def get_agent_tool(agent_name: str, config: dict) -> str:
     """config から指定エージェントの tool を取得。未定義なら claude-direct。"""
     agents = config.get("agents", {})
     cfg = agents.get(agent_name, {})
-    return (
-        cfg.get("tool", "claude-direct") if isinstance(cfg, dict) else "claude-direct"
-    )
+    return cfg.get("tool", "claude-direct") if isinstance(cfg, dict) else "claude-direct"
 
 
 def detect_agent(prompt: str) -> tuple[str | None, str]:
@@ -172,11 +170,7 @@ def build_aliases(config: dict) -> dict[str, list[str]]:
         "auto": ["bash:codex", "bash:gemini"],
     }
     for name, cfg in config.get("agents", {}).items():
-        tool = (
-            cfg.get("tool", "claude-direct")
-            if isinstance(cfg, dict)
-            else "claude-direct"
-        )
+        tool = cfg.get("tool", "claude-direct") if isinstance(cfg, dict) else "claude-direct"
         task_alias = f"task:{name}"
         if tool not in aliases:
             aliases[tool] = []
@@ -185,9 +179,7 @@ def build_aliases(config: dict) -> dict[str, list[str]]:
     return aliases
 
 
-def build_cli_suggestion(
-    tool: str, agent: str, trigger: str, config: dict
-) -> str | None:
+def build_cli_suggestion(tool: str, agent: str, trigger: str, config: dict) -> str | None:
     """CLI コマンド提案文字列を構築。claude-direct の場合は None。"""
     if tool == "codex":
         c = config.get("codex", {})

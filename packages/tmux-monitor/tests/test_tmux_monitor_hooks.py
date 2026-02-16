@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 from types import SimpleNamespace
 
@@ -140,4 +139,3 @@ def test_handle_progress_prints_only_bash_progress(capsys) -> None:
 def test_handle_progress_skips_empty_content(capsys) -> None:
     tmux_format_output.handle_progress({"type": "bash_progress", "content": ""})
     assert capsys.readouterr().out == ""
-

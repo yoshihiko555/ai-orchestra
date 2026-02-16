@@ -23,4 +23,3 @@ def test_get_field_returns_value_or_empty_string() -> None:
     assert hook_common.get_field(data, "empty") == ""
     assert hook_common.get_field(data, "none") == ""
     assert hook_common.get_field(data, "zero") == ""
-

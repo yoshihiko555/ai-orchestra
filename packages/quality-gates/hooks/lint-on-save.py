@@ -108,8 +108,7 @@ def main():
             output = {
                 "hookSpecificOutput": {
                     "hookEventName": "PostToolUse",
-                    "additionalContext": f"[Lint {status}] {file_path}\n"
-                    + "\n".join(messages),
+                    "additionalContext": f"[Lint {status}] {file_path}\n" + "\n".join(messages),
                 }
             }
             print(json.dumps(output))

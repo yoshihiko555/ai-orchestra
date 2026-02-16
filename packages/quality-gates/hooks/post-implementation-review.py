@@ -7,7 +7,6 @@ when 3+ files or 100+ lines have been modified.
 """
 
 import json
-import os
 import sys
 from pathlib import Path
 

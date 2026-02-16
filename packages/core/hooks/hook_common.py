@@ -7,7 +7,8 @@ import functools
 import json
 import os
 import sys
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 
 def deep_merge(base: dict, override: dict) -> dict:
@@ -28,17 +29,13 @@ def find_package_config(package_name: str, filename: str, project_dir: str) -> s
     1. {project_dir}/.claude/config/{package_name}/{filename}
     2. $AI_ORCHESTRA_DIR/packages/{package_name}/config/{filename}
     """
-    project_path = os.path.join(
-        project_dir, ".claude", "config", package_name, filename
-    )
+    project_path = os.path.join(project_dir, ".claude", "config", package_name, filename)
     if os.path.isfile(project_path):
         return project_path
 
     orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
     if orchestra_dir:
-        orchestra_path = os.path.join(
-            orchestra_dir, "packages", package_name, "config", filename
-        )
+        orchestra_path = os.path.join(orchestra_dir, "packages", package_name, "config", filename)
         if os.path.isfile(orchestra_path):
             return orchestra_path
 

@@ -38,8 +38,6 @@ def test_should_suggest_gemini_true_for_long_query() -> None:
 
 
 def test_should_suggest_gemini_false_when_no_condition_matches() -> None:
-    should_suggest, reason = suggest_gemini_research.should_suggest_gemini(
-        "what time is it now?"
-    )
+    should_suggest, reason = suggest_gemini_research.should_suggest_gemini("what time is it now?")
     assert not should_suggest
     assert reason == ""

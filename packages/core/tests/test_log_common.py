@@ -74,4 +74,3 @@ def test_append_event_writes_standard_record(tmp_path) -> None:
     assert record["hook"] == "hook-a"
     assert record["data"] == {"foo": "bar"}
     assert record["timestamp"]
-

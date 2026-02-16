@@ -15,7 +15,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any
 
 
 @dataclass
@@ -23,10 +23,10 @@ class HookEntry:
     """フックエントリ（manifest.json の hooks 値）"""
 
     file: str
-    matcher: Optional[str] = None
+    matcher: str | None = None
 
     @classmethod
-    def from_json(cls, value: Union[str, Dict[str, str]]) -> "HookEntry":
+    def from_json(cls, value: str | dict[str, str]) -> "HookEntry":
         """JSON 値から HookEntry を生成"""
         if isinstance(value, str):
             return cls(file=value)
@@ -40,20 +40,20 @@ class Package:
     name: str
     version: str
     description: str
-    depends: List[str]
-    hooks: Dict[str, List[HookEntry]]
-    files: List[str]
-    scripts: List[str]
-    config: List[str]
-    skills: List[str]
-    agents: List[str]
-    rules: List[str]
+    depends: list[str]
+    hooks: dict[str, list[HookEntry]]
+    files: list[str]
+    scripts: list[str]
+    config: list[str]
+    skills: list[str]
+    agents: list[str]
+    rules: list[str]
     path: Path
 
     @classmethod
     def load(cls, manifest_path: Path) -> "Package":
         """manifest.json からパッケージ情報をロード"""
-        with open(manifest_path, "r", encoding="utf-8") as f:
+        with open(manifest_path, encoding="utf-8") as f:
             data = json.load(f)
 
         hooks = {}
@@ -86,7 +86,7 @@ class OrchestraManager:
         self.orchestra_dir = orchestra_dir
         self.packages_dir = orchestra_dir / "packages"
 
-    def load_packages(self) -> Dict[str, Package]:
+    def load_packages(self) -> dict[str, Package]:
         """全パッケージをロード"""
         packages = {}
         for manifest_path in self.packages_dir.glob("*/manifest.json"):
@@ -94,14 +94,14 @@ class OrchestraManager:
             packages[pkg.name] = pkg
         return packages
 
-    def load_presets(self) -> Dict[str, Any]:
+    def load_presets(self) -> dict[str, Any]:
         """presets.json を読み込み、__all__ を全パッケージ名に展開"""
         presets_path = self.orchestra_dir / "presets.json"
         if not presets_path.exists():
             print("エラー: presets.json が見つかりません", file=sys.stderr)
             sys.exit(1)
 
-        with open(presets_path, "r", encoding="utf-8") as f:
+        with open(presets_path, encoding="utf-8") as f:
             presets = json.load(f)
 
         all_package_names = sorted(self.load_packages().keys())
@@ -111,14 +111,14 @@ class OrchestraManager:
 
         return presets
 
-    def resolve_install_order(self, package_names: List[str]) -> List[str]:
+    def resolve_install_order(self, package_names: list[str]) -> list[str]:
         """依存関係を考慮したインストール順を返す（トポロジカルソート）"""
         packages = self.load_packages()
         target_set = set(package_names)
 
         # 隣接リスト（依存先 → 依存元）と入次数を構築
-        in_degree: Dict[str, int] = {name: 0 for name in package_names}
-        dependents: Dict[str, List[str]] = {name: [] for name in package_names}
+        in_degree: dict[str, int] = {name: 0 for name in package_names}
+        dependents: dict[str, list[str]] = {name: [] for name in package_names}
 
         for name in package_names:
             pkg = packages.get(name)
@@ -131,7 +131,7 @@ class OrchestraManager:
 
         # Kahn のアルゴリズム
         queue = sorted([n for n in package_names if in_degree[n] == 0])
-        result: List[str] = []
+        result: list[str] = []
 
         while queue:
             node = queue.pop(0)
@@ -144,9 +144,7 @@ class OrchestraManager:
 
         if len(result) != len(package_names):
             # 循環依存がある場合は元の順序で返す
-            print(
-                "警告: 循環依存が検出されました。元の順序で実行します", file=sys.stderr
-            )
+            print("警告: 循環依存が検出されました。元の順序で実行します", file=sys.stderr)
             return package_names
 
         return result
@@ -158,7 +156,7 @@ class OrchestraManager:
             pkg = packages[name]
             print(f"{name:20} {pkg.version:10} {pkg.description}")
 
-    def get_project_dir(self, project_arg: Optional[str]) -> Path:
+    def get_project_dir(self, project_arg: str | None) -> Path:
         """プロジェクトディレクトリを取得"""
         if project_arg:
             return Path(project_arg).resolve()
@@ -166,15 +164,15 @@ class OrchestraManager:
             return Path(os.environ["CLAUDE_PROJECT_DIR"]).resolve()
         return Path.cwd()
 
-    def load_settings(self, project_dir: Path) -> Dict[str, Any]:
+    def load_settings(self, project_dir: Path) -> dict[str, Any]:
         """settings.local.json をロード"""
         settings_path = project_dir / ".claude" / "settings.local.json"
         if not settings_path.exists():
             return {"hooks": {}}
-        with open(settings_path, "r", encoding="utf-8") as f:
+        with open(settings_path, encoding="utf-8") as f:
             return json.load(f)
 
-    def save_settings(self, project_dir: Path, settings: Dict[str, Any]) -> None:
+    def save_settings(self, project_dir: Path, settings: dict[str, Any]) -> None:
         """settings.local.json を保存"""
         settings_path = project_dir / ".claude" / "settings.local.json"
         settings_path.parent.mkdir(parents=True, exist_ok=True)
@@ -182,15 +180,15 @@ class OrchestraManager:
             json.dump(settings, f, indent=2, ensure_ascii=False)
             f.write("\n")
 
-    def load_orchestra_json(self, project_dir: Path) -> Dict[str, Any]:
+    def load_orchestra_json(self, project_dir: Path) -> dict[str, Any]:
         """orchestra.json をロード"""
         path = project_dir / ".claude" / "orchestra.json"
         if not path.exists():
             return {"installed_packages": [], "orchestra_dir": "", "last_sync": ""}
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
 
-    def save_orchestra_json(self, project_dir: Path, data: Dict[str, Any]) -> None:
+    def save_orchestra_json(self, project_dir: Path, data: dict[str, Any]) -> None:
         """orchestra.json を保存"""
         path = project_dir / ".claude" / "orchestra.json"
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -200,11 +198,11 @@ class OrchestraManager:
 
     def is_hook_registered(
         self,
-        settings: Dict[str, Any],
+        settings: dict[str, Any],
         event: str,
         filename: str,
         pkg_name: str,
-        matcher: Optional[str] = None,
+        matcher: str | None = None,
     ) -> bool:
         """フックが settings.local.json に登録されているかチェック"""
         hooks = settings.get("hooks", {})
@@ -228,7 +226,7 @@ class OrchestraManager:
         return False
 
     def has_installed_dependents(
-        self, pkg_name: str, installed: List[str], packages: Dict[str, "Package"]
+        self, pkg_name: str, installed: list[str], packages: dict[str, "Package"]
     ) -> bool:
         """指定パッケージに依存するインストール済みパッケージがあるか"""
         for inst_name in installed:
@@ -237,9 +235,7 @@ class OrchestraManager:
                 return True
         return False
 
-    def get_package_status(
-        self, pkg: Package, project_dir: Path
-    ) -> tuple[str, int, int]:
+    def get_package_status(self, pkg: Package, project_dir: Path) -> tuple[str, int, int]:
         """パッケージの導入状況を判定"""
         # orchestra.json ベースでチェック
         orch = self.load_orchestra_json(project_dir)
@@ -279,9 +275,7 @@ class OrchestraManager:
         registered = 0
         for event, entries in pkg.hooks.items():
             for entry in entries:
-                if self.is_hook_registered(
-                    settings, event, entry.file, pkg.name, entry.matcher
-                ):
+                if self.is_hook_registered(settings, event, entry.file, pkg.name, entry.matcher):
                     registered += 1
 
         if registered == 0:
@@ -291,7 +285,7 @@ class OrchestraManager:
         else:
             return ("partial", registered, total)
 
-    def status(self, project: Optional[str]) -> None:
+    def status(self, project: str | None) -> None:
         """プロジェクトでのパッケージ導入状況を表示"""
         project_dir = self.get_project_dir(project)
         packages = self.load_packages()
@@ -316,15 +310,15 @@ class OrchestraManager:
                             settings, event, entry.file, pkg.name, entry.matcher
                         ):
                             missing.append(entry.file)
-                hooks_info = f"{registered}/{total} hooks registered (missing: {', '.join(missing)})"
+                hooks_info = (
+                    f"{registered}/{total} hooks registered (missing: {', '.join(missing)})"
+                )
             else:
                 hooks_info = f"{registered}/{total} hooks registered"
 
             print(f"{name:<20} {status:<15} {hooks_info}")
 
-    def check_dependencies(
-        self, pkg: Package, installed_packages: set[str]
-    ) -> List[str]:
+    def check_dependencies(self, pkg: Package, installed_packages: set[str]) -> list[str]:
         """依存パッケージのチェック"""
         missing = []
         for dep in pkg.depends:
@@ -338,11 +332,11 @@ class OrchestraManager:
 
     def add_hook_to_settings(
         self,
-        settings: Dict[str, Any],
+        settings: dict[str, Any],
         event: str,
         filename: str,
         pkg_name: str,
-        matcher: Optional[str] = None,
+        matcher: str | None = None,
         timeout: int = 5,
     ) -> None:
         """settings.local.json にフックを追加"""
@@ -379,11 +373,11 @@ class OrchestraManager:
 
     def remove_hook_from_settings(
         self,
-        settings: Dict[str, Any],
+        settings: dict[str, Any],
         event: str,
         filename: str,
         pkg_name: str,
-        matcher: Optional[str] = None,
+        matcher: str | None = None,
     ) -> None:
         """settings.local.json からフックを削除"""
         if "hooks" not in settings or event not in settings["hooks"]:
@@ -399,21 +393,17 @@ class OrchestraManager:
                 if "matcher" in entry:
                     continue
 
-            entry["hooks"] = [
-                h for h in entry.get("hooks", []) if h.get("command") != command
-            ]
+            entry["hooks"] = [h for h in entry.get("hooks", []) if h.get("command") != command]
 
-        settings["hooks"][event] = [
-            e for e in settings["hooks"][event] if e.get("hooks")
-        ]
+        settings["hooks"][event] = [e for e in settings["hooks"][event] if e.get("hooks")]
 
     def setup_env_var(self, dry_run: bool = False) -> None:
         """~/.claude/settings.json の env.AI_ORCHESTRA_DIR を設定"""
         global_settings_path = Path.home() / ".claude" / "settings.json"
-        global_settings: Dict[str, Any] = {}
+        global_settings: dict[str, Any] = {}
 
         if global_settings_path.exists():
-            with open(global_settings_path, "r", encoding="utf-8") as f:
+            with open(global_settings_path, encoding="utf-8") as f:
                 global_settings = json.load(f)
 
         env = global_settings.get("env", {})
@@ -437,7 +427,7 @@ class OrchestraManager:
 
         print(f"環境変数設定: AI_ORCHESTRA_DIR={orchestra_dir_str}")
 
-    def is_sync_hook_registered(self, settings: Dict[str, Any]) -> bool:
+    def is_sync_hook_registered(self, settings: dict[str, Any]) -> bool:
         """sync-orchestra の SessionStart hook が登録されているかチェック"""
         hooks = settings.get("hooks", {})
         for entry in hooks.get("SessionStart", []):
@@ -448,9 +438,7 @@ class OrchestraManager:
                     return True
         return False
 
-    def register_sync_hook(
-        self, settings: Dict[str, Any], dry_run: bool = False
-    ) -> None:
+    def register_sync_hook(self, settings: dict[str, Any], dry_run: bool = False) -> None:
         """sync-orchestra の SessionStart hook を登録"""
         if self.is_sync_hook_registered(settings):
             print("sync-orchestra hook は登録済み")
@@ -486,7 +474,7 @@ class OrchestraManager:
 
         print("sync-orchestra hook 登録: SessionStart")
 
-    def remove_sync_hook(self, settings: Dict[str, Any]) -> None:
+    def remove_sync_hook(self, settings: dict[str, Any]) -> None:
         """sync-orchestra の SessionStart hook を削除"""
         if "hooks" not in settings or "SessionStart" not in settings["hooks"]:
             return
@@ -495,9 +483,7 @@ class OrchestraManager:
             if "matcher" in entry:
                 continue
             entry["hooks"] = [
-                h
-                for h in entry.get("hooks", [])
-                if h.get("command") != self.SYNC_HOOK_COMMAND
+                h for h in entry.get("hooks", []) if h.get("command") != self.SYNC_HOOK_COMMAND
             ]
 
         settings["hooks"]["SessionStart"] = [
@@ -570,16 +556,14 @@ class OrchestraManager:
     def install(
         self,
         package_name: str,
-        project: Optional[str],
+        project: str | None,
         dry_run: bool = False,
         _skip_dep_check: bool = False,
     ) -> None:
         """パッケージをインストール"""
         packages = self.load_packages()
         if package_name not in packages:
-            print(
-                f"エラー: パッケージ '{package_name}' が見つかりません", file=sys.stderr
-            )
+            print(f"エラー: パッケージ '{package_name}' が見つかりません", file=sys.stderr)
             sys.exit(1)
 
         pkg = packages[package_name]
@@ -623,9 +607,7 @@ class OrchestraManager:
                         + (f" (matcher: {entry.matcher})" if entry.matcher else "")
                     )
                 else:
-                    self.add_hook_to_settings(
-                        settings, event, entry.file, pkg.name, entry.matcher
-                    )
+                    self.add_hook_to_settings(settings, event, entry.file, pkg.name, entry.matcher)
 
         # 4. sync-orchestra の SessionStart hook を登録（初回のみ）
         self.register_sync_hook(settings, dry_run)
@@ -639,28 +621,22 @@ class OrchestraManager:
                 installed_packages.add(pkg.name)
             orch["installed_packages"] = sorted(installed_packages)
             orch["orchestra_dir"] = str(self.orchestra_dir)
-            orch["last_sync"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            orch["last_sync"] = datetime.datetime.now(datetime.UTC).isoformat()
             self.save_orchestra_json(project_dir, orch)
 
         # 6. 初回同期を実行（skills/agents/rules/config をコピー）
         self.run_initial_sync(project_dir, dry_run)
 
         if dry_run:
-            print(
-                f"\n[DRY-RUN] orchestra.json 記録: installed_packages に '{package_name}' を追加"
-            )
+            print(f"\n[DRY-RUN] orchestra.json 記録: installed_packages に '{package_name}' を追加")
         else:
             print(f"\n✓ パッケージ '{package_name}' をインストールしました")
 
-    def uninstall(
-        self, package_name: str, project: Optional[str], dry_run: bool = False
-    ) -> None:
+    def uninstall(self, package_name: str, project: str | None, dry_run: bool = False) -> None:
         """パッケージをアンインストール"""
         packages = self.load_packages()
         if package_name not in packages:
-            print(
-                f"エラー: パッケージ '{package_name}' が見つかりません", file=sys.stderr
-            )
+            print(f"エラー: パッケージ '{package_name}' が見つかりません", file=sys.stderr)
             sys.exit(1)
 
         pkg = packages[package_name]
@@ -731,7 +707,7 @@ class OrchestraManager:
         if not dry_run:
             print(f"\n✓ パッケージ '{package_name}' をアンインストールしました")
 
-    def init(self, project: Optional[str], dry_run: bool = False) -> None:
+    def init(self, project: str | None, dry_run: bool = False) -> None:
         """プロジェクトを初期化（ディレクトリ構造 + テンプレート配置）"""
         project_dir = self.get_project_dir(project)
         templates_dir = self.orchestra_dir / "templates"
@@ -761,11 +737,7 @@ class OrchestraManager:
             / ".claude"
             / "docs"
             / "DESIGN.md",
-            templates_dir
-            / "project"
-            / "docs"
-            / "libraries"
-            / "_TEMPLATE.md": project_dir
+            templates_dir / "project" / "docs" / "libraries" / "_TEMPLATE.md": project_dir
             / ".claude"
             / "docs"
             / "libraries"
@@ -775,11 +747,7 @@ class OrchestraManager:
             / "docs"
             / "research"
             / ".gitkeep",
-            templates_dir
-            / "project"
-            / "logs"
-            / "orchestration"
-            / ".gitkeep": project_dir
+            templates_dir / "project" / "logs" / "orchestration" / ".gitkeep": project_dir
             / ".claude"
             / "logs"
             / "orchestration"
@@ -875,15 +843,11 @@ class OrchestraManager:
         if not dry_run:
             print(f"\n✓ プロジェクトを初期化しました: {project_dir}")
 
-    def enable(
-        self, package_name: str, project: Optional[str], dry_run: bool = False
-    ) -> None:
+    def enable(self, package_name: str, project: str | None, dry_run: bool = False) -> None:
         """パッケージを有効化（settings.local.json にフック登録を復元）"""
         packages = self.load_packages()
         if package_name not in packages:
-            print(
-                f"エラー: パッケージ '{package_name}' が見つかりません", file=sys.stderr
-            )
+            print(f"エラー: パッケージ '{package_name}' が見つかりません", file=sys.stderr)
             sys.exit(1)
 
         pkg = packages[package_name]
@@ -898,23 +862,17 @@ class OrchestraManager:
                         + (f" (matcher: {entry.matcher})" if entry.matcher else "")
                     )
                 else:
-                    self.add_hook_to_settings(
-                        settings, event, entry.file, pkg.name, entry.matcher
-                    )
+                    self.add_hook_to_settings(settings, event, entry.file, pkg.name, entry.matcher)
 
         if not dry_run:
             self.save_settings(project_dir, settings)
             print(f"\n✓ パッケージ '{package_name}' を有効化しました")
 
-    def disable(
-        self, package_name: str, project: Optional[str], dry_run: bool = False
-    ) -> None:
+    def disable(self, package_name: str, project: str | None, dry_run: bool = False) -> None:
         """パッケージを無効化（settings.local.json からフック登録を削除）"""
         packages = self.load_packages()
         if package_name not in packages:
-            print(
-                f"エラー: パッケージ '{package_name}' が見つかりません", file=sys.stderr
-            )
+            print(f"エラー: パッケージ '{package_name}' が見つかりません", file=sys.stderr)
             sys.exit(1)
 
         pkg = packages[package_name]
@@ -937,7 +895,7 @@ class OrchestraManager:
             self.save_settings(project_dir, settings)
             print(f"\n✓ パッケージ '{package_name}' を無効化しました")
 
-    def resolve_script_path(self, pkg: Package, script_name: str) -> Optional[Path]:
+    def resolve_script_path(self, pkg: Package, script_name: str) -> Path | None:
         """スクリプト名を解決してファイルパスを返す
 
         manifest の scripts エントリと照合し、実ファイルのパスを返す。
@@ -960,15 +918,13 @@ class OrchestraManager:
         self,
         package_name: str,
         script_name: str,
-        project: Optional[str],
-        script_args: List[str],
+        project: str | None,
+        script_args: list[str],
     ) -> None:
         """パッケージのスクリプトを実行"""
         packages = self.load_packages()
         if package_name not in packages:
-            print(
-                f"エラー: パッケージ '{package_name}' が見つかりません", file=sys.stderr
-            )
+            print(f"エラー: パッケージ '{package_name}' が見つかりません", file=sys.stderr)
             sys.exit(1)
 
         pkg = packages[package_name]
@@ -1001,7 +957,7 @@ class OrchestraManager:
         result = subprocess.run(cmd, cwd=project_dir)
         sys.exit(result.returncode)
 
-    def list_scripts(self, package_filter: Optional[str] = None) -> None:
+    def list_scripts(self, package_filter: str | None = None) -> None:
         """パッケージのスクリプト一覧を表示"""
         packages = self.load_packages()
 
@@ -1016,7 +972,7 @@ class OrchestraManager:
         else:
             target_packages = packages
 
-        rows: List[tuple[str, str, str]] = []
+        rows: list[tuple[str, str, str]] = []
         for name in sorted(target_packages.keys()):
             pkg = target_packages[name]
             for entry in pkg.scripts:
@@ -1037,16 +993,13 @@ class OrchestraManager:
         for pkg_name, short_name, display_path in rows:
             print(f"{pkg_name:<20} {short_name:<30} {display_path}")
 
-    def setup(
-        self, preset_name: str, project: Optional[str], dry_run: bool = False
-    ) -> None:
+    def setup(self, preset_name: str, project: str | None, dry_run: bool = False) -> None:
         """プリセットを使って一括セットアップ"""
         presets = self.load_presets()
         if preset_name not in presets:
             available = ", ".join(sorted(presets.keys()))
             print(
-                f"エラー: プリセット '{preset_name}' が見つかりません\n"
-                f"利用可能: {available}",
+                f"エラー: プリセット '{preset_name}' が見つかりません\n利用可能: {available}",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -1071,9 +1024,7 @@ class OrchestraManager:
         if dry_run:
             print("[DRY-RUN] 以下のパッケージをインストールします:")
             for i, name in enumerate(ordered, 1):
-                skip = (
-                    " (スキップ: インストール済み)" if name in already_installed else ""
-                )
+                skip = " (スキップ: インストール済み)" if name in already_installed else ""
                 print(f"  [{i + 1}/{total_steps}] {name}{skip}")
             print()
 
@@ -1089,9 +1040,7 @@ class OrchestraManager:
         for i, pkg_name in enumerate(ordered):
             step = i + 2
             if pkg_name in already_installed:
-                print(
-                    f"[{step}/{total_steps}] {pkg_name} はインストール済み（スキップ）"
-                )
+                print(f"[{step}/{total_steps}] {pkg_name} はインストール済み（スキップ）")
                 skipped_count += 1
                 continue
 
@@ -1130,9 +1079,7 @@ def main():
     # init コマンド
     init_parser = subparsers.add_parser("init", help="プロジェクトを初期化")
     init_parser.add_argument("--project", help="プロジェクトパス")
-    init_parser.add_argument(
-        "--dry-run", action="store_true", help="実行内容を表示のみ"
-    )
+    init_parser.add_argument("--dry-run", action="store_true", help="実行内容を表示のみ")
 
     # list コマンド
     subparsers.add_parser("list", help="パッケージ一覧を表示")
@@ -1145,35 +1092,25 @@ def main():
     install_parser = subparsers.add_parser("install", help="パッケージをインストール")
     install_parser.add_argument("package", help="パッケージ名")
     install_parser.add_argument("--project", help="プロジェクトパス")
-    install_parser.add_argument(
-        "--dry-run", action="store_true", help="実行内容を表示のみ"
-    )
+    install_parser.add_argument("--dry-run", action="store_true", help="実行内容を表示のみ")
 
     # uninstall コマンド
-    uninstall_parser = subparsers.add_parser(
-        "uninstall", help="パッケージをアンインストール"
-    )
+    uninstall_parser = subparsers.add_parser("uninstall", help="パッケージをアンインストール")
     uninstall_parser.add_argument("package", help="パッケージ名")
     uninstall_parser.add_argument("--project", help="プロジェクトパス")
-    uninstall_parser.add_argument(
-        "--dry-run", action="store_true", help="実行内容を表示のみ"
-    )
+    uninstall_parser.add_argument("--dry-run", action="store_true", help="実行内容を表示のみ")
 
     # enable コマンド
     enable_parser = subparsers.add_parser("enable", help="パッケージを有効化")
     enable_parser.add_argument("package", help="パッケージ名")
     enable_parser.add_argument("--project", help="プロジェクトパス")
-    enable_parser.add_argument(
-        "--dry-run", action="store_true", help="実行内容を表示のみ"
-    )
+    enable_parser.add_argument("--dry-run", action="store_true", help="実行内容を表示のみ")
 
     # disable コマンド
     disable_parser = subparsers.add_parser("disable", help="パッケージを無効化")
     disable_parser.add_argument("package", help="パッケージ名")
     disable_parser.add_argument("--project", help="プロジェクトパス")
-    disable_parser.add_argument(
-        "--dry-run", action="store_true", help="実行内容を表示のみ"
-    )
+    disable_parser.add_argument("--dry-run", action="store_true", help="実行内容を表示のみ")
 
     # run コマンド
     run_parser = subparsers.add_parser(
@@ -1194,13 +1131,11 @@ def main():
     setup_parser = subparsers.add_parser("setup", help="プリセットで一括セットアップ")
     setup_parser.add_argument("preset", help="プリセット名（essential / all）")
     setup_parser.add_argument("--project", help="プロジェクトパス")
-    setup_parser.add_argument(
-        "--dry-run", action="store_true", help="実行内容を表示のみ"
-    )
+    setup_parser.add_argument("--dry-run", action="store_true", help="実行内容を表示のみ")
 
     # run コマンドの -- 以降をスクリプト引数として分離
     argv = sys.argv[1:]
-    script_args: List[str] = []
+    script_args: list[str] = []
     if "--" in argv:
         sep_idx = argv.index("--")
         script_args = argv[sep_idx + 1 :]

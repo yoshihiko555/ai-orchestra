@@ -10,7 +10,6 @@ import argparse
 import datetime
 import json
 import os
-import sys
 from collections import Counter
 
 DEFAULT_EVENTS_PATH = os.path.join(".claude", "logs", "orchestration", "events.jsonl")
@@ -168,11 +167,15 @@ def render_dashboard(
     lines.append(row(f"Route Match: {rate}%  {bar}"))
 
     # CLI
-    lines.append(row(f"CLI: Codex {cli['codex']} / Gemini {cli['gemini']}  Success: {cli['success_rate']}%"))
+    lines.append(
+        row(f"CLI: Codex {cli['codex']} / Gemini {cli['gemini']}  Success: {cli['success_rate']}%")
+    )
 
     # Quality
     q_bar = _bar(quality["rate"] / 100)
-    lines.append(row(f"Tests: {quality['passed']}/{quality['total']} passed  {q_bar}  {quality['rate']}%"))
+    lines.append(
+        row(f"Tests: {quality['passed']}/{quality['total']} passed  {q_bar}  {quality['rate']}%")
+    )
 
     # Distribution
     dist_parts = [f"{k} {v}" for k, v in distribution.items()]

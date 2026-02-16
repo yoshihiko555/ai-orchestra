@@ -10,16 +10,13 @@ import json
 import os
 import sys
 
-
 from tests.module_loader import REPO_ROOT, load_module
 
 os.environ["AI_ORCHESTRA_DIR"] = str(REPO_ROOT)
 sys.path.insert(0, str(REPO_ROOT / "packages" / "core" / "hooks"))
 sys.path.insert(0, str(REPO_ROOT / "packages" / "agent-routing" / "hooks"))
 
-agent_router = load_module(
-    "agent_router", "packages/agent-routing/hooks/agent-router.py"
-)
+agent_router = load_module("agent_router", "packages/agent-routing/hooks/agent-router.py")
 
 
 def _run_hook(prompt: str, cwd: str | None = None) -> dict:

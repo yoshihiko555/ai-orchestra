@@ -35,9 +35,7 @@ def find_pane_by_title(tmux_session: str, agent_id: str) -> str | None:
 
     Returns: ペインID（例: "%5"）。見つからなければ None。
     """
-    result = run_tmux(
-        "list-panes", "-t", tmux_session, "-F", "#{pane_id}:#{pane_title}"
-    )
+    result = run_tmux("list-panes", "-t", tmux_session, "-F", "#{pane_id}:#{pane_title}")
     if result.returncode != 0:
         return None
 
@@ -90,12 +88,8 @@ def main() -> None:
         run_tmux("select-pane", "-t", pane_id, "-T", f"DONE: {label}")
 
         # ペインのボーダースタイルを緑に変更
-        run_tmux(
-            "set-option", "-t", pane_id, "pane-border-style", "fg=green"
-        )
-        run_tmux(
-            "set-option", "-t", pane_id, "pane-active-border-style", "fg=green"
-        )
+        run_tmux("set-option", "-t", pane_id, "pane-border-style", "fg=green")
+        run_tmux("set-option", "-t", pane_id, "pane-active-border-style", "fg=green")
 
     # pane info ファイルを削除（クリーンアップ）
     try:

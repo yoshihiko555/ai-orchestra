@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SessionStart hook: ai-orchestra パッケージの skills/agents/rules/config を自動同期する。
+SessionStart hook: ai-orchestra パッケージの skills/agents/rules/config/hooks を自動同期する。
 
 処理フロー:
 1. .claude/orchestra.json を読み込み → インストール済みパッケージ一覧を取得
@@ -9,6 +9,7 @@ SessionStart hook: ai-orchestra パッケージの skills/agents/rules/config �
 4. config/*.local.yaml はプロジェクト固有設定のため同期・削除の対象外
 5. 前回 synced_files にあって今回ないファイルを削除（ソース側で削除されたファイルの反映）
 6. synced_files リストと last_sync タイムスタンプを更新
+7. manifest.json の hooks と settings.local.json を比較し、不足/余剰 hook を同期
 
 パフォーマンス: 変更なしの場合 ~70ms（Python 起動 + mtime 比較のみ）
 """
@@ -47,14 +48,10 @@ def needs_sync(src: Path, dst: Path) -> bool:
 def is_local_override(category: str, rel_path: Path) -> bool:
     """プロジェクト固有の上書きファイル（*.local.yaml / *.local.json）かどうか判定"""
     name = rel_path.name
-    return category == "config" and (
-        name.endswith(".local.yaml") or name.endswith(".local.json")
-    )
+    return category == "config" and (name.endswith(".local.yaml") or name.endswith(".local.json"))
 
 
-def remove_stale_files(
-    claude_dir: Path, prev_synced: list[str], current_synced: set[str]
-) -> int:
+def remove_stale_files(claude_dir: Path, prev_synced: list[str], current_synced: set[str]) -> int:
     """前回同期したが今回は対象外になったファイルを削除する。
 
     削除後に空になったディレクトリも再帰的に削除する。
@@ -82,6 +79,205 @@ def remove_stale_files(
     return removed
 
 
+def _get_hook_command(pkg_name: str, filename: str) -> str:
+    """フックコマンド文字列を生成（orchestra-manager.py と同じ形式）"""
+    return f'python3 "$AI_ORCHESTRA_DIR/packages/{pkg_name}/hooks/{filename}"'
+
+
+def _parse_hook_entry(value: object) -> tuple[str, str | None]:
+    """manifest.json の hooks 値から (file, matcher) を取得"""
+    if isinstance(value, str):
+        return value, None
+    if isinstance(value, dict):
+        return value["file"], value.get("matcher")
+    return "", None
+
+
+def _find_hook_in_settings(
+    settings_hooks: dict, event: str, command: str, matcher: str | None
+) -> bool:
+    """settings.local.json に指定 hook が登録済みか判定"""
+    for entry in settings_hooks.get(event, []):
+        if matcher:
+            if entry.get("matcher") != matcher:
+                continue
+        else:
+            if "matcher" in entry:
+                continue
+        for hook in entry.get("hooks", []):
+            if hook.get("command") == command:
+                return True
+    return False
+
+
+def _add_hook_to_settings(
+    settings_hooks: dict,
+    event: str,
+    command: str,
+    matcher: str | None,
+    timeout: int = 5,
+) -> None:
+    """settings.local.json に hook を追加"""
+    if event not in settings_hooks:
+        settings_hooks[event] = []
+
+    hook_obj = {"type": "command", "command": command, "timeout": timeout}
+
+    target_entry = None
+    for entry in settings_hooks[event]:
+        if matcher:
+            if entry.get("matcher") == matcher:
+                target_entry = entry
+                break
+        else:
+            if "matcher" not in entry:
+                target_entry = entry
+                break
+
+    if target_entry is None:
+        target_entry = {"hooks": []}
+        if matcher:
+            target_entry["matcher"] = matcher
+        settings_hooks[event].append(target_entry)
+
+    for hook in target_entry["hooks"]:
+        if hook.get("command") == command:
+            return
+
+    target_entry["hooks"].append(hook_obj)
+
+
+def _remove_hook_from_settings(
+    settings_hooks: dict,
+    event: str,
+    command: str,
+    matcher: str | None,
+) -> None:
+    """settings.local.json から hook を削除"""
+    if event not in settings_hooks:
+        return
+
+    for entry in settings_hooks[event]:
+        if matcher:
+            if entry.get("matcher") != matcher:
+                continue
+        else:
+            if "matcher" in entry:
+                continue
+        entry["hooks"] = [h for h in entry.get("hooks", []) if h.get("command") != command]
+
+    # hooks が空になったエントリを除去
+    settings_hooks[event] = [e for e in settings_hooks[event] if e.get("hooks")]
+
+
+def _is_orchestra_hook(command: str) -> bool:
+    """コマンドが $AI_ORCHESTRA_DIR/packages/*/hooks/* パターンか判定"""
+    return command.startswith('python3 "$AI_ORCHESTRA_DIR/packages/') and "/hooks/" in command
+
+
+def _parse_pkg_from_command(command: str) -> str | None:
+    """hook コマンドからパッケージ名を抽出"""
+    # python3 "$AI_ORCHESTRA_DIR/packages/{pkg}/hooks/{file}"
+    prefix = 'python3 "$AI_ORCHESTRA_DIR/packages/'
+    if not command.startswith(prefix):
+        return None
+    rest = command[len(prefix) :]
+    slash_idx = rest.find("/")
+    if slash_idx < 0:
+        return None
+    return rest[:slash_idx]
+
+
+def sync_hooks(
+    project_dir: Path,
+    orchestra_path: Path,
+    installed_packages: list[str],
+) -> int:
+    """manifest.json の hooks と settings.local.json を比較し差分を同期する。
+
+    Returns:
+        変更があった hook 数（追加 + 削除）
+    """
+    settings_path = project_dir / ".claude" / "settings.local.json"
+    if not settings_path.exists():
+        return 0
+
+    try:
+        with open(settings_path, encoding="utf-8") as f:
+            settings = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return 0
+
+    settings_hooks = settings.get("hooks", {})
+
+    # sync-orchestra 自身の SessionStart hook コマンド（同期対象外）
+    sync_hook_command = 'python3 "$AI_ORCHESTRA_DIR/scripts/sync-orchestra.py"'
+
+    # 1. manifest から期待される hook 一覧を構築
+    # key: (event, command, matcher)
+    expected_hooks: set[tuple[str, str, str | None]] = set()
+    installed_set = set(installed_packages)
+
+    for pkg_name in installed_packages:
+        manifest_path = orchestra_path / "packages" / pkg_name / "manifest.json"
+        if not manifest_path.exists():
+            continue
+        try:
+            with open(manifest_path, encoding="utf-8") as f:
+                manifest = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            continue
+
+        for event, entries in manifest.get("hooks", {}).items():
+            for raw_entry in entries:
+                filename, matcher = _parse_hook_entry(raw_entry)
+                if not filename:
+                    continue
+                command = _get_hook_command(pkg_name, filename)
+                expected_hooks.add((event, command, matcher))
+
+    # 2. 不足 hook を追加
+    added = 0
+    for event, command, matcher in expected_hooks:
+        if not _find_hook_in_settings(settings_hooks, event, command, matcher):
+            _add_hook_to_settings(settings_hooks, event, command, matcher)
+            added += 1
+
+    # 3. 余剰 hook を削除（orchestra パッケージ由来の hook のみ対象）
+    removed = 0
+    for event, entries in list(settings_hooks.items()):
+        for entry in list(entries):
+            matcher = entry.get("matcher")
+            for hook in list(entry.get("hooks", [])):
+                command = hook.get("command", "")
+                if command == sync_hook_command:
+                    continue
+                if not _is_orchestra_hook(command):
+                    continue
+                pkg_name = _parse_pkg_from_command(command)
+                if pkg_name is not None and pkg_name not in installed_set:
+                    # アンインストール済みパッケージの hook → 削除
+                    _remove_hook_from_settings(settings_hooks, event, command, matcher)
+                    removed += 1
+                    continue
+                if (event, command, matcher) not in expected_hooks:
+                    _remove_hook_from_settings(settings_hooks, event, command, matcher)
+                    removed += 1
+
+    # 4. 変更があった場合のみ書き戻す
+    changes = added + removed
+    if changes > 0:
+        settings["hooks"] = settings_hooks
+        try:
+            with open(settings_path, "w", encoding="utf-8") as f:
+                json.dump(settings, f, indent=2, ensure_ascii=False)
+                f.write("\n")
+        except OSError:
+            pass
+
+    return changes
+
+
 def main() -> None:
     data = read_hook_input()
     project_dir = Path(get_project_dir(data))
@@ -92,7 +288,7 @@ def main() -> None:
         return
 
     try:
-        with open(orch_path, "r", encoding="utf-8") as f:
+        with open(orch_path, encoding="utf-8") as f:
             orch = json.load(f)
     except (json.JSONDecodeError, OSError):
         return
@@ -118,7 +314,7 @@ def main() -> None:
             continue
 
         try:
-            with open(manifest_path, "r", encoding="utf-8") as f:
+            with open(manifest_path, encoding="utf-8") as f:
                 manifest = json.load(f)
         except (json.JSONDecodeError, OSError):
             continue
@@ -179,7 +375,7 @@ def main() -> None:
         or "synced_files" not in orch
     )
     if needs_save:
-        orch["last_sync"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        orch["last_sync"] = datetime.datetime.now(datetime.UTC).isoformat()
         orch["synced_files"] = sorted(synced_files)
         try:
             with open(orch_path, "w", encoding="utf-8") as f:
@@ -188,13 +384,18 @@ def main() -> None:
         except OSError:
             pass
 
+    # hooks 同期（manifest.json の hooks と settings.local.json の差分を反映）
+    hooks_changed = sync_hooks(project_dir, orchestra_path, installed_packages)
+
     # SessionStart hook の stdout は Claude コンテキストに注入される
-    if synced_count > 0 or removed_count > 0:
+    if synced_count > 0 or removed_count > 0 or hooks_changed > 0:
         parts = []
         if synced_count > 0:
             parts.append(f"{synced_count} synced")
         if removed_count > 0:
             parts.append(f"{removed_count} removed")
+        if hooks_changed > 0:
+            parts.append(f"{hooks_changed} hooks synced")
         print(f"[orchestra] {', '.join(parts)}")
 
 

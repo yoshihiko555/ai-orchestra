@@ -18,4 +18,3 @@ def load_module(module_name: str, relative_path: str) -> ModuleType:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
-

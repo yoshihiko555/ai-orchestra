@@ -10,7 +10,6 @@ import json
 import re
 import sys
 
-
 # Test command patterns
 TEST_COMMAND_PATTERNS = [
     r"\bpytest\b",
@@ -61,8 +60,7 @@ def extract_failure_summary(output: str) -> str:
     failure_lines = []
     for line in lines:
         if any(
-            indicator in line
-            for indicator in ["FAILED", "Error", "AssertionError", "TypeError"]
+            indicator in line for indicator in ["FAILED", "Error", "AssertionError", "TypeError"]
         ):
             failure_lines.append(line.strip())
             if len(failure_lines) >= 3:

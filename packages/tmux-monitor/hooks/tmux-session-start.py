@@ -137,7 +137,7 @@ def main() -> None:
 
     meta = {
         "session_key": session_key,
-        "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "created_at": datetime.datetime.now(datetime.UTC).isoformat(),
         "project": project_name,
     }
     with open(os.path.join(shared_dir, "meta.json"), "w") as f:
