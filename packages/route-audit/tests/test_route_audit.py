@@ -94,7 +94,31 @@ class TestIsMatch:
         policy = {"aliases": {"claude-direct": ["skill:commit", "skill:memory-tidy"]}}
         assert is_match("claude-direct", "skill:commit", policy) is True
         assert is_match("claude-direct", "skill:memory-tidy", policy) is True
-        assert is_match("claude-direct", "skill:unknown", policy) is False
+        # prefix マッチにより未知のスキルも claude-direct にマッチする
+        assert is_match("claude-direct", "skill:unknown", policy) is True
+
+    def test_skill_prefix_match(self) -> None:
+        """skill:* は prefix マッチで常に claude-direct とマッチする。"""
+        policy: dict = {"aliases": {}}
+        assert is_match("claude-direct", "skill:commit", policy) is True
+        assert is_match("claude-direct", "skill:review", policy) is True
+        assert is_match("claude-direct", "skill:any-unknown-skill", policy) is True
+        # skill: は claude-direct 以外の expected_route にはマッチしない
+        assert is_match("codex", "skill:commit", policy) is False
+
+    def test_implementation_agents_aliased(self) -> None:
+        """実装エージェントが codex の動的 aliases に含まれる。"""
+        config = {
+            "agents": {
+                "frontend-dev": {"tool": "codex"},
+                "backend-python-dev": {"tool": "codex"},
+                "debugger": {"tool": "codex"},
+                "tester": {"tool": "codex"},
+            }
+        }
+        aliases = build_aliases(config)
+        for agent in ["frontend-dev", "backend-python-dev", "debugger", "tester"]:
+            assert f"task:{agent}" in aliases["codex"]
 
 
 # ========== build_scorecard テスト ==========
@@ -189,6 +213,35 @@ class TestBuildScorecard:
         assert card["summary"]["effective_prompts"] == 2
         assert card["summary"]["helper_only_prompts"] == 0
         assert card["metrics"]["expected_route_match_rate"] == 50.0
+
+    def test_implicit_direct_match(self) -> None:
+        """expected=claude-direct で委譲なし → 暗黙マッチとしてカウント。"""
+        route_rows = [
+            {
+                "prompt_id": "p1",
+                "timestamp": "2026-01-01T00:00:00",
+                "actual_route": "bash:codex",
+                "expected_route": "codex",
+                "matched": True,
+            },
+        ]
+        expected_rows = [
+            {"prompt_id": "p1", "expected_route": "codex"},
+            {"prompt_id": "p2", "expected_route": "claude-direct"},
+        ]
+        card = build_scorecard(route_rows, [], expected_rows)
+        assert card["summary"]["implicit_direct_matches"] == 1
+        assert card["summary"]["observed_prompts"] == 2
+        assert card["metrics"]["expected_route_match_rate"] == 100.0
+
+    def test_unresolved_prompts(self) -> None:
+        """expected!=claude-direct で委譲なし → unresolved。"""
+        expected_rows = [
+            {"prompt_id": "p1", "expected_route": "codex"},
+        ]
+        card = build_scorecard([], [], expected_rows)
+        assert card["summary"]["unresolved_prompts"] == 1
+        assert card["summary"]["implicit_direct_matches"] == 0
 
     def test_effective_prompts_count(self) -> None:
         """effective_prompts = observed_prompts - helper_only_prompts。"""
@@ -288,3 +341,24 @@ class TestCalcRouteStats:
         assert result["total"] == 0
         assert result["helpers_excluded"] == 1
         assert result["rate"] == 0.0
+
+    def test_implicit_direct_in_dashboard(self) -> None:
+        """dashboard の calc_route_stats で暗黙マッチが集計される。"""
+        events = [
+            {
+                "event_type": "expected_route",
+                "data": {"prompt_id": "p1", "expected_route": "claude-direct"},
+            },
+            {
+                "event_type": "expected_route",
+                "data": {"prompt_id": "p2", "expected_route": "codex"},
+            },
+            {
+                "event_type": "route_audit",
+                "data": {"prompt_id": "p2", "matched": True},
+            },
+        ]
+        result = calc_route_stats(events)
+        assert result["implicit_direct"] == 1
+        assert result["total"] == 2
+        assert result["matched"] == 2

@@ -184,6 +184,20 @@ def test_route_audit_is_match_supports_alias() -> None:
     assert not orchestration_route_audit.is_match("task:tester", "", policy)
 
 
+def test_route_audit_detect_route_for_skill() -> None:
+    route, excerpt = orchestration_route_audit.detect_route(
+        {"tool_name": "Skill", "tool_input": {"skill": "commit"}}
+    )
+    assert route == "skill:commit"
+    assert excerpt == ""
+
+    route, excerpt = orchestration_route_audit.detect_route(
+        {"tool_name": "Skill", "tool_input": {"skill": "review"}}
+    )
+    assert route == "skill:review"
+    assert excerpt == ""
+
+
 def test_route_audit_project_root_precedence(monkeypatch) -> None:
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", "/env/project")
 

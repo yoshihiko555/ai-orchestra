@@ -60,7 +60,11 @@ def percent(numerator: int, denominator: int) -> float:
     return round((numerator / denominator) * 100, 2)
 
 
-def build_scorecard(route_rows: list[dict], quality_rows: list[dict]) -> dict:
+def build_scorecard(
+    route_rows: list[dict],
+    quality_rows: list[dict],
+    expected_rows: list[dict] | None = None,
+) -> dict:
     by_prompt: dict[str, list[dict]] = defaultdict(list)
     for row in route_rows:
         prompt_id = str(row.get("prompt_id") or "")
@@ -68,7 +72,20 @@ def build_scorecard(route_rows: list[dict], quality_rows: list[dict]) -> dict:
             continue
         by_prompt[prompt_id].append(row)
 
-    observed_prompts = len(by_prompt)
+    # 委譲なしプロンプトの照合
+    implicit_direct_matches = 0
+    unresolved_prompts = 0
+    if expected_rows:
+        for exp in expected_rows:
+            pid = str(exp.get("prompt_id") or "")
+            if pid and pid not in by_prompt:
+                expected_route = str(exp.get("expected_route") or "")
+                if expected_route == "claude-direct":
+                    implicit_direct_matches += 1
+                elif expected_route:
+                    unresolved_prompts += 1
+
+    observed_prompts = len(by_prompt) + implicit_direct_matches + unresolved_prompts
     helper_only_prompts = 0
     first_attempt_matches = 0
     re_instruction_prompts = 0
@@ -100,6 +117,8 @@ def build_scorecard(route_rows: list[dict], quality_rows: list[dict]) -> dict:
                 if expected not in {"codex", "gemini"}:
                     unnecessary_calls += 1
 
+    # 暗黙マッチ分を加算
+    first_attempt_matches += implicit_direct_matches
     effective_prompts = observed_prompts - helper_only_prompts
     matched_rate = percent(first_attempt_matches, effective_prompts)
     re_instruction_rate = percent(re_instruction_prompts, effective_prompts)
@@ -134,6 +153,8 @@ def build_scorecard(route_rows: list[dict], quality_rows: list[dict]) -> dict:
             "helper_only_prompts": helper_only_prompts,
             "external_calls": external_calls,
             "quality_checks": quality_total,
+            "implicit_direct_matches": implicit_direct_matches,
+            "unresolved_prompts": unresolved_prompts,
         },
         "metrics": {
             "expected_route_match_rate": matched_rate,
@@ -165,6 +186,8 @@ def render_markdown(card: dict, days: int) -> str:
         f"- helper_only_prompts: {summary['helper_only_prompts']}",
         f"- external_calls: {summary['external_calls']}",
         f"- quality_checks: {summary['quality_checks']}",
+        f"- implicit_direct_matches: {summary['implicit_direct_matches']}",
+        f"- unresolved_prompts: {summary['unresolved_prompts']}",
         "",
         "## Metrics",
         f"- expected_route_match_rate: {metrics['expected_route_match_rate']}%",
@@ -220,10 +243,13 @@ def main() -> None:
     route_path = os.path.join(args.log_dir, "route-audit.jsonl")
     quality_path = os.path.join(args.log_dir, "quality-gate.jsonl")
 
+    expected_path = os.path.join(args.log_dir, "expected-routes.jsonl")
+
     route_rows = filter_by_days(read_jsonl(route_path), args.days)
     quality_rows = filter_by_days(read_jsonl(quality_path), args.days)
+    expected_rows = filter_by_days(read_jsonl(expected_path), args.days)
 
-    card = build_scorecard(route_rows, quality_rows)
+    card = build_scorecard(route_rows, quality_rows, expected_rows)
 
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     os.makedirs(os.path.dirname(args.json_out), exist_ok=True)

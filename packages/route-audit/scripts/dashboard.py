@@ -79,13 +79,33 @@ def calc_session_stats(events: list[dict]) -> dict:
 def calc_route_stats(events: list[dict]) -> dict:
     """ルート監査統計を計算する（ヘルパーを除外）。"""
     audits = [e for e in events if e.get("event_type") == "route_audit"]
+    expected = [e for e in events if e.get("event_type") == "expected_route"]
+
     effective = [a for a in audits if not (a.get("data") or {}).get("is_helper", False)]
     helpers_excluded = len(audits) - len(effective)
-    total = len(effective)
+
+    # 委譲なしプロンプトの照合
+    audit_prompt_ids = {str((a.get("data") or {}).get("prompt_id") or "") for a in audits}
+    implicit_direct = 0
+    for exp in expected:
+        pid = str((exp.get("data") or {}).get("prompt_id") or "")
+        if pid and pid not in audit_prompt_ids:
+            route = str((exp.get("data") or {}).get("expected_route") or "")
+            if route == "claude-direct":
+                implicit_direct += 1
+
+    total = len(effective) + implicit_direct
     matched = sum(1 for a in effective if (a.get("data") or {}).get("matched", False))
+    matched += implicit_direct
     rate = round((matched / total) * 100, 1) if total > 0 else 0.0
 
-    return {"total": total, "matched": matched, "rate": rate, "helpers_excluded": helpers_excluded}
+    return {
+        "total": total,
+        "matched": matched,
+        "rate": rate,
+        "helpers_excluded": helpers_excluded,
+        "implicit_direct": implicit_direct,
+    }
 
 
 def calc_cli_stats(events: list[dict]) -> dict:

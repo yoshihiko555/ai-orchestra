@@ -68,6 +68,13 @@ def detect_route(data: dict) -> tuple[str | None, str]:
             )
         return f"task:{subagent_type}", ""
 
+    # Skill 呼び出しを追跡
+    if tool_lower == "skill":
+        skill_name = "unknown"
+        if isinstance(tool_input, dict):
+            skill_name = str(tool_input.get("skill") or tool_input.get("skill_name") or "unknown")
+        return f"skill:{skill_name}", ""
+
     return None, ""
 
 
@@ -88,6 +95,10 @@ def is_match(expected_route: str, actual_route: str, policy: dict) -> bool:
         return False
 
     if expected_route == actual_route:
+        return True
+
+    # skill:* は常に claude-direct とマッチ（スキルはプロジェクトごとに異なるため）
+    if expected_route == "claude-direct" and actual_route.startswith("skill:"):
         return True
 
     aliases = policy.get("aliases") or {}
