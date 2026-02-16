@@ -1,0 +1,7 @@
+{
+  "description": "issue-workflow パッケージが必要とする sandbox 設定",
+  "sandbox": {
+    "excludedCommands": ["gh"]
+  },
+  "note": "gh は macOS キーリングにアクセスするためサンドボックス外で実行する必要がある"
+}

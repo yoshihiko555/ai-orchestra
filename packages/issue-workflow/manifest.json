@@ -1,0 +1,13 @@
+{
+  "name": "issue-workflow",
+  "version": "0.1.0",
+  "description": "GitHub Issue の登録と計画→実装→テスト→レビューの開発フロー",
+  "depends": [],
+  "hooks": {},
+  "files": [],
+  "skills": ["skills/issue-create", "skills/issue-fix"],
+  "agents": [],
+  "rules": [],
+  "scripts": [],
+  "config": ["config/sandbox-requirements.json"]
+}
