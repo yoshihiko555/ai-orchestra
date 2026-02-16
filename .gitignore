@@ -39,4 +39,5 @@ env/
 .claude/config/
 
 # Project-specific
-docs/tech/
+docs/*
+!docs/specs/
