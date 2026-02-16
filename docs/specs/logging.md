@@ -32,6 +32,4 @@
 ## 4. 既知の差異・注意点
 
 - `dashboard.py` は `events.jsonl` の `session_start` / `session_end` / `quality_gate` も集計対象にしますが、現行フックではこれらイベント出力が限定的です。
-- `scripts/analyze-cli-usage.py`（リポジトリ直下版）は `logs/cli-tools.jsonl` を参照します。  
-  現在の標準ログパスは `.claude/logs/cli-tools.jsonl` のため、通常は `packages/cli-logging/scripts/analyze-cli-usage.py` の利用を推奨します。
 - `packages/route-audit/hooks/orchestration-bootstrap.py` は `.claude/state/agent-trace.jsonl` を touch しますが、実際のトレース追記先は `.claude/logs/orchestration/agent-trace.jsonl` です。
