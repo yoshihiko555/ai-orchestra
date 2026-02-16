@@ -19,6 +19,10 @@
 
 ## 呼び出し方法
 
+> **重要: Bash サンドボックスの制約**
+> Gemini CLI は認証 + macOS システム API を使用するため、Bash のサンドボックス内では動作しない場合がある。
+> Gemini CLI を実行する際は **必ず `dangerouslyDisableSandbox: true`** を指定すること。
+
 ### サブエージェント経由（推奨）
 
 大きな出力が予想される場合、コンテキスト保護のためサブエージェント経由で呼び出す：
@@ -29,7 +33,7 @@ Gemini でリサーチしてください：
 
 {リサーチ内容}
 
-Gemini CLI コマンド:
+Gemini CLI コマンド（dangerouslyDisableSandbox: true で実行すること）:
 gemini -m <gemini.model> -p "{質問}" 2>/dev/null
 
 結果を .claude/docs/research/{topic}.md に保存し、
@@ -40,6 +44,8 @@ gemini -m <gemini.model> -p "{質問}" 2>/dev/null
 ### 直接呼び出し（短い質問のみ）
 
 ```bash
+# dangerouslyDisableSandbox: true で実行すること
+
 # config の gemini.model を -m フラグに展開して使う
 
 # リサーチ

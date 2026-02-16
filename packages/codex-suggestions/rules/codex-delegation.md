@@ -19,6 +19,10 @@
 
 ## 呼び出し方法
 
+> **重要: Bash サンドボックスの制約**
+> Codex CLI は OAuth 認証 + macOS システム API を使用するため、Bash のサンドボックス内では動作しない。
+> Codex CLI を実行する際は **必ず `dangerouslyDisableSandbox: true`** を指定すること。
+
 ### サブエージェント経由（推奨）
 
 大きな出力が予想される場合、コンテキスト保護のためサブエージェント経由で呼び出す：
@@ -29,7 +33,7 @@ Codex に以下を相談してください：
 
 {質問内容}
 
-Codex CLI コマンド:
+Codex CLI コマンド（dangerouslyDisableSandbox: true で実行すること）:
 codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "{質問}" 2>/dev/null
 
 結果を要約して返してください（5-7ポイント）。
@@ -39,6 +43,8 @@ codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags
 ### 直接呼び出し（短い質問のみ）
 
 ```bash
+# dangerouslyDisableSandbox: true で実行すること
+
 # 分析（読み取り専用）— config の codex.model, codex.sandbox.analysis, codex.flags を展開
 codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "{質問}" 2>/dev/null
 
