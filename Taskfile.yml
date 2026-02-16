@@ -9,4 +9,9 @@ includes:
     flatten: true
     vars:
       ORCHESTRA_DIR: "{{.ORCHESTRA_DIR}}"
+  kpi:
+    taskfile: ./taskfiles/kpi.yml
+    flatten: true
+    vars:
+      ORCHESTRA_DIR: "{{.ORCHESTRA_DIR}}"
 

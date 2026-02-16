@@ -1,0 +1,24 @@
+version: '3'
+
+tasks:
+  kpi:report:
+    desc: KPI スコアカードを生成（デフォルト7日間）
+    cmds:
+      - python3 {{.ORCHESTRA_DIR}}/scripts/orchestra-manager.py run route-audit orchestration-kpi-report --project {{.PROJECT_DIR}} -- --days {{.DAYS}}
+    vars:
+      PROJECT_DIR: '{{.PROJECT_DIR | default "."}}'
+      DAYS: '{{.DAYS | default "7"}}'
+
+  kpi:dashboard:
+    desc: ダッシュボードを実行
+    cmds:
+      - python3 {{.ORCHESTRA_DIR}}/scripts/orchestra-manager.py run route-audit dashboard --project {{.PROJECT_DIR}}
+    vars:
+      PROJECT_DIR: '{{.PROJECT_DIR | default "."}}'
+
+  kpi:logs:
+    desc: ログビューアを実行
+    cmds:
+      - python3 {{.ORCHESTRA_DIR}}/scripts/orchestra-manager.py run route-audit log-viewer --project {{.PROJECT_DIR}}
+    vars:
+      PROJECT_DIR: '{{.PROJECT_DIR | default "."}}'
