@@ -16,7 +16,7 @@ metadata:
 
 ## Overview
 
-このスキルは3つのエージェント（Claude, Codex, Gemini）を協調させ、プロジェクト開始から実装後レビューまでをカバーする。
+このスキルはマルチエージェント協調で、プロジェクト開始から実装後レビューまでをカバーする。
 
 ## Workflow
 
@@ -25,7 +25,7 @@ Phase 1: Research (Gemini via Subagent)
     ↓
 Phase 2: Requirements & Planning (Claude)
     ↓
-Phase 3: Design Review (Codex via Subagent)
+Phase 3: Design Review (architect)
     ↓
 Phase 4: Task Creation (Claude)
     ↓
@@ -33,8 +33,22 @@ Phase 5: CLAUDE.md Update (Claude)
     ↓
 [Implementation...]
     ↓
-Phase 6: Multi-Session Review (New Session + Codex)
+Phase 6: Multi-Session Review (code-reviewer / security-reviewer)
 ```
+
+---
+
+## Agent Routing
+
+各フェーズでエージェントを呼び出す際は、`cli-tools.yaml` の `agents.{name}.tool` を参照してルーティングする。
+
+| `tool` 設定 | 呼び出し方法 |
+|-------------|-------------|
+| `claude-direct` | `Task(subagent_type="{agent}", prompt="...")` |
+| `codex` | `Task(subagent_type="general-purpose", prompt="Codex CLI で実行: codex exec --model <codex.model> --sandbox <codex.sandbox.*> <codex.flags> '...'")` |
+| `gemini` | `Task(subagent_type="general-purpose", prompt="Gemini CLI で実行: gemini -m <gemini.model> -p '...'")` |
+
+**例**: `agents.architect.tool` が `codex` なら general-purpose + Codex CLI、`claude-direct` なら直接 `Task(subagent_type="architect", ...)`。
 
 ---
 
@@ -81,35 +95,30 @@ Ask in Japanese:
 
 ---
 
-## Phase 3: Codex Design Review (Background)
+## Phase 3: Design Review
 
-**Task tool でサブエージェントを起動し、Codex で計画レビュー。**
+**`architect` エージェントで設計レビューを実施。**
+
+> ルーティング: `agents.architect.tool` の値に基づき、Agent Routing セクションの方法で呼び出す。
 
 ```
-Task tool parameters:
-- subagent_type: "general-purpose"
-- run_in_background: true
-- prompt: |
-    Review plan for: {feature}
+Agent: architect
+run_in_background: true
+prompt: |
+    Review this implementation plan for: {feature}
 
     Draft plan: {plan from Phase 2}
 
-    1. Call Codex CLI:
-       codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "
-       Review this implementation plan:
-       {plan}
+    Analyze:
+    1. Approach assessment - is this the right architecture?
+    2. Risk analysis - what could go wrong?
+    3. Implementation order - what should be built first?
+    4. Improvements - any better approaches?
 
-       Analyze:
-       1. Approach assessment
-       2. Risk analysis
-       3. Implementation order
-       4. Improvements
-       " 2>/dev/null
-
-    2. Return CONCISE summary:
-       - Top 3-5 recommendations
-       - Key risks
-       - Suggested order
+    Return CONCISE summary:
+    - Top 3-5 recommendations
+    - Key risks
+    - Suggested implementation order
 ```
 
 ---
@@ -171,35 +180,47 @@ Add to CLAUDE.md:
 2. Run: `git diff main...HEAD` to see all changes
 3. Ask Claude to review the implementation
 
-### Option B: Codex Review (via Subagent)
+### Option B: Review Subagent
+
+> ルーティング: 各レビュアーの `agents.{name}.tool` の値に基づき、Agent Routing セクションの方法で呼び出す。
+> skill-review-policy.md に従い、変更内容に応じたレビュアーを選定する。
 
 ```
-Task tool parameters:
-- subagent_type: "general-purpose"
-- prompt: |
+# 変更ファイルのパスパターンに基づきレビュアーを選定（skill-review-policy.md 参照）
+# 例: code-reviewer + security-reviewer（並列実行）
+
+Agent: code-reviewer
+prompt: |
     Review implementation for: {feature}
 
-    1. Run: git diff main...HEAD
-    2. Call Codex CLI:
-       codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "
-       Review this implementation:
-       {diff output}
+    Changes: {git diff main...HEAD output}
 
-       Check:
-       1. Code quality and patterns
-       2. Potential bugs
-       3. Missing edge cases
-       4. Security concerns
-       " 2>/dev/null
+    Check:
+    1. Code quality and patterns
+    2. Potential bugs
+    3. Missing edge cases
 
-    3. Return findings and recommendations
+    Report only Critical/High findings.
+
+Agent: security-reviewer
+prompt: |
+    Security review for: {feature}
+
+    Changes: {git diff main...HEAD output}
+
+    Check:
+    1. Security concerns
+    2. Input validation
+    3. Authentication/authorization
+
+    Report only Critical/High findings.
 ```
 
 ### Why Multi-Session Review?
 
 - **Fresh perspective**: New session has no bias from implementation
 - **Different context**: Can focus purely on review, not implementation details
-- **Codex strength**: Deep analysis without context pollution
+- **Specialized reviewers**: Each reviewer focuses on their domain of expertise
 
 ---
 
@@ -214,7 +235,7 @@ Present final plan to user (in Japanese):
 
 {Key findings - 3-5 bullet points}
 
-### 設計方針 (Codex レビュー済み)
+### 設計方針 (設計レビュー済み)
 
 {Approach with refinements}
 
@@ -224,7 +245,7 @@ Present final plan to user (in Japanese):
 
 ### リスクと注意点
 
-{From Codex analysis}
+{From design review}
 
 ### 次のステップ
 
@@ -250,7 +271,8 @@ Present final plan to user (in Japanese):
 
 ## Tips
 
-- **All Codex/Gemini work through subagents** to preserve main context
+- **All external CLI / review work through subagents** to preserve main context
+- **Agent routing is config-driven** — `cli-tools.yaml` の変更が自動的に反映される
 - **Update CLAUDE.md** to persist context across sessions
 - **Use multi-session review** for better quality assurance
 - **Ctrl+T**: Toggle task list visibility
