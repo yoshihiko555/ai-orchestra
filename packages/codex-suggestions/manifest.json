@@ -13,7 +13,7 @@
   ],
   "skills": ["skills/codex-system"],
   "agents": [],
-  "rules": ["rules/codex-delegation.md"],
+  "rules": ["rules/codex-delegation.md", "rules/codex-suggestion-compliance.md"],
   "scripts": [],
   "config": []
 }
