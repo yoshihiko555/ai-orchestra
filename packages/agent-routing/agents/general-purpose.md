@@ -31,6 +31,11 @@ Do NOT hardcode model names or CLI options — always refer to the config file.
 - Codex sandbox: read-only (analysis), workspace-write (implementation)
 - Codex flags: --full-auto
 
+### Sandbox Policy
+
+cli-tools.yaml で `requires_sandbox_disable: true` のツールを Bash で実行する際は、
+**`dangerouslyDisableSandbox: true` を指定すること**（OAuth 認証 + macOS システム API のため）。
+
 ## Why Subagents Matter: Context Management
 
 **CRITICAL**: The main Claude Code orchestrator has limited context. Heavy operations (Codex consultation, Gemini research, large file analysis) should run in subagents to preserve main context.

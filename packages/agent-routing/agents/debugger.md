@@ -29,6 +29,11 @@ Do NOT hardcode model names or CLI options — always refer to the config file.
 - Sandbox: workspace-write
 - Flags: --full-auto
 
+### Sandbox Policy
+
+cli-tools.yaml で `requires_sandbox_disable: true` のツールを Bash で実行する際は、
+**`dangerouslyDisableSandbox: true` を指定すること**（OAuth 認証 + macOS システム API のため）。
+
 ## Role
 
 You analyze and fix bugs using Codex CLI:

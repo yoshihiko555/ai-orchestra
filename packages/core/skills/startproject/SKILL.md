@@ -63,7 +63,10 @@ Task tool parameters:
 - prompt: |
     Research for: {feature}
 
-    1. Call Gemini CLI:
+    IMPORTANT: Gemini CLI requires dangerouslyDisableSandbox: true
+    (requires_sandbox_disable: true in cli-tools.yaml).
+
+    1. Call Gemini CLI (with dangerouslyDisableSandbox: true):
        gemini -p "Analyze this repository for: {feature}
 
        Provide:

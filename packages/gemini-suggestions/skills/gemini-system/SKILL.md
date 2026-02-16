@@ -71,6 +71,9 @@ Task tool parameters:
 - prompt: |
     Research: {topic}
 
+    IMPORTANT: Gemini CLI requires dangerouslyDisableSandbox: true
+    (requires_sandbox_disable: true in cli-tools.yaml).
+
     gemini -p "{research question}" 2>/dev/null
 
     Save full output to: .claude/docs/research/{topic}.md

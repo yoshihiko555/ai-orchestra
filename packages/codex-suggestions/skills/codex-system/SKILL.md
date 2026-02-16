@@ -61,6 +61,9 @@ Task tool parameters:
 - prompt: |
     Consult Codex about: {topic}
 
+    IMPORTANT: Codex CLI requires dangerouslyDisableSandbox: true
+    (requires_sandbox_disable: true in cli-tools.yaml).
+
     codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "
     {question for Codex}
     " 2>/dev/null
