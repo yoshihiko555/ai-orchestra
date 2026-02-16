@@ -12,7 +12,10 @@ metadata:
 
 # Gemini System — Research & Multimodal Specialist
 
-**Gemini CLI (gemini-3-pro-preview) is your research specialist with 1M token context.**
+**Gemini CLI is your research specialist with 1M token context.**
+
+> **Note**: CLI のモデル名・オプションは `.claude/config/agent-routing/cli-tools.yaml` で一元管理。
+> `.claude/config/agent-routing/cli-tools.local.yaml` が存在する場合はそちらの値を優先する。
 
 > **詳細ルール**: `.claude/rules/gemini-delegation.md`
 

@@ -15,6 +15,15 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
+# hook_common を $AI_ORCHESTRA_DIR/packages/core/hooks/ から読み込む
+_orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
+if _orchestra_dir:
+    _core_hooks = os.path.join(_orchestra_dir, "packages", "core", "hooks")
+    if _core_hooks not in sys.path:
+        sys.path.insert(0, _core_hooks)
+
+from hook_common import load_package_config  # noqa: E402
+
 # codex exec コマンドの検知（timeout やenv変数プレフィックス付きも対応）
 CODEX_EXEC_RE = re.compile(
     r"(?:^|&&|\|\||;|\|)\s*"
@@ -93,6 +102,15 @@ def extract_model(command: str, tool: str = "codex") -> str | None:
     return match.group(1) if match else None
 
 
+def _get_default_model(tool: str, data: dict) -> str:
+    """cli-tools.yaml からデフォルトモデル名を取得する。"""
+    project_dir = data.get("cwd", "") or os.environ.get("CLAUDE_PROJECT_DIR", "")
+    config = load_package_config("agent-routing", "cli-tools.yaml", project_dir)
+    if tool == "codex":
+        return config.get("codex", {}).get("model", "gpt-5.3-codex")
+    return config.get("gemini", {}).get("model", "gemini-2.5-pro")
+
+
 def truncate_text(text: str, max_length: int = 2000) -> str:
     """Truncate text if too long."""
     if len(text) <= max_length:
@@ -137,11 +155,11 @@ def main() -> None:
     if is_codex:
         tool = "codex"
         prompt = extract_codex_prompt(command)
-        model = extract_model(command) or "gpt-5.2-codex"
+        model = extract_model(command) or _get_default_model("codex", hook_input)
     else:
         tool = "gemini"
         prompt = extract_gemini_prompt(command)
-        model = extract_model(command, tool="gemini") or "gemini-unknown"
+        model = extract_model(command, tool="gemini") or _get_default_model("gemini", hook_input)
 
     if not prompt:
         # Could not extract prompt, skip logging
@@ -166,24 +184,19 @@ def main() -> None:
 
     # 統一イベントログ ($AI_ORCHESTRA_DIR/packages/core/hooks/log_common.py)
     try:
-        _orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
-        if _orchestra_dir:
-            _core_hooks = os.path.join(_orchestra_dir, "packages", "core", "hooks")
-            if _core_hooks not in sys.path:
-                sys.path.insert(0, _core_hooks)
-            from log_common import append_event
+        from log_common import append_event
 
-            append_event(
-                "cli_call",
-                {
-                    "tool": tool,
-                    "model": model,
-                    "prompt": truncate_text(prompt, 200),
-                    "success": success,
-                },
-                session_id=hook_input.get("session_id", ""),
-                hook_name="log-cli-tools",
-            )
+        append_event(
+            "cli_call",
+            {
+                "tool": tool,
+                "model": model,
+                "prompt": truncate_text(prompt, 200),
+                "success": success,
+            },
+            session_id=hook_input.get("session_id", ""),
+            hook_name="log-cli-tools",
+        )
     except Exception:
         pass
 

@@ -7,7 +7,17 @@ for design decisions, complex implementations, or architectural changes.
 """
 
 import json
+import os
 import sys
+
+# hook_common を $AI_ORCHESTRA_DIR/packages/core/hooks/ から読み込む
+_orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
+if _orchestra_dir:
+    _core_hooks = os.path.join(_orchestra_dir, "packages", "core", "hooks")
+    if _core_hooks not in sys.path:
+        sys.path.insert(0, _core_hooks)
+
+from hook_common import load_package_config  # noqa: E402
 
 # Input validation constants
 MAX_PATH_LENGTH = 4096
@@ -95,6 +105,17 @@ def should_suggest_codex(file_path: str, content: str | None = None) -> tuple[bo
     return False, ""
 
 
+def _build_codex_command(data: dict) -> str:
+    """cli-tools.yaml から Codex コマンド文字列を構築する。"""
+    project_dir = data.get("cwd", "") or os.environ.get("CLAUDE_PROJECT_DIR", "")
+    config = load_package_config("agent-routing", "cli-tools.yaml", project_dir)
+    codex = config.get("codex", {})
+    model = codex.get("model", "gpt-5.3-codex")
+    sandbox = codex.get("sandbox", {}).get("analysis", "read-only")
+    flags = codex.get("flags", "--full-auto")
+    return f"`codex exec --model {model} --sandbox {sandbox} {flags} '...'`"
+
+
 def main():
     try:
         data = json.load(sys.stdin)
@@ -108,13 +129,14 @@ def main():
         should_suggest, reason = should_suggest_codex(file_path, content)
 
         if should_suggest:
+            codex_cmd = _build_codex_command(data)
             output = {
                 "hookSpecificOutput": {
                     "hookEventName": "PreToolUse",
                     "additionalContext": (
                         f"[Codex Suggestion] {reason}. "
                         "Consider consulting Codex before this change:\n"
-                        "`codex exec --model gpt-5.2-codex --sandbox read-only --full-auto '...'`"
+                        f"{codex_cmd}"
                     ),
                 }
             }

@@ -7,8 +7,18 @@ when the test run fails.
 """
 
 import json
+import os
 import re
 import sys
+
+# hook_common を $AI_ORCHESTRA_DIR/packages/core/hooks/ から読み込む
+_orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
+if _orchestra_dir:
+    _core_hooks = os.path.join(_orchestra_dir, "packages", "core", "hooks")
+    if _core_hooks not in sys.path:
+        sys.path.insert(0, _core_hooks)
+
+from hook_common import load_package_config  # noqa: E402
 
 # Test command patterns
 TEST_COMMAND_PATTERNS = [
@@ -71,6 +81,17 @@ def extract_failure_summary(output: str) -> str:
     return "Test failure detected"
 
 
+def _build_codex_command(data: dict) -> str:
+    """cli-tools.yaml から Codex コマンド文字列を構築する。"""
+    project_dir = data.get("cwd", "") or os.environ.get("CLAUDE_PROJECT_DIR", "")
+    config = load_package_config("agent-routing", "cli-tools.yaml", project_dir)
+    codex = config.get("codex", {})
+    model = codex.get("model", "gpt-5.3-codex")
+    sandbox = codex.get("sandbox", {}).get("analysis", "read-only")
+    flags = codex.get("flags", "--full-auto")
+    return f'`codex exec --model {model} --sandbox {sandbox} {flags} "..." 2>/dev/null`'
+
+
 def main():
     try:
         data = json.load(sys.stdin)
@@ -97,6 +118,7 @@ def main():
             sys.exit(0)
 
         failure_summary = extract_failure_summary(output)
+        codex_cmd = _build_codex_command(data)
 
         output_data = {
             "hookSpecificOutput": {
@@ -104,9 +126,7 @@ def main():
                 "additionalContext": (
                     "[Codex Debug Suggestion] Test failure detected:\n"
                     f"```\n{failure_summary}\n```\n\n"
-                    "Consider Codex for root cause analysis:\n"
-                    "`codex exec --model gpt-5.2-codex --sandbox read-only "
-                    '--full-auto "Debug test failure: ..."` 2>/dev/null'
+                    f"Consider Codex for root cause analysis:\n{codex_cmd}"
                 ),
             }
         }

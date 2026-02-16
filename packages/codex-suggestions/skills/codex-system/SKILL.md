@@ -13,7 +13,10 @@ metadata:
 
 # Codex System — Deep Reasoning Partner
 
-**Codex CLI (gpt-5.2-codex) is your highly capable supporter for deep reasoning tasks.**
+**Codex CLI is your highly capable supporter for deep reasoning tasks.**
+
+> **Note**: CLI のモデル名・オプションは `.claude/config/agent-routing/cli-tools.yaml` で一元管理。
+> `.claude/config/agent-routing/cli-tools.local.yaml` が存在する場合はそちらの値を優先する。
 
 > **詳細ルール**: `.claude/rules/codex-delegation.md`
 
@@ -58,7 +61,7 @@ Task tool parameters:
 - prompt: |
     Consult Codex about: {topic}
 
-    codex exec --model gpt-5.2-codex --sandbox read-only --full-auto "
+    codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "
     {question for Codex}
     " 2>/dev/null
 
@@ -70,7 +73,7 @@ Task tool parameters:
 For quick questions expecting 1-2 sentence answers:
 
 ```bash
-codex exec --model gpt-5.2-codex --sandbox read-only --full-auto "Brief question" 2>/dev/null
+codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "Brief question" 2>/dev/null
 ```
 
 ### Workflow (Subagent)
@@ -98,7 +101,7 @@ codex exec --model gpt-5.2-codex --sandbox read-only --full-auto "Brief question
 ### Design Review
 
 ```bash
-codex exec --model gpt-5.2-codex --sandbox read-only --full-auto "
+codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "
 Review this design approach for: {feature}
 
 Context:
@@ -115,7 +118,7 @@ Evaluate:
 ### Debug Analysis
 
 ```bash
-codex exec --model gpt-5.2-codex --sandbox read-only --full-auto "
+codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "
 Debug this issue:
 
 Error: {error message}
