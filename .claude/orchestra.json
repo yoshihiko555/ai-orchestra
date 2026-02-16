@@ -43,10 +43,13 @@
     "config/route-audit/orchestration-flags.json",
     "rules/agent-routing-policy.md",
     "rules/codex-delegation.md",
+    "rules/codex-suggestion-compliance.md",
     "rules/coding-principles.md",
     "rules/config-loading.md",
     "rules/gemini-delegation.md",
+    "rules/gemini-suggestion-compliance.md",
     "rules/orchestra-usage.md",
+    "rules/skill-review-policy.md",
     "skills/checkpointing/SKILL.md",
     "skills/checkpointing/checkpoint.py",
     "skills/codex-system/SKILL.md",
@@ -68,5 +71,5 @@
     "skills/startproject/references/task-patterns.md",
     "skills/tdd/SKILL.md"
   ],
-  "last_sync": "2026-02-16T02:36:37.954590+00:00"
+  "last_sync": "2026-02-16T08:49:41.219817+00:00"
 }
