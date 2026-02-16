@@ -6,6 +6,7 @@
     "codex-suggestions",
     "core",
     "gemini-suggestions",
+    "issue-workflow",
     "quality-gates",
     "route-audit",
     "tmux-monitor"
@@ -37,6 +38,7 @@
     "agents/tester.md",
     "agents/ux-reviewer.md",
     "config/agent-routing/cli-tools.yaml",
+    "config/issue-workflow/sandbox-requirements.json",
     "config/route-audit/delegation-policy.json",
     "config/route-audit/orchestration-flags.json",
     "rules/agent-routing-policy.md",
@@ -57,6 +59,8 @@
     "skills/gemini-system/SKILL.md",
     "skills/gemini-system/references/lib-research-task.md",
     "skills/gemini-system/references/use-cases.md",
+    "skills/issue-create/SKILL.md",
+    "skills/issue-fix/SKILL.md",
     "skills/plan/SKILL.md",
     "skills/review/SKILL.md",
     "skills/simplify/SKILL.md",
@@ -64,5 +68,5 @@
     "skills/startproject/references/task-patterns.md",
     "skills/tdd/SKILL.md"
   ],
-  "last_sync": "2026-02-15T16:48:43.300991+00:00"
+  "last_sync": "2026-02-16T02:36:37.954590+00:00"
 }
