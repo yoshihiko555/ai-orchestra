@@ -171,6 +171,21 @@ def find_first_int(node: Any, keys: set[str]) -> int | None:
 
 
 # ---------------------------------------------------------------------------
+# sys.path ヘルパー
+# ---------------------------------------------------------------------------
+
+
+def ensure_package_path(package_name: str, subdir: str = "hooks") -> None:
+    """$AI_ORCHESTRA_DIR/packages/{package_name}/{subdir} を sys.path に追加する。"""
+    orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
+    if not orchestra_dir:
+        return
+    path = os.path.join(orchestra_dir, "packages", package_name, subdir)
+    if path not in sys.path:
+        sys.path.insert(0, path)
+
+
+# ---------------------------------------------------------------------------
 # エラーハンドリング
 # ---------------------------------------------------------------------------
 

@@ -4,6 +4,9 @@
   "helper_routes": ["task:Explore", "task:Plan"],
   "rules": [],
   "aliases": {
-    "claude-direct": ["skill:commit", "skill:memory-tidy"]
+    "claude-direct": [
+      "skill:commit", "skill:memory-tidy",
+      "skill:issue-create", "skill:issue-fix"
+    ]
   }
 }
