@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import datetime
-import json
 import os
 import re
 import sys
@@ -15,20 +14,21 @@ if _orchestra_dir:
     _core_hooks = os.path.join(_orchestra_dir, "packages", "core", "hooks")
     if _core_hooks not in sys.path:
         sys.path.insert(0, _core_hooks)
-    _routing_hooks = os.path.join(_orchestra_dir, "packages", "agent-routing", "hooks")
-    if _routing_hooks not in sys.path:
-        sys.path.insert(0, _routing_hooks)
 
 from hook_common import (  # noqa: E402
     append_jsonl,
+    ensure_package_path,
     find_first_int,
     find_first_text,
     load_package_config,
+    read_hook_input,
     read_json_safe,
     safe_hook_execution,
     try_append_event,
     write_json,
 )
+
+ensure_package_path("agent-routing")
 from route_config import build_aliases, load_config  # noqa: E402
 
 _hook_dir = os.path.dirname(os.path.abspath(__file__))
@@ -117,10 +117,7 @@ def project_root(data: dict) -> str:
 
 
 def main() -> None:
-    try:
-        data = json.load(sys.stdin)
-    except (json.JSONDecodeError, ValueError):
-        data = {}
+    data = read_hook_input()
 
     root = project_root(data)
     flags = load_package_config("route-audit", "orchestration-flags.json", root)
