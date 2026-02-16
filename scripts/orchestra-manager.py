@@ -782,7 +782,19 @@ class OrchestraManager:
                 shutil.copy2(claude_md_src, claude_md_dst)
                 print("テンプレート配置: CLAUDE.md")
 
-        # 5. .codex/ テンプレート（既存はスキップ）
+        # 5. .claudeignore（既存はスキップ）
+        claudeignore_src = templates_dir / "project" / ".claudeignore"
+        claudeignore_dst = project_dir / ".claudeignore"
+        if claudeignore_src.exists():
+            if claudeignore_dst.exists():
+                print("スキップ（既存）: .claudeignore")
+            elif dry_run:
+                print("[DRY-RUN] テンプレート配置: .claudeignore")
+            else:
+                shutil.copy2(claudeignore_src, claudeignore_dst)
+                print("テンプレート配置: .claudeignore")
+
+        # 6. .codex/ テンプレート（既存はスキップ）
         codex_src = templates_dir / "codex"
         if codex_src.is_dir():
             codex_dst = project_dir / ".codex"
@@ -801,7 +813,7 @@ class OrchestraManager:
                     shutil.copy2(src_file, dst_file)
                     print(f"テンプレート配置: .codex/{rel}")
 
-        # 6. .gemini/ テンプレート（既存はスキップ）
+        # 7. .gemini/ テンプレート（既存はスキップ）
         gemini_src = templates_dir / "gemini"
         if gemini_src.is_dir():
             gemini_dst = project_dir / ".gemini"
@@ -820,7 +832,7 @@ class OrchestraManager:
                     shutil.copy2(src_file, dst_file)
                     print(f"テンプレート配置: .gemini/{rel}")
 
-        # 7. orchestra.json の初期化
+        # 8. orchestra.json の初期化
         orch = self.load_orchestra_json(project_dir)
         if not orch.get("orchestra_dir"):
             orch["orchestra_dir"] = str(self.orchestra_dir)
@@ -831,13 +843,13 @@ class OrchestraManager:
             self.save_orchestra_json(project_dir, orch)
             print("orchestra.json 初期化")
 
-        # 8. sync-orchestra の SessionStart hook を登録
+        # 9. sync-orchestra の SessionStart hook を登録
         settings = self.load_settings(project_dir)
         self.register_sync_hook(settings, dry_run)
         if not dry_run:
             self.save_settings(project_dir, settings)
 
-        # 9. 初回同期（skills/agents/rules/config をコピー）
+        # 10. 初回同期（skills/agents/rules/config をコピー）
         self.run_initial_sync(project_dir, dry_run)
 
         if not dry_run:

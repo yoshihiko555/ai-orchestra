@@ -60,6 +60,12 @@ orchestra-manager が以下を自動実行:
 git pull
 ```
 
+### .claudeignore の管理
+
+- `.claudeignore` は AI Orchestra が自動生成（直接編集不可）
+- プロジェクト固有パターンは `.claudeignore.local` に記載
+- SessionStart で ベース + `.claudeignore.local` がマージ生成される
+
 ### 運用ルール（更新後チェック）
 
 `git pull` 後は以下を確認してください。
