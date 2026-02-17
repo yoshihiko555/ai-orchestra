@@ -11,6 +11,9 @@
 # OpenAI Codex CLI (https://github.com/openai/codex)
 # 設計判断・デバッグ・コードレビューなど深い推論が必要な場面で使用
 codex:
+  # false にすると全 codex エージェントが claude-direct にフォールバック
+  # .local.yaml で codex.enabled: false にすれば CLI 未インストール環境でも利用可能
+  enabled: true
   # codex exec --model <この値> で指定される
   model: gpt-5.3-codex
   sandbox:
@@ -28,6 +31,9 @@ codex:
 # Google Gemini CLI (https://github.com/google-gemini/gemini-cli)
 # リサーチ・ドキュメント分析・コードベース理解・マルチモーダル処理で使用
 gemini:
+  # false にすると全 gemini エージェントが claude-direct にフォールバック
+  # .local.yaml で gemini.enabled: false にすれば CLI 未インストール環境でも利用可能
+  enabled: true
   # gemini -m <この値> で指定される
   # 未指定（空文字）の場合は -m フラグを省略し CLI デフォルトモデルを使用
   model: gemini-2.5-pro

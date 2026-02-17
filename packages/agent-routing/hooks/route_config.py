@@ -143,11 +143,27 @@ def load_config(data: dict) -> dict:
     return load_package_config("agent-routing", "cli-tools.yaml", project_dir)
 
 
+def is_cli_enabled(cli_name: str, config: dict) -> bool:
+    """CLI が有効かどうかを返す。未定義やセクション欠落時は True（後方互換）。"""
+    section = config.get(cli_name, {})
+    if not isinstance(section, dict):
+        return True
+    return bool(section.get("enabled", True))
+
+
 def get_agent_tool(agent_name: str, config: dict) -> str:
-    """config から指定エージェントの tool を取得。未定義なら claude-direct。"""
+    """config から指定エージェントの tool を取得。CLI 無効時は claude-direct にフォールバック。"""
     agents = config.get("agents", {})
     cfg = agents.get(agent_name, {})
-    return cfg.get("tool", "claude-direct") if isinstance(cfg, dict) else "claude-direct"
+    tool = cfg.get("tool", "claude-direct") if isinstance(cfg, dict) else "claude-direct"
+
+    # CLI 無効時のフォールバック
+    if tool == "codex" and not is_cli_enabled("codex", config):
+        return "claude-direct"
+    if tool == "gemini" and not is_cli_enabled("gemini", config):
+        return "claude-direct"
+
+    return tool
 
 
 def detect_agent(prompt: str) -> tuple[str | None, str]:
@@ -163,14 +179,31 @@ def detect_agent(prompt: str) -> tuple[str | None, str]:
 
 def build_aliases(config: dict) -> dict[str, list[str]]:
     """cli-tools.yaml の agents セクションから動的 aliases を構築。"""
+    codex_enabled = is_cli_enabled("codex", config)
+    gemini_enabled = is_cli_enabled("gemini", config)
+
     aliases: dict[str, list[str]] = {
-        "codex": ["bash:codex"],
-        "gemini": ["bash:gemini"],
+        "codex": ["bash:codex"] if codex_enabled else [],
+        "gemini": ["bash:gemini"] if gemini_enabled else [],
         "claude-direct": [],
-        "auto": ["bash:codex", "bash:gemini"],
+        "auto": [],
     }
+
+    # auto の bash エイリアスは有効な CLI のみ
+    if codex_enabled:
+        aliases["auto"].append("bash:codex")
+    if gemini_enabled:
+        aliases["auto"].append("bash:gemini")
+
     for name, cfg in config.get("agents", {}).items():
         tool = cfg.get("tool", "claude-direct") if isinstance(cfg, dict) else "claude-direct"
+
+        # CLI 無効時は claude-direct に振り替え
+        if tool == "codex" and not codex_enabled:
+            tool = "claude-direct"
+        elif tool == "gemini" and not gemini_enabled:
+            tool = "claude-direct"
+
         task_alias = f"task:{name}"
         if tool not in aliases:
             aliases[tool] = []
@@ -180,8 +213,10 @@ def build_aliases(config: dict) -> dict[str, list[str]]:
 
 
 def build_cli_suggestion(tool: str, agent: str, trigger: str, config: dict) -> str | None:
-    """CLI コマンド提案文字列を構築。claude-direct の場合は None。"""
+    """CLI コマンド提案文字列を構築。CLI 無効または claude-direct の場合は None。"""
     if tool == "codex":
+        if not is_cli_enabled("codex", config):
+            return None
         c = config.get("codex", {})
         model = c.get("model", "gpt-5.3-codex")
         sandbox = c.get("sandbox", {}).get("analysis", "read-only")
@@ -191,6 +226,8 @@ def build_cli_suggestion(tool: str, agent: str, trigger: str, config: dict) -> s
             f'`codex exec --model {model} --sandbox {sandbox} {flags} "..." 2>/dev/null`'
         )
     if tool == "gemini":
+        if not is_cli_enabled("gemini", config):
+            return None
         g = config.get("gemini", {})
         model = g.get("model", "")
         mf = f"-m {model} " if model else ""

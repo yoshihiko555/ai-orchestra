@@ -169,3 +169,156 @@ class TestAgentMdFallbackConsistency:
             f"{agent_name}.md のフォールバック ({fallback_tool}) と "
             f"cli-tools.yaml の tool ({config_tool}) が不一致"
         )
+
+
+# ---------------------------------------------------------------------------
+# is_cli_enabled: enabled フラグの動作
+# ---------------------------------------------------------------------------
+
+
+def _make_config(**overrides: dict) -> dict:
+    """テスト用の最小 config を構築する。"""
+    base: dict = {
+        "codex": {"enabled": True, "model": "gpt-5.3-codex"},
+        "gemini": {"enabled": True, "model": "gemini-2.5-pro"},
+        "agents": {
+            "debugger": {"tool": "codex"},
+            "researcher": {"tool": "gemini"},
+            "planner": {"tool": "claude-direct"},
+            "ai-architect": {"tool": "auto"},
+        },
+    }
+    for key, val in overrides.items():
+        if isinstance(val, dict) and key in base and isinstance(base[key], dict):
+            base[key] = {**base[key], **val}
+        else:
+            base[key] = val
+    return base
+
+
+class TestIsCliEnabled:
+    """is_cli_enabled の enabled/disabled/未定義/セクション欠落ケース。"""
+
+    def test_enabled_true(self) -> None:
+        config = _make_config(codex={"enabled": True})
+        assert route_config.is_cli_enabled("codex", config) is True
+
+    def test_enabled_false(self) -> None:
+        config = _make_config(codex={"enabled": False})
+        assert route_config.is_cli_enabled("codex", config) is False
+
+    def test_enabled_key_missing_defaults_true(self) -> None:
+        """enabled キー未定義時は True（後方互換）。"""
+        config = _make_config(codex={"model": "gpt-5.3-codex"})
+        assert route_config.is_cli_enabled("codex", config) is True
+
+    def test_section_missing_defaults_true(self) -> None:
+        """CLI セクション自体が存在しない場合も True（後方互換）。"""
+        assert route_config.is_cli_enabled("codex", {}) is True
+
+    def test_gemini_enabled_false(self) -> None:
+        config = _make_config(gemini={"enabled": False})
+        assert route_config.is_cli_enabled("gemini", config) is False
+
+    def test_gemini_enabled_true(self) -> None:
+        config = _make_config(gemini={"enabled": True})
+        assert route_config.is_cli_enabled("gemini", config) is True
+
+
+class TestGetAgentToolFallback:
+    """CLI 無効時に get_agent_tool が claude-direct にフォールバックするか。"""
+
+    def test_codex_disabled_falls_back(self) -> None:
+        config = _make_config(codex={"enabled": False})
+        assert route_config.get_agent_tool("debugger", config) == "claude-direct"
+
+    def test_codex_enabled_returns_codex(self) -> None:
+        config = _make_config(codex={"enabled": True})
+        assert route_config.get_agent_tool("debugger", config) == "codex"
+
+    def test_gemini_disabled_falls_back(self) -> None:
+        config = _make_config(gemini={"enabled": False})
+        assert route_config.get_agent_tool("researcher", config) == "claude-direct"
+
+    def test_gemini_enabled_returns_gemini(self) -> None:
+        config = _make_config(gemini={"enabled": True})
+        assert route_config.get_agent_tool("researcher", config) == "gemini"
+
+    def test_claude_direct_unaffected(self) -> None:
+        """claude-direct エージェントは CLI 無効の影響を受けない。"""
+        config = _make_config(codex={"enabled": False}, gemini={"enabled": False})
+        assert route_config.get_agent_tool("planner", config) == "claude-direct"
+
+    def test_auto_unaffected(self) -> None:
+        """auto エージェントはフォールバックしない（サブエージェントが動的判断）。"""
+        config = _make_config(codex={"enabled": False}, gemini={"enabled": False})
+        assert route_config.get_agent_tool("ai-architect", config) == "auto"
+
+
+class TestBuildCliSuggestionDisabled:
+    """CLI 無効時に build_cli_suggestion が None を返すか。"""
+
+    def test_codex_disabled_returns_none(self) -> None:
+        config = _make_config(codex={"enabled": False})
+        result = route_config.build_cli_suggestion("codex", "debugger", "debug", config)
+        assert result is None
+
+    def test_codex_enabled_returns_string(self) -> None:
+        config = _make_config(codex={"enabled": True})
+        result = route_config.build_cli_suggestion("codex", "debugger", "debug", config)
+        assert result is not None
+        assert "Codex" in result
+
+    def test_gemini_disabled_returns_none(self) -> None:
+        config = _make_config(gemini={"enabled": False})
+        result = route_config.build_cli_suggestion("gemini", "researcher", "research", config)
+        assert result is None
+
+    def test_gemini_enabled_returns_string(self) -> None:
+        config = _make_config(gemini={"enabled": True})
+        result = route_config.build_cli_suggestion("gemini", "researcher", "research", config)
+        assert result is not None
+        assert "Gemini" in result
+
+    def test_claude_direct_always_none(self) -> None:
+        config = _make_config()
+        result = route_config.build_cli_suggestion("claude-direct", "planner", "plan", config)
+        assert result is None
+
+
+class TestBuildAliasesDisabled:
+    """CLI 無効時のエイリアス構築確認。"""
+
+    def test_codex_disabled_no_bash_codex(self) -> None:
+        config = _make_config(codex={"enabled": False})
+        aliases = route_config.build_aliases(config)
+        assert "bash:codex" not in aliases.get("codex", [])
+
+    def test_codex_disabled_agents_move_to_claude_direct(self) -> None:
+        config = _make_config(codex={"enabled": False})
+        aliases = route_config.build_aliases(config)
+        assert "task:debugger" in aliases.get("claude-direct", [])
+
+    def test_gemini_disabled_no_bash_gemini(self) -> None:
+        config = _make_config(gemini={"enabled": False})
+        aliases = route_config.build_aliases(config)
+        assert "bash:gemini" not in aliases.get("gemini", [])
+
+    def test_gemini_disabled_agents_move_to_claude_direct(self) -> None:
+        config = _make_config(gemini={"enabled": False})
+        aliases = route_config.build_aliases(config)
+        assert "task:researcher" in aliases.get("claude-direct", [])
+
+    def test_both_disabled_auto_has_no_bash(self) -> None:
+        config = _make_config(codex={"enabled": False}, gemini={"enabled": False})
+        aliases = route_config.build_aliases(config)
+        auto_aliases = aliases.get("auto", [])
+        assert "bash:codex" not in auto_aliases
+        assert "bash:gemini" not in auto_aliases
+
+    def test_both_enabled_auto_has_both_bash(self) -> None:
+        config = _make_config()
+        aliases = route_config.build_aliases(config)
+        auto_aliases = aliases.get("auto", [])
+        assert "bash:codex" in auto_aliases
+        assert "bash:gemini" in auto_aliases

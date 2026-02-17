@@ -65,6 +65,17 @@ codex exec --model <codex.model> --sandbox <codex.sandbox.implementation> <codex
 2. Codex からの回答: **英語**
 3. ユーザーへの報告: **日本語**
 
+## 無効化
+
+`cli-tools.yaml`（または `.local.yaml`）で `codex.enabled: false` を設定すると、Codex CLI の呼び出しが全て無効化される。
+無効時は Codex を使用するエージェントが自動的に `claude-direct`（Claude Code 自身の能力）にフォールバックする。
+
+```yaml
+# .claude/config/agent-routing/cli-tools.local.yaml
+codex:
+  enabled: false
+```
+
 ## 使わない場面
 
 - 単純なファイル編集（typo修正など）

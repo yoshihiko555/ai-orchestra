@@ -7,7 +7,21 @@ for comprehensive research with its larger context window.
 """
 
 import json
+import os
 import sys
+
+# hook_common を $AI_ORCHESTRA_DIR/packages/core/hooks/ から読み込む
+_orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
+if _orchestra_dir:
+    _core_hooks = os.path.join(_orchestra_dir, "packages", "core", "hooks")
+    if _core_hooks not in sys.path:
+        sys.path.insert(0, _core_hooks)
+    _routing_hooks = os.path.join(_orchestra_dir, "packages", "agent-routing", "hooks")
+    if _routing_hooks not in sys.path:
+        sys.path.insert(0, _routing_hooks)
+
+from hook_common import load_package_config  # noqa: E402
+from route_config import is_cli_enabled  # noqa: E402
 
 # Keywords that suggest deep research would benefit from Gemini
 RESEARCH_INDICATORS = [
@@ -58,9 +72,24 @@ def should_suggest_gemini(query: str, url: str = "") -> tuple[bool, str]:
     return False, ""
 
 
+def _build_gemini_command(config: dict) -> str:
+    """config から Gemini コマンド文字列を構築する。"""
+    gemini = config.get("gemini", {})
+    model = gemini.get("model", "")
+    model_flag = f"-m {model} " if model else ""
+    return f"`gemini {model_flag}-p '...' 2>/dev/null`"
+
+
 def main():
     try:
         data = json.load(sys.stdin)
+
+        # Gemini CLI が無効化されている場合は提案をスキップ
+        project_dir = data.get("cwd", "") or os.environ.get("CLAUDE_PROJECT_DIR", "")
+        config = load_package_config("agent-routing", "cli-tools.yaml", project_dir)
+        if not is_cli_enabled("gemini", config):
+            sys.exit(0)
+
         tool_name = data.get("tool_name", "")
         tool_input = data.get("tool_input", {})
 
@@ -75,13 +104,14 @@ def main():
         should_suggest, reason = should_suggest_gemini(query, url)
 
         if should_suggest:
+            gemini_cmd = _build_gemini_command(config)
             output = {
                 "hookSpecificOutput": {
                     "hookEventName": "PreToolUse",
                     "additionalContext": (
                         f"[Gemini Suggestion] {reason}. "
                         "For comprehensive research, consider Gemini CLI (1M token context):\n"
-                        "`gemini -p '...' 2>/dev/null`"
+                        f"{gemini_cmd}"
                     ),
                 }
             }

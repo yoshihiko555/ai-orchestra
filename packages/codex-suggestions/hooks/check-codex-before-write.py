@@ -16,8 +16,12 @@ if _orchestra_dir:
     _core_hooks = os.path.join(_orchestra_dir, "packages", "core", "hooks")
     if _core_hooks not in sys.path:
         sys.path.insert(0, _core_hooks)
+    _routing_hooks = os.path.join(_orchestra_dir, "packages", "agent-routing", "hooks")
+    if _routing_hooks not in sys.path:
+        sys.path.insert(0, _routing_hooks)
 
 from hook_common import load_package_config  # noqa: E402
+from route_config import is_cli_enabled  # noqa: E402
 
 # Input validation constants
 MAX_PATH_LENGTH = 4096
@@ -105,10 +109,8 @@ def should_suggest_codex(file_path: str, content: str | None = None) -> tuple[bo
     return False, ""
 
 
-def _build_codex_command(data: dict) -> str:
-    """cli-tools.yaml から Codex コマンド文字列を構築する。"""
-    project_dir = data.get("cwd", "") or os.environ.get("CLAUDE_PROJECT_DIR", "")
-    config = load_package_config("agent-routing", "cli-tools.yaml", project_dir)
+def _build_codex_command(config: dict) -> str:
+    """config から Codex コマンド文字列を構築する。"""
     codex = config.get("codex", {})
     model = codex.get("model", "gpt-5.3-codex")
     sandbox = codex.get("sandbox", {}).get("analysis", "read-only")
@@ -119,6 +121,13 @@ def _build_codex_command(data: dict) -> str:
 def main():
     try:
         data = json.load(sys.stdin)
+
+        # Codex CLI が無効化されている場合は提案をスキップ
+        project_dir = data.get("cwd", "") or os.environ.get("CLAUDE_PROJECT_DIR", "")
+        config = load_package_config("agent-routing", "cli-tools.yaml", project_dir)
+        if not is_cli_enabled("codex", config):
+            sys.exit(0)
+
         tool_input = data.get("tool_input", {})
         file_path = tool_input.get("file_path", "")
         content = tool_input.get("content", "") or tool_input.get("new_string", "")
@@ -129,7 +138,7 @@ def main():
         should_suggest, reason = should_suggest_codex(file_path, content)
 
         if should_suggest:
-            codex_cmd = _build_codex_command(data)
+            codex_cmd = _build_codex_command(config)
             output = {
                 "hookSpecificOutput": {
                     "hookEventName": "PreToolUse",

@@ -72,6 +72,17 @@ gemini -m <gemini.model> -p "{抽出プロンプト}" < /path/to/file 2>/dev/nul
 2. Gemini からの回答: **英語**
 3. ユーザーへの報告: **日本語**
 
+## 無効化
+
+`cli-tools.yaml`（または `.local.yaml`）で `gemini.enabled: false` を設定すると、Gemini CLI の呼び出しが全て無効化される。
+無効時は Gemini を使用するエージェントが自動的に `claude-direct`（Claude Code 自身の能力）にフォールバックする。
+
+```yaml
+# .claude/config/agent-routing/cli-tools.local.yaml
+gemini:
+  enabled: false
+```
+
 ## Codex vs Gemini 使い分け
 
 | タスク | Codex | Gemini |

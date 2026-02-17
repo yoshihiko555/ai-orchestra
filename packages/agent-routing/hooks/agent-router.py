@@ -9,6 +9,7 @@ from route_config import (
     build_cli_suggestion,
     detect_agent,
     get_agent_tool,
+    is_cli_enabled,
     load_config,
 )
 
@@ -35,14 +36,16 @@ def main():
             )
         else:
             prompt_lower = prompt.lower()
-            for trig in GEMINI_FALLBACK_TRIGGERS.get("ja", []) + GEMINI_FALLBACK_TRIGGERS.get(
-                "en", []
-            ):
-                if trig in prompt_lower:
-                    cli_msg = build_cli_suggestion("gemini", "researcher", trig, config)
-                    if cli_msg:
-                        messages.append(cli_msg)
-                    break
+            # Gemini CLI が無効の場合はフォールバックトリガーを抑制
+            if is_cli_enabled("gemini", config):
+                for trig in GEMINI_FALLBACK_TRIGGERS.get("ja", []) + GEMINI_FALLBACK_TRIGGERS.get(
+                    "en", []
+                ):
+                    if trig in prompt_lower:
+                        cli_msg = build_cli_suggestion("gemini", "researcher", trig, config)
+                        if cli_msg:
+                            messages.append(cli_msg)
+                        break
 
         if messages:
             print(
