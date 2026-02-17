@@ -218,9 +218,7 @@ def test_generate_json_report_handles_empty_entries() -> None:
     }
 
 
-def test_export_to_csv_writes_expected_file_and_truncates_columns(
-    tmp_path, monkeypatch
-) -> None:
+def test_export_to_csv_writes_expected_file_and_truncates_columns(tmp_path, monkeypatch) -> None:
     export_dir = tmp_path / "exports"
     monkeypatch.setattr(mod, "EXPORT_DIR", export_dir)
 

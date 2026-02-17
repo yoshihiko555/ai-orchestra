@@ -24,7 +24,7 @@ Do NOT hardcode model names or CLI options — always refer to the config file.
 3. model/sandbox/flags の解決順: `agents.<agent-name>.*` → 該当ツールの設定 → フォールバック
 
 ### フォールバックデフォルト（設定ファイルが見つからない場合）
-- Tool: gemini
+- Tool: claude-direct
 - Model: (omit -m flag, use CLI default)
 
 ## Role
@@ -72,7 +72,7 @@ You review UX, accessibility, and design guideline compliance:
 
 cli-tools.yaml の `agents.<agent-name>.tool` に基づいてコマンドを構築する。
 
-### tool = "gemini" の場合（デフォルト）
+### tool = "gemini" の場合
 
 ```bash
 # ガイドライン参照・リサーチ
