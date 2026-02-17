@@ -12,7 +12,9 @@
     },
     "quality_gate": {
       "enabled": false,
-      "block_on_failed_test": false
+      "block_on_failed_test": false,
+      "test_file_threshold": 3,
+      "test_line_threshold": 100
     },
     "kpi_scorecard": {
       "enabled": true,

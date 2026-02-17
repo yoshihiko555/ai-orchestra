@@ -4,12 +4,17 @@ PostToolUse hook: Suggest Codex debugging after test failures.
 
 Triggers after Bash tool calls containing test commands (pytest, npm test, etc.)
 when the test run fails.
+
+Also records test results to the shared test-gate state file so that
+test-gate-checker.py can reset change counters after successful tests.
 """
 
 import json
 import os
 import re
 import sys
+from datetime import UTC, datetime
+from pathlib import Path
 
 # hook_common を $AI_ORCHESTRA_DIR/packages/core/hooks/ から読み込む
 _orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
@@ -33,6 +38,9 @@ TEST_COMMAND_PATTERNS = [
     r"\bcargo\s+test\b",
     r"\bmake\s+test\b",
 ]
+
+# Shared state file with test-gate-checker.py
+TEST_GATE_STATE_FILE = Path("/tmp/claude-test-gate-state.json")
 
 
 def is_test_command(command: str) -> bool:
@@ -81,6 +89,51 @@ def extract_failure_summary(output: str) -> str:
     return "Test failure detected"
 
 
+def load_test_gate_state() -> dict:
+    """Load the shared test-gate state from file."""
+    try:
+        if TEST_GATE_STATE_FILE.exists():
+            with open(TEST_GATE_STATE_FILE, encoding="utf-8") as f:
+                return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        pass
+    return {
+        "files_modified_since_test": [],
+        "lines_modified_since_test": 0,
+        "last_test_result": None,
+        "warned": False,
+    }
+
+
+def save_test_gate_state(state: dict) -> None:
+    """Save the shared test-gate state to file."""
+    try:
+        TEST_GATE_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(TEST_GATE_STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+    except OSError:
+        pass
+
+
+def record_test_result(command: str, passed: bool) -> None:
+    """Record test result to the shared state file.
+
+    On success: reset change counters and warned flag.
+    On failure: keep counters (changes are not yet validated).
+    """
+    state = load_test_gate_state()
+    state["last_test_result"] = {
+        "timestamp": datetime.now(UTC).isoformat(),
+        "passed": passed,
+        "command": command,
+    }
+    if passed:
+        state["files_modified_since_test"] = []
+        state["lines_modified_since_test"] = 0
+        state["warned"] = False
+    save_test_gate_state(state)
+
+
 def _build_codex_command(data: dict) -> str:
     """cli-tools.yaml から Codex コマンド文字列を構築する。"""
     project_dir = data.get("cwd", "") or os.environ.get("CLAUDE_PROJECT_DIR", "")
@@ -113,8 +166,13 @@ def main():
         exit_code = tool_response.get("exit_code", 0)
         output = tool_response.get("stdout", "") or tool_response.get("content", "")
 
-        # Check if tests failed
-        if not is_test_failure(exit_code, output):
+        passed = not is_test_failure(exit_code, output)
+
+        # Record test result to shared state (success resets counters)
+        record_test_result(command, passed)
+
+        # If tests passed, no further action needed
+        if passed:
             sys.exit(0)
 
         failure_summary = extract_failure_summary(output)

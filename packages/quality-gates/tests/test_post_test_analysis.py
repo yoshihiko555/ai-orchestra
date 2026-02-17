@@ -60,3 +60,58 @@ def test_extract_failure_summary_returns_top_3_lines() -> None:
 
 def test_extract_failure_summary_returns_default_when_no_match() -> None:
     assert post_test_analysis.extract_failure_summary("all passed") == "Test failure detected"
+
+
+# ---------------------------------------------------------------------------
+# record_test_result (shared state management)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def _clean_state(tmp_path, monkeypatch):
+    """Redirect state file to tmp_path so tests don't interfere."""
+    state_file = tmp_path / "test-gate-state.json"
+    monkeypatch.setattr(post_test_analysis, "TEST_GATE_STATE_FILE", state_file)
+    yield state_file
+
+
+def test_record_test_result_resets_on_pass(_clean_state) -> None:
+    """Successful test run should reset counters and warned flag."""
+    # Set up pre-existing state with modifications
+    state = {
+        "files_modified_since_test": ["src/auth.py", "src/models.py"],
+        "lines_modified_since_test": 85,
+        "last_test_result": None,
+        "warned": True,
+    }
+    post_test_analysis.save_test_gate_state(state)
+
+    # Record a passing test
+    post_test_analysis.record_test_result("pytest", passed=True)
+
+    reloaded = post_test_analysis.load_test_gate_state()
+    assert reloaded["files_modified_since_test"] == []
+    assert reloaded["lines_modified_since_test"] == 0
+    assert reloaded["warned"] is False
+    assert reloaded["last_test_result"]["passed"] is True
+    assert reloaded["last_test_result"]["command"] == "pytest"
+
+
+def test_record_test_result_preserves_on_fail(_clean_state) -> None:
+    """Failed test run should keep counters (changes not validated)."""
+    state = {
+        "files_modified_since_test": ["src/auth.py", "src/models.py"],
+        "lines_modified_since_test": 85,
+        "last_test_result": None,
+        "warned": True,
+    }
+    post_test_analysis.save_test_gate_state(state)
+
+    # Record a failing test
+    post_test_analysis.record_test_result("pytest", passed=False)
+
+    reloaded = post_test_analysis.load_test_gate_state()
+    assert reloaded["files_modified_since_test"] == ["src/auth.py", "src/models.py"]
+    assert reloaded["lines_modified_since_test"] == 85
+    assert reloaded["warned"] is True
+    assert reloaded["last_test_result"]["passed"] is False
