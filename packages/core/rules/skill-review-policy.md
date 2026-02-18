@@ -83,7 +83,7 @@ Task(subagent_type="code-reviewer", prompt="""
 このポリシーはレビューフェーズを持つ全スキルに適用される:
 
 - `issue-fix`（Phase 4）
-- `startproject`（Phase 6）
+- `startproject`（Phase 7）
 - その他、レビューフェーズを含むカスタムスキル
 
 ---

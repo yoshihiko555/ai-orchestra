@@ -31,9 +31,9 @@ Phase 4: Task Creation (Claude)
     ↓
 Phase 5: CLAUDE.md Update (Claude)
     ↓
-[Implementation...]
+Phase 6: Implementation (Implementation Agents via Subagent)
     ↓
-Phase 6: Multi-Session Review (code-reviewer / security-reviewer)
+Phase 7: Multi-Session Review (code-reviewer / security-reviewer)
 ```
 
 ---
@@ -173,7 +173,68 @@ Add to CLAUDE.md:
 
 ---
 
-## Phase 6: Multi-Session Review (Post-Implementation)
+## Phase 6: Implementation (Implementation Agents)
+
+**タスクリストの各タスクを implementation agents にサブエージェント経由で委譲する。**
+
+> **重要: オーケストレーターは実装コードを直接 Edit/Write しない。**
+> タスクリストの管理とサブエージェント呼び出しに専念する。
+
+### 原則
+
+1. **Phase 4 で作成したタスクリストを順に処理する**
+2. **各タスクを適切な implementation agent に委譲する**（`frontend-dev`, `backend-python-dev`, `backend-go-dev`, `ai-dev`, `tester` 等）
+3. **オーケストレーター自身は Edit/Write で実装コードを書かない** — サブエージェントに全て任せる
+4. **implementation agents は `cli-tools.yaml` の `agents.{name}.tool` 設定に従い、自動的に Codex CLI 経由で実装する**
+
+### 実行パターン
+
+```
+# 1. タスクリストから次のタスクを取得
+# 2. 適切な implementation agent を選定
+
+# ルーティング: agents.{name}.tool の値に基づき、Agent Routing セクションの方法で呼び出す
+
+# 例: Python バックエンド実装
+Task(subagent_type="backend-python-dev", prompt="""
+タスク: {タスク内容}
+
+コンテキスト:
+- プロジェクト: {feature}
+- 関連ファイル: {files}
+- 設計方針: {design decisions from Phase 3}
+
+実装してください。
+""")
+
+# 例: フロントエンド実装
+Task(subagent_type="frontend-dev", prompt="""
+タスク: {タスク内容}
+...
+""")
+
+# 例: テスト作成
+Task(subagent_type="tester", prompt="""
+タスク: {タスク内容}
+...
+""")
+```
+
+### 禁止事項
+
+- オーケストレーターが直接 `Edit` / `Write` で実装コードを変更すること
+- 「軽微な変更」を理由にサブエージェント委譲をスキップすること
+- implementation agent を経由せずに Codex CLI を直接呼び出すこと（Agent Routing に従う）
+
+### 許容事項
+
+- 設定ファイルの軽微な修正（`.env.example` 等）はオーケストレーターが直接行ってよい
+- タスクリストの更新（TaskCreate/TaskUpdate）はオーケストレーターが行う
+- サブエージェントの結果確認と次タスクへの遷移判断
+
+---
+
+## Phase 7: Multi-Session Review (Post-Implementation)
 
 **実装完了後、別セッションでレビューを実施。**
 
