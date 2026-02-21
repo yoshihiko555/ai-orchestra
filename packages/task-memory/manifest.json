@@ -1,0 +1,17 @@
+{
+  "name": "task-memory",
+  "version": "0.1.0",
+  "description": "Plans.md ベースの SSOT タスク管理・セッション間コンテキスト維持",
+  "depends": ["core"],
+  "hooks": {
+    "SessionStart": ["load-task-state.py"]
+  },
+  "files": [
+    "hooks/load-task-state.py"
+  ],
+  "skills": ["skills/task-state"],
+  "agents": [],
+  "rules": ["rules/task-memory-usage.md"],
+  "scripts": [],
+  "config": ["config/task-memory.yaml"]
+}
