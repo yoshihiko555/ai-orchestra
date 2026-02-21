@@ -1,0 +1,18 @@
+# task-memory パッケージ設定
+# プロジェクト固有の上書き: config/task-memory.local.yaml
+
+# Plans.md ファイルパス（プロジェクトルートからの相対パス）
+plans_file: ".claude/Plans.md"
+
+# SessionStart 時にタスク状態サマリーを出力するか
+show_summary_on_start: true
+
+# 表示するタスクの最大数（0 = 無制限）
+max_display_tasks: 20
+
+# 状態マーカー定義
+markers:
+  todo: "cc:TODO"
+  wip: "cc:WIP"
+  done: "cc:done"
+  blocked: "cc:blocked"
