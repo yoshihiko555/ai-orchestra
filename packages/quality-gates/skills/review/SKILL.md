@@ -110,3 +110,10 @@ When `/review {type}` is called:
 - Use `/review design` before major refactoring
 - Full `/review` is recommended before releases
 - Specify files/features for focused review
+
+## Quality Gate Rule（v2）
+
+- 最終品質ゲートとして使う場合（推奨: 別セッション実行）
+- `Critical` は必ず修正して再レビューする
+- `High` は運用方針に応じて必須修正またはユーザー確認とする
+- テストコード作成は `/tdd` の責務であり、`/review` の責務ではない

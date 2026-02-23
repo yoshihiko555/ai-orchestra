@@ -54,6 +54,7 @@ gemini -m <gemini.model> -p "{プロンプト}" < /path/to/file 2>/dev/null
 /review security     # セキュリティレビューのみ
 /review impl         # 実装系（code + security + performance）
 /review design       # 設計系（spec + architecture）
+/release-readiness   # マージ前最終チェック（テスト/レビュー/blocked確認）
 ```
 
 ---
@@ -174,6 +175,11 @@ codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags
 4. **レビューフェーズ**
    ```
    /review  # 全レビュアー並列実行
+   ```
+
+5. **仕上げフェーズ（任意だが推奨）**
+   ```
+   /release-readiness  # 最終チェック
    ```
 
 ---

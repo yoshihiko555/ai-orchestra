@@ -17,7 +17,13 @@
     "hooks/lint-on-save.py",
     "hooks/test-gate-checker.py"
   ],
-  "skills": ["skills/review", "skills/tdd", "skills/simplify", "skills/design-tracker"],
+  "skills": [
+    "skills/review",
+    "skills/tdd",
+    "skills/simplify",
+    "skills/design-tracker",
+    "skills/release-readiness"
+  ],
   "agents": [],
   "rules": [],
   "scripts": [],

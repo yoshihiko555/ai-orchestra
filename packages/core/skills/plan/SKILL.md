@@ -1,75 +1,103 @@
 ---
 name: plan
-description: Create a detailed implementation plan for a feature or task. Use when user wants to plan before coding.
+description: |
+  Create a preflight implementation plan before coding.
+  Clarifies scope, risks, and task breakdown, then reflects them in Plans.md.
 disable-model-invocation: true
 ---
 
-# Create Implementation Plan
+# Plan (Preflight)
 
-Create an implementation plan for $ARGUMENTS.
+`/plan` は **実装前のプリフライト** です。
+`/startproject` の前段で「何を作るか / どこまで作るか / 何が危険か」を確定します。
 
-## Planning Process
+## 役割
 
-### 1. Requirements Analysis
+1. 要件とスコープの確定
+2. リスクと未確定事項の可視化
+3. 実装ステップへの分解
+4. `Plans.md`（SSOT）への反映
 
-First clarify:
+## いつ使うか
 
-- **Purpose**: What to achieve
-- **Scope**: What to include, what to exclude
-- **Constraints**: Technical, time, dependencies
+### 必須（中〜大規模）
 
-### 2. Current State Investigation
+- 新機能追加
+- 複数ファイルにまたがる変更
+- 設計変更や依存追加を含む変更
 
-Investigate the codebase:
+### 省略可（小規模）
 
-```
-- Related existing code
-- Files affected
-- Libraries/patterns to use
-- Existing tests
-```
+- typo 修正
+- コメント修正のみ
+- 明確な 1 ファイル軽微変更
 
-### 3. Break Down Implementation Steps
+## プロセス
 
-Break into small steps:
+### 1. Requirements
 
-1. Each step is independently testable
-2. Consider dependency order
-3. High-risk steps first
+- 目的（何を達成するか）
+- スコープ in/out
+- 受け入れ条件
+- 制約（技術、時間、依存）
 
-### 4. Output Format
+### 2. Current State
+
+- 既存実装と関連ファイル
+- 既存テストと不足テスト
+- 既存ルール/パターン
+
+### 3. Plan Breakdown
+
+- 小さく検証可能なステップへ分解
+- 依存順序を明示
+- 高リスク項目を先に実施
+
+### 4. Plans.md 反映
+
+`Plans.md` をタスクの SSOT として更新する。
+
+- 未作成なら `/task-state init`
+- フェーズ追加が必要なら `/task-state add-phase ...`
+- 主要タスクを `cc:TODO` で登録
+
+### 5. Exit 条件
+
+- Open Questions が 0、または保留理由付きで明示
+- 実装ステップに抜けがない
+- `Plans.md` が次フェーズで実行可能な状態
+
+## 出力フォーマット
 
 ```markdown
-## Implementation Plan: {Title}
+## Preflight Plan: {Title}
 
-### Purpose
+### Goal
 {1-2 sentences}
 
 ### Scope
-- New files: {list}
-- Modified files: {list}
-- Dependencies: {list}
+- In: {list}
+- Out: {list}
+
+### Acceptance Criteria
+- {criteria}
 
 ### Implementation Steps
+1. [ ] {step}
+2. [ ] {step}
 
-#### Step 1: {Title}
-- [ ] {Specific task}
-- [ ] {Specific task}
-**Verification**: {Completion criteria for this step}
-
-#### Step 2: {Title}
-...
-
-### Risks & Considerations
-- {Potential issues and mitigations}
+### Risks
+- {risk}: {mitigation}
 
 ### Open Questions
-- {Items to clarify before implementation}
+- {question or "none"}
+
+### Plans.md Updates
+- {phase/task entries to add or update}
 ```
 
 ## Notes
 
-- Plans should be at actionable granularity
-- Include verification method for each step
-- Ask questions at planning stage for unclear points
-- Don't over-detail (adjust during implementation)
+- `/plan` は **実装を行わない**（プリフライト専用）
+- 実装本線は `/startproject` で行う
+- 必要に応じて設計相談は Codex、調査は Gemini を利用

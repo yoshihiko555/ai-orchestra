@@ -113,3 +113,8 @@ uv run pytest --cov={module} --cov-report=term-missing
 - Keep each cycle **small**
 - Refactor **after** tests pass
 - Prioritize **working code** over perfection
+- Python 以外では、テストフレームワークと実行コマンドをプロジェクト標準（例: Jest/Vitest, go test）に置き換える
+
+### 運用補足（v2）
+
+- `startproject` 後は最低 1 サイクル（Red → Green → Refactor）を実施する運用を推奨

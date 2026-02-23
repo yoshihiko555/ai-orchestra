@@ -85,3 +85,7 @@ uv run pytest -v
 - Web search for unclear points
 - Don't change behavior (refactoring only)
 - Run tests after each significant change
+
+### 運用補足（v2）
+
+- `/review` で保守性課題が出た場合に実行候補として扱う
