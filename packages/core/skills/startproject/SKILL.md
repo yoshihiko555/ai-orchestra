@@ -45,10 +45,10 @@ Phase 7: Multi-Session Review (code-reviewer / security-reviewer)
 | `tool` 設定 | 呼び出し方法 |
 |-------------|-------------|
 | `claude-direct` | `Task(subagent_type="{agent}", prompt="...")` |
-| `codex` | `Task(subagent_type="general-purpose", prompt="Codex CLI で実行: codex exec --model <codex.model> --sandbox <codex.sandbox.*> <codex.flags> '...'")` |
+| `codex` | `Task(subagent_type="{agent}", prompt="... Codex CLI (workspace-write) で実装すること ...")` |
 | `gemini` | `Task(subagent_type="general-purpose", prompt="Gemini CLI で実行: gemini -m <gemini.model> -p '...'")` |
 
-**例**: `agents.architect.tool` が `codex` なら general-purpose + Codex CLI、`claude-direct` なら直接 `Task(subagent_type="architect", ...)`。
+**例**: `agents.frontend-dev.tool` が `codex` なら `Task(subagent_type="frontend-dev", prompt="... Codex CLI で実装すること ...")`。named agent はドメイン固有の知識（コーディング規約、テックスタック）を保持するため、`general-purpose` ではなく直接呼び出す。
 
 ---
 
@@ -204,19 +204,36 @@ Task(subagent_type="backend-python-dev", prompt="""
 - 関連ファイル: {files}
 - 設計方針: {design decisions from Phase 3}
 
+IMPORTANT: cli-tools.yaml の設定に従い、Codex CLI (workspace-write) で実装すること。
+dangerouslyDisableSandbox: true で実行すること。
+
 実装してください。
 """)
 
 # 例: フロントエンド実装
 Task(subagent_type="frontend-dev", prompt="""
 タスク: {タスク内容}
-...
+
+コンテキスト:
+- プロジェクト: {feature}
+- 関連ファイル: {files}
+
+IMPORTANT: cli-tools.yaml の設定に従い、Codex CLI (workspace-write) で実装すること。
+dangerouslyDisableSandbox: true で実行すること。
+
+実装してください。
 """)
 
 # 例: テスト作成
 Task(subagent_type="tester", prompt="""
 タスク: {タスク内容}
-...
+
+コンテキスト:
+- 関連ファイル: {files}
+
+IMPORTANT: cli-tools.yaml の設定に従い実装すること。
+
+テストを作成してください。
 """)
 ```
 

@@ -15,3 +15,4 @@ AI Orchestra プロジェクトの意思決定記録。
 |---|---------|-----------|------|
 | ADR-20260216-001 | docs ディレクトリのカテゴリ分類と ADR 導入 | accepted | 2026-02-16 |
 | ADR-20260219-002 | startproject 実装フェーズの明示化と Codex 例外の厳格化 | accepted | 2026-02-19 |
+| ADR-20260223-003 | Codex CLI 実装委譲のデッドロック解消と Implementation Method 強制 | accepted | 2026-02-23 |

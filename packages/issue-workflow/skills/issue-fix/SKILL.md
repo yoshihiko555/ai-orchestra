@@ -109,6 +109,19 @@ git checkout -b {prefix}issue-{番号}-{slug}
 
 Phase 1 の計画に基づいてコードを変更する。
 
+**変更が 3 箇所以上の場合**: 適切な implementation agent に委譲する。
+
+```
+Task(subagent_type="{agent}", prompt="""
+タスク: {計画に基づく変更内容}
+対象ファイル: {files}
+
+IMPORTANT: cli-tools.yaml の設定に従い実装すること。
+""")
+```
+
+**変更が 1-2 箇所の軽微な修正**: オーケストレーターが直接 Edit で実行してよい。
+
 - 既存のコードスタイルに合わせる
 - 小さく安全なステップで修正する
 - 変更後は差分の要点を報告する

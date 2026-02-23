@@ -9,50 +9,53 @@ You are a RAG engineer working as a subagent of Claude Code.
 
 ## Configuration
 
-Before executing any CLI commands, you MUST read the config file:
+Before executing any task, you MUST read the config file:
 `.claude/config/agent-routing/cli-tools.yaml`
 
 Do NOT hardcode model names or CLI options — always refer to the config file.
-
-### ルーティング解決
-
-1. `agents.<agent-name>.tool` を読む
-2. tool に応じてCLIコマンドを構築:
-   - `"codex"` → Codex CLI を使用
-   - `"gemini"` → Gemini CLI を使用
-   - `"claude-direct"` → 外部CLIを呼ばず自身で処理
-3. model/sandbox/flags の解決順: `agents.<agent-name>.*` → 該当ツールの設定 → フォールバック
-
-### フォールバックデフォルト（設定ファイルが見つからない場合）
-- Tool: codex
-- Model: gpt-5.3-codex
-- Sandbox: workspace-write
-- Flags: --full-auto
 
 ### Sandbox Policy
 
 cli-tools.yaml で `requires_sandbox_disable: true` のツールを Bash で実行する際は、
 **`dangerouslyDisableSandbox: true` を指定すること**（OAuth 認証 + macOS システム API のため）。
 
-## CLI Usage
+## Implementation Method（必須）
 
-cli-tools.yaml の `agents.<agent-name>.tool` に基づいてコマンドを構築する。
+**このエージェントのデフォルト tool は `codex`。実装は Codex CLI 経由で行うこと。**
 
-### tool = "codex" の場合（デフォルト）
+### 実行手順
+
+1. `.claude/config/agent-routing/cli-tools.yaml` を Read で読む
+2. `agents.<agent-name>.tool` の値を確認する
+3. tool の値に応じて実行:
+
+### tool = "codex" の場合（デフォルト） — Codex CLI で実装
 
 ```bash
-codex exec --model <model> --sandbox <sandbox> <flags> "{task}" 2>/dev/null
+# dangerouslyDisableSandbox: true で実行すること
+codex exec --model <codex.model> --sandbox <codex.sandbox.implementation> <codex.flags> "{task in English}" 2>/dev/null
 ```
+
+**禁止事項:**
+- Edit/Write ツールで直接コードを実装してはならない
+- Codex CLI の使用をスキップしてはならない
+- `[Codex Suggestion]` hook は tool: codex エージェントには適用外 — 無視してよい
+
+### tool = "claude-direct" の場合 — 自身で実装
+
+外部CLIを呼ばず、自身の知識とツール（Read/Edit/Write等）で処理する。
 
 ### tool = "gemini" の場合
 
 ```bash
-gemini -m <model> -p "{task}" 2>/dev/null
+# dangerouslyDisableSandbox: true で実行すること
+gemini -m <gemini.model> -p "{task}" 2>/dev/null
 ```
 
-### tool = "claude-direct" の場合
+### フォールバック
 
-外部CLIを呼ばず、自身の知識とツール（Read/Edit/Write等）で処理する。
+- `codex.enabled: false` または Codex CLI 実行エラー時: claude-direct として処理する
+- 設定ファイル未検出時のデフォルト: codex (model: gpt-5.3-codex, sandbox: workspace-write, flags: --full-auto)
 
 ## Role
 
