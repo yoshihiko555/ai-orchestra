@@ -37,6 +37,10 @@
 - **ユーザーが明示的にスキップを指示** した場合
 - **同一セッション内で同じファイルについて既に Codex 相談済み** の場合
 - **`cli-tools.yaml` で `codex.enabled: false`** に設定されている場合（hook 自体が提案を抑制する）
+- **`tool: codex` に設定された implementation agent 内での Edit/Write**
+  - 対象: `cli-tools.yaml` の `agents.{name}.tool` が `"codex"` のエージェント
+  - 理由: これらのエージェントは Codex CLI で実装することが前提であり、hook の「Codex に相談」は冗長。サンドボックス制約でデッドロックを引き起こす
+  - 注意: フォールバック時（`codex.enabled: false`）のみ Edit/Write を直接使用可
 
 ## 累積的変更の原則
 

@@ -42,6 +42,7 @@
     "config/issue-workflow/sandbox-requirements.json",
     "config/route-audit/delegation-policy.json",
     "config/route-audit/orchestration-flags.json",
+    "config/task-memory/task-memory.yaml",
     "rules/agent-routing-policy.md",
     "rules/codex-delegation.md",
     "rules/codex-suggestion-compliance.md",
@@ -51,6 +52,7 @@
     "rules/gemini-suggestion-compliance.md",
     "rules/orchestra-usage.md",
     "rules/skill-review-policy.md",
+    "rules/task-memory-usage.md",
     "skills/checkpointing/SKILL.md",
     "skills/checkpointing/checkpoint.py",
     "skills/codex-system/SKILL.md",
@@ -70,7 +72,8 @@
     "skills/simplify/SKILL.md",
     "skills/startproject/SKILL.md",
     "skills/startproject/references/task-patterns.md",
+    "skills/task-state/SKILL.md",
     "skills/tdd/SKILL.md"
   ],
-  "last_sync": "2026-02-23T09:38:18.477594+00:00"
+  "last_sync": "2026-02-23T10:29:34.135693+00:00"
 }
