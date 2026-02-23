@@ -44,7 +44,7 @@ metadata:
 
 1. `.claude/Plans.md` を読み込み
 2. 状態マーカー別にタスクを集計
-3. WIP → blocked → TODO の優先度でサマリー表示
+3. WIP → TODO → blocked の優先度でサマリー表示
 
 ### update モード
 

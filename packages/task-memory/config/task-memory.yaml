@@ -7,10 +7,10 @@ plans_file: ".claude/Plans.md"
 # SessionStart 時にタスク状態サマリーを出力するか
 show_summary_on_start: true
 
-# 表示するタスクの最大数（0 = 無制限）
+# サマリーで表示するタスク合計の最大数（0 = 無制限）
 max_display_tasks: 20
 
-# 状態マーカー定義
+# 状態マーカー定義（値は重複不可）
 markers:
   todo: "cc:TODO"
   wip: "cc:WIP"
