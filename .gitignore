@@ -42,3 +42,6 @@ env/
 # Project-specific
 docs/*
 !docs/specs/
+
+# CocoIndex local search index
+.cocoindex_code/
