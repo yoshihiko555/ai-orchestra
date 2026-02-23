@@ -2,8 +2,8 @@
 
 オーケストレーションシステムの使い方。
 
-> **Note**: CLI のモデル名・オプションは `.claude/config/cli-tools.yaml` で一元管理。
-> `.claude/config/cli-tools.local.yaml` が存在する場合はそちらの値を優先する（詳細は `config-loading.md` 参照）。
+> **Note**: CLI のモデル名・オプションは `.claude/config/agent-routing/cli-tools.yaml` で一元管理。
+> `.claude/config/agent-routing/cli-tools.local.yaml` が存在する場合はそちらの値を優先する（詳細は `config-loading.md` 参照）。
 > 以下のコマンド例中のプレースホルダー（`<codex.model>` 等）は、config ファイルの値で置換して使用する。
 
 ---
@@ -88,20 +88,23 @@ codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags
 
 ## 利用可能なエージェント
 
+> **Note**: 各エージェントの実行ツールは `cli-tools.yaml` の `agents.<name>.tool` で決まる。
+> 下表はロール説明であり、Codex/Gemini の固定利用を意味しない。
+
 ### Planning
 | Agent | Role |
 |-------|------|
 | `planner` | タスク分解・マイルストーン計画 |
-| `researcher` | 調査・情報収集 (+Gemini) |
+| `researcher` | 調査・情報収集 |
 | `requirements` | 要件整理・明確化 |
 
 ### Design
 | Agent | Role |
 |-------|------|
-| `architect` | システムアーキテクチャ設計 (+Codex) |
-| `api-designer` | REST/GraphQL API設計 (+Codex) |
-| `data-modeler` | データベース・スキーマ設計 (+Codex) |
-| `auth-designer` | 認証・認可設計 (+Codex) |
+| `architect` | システムアーキテクチャ設計 |
+| `api-designer` | REST/GraphQL API設計 |
+| `data-modeler` | データベース・スキーマ設計 |
+| `auth-designer` | 認証・認可設計 |
 | `spec-writer` | 仕様書作成 |
 
 ### Implementation
@@ -110,43 +113,43 @@ codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags
 | `frontend-dev` | React/Vue/Next.js 実装 |
 | `backend-python-dev` | Python バックエンド |
 | `backend-go-dev` | Go バックエンド |
-| `ai-architect` | AI/ML システム設計 (+Codex/Gemini) |
+| `ai-architect` | AI/ML システム設計 |
 | `ai-dev` | AI 機能実装 |
 | `prompt-engineer` | プロンプト設計・最適化 |
 | `rag-engineer` | RAG パイプライン実装 |
-| `debugger` | バグ特定・修正 (+Codex) |
+| `debugger` | バグ特定・修正 |
 | `tester` | テストコード作成 |
 
 ### Review
 | Agent | Role |
 |-------|------|
-| `code-reviewer` | 可読性・保守性・バグ検出 (+Codex) |
-| `security-reviewer` | 脆弱性・権限・情報漏洩 (+Codex) |
-| `performance-reviewer` | 計算量・I/O・最適化 (+Codex) |
-| `spec-reviewer` | 仕様との整合性 (+Codex) |
-| `architecture-reviewer` | アーキテクチャ妥当性 (+Codex) |
+| `code-reviewer` | 可読性・保守性・バグ検出 |
+| `security-reviewer` | 脆弱性・権限・情報漏洩 |
+| `performance-reviewer` | 計算量・I/O・最適化 |
+| `spec-reviewer` | 仕様との整合性 |
+| `architecture-reviewer` | アーキテクチャ妥当性 |
 | `ux-reviewer` | UX・アクセシビリティ |
 | `docs-writer` | ドキュメント作成 |
 
 ### Utility
 | Agent | Role |
 |-------|------|
-| `general-purpose` | 汎用タスク・Codex/Gemini委譲 |
+| `general-purpose` | 汎用タスク・外部CLI委譲 |
 
 ---
 
-## Codex vs Gemini 使い分け
+## `tool: auto` 時の使い分け目安
 
-| タスク | Codex | Gemini |
-|--------|-------|--------|
-| 設計判断 | ✓ | |
-| デバッグ | ✓ | |
-| コード実装相談 | ✓ | |
-| トレードオフ分析 | ✓ | |
-| ライブラリ調査 | | ✓ |
-| コードベース全体理解 | | ✓ |
-| 最新ドキュメント検索 | | ✓ |
-| PDF/動画/画像処理 | | ✓ |
+| タスク | 推奨 |
+|--------|------|
+| 設計判断 | Codex 候補 |
+| デバッグ | Codex 候補 |
+| コード実装相談 | Codex 候補 |
+| トレードオフ分析 | Codex 候補 |
+| ライブラリ調査 | Gemini 候補 |
+| コードベース全体理解 | Gemini 候補 |
+| 最新ドキュメント検索 | Gemini 候補 |
+| PDF/動画/画像処理 | Gemini 候補 |
 
 ---
 
@@ -189,8 +192,8 @@ codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags
 - 独立したタスクは並列実行で効率化
 - レビューは `/review` スキルで一括実行
 - 大きなタスクは `planner` で分解してから実行
-- 設計判断で迷ったら Codex に相談
-- 調査が必要なら Gemini でリサーチ
+- 設計判断で迷ったら `agents.<target>.tool` を確認し、`tool: auto` の場合は Codex を候補にする
+- 調査が必要なら `agents.<target>.tool` を確認し、`tool: auto` の場合は Gemini を候補にする
 - 大きな出力が予想される CLI 呼び出しはサブエージェント経由
 
 ---

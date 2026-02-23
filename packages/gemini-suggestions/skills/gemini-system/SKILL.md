@@ -30,17 +30,15 @@ metadata:
 | マルチモーダル | サブエージェント経由（推奨） |
 | 短い質問 (1-2文回答) | 直接呼び出しOK |
 
-## Gemini vs Codex
+## Tool Selection (Config-Aware)
 
-| Task | Gemini | Codex |
-|------|--------|-------|
-| **リポジトリ全体理解** | ✓ | |
-| **ライブラリ調査** | ✓ | |
-| **マルチモーダル (PDF/動画/音声)** | ✓ | |
-| **最新ドキュメント検索** | ✓ | |
-| **設計判断** | | ✓ |
-| **デバッグ** | | ✓ |
-| **コード実装** | | ✓ |
+**固定マッピングではなく、`cli-tools.yaml` の解決結果を優先する。**
+
+| ケース | 推奨 |
+|--------|------|
+| 外部調査、最新ドキュメント、マルチモーダル | Gemini 候補 |
+| 設計判断、デバッグ、実装 | `agents.<target>.tool` で解決 |
+| `tool: auto` の場合 | 深い推論は Codex 候補、調査は Gemini 候補 |
 
 ## When to Consult (MUST)
 
@@ -53,10 +51,10 @@ metadata:
 
 ## When NOT to Consult
 
-- Design decisions (use Codex)
-- Debugging (use Codex)
-- Code implementation (use Codex)
-- Simple file operations (do directly)
+- `agents.<target>.tool` の解決結果が `gemini` でない場合
+- 実装作業で `tool: codex` / `tool: claude-direct` が指定されている場合
+- 単純なファイル操作（直接処理で十分）
+- テスト・lint 実行のみの作業
 
 ## How to Consult
 
@@ -170,9 +168,9 @@ gemini -p "Transcribe and summarize: decisions, action items" < meeting.mp3 2>/d
 
 | Workflow | Steps |
 |----------|-------|
-| **New feature** | Gemini research → Codex design review |
-| **Library choice** | Gemini comparison → Codex decision |
-| **Bug investigation** | Gemini codebase search → Codex debug |
+| **New feature** | Gemini research → (`agents.<target>.tool` に応じて) 設計レビュー |
+| **Library choice** | Gemini comparison → (`tool: auto` なら) Codex 候補で意思決定 |
+| **Bug investigation** | Gemini codebase search → (`tool: auto` なら) Codex 候補でデバッグ |
 
 ## Why Gemini?
 

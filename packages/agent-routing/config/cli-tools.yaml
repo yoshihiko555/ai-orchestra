@@ -3,7 +3,7 @@
 # 値を変更すると、このファイルを参照する全エージェントに自動で反映される。
 #
 # プロジェクト固有の上書き:
-#   .claude/config/cli-tools.local.yaml に同じキーを書くと、そちらが優先される。
+#   .claude/config/agent-routing/cli-tools.local.yaml に同じキーを書くと、そちらが優先される。
 #   例: codex.model だけ変えたい場合
 #     codex:
 #       model: o3-pro

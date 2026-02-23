@@ -1,156 +1,112 @@
 ---
 name: codex-system
 description: |
-  PROACTIVELY consult Codex CLI, your highly capable supporter with exceptional
-  reasoning and task completion abilities. Codex is a trusted expert you should
-  ALWAYS consult BEFORE making decisions on: design choices, implementation
-  approaches, debugging strategies, refactoring plans, or any non-trivial problem.
-  When uncertain, consult Codex. Don't hesitate - Codex provides better analysis.
-  Explicit triggers: "think deeper", "analyze", "second opinion", "consult codex".
+  Use Codex CLI with config-driven routing.
+  Always resolve behavior from `.claude/config/agent-routing/cli-tools.yaml`
+  (`codex.enabled`, `agents.<name>.tool`, model/sandbox/flags), instead of
+  hardcoding Codex as design-only or implementation-only.
+  Explicit triggers: "consult codex", "codexで", "think deeper", "analyze".
 metadata:
-  short-description: Claude Code ↔ Codex CLI collaboration
+  short-description: Claude Code ↔ Codex CLI collaboration (config-driven)
 ---
 
-# Codex System — Deep Reasoning Partner
+# Codex System — Config-Driven Integration
 
-**Codex CLI is your highly capable supporter for deep reasoning tasks.**
+**Codex の役割は固定しない。`cli-tools.yaml` を SSOT として解決する。**
 
 > **Note**: CLI のモデル名・オプションは `.claude/config/agent-routing/cli-tools.yaml` で一元管理。
 > `.claude/config/agent-routing/cli-tools.local.yaml` が存在する場合はそちらの値を優先する。
 
-> **詳細ルール**: `.claude/rules/codex-delegation.md`
+> **詳細ルール**: `.claude/rules/codex-delegation.md`, `.claude/rules/config-loading.md`
 
-## Context Management (CRITICAL)
+## Source of Truth (MUST)
 
-**サブエージェント経由を推奨。** メインオーケストレーターのコンテキストを節約するため。
+1. `.claude/config/agent-routing/cli-tools.yaml` を読む
+2. `.claude/config/agent-routing/cli-tools.local.yaml` があれば上書きを適用
+3. `codex.enabled` と `agents.<target-agent>.tool` で実行先を解決
+4. Codex を呼ぶ場合のみ `codex.model` / `codex.sandbox.*` / `codex.flags` を展開
+5. `codex.enabled: false` の場合は Codex 呼び出しを行わず、設定されたフォールバックに従う
 
-| 状況 | 方法 |
+## Routing Rules
+
+| 条件 | 動作 |
 |------|------|
-| 詳細な設計相談 | サブエージェント経由（推奨） |
-| デバッグ分析 | サブエージェント経由（推奨） |
-| 短い質問 (1-2文回答) | 直接呼び出しOK |
+| `agents.<target>.tool == "codex"` | Codex CLI を使用（analysis / implementation を用途で選択） |
+| `agents.<target>.tool == "claude-direct"` | Codex を強制しない |
+| `agents.<target>.tool == "gemini"` | Gemini を使用 |
+| `agents.<target>.tool == "auto"` | タスク特性で選択（深い推論・デバッグ・比較・レビューは Codex 候補） |
 
-## When to Consult (MUST)
+**重要**: 「Codex は設計専用」「Codex は実装専用」などの固定役割を前提にしない。  
+役割は `cli-tools.yaml` の変更で切り替わる。
 
-| Situation | Trigger Examples |
-|-----------|------------------|
-| **Design decisions** | 「どう設計？」「アーキテクチャ」 / "How to design?" |
-| **Debugging** | 「なぜ動かない？」「エラー」 / "Debug" "Error" |
-| **Trade-off analysis** | 「どちらがいい？」「比較して」 / "Compare" "Which?" |
-| **Complex implementation** | 「実装方法」「どう作る？」 / "How to implement?" |
-| **Refactoring** | 「リファクタ」「シンプルに」 / "Refactor" "Simplify" |
-| **Code review** | 「レビューして」「確認して」 / "Review" "Check" |
+## When to Consult Codex
 
-## When NOT to Consult
-
-- Simple file edits, typo fixes
-- Following explicit user instructions
-- git commit, running tests, linting
-- Tasks with obvious single solutions
+- ユーザーが明示的に Codex 利用を指示したとき
+- ルーティング解決結果が `tool: codex` のとき
+- `tool: auto` で深い推論が必要な分析（設計・デバッグ・比較検討・レビュー）を行うとき
 
 ## How to Consult
 
-### Recommended: Subagent Pattern
+### Subagent Pattern (推奨)
 
 **Use Task tool with `subagent_type='general-purpose'` to preserve main context.**
 
 ```
 Task tool parameters:
 - subagent_type: "general-purpose"
-- run_in_background: true (optional, for parallel work)
+- run_in_background: true (optional)
 - prompt: |
-    Consult Codex about: {topic}
+    Resolve target agent/tool from cli-tools.yaml first.
+    If tool resolves to codex, run:
 
     IMPORTANT: Codex CLI requires dangerouslyDisableSandbox: true
     (requires_sandbox_disable: true in cli-tools.yaml).
 
     codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "
-    {question for Codex}
+    {question}
     " 2>/dev/null
 
-    Return CONCISE summary (key recommendation + rationale).
+    Return CONCISE summary (recommendation + rationale).
 ```
 
-### Direct Call (Short Questions Only)
+### Direct Call (Short Questions)
 
-For quick questions expecting 1-2 sentence answers:
+For quick questions:
 
 ```bash
 codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "Brief question" 2>/dev/null
 ```
 
-### Workflow (Subagent)
+### Implementation Task (when route == codex)
 
-1. **Spawn subagent** with Codex consultation prompt
-2. **Continue your work** → Subagent runs in parallel
-3. **Receive summary** → Subagent returns concise insights
+```bash
+codex exec --model <codex.model> --sandbox <codex.sandbox.implementation> <codex.flags> "{implementation task}" 2>/dev/null
+```
 
 ### Sandbox Modes
 
 | Mode | Use Case |
 |------|----------|
-| `read-only` | Analysis, review, debugging advice |
-| `workspace-write` | Implementation, refactoring, fixes |
+| `read-only` | 分析、レビュー、デバッグ助言 |
+| `workspace-write` | 実装、修正、リファクタリング |
 
 ## Language Protocol
 
 1. Ask Codex in **English**
 2. Receive response in **English**
-3. Execute based on advice (or let Codex execute)
-4. Report to user in **Japanese**
-
-## Task Templates
-
-### Design Review
-
-```bash
-codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "
-Review this design approach for: {feature}
-
-Context:
-{relevant code or architecture}
-
-Evaluate:
-1. Is this approach sound?
-2. Alternative approaches?
-3. Potential issues?
-4. Recommendations?
-" 2>/dev/null
-```
-
-### Debug Analysis
-
-```bash
-codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "
-Debug this issue:
-
-Error: {error message}
-Code: {relevant code}
-Context: {what was happening}
-
-Analyze root cause and suggest fixes.
-" 2>/dev/null
-```
-
-### Code Review
-
-See: `references/code-review-task.md`
-
-### Refactoring
-
-See: `references/refactoring-task.md`
+3. Report to user in **Japanese**
 
 ## Integration with Gemini
 
 | Task | Use |
 |------|-----|
-| Need research first | Gemini → then Codex |
-| Design decision | Codex directly |
-| Library comparison | Gemini research → Codex decision |
+| 外部調査が必要 | Gemini → (必要なら) Codex |
+| 実装タスクで route が codex | Codex |
+| 実装タスクで route が claude-direct | Claude direct |
+| route が auto | タスク特性で選択 |
 
-## Why Codex?
+## Why This Skill
 
-- **Deep reasoning**: Complex analysis and problem-solving
-- **Code expertise**: Implementation strategies and patterns
-- **Consistency**: Same project context via `context-loader` skill
-- **Parallel work**: Background execution keeps you productive
+- config 変更だけで Codex の役割を切り替えられる
+- エージェント定義とスキル文書の責務齟齬を防げる
+- 将来のモデル評価変化（実装担当の入れ替え）に追従しやすい

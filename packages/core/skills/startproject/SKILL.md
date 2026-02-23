@@ -28,7 +28,7 @@ metadata:
 ## Workflow
 
 ```
-Phase 1: Research (Gemini via Subagent)
+Phase 1: Research (Config-Driven)
     ↓
 Phase 2: Requirements & Planning (Claude)
     ↓
@@ -59,22 +59,23 @@ Phase 7: Multi-Session Review (code-reviewer / security-reviewer)
 
 ---
 
-## Phase 1: Gemini Research (Background)
+## Phase 1: Research (Background)
 
-**Task tool でサブエージェントを起動し、Gemini でリポジトリ分析。**
+**Task tool でサブエージェントを起動し、`agents.researcher.tool` に従って調査を実行。**
 
 ```
 Task tool parameters:
-- subagent_type: "general-purpose"
+- subagent_type: "researcher"
 - run_in_background: true
 - prompt: |
     Research for: {feature}
 
-    IMPORTANT: Gemini CLI requires dangerouslyDisableSandbox: true
-    (requires_sandbox_disable: true in cli-tools.yaml).
+    Resolve route from cli-tools.yaml (`agents.researcher.tool`).
 
-    1. Call Gemini CLI (with dangerouslyDisableSandbox: true):
-       gemini -p "Analyze this repository for: {feature}
+    If tool == gemini:
+      IMPORTANT: Gemini CLI requires dangerouslyDisableSandbox: true
+      (requires_sandbox_disable: true in cli-tools.yaml).
+      gemini -m <gemini.model> <gemini.flags> -p "Analyze this repository for: {feature}
 
        Provide:
        1. Repository structure and architecture
@@ -83,9 +84,11 @@ Task tool parameters:
        4. Technical considerations
        " --include-directories . 2>/dev/null
 
-    2. Save full output to: .claude/docs/research/{feature}.md
+    If tool == claude-direct:
+      Read/Grep/Glob で同等の調査を実施し、同形式で要約を作成する。
 
-    3. Return CONCISE summary (5-7 bullet points)
+    Save full output to: .claude/docs/research/{feature}.md
+    Return CONCISE summary (5-7 bullet points)
 ```
 
 ---
@@ -101,7 +104,7 @@ Ask in Japanese:
 3. **技術的要件**: 特定のライブラリ、制約は？
 4. **成功基準**: 完了の判断基準は？
 
-**Draft implementation plan based on Gemini research + user answers.**
+**Draft implementation plan based on research output + user answers.**
 
 ---
 
@@ -329,7 +332,7 @@ Present final plan to user (in Japanese):
 ```markdown
 ## プロジェクト計画: {feature}
 
-### 調査結果 (Gemini)
+### 調査結果 (Research)
 
 {Key findings - 3-5 bullet points}
 
@@ -361,7 +364,7 @@ Present final plan to user (in Japanese):
 
 | File                         | Purpose                      |
 | ---------------------------- | ---------------------------- |
-| `docs/research/{feature}.md` | Gemini research output       |
+| `.claude/docs/research/{feature}.md` | Research output (config-driven) |
 | `CLAUDE.md`                  | Updated with project context |
 | Task list (internal)         | Progress tracking            |
 

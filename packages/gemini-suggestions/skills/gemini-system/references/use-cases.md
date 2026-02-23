@@ -4,7 +4,7 @@
 
 ### 1. Pre-Implementation Research
 
-Before implementing a new feature, use Gemini to research best practices.
+Before implementing a new feature, use Gemini when route resolution (`agents.<target>.tool`) points to `gemini`, or when `tool: auto` selects research.
 
 ```bash
 # General research
@@ -138,9 +138,9 @@ Cross-reference with our codebase to identify:
 
 | Task | Reason | Use Instead |
 |------|--------|-------------|
-| Design decisions | Requires deep reasoning | Codex |
-| Code implementation | Codex has better code abilities | Codex |
-| Debugging | Requires logical analysis | Codex |
+| Design decisions | Route should follow `agents.<target>.tool` | Resolve via `cli-tools.yaml` |
+| Code implementation | Route should follow `agents.<target>.tool` | Resolve via `cli-tools.yaml` |
+| Debugging | Route should follow `agents.<target>.tool` | Resolve via `cli-tools.yaml` |
 | Simple file edits | Overkill | Claude Code directly |
 | Running tests | Execution task | Claude Code directly |
 

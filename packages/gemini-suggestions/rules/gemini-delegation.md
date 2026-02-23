@@ -2,13 +2,24 @@
 
 **Gemini CLI は大規模リサーチを担当する専門家。**
 
-> **Note**: モデル名・オプションは `.claude/config/cli-tools.yaml` で一元管理。
-> `.claude/config/cli-tools.local.yaml` が存在する場合はそちらの値を優先する（詳細は `config-loading.md` 参照）。
+> **Note**: モデル名・オプションは `.claude/config/agent-routing/cli-tools.yaml` で一元管理。
+> `.claude/config/agent-routing/cli-tools.local.yaml` が存在する場合はそちらの値を優先する（詳細は `config-loading.md` 参照）。
 > 以下のコマンド例中の `<gemini.model>` 等のプレースホルダーは、config ファイルの値で置換して使用する。
+
+## 判定手順（MUST）
+
+1. `.claude/config/agent-routing/cli-tools.yaml` を読み込む
+2. `.claude/config/agent-routing/cli-tools.local.yaml` があれば上書きを適用する
+3. `gemini.enabled` を確認する
+4. 対象エージェントの `agents.<name>.tool` で実行先を決定する
+5. `tool == gemini` のときだけ Gemini CLI を呼び出す
 
 ## いつ Gemini を使うか
 
-以下の場面で Gemini に相談する：
+- ルーティング解決結果が `tool: gemini` のとき
+- `tool: auto` で調査・外部情報取得が必要なとき
+
+### `tool: auto` のトリガー目安
 
 | 場面 | トリガー（日本語） | トリガー（英語） |
 |------|------------------|-----------------|
@@ -74,7 +85,7 @@ gemini -m <gemini.model> -p "{抽出プロンプト}" < /path/to/file 2>/dev/nul
 
 ## 無効化
 
-`cli-tools.yaml`（または `.local.yaml`）で `gemini.enabled: false` を設定すると、Gemini CLI の呼び出しが全て無効化される。
+`.claude/config/agent-routing/cli-tools.yaml`（または `.local.yaml`）で `gemini.enabled: false` を設定すると、Gemini CLI の呼び出しが全て無効化される。
 無効時は Gemini を使用するエージェントが自動的に `claude-direct`（Claude Code 自身の能力）にフォールバックする。
 
 ```yaml
@@ -83,14 +94,14 @@ gemini:
   enabled: false
 ```
 
-## Codex vs Gemini 使い分け
+## `tool: auto` 時の使い分け目安
 
-| タスク | Codex | Gemini |
-|--------|-------|--------|
-| 設計判断 | ✓ | |
-| デバッグ | ✓ | |
-| コード実装 | ✓ | |
-| ライブラリ調査 | | ✓ |
-| コードベース理解 | | ✓ |
-| ドキュメント検索 | | ✓ |
-| マルチモーダル | | ✓ |
+| タスク | 推奨 |
+|--------|------|
+| 設計判断 | Codex 候補 |
+| デバッグ | Codex 候補 |
+| コード実装 | `agents.<target>.tool` で解決 |
+| ライブラリ調査 | Gemini 候補 |
+| コードベース理解 | Gemini 候補 |
+| ドキュメント検索 | Gemini 候補 |
+| マルチモーダル | Gemini 候補 |

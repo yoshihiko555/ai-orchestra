@@ -12,7 +12,7 @@ ai-orchestra/
 │   ├── cli-logging/       # Codex/Gemini CLI ログ記録 + checkpointing スキル
 │   ├── codex-suggestions/ # Codex 相談提案 + codex-delegation ルール + codex-system スキル
 │   ├── gemini-suggestions/# Gemini リサーチ提案 + gemini-delegation ルール + gemini-system スキル
-│   ├── quality-gates/     # 品質ゲート + review/tdd/simplify/design-tracker スキル
+│   ├── quality-gates/     # 品質ゲート + review/tdd/simplify/release-readiness (+ design-tracker)
 │   ├── route-audit/       # ルーティング監査・KPIレポート
 │   └── tmux-monitor/      # tmux サブエージェント監視
 ├── scripts/          # 管理CLI
@@ -186,10 +186,10 @@ Task(subagent_type="code-reviewer", prompt="このコードをレビューして
 |--------|------|
 | `/review` | コード・セキュリティ・設計レビュー（並列実行対応） |
 | `/startproject` | マルチエージェント協調で新規開発を開始 |
-| `/codex-system` | Codex CLI への設計相談・デバッグ分析 |
+| `/codex-system` | `cli-tools.yaml` に基づく Codex 利用ガイド（config-driven） |
 | `/gemini-system` | Gemini CLI でのリサーチ・マルチモーダル処理 |
 | `/checkpointing` | セッションコンテキストの保存・復元 |
-| `/design-tracker` | 設計決定の自動記録・追跡 |
+| `/design-tracker` | 設計記録スキル（現運用は `CLAUDE.md`/`Plans.md`/ADR/docs を優先） |
 | `/plan` | 実装計画の策定 |
 | `/simplify` | コードの簡素化 |
 | `/tdd` | テスト駆動開発ワークフロー |
@@ -211,8 +211,8 @@ Task(subagent_type="code-reviewer", prompt="このコードをレビューして
 ```
 Claude Code (Orchestrator)
     │
-    ├── Codex CLI    # 深い推論・設計判断・デバッグ
-    ├── Gemini CLI   # リサーチ・大規模分析・マルチモーダル
+    ├── Codex CLI    # `cli-tools.yaml` の設定に応じて利用（役割は config-driven）
+    ├── Gemini CLI   # `cli-tools.yaml` の設定に応じて利用（役割は config-driven）
     │
     ├── $AI_ORCHESTRA_DIR/packages/
     │   ├── core/               # 共通ユーティリティ

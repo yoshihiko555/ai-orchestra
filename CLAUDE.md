@@ -95,8 +95,8 @@ Task(subagent_type="frontend-dev", prompt="実装: {機能名}")
 ```
 Claude Code (Orchestrator)
     │
-    ├── Codex CLI    # 深い推論・設計判断・デバッグ
-    ├── Gemini CLI   # リサーチ・大規模分析・マルチモーダル
+    ├── Codex CLI    # `cli-tools.yaml` の設定に応じて利用（役割は config-driven）
+    ├── Gemini CLI   # `cli-tools.yaml` の設定に応じて利用（役割は config-driven）
     │
     └── 25 Specialized Agents
         ├── Planning: planner, researcher, requirements

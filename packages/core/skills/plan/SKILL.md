@@ -100,4 +100,4 @@ disable-model-invocation: true
 
 - `/plan` は **実装を行わない**（プリフライト専用）
 - 実装本線は `/startproject` で行う
-- 必要に応じて設計相談は Codex、調査は Gemini を利用
+- 必要に応じて `cli-tools.yaml` の `agents.<target>.tool` を確認し、`tool: auto` なら設計/デバッグは Codex 候補、調査は Gemini 候補を使う
