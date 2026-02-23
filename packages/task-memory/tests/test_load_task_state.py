@@ -18,12 +18,12 @@ def load_module(module_name: str, relative_path: str):
     return module
 
 
-load_task_state = load_module("task_memory_load_task_state", "packages/task-memory/hooks/load-task-state.py")
+load_task_state = load_module(
+    "task_memory_load_task_state", "packages/task-memory/hooks/load-task-state.py"
+)
 
 
-def test_load_config_uses_project_override_without_ai_orchestra_dir(
-    tmp_path, monkeypatch
-) -> None:
+def test_load_config_uses_project_override_without_ai_orchestra_dir(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("AI_ORCHESTRA_DIR", raising=False)
 
     config_dir = tmp_path / ".claude" / "config" / "task-memory"
@@ -240,9 +240,7 @@ def test_format_summary_unlimited_does_not_emit_truncation_line() -> None:
     assert "... and" not in summary
 
 
-def test_main_uses_unlimited_when_configured_max_display_is_zero(
-    tmp_path, monkeypatch
-) -> None:
+def test_main_uses_unlimited_when_configured_max_display_is_zero(tmp_path, monkeypatch) -> None:
     plans_path = tmp_path / ".claude" / "Plans.md"
     plans_path.parent.mkdir(parents=True)
     plans_path.write_text("- `cc:TODO` task", encoding="utf-8")
@@ -283,9 +281,7 @@ def test_main_uses_unlimited_when_configured_max_display_is_zero(
     assert printed == ["summary"]
 
 
-def test_main_falls_back_to_default_max_display_for_invalid_value(
-    tmp_path, monkeypatch
-) -> None:
+def test_main_falls_back_to_default_max_display_for_invalid_value(tmp_path, monkeypatch) -> None:
     plans_path = tmp_path / ".claude" / "Plans.md"
     plans_path.parent.mkdir(parents=True)
     plans_path.write_text("- `cc:TODO` task", encoding="utf-8")
@@ -337,7 +333,12 @@ def test_main_treats_string_zero_max_display_as_unlimited(tmp_path, monkeypatch)
             "plans_file": ".claude/Plans.md",
             "show_summary_on_start": True,
             "max_display_tasks": "0",
-            "markers": {"todo": "cc:TODO", "wip": "cc:WIP", "done": "cc:done", "blocked": "cc:blocked"},
+            "markers": {
+                "todo": "cc:TODO",
+                "wip": "cc:WIP",
+                "done": "cc:done",
+                "blocked": "cc:blocked",
+            },
         },
     )
     monkeypatch.setattr(
@@ -401,9 +402,7 @@ def test_main_passes_custom_marker_mapping_to_parse_tasks(tmp_path, monkeypatch)
     }
 
 
-def test_main_falls_back_to_default_markers_when_duplicates_exist(
-    tmp_path, monkeypatch
-) -> None:
+def test_main_falls_back_to_default_markers_when_duplicates_exist(tmp_path, monkeypatch) -> None:
     plans_path = tmp_path / ".claude" / "Plans.md"
     plans_path.parent.mkdir(parents=True)
     plans_path.write_text("- `dup:task` task", encoding="utf-8")

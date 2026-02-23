@@ -181,9 +181,7 @@ def parse_tasks(
     return tasks
 
 
-def format_summary(
-    tasks: dict[str, list[dict[str, str]]], max_display: int | None
-) -> str:
+def format_summary(tasks: dict[str, list[dict[str, str]]], max_display: int | None) -> str:
     """タスク状態のサマリーをフォーマットする。"""
     parts: list[str] = []
 
