@@ -17,3 +17,4 @@ AI Orchestra プロジェクトの意思決定記録。
 | ADR-20260219-002 | startproject 実装フェーズの明示化と Codex 例外の厳格化 | accepted | 2026-02-19 |
 | ADR-20260223-003 | Codex CLI 実装委譲のデッドロック解消と Implementation Method 強制 | accepted | 2026-02-23 |
 | ADR-20260223-004 | task-memory サマリー表示仕様の明確化と marker 設定の堅牢化 | accepted | 2026-02-23 |
+| ADR-20260223-005 | Codex/Gemini 運用記述の config-driven 統一 | accepted | 2026-02-23 |
