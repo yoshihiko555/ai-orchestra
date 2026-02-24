@@ -72,7 +72,13 @@ Task tool parameters:
     IMPORTANT: Gemini CLI requires dangerouslyDisableSandbox: true
     (requires_sandbox_disable: true in cli-tools.yaml).
 
-    gemini -p "{research question}" 2>/dev/null
+    gemini -m <gemini.model> -p "{research question}
+
+    IMPORTANT: Do not ask any clarifying questions. Provide your best answer
+    based on the available information." < /dev/null 2>/dev/null
+
+    タイムアウト: Bash timeout パラメータに 180000 を指定すること。
+    リトライ: タイムアウトや質問検出時は gemini-delegation.md のリトライプロトコルに従う。
 
     Save full output to: .claude/docs/research/{topic}.md
     Return CONCISE summary (5-7 bullet points).
@@ -83,20 +89,31 @@ Task tool parameters:
 For quick questions expecting brief answers:
 
 ```bash
-gemini -p "Brief question" 2>/dev/null
+gemini -m <gemini.model> -p "Brief question
+
+IMPORTANT: Do not ask any clarifying questions." < /dev/null 2>/dev/null
 ```
 
 ### CLI Options Reference
 
+> **Non-Interactive 実行**: 全コマンドに `< /dev/null` と no-questions 指示を追加すること。
+> 詳細は `gemini-delegation.md` の「Non-Interactive 実行（MUST）」セクション参照。
+
 ```bash
 # Codebase analysis
-gemini -p "{question}" --include-directories . 2>/dev/null
+gemini -m <gemini.model> -p "{question}
 
-# Multimodal (PDF/video/audio)
-gemini -p "{prompt}" < /path/to/file.pdf 2>/dev/null
+IMPORTANT: Do not ask any clarifying questions." --include-directories . < /dev/null 2>/dev/null
+
+# Multimodal (PDF/video/audio — stdin をファイルで使用するため < /dev/null 不要)
+gemini -m <gemini.model> -p "{prompt}
+
+IMPORTANT: Do not ask any clarifying questions." < /path/to/file.pdf 2>/dev/null
 
 # JSON output
-gemini -p "{question}" --output-format json 2>/dev/null
+gemini -m <gemini.model> -p "{question}
+
+IMPORTANT: Do not ask any clarifying questions." --output-format json < /dev/null 2>/dev/null
 ```
 
 ### Workflow (Subagent)
@@ -133,7 +150,10 @@ Include:
 - Library recommendations (with comparison)
 - Performance considerations
 - Security concerns
-- Code examples" 2>/dev/null
+- Code examples
+
+IMPORTANT: Do not ask any clarifying questions. Provide your best answer
+based on the available information." < /dev/null 2>/dev/null
 ```
 
 ### Repository Analysis
@@ -144,7 +164,9 @@ gemini -p "Analyze this repository:
 2. Key modules and responsibilities
 3. Data flow between components
 4. Entry points and extension points
-5. Existing patterns to follow" --include-directories . 2>/dev/null
+5. Existing patterns to follow
+
+IMPORTANT: Do not ask any clarifying questions." --include-directories . < /dev/null 2>/dev/null
 ```
 
 ### Library Research
@@ -154,14 +176,20 @@ See: `references/lib-research-task.md`
 ### Multimodal Analysis
 
 ```bash
-# Video
-gemini -p "Analyze video: main concepts, key points, timestamps" < tutorial.mp4 2>/dev/null
+# Video (stdin をファイルで使用 — < /dev/null 不要)
+gemini -p "Analyze video: main concepts, key points, timestamps
+
+IMPORTANT: Do not ask any clarifying questions." < tutorial.mp4 2>/dev/null
 
 # PDF
-gemini -p "Extract: API specs, examples, constraints" < api-docs.pdf 2>/dev/null
+gemini -p "Extract: API specs, examples, constraints
+
+IMPORTANT: Do not ask any clarifying questions." < api-docs.pdf 2>/dev/null
 
 # Audio
-gemini -p "Transcribe and summarize: decisions, action items" < meeting.mp3 2>/dev/null
+gemini -p "Transcribe and summarize: decisions, action items
+
+IMPORTANT: Do not ask any clarifying questions." < meeting.mp3 2>/dev/null
 ```
 
 ## Integration with Codex

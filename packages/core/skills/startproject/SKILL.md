@@ -75,14 +75,20 @@ Task tool parameters:
     If tool == gemini:
       IMPORTANT: Gemini CLI requires dangerouslyDisableSandbox: true
       (requires_sandbox_disable: true in cli-tools.yaml).
-      gemini -m <gemini.model> <gemini.flags> -p "Analyze this repository for: {feature}
+      Bash timeout: 180000 を指定すること。
+      gemini -m <gemini.model> -p "Analyze this repository for: {feature}
 
        Provide:
        1. Repository structure and architecture
        2. Relevant existing code and patterns
        3. Library recommendations
        4. Technical considerations
-       " --include-directories . 2>/dev/null
+
+       IMPORTANT: Do not ask any clarifying questions. Provide your best answer
+       based on the available information. If you need assumptions, state them.
+       " --include-directories . < /dev/null 2>/dev/null
+
+      リトライ: タイムアウトや質問検出時は gemini-delegation.md のリトライプロトコルに従う。
 
     If tool == claude-direct:
       Read/Grep/Glob で同等の調査を実施し、同形式で要約を作成する。

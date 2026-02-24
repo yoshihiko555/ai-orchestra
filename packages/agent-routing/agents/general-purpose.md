@@ -98,15 +98,25 @@ codex exec --model <model> --sandbox workspace-write <flags> "{task}" 2>/dev/nul
 
 #### リサーチ・大規模分析には Gemini
 
+> **Non-Interactive 実行**: 全コマンドに `< /dev/null` と no-questions 指示を追加すること。
+> 詳細は `gemini-delegation.md` の「Non-Interactive 実行（MUST）」セクション参照。
+
 ```bash
 # 一般的なリサーチ
-gemini -m <model> -p "{research question}" 2>/dev/null
+gemini -m <model> -p "{research question}
+
+IMPORTANT: Do not ask any clarifying questions. Provide your best answer
+based on the available information." < /dev/null 2>/dev/null
 
 # コードベース全体を対象に分析
-gemini -m <model> -p "{question}" --include-directories . 2>/dev/null
+gemini -m <model> -p "{question}
 
-# マルチモーダル入力（PDF, 動画, 音声を stdin から渡す）
-gemini -m <model> -p "{extraction prompt}" < /path/to/file 2>/dev/null
+IMPORTANT: Do not ask any clarifying questions." --include-directories . < /dev/null 2>/dev/null
+
+# マルチモーダル入力（PDF, 動画, 音声を stdin から渡す — < /dev/null 不要）
+gemini -m <model> -p "{extraction prompt}
+
+IMPORTANT: Do not ask any clarifying questions." < /path/to/file 2>/dev/null
 ```
 
 **When to call Gemini:**
@@ -127,7 +137,9 @@ codex exec --model <model> --sandbox <sandbox> <flags> "{question}" 2>/dev/null
 ### tool = "gemini" の場合
 
 ```bash
-gemini -m <model> -p "{question}" 2>/dev/null
+gemini -m <model> -p "{question}
+
+IMPORTANT: Do not ask any clarifying questions." < /dev/null 2>/dev/null
 ```
 
 ### tool = "claude-direct" の場合
