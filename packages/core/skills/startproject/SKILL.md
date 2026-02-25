@@ -36,7 +36,7 @@ Phase 3: Design Review (architect)
     ↓
 Phase 4: Task Creation (Claude)
     ↓
-Phase 5: CLAUDE.md Update (Claude)
+Phase 5: Plans.md Update (Claude)
     ↓
 Phase 6: Implementation (Implementation Agents via Subagent)
     ↓
@@ -158,34 +158,43 @@ Use TodoWrite to create tasks:
 
 ---
 
-## Phase 5: CLAUDE.md Update (IMPORTANT)
+## Phase 5: Plans.md Update
 
-**プロジェクト固有の情報を CLAUDE.md に追記する。**
+**プロジェクト固有のコンテキストを `.claude/Plans.md` に記録する。**
 
-Add to CLAUDE.md:
+Plans.md が未作成の場合は `/task-state` スキルで初期化するか、以下のフォーマットで作成する。
+既に Plans.md が存在する場合は、該当セクションに追記する。
+
+Update `.claude/Plans.md`:
 
 ```markdown
+# Plans
+
+## Project: {feature}
+
+### Phase 1: {フェーズ名} `cc:TODO`
+
+#### {タスクグループ名}
+
+- `cc:TODO` {タスク}
+
 ---
 
-## Current Project: {feature}
+## Decisions
 
-### Context
+- {YYYY-MM-DD}: {Decision 1} — 理由: {rationale}
+- {YYYY-MM-DD}: {Decision 2} — 理由: {rationale}
+
+## Notes
 
 - Goal: {1-2 sentences}
 - Key files: {list}
 - Dependencies: {list}
-
-### Decisions
-
-- {Decision 1}: {rationale}
-- {Decision 2}: {rationale}
-
-### Notes
-
 - {Important constraints or considerations}
 ```
 
-**This ensures context persists across sessions.**
+**SessionStart はタスク行（`cc:` マーカー付き）のみ自動抽出する。**
+Decisions / Notes のコンテキストは Plans.md を直接読むか、`.claude/docs/research/{feature}.md` を参照すること。
 
 ---
 
@@ -371,8 +380,7 @@ Present final plan to user (in Japanese):
 | File                         | Purpose                      |
 | ---------------------------- | ---------------------------- |
 | `.claude/docs/research/{feature}.md` | Research output (config-driven) |
-| `CLAUDE.md`                  | Updated with project context |
-| Task list (internal)         | Progress tracking            |
+| `.claude/Plans.md`           | Project context & task tracking |
 
 ---
 
@@ -380,6 +388,6 @@ Present final plan to user (in Japanese):
 
 - **All external CLI / review work through subagents** to preserve main context
 - **Agent routing is config-driven** — `cli-tools.yaml` の変更が自動的に反映される
-- **Update CLAUDE.md** to persist context across sessions
+- **Update Plans.md** to persist context across sessions
 - **Use multi-session review** for better quality assurance
 - **Ctrl+T**: Toggle task list visibility
