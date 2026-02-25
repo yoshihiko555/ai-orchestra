@@ -81,10 +81,34 @@ class OrchestraManager:
 
     SYNC_HOOK_COMMAND = 'python3 "$AI_ORCHESTRA_DIR/scripts/sync-orchestra.py"'
     SYNC_HOOK_TIMEOUT = 15
+    COLOR_RESET = "\033[0m"
+    COLOR_GREEN = "\033[32m"
+    COLOR_YELLOW = "\033[33m"
+    COLOR_RED = "\033[31m"
+    COLOR_CYAN = "\033[36m"
 
     def __init__(self, orchestra_dir: Path):
         self.orchestra_dir = orchestra_dir
         self.packages_dir = orchestra_dir / "packages"
+        self.use_color = sys.stdout.isatty() and os.getenv("NO_COLOR") is None
+
+    def colorize(self, text: str, color: str | None) -> str:
+        """色付き文字列を返す（非TTY/NO_COLORでは無効）"""
+        if not color or not self.use_color:
+            return text
+        return f"{color}{text}{self.COLOR_RESET}"
+
+    def get_status_color(self, status: str) -> str | None:
+        """ステータスに対応する色コードを返す"""
+        if status == "installed":
+            return self.COLOR_GREEN
+        if status == "partial":
+            return self.COLOR_YELLOW
+        if status == "not found":
+            return self.COLOR_RED
+        if status == "active":
+            return self.COLOR_CYAN
+        return None
 
     def load_packages(self) -> dict[str, Package]:
         """全パッケージをロード"""
@@ -290,8 +314,10 @@ class OrchestraManager:
         project_dir = self.get_project_dir(project)
         packages = self.load_packages()
 
-        print(f"{'PACKAGE':<20} {'STATUS':<15} HOOKS")
-        print("-" * 60)
+        print(f"{'TAG':<6} {'PACKAGE':<20} {'STATUS':<15} HOOKS")
+        print("-" * 70)
+
+        installed_packages: list[str] = []
 
         for name in sorted(packages.keys()):
             pkg = packages[name]
@@ -316,7 +342,23 @@ class OrchestraManager:
             else:
                 hooks_info = f"{registered}/{total} hooks registered"
 
-            print(f"{name:<20} {status:<15} {hooks_info}")
+            if status == "installed":
+                installed_packages.append(name)
+
+            marker = "INST" if status == "installed" else ""
+            marker_cell = f"{marker:<6}"
+            status_cell = f"{status:<15}"
+            marker_color = self.COLOR_GREEN if status == "installed" else None
+            status_color = self.get_status_color(status)
+            marker_cell = self.colorize(marker_cell, marker_color)
+            status_cell = self.colorize(status_cell, status_color)
+            print(f"{marker_cell} {name:<20} {status_cell} {hooks_info}")
+
+        if installed_packages:
+            print()
+            print("Installed packages summary:")
+            for installed_name in installed_packages:
+                print(f"  - {installed_name}")
 
     def check_dependencies(self, pkg: Package, installed_packages: set[str]) -> list[str]:
         """依存パッケージのチェック"""
