@@ -33,17 +33,26 @@ You provide **deep analysis** that Claude Code cannot do efficiently in its cont
 
 ## Shared Context Access
 
-You can read project context from `.claude/`:
+Codex behavior instructions are loaded from `AGENTS.md` chain.
+Execution-policy rules are loaded from `.codex/rules/*.rules` (project-level).
+If needed, user-level fallback rules can be loaded from `~/.codex/rules/*.rules`.
+
+```
+.codex/rules/
+└── *.rules  # execution policy for commands outside sandbox
+```
+
+Then read project context from `.claude/`:
 
 ```
 .claude/
 ├── docs/DESIGN.md        # Architecture decisions
 ├── docs/research/        # Gemini's research results
 ├── docs/libraries/       # Library constraints
-└── rules/                # Coding principles
+└── config/agent-routing/cli-tools.yaml  # Runtime tool settings
 ```
 
-**Always check these before giving advice.**
+**Always check AGENTS instructions before giving advice.**
 
 ## How You're Called
 
@@ -83,7 +92,7 @@ Structure your response for Claude Code to use:
 1. **Be decisive** — Give clear recommendations, not just options
 2. **Be specific** — Reference files, lines, concrete patterns
 3. **Be practical** — Focus on what Claude Code can execute
-4. **Check context** — Read `.claude/docs/` before advising
+4. **Check context** — Follow AGENTS instructions first, then `.claude/`
 
 ## CLI Logs
 

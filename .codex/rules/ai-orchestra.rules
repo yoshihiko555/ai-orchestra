@@ -1,0 +1,11 @@
+# ai-orchestra specific Codex rules (project-local)
+# This file is repository-scoped. Keep entries narrow and explicit.
+
+# Fast local test run in repo workflows.
+prefix_rule(pattern=["pytest", "-q"], decision="allow")
+
+# Common lightweight status check.
+prefix_rule(pattern=["git", "status", "--short"], decision="allow")
+
+# Read-only file discovery command.
+prefix_rule(pattern=["rg", "--files"], decision="allow")

@@ -48,21 +48,31 @@ ai-orchestra/
 
 ## Shared Context Access
 
-You can read project context from `.claude/`:
+Codex behavior instructions are loaded from `AGENTS.md` chain.
+Execution-policy rules are loaded from `.codex/rules/*.rules` (project-level).
+If needed, user-level fallback rules can be loaded from `~/.codex/rules/*.rules`.
+
+```
+.codex/rules/
+└── *.rules  # execution policy for commands outside sandbox
+```
+
+Then read project runtime context from `.claude/` as needed:
 
 ```
 .claude/
 ├── config/agent-routing/cli-tools.yaml  # CLI tool settings
-├── rules/                               # Coding principles, delegation rules
 ├── agents/                              # Agent definitions
 └── logs/cli-tools.jsonl                 # Past Codex/Gemini interactions
 ```
 
 Reference priority before giving advice:
-1. Required: `.claude/config/agent-routing/cli-tools.yaml`
-2. Required: `.claude/rules/` (relevant files only)
+1. Required: AGENTS instruction chain (this file + directory overrides)
+2. Required: `.claude/config/agent-routing/cli-tools.yaml`
 3. Required: `.claude/agents/` (only when agent behavior is discussed)
-4. Optional: `.claude/logs/cli-tools.jsonl` (for historical patterns)
+4. Optional: `.codex/rules/*.rules` (project execution-policy constraints)
+5. Optional: `~/.codex/rules/*.rules` (user-level fallback constraints)
+6. Optional: `.claude/logs/cli-tools.jsonl` (for historical patterns)
 
 **Always check required references before giving advice.**
 
@@ -100,7 +110,7 @@ A response is complete only when all conditions below are met:
 Quick verification checklist:
 - [ ] Includes all required sections in the output template.
 - [ ] Contains concrete, testable statements (no vague advice).
-- [ ] Uses evidence from `.claude/` context when relevant.
+- [ ] Uses evidence from AGENTS instructions and runtime config when relevant.
 
 ## Examples
 
@@ -135,4 +145,4 @@ Expected response characteristics:
 1. **Be decisive** — Give clear recommendations, not just options
 2. **Be specific** — Reference files, lines, concrete patterns
 3. **Be practical** — Focus on what Claude Code can execute
-4. **Check context** — Read `.claude/` before advising
+4. **Check context** — Follow AGENTS instructions first, then `.claude/` context
