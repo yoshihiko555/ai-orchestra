@@ -130,6 +130,16 @@ def main() -> None:
             f"echo 'Waiting for sub agents...' && echo '({project_name} / PID:{session_key})' && echo '($(date))' && cat",
         )
 
+    # ペインボーダーにエージェント名を常時表示
+    run_tmux("set-option", "-t", tmux_session, "pane-border-status", "top")
+    run_tmux(
+        "set-option",
+        "-t",
+        tmux_session,
+        "pane-border-format",
+        " #{pane_title} ",
+    )
+
     # 共有コンテキストストアの作成
     shared_dir = f"{SHARED_STORE_PREFIX}{session_key}"
     entries_dir = os.path.join(shared_dir, "entries")

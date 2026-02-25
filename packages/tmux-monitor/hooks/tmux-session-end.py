@@ -99,7 +99,7 @@ def main() -> None:
 
                 shutil.rmtree(sd, ignore_errors=True)
 
-            for ext in (".tmux-session", ".lock-path", ".pid", ".shared-dir"):
+            for ext in (".tmux-session", ".lock-path", ".pid", ".shared-dir", ".task-queue"):
                 remove_silent(os.path.join(SESSION_INFO_DIR, sid + ext))
     else:
         # PID ファイルが無い場合 (旧形式): 現在の session_id のみクリーンアップ

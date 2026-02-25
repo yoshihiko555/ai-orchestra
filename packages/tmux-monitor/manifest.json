@@ -6,11 +6,13 @@
   "hooks": {
     "SessionStart": ["tmux-session-start.py"],
     "SessionEnd": ["tmux-session-end.py"],
+    "PreToolUse": [{"file": "tmux-pre-task.py", "matcher": "Task"}],
     "SubagentStart": ["tmux-subagent-start.py"],
     "SubagentStop": ["tmux-subagent-stop.py"]
   },
   "files": [
     "hooks/tmux_common.py",
+    "hooks/tmux-pre-task.py",
     "hooks/tmux-session-start.py",
     "hooks/tmux-session-end.py",
     "hooks/tmux-subagent-start.py",

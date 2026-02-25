@@ -30,21 +30,21 @@ def read_file(path: str) -> str:
         return ""
 
 
-def find_pane_by_title(tmux_session: str, agent_id: str) -> str | None:
+def find_pane_by_title(tmux_session: str, agent_id: str) -> tuple[str, str]:
     """tmux セッション内で agent_id を含むタイトルのペインを探す。
 
-    Returns: ペインID（例: "%5"）。見つからなければ None。
+    Returns: (pane_id, pane_title) のタプル。見つからなければ ("", "")。
     """
-    result = run_tmux("list-panes", "-t", tmux_session, "-F", "#{pane_id}:#{pane_title}")
+    result = run_tmux("list-panes", "-t", tmux_session, "-F", "#{pane_id}\t#{pane_title}")
     if result.returncode != 0:
-        return None
+        return "", ""
 
     short_id = agent_id[:7]
     for line in result.stdout.strip().splitlines():
-        if short_id in line:
-            pane_id = line.split(":")[0]
-            return pane_id
-    return None
+        parts = line.split("\t", 1)
+        if len(parts) == 2 and short_id in parts[1]:
+            return parts[0], parts[1]
+    return "", ""
 
 
 def main() -> None:
@@ -55,7 +55,6 @@ def main() -> None:
         return
 
     agent_id = get_field(data, "agent_id")
-    agent_type = get_field(data, "agent_type")
     session_id = get_field(data, "session_id")
 
     if not agent_id or not session_id:
@@ -77,15 +76,13 @@ def main() -> None:
     if not tmux_has_session(tmux_session):
         return
 
-    short_id = agent_id[:7]
-    label = f"{agent_type}:{short_id}"
-
-    # ペインを特定
-    pane_id = find_pane_by_title(tmux_session, agent_id)
+    # ペインを特定（現在のタイトルも取得）
+    pane_id, current_title = find_pane_by_title(tmux_session, agent_id)
 
     if pane_id:
-        # 完了通知: ペインタイトルを更新（視覚的インジケータ）
-        run_tmux("select-pane", "-t", pane_id, "-T", f"DONE: {label}")
+        # 完了通知: 現在のタイトル（description 入り）を保持して DONE を付与
+        if not current_title.startswith("DONE:"):
+            run_tmux("select-pane", "-t", pane_id, "-T", f"DONE: {current_title}")
 
         # ペインのボーダースタイルを緑に変更
         run_tmux("set-option", "-t", pane_id, "pane-border-style", "fg=green")

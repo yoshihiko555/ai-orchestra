@@ -32,6 +32,29 @@ def read_file(path: str) -> str:
         return ""
 
 
+def pop_task_description(session_id: str) -> str:
+    """PreToolUse hook が保存した description をキューから取得する（FIFO）。"""
+    import fcntl
+    import json
+
+    queue_file = os.path.join(SESSION_INFO_DIR, f"{session_id}.task-queue")
+    try:
+        with open(queue_file, "r+") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            lines = f.readlines()
+            description = ""
+            if lines:
+                entry = json.loads(lines[0])
+                description = entry.get("description", "")
+                f.seek(0)
+                f.writelines(lines[1:])
+                f.truncate()
+            fcntl.flock(f, fcntl.LOCK_UN)
+            return description
+    except (OSError, json.JSONDecodeError, ValueError):
+        return ""
+
+
 def main() -> None:
     data = read_hook_input()
     cwd = get_field(data, "cwd")
@@ -68,7 +91,12 @@ def main() -> None:
     session_dir = transcript_path.removesuffix(".jsonl")
     output_file = f"{session_dir}/subagents/agent-{agent_id}.jsonl"
 
-    pane_title = f"{agent_type}:{agent_id[:7]}"
+    # PreToolUse hook が保存した description を取得
+    description = pop_task_description(session_id)
+    if description:
+        pane_title = f"{description} ({agent_type}:{agent_id[:7]})"
+    else:
+        pane_title = f"{agent_type}:{agent_id[:7]}"
 
     # ファイル待機 + tail コマンドを構築 (tmux ペイン内で実行される)
     wait_and_tail = f"echo '=== {pane_title} ===' && while [ ! -f '{output_file}' ]; do sleep 0.3; done && tail -f '{output_file}'"
