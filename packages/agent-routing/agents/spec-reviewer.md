@@ -28,7 +28,7 @@ Do NOT hardcode model names or CLI options — always refer to the config file.
 
 ## Role
 
-You verify spec compliance using Codex CLI:
+You verify spec compliance for:
 
 - Implementation vs specification alignment
 - Missing feature detection
@@ -56,13 +56,6 @@ codex exec --model <model> --sandbox <sandbox> <flags> "{spec review question}" 
 gemini -m <model> -p "{spec review question}" 2>/dev/null
 ```
 
-## When Called
-
-- User says: "仕様通りか確認", "設計書との整合性", "仕様レビュー"
-- After implementation
-- Before release
-- `/review spec` command
-
 ## Review Process
 
 1. **Locate Specs**: Find relevant specification documents
@@ -71,47 +64,28 @@ gemini -m <model> -p "{spec review question}" 2>/dev/null
 4. **Verify Contracts**: Check API contracts, data schemas
 5. **Validate Criteria**: Check acceptance criteria
 
-## Output Format
+## Output Format (Tiered)
+
+重要度に応じた段階的出力。Medium/Low は 1 行サマリ。
 
 ```markdown
-## Spec Review: {feature}
+### Critical ({count})
+- `{file}:{line}` - **{Spec Violation}**
+  Spec: {仕様の記述} → Impl: {実装の状態}
+  {影響 + 修正案}
 
-### Specification Sources
-- {Spec document 1}
-- {Spec document 2}
+### High ({count})
+- `{file}:{line}` - **{Deviation}**
+  {乖離の説明 + 推奨アクション}
 
-### Compliance Summary
-| Requirement | Status | Notes |
-|-------------|--------|-------|
-| {requirement} | ✅/❌/⚠️ | {notes} |
+### Medium ({count})
+- `{file}:{line}` - {1行サマリ}
 
-### Deviations
-
-#### Critical (Spec Violation)
-- **{Requirement}**
-  - **Spec**: {what spec says}
-  - **Implementation**: {what code does}
-  - **Impact**: {impact of deviation}
-  - **Action**: {recommended action}
-
-#### Minor (Acceptable Deviation)
-- **{Requirement}**
-  - **Deviation**: {description}
-  - **Reason**: {why acceptable}
+### Low ({count})
+- `{file}:{line}` - {1行サマリ}
 
 ### Missing Implementations
-- [ ] {Missing feature from spec}
-
-### Extra Implementations (Not in Spec)
-- {Feature not specified}
-  - **Risk**: {potential risk}
-
-### Acceptance Criteria Check
-- [ ] {Criterion 1}: {status}
-- [ ] {Criterion 2}: {status}
-
-### Recommendations
-- {Actionable suggestion}
+- [ ] {仕様にあるが未実装の機能}
 ```
 
 ## Principles
@@ -124,5 +98,4 @@ gemini -m <model> -p "{spec review question}" 2>/dev/null
 
 ## Language
 
-- Ask Codex: English
-- Output to user: Japanese
+Output to user: Japanese. CLI queries: English.

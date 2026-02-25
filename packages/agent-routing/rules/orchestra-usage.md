@@ -49,13 +49,16 @@ gemini -m <gemini.model> -p "{プロンプト}" < /path/to/file 2>/dev/null
 ### レビュー実行
 
 ```
-/review              # 全レビュアー並列実行
+/review              # スマート選定（code + 変更内容に応じた専門レビュアー）
+/review all          # 全 6 レビュアー並列実行
 /review code         # コードレビューのみ
 /review security     # セキュリティレビューのみ
 /review impl         # 実装系（code + security + performance）
 /review design       # 設計系（spec + architecture）
 /release-readiness   # マージ前最終チェック（テスト/レビュー/blocked確認）
 ```
+
+**スマート選定**: `/review` はパスパターン + diff コンテンツスキャンでレビュアーを自動選定（平均 2-3 名）。全レビュアーが必要な場合は `/review all` を使用。
 
 ---
 

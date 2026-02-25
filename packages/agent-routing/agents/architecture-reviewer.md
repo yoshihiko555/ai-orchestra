@@ -28,7 +28,7 @@ Do NOT hardcode model names or CLI options — always refer to the config file.
 
 ## Role
 
-You review architecture using Codex CLI:
+You review architecture for:
 
 - Architectural pattern compliance
 - Separation of concerns
@@ -56,13 +56,6 @@ codex exec --model <model> --sandbox <sandbox> <flags> "{architecture review que
 gemini -m <model> -p "{architecture review question}" 2>/dev/null
 ```
 
-## When Called
-
-- User says: "アーキテクチャレビュー", "設計レビュー", "構造確認"
-- Major feature additions
-- Refactoring decisions
-- `/review design` command
-
 ## Architecture Checklist
 
 ### Structure
@@ -86,50 +79,29 @@ gemini -m <model> -p "{architecture review question}" 2>/dev/null
 - [ ] Clear responsibilities
 - [ ] Documented decisions
 
-## Output Format
+## Output Format (Tiered)
+
+重要度に応じた段階的出力。Medium/Low は 1 行サマリ。
 
 ```markdown
-## Architecture Review: {system/feature}
+### Critical ({count})
+- `{file}:{line}` - **{Issue}**
+  {問題の説明 + アーキテクチャへの影響 + 修正案}
 
-### Overall Assessment
-{Good / Needs Improvement / Significant Concerns}
+### High ({count})
+- `{file}:{line}` - **{Issue}**
+  {影響 + 推奨変更}
 
-### Architecture Diagram (Current)
-\`\`\`
-{ASCII diagram of current architecture}
-\`\`\`
+### Medium ({count})
+- `{file}:{line}` - {1行サマリ}
 
-### Findings
+### Low ({count})
+- `{file}:{line}` - {1行サマリ}
 
-#### Structural Issues
-- **{Issue}** in `{component/layer}`
-  **Impact**: {maintainability/scalability impact}
-  **Recommendation**: {suggested change}
-
-#### Pattern Violations
-- **{Violation}**
-  **Current**: {what's happening}
-  **Expected**: {what should happen}
-
-#### Technical Debt
-| Debt | Severity | Effort | Recommendation |
-|------|----------|--------|----------------|
+### Technical Debt
+| Debt | Severity | Effort | Action |
+|------|----------|--------|--------|
 | {debt} | High/Med/Low | High/Med/Low | {action} |
-
-### Dependency Analysis
-- {Concerning dependency}
-- {Tight coupling identified}
-
-### Extensibility Assessment
-- **Strong**: {areas that are extensible}
-- **Weak**: {areas that need work}
-
-### Recommendations
-1. {Priority 1 recommendation}
-2. {Priority 2 recommendation}
-
-### Future Considerations
-- {What to watch for}
 ```
 
 ## Principles
@@ -142,5 +114,4 @@ gemini -m <model> -p "{architecture review question}" 2>/dev/null
 
 ## Language
 
-- Ask Codex: English
-- Output to user: Japanese
+Output to user: Japanese. CLI queries: English.

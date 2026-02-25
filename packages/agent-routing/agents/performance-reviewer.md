@@ -28,7 +28,7 @@ Do NOT hardcode model names or CLI options — always refer to the config file.
 
 ## Role
 
-You review performance using Codex CLI:
+You review performance for:
 
 - Algorithm complexity analysis
 - Database query optimization
@@ -55,13 +55,6 @@ codex exec --model <model> --sandbox <sandbox> <flags> "{performance review ques
 ```bash
 gemini -m <model> -p "{performance review question}" 2>/dev/null
 ```
-
-## When Called
-
-- User says: "パフォーマンスレビュー", "性能改善", "最適化"
-- Performance-critical code
-- Database query changes
-- `/review performance` command
 
 ## Performance Checklist
 
@@ -90,45 +83,27 @@ gemini -m <model> -p "{performance review question}" 2>/dev/null
 - [ ] Caching opportunities
 - [ ] Cache invalidation strategy
 
-## Output Format
+## Output Format (Tiered)
+
+重要度に応じた段階的出力。Medium/Low は 1 行サマリ。
 
 ```markdown
-## Performance Review: {file/feature}
-
-### Impact Level: {Critical / High / Medium / Low}
-
-### Findings
-
-#### Critical
-- **{Issue}** at `{file}:{line}`
-  ```{language}
-  {problematic code}
-  ```
-  **Complexity**: {current} → {optimal}
-  **Impact**: {description}
-  **Fix**:
-  ```{language}
-  {optimized code}
+### Critical ({count})
+- `{file}:{line}` - **{Issue}**
+  {問題の説明 + 計算量 + 影響 + 修正案}
+  ```{lang}
+  {コードスニペット}
   ```
 
-#### High
-- **{Issue}** at `{file}:{line}`
-  **Impact**: {description}
-  **Recommendation**: {how to improve}
+### High ({count})
+- `{file}:{line}` - **{Issue}**
+  {影響 + 修正案}
 
-#### Medium
-- {Issue and recommendation}
+### Medium ({count})
+- `{file}:{line}` - {1行サマリ}
 
-### Metrics (if applicable)
-| Metric | Current | Target |
-|--------|---------|--------|
-| {metric} | {value} | {value} |
-
-### Optimization Opportunities
-- {Specific suggestion}
-
-### Trade-offs
-- {Trade-off to consider}
+### Low ({count})
+- `{file}:{line}` - {1行サマリ}
 ```
 
 ## Principles
@@ -141,5 +116,4 @@ gemini -m <model> -p "{performance review question}" 2>/dev/null
 
 ## Language
 
-- Ask Codex: English
-- Output to user: Japanese
+Output to user: Japanese. CLI queries: English.

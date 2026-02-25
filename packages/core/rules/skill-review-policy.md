@@ -15,27 +15,29 @@
 
 ## レビュアー選定ガイド
 
-### パスパターンによる自動選定
+### パスパターンによる追加選定
 
-変更ファイルのパスに以下のパターンが含まれる場合、対応するレビュアーを選定する:
+パスパターンは**ベースライン（`code-reviewer`）に追加**する形で専門レビュアーを選定する。
+ソースコード変更がある限り `code-reviewer` は必ず含まれる。
 
-| パスパターン | レビュアー | 理由 |
-|-------------|-----------|------|
-| `packages/core/`, `packages/*/hooks/` | `code-reviewer` + `architecture-reviewer` | インフラ・共通基盤 |
-| `src/`, `lib/`, `app/`, `packages/` | `code-reviewer` | ソースコード変更 |
-| `auth`, `login`, `session`, `token`, `password`, `secret`, `permission` | `security-reviewer` | 認証・認可関連 |
-| `api/`, `routes/`, `endpoints/`, `graphql/`, `handler` | `code-reviewer` + `security-reviewer` | API 変更 |
-| `db/`, `migration`, `schema`, `model`, `prisma`, `drizzle` | `code-reviewer` + `performance-reviewer` | データベース変更 |
-| `components/`, `pages/`, `views/`, `ui/`, `styles/`, `css` | `code-reviewer` + `ux-reviewer` | フロントエンド変更 |
-| `config/`, `settings`, `.env`, `docker`, `infra/`, `terraform` | `security-reviewer` | インフラ・設定変更 |
-| `test`, `spec`, `__tests__` | `code-reviewer` | テストコード変更 |
+変更ファイルのパスに以下のパターンが含まれる場合、対応するレビュアーを**追加**する:
+
+| パスパターン | 追加レビュアー | 理由 |
+|-------------|--------------|------|
+| `packages/core/`, `packages/*/hooks/` | + `architecture-reviewer` | インフラ・共通基盤 |
+| `auth`, `login`, `session`, `token`, `password`, `secret`, `permission` | + `security-reviewer` | 認証・認可関連 |
+| `api/`, `routes/`, `endpoints/`, `graphql/`, `handler` | + `security-reviewer` | API 変更 |
+| `db/`, `migration`, `schema`, `model`, `prisma`, `drizzle` | + `performance-reviewer` | データベース変更 |
+| `components/`, `pages/`, `views/`, `ui/`, `styles/`, `css` | + `ux-reviewer` | フロントエンド変更 |
+| `config/`, `settings`, `.env`, `docker`, `infra/`, `terraform` | + `security-reviewer` | インフラ・設定変更 |
+| `test`, `spec`, `__tests__` | （追加なし） | テストコード変更 |
 | `docs/`, `*.md`（ドキュメントのみの変更） | レビュー不要 | ドキュメントのみ |
 
 ### 選定ルール
 
-1. **最大 2 レビュアー**: パスマッピングの結果を統合し、最大 2 個に絞る
-2. **優先順位**: `security-reviewer` > `code-reviewer` > `performance-reviewer` > `ux-reviewer`
-3. **最低 1 レビュアー**: コード変更がある限り、最低 `code-reviewer` は実行する
+1. **ベースライン**: ソースコード変更がある限り `code-reviewer` を必ず含める
+2. **最大 2 レビュアー**: パスマッピングの結果を統合し、最大 2 個に絞る
+3. **優先順位**: `security-reviewer` > `code-reviewer` > `performance-reviewer` > `ux-reviewer`
 4. **ドキュメントのみの例外**: `.md` ファイルのみの変更はレビューをスキップ可
 
 ---
@@ -58,7 +60,7 @@ Task(subagent_type="code-reviewer", prompt="""
 変更内容:
 {git diff の結果（対象ファイル）}
 
-重要な指摘のみ報告してください（Critical / High）。
+Tiered Output 形式（Critical/High/Medium/Low）で報告してください。
 """)
 ```
 
@@ -78,6 +80,15 @@ Task(subagent_type="code-reviewer", prompt="""
 
 ---
 
+## 出力形式
+
+Tiered Output 形式を使用する（レビュアーエージェント定義の Output Format 参照）:
+
+- **Critical/High**: 詳細な説明 + 修正案
+- **Medium/Low**: 1 行サマリ
+
+---
+
 ## 対象スキル
 
 このポリシーはレビューフェーズを持つ全スキルに適用される:
@@ -90,12 +101,13 @@ Task(subagent_type="code-reviewer", prompt="""
 
 ## `/review` スキルとの違い
 
-| | このポリシー | `/review` スキル |
-|-|-------------|-----------------|
-| レビュアー数 | 1-2（自動選定） | 最大 6（全レビュアー） |
-| 起動タイミング | スキル内レビューフェーズ | ユーザー明示的実行 |
-| 目的 | 変更に応じた最低限の品質確認 | リリース前の包括的レビュー |
-| 指摘への対応 | Critical は必須修正 | ユーザー判断 |
+| | このポリシー（スキル内レビュー） | `/review`（スマート選定） | `/review all` |
+|-|-------------------------------|-------------------------|---------------|
+| レビュアー数 | 1-2（パスパターンのみ） | 2-3（パス + diff コンテンツスキャン） | 全 6 レビュアー |
+| 起動タイミング | スキル内レビューフェーズ | ユーザー明示的実行 | ユーザー明示的実行 |
+| 目的 | 変更に応じた最低限の品質確認 | 効率的な包括レビュー | リリース前の網羅的レビュー |
+| 選定ロジック | パスパターンのみ | パス + diff コンテンツスキャン | 選定なし（全員） |
+| 指摘への対応 | Critical は必須修正 | ユーザー判断 | ユーザー判断 |
 
 ---
 

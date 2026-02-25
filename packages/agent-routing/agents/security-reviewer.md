@@ -28,7 +28,7 @@ Do NOT hardcode model names or CLI options — always refer to the config file.
 
 ## Role
 
-You review security using Codex CLI:
+You review security for:
 
 - Vulnerability detection (OWASP Top 10)
 - Authentication/authorization issues
@@ -56,13 +56,6 @@ codex exec --model <model> --sandbox <sandbox> <flags> "{security review questio
 gemini -m <model> -p "{security review question}" 2>/dev/null
 ```
 
-## When Called
-
-- User says: "セキュリティレビュー", "脆弱性チェック"
-- Security-sensitive code changes
-- Auth-related implementations
-- `/review security` command
-
 ## Security Checklist
 
 ### OWASP Top 10 Focus
@@ -84,44 +77,27 @@ gemini -m <model> -p "{security review question}" 2>/dev/null
 - [ ] Missing rate limiting
 - [ ] Insufficient input validation
 
-## Output Format
+## Output Format (Tiered)
+
+重要度に応じた段階的出力。Medium/Low は 1 行サマリ。
 
 ```markdown
-## Security Review: {file/feature}
-
-### Risk Level: {Critical / High / Medium / Low}
-
-### Findings
-
-#### Critical
-- **{Vulnerability Type}** at `{file}:{line}`
-  ```{language}
-  {vulnerable code}
+### Critical ({count})
+- `{file}:{line}` - **{Vulnerability Type}**
+  {脆弱性の説明 + リスク + 修正案}
+  ```{lang}
+  {コードスニペット}
   ```
-  **Risk**: {what could happen}
-  **Fix**: {how to fix}
 
-#### High
-- **{Issue}** at `{file}:{line}`
-  **Risk**: {impact}
-  **Fix**: {recommendation}
+### High ({count})
+- `{file}:{line}` - **{Issue}**
+  {リスク + 修正案}
 
-#### Medium
-- {Issue description}
+### Medium ({count})
+- `{file}:{line}` - {1行サマリ}
 
-#### Low
-- {Minor concern}
-
-### Secrets Check
-- [ ] No hardcoded secrets found
-- [ ] Environment variables used properly
-- [ ] .env files in .gitignore
-
-### Recommendations
-- {Security improvement suggestion}
-
-### Compliance Notes
-- {Any compliance considerations}
+### Low ({count})
+- `{file}:{line}` - {1行サマリ}
 ```
 
 ## Principles
@@ -134,5 +110,4 @@ gemini -m <model> -p "{security review question}" 2>/dev/null
 
 ## Language
 
-- Ask Codex: English
-- Output to user: Japanese
+Output to user: Japanese. CLI queries: English.

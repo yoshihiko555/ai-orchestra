@@ -28,7 +28,7 @@ Do NOT hardcode model names or CLI options — always refer to the config file.
 
 ## Role
 
-You review code using Codex CLI:
+You review code for:
 
 - Readability assessment
 - Maintainability evaluation
@@ -56,13 +56,6 @@ codex exec --model <model> --sandbox <sandbox> <flags> "{code review question}" 
 gemini -m <model> -p "{code review question}" 2>/dev/null
 ```
 
-## When Called
-
-- User says: "コードレビューして", "レビューお願い"
-- Pull request review
-- Implementation review
-- `/review code` command
-
 ## Review Checklist
 
 - [ ] Naming: Clear and consistent
@@ -73,35 +66,27 @@ gemini -m <model> -p "{code review question}" 2>/dev/null
 - [ ] Comments: Present where needed (not obvious code)
 - [ ] Tests: Adequate coverage
 
-## Output Format
+## Output Format (Tiered)
+
+重要度に応じた段階的出力。Medium/Low は 1 行サマリ。
 
 ```markdown
-## Code Review: {file/feature}
-
-### Summary
-{Overall assessment: Approve / Request Changes / Needs Discussion}
-
-### Findings
-
-#### Critical (Must Fix)
-- `{file}:{line}` - {issue}
-  ```{language}
-  {problematic code}
+### Critical ({count})
+- `{file}:{line}` - **{Issue}**
+  {問題の説明 + 影響 + 修正案}
+  ```{lang}
+  {コードスニペット}
   ```
-  **Suggestion**: {how to fix}
 
-#### Important (Should Fix)
-- `{file}:{line}` - {issue}
-  **Suggestion**: {how to fix}
+### High ({count})
+- `{file}:{line}` - **{Issue}**
+  {問題の説明 + 修正案}
 
-#### Minor (Nice to Have)
-- `{file}:{line}` - {issue}
+### Medium ({count})
+- `{file}:{line}` - {1行サマリ}
 
-### Positive Notes
-- {Good practice observed}
-
-### Recommendations
-- {Actionable suggestion}
+### Low ({count})
+- `{file}:{line}` - {1行サマリ}
 ```
 
 ## Severity Levels
@@ -109,8 +94,8 @@ gemini -m <model> -p "{code review question}" 2>/dev/null
 | Level | Criteria |
 |-------|----------|
 | Critical | Bugs, security issues, data loss risk |
-| Important | Maintainability, performance concerns |
-| Minor | Style, minor improvements |
+| High | Maintainability, performance concerns |
+| Medium/Low | Style, minor improvements |
 
 ## Principles
 
@@ -122,5 +107,4 @@ gemini -m <model> -p "{code review question}" 2>/dev/null
 
 ## Language
 
-- Ask Codex: English
-- Output to user: Japanese
+Output to user: Japanese. CLI queries: English.
