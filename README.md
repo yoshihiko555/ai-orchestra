@@ -112,6 +112,15 @@ orchestra-manager が内部で以下を実行:
 4. `sync-orchestra.py` の SessionStart hook を登録（初回のみ）
 5. skills/agents/rules の初回同期を実行
 
+### セットアップ完了条件
+
+以下をすべて満たしたらセットアップ完了です:
+
+- `~/.claude/settings.json` に `env.AI_ORCHESTRA_DIR` が設定されている
+- `.claude/settings.local.json` に AI Orchestra の hooks が登録されている
+- `.claude/orchestra.json` が存在し、インストール済みパッケージが記録されている
+- Claude Code 次回起動時に SessionStart hook が走り `.claude/` 配下へ差分同期される
+
 ### 3. 管理スクリプト
 
 | スクリプト | 用途 |
@@ -168,6 +177,14 @@ python3 ~/ai-orchestra/scripts/orchestra-manager.py install <package> --project 
 | Skills/Agents/Rules 修正 | `git pull`（次回 Claude Code 起動時に自動同期） |
 | 新フックイベント追加 | `git pull` + `install` 再実行 |
 | CLI スクリプト修正 | `git pull` のみ（即反映） |
+
+---
+
+## .claudeignore の管理
+
+- `.claudeignore` は AI Orchestra が自動生成するため直接編集しないでください
+- プロジェクト固有の除外パターンは `.claudeignore.local` に記載
+- SessionStart 時に ベース + `.claudeignore.local` がマージ生成されます
 
 ---
 
