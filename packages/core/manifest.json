@@ -3,10 +3,23 @@
   "version": "0.2.0",
   "description": "全パッケージ共通の基盤ライブラリ",
   "depends": [],
-  "hooks": {},
+  "hooks": {
+    "UserPromptSubmit": [
+      {"file": "clear-plan-gate.py"}
+    ],
+    "PreToolUse": [
+      {"file": "check-plan-gate.py", "matcher": "Task"}
+    ],
+    "PostToolUse": [
+      {"file": "set-plan-gate.py", "matcher": "Task"}
+    ]
+  },
   "files": [
     "hooks/hook_common.py",
-    "hooks/log_common.py"
+    "hooks/log_common.py",
+    "hooks/set-plan-gate.py",
+    "hooks/check-plan-gate.py",
+    "hooks/clear-plan-gate.py"
   ],
   "skills": ["skills/plan", "skills/startproject", "skills/checkpointing"],
   "agents": [],
