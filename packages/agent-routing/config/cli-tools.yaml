@@ -36,7 +36,7 @@ gemini:
   enabled: true
   # gemini -m <この値> で指定される
   # 未指定（空文字）の場合は -m フラグを省略し CLI デフォルトモデルを使用
-  model: gemini-2.5-pro
+  model: gemini-3.1-pro-preview
   # gemini コマンドに常に付与するフラグ（不要なら空文字）
   flags: ""
   # OAuth 認証 + macOS システム API を使用するため Bash サンドボックス内では動作しない
