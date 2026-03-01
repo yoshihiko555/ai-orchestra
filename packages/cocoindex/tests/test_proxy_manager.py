@@ -1,0 +1,412 @@
+"""proxy_manager.py の単体テスト。
+
+subprocess.Popen / os.kill / socket.connect_ex を mock でテストする。
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+from tests.module_loader import REPO_ROOT, load_module
+
+# hook_common を先に読み込む
+sys.path.insert(0, str(REPO_ROOT / "packages" / "core" / "hooks"))
+
+proxy_mgr = load_module(
+    "proxy_manager",
+    "packages/cocoindex/hooks/proxy_manager.py",
+)
+# @patch("proxy_manager.xxx") が解決できるよう sys.modules に登録
+sys.modules["proxy_manager"] = proxy_mgr
+
+SAMPLE_CONFIG: dict = {
+    "enabled": True,
+    "server_name": "cocoindex-code",
+    "command": "uvx",
+    "args": ["--prerelease=explicit", "--with", "cocoindex>=1.0.0a16", "cocoindex-code@latest"],
+    "proxy": {
+        "enabled": True,
+        "port": 8792,
+        "port_range": 0,
+        "host": "127.0.0.1",
+        "pid_file": ".claude/.mcp-proxy.pid",
+        "startup_timeout": 10,
+    },
+}
+
+
+# =========================================================================
+# get_proxy_config
+# =========================================================================
+
+
+class TestGetProxyConfig:
+    def test_returns_defaults_when_no_proxy_section(self) -> None:
+        result = proxy_mgr.get_proxy_config({})
+        assert result["enabled"] is False
+        assert result["port"] == 8792
+        assert result["host"] == "127.0.0.1"
+        assert result["startup_timeout"] == 10
+
+    def test_partial_override(self) -> None:
+        config = {"proxy": {"port": 9999}}
+        result = proxy_mgr.get_proxy_config(config)
+        assert result["port"] == 9999
+        assert result["host"] == "127.0.0.1"  # デフォルト維持
+
+    def test_full_override(self) -> None:
+        config = {"proxy": {"enabled": True, "port": 5555, "host": "0.0.0.0"}}
+        result = proxy_mgr.get_proxy_config(config)
+        assert result["enabled"] is True
+        assert result["port"] == 5555
+        assert result["host"] == "0.0.0.0"
+
+    def test_derives_port_with_project_dir(self) -> None:
+        config = {"proxy": {"port": 8792, "port_range": 100}}
+        result = proxy_mgr.get_proxy_config(config, project_dir="/home/user/project-a")
+        assert 8792 <= result["port"] < 8892
+
+    def test_fixed_port_when_range_zero(self) -> None:
+        config = {"proxy": {"port": 9999, "port_range": 0}}
+        result = proxy_mgr.get_proxy_config(config, project_dir="/home/user/project-a")
+        assert result["port"] == 9999
+
+    def test_no_derivation_without_project_dir(self) -> None:
+        config = {"proxy": {"port": 8792, "port_range": 100}}
+        result = proxy_mgr.get_proxy_config(config)
+        assert result["port"] == 8792  # base port そのまま
+
+
+# =========================================================================
+# _derive_port
+# =========================================================================
+
+
+class TestDerivePort:
+    def test_deterministic(self) -> None:
+        """同じ project_dir なら常に同じポートを返す。"""
+        port_a = proxy_mgr._derive_port("/home/user/project-a", 8792, 100)
+        port_b = proxy_mgr._derive_port("/home/user/project-a", 8792, 100)
+        assert port_a == port_b
+
+    def test_different_projects_different_ports(self) -> None:
+        """異なる project_dir なら異なるポートになる（高確率）。"""
+        port_a = proxy_mgr._derive_port("/home/user/project-a", 8792, 100)
+        port_b = proxy_mgr._derive_port("/home/user/project-b", 8792, 100)
+        # ハッシュ衝突の可能性はあるが、この 2 パスでは異なるはず
+        assert port_a != port_b
+
+    def test_port_in_range(self) -> None:
+        """導出ポートは base_port 〜 base_port + port_range - 1 の範囲内。"""
+        for path in ["/a", "/b", "/c/d/e", "/very/long/path/to/project"]:
+            port = proxy_mgr._derive_port(path, 8792, 100)
+            assert 8792 <= port < 8892
+
+    def test_range_zero_returns_base(self) -> None:
+        assert proxy_mgr._derive_port("/any/path", 9999, 0) == 9999
+
+    def test_range_negative_returns_base(self) -> None:
+        assert proxy_mgr._derive_port("/any/path", 9999, -1) == 9999
+
+
+# =========================================================================
+# resolve_pid_path
+# =========================================================================
+
+
+class TestResolvePidPath:
+    def test_relative_path(self, tmp_path: Path) -> None:
+        result = proxy_mgr.resolve_pid_path(SAMPLE_CONFIG, str(tmp_path))
+        expected = os.path.join(str(tmp_path), ".claude", ".mcp-proxy.pid")
+        assert result == expected
+
+    def test_absolute_path(self, tmp_path: Path) -> None:
+        abs_pid = "/tmp/test-proxy.pid"
+        config = {"proxy": {"pid_file": abs_pid}}
+        result = proxy_mgr.resolve_pid_path(config, str(tmp_path))
+        assert result == abs_pid
+
+
+# =========================================================================
+# PID ファイル操作
+# =========================================================================
+
+
+class TestPidFileOps:
+    def test_write_and_read(self, tmp_path: Path) -> None:
+        pid_path = str(tmp_path / "test.pid")
+        proxy_mgr._write_pid(pid_path, 12345)
+        assert proxy_mgr._read_pid(pid_path) == 12345
+
+    def test_read_nonexistent(self, tmp_path: Path) -> None:
+        pid_path = str(tmp_path / "nonexistent.pid")
+        assert proxy_mgr._read_pid(pid_path) is None
+
+    def test_remove(self, tmp_path: Path) -> None:
+        pid_path = tmp_path / "test.pid"
+        pid_path.write_text("12345")
+        proxy_mgr._remove_pid(str(pid_path))
+        assert not pid_path.exists()
+
+    def test_remove_nonexistent(self, tmp_path: Path) -> None:
+        proxy_mgr._remove_pid(str(tmp_path / "nonexistent.pid"))
+
+
+# =========================================================================
+# _is_pid_alive
+# =========================================================================
+
+
+class TestIsPidAlive:
+    @patch("proxy_manager.os.kill")
+    def test_alive(self, mock_kill: MagicMock) -> None:
+        mock_kill.return_value = None
+        assert proxy_mgr._is_pid_alive(12345) is True
+        mock_kill.assert_called_once_with(12345, 0)
+
+    @patch("proxy_manager.os.kill", side_effect=OSError)
+    def test_dead(self, mock_kill: MagicMock) -> None:
+        assert proxy_mgr._is_pid_alive(12345) is False
+
+
+# =========================================================================
+# _is_port_in_use
+# =========================================================================
+
+
+class TestIsPortInUse:
+    @patch("proxy_manager.socket.socket")
+    def test_port_in_use(self, mock_socket_cls: MagicMock) -> None:
+        mock_sock = MagicMock()
+        mock_socket_cls.return_value.__enter__ = MagicMock(return_value=mock_sock)
+        mock_socket_cls.return_value.__exit__ = MagicMock(return_value=False)
+        mock_sock.connect_ex.return_value = 0
+        assert proxy_mgr._is_port_in_use("127.0.0.1", 8792) is True
+
+    @patch("proxy_manager.socket.socket")
+    def test_port_not_in_use(self, mock_socket_cls: MagicMock) -> None:
+        mock_sock = MagicMock()
+        mock_socket_cls.return_value.__enter__ = MagicMock(return_value=mock_sock)
+        mock_socket_cls.return_value.__exit__ = MagicMock(return_value=False)
+        mock_sock.connect_ex.return_value = 1
+        assert proxy_mgr._is_port_in_use("127.0.0.1", 8792) is False
+
+
+# =========================================================================
+# _build_proxy_command
+# =========================================================================
+
+
+class TestBuildProxyCommand:
+    def test_builds_command(self) -> None:
+        proxy_cfg = proxy_mgr.get_proxy_config(SAMPLE_CONFIG)
+        cmd = proxy_mgr._build_proxy_command(SAMPLE_CONFIG, proxy_cfg)
+        assert cmd == [
+            "mcp-proxy",
+            "--pass-environment",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "8792",
+            "--",
+            "uvx",
+            "--prerelease=explicit",
+            "--with",
+            "cocoindex>=1.0.0a16",
+            "cocoindex-code@latest",
+        ]
+
+    def test_no_args(self) -> None:
+        config = {"command": "my-server"}
+        proxy_cfg = {"port": 9999}
+        cmd = proxy_mgr._build_proxy_command(config, proxy_cfg)
+        assert cmd == [
+            "mcp-proxy",
+            "--pass-environment",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "9999",
+            "--",
+            "my-server",
+        ]
+
+    def test_missing_command_raises(self) -> None:
+        import pytest
+
+        with pytest.raises(ValueError, match="config\\['command'\\] is required"):
+            proxy_mgr._build_proxy_command({}, {"port": 8792})
+
+
+# =========================================================================
+# start_proxy
+# =========================================================================
+
+
+class TestStartProxy:
+    @patch("proxy_manager._wait_for_port", return_value=True)
+    @patch("proxy_manager.subprocess.Popen")
+    @patch("proxy_manager.cleanup_orphan")
+    @patch("proxy_manager.is_proxy_running", return_value=False)
+    def test_normal_start(
+        self,
+        mock_running: MagicMock,
+        mock_cleanup: MagicMock,
+        mock_popen: MagicMock,
+        mock_wait: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        mock_proc = MagicMock()
+        mock_proc.pid = 99999
+        mock_popen.return_value = mock_proc
+
+        result = proxy_mgr.start_proxy(SAMPLE_CONFIG, str(tmp_path))
+        assert result is True
+
+        # PID ファイルが作成されている
+        pid_path = os.path.join(str(tmp_path), ".claude", ".mcp-proxy.pid")
+        assert proxy_mgr._read_pid(pid_path) == 99999
+
+    @patch("proxy_manager.is_proxy_running", return_value=True)
+    def test_idempotent(self, mock_running: MagicMock, tmp_path: Path) -> None:
+        result = proxy_mgr.start_proxy(SAMPLE_CONFIG, str(tmp_path))
+        assert result is True
+
+    @patch("proxy_manager.os.kill")
+    @patch("proxy_manager._wait_for_port", return_value=False)
+    @patch("proxy_manager.subprocess.Popen")
+    @patch("proxy_manager.cleanup_orphan")
+    @patch("proxy_manager.is_proxy_running", return_value=False)
+    def test_timeout_kills_process(
+        self,
+        mock_running: MagicMock,
+        mock_cleanup: MagicMock,
+        mock_popen: MagicMock,
+        mock_wait: MagicMock,
+        mock_kill: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        mock_proc = MagicMock()
+        mock_proc.pid = 88888
+        mock_popen.return_value = mock_proc
+
+        result = proxy_mgr.start_proxy(SAMPLE_CONFIG, str(tmp_path))
+        assert result is False
+
+        # PID ファイルが削除されている
+        pid_path = os.path.join(str(tmp_path), ".claude", ".mcp-proxy.pid")
+        assert proxy_mgr._read_pid(pid_path) is None
+
+    @patch("proxy_manager.subprocess.Popen", side_effect=FileNotFoundError)
+    @patch("proxy_manager.cleanup_orphan")
+    @patch("proxy_manager.is_proxy_running", return_value=False)
+    def test_popen_failure(
+        self,
+        mock_running: MagicMock,
+        mock_cleanup: MagicMock,
+        mock_popen: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        result = proxy_mgr.start_proxy(SAMPLE_CONFIG, str(tmp_path))
+        assert result is False
+
+
+# =========================================================================
+# stop_proxy
+# =========================================================================
+
+
+class TestStopProxy:
+    def test_noop_when_no_pid_file(self, tmp_path: Path) -> None:
+        result = proxy_mgr.stop_proxy(SAMPLE_CONFIG, str(tmp_path))
+        assert result is True
+
+    @patch("proxy_manager._is_pid_alive", return_value=False)
+    def test_removes_stale_pid(self, mock_alive: MagicMock, tmp_path: Path) -> None:
+        pid_path = os.path.join(str(tmp_path), ".claude", ".mcp-proxy.pid")
+        os.makedirs(os.path.dirname(pid_path), exist_ok=True)
+        proxy_mgr._write_pid(pid_path, 11111)
+
+        result = proxy_mgr.stop_proxy(SAMPLE_CONFIG, str(tmp_path))
+        assert result is True
+        assert proxy_mgr._read_pid(pid_path) is None
+
+    @patch("proxy_manager._wait_for_exit", return_value=True)
+    @patch("proxy_manager.os.kill")
+    @patch("proxy_manager._is_pid_alive", return_value=True)
+    def test_sigterm_stop(
+        self,
+        mock_alive: MagicMock,
+        mock_kill: MagicMock,
+        mock_wait: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        pid_path = os.path.join(str(tmp_path), ".claude", ".mcp-proxy.pid")
+        os.makedirs(os.path.dirname(pid_path), exist_ok=True)
+        proxy_mgr._write_pid(pid_path, 22222)
+
+        result = proxy_mgr.stop_proxy(SAMPLE_CONFIG, str(tmp_path))
+        assert result is True
+        assert proxy_mgr._read_pid(pid_path) is None
+
+    @patch("proxy_manager._wait_for_exit", return_value=False)
+    @patch("proxy_manager.os.kill")
+    @patch("proxy_manager._is_pid_alive", return_value=True)
+    def test_sigkill_fallback(
+        self,
+        mock_alive: MagicMock,
+        mock_kill: MagicMock,
+        mock_wait: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        import signal
+
+        pid_path = os.path.join(str(tmp_path), ".claude", ".mcp-proxy.pid")
+        os.makedirs(os.path.dirname(pid_path), exist_ok=True)
+        proxy_mgr._write_pid(pid_path, 33333)
+
+        proxy_mgr.stop_proxy(SAMPLE_CONFIG, str(tmp_path))
+
+        # SIGTERM + SIGKILL が呼ばれている
+        kill_signals = [call.args[1] for call in mock_kill.call_args_list]
+        assert signal.SIGTERM in kill_signals
+        assert signal.SIGKILL in kill_signals
+
+
+# =========================================================================
+# cleanup_orphan
+# =========================================================================
+
+
+class TestCleanupOrphan:
+    def test_noop_when_no_pid_file(self, tmp_path: Path) -> None:
+        proxy_mgr.cleanup_orphan(SAMPLE_CONFIG, str(tmp_path))
+
+    @patch("proxy_manager._is_pid_alive", return_value=False)
+    def test_removes_stale_pid_dead_process(self, mock_alive: MagicMock, tmp_path: Path) -> None:
+        pid_path = os.path.join(str(tmp_path), ".claude", ".mcp-proxy.pid")
+        os.makedirs(os.path.dirname(pid_path), exist_ok=True)
+        proxy_mgr._write_pid(pid_path, 44444)
+
+        proxy_mgr.cleanup_orphan(SAMPLE_CONFIG, str(tmp_path))
+        assert proxy_mgr._read_pid(pid_path) is None
+
+    @patch("proxy_manager._wait_for_exit", return_value=True)
+    @patch("proxy_manager.os.kill")
+    @patch("proxy_manager._is_pid_alive", return_value=True)
+    def test_kills_alive_orphan(
+        self,
+        mock_alive: MagicMock,
+        mock_kill: MagicMock,
+        mock_wait: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        pid_path = os.path.join(str(tmp_path), ".claude", ".mcp-proxy.pid")
+        os.makedirs(os.path.dirname(pid_path), exist_ok=True)
+        proxy_mgr._write_pid(pid_path, 55555)
+
+        proxy_mgr.cleanup_orphan(SAMPLE_CONFIG, str(tmp_path))
+        assert proxy_mgr._read_pid(pid_path) is None

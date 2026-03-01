@@ -337,3 +337,149 @@ class TestFindTomlSection:
 
     def test_handles_empty_content(self) -> None:
         assert provision._find_toml_section("", "mcp_servers.foo") is None
+
+
+# =========================================================================
+# v2: proxy モードのエントリ形式
+# =========================================================================
+
+SAMPLE_CONFIG_V2: dict = {
+    "enabled": True,
+    "server_name": "cocoindex-code",
+    "command": "uvx",
+    "args": ["--prerelease=explicit", "--with", "cocoindex>=1.0.0a16", "cocoindex-code@latest"],
+    "targets": {
+        "claude": {"enabled": True, "type": "stdio", "force_stdio": False},
+        "codex": {"enabled": True, "force_stdio": False},
+        "gemini": {"enabled": True, "force_stdio": False},
+    },
+    "proxy": {
+        "enabled": True,
+        "port": 8792,
+        "port_range": 0,
+        "host": "127.0.0.1",
+        "pid_file": ".claude/.mcp-proxy.pid",
+        "startup_timeout": 10,
+    },
+}
+
+PROXY_CFG = SAMPLE_CONFIG_V2["proxy"]
+
+
+class TestProxyModeEntries:
+    """proxy_active=True 時の各 CLI エントリ形式テスト。"""
+
+    # --- Claude Code: SSE ---
+
+    def test_claude_proxy_entry(self, tmp_path: Path) -> None:
+        mcp_path = tmp_path / ".mcp.json"
+        mcp_path.write_text("{}")
+
+        provision.provision_claude(str(tmp_path), SAMPLE_CONFIG_V2, SERVER_NAME, proxy_active=True)
+
+        data = json.loads(mcp_path.read_text())
+        entry = data["mcpServers"]["cocoindex-code"]
+        assert entry["type"] == "sse"
+        assert entry["url"] == "http://127.0.0.1:8792/sse"
+        assert "command" not in entry
+
+    def test_claude_force_stdio(self, tmp_path: Path) -> None:
+        config = {
+            **SAMPLE_CONFIG_V2,
+            "targets": {
+                **SAMPLE_CONFIG_V2["targets"],
+                "claude": {"enabled": True, "type": "stdio", "force_stdio": True},
+            },
+        }
+        mcp_path = tmp_path / ".mcp.json"
+        mcp_path.write_text("{}")
+
+        provision.provision_claude(str(tmp_path), config, SERVER_NAME, proxy_active=True)
+
+        data = json.loads(mcp_path.read_text())
+        entry = data["mcpServers"]["cocoindex-code"]
+        assert entry["command"] == "uvx"
+        assert entry["type"] == "stdio"
+        assert "url" not in entry
+
+    # --- Codex CLI: streamable-http ---
+
+    def test_codex_proxy_entry(self, tmp_path: Path) -> None:
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        toml_path = codex_dir / "config.toml"
+        toml_path.write_text(CODEX_BASE_TOML)
+
+        provision.provision_codex(str(tmp_path), SAMPLE_CONFIG_V2, SERVER_NAME, proxy_active=True)
+
+        content = toml_path.read_text()
+        assert 'url = "http://127.0.0.1:8792/mcp"' in content
+        assert "command" not in content.split("[mcp_servers.cocoindex-code]")[1]
+
+    def test_codex_force_stdio(self, tmp_path: Path) -> None:
+        config = {
+            **SAMPLE_CONFIG_V2,
+            "targets": {
+                **SAMPLE_CONFIG_V2["targets"],
+                "codex": {"enabled": True, "force_stdio": True},
+            },
+        }
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        toml_path = codex_dir / "config.toml"
+        toml_path.write_text(CODEX_BASE_TOML)
+
+        provision.provision_codex(str(tmp_path), config, SERVER_NAME, proxy_active=True)
+
+        content = toml_path.read_text()
+        assert 'command = "uvx"' in content
+        assert "url" not in content.split("[mcp_servers.cocoindex-code]")[1]
+
+    # --- Gemini CLI: SSE ---
+
+    def test_gemini_proxy_entry(self, tmp_path: Path) -> None:
+        gemini_dir = tmp_path / ".gemini"
+        gemini_dir.mkdir()
+        settings_path = gemini_dir / "settings.json"
+        settings_path.write_text(json.dumps({"model": {"name": "gemini-2.5-pro"}}))
+
+        provision.provision_gemini(str(tmp_path), SAMPLE_CONFIG_V2, SERVER_NAME, proxy_active=True)
+
+        data = json.loads(settings_path.read_text())
+        entry = data["mcpServers"]["cocoindex-code"]
+        assert entry["url"] == "http://127.0.0.1:8792/sse"
+        assert "command" not in entry
+
+    def test_gemini_force_stdio(self, tmp_path: Path) -> None:
+        config = {
+            **SAMPLE_CONFIG_V2,
+            "targets": {
+                **SAMPLE_CONFIG_V2["targets"],
+                "gemini": {"enabled": True, "force_stdio": True},
+            },
+        }
+        gemini_dir = tmp_path / ".gemini"
+        gemini_dir.mkdir()
+        settings_path = gemini_dir / "settings.json"
+        settings_path.write_text(json.dumps({"model": {"name": "gemini-2.5-pro"}}))
+
+        provision.provision_gemini(str(tmp_path), config, SERVER_NAME, proxy_active=True)
+
+        data = json.loads(settings_path.read_text())
+        entry = data["mcpServers"]["cocoindex-code"]
+        assert entry["command"] == "uvx"
+        assert "url" not in entry
+
+    # --- proxy_active=False → 従来の stdio ---
+
+    def test_v2_config_with_proxy_inactive(self, tmp_path: Path) -> None:
+        """proxy_active=False なら v2 config でも stdio エントリを生成する。"""
+        mcp_path = tmp_path / ".mcp.json"
+        mcp_path.write_text("{}")
+
+        provision.provision_claude(str(tmp_path), SAMPLE_CONFIG_V2, SERVER_NAME, proxy_active=False)
+
+        data = json.loads(mcp_path.read_text())
+        entry = data["mcpServers"]["cocoindex-code"]
+        assert entry["command"] == "uvx"
+        assert entry["type"] == "stdio"

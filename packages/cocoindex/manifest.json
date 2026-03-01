@@ -1,13 +1,16 @@
 {
   "name": "cocoindex",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "cocoindex MCP サーバーの自動プロビジョニング",
   "depends": ["core"],
   "hooks": {
-    "SessionStart": ["provision-mcp-servers.py"]
+    "SessionStart": ["provision-mcp-servers.py"],
+    "SessionEnd": ["stop-mcp-proxy.py"]
   },
   "files": [
-    "hooks/provision-mcp-servers.py"
+    "hooks/provision-mcp-servers.py",
+    "hooks/stop-mcp-proxy.py",
+    "hooks/proxy_manager.py"
   ],
   "skills": [],
   "agents": [],
