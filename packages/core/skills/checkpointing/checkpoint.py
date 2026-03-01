@@ -8,7 +8,7 @@ Usage:
     python checkpoint.py --full --analyze               # Full checkpoint + skill analysis
 
 Session History Mode (default):
-    Updates CLAUDE.md, .codex/AGENTS.md, .gemini/GEMINI.md with CLI consultation history.
+    Updates CLAUDE.md, AGENTS.md, .gemini/GEMINI.md with CLI consultation history.
 
 Full Checkpoint Mode (--full):
     Creates comprehensive checkpoint file in checkpoints/ including:
@@ -53,7 +53,7 @@ DESIGN_FILE = CLAUDE_DIR / "docs" / "DESIGN.md"
 
 CONTEXT_FILES = {
     "claude": PROJECT_ROOT / "CLAUDE.md",
-    "codex": PROJECT_ROOT / ".codex" / "AGENTS.md",
+    "codex": PROJECT_ROOT / "AGENTS.md",
     "gemini": PROJECT_ROOT / ".gemini" / "GEMINI.md",
 }
 

@@ -837,23 +837,30 @@ class OrchestraManager:
                 print("テンプレート配置: .claudeignore")
 
         # 6. .codex/ テンプレート（既存はスキップ）
+        # AGENTS.md はプロジェクトルートに配置（Codex は .codex/ 内ではなくルートを読む）
         codex_src = templates_dir / "codex"
+        root_files = {"AGENTS.md"}
         if codex_src.is_dir():
             codex_dst = project_dir / ".codex"
             for src_file in codex_src.rglob("*"):
                 if not src_file.is_file():
                     continue
                 rel = src_file.relative_to(codex_src)
-                dst_file = codex_dst / rel
+                if rel.name in root_files:
+                    dst_file = project_dir / rel.name
+                    label = rel.name
+                else:
+                    dst_file = codex_dst / rel
+                    label = f".codex/{rel}"
                 if dst_file.exists():
-                    print(f"スキップ（既存）: .codex/{rel}")
+                    print(f"スキップ（既存）: {label}")
                     continue
                 if dry_run:
-                    print(f"[DRY-RUN] テンプレート配置: .codex/{rel}")
+                    print(f"[DRY-RUN] テンプレート配置: {label}")
                 else:
                     dst_file.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(src_file, dst_file)
-                    print(f"テンプレート配置: .codex/{rel}")
+                    print(f"テンプレート配置: {label}")
 
         # 7. .gemini/ テンプレート（既存はスキップ）
         gemini_src = templates_dir / "gemini"
