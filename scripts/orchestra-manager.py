@@ -1047,6 +1047,21 @@ class OrchestraManager:
         for pkg_name, short_name, display_path in rows:
             print(f"{pkg_name:<20} {short_name:<30} {display_path}")
 
+    def list_presets(self) -> None:
+        """プリセット一覧を表示"""
+        presets = self.load_presets()
+        print(f"{'PRESET':<15} {'PACKAGES':<40} DESCRIPTION")
+        print("-" * 80)
+        for name in sorted(presets.keys()):
+            preset = presets[name]
+            description = preset.get("description", "")
+            packages = preset["packages"]
+            if isinstance(packages, list):
+                pkg_str = ", ".join(packages)
+            else:
+                pkg_str = str(packages)
+            print(f"{name:<15} {pkg_str:<40} {description}")
+
     def setup(self, preset_name: str, project: str | None, dry_run: bool = False) -> None:
         """プリセットを使って一括セットアップ"""
         presets = self.load_presets()
@@ -1183,7 +1198,9 @@ def main():
 
     # setup コマンド
     setup_parser = subparsers.add_parser("setup", help="プリセットで一括セットアップ")
-    setup_parser.add_argument("preset", help="プリセット名（essential / all）")
+    setup_parser.add_argument(
+        "preset", nargs="?", default=None, help="プリセット名（省略時は一覧表示）"
+    )
     setup_parser.add_argument("--project", help="プロジェクトパス")
     setup_parser.add_argument("--dry-run", action="store_true", help="実行内容を表示のみ")
 
@@ -1226,7 +1243,10 @@ def main():
     elif args.command == "scripts":
         manager.list_scripts(args.package)
     elif args.command == "setup":
-        manager.setup(args.preset, args.project, args.dry_run)
+        if args.preset is None:
+            manager.list_presets()
+        else:
+            manager.setup(args.preset, args.project, args.dry_run)
     else:
         parser.print_help()
         sys.exit(1)
