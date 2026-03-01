@@ -41,10 +41,10 @@
     "agents/ux-reviewer.md",
     "config/agent-routing/cli-tools.yaml",
     "config/cocoindex/cocoindex.yaml",
+    "config/core/task-memory.yaml",
     "config/issue-workflow/sandbox-requirements.json",
     "config/route-audit/delegation-policy.json",
     "config/route-audit/orchestration-flags.json",
-    "config/task-memory/task-memory.yaml",
     "rules/agent-routing-policy.md",
     "rules/cocoindex-usage.md",
     "rules/codex-delegation.md",
@@ -79,5 +79,5 @@
     "skills/task-state/SKILL.md",
     "skills/tdd/SKILL.md"
   ],
-  "last_sync": "2026-03-01T15:04:51.803770+00:00"
+  "last_sync": "2026-03-01T18:01:09.876014+00:00"
 }
