@@ -1,9 +1,10 @@
 {
   "name": "core",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "全パッケージ共通の基盤ライブラリ",
   "depends": [],
   "hooks": {
+    "SessionStart": ["load-task-state.py"],
     "UserPromptSubmit": [
       {"file": "clear-plan-gate.py"}
     ],
@@ -19,11 +20,12 @@
     "hooks/log_common.py",
     "hooks/set-plan-gate.py",
     "hooks/check-plan-gate.py",
-    "hooks/clear-plan-gate.py"
+    "hooks/clear-plan-gate.py",
+    "hooks/load-task-state.py"
   ],
-  "skills": ["skills/plan", "skills/startproject", "skills/checkpointing"],
+  "skills": ["skills/plan", "skills/startproject", "skills/checkpointing", "skills/task-state"],
   "agents": [],
-  "rules": ["rules/config-loading.md", "rules/coding-principles.md", "rules/skill-review-policy.md"],
+  "rules": ["rules/config-loading.md", "rules/coding-principles.md", "rules/skill-review-policy.md", "rules/task-memory-usage.md"],
   "scripts": [],
-  "config": []
+  "config": ["config/task-memory.yaml"]
 }

@@ -18,9 +18,7 @@ def load_module(module_name: str, relative_path: str):
     return module
 
 
-load_task_state = load_module(
-    "task_memory_load_task_state", "packages/task-memory/hooks/load-task-state.py"
-)
+load_task_state = load_module("core_load_task_state", "packages/core/hooks/load-task-state.py")
 
 
 def test_load_config_uses_project_override_without_ai_orchestra_dir(tmp_path, monkeypatch) -> None:
