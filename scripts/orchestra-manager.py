@@ -1159,7 +1159,7 @@ def main():
 
     # install コマンド
     install_parser = subparsers.add_parser("install", help="パッケージをインストール")
-    install_parser.add_argument("package", help="パッケージ名")
+    install_parser.add_argument("package", nargs="+", help="パッケージ名（複数指定可）")
     install_parser.add_argument("--project", help="プロジェクトパス")
     install_parser.add_argument("--dry-run", action="store_true", help="実行内容を表示のみ")
 
@@ -1231,7 +1231,12 @@ def main():
     elif args.command == "status":
         manager.status(args.project)
     elif args.command == "install":
-        manager.install(args.package, args.project, args.dry_run)
+        if len(args.package) == 1:
+            manager.install(args.package[0], args.project, args.dry_run)
+        else:
+            ordered = manager.resolve_install_order(args.package)
+            for pkg_name in ordered:
+                manager.install(pkg_name, args.project, args.dry_run, _skip_dep_check=True)
     elif args.command == "uninstall":
         manager.uninstall(args.package, args.project, args.dry_run)
     elif args.command == "enable":
