@@ -1,0 +1,22 @@
+enabled: true
+server_name: "cocoindex-code"
+command: "uvx"
+args:
+  - "--prerelease=explicit"
+  - "--with"
+  - "cocoindex>=1.0.0a16"
+  - "cocoindex-code@latest"
+
+targets:
+  claude:
+    enabled: true
+    type: "stdio"
+  codex:
+    enabled: true
+  gemini:
+    enabled: true
+
+# mcp-proxy 対応（v2）
+# proxy:
+#   enabled: false
+#   port: 8080

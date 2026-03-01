@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "cocoindex-code": {
+      "command": "uvx",
+      "args": [
+        "--prerelease=explicit",
+        "--with",
+        "cocoindex>=1.0.0a16",
+        "cocoindex-code@latest"
+      ],
+      "type": "stdio"
+    }
+  }
+}

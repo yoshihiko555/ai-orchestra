@@ -3,6 +3,7 @@
   "installed_packages": [
     "agent-routing",
     "cli-logging",
+    "cocoindex",
     "codex-suggestions",
     "core",
     "gemini-suggestions",
@@ -39,11 +40,13 @@
     "agents/tester.md",
     "agents/ux-reviewer.md",
     "config/agent-routing/cli-tools.yaml",
+    "config/cocoindex/cocoindex.yaml",
     "config/issue-workflow/sandbox-requirements.json",
     "config/route-audit/delegation-policy.json",
     "config/route-audit/orchestration-flags.json",
     "config/task-memory/task-memory.yaml",
     "rules/agent-routing-policy.md",
+    "rules/cocoindex-usage.md",
     "rules/codex-delegation.md",
     "rules/codex-suggestion-compliance.md",
     "rules/coding-principles.md",
@@ -76,5 +79,5 @@
     "skills/task-state/SKILL.md",
     "skills/tdd/SKILL.md"
   ],
-  "last_sync": "2026-02-25T12:26:20.192545+00:00"
+  "last_sync": "2026-03-01T15:04:51.803770+00:00"
 }

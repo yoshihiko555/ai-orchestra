@@ -1,0 +1,339 @@
+"""provision-mcp-servers.py のテスト。
+
+テスト対象:
+- Claude Code (.mcp.json) へのプロビジョニング・クリーンアップ
+- Codex CLI (.codex/config.toml) へのプロビジョニング・クリーンアップ
+- Gemini CLI (.gemini/settings.json) へのプロビジョニング・クリーンアップ
+- 冪等性（同一入力で再実行しても変更なし）
+- TOML セクション検出（行走査方式）
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+from tests.module_loader import REPO_ROOT, load_module
+
+# hook_common を先に読み込む（provision が import するため）
+sys.path.insert(0, str(REPO_ROOT / "packages" / "core" / "hooks"))
+
+provision = load_module(
+    "provision_mcp_servers",
+    "packages/cocoindex/hooks/provision-mcp-servers.py",
+)
+
+# テスト用の共通 config
+SAMPLE_CONFIG: dict = {
+    "enabled": True,
+    "server_name": "cocoindex-code",
+    "command": "uvx",
+    "args": ["--prerelease=explicit", "--with", "cocoindex>=1.0.0a16", "cocoindex-code@latest"],
+    "targets": {
+        "claude": {"enabled": True, "type": "stdio"},
+        "codex": {"enabled": True},
+        "gemini": {"enabled": True},
+    },
+}
+
+SERVER_NAME = "cocoindex-code"
+
+
+# =========================================================================
+# Claude Code (.mcp.json)
+# =========================================================================
+
+
+class TestProvisionClaude:
+    def test_creates_entry_in_empty_mcp_json(self, tmp_path: Path) -> None:
+        mcp_path = tmp_path / ".mcp.json"
+        mcp_path.write_text("{}")
+
+        result = provision.provision_claude(str(tmp_path), SAMPLE_CONFIG, SERVER_NAME)
+        assert result == "claude"
+
+        data = json.loads(mcp_path.read_text())
+        entry = data["mcpServers"]["cocoindex-code"]
+        assert entry["command"] == "uvx"
+        assert entry["args"] == SAMPLE_CONFIG["args"]
+        assert entry["type"] == "stdio"
+
+    def test_preserves_existing_servers(self, tmp_path: Path) -> None:
+        mcp_path = tmp_path / ".mcp.json"
+        mcp_path.write_text(
+            json.dumps({"mcpServers": {"other-server": {"command": "node", "args": ["server.js"]}}})
+        )
+
+        provision.provision_claude(str(tmp_path), SAMPLE_CONFIG, SERVER_NAME)
+
+        data = json.loads(mcp_path.read_text())
+        assert "other-server" in data["mcpServers"]
+        assert "cocoindex-code" in data["mcpServers"]
+
+    def test_idempotent(self, tmp_path: Path) -> None:
+        mcp_path = tmp_path / ".mcp.json"
+        mcp_path.write_text("{}")
+
+        provision.provision_claude(str(tmp_path), SAMPLE_CONFIG, SERVER_NAME)
+
+        result = provision.provision_claude(str(tmp_path), SAMPLE_CONFIG, SERVER_NAME)
+        assert result is None  # 変更なし
+
+    def test_creates_file_if_not_exists(self, tmp_path: Path) -> None:
+        """Claude Code の .mcp.json はファイルが存在しなくても作成する。"""
+        result = provision.provision_claude(str(tmp_path), SAMPLE_CONFIG, SERVER_NAME)
+        assert result == "claude"
+        mcp_path = tmp_path / ".mcp.json"
+        assert mcp_path.exists()
+
+
+class TestCleanupClaude:
+    def test_removes_entry(self, tmp_path: Path) -> None:
+        mcp_path = tmp_path / ".mcp.json"
+        mcp_path.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "cocoindex-code": {"command": "uvx", "args": []},
+                        "other": {"command": "node", "args": []},
+                    }
+                }
+            )
+        )
+
+        result = provision.cleanup_claude(str(tmp_path), SERVER_NAME)
+        assert result == "claude"
+
+        data = json.loads(mcp_path.read_text())
+        assert "cocoindex-code" not in data["mcpServers"]
+        assert "other" in data["mcpServers"]
+
+    def test_deletes_file_when_empty(self, tmp_path: Path) -> None:
+        mcp_path = tmp_path / ".mcp.json"
+        mcp_path.write_text(
+            json.dumps({"mcpServers": {"cocoindex-code": {"command": "uvx", "args": []}}})
+        )
+
+        provision.cleanup_claude(str(tmp_path), SERVER_NAME)
+        assert not mcp_path.exists()
+
+    def test_noop_when_not_present(self, tmp_path: Path) -> None:
+        mcp_path = tmp_path / ".mcp.json"
+        mcp_path.write_text(json.dumps({"mcpServers": {"other": {}}}))
+
+        result = provision.cleanup_claude(str(tmp_path), SERVER_NAME)
+        assert result is None
+
+    def test_noop_when_file_missing(self, tmp_path: Path) -> None:
+        result = provision.cleanup_claude(str(tmp_path), SERVER_NAME)
+        assert result is None
+
+
+# =========================================================================
+# Codex CLI (.codex/config.toml)
+# =========================================================================
+
+
+CODEX_BASE_TOML = """\
+model = "gpt-5.3-codex"
+approval_policy = "on-request"
+
+[features]
+skills = true
+"""
+
+
+class TestProvisionCodex:
+    def test_appends_section(self, tmp_path: Path) -> None:
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        toml_path = codex_dir / "config.toml"
+        toml_path.write_text(CODEX_BASE_TOML)
+
+        result = provision.provision_codex(str(tmp_path), SAMPLE_CONFIG, SERVER_NAME)
+        assert result == "codex"
+
+        content = toml_path.read_text()
+        assert "[mcp_servers.cocoindex-code]" in content
+        assert 'command = "uvx"' in content
+        assert "enabled = true" in content
+
+    def test_updates_existing_section(self, tmp_path: Path) -> None:
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        toml_path = codex_dir / "config.toml"
+        toml_path.write_text(
+            CODEX_BASE_TOML
+            + "\n[mcp_servers.cocoindex-code]\n"
+            + 'command = "old-cmd"\n'
+            + 'args = ["old"]\n'
+            + "enabled = true\n"
+        )
+
+        result = provision.provision_codex(str(tmp_path), SAMPLE_CONFIG, SERVER_NAME)
+        assert result == "codex"
+
+        content = toml_path.read_text()
+        assert 'command = "uvx"' in content
+        assert "old-cmd" not in content
+
+    def test_idempotent(self, tmp_path: Path) -> None:
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        toml_path = codex_dir / "config.toml"
+        toml_path.write_text(CODEX_BASE_TOML)
+
+        provision.provision_codex(str(tmp_path), SAMPLE_CONFIG, SERVER_NAME)
+        result = provision.provision_codex(str(tmp_path), SAMPLE_CONFIG, SERVER_NAME)
+        assert result is None
+
+    def test_skips_when_file_missing(self, tmp_path: Path) -> None:
+        result = provision.provision_codex(str(tmp_path), SAMPLE_CONFIG, SERVER_NAME)
+        assert result is None
+
+
+class TestCleanupCodex:
+    def test_removes_section(self, tmp_path: Path) -> None:
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        toml_path = codex_dir / "config.toml"
+        toml_path.write_text(
+            CODEX_BASE_TOML
+            + "\n[mcp_servers.cocoindex-code]\n"
+            + 'command = "uvx"\n'
+            + "args = []\n"
+            + "enabled = true\n"
+        )
+
+        result = provision.cleanup_codex(str(tmp_path), SERVER_NAME)
+        assert result == "codex"
+
+        content = toml_path.read_text()
+        assert "cocoindex-code" not in content
+        assert "model" in content  # 他の設定は残る
+
+    def test_noop_when_not_present(self, tmp_path: Path) -> None:
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        toml_path = codex_dir / "config.toml"
+        toml_path.write_text(CODEX_BASE_TOML)
+
+        result = provision.cleanup_codex(str(tmp_path), SERVER_NAME)
+        assert result is None
+
+
+# =========================================================================
+# Gemini CLI (.gemini/settings.json)
+# =========================================================================
+
+
+class TestProvisionGemini:
+    def test_adds_entry(self, tmp_path: Path) -> None:
+        gemini_dir = tmp_path / ".gemini"
+        gemini_dir.mkdir()
+        settings_path = gemini_dir / "settings.json"
+        settings_path.write_text(json.dumps({"model": {"name": "gemini-2.5-pro"}}))
+
+        result = provision.provision_gemini(str(tmp_path), SAMPLE_CONFIG, SERVER_NAME)
+        assert result == "gemini"
+
+        data = json.loads(settings_path.read_text())
+        entry = data["mcpServers"]["cocoindex-code"]
+        assert entry["command"] == "uvx"
+        assert entry["args"] == SAMPLE_CONFIG["args"]
+
+    def test_preserves_existing_settings(self, tmp_path: Path) -> None:
+        gemini_dir = tmp_path / ".gemini"
+        gemini_dir.mkdir()
+        settings_path = gemini_dir / "settings.json"
+        settings_path.write_text(
+            json.dumps(
+                {
+                    "model": {"name": "gemini-2.5-pro"},
+                    "mcpServers": {"other": {"command": "node"}},
+                }
+            )
+        )
+
+        provision.provision_gemini(str(tmp_path), SAMPLE_CONFIG, SERVER_NAME)
+
+        data = json.loads(settings_path.read_text())
+        assert data["model"]["name"] == "gemini-2.5-pro"
+        assert "other" in data["mcpServers"]
+
+    def test_idempotent(self, tmp_path: Path) -> None:
+        gemini_dir = tmp_path / ".gemini"
+        gemini_dir.mkdir()
+        settings_path = gemini_dir / "settings.json"
+        settings_path.write_text(json.dumps({"model": {"name": "gemini-2.5-pro"}}))
+
+        provision.provision_gemini(str(tmp_path), SAMPLE_CONFIG, SERVER_NAME)
+        result = provision.provision_gemini(str(tmp_path), SAMPLE_CONFIG, SERVER_NAME)
+        assert result is None
+
+    def test_skips_when_file_missing(self, tmp_path: Path) -> None:
+        result = provision.provision_gemini(str(tmp_path), SAMPLE_CONFIG, SERVER_NAME)
+        assert result is None
+
+
+class TestCleanupGemini:
+    def test_removes_entry(self, tmp_path: Path) -> None:
+        gemini_dir = tmp_path / ".gemini"
+        gemini_dir.mkdir()
+        settings_path = gemini_dir / "settings.json"
+        settings_path.write_text(
+            json.dumps(
+                {
+                    "model": {"name": "gemini-2.5-pro"},
+                    "mcpServers": {"cocoindex-code": {"command": "uvx", "args": []}},
+                }
+            )
+        )
+
+        result = provision.cleanup_gemini(str(tmp_path), SERVER_NAME)
+        assert result == "gemini"
+
+        data = json.loads(settings_path.read_text())
+        assert "mcpServers" not in data
+        assert data["model"]["name"] == "gemini-2.5-pro"
+
+    def test_noop_when_not_present(self, tmp_path: Path) -> None:
+        gemini_dir = tmp_path / ".gemini"
+        gemini_dir.mkdir()
+        settings_path = gemini_dir / "settings.json"
+        settings_path.write_text(json.dumps({"model": {}}))
+
+        result = provision.cleanup_gemini(str(tmp_path), SERVER_NAME)
+        assert result is None
+
+
+# =========================================================================
+# TOML セクション検出
+# =========================================================================
+
+
+class TestFindTomlSection:
+    def test_finds_section(self) -> None:
+        content = '[top]\nkey = 1\n\n[mcp_servers.foo]\ncmd = "bar"\n\n[other]\nx = 1\n'
+        span = provision._find_toml_section(content, "mcp_servers.foo")
+        assert span is not None
+        lines = content.splitlines()
+        section = "\n".join(lines[span[0] : span[1]])
+        assert "[mcp_servers.foo]" in section
+        assert 'cmd = "bar"' in section
+        assert "[other]" not in section
+
+    def test_finds_last_section(self) -> None:
+        content = '[top]\nkey = 1\n\n[mcp_servers.foo]\ncmd = "bar"\n'
+        span = provision._find_toml_section(content, "mcp_servers.foo")
+        assert span is not None
+        assert span[1] == len(content.splitlines())
+
+    def test_returns_none_when_not_found(self) -> None:
+        content = "[top]\nkey = 1\n"
+        result = provision._find_toml_section(content, "mcp_servers.foo")
+        assert result is None
+
+    def test_handles_empty_content(self) -> None:
+        assert provision._find_toml_section("", "mcp_servers.foo") is None

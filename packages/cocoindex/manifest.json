@@ -1,0 +1,17 @@
+{
+  "name": "cocoindex",
+  "version": "0.1.0",
+  "description": "cocoindex MCP サーバーの自動プロビジョニング",
+  "depends": ["core"],
+  "hooks": {
+    "SessionStart": ["provision-mcp-servers.py"]
+  },
+  "files": [
+    "hooks/provision-mcp-servers.py"
+  ],
+  "skills": [],
+  "agents": [],
+  "rules": ["rules/cocoindex-usage.md"],
+  "scripts": [],
+  "config": ["config/cocoindex.yaml"]
+}
