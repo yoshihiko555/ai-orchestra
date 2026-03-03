@@ -24,7 +24,7 @@ load_task_state = load_module("core_load_task_state", "packages/core/hooks/load-
 def test_load_config_uses_project_override_without_ai_orchestra_dir(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("AI_ORCHESTRA_DIR", raising=False)
 
-    config_dir = tmp_path / ".claude" / "config" / "task-memory"
+    config_dir = tmp_path / ".claude" / "config" / "core"
     config_dir.mkdir(parents=True)
     (config_dir / "task-memory.yaml").write_text(
         'plans_file: ".claude/MyPlans.md"\nshow_summary_on_start: false\nmax_display_tasks: 7\n',
@@ -63,7 +63,7 @@ def test_load_config_falls_back_to_repo_hook_common_when_orchestra_dir_is_invali
 ) -> None:
     monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path / "missing-orchestra"))
 
-    config_dir = tmp_path / ".claude" / "config" / "task-memory"
+    config_dir = tmp_path / ".claude" / "config" / "core"
     config_dir.mkdir(parents=True)
     (config_dir / "task-memory.yaml").write_text(
         'plans_file: ".claude/PlanB.md"\nshow_summary_on_start: true\nmax_display_tasks: 3\n',

@@ -10,7 +10,6 @@
     "issue-workflow",
     "quality-gates",
     "route-audit",
-    "task-memory",
     "tmux-monitor"
   ],
   "synced_files": [

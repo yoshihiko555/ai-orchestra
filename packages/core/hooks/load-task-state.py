@@ -116,7 +116,7 @@ def load_config(project_dir: str) -> dict:
 
             from hook_common import load_package_config
 
-            config = load_package_config("task-memory", "task-memory.yaml", project_dir)
+            config = load_package_config("core", "task-memory.yaml", project_dir)
             if config:
                 return config
         except Exception:
