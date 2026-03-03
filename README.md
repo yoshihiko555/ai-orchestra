@@ -186,6 +186,11 @@ python3 ~/ai-orchestra/scripts/orchestra-manager.py install <package> --project 
 - プロジェクト固有の除外パターンは `.claudeignore.local` に記載
 - SessionStart 時に ベース + `.claudeignore.local` がマージ生成されます
 
+## .gitignore の管理
+
+- `orchestra-manager.py init` 実行時に `.gitignore` へ AI Orchestra 用 block を追加/更新します
+- 対象: `.claude/docs/`, `.claude/logs/`, `.claude/state/`, `.claude/checkpoints/`, `.claude/Plans.md`
+
 ---
 
 ## 使い方

@@ -10,6 +10,7 @@ import argparse
 import datetime
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -86,6 +87,15 @@ class OrchestraManager:
 
     SYNC_HOOK_COMMAND = 'python3 "$AI_ORCHESTRA_DIR/scripts/sync-orchestra.py"'
     SYNC_HOOK_TIMEOUT = 15
+    GITIGNORE_BLOCK_START = "# >>> AI Orchestra (.claude) >>>"
+    GITIGNORE_BLOCK_END = "# <<< AI Orchestra (.claude) <<<"
+    GITIGNORE_CLAUDE_ENTRIES = [
+        ".claude/docs/",
+        ".claude/logs/",
+        ".claude/state/",
+        ".claude/checkpoints/",
+        ".claude/Plans.md",
+    ]
     COLOR_RESET = "\033[0m"
     COLOR_GREEN = "\033[32m"
     COLOR_YELLOW = "\033[33m"
@@ -224,6 +234,75 @@ class OrchestraManager:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
             f.write("\n")
+
+    @classmethod
+    def build_gitignore_block(cls) -> str:
+        """AI Orchestra 管理下の .gitignore ブロックを返す。"""
+        lines = [
+            cls.GITIGNORE_BLOCK_START,
+            *cls.GITIGNORE_CLAUDE_ENTRIES,
+            cls.GITIGNORE_BLOCK_END,
+        ]
+        return "\n".join(lines) + "\n"
+
+    @classmethod
+    def merge_gitignore_content(cls, existing: str) -> str:
+        """既存 .gitignore 文字列に AI Orchestra ブロックをマージする。"""
+        block = cls.build_gitignore_block()
+        start = cls.GITIGNORE_BLOCK_START
+        end = cls.GITIGNORE_BLOCK_END
+
+        start_idx = existing.find(start)
+        end_idx = existing.find(end)
+        if start_idx >= 0 and end_idx >= 0 and start_idx < end_idx:
+            end_idx += len(end)
+            before = existing[:start_idx].rstrip("\n")
+            after = existing[end_idx:].lstrip("\n")
+            parts = []
+            if before:
+                parts.append(before)
+            parts.append(block.rstrip("\n"))
+            if after:
+                parts.append(after.rstrip("\n"))
+            return "\n\n".join(parts) + "\n"
+
+        # 既存で同等エントリがすべてある場合は追記しない
+        all_entries_exist = True
+        for entry in cls.GITIGNORE_CLAUDE_ENTRIES:
+            if re.search(rf"(?m)^{re.escape(entry)}$", existing) is None:
+                all_entries_exist = False
+                break
+        if all_entries_exist:
+            return existing if existing.endswith("\n") else existing + "\n"
+
+        if not existing.strip():
+            return block
+
+        base = existing if existing.endswith("\n") else existing + "\n"
+        return base + "\n" + block
+
+    def sync_gitignore(self, project_dir: Path, dry_run: bool = False) -> bool:
+        """プロジェクトの .gitignore に AI Orchestra ブロックを追加/更新する。"""
+        path = project_dir / ".gitignore"
+        existing = ""
+        if path.exists():
+            try:
+                existing = path.read_text(encoding="utf-8")
+            except OSError:
+                existing = ""
+
+        merged = self.merge_gitignore_content(existing)
+        if merged == existing:
+            print("スキップ（既存）: .gitignore (AI Orchestra block)")
+            return False
+
+        if dry_run:
+            print("[DRY-RUN] .gitignore 更新: AI Orchestra block")
+            return True
+
+        path.write_text(merged, encoding="utf-8")
+        print(".gitignore 更新: AI Orchestra block")
+        return True
 
     def is_hook_registered(
         self,
@@ -772,6 +851,7 @@ class OrchestraManager:
             project_dir / ".claude" / "logs",
             project_dir / ".claude" / "logs" / "orchestration",
             project_dir / ".claude" / "state",
+            project_dir / ".claude" / "checkpoints",
         ]
         for d in claude_dirs:
             if dry_run:
@@ -805,6 +885,13 @@ class OrchestraManager:
             / ".claude"
             / "state"
             / ".gitkeep",
+            templates_dir / "project" / "checkpoints" / ".gitkeep": project_dir
+            / ".claude"
+            / "checkpoints"
+            / ".gitkeep",
+            templates_dir / "project" / "Plans.md": project_dir
+            / ".claude"
+            / "Plans.md",
         }
         for src, dst in project_templates.items():
             if not src.exists():
@@ -842,6 +929,9 @@ class OrchestraManager:
             else:
                 shutil.copy2(claudeignore_src, claudeignore_dst)
                 print("テンプレート配置: .claudeignore")
+
+        # 5b. .gitignore（AI Orchestra block を追加/更新）
+        self.sync_gitignore(project_dir, dry_run)
 
         # 6. .codex/ テンプレート（既存はスキップ）
         # AGENTS.md はプロジェクトルートに配置（Codex は .codex/ 内ではなくルートを読む）

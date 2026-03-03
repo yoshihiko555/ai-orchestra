@@ -11,6 +11,7 @@ from tests.module_loader import load_module
 
 sync_mod = load_module("sync_orchestra", "scripts/sync-orchestra.py")
 sync_claudeignore = sync_mod.sync_claudeignore
+ensure_claude_scaffold = sync_mod.ensure_claude_scaffold
 _strip_header = sync_mod._strip_header
 CLAUDEIGNORE_HEADER = sync_mod.CLAUDEIGNORE_HEADER
 LOCAL_SECTION_HEADER = sync_mod.LOCAL_SECTION_HEADER
@@ -54,6 +55,24 @@ def _setup_orchestra(tmp_path: Path, base_body: str) -> Path:
         encoding="utf-8",
     )
     return orchestra
+
+
+def _setup_project_templates(orchestra: Path) -> None:
+    """scaffold 用の project テンプレート群を作成する。"""
+    tpl = orchestra / "templates" / "project"
+    (tpl / "docs" / "libraries").mkdir(parents=True, exist_ok=True)
+    (tpl / "docs" / "research").mkdir(parents=True, exist_ok=True)
+    (tpl / "logs" / "orchestration").mkdir(parents=True, exist_ok=True)
+    (tpl / "state").mkdir(parents=True, exist_ok=True)
+    (tpl / "checkpoints").mkdir(parents=True, exist_ok=True)
+
+    (tpl / "docs" / "DESIGN.md").write_text("# design\n", encoding="utf-8")
+    (tpl / "docs" / "libraries" / "_TEMPLATE.md").write_text("# lib\n", encoding="utf-8")
+    (tpl / "docs" / "research" / ".gitkeep").write_text("", encoding="utf-8")
+    (tpl / "logs" / "orchestration" / ".gitkeep").write_text("", encoding="utf-8")
+    (tpl / "state" / ".gitkeep").write_text("", encoding="utf-8")
+    (tpl / "checkpoints" / ".gitkeep").write_text("", encoding="utf-8")
+    (tpl / "Plans.md").write_text("# Plans\n", encoding="utf-8")
 
 
 class TestSyncClaudeignoreBaseOnly:
@@ -195,3 +214,33 @@ class TestSyncClaudeignoreMissingTemplate:
 
         assert result is False
         assert not (project / ".claudeignore").exists()
+
+
+class TestEnsureClaudeScaffold:
+    def test_creates_required_dirs_and_templates(self, tmp_path: Path) -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        orchestra = tmp_path / "orchestra"
+        _setup_project_templates(orchestra)
+
+        created = ensure_claude_scaffold(project, orchestra)
+
+        assert created > 0
+        assert (project / ".claude" / "docs").is_dir()
+        assert (project / ".claude" / "logs").is_dir()
+        assert (project / ".claude" / "state").is_dir()
+        assert (project / ".claude" / "checkpoints").is_dir()
+        assert (project / ".claude" / "checkpoints" / ".gitkeep").is_file()
+        assert (project / ".claude" / "Plans.md").read_text(encoding="utf-8") == "# Plans\n"
+
+    def test_idempotent_second_run_returns_zero(self, tmp_path: Path) -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        orchestra = tmp_path / "orchestra"
+        _setup_project_templates(orchestra)
+
+        first = ensure_claude_scaffold(project, orchestra)
+        second = ensure_claude_scaffold(project, orchestra)
+
+        assert first > 0
+        assert second == 0
