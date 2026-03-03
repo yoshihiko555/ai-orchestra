@@ -24,13 +24,18 @@ class HookEntry:
 
     file: str
     matcher: str | None = None
+    timeout: int = 5
 
     @classmethod
-    def from_json(cls, value: str | dict[str, str]) -> "HookEntry":
+    def from_json(cls, value: str | dict[str, Any]) -> "HookEntry":
         """JSON 値から HookEntry を生成"""
         if isinstance(value, str):
             return cls(file=value)
-        return cls(file=value["file"], matcher=value.get("matcher"))
+        return cls(
+            file=value["file"],
+            matcher=value.get("matcher"),
+            timeout=value.get("timeout", 5),
+        )
 
 
 @dataclass
@@ -649,7 +654,9 @@ class OrchestraManager:
                         + (f" (matcher: {entry.matcher})" if entry.matcher else "")
                     )
                 else:
-                    self.add_hook_to_settings(settings, event, entry.file, pkg.name, entry.matcher)
+                    self.add_hook_to_settings(
+                        settings, event, entry.file, pkg.name, entry.matcher, entry.timeout
+                    )
 
         # 4. sync-orchestra の SessionStart hook を登録（初回のみ）
         self.register_sync_hook(settings, dry_run)
@@ -923,7 +930,9 @@ class OrchestraManager:
                         + (f" (matcher: {entry.matcher})" if entry.matcher else "")
                     )
                 else:
-                    self.add_hook_to_settings(settings, event, entry.file, pkg.name, entry.matcher)
+                    self.add_hook_to_settings(
+                        settings, event, entry.file, pkg.name, entry.matcher, entry.timeout
+                    )
 
         if not dry_run:
             self.save_settings(project_dir, settings)
@@ -1137,6 +1146,63 @@ class OrchestraManager:
         else:
             print(f"インストール済み: {all_names} ({len(ordered)} パッケージ)")
 
+    # ------------------------------------------------------------------
+    # proxy 管理
+    # ------------------------------------------------------------------
+
+    def _load_proxy_modules(self) -> tuple:
+        """proxy_manager と hook_common をインポートして返す。"""
+        core_hooks = str(self.orchestra_dir / "packages" / "core" / "hooks")
+        cocoindex_hooks = str(self.orchestra_dir / "packages" / "cocoindex" / "hooks")
+        for p in [core_hooks, cocoindex_hooks]:
+            if p not in sys.path:
+                sys.path.insert(0, p)
+
+        import hook_common
+        import proxy_manager
+
+        return hook_common, proxy_manager
+
+    def proxy_stop(self, project: str | None) -> None:
+        """mcp-proxy を停止する"""
+        hook_common, proxy_manager = self._load_proxy_modules()
+        project_dir = self.get_project_dir(project)
+
+        config = hook_common.load_package_config("cocoindex", "cocoindex.yaml", str(project_dir))
+        if not config:
+            print("エラー: cocoindex パッケージがインストールされていません", file=sys.stderr)
+            sys.exit(1)
+
+        if not proxy_manager.is_proxy_running(config, str(project_dir)):
+            print("mcp-proxy は停止しています")
+            return
+
+        if proxy_manager.stop_proxy(config, str(project_dir)):
+            print("✓ mcp-proxy を停止しました")
+        else:
+            print("エラー: mcp-proxy の停止に失敗しました", file=sys.stderr)
+            sys.exit(1)
+
+    def proxy_status(self, project: str | None) -> None:
+        """mcp-proxy の状態を表示する"""
+        hook_common, proxy_manager = self._load_proxy_modules()
+        project_dir = self.get_project_dir(project)
+
+        config = hook_common.load_package_config("cocoindex", "cocoindex.yaml", str(project_dir))
+        if not config:
+            print("エラー: cocoindex パッケージがインストールされていません", file=sys.stderr)
+            sys.exit(1)
+
+        proxy_cfg = proxy_manager.get_proxy_config(config, str(project_dir))
+        pid_path = proxy_manager.resolve_pid_path(config, str(project_dir))
+        pid = proxy_manager._read_pid(pid_path)
+        running = proxy_manager.is_proxy_running(config, str(project_dir))
+
+        print(f"状態:   {'稼働中' if running else '停止'}")
+        print(f"PID:    {pid or '-'}")
+        print(f"ポート: {proxy_cfg['host']}:{proxy_cfg['port']}")
+        print(f"PIDファイル: {pid_path}")
+
 
 def main():
     """メインエントリポイント"""
@@ -1203,6 +1269,14 @@ def main():
     scripts_parser = subparsers.add_parser("scripts", help="スクリプト一覧を表示")
     scripts_parser.add_argument("--package", help="特定パッケージのみ表示")
 
+    # proxy コマンド
+    proxy_parser = subparsers.add_parser("proxy", help="mcp-proxy の管理")
+    proxy_sub = proxy_parser.add_subparsers(dest="proxy_command", help="proxy サブコマンド")
+    proxy_stop_parser = proxy_sub.add_parser("stop", help="mcp-proxy を停止")
+    proxy_stop_parser.add_argument("--project", help="プロジェクトパス")
+    proxy_status_parser = proxy_sub.add_parser("status", help="mcp-proxy の状態を表示")
+    proxy_status_parser.add_argument("--project", help="プロジェクトパス")
+
     # setup コマンド
     setup_parser = subparsers.add_parser("setup", help="プリセットで一括セットアップ")
     setup_parser.add_argument(
@@ -1254,6 +1328,14 @@ def main():
         manager.run_script(args.package, args.script, args.project, script_args)
     elif args.command == "scripts":
         manager.list_scripts(args.package)
+    elif args.command == "proxy":
+        if args.proxy_command == "stop":
+            manager.proxy_stop(args.project)
+        elif args.proxy_command == "status":
+            manager.proxy_status(args.project)
+        else:
+            proxy_parser.print_help()
+            sys.exit(1)
     elif args.command == "setup":
         if args.preset is None:
             manager.list_presets()

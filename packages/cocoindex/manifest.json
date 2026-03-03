@@ -4,7 +4,7 @@
   "description": "cocoindex MCP サーバーの自動プロビジョニング",
   "depends": ["core"],
   "hooks": {
-    "SessionStart": ["provision-mcp-servers.py"],
+    "SessionStart": [{"file": "provision-mcp-servers.py", "timeout": 15}],
     "SessionEnd": ["stop-mcp-proxy.py"]
   },
   "files": [

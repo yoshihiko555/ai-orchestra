@@ -68,6 +68,12 @@ def start_proxy(config: dict, project_dir: str) -> bool:
     if is_proxy_running(config, project_dir):
         return True
 
+    # PID ファイルが無効でもポートが使用中なら稼働中とみなす
+    # （前セッションの proxy が停止されずに残っているケース）
+    proxy_cfg = get_proxy_config(config, project_dir)
+    if _is_port_in_use(proxy_cfg["host"], proxy_cfg["port"]):
+        return True
+
     cleanup_orphan(config, project_dir)
 
     proxy_cfg = get_proxy_config(config, project_dir)

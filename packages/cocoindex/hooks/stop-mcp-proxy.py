@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""SessionEnd hook: mcp-proxy プロセスを停止する。"""
+"""SessionEnd hook: mcp-proxy の状態をログ出力する。
+
+proxy はセッション間で永続化し、次セッションで再利用する。
+SessionEnd では停止しない（start_proxy の冪等チェックで管理）。
+手動停止: orchestra-manager.py proxy stop --project .
+"""
 
 from __future__ import annotations
 
@@ -19,7 +24,7 @@ if _hooks_dir not in sys.path:
     sys.path.insert(0, _hooks_dir)
 
 from hook_common import load_package_config, read_hook_input, safe_hook_execution
-from proxy_manager import stop_proxy
+from proxy_manager import is_proxy_running
 
 
 @safe_hook_execution
@@ -37,10 +42,8 @@ def main() -> None:
     if not proxy_cfg.get("enabled", False):
         return
 
-    if stop_proxy(config, project_dir):
-        print("[cocoindex] mcp-proxy stopped")
-    else:
-        print("[cocoindex] mcp-proxy stop failed", file=sys.stderr)
+    if is_proxy_running(config, project_dir):
+        print("[cocoindex] mcp-proxy persisted for next session")
 
 
 if __name__ == "__main__":

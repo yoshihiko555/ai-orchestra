@@ -62,18 +62,29 @@ def _read_config_file(path: str) -> dict:
 
 
 def load_package_config(package_name: str, filename: str, project_dir: str) -> dict:
-    """パッケージ config を読み込み、.local.{ext} があればマージする。"""
+    """パッケージ config を読み込み、.local.{ext} があればマージする。
+
+    local override の探索順:
+    1. {project_dir}/.claude/config/{package_name}/{name}.local.{ext}
+    2. base_path と同じディレクトリ（フォールバック）
+    """
     base_path = find_package_config(package_name, filename, project_dir)
     if not base_path:
         return {}
 
     base = _read_config_file(base_path)
 
-    # .local.{ext} をベースと同じディレクトリから探す
     name, ext = os.path.splitext(filename)
     local_filename = f"{name}.local{ext}"
-    local_path = os.path.join(os.path.dirname(base_path), local_filename)
-    local = _read_config_file(local_path)
+
+    # プロジェクトディレクトリを優先的に検索
+    project_local = os.path.join(project_dir, ".claude", "config", package_name, local_filename)
+    if os.path.isfile(project_local):
+        local = _read_config_file(project_local)
+    else:
+        # フォールバック: base_path と同じディレクトリ
+        local_path = os.path.join(os.path.dirname(base_path), local_filename)
+        local = _read_config_file(local_path)
 
     if local:
         return deep_merge(base, local)

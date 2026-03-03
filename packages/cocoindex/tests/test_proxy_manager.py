@@ -250,10 +250,12 @@ class TestStartProxy:
     @patch("proxy_manager._wait_for_port", return_value=True)
     @patch("proxy_manager.subprocess.Popen")
     @patch("proxy_manager.cleanup_orphan")
+    @patch("proxy_manager._is_port_in_use", return_value=False)
     @patch("proxy_manager.is_proxy_running", return_value=False)
     def test_normal_start(
         self,
         mock_running: MagicMock,
+        mock_port_check: MagicMock,
         mock_cleanup: MagicMock,
         mock_popen: MagicMock,
         mock_wait: MagicMock,
@@ -275,14 +277,28 @@ class TestStartProxy:
         result = proxy_mgr.start_proxy(SAMPLE_CONFIG, str(tmp_path))
         assert result is True
 
+    @patch("proxy_manager._is_port_in_use", return_value=True)
+    @patch("proxy_manager.is_proxy_running", return_value=False)
+    def test_port_in_use_skips_start(
+        self,
+        mock_running: MagicMock,
+        mock_port_check: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """PID ファイルが無効でもポートが使用中なら True を返す。"""
+        result = proxy_mgr.start_proxy(SAMPLE_CONFIG, str(tmp_path))
+        assert result is True
+
     @patch("proxy_manager.os.kill")
     @patch("proxy_manager._wait_for_port", return_value=False)
     @patch("proxy_manager.subprocess.Popen")
     @patch("proxy_manager.cleanup_orphan")
+    @patch("proxy_manager._is_port_in_use", return_value=False)
     @patch("proxy_manager.is_proxy_running", return_value=False)
     def test_timeout_kills_process(
         self,
         mock_running: MagicMock,
+        mock_port_check: MagicMock,
         mock_cleanup: MagicMock,
         mock_popen: MagicMock,
         mock_wait: MagicMock,
@@ -302,10 +318,12 @@ class TestStartProxy:
 
     @patch("proxy_manager.subprocess.Popen", side_effect=FileNotFoundError)
     @patch("proxy_manager.cleanup_orphan")
+    @patch("proxy_manager._is_port_in_use", return_value=False)
     @patch("proxy_manager.is_proxy_running", return_value=False)
     def test_popen_failure(
         self,
         mock_running: MagicMock,
+        mock_port_check: MagicMock,
         mock_cleanup: MagicMock,
         mock_popen: MagicMock,
         tmp_path: Path,
