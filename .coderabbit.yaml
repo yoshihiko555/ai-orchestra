@@ -3,7 +3,7 @@
 language: "ja"
 
 reviews:
-  profile: "concise"
+  profile: "chill"
   request_changes_workflow: true
   high_level_summary: true
   collapse_walkthrough: false
