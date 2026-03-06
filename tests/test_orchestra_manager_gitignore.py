@@ -43,11 +43,7 @@ class TestMergeGitignoreContent:
 
     def test_keeps_existing_when_all_entries_already_present(self) -> None:
         existing = (
-            ".claude/docs/\n"
-            ".claude/logs/\n"
-            ".claude/state/\n"
-            ".claude/checkpoints/\n"
-            ".claude/Plans.md\n"
+            ".claude/docs/\n.claude/logs/\n.claude/state/\n.claude/checkpoints/\n.claude/Plans.md\n"
         )
         merged = OrchestraManager.merge_gitignore_content(existing)
         assert merged == existing

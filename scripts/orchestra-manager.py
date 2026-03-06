@@ -889,9 +889,7 @@ class OrchestraManager:
             / ".claude"
             / "checkpoints"
             / ".gitkeep",
-            templates_dir / "project" / "Plans.md": project_dir
-            / ".claude"
-            / "Plans.md",
+            templates_dir / "project" / "Plans.md": project_dir / ".claude" / "Plans.md",
         }
         for src, dst in project_templates.items():
             if not src.exists():
