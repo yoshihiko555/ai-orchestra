@@ -72,6 +72,13 @@ def start_proxy(config: dict, project_dir: str) -> bool:
     # （前セッションの proxy が停止されずに残っているケース）
     proxy_cfg = get_proxy_config(config, project_dir)
     if _is_port_in_use(proxy_cfg["host"], proxy_cfg["port"]):
+        pid_path = resolve_pid_path(config, project_dir)
+        # 実プロセスの PID を復元し、stop_proxy で管理可能にする
+        port_pid = _find_pid_by_port(proxy_cfg["port"])
+        if port_pid is not None:
+            _write_pid(pid_path, port_pid)
+        else:
+            _remove_pid(pid_path)
         return True
 
     cleanup_orphan(config, project_dir)
@@ -123,7 +130,12 @@ def stop_proxy(config: dict, project_dir: str) -> bool:
     pid = _read_pid(pid_path)
 
     if pid is None:
-        return True
+        # PID ファイルなし — ポートから実プロセスを探すフォールバック
+        proxy_cfg = get_proxy_config(config, project_dir)
+        port_pid = _find_pid_by_port(proxy_cfg["port"])
+        if port_pid is None:
+            return True
+        pid = port_pid
 
     if not _is_pid_alive(pid):
         _remove_pid(pid_path)
@@ -160,10 +172,14 @@ def is_proxy_running(config: dict, project_dir: str) -> bool:
         return False
 
     if not _is_pid_alive(pid):
+        _remove_pid(pid_path)
         return False
 
     proxy_cfg = get_proxy_config(config, project_dir)
-    return _is_port_in_use(proxy_cfg["host"], proxy_cfg["port"])
+    if not _is_port_in_use(proxy_cfg["host"], proxy_cfg["port"]):
+        return False
+
+    return True
 
 
 def cleanup_orphan(config: dict, project_dir: str) -> None:
@@ -264,6 +280,27 @@ def _wait_for_exit(pid: int, timeout: float) -> bool:
             return True
         time.sleep(_EXIT_POLL_INTERVAL)
     return False
+
+
+def _find_pid_by_port(port: int) -> int | None:
+    """lsof でポートを使用しているプロセスの PID を取得する。
+
+    macOS/Linux 向け。lsof が利用不可の場合は None を返す。
+    """
+    try:
+        result = subprocess.run(
+            ["lsof", "-ti", f":{port}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return None
+        # 複数 PID が返る場合は最初の LISTEN プロセスを使用
+        first_pid = int(result.stdout.strip().splitlines()[0])
+        return first_pid if first_pid > 0 else None
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
 
 
 def _build_proxy_command(config: dict, proxy_cfg: dict) -> list[str]:

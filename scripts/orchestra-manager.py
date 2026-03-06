@@ -1283,8 +1283,9 @@ class OrchestraManager:
 
         proxy_cfg = proxy_manager.get_proxy_config(config, str(project_dir))
         pid_path = proxy_manager.resolve_pid_path(config, str(project_dir))
-        pid = proxy_manager._read_pid(pid_path)
         running = proxy_manager.is_proxy_running(config, str(project_dir))
+        # is_proxy_running が stale PID をクリーンアップするため、その後に読む
+        pid = proxy_manager._read_pid(pid_path)
 
         print(f"状態:   {'稼働中' if running else '停止'}")
         print(f"PID:    {pid or '-'}")

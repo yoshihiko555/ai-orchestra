@@ -196,6 +196,49 @@ class TestIsPortInUse:
 
 
 # =========================================================================
+# is_proxy_running
+# =========================================================================
+
+
+class TestIsProxyRunning:
+    def test_no_pid_file(self, tmp_path: Path) -> None:
+        config = {
+            **SAMPLE_CONFIG,
+            "proxy": {**SAMPLE_CONFIG["proxy"], "pid_file": str(tmp_path / "test.pid")},
+        }
+        assert proxy_mgr.is_proxy_running(config, str(tmp_path)) is False
+
+    @patch("proxy_manager._is_port_in_use", return_value=True)
+    @patch("proxy_manager._is_pid_alive", return_value=True)
+    def test_running(self, _alive: MagicMock, _port: MagicMock, tmp_path: Path) -> None:
+        pid_path = tmp_path / "test.pid"
+        pid_path.write_text("12345")
+        config = {**SAMPLE_CONFIG, "proxy": {**SAMPLE_CONFIG["proxy"], "pid_file": str(pid_path)}}
+        assert proxy_mgr.is_proxy_running(config, str(tmp_path)) is True
+        assert pid_path.exists()
+
+    @patch("proxy_manager._is_pid_alive", return_value=False)
+    def test_stale_pid_cleanup(self, _alive: MagicMock, tmp_path: Path) -> None:
+        """プロセス死亡時に stale PID ファイルをクリーンアップする。"""
+        pid_path = tmp_path / "test.pid"
+        pid_path.write_text("99999")
+        config = {**SAMPLE_CONFIG, "proxy": {**SAMPLE_CONFIG["proxy"], "pid_file": str(pid_path)}}
+        assert proxy_mgr.is_proxy_running(config, str(tmp_path)) is False
+        assert not pid_path.exists()
+
+    @patch("proxy_manager._is_port_in_use", return_value=False)
+    @patch("proxy_manager._is_pid_alive", return_value=True)
+    def test_alive_but_port_not_in_use(
+        self, _alive: MagicMock, _port: MagicMock, tmp_path: Path
+    ) -> None:
+        """プロセスは生きているがポート未使用の場合は False。"""
+        pid_path = tmp_path / "test.pid"
+        pid_path.write_text("12345")
+        config = {**SAMPLE_CONFIG, "proxy": {**SAMPLE_CONFIG["proxy"], "pid_file": str(pid_path)}}
+        assert proxy_mgr.is_proxy_running(config, str(tmp_path)) is False
+
+
+# =========================================================================
 # _build_proxy_command
 # =========================================================================
 
@@ -289,6 +332,45 @@ class TestStartProxy:
         result = proxy_mgr.start_proxy(SAMPLE_CONFIG, str(tmp_path))
         assert result is True
 
+    @patch("proxy_manager._find_pid_by_port", return_value=77777)
+    @patch("proxy_manager._is_port_in_use", return_value=True)
+    @patch("proxy_manager.is_proxy_running", return_value=False)
+    def test_port_in_use_restores_pid(
+        self,
+        mock_running: MagicMock,
+        mock_port_check: MagicMock,
+        mock_find: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """ポート使用中で早期リターンする際に実プロセスの PID が復元される。"""
+        pid_path = os.path.join(str(tmp_path), ".claude", ".mcp-proxy.pid")
+        os.makedirs(os.path.dirname(pid_path), exist_ok=True)
+        proxy_mgr._write_pid(pid_path, 99999)  # stale PID
+
+        result = proxy_mgr.start_proxy(SAMPLE_CONFIG, str(tmp_path))
+        assert result is True
+        # 実プロセスの PID に書き換えられている
+        assert proxy_mgr._read_pid(pid_path) == 77777
+
+    @patch("proxy_manager._find_pid_by_port", return_value=None)
+    @patch("proxy_manager._is_port_in_use", return_value=True)
+    @patch("proxy_manager.is_proxy_running", return_value=False)
+    def test_port_in_use_removes_pid_when_lsof_fails(
+        self,
+        mock_running: MagicMock,
+        mock_port_check: MagicMock,
+        mock_find: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """lsof で PID を取得できない場合は stale PID ファイルを削除する。"""
+        pid_path = os.path.join(str(tmp_path), ".claude", ".mcp-proxy.pid")
+        os.makedirs(os.path.dirname(pid_path), exist_ok=True)
+        proxy_mgr._write_pid(pid_path, 99999)
+
+        result = proxy_mgr.start_proxy(SAMPLE_CONFIG, str(tmp_path))
+        assert result is True
+        assert proxy_mgr._read_pid(pid_path) is None
+
     @patch("proxy_manager.os.kill")
     @patch("proxy_manager._wait_for_port", return_value=False)
     @patch("proxy_manager.subprocess.Popen")
@@ -338,9 +420,30 @@ class TestStartProxy:
 
 
 class TestStopProxy:
-    def test_noop_when_no_pid_file(self, tmp_path: Path) -> None:
+    @patch("proxy_manager._find_pid_by_port", return_value=None)
+    def test_noop_when_no_pid_file(self, mock_find: MagicMock, tmp_path: Path) -> None:
         result = proxy_mgr.stop_proxy(SAMPLE_CONFIG, str(tmp_path))
         assert result is True
+
+    @patch("proxy_manager._wait_for_exit", return_value=True)
+    @patch("proxy_manager.os.kill")
+    @patch("proxy_manager._is_pid_alive", return_value=True)
+    @patch("proxy_manager._find_pid_by_port", return_value=77777)
+    def test_stop_via_port_fallback(
+        self,
+        mock_find: MagicMock,
+        mock_alive: MagicMock,
+        mock_kill: MagicMock,
+        mock_wait: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """PID ファイルなしでもポートから PID を発見して停止できる。"""
+        result = proxy_mgr.stop_proxy(SAMPLE_CONFIG, str(tmp_path))
+        assert result is True
+        # ポートから発見した PID に SIGTERM が送られている
+        import signal
+
+        mock_kill.assert_any_call(77777, signal.SIGTERM)
 
     @patch("proxy_manager._is_pid_alive", return_value=False)
     def test_removes_stale_pid(self, mock_alive: MagicMock, tmp_path: Path) -> None:
@@ -392,6 +495,39 @@ class TestStopProxy:
         kill_signals = [call.args[1] for call in mock_kill.call_args_list]
         assert signal.SIGTERM in kill_signals
         assert signal.SIGKILL in kill_signals
+
+
+# =========================================================================
+# _find_pid_by_port
+# =========================================================================
+
+
+class TestFindPidByPort:
+    @patch("proxy_manager.subprocess.run")
+    def test_returns_pid(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(returncode=0, stdout="12345\n")
+        assert proxy_mgr._find_pid_by_port(8792) == 12345
+
+    @patch("proxy_manager.subprocess.run")
+    def test_multiple_pids_returns_first(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(returncode=0, stdout="11111\n22222\n")
+        assert proxy_mgr._find_pid_by_port(8792) == 11111
+
+    @patch("proxy_manager.subprocess.run")
+    def test_returns_none_on_failure(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(returncode=1, stdout="")
+        assert proxy_mgr._find_pid_by_port(8792) is None
+
+    @patch("proxy_manager.subprocess.run", side_effect=OSError)
+    def test_returns_none_on_os_error(self, mock_run: MagicMock) -> None:
+        assert proxy_mgr._find_pid_by_port(8792) is None
+
+    @patch(
+        "proxy_manager.subprocess.run",
+        side_effect=proxy_mgr.subprocess.TimeoutExpired(cmd="lsof", timeout=5),
+    )
+    def test_returns_none_on_timeout(self, mock_run: MagicMock) -> None:
+        assert proxy_mgr._find_pid_by_port(8792) is None
 
 
 # =========================================================================
