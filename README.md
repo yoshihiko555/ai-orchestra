@@ -6,7 +6,7 @@ Claude Code用のマルチエージェントオーケストレーションシス
 
 ```
 ai-orchestra/
-├── packages/         # パッケージ（hooks・scripts・agents・skills・rules・config）
+├── packages/         # パッケージ（hooks・scripts・agents・skills・rules・config）— 詳細は packages/README.md
 │   ├── core/              # 共通基盤ライブラリ + coding-principles / config-loading ルール
 │   ├── agent-routing/     # 25 エージェント定義 + ルーティング hooks + orchestra-usage ルール
 │   ├── cli-logging/       # Codex/Gemini CLI ログ記録 + checkpointing スキル
@@ -14,6 +14,8 @@ ai-orchestra/
 │   ├── gemini-suggestions/# Gemini リサーチ提案 + gemini-delegation ルール + gemini-system スキル
 │   ├── quality-gates/     # 品質ゲート + review/tdd/simplify/release-readiness (+ design-tracker)
 │   ├── route-audit/       # ルーティング監査・KPIレポート
+│   ├── issue-workflow/    # GitHub Issue 起票 + 計画→実装→テスト→レビューの開発フロー
+│   ├── cocoindex/         # cocoindex MCP サーバーの自動プロビジョニング
 │   └── tmux-monitor/      # tmux サブエージェント監視
 ├── scripts/          # 管理CLI
 ├── templates/        # テンプレート（エージェント・スキル・プロジェクト）
@@ -243,6 +245,8 @@ Claude Code (Orchestrator)
     │   ├── gemini-suggestions/ # Gemini リサーチ提案
     │   ├── quality-gates/      # 品質ゲート
     │   ├── route-audit/        # ルーティング監査
+    │   ├── issue-workflow/     # GitHub Issue 開発フロー
+    │   ├── cocoindex/          # MCP サーバー自動プロビジョニング
     │   └── tmux-monitor/       # tmux リアルタイム監視
     │
     └── 25 Specialized Agents
