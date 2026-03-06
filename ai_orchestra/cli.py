@@ -42,6 +42,12 @@ def get_orchestra_dir() -> Path:
 
 def main() -> None:
     """orchestra-manager.py の main() を呼び出す。"""
+    if len(sys.argv) >= 2 and sys.argv[1] in ("-v", "--version"):
+        from ai_orchestra import __version__
+
+        print(f"orchex {__version__}")
+        return
+
     orchestra_dir = get_orchestra_dir()
     script_path = orchestra_dir / "scripts" / "orchestra-manager.py"
 
