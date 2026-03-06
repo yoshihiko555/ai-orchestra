@@ -17,6 +17,7 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+ai_orchestra/_version.py
 .venv/
 venv/
 env/
