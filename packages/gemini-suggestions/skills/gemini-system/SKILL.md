@@ -69,8 +69,8 @@ Task tool parameters:
 - prompt: |
     Research: {topic}
 
-    IMPORTANT: Gemini CLI requires dangerouslyDisableSandbox: true
-    (requires_sandbox_disable: true in cli-tools.yaml).
+    まず sandbox 内で gemini を実行する。sandbox エラーが出たら
+    dangerouslyDisableSandbox: true で再試行。それも拒否されたら claude-direct にフォールバック。
 
     gemini -m <gemini.model> -p "{research question}
 

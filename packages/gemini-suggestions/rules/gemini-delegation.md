@@ -96,9 +96,16 @@ IMPORTANT: Do not ask any clarifying questions.
 
 ## 呼び出し方法
 
-> **重要: Bash サンドボックスの制約**
-> Gemini CLI は認証 + macOS システム API を使用するため、Bash のサンドボックス内では動作しない場合がある。
-> Gemini CLI を実行する際は **必ず `dangerouslyDisableSandbox: true`** を指定すること。
+> **Bash サンドボックスの制約**
+> Gemini CLI は認証 + macOS システム API を使用するため、sandbox 内では動作しない場合がある。
+> ただし `sandbox.excludedCommands` に `gemini` が設定済みなら sandbox 内でも実行可能。
+>
+> **実行手順（3段階フォールバック）:**
+> 1. まず sandbox 内で実行する（`dangerouslyDisableSandbox` なし）
+> 2. sandbox エラーが出たら `dangerouslyDisableSandbox: true` で再試行する
+> 3. それも拒否された場合は `claude-direct` にフォールバックする
+>
+> サブエージェントはノンインタラクティブのため、`dangerouslyDisableSandbox` の承認プロンプトが自動拒否される場合がある。
 
 ### サブエージェント経由（推奨）
 
@@ -110,7 +117,6 @@ Gemini でリサーチしてください：
 
 {リサーチ内容}
 
-Gemini CLI コマンド（dangerouslyDisableSandbox: true で実行すること）:
 gemini -m <gemini.model> -p "{質問}
 
 IMPORTANT: Do not ask any clarifying questions. Provide your best answer
@@ -118,6 +124,7 @@ based on the available information." < /dev/null 2>/dev/null
 
 タイムアウト: Bash timeout パラメータに 180000 を指定すること。
 リトライ: タイムアウトや質問検出時は上記「リトライプロトコル」に従う。
+sandbox エラーや権限拒否が発生した場合は claude-direct にフォールバックすること。
 
 結果を .claude/docs/research/{topic}.md に保存し、
 要約を返してください（5-7ポイント）。
@@ -127,7 +134,6 @@ based on the available information." < /dev/null 2>/dev/null
 ### 直接呼び出し（短い質問のみ）
 
 ```bash
-# dangerouslyDisableSandbox: true で実行すること
 
 # config の gemini.model を -m フラグに展開して使う
 

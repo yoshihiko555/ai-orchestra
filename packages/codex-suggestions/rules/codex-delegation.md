@@ -36,9 +36,16 @@
 
 ## 呼び出し方法
 
-> **重要: Bash サンドボックス制約**
-> Codex CLI は OAuth 認証 + macOS システム API を使用するため、Bash サンドボックス内では動作しない。
-> `requires_sandbox_disable: true` のときは **`dangerouslyDisableSandbox: true`** を指定すること。
+> **Bash サンドボックス制約**
+> Codex CLI は OAuth 認証 + macOS システム API を使用するため、sandbox 内では動作しない場合がある。
+> ただし `sandbox.excludedCommands` に `codex` が設定済みなら sandbox 内でも実行可能。
+>
+> **実行手順（3段階フォールバック）:**
+> 1. まず sandbox 内で実行する（`dangerouslyDisableSandbox` なし）
+> 2. sandbox エラーが出たら `dangerouslyDisableSandbox: true` で再試行する
+> 3. それも拒否された場合は `claude-direct` にフォールバックする
+>
+> サブエージェントはノンインタラクティブのため、`dangerouslyDisableSandbox` の承認プロンプトが自動拒否される場合がある。
 
 ### サブエージェント経由（推奨）
 
