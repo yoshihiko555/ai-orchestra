@@ -5,15 +5,9 @@
   "depends": [],
   "hooks": {
     "SessionStart": ["load-task-state.py"],
-    "UserPromptSubmit": [
-      {"file": "clear-plan-gate.py"}
-    ],
-    "PreToolUse": [
-      {"file": "check-plan-gate.py", "matcher": "Task"}
-    ],
-    "PostToolUse": [
-      {"file": "set-plan-gate.py", "matcher": "Task"}
-    ]
+    "UserPromptSubmit": [{ "file": "clear-plan-gate.py" }],
+    "PreToolUse": [{ "file": "check-plan-gate.py", "matcher": "Task" }],
+    "PostToolUse": [{ "file": "set-plan-gate.py", "matcher": "Task" }]
   },
   "files": [
     "hooks/hook_common.py",
@@ -23,9 +17,20 @@
     "hooks/clear-plan-gate.py",
     "hooks/load-task-state.py"
   ],
-  "skills": ["skills/plan", "skills/startproject", "skills/checkpointing", "skills/task-state"],
+  "skills": [
+    "skills/plan",
+    "skills/startproject",
+    "skills/checkpointing",
+    "skills/task-state",
+    "skills/design"
+  ],
   "agents": [],
-  "rules": ["rules/config-loading.md", "rules/coding-principles.md", "rules/skill-review-policy.md", "rules/task-memory-usage.md"],
+  "rules": [
+    "rules/config-loading.md",
+    "rules/coding-principles.md",
+    "rules/skill-review-policy.md",
+    "rules/task-memory-usage.md"
+  ],
   "scripts": [],
   "config": ["config/task-memory.yaml"]
 }
