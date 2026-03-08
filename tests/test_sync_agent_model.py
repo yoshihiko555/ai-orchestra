@@ -11,7 +11,7 @@ import yaml
 
 from tests.module_loader import load_module
 
-sync_mod = load_module('sync_orchestra', 'scripts/sync-orchestra.py')
+sync_mod = load_module("sync_orchestra", "scripts/sync-orchestra.py")
 resolve_agent_model = sync_mod.resolve_agent_model
 _patch_agent_model = sync_mod._patch_agent_model
 _load_cli_tools_config = sync_mod._load_cli_tools_config
@@ -177,9 +177,7 @@ class TestDeepMerge:
         assert _deep_merge({"a": 1, "b": 2}, {"b": 99}) == {"a": 1, "b": 99}
 
     def test_nested_merge(self) -> None:
-        assert _deep_merge({"a": {"x": 1, "y": 2}}, {"a": {"x": 99}}) == {
-            "a": {"x": 99, "y": 2}
-        }
+        assert _deep_merge({"a": {"x": 1, "y": 2}}, {"a": {"x": 99}}) == {"a": {"x": 99, "y": 2}}
 
     def test_missing_key_preserved(self) -> None:
         assert _deep_merge({"a": 1}, {"b": 2}) == {"a": 1, "b": 2}

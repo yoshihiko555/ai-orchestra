@@ -105,8 +105,13 @@ def main() -> None:
     # ペインを特定（pane_id が保存されていればそれを使い、なければタイトル検索）
     current_title = ""
     if pane_id:
-        current_title = get_pane_title(pane_id)
-    if not pane_id or not current_title:
+        # pane_id がセッション内に存在するか確認
+        check = run_tmux("list-panes", "-t", tmux_session, "-F", "#{pane_id}")
+        if check.returncode == 0 and pane_id in check.stdout.splitlines():
+            current_title = get_pane_title(pane_id)
+        else:
+            pane_id = ""
+    if not pane_id:
         # フォールバック: タイトルベースの検索（旧形式互換）
         pane_id, current_title = find_pane_by_title(tmux_session, agent_id)
 
