@@ -33,8 +33,16 @@ Do NOT hardcode model names or CLI options — always refer to the config file.
 
 ### Sandbox Policy
 
-cli-tools.yaml で `requires_sandbox_disable: true` のツールを Bash で実行する際は、
-**`dangerouslyDisableSandbox: true` を指定すること**（OAuth 認証 + macOS システム API のため）。
+CLI ツール（gemini / codex）の実行手順:
+
+1. **まず sandbox 内で実行する**（`dangerouslyDisableSandbox` なし）
+   - ユーザーが `sandbox.excludedCommands` に設定済みなら、これだけで成功する
+2. **sandbox エラー（Operation not permitted 等）が出たら** `dangerouslyDisableSandbox: true` で再試行する
+3. **それも拒否された場合は `claude-direct` にフォールバック**する
+   - 外部 CLI を使わず、自身の知識と Read/Edit/Write/Grep/Glob 等で処理する
+
+> サブエージェントはノンインタラクティブのため、`dangerouslyDisableSandbox` の承認プロンプトが自動拒否される場合がある。
+> フォールバックを必ず実装すること。
 
 ## Why Subagents Matter: Context Management
 

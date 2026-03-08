@@ -17,9 +17,15 @@ SessionStart hook: ai-orchestra パッケージの skills/agents/rules/config/ho
 import datetime
 import json
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
+
+try:
+    import yaml
+except ImportError:  # pragma: no cover - pyyaml が未導入でも同期処理は継続する
+    yaml = None
 
 
 def read_hook_input() -> dict:
@@ -408,6 +414,104 @@ def sync_claudeignore(project_dir: Path, orchestra_path: Path) -> bool:
     return True
 
 
+def _deep_merge(base: dict, override: dict) -> dict:
+    """override の値で base を再帰的に上書きする。
+
+    NOTE: hook_common.deep_merge と同一ロジック。
+    sync-orchestra.py は自己完結設計のため複製している。
+    hook_common 側を変更した場合はこちらも追従すること。
+    """
+    merged = dict(base)
+    for key, value in override.items():
+        if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _read_yaml_safe(path: Path) -> dict:
+    """YAML ファイルを読み込み、失敗時は空辞書を返す。"""
+    if yaml is None or not path.is_file():
+        return {}
+
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+    except OSError:
+        return {}
+    except yaml.YAMLError:
+        return {}
+
+    if isinstance(data, dict):
+        return data
+    return {}
+
+
+def _load_cli_tools_config(project_dir: Path) -> dict:
+    """cli-tools.yaml と cli-tools.local.yaml を読み込み、上書きをマージする。"""
+    config_dir = project_dir / ".claude" / "config" / "agent-routing"
+    base = _read_yaml_safe(config_dir / "cli-tools.yaml")
+    local = _read_yaml_safe(config_dir / "cli-tools.local.yaml")
+
+    if local:
+        return _deep_merge(base, local)
+    return base
+
+
+def resolve_agent_model(agent_name: str, config: dict) -> str | None:
+    """agent の model を解決する（agents.model > subagent.default_model > None）。"""
+    agents = config.get("agents", {})
+    if isinstance(agents, dict):
+        agent_cfg = agents.get(agent_name, {})
+        if isinstance(agent_cfg, dict):
+            if "model" in agent_cfg:
+                model = agent_cfg.get("model")
+                if isinstance(model, str) and model.strip():
+                    return model.strip()
+
+    subagent = config.get("subagent", {})
+    if isinstance(subagent, dict):
+        default_model = subagent.get("default_model")
+        if isinstance(default_model, str) and default_model.strip():
+            return default_model.strip()
+
+    return None
+
+
+def _patch_agent_model(file_path: Path, model: str) -> bool:
+    """agent .md の frontmatter model 行を置換する。"""
+    try:
+        content = file_path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+
+    frontmatter_match = re.match(r"(?s)\A---\r?\n(.*?)\r?\n---(?:\r?\n|$)", content)
+    if not frontmatter_match:
+        return False
+
+    frontmatter = frontmatter_match.group(1)
+    model_pattern = re.compile(r"(?m)^model:\s*.*$")
+    if not model_pattern.search(frontmatter):
+        return False
+
+    new_frontmatter = model_pattern.sub(f"model: {model}", frontmatter, count=1)
+    if new_frontmatter == frontmatter:
+        return False
+
+    new_content = (
+        content[: frontmatter_match.start(1)]
+        + new_frontmatter
+        + content[frontmatter_match.end(1) :]
+    )
+    try:
+        file_path.write_text(new_content, encoding="utf-8")
+    except OSError:
+        return False
+
+    return True
+
+
 def main() -> None:
     data = read_hook_input()
     project_dir = Path(get_project_dir(data))
@@ -502,11 +606,27 @@ def main() -> None:
     prev_synced = orch.get("synced_files", [])
     removed_count = remove_stale_files(claude_dir, prev_synced, synced_files)
 
+    # サブエージェント model を cli-tools 設定値でパッチ
+    # NOTE: frontmatter に model: 行を持たない .md はスキップされる（仕様）
+    # NOTE: パッチにより dst の mtime がソースより新しくなるが、パッチは毎セッション
+    #        全エージェントに対して試みるため model 値は常に最新に保たれる
+    patched_count = 0
+    cli_tools_config = _load_cli_tools_config(project_dir)
+    agents_dir = claude_dir / "agents"
+    if agents_dir.is_dir():
+        for agent_file in sorted(agents_dir.glob("*.md")):
+            model = resolve_agent_model(agent_file.stem, cli_tools_config)
+            if not model:
+                continue
+            if _patch_agent_model(agent_file, model):
+                patched_count += 1
+
     # orchestra.json を更新（同期・削除があった場合、synced_files が変わった場合、または初回記録時）
     prev_set = set(prev_synced)
     needs_save = (
         synced_count > 0
         or removed_count > 0
+        or patched_count > 0
         or synced_files != prev_set
         or "synced_files" not in orch
     )
@@ -533,6 +653,7 @@ def main() -> None:
         or hooks_changed > 0
         or claudeignore_updated
         or scaffolded_count > 0
+        or patched_count > 0
     ):
         parts = []
         if scaffolded_count > 0:
@@ -545,6 +666,8 @@ def main() -> None:
             parts.append(f"{hooks_changed} hooks synced")
         if claudeignore_updated:
             parts.append(".claudeignore updated")
+        if patched_count > 0:
+            parts.append(f"{patched_count} agent models patched")
         print(f"[orchestra] {', '.join(parts)}")
 
 

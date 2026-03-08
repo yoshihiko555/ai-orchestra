@@ -73,8 +73,8 @@ Task tool parameters:
     Resolve route from cli-tools.yaml (`agents.researcher.tool`).
 
     If tool == gemini:
-      IMPORTANT: Gemini CLI requires dangerouslyDisableSandbox: true
-      (requires_sandbox_disable: true in cli-tools.yaml).
+      まず sandbox 内で gemini を実行する。sandbox エラーが出たら
+      dangerouslyDisableSandbox: true で再試行。それも拒否されたら claude-direct にフォールバック。
       Bash timeout: 180000 を指定すること。
       gemini -m <gemini.model> -p "Analyze this repository for: {feature}
 
@@ -230,7 +230,7 @@ Task(subagent_type="backend-python-dev", prompt="""
 - 設計方針: {design decisions from Phase 3}
 
 IMPORTANT: cli-tools.yaml の設定に従い、Codex CLI (workspace-write) で実装すること。
-dangerouslyDisableSandbox: true で実行すること。
+sandbox エラーが出たら dangerouslyDisableSandbox: true で再試行。それも拒否されたら claude-direct にフォールバック。
 
 実装してください。
 """)
@@ -244,7 +244,7 @@ Task(subagent_type="frontend-dev", prompt="""
 - 関連ファイル: {files}
 
 IMPORTANT: cli-tools.yaml の設定に従い、Codex CLI (workspace-write) で実装すること。
-dangerouslyDisableSandbox: true で実行すること。
+sandbox エラーが出たら dangerouslyDisableSandbox: true で再試行。それも拒否されたら claude-direct にフォールバック。
 
 実装してください。
 """)

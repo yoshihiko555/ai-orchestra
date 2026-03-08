@@ -76,23 +76,30 @@ ai-orchestra/
 
 ## セットアップ
 
-### 1. リポジトリをクローン
+### 1. インストール
 
 ```bash
-git clone https://github.com/yoshihiko555/ai-orchestra.git ~/ai-orchestra
+# uv（推奨）
+uv tool install orchex
+
+# pip
+pip install orchex
+
+# pipx
+pipx install orchex
 ```
 
-### 2. セットアップ（推奨）
+### 2. プロジェクトへのセットアップ
 
 ```bash
 # チームメンバー向け: 最低限のパッケージを一括インストール
-python3 ~/ai-orchestra/scripts/orchestra-manager.py setup essential --project /path/to/project
+orchex setup essential --project /path/to/project
 
 # 管理者・開発者向け: 全パッケージを一括インストール
-python3 ~/ai-orchestra/scripts/orchestra-manager.py setup all --project /path/to/project
+orchex setup all --project /path/to/project
 
 # 事前確認（dry-run）
-python3 ~/ai-orchestra/scripts/orchestra-manager.py setup essential --project /path/to/project --dry-run
+orchex setup essential --project /path/to/project --dry-run
 ```
 
 プリセットは `presets.json` で定義されています:
@@ -103,11 +110,11 @@ python3 ~/ai-orchestra/scripts/orchestra-manager.py setup essential --project /p
 
 ```bash
 # 個別にパッケージをインストールする場合
-python3 ~/ai-orchestra/scripts/orchestra-manager.py install core --project /path/to/project
-python3 ~/ai-orchestra/scripts/orchestra-manager.py install tmux-monitor --project /path/to/project
+orchex install core --project /path/to/project
+orchex install tmux-monitor --project /path/to/project
 ```
 
-orchestra-manager が内部で以下を実行:
+orchex が内部で以下を実行:
 1. `~/.claude/settings.json` に `env.AI_ORCHESTRA_DIR` を設定
 2. `.claude/orchestra.json` にパッケージ情報を記録
 3. `.claude/settings.local.json` に hooks を登録（`$AI_ORCHESTRA_DIR/packages/...` 参照）
@@ -123,62 +130,75 @@ orchestra-manager が内部で以下を実行:
 - `.claude/orchestra.json` が存在し、インストール済みパッケージが記録されている
 - Claude Code 次回起動時に SessionStart hook が走り `.claude/` 配下へ差分同期される
 
-### 3. 管理スクリプト
+### 3. 管理コマンド
 
-| スクリプト | 用途 |
-|-----------|------|
-| `orchestra-manager.py` | パッケージのインストール・管理 |
-| `sync-orchestra.py` | SessionStart 時の自動同期 |
-| `analyze-cli-usage.py` | Codex/Gemini の使用状況分析 |
+```bash
+# バージョン確認
+orchex --version
+```
 
-### 3b. ログ仕様
-
-- 全ログの役割・参照先は `docs/specs/logging.md` を参照
+全ログの役割・参照先は `docs/specs/logging.md` を参照。
 
 ### 4. パッケージ管理コマンド
 
 ```bash
 # プリセットで一括セットアップ
-python3 ~/ai-orchestra/scripts/orchestra-manager.py setup essential --project .
-python3 ~/ai-orchestra/scripts/orchestra-manager.py setup all --project .
+orchex setup essential --project .
+orchex setup all --project .
 
 # パッケージ一覧
-python3 ~/ai-orchestra/scripts/orchestra-manager.py list
+orchex list
 
 # プロジェクトでの導入状況
-python3 ~/ai-orchestra/scripts/orchestra-manager.py status --project .
+orchex status --project .
 
 # インストール / アンインストール
-python3 ~/ai-orchestra/scripts/orchestra-manager.py install <package> --project .
-python3 ~/ai-orchestra/scripts/orchestra-manager.py uninstall <package> --project .
+orchex install <package> --project .
+orchex uninstall <package> --project .
 
 # 一時的な有効化 / 無効化（hooks の登録/解除のみ）
-python3 ~/ai-orchestra/scripts/orchestra-manager.py enable <package> --project .
-python3 ~/ai-orchestra/scripts/orchestra-manager.py disable <package> --project .
+orchex enable <package> --project .
+orchex disable <package> --project .
 
 # パッケージ内スクリプトの一覧表示
-python3 ~/ai-orchestra/scripts/orchestra-manager.py scripts
-python3 ~/ai-orchestra/scripts/orchestra-manager.py scripts --package route-audit
+orchex scripts
+orchex scripts --package route-audit
 
 # パッケージ内スクリプトの実行（-- 以降はスクリプトにパススルー）
-python3 ~/ai-orchestra/scripts/orchestra-manager.py run route-audit dashboard
-python3 ~/ai-orchestra/scripts/orchestra-manager.py run route-audit log-viewer --project /path/to/project -- --last 10
+orchex run route-audit dashboard
+orchex run route-audit log-viewer --project /path/to/project -- --last 10
 
 # dry-run（変更内容を表示のみ）
-python3 ~/ai-orchestra/scripts/orchestra-manager.py setup essential --project . --dry-run
-python3 ~/ai-orchestra/scripts/orchestra-manager.py install <package> --project . --dry-run
+orchex setup essential --project . --dry-run
+orchex install <package> --project . --dry-run
+```
+
+### 開発者向け: ソースからのインストール
+
+```bash
+git clone https://github.com/yoshihiko555/ai-orchestra.git
+cd ai-orchestra
+uv tool install -e .
 ```
 
 ---
 
 ## 更新フロー
 
+```bash
+# PyPI からの更新
+uv tool upgrade orchex
+
+# 開発版の更新（ソースインストール時）
+cd ai-orchestra && git pull
+```
+
 | 変更内容 | 操作 |
 |---------|------|
-| Hook スクリプト修正 | `git pull` のみ（即反映） |
-| Skills/Agents/Rules 修正 | `git pull`（次回 Claude Code 起動時に自動同期） |
-| 新フックイベント追加 | `git pull` + `install` 再実行 |
-| CLI スクリプト修正 | `git pull` のみ（即反映） |
+| 全般 | `uv tool upgrade orchex`（PyPI 経由） |
+| Hook スクリプト修正 | アップグレード後、即反映 |
+| Skills/Agents/Rules 修正 | アップグレード後、次回 Claude Code 起動時に自動同期 |
+| 新フックイベント追加 | アップグレード + `orchex install` 再実行 |
 
 ---
 
@@ -190,7 +210,7 @@ python3 ~/ai-orchestra/scripts/orchestra-manager.py install <package> --project 
 
 ## .gitignore の管理
 
-- `orchestra-manager.py init` 実行時に `.gitignore` へ AI Orchestra 用 block を追加/更新します
+- `orchex init` 実行時に `.gitignore` へ AI Orchestra 用 block を追加/更新します
 - 対象: `.claude/docs/`, `.claude/logs/`, `.claude/state/`, `.claude/checkpoints/`, `.claude/Plans.md`
 
 ---

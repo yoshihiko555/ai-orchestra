@@ -45,7 +45,9 @@ gemini:
 
 # Claude Code サブエージェントの設定
 subagent:
-  # エージェント .md のフロントマター model に対応
+  # 全エージェント .md のフロントマター model に適用されるデフォルトモデル
+  # sync-orchestra.py が SessionStart 時にこの値で .md を自動パッチする
+  # 個別上書き: agents.<name>.model で指定（null = デフォルトに従う）
   # 選択肢: sonnet, opus, haiku
   default_model: sonnet
 
