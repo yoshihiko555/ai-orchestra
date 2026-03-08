@@ -1,0 +1,11 @@
+{
+  "eval_id": 7, "run_type": "with_skill",
+  "expectations": [
+    {"text": "correct_phase_determination", "passed": true, "evidence": "Phase 1（要件定義）から開始と正確に判定。Phase 0 スキップも明示"},
+    {"text": "security_design_awareness", "passed": true, "evidence": "セキュリティ設計トラックのトリガーを検出し、Phase 1 と並行実施を提案"},
+    {"text": "security_reference_loaded", "passed": true, "evidence": "「references/security-design.md を読み込み済み」と明示。STRIDE、認証設計、データ保護の4ステップを列挙"},
+    {"text": "payment_data_sensitivity", "passed": true, "evidence": "PCI DSS 準拠の必要性に言及。決済代行サービス利用の有無を早期確認"},
+    {"text": "uses_ask_user_question", "passed": true, "evidence": "AskUserQuestion 形式で3項目の質問を記述"},
+    {"text": "structured_progression", "passed": true, "evidence": "Phase 1 + セキュリティトラック並行 → Phase 2 → Phase 3 の設計フローを図示"}
+  ]
+}

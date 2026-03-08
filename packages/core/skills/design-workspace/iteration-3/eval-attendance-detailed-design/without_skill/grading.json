@@ -1,0 +1,10 @@
+{
+  "eval_id": 5, "run_type": "without_skill",
+  "expectations": [
+    {"text": "correct_phase_determination", "passed": false, "evidence": "フェーズ判定なし。ただし詳細設計スコープの整理はされている"},
+    {"text": "reads_existing_docs", "passed": false, "evidence": "ファイルを自動読み込みせず「パスを教えてください」とユーザーに依頼"},
+    {"text": "individual_file_output", "passed": true, "evidence": "API-001_打刻.md, TBL-001_users.md の構成を提示"},
+    {"text": "skip_screen_design", "passed": true, "evidence": "「対象外: 画面詳細設計」と明記"},
+    {"text": "uses_ask_user_question", "passed": false, "evidence": "AskUserQuestion ツール未使用。テキストで4項目を質問"}
+  ]
+}

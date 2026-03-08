@@ -1,0 +1,13 @@
+{
+  "eval_id": 3,
+  "eval_name": "eval-attendance-api",
+  "prompt": "社内の勤怠管理システムのAPIを設計したい。要件はだいたい固まっていて、出退勤の打刻、勤怠一覧の取得、月次レポート生成がメインの機能。基本設計のAPI設計とデータモデル設計から始めたい。",
+  "assertions": [
+    {"text": "correct_phase_determination", "description": "Phase 2（基本設計）から開始すると判定"},
+    {"text": "question_granularity", "description": "質問が2-3項目に絞られている"},
+    {"text": "skip_unnecessary_steps", "description": "画面設計スキップなど不要ステップの省略判断"},
+    {"text": "structured_progression", "description": "段階的に進める流れを提示"},
+    {"text": "uses_ask_user_question", "description": "AskUserQuestionツールを使用して質問している"},
+    {"text": "existing_system_check", "description": "既存システム調査の要否を確認（Phase 0の条件判定）"}
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "eval_id": 1,
+  "run_type": "with_skill",
+  "expectations": [
+    {
+      "text": "correct_phase_determination",
+      "passed": true,
+      "evidence": "「Phase 1 から開始」と正確に判定。「要件定義から始めたい」を認識"
+    },
+    {
+      "text": "question_granularity",
+      "passed": true,
+      "evidence": "AskUserQuestion で2項目のみ（技術スタック、コードベースの所在）に絞っている"
+    },
+    {
+      "text": "structured_progression",
+      "passed": true,
+      "evidence": "Phase 0→1→2→3 の進行計画を図示し、次ターン以降の質問予定も明示"
+    },
+    {
+      "text": "glossary_or_terminology_awareness",
+      "passed": true,
+      "evidence": "「用語整理（初期案）」として4つの用語（レビュー、星評価、レビュアー、評価集計）を定義表で提示"
+    },
+    {
+      "text": "uses_ask_user_question",
+      "passed": true,
+      "evidence": "AskUserQuestion() ツール呼び出しの形式で質問を記載"
+    },
+    {
+      "text": "existing_system_investigation",
+      "passed": true,
+      "evidence": "「既存のECサイトへの機能追加」を認識し Phase 0（既存システム調査）を先行実施すると明示"
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "eval_id": 3, "run_type": "with_skill",
+  "expectations": [
+    {"text": "correct_phase_determination", "passed": true, "evidence": "Phase 2（基本設計）から開始と正確に判定。Phase 0 スキップも明示"},
+    {"text": "question_granularity", "passed": true, "evidence": "AskUserQuestion で2項目（技術スタック、ユーザー・認証）に絞っている"},
+    {"text": "skip_unnecessary_steps", "passed": true, "evidence": "API + データモデルに絞り、画面設計をスキップする方針を暗黙に示している"},
+    {"text": "structured_progression", "passed": true, "evidence": "次ターンで確認予定の情報（打刻構造、レポート形式、スコープ）を明示"},
+    {"text": "uses_ask_user_question", "passed": true, "evidence": "AskUserQuestion 形式で質問を記述"},
+    {"text": "existing_system_check", "passed": false, "evidence": "新規プロジェクトと判断しPhase 0 をスキップしたが、ユーザーへの確認はしていない"}
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "eval_id": 5,
+  "eval_name": "eval-attendance-detailed-design",
+  "prompt": "勤怠管理APIの詳細設計をお願いしたい。基本設計のapi-list.mdとer-design.mdは完成している。各APIエンドポイントのリクエスト/レスポンス仕様とテーブルのカラム定義を詰めたい。",
+  "assertions": [
+    {"text": "correct_phase_determination", "description": "Phase 3（詳細設計）から開始すると判定"},
+    {"text": "reads_existing_docs", "description": "既存の api-list.md と er-design.md を読み込む姿勢を示す"},
+    {"text": "individual_file_output", "description": "API-001.md, TBL-001.md 等の個別ファイル出力を提示"},
+    {"text": "skip_screen_design", "description": "画面詳細設計は対象外と判断"},
+    {"text": "uses_ask_user_question", "description": "AskUserQuestionツールを使用して質問している"}
+  ]
+}

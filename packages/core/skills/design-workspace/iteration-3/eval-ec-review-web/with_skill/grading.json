@@ -1,0 +1,11 @@
+{
+  "eval_id": 1, "run_type": "with_skill",
+  "expectations": [
+    {"text": "correct_phase_determination", "passed": true, "evidence": "Phase 0 + Phase 1 から開始と正確に判定"},
+    {"text": "question_granularity", "passed": true, "evidence": "AskUserQuestion で2項目（投稿者の範囲、モデレーション方針）に絞っている"},
+    {"text": "structured_progression", "passed": true, "evidence": "Phase 0→1 の進行計画と成果物5ファイルの作成予定を明示"},
+    {"text": "glossary_or_terminology_awareness", "passed": true, "evidence": "用語集の骨格（レビュー、星評価、レビュアー、総合評価、レビュー公開）を5項目提示"},
+    {"text": "uses_ask_user_question", "passed": true, "evidence": "AskUserQuestion 形式で質問を記載"},
+    {"text": "auto_investigation", "passed": true, "evidence": "「設定ファイル（package.json, pyproject.toml等）を確認しています」と自動調査を明示。ユーザーに技術スタックを聞いていない"}
+  ]
+}

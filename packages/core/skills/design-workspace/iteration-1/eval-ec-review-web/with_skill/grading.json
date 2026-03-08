@@ -1,0 +1,26 @@
+{
+  "eval_id": 1,
+  "run_type": "with_skill",
+  "expectations": [
+    {
+      "text": "correct_phase_determination",
+      "passed": true,
+      "evidence": "明示的に「Phase 1（要件定義）から開始」と判定し、フェーズ判定セクションで理由も示している"
+    },
+    {
+      "text": "question_granularity",
+      "passed": true,
+      "evidence": "質問を2グループに分け、各グループ2-3項目に絞っている（合計5項目だが段階的に提示）"
+    },
+    {
+      "text": "structured_progression",
+      "passed": true,
+      "evidence": "「次のトピック（レビューの編集・削除、管理者機能、非機能要件など）へ進みます」と今後の見通しを明示"
+    },
+    {
+      "text": "glossary_or_terminology_awareness",
+      "passed": false,
+      "evidence": "用語集やプロジェクト概要の作成について言及がない。スキルのStep 2（用語定義）に触れていない"
+    }
+  ]
+}

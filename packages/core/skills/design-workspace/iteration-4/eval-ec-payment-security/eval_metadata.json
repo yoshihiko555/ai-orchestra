@@ -1,0 +1,13 @@
+{
+  "eval_id": 7,
+  "eval_name": "eval-ec-payment-security",
+  "prompt": "オンライン決済機能付きのECサイトを新規構築したい。クレジットカード情報を扱うので、セキュリティ面もしっかり設計したい。要件定義から始めたい。",
+  "assertions": [
+    {"text": "correct_phase_determination", "description": "Phase 1（要件定義）から開始と判定"},
+    {"text": "security_design_awareness", "description": "セキュリティ設計の拡張トラックに言及または提案"},
+    {"text": "security_reference_loaded", "description": "references/security-design.md を読み込む意図を示す"},
+    {"text": "payment_data_sensitivity", "description": "決済データの機密性・PCI DSS等に言及"},
+    {"text": "uses_ask_user_question", "description": "AskUserQuestion ツールを使用"},
+    {"text": "structured_progression", "description": "段階的な進行計画を提示"}
+  ]
+}

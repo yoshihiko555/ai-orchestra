@@ -1,0 +1,12 @@
+{
+  "eval_id": 4,
+  "eval_name": "eval-ec-detailed-design",
+  "prompt": "ECサイトのレビュー機能の詳細設計をしたい。基本設計は完了していて、docs/api/api-list.md と docs/screens/screen-list.md と docs/database/er-design.md がある。各エンドポイントと画面の個別設計書を作りたい。",
+  "assertions": [
+    {"text": "correct_phase_determination", "description": "Phase 3（詳細設計）から開始すると判定"},
+    {"text": "reads_existing_docs", "description": "既存の docs/ ファイルを読み込む姿勢を示す"},
+    {"text": "individual_file_output", "description": "API-001.md, SC-001.md 等の個別ファイル出力を提示"},
+    {"text": "uses_ask_user_question", "description": "AskUserQuestionツールを使用して質問している"},
+    {"text": "structured_progression", "description": "どの順序で詳細設計を進めるか提示"}
+  ]
+}

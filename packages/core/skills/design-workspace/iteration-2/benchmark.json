@@ -1,0 +1,129 @@
+{
+  "skill_name": "design",
+  "iteration": 2,
+  "configurations": [
+    {
+      "name": "with_skill",
+      "label": "With Design Skill (v2)"
+    },
+    {
+      "name": "without_skill",
+      "label": "Without Skill (Baseline)"
+    }
+  ],
+  "evals": [
+    {
+      "eval_name": "eval-ec-review-web",
+      "prompt": "ECサイトにレビュー機能を追加したいので、要件定義から設計を始めたい。商品に対してユーザーが星評価とテキストでレビューを投稿できるようにしたい。Webアプリで、既存のECサイトへの機能追加です。",
+      "results": {
+        "with_skill": {
+          "pass_rate": 1.0,
+          "assertions": [
+            {"text": "correct_phase_determination", "passed": true},
+            {"text": "question_granularity", "passed": true},
+            {"text": "structured_progression", "passed": true},
+            {"text": "glossary_or_terminology_awareness", "passed": true},
+            {"text": "uses_ask_user_question", "passed": true},
+            {"text": "existing_system_investigation", "passed": true}
+          ],
+          "tokens": 37405,
+          "duration_seconds": 50.0
+        },
+        "without_skill": {
+          "pass_rate": 0.0,
+          "assertions": [
+            {"text": "correct_phase_determination", "passed": false},
+            {"text": "question_granularity", "passed": false},
+            {"text": "structured_progression", "passed": false},
+            {"text": "glossary_or_terminology_awareness", "passed": false},
+            {"text": "uses_ask_user_question", "passed": false},
+            {"text": "existing_system_investigation", "passed": false}
+          ],
+          "tokens": 31704,
+          "duration_seconds": 64.6
+        }
+      }
+    },
+    {
+      "eval_name": "eval-fitness-native-app",
+      "prompt": "フィットネス記録アプリをiOSとAndroid向けに新規開発したい。ワークアウトの記録、体重・体脂肪率のトラッキング、目標設定と進捗表示ができるアプリ。設計をお願いしたい。",
+      "results": {
+        "with_skill": {
+          "pass_rate": 1.0,
+          "assertions": [
+            {"text": "correct_phase_determination", "passed": true},
+            {"text": "question_granularity", "passed": true},
+            {"text": "platform_awareness", "passed": true},
+            {"text": "structured_progression", "passed": true},
+            {"text": "uses_ask_user_question", "passed": true},
+            {"text": "acceptance_criteria_mentioned", "passed": true}
+          ],
+          "tokens": 38296,
+          "duration_seconds": 63.6
+        },
+        "without_skill": {
+          "pass_rate": 0.167,
+          "assertions": [
+            {"text": "correct_phase_determination", "passed": false},
+            {"text": "question_granularity", "passed": false},
+            {"text": "platform_awareness", "passed": true},
+            {"text": "structured_progression", "passed": false},
+            {"text": "uses_ask_user_question", "passed": false},
+            {"text": "acceptance_criteria_mentioned", "passed": false}
+          ],
+          "tokens": 33030,
+          "duration_seconds": 117.4
+        }
+      }
+    },
+    {
+      "eval_name": "eval-attendance-api",
+      "prompt": "社内の勤怠管理システムのAPIを設計したい。要件はだいたい固まっていて、出退勤の打刻、勤怠一覧の取得、月次レポート生成がメインの機能。基本設計のAPI設計とデータモデル設計から始めたい。",
+      "results": {
+        "with_skill": {
+          "pass_rate": 1.0,
+          "assertions": [
+            {"text": "correct_phase_determination", "passed": true},
+            {"text": "question_granularity", "passed": true},
+            {"text": "skip_unnecessary_steps", "passed": true},
+            {"text": "structured_progression", "passed": true},
+            {"text": "uses_ask_user_question", "passed": true},
+            {"text": "existing_system_check", "passed": true}
+          ],
+          "tokens": 35313,
+          "duration_seconds": 41.3
+        },
+        "without_skill": {
+          "pass_rate": 0.167,
+          "assertions": [
+            {"text": "correct_phase_determination", "passed": false},
+            {"text": "question_granularity", "passed": false},
+            {"text": "skip_unnecessary_steps", "passed": true},
+            {"text": "structured_progression", "passed": false},
+            {"text": "uses_ask_user_question", "passed": false},
+            {"text": "existing_system_check", "passed": false}
+          ],
+          "tokens": 32198,
+          "duration_seconds": 62.3
+        }
+      }
+    }
+  ],
+  "summary": {
+    "with_skill": {
+      "mean_pass_rate": 1.0,
+      "mean_tokens": 37005,
+      "mean_duration_seconds": 51.6
+    },
+    "without_skill": {
+      "mean_pass_rate": 0.111,
+      "mean_tokens": 32311,
+      "mean_duration_seconds": 81.4
+    },
+    "delta": {
+      "pass_rate": "+0.889",
+      "tokens": "+4694 (skill reads reference files)",
+      "duration_seconds": "-29.8s (with_skill faster)"
+    }
+  }
+}

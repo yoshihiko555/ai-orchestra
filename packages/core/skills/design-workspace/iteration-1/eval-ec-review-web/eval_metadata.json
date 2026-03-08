@@ -1,0 +1,27 @@
+{
+  "eval_id": 1,
+  "eval_name": "eval-ec-review-web",
+  "prompt": "ECサイトにレビュー機能を追加したいので、要件定義から設計を始めたい。商品に対してユーザーが星評価とテキストでレビューを投稿できるようにしたい。Webアプリで、既存のECサイトへの機能追加です。",
+  "assertions": [
+    {
+      "name": "correct_phase_determination",
+      "description": "Phase 1（要件定義）から開始すると明示的に判定している",
+      "type": "manual"
+    },
+    {
+      "name": "question_granularity",
+      "description": "初回の質問が2-3項目程度に絞られている（一度に10項目以上聞いていない）",
+      "type": "manual"
+    },
+    {
+      "name": "structured_progression",
+      "description": "今後のステップや次に何を確認するかの見通しを示している",
+      "type": "manual"
+    },
+    {
+      "name": "glossary_or_terminology_awareness",
+      "description": "用語の整理やプロジェクト概要の作成について言及がある",
+      "type": "manual"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "eval_id": 2,
+  "eval_name": "eval-fitness-native-app",
+  "prompt": "フィットネス記録アプリをiOSとAndroid向けに新規開発したい。ワークアウトの記録、体重・体脂肪率のトラッキング、目標設定と進捗表示ができるアプリ。設計をお願いしたい。",
+  "assertions": [
+    {"text": "correct_phase_determination", "description": "Phase 1（要件定義）から開始すると判定"},
+    {"text": "question_granularity", "description": "質問が2-3項目に絞られている"},
+    {"text": "platform_awareness", "description": "iOS/Androidのネイティブ固有考慮に言及"},
+    {"text": "structured_progression", "description": "段階的に進める流れを提示"},
+    {"text": "uses_ask_user_question", "description": "AskUserQuestionツールを使用して質問している"},
+    {"text": "acceptance_criteria_mentioned", "description": "フェーズ完了条件や受け入れ基準に言及"}
+  ]
+}

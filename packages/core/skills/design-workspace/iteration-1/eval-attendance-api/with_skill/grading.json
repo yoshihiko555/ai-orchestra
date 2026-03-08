@@ -1,0 +1,26 @@
+{
+  "eval_id": 3,
+  "run_type": "with_skill",
+  "expectations": [
+    {
+      "text": "correct_phase_determination",
+      "passed": true,
+      "evidence": "「Phase 2（基本設計）から開始」と正確に判定。要件固まり済みを認識し、画面設計スキップも判断"
+    },
+    {
+      "text": "question_granularity",
+      "passed": true,
+      "evidence": "2点のみ（技術スタック・制約、認証方式）に絞っている"
+    },
+    {
+      "text": "skip_unnecessary_steps",
+      "passed": true,
+      "evidence": "「画面設計（Step 2）は今回スキップ」と明示的に判断"
+    },
+    {
+      "text": "structured_progression",
+      "passed": true,
+      "evidence": "「1.アーキテクチャ→2.API設計→3.データモデル」の順序を明示"
+    }
+  ]
+}

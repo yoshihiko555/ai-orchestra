@@ -1,0 +1,117 @@
+{
+  "skill_name": "design",
+  "iteration": 1,
+  "configurations": [
+    {
+      "name": "with_skill",
+      "label": "With Design Skill"
+    },
+    {
+      "name": "without_skill",
+      "label": "Without Skill (Baseline)"
+    }
+  ],
+  "evals": [
+    {
+      "eval_name": "eval-ec-review-web",
+      "prompt": "ECサイトにレビュー機能を追加したいので、要件定義から設計を始めたい。",
+      "results": {
+        "with_skill": {
+          "pass_rate": 0.75,
+          "assertions": [
+            {"text": "correct_phase_determination", "passed": true},
+            {"text": "question_granularity", "passed": true},
+            {"text": "structured_progression", "passed": true},
+            {"text": "glossary_or_terminology_awareness", "passed": false}
+          ],
+          "tokens": 38988,
+          "duration_seconds": 42.5
+        },
+        "without_skill": {
+          "pass_rate": 0.0,
+          "assertions": [
+            {"text": "correct_phase_determination", "passed": false},
+            {"text": "question_granularity", "passed": false},
+            {"text": "structured_progression", "passed": false},
+            {"text": "glossary_or_terminology_awareness", "passed": false}
+          ],
+          "tokens": 30227,
+          "duration_seconds": 41.1
+        }
+      }
+    },
+    {
+      "eval_name": "eval-fitness-native-app",
+      "prompt": "フィットネス記録アプリをiOSとAndroid向けに新規開発したい。設計をお願いしたい。",
+      "results": {
+        "with_skill": {
+          "pass_rate": 1.0,
+          "assertions": [
+            {"text": "correct_phase_determination", "passed": true},
+            {"text": "question_granularity", "passed": true},
+            {"text": "platform_awareness", "passed": true},
+            {"text": "structured_progression", "passed": true}
+          ],
+          "tokens": 39924,
+          "duration_seconds": 61.3
+        },
+        "without_skill": {
+          "pass_rate": 0.25,
+          "assertions": [
+            {"text": "correct_phase_determination", "passed": false},
+            {"text": "question_granularity", "passed": false},
+            {"text": "platform_awareness", "passed": true},
+            {"text": "structured_progression", "passed": false}
+          ],
+          "tokens": 30222,
+          "duration_seconds": 39.9
+        }
+      }
+    },
+    {
+      "eval_name": "eval-attendance-api",
+      "prompt": "社内の勤怠管理システムのAPIを設計したい。要件は固まっている。基本設計から始めたい。",
+      "results": {
+        "with_skill": {
+          "pass_rate": 1.0,
+          "assertions": [
+            {"text": "correct_phase_determination", "passed": true},
+            {"text": "question_granularity", "passed": true},
+            {"text": "skip_unnecessary_steps", "passed": true},
+            {"text": "structured_progression", "passed": true}
+          ],
+          "tokens": 39378,
+          "duration_seconds": 43.1
+        },
+        "without_skill": {
+          "pass_rate": 0.0,
+          "assertions": [
+            {"text": "correct_phase_determination", "passed": false},
+            {"text": "question_granularity", "passed": false},
+            {"text": "skip_unnecessary_steps", "passed": false},
+            {"text": "structured_progression", "passed": false}
+          ],
+          "tokens": 30172,
+          "duration_seconds": 35.8
+        }
+      }
+    }
+  ],
+  "summary": {
+    "with_skill": {
+      "mean_pass_rate": 0.917,
+      "mean_tokens": 39430,
+      "mean_duration_seconds": 49.0
+    },
+    "without_skill": {
+      "mean_pass_rate": 0.083,
+      "mean_tokens": 30207,
+      "mean_duration_seconds": 38.9
+    },
+    "delta": {
+      "pass_rate": "+0.834",
+      "tokens": "+9223 (skill reads reference files)",
+      "duration_seconds": "+10.1s"
+    }
+  }
+}

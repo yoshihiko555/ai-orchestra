@@ -1,0 +1,147 @@
+{
+  "skill_name": "design",
+  "iteration": 4,
+  "configurations": [
+    {"name": "with_skill", "label": "With Design Skill (v4)"},
+    {"name": "without_skill", "label": "Without Skill (Baseline)"}
+  ],
+  "evals": [
+    {
+      "eval_name": "eval-ec-review-web",
+      "prompt": "ECサイトにレビュー機能を追加したいので、要件定義から設計を始めたい。",
+      "results": {
+        "with_skill": {
+          "pass_rate": 0.833,
+          "assertions": [
+            {"text": "correct_phase_determination", "passed": true},
+            {"text": "question_granularity", "passed": true},
+            {"text": "structured_progression", "passed": true},
+            {"text": "glossary_or_terminology_awareness", "passed": true},
+            {"text": "uses_ask_user_question", "passed": true},
+            {"text": "auto_investigation", "passed": false}
+          ],
+          "tokens": 36890, "duration_seconds": 39.7
+        },
+        "without_skill": {
+          "pass_rate": 0.0,
+          "assertions": [
+            {"text": "correct_phase_determination", "passed": false},
+            {"text": "question_granularity", "passed": false},
+            {"text": "structured_progression", "passed": false},
+            {"text": "glossary_or_terminology_awareness", "passed": false},
+            {"text": "uses_ask_user_question", "passed": false},
+            {"text": "auto_investigation", "passed": false}
+          ],
+          "tokens": 10814, "duration_seconds": 24.4
+        }
+      }
+    },
+    {
+      "eval_name": "eval-attendance-api",
+      "prompt": "社内の勤怠管理システムのAPIを設計したい。要件は固まっている。基本設計から始めたい。",
+      "results": {
+        "with_skill": {
+          "pass_rate": 0.833,
+          "assertions": [
+            {"text": "correct_phase_determination", "passed": true},
+            {"text": "question_granularity", "passed": true},
+            {"text": "skip_unnecessary_steps", "passed": true},
+            {"text": "structured_progression", "passed": true},
+            {"text": "uses_ask_user_question", "passed": true},
+            {"text": "existing_system_check", "passed": false}
+          ],
+          "tokens": 37095, "duration_seconds": 45.4
+        },
+        "without_skill": {
+          "pass_rate": 0.167,
+          "assertions": [
+            {"text": "correct_phase_determination", "passed": false},
+            {"text": "question_granularity", "passed": false},
+            {"text": "skip_unnecessary_steps", "passed": true},
+            {"text": "structured_progression", "passed": false},
+            {"text": "uses_ask_user_question", "passed": false},
+            {"text": "existing_system_check", "passed": false}
+          ],
+          "tokens": 33609, "duration_seconds": 73.4
+        }
+      }
+    },
+    {
+      "eval_name": "eval-portal-design-system",
+      "prompt": "大規模社内ポータルサイト（20画面以上、5人FE並行開発）の基本設計とUIの統一ルールを決めたい。",
+      "results": {
+        "with_skill": {
+          "pass_rate": 1.0,
+          "assertions": [
+            {"text": "correct_phase_determination", "passed": true},
+            {"text": "design_system_awareness", "passed": true},
+            {"text": "design_system_reference_loaded", "passed": true},
+            {"text": "question_granularity", "passed": true},
+            {"text": "uses_ask_user_question", "passed": true},
+            {"text": "multi_developer_consideration", "passed": true}
+          ],
+          "tokens": 48876, "duration_seconds": 65.8
+        },
+        "without_skill": {
+          "pass_rate": 0.333,
+          "assertions": [
+            {"text": "correct_phase_determination", "passed": false},
+            {"text": "design_system_awareness", "passed": true},
+            {"text": "design_system_reference_loaded", "passed": false},
+            {"text": "question_granularity", "passed": false},
+            {"text": "uses_ask_user_question", "passed": false},
+            {"text": "multi_developer_consideration", "passed": true}
+          ],
+          "tokens": 33010, "duration_seconds": 90.8
+        }
+      }
+    },
+    {
+      "eval_name": "eval-ec-payment-security",
+      "prompt": "オンライン決済機能付きのECサイトを新規構築したい。クレジットカード情報を扱うのでセキュリティ設計もしたい。",
+      "results": {
+        "with_skill": {
+          "pass_rate": 1.0,
+          "assertions": [
+            {"text": "correct_phase_determination", "passed": true},
+            {"text": "security_design_awareness", "passed": true},
+            {"text": "security_reference_loaded", "passed": true},
+            {"text": "payment_data_sensitivity", "passed": true},
+            {"text": "uses_ask_user_question", "passed": true},
+            {"text": "structured_progression", "passed": true}
+          ],
+          "tokens": 47882, "duration_seconds": 65.7
+        },
+        "without_skill": {
+          "pass_rate": 0.333,
+          "assertions": [
+            {"text": "correct_phase_determination", "passed": false},
+            {"text": "security_design_awareness", "passed": true},
+            {"text": "security_reference_loaded", "passed": false},
+            {"text": "payment_data_sensitivity", "passed": true},
+            {"text": "uses_ask_user_question", "passed": false},
+            {"text": "structured_progression", "passed": false}
+          ],
+          "tokens": 31893, "duration_seconds": 71.8
+        }
+      }
+    }
+  ],
+  "summary": {
+    "with_skill": {
+      "mean_pass_rate": 0.917,
+      "mean_tokens": 42686,
+      "mean_duration_seconds": 54.2
+    },
+    "without_skill": {
+      "mean_pass_rate": 0.208,
+      "mean_tokens": 27332,
+      "mean_duration_seconds": 65.1
+    },
+    "delta": {
+      "pass_rate": "+0.709",
+      "tokens": "+15354 (skill reads reference files)",
+      "duration_seconds": "-10.9s (with_skill faster)"
+    }
+  }
+}

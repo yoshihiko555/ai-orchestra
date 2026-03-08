@@ -1,0 +1,11 @@
+{
+  "eval_id": 3, "run_type": "without_skill",
+  "expectations": [
+    {"text": "correct_phase_determination", "passed": false, "evidence": "フェーズ判定なし。いきなり完全なデータモデルとAPI設計を提示"},
+    {"text": "question_granularity", "passed": false, "evidence": "質問なし。全て推定で提示"},
+    {"text": "skip_unnecessary_steps", "passed": true, "evidence": "画面設計は含まれておらずAPI+データモデルに集中"},
+    {"text": "structured_progression", "passed": false, "evidence": "設計を一括提示。段階的進行なし"},
+    {"text": "uses_ask_user_question", "passed": false, "evidence": "AskUserQuestion ツール未使用"},
+    {"text": "existing_system_check", "passed": false, "evidence": "新規/既存の確認なし"}
+  ]
+}

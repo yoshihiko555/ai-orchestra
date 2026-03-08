@@ -1,0 +1,36 @@
+{
+  "eval_id": 3,
+  "run_type": "without_skill",
+  "expectations": [
+    {
+      "text": "correct_phase_determination",
+      "passed": false,
+      "evidence": "フェーズ判定なし。要件が固まっていると言っているのにいきなり完全なデータモデルとAPI設計を提示"
+    },
+    {
+      "text": "question_granularity",
+      "passed": false,
+      "evidence": "質問を一切行わず、技術選定・テーブル定義・API仕様を全て推定で提示"
+    },
+    {
+      "text": "skip_unnecessary_steps",
+      "passed": true,
+      "evidence": "画面設計は含まれておらず、API + データモデルに集中（暗黙的にスキップ）"
+    },
+    {
+      "text": "structured_progression",
+      "passed": false,
+      "evidence": "設計を一括提示。段階的な進め方の提示がない"
+    },
+    {
+      "text": "uses_ask_user_question",
+      "passed": false,
+      "evidence": "AskUserQuestion ツールを使用していない"
+    },
+    {
+      "text": "existing_system_check",
+      "passed": false,
+      "evidence": "新規 or 既存の確認なし。既存システム調査の要否判定がない"
+    }
+  ]
+}

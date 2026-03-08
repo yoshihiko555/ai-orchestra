@@ -1,0 +1,11 @@
+{
+  "eval_id": 1, "run_type": "with_skill",
+  "expectations": [
+    {"text": "correct_phase_determination", "passed": true, "evidence": "Phase 0（既存調査）+ Phase 1（要件定義）から開始と正確に判定"},
+    {"text": "question_granularity", "passed": true, "evidence": "AskUserQuestion で3項目（技術スタック、認証状況、既存ドキュメント）に絞っている"},
+    {"text": "structured_progression", "passed": true, "evidence": "Phase 1 の6ステップ（概要→用語→機能一覧→要件→非機能→優先度）と成果物一覧を提示"},
+    {"text": "glossary_or_terminology_awareness", "passed": true, "evidence": "Phase 1 の進行予定で用語定義を Step 2 として明記"},
+    {"text": "uses_ask_user_question", "passed": true, "evidence": "AskUserQuestion 形式で質問を記述"},
+    {"text": "auto_investigation", "passed": false, "evidence": "「コードベースへの直接アクセスができない文脈のため」として技術スタックをユーザーに質問。スキルの指示では自動調査が期待される"}
+  ]
+}
