@@ -127,8 +127,7 @@ def _build_toml_section(server_name: str, config: dict, proxy_active: bool, prox
         lines.append(f'command = "{config["command"]}"')
         args_str = json.dumps(config["args"])
         lines.append(f"args = {args_str}")
-
-    lines.append("enabled = true")
+        lines.append("enabled = true")
     return "\n".join(lines)
 
 
