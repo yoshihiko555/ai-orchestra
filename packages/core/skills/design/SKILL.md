@@ -8,7 +8,7 @@ description: |
   Trigger on: "設計", "要件定義", "基本設計", "詳細設計", "画面設計", "API設計",
   "アーキテクチャ", "design", "requirements", "system design",
   or when the user discusses what to build before implementation.
-  This skill produces design documents that feed into /plan and /startproject.
+  This skill produces design documents that feed into /preflight and /startproject.
 ---
 
 # Design
@@ -58,7 +58,7 @@ AskUserQuestion("質問内容をここに記載")
 ```
 /design → 設計ドキュメント（docs/）
     ↓
-/plan → タスク分解（Plans.md）
+/preflight → タスク分解（Plans.md）
     ↓
 /startproject → 実装
 ```
@@ -82,13 +82,13 @@ Phase 3: 詳細設計（Detailed Design）
   成果物: API-001.md, SC-001.md, TBL-001.md, ...（一覧の各項目を個別展開）
   遷移: 全個別設計書作成 + 実装可能レベル + ユーザー合意
     ↓
-/plan → タスク分解（Plans.md 作成）
+/preflight → タスク分解（Plans.md 作成）
     ↓
 /startproject → 実装開始
 ```
 
 各フェーズの終わりで **受け入れ確認** を行い、ユーザーの明示的な合意を得てから次に進む。
-Phase 3 完了後は `/plan` でタスク分解し、`/startproject` で実装に入る流れになる。
+Phase 3 完了後は `/preflight` でタスク分解し、`/startproject` で実装に入る流れになる。
 
 ---
 
@@ -431,7 +431,7 @@ docs/
 ## Tips
 
 - 全フェーズを一度にやる必要はない — 要件定義だけで止めてもよい
-- 設計ドキュメントは `/plan` や `/startproject` への入力になる
+- 設計ドキュメントは `/preflight` や `/startproject` への入力になる
 - 大きなプロジェクトではフェーズごとにセッションを分けることを推奨
 - 既存プロジェクトに新機能を追加する場合は、Phase 0（既存システム調査）から始める
 - 用語集はプロジェクト初期に作成し、設計中に継続的に更新する

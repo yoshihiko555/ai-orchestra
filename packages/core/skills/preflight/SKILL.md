@@ -1,5 +1,5 @@
 ---
-name: plan
+name: preflight
 description: |
   Create a preflight implementation plan through interactive dialogue with the user.
   Clarifies scope, risks, and task breakdown, then reflects them in Plans.md.
@@ -11,7 +11,7 @@ disable-model-invocation: true
 
 # Plan (Preflight)
 
-`/plan` は **実装前のプリフライト** です。
+`/preflight` は **実装前のプリフライト** です。
 `/startproject` の前段で「何を作るか / どこまで作るか / 何が危険か」を確定します。
 
 > **重要: このスキルは対話型ワークフローです。**
@@ -133,6 +133,6 @@ AskUserQuestion を活用してユーザーから以下を聞き出す:
 
 ## Notes
 
-- `/plan` は **実装を行わない**（プリフライト専用）
+- `/preflight` は **実装を行わない**（プリフライト専用）
 - 実装本線は `/startproject` で行う
 - **EnterPlanMode / ExitPlanMode ツールは使用禁止** — 通常モードで対話を続ける

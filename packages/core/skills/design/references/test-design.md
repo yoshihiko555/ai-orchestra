@@ -218,9 +218,9 @@ docs/testing/
 └── api-test-plan.md       ← API テスト計画（API がある場合）
 ```
 
-## `/plan` との連携
+## `/preflight` との連携
 
-テスト設計の成果物は `/plan` でのタスク分解に直接活用できる：
+テスト設計の成果物は `/preflight` でのタスク分解に直接活用できる：
 
 - `test-strategy.md` → テスト環境構築タスクの根拠
 - `test-plan.md` → 各機能のテストタスクの粒度と優先度

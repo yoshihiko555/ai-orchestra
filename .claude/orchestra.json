@@ -64,12 +64,20 @@
     "skills/codex-system/references/refactoring-task.md",
     "skills/codex-system/references/troubleshooting.md",
     "skills/design-tracker/SKILL.md",
+    "skills/design/SKILL.md",
+    "skills/design/evals/evals.json",
+    "skills/design/references/basic-design.md",
+    "skills/design/references/design-system.md",
+    "skills/design/references/detailed-design.md",
+    "skills/design/references/requirements.md",
+    "skills/design/references/security-design.md",
+    "skills/design/references/test-design.md",
     "skills/gemini-system/SKILL.md",
     "skills/gemini-system/references/lib-research-task.md",
     "skills/gemini-system/references/use-cases.md",
     "skills/issue-create/SKILL.md",
     "skills/issue-fix/SKILL.md",
-    "skills/plan/SKILL.md",
+    "skills/preflight/SKILL.md",
     "skills/release-readiness/SKILL.md",
     "skills/review/SKILL.md",
     "skills/simplify/SKILL.md",
@@ -78,5 +86,5 @@
     "skills/task-state/SKILL.md",
     "skills/tdd/SKILL.md"
   ],
-  "last_sync": "2026-03-07T17:18:17.725382+00:00"
+  "last_sync": "2026-03-12T13:47:02.406561+00:00"
 }

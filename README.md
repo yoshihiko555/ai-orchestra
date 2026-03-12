@@ -234,7 +234,7 @@ Task(subagent_type="code-reviewer", prompt="このコードをレビューして
 | `/gemini-system` | Gemini CLI でのリサーチ・マルチモーダル処理 |
 | `/checkpointing` | セッションコンテキストの保存・復元 |
 | `/design-tracker` | 設計記録スキル（現運用は `CLAUDE.md`/`Plans.md`/ADR/docs を優先） |
-| `/plan` | 実装計画の策定 |
+| `/preflight` | 実装計画の策定 |
 | `/simplify` | コードの簡素化 |
 | `/tdd` | テスト駆動開発ワークフロー |
 

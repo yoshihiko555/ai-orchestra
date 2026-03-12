@@ -32,7 +32,7 @@ AI Orchestra のパッケージ一覧と詳細。
 
 - hooks: `load-task-state.py`, `clear-plan-gate.py`, `check-plan-gate.py`, `set-plan-gate.py`
 - ユーティリティ: `hook_common.py`（全 hook 共通ライブラリ）, `log_common.py`
-- skills: `/plan`, `/startproject`, `/checkpointing`, `/task-state`
+- skills: `/preflight`, `/startproject`, `/checkpointing`, `/task-state`
 - rules: `config-loading.md`, `coding-principles.md`, `skill-review-policy.md`, `task-memory-usage.md`
 - config: `task-memory.yaml`
 
