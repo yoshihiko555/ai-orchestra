@@ -135,7 +135,7 @@ def main() -> None:
     if tmux_has_session(tmux_session):
         result = run_tmux("list-panes", "-t", tmux_session, "-F", "#{pane_id}\t#{pane_title}")
         if result.returncode == 0:
-            lines = [l for l in result.stdout.strip().splitlines() if l]
+            lines = [line for line in result.stdout.strip().splitlines() if line]
             for line in lines:
                 parts = line.split("\t", 1)
                 if len(parts) == 2:
@@ -155,18 +155,24 @@ def main() -> None:
                     continue
                 # このプロセスが dp を予約できた
                 resp = run_tmux("respawn-pane", "-t", dp, "-k", tail_cmd)
-                # claim を即座に解放（排他制御は mkdir の瞬間のみ必要）
+                if resp.returncode == 0:
+                    # タイトル設定後に claim 解放（二重取得防止）
+                    run_tmux("select-pane", "-t", dp, "-T", pane_title)
+                    try:
+                        os.rmdir(claim_path)
+                    except OSError:
+                        pass
+                    pane_id = dp
+                    respawned = True
+                    break
+                # respawn 失敗 → claim 解放して次の DONE ペインを試す
                 try:
                     os.rmdir(claim_path)
                 except OSError:
                     pass
-                if resp.returncode == 0:
-                    pane_id = dp
-                    respawned = True
-                    break
-                # respawn 失敗（ペイン消滅等）→ 次の DONE ペインを試す
 
     # tmux セッションにペインを追加（DONE ペインを再利用しなかった場合）
+    need_split = False
     if respawned:
         pass  # respawn 済み、pane_id は設定済み
     elif tmux_has_session(tmux_session):
@@ -174,11 +180,17 @@ def main() -> None:
         try:
             os.mkdir(first_agent_lock)
             # 最初の sub agent: 待機ペインを置き換え（明示的ペイン ID で競合回避）
-            pane_id = waiting_pane_id or get_current_pane_id(tmux_session)
-            run_tmux("respawn-pane", "-t", pane_id, "-k", tail_cmd)
+            target_pane = waiting_pane_id or get_current_pane_id(tmux_session)
+            resp = run_tmux("respawn-pane", "-t", target_pane, "-k", tail_cmd)
+            if resp.returncode == 0:
+                pane_id = target_pane
+            else:
+                # respawn 失敗 → split-window フォールバック
+                need_split = True
         except OSError:
-            # 2つ目以降: split-window -P -F で新ペインの ID を取得
-            # "no space for new pane" 対策: select-layout tiled 後にリトライ
+            # 2つ目以降 → split-window
+            need_split = True
+        if need_split:
             MAX_SPLIT_RETRIES = 3
             for _attempt in range(MAX_SPLIT_RETRIES):
                 run_tmux("select-layout", "-t", tmux_session, "tiled")
