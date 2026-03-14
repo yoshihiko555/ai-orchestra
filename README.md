@@ -164,6 +164,12 @@ orchex disable <package> --project .
 orchex scripts
 orchex scripts --package route-audit
 
+# CLAUDE.md / AGENTS.md / GEMINI.md テンプレート管理
+orchex context build
+orchex context check
+orchex context sync --project /path/to/project
+orchex context sync --project /path/to/project --force
+
 # パッケージ内スクリプトの実行（-- 以降はスクリプトにパススルー）
 orchex run route-audit dashboard
 orchex run route-audit log-viewer --project /path/to/project -- --last 10
