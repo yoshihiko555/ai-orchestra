@@ -50,6 +50,7 @@
     "rules/codex-suggestion-compliance.md",
     "rules/coding-principles.md",
     "rules/config-loading.md",
+    "rules/context-sharing.md",
     "rules/gemini-delegation.md",
     "rules/gemini-suggestion-compliance.md",
     "rules/orchestra-usage.md",
@@ -86,5 +87,5 @@
     "skills/task-state/SKILL.md",
     "skills/tdd/SKILL.md"
   ],
-  "last_sync": "2026-03-12T13:47:02.406561+00:00"
+  "last_sync": "2026-03-14T09:23:41.809276+00:00"
 }
