@@ -1,21 +1,35 @@
 {
   "name": "core",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "全パッケージ共通の基盤ライブラリ",
   "depends": [],
   "hooks": {
     "SessionStart": ["load-task-state.py"],
+    "SessionEnd": ["cleanup-session-context.py"],
     "UserPromptSubmit": [{ "file": "clear-plan-gate.py" }],
-    "PreToolUse": [{ "file": "check-plan-gate.py", "matcher": "Task" }],
-    "PostToolUse": [{ "file": "set-plan-gate.py", "matcher": "Task" }]
+    "PreToolUse": [
+      { "file": "check-plan-gate.py", "matcher": "Task" },
+      { "file": "inject-shared-context.py", "matcher": "Task" }
+    ],
+    "PostToolUse": [
+      { "file": "set-plan-gate.py", "matcher": "Task" },
+      { "file": "capture-task-result.py", "matcher": "Task" },
+      { "file": "update-working-context.py", "matcher": "Edit" },
+      { "file": "update-working-context.py", "matcher": "Write" }
+    ]
   },
   "files": [
     "hooks/hook_common.py",
     "hooks/log_common.py",
+    "hooks/context_store.py",
     "hooks/set-plan-gate.py",
     "hooks/check-plan-gate.py",
     "hooks/clear-plan-gate.py",
-    "hooks/load-task-state.py"
+    "hooks/load-task-state.py",
+    "hooks/capture-task-result.py",
+    "hooks/inject-shared-context.py",
+    "hooks/update-working-context.py",
+    "hooks/cleanup-session-context.py"
   ],
   "skills": [
     "skills/preflight",
@@ -29,7 +43,8 @@
     "rules/config-loading.md",
     "rules/coding-principles.md",
     "rules/skill-review-policy.md",
-    "rules/task-memory-usage.md"
+    "rules/task-memory-usage.md",
+    "rules/context-sharing.md"
   ],
   "scripts": [],
   "config": ["config/task-memory.yaml"]

@@ -60,3 +60,6 @@ htmlcov/
 *.min.css
 *.map
 *.wasm
+
+# Context sharing session data (auto-cleaned on session end)
+.claude/context/session/

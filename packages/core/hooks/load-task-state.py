@@ -243,6 +243,14 @@ def main() -> None:
     data = read_hook_input()
     project_dir = get_project_dir(data)
 
+    # コンテキストディレクトリを初期化（冪等）
+    try:
+        from context_store import init_context_dir
+
+        init_context_dir(project_dir)
+    except Exception:
+        pass  # context_store が利用できなくてもタスク状態表示は続行
+
     config = load_config(project_dir)
 
     if not config.get("show_summary_on_start", True):
