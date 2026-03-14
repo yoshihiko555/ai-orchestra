@@ -53,7 +53,18 @@
 
 ## セッション開始時の動作
 
-SessionStart hook が `.claude/Plans.md` を読み込み、以下をコンテキストに注入する:
+SessionStart hook が `.claude/Plans.md` を読み込み、以下を実行する:
+
+### 自動アーカイブ
+
+1. 全フェーズが `cc:done` のプロジェクトを検出する
+2. 該当プロジェクトを `.claude/Plans.archive.md` に日付付きで追記する
+3. Plans.md から該当プロジェクトセクション（+ 区切り線）を除去する
+4. **全プロジェクトが完了した場合のみ**、Decisions / Notes セクションもアーカイブに移動する
+
+### タスクサマリー注入
+
+アーカイブ後の Plans.md から以下をコンテキストに注入する:
 
 1. **WIP タスクの一覧** — 前回セッションで中断した作業
 2. **次の TODO タスク** — 優先度の高い未着手タスク
@@ -74,6 +85,12 @@ SessionStart hook が `.claude/Plans.md` を読み込み、以下をコンテキ
 - `/task-state` スキルで Plans.md の作成・更新ができる
 - 手動編集も可能（フォーマットに従うこと）
 - Plans.md は git にコミットしてチーム共有を推奨
+
+### アーカイブ
+
+- 完了済みプロジェクトは SessionStart 時に自動で `.claude/Plans.archive.md` に移動される
+- アーカイブファイルは参照用に保持される（`.claudeignore` に追加推奨）
+- Decisions / Notes は全プロジェクト完了時のみアーカイブに移動する（一部残存時は Plans.md に残る）
 
 ### 設計判断の記録
 
