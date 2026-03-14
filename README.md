@@ -164,6 +164,12 @@ orchex disable <package> --project .
 orchex scripts
 orchex scripts --package route-audit
 
+# CLAUDE.md / AGENTS.md / GEMINI.md テンプレート管理
+orchex context build
+orchex context check
+orchex context sync --project /path/to/project
+orchex context sync --project /path/to/project --force
+
 # パッケージ内スクリプトの実行（-- 以降はスクリプトにパススルー）
 orchex run route-audit dashboard
 orchex run route-audit log-viewer --project /path/to/project -- --last 10
@@ -234,7 +240,7 @@ Task(subagent_type="code-reviewer", prompt="このコードをレビューして
 | `/gemini-system` | Gemini CLI でのリサーチ・マルチモーダル処理 |
 | `/checkpointing` | セッションコンテキストの保存・復元 |
 | `/design-tracker` | 設計記録スキル（現運用は `CLAUDE.md`/`Plans.md`/ADR/docs を優先） |
-| `/plan` | 実装計画の策定 |
+| `/preflight` | 実装計画の策定 |
 | `/simplify` | コードの簡素化 |
 | `/tdd` | テスト駆動開発ワークフロー |
 
