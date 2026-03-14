@@ -130,6 +130,18 @@ class TestWriteEntry:
         summaries = {json.loads(e.read_text(encoding="utf-8"))["summary"] for e in entries}
         assert summaries == {"first", "second"}
 
+    def test_sanitizes_agent_id_for_filename(self, tmp_path: Path) -> None:
+        # Arrange
+        agent_id = "../unsafe agent id"
+
+        # Act
+        write_entry(str(tmp_path), agent_id, {"summary": "safe"})
+
+        # Assert
+        entries = list(_entries_dir(tmp_path).glob("*.json"))
+        assert len(entries) == 1
+        assert entries[0].name.startswith("unsafe-agent-id_")
+
 
 # ---------------------------------------------------------------------------
 # read_entries
@@ -308,6 +320,7 @@ class TestCleanupSession:
 
         # Assert
         assert not _working_context_path(tmp_path).exists()
+        assert _shared_dir(tmp_path).is_dir()
 
     def test_does_not_raise_when_already_clean(self, tmp_path: Path) -> None:
         # Act / Assert – no exception

@@ -463,9 +463,6 @@ def main() -> None:
 
     config = load_config(project_dir)
 
-    if not config.get("show_summary_on_start", True):
-        return
-
     plans_file = config.get("plans_file", ".claude/Plans.md")
     plans_path = Path(project_dir) / plans_file
 
@@ -477,8 +474,15 @@ def main() -> None:
     except OSError:
         return
 
+    markers = resolve_markers(config)
+    try:
+        marker_pattern, marker_to_state = build_marker_parser(markers, strict=True)
+    except ValueError as e:
+        print(f"[task-memory] invalid markers config: {e}; fallback to defaults", file=sys.stderr)
+        marker_pattern, marker_to_state = DEFAULT_MARKER_PATTERN, DEFAULT_MARKER_TO_STATE
+
     archive_path = plans_path.parent / "Plans.archive.md"
-    completed = detect_completed_projects(content, DEFAULT_MARKER_PATTERN, DEFAULT_MARKER_TO_STATE)
+    completed = detect_completed_projects(content, marker_pattern, marker_to_state)
     if completed:
         try:
             content = archive_projects(plans_path, archive_path, completed, content)
@@ -491,15 +495,12 @@ def main() -> None:
         except OSError as e:
             print(f"[task-memory] archive failed, skipping: {e}", file=sys.stderr)
 
+    if not config.get("show_summary_on_start", True):
+        return
+
     if not content.strip():
         return
 
-    markers = resolve_markers(config)
-    try:
-        marker_pattern, marker_to_state = build_marker_parser(markers, strict=True)
-    except ValueError as e:
-        print(f"[task-memory] invalid markers config: {e}; fallback to defaults", file=sys.stderr)
-        marker_pattern, marker_to_state = DEFAULT_MARKER_PATTERN, DEFAULT_MARKER_TO_STATE
     tasks = parse_tasks(content, marker_pattern, marker_to_state)
 
     # 1 つもタスクがなければ何も出力しない

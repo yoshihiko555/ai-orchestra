@@ -258,6 +258,10 @@ class TestBuildEntriesSection:
         lines = result.split("\n")
         entry_lines = [l for l in lines if l.startswith("- ")]
         assert len(entry_lines) == 5
+        assert "agent-0" not in result
+        assert "agent-1" not in result
+        for i in range(2, 7):
+            assert f"agent-{i}" in result
 
     def test_truncates_long_summary(self) -> None:
         # Arrange
@@ -473,6 +477,13 @@ class TestToRelativePath:
 
         # Assert
         assert result == "/other/src/foo.py"
+
+    def test_returns_path_unchanged_when_only_prefix_matches(self) -> None:
+        # Act
+        result = update_mod.to_relative_path("/project-other/src/foo.py", "/project")
+
+        # Assert
+        assert result == "/project-other/src/foo.py"
 
     def test_returns_path_unchanged_when_project_dir_empty(self) -> None:
         # Act

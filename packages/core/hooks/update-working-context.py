@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 
 # sys.path に packages/core/hooks を追加
 _HOOK_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -68,9 +69,22 @@ def to_relative_path(file_path: str, project_dir: str) -> str:
 
     project_dir が含まれない場合は file_path をそのまま返す。
     """
-    if project_dir and file_path.startswith(project_dir):
-        relative = file_path[len(project_dir) :]
-        return relative.lstrip(os.sep)
+    if not project_dir:
+        return file_path
+
+    try:
+        project_root = Path(project_dir).resolve()
+        source_path = Path(file_path)
+        if source_path.is_absolute():
+            resolved_source = source_path.resolve()
+        else:
+            resolved_source = (project_root / source_path).resolve()
+
+        if resolved_source.is_relative_to(project_root):
+            return str(resolved_source.relative_to(project_root))
+    except (OSError, RuntimeError, ValueError):
+        return file_path
+
     return file_path
 
 

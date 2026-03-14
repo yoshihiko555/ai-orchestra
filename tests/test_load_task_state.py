@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 import importlib
 import re
+from io import StringIO
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "packages" / "core" / "hooks"))
 _mod = importlib.import_module("load-task-state")
@@ -10,6 +11,7 @@ detect_completed_projects = _mod.detect_completed_projects
 archive_projects = _mod.archive_projects
 DEFAULT_MARKER_PATTERN = _mod.DEFAULT_MARKER_PATTERN
 DEFAULT_MARKER_TO_STATE = _mod.DEFAULT_MARKER_TO_STATE
+DEFAULT_MARKERS = _mod.DEFAULT_MARKERS
 
 
 def test_detect_completed_projects_all_done() -> None:
@@ -253,3 +255,66 @@ def test_archive_creates_new_file(tmp_path: Path) -> None:
     archive_text = archive_path.read_text(encoding="utf-8")
     assert archive_text.startswith("# Archived Plans")
     assert "## Project: Alpha" in archive_text
+
+
+def test_main_archives_even_when_summary_disabled(tmp_path: Path, monkeypatch) -> None:
+    plans_path = tmp_path / ".claude" / "Plans.md"
+    plans_path.parent.mkdir(parents=True, exist_ok=True)
+    plans_path.write_text(
+        "# Plans\n\n## Project: Alpha\n### Phase 1: Done `cc:done`\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(_mod, "read_hook_input", lambda: {"cwd": str(tmp_path)})
+    monkeypatch.setattr(
+        _mod,
+        "load_config",
+        lambda _project_dir: {
+            "plans_file": ".claude/Plans.md",
+            "show_summary_on_start": False,
+            "max_display_tasks": 20,
+            "markers": dict(DEFAULT_MARKERS),
+        },
+    )
+    monkeypatch.setattr(sys, "stdout", StringIO())
+
+    _mod.main()
+
+    archive_path = tmp_path / ".claude" / "Plans.archive.md"
+    assert archive_path.is_file()
+    assert "## Project: Alpha" in archive_path.read_text(encoding="utf-8")
+
+
+def test_main_uses_custom_markers_for_archive_detection(tmp_path: Path, monkeypatch) -> None:
+    plans_path = tmp_path / ".claude" / "Plans.md"
+    plans_path.parent.mkdir(parents=True, exist_ok=True)
+    plans_path.write_text(
+        "# Plans\n\n## Project: Custom\n### Phase 1: Done `custom:done`\n",
+        encoding="utf-8",
+    )
+
+    custom_markers = {
+        "todo": "custom:TODO",
+        "wip": "custom:WIP",
+        "done": "custom:done",
+        "blocked": "custom:blocked",
+    }
+    monkeypatch.setattr(_mod, "read_hook_input", lambda: {"cwd": str(tmp_path)})
+    monkeypatch.setattr(
+        _mod,
+        "load_config",
+        lambda _project_dir: {
+            "plans_file": ".claude/Plans.md",
+            "show_summary_on_start": False,
+            "max_display_tasks": 20,
+            "markers": custom_markers,
+        },
+    )
+    monkeypatch.setattr(sys, "stdout", StringIO())
+
+    _mod.main()
+
+    archive_path = tmp_path / ".claude" / "Plans.archive.md"
+    assert archive_path.is_file()
+    archive_text = archive_path.read_text(encoding="utf-8")
+    assert "## Project: Custom" in archive_text

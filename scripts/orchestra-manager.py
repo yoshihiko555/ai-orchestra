@@ -94,6 +94,7 @@ class OrchestraManager:
         ".claude/logs/",
         ".claude/state/",
         ".claude/checkpoints/",
+        ".claude/context/",
         ".claude/Plans.md",
         ".claude/Plans.archive.md",
     ]
@@ -399,11 +400,28 @@ class OrchestraManager:
     def context_sync(self, project: str | None, dry_run: bool = False, force: bool = False) -> int:
         """生成済み context をプロジェクトのトップレベル文書へ同期する。"""
         project_dir = self.get_project_dir(project)
+        project_root = project_dir.resolve()
         changed = 0
         skip_existing = not force
 
         for _, source_rel, _, project_rel in self.CONTEXT_SPECS:
             dst = project_dir / project_rel
+
+            # シンボリックリンク経由の意図しない上書きを防ぐ
+            if dst.is_symlink():
+                print(f"スキップ（安全性）: {project_rel} (symlink)")
+                continue
+            try:
+                dst_parent_resolved = dst.parent.resolve()
+            except OSError:
+                print(f"スキップ（安全性）: {project_rel} (parent unreadable)")
+                continue
+            try:
+                dst_parent_resolved.relative_to(project_root)
+            except ValueError:
+                print(f"スキップ（安全性）: {project_rel} (outside project)")
+                continue
+
             content = self._render_context_content(source_rel)
             if self._update_file_if_needed(
                 dst,

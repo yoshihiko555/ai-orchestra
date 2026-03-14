@@ -19,6 +19,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 import shutil
 import sys
 import uuid
@@ -49,6 +50,8 @@ except ImportError:
 
 # modified_files リストの最大件数
 MAX_MODIFIED_FILES = 100
+_AGENT_ID_SAFE_PATTERN = re.compile(r"[^A-Za-z0-9_-]+")
+_MAX_AGENT_ID_LEN = 64
 
 
 def _context_dir(project_dir: str) -> str:
@@ -74,6 +77,16 @@ def _shared_dir(project_dir: str) -> str:
 def _now_iso8601() -> str:
     """現在時刻を ISO8601 形式で返す。"""
     return datetime.now(tz=UTC).isoformat()
+
+
+def _sanitize_agent_id(agent_id: str) -> str:
+    """agent_id をファイル名として安全な形式に正規化する。"""
+    raw = str(agent_id or "").strip()
+    safe = _AGENT_ID_SAFE_PATTERN.sub("-", raw)
+    safe = re.sub(r"-{2,}", "-", safe).strip("-_")
+    if not safe:
+        return "unknown"
+    return safe[:_MAX_AGENT_ID_LEN]
 
 
 def get_project_dir(data: dict) -> str:
@@ -138,8 +151,9 @@ def write_entry(project_dir: str, agent_id: str, data: dict[str, Any]) -> None:
         entries_dir = _entries_dir(project_dir)
         Path(entries_dir).mkdir(parents=True, exist_ok=True)
 
+        safe_agent_id = _sanitize_agent_id(agent_id)
         timestamp_str = _now_iso8601().replace(":", "-").replace("+", "_")
-        entry_path = os.path.join(entries_dir, f"{agent_id}_{timestamp_str}.json")
+        entry_path = str(Path(entries_dir).joinpath(f"{safe_agent_id}_{timestamp_str}.json"))
         write_json(entry_path, data)
     except Exception as e:
         print(f"context_store.write_entry: {e}", file=sys.stderr)
