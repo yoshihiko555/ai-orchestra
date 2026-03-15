@@ -262,7 +262,9 @@ instruction: my-instruction
         project_dir.mkdir(parents=True)
         _setup_facet_sources(orchestra_dir)
         comp = "name: my-rule\ntype: rule\npolicies:\n  - code-quality\n"
-        (orchestra_dir / "facets" / "compositions" / "my-rule.yaml").write_text(comp, encoding="utf-8")
+        (orchestra_dir / "facets" / "compositions" / "my-rule.yaml").write_text(
+            comp, encoding="utf-8"
+        )
         builder = FacetBuilder(orchestra_dir)
         output_path = builder.build_one("my-rule", "claude", project_dir)
         content = output_path.read_text(encoding="utf-8")
@@ -275,7 +277,9 @@ instruction: my-instruction
         project_dir.mkdir(parents=True)
         _setup_facet_sources(orchestra_dir)
         comp = "name: my-rule\ntype: rule\npolicies:\n  - code-quality\n"
-        (orchestra_dir / "facets" / "compositions" / "my-rule.yaml").write_text(comp, encoding="utf-8")
+        (orchestra_dir / "facets" / "compositions" / "my-rule.yaml").write_text(
+            comp, encoding="utf-8"
+        )
         builder = FacetBuilder(orchestra_dir)
         output_path = builder.build_one("my-rule", "claude", project_dir)
         assert output_path == project_dir / ".claude" / "rules" / "my-rule.md"
@@ -286,7 +290,9 @@ instruction: my-instruction
         project_dir.mkdir(parents=True)
         _setup_facet_sources(orchestra_dir)
         comp = "name: my-rule\ntype: rule\npolicies:\n  - code-quality\n"
-        (orchestra_dir / "facets" / "compositions" / "my-rule.yaml").write_text(comp, encoding="utf-8")
+        (orchestra_dir / "facets" / "compositions" / "my-rule.yaml").write_text(
+            comp, encoding="utf-8"
+        )
         builder = FacetBuilder(orchestra_dir)
         output_path = builder.build_one("my-rule", "claude", project_dir)
         content = output_path.read_text(encoding="utf-8")
@@ -381,7 +387,9 @@ instruction: |
 
   local-extra-body
 """
-        (local_compositions_dir / "local-extra.yaml").write_text(local_composition, encoding="utf-8")
+        (local_compositions_dir / "local-extra.yaml").write_text(
+            local_composition, encoding="utf-8"
+        )
 
         builder = FacetBuilder(orchestra_dir=orchestra_dir, project_facets_dir=local_facets_dir)
         output_paths = builder.build_all("claude", project_dir)
@@ -392,6 +400,88 @@ instruction: |
         assert "simplify" in names
         assert "review" in names
         assert "local-extra" in names
+
+    def test_extract_recovers_instruction(self, tmp_path: Path) -> None:
+        orchestra_dir = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        project_dir.mkdir(parents=True)
+        _setup_facet_sources(orchestra_dir)
+
+        builder = FacetBuilder(orchestra_dir)
+        # Build first to generate SKILL.md
+        output_path = builder.build_one("simplify", "claude", project_dir)
+
+        # Modify the instruction section in the generated SKILL.md
+        content = output_path.read_text(encoding="utf-8")
+        modified = content.replace("simplify-body", "tuned-body")
+        output_path.write_text(modified, encoding="utf-8")
+
+        # Extract should write the tuned instruction back to source
+        instruction_path = builder.extract_one("simplify", "claude", project_dir)
+
+        assert instruction_path is not None
+        extracted = instruction_path.read_text(encoding="utf-8")
+        assert "tuned-body" in extracted
+        assert "# Simplify Code" in extracted
+
+    def test_extract_preserves_policy_content(self, tmp_path: Path) -> None:
+        orchestra_dir = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        project_dir.mkdir(parents=True)
+        _setup_facet_sources(orchestra_dir)
+
+        builder = FacetBuilder(orchestra_dir)
+        builder.build_one("simplify", "claude", project_dir)
+
+        instruction_path = builder.extract_one("simplify", "claude", project_dir)
+
+        assert instruction_path is not None
+        extracted = instruction_path.read_text(encoding="utf-8")
+        # The instruction section should NOT contain the policy content
+        assert "policy-body" not in extracted
+        assert "# Code Quality" not in extracted
+        # But it should contain the instruction
+        assert "simplify-body" in extracted
+
+    def test_extract_rule_type(self, tmp_path: Path) -> None:
+        orchestra_dir = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        project_dir.mkdir(parents=True)
+        _setup_facet_sources(orchestra_dir)
+
+        comp = """\
+name: my-rule
+type: rule
+policies:
+  - code-quality
+instruction: |
+  # Rule Instruction
+
+  rule-body
+"""
+        (orchestra_dir / "facets" / "compositions" / "my-rule.yaml").write_text(
+            comp, encoding="utf-8"
+        )
+
+        builder = FacetBuilder(orchestra_dir)
+        # Build rule first
+        builder.build_one("my-rule", "claude", project_dir)
+
+        # Modify instruction in generated rule
+        rule_path = project_dir / ".claude" / "rules" / "my-rule.md"
+        content = rule_path.read_text(encoding="utf-8")
+        modified = content.replace("rule-body", "tuned-rule-body")
+        rule_path.write_text(modified, encoding="utf-8")
+
+        # Extract should recover the instruction without frontmatter stripping
+        instruction_path = builder.extract_one("my-rule", "claude", project_dir)
+
+        assert instruction_path is not None
+        extracted = instruction_path.read_text(encoding="utf-8")
+        assert "tuned-rule-body" in extracted
+        assert "# Rule Instruction" in extracted
+        # Policy content should not be in extracted instruction
+        assert "policy-body" not in extracted
 
     def test_build_all_no_duplicate_when_same_name_in_both(self, tmp_path: Path) -> None:
         orchestra_dir = tmp_path / "orchestra"

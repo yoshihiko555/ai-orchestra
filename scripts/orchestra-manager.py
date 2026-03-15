@@ -1675,6 +1675,91 @@ class FacetBuilder:
 
         return output_paths
 
+    def extract_one(self, name: str, target: str, project_dir: Path) -> Path | None:
+        """生成済みファイルから instruction を抽出してソースに書き戻す。"""
+        # 1. Find and load composition
+        composition_path: Path | None = None
+        if self.project_facets_dir:
+            local_path = self.project_facets_dir / "compositions" / f"{name}.yaml"
+            if local_path.exists():
+                composition_path = local_path
+        if composition_path is None:
+            composition_path = self.orchestra_dir / "facets" / "compositions" / f"{name}.yaml"
+
+        composition = self.load_composition(composition_path)
+        comp_type = composition.get("type", "skill")
+        output_name = composition["name"]
+
+        # 2. Read generated file
+        generated_path = self._build_output_path(output_name, target, project_dir, comp_type)
+        if not generated_path.exists():
+            print(f"エラー: 生成済みファイルが見つかりません: {generated_path}", file=sys.stderr)
+            return None
+
+        content = generated_path.read_text(encoding="utf-8")
+
+        # 3. Strip frontmatter (skill only)
+        if comp_type == "skill":
+            if content.startswith("---"):
+                end_idx = content.index("---", 3)
+                content = content[end_idx + 3:].lstrip("\n")
+
+        # 4. Split by separator
+        sections = content.split("\n\n---\n\n")
+
+        # 5. Skip policy + output_contract sections
+        num_policies = len(composition.get("policies", []))
+        num_contracts = len(composition.get("output_contracts", []))
+        skip = num_policies + num_contracts
+
+        if skip >= len(sections):
+            print(f"エラー: instruction セクションが見つかりません: {name}", file=sys.stderr)
+            return None
+
+        instruction_content = "\n\n---\n\n".join(sections[skip:])
+
+        # 6. Determine write path (project-local -> orchestra)
+        instruction_path: Path | None = None
+        if self.project_facets_dir:
+            local_instr = self.project_facets_dir / "instructions" / f"{name}.md"
+            if local_instr.exists():
+                instruction_path = local_instr
+        if instruction_path is None:
+            instruction_path = self.orchestra_dir / "facets" / "instructions" / f"{name}.md"
+
+        # 7. Write
+        instruction_path.parent.mkdir(parents=True, exist_ok=True)
+        instruction_path.write_text(instruction_content, encoding="utf-8")
+
+        print(f"[facet] extracted {output_name} -> {instruction_path.relative_to(instruction_path.parent.parent.parent)}")
+        return instruction_path
+
+    def extract_all(self, target: str, project_dir: Path) -> list[Path]:
+        """全 composition の instruction を抽出する。"""
+        paths: list[Path] = []
+        seen: set[str] = set()
+
+        # Project-local compositions first
+        if self.project_facets_dir:
+            local_dir = self.project_facets_dir / "compositions"
+            if local_dir.is_dir():
+                for p in sorted(local_dir.glob("*.yaml")):
+                    seen.add(p.stem)
+                    result = self.extract_one(p.stem, target, project_dir)
+                    if result:
+                        paths.append(result)
+
+        # Orchestra compositions
+        compositions_dir = self.orchestra_dir / "facets" / "compositions"
+        if compositions_dir.is_dir():
+            for p in sorted(compositions_dir.glob("*.yaml")):
+                if p.stem not in seen:
+                    result = self.extract_one(p.stem, target, project_dir)
+                    if result:
+                        paths.append(result)
+
+        return paths
+
 
 def main():
     """メインエントリポイント"""
@@ -1794,6 +1879,18 @@ def main():
         help="出力先（デフォルト: claude）",
     )
     facet_build_parser.add_argument("--project", help="プロジェクトパス")
+    facet_extract_parser = facet_sub.add_parser(
+        "extract",
+        help="生成済みファイルから instruction を抽出してソースに書き戻す",
+    )
+    facet_extract_parser.add_argument("--name", help="composition 名（省略時は全件）")
+    facet_extract_parser.add_argument(
+        "--target",
+        choices=["claude", "codex"],
+        default="claude",
+        help="抽出元（デフォルト: claude）",
+    )
+    facet_extract_parser.add_argument("--project", help="プロジェクトパス")
 
     # setup コマンド
     setup_parser = subparsers.add_parser("setup", help="プリセットで一括セットアップ")
@@ -1878,6 +1975,11 @@ def main():
                 facet_builder.build_one(args.name, args.target, project_dir)
             else:
                 facet_builder.build_all(args.target, project_dir)
+        elif args.facet_command == "extract":
+            if args.name:
+                facet_builder.extract_one(args.name, args.target, project_dir)
+            else:
+                facet_builder.extract_all(args.target, project_dir)
         else:
             facet_parser.print_help()
             sys.exit(1)
