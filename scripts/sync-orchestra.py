@@ -19,6 +19,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -512,6 +513,31 @@ def _patch_agent_model(file_path: Path, model: str) -> bool:
     return True
 
 
+def build_facets(orchestra_path: Path, project_dir: Path) -> int:
+    """facet composition から SKILL.md / ルール .md を自動生成する。"""
+    compositions_dir = orchestra_path / "facets" / "compositions"
+    if not compositions_dir.is_dir():
+        return 0
+    if not any(compositions_dir.glob("*.yaml")):
+        return 0
+
+    script = orchestra_path / "scripts" / "orchestra-manager.py"
+    if not script.is_file():
+        return 0
+
+    try:
+        result = subprocess.run(
+            [sys.executable, str(script), "facet", "build", "--project", str(project_dir)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return 0
+
+    return result.stdout.count("[facet] built")
+
+
 def main() -> None:
     data = read_hook_input()
     project_dir = Path(get_project_dir(data))
@@ -617,6 +643,9 @@ def main() -> None:
             shutil.copy2(src_file, dst)
             synced_count += 1
 
+    # ファセットビルド（composition → SKILL.md / ルール .md 生成）
+    facet_built_count = build_facets(orchestra_path, project_dir)
+
     # 前回同期されたが今回は対象外のファイルを削除
     # synced_files キーが未設定（初回）の場合は削除しない（プロジェクト固有ファイルの誤削除を防止）
     prev_synced = orch.get("synced_files", [])
@@ -670,6 +699,7 @@ def main() -> None:
         or claudeignore_updated
         or scaffolded_count > 0
         or patched_count > 0
+        or facet_built_count > 0
     ):
         parts = []
         if scaffolded_count > 0:
@@ -684,6 +714,8 @@ def main() -> None:
             parts.append(".claudeignore updated")
         if patched_count > 0:
             parts.append(f"{patched_count} agent models patched")
+        if facet_built_count > 0:
+            parts.append(f"{facet_built_count} facets built")
         print(f"[orchestra] {', '.join(parts)}")
 
 
