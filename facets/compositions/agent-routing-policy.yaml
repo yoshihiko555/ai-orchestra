@@ -1,0 +1,8 @@
+# agent-routing-policy ルールのファセット構成定義
+name: agent-routing-policy
+description: エージェントルーティングポリシー
+type: rule
+
+policies: []
+
+instruction: agent-routing-policy

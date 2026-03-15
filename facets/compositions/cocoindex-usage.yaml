@@ -1,0 +1,8 @@
+# cocoindex-usage ルールのファセット構成定義
+name: cocoindex-usage
+description: cocoindex MCP サーバー使用ルール
+type: rule
+
+policies: []
+
+instruction: cocoindex-usage
