@@ -6,10 +6,7 @@
   "hooks": {
     "UserPromptSubmit": ["agent-router.py"]
   },
-  "files": [
-    "hooks/agent-router.py",
-    "hooks/route_config.py"
-  ],
+  "files": ["hooks/agent-router.py", "hooks/route_config.py"],
   "skills": [],
   "agents": [
     "agents/ai-architect.md",
@@ -33,14 +30,15 @@
     "agents/requirements.md",
     "agents/researcher.md",
     "agents/security-reviewer.md",
+    "agents/specialized-mcp-builder.md",
     "agents/spec-reviewer.md",
+    "agents/support-executive-summary-generator.md",
     "agents/spec-writer.md",
     "agents/tester.md",
+    "agents/testing-reality-checker.md",
     "agents/ux-reviewer.md"
   ],
   "rules": ["rules/orchestra-usage.md", "rules/agent-routing-policy.md"],
   "scripts": [],
-  "config": [
-    "config/cli-tools.yaml"
-  ]
+  "config": ["config/cli-tools.yaml"]
 }
