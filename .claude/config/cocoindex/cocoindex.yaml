@@ -21,9 +21,9 @@ targets:
 
 # mcp-proxy 対応（v2）— .local.yaml で proxy.enabled: true にしてオプトイン
 proxy:
-  enabled: false
+  enabled: true
   port: 8792
-  port_range: 100         # project_dir ハッシュで port〜port+99 を自動割り当て。0 で固定モード
+  port_range: 100 # project_dir ハッシュで port〜port+99 を自動割り当て。0 で固定モード
   host: "127.0.0.1"
   pid_file: ".claude/.mcp-proxy.pid"
   startup_timeout: 10
