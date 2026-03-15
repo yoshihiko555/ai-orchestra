@@ -516,19 +516,30 @@ def _patch_agent_model(file_path: Path, model: str) -> bool:
 def build_facets(orchestra_path: Path, project_dir: Path) -> int:
     """facet composition から SKILL.md / ルール .md を自動生成する。"""
     compositions_dir = orchestra_path / "facets" / "compositions"
-    if not compositions_dir.is_dir():
+    local_compositions_dir = project_dir / ".claude" / "facets" / "compositions"
+
+    has_orchestra = compositions_dir.is_dir() and any(compositions_dir.glob("*.yaml"))
+    has_local = local_compositions_dir.is_dir() and any(local_compositions_dir.glob("*.yaml"))
+    if not has_orchestra and not has_local:
         return 0
 
-    yamls = list(compositions_dir.glob("*.yaml"))
-    if not yamls:
-        return 0
+    # 変更検知: composition YAML / facet .md が生成物より新しい場合のみビルド
+    yamls: list[Path] = []
+    if has_orchestra:
+        yamls.extend(compositions_dir.glob("*.yaml"))
+    if has_local:
+        yamls.extend(local_compositions_dir.glob("*.yaml"))
 
-    # 変更検知: composition YAML が生成物より新しい場合のみビルド
     latest_src = max(p.stat().st_mtime for p in yamls)
     facets_dir = orchestra_path / "facets"
     facet_mds = list(facets_dir.glob("**/*.md"))
     if facet_mds:
         latest_src = max(latest_src, max(p.stat().st_mtime for p in facet_mds))
+    local_facets_dir = project_dir / ".claude" / "facets"
+    if local_facets_dir.is_dir():
+        local_facet_mds = list(local_facets_dir.glob("**/*.md"))
+        if local_facet_mds:
+            latest_src = max(latest_src, max(p.stat().st_mtime for p in local_facet_mds))
 
     claude_skills = project_dir / ".claude" / "skills"
     claude_rules = project_dir / ".claude" / "rules"

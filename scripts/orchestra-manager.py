@@ -1455,6 +1455,7 @@ class FacetBuilder:
     """facet composition から SKILL.md を生成するビルダー。"""
 
     orchestra_dir: Path
+    project_facets_dir: Path | None = None  # .claude/facets/ in the target project
 
     def load_composition(self, path: Path) -> dict[str, Any]:
         """composition YAML をロードして最低限の検証を行う。"""
@@ -1530,12 +1531,22 @@ class FacetBuilder:
         return composition
 
     def resolve_facet(self, kind: str, name: str) -> str:
-        """facet ファイル本文を読み込む。"""
+        """facet ファイル本文を読み込む。プロジェクトローカル → orchestra の順で解決。"""
+        # 1. プロジェクトローカルを先に検索
+        if self.project_facets_dir:
+            local_path = self.project_facets_dir / kind / f"{name}.md"
+            if local_path.exists():
+                try:
+                    return local_path.read_text(encoding="utf-8").strip()
+                except OSError as e:
+                    print(f"エラー: facet の読み込みに失敗しました: {local_path} ({e})", file=sys.stderr)
+                    sys.exit(1)
+
+        # 2. orchestra にフォールバック
         facet_path = self.orchestra_dir / "facets" / kind / f"{name}.md"
         if not facet_path.exists():
             print(f"エラー: facet ファイルが見つかりません: {facet_path}", file=sys.stderr)
             sys.exit(1)
-
         try:
             return facet_path.read_text(encoding="utf-8").strip()
         except OSError as e:
@@ -1614,7 +1625,15 @@ class FacetBuilder:
 
     def build_one(self, name: str, target: str, project_dir: Path) -> Path:
         """単一 composition をビルドして出力する。"""
-        composition_path = self.orchestra_dir / "facets" / "compositions" / f"{name}.yaml"
+        # プロジェクトローカル → orchestra の順で composition を検索
+        composition_path = None
+        if self.project_facets_dir:
+            local_path = self.project_facets_dir / "compositions" / f"{name}.yaml"
+            if local_path.exists():
+                composition_path = local_path
+        if composition_path is None:
+            composition_path = self.orchestra_dir / "facets" / "compositions" / f"{name}.yaml"
+
         composition = self.load_composition(composition_path)
         output_name = composition["name"]
         comp_type = composition.get("type", "skill")
@@ -1632,14 +1651,28 @@ class FacetBuilder:
 
     def build_all(self, target: str, project_dir: Path) -> list[Path]:
         """全 composition をビルドして出力する。"""
+        output_paths: list[Path] = []
+        seen_names: set[str] = set()
+
+        # 1. プロジェクトローカルの compositions を先にスキャン
+        if self.project_facets_dir:
+            local_compositions_dir = self.project_facets_dir / "compositions"
+            if local_compositions_dir.is_dir():
+                for composition_path in sorted(local_compositions_dir.glob("*.yaml")):
+                    seen_names.add(composition_path.stem)
+                    output_paths.append(self.build_one(composition_path.stem, target, project_dir))
+
+        # 2. orchestra の compositions をスキャン（ローカルで既に処理済みのものはスキップ）
         compositions_dir = self.orchestra_dir / "facets" / "compositions"
-        if not compositions_dir.exists():
-            print(f"エラー: compositions ディレクトリが見つかりません: {compositions_dir}", file=sys.stderr)
+        if compositions_dir.is_dir():
+            for composition_path in sorted(compositions_dir.glob("*.yaml")):
+                if composition_path.stem not in seen_names:
+                    output_paths.append(self.build_one(composition_path.stem, target, project_dir))
+
+        if not output_paths:
+            print("エラー: compositions が見つかりません", file=sys.stderr)
             sys.exit(1)
 
-        output_paths: list[Path] = []
-        for composition_path in sorted(compositions_dir.glob("*.yaml")):
-            output_paths.append(self.build_one(composition_path.stem, target, project_dir))
         return output_paths
 
 
@@ -1834,8 +1867,12 @@ def main():
             proxy_parser.print_help()
             sys.exit(1)
     elif args.command == "facet":
-        facet_builder = FacetBuilder(orchestra_dir)
         project_dir = manager.get_project_dir(args.project)
+        project_facets_dir = project_dir / ".claude" / "facets"
+        facet_builder = FacetBuilder(
+            orchestra_dir=orchestra_dir,
+            project_facets_dir=project_facets_dir if project_facets_dir.is_dir() else None,
+        )
         if args.facet_command == "build":
             if args.name:
                 facet_builder.build_one(args.name, args.target, project_dir)

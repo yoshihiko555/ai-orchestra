@@ -302,3 +302,133 @@ instruction: my-instruction
         assert output_path == project_dir / ".claude" / "skills" / "simplify" / "SKILL.md"
         content = output_path.read_text(encoding="utf-8")
         assert content.startswith("---")
+
+    def test_project_local_facet_overrides_orchestra(self, tmp_path: Path) -> None:
+        orchestra_dir = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        project_dir.mkdir(parents=True)
+        _setup_facet_sources(orchestra_dir)
+
+        # Create a project-local facet that overrides the orchestra policy
+        local_facets_dir = project_dir / ".claude" / "facets"
+        local_policies_dir = local_facets_dir / "policies"
+        local_policies_dir.mkdir(parents=True, exist_ok=True)
+        (local_policies_dir / "code-quality.md").write_text(
+            "# Local Code Quality\n\nlocal-policy-body\n",
+            encoding="utf-8",
+        )
+
+        builder = FacetBuilder(orchestra_dir=orchestra_dir, project_facets_dir=local_facets_dir)
+        output_path = builder.build_one("simplify", "claude", project_dir)
+
+        content = output_path.read_text(encoding="utf-8")
+        assert "local-policy-body" in content
+        assert "\npolicy-body\n" not in content
+
+    def test_project_local_composition_is_found(self, tmp_path: Path) -> None:
+        orchestra_dir = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        project_dir.mkdir(parents=True)
+        _setup_facet_sources(orchestra_dir)
+
+        # Create a composition only in project-local (not in orchestra)
+        local_facets_dir = project_dir / ".claude" / "facets"
+        local_compositions_dir = local_facets_dir / "compositions"
+        local_compositions_dir.mkdir(parents=True, exist_ok=True)
+        local_composition = """name: local-only
+description: local only skill
+frontmatter:
+  name: local-only
+  description: Local only description
+  disable-model-invocation: true
+policies:
+  - code-quality
+instruction: |
+  # Local Only
+
+  local-only-body
+"""
+        (local_compositions_dir / "local-only.yaml").write_text(local_composition, encoding="utf-8")
+
+        builder = FacetBuilder(orchestra_dir=orchestra_dir, project_facets_dir=local_facets_dir)
+        output_path = builder.build_one("local-only", "claude", project_dir)
+
+        assert output_path == project_dir / ".claude" / "skills" / "local-only" / "SKILL.md"
+        content = output_path.read_text(encoding="utf-8")
+        assert "local-only-body" in content
+
+    def test_build_all_merges_both_locations(self, tmp_path: Path) -> None:
+        orchestra_dir = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        project_dir.mkdir(parents=True)
+        _setup_facet_sources(orchestra_dir)
+        _setup_second_composition(orchestra_dir)
+
+        # Create a project-local composition (different name to avoid duplicate)
+        local_facets_dir = project_dir / ".claude" / "facets"
+        local_compositions_dir = local_facets_dir / "compositions"
+        local_compositions_dir.mkdir(parents=True, exist_ok=True)
+        local_composition = """name: local-extra
+description: local extra skill
+frontmatter:
+  name: local-extra
+  description: Local extra description
+  disable-model-invocation: true
+policies:
+  - code-quality
+instruction: |
+  # Local Extra
+
+  local-extra-body
+"""
+        (local_compositions_dir / "local-extra.yaml").write_text(local_composition, encoding="utf-8")
+
+        builder = FacetBuilder(orchestra_dir=orchestra_dir, project_facets_dir=local_facets_dir)
+        output_paths = builder.build_all("claude", project_dir)
+
+        # Should have 3 total: 2 from orchestra + 1 from project-local
+        assert len(output_paths) == 3
+        names = {p.parent.name for p in output_paths}
+        assert "simplify" in names
+        assert "review" in names
+        assert "local-extra" in names
+
+    def test_build_all_no_duplicate_when_same_name_in_both(self, tmp_path: Path) -> None:
+        orchestra_dir = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        project_dir.mkdir(parents=True)
+        _setup_facet_sources(orchestra_dir)
+
+        # Create a project-local composition with the SAME name as orchestra composition
+        local_facets_dir = project_dir / ".claude" / "facets"
+        local_policies_dir = local_facets_dir / "policies"
+        local_policies_dir.mkdir(parents=True, exist_ok=True)
+        (local_policies_dir / "code-quality.md").write_text(
+            "# Local Code Quality\n\nlocal-policy-body\n",
+            encoding="utf-8",
+        )
+        local_compositions_dir = local_facets_dir / "compositions"
+        local_compositions_dir.mkdir(parents=True, exist_ok=True)
+        local_composition = """name: simplify
+description: overridden simplify
+frontmatter:
+  name: simplify
+  description: Overridden description
+  disable-model-invocation: true
+policies:
+  - code-quality
+instruction: |
+  # Overridden Simplify
+
+  overridden-body
+"""
+        (local_compositions_dir / "simplify.yaml").write_text(local_composition, encoding="utf-8")
+
+        builder = FacetBuilder(orchestra_dir=orchestra_dir, project_facets_dir=local_facets_dir)
+        output_paths = builder.build_all("claude", project_dir)
+
+        # Should have only 1 (no duplicate): project-local overrides orchestra
+        assert len(output_paths) == 1
+        content = output_paths[0].read_text(encoding="utf-8")
+        assert "overridden-body" in content
+        assert "simplify-body" not in content
