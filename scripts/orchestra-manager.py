@@ -1540,7 +1540,10 @@ class FacetBuilder:
                 try:
                     return local_path.read_text(encoding="utf-8").strip()
                 except OSError as e:
-                    print(f"エラー: facet の読み込みに失敗しました: {local_path} ({e})", file=sys.stderr)
+                    print(
+                        f"エラー: facet の読み込みに失敗しました: {local_path} ({e})",
+                        file=sys.stderr,
+                    )
                     sys.exit(1)
 
         # 2. orchestra にフォールバック
@@ -1640,6 +1643,23 @@ class FacetBuilder:
         required_pkg = composition.get("package")
         if required_pkg and self.installed_packages is not None:
             if required_pkg not in self.installed_packages:
+                # 既存の生成物があれば削除
+                output_name = composition["name"]
+                comp_type = composition.get("type", "skill")
+                old_path = self._build_output_path(output_name, target, project_dir, comp_type)
+                if old_path.exists():
+                    old_path.unlink()
+                    # skill の場合は空ディレクトリも削除
+                    if (
+                        comp_type == "skill"
+                        and old_path.parent.exists()
+                        and not any(old_path.parent.iterdir())
+                    ):
+                        old_path.parent.rmdir()
+                    relative = old_path.relative_to(project_dir)
+                    print(
+                        f"[facet] removed {output_name} ({required_pkg} not installed) <- {relative}"
+                    )
                 return None
 
         output_name = composition["name"]
@@ -1716,7 +1736,7 @@ class FacetBuilder:
         if comp_type == "skill":
             if content.startswith("---"):
                 end_idx = content.index("---", 3)
-                content = content[end_idx + 3:].lstrip("\n")
+                content = content[end_idx + 3 :].lstrip("\n")
 
         # 4. Split by separator
         sections = content.split("\n\n---\n\n")
@@ -1745,7 +1765,9 @@ class FacetBuilder:
         instruction_path.parent.mkdir(parents=True, exist_ok=True)
         instruction_path.write_text(instruction_content, encoding="utf-8")
 
-        print(f"[facet] extracted {output_name} -> {instruction_path.relative_to(instruction_path.parent.parent.parent)}")
+        print(
+            f"[facet] extracted {output_name} -> {instruction_path.relative_to(instruction_path.parent.parent.parent)}"
+        )
         return instruction_path
 
     def extract_all(self, target: str, project_dir: Path) -> list[Path]:
