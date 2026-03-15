@@ -1,0 +1,22 @@
+# review スキルのファセット構成定義
+name: review
+description: マルチエージェントコードレビュー（スマート選定）
+
+# フロントマター（生成される SKILL.md に付与）
+frontmatter:
+  name: review
+  description: |
+    Run code reviews using specialized reviewer agents.
+    Supports individual or batch review modes with smart reviewer selection.
+  metadata:
+    short-description: Multi-agent code review (smart selection)
+
+# 参照する Output Contract（facets/output-contracts/ から解決）
+output_contracts:
+  - tiered-review
+
+# 参照するポリシー（なし — review はスキル固有ルールのみ）
+policies: []
+
+# スキル固有の instruction（ファイル参照）
+instruction: review

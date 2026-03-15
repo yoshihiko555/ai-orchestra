@@ -1542,6 +1542,17 @@ class FacetBuilder:
             print(f"エラー: facet の読み込みに失敗しました: {facet_path} ({e})", file=sys.stderr)
             sys.exit(1)
 
+    def resolve_instruction(self, instruction: str) -> str:
+        """instruction を解決する。"""
+        stripped = instruction.strip()
+        if not stripped:
+            return ""
+
+        if "\n" in instruction or len(instruction) > 100:
+            return stripped
+
+        return self.resolve_facet("instructions", stripped)
+
     def build_skill_md(self, composition: dict[str, Any]) -> str:
         """composition から SKILL.md 本文を組み立てる。"""
         frontmatter = composition["frontmatter"]
@@ -1556,7 +1567,7 @@ class FacetBuilder:
         for contract_name in output_contracts:
             sections.append(self.resolve_facet("output-contracts", contract_name))
 
-        instruction = composition["instruction"].strip()
+        instruction = self.resolve_instruction(composition["instruction"])
         if instruction:
             sections.append(instruction)
 
@@ -1575,7 +1586,7 @@ class FacetBuilder:
         for contract_name in output_contracts:
             sections.append(self.resolve_facet("output-contracts", contract_name))
 
-        instruction = composition.get("instruction", "").strip()
+        instruction = self.resolve_instruction(composition.get("instruction", ""))
         if instruction:
             sections.append(instruction)
 

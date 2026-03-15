@@ -206,6 +206,56 @@ class TestFacetBuilder:
         assert "# Simplify Code" in content
         assert "# Tiered Contract" not in content
 
+    def test_instruction_file_reference(self, tmp_path: Path) -> None:
+        orchestra_dir = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        project_dir.mkdir(parents=True)
+        _setup_facet_sources(orchestra_dir)
+
+        instructions_dir = orchestra_dir / "facets" / "instructions"
+        instructions_dir.mkdir(parents=True, exist_ok=True)
+        (instructions_dir / "my-instruction.md").write_text(
+            "# Referenced Instruction\n\nreferenced-body\n",
+            encoding="utf-8",
+        )
+        composition = """\
+name: simplify
+description: sample skill
+frontmatter:
+  name: simplify
+  description: Sample description
+  disable-model-invocation: true
+policies:
+  - code-quality
+output_contracts:
+  - tiered-review
+instruction: my-instruction
+"""
+        (orchestra_dir / "facets" / "compositions" / "simplify.yaml").write_text(
+            composition,
+            encoding="utf-8",
+        )
+
+        builder = FacetBuilder(orchestra_dir)
+        output_path = builder.build_one("simplify", "claude", project_dir)
+
+        content = output_path.read_text(encoding="utf-8")
+        assert "# Referenced Instruction" in content
+        assert "referenced-body" in content
+
+    def test_inline_instruction_still_works(self, tmp_path: Path) -> None:
+        orchestra_dir = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        project_dir.mkdir(parents=True)
+        _setup_facet_sources(orchestra_dir)
+
+        builder = FacetBuilder(orchestra_dir)
+        output_path = builder.build_one("simplify", "claude", project_dir)
+
+        content = output_path.read_text(encoding="utf-8")
+        assert "# Simplify Code" in content
+        assert "simplify-body" in content
+
     def test_rule_type_generates_without_frontmatter(self, tmp_path: Path) -> None:
         orchestra_dir = tmp_path / "orchestra"
         project_dir = tmp_path / "project"

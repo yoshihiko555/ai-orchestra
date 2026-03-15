@@ -1,0 +1,20 @@
+# design スキルのファセット構成定義
+name: design
+description: 対話的ソフトウェア設計（要件定義・基本設計・詳細設計）
+
+frontmatter:
+  name: design
+  description: |
+    Interactive design skill for software projects — covers requirements definition,
+    basic design, and detailed design through dialogue with the user.
+    Use this skill when the user wants to define requirements, design architecture,
+    plan screens/API/database, or any pre-implementation design work.
+    Trigger on: "設計", "要件定義", "基本設計", "詳細設計", "画面設計", "API設計",
+    "アーキテクチャ", "design", "requirements", "system design",
+    or when the user discusses what to build before implementation.
+    This skill produces design documents that feed into /preflight and /startproject.
+
+policies:
+  - dialog-rules
+
+instruction: design
