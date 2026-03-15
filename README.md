@@ -6,6 +6,11 @@ Claude Code用のマルチエージェントオーケストレーションシス
 
 ```
 ai-orchestra/
+├── facets/           # ファセットプロンプティング基盤（スキル・ルールの部品化）
+│   ├── policies/          # 共有 Policy（dialog-rules, cli-language, code-quality, factual-writing）
+│   ├── output-contracts/  # 共有 Output Contract（tiered-review, compare-report, deep-dive-report）
+│   ├── instructions/      # スキル・ルール固有の instruction
+│   └── compositions/      # 組み立て定義 YAML（facet build で SKILL.md / ルール .md を生成）
 ├── packages/         # パッケージ（hooks・scripts・agents・skills・rules・config）— 詳細は packages/README.md
 │   ├── core/              # 共通基盤ライブラリ + coding-principles / config-loading ルール
 │   ├── agent-routing/     # 25 エージェント定義 + ルーティング hooks + orchestra-usage ルール
@@ -179,6 +184,54 @@ orchex setup essential --project . --dry-run
 orchex install <package> --project . --dry-run
 ```
 
+### 5. ファセット管理コマンド
+
+スキル・ルールをファセット（Policy / Output Contract / Instruction）から自動生成・管理する。
+
+```bash
+# 全 composition をビルド（SKILL.md / ルール .md を生成）
+orchex facet build --project .
+
+# 単一 composition をビルド
+orchex facet build --name review --project .
+
+# Codex CLI 向けに生成（.codex/skills/ に出力）
+orchex facet build --target codex --project .
+
+# 生成済みファイルから instruction をソースに書き戻す（チューニング反映）
+orchex facet extract --name review --project .
+
+# 全件書き戻し
+orchex facet extract --project .
+```
+
+**運用フロー:**
+
+```
+facets/policies/*.md        ← 共有ルール（1箇所修正 → 全スキル・ルールに反映）
+facets/output-contracts/*.md ← 共有出力形式
+facets/instructions/*.md     ← スキル・ルール固有の手順
+facets/compositions/*.yaml   ← 組み立て定義
+
+    ↓ facet build
+
+.claude/skills/{name}/SKILL.md  ← 生成物（Claude Code 用）
+.claude/rules/{name}.md         ← 生成物（Claude Code 用）
+.codex/skills/{name}/SKILL.md   ← 生成物（Codex CLI 用）
+```
+
+**チューニング後の反映:**
+
+```
+/config-tune 等で SKILL.md を直接編集
+    ↓
+orchex facet extract --name {name}   ← instruction をソースに書き戻し
+    ↓
+次回 facet build で変更が保持される
+```
+
+SessionStart 時に `facet build` が自動実行されるため、通常は手動ビルド不要。
+
 ### 開発者向け: ソースからのインストール
 
 ```bash
@@ -286,4 +339,5 @@ Claude Code (Orchestrator)
 
 - **Hooks**: `$AI_ORCHESTRA_DIR` 環境変数で直接参照（シンボリックリンク不要）
 - **Skills/Agents/Rules**: SessionStart hook (`sync-orchestra.py`) で `$AI_ORCHESTRA_DIR` から `.claude/` に差分コピー
+- **Facets**: `facets/` のポリシー・出力形式を同期し、`facet build` で SKILL.md / ルール .md を自動生成
 - **CLI Scripts**: `$AI_ORCHESTRA_DIR/packages/{pkg}/scripts/` を直接実行
