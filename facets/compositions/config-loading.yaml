@@ -1,0 +1,8 @@
+# config-loading ルールのファセット構成定義
+name: config-loading
+description: 設定ファイルのレイヤード構成ルール
+type: rule
+
+policies: []
+
+instruction: config-loading

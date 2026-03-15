@@ -38,15 +38,19 @@ env/
 .claude/Plans.archive.md
 .claude/.mcp-proxy.pid
 
-# sync-orchestra.py により packages/ から自動同期（SessionStart で再生成）
-.claude/agents/
-.claude/skills/
-.claude/rules/
-.claude/config/
-
 # Project-specific
 docs/*
 !docs/specs/
 
 # CocoIndex local search index
 .cocoindex_code/
+
+# >>> AI Orchestra (.claude) >>>
+.claude/docs/
+.claude/logs/
+.claude/state/
+.claude/checkpoints/
+.claude/context/
+.claude/Plans.md
+.claude/Plans.archive.md
+# <<< AI Orchestra (.claude) <<<

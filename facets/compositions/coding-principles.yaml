@@ -1,0 +1,8 @@
+# coding-principles ルールのファセット構成定義
+name: coding-principles
+description: コード品質のための共通ルール
+type: rule
+
+# 参照するポリシー（facets/policies/ から解決）
+policies:
+  - code-quality

@@ -1,0 +1,8 @@
+# task-memory-usage ルールのファセット構成定義
+name: task-memory-usage
+description: Plans.md タスク管理ルール
+type: rule
+
+policies: []
+
+instruction: task-memory-usage

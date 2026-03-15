@@ -19,6 +19,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -512,6 +513,92 @@ def _patch_agent_model(file_path: Path, model: str) -> bool:
     return True
 
 
+def build_facets(
+    orchestra_path: Path, project_dir: Path, installed_packages: list[str] | None = None
+) -> int:
+    """facet composition から SKILL.md / ルール .md を自動生成する。"""
+    compositions_dir = orchestra_path / "facets" / "compositions"
+    local_compositions_dir = project_dir / ".claude" / "facets" / "compositions"
+
+    has_orchestra = compositions_dir.is_dir() and any(compositions_dir.glob("*.yaml"))
+    has_local = local_compositions_dir.is_dir() and any(local_compositions_dir.glob("*.yaml"))
+    if not has_orchestra and not has_local:
+        return 0
+
+    # 変更検知: composition YAML / facet .md が生成物より新しい場合のみビルド
+    yamls: list[Path] = []
+    if has_orchestra:
+        yamls.extend(compositions_dir.glob("*.yaml"))
+    if has_local:
+        yamls.extend(local_compositions_dir.glob("*.yaml"))
+
+    latest_src = max(p.stat().st_mtime for p in yamls)
+    facets_dir = orchestra_path / "facets"
+    facet_mds = list(facets_dir.glob("**/*.md"))
+    if facet_mds:
+        latest_src = max(latest_src, max(p.stat().st_mtime for p in facet_mds))
+    local_facets_dir = project_dir / ".claude" / "facets"
+    if local_facets_dir.is_dir():
+        local_facet_mds = list(local_facets_dir.glob("**/*.md"))
+        if local_facet_mds:
+            latest_src = max(latest_src, max(p.stat().st_mtime for p in local_facet_mds))
+
+    claude_skills = project_dir / ".claude" / "skills"
+    claude_rules = project_dir / ".claude" / "rules"
+    generated: list[Path] = []
+    if claude_skills.is_dir():
+        generated.extend(claude_skills.glob("*/SKILL.md"))
+    if claude_rules.is_dir():
+        generated.extend(claude_rules.glob("*.md"))
+    if generated and min(p.stat().st_mtime for p in generated) >= latest_src:
+        return 0
+
+    script = orchestra_path / "scripts" / "orchestra-manager.py"
+    if not script.is_file():
+        return 0
+
+    # ビルドターゲットを決定（claude は常に、codex は codex-suggestions インストール時のみ）
+    targets = ["claude"]
+    if installed_packages and "codex-suggestions" in installed_packages:
+        targets.append("codex")
+
+    total_built = 0
+    for target in targets:
+        try:
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(script),
+                    "facet",
+                    "build",
+                    "--target",
+                    target,
+                    "--project",
+                    str(project_dir),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except subprocess.TimeoutExpired:
+            print(f"[orchestra] facet build ({target}) timed out", file=sys.stderr)
+            continue
+        except OSError as e:
+            print(f"[orchestra] facet build ({target}) failed: {e}", file=sys.stderr)
+            continue
+
+        if result.returncode != 0:
+            print(
+                f"[orchestra] facet build ({target}) error: {result.stderr.strip()}",
+                file=sys.stderr,
+            )
+            continue
+
+        total_built += result.stdout.count("[facet] built")
+
+    return total_built
+
+
 def main() -> None:
     data = read_hook_input()
     project_dir = Path(get_project_dir(data))
@@ -601,6 +688,25 @@ def main() -> None:
                     shutil.copy2(src, dst)
                     synced_count += 1
 
+    # ファセット（トップレベル）の同期
+    facets_src = orchestra_path / "facets"
+    if facets_src.is_dir():
+        for src_file in facets_src.rglob("*.md"):
+            if not src_file.is_file():
+                continue
+            rel = src_file.relative_to(facets_src)
+            dst_key = "facets/" + str(rel)
+            synced_files.add(dst_key)
+            dst = claude_dir / "facets" / rel
+            if not needs_sync(src_file, dst):
+                continue
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src_file, dst)
+            synced_count += 1
+
+    # ファセットビルド（composition → SKILL.md / ルール .md 生成）
+    facet_built_count = build_facets(orchestra_path, project_dir, installed_packages)
+
     # 前回同期されたが今回は対象外のファイルを削除
     # synced_files キーが未設定（初回）の場合は削除しない（プロジェクト固有ファイルの誤削除を防止）
     prev_synced = orch.get("synced_files", [])
@@ -654,6 +760,7 @@ def main() -> None:
         or claudeignore_updated
         or scaffolded_count > 0
         or patched_count > 0
+        or facet_built_count > 0
     ):
         parts = []
         if scaffolded_count > 0:
@@ -668,6 +775,8 @@ def main() -> None:
             parts.append(".claudeignore updated")
         if patched_count > 0:
             parts.append(f"{patched_count} agent models patched")
+        if facet_built_count > 0:
+            parts.append(f"{facet_built_count} facets built")
         print(f"[orchestra] {', '.join(parts)}")
 
 

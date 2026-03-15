@@ -1,0 +1,12 @@
+# skill-review-policy ルールのファセット構成定義
+name: skill-review-policy
+description: スキルレビューポリシー
+package: quality-gates
+type: rule
+
+output_contracts:
+  - tiered-review
+
+policies: []
+
+instruction: skill-review-policy
