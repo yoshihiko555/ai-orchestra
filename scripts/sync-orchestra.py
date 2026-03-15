@@ -601,6 +601,22 @@ def main() -> None:
                     shutil.copy2(src, dst)
                     synced_count += 1
 
+    # ファセット（トップレベル）の同期
+    facets_src = orchestra_path / "facets"
+    if facets_src.is_dir():
+        for src_file in facets_src.rglob("*.md"):
+            if not src_file.is_file():
+                continue
+            rel = src_file.relative_to(facets_src)
+            dst_key = "facets/" + str(rel)
+            synced_files.add(dst_key)
+            dst = claude_dir / "facets" / rel
+            if not needs_sync(src_file, dst):
+                continue
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src_file, dst)
+            synced_count += 1
+
     # 前回同期されたが今回は対象外のファイルを削除
     # synced_files キーが未設定（初回）の場合は削除しない（プロジェクト固有ファイルの誤削除を防止）
     prev_synced = orch.get("synced_files", [])

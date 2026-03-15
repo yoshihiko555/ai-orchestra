@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 
 @dataclass
 class HookEntry:
@@ -1448,6 +1450,188 @@ class OrchestraManager:
         print(f"PIDファイル: {pid_path}")
 
 
+@dataclass
+class FacetBuilder:
+    """facet composition から SKILL.md を生成するビルダー。"""
+
+    orchestra_dir: Path
+
+    def load_composition(self, path: Path) -> dict[str, Any]:
+        """composition YAML をロードして最低限の検証を行う。"""
+        if not path.exists():
+            print(f"エラー: composition が見つかりません: {path}", file=sys.stderr)
+            sys.exit(1)
+
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except OSError as e:
+            print(f"エラー: composition の読み込みに失敗しました: {path} ({e})", file=sys.stderr)
+            sys.exit(1)
+
+        try:
+            composition = yaml.safe_load(raw)
+        except yaml.YAMLError as e:
+            print(f"エラー: YAML の解析に失敗しました: {path} ({e})", file=sys.stderr)
+            sys.exit(1)
+
+        if not isinstance(composition, dict):
+            print(f"エラー: composition の形式が不正です: {path}", file=sys.stderr)
+            sys.exit(1)
+
+        name = composition.get("name")
+        if not isinstance(name, str) or not name.strip():
+            print(f"エラー: composition.name が不正です: {path}", file=sys.stderr)
+            sys.exit(1)
+
+        comp_type = composition.get("type", "skill")
+        if not isinstance(comp_type, str) or not comp_type.strip():
+            print(f"エラー: composition.type が不正です: {path}", file=sys.stderr)
+            sys.exit(1)
+        comp_type = comp_type.strip()
+        composition["type"] = comp_type
+
+        frontmatter = composition.get("frontmatter")
+        if comp_type == "skill":
+            if not isinstance(frontmatter, dict) or not frontmatter:
+                print(f"エラー: composition.frontmatter が不正です: {path}", file=sys.stderr)
+                sys.exit(1)
+
+        policies = composition.get("policies")
+        if not isinstance(policies, list):
+            print(f"エラー: composition.policies が不正です: {path}", file=sys.stderr)
+            sys.exit(1)
+        for policy in policies:
+            if not isinstance(policy, str) or not policy.strip():
+                print(f"エラー: composition.policies の要素が不正です: {path}", file=sys.stderr)
+                sys.exit(1)
+
+        output_contracts = composition.get("output_contracts")
+        if output_contracts is not None:
+            if not isinstance(output_contracts, list):
+                print(f"エラー: composition.output_contracts が不正です: {path}", file=sys.stderr)
+                sys.exit(1)
+            for contract in output_contracts:
+                if not isinstance(contract, str) or not contract.strip():
+                    print(
+                        f"エラー: composition.output_contracts の要素が不正です: {path}",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+
+        instruction = composition.get("instruction")
+        if comp_type == "skill":
+            if not isinstance(instruction, str):
+                print(f"エラー: composition.instruction が不正です: {path}", file=sys.stderr)
+                sys.exit(1)
+        elif instruction is not None and not isinstance(instruction, str):
+            print(f"エラー: composition.instruction が不正です: {path}", file=sys.stderr)
+            sys.exit(1)
+
+        return composition
+
+    def resolve_facet(self, kind: str, name: str) -> str:
+        """facet ファイル本文を読み込む。"""
+        facet_path = self.orchestra_dir / "facets" / kind / f"{name}.md"
+        if not facet_path.exists():
+            print(f"エラー: facet ファイルが見つかりません: {facet_path}", file=sys.stderr)
+            sys.exit(1)
+
+        try:
+            return facet_path.read_text(encoding="utf-8").strip()
+        except OSError as e:
+            print(f"エラー: facet の読み込みに失敗しました: {facet_path} ({e})", file=sys.stderr)
+            sys.exit(1)
+
+    def build_skill_md(self, composition: dict[str, Any]) -> str:
+        """composition から SKILL.md 本文を組み立てる。"""
+        frontmatter = composition["frontmatter"]
+        frontmatter_yaml = yaml.safe_dump(frontmatter, allow_unicode=True, sort_keys=False).strip()
+        frontmatter_block = f"---\n{frontmatter_yaml}\n---"
+
+        sections: list[str] = []
+        for policy_name in composition["policies"]:
+            sections.append(self.resolve_facet("policies", policy_name))
+
+        output_contracts = composition.get("output_contracts", [])
+        for contract_name in output_contracts:
+            sections.append(self.resolve_facet("output-contracts", contract_name))
+
+        instruction = composition["instruction"].strip()
+        if instruction:
+            sections.append(instruction)
+
+        if not sections:
+            return f"{frontmatter_block}\n"
+
+        return f"{frontmatter_block}\n\n" + "\n\n---\n\n".join(sections) + "\n"
+
+    def build_rule_md(self, composition: dict[str, Any]) -> str:
+        """composition から rule 本文を組み立てる。"""
+        sections: list[str] = []
+        for policy_name in composition["policies"]:
+            sections.append(self.resolve_facet("policies", policy_name))
+
+        output_contracts = composition.get("output_contracts", [])
+        for contract_name in output_contracts:
+            sections.append(self.resolve_facet("output-contracts", contract_name))
+
+        instruction = composition.get("instruction", "").strip()
+        if instruction:
+            sections.append(instruction)
+
+        if not sections:
+            return ""
+
+        return "\n\n---\n\n".join(sections) + "\n"
+
+    def _build_output_path(
+        self,
+        name: str,
+        target: str,
+        project_dir: Path,
+        comp_type: str = "skill",
+    ) -> Path:
+        """target に応じた出力先パスを返す。"""
+        if comp_type == "rule":
+            if target == "claude":
+                return project_dir / ".claude" / "rules" / f"{name}.md"
+            return project_dir / ".codex" / "rules" / f"{name}.md"
+
+        if target == "claude":
+            return project_dir / ".claude" / "skills" / name / "SKILL.md"
+        return project_dir / ".codex" / "skills" / name / "SKILL.md"
+
+    def build_one(self, name: str, target: str, project_dir: Path) -> Path:
+        """単一 composition をビルドして出力する。"""
+        composition_path = self.orchestra_dir / "facets" / "compositions" / f"{name}.yaml"
+        composition = self.load_composition(composition_path)
+        output_name = composition["name"]
+        comp_type = composition.get("type", "skill")
+        if comp_type == "rule":
+            content = self.build_rule_md(composition)
+        else:
+            content = self.build_skill_md(composition)
+        output_path = self._build_output_path(output_name, target, project_dir, comp_type)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(content, encoding="utf-8")
+
+        relative = output_path.relative_to(project_dir)
+        print(f"[facet] built {output_name} -> {relative}")
+        return output_path
+
+    def build_all(self, target: str, project_dir: Path) -> list[Path]:
+        """全 composition をビルドして出力する。"""
+        compositions_dir = self.orchestra_dir / "facets" / "compositions"
+        if not compositions_dir.exists():
+            print(f"エラー: compositions ディレクトリが見つかりません: {compositions_dir}", file=sys.stderr)
+            sys.exit(1)
+
+        output_paths: list[Path] = []
+        for composition_path in sorted(compositions_dir.glob("*.yaml")):
+            output_paths.append(self.build_one(composition_path.stem, target, project_dir))
+        return output_paths
+
+
 def main():
     """メインエントリポイント"""
     parser = argparse.ArgumentParser(
@@ -1551,6 +1735,22 @@ def main():
     proxy_status_parser = proxy_sub.add_parser("status", help="mcp-proxy の状態を表示")
     proxy_status_parser.add_argument("--project", help="プロジェクトパス")
 
+    # facet コマンド
+    facet_parser = subparsers.add_parser("facet", help="facet composition から SKILL.md を生成")
+    facet_sub = facet_parser.add_subparsers(dest="facet_command", help="facet サブコマンド")
+    facet_build_parser = facet_sub.add_parser(
+        "build",
+        help="facet composition をビルドして SKILL.md を生成",
+    )
+    facet_build_parser.add_argument("--name", help="composition 名（省略時は全件ビルド）")
+    facet_build_parser.add_argument(
+        "--target",
+        choices=["claude", "codex"],
+        default="claude",
+        help="出力先（デフォルト: claude）",
+    )
+    facet_build_parser.add_argument("--project", help="プロジェクトパス")
+
     # setup コマンド
     setup_parser = subparsers.add_parser("setup", help="プリセットで一括セットアップ")
     setup_parser.add_argument(
@@ -1621,6 +1821,17 @@ def main():
             manager.proxy_status(args.project)
         else:
             proxy_parser.print_help()
+            sys.exit(1)
+    elif args.command == "facet":
+        facet_builder = FacetBuilder(orchestra_dir)
+        project_dir = manager.get_project_dir(args.project)
+        if args.facet_command == "build":
+            if args.name:
+                facet_builder.build_one(args.name, args.target, project_dir)
+            else:
+                facet_builder.build_all(args.target, project_dir)
+        else:
+            facet_parser.print_help()
             sys.exit(1)
     elif args.command == "setup":
         if args.preset is None:
