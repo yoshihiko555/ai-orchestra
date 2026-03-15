@@ -97,6 +97,7 @@ class OrchestraManager:
         ".claude/context/",
         ".claude/Plans.md",
         ".claude/Plans.archive.md",
+        
     ]
     CONTEXT_SPECS: tuple[tuple[str, str, str, str], ...] = (
         ("claude", "claude.md", "templates/project/CLAUDE.md", "CLAUDE.md"),

@@ -122,3 +122,33 @@
 - `cc:done` `.claude/rules/context-sharing.md` にコンテキスト共有ルールを追加
 
 ---
+
+## Archived: 2026-03-15
+
+## Project: Plans.md 自動アーカイブ
+
+### Phase 1: アーカイブロジック実装 `cc:done`
+
+#### load-task-state.py 拡張
+
+- `cc:done` detect_completed_projects(content) — PJ 単位の完了判定（全フェーズ `cc:done`）
+- `cc:done` archive_projects(plans_path, archive_path, projects) — 完了 PJ を archive に追記 + Plans.md から除去
+- `cc:done` main() のタスク解析前にアーカイブ実行
+
+### Phase 2: テスト `cc:done`
+
+- `cc:done` 完了 PJ 検出テスト
+- `cc:done` アーカイブ実行テスト（Plans.md → Plans.archive.md 移動）
+- `cc:done` 混在ケース（done + TODO 混在 PJ は残る）
+- `cc:done` Decisions/Notes の移動テスト（全 PJ 完了時にまとめてアーカイブ）
+
+### Phase 3: ルール/テンプレート更新 `cc:done`
+
+- `cc:done` task-memory-usage.md にアーカイブ仕様追記
+- `cc:done` .gitignore/.claudeignore テンプレート更新（Plans.archive.md 追加）
+
+### Phase 4: 検証 `cc:done`
+
+- `cc:done` 既存 Plans.md をアーカイブ実行して検証（SessionStart で自動実行を確認）
+
+---

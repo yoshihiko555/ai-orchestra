@@ -35,6 +35,7 @@ env/
 .claude/state/
 .claude/checkpoints/
 .claude/Plans.md
+.claude/Plans.archive.md
 .claude/.mcp-proxy.pid
 
 # sync-orchestra.py により packages/ から自動同期（SessionStart で再生成）
