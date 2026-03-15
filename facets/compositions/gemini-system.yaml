@@ -1,6 +1,7 @@
 # gemini-system スキルのファセット構成定義
 name: gemini-system
 description: Claude Code ↔ Gemini CLI collaboration (research & multimodal)
+package: gemini-suggestions
 
 frontmatter:
   name: gemini-system

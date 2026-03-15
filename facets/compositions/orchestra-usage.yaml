@@ -1,6 +1,7 @@
 # orchestra-usage ルールのファセット構成定義
 name: orchestra-usage
 description: AI Orchestra 使用ガイド
+package: agent-routing
 type: rule
 
 policies:

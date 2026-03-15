@@ -1,6 +1,7 @@
 # codex-system スキルのファセット構成定義
 name: codex-system
 description: Claude Code ↔ Codex CLI collaboration (config-driven)
+package: codex-suggestions
 
 frontmatter:
   name: codex-system

@@ -1456,6 +1456,7 @@ class FacetBuilder:
 
     orchestra_dir: Path
     project_facets_dir: Path | None = None  # .claude/facets/ in the target project
+    installed_packages: list[str] | None = None  # from orchestra.json
 
     def load_composition(self, path: Path) -> dict[str, Any]:
         """composition YAML をロードして最低限の検証を行う。"""
@@ -1623,7 +1624,7 @@ class FacetBuilder:
             return project_dir / ".claude" / "skills" / name / "SKILL.md"
         return project_dir / ".codex" / "skills" / name / "SKILL.md"
 
-    def build_one(self, name: str, target: str, project_dir: Path) -> Path:
+    def build_one(self, name: str, target: str, project_dir: Path) -> Path | None:
         """単一 composition をビルドして出力する。"""
         # プロジェクトローカル → orchestra の順で composition を検索
         composition_path = None
@@ -1635,6 +1636,12 @@ class FacetBuilder:
             composition_path = self.orchestra_dir / "facets" / "compositions" / f"{name}.yaml"
 
         composition = self.load_composition(composition_path)
+        # Package filter: skip if required package is not installed
+        required_pkg = composition.get("package")
+        if required_pkg and self.installed_packages is not None:
+            if required_pkg not in self.installed_packages:
+                return None
+
         output_name = composition["name"]
         comp_type = composition.get("type", "skill")
         if comp_type == "rule":
@@ -1653,23 +1660,30 @@ class FacetBuilder:
         """全 composition をビルドして出力する。"""
         output_paths: list[Path] = []
         seen_names: set[str] = set()
+        found_yaml_files = 0
 
         # 1. プロジェクトローカルの compositions を先にスキャン
         if self.project_facets_dir:
             local_compositions_dir = self.project_facets_dir / "compositions"
             if local_compositions_dir.is_dir():
                 for composition_path in sorted(local_compositions_dir.glob("*.yaml")):
+                    found_yaml_files += 1
                     seen_names.add(composition_path.stem)
-                    output_paths.append(self.build_one(composition_path.stem, target, project_dir))
+                    result = self.build_one(composition_path.stem, target, project_dir)
+                    if result:
+                        output_paths.append(result)
 
         # 2. orchestra の compositions をスキャン（ローカルで既に処理済みのものはスキップ）
         compositions_dir = self.orchestra_dir / "facets" / "compositions"
         if compositions_dir.is_dir():
             for composition_path in sorted(compositions_dir.glob("*.yaml")):
+                found_yaml_files += 1
                 if composition_path.stem not in seen_names:
-                    output_paths.append(self.build_one(composition_path.stem, target, project_dir))
+                    result = self.build_one(composition_path.stem, target, project_dir)
+                    if result:
+                        output_paths.append(result)
 
-        if not output_paths:
+        if found_yaml_files == 0:
             print("エラー: compositions が見つかりません", file=sys.stderr)
             sys.exit(1)
 
@@ -1966,9 +1980,22 @@ def main():
     elif args.command == "facet":
         project_dir = manager.get_project_dir(args.project)
         project_facets_dir = project_dir / ".claude" / "facets"
+
+        # Read installed_packages from orchestra.json
+        orch_path = project_dir / ".claude" / "orchestra.json"
+        installed_packages = None
+        if orch_path.exists():
+            try:
+                with open(orch_path, encoding="utf-8") as f:
+                    orch = json.load(f)
+                installed_packages = orch.get("installed_packages", [])
+            except (json.JSONDecodeError, OSError):
+                pass
+
         facet_builder = FacetBuilder(
             orchestra_dir=orchestra_dir,
             project_facets_dir=project_facets_dir if project_facets_dir.is_dir() else None,
+            installed_packages=installed_packages,
         )
         if args.facet_command == "build":
             if args.name:
