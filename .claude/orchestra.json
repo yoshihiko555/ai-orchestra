@@ -36,7 +36,10 @@
     "agents/security-reviewer.md",
     "agents/spec-reviewer.md",
     "agents/spec-writer.md",
+    "agents/specialized-mcp-builder.md",
+    "agents/support-executive-summary-generator.md",
     "agents/tester.md",
+    "agents/testing-reality-checker.md",
     "agents/ux-reviewer.md",
     "config/agent-routing/cli-tools.yaml",
     "config/cocoindex/cocoindex.yaml",
@@ -87,5 +90,5 @@
     "skills/task-state/SKILL.md",
     "skills/tdd/SKILL.md"
   ],
-  "last_sync": "2026-03-14T09:23:41.809276+00:00"
+  "last_sync": "2026-03-15T11:35:36.893714+00:00"
 }
