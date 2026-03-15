@@ -513,7 +513,9 @@ def _patch_agent_model(file_path: Path, model: str) -> bool:
     return True
 
 
-def build_facets(orchestra_path: Path, project_dir: Path) -> int:
+def build_facets(
+    orchestra_path: Path, project_dir: Path, installed_packages: list[str] | None = None
+) -> int:
     """facet composition から SKILL.md / ルール .md を自動生成する。"""
     compositions_dir = orchestra_path / "facets" / "compositions"
     local_compositions_dir = project_dir / ".claude" / "facets" / "compositions"
@@ -555,25 +557,46 @@ def build_facets(orchestra_path: Path, project_dir: Path) -> int:
     if not script.is_file():
         return 0
 
-    try:
-        result = subprocess.run(
-            [sys.executable, str(script), "facet", "build", "--project", str(project_dir)],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except subprocess.TimeoutExpired:
-        print("[orchestra] facet build timed out", file=sys.stderr)
-        return 0
-    except OSError as e:
-        print(f"[orchestra] facet build failed: {e}", file=sys.stderr)
-        return 0
+    # ビルドターゲットを決定（claude は常に、codex は codex-suggestions インストール時のみ）
+    targets = ["claude"]
+    if installed_packages and "codex-suggestions" in installed_packages:
+        targets.append("codex")
 
-    if result.returncode != 0:
-        print(f"[orchestra] facet build error: {result.stderr.strip()}", file=sys.stderr)
-        return 0
+    total_built = 0
+    for target in targets:
+        try:
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(script),
+                    "facet",
+                    "build",
+                    "--target",
+                    target,
+                    "--project",
+                    str(project_dir),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except subprocess.TimeoutExpired:
+            print(f"[orchestra] facet build ({target}) timed out", file=sys.stderr)
+            continue
+        except OSError as e:
+            print(f"[orchestra] facet build ({target}) failed: {e}", file=sys.stderr)
+            continue
 
-    return result.stdout.count("[facet] built")
+        if result.returncode != 0:
+            print(
+                f"[orchestra] facet build ({target}) error: {result.stderr.strip()}",
+                file=sys.stderr,
+            )
+            continue
+
+        total_built += result.stdout.count("[facet] built")
+
+    return total_built
 
 
 def main() -> None:
@@ -682,7 +705,7 @@ def main() -> None:
             synced_count += 1
 
     # ファセットビルド（composition → SKILL.md / ルール .md 生成）
-    facet_built_count = build_facets(orchestra_path, project_dir)
+    facet_built_count = build_facets(orchestra_path, project_dir, installed_packages)
 
     # 前回同期されたが今回は対象外のファイルを削除
     # synced_files キーが未設定（初回）の場合は削除しない（プロジェクト固有ファイルの誤削除を防止）
