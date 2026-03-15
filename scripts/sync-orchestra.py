@@ -518,7 +518,26 @@ def build_facets(orchestra_path: Path, project_dir: Path) -> int:
     compositions_dir = orchestra_path / "facets" / "compositions"
     if not compositions_dir.is_dir():
         return 0
-    if not any(compositions_dir.glob("*.yaml")):
+
+    yamls = list(compositions_dir.glob("*.yaml"))
+    if not yamls:
+        return 0
+
+    # 変更検知: composition YAML が生成物より新しい場合のみビルド
+    latest_src = max(p.stat().st_mtime for p in yamls)
+    facets_dir = orchestra_path / "facets"
+    facet_mds = list(facets_dir.glob("**/*.md"))
+    if facet_mds:
+        latest_src = max(latest_src, max(p.stat().st_mtime for p in facet_mds))
+
+    claude_skills = project_dir / ".claude" / "skills"
+    claude_rules = project_dir / ".claude" / "rules"
+    generated: list[Path] = []
+    if claude_skills.is_dir():
+        generated.extend(claude_skills.glob("*/SKILL.md"))
+    if claude_rules.is_dir():
+        generated.extend(claude_rules.glob("*.md"))
+    if generated and min(p.stat().st_mtime for p in generated) >= latest_src:
         return 0
 
     script = orchestra_path / "scripts" / "orchestra-manager.py"
@@ -532,7 +551,15 @@ def build_facets(orchestra_path: Path, project_dir: Path) -> int:
             text=True,
             timeout=30,
         )
-    except (subprocess.TimeoutExpired, OSError):
+    except subprocess.TimeoutExpired:
+        print("[orchestra] facet build timed out", file=sys.stderr)
+        return 0
+    except OSError as e:
+        print(f"[orchestra] facet build failed: {e}", file=sys.stderr)
+        return 0
+
+    if result.returncode != 0:
+        print(f"[orchestra] facet build error: {result.stderr.strip()}", file=sys.stderr)
         return 0
 
     return result.stdout.count("[facet] built")
