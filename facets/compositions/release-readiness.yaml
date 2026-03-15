@@ -1,0 +1,15 @@
+# release-readiness スキルのファセット構成定義
+name: release-readiness
+description: マージ前最終確認（テスト・レビュー・タスク状態の PASS/BLOCKED 判定）
+
+# フロントマター（生成される SKILL.md に付与）
+frontmatter:
+  name: release-readiness
+  description: Run a final pre-merge readiness check using test/review/task status evidence.
+  disable-model-invocation: true
+
+# 参照するポリシー（なし）
+policies: []
+
+# スキル固有の instruction（ファイル参照）
+instruction: release-readiness

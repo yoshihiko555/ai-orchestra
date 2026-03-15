@@ -1,0 +1,16 @@
+# tdd スキルのファセット構成定義
+name: tdd
+description: テスト駆動開発（Red-Green-Refactor サイクル）
+
+# フロントマター（生成される SKILL.md に付与）
+frontmatter:
+  name: tdd
+  description: Implement features using Test-Driven Development (TDD) with Red-Green-Refactor cycle. Use this skill when the user asks to implement something with TDD, write tests first, or mentions "tdd", "test-driven", "red green refactor". Also trigger when the user says "テスト駆動", "TDDで実装", or wants test-first development.
+  disable-model-invocation: true
+
+# 参照するポリシー（config-driven エージェントルーティングを使用）
+policies:
+  - cli-language
+
+# スキル固有の instruction（ファイル参照）
+instruction: tdd

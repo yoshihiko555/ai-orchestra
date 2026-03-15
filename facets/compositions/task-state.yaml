@@ -1,0 +1,18 @@
+# task-state スキルのファセット構成定義
+name: task-state
+description: Plans.md（SSOT）によるタスク状態管理
+
+# フロントマター（生成される SKILL.md に付与）
+frontmatter:
+  name: task-state
+  description: |
+    Plans.md (SSOT) のタスク状態を管理する。
+    タスクの追加・状態更新・一覧表示・Plans.md の初期化が可能。
+  metadata:
+    short-description: SSOT タスク管理（Plans.md の作成・更新）
+
+# 参照するポリシー（なし）
+policies: []
+
+# スキル固有の instruction（ファイル参照）
+instruction: task-state

@@ -1,0 +1,19 @@
+# checkpointing スキルのファセット構成定義
+name: checkpointing
+description: セッションコンテキストの永続化とスキル抽出分析
+
+# フロントマター（生成される SKILL.md に付与）
+frontmatter:
+  name: checkpointing
+  description: |
+    Save session context to agent configuration files or create full checkpoint files.
+    Supports three modes: session history (default), full checkpoint (--full),
+    and skill analysis (--full --analyze) for extracting reusable patterns.
+  metadata:
+    short-description: Checkpoint session context with skill extraction support
+
+# 参照するポリシー（なし）
+policies: []
+
+# スキル固有の instruction（ファイル参照）
+instruction: checkpointing

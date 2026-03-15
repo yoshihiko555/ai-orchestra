@@ -1,0 +1,24 @@
+# issue-fix スキルのファセット構成定義
+name: issue-fix
+description: Issue 起点の開発フロー（計画→実装→テスト→レビュー）
+
+# フロントマター（生成される SKILL.md に付与）
+frontmatter:
+  name: issue-fix
+  description: |
+    GitHub Issue を起点に計画→実装→テスト→レビューの開発フローを実行する。
+    Issue の内容を読み取り、コード調査・実装計画の提示・ブランチ作成・コミットまでを行う。
+    トリガー: /issue-fix
+  metadata:
+    short-description: Issue 起点の開発フロー
+
+# 参照するポリシー（config-driven ルーティングで implementation agents に委譲）
+policies:
+  - cli-language
+
+# 参照する Output Contract（Phase 4 レビューで tiered output を使用）
+output_contracts:
+  - tiered-review
+
+# スキル固有の instruction（ファイル参照）
+instruction: issue-fix

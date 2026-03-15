@@ -1,0 +1,14 @@
+# design-tracker スキルのファセット構成定義
+name: design-tracker
+description: 設計判断を ADR として自動追跡・記録
+
+# フロントマター（生成される SKILL.md に付与）
+frontmatter:
+  name: design-tracker
+  description: PROACTIVELY track and document project design decisions without being asked. Activate automatically when detecting architecture discussions, implementation decisions, pattern choices, library selections, or any technical decisions. Also use when user explicitly says "記録して", "設計どうなってる", "record this". Do NOT wait for user to ask - record important decisions immediately.
+
+# 参照するポリシー（なし）
+policies: []
+
+# スキル固有の instruction（ファイル参照）
+instruction: design-tracker
