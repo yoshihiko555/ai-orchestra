@@ -24,9 +24,8 @@ codex:
   # codex exec に常に付与するフラグ
   # --full-auto: 確認プロンプトなしで自動実行
   flags: --full-auto
-  # OAuth 認証 + macOS システム API を使用するため Bash サンドボックス内では動作しない
-  # Bash ツールで実行する際は dangerouslyDisableSandbox: true を指定すること
-  requires_sandbox_disable: true
+  # sandbox 内で実行可能（enableWeakerNetworkIsolation: true が前提）
+  requires_sandbox_disable: false
 
 # Google Gemini CLI (https://github.com/google-gemini/gemini-cli)
 # リサーチ・ドキュメント分析・コードベース理解・マルチモーダル処理で使用
@@ -39,9 +38,8 @@ gemini:
   model: gemini-3.1-pro-preview
   # gemini コマンドに常に付与するフラグ（不要なら空文字）
   flags: ""
-  # OAuth 認証 + macOS システム API を使用するため Bash サンドボックス内では動作しない
-  # Bash ツールで実行する際は dangerouslyDisableSandbox: true を指定すること
-  requires_sandbox_disable: true
+  # sandbox 内で実行可能（enableWeakerNetworkIsolation + NODE_OPTIONS + allowedDomains が前提）
+  requires_sandbox_disable: false
 
 # Claude Code サブエージェントの設定
 subagent:

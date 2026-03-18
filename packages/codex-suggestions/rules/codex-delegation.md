@@ -36,16 +36,12 @@
 
 ## 呼び出し方法
 
-> **Bash サンドボックス制約**
-> Codex CLI は OAuth 認証 + macOS システム API を使用するため、sandbox 内では動作しない場合がある。
-> ただし `sandbox.excludedCommands` に `codex` が設定済みなら sandbox 内でも実行可能。
+> **Sandbox 実行**
+> Codex CLI は sandbox 内で直接実行する。
+> 前提条件として `~/.claude/settings.json` に以下の設定が必要:
+> - `sandbox.enableWeakerNetworkIsolation: true` — macOS 証明書検証サービスへのアクセスを許可
 >
-> **実行手順（3段階フォールバック）:**
-> 1. まず sandbox 内で実行する（`dangerouslyDisableSandbox` なし）
-> 2. sandbox エラーが出たら `dangerouslyDisableSandbox: true` で再試行する
-> 3. それも拒否された場合は `claude-direct` にフォールバックする
->
-> サブエージェントはノンインタラクティブのため、`dangerouslyDisableSandbox` の承認プロンプトが自動拒否される場合がある。
+> エラー時は `claude-direct` にフォールバックする（`dangerouslyDisableSandbox` は使用しない）。
 
 ### サブエージェント経由（推奨）
 
