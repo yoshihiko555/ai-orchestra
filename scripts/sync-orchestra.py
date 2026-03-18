@@ -514,7 +514,10 @@ def _patch_agent_model(file_path: Path, model: str) -> bool:
 
 
 def build_facets(
-    orchestra_path: Path, project_dir: Path, installed_packages: list[str] | None = None
+    orchestra_path: Path,
+    project_dir: Path,
+    installed_packages: list[str] | None = None,
+    force: bool = False,
 ) -> int:
     """facet composition から SKILL.md / ルール .md を自動生成する。"""
     compositions_dir = orchestra_path / "facets" / "compositions"
@@ -550,7 +553,7 @@ def build_facets(
         generated.extend(claude_skills.glob("*/SKILL.md"))
     if claude_rules.is_dir():
         generated.extend(claude_rules.glob("*.md"))
-    if generated and min(p.stat().st_mtime for p in generated) >= latest_src:
+    if not force and generated and min(p.stat().st_mtime for p in generated) >= latest_src:
         return 0
 
     script = orchestra_path / "scripts" / "orchestra-manager.py"
@@ -689,6 +692,7 @@ def main() -> None:
                     synced_count += 1
 
     # ファセット（トップレベル）の同期
+    facets_synced = False
     facets_src = orchestra_path / "facets"
     if facets_src.is_dir():
         for src_file in facets_src.rglob("*.md"):
@@ -703,9 +707,13 @@ def main() -> None:
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src_file, dst)
             synced_count += 1
+            facets_synced = True
 
     # ファセットビルド（composition → SKILL.md / ルール .md 生成）
-    facet_built_count = build_facets(orchestra_path, project_dir, installed_packages)
+    # facets_synced: ソースが更新された場合は mtime チェックをスキップして強制リビルド
+    facet_built_count = build_facets(
+        orchestra_path, project_dir, installed_packages, force=facets_synced
+    )
 
     # 前回同期されたが今回は対象外のファイルを削除
     # synced_files キーが未設定（初回）の場合は削除しない（プロジェクト固有ファイルの誤削除を防止）

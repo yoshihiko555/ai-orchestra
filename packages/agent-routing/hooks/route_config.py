@@ -123,6 +123,19 @@ AGENT_TRIGGERS: dict[str, dict[str, list[str]]] = {
         "ja": ["ドキュメント", "README", "手順書", "マニュアル"],
         "en": ["documentation", "readme", "manual", "docs"],
     },
+    # Specialized
+    "specialized-mcp-builder": {
+        "ja": ["MCP", "MCPサーバー", "ツール定義"],
+        "en": ["mcp", "mcp server", "tool definition"],
+    },
+    "support-executive-summary-generator": {
+        "ja": ["エグゼクティブサマリー", "要約", "経営報告"],
+        "en": ["executive summary", "briefing", "c-suite"],
+    },
+    "testing-reality-checker": {
+        "ja": ["リアリティチェック", "本番準備", "品質確認"],
+        "en": ["reality check", "production ready", "quality gate"],
+    },
 }
 
 # エージェント不一致時の Gemini フォールバックトリガー

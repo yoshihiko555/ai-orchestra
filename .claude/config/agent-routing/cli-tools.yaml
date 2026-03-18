@@ -134,3 +134,9 @@ agents:
     tool: claude-direct
   requirements:
     tool: claude-direct
+  specialized-mcp-builder:
+    tool: claude-direct
+  support-executive-summary-generator:
+    tool: claude-direct
+  testing-reality-checker:
+    tool: claude-direct
