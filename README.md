@@ -189,7 +189,9 @@ orchex install <package> --project . --dry-run
 
 ### 5. ファセット管理コマンド
 
-スキル・ルールをファセット（Policy / Output Contract / Instruction）から自動生成・管理する。
+スキル・ルールをファセット（Policy / Output Contract / Instruction）から自動生成・管理する。詳細は [Facet システム解説](docs/guides/facet-system.md) を参照。
+
+![Facet 合成システム](docs/assets/facet.png)
 
 ```bash
 # 全 composition をビルド（SKILL.md / ルール .md を生成）
@@ -319,6 +321,8 @@ Task(subagent_type="code-reviewer", prompt="このコードをレビューして
 ---
 
 ## アーキテクチャ
+
+![アーキテクチャ図](docs/assets/architecture.png)
 
 ```
 Claude Code (Orchestrator)

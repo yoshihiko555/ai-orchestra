@@ -5,6 +5,10 @@
 
 ---
 
+![アーキテクチャ図](../assets/architecture.png)
+
+---
+
 ## 1. プロジェクト概要
 
 AI Orchestra は Claude Code + Codex CLI + Gemini CLI の協調実行を管理する Python 製オーケストレーション基盤。
