@@ -25,7 +25,6 @@ class TestFacetBuild:
         skills = e2e_project / ".claude" / "skills"
         rules = e2e_project / ".claude" / "rules"
         assert (skills / "review" / "SKILL.md").is_file()
-        assert (skills / "simplify" / "SKILL.md").is_file()
         assert (skills / "tdd" / "SKILL.md").is_file()
         assert (rules / "coding-principles.md").is_file()
         assert (rules / "config-loading.md").is_file()
@@ -45,8 +44,8 @@ class TestFacetBuild:
         local_dir.mkdir(parents=True, exist_ok=True)
         (local_dir / "code-quality.md").write_text("# E2E LOCAL POLICY\n", encoding="utf-8")
         # Rebuild
-        run_orchex("facet", "build", "--name", "simplify", project=e2e_project)
-        content = (e2e_project / ".claude" / "skills" / "simplify" / "SKILL.md").read_text(
+        run_orchex("facet", "build", "--name", "coding-principles", project=e2e_project)
+        content = (e2e_project / ".claude" / "rules" / "coding-principles.md").read_text(
             encoding="utf-8"
         )
         assert "E2E LOCAL POLICY" in content

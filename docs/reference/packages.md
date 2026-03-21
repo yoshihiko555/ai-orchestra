@@ -113,7 +113,6 @@ AI Orchestra の全パッケージ一覧と詳細。
 | hook | `test-gate-checker.py` | PreToolUse: テスト品質ゲートチェック |
 | skill | `/review` | マルチエージェントコードレビュー（スマート選定） |
 | skill | `/tdd` | テスト駆動開発ワークフロー |
-| skill | `/simplify` | コードの簡素化 |
 | skill | `/design-tracker` | 設計記録 |
 | skill | `/release-readiness` | リリース前最終チェック |
 

@@ -248,7 +248,6 @@ Task(subagent_type="code-reviewer", prompt="このコードをレビューして
 | `/design-tracker` | 設計記録 |
 | `/task-state` | Plans.md の作成・更新 |
 | `/release-readiness` | マージ前の最終チェック |
-| `/simplify` | コードの簡素化 |
 | `/tdd` | テスト駆動開発ワークフロー |
 
 ### レビュースキル
@@ -279,7 +278,7 @@ ai-orchestra/
 │   ├── cli-logging/       # Codex/Gemini CLI ログ記録 + checkpointing スキル
 │   ├── codex-suggestions/ # Codex 相談提案 + codex-delegation ルール + codex-system スキル
 │   ├── gemini-suggestions/# Gemini リサーチ提案 + gemini-delegation ルール + gemini-system スキル
-│   ├── quality-gates/     # 品質ゲート + review/tdd/simplify/release-readiness (+ design-tracker)
+│   ├── quality-gates/     # 品質ゲート + review/tdd/release-readiness (+ design-tracker)
 │   ├── route-audit/       # ルーティング監査・KPIレポート
 │   ├── issue-workflow/    # GitHub Issue 起票 + 計画→実装→テスト→レビューの開発フロー
 │   ├── cocoindex/         # cocoindex MCP サーバーの自動プロビジョニング

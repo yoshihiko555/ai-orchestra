@@ -103,6 +103,6 @@ $(cat src/services/llm_client.py)
 ## When to Use
 
 - When code becomes hard to read/maintain
-- When user says "リファクタリングして", "シンプルにして", "simplify this"
+- When user says "リファクタリングして", "シンプルにして"
 - Before adding new features to complex code
 - When code review identifies complexity issues

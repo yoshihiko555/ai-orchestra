@@ -65,7 +65,7 @@ facets/
 |---------|-------------|
 | ルーティング | `agent-routing-policy`, `orchestra-usage`, `config-loading` |
 | Codex/Gemini | `codex-delegation`, `codex-suggestion-compliance`, `codex-system`, `gemini-delegation`, `gemini-suggestion-compliance`, `gemini-system` |
-| 品質 | `review`, `skill-review-policy`, `simplify`, `tdd`, `release-readiness` |
+| 品質 | `review`, `skill-review-policy`, `tdd`, `release-readiness` |
 | 開発フロー | `startproject`, `issue-create`, `issue-fix`, `preflight` |
 | 状態管理 | `task-memory-usage`, `task-state`, `checkpointing`, `context-sharing` |
 | その他 | `coding-principles` (rule), `cocoindex-usage`, `design`, `design-tracker` |
@@ -286,7 +286,6 @@ orchex facet build --name my-skill --project .
 | `preflight` | skill | core | — | — |
 | `release-readiness` | skill | quality-gates | — | tiered-review |
 | `review` | skill | quality-gates | — | tiered-review |
-| `simplify` | skill | quality-gates | — | — |
 | `skill-review-policy` | rule | core | — | tiered-review |
 | `startproject` | skill | core | — | — |
 | `task-memory-usage` | rule | core | — | — |
