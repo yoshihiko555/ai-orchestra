@@ -27,23 +27,33 @@ def e2e_project(tmp_path: Path) -> Path:
     project = tmp_path / "project"
     project.mkdir()
     (project / "README.md").write_text("# e2e test\n", encoding="utf-8")
+    git_env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "test",
+        "GIT_COMMITTER_NAME": "test",
+        "GIT_AUTHOR_EMAIL": "test@test",
+        "GIT_COMMITTER_EMAIL": "test@test",
+    }
     subprocess.run(
         ["git", "init", "-q"],
         cwd=project,
         check=True,
         capture_output=True,
+        env=git_env,
     )
     subprocess.run(
         ["git", "add", "."],
         cwd=project,
         check=True,
         capture_output=True,
+        env=git_env,
     )
     subprocess.run(
         ["git", "commit", "-q", "-m", "init"],
         cwd=project,
         check=True,
         capture_output=True,
+        env=git_env,
     )
     return project
 
