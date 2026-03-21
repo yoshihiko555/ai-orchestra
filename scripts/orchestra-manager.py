@@ -1509,6 +1509,9 @@ class FacetBuilder:
                 sys.exit(1)
 
         policies = composition.get("policies")
+        if policies is None:
+            policies = []
+            composition["policies"] = policies
         if not isinstance(policies, list):
             print(f"エラー: composition.policies が不正です: {path}", file=sys.stderr)
             sys.exit(1)

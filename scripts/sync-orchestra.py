@@ -513,6 +513,50 @@ def _patch_agent_model(file_path: Path, model: str) -> bool:
     return True
 
 
+def _collect_facet_managed_paths(orchestra_path: Path, project_dir: Path) -> set[str]:
+    """facet composition で管理される skill/rule のパスを収集する。
+
+    返すパスは .claude/ 相対（例: "skills/review/SKILL.md", "rules/coding-principles.md"）。
+    パッケージ同期でこれらをスキップし、facet build に管理を委ねる。
+    """
+    managed: set[str] = set()
+    dirs = []
+    compositions_dir = orchestra_path / "facets" / "compositions"
+    if compositions_dir.is_dir():
+        dirs.append(compositions_dir)
+    local_dir = project_dir / ".claude" / "facets" / "compositions"
+    if local_dir.is_dir():
+        dirs.append(local_dir)
+
+    for d in dirs:
+        for ypath in d.glob("*.yaml"):
+            try:
+                with open(ypath, encoding="utf-8") as f:
+                    if yaml:
+                        comp = yaml.safe_load(f)
+                    else:
+                        # yaml 未導入時は name と type のみ正規表現で抽出
+                        text = f.read()
+                        m_name = re.search(r"^name:\s*(.+)$", text, re.MULTILINE)
+                        m_type = re.search(r"^type:\s*(.+)$", text, re.MULTILINE)
+                        comp = {}
+                        if m_name:
+                            comp["name"] = m_name.group(1).strip()
+                        if m_type:
+                            comp["type"] = m_type.group(1).strip()
+            except OSError:
+                continue
+            if not isinstance(comp, dict) or "name" not in comp:
+                continue
+            name = comp["name"]
+            comp_type = comp.get("type", "skill")
+            if comp_type == "rule":
+                managed.add(f"rules/{name}.md")
+            else:
+                managed.add(f"skills/{name}/SKILL.md")
+    return managed
+
+
 def build_facets(
     orchestra_path: Path,
     project_dir: Path,
@@ -637,6 +681,9 @@ def main() -> None:
     synced_count = 0
     synced_files: set[str] = set()
 
+    # facet composition で管理される skill/rule パスを収集（sync スキップ対象）
+    facet_managed = _collect_facet_managed_paths(orchestra_path, project_dir)
+
     # パッケージ単位の同期
     for pkg_name in installed_packages:
         manifest_path = orchestra_path / "packages" / pkg_name / "manifest.json"
@@ -665,6 +712,9 @@ def main() -> None:
                         if not src_file.is_file():
                             continue
                         file_rel = str(src_file.relative_to(pkg_dir))
+                        # facet composition で管理されるファイルはスキップ
+                        if file_rel in facet_managed:
+                            continue
                         synced_files.add(file_rel)
                         dst = claude_dir / file_rel
                         if not needs_sync(src_file, dst):
@@ -681,6 +731,10 @@ def main() -> None:
                     else:
                         dst = claude_dir / rel_path
                         dst_key = rel_path
+
+                    # facet composition で管理されるファイルはスキップ
+                    if dst_key in facet_managed:
+                        continue
 
                     synced_files.add(dst_key)
 
