@@ -13,7 +13,7 @@ ai-orchestra/
 │   └── compositions/      # 組み立て定義 YAML（facet build で SKILL.md / ルール .md を生成）
 ├── packages/         # パッケージ（hooks・scripts・agents・skills・rules・config）— 詳細は packages/README.md
 │   ├── core/              # 共通基盤ライブラリ + coding-principles / config-loading ルール
-│   ├── agent-routing/     # 25 エージェント定義 + ルーティング hooks + orchestra-usage ルール
+│   ├── agent-routing/     # 28 エージェント定義 + ルーティング hooks + orchestra-usage ルール
 │   ├── cli-logging/       # Codex/Gemini CLI ログ記録 + checkpointing スキル
 │   ├── codex-suggestions/ # Codex 相談提案 + codex-delegation ルール + codex-system スキル
 │   ├── gemini-suggestions/# Gemini リサーチ提案 + gemini-delegation ルール + gemini-system スキル
@@ -25,7 +25,7 @@ ai-orchestra/
 ├── scripts/          # 管理CLI
 ├── templates/        # テンプレート（エージェント・スキル・プロジェクト）
 ├── tests/            # Python 単体テスト
-├── docs/             # ドキュメント（設計・マイグレーション等）
+├── docs/             # 公開ドキュメント（guides / reference / design / adr）
 ├── taskfiles/        # Task CLI 用タスク定義
 └── Taskfile.yml      # メインタスクファイル
 ```
@@ -76,6 +76,9 @@ ai-orchestra/
 
 ### ユーティリティ
 - `general-purpose` - 汎用タスク・Codex/Gemini委譲
+- `specialized-mcp-builder` - MCP サーバー構築
+- `support-executive-summary-generator` - エグゼクティブサマリー生成
+- `testing-reality-checker` - 実装品質の現実チェック
 
 ---
 
@@ -142,7 +145,7 @@ orchex が内部で以下を実行:
 orchex --version
 ```
 
-全ログの役割・参照先は `docs/specs/logging.md` を参照。
+全ログの役割・参照先は `docs/reference/logging.md` を参照。
 
 ### 4. パッケージ管理コマンド
 
@@ -287,24 +290,30 @@ Task(subagent_type="code-reviewer", prompt="このコードをレビューして
 
 | スキル | 用途 |
 |--------|------|
-| `/review` | コード・セキュリティ・設計レビュー（並列実行対応） |
+| `/review` | コード・セキュリティ・設計レビュー（スマート選定 + 並列実行） |
 | `/startproject` | マルチエージェント協調で新規開発を開始 |
+| `/issue-create` | GitHub Issue の作成と計画策定 |
+| `/issue-fix` | Issue ベースの計画→実装→テスト→レビューフロー |
 | `/codex-system` | `cli-tools.yaml` に基づく Codex 利用ガイド（config-driven） |
 | `/gemini-system` | Gemini CLI でのリサーチ・マルチモーダル処理 |
 | `/checkpointing` | セッションコンテキストの保存・復元 |
-| `/design-tracker` | 設計記録スキル（現運用は `CLAUDE.md`/`Plans.md`/ADR/docs を優先） |
 | `/preflight` | 実装計画の策定 |
+| `/design` | 設計テンプレート |
+| `/design-tracker` | 設計記録 |
+| `/task-state` | Plans.md の作成・更新 |
+| `/release-readiness` | マージ前の最終チェック |
 | `/simplify` | コードの簡素化 |
 | `/tdd` | テスト駆動開発ワークフロー |
 
 ### レビュースキル
 
 ```
-/review              # 全レビュアー並列実行
+/review              # スマート選定（変更内容に応じて 2-3 名を自動選定）
+/review all          # 全 6 レビュアー並列実行
 /review code         # コードレビューのみ
 /review security     # セキュリティレビューのみ
-/review impl         # 実装系レビュー
-/review design       # 設計系レビュー
+/review impl         # 実装系（code + security + performance）
+/review design       # 設計系（spec + architecture）
 ```
 
 ---
@@ -328,7 +337,7 @@ Claude Code (Orchestrator)
     │   ├── cocoindex/          # MCP サーバー自動プロビジョニング
     │   └── tmux-monitor/       # tmux リアルタイム監視
     │
-    └── 25 Specialized Agents
+    └── 28 Specialized Agents
         ├── Planning: planner, researcher, requirements
         ├── Design: architect, api-designer, data-modeler, auth-designer, spec-writer
         ├── Implementation: frontend-dev, backend-*-dev, ai-*, debugger, tester
