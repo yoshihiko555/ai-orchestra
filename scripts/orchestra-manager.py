@@ -99,7 +99,6 @@ class OrchestraManager:
         ".claude/context/",
         ".claude/Plans.md",
         ".claude/Plans.archive.md",
-        
     ]
     CONTEXT_SPECS: tuple[tuple[str, str, str, str], ...] = (
         ("claude", "claude.md", "templates/project/CLAUDE.md", "CLAUDE.md"),
@@ -837,6 +836,10 @@ class OrchestraManager:
         if synced_count > 0:
             print(f"{synced_count} ファイルを同期しました")
 
+    def _is_initialized(self, project_dir: Path) -> bool:
+        """プロジェクトが初期化済みかどうかを判定"""
+        return (project_dir / ".claude" / "orchestra.json").exists()
+
     def install(
         self,
         package_name: str,
@@ -852,6 +855,12 @@ class OrchestraManager:
 
         pkg = packages[package_name]
         project_dir = self.get_project_dir(project)
+
+        # 未初期化なら自動で init を実行
+        if not self._is_initialized(project_dir):
+            print("プロジェクト未初期化のため自動初期化します...\n")
+            self.init(project, dry_run)
+            print()
 
         # 依存チェック（setup 経由の場合は依存順が保証されるためスキップ）
         orch = self.load_orchestra_json(project_dir)
@@ -1812,11 +1821,6 @@ def main():
 
     subparsers = parser.add_subparsers(dest="command", help="サブコマンド")
 
-    # init コマンド
-    init_parser = subparsers.add_parser("init", help="プロジェクトを初期化")
-    init_parser.add_argument("--project", help="プロジェクトパス")
-    init_parser.add_argument("--dry-run", action="store_true", help="実行内容を表示のみ")
-
     # list コマンド
     subparsers.add_parser("list", help="パッケージ一覧を表示")
 
@@ -1957,9 +1961,7 @@ def main():
     manager = OrchestraManager(orchestra_dir)
 
     # コマンド実行
-    if args.command == "init":
-        manager.init(args.project, args.dry_run)
-    elif args.command == "list":
+    if args.command == "list":
         manager.list_packages()
     elif args.command == "status":
         manager.status(args.project)
