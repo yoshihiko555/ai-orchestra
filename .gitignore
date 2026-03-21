@@ -37,10 +37,7 @@ env/
 .claude/Plans.md
 .claude/Plans.archive.md
 .claude/.mcp-proxy.pid
-
-# Project-specific
-docs/*
-!docs/specs/
+.claude/.facet-packages-hash
 
 # CocoIndex local search index
 .cocoindex_code/

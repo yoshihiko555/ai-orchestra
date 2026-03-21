@@ -97,6 +97,7 @@ class OrchestraManager:
         ".claude/state/",
         ".claude/checkpoints/",
         ".claude/context/",
+        ".claude/.facet-packages-hash",
         ".claude/Plans.md",
         ".claude/Plans.archive.md",
     ]
@@ -1813,7 +1814,7 @@ class FacetBuilder:
 def main():
     """メインエントリポイント"""
     parser = argparse.ArgumentParser(
-        description="ai-orchestra パッケージ管理 CLI",
+        description="AI-ORCHESTRA パッケージ管理 CLI",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(

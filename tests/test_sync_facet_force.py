@@ -1,8 +1,9 @@
-"""sync-orchestra.py の build_facets force パラメータのテスト。
+"""sync-orchestra.py の build_facets mtime スキップのテスト。
 
 テスト観点:
-- force=False かつ生成物がソースより新しい場合はビルドをスキップする
-- force=True なら生成物がソースより新しくてもビルドを実行する
+- 生成物がソースより新しい場合はビルドをスキップする
+- 生成物が存在しない場合はビルドする
+- ソースが更新された場合はビルドする
 """
 
 from __future__ import annotations
@@ -49,7 +50,6 @@ instruction: |
     # orchestra-manager.py が必要（build_facets がサブプロセスで呼ぶ）
     scripts_dir = orchestra_dir / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
-    # 実際の orchestra-manager.py をコピーではなくシンボリックリンクで参照
     src_script = REPO_ROOT / "scripts" / "orchestra-manager.py"
     dst_script = scripts_dir / "orchestra-manager.py"
     if not dst_script.exists():
@@ -69,52 +69,45 @@ def _create_stale_generated(project_dir: Path) -> None:
     os.utime(skill_path, (future_time, future_time))
 
 
-class TestBuildFacetsForce:
-    def test_skip_when_generated_newer_and_force_false(self, tmp_path: Path) -> None:
-        """force=False で生成物がソースより新しい場合はスキップ（return 0）。"""
+class TestBuildFacetsMtime:
+    def test_skip_when_generated_newer(self, tmp_path: Path) -> None:
+        """生成物がソースより新しい場合はスキップ（return 0）。"""
         orchestra_dir = tmp_path / "orchestra"
         project_dir = tmp_path / "project"
         project_dir.mkdir(parents=True)
         _setup_minimal_facets(orchestra_dir, project_dir)
         _create_stale_generated(project_dir)
 
-        result = build_facets(orchestra_dir, project_dir, force=False)
+        result = build_facets(orchestra_dir, project_dir)
         assert result == 0
 
-    def test_rebuild_when_force_true(self, tmp_path: Path) -> None:
-        """force=True なら生成物がソースより新しくてもビルドを実行する。"""
+    def test_build_when_source_newer(self, tmp_path: Path) -> None:
+        """ソースが生成物より新しい場合はビルドする。"""
         orchestra_dir = tmp_path / "orchestra"
         project_dir = tmp_path / "project"
         project_dir.mkdir(parents=True)
         _setup_minimal_facets(orchestra_dir, project_dir)
         _create_stale_generated(project_dir)
 
-        result = build_facets(orchestra_dir, project_dir, force=True)
-        assert result > 0
-
-    def test_rebuild_updates_content(self, tmp_path: Path) -> None:
-        """force=True でビルドすると生成物の内容が更新される。"""
-        orchestra_dir = tmp_path / "orchestra"
-        project_dir = tmp_path / "project"
-        project_dir.mkdir(parents=True)
-        _setup_minimal_facets(orchestra_dir, project_dir)
-        _create_stale_generated(project_dir)
-
+        # ソースのタイムスタンプを生成物より新しくする
         skill_path = project_dir / ".claude" / "skills" / "test-skill" / "SKILL.md"
-        assert skill_path.read_text(encoding="utf-8") == "old-content"
+        composition_path = orchestra_dir / "facets" / "compositions" / "test-skill.yaml"
+        far_future = time.time() + 7200
+        os.utime(composition_path, (far_future, far_future))
 
-        build_facets(orchestra_dir, project_dir, force=True)
+        result = build_facets(orchestra_dir, project_dir)
+        assert result > 0
 
         content = skill_path.read_text(encoding="utf-8")
         assert "original-body" in content
         assert "policy-body" in content
 
     def test_build_when_no_generated_exists(self, tmp_path: Path) -> None:
-        """生成物が存在しない場合は force に関わらずビルドする。"""
+        """生成物が存在しない場合はビルドする。"""
         orchestra_dir = tmp_path / "orchestra"
         project_dir = tmp_path / "project"
         project_dir.mkdir(parents=True)
         _setup_minimal_facets(orchestra_dir, project_dir)
 
-        result = build_facets(orchestra_dir, project_dir, force=False)
+        result = build_facets(orchestra_dir, project_dir)
         assert result > 0

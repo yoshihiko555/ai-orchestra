@@ -561,7 +561,6 @@ def build_facets(
     orchestra_path: Path,
     project_dir: Path,
     installed_packages: list[str] | None = None,
-    force: bool = False,
 ) -> int:
     """facet composition から SKILL.md / ルール .md を自動生成する。"""
     compositions_dir = orchestra_path / "facets" / "compositions"
@@ -573,6 +572,7 @@ def build_facets(
         return 0
 
     # 変更検知: composition YAML / facet .md が生成物より新しい場合のみビルド
+    # ソース: orchestra 側の compositions + facet .md + プロジェクトローカル上書き
     yamls: list[Path] = []
     if has_orchestra:
         yamls.extend(compositions_dir.glob("*.yaml"))
@@ -584,11 +584,39 @@ def build_facets(
     facet_mds = list(facets_dir.glob("**/*.md"))
     if facet_mds:
         latest_src = max(latest_src, max(p.stat().st_mtime for p in facet_mds))
+    # プロジェクトローカルの上書きファイル（手動配置）も検知対象
     local_facets_dir = project_dir / ".claude" / "facets"
     if local_facets_dir.is_dir():
         local_facet_mds = list(local_facets_dir.glob("**/*.md"))
         if local_facet_mds:
             latest_src = max(latest_src, max(p.stat().st_mtime for p in local_facet_mds))
+    # installed_packages の変更を検知（install/uninstall でパッケージ構成が変わる）
+    # mtime ではなく内容ベースで判定: .claude/.facet-packages-hash に前回のハッシュを保存
+    import hashlib
+
+    orch_json = project_dir / ".claude" / "orchestra.json"
+    if orch_json.is_file():
+        try:
+            orch_data = json.loads(orch_json.read_text(encoding="utf-8"))
+            pkgs_str = ",".join(sorted(orch_data.get("installed_packages", [])))
+        except (json.JSONDecodeError, OSError):
+            pkgs_str = ""
+        pkgs_hash = hashlib.md5(pkgs_str.encode()).hexdigest()
+        hash_file = project_dir / ".claude" / ".facet-packages-hash"
+        prev_hash = ""
+        if hash_file.is_file():
+            try:
+                prev_hash = hash_file.read_text(encoding="utf-8").strip()
+            except OSError:
+                pass
+        if pkgs_hash != prev_hash:
+            # パッケージ構成が変わった → 強制リビルド（mtime スキップ無効化）
+            try:
+                hash_file.write_text(pkgs_hash, encoding="utf-8")
+            except OSError:
+                pass
+            # latest_src を未来に設定してスキップ条件を無効化
+            latest_src = os.time() if hasattr(os, "time") else float("inf")
 
     claude_skills = project_dir / ".claude" / "skills"
     claude_rules = project_dir / ".claude" / "rules"
@@ -597,7 +625,7 @@ def build_facets(
         generated.extend(claude_skills.glob("*/SKILL.md"))
     if claude_rules.is_dir():
         generated.extend(claude_rules.glob("*.md"))
-    if not force and generated and min(p.stat().st_mtime for p in generated) >= latest_src:
+    if generated and min(p.stat().st_mtime for p in generated) >= latest_src:
         return 0
 
     script = orchestra_path / "scripts" / "orchestra-manager.py"
@@ -745,29 +773,10 @@ def main() -> None:
                     shutil.copy2(src, dst)
                     synced_count += 1
 
-    # ファセット（トップレベル）の同期
-    facets_synced = False
-    facets_src = orchestra_path / "facets"
-    if facets_src.is_dir():
-        for src_file in facets_src.rglob("*.md"):
-            if not src_file.is_file():
-                continue
-            rel = src_file.relative_to(facets_src)
-            dst_key = "facets/" + str(rel)
-            synced_files.add(dst_key)
-            dst = claude_dir / "facets" / rel
-            if not needs_sync(src_file, dst):
-                continue
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src_file, dst)
-            synced_count += 1
-            facets_synced = True
-
     # ファセットビルド（composition → SKILL.md / ルール .md 生成）
-    # facets_synced: ソースが更新された場合は mtime チェックをスキップして強制リビルド
-    facet_built_count = build_facets(
-        orchestra_path, project_dir, installed_packages, force=facets_synced
-    )
+    # facet ソース（policies/instructions/output-contracts）は orchestra 側を直接参照する。
+    # プロジェクト側 .claude/facets/ への自動コピーは行わない（ローカル上書き用に手動配置のみ）。
+    facet_built_count = build_facets(orchestra_path, project_dir, installed_packages)
 
     # 前回同期されたが今回は対象外のファイルを削除
     # synced_files キーが未設定（初回）の場合は削除しない（プロジェクト固有ファイルの誤削除を防止）
