@@ -42,14 +42,6 @@ class TestMergeGitignoreContent:
         assert merged.count(OrchestraManager.GITIGNORE_BLOCK_START) == 1
 
     def test_keeps_existing_when_all_entries_already_present(self) -> None:
-        existing = (
-            ".claude/docs/\n"
-            ".claude/logs/\n"
-            ".claude/state/\n"
-            ".claude/checkpoints/\n"
-            ".claude/context/\n"
-            ".claude/Plans.md\n"
-            ".claude/Plans.archive.md\n"
-        )
-        merged = OrchestraManager.merge_gitignore_content(existing)
-        assert merged == existing
+        entries = "\n".join(OrchestraManager.GITIGNORE_CLAUDE_ENTRIES) + "\n"
+        merged = OrchestraManager.merge_gitignore_content(entries)
+        assert merged == entries
