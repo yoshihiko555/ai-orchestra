@@ -47,15 +47,22 @@ instruction: |
         encoding="utf-8",
     )
 
-    # orchestra-manager.py が必要（build_facets がサブプロセスで呼ぶ）
+    # orchestra-manager.py と依存モジュールが必要（build_facets がサブプロセスで呼ぶ）
     scripts_dir = orchestra_dir / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
-    src_script = REPO_ROOT / "scripts" / "orchestra-manager.py"
-    dst_script = scripts_dir / "orchestra-manager.py"
-    if not dst_script.exists():
-        import shutil
+    import shutil
 
-        shutil.copy2(src_script, dst_script)
+    for script_name in [
+        "orchestra-manager.py",
+        "orchestra_models.py",
+        "orchestra_context.py",
+        "orchestra_hooks.py",
+        "facet_builder.py",
+    ]:
+        src_script = REPO_ROOT / "scripts" / script_name
+        dst_script = scripts_dir / script_name
+        if src_script.exists() and not dst_script.exists():
+            shutil.copy2(src_script, dst_script)
 
 
 def _create_stale_generated(project_dir: Path) -> None:
