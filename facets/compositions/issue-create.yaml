@@ -1,7 +1,6 @@
 # issue-create スキルのファセット構成定義
 name: issue-create
 description: GitHub Issue の作成（種類別テンプレート・ラベル自動付与）
-package: issue-workflow
 
 # フロントマター（生成される SKILL.md に付与）
 frontmatter:

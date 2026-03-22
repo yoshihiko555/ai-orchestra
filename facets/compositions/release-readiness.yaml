@@ -1,7 +1,6 @@
 # release-readiness スキルのファセット構成定義
 name: release-readiness
 description: マージ前最終確認（テスト・レビュー・タスク状態の PASS/BLOCKED 判定）
-package: quality-gates
 
 # フロントマター（生成される SKILL.md に付与）
 frontmatter:

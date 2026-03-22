@@ -14,7 +14,7 @@
   ],
   "skills": [],
   "agents": [],
-  "rules": ["rules/cocoindex-usage.md"],
+  "rules": ["cocoindex-usage"],
   "scripts": [],
   "config": ["config/cocoindex.yaml"]
 }

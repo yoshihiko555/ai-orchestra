@@ -17,14 +17,9 @@
     "hooks/lint-on-save.py",
     "hooks/test-gate-checker.py"
   ],
-  "skills": [
-    "skills/review",
-    "skills/tdd",
-    "skills/design-tracker",
-    "skills/release-readiness"
-  ],
+  "skills": ["review", "tdd", "design-tracker", "release-readiness"],
   "agents": [],
-  "rules": [],
+  "rules": ["skill-review-policy"],
   "scripts": [],
   "config": []
 }

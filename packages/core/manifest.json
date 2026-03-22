@@ -31,21 +31,9 @@
     "hooks/update-working-context.py",
     "hooks/cleanup-session-context.py"
   ],
-  "skills": [
-    "skills/preflight",
-    "skills/startproject",
-    "skills/checkpointing",
-    "skills/task-state",
-    "skills/design"
-  ],
+  "skills": ["preflight", "startproject", "checkpointing", "task-state", "design"],
   "agents": [],
-  "rules": [
-    "rules/config-loading.md",
-    "rules/coding-principles.md",
-    "rules/skill-review-policy.md",
-    "rules/task-memory-usage.md",
-    "rules/context-sharing.md"
-  ],
+  "rules": ["config-loading", "coding-principles", "task-memory-usage", "context-sharing"],
   "scripts": [],
   "config": ["config/task-memory.yaml"]
 }

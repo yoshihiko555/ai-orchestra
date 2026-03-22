@@ -41,18 +41,16 @@ class TestFileSync:
     def test_updated_file_synced(self, e2e_project: Path, orchestra_dir: Path) -> None:
         """#26: orchestra 側のファイル更新で差分同期"""
         _setup_essential(e2e_project)
-        # Touch a non-facet file to trigger sync
-        checkpoint_script = (
-            orchestra_dir / "packages" / "core" / "skills" / "checkpointing" / "checkpoint.py"
-        )
-        original_mtime = checkpoint_script.stat().st_mtime
+        # Touch a config file to trigger sync
+        config_file = orchestra_dir / "packages" / "core" / "config" / "task-memory.yaml"
+        original_mtime = config_file.stat().st_mtime
         try:
             future = time.time() + 100
-            os.utime(checkpoint_script, (future, future))
+            os.utime(config_file, (future, future))
             result = run_session_start(e2e_project, "s3")
             assert "synced" in result.stdout
         finally:
-            os.utime(checkpoint_script, (original_mtime, original_mtime))
+            os.utime(config_file, (original_mtime, original_mtime))
 
     def test_local_yaml_preserved(self, e2e_project: Path) -> None:
         """#27: *.local.yaml が sync で上書きされない"""
@@ -125,14 +123,23 @@ class TestStaleCleanup:
         assert local_file.is_file()
 
     def test_uninstall_cleans_up_files(self, e2e_project: Path) -> None:
-        """#31: パッケージ uninstall 後の SessionStart でファイル削除"""
+        """#31: パッケージ uninstall でファイル削除、SessionStart で facet 再生成"""
         _setup_essential(e2e_project)
         run_orchex("install", "codex-suggestions", project=e2e_project)
         run_session_start(e2e_project, "s31a")
 
-        run_orchex("uninstall", "codex-suggestions", project=e2e_project)
+        # Verify codex skill exists before uninstall
+        codex_skill = e2e_project / ".claude" / "skills" / "codex-system" / "SKILL.md"
+        assert codex_skill.exists()
+
+        # Uninstall removes the skill files
+        result = run_orchex("uninstall", "codex-suggestions", project=e2e_project)
+        assert "削除" in result.stdout or "removed" in result.stdout
+        assert not codex_skill.exists()
+
+        # SessionStart rebuilds remaining facets without error
         result = run_session_start(e2e_project, "s31b")
-        assert "removed" in result.stdout
+        assert result.returncode == 0
 
 
 class TestHookSync:

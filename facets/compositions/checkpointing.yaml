@@ -1,7 +1,6 @@
 # checkpointing スキルのファセット構成定義
 name: checkpointing
 description: セッションコンテキストの永続化とスキル抽出分析
-package: cli-logging
 
 # フロントマター（生成される SKILL.md に付与）
 frontmatter:
