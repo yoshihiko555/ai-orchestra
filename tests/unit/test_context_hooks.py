@@ -638,3 +638,68 @@ class TestCleanupSessionContextMain:
         with patch.object(sys, "stdin", StringIO(stdin_data)):
             with patch.object(cleanup_mod, "_CONTEXT_STORE_AVAILABLE", True):
                 cleanup_mod.main()
+
+
+# ---------------------------------------------------------------------------
+# tool_name="Agent" 互換テスト（Claude Code は "Agent" を送る）
+# ---------------------------------------------------------------------------
+
+
+class TestAgentToolNameCompat:
+    """Claude Code は tool_name="Agent" を送る。"Task" からの移行互換を検証。"""
+
+    def test_capture_writes_entry_for_agent_tool_name(self, tmp_path: Path) -> None:
+        stdin_data = json.dumps(
+            {
+                "tool_name": "Agent",
+                "cwd": str(tmp_path),
+                "tool_input": {
+                    "subagent_type": "tester",
+                    "description": "Run tests",
+                    "prompt": "pytest -q",
+                },
+                "tool_response": "All tests passed.",
+            }
+        )
+
+        with patch.object(sys, "stdin", StringIO(stdin_data)):
+            with patch.object(capture_mod, "_CONTEXT_STORE_AVAILABLE", True):
+                capture_mod.main()
+
+        entries = list(_entries_dir(tmp_path).glob("tester_*.json"))
+        assert len(entries) == 1
+        stored = json.loads(entries[0].read_text(encoding="utf-8"))
+        assert stored["agent_id"] == "tester"
+        assert stored["status"] == "done"
+
+    def test_inject_appends_context_for_agent_tool_name(self, tmp_path: Path) -> None:
+        context_store.write_entry(
+            str(tmp_path),
+            "tester",
+            {
+                "agent_id": "tester",
+                "task_name": "run",
+                "summary": "done",
+                "timestamp": "2026-01-01T00:00:00+00:00",
+                "status": "done",
+            },
+        )
+        stdin_data = json.dumps(
+            {
+                "tool_name": "Agent",
+                "cwd": str(tmp_path),
+                "tool_input": {"subagent_type": "backend-python-dev", "prompt": "implement X"},
+            }
+        )
+
+        output_buf = StringIO()
+        with patch.object(sys, "stdin", StringIO(stdin_data)):
+            with patch.object(sys, "stdout", output_buf):
+                with patch.object(inject_mod, "_CONTEXT_STORE_AVAILABLE", True):
+                    inject_mod.main()
+
+        output = output_buf.getvalue()
+        assert output
+        parsed = json.loads(output)
+        assert parsed["decision"] == "approve"
+        assert "[Shared Context]" in parsed["tool_input"]["prompt"]

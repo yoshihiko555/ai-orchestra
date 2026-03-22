@@ -1,10 +1,68 @@
 ---
 name: review
-description: |
-  Run code reviews using specialized reviewer agents.
+description: 'Run code reviews using specialized reviewer agents.
+
   Supports individual or batch review modes with smart reviewer selection.
+
+  '
 metadata:
   short-description: Multi-agent code review (smart selection)
+---
+
+# Tiered Review Output Contract
+
+**レビュー系スキルの段階別出力形式。**
+
+## フォーマット
+
+```markdown
+## Review Summary
+
+**レビュアー**: {選定されたレビュアー一覧}
+**変更ファイル**: {ファイル数} files, {追加行数} insertions(+), {削除行数} deletions(-)
+
+### Critical ({count})
+- [{reviewer}] `{file}:{line}` - **{Issue}**
+  {問題の説明 + 影響 + 修正案}
+  ```{lang}
+  {コードスニペット}
+  ```
+
+### High ({count})
+- [{reviewer}] `{file}:{line}` - **{Issue}**
+  {問題の説明 + 修正案}
+
+### Medium ({count})
+- [{reviewer}] `{file}:{line}` - {1行サマリ}
+
+### Low ({count})
+- [{reviewer}] `{file}:{line}` - {1行サマリ}
+```
+
+## 重要度の定義
+
+| 重要度 | 基準 | 対応 |
+|--------|------|------|
+| **Critical** | セキュリティ脆弱性、データ損失リスク、本番障害の可能性 | 必ず修正してから次に進む |
+| **High** | バグの可能性、設計上の問題、パフォーマンス劣化 | ユーザーに確認（AskUserQuestion） |
+| **Medium** | コード品質、可読性、軽微な改善 | 報告のみ。修正は任意 |
+| **Low** | スタイル、命名、コメント改善 | 報告のみ。修正は任意 |
+
+## 集約ルール
+
+### 重複指摘の統合
+
+複数レビュアーが同一ファイル・同一箇所を指摘した場合:
+
+- severity が最も高いものを採用する
+- 他のレビュアー名を `[{reviewer1}, {reviewer2}]` で併記する
+- 異なる観点の指摘（例: security と performance）は別エントリとして残す
+
+### 詳細度
+
+- **Critical / High**: 詳細な説明 + 影響範囲 + 修正案（コードスニペット付き）
+- **Medium / Low**: 1行サマリのみ
+
 ---
 
 # Review Skill
@@ -184,6 +242,136 @@ Tiered Output 形式（Critical/High/Medium/Low）で報告してください。
 - [{reviewer}] `{file}:{line}` - {1行サマリ}
 ```
 
+**重要度の定義**（`/review` スキル固有。スキル内レビューフェーズの共通定義は `skill-review-policy.md` を参照）:
+
+| 重要度 | 基準 | 対応 |
+|--------|------|------|
+| **Critical** | セキュリティ脆弱性、データ損失リスク、本番障害の可能性 | 自動修正（Phase 6） |
+| **High** | バグの可能性、設計上の問題、パフォーマンス劣化 | 報告のみ |
+| **Medium** | コード品質、可読性、軽微な改善 | 報告のみ |
+| **Low** | スタイル、命名、コメント改善 | 報告のみ |
+
+**詳細度**:
+- **Critical / High**: 詳細な説明 + 影響範囲 + 修正案（コードスニペット付き）
+- **Medium / Low**: 1行サマリのみ
+
+### Phase 5: Pass/Fail 判定
+
+Phase 4 の集約結果から通過判定を行う。
+
+1. `cli-tools.yaml` の `review.auto_fix` を確認する（config-loading ルールに従い `.local.yaml` 上書きを適用。詳細は `config-loading.md` 参照）
+2. `auto_fix: false` の場合 → Phase 4 の Review Summary を出力してスキル終了（従来動作）
+3. `auto_fix: true` の場合 → 通過基準を `review.pass_threshold` から取得
+4. 通過基準の評価:
+   - `critical_zero`: Critical 指摘が 0 件で通過
+5. 通過 → Final Report（PASSED）を出力してスキル終了
+6. 不通過 → Phase 6 へ進む（ループ制御は Phase 7 の `while` で管理）
+
+### Phase 6: Auto-Fix（自動修正）
+
+Critical 指摘をサブエージェントで自動修正する。
+
+1. Critical 指摘をファイルごとにグループ化
+2. 各ファイルの拡張子から修正エージェントを決定（マッピングテーブル参照）
+3. 修正エージェントをサブエージェントとして起動（並列可）
+
+**修正エージェントマッピングテーブル**:
+
+| 拡張子 | 修正エージェント |
+|--------|----------------|
+| `.py` | `backend-python-dev` |
+| `.go` | `backend-go-dev` |
+| `.tsx`, `.jsx` | `frontend-dev` |
+| `.ts`, `.js` | `frontend-dev` |
+| `.vue`, `.svelte` | `frontend-dev` |
+| その他 | `general-purpose` |
+
+修正エージェント起動パターン:
+
+```
+Task(subagent_type="{fix_agent}", prompt="""
+以下の Critical 指摘を修正してください。
+
+## 対象ファイル
+{file_path}
+
+## Critical 指摘一覧
+{critical_issues のリスト（レビュアー名、行番号、問題の説明、修正案を含む）}
+
+## コンテキスト
+{Phase 0 で収集したファイルコンテキスト}
+
+指摘の修正案に従い、コードを修正してください。
+修正内容を簡潔に報告してください。
+""")
+```
+
+**注意**:
+- 修正エージェントの `agents.{name}.tool` は cli-tools.yaml の設定に従う
+- High/Medium/Low 指摘は修正対象外（報告のみ）
+
+### Phase 7: Re-Review Loop
+
+修正完了後、再レビューを実行する。
+
+1. ループカウンターをインクリメント
+2. Phase 0 に戻り、新しい diff でコンテキストを再収集
+3. Phase 1-4 を再実行（レビュアー選定も再実行）
+4. Phase 5 で再び Pass/Fail 判定
+
+ループ制御:
+
+```
+loop_count = 0
+max_loops = cli-tools.yaml の review.max_loops（デフォルト: 3）
+
+while loop_count < max_loops:
+    Phase 0-4: レビュー実行
+    Phase 5: 判定
+    if passed:
+        Final Report を出力して終了
+    Phase 6: Auto-Fix
+    loop_count += 1
+
+# ループ上限到達
+Final Report（残存 Critical 付き）を出力
+```
+
+#### Final Report フォーマット
+
+ループ終了後（通過・上限到達どちらでも）に出力:
+
+```markdown
+## Review Loop Summary
+
+**結果**: {PASSED | FAILED (max loops reached)}
+**ループ回数**: {loop_count} / {max_loops}
+**通過基準**: {pass_threshold}
+
+### Loop History
+| Loop | Critical | High | Medium | Low | Status |
+|------|----------|------|--------|-----|--------|
+| 1    | {n}      | {n}  | {n}    | {n} | {Fixed → Re-review / Passed} |
+| 2    | {n}      | {n}  | {n}    | {n} | {Fixed → Re-review / Passed} |
+
+### Remaining Issues (if FAILED)
+{残存 Critical/High 指摘のリスト}
+
+### Auto-Fix Summary
+{各ループで行った修正の概要}
+```
+
+### 全モードへの適用
+
+Phase 5-7 のループは以下の全モードに共通して適用される:
+
+- Smart Review (`/review`)
+- Full Review (`/review all`)
+- Individual Review (`/review {type}`)
+- Group Review (`/review impl`, `/review design`)
+
+各モードの Phase 0-4 の後に Phase 5-7 が実行される。
+
 ---
 
 ## Execution: Full Review (`/review all`)
@@ -194,6 +382,7 @@ Tiered Output 形式（Critical/High/Medium/Low）で報告してください。
 2. モデル選択を実行（Phase 2 と同じ）
 3. 全 6 レビュアーを起動（スマート選定をスキップ）
 4. Phase 4 の Tiered Output で集約
+5. Phase 5-7（Pass/Fail 判定 → Auto-Fix → Re-Review）を実行
 
 ## Execution: Individual Review (`/review {type}`)
 
@@ -203,6 +392,7 @@ Tiered Output 形式（Critical/High/Medium/Low）で報告してください。
 2. モデル選択を実行（Phase 2 と同じ）
 3. 指定レビュアーを起動
 4. 結果を報告
+5. Phase 5-7（Pass/Fail 判定 → Auto-Fix → Re-Review）を実行
 
 ## Execution: Group Review (`/review impl`, `/review design`)
 
@@ -217,6 +407,7 @@ Tiered Output 形式（Critical/High/Medium/Low）で報告してください。
 2. モデル選択を実行（Phase 2 と同じ）
 3. グループ内レビュアーを並列起動
 4. Phase 4 の Tiered Output で集約
+5. Phase 5-7（Pass/Fail 判定 → Auto-Fix → Re-Review）を実行
 
 ---
 
@@ -228,9 +419,9 @@ Tiered Output 形式（Critical/High/Medium/Low）で報告してください。
 - `/review design` は大規模リファクタリング前に推奨
 - リリース前は `/review all` を推奨
 
-## Quality Gate Rule（v2）
+## Quality Gate Rule（v3: Auto-Loop）
 
-- 最終品質ゲートとして使う場合（推奨: 別セッション実行）
-- `Critical` は必ず修正して再レビューする
-- `High` は運用方針に応じて必須修正またはユーザー確認とする
+デフォルトで自動修正ループが有効。詳細は Phase 5-7 を参照。
+
+- `review.auto_fix: false` で従来動作（報告のみ）に切替可能
 - テストコード作成は `/tdd` の責務であり、`/review` の責務ではない

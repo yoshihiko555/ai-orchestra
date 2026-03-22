@@ -3,7 +3,7 @@
 
 処理フロー:
 1. stdin から PostToolUse JSON を読み込む
-2. tool_name が "Task" でなければ何もしない
+2. tool_name が "Agent"（または後方互換の "Task"）でなければ何もしない
 3. tool_input から agent_id / task_name を取得する
 4. tool_response を先頭 2000 文字にトランケートしてサマリーとする
 5. context_store.write_entry() でエントリーを書き出す
@@ -100,9 +100,9 @@ def main() -> None:
 
     data = _read_stdin_json()
 
-    # Task ツール以外は何もしない
+    # Agent ツール以外は何もしない（後方互換のため "Task" も許容）
     tool_name = data.get("tool_name") or ""
-    if tool_name != "Task":
+    if tool_name not in ("Agent", "Task"):
         return
 
     tool_input = data.get("tool_input") or {}

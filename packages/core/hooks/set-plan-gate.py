@@ -37,8 +37,8 @@ def _get_state_dir(data: dict) -> str:
 def main() -> None:
     data = json.load(sys.stdin)
 
-    # Task ツール以外は無視
-    if data.get("tool_name") != "Task":
+    # Agent ツール以外は無視（後方互換のため "Task" も許容）
+    if data.get("tool_name") not in ("Agent", "Task"):
         sys.exit(0)
 
     tool_input = data.get("tool_input", {})
