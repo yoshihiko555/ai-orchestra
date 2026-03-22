@@ -30,6 +30,7 @@ env/
 *.log
 
 .claude/.mcp-proxy.pid
+.worktree/
 
 # CocoIndex local search index
 .cocoindex_code/
