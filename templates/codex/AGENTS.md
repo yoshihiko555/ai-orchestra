@@ -33,7 +33,7 @@ Claude Code (Orchestrator)
 ```
 ai_orchestra/               # Python package entrypoint
 scripts/                    # orchestra-manager and helper scripts
-packages/                   # reusable package units (hooks/agents/skills/rules/config)
+packages/                   # reusable package units (hooks/agents/config)
 templates/                  # distributed templates
 .claude/                    # synced runtime context in a project
 ```

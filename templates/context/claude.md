@@ -47,12 +47,12 @@ python scripts/orchestra-manager.py context sync --project .
 
 ```text
 ai_orchestra/                # Python package entrypoint
-packages/                    # 配布パッケージ群（hooks/agents/skills/rules/config）
+packages/                    # 配布パッケージ群（hooks/agents/config）
 scripts/                     # 管理 CLI（orchestra-manager.py など）
 templates/                   # 配布テンプレート
 templates/context/           # 指示書のソース（手編集する場所）
 tests/                       # unit tests
-.claude/                     # 同期後の実行コンテキスト（agents/skills/rules/config/logs）
+.claude/                     # 実行コンテキスト（agents/config は sync、skills/rules は facet build）
 ```
 
 ---
