@@ -5,7 +5,7 @@
   "depends": ["core"],
   "hooks": {
     "PreToolUse": [{"file": "check-codex-before-write.py", "matcher": "Edit|Write"}],
-    "PostToolUse": [{"file": "check-codex-after-plan.py", "matcher": "Task"}]
+    "PostToolUse": [{"file": "check-codex-after-plan.py", "matcher": "Agent|Task"}]
   },
   "files": [
     "hooks/check-codex-before-write.py",

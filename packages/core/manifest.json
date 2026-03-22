@@ -8,12 +8,12 @@
     "SessionEnd": ["cleanup-session-context.py"],
     "UserPromptSubmit": [{ "file": "clear-plan-gate.py" }],
     "PreToolUse": [
-      { "file": "check-plan-gate.py", "matcher": "Task" },
-      { "file": "inject-shared-context.py", "matcher": "Task" }
+      { "file": "check-plan-gate.py", "matcher": "Agent|Task" },
+      { "file": "inject-shared-context.py", "matcher": "Agent|Task" }
     ],
     "PostToolUse": [
-      { "file": "set-plan-gate.py", "matcher": "Task" },
-      { "file": "capture-task-result.py", "matcher": "Task" },
+      { "file": "set-plan-gate.py", "matcher": "Agent|Task" },
+      { "file": "capture-task-result.py", "matcher": "Agent|Task" },
       { "file": "update-working-context.py", "matcher": "Edit" },
       { "file": "update-working-context.py", "matcher": "Write" }
     ]

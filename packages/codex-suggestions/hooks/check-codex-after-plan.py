@@ -59,8 +59,8 @@ def main():
         data = json.load(sys.stdin)
         tool_name = data.get("tool_name", "")
 
-        # Only process Task tool calls
-        if tool_name != "Task":
+        # Only process Agent tool calls (backward compat: "Task" also accepted)
+        if tool_name not in ("Agent", "Task"):
             sys.exit(0)
 
         # Codex CLI が無効化されている場合は提案をスキップ

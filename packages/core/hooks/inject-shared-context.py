@@ -3,7 +3,7 @@
 
 処理フロー:
 1. stdin から PreToolUse JSON を読み込む
-2. tool_name が "Task" でなければ何もしない
+2. tool_name が "Agent"（または後方互換の "Task"）でなければ何もしない
 3. context_store からセッションエントリーと working-context を取得する
 4. どちらも空なら何もしない
 5. 注入テキストを構築して tool_input.prompt の末尾に追加する
@@ -170,9 +170,9 @@ def main() -> None:
     except (json.JSONDecodeError, ValueError):
         return
 
-    # Task ツール以外は何もしない
+    # Agent ツール以外は何もしない（後方互換のため "Task" も許容）
     tool_name = data.get("tool_name") or ""
-    if tool_name != "Task":
+    if tool_name not in ("Agent", "Task"):
         return
 
     tool_input = data.get("tool_input") or {}
