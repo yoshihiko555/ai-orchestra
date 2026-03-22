@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """
-SessionStart hook: ai-orchestra パッケージの skills/agents/rules/config/hooks を自動同期する。
+SessionStart hook: ai-orchestra パッケージの agents/config/hooks を自動同期する。
 
 処理フロー:
 1. .claude/orchestra.json を読み込み → インストール済みパッケージ一覧を取得
-2. 各パッケージの manifest.json を読み込み → skills/agents/rules/config をコピー
-3. 差分があるファイルのみ .claude/{skills,agents,rules,config}/ にコピー（mtime 比較）
+2. 各パッケージの manifest.json を読み込み → agents/config をコピー
+3. 差分があるファイルのみ .claude/{agents,config}/ にコピー（mtime 比較）
 4. config/*.local.yaml はプロジェクト固有設定のため同期・削除の対象外
 5. 前回 synced_files にあって今回ないファイルを削除（ソース側で削除されたファイルの反映）
 6. synced_files リストと last_sync タイムスタンプを更新
 7. manifest.json の hooks と settings.local.json を比較し、不足/余剰 hook を同期
+
+Note: skills/rules は facet build に完全委譲（packages からは同期しない）
 
 パフォーマンス: 変更なしの場合 ~70ms（Python 起動 + mtime 比較のみ）
 """
@@ -98,9 +100,9 @@ def main() -> None:
     # ファセットビルド
     facet_built_count = build_facets(orchestra_path, project_dir, installed_packages)
 
-    # 前回同期されたが今回は対象外のファイルを削除
+    # 前回同期されたが今回は対象外のファイルを削除（facet 管理パスは除外）
     prev_synced = orch.get("synced_files", [])
-    removed_count = remove_stale_files(claude_dir, prev_synced, synced_files)
+    removed_count = remove_stale_files(claude_dir, prev_synced, synced_files, facet_managed)
 
     # サブエージェント model パッチ
     patched_count = patch_all_agents(project_dir)

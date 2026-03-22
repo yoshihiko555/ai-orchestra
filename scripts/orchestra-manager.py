@@ -285,7 +285,7 @@ class OrchestraManager(ContextMixin, HooksMixin):
             pkg = packages[pkg_name]
             pkg_dir = orchestra_path / "packages" / pkg_name
 
-            for category in ("skills", "agents", "rules", "config"):
+            for category in ("agents", "config"):
                 file_list = getattr(pkg, category, [])
                 for rel_path in file_list:
                     src = pkg_dir / rel_path
@@ -440,26 +440,6 @@ class OrchestraManager(ContextMixin, HooksMixin):
                         print(f"ファイル削除: {pkg.name}/{target.name}")
 
         claude_dir = project_dir / ".claude"
-        for skill_name in pkg.skills:
-            target = claude_dir / "skills" / skill_name / "SKILL.md"
-            if dry_run:
-                if target.exists():
-                    print(f"[DRY-RUN] 同期ファイル削除: {target}")
-            else:
-                if target.exists():
-                    target.unlink()
-                    if target.parent.exists() and not any(target.parent.iterdir()):
-                        target.parent.rmdir()
-                    print(f"同期ファイル削除: skills/{skill_name}/SKILL.md")
-        for rule_name in pkg.rules:
-            target = claude_dir / "rules" / f"{rule_name}.md"
-            if dry_run:
-                if target.exists():
-                    print(f"[DRY-RUN] 同期ファイル削除: {target}")
-            else:
-                if target.exists():
-                    target.unlink()
-                    print(f"同期ファイル削除: rules/{rule_name}.md")
         for agent_path in pkg.agents:
             target = claude_dir / agent_path
             if dry_run:

@@ -39,14 +39,22 @@ def is_local_override(category: str, rel_path: Path) -> bool:
     return category == "config" and (name.endswith(".local.yaml") or name.endswith(".local.json"))
 
 
-def remove_stale_files(claude_dir: Path, prev_synced: list[str], current_synced: set[str]) -> int:
+def remove_stale_files(
+    claude_dir: Path,
+    prev_synced: list[str],
+    current_synced: set[str],
+    facet_managed: set[str] | None = None,
+) -> int:
     """前回同期したが今回は対象外になったファイルを削除する。
 
+    facet_managed に含まれるパスは facet build が管理するため削除しない。
     削除後に空になったディレクトリも再帰的に削除する。
     """
     removed = 0
     for file_key in prev_synced:
         if file_key in current_synced:
+            continue
+        if facet_managed and file_key in facet_managed:
             continue
         parts = file_key.split("/", 1)
         if len(parts) == 2 and is_local_override(parts[0], Path(parts[1])):
@@ -261,8 +269,8 @@ def sync_packages(
 
         pkg_dir = orchestra_path / "packages" / pkg_name
 
-        # "skills" は facet build に完全委譲（manifest-SSOT: Issue #20）
-        for category in ("agents", "rules", "config"):
+        # "skills" / "rules" は facet build に完全委譲（manifest-SSOT: Issue #20）
+        for category in ("agents", "config"):
             file_list = manifest.get(category, [])
             for rel_path in file_list:
                 src = pkg_dir / rel_path

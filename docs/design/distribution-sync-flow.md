@@ -101,11 +101,10 @@ SessionStart hook 発火
 |----------|---------|--------------|
 | `packages/*/hooks/*.py` | **同期不要**（`$AI_ORCHESTRA_DIR` から直接実行） | 即時 |
 | `packages/*/agents/` | mtime ベースのファイルコピー | 次回 SessionStart |
-| `packages/*/rules/` | mtime ベースのファイルコピー | 次回 SessionStart |
 | `packages/*/config/` | mtime ベースのファイルコピー | 次回 SessionStart |
-| `facets/policies/*.md` | 同期 → facet build で全参照スキル再生成 | 次回 SessionStart |
-| `facets/instructions/*.md` | 同期 → 該当 composition のみ再生成 | 次回 SessionStart |
-| `facets/compositions/*.yaml` | 同期 → 該当スキルのみ再生成 | 次回 SessionStart |
+| `facets/policies/*.md` | facet build で全参照スキル・ルール再生成 | 次回 SessionStart |
+| `facets/instructions/*.md` | facet build で該当 composition のみ再生成 | 次回 SessionStart |
+| `facets/compositions/*.yaml` | facet build で該当スキル・ルールのみ再生成 | 次回 SessionStart |
 | 新パッケージ追加 | `orchex install` が必要 | install 実行時 |
 
 ---
@@ -136,10 +135,15 @@ SessionStart hook 発火
 - 生成先は `.claude/skills/{name}/SKILL.md`（プロジェクト側）
 - composition の所有パッケージは manifest.json の `skills` リストから解決される（composition YAML に `package` フィールドは不要）
 
-### rules/config はコピー（上書き可能）
+### rules は facet build で生成（skills と同様）
 
-- プロジェクト側の `.claude/` にコピーされる
-- プロジェクト固有のカスタマイズが可能（ローカル上書き）
+- ルール（`.claude/rules/{name}.md`）は `facets/compositions/*.yaml` の `type: rule` 定義をもとに `facet build` で生成される
+- composition の所有パッケージは manifest.json の `rules` リストから解決される
+
+### config はコピー（上書き可能）
+
+- プロジェクト側の `.claude/config/` にコピーされる
+- プロジェクト固有のカスタマイズが可能（`.local.yaml` / `.local.json` で上書き）
 
 ### .local ファイルの保護
 

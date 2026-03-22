@@ -33,8 +33,8 @@ Claude Code (Orchestrator)
 ### 仕組み
 
 - **Hooks**: `$AI_ORCHESTRA_DIR` 環境変数で直接参照（シンボリックリンク不要）
-- **Skills/Agents/Rules**: SessionStart hook (`sync-orchestra.py`) で `$AI_ORCHESTRA_DIR` から `.claude/` に差分コピー
-- **Facets**: `facets/` のポリシー・出力形式を同期し、`facet build` で SKILL.md / ルール .md を自動生成
+- **Agents/Config**: SessionStart hook (`sync-orchestra.py`) で `$AI_ORCHESTRA_DIR` から `.claude/` に差分コピー
+- **Skills/Rules**: `facets/` の composition 定義から `facet build` で SKILL.md / ルール .md を自動生成
 - **CLI Scripts**: `$AI_ORCHESTRA_DIR/packages/{pkg}/scripts/` を直接実行
 
 ---
@@ -272,15 +272,15 @@ ai-orchestra/
 │   ├── output-contracts/  # 共有 Output Contract（tiered-review, compare-report, deep-dive-report）
 │   ├── instructions/      # スキル・ルール固有の instruction
 │   └── compositions/      # 組み立て定義 YAML（facet build で SKILL.md / ルール .md を生成）
-├── packages/         # パッケージ（hooks・scripts・agents・skills・rules・config）— 詳細は packages/README.md
-│   ├── core/              # 共通基盤ライブラリ + coding-principles / config-loading ルール
-│   ├── agent-routing/     # 28 エージェント定義 + ルーティング hooks + orchestra-usage ルール
-│   ├── cli-logging/       # Codex/Gemini CLI ログ記録 + checkpointing スキル
-│   ├── codex-suggestions/ # Codex 相談提案 + codex-delegation ルール + codex-system スキル
-│   ├── gemini-suggestions/# Gemini リサーチ提案 + gemini-delegation ルール + gemini-system スキル
-│   ├── quality-gates/     # 品質ゲート + review/tdd/release-readiness (+ design-tracker)
+├── packages/         # パッケージ（hooks・scripts・agents・config）— 詳細は packages/README.md
+│   ├── core/              # 共通基盤ライブラリ + hooks
+│   ├── agent-routing/     # 28 エージェント定義 + ルーティング hooks
+│   ├── cli-logging/       # Codex/Gemini CLI ログ記録
+│   ├── codex-suggestions/ # Codex 相談提案 hooks
+│   ├── gemini-suggestions/# Gemini リサーチ提案 hooks
+│   ├── quality-gates/     # 品質ゲート hooks
 │   ├── route-audit/       # ルーティング監査・KPIレポート
-│   ├── issue-workflow/    # GitHub Issue 起票 + 計画→実装→テスト→レビューの開発フロー
+│   ├── issue-workflow/    # GitHub Issue 起票 + 開発フロー
 │   ├── cocoindex/         # cocoindex MCP サーバーの自動プロビジョニング
 │   └── tmux-monitor/      # tmux サブエージェント監視
 ├── scripts/          # 管理CLI（エントリポイント + lib/ 共有ライブラリ）

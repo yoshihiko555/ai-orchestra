@@ -65,7 +65,8 @@ class TestInstallDependency:
     def test_missing_dependency_warning(self, e2e_project: Path) -> None:
         """#7: 依存パッケージ未インストールで警告"""
         result = run_orchex("install", "quality-gates", project=e2e_project)
-        assert "依存" in result.stdout or "depend" in result.stdout.lower()
+        output = result.stdout + result.stderr
+        assert "依存" in output or "depend" in output.lower()
 
     def test_no_warning_with_dependency(self, e2e_project: Path) -> None:
         """#8: 依存パッケージインストール済みなら警告なし"""

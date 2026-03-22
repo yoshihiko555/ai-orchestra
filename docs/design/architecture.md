@@ -116,7 +116,7 @@ ai-orchestra/
 4. hook を `.claude/settings.local.json` に登録
 5. `sync-orchestra.py` の SessionStart hook を登録
 6. `.claude/orchestra.json` にパッケージ記録
-7. agents/rules をコピー（skills は facet build で生成）
+7. agents/config をコピー（skills/rules は facet build で生成）
 
 ### 3.3 scripts/sync-orchestra.py
 
