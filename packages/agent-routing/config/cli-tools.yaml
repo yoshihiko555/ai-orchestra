@@ -56,6 +56,18 @@ language:
   # ユーザーへの出力に使う言語
   user_output: japanese
 
+# Review ループ設定
+# /review スキルの自動修正ループを制御する
+review:
+  # 最大ループ回数（レビュー → 修正 → 再レビューのサイクル上限）
+  # コスト制御のため .local.yaml で変更可能
+  max_loops: 3
+  # 通過基準: critical_zero = Critical が 0 件で通過
+  pass_threshold: critical_zero
+  # 自動修正: true = Critical 指摘をサブエージェントが自動修正
+  # false にするとループせず従来どおり報告のみ
+  auto_fix: true
+
 # エージェントルーティング
 # 各エージェントが使用するツールを定義する。
 # tool: "codex" | "gemini" | "claude-direct" | "auto"
