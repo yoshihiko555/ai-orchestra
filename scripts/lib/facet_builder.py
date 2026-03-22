@@ -18,7 +18,10 @@ class FacetBuilder:
 
     orchestra_dir: Path
     project_facets_dir: Path | None = None  # .claude/facets/ in the target project
-    installed_packages: list[str] | None = None  # from orchestra.json
+    manifest_compositions: dict[str, str] | None = (
+        None  # {composition_name: package_name} from ALL packages
+    )
+    installed_packages: list[str] | None = None  # currently installed packages
 
     def load_composition(self, path: Path) -> dict[str, Any]:
         """composition YAML をロードして最低限の検証を行う。"""
@@ -201,9 +204,15 @@ class FacetBuilder:
             composition_path = self.orchestra_dir / "facets" / "compositions" / f"{name}.yaml"
 
         composition = self.load_composition(composition_path)
-        required_pkg = composition.get("package")
-        if required_pkg and self.installed_packages is not None:
-            if required_pkg not in self.installed_packages:
+
+        # Package filtering:
+        # - manifest_compositions is None → build all (no filtering)
+        # - name in manifest_compositions → package-owned → build only if package is installed
+        # - name not in manifest_compositions → global → always build
+        if self.manifest_compositions is not None and name in self.manifest_compositions:
+            owning_pkg = self.manifest_compositions[name]
+            installed = set(self.installed_packages or [])
+            if owning_pkg not in installed:
                 output_name = composition["name"]
                 comp_type = composition.get("type", "skill")
                 old_path = self._build_output_path(output_name, target, project_dir, comp_type)
@@ -217,7 +226,7 @@ class FacetBuilder:
                         old_path.parent.rmdir()
                     relative = old_path.relative_to(project_dir)
                     print(
-                        f"[facet] removed {output_name} ({required_pkg} not installed) <- {relative}"
+                        f"[facet] removed {output_name} ({owning_pkg} not installed) <- {relative}"
                     )
                 return None
 

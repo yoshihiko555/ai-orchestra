@@ -52,7 +52,7 @@ orchex install {package} --project /path/to/project
 | hooks 登録 | `.claude/settings.local.json` にイベント→コマンドを追加 |
 | config コピー | `packages/{pkg}/config/` → `.claude/config/{pkg}/` |
 | orchestra.json 更新 | `installed_packages`, `synced_files` に記録 |
-| 初回同期実行 | skills/agents/rules をコピー |
+| 初回同期実行 | agents/rules をコピー（skills は facet build で生成） |
 
 ---
 
@@ -67,11 +67,11 @@ SessionStart hook 発火
 │     installed_packages, synced_files を取得
 │
 ├─ 2. ファイル同期（mtime 比較で差分のみ）
-│     packages/{pkg}/skills/   → .claude/skills/
 │     packages/{pkg}/agents/   → .claude/agents/
 │     packages/{pkg}/rules/    → .claude/rules/
 │     packages/{pkg}/config/   → .claude/config/{pkg}/
 │     facets/**/*.md           → .claude/facets/
+│     ※ skills は facet build で生成するため packages/{pkg}/skills/ は存在しない
 │
 ├─ 3. Facet Build（composition 更新時のみ）
 │     facets/ の部品を組み立て → SKILL.md / rules を再生成
@@ -100,7 +100,6 @@ SessionStart hook 発火
 | 変更箇所 | 同期方法 | 反映タイミング |
 |----------|---------|--------------|
 | `packages/*/hooks/*.py` | **同期不要**（`$AI_ORCHESTRA_DIR` から直接実行） | 即時 |
-| `packages/*/skills/` | mtime ベースのファイルコピー | 次回 SessionStart |
 | `packages/*/agents/` | mtime ベースのファイルコピー | 次回 SessionStart |
 | `packages/*/rules/` | mtime ベースのファイルコピー | 次回 SessionStart |
 | `packages/*/config/` | mtime ベースのファイルコピー | 次回 SessionStart |
@@ -131,7 +130,13 @@ SessionStart hook 発火
 - `$AI_ORCHESTRA_DIR` のファイルを直接参照するため、orchestra リポで更新すれば全プロジェクトに即反映
 - 再登録や再インストールは不要
 
-### skills/rules/config はコピー（上書き可能）
+### skills は facet build で生成（パッケージ内に置かない）
+
+- スキル（SKILL.md）は `facets/compositions/*.yaml` の定義をもとに `facet build` で生成される
+- 生成先は `.claude/skills/{name}/SKILL.md`（プロジェクト側）
+- composition の所有パッケージは manifest.json の `skills` リストから解決される（composition YAML に `package` フィールドは不要）
+
+### rules/config はコピー（上書き可能）
 
 - プロジェクト側の `.claude/` にコピーされる
 - プロジェクト固有のカスタマイズが可能（ローカル上書き）

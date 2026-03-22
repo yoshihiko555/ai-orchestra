@@ -107,6 +107,44 @@ def collect_facet_managed_paths(orchestra_path: Path, project_dir: Path) -> set[
     return managed
 
 
+def collect_manifest_compositions(
+    orchestra_path: Path,
+) -> dict[str, str]:
+    """Collect composition names from skills/rules fields of ALL package manifests.
+
+    Scans every package directory (not just installed ones) so that
+    package-owned compositions can be distinguished from global ones.
+
+    Returns:
+        {composition_name: package_name} mapping
+    """
+    compositions: dict[str, str] = {}
+    packages_dir = orchestra_path / "packages"
+    if not packages_dir.is_dir():
+        return compositions
+    for pkg_dir in sorted(packages_dir.iterdir()):
+        manifest_path = pkg_dir / "manifest.json"
+        if not manifest_path.is_file():
+            continue
+        try:
+            with open(manifest_path, encoding="utf-8") as f:
+                manifest = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            continue
+        pkg_name = manifest.get("name", pkg_dir.name)
+        for field in ("skills", "rules"):
+            for name in manifest.get(field, []):
+                if isinstance(name, str):
+                    if name in compositions:
+                        print(
+                            f"[warn] composition '{name}' claimed by both"
+                            f" '{compositions[name]}' and '{pkg_name}'",
+                            file=sys.stderr,
+                        )
+                    compositions[name] = pkg_name
+    return compositions
+
+
 def sync_hooks(
     project_dir: Path,
     orchestra_path: Path,
@@ -217,7 +255,8 @@ def sync_packages(
 
         pkg_dir = orchestra_path / "packages" / pkg_name
 
-        for category in ("skills", "agents", "rules", "config"):
+        # "skills" は facet build に完全委譲（manifest-SSOT: Issue #20）
+        for category in ("agents", "rules", "config"):
             file_list = manifest.get(category, [])
             for rel_path in file_list:
                 src = pkg_dir / rel_path
@@ -268,7 +307,6 @@ def build_facets(
     installed_packages: list[str] | None = None,
 ) -> int:
     """facet composition から SKILL.md / ルール .md を自動生成する。"""
-    import os
 
     compositions_dir = orchestra_path / "facets" / "compositions"
     local_compositions_dir = project_dir / ".claude" / "facets" / "compositions"
@@ -315,7 +353,9 @@ def build_facets(
                 hash_file.write_text(pkgs_hash, encoding="utf-8")
             except OSError:
                 pass
-            latest_src = os.time() if hasattr(os, "time") else float("inf")
+            import time
+
+            latest_src = time.time()
 
     claude_skills = project_dir / ".claude" / "skills"
     claude_rules = project_dir / ".claude" / "rules"
@@ -368,5 +408,8 @@ def build_facets(
             continue
 
         total_built += result.stdout.count("[facet] built")
+        for line in result.stdout.splitlines():
+            if "[facet] removed" in line or "[facet] cleanup" in line:
+                print(line)
 
     return total_built

@@ -1,7 +1,6 @@
 # issue-fix スキルのファセット構成定義
 name: issue-fix
 description: Issue 起点の開発フロー（計画→実装→テスト→レビュー）
-package: issue-workflow
 
 # フロントマター（生成される SKILL.md に付与）
 frontmatter:

@@ -1,7 +1,6 @@
 # gemini-suggestion-compliance ルールのファセット構成定義
 name: gemini-suggestion-compliance
 description: Gemini suggestion 遵守ルール
-package: gemini-suggestions
 type: rule
 
 policies: []
