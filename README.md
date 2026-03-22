@@ -84,7 +84,7 @@ orchex が内部で以下を実行:
 2. `.claude/orchestra.json` にパッケージ情報を記録
 3. `.claude/settings.local.json` に hooks を登録（`$AI_ORCHESTRA_DIR/packages/...` 参照）
 4. `sync-orchestra.py` の SessionStart hook を登録（初回のみ）
-5. skills/agents/rules の初回同期を実行
+5. agents/rules の初回同期を実行（skills は facet build で `.claude/skills/` に直接生成）
 
 ### セットアップ完了条件
 

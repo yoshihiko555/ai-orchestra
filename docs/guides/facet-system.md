@@ -82,7 +82,7 @@ facets/
 # codex-delegation.yaml
 name: codex-delegation
 description: Codex CLI 委譲ルール
-package: codex-suggestions
+# package フィールドは不要（所有パッケージは manifest.json の rules リストから解決）
 type: rule                    # "rule" を指定するとルール .md を生成
 
 policies:
@@ -97,7 +97,7 @@ instruction: codex-delegation # facets/instructions/ から参照
 # review.yaml
 name: review
 description: マルチエージェントコードレビュー（スマート選定）
-package: quality-gates
+# package フィールドは不要（所有パッケージは manifest.json の skills リストから解決）
 # type を省略するとスキル（SKILL.md）を生成
 
 # フロントマター（生成される SKILL.md に付与）
@@ -126,12 +126,13 @@ instruction: review           # facets/instructions/ から参照
 |-----------|------|------|
 | `name` | 必須 | 生成物の名前 |
 | `description` | 必須 | 説明 |
-| `package` | 必須 | 所属パッケージ |
 | `type` | 任意 | `rule` でルール生成。省略でスキル生成 |
 | `frontmatter` | 任意 | SKILL.md のフロントマター（スキルのみ） |
 | `policies` | 任意 | 参照する Policy 名のリスト |
 | `output_contracts` | 任意 | 参照する Output Contract 名のリスト |
 | `instruction` | 必須 | 参照する Instruction 名 |
+
+> **Note**: `package` フィールドは廃止。composition の所有パッケージは各パッケージの `manifest.json` の `skills` / `rules` リストに composition 名を記載することで管理する（manifest が SSOT）。
 
 ---
 
@@ -225,7 +226,7 @@ orchex facet extract --project .
 # facets/compositions/my-skill.yaml
 name: my-skill
 description: 新しいスキルの説明
-package: quality-gates
+# package フィールドは不要（所有パッケージは manifest.json の skills リストに追加する）
 
 frontmatter:
   name: my-skill
@@ -264,8 +265,10 @@ orchex facet build --name my-skill --project .
 
 ## 既存 Composition 一覧
 
-| Composition | 種別 | パッケージ | ポリシー | 出力契約 |
-|------------|------|-----------|---------|---------|
+所有パッケージは各パッケージの `manifest.json` で管理される。
+
+| Composition | 種別 | 所有パッケージ（manifest 参照） | ポリシー | 出力契約 |
+|------------|------|-------------------------------|---------|---------|
 | `agent-routing-policy` | rule | agent-routing | — | — |
 | `checkpointing` | skill | cli-logging | — | — |
 | `cocoindex-usage` | rule | cocoindex | — | — |
@@ -286,7 +289,7 @@ orchex facet build --name my-skill --project .
 | `preflight` | skill | core | — | — |
 | `release-readiness` | skill | quality-gates | — | tiered-review |
 | `review` | skill | quality-gates | — | tiered-review |
-| `skill-review-policy` | rule | core | — | tiered-review |
+| `skill-review-policy` | rule | quality-gates | — | tiered-review |
 | `startproject` | skill | core | — | — |
 | `task-memory-usage` | rule | core | — | — |
 | `task-state` | skill | core | — | — |
