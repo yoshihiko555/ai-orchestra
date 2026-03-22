@@ -17,3 +17,10 @@ policies:
   - cli-language
 
 instruction: codex-system
+
+knowledge:
+  - agent-prompts
+  - code-review-task
+  - delegation-patterns
+  - refactoring-task
+  - troubleshooting

@@ -18,3 +18,11 @@ policies:
   - dialog-rules
 
 instruction: design
+
+knowledge:
+  - requirements
+  - basic-design
+  - detailed-design
+  - design-system
+  - test-design
+  - security-design

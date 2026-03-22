@@ -46,23 +46,7 @@
     "config/core/task-memory.yaml",
     "config/issue-workflow/sandbox-requirements.json",
     "config/route-audit/delegation-policy.json",
-    "config/route-audit/orchestration-flags.json",
-    "skills/checkpointing/checkpoint.py",
-    "skills/codex-system/references/agent-prompts.md",
-    "skills/codex-system/references/code-review-task.md",
-    "skills/codex-system/references/delegation-patterns.md",
-    "skills/codex-system/references/refactoring-task.md",
-    "skills/codex-system/references/troubleshooting.md",
-    "skills/design/evals/evals.json",
-    "skills/design/references/basic-design.md",
-    "skills/design/references/design-system.md",
-    "skills/design/references/detailed-design.md",
-    "skills/design/references/requirements.md",
-    "skills/design/references/security-design.md",
-    "skills/design/references/test-design.md",
-    "skills/gemini-system/references/lib-research-task.md",
-    "skills/gemini-system/references/use-cases.md",
-    "skills/startproject/references/task-patterns.md"
+    "config/route-audit/orchestration-flags.json"
   ],
-  "last_sync": "2026-03-22T06:16:50.634795+00:00"
+  "last_sync": "2026-03-22T11:33:57.648754+00:00"
 }

@@ -104,6 +104,12 @@ def collect_facet_managed_paths(orchestra_path: Path, project_dir: Path) -> set[
                 managed.add(f"rules/{name}.md")
             else:
                 managed.add(f"skills/{name}/SKILL.md")
+                for kname in comp.get("knowledge") or []:
+                    if isinstance(kname, str):
+                        managed.add(f"skills/{name}/references/{kname}.md")
+                for sname in comp.get("scripts") or []:
+                    if isinstance(sname, str):
+                        managed.add(f"skills/{name}/scripts/{sname}")
     return managed
 
 
