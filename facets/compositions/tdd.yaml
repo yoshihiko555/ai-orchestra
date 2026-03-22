@@ -1,7 +1,6 @@
 # tdd スキルのファセット構成定義
 name: tdd
 description: テスト駆動開発（Red-Green-Refactor サイクル）
-package: quality-gates
 
 # フロントマター（生成される SKILL.md に付与）
 frontmatter:

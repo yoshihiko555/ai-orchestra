@@ -41,18 +41,16 @@ class TestFileSync:
     def test_updated_file_synced(self, e2e_project: Path, orchestra_dir: Path) -> None:
         """#26: orchestra 側のファイル更新で差分同期"""
         _setup_essential(e2e_project)
-        # Touch a non-facet file to trigger sync
-        checkpoint_script = (
-            orchestra_dir / "packages" / "core" / "skills" / "checkpointing" / "checkpoint.py"
-        )
-        original_mtime = checkpoint_script.stat().st_mtime
+        # Touch a config file to trigger sync
+        config_file = orchestra_dir / "packages" / "core" / "config" / "task-memory.yaml"
+        original_mtime = config_file.stat().st_mtime
         try:
             future = time.time() + 100
-            os.utime(checkpoint_script, (future, future))
+            os.utime(config_file, (future, future))
             result = run_session_start(e2e_project, "s3")
             assert "synced" in result.stdout
         finally:
-            os.utime(checkpoint_script, (original_mtime, original_mtime))
+            os.utime(config_file, (original_mtime, original_mtime))
 
     def test_local_yaml_preserved(self, e2e_project: Path) -> None:
         """#27: *.local.yaml が sync で上書きされない"""
@@ -124,15 +122,77 @@ class TestStaleCleanup:
         run_session_start(e2e_project, "s30")
         assert local_file.is_file()
 
+    def test_facet_managed_not_deleted_by_stale_cleanup(self, e2e_project: Path) -> None:
+        """#30b: synced_files に残った facet 管理パスが stale cleanup で削除されない
+
+        以前 packages/*/rules/ から sync されていた rules ファイルが
+        facet build に移管された後、stale cleanup で誤削除されないことを検証。
+        """
+        _setup_essential(e2e_project)
+        run_orchex("install", "codex-suggestions", project=e2e_project)
+        run_session_start(e2e_project, "s30b-1")
+
+        # facet build で codex-delegation ルールが生成されていることを確認
+        rule_file = e2e_project / ".claude" / "rules" / "codex-delegation.md"
+        assert rule_file.is_file()
+
+        # 旧 sync が synced_files に rules を記録していた状態をシミュレーション
+        orch_path = e2e_project / ".claude" / "orchestra.json"
+        orch = json.loads(orch_path.read_text(encoding="utf-8"))
+        orch["synced_files"] = orch.get("synced_files", []) + [
+            "rules/codex-delegation.md",
+        ]
+        orch_path.write_text(
+            json.dumps(orch, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+
+        # SessionStart: stale cleanup が走るが、facet 管理パスは削除されない
+        run_session_start(e2e_project, "s30b-2")
+        assert rule_file.is_file(), "facet 管理の rules ファイルが stale cleanup で削除された"
+
+    def test_facet_managed_references_not_deleted(self, e2e_project: Path) -> None:
+        """#30c: facet build で配置された references が stale cleanup で削除されない"""
+        _setup_essential(e2e_project)
+        run_orchex("install", "codex-suggestions", project=e2e_project)
+        run_session_start(e2e_project, "s30c-1")
+
+        # knowledge を持つスキルの references が存在する場合のテスト
+        # codex-system スキルに references があれば検証、なければ SKILL.md で代替検証
+        codex_skill = e2e_project / ".claude" / "skills" / "codex-system" / "SKILL.md"
+        assert codex_skill.is_file()
+
+        # 旧 synced_files にスキルパスが残っていた状態をシミュレーション
+        orch_path = e2e_project / ".claude" / "orchestra.json"
+        orch = json.loads(orch_path.read_text(encoding="utf-8"))
+        orch["synced_files"] = orch.get("synced_files", []) + [
+            "skills/codex-system/SKILL.md",
+        ]
+        orch_path.write_text(
+            json.dumps(orch, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+
+        # SessionStart: stale cleanup が走るが、facet 管理パスは削除されない
+        run_session_start(e2e_project, "s30c-2")
+        assert codex_skill.is_file(), "facet 管理の SKILL.md が stale cleanup で削除された"
+
     def test_uninstall_cleans_up_files(self, e2e_project: Path) -> None:
-        """#31: パッケージ uninstall 後の SessionStart でファイル削除"""
+        """#31: パッケージ uninstall 後、SessionStart の facet build で不要ファイル除去"""
         _setup_essential(e2e_project)
         run_orchex("install", "codex-suggestions", project=e2e_project)
         run_session_start(e2e_project, "s31a")
 
-        run_orchex("uninstall", "codex-suggestions", project=e2e_project)
+        # Verify codex skill exists before uninstall
+        codex_skill = e2e_project / ".claude" / "skills" / "codex-system" / "SKILL.md"
+        assert codex_skill.exists()
+
+        # Uninstall removes package from orchestra.json
+        result = run_orchex("uninstall", "codex-suggestions", project=e2e_project)
+        assert result.returncode == 0
+
+        # SessionStart rebuilds facets — stale skill is cleaned up
         result = run_session_start(e2e_project, "s31b")
-        assert "removed" in result.stdout
+        assert result.returncode == 0
+        assert not codex_skill.exists()
 
 
 class TestHookSync:

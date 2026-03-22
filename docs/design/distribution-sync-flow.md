@@ -52,7 +52,7 @@ orchex install {package} --project /path/to/project
 | hooks 登録 | `.claude/settings.local.json` にイベント→コマンドを追加 |
 | config コピー | `packages/{pkg}/config/` → `.claude/config/{pkg}/` |
 | orchestra.json 更新 | `installed_packages`, `synced_files` に記録 |
-| 初回同期実行 | skills/agents/rules をコピー |
+| 初回同期実行 | agents/rules をコピー（skills は facet build で生成） |
 
 ---
 
@@ -67,11 +67,9 @@ SessionStart hook 発火
 │     installed_packages, synced_files を取得
 │
 ├─ 2. ファイル同期（mtime 比較で差分のみ）
-│     packages/{pkg}/skills/   → .claude/skills/
 │     packages/{pkg}/agents/   → .claude/agents/
-│     packages/{pkg}/rules/    → .claude/rules/
 │     packages/{pkg}/config/   → .claude/config/{pkg}/
-│     facets/**/*.md           → .claude/facets/
+│     ※ skills/rules は facet build で生成（packages からは同期しない）
 │
 ├─ 3. Facet Build（composition 更新時のみ）
 │     facets/ の部品を組み立て → SKILL.md / rules を再生成
@@ -100,13 +98,11 @@ SessionStart hook 発火
 | 変更箇所 | 同期方法 | 反映タイミング |
 |----------|---------|--------------|
 | `packages/*/hooks/*.py` | **同期不要**（`$AI_ORCHESTRA_DIR` から直接実行） | 即時 |
-| `packages/*/skills/` | mtime ベースのファイルコピー | 次回 SessionStart |
 | `packages/*/agents/` | mtime ベースのファイルコピー | 次回 SessionStart |
-| `packages/*/rules/` | mtime ベースのファイルコピー | 次回 SessionStart |
 | `packages/*/config/` | mtime ベースのファイルコピー | 次回 SessionStart |
-| `facets/policies/*.md` | 同期 → facet build で全参照スキル再生成 | 次回 SessionStart |
-| `facets/instructions/*.md` | 同期 → 該当 composition のみ再生成 | 次回 SessionStart |
-| `facets/compositions/*.yaml` | 同期 → 該当スキルのみ再生成 | 次回 SessionStart |
+| `facets/policies/*.md` | facet build で全参照スキル・ルール再生成 | 次回 SessionStart |
+| `facets/instructions/*.md` | facet build で該当 composition のみ再生成 | 次回 SessionStart |
+| `facets/compositions/*.yaml` | facet build で該当スキル・ルールのみ再生成 | 次回 SessionStart |
 | 新パッケージ追加 | `orchex install` が必要 | install 実行時 |
 
 ---
@@ -131,10 +127,21 @@ SessionStart hook 発火
 - `$AI_ORCHESTRA_DIR` のファイルを直接参照するため、orchestra リポで更新すれば全プロジェクトに即反映
 - 再登録や再インストールは不要
 
-### skills/rules/config はコピー（上書き可能）
+### skills は facet build で生成（パッケージ内に置かない）
 
-- プロジェクト側の `.claude/` にコピーされる
-- プロジェクト固有のカスタマイズが可能（ローカル上書き）
+- スキル（SKILL.md）は `facets/compositions/*.yaml` の定義をもとに `facet build` で生成される
+- 生成先は `.claude/skills/{name}/SKILL.md`（プロジェクト側）
+- composition の所有パッケージは manifest.json の `skills` リストから解決される（composition YAML に `package` フィールドは不要）
+
+### rules は facet build で生成（skills と同様）
+
+- ルール（`.claude/rules/{name}.md`）は `facets/compositions/*.yaml` の `type: rule` 定義をもとに `facet build` で生成される
+- composition の所有パッケージは manifest.json の `rules` リストから解決される
+
+### config はコピー（上書き可能）
+
+- プロジェクト側の `.claude/config/` にコピーされる
+- プロジェクト固有のカスタマイズが可能（`.local.yaml` / `.local.json` で上書き）
 
 ### .local ファイルの保護
 

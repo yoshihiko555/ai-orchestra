@@ -431,3 +431,9 @@ Present final plan to user (in Japanese):
 - **Update Plans.md** to persist context across sessions
 - **Use multi-session review** for better quality assurance
 - **Ctrl+T**: Toggle task list visibility
+
+---
+
+## Additional resources
+
+- For task-patterns details, see [references/task-patterns.md](references/task-patterns.md)

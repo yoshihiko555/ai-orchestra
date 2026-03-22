@@ -33,8 +33,8 @@ Claude Code (Orchestrator)
 ### 仕組み
 
 - **Hooks**: `$AI_ORCHESTRA_DIR` 環境変数で直接参照（シンボリックリンク不要）
-- **Skills/Agents/Rules**: SessionStart hook (`sync-orchestra.py`) で `$AI_ORCHESTRA_DIR` から `.claude/` に差分コピー
-- **Facets**: `facets/` のポリシー・出力形式を同期し、`facet build` で SKILL.md / ルール .md を自動生成
+- **Agents/Config**: SessionStart hook (`sync-orchestra.py`) で `$AI_ORCHESTRA_DIR` から `.claude/` に差分コピー
+- **Skills/Rules**: `facets/` の composition 定義から `facet build` で SKILL.md / ルール .md を自動生成
 - **CLI Scripts**: `$AI_ORCHESTRA_DIR/packages/{pkg}/scripts/` を直接実行
 
 ---
@@ -84,7 +84,7 @@ orchex が内部で以下を実行:
 2. `.claude/orchestra.json` にパッケージ情報を記録
 3. `.claude/settings.local.json` に hooks を登録（`$AI_ORCHESTRA_DIR/packages/...` 参照）
 4. `sync-orchestra.py` の SessionStart hook を登録（初回のみ）
-5. skills/agents/rules の初回同期を実行
+5. agents/rules の初回同期を実行（skills は facet build で `.claude/skills/` に直接生成）
 
 ### セットアップ完了条件
 
@@ -170,16 +170,20 @@ orchex facet extract --project .
 **運用フロー:**
 
 ```
-facets/policies/*.md        ← 共有ルール（1箇所修正 → 全スキル・ルールに反映）
+facets/policies/*.md         ← 共有ルール（1箇所修正 → 全スキル・ルールに反映）
 facets/output-contracts/*.md ← 共有出力形式
 facets/instructions/*.md     ← スキル・ルール固有の手順
+facets/knowledge/*.md        ← スキルに同梱する参考資料
+facets/scripts/*             ← スキルに同梱するスクリプト
 facets/compositions/*.yaml   ← 組み立て定義
 
     ↓ facet build
 
-.claude/skills/{name}/SKILL.md  ← 生成物（Claude Code 用）
-.claude/rules/{name}.md         ← 生成物（Claude Code 用）
-.codex/skills/{name}/SKILL.md   ← 生成物（Codex CLI 用）
+.claude/skills/{name}/SKILL.md       ← 生成物（Claude Code 用）
+.claude/skills/{name}/references/    ← 知識ファイル（knowledge から配布）
+.claude/skills/{name}/scripts/       ← スクリプト（scripts から配布）
+.claude/rules/{name}.md              ← 生成物（Claude Code 用）
+.codex/skills/{name}/SKILL.md        ← 生成物（Codex CLI 用）
 ```
 
 **チューニング後の反映:**
@@ -271,16 +275,18 @@ ai-orchestra/
 │   ├── policies/          # 共有 Policy（dialog-rules, cli-language, code-quality, factual-writing）
 │   ├── output-contracts/  # 共有 Output Contract（tiered-review, compare-report, deep-dive-report）
 │   ├── instructions/      # スキル・ルール固有の instruction
+│   ├── knowledge/         # スキルに同梱する参考資料（references/ に配布）
+│   ├── scripts/           # スキルに同梱するユーティリティスクリプト（scripts/ に配布）
 │   └── compositions/      # 組み立て定義 YAML（facet build で SKILL.md / ルール .md を生成）
-├── packages/         # パッケージ（hooks・scripts・agents・skills・rules・config）— 詳細は packages/README.md
-│   ├── core/              # 共通基盤ライブラリ + coding-principles / config-loading ルール
-│   ├── agent-routing/     # 28 エージェント定義 + ルーティング hooks + orchestra-usage ルール
-│   ├── cli-logging/       # Codex/Gemini CLI ログ記録 + checkpointing スキル
-│   ├── codex-suggestions/ # Codex 相談提案 + codex-delegation ルール + codex-system スキル
-│   ├── gemini-suggestions/# Gemini リサーチ提案 + gemini-delegation ルール + gemini-system スキル
-│   ├── quality-gates/     # 品質ゲート + review/tdd/release-readiness (+ design-tracker)
+├── packages/         # パッケージ（hooks・scripts・agents・config）— 詳細は packages/README.md
+│   ├── core/              # 共通基盤ライブラリ + hooks
+│   ├── agent-routing/     # 28 エージェント定義 + ルーティング hooks
+│   ├── cli-logging/       # Codex/Gemini CLI ログ記録
+│   ├── codex-suggestions/ # Codex 相談提案 hooks
+│   ├── gemini-suggestions/# Gemini リサーチ提案 hooks
+│   ├── quality-gates/     # 品質ゲート hooks
 │   ├── route-audit/       # ルーティング監査・KPIレポート
-│   ├── issue-workflow/    # GitHub Issue 起票 + 計画→実装→テスト→レビューの開発フロー
+│   ├── issue-workflow/    # GitHub Issue 起票 + 開発フロー
 │   ├── cocoindex/         # cocoindex MCP サーバーの自動プロビジョニング
 │   └── tmux-monitor/      # tmux サブエージェント監視
 ├── scripts/          # 管理CLI（エントリポイント + lib/ 共有ライブラリ）

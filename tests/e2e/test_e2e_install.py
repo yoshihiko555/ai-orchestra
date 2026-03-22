@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from tests.conftest import run_orchex
+from tests.conftest import run_orchex, run_session_start
 
 
 class TestInstallBasic:
@@ -43,9 +43,10 @@ class TestInstallBasic:
         assert config_dir.is_dir()
         assert (config_dir / "task-memory.yaml").is_file()
 
-    def test_skills_copied(self, e2e_project: Path) -> None:
-        """#5: install 後に skills がコピー"""
+    def test_skills_generated_after_session_start(self, e2e_project: Path) -> None:
+        """#5: install + SessionStart 後に facet build で skills が生成される"""
         run_orchex("install", "core", project=e2e_project)
+        run_session_start(e2e_project, "s1")
         assert (e2e_project / ".claude" / "skills").is_dir()
 
     def test_orchestra_dir_env_set(self, e2e_project: Path) -> None:
@@ -64,7 +65,8 @@ class TestInstallDependency:
     def test_missing_dependency_warning(self, e2e_project: Path) -> None:
         """#7: 依存パッケージ未インストールで警告"""
         result = run_orchex("install", "quality-gates", project=e2e_project)
-        assert "依存" in result.stdout or "depend" in result.stdout.lower()
+        output = result.stdout + result.stderr
+        assert "依存" in output or "depend" in output.lower()
 
     def test_no_warning_with_dependency(self, e2e_project: Path) -> None:
         """#8: 依存パッケージインストール済みなら警告なし"""

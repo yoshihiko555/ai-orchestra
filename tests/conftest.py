@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,10 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ORCHESTRA_MANAGER = REPO_ROOT / "scripts" / "orchestra-manager.py"
 SYNC_ORCHESTRA = REPO_ROOT / "scripts" / "sync-orchestra.py"
+
+# Claude Code sandbox では tmp_path (プロジェクト配下) への git init が
+# Operation not permitted になる。sandbox 許可パスを優先して使う。
+_SANDBOX_TMP = Path("/private/tmp/claude-501")
 
 
 @pytest.fixture()
@@ -24,8 +29,14 @@ def orchestra_dir() -> Path:
 @pytest.fixture()
 def e2e_project(tmp_path: Path) -> Path:
     """git 初期化済みの一時プロジェクトを作成する。"""
-    project = tmp_path / "project"
-    project.mkdir()
+    # sandbox 環境では tmp_path で git init が失敗するため、
+    # sandbox 許可パスにフォールバックする
+    if _SANDBOX_TMP.is_dir():
+        base = Path(tempfile.mkdtemp(dir=_SANDBOX_TMP))
+    else:
+        base = tmp_path
+    project = base / "project"
+    project.mkdir(parents=True, exist_ok=True)
     (project / "README.md").write_text("# e2e test\n", encoding="utf-8")
     git_env = {
         **os.environ,
@@ -35,7 +46,7 @@ def e2e_project(tmp_path: Path) -> Path:
         "GIT_COMMITTER_EMAIL": "test@test",
     }
     subprocess.run(
-        ["git", "init", "-q"],
+        ["git", "init", "-q", "--template="],
         cwd=project,
         check=True,
         capture_output=True,

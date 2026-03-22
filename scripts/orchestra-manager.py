@@ -28,6 +28,7 @@ from lib.facet_builder import FacetBuilder  # noqa: E402
 from lib.orchestra_context import ContextMixin  # noqa: E402
 from lib.orchestra_hooks import HooksMixin  # noqa: E402
 from lib.orchestra_models import Package  # noqa: E402
+from lib.sync_engine import collect_manifest_compositions  # noqa: E402
 
 
 class OrchestraManager(ContextMixin, HooksMixin):
@@ -284,7 +285,7 @@ class OrchestraManager(ContextMixin, HooksMixin):
             pkg = packages[pkg_name]
             pkg_dir = orchestra_path / "packages" / pkg_name
 
-            for category in ("skills", "agents", "rules", "config"):
+            for category in ("agents", "config"):
                 file_list = getattr(pkg, category, [])
                 for rel_path in file_list:
                     src = pkg_dir / rel_path
@@ -439,17 +440,15 @@ class OrchestraManager(ContextMixin, HooksMixin):
                         print(f"ファイル削除: {pkg.name}/{target.name}")
 
         claude_dir = project_dir / ".claude"
-        for category in ("skills", "agents", "rules"):
-            file_list = getattr(pkg, category, [])
-            for rel_path in file_list:
-                target = claude_dir / category / rel_path
-                if dry_run:
-                    if target.exists():
-                        print(f"[DRY-RUN] 同期ファイル削除: {target}")
-                else:
-                    if target.exists():
-                        target.unlink()
-                        print(f"同期ファイル削除: {category}/{rel_path}")
+        for agent_path in pkg.agents:
+            target = claude_dir / agent_path
+            if dry_run:
+                if target.exists():
+                    print(f"[DRY-RUN] 同期ファイル削除: {target}")
+            else:
+                if target.exists():
+                    target.unlink()
+                    print(f"同期ファイル削除: {agent_path}")
 
         orch = self.load_orchestra_json(project_dir)
         installed = set(orch.get("installed_packages", []))
@@ -1032,11 +1031,15 @@ def main():
     elif args.command == "facet":
         project_dir = manager.get_project_dir(args.project)
         project_facets_dir = project_dir / ".claude" / "facets"
-        installed_packages = manager.load_orchestra_json(project_dir).get("installed_packages")
+        installed_packages = (
+            manager.load_orchestra_json(project_dir).get("installed_packages") or []
+        )
+        manifest_compositions = collect_manifest_compositions(orchestra_dir)
 
         facet_builder = FacetBuilder(
             orchestra_dir=orchestra_dir,
             project_facets_dir=project_facets_dir if project_facets_dir.is_dir() else None,
+            manifest_compositions=manifest_compositions,
             installed_packages=installed_packages,
         )
         if args.facet_command == "build":

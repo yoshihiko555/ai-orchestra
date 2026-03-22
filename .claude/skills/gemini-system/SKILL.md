@@ -241,3 +241,10 @@ IMPORTANT: Do not ask any clarifying questions." < meeting.mp3 2>/dev/null
 - **Multimodal**: Native PDF/video/audio processing
 - **Fast exploration**: Quick overview before deep work
 - **Shared context**: Results saved for Claude/Codex
+
+---
+
+## Additional resources
+
+- For lib-research-task details, see [references/lib-research-task.md](references/lib-research-task.md)
+- For use-cases details, see [references/use-cases.md](references/use-cases.md)

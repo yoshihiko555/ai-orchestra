@@ -136,3 +136,13 @@ codex exec --model <codex.model> --sandbox <codex.sandbox.implementation> <codex
 - config 変更だけで Codex の役割を切り替えられる
 - エージェント定義とスキル文書の責務齟齬を防げる
 - 将来のモデル評価変化（実装担当の入れ替え）に追従しやすい
+
+---
+
+## Additional resources
+
+- For agent-prompts details, see [references/agent-prompts.md](references/agent-prompts.md)
+- For code-review-task details, see [references/code-review-task.md](references/code-review-task.md)
+- For delegation-patterns details, see [references/delegation-patterns.md](references/delegation-patterns.md)
+- For refactoring-task details, see [references/refactoring-task.md](references/refactoring-task.md)
+- For troubleshooting details, see [references/troubleshooting.md](references/troubleshooting.md)

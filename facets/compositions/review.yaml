@@ -1,7 +1,6 @@
 # review スキルのファセット構成定義
 name: review
 description: マルチエージェントコードレビュー（スマート選定）
-package: quality-gates
 
 # フロントマター（生成される SKILL.md に付与）
 frontmatter:

@@ -5,7 +5,7 @@
   "depends": [],
   "hooks": {},
   "files": [],
-  "skills": ["skills/issue-create", "skills/issue-fix"],
+  "skills": ["issue-create", "issue-fix"],
   "agents": [],
   "rules": [],
   "scripts": [],

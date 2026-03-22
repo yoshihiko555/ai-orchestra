@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,7 +19,10 @@ class FacetBuilder:
 
     orchestra_dir: Path
     project_facets_dir: Path | None = None  # .claude/facets/ in the target project
-    installed_packages: list[str] | None = None  # from orchestra.json
+    manifest_compositions: dict[str, str] | None = (
+        None  # {composition_name: package_name} from ALL packages
+    )
+    installed_packages: list[str] | None = None  # currently installed packages
 
     def load_composition(self, path: Path) -> dict[str, Any]:
         """composition YAML をロードして最低限の検証を行う。"""
@@ -94,6 +98,36 @@ class FacetBuilder:
             print(f"エラー: composition.instruction が不正です: {path}", file=sys.stderr)
             sys.exit(1)
 
+        knowledge = composition.get("knowledge")
+        if knowledge is None:
+            composition["knowledge"] = []
+        else:
+            if not isinstance(knowledge, list):
+                print(f"エラー: composition.knowledge が不正です: {path}", file=sys.stderr)
+                sys.exit(1)
+            for item in knowledge:
+                if not isinstance(item, str) or not item.strip():
+                    print(
+                        f"エラー: composition.knowledge の要素が不正です: {path}",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+
+        scripts = composition.get("scripts")
+        if scripts is None:
+            composition["scripts"] = []
+        else:
+            if not isinstance(scripts, list):
+                print(f"エラー: composition.scripts が不正です: {path}", file=sys.stderr)
+                sys.exit(1)
+            for item in scripts:
+                if not isinstance(item, str) or not item.strip():
+                    print(
+                        f"エラー: composition.scripts の要素が不正です: {path}",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+
         return composition
 
     def resolve_facet(self, kind: str, name: str) -> str:
@@ -131,6 +165,32 @@ class FacetBuilder:
 
         return self.resolve_facet("instructions", stripped)
 
+    def resolve_knowledge(self, name: str) -> Path:
+        """knowledge ファイルのパスを解決する。プロジェクトローカル → orchestra の順で解決。"""
+        if self.project_facets_dir:
+            local_path = self.project_facets_dir / "knowledge" / f"{name}.md"
+            if local_path.exists():
+                return local_path
+
+        facet_path = self.orchestra_dir / "facets" / "knowledge" / f"{name}.md"
+        if not facet_path.exists():
+            print(f"エラー: knowledge ファイルが見つかりません: {facet_path}", file=sys.stderr)
+            sys.exit(1)
+        return facet_path
+
+    def resolve_script(self, name: str) -> Path:
+        """script ファイルのパスを解決する。プロジェクトローカル → orchestra の順で解決。"""
+        if self.project_facets_dir:
+            local_path = self.project_facets_dir / "scripts" / name
+            if local_path.exists():
+                return local_path
+
+        facet_path = self.orchestra_dir / "facets" / "scripts" / name
+        if not facet_path.exists():
+            print(f"エラー: script ファイルが見つかりません: {facet_path}", file=sys.stderr)
+            sys.exit(1)
+        return facet_path
+
     def build_skill_md(self, composition: dict[str, Any]) -> str:
         """composition から SKILL.md 本文を組み立てる。"""
         frontmatter = composition["frontmatter"]
@@ -148,6 +208,15 @@ class FacetBuilder:
         instruction = self.resolve_instruction(composition["instruction"])
         if instruction:
             sections.append(instruction)
+
+        knowledge = composition.get("knowledge", [])
+        if knowledge:
+            lines = ["## Additional resources", ""]
+            for kname in knowledge:
+                lines.append(
+                    f"- For {kname} details, see [references/{kname}.md](references/{kname}.md)"
+                )
+            sections.append("\n".join(lines))
 
         if not sections:
             return f"{frontmatter_block}\n"
@@ -201,9 +270,15 @@ class FacetBuilder:
             composition_path = self.orchestra_dir / "facets" / "compositions" / f"{name}.yaml"
 
         composition = self.load_composition(composition_path)
-        required_pkg = composition.get("package")
-        if required_pkg and self.installed_packages is not None:
-            if required_pkg not in self.installed_packages:
+
+        # Package filtering:
+        # - manifest_compositions is None → build all (no filtering)
+        # - name in manifest_compositions → package-owned → build only if package is installed
+        # - name not in manifest_compositions → global → always build
+        if self.manifest_compositions is not None and name in self.manifest_compositions:
+            owning_pkg = self.manifest_compositions[name]
+            installed = set(self.installed_packages or [])
+            if owning_pkg not in installed:
                 output_name = composition["name"]
                 comp_type = composition.get("type", "skill")
                 old_path = self._build_output_path(output_name, target, project_dir, comp_type)
@@ -217,7 +292,7 @@ class FacetBuilder:
                         old_path.parent.rmdir()
                     relative = old_path.relative_to(project_dir)
                     print(
-                        f"[facet] removed {output_name} ({required_pkg} not installed) <- {relative}"
+                        f"[facet] removed {output_name} ({owning_pkg} not installed) <- {relative}"
                     )
                 return None
 
@@ -230,6 +305,29 @@ class FacetBuilder:
         output_path = self._build_output_path(output_name, target, project_dir, comp_type)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(content, encoding="utf-8")
+
+        if comp_type != "rule":
+            skill_dir = output_path.parent
+
+            # Clear existing references/ and scripts/ to remove stale files
+            refs_dir = skill_dir / "references"
+            if refs_dir.is_dir():
+                shutil.rmtree(refs_dir)
+            scripts_dir_path = skill_dir / "scripts"
+            if scripts_dir_path.is_dir():
+                shutil.rmtree(scripts_dir_path)
+
+            for kname in composition.get("knowledge", []):
+                src = self.resolve_knowledge(kname)
+                dst = skill_dir / "references" / f"{kname}.md"
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+
+            for sname in composition.get("scripts", []):
+                src = self.resolve_script(sname)
+                dst = skill_dir / "scripts" / sname
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
 
         relative = output_path.relative_to(project_dir)
         print(f"[facet] built {output_name} -> {relative}")
@@ -279,12 +377,20 @@ class FacetBuilder:
         for name in prev.get("skills", []):
             if name not in built_skills:
                 orphan = self._build_output_path(name, target, project_dir, "skill")
-                if orphan.exists():
-                    orphan.unlink()
-                    if orphan.parent.exists() and not any(orphan.parent.iterdir()):
-                        orphan.parent.rmdir()
-                    relative = orphan.relative_to(project_dir)
-                    print(f"[facet] cleanup: removed orphan skill {name} <- {relative}")
+                skill_dir = orphan.parent
+                if skill_dir.exists():
+                    if orphan.exists():
+                        orphan.unlink()
+                        relative = orphan.relative_to(project_dir)
+                        print(f"[facet] cleanup: removed orphan skill {name} <- {relative}")
+                    refs_dir = skill_dir / "references"
+                    if refs_dir.is_dir():
+                        shutil.rmtree(refs_dir)
+                    scripts_dir = skill_dir / "scripts"
+                    if scripts_dir.is_dir():
+                        shutil.rmtree(scripts_dir)
+                    if not any(skill_dir.iterdir()):
+                        skill_dir.rmdir()
 
         for name in prev.get("rules", []):
             if name not in built_rules:
@@ -389,6 +495,11 @@ class FacetBuilder:
             return None
 
         instruction_content = "\n\n---\n\n".join(sections[skip:])
+
+        # Remove auto-generated Additional resources section
+        marker = "\n\n---\n\n## Additional resources"
+        if marker in instruction_content:
+            instruction_content = instruction_content[: instruction_content.index(marker)]
 
         instruction_path: Path | None = None
         if self.project_facets_dir:

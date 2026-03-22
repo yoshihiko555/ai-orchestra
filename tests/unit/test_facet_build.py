@@ -192,61 +192,64 @@ class TestFacetBuilder:
         assert (project_dir / ".claude" / "skills" / "simplify" / "SKILL.md").is_file()
         assert (project_dir / ".claude" / "skills" / "review" / "SKILL.md").is_file()
 
-    def test_package_filter_skips_uninstalled(self, tmp_path: Path) -> None:
+    def test_manifest_installed_package_builds(self, tmp_path: Path) -> None:
+        """manifest に含まれ、パッケージがインストール済みならビルドされる。"""
         orchestra_dir = tmp_path / "orchestra"
         project_dir = tmp_path / "project"
         project_dir.mkdir(parents=True)
         _setup_facet_sources(orchestra_dir)
 
-        # Overwrite simplify.yaml with package: optional-pkg
-        comp = (orchestra_dir / "facets" / "compositions" / "simplify.yaml").read_text(
-            encoding="utf-8"
+        builder = FacetBuilder(
+            orchestra_dir,
+            manifest_compositions={"simplify": "optional-pkg"},
+            installed_packages=["core", "optional-pkg"],
         )
-        comp_with_pkg = comp.replace(
-            "description: sample skill\n",
-            "description: sample skill\npackage: optional-pkg\n",
-        )
-        (orchestra_dir / "facets" / "compositions" / "simplify.yaml").write_text(
-            comp_with_pkg, encoding="utf-8"
-        )
-
-        builder = FacetBuilder(orchestra_dir, installed_packages=["core"])
-        result = builder.build_one("simplify", "claude", project_dir)
-
-        assert result is None
-
-    def test_package_filter_builds_installed(self, tmp_path: Path) -> None:
-        orchestra_dir = tmp_path / "orchestra"
-        project_dir = tmp_path / "project"
-        project_dir.mkdir(parents=True)
-        _setup_facet_sources(orchestra_dir)
-
-        # Overwrite simplify.yaml with package: optional-pkg
-        comp = (orchestra_dir / "facets" / "compositions" / "simplify.yaml").read_text(
-            encoding="utf-8"
-        )
-        comp_with_pkg = comp.replace(
-            "description: sample skill\n",
-            "description: sample skill\npackage: optional-pkg\n",
-        )
-        (orchestra_dir / "facets" / "compositions" / "simplify.yaml").write_text(
-            comp_with_pkg, encoding="utf-8"
-        )
-
-        builder = FacetBuilder(orchestra_dir, installed_packages=["core", "optional-pkg"])
         result = builder.build_one("simplify", "claude", project_dir)
 
         assert result is not None
         assert result == project_dir / ".claude" / "skills" / "simplify" / "SKILL.md"
 
-    def test_no_package_field_always_builds(self, tmp_path: Path) -> None:
+    def test_manifest_uninstalled_package_skips(self, tmp_path: Path) -> None:
+        """manifest に含まれるが、パッケージが未インストールならスキップされる。"""
         orchestra_dir = tmp_path / "orchestra"
         project_dir = tmp_path / "project"
         project_dir.mkdir(parents=True)
         _setup_facet_sources(orchestra_dir)
 
-        # No package field in composition - should always build regardless
-        builder = FacetBuilder(orchestra_dir, installed_packages=["core"])
+        builder = FacetBuilder(
+            orchestra_dir,
+            manifest_compositions={"simplify": "optional-pkg"},
+            installed_packages=["core"],
+        )
+        result = builder.build_one("simplify", "claude", project_dir)
+
+        assert result is None
+
+    def test_global_composition_always_builds(self, tmp_path: Path) -> None:
+        """manifest_compositions に含まれない composition はグローバルとして常にビルドされる。"""
+        orchestra_dir = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        project_dir.mkdir(parents=True)
+        _setup_facet_sources(orchestra_dir)
+
+        builder = FacetBuilder(
+            orchestra_dir,
+            manifest_compositions={"other-skill": "core"},
+            installed_packages=["core"],
+        )
+        result = builder.build_one("simplify", "claude", project_dir)
+
+        assert result is not None
+        assert result == project_dir / ".claude" / "skills" / "simplify" / "SKILL.md"
+
+    def test_no_manifest_compositions_builds_all(self, tmp_path: Path) -> None:
+        """manifest_compositions が None の場合は全 composition をビルドする。"""
+        orchestra_dir = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        project_dir.mkdir(parents=True)
+        _setup_facet_sources(orchestra_dir)
+
+        builder = FacetBuilder(orchestra_dir, manifest_compositions=None)
         result = builder.build_one("simplify", "claude", project_dir)
 
         assert result is not None
