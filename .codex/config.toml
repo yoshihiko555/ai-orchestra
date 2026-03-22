@@ -17,3 +17,6 @@ skills = true
 [[skills.config]]
 enabled = true
 path = ".codex/skills/context-loader"
+
+[mcp_servers.cocoindex-code]
+url = "http://127.0.0.1:8887/mcp"

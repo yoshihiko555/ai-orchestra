@@ -1,0 +1,10 @@
+# codex-delegation ルールのファセット構成定義
+name: codex-delegation
+description: Codex CLI 委譲ルール
+package: codex-suggestions
+type: rule
+
+policies:
+  - cli-language
+
+instruction: codex-delegation

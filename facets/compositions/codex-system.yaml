@@ -1,0 +1,20 @@
+# codex-system スキルのファセット構成定義
+name: codex-system
+description: Claude Code ↔ Codex CLI collaboration (config-driven)
+package: codex-suggestions
+
+frontmatter:
+  name: codex-system
+  description: |
+    Use Codex CLI with config-driven routing.
+    Always resolve behavior from `.claude/config/agent-routing/cli-tools.yaml`
+    (`codex.enabled`, `agents.<name>.tool`, model/sandbox/flags), instead of
+    hardcoding Codex as design-only or implementation-only.
+    Explicit triggers: "consult codex", "codexで", "think deeper", "analyze".
+  metadata:
+    short-description: Claude Code ↔ Codex CLI collaboration (config-driven)
+
+policies:
+  - cli-language
+
+instruction: codex-system

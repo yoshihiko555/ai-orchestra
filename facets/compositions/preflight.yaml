@@ -1,0 +1,18 @@
+# preflight スキルのファセット構成定義
+name: preflight
+description: 実装前のプリフライト計画（要件・スコープ・リスク・タスク分解）
+
+frontmatter:
+  name: preflight
+  description: |
+    Create a preflight implementation plan through interactive dialogue with the user.
+    Clarifies scope, risks, and task breakdown, then reflects them in Plans.md.
+    Use this skill when the user wants to plan before coding, discuss requirements,
+    or prepare an implementation roadmap. Trigger on: "計画", "プラン", "設計相談",
+    "何を作るか整理", "要件整理", or any pre-implementation planning request.
+  disable-model-invocation: true
+
+policies:
+  - dialog-rules
+
+instruction: preflight

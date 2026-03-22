@@ -29,23 +29,20 @@ env/
 # Logs
 *.log
 
-# Claude Code
+.claude/.mcp-proxy.pid
+
+# CocoIndex local search index
+.cocoindex_code/
+
+# >>> AI Orchestra (.claude) >>>
 .claude/docs/
 .claude/logs/
 .claude/state/
 .claude/checkpoints/
+.claude/context/
+.claude/.facet-packages-hash
+.claude/.facet-manifest.json
+.codex/.facet-manifest.json
 .claude/Plans.md
-.claude/.mcp-proxy.pid
-
-# sync-orchestra.py により packages/ から自動同期（SessionStart で再生成）
-.claude/agents/
-.claude/skills/
-.claude/rules/
-.claude/config/
-
-# Project-specific
-docs/*
-!docs/specs/
-
-# CocoIndex local search index
-.cocoindex_code/
+.claude/Plans.archive.md
+# <<< AI Orchestra (.claude) <<<

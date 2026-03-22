@@ -1,0 +1,19 @@
+# startproject スキルのファセット構成定義
+name: startproject
+description: マルチエージェント協調によるプロジェクトキックオフ
+
+# フロントマター（生成される SKILL.md に付与）
+frontmatter:
+  name: startproject
+  description: |
+    Start a new project/feature implementation with multi-agent collaboration.
+    Includes multi-session review workflow for quality assurance.
+  metadata:
+    short-description: Project kickoff with multi-agent collaboration
+
+# 参照するポリシー（config-driven ルーティングを全フェーズで使用）
+policies:
+  - cli-language
+
+# スキル固有の instruction（ファイル参照）
+instruction: startproject

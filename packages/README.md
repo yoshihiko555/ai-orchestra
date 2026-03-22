@@ -25,22 +25,22 @@ AI Orchestra のパッケージ一覧と詳細。
 
 全パッケージ共通の基盤ライブラリ。タスク状態管理・プランゲート制御など、オーケストレーション基盤を担う。
 
-- **バージョン**: 0.3.0
+- **バージョン**: 0.4.0
 - **依存**: なし
 
 **提供するもの:**
 
-- hooks: `load-task-state.py`, `clear-plan-gate.py`, `check-plan-gate.py`, `set-plan-gate.py`
-- ユーティリティ: `hook_common.py`（全 hook 共通ライブラリ）, `log_common.py`
-- skills: `/preflight`, `/startproject`, `/checkpointing`, `/task-state`
-- rules: `config-loading.md`, `coding-principles.md`, `skill-review-policy.md`, `task-memory-usage.md`
+- hooks: `load-task-state.py`, `clear-plan-gate.py`, `check-plan-gate.py`, `set-plan-gate.py`, `inject-shared-context.py`, `capture-task-result.py`, `update-working-context.py`, `cleanup-session-context.py`
+- ユーティリティ: `hook_common.py`（全 hook 共通ライブラリ）, `log_common.py`, `context_store.py`
+- skills: `/preflight`, `/startproject`, `/checkpointing`, `/task-state`, `/design`
+- rules: `config-loading.md`, `coding-principles.md`, `skill-review-policy.md`, `task-memory-usage.md`, `context-sharing.md`
 - config: `task-memory.yaml`
 
 ---
 
 ### agent-routing
 
-`cli-tools.yaml` に基づいてエージェントをルーティング提案する。25 エージェントの定義と使い方ルールを管理する。
+`cli-tools.yaml` に基づいてエージェントをルーティング提案する。28 エージェントの定義と使い方ルールを管理する。
 
 - **バージョン**: 0.1.0
 - **依存**: core
@@ -48,7 +48,7 @@ AI Orchestra のパッケージ一覧と詳細。
 **提供するもの:**
 
 - hooks: `agent-router.py`（UserPromptSubmit で自動提案）
-- agents: 25 エージェント定義（planner, architect, code-reviewer, general-purpose 等）
+- agents: 28 エージェント定義（planner, architect, code-reviewer, general-purpose 等）
 - rules: `orchestra-usage.md`, `agent-routing-policy.md`
 - config: `cli-tools.yaml`（モデル名・サンドボックス・フラグの一元管理）
 

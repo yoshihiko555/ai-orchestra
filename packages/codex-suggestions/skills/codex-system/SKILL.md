@@ -59,8 +59,8 @@ Task tool parameters:
     Resolve target agent/tool from cli-tools.yaml first.
     If tool resolves to codex, run:
 
-    まず sandbox 内で codex を実行する。sandbox エラーが出たら
-    dangerouslyDisableSandbox: true で再試行。それも拒否されたら claude-direct にフォールバック。
+    codex は sandbox 内で直接実行する（dangerouslyDisableSandbox は使用しない）。
+    エラー時は claude-direct にフォールバック。
 
     codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "
     {question}

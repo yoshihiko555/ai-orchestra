@@ -1,0 +1,10 @@
+# gemini-delegation ルールのファセット構成定義
+name: gemini-delegation
+description: Gemini CLI 委譲ルール
+package: gemini-suggestions
+type: rule
+
+policies:
+  - cli-language
+
+instruction: gemini-delegation

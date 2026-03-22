@@ -1,0 +1,9 @@
+# codex-suggestion-compliance ルールのファセット構成定義
+name: codex-suggestion-compliance
+description: Codex suggestion 遵守ルール
+package: codex-suggestions
+type: rule
+
+policies: []
+
+instruction: codex-suggestion-compliance

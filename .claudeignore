@@ -62,3 +62,6 @@ htmlcov/
 
 # Context sharing session data (auto-cleaned on session end)
 .claude/context/session/
+
+# Archived plans (auto-generated, reference only)
+.claude/Plans.archive.md

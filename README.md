@@ -2,75 +2,40 @@
 
 Claude Code用のマルチエージェントオーケストレーションシステム
 
-## 構成
+## アーキテクチャ
+
+![アーキテクチャ図](docs/assets/architecture.png)
 
 ```
-ai-orchestra/
-├── packages/         # パッケージ（hooks・scripts・agents・skills・rules・config）— 詳細は packages/README.md
-│   ├── core/              # 共通基盤ライブラリ + coding-principles / config-loading ルール
-│   ├── agent-routing/     # 25 エージェント定義 + ルーティング hooks + orchestra-usage ルール
-│   ├── cli-logging/       # Codex/Gemini CLI ログ記録 + checkpointing スキル
-│   ├── codex-suggestions/ # Codex 相談提案 + codex-delegation ルール + codex-system スキル
-│   ├── gemini-suggestions/# Gemini リサーチ提案 + gemini-delegation ルール + gemini-system スキル
-│   ├── quality-gates/     # 品質ゲート + review/tdd/simplify/release-readiness (+ design-tracker)
-│   ├── route-audit/       # ルーティング監査・KPIレポート
-│   ├── issue-workflow/    # GitHub Issue 起票 + 計画→実装→テスト→レビューの開発フロー
-│   ├── cocoindex/         # cocoindex MCP サーバーの自動プロビジョニング
-│   └── tmux-monitor/      # tmux サブエージェント監視
-├── scripts/          # 管理CLI
-├── templates/        # テンプレート（エージェント・スキル・プロジェクト）
-├── tests/            # Python 単体テスト
-├── docs/             # ドキュメント（設計・マイグレーション等）
-├── taskfiles/        # Task CLI 用タスク定義
-└── Taskfile.yml      # メインタスクファイル
+Claude Code (Orchestrator)
+    │
+    ├── Codex CLI    # `cli-tools.yaml` の設定に応じて利用（役割は config-driven）
+    ├── Gemini CLI   # `cli-tools.yaml` の設定に応じて利用（役割は config-driven）
+    │
+    ├── $AI_ORCHESTRA_DIR/packages/
+    │   ├── core/               # 共通ユーティリティ
+    │   ├── cli-logging/        # CLI 呼び出しログ
+    │   ├── codex-suggestions/  # Codex 相談提案
+    │   ├── gemini-suggestions/ # Gemini リサーチ提案
+    │   ├── quality-gates/      # 品質ゲート
+    │   ├── route-audit/        # ルーティング監査
+    │   ├── issue-workflow/     # GitHub Issue 開発フロー
+    │   ├── cocoindex/          # MCP サーバー自動プロビジョニング
+    │   └── tmux-monitor/       # tmux リアルタイム監視
+    │
+    └── 28 Specialized Agents
+        ├── Planning: planner, researcher, requirements
+        ├── Design: architect, api-designer, data-modeler, auth-designer, spec-writer
+        ├── Implementation: frontend-dev, backend-*-dev, ai-*, debugger, tester
+        └── Review: code-reviewer, security-reviewer, performance-reviewer, ...
 ```
 
-## エージェント一覧
+### 仕組み
 
-### コア
-- `planner` - タスク分解・マイルストーン策定
-- `researcher` - リサーチ・ドキュメント解析
-
-### 要件・仕様
-- `requirements` - 要件抽出・NFR整理
-- `spec-writer` - 仕様書生成
-
-### 設計
-- `architect` - アーキテクチャ設計・技術選定
-- `api-designer` - API/IF設計
-- `data-modeler` - データモデリング・スキーマ設計
-- `auth-designer` - 認証認可設計
-
-### 実装
-- `frontend-dev` - React/Next.js/TypeScript
-- `backend-python-dev` - Python API
-- `backend-go-dev` - Go API
-
-### AI/ML
-- `ai-architect` - AIアーキテクチャ・モデル選定
-- `ai-dev` - AI機能実装
-- `prompt-engineer` - プロンプト設計
-- `rag-engineer` - RAG実装
-
-### テスト・デバッグ
-- `debugger` - バグ原因分析
-- `tester` - テスト戦略・実装
-
-### レビュー（実装）
-- `code-reviewer` - コード品質
-- `security-reviewer` - セキュリティ
-- `performance-reviewer` - パフォーマンス
-
-### レビュー（設計・仕様）
-- `spec-reviewer` - 仕様整合性
-- `architecture-reviewer` - アーキテクチャ妥当性
-- `ux-reviewer` - UX・アクセシビリティ
-
-### ドキュメント
-- `docs-writer` - 技術文書・手順書
-
-### ユーティリティ
-- `general-purpose` - 汎用タスク・Codex/Gemini委譲
+- **Hooks**: `$AI_ORCHESTRA_DIR` 環境変数で直接参照（シンボリックリンク不要）
+- **Skills/Agents/Rules**: SessionStart hook (`sync-orchestra.py`) で `$AI_ORCHESTRA_DIR` から `.claude/` に差分コピー
+- **Facets**: `facets/` のポリシー・出力形式を同期し、`facet build` で SKILL.md / ルール .md を自動生成
+- **CLI Scripts**: `$AI_ORCHESTRA_DIR/packages/{pkg}/scripts/` を直接実行
 
 ---
 
@@ -137,7 +102,7 @@ orchex が内部で以下を実行:
 orchex --version
 ```
 
-全ログの役割・参照先は `docs/specs/logging.md` を参照。
+全ログの役割・参照先は `docs/reference/logging.md` を参照。
 
 ### 4. パッケージ管理コマンド
 
@@ -179,12 +144,151 @@ orchex setup essential --project . --dry-run
 orchex install <package> --project . --dry-run
 ```
 
+### 5. ファセット管理コマンド
+
+スキル・ルールをファセット（Policy / Output Contract / Instruction）から自動生成・管理する。詳細は [Facet システム解説](docs/guides/facet-system.md) を参照。
+
+![Facet 合成システム](docs/assets/facet.png)
+
+```bash
+# 全 composition をビルド（SKILL.md / ルール .md を生成）
+orchex facet build --project .
+
+# 単一 composition をビルド
+orchex facet build --name review --project .
+
+# Codex CLI 向けに生成（.codex/skills/ に出力）
+orchex facet build --target codex --project .
+
+# 生成済みファイルから instruction をソースに書き戻す（チューニング反映）
+orchex facet extract --name review --project .
+
+# 全件書き戻し
+orchex facet extract --project .
+```
+
+**運用フロー:**
+
+```
+facets/policies/*.md        ← 共有ルール（1箇所修正 → 全スキル・ルールに反映）
+facets/output-contracts/*.md ← 共有出力形式
+facets/instructions/*.md     ← スキル・ルール固有の手順
+facets/compositions/*.yaml   ← 組み立て定義
+
+    ↓ facet build
+
+.claude/skills/{name}/SKILL.md  ← 生成物（Claude Code 用）
+.claude/rules/{name}.md         ← 生成物（Claude Code 用）
+.codex/skills/{name}/SKILL.md   ← 生成物（Codex CLI 用）
+```
+
+**チューニング後の反映:**
+
+```
+/config-tune 等で SKILL.md を直接編集
+    ↓
+orchex facet extract --name {name}   ← instruction をソースに書き戻し
+    ↓
+次回 facet build で変更が保持される
+```
+
+SessionStart 時に `facet build` が自動実行されるため、通常は手動ビルド不要。
+
+### 自動管理されるファイル
+
+- `.claudeignore` — AI Orchestra が自動生成。プロジェクト固有の除外パターンは `.claudeignore.local` に記載
+- `.gitignore` — `orchex install` 時に AI Orchestra 用ブロックを追加（`.claude/docs/`, `.claude/logs/`, `.claude/state/` 等）
+
 ### 開発者向け: ソースからのインストール
 
 ```bash
 git clone https://github.com/yoshihiko555/ai-orchestra.git
 cd ai-orchestra
 uv tool install -e .
+```
+
+---
+
+## 使い方
+
+### エージェント一覧
+
+| カテゴリ | エージェント |
+|---------|------------|
+| コア | `planner` `researcher` `requirements` |
+| 設計 | `architect` `api-designer` `data-modeler` `auth-designer` `spec-writer` |
+| 実装 | `frontend-dev` `backend-python-dev` `backend-go-dev` |
+| AI/ML | `ai-architect` `ai-dev` `prompt-engineer` `rag-engineer` |
+| テスト・デバッグ | `debugger` `tester` |
+| レビュー（実装） | `code-reviewer` `security-reviewer` `performance-reviewer` |
+| レビュー（設計） | `spec-reviewer` `architecture-reviewer` `ux-reviewer` |
+| ドキュメント | `docs-writer` |
+| ユーティリティ | `general-purpose` `specialized-mcp-builder` `support-executive-summary-generator` `testing-reality-checker` |
+
+### エージェントの呼び出し
+
+```
+Task(subagent_type="planner", prompt="このタスクを分解して")
+Task(subagent_type="code-reviewer", prompt="このコードをレビューして")
+```
+
+### スキル一覧
+
+| スキル | 用途 |
+|--------|------|
+| `/review` | コード・セキュリティ・設計レビュー（スマート選定 + 並列実行） |
+| `/startproject` | マルチエージェント協調で新規開発を開始 |
+| `/issue-create` | GitHub Issue の作成と計画策定 |
+| `/issue-fix` | Issue ベースの計画→実装→テスト→レビューフロー |
+| `/codex-system` | `cli-tools.yaml` に基づく Codex 利用ガイド（config-driven） |
+| `/gemini-system` | Gemini CLI でのリサーチ・マルチモーダル処理 |
+| `/checkpointing` | セッションコンテキストの保存・復元 |
+| `/preflight` | 実装計画の策定 |
+| `/design` | 設計テンプレート |
+| `/design-tracker` | 設計記録 |
+| `/task-state` | Plans.md の作成・更新 |
+| `/release-readiness` | マージ前の最終チェック |
+| `/tdd` | テスト駆動開発ワークフロー |
+
+### レビュースキル
+
+```
+/review              # スマート選定（変更内容に応じて 2-3 名を自動選定）
+/review all          # 全 6 レビュアー並列実行
+/review code         # コードレビューのみ
+/review security     # セキュリティレビューのみ
+/review impl         # 実装系（code + security + performance）
+/review design       # 設計系（spec + architecture）
+```
+
+---
+
+## 構成
+
+```
+ai-orchestra/
+├── facets/           # ファセットプロンプティング基盤（スキル・ルールの部品化）
+│   ├── policies/          # 共有 Policy（dialog-rules, cli-language, code-quality, factual-writing）
+│   ├── output-contracts/  # 共有 Output Contract（tiered-review, compare-report, deep-dive-report）
+│   ├── instructions/      # スキル・ルール固有の instruction
+│   └── compositions/      # 組み立て定義 YAML（facet build で SKILL.md / ルール .md を生成）
+├── packages/         # パッケージ（hooks・scripts・agents・skills・rules・config）— 詳細は packages/README.md
+│   ├── core/              # 共通基盤ライブラリ + coding-principles / config-loading ルール
+│   ├── agent-routing/     # 28 エージェント定義 + ルーティング hooks + orchestra-usage ルール
+│   ├── cli-logging/       # Codex/Gemini CLI ログ記録 + checkpointing スキル
+│   ├── codex-suggestions/ # Codex 相談提案 + codex-delegation ルール + codex-system スキル
+│   ├── gemini-suggestions/# Gemini リサーチ提案 + gemini-delegation ルール + gemini-system スキル
+│   ├── quality-gates/     # 品質ゲート + review/tdd/release-readiness (+ design-tracker)
+│   ├── route-audit/       # ルーティング監査・KPIレポート
+│   ├── issue-workflow/    # GitHub Issue 起票 + 計画→実装→テスト→レビューの開発フロー
+│   ├── cocoindex/         # cocoindex MCP サーバーの自動プロビジョニング
+│   └── tmux-monitor/      # tmux サブエージェント監視
+├── scripts/          # 管理CLI（エントリポイント + lib/ 共有ライブラリ）
+├── templates/        # テンプレート（エージェント・スキル・プロジェクト）
+├── tests/            # Python 単体テスト
+├── docs/             # 公開ドキュメント（guides / reference / design / adr）
+├── taskfiles/        # Task CLI 用タスク定義
+└── Taskfile.yml      # メインタスクファイル
 ```
 
 ---
@@ -205,85 +309,3 @@ cd ai-orchestra && git pull
 | Hook スクリプト修正 | アップグレード後、即反映 |
 | Skills/Agents/Rules 修正 | アップグレード後、次回 Claude Code 起動時に自動同期 |
 | 新フックイベント追加 | アップグレード + `orchex install` 再実行 |
-
----
-
-## .claudeignore の管理
-
-- `.claudeignore` は AI Orchestra が自動生成するため直接編集しないでください
-- プロジェクト固有の除外パターンは `.claudeignore.local` に記載
-- SessionStart 時に ベース + `.claudeignore.local` がマージ生成されます
-
-## .gitignore の管理
-
-- `orchex init` 実行時に `.gitignore` へ AI Orchestra 用 block を追加/更新します
-- 対象: `.claude/docs/`, `.claude/logs/`, `.claude/state/`, `.claude/checkpoints/`, `.claude/Plans.md`
-
----
-
-## 使い方
-
-### エージェントの呼び出し
-
-```
-Task(subagent_type="planner", prompt="このタスクを分解して")
-Task(subagent_type="code-reviewer", prompt="このコードをレビューして")
-```
-
-### スキル一覧
-
-| スキル | 用途 |
-|--------|------|
-| `/review` | コード・セキュリティ・設計レビュー（並列実行対応） |
-| `/startproject` | マルチエージェント協調で新規開発を開始 |
-| `/codex-system` | `cli-tools.yaml` に基づく Codex 利用ガイド（config-driven） |
-| `/gemini-system` | Gemini CLI でのリサーチ・マルチモーダル処理 |
-| `/checkpointing` | セッションコンテキストの保存・復元 |
-| `/design-tracker` | 設計記録スキル（現運用は `CLAUDE.md`/`Plans.md`/ADR/docs を優先） |
-| `/preflight` | 実装計画の策定 |
-| `/simplify` | コードの簡素化 |
-| `/tdd` | テスト駆動開発ワークフロー |
-
-### レビュースキル
-
-```
-/review              # 全レビュアー並列実行
-/review code         # コードレビューのみ
-/review security     # セキュリティレビューのみ
-/review impl         # 実装系レビュー
-/review design       # 設計系レビュー
-```
-
----
-
-## アーキテクチャ
-
-```
-Claude Code (Orchestrator)
-    │
-    ├── Codex CLI    # `cli-tools.yaml` の設定に応じて利用（役割は config-driven）
-    ├── Gemini CLI   # `cli-tools.yaml` の設定に応じて利用（役割は config-driven）
-    │
-    ├── $AI_ORCHESTRA_DIR/packages/
-    │   ├── core/               # 共通ユーティリティ
-    │   ├── cli-logging/        # CLI 呼び出しログ
-    │   ├── codex-suggestions/  # Codex 相談提案
-    │   ├── gemini-suggestions/ # Gemini リサーチ提案
-    │   ├── quality-gates/      # 品質ゲート
-    │   ├── route-audit/        # ルーティング監査
-    │   ├── issue-workflow/     # GitHub Issue 開発フロー
-    │   ├── cocoindex/          # MCP サーバー自動プロビジョニング
-    │   └── tmux-monitor/       # tmux リアルタイム監視
-    │
-    └── 25 Specialized Agents
-        ├── Planning: planner, researcher, requirements
-        ├── Design: architect, api-designer, data-modeler, auth-designer, spec-writer
-        ├── Implementation: frontend-dev, backend-*-dev, ai-*, debugger, tester
-        └── Review: code-reviewer, security-reviewer, performance-reviewer, ...
-```
-
-### 仕組み
-
-- **Hooks**: `$AI_ORCHESTRA_DIR` 環境変数で直接参照（シンボリックリンク不要）
-- **Skills/Agents/Rules**: SessionStart hook (`sync-orchestra.py`) で `$AI_ORCHESTRA_DIR` から `.claude/` に差分コピー
-- **CLI Scripts**: `$AI_ORCHESTRA_DIR/packages/{pkg}/scripts/` を直接実行

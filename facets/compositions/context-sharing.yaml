@@ -1,0 +1,8 @@
+# context-sharing ルールのファセット構成定義
+name: context-sharing
+description: CLI 間コンテキスト共有ルール
+type: rule
+
+policies: []
+
+instruction: context-sharing
