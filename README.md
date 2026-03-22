@@ -283,7 +283,7 @@ ai-orchestra/
 │   ├── issue-workflow/    # GitHub Issue 起票 + 計画→実装→テスト→レビューの開発フロー
 │   ├── cocoindex/         # cocoindex MCP サーバーの自動プロビジョニング
 │   └── tmux-monitor/      # tmux サブエージェント監視
-├── scripts/          # 管理CLI
+├── scripts/          # 管理CLI（エントリポイント + lib/ 共有ライブラリ）
 ├── templates/        # テンプレート（エージェント・スキル・プロジェクト）
 ├── tests/            # Python 単体テスト
 ├── docs/             # 公開ドキュメント（guides / reference / design / adr）

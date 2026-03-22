@@ -52,16 +52,27 @@ instruction: |
     scripts_dir.mkdir(parents=True, exist_ok=True)
     import shutil
 
-    for script_name in [
-        "orchestra-manager.py",
+    shutil.copy2(
+        REPO_ROOT / "scripts" / "orchestra-manager.py", scripts_dir / "orchestra-manager.py"
+    )
+
+    lib_dst = scripts_dir / "lib"
+    lib_dst.mkdir(exist_ok=True)
+    for lib_name in [
+        "__init__.py",
         "orchestra_models.py",
         "orchestra_context.py",
         "orchestra_hooks.py",
         "facet_builder.py",
         "gitignore_sync.py",
+        "scaffold.py",
+        "agent_model_patch.py",
+        "hook_utils.py",
+        "sync_engine.py",
+        "settings_io.py",
     ]:
-        src_script = REPO_ROOT / "scripts" / script_name
-        dst_script = scripts_dir / script_name
+        src_script = REPO_ROOT / "scripts" / "lib" / lib_name
+        dst_script = lib_dst / lib_name
         if src_script.exists() and not dst_script.exists():
             shutil.copy2(src_script, dst_script)
 

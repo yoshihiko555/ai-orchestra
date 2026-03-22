@@ -7,7 +7,7 @@ from pathlib import Path
 
 from tests.module_loader import load_module
 
-models_mod = load_module("orchestra_models", "scripts/orchestra_models.py")
+models_mod = load_module("orchestra_models", "scripts/lib/orchestra_models.py")
 HookEntry = models_mod.HookEntry
 Package = models_mod.Package
 

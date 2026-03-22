@@ -177,7 +177,7 @@ class ContextMixin:
 
     def sync_gitignore(self, project_dir: Path, dry_run: bool = False) -> bool:
         """プロジェクトの .gitignore に AI Orchestra ブロックを追加/更新する。"""
-        import gitignore_sync
+        from lib import gitignore_sync
 
         path = project_dir / ".gitignore"
         existing = ""

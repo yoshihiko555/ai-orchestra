@@ -2,16 +2,26 @@
 
 from __future__ import annotations
 
-import json
-import sys
 from pathlib import Path
 from typing import Any
 
-_SCRIPTS_DIR = str(Path(__file__).resolve().parent)
-if _SCRIPTS_DIR not in sys.path:
-    sys.path.insert(0, _SCRIPTS_DIR)
-
-from orchestra_models import Package  # noqa: E402
+from lib.hook_utils import (
+    add_hook_to_settings as _add_hook,
+)
+from lib.hook_utils import (
+    find_hook_in_settings,
+    get_hook_command,
+)
+from lib.hook_utils import (
+    remove_hook_from_settings as _remove_hook,
+)
+from lib.orchestra_models import Package
+from lib.settings_io import (
+    load_orchestra_json,
+    load_settings,
+    save_orchestra_json,
+    save_settings,
+)
 
 
 class HooksMixin:
@@ -23,41 +33,34 @@ class HooksMixin:
     - self.SYNC_HOOK_TIMEOUT: int
     """
 
-    def load_settings(self, project_dir: Path) -> dict[str, Any]:
+    # --- settings / orchestra.json I/O（settings_io に委譲） ---
+
+    @staticmethod
+    def load_settings(project_dir: Path) -> dict[str, Any]:
         """settings.local.json をロード"""
-        settings_path = project_dir / ".claude" / "settings.local.json"
-        if not settings_path.exists():
-            return {"hooks": {}}
-        with open(settings_path, encoding="utf-8") as f:
-            return json.load(f)
+        return load_settings(project_dir)
 
-    def save_settings(self, project_dir: Path, settings: dict[str, Any]) -> None:
+    @staticmethod
+    def save_settings(project_dir: Path, settings: dict[str, Any]) -> None:
         """settings.local.json を保存"""
-        settings_path = project_dir / ".claude" / "settings.local.json"
-        settings_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(settings_path, "w", encoding="utf-8") as f:
-            json.dump(settings, f, indent=2, ensure_ascii=False)
-            f.write("\n")
+        save_settings(project_dir, settings)
 
-    def load_orchestra_json(self, project_dir: Path) -> dict[str, Any]:
+    @staticmethod
+    def load_orchestra_json(project_dir: Path) -> dict[str, Any]:
         """orchestra.json をロード"""
-        path = project_dir / ".claude" / "orchestra.json"
-        if not path.exists():
-            return {"installed_packages": [], "orchestra_dir": "", "last_sync": ""}
-        with open(path, encoding="utf-8") as f:
-            return json.load(f)
+        return load_orchestra_json(project_dir)
 
-    def save_orchestra_json(self, project_dir: Path, data: dict[str, Any]) -> None:
+    @staticmethod
+    def save_orchestra_json(project_dir: Path, data: dict[str, Any]) -> None:
         """orchestra.json を保存"""
-        path = project_dir / ".claude" / "orchestra.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-            f.write("\n")
+        save_orchestra_json(project_dir, data)
 
-    def get_hook_command(self, pkg_name: str, filename: str) -> str:
+    # --- hook 操作（hook_utils に委譲） ---
+
+    @staticmethod
+    def get_hook_command(pkg_name: str, filename: str) -> str:
         """フックコマンドを生成（$AI_ORCHESTRA_DIR 参照）"""
-        return f'python3 "$AI_ORCHESTRA_DIR/packages/{pkg_name}/hooks/{filename}"'
+        return get_hook_command(pkg_name, filename)
 
     def is_hook_registered(
         self,
@@ -69,24 +72,8 @@ class HooksMixin:
     ) -> bool:
         """フックが settings.local.json に登録されているかチェック"""
         hooks = settings.get("hooks", {})
-        if event not in hooks:
-            return False
-
-        command = self.get_hook_command(pkg_name, filename)
-
-        for entry in hooks[event]:
-            if matcher:
-                if entry.get("matcher") != matcher:
-                    continue
-            else:
-                if "matcher" in entry:
-                    continue
-
-            for hook in entry.get("hooks", []):
-                if hook.get("command") == command:
-                    return True
-
-        return False
+        command = get_hook_command(pkg_name, filename)
+        return find_hook_in_settings(hooks, event, command, matcher)
 
     def _count_registered_hooks(self, pkg: Package, settings: dict[str, Any]) -> tuple[int, int]:
         """パッケージのフック登録状況を集計して (registered, total) を返す"""
@@ -122,8 +109,8 @@ class HooksMixin:
                         settings, event, entry.file, pkg.name, entry.matcher
                     )
 
+    @staticmethod
     def add_hook_to_settings(
-        self,
         settings: dict[str, Any],
         event: str,
         filename: str,
@@ -134,37 +121,11 @@ class HooksMixin:
         """settings.local.json にフックを追加"""
         if "hooks" not in settings:
             settings["hooks"] = {}
-        if event not in settings["hooks"]:
-            settings["hooks"][event] = []
+        command = get_hook_command(pkg_name, filename)
+        _add_hook(settings["hooks"], event, command, matcher, timeout)
 
-        command = self.get_hook_command(pkg_name, filename)
-        hook_obj = {"type": "command", "command": command, "timeout": timeout}
-
-        target_entry = None
-        for entry in settings["hooks"][event]:
-            if matcher:
-                if entry.get("matcher") == matcher:
-                    target_entry = entry
-                    break
-            else:
-                if "matcher" not in entry:
-                    target_entry = entry
-                    break
-
-        if target_entry is None:
-            target_entry = {"hooks": []}
-            if matcher:
-                target_entry["matcher"] = matcher
-            settings["hooks"][event].append(target_entry)
-
-        for hook in target_entry["hooks"]:
-            if hook.get("command") == command:
-                return
-
-        target_entry["hooks"].append(hook_obj)
-
+    @staticmethod
     def remove_hook_from_settings(
-        self,
         settings: dict[str, Any],
         event: str,
         filename: str,
@@ -174,23 +135,13 @@ class HooksMixin:
         """settings.local.json からフックを削除"""
         if "hooks" not in settings or event not in settings["hooks"]:
             return
-
-        command = self.get_hook_command(pkg_name, filename)
-
-        for entry in settings["hooks"][event]:
-            if matcher:
-                if entry.get("matcher") != matcher:
-                    continue
-            else:
-                if "matcher" in entry:
-                    continue
-
-            entry["hooks"] = [h for h in entry.get("hooks", []) if h.get("command") != command]
-
-        settings["hooks"][event] = [e for e in settings["hooks"][event] if e.get("hooks")]
+        command = get_hook_command(pkg_name, filename)
+        _remove_hook(settings["hooks"], event, command, matcher)
 
     def setup_env_var(self, dry_run: bool = False) -> None:
         """~/.claude/settings.json の env.AI_ORCHESTRA_DIR を設定"""
+        import json
+
         global_settings_path = Path.home() / ".claude" / "settings.json"
         global_settings: dict[str, Any] = {}
 

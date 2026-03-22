@@ -14,7 +14,7 @@ from tests.module_loader import load_module
 
 manager_mod = load_module("orchestra_manager", "scripts/orchestra-manager.py")
 OrchestraManager = manager_mod.OrchestraManager
-models_mod = load_module("orchestra_models", "scripts/orchestra_models.py")
+models_mod = load_module("orchestra_models", "scripts/lib/orchestra_models.py")
 HookEntry = models_mod.HookEntry
 Package = models_mod.Package
 

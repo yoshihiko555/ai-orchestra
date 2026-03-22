@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from tests.module_loader import load_module
 
-gitignore_mod = load_module("gitignore_sync", "scripts/gitignore_sync.py")
+gitignore_mod = load_module("gitignore_sync", "scripts/lib/gitignore_sync.py")
 BLOCK_START = gitignore_mod.BLOCK_START
 BLOCK_END = gitignore_mod.BLOCK_END
 ENTRIES = gitignore_mod.ENTRIES

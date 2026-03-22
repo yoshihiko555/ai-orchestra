@@ -34,7 +34,6 @@ class TestLifecycleNewProject:
         # Verify skills generated
         skills_dir = e2e_project / ".claude" / "skills"
         assert (skills_dir / "review" / "SKILL.md").is_file()
-        assert (skills_dir / "simplify" / "SKILL.md").is_file()
 
         # Step 3: Add package
         result = run_orchex("install", "codex-suggestions", project=e2e_project)
@@ -77,11 +76,6 @@ class TestLifecycleOrchestraUpdate:
 
             result = run_session_start(e2e_project, "s3")
             assert "facets built" in result.stdout
-
-            simplify = (e2e_project / ".claude" / "skills" / "simplify" / "SKILL.md").read_text(
-                encoding="utf-8"
-            )
-            assert "E2E_POLICY_TEST" in simplify
 
             principles = (e2e_project / ".claude" / "rules" / "coding-principles.md").read_text(
                 encoding="utf-8"
@@ -151,7 +145,6 @@ class TestLifecycleUninstall:
 
         # quality-gates skills still exist
         assert (e2e_project / ".claude" / "skills" / "review" / "SKILL.md").is_file()
-        assert (e2e_project / ".claude" / "skills" / "simplify" / "SKILL.md").is_file()
 
         # agent-routing hooks still present
         settings = json.loads(

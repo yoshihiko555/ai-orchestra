@@ -9,7 +9,7 @@ from pathlib import Path
 
 from tests.module_loader import load_module
 
-sync_mod = load_module("sync_orchestra", "scripts/sync-orchestra.py")
+sync_mod = load_module("scaffold", "scripts/lib/scaffold.py")
 sync_claudeignore = sync_mod.sync_claudeignore
 ensure_claude_scaffold = sync_mod.ensure_claude_scaffold
 _strip_header = sync_mod._strip_header

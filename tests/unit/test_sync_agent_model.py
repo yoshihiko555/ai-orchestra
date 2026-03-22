@@ -11,10 +11,10 @@ import yaml
 
 from tests.module_loader import load_module
 
-sync_mod = load_module("sync_orchestra", "scripts/sync-orchestra.py")
+sync_mod = load_module("agent_model_patch", "scripts/lib/agent_model_patch.py")
 resolve_agent_model = sync_mod.resolve_agent_model
-_patch_agent_model = sync_mod._patch_agent_model
-_load_cli_tools_config = sync_mod._load_cli_tools_config
+_patch_agent_model = sync_mod.patch_agent_model
+_load_cli_tools_config = sync_mod.load_cli_tools_config
 _deep_merge = sync_mod._deep_merge
 
 

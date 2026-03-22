@@ -23,11 +23,11 @@ _SCRIPTS_DIR = str(Path(__file__).resolve().parent)
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
-import gitignore_sync  # noqa: E402
-from facet_builder import FacetBuilder  # noqa: E402
-from orchestra_context import ContextMixin  # noqa: E402
-from orchestra_hooks import HooksMixin  # noqa: E402
-from orchestra_models import Package  # noqa: E402
+import lib.gitignore_sync as gitignore_sync  # noqa: E402
+from lib.facet_builder import FacetBuilder  # noqa: E402
+from lib.orchestra_context import ContextMixin  # noqa: E402
+from lib.orchestra_hooks import HooksMixin  # noqa: E402
+from lib.orchestra_models import Package  # noqa: E402
 
 
 class OrchestraManager(ContextMixin, HooksMixin):

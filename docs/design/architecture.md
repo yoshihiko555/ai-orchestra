@@ -31,8 +31,19 @@ ai-orchestra/
 │   └── cli.py                 # orchex CLI → orchestra-manager.py 動的ロード
 │
 ├── scripts/
-│   ├── orchestra-manager.py   # メイン CLI（2052行）
-│   └── sync-orchestra.py      # SessionStart 自動同期（828行）
+│   ├── orchestra-manager.py   # メイン CLI エントリポイント
+│   ├── sync-orchestra.py      # SessionStart 自動同期エントリポイント
+│   └── lib/                   # 共有ライブラリ
+│       ├── hook_utils.py      # Hook 操作共通関数
+│       ├── settings_io.py     # settings/orchestra.json I/O
+│       ├── sync_engine.py     # パッケージ同期コアロジック
+│       ├── scaffold.py        # scaffold / .claudeignore 管理
+│       ├── agent_model_patch.py # エージェント model パッチ
+│       ├── facet_builder.py   # Facet 合成ビルダー
+│       ├── gitignore_sync.py  # .gitignore ブロック管理
+│       ├── orchestra_models.py # データモデル（Package, HookEntry）
+│       ├── orchestra_hooks.py  # Hook 管理 Mixin
+│       └── orchestra_context.py # Context テンプレート Mixin
 │
 ├── packages/                  # 配布パッケージ群（10パッケージ）
 │   ├── core/                  # 共通基盤
@@ -78,7 +89,7 @@ ai-orchestra/
 
 ### 3.2 scripts/orchestra-manager.py
 
-メイン管理 CLI。`OrchestraManager` クラスと `FacetBuilder` クラスで構成。
+メイン管理 CLI。`OrchestraManager` クラスがエントリポイントとなり、`scripts/lib/` の共有モジュール群を利用する。
 
 **主要コマンド**:
 
@@ -109,18 +120,35 @@ ai-orchestra/
 
 ### 3.3 scripts/sync-orchestra.py
 
-SessionStart hook として毎セッション自動実行。mtime 比較による差分同期で高速化（変更なし時 ~70ms）。
+SessionStart hook として毎セッション自動実行。エントリポイントのみを持ち、コアロジックは `scripts/lib/` に委譲する。mtime 比較による差分同期で高速化（変更なし時 ~70ms）。
 
-**同期対象**:
+**同期対象**（`lib/sync_engine.py` で実装）:
 - skills, agents, rules, config（パッケージごと）
 - facets（policies, instructions, output-contracts）
-- .claudeignore（テンプレート + .local のマージ）
-- agent .md ファイルの model フロントマター（cli-tools.yaml から解決）
+- .claudeignore（`lib/scaffold.py` で実装）
+- agent .md ファイルの model フロントマター（`lib/agent_model_patch.py` で実装）
 
 **特徴**:
 - `.local.*` ファイルは同期対象外（上書きしない）
 - 前回同期されたが現在は不要なファイルを自動削除（stale file removal）
 - facet ソースが更新された場合のみ facet build を実行
+
+### 3.4 scripts/lib/ — 共有ライブラリ
+
+`orchestra-manager.py` と `sync-orchestra.py` の両方から利用される共有モジュール群。
+
+| モジュール | 役割 |
+|-----------|------|
+| `hook_utils.py` | Hook コマンド生成・検索・追加・削除の共通関数 |
+| `settings_io.py` | `settings.local.json` / `orchestra.json` の読み書き |
+| `sync_engine.py` | パッケージ同期・hook 同期・facet ビルドのコアロジック |
+| `scaffold.py` | プロジェクト scaffold と `.claudeignore` 管理 |
+| `agent_model_patch.py` | エージェント `.md` の frontmatter model パッチ |
+| `facet_builder.py` | Facet composition → SKILL.md / rule.md のビルダー |
+| `gitignore_sync.py` | `.gitignore` の AI Orchestra ブロック管理 |
+| `orchestra_models.py` | `Package` / `HookEntry` データクラス |
+| `orchestra_hooks.py` | `HooksMixin`（OrchestraManager 用 hook 管理） |
+| `orchestra_context.py` | `ContextMixin`（OrchestraManager 用 context テンプレート管理） |
 
 ---
 
