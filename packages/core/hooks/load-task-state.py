@@ -130,7 +130,7 @@ def parse_tasks(
     content: str,
     marker_pattern: re.Pattern[str] | None = None,
     marker_to_state: dict[str, str] | None = None,
-) -> dict[str, list[dict[str, str]]]:
+) -> dict[str, list[dict[str, str | None]]]:
     """Plans.md の内容からタスクを状態別に分類する。
 
     Returns:
@@ -142,7 +142,7 @@ def parse_tasks(
     if marker_to_state is None:
         marker_to_state = DEFAULT_MARKER_TO_STATE
 
-    tasks: dict[str, list[dict[str, str]]] = {
+    tasks: dict[str, list[dict[str, str | None]]] = {
         "WIP": [],
         "TODO": [],
         "done": [],
@@ -182,7 +182,7 @@ def parse_tasks(
     return tasks
 
 
-def format_summary(tasks: dict[str, list[dict[str, str]]], max_display: int | None) -> str:
+def format_summary(tasks: dict[str, list[dict[str, str | None]]], max_display: int | None) -> str:
     """タスク状態のサマリーをフォーマットする。"""
     parts: list[str] = []
 

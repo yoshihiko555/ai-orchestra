@@ -48,7 +48,7 @@ def add_hook_to_settings(
 
     hook_obj = {"type": "command", "command": command, "timeout": timeout}
 
-    target_entry = None
+    target_entry: dict[str, Any] | None = None
     for entry in settings_hooks[event]:
         if matcher:
             if entry.get("matcher") == matcher:

@@ -27,11 +27,12 @@ from lib.settings_io import (
 class HooksMixin:
     """OrchestraManager にフック管理機能を提供する Mixin。
 
-    利用側で以下の属性・メソッドが必要:
-    - self.orchestra_dir: Path
-    - self.SYNC_HOOK_COMMAND: str
-    - self.SYNC_HOOK_TIMEOUT: int
+    利用側は以下の属性を定義すること。
     """
+
+    orchestra_dir: Path
+    SYNC_HOOK_COMMAND: str
+    SYNC_HOOK_TIMEOUT: int
 
     # --- settings / orchestra.json I/O（settings_io に委譲） ---
 

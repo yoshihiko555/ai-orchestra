@@ -63,6 +63,9 @@ except ImportError:
             return cwd
         return os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())
 
+    def update_working_context(project_dir: str, updates: dict) -> None:  # type: ignore[misc]
+        """フォールバック: context_store が利用不可なら何もしない。"""
+
 
 def to_relative_path(file_path: str, project_dir: str) -> str:
     """file_path から project_dir プレフィックスを除去して相対パスに変換する。

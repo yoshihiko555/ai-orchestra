@@ -62,7 +62,7 @@ def test_is_plan_agent_task_false_for_missing_fields() -> None:
 # --- main (stdout/exit-code integration) ---
 
 
-def _run_main_with_stdin(data: dict) -> tuple[str, int]:
+def _run_main_with_stdin(data: dict) -> tuple[str, str | int]:
     """main() を stdin モックで実行し (stdout, exit_code) を返す。"""
     import io
     import sys
