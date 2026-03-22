@@ -14,4 +14,7 @@ includes:
     flatten: true
     vars:
       ORCHESTRA_DIR: "{{.ORCHESTRA_DIR}}"
+  rel:
+    taskfile: ~/ghq/github.com/yoshihiko555/dotfiles/taskfiles/release.yml
+    flatten: true
 
