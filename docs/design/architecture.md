@@ -123,7 +123,7 @@ ai-orchestra/
 SessionStart hook として毎セッション自動実行。エントリポイントのみを持ち、コアロジックは `scripts/lib/` に委譲する。mtime 比較による差分同期で高速化（変更なし時 ~70ms）。
 
 **同期対象**（`lib/sync_engine.py` で実装）:
-- agents, rules, config（パッケージごと）※ skills は facet build で生成するため同期しない
+- agents, config（パッケージごと）※ skills/rules は facet build で生成するため同期しない
 - facets（policies, instructions, output-contracts）
 - .claudeignore（`lib/scaffold.py` で実装）
 - agent .md ファイルの model フロントマター（`lib/agent_model_patch.py` で実装）
@@ -161,13 +161,12 @@ packages/{name}/
   manifest.json         # メタデータ・依存・hook定義・ファイルリスト（skills/rulesは composition 名形式）
   hooks/                # Claude Code hook 実装（Python）
   agents/               # エージェント定義（.md）
-  rules/                # ルール定義（.md）
   config/               # 設定ファイル（YAML/JSON）
   scripts/              # ユーティリティスクリプト
   tests/                # パッケージ単位テスト
 ```
 
-> **Note**: `skills/` ディレクトリはパッケージ内には存在しない。スキル（SKILL.md）は `facet build` で `.claude/skills/` に直接生成される。manifest.json の `skills` フィールドは composition 名（例: `"preflight"`, `"review"`）のリストで管理する。
+> **Note**: `skills/` `rules/` ディレクトリはパッケージ内には存在しない。スキル（SKILL.md）とルール（.md）は `facet build` で `.claude/skills/` `.claude/rules/` に直接生成される。manifest.json の `skills` `rules` フィールドは composition 名（例: `"preflight"`, `"coding-principles"`）のリストで管理する。
 
 ### 4.2 パッケージ一覧と依存関係
 
