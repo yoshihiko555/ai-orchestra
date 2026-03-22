@@ -170,16 +170,20 @@ orchex facet extract --project .
 **運用フロー:**
 
 ```
-facets/policies/*.md        ← 共有ルール（1箇所修正 → 全スキル・ルールに反映）
+facets/policies/*.md         ← 共有ルール（1箇所修正 → 全スキル・ルールに反映）
 facets/output-contracts/*.md ← 共有出力形式
 facets/instructions/*.md     ← スキル・ルール固有の手順
+facets/knowledge/*.md        ← スキルに同梱する参考資料
+facets/scripts/*             ← スキルに同梱するスクリプト
 facets/compositions/*.yaml   ← 組み立て定義
 
     ↓ facet build
 
-.claude/skills/{name}/SKILL.md  ← 生成物（Claude Code 用）
-.claude/rules/{name}.md         ← 生成物（Claude Code 用）
-.codex/skills/{name}/SKILL.md   ← 生成物（Codex CLI 用）
+.claude/skills/{name}/SKILL.md       ← 生成物（Claude Code 用）
+.claude/skills/{name}/references/    ← 知識ファイル（knowledge から配布）
+.claude/skills/{name}/scripts/       ← スクリプト（scripts から配布）
+.claude/rules/{name}.md              ← 生成物（Claude Code 用）
+.codex/skills/{name}/SKILL.md        ← 生成物（Codex CLI 用）
 ```
 
 **チューニング後の反映:**
@@ -271,6 +275,8 @@ ai-orchestra/
 │   ├── policies/          # 共有 Policy（dialog-rules, cli-language, code-quality, factual-writing）
 │   ├── output-contracts/  # 共有 Output Contract（tiered-review, compare-report, deep-dive-report）
 │   ├── instructions/      # スキル・ルール固有の instruction
+│   ├── knowledge/         # スキルに同梱する参考資料（references/ に配布）
+│   ├── scripts/           # スキルに同梱するユーティリティスクリプト（scripts/ に配布）
 │   └── compositions/      # 組み立て定義 YAML（facet build で SKILL.md / ルール .md を生成）
 ├── packages/         # パッケージ（hooks・scripts・agents・config）— 詳細は packages/README.md
 │   ├── core/              # 共通基盤ライブラリ + hooks

@@ -24,13 +24,15 @@ Facet の解決策:
 
 ---
 
-## 3つの構成要素
+## 構成要素
 
 ```
 facets/
 ├── policies/           ← 共有 Policy（複数スキル・ルールで再利用）
 ├── output-contracts/   ← 共有 Output Contract（出力形式の標準化）
 ├── instructions/       ← スキル・ルール固有の Instruction
+├── knowledge/          ← 参考資料（スキルの references/ に配布）
+├── scripts/            ← ユーティリティスクリプト（スキルの scripts/ に配布）
 └── compositions/       ← 組み立て定義 YAML
 ```
 
@@ -59,8 +61,6 @@ facets/
 
 各スキル・ルール固有の手順や仕様。Composition から1対1で参照される。
 
-現在 25 個の Instruction が存在:
-
 | カテゴリ | Instruction |
 |---------|-------------|
 | ルーティング | `agent-routing-policy`, `orchestra-usage`, `config-loading` |
@@ -69,6 +69,14 @@ facets/
 | 開発フロー | `startproject`, `issue-create`, `issue-fix`, `preflight` |
 | 状態管理 | `task-memory-usage`, `task-state`, `checkpointing`, `context-sharing` |
 | その他 | `coding-principles` (rule), `cocoindex-usage`, `design`, `design-tracker` |
+
+### Knowledge（ナレッジ）
+
+スキルに同梱する参考資料。composition の `knowledge` フィールドで宣言すると、`facet build` 時に `skills/{name}/references/` に自動配布される。
+
+### Scripts（スクリプト）
+
+スキルに同梱するユーティリティスクリプト。composition の `scripts` フィールドで宣言すると、`facet build` 時に `skills/{name}/scripts/` に自動配布される。
 
 ---
 
@@ -118,6 +126,12 @@ policies: []                  # なし（スキル固有ルールのみ）
 
 # スキル固有の instruction
 instruction: review           # facets/instructions/ から参照
+
+# スキルに同梱するリソース（任意）
+knowledge:                    # facets/knowledge/ から参照 → references/ に配布
+  - review-guidelines
+scripts:                      # facets/scripts/ から参照 → scripts/ に配布
+  - analyze.py
 ```
 
 ### 全フィールド
@@ -131,6 +145,8 @@ instruction: review           # facets/instructions/ から参照
 | `policies` | 任意 | 参照する Policy 名のリスト |
 | `output_contracts` | 任意 | 参照する Output Contract 名のリスト |
 | `instruction` | 必須 | 参照する Instruction 名 |
+| `knowledge` | 任意 | 同梱する Knowledge 名のリスト（スキルのみ） |
+| `scripts` | 任意 | 同梱する Script ファイル名のリスト（スキルのみ） |
 
 > **Note**: `package` フィールドは廃止。composition の所有パッケージは各パッケージの `manifest.json` の `skills` / `rules` リストに composition 名を記載することで管理する（manifest が SSOT）。
 
@@ -148,9 +164,12 @@ instruction: review           # facets/instructions/ から参照
    c. instructions/ からインストラクションを読み込む
    d. [スキルの場合] frontmatter を YAML フロントマター形式で付与
    e. ポリシー + 出力契約 + インストラクション を結合して出力
+   f. [スキルの場合] knowledge/ → references/ にコピー
+   g. [スキルの場合] scripts/ → scripts/ にコピー
 3. 出力先:
    - スキル → .claude/skills/{name}/SKILL.md + .codex/skills/{name}/SKILL.md
    - ルール → .claude/rules/{name}.md + .codex/rules/{name}.md
+   - リソース → .claude/skills/{name}/references/*.md, scripts/*
 ```
 
 ### ビルドフロー図
@@ -158,12 +177,13 @@ instruction: review           # facets/instructions/ から参照
 ```
 facets/policies/cli-language.md ──────┐
 facets/policies/code-quality.md ──────┤
-                                      ├──→ facet build ──→ .claude/skills/{name}/SKILL.md
-facets/output-contracts/tiered-review.md ─┤              ──→ .claude/rules/{name}.md
-                                      │              ──→ .codex/skills/{name}/SKILL.md
-facets/instructions/{name}.md ────────┘              ──→ .codex/rules/{name}.md
-
-facets/compositions/{name}.yaml ← 組み立て定義（どれを結合するか）
+facets/output-contracts/tiered-review.md ─┤
+facets/instructions/{name}.md ────────┤
+facets/knowledge/{name}.md ───────────┤  ← facet build ──→ .claude/skills/{name}/SKILL.md
+facets/scripts/{name}.py ─────────────┘                ──→ .claude/skills/{name}/references/*.md
+                                                       ──→ .claude/skills/{name}/scripts/*
+facets/compositions/{name}.yaml                        ──→ .claude/rules/{name}.md
+  ↑ 組み立て定義（どれを結合するか）                      ──→ .codex/skills/{name}/SKILL.md
 ```
 
 ### コマンド

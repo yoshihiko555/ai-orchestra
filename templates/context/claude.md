@@ -48,6 +48,7 @@ python scripts/orchestra-manager.py context sync --project .
 ```text
 ai_orchestra/                # Python package entrypoint
 packages/                    # 配布パッケージ群（hooks/agents/config）
+facets/                      # ファセット定義（policies/instructions/knowledge/scripts/compositions）
 scripts/                     # 管理 CLI（orchestra-manager.py など）
 templates/                   # 配布テンプレート
 templates/context/           # 指示書のソース（手編集する場所）

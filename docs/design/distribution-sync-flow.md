@@ -68,10 +68,8 @@ SessionStart hook 発火
 │
 ├─ 2. ファイル同期（mtime 比較で差分のみ）
 │     packages/{pkg}/agents/   → .claude/agents/
-│     packages/{pkg}/rules/    → .claude/rules/
 │     packages/{pkg}/config/   → .claude/config/{pkg}/
-│     facets/**/*.md           → .claude/facets/
-│     ※ skills は facet build で生成するため packages/{pkg}/skills/ は存在しない
+│     ※ skills/rules は facet build で生成（packages からは同期しない）
 │
 ├─ 3. Facet Build（composition 更新時のみ）
 │     facets/ の部品を組み立て → SKILL.md / rules を再生成
