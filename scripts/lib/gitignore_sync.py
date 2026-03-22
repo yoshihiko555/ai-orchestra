@@ -19,6 +19,7 @@ ENTRIES = [
     ".claude/context/",
     ".claude/.facet-packages-hash",
     ".claude/.facet-manifest.json",
+    ".codex/.facet-manifest.json",
     ".claude/Plans.md",
     ".claude/Plans.archive.md",
 ]

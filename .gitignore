@@ -29,15 +29,7 @@ env/
 # Logs
 *.log
 
-# Claude Code
-.claude/docs/
-.claude/logs/
-.claude/state/
-.claude/checkpoints/
-.claude/Plans.md
-.claude/Plans.archive.md
 .claude/.mcp-proxy.pid
-.claude/.facet-packages-hash
 
 # CocoIndex local search index
 .cocoindex_code/
@@ -48,6 +40,8 @@ env/
 .claude/state/
 .claude/checkpoints/
 .claude/context/
+.claude/.facet-packages-hash
+.claude/.facet-manifest.json
 .claude/Plans.md
 .claude/Plans.archive.md
 # <<< AI Orchestra (.claude) <<<
