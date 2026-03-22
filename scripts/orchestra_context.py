@@ -177,6 +177,8 @@ class ContextMixin:
 
     def sync_gitignore(self, project_dir: Path, dry_run: bool = False) -> bool:
         """プロジェクトの .gitignore に AI Orchestra ブロックを追加/更新する。"""
+        import gitignore_sync
+
         path = project_dir / ".gitignore"
         existing = ""
         if path.exists():
@@ -185,7 +187,7 @@ class ContextMixin:
             except OSError:
                 existing = ""
 
-        merged: str = self.merge_gitignore_content(existing)  # type: ignore[attr-defined]
+        merged = gitignore_sync.merge_content(existing)
         if merged == existing:
             print("スキップ（既存）: .gitignore (AI Orchestra block)")
             return False

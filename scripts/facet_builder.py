@@ -9,6 +9,8 @@ from typing import Any
 
 import yaml
 
+FACET_MANIFEST_NAME = ".facet-manifest.json"
+
 
 @dataclass
 class FacetBuilder:
@@ -233,11 +235,72 @@ class FacetBuilder:
         print(f"[facet] built {output_name} -> {relative}")
         return output_path
 
+    def _load_manifest(self, target: str, project_dir: Path) -> dict[str, list[str]]:
+        """前回ビルド時のマニフェストを読み込む。"""
+        import json
+
+        manifest_path = self._manifest_path(target, project_dir)
+        if not manifest_path.exists():
+            return {"skills": [], "rules": []}
+        try:
+            return json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return {"skills": [], "rules": []}
+
+    def _save_manifest(
+        self, target: str, project_dir: Path, skills: list[str], rules: list[str]
+    ) -> None:
+        """今回ビルドしたスキル/ルール名をマニフェストに記録する。"""
+        import json
+
+        manifest_path = self._manifest_path(target, project_dir)
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        data = {"skills": sorted(skills), "rules": sorted(rules)}
+        manifest_path.write_text(
+            json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+
+    def _manifest_path(self, target: str, project_dir: Path) -> Path:
+        """マニフェストファイルのパスを返す。"""
+        if target == "claude":
+            return project_dir / ".claude" / FACET_MANIFEST_NAME
+        return project_dir / ".codex" / FACET_MANIFEST_NAME
+
+    def _cleanup_orphans(
+        self,
+        target: str,
+        project_dir: Path,
+        built_skills: set[str],
+        built_rules: set[str],
+    ) -> None:
+        """前回マニフェストに存在し今回ビルドされなかった生成物を削除する。"""
+        prev = self._load_manifest(target, project_dir)
+
+        for name in prev.get("skills", []):
+            if name not in built_skills:
+                orphan = self._build_output_path(name, target, project_dir, "skill")
+                if orphan.exists():
+                    orphan.unlink()
+                    if orphan.parent.exists() and not any(orphan.parent.iterdir()):
+                        orphan.parent.rmdir()
+                    relative = orphan.relative_to(project_dir)
+                    print(f"[facet] cleanup: removed orphan skill {name} <- {relative}")
+
+        for name in prev.get("rules", []):
+            if name not in built_rules:
+                orphan = self._build_output_path(name, target, project_dir, "rule")
+                if orphan.exists():
+                    orphan.unlink()
+                    relative = orphan.relative_to(project_dir)
+                    print(f"[facet] cleanup: removed orphan rule {name} <- {relative}")
+
     def build_all(self, target: str, project_dir: Path) -> list[Path]:
         """全 composition をビルドして出力する。"""
         output_paths: list[Path] = []
         seen_names: set[str] = set()
         found_yaml_files = 0
+        built_skills: set[str] = set()
+        built_rules: set[str] = set()
 
         if self.project_facets_dir:
             local_compositions_dir = self.project_facets_dir / "compositions"
@@ -248,6 +311,7 @@ class FacetBuilder:
                     result = self.build_one(composition_path.stem, target, project_dir)
                     if result:
                         output_paths.append(result)
+                        self._track_built(composition_path, built_skills, built_rules)
 
         compositions_dir = self.orchestra_dir / "facets" / "compositions"
         if compositions_dir.is_dir():
@@ -257,12 +321,36 @@ class FacetBuilder:
                     result = self.build_one(composition_path.stem, target, project_dir)
                     if result:
                         output_paths.append(result)
+                        self._track_built(composition_path, built_skills, built_rules)
 
         if found_yaml_files == 0:
             print("エラー: compositions が見つかりません", file=sys.stderr)
             sys.exit(1)
 
+        self._cleanup_orphans(target, project_dir, built_skills, built_rules)
+        self._save_manifest(target, project_dir, list(built_skills), list(built_rules))
+
         return output_paths
+
+    def _track_built(
+        self,
+        composition_path: Path,
+        built_skills: set[str],
+        built_rules: set[str],
+    ) -> None:
+        """ビルドされた composition の名前を種別ごとに記録する。"""
+        try:
+            comp = yaml.safe_load(composition_path.read_text(encoding="utf-8"))
+        except (yaml.YAMLError, OSError):
+            return
+        if not isinstance(comp, dict):
+            return
+        name = comp.get("name", composition_path.stem)
+        comp_type = comp.get("type", "skill")
+        if comp_type == "rule":
+            built_rules.add(name)
+        else:
+            built_skills.add(name)
 
     def extract_one(self, name: str, target: str, project_dir: Path) -> Path | None:
         """生成済みファイルから instruction を抽出してソースに書き戻す。"""

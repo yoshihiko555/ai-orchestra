@@ -415,6 +415,13 @@ def sync_claudeignore(project_dir: Path, orchestra_path: Path) -> bool:
     return True
 
 
+def sync_gitignore(project_dir: Path, _orchestra_path: Path) -> bool:
+    """プロジェクトの .gitignore に AI Orchestra ブロックを追加/更新する。"""
+    from gitignore_sync import sync_gitignore as _sync
+
+    return _sync(project_dir)
+
+
 def _deep_merge(base: dict, override: dict) -> dict:
     """override の値で base を再帰的に上書きする。
 
@@ -823,12 +830,16 @@ def main() -> None:
     # .claudeignore 同期（ベーステンプレート + .claudeignore.local をマージ）
     claudeignore_updated = sync_claudeignore(project_dir, orchestra_path)
 
+    # .gitignore 同期（AI Orchestra ブロックのエントリ追加/更新）
+    gitignore_updated = sync_gitignore(project_dir, orchestra_path)
+
     # SessionStart hook の stdout は Claude コンテキストに注入される
     if (
         synced_count > 0
         or removed_count > 0
         or hooks_changed > 0
         or claudeignore_updated
+        or gitignore_updated
         or scaffolded_count > 0
         or patched_count > 0
         or facet_built_count > 0

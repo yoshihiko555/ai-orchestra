@@ -11,7 +11,6 @@ import bisect
 import datetime
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -24,6 +23,7 @@ _SCRIPTS_DIR = str(Path(__file__).resolve().parent)
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
+import gitignore_sync  # noqa: E402
 from facet_builder import FacetBuilder  # noqa: E402
 from orchestra_context import ContextMixin  # noqa: E402
 from orchestra_hooks import HooksMixin  # noqa: E402
@@ -35,18 +35,7 @@ class OrchestraManager(ContextMixin, HooksMixin):
 
     SYNC_HOOK_COMMAND = 'python3 "$AI_ORCHESTRA_DIR/scripts/sync-orchestra.py"'
     SYNC_HOOK_TIMEOUT = 15
-    GITIGNORE_BLOCK_START = "# >>> AI Orchestra (.claude) >>>"
-    GITIGNORE_BLOCK_END = "# <<< AI Orchestra (.claude) <<<"
-    GITIGNORE_CLAUDE_ENTRIES = [
-        ".claude/docs/",
-        ".claude/logs/",
-        ".claude/state/",
-        ".claude/checkpoints/",
-        ".claude/context/",
-        ".claude/.facet-packages-hash",
-        ".claude/Plans.md",
-        ".claude/Plans.archive.md",
-    ]
+    # gitignore エントリは gitignore_sync モジュールで一元管理
     CONTEXT_SPECS: tuple[tuple[str, str, str, str], ...] = (
         ("claude", "claude.md", "templates/project/CLAUDE.md", "CLAUDE.md"),
         ("codex", "codex.md", "templates/codex/AGENTS.md", "AGENTS.md"),
@@ -156,51 +145,15 @@ class OrchestraManager(ContextMixin, HooksMixin):
             return Path(os.environ["CLAUDE_PROJECT_DIR"]).resolve()
         return Path.cwd()
 
-    @classmethod
-    def build_gitignore_block(cls) -> str:
+    @staticmethod
+    def build_gitignore_block() -> str:
         """AI Orchestra 管理下の .gitignore ブロックを返す。"""
-        lines = [
-            cls.GITIGNORE_BLOCK_START,
-            *cls.GITIGNORE_CLAUDE_ENTRIES,
-            cls.GITIGNORE_BLOCK_END,
-        ]
-        return "\n".join(lines) + "\n"
+        return gitignore_sync.build_block()
 
-    @classmethod
-    def merge_gitignore_content(cls, existing: str) -> str:
+    @staticmethod
+    def merge_gitignore_content(existing: str) -> str:
         """既存 .gitignore 文字列に AI Orchestra ブロックをマージする。"""
-        block = cls.build_gitignore_block()
-        start = cls.GITIGNORE_BLOCK_START
-        end = cls.GITIGNORE_BLOCK_END
-
-        start_idx = existing.find(start)
-        end_idx = existing.find(end)
-        if start_idx >= 0 and end_idx >= 0 and start_idx < end_idx:
-            end_idx += len(end)
-            before = existing[:start_idx].rstrip("\n")
-            after = existing[end_idx:].lstrip("\n")
-            parts = []
-            if before:
-                parts.append(before)
-            parts.append(block.rstrip("\n"))
-            if after:
-                parts.append(after.rstrip("\n"))
-            return "\n\n".join(parts) + "\n"
-
-        # 既存で同等エントリがすべてある場合は追記しない
-        all_entries_exist = True
-        for entry in cls.GITIGNORE_CLAUDE_ENTRIES:
-            if re.search(rf"(?m)^{re.escape(entry)}$", existing) is None:
-                all_entries_exist = False
-                break
-        if all_entries_exist:
-            return existing if existing.endswith("\n") else existing + "\n"
-
-        if not existing.strip():
-            return block
-
-        base = existing if existing.endswith("\n") else existing + "\n"
-        return base + "\n" + block
+        return gitignore_sync.merge_content(existing)
 
     def has_installed_dependents(
         self, pkg_name: str, installed: list[str], packages: dict[str, Package]

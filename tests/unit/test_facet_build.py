@@ -582,3 +582,96 @@ instruction: |
         content = output_paths[0].read_text(encoding="utf-8")
         assert "overridden-body" in content
         assert "simplify-body" not in content
+
+
+class TestOrphanCleanup:
+    """孤児クリーンアップ機能のテスト。"""
+
+    def test_orphan_skill_removed_on_second_build(self, tmp_path: Path) -> None:
+        """composition を削除して再ビルドすると、前回の生成物が削除される。"""
+        import json
+
+        orchestra_dir = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        project_dir.mkdir(parents=True)
+        _setup_facet_sources(orchestra_dir)
+        _setup_second_composition(orchestra_dir)
+
+        builder = FacetBuilder(orchestra_dir)
+        builder.build_all("claude", project_dir)
+
+        # simplify と review の両方がビルドされた
+        assert (project_dir / ".claude" / "skills" / "simplify" / "SKILL.md").is_file()
+        assert (project_dir / ".claude" / "skills" / "review" / "SKILL.md").is_file()
+
+        # マニフェストが作成された
+        manifest_path = project_dir / ".claude" / ".facet-manifest.json"
+        assert manifest_path.is_file()
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        assert "simplify" in manifest["skills"]
+        assert "review" in manifest["skills"]
+
+        # simplify の composition を削除して再ビルド
+        (orchestra_dir / "facets" / "compositions" / "simplify.yaml").unlink()
+        builder2 = FacetBuilder(orchestra_dir)
+        builder2.build_all("claude", project_dir)
+
+        # simplify は孤児として削除された
+        assert not (project_dir / ".claude" / "skills" / "simplify" / "SKILL.md").exists()
+        assert not (project_dir / ".claude" / "skills" / "simplify").exists()
+        # review は残っている
+        assert (project_dir / ".claude" / "skills" / "review" / "SKILL.md").is_file()
+
+    def test_orphan_rule_removed_on_second_build(self, tmp_path: Path) -> None:
+        """rule タイプの孤児も削除される。"""
+
+        orchestra_dir = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        project_dir.mkdir(parents=True)
+        _setup_facet_sources(orchestra_dir)
+
+        # rule タイプの composition を追加
+        rule_comp = "name: my-rule\ntype: rule\npolicies:\n  - code-quality\n"
+        (orchestra_dir / "facets" / "compositions" / "my-rule.yaml").write_text(
+            rule_comp, encoding="utf-8"
+        )
+
+        builder = FacetBuilder(orchestra_dir)
+        builder.build_all("claude", project_dir)
+        assert (project_dir / ".claude" / "rules" / "my-rule.md").is_file()
+
+        # rule の composition を削除して再ビルド
+        (orchestra_dir / "facets" / "compositions" / "my-rule.yaml").unlink()
+        builder2 = FacetBuilder(orchestra_dir)
+        builder2.build_all("claude", project_dir)
+
+        assert not (project_dir / ".claude" / "rules" / "my-rule.md").exists()
+
+    def test_no_manifest_first_build_no_error(self, tmp_path: Path) -> None:
+        """初回ビルド（マニフェストなし）でエラーにならない。"""
+        orchestra_dir = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        project_dir.mkdir(parents=True)
+        _setup_facet_sources(orchestra_dir)
+
+        builder = FacetBuilder(orchestra_dir)
+        output_paths = builder.build_all("claude", project_dir)
+        assert len(output_paths) == 1
+
+    def test_non_facet_skill_not_deleted(self, tmp_path: Path) -> None:
+        """facet 管理外のスキルは孤児クリーンアップで削除されない。"""
+        orchestra_dir = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        project_dir.mkdir(parents=True)
+        _setup_facet_sources(orchestra_dir)
+
+        # facet 管理外のスキルを手動配置
+        manual_skill = project_dir / ".claude" / "skills" / "manual-skill" / "SKILL.md"
+        manual_skill.parent.mkdir(parents=True, exist_ok=True)
+        manual_skill.write_text("# Manual Skill\n", encoding="utf-8")
+
+        builder = FacetBuilder(orchestra_dir)
+        builder.build_all("claude", project_dir)
+
+        # 手動配置のスキルは削除されない
+        assert manual_skill.is_file()

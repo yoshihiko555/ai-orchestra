@@ -58,6 +58,7 @@ instruction: |
         "orchestra_context.py",
         "orchestra_hooks.py",
         "facet_builder.py",
+        "gitignore_sync.py",
     ]:
         src_script = REPO_ROOT / "scripts" / script_name
         dst_script = scripts_dir / script_name
