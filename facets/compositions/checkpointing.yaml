@@ -17,3 +17,6 @@ policies: []
 
 # スキル固有の instruction（ファイル参照）
 instruction: checkpointing
+
+scripts:
+  - checkpoint.py

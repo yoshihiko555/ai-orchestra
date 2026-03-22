@@ -17,3 +17,7 @@ policies:
   - cli-language
 
 instruction: gemini-system
+
+knowledge:
+  - lib-research-task
+  - use-cases
