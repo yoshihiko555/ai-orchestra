@@ -22,3 +22,6 @@ AI Orchestra プロジェクトの意思決定記録。
 | ADR-20260307-007 | cocoindex proxy モードのデフォルト設定維持（stdio） | accepted | 2026-03-07 |
 | ADR-20260308-008 | サブエージェント model の config-driven 自動パッチ | accepted | 2026-03-08 |
 | ADR-20260313-009 | CLI 間コンテキスト共有のファイルベース設計 | accepted | 2026-03-13 |
+| ADR-20260315-010 | Faceted Prompting によるスキル・ルールのファセット分解と自動生成 | accepted | 2026-03-15 |
+| ADR-20260322-011 | manifest-SSOT アーキテクチャ（facets 正本化・パッケージ skills 廃止） | accepted | 2026-03-22 |
+| ADR-20260322-012 | facet build 完全委譲（rules 廃止・knowledge/scripts 層導入） | accepted | 2026-03-22 |
