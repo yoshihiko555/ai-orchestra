@@ -54,6 +54,8 @@ try:
 
     _CONTEXT_STORE_AVAILABLE = True
 except ImportError:
+    from typing import Any
+
     _CONTEXT_STORE_AVAILABLE = False
 
     def get_project_dir(data: dict) -> str:  # type: ignore[misc]
@@ -62,6 +64,9 @@ except ImportError:
         if cwd:
             return cwd
         return os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())
+
+    def update_working_context(project_dir: str, updates: dict[str, Any]) -> None:
+        """フォールバック: context_store が利用不可なら何もしない。"""
 
 
 def to_relative_path(file_path: str, project_dir: str) -> str:

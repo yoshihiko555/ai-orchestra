@@ -4,17 +4,34 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    ContextSpecEntry = tuple[str, str, str, str]
+
+
+class _ContextHost(Protocol):
+    """ContextMixin が利用側に要求するインターフェース。"""
+
+    orchestra_dir: Path
+    CONTEXT_SPECS: tuple[ContextSpecEntry, ...]
+    CONTEXT_SHARED_REL: str
+
+    def get_project_dir(self, project: str | None) -> Path: ...
 
 
 class ContextMixin:
     """OrchestraManager に context 管理機能を提供する Mixin。
 
-    利用側で以下の属性・メソッドが必要:
-    - self.orchestra_dir: Path
-    - self.CONTEXT_SPECS: tuple
-    - self.CONTEXT_SHARED_REL: str
-    - self.get_project_dir(project) -> Path
+    利用側は _ContextHost Protocol を満たすこと。
     """
+
+    # Protocol で宣言した属性を型チェッカーに認識させる
+    orchestra_dir: Path
+    CONTEXT_SPECS: tuple[ContextSpecEntry, ...]
+    CONTEXT_SHARED_REL: str
+
+    def get_project_dir(self, project: str | None) -> Path: ...
 
     def _load_context_file(self, path: Path) -> str:
         """context テンプレートファイルを読み込む（存在しなければ終了）。"""

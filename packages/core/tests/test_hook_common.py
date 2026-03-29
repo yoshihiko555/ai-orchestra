@@ -3,6 +3,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 from tests.module_loader import load_module
 
 hook_common = load_module("hook_common", "packages/core/hooks/hook_common.py")
@@ -39,7 +41,7 @@ def _write_json(path: Path, data: dict) -> None:
 
 class TestLoadPackageConfig:
     def test_project_local_overrides_orchestra_base(
-        self, tmp_path: Path, monkeypatch: object
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """base が orchestra dir にあっても project dir の .local が優先される。"""
         orchestra_dir = tmp_path / "orchestra"
@@ -59,7 +61,9 @@ class TestLoadPackageConfig:
         assert result["key"] == "local"  # local override が効いている
         assert result["only_base"] is True  # base のキーは保持
 
-    def test_falls_back_to_base_dir_local(self, tmp_path: Path, monkeypatch: object) -> None:
+    def test_falls_back_to_base_dir_local(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """project dir に .local がない場合は base と同じディレクトリの .local を使う。"""
         config_dir = tmp_path / "project" / ".claude" / "config" / "mypkg"
         _write_json(config_dir / "settings.json", {"key": "base"})
@@ -70,7 +74,9 @@ class TestLoadPackageConfig:
         )
         assert result["key"] == "local-same-dir"
 
-    def test_no_local_returns_base_only(self, tmp_path: Path, monkeypatch: object) -> None:
+    def test_no_local_returns_base_only(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """local ファイルが存在しない場合は base のみ返す。"""
         config_dir = tmp_path / "project" / ".claude" / "config" / "mypkg"
         _write_json(config_dir / "settings.json", {"key": "base", "nested": {"a": 1}})

@@ -1,0 +1,23 @@
+{
+  "include": [
+    "ai_orchestra",
+    "packages",
+    "scripts",
+    "facets/scripts",
+    "tests"
+  ],
+  "exclude": [
+    "pytest-of-*",
+    "**/node_modules",
+    "**/__pycache__",
+    "templates"
+  ],
+  "extraPaths": [
+    "packages/core/hooks",
+    "packages/agent-routing/hooks",
+    "packages/cli-logging/hooks",
+    "packages/cocoindex/hooks"
+  ],
+  "pythonVersion": "3.12",
+  "typeCheckingMode": "basic"
+}

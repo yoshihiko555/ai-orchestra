@@ -1,0 +1,10 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  release:
+    uses: yoshihiko555/.github/.github/workflows/release.yml@main

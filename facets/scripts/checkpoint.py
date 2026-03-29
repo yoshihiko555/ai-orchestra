@@ -205,7 +205,7 @@ def get_file_stats(since: str | None = None) -> dict[str, tuple[int, int]]:
     return stats
 
 
-def summarize_entries(entries: list[dict]) -> dict[str, list[dict]]:
+def summarize_entries(entries: list[dict]) -> dict[str, dict[str, list[dict]]]:
     """Group and summarize entries by tool and date."""
     by_date: dict[str, dict[str, list]] = {}
 
