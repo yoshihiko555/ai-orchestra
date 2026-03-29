@@ -423,8 +423,9 @@ class TestInjectSharedContextMain:
         output = output_buf.getvalue()
         assert output  # something was printed
         parsed = json.loads(output)
-        assert parsed["decision"] == "approve"
-        assert "[Shared Context]" in parsed["tool_input"]["prompt"]
+        hook_output = parsed["hookSpecificOutput"]
+        assert "[Shared Context]" in hook_output["additionalContext"]
+        assert "[Shared Context]" in hook_output["updatedInput"]["prompt"]
 
     def test_does_nothing_for_non_task_tool(self, tmp_path: Path) -> None:
         # Arrange
@@ -701,5 +702,6 @@ class TestAgentToolNameCompat:
         output = output_buf.getvalue()
         assert output
         parsed = json.loads(output)
-        assert parsed["decision"] == "approve"
-        assert "[Shared Context]" in parsed["tool_input"]["prompt"]
+        hook_output = parsed["hookSpecificOutput"]
+        assert "[Shared Context]" in hook_output["additionalContext"]
+        assert "[Shared Context]" in hook_output["updatedInput"]["prompt"]
