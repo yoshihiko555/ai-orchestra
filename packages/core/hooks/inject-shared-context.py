@@ -188,14 +188,17 @@ def main() -> None:
     if not injection:
         return
 
+    # additionalContext: オーケストレーターに表示される
+    # updatedInput: サブエージェントの prompt に直接注入される
     original_prompt = tool_input.get("prompt") or ""
-    new_prompt = original_prompt + injection
-
-    new_tool_input = {**tool_input, "prompt": new_prompt}
+    new_tool_input = {**tool_input, "prompt": original_prompt + injection}
 
     output = {
-        "decision": "approve",
-        "tool_input": new_tool_input,
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "additionalContext": injection.strip(),
+            "updatedInput": new_tool_input,
+        }
     }
     print(json.dumps(output, ensure_ascii=False))
 

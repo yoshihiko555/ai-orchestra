@@ -393,9 +393,9 @@ class TestInjectSharedContext:
         )
         assert result.returncode == 0
         output = json.loads(result.stdout)
-        assert output["decision"] == "approve"
-        assert "[Shared Context]" in output["tool_input"]["prompt"]
-        assert "agent-0" in output["tool_input"]["prompt"]
+        ctx = output["hookSpecificOutput"]["additionalContext"]
+        assert "[Shared Context]" in ctx
+        assert "agent-0" in ctx
 
     def test_limits_to_five_entries(self, tmp_path: Path) -> None:
         """#15: 最新5件のみ注入される"""
@@ -409,12 +409,12 @@ class TestInjectSharedContext:
             project=tmp_path,
         )
         output = json.loads(result.stdout)
-        prompt = output["tool_input"]["prompt"]
+        ctx = output["hookSpecificOutput"]["additionalContext"]
         # 最新5件（agent-2〜agent-6）が注入、agent-0/agent-1 は含まれない
-        assert "agent-0" not in prompt
-        assert "agent-1" not in prompt
-        assert "agent-2" in prompt
-        assert "agent-6" in prompt
+        assert "agent-0" not in ctx
+        assert "agent-1" not in ctx
+        assert "agent-2" in ctx
+        assert "agent-6" in ctx
 
     def test_truncates_long_summary(self, tmp_path: Path) -> None:
         """#16: 200文字超のサマリーがトランケートされる"""
@@ -428,9 +428,9 @@ class TestInjectSharedContext:
             project=tmp_path,
         )
         output = json.loads(result.stdout)
-        prompt = output["tool_input"]["prompt"]
+        ctx = output["hookSpecificOutput"]["additionalContext"]
         # agent-6 は 300文字のサマリー → 200文字 + "..." にトランケート
-        assert "..." in prompt
+        assert "..." in ctx
 
     def test_includes_working_context(self, tmp_path: Path) -> None:
         """#17: working-context.json の内容が注入される"""
@@ -456,9 +456,9 @@ class TestInjectSharedContext:
             project=tmp_path,
         )
         output = json.loads(result.stdout)
-        prompt = output["tool_input"]["prompt"]
-        assert "src/main.py" in prompt
-        assert "implementation" in prompt
+        ctx = output["hookSpecificOutput"]["additionalContext"]
+        assert "src/main.py" in ctx
+        assert "implementation" in ctx
 
     def test_no_injection_when_empty(self, tmp_path: Path) -> None:
         """#18: entries も working-context も空の場合は注入なし"""
