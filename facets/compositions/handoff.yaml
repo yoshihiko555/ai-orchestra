@@ -1,0 +1,24 @@
+# handoff スキ���のファセット構成��義
+name: handoff
+description: Claude Code → Codex CLI タスク引き継ぎファイル生成
+
+# フロ���トマター（生成される SKILL.md に付与）
+frontmatter:
+  name: handoff
+  description: |
+    Generate a task handoff file so Codex CLI can continue work when Claude Code
+    hits rate limits. Use this skill when the user says "handoff", "引き継ぎ",
+    "Codex に渡して", "rate limit", "レート制限", "continue in codex",
+    or wants to transfer in-progress work to Codex CLI.
+  metadata:
+    short-description: Transfer in-progress tasks to Codex CLI via handoff file
+
+# 参照するポリシー
+policies:
+  - cli-language
+
+# スキル固有の instruction（フ��イル参照）
+instruction: handoff
+
+scripts:
+  - handoff.py
