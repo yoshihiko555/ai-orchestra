@@ -1,6 +1,6 @@
 # Packages
 
-AI Orchestra のパッケージ一覧と詳細。
+AI Orchestra のパッケージ一覧と詳細。`packages/*/agents` と `packages/*/config` は `.claude/` へ同期される配布元です。
 
 ## パッケージ概要
 
@@ -40,7 +40,7 @@ AI Orchestra のパッケージ一覧と詳細。
 
 ### agent-routing
 
-`cli-tools.yaml` に基づいてエージェントをルーティング提案する。28 エージェントの定義と使い方ルールを管理する。
+`cli-tools.yaml` に基づいてエージェントをルーティング提案する。28 エージェントの定義と使い方ルールを管理し、`.claude/agents/` に同期される配布元でもある。
 
 - **バージョン**: 0.1.0
 - **依存**: core
@@ -68,7 +68,7 @@ AI Orchestra のパッケージ一覧と詳細。
   - `post-test-analysis.py` — Bash 実行後にテスト結果分析
   - `lint-on-save.py` — Edit/Write 後に自動 lint
   - `test-gate-checker.py` — テスト品質チェック
-- skills (facet build): `review`, `tdd`, `simplify`, `design-tracker`, `release-readiness`
+- skills (facet build): `review`, `tdd`, `design-tracker`, `release-readiness`
 - rules (facet build): `skill-review-policy`
 
 ---
