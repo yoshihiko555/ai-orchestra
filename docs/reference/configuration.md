@@ -1,5 +1,6 @@
 # 設定リファレンス
 
+**更新日**: 2026-04-09
 AI Orchestra の全設定ファイルとオプションの詳細。
 
 ---
@@ -141,7 +142,7 @@ agents:
 
 | tool 値 | エージェント |
 |---------|------------|
-| `claude-direct` | architect, api-designer, code-reviewer, security-reviewer, performance-reviewer, ux-reviewer, spec-reviewer, architecture-reviewer, auth-designer, data-modeler, docs-writer, planner, prompt-engineer, requirements |
+| `claude-direct` | architect, api-designer, code-reviewer, security-reviewer, performance-reviewer, ux-reviewer, spec-reviewer, architecture-reviewer, auth-designer, data-modeler, docs-writer, planner, prompt-engineer, requirements, specialized-mcp-builder, support-executive-summary-generator, testing-reality-checker |
 | `codex` | ai-dev, backend-go-dev, backend-python-dev, debugger, frontend-dev, rag-engineer, spec-writer, tester |
 | `gemini` | researcher |
 | `auto` | ai-architect, general-purpose |
@@ -164,7 +165,7 @@ agents:
   ],
   "synced_files": [
     "agents/planner.md",
-    "rules/config-loading.md",
+    "agents/code-reviewer.md",
     "config/agent-routing/cli-tools.yaml"
   ],
   "last_sync": "2026-03-21T11:37:04.904409+00:00"
@@ -175,7 +176,7 @@ agents:
 |------|------|
 | `orchestra_dir` | ai-orchestra のインストールディレクトリ |
 | `installed_packages` | インストール済みパッケージ一覧 |
-| `synced_files` | 最後の同期で `.claude/` に配置されたファイル一覧 |
+| `synced_files` | 最後の同期で `.claude/agents/` と `.claude/config/` に配置されたファイル一覧 |
 | `last_sync` | 最終同期日時（ISO 8601） |
 
 ---

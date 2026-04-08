@@ -1,6 +1,7 @@
 # パッケージリファレンス
 
-AI Orchestra の全パッケージ一覧と詳細。
+**更新日**: 2026-04-09
+AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `packages/*/config` は `.claude/` に同期される配布元。
 
 ---
 
@@ -40,11 +41,11 @@ AI Orchestra の全パッケージ一覧と詳細。
 | 種別 | 名前 | 説明 |
 |------|------|------|
 | hook | `load-task-state.py` | SessionStart: Plans.md からタスク状態を読み込みサマリーを出力 |
-| hook | `set-plan-gate.py` | ExitPlanMode: プランゲートを設定 |
-| hook | `check-plan-gate.py` | PreToolUse: プランゲートの確認 |
-| hook | `clear-plan-gate.py` | PostToolUse: プランゲートのクリア |
-| hook | `inject-shared-context.py` | PreToolUse(Agent): サブエージェントに共有コンテキストを注入 |
-| hook | `capture-task-result.py` | PostToolUse(Agent): サブエージェント結果を記録 |
+| hook | `set-plan-gate.py` | PostToolUse(Agent/Task): プランゲートを設定 |
+| hook | `check-plan-gate.py` | PreToolUse(Agent/Task): プランゲートの確認 |
+| hook | `clear-plan-gate.py` | UserPromptSubmit: プランゲートのクリア |
+| hook | `inject-shared-context.py` | PreToolUse(Agent/Task): サブエージェントに共有コンテキストを注入 |
+| hook | `capture-task-result.py` | PostToolUse(Agent/Task): サブエージェント結果を記録 |
 | hook | `update-working-context.py` | PostToolUse(Edit/Write): 変更ファイルを working-context に追記 |
 | hook | `cleanup-session-context.py` | SessionEnd: セッションコンテキストをクリーンアップ |
 | util | `hook_common.py` | 全 hook 共通ユーティリティ（config 読み込み、JSON 操作等） |
@@ -54,6 +55,7 @@ AI Orchestra の全パッケージ一覧と詳細。
 | skill | `startproject` | マルチエージェント協調で新規開発を開始 |
 | skill | `checkpointing` | セッションコンテキストの保存・復元 |
 | skill | `task-state` | Plans.md の作成・更新 |
+| skill | `design` | 要件定義・設計ドキュメント作成 |
 | rule | `config-loading` | 設定ファイルのレイヤード構成ルール |
 | rule | `coding-principles` | コード品質の共通ルール |
 | rule | `task-memory-usage` | Plans.md によるタスク管理ルール |
@@ -64,7 +66,7 @@ AI Orchestra の全パッケージ一覧と詳細。
 
 ## agent-routing
 
-`cli-tools.yaml` に基づいてエージェントをルーティング提案する。28 エージェントの定義と使い方ルールを管理する。
+`cli-tools.yaml` に基づいてエージェントをルーティング提案する。28 エージェントの定義と使い方ルールを管理し、`.claude/agents/` に同期される配布元でもある。
 
 - **バージョン**: 0.1.0
 - **依存**: core
@@ -86,8 +88,8 @@ AI Orchestra の全パッケージ一覧と詳細。
 |---------|------------|
 | Planning | planner, researcher, requirements |
 | Design | architect, api-designer, data-modeler, auth-designer, spec-writer |
-| Implementation | frontend-dev, backend-python-dev, backend-go-dev, ai-dev, rag-engineer |
-| AI/ML | ai-architect, prompt-engineer |
+| Implementation | frontend-dev, backend-python-dev, backend-go-dev |
+| AI/ML | ai-architect, ai-dev, prompt-engineer, rag-engineer |
 | Test/Debug | debugger, tester |
 | Review | code-reviewer, security-reviewer, performance-reviewer, spec-reviewer, architecture-reviewer, ux-reviewer |
 | Docs | docs-writer |
@@ -109,7 +111,7 @@ AI Orchestra の全パッケージ一覧と詳細。
 | hook | `post-implementation-review.py` | PostToolUse(Edit/Write): 一定量の変更後にレビューを提案 |
 | hook | `post-test-analysis.py` | PostToolUse(Bash): テスト実行後に結果を分析 |
 | hook | `lint-on-save.py` | PostToolUse(Edit/Write): 自動 lint（ruff）実行 |
-| hook | `test-gate-checker.py` | PreToolUse: テスト品質ゲートチェック |
+| hook | `test-gate-checker.py` | PostToolUse(Edit/Write): テスト品質ゲートチェック |
 | skill | `review` | マルチエージェントコードレビュー（スマート選定） |
 | skill | `tdd` | テスト駆動開発ワークフロー |
 | skill | `design-tracker` | 設計記録 |
@@ -166,7 +168,7 @@ Codex/Gemini CLI の呼び出し履歴を記録し、後から分析できるよ
 
 ## codex-suggestions
 
-ファイル編集前に Codex 相談を提案し、設計品質を高める。
+ファイル編集前に Codex 相談を提案し、設計品質を高める。プラン完了後も Codex レビューを促す。
 
 - **バージョン**: 0.1.0
 - **依存**: core
@@ -176,7 +178,7 @@ Codex/Gemini CLI の呼び出し履歴を記録し、後から分析できるよ
 | 種別 | 名前 | 説明 |
 |------|------|------|
 | hook | `check-codex-before-write.py` | PreToolUse(Edit/Write): `[Codex Suggestion]` を出力 |
-| hook | `check-codex-after-plan.py` | PostToolUse(Task): プラン完了後に Codex レビューを提案 |
+| hook | `check-codex-after-plan.py` | PostToolUse(Agent/Task): プラン完了後に Codex レビューを提案 |
 | skill | `codex-system` | Codex CLI 利用ガイド |
 | rule | `codex-delegation` | Codex CLI 委譲ルール |
 | rule | `codex-suggestion-compliance` | Codex 提案への遵守ルール |
@@ -265,10 +267,10 @@ tmux ペインでサブエージェントの起動・停止をリアルタイム
 |------|------|------|
 | hook | `tmux-session-start.py` | SessionStart: tmux セットアップ |
 | hook | `tmux-session-end.py` | SessionEnd: tmux クリーンアップ |
-| hook | `tmux-pre-task.py` | PreToolUse(Agent): タスク実行前の準備 |
+| hook | `tmux-pre-task.py` | PreToolUse(Agent/Task): タスク実行前の準備 |
 | hook | `tmux-subagent-start.py` | SubagentStart: サブエージェント起動表示 |
 | hook | `tmux-subagent-stop.py` | SubagentStop: サブエージェント停止表示 |
-| hook | `tmux-format-output.py` | PostToolUse: 出力フォーマット |
+| util | `tmux-format-output.py` | 出力フォーマット整形ユーティリティ |
 | util | `tmux_common.py` | tmux 操作の共通ユーティリティ |
 
 ### 有効化

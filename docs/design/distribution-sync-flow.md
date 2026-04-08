@@ -1,5 +1,6 @@
 # 開発 → 配布 → 自動同期フロー
 
+**更新日**: 2026-04-09
 **概要**: ai-orchestra リポジトリでの開発から、各プロジェクトへの配布・自動同期までの全体像。
 
 ---
@@ -9,7 +10,7 @@
 ```
 ai-orchestra リポジトリ（開発）
 │
-├─ packages/{pkg}/          スキル・ルール・hooks・config
+├─ packages/{pkg}/          manifest・agents・hooks・config
 ├─ facets/                  ポリシー・instruction・composition
 └─ scripts/orchestra-manager.py  CLI（orchex）
 
@@ -51,8 +52,8 @@ orchex install {package} --project /path/to/project
 | manifest.json 読み込み | パッケージの宣言内容を取得 |
 | hooks 登録 | `.claude/settings.local.json` にイベント→コマンドを追加 |
 | config コピー | `packages/{pkg}/config/` → `.claude/config/{pkg}/` |
-| orchestra.json 更新 | `installed_packages`, `synced_files` に記録 |
-| 初回同期実行 | agents/rules をコピー（skills は facet build で生成） |
+| orchestra.json 更新 | `installed_packages`, `orchestra_dir`, `last_sync` を更新 |
+| 初回同期実行 | agents/config をコピー（skills/rules は facet build で生成） |
 
 ---
 
@@ -176,10 +177,10 @@ SessionStart hook 発火
   "orchestra_dir": "/path/to/ai-orchestra",
   "last_sync": "2026-03-19T03:30:00+00:00",
   "synced_files": [
-    "skills/review/SKILL.md",
-    "config/agent-routing/cli-tools.yaml",
+    "agents/planner.md",
     "agents/code-reviewer.md",
-    "rules/coding-principles.md"
+    "config/agent-routing/cli-tools.yaml",
+    "config/core/task-memory.yaml"
   ]
 }
 ```
