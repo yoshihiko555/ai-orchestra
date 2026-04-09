@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import io
 import json
-import sys
 
 import pytest
 
 from tests.module_loader import load_module
 
-codex_write = load_module("check_codex_write", "packages/codex-suggestions/hooks/check-codex-before-write.py")
-codex_plan = load_module("check_codex_plan", "packages/codex-suggestions/hooks/check-codex-after-plan.py")
+codex_write = load_module(
+    "check_codex_write", "packages/codex-suggestions/hooks/check-codex-before-write.py"
+)
+codex_plan = load_module(
+    "check_codex_plan", "packages/codex-suggestions/hooks/check-codex-after-plan.py"
+)
 
 
 # ======================================================================
@@ -137,17 +140,18 @@ class TestCodexWriteMain:
 
     def test_codex_disabled_exits(self, monkeypatch):
         """Codex 無効時は提案なしで exit(0)。"""
+        monkeypatch.setattr(codex_write, "is_cli_enabled", lambda tool, config: False)
+        monkeypatch.setattr(codex_write, "load_package_config", lambda *a: {})
         monkeypatch.setattr(
-            codex_write, "is_cli_enabled", lambda tool, config: False
-        )
-        monkeypatch.setattr(
-            codex_write, "load_package_config", lambda *a: {}
-        )
-        monkeypatch.setattr(
-            "sys.stdin", io.StringIO(json.dumps({
-                "tool_input": {"file_path": "core/main.py", "content": "class Foo: pass"},
-                "cwd": "/project",
-            }))
+            "sys.stdin",
+            io.StringIO(
+                json.dumps(
+                    {
+                        "tool_input": {"file_path": "core/main.py", "content": "class Foo: pass"},
+                        "cwd": "/project",
+                    }
+                )
+            ),
         )
         with pytest.raises(SystemExit, match="0"):
             codex_write.main()
@@ -157,10 +161,15 @@ class TestCodexWriteMain:
         monkeypatch.setattr(codex_write, "is_cli_enabled", lambda *a: True)
         monkeypatch.setattr(codex_write, "load_package_config", lambda *a: {})
         monkeypatch.setattr(
-            "sys.stdin", io.StringIO(json.dumps({
-                "tool_input": {"file_path": "../etc/passwd", "content": "hack"},
-                "cwd": "/project",
-            }))
+            "sys.stdin",
+            io.StringIO(
+                json.dumps(
+                    {
+                        "tool_input": {"file_path": "../etc/passwd", "content": "hack"},
+                        "cwd": "/project",
+                    }
+                )
+            ),
         )
         with pytest.raises(SystemExit, match="0"):
             codex_write.main()
@@ -170,10 +179,18 @@ class TestCodexWriteMain:
         monkeypatch.setattr(codex_write, "is_cli_enabled", lambda *a: True)
         monkeypatch.setattr(codex_write, "load_package_config", lambda *a: {})
         monkeypatch.setattr(
-            "sys.stdin", io.StringIO(json.dumps({
-                "tool_input": {"file_path": "core/engine.py", "content": "class Engine: pass"},
-                "cwd": "/project",
-            }))
+            "sys.stdin",
+            io.StringIO(
+                json.dumps(
+                    {
+                        "tool_input": {
+                            "file_path": "core/engine.py",
+                            "content": "class Engine: pass",
+                        },
+                        "cwd": "/project",
+                    }
+                )
+            ),
         )
         with pytest.raises(SystemExit, match="0"):
             codex_write.main()
@@ -209,16 +226,30 @@ class TestIsPlanAgentTask:
 
     def test_plan_keyword_in_prompt_japanese(self):
         """日本語の計画キーワードで True。"""
-        assert codex_plan.is_plan_agent_task({"subagent_type": "other", "prompt": "実装計画を立てて"}) is True
-        assert codex_plan.is_plan_agent_task({"subagent_type": "other", "prompt": "プランを作成"}) is True
+        assert (
+            codex_plan.is_plan_agent_task({"subagent_type": "other", "prompt": "実装計画を立てて"})
+            is True
+        )
+        assert (
+            codex_plan.is_plan_agent_task({"subagent_type": "other", "prompt": "プランを作成"})
+            is True
+        )
 
     def test_plan_keyword_in_prompt_english(self):
         """英語の plan キーワードで True。"""
-        assert codex_plan.is_plan_agent_task({"subagent_type": "other", "prompt": "create implementation plan"}) is True
+        assert (
+            codex_plan.is_plan_agent_task(
+                {"subagent_type": "other", "prompt": "create implementation plan"}
+            )
+            is True
+        )
 
     def test_no_plan_keywords(self):
         """キーワードなしは False。"""
-        assert codex_plan.is_plan_agent_task({"subagent_type": "other", "prompt": "implement feature"}) is False
+        assert (
+            codex_plan.is_plan_agent_task({"subagent_type": "other", "prompt": "implement feature"})
+            is False
+        )
 
 
 class TestCodexPlanMain:
@@ -235,12 +266,17 @@ class TestCodexPlanMain:
         monkeypatch.setattr(codex_plan, "is_cli_enabled", lambda *a: False)
         monkeypatch.setattr(codex_plan, "load_package_config", lambda *a: {})
         monkeypatch.setattr(
-            "sys.stdin", io.StringIO(json.dumps({
-                "tool_name": "Agent",
-                "tool_input": {"subagent_type": "planner"},
-                "tool_response": "plan done",
-                "cwd": "/project",
-            }))
+            "sys.stdin",
+            io.StringIO(
+                json.dumps(
+                    {
+                        "tool_name": "Agent",
+                        "tool_input": {"subagent_type": "planner"},
+                        "tool_response": "plan done",
+                        "cwd": "/project",
+                    }
+                )
+            ),
         )
         with pytest.raises(SystemExit, match="0"):
             codex_plan.main()
@@ -250,12 +286,17 @@ class TestCodexPlanMain:
         monkeypatch.setattr(codex_plan, "is_cli_enabled", lambda *a: True)
         monkeypatch.setattr(codex_plan, "load_package_config", lambda *a: {})
         monkeypatch.setattr(
-            "sys.stdin", io.StringIO(json.dumps({
-                "tool_name": "Agent",
-                "tool_input": {"subagent_type": "planner"},
-                "tool_response": "An error occurred and the task failed",
-                "cwd": "/project",
-            }))
+            "sys.stdin",
+            io.StringIO(
+                json.dumps(
+                    {
+                        "tool_name": "Agent",
+                        "tool_input": {"subagent_type": "planner"},
+                        "tool_response": "An error occurred and the task failed",
+                        "cwd": "/project",
+                    }
+                )
+            ),
         )
         with pytest.raises(SystemExit, match="0"):
             codex_plan.main()
@@ -265,12 +306,17 @@ class TestCodexPlanMain:
         monkeypatch.setattr(codex_plan, "is_cli_enabled", lambda *a: True)
         monkeypatch.setattr(codex_plan, "load_package_config", lambda *a: {})
         monkeypatch.setattr(
-            "sys.stdin", io.StringIO(json.dumps({
-                "tool_name": "Agent",
-                "tool_input": {"subagent_type": "planner"},
-                "tool_response": "Plan created with 5 phases",
-                "cwd": "/project",
-            }))
+            "sys.stdin",
+            io.StringIO(
+                json.dumps(
+                    {
+                        "tool_name": "Agent",
+                        "tool_input": {"subagent_type": "planner"},
+                        "tool_response": "Plan created with 5 phases",
+                        "cwd": "/project",
+                    }
+                )
+            ),
         )
         with pytest.raises(SystemExit, match="0"):
             codex_plan.main()

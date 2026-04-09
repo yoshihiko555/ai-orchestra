@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import io
 import json
-import os
-import sys
 
 import pytest
 
@@ -59,7 +57,11 @@ class TestCheckPlanGateMain:
     def test_non_implementation_agent_exits_0(self, monkeypatch, tmp_path):
         """実装系でもWARNでもないエージェントは exit(0)。"""
         _make_stdin(
-            {"tool_name": "Agent", "tool_input": {"subagent_type": "researcher"}, "cwd": str(tmp_path)},
+            {
+                "tool_name": "Agent",
+                "tool_input": {"subagent_type": "researcher"},
+                "cwd": str(tmp_path),
+            },
             monkeypatch,
         )
         with pytest.raises(SystemExit, match="0"):
@@ -69,7 +71,11 @@ class TestCheckPlanGateMain:
         """gate path が空の場合、exit(0)。"""
         monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
         _make_stdin(
-            {"tool_name": "Agent", "tool_input": {"subagent_type": "backend-python-dev"}, "cwd": ""},
+            {
+                "tool_name": "Agent",
+                "tool_input": {"subagent_type": "backend-python-dev"},
+                "cwd": "",
+            },
             monkeypatch,
         )
         with pytest.raises(SystemExit, match="0"):
@@ -78,7 +84,11 @@ class TestCheckPlanGateMain:
     def test_no_gate_file_exits_0(self, monkeypatch, tmp_path):
         """gate ファイルがない場合（pending=False と同等）、exit(0)。"""
         _make_stdin(
-            {"tool_name": "Agent", "tool_input": {"subagent_type": "backend-python-dev"}, "cwd": str(tmp_path)},
+            {
+                "tool_name": "Agent",
+                "tool_input": {"subagent_type": "backend-python-dev"},
+                "cwd": str(tmp_path),
+            },
             monkeypatch,
         )
         with pytest.raises(SystemExit, match="0"):
@@ -92,7 +102,11 @@ class TestCheckPlanGateMain:
         gate_path.write_text(json.dumps({"pending": False}), encoding="utf-8")
 
         _make_stdin(
-            {"tool_name": "Agent", "tool_input": {"subagent_type": "backend-python-dev"}, "cwd": str(tmp_path)},
+            {
+                "tool_name": "Agent",
+                "tool_input": {"subagent_type": "backend-python-dev"},
+                "cwd": str(tmp_path),
+            },
             monkeypatch,
         )
         with pytest.raises(SystemExit, match="0"):
@@ -106,7 +120,11 @@ class TestCheckPlanGateMain:
         gate_path.write_text(json.dumps({"pending": True, "agent": "planner"}), encoding="utf-8")
 
         _make_stdin(
-            {"tool_name": "Agent", "tool_input": {"subagent_type": "backend-python-dev"}, "cwd": str(tmp_path)},
+            {
+                "tool_name": "Agent",
+                "tool_input": {"subagent_type": "backend-python-dev"},
+                "cwd": str(tmp_path),
+            },
             monkeypatch,
         )
         with pytest.raises(SystemExit, match="2"):
@@ -120,7 +138,11 @@ class TestCheckPlanGateMain:
         gate_path.write_text(json.dumps({"pending": True, "agent": "planner"}), encoding="utf-8")
 
         _make_stdin(
-            {"tool_name": "Agent", "tool_input": {"subagent_type": "general-purpose"}, "cwd": str(tmp_path)},
+            {
+                "tool_name": "Agent",
+                "tool_input": {"subagent_type": "general-purpose"},
+                "cwd": str(tmp_path),
+            },
             monkeypatch,
         )
         with pytest.raises(SystemExit, match="0"):
@@ -138,7 +160,11 @@ class TestCheckPlanGateMain:
         gate_path.write_text(json.dumps({"pending": True}), encoding="utf-8")
 
         _make_stdin(
-            {"tool_name": "Task", "tool_input": {"subagent_type": "frontend-dev"}, "cwd": str(tmp_path)},
+            {
+                "tool_name": "Task",
+                "tool_input": {"subagent_type": "frontend-dev"},
+                "cwd": str(tmp_path),
+            },
             monkeypatch,
         )
         with pytest.raises(SystemExit, match="2"):
@@ -162,7 +188,11 @@ class TestSetPlanGateMain:
     def test_non_plan_agent_exits_0(self, monkeypatch):
         """plan エージェント以外は exit(0)。"""
         _make_stdin(
-            {"tool_name": "Agent", "tool_input": {"subagent_type": "researcher"}, "tool_response": "ok"},
+            {
+                "tool_name": "Agent",
+                "tool_input": {"subagent_type": "researcher"},
+                "tool_response": "ok",
+            },
             monkeypatch,
         )
         with pytest.raises(SystemExit, match="0"):
@@ -180,7 +210,11 @@ class TestSetPlanGateMain:
     def test_none_response_exits_0(self, monkeypatch):
         """tool_response が None の場合、gate を設定しない。"""
         _make_stdin(
-            {"tool_name": "Agent", "tool_input": {"subagent_type": "planner"}, "tool_response": None},
+            {
+                "tool_name": "Agent",
+                "tool_input": {"subagent_type": "planner"},
+                "tool_response": None,
+            },
             monkeypatch,
         )
         with pytest.raises(SystemExit, match="0"):

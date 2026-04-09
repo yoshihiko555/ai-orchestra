@@ -5,8 +5,6 @@ from __future__ import annotations
 import json
 from unittest.mock import patch
 
-import pytest
-
 from tests.module_loader import load_module
 
 checkpoint = load_module("checkpoint", "facets/scripts/checkpoint.py")
@@ -239,7 +237,12 @@ class TestSummarizeEntries:
         """日付とツールでグループ化する。"""
         entries = [
             {"timestamp": "2026-01-01T10:00:00Z", "tool": "codex", "prompt": "q1", "success": True},
-            {"timestamp": "2026-01-01T11:00:00Z", "tool": "gemini", "prompt": "q2", "success": False},
+            {
+                "timestamp": "2026-01-01T11:00:00Z",
+                "tool": "gemini",
+                "prompt": "q2",
+                "success": False,
+            },
             {"timestamp": "2026-01-02T10:00:00Z", "tool": "codex", "prompt": "q3", "success": True},
         ]
         result = checkpoint.summarize_entries(entries)
@@ -403,7 +406,8 @@ class TestGenerateFullCheckpoint:
         monkeypatch.setattr(checkpoint, "parse_logs", lambda since=None: [])
         monkeypatch.setattr(checkpoint, "get_git_commits", lambda since=None: [])
         monkeypatch.setattr(
-            checkpoint, "get_file_changes",
+            checkpoint,
+            "get_file_changes",
             lambda since=None: {"created": [], "modified": [], "deleted": []},
         )
         monkeypatch.setattr(checkpoint, "get_file_stats", lambda since=None: {})

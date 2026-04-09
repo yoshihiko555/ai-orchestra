@@ -245,7 +245,9 @@ class TestPostTestAnalysis:
 class TestTestGateChecker:
     """test-gate-checker.py のテスト。"""
 
-    def test_load_thresholds_reads_quality_gate_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_load_thresholds_reads_quality_gate_config(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """設定ファイルから閾値を読む。"""
         monkeypatch.setattr(
             test_gate_checker,

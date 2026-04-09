@@ -6,8 +6,6 @@ import json
 import sys
 from pathlib import Path
 
-import pytest
-
 # sync_engine は scripts/ からの相対 import を使うため sys.path にスクリプトルートを追加
 _repo_root = Path(__file__).resolve().parents[2]
 _scripts_dir = str(_repo_root / "scripts")
@@ -318,7 +316,7 @@ class TestCollectManifestCompositions:
             manifest = {"name": pkg_name, "skills": ["shared-skill"]}
             (pkg_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
-        result = sync_engine.collect_manifest_compositions(tmp_path)
+        sync_engine.collect_manifest_compositions(tmp_path)
         captured = capsys.readouterr()
         assert "shared-skill" in captured.err
         assert "warn" in captured.err
@@ -343,9 +341,7 @@ class TestSyncPackages:
         claude_dir = tmp_path / "project" / ".claude"
         claude_dir.mkdir(parents=True)
 
-        count, files = sync_engine.sync_packages(
-            claude_dir, orchestra_path, ["core"], set()
-        )
+        count, files = sync_engine.sync_packages(claude_dir, orchestra_path, ["core"], set())
         assert count == 1
         assert "agents/testing-reality-checker.md" in files
         assert (claude_dir / "agents" / "testing-reality-checker.md").exists()
@@ -401,9 +397,7 @@ class TestSyncPackages:
         claude_dir = tmp_path / "project" / ".claude"
         claude_dir.mkdir(parents=True)
 
-        count, files = sync_engine.sync_packages(
-            claude_dir, orchestra_path, ["no-manifest"], set()
-        )
+        count, files = sync_engine.sync_packages(claude_dir, orchestra_path, ["no-manifest"], set())
         assert count == 0
         assert files == set()
 
@@ -422,7 +416,5 @@ class TestSyncPackages:
         claude_dir = tmp_path / "project" / ".claude"
         claude_dir.mkdir(parents=True)
 
-        count, files = sync_engine.sync_packages(
-            claude_dir, orchestra_path, ["core"], set()
-        )
+        count, files = sync_engine.sync_packages(claude_dir, orchestra_path, ["core"], set())
         assert count == 2

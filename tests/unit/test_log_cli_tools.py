@@ -15,9 +15,7 @@ core_hooks_dir = str(REPO_ROOT / "packages" / "core" / "hooks")
 if core_hooks_dir not in sys.path:
     sys.path.insert(0, core_hooks_dir)
 
-log_cli_tools = load_module(
-    "log_cli_tools_test", "packages/cli-logging/hooks/log-cli-tools.py"
-)
+log_cli_tools = load_module("log_cli_tools_test", "packages/cli-logging/hooks/log-cli-tools.py")
 
 
 def _make_stdin(data: dict, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -94,9 +92,7 @@ class TestMain:
         _make_stdin(
             {
                 "tool_name": "Bash",
-                "tool_input": {
-                    "command": 'gemini -m gemini-3.1-pro -p "research session cleanup"'
-                },
+                "tool_input": {"command": 'gemini -m gemini-3.1-pro -p "research session cleanup"'},
                 "tool_response": {"exit_code": 0, "stdout": "analysis"},
             },
             monkeypatch,

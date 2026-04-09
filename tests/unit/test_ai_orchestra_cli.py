@@ -40,7 +40,9 @@ class TestGetOrchestraDir:
         """レイアウトで解決できない場合は環境変数を使う。"""
         env_root = tmp_path / "env-root"
         env_root.mkdir()
-        monkeypatch.setattr(cli_mod, "__file__", str(tmp_path / "other" / "ai_orchestra" / "cli.py"))
+        monkeypatch.setattr(
+            cli_mod, "__file__", str(tmp_path / "other" / "ai_orchestra" / "cli.py")
+        )
         monkeypatch.setenv("AI_ORCHESTRA_DIR", str(env_root))
 
         assert cli_mod.get_orchestra_dir() == env_root
@@ -52,7 +54,9 @@ class TestGetOrchestraDir:
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         """どの解決経路も使えない場合は exit(1) する。"""
-        monkeypatch.setattr(cli_mod, "__file__", str(tmp_path / "missing" / "ai_orchestra" / "cli.py"))
+        monkeypatch.setattr(
+            cli_mod, "__file__", str(tmp_path / "missing" / "ai_orchestra" / "cli.py")
+        )
         monkeypatch.delenv("AI_ORCHESTRA_DIR", raising=False)
 
         with pytest.raises(SystemExit, match="1"):

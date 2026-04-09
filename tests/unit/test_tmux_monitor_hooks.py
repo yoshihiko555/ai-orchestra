@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import io
 import json
-import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,9 +19,7 @@ if core_hooks_dir not in sys.path:
 tmux_format = load_module(
     "tmux_format_output_test", "packages/tmux-monitor/hooks/tmux-format-output.py"
 )
-tmux_pre_task = load_module(
-    "tmux_pre_task_test", "packages/tmux-monitor/hooks/tmux-pre-task.py"
-)
+tmux_pre_task = load_module("tmux_pre_task_test", "packages/tmux-monitor/hooks/tmux-pre-task.py")
 tmux_session_end = load_module(
     "tmux_session_end_test", "packages/tmux-monitor/hooks/tmux-session-end.py"
 )
@@ -58,7 +55,11 @@ class TestTmuxFormatOutput:
                         "message": {
                             "content": [
                                 {"type": "text", "text": "hello"},
-                                {"type": "tool_use", "name": "Bash", "input": {"command": "pytest -q"}},
+                                {
+                                    "type": "tool_use",
+                                    "name": "Bash",
+                                    "input": {"command": "pytest -q"},
+                                },
                             ]
                         },
                     }
@@ -69,7 +70,9 @@ class TestTmuxFormatOutput:
                         "message": {"content": [{"type": "tool_result", "content": "done"}]},
                     }
                 ),
-                json.dumps({"type": "progress", "data": {"type": "bash_progress", "content": "running"}}),
+                json.dumps(
+                    {"type": "progress", "data": {"type": "bash_progress", "content": "running"}}
+                ),
             ]
         )
         monkeypatch.setattr("sys.stdin", io.StringIO(lines))
@@ -195,7 +198,9 @@ class TestTmuxSessionStart:
 
         tmux_session_start.main()
 
-        assert (info_dir / "abcdef123456.tmux-session").read_text(encoding="utf-8") == "claude-proj-4321"
+        assert (info_dir / "abcdef123456.tmux-session").read_text(
+            encoding="utf-8"
+        ) == "claude-proj-4321"
         assert (info_dir / "abcdef123456.pid").read_text(encoding="utf-8") == "4321"
         shared_dir = Path(f"{shared_prefix}4321")
         meta = json.loads((shared_dir / "meta.json").read_text(encoding="utf-8"))
@@ -215,7 +220,7 @@ class TestTmuxSubagentStart:
         info_dir.mkdir()
         queue_file = info_dir / "sess-1.task-queue"
         queue_file.write_text(
-            '\n'.join(
+            "\n".join(
                 [
                     json.dumps({"description": "first"}),
                     json.dumps({"description": "second"}),

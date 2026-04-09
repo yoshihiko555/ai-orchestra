@@ -12,7 +12,10 @@ class TestDetectRoute:
 
     def test_bash_codex(self):
         """Bash で codex コマンドを検出。"""
-        data = {"tool_name": "Bash", "tool_input": {"command": "codex exec --model gpt-5 'question'"}}
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "codex exec --model gpt-5 'question'"},
+        }
         route, cmd = route_audit.detect_route(data)
         assert route == "bash:codex"
         assert "codex" in cmd

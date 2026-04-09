@@ -262,9 +262,7 @@ class TestFindPidByPort:
         """lsof が PID を返す。"""
         import subprocess
 
-        mock_result = subprocess.CompletedProcess(
-            args=["lsof"], returncode=0, stdout="12345\n"
-        )
+        mock_result = subprocess.CompletedProcess(args=["lsof"], returncode=0, stdout="12345\n")
         with patch("subprocess.run", return_value=mock_result):
             result = proxy_mgr._find_pid_by_port(8792)
         assert result == 12345
@@ -273,9 +271,7 @@ class TestFindPidByPort:
         """lsof 失敗時は None。"""
         import subprocess
 
-        mock_result = subprocess.CompletedProcess(
-            args=["lsof"], returncode=1, stdout=""
-        )
+        mock_result = subprocess.CompletedProcess(args=["lsof"], returncode=1, stdout="")
         with patch("subprocess.run", return_value=mock_result):
             result = proxy_mgr._find_pid_by_port(8792)
         assert result is None

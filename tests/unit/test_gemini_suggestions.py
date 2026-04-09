@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import io
 import json
-import sys
 
 import pytest
 
 from tests.module_loader import load_module
 
-gemini_hook = load_module("suggest_gemini", "packages/gemini-suggestions/hooks/suggest-gemini-research.py")
+gemini_hook = load_module(
+    "suggest_gemini", "packages/gemini-suggestions/hooks/suggest-gemini-research.py"
+)
 
 
 class TestShouldSuggestGemini:
@@ -31,7 +32,9 @@ class TestShouldSuggestGemini:
 
     def test_best_practice(self):
         """best practice キーワードで True。"""
-        result, reason = gemini_hook.should_suggest_gemini("react best practice for state management")
+        result, reason = gemini_hook.should_suggest_gemini(
+            "react best practice for state management"
+        )
         assert result is True
 
     def test_library_comparison(self):
@@ -54,7 +57,9 @@ class TestShouldSuggestGemini:
 
     def test_url_indicator(self):
         """URL に indicator がある場合も True。"""
-        result, reason = gemini_hook.should_suggest_gemini("", url="https://docs.example.com/api-reference")
+        result, reason = gemini_hook.should_suggest_gemini(
+            "", url="https://docs.example.com/api-reference"
+        )
         assert result is True
 
     def test_simple_query_no_indicator(self):
@@ -64,7 +69,9 @@ class TestShouldSuggestGemini:
 
     def test_simple_lookup_in_url(self):
         """URL に simple lookup pattern がある場合はスキップ。"""
-        result, _ = gemini_hook.should_suggest_gemini("check", url="https://releases.example.com/changelog")
+        result, _ = gemini_hook.should_suggest_gemini(
+            "check", url="https://releases.example.com/changelog"
+        )
         assert result is False
 
     def test_empty_query(self):
@@ -97,11 +104,16 @@ class TestGeminiMain:
         monkeypatch.setattr(gemini_hook, "is_cli_enabled", lambda *a: False)
         monkeypatch.setattr(gemini_hook, "load_package_config", lambda *a: {})
         monkeypatch.setattr(
-            "sys.stdin", io.StringIO(json.dumps({
-                "tool_name": "WebSearch",
-                "tool_input": {"query": "python documentation asyncio"},
-                "cwd": "/project",
-            }))
+            "sys.stdin",
+            io.StringIO(
+                json.dumps(
+                    {
+                        "tool_name": "WebSearch",
+                        "tool_input": {"query": "python documentation asyncio"},
+                        "cwd": "/project",
+                    }
+                )
+            ),
         )
         with pytest.raises(SystemExit, match="0"):
             gemini_hook.main()
@@ -111,11 +123,16 @@ class TestGeminiMain:
         monkeypatch.setattr(gemini_hook, "is_cli_enabled", lambda *a: True)
         monkeypatch.setattr(gemini_hook, "load_package_config", lambda *a: {})
         monkeypatch.setattr(
-            "sys.stdin", io.StringIO(json.dumps({
-                "tool_name": "WebSearch",
-                "tool_input": {"query": "python documentation asyncio"},
-                "cwd": "/project",
-            }))
+            "sys.stdin",
+            io.StringIO(
+                json.dumps(
+                    {
+                        "tool_name": "WebSearch",
+                        "tool_input": {"query": "python documentation asyncio"},
+                        "cwd": "/project",
+                    }
+                )
+            ),
         )
         with pytest.raises(SystemExit, match="0"):
             gemini_hook.main()
@@ -129,11 +146,19 @@ class TestGeminiMain:
         monkeypatch.setattr(gemini_hook, "is_cli_enabled", lambda *a: True)
         monkeypatch.setattr(gemini_hook, "load_package_config", lambda *a: {})
         monkeypatch.setattr(
-            "sys.stdin", io.StringIO(json.dumps({
-                "tool_name": "WebFetch",
-                "tool_input": {"url": "https://docs.example.com/api-reference", "prompt": "get info"},
-                "cwd": "/project",
-            }))
+            "sys.stdin",
+            io.StringIO(
+                json.dumps(
+                    {
+                        "tool_name": "WebFetch",
+                        "tool_input": {
+                            "url": "https://docs.example.com/api-reference",
+                            "prompt": "get info",
+                        },
+                        "cwd": "/project",
+                    }
+                )
+            ),
         )
         with pytest.raises(SystemExit, match="0"):
             gemini_hook.main()
@@ -147,11 +172,16 @@ class TestGeminiMain:
         monkeypatch.setattr(gemini_hook, "is_cli_enabled", lambda *a: True)
         monkeypatch.setattr(gemini_hook, "load_package_config", lambda *a: {})
         monkeypatch.setattr(
-            "sys.stdin", io.StringIO(json.dumps({
-                "tool_name": "WebSearch",
-                "tool_input": {"query": "simple lookup"},
-                "cwd": "/project",
-            }))
+            "sys.stdin",
+            io.StringIO(
+                json.dumps(
+                    {
+                        "tool_name": "WebSearch",
+                        "tool_input": {"query": "simple lookup"},
+                        "cwd": "/project",
+                    }
+                )
+            ),
         )
         with pytest.raises(SystemExit, match="0"):
             gemini_hook.main()
