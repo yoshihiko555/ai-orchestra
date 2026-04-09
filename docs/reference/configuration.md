@@ -1,5 +1,6 @@
 # 設定リファレンス
 
+**更新日**: 2026-04-09
 AI Orchestra の全設定ファイルとオプションの詳細。
 
 ---
@@ -118,6 +119,28 @@ language:
   user_output: japanese   # ユーザーへの出力言語
 ```
 
+### review セクション
+
+`/review` スキルの自動修正ループ設定。
+
+```yaml
+review:
+  # 最大ループ回数（レビュー → 修正 → 再レビューのサイクル上限）
+  max_loops: 3
+
+  # 通過基準: critical_zero = Critical が 0 件で通過
+  pass_threshold: critical_zero
+
+  # true の場合、Critical 指摘を自動修正して再レビューする
+  auto_fix: true
+```
+
+| キー | 型 | デフォルト | 説明 |
+|------|-----|-----------|------|
+| `max_loops` | int | `3` | 自動修正ループの上限回数 |
+| `pass_threshold` | string | `critical_zero` | `/review` の通過基準 |
+| `auto_fix` | bool | `true` | Critical 指摘の自動修正ループを有効化 |
+
 ### agents セクション
 
 各エージェントのルーティング設定。
@@ -141,7 +164,7 @@ agents:
 
 | tool 値 | エージェント |
 |---------|------------|
-| `claude-direct` | architect, api-designer, code-reviewer, security-reviewer, performance-reviewer, ux-reviewer, spec-reviewer, architecture-reviewer, auth-designer, data-modeler, docs-writer, planner, prompt-engineer, requirements |
+| `claude-direct` | architect, api-designer, code-reviewer, security-reviewer, performance-reviewer, ux-reviewer, spec-reviewer, architecture-reviewer, auth-designer, data-modeler, docs-writer, planner, prompt-engineer, requirements, specialized-mcp-builder, support-executive-summary-generator, testing-reality-checker |
 | `codex` | ai-dev, backend-go-dev, backend-python-dev, debugger, frontend-dev, rag-engineer, spec-writer, tester |
 | `gemini` | researcher |
 | `auto` | ai-architect, general-purpose |
@@ -164,7 +187,7 @@ agents:
   ],
   "synced_files": [
     "agents/planner.md",
-    "rules/config-loading.md",
+    "agents/code-reviewer.md",
     "config/agent-routing/cli-tools.yaml"
   ],
   "last_sync": "2026-03-21T11:37:04.904409+00:00"
@@ -175,7 +198,7 @@ agents:
 |------|------|
 | `orchestra_dir` | ai-orchestra のインストールディレクトリ |
 | `installed_packages` | インストール済みパッケージ一覧 |
-| `synced_files` | 最後の同期で `.claude/` に配置されたファイル一覧 |
+| `synced_files` | 最後の同期で `.claude/agents/` と `.claude/config/` に配置されたファイル一覧 |
 | `last_sync` | 最終同期日時（ISO 8601） |
 
 ---

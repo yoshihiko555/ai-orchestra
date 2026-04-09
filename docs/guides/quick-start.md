@@ -1,5 +1,6 @@
 # クイックスタートガイド
 
+**更新日**: 2026-04-09
 AI Orchestra を初めて使うユーザー向けのセットアップ手順。
 
 ---
@@ -43,7 +44,7 @@ orchex --version
 ### プリセットで一括セットアップ（推奨）
 
 ```bash
-# チームメンバー向け: 最低限のパッケージ（core, route-audit, quality-gates）
+# チームメンバー向け: 最低限のパッケージ（core, agent-routing, quality-gates）
 orchex setup essential --project /path/to/project
 
 # 全パッケージを一括インストール
@@ -193,10 +194,7 @@ codex:
 
 ### パッケージの同期が反映されない
 
-```bash
-# 手動で同期を実行
-orchex setup essential --project . --force
-```
+Claude Code を再起動して SessionStart hook を再実行する。パッケージ再導入も兼ねて再同期したい場合は、必要な `orchex install <package> --project .` か `orchex setup <preset> --project .` を再実行する。
 
 ### orchex コマンドが見つからない
 

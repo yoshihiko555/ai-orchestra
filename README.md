@@ -68,7 +68,7 @@ orchex setup essential --project /path/to/project --dry-run
 ```
 
 プリセットは `presets.json` で定義されています:
-- **essential** — core, route-audit, quality-gates
+- **essential** — core, agent-routing, quality-gates
 - **all** — 全パッケージ
 
 ### 2b. 個別インストール
@@ -146,7 +146,7 @@ orchex install <package> --project . --dry-run
 
 ### 5. ファセット管理コマンド
 
-スキル・ルールをファセット（Policy / Output Contract / Instruction）から自動生成・管理する。詳細は [Facet システム解説](docs/guides/facet-system.md) を参照。
+スキル・ルールをファセット（Policy / Output Contract / Instruction）から自動生成・管理する。配下ディレクトリの役割は [facets/README.md](facets/README.md)、仕組み全体は [Facet システム解説](docs/guides/facet-system.md) を参照。
 
 ![Facet 合成システム](docs/assets/facet.png)
 
