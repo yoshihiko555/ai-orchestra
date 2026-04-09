@@ -678,3 +678,71 @@ class TestOrphanCleanup:
 
         # 手動配置のスキルは削除されない
         assert manual_skill.is_file()
+
+    def test_find_composition_in_subdirectory(self, tmp_path: Path) -> None:
+        """_find_composition がサブディレクトリ内のファイルを発見できる。"""
+        orchestra_dir = tmp_path / "orchestra"
+        skills_dir = orchestra_dir / "facets" / "compositions" / "skills"
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        policies_dir = orchestra_dir / "facets" / "policies"
+        policies_dir.mkdir(parents=True, exist_ok=True)
+        (policies_dir / "code-quality.md").write_text(
+            "# Code Quality\n\npolicy-body\n", encoding="utf-8"
+        )
+
+        comp = "name: nested-skill\ndescription: test\npolicies:\n  - code-quality\n"
+        comp += "instruction: |\n  # Nested\n\n  nested-body\n"
+        (skills_dir / "nested-skill.yaml").write_text(comp, encoding="utf-8")
+
+        builder = FacetBuilder(orchestra_dir)
+        path = builder._find_composition("nested-skill")
+        assert path == skills_dir / "nested-skill.yaml"
+
+    def test_find_composition_exits_on_duplicate(self, tmp_path: Path) -> None:
+        """同名ファイルが複数サブディレクトリにある場合に sys.exit する。"""
+        orchestra_dir = tmp_path / "orchestra"
+        for sub in ("skills", "rules"):
+            d = orchestra_dir / "facets" / "compositions" / sub
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "dup.yaml").write_text(
+                f"name: dup\ndescription: {sub}\ntype: rule\npolicies: []\n",
+                encoding="utf-8",
+            )
+
+        builder = FacetBuilder(orchestra_dir)
+        with pytest.raises(SystemExit):
+            builder._find_composition("dup")
+
+    def test_build_all_with_subdirectory_layout(self, tmp_path: Path) -> None:
+        """サブディレクトリ構成で build_all が全ファイルをビルドする。"""
+        orchestra_dir = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        project_dir.mkdir(parents=True)
+
+        policies_dir = orchestra_dir / "facets" / "policies"
+        policies_dir.mkdir(parents=True, exist_ok=True)
+        (policies_dir / "code-quality.md").write_text(
+            "# Code Quality\n\npolicy-body\n", encoding="utf-8"
+        )
+
+        skills_dir = orchestra_dir / "facets" / "compositions" / "skills"
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        skill_comp = (
+            "name: sub-skill\ndescription: test\n"
+            "frontmatter:\n  name: sub-skill\n  description: test\n"
+            "policies:\n  - code-quality\n"
+            "instruction: |\n  # SubSkill\n\n  sub-skill-body\n"
+        )
+        (skills_dir / "sub-skill.yaml").write_text(skill_comp, encoding="utf-8")
+
+        rules_dir = orchestra_dir / "facets" / "compositions" / "rules"
+        rules_dir.mkdir(parents=True, exist_ok=True)
+        rule_comp = "name: sub-rule\ntype: rule\ndescription: test\npolicies:\n  - code-quality\n"
+        (rules_dir / "sub-rule.yaml").write_text(rule_comp, encoding="utf-8")
+
+        builder = FacetBuilder(orchestra_dir)
+        output_paths = builder.build_all("claude", project_dir)
+
+        assert len(output_paths) == 2
+        assert (project_dir / ".claude" / "skills" / "sub-skill" / "SKILL.md").is_file()
+        assert (project_dir / ".claude" / "rules" / "sub-rule.md").is_file()

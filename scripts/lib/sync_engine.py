@@ -88,7 +88,7 @@ def collect_facet_managed_paths(orchestra_path: Path, project_dir: Path) -> set[
         dirs.append(local_dir)
 
     for d in dirs:
-        for ypath in d.glob("*.yaml"):
+        for ypath in d.rglob("*.yaml"):
             try:
                 with open(ypath, encoding="utf-8") as f:
                     if yaml:
@@ -325,16 +325,16 @@ def build_facets(
     compositions_dir = orchestra_path / "facets" / "compositions"
     local_compositions_dir = project_dir / ".claude" / "facets" / "compositions"
 
-    has_orchestra = compositions_dir.is_dir() and any(compositions_dir.glob("*.yaml"))
-    has_local = local_compositions_dir.is_dir() and any(local_compositions_dir.glob("*.yaml"))
+    has_orchestra = compositions_dir.is_dir() and any(compositions_dir.rglob("*.yaml"))
+    has_local = local_compositions_dir.is_dir() and any(local_compositions_dir.rglob("*.yaml"))
     if not has_orchestra and not has_local:
         return 0
 
     yamls: list[Path] = []
     if has_orchestra:
-        yamls.extend(compositions_dir.glob("*.yaml"))
+        yamls.extend(compositions_dir.rglob("*.yaml"))
     if has_local:
-        yamls.extend(local_compositions_dir.glob("*.yaml"))
+        yamls.extend(local_compositions_dir.rglob("*.yaml"))
 
     latest_src = max(p.stat().st_mtime for p in yamls)
     facets_dir = orchestra_path / "facets"

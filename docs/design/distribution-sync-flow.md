@@ -35,13 +35,13 @@ orchex setup essential --project /path/to/project
 orchex install {package} --project /path/to/project
 ```
 
-| 処理 | 内容 |
-|------|------|
-| ディレクトリ作成 | `.claude/{docs,logs,state,checkpoints}/` |
-| テンプレート配置 | `Plans.md`, `.claudeignore`, `CLAUDE.md`, `.codex/`, `.gemini/` |
-| orchestra.json 初期化 | `installed_packages: []` |
-| 環境変数登録 | `$AI_ORCHESTRA_DIR` を `~/.claude/settings.json` に設定 |
-| hook 登録 | `sync-orchestra.py` を SessionStart hook に登録 |
+| 処理                  | 内容                                                            |
+| --------------------- | --------------------------------------------------------------- |
+| ディレクトリ作成      | `.claude/{docs,logs,state,checkpoints}/`                        |
+| テンプレート配置      | `Plans.md`, `.claudeignore`, `CLAUDE.md`, `.codex/`, `.gemini/` |
+| orchestra.json 初期化 | `installed_packages: []`                                        |
+| 環境変数登録          | `$AI_ORCHESTRA_DIR` を `~/.claude/settings.json` に設定         |
+| hook 登録             | `sync-orchestra.py` を SessionStart hook に登録                 |
 
 `orchex install` は未初期化プロジェクトに対して実行された場合、この初期化フェーズを先に自動実行する。
 
@@ -51,13 +51,13 @@ orchex install {package} --project /path/to/project
 orchex install {package} --project /path/to/project
 ```
 
-| 処理 | 内容 |
-|------|------|
-| manifest.json 読み込み | パッケージの宣言内容を取得 |
-| hooks 登録 | `.claude/settings.local.json` にイベント→コマンドを追加 |
-| config コピー | `packages/{pkg}/config/` → `.claude/config/{pkg}/` |
-| orchestra.json 更新 | `installed_packages`, `orchestra_dir`, `last_sync` を更新 |
-| 初回同期実行 | agents/config をコピー（skills/rules は facet build で生成） |
+| 処理                   | 内容                                                         |
+| ---------------------- | ------------------------------------------------------------ |
+| manifest.json 読み込み | パッケージの宣言内容を取得                                   |
+| hooks 登録             | `.claude/settings.local.json` にイベント→コマンドを追加      |
+| config コピー          | `packages/{pkg}/config/` → `.claude/config/{pkg}/`           |
+| orchestra.json 更新    | `installed_packages`, `orchestra_dir`, `last_sync` を更新    |
+| 初回同期実行           | agents/config をコピー（skills/rules は facet build で生成） |
 
 ---
 
@@ -100,15 +100,15 @@ SessionStart hook 発火
 
 ## Phase 3: 変更の伝播パターン
 
-| 変更箇所 | 同期方法 | 反映タイミング |
-|----------|---------|--------------|
-| `packages/*/hooks/*.py` | **同期不要**（`$AI_ORCHESTRA_DIR` から直接実行） | 即時 |
-| `packages/*/agents/` | mtime ベースのファイルコピー | 次回 SessionStart |
-| `packages/*/config/` | mtime ベースのファイルコピー | 次回 SessionStart |
-| `facets/policies/*.md` | facet build で全参照スキル・ルール再生成 | 次回 SessionStart |
-| `facets/instructions/*.md` | facet build で該当 composition のみ再生成 | 次回 SessionStart |
-| `facets/compositions/*.yaml` | facet build で該当スキル・ルールのみ再生成 | 次回 SessionStart |
-| 新パッケージ追加 | `orchex install` が必要 | install 実行時 |
+| 変更箇所                        | 同期方法                                         | 反映タイミング    |
+| ------------------------------- | ------------------------------------------------ | ----------------- |
+| `packages/*/hooks/*.py`         | **同期不要**（`$AI_ORCHESTRA_DIR` から直接実行） | 即時              |
+| `packages/*/agents/`            | mtime ベースのファイルコピー                     | 次回 SessionStart |
+| `packages/*/config/`            | mtime ベースのファイルコピー                     | 次回 SessionStart |
+| `facets/policies/*.md`          | facet build で全参照スキル・ルール再生成         | 次回 SessionStart |
+| `facets/instructions/*.md`      | facet build で該当 composition のみ再生成        | 次回 SessionStart |
+| `facets/compositions/**/*.yaml` | facet build で該当スキル・ルールのみ再生成       | 次回 SessionStart |
+| 新パッケージ追加                | `orchex install` が必要                          | install 実行時    |
 
 ---
 
@@ -120,11 +120,15 @@ SessionStart hook 発火
 // .claude/settings.local.json
 {
   "hooks": {
-    "PreToolUse": [{
-      "hooks": [{
-        "command": "python3 \"$AI_ORCHESTRA_DIR/packages/agent-routing/hooks/agent-router.py\""
-      }]
-    }]
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "python3 \"$AI_ORCHESTRA_DIR/packages/agent-routing/hooks/agent-router.py\""
+          }
+        ]
+      }
+    ]
   }
 }
 ```
@@ -134,13 +138,13 @@ SessionStart hook 発火
 
 ### skills は facet build で生成（パッケージ内に置かない）
 
-- スキル（SKILL.md）は `facets/compositions/*.yaml` の定義をもとに `facet build` で生成される
+- スキル（SKILL.md）は `facets/compositions/skills/*.yaml` の定義をもとに `facet build` で生成される
 - 生成先は `.claude/skills/{name}/SKILL.md`（プロジェクト側）
 - composition の所有パッケージは manifest.json の `skills` リストから解決される（composition YAML に `package` フィールドは不要）
 
 ### rules は facet build で生成（skills と同様）
 
-- ルール（`.claude/rules/{name}.md`）は `facets/compositions/*.yaml` の `type: rule` 定義をもとに `facet build` で生成される
+- ルール（`.claude/rules/{name}.md`）は `facets/compositions/rules/*.yaml` の定義をもとに `facet build` で生成される
 - composition の所有パッケージは manifest.json の `rules` リストから解決される
 
 ### config はコピー（上書き可能）
@@ -150,10 +154,10 @@ SessionStart hook 発火
 
 ### .local ファイルの保護
 
-| ファイル種別 | 同期対象 | 削除対象 |
-|------------|---------|---------|
-| `*.yaml` / `*.json`（ベース） | Yes | Yes（manifest から消えたら） |
-| `*.local.yaml` / `*.local.json` | **No** | **No（絶対に削除しない）** |
+| ファイル種別                    | 同期対象 | 削除対象                     |
+| ------------------------------- | -------- | ---------------------------- |
+| `*.yaml` / `*.json`（ベース）   | Yes      | Yes（manifest から消えたら） |
+| `*.local.yaml` / `*.local.json` | **No**   | **No（絶対に削除しない）**   |
 
 ### mtime ベースの差分同期
 
@@ -164,12 +168,12 @@ SessionStart hook 発火
 
 ## $AI_ORCHESTRA_DIR の役割
 
-| 利用箇所 | 用途 |
-|----------|------|
+| 利用箇所             | 用途                                                |
+| -------------------- | --------------------------------------------------- |
 | hooks のコマンドパス | `python3 "$AI_ORCHESTRA_DIR/packages/*/hooks/*.py"` |
-| sync-orchestra.py | packages/ から同期元ファイルを特定 |
-| facet build | facets/compositions/ の読み込み元 |
-| orchestra.json | `orchestra_dir` に記録（同期元の絶対パス） |
+| sync-orchestra.py    | packages/ から同期元ファイルを特定                  |
+| facet build          | facets/compositions/{skills,rules}/ の読み込み元    |
+| orchestra.json       | `orchestra_dir` に記録（同期元の絶対パス）          |
 
 ---
 
@@ -189,12 +193,12 @@ SessionStart hook 発火
 }
 ```
 
-| フィールド | 用途 |
-|-----------|------|
-| `installed_packages` | インストール済みパッケージの追跡 |
-| `orchestra_dir` | 同期元リポジトリの絶対パス |
-| `last_sync` | 最終同期日時 |
-| `synced_files` | 前回同期したファイル一覧（stale cleanup に使用） |
+| フィールド           | 用途                                             |
+| -------------------- | ------------------------------------------------ |
+| `installed_packages` | インストール済みパッケージの追跡                 |
+| `orchestra_dir`      | 同期元リポジトリの絶対パス                       |
+| `last_sync`          | 最終同期日時                                     |
+| `synced_files`       | 前回同期したファイル一覧（stale cleanup に使用） |
 
 ---
 
@@ -204,7 +208,7 @@ SessionStart hook 発火
 facets/policies/*.md          共有ルール（1箇所修正 → 全スキルに反映）
 facets/output-contracts/*.md  共有出力形式
 facets/instructions/*.md      スキル・ルール固有の手順
-facets/compositions/*.yaml    組み立て定義
+facets/compositions/**/*.yaml 組み立て定義（skills/ と rules/ に分類）
 
     ↓ SessionStart で自動同期 + facet build
 
