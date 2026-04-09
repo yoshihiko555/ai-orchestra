@@ -359,12 +359,12 @@ proxy:
 
 ## sandbox-requirements.json
 
-**パス:** `.claude/config/issue-workflow/sandbox-requirements.json`
-**パッケージ:** issue-workflow
+**パス:** `.claude/config/git-workflow/sandbox-requirements.json`
+**パッケージ:** git-workflow
 
 ```json
 {
-  "description": "issue-workflow パッケージが必要とする sandbox 設定",
+  "description": "git-workflow パッケージが必要とする sandbox 設定",
   "sandbox": {
     "excludedCommands": ["gh"]
   },

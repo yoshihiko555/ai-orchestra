@@ -15,6 +15,7 @@ frontmatter:
 # 参照するポリシー（config-driven ルーティングで implementation agents に委譲）
 policies:
   - cli-language
+  - pr-standards
 
 # 参照する Output Contract（Phase 4 レビューで tiered output を使用）
 output_contracts:

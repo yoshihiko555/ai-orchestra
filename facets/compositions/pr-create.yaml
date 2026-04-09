@@ -1,0 +1,25 @@
+# pr-create スキルのファセット構成定義
+name: pr-create
+description: GitHub Pull Request の作成（standalone / issue-fix からの委譲の両方に対応）
+
+# フロントマター（生成される SKILL.md に付与）
+frontmatter:
+  name: pr-create
+  description: |
+    現在のブランチから Pull Request を作成する。
+    PULL_REQUEST_TEMPLATE.md を読み込みセクションを自動生成する。
+    ブランチ名からタイトルプレフィックスとラベルを自動決定する。
+    「PR 作成して」「プルリク作って」「PR 出して」等のリクエストや、
+    実装完了後の PR 作成フローで使用する。
+    トリガー: /pr-create
+  metadata:
+    short-description: GitHub PR の作成
+
+# 参照するポリシー
+policies:
+  - cli-language
+  - dialog-rules
+  - pr-standards
+
+# スキル固有の instruction（ファイル参照）
+instruction: pr-create

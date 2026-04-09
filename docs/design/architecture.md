@@ -56,7 +56,7 @@ ai-orchestra/
 │   ├── cli-logging/           # CLI 呼び出しログ
 │   ├── cocoindex/             # MCP サーバー自動プロビジョニング
 │   ├── tmux-monitor/          # tmux サブエージェント監視
-│   └── issue-workflow/        # GitHub Issue 開発フロー
+│   └── git-workflow/        # GitHub Issue 開発フロー
 │
 ├── facets/                    # Facet 合成システム
 │   ├── compositions/          # 合成定義 YAML（26ファイル）
@@ -184,7 +184,7 @@ core (v0.4.0)                   ← 依存なし（共通基盤）
 ├── cocoindex (v0.2.0)          ← core
 └── tmux-monitor (v0.2.0)       ← core
 
-issue-workflow (v0.1.0)         ← 依存なし（独立）
+git-workflow (v0.1.0)         ← 依存なし（独立）
 ```
 
 ### 4.3 core パッケージ — 共通ライブラリ

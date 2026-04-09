@@ -217,24 +217,23 @@ Closes #{番号}"
 
 AskUserQuestion で次のアクションを選択:
 
-- **PR 作成**: `gh pr create` で Pull Request を作成
+- **PR 作成**: PR Standards Policy に従い Pull Request を作成
 - **追加修正**: Phase 2 に戻る
 - **完了**: 現在の状態で終了
 
 ##### PR 作成時
 
+PR Standards Policy に従い、以下を実行する:
+
+1. PR テンプレートを取得する（`.github/PULL_REQUEST_TEMPLATE.md` → フォールバック）
+2. ブランチプレフィックスからタイトルプレフィックスとラベルを決定する
+3. テンプレートの各セクションを埋める（レビュー結果がある場合は Summary に追記）
+4. `Closes #{番号}` を本文冒頭に追加する
+5. Push して PR を作成する:
+
 ```bash
 git push -u origin {ブランチ名}
-gh pr create --title "{タイトル}" --body "Closes #{番号}
-
-## 変更内容
-{サマリー}
-
-## レビュー結果
-{レビュアー名}: {要約}
-
-## テスト
-{テスト結果}"
+gh pr create --title "{prefix}: {要約}" --label "{ラベル}" --body "{生成された本文}"
 ```
 
 ## 注意事項

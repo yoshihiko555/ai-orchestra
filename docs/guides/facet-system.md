@@ -303,8 +303,9 @@ orchex facet build --name my-skill --project .
 | `gemini-delegation` | rule | gemini-suggestions | cli-language | — |
 | `gemini-suggestion-compliance` | rule | gemini-suggestions | — | — |
 | `gemini-system` | skill | gemini-suggestions | cli-language | — |
-| `issue-create` | skill | issue-workflow | — | — |
-| `issue-fix` | skill | issue-workflow | — | — |
+| `issue-create` | skill | git-workflow | — | — |
+| `issue-fix` | skill | git-workflow | cli-language, pr-standards | tiered-review |
+| `pr-create` | skill | git-workflow | cli-language, dialog-rules, pr-standards | — |
 | `orchestra-usage` | rule | agent-routing | cli-language | — |
 | `preflight` | skill | core | — | — |
 | `release-readiness` | skill | quality-gates | — | tiered-review |

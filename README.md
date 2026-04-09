@@ -19,7 +19,7 @@ Claude Code (Orchestrator)
     │   ├── gemini-suggestions/ # Gemini リサーチ提案
     │   ├── quality-gates/      # 品質ゲート
     │   ├── route-audit/        # ルーティング監査
-    │   ├── issue-workflow/     # GitHub Issue 開発フロー
+    │   ├── git-workflow/     # Git/GitHub ワークフロー
     │   ├── cocoindex/          # MCP サーバー自動プロビジョニング
     │   └── tmux-monitor/       # tmux リアルタイム監視
     │
@@ -286,7 +286,7 @@ ai-orchestra/
 │   ├── gemini-suggestions/# Gemini リサーチ提案 hooks
 │   ├── quality-gates/     # 品質ゲート hooks
 │   ├── route-audit/       # ルーティング監査・KPIレポート
-│   ├── issue-workflow/    # GitHub Issue 起票 + 開発フロー
+│   ├── git-workflow/    # Git/GitHub ワークフロー（Issue・PR・開発フロー）
 │   ├── cocoindex/         # cocoindex MCP サーバーの自動プロビジョニング
 │   └── tmux-monitor/      # tmux サブエージェント監視
 ├── scripts/          # 管理CLI（エントリポイント + lib/ 共有ライブラリ）
