@@ -54,23 +54,18 @@ class TestFacetBuild:
         """#48: extract — instruction の書き戻し"""
         _setup_essential(e2e_project)
         skill_path = e2e_project / ".claude" / "skills" / "tdd" / "SKILL.md"
+        instruction_path = orchestra_dir / "facets" / "instructions" / "tdd.md"
+        original_instruction = instruction_path.read_text(encoding="utf-8")
         original = skill_path.read_text(encoding="utf-8")
         # Edit instruction section
         edited = original.replace("Red-Green-Refactor", "E2E-EXTRACT-MARKER")
+        assert edited != original
         skill_path.write_text(edited, encoding="utf-8")
 
         run_orchex("facet", "extract", "--name", "tdd", project=e2e_project)
 
-        instruction_path = orchestra_dir / "facets" / "instructions" / "tdd.md"
         try:
             instruction = instruction_path.read_text(encoding="utf-8")
             assert "E2E-EXTRACT-MARKER" in instruction
         finally:
-            # Revert
-            import subprocess
-
-            subprocess.run(
-                ["git", "checkout", "facets/instructions/tdd.md"],
-                cwd=orchestra_dir,
-                capture_output=True,
-            )
+            instruction_path.write_text(original_instruction, encoding="utf-8")

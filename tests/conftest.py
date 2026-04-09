@@ -76,12 +76,19 @@ def run_orchex(
 ) -> subprocess.CompletedProcess[str]:
     """orchestra-manager.py をサブプロセスで実行する。"""
     cmd = [sys.executable, str(ORCHESTRA_MANAGER), *args, "--project", str(project)]
+    env = {
+        **os.environ,
+        "AI_ORCHESTRA_DIR": str(REPO_ROOT),
+        # setup_env_var() が ~/.claude/settings.json に書き込むため、
+        # テスト中は HOME をプロジェクト内に向けてグローバル設定を汚さない
+        "HOME": str(project),
+    }
     return subprocess.run(
         cmd,
         capture_output=True,
         text=True,
         check=check,
-        env={**os.environ, "AI_ORCHESTRA_DIR": str(REPO_ROOT)},
+        env=env,
     )
 
 
