@@ -267,9 +267,10 @@ class FacetBuilder:
                 candidates = sorted(local_dir.rglob(f"{name}.yaml"))
                 if len(candidates) > 1:
                     print(
-                        f"[warn] multiple compositions named '{name}': {candidates}",
+                        f"エラー: composition '{name}' が複数見つかりました: {candidates}",
                         file=sys.stderr,
                     )
+                    sys.exit(1)
                 if candidates:
                     return candidates[0]
 
@@ -277,9 +278,10 @@ class FacetBuilder:
         candidates = sorted(orch_dir.rglob(f"{name}.yaml"))
         if len(candidates) > 1:
             print(
-                f"[warn] multiple compositions named '{name}': {candidates}",
+                f"エラー: composition '{name}' が複数見つかりました: {candidates}",
                 file=sys.stderr,
             )
+            sys.exit(1)
         if candidates:
             return candidates[0]
 

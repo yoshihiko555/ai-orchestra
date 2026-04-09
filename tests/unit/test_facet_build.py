@@ -698,8 +698,8 @@ class TestOrphanCleanup:
         path = builder._find_composition("nested-skill")
         assert path == skills_dir / "nested-skill.yaml"
 
-    def test_find_composition_warns_on_duplicate(self, tmp_path: Path, capsys: object) -> None:
-        """同名ファイルが複数サブディレクトリにある場合に警告を出す。"""
+    def test_find_composition_exits_on_duplicate(self, tmp_path: Path) -> None:
+        """同名ファイルが複数サブディレクトリにある場合に sys.exit する。"""
         orchestra_dir = tmp_path / "orchestra"
         for sub in ("skills", "rules"):
             d = orchestra_dir / "facets" / "compositions" / sub
@@ -710,9 +710,8 @@ class TestOrphanCleanup:
             )
 
         builder = FacetBuilder(orchestra_dir)
-        builder._find_composition("dup")
-        captured = capsys.readouterr()  # type: ignore[union-attr]
-        assert "multiple compositions named 'dup'" in captured.err
+        with pytest.raises(SystemExit):
+            builder._find_composition("dup")
 
     def test_build_all_with_subdirectory_layout(self, tmp_path: Path) -> None:
         """サブディレクトリ構成で build_all が全ファイルをビルドする。"""
