@@ -15,7 +15,7 @@ ai-orchestra リポジトリ（開発）
 └─ scripts/orchestra-manager.py  CLI（orchex）
 
         │
-        ├─── orchex init / install ──→ 初期導入（手動）
+        ├─── orchex setup / install ─→ 初期導入（手動）
         │
         └─── SessionStart hook ─────→ 自動同期（毎セッション）
                                           │
@@ -27,10 +27,12 @@ ai-orchestra リポジトリ（開発）
 
 ## Phase 1: 初期導入（手動）
 
-### orchex init
+### 初期化フェーズ（`setup` / `install` が内部で実行）
 
 ```bash
-orchex init --project /path/to/project
+orchex setup essential --project /path/to/project
+# または
+orchex install {package} --project /path/to/project
 ```
 
 | 処理 | 内容 |
@@ -40,6 +42,8 @@ orchex init --project /path/to/project
 | orchestra.json 初期化 | `installed_packages: []` |
 | 環境変数登録 | `$AI_ORCHESTRA_DIR` を `~/.claude/settings.json` に設定 |
 | hook 登録 | `sync-orchestra.py` を SessionStart hook に登録 |
+
+`orchex install` は未初期化プロジェクトに対して実行された場合、この初期化フェーズを先に自動実行する。
 
 ### orchex install
 

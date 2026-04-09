@@ -119,6 +119,28 @@ language:
   user_output: japanese   # ユーザーへの出力言語
 ```
 
+### review セクション
+
+`/review` スキルの自動修正ループ設定。
+
+```yaml
+review:
+  # 最大ループ回数（レビュー → 修正 → 再レビューのサイクル上限）
+  max_loops: 3
+
+  # 通過基準: critical_zero = Critical が 0 件で通過
+  pass_threshold: critical_zero
+
+  # true の場合、Critical 指摘を自動修正して再レビューする
+  auto_fix: true
+```
+
+| キー | 型 | デフォルト | 説明 |
+|------|-----|-----------|------|
+| `max_loops` | int | `3` | 自動修正ループの上限回数 |
+| `pass_threshold` | string | `critical_zero` | `/review` の通過基準 |
+| `auto_fix` | bool | `true` | Critical 指摘の自動修正ループを有効化 |
+
 ### agents セクション
 
 各エージェントのルーティング設定。

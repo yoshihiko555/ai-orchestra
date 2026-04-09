@@ -68,7 +68,7 @@ orchex setup essential --project /path/to/project --dry-run
 ```
 
 プリセットは `presets.json` で定義されています:
-- **essential** — core, route-audit, quality-gates
+- **essential** — core, agent-routing, quality-gates
 - **all** — 全パッケージ
 
 ### 2b. 個別インストール

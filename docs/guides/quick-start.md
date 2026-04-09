@@ -44,7 +44,7 @@ orchex --version
 ### プリセットで一括セットアップ（推奨）
 
 ```bash
-# チームメンバー向け: 最低限のパッケージ（core, route-audit, quality-gates）
+# チームメンバー向け: 最低限のパッケージ（core, agent-routing, quality-gates）
 orchex setup essential --project /path/to/project
 
 # 全パッケージを一括インストール

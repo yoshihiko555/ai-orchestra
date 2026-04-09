@@ -24,7 +24,7 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 
 | プリセット | 含まれるパッケージ |
 |-----------|------------------|
-| `essential` | core, route-audit, quality-gates |
+| `essential` | core, agent-routing, quality-gates |
 | `all` | 全パッケージ |
 
 ---

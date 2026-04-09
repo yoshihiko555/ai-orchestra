@@ -1,7 +1,7 @@
 # ログ仕様
 
 このドキュメントは、`ai-orchestra` が出力するログ/集計ファイルの役割を整理したものです。  
-対象時点: 2026-02-15
+対象時点: 2026-04-09
 
 ## 1. 主要ログ一覧
 
@@ -19,7 +19,7 @@
 | ファイル | 生成元 | 役割 |
 |---|---|---|
 | `.claude/logs/orchestration/scorecard.json` | `packages/route-audit/scripts/orchestration-kpi-report.py --json-out` | KPI スコアカードの機械可読出力 |
-| `docs/comparisons/[WIP]2026-02-14-orchestration-kpi-scorecard.md` | `packages/route-audit/scripts/orchestration-kpi-report.py --out` | KPI スコアカードの Markdown 出力（既定値） |
+| `.claude/logs/orchestration/scorecard.md` | `packages/route-audit/scripts/orchestration-kpi-report.py --out` | KPI スコアカードの Markdown 出力（既定値） |
 | `.claude/logs/cli-usage-*.csv` | `packages/cli-logging/scripts/analyze-cli-usage.py --export` | CLI 利用状況の CSV エクスポート |
 
 ## 3. 使い分け

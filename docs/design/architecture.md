@@ -98,7 +98,7 @@ ai-orchestra/
 
 | コマンド | 用途 |
 |---------|------|
-| `orchex init --project <path>` | プロジェクト初期化（.claude/ 構造作成） |
+| `orchex setup <preset> --project <path>` | 初期 scaffold 作成 + プリセット一括セットアップ |
 | `orchex install <pkg>` | パッケージインストール（依存解決 + hook 登録） |
 | `orchex uninstall <pkg>` | パッケージ削除 |
 | `orchex list` | 全パッケージ一覧 |
@@ -110,7 +110,7 @@ ai-orchestra/
 | `orchex facet build` | Facet 合成 → SKILL.md/rule.md 生成 |
 | `orchex facet extract` | 生成ファイルからソースへ逆抽出 |
 | `orchex setup <preset>` | プリセット一括セットアップ |
-| `orchex proxy start/stop/status` | MCP proxy 管理 |
+| `orchex proxy stop/status` | MCP proxy 管理 |
 
 **インストールフロー**:
 1. manifest.json 読み込み → 依存パッケージをトポロジカルソート
@@ -428,7 +428,7 @@ agents:
 
 ## 10. プロジェクト出力構造
 
-`orchex init` + `orchex install` 後のプロジェクト構造:
+初回 `orchex setup` または `orchex install` 後のプロジェクト構造:
 
 ```
 <project>/
