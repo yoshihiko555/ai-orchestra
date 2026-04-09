@@ -68,6 +68,7 @@ orchex setup essential --project /path/to/project --dry-run
 ```
 
 プリセットは `presets.json` で定義されています:
+
 - **essential** — core, agent-routing, quality-gates
 - **all** — 全パッケージ
 
@@ -80,6 +81,7 @@ orchex install tmux-monitor --project /path/to/project
 ```
 
 orchex が内部で以下を実行:
+
 1. `~/.claude/settings.json` に `env.AI_ORCHESTRA_DIR` を設定
 2. `.claude/orchestra.json` にパッケージ情報を記録
 3. `.claude/settings.local.json` に hooks を登録（`$AI_ORCHESTRA_DIR/packages/...` 参照）
@@ -175,7 +177,7 @@ facets/output-contracts/*.md ← 共有出力形式
 facets/instructions/*.md     ← スキル・ルール固有の手順
 facets/knowledge/*.md        ← スキルに同梱する参考資料
 facets/scripts/*             ← スキルに同梱するスクリプト
-facets/compositions/*.yaml   ← 組み立て定義
+facets/compositions/**/*.yaml ← 組み立て定義（skills/ と rules/ に分類）
 
     ↓ facet build
 
@@ -217,17 +219,17 @@ uv tool install -e .
 
 ### エージェント一覧
 
-| カテゴリ | エージェント |
-|---------|------------|
-| コア | `planner` `researcher` `requirements` |
-| 設計 | `architect` `api-designer` `data-modeler` `auth-designer` `spec-writer` |
-| 実装 | `frontend-dev` `backend-python-dev` `backend-go-dev` |
-| AI/ML | `ai-architect` `ai-dev` `prompt-engineer` `rag-engineer` |
-| テスト・デバッグ | `debugger` `tester` |
-| レビュー（実装） | `code-reviewer` `security-reviewer` `performance-reviewer` |
-| レビュー（設計） | `spec-reviewer` `architecture-reviewer` `ux-reviewer` |
-| ドキュメント | `docs-writer` |
-| ユーティリティ | `general-purpose` `specialized-mcp-builder` `support-executive-summary-generator` `testing-reality-checker` |
+| カテゴリ         | エージェント                                                                                                |
+| ---------------- | ----------------------------------------------------------------------------------------------------------- |
+| コア             | `planner` `researcher` `requirements`                                                                       |
+| 設計             | `architect` `api-designer` `data-modeler` `auth-designer` `spec-writer`                                     |
+| 実装             | `frontend-dev` `backend-python-dev` `backend-go-dev`                                                        |
+| AI/ML            | `ai-architect` `ai-dev` `prompt-engineer` `rag-engineer`                                                    |
+| テスト・デバッグ | `debugger` `tester`                                                                                         |
+| レビュー（実装） | `code-reviewer` `security-reviewer` `performance-reviewer`                                                  |
+| レビュー（設計） | `spec-reviewer` `architecture-reviewer` `ux-reviewer`                                                       |
+| ドキュメント     | `docs-writer`                                                                                               |
+| ユーティリティ   | `general-purpose` `specialized-mcp-builder` `support-executive-summary-generator` `testing-reality-checker` |
 
 ### エージェントの呼び出し
 
@@ -238,21 +240,21 @@ Task(subagent_type="code-reviewer", prompt="このコードをレビューして
 
 ### スキル一覧
 
-| スキル | 用途 |
-|--------|------|
-| `/review` | コード・セキュリティ・設計レビュー（スマート選定 + 並列実行） |
-| `/startproject` | マルチエージェント協調で新規開発を開始 |
-| `/issue-create` | GitHub Issue の作成と計画策定 |
-| `/issue-fix` | Issue ベースの計画→実装→テスト→レビューフロー |
-| `/codex-system` | `cli-tools.yaml` に基づく Codex 利用ガイド（config-driven） |
-| `/gemini-system` | Gemini CLI でのリサーチ・マルチモーダル処理 |
-| `/checkpointing` | セッションコンテキストの保存・復元 |
-| `/preflight` | 実装計画の策定 |
-| `/design` | 設計テンプレート |
-| `/design-tracker` | 設計記録 |
-| `/task-state` | Plans.md の作成・更新 |
-| `/release-readiness` | マージ前の最終チェック |
-| `/tdd` | テスト駆動開発ワークフロー |
+| スキル               | 用途                                                          |
+| -------------------- | ------------------------------------------------------------- |
+| `/review`            | コード・セキュリティ・設計レビュー（スマート選定 + 並列実行） |
+| `/startproject`      | マルチエージェント協調で新規開発を開始                        |
+| `/issue-create`      | GitHub Issue の作成と計画策定                                 |
+| `/issue-fix`         | Issue ベースの計画→実装→テスト→レビューフロー                 |
+| `/codex-system`      | `cli-tools.yaml` に基づく Codex 利用ガイド（config-driven）   |
+| `/gemini-system`     | Gemini CLI でのリサーチ・マルチモーダル処理                   |
+| `/checkpointing`     | セッションコンテキストの保存・復元                            |
+| `/preflight`         | 実装計画の策定                                                |
+| `/design`            | 設計テンプレート                                              |
+| `/design-tracker`    | 設計記録                                                      |
+| `/task-state`        | Plans.md の作成・更新                                         |
+| `/release-readiness` | マージ前の最終チェック                                        |
+| `/tdd`               | テスト駆動開発ワークフロー                                    |
 
 ### レビュースキル
 
@@ -278,6 +280,8 @@ ai-orchestra/
 │   ├── knowledge/         # スキルに同梱する参考資料（references/ に配布）
 │   ├── scripts/           # スキルに同梱するユーティリティスクリプト（scripts/ に配布）
 │   └── compositions/      # 組み立て定義 YAML（facet build で SKILL.md / ルール .md を生成）
+│       ├── skills/        # スキル系 composition
+│       └── rules/         # ルール系 composition
 ├── packages/         # パッケージ（hooks・scripts・agents・config）— 詳細は packages/README.md
 │   ├── core/              # 共通基盤ライブラリ + hooks
 │   ├── agent-routing/     # 28 エージェント定義 + ルーティング hooks
@@ -309,9 +313,9 @@ uv tool upgrade orchex
 cd ai-orchestra && git pull
 ```
 
-| 変更内容 | 操作 |
-|---------|------|
-| 全般 | `uv tool upgrade orchex`（PyPI 経由） |
-| Hook スクリプト修正 | アップグレード後、即反映 |
+| 変更内容                 | 操作                                                |
+| ------------------------ | --------------------------------------------------- |
+| 全般                     | `uv tool upgrade orchex`（PyPI 経由）               |
+| Hook スクリプト修正      | アップグレード後、即反映                            |
 | Skills/Agents/Rules 修正 | アップグレード後、次回 Claude Code 起動時に自動同期 |
-| 新フックイベント追加 | アップグレード + `orchex install` 再実行 |
+| 新フックイベント追加     | アップグレード + `orchex install` 再実行            |

@@ -13,10 +13,12 @@
 Facet システムは、スキル（SKILL.md）やルール（.md）を **再利用可能な部品（ファセット）** から自動生成する仕組み。
 
 従来の問題:
+
 - 同じルール（言語ポリシー、コード品質等）を複数のスキル・ルールに手動コピー
 - 1箇所を修正すると全ファイルを手動更新する必要がある
 
 Facet の解決策:
+
 - 共通ルールを **Policy** として1箇所で管理
 - 出力形式を **Output Contract** として共有
 - スキル固有の手順を **Instruction** として分離
@@ -40,35 +42,35 @@ facets/
 
 複数のスキル・ルールで共有される横断的なルール。1箇所を修正すれば、参照する全スキル・ルールに反映される。
 
-| ファイル | 内容 |
-|---------|------|
-| `cli-language.md` | 外部 CLI との言語プロトコル（英語で質問、日本語で報告） |
-| `code-quality.md` | コード品質の共通ルール（シンプルさ、型ヒント、命名等） |
-| `dialog-rules.md` | 対話ルール |
-| `factual-writing.md` | 事実に基づいた記述ルール |
+| ファイル             | 内容                                                    |
+| -------------------- | ------------------------------------------------------- |
+| `cli-language.md`    | 外部 CLI との言語プロトコル（英語で質問、日本語で報告） |
+| `code-quality.md`    | コード品質の共通ルール（シンプルさ、型ヒント、命名等）  |
+| `dialog-rules.md`    | 対話ルール                                              |
+| `factual-writing.md` | 事実に基づいた記述ルール                                |
 
 ### Output Contract（出力契約）
 
 レビューやレポート等、出力形式を標準化するテンプレート。
 
-| ファイル | 内容 |
-|---------|------|
-| `tiered-review.md` | Critical/High/Medium/Low の4段階レビュー形式 |
-| `compare-report.md` | 比較レポート形式 |
-| `deep-dive-report.md` | 詳細分析レポート形式 |
+| ファイル              | 内容                                         |
+| --------------------- | -------------------------------------------- |
+| `tiered-review.md`    | Critical/High/Medium/Low の4段階レビュー形式 |
+| `compare-report.md`   | 比較レポート形式                             |
+| `deep-dive-report.md` | 詳細分析レポート形式                         |
 
 ### Instruction（インストラクション）
 
 各スキル・ルール固有の手順や仕様。Composition から1対1で参照される。
 
-| カテゴリ | Instruction |
-|---------|-------------|
-| ルーティング | `agent-routing-policy`, `orchestra-usage`, `config-loading` |
+| カテゴリ     | Instruction                                                                                                                             |
+| ------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
+| ルーティング | `agent-routing-policy`, `orchestra-usage`, `config-loading`                                                                             |
 | Codex/Gemini | `codex-delegation`, `codex-suggestion-compliance`, `codex-system`, `gemini-delegation`, `gemini-suggestion-compliance`, `gemini-system` |
-| 品質 | `review`, `skill-review-policy`, `tdd`, `release-readiness` |
-| 開発フロー | `startproject`, `issue-create`, `issue-fix`, `preflight` |
-| 状態管理 | `task-memory-usage`, `task-state`, `checkpointing`, `context-sharing` |
-| その他 | `coding-principles` (rule), `cocoindex-usage`, `design`, `design-tracker` |
+| 品質         | `review`, `skill-review-policy`, `tdd`, `release-readiness`                                                                             |
+| 開発フロー   | `startproject`, `issue-create`, `issue-fix`, `preflight`                                                                                |
+| 状態管理     | `task-memory-usage`, `task-state`, `checkpointing`, `context-sharing`                                                                   |
+| その他       | `coding-principles` (rule), `cocoindex-usage`, `design`, `design-tracker`                                                               |
 
 ### Knowledge（ナレッジ）
 
@@ -91,10 +93,10 @@ facets/
 name: codex-delegation
 description: Codex CLI 委譲ルール
 # package フィールドは不要（所有パッケージは manifest.json の rules リストから解決）
-type: rule                    # "rule" を指定するとルール .md を生成
+type: rule # "rule" を指定するとルール .md を生成
 
 policies:
-  - cli-language              # facets/policies/ から参照
+  - cli-language # facets/policies/ から参照
 
 instruction: codex-delegation # facets/instructions/ から参照
 ```
@@ -119,34 +121,34 @@ frontmatter:
 
 # 参照する Output Contract
 output_contracts:
-  - tiered-review             # facets/output-contracts/ から参照
+  - tiered-review # facets/output-contracts/ から参照
 
 # 参照するポリシー
-policies: []                  # なし（スキル固有ルールのみ）
+policies: [] # なし（スキル固有ルールのみ）
 
 # スキル固有の instruction
-instruction: review           # facets/instructions/ から参照
+instruction: review # facets/instructions/ から参照
 
 # スキルに同梱するリソース（任意）
-knowledge:                    # facets/knowledge/ から参照 → references/ に配布
+knowledge: # facets/knowledge/ から参照 → references/ に配布
   - review-guidelines
-scripts:                      # facets/scripts/ から参照 → scripts/ に配布
+scripts: # facets/scripts/ から参照 → scripts/ に配布
   - analyze.py
 ```
 
 ### 全フィールド
 
-| フィールド | 必須 | 説明 |
-|-----------|------|------|
-| `name` | 必須 | 生成物の名前 |
-| `description` | 必須 | 説明 |
-| `type` | 任意 | `rule` でルール生成。省略でスキル生成 |
-| `frontmatter` | 任意 | SKILL.md のフロントマター（スキルのみ） |
-| `policies` | 任意 | 参照する Policy 名のリスト |
-| `output_contracts` | 任意 | 参照する Output Contract 名のリスト |
-| `instruction` | 必須 | 参照する Instruction 名 |
-| `knowledge` | 任意 | 同梱する Knowledge 名のリスト（スキルのみ） |
-| `scripts` | 任意 | 同梱する Script ファイル名のリスト（スキルのみ） |
+| フィールド         | 必須 | 説明                                             |
+| ------------------ | ---- | ------------------------------------------------ |
+| `name`             | 必須 | 生成物の名前                                     |
+| `description`      | 必須 | 説明                                             |
+| `type`             | 任意 | `rule` でルール生成。省略でスキル生成            |
+| `frontmatter`      | 任意 | SKILL.md のフロントマター（スキルのみ）          |
+| `policies`         | 任意 | 参照する Policy 名のリスト                       |
+| `output_contracts` | 任意 | 参照する Output Contract 名のリスト              |
+| `instruction`      | 必須 | 参照する Instruction 名                          |
+| `knowledge`        | 任意 | 同梱する Knowledge 名のリスト（スキルのみ）      |
+| `scripts`          | 任意 | 同梱する Script ファイル名のリスト（スキルのみ） |
 
 > **Note**: `package` フィールドは廃止。composition の所有パッケージは各パッケージの `manifest.json` の `skills` / `rules` リストに composition 名を記載することで管理する（manifest が SSOT）。
 
@@ -182,7 +184,7 @@ facets/instructions/{name}.md ────────┤
 facets/knowledge/{name}.md ───────────┤  ← facet build ──→ .claude/skills/{name}/SKILL.md
 facets/scripts/{name}.py ─────────────┘                ──→ .claude/skills/{name}/references/*.md
                                                        ──→ .claude/skills/{name}/scripts/*
-facets/compositions/{name}.yaml                        ──→ .claude/rules/{name}.md
+facets/compositions/{skills,rules}/{name}.yaml          ──→ .claude/rules/{name}.md
   ↑ 組み立て定義（どれを結合するか）                      ──→ .codex/skills/{name}/SKILL.md
 ```
 
@@ -243,7 +245,7 @@ orchex facet extract --project .
 2. **Composition YAML を作成**
 
 ```yaml
-# facets/compositions/my-skill.yaml
+# facets/compositions/skills/my-skill.yaml
 name: my-skill
 description: 新しいスキルの説明
 # package フィールドは不要（所有パッケージは manifest.json の skills リストに追加する）
@@ -254,7 +256,7 @@ frontmatter:
     What this skill does.
 
 policies:
-  - code-quality        # 必要に応じてポリシーを参照
+  - code-quality # 必要に応じてポリシーを参照
 
 output_contracts: []
 
@@ -287,31 +289,31 @@ orchex facet build --name my-skill --project .
 
 所有パッケージは各パッケージの `manifest.json` で管理される。
 
-| Composition | 種別 | 所有パッケージ（manifest 参照） | ポリシー | 出力契約 |
-|------------|------|-------------------------------|---------|---------|
-| `agent-routing-policy` | rule | agent-routing | — | — |
-| `checkpointing` | skill | cli-logging | — | — |
-| `cocoindex-usage` | rule | cocoindex | — | — |
-| `codex-delegation` | rule | codex-suggestions | cli-language | — |
-| `codex-suggestion-compliance` | rule | codex-suggestions | — | — |
-| `codex-system` | skill | codex-suggestions | cli-language | — |
-| `coding-principles` | rule | core | — | — |
-| `config-loading` | rule | core | — | — |
-| `context-sharing` | rule | core | — | — |
-| `design` | skill | core | — | — |
-| `design-tracker` | skill | quality-gates | — | — |
-| `gemini-delegation` | rule | gemini-suggestions | cli-language | — |
-| `gemini-suggestion-compliance` | rule | gemini-suggestions | — | — |
-| `gemini-system` | skill | gemini-suggestions | cli-language | — |
-| `issue-create` | skill | git-workflow | — | — |
-| `issue-fix` | skill | git-workflow | cli-language, pr-standards | tiered-review |
-| `pr-create` | skill | git-workflow | cli-language, dialog-rules, pr-standards | — |
-| `orchestra-usage` | rule | agent-routing | cli-language | — |
-| `preflight` | skill | core | — | — |
-| `release-readiness` | skill | quality-gates | — | tiered-review |
-| `review` | skill | quality-gates | — | tiered-review |
-| `skill-review-policy` | rule | quality-gates | — | tiered-review |
-| `startproject` | skill | core | — | — |
-| `task-memory-usage` | rule | core | — | — |
-| `task-state` | skill | core | — | — |
-| `tdd` | skill | quality-gates | — | — |
+| Composition                    | 種別  | 所有パッケージ（manifest 参照） | ポリシー                                 | 出力契約      |
+| ------------------------------ | ----- | ------------------------------- | ---------------------------------------- | ------------- |
+| `agent-routing-policy`         | rule  | agent-routing                   | —                                        | —             |
+| `checkpointing`                | skill | cli-logging                     | —                                        | —             |
+| `cocoindex-usage`              | rule  | cocoindex                       | —                                        | —             |
+| `codex-delegation`             | rule  | codex-suggestions               | cli-language                             | —             |
+| `codex-suggestion-compliance`  | rule  | codex-suggestions               | —                                        | —             |
+| `codex-system`                 | skill | codex-suggestions               | cli-language                             | —             |
+| `coding-principles`            | rule  | core                            | —                                        | —             |
+| `config-loading`               | rule  | core                            | —                                        | —             |
+| `context-sharing`              | rule  | core                            | —                                        | —             |
+| `design`                       | skill | core                            | —                                        | —             |
+| `design-tracker`               | skill | quality-gates                   | —                                        | —             |
+| `gemini-delegation`            | rule  | gemini-suggestions              | cli-language                             | —             |
+| `gemini-suggestion-compliance` | rule  | gemini-suggestions              | —                                        | —             |
+| `gemini-system`                | skill | gemini-suggestions              | cli-language                             | —             |
+| `issue-create`                 | skill | git-workflow                    | —                                        | —             |
+| `issue-fix`                    | skill | git-workflow                    | cli-language, pr-standards               | tiered-review |
+| `pr-create`                    | skill | git-workflow                    | cli-language, dialog-rules, pr-standards | —             |
+| `orchestra-usage`              | rule  | agent-routing                   | cli-language                             | —             |
+| `preflight`                    | skill | core                            | —                                        | —             |
+| `release-readiness`            | skill | quality-gates                   | —                                        | tiered-review |
+| `review`                       | skill | quality-gates                   | —                                        | tiered-review |
+| `skill-review-policy`          | rule  | quality-gates                   | —                                        | tiered-review |
+| `startproject`                 | skill | core                            | —                                        | —             |
+| `task-memory-usage`            | rule  | core                            | —                                        | —             |
+| `task-state`                   | skill | core                            | —                                        | —             |
+| `tdd`                          | skill | quality-gates                   | —                                        | —             |

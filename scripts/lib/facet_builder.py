@@ -259,15 +259,40 @@ class FacetBuilder:
             return project_dir / ".claude" / "skills" / name / "SKILL.md"
         return project_dir / ".codex" / "skills" / name / "SKILL.md"
 
+    def _find_composition(self, name: str) -> Path:
+        """name から composition YAML のパスを解決する。サブディレクトリも再帰検索。"""
+        if self.project_facets_dir:
+            local_dir = self.project_facets_dir / "compositions"
+            if local_dir.is_dir():
+                candidates = sorted(local_dir.rglob(f"{name}.yaml"))
+                if len(candidates) > 1:
+                    print(
+                        f"[warn] multiple compositions named '{name}': {candidates}",
+                        file=sys.stderr,
+                    )
+                if candidates:
+                    return candidates[0]
+
+        orch_dir = self.orchestra_dir / "facets" / "compositions"
+        candidates = sorted(orch_dir.rglob(f"{name}.yaml"))
+        if len(candidates) > 1:
+            print(
+                f"[warn] multiple compositions named '{name}': {candidates}",
+                file=sys.stderr,
+            )
+        if candidates:
+            return candidates[0]
+
+        print(
+            f"エラー: composition '{name}' が見つかりません"
+            f" ({orch_dir}/{{skills,rules}}/{name}.yaml を検索)",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     def build_one(self, name: str, target: str, project_dir: Path) -> Path | None:
         """単一 composition をビルドして出力する。"""
-        composition_path = None
-        if self.project_facets_dir:
-            local_path = self.project_facets_dir / "compositions" / f"{name}.yaml"
-            if local_path.exists():
-                composition_path = local_path
-        if composition_path is None:
-            composition_path = self.orchestra_dir / "facets" / "compositions" / f"{name}.yaml"
+        composition_path = self._find_composition(name)
 
         composition = self.load_composition(composition_path)
 
@@ -411,23 +436,33 @@ class FacetBuilder:
         if self.project_facets_dir:
             local_compositions_dir = self.project_facets_dir / "compositions"
             if local_compositions_dir.is_dir():
-                for composition_path in sorted(local_compositions_dir.glob("*.yaml")):
+                for composition_path in sorted(local_compositions_dir.rglob("*.yaml")):
                     found_yaml_files += 1
-                    seen_names.add(composition_path.stem)
-                    result = self.build_one(composition_path.stem, target, project_dir)
+                    stem = composition_path.stem
+                    if stem in seen_names:
+                        print(
+                            f"[warn] duplicate composition '{stem}' in local: {composition_path}",
+                            file=sys.stderr,
+                        )
+                        continue
+                    seen_names.add(stem)
+                    result = self.build_one(stem, target, project_dir)
                     if result:
                         output_paths.append(result)
                         self._track_built(composition_path, built_skills, built_rules)
 
         compositions_dir = self.orchestra_dir / "facets" / "compositions"
         if compositions_dir.is_dir():
-            for composition_path in sorted(compositions_dir.glob("*.yaml")):
+            for composition_path in sorted(compositions_dir.rglob("*.yaml")):
                 found_yaml_files += 1
-                if composition_path.stem not in seen_names:
-                    result = self.build_one(composition_path.stem, target, project_dir)
-                    if result:
-                        output_paths.append(result)
-                        self._track_built(composition_path, built_skills, built_rules)
+                stem = composition_path.stem
+                if stem in seen_names:
+                    continue
+                seen_names.add(stem)
+                result = self.build_one(stem, target, project_dir)
+                if result:
+                    output_paths.append(result)
+                    self._track_built(composition_path, built_skills, built_rules)
 
         if found_yaml_files == 0:
             print("エラー: compositions が見つかりません", file=sys.stderr)
@@ -460,13 +495,7 @@ class FacetBuilder:
 
     def extract_one(self, name: str, target: str, project_dir: Path) -> Path | None:
         """生成済みファイルから instruction を抽出してソースに書き戻す。"""
-        composition_path: Path | None = None
-        if self.project_facets_dir:
-            local_path = self.project_facets_dir / "compositions" / f"{name}.yaml"
-            if local_path.exists():
-                composition_path = local_path
-        if composition_path is None:
-            composition_path = self.orchestra_dir / "facets" / "compositions" / f"{name}.yaml"
+        composition_path = self._find_composition(name)
 
         composition = self.load_composition(composition_path)
         comp_type = composition.get("type", "skill")
@@ -525,18 +554,28 @@ class FacetBuilder:
         if self.project_facets_dir:
             local_dir = self.project_facets_dir / "compositions"
             if local_dir.is_dir():
-                for p in sorted(local_dir.glob("*.yaml")):
-                    seen.add(p.stem)
-                    result = self.extract_one(p.stem, target, project_dir)
+                for p in sorted(local_dir.rglob("*.yaml")):
+                    stem = p.stem
+                    if stem in seen:
+                        print(
+                            f"[warn] duplicate composition '{stem}' in local: {p}",
+                            file=sys.stderr,
+                        )
+                        continue
+                    seen.add(stem)
+                    result = self.extract_one(stem, target, project_dir)
                     if result:
                         paths.append(result)
 
         compositions_dir = self.orchestra_dir / "facets" / "compositions"
         if compositions_dir.is_dir():
-            for p in sorted(compositions_dir.glob("*.yaml")):
-                if p.stem not in seen:
-                    result = self.extract_one(p.stem, target, project_dir)
-                    if result:
-                        paths.append(result)
+            for p in sorted(compositions_dir.rglob("*.yaml")):
+                stem = p.stem
+                if stem in seen:
+                    continue
+                seen.add(stem)
+                result = self.extract_one(stem, target, project_dir)
+                if result:
+                    paths.append(result)
 
         return paths

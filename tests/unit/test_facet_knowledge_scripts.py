@@ -80,7 +80,7 @@ class TestRealCompositionIntegrity:
         """全 composition.yaml の knowledge エントリに対応するファイルが存在する。"""
         missing: list[str] = []
 
-        for comp_path in sorted(FACETS_DIR.glob("compositions/*.yaml")):
+        for comp_path in sorted(FACETS_DIR.glob("compositions/**/*.yaml")):
             try:
                 comp = yaml.safe_load(comp_path.read_text(encoding="utf-8"))
             except yaml.YAMLError:
@@ -99,7 +99,7 @@ class TestRealCompositionIntegrity:
         """全 composition.yaml の scripts エントリに対応するファイルが存在する。"""
         missing: list[str] = []
 
-        for comp_path in sorted(FACETS_DIR.glob("compositions/*.yaml")):
+        for comp_path in sorted(FACETS_DIR.glob("compositions/**/*.yaml")):
             try:
                 comp = yaml.safe_load(comp_path.read_text(encoding="utf-8"))
             except yaml.YAMLError:
