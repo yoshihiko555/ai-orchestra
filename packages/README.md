@@ -56,7 +56,7 @@ AI Orchestra のパッケージ一覧と詳細。`packages/*/agents` と `packag
 
 ### quality-gates
 
-実装後の品質チェックを自動化する。コード編集時に lint・レビュー提案・テスト分析を実行する。
+実装後の品質チェックを自動化する。コード編集時にファイル種別ごとの lint / format・レビュー提案・テスト分析を実行する。
 
 - **バージョン**: 0.1.0
 - **依存**: core
@@ -66,7 +66,7 @@ AI Orchestra のパッケージ一覧と詳細。`packages/*/agents` と `packag
 - hooks:
   - `post-implementation-review.py` — Edit/Write 後にレビュー提案
   - `post-test-analysis.py` — Bash 実行後にテスト結果分析
-  - `lint-on-save.py` — Edit/Write 後に自動 lint
+  - `lint-on-save.py` — Edit/Write 後にファイル種別ごとの自動 lint / format
   - `test-gate-checker.py` — テスト品質チェック
 - skills (facet build): `review`, `tdd`, `design-tracker`, `release-readiness`
 - rules (facet build): `skill-review-policy`

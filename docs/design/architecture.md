@@ -258,7 +258,7 @@ PreToolUse(WebSearch|WebFetch):
 
 PostToolUse(Edit|Write):
   - post-implementation-review.py        一定量の変更後にレビューを提案
-  - lint-on-save.py (quality)            .py ファイルに ruff format/check 自動実行
+  - lint-on-save.py (quality)            ファイル種別ごとの formatter/linter を自動実行
   - test-gate-checker.py (quality)       テスト品質ゲートチェック
   - update-working-context.py (core)     変更ファイルを working-context.json に記録
 
