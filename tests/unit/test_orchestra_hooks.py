@@ -6,6 +6,7 @@ OrchestraManager 経由で HooksMixin のメソッドをテストする。
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,7 @@ OrchestraManager = manager_mod.OrchestraManager
 models_mod = load_module("orchestra_models", "scripts/lib/orchestra_models.py")
 HookEntry = models_mod.HookEntry
 Package = models_mod.Package
+hooks_mod = sys.modules[manager_mod.HooksMixin.__module__]
 
 
 def _make_manager(tmp_path: Path) -> OrchestraManager:
@@ -359,3 +361,182 @@ class TestLoadSaveOrchestraJson:
 
         # Assert
         assert loaded == data
+
+
+class TestSetupEnvVar:
+    """setup_env_var のテスト。"""
+
+    def test_dry_run_does_not_create_settings_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """dry-run 時は settings.json を作成しない。"""
+        manager = _make_manager(tmp_path)
+        monkeypatch.setattr(hooks_mod.Path, "home", lambda: tmp_path)
+
+        manager.setup_env_var(dry_run=True)
+
+        captured = capsys.readouterr()
+        assert "[DRY-RUN] 環境変数設定" in captured.out
+        assert not (tmp_path / ".claude" / "settings.json").exists()
+
+    def test_writes_ai_orchestra_dir_into_global_settings(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """settings.json に AI_ORCHESTRA_DIR を書き込む。"""
+        manager = _make_manager(tmp_path)
+        monkeypatch.setattr(hooks_mod.Path, "home", lambda: tmp_path)
+
+        settings_path = tmp_path / ".claude" / "settings.json"
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        settings_path.write_text(json.dumps({"env": {"EXISTING": "1"}}), encoding="utf-8")
+
+        manager.setup_env_var()
+
+        saved = json.loads(settings_path.read_text(encoding="utf-8"))
+        assert saved["env"]["EXISTING"] == "1"
+        assert saved["env"]["AI_ORCHESTRA_DIR"] == str(tmp_path)
+
+    def test_skips_when_already_configured(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """同じ値が設定済みなら変更しない。"""
+        manager = _make_manager(tmp_path)
+        monkeypatch.setattr(hooks_mod.Path, "home", lambda: tmp_path)
+
+        settings_path = tmp_path / ".claude" / "settings.json"
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        settings_path.write_text(
+            json.dumps({"env": {"AI_ORCHESTRA_DIR": str(tmp_path)}}),
+            encoding="utf-8",
+        )
+        before = settings_path.read_text(encoding="utf-8")
+
+        manager.setup_env_var()
+
+        captured = capsys.readouterr()
+        assert "設定済み" in captured.out
+        assert settings_path.read_text(encoding="utf-8") == before
+
+
+class TestSyncHookOperations:
+    """sync hook 関連メソッドのテスト。"""
+
+    def test_is_sync_hook_registered_ignores_matcher_entries(self, tmp_path: Path) -> None:
+        """matcher 付きエントリだけでは登録済みとみなさない。"""
+        manager = _make_manager(tmp_path)
+        settings = {
+            "hooks": {
+                "SessionStart": [
+                    {
+                        "matcher": "Task",
+                        "hooks": [{"type": "command", "command": manager.SYNC_HOOK_COMMAND}],
+                    }
+                ]
+            }
+        }
+
+        assert manager.is_sync_hook_registered(settings) is False
+
+    def test_is_sync_hook_registered_returns_true_for_plain_session_start(
+        self, tmp_path: Path
+    ) -> None:
+        """matcher なしの SessionStart hook を検出する。"""
+        manager = _make_manager(tmp_path)
+        settings = {
+            "hooks": {
+                "SessionStart": [
+                    {
+                        "hooks": [{"type": "command", "command": manager.SYNC_HOOK_COMMAND}],
+                    }
+                ]
+            }
+        }
+
+        assert manager.is_sync_hook_registered(settings) is True
+
+    def test_register_sync_hook_creates_entry(self, tmp_path: Path) -> None:
+        """sync hook を新規登録する。"""
+        manager = _make_manager(tmp_path)
+        settings: dict = {}
+
+        manager.register_sync_hook(settings)
+
+        hooks = settings["hooks"]["SessionStart"][0]["hooks"]
+        assert hooks == [
+            {
+                "type": "command",
+                "command": manager.SYNC_HOOK_COMMAND,
+                "timeout": manager.SYNC_HOOK_TIMEOUT,
+            }
+        ]
+
+    def test_register_sync_hook_is_idempotent(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """既存登録がある場合は重複追加しない。"""
+        manager = _make_manager(tmp_path)
+        settings = {"hooks": {"SessionStart": [{"hooks": []}]}}
+        manager.register_sync_hook(settings)
+
+        manager.register_sync_hook(settings)
+
+        captured = capsys.readouterr()
+        hooks = settings["hooks"]["SessionStart"][0]["hooks"]
+        assert len(hooks) == 1
+        assert "登録済み" in captured.out
+
+    def test_register_sync_hook_dry_run_does_not_mutate(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """dry-run 時は settings を変更しない。"""
+        manager = _make_manager(tmp_path)
+        settings: dict = {}
+
+        manager.register_sync_hook(settings, dry_run=True)
+
+        captured = capsys.readouterr()
+        assert "[DRY-RUN]" in captured.out
+        assert settings == {}
+
+    def test_remove_sync_hook_removes_only_target_command(self, tmp_path: Path) -> None:
+        """sync hook だけを削除し、他の hook は残す。"""
+        manager = _make_manager(tmp_path)
+        settings = {
+            "hooks": {
+                "SessionStart": [
+                    {
+                        "hooks": [
+                            {"type": "command", "command": manager.SYNC_HOOK_COMMAND},
+                            {"type": "command", "command": "python3 other.py"},
+                        ]
+                    }
+                ]
+            }
+        }
+
+        manager.remove_sync_hook(settings)
+
+        assert settings["hooks"]["SessionStart"] == [
+            {"hooks": [{"type": "command", "command": "python3 other.py"}]}
+        ]
+
+    def test_remove_sync_hook_keeps_matcher_entries(self, tmp_path: Path) -> None:
+        """matcher 付きエントリはそのまま残す。"""
+        manager = _make_manager(tmp_path)
+        settings = {
+            "hooks": {
+                "SessionStart": [
+                    {"hooks": [{"type": "command", "command": manager.SYNC_HOOK_COMMAND}]},
+                    {
+                        "matcher": "Task",
+                        "hooks": [{"type": "command", "command": "python3 keep.py"}],
+                    },
+                ]
+            }
+        }
+
+        manager.remove_sync_hook(settings)
+
+        assert settings["hooks"]["SessionStart"] == [
+            {"matcher": "Task", "hooks": [{"type": "command", "command": "python3 keep.py"}]}
+        ]
