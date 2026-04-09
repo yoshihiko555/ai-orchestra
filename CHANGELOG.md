@@ -17,6 +17,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `issue-workflow` パッケージを `git-workflow` に改名（責務拡大に伴う名称整理）
 - `issue-fix` の PR 作成ロジックを PR Standards Policy 参照に簡素化
 
+### Fixed
+
+- `quality-gates` の `lint-on-save.py` が、編集ファイルの種別に応じて formatter / linter を切り替えられるよう改善
+
 ## [0.2.3] - 2026-03-30
 
 ### Added
