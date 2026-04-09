@@ -7,7 +7,7 @@
     "codex-suggestions",
     "core",
     "gemini-suggestions",
-    "issue-workflow",
+    "git-workflow",
     "quality-gates",
     "route-audit",
     "tmux-monitor"
@@ -44,7 +44,7 @@
     "config/agent-routing/cli-tools.yaml",
     "config/cocoindex/cocoindex.yaml",
     "config/core/task-memory.yaml",
-    "config/issue-workflow/sandbox-requirements.json",
+    "config/git-workflow/sandbox-requirements.json",
     "config/route-audit/delegation-policy.json",
     "config/route-audit/orchestration-flags.json"
   ],

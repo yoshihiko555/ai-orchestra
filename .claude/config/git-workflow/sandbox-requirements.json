@@ -1,5 +1,5 @@
 {
-  "description": "issue-workflow パッケージが必要とする sandbox 設定",
+  "description": "git-workflow パッケージが必要とする sandbox 設定",
   "sandbox": {
     "excludedCommands": ["gh"]
   },

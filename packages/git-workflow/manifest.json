@@ -1,0 +1,13 @@
+{
+  "name": "git-workflow",
+  "version": "0.1.0",
+  "description": "GitHub Issue の登録・開発フロー・PR 作成を含む Git/GitHub ワークフロー",
+  "depends": [],
+  "hooks": {},
+  "files": [],
+  "skills": ["issue-create", "issue-fix", "pr-create"],
+  "agents": [],
+  "rules": [],
+  "scripts": [],
+  "config": ["config/sandbox-requirements.json"]
+}
