@@ -40,7 +40,9 @@ def is_shell_script(file_path: str) -> bool:
     except (FileNotFoundError, IndexError, OSError):
         return False
 
-    return first_line.startswith("#!") and any(shell in first_line for shell in ("sh", "bash", "zsh"))
+    return first_line.startswith("#!") and any(
+        shell in first_line for shell in ("sh", "bash", "zsh")
+    )
 
 
 def get_file_kind(file_path: str) -> str | None:
