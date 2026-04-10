@@ -40,7 +40,13 @@ class OrchestraManager(ContextMixin, HooksMixin):
     CONTEXT_SPECS: tuple[tuple[str, str, str, str, str | None], ...] = (
         ("claude", "claude.md", "templates/project/CLAUDE.md", "CLAUDE.md", None),
         ("codex", "codex.md", "templates/codex/AGENTS.md", "AGENTS.md", "codex-suggestions"),
-        ("gemini", "gemini.md", "templates/gemini/GEMINI.md", ".gemini/GEMINI.md", "gemini-suggestions"),
+        (
+            "gemini",
+            "gemini.md",
+            "templates/gemini/GEMINI.md",
+            ".gemini/GEMINI.md",
+            "gemini-suggestions",
+        ),
     )
     CONTEXT_SHARED_REL = "templates/context/shared.md"
     COLOR_RESET = "\033[0m"
