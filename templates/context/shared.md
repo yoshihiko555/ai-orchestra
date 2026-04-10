@@ -10,7 +10,3 @@
 運用メモ:
 
 - `*.local.yaml` / `*.local.json` はベース設定より優先される上書きとして扱う
-- 指示書の正本（source of truth）は `templates/context/*.md`
-- 変更後は必ず再生成と同期を実行する
-  - `python scripts/orchestra-manager.py context build`
-  - `python scripts/orchestra-manager.py context sync --project <path>`

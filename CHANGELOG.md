@@ -11,11 +11,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `/handoff` スキル: Claude Code のレート制限時に Codex CLI へタスクを引き継ぐ指示書ファイルを生成
 - `/pr-create` スキル: 現在のブランチから PR を作成（テンプレート自動生成・ラベル自動決定）
 - `pr-standards` ポリシー: PR 作成ルールを `pr-create` と `issue-fix` で共通化
+- `context_files` key in package manifests for context file ownership (#36)
+- `required_package` field in CONTEXT_SPECS for data-driven distribution (#36)
 
 ### Changed
 
 - `issue-workflow` パッケージを `git-workflow` に改名（責務拡大に伴う名称整理）
 - `issue-fix` の PR 作成ロジックを PR Standards Policy 参照に簡素化
+- Context templates now use `<YOUR_...>` placeholders instead of ai-orchestra-specific content (#37)
+- AGENTS.md / GEMINI.md distribution is now conditional on package install state (#36)
 
 ### Fixed
 

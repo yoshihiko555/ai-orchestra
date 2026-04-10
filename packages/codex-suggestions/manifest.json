@@ -15,5 +15,9 @@
   "agents": [],
   "rules": ["codex-delegation", "codex-suggestion-compliance"],
   "scripts": [],
-  "config": []
+  "config": [],
+  "context_files": {
+    "init": ["AGENTS.md", ".codex/config.toml", ".codex/skills/context-loader/"],
+    "sync": ["AGENTS.md"]
+  }
 }

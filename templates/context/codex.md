@@ -19,21 +19,15 @@ Claude Code (Orchestrator)
 
 ## プロジェクト文脈
 
-このリポジトリ `ai-orchestra` は、以下を再利用可能にするオーケストレーション基盤です。
-
-- Claude Code subagent workflows
-- Codex/Gemini CLI delegation and logging
-- Package-based setup and sync via `orchex`
+<!-- TODO: このプロジェクトの概要と主要なコード配置をここに記載してください -->
+このリポジトリは `<YOUR_PROJECT_NAME>` です。
 
 主要なコード配置:
 
 ```
-ai_orchestra/               # Python package entrypoint
-scripts/                    # orchestra-manager and helper scripts
-packages/                   # reusable package units (hooks/agents/config)
-facets/                     # facet definitions (policies/instructions/knowledge/scripts/compositions)
-templates/                  # distributed templates
-.claude/                    # synced runtime context in a project
+<your-src>/             # メインソースコード
+<your-tests>/           # テストコード
+.claude/                # synced runtime context in a project
 ```
 
 ## 得意領域

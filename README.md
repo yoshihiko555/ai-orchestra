@@ -71,6 +71,9 @@ orchex setup essential --project /path/to/project --dry-run
 - **essential** — core, agent-routing, quality-gates
 - **all** — 全パッケージ
 
+> **テンプレートのプレースホルダーについて**: 配布される `CLAUDE.md` / `AGENTS.md` / `GEMINI.md` には `<YOUR_PROJECT_NAME>` などの `<YOUR_...>` 形式のプレースホルダーが含まれています。セットアップ後にプロジェクト固有の内容に書き換えてください。
+> `AGENTS.md` は `codex-suggestions` パッケージ、`GEMINI.md` は `gemini-suggestions` パッケージがインストール済みの場合のみ配布されます。
+
 ### 2b. 個別インストール
 
 ```bash
@@ -134,6 +137,9 @@ orchex context build
 orchex context check
 orchex context sync --project /path/to/project
 orchex context sync --project /path/to/project --force
+
+# 注意: AGENTS.md は codex-suggestions パッケージがインストール済みの場合のみ配布されます
+# 注意: GEMINI.md は gemini-suggestions パッケージがインストール済みの場合のみ配布されます
 
 # パッケージ内スクリプトの実行（-- 以降はスクリプトにパススルー）
 orchex run route-audit dashboard
