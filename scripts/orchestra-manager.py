@@ -409,6 +409,7 @@ class OrchestraManager(ContextMixin, HooksMixin):
             orch["last_sync"] = datetime.datetime.now(datetime.UTC).isoformat()
             self.save_orchestra_json(project_dir, orch)
 
+        self.context_sync(project, dry_run)
         self.run_initial_sync(project_dir, dry_run)
 
         if dry_run:
