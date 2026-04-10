@@ -13,5 +13,9 @@
   "agents": [],
   "rules": ["gemini-delegation", "gemini-suggestion-compliance"],
   "scripts": [],
-  "config": []
+  "config": [],
+  "context_files": {
+    "init": [".gemini/GEMINI.md", ".gemini/settings.json", ".gemini/skills/context-loader/"],
+    "sync": [".gemini/GEMINI.md"]
+  }
 }

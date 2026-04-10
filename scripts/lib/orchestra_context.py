@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
-    ContextSpecEntry = tuple[str, str, str, str]
+    ContextSpecEntry = tuple[str, str, str, str, str | None]
 
 
 class _ContextHost(Protocol):
@@ -18,6 +18,7 @@ class _ContextHost(Protocol):
     CONTEXT_SHARED_REL: str
 
     def get_project_dir(self, project: str | None) -> Path: ...
+    def load_orchestra_json(self, project_dir: Path) -> dict[str, Any]: ...
 
 
 class ContextMixin:
@@ -106,7 +107,7 @@ class ContextMixin:
         """templates/context から配布テンプレートを再生成する。"""
         shared_content = self._load_shared_content()
         changed = 0
-        for _, source_rel, template_rel, _ in self.CONTEXT_SPECS:
+        for _, source_rel, template_rel, _, _ in self.CONTEXT_SPECS:
             dst = self.orchestra_dir / template_rel
             content = self._render_context_content(source_rel, shared_content)
             label = str(dst.relative_to(self.orchestra_dir))
@@ -122,7 +123,7 @@ class ContextMixin:
         shared_content = self._load_shared_content()
         mismatches: list[str] = []
 
-        for _, source_rel, template_rel, _ in self.CONTEXT_SPECS:
+        for _, source_rel, template_rel, _, _ in self.CONTEXT_SPECS:
             expected = self._render_context_content(source_rel, shared_content)
             target = self.orchestra_dir / template_rel
             label = str(target.relative_to(self.orchestra_dir))
@@ -159,7 +160,12 @@ class ContextMixin:
         changed = 0
         skip_existing = not force
 
-        for _, source_rel, _, project_rel in self.CONTEXT_SPECS:
+        orch = self.load_orchestra_json(project_dir)
+        installed_packages = set(orch.get("installed_packages", []))
+
+        for _, source_rel, _, project_rel, required_pkg in self.CONTEXT_SPECS:
+            if required_pkg is not None and required_pkg not in installed_packages:
+                continue
             dst = project_dir / project_rel
 
             if dst.is_symlink():

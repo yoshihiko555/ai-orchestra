@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,19 @@ def _setup_context_sources(orchestra_dir: Path) -> None:
     (context_dir / "claude.md").write_text("# CLAUDE\n\nclaude body\n", encoding="utf-8")
     (context_dir / "codex.md").write_text("# AGENTS\n\ncodex body\n", encoding="utf-8")
     (context_dir / "gemini.md").write_text("# GEMINI\n\ngemini body\n", encoding="utf-8")
+
+
+def _setup_orchestra_json(
+    project_dir: Path,
+    installed_packages: list[str] | None = None,
+) -> None:
+    """Create .claude/orchestra.json with specified installed packages."""
+    if installed_packages is None:
+        installed_packages = ["codex-suggestions", "gemini-suggestions"]
+    claude_dir = project_dir / ".claude"
+    claude_dir.mkdir(parents=True, exist_ok=True)
+    orch = {"installed_packages": installed_packages, "orchestra_dir": "", "last_sync": ""}
+    (claude_dir / "orchestra.json").write_text(json.dumps(orch), encoding="utf-8")
 
 
 class TestContextBuildAndCheck:
@@ -63,6 +77,7 @@ class TestContextSync:
         project_dir.mkdir(parents=True)
 
         _setup_context_sources(orchestra_dir)
+        _setup_orchestra_json(project_dir)
         manager = OrchestraManager(orchestra_dir)
 
         changed = manager.context_sync(str(project_dir))
@@ -78,6 +93,7 @@ class TestContextSync:
         project_dir.mkdir(parents=True)
 
         _setup_context_sources(orchestra_dir)
+        _setup_orchestra_json(project_dir)
         manager = OrchestraManager(orchestra_dir)
 
         claude_file = project_dir / "CLAUDE.md"
@@ -94,6 +110,7 @@ class TestContextSync:
         project_dir.mkdir(parents=True)
 
         _setup_context_sources(orchestra_dir)
+        _setup_orchestra_json(project_dir)
         manager = OrchestraManager(orchestra_dir)
 
         claude_file = project_dir / "CLAUDE.md"
@@ -110,6 +127,7 @@ class TestContextSync:
         project_dir.mkdir(parents=True)
 
         _setup_context_sources(orchestra_dir)
+        _setup_orchestra_json(project_dir)
         manager = OrchestraManager(orchestra_dir)
 
         outside_file = tmp_path / "outside.md"
@@ -131,6 +149,7 @@ class TestContextSync:
         project_dir.mkdir(parents=True)
 
         _setup_context_sources(orchestra_dir)
+        _setup_orchestra_json(project_dir)
         manager = OrchestraManager(orchestra_dir)
 
         external_dir = tmp_path / "external"
@@ -145,3 +164,37 @@ class TestContextSync:
 
         assert changed == 2
         assert not (external_dir / "GEMINI.md").exists()
+
+    def test_sync_skips_codex_when_package_not_installed(self, tmp_path: Path) -> None:
+        """codex-suggestions がインストールされていない場合、AGENTS.md を配布しない"""
+        orchestra_dir = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        project_dir.mkdir(parents=True)
+
+        _setup_context_sources(orchestra_dir)
+        _setup_orchestra_json(project_dir, installed_packages=["gemini-suggestions"])
+        manager = OrchestraManager(orchestra_dir)
+
+        changed = manager.context_sync(str(project_dir))
+
+        assert changed == 2
+        assert (project_dir / "CLAUDE.md").is_file()
+        assert not (project_dir / "AGENTS.md").exists()
+        assert (project_dir / ".gemini" / "GEMINI.md").is_file()
+
+    def test_sync_only_claude_when_no_packages_installed(self, tmp_path: Path) -> None:
+        """suggestions パッケージが未インストールの場合、CLAUDE.md のみ配布"""
+        orchestra_dir = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        project_dir.mkdir(parents=True)
+
+        _setup_context_sources(orchestra_dir)
+        _setup_orchestra_json(project_dir, installed_packages=[])
+        manager = OrchestraManager(orchestra_dir)
+
+        changed = manager.context_sync(str(project_dir))
+
+        assert changed == 1
+        assert (project_dir / "CLAUDE.md").is_file()
+        assert not (project_dir / "AGENTS.md").exists()
+        assert not (project_dir / ".gemini" / "GEMINI.md").exists()

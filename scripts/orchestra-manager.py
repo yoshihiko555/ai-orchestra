@@ -37,10 +37,16 @@ class OrchestraManager(ContextMixin, HooksMixin):
     SYNC_HOOK_COMMAND = 'python3 "$AI_ORCHESTRA_DIR/scripts/sync-orchestra.py"'
     SYNC_HOOK_TIMEOUT = 15
     # gitignore エントリは gitignore_sync モジュールで一元管理
-    CONTEXT_SPECS: tuple[tuple[str, str, str, str], ...] = (
-        ("claude", "claude.md", "templates/project/CLAUDE.md", "CLAUDE.md"),
-        ("codex", "codex.md", "templates/codex/AGENTS.md", "AGENTS.md"),
-        ("gemini", "gemini.md", "templates/gemini/GEMINI.md", ".gemini/GEMINI.md"),
+    CONTEXT_SPECS: tuple[tuple[str, str, str, str, str | None], ...] = (
+        ("claude", "claude.md", "templates/project/CLAUDE.md", "CLAUDE.md", None),
+        ("codex", "codex.md", "templates/codex/AGENTS.md", "AGENTS.md", "codex-suggestions"),
+        (
+            "gemini",
+            "gemini.md",
+            "templates/gemini/GEMINI.md",
+            ".gemini/GEMINI.md",
+            "gemini-suggestions",
+        ),
     )
     CONTEXT_SHARED_REL = "templates/context/shared.md"
     COLOR_RESET = "\033[0m"
@@ -403,6 +409,7 @@ class OrchestraManager(ContextMixin, HooksMixin):
             orch["last_sync"] = datetime.datetime.now(datetime.UTC).isoformat()
             self.save_orchestra_json(project_dir, orch)
 
+        self.context_sync(project, dry_run)
         self.run_initial_sync(project_dir, dry_run)
 
         if dry_run:
@@ -539,33 +546,37 @@ class OrchestraManager(ContextMixin, HooksMixin):
 
         self.sync_gitignore(project_dir, dry_run)
 
-        # AGENTS.md はプロジェクトルートに配置（Codex は .codex/ 内ではなくルートを読む）
-        codex_src = templates_dir / "codex"
-        codex_root_files = {"AGENTS.md"}
-        if codex_src.is_dir():
-            codex_dst = project_dir / ".codex"
-            for src_file in codex_src.rglob("*"):
-                if not src_file.is_file():
-                    continue
-                rel = src_file.relative_to(codex_src)
-                if rel.name in codex_root_files:
-                    dst_file = project_dir / rel.name
-                    label = rel.name
-                else:
-                    dst_file = codex_dst / rel
-                    label = f".codex/{rel}"
-                self._copy_template_if_missing(src_file, dst_file, label, dry_run)
-
-        gemini_src = templates_dir / "gemini"
-        if gemini_src.is_dir():
-            for src_file in gemini_src.rglob("*"):
-                if not src_file.is_file():
-                    continue
-                rel = src_file.relative_to(gemini_src)
-                dst_file = project_dir / ".gemini" / rel
-                self._copy_template_if_missing(src_file, dst_file, f".gemini/{rel}", dry_run)
-
         orch = self.load_orchestra_json(project_dir)
+        installed = set(orch.get("installed_packages", []))
+
+        # AGENTS.md はプロジェクトルートに配置（Codex は .codex/ 内ではなくルートを読む）
+        if "codex-suggestions" in installed:
+            codex_src = templates_dir / "codex"
+            codex_root_files = {"AGENTS.md"}
+            if codex_src.is_dir():
+                codex_dst = project_dir / ".codex"
+                for src_file in codex_src.rglob("*"):
+                    if not src_file.is_file():
+                        continue
+                    rel = src_file.relative_to(codex_src)
+                    if rel.name in codex_root_files:
+                        dst_file = project_dir / rel.name
+                        label = rel.name
+                    else:
+                        dst_file = codex_dst / rel
+                        label = f".codex/{rel}"
+                    self._copy_template_if_missing(src_file, dst_file, label, dry_run)
+
+        if "gemini-suggestions" in installed:
+            gemini_src = templates_dir / "gemini"
+            if gemini_src.is_dir():
+                for src_file in gemini_src.rglob("*"):
+                    if not src_file.is_file():
+                        continue
+                    rel = src_file.relative_to(gemini_src)
+                    dst_file = project_dir / ".gemini" / rel
+                    self._copy_template_if_missing(src_file, dst_file, f".gemini/{rel}", dry_run)
+
         if not orch.get("orchestra_dir"):
             orch["orchestra_dir"] = str(self.orchestra_dir)
         orch.setdefault("installed_packages", [])
@@ -780,6 +791,9 @@ class OrchestraManager(ContextMixin, HooksMixin):
             already_installed.add(pkg_name)
             installed_count += 1
             print()
+
+        # パッケージインストール後に context ファイルを配布
+        self.context_sync(project, dry_run)
 
         print("=== セットアップ完了 ===")
         all_names = ", ".join(ordered)

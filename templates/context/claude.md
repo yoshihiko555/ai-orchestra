@@ -1,59 +1,51 @@
-# AI Orchestra
+# <YOUR_PROJECT_NAME>
 
-**概要**: Claude Code + Codex CLI + Gemini CLI の協調実行を管理する Python 製オーケストレーション基盤。
+**概要**: <YOUR_PROJECT_DESCRIPTION>
 
 ---
 
 ## 目的
 
-- `orchex` CLI で packages/templates/scripts を配布・同期する
-- 既存導入プロジェクトの互換性を壊さずに設定と運用を進化させる
-- 複数プロジェクトへ横展開しやすいテンプレート運用を維持する
+<!-- TODO: プロジェクトの目的をここに記載してください -->
+- <YOUR_GOAL_1>
+- <YOUR_GOAL_2>
+- <YOUR_GOAL_3>
 
 ---
 
 ## 技術スタック
 
-- **Language**: Python 3.12+
-- **Packaging**: Hatchling (`pyproject.toml`), PyPI package `orchex`
-- **Quality**: `pytest`, `ruff`
-- **Config**: YAML / JSON (`.claude/config/**`)
+<!-- TODO: プロジェクトの技術スタックをここに記載してください -->
+- **Language**: <YOUR_LANGUAGE>
+- **Framework**: <YOUR_FRAMEWORK>
+- **Quality**: <YOUR_TEST_AND_LINT_TOOLS>
+- **Config**: <YOUR_CONFIG_FORMAT>
 
 ---
 
 ## 主要コマンド
 
+<!-- TODO: プロジェクト固有のコマンドをここに記載してください -->
 ```bash
-# 開発依存込みでインストール
-pip install -e ".[dev]"
+# 依存インストール
+<YOUR_INSTALL_COMMAND>
 
 # テスト
-pytest -q
-pytest -q tests/test_orchestra_manager_context.py
+<YOUR_TEST_COMMAND>
 
 # Lint / Format
-ruff check .
-ruff format --check .
-
-# コンテキストテンプレート管理
-python scripts/orchestra-manager.py context build
-python scripts/orchestra-manager.py context check
-python scripts/orchestra-manager.py context sync --project .
+<YOUR_LINT_COMMAND>
 ```
 
 ---
 
 ## ディレクトリ構成
 
+<!-- TODO: プロジェクトのディレクトリ構成をここに記載してください -->
 ```text
-ai_orchestra/                # Python package entrypoint
-packages/                    # 配布パッケージ群（hooks/agents/config）
-facets/                      # ファセット定義（policies/instructions/knowledge/scripts/compositions）
-scripts/                     # 管理 CLI（orchestra-manager.py など）
-templates/                   # 配布テンプレート
-templates/context/           # 指示書のソース（手編集する場所）
-tests/                       # unit tests
-.claude/                     # 実行コンテキスト（agents/config は sync、skills/rules は facet build）
+<your-src>/          # メインソースコード
+<your-tests>/        # テストコード
+.claude/             # 実行コンテキスト（agents/config は sync、skills/rules は facet build）
 ```
 
 ---
@@ -70,4 +62,23 @@ tests/                       # unit tests
 
 - 既存 CLI コマンドと設定キー（特に `.claude/config/**`）の後方互換性を優先する
 - `config-loading` ルールに従い `*.local.*` 上書きを壊さない
-- 仕様変更時は `README.md` と必要なテストを同時更新する
+- 仕様変更時は必要なテストを同時更新する
+
+---
+
+## 共通参照順序
+
+提案や判断を行う前に、次の順で確認してください。
+
+1. `README.md`（プロジェクト範囲、パッケージ構成、利用コマンド）
+2. `.claude/config/agent-routing/cli-tools.yaml` と任意の `.claude/config/agent-routing/cli-tools.local.yaml`（実効ルーティング/モデル設定）
+3. `.claude/rules/`（`orchestra-usage.md` / `config-loading.md` / `coding-principles.md` などの運用制約）
+4. `.claude/orchestra.json`（対象プロジェクトで有効化されているパッケージ状態）
+
+運用メモ:
+
+- `*.local.yaml` / `*.local.json` はベース設定より優先される上書きとして扱う
+- 指示書の正本（source of truth）は `templates/context/*.md`
+- 変更後は必ず再生成と同期を実行する
+  - `python scripts/orchestra-manager.py context build`
+  - `python scripts/orchestra-manager.py context sync --project <path>`
