@@ -8,6 +8,9 @@ import re
 import sys
 
 _hook_dir = os.path.dirname(os.path.abspath(__file__))
+if _hook_dir not in sys.path:
+    sys.path.insert(0, _hook_dir)
+
 _orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
 if _orchestra_dir:
     _core_hooks = os.path.join(_orchestra_dir, "packages", "core", "hooks")
@@ -19,11 +22,12 @@ if _orchestra_dir:
     _audit_hooks = os.path.join(_orchestra_dir, "packages", "audit", "hooks")
     if _audit_hooks not in sys.path:
         sys.path.insert(0, _audit_hooks)
-else:
-    if _hook_dir not in sys.path:
-        sys.path.insert(0, _hook_dir)
 
-from event_logger import emit_event, load_trace_state
+from event_logger import (
+    emit_event,
+    load_trace_state,
+    resolve_project_root_from_hook_data,
+)
 from hook_common import (
     find_first_int,
     find_first_text,
@@ -51,8 +55,15 @@ TEST_CMD_PATTERN = re.compile(
 def detect_route(data: dict) -> tuple[str | None, str, str]:
     """ツール呼び出しから実際のルートを検出する。
 
+    Bash コマンドが Codex/Gemini CLI を含む場合は `bash:codex` / `bash:gemini`、
+    Task/Agent ツールは `task:<agent_type>`、Skill ツールは `skill:<name>` を返す。
+
+    Args:
+        data: PostToolUse hook の入力辞書。
+
     Returns:
-        (route, command_excerpt, tool_name)
+        (route, command_excerpt, tool_name) のタプル。
+        ルート検出不可の場合は route=None。
     """
     tool_name = str(data.get("tool_name") or find_first_text(data, {"tool_name", "tool"}))
     tool_lower = tool_name.lower()
@@ -93,7 +104,16 @@ def detect_route(data: dict) -> tuple[str | None, str, str]:
 
 
 def is_match(expected_route: str, actual_route: str, aliases: dict) -> bool:
-    """予測ルートと実ルートが一致するか判定する。"""
+    """予測ルートと実ルートが一致するか判定する。
+
+    Args:
+        expected_route: 予測されたルート文字列。
+        actual_route: 実際に使用されたルート文字列。
+        aliases: エイリアス定義辞書 (`expected_route` → 許容 actual のリスト)。
+
+    Returns:
+        一致していれば True。
+    """
     if not expected_route or not actual_route:
         return False
     if expected_route == actual_route:
@@ -106,22 +126,30 @@ def is_match(expected_route: str, actual_route: str, aliases: dict) -> bool:
 
 
 def _parse_actual_route(actual_route: str) -> dict:
-    """actual_route 文字列を構造化する。"""
+    """actual_route 文字列を構造化する。
+
+    Args:
+        actual_route: `bash:codex` のような文字列。
+
+    Returns:
+        `{"tool": "bash", "detail": "codex"}` 形式の辞書。
+    """
     if ":" in actual_route:
         parts = actual_route.split(":", 1)
         return {"tool": parts[0], "detail": parts[1]}
     return {"tool": actual_route, "detail": None}
 
 
-def _resolve_project_root(data: dict) -> str:
-    cwd = str(data.get("cwd") or "")
-    if cwd and os.path.isdir(os.path.join(cwd, ".claude")):
-        return cwd
-    return os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
-
-
 def _get_expected_route(trace: dict, root: str) -> str:
-    """trace state から expected_route を取得。なければ legacy state を参照。"""
+    """trace state から expected_route を取得する。
+
+    Args:
+        trace: `load_trace_state()` の結果辞書。
+        root: プロジェクトルート。
+
+    Returns:
+        予測ルート文字列。trace になければ legacy state (`expected-route.json`) を参照。
+    """
     expected_route = trace.get("expected_route", "")
     if expected_route:
         return expected_route
@@ -136,9 +164,14 @@ def _get_expected_route(trace: dict, root: str) -> str:
 
 @safe_hook_execution
 def main() -> None:
+    """PostToolUse hook のエントリポイント。
+
+    実ルートを検出し、予測ルートとの一致判定を行って route_decision イベントを記録する。
+    テストコマンドの検出時には quality_gate イベントも記録する。
+    """
     data = read_hook_input()
 
-    root = _resolve_project_root(data)
+    root = resolve_project_root_from_hook_data(data)
     flags = load_package_config("audit", "audit-flags.json", root)
     features = flags.get("features") or {}
     route_audit_cfg = features.get("route_audit") or {}

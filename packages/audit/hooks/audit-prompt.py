@@ -8,6 +8,9 @@ import re
 import sys
 
 _hook_dir = os.path.dirname(os.path.abspath(__file__))
+if _hook_dir not in sys.path:
+    sys.path.insert(0, _hook_dir)
+
 _orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
 if _orchestra_dir:
     _core_hooks = os.path.join(_orchestra_dir, "packages", "core", "hooks")
@@ -19,11 +22,13 @@ if _orchestra_dir:
     _audit_hooks = os.path.join(_orchestra_dir, "packages", "audit", "hooks")
     if _audit_hooks not in sys.path:
         sys.path.insert(0, _audit_hooks)
-else:
-    if _hook_dir not in sys.path:
-        sys.path.insert(0, _hook_dir)
 
-from event_logger import emit_event, generate_id, save_trace_state
+from event_logger import (
+    emit_event,
+    generate_id,
+    resolve_project_root_from_hook_data,
+    save_trace_state,
+)
 from hook_common import (
     find_first_text,
     load_package_config,
@@ -36,22 +41,31 @@ from route_config import detect_agent, get_agent_tool, load_config
 # Constants
 # ---------------------------------------------------------------------------
 
-MAX_EXCERPT_CHARS = 160
+DEFAULT_MAX_EXCERPT_CHARS = 160
 
 # 機密情報パターン（API キー・トークン・パスワード等）
 SECRET_PATTERNS = [
-    re.compile(r"\bsk-[A-Za-z0-9_-]{20,}"),  # OpenAI / generic API keys
+    re.compile(r"\bsk-[A-Za-z0-9_-]{20,}"),
     re.compile(
         r"\b[A-Za-z0-9_-]{0,20}(api[_-]?key|token|password|secret|credential)\b\s*[:=]\s*\S+",
         re.IGNORECASE,
     ),
     re.compile(r"\bBearer\s+[A-Za-z0-9._-]+", re.IGNORECASE),
-    re.compile(r"\bghp_[A-Za-z0-9]{36}\b"),  # GitHub PAT
+    re.compile(r"\bghp_[A-Za-z0-9]{36}\b"),
+    re.compile(r"\b(AKIA|ASIA|A3T)[A-Z0-9]{16}\b"),
+    re.compile(r"\bAIza[A-Za-z0-9_-]{35}\b"),
 ]
 
 
 def _mask_secrets(text: str) -> str:
-    """テキストから既知の機密情報パターンをマスクする。"""
+    """テキストから既知の機密情報パターンをマスクする。
+
+    Args:
+        text: 検査対象のテキスト。
+
+    Returns:
+        マスク済みテキスト。該当しない場合は元の文字列を返す。
+    """
     for pattern in SECRET_PATTERNS:
         text = pattern.sub("[REDACTED]", text)
     return text
@@ -63,7 +77,17 @@ def _mask_secrets(text: str) -> str:
 
 
 def select_expected_route(prompt: str, config: dict, policy: dict) -> tuple[str, str | None]:
-    """config 駆動 + policy フォールバックで期待ルートを決定。"""
+    """config 駆動 + policy フォールバックで期待ルートを決定する。
+
+    Args:
+        prompt: ユーザープロンプト全文。
+        config: cli-tools.yaml から読み込んだ agent-routing 設定。
+        policy: delegation-policy.json から読み込んだルーティングポリシー。
+
+    Returns:
+        (expected_route, matched_rule_id) のタプル。ルール非マッチ時は
+        matched_rule_id は None。
+    """
     agent, _trigger = detect_agent(prompt)
     if agent:
         tool = get_agent_tool(agent, config)
@@ -91,18 +115,16 @@ def select_expected_route(prompt: str, config: dict, policy: dict) -> tuple[str,
 # ---------------------------------------------------------------------------
 
 
-def _resolve_project_root(data: dict) -> str:
-    cwd = str(data.get("cwd") or "")
-    if cwd and os.path.isdir(os.path.join(cwd, ".claude")):
-        return cwd
-    return os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
-
-
 @safe_hook_execution
 def main() -> None:
+    """UserPromptSubmit hook のエントリポイント。
+
+    ユーザープロンプトから期待ルートを予測し、トレース ID を生成して
+    後続 hook に引き継ぐ。機密情報マスキング済みの excerpt を記録する。
+    """
     data = read_hook_input()
 
-    root = _resolve_project_root(data)
+    root = resolve_project_root_from_hook_data(data)
     flags = load_package_config("audit", "audit-flags.json", root)
     audit_cfg = (flags.get("features") or {}).get("route_audit") or {}
     if not audit_cfg.get("enabled", True):
@@ -117,11 +139,21 @@ def main() -> None:
     expected_route, matched_rule = select_expected_route(prompt, config, policy)
 
     session_id = str(data.get("session_id") or "")
-    excerpt = prompt.strip().replace("\n", " ")[:MAX_EXCERPT_CHARS]
+
+    # マスキング → truncate の順序で処理する
+    # (config の max_excerpt_chars を読み、デフォルトは 160)
+    max_chars = int(audit_cfg.get("max_excerpt_chars", DEFAULT_MAX_EXCERPT_CHARS))
+    excerpt = prompt.strip().replace("\n", " ")
     excerpt = _mask_secrets(excerpt)
+    excerpt = excerpt[:max_chars]
 
     tid = generate_id()
-    save_trace_state(tid, session_id=session_id, expected_route=expected_route, project_dir=root)
+    save_trace_state(
+        tid,
+        session_id=session_id,
+        expected_route=expected_route,
+        project_dir=root,
+    )
 
     emit_event(
         "prompt",

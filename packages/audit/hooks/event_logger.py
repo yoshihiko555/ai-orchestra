@@ -8,8 +8,11 @@
 from __future__ import annotations
 
 import datetime
+import fcntl
 import json
 import os
+import re
+import tempfile
 import uuid
 from typing import Any
 
@@ -48,7 +51,11 @@ EVENT_TYPES = frozenset(
 
 
 def generate_id() -> str:
-    """イベント ID / トレース ID 用の短縮 UUID を生成する。"""
+    """イベント ID / トレース ID 用の短縮 UUID を生成する。
+
+    Returns:
+        12 文字の 16 進文字列。
+    """
     return uuid.uuid4().hex[:12]
 
 
@@ -58,10 +65,16 @@ def generate_id() -> str:
 
 
 def _resolve_project_dir(project_dir: str | None = None) -> str:
-    """プロジェクトルートを解決する。"""
+    """プロジェクトルートを解決する。
+
+    Args:
+        project_dir: 明示指定されたルート。None の場合は .claude/ を持つ親を探索。
+
+    Returns:
+        解決されたプロジェクトルートの絶対パス。見つからなければ CWD。
+    """
     if project_dir:
         return project_dir
-    # .claude/ ディレクトリを持つ最寄りの親を探索
     current = os.getcwd()
     while True:
         if os.path.isdir(os.path.join(current, ".claude")):
@@ -72,23 +85,59 @@ def _resolve_project_dir(project_dir: str | None = None) -> str:
         current = parent
 
 
-def _sanitize_session_id(session_id: str) -> str:
-    """session_id をファイル名として安全な形に正規化する。"""
-    import re
+def resolve_project_root_from_hook_data(data: dict) -> str:
+    """hook 入力データからプロジェクトルートを解決する共通ヘルパー。
 
+    Args:
+        data: hook stdin から読み込んだ辞書（cwd フィールドを含む可能性）
+
+    Returns:
+        解決されたプロジェクトルート。data.cwd → CLAUDE_PROJECT_DIR → os.getcwd() の順。
+    """
+    cwd = str(data.get("cwd") or "")
+    if cwd and os.path.isdir(os.path.join(cwd, ".claude")):
+        return cwd
+    return os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+
+
+def _sanitize_session_id(session_id: str) -> str:
+    """session_id をファイル名として安全な形に正規化する。
+
+    Args:
+        session_id: 外部入力の session_id。
+
+    Returns:
+        英数字・アンダースコア・ハイフンのみの文字列（最大 64 文字）。
+        空になる場合は "unknown" を返す。
+    """
     sanitized = re.sub(r"[^a-zA-Z0-9_-]", "", session_id)
     return sanitized[:64] if sanitized else "unknown"
 
 
 def get_session_log_path(session_id: str, project_dir: str | None = None) -> str:
-    """セッション単位の JSONL ログパスを返す。"""
+    """セッション単位の JSONL ログパスを返す。
+
+    Args:
+        session_id: セッション識別子。内部でサニタイズされる。
+        project_dir: プロジェクトルート。省略時は自動解決。
+
+    Returns:
+        セッションログファイルの絶対パス。
+    """
     root = _resolve_project_dir(project_dir)
     safe_id = _sanitize_session_id(session_id)
     return os.path.join(root, SESSIONS_DIR, f"{safe_id}.jsonl")
 
 
 def get_log_base_path(project_dir: str | None = None) -> str:
-    """ログベースディレクトリのパスを返す。"""
+    """ログベースディレクトリのパスを返す。
+
+    Args:
+        project_dir: プロジェクトルート。省略時は自動解決。
+
+    Returns:
+        `.claude/logs/audit` の絶対パス。
+    """
     root = _resolve_project_dir(project_dir)
     return os.path.join(root, LOG_BASE_DIR)
 
@@ -99,19 +148,26 @@ def get_log_base_path(project_dir: str | None = None) -> str:
 
 
 def _trace_state_path(project_dir: str | None = None) -> str:
+    """トレース state ファイルのパスを返す。"""
     root = _resolve_project_dir(project_dir)
     return os.path.join(root, STATE_DIR, TRACE_STATE_FILE)
 
 
 def _atomic_write_json(path: str, data: dict) -> None:
-    """JSON ファイルをアトミックに書き出す（tempfile + os.replace）。"""
-    import tempfile
+    """JSON ファイルをアトミックに書き出す（tempfile + os.replace）。
 
+    Args:
+        path: 書き込み先パス。
+        data: JSON 化する辞書。
+
+    Raises:
+        OSError: 書き込みに失敗した場合。
+    """
     dir_name = os.path.dirname(path)
     os.makedirs(dir_name, mode=LOG_DIR_MODE, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(prefix=".audit-", dir=dir_name)
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f)
         os.chmod(tmp_path, LOG_FILE_MODE)
         os.replace(tmp_path, path)
@@ -130,7 +186,14 @@ def save_trace_state(
     expected_route: str = "",
     project_dir: str | None = None,
 ) -> None:
-    """現在のトレース ID を state ファイルに保存する（アトミック書き込み）。"""
+    """現在のトレース ID を state ファイルに保存する（アトミック書き込み）。
+
+    Args:
+        tid: トレース ID（UserPromptSubmit 起点で生成される）
+        session_id: セッション識別子
+        expected_route: 予測ルート（audit-route.py が参照する）
+        project_dir: プロジェクトルート。省略時は自動解決。
+    """
     path = _trace_state_path(project_dir)
     data = {
         "tid": tid,
@@ -142,12 +205,19 @@ def save_trace_state(
 
 
 def load_trace_state(project_dir: str | None = None) -> dict[str, str]:
-    """state ファイルからトレース情報を読み込む。存在しなければ空辞書。"""
+    """state ファイルからトレース情報を読み込む。
+
+    Args:
+        project_dir: プロジェクトルート。省略時は自動解決。
+
+    Returns:
+        トレース情報辞書。存在しない/パース失敗時は空辞書。
+    """
     path = _trace_state_path(project_dir)
     if not os.path.exists(path):
         return {}
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
     except (json.JSONDecodeError, OSError):
         return {}
@@ -159,8 +229,10 @@ def load_trace_state(project_dir: str | None = None) -> dict[str, str]:
 
 
 def _subagent_trace_path(agent_id: str, project_dir: str | None = None) -> str:
+    """サブエージェント固有の state ファイルパスを返す。"""
     root = _resolve_project_dir(project_dir)
-    return os.path.join(root, STATE_DIR, f"audit-subagent-{agent_id}.json")
+    safe_aid = _sanitize_session_id(agent_id)
+    return os.path.join(root, STATE_DIR, f"audit-subagent-{safe_aid}.json")
 
 
 def save_subagent_trace(
@@ -170,7 +242,14 @@ def save_subagent_trace(
     ptid: str = "",
     project_dir: str | None = None,
 ) -> None:
-    """サブエージェント固有のトレース情報を保存する（アトミック書き込み）。"""
+    """サブエージェント固有のトレース情報を保存する（アトミック書き込み）。
+
+    Args:
+        aid: エージェント ID
+        tid: サブエージェント固有のトレース ID
+        ptid: 親トレース ID
+        project_dir: プロジェクトルート。省略時は自動解決。
+    """
     path = _subagent_trace_path(aid, project_dir)
     data = {
         "tid": tid,
@@ -182,19 +261,32 @@ def save_subagent_trace(
 
 
 def load_subagent_trace(aid: str, project_dir: str | None = None) -> dict[str, str]:
-    """サブエージェント固有のトレース情報を読み込む。存在しなければ空辞書。"""
+    """サブエージェント固有のトレース情報を読み込む。
+
+    Args:
+        aid: エージェント ID
+        project_dir: プロジェクトルート。省略時は自動解決。
+
+    Returns:
+        トレース情報辞書。存在しない/パース失敗時は空辞書。
+    """
     path = _subagent_trace_path(aid, project_dir)
     if not os.path.exists(path):
         return {}
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
     except (json.JSONDecodeError, OSError):
         return {}
 
 
 def cleanup_subagent_trace(aid: str, project_dir: str | None = None) -> None:
-    """サブエージェント固有のトレース state ファイルを削除する。"""
+    """サブエージェント固有のトレース state ファイルを削除する。
+
+    Args:
+        aid: エージェント ID
+        project_dir: プロジェクトルート。省略時は自動解決。
+    """
     path = _subagent_trace_path(aid, project_dir)
     try:
         os.remove(path)
@@ -208,25 +300,29 @@ def cleanup_subagent_trace(aid: str, project_dir: str | None = None) -> None:
 
 
 def _append_jsonl(path: str, record: dict) -> None:
-    """JSONL ファイルに 1 行追記する（排他ロック + パーミッション制限）。"""
-    import fcntl
+    """JSONL ファイルに 1 行追記する（排他ロック + パーミッション制限、TOCTOU 耐性）。
 
+    os.open で O_CREAT|O_APPEND フラグを指定することで、ファイル作成と
+    パーミッション設定をアトミックに行う（stat → open の競合を排除）。
+
+    Args:
+        path: 書き込み先 JSONL ファイルのパス
+        record: 書き込むイベント辞書
+    """
     dir_name = os.path.dirname(path)
     os.makedirs(dir_name, mode=LOG_DIR_MODE, exist_ok=True)
 
-    is_new = not os.path.exists(path)
-    with open(path, "a") as f:
+    fd = os.open(
+        path,
+        os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+        LOG_FILE_MODE,
+    )
+    with os.fdopen(fd, "a", encoding="utf-8") as f:
         fcntl.flock(f.fileno(), fcntl.LOCK_EX)
         try:
             f.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
         finally:
             fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-
-    if is_new:
-        try:
-            os.chmod(path, LOG_FILE_MODE)
-        except OSError:
-            pass
 
 
 def emit_event(
@@ -242,8 +338,21 @@ def emit_event(
 ) -> dict[str, Any]:
     """統一スキーマ v1 のイベントを書き出す。
 
+    Args:
+        event_type: イベント種別（EVENT_TYPES のいずれか）
+        data: イベント固有のペイロード
+        session_id: セッション識別子（空の場合は書き込まずレコードのみ返す）
+        tid: トレース ID。空の場合は新規生成。
+        ptid: 親トレース ID（サブエージェント内なら設定）
+        aid: エージェント ID（サブエージェント内なら設定）
+        ctx: ワークフロー文脈辞書（skill / phase 等）
+        project_dir: プロジェクトルート。省略時は自動解決。
+
     Returns:
-        書き出したレコード（テスト用）。
+        書き出したレコード辞書（テスト用）。
+
+    Raises:
+        ValueError: 未知の event_type が指定された場合。
     """
     if event_type not in EVENT_TYPES:
         msg = f"Unknown event_type: {event_type}"
@@ -277,7 +386,15 @@ def emit_event(
 
 
 def init_session_dir(session_id: str, project_dir: str | None = None) -> str:
-    """セッション用ログディレクトリを初期化し、パスを返す。"""
+    """セッション用ログディレクトリを初期化し、パスを返す。
+
+    Args:
+        session_id: セッション識別子
+        project_dir: プロジェクトルート。省略時は自動解決。
+
+    Returns:
+        セッションログファイルの絶対パス。
+    """
     root = _resolve_project_dir(project_dir)
     sessions_path = os.path.join(root, SESSIONS_DIR)
     os.makedirs(sessions_path, mode=LOG_DIR_MODE, exist_ok=True)
@@ -325,7 +442,7 @@ def iter_session_events(
         if not os.path.exists(path):
             continue
         try:
-            with open(path) as f:
+            with open(path, encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
                     if not line:
@@ -342,7 +459,14 @@ def iter_session_events(
 
 
 def list_sessions(project_dir: str | None = None) -> list[str]:
-    """存在するセッション ID の一覧を返す（時刻順）。"""
+    """存在するセッション ID の一覧を返す（時刻順）。
+
+    Args:
+        project_dir: プロジェクトルート。省略時は自動解決。
+
+    Returns:
+        セッション ID 文字列のリスト。ディレクトリが存在しなければ空リスト。
+    """
     root = _resolve_project_dir(project_dir)
     sessions_path = os.path.join(root, SESSIONS_DIR)
     if not os.path.isdir(sessions_path):

@@ -23,8 +23,16 @@ from event_logger import iter_session_events
 
 
 def filter_by_days(events: list[dict], days: int | None) -> list[dict]:
-    """直近 N 日間のイベントのみ返す。"""
-    if not days:
+    """直近 N 日間のイベントのみ返す。
+
+    Args:
+        events: 全イベントリスト。
+        days: フィルタ対象日数。None/0 の場合はフィルタなし。
+
+    Returns:
+        フィルタ後のイベントリスト。
+    """
+    if not days or days <= 0:
         return events
     cutoff = datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=days)
     cutoff_str = cutoff.isoformat()
@@ -32,7 +40,14 @@ def filter_by_days(events: list[dict], days: int | None) -> list[dict]:
 
 
 def build_scorecard(events: list[dict]) -> dict:
-    """KPI スコアカードを構築する。"""
+    """KPI スコアカードを構築する。
+
+    Args:
+        events: 集計対象のイベントリスト。
+
+    Returns:
+        ルーティング・CLI・サブエージェント・品質ゲートの集計結果を含む辞書。
+    """
     sessions = {e.get("sid", "") for e in events if e.get("sid")}
 
     decisions = [e for e in events if e.get("type") == "route_decision"]
@@ -83,7 +98,15 @@ def build_scorecard(events: list[dict]) -> dict:
 
 
 def render_markdown(scorecard: dict, period: str) -> str:
-    """スコアカードを markdown で描画する。"""
+    """スコアカードを markdown で描画する。
+
+    Args:
+        scorecard: `build_scorecard()` が返した辞書。
+        period: 集計期間の説明文字列。
+
+    Returns:
+        markdown 形式の文字列。
+    """
     lines: list[str] = []
     lines.append(f"# Audit KPI Scorecard ({period})")
     lines.append("")
@@ -130,11 +153,15 @@ def render_markdown(scorecard: dict, period: str) -> str:
 
 
 def main() -> int:
+    """kpi-report CLI のエントリポイント。"""
     parser = argparse.ArgumentParser(description="KPI scorecard for ai-orchestra audit logs")
     parser.add_argument("--days", type=int, default=None, help="直近 N 日間で集計")
-    parser.add_argument("--output", help="出力ファイル（省略時は stdout）")
+    parser.add_argument("--output", help="出力ファイル (省略時は stdout)")
     parser.add_argument("--project", default=None, help="プロジェクトルート")
     args = parser.parse_args()
+
+    if args.days is not None and args.days < 0:
+        parser.error("--days must be non-negative")
 
     events = iter_session_events(project_dir=args.project)
     events = filter_by_days(events, args.days)
@@ -144,7 +171,7 @@ def main() -> int:
     markdown = render_markdown(scorecard, period)
 
     if args.output:
-        with open(args.output, "w") as f:
+        with open(args.output, "w", encoding="utf-8") as f:
             f.write(markdown)
         print(f"Report written to {args.output}")
     else:

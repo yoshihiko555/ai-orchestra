@@ -21,7 +21,14 @@ from event_logger import iter_session_events, list_sessions
 
 
 def calc_session_stats(events: list[dict]) -> dict:
-    """セッション全体の基本統計を計算する。"""
+    """セッション全体の基本統計を計算する。
+
+    Args:
+        events: 集計対象のイベントリスト。
+
+    Returns:
+        `{"total_sessions": int, "session_starts": int, "session_ends": int}`
+    """
     sessions = {e.get("sid", "") for e in events if e.get("sid")}
     starts = sum(1 for e in events if e.get("type") == "session_start")
     ends = sum(1 for e in events if e.get("type") == "session_end")
@@ -33,7 +40,14 @@ def calc_session_stats(events: list[dict]) -> dict:
 
 
 def calc_route_stats(events: list[dict]) -> dict:
-    """route_decision イベントの集計。"""
+    """route_decision イベントの集計を計算する。
+
+    Args:
+        events: 集計対象のイベントリスト。
+
+    Returns:
+        total / matched / mismatched / match_rate を含む辞書。
+    """
     decisions = [e for e in events if e.get("type") == "route_decision"]
     non_helper = [d for d in decisions if not (d.get("data") or {}).get("is_helper", False)]
     matched = sum(1 for d in non_helper if (d.get("data") or {}).get("matched", False))
@@ -47,7 +61,14 @@ def calc_route_stats(events: list[dict]) -> dict:
 
 
 def calc_cli_stats(events: list[dict]) -> dict:
-    """cli_call イベントの集計。"""
+    """cli_call イベントの集計を計算する。
+
+    Args:
+        events: 集計対象のイベントリスト。
+
+    Returns:
+        total / codex / gemini / success_rate / errors_by_type を含む辞書。
+    """
     calls = [e for e in events if e.get("type") == "cli_call"]
     total = len(calls)
     codex = sum(1 for c in calls if (c.get("data") or {}).get("tool") == "codex")
@@ -71,7 +92,14 @@ def calc_cli_stats(events: list[dict]) -> dict:
 
 
 def calc_subagent_stats(events: list[dict]) -> dict:
-    """subagent_start / subagent_end イベントの集計。"""
+    """subagent_start / subagent_end イベントの集計を計算する。
+
+    Args:
+        events: 集計対象のイベントリスト。
+
+    Returns:
+        total_starts / total_ends / by_agent_type を含む辞書。
+    """
     starts = [e for e in events if e.get("type") == "subagent_start"]
     ends = [e for e in events if e.get("type") == "subagent_end"]
     agent_types = Counter((s.get("data") or {}).get("agent_type") for s in starts)
@@ -83,7 +111,14 @@ def calc_subagent_stats(events: list[dict]) -> dict:
 
 
 def calc_quality_stats(events: list[dict]) -> dict:
-    """quality_gate イベントの集計。"""
+    """quality_gate イベントの集計を計算する。
+
+    Args:
+        events: 集計対象のイベントリスト。
+
+    Returns:
+        total / passed / failed を含む辞書。
+    """
     gates = [e for e in events if e.get("type") == "quality_gate"]
     passed = sum(1 for g in gates if (g.get("data") or {}).get("passed") is True)
     failed = sum(1 for g in gates if (g.get("data") or {}).get("passed") is False)
@@ -91,12 +126,27 @@ def calc_quality_stats(events: list[dict]) -> dict:
 
 
 def calc_event_distribution(events: list[dict]) -> dict:
-    """イベントタイプ別の件数分布。"""
+    """イベントタイプ別の件数分布を計算する。
+
+    Args:
+        events: 集計対象のイベントリスト。
+
+    Returns:
+        `{event_type: count}` 形式の辞書。
+    """
     return dict(Counter(e.get("type", "unknown") for e in events))
 
 
 def render_dashboard(events: list[dict], session_id: str | None = None) -> str:
-    """ダッシュボードを文字列として描画する。"""
+    """ダッシュボードを文字列として描画する。
+
+    Args:
+        events: 集計対象のイベントリスト。
+        session_id: 特定セッションのみ集計する場合に指定。
+
+    Returns:
+        改行区切りのダッシュボード文字列。
+    """
     lines: list[str] = []
     title = f"Session: {session_id}" if session_id else "All Sessions"
     lines.append(f"=== Audit Dashboard ({title}) ===")
@@ -162,9 +212,10 @@ def render_dashboard(events: list[dict], session_id: str | None = None) -> str:
 
 
 def main() -> int:
+    """dashboard CLI のエントリポイント。"""
     parser = argparse.ArgumentParser(description="Audit dashboard for ai-orchestra")
     parser.add_argument("--session", help="特定セッションのみ集計")
-    parser.add_argument("--project", default=None, help="プロジェクトルート（省略時は自動解決）")
+    parser.add_argument("--project", default=None, help="プロジェクトルート (省略時は自動解決)")
     args = parser.parse_args()
 
     if args.session:

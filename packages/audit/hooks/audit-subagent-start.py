@@ -7,6 +7,9 @@ import os
 import sys
 
 _hook_dir = os.path.dirname(os.path.abspath(__file__))
+if _hook_dir not in sys.path:
+    sys.path.insert(0, _hook_dir)
+
 _orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
 if _orchestra_dir:
     _core_hooks = os.path.join(_orchestra_dir, "packages", "core", "hooks")
@@ -15,9 +18,6 @@ if _orchestra_dir:
     _audit_hooks = os.path.join(_orchestra_dir, "packages", "audit", "hooks")
     if _audit_hooks not in sys.path:
         sys.path.insert(0, _audit_hooks)
-else:
-    if _hook_dir not in sys.path:
-        sys.path.insert(0, _hook_dir)
 
 from event_logger import emit_event, generate_id, load_trace_state, save_subagent_trace
 from hook_common import get_field, read_hook_input, safe_hook_execution
@@ -25,6 +25,11 @@ from hook_common import get_field, read_hook_input, safe_hook_execution
 
 @safe_hook_execution
 def main() -> None:
+    """SubagentStart hook のエントリポイント。
+
+    親プロンプトのトレース ID を ptid として引き継ぎ、
+    サブエージェント固有の tid を生成して subagent_start イベントを記録する。
+    """
     data = read_hook_input()
 
     session_id = get_field(data, "session_id")
@@ -42,7 +47,6 @@ def main() -> None:
 
     # サブエージェント用の新しいトレース ID
     sub_tid = generate_id()
-
     save_subagent_trace(aid=agent_id, tid=sub_tid, ptid=parent_tid, project_dir=cwd)
 
     # task_summary は SubagentStart hook の入力に含まれないため null

@@ -7,6 +7,9 @@ import os
 import sys
 
 _hook_dir = os.path.dirname(os.path.abspath(__file__))
+if _hook_dir not in sys.path:
+    sys.path.insert(0, _hook_dir)
+
 _orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
 if _orchestra_dir:
     _core_hooks = os.path.join(_orchestra_dir, "packages", "core", "hooks")
@@ -15,16 +18,23 @@ if _orchestra_dir:
     _audit_hooks = os.path.join(_orchestra_dir, "packages", "audit", "hooks")
     if _audit_hooks not in sys.path:
         sys.path.insert(0, _audit_hooks)
-else:
-    if _hook_dir not in sys.path:
-        sys.path.insert(0, _hook_dir)
 
-from event_logger import cleanup_subagent_trace, emit_event, load_subagent_trace
+from event_logger import (
+    cleanup_subagent_trace,
+    emit_event,
+    load_subagent_trace,
+    load_trace_state,
+)
 from hook_common import get_field, read_hook_input, safe_hook_execution
 
 
 @safe_hook_execution
 def main() -> None:
+    """SubagentStop hook のエントリポイント。
+
+    subagent_start で保存したトレース ID を復元して subagent_end を記録する。
+    state ファイルが失われた場合は親の tid → session_id の順でフォールバックする。
+    """
     data = read_hook_input()
 
     session_id = get_field(data, "session_id")
@@ -38,8 +48,13 @@ def main() -> None:
 
     # サブエージェント固有のトレース情報を復元
     sub_trace = load_subagent_trace(agent_id, project_dir=cwd)
-    sub_tid = sub_trace.get("tid", "")
     ptid = sub_trace.get("ptid") or None
+
+    # sub_trace が消えていた場合は親トレース → session_id の順でフォールバック
+    sub_tid = sub_trace.get("tid", "")
+    if not sub_tid:
+        parent_trace = load_trace_state(project_dir=cwd)
+        sub_tid = parent_trace.get("tid") or session_id
 
     # success / result_summary は SubagentStop hook の入力に含まれないため null
     # 将来的に transcript 解析で補完する

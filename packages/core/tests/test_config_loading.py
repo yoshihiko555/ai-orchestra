@@ -212,12 +212,24 @@ class TestRealConfigFiles:
         assert "features" in flags
         assert "route_audit" in flags["features"]
         assert isinstance(flags["features"]["route_audit"].get("enabled"), bool)
+        # Contract: 具体的なデフォルト値の検証
+        assert flags["features"]["route_audit"]["max_excerpt_chars"] == 160
+        assert flags["features"]["quality_gate"]["block_on_failed_test"] is False
+        assert flags["paths"]["state_dir"] == ".claude/state"
+        assert flags["paths"]["logs_dir"] == ".claude/logs/audit"
 
     def test_delegation_policy(self) -> None:
         policy = hook_common.load_package_config("audit", "delegation-policy.json", str(REPO_ROOT))
         assert "default_route" in policy
         assert "rules" in policy
         assert isinstance(policy["rules"], list)
+        # Contract: デフォルトルートとエイリアス定義の検証
+        assert policy["default_route"] == "claude-direct"
+        assert "aliases" in policy
+        assert "claude-direct" in policy["aliases"]
+        claude_direct_aliases = policy["aliases"]["claude-direct"]
+        assert isinstance(claude_direct_aliases, list)
+        assert "skill:commit" in claude_direct_aliases
 
     def test_cli_tools_yaml(self) -> None:
         config = hook_common.load_package_config("agent-routing", "cli-tools.yaml", str(REPO_ROOT))

@@ -13,6 +13,7 @@ import argparse
 import datetime
 import json
 import os
+import re
 import sys
 from collections import Counter
 
@@ -24,19 +25,39 @@ from event_logger import iter_session_events
 
 
 def filter_cli_calls(events: list[dict], days: int | None = None) -> list[dict]:
-    """cli_call イベントのみ抽出し、日数フィルタを適用する。"""
+    """cli_call イベントのみ抽出し、日数フィルタを適用する。
+
+    Args:
+        events: 全イベントリスト。
+        days: フィルタ対象日数。None/0 の場合はフィルタなし。負値は拒否される。
+
+    Returns:
+        フィルタ後の cli_call イベントリスト。
+
+    Raises:
+        ValueError: days が負値の場合。
+    """
+    if days is not None and days < 0:
+        msg = "days must be non-negative"
+        raise ValueError(msg)
+
     calls = [e for e in events if e.get("type") == "cli_call"]
-    if days:
-        cutoff = datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=days)
-        cutoff_str = cutoff.isoformat()
-        calls = [c for c in calls if c.get("ts", "") >= cutoff_str]
-    return calls
+    if days is None or days == 0:
+        return calls
+    cutoff = datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=days)
+    cutoff_str = cutoff.isoformat()
+    return [c for c in calls if c.get("ts", "") >= cutoff_str]
 
 
 def extract_keywords(prompt: str) -> list[str]:
-    """プロンプトから主要キーワードを抽出する（簡易版）。"""
-    import re
+    """プロンプトから主要キーワードを抽出する（簡易版）。
 
+    Args:
+        prompt: プロンプトテキスト。
+
+    Returns:
+        小文字化されたキーワードのリスト。ストップワードは除外。
+    """
     words = re.findall(r"\b[a-zA-Z][a-zA-Z0-9_-]{3,}\b", prompt.lower())
     stop_words = {
         "with",
@@ -66,7 +87,14 @@ def extract_keywords(prompt: str) -> list[str]:
 
 
 def analyze(calls: list[dict]) -> dict:
-    """CLI 呼び出しを分析する。"""
+    """CLI 呼び出しを分析する。
+
+    Args:
+        calls: cli_call イベントのリスト。
+
+    Returns:
+        集計結果辞書（total, success_rate, by_tool, errors_by_type 等）。
+    """
     total = len(calls)
     if total == 0:
         return {"total": 0}
@@ -120,7 +148,15 @@ def analyze(calls: list[dict]) -> dict:
 
 
 def render_text(analysis: dict, period: str) -> str:
-    """分析結果をテキストで整形する。"""
+    """分析結果をテキストで整形する。
+
+    Args:
+        analysis: `analyze()` が返した辞書。
+        period: 集計期間の説明文字列。
+
+    Returns:
+        改行区切りのテキスト。
+    """
     lines: list[str] = []
     lines.append(f"=== CLI Usage Analysis ({period}) ===")
 
@@ -160,11 +196,15 @@ def render_text(analysis: dict, period: str) -> str:
 
 
 def main() -> int:
+    """analyze-cli-usage CLI のエントリポイント。"""
     parser = argparse.ArgumentParser(description="Analyze CLI usage patterns")
     parser.add_argument("--days", type=int, default=None, help="直近 N 日間")
     parser.add_argument("--format", choices=["text", "json"], default="text", help="出力形式")
     parser.add_argument("--project", default=None, help="プロジェクトルート")
     args = parser.parse_args()
+
+    if args.days is not None and args.days < 0:
+        parser.error("--days must be non-negative")
 
     events = iter_session_events(project_dir=args.project)
     calls = filter_cli_calls(events, days=args.days)

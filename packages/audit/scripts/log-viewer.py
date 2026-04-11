@@ -5,7 +5,7 @@ Usage:
   python log-viewer.py                          # 全イベント表示
   python log-viewer.py --type cli_call          # タイプ別フィルタ
   python log-viewer.py --session SID            # セッション別フィルタ
-  python log-viewer.py --limit 50               # 件数制限（デフォルト: 最新 100）
+  python log-viewer.py --limit 50               # 件数制限(デフォルト: 最新 100)
   python log-viewer.py --trace TID              # トレース ID でチェーン追跡
 """
 
@@ -30,7 +30,17 @@ def filter_events(
     session_id: str | None = None,
     trace_id: str | None = None,
 ) -> list[dict]:
-    """条件に合致するイベントのみ返す。"""
+    """条件に合致するイベントのみ返す。
+
+    Args:
+        events: イベントリスト。
+        event_type: 指定すると type でフィルタ。
+        session_id: 指定すると sid でフィルタ。
+        trace_id: 指定すると tid または ptid でフィルタ。
+
+    Returns:
+        フィルタ後のイベントリスト。
+    """
     result = events
     if event_type:
         result = [e for e in result if e.get("type") == event_type]
@@ -42,7 +52,14 @@ def filter_events(
 
 
 def format_event(event: dict) -> str:
-    """1件のイベントを 1 行サマリに整形する。"""
+    """1件のイベントを 1 行サマリに整形する。
+
+    Args:
+        event: v1 スキーマのイベント辞書。
+
+    Returns:
+        タイプ別の 1 行サマリ文字列。
+    """
     ts = event.get("ts", "")[:19]
     event_type = event.get("type", "unknown")
     sid = (event.get("sid") or "")[:8]
@@ -51,16 +68,26 @@ def format_event(event: dict) -> str:
 
     detail = ""
     if event_type == "prompt":
-        detail = f"expected={data.get('expected_route', '?')} excerpt={data.get('user_input_excerpt', '')[:60]}"
+        detail = (
+            f"expected={data.get('expected_route', '?')} "
+            f"excerpt={data.get('user_input_excerpt', '')[:60]}"
+        )
     elif event_type == "route_decision":
         actual = data.get("actual") or {}
         if isinstance(actual, dict):
             actual_str = f"{actual.get('tool', '')}:{actual.get('detail') or ''}"
         else:
             actual_str = str(actual)
-        detail = f"expected={data.get('expected', '?')} actual={actual_str} matched={data.get('matched', False)}"
+        detail = (
+            f"expected={data.get('expected', '?')} "
+            f"actual={actual_str} matched={data.get('matched', False)}"
+        )
     elif event_type == "cli_call":
-        detail = f"tool={data.get('tool', '?')} success={data.get('success', False)} err={data.get('error_type') or '-'}"
+        detail = (
+            f"tool={data.get('tool', '?')} "
+            f"success={data.get('success', False)} "
+            f"err={data.get('error_type') or '-'}"
+        )
     elif event_type == "subagent_start":
         detail = f"type={data.get('agent_type', '?')} aid={(event.get('aid') or '')[:8]}"
     elif event_type == "subagent_end":
@@ -77,14 +104,20 @@ def format_event(event: dict) -> str:
 
 
 def main() -> int:
+    """log-viewer CLI のエントリポイント。"""
     parser = argparse.ArgumentParser(description="Audit log viewer for ai-orchestra")
     parser.add_argument("--type", dest="event_type", help="イベントタイプでフィルタ")
     parser.add_argument("--session", help="セッション ID でフィルタ")
     parser.add_argument("--trace", help="トレース ID でチェーン追跡")
-    parser.add_argument("--limit", type=int, default=100, help="表示件数（デフォルト: 100）")
+    parser.add_argument(
+        "--limit", type=int, default=100, help="表示件数 (デフォルト: 100、0 以下は無制限)"
+    )
     parser.add_argument("--raw", action="store_true", help="JSON 生出力")
     parser.add_argument("--project", default=None, help="プロジェクトルート")
     args = parser.parse_args()
+
+    if args.limit < 0:
+        parser.error("--limit must be non-negative")
 
     events = iter_session_events(project_dir=args.project, session_id=args.session)
     events = filter_events(
@@ -94,7 +127,7 @@ def main() -> int:
         trace_id=args.trace,
     )
 
-    if args.limit and len(events) > args.limit:
+    if args.limit > 0 and len(events) > args.limit:
         events = events[-args.limit :]
 
     if args.raw:
