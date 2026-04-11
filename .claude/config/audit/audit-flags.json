@@ -16,7 +16,6 @@
   },
   "paths": {
     "state_dir": ".claude/state",
-    "logs_dir": ".claude/logs/audit",
-    "delegation_policy": ".claude/config/audit/delegation-policy.json"
+    "logs_dir": ".claude/logs/audit"
   }
 }
