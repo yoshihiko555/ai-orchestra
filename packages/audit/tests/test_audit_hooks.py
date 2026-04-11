@@ -86,9 +86,12 @@ class TestIsMatch:
         """完全一致のケースでマッチすることを確認する。"""
         assert audit_route.is_match("codex", "codex", {})
 
-    def test_skill_matches_claude_direct(self) -> None:
-        """claude-direct 予測に対し skill:* が常にマッチすることを確認する。"""
-        assert audit_route.is_match("claude-direct", "skill:commit", {})
+    def test_skill_matches_via_alias(self) -> None:
+        """claude-direct 予測に対し aliases に登録された skill のみマッチすることを確認する。"""
+        aliases = {"claude-direct": ["skill:commit", "skill:issue-fix"]}
+        assert audit_route.is_match("claude-direct", "skill:commit", aliases)
+        # aliases に登録されていない skill はマッチしない
+        assert not audit_route.is_match("claude-direct", "skill:unknown", aliases)
 
     def test_alias(self) -> None:
         """エイリアス経由でマッチすることを確認する。"""

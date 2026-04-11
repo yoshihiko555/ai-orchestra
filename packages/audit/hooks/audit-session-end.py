@@ -37,8 +37,14 @@ def _count_events(session_log_path: str) -> dict:
     counts: dict[str, int] = {}
     error_count = 0
     first_ts = ""
+    empty_summary = {
+        "cli_calls": 0,
+        "subagents": 0,
+        "route_decisions": 0,
+        "errors": 0,
+    }
     if not os.path.exists(session_log_path):
-        return {"event_count": 0, "summary": {}, "first_ts": ""}
+        return {"event_count": 0, "summary": empty_summary, "first_ts": ""}
 
     with open(session_log_path, encoding="utf-8") as f:
         for line in f:

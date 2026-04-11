@@ -50,7 +50,7 @@ def filter_cli_calls(events: list[dict], days: int | None = None) -> list[dict]:
 
 
 def extract_keywords(prompt: str) -> list[str]:
-    """プロンプトから主要キーワードを抽出する（簡易版）。
+    """プロンプトから主要キーワードを抽出する (簡易版)。
 
     Args:
         prompt: プロンプトテキスト。
@@ -93,7 +93,7 @@ def analyze(calls: list[dict]) -> dict:
         calls: cli_call イベントのリスト。
 
     Returns:
-        集計結果辞書（total, success_rate, by_tool, errors_by_type 等）。
+        集計結果辞書 (total, success_rate, by_tool, errors_by_type 等)。
     """
     total = len(calls)
     if total == 0:

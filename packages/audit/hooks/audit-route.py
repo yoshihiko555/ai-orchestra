@@ -106,6 +106,13 @@ def detect_route(data: dict) -> tuple[str | None, str, str]:
 def is_match(expected_route: str, actual_route: str, aliases: dict) -> bool:
     """予測ルートと実ルートが一致するか判定する。
 
+    マッチ条件:
+    - 完全一致
+    - aliases[expected_route] に actual_route が含まれる
+
+    `skill:*` も aliases 経由で許可する必要があり、ポリシー未定義の skill は
+    不一致扱いとなる（過剰なマッチを避けるため）。
+
     Args:
         expected_route: 予測されたルート文字列。
         actual_route: 実際に使用されたルート文字列。
@@ -117,8 +124,6 @@ def is_match(expected_route: str, actual_route: str, aliases: dict) -> bool:
     if not expected_route or not actual_route:
         return False
     if expected_route == actual_route:
-        return True
-    if expected_route == "claude-direct" and actual_route.startswith("skill:"):
         return True
     if actual_route in (aliases.get(expected_route) or []):
         return True
@@ -222,18 +227,30 @@ def main() -> None:
         exit_code = find_first_int(tool_response, {"exit_code", "code", "status"})
         stdout = str(tool_response.get("stdout") or tool_response.get("content") or "")
 
+        passed = exit_code == 0 if exit_code is not None else None
+        # block_on_failed_test: 失敗時に後続処理をブロックするかどうかの契約
+        block_on_failed = bool(quality_gate_cfg.get("block_on_failed_test", False))
+        blocking = block_on_failed and passed is False
+
         emit_event(
             "quality_gate",
             {
                 "command": command_excerpt,
                 "exit_code": exit_code,
-                "passed": exit_code == 0 if exit_code is not None else None,
+                "passed": passed,
                 "output_excerpt": stdout[:200] if stdout else "",
+                "blocking": blocking,
             },
             session_id=session_id,
             tid=tid,
             project_dir=root,
         )
+
+        # block_on_failed_test=true かつテスト失敗時は Claude Code に blocking を signal する
+        # (PostToolUse hook の exit code 2 は blocking error として扱われる)
+        if blocking:
+            sys.stderr.write(f"[audit] quality gate blocked: test failed (exit_code={exit_code})\n")
+            sys.exit(2)
 
 
 if __name__ == "__main__":
