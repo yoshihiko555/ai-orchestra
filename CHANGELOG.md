@@ -29,6 +29,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Context templates now use `<YOUR_...>` placeholders instead of ai-orchestra-specific content (#37)
 - AGENTS.md / GEMINI.md distribution is now conditional on package install state (#36)
 - `route-audit` + `cli-logging` を `audit` パッケージに統合（#38）
+- `/design` スキル: 既存コードがあるプロジェクトでは Phase 0（既存コード調査と影響範囲分析）を必ず先行実施するよう変更。`researcher` サブエージェント経由で中粒度の影響範囲（直接変更対象／依存関係／リスク）を調査し、成果物を `.claude/docs/impact-analysis/{date}_{slug}.md` に出力する
 
 ### Fixed
 
