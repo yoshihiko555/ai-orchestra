@@ -16,7 +16,8 @@
       { "file": "capture-task-result.py", "matcher": "Agent|Task" },
       { "file": "update-working-context.py", "matcher": "Edit" },
       { "file": "update-working-context.py", "matcher": "Write" }
-    ]
+    ],
+    "PreCompact": ["precompact-dump.py"]
   },
   "files": [
     "hooks/hook_common.py",
@@ -29,7 +30,8 @@
     "hooks/capture-task-result.py",
     "hooks/inject-shared-context.py",
     "hooks/update-working-context.py",
-    "hooks/cleanup-session-context.py"
+    "hooks/cleanup-session-context.py",
+    "hooks/precompact-dump.py"
   ],
   "skills": ["preflight", "startproject", "checkpointing", "task-state", "design"],
   "agents": [],

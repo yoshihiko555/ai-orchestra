@@ -12,7 +12,8 @@
       { "file": "audit-cli.py", "matcher": "Bash" }
     ],
     "SubagentStart": ["audit-subagent-start.py"],
-    "SubagentStop": ["audit-subagent-end.py"]
+    "SubagentStop": ["audit-subagent-end.py"],
+    "InstructionsLoaded": ["audit-instructions-loaded.py"]
   },
   "files": [
     "hooks/event_logger.py",
@@ -22,7 +23,8 @@
     "hooks/audit-route.py",
     "hooks/audit-cli.py",
     "hooks/audit-subagent-start.py",
-    "hooks/audit-subagent-end.py"
+    "hooks/audit-subagent-end.py",
+    "hooks/audit-instructions-loaded.py"
   ],
   "skills": [],
   "agents": [],

@@ -19,6 +19,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - 新規イベント: `session_start`, `session_end`, `subagent_start`, `subagent_end`
   - トレース ID によるプロンプト→ルーティング→ツール実行の呼び出しチェーン追跡
   - CLI 呼び出しのエラー分類（timeout, auth, rate_limit 等）と生レスポンス記録
+- 新しい hook イベントへの対応（Claude Code の最新 hook API に合わせた拡張）
+  - `core/precompact-dump.py`: PreCompact イベントで working-context と Plans.md を
+    `.claude/context/shared/precompact-{timestamp}.md` に退避（圧縮前の重要情報退避）
+  - `audit/audit-instructions-loaded.py`: InstructionsLoaded イベントで CLAUDE.md / ルール等の
+    ロード状況（`load_reason`, `file_path`, `globs`）を audit v1 ログに記録
+  - `quality-gates/turn-end-summary.py`: Stop イベントでターン終了サマリーを注入
+    （編集ファイル数、Plans.md の WIP/TODO/blocked 件数、lint 未実行リマインダー）
+  - audit 統一スキーマに `instructions_loaded`, `turn_end`, `precompact` イベント型を追加
 
 ### Changed
 

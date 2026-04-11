@@ -41,6 +41,9 @@ EVENT_TYPES = frozenset(
         "subagent_start",
         "subagent_end",
         "quality_gate",
+        "instructions_loaded",
+        "turn_end",
+        "precompact",
     }
 )
 
