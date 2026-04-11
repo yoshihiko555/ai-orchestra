@@ -161,12 +161,30 @@ def write_dump(project_dir: str, text: str) -> str:
     return dump_path
 
 
+def _resolve_project_dir(data: dict) -> str:
+    """hook 入力からプロジェクトディレクトリを取得し、検証する。
+
+    この hook は `.claude/context/shared/` 配下にファイルを書き込むため、
+    異常値（相対パス・存在しないパス・空文字）を受け取ると想定外の場所に
+    書き込みが発生しうる。正規化 + 存在確認を行い、不正時は CWD へ fallback する。
+    """
+    raw = get_project_dir(data)
+    resolved = os.path.abspath(raw) if raw else ""
+    if not resolved or not os.path.isdir(resolved):
+        print(
+            f"precompact-dump: invalid cwd from hook input: {raw!r}; fallback to current directory",
+            file=sys.stderr,
+        )
+        return os.getcwd()
+    return resolved
+
+
 @safe_hook_execution
 def main() -> None:
     """PreCompact hook のエントリポイント。"""
     data = read_hook_input()
 
-    project_dir = get_project_dir(data)
+    project_dir = _resolve_project_dir(data)
     session_id = str(data.get("session_id") or "")
     trigger = str(data.get("trigger") or "")
 

@@ -130,6 +130,46 @@ class TestWriteDump:
         assert old_names[0] not in remaining_names
 
 
+class TestResolveProjectDir:
+    """`_resolve_project_dir` の hook 入力検証テスト。"""
+
+    def test_returns_absolute_path_for_valid_dir(self, tmp_path: Path) -> None:
+        """正常な cwd が渡されたとき絶対パスが返ることを確認する。"""
+        result = precompact._resolve_project_dir({"cwd": str(tmp_path)})
+        assert result == os.path.abspath(str(tmp_path))
+
+    def test_falls_back_for_nonexistent_path(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """存在しないパスが渡されたとき CWD にフォールバックし、stderr にログを出すことを確認する。"""
+        bogus = tmp_path / "does-not-exist"
+        result = precompact._resolve_project_dir({"cwd": str(bogus)})
+
+        assert result == os.getcwd()
+        err = capsys.readouterr().err
+        assert "invalid cwd" in err
+        assert "fallback" in err
+
+    def test_falls_back_for_empty_cwd(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """空文字 cwd かつ CLAUDE_PROJECT_DIR が無効な場合、CWD にフォールバックすることを確認する。"""
+        monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path / "nonexistent"))
+        result = precompact._resolve_project_dir({"cwd": ""})
+        assert result == os.getcwd()
+
+    def test_normalizes_relative_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """相対パスが絶対パスに正規化されることを確認する。"""
+        monkeypatch.chdir(tmp_path)
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        result = precompact._resolve_project_dir({"cwd": "sub"})
+        assert result == os.path.abspath(str(sub))
+        assert os.path.isabs(result)
+
+
 class TestMain:
     """`main` のエンドツーエンド動作を確認する。"""
 
