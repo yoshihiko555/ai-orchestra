@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "features": {
+    "route_audit": {
+      "enabled": true,
+      "max_excerpt_chars": 160
+    },
+    "quality_gate": {
+      "enabled": true,
+      "block_on_failed_test": false
+    },
+    "kpi_scorecard": {
+      "enabled": true,
+      "default_period_days": 7
+    }
+  },
+  "paths": {
+    "state_dir": ".claude/state",
+    "logs_dir": ".claude/logs/audit",
+    "delegation_policy": ".claude/config/audit/delegation-policy.json"
+  }
+}

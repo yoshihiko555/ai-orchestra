@@ -4,18 +4,17 @@ AI Orchestra のパッケージ一覧と詳細。`packages/*/agents` と `packag
 
 ## パッケージ概要
 
-| パッケージ | 概要 | カテゴリ |
-|-----------|------|----------|
-| [core](#core) | 全パッケージ共通の基盤ライブラリ | 基盤 |
-| [agent-routing](#agent-routing) | cli-tools.yaml 駆動のエージェントルーティング提案 | 基盤 |
-| [quality-gates](#quality-gates) | 実装後レビュー・テスト分析・自動 lint の品質ゲート | 品質 |
-| [route-audit](#route-audit) | 期待ルート予測とルーティング監査（管理者向け） | 監査 |
-| [cli-logging](#cli-logging) | Codex/Gemini CLI 呼び出しのログ記録と分析 | ログ |
-| [codex-suggestions](#codex-suggestions) | ファイル編集・プラン完了時の Codex 相談提案 | 提案 |
-| [gemini-suggestions](#gemini-suggestions) | Web 検索・fetch 時の Gemini リサーチ提案 | 提案 |
-| [git-workflow](#git-workflow) | Git/GitHub ワークフロー（Issue・PR・開発フロー） | ワークフロー |
-| [cocoindex](#cocoindex) | cocoindex MCP サーバーの自動プロビジョニング | MCP |
-| [tmux-monitor](#tmux-monitor) | tmux でサブエージェント出力をリアルタイム監視 | 監視 |
+| パッケージ                                | 概要                                               | カテゴリ     |
+| ----------------------------------------- | -------------------------------------------------- | ------------ |
+| [core](#core)                             | 全パッケージ共通の基盤ライブラリ                   | 基盤         |
+| [agent-routing](#agent-routing)           | cli-tools.yaml 駆動のエージェントルーティング提案  | 基盤         |
+| [quality-gates](#quality-gates)           | 実装後レビュー・テスト分析・自動 lint の品質ゲート | 品質         |
+| [audit](#audit)                           | 統一イベントログによるオーケストレーション監査基盤 | 監査         |
+| [codex-suggestions](#codex-suggestions)   | ファイル編集・プラン完了時の Codex 相談提案        | 提案         |
+| [gemini-suggestions](#gemini-suggestions) | Web 検索・fetch 時の Gemini リサーチ提案           | 提案         |
+| [git-workflow](#git-workflow)             | Git/GitHub ワークフロー（Issue・PR・開発フロー）   | ワークフロー |
+| [cocoindex](#cocoindex)                   | cocoindex MCP サーバーの自動プロビジョニング       | MCP          |
+| [tmux-monitor](#tmux-monitor)             | tmux でサブエージェント出力をリアルタイム監視      | 監視         |
 
 ---
 
@@ -73,38 +72,29 @@ AI Orchestra のパッケージ一覧と詳細。`packages/*/agents` と `packag
 
 ---
 
-### route-audit
+### audit
 
-エージェントルーティングの期待値予測・実績照合・KPI 集計を行う管理者向けパッケージ。
+統一イベントログによるオーケストレーション監査基盤。ルーティング監査・CLI 呼び出し記録・サブエージェント追跡をセッション単位の統一ログに集約する。旧 `route-audit` + `cli-logging` を統合・再設計したパッケージ。
 
-- **バージョン**: 0.2.0
+- **バージョン**: 1.0.0
 - **依存**: core, agent-routing
 
 **提供するもの:**
 
 - hooks:
-  - `orchestration-bootstrap.py` — SessionStart 時に初期化
-  - `orchestration-expected-route.py` — UserPromptSubmit で期待ルートを予測
-  - `orchestration-route-audit.py` — PostToolUse で実績ルートを記録
+  - `audit-bootstrap.py` — SessionStart 時にセッションログ初期化 + session_start イベント
+  - `audit-session-end.py` — SessionEnd 時にセッションサマリー記録
+  - `audit-prompt.py` — UserPromptSubmit で期待ルート予測 + prompt イベント
+  - `audit-route.py` — PostToolUse でルーティング監査 + quality_gate 検出
+  - `audit-cli.py` — PostToolUse:Bash で Codex/Gemini CLI 呼び出しを記録
+  - `audit-subagent-start.py` / `audit-subagent-end.py` — サブエージェントのライフサイクル記録
+- ライブラリ: `event_logger.py`（統一スキーマ v1 + セッションローテーション）
 - scripts:
-  - `log-viewer.py` — ルーティングログ閲覧
-  - `dashboard.py` — ルーティング状況ダッシュボード
-  - `orchestration-kpi-report.py` — KPI レポート生成
-- config: `delegation-policy.json`, `orchestration-flags.json`
-
----
-
-### cli-logging
-
-Codex/Gemini CLI の呼び出し履歴を記録し、後から分析できるようにする。
-
-- **バージョン**: 0.1.0
-- **依存**: core
-
-**提供するもの:**
-
-- hooks: `log-cli-tools.py`（Bash PostToolUse で CLI 呼び出しを検出・記録）
-- scripts: `analyze-cli-usage.py`（使用状況の集計・分析）
+  - `dashboard.py` — 運用ダッシュボード
+  - `log-viewer.py` — イベントログ閲覧
+  - `kpi-report.py` — KPI レポート生成
+  - `analyze-cli-usage.py` — CLI 使用状況分析
+- config: `delegation-policy.json`, `audit-flags.json`
 
 ---
 

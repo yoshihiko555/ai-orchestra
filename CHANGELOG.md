@@ -13,6 +13,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `pr-standards` ポリシー: PR 作成ルールを `pr-create` と `issue-fix` で共通化
 - `context_files` key in package manifests for context file ownership (#36)
 - `required_package` field in CONTEXT_SPECS for data-driven distribution (#36)
+- `audit` パッケージ: `route-audit` + `cli-logging` を統合した統一イベントログ監査基盤 (#38)
+  - 統一スキーマ v1（`v`, `ts`, `sid`, `eid`, `type`, `tid`, `ptid`, `aid`, `ctx`, `data`）
+  - セッション単位のログローテーション（`sessions/{session_id}.jsonl`）
+  - 新規イベント: `session_start`, `session_end`, `subagent_start`, `subagent_end`
+  - トレース ID によるプロンプト→ルーティング→ツール実行の呼び出しチェーン追跡
+  - CLI 呼び出しのエラー分類（timeout, auth, rate_limit 等）と生レスポンス記録
 
 ### Changed
 
@@ -20,6 +26,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `issue-fix` の PR 作成ロジックを PR Standards Policy 参照に簡素化
 - Context templates now use `<YOUR_...>` placeholders instead of ai-orchestra-specific content (#37)
 - AGENTS.md / GEMINI.md distribution is now conditional on package install state (#36)
+- `route-audit` + `cli-logging` を `audit` パッケージに統合（#38）
 
 ### Fixed
 

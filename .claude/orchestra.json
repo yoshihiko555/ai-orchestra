@@ -2,14 +2,13 @@
   "orchestra_dir": "/Users/yoshihiko/ghq/github.com/yoshihiko555/ai-orchestra",
   "installed_packages": [
     "agent-routing",
-    "cli-logging",
+    "audit",
     "cocoindex",
     "codex-suggestions",
     "core",
     "gemini-suggestions",
     "git-workflow",
     "quality-gates",
-    "route-audit",
     "tmux-monitor"
   ],
   "synced_files": [
@@ -45,8 +44,8 @@
     "config/cocoindex/cocoindex.yaml",
     "config/core/task-memory.yaml",
     "config/git-workflow/sandbox-requirements.json",
-    "config/route-audit/delegation-policy.json",
-    "config/route-audit/orchestration-flags.json"
+    "config/audit/delegation-policy.json",
+    "config/audit/audit-flags.json"
   ],
-  "last_sync": "2026-03-29T11:23:59.353222+00:00"
+  "last_sync": "2026-04-09T11:36:54.729381+00:00"
 }

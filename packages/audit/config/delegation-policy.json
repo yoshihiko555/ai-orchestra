@@ -5,8 +5,10 @@
   "rules": [],
   "aliases": {
     "claude-direct": [
-      "skill:commit", "skill:memory-tidy",
-      "skill:issue-create", "skill:issue-fix"
+      "skill:commit",
+      "skill:memory-tidy",
+      "skill:issue-create",
+      "skill:issue-fix"
     ]
   }
 }
