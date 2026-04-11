@@ -89,6 +89,16 @@ def _sanitize_agent_id(agent_id: str) -> str:
     return safe[:_MAX_AGENT_ID_LEN]
 
 
+def get_shared_dir(project_dir: str) -> str:
+    """`.claude/context/shared/` の絶対パスを返す公開 API。
+
+    CLI 間で共有される作業コンテキスト置き場のパスを取得する。
+    このディレクトリは存在しないこともあるため、書き込み側が必要に応じて
+    `Path(...).mkdir(parents=True, exist_ok=True)` を呼ぶこと。
+    """
+    return _shared_dir(project_dir)
+
+
 def get_project_dir(data: dict) -> str:
     """hook 入力からプロジェクトディレクトリを取得する。
 

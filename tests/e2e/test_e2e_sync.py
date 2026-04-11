@@ -212,9 +212,9 @@ class TestHookSync:
             (e2e_project / ".claude" / "settings.local.json").read_text(encoding="utf-8")
         )
         hooks_after = json.dumps(settings_after.get("hooks", {})).count("command")
-        # audit manifest に宣言された 7 hooks が追加される
+        # audit manifest に宣言された 8 hooks が追加される
         # count("command") は "type": "command" と "command": "..." の 2 箇所を拾うため x2
-        assert hooks_after - hooks_before == 7 * 2
+        assert hooks_after - hooks_before == 8 * 2
 
     def test_hook_removed_on_uninstall(self, e2e_project: Path) -> None:
         """#33: パッケージ uninstall で hooks が除去"""
@@ -230,8 +230,8 @@ class TestHookSync:
             (e2e_project / ".claude" / "settings.local.json").read_text(encoding="utf-8")
         )
         hooks_without = json.dumps(settings_without.get("hooks", {})).count("command")
-        # audit package の 7 hooks が全て除去される
-        assert hooks_with - hooks_without == 7 * 2
+        # audit package の 8 hooks が全て除去される
+        assert hooks_with - hooks_without == 8 * 2
 
     def test_manual_hook_preserved(self, e2e_project: Path) -> None:
         """#34: 手動追加した hook は sync で削除されない"""

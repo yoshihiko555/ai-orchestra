@@ -9,13 +9,15 @@
       {"file": "post-test-analysis.py", "matcher": "Bash"},
       {"file": "lint-on-save.py", "matcher": "Edit|Write"},
       {"file": "test-gate-checker.py", "matcher": "Edit|Write"}
-    ]
+    ],
+    "Stop": ["turn-end-summary.py"]
   },
   "files": [
     "hooks/post-implementation-review.py",
     "hooks/post-test-analysis.py",
     "hooks/lint-on-save.py",
-    "hooks/test-gate-checker.py"
+    "hooks/test-gate-checker.py",
+    "hooks/turn-end-summary.py"
   ],
   "skills": ["review", "tdd", "design-tracker", "release-readiness"],
   "agents": [],
