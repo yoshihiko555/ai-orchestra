@@ -66,10 +66,8 @@ class TestDeepMerge:
 class TestFindPackageConfig:
     def test_finds_from_orchestra_dir(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("AI_ORCHESTRA_DIR", str(REPO_ROOT))
-        path = hook_common.find_package_config(
-            "route-audit", "orchestration-flags.json", "/nonexistent"
-        )
-        assert path.endswith("packages/route-audit/config/orchestration-flags.json")
+        path = hook_common.find_package_config("audit", "audit-flags.json", "/nonexistent")
+        assert path.endswith("packages/audit/config/audit-flags.json")
         assert os.path.isfile(path)
 
     def test_finds_from_project_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -85,13 +83,11 @@ class TestFindPackageConfig:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("AI_ORCHESTRA_DIR", str(REPO_ROOT))
-        config_dir = tmp_path / ".claude" / "config" / "route-audit"
+        config_dir = tmp_path / ".claude" / "config" / "audit"
         config_dir.mkdir(parents=True)
-        config_file = config_dir / "orchestration-flags.json"
+        config_file = config_dir / "audit-flags.json"
         config_file.write_text('{"source": "project"}')
-        path = hook_common.find_package_config(
-            "route-audit", "orchestration-flags.json", str(tmp_path)
-        )
+        path = hook_common.find_package_config("audit", "audit-flags.json", str(tmp_path))
         assert path == str(config_file)
 
     def test_returns_empty_when_not_found(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -211,18 +207,14 @@ class TestRealConfigFiles:
     def _set_orchestra_dir(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("AI_ORCHESTRA_DIR", str(REPO_ROOT))
 
-    def test_orchestration_flags(self) -> None:
-        flags = hook_common.load_package_config(
-            "route-audit", "orchestration-flags.json", str(REPO_ROOT)
-        )
+    def test_audit_flags(self) -> None:
+        flags = hook_common.load_package_config("audit", "audit-flags.json", str(REPO_ROOT))
         assert "features" in flags
         assert "route_audit" in flags["features"]
         assert isinstance(flags["features"]["route_audit"].get("enabled"), bool)
 
     def test_delegation_policy(self) -> None:
-        policy = hook_common.load_package_config(
-            "route-audit", "delegation-policy.json", str(REPO_ROOT)
-        )
+        policy = hook_common.load_package_config("audit", "delegation-policy.json", str(REPO_ROOT))
         assert "default_route" in policy
         assert "rules" in policy
         assert isinstance(policy["rules"], list)
