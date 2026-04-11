@@ -259,12 +259,8 @@ def main() -> None:
     if not summary:
         return
 
-    output = {
-        "hookSpecificOutput": {
-            "hookEventName": "Stop",
-            "additionalContext": summary,
-        }
-    }
+    # Stop hook では hookSpecificOutput は許可されていないため systemMessage を使う
+    output = {"systemMessage": summary}
     print(json.dumps(output, ensure_ascii=False))
 
 

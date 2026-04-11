@@ -26,18 +26,18 @@ PR 本文は以下のテンプレート構造に従う。プロジェクトに `
 ## Checklist
 
 - [ ] PR タイトルが GitHub Release にそのまま載っても読める
-- [ ] 適切なラベルを付けた (`feature` / `fix` / `docs` / `chore` / ...)
+- [ ] 適切なラベルを付けた (`bug` / `enhancement` / `documentation` / `refactor` / `task` / ...)
 - [ ] ユーザー向け変更がある場合は `CHANGELOG.md` の `Unreleased` を更新した
 ```
 
 ### セクション埋め込みルール
 
-| セクション | 入力ソース | 記述ルール |
-|-----------|-----------|-----------|
-| Summary | コミット履歴 + diff stat | 変更内容を箇条書きで要約 |
-| Testing | テスト実行結果 | 実施済みなら結果を記載、未実施なら理由を記載 |
-| Release Note | 変更内容の分析 | ユーザー向け変更がある場合のみ記載 |
-| Checklist | 自動チェック | 可能な項目は事前にチェック済みにする |
+| セクション   | 入力ソース               | 記述ルール                                   |
+| ------------ | ------------------------ | -------------------------------------------- |
+| Summary      | コミット履歴 + diff stat | 変更内容を箇条書きで要約                     |
+| Testing      | テスト実行結果           | 実施済みなら結果を記載、未実施なら理由を記載 |
+| Release Note | 変更内容の分析           | ユーザー向け変更がある場合のみ記載           |
+| Checklist    | 自動チェック             | 可能な項目は事前にチェック済みにする         |
 
 ## PR タイトル
 
@@ -47,17 +47,21 @@ PR 本文は以下のテンプレート構造に従う。プロジェクトに `
 
 ## ブランチプレフィックスとラベルの対応
 
-| ブランチプレフィックス | PR タイトルプレフィックス | ラベル |
-|---------------------|----------------------|--------|
-| `fix/` | `fix:` | `fix` |
-| `feat/` | `feat:` | `feature` |
-| `docs/` | `docs:` | `docs` |
-| `chore/` | `chore:` | `chore` |
-| `refactor/` | `refactor:` | `refactor` |
-| `test/` | `test:` | `test` |
-| `task/` | `chore:` | `chore` |
-| `release/` | `release:` | `release` |
-| その他 | `chore:` | `chore` |
+ラベルは GitHub リポジトリで実際に定義されているものに合わせる。存在しないラベルを指定すると `gh pr create` がエラーを返すため、ポリシーと実リポジトリを同期させる。
+
+| ブランチプレフィックス | PR タイトルプレフィックス | ラベル          |
+| ---------------------- | ------------------------- | --------------- |
+| `fix/`                 | `fix:`                    | `bug`           |
+| `feat/`                | `feat:`                   | `enhancement`   |
+| `docs/`                | `docs:`                   | `documentation` |
+| `chore/`               | `chore:`                  | `task`          |
+| `refactor/`            | `refactor:`               | `refactor`      |
+| `test/`                | `test:`                   | `task`          |
+| `task/`                | `chore:`                  | `task`          |
+| `release/`             | `release:`                | `task`          |
+| その他                 | `chore:`                  | `task`          |
+
+> **Note**: `bug` / `enhancement` / `documentation` は GitHub のデフォルトラベルをそのまま採用している。`refactor` / `task` はプロジェクト固有ラベル。リポジトリが異なるラベル体系を使っている場合は、この表と実ラベルを個別に調整すること。
 
 ## Issue 連携
 

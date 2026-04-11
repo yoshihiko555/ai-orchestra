@@ -41,11 +41,11 @@
     "agents/testing-reality-checker.md",
     "agents/ux-reviewer.md",
     "config/agent-routing/cli-tools.yaml",
+    "config/audit/audit-flags.json",
+    "config/audit/delegation-policy.json",
     "config/cocoindex/cocoindex.yaml",
     "config/core/task-memory.yaml",
-    "config/git-workflow/sandbox-requirements.json",
-    "config/audit/delegation-policy.json",
-    "config/audit/audit-flags.json"
+    "config/git-workflow/sandbox-requirements.json"
   ],
-  "last_sync": "2026-04-09T11:36:54.729381+00:00"
+  "last_sync": "2026-04-11T07:26:22.086365+00:00"
 }

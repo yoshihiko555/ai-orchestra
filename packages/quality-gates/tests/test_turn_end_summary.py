@@ -124,13 +124,13 @@ class TestMain:
         output = self._invoke(payload, monkeypatch, capsys)
         assert output == ""
 
-    def test_outputs_additional_context(
+    def test_outputs_system_message(
         self,
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
         tmp_path: Path,
     ) -> None:
-        """Plans.md と working-context から additionalContext を組み立てることを確認する。"""
+        """Plans.md と working-context から systemMessage を組み立てることを確認する。"""
         claude_dir = tmp_path / ".claude"
         (claude_dir / "context" / "shared").mkdir(parents=True)
         (claude_dir / "context" / "shared" / "working-context.json").write_text(
@@ -147,7 +147,9 @@ class TestMain:
         output = self._invoke(payload, monkeypatch, capsys)
         assert output
         parsed = json.loads(output)
-        text = parsed["hookSpecificOutput"]["additionalContext"]
+        # Stop hook では hookSpecificOutput は許可されていないため systemMessage を使う
+        assert "hookSpecificOutput" not in parsed
+        text = parsed["systemMessage"]
         assert "Modified: 3 files" in text
         # main.py と server.ts はコード
         assert "code: 2" in text
