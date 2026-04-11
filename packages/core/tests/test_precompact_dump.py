@@ -94,18 +94,26 @@ class TestWriteDump:
         assert Path(path).name.endswith(".md")
         assert Path(path).read_text(encoding="utf-8") == "# hello\n"
 
-    def test_prunes_old_dumps(self, tmp_path: Path) -> None:
-        """古いダンプは MAX_DUMP_FILES を超えると削除され、新規 dump は残ることを確認する。"""
+    def test_prunes_old_dumps(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """古いダンプは MAX_DUMP_FILES を超えると削除され、新規 dump は残ることを確認する。
+
+        実行時刻に依存しないよう `_now_stamp` を固定値にモンキーパッチする。
+        古いダンプよりも必ず後ろに並ぶタイムスタンプを使うことで、ソート順が
+        実時刻に関係なく決定的になる。
+        """
         project_dir = str(tmp_path)
         shared_dir = tmp_path / ".claude" / "context" / "shared"
         shared_dir.mkdir(parents=True)
 
-        # 既存ダンプを 21 個作る（閾値 +1）。
-        # ファイル名を本番と同じ `YYYYMMDDTHHMMSSZ` 形式にして、辞書順 = 時系列順になるよう揃える。
-        # ゼロ埋めされた `000000` より後ろに並ぶ時刻を使い、新規 dump が必ず末尾に来るようにする。
-        old_names = [f"precompact-20260101T00{i:04d}Z.md" for i in range(21)]
+        # 既存ダンプを 21 個作る（MAX_DUMP_FILES + 1）。
+        # `_now_stamp` が返すフォーマットに合わせてゼロ埋めし、辞書順 = 時系列順にする。
+        old_names = [f"precompact-20260101T000000-{i:06d}Z.md" for i in range(21)]
         for name in old_names:
             (shared_dir / name).write_text("x")
+
+        # 新規 dump は必ず old_names の最後より後ろに並ぶタイムスタンプにする
+        fixed_stamp = "20991231T235959-999999Z"
+        monkeypatch.setattr(precompact, "_now_stamp", lambda: fixed_stamp)
 
         new_path = precompact.write_dump(project_dir, "new")
 
@@ -114,7 +122,8 @@ class TestWriteDump:
         )
         # 件数が MAX_DUMP_FILES 以内に収まっている
         assert len(remaining_names) == precompact.MAX_DUMP_FILES
-        # 新規 dump は必ず残る
+        # 新規 dump は必ず残る（固定スタンプが最後尾なので確実に保持される）
+        assert Path(new_path).name == f"precompact-{fixed_stamp}.md"
         assert Path(new_path).exists()
         assert Path(new_path).name in remaining_names
         # 最古のダンプ（先頭）は削除されている

@@ -47,8 +47,14 @@ MAX_DUMP_FILES = 20
 
 
 def _now_stamp() -> str:
-    """ファイル名用のタイムスタンプを返す（UTC, コロン無し）。"""
-    return datetime.datetime.now(datetime.UTC).strftime("%Y%m%dT%H%M%SZ")
+    """ファイル名用のタイムスタンプを返す(UTC, コロン無し)。
+
+    秒精度だけだと同一秒内の複数 PreCompact 実行でファイル名が衝突し、
+    古い dump を上書きしてしまうため、マイクロ秒まで含めて一意化する。
+    形式: `YYYYMMDDTHHMMSS-ffffffZ`（辞書順 = 時系列順）。
+    """
+    now = datetime.datetime.now(datetime.UTC)
+    return now.strftime("%Y%m%dT%H%M%S") + f"-{now.microsecond:06d}Z"
 
 
 def _read_plans(project_dir: str) -> str:
@@ -189,8 +195,11 @@ def main() -> None:
                 session_id=session_id,
                 project_dir=project_dir,
             )
-        except Exception:  # pragma: no cover
-            pass
+        except Exception as exc:  # pragma: no cover - 診断ログのみ、フックは止めない
+            print(
+                f"precompact-dump: failed to emit audit event: {exc}",
+                file=sys.stderr,
+            )
 
     print(f"precompact-dump: saved to {dump_path}", file=sys.stderr)
 

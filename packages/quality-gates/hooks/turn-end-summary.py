@@ -147,7 +147,8 @@ def _count_plans(project_dir: str) -> dict[str, int]:
         return {}
     try:
         tasks = parse_tasks(content)
-    except Exception:
+    except Exception as exc:  # pragma: no cover - 診断ログのみ
+        print(f"turn-end-summary: failed to parse Plans.md: {exc}", file=sys.stderr)
         return {}
     return {state: len(items) for state, items in tasks.items()}
 
@@ -219,8 +220,8 @@ def _emit_turn_end(
             session_id=session_id,
             project_dir=project_dir,
         )
-    except Exception:  # pragma: no cover
-        pass
+    except Exception as exc:  # pragma: no cover - 診断ログのみ、フックは止めない
+        print(f"turn-end-summary: audit emit skipped: {exc}", file=sys.stderr)
 
 
 @safe_hook_execution
