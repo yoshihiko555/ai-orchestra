@@ -24,6 +24,7 @@ Do NOT hardcode model names or CLI options — always refer to the config file.
 3. model/sandbox/flags の解決順: `agents.<agent-name>.*` → 該当ツールの設定 → フォールバック
 
 ### フォールバックデフォルト（設定ファイルが見つからない場合）
+
 - Tool: gemini
 - Model: (omit -m flag, use CLI default)
 
@@ -94,18 +95,22 @@ codex exec --model <model> --sandbox <sandbox> <flags> "{research question}" 2>/
 ## Research: {topic}
 
 ### Key Findings
+
 - {Finding 1}
 - {Finding 2}
 - {Finding 3}
 
 ### Recommendations
+
 - {Recommended approach}
 
 ### Sources
+
 - {Source 1}
 - {Source 2}
 
 ### Detailed Notes
+
 {Save to .claude/docs/research/{topic}.md if lengthy}
 ```
 
@@ -116,6 +121,14 @@ codex exec --model <model> --sandbox <sandbox> <flags> "{research question}" 2>/
 - Compare multiple approaches
 - Save detailed output to files, return summary
 - Return concise output (main orchestrator has limited context)
+
+## コンテキスト効率
+
+- ファイル探索は Glob → Grep(count) → Grep(files_with_matches) → Grep(content, head_limit) → Read(offset/limit) の段階的絞り込みで行う
+- 対象ファイル 5 個以上の探索ではエスカレーション戦略を徹底、10 個以上はサブエージェント委譲を検討
+- Read は必要な範囲のみ offset/limit で部分読み込み。全文 Read は避ける
+- Bash の cat / grep / find は使用せず、専用ツール（Read / Grep / Glob）を使う
+- 詳細は `escalation-strategy` ルール参照
 
 ## Language
 

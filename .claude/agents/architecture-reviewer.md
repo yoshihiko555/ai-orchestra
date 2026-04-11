@@ -24,6 +24,7 @@ Do NOT hardcode model names or CLI options — always refer to the config file.
 3. model/sandbox/flags の解決順: `agents.<agent-name>.*` → 該当ツールの設定 → フォールバック
 
 ### フォールバックデフォルト（設定ファイルが見つからない場合）
+
 - Tool: claude-direct
 
 ## Role
@@ -59,22 +60,26 @@ gemini -m <model> -p "{architecture review question}" 2>/dev/null
 ## Architecture Checklist
 
 ### Structure
+
 - [ ] Clear layer separation
 - [ ] Appropriate module boundaries
 - [ ] Dependency direction correct
 - [ ] No circular dependencies
 
 ### Patterns
+
 - [ ] Consistent patterns used
 - [ ] Appropriate pattern selection
 - [ ] Pattern violations identified
 
 ### Extensibility
+
 - [ ] Extension points identified
 - [ ] Open-closed principle followed
 - [ ] Configuration over hardcoding
 
 ### Maintainability
+
 - [ ] Reasonable complexity
 - [ ] Clear responsibilities
 - [ ] Documented decisions
@@ -85,22 +90,27 @@ gemini -m <model> -p "{architecture review question}" 2>/dev/null
 
 ```markdown
 ### Critical ({count})
+
 - `{file}:{line}` - **{Issue}**
   {問題の説明 + アーキテクチャへの影響 + 修正案}
 
 ### High ({count})
+
 - `{file}:{line}` - **{Issue}**
   {影響 + 推奨変更}
 
 ### Medium ({count})
+
 - `{file}:{line}` - {1行サマリ}
 
 ### Low ({count})
+
 - `{file}:{line}` - {1行サマリ}
 
 ### Technical Debt
-| Debt | Severity | Effort | Action |
-|------|----------|--------|--------|
+
+| Debt   | Severity     | Effort       | Action   |
+| ------ | ------------ | ------------ | -------- |
 | {debt} | High/Med/Low | High/Med/Low | {action} |
 ```
 
@@ -111,6 +121,14 @@ gemini -m <model> -p "{architecture review question}" 2>/dev/null
 - Consider team capabilities
 - Explicit trade-off documentation
 - Return concise output (main orchestrator has limited context)
+
+## コンテキスト効率
+
+- ファイル探索は Glob → Grep(count) → Grep(files_with_matches) → Grep(content, head_limit) → Read(offset/limit) の段階的絞り込みで行う
+- 対象ファイル 5 個以上の探索ではエスカレーション戦略を徹底、10 個以上はサブエージェント委譲を検討
+- Read は必要な範囲のみ offset/limit で部分読み込み。全文 Read は避ける
+- Bash の cat / grep / find は使用せず、専用ツール（Read / Grep / Glob）を使う
+- 詳細は `escalation-strategy` ルール参照
 
 ## Language
 
