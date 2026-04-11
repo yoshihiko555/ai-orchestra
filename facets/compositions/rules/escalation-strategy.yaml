@@ -1,0 +1,8 @@
+# escalation-strategy ルールのファセット構成定義
+name: escalation-strategy
+description: コンテキスト節約のためのツール選択エスカレーション戦略
+type: rule
+
+# 参照するポリシー（facets/policies/ から解決）
+policies:
+  - context-escalation

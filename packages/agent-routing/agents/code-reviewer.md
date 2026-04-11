@@ -24,6 +24,7 @@ Do NOT hardcode model names or CLI options — always refer to the config file.
 3. model/sandbox/flags の解決順: `agents.<agent-name>.*` → 該当ツールの設定 → フォールバック
 
 ### フォールバックデフォルト（設定ファイルが見つからない場合）
+
 - Tool: claude-direct
 
 ## Role
@@ -70,32 +71,20 @@ gemini -m <model> -p "{code review question}" 2>/dev/null
 
 重要度に応じた段階的出力。Medium/Low は 1 行サマリ。
 
-```markdown
-### Critical ({count})
-- `{file}:{line}` - **{Issue}**
-  {問題の説明 + 影響 + 修正案}
-  ```{lang}
-  {コードスニペット}
-  ```
+- `### Critical ({count})` — `- {file}:{line} - **{Issue}** 問題の説明 + 影響 + 修正案 + コードスニペット`
+- `### High ({count})` — `- {file}:{line} - **{Issue}** 問題の説明 + 修正案`
+- `### Medium ({count})` — `- {file}:{line} - {1 行サマリ}`
+- `### Low ({count})` — `- {file}:{line} - {1 行サマリ}`
 
-### High ({count})
-- `{file}:{line}` - **{Issue}**
-  {問題の説明 + 修正案}
-
-### Medium ({count})
-- `{file}:{line}` - {1行サマリ}
-
-### Low ({count})
-- `{file}:{line}` - {1行サマリ}
-```
+Critical/High には言語指定のコードスニペットを添付する（プレーンなインラインコードで記述する）。
 
 ## Severity Levels
 
-| Level | Criteria |
-|-------|----------|
-| Critical | Bugs, security issues, data loss risk |
-| High | Maintainability, performance concerns |
-| Medium/Low | Style, minor improvements |
+| Level      | Criteria                              |
+| ---------- | ------------------------------------- |
+| Critical   | Bugs, security issues, data loss risk |
+| High       | Maintainability, performance concerns |
+| Medium/Low | Style, minor improvements             |
 
 ## Principles
 
@@ -104,6 +93,14 @@ gemini -m <model> -p "{code review question}" 2>/dev/null
 - Suggest specific improvements
 - Acknowledge good practices
 - Return concise output (main orchestrator has limited context)
+
+## コンテキスト効率
+
+- ファイル探索は Glob → Grep(count) → Grep(files_with_matches) → Grep(content, head_limit) → Read(offset/limit) の段階的絞り込みで行う
+- 対象ファイル 5 個以上の探索ではエスカレーション戦略を徹底、10 個以上はサブエージェント委譲を検討
+- Read は必要な範囲のみ offset/limit で部分読み込み。全文 Read は避ける
+- Bash の cat / grep / find は使用せず、専用ツール（Read / Grep / Glob）を使う
+- 詳細は `escalation-strategy` ルール参照
 
 ## Language
 

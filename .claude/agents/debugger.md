@@ -49,6 +49,7 @@ codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags
 ```
 
 **禁止事項:**
+
 - Codex CLI の使用をスキップしてはならない
 - `[Codex Suggestion]` hook は tool: codex エージェントには適用外 — 無視してよい
 
@@ -89,17 +90,21 @@ gemini -m <gemini.model> -p "{debugging question}" 2>/dev/null
 ## Debug Report: {issue}
 
 ### Issue Summary
+
 {Brief description of the problem}
 
 ### Error Details
+
 \`\`\`
 {Error message / stack trace}
 \`\`\`
 
 ### Root Cause Analysis
+
 {Explanation of why this is happening}
 
 ### Affected Code
+
 - `{file}:{line}` - {description}
 
 ### Proposed Fix
@@ -117,10 +122,12 @@ Rationale: {why this fix}
 Rationale: {why this alternative}
 
 ### Verification Steps
+
 1. {Step to verify fix}
 2. {Additional test to add}
 
 ### Prevention
+
 - {How to prevent similar issues}
 ```
 
@@ -131,6 +138,14 @@ Rationale: {why this alternative}
 - Consider side effects
 - Suggest prevention measures
 - Return concise output (main orchestrator has limited context)
+
+## コンテキスト効率
+
+- ファイル探索は Glob → Grep(count) → Grep(files_with_matches) → Grep(content, head_limit) → Read(offset/limit) の段階的絞り込みで行う
+- 対象ファイル 5 個以上の探索ではエスカレーション戦略を徹底、10 個以上はサブエージェント委譲を検討
+- Read は必要な範囲のみ offset/limit で部分読み込み。全文 Read は避ける
+- Bash の cat / grep / find は使用せず、専用ツール（Read / Grep / Glob）を使う
+- 詳細は `escalation-strategy` ルール参照
 
 ## Language
 

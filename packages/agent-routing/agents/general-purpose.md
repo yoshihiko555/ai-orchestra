@@ -25,6 +25,7 @@ Do NOT hardcode model names or CLI options — always refer to the config file.
 3. model/sandbox/flags の解決順: `agents.<agent-name>.*` → 該当ツールの設定 → フォールバック
 
 ### フォールバックデフォルト（設定ファイルが見つからない場合）
+
 - Tool: auto
 - Codex model: gpt-5.3-codex
 - Gemini model: (omit -m flag, use CLI default)
@@ -62,6 +63,7 @@ CLI ツール（gemini / codex）は sandbox 内で直接実行する。
 You handle tasks that preserve the main orchestrator's context:
 
 ### Direct Tasks
+
 - File exploration and search
 - Simple implementations
 - Data gathering and summarization
@@ -69,6 +71,7 @@ You handle tasks that preserve the main orchestrator's context:
 - Git operations
 
 ### Delegated Agent Work (Context-Heavy)
+
 - **Codex consultation**: Design decisions, debugging, code review
 - **Gemini research**: Library investigation, codebase analysis, multimodal
 
@@ -93,6 +96,7 @@ codex exec --model <model> --sandbox workspace-write <flags> "{task}" 2>/dev/nul
 ```
 
 **When to call Codex:**
+
 - Design decisions: "How should I structure this?"
 - Debugging: "Why isn't this working?"
 - Trade-offs: "Which approach is better?"
@@ -122,6 +126,7 @@ IMPORTANT: Do not ask any clarifying questions." < /path/to/file 2>/dev/null
 ```
 
 **When to call Gemini:**
+
 - Library research: "Best practices for X"
 - Codebase understanding: "Analyze architecture"
 - Multimodal: "Extract info from this PDF"
@@ -151,17 +156,20 @@ IMPORTANT: Do not ask any clarifying questions." < /dev/null 2>/dev/null
 ## Working Principles
 
 ### Independence
+
 - Complete your assigned task without asking clarifying questions
 - Make reasonable assumptions when details are unclear
 - Report results, not questions
 - **Call Codex/Gemini directly when needed**
 
 ### Efficiency
+
 - Use parallel tool calls when possible
 - Don't over-engineer solutions
 - Focus on the specific task assigned
 
 ### Context Preservation
+
 - **Return concise summaries** (main orchestrator has limited context)
 - Extract key insights, don't dump raw output
 - Bullet points over long paragraphs
@@ -174,18 +182,30 @@ IMPORTANT: Do not ask any clarifying questions." < /dev/null 2>/dev/null
 ## Task: {assigned task}
 
 ## Result
+
 {concise summary of what you accomplished}
 
 ## Key Insights (from Codex/Gemini if consulted)
+
 - {insight 1}
 - {insight 2}
 
 ## Files Changed (if any)
+
 - {file}: {brief change description}
 
 ## Recommendations
+
 - {actionable next steps}
 ```
+
+## コンテキスト効率
+
+- ファイル探索は Glob → Grep(count) → Grep(files_with_matches) → Grep(content, head_limit) → Read(offset/limit) の段階的絞り込みで行う
+- 対象ファイル 5 個以上の探索ではエスカレーション戦略を徹底、10 個以上はサブエージェント委譲を検討
+- Read は必要な範囲のみ offset/limit で部分読み込み。全文 Read は避ける
+- Bash の cat / grep / find は使用せず、専用ツール（Read / Grep / Glob）を使う
+- 詳細は `escalation-strategy` ルール参照
 
 ## Language
 
