@@ -1,0 +1,37 @@
+{
+  "name": "audit",
+  "version": "1.0.0",
+  "description": "統一イベントログによるオーケストレーション監査基盤",
+  "depends": ["core", "agent-routing"],
+  "hooks": {
+    "SessionStart": ["audit-bootstrap.py"],
+    "SessionEnd": ["audit-session-end.py"],
+    "UserPromptSubmit": ["audit-prompt.py"],
+    "PostToolUse": [
+      "audit-route.py",
+      { "file": "audit-cli.py", "matcher": "Bash" }
+    ],
+    "SubagentStart": ["audit-subagent-start.py"],
+    "SubagentStop": ["audit-subagent-end.py"]
+  },
+  "files": [
+    "hooks/event_logger.py",
+    "hooks/audit-bootstrap.py",
+    "hooks/audit-session-end.py",
+    "hooks/audit-prompt.py",
+    "hooks/audit-route.py",
+    "hooks/audit-cli.py",
+    "hooks/audit-subagent-start.py",
+    "hooks/audit-subagent-end.py"
+  ],
+  "skills": [],
+  "agents": [],
+  "rules": [],
+  "scripts": [
+    "scripts/dashboard.py",
+    "scripts/log-viewer.py",
+    "scripts/kpi-report.py",
+    "scripts/analyze-cli-usage.py"
+  ],
+  "config": ["config/delegation-policy.json", "config/audit-flags.json"]
+}
