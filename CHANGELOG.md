@@ -39,6 +39,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - `quality-gates/turn-end-summary.py`: Stop イベントでターン終了サマリーを注入
     （編集ファイル数、Plans.md の WIP/TODO/blocked 件数、lint 未実行リマインダー）
   - audit 統一スキーマに `instructions_loaded`, `turn_end`, `precompact` イベント型を追加
+- `quality-gates/check-context-optimization.py`: PreToolUse(Read|Grep|Bash) で非効率な
+  ツール使用 (Read 全文読み・Grep content モード乱用・Bash の cat/grep/find 等) を検出し、
+  エスカレーション戦略への切り替えを提案する Hook を追加 (#10)
+  - `audit-flags.json` に `features.context_optimization` フラグを追加（閾値・無効化対応）
 
 ### Changed
 
