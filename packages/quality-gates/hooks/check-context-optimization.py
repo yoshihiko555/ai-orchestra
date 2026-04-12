@@ -191,6 +191,8 @@ def main() -> None:
         data = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):
         sys.exit(0)
+    if not isinstance(data, dict):
+        sys.exit(0)
 
     project_dir = data.get("cwd", "") or os.environ.get("CLAUDE_PROJECT_DIR", "")
     settings = _load_settings(project_dir)
