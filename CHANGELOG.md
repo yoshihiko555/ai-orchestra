@@ -9,10 +9,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - `quality-gates/test-tampering-detector.py`: PostToolUse で `it.skip()` / `@pytest.mark.skip` / `eslint-disable` / `noqa` / `type: ignore` の追加と、`rm` / `git rm` によるテストファイル削除を検出して警告する品質ゲートを追加
+## [0.2.5] - 2026-04-12
 
 ### Changed
 
 - `pr-standards` ポリシーのブランチプレフィックス→ラベル対応表を GitHub の実ラベル体系 (`bug` / `enhancement` / `documentation` / `refactor` / `task`) に合わせて更新。`gh pr create` がラベル未存在で失敗する問題を解消 (`facets/policies/pr-standards.md`、`pr-create` / `issue-fix` スキル再生成)
+- `CONTEXT_SPECS` をパッケージ manifest の `context_files` から動的に構築するようリファクタ。`orchestra-manager.py` のハードコード定義を廃止し、`core` / `codex-suggestions` / `gemini-suggestions` の manifest に `source` / `template` キーを追加。`Package` dataclass に `context_files` フィールドを追加し、`init()` の hardcoded テンプレートコピーも init リストを SSOT とする whitelist 方式のデータ駆動ループに置換 (#45)
 
 ### Fixed
 
@@ -43,6 +45,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - `quality-gates/turn-end-summary.py`: Stop イベントでターン終了サマリーを注入
     （編集ファイル数、Plans.md の WIP/TODO/blocked 件数、lint 未実行リマインダー）
   - audit 統一スキーマに `instructions_loaded`, `turn_end`, `precompact` イベント型を追加
+- `quality-gates/check-context-optimization.py`: PreToolUse(Read|Grep|Bash) で非効率な
+  ツール使用 (Read 全文読み・Grep content モード乱用・Bash の cat/grep/find 等) を検出し、
+  エスカレーション戦略への切り替えを提案する Hook を追加 (#10)
+  - `audit-flags.json` に `features.context_optimization` フラグを追加（閾値・無効化対応）
 
 ### Changed
 
@@ -61,9 +67,51 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-### Changed
+- `release-readiness` を強化し、`pyright` を導入。あわせて release workflow を追加 (#26)
 
 ### Fixed
 
-<!-- release 時は Unreleased の内容を次のような version セクションへ確定する -->
-<!-- ## [0.1.0] - YYYY-MM-DD -->
+- `inject-shared-context` の hook 出力フォーマットを修正 (#27)
+
+## [0.2.2] - 2026-03-22
+
+### Added
+
+- `review` のレビュー自動修正ループ機能を追加 (#21)
+- facet composition に Knowledge 層と Scripts を導入 (#24)
+
+### Changed
+
+- manifest-SSOT アーキテクチャへの移行に伴い、`packages/skills` を廃止 (#22)
+- `packages/rules` を廃止し、facet build へ完全委譲する構成に整理 (#25)
+
+## [0.2.1] - 2026-03-22
+
+### Added
+
+- ファセットシステムを導入し、E2E テストを追加 (#19)
+
+### Changed
+
+- モジュール分割を進め、ドキュメント体系を整理 (#19)
+
+## [0.2.0] - 2026-03-14
+
+### Added
+
+- コンテキスト共有基盤と指示書テンプレート管理を導入 (#17)
+
+### Changed
+
+- `design-tracker` の運用乖離と migration guide の記載不整合を整理 (#16)
+
+## [0.1.0] - 2026-03-06
+
+### Added
+
+- AI Orchestra の初期リリース
+- Claude Code + Codex CLI + Gemini CLI のエージェントルーティング
+- `Plans.md` による SSOT タスク管理
+- PyPI パッケージ `orchex` として公開
+- hook による自動品質ゲート
+
