@@ -110,9 +110,7 @@ def test_collect_tampering_findings_for_new_file_uses_tool_input(monkeypatch, _c
     ]
 
 
-def test_collect_tampering_findings_detects_deleted_test_files(
-    monkeypatch, _clean_state
-) -> None:
+def test_collect_tampering_findings_detects_deleted_test_files(monkeypatch, _clean_state) -> None:
     payload = {
         "tool_name": "Bash",
         "cwd": "/repo",
@@ -122,9 +120,9 @@ def test_collect_tampering_findings_detects_deleted_test_files(
     monkeypatch.setattr(
         test_tampering_detector,
         "run_git_command",
-        lambda _project_dir, *args: "D\ttests/test_auth.py\nD\ttests/test_other.py\n"
-        if "--name-status" in args
-        else "",
+        lambda _project_dir, *args: (
+            "D\ttests/test_auth.py\nD\ttests/test_other.py\n" if "--name-status" in args else ""
+        ),
     )
 
     findings = test_tampering_detector.collect_tampering_findings(payload)
@@ -213,7 +211,9 @@ def test_get_project_state_key_prefers_git_common_dir(monkeypatch) -> None:
     monkeypatch.setattr(
         test_tampering_detector,
         "run_git_command",
-        lambda _project_dir, *args: "../../.git\n" if args == ("rev-parse", "--git-common-dir") else "",
+        lambda _project_dir, *args: (
+            "../../.git\n" if args == ("rev-parse", "--git-common-dir") else ""
+        ),
     )
 
     key = test_tampering_detector.get_project_state_key("/repo/.worktrees/feat-4")
