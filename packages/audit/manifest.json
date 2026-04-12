@@ -24,13 +24,15 @@
     "hooks/audit-cli.py",
     "hooks/audit-subagent-start.py",
     "hooks/audit-subagent-end.py",
-    "hooks/audit-instructions-loaded.py"
+    "hooks/audit-instructions-loaded.py",
+    "scripts/dashboard_stats.py"
   ],
   "skills": [],
   "agents": [],
   "rules": [],
   "scripts": [
     "scripts/dashboard.py",
+    "scripts/dashboard-html.py",
     "scripts/log-viewer.py",
     "scripts/kpi-report.py",
     "scripts/analyze-cli-usage.py"

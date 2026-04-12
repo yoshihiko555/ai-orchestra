@@ -8,7 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `audit/scripts/dashboard-html.py`: 既存ログを横断集計し Chart.js で可視化する HTML ダッシュボード生成スクリプトを追加 (#31)
+- `audit/scripts/dashboard_stats.py`: テキスト / HTML 両ダッシュボードで共有する集計ロジックモジュールを新設
 - `quality-gates/test-tampering-detector.py`: PostToolUse で `it.skip()` / `@pytest.mark.skip` / `eslint-disable` / `noqa` / `type: ignore` の追加と、`rm` / `git rm` によるテストファイル削除を検出して警告する品質ゲートを追加
+
 ## [0.2.5] - 2026-04-12
 
 ### Changed
@@ -114,4 +117,3 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `Plans.md` による SSOT タスク管理
 - PyPI パッケージ `orchex` として公開
 - hook による自動品質ゲート
-
