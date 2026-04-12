@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +44,7 @@ class Package:
     agents: list[str]
     rules: list[str]
     path: Path
+    context_files: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def load(cls, manifest_path: Path) -> Package:
@@ -68,4 +69,5 @@ class Package:
             agents=data.get("agents", []),
             rules=data.get("rules", []),
             path=manifest_path.parent,
+            context_files=data.get("context_files", {}),
         )

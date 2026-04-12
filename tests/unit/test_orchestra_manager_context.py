@@ -5,6 +5,52 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+
+def _setup_context_packages(orchestra_dir: Path) -> None:
+    """context_files を含む minimal manifest を作成する。"""
+    packages = {
+        "core": {
+            "name": "core",
+            "version": "0.0.0",
+            "depends": [],
+            "context_files": {
+                "source": "claude.md",
+                "template": "templates/project/CLAUDE.md",
+                "init": ["CLAUDE.md"],
+                "sync": ["CLAUDE.md"],
+            },
+        },
+        "codex-suggestions": {
+            "name": "codex-suggestions",
+            "version": "0.0.0",
+            "depends": [],
+            "context_files": {
+                "source": "codex.md",
+                "template": "templates/codex/AGENTS.md",
+                "init": ["AGENTS.md"],
+                "sync": ["AGENTS.md"],
+            },
+        },
+        "gemini-suggestions": {
+            "name": "gemini-suggestions",
+            "version": "0.0.0",
+            "depends": [],
+            "context_files": {
+                "source": "gemini.md",
+                "template": "templates/gemini/GEMINI.md",
+                "init": [".gemini/GEMINI.md"],
+                "sync": [".gemini/GEMINI.md"],
+            },
+        },
+    }
+    packages_dir = orchestra_dir / "packages"
+    packages_dir.mkdir(parents=True, exist_ok=True)
+    for pkg_name, manifest in packages.items():
+        pkg_dir = packages_dir / pkg_name
+        pkg_dir.mkdir(parents=True, exist_ok=True)
+        (pkg_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+
 import pytest
 
 from tests.module_loader import load_module
@@ -21,6 +67,8 @@ def _setup_context_sources(orchestra_dir: Path) -> None:
     (context_dir / "claude.md").write_text("# CLAUDE\n\nclaude body\n", encoding="utf-8")
     (context_dir / "codex.md").write_text("# AGENTS\n\ncodex body\n", encoding="utf-8")
     (context_dir / "gemini.md").write_text("# GEMINI\n\ngemini body\n", encoding="utf-8")
+
+    _setup_context_packages(orchestra_dir)
 
 
 def _setup_orchestra_json(
@@ -198,3 +246,199 @@ class TestContextSync:
         assert (project_dir / "CLAUDE.md").is_file()
         assert not (project_dir / "AGENTS.md").exists()
         assert not (project_dir / ".gemini" / "GEMINI.md").exists()
+
+
+class TestInstallContextInitFiles:
+    def test_root_file_is_copied(self, tmp_path: Path) -> None:
+        orchestra_dir = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        project_dir.mkdir(parents=True)
+
+        tmpl = orchestra_dir / "templates" / "project" / "CLAUDE.md"
+        tmpl.parent.mkdir(parents=True, exist_ok=True)
+        tmpl.write_text("claude content", encoding="utf-8")
+
+        pkg_dir = orchestra_dir / "packages" / "core"
+        pkg_dir.mkdir(parents=True, exist_ok=True)
+        manifest = {
+            "name": "core",
+            "version": "0.0.0",
+            "depends": [],
+            "context_files": {
+                "source": "claude.md",
+                "template": "templates/project/CLAUDE.md",
+                "init": ["CLAUDE.md"],
+                "sync": ["CLAUDE.md"],
+            },
+        }
+        (pkg_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+        manager = OrchestraManager(orchestra_dir)
+        pkg = manager.load_packages()["core"]
+        manager._install_context_init_files(pkg, project_dir, dry_run=False)
+
+        dest = project_dir / "CLAUDE.md"
+        assert dest.is_file()
+        assert dest.read_text(encoding="utf-8") == "claude content"
+
+    def test_prefixed_file_is_copied(self, tmp_path: Path) -> None:
+        orchestra_dir = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        project_dir.mkdir(parents=True)
+
+        tmpl_dir = orchestra_dir / "templates" / "codex"
+        tmpl_dir.mkdir(parents=True, exist_ok=True)
+        (tmpl_dir / "AGENTS.md").write_text("agents content", encoding="utf-8")
+        (tmpl_dir / "config.toml").write_text("toml content", encoding="utf-8")
+
+        pkg_dir = orchestra_dir / "packages" / "codex-suggestions"
+        pkg_dir.mkdir(parents=True, exist_ok=True)
+        manifest = {
+            "name": "codex-suggestions",
+            "version": "0.0.0",
+            "depends": [],
+            "context_files": {
+                "source": "codex.md",
+                "template": "templates/codex/AGENTS.md",
+                "init": ["AGENTS.md", ".codex/config.toml"],
+                "sync": ["AGENTS.md"],
+            },
+        }
+        (pkg_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+        manager = OrchestraManager(orchestra_dir)
+        pkg = manager.load_packages()["codex-suggestions"]
+        manager._install_context_init_files(pkg, project_dir, dry_run=False)
+
+        assert (project_dir / "AGENTS.md").is_file()
+        toml_dest = project_dir / ".codex" / "config.toml"
+        assert toml_dest.is_file()
+        assert toml_dest.read_text(encoding="utf-8") == "toml content"
+
+    def test_directory_entry_is_copied_recursively(self, tmp_path: Path) -> None:
+        orchestra_dir = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        project_dir.mkdir(parents=True)
+
+        tmpl_dir = orchestra_dir / "templates" / "codex"
+        tmpl_dir.mkdir(parents=True, exist_ok=True)
+        (tmpl_dir / "AGENTS.md").write_text("placeholder", encoding="utf-8")
+
+        skill_dir = tmpl_dir / "skills" / "context-loader"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text("skill content", encoding="utf-8")
+
+        pkg_dir = orchestra_dir / "packages" / "codex-suggestions"
+        pkg_dir.mkdir(parents=True, exist_ok=True)
+        manifest = {
+            "name": "codex-suggestions",
+            "version": "0.0.0",
+            "depends": [],
+            "context_files": {
+                "source": "codex.md",
+                "template": "templates/codex/AGENTS.md",
+                "init": [".codex/skills/context-loader/"],
+                "sync": ["AGENTS.md"],
+            },
+        }
+        (pkg_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+        manager = OrchestraManager(orchestra_dir)
+        pkg = manager.load_packages()["codex-suggestions"]
+        manager._install_context_init_files(pkg, project_dir, dry_run=False)
+
+        dest = project_dir / ".codex" / "skills" / "context-loader" / "SKILL.md"
+        assert dest.is_file()
+        assert dest.read_text(encoding="utf-8") == "skill content"
+
+    def test_missing_template_root_prints_warning_and_no_crash(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        orchestra_dir = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        project_dir.mkdir(parents=True)
+
+        pkg_dir = orchestra_dir / "packages" / "core"
+        pkg_dir.mkdir(parents=True, exist_ok=True)
+        manifest = {
+            "name": "core",
+            "version": "0.0.0",
+            "depends": [],
+            "context_files": {
+                "source": "claude.md",
+                "template": "templates/nonexistent/FILE.md",
+                "init": ["FILE.md"],
+                "sync": [],
+            },
+        }
+        (pkg_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+        manager = OrchestraManager(orchestra_dir)
+        pkg = manager.load_packages()["core"]
+        manager._install_context_init_files(pkg, project_dir, dry_run=False)
+
+        captured = capsys.readouterr()
+        assert "テンプレートディレクトリ" in captured.err
+
+    def test_existing_file_is_not_overwritten(self, tmp_path: Path) -> None:
+        orchestra_dir = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        project_dir.mkdir(parents=True)
+
+        tmpl = orchestra_dir / "templates" / "project" / "CLAUDE.md"
+        tmpl.parent.mkdir(parents=True, exist_ok=True)
+        tmpl.write_text("new content", encoding="utf-8")
+
+        existing = project_dir / "CLAUDE.md"
+        existing.write_text("existing content", encoding="utf-8")
+
+        pkg_dir = orchestra_dir / "packages" / "core"
+        pkg_dir.mkdir(parents=True, exist_ok=True)
+        manifest = {
+            "name": "core",
+            "version": "0.0.0",
+            "depends": [],
+            "context_files": {
+                "source": "claude.md",
+                "template": "templates/project/CLAUDE.md",
+                "init": ["CLAUDE.md"],
+                "sync": ["CLAUDE.md"],
+            },
+        }
+        (pkg_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+        manager = OrchestraManager(orchestra_dir)
+        pkg = manager.load_packages()["core"]
+        manager._install_context_init_files(pkg, project_dir, dry_run=False)
+
+        assert existing.read_text(encoding="utf-8") == "existing content"
+
+    def test_empty_init_list_is_noop(self, tmp_path: Path) -> None:
+        orchestra_dir = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        project_dir.mkdir(parents=True)
+
+        tmpl = orchestra_dir / "templates" / "project" / "CLAUDE.md"
+        tmpl.parent.mkdir(parents=True, exist_ok=True)
+        tmpl.write_text("content", encoding="utf-8")
+
+        pkg_dir = orchestra_dir / "packages" / "core"
+        pkg_dir.mkdir(parents=True, exist_ok=True)
+        manifest = {
+            "name": "core",
+            "version": "0.0.0",
+            "depends": [],
+            "context_files": {
+                "source": "claude.md",
+                "template": "templates/project/CLAUDE.md",
+                "init": [],
+                "sync": ["CLAUDE.md"],
+            },
+        }
+        (pkg_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+        manager = OrchestraManager(orchestra_dir)
+        pkg = manager.load_packages()["core"]
+        manager._install_context_init_files(pkg, project_dir, dry_run=False)
+
+        assert list(project_dir.iterdir()) == []
