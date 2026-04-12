@@ -64,9 +64,51 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-### Changed
+- `release-readiness` を強化し、`pyright` を導入。あわせて release workflow を追加 (#26)
 
 ### Fixed
 
-<!-- release 時は Unreleased の内容を次のような version セクションへ確定する -->
-<!-- ## [0.1.0] - YYYY-MM-DD -->
+- `inject-shared-context` の hook 出力フォーマットを修正 (#27)
+
+## [0.2.2] - 2026-03-22
+
+### Added
+
+- `review` のレビュー自動修正ループ機能を追加 (#21)
+- facet composition に Knowledge 層と Scripts を導入 (#24)
+
+### Changed
+
+- manifest-SSOT アーキテクチャへの移行に伴い、`packages/skills` を廃止 (#22)
+- `packages/rules` を廃止し、facet build へ完全委譲する構成に整理 (#25)
+
+## [0.2.1] - 2026-03-22
+
+### Added
+
+- ファセットシステムを導入し、E2E テストを追加 (#19)
+
+### Changed
+
+- モジュール分割を進め、ドキュメント体系を整理 (#19)
+
+## [0.2.0] - 2026-03-14
+
+### Added
+
+- コンテキスト共有基盤と指示書テンプレート管理を導入 (#17)
+
+### Changed
+
+- `design-tracker` の運用乖離と migration guide の記載不整合を整理 (#16)
+
+## [0.1.0] - 2026-03-06
+
+### Added
+
+- AI Orchestra の初期リリース
+- Claude Code + Codex CLI + Gemini CLI のエージェントルーティング
+- `Plans.md` による SSOT タスク管理
+- PyPI パッケージ `orchex` として公開
+- hook による自動品質ゲート
+
