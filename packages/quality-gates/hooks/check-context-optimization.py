@@ -38,6 +38,9 @@ BASH_REPLACEMENTS: dict[str, str] = {
     "rg": "Grep",
 }
 
+# 検出時に剥がして次トークンを評価する単純なラッパー
+BASH_WRAPPER_PREFIXES: frozenset[str] = frozenset({"sudo", "time", "nice"})
+
 ESCALATION_REF = "参照: .claude/rules/escalation-strategy.md"
 
 _MESSAGE_VALUE_MAX_LEN = 200
@@ -93,9 +96,6 @@ def check_read(tool_input: dict, settings: dict) -> str:
     threshold = int(settings.get("read_line_threshold", DEFAULT_READ_LINE_THRESHOLD))
     max_bytes = int(settings.get("max_file_size_bytes", DEFAULT_MAX_FILE_SIZE_BYTES))
 
-    if not os.path.isfile(file_path):
-        return ""
-
     line_count = _count_lines(file_path, max_bytes)
     if line_count is None or line_count <= threshold:
         return ""
@@ -125,22 +125,25 @@ def check_grep(tool_input: dict, _settings: dict) -> str:
 
 
 def _bash_replacement(command: str) -> tuple[str, str]:
-    """command の先頭トークンを解析し、(検出されたコマンド, 推奨ツール) を返す。"""
+    """command の先頭トークンを解析し、(検出されたコマンド, 推奨ツール) を返す。
+
+    `sudo cat foo` や `sudo nice cat foo` のような連続ラッパーは
+    BASH_WRAPPER_PREFIXES に含まれる限り何段でも剥がして次のトークンを評価する。
+    """
     if not command:
         return "", ""
     try:
         tokens = shlex.split(command, comments=False, posix=True)
     except ValueError:
         return "", ""
-    if not tokens:
+
+    idx = 0
+    while idx < len(tokens) and os.path.basename(tokens[idx]) in BASH_WRAPPER_PREFIXES:
+        idx += 1
+    if idx >= len(tokens):
         return "", ""
 
-    head = tokens[0]
-    # `sudo cat foo.py` のような呼び出しも拾う
-    if head in {"sudo", "time", "nice"} and len(tokens) > 1:
-        head = tokens[1]
-
-    base = os.path.basename(head)
+    base = os.path.basename(tokens[idx])
     if base in BASH_REPLACEMENTS:
         return base, BASH_REPLACEMENTS[base]
     return "", ""
