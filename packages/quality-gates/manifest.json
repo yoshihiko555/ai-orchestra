@@ -4,6 +4,9 @@
   "description": "実装後レビュー・テスト分析・自動 lint の品質ゲート",
   "depends": ["core"],
   "hooks": {
+    "PreToolUse": [
+      {"file": "check-context-optimization.py", "matcher": "Read|Grep|Bash"}
+    ],
     "PostToolUse": [
       {"file": "post-implementation-review.py", "matcher": "Edit|Write"},
       {"file": "post-test-analysis.py", "matcher": "Bash"},
@@ -13,6 +16,7 @@
     "Stop": ["turn-end-summary.py"]
   },
   "files": [
+    "hooks/check-context-optimization.py",
     "hooks/post-implementation-review.py",
     "hooks/post-test-analysis.py",
     "hooks/lint-on-save.py",

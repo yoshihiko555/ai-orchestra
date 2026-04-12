@@ -12,6 +12,11 @@
     "kpi_scorecard": {
       "enabled": true,
       "default_period_days": 7
+    },
+    "context_optimization": {
+      "enabled": true,
+      "read_line_threshold": 200,
+      "max_file_size_bytes": 5242880
     }
   },
   "paths": {
