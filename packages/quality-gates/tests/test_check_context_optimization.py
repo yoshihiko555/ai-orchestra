@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
+
+import pytest
 
 from tests.module_loader import load_module
 
@@ -86,13 +89,11 @@ def test_check_read_skipped_when_file_too_large(tmp_path: Path) -> None:
 
 
 def test_check_read_skipped_for_non_regular_file(tmp_path: Path) -> None:
-    import os
-
     fifo = tmp_path / "fifo"
     try:
         os.mkfifo(fifo)
-    except (AttributeError, OSError):
-        return
+    except (AttributeError, OSError) as exc:
+        pytest.skip(f"mkfifo not supported on this platform: {exc}")
     msg = check_context_optimization.check_read({"file_path": str(fifo)}, _settings())
     assert msg == ""
 
@@ -158,6 +159,18 @@ def test_check_bash_suggests_grep_for_rg() -> None:
 def test_check_bash_handles_sudo_prefix() -> None:
     msg = check_context_optimization.check_bash({"command": "sudo cat /etc/hosts"}, _settings())
     assert "Read" in msg
+
+
+def test_check_bash_handles_chained_wrapper_prefixes() -> None:
+    msg = check_context_optimization.check_bash(
+        {"command": "sudo nice cat /etc/hosts"}, _settings()
+    )
+    assert "Read" in msg
+
+
+def test_check_bash_returns_empty_when_only_wrappers() -> None:
+    msg = check_context_optimization.check_bash({"command": "sudo nice"}, _settings())
+    assert msg == ""
 
 
 def test_check_bash_returns_empty_for_unknown_command() -> None:

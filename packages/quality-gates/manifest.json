@@ -2,7 +2,7 @@
   "name": "quality-gates",
   "version": "0.1.0",
   "description": "実装後レビュー・テスト分析・自動 lint の品質ゲート",
-  "depends": ["core"],
+  "depends": ["core", "audit"],
   "hooks": {
     "PreToolUse": [
       {"file": "check-context-optimization.py", "matcher": "Read|Grep|Bash"}
