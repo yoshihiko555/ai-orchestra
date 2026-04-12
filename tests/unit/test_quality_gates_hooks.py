@@ -26,6 +26,9 @@ post_test_analysis = load_module(
 test_gate_checker = load_module(
     "test_gate_checker_test", "packages/quality-gates/hooks/test-gate-checker.py"
 )
+test_tampering_detector = load_module(
+    "test_tampering_detector_test", "packages/quality-gates/hooks/test-tampering-detector.py"
+)
 
 
 def _make_stdin(data: dict, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -311,3 +314,102 @@ class TestTestGateChecker:
             test_gate_checker.main()
 
         assert not state_file.exists()
+
+
+class TestTestTamperingDetector:
+    """test-tampering-detector.py のテスト。"""
+
+    def test_main_warns_when_skip_marker_is_added(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """skip マーカー追加時に警告を出す。"""
+        monkeypatch.setattr(
+            test_tampering_detector,
+            "collect_tampering_findings",
+            lambda _data: [
+                {
+                    "type": "pattern",
+                    "file_path": "tests/test_auth.py",
+                    "label": "@pytest.mark.skip / @unittest.skip",
+                    "snippet": "@pytest.mark.skip",
+                }
+            ],
+        )
+        _make_stdin(
+            {
+                "tool_name": "Write",
+                "tool_input": {"file_path": "tests/test_auth.py", "content": "@pytest.mark.skip"},
+            },
+            monkeypatch,
+        )
+
+        with pytest.raises(SystemExit, match="0"):
+            test_tampering_detector.main()
+
+        output = json.loads(capsys.readouterr().out)
+        assert "[Warning]" in output["hookSpecificOutput"]["additionalContext"]
+        assert "@pytest.mark.skip" in output["hookSpecificOutput"]["additionalContext"]
+
+    def test_collect_findings_for_delete_command(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """削除コマンド時は deleted test file を報告する。"""
+        monkeypatch.setattr(
+            test_tampering_detector,
+            "get_deleted_test_files",
+            lambda _project_dir, _delete_targets: ["tests/x.py"],
+        )
+
+        findings = test_tampering_detector.collect_tampering_findings(
+            {
+                "tool_name": "Bash",
+                "cwd": "/project",
+                "tool_input": {"command": "rm tests/x.py"},
+            }
+        )
+
+        assert findings == [
+            {
+                "type": "deleted_test_file",
+                "file_path": "tests/x.py",
+                "label": "deleted test file",
+                "snippet": "",
+            }
+        ]
+
+    def test_non_test_file_does_not_warn_for_type_ignore(self) -> None:
+        """通常コードの suppression だけでは警告しない。"""
+        findings = test_tampering_detector.scan_added_lines(
+            "src/main.py",
+            ["# type: ignore[attr-defined]"],
+        )
+
+        assert findings == []
+
+    def test_extract_delete_targets_supports_bash_wrapper(self) -> None:
+        """bash -lc 経由の git rm からも削除ターゲットを取れる。"""
+        targets = test_tampering_detector.extract_delete_targets(
+            "Bash",
+            {"command": 'bash -lc "git rm tests/*.py"'},
+            "/project",
+        )
+
+        assert targets == ["tests/*.py"]
+
+    def test_extract_delete_targets_collects_multiple_delete_commands(self) -> None:
+        """複数の rm もすべて拾う。"""
+        targets = test_tampering_detector.extract_delete_targets(
+            "Bash",
+            {"command": "rm tests/a.py && rm tests/b.py"},
+            "/project",
+        )
+
+        assert targets == ["tests/a.py", "tests/b.py"]
+
+    def test_extract_delete_targets_collects_semicolon_separated_commands(self) -> None:
+        """セミコロン区切りの rm も拾う。"""
+        targets = test_tampering_detector.extract_delete_targets(
+            "Bash",
+            {"command": "rm tests/a.py; rm tests/b.py"},
+            "/project",
+        )
+
+        assert targets == ["tests/a.py", "tests/b.py"]

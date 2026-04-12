@@ -66,6 +66,7 @@ AI Orchestra のパッケージ一覧と詳細。`packages/*/agents` と `packag
   - `post-implementation-review.py` — Edit/Write 後にレビュー提案
   - `post-test-analysis.py` — Bash 実行後にテスト結果分析
   - `lint-on-save.py` — Edit/Write 後にファイル種別ごとの自動 lint / format
+  - `test-tampering-detector.py` — PostToolUse で skip/disable 追加やテスト削除を警告
   - `test-gate-checker.py` — テスト品質チェック
 - skills (facet build): `review`, `tdd`, `design-tracker`, `release-readiness`
 - rules (facet build): `skill-review-policy`
