@@ -49,5 +49,11 @@
     "escalation-strategy"
   ],
   "scripts": [],
-  "config": ["config/task-memory.yaml"]
+  "config": ["config/task-memory.yaml"],
+  "context_files": {
+    "source": "claude.md",
+    "template": "templates/project/CLAUDE.md",
+    "init": ["CLAUDE.md"],
+    "sync": ["CLAUDE.md"]
+  }
 }

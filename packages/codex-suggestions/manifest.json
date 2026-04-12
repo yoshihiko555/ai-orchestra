@@ -4,8 +4,12 @@
   "description": "ファイル編集・プラン完了時の Codex 相談提案",
   "depends": ["core"],
   "hooks": {
-    "PreToolUse": [{"file": "check-codex-before-write.py", "matcher": "Edit|Write"}],
-    "PostToolUse": [{"file": "check-codex-after-plan.py", "matcher": "Agent|Task"}]
+    "PreToolUse": [
+      { "file": "check-codex-before-write.py", "matcher": "Edit|Write" }
+    ],
+    "PostToolUse": [
+      { "file": "check-codex-after-plan.py", "matcher": "Agent|Task" }
+    ]
   },
   "files": [
     "hooks/check-codex-before-write.py",
@@ -17,7 +21,13 @@
   "scripts": [],
   "config": [],
   "context_files": {
-    "init": ["AGENTS.md", ".codex/config.toml", ".codex/skills/context-loader/"],
+    "source": "codex.md",
+    "template": "templates/codex/AGENTS.md",
+    "init": [
+      "AGENTS.md",
+      ".codex/config.toml",
+      ".codex/skills/context-loader/"
+    ],
     "sync": ["AGENTS.md"]
   }
 }
