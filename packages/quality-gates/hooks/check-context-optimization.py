@@ -46,6 +46,15 @@ ESCALATION_REF = "参照: .claude/rules/escalation-strategy.md"
 _MESSAGE_VALUE_MAX_LEN = 200
 
 
+def _safe_int(value: object, default: int, *, minimum: int = 1) -> int:
+    """設定値を安全に int 変換する。失敗時・下限未満時は default を返す。"""
+    try:
+        parsed = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed >= minimum else default
+
+
 def _sanitize_for_message(value: str, max_len: int = _MESSAGE_VALUE_MAX_LEN) -> str:
     """改行・制御文字を除去し、メッセージ埋め込み用に切り詰めた文字列を返す。"""
     cleaned = "".join(ch if ch.isprintable() else " " for ch in value)
@@ -93,8 +102,14 @@ def check_read(tool_input: dict, settings: dict) -> str:
     if has_offset or has_limit:
         return ""
 
-    threshold = int(settings.get("read_line_threshold", DEFAULT_READ_LINE_THRESHOLD))
-    max_bytes = int(settings.get("max_file_size_bytes", DEFAULT_MAX_FILE_SIZE_BYTES))
+    threshold = _safe_int(
+        settings.get("read_line_threshold", DEFAULT_READ_LINE_THRESHOLD),
+        DEFAULT_READ_LINE_THRESHOLD,
+    )
+    max_bytes = _safe_int(
+        settings.get("max_file_size_bytes", DEFAULT_MAX_FILE_SIZE_BYTES),
+        DEFAULT_MAX_FILE_SIZE_BYTES,
+    )
 
     line_count = _count_lines(file_path, max_bytes)
     if line_count is None or line_count <= threshold:

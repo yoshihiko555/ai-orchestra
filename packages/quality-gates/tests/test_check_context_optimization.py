@@ -24,6 +24,25 @@ def _settings(**overrides) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def test_safe_int_valid() -> None:
+    assert check_context_optimization._safe_int(200, 100) == 200
+
+
+def test_safe_int_invalid_falls_back() -> None:
+    assert check_context_optimization._safe_int("bad", 100) == 100
+    assert check_context_optimization._safe_int(None, 100) == 100
+
+
+def test_safe_int_below_minimum_falls_back() -> None:
+    assert check_context_optimization._safe_int(0, 100) == 100
+    assert check_context_optimization._safe_int(-5, 100) == 100
+
+
+# ---------------------------------------------------------------------------
+# is_enabled
+# ---------------------------------------------------------------------------
+
+
 def test_is_enabled_default_true_when_missing() -> None:
     assert check_context_optimization.is_enabled({}) is True
 
