@@ -12,9 +12,49 @@ import fcntl
 import json
 import os
 import re
+import subprocess
 import tempfile
 import uuid
 from typing import Any
+
+
+def _resolve_root_worktree() -> str | None:
+    """Git の root worktree パスを解決する。
+
+    worktree 環境では main worktree のパスを返す。
+    通常リポジトリではリポジトリルートを返す（動作変更なし）。
+    git が使えない・結果が不正な場合は None を返す。
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            git_common_dir = result.stdout.strip()
+            if not git_common_dir:
+                return None
+            root = os.path.dirname(git_common_dir)
+            if os.path.isabs(root) and os.path.isdir(root):
+                return root
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        pass
+    return None
+
+
+def _resolve_log_root(project_dir: str | None = None) -> str:
+    """ログ保存先のルートを解決する。
+
+    worktree 環境では root worktree に集約する。
+    通常環境では _resolve_project_dir と同じ。
+    """
+    root = _resolve_root_worktree()
+    if root and os.path.isdir(os.path.join(root, ".claude")):
+        return root
+    return _resolve_project_dir(project_dir)
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -127,7 +167,7 @@ def get_session_log_path(session_id: str, project_dir: str | None = None) -> str
     Returns:
         セッションログファイルの絶対パス。
     """
-    root = _resolve_project_dir(project_dir)
+    root = _resolve_log_root(project_dir)
     safe_id = _sanitize_session_id(session_id)
     return os.path.join(root, SESSIONS_DIR, f"{safe_id}.jsonl")
 
@@ -141,7 +181,7 @@ def get_log_base_path(project_dir: str | None = None) -> str:
     Returns:
         `.claude/logs/audit` の絶対パス。
     """
-    root = _resolve_project_dir(project_dir)
+    root = _resolve_log_root(project_dir)
     return os.path.join(root, LOG_BASE_DIR)
 
 
@@ -398,7 +438,7 @@ def init_session_dir(session_id: str, project_dir: str | None = None) -> str:
     Returns:
         セッションログファイルの絶対パス。
     """
-    root = _resolve_project_dir(project_dir)
+    root = _resolve_log_root(project_dir)
     sessions_path = os.path.join(root, SESSIONS_DIR)
     os.makedirs(sessions_path, mode=LOG_DIR_MODE, exist_ok=True)
     try:
@@ -426,7 +466,7 @@ def iter_session_events(
     Returns:
         v1 スキーマのイベントレコード一覧（時刻順）
     """
-    root = _resolve_project_dir(project_dir)
+    root = _resolve_log_root(project_dir)
     sessions_path = os.path.join(root, SESSIONS_DIR)
     if not os.path.isdir(sessions_path):
         return []
@@ -470,7 +510,7 @@ def list_sessions(project_dir: str | None = None) -> list[str]:
     Returns:
         セッション ID 文字列のリスト。ディレクトリが存在しなければ空リスト。
     """
-    root = _resolve_project_dir(project_dir)
+    root = _resolve_log_root(project_dir)
     sessions_path = os.path.join(root, SESSIONS_DIR)
     if not os.path.isdir(sessions_path):
         return []

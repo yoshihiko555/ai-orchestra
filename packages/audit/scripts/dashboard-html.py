@@ -438,7 +438,11 @@ def main() -> int:
         "Data tables are always visible offline.",
     )
     parser.add_argument("--session", help="Filter by session ID")
-    parser.add_argument("-o", "--output", help="Output file path (default: stdout)")
+    parser.add_argument(
+        "-o",
+        "--output",
+        help="Output file path (default: .claude/YYYYMMDD-dashboard.html, use '-' for stdout)",
+    )
     parser.add_argument("--project", help="Project directory override")
     parser.add_argument("--title", default="AI Orchestra Dashboard", help="Dashboard title")
     args = parser.parse_args()
@@ -453,14 +457,20 @@ def main() -> int:
 
     html_content = generate_html(events, title=args.title, session_id=args.session)
 
-    if args.output:
-        out_path = os.path.abspath(args.output)
+    if args.output == "-":
+        print(html_content)
+    else:
+        if args.output:
+            out_path = os.path.abspath(args.output)
+        else:
+            base_dir = project_dir or "."
+            claude_dir = os.path.join(base_dir, ".claude")
+            date_str = datetime.now(UTC).strftime("%Y%m%d")
+            out_path = os.path.abspath(os.path.join(claude_dir, f"{date_str}-dashboard.html"))
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
         with open(out_path, "w", encoding="utf-8") as f:
             f.write(html_content)
         print(f"Dashboard written to {out_path}", file=sys.stderr)
-    else:
-        print(html_content)
 
     return 0
 
