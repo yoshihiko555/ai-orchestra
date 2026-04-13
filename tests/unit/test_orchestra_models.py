@@ -84,7 +84,7 @@ class TestScriptEntryFromJson:
         value = {"description": "no path key"}
 
         # Act / Assert
-        with pytest.raises(ValueError, match="requires 'path' key"):
+        with pytest.raises(ValueError, match="non-empty 'path' string"):
             ScriptEntry.from_json(value)
 
 

@@ -40,11 +40,12 @@ class ScriptEntry:
         """JSON 値から ScriptEntry を生成。文字列または辞書に対応。"""
         if isinstance(value, str):
             return cls(path=value)
-        if "path" not in value:
-            msg = f"ScriptEntry requires 'path' key, got: {value!r}"
+        path = value.get("path")
+        if not isinstance(path, str) or not path.strip():
+            msg = f"ScriptEntry requires non-empty 'path' string, got: {value!r}"
             raise ValueError(msg)
         return cls(
-            path=value["path"],
+            path=path,
             description=value.get("description", ""),
         )
 

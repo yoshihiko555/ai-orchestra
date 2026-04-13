@@ -16,9 +16,6 @@ get_log_base_path = mod.get_log_base_path
 
 
 class TestResolveRootWorktree:
-    def setup_method(self) -> None:
-        pass  # no cache to clear
-
     def test_returns_parent_of_git_common_dir(self, tmp_path: Path) -> None:
         """git rev-parse が成功すると .git の親を返す。"""
         fake_git = tmp_path / "project" / ".git"
@@ -27,8 +24,10 @@ class TestResolveRootWorktree:
         with patch("subprocess.run") as mock_run:
             mock_run.return_value.returncode = 0
             mock_run.return_value.stdout = f"{fake_git}\n"
-            result = _resolve_root_worktree()
+            result = _resolve_root_worktree(str(tmp_path / "project"))
 
+        mock_run.assert_called_once()
+        assert mock_run.call_args.kwargs["cwd"] == str(tmp_path / "project")
         assert result == str(tmp_path / "project")
 
     def test_returns_none_when_git_fails(self) -> None:
@@ -47,19 +46,28 @@ class TestResolveRootWorktree:
 
         assert result is None
 
+    def test_passes_none_cwd_when_no_project_dir(self) -> None:
+        """project_dir 未指定時に cwd=None で git を実行する。"""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 128
+            mock_run.return_value.stdout = ""
+            _resolve_root_worktree()
+
+        assert mock_run.call_args.kwargs["cwd"] is None
+
 
 class TestResolveLogRoot:
-    def setup_method(self) -> None:
-        pass  # no cache to clear
-
     def test_uses_root_worktree_when_available(self, tmp_path: Path) -> None:
         """root worktree に .claude/ があればそちらを使う。"""
         root = tmp_path / "root"
         root.mkdir()
         (root / ".claude").mkdir()
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        (worktree / ".claude").mkdir()
 
         with patch.object(mod, "_resolve_root_worktree", return_value=str(root)):
-            result = _resolve_log_root("/some/worktree")
+            result = _resolve_log_root(str(worktree))
 
         assert result == str(root)
 
@@ -67,18 +75,25 @@ class TestResolveLogRoot:
         """root worktree に .claude/ がなければフォールバック。"""
         root = tmp_path / "root"
         root.mkdir()
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        (worktree / ".claude").mkdir()
 
         with patch.object(mod, "_resolve_root_worktree", return_value=str(root)):
-            result = _resolve_log_root("/some/worktree")
+            result = _resolve_log_root(str(worktree))
 
-        assert result == "/some/worktree"
+        assert result == str(worktree)
 
-    def test_falls_back_when_git_unavailable(self) -> None:
+    def test_falls_back_when_git_unavailable(self, tmp_path: Path) -> None:
         """git が使えなければ通常の project_dir 解決。"""
-        with patch.object(mod, "_resolve_root_worktree", return_value=None):
-            result = _resolve_log_root("/my/project")
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".claude").mkdir()
 
-        assert result == "/my/project"
+        with patch.object(mod, "_resolve_root_worktree", return_value=None):
+            result = _resolve_log_root(str(project))
+
+        assert result == str(project)
 
 
 class TestLogPathsUseLogRoot:

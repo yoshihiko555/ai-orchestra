@@ -18,12 +18,15 @@ import uuid
 from typing import Any
 
 
-def _resolve_root_worktree() -> str | None:
+def _resolve_root_worktree(project_dir: str | None = None) -> str | None:
     """Git の root worktree パスを解決する。
 
     worktree 環境では main worktree のパスを返す。
-    通常リポジトリではリポジトリルートを返す（動作変更なし）。
+    通常リポジトリではリポジトリルートを返す(動作変更なし)。
     git が使えない・結果が不正な場合は None を返す。
+
+    Args:
+        project_dir: git を実行する作業ディレクトリ。省略時は CWD。
     """
     try:
         result = subprocess.run(
@@ -31,6 +34,7 @@ def _resolve_root_worktree() -> str | None:
             capture_output=True,
             text=True,
             timeout=5,
+            cwd=project_dir or None,
         )
         if result.returncode == 0:
             git_common_dir = result.stdout.strip()
@@ -50,10 +54,11 @@ def _resolve_log_root(project_dir: str | None = None) -> str:
     worktree 環境では root worktree に集約する。
     通常環境では _resolve_project_dir と同じ。
     """
-    root = _resolve_root_worktree()
+    resolved = _resolve_project_dir(project_dir)
+    root = _resolve_root_worktree(resolved)
     if root and os.path.isdir(os.path.join(root, ".claude")):
         return root
-    return _resolve_project_dir(project_dir)
+    return resolved
 
 
 # ---------------------------------------------------------------------------

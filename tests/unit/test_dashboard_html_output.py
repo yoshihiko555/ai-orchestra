@@ -17,8 +17,7 @@ class TestDashboardHtmlDefaultOutput:
         project_dir = tmp_path / "project"
         project_dir.mkdir()
         (project_dir / ".claude").mkdir()
-        date_str = datetime.now(UTC).strftime("%Y%m%d")
-        expected = project_dir / ".claude" / f"{date_str}-dashboard.html"
+        before = datetime.now(UTC).strftime("%Y%m%d")
 
         # Act
         result = subprocess.run(
@@ -26,10 +25,15 @@ class TestDashboardHtmlDefaultOutput:
             capture_output=True,
             text=True,
         )
+        after = datetime.now(UTC).strftime("%Y%m%d")
 
         # Assert
         assert result.returncode == 0
-        assert expected.exists()
+        candidates = {
+            project_dir / ".claude" / f"{before}-dashboard.html",
+            project_dir / ".claude" / f"{after}-dashboard.html",
+        }
+        assert any(p.exists() for p in candidates)
         assert "Dashboard written to" in result.stderr
 
     def test_explicit_output_path(self, tmp_path: Path) -> None:
