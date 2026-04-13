@@ -291,12 +291,12 @@ class OrchestraManager(ContextMixin, HooksMixin):
         """初回同期を実行（sync-orchestra.py と同等のロジック）"""
         orch = self.load_orchestra_json(project_dir)
         installed = orch.get("installed_packages", [])
-        orchestra_dir = orch.get("orchestra_dir", "")
+        orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
 
         if not orchestra_dir:
             return
 
-        orchestra_path = Path(orchestra_dir)
+        orchestra_path = Path(orchestra_dir).resolve()
         if not orchestra_path.is_dir():
             return
 
@@ -477,7 +477,6 @@ class OrchestraManager(ContextMixin, HooksMixin):
             if pkg.name not in installed_packages:
                 installed_packages.add(pkg.name)
             orch["installed_packages"] = sorted(installed_packages)
-            orch["orchestra_dir"] = str(self.orchestra_dir)
             orch["last_sync"] = datetime.datetime.now(datetime.UTC).isoformat()
             self.save_orchestra_json(project_dir, orch)
 
@@ -623,8 +622,6 @@ class OrchestraManager(ContextMixin, HooksMixin):
                 continue
             self._install_context_init_files(pkg, project_dir, dry_run)
 
-        if not orch.get("orchestra_dir"):
-            orch["orchestra_dir"] = str(self.orchestra_dir)
         orch.setdefault("installed_packages", [])
         if dry_run:
             print("[DRY-RUN] orchestra.json 初期化")

@@ -18,6 +18,7 @@ Note: skills/rules は facet build に完全委譲（packages からは同期し
 
 import datetime
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -48,8 +49,6 @@ def read_hook_input() -> dict:
 
 def get_project_dir(data: dict) -> str:
     """hook 入力からプロジェクトディレクトリを取得"""
-    import os
-
     cwd = data.get("cwd") or ""
     if cwd:
         return cwd
@@ -72,12 +71,12 @@ def main() -> None:
         return
 
     installed_packages = orch.get("installed_packages", [])
-    orchestra_dir = orch.get("orchestra_dir", "")
+    orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
 
     if not orchestra_dir:
         return
 
-    orchestra_path = Path(orchestra_dir)
+    orchestra_path = Path(orchestra_dir).resolve()
     if not orchestra_path.is_dir():
         return
 
