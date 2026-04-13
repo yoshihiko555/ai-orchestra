@@ -119,4 +119,4 @@ def calc_event_distribution(events: list[dict]) -> dict:
     Returns:
         `{event_type: count}` 形式の辞書。
     """
-    return dict(Counter(e.get("type", "unknown") for e in events))
+    return dict(Counter(e.get("type") or "unknown" for e in events))

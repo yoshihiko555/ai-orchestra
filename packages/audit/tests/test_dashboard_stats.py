@@ -189,3 +189,12 @@ class TestCalcEventDistribution:
         assert result["route_decision"] == 3
         assert result["cli_call"] == 3
         assert result["quality_gate"] == 3
+
+    def test_none_and_empty_type_mapped_to_unknown(self) -> None:
+        events = [
+            {"type": None, "data": {}},
+            {"type": "", "data": {}},
+            {"data": {}},
+        ]
+        result = calc_event_distribution(events)
+        assert result["unknown"] == 3

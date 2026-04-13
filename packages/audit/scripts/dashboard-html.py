@@ -32,7 +32,7 @@ from dashboard_stats import (  # noqa: E402
     calc_session_stats,
     calc_subagent_stats,
 )
-from event_logger import iter_session_events, list_sessions  # noqa: E402
+from event_logger import iter_session_events  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Colour palette
@@ -70,8 +70,8 @@ def _safe_calc(fn: Callable[[list[dict]], dict], events: list[dict]) -> dict:
     """Call a calc function and return empty dict on failure."""
     try:
         return fn(events)
-    except Exception:
-        logger.debug("calc function %s failed", fn.__name__, exc_info=True)
+    except (KeyError, TypeError, ValueError):
+        logger.warning("calc function %s failed", fn.__name__, exc_info=True)
         return {}
 
 
@@ -449,8 +449,7 @@ def main() -> int:
     if args.session:
         events = list(iter_session_events(session_id=args.session, project_dir=project_dir))
     else:
-        for sid in list_sessions(project_dir=project_dir):
-            events.extend(iter_session_events(session_id=sid, project_dir=project_dir))
+        events = list(iter_session_events(project_dir=project_dir))
 
     html_content = generate_html(events, title=args.title, session_id=args.session)
 
