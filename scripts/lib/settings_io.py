@@ -32,12 +32,12 @@ def load_orchestra_json(project_dir: Path) -> dict[str, Any]:
     """orchestra.json をロードする。"""
     path = project_dir / ".claude" / "orchestra.json"
     if not path.exists():
-        return {"installed_packages": [], "orchestra_dir": "", "last_sync": ""}
+        return {"installed_packages": [], "last_sync": ""}
     try:
         with open(path, encoding="utf-8") as f:
             return json.load(f)
     except (json.JSONDecodeError, OSError):
-        return {"installed_packages": [], "orchestra_dir": "", "last_sync": ""}
+        return {"installed_packages": [], "last_sync": ""}
 
 
 def save_orchestra_json(project_dir: Path, data: dict[str, Any]) -> None:

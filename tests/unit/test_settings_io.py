@@ -89,14 +89,14 @@ class TestLoadOrchestraJson:
     def test_file_not_found(self, tmp_path):
         """ファイルが存在しない場合、デフォルト値を返す。"""
         result = settings_io.load_orchestra_json(tmp_path)
-        assert result == {"installed_packages": [], "orchestra_dir": "", "last_sync": ""}
+        assert result == {"installed_packages": [], "last_sync": ""}
 
     def test_valid_json(self, tmp_path):
         """正常な JSON を読み込める。"""
         claude_dir = tmp_path / ".claude"
         claude_dir.mkdir()
         path = claude_dir / "orchestra.json"
-        data = {"installed_packages": ["core"], "orchestra_dir": "/tmp", "last_sync": "2026-01-01"}
+        data = {"installed_packages": ["core"], "last_sync": "2026-01-01"}
         path.write_text(json.dumps(data), encoding="utf-8")
 
         result = settings_io.load_orchestra_json(tmp_path)
@@ -110,7 +110,7 @@ class TestLoadOrchestraJson:
         path.write_text("not json", encoding="utf-8")
 
         result = settings_io.load_orchestra_json(tmp_path)
-        assert result == {"installed_packages": [], "orchestra_dir": "", "last_sync": ""}
+        assert result == {"installed_packages": [], "last_sync": ""}
 
 
 class TestSaveOrchestraJson:
@@ -118,7 +118,7 @@ class TestSaveOrchestraJson:
 
     def test_creates_and_writes(self, tmp_path):
         """ファイルを作成して書き込む。"""
-        data = {"installed_packages": ["core", "agent-routing"], "orchestra_dir": "/home/test"}
+        data = {"installed_packages": ["core", "agent-routing"]}
         settings_io.save_orchestra_json(tmp_path, data)
 
         path = tmp_path / ".claude" / "orchestra.json"

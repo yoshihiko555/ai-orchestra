@@ -1,5 +1,4 @@
 {
-  "orchestra_dir": "/Users/yoshihiko/ghq/github.com/yoshihiko555/ai-orchestra",
   "installed_packages": [
     "agent-routing",
     "audit",
@@ -47,5 +46,5 @@
     "config/core/task-memory.yaml",
     "config/git-workflow/sandbox-requirements.json"
   ],
-  "last_sync": "2026-04-11T07:26:22.086365+00:00"
+  "last_sync": "2026-04-13T11:06:51.110164+00:00"
 }
