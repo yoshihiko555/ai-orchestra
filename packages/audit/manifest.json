@@ -31,11 +31,26 @@
   "agents": [],
   "rules": [],
   "scripts": [
-    "scripts/dashboard.py",
-    "scripts/dashboard-html.py",
-    "scripts/log-viewer.py",
-    "scripts/kpi-report.py",
-    "scripts/analyze-cli-usage.py"
+    {
+      "path": "scripts/dashboard.py",
+      "description": "テキスト形式の監査ダッシュボード"
+    },
+    {
+      "path": "scripts/dashboard-html.py",
+      "description": "HTML 形式の監査ダッシュボード（Chart.js グラフ付き）"
+    },
+    {
+      "path": "scripts/log-viewer.py",
+      "description": "監査ログビューア（イベント検索・トレース追跡）"
+    },
+    {
+      "path": "scripts/kpi-report.py",
+      "description": "KPI スコアカードレポート"
+    },
+    {
+      "path": "scripts/analyze-cli-usage.py",
+      "description": "CLI 利用パターン分析"
+    }
   ],
   "config": ["config/delegation-policy.json", "config/audit-flags.json"]
 }

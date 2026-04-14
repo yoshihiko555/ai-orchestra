@@ -29,6 +29,28 @@ class HookEntry:
 
 
 @dataclass
+class ScriptEntry:
+    """スクリプトエントリ（manifest.json の scripts 値）"""
+
+    path: str
+    description: str = ""
+
+    @classmethod
+    def from_json(cls, value: str | dict[str, Any]) -> ScriptEntry:
+        """JSON 値から ScriptEntry を生成。文字列または辞書に対応。"""
+        if isinstance(value, str):
+            return cls(path=value)
+        path = value.get("path")
+        if not isinstance(path, str) or not path.strip():
+            msg = f"ScriptEntry requires non-empty 'path' string, got: {value!r}"
+            raise ValueError(msg)
+        return cls(
+            path=path,
+            description=value.get("description", ""),
+        )
+
+
+@dataclass
 class Package:
     """パッケージ情報"""
 
@@ -38,7 +60,7 @@ class Package:
     depends: list[str]
     hooks: dict[str, list[HookEntry]]
     files: list[str]
-    scripts: list[str]
+    scripts: list[ScriptEntry]
     config: list[str]
     skills: list[str]
     agents: list[str]
@@ -63,7 +85,7 @@ class Package:
             depends=data.get("depends", []),
             hooks=hooks,
             files=data.get("files", []),
-            scripts=data.get("scripts", []),
+            scripts=[ScriptEntry.from_json(s) for s in data.get("scripts", [])],
             config=data.get("config", []),
             skills=data.get("skills", []),
             agents=data.get("agents", []),

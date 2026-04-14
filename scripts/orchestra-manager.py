@@ -679,12 +679,12 @@ class OrchestraManager(ContextMixin, HooksMixin):
         フルパス（例: scripts/dashboard.py）のいずれも受け付ける。
         """
         for entry in pkg.scripts:
-            entry_path = Path(entry)
+            entry_path = Path(entry.path)
             stem = entry_path.stem
 
-            if script_name in (entry, entry_path.name, stem):
+            if script_name in (entry.path, entry_path.name, stem):
                 if entry_path.parts[0] == "scripts":
-                    return pkg.path / entry
+                    return pkg.path / entry.path
                 return pkg.path / "scripts" / entry_path.name
         return None
 
@@ -711,7 +711,7 @@ class OrchestraManager(ContextMixin, HooksMixin):
 
         script_path = self.resolve_script_path(pkg, script_name)
         if script_path is None:
-            available = [Path(s).stem for s in pkg.scripts]
+            available = [Path(s.path).stem for s in pkg.scripts]
             print(
                 f"エラー: スクリプト '{script_name}' が見つかりません\n"
                 f"利用可能: {', '.join(available)}",
@@ -750,21 +750,20 @@ class OrchestraManager(ContextMixin, HooksMixin):
         for name in sorted(target_packages.keys()):
             pkg = target_packages[name]
             for entry in pkg.scripts:
-                entry_path = Path(entry)
+                entry_path = Path(entry.path)
                 short_name = entry_path.stem
-                if entry_path.parts[0] == "scripts":
-                    display_path = entry
-                else:
-                    display_path = f"scripts/{entry_path.name}"
-                rows.append((name, short_name, display_path))
+                rows.append((name, short_name, entry.description))
 
         if not rows:
             print("スクリプトが見つかりません")
             return
 
-        print(f"{'PACKAGE':<20} {'SCRIPT':<30} {'PATH'}")
-        for pkg_name, short_name, display_path in rows:
-            print(f"{pkg_name:<20} {short_name:<30} {display_path}")
+        print(f"{'PACKAGE':<20} {'SCRIPT':<25} {'DESCRIPTION'}")
+        for pkg_name, short_name, desc in rows:
+            print(f"{pkg_name:<20} {short_name:<25} {desc}")
+
+        print("\n実行方法: orchex run <package> <script> [-- <args>]")
+        print("詳細:     orchex run <package> <script> -- --help")
 
     def list_presets(self) -> None:
         """プリセット一覧を表示"""
