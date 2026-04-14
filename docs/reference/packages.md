@@ -1,6 +1,6 @@
 # パッケージリファレンス
 
-**更新日**: 2026-04-09
+**更新日**: 2026-04-14
 AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `packages/*/config` は `.claude/` に同期される配布元。
 
 ---
@@ -12,8 +12,7 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 | [core](#core)                             | 全パッケージ共通の基盤ライブラリ                  | 基盤         |
 | [agent-routing](#agent-routing)           | cli-tools.yaml 駆動のエージェントルーティング提案 | 基盤         |
 | [quality-gates](#quality-gates)           | 実装後レビュー・テスト分析・自動 lint             | 品質         |
-| [route-audit](#route-audit)               | ルーティング監査・KPI レポート                    | 監査         |
-| [cli-logging](#cli-logging)               | Codex/Gemini CLI ログ記録と分析                   | ログ         |
+| [audit](#audit)                           | 統一イベントログによる監査・CLI 記録              | 監査         |
 | [codex-suggestions](#codex-suggestions)   | ファイル編集時の Codex 相談提案                   | 提案         |
 | [gemini-suggestions](#gemini-suggestions) | Web 検索時の Gemini リサーチ提案                  | 提案         |
 | [git-workflow](#git-workflow)             | Git/GitHub ワークフロー（Issue・PR・開発フロー）  | ワークフロー |
@@ -102,71 +101,64 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 実装後の品質チェックを自動化する。コード編集時にファイル種別ごとの lint / format・レビュー提案・テスト分析を実行する。
 
 - **バージョン**: 0.1.0
-- **依存**: core
+- **依存**: core, audit
 
 ### コンポーネント
 
-| 種別  | 名前                            | 説明                                                               |
-| ----- | ------------------------------- | ------------------------------------------------------------------ |
-| hook  | `post-implementation-review.py` | PostToolUse(Edit/Write): 一定量の変更後にレビューを提案            |
-| hook  | `post-test-analysis.py`         | PostToolUse(Bash): テスト実行後に結果を分析                        |
-| hook  | `lint-on-save.py`               | PostToolUse(Edit/Write): ファイル種別ごとの自動 lint / format 実行 |
-| hook  | `test-gate-checker.py`          | PostToolUse(Edit/Write): テスト品質ゲートチェック                  |
-| skill | `review`                        | マルチエージェントコードレビュー（スマート選定）                   |
-| skill | `tdd`                           | テスト駆動開発ワークフロー                                         |
-| skill | `design-tracker`                | 設計記録                                                           |
-| skill | `release-readiness`             | リリース前最終チェック                                             |
-| rule  | `skill-review-policy`           | レビュー系スキルのポリシー                                         |
+| 種別  | 名前                            | 説明                                                                     |
+| ----- | ------------------------------- | ------------------------------------------------------------------------ |
+| hook  | `check-context-optimization.py` | PreToolUse(Read/Grep/Bash): 大きすぎる読み込みや `cat` 利用を抑制         |
+| hook  | `post-implementation-review.py` | PostToolUse(Edit/Write): 一定量の変更後にレビューを提案                  |
+| hook  | `post-test-analysis.py`         | PostToolUse(Bash): テスト実行後に結果を分析                              |
+| hook  | `lint-on-save.py`               | PostToolUse(Edit/Write): ファイル種別ごとの自動 lint / format 実行       |
+| hook  | `test-tampering-detector.py`    | PostToolUse(Edit/Write/Bash): skip 追加やテスト削除を検知                |
+| hook  | `test-gate-checker.py`          | PostToolUse(Edit/Write): テスト品質ゲートチェック                        |
+| hook  | `turn-end-summary.py`           | Stop: working-context / Plans.md から次ターン向け `systemMessage` を生成 |
+| skill | `review`                        | マルチエージェントコードレビュー（スマート選定）                         |
+| skill | `tdd`                           | テスト駆動開発ワークフロー                                               |
+| skill | `design-tracker`                | 設計記録                                                                 |
+| skill | `release-readiness`             | リリース前最終チェック                                                   |
+| rule  | `skill-review-policy`           | レビュー系スキルのポリシー                                               |
 
 ---
 
-## route-audit
+## audit
 
-エージェントルーティングの期待値予測・実績照合・KPI 集計を行う管理者向けパッケージ。
+統一イベントログによるオーケストレーション監査基盤。ルーティング監査・CLI 呼び出し記録・サブエージェント追跡をセッション単位のログに集約する。
 
-- **バージョン**: 0.2.0
+- **バージョン**: 1.0.0
 - **依存**: core, agent-routing
 
 ### コンポーネント
 
-| 種別   | 名前                              | 説明                                           |
-| ------ | --------------------------------- | ---------------------------------------------- |
-| hook   | `orchestration-bootstrap.py`      | SessionStart: 監査ログの初期化                 |
-| hook   | `orchestration-expected-route.py` | UserPromptSubmit: 期待ルートの予測・記録       |
-| hook   | `orchestration-route-audit.py`    | PostToolUse: 実績ルートの記録・照合            |
-| script | `log-viewer.py`                   | ルーティングログの閲覧                         |
-| script | `dashboard.py`                    | ルーティング状況ダッシュボード（テキスト出力） |
-| script | `dashboard-html.py`               | HTML ダッシュボード生成（Chart.js 可視化）     |
-| module | `dashboard_stats.py`              | ダッシュボード共有集計ロジック                 |
-| script | `orchestration-kpi-report.py`     | KPI レポート生成                               |
-| config | `delegation-policy.json`          | ルーティングルール定義                         |
-| config | `orchestration-flags.json`        | 機能フラグ（route_audit, quality_gate 等）     |
+| 種別   | 名前                            | 説明                                                                  |
+| ------ | ------------------------------- | --------------------------------------------------------------------- |
+| hook   | `audit-bootstrap.py`           | SessionStart: セッションログ初期化 + `session_start` 記録             |
+| hook   | `audit-session-end.py`         | SessionEnd: セッション集計 + `session_end` 記録                       |
+| hook   | `audit-prompt.py`              | UserPromptSubmit: 期待ルート予測 + `prompt` 記録                      |
+| hook   | `audit-route.py`               | PostToolUse: 実ルート照合 + `route_decision` / `quality_gate` 記録    |
+| hook   | `audit-cli.py`                 | PostToolUse(Bash): Codex/Gemini CLI 呼び出しを `cli_call` として記録  |
+| hook   | `audit-subagent-start.py`      | SubagentStart: サブエージェント開始を記録                             |
+| hook   | `audit-subagent-end.py`        | SubagentStop: サブエージェント終了を記録                              |
+| hook   | `audit-instructions-loaded.py` | InstructionsLoaded: 読み込まれた指示書を記録                          |
+| script | `dashboard.py`                 | 監査ダッシュボード（テキスト）                                        |
+| script | `dashboard-html.py`            | 監査ダッシュボード（HTML）                                            |
+| script | `log-viewer.py`                | 統一イベントログのフィルタ / 閲覧                                     |
+| script | `kpi-report.py`                | KPI スコアカードの生成                                                |
+| script | `analyze-cli-usage.py`         | CLI 利用パターン分析                                                  |
+| module | `event_logger.py`              | 統一イベントログ書き込み / トレース state 管理                        |
+| config | `delegation-policy.json`       | ルーティングポリシー                                                  |
+| config | `audit-flags.json`             | 監査・品質ゲート系の機能フラグ                                        |
 
 ### スクリプト実行
 
 ```bash
-orchex run audit dashboard                              # テキストダッシュボード
-orchex run audit dashboard-html -- -o dashboard.html     # HTML ダッシュボード生成
-orchex run audit dashboard-html -- --session <ID>        # セッション指定
-orchex run audit log-viewer --project . -- --last 10
-orchex run audit kpi-report
+orchex run audit dashboard
+orchex run audit dashboard-html -- -o dashboard.html
+orchex run audit log-viewer -- --limit 10
+orchex run audit kpi-report -- --days 7
+orchex run audit analyze-cli-usage -- --format json
 ```
-
----
-
-## cli-logging
-
-Codex/Gemini CLI の呼び出し履歴を記録し、後から分析できるようにする。
-
-- **バージョン**: 0.1.0
-- **依存**: core
-
-### コンポーネント
-
-| 種別   | 名前                   | 説明                                            |
-| ------ | ---------------------- | ----------------------------------------------- |
-| hook   | `log-cli-tools.py`     | PostToolUse(Bash): CLI 呼び出しを検出しログ記録 |
-| script | `analyze-cli-usage.py` | CLI 使用状況の集計・分析                        |
 
 ---
 
@@ -280,17 +272,7 @@ tmux ペインでサブエージェントの起動・停止をリアルタイム
 
 ### 有効化
 
-`orchestration-flags.json` で有効化する:
-
-```json
-{
-  "features": {
-    "tmux_monitoring": {
-      "enabled": true
-    }
-  }
-}
-```
+専用の設定ファイルはなく、`tmux` バイナリが見つかる環境で自動的に有効になる。`tmux` が未インストールの場合、各 hook は no-op として終了する。
 
 ---
 

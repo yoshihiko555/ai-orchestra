@@ -1,7 +1,7 @@
 # AI Orchestra アーキテクチャドキュメント
 
 **作成日**: 2026-03-20
-**更新日**: 2026-04-09
+**更新日**: 2026-04-14
 **対象**: `main` ブランチ時点の実装
 
 ---
@@ -46,14 +46,13 @@ ai-orchestra/
 │       ├── orchestra_hooks.py  # Hook 管理 Mixin
 │       └── orchestra_context.py # Context テンプレート Mixin
 │
-├── packages/                  # 配布パッケージ群（10パッケージ）
+├── packages/                  # 配布パッケージ群（9パッケージ）
 │   ├── core/                  # 共通基盤
 │   ├── agent-routing/         # エージェント定義・ルーティング
 │   ├── quality-gates/         # 自動lint・テストゲート
-│   ├── route-audit/           # ルーティング監査・KPI
+│   ├── audit/                 # 統一イベントログ監査・CLI 記録
 │   ├── codex-suggestions/     # Codex 相談提案
 │   ├── gemini-suggestions/    # Gemini リサーチ提案
-│   ├── cli-logging/           # CLI 呼び出しログ
 │   ├── cocoindex/             # MCP サーバー自動プロビジョニング
 │   ├── tmux-monitor/          # tmux サブエージェント監視
 │   └── git-workflow/        # GitHub Issue 開発フロー
@@ -180,11 +179,10 @@ packages/{name}/
 ```
 core (v0.4.0)                   ← 依存なし（共通基盤）
 ├── agent-routing (v0.1.0)      ← core
-│   └── route-audit (v0.2.0)    ← core, agent-routing
-├── quality-gates (v0.1.0)      ← core
+│   └── audit (v1.0.0)          ← core, agent-routing
+├── quality-gates (v0.1.0)      ← core, audit
 ├── codex-suggestions (v0.1.0)  ← core
 ├── gemini-suggestions (v0.1.0) ← core
-├── cli-logging (v0.1.0)        ← core
 ├── cocoindex (v0.2.0)          ← core
 └── tmux-monitor (v0.2.0)       ← core
 
@@ -377,8 +375,8 @@ templates/project/CLAUDE.md  (生成物・直接編集禁止)
 | `cli-tools.yaml`           | agent-routing | Codex/Gemini モデル名、sandbox 設定、28 エージェントの tool 割り当て    |
 | `cocoindex.yaml`           | cocoindex     | MCP サーバー設定、proxy 設定                                            |
 | `task-memory.yaml`         | core          | Plans.md パス、タスクマーカー定義                                       |
-| `orchestration-flags.json` | route-audit   | 機能フラグ（route_audit, quality_gate, kpi_scorecard, tmux_monitoring） |
-| `delegation-policy.json`   | route-audit   | ルーティングポリシー（将来用）                                          |
+| `audit-flags.json`         | audit         | 機能フラグ（route_audit, quality_gate, kpi_scorecard, context_optimization） |
+| `delegation-policy.json`   | audit         | ルーティングポリシー（将来用）                                              |
 
 ### 8.3 cli-tools.yaml の構造
 
@@ -453,7 +451,7 @@ agents:
 │   ├── config/{package}/*.yaml     # ベース設定 + ローカル上書き
 │   ├── context/                    # セッションコンテキスト（ephemeral）
 │   ├── state/                      # 永続状態
-│   ├── logs/orchestration/         # イベントログ
+│   ├── logs/audit/                 # 監査イベントログ（セッション単位）
 │   ├── docs/                       # ドキュメント
 │   ├── checkpoints/                # セッションチェックポイント
 │   └── facets/                     # プロジェクトローカル facet 上書き

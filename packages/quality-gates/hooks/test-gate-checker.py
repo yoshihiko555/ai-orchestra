@@ -29,7 +29,7 @@ TEST_GATE_STATE_FILE = Path("/tmp/claude-test-gate-state.json")
 # Code file extensions to track
 CODE_EXTENSIONS = {".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java"}
 
-# Default thresholds (overridden by orchestration-flags.json)
+# Default thresholds (overridden by audit-flags.json)
 DEFAULT_FILE_THRESHOLD = 3
 DEFAULT_LINE_THRESHOLD = 100
 
@@ -71,8 +71,8 @@ def count_lines(content: str) -> int:
 
 
 def load_thresholds(project_dir: str) -> tuple[int, int]:
-    """Load threshold values from orchestration-flags.json."""
-    config = load_package_config("route-audit", "orchestration-flags.json", project_dir)
+    """Load threshold values from audit-flags.json."""
+    config = load_package_config("audit", "audit-flags.json", project_dir)
     quality_gate = config.get("features", {}).get("quality_gate", {})
     file_threshold = quality_gate.get("test_file_threshold", DEFAULT_FILE_THRESHOLD)
     line_threshold = quality_gate.get("test_line_threshold", DEFAULT_LINE_THRESHOLD)
@@ -81,7 +81,7 @@ def load_thresholds(project_dir: str) -> tuple[int, int]:
 
 def is_quality_gate_enabled(project_dir: str) -> bool:
     """Check if the quality_gate feature is enabled."""
-    config = load_package_config("route-audit", "orchestration-flags.json", project_dir)
+    config = load_package_config("audit", "audit-flags.json", project_dir)
     return config.get("features", {}).get("quality_gate", {}).get("enabled", False)
 
 

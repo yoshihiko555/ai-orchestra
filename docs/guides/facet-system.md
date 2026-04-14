@@ -292,7 +292,7 @@ orchex facet build --name my-skill --project .
 | Composition                    | 種別  | 所有パッケージ（manifest 参照） | ポリシー                                 | 出力契約      |
 | ------------------------------ | ----- | ------------------------------- | ---------------------------------------- | ------------- |
 | `agent-routing-policy`         | rule  | agent-routing                   | —                                        | —             |
-| `checkpointing`                | skill | cli-logging                     | —                                        | —             |
+| `checkpointing`                | skill | audit                           | —                                        | —             |
 | `cocoindex-usage`              | rule  | cocoindex                       | —                                        | —             |
 | `codex-delegation`             | rule  | codex-suggestions               | cli-language                             | —             |
 | `codex-suggestion-compliance`  | rule  | codex-suggestions               | —                                        | —             |

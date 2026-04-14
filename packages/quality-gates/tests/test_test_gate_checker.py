@@ -150,7 +150,7 @@ def test_build_warning_message_with_test_history() -> None:
 
 def test_respects_enabled_flag(tmp_path, monkeypatch) -> None:
     """When enabled=false in config, quality gate should be disabled."""
-    config_dir = tmp_path / ".claude" / "config" / "route-audit"
+    config_dir = tmp_path / ".claude" / "config" / "audit"
     config_dir.mkdir(parents=True)
     config = {
         "features": {
@@ -161,7 +161,7 @@ def test_respects_enabled_flag(tmp_path, monkeypatch) -> None:
             }
         }
     }
-    with open(config_dir / "orchestration-flags.json", "w") as f:
+    with open(config_dir / "audit-flags.json", "w") as f:
         json.dump(config, f)
 
     assert not test_gate_checker.is_quality_gate_enabled(str(tmp_path))
@@ -169,7 +169,7 @@ def test_respects_enabled_flag(tmp_path, monkeypatch) -> None:
 
 def test_enabled_when_flag_true(tmp_path) -> None:
     """When enabled=true in config, quality gate should be enabled."""
-    config_dir = tmp_path / ".claude" / "config" / "route-audit"
+    config_dir = tmp_path / ".claude" / "config" / "audit"
     config_dir.mkdir(parents=True)
     config = {
         "features": {
@@ -180,7 +180,7 @@ def test_enabled_when_flag_true(tmp_path) -> None:
             }
         }
     }
-    with open(config_dir / "orchestration-flags.json", "w") as f:
+    with open(config_dir / "audit-flags.json", "w") as f:
         json.dump(config, f)
 
     assert test_gate_checker.is_quality_gate_enabled(str(tmp_path))
