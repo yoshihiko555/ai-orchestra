@@ -27,3 +27,4 @@ AI Orchestra プロジェクトの意思決定記録。
 | ADR-20260322-012 | facet build 完全委譲（rules 廃止・knowledge/scripts 層導入） | accepted | 2026-03-22 |
 | ADR-20260409-013 | PR 作成スキル追加と issue-workflow パッケージの git-workflow への改名 | accepted | 2026-04-09 |
 | ADR-20260412-014 | quality-gates に独立したテスト改ざん検出 Hook を追加 | accepted | 2026-04-12 |
+| ADR-20260414-015 | agent-routing の未分類リサーチ入力は researcher 基点で解決する | accepted | 2026-04-14 |
