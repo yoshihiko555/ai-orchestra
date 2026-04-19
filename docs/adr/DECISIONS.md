@@ -28,3 +28,4 @@ AI Orchestra プロジェクトの意思決定記録。
 | ADR-20260409-013 | PR 作成スキル追加と issue-workflow パッケージの git-workflow への改名 | accepted | 2026-04-09 |
 | ADR-20260412-014 | quality-gates に独立したテスト改ざん検出 Hook を追加 | accepted | 2026-04-12 |
 | ADR-20260414-015 | agent-routing の未分類リサーチ入力は researcher 基点で解決する | accepted | 2026-04-14 |
+| ADR-20260419-016 | quality gate の判定は quality-gates が担い、audit は記録と集計に限定する | accepted | 2026-04-19 |

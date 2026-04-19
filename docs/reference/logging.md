@@ -20,7 +20,7 @@ worktree 環境では、監査ログは root worktree 側の `.claude/logs/audit
 | `session_start` / `session_end` | `audit-bootstrap.py`, `audit-session-end.py` | セッション開始 / 終了の集計 |
 | `prompt` | `audit-prompt.py` | expected route と入力抜粋の記録 |
 | `route_decision` | `audit-route.py` | expected / actual route の照合 |
-| `quality_gate` | `audit-route.py` | テストコマンド実行結果の記録 |
+| `quality_gate` | `packages/quality-gates/hooks/post-test-analysis.py` | テストコマンド実行結果の記録 |
 | `cli_call` | `audit-cli.py` | Codex / Gemini CLI 呼び出しの記録 |
 | `subagent_start` / `subagent_end` | `audit-subagent-start.py`, `audit-subagent-end.py` | サブエージェントのライフサイクル |
 | `instructions_loaded` | `audit-instructions-loaded.py` | 読み込まれた指示書の監査 |

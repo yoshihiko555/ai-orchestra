@@ -16,13 +16,25 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
+_hook_dir = os.path.dirname(os.path.abspath(__file__))
+if _hook_dir not in sys.path:
+    sys.path.insert(0, _hook_dir)
+
 # hook_common を $AI_ORCHESTRA_DIR/packages/core/hooks/ から読み込む
 _orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
 if _orchestra_dir:
     _core_hooks = os.path.join(_orchestra_dir, "packages", "core", "hooks")
     if _core_hooks not in sys.path:
         sys.path.insert(0, _core_hooks)
+    _audit_hooks = os.path.join(_orchestra_dir, "packages", "audit", "hooks")
+    if _audit_hooks not in sys.path:
+        sys.path.insert(0, _audit_hooks)
+else:
+    _audit_hooks = os.path.abspath(os.path.join(_hook_dir, "..", "..", "audit", "hooks"))
+    if os.path.isdir(_audit_hooks) and _audit_hooks not in sys.path:
+        sys.path.insert(0, _audit_hooks)
 
+from event_logger import emit_event, load_trace_state, resolve_project_root_from_hook_data  # noqa: E402
 from hook_common import load_package_config  # noqa: E402
 
 # Test command patterns
@@ -134,6 +146,50 @@ def record_test_result(command: str, passed: bool) -> None:
     save_test_gate_state(state)
 
 
+def load_quality_gate_config(project_dir: str) -> dict:
+    """audit-flags.json から quality_gate 設定を読み込む。"""
+    config = load_package_config("audit", "audit-flags.json", project_dir)
+    features = config.get("features", {})
+    return features.get("quality_gate", {}) if isinstance(features, dict) else {}
+
+
+def emit_quality_gate_event(
+    data: dict,
+    *,
+    command: str,
+    exit_code: int,
+    output: str,
+    passed: bool,
+) -> bool:
+    """品質ゲート結果を audit イベントログに記録する。
+
+    Returns:
+        `block_on_failed_test` によりブロックすべき場合は True。
+    """
+    project_dir = resolve_project_root_from_hook_data(data)
+    quality_gate = load_quality_gate_config(project_dir)
+    if quality_gate.get("enabled", True) is False:
+        return False
+
+    trace = load_trace_state(project_dir=project_dir)
+    blocking = bool(quality_gate.get("block_on_failed_test", False)) and not passed
+
+    emit_event(
+        "quality_gate",
+        {
+            "command": command[:200],
+            "exit_code": exit_code,
+            "passed": passed,
+            "output_excerpt": output[:200] if output else "",
+            "blocking": blocking,
+        },
+        session_id=str(data.get("session_id") or ""),
+        tid=trace.get("tid", ""),
+        project_dir=project_dir,
+    )
+    return blocking
+
+
 def _build_codex_command(data: dict) -> str:
     """cli-tools.yaml から Codex コマンド文字列を構築する。"""
     project_dir = data.get("cwd", "") or os.environ.get("CLAUDE_PROJECT_DIR", "")
@@ -170,6 +226,17 @@ def main():
 
         # Record test result to shared state (success resets counters)
         record_test_result(command, passed)
+        blocking = emit_quality_gate_event(
+            data,
+            command=command,
+            exit_code=exit_code,
+            output=output,
+            passed=passed,
+        )
+
+        if blocking:
+            print(f"[quality-gates] quality gate blocked: test failed (exit_code={exit_code})", file=sys.stderr)
+            sys.exit(2)
 
         # If tests passed, no further action needed
         if passed:

@@ -23,7 +23,7 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 
 | プリセット  | 含まれるパッケージ                 |
 | ----------- | ---------------------------------- |
-| `essential` | core, agent-routing, quality-gates |
+| `essential` | core, agent-routing, audit, quality-gates |
 | `all`       | 全パッケージ                       |
 
 ---
@@ -109,7 +109,7 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 | ----- | ------------------------------- | ------------------------------------------------------------------------ |
 | hook  | `check-context-optimization.py` | PreToolUse(Read/Grep/Bash): 大きすぎる読み込みや `cat` 利用を抑制         |
 | hook  | `post-implementation-review.py` | PostToolUse(Edit/Write): 一定量の変更後にレビューを提案                  |
-| hook  | `post-test-analysis.py`         | PostToolUse(Bash): テスト実行後に結果を分析                              |
+| hook  | `post-test-analysis.py`         | PostToolUse(Bash): テスト実行後に結果を分析し `quality_gate` を記録       |
 | hook  | `lint-on-save.py`               | PostToolUse(Edit/Write): ファイル種別ごとの自動 lint / format 実行       |
 | hook  | `test-tampering-detector.py`    | PostToolUse(Edit/Write/Bash): skip 追加やテスト削除を検知                |
 | hook  | `test-gate-checker.py`          | PostToolUse(Edit/Write): テスト品質ゲートチェック                        |
@@ -136,7 +136,7 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 | hook   | `audit-bootstrap.py`           | SessionStart: セッションログ初期化 + `session_start` 記録             |
 | hook   | `audit-session-end.py`         | SessionEnd: セッション集計 + `session_end` 記録                       |
 | hook   | `audit-prompt.py`              | UserPromptSubmit: 期待ルート予測 + `prompt` 記録                      |
-| hook   | `audit-route.py`               | PostToolUse: 実ルート照合 + `route_decision` / `quality_gate` 記録    |
+| hook   | `audit-route.py`               | PostToolUse: 実ルート照合 + `route_decision` 記録                    |
 | hook   | `audit-cli.py`                 | PostToolUse(Bash): Codex/Gemini CLI 呼び出しを `cli_call` として記録  |
 | hook   | `audit-subagent-start.py`      | SubagentStart: サブエージェント開始を記録                             |
 | hook   | `audit-subagent-end.py`        | SubagentStop: サブエージェント終了を記録                              |

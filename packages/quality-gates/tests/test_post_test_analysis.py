@@ -115,3 +115,55 @@ def test_record_test_result_preserves_on_fail(_clean_state) -> None:
     assert reloaded["lines_modified_since_test"] == 85
     assert reloaded["warned"] is True
     assert reloaded["last_test_result"]["passed"] is False
+
+
+def test_emit_quality_gate_event_records_audit_event(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict = {}
+
+    monkeypatch.setattr(post_test_analysis, "resolve_project_root_from_hook_data", lambda data: data["cwd"])
+    monkeypatch.setattr(post_test_analysis, "load_quality_gate_config", lambda _project_dir: {"enabled": True})
+    monkeypatch.setattr(post_test_analysis, "load_trace_state", lambda **_kwargs: {"tid": "tid-123"})
+    monkeypatch.setattr(post_test_analysis, "emit_event", lambda event_type, payload, **kwargs: captured.update({"type": event_type, "payload": payload, "kwargs": kwargs}))
+
+    blocking = post_test_analysis.emit_quality_gate_event(
+        {
+            "session_id": "sid-1",
+            "cwd": "/project",
+        },
+        command="pytest -q",
+        exit_code=1,
+        output="FAILED test_example.py::test_case",
+        passed=False,
+    )
+
+    assert blocking is False
+    assert captured["type"] == "quality_gate"
+    assert captured["payload"]["command"] == "pytest -q"
+    assert captured["payload"]["exit_code"] == 1
+    assert captured["payload"]["passed"] is False
+    assert captured["payload"]["blocking"] is False
+    assert captured["kwargs"]["session_id"] == "sid-1"
+    assert captured["kwargs"]["tid"] == "tid-123"
+
+
+def test_emit_quality_gate_event_returns_blocking_when_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(post_test_analysis, "resolve_project_root_from_hook_data", lambda data: data["cwd"])
+    monkeypatch.setattr(
+        post_test_analysis,
+        "load_quality_gate_config",
+        lambda _project_dir: {"enabled": True, "block_on_failed_test": True},
+    )
+    monkeypatch.setattr(post_test_analysis, "load_trace_state", lambda **_kwargs: {"tid": "tid-123"})
+    monkeypatch.setattr(post_test_analysis, "emit_event", lambda *_args, **_kwargs: None)
+
+    blocking = post_test_analysis.emit_quality_gate_event(
+        {"session_id": "sid-1", "cwd": "/project"},
+        command="pytest -q",
+        exit_code=1,
+        output="FAILED",
+        passed=False,
+    )
+
+    assert blocking is True

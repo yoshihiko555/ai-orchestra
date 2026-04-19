@@ -252,7 +252,9 @@ agents:
     },
     "quality_gate": {
       "enabled": true,
-      "block_on_failed_test": false
+      "block_on_failed_test": false,
+      "test_file_threshold": 3,
+      "test_line_threshold": 100
     },
     "kpi_scorecard": {
       "enabled": true,
@@ -274,7 +276,7 @@ agents:
 | 機能 | 説明 | デフォルト |
 |------|------|-----------|
 | `route_audit` | ルーティング実績の記録 | 有効 |
-| `quality_gate` | テスト品質ゲート | 有効 |
+| `quality_gate` | `audit` / `quality-gates` 共有の品質ゲート設定 | 有効 |
 | `kpi_scorecard` | KPI スコアカード生成 | 有効 |
 | `context_optimization` | 大きすぎる読み込みや `cat` 利用の抑制 | 有効 |
 

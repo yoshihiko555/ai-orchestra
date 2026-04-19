@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PostToolUse hook: 実際のルートを検出し route_decision / quality_gate を記録する。"""
+"""PostToolUse hook: 実際のルートを検出し route_decision を記録する。"""
 
 from __future__ import annotations
 
@@ -29,7 +29,6 @@ from event_logger import (
     resolve_project_root_from_hook_data,
 )
 from hook_common import (
-    find_first_int,
     find_first_text,
     load_package_config,
     read_hook_input,
@@ -37,15 +36,6 @@ from hook_common import (
     safe_hook_execution,
 )
 from route_config import build_aliases, load_config
-
-# ---------------------------------------------------------------------------
-# Patterns
-# ---------------------------------------------------------------------------
-
-TEST_CMD_PATTERN = re.compile(
-    r"\b(pytest|npm\s+test|pnpm\s+test|yarn\s+test|go\s+test|cargo\s+test|ruff\s+check|mypy)\b"
-)
-
 
 # ---------------------------------------------------------------------------
 # Route detection
@@ -172,7 +162,6 @@ def main() -> None:
     """PostToolUse hook のエントリポイント。
 
     実ルートを検出し、予測ルートとの一致判定を行って route_decision イベントを記録する。
-    テストコマンドの検出時には quality_gate イベントも記録する。
     """
     data = read_hook_input()
 
@@ -180,7 +169,6 @@ def main() -> None:
     flags = load_package_config("audit", "audit-flags.json", root)
     features = flags.get("features") or {}
     route_audit_cfg = features.get("route_audit") or {}
-    quality_gate_cfg = features.get("quality_gate") or {}
 
     if not route_audit_cfg.get("enabled", True):
         return
@@ -215,42 +203,6 @@ def main() -> None:
         tid=tid,
         project_dir=root,
     )
-
-    # Quality gate: quality_gate.enabled が false の場合はスキップ
-    if not quality_gate_cfg.get("enabled", True):
-        return
-
-    if tool_name.lower() == "bash" and TEST_CMD_PATTERN.search(command_excerpt):
-        tool_response = (
-            data.get("tool_response") if isinstance(data.get("tool_response"), dict) else {}
-        )
-        exit_code = find_first_int(tool_response, {"exit_code", "code", "status"})
-        stdout = str(tool_response.get("stdout") or tool_response.get("content") or "")
-
-        passed = exit_code == 0 if exit_code is not None else None
-        # block_on_failed_test: 失敗時に後続処理をブロックするかどうかの契約
-        block_on_failed = bool(quality_gate_cfg.get("block_on_failed_test", False))
-        blocking = block_on_failed and passed is False
-
-        emit_event(
-            "quality_gate",
-            {
-                "command": command_excerpt,
-                "exit_code": exit_code,
-                "passed": passed,
-                "output_excerpt": stdout[:200] if stdout else "",
-                "blocking": blocking,
-            },
-            session_id=session_id,
-            tid=tid,
-            project_dir=root,
-        )
-
-        # block_on_failed_test=true かつテスト失敗時は Claude Code に blocking を signal する
-        # (PostToolUse hook の exit code 2 は blocking error として扱われる)
-        if blocking:
-            sys.stderr.write(f"[audit] quality gate blocked: test failed (exit_code={exit_code})\n")
-            sys.exit(2)
 
 
 if __name__ == "__main__":
