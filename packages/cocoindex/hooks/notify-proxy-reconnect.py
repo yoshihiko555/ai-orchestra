@@ -1,30 +1,27 @@
 #!/usr/bin/env python3
-"""SessionEnd hook: mcp-proxy の状態をログ出力する。
-
-proxy はセッション間で永続化し、次セッションで再利用する。
-SessionEnd では停止しない（start_proxy の冪等チェックで管理）。
-手動停止: orchestra-manager.py proxy stop --project .
-"""
+"""proxy ready 後に 1 回だけ reconnect を促す。"""
 
 from __future__ import annotations
 
 import os
 import sys
 
-# hook_common を import するため core/hooks を sys.path に追加
 _orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
 if _orchestra_dir:
     _core_hooks = os.path.join(_orchestra_dir, "packages", "core", "hooks")
     if _core_hooks not in sys.path:
         sys.path.insert(0, _core_hooks)
 
-# proxy_manager を import するため自ディレクトリを sys.path に追加
 _hooks_dir = os.path.dirname(os.path.abspath(__file__))
 if _hooks_dir not in sys.path:
     sys.path.insert(0, _hooks_dir)
 
 from hook_common import load_package_config, read_hook_input, safe_hook_execution
-from proxy_manager import clear_session_state, is_proxy_running
+from proxy_manager import (
+    get_proxy_state,
+    mark_session_reconnect_notified,
+    read_session_state,
+)
 
 
 @safe_hook_execution
@@ -32,22 +29,32 @@ def main() -> None:
     data = read_hook_input()
     project_dir = data.get("cwd", "") or os.environ.get("CLAUDE_PROJECT_DIR", "") or os.getcwd()
     session_id = str(data.get("session_id") or "")
-    if not project_dir:
+    if not project_dir or not session_id:
         return
 
     config = load_package_config("cocoindex", "cocoindex.yaml", project_dir)
     if not config:
         return
 
-    if session_id:
-        clear_session_state(project_dir, session_id)
-
-    proxy_cfg = config.get("proxy", {})
-    if not proxy_cfg.get("enabled", False):
+    proxy_cfg = config.get("proxy", {}) or {}
+    if not (config.get("enabled", False) and proxy_cfg.get("enabled", False)):
         return
 
-    if is_proxy_running(config, project_dir):
-        print("[cocoindex] mcp-proxy persisted for next session")
+    session_state = read_session_state(project_dir, session_id)
+    if not session_state.get("reconnect_required", False):
+        return
+    if session_state.get("reconnect_notified", False):
+        return
+
+    proxy_state = get_proxy_state(config, project_dir)
+    if proxy_state.get("proxy_state") != "ready":
+        return
+
+    mark_session_reconnect_notified(project_dir, session_id)
+    print(
+        "[cocoindex] mcp-proxy is ready. "
+        "このセッションで cocoindex を使うには /mcp で reconnect してください。"
+    )
 
 
 if __name__ == "__main__":

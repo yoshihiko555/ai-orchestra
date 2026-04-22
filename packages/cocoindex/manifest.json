@@ -5,12 +5,15 @@
   "depends": ["core"],
   "hooks": {
     "SessionStart": [{"file": "provision-mcp-servers.py", "timeout": 15}],
-    "SessionEnd": ["stop-mcp-proxy.py"]
+    "SessionEnd": ["stop-mcp-proxy.py"],
+    "UserPromptSubmit": ["notify-proxy-reconnect.py"]
   },
   "files": [
     "hooks/provision-mcp-servers.py",
     "hooks/stop-mcp-proxy.py",
-    "hooks/proxy_manager.py"
+    "hooks/proxy_manager.py",
+    "hooks/start-mcp-proxy.py",
+    "hooks/notify-proxy-reconnect.py"
   ],
   "skills": [],
   "agents": [],

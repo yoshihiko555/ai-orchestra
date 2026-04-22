@@ -5,6 +5,7 @@ subprocess.Popen / os.kill / socket.connect_ex を mock でテストする。
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -78,6 +79,57 @@ class TestGetProxyConfig:
         config = {"proxy": {"port": 8792, "port_range": 100}}
         result = proxy_mgr.get_proxy_config(config)
         assert result["port"] == 8792  # base port そのまま
+
+    def test_normalizes_project_dir_before_deriving_port(self, tmp_path: Path) -> None:
+        config = {"proxy": {"port": 8792, "port_range": 100}}
+        real_project = tmp_path / "project"
+        real_project.mkdir()
+        alias_root = tmp_path / "alias-root"
+        alias_root.mkdir()
+        alias_project = alias_root / "project-link"
+        alias_project.symlink_to(real_project, target_is_directory=True)
+
+        result_real = proxy_mgr.get_proxy_config(config, project_dir=str(real_project))
+        result_alias = proxy_mgr.get_proxy_config(config, project_dir=str(alias_project))
+
+        assert result_real["port"] == result_alias["port"]
+
+
+class TestBuildProxyUrl:
+    def test_claude_uses_sse(self) -> None:
+        url = proxy_mgr.build_proxy_url("claude", SAMPLE_CONFIG, "/tmp/project")
+        assert url.endswith("/sse")
+
+    def test_codex_uses_mcp(self) -> None:
+        url = proxy_mgr.build_proxy_url("codex", SAMPLE_CONFIG, "/tmp/project")
+        assert url.endswith("/mcp")
+
+
+class TestStateFiles:
+    def test_updates_proxy_state(self, tmp_path: Path) -> None:
+        state = proxy_mgr.update_proxy_state(str(tmp_path), SAMPLE_CONFIG, proxy_state="starting")
+
+        assert state["proxy_state"] == "starting"
+        assert state["port"] == 8792
+        assert os.path.exists(proxy_mgr.resolve_proxy_state_path(str(tmp_path)))
+
+    def test_session_state_round_trip(self, tmp_path: Path) -> None:
+        proxy_mgr.write_session_state(
+            str(tmp_path),
+            "sess-1",
+            reconnect_required=True,
+            reconnect_notified=False,
+        )
+        state = proxy_mgr.read_session_state(str(tmp_path), "sess-1")
+        assert state["reconnect_required"] is True
+        assert state["reconnect_notified"] is False
+
+        proxy_mgr.mark_session_reconnect_notified(str(tmp_path), "sess-1")
+        updated = proxy_mgr.read_session_state(str(tmp_path), "sess-1")
+        assert updated["reconnect_notified"] is True
+
+        proxy_mgr.clear_session_state(str(tmp_path), "sess-1")
+        assert proxy_mgr.read_session_state(str(tmp_path), "sess-1") == {}
 
 
 # =========================================================================
@@ -412,6 +464,37 @@ class TestStartProxy:
     ) -> None:
         result = proxy_mgr.start_proxy(SAMPLE_CONFIG, str(tmp_path))
         assert result is False
+
+
+class TestStartProxyBackground:
+    @patch("proxy_manager.subprocess.Popen")
+    @patch("proxy_manager.get_proxy_state", return_value={"proxy_state": "stopped"})
+    def test_launches_helper(
+        self,
+        mock_state: MagicMock,
+        mock_popen: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        result = proxy_mgr.start_proxy_background(SAMPLE_CONFIG, str(tmp_path))
+        assert result is True
+        mock_popen.assert_called_once()
+
+        state = json.loads(
+            Path(proxy_mgr.resolve_proxy_state_path(str(tmp_path))).read_text(encoding="utf-8")
+        )
+        assert state["proxy_state"] == "starting"
+
+    @patch("proxy_manager.subprocess.Popen")
+    @patch("proxy_manager.get_proxy_state", return_value={"proxy_state": "ready"})
+    def test_skips_when_ready(
+        self,
+        mock_state: MagicMock,
+        mock_popen: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        result = proxy_mgr.start_proxy_background(SAMPLE_CONFIG, str(tmp_path))
+        assert result is False
+        mock_popen.assert_not_called()
 
 
 # =========================================================================

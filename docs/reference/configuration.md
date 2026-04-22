@@ -350,6 +350,15 @@ proxy:
   startup_timeout: 10
 ```
 
+補足:
+
+- `proxy.enabled: true` は proxy-only を意味する。proxy 未 ready でも stdio fallback は行わない
+- URL は `host + derived port + fixed path` で決定される
+  - Claude Code / Gemini CLI: `/sse`
+  - Codex CLI: `/mcp`
+- runtime state は設定ファイルに書かず、`.claude/state/cocoindex-proxy.json` と `.claude/state/cocoindex-sessions/<session_id>.json` に保存する
+- 初回 session では proxy warmup 完了後に `/mcp` reconnect が必要になる場合がある
+
 ---
 
 ## sandbox-requirements.json
@@ -431,6 +440,8 @@ args:
 | cli-tools.yaml | 次回のエージェント呼び出し時（即時） |
 | cli-tools.local.yaml | 次回のエージェント呼び出し時（即時） |
 | audit-flags.json | 次回の hook 発火時（即時） |
-| cocoindex.yaml | 次回セッション開始時（SessionStart hook） |
+| cocoindex.yaml | 次回セッション開始時の reconcile（SessionStart hook） |
 | task-memory.yaml | 次回セッション開始時（SessionStart hook） |
 | ベースファイル全般 | SessionStart 時に `sync-orchestra.py` で自動同期 |
+
+`cocoindex` の proxy runtime state は即時反映で更新されるが、これは設定反映ではなく `.claude/state/` 配下の内部状態として扱う。

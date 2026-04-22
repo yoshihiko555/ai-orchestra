@@ -10,9 +10,11 @@
 
 from __future__ import annotations
 
+import io
 import json
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock
 
 from tests.module_loader import REPO_ROOT, load_module
 
@@ -367,7 +369,7 @@ PROXY_CFG = SAMPLE_CONFIG_V2["proxy"]
 
 
 class TestProxyModeEntries:
-    """proxy_active=True 時の各 CLI エントリ形式テスト。"""
+    """proxy_enabled=True 時の各 CLI エントリ形式テスト。"""
 
     # --- Claude Code: SSE ---
 
@@ -375,7 +377,7 @@ class TestProxyModeEntries:
         mcp_path = tmp_path / ".mcp.json"
         mcp_path.write_text("{}")
 
-        provision.provision_claude(str(tmp_path), SAMPLE_CONFIG_V2, SERVER_NAME, proxy_active=True)
+        provision.provision_claude(str(tmp_path), SAMPLE_CONFIG_V2, SERVER_NAME, proxy_enabled=True)
 
         data = json.loads(mcp_path.read_text())
         entry = data["mcpServers"]["cocoindex-code"]
@@ -394,7 +396,7 @@ class TestProxyModeEntries:
         mcp_path = tmp_path / ".mcp.json"
         mcp_path.write_text("{}")
 
-        provision.provision_claude(str(tmp_path), config, SERVER_NAME, proxy_active=True)
+        provision.provision_claude(str(tmp_path), config, SERVER_NAME, proxy_enabled=True)
 
         data = json.loads(mcp_path.read_text())
         entry = data["mcpServers"]["cocoindex-code"]
@@ -410,7 +412,7 @@ class TestProxyModeEntries:
         toml_path = codex_dir / "config.toml"
         toml_path.write_text(CODEX_BASE_TOML)
 
-        provision.provision_codex(str(tmp_path), SAMPLE_CONFIG_V2, SERVER_NAME, proxy_active=True)
+        provision.provision_codex(str(tmp_path), SAMPLE_CONFIG_V2, SERVER_NAME, proxy_enabled=True)
 
         content = toml_path.read_text()
         assert 'url = "http://127.0.0.1:8792/mcp"' in content
@@ -429,7 +431,7 @@ class TestProxyModeEntries:
         toml_path = codex_dir / "config.toml"
         toml_path.write_text(CODEX_BASE_TOML)
 
-        provision.provision_codex(str(tmp_path), config, SERVER_NAME, proxy_active=True)
+        provision.provision_codex(str(tmp_path), config, SERVER_NAME, proxy_enabled=True)
 
         content = toml_path.read_text()
         assert 'command = "uvx"' in content
@@ -443,7 +445,7 @@ class TestProxyModeEntries:
         settings_path = gemini_dir / "settings.json"
         settings_path.write_text(json.dumps({"model": {"name": "gemini-2.5-pro"}}))
 
-        provision.provision_gemini(str(tmp_path), SAMPLE_CONFIG_V2, SERVER_NAME, proxy_active=True)
+        provision.provision_gemini(str(tmp_path), SAMPLE_CONFIG_V2, SERVER_NAME, proxy_enabled=True)
 
         data = json.loads(settings_path.read_text())
         entry = data["mcpServers"]["cocoindex-code"]
@@ -463,23 +465,82 @@ class TestProxyModeEntries:
         settings_path = gemini_dir / "settings.json"
         settings_path.write_text(json.dumps({"model": {"name": "gemini-2.5-pro"}}))
 
-        provision.provision_gemini(str(tmp_path), config, SERVER_NAME, proxy_active=True)
+        provision.provision_gemini(str(tmp_path), config, SERVER_NAME, proxy_enabled=True)
 
         data = json.loads(settings_path.read_text())
         entry = data["mcpServers"]["cocoindex-code"]
         assert entry["command"] == "uvx"
         assert "url" not in entry
 
-    # --- proxy_active=False → 従来の stdio ---
+    # --- proxy_enabled=False → 従来の stdio ---
 
     def test_v2_config_with_proxy_inactive(self, tmp_path: Path) -> None:
-        """proxy_active=False なら v2 config でも stdio エントリを生成する。"""
+        """proxy_enabled=False なら v2 config でも stdio エントリを生成する。"""
         mcp_path = tmp_path / ".mcp.json"
         mcp_path.write_text("{}")
 
-        provision.provision_claude(str(tmp_path), SAMPLE_CONFIG_V2, SERVER_NAME, proxy_active=False)
+        provision.provision_claude(str(tmp_path), SAMPLE_CONFIG_V2, SERVER_NAME, proxy_enabled=False)
 
         data = json.loads(mcp_path.read_text())
         entry = data["mcpServers"]["cocoindex-code"]
         assert entry["command"] == "uvx"
         assert entry["type"] == "stdio"
+
+
+class TestMain:
+    def _invoke(self, payload: dict, monkeypatch) -> str:
+        buffer = io.StringIO()
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
+        monkeypatch.setattr(sys, "stdout", buffer)
+        provision.main()
+        return buffer.getvalue()
+
+    def test_proxy_mode_creates_session_state_and_starts_warmup(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        project_dir = tmp_path
+        (project_dir / ".claude" / "config" / "cocoindex").mkdir(parents=True)
+        (project_dir / ".claude" / "config" / "cocoindex" / "cocoindex.yaml").write_text(
+            json.dumps(SAMPLE_CONFIG_V2)
+        )
+
+        monkeypatch.setattr(provision, "load_package_config", lambda *_: SAMPLE_CONFIG_V2)
+        monkeypatch.setattr(
+            provision,
+            "get_proxy_state",
+            lambda *_: {"proxy_state": "stopped"},
+        )
+        start_mock = MagicMock(return_value=True)
+        monkeypatch.setattr(provision, "start_proxy_background", start_mock)
+
+        output = self._invoke(
+            {"cwd": str(project_dir), "session_id": "sess-1"},
+            monkeypatch,
+        )
+
+        session_state = json.loads(
+            (project_dir / ".claude" / "state" / "cocoindex-sessions" / "sess-1.json").read_text()
+        )
+        assert session_state["reconnect_required"] is True
+        start_mock.assert_called_once_with(SAMPLE_CONFIG_V2, str(project_dir))
+        assert "falling back to stdio" not in output
+        assert "warmup started" in output
+
+    def test_proxy_ready_session_does_not_start_warmup(self, tmp_path: Path, monkeypatch) -> None:
+        project_dir = tmp_path
+        monkeypatch.setattr(provision, "load_package_config", lambda *_: SAMPLE_CONFIG_V2)
+        monkeypatch.setattr(
+            provision,
+            "get_proxy_state",
+            lambda *_: {"proxy_state": "ready"},
+        )
+        start_mock = MagicMock(return_value=False)
+        monkeypatch.setattr(provision, "start_proxy_background", start_mock)
+
+        self._invoke({"cwd": str(project_dir), "session_id": "sess-2"}, monkeypatch)
+
+        session_state = json.loads(
+            (project_dir / ".claude" / "state" / "cocoindex-sessions" / "sess-2.json").read_text()
+        )
+        assert session_state["reconnect_required"] is False
+        start_mock.assert_not_called()

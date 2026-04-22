@@ -241,13 +241,14 @@ SessionStart:
   - sync-orchestra.py (外部)             パッケージ差分同期 + facet build
   - load-task-state.py (core)            Plans.md 読み込み・自動アーカイブ・タスクサマリー表示
   - orchestration-bootstrap.py (audit)   state/logs ディレクトリ初期化
-  - provision-mcp-servers.py (cocoindex) MCP 設定書き出し
+  - provision-mcp-servers.py (cocoindex) MCP 設定 reconcile + proxy warmup
   - tmux-session-start.py (tmux)         tmux セットアップ
 
 UserPromptSubmit:
   - clear-plan-gate.py (core)            プランゲートクリア
   - orchestration-expected-route.py      期待ルート予測
   - agent-router.py (routing)            プロンプト解析 → [Agent Routing] 提案
+  - notify-proxy-reconnect.py (cocoindex) proxy ready 後に 1 回だけ reconnect 案内
 
 PreToolUse(Edit|Write):
   - check-codex-before-write.py (codex)  設計判断を伴う変更で [Codex Suggestion] 出力
@@ -273,7 +274,7 @@ PostToolUse(Agent|Task):
 
 SessionEnd:
   - cleanup-session-context.py (core)    session/ ディレクトリ削除
-  - stop-mcp-proxy.py (cocoindex)        proxy 停止（v2 有効時）
+  - stop-mcp-proxy.py (cocoindex)        session state cleanup + proxy 再利用通知
   - tmux-session-end.py (tmux)           tmux クリーンアップ
 ```
 
