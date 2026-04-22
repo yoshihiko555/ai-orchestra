@@ -545,6 +545,25 @@ class TestMain:
         assert session_state["reconnect_required"] is False
         start_mock.assert_not_called()
 
+    def test_proxy_idle_session_does_not_start_warmup(self, tmp_path: Path, monkeypatch) -> None:
+        project_dir = tmp_path
+        monkeypatch.setattr(provision, "load_package_config", lambda *_: SAMPLE_CONFIG_V2)
+        monkeypatch.setattr(
+            provision,
+            "get_proxy_state",
+            lambda *_: {"proxy_state": "idle"},
+        )
+        start_mock = MagicMock(return_value=False)
+        monkeypatch.setattr(provision, "start_proxy_background", start_mock)
+
+        self._invoke({"cwd": str(project_dir), "session_id": "sess-idle"}, monkeypatch)
+
+        session_state = json.loads(
+            (project_dir / ".claude" / "state" / "cocoindex-sessions" / "sess-idle.json").read_text()
+        )
+        assert session_state["reconnect_required"] is False
+        start_mock.assert_not_called()
+
     def test_claude_force_stdio_session_skips_reconnect_state(
         self, tmp_path: Path, monkeypatch
     ) -> None:

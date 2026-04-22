@@ -49,6 +49,8 @@ TEST_COMMAND_PATTERNS = [
     r"\bgo\s+test\b",
     r"\bcargo\s+test\b",
     r"\bmake\s+test\b",
+    r"\bruff\s+check\b",
+    r"\bmypy\b",
 ]
 
 # Shared state file with test-gate-checker.py
@@ -159,7 +161,6 @@ def emit_quality_gate_event(
     command: str,
     exit_code: int,
     output: str,
-    passed: bool,
 ) -> bool:
     """品質ゲート結果を audit イベントログに記録する。
 
@@ -172,14 +173,15 @@ def emit_quality_gate_event(
         return False
 
     trace = load_trace_state(project_dir=project_dir)
-    blocking = bool(quality_gate.get("block_on_failed_test", False)) and not passed
+    gate_passed = exit_code == 0
+    blocking = bool(quality_gate.get("block_on_failed_test", False)) and not gate_passed
 
     emit_event(
         "quality_gate",
         {
             "command": command[:200],
             "exit_code": exit_code,
-            "passed": passed,
+            "passed": gate_passed,
             "output_excerpt": output[:200] if output else "",
             "blocking": blocking,
         },
@@ -222,16 +224,16 @@ def main():
         exit_code = tool_response.get("exit_code", 0)
         output = tool_response.get("stdout", "") or tool_response.get("content", "")
 
-        passed = not is_test_failure(exit_code, output)
+        analysis_failed = is_test_failure(exit_code, output)
+        gate_passed = exit_code == 0
 
         # Record test result to shared state (success resets counters)
-        record_test_result(command, passed)
+        record_test_result(command, gate_passed)
         blocking = emit_quality_gate_event(
             data,
             command=command,
             exit_code=exit_code,
             output=output,
-            passed=passed,
         )
 
         if blocking:
@@ -239,7 +241,7 @@ def main():
             sys.exit(2)
 
         # If tests passed, no further action needed
-        if passed:
+        if not analysis_failed:
             sys.exit(0)
 
         failure_summary = extract_failure_summary(output)

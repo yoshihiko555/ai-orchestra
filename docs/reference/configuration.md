@@ -348,6 +348,7 @@ proxy:
   host: "127.0.0.1"
   pid_file: ".claude/.mcp-proxy.pid"
   startup_timeout: 10
+  idle_timeout: 300       # active client が 0 の状態が続いたら supervisor が自動停止する秒数
 ```
 
 補足:
@@ -356,7 +357,10 @@ proxy:
 - URL は `host + derived port + fixed path` で決定される
   - Claude Code / Gemini CLI: `/sse`
   - Codex CLI: `/mcp`
+- 外側の固定ポートは supervisor が listen し、inner `mcp-proxy` は一時ポートで起動する
+- `idle_timeout` は `active_clients == 0` が続いたときの supervisor 自動停止秒数。`0` で無効化できる
 - runtime state は設定ファイルに書かず、`.claude/state/cocoindex-proxy.json` と `.claude/state/cocoindex-sessions/<session_id>.json` に保存する
+- `proxy_state` は `starting` / `ready` / `idle` / `stopping` / `stopped` / `failed`
 - 初回 session では proxy warmup 完了後に `/mcp` reconnect が必要になる場合がある
 
 ---

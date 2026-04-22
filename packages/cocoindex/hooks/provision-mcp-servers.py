@@ -321,7 +321,7 @@ def main() -> None:
     session_uses_proxy = _session_uses_proxy(config, proxy_enabled) if config else False
     if proxy_enabled and config:
         proxy_state = get_proxy_state(config, project_dir)
-        proxy_ready = proxy_state.get("proxy_state") == "ready"
+        proxy_ready = proxy_state.get("proxy_state") in {"ready", "idle"}
         if session_id:
             if session_uses_proxy:
                 write_session_state(project_dir, session_id, reconnect_required=not proxy_ready)

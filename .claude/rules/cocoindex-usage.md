@@ -78,21 +78,28 @@ proxy:
 
 ### proxy ライフサイクル
 
-proxy はセッション間で**永続化**する。
+proxy は supervisor 管理で起動し、外向き URL は固定のまま維持する。
 
 - `SessionStart`
   - 各 CLI の設定を proxy URL に reconcile する
   - `.claude/state/cocoindex-sessions/<session_id>.json` を作成する
-  - proxy が未 ready ならバックグラウンド warmup を開始する
+  - proxy が `stopped` / `failed` のときだけバックグラウンド warmup を開始する
 - `UserPromptSubmit`
-  - `proxy_state == ready` になった後、その session に対して 1 回だけ reconnect を促す
+  - `proxy_state == ready` または `idle` になった後、その session に対して 1 回だけ reconnect を促す
 - `SessionEnd`
   - session state のみ削除する
-  - proxy 自体は停止しない
 - 手動停止
   - `orchestra-manager.py proxy stop --project .`
 
 global state は `.claude/state/cocoindex-proxy.json` に保存する。
+
+#### supervisor と自動停止
+
+- 外側の固定ポートは `proxy_supervisor.py` が listen する
+- 実際の `mcp-proxy` は内側の一時ポートで起動し、supervisor が TCP 転送する
+- `active_clients == 0` になると `idle_timeout` 秒のカウントダウンに入る
+- タイムアウトまでに新しい接続が来なければ、supervisor が inner proxy と自分自身を停止する
+- `proxy_state` は `starting` / `ready` / `idle` / `stopping` / `stopped` / `failed` を取る
 
 #### なぜ current session を自動救済しないのか（実測: 2026-04-21）
 
@@ -116,5 +123,5 @@ global state は `.claude/state/cocoindex-proxy.json` に保存する。
 初回（proxy 未起動）のセッションでは MCP 接続が失敗しうる。
 
 - SessionStart は stdio へ落とさず、proxy warmup を裏で始める
-- proxy が ready になった後、次の `UserPromptSubmit` で 1 回だけ `/mcp` reconnect を促す
-- 以後の新しい session は、proxy が ready なら自動接続される
+- proxy が `ready` または `idle` になった後、次の `UserPromptSubmit` で 1 回だけ `/mcp` reconnect を促す
+- 以後の新しい session は、proxy が `ready` または `idle` なら自動接続される

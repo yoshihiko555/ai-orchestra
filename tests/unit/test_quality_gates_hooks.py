@@ -228,7 +228,6 @@ class TestPostTestAnalysis:
             command="pytest -q",
             exit_code=1,
             output="FAILED",
-            passed=False,
         )
 
         assert blocking is False
@@ -268,6 +267,44 @@ class TestPostTestAnalysis:
         assert state["last_test_result"]["passed"] is False
         assert state["last_test_result"]["command"] == "pytest -q"
 
+    def test_main_successful_exit_with_error_text_does_not_block_quality_gate(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """exit code 0 なら quality gate は block しない。"""
+        state_file = tmp_path / "test-gate.json"
+        monkeypatch.setattr(post_test_analysis, "TEST_GATE_STATE_FILE", state_file)
+        monkeypatch.setattr(
+            post_test_analysis,
+            "load_quality_gate_config",
+            lambda _project_dir: {"enabled": True, "block_on_failed_test": True},
+        )
+        monkeypatch.setattr(post_test_analysis, "resolve_project_root_from_hook_data", lambda data: data["cwd"])
+        monkeypatch.setattr(post_test_analysis, "load_trace_state", lambda **_kwargs: {"tid": "tid-1"})
+        monkeypatch.setattr(post_test_analysis, "emit_event", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(
+            post_test_analysis,
+            "load_package_config",
+            lambda *args: {"codex": {"model": "gpt-test", "sandbox": {"analysis": "read-only"}}},
+        )
+        _make_stdin(
+            {
+                "tool_name": "Bash",
+                "cwd": str(tmp_path),
+                "tool_input": {"command": "pytest -q"},
+                "tool_response": {
+                    "exit_code": 0,
+                    "stdout": "ValueError: expected output marker",
+                },
+            },
+            monkeypatch,
+        )
+
+        with pytest.raises(SystemExit, match="0"):
+            post_test_analysis.main()
+
+        captured = capsys.readouterr()
+        assert "[quality-gates] quality gate blocked" not in captured.err
+
     def test_main_blocks_when_quality_gate_requires_it(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -304,6 +341,11 @@ class TestPostTestAnalysis:
 
         with pytest.raises(SystemExit, match="0"):
             post_test_analysis.main()
+
+    def test_is_test_command_includes_lint_and_typecheck(self) -> None:
+        """quality gate 対象として ruff check と mypy を維持する。"""
+        assert post_test_analysis.is_test_command("ruff check .")
+        assert post_test_analysis.is_test_command("mypy src/")
 
 
 class TestTestGateChecker:

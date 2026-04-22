@@ -81,6 +81,34 @@ class TestMain:
 
         assert output == ""
 
+    def test_notifies_when_proxy_is_idle(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(notify_hook, "load_package_config", lambda *_: {"enabled": True, "proxy": {"enabled": True}})
+        monkeypatch.setattr(
+            notify_hook,
+            "read_session_state",
+            lambda *_: {
+                "session_id": "sess-idle",
+                "reconnect_required": True,
+                "reconnect_notified": False,
+            },
+        )
+        monkeypatch.setattr(notify_hook, "get_proxy_state", lambda *_: {"proxy_state": "idle"})
+
+        marked: list[tuple[str, str]] = []
+
+        def _mark(project_dir: str, session_id: str) -> dict:
+            marked.append((project_dir, session_id))
+            return {"reconnect_notified": True}
+
+        monkeypatch.setattr(notify_hook, "mark_session_reconnect_notified", _mark)
+
+        output = self._invoke({"cwd": str(tmp_path), "session_id": "sess-idle"}, monkeypatch)
+
+        assert "mcp-proxy is ready" in output
+        assert marked == [(str(tmp_path), "sess-idle")]
+
     def test_skips_when_already_notified(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

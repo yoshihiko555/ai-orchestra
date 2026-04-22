@@ -274,7 +274,7 @@ PostToolUse(Agent|Task):
 
 SessionEnd:
   - cleanup-session-context.py (core)    session/ ディレクトリ削除
-  - stop-mcp-proxy.py (cocoindex)        session state cleanup + proxy 再利用通知
+  - stop-mcp-proxy.py (cocoindex)        session state cleanup
   - tmux-session-end.py (tmux)           tmux クリーンアップ
 ```
 

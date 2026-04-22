@@ -47,7 +47,7 @@ def main() -> None:
         return
 
     proxy_state = get_proxy_state(config, project_dir)
-    if proxy_state.get("proxy_state") != "ready":
+    if proxy_state.get("proxy_state") not in {"ready", "idle"}:
         return
 
     mark_session_reconnect_notified(project_dir, session_id)

@@ -32,6 +32,12 @@ from lib.orchestra_models import Package  # noqa: E402
 from lib.sync_engine import collect_manifest_compositions  # noqa: E402
 
 
+def _fmt_inner_proxy(inner_port: object) -> str:
+    if isinstance(inner_port, int) and inner_port > 0:
+        return f"127.0.0.1:{inner_port}"
+    return "-"
+
+
 class OrchestraManager(ContextMixin, HooksMixin):
     """パッケージ管理マネージャー"""
 
@@ -895,13 +901,18 @@ class OrchestraManager(ContextMixin, HooksMixin):
             sys.exit(1)
 
         proxy_cfg = proxy_manager.get_proxy_config(config, str(project_dir))
+        state = proxy_manager.get_proxy_state(config, str(project_dir))
         pid_path = proxy_manager.resolve_pid_path(config, str(project_dir))
-        running = proxy_manager.is_proxy_running(config, str(project_dir))
-        pid = proxy_manager._read_pid(pid_path)
+        running = state.get("proxy_state") in {"ready", "idle"}
+        pid = state.get("pid") or proxy_manager._read_pid(pid_path)
+        child_pid = state.get("child_pid")
+        inner_port = state.get("inner_port")
 
-        print(f"状態:   {'稼働中' if running else '停止'}")
+        print(f"状態:   {'稼働中' if running else '停止'} ({state.get('proxy_state', 'unknown')})")
         print(f"PID:    {pid or '-'}")
+        print(f"Child:  {child_pid or '-'}")
         print(f"ポート: {proxy_cfg['host']}:{proxy_cfg['port']}")
+        print(f"内部:   {_fmt_inner_proxy(inner_port)}")
         print(f"PIDファイル: {pid_path}")
 
 

@@ -91,6 +91,14 @@ class TestBuildProxyUrl:
         assert url == "http://127.0.0.1:8792/mcp"
 
 
+class TestBuildSupervisorCommand:
+    def test_builds_command(self):
+        cmd = proxy_mgr._build_supervisor_command("/tmp/project")
+        assert cmd[0] == "python3"
+        assert cmd[1].endswith("proxy_supervisor.py")
+        assert cmd[2] == "/tmp/project"
+
+
 class TestStateFiles:
     def test_resolve_paths(self, tmp_path):
         proxy_path = proxy_mgr.resolve_proxy_state_path(str(tmp_path))
@@ -230,6 +238,22 @@ class TestIsProxyRunning:
             result = proxy_mgr.is_proxy_running({}, str(tmp_path))
         assert result is False
 
+    def test_idle_state_counts_as_running(self, tmp_path):
+        proxy_mgr.update_proxy_state(
+            str(tmp_path),
+            {"proxy": {"port": 8792, "port_range": 0}},
+            proxy_state="idle",
+            pid=12345,
+            child_pid=54321,
+            inner_port=9999,
+            active_clients=0,
+            last_disconnect_at="2026-04-23T00:00:00+00:00",
+        )
+
+        with patch.object(proxy_mgr, "_is_port_in_use", return_value=True):
+            result = proxy_mgr.is_proxy_running({"proxy": {"port": 8792, "port_range": 0}}, str(tmp_path))
+        assert result is True
+
 
 class TestStartProxy:
     """start_proxy のテスト。"""
@@ -251,6 +275,29 @@ class TestStartProxy:
             result = proxy_mgr.start_proxy({"command": "test"}, str(tmp_path))
         assert result is True
         mock_write.assert_called_once()
+
+    def test_launches_supervisor(self, tmp_path):
+        """起動時は raw mcp-proxy ではなく supervisor を立ち上げる。"""
+        mock_proc = MagicMock()
+        mock_proc.pid = 43210
+
+        with (
+            patch.object(proxy_mgr, "is_proxy_running", return_value=False),
+            patch.object(proxy_mgr, "_is_port_in_use", return_value=False),
+            patch.object(proxy_mgr, "cleanup_orphan"),
+            patch.object(proxy_mgr, "_wait_for_port", return_value=True),
+            patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
+        ):
+            result = proxy_mgr.start_proxy({"command": "test"}, str(tmp_path))
+
+        assert result is True
+        launched_call = mock_popen.call_args_list[0]
+        launched_cmd = launched_call.args[0]
+        launched_env = launched_call.kwargs["env"]
+        assert launched_cmd[0] == "python3"
+        assert launched_cmd[1].endswith("proxy_supervisor.py")
+        assert launched_cmd[2] == str(tmp_path)
+        assert launched_env[proxy_mgr._SUPERVISOR_CONFIG_ENV]
 
     def test_popen_failure(self, tmp_path):
         """Popen が失敗した場合、False。"""

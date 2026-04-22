@@ -11,6 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `agent-routing`: 未分類のリサーチ入力を `Gemini` 固定ではなく `researcher` 基点の config-driven 解決に変更。`cli-tools.yaml` / `.local.yaml` の `agents.researcher.tool` に追従するようにした
 - `quality-gates` / `audit`: quality gate の責務を整理し、判定と block は `quality-gates`、監査ログと集計は `audit` が担う構成に変更
 - `cocoindex`: proxy モードを proxy-only に変更。`proxy.enabled: true` 時は stdio fallback を行わず、決定論的 URL と state file、reconnect 通知で扱うようにした
+- `cocoindex`: proxy 実体を supervisor 管理に変更。外向き URL を維持したまま inner `mcp-proxy` を転送し、`idle_timeout` ベースの自動停止を追加
 - `audit/scripts/dashboard-html.py`: `-o` 未指定時のデフォルト出力先を `.claude/YYYYMMDD-dashboard.html` に変更。`-o -` で stdout 出力をサポート
 - `orchex scripts`: スクリプト一覧に説明（description）カラムと使い方ヒントを追加
 - `packages/audit/manifest.json`: scripts エントリを `{path, description}` オブジェクト形式に拡張（文字列形式との後方互換あり）
@@ -18,6 +19,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - `cocoindex`: `start-mcp-proxy.py` と `notify-proxy-reconnect.py` を追加し、`.claude/state/cocoindex-proxy.json` / `.claude/state/cocoindex-sessions/<session_id>.json` による runtime state 管理を導入
+- `cocoindex`: `proxy_supervisor.py` を追加し、`active_clients` と `idle` 状態を持つ proxy supervisor を導入
 - `scripts/lib/orchestra_models.py`: `ScriptEntry` データクラスを追加（manifest の scripts 値を型安全に扱う）
 - `packages/audit/README.md`: audit パッケージの使い方ドキュメントを追加
 
@@ -25,6 +27,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `agent-routing`: `このPDF見てください` のような入力が大小文字不一致で Gemini fallback に乗らなかった問題を修正し、`researcher` ルーティングに統一
 - `quality-gates/test-gate-checker.py`: 旧 `route-audit/orchestration-flags.json` 参照を廃止し、現行 `audit/audit-flags.json` を正として読むよう修正
+- `quality-gates/post-test-analysis.py`: quality gate の pass/fail を exit code 基準へ戻し、`ruff check` / `mypy` を再び gate 対象に含めるよう修正
 - `cocoindex/proxy_manager.py`: `project_dir` の別表現 (`/tmp` / `/private/tmp` など) で別ポートになる問題を修正し、proxy status / 再利用判定の不整合を解消
 - `audit/hooks/event_logger.py`: worktree 環境でログが分散する問題を修正。全 worktree のログを root worktree の `.claude/logs/audit/` に集約するようにした
 

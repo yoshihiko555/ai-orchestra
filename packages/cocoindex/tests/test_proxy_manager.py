@@ -289,6 +289,24 @@ class TestIsProxyRunning:
         config = {**SAMPLE_CONFIG, "proxy": {**SAMPLE_CONFIG["proxy"], "pid_file": str(pid_path)}}
         assert proxy_mgr.is_proxy_running(config, str(tmp_path)) is False
 
+    @patch("proxy_manager._is_port_in_use", return_value=True)
+    @patch("proxy_manager._find_pid_by_port", return_value=77777)
+    def test_idle_state_counts_as_running(
+        self, _find: MagicMock, _port: MagicMock, tmp_path: Path
+    ) -> None:
+        proxy_mgr.update_proxy_state(
+            str(tmp_path),
+            SAMPLE_CONFIG,
+            proxy_state="idle",
+            pid=12345,
+            child_pid=54321,
+            inner_port=9999,
+            active_clients=0,
+            last_disconnect_at="2026-04-23T00:00:00+00:00",
+        )
+
+        assert proxy_mgr.is_proxy_running(SAMPLE_CONFIG, str(tmp_path)) is True
+
 
 # =========================================================================
 # _build_proxy_command
@@ -336,6 +354,14 @@ class TestBuildProxyCommand:
             proxy_mgr._build_proxy_command({}, {"port": 8792})
 
 
+class TestBuildSupervisorCommand:
+    def test_builds_command(self) -> None:
+        cmd = proxy_mgr._build_supervisor_command("/tmp/project")
+        assert cmd[0] == "python3"
+        assert cmd[1].endswith("proxy_supervisor.py")
+        assert cmd[2] == "/tmp/project"
+
+
 # =========================================================================
 # start_proxy
 # =========================================================================
@@ -362,6 +388,13 @@ class TestStartProxy:
 
         result = proxy_mgr.start_proxy(SAMPLE_CONFIG, str(tmp_path))
         assert result is True
+        launched_call = mock_popen.call_args_list[0]
+        launched_cmd = launched_call.args[0]
+        launched_env = launched_call.kwargs["env"]
+        assert launched_cmd[0] == "python3"
+        assert launched_cmd[1].endswith("proxy_supervisor.py")
+        assert launched_cmd[2] == str(tmp_path)
+        assert launched_env[proxy_mgr._SUPERVISOR_CONFIG_ENV]
 
         # PID ファイルが作成されている
         pid_path = os.path.join(str(tmp_path), ".claude", ".mcp-proxy.pid")

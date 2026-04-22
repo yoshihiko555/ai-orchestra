@@ -27,6 +27,7 @@ _DEFAULTS: dict = {
     "host": "127.0.0.1",
     "pid_file": ".claude/.mcp-proxy.pid",
     "startup_timeout": 10,
+    "idle_timeout": 300,
 }
 
 _STATE_DIR = ".claude/state"
@@ -37,6 +38,7 @@ _PORT_POLL_INTERVAL = 0.3
 _EXIT_POLL_INTERVAL = 0.2
 _SIGTERM_WAIT = 5
 _STATE_STALE_SECONDS = 300
+_SUPERVISOR_CONFIG_ENV = "COCOINDEX_PROXY_CONFIG_JSON"
 
 
 # ---------------------------------------------------------------------------
@@ -95,9 +97,12 @@ def get_proxy_state(config: dict, project_dir: str) -> dict:
         pid = _find_pid_by_port(proxy_cfg["port"])
         if pid is not None:
             _write_pid(resolve_pid_path(config, project_dir), pid)
+        proxy_state = state.get("proxy_state")
+        if proxy_state not in {"ready", "idle"}:
+            proxy_state = "ready"
         next_state = {
             **state,
-            "proxy_state": "ready",
+            "proxy_state": proxy_state,
             "pid": pid or state.get("pid"),
             "last_error": "",
         }
@@ -205,7 +210,7 @@ def start_proxy_background(config: dict, project_dir: str) -> bool:
 
     try:
         state = get_proxy_state(config, project_dir)
-        if state.get("proxy_state") == "ready":
+        if state.get("proxy_state") in {"ready", "idle"}:
             return False
         if state.get("proxy_state") == "starting" and not _is_state_stale(state):
             return False
@@ -249,7 +254,7 @@ def start_proxy_background(config: dict, project_dir: str) -> bool:
 
 
 def start_proxy(config: dict, project_dir: str) -> bool:
-    """mcp-proxy を同期起動する。helper から呼ばれる。"""
+    """supervisor を同期起動する。helper から呼ばれる。"""
     if is_proxy_running(config, project_dir):
         return True
 
@@ -289,11 +294,13 @@ def start_proxy(config: dict, project_dir: str) -> bool:
 
         cleanup_orphan(config, project_dir)
 
-        cmd = _build_proxy_command(config, proxy_cfg)
+        cmd = _build_supervisor_command(project_dir)
         pid_path = resolve_pid_path(config, project_dir)
         pid_dir = os.path.dirname(pid_path)
         if pid_dir:
             os.makedirs(pid_dir, exist_ok=True)
+        env = os.environ.copy()
+        env[_SUPERVISOR_CONFIG_ENV] = json.dumps(config, ensure_ascii=False)
 
         try:
             proc = subprocess.Popen(
@@ -301,6 +308,7 @@ def start_proxy(config: dict, project_dir: str) -> bool:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
+                env=env,
             )
         except (OSError, FileNotFoundError, ValueError) as exc:
             update_proxy_state(
@@ -318,6 +326,8 @@ def start_proxy(config: dict, project_dir: str) -> bool:
             config,
             proxy_state="starting",
             pid=proc.pid,
+            child_pid=None,
+            inner_port=None,
             last_error="",
         )
 
@@ -351,7 +361,7 @@ def start_proxy(config: dict, project_dir: str) -> bool:
 
 
 def stop_proxy(config: dict, project_dir: str) -> bool:
-    """mcp-proxy を停止する。"""
+    """supervisor と子 mcp-proxy を停止する。"""
     pid_path = resolve_pid_path(config, project_dir)
     pid = _read_pid(pid_path)
 
@@ -359,25 +369,69 @@ def stop_proxy(config: dict, project_dir: str) -> bool:
         proxy_cfg = get_proxy_config(config, project_dir)
         port_pid = _find_pid_by_port(proxy_cfg["port"])
         if port_pid is None:
-            update_proxy_state(project_dir, config, proxy_state="stopped", pid=None, last_error="")
+            _cleanup_child_process(project_dir)
+            update_proxy_state(
+                project_dir,
+                config,
+                proxy_state="stopped",
+                pid=None,
+                child_pid=None,
+                inner_port=None,
+                active_clients=0,
+                last_disconnect_at="",
+                last_error="",
+            )
             return True
         pid = port_pid
 
     if not _is_pid_alive(pid):
         _remove_pid(pid_path)
-        update_proxy_state(project_dir, config, proxy_state="stopped", pid=None, last_error="")
+        _cleanup_child_process(project_dir)
+        update_proxy_state(
+            project_dir,
+            config,
+            proxy_state="stopped",
+            pid=None,
+            child_pid=None,
+            inner_port=None,
+            active_clients=0,
+            last_disconnect_at="",
+            last_error="",
+        )
         return True
 
     try:
         os.kill(pid, signal.SIGTERM)
     except OSError:
         _remove_pid(pid_path)
-        update_proxy_state(project_dir, config, proxy_state="stopped", pid=None, last_error="")
+        _cleanup_child_process(project_dir)
+        update_proxy_state(
+            project_dir,
+            config,
+            proxy_state="stopped",
+            pid=None,
+            child_pid=None,
+            inner_port=None,
+            active_clients=0,
+            last_disconnect_at="",
+            last_error="",
+        )
         return True
 
     if _wait_for_exit(pid, _SIGTERM_WAIT):
         _remove_pid(pid_path)
-        update_proxy_state(project_dir, config, proxy_state="stopped", pid=None, last_error="")
+        _cleanup_child_process(project_dir, exclude_pid=pid)
+        update_proxy_state(
+            project_dir,
+            config,
+            proxy_state="stopped",
+            pid=None,
+            child_pid=None,
+            inner_port=None,
+            active_clients=0,
+            last_disconnect_at="",
+            last_error="",
+        )
         return True
 
     try:
@@ -388,22 +442,34 @@ def stop_proxy(config: dict, project_dir: str) -> bool:
     exited = _wait_for_exit(pid, 2)
     _remove_pid(pid_path)
     if exited:
-        update_proxy_state(project_dir, config, proxy_state="stopped", pid=None, last_error="")
+        _cleanup_child_process(project_dir, exclude_pid=pid)
+        update_proxy_state(
+            project_dir,
+            config,
+            proxy_state="stopped",
+            pid=None,
+            child_pid=None,
+            inner_port=None,
+            active_clients=0,
+            last_disconnect_at="",
+            last_error="",
+        )
     return exited
 
 
 def is_proxy_running(config: dict, project_dir: str) -> bool:
     """proxy が稼働中かチェックする。"""
     state = get_proxy_state(config, project_dir)
-    return state.get("proxy_state") == "ready"
+    return state.get("proxy_state") in {"ready", "idle"}
 
 
 def cleanup_orphan(config: dict, project_dir: str) -> None:
-    """stale PID ファイルを検出し、残存プロセスをクリーンアップする。"""
+    """stale supervisor / child プロセスをクリーンアップする。"""
     pid_path = resolve_pid_path(config, project_dir)
     pid = _read_pid(pid_path)
 
     if pid is None:
+        _cleanup_child_process(project_dir)
         return
 
     if _is_pid_alive(pid):
@@ -419,6 +485,7 @@ def cleanup_orphan(config: dict, project_dir: str) -> None:
                 pass
 
     _remove_pid(pid_path)
+    _cleanup_child_process(project_dir, exclude_pid=pid)
 
 
 # ---------------------------------------------------------------------------
@@ -534,6 +601,11 @@ def _build_proxy_command(config: dict, proxy_cfg: dict) -> list[str]:
     return cmd
 
 
+def _build_supervisor_command(project_dir: str) -> list[str]:
+    """proxy supervisor の起動コマンドを組み立てる。"""
+    return ["python3", _resolve_supervisor_path(), project_dir]
+
+
 def _resolve_state_dir(project_dir: str) -> str:
     return os.path.join(project_dir, _STATE_DIR)
 
@@ -551,12 +623,51 @@ def _resolve_background_helper_path() -> str:
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "start-mcp-proxy.py")
 
 
+def _resolve_supervisor_path() -> str:
+    orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
+    if orchestra_dir:
+        candidate = os.path.join(orchestra_dir, "packages", "cocoindex", "hooks", "proxy_supervisor.py")
+        if os.path.isfile(candidate):
+            return candidate
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "proxy_supervisor.py")
+
+
+def _cleanup_child_process(project_dir: str, *, exclude_pid: int | None = None) -> None:
+    """state に記録された child_pid が残っていれば停止する。"""
+    state = read_proxy_state(project_dir)
+    child_pid = state.get("child_pid")
+    if not isinstance(child_pid, int) or child_pid <= 0:
+        return
+    if exclude_pid is not None and child_pid == exclude_pid:
+        return
+    if not _is_pid_alive(child_pid):
+        return
+
+    try:
+        os.kill(child_pid, signal.SIGTERM)
+    except OSError:
+        return
+
+    if _wait_for_exit(child_pid, _SIGTERM_WAIT):
+        return
+
+    try:
+        os.kill(child_pid, signal.SIGKILL)
+    except OSError:
+        return
+    _wait_for_exit(child_pid, 2)
+
+
 def _merge_proxy_state(existing: dict, proxy_cfg: dict) -> dict:
     state = {
         "proxy_state": "stopped",
         "pid": None,
+        "child_pid": None,
         "host": proxy_cfg["host"],
         "port": proxy_cfg["port"],
+        "inner_port": None,
+        "active_clients": 0,
+        "last_disconnect_at": "",
         "last_transition_at": "",
         "last_error": "",
     }

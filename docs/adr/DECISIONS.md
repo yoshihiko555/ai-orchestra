@@ -30,3 +30,4 @@ AI Orchestra プロジェクトの意思決定記録。
 | ADR-20260414-015 | agent-routing の未分類リサーチ入力は researcher 基点で解決する | accepted | 2026-04-14 |
 | ADR-20260419-016 | quality gate の判定は quality-gates が担い、audit は記録と集計に限定する | accepted | 2026-04-19 |
 | ADR-20260421-017 | cocoindex proxy 起動は proxy-only とし、state file と reconnect 通知で扱う | accepted | 2026-04-21 |
+| ADR-20260423-018 | cocoindex proxy 停止は supervisor の idle shutdown で扱う | accepted | 2026-04-23 |

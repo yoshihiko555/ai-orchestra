@@ -12,6 +12,7 @@
     "hooks/provision-mcp-servers.py",
     "hooks/stop-mcp-proxy.py",
     "hooks/proxy_manager.py",
+    "hooks/proxy_supervisor.py",
     "hooks/start-mcp-proxy.py",
     "hooks/notify-proxy-reconnect.py"
   ],
