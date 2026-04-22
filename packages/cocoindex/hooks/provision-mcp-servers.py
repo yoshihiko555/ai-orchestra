@@ -296,6 +296,14 @@ TARGET_HANDLERS = {
 }
 
 
+def _session_uses_proxy(config: dict, proxy_enabled: bool) -> bool:
+    """現在の Claude session が proxy reconnect 対象かを返す。"""
+    if not proxy_enabled:
+        return False
+    target = (config.get("targets", {}) or {}).get("claude", {}) or {}
+    return bool(target.get("enabled", False) and not target.get("force_stdio", False))
+
+
 @safe_hook_execution
 def main() -> None:
     data = read_hook_input()
@@ -310,11 +318,15 @@ def main() -> None:
 
     proxy_enabled = bool(enabled and config and (config.get("proxy", {}) or {}).get("enabled", False))
     warmup_started = False
+    session_uses_proxy = _session_uses_proxy(config, proxy_enabled) if config else False
     if proxy_enabled and config:
         proxy_state = get_proxy_state(config, project_dir)
         proxy_ready = proxy_state.get("proxy_state") == "ready"
         if session_id:
-            write_session_state(project_dir, session_id, reconnect_required=not proxy_ready)
+            if session_uses_proxy:
+                write_session_state(project_dir, session_id, reconnect_required=not proxy_ready)
+            else:
+                clear_session_state(project_dir, session_id)
         if not proxy_ready:
             warmup_started = start_proxy_background(config, project_dir)
     elif session_id:

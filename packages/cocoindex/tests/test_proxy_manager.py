@@ -484,6 +484,31 @@ class TestStartProxyBackground:
         )
         assert state["proxy_state"] == "starting"
 
+    def test_releases_lock_before_launching_helper(self, tmp_path: Path) -> None:
+        events: list[str] = []
+
+        def _acquire(_path: str) -> bool:
+            events.append("acquire")
+            return True
+
+        def _release(_path: str) -> None:
+            events.append("release")
+
+        def _popen(*_args, **_kwargs):
+            events.append("popen")
+            return MagicMock()
+
+        with (
+            patch.object(proxy_mgr, "_acquire_lock", side_effect=_acquire),
+            patch.object(proxy_mgr, "_release_lock", side_effect=_release),
+            patch.object(proxy_mgr, "get_proxy_state", return_value={"proxy_state": "stopped"}),
+            patch("proxy_manager.subprocess.Popen", side_effect=_popen),
+        ):
+            result = proxy_mgr.start_proxy_background(SAMPLE_CONFIG, str(tmp_path))
+
+        assert result is True
+        assert events == ["acquire", "release", "popen"]
+
     @patch("proxy_manager.subprocess.Popen")
     @patch("proxy_manager.get_proxy_state", return_value={"proxy_state": "ready"})
     def test_skips_when_ready(

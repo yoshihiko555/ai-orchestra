@@ -199,6 +199,10 @@ def start_proxy_background(config: dict, project_dir: str) -> bool:
     if not _acquire_lock(lock_path):
         return False
 
+    helper_path = ""
+    env: dict[str, str] | None = None
+    should_spawn = False
+
     try:
         state = get_proxy_state(config, project_dir)
         if state.get("proxy_state") == "ready":
@@ -217,27 +221,31 @@ def start_proxy_background(config: dict, project_dir: str) -> bool:
         helper_path = _resolve_background_helper_path()
         env = os.environ.copy()
         env.setdefault("AI_ORCHESTRA_DIR", os.environ.get("AI_ORCHESTRA_DIR", ""))
-
-        try:
-            subprocess.Popen(
-                ["python3", helper_path, project_dir],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-                env=env,
-            )
-            return True
-        except (OSError, FileNotFoundError, ValueError) as exc:
-            update_proxy_state(
-                project_dir,
-                config,
-                proxy_state="failed",
-                pid=None,
-                last_error=f"launcher failed: {exc}",
-            )
-            return False
+        should_spawn = True
     finally:
         _release_lock(lock_path)
+
+    if not should_spawn:
+        return False
+
+    try:
+        subprocess.Popen(
+            ["python3", helper_path, project_dir],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            env=env,
+        )
+        return True
+    except (OSError, FileNotFoundError, ValueError) as exc:
+        update_proxy_state(
+            project_dir,
+            config,
+            proxy_state="failed",
+            pid=None,
+            last_error=f"launcher failed: {exc}",
+        )
+        return False
 
 
 def start_proxy(config: dict, project_dir: str) -> bool:

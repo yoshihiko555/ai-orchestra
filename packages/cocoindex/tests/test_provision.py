@@ -544,3 +544,31 @@ class TestMain:
         )
         assert session_state["reconnect_required"] is False
         start_mock.assert_not_called()
+
+    def test_claude_force_stdio_session_skips_reconnect_state(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        project_dir = tmp_path
+        config = {
+            **SAMPLE_CONFIG_V2,
+            "targets": {
+                **SAMPLE_CONFIG_V2["targets"],
+                "claude": {"enabled": True, "type": "stdio", "force_stdio": True},
+            },
+        }
+        monkeypatch.setattr(provision, "load_package_config", lambda *_: config)
+        monkeypatch.setattr(
+            provision,
+            "get_proxy_state",
+            lambda *_: {"proxy_state": "stopped"},
+        )
+        start_mock = MagicMock(return_value=True)
+        monkeypatch.setattr(provision, "start_proxy_background", start_mock)
+
+        self._invoke({"cwd": str(project_dir), "session_id": "sess-force-stdio"}, monkeypatch)
+
+        session_state_path = (
+            project_dir / ".claude" / "state" / "cocoindex-sessions" / "sess-force-stdio.json"
+        )
+        assert not session_state_path.exists()
+        start_mock.assert_called_once_with(config, str(project_dir))

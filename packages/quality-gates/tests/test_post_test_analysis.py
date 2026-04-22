@@ -1,3 +1,5 @@
+import sys
+
 import pytest
 
 from tests.module_loader import load_module
@@ -5,6 +7,25 @@ from tests.module_loader import load_module
 post_test_analysis = load_module(
     "post_test_analysis", "packages/quality-gates/hooks/post-test-analysis.py"
 )
+
+
+def test_module_loads_without_ai_orchestra_dir(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("AI_ORCHESTRA_DIR", raising=False)
+
+    saved_hook_common = sys.modules.pop("hook_common", None)
+    saved_event_logger = sys.modules.pop("event_logger", None)
+    try:
+        module = load_module(
+            "post_test_analysis_without_orchestra",
+            "packages/quality-gates/hooks/post-test-analysis.py",
+        )
+    finally:
+        if saved_hook_common is not None:
+            sys.modules["hook_common"] = saved_hook_common
+        if saved_event_logger is not None:
+            sys.modules["event_logger"] = saved_event_logger
+
+    assert callable(module.load_quality_gate_config)
 
 
 @pytest.mark.parametrize(
