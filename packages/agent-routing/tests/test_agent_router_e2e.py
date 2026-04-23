@@ -88,24 +88,24 @@ class TestHookOutputForAgentDetection:
 
 
 # ---------------------------------------------------------------------------
-# エージェント未検出時の Gemini フォールバック
+# エージェント未検出時の researcher フォールバック
 # ---------------------------------------------------------------------------
 
 
-class TestGeminiFallbackTrigger:
-    def test_pdf_trigger_case_mismatch_is_known_bug(self) -> None:
-        """BUG: GEMINI_FALLBACK_TRIGGERS の "PDF見て" が大文字なのに
-        prompt.lower() と比較するためマッチしない。
-        ここでは現在の挙動を記録しておく。"""
+class TestResearcherFallbackTrigger:
+    def test_pdf_trigger_routes_to_researcher(self) -> None:
         result = _run_hook("このPDF見てください")
-        # 現状はマッチしない（大文字 "PDF" vs lower() された "pdf"）
-        assert result == {}
+        hook_out = result.get("hookSpecificOutput", {})
+        ctx = hook_out.get("additionalContext", "")
+        assert "researcher" in ctx
+        assert "Gemini CLI" in ctx
 
     def test_codebase_trigger(self) -> None:
         result = _run_hook("コードベース全体を理解したい")
         hook_out = result.get("hookSpecificOutput", {})
         ctx = hook_out.get("additionalContext", "")
         assert "Gemini CLI" in ctx
+        assert "researcher" in ctx
 
 
 # ---------------------------------------------------------------------------

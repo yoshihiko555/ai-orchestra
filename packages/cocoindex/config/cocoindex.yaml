@@ -27,3 +27,4 @@ proxy:
   host: "127.0.0.1"
   pid_file: ".claude/.mcp-proxy.pid"
   startup_timeout: 10
+  idle_timeout: 300        # active client が 0 の状態が続いたら supervisor が自動停止する秒数

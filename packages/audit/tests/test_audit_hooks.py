@@ -49,6 +49,14 @@ class TestDetectRoute:
         route, _, _ = audit_route.detect_route(data)
         assert route is None
 
+    def test_bash_test_command_is_not_treated_as_route(self) -> None:
+        """通常のテスト実行は route 判定せず、quality-gates 側に委譲する。"""
+        data = {"tool_name": "Bash", "tool_input": {"command": "pytest -q"}}
+        route, excerpt, tool = audit_route.detect_route(data)
+        assert route is None
+        assert excerpt == "pytest -q"
+        assert tool == "Bash"
+
     def test_task_agent(self) -> None:
         """Task ツール呼び出しで task:<agent_type> を返すことを確認する。"""
         data = {"tool_name": "Task", "tool_input": {"subagent_type": "backend-python-dev"}}

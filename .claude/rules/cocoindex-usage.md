@@ -4,13 +4,21 @@ cocoindex パッケージは cocoindex-code MCP サーバーの設定を Claude 
 
 ## 仕組み
 
-SessionStart hook が `config/cocoindex.yaml` を読み込み、以下の設定ファイルに MCP サーバー定義を書き出す:
+SessionStart hook が `config/cocoindex.yaml` を読み込み、以下の設定ファイルを reconcile する:
 
 | CLI | 設定ファイル | フォーマット |
 |-----|------------|-------------|
 | Claude Code | `.mcp.json` | JSON (`mcpServers` キー) |
 | Codex CLI | `.codex/config.toml` | TOML (`[mcp_servers.{name}]` セクション) |
 | Gemini CLI | `.gemini/settings.json` | JSON (`mcpServers` キー) |
+
+proxy モードでは、これらのエントリは **決定論的な proxy URL** を向く。
+
+- `host/port` は `get_proxy_config()` から一意に導出する
+- Claude Code / Gemini CLI は `/sse`
+- Codex CLI は `/mcp`
+- `proxy.enabled: true` のとき **stdio fallback は行わない**
+- ただし target ごとの `force_stdio: true` は明示的 override として有効
 
 ## 設定変更
 
@@ -70,31 +78,50 @@ proxy:
 
 ### proxy ライフサイクル
 
-proxy はセッション間で**永続化**する運用を推奨する。
+proxy は supervisor 管理で起動し、外向き URL は固定のまま維持する。
 
-- `SessionStart` で `start_proxy()` が冪等に呼ばれる（起動済みならスキップ）
-- `SessionEnd` では proxy を**停止しない**（次セッションで再利用）
-- 手動停止: `orchestra-manager.py proxy stop --project .`
+- `SessionStart`
+  - 各 CLI の設定を proxy URL に reconcile する
+  - `.claude/state/cocoindex-sessions/<session_id>.json` を作成する
+  - proxy が `stopped` / `failed` のときだけバックグラウンド warmup を開始する
+- `UserPromptSubmit`
+  - `proxy_state == ready` または `idle` になった後、その session に対して 1 回だけ reconnect を促す
+- `SessionEnd`
+  - session state のみ削除する
+- 手動停止
+  - `orchestra-manager.py proxy stop --project .`
 
-#### なぜ永続化するのか（検証結果: 2026-03-06）
+global state は `.claude/state/cocoindex-proxy.json` に保存する。
 
-Claude Code の起動シーケンスは以下の順序で行われる:
+#### supervisor と自動停止
+
+- 外側の固定ポートは `proxy_supervisor.py` が listen する
+- 実際の `mcp-proxy` は内側の一時ポートで起動し、supervisor が TCP 転送する
+- `active_clients == 0` になると `idle_timeout` 秒のカウントダウンに入る
+- タイムアウトまでに新しい接続が来なければ、supervisor が inner proxy と自分自身を停止する
+- `proxy_state` は `starting` / `ready` / `idle` / `stopping` / `stopped` / `failed` を取る
+
+#### なぜ current session を自動救済しないのか（実測: 2026-04-21）
+
+2026-04-21 に Claude Code `v2.1.116` の `--print` 実行で確認した順序は次の通りだった。
 
 ```
-1. Instructions 読み込み → InstructionsLoaded hook 発火
-2. .mcp.json 読み込み → MCP サーバー接続試行
-3. SessionStart hook 発火
+1. MCP 設定読み込み / 接続試行
+2. SessionStart hook 発火
+3. InstructionsLoaded hook 発火
 ```
 
 検証で判明した事実:
-- `InstructionsLoaded` は `SessionStart` より約 580ms 先に発火する
-- しかし proxy 起動には約 6 秒かかる（uvx + cocoindex のロード）
-- MCP 接続は proxy ready より前に行われるため、どのフックで起動しても間に合わない
-- フックから MCP リコネクトをプログラム的にトリガーする手段がない
+- `InstructionsLoaded` でも初回の MCP 接続には間に合わない
+- cold start は 10 秒を超えることがある
+- フック側から MCP reconnect を自動実行する手段はない
 
-そのため、proxy をセッション間で永続化し、次セッション起動時には既に proxy が稼働している状態にする。
+そのため、proxy mode は「**proxy-only で URL を先に固定し、proxy は裏で warmup する**」設計にしている。
 
 #### 初回起動時
 
-初回（proxy 未起動）のセッションでは MCP 接続が失敗する。`/mcp` でリコネクトが必要。
-2 回目以降は proxy が永続化されているため自動接続される。
+初回（proxy 未起動）のセッションでは MCP 接続が失敗しうる。
+
+- SessionStart は stdio へ落とさず、proxy warmup を裏で始める
+- proxy が `ready` または `idle` になった後、次の `UserPromptSubmit` で 1 回だけ `/mcp` reconnect を促す
+- 以後の新しい session は、proxy が `ready` または `idle` なら自動接続される

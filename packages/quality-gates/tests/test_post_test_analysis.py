@@ -1,3 +1,5 @@
+import sys
+
 import pytest
 
 from tests.module_loader import load_module
@@ -5,6 +7,25 @@ from tests.module_loader import load_module
 post_test_analysis = load_module(
     "post_test_analysis", "packages/quality-gates/hooks/post-test-analysis.py"
 )
+
+
+def test_module_loads_without_ai_orchestra_dir(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("AI_ORCHESTRA_DIR", raising=False)
+
+    saved_hook_common = sys.modules.pop("hook_common", None)
+    saved_event_logger = sys.modules.pop("event_logger", None)
+    try:
+        module = load_module(
+            "post_test_analysis_without_orchestra",
+            "packages/quality-gates/hooks/post-test-analysis.py",
+        )
+    finally:
+        if saved_hook_common is not None:
+            sys.modules["hook_common"] = saved_hook_common
+        if saved_event_logger is not None:
+            sys.modules["event_logger"] = saved_event_logger
+
+    assert callable(module.load_quality_gate_config)
 
 
 @pytest.mark.parametrize(
@@ -15,13 +36,15 @@ post_test_analysis = load_module(
         "npm run test",
         "uv run pytest tests/",
         "cargo test -q",
+        "ruff check .",
+        "mypy src/",
     ],
 )
 def test_is_test_command_detects_supported_commands(command: str) -> None:
     assert post_test_analysis.is_test_command(command)
 
 
-@pytest.mark.parametrize("command", ["ls -la", "npm run build", "ruff check ."])
+@pytest.mark.parametrize("command", ["ls -la", "npm run build", "ruff format ."])
 def test_is_test_command_ignores_non_test_commands(command: str) -> None:
     assert not post_test_analysis.is_test_command(command)
 
@@ -115,3 +138,106 @@ def test_record_test_result_preserves_on_fail(_clean_state) -> None:
     assert reloaded["lines_modified_since_test"] == 85
     assert reloaded["warned"] is True
     assert reloaded["last_test_result"]["passed"] is False
+
+
+def test_emit_quality_gate_event_records_audit_event(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict = {}
+
+    monkeypatch.setattr(
+        post_test_analysis, "resolve_project_root_from_hook_data", lambda data: data["cwd"]
+    )
+    monkeypatch.setattr(
+        post_test_analysis, "load_quality_gate_config", lambda _project_dir: {"enabled": True}
+    )
+    monkeypatch.setattr(
+        post_test_analysis, "load_trace_state", lambda **_kwargs: {"tid": "tid-123"}
+    )
+    monkeypatch.setattr(
+        post_test_analysis,
+        "emit_event",
+        lambda event_type, payload, **kwargs: captured.update(
+            {"type": event_type, "payload": payload, "kwargs": kwargs}
+        ),
+    )
+
+    blocking = post_test_analysis.emit_quality_gate_event(
+        {
+            "session_id": "sid-1",
+            "cwd": "/project",
+        },
+        command="pytest -q",
+        exit_code=1,
+        output="FAILED test_example.py::test_case",
+    )
+
+    assert blocking is False
+    assert captured["type"] == "quality_gate"
+    assert captured["payload"]["command"] == "pytest -q"
+    assert captured["payload"]["exit_code"] == 1
+    assert captured["payload"]["passed"] is False
+    assert captured["payload"]["blocking"] is False
+    assert captured["kwargs"]["session_id"] == "sid-1"
+    assert captured["kwargs"]["tid"] == "tid-123"
+
+
+def test_emit_quality_gate_event_returns_blocking_when_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        post_test_analysis, "resolve_project_root_from_hook_data", lambda data: data["cwd"]
+    )
+    monkeypatch.setattr(
+        post_test_analysis,
+        "load_quality_gate_config",
+        lambda _project_dir: {"enabled": True, "block_on_failed_test": True},
+    )
+    monkeypatch.setattr(
+        post_test_analysis, "load_trace_state", lambda **_kwargs: {"tid": "tid-123"}
+    )
+    monkeypatch.setattr(post_test_analysis, "emit_event", lambda *_args, **_kwargs: None)
+
+    blocking = post_test_analysis.emit_quality_gate_event(
+        {"session_id": "sid-1", "cwd": "/project"},
+        command="pytest -q",
+        exit_code=1,
+        output="FAILED",
+    )
+
+    assert blocking is True
+
+
+def test_emit_quality_gate_event_uses_exit_code_for_success_even_with_error_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict = {}
+
+    monkeypatch.setattr(
+        post_test_analysis, "resolve_project_root_from_hook_data", lambda data: data["cwd"]
+    )
+    monkeypatch.setattr(
+        post_test_analysis,
+        "load_quality_gate_config",
+        lambda _project_dir: {"enabled": True, "block_on_failed_test": True},
+    )
+    monkeypatch.setattr(
+        post_test_analysis, "load_trace_state", lambda **_kwargs: {"tid": "tid-123"}
+    )
+    monkeypatch.setattr(
+        post_test_analysis,
+        "emit_event",
+        lambda event_type, payload, **kwargs: captured.update(
+            {"type": event_type, "payload": payload, "kwargs": kwargs}
+        ),
+    )
+
+    blocking = post_test_analysis.emit_quality_gate_event(
+        {"session_id": "sid-1", "cwd": "/project"},
+        command="pytest -q",
+        exit_code=0,
+        output="ValueError: expected output marker",
+    )
+
+    assert blocking is False
+    assert captured["type"] == "quality_gate"
+    assert captured["payload"]["passed"] is True
+    assert captured["payload"]["blocking"] is False
