@@ -18,7 +18,10 @@ import sys
 from pathlib import Path
 
 ENV_VAR = "AI_ORCHESTRA_BASE_BRANCH"
-CANDIDATES: tuple[str, ...] = ("main", "master", "staging", "stage", "develop")
+# 同距離の候補が複数ある場合は先頭が優先される。
+# 多段ブランチ運用（main + stage 等）では feature PR の target を stage 側にしたいため、
+# staging / stage / develop を main / master より先に並べる。
+CANDIDATES: tuple[str, ...] = ("staging", "stage", "develop", "main", "master")
 FALLBACK = "main"
 
 
@@ -53,7 +56,9 @@ def _distance_to_tip(candidate: str, cwd: Path) -> int | None:
     値が大きいほど candidate が分岐点から先に進んでおり、親としては遠い。
     複数候補がある場合は最小値のものを親として選ぶ。
     同距離の候補が複数ある場合は ``CANDIDATES`` の先頭優先
-    （``main`` > ``master`` > ``staging`` > ``stage`` > ``develop``）。
+    （``staging`` > ``stage`` > ``develop`` > ``main`` > ``master``）。
+    多段ブランチ運用で main と stage が同一コミットを指すときに
+    stage 側が選ばれるよう、staging 系が main 系より先になっている。
     merge-base が取れない場合は None。
     """
     mb = _run_git(["merge-base", candidate, "HEAD"], cwd)

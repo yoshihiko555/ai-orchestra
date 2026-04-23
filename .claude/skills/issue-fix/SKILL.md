@@ -148,7 +148,7 @@ BASE=$(python3 "$AI_ORCHESTRA_DIR/packages/git-workflow/scripts/resolve_base_bra
 
 1. **`--base <branch>` 明示指定** — ユーザーが `/pr-create --base stage` のように指定した値
 2. **環境変数 `AI_ORCHESTRA_BASE_BRANCH`** — プロジェクト固有のデフォルト（shell 設定や `.envrc` 等で設定）
-3. **自動推定** — 候補 `main` / `master` / `staging` / `stage` / `develop` の中で実在するものを対象に、各候補について `merge-base <candidate> HEAD` → `rev-list --count <merge-base>..<candidate>` を計算し、距離が最小のもの（≒ 最も近い親ブランチ）を選ぶ。remote を優先し、remote になければローカルブランチを見る
+3. **自動推定** — 候補 `staging` / `stage` / `develop` / `main` / `master` の中で実在するものを対象に、各候補について `merge-base <candidate> HEAD` → `rev-list --count <merge-base>..<candidate>` を計算し、距離が最小のもの（≒ 最も近い親ブランチ）を選ぶ。remote を優先し、remote になければローカルブランチを見る。同距離の場合は **候補リストの先頭優先** で、多段ブランチ運用（`main` + `stage` 等）で両者が同一コミットを指すときは `stage` 系を選ぶ
 4. **Fallback: `main`** — 候補が 1 つも存在しない場合
 
 ### スキル側の使い方
@@ -160,13 +160,14 @@ BASE=$(python3 "$AI_ORCHESTRA_DIR/packages/git-workflow/scripts/resolve_base_bra
 
 ### 検証手順
 
-| 運用パターン                                          | 期待動作                                |
-| ----------------------------------------------------- | --------------------------------------- |
-| `main` only のリポジトリ                              | `$BASE = main`                          |
-| `main` + `stage` で `stage` から切った feature branch | `$BASE = stage`                         |
-| `main` + `stage` で `main` から切った feature branch  | `$BASE = main`                          |
-| `--base release` を明示指定                           | `$BASE = release`（他条件を無視）       |
-| `AI_ORCHESTRA_BASE_BRANCH=develop`                    | `$BASE = develop`（明示指定がなければ） |
+| 運用パターン                                                     | 期待動作                                |
+| ---------------------------------------------------------------- | --------------------------------------- |
+| `main` only のリポジトリ                                         | `$BASE = main`                          |
+| `main` + `stage` で `stage` から切った feature branch            | `$BASE = stage`                         |
+| `main` + `stage` で `main` から切った feature branch (divergent) | `$BASE = main`                          |
+| `main` + `stage` が同一コミットを指す状態 (tie-break)            | `$BASE = stage`（候補リストの先頭優先） |
+| `--base release` を明示指定                                      | `$BASE = release`（他条件を無視）       |
+| `AI_ORCHESTRA_BASE_BRANCH=develop`                               | `$BASE = develop`（明示指定がなければ） |
 
 自動テストは `tests/unit/test_resolve_base_branch.py` が担保する。
 

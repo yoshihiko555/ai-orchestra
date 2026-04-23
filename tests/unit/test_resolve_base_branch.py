@@ -134,6 +134,19 @@ def test_auto_detect_main_plus_stage_branched_from_main(git_repo: Path) -> None:
     assert resolver.resolve(cwd=git_repo) == "main"
 
 
+def test_auto_detect_prefers_stage_on_tie(git_repo: Path) -> None:
+    """main と stage が同一コミットを指す場合、候補リストの先頭優先で stage を選ぶ。"""
+    # main から stage を作る（同一コミット、divergence なし）
+    _git(["checkout", "-q", "-b", "stage"], git_repo)
+    # stage から feature branch を作る（これも同一コミット）
+    _git(["checkout", "-q", "-b", "feat/foo"], git_repo)
+    _write_commit(git_repo, "foo.txt", "foo\n", "feat")
+
+    # main と stage は同じコミットを指す（distance 0 で同値）
+    # CANDIDATES 先頭優先で stage が選ばれる
+    assert resolver.resolve(cwd=git_repo) == "stage"
+
+
 def test_auto_detect_excludes_current_branch(git_repo: Path) -> None:
     """現在ブランチ自体は候補から除外される（fallback に抜ける）。"""
     # main にいる状態で resolve すると候補は main だけ → 現在ブランチなので除外
