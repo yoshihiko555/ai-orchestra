@@ -83,7 +83,9 @@ class TestGetProxyConfig:
 
 class TestBuildProxyUrl:
     def test_claude_uses_sse(self):
-        url = proxy_mgr.build_proxy_url("claude", {"proxy": {"port": 8792, "port_range": 0}}, "/tmp")
+        url = proxy_mgr.build_proxy_url(
+            "claude", {"proxy": {"port": 8792, "port_range": 0}}, "/tmp"
+        )
         assert url == "http://127.0.0.1:8792/sse"
 
     def test_codex_uses_mcp(self):
@@ -251,7 +253,9 @@ class TestIsProxyRunning:
         )
 
         with patch.object(proxy_mgr, "_is_port_in_use", return_value=True):
-            result = proxy_mgr.is_proxy_running({"proxy": {"port": 8792, "port_range": 0}}, str(tmp_path))
+            result = proxy_mgr.is_proxy_running(
+                {"proxy": {"port": 8792, "port_range": 0}}, str(tmp_path)
+            )
         assert result is True
 
 

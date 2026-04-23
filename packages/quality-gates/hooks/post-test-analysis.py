@@ -34,7 +34,11 @@ for _candidate in [
     if _candidate and os.path.isdir(_candidate) and _candidate not in sys.path:
         sys.path.insert(0, _candidate)
 
-from event_logger import emit_event, load_trace_state, resolve_project_root_from_hook_data  # noqa: E402
+from event_logger import (  # noqa: E402
+    emit_event,
+    load_trace_state,
+    resolve_project_root_from_hook_data,
+)
 from hook_common import load_package_config  # noqa: E402
 
 # Test command patterns
@@ -237,7 +241,10 @@ def main():
         )
 
         if blocking:
-            print(f"[quality-gates] quality gate blocked: test failed (exit_code={exit_code})", file=sys.stderr)
+            print(
+                f"[quality-gates] quality gate blocked: test failed (exit_code={exit_code})",
+                file=sys.stderr,
+            )
             sys.exit(2)
 
         # If tests passed, no further action needed

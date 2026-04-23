@@ -214,7 +214,9 @@ class TestPostTestAnalysis:
             "load_quality_gate_config",
             lambda _project_dir: {"enabled": True},
         )
-        monkeypatch.setattr(post_test_analysis, "load_trace_state", lambda **_kwargs: {"tid": "tid-1"})
+        monkeypatch.setattr(
+            post_test_analysis, "load_trace_state", lambda **_kwargs: {"tid": "tid-1"}
+        )
         monkeypatch.setattr(
             post_test_analysis,
             "emit_event",
@@ -241,7 +243,9 @@ class TestPostTestAnalysis:
         """失敗したテストコマンドでは Codex 提案を出す。"""
         state_file = tmp_path / "test-gate.json"
         monkeypatch.setattr(post_test_analysis, "TEST_GATE_STATE_FILE", state_file)
-        monkeypatch.setattr(post_test_analysis, "emit_quality_gate_event", lambda *_args, **_kwargs: False)
+        monkeypatch.setattr(
+            post_test_analysis, "emit_quality_gate_event", lambda *_args, **_kwargs: False
+        )
         monkeypatch.setattr(
             post_test_analysis,
             "load_package_config",
@@ -278,8 +282,12 @@ class TestPostTestAnalysis:
             "load_quality_gate_config",
             lambda _project_dir: {"enabled": True, "block_on_failed_test": True},
         )
-        monkeypatch.setattr(post_test_analysis, "resolve_project_root_from_hook_data", lambda data: data["cwd"])
-        monkeypatch.setattr(post_test_analysis, "load_trace_state", lambda **_kwargs: {"tid": "tid-1"})
+        monkeypatch.setattr(
+            post_test_analysis, "resolve_project_root_from_hook_data", lambda data: data["cwd"]
+        )
+        monkeypatch.setattr(
+            post_test_analysis, "load_trace_state", lambda **_kwargs: {"tid": "tid-1"}
+        )
         monkeypatch.setattr(post_test_analysis, "emit_event", lambda *_args, **_kwargs: None)
         monkeypatch.setattr(
             post_test_analysis,
@@ -311,7 +319,9 @@ class TestPostTestAnalysis:
         """block_on_failed_test=true のときは exit 2 で止める。"""
         state_file = tmp_path / "test-gate.json"
         monkeypatch.setattr(post_test_analysis, "TEST_GATE_STATE_FILE", state_file)
-        monkeypatch.setattr(post_test_analysis, "emit_quality_gate_event", lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(
+            post_test_analysis, "emit_quality_gate_event", lambda *_args, **_kwargs: True
+        )
         _make_stdin(
             {
                 "tool_name": "Bash",

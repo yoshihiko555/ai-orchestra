@@ -617,7 +617,9 @@ def _resolve_proxy_lock_path(project_dir: str) -> str:
 def _resolve_background_helper_path() -> str:
     orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
     if orchestra_dir:
-        candidate = os.path.join(orchestra_dir, "packages", "cocoindex", "hooks", "start-mcp-proxy.py")
+        candidate = os.path.join(
+            orchestra_dir, "packages", "cocoindex", "hooks", "start-mcp-proxy.py"
+        )
         if os.path.isfile(candidate):
             return candidate
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "start-mcp-proxy.py")
@@ -626,7 +628,9 @@ def _resolve_background_helper_path() -> str:
 def _resolve_supervisor_path() -> str:
     orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
     if orchestra_dir:
-        candidate = os.path.join(orchestra_dir, "packages", "cocoindex", "hooks", "proxy_supervisor.py")
+        candidate = os.path.join(
+            orchestra_dir, "packages", "cocoindex", "hooks", "proxy_supervisor.py"
+        )
         if os.path.isfile(candidate):
             return candidate
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "proxy_supervisor.py")

@@ -479,7 +479,9 @@ class TestProxyModeEntries:
         mcp_path = tmp_path / ".mcp.json"
         mcp_path.write_text("{}")
 
-        provision.provision_claude(str(tmp_path), SAMPLE_CONFIG_V2, SERVER_NAME, proxy_enabled=False)
+        provision.provision_claude(
+            str(tmp_path), SAMPLE_CONFIG_V2, SERVER_NAME, proxy_enabled=False
+        )
 
         data = json.loads(mcp_path.read_text())
         entry = data["mcpServers"]["cocoindex-code"]
@@ -559,7 +561,9 @@ class TestMain:
         self._invoke({"cwd": str(project_dir), "session_id": "sess-idle"}, monkeypatch)
 
         session_state = json.loads(
-            (project_dir / ".claude" / "state" / "cocoindex-sessions" / "sess-idle.json").read_text()
+            (
+                project_dir / ".claude" / "state" / "cocoindex-sessions" / "sess-idle.json"
+            ).read_text()
         )
         assert session_state["reconnect_required"] is False
         start_mock.assert_not_called()

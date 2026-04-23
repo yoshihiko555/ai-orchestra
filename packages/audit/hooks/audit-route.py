@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import os
-import re
 import sys
 
 _hook_dir = os.path.dirname(os.path.abspath(__file__))

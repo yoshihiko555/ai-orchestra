@@ -37,7 +37,11 @@ class TestMain:
     def test_notifies_once_when_proxy_becomes_ready(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(notify_hook, "load_package_config", lambda *_: {"enabled": True, "proxy": {"enabled": True}})
+        monkeypatch.setattr(
+            notify_hook,
+            "load_package_config",
+            lambda *_: {"enabled": True, "proxy": {"enabled": True}},
+        )
         monkeypatch.setattr(
             notify_hook,
             "read_session_state",
@@ -64,7 +68,11 @@ class TestMain:
         assert marked == [(str(tmp_path), "sess-1")]
 
     def test_skips_before_ready(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(notify_hook, "load_package_config", lambda *_: {"enabled": True, "proxy": {"enabled": True}})
+        monkeypatch.setattr(
+            notify_hook,
+            "load_package_config",
+            lambda *_: {"enabled": True, "proxy": {"enabled": True}},
+        )
         monkeypatch.setattr(
             notify_hook,
             "read_session_state",
@@ -84,7 +92,11 @@ class TestMain:
     def test_notifies_when_proxy_is_idle(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(notify_hook, "load_package_config", lambda *_: {"enabled": True, "proxy": {"enabled": True}})
+        monkeypatch.setattr(
+            notify_hook,
+            "load_package_config",
+            lambda *_: {"enabled": True, "proxy": {"enabled": True}},
+        )
         monkeypatch.setattr(
             notify_hook,
             "read_session_state",
@@ -112,7 +124,11 @@ class TestMain:
     def test_skips_when_already_notified(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(notify_hook, "load_package_config", lambda *_: {"enabled": True, "proxy": {"enabled": True}})
+        monkeypatch.setattr(
+            notify_hook,
+            "load_package_config",
+            lambda *_: {"enabled": True, "proxy": {"enabled": True}},
+        )
         monkeypatch.setattr(
             notify_hook,
             "read_session_state",

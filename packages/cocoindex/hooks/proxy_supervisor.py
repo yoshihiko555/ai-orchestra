@@ -125,7 +125,9 @@ class ProxySupervisor:
                 inner_port=None,
                 active_clients=0,
                 last_disconnect_at="",
-                last_error="" if self._exit_state == "stopped" else "supervisor exited with failure",
+                last_error=""
+                if self._exit_state == "stopped"
+                else "supervisor exited with failure",
             )
 
     async def _start_child_with_retry(self) -> None:
@@ -152,7 +154,9 @@ class ProxySupervisor:
                 last_disconnect_at="",
                 last_error="",
             )
-            if await _wait_for_port(_INNER_HOST, inner_port, float(self.proxy_cfg["startup_timeout"])):
+            if await _wait_for_port(
+                _INNER_HOST, inner_port, float(self.proxy_cfg["startup_timeout"])
+            ):
                 return
             await self._stop_child()
 
@@ -171,7 +175,9 @@ class ProxySupervisor:
         try:
             if self.inner_port is None:
                 return
-            upstream_reader, upstream_writer = await asyncio.open_connection(_INNER_HOST, self.inner_port)
+            upstream_reader, upstream_writer = await asyncio.open_connection(
+                _INNER_HOST, self.inner_port
+            )
             await asyncio.gather(
                 self._relay(client_reader, upstream_writer),
                 self._relay(upstream_reader, client_writer),
@@ -188,9 +194,7 @@ class ProxySupervisor:
                 self._client_tasks.discard(task)
             await self._on_client_disconnected()
 
-    async def _relay(
-        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
-    ) -> None:
+    async def _relay(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
             while True:
                 chunk = await reader.read(65536)
@@ -233,7 +237,7 @@ class ProxySupervisor:
         self.child.terminate()
         try:
             await asyncio.wait_for(self.child.wait(), timeout=_CHILD_STOP_TIMEOUT)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self.child.kill()
             with contextlib.suppress(Exception):
                 await self.child.wait()

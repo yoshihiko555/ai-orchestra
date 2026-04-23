@@ -32,11 +32,7 @@ class TestProxySupervisorForwarding:
             async def _upstream(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
                 await reader.readuntil(b"\r\n\r\n")
                 writer.write(
-                    b"HTTP/1.1 200 OK\r\n"
-                    b"Content-Length: 5\r\n"
-                    b"Connection: close\r\n"
-                    b"\r\n"
-                    b"hello"
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello"
                 )
                 await writer.drain()
                 writer.close()
@@ -61,13 +57,10 @@ class TestProxySupervisorForwarding:
                 port=supervisor.outer_port,
             )
 
-            reader, writer = await asyncio.open_connection(supervisor.outer_host, supervisor.outer_port)
-            writer.write(
-                b"GET /mcp HTTP/1.1\r\n"
-                b"Host: 127.0.0.1\r\n"
-                b"Connection: close\r\n"
-                b"\r\n"
+            reader, writer = await asyncio.open_connection(
+                supervisor.outer_host, supervisor.outer_port
             )
+            writer.write(b"GET /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
             await writer.drain()
             response = await reader.read()
             writer.close()
@@ -124,13 +117,10 @@ class TestProxySupervisorForwarding:
                 port=supervisor.outer_port,
             )
 
-            reader, writer = await asyncio.open_connection(supervisor.outer_host, supervisor.outer_port)
-            writer.write(
-                b"GET /sse HTTP/1.1\r\n"
-                b"Host: 127.0.0.1\r\n"
-                b"Connection: close\r\n"
-                b"\r\n"
+            reader, writer = await asyncio.open_connection(
+                supervisor.outer_host, supervisor.outer_port
             )
+            writer.write(b"GET /sse HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
             await writer.drain()
             response = await reader.read()
             writer.close()
@@ -152,7 +142,9 @@ class TestProxySupervisorForwarding:
 
 
 class TestProxySupervisorIdleTimeout:
-    def test_idle_timeout_sets_shutdown_event(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_idle_timeout_sets_shutdown_event(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         events: list[dict] = []
 
         def _capture(_project_dir: str, _config: dict, **updates):
@@ -164,7 +156,15 @@ class TestProxySupervisorIdleTimeout:
         async def _scenario() -> None:
             supervisor = proxy_supervisor.ProxySupervisor(
                 str(tmp_path),
-                {"proxy": {"enabled": True, "host": "127.0.0.1", "port": 8792, "port_range": 0, "idle_timeout": 0.05}},
+                {
+                    "proxy": {
+                        "enabled": True,
+                        "host": "127.0.0.1",
+                        "port": 8792,
+                        "port_range": 0,
+                        "idle_timeout": 0.05,
+                    }
+                },
             )
             await supervisor._apply_runtime_state()
             supervisor._schedule_idle_shutdown()
@@ -175,7 +175,9 @@ class TestProxySupervisorIdleTimeout:
         assert any(event.get("proxy_state") == "idle" for event in events)
         assert any(event.get("proxy_state") == "stopping" for event in events)
 
-    def test_active_client_cancels_idle_timer(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_active_client_cancels_idle_timer(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         events: list[dict] = []
 
         def _capture(_project_dir: str, _config: dict, **updates):
@@ -187,7 +189,15 @@ class TestProxySupervisorIdleTimeout:
         async def _scenario() -> None:
             supervisor = proxy_supervisor.ProxySupervisor(
                 str(tmp_path),
-                {"proxy": {"enabled": True, "host": "127.0.0.1", "port": 8792, "port_range": 0, "idle_timeout": 0.1}},
+                {
+                    "proxy": {
+                        "enabled": True,
+                        "host": "127.0.0.1",
+                        "port": 8792,
+                        "port_range": 0,
+                        "idle_timeout": 0.1,
+                    }
+                },
             )
             await supervisor._apply_runtime_state()
             supervisor._schedule_idle_shutdown()
@@ -199,5 +209,8 @@ class TestProxySupervisorIdleTimeout:
 
         asyncio.run(_scenario())
 
-        assert any(event.get("proxy_state") == "ready" and event.get("active_clients") == 1 for event in events)
+        assert any(
+            event.get("proxy_state") == "ready" and event.get("active_clients") == 1
+            for event in events
+        )
         assert any(event.get("proxy_state") == "stopping" for event in events)

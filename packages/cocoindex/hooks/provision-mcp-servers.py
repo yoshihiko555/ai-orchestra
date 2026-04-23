@@ -316,7 +316,9 @@ def main() -> None:
     enabled = config.get("enabled", False) if config else False
     server_name = config.get("server_name", "cocoindex-code") if config else "cocoindex-code"
 
-    proxy_enabled = bool(enabled and config and (config.get("proxy", {}) or {}).get("enabled", False))
+    proxy_enabled = bool(
+        enabled and config and (config.get("proxy", {}) or {}).get("enabled", False)
+    )
     warmup_started = False
     session_uses_proxy = _session_uses_proxy(config, proxy_enabled) if config else False
     if proxy_enabled and config:
