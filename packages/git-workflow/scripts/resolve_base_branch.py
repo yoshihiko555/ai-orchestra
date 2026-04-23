@@ -75,14 +75,20 @@ def _distance_to_tip(candidate: str, cwd: Path) -> int | None:
 
 
 def _enumerate_refs(cwd: Path, current_branch: str) -> list[str]:
-    """探索対象の ref を集める。remote を優先し、なければローカル。現在ブランチは除外。"""
+    """探索対象の ref を集める。
+
+    - remote ``origin/<name>`` があれば優先。なければローカル ``<name>``。
+    - 現在ブランチと完全一致するローカル ref のみ除外する。
+      ``origin/<name>`` は current_branch と名前が同じでも別 ref なので除外しない
+      （ローカルが remote より遅れている場合でも origin を候補として残すため）。
+    """
     refs: list[str] = []
     for name in CANDIDATES:
-        if name == current_branch:
-            continue
         remote = f"origin/{name}"
         if _ref_exists(remote, cwd):
             refs.append(remote)
+            continue
+        if name == current_branch:
             continue
         if _ref_exists(name, cwd):
             refs.append(name)

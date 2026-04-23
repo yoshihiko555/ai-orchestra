@@ -55,6 +55,13 @@ def _write_commit(repo: Path, filename: str, content: str, message: str) -> None
     _git(["commit", "-q", "-m", message], repo)
 
 
+@pytest.fixture(autouse=True)
+def _unset_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
+    """実行環境に AI_ORCHESTRA_BASE_BRANCH が設定されていると auto-detect テストが
+    環境変数の値で上書きされるため、毎テスト開始時に必ず削除する。"""
+    monkeypatch.delenv(resolver.ENV_VAR, raising=False)
+
+
 @pytest.fixture()
 def git_repo(tmp_path: Path) -> Path:
     """main ブランチ + 初回コミット済みの一時リポジトリを作成する。"""
@@ -148,10 +155,14 @@ def test_auto_detect_prefers_stage_on_tie(git_repo: Path) -> None:
 
 
 def test_auto_detect_excludes_current_branch(git_repo: Path) -> None:
-    """現在ブランチ自体は候補から除外される（fallback に抜ける）。"""
-    # main にいる状態で resolve すると候補は main だけ → 現在ブランチなので除外
-    # 他に候補がなければ fallback "main" に落ちる
-    assert resolver.resolve(cwd=git_repo) == "main"
+    """現在ブランチが候補名と一致していても除外され、別の候補が選ばれる。"""
+    # main から develop / stage を順に作成する（全て同一コミット）
+    _git(["checkout", "-q", "-b", "develop"], git_repo)
+    _git(["checkout", "-q", "-b", "stage"], git_repo)
+    # stage にいる状態で resolve
+    # 除外ロジックが効かないと tie-break で stage (CANDIDATES 先頭近く) が返る。
+    # 除外ロジックが効くと stage が候補から外れ、次に近い develop が選ばれる。
+    assert resolver.resolve(cwd=git_repo) == "develop"
 
 
 # ---- Fallback ----
