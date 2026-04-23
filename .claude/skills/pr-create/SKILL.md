@@ -165,10 +165,54 @@ PR 本文は以下のテンプレート構造に従う。プロジェクトに `
 
 ## Git 操作ルール
 
-- `main` への直接 push は行わない
+- `main` / 解決済み base branch への直接 push は行わない
 - マージ方式は GitHub 上の **Squash and merge** を前提とする
-- 競合解決は PR ブランチ側で `origin/main` を取り込んで行う
+- 競合解決は PR ブランチ側で `origin/{base}` を取り込んで行う（`{base}` は後述の resolver で解決）
 - Push は `-u` フラグでトラッキングを設定する: `git push -u origin {ブランチ名}`
+
+## Base Branch Resolution
+
+**PR の base branch を固定せず、resolver スクリプトで解決する。** `pr-create` / `issue-fix` / その他 PR を作成するスキルは、このルールに従って `$BASE` を取得する。
+
+### Resolver スクリプト
+
+```bash
+: "${AI_ORCHESTRA_DIR:?AI_ORCHESTRA_DIR is not set}"
+BASE=$(python3 "$AI_ORCHESTRA_DIR/packages/git-workflow/scripts/resolve_base_branch.py" \
+  ${BASE_OVERRIDE:+--base "$BASE_OVERRIDE"})
+```
+
+- 実体: `packages/git-workflow/scripts/resolve_base_branch.py`
+- 出力: stdout に解決済み base branch 名を 1 行（`origin/` プレフィックスは除去される）
+- `AI_ORCHESTRA_DIR` 未設定時はガードで即座に失敗させ、`$BASE` が空のまま `gh pr create --base ""` が実行される事故を防ぐ
+- `BASE_OVERRIDE` が未定義の場合 `${BASE_OVERRIDE:+...}` は空に展開され、`--base` 引数なしで resolver を呼ぶ
+
+### 解決優先順位
+
+1. **`--base <branch>` 明示指定** — ユーザーが `/pr-create --base stage` のように指定した値
+2. **環境変数 `AI_ORCHESTRA_BASE_BRANCH`** — プロジェクト固有のデフォルト（shell 設定や `.envrc` 等で設定）
+3. **自動推定** — 候補 `staging` / `stage` / `develop` / `main` / `master` の中で実在するものを対象に、各候補について `merge-base <candidate> HEAD` → `rev-list --count <merge-base>..<candidate>` を計算し、距離が最小のもの（≒ 最も近い親ブランチ）を選ぶ。remote を優先し、remote になければローカルブランチを見る。同距離の場合は **候補リストの先頭優先** で、多段ブランチ運用（`main` + `stage` 等）で両者が同一コミットを指すときは `stage` 系を選ぶ
+4. **Fallback: `main`** — 候補が 1 つも存在しない場合
+
+### スキル側の使い方
+
+- Usage に `--base <branch>` 引数を追加する（明示指定を受け付ける）
+- Context 収集の冒頭で resolver を呼び `$BASE` に格納する
+- 差分収集 (`git log`, `git diff`) / プレビュー / `gh pr create` のすべてで `$BASE` を使う
+- 「ベースブランチ: main」のような固定表記はしない（`ベースブランチ: $BASE` と表現する）
+
+### 検証手順
+
+| 運用パターン                                                     | 期待動作                                |
+| ---------------------------------------------------------------- | --------------------------------------- |
+| `main` only のリポジトリ                                         | `$BASE = main`                          |
+| `main` + `stage` で `stage` から切った feature branch            | `$BASE = stage`                         |
+| `main` + `stage` で `main` から切った feature branch (divergent) | `$BASE = main`                          |
+| `main` + `stage` が同一コミットを指す状態 (tie-break)            | `$BASE = stage`（候補リストの先頭優先） |
+| `--base release` を明示指定                                      | `$BASE = release`（他条件を無視）       |
+| `AI_ORCHESTRA_BASE_BRANCH=develop`                               | `$BASE = develop`（明示指定がなければ） |
+
+自動テストは `tests/unit/test_resolve_base_branch.py` が担保する。
 
 ---
 
@@ -181,20 +225,31 @@ PR 本文は以下のテンプレート構造に従う。プロジェクトに `
 ```
 /pr-create
 /pr-create --issue 42
+/pr-create --base stage
 /pr-create --issue 42 --reviewers "code-reviewer: LGTM"
 ```
+
+- `--base <branch>` は base branch を明示指定する（省略時は resolver で解決）
 
 ## Context 収集
 
 スキル実行時に以下の情報を収集する:
 
 ```bash
+# base branch の解決（PR Standards Policy の "Base Branch Resolution" 参照）
+: "${AI_ORCHESTRA_DIR:?AI_ORCHESTRA_DIR is not set}"
+BASE=$(python3 "$AI_ORCHESTRA_DIR/packages/git-workflow/scripts/resolve_base_branch.py" \
+  ${BASE_OVERRIDE:+--base "$BASE_OVERRIDE"})
+
 # ブランチ・ステータス・ベースブランチとの差分
 git branch --show-current
 git status --short
-git log --oneline main..HEAD
-git diff --stat main..HEAD
+git log --oneline "$BASE..HEAD"
+git diff --stat "$BASE..HEAD"
 ```
+
+- `--base` 引数があれば `BASE_OVERRIDE` に代入してから resolver を呼ぶ
+- 以降の手順で PR タイトル生成・差分収集・`gh pr create` のすべてに `$BASE` を使う
 
 ## Workflow
 
@@ -206,13 +261,13 @@ git diff --stat main..HEAD
 BRANCH=$(git branch --show-current)
 ```
 
-`main` ブランチ上にいる場合はエラーで終了する（PR 作成対象のブランチに移動するよう案内）。
+解決済み `$BASE` と `$BRANCH` が一致する場合（= base branch 上で実行された場合）はエラーで終了する（PR 作成対象のブランチに移動するよう案内）。
 
 #### 1-2. コミット履歴の取得
 
 ```bash
-git log --oneline main..HEAD
-git diff --stat main..HEAD
+git log --oneline "$BASE..HEAD"
+git diff --stat "$BASE..HEAD"
 ```
 
 コミットが 0 件の場合はエラーで終了する。
@@ -226,6 +281,7 @@ gh pr list --head {ブランチ名} --state open --json number,title,url
 ```
 
 既存 PR がある場合は AskUserQuestion で対応を選択する:
+
 - **既存 PR を開く** — URL を報告して終了
 - **新規 PR を作成** — 新しい PR を作成する
 
@@ -285,7 +341,7 @@ PR Standards Policy の「ブランチプレフィックスとラベルの対応
 ```
 PR タイトル: {タイトル}
 ラベル: {ラベル}
-ベースブランチ: main
+ベースブランチ: {$BASE}
 
 --- PR 本文プレビュー ---
 {生成された本文}
@@ -295,6 +351,7 @@ PR タイトル: {タイトル}
 ```
 
 選択肢:
+
 - **作成する** — そのまま PR を作成
 - **タイトルを修正** — タイトルのみ変更
 - **本文を修正** — 本文を変更
@@ -318,6 +375,7 @@ git push -u origin {ブランチ名}
 gh pr create \
   --title "{タイトル}" \
   --label "{ラベル}" \
+  --base "$BASE" \
   --body "$(cat <<'EOF'
 {生成された本文}
 EOF
@@ -331,13 +389,13 @@ PR を作成しました:
 - URL: {PR URL}
 - タイトル: {タイトル}
 - ラベル: {ラベル}
-- ベースブランチ: main
+- ベースブランチ: {$BASE}
 ```
 
 ## 注意事項
 
 - `gh` コマンドは認証済みであることを前提とする
-- `main` への直接 push は行わない
+- 解決済み base branch への直接 push は行わない
 - マージ方式は GitHub 上の Squash and merge を前提とする
 - ユーザー向け変更がある場合は `CHANGELOG.md` の `Unreleased` 更新を Checklist で確認する
 - PR タイトルは GitHub Release にそのまま載ることを想定し、簡潔かつ明確にする
