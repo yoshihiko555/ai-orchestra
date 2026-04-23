@@ -70,7 +70,50 @@ PR 本文は以下のテンプレート構造に従う。プロジェクトに `
 
 ## Git 操作ルール
 
-- `main` への直接 push は行わない
+- `main` / 解決済み base branch への直接 push は行わない
 - マージ方式は GitHub 上の **Squash and merge** を前提とする
-- 競合解決は PR ブランチ側で `origin/main` を取り込んで行う
+- 競合解決は PR ブランチ側で `origin/{base}` を取り込んで行う（`{base}` は後述の resolver で解決）
 - Push は `-u` フラグでトラッキングを設定する: `git push -u origin {ブランチ名}`
+
+## Base Branch Resolution
+
+**PR の base branch を固定せず、resolver スクリプトで解決する。** `pr-create` / `issue-fix` / その他 PR を作成するスキルは、このルールに従って `$BASE` を取得する。
+
+### Resolver スクリプト
+
+```bash
+: "${AI_ORCHESTRA_DIR:?AI_ORCHESTRA_DIR is not set}"
+BASE=$(python3 "$AI_ORCHESTRA_DIR/packages/git-workflow/scripts/resolve_base_branch.py" \
+  ${BASE_OVERRIDE:+--base "$BASE_OVERRIDE"})
+```
+
+- 実体: `packages/git-workflow/scripts/resolve_base_branch.py`
+- 出力: stdout に解決済み base branch 名を 1 行（`origin/` プレフィックスは除去される）
+- `AI_ORCHESTRA_DIR` 未設定時はガードで即座に失敗させ、`$BASE` が空のまま `gh pr create --base ""` が実行される事故を防ぐ
+- `BASE_OVERRIDE` が未定義の場合 `${BASE_OVERRIDE:+...}` は空に展開され、`--base` 引数なしで resolver を呼ぶ
+
+### 解決優先順位
+
+1. **`--base <branch>` 明示指定** — ユーザーが `/pr-create --base stage` のように指定した値
+2. **環境変数 `AI_ORCHESTRA_BASE_BRANCH`** — プロジェクト固有のデフォルト（shell 設定や `.envrc` 等で設定）
+3. **自動推定** — 候補 `main` / `master` / `staging` / `stage` / `develop` の中で実在するものを対象に、各候補について `merge-base <candidate> HEAD` → `rev-list --count <merge-base>..<candidate>` を計算し、距離が最小のもの（≒ 最も近い親ブランチ）を選ぶ。remote を優先し、remote になければローカルブランチを見る
+4. **Fallback: `main`** — 候補が 1 つも存在しない場合
+
+### スキル側の使い方
+
+- Usage に `--base <branch>` 引数を追加する（明示指定を受け付ける）
+- Context 収集の冒頭で resolver を呼び `$BASE` に格納する
+- 差分収集 (`git log`, `git diff`) / プレビュー / `gh pr create` のすべてで `$BASE` を使う
+- 「ベースブランチ: main」のような固定表記はしない（`ベースブランチ: $BASE` と表現する）
+
+### 検証手順
+
+| 運用パターン                                          | 期待動作                                |
+| ----------------------------------------------------- | --------------------------------------- |
+| `main` only のリポジトリ                              | `$BASE = main`                          |
+| `main` + `stage` で `stage` から切った feature branch | `$BASE = stage`                         |
+| `main` + `stage` で `main` から切った feature branch  | `$BASE = main`                          |
+| `--base release` を明示指定                           | `$BASE = release`（他条件を無視）       |
+| `AI_ORCHESTRA_BASE_BRANCH=develop`                    | `$BASE = develop`（明示指定がなければ） |
+
+自動テストは `tests/unit/test_resolve_base_branch.py` が担保する。

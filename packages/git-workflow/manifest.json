@@ -8,6 +8,11 @@
   "skills": ["issue-create", "issue-fix", "pr-create"],
   "agents": [],
   "rules": [],
-  "scripts": [],
+  "scripts": [
+    {
+      "path": "scripts/resolve_base_branch.py",
+      "description": "PR の base branch を --base 引数・環境変数・merge-base 自動推定の優先順で解決する"
+    }
+  ],
   "config": ["config/sandbox-requirements.json"]
 }

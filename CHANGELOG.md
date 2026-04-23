@@ -16,6 +16,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `scripts/lib/orchestra_models.py`: `ScriptEntry` データクラスを追加（manifest の scripts 値を型安全に扱う）
 - `packages/audit/README.md`: audit パッケージの使い方ドキュメントを追加
+- `packages/git-workflow/scripts/resolve_base_branch.py`: PR の base branch を `--base` 明示指定 > 環境変数 `AI_ORCHESTRA_BASE_BRANCH` > merge-base 自動推定 > fallback (`main`) の優先順で解決する CLI を追加。`main` + `stage` 等の多段ブランチ運用に対応 (#63)
+
+### Changed
+
+- `pr-create` / `issue-fix` / `pr-standards`: PR 作成時の base branch を `main` 固定から resolver スクリプト経由の解決に切り替え。`/pr-create --base <branch>` で明示指定可能 (#63)
 
 ### Fixed
 

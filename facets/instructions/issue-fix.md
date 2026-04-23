@@ -49,24 +49,29 @@ Issue の内容から関連するコードを Grep/Glob で調査する:
 ## Issue #{番号}: {タイトル}
 
 ### 要約
+
 {Issue の内容を 1-2 文で要約}
 
 ### 変更予定ファイル
+
 - `path/to/file1.ts` — {変更内容}
 - `path/to/file2.ts` — {変更内容}
 
 ### 実装手順
+
 1. {ステップ 1}
 2. {ステップ 2}
 3. {ステップ 3}
 
 ### リスク・注意点
+
 - {潜在的な問題と対策}
 ```
 
 #### 1-4. ユーザー承認
 
 AskUserQuestion で計画の承認を求める:
+
 - 「計画通り進める」
 - 「計画を修正する」
 - 「中止する」
@@ -81,12 +86,12 @@ AskUserQuestion で計画の承認を求める:
 
 Issue のラベルからブランチプレフィックスを決定する:
 
-| ラベル | プレフィックス | 例 |
-|--------|-------------|-----|
-| bug | `fix/` | `fix/issue-42-login-error` |
-| feature | `feat/` | `feat/issue-42-dark-mode` |
-| task | `chore/` | `chore/issue-42-ci-setup` |
-| その他 | `fix/` | `fix/issue-42-slug` |
+| ラベル  | プレフィックス | 例                         |
+| ------- | -------------- | -------------------------- |
+| bug     | `fix/`         | `fix/issue-42-login-error` |
+| feature | `feat/`        | `feat/issue-42-dark-mode`  |
+| task    | `chore/`       | `chore/issue-42-ci-setup`  |
+| その他  | `fix/`         | `fix/issue-42-slug`        |
 
 ```bash
 git checkout -b {prefix}issue-{番号}-{slug}
@@ -163,6 +168,7 @@ git diff --stat
 `git diff --stat` の出力からファイルパス一覧を取得し、`skill-review-policy.md` のパスパターンマッピングに基づいてレビュアーを選定する（最大 2 個）。
 
 **選定手順:**
+
 1. 変更ファイルのパスをパスパターンマッピングに照合
 2. 優先順位（security > code > performance > ux）に基づき最大 2 レビュアーに絞る
 3. コード変更がある限り最低 `code-reviewer` は選定する
@@ -209,6 +215,7 @@ Closes #{番号}"
 ```
 
 プレフィックスは Issue のラベルに応じて決定する:
+
 - bug → `fix:`
 - feature → `feat:`
 - task → `chore:`
@@ -225,15 +232,20 @@ AskUserQuestion で次のアクションを選択:
 
 PR Standards Policy に従い、以下を実行する:
 
-1. PR テンプレートを取得する（`.github/PULL_REQUEST_TEMPLATE.md` → フォールバック）
-2. ブランチプレフィックスからタイトルプレフィックスとラベルを決定する
-3. テンプレートの各セクションを埋める（レビュー結果がある場合は Summary に追記）
-4. `Closes #{番号}` を本文冒頭に追加する
-5. Push して PR を作成する:
+1. PR Standards Policy の "Base Branch Resolution" に従い `$BASE` を解決する（issue-fix では `--base` 引数は持たず、環境変数 `AI_ORCHESTRA_BASE_BRANCH` → 自動推定 → fallback の順で解決される）:
+   ```bash
+   : "${AI_ORCHESTRA_DIR:?AI_ORCHESTRA_DIR is not set}"
+   BASE=$(python3 "$AI_ORCHESTRA_DIR/packages/git-workflow/scripts/resolve_base_branch.py")
+   ```
+2. PR テンプレートを取得する（`.github/PULL_REQUEST_TEMPLATE.md` → フォールバック）
+3. ブランチプレフィックスからタイトルプレフィックスとラベルを決定する
+4. テンプレートの各セクションを埋める（レビュー結果がある場合は Summary に追記）
+5. `Closes #{番号}` を本文冒頭に追加する
+6. Push して PR を作成する:
 
 ```bash
 git push -u origin {ブランチ名}
-gh pr create --title "{prefix}: {要約}" --label "{ラベル}" --body "{生成された本文}"
+gh pr create --title "{prefix}: {要約}" --label "{ラベル}" --base "$BASE" --body "{生成された本文}"
 ```
 
 ## 注意事項
