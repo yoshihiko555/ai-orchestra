@@ -17,3 +17,6 @@ includes:
   rel:
     taskfile: ~/ghq/github.com/yoshihiko555/.github/taskfiles/release.yml
     flatten: true
+    vars:
+      # ADR-020: stage 経由フローを採用。release/* を stage と main の両方に並列 PR で出す
+      STAGE_BRANCH: stage
