@@ -1,0 +1,29 @@
+# reverse スキルのファセット構成定義
+name: reverse
+description: 既存コードベースのリバースエンジニアリング（5 フェーズ対話型解析）
+
+frontmatter:
+  name: reverse
+  description: |
+    Reverse-engineer an existing codebase through 5 phases:
+    scan, dependency graph, feature extraction, design documentation, debt/security report.
+    Defaults to repository-wide scope; accepts `/reverse <path>` to narrow.
+    Gemini-driven (with claude-direct fallback) for large-scale comprehension.
+    Trigger: /reverse
+  metadata:
+    short-description: 既存コードのリバースエンジニアリング
+
+policies:
+  - cli-language
+  - dialog-rules
+
+output_contracts:
+  - tiered-review
+
+instruction: reverse
+
+scripts:
+  - reverse/collect-stats.py
+  - reverse/find-entrypoints.py
+  - reverse/collect-todos.py
+  - reverse/generate-mermaid.py
