@@ -352,7 +352,9 @@ class FacetBuilder:
 
             for sname in composition.get("scripts", []):
                 src = self.resolve_script(sname)
-                dst = skill_dir / "scripts" / sname
+                # Flatten to basename so subdirectory-organized sources land in scripts/ flat
+                # (matches Claude Code's expected `.claude/skills/<name>/scripts/<file>` layout)
+                dst = skill_dir / "scripts" / Path(sname).name
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dst)
 

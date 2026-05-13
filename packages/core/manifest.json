@@ -38,7 +38,8 @@
     "startproject",
     "checkpointing",
     "task-state",
-    "design"
+    "design",
+    "handoff"
   ],
   "agents": [],
   "rules": [

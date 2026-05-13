@@ -8,6 +8,7 @@
     "gemini-suggestions",
     "git-workflow",
     "quality-gates",
+    "reverse",
     "tmux-monitor"
   ],
   "synced_files": [
@@ -46,5 +47,5 @@
     "config/core/task-memory.yaml",
     "config/git-workflow/sandbox-requirements.json"
   ],
-  "last_sync": "2026-04-13T11:06:51.110164+00:00"
+  "last_sync": "2026-05-12T17:00:46.776301+00:00"
 }

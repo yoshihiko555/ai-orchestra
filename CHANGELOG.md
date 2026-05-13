@@ -16,10 +16,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `scripts/lib/orchestra_models.py`: `ScriptEntry` データクラスを追加（manifest の scripts 値を型安全に扱う）
 - `packages/audit/README.md`: audit パッケージの使い方ドキュメントを追加
+- `packages/reverse/`: 既存コードベースのリバースエンジニアリングを 5 フェーズ対話型で実行する `/reverse` スキルを追加。`collect-stats.py` / `find-entrypoints.py` / `collect-todos.py` / `generate-mermaid.py` の言語非依存補助スクリプト 4 本を同梱し、Gemini 主体で依存グラフ・機能抽出・設計書・負債レポートを生成する
+- `docs/adr/ADR-20260513-015.md`: スキル/ルールは必ずパッケージ manifest に登録する（孤立 composition の禁止）ポリシーを ADR として記録
+- `tests/unit/test_composition_manifest_consistency.py`: 全 composition が manifest に登録されていることを検証する pytest を追加（ADR-015 の強制機構）
 
 ### Fixed
 
 - `audit/hooks/event_logger.py`: worktree 環境でログが分散する問題を修正。全 worktree のログを root worktree の `.claude/logs/audit/` に集約するようにした
+- `packages/core/manifest.json`: `handoff` スキルがどの manifest にも登録されていない孤立状態だったため、`core` の skills 配列に追加してライフサイクル管理対象とした
+- `scripts/lib/facet_builder.py`: composition の `scripts:` でサブディレクトリ込みのパスを指定した場合に、スキル配下に二重ネストで配置される問題を修正。`Path(sname).name` で basename のみを使い `.claude/skills/<name>/scripts/<file>` のフラット構造に統一した
 
 ## [0.2.6] - 2026-04-13
 
