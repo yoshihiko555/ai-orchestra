@@ -138,8 +138,8 @@ AGENT_TRIGGERS: dict[str, dict[str, list[str]]] = {
     },
 }
 
-# エージェント不一致時の Gemini フォールバックトリガー
-GEMINI_FALLBACK_TRIGGERS: dict[str, list[str]] = {
+# エージェント不一致時の researcher フォールバックトリガー
+RESEARCHER_FALLBACK_TRIGGERS: dict[str, list[str]] = {
     "ja": ["PDF見て", "動画分析", "画像解析", "コードベース全体", "リポジトリ全体"],
     "en": ["analyze pdf", "analyze video", "analyze image", "entire codebase"],
 }

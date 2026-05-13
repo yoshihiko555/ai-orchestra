@@ -16,13 +16,29 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-# hook_common を $AI_ORCHESTRA_DIR/packages/core/hooks/ から読み込む
-_orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
-if _orchestra_dir:
-    _core_hooks = os.path.join(_orchestra_dir, "packages", "core", "hooks")
-    if _core_hooks not in sys.path:
-        sys.path.insert(0, _core_hooks)
+_hook_dir = os.path.dirname(os.path.abspath(__file__))
+if _hook_dir not in sys.path:
+    sys.path.insert(0, _hook_dir)
 
+# hook_common / event_logger を import するため core/hooks と audit/hooks を sys.path に追加
+_orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
+_repo_core_hooks = os.path.abspath(os.path.join(_hook_dir, "..", "..", "core", "hooks"))
+_repo_audit_hooks = os.path.abspath(os.path.join(_hook_dir, "..", "..", "audit", "hooks"))
+
+for _candidate in [
+    os.path.join(_orchestra_dir, "packages", "core", "hooks") if _orchestra_dir else "",
+    os.path.join(_orchestra_dir, "packages", "audit", "hooks") if _orchestra_dir else "",
+    _repo_core_hooks,
+    _repo_audit_hooks,
+]:
+    if _candidate and os.path.isdir(_candidate) and _candidate not in sys.path:
+        sys.path.insert(0, _candidate)
+
+from event_logger import (  # noqa: E402
+    emit_event,
+    load_trace_state,
+    resolve_project_root_from_hook_data,
+)
 from hook_common import load_package_config  # noqa: E402
 
 # Test command patterns
@@ -37,6 +53,8 @@ TEST_COMMAND_PATTERNS = [
     r"\bgo\s+test\b",
     r"\bcargo\s+test\b",
     r"\bmake\s+test\b",
+    r"\bruff\s+check\b",
+    r"\bmypy\b",
 ]
 
 # Shared state file with test-gate-checker.py
@@ -134,6 +152,50 @@ def record_test_result(command: str, passed: bool) -> None:
     save_test_gate_state(state)
 
 
+def load_quality_gate_config(project_dir: str) -> dict:
+    """audit-flags.json から quality_gate 設定を読み込む。"""
+    config = load_package_config("audit", "audit-flags.json", project_dir)
+    features = config.get("features", {})
+    return features.get("quality_gate", {}) if isinstance(features, dict) else {}
+
+
+def emit_quality_gate_event(
+    data: dict,
+    *,
+    command: str,
+    exit_code: int,
+    output: str,
+) -> bool:
+    """品質ゲート結果を audit イベントログに記録する。
+
+    Returns:
+        `block_on_failed_test` によりブロックすべき場合は True。
+    """
+    project_dir = resolve_project_root_from_hook_data(data)
+    quality_gate = load_quality_gate_config(project_dir)
+    if quality_gate.get("enabled", True) is False:
+        return False
+
+    trace = load_trace_state(project_dir=project_dir)
+    gate_passed = exit_code == 0
+    blocking = bool(quality_gate.get("block_on_failed_test", False)) and not gate_passed
+
+    emit_event(
+        "quality_gate",
+        {
+            "command": command[:200],
+            "exit_code": exit_code,
+            "passed": gate_passed,
+            "output_excerpt": output[:200] if output else "",
+            "blocking": blocking,
+        },
+        session_id=str(data.get("session_id") or ""),
+        tid=trace.get("tid", ""),
+        project_dir=project_dir,
+    )
+    return blocking
+
+
 def _build_codex_command(data: dict) -> str:
     """cli-tools.yaml から Codex コマンド文字列を構築する。"""
     project_dir = data.get("cwd", "") or os.environ.get("CLAUDE_PROJECT_DIR", "")
@@ -166,13 +228,27 @@ def main():
         exit_code = tool_response.get("exit_code", 0)
         output = tool_response.get("stdout", "") or tool_response.get("content", "")
 
-        passed = not is_test_failure(exit_code, output)
+        analysis_failed = is_test_failure(exit_code, output)
+        gate_passed = exit_code == 0
 
         # Record test result to shared state (success resets counters)
-        record_test_result(command, passed)
+        record_test_result(command, gate_passed)
+        blocking = emit_quality_gate_event(
+            data,
+            command=command,
+            exit_code=exit_code,
+            output=output,
+        )
+
+        if blocking:
+            print(
+                f"[quality-gates] quality gate blocked: test failed (exit_code={exit_code})",
+                file=sys.stderr,
+            )
+            sys.exit(2)
 
         # If tests passed, no further action needed
-        if passed:
+        if not analysis_failed:
             sys.exit(0)
 
         failure_summary = extract_failure_summary(output)

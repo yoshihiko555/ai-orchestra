@@ -5,6 +5,7 @@ subprocess.Popen / os.kill / socket.connect_ex を mock でテストする。
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -78,6 +79,57 @@ class TestGetProxyConfig:
         config = {"proxy": {"port": 8792, "port_range": 100}}
         result = proxy_mgr.get_proxy_config(config)
         assert result["port"] == 8792  # base port そのまま
+
+    def test_normalizes_project_dir_before_deriving_port(self, tmp_path: Path) -> None:
+        config = {"proxy": {"port": 8792, "port_range": 100}}
+        real_project = tmp_path / "project"
+        real_project.mkdir()
+        alias_root = tmp_path / "alias-root"
+        alias_root.mkdir()
+        alias_project = alias_root / "project-link"
+        alias_project.symlink_to(real_project, target_is_directory=True)
+
+        result_real = proxy_mgr.get_proxy_config(config, project_dir=str(real_project))
+        result_alias = proxy_mgr.get_proxy_config(config, project_dir=str(alias_project))
+
+        assert result_real["port"] == result_alias["port"]
+
+
+class TestBuildProxyUrl:
+    def test_claude_uses_sse(self) -> None:
+        url = proxy_mgr.build_proxy_url("claude", SAMPLE_CONFIG, "/tmp/project")
+        assert url.endswith("/sse")
+
+    def test_codex_uses_mcp(self) -> None:
+        url = proxy_mgr.build_proxy_url("codex", SAMPLE_CONFIG, "/tmp/project")
+        assert url.endswith("/mcp")
+
+
+class TestStateFiles:
+    def test_updates_proxy_state(self, tmp_path: Path) -> None:
+        state = proxy_mgr.update_proxy_state(str(tmp_path), SAMPLE_CONFIG, proxy_state="starting")
+
+        assert state["proxy_state"] == "starting"
+        assert state["port"] == 8792
+        assert os.path.exists(proxy_mgr.resolve_proxy_state_path(str(tmp_path)))
+
+    def test_session_state_round_trip(self, tmp_path: Path) -> None:
+        proxy_mgr.write_session_state(
+            str(tmp_path),
+            "sess-1",
+            reconnect_required=True,
+            reconnect_notified=False,
+        )
+        state = proxy_mgr.read_session_state(str(tmp_path), "sess-1")
+        assert state["reconnect_required"] is True
+        assert state["reconnect_notified"] is False
+
+        proxy_mgr.mark_session_reconnect_notified(str(tmp_path), "sess-1")
+        updated = proxy_mgr.read_session_state(str(tmp_path), "sess-1")
+        assert updated["reconnect_notified"] is True
+
+        proxy_mgr.clear_session_state(str(tmp_path), "sess-1")
+        assert proxy_mgr.read_session_state(str(tmp_path), "sess-1") == {}
 
 
 # =========================================================================
@@ -237,6 +289,24 @@ class TestIsProxyRunning:
         config = {**SAMPLE_CONFIG, "proxy": {**SAMPLE_CONFIG["proxy"], "pid_file": str(pid_path)}}
         assert proxy_mgr.is_proxy_running(config, str(tmp_path)) is False
 
+    @patch("proxy_manager._is_port_in_use", return_value=True)
+    @patch("proxy_manager._find_pid_by_port", return_value=77777)
+    def test_idle_state_counts_as_running(
+        self, _find: MagicMock, _port: MagicMock, tmp_path: Path
+    ) -> None:
+        proxy_mgr.update_proxy_state(
+            str(tmp_path),
+            SAMPLE_CONFIG,
+            proxy_state="idle",
+            pid=12345,
+            child_pid=54321,
+            inner_port=9999,
+            active_clients=0,
+            last_disconnect_at="2026-04-23T00:00:00+00:00",
+        )
+
+        assert proxy_mgr.is_proxy_running(SAMPLE_CONFIG, str(tmp_path)) is True
+
 
 # =========================================================================
 # _build_proxy_command
@@ -284,6 +354,14 @@ class TestBuildProxyCommand:
             proxy_mgr._build_proxy_command({}, {"port": 8792})
 
 
+class TestBuildSupervisorCommand:
+    def test_builds_command(self) -> None:
+        cmd = proxy_mgr._build_supervisor_command("/tmp/project")
+        assert cmd[0] == "python3"
+        assert cmd[1].endswith("proxy_supervisor.py")
+        assert cmd[2] == "/tmp/project"
+
+
 # =========================================================================
 # start_proxy
 # =========================================================================
@@ -310,6 +388,13 @@ class TestStartProxy:
 
         result = proxy_mgr.start_proxy(SAMPLE_CONFIG, str(tmp_path))
         assert result is True
+        launched_call = mock_popen.call_args_list[0]
+        launched_cmd = launched_call.args[0]
+        launched_env = launched_call.kwargs["env"]
+        assert launched_cmd[0] == "python3"
+        assert launched_cmd[1].endswith("proxy_supervisor.py")
+        assert launched_cmd[2] == str(tmp_path)
+        assert launched_env[proxy_mgr._SUPERVISOR_CONFIG_ENV]
 
         # PID ファイルが作成されている
         pid_path = os.path.join(str(tmp_path), ".claude", ".mcp-proxy.pid")
@@ -412,6 +497,62 @@ class TestStartProxy:
     ) -> None:
         result = proxy_mgr.start_proxy(SAMPLE_CONFIG, str(tmp_path))
         assert result is False
+
+
+class TestStartProxyBackground:
+    @patch("proxy_manager.subprocess.Popen")
+    @patch("proxy_manager.get_proxy_state", return_value={"proxy_state": "stopped"})
+    def test_launches_helper(
+        self,
+        mock_state: MagicMock,
+        mock_popen: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        result = proxy_mgr.start_proxy_background(SAMPLE_CONFIG, str(tmp_path))
+        assert result is True
+        mock_popen.assert_called_once()
+
+        state = json.loads(
+            Path(proxy_mgr.resolve_proxy_state_path(str(tmp_path))).read_text(encoding="utf-8")
+        )
+        assert state["proxy_state"] == "starting"
+
+    def test_releases_lock_before_launching_helper(self, tmp_path: Path) -> None:
+        events: list[str] = []
+
+        def _acquire(_path: str) -> bool:
+            events.append("acquire")
+            return True
+
+        def _release(_path: str) -> None:
+            events.append("release")
+
+        def _popen(*_args, **_kwargs):
+            events.append("popen")
+            return MagicMock()
+
+        with (
+            patch.object(proxy_mgr, "_acquire_lock", side_effect=_acquire),
+            patch.object(proxy_mgr, "_release_lock", side_effect=_release),
+            patch.object(proxy_mgr, "get_proxy_state", return_value={"proxy_state": "stopped"}),
+            patch("proxy_manager.subprocess.Popen", side_effect=_popen),
+        ):
+            result = proxy_mgr.start_proxy_background(SAMPLE_CONFIG, str(tmp_path))
+
+        assert result is True
+        assert events == ["acquire", "release", "popen"]
+
+    @patch("proxy_manager.subprocess.Popen")
+    @patch("proxy_manager.get_proxy_state", return_value={"proxy_state": "ready"})
+    def test_skips_when_ready(
+        self,
+        mock_state: MagicMock,
+        mock_popen: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        result = proxy_mgr.start_proxy_background(SAMPLE_CONFIG, str(tmp_path))
+        assert result is False
+        mock_popen.assert_not_called()
 
 
 # =========================================================================

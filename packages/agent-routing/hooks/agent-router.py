@@ -5,11 +5,10 @@ import json
 import sys
 
 from route_config import (
-    GEMINI_FALLBACK_TRIGGERS,
+    RESEARCHER_FALLBACK_TRIGGERS,
     build_cli_suggestion,
     detect_agent,
     get_agent_tool,
-    is_cli_enabled,
     load_config,
 )
 
@@ -36,16 +35,20 @@ def main():
             )
         else:
             prompt_lower = prompt.lower()
-            # Gemini CLI が無効の場合はフォールバックトリガーを抑制
-            if is_cli_enabled("gemini", config):
-                for trig in GEMINI_FALLBACK_TRIGGERS.get("ja", []) + GEMINI_FALLBACK_TRIGGERS.get(
-                    "en", []
-                ):
-                    if trig in prompt_lower:
-                        cli_msg = build_cli_suggestion("gemini", "researcher", trig, config)
-                        if cli_msg:
-                            messages.append(cli_msg)
-                        break
+            for trig in RESEARCHER_FALLBACK_TRIGGERS.get(
+                "ja", []
+            ) + RESEARCHER_FALLBACK_TRIGGERS.get("en", []):
+                if trig.lower() in prompt_lower:
+                    fallback_agent = "researcher"
+                    tool = get_agent_tool(fallback_agent, config)
+                    cli_msg = build_cli_suggestion(tool, fallback_agent, trig, config)
+                    if cli_msg:
+                        messages.append(cli_msg)
+                    messages.append(
+                        f"[Agent Routing] '{trig}' → `{fallback_agent}` (tool: {tool}):\n"
+                        f'Task(subagent_type="{fallback_agent}", prompt="...")'
+                    )
+                    break
 
         if messages:
             print(

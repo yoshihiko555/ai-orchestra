@@ -14,11 +14,10 @@ Claude Code (Orchestrator)
     │
     ├── $AI_ORCHESTRA_DIR/packages/
     │   ├── core/               # 共通ユーティリティ
-    │   ├── cli-logging/        # CLI 呼び出しログ
+    │   ├── audit/              # 監査ログ・KPI・ダッシュボード
     │   ├── codex-suggestions/  # Codex 相談提案
     │   ├── gemini-suggestions/ # Gemini リサーチ提案
     │   ├── quality-gates/      # 品質ゲート
-    │   ├── route-audit/        # ルーティング監査
     │   ├── git-workflow/     # Git/GitHub ワークフロー
     │   ├── cocoindex/          # MCP サーバー自動プロビジョニング
     │   └── tmux-monitor/       # tmux リアルタイム監視
@@ -69,7 +68,7 @@ orchex setup essential --project /path/to/project --dry-run
 
 プリセットは `presets.json` で定義されています:
 
-- **essential** — core, agent-routing, quality-gates
+- **essential** — core, agent-routing, audit, quality-gates
 - **all** — 全パッケージ
 
 > **テンプレートのプレースホルダーについて**: 配布される `CLAUDE.md` / `AGENTS.md` / `GEMINI.md` には `<YOUR_PROJECT_NAME>` などの `<YOUR_...>` 形式のプレースホルダーが含まれています。セットアップ後にプロジェクト固有の内容に書き換えてください。
@@ -132,7 +131,7 @@ orchex disable <package> --project .
 
 # パッケージ内スクリプトの一覧表示
 orchex scripts
-orchex scripts --package route-audit
+orchex scripts --package audit
 
 # CLAUDE.md / AGENTS.md / GEMINI.md テンプレート管理
 orchex context build
@@ -144,8 +143,8 @@ orchex context sync --project /path/to/project --force
 # 注意: GEMINI.md は gemini-suggestions パッケージがインストール済みの場合のみ配布されます
 
 # パッケージ内スクリプトの実行（-- 以降はスクリプトにパススルー）
-orchex run route-audit dashboard
-orchex run route-audit log-viewer --project /path/to/project -- --last 10
+orchex run audit dashboard
+orchex run audit log-viewer --project /path/to/project -- --last 10
 
 # dry-run（変更内容を表示のみ）
 orchex setup essential --project . --dry-run
@@ -291,11 +290,10 @@ ai-orchestra/
 ├── packages/         # パッケージ（hooks・scripts・agents・config）— 詳細は packages/README.md
 │   ├── core/              # 共通基盤ライブラリ + hooks
 │   ├── agent-routing/     # 28 エージェント定義 + ルーティング hooks
-│   ├── cli-logging/       # Codex/Gemini CLI ログ記録
+│   ├── audit/             # 監査ログ・KPI・ダッシュボード
 │   ├── codex-suggestions/ # Codex 相談提案 hooks
 │   ├── gemini-suggestions/# Gemini リサーチ提案 hooks
 │   ├── quality-gates/     # 品質ゲート hooks
-│   ├── route-audit/       # ルーティング監査・KPIレポート
 │   ├── git-workflow/    # Git/GitHub ワークフロー（Issue・PR・開発フロー）
 │   ├── cocoindex/         # cocoindex MCP サーバーの自動プロビジョニング
 │   └── tmux-monitor/      # tmux サブエージェント監視

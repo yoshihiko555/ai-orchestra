@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -63,6 +65,80 @@ class TestGetProxyConfig:
         result = proxy_mgr.get_proxy_config({}, project_dir="/my/project")
         assert result["port"] != 8792 or True  # ハッシュ次第で同じになる可能性あり
         assert isinstance(result["port"], int)
+
+    def test_project_dir_alias_uses_same_port(self, tmp_path: Path):
+        """同じ実体への別パスでも同じポートを使う。"""
+        real_project = tmp_path / "project"
+        real_project.mkdir()
+        alias_root = tmp_path / "alias-root"
+        alias_root.mkdir()
+        alias_project = alias_root / "project-link"
+        alias_project.symlink_to(real_project, target_is_directory=True)
+
+        result_real = proxy_mgr.get_proxy_config({}, project_dir=str(real_project))
+        result_alias = proxy_mgr.get_proxy_config({}, project_dir=str(alias_project))
+
+        assert result_real["port"] == result_alias["port"]
+
+
+class TestBuildProxyUrl:
+    def test_claude_uses_sse(self):
+        url = proxy_mgr.build_proxy_url(
+            "claude", {"proxy": {"port": 8792, "port_range": 0}}, "/tmp"
+        )
+        assert url == "http://127.0.0.1:8792/sse"
+
+    def test_codex_uses_mcp(self):
+        url = proxy_mgr.build_proxy_url("codex", {"proxy": {"port": 8792, "port_range": 0}}, "/tmp")
+        assert url == "http://127.0.0.1:8792/mcp"
+
+
+class TestBuildSupervisorCommand:
+    def test_builds_command(self):
+        cmd = proxy_mgr._build_supervisor_command("/tmp/project")
+        assert cmd[0] == "python3"
+        assert cmd[1].endswith("proxy_supervisor.py")
+        assert cmd[2] == "/tmp/project"
+
+
+class TestStateFiles:
+    def test_resolve_paths(self, tmp_path):
+        proxy_path = proxy_mgr.resolve_proxy_state_path(str(tmp_path))
+        session_path = proxy_mgr.resolve_session_state_path(str(tmp_path), "sess-1")
+
+        assert proxy_path.endswith(".claude/state/cocoindex-proxy.json")
+        assert session_path.endswith(".claude/state/cocoindex-sessions/sess-1.json")
+
+    def test_proxy_state_round_trip(self, tmp_path):
+        state = proxy_mgr.update_proxy_state(
+            str(tmp_path),
+            {"proxy": {"port": 8792, "port_range": 0}},
+            proxy_state="starting",
+        )
+        assert state["proxy_state"] == "starting"
+
+        saved = proxy_mgr.read_proxy_state(str(tmp_path))
+        assert saved["proxy_state"] == "starting"
+        assert saved["port"] == 8792
+
+    def test_session_state_round_trip(self, tmp_path):
+        proxy_mgr.write_session_state(
+            str(tmp_path),
+            "sess-1",
+            reconnect_required=True,
+            reconnect_notified=False,
+        )
+
+        state = proxy_mgr.read_session_state(str(tmp_path), "sess-1")
+        assert state["reconnect_required"] is True
+        assert state["reconnect_notified"] is False
+
+        proxy_mgr.mark_session_reconnect_notified(str(tmp_path), "sess-1")
+        updated = proxy_mgr.read_session_state(str(tmp_path), "sess-1")
+        assert updated["reconnect_notified"] is True
+
+        proxy_mgr.clear_session_state(str(tmp_path), "sess-1")
+        assert proxy_mgr.read_session_state(str(tmp_path), "sess-1") == {}
 
 
 class TestResolvePidPath:
@@ -164,6 +240,24 @@ class TestIsProxyRunning:
             result = proxy_mgr.is_proxy_running({}, str(tmp_path))
         assert result is False
 
+    def test_idle_state_counts_as_running(self, tmp_path):
+        proxy_mgr.update_proxy_state(
+            str(tmp_path),
+            {"proxy": {"port": 8792, "port_range": 0}},
+            proxy_state="idle",
+            pid=12345,
+            child_pid=54321,
+            inner_port=9999,
+            active_clients=0,
+            last_disconnect_at="2026-04-23T00:00:00+00:00",
+        )
+
+        with patch.object(proxy_mgr, "_is_port_in_use", return_value=True):
+            result = proxy_mgr.is_proxy_running(
+                {"proxy": {"port": 8792, "port_range": 0}}, str(tmp_path)
+            )
+        assert result is True
+
 
 class TestStartProxy:
     """start_proxy のテスト。"""
@@ -185,6 +279,29 @@ class TestStartProxy:
             result = proxy_mgr.start_proxy({"command": "test"}, str(tmp_path))
         assert result is True
         mock_write.assert_called_once()
+
+    def test_launches_supervisor(self, tmp_path):
+        """起動時は raw mcp-proxy ではなく supervisor を立ち上げる。"""
+        mock_proc = MagicMock()
+        mock_proc.pid = 43210
+
+        with (
+            patch.object(proxy_mgr, "is_proxy_running", return_value=False),
+            patch.object(proxy_mgr, "_is_port_in_use", return_value=False),
+            patch.object(proxy_mgr, "cleanup_orphan"),
+            patch.object(proxy_mgr, "_wait_for_port", return_value=True),
+            patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
+        ):
+            result = proxy_mgr.start_proxy({"command": "test"}, str(tmp_path))
+
+        assert result is True
+        launched_call = mock_popen.call_args_list[0]
+        launched_cmd = launched_call.args[0]
+        launched_env = launched_call.kwargs["env"]
+        assert launched_cmd[0] == "python3"
+        assert launched_cmd[1].endswith("proxy_supervisor.py")
+        assert launched_cmd[2] == str(tmp_path)
+        assert launched_env[proxy_mgr._SUPERVISOR_CONFIG_ENV]
 
     def test_popen_failure(self, tmp_path):
         """Popen が失敗した場合、False。"""
@@ -253,6 +370,86 @@ class TestStopProxy:
         ):
             result = proxy_mgr.stop_proxy({}, str(tmp_path))
         assert result is True
+
+
+class TestStartProxyBackground:
+    def test_launches_helper(self, tmp_path):
+        with (
+            patch.object(proxy_mgr, "get_proxy_state", return_value={"proxy_state": "stopped"}),
+            patch("subprocess.Popen") as mock_popen,
+        ):
+            result = proxy_mgr.start_proxy_background(
+                {"command": "test", "proxy": {"port": 8792, "port_range": 0}},
+                str(tmp_path),
+            )
+
+        assert result is True
+        mock_popen.assert_called_once()
+
+        state_path = Path(proxy_mgr.resolve_proxy_state_path(str(tmp_path)))
+        state = json.loads(state_path.read_text())
+        assert state["proxy_state"] == "starting"
+
+    def test_releases_lock_before_launching_helper(self, tmp_path):
+        events: list[str] = []
+
+        def _acquire(_path: str) -> bool:
+            events.append("acquire")
+            return True
+
+        def _release(_path: str) -> None:
+            events.append("release")
+
+        def _popen(*_args, **_kwargs):
+            events.append("popen")
+            return MagicMock()
+
+        with (
+            patch.object(proxy_mgr, "_acquire_lock", side_effect=_acquire),
+            patch.object(proxy_mgr, "_release_lock", side_effect=_release),
+            patch.object(proxy_mgr, "get_proxy_state", return_value={"proxy_state": "stopped"}),
+            patch("subprocess.Popen", side_effect=_popen),
+        ):
+            result = proxy_mgr.start_proxy_background(
+                {"command": "test", "proxy": {"port": 8792, "port_range": 0}},
+                str(tmp_path),
+            )
+
+        assert result is True
+        assert events == ["acquire", "release", "popen"]
+
+    def test_skips_when_ready(self, tmp_path):
+        with (
+            patch.object(proxy_mgr, "get_proxy_state", return_value={"proxy_state": "ready"}),
+            patch("subprocess.Popen") as mock_popen,
+        ):
+            result = proxy_mgr.start_proxy_background(
+                {"command": "test", "proxy": {"port": 8792, "port_range": 0}},
+                str(tmp_path),
+            )
+
+        assert result is False
+        mock_popen.assert_not_called()
+
+    def test_skips_when_starting(self, tmp_path):
+        with (
+            patch.object(
+                proxy_mgr,
+                "get_proxy_state",
+                return_value={
+                    "proxy_state": "starting",
+                    "last_transition_at": "2999-01-01T00:00:00+00:00",
+                },
+            ),
+            patch("subprocess.Popen") as mock_popen,
+        ):
+            result = proxy_mgr.start_proxy_background(
+                {"command": "test", "proxy": {"port": 8792, "port_range": 0}},
+                str(tmp_path),
+            )
+
+        assert result is False
+        mock_popen.assert_not_called()
 
 
 class TestFindPidByPort:
