@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-05-13
+
 ### Changed
 
 - `agent-routing`: 未分類のリサーチ入力を `Gemini` 固定ではなく `researcher` 基点の config-driven 解決に変更。`cli-tools.yaml` / `.local.yaml` の `agents.researcher.tool` に追従するようにした
