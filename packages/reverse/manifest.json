@@ -1,0 +1,13 @@
+{
+  "name": "reverse",
+  "version": "0.1.0",
+  "description": "既存コードベースのリバースエンジニアリング（5 フェーズ対話型解析）",
+  "depends": [],
+  "hooks": {},
+  "files": [],
+  "skills": ["reverse"],
+  "agents": [],
+  "rules": [],
+  "scripts": [],
+  "config": []
+}
