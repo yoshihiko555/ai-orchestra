@@ -32,3 +32,4 @@ AI Orchestra プロジェクトの意思決定記録。
 | ADR-20260421-017 | cocoindex proxy 起動は proxy-only とし、state file と reconnect 通知で扱う | accepted   | 2026-04-21 |
 | ADR-20260423-018 | cocoindex proxy 停止は supervisor の idle shutdown で扱う                  | accepted   | 2026-04-23 |
 | ADR-20260513-019 | スキル/ルールは必ずパッケージに登録する（孤立 composition の禁止）         | accepted   | 2026-05-13 |
+| ADR-20260513-020 | stage → main リリースフローを squash merge + 並列 PR 方式に確定する        | accepted   | 2026-05-13 |
