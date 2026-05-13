@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SessionStart hook: cocoindex MCP サーバーを各 CLI に自動プロビジョニングする。
+"""SessionStart hook: cocoindex MCP 設定の reconcile と proxy warmup を行う。
 
 対象:
   - Claude Code: {project_dir}/.mcp.json
@@ -10,6 +10,8 @@
 クリーンアップ: enabled=false またはパッケージ未インストール時にエントリを削除する。
 
 v2: proxy.enabled=true 時は mcp-proxy 経由の HTTP エントリを生成する。
+current session の接続を救済することはせず、必要に応じて proxy warmup を
+バックグラウンドで開始する。
 """
 
 from __future__ import annotations
@@ -38,21 +40,25 @@ from hook_common import (
     safe_hook_execution,
     write_json,
 )
-from proxy_manager import get_proxy_config, start_proxy
+from proxy_manager import (
+    build_proxy_url,
+    clear_session_state,
+    get_proxy_state,
+    start_proxy_background,
+    write_session_state,
+)
 
 # ---------------------------------------------------------------------------
 # Claude Code (.mcp.json)
 # ---------------------------------------------------------------------------
 
 
-def _build_claude_entry(config: dict, proxy_active: bool, proxy_cfg: dict) -> dict:
+def _build_claude_entry(config: dict, proxy_enabled: bool, project_dir: str) -> dict:
     """Claude Code 用の MCP サーバーエントリを構築する。"""
     target = config.get("targets", {}).get("claude", {})
 
-    if proxy_active and not target.get("force_stdio", False):
-        host = proxy_cfg["host"]
-        port = proxy_cfg["port"]
-        return {"type": "sse", "url": f"http://{host}:{port}/sse"}
+    if proxy_enabled and not target.get("force_stdio", False):
+        return {"type": "sse", "url": build_proxy_url("claude", config, project_dir)}
 
     entry: dict = {
         "command": config["command"],
@@ -64,15 +70,14 @@ def _build_claude_entry(config: dict, proxy_active: bool, proxy_cfg: dict) -> di
 
 
 def provision_claude(
-    project_dir: str, config: dict, server_name: str, proxy_active: bool = False
+    project_dir: str, config: dict, server_name: str, proxy_enabled: bool = False
 ) -> str | None:
     """Claude Code の .mcp.json にエントリを追加/更新する。"""
     mcp_path = os.path.join(project_dir, ".mcp.json")
     data = read_json_safe(mcp_path)
 
-    proxy_cfg = get_proxy_config(config, project_dir)
     servers = data.get("mcpServers", {})
-    new_entry = _build_claude_entry(config, proxy_active, proxy_cfg)
+    new_entry = _build_claude_entry(config, proxy_enabled, project_dir)
 
     if servers.get(server_name) == new_entry:
         return None
@@ -114,15 +119,15 @@ def cleanup_claude(project_dir: str, server_name: str) -> str | None:
 _TOML_HEADER_RE = re.compile(r"^\[([^\]]+)\]")
 
 
-def _build_toml_section(server_name: str, config: dict, proxy_active: bool, proxy_cfg: dict) -> str:
+def _build_toml_section(
+    server_name: str, config: dict, proxy_enabled: bool, project_dir: str
+) -> str:
     """Codex 用の TOML セクション文字列を生成する。"""
     target = config.get("targets", {}).get("codex", {})
     lines = [f"[mcp_servers.{server_name}]"]
 
-    if proxy_active and not target.get("force_stdio", False):
-        host = proxy_cfg["host"]
-        port = proxy_cfg["port"]
-        lines.append(f'url = "http://{host}:{port}/mcp"')
+    if proxy_enabled and not target.get("force_stdio", False):
+        lines.append(f'url = "{build_proxy_url("codex", config, project_dir)}"')
     else:
         lines.append(f'command = "{config["command"]}"')
         args_str = json.dumps(config["args"])
@@ -153,17 +158,16 @@ def _find_toml_section(content: str, section_name: str) -> tuple[int, int] | Non
 
 
 def provision_codex(
-    project_dir: str, config: dict, server_name: str, proxy_active: bool = False
+    project_dir: str, config: dict, server_name: str, proxy_enabled: bool = False
 ) -> str | None:
     """Codex CLI の .codex/config.toml にセクションを追加/更新する。"""
     toml_path = os.path.join(project_dir, ".codex", "config.toml")
     if not os.path.isfile(toml_path):
         return None
 
-    proxy_cfg = get_proxy_config(config, project_dir)
     content = _read_text(toml_path)
     section_key = f"mcp_servers.{server_name}"
-    new_section = _build_toml_section(server_name, config, proxy_active, proxy_cfg)
+    new_section = _build_toml_section(server_name, config, proxy_enabled, project_dir)
 
     span = _find_toml_section(content, section_key)
     if span is not None:
@@ -206,14 +210,12 @@ def cleanup_codex(project_dir: str, server_name: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def _build_gemini_entry(config: dict, proxy_active: bool, proxy_cfg: dict) -> dict:
+def _build_gemini_entry(config: dict, proxy_enabled: bool, project_dir: str) -> dict:
     """Gemini CLI 用の MCP サーバーエントリを構築する。"""
     target = config.get("targets", {}).get("gemini", {})
 
-    if proxy_active and not target.get("force_stdio", False):
-        host = proxy_cfg["host"]
-        port = proxy_cfg["port"]
-        return {"url": f"http://{host}:{port}/sse"}
+    if proxy_enabled and not target.get("force_stdio", False):
+        return {"url": build_proxy_url("gemini", config, project_dir)}
 
     return {
         "command": config["command"],
@@ -222,17 +224,16 @@ def _build_gemini_entry(config: dict, proxy_active: bool, proxy_cfg: dict) -> di
 
 
 def provision_gemini(
-    project_dir: str, config: dict, server_name: str, proxy_active: bool = False
+    project_dir: str, config: dict, server_name: str, proxy_enabled: bool = False
 ) -> str | None:
     """Gemini CLI の .gemini/settings.json にエントリを追加/更新する。"""
     settings_path = os.path.join(project_dir, ".gemini", "settings.json")
     if not os.path.isfile(settings_path):
         return None
 
-    proxy_cfg = get_proxy_config(config, project_dir)
     data = read_json_safe(settings_path)
     servers = data.get("mcpServers", {})
-    new_entry = _build_gemini_entry(config, proxy_active, proxy_cfg)
+    new_entry = _build_gemini_entry(config, proxy_enabled, project_dir)
 
     if servers.get(server_name) == new_entry:
         return None
@@ -295,26 +296,43 @@ TARGET_HANDLERS = {
 }
 
 
+def _session_uses_proxy(config: dict, proxy_enabled: bool) -> bool:
+    """現在の Claude session が proxy reconnect 対象かを返す。"""
+    if not proxy_enabled:
+        return False
+    target = (config.get("targets", {}) or {}).get("claude", {}) or {}
+    return bool(target.get("enabled", False) and not target.get("force_stdio", False))
+
+
 @safe_hook_execution
 def main() -> None:
     data = read_hook_input()
     project_dir = data.get("cwd", "")
     if not project_dir:
         return
+    session_id = str(data.get("session_id") or "")
 
     config = load_package_config("cocoindex", "cocoindex.yaml", project_dir)
     enabled = config.get("enabled", False) if config else False
     server_name = config.get("server_name", "cocoindex-code") if config else "cocoindex-code"
 
-    # proxy 判定
-    proxy_active = False
-    if enabled and config:
-        proxy_cfg = config.get("proxy", {})
-        proxy_enabled = proxy_cfg.get("enabled", False)
-        if proxy_enabled:
-            proxy_active = start_proxy(config, project_dir)
-            if not proxy_active:
-                print("[cocoindex] mcp-proxy failed, falling back to stdio", file=sys.stderr)
+    proxy_enabled = bool(
+        enabled and config and (config.get("proxy", {}) or {}).get("enabled", False)
+    )
+    warmup_started = False
+    session_uses_proxy = _session_uses_proxy(config, proxy_enabled) if config else False
+    if proxy_enabled and config:
+        proxy_state = get_proxy_state(config, project_dir)
+        proxy_ready = proxy_state.get("proxy_state") in {"ready", "idle"}
+        if session_id:
+            if session_uses_proxy:
+                write_session_state(project_dir, session_id, reconnect_required=not proxy_ready)
+            else:
+                clear_session_state(project_dir, session_id)
+        if not proxy_ready:
+            warmup_started = start_proxy_background(config, project_dir)
+    elif session_id:
+        clear_session_state(project_dir, session_id)
 
     changed: list[str] = []
 
@@ -323,7 +341,7 @@ def main() -> None:
         for target_name, (provision_fn, cleanup_fn) in TARGET_HANDLERS.items():
             target_config = targets.get(target_name, {})
             if target_config.get("enabled", False):
-                result = provision_fn(project_dir, config, server_name, proxy_active)
+                result = provision_fn(project_dir, config, server_name, proxy_enabled)
             else:
                 result = cleanup_fn(project_dir, server_name)
             if result:
@@ -334,9 +352,14 @@ def main() -> None:
             if result:
                 changed.append(result)
 
+    messages: list[str] = []
     if changed:
-        mode = "proxy" if proxy_active else "stdio"
-        print(f"[cocoindex] MCP server provisioned ({mode}): {', '.join(changed)}")
+        mode = "proxy" if proxy_enabled else "stdio"
+        messages.append(f"[cocoindex] MCP server provisioned ({mode}): {', '.join(changed)}")
+    if warmup_started:
+        messages.append("[cocoindex] mcp-proxy warmup started in background")
+    if messages:
+        print("\n".join(messages))
 
 
 if __name__ == "__main__":

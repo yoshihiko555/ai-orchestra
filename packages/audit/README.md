@@ -24,7 +24,7 @@ orchex run audit dashboard-html
 # ログビューア（最新イベントを表示）
 orchex run audit log-viewer
 
-# KPI レポート（直近 7 日間）
+# KPI レポート
 orchex run audit kpi-report
 ```
 
@@ -78,7 +78,7 @@ orchex run audit log-viewer -- --type <EVENT_TYPE>
 # トレース ID で追跡
 orchex run audit log-viewer -- --trace <TRACE_ID>
 
-# 表示件数を指定（デフォルト: 20）
+# 表示件数を指定（デフォルト: 100）
 orchex run audit log-viewer -- --limit 50
 
 # JSONL 生ログ形式で出力
@@ -90,7 +90,7 @@ orchex run audit log-viewer -- --raw
 | `--session <ID>` | セッション ID でフィルタ                          |
 | `--type <TYPE>`  | イベント種別でフィルタ（例: `route`, `cli_call`） |
 | `--trace <ID>`   | トレース ID でイベント連鎖を追跡                  |
-| `--limit <N>`    | 表示件数の上限（デフォルト: 20）                  |
+| `--limit <N>`    | 表示件数の上限（デフォルト: 100）                 |
 | `--raw`          | JSONL 形式のまま出力                              |
 
 ### kpi-report — KPI スコアカードレポート
@@ -98,7 +98,7 @@ orchex run audit log-viewer -- --raw
 ルーティング精度・品質ゲート通過率などの KPI を集計します。
 
 ```bash
-# 直近 7 日間（デフォルト）
+# 全期間（デフォルト）
 orchex run audit kpi-report
 
 # 集計期間を指定（日数）
@@ -110,7 +110,7 @@ orchex run audit kpi-report -- --output report.txt
 
 | オプション        | 説明                            |
 | ----------------- | ------------------------------- |
-| `--days <N>`      | 集計対象の日数（デフォルト: 7） |
+| `--days <N>`      | 集計対象の日数（未指定時は全期間） |
 | `--output <PATH>` | レポートの保存先ファイルパス    |
 
 ### analyze-cli-usage — CLI 利用パターン分析
@@ -118,7 +118,7 @@ orchex run audit kpi-report -- --output report.txt
 Codex CLI・Gemini CLI の呼び出し頻度・パターンを分析します。
 
 ```bash
-# 直近 30 日間（デフォルト）
+# 全期間（デフォルト）
 orchex run audit analyze-cli-usage
 
 # 集計期間を指定
@@ -127,7 +127,7 @@ orchex run audit analyze-cli-usage -- --days 30
 
 | オプション   | 説明                             |
 | ------------ | -------------------------------- |
-| `--days <N>` | 集計対象の日数（デフォルト: 30） |
+| `--days <N>` | 集計対象の日数（未指定時は全期間） |
 
 ## フック一覧
 
@@ -138,13 +138,13 @@ orchex run audit analyze-cli-usage -- --days 30
 | `audit-bootstrap.py`           | SessionStart        | セッション開始・メタ情報（セッション ID、開始時刻） |
 | `audit-session-end.py`         | SessionEnd          | セッション終了・サマリー統計                        |
 | `audit-prompt.py`              | UserPromptSubmit    | ユーザープロンプトの受信イベント                    |
-| `audit-route.py`               | PostToolUse         | エージェントルーティング結果                        |
+| `audit-route.py`               | PostToolUse         | 実ルートの照合結果（`route_decision`）              |
 | `audit-cli.py`                 | PostToolUse（Bash） | CLI ツール（Codex/Gemini）の呼び出し記録            |
 | `audit-subagent-start.py`      | SubagentStart       | サブエージェントの起動                              |
 | `audit-subagent-end.py`        | SubagentStop        | サブエージェントの終了・結果                        |
 | `audit-instructions-loaded.py` | InstructionsLoaded  | 指示書の読み込み完了                                |
 
-ログは `.claude/logs/audit/` 配下に JSONL 形式で保存されます。
+ログは `.claude/logs/audit/` 配下に JSONL 形式で保存されます。`quality_gate` イベント自体は `quality-gates` パッケージの `post-test-analysis.py` から記録されます。
 
 ## 設定
 
@@ -156,8 +156,10 @@ orchex run audit analyze-cli-usage -- --days 30
 | ------------------------------------------ | ---------- | ------------------------------------- |
 | `route_audit.enabled`                      | `true`     | ルーティング記録の有効/無効           |
 | `route_audit.max_excerpt_chars`            | `160`      | プロンプト抜粋の最大文字数            |
-| `quality_gate.enabled`                     | `true`     | 品質ゲートチェックの有効/無効         |
-| `quality_gate.block_on_failed_test`        | `false`    | テスト失敗時にブロックするか          |
+| `quality_gate.enabled`                     | `true`     | 品質ゲート記録 / 判定の有効・無効     |
+| `quality_gate.block_on_failed_test`        | `false`    | `quality-gates` が失敗テストを block するか |
+| `quality_gate.test_file_threshold`         | `3`        | テスト実行を促す変更ファイル数の閾値  |
+| `quality_gate.test_line_threshold`         | `100`      | テスト実行を促す変更行数の閾値        |
 | `kpi_scorecard.enabled`                    | `true`     | KPI スコアカード集計の有効/無効       |
 | `kpi_scorecard.default_period_days`        | `7`        | KPI 集計のデフォルト期間（日）        |
 | `context_optimization.enabled`             | `true`     | コンテキスト最適化チェックの有効/無効 |
@@ -167,7 +169,7 @@ orchex run audit analyze-cli-usage -- --days 30
 
 キーワードベースのエージェントルーティングルールを定義します。`default_route` でフォールバック先を指定し、`rules` でキーワード→エージェントのマッピングを追加できます。
 
-プロジェクト固有の上書きは `.claude/config/audit/audit-flags.local.json` で行います（`config-loading` ルール準拠）。
+`quality_gate` セクションは `audit` と `quality-gates` の共有設定です。プロジェクト固有の上書きは `.claude/config/audit/audit-flags.local.json` で行います（`config-loading` ルール準拠）。
 
 ```json
 // .claude/config/audit/audit-flags.local.json

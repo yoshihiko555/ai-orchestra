@@ -1,11 +1,11 @@
-"""composition と manifest の整合性テスト（ADR-015 準拠）。
+"""composition と manifest の整合性テスト（ADR-019 準拠）。
 
 `facets/compositions/{skills,rules}/*.yaml` の全 composition は、
 いずれかの `packages/*/manifest.json` の `skills` / `rules` 配列に
 登録されていなければならない。
 
 孤立した composition（manifest 未登録）はパッケージのライフサイクル管理
-から外れるため、ADR-015 で禁止された。
+から外れるため、ADR-019 で禁止された。
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ def test_no_orphan_skill_compositions() -> None:
     orphans = sorted(compositions - registered)
     assert not orphans, (
         f"以下のスキルがどの packages/*/manifest.json にも登録されていません: {orphans}\n"
-        "ADR-015 に従い packages/<pkg>/manifest.json の skills 配列に追加してください。"
+        "ADR-019 に従い packages/<pkg>/manifest.json の skills 配列に追加してください。"
     )
 
 
@@ -56,5 +56,5 @@ def test_no_orphan_rule_compositions() -> None:
     orphans = sorted(compositions - registered)
     assert not orphans, (
         f"以下のルールがどの packages/*/manifest.json にも登録されていません: {orphans}\n"
-        "ADR-015 に従い packages/<pkg>/manifest.json の rules 配列に追加してください。"
+        "ADR-019 に従い packages/<pkg>/manifest.json の rules 配列に追加してください。"
     )

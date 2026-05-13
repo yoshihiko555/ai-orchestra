@@ -206,15 +206,15 @@ class TestHookSync:
         )
         hooks_before = json.dumps(settings_before.get("hooks", {})).count("command")
 
-        run_orchex("install", "audit", project=e2e_project)
+        run_orchex("install", "codex-suggestions", project=e2e_project)
 
         settings_after = json.loads(
             (e2e_project / ".claude" / "settings.local.json").read_text(encoding="utf-8")
         )
         hooks_after = json.dumps(settings_after.get("hooks", {})).count("command")
-        # audit manifest に宣言された 8 hooks が追加される
+        # codex-suggestions manifest に宣言された 2 hooks が追加される
         # count("command") は "type": "command" と "command": "..." の 2 箇所を拾うため x2
-        assert hooks_after - hooks_before == 8 * 2
+        assert hooks_after - hooks_before == 2 * 2
 
     def test_hook_removed_on_uninstall(self, e2e_project: Path) -> None:
         """#33: パッケージ uninstall で hooks が除去"""

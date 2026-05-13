@@ -205,8 +205,8 @@ agents:
 
 ## delegation-policy.json
 
-**パス:** `.claude/config/route-audit/delegation-policy.json`
-**パッケージ:** route-audit
+**パス:** `.claude/config/audit/delegation-policy.json`
+**パッケージ:** audit
 
 ルーティングルールとエイリアスの定義。
 
@@ -235,28 +235,23 @@ agents:
 
 ---
 
-## orchestration-flags.json
+## audit-flags.json
 
-**パス:** `.claude/config/route-audit/orchestration-flags.json`
-**パッケージ:** route-audit
+**パス:** `.claude/config/audit/audit-flags.json`
+**パッケージ:** audit
 
 機能フラグの管理。
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "features": {
     "route_audit": {
       "enabled": true,
-      "record_input_excerpt": true,
       "max_excerpt_chars": 160
     },
-    "route_guard": {
-      "enabled": false,
-      "mode": "warn"
-    },
     "quality_gate": {
-      "enabled": false,
+      "enabled": true,
       "block_on_failed_test": false,
       "test_file_threshold": 3,
       "test_line_threshold": 100
@@ -265,14 +260,15 @@ agents:
       "enabled": true,
       "default_period_days": 7
     },
-    "tmux_monitoring": {
-      "enabled": false
+    "context_optimization": {
+      "enabled": true,
+      "read_line_threshold": 200,
+      "max_file_size_bytes": 5242880
     }
   },
   "paths": {
     "state_dir": ".claude/state",
-    "logs_dir": ".claude/logs/orchestration",
-    "delegation_policy": ".claude/config/route-audit/delegation-policy.json"
+    "logs_dir": ".claude/logs/audit"
   }
 }
 ```
@@ -280,10 +276,9 @@ agents:
 | 機能 | 説明 | デフォルト |
 |------|------|-----------|
 | `route_audit` | ルーティング実績の記録 | 有効 |
-| `route_guard` | ルーティング逸脱の警告/ブロック | 無効 |
-| `quality_gate` | テスト品質ゲート | 無効 |
+| `quality_gate` | `audit` / `quality-gates` 共有の品質ゲート設定 | 有効 |
 | `kpi_scorecard` | KPI スコアカード生成 | 有効 |
-| `tmux_monitoring` | tmux サブエージェント監視 | 無効 |
+| `context_optimization` | 大きすぎる読み込みや `cat` 利用の抑制 | 有効 |
 
 ---
 
@@ -353,7 +348,20 @@ proxy:
   host: "127.0.0.1"
   pid_file: ".claude/.mcp-proxy.pid"
   startup_timeout: 10
+  idle_timeout: 300       # active client が 0 の状態が続いたら supervisor が自動停止する秒数
 ```
+
+補足:
+
+- `proxy.enabled: true` は proxy-only を意味する。proxy 未 ready でも stdio fallback は行わない
+- URL は `host + derived port + fixed path` で決定される
+  - Claude Code / Gemini CLI: `/sse`
+  - Codex CLI: `/mcp`
+- 外側の固定ポートは supervisor が listen し、inner `mcp-proxy` は一時ポートで起動する
+- `idle_timeout` は `active_clients == 0` が続いたときの supervisor 自動停止秒数。`0` で無効化できる
+- runtime state は設定ファイルに書かず、`.claude/state/cocoindex-proxy.json` と `.claude/state/cocoindex-sessions/<session_id>.json` に保存する
+- `proxy_state` は `starting` / `ready` / `idle` / `stopping` / `stopped` / `failed`
+- 初回 session では proxy warmup 完了後に `/mcp` reconnect が必要になる場合がある
 
 ---
 
@@ -435,7 +443,9 @@ args:
 |---------|--------------|
 | cli-tools.yaml | 次回のエージェント呼び出し時（即時） |
 | cli-tools.local.yaml | 次回のエージェント呼び出し時（即時） |
-| orchestration-flags.json | 次回の hook 発火時（即時） |
-| cocoindex.yaml | 次回セッション開始時（SessionStart hook） |
+| audit-flags.json | 次回の hook 発火時（即時） |
+| cocoindex.yaml | 次回セッション開始時の reconcile（SessionStart hook） |
 | task-memory.yaml | 次回セッション開始時（SessionStart hook） |
 | ベースファイル全般 | SessionStart 時に `sync-orchestra.py` で自動同期 |
+
+`cocoindex` の proxy runtime state は即時反映で更新されるが、これは設定反映ではなく `.claude/state/` 配下の内部状態として扱う。

@@ -18,6 +18,7 @@ reviews:
     drafts: false
     base_branches:
       - "main"
+      - "stage"
 
   # レビュー対象/除外パス
   # ! プレフィックスで除外

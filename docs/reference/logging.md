@@ -1,35 +1,41 @@
 # ログ仕様
 
-このドキュメントは、`ai-orchestra` が出力するログ/集計ファイルの役割を整理したものです。  
-対象時点: 2026-04-09
+このドキュメントは、`ai-orchestra` の現行ログ構成を整理したものです。
+対象時点: 2026-04-14
 
-## 1. 主要ログ一覧
+## 1. 主要ログ / 状態ファイル
 
-| ファイル | 主な出力元 | 役割 | 主な参照先 |
+| パス | 主な出力元 | 役割 | 主な参照先 |
 |---|---|---|---|
-| `.claude/logs/cli-tools.jsonl` | `packages/cli-logging/hooks/log-cli-tools.py` | Codex/Gemini CLI 実行履歴（prompt/response/model/success） | `packages/cli-logging/scripts/analyze-cli-usage.py` |
-| `.claude/logs/orchestration/events.jsonl` | `packages/core/hooks/log_common.py` 経由（`expected-route` / `route-audit` / `log-cli-tools`） | 統一イベントログ（時系列可視化用） | `packages/route-audit/scripts/log-viewer.py`, `packages/route-audit/scripts/dashboard.py` |
-| `.claude/logs/orchestration/expected-routes.jsonl` | `packages/route-audit/hooks/orchestration-expected-route.py` | プロンプトごとの期待ルート判定履歴 | 監査時の詳細確認（手動） |
-| `.claude/logs/orchestration/route-audit.jsonl` | `packages/route-audit/hooks/orchestration-route-audit.py` | 期待ルートと実際ルートの監査結果 | `packages/route-audit/scripts/orchestration-kpi-report.py` |
-| `.claude/logs/orchestration/quality-gate.jsonl` | `packages/route-audit/hooks/orchestration-route-audit.py`（テストコマンド検知時） | テスト結果ベースの品質ゲート履歴 | `packages/route-audit/scripts/orchestration-kpi-report.py` |
-| `.claude/logs/orchestration/agent-trace.jsonl` | `packages/route-audit/hooks/orchestration-expected-route.py`, `packages/route-audit/hooks/orchestration-route-audit.py` | ルーティング関連イベントの生トレース | 監査時の詳細確認（手動） |
+| `.claude/logs/audit/sessions/<session_id>.jsonl` | `packages/audit/hooks/event_logger.py` 経由（`audit-*` hook 全般） | セッション単位の統一監査イベントログ | `packages/audit/scripts/log-viewer.py`, `dashboard.py`, `dashboard-html.py`, `kpi-report.py`, `analyze-cli-usage.py` |
+| `.claude/state/audit-trace.json` | `audit-bootstrap.py`, `audit-prompt.py` | 現在のトレース ID / expected route の受け渡し | `audit-route.py`, `audit-cli.py`, `audit-instructions-loaded.py` |
+| `.claude/state/audit-subagent-<agent_id>.json` | `audit-subagent-start.py` | サブエージェント固有のトレース状態 | `audit-subagent-end.py` |
 
-## 2. 集計/出力ファイル
+worktree 環境では、監査ログは root worktree 側の `.claude/logs/audit/` に集約されます。
 
-| ファイル | 生成元 | 役割 |
+## 2. 主なイベント種別
+
+| type | 主な出力元 | 用途 |
 |---|---|---|
-| `.claude/logs/orchestration/scorecard.json` | `packages/route-audit/scripts/orchestration-kpi-report.py --json-out` | KPI スコアカードの機械可読出力 |
-| `.claude/logs/orchestration/scorecard.md` | `packages/route-audit/scripts/orchestration-kpi-report.py --out` | KPI スコアカードの Markdown 出力（既定値） |
-| `.claude/logs/cli-usage-*.csv` | `packages/cli-logging/scripts/analyze-cli-usage.py --export` | CLI 利用状況の CSV エクスポート |
+| `session_start` / `session_end` | `audit-bootstrap.py`, `audit-session-end.py` | セッション開始 / 終了の集計 |
+| `prompt` | `audit-prompt.py` | expected route と入力抜粋の記録 |
+| `route_decision` | `audit-route.py` | expected / actual route の照合 |
+| `quality_gate` | `packages/quality-gates/hooks/post-test-analysis.py` | テストコマンド実行結果の記録 |
+| `cli_call` | `audit-cli.py` | Codex / Gemini CLI 呼び出しの記録 |
+| `subagent_start` / `subagent_end` | `audit-subagent-start.py`, `audit-subagent-end.py` | サブエージェントのライフサイクル |
+| `instructions_loaded` | `audit-instructions-loaded.py` | 読み込まれた指示書の監査 |
 
-## 3. 使い分け
+## 3. 集計と確認
 
-- Codex/Gemini の利用状況を見たい: `.claude/logs/cli-tools.jsonl`
-- ルーティング精度を評価したい: `route-audit.jsonl` + `quality-gate.jsonl`（`orchestration-kpi-report.py`）
-- 全体時系列を確認したい: `events.jsonl`（`log-viewer.py` / `dashboard.py`）
-- ルーティングの詳細調査をしたい: `agent-trace.jsonl` / `expected-routes.jsonl`
+- 全体を時系列で確認する: `orchex run audit log-viewer`
+- ルーティング精度を見る: `prompt` と `route_decision` を `log-viewer` / `kpi-report` で確認
+- CLI 利用状況を見る: `orchex run audit analyze-cli-usage`
+- セッション全体を俯瞰する: `orchex run audit dashboard`
+- HTML で共有する: `orchex run audit dashboard-html -- -o dashboard.html`
 
-## 4. 既知の差異・注意点
+`kpi-report.py` や `dashboard-html.py` の出力ファイル名は固定ではなく、呼び出し側が `--output` / `-o` で指定します。
 
-- `dashboard.py` は `events.jsonl` の `session_start` / `session_end` / `quality_gate` も集計対象にしますが、現行フックではこれらイベント出力が限定的です。
-- `packages/route-audit/hooks/orchestration-bootstrap.py` は `.claude/state/agent-trace.jsonl` を touch しますが、実際のトレース追記先は `.claude/logs/orchestration/agent-trace.jsonl` です。
+## 4. 補足
+
+- 旧 `route-audit` / `cli-logging` 系の個別 JSONL は現行実装では使っていません。
+- 監査ログの正本は `audit` パッケージのセッション単位 JSONL です。
