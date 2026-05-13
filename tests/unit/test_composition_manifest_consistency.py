@@ -21,7 +21,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 def _composition_names(comp_type: str) -> list[str]:
     comp_dir = REPO_ROOT / "facets" / "compositions" / comp_type
     names: list[str] = []
-    for path in sorted(comp_dir.glob("*.yaml")):
+    for path in sorted(comp_dir.rglob("*.yaml")):
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
         if isinstance(data, dict):
             name = data.get("name")

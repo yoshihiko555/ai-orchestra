@@ -350,11 +350,22 @@ class FacetBuilder:
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dst)
 
+            seen_script_basenames: set[str] = set()
             for sname in composition.get("scripts", []):
                 src = self.resolve_script(sname)
                 # Flatten to basename so subdirectory-organized sources land in scripts/ flat
                 # (matches Claude Code's expected `.claude/skills/<name>/scripts/<file>` layout)
-                dst = skill_dir / "scripts" / Path(sname).name
+                basename = Path(sname).name
+                # Detect basename collisions to prevent silent overwrites when paths like
+                # `a/run.py` and `b/run.py` flatten to the same destination
+                if basename in seen_script_basenames:
+                    print(
+                        f"エラー: composition.scripts に basename 重複があります: {basename}",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+                seen_script_basenames.add(basename)
+                dst = skill_dir / "scripts" / basename
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dst)
 
