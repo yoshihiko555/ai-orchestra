@@ -15,8 +15,6 @@ includes:
     vars:
       ORCHESTRA_DIR: "{{.ORCHESTRA_DIR}}"
   rel:
+    # ADR-022: stage 廃止により main 直 PR + 直タグ方式（STAGE_BRANCH は渡さない）
     taskfile: ~/ghq/github.com/yoshihiko555/.github/taskfiles/release.yml
     flatten: true
-    vars:
-      # ADR-020: stage 経由フローを採用。release/* を stage と main の両方に並列 PR で出す
-      STAGE_BRANCH: stage
