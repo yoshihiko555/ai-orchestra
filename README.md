@@ -36,6 +36,38 @@ Claude Code (Orchestrator)
 - **Skills/Rules**: `facets/` の composition 定義から `facet build` で SKILL.md / ルール .md を自動生成
 - **CLI Scripts**: `$AI_ORCHESTRA_DIR/packages/{pkg}/scripts/` を直接実行
 
+`$AI_ORCHESTRA_DIR` は「配布元リポジトリへのポインタ」であり、hook は起動のたびにこのパスを直接実行する。  
+通常は `~/.claude/settings.json` の `env.AI_ORCHESTRA_DIR` がメインディレクトリ（安定版 main）を指す。
+
+### 開発・検証フロー（メンテナ向け）
+
+feature 開発は `git worktree add` で別ディレクトリに切り出す。メインディレクトリは **常に main 固定**で、ここではブランチを切り替えない。
+
+```bash
+# feature ブランチを worktree で作成
+git worktree add ../ai-orchestra-feat-X -b feature/X origin/main
+```
+
+検証時は `AI_ORCHESTRA_DIR` と `OCHE_ROOT` の **2 変数を同時に**インライン上書きして起動する。  
+この起動セッションだけ feature 版の hooks/skills/agents で動き、ウィンドウを閉じれば次回起動から安定版（main）に自動復帰する。
+
+```bash
+# 検証用プロジェクトのディレクトリで実行
+OCHE_ROOT=~/ghq/.../ai-orchestra-feat-X \
+AI_ORCHESTRA_DIR=~/ghq/.../ai-orchestra-feat-X claude
+```
+
+> **注意**: `AI_ORCHESTRA_DIR`（hooks/sync が参照）と `OCHE_ROOT`（手動 `orche` コマンド）は独立して解決される。片方だけ上書きすると `orche sync` 実行時に安定版から sync され検証環境が汚染される。2 変数は必ず同時に指定すること。  
+> 2 変数の同時指定を 1 コマンドに集約する `orche-validate <worktree>` wrapper の追加を推奨する。
+
+検証後、PR を main へ squash merge して worktree を削除する:
+
+```bash
+gh pr create --base main --title "feat: X"
+# squash merge 後
+git worktree remove ../ai-orchestra-feat-X
+```
+
 ---
 
 ## セットアップ
@@ -323,3 +355,21 @@ cd ai-orchestra && git pull
 | Hook スクリプト修正      | アップグレード後、即反映                            |
 | Skills/Agents/Rules 修正 | アップグレード後、次回 Claude Code 起動時に自動同期 |
 | 新フックイベント追加     | アップグレード + `orchex install` 再実行            |
+
+### リリース手順（メンテナ向け）
+
+ブランチは main 一本。stage を経由しない（ADR-022）。
+
+```bash
+# 1. リリース用 worktree を作成
+git worktree add ../ai-orchestra-release -b release/vX.Y.Z origin/main
+
+# 2. CHANGELOG.md の Unreleased を vX.Y.Z セクションへフラッシュしてコミット
+#    （../ai-orchestra-release 内で編集）
+
+# 3. リリース PR を作成して squash merge
+task release VERSION=vX.Y.Z
+
+# 4. マージ確認 → main を pull → タグ push → GitHub Actions が Release 生成
+task release:complete VERSION=vX.Y.Z
+```
