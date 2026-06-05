@@ -1,0 +1,13 @@
+{
+  "name": "image-generation",
+  "version": "0.1.0",
+  "description": "Codex 組み込み image_gen による画像生成（/image-gen スキル + image-generator エージェント）",
+  "depends": ["core"],
+  "hooks": {},
+  "files": [],
+  "skills": ["image-gen"],
+  "agents": ["agents/image-generator.md"],
+  "rules": [],
+  "scripts": [],
+  "config": ["config/image-generation.yaml"]
+}

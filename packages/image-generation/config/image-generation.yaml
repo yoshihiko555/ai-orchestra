@@ -1,0 +1,8 @@
+# image-generation パッケージ設定
+#
+# image-generator エージェントが参照する画像生成専用モデル。
+# Codex 組み込み image_gen は ChatGPT 認証で動くため OPENAI_API_KEY 不要。
+# 注意: codex.model（gpt-5.3-codex 等）は image_gen 非対応のため、ここで
+#       image_gen 対応モデルを指定する。差し替えはこのキーで行う。
+# 上書きは .claude/config/image-generation/image-generation.local.yaml で可能。
+image_model: gpt-5.5

@@ -35,3 +35,4 @@ AI Orchestra プロジェクトの意思決定記録。
 | ADR-20260513-020 | stage → main リリースフローを squash merge + 並列 PR 方式に確定する                     | superseded | 2026-05-13 |
 | ADR-20260513-021 | stage → main リリースフローを直列方式に変更する（ADR-020 supersede）                    | superseded | 2026-05-13 |
 | ADR-20260520-022 | stage ブランチを廃止し、検証をインライン環境変数の一時上書きで行う（ADR-021 supersede） | accepted   | 2026-06-05 |
+| ADR-20260605-023 | Codex 組み込み image_gen による画像生成サブエージェントの追加                           | accepted   | 2026-06-05 |
