@@ -13,17 +13,23 @@ Claude Code から呼び出して画像を生成する。Adobe Firefly を使う
 /image-gen <プロンプト> --out <path> # 出力先を指定
 ```
 
-「画像生成して」「画像を作って」等のキーワードで agent-routing が
-`image-generator` エージェントを自動提案する。
+「画像生成して」「画像を作って」等の依頼は、`image-generator` エージェントの
+description に基づく Claude Code のネイティブ subagent dispatch で起動される
+（独自のルーティング登録は持たない）。
 
 ## 構成
 
-| 要素                    | 配置                                 | 役割                                    |
-| ----------------------- | ------------------------------------ | --------------------------------------- |
-| `/image-gen` スキル     | `facets/instructions/image-gen.md`   | プロンプト → 画像のワークフロー         |
-| `image-generator` agent | `agents/image-generator.md`          | Codex `image_gen` 呼び出し + 検証       |
-| ルーティング登録        | `agent-routing` の `cli-tools.yaml`  | `agents.image-generator`（tool: codex） |
-| 自動ルーティング        | `agent-routing` の `route_config.py` | `AGENT_TRIGGERS`                        |
+このパッケージは **自己完結** している（skill + agent + config を同梱。`core` 以外に依存しない）。
+
+| 要素                    | 配置                                                  | 役割                              |
+| ----------------------- | ----------------------------------------------------- | --------------------------------- |
+| `/image-gen` スキル     | `facets/instructions/image-gen.md`                    | プロンプト → 画像のワークフロー   |
+| `image-generator` agent | `packages/image-generation/agents/image-generator.md` | Codex `image_gen` 呼び出し + 検証 |
+| モデル設定              | `config/image-generation.yaml`                        | `image_model`（既定 `gpt-5.5`）   |
+
+> **Note**: `cli-tools.yaml` への登録や `route_config.py` の AGENT_TRIGGERS は
+> 持たない。エージェントは `codex exec` を直接呼ぶため通常の codex-delegation
+> 経路に乗らず、ルーティング登録は冗長だったため廃止した。
 
 ## 呼び出しの仕組み（要点）
 
@@ -43,8 +49,8 @@ codex exec --model gpt-5.5 --sandbox workspace-write --skip-git-repo-check --ful
    Do NOT fall back to Pillow/ImageMagick on rate limit; report failure explicitly."
 ```
 
-- モデルは `gpt-5.5` 固定（`codex.model` の `gpt-5.3-codex` は image_gen 非対応）。
-  `cli-tools.yaml` の `agents.image-generator.image_model` で差し替え可能。
+- モデルは既定 `gpt-5.5`（`gpt-5.3-codex` 等のコーディングモデルは image_gen 非対応）。
+  `config/image-generation.yaml` の `image_model` で差し替え可能。
 - レートリミットは連打由来。**1 タスク 1 回**で回避する。
 - レートリミット時に Codex が Pillow で描く代替画像（非 AI）は**検知して失敗扱い**にする。
 
@@ -55,12 +61,11 @@ codex exec --model gpt-5.5 --sandbox workspace-write --skip-git-repo-check --ful
 
 ## CLI 連携
 
-`cli-tools.yaml` の設定に従う:
+エージェントは `codex exec` を直接呼ぶ:
 
-- `codex.enabled: true` かつ `agents.image-generator.tool: codex` のとき有効
-- `codex.enabled: false` の場合、本物の AI 画像生成は利用不可（その旨を報告）
+- Codex CLI がインストール・認証済みなら有効
+- 未インストール/未認証/実行エラー時は、本物の AI 画像生成は利用不可（その旨を報告）
 
 ## 依存
 
-- `core`（hook 共通基盤）
-- `agent-routing`（`cli-tools.yaml` / `route_config.py` によるルーティング）
+- `core`（hook 共通基盤・config ローダ）

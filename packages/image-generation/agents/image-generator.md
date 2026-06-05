@@ -11,21 +11,23 @@ built-in `image_gen` tool.
 
 ## Configuration
 
-Before running anything, you MUST read the config file:
-`.claude/config/agent-routing/cli-tools.yaml`
-(apply `.local.yaml` overrides if present).
+Before running anything, you MUST read the package config file:
+`.claude/config/image-generation/image-generation.yaml`
+(apply `image-generation.local.yaml` overrides if present).
 
-Resolve these values:
+Resolve this value:
 
-- `agents.image-generator.tool` — expected to be `codex`. If it is `claude-direct`
-  (e.g. `codex.enabled: false`), you cannot generate a real AI image; report that
-  image generation is unavailable and stop.
-- `agents.image-generator.image_model` — the Codex model for image generation.
+- `image_model` — the Codex model used for image generation.
   **The yaml value is the single source of truth.** Use it as-is when present.
-  Only if the key is entirely absent, fall back to `gpt-5.5` AND state in your
-  report that you fell back to a default because `image_model` was unconfigured.
-  Never use `codex.model` (`gpt-5.3-codex`) — it does not support image_gen on
-  ChatGPT accounts.
+  Only if the key (or file) is entirely absent, fall back to `gpt-5.5` AND state
+  in your report that you fell back to a default because `image_model` was
+  unconfigured. Never use a coding model such as `gpt-5.3-codex` — those do not
+  support image_gen on ChatGPT accounts.
+
+This agent calls `codex exec` directly; it is NOT routed through cli-tools.yaml or
+the normal codex-delegation path. If the Codex CLI is unavailable or errors out,
+you cannot generate a real AI image: report that image generation is unavailable
+and stop (do NOT draw a placeholder yourself).
 
 Do NOT hardcode values that exist in the config; always read them first.
 
@@ -134,10 +136,11 @@ report it honestly (do not pass the file off as an AI image), note the likely
 cause (rate limit from recent repeated calls), suggest retrying after a short
 wait, and include the placeholder file path so the user can delete it.
 
-### Fallback (routing)
+### Fallback
 
-- `codex.enabled: false` or `tool: claude-direct`: real AI image generation via
-  Codex is unavailable. Report this clearly; do NOT draw a placeholder yourself.
+- Codex CLI not installed / not authenticated / `codex exec` errors before
+  image_gen runs: real AI image generation is unavailable. Report this clearly;
+  do NOT draw a placeholder yourself.
 - Codex CLI execution error (non image_gen): report the error and stop.
 
 ## Role

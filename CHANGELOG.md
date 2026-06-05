@@ -8,9 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- `packages/image-generation`: Claude Code から API キー不要・非対話で Codex 組み込み `image_gen`（ChatGPT 認証, 本物の AI 画像生成）を呼ぶ `/image-gen <プロンプト>` スキルと `image-generator` サブエージェントを追加。出力先デフォルトは `generated-images/`（`--out` で変更可・`.gitignore` 管理）。設計は ADR-023
-- `packages/agent-routing`: `image-generator` エージェント定義（入力サニタイズ・パス境界検証・PNG/サイズ/キーワード検証・sandbox 二層構造ポリシー）を追加し、`cli-tools.yaml` のルーティング（`tool: codex` / `sandbox: workspace-write` / `image_model: gpt-5.5`）と `route_config.py` の自動ルーティングトリガーに統合
-- `docs/adr/ADR-20260605-023.md`: Codex 画像生成統合の設計（sandbox 二層構造・呼び出し契約・モデル固定 `gpt-5.5`・リスク）を ADR として記録
+- `packages/image-generation`: Claude Code から API キー不要・非対話で Codex 組み込み `image_gen`（ChatGPT 認証, 本物の AI 画像生成）を呼ぶ `/image-gen <プロンプト>` スキルと `image-generator` サブエージェントを追加した自己完結パッケージ（`core` のみ依存）。エージェントは入力サニタイズ・出力パス境界検証・PNG/サイズ/キーワード検証・sandbox 二層構造ポリシーを内包し、CLI ログでメインコンテキストを汚さないよう生成を委譲する。モデルは `config/image-generation.yaml` の `image_model`（既定 `gpt-5.5`）。出力先デフォルトは `generated-images/`（`--out` で変更可・`.gitignore` 管理）。起動は Claude のネイティブ subagent dispatch ＋ `/image-gen` からの明示 `Task()` で行い、agent-routing への登録（`cli-tools.yaml` / `route_config.py`）は持たない。設計は ADR-023
+- `docs/adr/ADR-20260605-023.md`: Codex 画像生成統合の設計（sandbox 二層構造・呼び出し契約・モデル既定 `gpt-5.5`・自己完結パッケージ化・リスク）を ADR として記録
 
 ## [0.2.7] - 2026-05-13
 

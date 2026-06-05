@@ -136,17 +136,6 @@ AGENT_TRIGGERS: dict[str, dict[str, list[str]]] = {
         "ja": ["リアリティチェック", "本番準備", "品質確認"],
         "en": ["reality check", "production ready", "quality gate"],
     },
-    # Image Generation
-    "image-generator": {
-        "ja": ["画像生成", "画像作成", "画像を生成", "イラスト生成", "ビジュアル生成"],
-        "en": [
-            "image generation",
-            "generate image",
-            "generate an image",
-            "create image",
-            "generate illustration",
-        ],
-    },
 }
 
 # エージェント不一致時の researcher フォールバックトリガー
