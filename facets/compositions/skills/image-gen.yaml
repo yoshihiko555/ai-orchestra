@@ -1,0 +1,19 @@
+# image-gen スキルのファセット構成定義
+name: image-gen
+description: Codex 組み込み image_gen による画像生成
+
+frontmatter:
+  name: image-gen
+  description: |
+    Generate an image from a text prompt via Codex CLI's built-in image_gen skill
+    (OpenAI gpt-image, ChatGPT auth, no API key required). Delegates to the
+    image-generator subagent. Saves to generated-images/ by default; accepts
+    `--out <path>`. Use for quick images without reaching for Adobe Firefly etc.
+    Trigger: /image-gen <prompt>
+  metadata:
+    short-description: Codex image_gen による画像生成
+
+policies:
+  - cli-language
+
+instruction: image-gen

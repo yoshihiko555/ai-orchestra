@@ -29,6 +29,9 @@ env/
 # Logs
 *.log
 
+# Generated images (/image-gen output)
+generated-images/
+
 .claude/.mcp-proxy.pid
 .worktrees/
 

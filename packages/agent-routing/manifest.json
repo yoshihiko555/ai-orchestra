@@ -23,6 +23,7 @@
     "agents/docs-writer.md",
     "agents/frontend-dev.md",
     "agents/general-purpose.md",
+    "agents/image-generator.md",
     "agents/performance-reviewer.md",
     "agents/planner.md",
     "agents/prompt-engineer.md",

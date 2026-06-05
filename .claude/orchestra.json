@@ -7,6 +7,7 @@
     "core",
     "gemini-suggestions",
     "git-workflow",
+    "image-generation",
     "quality-gates",
     "reverse",
     "tmux-monitor"
@@ -26,6 +27,7 @@
     "agents/docs-writer.md",
     "agents/frontend-dev.md",
     "agents/general-purpose.md",
+    "agents/image-generator.md",
     "agents/performance-reviewer.md",
     "agents/planner.md",
     "agents/prompt-engineer.md",
@@ -47,5 +49,5 @@
     "config/core/task-memory.yaml",
     "config/git-workflow/sandbox-requirements.json"
   ],
-  "last_sync": "2026-05-12T17:00:46.776301+00:00"
+  "last_sync": "2026-06-05T10:24:09.647453+00:00"
 }

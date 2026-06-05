@@ -124,6 +124,17 @@ agents:
     tool: codex
     sandbox: workspace-write
 
+  # --- 画像生成系（Codex 組み込み image_gen）---
+  # 注意: image-generator は画像生成コマンドのみ Claude Code 側 Bash を
+  #       dangerouslyDisableSandbox で実行する（Codex の app-server 起動が
+  #       層1 sandbox に阻害されるため）。Codex 側は workspace-write のまま。
+  image-generator:
+    tool: codex
+    sandbox: workspace-write
+    # 画像生成専用モデル。codex.model（gpt-5.3-codex）は image_gen 非対応のため
+    # ここで gpt-5.5 を指定する。差し替えはこのキーで行う。
+    image_model: gpt-5.5
+
   # --- マルチツール系（状況に応じて使い分け）---
   ai-architect:
     tool: auto
