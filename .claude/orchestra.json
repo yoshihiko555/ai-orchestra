@@ -47,7 +47,8 @@
     "config/audit/delegation-policy.json",
     "config/cocoindex/cocoindex.yaml",
     "config/core/task-memory.yaml",
-    "config/git-workflow/sandbox-requirements.json"
+    "config/git-workflow/sandbox-requirements.json",
+    "config/image-generation/image-generation.yaml"
   ],
-  "last_sync": "2026-06-05T10:43:19.981427+00:00"
+  "last_sync": "2026-06-11T08:21:55.970885+00:00"
 }
