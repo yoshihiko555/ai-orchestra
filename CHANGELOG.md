@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-06-12
+
 ### Changed
 
 - **Gemini CLI → Anti-Gravity CLI（agy）移行**: Google の方針変更（Gemini CLI 廃止・Antigravity への移行）に伴い、リサーチ系 CLI 連携を `agy` に置き換え
