@@ -89,7 +89,7 @@ class TestAgentTriggersCompleteness:
 # get_agent_tool: 実 config に対する動作
 # ---------------------------------------------------------------------------
 
-_VALID_TOOLS = {"codex", "gemini", "claude-direct", "auto"}
+_VALID_TOOLS = {"codex", "antigravity", "claude-direct", "auto"}
 
 
 class TestGetAgentToolWithRealConfig:
@@ -107,8 +107,8 @@ class TestGetAgentToolWithRealConfig:
         # 実装系は codex
         for name in ["tester", "debugger", "frontend-dev", "backend-python-dev"]:
             assert agents[name]["tool"] == "codex"
-        # リサーチ系は gemini
-        assert agents["researcher"]["tool"] == "gemini"
+        # リサーチ系は antigravity
+        assert agents["researcher"]["tool"] == "antigravity"
 
 
 # ---------------------------------------------------------------------------
@@ -131,9 +131,9 @@ class TestBuildAliasesWithRealConfig:
         aliases = route_config.build_aliases(_REAL_CONFIG)
         assert "bash:codex" in aliases.get("codex", [])
 
-    def test_gemini_tool_has_bash_gemini_alias(self) -> None:
+    def test_antigravity_tool_has_bash_agy_alias(self) -> None:
         aliases = route_config.build_aliases(_REAL_CONFIG)
-        assert "bash:gemini" in aliases.get("gemini", [])
+        assert "bash:agy" in aliases.get("antigravity", [])
 
 
 # ---------------------------------------------------------------------------
@@ -179,11 +179,11 @@ class TestAgentMdFallbackConsistency:
 def _make_config(**overrides: dict) -> dict:
     """テスト用の最小 config を構築する。"""
     base: dict = {
-        "codex": {"enabled": True, "model": "gpt-5.3-codex"},
-        "gemini": {"enabled": True, "model": "gemini-2.5-pro"},
+        "codex": {"enabled": True, "model": "gpt-5.5"},
+        "antigravity": {"enabled": True, "model": "gemini-3.1-pro-high"},
         "agents": {
             "debugger": {"tool": "codex"},
-            "researcher": {"tool": "gemini"},
+            "researcher": {"tool": "antigravity"},
             "planner": {"tool": "claude-direct"},
             "ai-architect": {"tool": "auto"},
         },
@@ -216,13 +216,13 @@ class TestIsCliEnabled:
         """CLI セクション自体が存在しない場合も True（後方互換）。"""
         assert route_config.is_cli_enabled("codex", {}) is True
 
-    def test_gemini_enabled_false(self) -> None:
-        config = _make_config(gemini={"enabled": False})
-        assert route_config.is_cli_enabled("gemini", config) is False
+    def test_antigravity_enabled_false(self) -> None:
+        config = _make_config(antigravity={"enabled": False})
+        assert route_config.is_cli_enabled("antigravity", config) is False
 
-    def test_gemini_enabled_true(self) -> None:
-        config = _make_config(gemini={"enabled": True})
-        assert route_config.is_cli_enabled("gemini", config) is True
+    def test_antigravity_enabled_true(self) -> None:
+        config = _make_config(antigravity={"enabled": True})
+        assert route_config.is_cli_enabled("antigravity", config) is True
 
 
 class TestGetAgentToolFallback:
@@ -236,22 +236,22 @@ class TestGetAgentToolFallback:
         config = _make_config(codex={"enabled": True})
         assert route_config.get_agent_tool("debugger", config) == "codex"
 
-    def test_gemini_disabled_falls_back(self) -> None:
-        config = _make_config(gemini={"enabled": False})
+    def test_antigravity_disabled_falls_back(self) -> None:
+        config = _make_config(antigravity={"enabled": False})
         assert route_config.get_agent_tool("researcher", config) == "claude-direct"
 
-    def test_gemini_enabled_returns_gemini(self) -> None:
-        config = _make_config(gemini={"enabled": True})
-        assert route_config.get_agent_tool("researcher", config) == "gemini"
+    def test_antigravity_enabled_returns_antigravity(self) -> None:
+        config = _make_config(antigravity={"enabled": True})
+        assert route_config.get_agent_tool("researcher", config) == "antigravity"
 
     def test_claude_direct_unaffected(self) -> None:
         """claude-direct エージェントは CLI 無効の影響を受けない。"""
-        config = _make_config(codex={"enabled": False}, gemini={"enabled": False})
+        config = _make_config(codex={"enabled": False}, antigravity={"enabled": False})
         assert route_config.get_agent_tool("planner", config) == "claude-direct"
 
     def test_auto_unaffected(self) -> None:
         """auto エージェントはフォールバックしない（サブエージェントが動的判断）。"""
-        config = _make_config(codex={"enabled": False}, gemini={"enabled": False})
+        config = _make_config(codex={"enabled": False}, antigravity={"enabled": False})
         assert route_config.get_agent_tool("ai-architect", config) == "auto"
 
 
@@ -270,16 +270,43 @@ class TestBuildCliSuggestionDisabled:
         assert "Codex" in result
         assert "< /dev/null" in result
 
-    def test_gemini_disabled_returns_none(self) -> None:
-        config = _make_config(gemini={"enabled": False})
-        result = route_config.build_cli_suggestion("gemini", "researcher", "research", config)
+    def test_antigravity_disabled_returns_none(self) -> None:
+        config = _make_config(antigravity={"enabled": False})
+        result = route_config.build_cli_suggestion("antigravity", "researcher", "research", config)
         assert result is None
 
-    def test_gemini_enabled_returns_string(self) -> None:
-        config = _make_config(gemini={"enabled": True})
-        result = route_config.build_cli_suggestion("gemini", "researcher", "research", config)
+    def test_antigravity_enabled_returns_string(self) -> None:
+        config = _make_config(antigravity={"enabled": True})
+        result = route_config.build_cli_suggestion("antigravity", "researcher", "research", config)
         assert result is not None
-        assert "Gemini" in result
+        assert "Antigravity" in result
+        assert "agy -p" in result
+        assert "--model gemini-3.1-pro-high" in result
+
+    def test_antigravity_model_not_in_allowlist_warns(self) -> None:
+        """allowlist 未掲載 model は WARN を提案文字列に含める。"""
+        config = _make_config(
+            antigravity={
+                "enabled": True,
+                "model": "totally-bogus",
+                "model_allowlist": ["gemini-3.1-pro-high"],
+            }
+        )
+        result = route_config.build_cli_suggestion("antigravity", "researcher", "research", config)
+        assert result is not None
+        assert "[WARN]" in result
+
+    def test_antigravity_model_in_allowlist_no_warn(self) -> None:
+        config = _make_config(
+            antigravity={
+                "enabled": True,
+                "model": "gemini-3.1-pro-high",
+                "model_allowlist": ["gemini-3.1-pro-high"],
+            }
+        )
+        result = route_config.build_cli_suggestion("antigravity", "researcher", "research", config)
+        assert result is not None
+        assert "[WARN]" not in result
 
     def test_claude_direct_always_none(self) -> None:
         config = _make_config()
@@ -300,26 +327,91 @@ class TestBuildAliasesDisabled:
         aliases = route_config.build_aliases(config)
         assert "task:debugger" in aliases.get("claude-direct", [])
 
-    def test_gemini_disabled_no_bash_gemini(self) -> None:
-        config = _make_config(gemini={"enabled": False})
+    def test_antigravity_disabled_no_bash_agy(self) -> None:
+        config = _make_config(antigravity={"enabled": False})
         aliases = route_config.build_aliases(config)
-        assert "bash:gemini" not in aliases.get("gemini", [])
+        assert "bash:agy" not in aliases.get("antigravity", [])
 
-    def test_gemini_disabled_agents_move_to_claude_direct(self) -> None:
-        config = _make_config(gemini={"enabled": False})
+    def test_antigravity_disabled_agents_move_to_claude_direct(self) -> None:
+        config = _make_config(antigravity={"enabled": False})
         aliases = route_config.build_aliases(config)
         assert "task:researcher" in aliases.get("claude-direct", [])
 
     def test_both_disabled_auto_has_no_bash(self) -> None:
-        config = _make_config(codex={"enabled": False}, gemini={"enabled": False})
+        config = _make_config(codex={"enabled": False}, antigravity={"enabled": False})
         aliases = route_config.build_aliases(config)
         auto_aliases = aliases.get("auto", [])
         assert "bash:codex" not in auto_aliases
-        assert "bash:gemini" not in auto_aliases
+        assert "bash:agy" not in auto_aliases
 
     def test_both_enabled_auto_has_both_bash(self) -> None:
         config = _make_config()
         aliases = route_config.build_aliases(config)
         auto_aliases = aliases.get("auto", [])
         assert "bash:codex" in auto_aliases
-        assert "bash:gemini" in auto_aliases
+        assert "bash:agy" in auto_aliases
+
+
+# ---------------------------------------------------------------------------
+# 旧 gemini 設定（横展開先 .local.yaml 残存分）の後方互換
+# ---------------------------------------------------------------------------
+
+
+def _make_legacy_config(**overrides: dict) -> dict:
+    """旧 gemini キー形式の config（移行前の .local.yaml 相当）を構築する。"""
+    base: dict = {
+        "codex": {"enabled": True, "model": "gpt-5.5"},
+        "antigravity": {"enabled": True, "model": "gemini-3.1-pro-high"},
+        "gemini": {"enabled": True, "model": "gemini-3.1-pro-preview"},
+        "agents": {
+            "researcher": {"tool": "gemini"},
+        },
+    }
+    for key, val in overrides.items():
+        if isinstance(val, dict) and key in base and isinstance(base[key], dict):
+            base[key] = {**base[key], **val}
+        else:
+            base[key] = val
+    return base
+
+
+class TestLegacyGeminiCompat:
+    """旧 gemini 系設定が antigravity に読み替えられるか（エイリアス 3 形態）。"""
+
+    def test_normalize_rewrites_agent_tool(self) -> None:
+        """形態 1: agents.*.tool: gemini → antigravity。"""
+        config = hook_common.normalize_cli_tools_config(_make_legacy_config())
+        assert config["agents"]["researcher"]["tool"] == "antigravity"
+
+    def test_normalize_applies_legacy_disabled(self) -> None:
+        """形態 2: gemini.enabled: false → antigravity.enabled: false。"""
+        config = hook_common.normalize_cli_tools_config(
+            _make_legacy_config(gemini={"enabled": False})
+        )
+        assert config["antigravity"]["enabled"] is False
+
+    def test_normalize_ignores_legacy_model(self) -> None:
+        """形態 3: gemini.model（Gemini CLI 固有値）は引き継がない。"""
+        config = hook_common.normalize_cli_tools_config(_make_legacy_config())
+        assert config["antigravity"]["model"] == "gemini-3.1-pro-high"
+
+    def test_normalize_does_not_mutate_input(self) -> None:
+        original = _make_legacy_config()
+        hook_common.normalize_cli_tools_config(original)
+        assert original["agents"]["researcher"]["tool"] == "gemini"
+
+    def test_get_agent_tool_accepts_legacy_tool_value(self) -> None:
+        """正規化前の config を直接渡しても gemini → antigravity に読み替える。"""
+        config = _make_legacy_config()
+        assert route_config.get_agent_tool("researcher", config) == "antigravity"
+
+    def test_build_cli_suggestion_accepts_legacy_tool_value(self) -> None:
+        config = _make_legacy_config()
+        result = route_config.build_cli_suggestion("gemini", "researcher", "research", config)
+        assert result is not None
+        assert "agy -p" in result
+
+    def test_build_aliases_accepts_legacy_tool_value(self) -> None:
+        config = _make_legacy_config()
+        aliases = route_config.build_aliases(config)
+        assert "task:researcher" in aliases.get("antigravity", [])

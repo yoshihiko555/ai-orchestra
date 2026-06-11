@@ -183,7 +183,7 @@ class TestRouteConfigLoadConfig:
         monkeypatch.setenv("AI_ORCHESTRA_DIR", str(REPO_ROOT))
         config = route_config.load_config({"cwd": str(REPO_ROOT)})
         assert config.get("codex", {}).get("model") == "gpt-5.5"
-        assert config.get("gemini", {}).get("model") == "gemini-3.1-pro-preview"
+        assert config.get("antigravity", {}).get("model") == "gemini-3.1-pro-high"
 
     def test_loads_agents_section(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("AI_ORCHESTRA_DIR", str(REPO_ROOT))
@@ -192,7 +192,7 @@ class TestRouteConfigLoadConfig:
         assert len(agents) >= 20
         assert agents.get("planner", {}).get("tool") == "claude-direct"
         assert agents.get("debugger", {}).get("tool") == "codex"
-        assert agents.get("researcher", {}).get("tool") == "gemini"
+        assert agents.get("researcher", {}).get("tool") == "antigravity"
 
 
 # =========================================================================
@@ -234,8 +234,9 @@ class TestRealConfigFiles:
     def test_cli_tools_yaml(self) -> None:
         config = hook_common.load_package_config("agent-routing", "cli-tools.yaml", str(REPO_ROOT))
         assert "codex" in config
-        assert "gemini" in config
+        assert "antigravity" in config
         assert "agents" in config
         assert config["codex"]["model"] == "gpt-5.5"
         assert config["codex"]["sandbox"]["analysis"] == "read-only"
-        assert config["gemini"]["model"] == "gemini-3.1-pro-preview"
+        assert config["antigravity"]["model"] == "gemini-3.1-pro-high"
+        assert config["antigravity"]["model"] in config["antigravity"]["model_allowlist"]

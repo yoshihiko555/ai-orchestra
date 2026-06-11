@@ -15,7 +15,7 @@ codex:
   # .local.yaml で codex.enabled: false にすれば CLI 未インストール環境でも利用可能
   enabled: true
   # codex exec --model <この値> で指定される
-  model: gpt-5.3-codex
+  model: gpt-5.5
   sandbox:
     # 読み取り専用: 設計相談・分析・レビュー向け（ファイル変更不可）
     analysis: read-only
@@ -27,19 +27,36 @@ codex:
   # sandbox 内で実行可能（enableWeakerNetworkIsolation: true が前提）
   requires_sandbox_disable: false
 
-# Google Gemini CLI (https://github.com/google-gemini/gemini-cli)
+# Google Antigravity CLI (https://antigravity.google) — Gemini CLI の後継
 # リサーチ・ドキュメント分析・コードベース理解・マルチモーダル処理で使用
-gemini:
-  # false にすると全 gemini エージェントが claude-direct にフォールバック
-  # .local.yaml で gemini.enabled: false にすれば CLI 未インストール環境でも利用可能
+antigravity:
+  # false にすると全 antigravity エージェントが claude-direct にフォールバック
+  # .local.yaml で antigravity.enabled: false にすれば CLI 未インストール環境でも利用可能
   enabled: true
-  # gemini -m <この値> で指定される
-  # 未指定（空文字）の場合は -m フラグを省略し CLI デフォルトモデルを使用
-  model: gemini-3.1-pro-preview
-  # gemini コマンドに常に付与するフラグ（不要なら空文字）
+  # agy -p "..." --model <この値> で指定される
+  # 未指定（空文字）の場合は --model フラグを省略し CLI デフォルトモデルを使用
+  # 注意: agy は無効な slug でも exit 0 でデフォルトモデルに黙ってフォールバックする
+  model: gemini-3.1-pro-high
+  # model の妥当性チェック用 allowlist（コマンド構築時に警告判定へ使用）
+  # agy 側のモデル追加時は .local.yaml で上書き拡張する
+  model_allowlist:
+    - gemini-3.1-pro
+    - gemini-3.1-pro-high
+    - gemini-3.1-pro-low
+    - gemini-3.5-flash-medium
+    - gemini-3.5-flash-high
+    - gemini-3.5-flash-low
+    - claude-4.6-sonnet-thinking
+    - claude-4.6-opus-thinking
+    - gpt-oss-120b-medium
+  # agy コマンドに常に付与するフラグ（不要なら空文字）
   flags: ""
-  # sandbox 内で実行可能（enableWeakerNetworkIsolation + NODE_OPTIONS + allowedDomains が前提）
+  # sandbox 内で実行可能（sandbox.excludedCommands に agy 追加が前提）
   requires_sandbox_disable: false
+
+# (移行メモ) 旧 gemini: キーは廃止。.local.yaml に残る gemini: 上書きは
+# 読み込み時に antigravity へ正規化される（enabled のみ反映、model/flags は
+# Gemini CLI 固有値のため無視）。agents.*.tool: gemini も antigravity に読み替える。
 
 # Claude Code サブエージェントの設定
 subagent:
@@ -70,11 +87,11 @@ review:
 
 # エージェントルーティング
 # 各エージェントが使用するツールを定義する。
-# tool: "codex" | "gemini" | "claude-direct" | "auto"
+# tool: "codex" | "antigravity" | "claude-direct" | "auto"
 #   - codex: Codex CLI を使用
-#   - gemini: Gemini CLI を使用
+#   - antigravity: Antigravity CLI（agy）を使用（旧値 "gemini" は読み替え）
 #   - claude-direct: 外部CLIを呼ばず自身で処理
-#   - auto: タスクに応じて codex / gemini / claude-direct を使い分け
+#   - auto: タスクに応じて codex / antigravity / claude-direct を使い分け
 agents:
   # --- レビュー・設計分析系（Claude Code 直接）---
   architect:
@@ -132,9 +149,9 @@ agents:
     tool: auto
     model: null
 
-  # --- リサーチ系（Gemini CLI）---
+  # --- リサーチ系（Antigravity CLI）---
   researcher:
-    tool: gemini
+    tool: antigravity
     model: null
 
   # --- その他（Claude Code 直接）---

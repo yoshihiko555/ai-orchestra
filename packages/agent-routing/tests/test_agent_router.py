@@ -137,15 +137,22 @@ def test_build_aliases_from_config() -> None:
         "agents": {
             "architect": {"tool": "claude-direct"},
             "debugger": {"tool": "codex"},
-            "researcher": {"tool": "gemini"},
+            "researcher": {"tool": "antigravity"},
             "general-purpose": {"tool": "auto"},
         }
     }
     aliases = route_config.build_aliases(config)
     assert "task:architect" in aliases["claude-direct"]
     assert "task:debugger" in aliases["codex"]
-    assert "task:researcher" in aliases["gemini"]
+    assert "task:researcher" in aliases["antigravity"]
     assert "task:general-purpose" in aliases["auto"]
+
+
+def test_build_aliases_legacy_gemini_tool_value() -> None:
+    """旧 tool 値 gemini は antigravity に読み替えられる。"""
+    config = {"agents": {"researcher": {"tool": "gemini"}}}
+    aliases = route_config.build_aliases(config)
+    assert "task:researcher" in aliases["antigravity"]
 
 
 def test_build_aliases_follows_config_change() -> None:
@@ -161,9 +168,9 @@ def test_build_aliases_base_aliases_present() -> None:
     """基本 aliases（bash:codex 等）は常に存在。"""
     aliases = route_config.build_aliases({})
     assert "bash:codex" in aliases["codex"]
-    assert "bash:gemini" in aliases["gemini"]
+    assert "bash:agy" in aliases["antigravity"]
     assert "bash:codex" in aliases["auto"]
-    assert "bash:gemini" in aliases["auto"]
+    assert "bash:agy" in aliases["auto"]
 
 
 # ---------------------------------------------------------------------------
@@ -187,20 +194,20 @@ def test_build_cli_suggestion_codex() -> None:
     assert "--full-auto" in result
 
 
-def test_build_cli_suggestion_gemini() -> None:
-    config = {"gemini": {"model": "gemini-2.5-pro"}}
-    result = route_config.build_cli_suggestion("gemini", "researcher", "調べて", config)
+def test_build_cli_suggestion_antigravity() -> None:
+    config = {"antigravity": {"model": "gemini-3.1-pro-high"}}
+    result = route_config.build_cli_suggestion("antigravity", "researcher", "調べて", config)
     assert result is not None
-    assert "Gemini CLI" in result
-    assert "gemini-2.5-pro" in result
-    assert "-p" in result
+    assert "Antigravity CLI" in result
+    assert "gemini-3.1-pro-high" in result
+    assert "agy -p" in result
 
 
-def test_build_cli_suggestion_gemini_no_model() -> None:
-    config = {"gemini": {"model": ""}}
-    result = route_config.build_cli_suggestion("gemini", "researcher", "調べて", config)
+def test_build_cli_suggestion_antigravity_no_model() -> None:
+    config = {"antigravity": {"model": ""}}
+    result = route_config.build_cli_suggestion("antigravity", "researcher", "調べて", config)
     assert result is not None
-    assert "-m " not in result
+    assert "--model" not in result
 
 
 def test_build_cli_suggestion_claude_direct_returns_none() -> None:
