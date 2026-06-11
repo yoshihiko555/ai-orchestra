@@ -12,9 +12,9 @@ AI Orchestra を初めて使うユーザー向けのセットアップ手順。
 | Python 3.12+ | 必須 | `orchex` CLI の実行に必要 |
 | Claude Code | 必須 | オーケストレーター本体 |
 | Codex CLI | 任意 | 深い推論（設計判断・デバッグ）に使用。未インストールでも動作する |
-| Gemini CLI | 任意 | リサーチ・マルチモーダル処理に使用。未インストールでも動作する |
+| Antigravity CLI (agy) | 任意 | リサーチ・マルチモーダル処理に使用。未インストールでも動作する |
 
-Codex / Gemini CLI が未インストールの場合、該当エージェントは自動的に Claude Code 自身（`claude-direct`）にフォールバックする。
+Codex / Antigravity CLI が未インストールの場合、該当エージェントは自動的に Claude Code 自身（`claude-direct`）にフォールバックする。
 
 ---
 
@@ -88,7 +88,7 @@ Claude Code の会話中に、タスクの種類に応じたキーワードを�
 「この機能のタスクを分解して」     → planner が提案される
 「セキュリティをレビューして」     → security-reviewer が提案される
 「Python で API を実装して」       → backend-python-dev が提案される
-「このライブラリについて調べて」   → researcher（Gemini）が提案される
+「このライブラリについて調べて」   → researcher（Antigravity）が提案される
 ```
 
 手動でエージェントを指定することもできる:
@@ -126,17 +126,17 @@ Task(subagent_type="architect", prompt="マイクロサービス構成を設計�
 
 AI Orchestra の設定はレイヤード構成で管理されている。ベース設定を `.local` ファイルで上書きできる。
 
-### Codex / Gemini のモデルを変更
+### Codex / Antigravity のモデルを変更
 
 ```yaml
 # .claude/config/agent-routing/cli-tools.local.yaml
 codex:
   model: o3-pro
-gemini:
-  model: gemini-2.5-flash
+antigravity:
+  model: gemini-3.5-flash-high
 ```
 
-### Codex / Gemini を無効化
+### Codex / Antigravity を無効化
 
 CLI が未インストールの環境では、明示的に無効化できる:
 
@@ -144,7 +144,7 @@ CLI が未インストールの環境では、明示的に無効化できる:
 # .claude/config/agent-routing/cli-tools.local.yaml
 codex:
   enabled: false
-gemini:
+antigravity:
   enabled: false
 ```
 
@@ -154,7 +154,7 @@ gemini:
 # .claude/config/agent-routing/cli-tools.local.yaml
 agents:
   researcher:
-    tool: claude-direct    # Gemini の代わりに Claude で処理
+    tool: claude-direct    # Antigravity の代わりに Claude で処理
   debugger:
     tool: claude-direct    # Codex の代わりに Claude で処理
 ```
@@ -181,9 +181,9 @@ cat .claude/orchestra.json
 cat .claude/settings.local.json | grep sync-orchestra
 ```
 
-### Codex / Gemini CLI がエラーになる
+### Codex / Antigravity CLI がエラーになる
 
-1. CLI が正しくインストールされているか確認: `codex --version` / `gemini --version`
+1. CLI が正しくインストールされているか確認: `codex --version` / `agy --version`
 2. `.local.yaml` で無効化して Claude にフォールバック:
 
 ```yaml

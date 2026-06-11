@@ -1,6 +1,6 @@
 ---
 name: ux-reviewer
-description: UX and accessibility review agent using Claude and Gemini for user experience evaluation and accessibility compliance.
+description: UX and accessibility review agent using Claude and Antigravity for user experience evaluation and accessibility compliance.
 tools: Read, Glob, Grep, Bash, WebSearch
 model: sonnet
 ---
@@ -19,7 +19,7 @@ Do NOT hardcode model names or CLI options — always refer to the config file.
 1. `agents.<agent-name>.tool` を読む
 2. tool に応じてCLIコマンドを構築:
    - `"codex"` → Codex CLI を使用
-   - `"gemini"` → Gemini CLI を使用
+   - `"antigravity"` → Antigravity CLI（agy）を使用（旧値 `"gemini"` は読み替え）
    - `"claude-direct"` → 外部CLIを呼ばず自身で処理
 3. model/sandbox/flags の解決順: `agents.<agent-name>.*` → 該当ツールの設定 → フォールバック
 
@@ -72,14 +72,14 @@ You review UX, accessibility, and design guideline compliance:
 
 cli-tools.yaml の `agents.<agent-name>.tool` に基づいてコマンドを構築する。
 
-### tool = "gemini" の場合
+### tool = "antigravity" の場合
 
 ```bash
 # ガイドライン参照・リサーチ
-gemini -m <model> -p "{research question about UX/accessibility guidelines}" 2>/dev/null
+agy -p "{research question about UX/accessibility guidelines}" --model <antigravity.model> 2>/dev/null
 
 # コードベースのUXレビュー
-gemini -m <model> -p "{UX review prompt}" --include-directories . 2>/dev/null
+agy -p "{UX review prompt}" --model <antigravity.model> --add-dir . 2>/dev/null
 ```
 
 ### tool = "codex" の場合

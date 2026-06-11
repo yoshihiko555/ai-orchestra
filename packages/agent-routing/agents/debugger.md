@@ -16,7 +16,7 @@ Do NOT hardcode model names or CLI options — always refer to the config file.
 
 ### Sandbox Policy
 
-CLI ツール（gemini / codex）は sandbox 内で直接実行する。
+CLI ツール（agy / codex）は sandbox 内で直接実行する。
 
 - エラー時は `claude-direct` にフォールバックする
 - `dangerouslyDisableSandbox` は使用しない
@@ -57,17 +57,17 @@ codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags
 
 外部CLIを呼ばず、自身の知識とツール（Read/Grep/Glob等）で処理する。
 
-### tool = "gemini" の場合
+### tool = "antigravity" の場合
 
 ```bash
 # エラー時は claude-direct にフォールバック
-gemini -m <gemini.model> -p "{debugging question}" 2>/dev/null
+agy -p "{debugging question}" --model <antigravity.model> 2>/dev/null
 ```
 
 ### フォールバック
 
 - `codex.enabled: false` または Codex CLI 実行エラー時: claude-direct として処理する
-- 設定ファイル未検出時のデフォルト: codex (model: gpt-5.3-codex, sandbox: read-only, flags: --full-auto)
+- 設定ファイル未検出時のデフォルト: codex (model: gpt-5.5, sandbox: read-only, flags: --full-auto)
 
 ## When Called
 
