@@ -38,6 +38,34 @@ from lib.sync_engine import (  # noqa: E402
     sync_packages,
 )
 
+# リネームされたパッケージの読み替え表（旧名 → 新名）
+# 横展開先の orchestra.json に旧名が残っていても自動移行する
+RENAMED_PACKAGES = {
+    "gemini-suggestions": "antigravity-suggestions",
+}
+
+
+def migrate_installed_packages(packages: list[str]) -> tuple[list[str], bool]:
+    """installed_packages の旧パッケージ名を新名に読み替える。
+
+    Args:
+        packages: orchestra.json の installed_packages。
+
+    Returns:
+        (移行後リスト, 変更有無)。重複は除去し元の順序を保つ。
+    """
+    migrated: list[str] = []
+    changed = False
+    for name in packages:
+        new_name = RENAMED_PACKAGES.get(name, name)
+        if new_name != name:
+            changed = True
+        if new_name not in migrated:
+            migrated.append(new_name)
+        else:
+            changed = True
+    return migrated, changed
+
 
 def read_hook_input() -> dict:
     """stdin から JSON を読み取って dict を返す。"""
@@ -70,7 +98,11 @@ def main() -> None:
     except (json.JSONDecodeError, OSError):
         return
 
-    installed_packages = orch.get("installed_packages", [])
+    installed_packages, packages_migrated = migrate_installed_packages(
+        orch.get("installed_packages", [])
+    )
+    if packages_migrated:
+        orch["installed_packages"] = installed_packages
     orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
 
     if not orchestra_dir:
@@ -112,6 +144,7 @@ def main() -> None:
         synced_count > 0
         or removed_count > 0
         or patched_count > 0
+        or packages_migrated
         or synced_files != prev_set
         or "synced_files" not in orch
     )
