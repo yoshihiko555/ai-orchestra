@@ -64,8 +64,8 @@ tests/                       # unit tests
 ## 指示書テンプレートの責務
 
 - `templates/context/claude.md` を編集すると `templates/project/CLAUDE.md` と `<project>/CLAUDE.md` に反映される
-- `templates/context/codex.md` は `AGENTS.md` 系、`templates/context/gemini.md` は `GEMINI.md` 系のソース
-- `templates/project/CLAUDE.md`, `templates/codex/AGENTS.md`, `templates/gemini/GEMINI.md` は generated 扱いで直接編集しない
+- `templates/context/codex.md` と `templates/context/antigravity.md` は `AGENTS.md` のソース（Codex CLI / Antigravity CLI 共用、セクション合成）
+- `templates/project/CLAUDE.md`, `templates/codex/AGENTS.md` は generated 扱いで直接編集しない
 
 ---
 

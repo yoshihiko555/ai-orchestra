@@ -20,7 +20,7 @@
    - ファイル: {対象ファイル}
    - 変更内容: {変更の概要}
 
-   codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "..." 2>/dev/null
+   codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "..." < /dev/null 2>/dev/null
 
    結果を要約して返してください。
    """)

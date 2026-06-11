@@ -68,17 +68,17 @@ class TestHookOutputForAgentDetection:
         hook_out = result.get("hookSpecificOutput", {})
         ctx = hook_out.get("additionalContext", "")
         assert "architect" in ctx
-        # claude-direct は CLI 提案なし → Codex CLI/Gemini CLI が含まれない
+        # claude-direct は CLI 提案なし → Codex CLI/Antigravity CLI が含まれない
         assert "Codex CLI" not in ctx
-        assert "Gemini CLI" not in ctx
+        assert "Antigravity CLI" not in ctx
 
-    def test_gemini_agent_includes_gemini_suggestion(self) -> None:
+    def test_antigravity_agent_includes_antigravity_suggestion(self) -> None:
         result = _run_hook("最新のライブラリについてリサーチして")
         hook_out = result.get("hookSpecificOutput", {})
         ctx = hook_out.get("additionalContext", "")
         assert "researcher" in ctx
-        assert "Gemini CLI" in ctx
-        assert "gemini" in ctx
+        assert "Antigravity CLI" in ctx
+        assert "agy" in ctx
         assert "-p" in ctx
 
     def test_hook_event_name_is_user_prompt_submit(self) -> None:
@@ -98,13 +98,13 @@ class TestResearcherFallbackTrigger:
         hook_out = result.get("hookSpecificOutput", {})
         ctx = hook_out.get("additionalContext", "")
         assert "researcher" in ctx
-        assert "Gemini CLI" in ctx
+        assert "Antigravity CLI" in ctx
 
     def test_codebase_trigger(self) -> None:
         result = _run_hook("コードベース全体を理解したい")
         hook_out = result.get("hookSpecificOutput", {})
         ctx = hook_out.get("additionalContext", "")
-        assert "Gemini CLI" in ctx
+        assert "Antigravity CLI" in ctx
         assert "researcher" in ctx
 
 

@@ -21,30 +21,28 @@ Task(subagent_type="frontend-dev", prompt="実装: ログインフォーム")
 
 ```bash
 # 設計相談・デバッグ・トレードオフ分析 — config の codex.model, codex.sandbox.analysis, codex.flags を展開
-codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "{質問}" 2>/dev/null
+codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "{質問}" < /dev/null 2>/dev/null
 
 # 実装作業 — config の codex.sandbox.implementation を使用
-codex exec --model <codex.model> --sandbox <codex.sandbox.implementation> <codex.flags> "{タスク}" 2>/dev/null
+codex exec --model <codex.model> --sandbox <codex.sandbox.implementation> <codex.flags> "{タスク}" < /dev/null 2>/dev/null
 ```
 
 **使う場面:** 設計判断、デバッグ、比較検討、レビュー
 
-### Gemini CLI（リサーチ）
+### Antigravity CLI（リサーチ）
 
 ```bash
-# config の gemini.model を -m フラグに展開して使う
+# config の antigravity.model を --model フラグに展開して使う
+# agy -p モードは stdin を待たないため < /dev/null 不要
 
 # リサーチ
-gemini -m <gemini.model> -p "{質問}" 2>/dev/null
+agy -p "{質問}" --model <antigravity.model> 2>/dev/null
 
 # コードベース分析
-gemini -m <gemini.model> -p "{質問}" --include-directories . 2>/dev/null
-
-# マルチモーダル（PDF/動画）
-gemini -m <gemini.model> -p "{プロンプト}" < /path/to/file 2>/dev/null
+agy -p "{質問}" --model <antigravity.model> --add-dir . 2>/dev/null
 ```
 
-**使う場面:** ライブラリ調査、ドキュメント検索、大規模分析、PDF/動画処理
+**使う場面:** ライブラリ調査、ドキュメント検索、大規模分析
 
 ### レビュー実行
 
@@ -66,12 +64,12 @@ gemini -m <gemini.model> -p "{プロンプト}" < /path/to/file 2>/dev/null
 
 メインオーケストレーターのコンテキストを節約するため、サブエージェント経由で実行する。
 
-| 状況 | 推奨方法 |
-|------|----------|
-| 大きな出力が予想される | サブエージェント経由 |
-| 複数の分析が必要 | 並列サブエージェント |
-| 詳細なレビュー | `/review` スキル使用 |
-| Codex/Gemini 相談 | サブエージェント経由（出力が大きい場合） |
+| 状況                   | 推奨方法                                 |
+| ---------------------- | ---------------------------------------- |
+| 大きな出力が予想される | サブエージェント経由                     |
+| 複数の分析が必要       | 並列サブエージェント                     |
+| 詳細なレビュー         | `/review` スキル使用                     |
+| Codex/Gemini 相談      | サブエージェント経由（出力が大きい場合） |
 
 ### Codex/Gemini 呼び出しパターン
 
@@ -81,7 +79,7 @@ Task(subagent_type="general-purpose", prompt="""
 Codex に設計を相談してください:
 {質問内容}
 
-codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "..." 2>/dev/null
+codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "..." < /dev/null 2>/dev/null
 
 結果を要約して返してください。
 """)
@@ -92,67 +90,71 @@ codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags
 ## 利用可能なエージェント
 
 > **Note**: 各エージェントの実行ツールは `cli-tools.yaml` の `agents.<name>.tool` で決まる。
-> 下表はロール説明であり、Codex/Gemini の固定利用を意味しない。
+> 下表はロール説明であり、Codex/Antigravity の固定利用を意味しない。
 
 ### Planning
-| Agent | Role |
-|-------|------|
-| `planner` | タスク分解・マイルストーン計画 |
-| `researcher` | 調査・情報収集 |
-| `requirements` | 要件整理・明確化 |
+
+| Agent          | Role                           |
+| -------------- | ------------------------------ |
+| `planner`      | タスク分解・マイルストーン計画 |
+| `researcher`   | 調査・情報収集                 |
+| `requirements` | 要件整理・明確化               |
 
 ### Design
-| Agent | Role |
-|-------|------|
-| `architect` | システムアーキテクチャ設計 |
-| `api-designer` | REST/GraphQL API設計 |
-| `data-modeler` | データベース・スキーマ設計 |
-| `auth-designer` | 認証・認可設計 |
-| `spec-writer` | 仕様書作成 |
+
+| Agent           | Role                       |
+| --------------- | -------------------------- |
+| `architect`     | システムアーキテクチャ設計 |
+| `api-designer`  | REST/GraphQL API設計       |
+| `data-modeler`  | データベース・スキーマ設計 |
+| `auth-designer` | 認証・認可設計             |
+| `spec-writer`   | 仕様書作成                 |
 
 ### Implementation
-| Agent | Role |
-|-------|------|
-| `frontend-dev` | React/Vue/Next.js 実装 |
-| `backend-python-dev` | Python バックエンド |
-| `backend-go-dev` | Go バックエンド |
-| `ai-architect` | AI/ML システム設計 |
-| `ai-dev` | AI 機能実装 |
-| `prompt-engineer` | プロンプト設計・最適化 |
-| `rag-engineer` | RAG パイプライン実装 |
-| `debugger` | バグ特定・修正 |
-| `tester` | テストコード作成 |
+
+| Agent                | Role                   |
+| -------------------- | ---------------------- |
+| `frontend-dev`       | React/Vue/Next.js 実装 |
+| `backend-python-dev` | Python バックエンド    |
+| `backend-go-dev`     | Go バックエンド        |
+| `ai-architect`       | AI/ML システム設計     |
+| `ai-dev`             | AI 機能実装            |
+| `prompt-engineer`    | プロンプト設計・最適化 |
+| `rag-engineer`       | RAG パイプライン実装   |
+| `debugger`           | バグ特定・修正         |
+| `tester`             | テストコード作成       |
 
 ### Review
-| Agent | Role |
-|-------|------|
-| `code-reviewer` | 可読性・保守性・バグ検出 |
-| `security-reviewer` | 脆弱性・権限・情報漏洩 |
-| `performance-reviewer` | 計算量・I/O・最適化 |
-| `spec-reviewer` | 仕様との整合性 |
-| `architecture-reviewer` | アーキテクチャ妥当性 |
-| `ux-reviewer` | UX・アクセシビリティ |
-| `docs-writer` | ドキュメント作成 |
+
+| Agent                   | Role                     |
+| ----------------------- | ------------------------ |
+| `code-reviewer`         | 可読性・保守性・バグ検出 |
+| `security-reviewer`     | 脆弱性・権限・情報漏洩   |
+| `performance-reviewer`  | 計算量・I/O・最適化      |
+| `spec-reviewer`         | 仕様との整合性           |
+| `architecture-reviewer` | アーキテクチャ妥当性     |
+| `ux-reviewer`           | UX・アクセシビリティ     |
+| `docs-writer`           | ドキュメント作成         |
 
 ### Utility
-| Agent | Role |
-|-------|------|
+
+| Agent             | Role                    |
+| ----------------- | ----------------------- |
 | `general-purpose` | 汎用タスク・外部CLI委譲 |
 
 ---
 
 ## `tool: auto` 時の使い分け目安
 
-| タスク | 推奨 |
-|--------|------|
-| 設計判断 | Codex 候補 |
-| デバッグ | Codex 候補 |
-| コード実装相談 | Codex 候補 |
-| トレードオフ分析 | Codex 候補 |
-| ライブラリ調査 | Gemini 候補 |
-| コードベース全体理解 | Gemini 候補 |
-| 最新ドキュメント検索 | Gemini 候補 |
-| PDF/動画/画像処理 | Gemini 候補 |
+| タスク               | 推奨             |
+| -------------------- | ---------------- |
+| 設計判断             | Codex 候補       |
+| デバッグ             | Codex 候補       |
+| コード実装相談       | Codex 候補       |
+| トレードオフ分析     | Codex 候補       |
+| ライブラリ調査       | Antigravity 候補 |
+| コードベース全体理解 | Antigravity 候補 |
+| 最新ドキュメント検索 | Antigravity 候補 |
 
 ---
 
@@ -161,24 +163,28 @@ codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags
 ### 新機能開発
 
 1. **計画フェーズ**
+
    ```
    Task(subagent_type="planner", prompt="計画: {機能名}")
    Task(subagent_type="researcher", prompt="調査: {関連技術}")
    ```
 
 2. **設計フェーズ**
+
    ```
    Task(subagent_type="architect", prompt="設計: {機能名}")
    Task(subagent_type="api-designer", prompt="API設計: {機能名}")
    ```
 
 3. **実装フェーズ**
+
    ```
    Task(subagent_type="backend-python-dev", prompt="実装: {機能名}")
    Task(subagent_type="tester", prompt="テスト作成: {機能名}")
    ```
 
 4. **レビューフェーズ**
+
    ```
    /review  # 全レビュアー並列実行
    ```
@@ -196,7 +202,7 @@ codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags
 - レビューは `/review` スキルで一括実行
 - 大きなタスクは `planner` で分解してから実行
 - 設計判断で迷ったら `agents.<target>.tool` を確認し、`tool: auto` の場合は Codex を候補にする
-- 調査が必要なら `agents.<target>.tool` を確認し、`tool: auto` の場合は Gemini を候補にする
+- 調査が必要なら `agents.<target>.tool` を確認し、`tool: auto` の場合は Antigravity を候補にする
 - 大きな出力が予想される CLI 呼び出しはサブエージェント経由
 
 ---

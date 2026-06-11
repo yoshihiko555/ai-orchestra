@@ -1,0 +1,9 @@
+# antigravity-delegation ルールのファセット構成定義
+name: antigravity-delegation
+description: Antigravity CLI 委譲ルール
+type: rule
+
+policies:
+  - cli-language
+
+instruction: antigravity-delegation

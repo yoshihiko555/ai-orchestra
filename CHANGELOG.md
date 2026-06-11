@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Gemini CLI → Anti-Gravity CLI（agy）移行**: Google の方針変更（Gemini CLI 廃止・Antigravity への移行）に伴い、リサーチ系 CLI 連携を `agy` に置き換え
+  - `cli-tools.yaml`: `antigravity:` セクションを新設（`model: gemini-3.1-pro-high`、`model_allowlist`、`requires_sandbox_disable: false`）、`gemini:` セクションを廃止。`agents.researcher.tool` は `antigravity` に変更
+  - 後方互換: 横展開先の `.local.yaml` に残る旧 `gemini` 設定は読み込み時に正規化（`hook_common.normalize_cli_tools_config`）。`gemini.enabled: false` は `antigravity.enabled` に反映、`agents.*.tool: gemini` は `antigravity` に読み替え、`gemini.model` は Gemini CLI 固有値のため引き継がない
+  - agy は無効なモデル slug でも exit 0 でデフォルトに黙ってフォールバックするため、コマンド提案時に `model_allowlist` と突合して `[WARN]` を付与
+  - `packages/gemini-suggestions` を `packages/antigravity-suggestions` にリネーム。hook は `suggest-antigravity-research.py`（`[Antigravity Suggestion]` 出力、`agy -p '...' --model <slug>` 提案。agy は stdin 封じ不要）
+  - 横展開先の `orchestra.json` に残る旧パッケージ名は SessionStart 時に自動移行（`sync-orchestra.py` の `RENAMED_PACKAGES` 読み替え）。旧 hook 登録は既存の hooks 同期が自動除去
+  - facets を antigravity 系にリネーム（`antigravity-system` スキル / `antigravity-delegation`・`antigravity-suggestion-compliance` ルール）。旧 gemini スキル・ルールは facet build の orphan cleanup で自動削除
+  - **`GEMINI.md` の生成・配布を廃止**: Antigravity 向け指示は `AGENTS.md` に統合（`context_files.fragments` による `codex.md` + `antigravity.md` のセクション合成。Codex CLI / Antigravity CLI 共用）。横展開先の旧 `.gemini/GEMINI.md` は生成物マーカーを確認した上で context sync 時に自動削除（手書きファイルは保持）
+  - `templates/gemini/`（GEMINI.md / settings.json / skills）と `templates/context/gemini.md` を削除
+  - cocoindex: MCP プロビジョニングのターゲットを `targets.antigravity` に改名（出力先は agy の仕様に合わせて `.gemini/settings.json` を維持。旧 `targets.gemini` の `enabled: false` は読み替え）
+  - audit: `agy -p` / `--print` / `--prompt` の呼び出しを `tool: antigravity` の `cli_call` として記録（旧 `gemini -p` 検知はレガシーログ用に残置）。checkpoint スクリプトも antigravity 集計に対応
+  - 設計判断を ADR-20260612-024 として記録
+
+### Fixed
+
+- `codex exec` の非対話実行で stdin を封じていなかった問題を修正。stdin が開いたままだと "Reading additional input from stdin..." で無限ハングするため（特にバックグラウンド実行・サブエージェント実行時）、コマンド生成 hook 4 本（`route_config.py` / `check-codex-before-write.py` / `check-codex-after-plan.py` / `post-test-analysis.py`）が提案するコマンドと、全ドキュメント・エージェント定義・テンプレートのコマンド例に `< /dev/null` を追加。`audit-cli.py` のプロンプト抽出正規表現も `< /dev/null` 付きコマンドに対応
+- `codex-delegation` ルールに「Non-Interactive 実行（MUST）」セクションを新設（stdin 封じ・タイムアウト・exit code 判定・ハング調査プロトコル。無効モデル名が 400 リトライループで無限ハングに見える事象の調査手順を含む）
+- `packages/core/tests/test_config_loading.py` のモデル期待値を実際の設定値（`gpt-5.5`）に追従
+
 ### Added
 
 - `packages/image-generation`: Claude Code から API キー不要・非対話で Codex 組み込み `image_gen`（ChatGPT 認証, 本物の AI 画像生成）を呼ぶ `/image-gen <プロンプト>` スキルと `image-generator` サブエージェントを追加した自己完結パッケージ（`core` のみ依存）。エージェントは入力サニタイズ・出力パス境界検証・PNG/サイズ/キーワード検証・sandbox 二層構造ポリシーを内包し、CLI ログでメインコンテキストを汚さないよう生成を委譲する。モデルは `config/image-generation.yaml` の `image_model`（既定 `gpt-5.5`）。出力先デフォルトは `generated-images/`（`--out` で変更可・`.gitignore` 管理）。起動は Claude のネイティブ subagent dispatch ＋ `/image-gen` からの明示 `Task()` で行い、agent-routing への登録（`cli-tools.yaml` / `route_config.py`）は持たない。設計は ADR-023

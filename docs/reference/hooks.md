@@ -73,7 +73,7 @@ Hook は Claude Code のライフサイクルイベントに応じて自動実�
 | `audit-session-end.py` | SessionEnd | — | セッション集計 + `session_end` 記録 |
 | `audit-prompt.py` | UserPromptSubmit | — | 期待ルートを予測し `prompt` を記録 |
 | `audit-route.py` | PostToolUse | 全 PostToolUse | 実ルート照合 + `route_decision` 記録 |
-| `audit-cli.py` | PostToolUse | Bash | Codex/Gemini CLI 呼び出しを `cli_call` として記録 |
+| `audit-cli.py` | PostToolUse | Bash | Codex/Antigravity CLI 呼び出しを `cli_call` として記録 |
 | `audit-subagent-start.py` | SubagentStart | — | サブエージェント開始を記録 |
 | `audit-subagent-end.py` | SubagentStop | — | サブエージェント終了を記録 |
 | `audit-instructions-loaded.py` | InstructionsLoaded | — | 読み込まれた指示書を記録 |
@@ -85,11 +85,11 @@ Hook は Claude Code のライフサイクルイベントに応じて自動実�
 | `check-codex-before-write.py` | PreToolUse | Edit/Write | `[Codex Suggestion]` を出力して Codex 相談を促す |
 | `check-codex-after-plan.py` | PostToolUse | Agent/Task | プラン完了後に Codex レビューを提案 |
 
-### gemini-suggestions
+### antigravity-suggestions
 
 | フック | イベント | 対象 | 説明 |
 |-------|---------|------|------|
-| `suggest-gemini-research.py` | PreToolUse | WebSearch/WebFetch | `[Gemini Suggestion]` を出力して Gemini リサーチを促す |
+| `suggest-antigravity-research.py` | PreToolUse | WebSearch/WebFetch | `[Antigravity Suggestion]` を出力して Antigravity リサーチを促す |
 
 ### cocoindex
 
@@ -178,20 +178,20 @@ Task(subagent_type="backend-python-dev", prompt="...")
 - `codex.enabled: false` の場合
 - 既に Codex 相談済みのファイル
 
-### suggest-gemini-research.py（gemini-suggestions）
+### suggest-antigravity-research.py（antigravity-suggestions）
 
-WebSearch/WebFetch の前に Gemini CLI でのリサーチを提案する。
+WebSearch/WebFetch の前に Antigravity CLI でのリサーチを提案する。
 
 **出力例:**
 
 ```
-[Gemini Suggestion] Consider using Gemini CLI for research:
-`gemini -m gemini-3.1-pro-preview -p "..." 2>/dev/null`
+[Antigravity Suggestion] Consider using Antigravity CLI for research:
+`agy -p "..." --model gemini-3.1-pro-high 2>/dev/null`
 ```
 
 **例外:**
 
-- `gemini.enabled: false` の場合
+- `antigravity.enabled: false` の場合（旧 `gemini.enabled: false` も後方互換で尊重）
 
 ### lint-on-save.py（quality-gates）
 
@@ -279,7 +279,7 @@ if __name__ == "__main__":
 - `Agent/Task`: `check-plan-gate.py`, `inject-shared-context.py`, `tmux-pre-task.py`
 - `Edit/Write`: `check-codex-before-write.py`
 - `Read/Grep/Bash`: `check-context-optimization.py`
-- `WebSearch/WebFetch`: `suggest-gemini-research.py`
+- `WebSearch/WebFetch`: `suggest-antigravity-research.py`
 
 ### PostToolUse
 
@@ -322,6 +322,6 @@ orchex enable codex-suggestions --project .
 # .claude/config/agent-routing/cli-tools.local.yaml
 codex:
   enabled: false    # check-codex-before-write.py の [Codex Suggestion] が抑制される
-gemini:
-  enabled: false    # suggest-gemini-research.py の [Gemini Suggestion] が抑制される
+antigravity:
+  enabled: false    # suggest-antigravity-research.py の [Antigravity Suggestion] が抑制される
 ```

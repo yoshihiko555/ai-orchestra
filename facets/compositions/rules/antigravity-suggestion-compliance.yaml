@@ -1,0 +1,8 @@
+# antigravity-suggestion-compliance ルールのファセット構成定義
+name: antigravity-suggestion-compliance
+description: Antigravity suggestion 遵守ルール
+type: rule
+
+policies: []
+
+instruction: antigravity-suggestion-compliance

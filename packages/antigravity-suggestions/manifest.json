@@ -1,0 +1,20 @@
+{
+  "name": "antigravity-suggestions",
+  "version": "0.2.0",
+  "description": "Web 検索・fetch 時の Antigravity リサーチ提案",
+  "depends": ["core"],
+  "hooks": {
+    "PreToolUse": [
+      {
+        "file": "suggest-antigravity-research.py",
+        "matcher": "WebSearch|WebFetch"
+      }
+    ]
+  },
+  "files": ["hooks/suggest-antigravity-research.py"],
+  "skills": ["antigravity-system"],
+  "agents": [],
+  "rules": ["antigravity-delegation", "antigravity-suggestion-compliance"],
+  "scripts": [],
+  "config": []
+}

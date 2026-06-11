@@ -91,6 +91,45 @@ def load_package_config(package_name: str, filename: str, project_dir: str) -> d
     return base
 
 
+def normalize_cli_tools_config(config: dict) -> dict:
+    """cli-tools.yaml の旧 gemini 系設定を antigravity に正規化する。
+
+    横展開先プロジェクトの .local.yaml に残る旧キーへの後方互換:
+
+    1. トップレベル ``gemini:`` キーの ``enabled: false`` は
+       ``antigravity.enabled`` に反映する（無効化の意図を引き継ぐ。
+       ``model`` / ``flags`` は Gemini CLI 固有値のため引き継がない）
+    2. ``agents.<name>.tool: "gemini"`` は ``"antigravity"`` に読み替える
+
+    Args:
+        config: load_package_config が返した cli-tools.yaml の dict。
+
+    Returns:
+        正規化済みの新しい dict（入力は変更しない）。
+    """
+    if not isinstance(config, dict):
+        return config
+
+    normalized = dict(config)
+
+    legacy = normalized.get("gemini")
+    if isinstance(legacy, dict) and legacy.get("enabled") is False:
+        antigravity = dict(normalized.get("antigravity") or {})
+        antigravity["enabled"] = False
+        normalized["antigravity"] = antigravity
+
+    agents = normalized.get("agents")
+    if isinstance(agents, dict):
+        new_agents: dict = {}
+        for name, cfg in agents.items():
+            if isinstance(cfg, dict) and cfg.get("tool") == "gemini":
+                cfg = {**cfg, "tool": "antigravity"}
+            new_agents[name] = cfg
+        normalized["agents"] = new_agents
+
+    return normalized
+
+
 def read_hook_input() -> dict:
     """stdin から JSON を読み取って dict を返す。"""
     try:

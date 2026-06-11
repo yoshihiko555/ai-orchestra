@@ -158,6 +158,21 @@ class TestExtractCodexPrompt:
         cmd = "echo hello"
         assert audit_cli.extract_codex_prompt(cmd) is None
 
+    def test_stdin_redirect_with_full_auto(self) -> None:
+        """--full-auto + stdin 封じ付きコマンドから抽出できることを確認する。"""
+        cmd = 'codex exec --model gpt-5.5 --full-auto "What is 2+2?" < /dev/null 2>/dev/null'
+        assert audit_cli.extract_codex_prompt(cmd) == "What is 2+2?"
+
+    def test_stdin_redirect_without_full_auto(self) -> None:
+        """--full-auto なし + stdin 封じ付きコマンドから抽出できることを確認する。"""
+        cmd = 'codex exec --model gpt-5.5 --sandbox read-only "Review this" < /dev/null 2>/dev/null'
+        assert audit_cli.extract_codex_prompt(cmd) == "Review this"
+
+    def test_stdin_redirect_nospace(self) -> None:
+        """`</dev/null` （スペースなし）でも抽出できることを確認する。"""
+        cmd = "codex exec --sandbox read-only 'Review this' </dev/null 2>/dev/null"
+        assert audit_cli.extract_codex_prompt(cmd) == "Review this"
+
 
 class TestExtractGeminiPrompt:
     """`extract_gemini_prompt` のテスト。"""
@@ -173,6 +188,30 @@ class TestExtractGeminiPrompt:
         assert audit_cli.extract_gemini_prompt(cmd) is None
 
 
+class TestExtractAntigravityPrompt:
+    """`extract_antigravity_prompt` のテスト。"""
+
+    def test_double_quotes(self) -> None:
+        """ダブルクォートで囲まれたプロンプトを抽出できることを確認する。"""
+        cmd = 'agy -p "Research topic" --model gemini-3.1-pro-high 2>/dev/null'
+        assert audit_cli.extract_antigravity_prompt(cmd) == "Research topic"
+
+    def test_single_quotes(self) -> None:
+        """シングルクォートで囲まれたプロンプトを抽出できることを確認する。"""
+        cmd = "agy -p 'Compare libraries' 2>/dev/null"
+        assert audit_cli.extract_antigravity_prompt(cmd) == "Compare libraries"
+
+    def test_print_long_flag(self) -> None:
+        """--print 形式でも抽出できることを確認する。"""
+        cmd = 'agy --print "Long form" 2>/dev/null'
+        assert audit_cli.extract_antigravity_prompt(cmd) == "Long form"
+
+    def test_no_match(self) -> None:
+        """-p フラグがない場合 None を返すことを確認する。"""
+        cmd = "agy --version"
+        assert audit_cli.extract_antigravity_prompt(cmd) is None
+
+
 class TestExtractModel:
     """`extract_model` のテスト。"""
 
@@ -185,6 +224,11 @@ class TestExtractModel:
         """gemini の -m フラグからモデル名を抽出できることを確認する。"""
         cmd = "gemini -m gemini-2.5-pro -p 'hello'"
         assert audit_cli.extract_model(cmd, tool="gemini") == "gemini-2.5-pro"
+
+    def test_antigravity_model(self) -> None:
+        """agy の --model フラグからモデル名を抽出できることを確認する。"""
+        cmd = "agy -p 'hello' --model gemini-3.1-pro-high"
+        assert audit_cli.extract_model(cmd, tool="antigravity") == "gemini-3.1-pro-high"
 
 
 class TestClassifyError:

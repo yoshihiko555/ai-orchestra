@@ -66,7 +66,7 @@ facets/
 | カテゴリ     | Instruction                                                                                                                             |
 | ------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
 | ルーティング | `agent-routing-policy`, `orchestra-usage`, `config-loading`                                                                             |
-| Codex/Gemini | `codex-delegation`, `codex-suggestion-compliance`, `codex-system`, `gemini-delegation`, `gemini-suggestion-compliance`, `gemini-system` |
+| Codex/Antigravity | `codex-delegation`, `codex-suggestion-compliance`, `codex-system`, `antigravity-delegation`, `antigravity-suggestion-compliance`, `antigravity-system` |
 | 品質         | `review`, `skill-review-policy`, `tdd`, `release-readiness`                                                                             |
 | 開発フロー   | `startproject`, `issue-create`, `issue-fix`, `preflight`                                                                                |
 | 状態管理     | `task-memory-usage`, `task-state`, `checkpointing`, `context-sharing`                                                                   |
@@ -302,9 +302,9 @@ orchex facet build --name my-skill --project .
 | `context-sharing`              | rule  | core                            | —                                        | —             |
 | `design`                       | skill | core                            | —                                        | —             |
 | `design-tracker`               | skill | quality-gates                   | —                                        | —             |
-| `gemini-delegation`            | rule  | gemini-suggestions              | cli-language                             | —             |
-| `gemini-suggestion-compliance` | rule  | gemini-suggestions              | —                                        | —             |
-| `gemini-system`                | skill | gemini-suggestions              | cli-language                             | —             |
+| `antigravity-delegation`            | rule  | antigravity-suggestions              | cli-language                             | —             |
+| `antigravity-suggestion-compliance` | rule  | antigravity-suggestions              | —                                        | —             |
+| `antigravity-system`                | skill | antigravity-suggestions              | cli-language                             | —             |
 | `issue-create`                 | skill | git-workflow                    | —                                        | —             |
 | `issue-fix`                    | skill | git-workflow                    | cli-language, pr-standards               | tiered-review |
 | `pr-create`                    | skill | git-workflow                    | cli-language, dialog-rules, pr-standards | —             |

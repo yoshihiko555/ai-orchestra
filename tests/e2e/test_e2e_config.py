@@ -12,7 +12,7 @@ from tests.conftest import REPO_ROOT, run_orchex, run_session_start
 
 # hook_common を動的にロード
 sys.path.insert(0, str(REPO_ROOT / "packages" / "core" / "hooks"))
-from hook_common import load_package_config  # noqa: E402
+from hook_common import load_package_config, normalize_cli_tools_config  # noqa: E402
 
 
 def _setup_with_config(project: Path) -> None:
@@ -65,13 +65,39 @@ class TestConfigLoading:
         config = load_package_config("agent-routing", "cli-tools.yaml", str(e2e_project))
         assert config["codex"]["enabled"] is False
 
-    def test_gemini_disabled(self, e2e_project: Path) -> None:
-        """#44: gemini.enabled: false"""
+    def test_antigravity_disabled(self, e2e_project: Path) -> None:
+        """antigravity.enabled: false"""
+        _setup_with_config(e2e_project)
+        config_dir = e2e_project / ".claude" / "config" / "agent-routing"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        (config_dir / "cli-tools.local.yaml").write_text(
+            "antigravity:\n  enabled: false\n", encoding="utf-8"
+        )
+        config = load_package_config("agent-routing", "cli-tools.yaml", str(e2e_project))
+        assert config["antigravity"]["enabled"] is False
+
+    def test_legacy_gemini_disabled_normalizes_to_antigravity(self, e2e_project: Path) -> None:
+        """#44: 旧 gemini.enabled: false の .local.yaml が antigravity に正規化される。"""
         _setup_with_config(e2e_project)
         config_dir = e2e_project / ".claude" / "config" / "agent-routing"
         config_dir.mkdir(parents=True, exist_ok=True)
         (config_dir / "cli-tools.local.yaml").write_text(
             "gemini:\n  enabled: false\n", encoding="utf-8"
         )
-        config = load_package_config("agent-routing", "cli-tools.yaml", str(e2e_project))
-        assert config["gemini"]["enabled"] is False
+        config = normalize_cli_tools_config(
+            load_package_config("agent-routing", "cli-tools.yaml", str(e2e_project))
+        )
+        assert config["antigravity"]["enabled"] is False
+
+    def test_legacy_tool_gemini_normalizes_to_antigravity(self, e2e_project: Path) -> None:
+        """旧 agents.*.tool: gemini の .local.yaml が antigravity に読み替えられる。"""
+        _setup_with_config(e2e_project)
+        config_dir = e2e_project / ".claude" / "config" / "agent-routing"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        (config_dir / "cli-tools.local.yaml").write_text(
+            "agents:\n  researcher:\n    tool: gemini\n", encoding="utf-8"
+        )
+        config = normalize_cli_tools_config(
+            load_package_config("agent-routing", "cli-tools.yaml", str(e2e_project))
+        )
+        assert config["agents"]["researcher"]["tool"] == "antigravity"

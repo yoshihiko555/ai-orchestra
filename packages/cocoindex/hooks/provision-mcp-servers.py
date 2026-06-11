@@ -206,16 +206,17 @@ def cleanup_codex(project_dir: str, server_name: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Gemini CLI (.gemini/settings.json)
+# Antigravity CLI (.gemini/settings.json)
+# agy は Gemini CLI と同じ {project}/.gemini/settings.json を継続利用する
 # ---------------------------------------------------------------------------
 
 
-def _build_gemini_entry(config: dict, proxy_enabled: bool, project_dir: str) -> dict:
-    """Gemini CLI 用の MCP サーバーエントリを構築する。"""
-    target = config.get("targets", {}).get("gemini", {})
+def _build_antigravity_entry(config: dict, proxy_enabled: bool, project_dir: str) -> dict:
+    """Antigravity CLI 用の MCP サーバーエントリを構築する。"""
+    target = config.get("targets", {}).get("antigravity", {})
 
     if proxy_enabled and not target.get("force_stdio", False):
-        return {"url": build_proxy_url("gemini", config, project_dir)}
+        return {"url": build_proxy_url("antigravity", config, project_dir)}
 
     return {
         "command": config["command"],
@@ -223,17 +224,17 @@ def _build_gemini_entry(config: dict, proxy_enabled: bool, project_dir: str) -> 
     }
 
 
-def provision_gemini(
+def provision_antigravity(
     project_dir: str, config: dict, server_name: str, proxy_enabled: bool = False
 ) -> str | None:
-    """Gemini CLI の .gemini/settings.json にエントリを追加/更新する。"""
+    """Antigravity CLI の .gemini/settings.json にエントリを追加/更新する。"""
     settings_path = os.path.join(project_dir, ".gemini", "settings.json")
     if not os.path.isfile(settings_path):
         return None
 
     data = read_json_safe(settings_path)
     servers = data.get("mcpServers", {})
-    new_entry = _build_gemini_entry(config, proxy_enabled, project_dir)
+    new_entry = _build_antigravity_entry(config, proxy_enabled, project_dir)
 
     if servers.get(server_name) == new_entry:
         return None
@@ -241,11 +242,11 @@ def provision_gemini(
     servers[server_name] = new_entry
     data["mcpServers"] = servers
     write_json(settings_path, data)
-    return "gemini"
+    return "antigravity"
 
 
-def cleanup_gemini(project_dir: str, server_name: str) -> str | None:
-    """Gemini CLI の .gemini/settings.json からエントリを削除する。"""
+def cleanup_antigravity(project_dir: str, server_name: str) -> str | None:
+    """Antigravity CLI の .gemini/settings.json からエントリを削除する。"""
     settings_path = os.path.join(project_dir, ".gemini", "settings.json")
     if not os.path.isfile(settings_path):
         return None
@@ -262,7 +263,7 @@ def cleanup_gemini(project_dir: str, server_name: str) -> str | None:
         del data["mcpServers"]
 
     write_json(settings_path, data)
-    return "gemini"
+    return "antigravity"
 
 
 # ---------------------------------------------------------------------------
@@ -292,8 +293,24 @@ def _write_text(path: str, content: str) -> None:
 TARGET_HANDLERS = {
     "claude": (provision_claude, cleanup_claude),
     "codex": (provision_codex, cleanup_codex),
-    "gemini": (provision_gemini, cleanup_gemini),
+    "antigravity": (provision_antigravity, cleanup_antigravity),
 }
+
+
+def normalize_targets(config: dict) -> dict:
+    """旧 targets.gemini（.local.yaml 残存分）を antigravity に読み替える。
+
+    無効化の意図を引き継ぐため enabled: false のみ反映する。
+    """
+    targets = config.get("targets")
+    if not isinstance(targets, dict):
+        return config
+    legacy = targets.get("gemini")
+    if not isinstance(legacy, dict) or legacy.get("enabled") is not False:
+        return config
+    antigravity = dict(targets.get("antigravity") or {})
+    antigravity["enabled"] = False
+    return {**config, "targets": {**targets, "antigravity": antigravity}}
 
 
 def _session_uses_proxy(config: dict, proxy_enabled: bool) -> bool:
@@ -312,7 +329,7 @@ def main() -> None:
         return
     session_id = str(data.get("session_id") or "")
 
-    config = load_package_config("cocoindex", "cocoindex.yaml", project_dir)
+    config = normalize_targets(load_package_config("cocoindex", "cocoindex.yaml", project_dir))
     enabled = config.get("enabled", False) if config else False
     server_name = config.get("server_name", "cocoindex-code") if config else "cocoindex-code"
 

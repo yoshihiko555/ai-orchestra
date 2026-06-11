@@ -46,7 +46,7 @@ Codex の組み込み `image_gen` は ChatGPT 認証で動くため **`OPENAI_AP
 ```bash
 codex exec --model gpt-5.5 --sandbox workspace-write --skip-git-repo-check --full-auto \
   "Generate <subject>. Save the file to <abs-path>. Use your built-in image generation tool. \
-   Do NOT fall back to Pillow/ImageMagick on rate limit; report failure explicitly."
+   Do NOT fall back to Pillow/ImageMagick on rate limit; report failure explicitly." < /dev/null
 ```
 
 - モデルは既定 `gpt-5.5`（`gpt-5.3-codex` 等のコーディングモデルは image_gen 非対応）。

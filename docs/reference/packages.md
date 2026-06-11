@@ -14,7 +14,7 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 | [quality-gates](#quality-gates)           | 実装後レビュー・テスト分析・自動 lint             | 品質         |
 | [audit](#audit)                           | 統一イベントログによる監査・CLI 記録              | 監査         |
 | [codex-suggestions](#codex-suggestions)   | ファイル編集時の Codex 相談提案                   | 提案         |
-| [gemini-suggestions](#gemini-suggestions) | Web 検索時の Gemini リサーチ提案                  | 提案         |
+| [antigravity-suggestions](#antigravity-suggestions) | Web 検索時の Antigravity リサーチ提案                  | 提案         |
 | [git-workflow](#git-workflow)             | Git/GitHub ワークフロー（Issue・PR・開発フロー）  | ワークフロー |
 | [cocoindex](#cocoindex)                   | cocoindex MCP サーバーの自動プロビジョニング      | MCP          |
 | [tmux-monitor](#tmux-monitor)             | tmux でサブエージェント出力をリアルタイム監視     | 監視         |
@@ -137,7 +137,7 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 | hook   | `audit-session-end.py`         | SessionEnd: セッション集計 + `session_end` 記録                       |
 | hook   | `audit-prompt.py`              | UserPromptSubmit: 期待ルート予測 + `prompt` 記録                      |
 | hook   | `audit-route.py`               | PostToolUse: 実ルート照合 + `route_decision` 記録                    |
-| hook   | `audit-cli.py`                 | PostToolUse(Bash): Codex/Gemini CLI 呼び出しを `cli_call` として記録  |
+| hook   | `audit-cli.py`                 | PostToolUse(Bash): Codex/Antigravity CLI 呼び出しを `cli_call` として記録  |
 | hook   | `audit-subagent-start.py`      | SubagentStart: サブエージェント開始を記録                             |
 | hook   | `audit-subagent-end.py`        | SubagentStop: サブエージェント終了を記録                              |
 | hook   | `audit-instructions-loaded.py` | InstructionsLoaded: 読み込まれた指示書を記録                          |
@@ -189,9 +189,9 @@ orchex run audit analyze-cli-usage -- --format json
 
 ---
 
-## gemini-suggestions
+## antigravity-suggestions
 
-WebSearch/WebFetch の前に Gemini CLI でのリサーチを提案する。
+WebSearch/WebFetch の前に Antigravity CLI でのリサーチを提案する。
 
 - **バージョン**: 0.1.0
 - **依存**: core
@@ -200,10 +200,10 @@ WebSearch/WebFetch の前に Gemini CLI でのリサーチを提案する。
 
 | 種別  | 名前                           | 説明                                                         |
 | ----- | ------------------------------ | ------------------------------------------------------------ |
-| hook  | `suggest-gemini-research.py`   | PreToolUse(WebSearch/WebFetch): `[Gemini Suggestion]` を出力 |
-| skill | `gemini-system`                | Gemini CLI 利用ガイド                                        |
-| rule  | `gemini-delegation`            | Gemini CLI 委譲ルール                                        |
-| rule  | `gemini-suggestion-compliance` | Gemini 提案への遵守ルール                                    |
+| hook  | `suggest-antigravity-research.py`   | PreToolUse(WebSearch/WebFetch): `[Antigravity Suggestion]` を出力 |
+| skill | `antigravity-system`                | Antigravity CLI 利用ガイド                                        |
+| rule  | `antigravity-delegation`            | Antigravity CLI 委譲ルール                                        |
+| rule  | `antigravity-suggestion-compliance` | Antigravity 提案への遵守ルール                                    |
 
 ---
 
@@ -227,7 +227,7 @@ GitHub Issue の登録・開発フロー・PR 作成を含む Git/GitHub ワー�
 
 ## cocoindex
 
-cocoindex-code MCP サーバーを Claude Code / Codex CLI / Gemini CLI に自動プロビジョニングする。
+cocoindex-code MCP サーバーを Claude Code / Codex CLI / Antigravity CLI に自動プロビジョニングする。
 
 - **バージョン**: 0.2.0
 - **依存**: core

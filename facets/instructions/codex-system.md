@@ -6,12 +6,12 @@
 
 ## Routing Rules
 
-| 条件 | 動作 |
-|------|------|
-| `agents.<target>.tool == "codex"` | Codex CLI を使用（analysis / implementation を用途で選択） |
-| `agents.<target>.tool == "claude-direct"` | Codex を強制しない |
-| `agents.<target>.tool == "gemini"` | Gemini を使用 |
-| `agents.<target>.tool == "auto"` | タスク特性で選択（深い推論・デバッグ・比較・レビューは Codex 候補） |
+| 条件                                      | 動作                                                                |
+| ----------------------------------------- | ------------------------------------------------------------------- |
+| `agents.<target>.tool == "codex"`         | Codex CLI を使用（analysis / implementation を用途で選択）          |
+| `agents.<target>.tool == "claude-direct"` | Codex を強制しない                                                  |
+| `agents.<target>.tool == "antigravity"`   | Antigravity CLI（`agy`）を使用                                      |
+| `agents.<target>.tool == "auto"`          | タスク特性で選択（深い推論・デバッグ・比較・レビューは Codex 候補） |
 
 **重要**: 「Codex は設計専用」「Codex は実装専用」などの固定役割を前提にしない。
 役割は `cli-tools.yaml` の変更で切り替わる。
@@ -40,7 +40,7 @@ Task tool parameters:
 
     codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "
     {question}
-    " 2>/dev/null
+    " < /dev/null 2>/dev/null
 
     Return CONCISE summary (recommendation + rationale).
 ```
@@ -50,30 +50,30 @@ Task tool parameters:
 For quick questions:
 
 ```bash
-codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "Brief question" 2>/dev/null
+codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "Brief question" < /dev/null 2>/dev/null
 ```
 
 ### Implementation Task (when route == codex)
 
 ```bash
-codex exec --model <codex.model> --sandbox <codex.sandbox.implementation> <codex.flags> "{implementation task}" 2>/dev/null
+codex exec --model <codex.model> --sandbox <codex.sandbox.implementation> <codex.flags> "{implementation task}" < /dev/null 2>/dev/null
 ```
 
 ### Sandbox Modes
 
-| Mode | Use Case |
-|------|----------|
-| `read-only` | 分析、レビュー、デバッグ助言 |
+| Mode              | Use Case                     |
+| ----------------- | ---------------------------- |
+| `read-only`       | 分析、レビュー、デバッグ助言 |
 | `workspace-write` | 実装、修正、リファクタリング |
 
 ## Integration with Gemini
 
-| Task | Use |
-|------|-----|
-| 外部調査が必要 | Gemini → (必要なら) Codex |
-| 実装タスクで route が codex | Codex |
-| 実装タスクで route が claude-direct | Claude direct |
-| route が auto | タスク特性で選択 |
+| Task                                | Use                       |
+| ----------------------------------- | ------------------------- |
+| 外部調査が必要                      | Gemini → (必要なら) Codex |
+| 実装タスクで route が codex         | Codex                     |
+| 実装タスクで route が claude-direct | Claude direct             |
+| route が auto                       | タスク特性で選択          |
 
 ## Why This Skill
 

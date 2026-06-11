@@ -12,7 +12,7 @@
 
 ## 1. プロジェクト概要
 
-AI Orchestra は Claude Code + Codex CLI + Gemini CLI の協調実行を管理する Python 製オーケストレーション基盤。
+AI Orchestra は Claude Code + Codex CLI + Antigravity CLI の協調実行を管理する Python 製オーケストレーション基盤。
 `orchex` CLI でパッケージ・テンプレート・スクリプトを配布・同期し、複数プロジェクトへの横展開を可能にする。
 
 - **PyPI パッケージ名**: `orchex`
@@ -52,7 +52,7 @@ ai-orchestra/
 │   ├── quality-gates/         # 自動lint・テストゲート
 │   ├── audit/                 # 統一イベントログ監査・CLI 記録
 │   ├── codex-suggestions/     # Codex 相談提案
-│   ├── gemini-suggestions/    # Gemini リサーチ提案
+│   ├── antigravity-suggestions/    # Antigravity リサーチ提案
 │   ├── cocoindex/             # MCP サーバー自動プロビジョニング
 │   ├── tmux-monitor/          # tmux サブエージェント監視
 │   └── git-workflow/        # GitHub Issue 開発フロー
@@ -68,8 +68,7 @@ ai-orchestra/
 ├── templates/                 # 配布テンプレート
 │   ├── context/               # 正本（手編集するソース）
 │   ├── project/               # 生成物 → CLAUDE.md
-│   ├── codex/                 # 生成物 → AGENTS.md
-│   └── gemini/                # 生成物 → GEMINI.md
+│   └── codex/                 # 生成物 → AGENTS.md（codex.md + antigravity.md 合成）
 │
 ├── tests/                     # ユニットテスト（27ファイル）
 ├── .claude/                   # 同期後の実行コンテキスト
@@ -182,7 +181,7 @@ core (v0.4.0)                   ← 依存なし（共通基盤）
 │   └── audit (v1.0.0)          ← core, agent-routing
 ├── quality-gates (v0.1.0)      ← core, audit
 ├── codex-suggestions (v0.1.0)  ← core
-├── gemini-suggestions (v0.1.0) ← core
+├── antigravity-suggestions (v0.1.0) ← core
 ├── cocoindex (v0.2.0)          ← core
 └── tmux-monitor (v0.2.0)       ← core
 
@@ -225,9 +224,9 @@ git-workflow (v0.1.0)         ← 依存なし（独立）
 ```
 agents.{name}.tool の値:
   codex         → Codex CLI 使用
-  gemini        → Gemini CLI 使用
+  antigravity   → Antigravity CLI（agy）使用（旧値 gemini は読み替え）
   claude-direct → Claude Code で直接処理
-  auto          → ヒューリスティクス（設計→Codex、調査→Gemini、単純→Claude）
+  auto          → ヒューリスティクス（設計→Codex、調査→Antigravity、単純→Claude）
 ```
 
 ---
@@ -259,7 +258,7 @@ PreToolUse(Agent|Task):
   - tmux-pre-task.py (tmux)              タスク実行前の準備
 
 PreToolUse(WebSearch|WebFetch):
-  - suggest-gemini-research.py (gemini)  リサーチ向きクエリで [Gemini Suggestion] 出力
+  - suggest-antigravity-research.py (antigravity)  リサーチ向きクエリで [Antigravity Suggestion] 出力
 
 PostToolUse(Edit|Write):
   - post-implementation-review.py        一定量の変更後にレビューを提案
@@ -354,8 +353,7 @@ templates/project/CLAUDE.md  (生成物・直接編集禁止)
 | 正本                | 生成先テンプレート            | プロジェクト配置先  |
 | ------------------- | ----------------------------- | ------------------- |
 | `context/claude.md` | `templates/project/CLAUDE.md` | `CLAUDE.md`         |
-| `context/codex.md`  | `templates/codex/AGENTS.md`   | `AGENTS.md`         |
-| `context/gemini.md` | `templates/gemini/GEMINI.md`  | `.gemini/GEMINI.md` |
+| `context/codex.md` + `context/antigravity.md` | `templates/codex/AGENTS.md` | `AGENTS.md` |
 
 ---
 
@@ -373,7 +371,7 @@ templates/project/CLAUDE.md  (生成物・直接編集禁止)
 
 | ファイル                   | パッケージ    | 内容                                                                    |
 | -------------------------- | ------------- | ----------------------------------------------------------------------- |
-| `cli-tools.yaml`           | agent-routing | Codex/Gemini モデル名、sandbox 設定、28 エージェントの tool 割り当て    |
+| `cli-tools.yaml`           | agent-routing | Codex/Antigravity モデル名、sandbox 設定、28 エージェントの tool 割り当て    |
 | `cocoindex.yaml`           | cocoindex     | MCP サーバー設定、proxy 設定                                            |
 | `task-memory.yaml`         | core          | Plans.md パス、タスクマーカー定義                                       |
 | `audit-flags.json`         | audit         | 機能フラグ（route_audit, quality_gate, kpi_scorecard, context_optimization） |
@@ -390,9 +388,9 @@ codex:
     implementation: workspace-write
   flags: --full-auto
 
-gemini:
+antigravity:
   enabled: true
-  model: gemini-3.1-pro-preview
+  model: gemini-3.1-pro-high
 
 subagent:
   default_model: sonnet
@@ -400,7 +398,7 @@ subagent:
 agents:
   architect: { tool: claude-direct }
   frontend-dev: { tool: codex, sandbox: workspace-write }
-  researcher: { tool: gemini }
+  researcher: { tool: antigravity }
   general-purpose: { tool: auto }
   # ... 21 more agents
 ```
@@ -439,7 +437,6 @@ agents:
 <project>/
 ├── CLAUDE.md                       # テンプレートから同期
 ├── AGENTS.md                       # テンプレートから同期
-├── .gemini/GEMINI.md               # テンプレートから同期
 ├── .mcp.json                       # MCP サーバー設定（cocoindex 利用時）
 ├── .claude/
 │   ├── orchestra.json              # インストール済みパッケージ・同期状態
@@ -470,7 +467,7 @@ agents:
 | 設定管理   | base + local override の読み込み優先順位、YAML/JSON パース       |
 | 一貫性     | manifest ↔ 実ファイル、config ↔ 生成物の整合性検証               |
 | Hook       | コンテキスト注入・キャプチャ・クリーンアップ                     |
-| CLI 検出   | `codex exec` / `gemini -p` の正規表現マッチング                  |
+| CLI 検出   | `codex exec` / `agy -p` の正規表現マッチング                  |
 | Facet      | composition 解決、policy 注入、エラーハンドリング                |
 | 同期       | agents/config の差分同期、.claudeignore 生成、agent model パッチ |
 | タスク状態 | Plans.md パース、マーカー更新、アーカイブ                        |

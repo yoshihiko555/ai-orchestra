@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-PreToolUse hook: Suggest Gemini for research tasks.
+PreToolUse hook: Suggest Antigravity for research tasks.
 
-Analyzes web search/fetch operations and suggests using Gemini CLI
+Analyzes web search/fetch operations and suggests using Antigravity CLI (agy)
 for comprehensive research with its larger context window.
 """
 
@@ -20,10 +20,10 @@ if _orchestra_dir:
     if _routing_hooks not in sys.path:
         sys.path.insert(0, _routing_hooks)
 
-from hook_common import load_package_config  # noqa: E402
+from hook_common import load_package_config, normalize_cli_tools_config  # noqa: E402
 from route_config import is_cli_enabled  # noqa: E402
 
-# Keywords that suggest deep research would benefit from Gemini
+# Keywords that suggest deep research would benefit from Antigravity
 RESEARCH_INDICATORS = [
     "documentation",
     "best practice",
@@ -42,7 +42,7 @@ RESEARCH_INDICATORS = [
     "specification",
 ]
 
-# Simple lookups that don't need Gemini
+# Simple lookups that don't need Antigravity
 SIMPLE_LOOKUP_PATTERNS = [
     "error message",
     "stack trace",
@@ -51,9 +51,12 @@ SIMPLE_LOOKUP_PATTERNS = [
     "changelog",
 ]
 
+# 複雑なリサーチとみなすクエリ長の閾値
+COMPLEX_QUERY_LENGTH = 100
 
-def should_suggest_gemini(query: str, url: str = "") -> tuple[bool, str]:
-    """Determine if Gemini should be suggested for this research."""
+
+def should_suggest_antigravity(query: str, url: str = "") -> tuple[bool, str]:
+    """Determine if Antigravity should be suggested for this research."""
     query_lower = query.lower()
     url_lower = url.lower()
     combined = f"{query_lower} {url_lower}"
@@ -66,28 +69,42 @@ def should_suggest_gemini(query: str, url: str = "") -> tuple[bool, str]:
         if indicator in combined:
             return True, f"Research involves '{indicator}'"
 
-    if len(query) > 100:
+    if len(query) > COMPLEX_QUERY_LENGTH:
         return True, "Complex research query detected"
 
     return False, ""
 
 
-def _build_gemini_command(config: dict) -> str:
-    """config から Gemini コマンド文字列を構築する。"""
-    gemini = config.get("gemini", {})
-    model = gemini.get("model", "")
-    model_flag = f"-m {model} " if model else ""
-    return f"`gemini {model_flag}-p '...' 2>/dev/null`"
+def _build_antigravity_command(config: dict) -> str:
+    """config から Antigravity コマンド文字列を構築する。
+
+    agy は無効な model slug でも exit 0 でデフォルトにフォールバックするため、
+    model_allowlist 未掲載の場合は警告を併記する。
+    """
+    antigravity = config.get("antigravity", {})
+    model = antigravity.get("model", "")
+    model_flag = f" --model {model}" if model else ""
+    command = f"`agy -p '...'{model_flag} 2>/dev/null`"
+
+    allowlist = antigravity.get("model_allowlist") or []
+    if model and allowlist and model not in allowlist:
+        command += (
+            f"\n[WARN] model '{model}' is not in antigravity.model_allowlist. "
+            "agy silently falls back to its default model for unknown slugs."
+        )
+    return command
 
 
 def main():
     try:
         data = json.load(sys.stdin)
 
-        # Gemini CLI が無効化されている場合は提案をスキップ
+        # Antigravity CLI が無効化されている場合は提案をスキップ
         project_dir = data.get("cwd", "") or os.environ.get("CLAUDE_PROJECT_DIR", "")
-        config = load_package_config("agent-routing", "cli-tools.yaml", project_dir)
-        if not is_cli_enabled("gemini", config):
+        config = normalize_cli_tools_config(
+            load_package_config("agent-routing", "cli-tools.yaml", project_dir)
+        )
+        if not is_cli_enabled("antigravity", config):
             sys.exit(0)
 
         tool_name = data.get("tool_name", "")
@@ -101,17 +118,18 @@ def main():
             url = tool_input.get("url", "")
             query = tool_input.get("prompt", "")
 
-        should_suggest, reason = should_suggest_gemini(query, url)
+        should_suggest, reason = should_suggest_antigravity(query, url)
 
         if should_suggest:
-            gemini_cmd = _build_gemini_command(config)
+            agy_cmd = _build_antigravity_command(config)
             output = {
                 "hookSpecificOutput": {
                     "hookEventName": "PreToolUse",
                     "additionalContext": (
-                        f"[Gemini Suggestion] {reason}. "
-                        "For comprehensive research, consider Gemini CLI (1M token context):\n"
-                        f"{gemini_cmd}"
+                        f"[Antigravity Suggestion] {reason}. "
+                        "For comprehensive research, consider Antigravity CLI "
+                        "(large context + Google Search grounding):\n"
+                        f"{agy_cmd}"
                     ),
                 }
             }

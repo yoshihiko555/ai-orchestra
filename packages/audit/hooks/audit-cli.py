@@ -84,6 +84,14 @@ GEMINI_EXEC_RE = re.compile(
     re.IGNORECASE,
 )
 
+ANTIGRAVITY_EXEC_RE = re.compile(
+    r"(?:^|&&|\|\||;|\|)\s*"
+    r"(?:timeout\s+\d+\s+)?"
+    r"(?:\w+=\S+\s+)*agy(?=\s|$)"
+    r"(?:(?!&&|\|\||;|\|).)*\s+(?:-p|--print|--prompt)(?=\s|$)",
+    re.IGNORECASE,
+)
+
 
 # ---------------------------------------------------------------------------
 # Prompt / model extraction
@@ -102,8 +110,8 @@ def extract_codex_prompt(command: str) -> str | None:
     patterns = [
         r'codex\s+exec\s+.*?--full-auto\s+"([^"]+)"',
         r"codex\s+exec\s+.*?--full-auto\s+'([^']+)'",
-        r'codex\s+exec\s+.*?"([^"]+)"\s*2>/dev/null',
-        r"codex\s+exec\s+.*?'([^']+)'\s*2>/dev/null",
+        r'codex\s+exec\s+.*?"([^"]+)"\s*(?:<\s*/dev/null\s*)?2>/dev/null',
+        r"codex\s+exec\s+.*?'([^']+)'\s*(?:<\s*/dev/null\s*)?2>/dev/null",
     ]
     for pattern in patterns:
         match = re.search(pattern, command, re.DOTALL)
@@ -132,12 +140,32 @@ def extract_gemini_prompt(command: str) -> str | None:
     return None
 
 
+def extract_antigravity_prompt(command: str) -> str | None:
+    """agy コマンドからプロンプトを抽出する。
+
+    Args:
+        command: Bash コマンド文字列。
+
+    Returns:
+        プロンプト文字列。検出できなければ None。
+    """
+    patterns = [
+        r'agy(?=\s|$)(?:(?!&&|\|\||;|\|).)*?\s+(?:-p|--print|--prompt)\s+"([^"]+)"',
+        r"agy(?=\s|$)(?:(?!&&|\|\||;|\|).)*?\s+(?:-p|--print|--prompt)\s+'([^']+)'",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, command, re.DOTALL)
+        if match:
+            return match.group(1).strip()
+    return None
+
+
 def extract_model(command: str, tool: str = "codex") -> str | None:
     """コマンドからモデル名を抽出する。
 
     Args:
         command: Bash コマンド文字列。
-        tool: ツール種別（"codex" または "gemini"）。
+        tool: ツール種別（"codex" / "antigravity" / "gemini"）。
 
     Returns:
         モデル名。検出できなければ None。
@@ -145,6 +173,7 @@ def extract_model(command: str, tool: str = "codex") -> str | None:
     if tool == "gemini":
         match = re.search(r"(?:^|[\s;|&])gemini\s+.*?-m\s+(\S+)", command)
         return match.group(1) if match else None
+    # codex / antigravity は --model フラグを使う
     match = re.search(r"--model\s+(\S+)", command)
     return match.group(1) if match else None
 
@@ -197,15 +226,21 @@ def main() -> None:
     output = tool_response.get("stdout", "") or tool_response.get("content", "")
 
     is_codex = bool(CODEX_EXEC_RE.search(command))
-    is_gemini = bool(GEMINI_EXEC_RE.search(command)) and not is_codex
+    is_antigravity = bool(ANTIGRAVITY_EXEC_RE.search(command)) and not is_codex
+    # gemini は移行期間中のレガシー検知（古いコマンド例・手動実行向け）
+    is_gemini = bool(GEMINI_EXEC_RE.search(command)) and not (is_codex or is_antigravity)
 
-    if not (is_codex or is_gemini):
+    if not (is_codex or is_antigravity or is_gemini):
         return
 
     if is_codex:
         tool = "codex"
         prompt = extract_codex_prompt(command)
         model = extract_model(command) or ""
+    elif is_antigravity:
+        tool = "antigravity"
+        prompt = extract_antigravity_prompt(command)
+        model = extract_model(command, tool="antigravity") or ""
     else:
         tool = "gemini"
         prompt = extract_gemini_prompt(command)
