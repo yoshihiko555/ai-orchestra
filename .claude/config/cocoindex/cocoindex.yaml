@@ -15,15 +15,19 @@ targets:
   codex:
     enabled: true
     force_stdio: false
-  gemini:
+  # Antigravity CLI（agy）。設定ファイルは Gemini CLI と同じ
+  # {project}/.gemini/settings.json を継続利用する（agy の仕様）
+  # 旧キー targets.gemini の enabled: false は読み込み時に読み替えられる
+  antigravity:
     enabled: true
     force_stdio: false
 
 # mcp-proxy 対応（v2）— .local.yaml で proxy.enabled: true にしてオプトイン
 proxy:
-  enabled: true
+  enabled: false
   port: 8792
-  port_range: 100 # project_dir ハッシュで port〜port+99 を自動割り当て。0 で固定モード
+  port_range: 100         # project_dir ハッシュで port〜port+99 を自動割り当て。0 で固定モード
   host: "127.0.0.1"
   pid_file: ".claude/.mcp-proxy.pid"
   startup_timeout: 10
+  idle_timeout: 300        # active client が 0 の状態が続いたら supervisor が自動停止する秒数
