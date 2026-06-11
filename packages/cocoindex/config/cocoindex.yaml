@@ -15,7 +15,10 @@ targets:
   codex:
     enabled: true
     force_stdio: false
-  gemini:
+  # Antigravity CLI（agy）。設定ファイルは Gemini CLI と同じ
+  # {project}/.gemini/settings.json を継続利用する（agy の仕様）
+  # 旧キー targets.gemini の enabled: false は読み込み時に読み替えられる
+  antigravity:
     enabled: true
     force_stdio: false
 

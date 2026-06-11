@@ -17,6 +17,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - facets を antigravity 系にリネーム（`antigravity-system` スキル / `antigravity-delegation`・`antigravity-suggestion-compliance` ルール）。旧 gemini スキル・ルールは facet build の orphan cleanup で自動削除
   - **`GEMINI.md` の生成・配布を廃止**: Antigravity 向け指示は `AGENTS.md` に統合（`context_files.fragments` による `codex.md` + `antigravity.md` のセクション合成。Codex CLI / Antigravity CLI 共用）。横展開先の旧 `.gemini/GEMINI.md` は生成物マーカーを確認した上で context sync 時に自動削除（手書きファイルは保持）
   - `templates/gemini/`（GEMINI.md / settings.json / skills）と `templates/context/gemini.md` を削除
+  - cocoindex: MCP プロビジョニングのターゲットを `targets.antigravity` に改名（出力先は agy の仕様に合わせて `.gemini/settings.json` を維持。旧 `targets.gemini` の `enabled: false` は読み替え）
+  - audit: `agy -p` / `--print` / `--prompt` の呼び出しを `tool: antigravity` の `cli_call` として記録（旧 `gemini -p` 検知はレガシーログ用に残置）。checkpoint スクリプトも antigravity 集計に対応
+  - 設計判断を ADR-20260612-024 として記録
 
 ### Fixed
 

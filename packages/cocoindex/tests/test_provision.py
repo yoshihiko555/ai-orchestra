@@ -3,7 +3,7 @@
 テスト対象:
 - Claude Code (.mcp.json) へのプロビジョニング・クリーンアップ
 - Codex CLI (.codex/config.toml) へのプロビジョニング・クリーンアップ
-- Gemini CLI (.gemini/settings.json) へのプロビジョニング・クリーンアップ
+- Antigravity CLI (.gemini/settings.json) へのプロビジョニング・クリーンアップ
 - 冪等性（同一入力で再実行しても変更なし）
 - TOML セクション検出（行走査方式）
 """
@@ -35,7 +35,7 @@ SAMPLE_CONFIG: dict = {
     "targets": {
         "claude": {"enabled": True, "type": "stdio"},
         "codex": {"enabled": True},
-        "gemini": {"enabled": True},
+        "antigravity": {"enabled": True},
     },
 }
 
@@ -226,19 +226,19 @@ class TestCleanupCodex:
 
 
 # =========================================================================
-# Gemini CLI (.gemini/settings.json)
+# Antigravity CLI (.gemini/settings.json)
 # =========================================================================
 
 
-class TestProvisionGemini:
+class TestProvisionAntigravity:
     def test_adds_entry(self, tmp_path: Path) -> None:
         gemini_dir = tmp_path / ".gemini"
         gemini_dir.mkdir()
         settings_path = gemini_dir / "settings.json"
         settings_path.write_text(json.dumps({"model": {"name": "gemini-2.5-pro"}}))
 
-        result = provision.provision_gemini(str(tmp_path), SAMPLE_CONFIG, SERVER_NAME)
-        assert result == "gemini"
+        result = provision.provision_antigravity(str(tmp_path), SAMPLE_CONFIG, SERVER_NAME)
+        assert result == "antigravity"
 
         data = json.loads(settings_path.read_text())
         entry = data["mcpServers"]["cocoindex-code"]
@@ -258,7 +258,7 @@ class TestProvisionGemini:
             )
         )
 
-        provision.provision_gemini(str(tmp_path), SAMPLE_CONFIG, SERVER_NAME)
+        provision.provision_antigravity(str(tmp_path), SAMPLE_CONFIG, SERVER_NAME)
 
         data = json.loads(settings_path.read_text())
         assert data["model"]["name"] == "gemini-2.5-pro"
@@ -270,16 +270,16 @@ class TestProvisionGemini:
         settings_path = gemini_dir / "settings.json"
         settings_path.write_text(json.dumps({"model": {"name": "gemini-2.5-pro"}}))
 
-        provision.provision_gemini(str(tmp_path), SAMPLE_CONFIG, SERVER_NAME)
-        result = provision.provision_gemini(str(tmp_path), SAMPLE_CONFIG, SERVER_NAME)
+        provision.provision_antigravity(str(tmp_path), SAMPLE_CONFIG, SERVER_NAME)
+        result = provision.provision_antigravity(str(tmp_path), SAMPLE_CONFIG, SERVER_NAME)
         assert result is None
 
     def test_skips_when_file_missing(self, tmp_path: Path) -> None:
-        result = provision.provision_gemini(str(tmp_path), SAMPLE_CONFIG, SERVER_NAME)
+        result = provision.provision_antigravity(str(tmp_path), SAMPLE_CONFIG, SERVER_NAME)
         assert result is None
 
 
-class TestCleanupGemini:
+class TestCleanupAntigravity:
     def test_removes_entry(self, tmp_path: Path) -> None:
         gemini_dir = tmp_path / ".gemini"
         gemini_dir.mkdir()
@@ -293,8 +293,8 @@ class TestCleanupGemini:
             )
         )
 
-        result = provision.cleanup_gemini(str(tmp_path), SERVER_NAME)
-        assert result == "gemini"
+        result = provision.cleanup_antigravity(str(tmp_path), SERVER_NAME)
+        assert result == "antigravity"
 
         data = json.loads(settings_path.read_text())
         assert "mcpServers" not in data
@@ -306,7 +306,7 @@ class TestCleanupGemini:
         settings_path = gemini_dir / "settings.json"
         settings_path.write_text(json.dumps({"model": {}}))
 
-        result = provision.cleanup_gemini(str(tmp_path), SERVER_NAME)
+        result = provision.cleanup_antigravity(str(tmp_path), SERVER_NAME)
         assert result is None
 
 
@@ -353,7 +353,7 @@ SAMPLE_CONFIG_V2: dict = {
     "targets": {
         "claude": {"enabled": True, "type": "stdio", "force_stdio": False},
         "codex": {"enabled": True, "force_stdio": False},
-        "gemini": {"enabled": True, "force_stdio": False},
+        "antigravity": {"enabled": True, "force_stdio": False},
     },
     "proxy": {
         "enabled": True,
@@ -439,25 +439,27 @@ class TestProxyModeEntries:
 
     # --- Gemini CLI: SSE ---
 
-    def test_gemini_proxy_entry(self, tmp_path: Path) -> None:
+    def test_antigravity_proxy_entry(self, tmp_path: Path) -> None:
         gemini_dir = tmp_path / ".gemini"
         gemini_dir.mkdir()
         settings_path = gemini_dir / "settings.json"
         settings_path.write_text(json.dumps({"model": {"name": "gemini-2.5-pro"}}))
 
-        provision.provision_gemini(str(tmp_path), SAMPLE_CONFIG_V2, SERVER_NAME, proxy_enabled=True)
+        provision.provision_antigravity(
+            str(tmp_path), SAMPLE_CONFIG_V2, SERVER_NAME, proxy_enabled=True
+        )
 
         data = json.loads(settings_path.read_text())
         entry = data["mcpServers"]["cocoindex-code"]
         assert entry["url"] == "http://127.0.0.1:8792/sse"
         assert "command" not in entry
 
-    def test_gemini_force_stdio(self, tmp_path: Path) -> None:
+    def test_antigravity_force_stdio(self, tmp_path: Path) -> None:
         config = {
             **SAMPLE_CONFIG_V2,
             "targets": {
                 **SAMPLE_CONFIG_V2["targets"],
-                "gemini": {"enabled": True, "force_stdio": True},
+                "antigravity": {"enabled": True, "force_stdio": True},
             },
         }
         gemini_dir = tmp_path / ".gemini"
@@ -465,7 +467,7 @@ class TestProxyModeEntries:
         settings_path = gemini_dir / "settings.json"
         settings_path.write_text(json.dumps({"model": {"name": "gemini-2.5-pro"}}))
 
-        provision.provision_gemini(str(tmp_path), config, SERVER_NAME, proxy_enabled=True)
+        provision.provision_antigravity(str(tmp_path), config, SERVER_NAME, proxy_enabled=True)
 
         data = json.loads(settings_path.read_text())
         entry = data["mcpServers"]["cocoindex-code"]
@@ -595,3 +597,41 @@ class TestMain:
         )
         assert not session_state_path.exists()
         start_mock.assert_called_once_with(config, str(project_dir))
+
+
+class TestNormalizeTargets:
+    """旧 targets.gemini（.local.yaml 残存分）の読み替え。"""
+
+    def test_legacy_gemini_disabled_propagates(self) -> None:
+        config = {
+            "targets": {
+                "antigravity": {"enabled": True},
+                "gemini": {"enabled": False},
+            }
+        }
+        normalized = provision.normalize_targets(config)
+        assert normalized["targets"]["antigravity"]["enabled"] is False
+
+    def test_legacy_gemini_enabled_true_is_ignored(self) -> None:
+        config = {
+            "targets": {
+                "antigravity": {"enabled": True},
+                "gemini": {"enabled": True},
+            }
+        }
+        normalized = provision.normalize_targets(config)
+        assert normalized["targets"]["antigravity"]["enabled"] is True
+
+    def test_no_legacy_key_is_noop(self) -> None:
+        config = {"targets": {"antigravity": {"enabled": True}}}
+        assert provision.normalize_targets(config) == config
+
+    def test_does_not_mutate_input(self) -> None:
+        config = {
+            "targets": {
+                "antigravity": {"enabled": True},
+                "gemini": {"enabled": False},
+            }
+        }
+        provision.normalize_targets(config)
+        assert config["targets"]["antigravity"]["enabled"] is True

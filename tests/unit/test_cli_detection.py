@@ -25,6 +25,14 @@ GEMINI_EXEC_RE = re.compile(
     re.IGNORECASE,
 )
 
+ANTIGRAVITY_EXEC_RE = re.compile(
+    r"(?:^|&&|\|\||;|\|)\s*"
+    r"(?:timeout\s+\d+\s+)?"
+    r"(?:\w+=\S+\s+)*agy(?=\s|$)"
+    r"(?:(?!&&|\|\||;|\|).)*\s+(?:-p|--print|--prompt)(?=\s|$)",
+    re.IGNORECASE,
+)
+
 
 # --- codex exec: 検知すべきケース ---
 
@@ -156,7 +164,71 @@ def test_gemini_not_detected(command: str) -> None:
     assert not GEMINI_EXEC_RE.search(command), f"Should NOT detect gemini -p: {command}"
 
 
-# --- is_codex が True のとき is_gemini は False になる ---
+# --- agy -p: 検知すべきケース ---
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'agy -p "research query" 2>/dev/null',
+        "agy -p 'What is 1+1?'",
+        'agy -p "with model flag" --model gemini-3.1-pro-high',
+        'agy -p "question" --add-dir . 2>/dev/null',
+        'agy --print "long form flag"',
+        'agy --prompt "alias flag"',
+        'timeout 5 agy -p "timeout prefix"',
+        'echo done && agy -p "chained"',
+        'true; agy -p "after semicolon"',
+    ],
+    ids=[
+        "basic_agy",
+        "single_quote",
+        "model_after_prompt",
+        "with_add_dir",
+        "print_long_flag",
+        "prompt_alias_flag",
+        "timeout_prefix",
+        "chained_with_and",
+        "after_semicolon",
+    ],
+)
+def test_antigravity_detected(command: str) -> None:
+    assert ANTIGRAVITY_EXEC_RE.search(command), f"Should detect agy -p: {command}"
+
+
+# --- agy: 検知してはいけないケース ---
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "agy --version",
+        "agy --help",
+        "agy models",
+        "agy update",
+        'agy --prompt-interactive "interactive session"',
+        "echo agy is great",
+        "which agy",
+        'grep "agy" config.yaml',
+        "ls -la ~/.gemini/",
+    ],
+    ids=[
+        "agy_version",
+        "agy_help",
+        "agy_models",
+        "agy_update",
+        "agy_prompt_interactive",
+        "echo_agy",
+        "which_agy",
+        "grep_agy",
+        "ls_gemini_dir",
+    ],
+)
+def test_antigravity_not_detected(command: str) -> None:
+    assert not ANTIGRAVITY_EXEC_RE.search(command), f"Should NOT detect agy -p: {command}"
+
+
+# --- 検知の優先順位 ---
 
 
 def test_codex_takes_priority_over_gemini() -> None:
@@ -166,3 +238,12 @@ def test_codex_takes_priority_over_gemini() -> None:
     is_gemini = bool(GEMINI_EXEC_RE.search(command)) and not is_codex
     assert is_codex
     assert not is_gemini
+
+
+def test_codex_takes_priority_over_antigravity() -> None:
+    """codex exec コマンドに agy が含まれていても、codex として検知される。"""
+    command = 'codex exec --full-auto "compare with agy -p approach"'
+    is_codex = bool(CODEX_EXEC_RE.search(command))
+    is_antigravity = bool(ANTIGRAVITY_EXEC_RE.search(command)) and not is_codex
+    assert is_codex
+    assert not is_antigravity
