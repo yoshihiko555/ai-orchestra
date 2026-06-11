@@ -22,6 +22,7 @@
   "config": [],
   "context_files": {
     "source": "codex.md",
+    "fragments": ["antigravity.md"],
     "template": "templates/codex/AGENTS.md",
     "init": [
       "AGENTS.md",

@@ -7,6 +7,7 @@
 ## 目的
 
 <!-- TODO: プロジェクトの目的をここに記載してください -->
+
 - <YOUR_GOAL_1>
 - <YOUR_GOAL_2>
 - <YOUR_GOAL_3>
@@ -16,6 +17,7 @@
 ## 技術スタック
 
 <!-- TODO: プロジェクトの技術スタックをここに記載してください -->
+
 - **Language**: <YOUR_LANGUAGE>
 - **Framework**: <YOUR_FRAMEWORK>
 - **Quality**: <YOUR_TEST_AND_LINT_TOOLS>
@@ -26,6 +28,7 @@
 ## 主要コマンド
 
 <!-- TODO: プロジェクト固有のコマンドをここに記載してください -->
+
 ```bash
 # 依存インストール
 <YOUR_INSTALL_COMMAND>
@@ -42,6 +45,7 @@
 ## ディレクトリ構成
 
 <!-- TODO: プロジェクトのディレクトリ構成をここに記載してください -->
+
 ```text
 <your-src>/          # メインソースコード
 <your-tests>/        # テストコード
@@ -53,8 +57,8 @@
 ## 指示書テンプレートの責務
 
 - `templates/context/claude.md` を編集すると `templates/project/CLAUDE.md` と `<project>/CLAUDE.md` に反映される
-- `templates/context/codex.md` は `AGENTS.md` 系、`templates/context/gemini.md` は `GEMINI.md` 系のソース
-- `templates/project/CLAUDE.md`, `templates/codex/AGENTS.md`, `templates/gemini/GEMINI.md` は generated 扱いで直接編集しない
+- `templates/context/codex.md` と `templates/context/antigravity.md` は `AGENTS.md` のソース（Codex CLI / Antigravity CLI 共用、セクション合成）
+- `templates/project/CLAUDE.md`, `templates/codex/AGENTS.md` は generated 扱いで直接編集しない
 
 ---
 

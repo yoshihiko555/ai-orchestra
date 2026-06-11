@@ -55,14 +55,18 @@ class OrchestraManager(ContextMixin, HooksMixin):
         self.packages_dir = orchestra_dir / "packages"
         self.use_color = sys.stdout.isatty() and os.getenv("NO_COLOR") is None
 
-    def _build_context_specs(self) -> tuple[tuple[str, str, str, str, str | None], ...]:
+    def _build_context_specs(
+        self,
+    ) -> tuple[tuple[str, tuple[str, ...], str, str, str | None], ...]:
         """manifest の context_files から CONTEXT_SPECS を動的に構築する。
 
         core は常に先頭（CLAUDE.md を最初に処理）、その他はパッケージ名の昇順。
         core の context は required_package=None で常時配布扱い。
+        context_files.fragments があれば source に続けて連結する
+        （例: AGENTS.md = codex.md + antigravity.md のセクション合成）。
         """
         packages = self.load_packages()
-        specs_with_pkg: list[tuple[str, tuple[str, str, str, str, str | None]]] = []
+        specs_with_pkg: list[tuple[str, tuple[str, tuple[str, ...], str, str, str | None]]] = []
         for pkg_name, pkg in packages.items():
             cf = pkg.context_files
             if not cf:
@@ -72,16 +76,18 @@ class OrchestraManager(ContextMixin, HooksMixin):
             sync_list = cf.get("sync") or []
             if not source or not template or not sync_list:
                 continue
+            fragments = cf.get("fragments") or []
+            sources = (source, *fragments)
             project_rel = sync_list[0]
             required: str | None = None if pkg.name == "core" else pkg.name
             name = Path(source).stem
-            specs_with_pkg.append((pkg_name, (name, source, template, project_rel, required)))
+            specs_with_pkg.append((pkg_name, (name, sources, template, project_rel, required)))
         # core first (owns claude.md), then alphabetical by package name
         specs_with_pkg.sort(key=lambda item: (0 if item[0] == "core" else 1, item[0]))
         return tuple(spec for _, spec in specs_with_pkg)
 
     @cached_property
-    def CONTEXT_SPECS(self) -> tuple[tuple[str, str, str, str, str | None], ...]:
+    def CONTEXT_SPECS(self) -> tuple[tuple[str, tuple[str, ...], str, str, str | None], ...]:
         """manifest.context_files から動的構築された context spec タプル。"""
         return self._build_context_specs()
 

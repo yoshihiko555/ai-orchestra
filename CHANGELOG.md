@@ -14,6 +14,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - agy は無効なモデル slug でも exit 0 でデフォルトに黙ってフォールバックするため、コマンド提案時に `model_allowlist` と突合して `[WARN]` を付与
   - `packages/gemini-suggestions` を `packages/antigravity-suggestions` にリネーム。hook は `suggest-antigravity-research.py`（`[Antigravity Suggestion]` 出力、`agy -p '...' --model <slug>` 提案。agy は stdin 封じ不要）
   - 横展開先の `orchestra.json` に残る旧パッケージ名は SessionStart 時に自動移行（`sync-orchestra.py` の `RENAMED_PACKAGES` 読み替え）。旧 hook 登録は既存の hooks 同期が自動除去
+  - facets を antigravity 系にリネーム（`antigravity-system` スキル / `antigravity-delegation`・`antigravity-suggestion-compliance` ルール）。旧 gemini スキル・ルールは facet build の orphan cleanup で自動削除
+  - **`GEMINI.md` の生成・配布を廃止**: Antigravity 向け指示は `AGENTS.md` に統合（`context_files.fragments` による `codex.md` + `antigravity.md` のセクション合成。Codex CLI / Antigravity CLI 共用）。横展開先の旧 `.gemini/GEMINI.md` は生成物マーカーを確認した上で context sync 時に自動削除（手書きファイルは保持）
+  - `templates/gemini/`（GEMINI.md / settings.json / skills）と `templates/context/gemini.md` を削除
 
 ### Fixed
 

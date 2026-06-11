@@ -21,7 +21,7 @@
 | `codex.enabled == false`                | Codex は呼び出さない（フォールバック方針に従う） |
 | `agents.<name>.tool == "codex"`         | Codex CLI を使用                                 |
 | `agents.<name>.tool == "claude-direct"` | 外部 CLI を呼ばず Claude で処理                  |
-| `agents.<name>.tool == "gemini"`        | Gemini CLI を使用                                |
+| `agents.<name>.tool == "antigravity"`   | Antigravity CLI（`agy`）を使用                   |
 | `agents.<name>.tool == "auto"`          | 以下の `auto` ヒューリスティクスで選択           |
 
 ## `tool: auto` ヒューリスティクス
@@ -31,7 +31,7 @@
 | タスク種別                                         | 推奨          |
 | -------------------------------------------------- | ------------- |
 | 深い推論（設計判断、デバッグ、比較検討、レビュー） | Codex         |
-| 外部調査、最新ドキュメント確認、マルチモーダル処理 | Gemini        |
+| 外部調査、最新ドキュメント確認                     | Antigravity   |
 | 単純編集、明確な単一解、テスト/lint実行            | Claude direct |
 
 ## 呼び出し方法

@@ -12,19 +12,9 @@
     ]
   },
   "files": ["hooks/suggest-antigravity-research.py"],
-  "skills": ["gemini-system"],
+  "skills": ["antigravity-system"],
   "agents": [],
-  "rules": ["gemini-delegation", "gemini-suggestion-compliance"],
+  "rules": ["antigravity-delegation", "antigravity-suggestion-compliance"],
   "scripts": [],
-  "config": [],
-  "context_files": {
-    "source": "gemini.md",
-    "template": "templates/gemini/GEMINI.md",
-    "init": [
-      ".gemini/GEMINI.md",
-      ".gemini/settings.json",
-      ".gemini/skills/context-loader/"
-    ],
-    "sync": [".gemini/GEMINI.md"]
-  }
+  "config": []
 }

@@ -1,0 +1,23 @@
+# antigravity-system スキルのファセット構成定義
+name: antigravity-system
+description: Claude Code ↔ Antigravity CLI collaboration (research)
+
+frontmatter:
+  name: antigravity-system
+  description: |
+    PROACTIVELY consult Antigravity CLI for research and large codebase comprehension.
+    Antigravity excels at: large context windows, Google Search grounding,
+    and repository-wide understanding.
+    Use for pre-implementation research, documentation analysis, and codebase exploration.
+    Explicit triggers: "research", "investigate", "agy", "antigravity", "understand codebase".
+  metadata:
+    short-description: Claude Code ↔ Antigravity CLI collaboration (research)
+
+policies:
+  - cli-language
+
+instruction: antigravity-system
+
+knowledge:
+  - lib-research-task
+  - use-cases

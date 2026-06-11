@@ -11,7 +11,7 @@ AI Orchestra のパッケージ一覧と詳細。`packages/*/agents` と `packag
 | [quality-gates](#quality-gates)           | 実装後レビュー・テスト分析・自動 lint の品質ゲート | 品質         |
 | [audit](#audit)                           | 統一イベントログによるオーケストレーション監査基盤 | 監査         |
 | [codex-suggestions](#codex-suggestions)   | ファイル編集・プラン完了時の Codex 相談提案        | 提案         |
-| [gemini-suggestions](#gemini-suggestions) | Web 検索・fetch 時の Gemini リサーチ提案           | 提案         |
+| [antigravity-suggestions](#antigravity-suggestions) | Web 検索・fetch 時の Antigravity リサーチ提案           | 提案         |
 | [git-workflow](#git-workflow)             | Git/GitHub ワークフロー（Issue・PR・開発フロー）   | ワークフロー |
 | [cocoindex](#cocoindex)                   | cocoindex MCP サーバーの自動プロビジョニング       | MCP          |
 | [tmux-monitor](#tmux-monitor)             | tmux でサブエージェント出力をリアルタイム監視      | 監視         |
@@ -87,7 +87,7 @@ AI Orchestra のパッケージ一覧と詳細。`packages/*/agents` と `packag
   - `audit-session-end.py` — SessionEnd 時にセッションサマリー記録
   - `audit-prompt.py` — UserPromptSubmit で期待ルート予測 + prompt イベント
   - `audit-route.py` — PostToolUse でルーティング監査 + quality_gate 検出
-  - `audit-cli.py` — PostToolUse:Bash で Codex/Gemini CLI 呼び出しを記録
+  - `audit-cli.py` — PostToolUse:Bash で Codex/Antigravity CLI 呼び出しを記録
   - `audit-subagent-start.py` / `audit-subagent-end.py` — サブエージェントのライフサイクル記録
 - ライブラリ: `event_logger.py`（統一スキーマ v1 + セッションローテーション）
 - scripts:
@@ -120,22 +120,19 @@ AI Orchestra のパッケージ一覧と詳細。`packages/*/agents` と `packag
 
 ---
 
-### gemini-suggestions
+### antigravity-suggestions
 
-WebSearch/WebFetch の前に Gemini CLI でのリサーチを提案し、最新情報へのアクセスを最適化する。
+WebSearch/WebFetch の前に Antigravity CLI でのリサーチを提案し、最新情報へのアクセスを最適化する。
 
 - **バージョン**: 0.1.0
 - **依存**: core
 
 **提供するもの:**
 
-- hooks: `suggest-gemini-research.py`（WebSearch/WebFetch 前に `[Gemini Suggestion]` を出力）
-- skills (facet build): `gemini-system`
-- rules (facet build): `gemini-delegation`, `gemini-suggestion-compliance`
-- context files (所有):
-  - `.gemini/GEMINI.md` — init/sync 時に配布（Gemini CLI 用指示書）
-  - `.gemini/settings.json` — init 時に配布
-  - `.gemini/skills/context-loader/` — init 時に配布
+- hooks: `suggest-antigravity-research.py`（WebSearch/WebFetch 前に `[Antigravity Suggestion]` を出力）
+- skills (facet build): `antigravity-system`
+- rules (facet build): `antigravity-delegation`, `antigravity-suggestion-compliance`
+- context files: なし（Antigravity 向け指示は codex-suggestions の `AGENTS.md` に `antigravity.md` セクションとして合成。旧 `.gemini/GEMINI.md` の生成物は context sync 時に自動削除される）
 
 ---
 
@@ -158,7 +155,7 @@ GitHub Issue の登録・開発フロー・PR 作成を含む Git/GitHub ワー�
 
 ### cocoindex
 
-cocoindex-code MCP サーバーを Claude Code / Codex CLI / Gemini CLI に自動プロビジョニングする。v1（stdio）と v2（proxy）の2モードに対応。
+cocoindex-code MCP サーバーを Claude Code / Codex CLI / Antigravity CLI に自動プロビジョニングする。v1（stdio）と v2（proxy）の2モードに対応。
 
 - **バージョン**: 0.2.0
 - **依存**: core

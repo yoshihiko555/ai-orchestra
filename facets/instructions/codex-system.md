@@ -10,7 +10,7 @@
 | ----------------------------------------- | ------------------------------------------------------------------- |
 | `agents.<target>.tool == "codex"`         | Codex CLI を使用（analysis / implementation を用途で選択）          |
 | `agents.<target>.tool == "claude-direct"` | Codex を強制しない                                                  |
-| `agents.<target>.tool == "gemini"`        | Gemini を使用                                                       |
+| `agents.<target>.tool == "antigravity"`   | Antigravity CLI（`agy`）を使用                                      |
 | `agents.<target>.tool == "auto"`          | タスク特性で選択（深い推論・デバッグ・比較・レビューは Codex 候補） |
 
 **重要**: 「Codex は設計専用」「Codex は実装専用」などの固定役割を前提にしない。

@@ -9,14 +9,14 @@ Claude Code用のマルチエージェントオーケストレーションシス
 ```
 Claude Code (Orchestrator)
     │
-    ├── Codex CLI    # `cli-tools.yaml` の設定に応じて利用（役割は config-driven）
-    ├── Gemini CLI   # `cli-tools.yaml` の設定に応じて利用（役割は config-driven）
+    ├── Codex CLI            # `cli-tools.yaml` の設定に応じて利用（役割は config-driven）
+    ├── Antigravity CLI (agy) # `cli-tools.yaml` の設定に応じて利用（役割は config-driven）
     │
     ├── $AI_ORCHESTRA_DIR/packages/
-    │   ├── core/               # 共通ユーティリティ
-    │   ├── audit/              # 監査ログ・KPI・ダッシュボード
-    │   ├── codex-suggestions/  # Codex 相談提案
-    │   ├── gemini-suggestions/ # Gemini リサーチ提案
+    │   ├── core/                     # 共通ユーティリティ
+    │   ├── audit/                    # 監査ログ・KPI・ダッシュボード
+    │   ├── codex-suggestions/        # Codex 相談提案
+    │   ├── antigravity-suggestions/  # Antigravity リサーチ提案
     │   ├── quality-gates/      # 品質ゲート
     │   ├── git-workflow/     # Git/GitHub ワークフロー
     │   ├── cocoindex/          # MCP サーバー自動プロビジョニング
@@ -103,8 +103,8 @@ orchex setup essential --project /path/to/project --dry-run
 - **essential** — core, agent-routing, audit, quality-gates
 - **all** — 全パッケージ
 
-> **テンプレートのプレースホルダーについて**: 配布される `CLAUDE.md` / `AGENTS.md` / `GEMINI.md` には `<YOUR_PROJECT_NAME>` などの `<YOUR_...>` 形式のプレースホルダーが含まれています。セットアップ後にプロジェクト固有の内容に書き換えてください。
-> `AGENTS.md` は `codex-suggestions` パッケージ、`GEMINI.md` は `gemini-suggestions` パッケージがインストール済みの場合のみ配布されます。
+> **テンプレートのプレースホルダーについて**: 配布される `CLAUDE.md` / `AGENTS.md` には `<YOUR_PROJECT_NAME>` などの `<YOUR_...>` 形式のプレースホルダーが含まれています。セットアップ後にプロジェクト固有の内容に書き換えてください。
+> `AGENTS.md` は `codex-suggestions` パッケージがインストール済みの場合のみ配布されます（Codex CLI と Antigravity CLI が共用。`antigravity.md` セクションを合成）。
 
 ### 2b. 個別インストール
 
@@ -165,14 +165,15 @@ orchex disable <package> --project .
 orchex scripts
 orchex scripts --package audit
 
-# CLAUDE.md / AGENTS.md / GEMINI.md テンプレート管理
+# CLAUDE.md / AGENTS.md テンプレート管理
 orchex context build
 orchex context check
 orchex context sync --project /path/to/project
 orchex context sync --project /path/to/project --force
 
 # 注意: AGENTS.md は codex-suggestions パッケージがインストール済みの場合のみ配布されます
-# 注意: GEMINI.md は gemini-suggestions パッケージがインストール済みの場合のみ配布されます
+#       （Codex CLI / Antigravity CLI 共用。codex.md + antigravity.md のセクション合成）
+# 注意: 旧 .gemini/GEMINI.md（生成物のみ）は context sync 時に自動削除されます
 
 # パッケージ内スクリプトの実行（-- 以降はスクリプトにパススルー）
 orchex run audit dashboard
@@ -277,21 +278,21 @@ Task(subagent_type="code-reviewer", prompt="このコードをレビューして
 
 ### スキル一覧
 
-| スキル               | 用途                                                          |
-| -------------------- | ------------------------------------------------------------- |
-| `/review`            | コード・セキュリティ・設計レビュー（スマート選定 + 並列実行） |
-| `/startproject`      | マルチエージェント協調で新規開発を開始                        |
-| `/issue-create`      | GitHub Issue の作成と計画策定                                 |
-| `/issue-fix`         | Issue ベースの計画→実装→テスト→レビューフロー                 |
-| `/codex-system`      | `cli-tools.yaml` に基づく Codex 利用ガイド（config-driven）   |
-| `/gemini-system`     | Gemini CLI でのリサーチ・マルチモーダル処理                   |
-| `/checkpointing`     | セッションコンテキストの保存・復元                            |
-| `/preflight`         | 実装計画の策定                                                |
-| `/design`            | 設計テンプレート                                              |
-| `/design-tracker`    | 設計記録                                                      |
-| `/task-state`        | Plans.md の作成・更新                                         |
-| `/release-readiness` | マージ前の最終チェック                                        |
-| `/tdd`               | テスト駆動開発ワークフロー                                    |
+| スキル                | 用途                                                          |
+| --------------------- | ------------------------------------------------------------- |
+| `/review`             | コード・セキュリティ・設計レビュー（スマート選定 + 並列実行） |
+| `/startproject`       | マルチエージェント協調で新規開発を開始                        |
+| `/issue-create`       | GitHub Issue の作成と計画策定                                 |
+| `/issue-fix`          | Issue ベースの計画→実装→テスト→レビューフロー                 |
+| `/codex-system`       | `cli-tools.yaml` に基づく Codex 利用ガイド（config-driven）   |
+| `/antigravity-system` | Antigravity CLI（agy）でのリサーチ・マルチモーダル処理        |
+| `/checkpointing`      | セッションコンテキストの保存・復元                            |
+| `/preflight`          | 実装計画の策定                                                |
+| `/design`             | 設計テンプレート                                              |
+| `/design-tracker`     | 設計記録                                                      |
+| `/task-state`         | Plans.md の作成・更新                                         |
+| `/release-readiness`  | マージ前の最終チェック                                        |
+| `/tdd`                | テスト駆動開発ワークフロー                                    |
 
 ### レビュースキル
 
@@ -324,7 +325,7 @@ ai-orchestra/
 │   ├── agent-routing/     # 28 エージェント定義 + ルーティング hooks
 │   ├── audit/             # 監査ログ・KPI・ダッシュボード
 │   ├── codex-suggestions/ # Codex 相談提案 hooks
-│   ├── gemini-suggestions/# Gemini リサーチ提案 hooks
+│   ├── antigravity-suggestions/ # Antigravity リサーチ提案 hooks
 │   ├── quality-gates/     # 品質ゲート hooks
 │   ├── git-workflow/    # Git/GitHub ワークフロー（Issue・PR・開発フロー）
 │   ├── cocoindex/         # cocoindex MCP サーバーの自動プロビジョニング

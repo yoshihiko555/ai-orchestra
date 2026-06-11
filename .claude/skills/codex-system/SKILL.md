@@ -17,15 +17,15 @@ metadata:
 
 # CLI Language Policy
 
-**外部 CLI（Codex CLI / Gemini CLI）と連携するスキルで守るべき共通ルール。**
+**外部 CLI（Codex CLI / Antigravity CLI）と連携するスキルで守るべき共通ルール。**
 
 ## 言語プロトコル
 
-| 対象 | 言語 |
-|------|------|
-| Codex / Gemini への質問 | **英語** |
-| Codex / Gemini からの回答 | **英語** |
-| ユーザーへの報告 | **日本語** |
+| 対象                           | 言語       |
+| ------------------------------ | ---------- |
+| Codex / Antigravity への質問   | **英語**   |
+| Codex / Antigravity からの回答 | **英語**   |
+| ユーザーへの報告               | **日本語** |
 
 ## Config-Driven ルーティング
 
@@ -40,16 +40,16 @@ CLI ツールの利用可否と設定は `cli-tools.yaml` で一元管理する�
 
 ### ルーティング規則
 
-| `agents.{name}.tool` | 動作 |
-|----------------------|------|
-| `codex` | Codex CLI を使用 |
-| `gemini` | Gemini CLI を使用 |
-| `claude-direct` | 外部 CLI を呼ばず Claude で処理 |
-| `auto` | タスク種別に応じて選択（深い推論 → Codex、調査 → Gemini、単純作業 → Claude） |
+| `agents.{name}.tool` | 動作                                                                              |
+| -------------------- | --------------------------------------------------------------------------------- |
+| `codex`              | Codex CLI を使用                                                                  |
+| `antigravity`        | Antigravity CLI（`agy`）を使用（旧値 `gemini` は読み替え）                        |
+| `claude-direct`      | 外部 CLI を呼ばず Claude で処理                                                   |
+| `auto`               | タスク種別に応じて選択（深い推論 → Codex、調査 → Antigravity、単純作業 → Claude） |
 
 ## サンドボックス実行
 
-外部 CLI（Codex / Gemini）は sandbox 内で直接実行する。
+外部 CLI（Codex / Antigravity）は sandbox 内で直接実行する。
 エラー時は `claude-direct` にフォールバックする。
 
 ---
@@ -66,7 +66,7 @@ CLI ツールの利用可否と設定は `cli-tools.yaml` で一元管理する�
 | ----------------------------------------- | ------------------------------------------------------------------- |
 | `agents.<target>.tool == "codex"`         | Codex CLI を使用（analysis / implementation を用途で選択）          |
 | `agents.<target>.tool == "claude-direct"` | Codex を強制しない                                                  |
-| `agents.<target>.tool == "gemini"`        | Gemini を使用                                                       |
+| `agents.<target>.tool == "antigravity"`   | Antigravity CLI（`agy`）を使用                                      |
 | `agents.<target>.tool == "auto"`          | タスク特性で選択（深い推論・デバッグ・比較・レビューは Codex 候補） |
 
 **重要**: 「Codex は設計専用」「Codex は実装専用」などの固定役割を前提にしない。
