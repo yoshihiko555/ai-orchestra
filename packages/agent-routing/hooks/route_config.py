@@ -236,7 +236,7 @@ def build_cli_suggestion(tool: str, agent: str, trigger: str, config: dict) -> s
         flags = c.get("flags", "--full-auto")
         return (
             f"[Codex CLI] Agent '{agent}' ('{trigger}') uses Codex:\n"
-            f'`codex exec --model {model} --sandbox {sandbox} {flags} "..." 2>/dev/null`'
+            f'`codex exec --model {model} --sandbox {sandbox} {flags} "..." < /dev/null 2>/dev/null`'
         )
     if tool == "gemini":
         if not is_cli_enabled("gemini", config):

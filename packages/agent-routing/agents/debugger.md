@@ -45,7 +45,7 @@ You analyze and fix bugs using Codex CLI:
 
 ```bash
 # エラー時は claude-direct にフォールバック
-codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "{debugging question in English}" 2>/dev/null
+codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "{debugging question in English}" < /dev/null 2>/dev/null
 ```
 
 **禁止事項:**

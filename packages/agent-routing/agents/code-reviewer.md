@@ -48,7 +48,7 @@ cli-tools.yaml の `agents.<agent-name>.tool` に基づいてコマンドを構�
 ### tool = "codex" の場合
 
 ```bash
-codex exec --model <model> --sandbox <sandbox> <flags> "{code review question}" 2>/dev/null
+codex exec --model <model> --sandbox <sandbox> <flags> "{code review question}" < /dev/null 2>/dev/null
 ```
 
 ### tool = "gemini" の場合

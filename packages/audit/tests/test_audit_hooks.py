@@ -158,6 +158,21 @@ class TestExtractCodexPrompt:
         cmd = "echo hello"
         assert audit_cli.extract_codex_prompt(cmd) is None
 
+    def test_stdin_redirect_with_full_auto(self) -> None:
+        """--full-auto + stdin 封じ付きコマンドから抽出できることを確認する。"""
+        cmd = 'codex exec --model gpt-5.5 --full-auto "What is 2+2?" < /dev/null 2>/dev/null'
+        assert audit_cli.extract_codex_prompt(cmd) == "What is 2+2?"
+
+    def test_stdin_redirect_without_full_auto(self) -> None:
+        """--full-auto なし + stdin 封じ付きコマンドから抽出できることを確認する。"""
+        cmd = 'codex exec --model gpt-5.5 --sandbox read-only "Review this" < /dev/null 2>/dev/null'
+        assert audit_cli.extract_codex_prompt(cmd) == "Review this"
+
+    def test_stdin_redirect_nospace(self) -> None:
+        """`</dev/null` （スペースなし）でも抽出できることを確認する。"""
+        cmd = "codex exec --sandbox read-only 'Review this' </dev/null 2>/dev/null"
+        assert audit_cli.extract_codex_prompt(cmd) == "Review this"
+
 
 class TestExtractGeminiPrompt:
     """`extract_gemini_prompt` のテスト。"""

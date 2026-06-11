@@ -119,6 +119,7 @@ class TestBuildCodexCommand:
         assert "gpt-5.3-codex" in result
         assert "read-only" in result
         assert "--full-auto" in result
+        assert "< /dev/null" in result
 
     def test_custom_config(self):
         """カスタム設定でコマンドを構築。"""

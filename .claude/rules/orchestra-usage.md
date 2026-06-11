@@ -60,10 +60,10 @@ Task(subagent_type="frontend-dev", prompt="実装: ログインフォーム")
 
 ```bash
 # 設計相談・デバッグ・トレードオフ分析 — config の codex.model, codex.sandbox.analysis, codex.flags を展開
-codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "{質問}" 2>/dev/null
+codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "{質問}" < /dev/null 2>/dev/null
 
 # 実装作業 — config の codex.sandbox.implementation を使用
-codex exec --model <codex.model> --sandbox <codex.sandbox.implementation> <codex.flags> "{タスク}" 2>/dev/null
+codex exec --model <codex.model> --sandbox <codex.sandbox.implementation> <codex.flags> "{タスク}" < /dev/null 2>/dev/null
 ```
 
 **使う場面:** 設計判断、デバッグ、比較検討、レビュー
@@ -120,7 +120,7 @@ Task(subagent_type="general-purpose", prompt="""
 Codex に設計を相談してください:
 {質問内容}
 
-codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "..." 2>/dev/null
+codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "..." < /dev/null 2>/dev/null
 
 結果を要約して返してください。
 """)

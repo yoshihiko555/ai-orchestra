@@ -35,7 +35,7 @@ CLI ツール（gemini / codex）は sandbox 内で直接実行する。
 
 ```bash
 # エラー時は claude-direct にフォールバック
-codex exec --model <codex.model> --sandbox <codex.sandbox.implementation> <codex.flags> "{task in English}" 2>/dev/null
+codex exec --model <codex.model> --sandbox <codex.sandbox.implementation> <codex.flags> "{task in English}" < /dev/null 2>/dev/null
 ```
 
 **禁止事項:**

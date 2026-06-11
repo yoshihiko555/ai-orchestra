@@ -115,7 +115,7 @@ def _build_codex_command(config: dict) -> str:
     model = codex.get("model", "gpt-5.3-codex")
     sandbox = codex.get("sandbox", {}).get("analysis", "read-only")
     flags = codex.get("flags", "--full-auto")
-    return f"`codex exec --model {model} --sandbox {sandbox} {flags} '...'`"
+    return f"`codex exec --model {model} --sandbox {sandbox} {flags} '...' < /dev/null 2>/dev/null`"
 
 
 def main():

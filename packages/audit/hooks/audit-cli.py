@@ -102,8 +102,8 @@ def extract_codex_prompt(command: str) -> str | None:
     patterns = [
         r'codex\s+exec\s+.*?--full-auto\s+"([^"]+)"',
         r"codex\s+exec\s+.*?--full-auto\s+'([^']+)'",
-        r'codex\s+exec\s+.*?"([^"]+)"\s*2>/dev/null',
-        r"codex\s+exec\s+.*?'([^']+)'\s*2>/dev/null",
+        r'codex\s+exec\s+.*?"([^"]+)"\s*(?:<\s*/dev/null\s*)?2>/dev/null',
+        r"codex\s+exec\s+.*?'([^']+)'\s*(?:<\s*/dev/null\s*)?2>/dev/null",
     ]
     for pattern in patterns:
         match = re.search(pattern, command, re.DOTALL)

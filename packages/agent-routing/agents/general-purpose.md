@@ -89,10 +89,10 @@ cli-tools.yaml の `agents.<agent-name>.tool` に基づいてコマンドを構�
 
 ```bash
 # 分析・レビュー用（ファイル変更不可）
-codex exec --model <model> --sandbox <sandbox> <flags> "{question}" 2>/dev/null
+codex exec --model <model> --sandbox <sandbox> <flags> "{question}" < /dev/null 2>/dev/null
 
 # 実装・修正用（ファイル変更可）
-codex exec --model <model> --sandbox workspace-write <flags> "{task}" 2>/dev/null
+codex exec --model <model> --sandbox workspace-write <flags> "{task}" < /dev/null 2>/dev/null
 ```
 
 **When to call Codex:**
@@ -138,7 +138,7 @@ IMPORTANT: Do not ask any clarifying questions." < /path/to/file 2>/dev/null
 ### tool = "codex" の場合
 
 ```bash
-codex exec --model <model> --sandbox <sandbox> <flags> "{question}" 2>/dev/null
+codex exec --model <model> --sandbox <sandbox> <flags> "{question}" < /dev/null 2>/dev/null
 ```
 
 ### tool = "gemini" の場合

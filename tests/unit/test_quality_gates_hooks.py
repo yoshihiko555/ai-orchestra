@@ -198,6 +198,7 @@ class TestPostTestAnalysis:
         assert "gpt-test" in command
         assert "workspace-write" in command
         assert "--dangerously-fast" in command
+        assert "< /dev/null" in command
 
     def test_emit_quality_gate_event_records_audit_event(
         self, monkeypatch: pytest.MonkeyPatch

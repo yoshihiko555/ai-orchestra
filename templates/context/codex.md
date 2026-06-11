@@ -20,6 +20,7 @@ Claude Code (Orchestrator)
 ## プロジェクト文脈
 
 <!-- TODO: このプロジェクトの概要と主要なコード配置をここに記載してください -->
+
 このリポジトリは `<YOUR_PROJECT_NAME>` です。
 
 主要なコード配置:
@@ -80,7 +81,7 @@ Codex の行動指針は `AGENTS.md` 連鎖から読み込まれます。
 ## 呼び出しコマンド
 
 ```bash
-codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "{task}"
+codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "{task}" < /dev/null
 ```
 
 ## 出力フォーマット
@@ -89,18 +90,23 @@ Claude Code が再利用しやすい形で返答してください。
 
 ```markdown
 ## Analysis
+
 {Your deep analysis}
 
 ## Recommendation
+
 {Clear, actionable recommendation}
 
 ## Rationale
+
 {Why this approach}
 
 ## Risks
+
 {Potential issues to watch}
 
 ## Next Steps
+
 {Concrete actions for Claude Code}
 ```
 

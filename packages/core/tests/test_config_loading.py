@@ -182,7 +182,7 @@ class TestRouteConfigLoadConfig:
     def test_loads_via_orchestra_dir(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("AI_ORCHESTRA_DIR", str(REPO_ROOT))
         config = route_config.load_config({"cwd": str(REPO_ROOT)})
-        assert config.get("codex", {}).get("model") == "gpt-5.3-codex"
+        assert config.get("codex", {}).get("model") == "gpt-5.5"
         assert config.get("gemini", {}).get("model") == "gemini-3.1-pro-preview"
 
     def test_loads_agents_section(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -236,6 +236,6 @@ class TestRealConfigFiles:
         assert "codex" in config
         assert "gemini" in config
         assert "agents" in config
-        assert config["codex"]["model"] == "gpt-5.3-codex"
+        assert config["codex"]["model"] == "gpt-5.5"
         assert config["codex"]["sandbox"]["analysis"] == "read-only"
         assert config["gemini"]["model"] == "gemini-3.1-pro-preview"

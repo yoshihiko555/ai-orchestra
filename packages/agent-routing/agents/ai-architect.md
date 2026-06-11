@@ -52,7 +52,7 @@ cli-tools.yaml の `agents.<agent-name>.tool` に基づいてコマンドを構�
 #### 設計・分析には Codex
 
 ```bash
-codex exec --model <model> --sandbox <sandbox> <flags> "{AI architecture question}" 2>/dev/null
+codex exec --model <model> --sandbox <sandbox> <flags> "{AI architecture question}" < /dev/null 2>/dev/null
 ```
 
 #### リサーチには Gemini
@@ -68,7 +68,7 @@ gemini -m <model> -p "{AI research question}" 2>/dev/null
 ### tool = "codex" の場合
 
 ```bash
-codex exec --model <model> --sandbox <sandbox> <flags> "{AI architecture question}" 2>/dev/null
+codex exec --model <model> --sandbox <sandbox> <flags> "{AI architecture question}" < /dev/null 2>/dev/null
 ```
 
 ### tool = "gemini" の場合

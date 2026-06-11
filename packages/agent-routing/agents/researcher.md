@@ -75,7 +75,7 @@ IMPORTANT: Do not ask any clarifying questions." < /path/to/file 2>/dev/null
 ### tool = "codex" の場合
 
 ```bash
-codex exec --model <model> --sandbox <sandbox> <flags> "{research question}" 2>/dev/null
+codex exec --model <model> --sandbox <sandbox> <flags> "{research question}" < /dev/null 2>/dev/null
 ```
 
 ### tool = "claude-direct" の場合

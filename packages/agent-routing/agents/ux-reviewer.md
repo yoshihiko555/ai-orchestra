@@ -85,7 +85,7 @@ gemini -m <model> -p "{UX review prompt}" --include-directories . 2>/dev/null
 ### tool = "codex" の場合
 
 ```bash
-codex exec --model <model> --sandbox <sandbox> <flags> "{UX review question}" 2>/dev/null
+codex exec --model <model> --sandbox <sandbox> <flags> "{UX review question}" < /dev/null 2>/dev/null
 ```
 
 ### tool = "claude-direct" の場合

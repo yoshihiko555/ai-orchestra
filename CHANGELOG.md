@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `codex exec` の非対話実行で stdin を封じていなかった問題を修正。stdin が開いたままだと "Reading additional input from stdin..." で無限ハングするため（特にバックグラウンド実行・サブエージェント実行時）、コマンド生成 hook 4 本（`route_config.py` / `check-codex-before-write.py` / `check-codex-after-plan.py` / `post-test-analysis.py`）が提案するコマンドと、全ドキュメント・エージェント定義・テンプレートのコマンド例に `< /dev/null` を追加。`audit-cli.py` のプロンプト抽出正規表現も `< /dev/null` 付きコマンドに対応
+- `codex-delegation` ルールに「Non-Interactive 実行（MUST）」セクションを新設（stdin 封じ・タイムアウト・exit code 判定・ハング調査プロトコル。無効モデル名が 400 リトライループで無限ハングに見える事象の調査手順を含む）
+- `packages/core/tests/test_config_loading.py` のモデル期待値を実際の設定値（`gpt-5.5`）に追従
+
 ### Added
 
 - `packages/image-generation`: Claude Code から API キー不要・非対話で Codex 組み込み `image_gen`（ChatGPT 認証, 本物の AI 画像生成）を呼ぶ `/image-gen <プロンプト>` スキルと `image-generator` サブエージェントを追加した自己完結パッケージ（`core` のみ依存）。エージェントは入力サニタイズ・出力パス境界検証・PNG/サイズ/キーワード検証・sandbox 二層構造ポリシーを内包し、CLI ログでメインコンテキストを汚さないよう生成を委譲する。モデルは `config/image-generation.yaml` の `image_model`（既定 `gpt-5.5`）。出力先デフォルトは `generated-images/`（`--out` で変更可・`.gitignore` 管理）。起動は Claude のネイティブ subagent dispatch ＋ `/image-gen` からの明示 `Task()` で行い、agent-routing への登録（`cli-tools.yaml` / `route_config.py`）は持たない。設計は ADR-023

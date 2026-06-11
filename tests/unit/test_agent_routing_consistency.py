@@ -268,6 +268,7 @@ class TestBuildCliSuggestionDisabled:
         result = route_config.build_cli_suggestion("codex", "debugger", "debug", config)
         assert result is not None
         assert "Codex" in result
+        assert "< /dev/null" in result
 
     def test_gemini_disabled_returns_none(self) -> None:
         config = _make_config(gemini={"enabled": False})

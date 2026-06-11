@@ -40,6 +40,8 @@ GEMINI_EXEC_RE = re.compile(
         'true || codex exec --full-auto "fallback"',
         'pre; codex exec --full-auto "after semicolon"',
         'something | codex exec --full-auto "piped"',
+        'codex exec --model gpt-5.5 --sandbox read-only --full-auto "q" < /dev/null 2>/dev/null',
+        "codex exec --sandbox read-only 'q' </dev/null 2>/dev/null",
     ],
     ids=[
         "basic_codex_exec",
@@ -50,6 +52,8 @@ GEMINI_EXEC_RE = re.compile(
         "chained_with_or",
         "after_semicolon",
         "piped",
+        "stdin_redirect",
+        "stdin_redirect_nospace",
     ],
 )
 def test_codex_detected(command: str) -> None:

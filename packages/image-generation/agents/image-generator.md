@@ -109,7 +109,7 @@ codex exec \
   --sandbox workspace-write \
   --skip-git-repo-check \
   --full-auto \
-  "$FULL_PROMPT"
+  "$FULL_PROMPT" < /dev/null
 ```
 
 ### Step 4 — Verify it is a real AI image (placeholder = failure)
