@@ -46,7 +46,12 @@ def truncate_text(text: str, max_length: int = 2000) -> str:
 
 
 def append_jsonl(path: str, record: dict) -> None:
-    """JSONL ファイルに1行追記する。"""
+    """JSONL ファイルに1行追記する。
+
+    注意: 排他ロックもパーミッション制限も行わない。機密を含みうるログや
+    並行書き込みがある場合は、fail-logs の `_append_secure_jsonl`
+    （flock + 0600）相当のセキュアな追記を使うこと。
+    """
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
