@@ -1,16 +1,20 @@
 # cocoindex MCP サーバー
 
-cocoindex パッケージは cocoindex-code MCP サーバーの設定を Claude Code / Codex CLI / Gemini CLI に自動プロビジョニングする。
+cocoindex パッケージは cocoindex-code MCP サーバーの設定を Claude Code / Codex CLI / Antigravity CLI に自動プロビジョニングする。
 
 ## 仕組み
 
 SessionStart hook が `config/cocoindex.yaml` を読み込み、以下の設定ファイルに MCP サーバー定義を書き出す:
 
-| CLI | 設定ファイル | フォーマット |
-|-----|------------|-------------|
-| Claude Code | `.mcp.json` | JSON (`mcpServers` キー) |
-| Codex CLI | `.codex/config.toml` | TOML (`[mcp_servers.{name}]` セクション) |
-| Gemini CLI | `.gemini/settings.json` | JSON (`mcpServers` キー) |
+| CLI                   | 設定ファイル            | フォーマット                             |
+| --------------------- | ----------------------- | ---------------------------------------- |
+| Claude Code           | `.mcp.json`             | JSON (`mcpServers` キー)                 |
+| Codex CLI             | `.codex/config.toml`    | TOML (`[mcp_servers.{name}]` セクション) |
+| Antigravity CLI (agy) | `.gemini/settings.json` | JSON (`mcpServers` キー)                 |
+
+> **Note**: agy は Gemini CLI と同じ `.gemini/settings.json` を継続利用する（agy の仕様）。
+> 旧キー `targets.gemini` の `enabled: false`（`.local.yaml` 残存分）は
+> `targets.antigravity` に読み替えられる。
 
 ## 設定変更
 
@@ -87,6 +91,7 @@ Claude Code の起動シーケンスは以下の順序で行われる:
 ```
 
 検証で判明した事実:
+
 - `InstructionsLoaded` は `SessionStart` より約 580ms 先に発火する
 - しかし proxy 起動には約 6 秒かかる（uvx + cocoindex のロード）
 - MCP 接続は proxy ready より前に行われるため、どのフックで起動しても間に合わない

@@ -10,6 +10,21 @@ import sys
 from collections.abc import Callable
 from typing import Any
 
+# CLI ツール設定（cli-tools.yaml）が読めない場合のフォールバック既定値（SSOT）。
+#
+# 正本は常に cli-tools.yaml。これらは config が「読めない／キーが無い」障害時のみ
+# 使われる最終安全網であり、各 hook がここを参照することで既定値の散在を防ぐ。
+#
+# 重要: これらは cli-tools.yaml と意図的に独立しており、yaml のモデルを変更しても
+# ここを同期する必要はない（同期を強制するテストも置かない）。役割は「正本が読めない
+# 障害時にとにかく何か動く値を返す」こと。値が多少古くても安全網としては許容する。
+DEFAULT_CODEX_MODEL = "gpt-5.5"
+DEFAULT_CODEX_SANDBOX_ANALYSIS = "read-only"
+DEFAULT_CODEX_FLAGS = "--full-auto"
+# 空文字 = --model フラグを省略し、Antigravity CLI のデフォルトモデルに委ねる意図。
+DEFAULT_ANTIGRAVITY_MODEL = ""
+DEFAULT_ANTIGRAVITY_FLAGS = ""
+
 
 def deep_merge(base: dict, override: dict) -> dict:
     """override の値で base を再帰的に上書きする。"""

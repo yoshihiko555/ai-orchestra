@@ -14,6 +14,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - 責務境界: `audit`=compliance/observability、`quality-gates`=ゲート + 合格率分母、`fail-logs`=失敗知識の蓄積。`quality_gate` emit は存続させ後方互換を維持。設計と移行パスは ADR-20260612-025 に記録
   - 次フェーズの課題（失敗サマリー注入・教訓のルール化・quality-gates への detector 適用によるパイプマスクバグ修正・差し戻し検知）を Issue #81〜#85 として登録
 - `docs/adr/ADR-20260612-025.md`: fail-logs 新設と失敗検知ロジック共通化の設計判断を ADR として記録
+### Changed
+
+- **LLM モデル名ハードコードの SSOT 参照化**: モデルを変更してもテストが壊れない状態に整理
+  - Codex コマンド生成 hook 4 本（`route_config.py` / `check-codex-before-write.py` / `check-codex-after-plan.py` / `post-test-analysis.py`）のフォールバック既定値（model / sandbox.analysis / flags）を `hook_common` の定数（`DEFAULT_CODEX_MODEL` ほか）に集約。各 hook に散在していた既定値の重複・値ズレを解消し、フォールバックモデルを `gpt-5.3-codex` → `gpt-5.5` に統一。これらの定数は config が読めない障害時のみ使う最終安全網であり、`cli-tools.yaml` とは意図的に独立（同期不要）
+  - `packages/core/tests/test_config_loading.py`: 実 `cli-tools.yaml` のモデル値を literal で比較していた 2 テストを、同じ yaml を独立に読んで期待値を導出する方式に変更。`codex.model` / `antigravity.model` を変更してもテストが壊れない（非空 str・allowlist 包含の構造契約は維持）
 
 ## [0.2.8] - 2026-06-12
 

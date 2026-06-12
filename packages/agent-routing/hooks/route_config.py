@@ -14,7 +14,15 @@ if _orchestra_dir:
     if _core_hooks not in sys.path:
         sys.path.insert(0, _core_hooks)
 
-from hook_common import load_package_config, normalize_cli_tools_config  # noqa: E402, F401
+from hook_common import (  # noqa: E402, F401
+    DEFAULT_ANTIGRAVITY_FLAGS,
+    DEFAULT_ANTIGRAVITY_MODEL,
+    DEFAULT_CODEX_FLAGS,
+    DEFAULT_CODEX_MODEL,
+    DEFAULT_CODEX_SANDBOX_ANALYSIS,
+    load_package_config,
+    normalize_cli_tools_config,
+)
 
 # エージェントルーティング設定（25エージェント分）
 AGENT_TRIGGERS: dict[str, dict[str, list[str]]] = {
@@ -243,9 +251,9 @@ def build_cli_suggestion(tool: str, agent: str, trigger: str, config: dict) -> s
         if not is_cli_enabled("codex", config):
             return None
         c = config.get("codex", {})
-        model = c.get("model", "gpt-5.3-codex")
-        sandbox = c.get("sandbox", {}).get("analysis", "read-only")
-        flags = c.get("flags", "--full-auto")
+        model = c.get("model", DEFAULT_CODEX_MODEL)
+        sandbox = c.get("sandbox", {}).get("analysis", DEFAULT_CODEX_SANDBOX_ANALYSIS)
+        flags = c.get("flags", DEFAULT_CODEX_FLAGS)
         return (
             f"[Codex CLI] Agent '{agent}' ('{trigger}') uses Codex:\n"
             f'`codex exec --model {model} --sandbox {sandbox} {flags} "..." < /dev/null 2>/dev/null`'
@@ -254,8 +262,8 @@ def build_cli_suggestion(tool: str, agent: str, trigger: str, config: dict) -> s
         if not is_cli_enabled("antigravity", config):
             return None
         a = config.get("antigravity", {})
-        model = a.get("model", "")
-        flags = a.get("flags", "")
+        model = a.get("model", DEFAULT_ANTIGRAVITY_MODEL)
+        flags = a.get("flags", DEFAULT_ANTIGRAVITY_FLAGS)
         parts = ["agy", '-p "..."']
         if model:
             parts.append(f"--model {model}")
