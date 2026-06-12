@@ -26,7 +26,13 @@
   },
   "mcpServers": {
     "cocoindex-code": {
-      "url": "http://127.0.0.1:8887/sse"
+      "command": "uvx",
+      "args": [
+        "--prerelease=explicit",
+        "--with",
+        "cocoindex>=1.0.0a16",
+        "cocoindex-code@latest"
+      ]
     }
   }
 }
