@@ -1,0 +1,15 @@
+{
+  "name": "fail-logs",
+  "version": "0.1.0",
+  "description": "AI の失敗イベント記録基盤（学習ループの入力。core 依存のみ）",
+  "depends": ["core"],
+  "hooks": {
+    "PostToolUse": ["capture-failures.py"]
+  },
+  "files": ["hooks/capture-failures.py"],
+  "skills": [],
+  "agents": [],
+  "rules": [],
+  "scripts": [],
+  "config": ["config/fail-logs.yaml"]
+}

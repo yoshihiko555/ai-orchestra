@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `packages/fail-logs`: AI の失敗イベントを記録する基盤パッケージ（`core` のみ依存）。PostToolUse hook（`capture-failures.py`）がツール実行エラー・テスト/lint 失敗・外部 CLI 失敗を検知し、**失敗のみ**を `.claude/logs/fail-logs/failures.jsonl`（audit v1 互換スキーマ・所有者限定 `0600`・機密マスク済み）に追記する。「失敗を蓄積して次回以降に活かす」学習ループの記録基盤（活用は次フェーズ）
+  - 失敗検知ロジックを `packages/core/hooks/failure_detector.py`（純粋関数）に集約。`exit_code` が 0/欠落でも test/lint コマンドの出力に失敗マーカーがあれば失敗と判定する 2 段構成で、`pytest ... | tail` のようにパイプで終了コードがマスクされる誤検知を回避
+  - `config/fail-logs.yaml` で全体の有効/無効・失敗種別ごとのトグル・抜粋文字数・保存先を制御（`.local.yaml` 上書き対応）
+  - 責務境界: `audit`=compliance/observability、`quality-gates`=ゲート + 合格率分母、`fail-logs`=失敗知識の蓄積。`quality_gate` emit は存続させ後方互換を維持。設計と移行パスは ADR-20260612-025 に記録
+  - 次フェーズの課題（失敗サマリー注入・教訓のルール化・quality-gates への detector 適用によるパイプマスクバグ修正・差し戻し検知）を Issue #81〜#85 として登録
+- `docs/adr/ADR-20260612-025.md`: fail-logs 新設と失敗検知ロジック共通化の設計判断を ADR として記録
+
 ## [0.2.8] - 2026-06-12
 
 ### Changed
