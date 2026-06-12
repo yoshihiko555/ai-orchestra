@@ -24,8 +24,8 @@ codex:
     implementation: workspace-write
   flags: --full-auto
 
-gemini:
-  model: gemini-2.5-pro
+antigravity:
+  model: gemini-3.1-pro-high
 ```
 
 プロジェクト固有の上書き:
@@ -40,7 +40,7 @@ codex:
 
 - `codex.model` = `o3-pro`（local で上書き）
 - `codex.sandbox.analysis` = `read-only`（ベースの値を継続使用）
-- `gemini.model` = `gemini-2.5-pro`（ベースの値を継続使用）
+- `antigravity.model` = `gemini-3.1-pro-high`（ベースの値を継続使用）
 
 ## 対象ファイル
 

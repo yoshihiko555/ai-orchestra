@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 from tests.module_loader import REPO_ROOT, load_module
 
@@ -22,6 +23,22 @@ hook_common = load_module("hook_common", "packages/core/hooks/hook_common.py")
 # route_config は hook_common を import するため sys.path を設定
 sys.path.insert(0, str(REPO_ROOT / "packages" / "core" / "hooks"))
 route_config = load_module("route_config", "packages/agent-routing/hooks/route_config.py")
+
+
+def _read_cli_tools_yaml_raw() -> dict:
+    """ローダとは独立に、解決済み cli-tools.yaml を直接 PyYAML で読む。
+
+    期待値を yaml 由来で導出することで、テストをモデル名の literal に依存させない。
+    cli-tools.yaml の codex.model / antigravity.model を変更してもテストが壊れない。
+
+    Note: ベース yaml のみを読み、cli-tools.local.yaml のマージは考慮しない。
+    ローカル上書きが存在する環境では load_package_config の結果と乖離しうるため、
+    本ヘルパは「ローカル上書きなし」を前提とした統合テスト専用とする。
+    """
+    path = hook_common.find_package_config("agent-routing", "cli-tools.yaml", str(REPO_ROOT))
+    assert path, "cli-tools.yaml が解決できること"
+    with open(path, encoding="utf-8") as f:
+        return yaml.safe_load(f)
 
 
 # =========================================================================
@@ -182,8 +199,9 @@ class TestRouteConfigLoadConfig:
     def test_loads_via_orchestra_dir(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("AI_ORCHESTRA_DIR", str(REPO_ROOT))
         config = route_config.load_config({"cwd": str(REPO_ROOT)})
-        assert config.get("codex", {}).get("model") == "gpt-5.5"
-        assert config.get("antigravity", {}).get("model") == "gemini-3.1-pro-high"
+        expected = _read_cli_tools_yaml_raw()
+        assert config.get("codex", {}).get("model") == expected["codex"]["model"]
+        assert config.get("antigravity", {}).get("model") == expected["antigravity"]["model"]
 
     def test_loads_agents_section(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("AI_ORCHESTRA_DIR", str(REPO_ROOT))
@@ -233,10 +251,14 @@ class TestRealConfigFiles:
 
     def test_cli_tools_yaml(self) -> None:
         config = hook_common.load_package_config("agent-routing", "cli-tools.yaml", str(REPO_ROOT))
+        expected = _read_cli_tools_yaml_raw()
         assert "codex" in config
         assert "antigravity" in config
         assert "agents" in config
-        assert config["codex"]["model"] == "gpt-5.5"
-        assert config["codex"]["sandbox"]["analysis"] == "read-only"
-        assert config["antigravity"]["model"] == "gemini-3.1-pro-high"
+        # モデル値・sandbox 値は yaml 由来で導出（literal 比較を廃止し、モデル変更で壊れない）
+        assert config["codex"]["model"] == expected["codex"]["model"]
+        assert config["codex"]["sandbox"]["analysis"] == expected["codex"]["sandbox"]["analysis"]
+        assert config["antigravity"]["model"] == expected["antigravity"]["model"]
+        # 構造契約: model は非空かつ allowlist に含まれる（ファイル健全性の保証）
+        assert isinstance(config["codex"]["model"], str) and config["codex"]["model"]
         assert config["antigravity"]["model"] in config["antigravity"]["model_allowlist"]

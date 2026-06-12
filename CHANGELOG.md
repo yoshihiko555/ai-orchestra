@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **LLM モデル名ハードコードの SSOT 参照化**: モデルを変更してもテストが壊れない状態に整理
+  - Codex コマンド生成 hook 4 本（`route_config.py` / `check-codex-before-write.py` / `check-codex-after-plan.py` / `post-test-analysis.py`）のフォールバック既定値（model / sandbox.analysis / flags）を `hook_common` の定数（`DEFAULT_CODEX_MODEL` ほか）に集約。各 hook に散在していた既定値の重複・値ズレを解消し、フォールバックモデルを `gpt-5.3-codex` → `gpt-5.5` に統一。これらの定数は config が読めない障害時のみ使う最終安全網であり、`cli-tools.yaml` とは意図的に独立（同期不要）
+  - `packages/core/tests/test_config_loading.py`: 実 `cli-tools.yaml` のモデル値を literal で比較していた 2 テストを、同じ yaml を独立に読んで期待値を導出する方式に変更。`codex.model` / `antigravity.model` を変更してもテストが壊れない（非空 str・allowlist 包含の構造契約は維持）
+
 ## [0.2.8] - 2026-06-12
 
 ### Changed

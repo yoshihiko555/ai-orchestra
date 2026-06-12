@@ -114,11 +114,18 @@ class TestBuildCodexCommand:
     """_build_codex_command のテスト。"""
 
     def test_defaults(self):
-        """デフォルト値でコマンドを構築。"""
+        """デフォルト値でコマンドを構築。
+
+        フォールバック既定値は hook_common の SSOT 定数を参照するため、
+        モデル名を literal で固定せず定数と照合する（モデル変更で壊れない）。
+        """
+        # 空文字定数では `in` が常に真になり検証が無意味化するため非空をガード
+        assert codex_write.DEFAULT_CODEX_MODEL
+        assert codex_write.DEFAULT_CODEX_FLAGS
         result = codex_write._build_codex_command({})
-        assert "gpt-5.3-codex" in result
-        assert "read-only" in result
-        assert "--full-auto" in result
+        assert codex_write.DEFAULT_CODEX_MODEL in result
+        assert codex_write.DEFAULT_CODEX_SANDBOX_ANALYSIS in result
+        assert codex_write.DEFAULT_CODEX_FLAGS in result
         assert "< /dev/null" in result
 
     def test_custom_config(self):

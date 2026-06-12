@@ -11,15 +11,15 @@ metadata:
 
 # CLI Language Policy
 
-**外部 CLI（Codex CLI / Gemini CLI）と連携するスキルで守るべき共通ルール。**
+**外部 CLI（Codex CLI / Antigravity CLI）と連携するスキルで守るべき共通ルール。**
 
 ## 言語プロトコル
 
-| 対象 | 言語 |
-|------|------|
-| Codex / Gemini への質問 | **英語** |
-| Codex / Gemini からの回答 | **英語** |
-| ユーザーへの報告 | **日本語** |
+| 対象                           | 言語       |
+| ------------------------------ | ---------- |
+| Codex / Antigravity への質問   | **英語**   |
+| Codex / Antigravity からの回答 | **英語**   |
+| ユーザーへの報告               | **日本語** |
 
 ## Config-Driven ルーティング
 
@@ -34,16 +34,16 @@ CLI ツールの利用可否と設定は `cli-tools.yaml` で一元管理する�
 
 ### ルーティング規則
 
-| `agents.{name}.tool` | 動作 |
-|----------------------|------|
-| `codex` | Codex CLI を使用 |
-| `gemini` | Gemini CLI を使用 |
-| `claude-direct` | 外部 CLI を呼ばず Claude で処理 |
-| `auto` | タスク種別に応じて選択（深い推論 → Codex、調査 → Gemini、単純作業 → Claude） |
+| `agents.{name}.tool` | 動作                                                                              |
+| -------------------- | --------------------------------------------------------------------------------- |
+| `codex`              | Codex CLI を使用                                                                  |
+| `antigravity`        | Antigravity CLI（`agy`）を使用（旧値 `gemini` は読み替え）                        |
+| `claude-direct`      | 外部 CLI を呼ばず Claude で処理                                                   |
+| `auto`               | タスク種別に応じて選択（深い推論 → Codex、調査 → Antigravity、単純作業 → Claude） |
 
 ## サンドボックス実行
 
-外部 CLI（Codex / Gemini）は sandbox 内で直接実行する。
+外部 CLI（Codex / Antigravity）は sandbox 内で直接実行する。
 エラー時は `claude-direct` にフォールバックする。
 
 ---
@@ -90,11 +90,11 @@ Phase 7: Multi-Session Review (code-reviewer / security-reviewer)
 
 各フェーズでエージェントを呼び出す際は、`cli-tools.yaml` の `agents.{name}.tool` を参照してルーティングする。
 
-| `tool` 設定 | 呼び出し方法 |
-|-------------|-------------|
-| `claude-direct` | `Task(subagent_type="{agent}", prompt="...")` |
-| `codex` | `Task(subagent_type="{agent}", prompt="... Codex CLI (workspace-write) で実装すること ...")` |
-| `gemini` | `Task(subagent_type="general-purpose", prompt="Gemini CLI で実行: gemini -m <gemini.model> -p '...'")` |
+| `tool` 設定     | 呼び出し方法                                                                                                       |
+| --------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `claude-direct` | `Task(subagent_type="{agent}", prompt="...")`                                                                      |
+| `codex`         | `Task(subagent_type="{agent}", prompt="... Codex CLI (workspace-write) で実装すること ...")`                       |
+| `antigravity`   | `Task(subagent_type="general-purpose", prompt="Antigravity CLI で実行: agy -p '...' --model <antigravity.model>")` |
 
 **例**: `agents.frontend-dev.tool` が `codex` なら `Task(subagent_type="frontend-dev", prompt="... Codex CLI で実装すること ...")`。named agent はドメイン固有の知識（コーディング規約、テックスタック）を保持するため、`general-purpose` ではなく直接呼び出す。
 
@@ -113,10 +113,10 @@ Task tool parameters:
 
     Resolve route from cli-tools.yaml (`agents.researcher.tool`).
 
-    If tool == gemini:
-      sandbox 内で gemini を実行する。エラー時は claude-direct にフォールバック。
-      Bash timeout: 180000 を指定すること。
-      gemini -m <gemini.model> -p "Analyze this repository for: {feature}
+    If tool == antigravity:
+      sandbox 内で agy を実行する。エラー時は claude-direct にフォールバック。
+      Bash timeout: 300000 を指定すること。
+      agy -p "Analyze this repository for: {feature}
 
        Provide:
        1. Repository structure and architecture
@@ -126,9 +126,9 @@ Task tool parameters:
 
        IMPORTANT: Do not ask any clarifying questions. Provide your best answer
        based on the available information. If you need assumptions, state them.
-       " --include-directories . < /dev/null 2>/dev/null
+       " --model <antigravity.model> --add-dir . 2>/dev/null
 
-      リトライ: タイムアウトや質問検出時は gemini-delegation.md のリトライプロトコルに従う。
+      リトライ: タイムアウトや質問検出時は antigravity-delegation.md のリトライプロトコルに従う。
 
     If tool == claude-direct:
       Read/Grep/Glob で同等の調査を実施し、同形式で要約を作成する。
@@ -417,10 +417,10 @@ Present final plan to user (in Japanese):
 
 ## Output Files
 
-| File                         | Purpose                      |
-| ---------------------------- | ---------------------------- |
+| File                                 | Purpose                         |
+| ------------------------------------ | ------------------------------- |
 | `.claude/docs/research/{feature}.md` | Research output (config-driven) |
-| `.claude/Plans.md`           | Project context & task tracking |
+| `.claude/Plans.md`                   | Project context & task tracking |
 
 ---
 

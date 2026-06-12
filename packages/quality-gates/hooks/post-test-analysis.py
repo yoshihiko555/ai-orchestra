@@ -39,7 +39,12 @@ from event_logger import (  # noqa: E402
     load_trace_state,
     resolve_project_root_from_hook_data,
 )
-from hook_common import load_package_config  # noqa: E402
+from hook_common import (  # noqa: E402
+    DEFAULT_CODEX_FLAGS,
+    DEFAULT_CODEX_MODEL,
+    DEFAULT_CODEX_SANDBOX_ANALYSIS,
+    load_package_config,
+)
 
 # Test command patterns
 TEST_COMMAND_PATTERNS = [
@@ -201,9 +206,9 @@ def _build_codex_command(data: dict) -> str:
     project_dir = data.get("cwd", "") or os.environ.get("CLAUDE_PROJECT_DIR", "")
     config = load_package_config("agent-routing", "cli-tools.yaml", project_dir)
     codex = config.get("codex", {})
-    model = codex.get("model", "gpt-5.3-codex")
-    sandbox = codex.get("sandbox", {}).get("analysis", "read-only")
-    flags = codex.get("flags", "--full-auto")
+    model = codex.get("model", DEFAULT_CODEX_MODEL)
+    sandbox = codex.get("sandbox", {}).get("analysis", DEFAULT_CODEX_SANDBOX_ANALYSIS)
+    flags = codex.get("flags", DEFAULT_CODEX_FLAGS)
     return f'`codex exec --model {model} --sandbox {sandbox} {flags} "..." < /dev/null 2>/dev/null`'
 
 
