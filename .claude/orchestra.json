@@ -1,9 +1,9 @@
 {
   "installed_packages": [
     "agent-routing",
+    "antigravity-suggestions",
     "audit",
     "cocoindex",
-    "antigravity-suggestions",
     "codex-suggestions",
     "core",
     "git-workflow",
@@ -50,5 +50,5 @@
     "config/git-workflow/sandbox-requirements.json",
     "config/image-generation/image-generation.yaml"
   ],
-  "last_sync": "2026-06-11T08:21:55.970885+00:00"
+  "last_sync": "2026-06-12T03:10:44.236927+00:00"
 }

@@ -51,10 +51,10 @@ LOG_FILE = CLAUDE_DIR / "logs" / "cli-tools.jsonl"
 CHECKPOINTS_DIR = CLAUDE_DIR / "checkpoints"
 DESIGN_FILE = CLAUDE_DIR / "docs" / "DESIGN.md"
 
+# AGENTS.md は Codex CLI / Antigravity CLI が共用する
 CONTEXT_FILES = {
     "claude": PROJECT_ROOT / "CLAUDE.md",
     "codex": PROJECT_ROOT / "AGENTS.md",
-    "gemini": PROJECT_ROOT / ".gemini" / "GEMINI.md",
 }
 
 SESSION_HISTORY_HEADER = "## Session History"
@@ -215,7 +215,8 @@ def summarize_entries(entries: list[dict]) -> dict[str, dict[str, list[dict]]]:
         tool = entry.get("tool", "unknown")
 
         if date not in by_date:
-            by_date[date] = {"codex": [], "gemini": []}
+            # gemini はレガシーログ（移行前の cli_call）用に残置
+            by_date[date] = {"codex": [], "antigravity": [], "gemini": []}
 
         if tool in by_date[date]:
             by_date[date][tool].append(
@@ -250,8 +251,16 @@ def generate_session_history(by_date: dict) -> str:
                 lines.append(f"- {status} {prompt_summary}...")
             lines.append("")
 
+        if data.get("antigravity"):
+            lines.append("**Antigravity調査:**")
+            for item in data["antigravity"][:5]:  # Limit to 5 per day
+                prompt_summary = item["prompt"][:100].replace("\n", " ")
+                status = "✓" if item["success"] else "✗"
+                lines.append(f"- {status} {prompt_summary}...")
+            lines.append("")
+
         if data.get("gemini"):
-            lines.append("**Gemini調査:**")
+            lines.append("**Gemini調査（レガシー）:**")
             for item in data["gemini"][:5]:  # Limit to 5 per day
                 prompt_summary = item["prompt"][:100].replace("\n", " ")
                 status = "✓" if item["success"] else "✗"
@@ -297,6 +306,7 @@ def generate_full_checkpoint(since: str | None = None) -> Path | None:
 
     # Count CLI consultations
     codex_count = sum(1 for e in entries if e.get("tool") == "codex")
+    antigravity_count = sum(1 for e in entries if e.get("tool") == "antigravity")
     gemini_count = sum(1 for e in entries if e.get("tool") == "gemini")
 
     # Build checkpoint content
@@ -320,7 +330,9 @@ def generate_full_checkpoint(since: str | None = None) -> Path | None:
         f"{len(file_changes['deleted'])} deleted)"
     )
     lines.append(f"- **Codex consultations**: {codex_count}")
-    lines.append(f"- **Gemini researches**: {gemini_count}")
+    lines.append(f"- **Antigravity researches**: {antigravity_count}")
+    if gemini_count:
+        lines.append(f"- **Gemini researches (legacy)**: {gemini_count}")
     if since:
         lines.append(f"- **Since**: {since}")
     lines.append("")
@@ -377,6 +389,7 @@ def generate_full_checkpoint(since: str | None = None) -> Path | None:
     lines.append("")
 
     codex_entries = [e for e in entries if e.get("tool") == "codex"]
+    antigravity_entries = [e for e in entries if e.get("tool") == "antigravity"]
     gemini_entries = [e for e in entries if e.get("tool") == "gemini"]
 
     if codex_entries:
@@ -388,6 +401,17 @@ def generate_full_checkpoint(since: str | None = None) -> Path | None:
             lines.append(f"- {status} {prompt}...")
         if len(codex_entries) > 10:
             lines.append(f"- ... and {len(codex_entries) - 10} more consultations")
+        lines.append("")
+
+    if antigravity_entries:
+        lines.append(f"### Antigravity ({len(antigravity_entries)} researches)")
+        lines.append("")
+        for entry in antigravity_entries[:10]:
+            status = "✓" if entry.get("success", False) else "✗"
+            prompt = entry.get("prompt", "")[:80].replace("\n", " ")
+            lines.append(f"- {status} {prompt}...")
+        if len(antigravity_entries) > 10:
+            lines.append(f"- ... and {len(antigravity_entries) - 10} more researches")
         lines.append("")
 
     if gemini_entries:
