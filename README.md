@@ -197,7 +197,7 @@ orchex facet build --project .
 # 単一 composition をビルド
 orchex facet build --name review --project .
 
-# Codex CLI 向けに生成（.codex/skills/ に出力）
+# 外部 CLI 向けに生成（.agents/skills/ に出力。Codex CLI / Antigravity CLI(agy) 共用）
 orchex facet build --target codex --project .
 
 # 生成済みファイルから instruction をソースに書き戻す（チューニング反映）
@@ -223,7 +223,7 @@ facets/compositions/**/*.yaml ← 組み立て定義（skills/ と rules/ に分
 .claude/skills/{name}/references/    ← 知識ファイル（knowledge から配布）
 .claude/skills/{name}/scripts/       ← スクリプト（scripts から配布）
 .claude/rules/{name}.md              ← 生成物（Claude Code 用）
-.codex/skills/{name}/SKILL.md        ← 生成物（Codex CLI 用）
+.agents/skills/{name}/SKILL.md       ← 生成物（Codex CLI / Antigravity CLI 共用）
 ```
 
 **チューニング後の反映:**

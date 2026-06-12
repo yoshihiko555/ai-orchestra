@@ -14,8 +14,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - 責務境界: `audit`=compliance/observability、`quality-gates`=ゲート + 合格率分母、`fail-logs`=失敗知識の蓄積。`quality_gate` emit は存続させ後方互換を維持。設計と移行パスは ADR-20260612-025 に記録
   - 次フェーズの課題（失敗サマリー注入・教訓のルール化・quality-gates への detector 適用によるパイプマスクバグ修正・差し戻し検知）を Issue #81〜#85 として登録
 - `docs/adr/ADR-20260612-025.md`: fail-logs 新設と失敗検知ロジック共通化の設計判断を ADR として記録
+
 ### Changed
 
+- **外部 CLI 向けスキルの出力先を `.agents/skills/` に統一**: facet build の非 claude ターゲットが生成する SKILL.md の出力先を `.codex/skills/` → `.agents/skills/` に変更。`.agents/skills/` は Codex CLI と Antigravity CLI（agy）の両方がプロジェクトローカルで自動検出する共有ディレクトリ（agy 1.0.7 / Codex 0.139 で実機確認）。これにより、これまで同期されていなかった agy へのスキル配布が解決
+  - 移行: 横展開先の旧 `.codex/skills/{name}` に残る facet スキルは、facet build 時に **facet manifest 記録分のみ**を対象に一度だけ削除（`_cleanup_legacy_codex_skills`）。template 配布の `context-loader` 等（manifest 非記録）・手書きファイル・`.codex/config.toml`・execpolicy 用 `.codex/rules/*.rules` は対象外。symlink は辿らない
+  - ターゲット名（`codex`）・manifest 配置は現状維持（`.agents/skills/` は config なしで自動検出されるため `.codex/config.toml` 変更は不要）
+
+### Removed
+
+- **外部 CLI へのルール同期を廃止**: facet build の非 claude ターゲットでルール composition をビルドしないように変更（`build_one` で skip）。Claude のルール（`.claude/rules/*.md` は振る舞い指示）と Codex/agy のルール（execpolicy 等のコマンドポリシー）は思想が異なり、Markdown ルールを外部 CLI に同期する意味がないとの判断
+  - 移行: 旧 `.codex/rules/*.md`（生成物）は facet build 時に削除（`_cleanup_legacy_codex_rules`）。execpolicy 用 `.codex/rules/*.rules` は保持。`.claude/rules/` は従来どおり生成
+  - 各プロジェクトが Codex/agy のルール（コマンドポリシー等）をどう設定するかは別途検討（このリポジトリ対象外）
 - **LLM モデル名ハードコードの SSOT 参照化**: モデルを変更してもテストが壊れない状態に整理
   - Codex コマンド生成 hook 4 本（`route_config.py` / `check-codex-before-write.py` / `check-codex-after-plan.py` / `post-test-analysis.py`）のフォールバック既定値（model / sandbox.analysis / flags）を `hook_common` の定数（`DEFAULT_CODEX_MODEL` ほか）に集約。各 hook に散在していた既定値の重複・値ズレを解消し、フォールバックモデルを `gpt-5.3-codex` → `gpt-5.5` に統一。これらの定数は config が読めない障害時のみ使う最終安全網であり、`cli-tools.yaml` とは意図的に独立（同期不要）
   - `packages/core/tests/test_config_loading.py`: 実 `cli-tools.yaml` のモデル値を literal で比較していた 2 テストを、同じ yaml を独立に読んで期待値を導出する方式に変更。`codex.model` / `antigravity.model` を変更してもテストが壊れない（非空 str・allowlist 包含の構造契約は維持）

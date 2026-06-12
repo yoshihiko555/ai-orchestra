@@ -214,7 +214,7 @@ facets/compositions/**/*.yaml 組み立て定義（skills/ と rules/ に分類�
 
 .claude/skills/{name}/SKILL.md   生成物（Claude Code 用）
 .claude/rules/{name}.md          生成物（Claude Code 用）
-.codex/skills/{name}/SKILL.md    生成物（Codex CLI 用、パッケージ依存）
+.agents/skills/{name}/SKILL.md   生成物（Codex CLI / Antigravity CLI 共用、パッケージ依存）
 ```
 
 - SessionStart の同期フローの中で facet build が自動実行される
