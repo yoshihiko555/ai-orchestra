@@ -63,14 +63,14 @@ facets/
 
 各スキル・ルール固有の手順や仕様。Composition から1対1で参照される。
 
-| カテゴリ     | Instruction                                                                                                                             |
-| ------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
-| ルーティング | `agent-routing-policy`, `orchestra-usage`, `config-loading`                                                                             |
+| カテゴリ          | Instruction                                                                                                                                            |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| ルーティング      | `agent-routing-policy`, `orchestra-usage`, `config-loading`                                                                                            |
 | Codex/Antigravity | `codex-delegation`, `codex-suggestion-compliance`, `codex-system`, `antigravity-delegation`, `antigravity-suggestion-compliance`, `antigravity-system` |
-| 品質         | `review`, `skill-review-policy`, `tdd`, `release-readiness`                                                                             |
-| 開発フロー   | `startproject`, `issue-create`, `issue-fix`, `preflight`                                                                                |
-| 状態管理     | `task-memory-usage`, `task-state`, `checkpointing`, `context-sharing`                                                                   |
-| その他       | `coding-principles` (rule), `cocoindex-usage`, `design`, `design-tracker`                                                               |
+| 品質              | `review`, `skill-review-policy`, `tdd`, `release-readiness`                                                                                            |
+| 開発フロー        | `startproject`, `issue-create`, `issue-fix`, `preflight`                                                                                               |
+| 状態管理          | `task-memory-usage`, `task-state`, `checkpointing`, `context-sharing`                                                                                  |
+| その他            | `coding-principles` (rule), `cocoindex-usage`, `design`, `design-tracker`                                                                              |
 
 ### Knowledge（ナレッジ）
 
@@ -169,8 +169,8 @@ scripts: # facets/scripts/ から参照 → scripts/ に配布
    f. [スキルの場合] knowledge/ → references/ にコピー
    g. [スキルの場合] scripts/ → scripts/ にコピー
 3. 出力先:
-   - スキル → .claude/skills/{name}/SKILL.md + .codex/skills/{name}/SKILL.md
-   - ルール → .claude/rules/{name}.md + .codex/rules/{name}.md
+   - スキル → .claude/skills/{name}/SKILL.md + .agents/skills/{name}/SKILL.md（Codex/agy 共用）
+   - ルール → .claude/rules/{name}.md（Claude のみ。外部 CLI へのルール同期は廃止）
    - リソース → .claude/skills/{name}/references/*.md, scripts/*
 ```
 
@@ -185,7 +185,7 @@ facets/knowledge/{name}.md ───────────┤  ← facet build
 facets/scripts/{name}.py ─────────────┘                ──→ .claude/skills/{name}/references/*.md
                                                        ──→ .claude/skills/{name}/scripts/*
 facets/compositions/{skills,rules}/{name}.yaml          ──→ .claude/rules/{name}.md
-  ↑ 組み立て定義（どれを結合するか）                      ──→ .codex/skills/{name}/SKILL.md
+  ↑ 組み立て定義（どれを結合するか）                      ──→ .agents/skills/{name}/SKILL.md
 ```
 
 ### コマンド
@@ -289,31 +289,31 @@ orchex facet build --name my-skill --project .
 
 所有パッケージは各パッケージの `manifest.json` で管理される。
 
-| Composition                    | 種別  | 所有パッケージ（manifest 参照） | ポリシー                                 | 出力契約      |
-| ------------------------------ | ----- | ------------------------------- | ---------------------------------------- | ------------- |
-| `agent-routing-policy`         | rule  | agent-routing                   | —                                        | —             |
-| `checkpointing`                | skill | audit                           | —                                        | —             |
-| `cocoindex-usage`              | rule  | cocoindex                       | —                                        | —             |
-| `codex-delegation`             | rule  | codex-suggestions               | cli-language                             | —             |
-| `codex-suggestion-compliance`  | rule  | codex-suggestions               | —                                        | —             |
-| `codex-system`                 | skill | codex-suggestions               | cli-language                             | —             |
-| `coding-principles`            | rule  | core                            | —                                        | —             |
-| `config-loading`               | rule  | core                            | —                                        | —             |
-| `context-sharing`              | rule  | core                            | —                                        | —             |
-| `design`                       | skill | core                            | —                                        | —             |
-| `design-tracker`               | skill | quality-gates                   | —                                        | —             |
-| `antigravity-delegation`            | rule  | antigravity-suggestions              | cli-language                             | —             |
-| `antigravity-suggestion-compliance` | rule  | antigravity-suggestions              | —                                        | —             |
-| `antigravity-system`                | skill | antigravity-suggestions              | cli-language                             | —             |
-| `issue-create`                 | skill | git-workflow                    | —                                        | —             |
-| `issue-fix`                    | skill | git-workflow                    | cli-language, pr-standards               | tiered-review |
-| `pr-create`                    | skill | git-workflow                    | cli-language, dialog-rules, pr-standards | —             |
-| `orchestra-usage`              | rule  | agent-routing                   | cli-language                             | —             |
-| `preflight`                    | skill | core                            | —                                        | —             |
-| `release-readiness`            | skill | quality-gates                   | —                                        | tiered-review |
-| `review`                       | skill | quality-gates                   | —                                        | tiered-review |
-| `skill-review-policy`          | rule  | quality-gates                   | —                                        | tiered-review |
-| `startproject`                 | skill | core                            | —                                        | —             |
-| `task-memory-usage`            | rule  | core                            | —                                        | —             |
-| `task-state`                   | skill | core                            | —                                        | —             |
-| `tdd`                          | skill | quality-gates                   | —                                        | —             |
+| Composition                         | 種別  | 所有パッケージ（manifest 参照） | ポリシー                                 | 出力契約      |
+| ----------------------------------- | ----- | ------------------------------- | ---------------------------------------- | ------------- |
+| `agent-routing-policy`              | rule  | agent-routing                   | —                                        | —             |
+| `checkpointing`                     | skill | audit                           | —                                        | —             |
+| `cocoindex-usage`                   | rule  | cocoindex                       | —                                        | —             |
+| `codex-delegation`                  | rule  | codex-suggestions               | cli-language                             | —             |
+| `codex-suggestion-compliance`       | rule  | codex-suggestions               | —                                        | —             |
+| `codex-system`                      | skill | codex-suggestions               | cli-language                             | —             |
+| `coding-principles`                 | rule  | core                            | —                                        | —             |
+| `config-loading`                    | rule  | core                            | —                                        | —             |
+| `context-sharing`                   | rule  | core                            | —                                        | —             |
+| `design`                            | skill | core                            | —                                        | —             |
+| `design-tracker`                    | skill | quality-gates                   | —                                        | —             |
+| `antigravity-delegation`            | rule  | antigravity-suggestions         | cli-language                             | —             |
+| `antigravity-suggestion-compliance` | rule  | antigravity-suggestions         | —                                        | —             |
+| `antigravity-system`                | skill | antigravity-suggestions         | cli-language                             | —             |
+| `issue-create`                      | skill | git-workflow                    | —                                        | —             |
+| `issue-fix`                         | skill | git-workflow                    | cli-language, pr-standards               | tiered-review |
+| `pr-create`                         | skill | git-workflow                    | cli-language, dialog-rules, pr-standards | —             |
+| `orchestra-usage`                   | rule  | agent-routing                   | cli-language                             | —             |
+| `preflight`                         | skill | core                            | —                                        | —             |
+| `release-readiness`                 | skill | quality-gates                   | —                                        | tiered-review |
+| `review`                            | skill | quality-gates                   | —                                        | tiered-review |
+| `skill-review-policy`               | rule  | quality-gates                   | —                                        | tiered-review |
+| `startproject`                      | skill | core                            | —                                        | —             |
+| `task-memory-usage`                 | rule  | core                            | —                                        | —             |
+| `task-state`                        | skill | core                            | —                                        | —             |
+| `tdd`                               | skill | quality-gates                   | —                                        | —             |

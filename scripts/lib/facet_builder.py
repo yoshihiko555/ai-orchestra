@@ -257,7 +257,9 @@ class FacetBuilder:
 
         if target == "claude":
             return project_dir / ".claude" / "skills" / name / "SKILL.md"
-        return project_dir / ".codex" / "skills" / name / "SKILL.md"
+        # 非 claude ターゲットのスキルは .agents/skills/ に出力する。
+        # この配置は Codex CLI と Antigravity CLI(agy) の両方が自動検出する共有ディレクトリ。
+        return project_dir / ".agents" / "skills" / name / "SKILL.md"
 
     def _find_composition(self, name: str) -> Path:
         """name から composition YAML のパスを解決する。サブディレクトリも再帰検索。"""
@@ -297,6 +299,14 @@ class FacetBuilder:
         composition_path = self._find_composition(name)
 
         composition = self.load_composition(composition_path)
+
+        # 非 claude ターゲットにはルールを配布しない（ルール同期は廃止）。
+        # Claude のルールは振る舞い指示、Codex/agy のルールは別思想（execpolicy 等の
+        # コマンドポリシー）のため、Markdown ルールの外部 CLI への同期は行わない。
+        if target != "claude" and composition.get("type", "skill") == "rule":
+            # targeted build でも旧 .codex/rules/<name>.md 生成物を掃除する。
+            self._cleanup_legacy_codex_rule(project_dir, composition["name"])
+            return None
 
         # Package filtering:
         # - manifest_compositions is None → build all (no filtering)
@@ -369,6 +379,11 @@ class FacetBuilder:
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dst)
 
+        # スキル出力先が .agents/skills/ に移行したため、targeted build でも
+        # 旧 .codex/skills/<name> に残った同名スキルを掃除する。
+        if target != "claude" and comp_type != "rule":
+            self._cleanup_legacy_codex_skills(project_dir, {output_name})
+
         relative = output_path.relative_to(project_dir)
         print(f"[facet] built {output_name} -> {relative}")
         return output_path
@@ -440,6 +455,59 @@ class FacetBuilder:
                     relative = orphan.relative_to(project_dir)
                     print(f"[facet] cleanup: removed orphan rule {name} <- {relative}")
 
+    def _cleanup_legacy_codex_skills(self, project_dir: Path, facet_skill_names: set[str]) -> None:
+        """旧 .codex/skills/<name> に残った facet スキルを掃除する（移行後は no-op）。
+
+        スキル出力先が .codex/skills/ から .agents/skills/ へ移行したため、
+        facet が所有するスキル名（今回ビルド分 + 前回マニフェスト分）のみを対象に
+        旧ディレクトリを削除する。union により、未インストール等で今回 skip された
+        スキルも前回マニフェスト経由で対象に含まれる。template 配布の context-loader 等
+        （manifest 非記録）や手書きファイルは対象外。symlink は辿らずスキップする。
+        """
+        legacy_root = project_dir / ".codex" / "skills"
+        if not legacy_root.is_dir() or legacy_root.is_symlink():
+            return
+        for name in sorted(facet_skill_names):
+            legacy_dir = legacy_root / name
+            if not legacy_dir.is_dir() or legacy_dir.is_symlink():
+                continue
+            try:
+                shutil.rmtree(legacy_dir)
+                print(f"[facet] migrate: removed legacy .codex/skills/{name}")
+            except OSError as e:
+                print(
+                    f"[facet] migrate: failed to remove legacy .codex/skills/{name}: {e}",
+                    file=sys.stderr,
+                )
+
+    def _cleanup_legacy_codex_rule(self, project_dir: Path, name: str) -> None:
+        """旧 .codex/rules/<name>.md（生成物）を 1 件削除する。symlink はスキップ。"""
+        legacy_file = project_dir / ".codex" / "rules" / f"{name}.md"
+        if legacy_file.is_symlink() or not legacy_file.is_file():
+            return
+        try:
+            legacy_file.unlink()
+            print(f"[facet] migrate: removed legacy .codex/rules/{name}.md")
+        except OSError as e:
+            print(
+                f"[facet] migrate: failed to remove legacy .codex/rules/{name}.md: {e}",
+                file=sys.stderr,
+            )
+
+    def _cleanup_legacy_codex_rules(self, project_dir: Path) -> None:
+        """旧 .codex/rules/*.md（生成物）を削除する。ルール同期廃止に伴う後始末。
+
+        対象は Markdown 生成物（*.md）のみ。Codex の execpolicy 用 *.rules や
+        その他のファイルは削除しない。symlink は辿らずスキップする。
+        """
+        legacy_root = project_dir / ".codex" / "rules"
+        if not legacy_root.is_dir() or legacy_root.is_symlink():
+            return
+        for md_file in sorted(legacy_root.glob("*.md")):
+            if md_file.is_symlink() or not md_file.is_file():
+                continue
+            self._cleanup_legacy_codex_rule(project_dir, md_file.stem)
+
     def build_all(self, target: str, project_dir: Path) -> list[Path]:
         """全 composition をビルドして出力する。"""
         output_paths: list[Path] = []
@@ -484,6 +552,12 @@ class FacetBuilder:
             sys.exit(1)
 
         self._cleanup_orphans(target, project_dir, built_skills, built_rules)
+        if target != "claude":
+            prev = self._load_manifest(target, project_dir)
+            legacy_names = built_skills | set(prev.get("skills", []))
+            self._cleanup_legacy_codex_skills(project_dir, legacy_names)
+            # ルール同期廃止: 旧 .codex/rules/*.md 生成物を掃除する
+            self._cleanup_legacy_codex_rules(project_dir)
         self._save_manifest(target, project_dir, list(built_skills), list(built_rules))
 
         return output_paths
@@ -515,6 +589,10 @@ class FacetBuilder:
         composition = self.load_composition(composition_path)
         comp_type = composition.get("type", "skill")
         output_name = composition["name"]
+
+        # 非 claude ターゲットにルールは配布しないため、書き戻し対象も存在しない
+        if target != "claude" and comp_type == "rule":
+            return None
 
         generated_path = self._build_output_path(output_name, target, project_dir, comp_type)
         if not generated_path.exists():
