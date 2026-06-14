@@ -304,6 +304,8 @@ class FacetBuilder:
         # Claude のルールは振る舞い指示、Codex/agy のルールは別思想（execpolicy 等の
         # コマンドポリシー）のため、Markdown ルールの外部 CLI への同期は行わない。
         if target != "claude" and composition.get("type", "skill") == "rule":
+            # targeted build でも旧 .codex/rules/<name>.md 生成物を掃除する。
+            self._cleanup_legacy_codex_rule(project_dir, composition["name"])
             return None
 
         # Package filtering:
@@ -376,6 +378,11 @@ class FacetBuilder:
                 dst = skill_dir / "scripts" / basename
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dst)
+
+        # スキル出力先が .agents/skills/ に移行したため、targeted build でも
+        # 旧 .codex/skills/<name> に残った同名スキルを掃除する。
+        if target != "claude" and comp_type != "rule":
+            self._cleanup_legacy_codex_skills(project_dir, {output_name})
 
         relative = output_path.relative_to(project_dir)
         print(f"[facet] built {output_name} -> {relative}")
@@ -464,8 +471,28 @@ class FacetBuilder:
             legacy_dir = legacy_root / name
             if not legacy_dir.is_dir() or legacy_dir.is_symlink():
                 continue
-            shutil.rmtree(legacy_dir)
-            print(f"[facet] migrate: removed legacy .codex/skills/{name}")
+            try:
+                shutil.rmtree(legacy_dir)
+                print(f"[facet] migrate: removed legacy .codex/skills/{name}")
+            except OSError as e:
+                print(
+                    f"[facet] migrate: failed to remove legacy .codex/skills/{name}: {e}",
+                    file=sys.stderr,
+                )
+
+    def _cleanup_legacy_codex_rule(self, project_dir: Path, name: str) -> None:
+        """旧 .codex/rules/<name>.md（生成物）を 1 件削除する。symlink はスキップ。"""
+        legacy_file = project_dir / ".codex" / "rules" / f"{name}.md"
+        if legacy_file.is_symlink() or not legacy_file.is_file():
+            return
+        try:
+            legacy_file.unlink()
+            print(f"[facet] migrate: removed legacy .codex/rules/{name}.md")
+        except OSError as e:
+            print(
+                f"[facet] migrate: failed to remove legacy .codex/rules/{name}.md: {e}",
+                file=sys.stderr,
+            )
 
     def _cleanup_legacy_codex_rules(self, project_dir: Path) -> None:
         """旧 .codex/rules/*.md（生成物）を削除する。ルール同期廃止に伴う後始末。
@@ -479,8 +506,7 @@ class FacetBuilder:
         for md_file in sorted(legacy_root.glob("*.md")):
             if md_file.is_symlink() or not md_file.is_file():
                 continue
-            md_file.unlink()
-            print(f"[facet] migrate: removed legacy .codex/rules/{md_file.name}")
+            self._cleanup_legacy_codex_rule(project_dir, md_file.stem)
 
     def build_all(self, target: str, project_dir: Path) -> list[Path]:
         """全 composition をビルドして出力する。"""

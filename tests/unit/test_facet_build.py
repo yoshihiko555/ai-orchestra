@@ -790,6 +790,25 @@ class TestLegacyCodexSkillMigration:
         assert (project_dir / ".agents" / "skills" / "simplify" / "SKILL.md").is_file()
         assert not (project_dir / ".codex" / "skills" / "simplify").exists()
 
+    def test_targeted_build_removes_legacy_codex_skill(self, tmp_path: Path) -> None:
+        """単一スキルビルド（build_one）でも旧 .codex/skills/<name> が掃除される。"""
+        orchestra_dir = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        project_dir.mkdir(parents=True)
+        _setup_facet_sources(orchestra_dir)
+
+        # 旧バージョンの生成物（.codex/skills/simplify）を再現
+        legacy_skill = project_dir / ".codex" / "skills" / "simplify" / "SKILL.md"
+        legacy_skill.parent.mkdir(parents=True, exist_ok=True)
+        legacy_skill.write_text("# old simplify\n", encoding="utf-8")
+
+        builder = FacetBuilder(orchestra_dir)
+        builder.build_one("simplify", "codex", project_dir)
+
+        # 新パスに生成され、旧パスは削除されている
+        assert (project_dir / ".agents" / "skills" / "simplify" / "SKILL.md").is_file()
+        assert not (project_dir / ".codex" / "skills" / "simplify").exists()
+
     def test_legacy_cleanup_preserves_non_facet_codex_skill(self, tmp_path: Path) -> None:
         """manifest 非記録の .codex/skills（template 配布等）は削除されない。"""
         orchestra_dir = tmp_path / "orchestra"
@@ -830,6 +849,30 @@ class TestNonClaudeRuleAbolished:
         # 一括ビルドでも .codex/rules/ にも .agents/rules/ にも出力されない
         builder.build_all("codex", project_dir)
         assert not (project_dir / ".codex" / "rules" / "my-rule.md").exists()
+        assert not (project_dir / ".agents" / "rules" / "my-rule.md").exists()
+
+    def test_targeted_rule_build_removes_legacy_codex_rule_md(self, tmp_path: Path) -> None:
+        """単一ルールビルド（build_one）でも旧 .codex/rules/<name>.md が掃除される。"""
+        orchestra_dir = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        project_dir.mkdir(parents=True)
+        _setup_facet_sources(orchestra_dir)
+
+        rule_comp = "name: my-rule\ntype: rule\npolicies:\n  - code-quality\n"
+        (orchestra_dir / "facets" / "compositions" / "my-rule.yaml").write_text(
+            rule_comp, encoding="utf-8"
+        )
+
+        # 旧バージョンの生成物（.codex/rules/my-rule.md）を再現
+        legacy_md = project_dir / ".codex" / "rules" / "my-rule.md"
+        legacy_md.parent.mkdir(parents=True, exist_ok=True)
+        legacy_md.write_text("# old rule\n", encoding="utf-8")
+
+        builder = FacetBuilder(orchestra_dir)
+        assert builder.build_one("my-rule", "codex", project_dir) is None
+
+        # 非 claude ルールは生成されず、旧 Markdown は削除されている
+        assert not legacy_md.exists()
         assert not (project_dir / ".agents" / "rules" / "my-rule.md").exists()
 
     def test_claude_rule_still_built(self, tmp_path: Path) -> None:
