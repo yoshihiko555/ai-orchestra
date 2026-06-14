@@ -17,6 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **cli-language ポリシーの重複出力を排除**: `cli-language` policy を参照する rule composition を `orchestra-usage` のみに集約し、`codex-delegation` / `antigravity-delegation` の composition からは参照を外した（`policies: []`）。これまで 3 つの生成ルール（`.claude/rules/*.md`）に同一の「CLI Language Policy」ブロックが inline され 3 回重複していたが、毎セッション読み込まれるルール群から約 3.6KB の重複を削減。全ルールは同時ロードされるため委譲ルール側からの参照可能性は不変で、instruction 本文・振る舞いは変更なし
 - **外部 CLI 向けスキルの出力先を `.agents/skills/` に統一**: facet build の非 claude ターゲットが生成する SKILL.md の出力先を `.codex/skills/` → `.agents/skills/` に変更。`.agents/skills/` は Codex CLI と Antigravity CLI（agy）の両方がプロジェクトローカルで自動検出する共有ディレクトリ（agy 1.0.7 / Codex 0.139 で実機確認）。これにより、これまで同期されていなかった agy へのスキル配布が解決
   - 移行: 横展開先の旧 `.codex/skills/{name}` に残る facet スキルは、facet build 時に **facet manifest 記録分のみ**を対象に一度だけ削除（`_cleanup_legacy_codex_skills`）。template 配布の `context-loader` 等（manifest 非記録）・手書きファイル・`.codex/config.toml`・execpolicy 用 `.codex/rules/*.rules` は対象外。symlink は辿らない
   - 単一ビルド（`orchex facet build --target codex --name <skill>` 等の `build_one`）でも対象スキルの旧 `.codex/skills/<name>` を掃除するよう修正。これまで一括ビルド（`build_all`）でしか掃除されず、targeted rebuild 時に旧パスの重複スキルが残る問題を解消。cleanup の `shutil.rmtree`/`unlink` は `OSError` を捕捉し、1 件の失敗で全体が止まらないようにした
