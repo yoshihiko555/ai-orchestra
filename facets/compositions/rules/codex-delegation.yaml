@@ -3,7 +3,6 @@ name: codex-delegation
 description: Codex CLI 委譲ルール
 type: rule
 
-policies:
-  - cli-language
+policies: []
 
 instruction: codex-delegation

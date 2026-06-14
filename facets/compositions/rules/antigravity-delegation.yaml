@@ -3,7 +3,6 @@ name: antigravity-delegation
 description: Antigravity CLI 委譲ルール
 type: rule
 
-policies:
-  - cli-language
+policies: []
 
 instruction: antigravity-delegation
