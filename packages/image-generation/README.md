@@ -36,22 +36,40 @@ description に基づく Claude Code のネイティブ subagent dispatch で起
 Codex の組み込み `image_gen` は ChatGPT 認証で動くため **`OPENAI_API_KEY` は不要**。
 非対話 `codex exec` から呼ぶには **sandbox の二層構造**を解く必要がある。
 
-| 層  | 対象                        | 設定                                            |
-| --- | --------------------------- | ----------------------------------------------- |
-| 層1 | Claude Code の Bash sandbox | **無効化**（`dangerouslyDisableSandbox: true`） |
-| 層2 | Codex の `--sandbox`        | 通常の `workspace-write`（危険フラグ不要）      |
+| 層  | 対象                        | 設定                                                                       |
+| --- | --------------------------- | -------------------------------------------------------------------------- |
+| 層1 | Claude Code の Bash sandbox | **無効化**（`dangerouslyDisableSandbox: true`）                            |
+| 層2 | Codex の `--sandbox`        | `workspace-write` + `network_access=true`（FS は repo 内に OS 強制で限定） |
 
-確定呼び出し:
+確定呼び出し（codex 0.140.0）:
 
 ```bash
-codex exec --model gpt-5.5 --sandbox workspace-write --skip-git-repo-check --full-auto \
-  "Generate <subject>. Save the file to <abs-path>. Use your built-in image generation tool. \
-   Do NOT fall back to Pillow/ImageMagick on rate limit; report failure explicitly." < /dev/null
+codex exec --model gpt-5.5 \
+  --sandbox workspace-write \
+  -c sandbox_workspace_write.network_access=true \
+  --enable imagegenext \
+  -c model_reasoning_effort=low \
+  --skip-git-repo-check \
+  "Use your built-in image_gen tool to generate <subject>. Accept whatever it returns; \
+   do NOT delete files. Print the saved path. Do NOT fall back to Pillow/ImageMagick on \
+   rate limit; report failure explicitly." < /dev/null
 ```
 
+- **`--enable imagegenext` が必須**: codex 0.140.0 の `exec` は、このフラグが無いと
+  `image_gen` の画像を**ディスクに保存しない**（`saved_path` が返らず base64 のみ）。
+  0.137.0 からの回帰で、`imagegenext` を有効化すると保存が復活する。
+- **`network_access=true` が必須**: codex 0.140.0 では `image_gen` の app-server が
+  backend 通信を行うため、network 遮断のままだと app-server が `Operation not permitted`
+  で起動しない。FS は `workspace-write` のまま repo 内に限定され、`danger-full-access`
+  は使わない（OS 強制の境界を維持）。
+- **`--full-auto` は廃止**: codex 0.140.0 で deprecated（`--sandbox` に統合）。
+- **保存先**: `image_gen` は `~/.codex/generated_images/<session>/` に保存する（imagegenext 有効時の
+  ファイル名は `call_*.png`、旧 codex は `ig_*.png`）。エージェントは生成直前のマーカー時刻より
+  **新しい**ファイルだけを採用して出力先へコピーする（古い画像を誤って成功扱いしない鮮度ガード）。
+  対象なし時に手動でディレクトリを漁って最新ファイルを掴むのは**禁止**（虚偽成功の原因）。
 - モデルは既定 `gpt-5.5`（`gpt-5.3-codex` 等のコーディングモデルは image_gen 非対応）。
   `config/image-generation.yaml` の `image_model` で差し替え可能。
-- レートリミットは連打由来。**1 タスク 1 回**で回避する。
+- レートリミット/利用上限は連打由来。**1 タスク 1 回**で回避する。
 - レートリミット時に Codex が Pillow で描く代替画像（非 AI）は**検知して失敗扱い**にする。
 
 ## 出力先

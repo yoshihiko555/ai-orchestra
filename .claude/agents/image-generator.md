@@ -31,23 +31,49 @@ and stop (do NOT draw a placeholder yourself).
 
 Do NOT hardcode values that exist in the config; always read them first.
 
-## Sandbox Policy (IMPORTANT — intentional exception)
+## Sandbox Policy (IMPORTANT — two layers, read carefully)
 
 This agent is the **single** deliberate exception to the project-wide rule
 "`dangerouslyDisableSandbox` is never used". The exception lives here and nowhere
 else — callers (skills/orchestrator) must NOT pass sandbox instructions to this
 agent; this Sandbox Policy is the only authority.
 
-- The image generation Bash command (Step 3 only) **MUST** run with
-  `dangerouslyDisableSandbox: true`.
+There are two independent sandbox layers around the `codex exec` call. The
+security boundary is **layer 2** (Codex's own OS-enforced seatbelt), NOT prompt
+wording.
+
+- **Layer 1 — Claude Code Bash sandbox**: the image generation Bash command
+  (Step 3 only) **MUST** run with `dangerouslyDisableSandbox: true`.
   Reason: Codex spins up an in-process app-server to call `image_gen`, and the
-  Claude Code Bash sandbox (layer 1) blocks that with `Operation not permitted`.
-- Codex's own sandbox (layer 2) stays at the normal `--sandbox workspace-write`.
-  The dangerous Codex flag `--dangerously-bypass-approvals-and-sandbox` is **NOT** used.
-- Every other Bash command in this workflow (path validation, file inspection)
-  runs under the **normal sandbox**. Only the one `codex exec` line is exempt.
-- Because layer 1 is off for that one command, input validation (Steps 1–2) is a
-  hard security boundary, not a nicety. Do not skip it.
+  Claude Code Bash sandbox blocks that process/socket spawn with
+  `Operation not permitted`. Every other Bash command in this workflow (path
+  validation, file inspection, copy) runs under the **normal sandbox**. Only the
+  one `codex exec` line is exempt.
+- **Layer 2 — Codex's own sandbox**: stays at `--sandbox workspace-write` **with
+  network access enabled** via `-c sandbox_workspace_write.network_access=true`.
+  - `workspace-write` keeps the filesystem **OS-restricted to the repo + /tmp**:
+    Codex cannot read, write, or delete anything outside the workspace (e.g.
+    `~/.ssh`, repo-external `.env`, other projects) regardless of what the
+    (untrusted) prompt says. This is a deterministic, kernel-enforced boundary —
+    do NOT weaken it.
+  - `network_access=true` is required because codex 0.140.0's `image_gen`
+    app-server reaches its backend over the network; with the default restricted
+    network it fails app-server init with `Operation not permitted`.
+  - The image itself is saved by Codex's own process (not a model-generated shell
+    command) to `~/.codex/generated_images/<session>/`, so it is unaffected by
+    the workspace-write filesystem restriction — **provided `--enable imagegenext`
+    is set** (Step 3). Without that flag, codex 0.140.0's exec mode does not write
+    the file to disk at all.
+  - **NEVER** use `--sandbox danger-full-access` or
+    `--dangerously-bypass-approvals-and-sandbox` here. They remove the
+    filesystem boundary (whole-disk read/write/delete) and were explicitly
+    rejected: the agent could be invoked with an untrusted prompt, so the OS
+    boundary must remain.
+- **Residual risk** (accepted): with network open and repo files readable, repo
+  contents could in principle be exfiltrated. Input validation (Steps 1–2) and
+  the constrained Codex prompt (Step 2) are defense-in-depth on top of the OS
+  boundary — keep them. Do not feed this agent prompts from fully untrusted
+  automated sources.
 
 ## Implementation Method (required)
 
@@ -86,31 +112,127 @@ PROMPT_TEXT=$(cat <<'PROMPT_EOF'
 PROMPT_EOF
 )
 # Build the instruction with parameter expansion (no eval, no nested quoting):
-FULL_PROMPT="Generate the following image: ${PROMPT_TEXT}. \
-Save the file to ${RESOLVED}. Use your built-in image generation tool. \
-IMPORTANT: if image generation fails (e.g. rate limit / TooManyRequests), do NOT \
-draw a fallback with Pillow, PIL, ImageMagick, matplotlib or any code-drawn \
-placeholder; report the failure explicitly instead."
+FULL_PROMPT="Use your built-in image_gen tool to generate the following image: \
+${PROMPT_TEXT}. \
+Accept whatever image_gen returns — do NOT judge, reject, or regenerate it for \
+quality, color, or composition reasons. Do NOT delete any generated file. \
+Do NOT read, write, or run anything unrelated to this single image generation. \
+After generation, print the absolute path of the image file image_gen saved on disk. \
+IMPORTANT: if image generation fails (e.g. rate limit / TooManyRequests / usage \
+limit), do NOT draw a fallback with Pillow, PIL, ImageMagick, matplotlib or any \
+code-drawn placeholder; report the failure explicitly instead."
 ```
 
+- Do **not** tell Codex to "save to `${RESOLVED}`": `image_gen` always writes to
+  its own `~/.codex/generated_images/<session>/` dir and ignores a target path,
+  so that instruction only confuses the agent. This workflow copies the result to
+  `${RESOLVED}` itself in Step 3.5.
 - The user prompt becomes plain text **inside** Codex's instruction; it never
   reaches the host shell as code. Passing `"$FULL_PROMPT"` as one quoted arg is
   what neutralises shell metacharacters.
 - The CLI query to Codex is in English (per cli-language policy).
 
-### Step 3 — Generate the image (single attempt, sandbox off for THIS command only)
+### Step 3 — Generate the image (single attempt, layer-1 sandbox off for THIS command only)
 
 Run exactly once (do NOT loop — repeated calls trigger rate limits). This is the
-only command that uses `dangerouslyDisableSandbox: true`; set Bash `timeout` to `180000`:
+only command that uses `dangerouslyDisableSandbox: true` (layer 1); Codex's own
+sandbox (layer 2) stays `workspace-write` per the Sandbox Policy. Set Bash
+`timeout` to `180000`.
+
+First record a freshness marker, then run Codex in the **same** command so the
+marker's timestamp precedes generation. Step 3.5 runs as a **separate** Bash call
+and shell variables do not persist between calls, so the marker path must be a
+fixed literal you reuse verbatim in both steps. Make it **unique per run**: pick
+one `RUN_ID` token (e.g. a timestamp plus a few random chars) and hard-code the
+**same** resulting path string in Step 3 and Step 3.5, so two concurrent
+generations never share a marker. Do NOT use `$$`/`$RANDOM` inline — they differ
+between the two separate Bash calls.
 
 ```bash
+MARKER="${TMPDIR:-/tmp}/imggen.<RUN_ID>.marker"   # e.g. .../imggen.20260617-0930-a1b2.marker
+touch "$MARKER"
+sleep 1  # ensure any new image has a strictly newer mtime than the marker
+
 codex exec \
   --model "$IMAGE_MODEL" \
   --sandbox workspace-write \
+  -c sandbox_workspace_write.network_access=true \
+  --enable imagegenext \
+  -c model_reasoning_effort=low \
   --skip-git-repo-check \
-  --full-auto \
   "$FULL_PROMPT" < /dev/null
 ```
+
+Notes:
+
+- `--enable imagegenext` is **required** on codex 0.140.0. Without it, `codex exec`
+  generates the image but **does NOT persist it to disk** (the built-in `image_gen`
+  result is only returned inline in the event stream; `~/.codex/generated_images/`
+  stays empty and `saved_path` is never populated). This is a regression vs codex
+  0.137.0, where exec saved the file by default. With `imagegenext` enabled, codex
+  writes the image to `~/.codex/generated_images/<session>/call_*.png` again.
+- `-c sandbox_workspace_write.network_access=true` opens network while keeping the
+  filesystem confined to the repo (see Sandbox Policy). Required for codex
+  0.140.0's `image_gen` app-server.
+- `-c model_reasoning_effort=low` keeps the agent from over-thinking and
+  self-rejecting/regenerating the output (and cuts token cost). Do not raise it —
+  at default effort the agent loops for many minutes and never finishes.
+- `--full-auto` is **removed** — it is deprecated in codex 0.140.0 (folded into
+  `--sandbox`). Do not re-add it.
+
+### Step 3.5 — Locate the fresh output and copy it to `$RESOLVED` (freshness guard)
+
+With `imagegenext` enabled (Step 3), `image_gen` saves to
+`~/.codex/generated_images/<session>/call_*.png` (older codex used `ig_*.png`), NOT
+to `$RESOLVED`. Find the newest generated PNG (`call_*.png` or `ig_*.png`) that is
+**strictly newer than the Step 3 marker** and copy it. The marker check is the
+freshness guard: it prevents picking up a **stale image from a previous run** (which
+would otherwise be reported as a false success — this is exactly what happens when
+the file is missing and the agent grabs an old one). Re-use the **same** `RUN_ID`
+marker literal as Step 3 (a separate Bash call does not inherit Step 3's `$MARKER`
+variable). Run under the normal sandbox:
+
+```bash
+MARKER="${TMPDIR:-/tmp}/imggen.<RUN_ID>.marker"   # SAME literal as Step 3
+GEN_DIR="$HOME/.codex/generated_images"
+
+# Newest generated PNG strictly newer than the marker. Match BOTH naming schemes
+# (`call_*.png` on codex 0.140.0 + imagegenext, `ig_*.png` on older codex).
+# NUL-delimited read + `-nt` so the result is empty when nothing new was produced,
+# and it is safe for any filename. Do NOT pipe to `xargs ls`: with no input, BSD
+# xargs runs `ls` against the CWD and yields a bogus match that defeats the
+# freshness guard. Avoid GNU-only flags (`find -printf`, `stat -c`, `xargs -r`) —
+# this must work on macOS too.
+FRESH=""
+if [ -d "$GEN_DIR" ]; then
+  while IFS= read -r -d '' f; do
+    if [ -z "$FRESH" ] || [ "$f" -nt "$FRESH" ]; then FRESH="$f"; fi
+  done < <(find "$GEN_DIR" -type f \( -name 'call_*.png' -o -name 'ig_*.png' \) -newer "$MARKER" -print0 2>/dev/null)
+fi
+rm -f "$MARKER"
+
+if [ -z "$FRESH" ]; then
+  echo "ERROR: no image newer than the marker was produced (generation failed; \
+NOT falling back to any older image)."
+  # Treat as FAILURE — do NOT copy or accept any pre-existing file.
+  exit 1
+fi
+
+cp "$FRESH" "$RESOLVED" || { echo "ERROR: failed to copy $FRESH -> $RESOLVED"; exit 1; }
+echo "COPIED: $FRESH -> $RESOLVED"
+```
+
+If no fresh file exists, generation did not produce a new image (rate/usage
+limit, app-server error, or self-rejection): report FAILURE honestly. Never copy
+an older file — that is exactly the stale-image bug this guard prevents.
+
+**Do NOT improvise a recovery.** If `$FRESH` is empty you MUST stop and report
+FAILURE. Do NOT then browse `$GEN_DIR`, run `ls -t … | head`, pick "the newest
+file", or copy any file you locate by hand — those bypass the freshness guard and
+will silently grab a stale image from a previous run (observed false-success mode:
+the agent copied an unrelated older `call_*.png` and reported success). The ONLY
+file you may copy is the one the freshness-guarded `find` above selected. If the
+flag/glob seem wrong, report that — do not work around the guard.
 
 ### Step 4 — Verify it is a real AI image (placeholder = failure)
 

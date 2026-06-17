@@ -69,6 +69,12 @@ Task(subagent_type="image-generator", prompt="""
 - **モデル**: 既定 `gpt-5.5`（`gpt-5.3-codex` 等のコーディングモデルは image_gen 非対応）。
   変更は `image-generation` パッケージ config（`config/image-generation.yaml` の `image_model`）で行う。
 - **sandbox**: 画像生成コマンドのみ Claude Code 側 Bash を `dangerouslyDisableSandbox: true` で実行する
-  （Codex の app-server 起動が層1 sandbox に阻害されるため）。Codex 側は通常の `workspace-write`。
+  （Codex の app-server 起動が層1 sandbox に阻害されるため）。Codex 側（層2）は
+  `workspace-write` のまま（FS は repo 内に OS 強制で限定）、`image_gen` の backend 通信のため
+  `network_access=true` だけを開放する。`danger-full-access` は使わない（詳細は image-generator
+  エージェント定義の Sandbox Policy）。
+- **`--enable imagegenext` 必須**（codex 0.140.0）: これが無いと exec モードで生成画像が
+  ディスク保存されず（`saved_path` 未populate）、結果を取得できない。0.137.0 からの回帰。
+  詳細は image-generator エージェント定義の Step 3。
 - **レートリミット**: 連打で発生する。1 リクエストにつき 1 回だけ生成を試みる。
 - **出力先**: デフォルト `generated-images/` は `.gitignore` 管理。成果物はユーザーが目視確認する前提。
