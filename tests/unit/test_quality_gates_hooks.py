@@ -230,6 +230,7 @@ class TestPostTestAnalysis:
             {"session_id": "sid-1", "cwd": "/project"},
             command="pytest -q",
             exit_code=1,
+            gate_passed=False,
             output="FAILED",
         )
 

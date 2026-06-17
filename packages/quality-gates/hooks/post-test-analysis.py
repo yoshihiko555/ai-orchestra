@@ -39,6 +39,7 @@ from event_logger import (  # noqa: E402
     load_trace_state,
     resolve_project_root_from_hook_data,
 )
+from failure_detector import analyze  # noqa: E402
 from hook_common import (  # noqa: E402
     DEFAULT_CODEX_FLAGS,
     DEFAULT_CODEX_MODEL,
@@ -70,27 +71,6 @@ def is_test_command(command: str) -> bool:
     """Check if the command is a test command."""
     command_lower = command.lower()
     return any(re.search(pattern, command_lower) for pattern in TEST_COMMAND_PATTERNS)
-
-
-def is_test_failure(exit_code: int, output: str) -> bool:
-    """Check if the test run failed."""
-    if exit_code != 0:
-        return True
-
-    # Check output for failure indicators
-    failure_indicators = [
-        "FAILED",
-        "FAIL:",
-        "failed",
-        "Error:",
-        "error:",
-        "AssertionError",
-        "TypeError",
-        "ValueError",
-        "test failed",
-        "tests failed",
-    ]
-    return any(indicator in output for indicator in failure_indicators)
 
 
 def extract_failure_summary(output: str) -> str:
@@ -169,9 +149,15 @@ def emit_quality_gate_event(
     *,
     command: str,
     exit_code: int,
+    gate_passed: bool,
     output: str,
+    detected_by: str | None = None,
 ) -> bool:
     """品質ゲート結果を audit イベントログに記録する。
+
+    `gate_passed` は failure_detector.analyze による 2 段判定の結果を
+    呼び出し側が導出して渡す。`exit_code` は payload 記録用に保持する
+    （パイプで終了コードがマスクされても出力パターンで失敗を検知できる）。
 
     Returns:
         `block_on_failed_test` によりブロックすべき場合は True。
@@ -182,18 +168,21 @@ def emit_quality_gate_event(
         return False
 
     trace = load_trace_state(project_dir=project_dir)
-    gate_passed = exit_code == 0
     blocking = bool(quality_gate.get("block_on_failed_test", False)) and not gate_passed
+
+    payload = {
+        "command": command[:200],
+        "exit_code": exit_code,
+        "passed": gate_passed,
+        "output_excerpt": output[:200] if output else "",
+        "blocking": blocking,
+    }
+    if detected_by is not None:
+        payload["detected_by"] = detected_by
 
     emit_event(
         "quality_gate",
-        {
-            "command": command[:200],
-            "exit_code": exit_code,
-            "passed": gate_passed,
-            "output_excerpt": output[:200] if output else "",
-            "blocking": blocking,
-        },
+        payload,
         session_id=str(data.get("session_id") or ""),
         tid=trace.get("tid", ""),
         project_dir=project_dir,
@@ -233,8 +222,12 @@ def main():
         exit_code = tool_response.get("exit_code", 0)
         output = tool_response.get("stdout", "") or tool_response.get("content", "")
 
-        analysis_failed = is_test_failure(exit_code, output)
-        gate_passed = exit_code == 0
+        # failure_detector で 2 段判定（exit_code + 出力パターン）に統一する。
+        # パイプで exit code がマスクされた失敗も output パターンで検知できる。
+        failure = analyze("Bash", tool_input, tool_response)
+        gate_passed = failure is None
+        analysis_failed = not gate_passed
+        detected_by = failure.get("detected_by") if failure else None
 
         # Record test result to shared state (success resets counters)
         record_test_result(command, gate_passed)
@@ -242,12 +235,17 @@ def main():
             data,
             command=command,
             exit_code=exit_code,
+            gate_passed=gate_passed,
             output=output,
+            detected_by=detected_by,
         )
 
         if blocking:
+            # detected_by を併記する。パイプマスク失敗（exit_code=0 でも
+            # 出力パターンで検知）の場合にブロック理由を判別できるようにする。
             print(
-                f"[quality-gates] quality gate blocked: test failed (exit_code={exit_code})",
+                f"[quality-gates] quality gate blocked: test failed "
+                f"(exit_code={exit_code}, detected_by={detected_by})",
                 file=sys.stderr,
             )
             sys.exit(2)
