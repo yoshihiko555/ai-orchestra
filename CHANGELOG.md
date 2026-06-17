@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **quality-gates のパイプマスク誤検知を修正（Issue #83）**: `quality_gate` イベントの `passed` 判定を `exit_code == 0` 単独から `failure_detector.analyze` の 2 段判定（exit_code + 出力パターン）へ統一。`pytest ... | tail -30` のようにパイプで終了コードがマスクされた失敗を `passed: false` と正しく記録し、`block_on_failed_test` 有効時はブロックする
+  - `post-test-analysis.py` の独自 `is_test_failure()` を削除し `packages/core/hooks/failure_detector.py` に一本化（検知ロジックの重複解消）。`extract_failure_summary` は存続
+  - `emit_quality_gate_event` は呼び出し側が導出した `gate_passed` を受け取る形に変更。payload キー（command/exit_code/passed/output_excerpt/blocking）は不変で後方互換。検知根拠を示す `detected_by`（`exit_code` / `output_pattern`）を任意で追記
 - **`/image-gen` スキルの画像生成失敗を修正（codex 0.140.0 対応・実機 E2E 検証済）**: codex-cli 0.140.0 への更新で `image-generator` エージェントの呼び出し契約が壊れていた問題を修正。実機の生成検証で原因を特定し対処した（赤リンゴ画像の出力まで確認）
   - **保存回帰の解決（`--enable imagegenext` 必須）**: codex 0.140.0 の `exec` モードは built-in `image_gen` の画像を**ディスクに保存しなくなっていた**（`image_generation_end` イベントから `saved_path` キーが消失。画像は base64 で返るのみ）。0.137.0 からの回帰で、`--enable imagegenext` フラグを付けると保存が復活する。これが無いと `~/.codex/generated_images/` は空のままで、エージェントが過去の画像を誤って掴む（虚偽成功）原因になっていた
   - **保存ファイル名の変化に追従**: imagegenext 有効時の保存名は `ig_*.png` ではなく `call_*.png`。鮮度ガードの検索を両パターン対応（`\( -name 'call_*.png' -o -name 'ig_*.png' \)`）に更新

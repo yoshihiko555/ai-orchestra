@@ -49,16 +49,36 @@ def test_is_test_command_ignores_non_test_commands(command: str) -> None:
     assert not post_test_analysis.is_test_command(command)
 
 
-def test_is_test_failure_true_when_exit_code_nonzero() -> None:
-    assert post_test_analysis.is_test_failure(1, "all good")
+def test_analyze_detects_failure_on_nonzero_exit() -> None:
+    """終了コードが非ゼロなら失敗（最も信頼できる根拠）。"""
+    failure = post_test_analysis.analyze(
+        "Bash",
+        {"command": "pytest -q"},
+        {"exit_code": 1, "stdout": "1 failed in 0.12s"},
+    )
+    assert failure is not None
+    assert failure["detected_by"] == "exit_code"
 
 
-def test_is_test_failure_true_when_output_contains_failure_indicator() -> None:
-    assert post_test_analysis.is_test_failure(0, "2 tests FAILED")
+def test_analyze_detects_failure_on_output_marker_when_exit_code_masked() -> None:
+    """パイプで exit code がマスクされても出力パターンで失敗を検知する。"""
+    failure = post_test_analysis.analyze(
+        "Bash",
+        {"command": "pytest -q | tail -30"},
+        {"exit_code": 0, "stdout": "FAILED tests/test_x.py::test_y\n1 failed in 0.30s"},
+    )
+    assert failure is not None
+    assert failure["detected_by"] == "output_pattern"
 
 
-def test_is_test_failure_false_for_successful_output() -> None:
-    assert not post_test_analysis.is_test_failure(0, "12 passed")
+def test_analyze_returns_none_for_successful_output() -> None:
+    """実 pytest の成功出力では失敗としない。"""
+    failure = post_test_analysis.analyze(
+        "Bash",
+        {"command": "pytest -q"},
+        {"exit_code": 0, "stdout": "12 passed in 0.45s"},
+    )
+    assert failure is None
 
 
 def test_extract_failure_summary_returns_top_3_lines() -> None:
@@ -167,7 +187,9 @@ def test_emit_quality_gate_event_records_audit_event(monkeypatch: pytest.MonkeyP
         },
         command="pytest -q",
         exit_code=1,
+        gate_passed=False,
         output="FAILED test_example.py::test_case",
+        detected_by="exit_code",
     )
 
     assert blocking is False
@@ -176,6 +198,7 @@ def test_emit_quality_gate_event_records_audit_event(monkeypatch: pytest.MonkeyP
     assert captured["payload"]["exit_code"] == 1
     assert captured["payload"]["passed"] is False
     assert captured["payload"]["blocking"] is False
+    assert captured["payload"]["detected_by"] == "exit_code"
     assert captured["kwargs"]["session_id"] == "sid-1"
     assert captured["kwargs"]["tid"] == "tid-123"
 
@@ -200,15 +223,22 @@ def test_emit_quality_gate_event_returns_blocking_when_configured(
         {"session_id": "sid-1", "cwd": "/project"},
         command="pytest -q",
         exit_code=1,
+        gate_passed=False,
         output="FAILED",
     )
 
     assert blocking is True
 
 
-def test_emit_quality_gate_event_uses_exit_code_for_success_even_with_error_text(
+def test_emit_quality_gate_event_records_failure_when_exit_code_masked(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """パイプマスク回帰: exit_code=0 でも gate_passed=False なら failed 記録 + ブロック。
+
+    `pytest ... | tail -30` のようにパイプで終了コードがマスクされた失敗を、
+    failure_detector が出力パターンで検知し gate_passed=False を導出する。
+    その結果が payload に passed:false / blocking:true として記録されることを保証する。
+    """
     captured: dict = {}
 
     monkeypatch.setattr(
@@ -232,12 +262,34 @@ def test_emit_quality_gate_event_uses_exit_code_for_success_even_with_error_text
 
     blocking = post_test_analysis.emit_quality_gate_event(
         {"session_id": "sid-1", "cwd": "/project"},
-        command="pytest -q",
+        command="pytest -q | tail -30",
         exit_code=0,
-        output="ValueError: expected output marker",
+        gate_passed=False,
+        output="FAILED tests/test_x.py::test_y\n1 failed in 0.30s",
+        detected_by="output_pattern",
     )
 
-    assert blocking is False
+    assert blocking is True
     assert captured["type"] == "quality_gate"
-    assert captured["payload"]["passed"] is True
-    assert captured["payload"]["blocking"] is False
+    assert captured["payload"]["exit_code"] == 0
+    assert captured["payload"]["passed"] is False
+    assert captured["payload"]["blocking"] is True
+    assert captured["payload"]["detected_by"] == "output_pattern"
+
+
+def test_pipe_masked_failure_flow_derives_failed_gate_and_fires_suggestion() -> None:
+    """パイプマスク回帰（フロー）: exit_code=0 + "1 failed" → gate_passed=False。
+
+    main() が `analyze` から導出する gate_passed / analysis_failed を直接検証する。
+    analysis_failed=True は Codex debug suggestion 発火条件（非ブロック時）に一致する。
+    """
+    tool_input = {"command": "pytest -q | tail -30"}
+    tool_response = {"exit_code": 0, "stdout": "FAILED tests/test_x.py::test_y\n1 failed in 0.3s"}
+
+    failure = post_test_analysis.analyze("Bash", tool_input, tool_response)
+    gate_passed = failure is None
+    analysis_failed = not gate_passed
+
+    assert gate_passed is False
+    assert analysis_failed is True
+    assert failure["detected_by"] == "output_pattern"
