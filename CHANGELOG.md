@@ -8,11 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- **`/image-gen` スキルの画像生成失敗を修正（codex 0.140.0 対応）**: codex-cli 0.140.0 への更新で `image-generator` エージェントの呼び出し契約が壊れていた問題を修正。実機検証で 3 つの原因を特定し対処した
-  - **sandbox レベル回帰**: `--sandbox workspace-write` だけでは `image_gen` の in-process app-server が `failed to initialize in-process app-server client: Operation not permitted` で起動しなくなった（backend 通信に network が必要）。`-c sandbox_workspace_write.network_access=true` で **network のみ開放**し、ファイルシステムは `workspace-write`（repo 内に OS 強制で限定）のまま維持。`danger-full-access` は untrusted prompt 経由の悪用を避けるため**採用しない**
-  - **`--full-auto` 廃止**: codex 0.140.0 で deprecated（`--sandbox` に統合）のためコマンドから削除
-  - **保存先の取りこぼし + 鮮度ガード追加**: `image_gen` は指定パスではなく常に `~/.codex/generated_images/<session>/ig_*.png` に保存する。生成直前のマーカー時刻より**新しい**ファイルのみを採用して出力先へコピーする Step を追加。過去の画像を誤って成功扱いする不具合（stale image）を防止
-  - 併せて `-c model_reasoning_effort=low` を指定し、agentic な Codex が生成画像を自己評価で破棄する挙動とトークン浪費を抑制
+- **`/image-gen` スキルの画像生成失敗を修正（codex 0.140.0 対応・実機 E2E 検証済）**: codex-cli 0.140.0 への更新で `image-generator` エージェントの呼び出し契約が壊れていた問題を修正。実機の生成検証で原因を特定し対処した（赤リンゴ画像の出力まで確認）
+  - **保存回帰の解決（`--enable imagegenext` 必須）**: codex 0.140.0 の `exec` モードは built-in `image_gen` の画像を**ディスクに保存しなくなっていた**（`image_generation_end` イベントから `saved_path` キーが消失。画像は base64 で返るのみ）。0.137.0 からの回帰で、`--enable imagegenext` フラグを付けると保存が復活する。これが無いと `~/.codex/generated_images/` は空のままで、エージェントが過去の画像を誤って掴む（虚偽成功）原因になっていた
+  - **保存ファイル名の変化に追従**: imagegenext 有効時の保存名は `ig_*.png` ではなく `call_*.png`。鮮度ガードの検索を両パターン対応（`\( -name 'call_*.png' -o -name 'ig_*.png' \)`）に更新
+  - **鮮度ガードの手動迂回を明示的に禁止**: 鮮度判定で対象なしのとき `ls -t | head` 等で session ディレクトリを漁って「最新ファイル」を掴む improvise を禁止（無関係な古い画像を誤コピーして虚偽成功する実害を確認）。対象なしは必ず FAILURE 報告
+  - **sandbox レベル回帰**: `--sandbox workspace-write` だけでは `image_gen` の in-process app-server が `Operation not permitted` で起動しない（backend 通信に network が必要）。`-c sandbox_workspace_write.network_access=true` で **network のみ開放**し、FS は `workspace-write`（repo 内に OS 強制で限定）のまま維持。`danger-full-access` は untrusted prompt 経由の悪用を避けるため**採用しない**
+  - **`--full-auto` 廃止**: codex 0.140.0 で deprecated（`--sandbox` に統合）のためコマンドから削除。併せて `-c model_reasoning_effort=low` を指定（default effort は自己評価ループで長時間ハングするため必須）
   - 設計改訂は ADR-20260605-023 の Update（2026-06-17）に記録
 
 ### Added

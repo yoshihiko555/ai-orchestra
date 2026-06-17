@@ -61,7 +61,9 @@ wording.
     network it fails app-server init with `Operation not permitted`.
   - The image itself is saved by Codex's own process (not a model-generated shell
     command) to `~/.codex/generated_images/<session>/`, so it is unaffected by
-    the workspace-write filesystem restriction.
+    the workspace-write filesystem restriction — **provided `--enable imagegenext`
+    is set** (Step 3). Without that flag, codex 0.140.0's exec mode does not write
+    the file to disk at all.
   - **NEVER** use `--sandbox danger-full-access` or
     `--dangerously-bypass-approvals-and-sandbox` here. They remove the
     filesystem boundary (whole-disk read/write/delete) and were explicitly
@@ -155,6 +157,7 @@ codex exec \
   --model "$IMAGE_MODEL" \
   --sandbox workspace-write \
   -c sandbox_workspace_write.network_access=true \
+  --enable imagegenext \
   -c model_reasoning_effort=low \
   --skip-git-repo-check \
   "$FULL_PROMPT" < /dev/null
@@ -162,38 +165,49 @@ codex exec \
 
 Notes:
 
+- `--enable imagegenext` is **required** on codex 0.140.0. Without it, `codex exec`
+  generates the image but **does NOT persist it to disk** (the built-in `image_gen`
+  result is only returned inline in the event stream; `~/.codex/generated_images/`
+  stays empty and `saved_path` is never populated). This is a regression vs codex
+  0.137.0, where exec saved the file by default. With `imagegenext` enabled, codex
+  writes the image to `~/.codex/generated_images/<session>/call_*.png` again.
 - `-c sandbox_workspace_write.network_access=true` opens network while keeping the
   filesystem confined to the repo (see Sandbox Policy). Required for codex
   0.140.0's `image_gen` app-server.
 - `-c model_reasoning_effort=low` keeps the agent from over-thinking and
-  self-rejecting/regenerating the output (and cuts token cost). Do not raise it.
+  self-rejecting/regenerating the output (and cuts token cost). Do not raise it —
+  at default effort the agent loops for many minutes and never finishes.
 - `--full-auto` is **removed** — it is deprecated in codex 0.140.0 (folded into
   `--sandbox`). Do not re-add it.
 
 ### Step 3.5 — Locate the fresh output and copy it to `$RESOLVED` (freshness guard)
 
-`image_gen` saves to `~/.codex/generated_images/<session>/ig_*.png`, NOT to
-`$RESOLVED`. Find the newest `ig_*.png` that is **strictly newer than the Step 3
-marker** and copy it. The marker check is the freshness guard: it prevents picking
-up a **stale image from a previous run** (which would otherwise be reported as a
-false success). Re-use the **same** `RUN_ID` marker literal as Step 3 (a separate
-Bash call does not inherit Step 3's `$MARKER` variable). Run under the normal
-sandbox:
+With `imagegenext` enabled (Step 3), `image_gen` saves to
+`~/.codex/generated_images/<session>/call_*.png` (older codex used `ig_*.png`), NOT
+to `$RESOLVED`. Find the newest generated PNG (`call_*.png` or `ig_*.png`) that is
+**strictly newer than the Step 3 marker** and copy it. The marker check is the
+freshness guard: it prevents picking up a **stale image from a previous run** (which
+would otherwise be reported as a false success — this is exactly what happens when
+the file is missing and the agent grabs an old one). Re-use the **same** `RUN_ID`
+marker literal as Step 3 (a separate Bash call does not inherit Step 3's `$MARKER`
+variable). Run under the normal sandbox:
 
 ```bash
 MARKER="${TMPDIR:-/tmp}/imggen.<RUN_ID>.marker"   # SAME literal as Step 3
 GEN_DIR="$HOME/.codex/generated_images"
 
-# Newest ig_*.png strictly newer than the marker. NUL-delimited read + `-nt` so
-# the result is empty when nothing new was produced, and it is safe for any
-# filename. Do NOT pipe to `xargs ls`: with no input, BSD xargs runs `ls` against
-# the CWD and yields a bogus match that defeats the freshness guard. Avoid GNU-only
-# flags (`find -printf`, `stat -c`, `xargs -r`) — this must work on macOS too.
+# Newest generated PNG strictly newer than the marker. Match BOTH naming schemes
+# (`call_*.png` on codex 0.140.0 + imagegenext, `ig_*.png` on older codex).
+# NUL-delimited read + `-nt` so the result is empty when nothing new was produced,
+# and it is safe for any filename. Do NOT pipe to `xargs ls`: with no input, BSD
+# xargs runs `ls` against the CWD and yields a bogus match that defeats the
+# freshness guard. Avoid GNU-only flags (`find -printf`, `stat -c`, `xargs -r`) —
+# this must work on macOS too.
 FRESH=""
 if [ -d "$GEN_DIR" ]; then
   while IFS= read -r -d '' f; do
     if [ -z "$FRESH" ] || [ "$f" -nt "$FRESH" ]; then FRESH="$f"; fi
-  done < <(find "$GEN_DIR" -type f -name 'ig_*.png' -newer "$MARKER" -print0 2>/dev/null)
+  done < <(find "$GEN_DIR" -type f \( -name 'call_*.png' -o -name 'ig_*.png' \) -newer "$MARKER" -print0 2>/dev/null)
 fi
 rm -f "$MARKER"
 
@@ -211,6 +225,14 @@ echo "COPIED: $FRESH -> $RESOLVED"
 If no fresh file exists, generation did not produce a new image (rate/usage
 limit, app-server error, or self-rejection): report FAILURE honestly. Never copy
 an older file — that is exactly the stale-image bug this guard prevents.
+
+**Do NOT improvise a recovery.** If `$FRESH` is empty you MUST stop and report
+FAILURE. Do NOT then browse `$GEN_DIR`, run `ls -t … | head`, pick "the newest
+file", or copy any file you locate by hand — those bypass the freshness guard and
+will silently grab a stale image from a previous run (observed false-success mode:
+the agent copied an unrelated older `call_*.png` and reported success). The ONLY
+file you may copy is the one the freshness-guarded `find` above selected. If the
+flag/glob seem wrong, report that — do not work around the guard.
 
 ### Step 4 — Verify it is a real AI image (placeholder = failure)
 

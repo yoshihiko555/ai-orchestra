@@ -47,6 +47,7 @@ Codex の組み込み `image_gen` は ChatGPT 認証で動くため **`OPENAI_AP
 codex exec --model gpt-5.5 \
   --sandbox workspace-write \
   -c sandbox_workspace_write.network_access=true \
+  --enable imagegenext \
   -c model_reasoning_effort=low \
   --skip-git-repo-check \
   "Use your built-in image_gen tool to generate <subject>. Accept whatever it returns; \
@@ -54,14 +55,18 @@ codex exec --model gpt-5.5 \
    rate limit; report failure explicitly." < /dev/null
 ```
 
+- **`--enable imagegenext` が必須**: codex 0.140.0 の `exec` は、このフラグが無いと
+  `image_gen` の画像を**ディスクに保存しない**（`saved_path` が返らず base64 のみ）。
+  0.137.0 からの回帰で、`imagegenext` を有効化すると保存が復活する。
 - **`network_access=true` が必須**: codex 0.140.0 では `image_gen` の app-server が
   backend 通信を行うため、network 遮断のままだと app-server が `Operation not permitted`
   で起動しない。FS は `workspace-write` のまま repo 内に限定され、`danger-full-access`
   は使わない（OS 強制の境界を維持）。
 - **`--full-auto` は廃止**: codex 0.140.0 で deprecated（`--sandbox` に統合）。
-- **保存先**: `image_gen` は常に `~/.codex/generated_images/<session>/ig_*.png` に保存する。
-  エージェントは生成直前のマーカー時刻より**新しい**ファイルだけを採用して出力先へコピーする
-  （古い画像を誤って成功扱いしない鮮度ガード）。
+- **保存先**: `image_gen` は `~/.codex/generated_images/<session>/` に保存する（imagegenext 有効時の
+  ファイル名は `call_*.png`、旧 codex は `ig_*.png`）。エージェントは生成直前のマーカー時刻より
+  **新しい**ファイルだけを採用して出力先へコピーする（古い画像を誤って成功扱いしない鮮度ガード）。
+  対象なし時に手動でディレクトリを漁って最新ファイルを掴むのは**禁止**（虚偽成功の原因）。
 - モデルは既定 `gpt-5.5`（`gpt-5.3-codex` 等のコーディングモデルは image_gen 非対応）。
   `config/image-generation.yaml` の `image_model` で差し替え可能。
 - レートリミット/利用上限は連打由来。**1 タスク 1 回**で回避する。
