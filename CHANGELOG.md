@@ -30,6 +30,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **`/reverse` の Phase 1（走査）をサブエージェント委譲化（試作）**: Phase 1 の重い処理（統計収集・エントリポイント抽出・Antigravity 概観・`scope.md` 合成）を新規 `reverse-coordinator` サブエージェントに委譲し、メインオーケストレーターには **要約＋成果物パスのみ** を返すようにした。中間 JSON（`stats.json` / `entrypoints.json`）と Antigravity 生出力がメインコンテキストに流入しなくなる（コンテキスト保護）。ユーザー確認ゲート（AskUserQuestion: 続行/再実行/中止）は従来どおりメインに残置し、Phase 2〜5 は不変
+  - 新規エージェント `reverse-coordinator`（`tool: claude-direct`、`tools` に `Agent` を含みネスト起動可能）を `agent-routing` に追加。内部で Antigravity スキャンを nested 起動する（メイン→coordinator→agy の深さ 2〜3）。`antigravity.enabled: false` 時は coordinator 内で Read/Grep/Glob フォールバック
+  - まず Phase 1 のみの試作（検証後に Phase 2〜3 へ段階展開予定）。`reverse-coordinator` は `/reverse` スキル内部から Task 起動される専用エージェントのため、キーワードルーティング（`AGENT_TRIGGERS`）の対象外
 - **cli-language ポリシーの重複出力を排除**: `cli-language` policy を参照する rule composition を `orchestra-usage` のみに集約し、`codex-delegation` / `antigravity-delegation` の composition からは参照を外した（`policies: []`）。これまで 3 つの生成ルール（`.claude/rules/*.md`）に同一の「CLI Language Policy」ブロックが inline され 3 回重複していたが、毎セッション読み込まれるルール群から約 3.6KB の重複を削減。全ルールは同時ロードされるため委譲ルール側からの参照可能性は不変で、instruction 本文・振る舞いは変更なし
 - **外部 CLI 向けスキルの出力先を `.agents/skills/` に統一**: facet build の非 claude ターゲットが生成する SKILL.md の出力先を `.codex/skills/` → `.agents/skills/` に変更。`.agents/skills/` は Codex CLI と Antigravity CLI（agy）の両方がプロジェクトローカルで自動検出する共有ディレクトリ（agy 1.0.7 / Codex 0.139 で実機確認）。これにより、これまで同期されていなかった agy へのスキル配布が解決
   - 移行: 横展開先の旧 `.codex/skills/{name}` に残る facet スキルは、facet build 時に **facet manifest 記録分のみ**を対象に一度だけ削除（`_cleanup_legacy_codex_skills`）。template 配布の `context-loader` 等（manifest 非記録）・手書きファイル・`.codex/config.toml`・execpolicy 用 `.codex/rules/*.rules` は対象外。symlink は辿らない

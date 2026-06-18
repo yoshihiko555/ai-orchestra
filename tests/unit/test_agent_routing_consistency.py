@@ -64,8 +64,11 @@ class TestAgentTriggersCompleteness:
 
     def test_all_config_agents_have_triggers(self) -> None:
         triggers_agents = set(route_config.AGENT_TRIGGERS.keys())
-        # general-purpose は汎用エージェントでトリガー不要の場合がある
-        config_agents = _AGENTS_IN_CONFIG - {"general-purpose"}
+        # トリガー不要なエージェント:
+        # - general-purpose: 汎用エージェント
+        # - reverse-coordinator: /reverse スキル内部から Task 起動される専用エージェントで、
+        #   ユーザープロンプトからのキーワードルーティング対象ではない
+        config_agents = _AGENTS_IN_CONFIG - {"general-purpose", "reverse-coordinator"}
         missing = config_agents - triggers_agents
         assert not missing, f"AGENT_TRIGGERS に定義がないエージェント: {sorted(missing)}"
 
