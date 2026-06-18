@@ -6,7 +6,7 @@
   "hooks": {},
   "files": [],
   "skills": ["reverse"],
-  "agents": [],
+  "agents": ["agents/reverse-coordinator.md"],
   "rules": [],
   "scripts": [],
   "config": []

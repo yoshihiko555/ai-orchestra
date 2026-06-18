@@ -155,9 +155,6 @@ agents:
     model: null
 
   # --- その他（Claude Code 直接）---
-  # reverse スキルの Phase コーディネーター（内部で agy を nested 起動）
-  reverse-coordinator:
-    tool: claude-direct
   docs-writer:
     tool: claude-direct
   planner:

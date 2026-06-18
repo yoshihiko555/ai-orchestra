@@ -29,7 +29,6 @@
     "agents/rag-engineer.md",
     "agents/requirements.md",
     "agents/researcher.md",
-    "agents/reverse-coordinator.md",
     "agents/security-reviewer.md",
     "agents/specialized-mcp-builder.md",
     "agents/spec-reviewer.md",
