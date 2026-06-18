@@ -34,6 +34,7 @@
     "agents/rag-engineer.md",
     "agents/requirements.md",
     "agents/researcher.md",
+    "agents/reverse-coordinator.md",
     "agents/security-reviewer.md",
     "agents/spec-reviewer.md",
     "agents/spec-writer.md",
@@ -50,5 +51,5 @@
     "config/git-workflow/sandbox-requirements.json",
     "config/image-generation/image-generation.yaml"
   ],
-  "last_sync": "2026-06-12T07:12:04.393664+00:00"
+  "last_sync": "2026-06-18T11:29:43.340074+00:00"
 }
