@@ -1,0 +1,19 @@
+# codd-scan スキルのファセット構成定義
+name: codd-scan
+description: ドキュメント依存グラフの構築（codd scan）
+
+# フロントマター（生成される SKILL.md に付与）
+frontmatter:
+  name: codd-scan
+  description: |
+    Build the document dependency graph from `codd:` frontmatter blocks.
+    Scans the configured scope and writes `.claude/codd/graph.jsonl`.
+    Trigger on: "codd scan", "依存グラフ", "整合性グラフ構築", "/codd-scan".
+  metadata:
+    short-description: Build the CODD document dependency graph
+
+# 参照するポリシー（codd skill は claude-direct。外部 CLI 連携なし）
+policies: []
+
+# スキル固有の instruction（ファイル参照）
+instruction: codd-scan

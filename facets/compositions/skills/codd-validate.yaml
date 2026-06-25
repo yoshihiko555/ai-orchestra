@@ -1,0 +1,20 @@
+# codd-validate スキルのファセット構成定義
+name: codd-validate
+description: ドキュメント整合性の検証（codd validate）
+
+# フロントマター（生成される SKILL.md に付与）
+frontmatter:
+  name: codd-validate
+  description: |
+    Validate the document dependency graph for coherence issues:
+    dangling links, duplicates, cycles, unknown vocab (error) and
+    missing frontmatter, orphans, drift (warning).
+    Trigger on: "codd validate", "整合性チェック", "リンク切れ検証", "/codd-validate".
+  metadata:
+    short-description: Validate CODD document coherence
+
+# 参照するポリシー（codd skill は claude-direct。外部 CLI 連携なし）
+policies: []
+
+# スキル固有の instruction（ファイル参照）
+instruction: codd-validate

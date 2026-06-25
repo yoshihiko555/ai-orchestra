@@ -1,3 +1,14 @@
+---
+codd:
+  node_id: "design:quick-start"
+  kind: design
+  status: active
+  depends_on:
+    - id: "design:architecture"
+      relation: references
+  owner: ai-orchestra
+---
+
 # クイックスタートガイド
 
 **更新日**: 2026-04-09

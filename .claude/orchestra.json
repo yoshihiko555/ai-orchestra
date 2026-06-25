@@ -4,6 +4,7 @@
     "antigravity-suggestions",
     "audit",
     "cocoindex",
+    "codd",
     "codex-suggestions",
     "core",
     "git-workflow",
@@ -51,5 +52,5 @@
     "config/git-workflow/sandbox-requirements.json",
     "config/image-generation/image-generation.yaml"
   ],
-  "last_sync": "2026-06-18T11:29:43.340074+00:00"
+  "last_sync": "2026-06-23T12:10:36.046996+00:00"
 }

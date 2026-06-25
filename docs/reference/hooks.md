@@ -1,3 +1,14 @@
+---
+codd:
+  node_id: "design:hooks"
+  kind: design
+  status: active
+  depends_on:
+    - id: "design:architecture"
+      relation: references
+  owner: ai-orchestra
+---
+
 # Hook リファレンス
 
 **更新日**: 2026-04-14

@@ -1,3 +1,14 @@
+---
+codd:
+  node_id: "design:facet-system"
+  kind: design
+  status: active
+  depends_on:
+    - id: "design:architecture"
+      relation: references
+  owner: ai-orchestra
+---
+
 # Facet システム解説
 
 ファセットプロンプティングの仕組みと運用フロー。

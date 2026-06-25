@@ -21,6 +21,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`packages/codd`: ドキュメント整合性レイヤー（CODD 思想の独立パッケージ・essential 化）**: 設計書・ADR・計画・ルール・指示書の依存関係をドキュメント先頭のフロントマター（`codd:` ブロック）で宣言し、`scan` で依存グラフを構築（`.claude/codd/graph.jsonl`）、`validate` で整合性を検証する。`core` のみ依存
+  - **検査**: dangling（リンク切れ）/ duplicate / cycle（循環）/ unknown（未定義 kind・relation・status）を error、missing_frontmatter / orphan（孤立）/ drift（上流が下流より新しい追従漏れ疑い）を warning として検出。error 検出時は非ゼロ終了（CI/フック組み込み可）。drift の時刻ソースは `git log -1 --format=%ct`（未コミットは mtime フォールバック）
+  - **配布**: essential プリセットに追加し常時有効化。`config/codd.yaml` で scope glob・kind/relation 語彙・検査レベル・グラフ保存先を制御（`.local.yaml` 上書き対応）。スキル `/codd-scan`・`/codd-validate`、ルール `codd-frontmatter-policy` を facet build で配布
+  - **生成スキル連携**: `design` / `design-tracker` / `task-state` スキルが成果物（要件・設計・ADR・Plans.md）に `codd:` フロントマターを自動付与するよう改修。導入先プロジェクトが essential セットアップだけで生成ドキュメントを CODD 管理下に置ける
+  - **方針**: 1 ファイル = 1 ノード。依存宣言の正本はフロントマター 1 箇所（外部 doc_links.yaml は作らない）。impact 分析（Green/Amber/Gray）・hook 自動配線・CI verdict・コード⇔ドキュメントトレースは Phase 2/3（別 Issue #94〜#98）。設計と決定は `docs/design/codd-coherence-layer.md` / ADR-20260624-026 に記録
 - `packages/fail-logs`: AI の失敗イベントを記録する基盤パッケージ（`core` のみ依存）。PostToolUse hook（`capture-failures.py`）がツール実行エラー・テスト/lint 失敗・外部 CLI 失敗を検知し、**失敗のみ**を `.claude/logs/fail-logs/failures.jsonl`（audit v1 互換スキーマ・所有者限定 `0600`・機密マスク済み）に追記する。「失敗を蓄積して次回以降に活かす」学習ループの記録基盤（活用は次フェーズ）
   - 失敗検知ロジックを `packages/core/hooks/failure_detector.py`（純粋関数）に集約。`exit_code` が 0/欠落でも test/lint コマンドの出力に失敗マーカーがあれば失敗と判定する 2 段構成で、`pytest ... | tail` のようにパイプで終了コードがマスクされる誤検知を回避
   - `config/fail-logs.yaml` で全体の有効/無効・失敗種別ごとのトグル・抜粋文字数・保存先を制御（`.local.yaml` 上書き対応）

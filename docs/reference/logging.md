@@ -1,3 +1,14 @@
+---
+codd:
+  node_id: "design:logging"
+  kind: design
+  status: active
+  depends_on:
+    - id: "design:architecture"
+      relation: references
+  owner: ai-orchestra
+---
+
 # ログ仕様
 
 このドキュメントは、`ai-orchestra` の現行ログ構成を整理したものです。
