@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from tests.module_loader import load_module
 
 codd = load_module("codd_common", "packages/codd/lib/codd_common.py")
@@ -74,6 +76,23 @@ def test_build_node_tolerates_missing_fields() -> None:
     assert node.owner is None
 
 
+def test_build_node_normalizes_yaml_null_to_empty() -> None:
+    # YAML の null（明示）が文字列 "None" にならず空文字へ正規化される。
+    block = {
+        "node_id": None,
+        "kind": None,
+        "status": None,
+        "depends_on": [{"id": None, "relation": None}],
+        "owner": None,
+    }
+    node = codd.build_node(block, "docs/x.md")
+    assert node.node_id == ""
+    assert node.kind == ""
+    assert node.status == ""
+    assert node.depends_on == (codd.Dependency(id="", relation=""),)
+    assert node.owner is None
+
+
 # ---------------------------------------------------------------------------
 # graph model
 # ---------------------------------------------------------------------------
@@ -109,7 +128,9 @@ def test_find_cycles_detects_simple_cycle() -> None:
     graph = codd.build_graph([_node("a", ["b"]), _node("b", ["a"])])
     cycles = graph.find_cycles()
     assert len(cycles) == 1
-    assert set(cycles[0]) == {"a", "b"}
+    # 「始点 == 終点」で閉じる契約を検証する。
+    assert cycles[0][0] == cycles[0][-1]
+    assert set(cycles[0][:-1]) == {"a", "b"}
 
 
 def test_find_cycles_empty_for_dag() -> None:
@@ -126,14 +147,15 @@ def test_find_cycles_detects_self_loop() -> None:
     graph = codd.build_graph([_node("a", ["a"])])
     cycles = graph.find_cycles()
     assert len(cycles) == 1
-    assert set(cycles[0]) == {"a"}
+    assert cycles[0] == ["a", "a"]
 
 
 def test_find_cycles_three_node_cycle_reported_once() -> None:
     graph = codd.build_graph([_node("a", ["b"]), _node("b", ["c"]), _node("c", ["a"])])
     cycles = graph.find_cycles()
     assert len(cycles) == 1
-    assert set(cycles[0]) == {"a", "b", "c"}
+    assert cycles[0][0] == cycles[0][-1]
+    assert set(cycles[0][:-1]) == {"a", "b", "c"}
 
 
 def test_extract_frontmatter_block_none_for_empty_text() -> None:
@@ -200,3 +222,11 @@ def test_load_config_defaults_when_missing(tmp_path) -> None:
     assert config.graph_format == codd.DEFAULT_GRAPH_FORMAT
     assert config.graph_path == codd.DEFAULT_GRAPH_PATH
     assert config.include == []
+
+
+def test_load_config_raises_value_error_on_invalid_yaml(tmp_path) -> None:
+
+    cfg_path = tmp_path / "codd.yaml"
+    _write(cfg_path, "checks:\n  dangling: [unclosed\n")
+    with pytest.raises(ValueError, match="Invalid CODD config YAML"):
+        codd.load_config(cfg_path)

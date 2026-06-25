@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
 
 from tests.module_loader import load_module
@@ -92,6 +93,19 @@ def test_scan_respects_exclude(tmp_path) -> None:
     result = cli.scan_project(tmp_path, config)
     ids = {n.node_id for n in result.nodes}
     assert ids == {"design:k"}
+
+
+def test_scan_respects_recursive_exclude_glob(tmp_path) -> None:
+    # exclude も Path.glob で解決するため、`**` 再帰 glob が直下・ネスト両方を除外する。
+    _write(tmp_path, "docs/a.md", _doc("design:a", "design"))
+    _write(tmp_path, "docs/sub/b.md", _doc("design:b", "design"))
+    _write(tmp_path, "guides/c.md", _doc("design:c", "design"))
+    config = _config(
+        scope={"include": ["docs/**/*.md", "guides/**/*.md"], "exclude": ["docs/**/*.md"]}
+    )
+    result = cli.scan_project(tmp_path, config)
+    ids = {n.node_id for n in result.nodes}
+    assert ids == {"design:c"}
 
 
 def test_write_graph_jsonl_roundtrip(tmp_path) -> None:
@@ -231,6 +245,30 @@ def test_validate_drift_warning_via_mtime(tmp_path) -> None:
     grouped = _checks(result, _config(), tmp_path)
     assert len(grouped["drift"]) == 1
     assert grouped["drift"][0].level == cc.LEVEL_WARNING
+
+
+def _git(root: Path, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=root, capture_output=True, check=True)
+
+
+def test_commit_time_clean_uses_git_dirty_uses_mtime(tmp_path) -> None:
+    # クリーン追跡ファイルは git コミット時刻、未コミット編集のあるファイルは mtime。
+    _git(tmp_path, "init")
+    _git(tmp_path, "config", "user.email", "t@example.com")
+    _git(tmp_path, "config", "user.name", "tester")
+    target = _write(tmp_path, "docs/x.md", _doc("design:x", "design"))
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "init")
+
+    future = 4102444800.0  # 2100-01-01。mtime を未来へ置き、コミット時刻と区別する
+    os.utime(target, (future, future))
+    # クリーン: コミット時刻が返る（mtime ではない）
+    assert cli.commit_time(tmp_path, "docs/x.md") != future
+
+    # 編集して dirty にする → mtime が返る（drift を取りこぼさない）
+    target.write_text(_doc("design:x", "design") + "\nedit\n", encoding="utf-8")
+    os.utime(target, (future, future))
+    assert cli.commit_time(tmp_path, "docs/x.md") == future
 
 
 def test_checks_off_level_suppresses(tmp_path) -> None:

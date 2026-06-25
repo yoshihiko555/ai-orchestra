@@ -103,6 +103,14 @@ class CoddNode:
     path: str  # プロジェクトルートからの相対パス
 
 
+def _as_text(value: Any) -> str:
+    """YAML 値を文字列へ正規化する。`None`（YAML の `null`）は空文字にする。
+
+    `str(None)` が `"None"` になり架空の ID/語彙としてグラフに混入するのを防ぐ。
+    """
+    return "" if value is None else str(value)
+
+
 def build_node(codd: dict[str, Any], path: str) -> CoddNode:
     """`codd:` ブロック dict から CoddNode を構築する。
 
@@ -116,15 +124,15 @@ def build_node(codd: dict[str, Any], path: str) -> CoddNode:
             if isinstance(entry, dict):
                 deps.append(
                     Dependency(
-                        id=str(entry.get("id", "")),
-                        relation=str(entry.get("relation", "")),
+                        id=_as_text(entry.get("id")),
+                        relation=_as_text(entry.get("relation")),
                     )
                 )
     owner = codd.get("owner")
     return CoddNode(
-        node_id=str(codd.get("node_id", "")),
-        kind=str(codd.get("kind", "")),
-        status=str(codd.get("status", "")),
+        node_id=_as_text(codd.get("node_id")),
+        kind=_as_text(codd.get("kind")),
+        status=_as_text(codd.get("status")),
         depends_on=tuple(deps),
         owner=str(owner) if owner is not None else None,
         path=path,
@@ -297,18 +305,23 @@ def _local_path(config_path: Path) -> Path:
     return config_path.with_name(f"{config_path.stem}.local{config_path.suffix}")
 
 
+def _load_yaml_dict(path: Path) -> dict[str, Any]:
+    """YAML を dict として読む。構文エラーはパス付きの ValueError に変換する。"""
+    try:
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise ValueError(f"Invalid CODD config YAML: {path}") from exc
+    return loaded if isinstance(loaded, dict) else {}
+
+
 def load_config(config_path: Path) -> CoddConfig:
     """base config を読み、`*.local.yaml` があれば上書きマージして返す。"""
     base: dict[str, Any] = {}
     if config_path.exists():
-        loaded = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-        if isinstance(loaded, dict):
-            base = loaded
+        base = _load_yaml_dict(config_path)
 
     local_path = _local_path(config_path)
     if local_path.exists():
-        local_loaded = yaml.safe_load(local_path.read_text(encoding="utf-8"))
-        if isinstance(local_loaded, dict):
-            base = deep_merge(base, local_loaded)
+        base = deep_merge(base, _load_yaml_dict(local_path))
 
     return CoddConfig.from_dict(base)

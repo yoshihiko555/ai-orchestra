@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import argparse
-import fnmatch
 import json
 import subprocess
 import sys
@@ -41,23 +40,25 @@ class ScanResult:
     missing_frontmatter: list[str]
 
 
-def _matches_any(rel_path: str, patterns: list[str]) -> bool:
-    """相対 posix パスがいずれかの glob にマッチするか。"""
-    return any(fnmatch.fnmatch(rel_path, pattern) for pattern in patterns)
+def _glob_relpaths(root: Path, patterns: list[str]) -> set[str]:
+    """patterns（glob）にマッチするファイルの相対 posix パス集合を返す。"""
+    matched: set[str] = set()
+    for pattern in patterns:
+        for path in root.glob(pattern):
+            if path.is_file():
+                matched.add(path.relative_to(root).as_posix())
+    return matched
 
 
 def collect_files(root: Path, config: cc.CoddConfig) -> list[Path]:
-    """include glob から exclude を差し引いた対象ファイル一覧を返す。"""
-    found: dict[str, Path] = {}
-    for pattern in config.include:
-        for path in root.glob(pattern):
-            if not path.is_file():
-                continue
-            rel = path.relative_to(root).as_posix()
-            if _matches_any(rel, config.exclude):
-                continue
-            found[rel] = path
-    return [found[rel] for rel in sorted(found)]
+    """include glob から exclude を差し引いた対象ファイル一覧を返す。
+
+    exclude も include と同じ ``Path.glob`` で解決するため、``docs/**/*.md`` の
+    ような再帰 glob を exclude に書いても期待どおり除外される。
+    """
+    included = _glob_relpaths(root, config.include)
+    excluded = _glob_relpaths(root, config.exclude)
+    return [root / rel for rel in sorted(included - excluded)]
 
 
 def scan_project(root: Path, config: cc.CoddConfig) -> ScanResult:
@@ -105,21 +106,40 @@ def write_graph_jsonl(result: ScanResult, output_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def commit_time(root: Path, rel_path: str) -> float:
-    """最終コミット時刻（epoch 秒）。未コミットは mtime にフォールバック。"""
+def _git_output(root: Path, args: list[str]) -> str | None:
+    """git コマンドを実行し stdout を返す。失敗時は None。"""
     try:
         completed = subprocess.run(
-            ["git", "log", "-1", "--format=%ct", "--", rel_path],
+            ["git", *args],
             cwd=root,
             capture_output=True,
             text=True,
             check=False,
         )
-        out = completed.stdout.strip()
-        if completed.returncode == 0 and out:
-            return float(out)
-    except (OSError, ValueError):
-        pass
+    except OSError:
+        return None
+    if completed.returncode != 0:
+        return None
+    return completed.stdout
+
+
+def commit_time(root: Path, rel_path: str) -> float:
+    """最終更新時刻（epoch 秒）。
+
+    クリーンな追跡ファイルは最終コミット時刻（`git log -1 --format=%ct`）を、
+    未追跡・未コミット編集のあるファイルは mtime を用いる。git は mtime を
+    履歴保持しないため、編集中ファイルではコミット時刻が古いままになり drift を
+    取りこぼす。これを避けるため dirty 判定で mtime に切り替える（H-3 / Codex P2）。
+    """
+    status = _git_output(root, ["status", "--porcelain", "--", rel_path])
+    is_clean_tracked = status is not None and not status.strip()
+    if is_clean_tracked:
+        out = _git_output(root, ["log", "-1", "--format=%ct", "--", rel_path])
+        if out and out.strip():
+            try:
+                return float(out.strip())
+            except ValueError:
+                pass
     try:
         return (root / rel_path).stat().st_mtime
     except OSError:
