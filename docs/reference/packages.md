@@ -1,3 +1,14 @@
+---
+codd:
+  node_id: "design:packages"
+  kind: design
+  status: active
+  depends_on:
+    - id: "design:architecture"
+      relation: references
+  owner: ai-orchestra
+---
+
 # パッケージリファレンス
 
 **更新日**: 2026-04-14

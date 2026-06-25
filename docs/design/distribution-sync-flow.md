@@ -1,3 +1,14 @@
+---
+codd:
+  node_id: "design:distribution-sync-flow"
+  kind: design
+  status: active
+  depends_on:
+    - id: "design:architecture"
+      relation: refines
+  owner: ai-orchestra
+---
+
 # 開発 → 配布 → 自動同期フロー
 
 **更新日**: 2026-04-09

@@ -1,3 +1,11 @@
+---
+codd:
+  node_id: "design:architecture"
+  kind: design
+  status: active
+  owner: ai-orchestra
+---
+
 # AI Orchestra アーキテクチャドキュメント
 
 **作成日**: 2026-03-20
