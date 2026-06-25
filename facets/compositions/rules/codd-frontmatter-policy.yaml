@@ -1,0 +1,8 @@
+# codd-frontmatter-policy ルールのファセット構成定義
+name: codd-frontmatter-policy
+description: CODD フロントマター記法の運用ルール
+type: rule
+
+policies: []
+
+instruction: codd-frontmatter-policy

@@ -1,0 +1,55 @@
+# codd: ドキュメント整合性レイヤーの設定
+#
+# プロジェクト固有の上書きは codd.local.yaml で行う（config-loading ルール参照）。
+# scan が走査する対象・kind/relation 語彙・検査レベル・グラフ保存先を定義する。
+
+# 機能全体の有効/無効。
+enabled: true
+
+# scan が走査する対象ファイル（glob）。include から exclude を差し引く。
+scope:
+  include:
+    - "docs/**/*.md"
+    - ".claude/rules/*.md"
+    - ".claude/Plans.md"
+    - "templates/context/*.md"
+  exclude:
+    - "docs/adr/_template.md"
+    - "docs/adr/DECISIONS.md"
+
+# 許可する kind 語彙（scope と整合させる）。
+kinds:
+  - requirement
+  - design
+  - adr
+  - plan
+  - rule
+  - instruction
+
+# 許可する relation 語彙。
+relations:
+  - derives_from
+  - refines
+  - implements
+  - references
+  - supersedes
+
+# 被参照ゼロを許容する最上流 kind（orphan 検査から除外）。
+roots:
+  - requirement
+  - instruction
+
+# 依存グラフの保存形式と出力先。
+graph_store:
+  format: jsonl
+  path: ".claude/codd/graph.jsonl"
+
+# 各検査のレベル（error / warning / off）。
+checks:
+  dangling: error
+  duplicate: error
+  cycle: error
+  unknown: error
+  missing_frontmatter: warning
+  orphan: warning
+  drift: warning

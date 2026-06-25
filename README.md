@@ -18,6 +18,7 @@ Claude Code (Orchestrator)
     │   ├── codex-suggestions/        # Codex 相談提案
     │   ├── antigravity-suggestions/  # Antigravity リサーチ提案
     │   ├── quality-gates/      # 品質ゲート
+    │   ├── codd/              # ドキュメント整合性レイヤー（scan/validate）
     │   ├── git-workflow/     # Git/GitHub ワークフロー
     │   ├── cocoindex/          # MCP サーバー自動プロビジョニング
     │   └── tmux-monitor/       # tmux リアルタイム監視
@@ -100,7 +101,7 @@ orchex setup essential --project /path/to/project --dry-run
 
 プリセットは `presets.json` で定義されています:
 
-- **essential** — core, agent-routing, audit, quality-gates
+- **essential** — core, agent-routing, audit, quality-gates, codd
 - **all** — 全パッケージ
 
 > **テンプレートのプレースホルダーについて**: 配布される `CLAUDE.md` / `AGENTS.md` には `<YOUR_PROJECT_NAME>` などの `<YOUR_...>` 形式のプレースホルダーが含まれています。セットアップ後にプロジェクト固有の内容に書き換えてください。

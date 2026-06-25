@@ -54,7 +54,22 @@
 
 ## Plans.md フォーマット
 
+ファイル先頭に CODD フロントマターを付与する（記法は `codd-frontmatter-policy` ルール参照）。
+Plans.md は**プロジェクト単位で 1 ノード**（kind: plan）とし、実装対象の `design:` ノードへ
+`implements` でリンクする。
+
 ```markdown
+---
+codd:
+  node_id: "plan:my-app"
+  kind: plan
+  status: active # draft/active/deprecated
+  depends_on:
+    - id: "design:architecture"
+      relation: implements
+  owner: # 任意
+---
+
 # Plans
 
 ## Project: my-app
@@ -88,12 +103,12 @@
 
 ## 状態マーカー
 
-| マーカー     | 意味         |
-| ------------ | ------------ |
-| `cc:TODO`    | 未着手       |
-| `cc:WIP`     | 作業中       |
-| `cc:done`    | 完了         |
-| `cc:blocked` | ブロック中   |
+| マーカー     | 意味       |
+| ------------ | ---------- |
+| `cc:TODO`    | 未着手     |
+| `cc:WIP`     | 作業中     |
+| `cc:done`    | 完了       |
+| `cc:blocked` | ブロック中 |
 
 ## 注意事項
 
@@ -101,3 +116,4 @@
 - 手動編集も可能（フォーマットに従うこと）
 - git にコミットしてチーム間で共有することを推奨
 - 状態マーカーはバッククォートで囲む: `` `cc:WIP` ``
+- 先頭の `codd:` フロントマターは SessionStart の自動アーカイブでも保持される（`## Project:` 境界の外側のため）

@@ -5,6 +5,7 @@
 プロジェクトの設計判断を ADR（Architecture Decision Records）として `docs/adr/` に記録する。
 
 追跡対象:
+
 - アーキテクチャ判断
 - 実装方針の決定
 - ライブラリ選定とその理由
@@ -36,7 +37,19 @@ docs/adr/ADR-{YYYYMMDD}-{連番}.md
 
 ### ADR テンプレート
 
+ファイル先頭に CODD フロントマターを付与する（codd は essential のため常に付与。記法は
+`codd-frontmatter-policy` ルール参照）。
+
 ```markdown
+---
+codd:
+  node_id: "adr:ADR-{YYYYMMDD}-{連番}"
+  kind: adr
+  status: accepted # proposed/accepted/rejected/superseded/deprecated（ステータス行と一致させる）
+  depends_on: [] # 「関連」がある場合のみ記載（下記マッピング参照）
+  owner: # 任意
+---
+
 # ADR-{YYYYMMDD}-{連番}: {タイトル}
 
 - **ステータス**: accepted
@@ -68,6 +81,30 @@ docs/adr/ADR-{YYYYMMDD}-{連番}.md
 この決定によって変わること、今後の制約。
 ```
 
+### CODD フロントマターの付与
+
+ADR 作成・更新時に `codd:` ブロックを必ず維持する。
+
+- **node_id**: `adr:ADR-{YYYYMMDD}-{連番}`（ファイル名と一致）。
+- **status**: 本文の `**ステータス**` 行と常に一致させる（accepted / superseded など）。
+  ステータスを変更したらフロントマターの `status` も同時に更新する。
+- **depends_on（`関連:` からの移行）**:
+
+| 関連の種類                            | relation     |
+| ------------------------------------- | ------------ |
+| 旧 ADR を置き換える（supersede）      | `supersedes` |
+| 関連する ADR / 設計を参照する（弱い） | `references` |
+
+例: ADR-20260624-011 が ADR-20260101-003 を置き換える場合:
+
+```yaml
+depends_on:
+  - id: "adr:ADR-20260101-003"
+    relation: supersedes
+```
+
+置き換えられた旧 ADR 側は `status: superseded` に更新する。
+
 ### Viewing Current Decisions
 
 ユーザーが「設計どうなってる」「what have we decided?」と聞いた場合:
@@ -87,6 +124,7 @@ docs/adr/ADR-{YYYYMMDD}-{連番}.md
 ## Output Format
 
 When recording, confirm in Japanese:
+
 - 何を記録したか
 - ADR ファイル名
 - 判断の要約

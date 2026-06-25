@@ -4,17 +4,18 @@ AI Orchestra のパッケージ一覧と詳細。`packages/*/agents` と `packag
 
 ## パッケージ概要
 
-| パッケージ                                | 概要                                               | カテゴリ     |
-| ----------------------------------------- | -------------------------------------------------- | ------------ |
-| [core](#core)                             | 全パッケージ共通の基盤ライブラリ                   | 基盤         |
-| [agent-routing](#agent-routing)           | cli-tools.yaml 駆動のエージェントルーティング提案  | 基盤         |
-| [quality-gates](#quality-gates)           | 実装後レビュー・テスト分析・自動 lint の品質ゲート | 品質         |
-| [audit](#audit)                           | 統一イベントログによるオーケストレーション監査基盤 | 監査         |
-| [codex-suggestions](#codex-suggestions)   | ファイル編集・プラン完了時の Codex 相談提案        | 提案         |
-| [antigravity-suggestions](#antigravity-suggestions) | Web 検索・fetch 時の Antigravity リサーチ提案           | 提案         |
-| [git-workflow](#git-workflow)             | Git/GitHub ワークフロー（Issue・PR・開発フロー）   | ワークフロー |
-| [cocoindex](#cocoindex)                   | cocoindex MCP サーバーの自動プロビジョニング       | MCP          |
-| [tmux-monitor](#tmux-monitor)             | tmux でサブエージェント出力をリアルタイム監視      | 監視         |
+| パッケージ                                          | 概要                                                       | カテゴリ     |
+| --------------------------------------------------- | ---------------------------------------------------------- | ------------ |
+| [core](#core)                                       | 全パッケージ共通の基盤ライブラリ                           | 基盤         |
+| [agent-routing](#agent-routing)                     | cli-tools.yaml 駆動のエージェントルーティング提案          | 基盤         |
+| [quality-gates](#quality-gates)                     | 実装後レビュー・テスト分析・自動 lint の品質ゲート         | 品質         |
+| [codd](#codd)                                       | ドキュメント依存グラフの scan / validate（整合性レイヤー） | 整合性       |
+| [audit](#audit)                                     | 統一イベントログによるオーケストレーション監査基盤         | 監査         |
+| [codex-suggestions](#codex-suggestions)             | ファイル編集・プラン完了時の Codex 相談提案                | 提案         |
+| [antigravity-suggestions](#antigravity-suggestions) | Web 検索・fetch 時の Antigravity リサーチ提案              | 提案         |
+| [git-workflow](#git-workflow)                       | Git/GitHub ワークフロー（Issue・PR・開発フロー）           | ワークフロー |
+| [cocoindex](#cocoindex)                             | cocoindex MCP サーバーの自動プロビジョニング               | MCP          |
+| [tmux-monitor](#tmux-monitor)                       | tmux でサブエージェント出力をリアルタイム監視              | 監視         |
 
 ---
 
@@ -70,6 +71,24 @@ AI Orchestra のパッケージ一覧と詳細。`packages/*/agents` と `packag
   - `test-gate-checker.py` — テスト品質チェック
 - skills (facet build): `review`, `tdd`, `design-tracker`, `release-readiness`
 - rules (facet build): `skill-review-policy`
+
+---
+
+### codd
+
+ドキュメント間の依存関係をフロントマター（`codd:` ブロック）で宣言し、`scan` で依存グラフを構築、`validate` で整合性（リンク切れ・重複・循環・孤立・ドリフト・欠落）を検証する整合性レイヤー。essential プリセットに含まれ常時有効。
+
+- **バージョン**: 0.1.0
+- **依存**: core
+
+**提供するもの:**
+
+- lib: `codd_common.py`（フロントマター parser + グラフモデル + config ローダー）
+- scripts:
+  - `codd.py` — `scan`（依存グラフ構築 → `.claude/codd/graph.jsonl`）/ `validate`（整合性検証）/ `graph`（テキスト可視化）
+- skills (facet build): `codd-scan`, `codd-validate`
+- rules (facet build): `codd-frontmatter-policy`
+- config: `codd.yaml`（scope glob・kind/relation 語彙・検査レベル・グラフ保存先）
 
 ---
 
