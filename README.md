@@ -2,6 +2,27 @@
 
 Claude Code用のマルチエージェントオーケストレーションシステム
 
+## 設計思想
+
+AI Orchestra は AI コーディングの実行基盤を 3 つの層で組み立て、さらに「変更しても壊れない」ための整合性層を加えた 4 層で捉える。
+
+| 層                    | 役割                     | AI Orchestra での実体                                                                                                    |
+| --------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
+| **Prompt**            | 何を指示するか           | facets（policies / instructions / output-contracts）から合成する Skill・Rule                                             |
+| **Context**           | 何を踏まえるか           | `CLAUDE.md` / `AGENTS.md` テンプレート、config の階層上書き、`.claude/context/` のセッション間共有                       |
+| **Harness**           | どう実行するか           | hooks、agent-routing（28 エージェント）、packages 配布、外部 CLI（Codex / Antigravity）協調                              |
+| **Coherence（CoDD）** | 変更が入っても整合を保つ | `packages/codd`：各ドキュメントの `codd:` フロントマターで依存を宣言し、`scan` で依存グラフ構築・`validate` で不整合検出 |
+
+最初の 3 層が「一度うまく動かす」ための基盤であるのに対し、**CoDD（Coherence-Driven Development / 整合性駆動開発）** は「要件や設計が変わったとき、波及先の成果物まで整合を保つ」ことを扱うレイヤー。AI Orchestra ではこれを独立パッケージ `packages/codd`（essential プリセット）として配布レールに載せ、導入先プロジェクトが生成するドキュメントまで整合性管理の対象にする。
+
+CoDD の中核は次の 3 点:
+
+- **依存グラフ構築** — ドキュメント先頭の `codd:` ブロックが依存を宣言し、`scan` がグラフ（`.claude/codd/graph.jsonl`）を組み立てる。
+- **変更影響分析** — 上流を変更したとき、どの下流に波及するかをグラフから辿る（Phase 1 はドリフト検出として素朴に、信頼度スコアによる本格分析は Phase 2）。
+- **整合性維持** — `validate` がリンク切れ・重複・循環・孤立・ドリフトを検出し、追従漏れをガードレールとして可視化する。
+
+> 本節は [CoDD の提唱記事](https://zenn.dev/shio_shoppaize/articles/shogun-codd-coherence) の概念を、AI Orchestra の用語（facet / hook / `packages/codd`・scan/validate）に合わせて再構成したもので、原文の転載ではない。実装の詳細は [整合性レイヤー設計](docs/design/codd-coherence-layer.md) と [要件: 整合性ガードレール](docs/requirements/coherence-guardrail.md) を参照。
+
 ## アーキテクチャ
 
 ![アーキテクチャ図](docs/assets/architecture.png)
