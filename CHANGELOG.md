@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.9] - 2026-06-26
+
 ### Fixed
 
 - **quality-gates のパイプマスク誤検知を修正（Issue #83）**: `quality_gate` イベントの `passed` 判定を `exit_code == 0` 単独から `failure_detector.analyze` の 2 段判定（exit_code + 出力パターン）へ統一。`pytest ... | tail -30` のようにパイプで終了コードがマスクされた失敗を `passed: false` と正しく記録し、`block_on_failed_test` 有効時はブロックする
