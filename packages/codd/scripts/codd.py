@@ -344,6 +344,182 @@ def cmd_validate(root: Path, config: cc.CoddConfig) -> int:
 
 
 # ---------------------------------------------------------------------------
+# impact（Issue #94 / 信頼度3帯域）
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ImpactResult:
+    """impact 分析の結果。影響先・変更ノード・削除上流をまとめる。"""
+
+    ref: str
+    changed_ids: list[str]
+    impacted: list[cc.ImpactedNode]
+    deleted_upstream: list[str]
+
+
+def diff_changed_paths(root: Path, ref: str) -> tuple[set[str], set[str]]:
+    """``git diff --name-status <ref>`` から変更パスと削除パスを返す。
+
+    返り値は (changed, deleted)。rename は旧パスを deleted・新パスを changed に振る。
+    パスはリポジトリルート相対の posix。``--root`` が git ルートと一致する前提
+    （drift 検査と同じ運用、設計 4.5 H-3 と整合）。
+    """
+    out = _git_output(root, ["diff", "--name-status", ref])
+    changed: set[str] = set()
+    deleted: set[str] = set()
+    if out is None:
+        return changed, deleted
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 2:
+            continue
+        status = parts[0]
+        if status.startswith("R") and len(parts) >= 3:
+            deleted.add(parts[1])
+            changed.add(parts[2])
+        elif status.startswith("D"):
+            deleted.add(parts[1])
+        else:
+            changed.add(parts[1])
+    return changed, deleted
+
+
+_GLOB_META = "*?["
+
+
+def _glob_prefix(pattern: str) -> str:
+    """glob パターンの先頭の固定（メタ文字以前の）プレフィックスを返す。"""
+    for index, char in enumerate(pattern):
+        if char in _GLOB_META:
+            return pattern[:index]
+    return pattern  # メタ文字なし（完全一致パターン）
+
+
+def _matches_scope_pattern(rel: str, pattern: str) -> bool:
+    """rel が scope glob にマッチするか（削除済みファイル向けの純粋パス判定）。
+
+    ``Path.glob`` はファイルシステムを走査するため削除済みパスには使えない。
+    ここでは「固定プレフィックス配下 かつ 拡張子一致」で近似する（include/exclude の
+    ``dir/**/*.md`` / ``dir/*.md`` / 完全一致 を実用上正しく判定できる）。
+    """
+    if not any(meta in pattern for meta in _GLOB_META):
+        return rel == pattern
+    prefix = _glob_prefix(pattern)
+    suffix = Path(pattern).suffix
+    return rel.startswith(prefix) and (not suffix or rel.endswith(suffix))
+
+
+def path_in_scope(rel: str, config: cc.CoddConfig) -> bool:
+    """rel が codd scope（include − exclude）に属するか判定する。"""
+    if not any(_matches_scope_pattern(rel, pat) for pat in config.include):
+        return False
+    return not any(_matches_scope_pattern(rel, pat) for pat in config.exclude)
+
+
+def _warn_if_not_git_root(root: Path) -> None:
+    """root が git のトップレベルと異なる場合、無音の空結果を避けるため警告する。"""
+    out = _git_output(root, ["rev-parse", "--show-toplevel"])
+    if out is None:
+        return
+    toplevel = Path(out.strip())
+    if toplevel.resolve() != root.resolve():
+        print(
+            f"[codd impact] WARN: --root ({root}) が git トップレベル ({toplevel}) と不一致。"
+            "変更パスの突合に失敗し空結果になる可能性があります。",
+            file=sys.stderr,
+        )
+
+
+def compute_impact_result(root: Path, config: cc.CoddConfig, ref: str) -> ImpactResult:
+    """scan → diff 突合 → 影響分析までを行い ImpactResult を返す。"""
+    _warn_if_not_git_root(root)
+    result = scan_project(root, config)
+    changed_paths, deleted_paths = diff_changed_paths(root, ref)
+
+    path_to_id = {node.path: node.node_id for node in result.nodes}
+    changed_ids = {path_to_id[p] for p in changed_paths if p in path_to_id}
+
+    # 削除された scope 内ドキュメント（下流が dangling 化する可能性）。
+    # 削除済みファイルは working tree に無いため、純粋パス判定でスコープ membership を見る。
+    deleted_upstream = sorted(p for p in deleted_paths if path_in_scope(p, config))
+
+    impacted = cc.compute_impact(result.graph, changed_ids, config.impact)
+    impacted.sort(key=lambda n: (_BAND_ORDER.get(n.band, 9), -n.score, n.node_id))
+    return ImpactResult(
+        ref=ref,
+        changed_ids=sorted(changed_ids),
+        impacted=impacted,
+        deleted_upstream=deleted_upstream,
+    )
+
+
+_BAND_ORDER = {cc.BAND_GREEN: 0, cc.BAND_AMBER: 1, cc.BAND_GRAY: 2}
+_BAND_LABEL = {
+    cc.BAND_GREEN: "Green（自動更新可）",
+    cc.BAND_AMBER: "Amber（要確認）",
+    cc.BAND_GRAY: "Gray（参考）",
+}
+
+
+def _impact_to_json(result: ImpactResult) -> dict[str, Any]:
+    return {
+        "ref": result.ref,
+        "changed_nodes": result.changed_ids,
+        "impacted": [
+            {
+                "node_id": node.node_id,
+                "path": node.path,
+                "band": node.band,
+                "score": node.score,
+                "origins": node.origins,
+                "min_hops": node.min_hops,
+                "co_changed": node.co_changed,
+            }
+            for node in result.impacted
+        ],
+        "deleted_upstream": result.deleted_upstream,
+    }
+
+
+def print_impact_text(result: ImpactResult) -> None:
+    counts = {band: 0 for band in (cc.BAND_GREEN, cc.BAND_AMBER, cc.BAND_GRAY)}
+    for node in result.impacted:
+        counts[node.band] += 1
+    print(
+        f"[codd impact] ref={result.ref} changed_nodes={len(result.changed_ids)} "
+        f"impacted={len(result.impacted)} "
+        f"(green={counts[cc.BAND_GREEN]} amber={counts[cc.BAND_AMBER]} "
+        f"gray={counts[cc.BAND_GRAY]})"
+    )
+    for band in (cc.BAND_GREEN, cc.BAND_AMBER, cc.BAND_GRAY):
+        rows = [n for n in result.impacted if n.band == band]
+        if not rows:
+            continue
+        print(f"\n## {_BAND_LABEL[band]} ({len(rows)})")
+        for node in rows:
+            origins = ", ".join(node.origins) if node.origins else "-"
+            flag = " [co_changed]" if node.co_changed else ""
+            print(
+                f"- {node.node_id}  {node.path}  score={node.score:.2f} "
+                f"hops={node.min_hops}  via {origins}{flag}"
+            )
+    if result.deleted_upstream:
+        print(f"\n## 削除された上流（dangling 注意, {len(result.deleted_upstream)}）")
+        for path in result.deleted_upstream:
+            print(f"- {path}  — `/codd-validate` で dangling を確認")
+
+
+def cmd_impact(root: Path, config: cc.CoddConfig, ref: str, as_json: bool) -> int:
+    result = compute_impact_result(root, config, ref)
+    if as_json:
+        print(json.dumps(_impact_to_json(result), ensure_ascii=False, indent=2))
+    else:
+        print_impact_text(result)
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # エントリポイント
 # ---------------------------------------------------------------------------
 
@@ -366,6 +542,17 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("scan", help="依存グラフを構築し JSONL 出力")
     sub.add_parser("graph", help="依存グラフをテキスト表示")
     sub.add_parser("validate", help="整合性を検証")
+    impact = sub.add_parser("impact", help="変更 diff から下流影響を信頼度帯域で分類")
+    impact.add_argument(
+        "--diff",
+        default="HEAD",
+        help="比較対象の git ref（既定: HEAD。例: origin/main, HEAD~1）",
+    )
+    impact.add_argument(
+        "--json",
+        action="store_true",
+        help="JSON で出力（既定はテキスト）",
+    )
     return parser
 
 
@@ -376,6 +563,9 @@ def main(argv: list[str] | None = None) -> int:
     if not config.enabled:
         print("[codd] disabled（config の enabled: false）")
         return 0
+
+    if args.command == "impact":
+        return cmd_impact(root, config, args.diff, args.json)
 
     handlers = {"scan": cmd_scan, "graph": cmd_graph, "validate": cmd_validate}
     return handlers[args.command](root, config)

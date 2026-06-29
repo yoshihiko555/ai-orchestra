@@ -1,17 +1,17 @@
 {
   "name": "codd",
-  "version": "0.1.0",
-  "description": "CODD 整合性レイヤー（ドキュメント依存グラフの scan / validate。core 依存）",
+  "version": "0.2.0",
+  "description": "CODD 整合性レイヤー（ドキュメント依存グラフの scan / validate / impact。core 依存）",
   "depends": ["core"],
   "hooks": {},
   "files": [],
-  "skills": ["codd-scan", "codd-validate"],
+  "skills": ["codd-scan", "codd-validate", "codd-impact"],
   "agents": [],
   "rules": ["codd-frontmatter-policy"],
   "scripts": [
     {
       "path": "scripts/codd.py",
-      "description": "CODD CLI: scan（依存グラフ構築）/ validate（整合性検証）/ graph（可視化）"
+      "description": "CODD CLI: scan（依存グラフ構築）/ validate（整合性検証）/ graph（可視化）/ impact（変更影響の信頼度分類）"
     }
   ],
   "config": ["config/codd.yaml"]

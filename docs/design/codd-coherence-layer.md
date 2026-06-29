@@ -41,13 +41,13 @@ AI Orchestra にこの思想を取り込む目的は2段階ある。
 codd-dev のコードは使わず、以下の**設計思想だけ**を AI Orchestra の流儀（package / facet /
 skill / hook）で独自実装する。
 
-| 借用する思想                              | AI Orchestra での実装                          |
-| ----------------------------------------- | ---------------------------------------------- |
-| フロントマターで依存を宣言（SSOT 1箇所）  | 各 `.md` 先頭に `codd:` ブロック               |
-| `scan` で依存グラフを構築                 | `packages/codd` の Python スクリプト           |
-| `validate` で不整合を検出                 | リンク切れ・孤立・ドリフト・循環・欠落の検出   |
-| 信頼度3帯域（Green/Amber/Gray）の影響分析 | **Phase 2 以降**（別Issue。重いため隔離）      |
-| hook / CI への組み込み                    | **Phase 2 以降**（既存 manifest hooks レール） |
+| 借用する思想                              | AI Orchestra での実装                           |
+| ----------------------------------------- | ----------------------------------------------- |
+| フロントマターで依存を宣言（SSOT 1箇所）  | 各 `.md` 先頭に `codd:` ブロック                |
+| `scan` で依存グラフを構築                 | `packages/codd` の Python スクリプト            |
+| `validate` で不整合を検出                 | リンク切れ・孤立・ドリフト・循環・欠落の検出    |
+| 信頼度3帯域（Green/Amber/Gray）の影響分析 | **Phase 2（実装済み）**: `codd impact`（4.5.1） |
+| hook / CI への組み込み                    | **Phase 2 以降**（既存 manifest hooks レール）  |
 
 ---
 
@@ -64,13 +64,13 @@ skill / hook）で独自実装する。
 
 ### 3.2 Out of Scope（別Issue 登録）
 
-| 項目                                                                | 理由                                       | 移管先                          |
-| ------------------------------------------------------------------- | ------------------------------------------ | ------------------------------- |
-| impact 分析（Green/Amber/Gray 信頼度スコア）                        | 信頼度設計が重い                           | Issue: codd-impact-analysis     |
-| hook 自動配線（PostToolUse scan / pre-commit validate）の導入先展開 | Phase 1 は手動 `/codd-validate` で価値検証 | Issue: codd-hook-distribution   |
-| CI（PR に verdict 投稿）                                            | impact 分析に依存                          | Issue: codd-ci-guardrail        |
-| コード ⇔ ドキュメントのトレーサビリティ                             | 静的解析が必要で重い                       | Issue: codd-code-doc-trace      |
-| ノードのサブ粒度化（1ファイル内 FT-xxx 単位のノード）               | parser/validate が複雑化                   | Issue: codd-subnode-granularity |
+| 項目                                                                                           | 理由                                       | 移管先                          |
+| ---------------------------------------------------------------------------------------------- | ------------------------------------------ | ------------------------------- |
+| ~~impact 分析（Green/Amber/Gray 信頼度スコア）~~ → **Phase 2 で実装済み（Issue #94 / 4.5.1）** | —                                          | 完了                            |
+| hook 自動配線（PostToolUse scan / pre-commit validate）の導入先展開                            | Phase 1 は手動 `/codd-validate` で価値検証 | Issue: codd-hook-distribution   |
+| CI（PR に verdict 投稿）                                                                       | impact 分析に依存                          | Issue: codd-ci-guardrail        |
+| コード ⇔ ドキュメントのトレーサビリティ                                                        | 静的解析が必要で重い                       | Issue: codd-code-doc-trace      |
+| ノードのサブ粒度化（1ファイル内 FT-xxx 単位のノード）                                          | parser/validate が複雑化                   | Issue: codd-subnode-granularity |
 
 ---
 
@@ -176,6 +176,47 @@ codd:
 - drift は「上流を変えたのに下流が追従していないかもしれない」という**素朴な Amber 相当**。
   信頼度スコアによる本格的な impact 分析は Phase 2。
 
+### 4.5.1 impact 分析（信頼度3帯域 / Issue #94）
+
+`impact` は変更 diff から下流ドキュメントへの影響を **Green（自動更新可）/ Amber（要確認）/
+Gray（参考）** に分類する。Phase 1 の素朴な drift（コミット時刻比較）を、宣言された依存関係を
+証拠とした信頼度スコアへ発展させたもの。
+
+```bash
+codd impact --diff <ref> [--json]   # 既定 ref = HEAD
+```
+
+**手順:**
+
+1. `git diff --name-status <ref>` で変更/削除ファイルを取得し、frontmatter の `node_id` にマップ。
+2. `depends_on` の逆引き（`incoming`）を単純パスで辿り、変更ノードに依存する下流を列挙
+   （サイクル安全・`max_hops` で打ち切り）。
+3. 各経路を信頼度スコア化し、ノードごとに最良値を採って帯域へ分類。
+
+**信頼度スコア:**
+
+| 要素          | 反映                                                                          |
+| ------------- | ----------------------------------------------------------------------------- |
+| relation 強度 | `derives_from`/`refines`/`implements`=1.0、`supersedes`=0.6、`references`=0.3 |
+| 距離減衰      | `decay^(hops-1)`（既定 decay=0.5）                                            |
+| パススコア    | `min(経路上の重み) × decay^(hops-1)`（最弱リンクが信頼度を決める）            |
+| ノードスコア  | 全経路・全起点の最大値（最良証拠が勝つ）                                      |
+| 件数ボーナス  | amber 以上の経路を持つ複数起点が裏付ける場合のみ加点（水増し防止）            |
+
+**帯域分類（補正込み）:**
+
+- `score >= green_threshold`（0.8）→ Green / `>= amber_threshold`（0.4）→ Amber / それ未満 → Gray。
+- **Corroboration rule**: Green は「直接の強依存（1 hop・強 relation）= 事実」か、
+  「裏付け起点 ≥ `corroboration_min_origins`（2）」のみ許す。多段単一経路（推論的）は Amber 上限。
+- **co_changed cap**: 下流ノード自身が同一 diff で変更済みなら Amber 上限にフラグ表示する
+  （スコアは下げず、破壊的変更を Gray に隠さない）。
+- 削除された上流ファイルは dangling 注意として別建てで報告する。
+
+**設計判断（codd-dev 比較 / ADR-026 D3）:** CODD は依存宣言を frontmatter に限定するため、証拠源は
+relation 種別とグラフ距離のみ。codd-dev の Noisy-OR・エビデンス種別分類（static/inferred/human 等）は
+コード静的解析由来の多様な証拠を確率合成する設計であり、本レイヤーには証拠源が無く適用しない。
+Corroboration rule と testimony cap（co_changed）の思想のみ借用した。`must_review` エッジは将来フェーズ。
+
 ### 4.6 config（codd.yaml）
 
 ```yaml
@@ -246,7 +287,7 @@ AI Orchestra 自身の `.claude/orchestra.json` に `codd` を追加し、最初
 詳細タスクは `.claude/Plans.md` を SSOT とする。
 
 - **Phase 1**: フロントマター規約 + `packages/codd`（scan/validate）+ essential 化 + skill 改修 + ドッグフード
-- **Phase 2**: impact 分析（Green/Amber/Gray）+ hook 配線の導入先展開（別Issue）
+- **Phase 2**: impact 分析（Green/Amber/Gray）**実装済み（Issue #94）** + hook 配線の導入先展開（別Issue）
 - **Phase 3**: CI verdict + コード⇔ドキュメントトレース（別Issue）
 
 ---

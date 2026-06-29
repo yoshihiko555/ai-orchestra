@@ -230,6 +230,239 @@ def build_graph(nodes: list[CoddNode]) -> CoddGraph:
 
 
 # ---------------------------------------------------------------------------
+# impact 分析（Issue #94 / Phase 2 / 信頼度3帯域）
+# ---------------------------------------------------------------------------
+#
+# 変更ノードの下流（depends_on で依存している側）を逆引きで辿り、各下流ノードを
+# Green（自動更新可）/ Amber（要確認）/ Gray（参考）に分類する。
+#
+# 信頼度スコアは「宣言された relation の強度 × グラフ距離の減衰」で算出する。
+# CODD は依存宣言を frontmatter に限定する（ADR-026 D3）ため、証拠源は relation 種別と
+# 距離のみ。codd-dev の Noisy-OR / エビデンス種別分類はコード静的解析由来の多様な証拠を
+# 確率合成する設計であり、本レイヤーには適用しない（証拠源が無い）。
+#
+# 取り込んだ補正（codd-dev 思想の借用）:
+# - Corroboration rule: Green は「直接の強依存（1 hop・強 relation）= 事実」か、
+#   「complementary な複数起点で裏付け（origins >= corroboration_min_origins）」のみ許す。
+#   多段単一経路（推論的）は Amber 上限に留める。
+# - co_changed cap: 下流ノード自身が同一 diff で変更済みなら Amber 上限にフラグ表示する
+#   （testimony cap 相当。スコアは下げず破壊的変更を Gray に隠さない）。
+
+# 信頼度帯域の正準値。
+BAND_GREEN = "green"
+BAND_AMBER = "amber"
+BAND_GRAY = "gray"
+
+DEFAULT_RELATION_WEIGHTS: dict[str, float] = {
+    "derives_from": 1.0,
+    "refines": 1.0,
+    "implements": 1.0,
+    "supersedes": 0.6,
+    "references": 0.3,
+}
+DEFAULT_DECAY = 0.5
+DEFAULT_MAX_HOPS = 6
+DEFAULT_GREEN_THRESHOLD = 0.8
+DEFAULT_AMBER_THRESHOLD = 0.4
+DEFAULT_STRONG_RELATION_MIN = 1.0
+DEFAULT_CORROBORATION_MIN_ORIGINS = 2
+DEFAULT_EVIDENCE_BONUS = 0.05
+# 未知 relation のフォールバック重み（弱依存扱い）。
+UNKNOWN_RELATION_WEIGHT = 0.3
+
+
+@dataclass(frozen=True)
+class ImpactConfig:
+    """impact 分析の重み・閾値設定（codd.yaml の ``impact:`` ブロック）。"""
+
+    relation_weights: dict[str, float]
+    decay: float
+    max_hops: int
+    green_threshold: float
+    amber_threshold: float
+    strong_relation_min: float
+    corroboration_min_origins: int
+    evidence_bonus: float
+
+    def __post_init__(self) -> None:
+        """誤設定で無音の異常結果を返さないよう値域を検証する。"""
+        if not 0.0 < self.decay <= 1.0:
+            raise ValueError(f"impact.decay は (0, 1] の範囲（got {self.decay}）")
+        if self.max_hops < 1:
+            raise ValueError(f"impact.max_hops は 1 以上（got {self.max_hops}）")
+        if self.amber_threshold > self.green_threshold:
+            raise ValueError(
+                "impact.amber_threshold は green_threshold 以下である必要がある"
+                f"（amber={self.amber_threshold} > green={self.green_threshold}）"
+            )
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ImpactConfig:
+        weights = dict(DEFAULT_RELATION_WEIGHTS)
+        for name, value in (data.get("relation_weights") or {}).items():
+            try:
+                weights[str(name)] = float(value)
+            except (TypeError, ValueError):
+                continue
+        return cls(
+            relation_weights=weights,
+            decay=float(data.get("decay", DEFAULT_DECAY)),
+            max_hops=int(data.get("max_hops", DEFAULT_MAX_HOPS)),
+            green_threshold=float(data.get("green_threshold", DEFAULT_GREEN_THRESHOLD)),
+            amber_threshold=float(data.get("amber_threshold", DEFAULT_AMBER_THRESHOLD)),
+            strong_relation_min=float(data.get("strong_relation_min", DEFAULT_STRONG_RELATION_MIN)),
+            corroboration_min_origins=int(
+                data.get("corroboration_min_origins", DEFAULT_CORROBORATION_MIN_ORIGINS)
+            ),
+            evidence_bonus=float(data.get("evidence_bonus", DEFAULT_EVIDENCE_BONUS)),
+        )
+
+    def weight_of(self, relation: str) -> float:
+        """relation の重みを返す（未知は弱依存フォールバック）。"""
+        return self.relation_weights.get(relation, UNKNOWN_RELATION_WEIGHT)
+
+
+@dataclass
+class ImpactedNode:
+    """impact 分析で影響先と判定された 1 ノード。"""
+
+    node_id: str
+    path: str
+    score: float
+    band: str
+    origins: list[str]  # この下流に到達した変更ノード（昇順）
+    min_hops: int
+    co_changed: bool  # 同一 diff で自身も変更されている
+
+
+def build_edge_weights(graph: CoddGraph, config: ImpactConfig) -> dict[tuple[str, str], float]:
+    """``(target_id, source_id) -> 重み`` のエッジ重みキャッシュを構築する。
+
+    エッジ ``source depends_on target`` の relation 重み。source が target を複数 relation で
+    参照する場合は最大重み（最良証拠）を採る。グラフ構築後は不変なので traversal 前に一度だけ
+    計算し、hot path での depends_on 線形走査を避ける。
+    """
+    cache: dict[tuple[str, str], float] = {}
+    for source_id, node in graph.nodes.items():
+        for dep in node.depends_on:
+            if dep.id == source_id:
+                continue
+            key = (dep.id, source_id)
+            cache[key] = max(cache.get(key, 0.0), config.weight_of(dep.relation))
+    return cache
+
+
+def _band_for_score(score: float, config: ImpactConfig) -> str:
+    """スコアを帯域へ写像する（補正前の素の帯域）。"""
+    if score >= config.green_threshold:
+        return BAND_GREEN
+    if score >= config.amber_threshold:
+        return BAND_AMBER
+    return BAND_GRAY
+
+
+@dataclass
+class _Accumulator:
+    """1 下流ノードに対する経路探索の集計バケット。"""
+
+    best_score: float = 0.0
+    min_hops: int = 0
+    has_direct_fact: bool = False
+    # 到達した全変更起点（表示用 via）。
+    origins: set[str] = field(default_factory=set)
+    # amber 閾値以上の経路で到達した変更起点（Corroboration カウント用）。
+    strong_origins: set[str] = field(default_factory=set)
+
+
+def compute_impact(
+    graph: CoddGraph,
+    changed_ids: set[str],
+    config: ImpactConfig,
+) -> list[ImpactedNode]:
+    """変更ノード集合から下流の影響先を列挙し信頼度帯域へ分類する。
+
+    各変更起点から incoming（逆引き）エッジを単純パスで辿り（サイクル安全・
+    ``max_hops`` で打ち切り）、``path_score = min(経路上の重み) × decay^(hops-1)`` を
+    計算する。ノードごとに全経路・全起点の最良スコアを採り、補正を適用する。
+    """
+    acc: dict[str, _Accumulator] = {}
+    weights = build_edge_weights(graph, config)
+
+    for origin in changed_ids:
+        if origin not in graph.nodes:
+            continue
+        # スタック要素: (現在ノード, hops, 経路上の最小重み, 訪問済み集合)
+        stack: list[tuple[str, int, float, frozenset[str]]] = [
+            (origin, 0, 1.0, frozenset({origin}))
+        ]
+        while stack:
+            current, hops, min_w, visited = stack.pop()
+            next_hops = hops + 1
+            if next_hops > config.max_hops:
+                continue
+            for source_id in graph.incoming.get(current, ()):
+                if source_id in visited:
+                    continue  # 単純パスのみ（循環を辿らない）
+                weight = weights.get((current, source_id), 0.0)
+                new_min = min(min_w, weight)
+                path_score = new_min * (config.decay ** (next_hops - 1))
+                is_direct_fact = next_hops == 1 and weight >= config.strong_relation_min
+                bucket = acc.setdefault(source_id, _Accumulator(min_hops=next_hops))
+                if path_score > bucket.best_score:
+                    bucket.best_score = path_score
+                bucket.min_hops = min(bucket.min_hops, next_hops)
+                bucket.has_direct_fact = bucket.has_direct_fact or is_direct_fact
+                bucket.origins.add(origin)
+                if path_score >= config.amber_threshold:
+                    bucket.strong_origins.add(origin)
+                stack.append((source_id, next_hops, new_min, visited | {source_id}))
+
+    return [
+        _finalize(node_id, bucket, graph, changed_ids, config) for node_id, bucket in acc.items()
+    ]
+
+
+def _finalize(
+    node_id: str,
+    bucket: _Accumulator,
+    graph: CoddGraph,
+    changed_ids: set[str],
+    config: ImpactConfig,
+) -> ImpactedNode:
+    """集計バケットへ件数ボーナス・Corroboration・co_changed 補正を適用する。"""
+    score = bucket.best_score
+    strong_count = len(bucket.strong_origins)
+    # 件数ボーナス: amber 以上の経路を持つ複数起点が裏付ける場合のみ加点（弱リンク水増し防止）。
+    if strong_count >= 2:
+        score = min(1.0, score + config.evidence_bonus * (strong_count - 1))
+
+    band = _band_for_score(score, config)
+    # Corroboration rule: Green は直接事実か、十分な起点数の裏付けが必要。
+    if (
+        band == BAND_GREEN
+        and not bucket.has_direct_fact
+        and strong_count < config.corroboration_min_origins
+    ):
+        band = BAND_AMBER
+
+    # co_changed cap: 自身も変更済みなら Green を Amber に留める（フラグで可視化）。
+    co_changed = node_id in changed_ids
+    if co_changed and band == BAND_GREEN:
+        band = BAND_AMBER
+
+    node = graph.nodes.get(node_id)
+    return ImpactedNode(
+        node_id=node_id,
+        path=node.path if node else "",
+        score=round(score, 4),
+        band=band,
+        origins=sorted(bucket.origins),
+        min_hops=bucket.min_hops,
+        co_changed=co_changed,
+    )
+
+
+# ---------------------------------------------------------------------------
 # config ローダー（設計 4.6 / config-loading ルール準拠）
 # ---------------------------------------------------------------------------
 
@@ -266,6 +499,7 @@ class CoddConfig:
     graph_format: str
     graph_path: str
     checks: dict[str, str]
+    impact: ImpactConfig
     raw: dict[str, Any]
 
     @classmethod
@@ -285,6 +519,7 @@ class CoddConfig:
                 str(name): normalize_check_level(level)
                 for name, level in (data.get("checks") or {}).items()
             },
+            impact=ImpactConfig.from_dict(data.get("impact") or {}),
             raw=data,
         )
 
