@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **`/issue-fix` を worktree 前提のフローに整合（不要なブランチ作成を回収）**: Phase 2-1 を「ブランチ作成」から「ブランチの準備状況を確認」に変更。issue ごとに先に worktree を作成してその上で作業する運用に合わせ、worktree 内（`git rev-parse --git-dir` ≠ `--git-common-dir`）または base 以外のブランチにいる場合は追加のブランチ作成をスキップし、現在ブランチでそのまま作業を開始する。base 上かつ非 worktree のときのみ従来どおりラベル起点でブランチを作成する（後方互換維持）
+  - `$BASE` 解決失敗時は統合ブランチ（`main` / `master` / `develop` / `stage` / `staging`）上でのみブランチを作成し、それ以外は準備済み扱いでスキップ（統合ブランチでの直接作業を回避する安全側設計）
+  - 編集ソースは facet `facets/instructions/issue-fix.md`。`.claude/skills/` と `.agents/skills/` の SKILL.md は facet build で再生成
+
 ## [0.2.9] - 2026-06-26
 
 ### Fixed

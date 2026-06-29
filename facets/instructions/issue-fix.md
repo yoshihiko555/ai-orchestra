@@ -82,7 +82,42 @@ AskUserQuestion で計画の承認を求める:
 
 ### Phase 2: 実装
 
-#### 2-1. ブランチ作成
+#### 2-1. ブランチの準備状況を確認
+
+**issue ごとに先に worktree を作成し、その worktree 上で作業を進める。**
+そのため Phase 2-1 ではまず「作業用ブランチが既に準備済みか」を判定し、**準備済みならブランチ作成をスキップ**して現在ブランチでそのまま作業を開始する。worktree 作成の責務とブランチ作成の責務を二重化させない。
+
+##### 準備状況の判定
+
+以下のいずれかを満たせば「準備済み」とみなす:
+
+- **worktree 内で実行している**: `git rev-parse --git-dir` と `git rev-parse --git-common-dir` が異なる（最も確実なシグナル）
+- **base 以外のブランチにいる**: 現在ブランチが解決済み base branch（`$BASE`）と異なる
+
+```bash
+GIT_DIR=$(git rev-parse --git-dir)
+GIT_COMMON_DIR=$(git rev-parse --git-common-dir)
+CURRENT_BRANCH=$(git branch --show-current)
+
+# base branch 解決（PR Standards Policy の resolver を利用）
+: "${AI_ORCHESTRA_DIR:?AI_ORCHESTRA_DIR is not set}"
+BASE=$(python3 "$AI_ORCHESTRA_DIR/packages/git-workflow/scripts/resolve_base_branch.py" 2>/dev/null || echo "")
+
+# 判定に使う比較（下記いずれかが真なら「準備済み」）:
+#   worktree 内     : [ "$GIT_DIR" != "$GIT_COMMON_DIR" ]
+#   base 以外にいる : [ -n "$BASE" ] && [ "$CURRENT_BRANCH" != "$BASE" ]
+```
+
+- **準備済み（`$GIT_DIR` ≠ `$GIT_COMMON_DIR`、または `$BASE` が非空かつ `$CURRENT_BRANCH` ≠ `$BASE`）の場合**:
+  - 追加のブランチ作成は **行わない**
+  - 現在のブランチをそのまま採用し、「作業ブランチ: `{現在ブランチ}`」と明示報告する
+  - 以降のフェーズ（4-5 コミット / 4-6 PR push）で参照する `{ブランチ名}` は、ここで採用した現在ブランチ（`$CURRENT_BRANCH`）を指す
+  - そのまま 2-2 へ進む
+- **未準備（base 上 かつ 非 worktree）の場合のみ**: 下記フォールバックでブランチを作成する
+
+> **安全側の判断**: `$BASE` の解決に失敗した（空になった）場合、現在ブランチが `main` / `master` / `develop` / `stage` / `staging`（resolver の候補と同じ統合ブランチ）なら未準備として扱いブランチを作成する。それ以外（既に feature ブランチ等）は準備済みとみなしスキップする。統合ブランチ上で直接作業しないことを優先する。
+
+##### フォールバック: ブランチ作成（base 上・非 worktree のときのみ）
 
 Issue のラベルからブランチプレフィックスを決定する:
 
