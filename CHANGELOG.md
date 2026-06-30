@@ -14,6 +14,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - **出力**: テキスト（帯域別）と `--json`（CI/機械処理向け）。スキル `/codd-impact` を facet build で配布（`.claude/skills/` と `.agents/skills/`）
   - **設計判断（ADR-026 D3）**: CODD は依存宣言を frontmatter に限定するため、証拠源は relation 種別とグラフ距離のみ。参考実装 codd-dev の Noisy-OR・エビデンス種別分類はコード静的解析由来の多様な証拠を確率合成する設計のため適用せず、Corroboration / testimony cap の思想のみ借用。設計は `docs/design/codd-coherence-layer.md` 4.5.1 に記録
   - **レビュー対応の堅牢化（PR #103）**: (1) `git diff` 失敗（無効な ref / git エラー）を空の「影響なし」成功にせず `ImpactError` で非ゼロ終了するよう修正。(2) scope の単層 glob（`dir/*.md`）がサブディレクトリを跨いで誤一致する問題を segment-aware なパス判定に修正。(3) rename された上流（`R old new`）を、ref 側の旧 `node_id` が現グラフに残っていれば dangling 注意から除外し、移動の誤警告を解消。(4) `ImpactConfig` の `green/amber_threshold`（`[0, 1]`）と `corroboration_min_origins`（≥1）の値域検証を追加
+### Changed
+
+- **`/issue-fix` を worktree 前提のフローに整合（不要なブランチ作成を回収）**: Phase 2-1 を「ブランチ作成」から「ブランチの準備状況を確認」に変更。issue ごとに先に worktree を作成してその上で作業する運用に合わせ、worktree 内（`git rev-parse --git-dir` ≠ `--git-common-dir`）または base 以外のブランチにいる場合は追加のブランチ作成をスキップし、現在ブランチでそのまま作業を開始する。base 上かつ非 worktree のときのみ従来どおりラベル起点でブランチを作成する（後方互換維持）
+  - `$BASE` 解決失敗時は統合ブランチ（`main` / `master` / `develop` / `stage` / `staging`）上でのみブランチを作成し、それ以外は準備済み扱いでスキップ（統合ブランチでの直接作業を回避する安全側設計）
+  - 編集ソースは facet `facets/instructions/issue-fix.md`。`.claude/skills/` と `.agents/skills/` の SKILL.md は facet build で再生成
 
 ## [0.2.9] - 2026-06-26
 
