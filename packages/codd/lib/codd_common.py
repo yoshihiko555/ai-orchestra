@@ -290,6 +290,16 @@ class ImpactConfig:
             raise ValueError(f"impact.decay は (0, 1] の範囲（got {self.decay}）")
         if self.max_hops < 1:
             raise ValueError(f"impact.max_hops は 1 以上（got {self.max_hops}）")
+        for name, value in (
+            ("green_threshold", self.green_threshold),
+            ("amber_threshold", self.amber_threshold),
+        ):
+            if not 0.0 <= value <= 1.0:
+                raise ValueError(f"impact.{name} は [0, 1] の範囲（got {value}）")
+        if self.corroboration_min_origins < 1:
+            raise ValueError(
+                f"impact.corroboration_min_origins は 1 以上（got {self.corroboration_min_origins}）"
+            )
         if self.amber_threshold > self.green_threshold:
             raise ValueError(
                 "impact.amber_threshold は green_threshold 以下である必要がある"

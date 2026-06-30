@@ -517,6 +517,7 @@ def test_compute_impact_result_reports_deleted_upstream(tmp_path) -> None:
     result = cli.compute_impact_result(tmp_path, _config(), "HEAD")
     assert "docs/req.md" in result.deleted_upstream
     assert result.changed_ids == []  # 削除されたファイルはノードに残らない
+    assert result.impacted == []  # 削除は deleted_upstream に分離され impacted には出ない
 
 
 def test_deleted_upstream_excludes_out_of_scope_md(tmp_path) -> None:
@@ -532,6 +533,7 @@ def test_deleted_upstream_excludes_out_of_scope_md(tmp_path) -> None:
     result = cli.compute_impact_result(tmp_path, _config(), "HEAD")
     assert "docs/req.md" in result.deleted_upstream
     assert "README.md" not in result.deleted_upstream  # スコープ外を誤検出しない
+    assert result.impacted == []  # 削除は deleted_upstream に分離され impacted には出ない
 
 
 def test_path_in_scope() -> None:
@@ -543,6 +545,13 @@ def test_path_in_scope() -> None:
     assert cli.path_in_scope("docs/adr/_template.md", config) is False  # exclude
 
 
+def test_path_in_scope_single_star_is_segment_aware() -> None:
+    # 単層 glob (dir/*.md) は 1 セグメントのみ。サブディレクトリを跨いではならない。
+    config = _config(scope={"include": [".claude/rules/*.md"], "exclude": []})
+    assert cli.path_in_scope(".claude/rules/foo.md", config) is True
+    assert cli.path_in_scope(".claude/rules/sub/deep.md", config) is False  # 単層を跨がない
+
+
 def test_impact_config_rejects_invalid_values() -> None:
     with pytest.raises(ValueError):
         cc.ImpactConfig.from_dict({"decay": 2.0})  # (0, 1] 外
@@ -550,6 +559,12 @@ def test_impact_config_rejects_invalid_values() -> None:
         cc.ImpactConfig.from_dict({"max_hops": 0})  # 1 未満
     with pytest.raises(ValueError):
         cc.ImpactConfig.from_dict({"green_threshold": 0.3, "amber_threshold": 0.5})  # 帯域逆転
+    with pytest.raises(ValueError):
+        cc.ImpactConfig.from_dict({"green_threshold": 1.5})  # [0, 1] 外
+    with pytest.raises(ValueError):
+        cc.ImpactConfig.from_dict({"amber_threshold": -0.1})  # [0, 1] 外
+    with pytest.raises(ValueError):
+        cc.ImpactConfig.from_dict({"corroboration_min_origins": 0})  # 1 未満
 
 
 def test_cmd_impact_json_output(tmp_path, capsys) -> None:
@@ -571,3 +586,43 @@ def test_cmd_impact_json_output(tmp_path, capsys) -> None:
     entry = {e["node_id"]: e for e in payload["impacted"]}["design:d"]
     assert entry["band"] == cc.BAND_GREEN
     assert entry["origins"] == ["req:r"]
+
+
+def test_rename_keeps_node_out_of_deleted_upstream(tmp_path) -> None:
+    # rename で node_id が新パスに引き継がれた上流は dangling 警告に出さない。
+    _init_repo(tmp_path)
+    _write(tmp_path, "docs/req.md", _doc("req:r", "requirement"))
+    _write(
+        tmp_path,
+        "docs/design.md",
+        _doc("design:d", "design", deps=[("req:r", "derives_from")]),
+    )
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "init")
+    _git(tmp_path, "mv", "docs/req.md", "docs/req2.md")  # node_id は req:r のまま移動
+
+    result = cli.compute_impact_result(tmp_path, _config(), "HEAD")
+    assert "docs/req.md" not in result.deleted_upstream  # 移動しただけ → dangling ではない
+    assert result.deleted_upstream == []
+    assert "req:r" in result.changed_ids  # 移動先は changed 扱い → 下流が影響を受ける
+
+
+def test_compute_impact_result_raises_on_invalid_ref(tmp_path) -> None:
+    # 無効な ref / git 失敗を空の成功結果にせず、明示的にエラーへ昇格させる。
+    _init_repo(tmp_path)
+    _write(tmp_path, "docs/req.md", _doc("req:r", "requirement"))
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "init")
+
+    with pytest.raises(cli.ImpactError):
+        cli.compute_impact_result(tmp_path, _config(), "no-such-ref")
+
+
+def test_cmd_impact_returns_nonzero_on_invalid_ref(tmp_path, capsys) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "docs/req.md", _doc("req:r", "requirement"))
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "init")
+
+    assert cli.cmd_impact(tmp_path, _config(), "no-such-ref", as_json=False) == 2
+    assert "ERROR" in capsys.readouterr().err

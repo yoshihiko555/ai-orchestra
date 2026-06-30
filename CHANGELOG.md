@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - **帯域補正**: Corroboration rule（Green は「直接の強依存=事実」か「裏付け起点≥2」のみ。多段単一経路は Amber 上限）と co_changed cap（下流自身も同一 diff で変更済みなら Amber 上限にフラグ。スコアは下げず破壊的変更を Gray に隠さない）を適用。削除された上流ファイルは dangling 注意として別建て報告
   - **出力**: テキスト（帯域別）と `--json`（CI/機械処理向け）。スキル `/codd-impact` を facet build で配布（`.claude/skills/` と `.agents/skills/`）
   - **設計判断（ADR-026 D3）**: CODD は依存宣言を frontmatter に限定するため、証拠源は relation 種別とグラフ距離のみ。参考実装 codd-dev の Noisy-OR・エビデンス種別分類はコード静的解析由来の多様な証拠を確率合成する設計のため適用せず、Corroboration / testimony cap の思想のみ借用。設計は `docs/design/codd-coherence-layer.md` 4.5.1 に記録
+  - **レビュー対応の堅牢化（PR #103）**: (1) `git diff` 失敗（無効な ref / git エラー）を空の「影響なし」成功にせず `ImpactError` で非ゼロ終了するよう修正。(2) scope の単層 glob（`dir/*.md`）がサブディレクトリを跨いで誤一致する問題を segment-aware なパス判定に修正。(3) rename された上流（`R old new`）を、ref 側の旧 `node_id` が現グラフに残っていれば dangling 注意から除外し、移動の誤警告を解消。(4) `ImpactConfig` の `green/amber_threshold`（`[0, 1]`）と `corroboration_min_origins`（≥1）の値域検証を追加
 
 ## [0.2.9] - 2026-06-26
 

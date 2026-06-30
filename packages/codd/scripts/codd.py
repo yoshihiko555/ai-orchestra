@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -348,6 +349,10 @@ def cmd_validate(root: Path, config: cc.CoddConfig) -> int:
 # ---------------------------------------------------------------------------
 
 
+class ImpactError(RuntimeError):
+    """impact 分析が前提条件を満たせず続行できないことを示す。"""
+
+
 @dataclass
 class ImpactResult:
     """impact 分析の結果。影響先・変更ノード・削除上流をまとめる。"""
@@ -366,10 +371,11 @@ def diff_changed_paths(root: Path, ref: str) -> tuple[set[str], set[str]]:
     （drift 検査と同じ運用、設計 4.5 H-3 と整合）。
     """
     out = _git_output(root, ["diff", "--name-status", ref])
+    if out is None:
+        msg = f"git diff --name-status {ref!r} に失敗しました（無効な ref または git 実行エラー）"
+        raise ImpactError(msg)
     changed: set[str] = set()
     deleted: set[str] = set()
-    if out is None:
-        return changed, deleted
     for line in out.splitlines():
         parts = line.split("\t")
         if len(parts) < 2:
@@ -385,29 +391,43 @@ def diff_changed_paths(root: Path, ref: str) -> tuple[set[str], set[str]]:
     return changed, deleted
 
 
-_GLOB_META = "*?["
+def _scope_pattern_to_regex(pattern: str) -> re.Pattern[str]:
+    """scope glob を segment-aware な正規表現へ変換する。
 
+    - ``*`` / ``?`` は 1 セグメント内（``/`` を跨がない）でマッチする
+    - ``**`` は 0 個以上のディレクトリセグメントにマッチする（例: ``docs/**/*.md``）
+    - メタ文字を含まないパターンは完全一致
 
-def _glob_prefix(pattern: str) -> str:
-    """glob パターンの先頭の固定（メタ文字以前の）プレフィックスを返す。"""
-    for index, char in enumerate(pattern):
-        if char in _GLOB_META:
-            return pattern[:index]
-    return pattern  # メタ文字なし（完全一致パターン）
+    ``Path.glob`` はファイルシステムを走査するため削除済みパスには使えない。
+    純粋なパス文字列の判定として正規表現に落とす。
+    """
+    out: list[str] = []
+    index, length = 0, len(pattern)
+    while index < length:
+        char = pattern[index]
+        if char == "*":
+            if pattern[index : index + 2] == "**":
+                index += 2
+                if index < length and pattern[index] == "/":
+                    index += 1
+                    out.append("(?:[^/]+/)*")  # 0 個以上のディレクトリセグメント
+                else:
+                    out.append(".*")  # 末尾の ** は残り全部にマッチ
+            else:
+                out.append("[^/]*")  # 単層: / を跨がない
+                index += 1
+        elif char == "?":
+            out.append("[^/]")
+            index += 1
+        else:
+            out.append(re.escape(char))
+            index += 1
+    return re.compile("".join(out))
 
 
 def _matches_scope_pattern(rel: str, pattern: str) -> bool:
-    """rel が scope glob にマッチするか（削除済みファイル向けの純粋パス判定）。
-
-    ``Path.glob`` はファイルシステムを走査するため削除済みパスには使えない。
-    ここでは「固定プレフィックス配下 かつ 拡張子一致」で近似する（include/exclude の
-    ``dir/**/*.md`` / ``dir/*.md`` / 完全一致 を実用上正しく判定できる）。
-    """
-    if not any(meta in pattern for meta in _GLOB_META):
-        return rel == pattern
-    prefix = _glob_prefix(pattern)
-    suffix = Path(pattern).suffix
-    return rel.startswith(prefix) and (not suffix or rel.endswith(suffix))
+    """rel が scope glob にマッチするか（削除済みファイル向けの純粋パス判定）。"""
+    return _scope_pattern_to_regex(pattern).fullmatch(rel) is not None
 
 
 def path_in_scope(rel: str, config: cc.CoddConfig) -> bool:
@@ -431,6 +451,23 @@ def _warn_if_not_git_root(root: Path) -> None:
         )
 
 
+def _is_dangling_deletion(root: Path, ref: str, rel: str, graph: cc.CoddGraph) -> bool:
+    """rel の削除/改名で旧 node_id が現グラフから消えたか（dangling 化の可能性）。
+
+    rename（``R old new``）では old を deleted として受け取るが、node_id が新パスへ
+    引き継がれていれば現グラフに残るため dangling ではない。ref 側の旧 frontmatter から
+    node_id を回収し、現グラフに存在しない場合のみ dangling 候補とする。
+    """
+    out = _git_output(root, ["show", f"{ref}:{rel}"])
+    if out is None:
+        return False  # ref 側に存在しない（新規追加→削除等）→ dangling 化しない
+    codd = cc.parse_codd_frontmatter(out)
+    old_id = str((codd or {}).get("node_id") or "").strip()
+    if not old_id:
+        return False  # CODD ノードでなかった → 依存元にならず dangling 化しない
+    return not graph.has(old_id)
+
+
 def compute_impact_result(root: Path, config: cc.CoddConfig, ref: str) -> ImpactResult:
     """scan → diff 突合 → 影響分析までを行い ImpactResult を返す。"""
     _warn_if_not_git_root(root)
@@ -442,7 +479,12 @@ def compute_impact_result(root: Path, config: cc.CoddConfig, ref: str) -> Impact
 
     # 削除された scope 内ドキュメント（下流が dangling 化する可能性）。
     # 削除済みファイルは working tree に無いため、純粋パス判定でスコープ membership を見る。
-    deleted_upstream = sorted(p for p in deleted_paths if path_in_scope(p, config))
+    # rename は old を deleted に含むが、node_id が現グラフに残るものは除外する（誤警告防止）。
+    deleted_upstream = sorted(
+        p
+        for p in deleted_paths
+        if path_in_scope(p, config) and _is_dangling_deletion(root, ref, p, result.graph)
+    )
 
     impacted = cc.compute_impact(result.graph, changed_ids, config.impact)
     impacted.sort(key=lambda n: (_BAND_ORDER.get(n.band, 9), -n.score, n.node_id))
@@ -511,7 +553,11 @@ def print_impact_text(result: ImpactResult) -> None:
 
 
 def cmd_impact(root: Path, config: cc.CoddConfig, ref: str, as_json: bool) -> int:
-    result = compute_impact_result(root, config, ref)
+    try:
+        result = compute_impact_result(root, config, ref)
+    except ImpactError as exc:
+        print(f"[codd impact] ERROR: {exc}", file=sys.stderr)
+        return 2
     if as_json:
         print(json.dumps(_impact_to_json(result), ensure_ascii=False, indent=2))
     else:
