@@ -1,0 +1,19 @@
+# codd-impact スキルのファセット構成定義
+name: codd-impact
+description: 変更影響の信頼度分類（codd impact）
+
+# フロントマター（生成される SKILL.md に付与）
+frontmatter:
+  name: codd-impact
+  description: |
+    Classify downstream documentation impact of a change into Green/Amber/Gray
+    confidence bands by traversing the `depends_on` graph. Runs `codd impact --diff <ref>`.
+    Trigger on: "codd impact", "影響分析", "信頼度", "/codd-impact".
+  metadata:
+    short-description: Classify change impact into Green/Amber/Gray bands
+
+# 参照するポリシー（codd skill は claude-direct。外部 CLI 連携なし）
+policies: []
+
+# スキル固有の instruction（ファイル参照）
+instruction: codd-impact
