@@ -10,8 +10,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **`packages/fail-logs`: 活用フェーズ — SessionStart で再発失敗サマリーを注入（Issue #81 / ADR-20260630-027）**: 記録した失敗（`.claude/logs/fail-logs/failures.jsonl`）をセッション開始時に集計し、**再発している失敗シグネチャ**をオーケストレーターのコンテキストへ注入する SessionStart hook `inject-failure-summary.py` を追加。記録 → 活用の学習ループ第 2 段階
   - **集計軸**: `failure_type` 別カウント（行動指針にならない）ではなく「再発シグネチャ中心」を採用。シグネチャは command ベースで `(command_kind, 先頭トークン)`、非 Bash は `(tool, failure_type)` にフォールバック。`min_occurrences`（既定 2）以上の再発のみ注入し、見出しに `failure_type` 別内訳を 1 行で添える
-  - **フィルタ/抑制**: ログ末尾から `max_records` 行のみ走査（I/O 抑制）、`window_days`（既定 7・0 で無期限）で期間フィルタ。再発ゼロなら何も注入しない（ノイズ抑制）。`config/fail-logs.yaml` の `summary:` ブロックで制御（`fail-logs.local.yaml` で上書き可）
-  - **セキュリティ**: 注入する command / error_excerpt はログ由来の信頼できない外部データのため `<fail-logs-summary>` 境界フレームで囲み `[log]` プレフィックスを付与（間接プロンプトインジェクション対策）。`logs_dir` は `realpath` で project_dir 配下を検証（パストラバーサル防御）
+  - **フィルタ/抑制**: ログ末尾からチャンク単位で遡って `max_records` 行のみ読む末尾シーク方式（全行走査せず I/O を一定に制限）、`window_days`（既定 7・0 で無期限）で期間フィルタ。再発ゼロなら何も注入しない（ノイズ抑制）。`config/fail-logs.yaml` の `summary:` ブロックで制御（`fail-logs.local.yaml` で上書き可）
+  - **セキュリティ**: 注入する command / error_excerpt はログ由来の信頼できない外部データのため `<fail-logs-summary>` 境界フレームで囲み `[log]` プレフィックスを付与し、本文中の山括弧を中和して境界フレーム偽造を防ぐ（間接プロンプトインジェクション対策）。`logs_dir` は `realpath` で project_dir 配下を検証（パストラバーサル防御）
   - 記録フェーズ（`capture-failures.py` / ログスキーマ / `failure_detector`）には手を入れない純粋追加。core 依存のみ
 - **`packages/codd`: impact 分析（変更影響の信頼度3帯域分類・Issue #94 / Phase 2）**: 変更 diff から下流ドキュメントへの影響を **Green（自動更新可）/ Amber（要確認）/ Gray（参考）** に分類する `codd impact --diff <ref>` を追加。Phase 1 の素朴な drift（コミット時刻比較）を、宣言された依存関係を証拠とした信頼度スコアへ発展させた
   - **信頼度スコア**: `git diff --name-status <ref>` の変更ファイルを frontmatter の `node_id` にマップし、`depends_on` の逆引きで下流を辿る（サイクル安全・`max_hops` 打ち切り）。`path_score = min(経路上の relation 重み) × decay^(hops-1)`、ノードは全経路・全起点の最良値を採る。重み（derives_from/refines/implements=1.0, supersedes=0.6, references=0.3）・閾値・減衰は `codd.yaml` の `impact:` ブロックで上書き可能

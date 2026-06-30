@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from collections import Counter, deque
+from collections import Counter
 from datetime import UTC, datetime, timedelta
 
 # --- sys.path 設定（core/hooks を解決してから import する）---------------------
@@ -56,6 +56,9 @@ DEFAULT_SUMMARY = {
 # 見出し・抜粋の表示上限（コンテキスト消費を抑える）
 MAX_COMMAND_DISPLAY_CHARS = 120
 MAX_EXCERPT_DISPLAY_CHARS = 100
+
+# 末尾シーク読み出しのチャンクサイズ（バイト）
+TAIL_CHUNK_BYTES = 64 * 1024
 
 
 def _coerce_int(value: object, default: int, *, minimum: int = 0) -> int:
@@ -110,19 +113,37 @@ def _resolve_log_path(project_dir: str, logs_dir: str) -> str | None:
     return None
 
 
+def _read_tail_lines(log_path: str, max_records: int) -> list[str]:
+    """ファイル末尾から最大 max_records 行を、末尾シークで読み出す。
+
+    全行を走査せずチャンク単位で後方から読むため、ログが肥大しても
+    SessionStart の I/O は max_records 行相当に制限される。
+    """
+    try:
+        with open(log_path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            pos = f.tell()
+            buf = b""
+            # max_records 行を確実に含めるため改行数が max_records を超えるまで遡る
+            while pos > 0 and buf.count(b"\n") <= max_records:
+                read_size = min(TAIL_CHUNK_BYTES, pos)
+                pos -= read_size
+                f.seek(pos)
+                buf = f.read(read_size) + buf
+    except OSError:
+        return []
+
+    text = buf.decode("utf-8", errors="replace")
+    return text.splitlines()[-max_records:]
+
+
 def _tail_records(log_path: str, max_records: int) -> list[dict]:
     """ログ末尾から最大 max_records 行を読み、JSON としてパースできた行のみ返す。
 
     壊れた行はスキップする（SessionStart を止めない）。
     """
-    try:
-        with open(log_path, encoding="utf-8") as f:
-            lines = deque(f, maxlen=max_records)
-    except OSError:
-        return []
-
     records: list[dict] = []
-    for line in lines:
+    for line in _read_tail_lines(log_path, max_records):
         stripped = line.strip()
         if not stripped:
             continue
@@ -188,13 +209,23 @@ def _truncate(text: str, max_chars: int) -> str:
     return flattened[: max_chars - 1] + "…"
 
 
+def _sanitize_log_text(text: str, max_chars: int) -> str:
+    """ログ由来テキストを注入用に無害化する（1 行化・字数制限・境界トークン中和）。
+
+    境界フレーム `<fail-logs-summary>` の偽造を防ぐため山括弧を視覚的に近い
+    記号へ置換する。ログに `</fail-logs-summary>` 等が含まれても信頼境界を
+    壊せない（間接プロンプトインジェクション対策・ADR-20260630-027）。
+    """
+    return _truncate(text, max_chars).replace("<", "‹").replace(">", "›")
+
+
 def _signature_label(data: dict) -> str:
     """シグネチャの表示ラベルを代表レコードから作る。"""
     command = str(data.get("command") or "")
     if command.strip():
         kind = str(data.get("command_kind") or "")
         prefix = f"[{kind}] " if kind else ""
-        return prefix + _truncate(command, MAX_COMMAND_DISPLAY_CHARS)
+        return prefix + _sanitize_log_text(command, MAX_COMMAND_DISPLAY_CHARS)
     tool = str(data.get("tool") or "tool")
     failure_type = str(data.get("failure_type") or "unknown")
     return f"[{tool}] {failure_type}"
@@ -267,7 +298,9 @@ def format_summary(
         data = entry["data"]
         lines.append(f"    - ×{entry['count']} {_signature_label(data)}")
         if summary_cfg["show_examples"]:
-            excerpt = _truncate(str(data.get("error_excerpt") or ""), MAX_EXCERPT_DISPLAY_CHARS)
+            excerpt = _sanitize_log_text(
+                str(data.get("error_excerpt") or ""), MAX_EXCERPT_DISPLAY_CHARS
+            )
             if excerpt:
                 lines.append(f"        ↳ [log] {excerpt}")
     lines.append("</fail-logs-summary>")
