@@ -212,24 +212,38 @@ facet 製/非 facet 製で「改善の反映先」が異なるため、判別と
 > 誤判定の影響: 「facet→非 facet」誤判定は FT-11 未達（改善が配布されない）、「非 facet→facet」
 > 誤判定は導入先スキルを facet build 対象にしてしまう危険。manifest 照合でこれを防ぐ。
 
-### 3.8 スキル発火検出（spike で方式確定）
+### 3.8 スキル発火検出（spike 実施済み・方式確定）
 
-二層アーキの前提。**spike は Go/No-Go ではなく「どの方式を採用するか」の確認**として行い、
-失敗パターンごとの代替を事前に決めておく（核心機能の空洞化を防ぐ）。
+二層アーキの前提。spike の結論: **発火検出は実現可能**。採用方式を以下に確定する。
 
-| 候補方式                                              | 期待                                   | 失敗時の代替                                                                    |
-| ----------------------------------------------------- | -------------------------------------- | ------------------------------------------------------------------------------- |
-| 候補1: `PreToolUse`/`PostToolUse` で Skill ツール捕捉 | 発火・完了の両側を取得、スキル名も特定 | 候補2へ                                                                         |
-| 候補2: `UserPromptSubmit` で `/skill` を正規表現検出  | slash 起動を捕捉                       | Skill ツール経由を取りこぼす → **inject を諦め lessons は起動時一括注入**に切替 |
-| 候補3: `SubagentStop`/`Stop` で境界推定（完了側）     | 完了側テレメトリは確実に取得           | 発火側特定は弱い → 機械計測は確保、属性付けは run_id で補完                     |
+**採用（候補1）: `PreToolUse` / `PostToolUse` で Skill ツールを捕捉**
 
-**成否マトリクスと方針**:
+- **本リポジトリで実証済み**: `packages/audit/hooks/audit-route.py` が既に本番で
+  `tool_name.lower() == "skill"` を検出し、`tool_input.skill`（または `skill_name`）から
+  スキル名を取得している。→ Skill ツールは tool 系 hook に乗り、発火（PreToolUse）と
+  完了（PostToolUse）の両側でスキル名付きで捕捉できる。
+- Task/Agent 経由のスキルは `tool_input.subagent_type` で捕捉（audit-route に前例あり）。
+- slash 起動（`/skill-name`）も Skill ツール呼び出しに展開されるため、候補1で拾える。
 
-- 候補1が動く → 二層フル機能（発火前 inject ＋ 完了捕捉）。
-- 候補1不可・候補2のみ → inject は起動時一括注入に縮退、許容範囲として進める。
-- いずれも不安定 → オンライン層は「完了側の機械計測のみ」に縮退し、自己申告/注入は手動運用にフォールバック。
+**完了境界**:
 
-> spike 結果に応じて本節を確定し、`status` を draft → active へ上げる。
+| スキルの実行形態                    | 完了検知                                      |
+| ----------------------------------- | --------------------------------------------- |
+| メインループ内実行                  | `PostToolUse`（`tool_name == "Skill"`）       |
+| `context: fork`（サブエージェント） | `SubagentStop`（＋ `SubagentStart` で開始側） |
+| セッション全体の区切り              | `Stop`                                        |
+
+**不採用・代替**:
+
+- 候補2（`UserPromptSubmit` で `/skill` 正規表現）は**不採用**。公式 docs によると slash は
+  `UserPromptExpansion` で展開後に `UserPromptSubmit` へ渡るため literal を取りこぼす。ただし
+  候補1が slash 起動も拾うため不要。literal が必要になった場合のみ `UserPromptExpansion` を使う。
+- 縮退方針（保険）: 万一メインループ Skill の PostToolUse が不安定なら、完了側は
+  `SubagentStop`/`Stop` ＋ `run_id` 突合で機械計測を確保する。
+
+> 出典: in-repo 実証（`audit-route.py`）＋ Claude Code hooks-guide（`UserPromptExpansion` /
+> `SubagentStart` / `SubagentStop` の存在を確認）。本節確定により発火検出の draft 要因は解消。
+> 残る draft 要因は自己申告フォーマット等（8 節）。
 
 ### 3.9 既存基盤の流用
 
