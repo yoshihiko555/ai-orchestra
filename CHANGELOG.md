@@ -8,12 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`packages/skill-evolution`: スキル自己改善ループ（Issue #5）**: スキル実行の品質を二軸（自己申告＋機械計測）で計測し、学び（lessons）を次回実行へ還元しつつ、停止条件付きのオフライン反復でスキル自体を改善する新パッケージ。設計は `req/design:skill-evolution` ＋ `ADR-20260701-027` に記録
+  - **二層アーキ**: オンライン層＝スキル発火ごとに軽量収集（`inject-lessons.py` が発火前に lessons 注入＋`run_id` 発行、`capture-skill-telemetry.py`／`capture-subagent-skill.py` が完了時に二軸テレメトリを `metrics/<skill>.jsonl` へ記録）。オフライン層＝`skill_evolution.py` CLI が停止条件・3ガード・スコアリング・ロックの決定論部分を提供（シナリオ実行と改善案生成は人間承認ゲート下の実行時作業）
+  - **発火検出**: `PreToolUse`/`PostToolUse` の `tool_name == "Skill"`（`tool_input.skill`）で捕捉（`packages/audit` の実績方式）。`context: fork` スキルは `SubagentStop` で補完
+  - **成功判定**: スキルごとの `[critical]` チェックリスト全達成で初めて成功。反映先は provenance で塩梅（facet 製→facet 昇格＋`facet build`、非 facet 製→lessons/SKILL.md diff、判別不能→lessons のみ）。数値ガード（コスト・反復・holdout・注入行数）は `skill-evolution.yaml` で調整可能
+- **`skill-review-policy`: 4視点網羅オプション（Security/Perf/Quality/a11y）**: 成果物をパスパターンに依存せず固定4視点で網羅レビューするオプションを追記（Issue #5 の A 縮小版。skill-evolution の「スキル実行品質」とは別に「成果物品質」を対象）
 - **`packages/codd`: impact 分析（変更影響の信頼度3帯域分類・Issue #94 / Phase 2）**: 変更 diff から下流ドキュメントへの影響を **Green（自動更新可）/ Amber（要確認）/ Gray（参考）** に分類する `codd impact --diff <ref>` を追加。Phase 1 の素朴な drift（コミット時刻比較）を、宣言された依存関係を証拠とした信頼度スコアへ発展させた
   - **信頼度スコア**: `git diff --name-status <ref>` の変更ファイルを frontmatter の `node_id` にマップし、`depends_on` の逆引きで下流を辿る（サイクル安全・`max_hops` 打ち切り）。`path_score = min(経路上の relation 重み) × decay^(hops-1)`、ノードは全経路・全起点の最良値を採る。重み（derives_from/refines/implements=1.0, supersedes=0.6, references=0.3）・閾値・減衰は `codd.yaml` の `impact:` ブロックで上書き可能
   - **帯域補正**: Corroboration rule（Green は「直接の強依存=事実」か「裏付け起点≥2」のみ。多段単一経路は Amber 上限）と co_changed cap（下流自身も同一 diff で変更済みなら Amber 上限にフラグ。スコアは下げず破壊的変更を Gray に隠さない）を適用。削除された上流ファイルは dangling 注意として別建て報告
   - **出力**: テキスト（帯域別）と `--json`（CI/機械処理向け）。スキル `/codd-impact` を facet build で配布（`.claude/skills/` と `.agents/skills/`）
   - **設計判断（ADR-026 D3）**: CODD は依存宣言を frontmatter に限定するため、証拠源は relation 種別とグラフ距離のみ。参考実装 codd-dev の Noisy-OR・エビデンス種別分類はコード静的解析由来の多様な証拠を確率合成する設計のため適用せず、Corroboration / testimony cap の思想のみ借用。設計は `docs/design/codd-coherence-layer.md` 4.5.1 に記録
   - **レビュー対応の堅牢化（PR #103）**: (1) `git diff` 失敗（無効な ref / git エラー）を空の「影響なし」成功にせず `ImpactError` で非ゼロ終了するよう修正。(2) scope の単層 glob（`dir/*.md`）がサブディレクトリを跨いで誤一致する問題を segment-aware なパス判定に修正。(3) rename された上流（`R old new`）を、ref 側の旧 `node_id` が現グラフに残っていれば dangling 注意から除外し、移動の誤警告を解消。(4) `ImpactConfig` の `green/amber_threshold`（`[0, 1]`）と `corroboration_min_origins`（≥1）の値域検証を追加
+
 ### Changed
 
 - **`/issue-fix` を worktree 前提のフローに整合（不要なブランチ作成を回収）**: Phase 2-1 を「ブランチ作成」から「ブランチの準備状況を確認」に変更。issue ごとに先に worktree を作成してその上で作業する運用に合わせ、worktree 内（`git rev-parse --git-dir` ≠ `--git-common-dir`）または base 以外のブランチにいる場合は追加のブランチ作成をスキップし、現在ブランチでそのまま作業を開始する。base 上かつ非 worktree のときのみ従来どおりラベル起点でブランチを作成する（後方互換維持）
