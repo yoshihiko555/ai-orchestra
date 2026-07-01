@@ -200,6 +200,41 @@ def read_metrics(project_dir: str, skill: str, config: dict | None = None) -> li
     return records
 
 
+def recent_run_ids(
+    project_dir: str, skill: str, config: dict | None = None, limit: int = 500
+) -> set[str]:
+    """metrics の末尾から run_id 集合を返す（重複記録チェック用の有界読み込み）。
+
+    ファイル全体ではなく末尾 ~128KB のみ読むため、肥大化しても I/O が一定。
+    """
+    path = metrics_path(project_dir, skill, config)
+    if not os.path.isfile(path):
+        return set()
+    tail_bytes = 128 * 1024
+    with open(path, "rb") as f:
+        f.seek(0, os.SEEK_END)
+        size = f.tell()
+        f.seek(max(0, size - tail_bytes))
+        chunk = f.read().decode("utf-8", "replace")
+    ids: set[str] = set()
+    # 先頭は途中行の可能性があるため 1 行目を捨てる（size>tail のときのみ）
+    lines = chunk.splitlines()
+    if size > tail_bytes and lines:
+        lines = lines[1:]
+    for line in lines[-limit:]:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except (ValueError, json.JSONDecodeError):
+            continue
+        rid = obj.get("run_id") if isinstance(obj, dict) else None
+        if rid:
+            ids.add(str(rid))
+    return ids
+
+
 # ---------------------------------------------------------------------------
 # lessons I/O ＋ 肥大化管理
 # ---------------------------------------------------------------------------
@@ -442,38 +477,53 @@ NON_FACET = "non_facet"
 UNKNOWN = "unknown"
 
 
-def _managed_skill_names() -> set[str] | None:
-    """AI Orchestra 管理下のスキル名集合を manifest から集める。読めなければ None。"""
-    orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
-    if not orchestra_dir:
-        return None
-    packages_dir = os.path.join(orchestra_dir, "packages")
-    if not os.path.isdir(packages_dir):
-        return None
+def _managed_skill_names(project_dir: str | None = None) -> set[str] | None:
+    """AI Orchestra 管理下（facet 製）のスキル名集合を集める。解決不能なら None。
+
+    2 系統を union する:
+    1. `$AI_ORCHESTRA_DIR/packages/*/manifest.json` の `skills`（開発/ソース環境）
+    2. `<project>/.agents/skills/<name>/`（導入先の facet build 生成物）
+       — 導入先には AI_ORCHESTRA_DIR も facets/ も無いため、生成物ディレクトリを正本とする。
+    """
     names: set[str] = set()
     found = False
-    for entry in os.listdir(packages_dir):
-        manifest = os.path.join(packages_dir, entry, "manifest.json")
-        if not os.path.isfile(manifest):
-            continue
-        try:
-            with open(manifest, encoding="utf-8") as f:
-                data = json.load(f)
-        except (OSError, ValueError):
-            continue
-        found = True
-        for s in data.get("skills") or []:
-            names.add(str(s))
+
+    orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
+    packages_dir = os.path.join(orchestra_dir, "packages") if orchestra_dir else ""
+    if packages_dir and os.path.isdir(packages_dir):
+        for entry in os.listdir(packages_dir):
+            manifest = os.path.join(packages_dir, entry, "manifest.json")
+            if not os.path.isfile(manifest):
+                continue
+            try:
+                with open(manifest, encoding="utf-8") as f:
+                    data = json.load(f)
+            except (OSError, ValueError):
+                continue
+            found = True
+            for s in data.get("skills") or []:
+                names.add(str(s))
+
+    if project_dir:
+        agents_skills = os.path.join(project_dir, ".agents", "skills")
+        if os.path.isdir(agents_skills):
+            for entry in os.listdir(agents_skills):
+                if os.path.isdir(os.path.join(agents_skills, entry)):
+                    names.add(entry)
+                    found = True
+
     return names if found else None
 
 
-def detect_provenance(skill: str, managed: set[str] | None = None) -> str:
-    """スキルが facet 製か非 facet 製かを manifest 照合で判別する。
+def detect_provenance(
+    skill: str, managed: set[str] | None = None, project_dir: str | None = None
+) -> str:
+    """スキルが facet 製か非 facet 製かを判別する。
 
-    `facets/` の有無では判定しない（導入先には facets/ が無いため）。
-    manifest が読めない場合は UNKNOWN（安全側）を返す。
+    判別根拠は manifest の skills と `.agents/skills/` 生成物（`facets/` 有無では判定しない）。
+    解決不能な場合は UNKNOWN（安全側）を返す。
     """
-    names = managed if managed is not None else _managed_skill_names()
+    names = managed if managed is not None else _managed_skill_names(project_dir)
     if names is None:
         return UNKNOWN
     return FACET if skill in names else NON_FACET

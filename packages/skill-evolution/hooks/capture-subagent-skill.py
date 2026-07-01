@@ -43,13 +43,13 @@ def _project_dir(data: dict) -> str:
 
 
 def _already_recorded(project_dir: str, skill: str, run_id: str, config: dict) -> bool:
-    """同一 run_id が既に metrics にあるか（PostToolUse と二重記録しない）。"""
+    """同一 run_id が既に metrics にあるか（PostToolUse と二重記録しない）。
+
+    末尾のみを走査する有界チェック（metrics 肥大化時も一定コスト）。
+    """
     if not run_id:
         return False
-    for rec in se.read_metrics(project_dir, skill, config):
-        if rec.get("run_id") == run_id:
-            return True
-    return False
+    return run_id in se.recent_run_ids(project_dir, skill, config)
 
 
 @_safe

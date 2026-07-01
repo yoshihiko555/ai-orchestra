@@ -187,6 +187,23 @@ def test_resolve_reflection_target() -> None:
     assert se.resolve_reflection_target(se.UNKNOWN) == "lessons_only"
 
 
+def test_detect_provenance_via_agents_skills_fallback(tmp_path, monkeypatch) -> None:
+    # AI_ORCHESTRA_DIR 無しでも .agents/skills/ 生成物で facet 判別できる
+    monkeypatch.setenv("AI_ORCHESTRA_DIR", "")
+    (tmp_path / ".agents" / "skills" / "issue-fix").mkdir(parents=True)
+    assert se.detect_provenance("issue-fix", project_dir=str(tmp_path)) == se.FACET
+    assert se.detect_provenance("my-own", project_dir=str(tmp_path)) == se.NON_FACET
+
+
+def test_recent_run_ids(tmp_path) -> None:
+    p = str(tmp_path)
+    for i in range(5):
+        se.append_metric(p, "s", {"run_id": f"r{i}", "success": True})
+    ids = se.recent_run_ids(p, "s")
+    assert ids == {"r0", "r1", "r2", "r3", "r4"}
+    assert se.recent_run_ids(p, "missing") == set()
+
+
 # ---------------------------------------------------------------------------
 # 停止条件 ＋ 3 ガード
 # ---------------------------------------------------------------------------

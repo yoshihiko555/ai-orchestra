@@ -99,9 +99,9 @@ def cmd_evaluate(project: str, history_path: str) -> int:
     return 0
 
 
-def cmd_provenance(skill: str) -> int:
+def cmd_provenance(project: str, skill: str) -> int:
     """スキルの provenance と改善反映先を出力する。"""
-    prov = se.detect_provenance(skill)
+    prov = se.detect_provenance(skill, project_dir=project)
     target = se.resolve_reflection_target(prov)
     print(
         json.dumps(
@@ -159,7 +159,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "evaluate":
         return cmd_evaluate(project, args.history)
     if args.command == "provenance":
-        return cmd_provenance(args.skill)
+        return cmd_provenance(project, args.skill)
     if args.command == "lock":
         return cmd_lock(project, args.action, args.skill)
     return 2
