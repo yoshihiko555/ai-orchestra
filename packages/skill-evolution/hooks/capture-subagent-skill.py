@@ -24,6 +24,8 @@ try:
 except ImportError:
     se = None  # type: ignore[assignment]
 
+MAX_STDIN_BYTES = 1024 * 1024  # 1 MB。巨大 stdin による OOM を防ぐ
+
 
 def _safe(func):
     def wrapper() -> None:
@@ -55,7 +57,7 @@ def main() -> None:
     """SubagentStop hook のエントリポイント。"""
     if se is None:
         return
-    raw = sys.stdin.read()
+    raw = sys.stdin.buffer.read(MAX_STDIN_BYTES).decode("utf-8", "replace")
     try:
         data = json.loads(raw)
     except (ValueError, json.JSONDecodeError):

@@ -28,6 +28,8 @@ try:
 except ImportError:
     se = None  # type: ignore[assignment]
 
+MAX_STDIN_BYTES = 1024 * 1024  # 1 MB。巨大 stdin による OOM を防ぐ
+
 
 def _safe(func):
     """例外時は stderr に出して exit(0) するラッパ。"""
@@ -56,8 +58,8 @@ def build_injection(skill: str, lessons: str, run_id: str, max_chars: int) -> st
         "## 完了時の自己申告（必須）\n"
         "スキル完了時に以下のブロックを出力すること（値は実績で置換）:\n"
         "[skill-self-report]\n"
-        f'{{"run_id": "{run_id}", "ambiguities": 0, "discretion_fills": 0, '
-        '"retries": 0, "critical": {}}\n'
+        f'{{"run_id": "{run_id}", "skill": "{skill}", "ambiguities": 0, '
+        '"discretion_fills": 0, "retries": 0, "critical": {"<項目>": true}}\n'
         "[/skill-self-report]\n"
         "critical には lessons の [critical] チェックリスト各項目の達成可否(true/false)を入れる。"
     )
@@ -70,7 +72,8 @@ def main() -> None:
     if se is None:
         return
     try:
-        data = json.loads(sys.stdin.read())
+        raw = sys.stdin.buffer.read(MAX_STDIN_BYTES).decode("utf-8", "replace")
+        data = json.loads(raw)
     except (ValueError, json.JSONDecodeError):
         return
     if (data.get("tool_name") or "") != "Skill":

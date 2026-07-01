@@ -19,10 +19,16 @@ import json
 import os
 import random
 import re
+import sys
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
+
+try:
+    import fcntl  # Unix のみ。lessons の read-modify-write を排他化する
+except ImportError:  # 非 Unix 環境ではロックなしにフォールバック
+    fcntl = None  # type: ignore[assignment]
 
 PACKAGE_NAME = "skill-evolution"
 CONFIG_FILENAME = "skill-evolution.yaml"
@@ -65,11 +71,15 @@ def load_config(project_dir: str) -> dict:
     hook_common.load_package_config が使える場合はそれを使い、無ければ DEFAULTS を返す。
     """
     try:
-        _core_hooks = os.path.join(
-            os.environ.get("AI_ORCHESTRA_DIR", ""), "packages", "core", "hooks"
-        )
-        if _core_hooks and _core_hooks not in os.sys.path:
-            os.sys.path.insert(0, _core_hooks)
+        orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
+        _core_hooks = os.path.join(orchestra_dir, "packages", "core", "hooks")
+        # 絶対パスかつ実在する場合のみ sys.path を汚染する（cwd 相対の残留を防ぐ）。
+        if (
+            os.path.isabs(_core_hooks)
+            and os.path.isdir(_core_hooks)
+            and _core_hooks not in sys.path
+        ):
+            sys.path.insert(0, _core_hooks)
         from hook_common import load_package_config
 
         loaded = load_package_config(PACKAGE_NAME, CONFIG_FILENAME, project_dir)
@@ -84,15 +94,29 @@ def load_config(project_dir: str) -> dict:
 
 
 def data_dir(project_dir: str, config: dict | None = None) -> str:
-    """データルート（`.claude/skill-evolution`）の絶対パスを返す。"""
+    """データルート（`.claude/skill-evolution`）の絶対パスを返す。
+
+    config の storage.dir が project_dir の外を指す場合（`../` 等）は既定値に戻す
+    （設定経由のパストラバーサル防止）。
+    """
     cfg = config or {}
     rel = (cfg.get("storage") or {}).get("dir") or DEFAULTS["storage"]["dir"]
-    return os.path.join(project_dir, rel)
+    base = os.path.abspath(project_dir)
+    candidate = os.path.abspath(os.path.join(base, rel))
+    if os.path.commonpath([base, candidate]) != base:
+        candidate = os.path.abspath(os.path.join(base, DEFAULTS["storage"]["dir"]))
+    return candidate
 
 
 def _slug(skill: str) -> str:
-    """スキル名をファイル名に使える slug に正規化する。"""
-    return re.sub(r"[^A-Za-z0-9_.-]", "_", skill or "unknown")
+    """スキル名をファイル名に使える slug に正規化する。
+
+    パストラバーサル/隠しファイル化を防ぐため先頭のドットは `_` に置換する
+    （`..` → `__`、`.env` → `_env`）。長すぎる名前は切り詰める。
+    """
+    slug = re.sub(r"[^A-Za-z0-9_.-]", "_", skill or "unknown")
+    slug = re.sub(r"^\.+", lambda m: "_" * len(m.group()), slug)
+    return slug[:120] or "unknown"
 
 
 def metrics_path(project_dir: str, skill: str, config: dict | None = None) -> str:
@@ -148,10 +172,11 @@ def gen_run_id(skill: str) -> str:
 
 
 def append_metric(project_dir: str, skill: str, record: dict, config: dict | None = None) -> None:
-    """metrics/<skill>.jsonl に 1 行追記する。"""
+    """metrics/<skill>.jsonl に 1 行追記する（所有者のみ読み書き 0o600）。"""
     path = metrics_path(project_dir, skill, config)
     _ensure_parent(path)
-    with open(path, "a", encoding="utf-8") as f:
+    fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
+    with os.fdopen(fd, "a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
@@ -201,19 +226,26 @@ def append_lesson(project_dir: str, skill: str, lesson: str, config: dict | None
     max_lines = int((cfg.get("lessons") or {}).get("max_lines") or DEFAULTS["lessons"]["max_lines"])
     path = lessons_path(project_dir, skill, config)
     _ensure_parent(path)
+    # 改行はセクション分割を壊すため 1 行に畳む。
+    dated = f"- {datetime.now(tz=UTC).strftime('%Y-%m-%d')}: {' '.join(lesson.split())}"
 
-    text = read_lessons(project_dir, skill, config) or _LESSONS_TEMPLATE.format(skill=skill)
-    head, learn_items = _split_learn_section(text)
-    dated = f"- {datetime.now(tz=UTC).strftime('%Y-%m-%d')}: {lesson.strip()}"
-    learn_items.insert(0, dated)
-
-    kept, overflow = learn_items[:max_lines], learn_items[max_lines:]
-    if overflow:
-        _archive_lessons(project_dir, skill, overflow, config)
-
-    new_text = head.rstrip() + "\n\n" + "\n".join(kept) + "\n"
-    with open(path, "w", encoding="utf-8") as f:
+    # 排他ロック下で read-modify-write（並行 append による上書き喪失を防ぐ）。
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    with os.fdopen(fd, "r+", encoding="utf-8") as f:
+        if fcntl is not None:
+            fcntl.flock(f, fcntl.LOCK_EX)
+        text = f.read() or _LESSONS_TEMPLATE.format(skill=skill)
+        head, learn_items = _split_learn_section(text)
+        learn_items.insert(0, dated)
+        kept, overflow = learn_items[:max_lines], learn_items[max_lines:]
+        if overflow:
+            _archive_lessons(project_dir, skill, overflow, config)
+        new_text = head.rstrip() + "\n\n" + "\n".join(kept) + "\n"
+        f.seek(0)
         f.write(new_text)
+        f.truncate()
+        if fcntl is not None:
+            fcntl.flock(f, fcntl.LOCK_UN)
 
 
 def _split_learn_section(text: str) -> tuple[str, list[str]]:
@@ -304,6 +336,20 @@ def parse_self_report(text: str) -> dict | None:
     return obj if isinstance(obj, dict) else None
 
 
+def _safe_int(value: object, default: int = 0) -> int:
+    """信頼できない値を安全に int 化する（非数値・None は default）。"""
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return default
+    return default
+
+
 def build_metric_record(
     skill: str,
     run_id: str,
@@ -311,17 +357,20 @@ def build_metric_record(
     duration_ms: int | None,
     tool_uses: int | None = None,
 ) -> dict:
-    """自己申告と機械計測から metrics 1 行分のレコードを組み立てる。"""
-    critical = {}
+    """自己申告と機械計測から metrics 1 行分のレコードを組み立てる。
+
+    self_report は信頼できない tool_response 由来のため、値を安全に正規化する。
+    """
+    critical: dict = {}
     sr_clean = None
     if isinstance(self_report, dict):
-        critical = self_report.get("critical") or {}
-        if not isinstance(critical, dict):
-            critical = {}
+        raw_critical = self_report.get("critical")
+        if isinstance(raw_critical, dict):
+            critical = {str(k): bool(v) for k, v in raw_critical.items()}
         sr_clean = {
-            "ambiguities": int(self_report.get("ambiguities") or 0),
-            "discretion_fills": int(self_report.get("discretion_fills") or 0),
-            "retries": int(self_report.get("retries") or 0),
+            "ambiguities": _safe_int(self_report.get("ambiguities")),
+            "discretion_fills": _safe_int(self_report.get("discretion_fills")),
+            "retries": _safe_int(self_report.get("retries")),
         }
     return {
         "ts": now_iso(),
@@ -358,9 +407,9 @@ def score_run(record: dict) -> float:
         return round(cpr * 100.0, 2)
 
     penalty = (
-        int(self_report.get("ambiguities") or 0)
-        + int(self_report.get("discretion_fills") or 0)
-        + int(self_report.get("retries") or 0)
+        _safe_int(self_report.get("ambiguities"))
+        + _safe_int(self_report.get("discretion_fills"))
+        + _safe_int(self_report.get("retries"))
     )
     quality = max(0.0, 30.0 - penalty * 5.0)
     return round(base + quality, 2)
@@ -471,9 +520,9 @@ class StopDecision:
 
 
 def _within(a: float, b: float, pct: float) -> bool:
-    """b に対する a の相対変化が ±pct% 以内かを判定する（b=0 は絶対差 0 のみ許容）。"""
+    """b に対する a の相対変化が ±pct% 以内かを判定する（b=0 は微小許容）。"""
     if b == 0:
-        return a == 0
+        return abs(a) < 1e-9
     return abs(a - b) / abs(b) * 100.0 <= pct
 
 
@@ -549,23 +598,60 @@ def evaluate_stop(history: list[IterationRecord], config: dict) -> StopDecision:
 # ---------------------------------------------------------------------------
 
 
+LOCK_TTL_SECONDS = 3600  # この時間を超えたロックは stale とみなす
+
+
+def _is_stale_lock(path: str) -> bool:
+    """ロックが stale（保持プロセス死亡 or TTL 超過）かを判定する。
+
+    読めない/壊れたロックも stale 扱い（恒久デッドロックを避ける安全側）。
+    """
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return True
+    epoch = data.get("epoch")
+    if isinstance(epoch, (int, float)) and time.time() - epoch > LOCK_TTL_SECONDS:
+        return True
+    pid = data.get("pid")
+    if not isinstance(pid, int) or pid <= 0:
+        return True
+    try:
+        os.kill(pid, 0)  # シグナル 0 = 生存確認のみ
+    except ProcessLookupError:
+        return True  # プロセス消滅 → stale
+    except PermissionError:
+        return False  # 別ユーザーの生存プロセス → 有効
+    except OSError:
+        return True
+    return False
+
+
 def acquire_lock(project_dir: str, skill: str, config: dict | None = None) -> bool:
-    """ロックを取得する。既に存在すれば False（同一スキルは同時 1 インスタンス）。"""
+    """ロックを取得する。既存でも stale なら奪取する（同一スキルは同時 1 インスタンス）。"""
     path = lock_path(project_dir, skill, config)
     _ensure_parent(path)
     try:
         fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     except FileExistsError:
-        return False
+        if not _is_stale_lock(path):
+            return False
+        # stale ロックを奪取（削除 → 再作成を 1 回だけ試行）
+        try:
+            os.remove(path)
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except (OSError, FileExistsError):
+            return False
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(json.dumps({"pid": os.getpid(), "ts": now_iso(), "epoch": time.time()}))
     return True
 
 
 def release_lock(project_dir: str, skill: str, config: dict | None = None) -> None:
-    """ロックを解放する（存在しなくてもエラーにしない）。"""
+    """ロックを解放する（存在しない/権限エラーでもクラッシュしない）。"""
     path = lock_path(project_dir, skill, config)
     try:
         os.remove(path)
-    except FileNotFoundError:
+    except OSError:
         pass

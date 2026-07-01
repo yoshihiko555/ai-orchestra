@@ -70,6 +70,9 @@ def cmd_evaluate(project: str, history_path: str) -> int:
     if not isinstance(data, list):
         print("history must be a JSON array", file=sys.stderr)
         return 2
+    if not all(isinstance(d, dict) for d in data):
+        print("history elements must be JSON objects", file=sys.stderr)
+        return 2
     history = [
         se.IterationRecord(
             score=float(d.get("score") or 0.0),

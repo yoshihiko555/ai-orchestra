@@ -28,6 +28,8 @@ try:
 except ImportError:
     se = None  # type: ignore[assignment]
 
+MAX_STDIN_BYTES = 1024 * 1024  # 1 MB。巨大 stdin による OOM を防ぐ
+
 
 def _safe(func):
     def wrapper() -> None:
@@ -69,7 +71,11 @@ def _consume_pending(project_dir: str, skill: str, config: dict) -> tuple[str, i
         return "", None
     run_id = str(pending.get("run_id") or "")
     start = pending.get("start_epoch")
-    duration = int((time.time() - float(start)) * 1000) if start else None
+    try:
+        # clock skew で負になり得るため max(0, ...) でガード
+        duration = max(0, int((time.time() - float(start)) * 1000)) if start is not None else None
+    except (TypeError, ValueError):
+        duration = None
     try:
         os.remove(path)
     except OSError:
@@ -83,7 +89,8 @@ def main() -> None:
     if se is None:
         return
     try:
-        data = json.loads(sys.stdin.read())
+        raw = sys.stdin.buffer.read(MAX_STDIN_BYTES).decode("utf-8", "replace")
+        data = json.loads(raw)
     except (ValueError, json.JSONDecodeError):
         return
     if (data.get("tool_name") or "") != "Skill":

@@ -61,3 +61,10 @@ def test_evaluate_cost_guard(tmp_path, capsys) -> None:
     rc = cli.main(["--project", p, "evaluate", "--history", str(hist)])
     out = json.loads(capsys.readouterr().out)
     assert rc == 0 and out["should_stop"] is True and out["guard"] == "cost"
+
+
+def test_evaluate_rejects_non_dict_elements(tmp_path) -> None:
+    hist = tmp_path / "bad.json"
+    hist.write_text(json.dumps([1, "a", None]), encoding="utf-8")
+    rc = cli.main(["--project", str(tmp_path), "evaluate", "--history", str(hist)])
+    assert rc == 2

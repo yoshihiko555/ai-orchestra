@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from tests.module_loader import load_module
 
 se = load_module("skill_evolution_common", "packages/skill-evolution/lib/skill_evolution_common.py")
@@ -35,7 +37,6 @@ def test_append_and_read_metrics_roundtrip(tmp_path) -> None:
 def test_read_metrics_skips_broken_lines(tmp_path) -> None:
     p = str(tmp_path)
     path = se.metrics_path(p, "s")
-    import os
 
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
@@ -59,7 +60,6 @@ def test_append_lesson_rotates_to_archive(tmp_path) -> None:
     assert se.lessons_count(p, "s", cfg) == 2
     text = se.read_lessons(p, "s", cfg)
     assert "third" in text and "second" in text and "first" not in text
-    import os
 
     assert os.path.isfile(se.lessons_archive_path(p, "s", cfg))
     with open(se.lessons_archive_path(p, "s", cfg), encoding="utf-8") as f:
@@ -267,3 +267,65 @@ def test_lock_is_exclusive(tmp_path) -> None:
     assert se.acquire_lock(p, "s") is False
     se.release_lock(p, "s")
     assert se.acquire_lock(p, "s") is True
+
+
+def test_acquire_lock_reclaims_stale(tmp_path) -> None:
+    import json
+
+    p = str(tmp_path)
+    assert se.acquire_lock(p, "s") is True
+    # ロックを stale 化（TTL 超過 epoch + 存在しない PID）
+    with open(se.lock_path(p, "s"), "w", encoding="utf-8") as f:
+        json.dump({"pid": 2_000_000_000, "epoch": 0.0, "ts": "old"}, f)
+    assert se.acquire_lock(p, "s") is True  # stale を奪取
+
+
+def test_acquire_lock_reclaims_unreadable(tmp_path) -> None:
+    p = str(tmp_path)
+    se.acquire_lock(p, "s")
+    with open(se.lock_path(p, "s"), "w", encoding="utf-8") as f:
+        f.write("not-json")
+    assert se.acquire_lock(p, "s") is True
+
+
+# ---------------------------------------------------------------------------
+# ハードニング（レビュー反映）
+# ---------------------------------------------------------------------------
+
+
+def test_slug_hardening() -> None:
+    assert se._slug("..") == "__"
+    assert not se._slug(".env").startswith(".")
+    assert "/" not in se._slug("a/b/c")
+    assert len(se._slug("x" * 500)) <= 120
+
+
+def test_data_dir_rejects_traversal(tmp_path) -> None:
+    p = str(tmp_path)
+    d = se.data_dir(p, {"storage": {"dir": "../../etc"}})
+    assert d.startswith(os.path.abspath(p))
+
+
+def test_build_metric_record_sanitizes_nonnumeric() -> None:
+    sr = {"run_id": "r", "ambiguities": "abc", "critical": {"a": True}}
+    rec = se.build_metric_record("s", "r", sr, None)
+    assert rec["self_report"]["ambiguities"] == 0
+    assert rec["machine"]["critical_pass_rate"] == 1.0
+
+
+def test_within_zero_baseline() -> None:
+    assert se._within(0.0, 0.0, 10) is True
+    assert se._within(0.5, 0.0, 10) is False
+
+
+def test_append_lesson_collapses_newlines(tmp_path) -> None:
+    p = str(tmp_path)
+    cfg = {"lessons": {"max_lines": 10}}
+    se.append_lesson(p, "s", "line1\nline2", cfg)
+    assert se.lessons_count(p, "s", cfg) == 1
+
+
+def test_score_run_penalty_from_raw_nonnumeric() -> None:
+    # score_run が生の非数値 self_report でもクラッシュしない
+    rec = {"machine": {"critical_pass_rate": 1.0}, "self_report": {"ambiguities": "x"}}
+    assert se.score_run(rec) == 100.0
