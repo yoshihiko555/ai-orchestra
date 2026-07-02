@@ -36,7 +36,6 @@ if _hooks_dir not in sys.path:
 from hook_common import (
     load_package_config,
     read_hook_input,
-    read_json_safe,
     safe_hook_execution,
     write_json,
 )
@@ -44,9 +43,46 @@ from proxy_manager import (
     build_proxy_url,
     clear_session_state,
     get_proxy_state,
+    is_proxy_port_free,
     start_proxy_background,
     write_session_state,
 )
+
+# ---------------------------------------------------------------------------
+# JSON ファイル読み込み（破損検知付き）
+# ---------------------------------------------------------------------------
+
+
+def _read_json_or_none(path: str) -> dict | None:
+    """JSON ファイルを読み込む。
+
+    ファイルが存在しない、または中身が空の場合は空 dict を返す（初期状態として扱う）。
+    ファイルが存在し中身が非空にもかかわらずパースに失敗、または dict 以外にパースされた
+    場合は破損とみなし None を返す（呼び出し側は上書きせずスキップすること）。
+    """
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            raw = f.read()
+    except OSError:
+        return {}
+    if not raw.strip():
+        return {}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _warn_corrupted_json(path: str) -> None:
+    """破損した JSON ファイルをスキップする旨の警告を stderr に出す。"""
+    print(
+        f"[cocoindex] {path} is not valid JSON; skipping to avoid overwriting manual edits",
+        file=sys.stderr,
+    )
+
 
 # ---------------------------------------------------------------------------
 # Claude Code (.mcp.json)
@@ -74,7 +110,10 @@ def provision_claude(
 ) -> str | None:
     """Claude Code の .mcp.json にエントリを追加/更新する。"""
     mcp_path = os.path.join(project_dir, ".mcp.json")
-    data = read_json_safe(mcp_path)
+    data = _read_json_or_none(mcp_path)
+    if data is None:
+        _warn_corrupted_json(mcp_path)
+        return None
 
     servers = data.get("mcpServers", {})
     new_entry = _build_claude_entry(config, proxy_enabled, project_dir)
@@ -94,7 +133,10 @@ def cleanup_claude(project_dir: str, server_name: str) -> str | None:
     if not os.path.isfile(mcp_path):
         return None
 
-    data = read_json_safe(mcp_path)
+    data = _read_json_or_none(mcp_path)
+    if data is None:
+        _warn_corrupted_json(mcp_path)
+        return None
     servers = data.get("mcpServers", {})
 
     if server_name not in servers:
@@ -119,6 +161,11 @@ def cleanup_claude(project_dir: str, server_name: str) -> str | None:
 _TOML_HEADER_RE = re.compile(r"^\[([^\]]+)\]")
 
 
+def _toml_escape(value: str) -> str:
+    """TOML basic string 用に `\\` と `"` をエスケープする。"""
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
 def _build_toml_section(
     server_name: str, config: dict, proxy_enabled: bool, project_dir: str
 ) -> str:
@@ -127,9 +174,10 @@ def _build_toml_section(
     lines = [f"[mcp_servers.{server_name}]"]
 
     if proxy_enabled and not target.get("force_stdio", False):
-        lines.append(f'url = "{build_proxy_url("codex", config, project_dir)}"')
+        url = build_proxy_url("codex", config, project_dir)
+        lines.append(f'url = "{_toml_escape(url)}"')
     else:
-        lines.append(f'command = "{config["command"]}"')
+        lines.append(f'command = "{_toml_escape(config["command"])}"')
         args_str = json.dumps(config["args"])
         lines.append(f"args = {args_str}")
         lines.append("enabled = true")
@@ -232,7 +280,10 @@ def provision_antigravity(
     if not os.path.isfile(settings_path):
         return None
 
-    data = read_json_safe(settings_path)
+    data = _read_json_or_none(settings_path)
+    if data is None:
+        _warn_corrupted_json(settings_path)
+        return None
     servers = data.get("mcpServers", {})
     new_entry = _build_antigravity_entry(config, proxy_enabled, project_dir)
 
@@ -251,7 +302,10 @@ def cleanup_antigravity(project_dir: str, server_name: str) -> str | None:
     if not os.path.isfile(settings_path):
         return None
 
-    data = read_json_safe(settings_path)
+    data = _read_json_or_none(settings_path)
+    if data is None:
+        _warn_corrupted_json(settings_path)
+        return None
     servers = data.get("mcpServers", {})
 
     if server_name not in servers:
@@ -337,9 +391,27 @@ def main() -> None:
         enabled and config and (config.get("proxy", {}) or {}).get("enabled", False)
     )
     warmup_started = False
-    session_uses_proxy = _session_uses_proxy(config, proxy_enabled) if config else False
+    fallback_message = ""
+
     if proxy_enabled and config:
         proxy_state = get_proxy_state(config, project_dir)
+        if proxy_state.get("proxy_state") == "failed":
+            if is_proxy_port_free(config, project_dir):
+                # 一時的な失敗（ポート衝突やランチャー不調など）の可能性がある。
+                # ポートが解放されていれば別プロセスを乗っ取る心配がないため、
+                # stdio へ恒久降格せず後続の start_proxy_background() による
+                # 再起動を試みる（この tick では stdio のまま扱う従来挙動は
+                # proxy_ready=False の分岐が引き継ぐ）。
+                pass
+            else:
+                # ポートを他プロセスが握っており安全に再起動できない場合のみ
+                # stdio エントリへフォールバックする（乗っ取り/kill は行わない）。
+                proxy_enabled = False
+                fallback_message = "[cocoindex] proxy is in a failed state; falling back to stdio"
+
+    session_uses_proxy = _session_uses_proxy(config, proxy_enabled) if config else False
+
+    if proxy_enabled and config:
         proxy_ready = proxy_state.get("proxy_state") in {"ready", "idle"}
         if session_id:
             if session_uses_proxy:
@@ -370,6 +442,8 @@ def main() -> None:
                 changed.append(result)
 
     messages: list[str] = []
+    if fallback_message:
+        messages.append(fallback_message)
     if changed:
         mode = "proxy" if proxy_enabled else "stdio"
         messages.append(f"[cocoindex] MCP server provisioned ({mode}): {', '.join(changed)}")

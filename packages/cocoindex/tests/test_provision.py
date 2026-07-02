@@ -89,6 +89,30 @@ class TestProvisionClaude:
         mcp_path = tmp_path / ".mcp.json"
         assert mcp_path.exists()
 
+    def test_skips_corrupted_json_without_overwriting(self, tmp_path: Path, capsys) -> None:
+        """構文エラーのある .mcp.json は上書きせず警告を出してスキップする。"""
+        mcp_path = tmp_path / ".mcp.json"
+        broken_content = '{"mcpServers": {"broken": '
+        mcp_path.write_text(broken_content)
+
+        result = provision.provision_claude(str(tmp_path), SAMPLE_CONFIG, SERVER_NAME)
+        assert result is None
+        assert mcp_path.read_text() == broken_content
+
+        stderr = capsys.readouterr().err
+        assert "not valid JSON" in stderr
+
+    def test_treats_empty_file_as_fresh(self, tmp_path: Path) -> None:
+        """0 バイトのファイルは破損ではなく空の状態として扱う。"""
+        mcp_path = tmp_path / ".mcp.json"
+        mcp_path.write_text("")
+
+        result = provision.provision_claude(str(tmp_path), SAMPLE_CONFIG, SERVER_NAME)
+        assert result == "claude"
+
+        data = json.loads(mcp_path.read_text())
+        assert "cocoindex-code" in data["mcpServers"]
+
 
 class TestCleanupClaude:
     def test_removes_entry(self, tmp_path: Path) -> None:
@@ -130,6 +154,19 @@ class TestCleanupClaude:
     def test_noop_when_file_missing(self, tmp_path: Path) -> None:
         result = provision.cleanup_claude(str(tmp_path), SERVER_NAME)
         assert result is None
+
+    def test_skips_corrupted_json_without_overwriting(self, tmp_path: Path, capsys) -> None:
+        """構文エラーのある .mcp.json は上書きせず警告を出してスキップする。"""
+        mcp_path = tmp_path / ".mcp.json"
+        broken_content = '{"mcpServers": {"cocoindex-code": '
+        mcp_path.write_text(broken_content)
+
+        result = provision.cleanup_claude(str(tmp_path), SERVER_NAME)
+        assert result is None
+        assert mcp_path.read_text() == broken_content
+
+        stderr = capsys.readouterr().err
+        assert "not valid JSON" in stderr
 
 
 # =========================================================================
@@ -278,6 +315,21 @@ class TestProvisionAntigravity:
         result = provision.provision_antigravity(str(tmp_path), SAMPLE_CONFIG, SERVER_NAME)
         assert result is None
 
+    def test_skips_corrupted_json_without_overwriting(self, tmp_path: Path, capsys) -> None:
+        """構文エラーのある settings.json は上書きせず警告を出してスキップする。"""
+        gemini_dir = tmp_path / ".gemini"
+        gemini_dir.mkdir()
+        settings_path = gemini_dir / "settings.json"
+        broken_content = '{"model": {'
+        settings_path.write_text(broken_content)
+
+        result = provision.provision_antigravity(str(tmp_path), SAMPLE_CONFIG, SERVER_NAME)
+        assert result is None
+        assert settings_path.read_text() == broken_content
+
+        stderr = capsys.readouterr().err
+        assert "not valid JSON" in stderr
+
 
 class TestCleanupAntigravity:
     def test_removes_entry(self, tmp_path: Path) -> None:
@@ -308,6 +360,106 @@ class TestCleanupAntigravity:
 
         result = provision.cleanup_antigravity(str(tmp_path), SERVER_NAME)
         assert result is None
+
+    def test_skips_corrupted_json_without_overwriting(self, tmp_path: Path, capsys) -> None:
+        """構文エラーのある settings.json は上書きせず警告を出してスキップする。"""
+        gemini_dir = tmp_path / ".gemini"
+        gemini_dir.mkdir()
+        settings_path = gemini_dir / "settings.json"
+        broken_content = '{"mcpServers": {"cocoindex-code": '
+        settings_path.write_text(broken_content)
+
+        result = provision.cleanup_antigravity(str(tmp_path), SERVER_NAME)
+        assert result is None
+        assert settings_path.read_text() == broken_content
+
+        stderr = capsys.readouterr().err
+        assert "not valid JSON" in stderr
+
+
+# =========================================================================
+# _read_json_or_none
+# =========================================================================
+
+
+class TestReadJsonOrNone:
+    def test_missing_file_returns_empty_dict(self, tmp_path: Path) -> None:
+        path = tmp_path / "does-not-exist.json"
+        assert provision._read_json_or_none(str(path)) == {}
+
+    def test_empty_file_returns_empty_dict(self, tmp_path: Path) -> None:
+        path = tmp_path / "empty.json"
+        path.write_text("")
+        assert provision._read_json_or_none(str(path)) == {}
+
+    def test_whitespace_only_file_returns_empty_dict(self, tmp_path: Path) -> None:
+        path = tmp_path / "whitespace.json"
+        path.write_text("   \n")
+        assert provision._read_json_or_none(str(path)) == {}
+
+    def test_valid_empty_object_returns_empty_dict(self, tmp_path: Path) -> None:
+        path = tmp_path / "valid.json"
+        path.write_text("{}")
+        assert provision._read_json_or_none(str(path)) == {}
+
+    def test_valid_object_returns_dict(self, tmp_path: Path) -> None:
+        path = tmp_path / "valid.json"
+        path.write_text(json.dumps({"a": 1}))
+        assert provision._read_json_or_none(str(path)) == {"a": 1}
+
+    def test_broken_syntax_returns_none(self, tmp_path: Path) -> None:
+        path = tmp_path / "broken.json"
+        path.write_text('{"a": ')
+        assert provision._read_json_or_none(str(path)) is None
+
+    def test_non_object_json_returns_none(self, tmp_path: Path) -> None:
+        path = tmp_path / "array.json"
+        path.write_text(json.dumps([1, 2, 3]))
+        assert provision._read_json_or_none(str(path)) is None
+
+
+# =========================================================================
+# TOML 文字列エスケープ
+# =========================================================================
+
+
+class TestTomlEscape:
+    def test_escapes_quotes_and_backslashes(self) -> None:
+        assert provision._toml_escape('say "hi"') == 'say \\"hi\\"'
+        assert provision._toml_escape("C:\\path\\to\\bin") == "C:\\\\path\\\\to\\\\bin"
+
+    def test_no_special_characters_unchanged(self) -> None:
+        assert provision._toml_escape("uvx") == "uvx"
+
+    def test_build_toml_section_escapes_command(self) -> None:
+        config = {
+            **SAMPLE_CONFIG,
+            "command": 'uvx "weird" \\value',
+        }
+        section = provision._build_toml_section(SERVER_NAME, config, False, "/tmp/project")
+        assert 'command = "uvx \\"weird\\" \\\\value"' in section
+
+    def test_provision_codex_writes_valid_toml_with_special_chars(self, tmp_path: Path) -> None:
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        toml_path = codex_dir / "config.toml"
+        toml_path.write_text(CODEX_BASE_TOML)
+
+        config = {
+            **SAMPLE_CONFIG,
+            "command": 'uvx "weird" \\value',
+        }
+        result = provision.provision_codex(str(tmp_path), config, SERVER_NAME)
+        assert result == "codex"
+
+        content = toml_path.read_text()
+        assert 'command = "uvx \\"weird\\" \\\\value"' in content
+
+        # tomllib で妥当な TOML としてパースできることを確認する
+        import tomllib
+
+        parsed = tomllib.loads(content)
+        assert parsed["mcp_servers"]["cocoindex-code"]["command"] == 'uvx "weird" \\value'
 
 
 # =========================================================================
@@ -597,6 +749,81 @@ class TestMain:
         )
         assert not session_state_path.exists()
         start_mock.assert_called_once_with(config, str(project_dir))
+
+    def test_proxy_failed_state_with_occupied_port_falls_back_to_stdio(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """別プロセスがポートを占有する場合は乗っ取らず stdio へフォールバックする。"""
+        project_dir = tmp_path
+        mcp_path = project_dir / ".mcp.json"
+        mcp_path.write_text("{}")
+
+        monkeypatch.setattr(provision, "load_package_config", lambda *_: SAMPLE_CONFIG_V2)
+        monkeypatch.setattr(
+            provision,
+            "get_proxy_state",
+            lambda *_: {"proxy_state": "failed"},
+        )
+        start_mock = MagicMock(return_value=True)
+        monkeypatch.setattr(provision, "start_proxy_background", start_mock)
+        monkeypatch.setattr(provision, "is_proxy_port_free", lambda *_: False)
+
+        output = self._invoke(
+            {"cwd": str(project_dir), "session_id": "sess-failed"},
+            monkeypatch,
+        )
+
+        assert "falling back to stdio" in output
+        # 自動再起動は行わない
+        start_mock.assert_not_called()
+        # session state も proxy 未使用として扱われる（reconnect 不要）
+        session_state_path = (
+            project_dir / ".claude" / "state" / "cocoindex-sessions" / "sess-failed.json"
+        )
+        assert not session_state_path.exists()
+
+        data = json.loads(mcp_path.read_text())
+        entry = data["mcpServers"]["cocoindex-code"]
+        assert entry["command"] == "uvx"
+        assert "url" not in entry
+        assert entry.get("type") != "sse"
+
+    def test_proxy_failed_state_with_free_port_retries_via_warmup(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        project_dir = tmp_path
+        mcp_path = project_dir / ".mcp.json"
+        mcp_path.write_text("{}")
+
+        monkeypatch.setattr(provision, "load_package_config", lambda *_: SAMPLE_CONFIG_V2)
+        monkeypatch.setattr(
+            provision,
+            "get_proxy_state",
+            lambda *_: {"proxy_state": "failed"},
+        )
+        monkeypatch.setattr(provision, "is_proxy_port_free", lambda *_: True)
+        start_mock = MagicMock(return_value=True)
+        monkeypatch.setattr(provision, "start_proxy_background", start_mock)
+
+        output = self._invoke(
+            {"cwd": str(project_dir), "session_id": "sess-retry"},
+            monkeypatch,
+        )
+
+        assert "falling back to stdio" not in output
+        assert "warmup started" in output
+        start_mock.assert_called_once_with(SAMPLE_CONFIG_V2, str(project_dir))
+
+        session_state = json.loads(
+            (
+                project_dir / ".claude" / "state" / "cocoindex-sessions" / "sess-retry.json"
+            ).read_text()
+        )
+        assert session_state["reconnect_required"] is True
+
+        data = json.loads(mcp_path.read_text())
+        entry = data["mcpServers"]["cocoindex-code"]
+        assert entry["type"] == "sse"
 
 
 class TestNormalizeTargets:

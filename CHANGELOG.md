@@ -33,6 +33,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`packages/cocoindex`: proxy プロセス管理と設定ファイル書き込みの安全性を強化（全パッケージレビュー指摘対応）**: 無関係プロセスの誤 kill と他ツール設定の破壊を防止
+  - **ポート占有 PID の同一性検証（Critical）**: `start_proxy` / `stop_proxy` / `cleanup_orphan` がポートから見つけた PID を無検証で採用・SIGTERM/SIGKILL していた問題を修正。`ps -o command=` で `mcp-proxy` / `proxy_supervisor` のプロセスであることを検証し、検証失敗時は採用せず（start は `proxy_state=failed` + 理由記録）、kill せずクリーンアップのみ行う
+  - **破損 JSON の無警告上書き防止**: 構文エラーのある `.mcp.json` / `.gemini/settings.json` を「空」とみなしてユーザーの手動編集ごと上書きしていた問題を修正。非空でパース不能な場合は stderr 警告を出して提供・削除をスキップ
+  - **TOML エスケープ**: `.codex/config.toml` 生成時に `command` / `url` の `"` `\` をエスケープし、想定外の値でファイル全体が壊れる問題を修正
+  - **proxy 恒久失敗時の stdio フォールバック**: `proxy_state == "failed"` の場合に SSE/HTTP エントリを書き続けて cocoindex-code が使用不能のままになる問題を修正。stdio エントリへフォールバックし "falling back to stdio" を出力（同一 tick 内の自動再起動はしない）
+  - **transient failure の永続降格を回避（PR #107 レビュー対応）**: 上記フォールバックが、一時的な起動失敗（ポート衝突・ランチャー不調）でも `failed` 状態を永続化させ、ポートが空いても stdio へ恒久降格したまま再起動されない問題を修正。`failed` かつ**ポートが空いている**場合は stdio に落とさず後続の `start_proxy_background()` による再起動を許し、**ポートを他プロセスが占有している場合のみ** stdio フォールバック（従来の PID 同一性検証による「無関係プロセスを kill しない」安全性は維持）
+  - **テストのモジュールロード衝突を解消**: `tests/module_loader.load_module` が呼び出しごとに新しいモジュールを `sys.modules["proxy_manager"]` へ登録するため、`tests/unit/test_proxy_manager.py` との併走時に文字列指定 `@patch("proxy_manager.xxx")` が別オブジェクトを patch して 16 件が収集順依存で失敗していた。package テストに autouse fixture を追加し、各テスト直前に本ファイルの proxy_mgr へ再バインドして収集順に依存しないようにした
 - **hook 判定精度と依存整理（agent-routing / codex-suggestions / antigravity-suggestions、全パッケージレビュー指摘対応）**
   - **`is_cli_enabled` を core へ引き上げ**: codex-suggestions / antigravity-suggestions が agent-routing 所有の `route_config` へ try/except 外のトップレベル import で依存し、agent-routing 未導入構成で hook がハードクラッシュしていた問題を修正。`hook_common.is_cli_enabled` に移動し（route_config は再エクスポートで後方互換）、manifest の `depends: ["core"]` と実態を一致させた
   - **agent-routing の単語境界マッチ化**: `"ui" in "quick"`、`"test" in "latest"` 等の部分文字列誤検知で UserPromptSubmit のほぼ毎回誤ルーティング提案が注入されていた問題を修正。英語トリガーは `\b` 境界の正規表現（コンパイルキャッシュ付き）、日本語トリガーは従来の部分一致を維持
