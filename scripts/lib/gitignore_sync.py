@@ -17,6 +17,7 @@ ENTRIES = [
     ".claude/state/",
     ".claude/checkpoints/",
     ".claude/context/",
+    ".claude/codd/",
     ".claude/.facet-packages-hash",
     ".claude/.facet-manifest.json",
     ".codex/.facet-manifest.json",
