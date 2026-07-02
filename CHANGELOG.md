@@ -33,6 +33,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`packages/quality-gates`: 共有状態のプロジェクトスコープ化と設定判定の一元化（全パッケージレビュー指摘対応）**
+  - **/tmp 状態ファイルのプロジェクトスコープ化**: `test-gate-checker` / `post-test-analysis` / `post-implementation-review` が固定パス `/tmp/claude-*-state.json` を共有し、複数プロジェクト並行時に編集件数・テスト結果が相互汚染して閾値判定が誤る問題（Issue #83 と同系統）を修正。`test-tampering-detector` と同じ `get_project_state_key()`（git-common-dir 優先）でプロジェクトごとにネストする形式へ変更し、共有ヘルパー `hooks/quality_gate_config.py` を新設（manifest 宣言済み）。同一リポジトリの worktree 間は tampering-detector と同様に意図的に状態を共有する
+  - **`quality_gate.enabled` デフォルトの一元化**: `test-gate-checker.py`（False）と `post-test-analysis.py`（True）で真逆だったデフォルトを、ベース config（`enabled: true`）と対称な True に統一（`QUALITY_GATE_ENABLED_DEFAULT` を共有モジュールに定義）
+  - **`review_suggested` のリセット経路追加**: 一度提案すると二度と提案されなかった `post-implementation-review` に TTL（24 時間、定数化）による再アームと、提案時のカウンタリセットを追加。7 フック中唯一テストが無かった同 hook に初のテスト（閾値・TTL・プロジェクト分離・main() E2E）を新設
+  - **状態更新のロック + アトミック書き込み（PR #112 レビュー対応）**: プロジェクトスコープ状態の read-modify-write がロックなし・非アトミックで、並行 worktree/セッションで lost update や書き込み中断による JSON 破損（全プロジェクト分喪失）が起きうる問題を修正。単一トランザクション API `update_project_scoped_state()` を新設し、`fcntl.flock` による排他区間で read → mutate → write（tmp + `os.replace`）を実行して TOCTOU を構造的に排除（`context_store.py` の既存 flock パターンを踏襲）。`post-implementation-review` の更新もこの API 経由に統一
+  - **`DEFAULT_TEST_GATE_STATE` の重複解消（PR #112 レビュー対応）**: 同一の共有状態ファイルを使う `test-gate-checker` / `post-test-analysis` が独自に持っていたデフォルト状態辞書を `quality_gate_config.py` に集約し、両 hook から import してスキーマドリフトを防止
 - **`packages/core`: `write_json` のアトミック化と plan-gate のフェイルオープン修正（全パッケージレビュー指摘対応）**: hook の並列実行・タイムアウト kill に対する書き込み安全性を改善
   - **`write_json` アトミック化**: `open(path, "w")` の直接上書きを「一時ファイル書き込み → `os.replace()`」へ変更。書き込み途中に他 hook が読んで不完全 JSON を掴む競合（`working-context.json` / `plan-gate.json`）と、SessionStart の 15 秒タイムアウト kill による `.mcp.json` 等の破損（cocoindex の provision も本関数を使用）を防止。例外時は一時ファイルを削除して再送出。既存ファイルのパーミッション（例: mode 0600 の `.mcp.json`）は `os.replace` で失われないよう一時ファイルへ複製してから置換する
   - **plan-gate の `subagent_type: null` フェイルオープン修正**: `tool_input.get("subagent_type", "").lower()` は値が `null` のとき `None.lower()` で例外になり、`@safe_hook_execution` が握りつぶして「ブロックすべき実装エージェント呼び出しが素通り」していた。plan-gate 系 3 hook（check/set/clear）の stdin 読みを `hook_common.read_hook_input()` に、フィールド取得を None 安全な `get_field()` に統一
