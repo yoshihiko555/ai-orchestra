@@ -31,6 +31,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **配布基盤: ユーザー編集ファイルの保護（全パッケージレビュー指摘対応）**: 配布時 SHA-256 ハッシュを `orchestra.json`（`file_hashes`）に記録し、変更検知で破壊的操作を防止
   - **`uninstall` の無条件削除防止（Critical）**: config / agents ファイルを diff 確認なしで `unlink()` していた問題を修正。削除前にハッシュ比較し、ユーザー編集済み・ハッシュ未記録（旧 install 由来）は警告してスキップ（安全側）。dry-run でも同じ判定を表示
   - **`install` 再実行の無条件上書き防止**: `run_initial_sync()` に `sync_engine.needs_sync()` ゲートを追加し SessionStart 側の同期と挙動を一致。ユーザー変更が静かに消える問題を解消
+  - **`install` の config コピーもハッシュ保護（PR #110 レビュー対応）**: `run_initial_sync()` 以外に `install()` 内の config コピーループが hash 比較なしで無条件 `copy2` していたため、「編集 → uninstall（保護スキップ）→ 再 install」でユーザー編集が消えていた（Codex 実機再現）。`_copy_config_if_safe()` ヘルパーで uninstall と対称の変更検知を適用（編集済みは警告してスキップ。ただし hash 未記録時はコピーを通す＝非破壊操作の自己修復を優先）
   - **`patch_all_agents` の所有権チェック**: `.claude/agents/*.md` 全件を対象にしていた model パッチを、インストール済みパッケージの manifest `agents` 宣言から構築した allowlist のみに限定。ユーザー独自エージェントの `model:` が毎 SessionStart で上書きされる問題を解消
   - 後方互換: `file_hashes` の無い既存 `orchestra.json` でも全機能が動作（未記録ファイルは削除スキップの安全側）
 

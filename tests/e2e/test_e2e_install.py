@@ -194,6 +194,48 @@ class TestDistributionHashSafety:
 
         assert agent_file.read_text(encoding="utf-8") == "# user customized planner\n"
 
+    def test_reinstall_preserves_user_edited_config_file(self, e2e_project: Path) -> None:
+        """パッケージ再インストール時、ユーザー編集済みの config ファイルは上書きされない"""
+        run_orchex("install", "core", project=e2e_project)
+        config_file = e2e_project / ".claude" / "config" / "core" / "task-memory.yaml"
+        config_file.write_text("# user edited\n", encoding="utf-8")
+
+        result = run_orchex("install", "core", project=e2e_project)
+
+        assert config_file.read_text(encoding="utf-8") == "# user edited\n"
+        assert "変更されているため上書きをスキップ" in result.stdout
+
+    def test_reinstall_updates_unchanged_config_file(self, e2e_project: Path) -> None:
+        """未変更の config ファイルは再インストールで通常どおり更新される（回帰確認）"""
+        run_orchex("install", "core", project=e2e_project)
+        config_file = e2e_project / ".claude" / "config" / "core" / "task-memory.yaml"
+        source_file = Path("packages/core/config/task-memory.yaml")
+
+        result = run_orchex("install", "core", project=e2e_project)
+
+        assert config_file.read_text(encoding="utf-8") == source_file.read_text(encoding="utf-8")
+        assert "上書きをスキップ" not in result.stdout
+
+    def test_reinstall_config_file_without_recorded_hash(self, e2e_project: Path) -> None:
+        """file_hashes が記録されていない旧形式の orchestra.json では上書きをスキップせず自己修復する"""
+        run_orchex("install", "core", project=e2e_project)
+        orch_path = e2e_project / ".claude" / "orchestra.json"
+        orch = json.loads(orch_path.read_text(encoding="utf-8"))
+        orch.pop("file_hashes", None)
+        orch_path.write_text(
+            json.dumps(orch, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+        config_file = e2e_project / ".claude" / "config" / "core" / "task-memory.yaml"
+
+        result = run_orchex("install", "core", project=e2e_project)
+
+        assert result.returncode == 0
+        assert config_file.is_file()
+        assert "変更されているため上書きをスキップ" not in result.stdout
+
+        updated_orch = json.loads(orch_path.read_text(encoding="utf-8"))
+        assert "config/core/task-memory.yaml" in updated_orch.get("file_hashes", {}).get("core", {})
+
     def test_status_command_works_without_file_hashes(self, e2e_project: Path) -> None:
         """file_hashes キーがない旧形式の orchestra.json でも status がクラッシュしない（後方互換）"""
         run_orchex("install", "core", project=e2e_project)

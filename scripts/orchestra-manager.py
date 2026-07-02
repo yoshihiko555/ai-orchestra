@@ -493,15 +493,17 @@ class OrchestraManager(ContextMixin, HooksMixin):
                 source = pkg.path / file_path
                 target = project_dir / ".claude" / "config" / pkg.name / filename
                 target.parent.mkdir(parents=True, exist_ok=True)
+                file_key = f"config/{pkg.name}/{filename}"
 
-                if dry_run:
-                    print(f"[DRY-RUN] ファイルコピー: {target} <- {source}")
-                else:
-                    shutil.copy2(source, target)
-                    record_file_hash(
-                        orch, pkg.name, f"config/{pkg.name}/{filename}", compute_file_hash(target)
-                    )
-                    print(f"ファイルコピー: {pkg.name}/{target.name}")
+                self._copy_config_if_safe(
+                    orch,
+                    pkg.name,
+                    file_key,
+                    source,
+                    target,
+                    dry_run,
+                    label=f"{pkg.name}/{target.name}",
+                )
 
         settings = self.load_settings(project_dir)
         self._apply_hooks(pkg, settings, "add", dry_run)
@@ -524,6 +526,38 @@ class OrchestraManager(ContextMixin, HooksMixin):
             print(f"\n[DRY-RUN] orchestra.json 記録: installed_packages に '{package_name}' を追加")
         else:
             print(f"\n✓ パッケージ '{package_name}' をインストールしました")
+
+    def _copy_config_if_safe(
+        self,
+        orch: dict[str, Any],
+        pkg_name: str,
+        file_key: str,
+        source: Path,
+        target: Path,
+        dry_run: bool,
+        label: str,
+    ) -> None:
+        """配布時ハッシュと現在のファイル内容を比較し、ユーザー編集済みなら上書きをスキップする。
+
+        対象が存在しない、またはハッシュが未記録（新規/初回 install）の場合は
+        通常どおりコピーする。dry_run 時も判定結果（コピー予定/スキップ予定）は
+        同じロジックで表示するが、ファイルおよび orch dict は変更しない。
+        """
+        if target.exists():
+            recorded = get_recorded_file_hash(orch, pkg_name, file_key)
+            if recorded is not None and compute_file_hash(target) != recorded:
+                print(
+                    f"警告: {target} はインストール後に変更されているため上書きをスキップしました"
+                )
+                return
+
+        if dry_run:
+            print(f"[DRY-RUN] ファイルコピー: {target} <- {source}")
+            return
+
+        shutil.copy2(source, target)
+        record_file_hash(orch, pkg_name, file_key, compute_file_hash(target))
+        print(f"ファイルコピー: {label}")
 
     def _remove_if_unchanged(
         self,
