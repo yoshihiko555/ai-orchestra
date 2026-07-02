@@ -35,7 +35,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-<<<<<<< fix/audit-route-accuracy
 - **`packages/audit`: ルーティング適合率メトリクスの修復と秘密情報マスキングの統一（全パッケージレビュー指摘対応）**: Antigravity（agy）移行後に壊れていた監査機能を修復
   - **エイリアスマージの union 化（Critical）**: `delegation-policy.json` の `aliases` が `cli-tools.yaml` 由来のエイリアスを丸ごと上書きし、`claude-direct` ルーティングの Task 呼び出しが常に `matched=False` に誤記録されていた問題を修正。キーごとに順序保持・重複排除で union する
   - **`detect_route()` の agy 検出追加（Critical）**: codex / gemini のみでルート一致判定から agy が漏れていた問題を修正。単語境界付き正規表現で `bash:agy` を検出し、判定順は `audit-cli.py` と統一（codex → agy → gemini）
@@ -44,7 +43,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - **PEM 秘密鍵をブロック全体マスク（PR #108 レビュー対応 / P1）**: PEM パターンが BEGIN 行のみにマッチし鍵本文（base64）と END 行がログに残っていた問題を修正。`-----BEGIN ... PRIVATE KEY-----.*?-----END ... PRIVATE KEY-----`（`re.DOTALL`）でブロック全体を 1 マッチ redact
   - **`detect_route()` を実行ファイル分類へ変更（PR #108 レビュー対応）**: プロンプト本文の "codex"/"agy" 文字列で判定していたため `agy -p 'compare with codex'` が `bash:codex` に誤分類されていた。`_detect_cli_executable()` を新設し、コマンドを `&& || ; |` でセグメント分割して各先頭トークン（env 代入は読み飛ばし）の basename で実行ファイルを判定。プロンプト引数の文字列は分類根拠にしない
   - **テストの秘密情報リテラル分割（CI 対応）**: GitGuardian / Betterleaks が検出していたテスト内の Bearer token / PEM 直書きを文字列連結に分割（実行時の値は不変）
-=======
 - **`packages/cocoindex`: proxy プロセス管理と設定ファイル書き込みの安全性を強化（全パッケージレビュー指摘対応）**: 無関係プロセスの誤 kill と他ツール設定の破壊を防止
   - **ポート占有 PID の同一性検証（Critical）**: `start_proxy` / `stop_proxy` / `cleanup_orphan` がポートから見つけた PID を無検証で採用・SIGTERM/SIGKILL していた問題を修正。`ps -o command=` で `mcp-proxy` / `proxy_supervisor` のプロセスであることを検証し、検証失敗時は採用せず（start は `proxy_state=failed` + 理由記録）、kill せずクリーンアップのみ行う
   - **破損 JSON の無警告上書き防止**: 構文エラーのある `.mcp.json` / `.gemini/settings.json` を「空」とみなしてユーザーの手動編集ごと上書きしていた問題を修正。非空でパース不能な場合は stderr 警告を出して提供・削除をスキップ
@@ -83,7 +81,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - **孤児クリーンアップの整合**: PID 検出失敗時のフォールバックキー（16 進）のセッション・info ファイルが `isdigit()` 判定に合わず永久残留していた問題と、削除対象が 3 拡張子のみで `.shared-dir` / `.task-queue` と shared-dir 実体（`/tmp/claude-shared-*`）が異常終了時に永続リークしていた問題を修正。session-end と同じ 5 拡張子 + 実体削除に統一（`remove_session_files()` 共通化）
   - **`tmux-subagent-start.py` の `main()` 分割**: 約 150 行・ネスト 4-5 段を責務ごとの 5 関数へ純粋抽出（挙動不変、回帰テスト付き）
   - **フォールバッククリーンアップの誤削除防止（PR #109 レビュー対応）**: フォールバックキーのクリーンアップ判定が current `project_name` から tmux セッション名を再構成していたため、後続プロジェクトの起動時に別プロジェクトのフォールバックセッション（`.tmux-session` / `.shared-dir` / キュー）を誤削除しうる問題を修正。記録された `.tmux-session` の実名で生存判定し、現在の prefix で始まらない他プロジェクトの session info には触れない
->>>>>>> main
 - **配布基盤: ユーザー編集ファイルの保護（全パッケージレビュー指摘対応）**: 配布時 SHA-256 ハッシュを `orchestra.json`（`file_hashes`）に記録し、変更検知で破壊的操作を防止
   - **`uninstall` の無条件削除防止（Critical）**: config / agents ファイルを diff 確認なしで `unlink()` していた問題を修正。削除前にハッシュ比較し、ユーザー編集済み・ハッシュ未記録（旧 install 由来）は警告してスキップ（安全側）。dry-run でも同じ判定を表示
   - **`install` 再実行の無条件上書き防止**: `run_initial_sync()` に `sync_engine.needs_sync()` ゲートを追加し SessionStart 側の同期と挙動を一致。ユーザー変更が静かに消える問題を解消
