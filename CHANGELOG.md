@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.10] - 2026-07-02
+
 ### Added
 
 - **`packages/skill-evolution`: スキル自己改善ループ（Issue #5）**: スキル実行の品質を二軸（自己申告＋機械計測）で計測し、学び（lessons）を次回実行へ還元しつつ、停止条件付きのオフライン反復でスキル自体を改善する新パッケージ。設計は `req/design:skill-evolution` ＋ `ADR-20260701-027` に記録
