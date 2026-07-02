@@ -230,3 +230,42 @@ def test_load_config_raises_value_error_on_invalid_yaml(tmp_path) -> None:
     _write(cfg_path, "checks:\n  dangling: [unclosed\n")
     with pytest.raises(ValueError, match="Invalid CODD config YAML"):
         codd.load_config(cfg_path)
+
+
+def test_load_config_raises_value_error_on_typo_check_level(tmp_path) -> None:
+    # checks の値に typo（例: eror）があると Finding の level がどの集計にも
+    # 一致せず validate が無音の成功になる（CI ゲートのサイレント無効化）ため、
+    # config ロード時点で明確なエラーにする。
+    cfg_path = tmp_path / "codd.yaml"
+    _write(cfg_path, "checks:\n  dangling: eror\n")
+    with pytest.raises(ValueError, match="Invalid check level"):
+        codd.load_config(cfg_path)
+
+
+def test_normalize_check_level_accepts_known_values() -> None:
+    assert codd.normalize_check_level("error") == codd.LEVEL_ERROR
+    assert codd.normalize_check_level("Warning") == codd.LEVEL_WARNING
+    assert codd.normalize_check_level("  ERROR  ") == codd.LEVEL_ERROR
+    assert codd.normalize_check_level("off") == codd.LEVEL_OFF
+    assert codd.normalize_check_level(False) == codd.LEVEL_OFF  # YAML 1.1 bare off
+
+
+def test_normalize_check_level_rejects_unknown_values() -> None:
+    with pytest.raises(ValueError, match="Invalid check level"):
+        codd.normalize_check_level("eror")
+    with pytest.raises(ValueError, match="Invalid check level"):
+        codd.normalize_check_level("critical")
+
+
+def test_load_config_accepts_all_known_check_levels(tmp_path) -> None:
+    cfg_path = tmp_path / "codd.yaml"
+    _write(
+        cfg_path,
+        "checks:\n  dangling: error\n  drift: warning\n  orphan: off\n  cycle: off\n",
+    )
+    config = codd.load_config(cfg_path)
+    assert config.checks["dangling"] == codd.LEVEL_ERROR
+    assert config.checks["drift"] == codd.LEVEL_WARNING
+    assert config.checks["orphan"] == codd.LEVEL_OFF
+    # bare `off`（YAML 1.1 boolean False）も同様に off へ揃う
+    assert config.checks["cycle"] == codd.LEVEL_OFF

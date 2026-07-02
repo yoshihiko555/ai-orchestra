@@ -33,6 +33,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+<<<<<<< fix/codd-robustness
+- **`packages/codd`: validate の無音化防止と非 ASCII ファイル名対応（全パッケージレビュー指摘対応）**
+  - **`checks:` の語彙バリデーション**: 検査レベルに typo（例: `dangling: eror`）があると Finding が error / warning のどちらにも集計されず validate が出力ゼロ・exit 0 になり、CI ゲートがサイレント無効化されていた問題を修正。`normalize_check_level` が `{error, warning, off}` 以外を `ValueError` で拒否する（YAML 1.1 の bare `off` → False 読み替えは維持）
+  - **`git diff --name-status -z` への切り替え**: `core.quotePath=true`（デフォルト）で日本語等の非 ASCII ファイル名が 8 進エスケープされ、impact の変更検出から漏れる（silent false negative）問題を修正。NUL 区切りパースで R（rename）/ C（copy）/ D も正しく処理し、C のコピー元を changed に誤算入していた挙動も併せて解消。`_git_output` に `encoding="utf-8"` を明示
+=======
 - **`packages/quality-gates`: 共有状態のプロジェクトスコープ化と設定判定の一元化（全パッケージレビュー指摘対応）**
   - **/tmp 状態ファイルのプロジェクトスコープ化**: `test-gate-checker` / `post-test-analysis` / `post-implementation-review` が固定パス `/tmp/claude-*-state.json` を共有し、複数プロジェクト並行時に編集件数・テスト結果が相互汚染して閾値判定が誤る問題（Issue #83 と同系統）を修正。`test-tampering-detector` と同じ `get_project_state_key()`（git-common-dir 優先）でプロジェクトごとにネストする形式へ変更し、共有ヘルパー `hooks/quality_gate_config.py` を新設（manifest 宣言済み）。同一リポジトリの worktree 間は tampering-detector と同様に意図的に状態を共有する
   - **`quality_gate.enabled` デフォルトの一元化**: `test-gate-checker.py`（False）と `post-test-analysis.py`（True）で真逆だったデフォルトを、ベース config（`enabled: true`）と対称な True に統一（`QUALITY_GATE_ENABLED_DEFAULT` を共有モジュールに定義）
@@ -56,6 +61,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - **`install` の config コピーもハッシュ保護（PR #110 レビュー対応）**: `run_initial_sync()` 以外に `install()` 内の config コピーループが hash 比較なしで無条件 `copy2` していたため、「編集 → uninstall（保護スキップ）→ 再 install」でユーザー編集が消えていた（Codex 実機再現）。`_copy_config_if_safe()` ヘルパーで uninstall と対称の変更検知を適用（編集済みは警告してスキップ。ただし hash 未記録時はコピーを通す＝非破壊操作の自己修復を優先）
   - **`patch_all_agents` の所有権チェック**: `.claude/agents/*.md` 全件を対象にしていた model パッチを、インストール済みパッケージの manifest `agents` 宣言から構築した allowlist のみに限定。ユーザー独自エージェントの `model:` が毎 SessionStart で上書きされる問題を解消
   - 後方互換: `file_hashes` の無い既存 `orchestra.json` でも全機能が動作（未記録ファイルは削除スキップの安全側）
+>>>>>>> main
 
 ## [0.2.9] - 2026-06-26
 
