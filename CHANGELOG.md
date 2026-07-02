@@ -26,6 +26,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - `$BASE` 解決失敗時は統合ブランチ（`main` / `master` / `develop` / `stage` / `staging`）上でのみブランチを作成し、それ以外は準備済み扱いでスキップ（統合ブランチでの直接作業を回避する安全側設計）
   - 編集ソースは facet `facets/instructions/issue-fix.md`。`.claude/skills/` と `.agents/skills/` の SKILL.md は facet build で再生成
 
+### Fixed
+
+- **`packages/codd`: validate の無音化防止と非 ASCII ファイル名対応（全パッケージレビュー指摘対応）**
+  - **`checks:` の語彙バリデーション**: 検査レベルに typo（例: `dangling: eror`）があると Finding が error / warning のどちらにも集計されず validate が出力ゼロ・exit 0 になり、CI ゲートがサイレント無効化されていた問題を修正。`normalize_check_level` が `{error, warning, off}` 以外を `ValueError` で拒否する（YAML 1.1 の bare `off` → False 読み替えは維持）
+  - **`git diff --name-status -z` への切り替え**: `core.quotePath=true`（デフォルト）で日本語等の非 ASCII ファイル名が 8 進エスケープされ、impact の変更検出から漏れる（silent false negative）問題を修正。NUL 区切りパースで R（rename）/ C（copy）/ D も正しく処理し、C のコピー元を changed に誤算入していた挙動も併せて解消。`_git_output` に `encoding="utf-8"` を明示
+
 ## [0.2.9] - 2026-06-26
 
 ### Fixed
