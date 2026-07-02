@@ -4,11 +4,11 @@
 
 ## checkpointing との違い
 
-| | checkpointing | handoff |
-|---|---|---|
-| 目的 | 過去の作業を記録 | 未完了タスクを Codex に委譲 |
-| 視点 | 過去（何をやったか） | 未来（何をやるべきか） |
-| 消費者 | 次セッションの Claude/人間 | Codex CLI |
+|        | checkpointing              | handoff                     |
+| ------ | -------------------------- | --------------------------- |
+| 目的   | 過去の作業を記録           | 未完了タスクを Codex に委譲 |
+| 視点   | 過去（何をやったか）       | 未来（何をやるべきか）      |
+| 消費者 | 次セッションの Claude/人間 | Codex CLI                   |
 
 ## 使い方
 
@@ -30,24 +30,25 @@ python .claude/skills/handoff/scripts/handoff.py
 ```
 
 スクリプトが JSON を stdout に出力する。内容:
+
 - Plans.md の WIP/TODO/blocked タスク
 - 未コミット diff のサマリー（`git diff --stat`）
 - ブランチ名、最近のコミット
 - Decisions セクション
 
-### Step 2: ��話要約の生成
+### Step 2: 会話要約の生成
 
 ここが **スキル実行時に Claude が担当する部分**。Step 1 の出力 JSON に加えて、
 現在の会話コンテキストから以下を要約する（英語で、500文字以内）:
 
 - 何に取り組んでいたか（What was being worked on）
-- どこまで��んだか（Progress so far）
+- どこまで進んだか（Progress so far）
 - 次にやるべきこと（What needs to be done next）
 - 注意点や判断のコンテキスト（Important context or decisions）
 
 ### Step 3: 引き継ぎファイル生成
 
-Step 1 の JSON + Step 2 の要約を組み合わせ��、以下のフォーマットで
+Step 1 の JSON + Step 2 の要約を組み合わせて、以下のフォーマットで
 `.claude/handoffs/{timestamp}.md` に書き出す。
 
 **ファイルは英語で記述する**（Codex への指示は英語ルール準拠）。
@@ -66,25 +67,31 @@ Step 1 の JSON + Step 2 の要約を組み合わせ��、以下のフォー�
 ## Current Task State
 
 ### In Progress (WIP)
+
 - {task 1}
 - {task 2}
 
 ### Next Up (TODO)
+
 - {task 1}
 - {task 2}
 
 ### Blocked
+
 - {task} — Reason: {reason}
 
 ## Recent Changes
 
 ### Uncommitted Changes
+
 {git diff --stat output}
 
 ### Recent Commits
+
 - {hash} {message}
 
 ## Design Decisions
+
 - {decision 1}
 - {decision 2}
 
@@ -95,6 +102,7 @@ Focus on the WIP tasks listed above. The conversation summary
 provides context on what has been done and what remains.
 
 Key files to review:
+
 - .claude/Plans.md — Full task state (update markers as you complete tasks)
 - {other relevant files from working context}
 
@@ -105,7 +113,7 @@ When you complete a task, update its marker in Plans.md from `cc:WIP` to `cc:don
 
 生成後、以下をユーザーに **日本語で** 表示する:
 
-1. 生成され���ファイルのパス
+1. 生成されたファイルのパス
 2. Codex 起動コマンド:
    ```
    codex -c .claude/handoffs/{timestamp}.md
@@ -114,8 +122,8 @@ When you complete a task, update its marker in Plans.md from `cc:WIP` to `cc:don
 
 ## オプション
 
-| フラグ | 説明 |
-|--------|------|
+| フラグ            | 説明                                                   |
+| ----------------- | ------------------------------------------------------ |
 | `--message "..."` | Codex への追加指示メッセージを引き継ぎファイルに含める |
 
 ## 注意事項

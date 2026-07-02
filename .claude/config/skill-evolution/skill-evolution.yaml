@@ -1,0 +1,34 @@
+# skill-evolution: スキル自己改善ループの設定
+#
+# プロジェクト固有の上書きは skill-evolution.local.yaml で行う（config-loading ルール参照）。
+# 数値ガード（コスト上限・反復上限・holdout・停止しきい値）はここが正本。
+
+# 機能全体の有効/無効。
+enabled: true
+
+# データ保存先（プロジェクトローカル）。metrics/ と lessons/ をこの下に置く。
+storage:
+  dir: ".claude/skill-evolution"
+
+# lessons/<skill>.md の肥大化管理（NF-01: 注入コンテキストを膨らませない）。
+lessons:
+  max_lines: 40 # 「学び」セクションの保持行数。超過分は archive へ退避
+  inject_max_chars: 4000 # 発火前注入時の最大文字数
+
+# オフライン反復ループのガード（NF-02: 無限ループに陥らない）。
+offline:
+  max_iterations: 10 # 最大反復上限
+  max_cost_usd: 5.0 # コスト打ち切り
+  holdout_ratio: 0.3 # 固定シナリオの holdout 割合
+  stop: # 連続 consecutive 回すべて満たしたら停止
+    consecutive: 2
+    accuracy_delta_pt: 3 # 精度（judge 総合スコア）変化がこの pt 以内
+    steps_pct: 10 # ステップ数変化が ±this%
+    time_pct: 15 # 所要時間変化が ±this%
+  guards:
+    divergence_rounds: 3 # この回数改善なしで発散 → 人間通知して停止
+    overfit_drop_pt: 15 # holdout がこの pt 超下落で過学習停止
+
+# オフライン起動口: lessons 蓄積がこの件数を超えたら起動候補。
+trigger:
+  lessons_threshold: 20
