@@ -77,9 +77,9 @@ description: 'Interactive design skill for software projects — covers requirem
 
 ### フェーズ間の境界
 
-| 境界 | 基準 |
-|------|------|
-| 要件定義 → 基本設計 | 「何を作るか」が確定した（機能一覧・要件が合意済み） |
+| 境界                | 基準                                                         |
+| ------------------- | ------------------------------------------------------------ |
+| 要件定義 → 基本設計 | 「何を作るか」が確定した（機能一覧・要件が合意済み）         |
 | 基本設計 → 詳細設計 | 「どう作るか」の方針が確定した（一覧レベルの設計が合意済み） |
 
 基本設計は「一覧」と「方針」を決めるフェーズ。詳細設計は一覧の各項目を「個別の設計書」に展開するフェーズ。
@@ -123,16 +123,61 @@ Phase 3 完了後は `/preflight` でタスク分解し、`/startproject` で実
 
 ---
 
+## CODD フロントマター（全成果物に付与）
+
+**Phase 1-3 で生成する各ドキュメントファイルの先頭に、必ず `codd:` フロントマターを付与する。**
+codd は essential（常時有効）なので、条件分岐せず常に付与する。記法の詳細は
+`codd-frontmatter-policy` ルールを参照。
+
+### kind / node_id の対応
+
+| 成果物                                                                   | kind          | node_id 例            |
+| ------------------------------------------------------------------------ | ------------- | --------------------- |
+| project-overview / glossary / feature-list / functional / non-functional | `requirement` | `req:feature-list`    |
+| architecture / screen-list / api-list / er-design                        | `design`      | `design:architecture` |
+| API-001 / SC-001 / TBL-001 など個別設計書                                | `design`      | `design:API-001`      |
+
+- `node_id` は `<kind>:<file-slug>`（拡張子を除いたファイル名）。
+- `status` は新規作成時 `draft`（要件・設計とも）。
+- **1 ファイル = 1 ノード**。
+
+### depends_on（relation）
+
+- **基本設計 → 要件定義**: `derives_from`（例: `design:architecture` が `req:feature-list` から派生）
+- **詳細設計 → 基本設計**: `refines`（例: `design:API-001` が `design:api-list` を詳細化）
+- 上流が複数ある場合は該当する全 node_id を列挙する。
+
+### 付与例（基本設計 architecture.md）
+
+```yaml
+---
+codd:
+  node_id: "design:architecture"
+  kind: design
+  status: draft
+  depends_on:
+    - id: "req:feature-list"
+      relation: derives_from
+    - id: "req:non-functional"
+      relation: derives_from
+  owner: <チーム名 or 省略>
+---
+```
+
+生成後、整合性は `/codd-validate` で確認できる（dangling 等が無いこと）。
+
+---
+
 ## Phase 判定
 
 ユーザーの入力から開始フェーズを判定する：
 
-| ユーザーの意図 | 開始フェーズ |
-|--------------|------------|
-| 「要件定義から始めたい」「何を作るか整理したい」 | Phase 1 |
-| 「要件は決まっている、設計をしたい」 | Phase 2 |
-| 「基本設計は終わった、詳細を詰めたい」 | Phase 3 |
-| 「設計して」（曖昧） | Phase 1 から |
+| ユーザーの意図                                   | 開始フェーズ |
+| ------------------------------------------------ | ------------ |
+| 「要件定義から始めたい」「何を作るか整理したい」 | Phase 1      |
+| 「要件は決まっている、設計をしたい」             | Phase 2      |
+| 「基本設計は終わった、詳細を詰めたい」           | Phase 3      |
+| 「設計して」（曖昧）                             | Phase 1 から |
 
 判定が曖昧な場合は AskUserQuestion で確認する。
 
@@ -255,8 +300,8 @@ status: draft
 
 ### 成果物
 
-| ファイル | 内容 |
-|---------|------|
+| ファイル                                              | 内容                                 |
+| ----------------------------------------------------- | ------------------------------------ |
 | `.claude/docs/impact-analysis/{YYYY-MM-DD}_{slug}.md` | 既存コード調査と影響範囲分析レポート |
 
 **保存先の理由**: 永続的な設計ドキュメントを置く `docs/` ではなく `.claude/docs/` 配下を使う。影響範囲分析はその時点の変更計画に紐づく作業メモであり、時間とともに陳腐化する。作業用スクラッチ領域として他の設計ドキュメントと分離する。
@@ -294,13 +339,13 @@ status: draft
 
 ### 出力ファイル
 
-| ファイル | 内容 |
-|---------|------|
-| `docs/project-overview.md` | プロジェクト概要（目的・背景・スコープ） |
-| `docs/glossary.md` | 用語集 |
-| `docs/requirements/feature-list.md` | 機能一覧 |
-| `docs/requirements/functional.md` | 機能要件の詳細 |
-| `docs/requirements/non-functional.md` | 非機能要件の詳細 |
+| ファイル                              | 内容                                     |
+| ------------------------------------- | ---------------------------------------- |
+| `docs/project-overview.md`            | プロジェクト概要（目的・背景・スコープ） |
+| `docs/glossary.md`                    | 用語集                                   |
+| `docs/requirements/feature-list.md`   | 機能一覧                                 |
+| `docs/requirements/functional.md`     | 機能要件の詳細                           |
+| `docs/requirements/non-functional.md` | 非機能要件の詳細                         |
 
 ### フェーズ完了条件（受け入れチェックリスト）
 
@@ -336,13 +381,13 @@ status: draft
 
 ### 出力ファイル
 
-| ファイル | 内容 | 必須度 |
-|---------|------|--------|
-| `docs/architecture/architecture.md` | アーキテクチャ設計 | ほぼ必須 |
-| `docs/screens/screen-list.md` | 画面一覧 | UI ありの場合 |
-| `docs/screens/screen-transitions.md` | 画面遷移 | UI ありの場合 |
-| `docs/api/api-list.md` | API エンドポイント一覧 | API ありの場合 |
-| `docs/database/er-design.md` | データモデル設計（テーブル定義含む） | DB ありの場合 |
+| ファイル                             | 内容                                 | 必須度         |
+| ------------------------------------ | ------------------------------------ | -------------- |
+| `docs/architecture/architecture.md`  | アーキテクチャ設計                   | ほぼ必須       |
+| `docs/screens/screen-list.md`        | 画面一覧                             | UI ありの場合  |
+| `docs/screens/screen-transitions.md` | 画面遷移                             | UI ありの場合  |
+| `docs/api/api-list.md`               | API エンドポイント一覧               | API ありの場合 |
+| `docs/database/er-design.md`         | データモデル設計（テーブル定義含む） | DB ありの場合  |
 
 ### フェーズ完了条件（受け入れチェックリスト）
 
@@ -386,11 +431,11 @@ status: draft
 
 Phase 1-3 の基本フローに加えて、プロジェクトの性質に応じて追加の設計トラックを実施できる。
 
-| トラック | reference ファイル | 主な実施タイミング | トリガー |
-|---------|------------------|------------------|---------|
-| デザインシステム | `references/design-system.md` | Phase 2-3（画面設計と並行） | UI を持つプロジェクトで画面数が多い、またはユーザーが希望 |
-| テスト設計 | `references/test-design.md` | Phase 2-3（設計と並行） | 機能数が多い、品質要件が厳しい、またはユーザーが希望 |
-| セキュリティ設計 | `references/security-design.md` | Phase 1-2（要件・基本設計と並行） | 機密データを扱う、権限モデルが複雑、またはユーザーが希望 |
+| トラック         | reference ファイル              | 主な実施タイミング                | トリガー                                                  |
+| ---------------- | ------------------------------- | --------------------------------- | --------------------------------------------------------- |
+| デザインシステム | `references/design-system.md`   | Phase 2-3（画面設計と並行）       | UI を持つプロジェクトで画面数が多い、またはユーザーが希望 |
+| テスト設計       | `references/test-design.md`     | Phase 2-3（設計と並行）           | 機能数が多い、品質要件が厳しい、またはユーザーが希望      |
+| セキュリティ設計 | `references/security-design.md` | Phase 1-2（要件・基本設計と並行） | 機密データを扱う、権限モデルが複雑、またはユーザーが希望  |
 
 ---
 
@@ -398,13 +443,13 @@ Phase 1-3 の基本フローに加えて、プロジェクトの性質に応じ�
 
 設計作業でサブエージェントを活用する際は、`cli-tools.yaml` の `agents.{name}.tool` を参照する。
 
-| エージェント | 用途 |
-|------------|------|
-| `architect` | アーキテクチャレビュー・設計判断 |
-| `api-designer` | API 設計の詳細化 |
-| `data-modeler` | データモデル設計 |
-| `researcher` | 技術調査・ライブラリ選定 |
-| `requirements` | 要件の整理・分析（補助） |
+| エージェント   | 用途                             |
+| -------------- | -------------------------------- |
+| `architect`    | アーキテクチャレビュー・設計判断 |
+| `api-designer` | API 設計の詳細化                 |
+| `data-modeler` | データモデル設計                 |
+| `researcher`   | 技術調査・ライブラリ選定         |
+| `requirements` | 要件の整理・分析（補助）         |
 
 ---
 

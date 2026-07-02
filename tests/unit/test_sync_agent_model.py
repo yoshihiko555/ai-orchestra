@@ -16,6 +16,7 @@ resolve_agent_model = sync_mod.resolve_agent_model
 _patch_agent_model = sync_mod.patch_agent_model
 _load_cli_tools_config = sync_mod.load_cli_tools_config
 _deep_merge = sync_mod._deep_merge
+patch_all_agents = sync_mod.patch_all_agents
 
 
 FRONTMATTER_TEMPLATE = """\
@@ -181,3 +182,68 @@ class TestDeepMerge:
 
     def test_missing_key_preserved(self) -> None:
         assert _deep_merge({"a": 1}, {"b": 2}) == {"a": 1, "b": 2}
+
+
+def _write_agent_md(path: Path, model: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(FRONTMATTER_TEMPLATE.format(model=model), encoding="utf-8")
+
+
+class TestPatchAllAgentsAllowlist:
+    """patch_all_agents の managed_agent_stems allowlist のテスト。"""
+
+    def _setup_project(self, tmp_path: Path) -> Path:
+        project_dir = tmp_path / "project"
+        config_dir = project_dir / ".claude" / "config" / "agent-routing"
+        _write_yaml(config_dir / "cli-tools.yaml", {"subagent": {"default_model": "opus"}})
+        return project_dir
+
+    def test_allowlist_protects_unmanaged_agent(self, tmp_path: Path) -> None:
+        """allowlist 外のユーザー独自エージェント .md は変更されない。"""
+        project_dir = self._setup_project(tmp_path)
+        known = project_dir / ".claude" / "agents" / "known.md"
+        custom = project_dir / ".claude" / "agents" / "user-custom.md"
+        _write_agent_md(known, "sonnet")
+        _write_agent_md(custom, "sonnet")
+
+        patched_count = patch_all_agents(project_dir, managed_agent_stems={"known"})
+
+        assert patched_count == 1
+        assert "model: opus" in known.read_text(encoding="utf-8")
+        assert "model: sonnet" in custom.read_text(encoding="utf-8")
+
+    def test_none_allowlist_patches_all(self, tmp_path: Path) -> None:
+        """managed_agent_stems が None の場合は全件パッチする（後方互換）。"""
+        project_dir = self._setup_project(tmp_path)
+        known = project_dir / ".claude" / "agents" / "known.md"
+        custom = project_dir / ".claude" / "agents" / "user-custom.md"
+        _write_agent_md(known, "sonnet")
+        _write_agent_md(custom, "sonnet")
+
+        patched_count = patch_all_agents(project_dir, None)
+
+        assert patched_count == 2
+        assert "model: opus" in known.read_text(encoding="utf-8")
+        assert "model: opus" in custom.read_text(encoding="utf-8")
+
+    def test_default_argument_patches_all(self, tmp_path: Path) -> None:
+        """managed_agent_stems 省略時は全件パッチする（後方互換）。"""
+        project_dir = self._setup_project(tmp_path)
+        agent = project_dir / ".claude" / "agents" / "known.md"
+        _write_agent_md(agent, "sonnet")
+
+        patched_count = patch_all_agents(project_dir)
+
+        assert patched_count == 1
+        assert "model: opus" in agent.read_text(encoding="utf-8")
+
+    def test_empty_allowlist_patches_nothing(self, tmp_path: Path) -> None:
+        """空集合の allowlist は全ファイルをスキップする。"""
+        project_dir = self._setup_project(tmp_path)
+        agent = project_dir / ".claude" / "agents" / "known.md"
+        _write_agent_md(agent, "sonnet")
+
+        patched_count = patch_all_agents(project_dir, managed_agent_stems=set())
+
+        assert patched_count == 0
+        assert "model: sonnet" in agent.read_text(encoding="utf-8")

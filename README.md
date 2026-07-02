@@ -40,6 +40,7 @@ Claude Code (Orchestrator)
     │   ├── antigravity-suggestions/  # Antigravity リサーチ提案
     │   ├── quality-gates/      # 品質ゲート
     │   ├── codd/              # ドキュメント整合性レイヤー（scan/validate）
+    │   ├── skill-evolution/   # スキル自己改善ループ（二軸テレメトリ + オフライン反復）
     │   ├── git-workflow/     # Git/GitHub ワークフロー
     │   ├── cocoindex/          # MCP サーバー自動プロビジョニング
     │   └── tmux-monitor/       # tmux リアルタイム監視
@@ -349,6 +350,7 @@ ai-orchestra/
 │   ├── codex-suggestions/ # Codex 相談提案 hooks
 │   ├── antigravity-suggestions/ # Antigravity リサーチ提案 hooks
 │   ├── quality-gates/     # 品質ゲート hooks
+│   ├── skill-evolution/  # スキル自己改善ループ（テレメトリ hooks + オフライン CLI）
 │   ├── git-workflow/    # Git/GitHub ワークフロー（Issue・PR・開発フロー）
 │   ├── cocoindex/         # cocoindex MCP サーバーの自動プロビジョニング
 │   └── tmux-monitor/      # tmux サブエージェント監視
