@@ -41,6 +41,39 @@ from route_config import build_aliases, load_config
 # Route detection
 # ---------------------------------------------------------------------------
 
+# パイプ/`;`/`&&`/`||` でコマンドをセグメント分割する。
+_COMMAND_SEGMENT_SPLIT_RE = re.compile(r"&&|\|\||[;|]")
+# セグメント先頭の環境変数代入（`FOO=bar` 形式）を読み飛ばすための判定。
+_ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_KNOWN_CLI_EXECUTABLES = ("codex", "agy", "gemini")
+
+
+def _detect_cli_executable(command: str) -> str | None:
+    """コマンド文字列から実際に実行される CLI 実行ファイル名を判定する。
+
+    パイプ/`;`/`&&`/`||` で区切った各セグメントについて、環境変数代入
+    （`FOO=bar`）を読み飛ばした先頭トークンを実行ファイル名とみなす。
+    プロンプト引数などコマンド本文に含まれる文字列（例: `agy -p 'compare with codex'`
+    の `codex`）は分類根拠にしない。
+
+    Args:
+        command: Bash コマンド文字列。
+
+    Returns:
+        検出した実行ファイル名（"codex" / "agy" / "gemini"）。該当なしは None。
+    """
+    for segment in _COMMAND_SEGMENT_SPLIT_RE.split(command):
+        tokens = segment.split()
+        idx = 0
+        while idx < len(tokens) and _ENV_ASSIGNMENT_RE.match(tokens[idx]):
+            idx += 1
+        if idx >= len(tokens):
+            continue
+        executable = os.path.basename(tokens[idx]).lower()
+        if executable in _KNOWN_CLI_EXECUTABLES:
+            return executable
+    return None
+
 
 def detect_route(data: dict) -> tuple[str | None, str, str]:
     """ツール呼び出しから実際のルートを検出する。
@@ -67,15 +100,11 @@ def detect_route(data: dict) -> tuple[str | None, str, str]:
         if not command:
             command = find_first_text(data, {"command", "cmd"})
 
-        cmd_lower = command.lower()
-        # 優先順位は audit-cli.py の検出ロジック（codex > antigravity > gemini）に合わせる。
-        # gemini はレガシー検知のため最後に判定する。
-        if "codex" in cmd_lower:
-            return "bash:codex", command[:200], tool_name
-        if re.search(r"(?:^|[\s;|&])agy(?=\s|$)", cmd_lower):
-            return "bash:agy", command[:200], tool_name
-        if "gemini" in cmd_lower:
-            return "bash:gemini", command[:200], tool_name
+        # プロンプト引数の文字列ではなく、実行ファイル（コマンド先頭トークン）で分類する。
+        # 例: `agy -p 'compare with codex'` はプロンプト本文に "codex" を含むが bash:agy とする。
+        detected = _detect_cli_executable(command)
+        if detected:
+            return f"bash:{detected}", command[:200], tool_name
         return None, command[:200], tool_name
 
     if tool_lower in ("task", "agent"):

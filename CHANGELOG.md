@@ -33,6 +33,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - **`detect_route()` の agy 検出追加（Critical）**: codex / gemini のみでルート一致判定から agy が漏れていた問題を修正。単語境界付き正規表現で `bash:agy` を検出し、判定順は `audit-cli.py` と統一（codex → agy → gemini）
   - **`calc_cli_stats` の Counter 化**: antigravity 呼び出しが合計に入るのに内訳・グラフから消えていた問題を修正。`by_tool` 集計を追加し、`dashboard.py` / `dashboard-html.py` も antigravity を表示
   - **SECRET_PATTERNS の共通化**: `audit-prompt.py` に Azure SAS / PEM 秘密鍵の redact パターンが無く、プロンプト経由の秘密情報がマスクされずログに残っていた問題を修正。新設の `hooks/secret_masking.py` に完全版パターンを集約し両 hook から参照
+  - **PEM 秘密鍵をブロック全体マスク（PR #108 レビュー対応 / P1）**: PEM パターンが BEGIN 行のみにマッチし鍵本文（base64）と END 行がログに残っていた問題を修正。`-----BEGIN ... PRIVATE KEY-----.*?-----END ... PRIVATE KEY-----`（`re.DOTALL`）でブロック全体を 1 マッチ redact
+  - **`detect_route()` を実行ファイル分類へ変更（PR #108 レビュー対応）**: プロンプト本文の "codex"/"agy" 文字列で判定していたため `agy -p 'compare with codex'` が `bash:codex` に誤分類されていた。`_detect_cli_executable()` を新設し、コマンドを `&& || ; |` でセグメント分割して各先頭トークン（env 代入は読み飛ばし）の basename で実行ファイルを判定。プロンプト引数の文字列は分類根拠にしない
+  - **テストの秘密情報リテラル分割（CI 対応）**: GitGuardian / Betterleaks が検出していたテスト内の Bearer token / PEM 直書きを文字列連結に分割（実行時の値は不変）
 
 ## [0.2.9] - 2026-06-26
 

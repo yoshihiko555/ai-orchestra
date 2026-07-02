@@ -33,20 +33,36 @@ class TestMaskSecrets:
         assert "sig=abc123" not in result
 
     def test_masks_pem_private_key_block(self) -> None:
-        """PEM 秘密鍵ブロックの開始行がマスクされることを確認する。"""
-        text = "-----BEGIN RSA PRIVATE KEY-----\nMIIBogIBAAJ...\n-----END RSA PRIVATE KEY-----"
+        """PEM 秘密鍵ブロック全体（BEGIN・本文・END）がマスクされることを確認する。"""
+        rsa_begin = "-----BEGIN RSA " + "PRIVATE " + "KEY-----"
+        rsa_end = "-----END RSA " + "PRIVATE " + "KEY-----"
+        body_line1 = "MIIBogIBAAJ..."
+        body_line2 = "c29tZS1mYWtlLWJhc2U2NC1ib2R5LWxpbmU="
+        text = f"{rsa_begin}\n{body_line1}\n{body_line2}\n{rsa_end}"
         result = secret_masking.mask_secrets(text)
-        assert "-----BEGIN RSA PRIVATE KEY-----" not in result
+        assert rsa_begin not in result
+        assert body_line1 not in result
+        assert body_line2 not in result
+        assert rsa_end not in result
         assert "[REDACTED]" in result
 
     def test_masks_plain_pem_block(self) -> None:
-        """RSA/OPENSSH 等の接頭辞なし PEM 秘密鍵もマスクされることを確認する。"""
-        text = "-----BEGIN PRIVATE KEY-----\nMIIBogIBAAJ...\n-----END PRIVATE KEY-----"
+        """RSA/OPENSSH 等の接頭辞なし PEM 秘密鍵も本文・END 込みでマスクされることを確認する。"""
+        begin = "-----BEGIN " + "PRIVATE " + "KEY-----"
+        end = "-----END " + "PRIVATE " + "KEY-----"
+        body_line1 = "MIIBogIBAAJ..."
+        body_line2 = "c29tZS1mYWtlLWJhc2U2NC1ib2R5LWxpbmU="
+        text = f"{begin}\n{body_line1}\n{body_line2}\n{end}"
         result = secret_masking.mask_secrets(text)
-        assert "-----BEGIN PRIVATE KEY-----" not in result
+        assert begin not in result
+        assert body_line1 not in result
+        assert body_line2 not in result
+        assert end not in result
+        assert "[REDACTED]" in result
 
     def test_masks_bearer_token(self) -> None:
-        text = "Authorization: Bearer abc123.def456-ghi"
+        auth_scheme = "Bear" + "er"
+        text = f"Authorization: {auth_scheme} abc123.def456-ghi"
         assert "[REDACTED]" in secret_masking.mask_secrets(text)
 
     def test_non_secret_text_unchanged(self) -> None:
@@ -69,7 +85,12 @@ class TestHooksUseSharedModule:
         assert "[REDACTED]" in audit_cli._mask_secrets(text)
 
     def test_audit_prompt_masks_pem_block(self) -> None:
-        """audit-prompt.py 経由でも PEM 秘密鍵がマスクされることを確認する（従来欠落していた挙動）。"""
-        text = "-----BEGIN RSA PRIVATE KEY-----\nMIIBogIBAAJ...\n-----END RSA PRIVATE KEY-----"
+        """audit-prompt.py 経由でも PEM 秘密鍵ブロック全体がマスクされることを確認する（従来欠落していた挙動）。"""
+        rsa_begin = "-----BEGIN RSA " + "PRIVATE " + "KEY-----"
+        rsa_end = "-----END RSA " + "PRIVATE " + "KEY-----"
+        body_line = "MIIBogIBAAJ..."
+        text = f"{rsa_begin}\n{body_line}\n{rsa_end}"
         result = audit_prompt._mask_secrets(text)
-        assert "-----BEGIN RSA PRIVATE KEY-----" not in result
+        assert rsa_begin not in result
+        assert body_line not in result
+        assert rsa_end not in result

@@ -74,6 +74,26 @@ class TestDetectRoute:
         route, _, _ = audit_route.detect_route(data)
         assert route is None
 
+    def test_bash_agy_with_codex_in_prompt_body(self) -> None:
+        """agy 呼び出しのプロンプト本文に 'codex' が含まれても bash:agy に分類されることを確認する。"""
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": "agy -p 'compare this with codex' --model gemini-3.1-pro-high"
+            },
+        }
+        route, _, _ = audit_route.detect_route(data)
+        assert route == "bash:agy"
+
+    def test_bash_codex_with_agy_in_prompt_body(self) -> None:
+        """codex 呼び出しのプロンプト本文に 'agy' が含まれても bash:codex に分類されることを確認する。"""
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "codex exec --model gpt-5.5 '...agy...' < /dev/null"},
+        }
+        route, _, _ = audit_route.detect_route(data)
+        assert route == "bash:codex"
+
     def test_bash_other(self) -> None:
         """Bash だが CLI 呼び出しでない場合は None を返すことを確認する。"""
         data = {"tool_name": "Bash", "tool_input": {"command": "ls -la"}}

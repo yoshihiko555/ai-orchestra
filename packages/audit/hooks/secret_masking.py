@@ -19,8 +19,14 @@ SECRET_PATTERNS = [
     re.compile(r"\bAIza[A-Za-z0-9_-]{35}\b"),
     # Azure SAS token
     re.compile(r"\bSharedAccessSignature\s*=\s*\S+", re.IGNORECASE),
-    # PEM private key block
-    re.compile(r"-----BEGIN (RSA |OPENSSH |EC |DSA )?PRIVATE KEY-----"),
+    # PEM private key block（BEGIN から END までをブロック全体で 1 マッチにする。
+    # ヘッダー行のみだと鍵本文が残留するため re.DOTALL で改行をまたいで捕捉する）
+    re.compile(
+        r"-----BEGIN (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY-----"
+        r".*?"
+        r"-----END (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY-----",
+        re.DOTALL,
+    ),
 ]
 
 
