@@ -197,7 +197,7 @@ def _compile_trigger_pattern(trigger_lower: str) -> re.Pattern[str]:
     """ASCII トリガー用の単語境界付き正規表現を初回のみコンパイルしてキャッシュする。"""
     pattern = _TRIGGER_REGEX_CACHE.get(trigger_lower)
     if pattern is None:
-        pattern = re.compile(rf"\b{re.escape(trigger_lower)}\b")
+        pattern = re.compile(rf"(?<![A-Za-z0-9_]){re.escape(trigger_lower)}(?![A-Za-z0-9_])")
         _TRIGGER_REGEX_CACHE[trigger_lower] = pattern
     return pattern
 

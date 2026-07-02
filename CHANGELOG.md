@@ -33,6 +33,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - **agent-routing の単語境界マッチ化**: `"ui" in "quick"`、`"test" in "latest"` 等の部分文字列誤検知で UserPromptSubmit のほぼ毎回誤ルーティング提案が注入されていた問題を修正。英語トリガーは `\b` 境界の正規表現（コンパイルキャッシュ付き）、日本語トリガーは従来の部分一致を維持
   - **codex-suggestions の誤抑制修正**: `str(tool_response)` への "error"/"failed" 部分一致で「エラーハンドリング設計」を含む正常な plan の提案が抑制されていた問題を、構造化フィールド（`is_error` / `error`）のみの判定へ変更
   - **antigravity-suggestions の "version" 過剰抑制修正**: 研究シグナル（RESEARCH_INDICATORS）を抑制パターンより優先する順序に変更し、`"version"` は `"latest version"` / `"what version"` の具体的フレーズへ置き換え
+  - **日本語隣接 ASCII トリガーの回帰修正（PR #111 レビュー対応）**: `\b` 単語境界マッチは Python が日本語文字を単語文字として扱うため `ReactのUIを実装して` の `UI` 等が境界なしと判定されマッチしなくなっていた。ASCII 限定 lookaround（`(?<![A-Za-z0-9_])...(?![A-Za-z0-9_])`）へ変更し、日本語隣接 ASCII を検出しつつ `quick` の `ui` 等の誤検知防止は維持
 
 ## [0.2.9] - 2026-06-26
 

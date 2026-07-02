@@ -131,6 +131,16 @@ def test_detect_agent_still_detects_legitimate_mixed_ja_ascii_prompt() -> None:
     assert trigger in {"React", "UI"}
 
 
+def test_detect_agent_detects_ascii_trigger_adjacent_to_japanese() -> None:
+    agent, _ = route_config.detect_agent("ReactのUIを実装して")
+    assert agent == "frontend-dev"
+
+
+def test_detect_agent_detects_dotted_ascii_trigger_adjacent_to_japanese() -> None:
+    agent, _ = route_config.detect_agent("Next.jsで画面を作る")
+    assert agent == "frontend-dev"
+
+
 # ---------------------------------------------------------------------------
 # is_cli_enabled（hook_common からの re-export、後方互換確認）
 # ---------------------------------------------------------------------------
