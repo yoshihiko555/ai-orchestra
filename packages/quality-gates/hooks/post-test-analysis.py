@@ -50,6 +50,7 @@ from hook_common import (  # noqa: E402
     load_package_config,
 )
 from quality_gate_config import (  # noqa: E402
+    DEFAULT_TEST_GATE_STATE,
     get_project_state_key,
     load_project_scoped_state,
     resolve_quality_gate_enabled,
@@ -101,18 +102,10 @@ def extract_failure_summary(output: str) -> str:
     return "Test failure detected"
 
 
-_DEFAULT_TEST_GATE_STATE: dict = {
-    "files_modified_since_test": [],
-    "lines_modified_since_test": 0,
-    "last_test_result": None,
-    "warned": False,
-}
-
-
 def load_test_gate_state(project_dir: str) -> dict:
     """Load the shared test-gate state from file (scoped to the current project)."""
     project_key = get_project_state_key(project_dir)
-    return load_project_scoped_state(TEST_GATE_STATE_FILE, project_key, _DEFAULT_TEST_GATE_STATE)
+    return load_project_scoped_state(TEST_GATE_STATE_FILE, project_key, DEFAULT_TEST_GATE_STATE)
 
 
 def save_test_gate_state(project_dir: str, state: dict) -> None:

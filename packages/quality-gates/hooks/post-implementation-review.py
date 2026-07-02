@@ -25,6 +25,7 @@ from quality_gate_config import (  # noqa: E402
     get_project_state_key,
     load_project_scoped_state,
     save_project_scoped_state,
+    update_project_scoped_state,
 )
 
 # Session state file for tracking modifications
@@ -102,30 +103,41 @@ def main():
         content = tool_input.get("content", "") or tool_input.get("new_string", "")
         lines_changed = count_lines(content)
 
-        # Update state
+        # Update state atomically: a single locked read-modify-write critical
+        # section covers both the counter accumulation and the
+        # should_suggest_review decision, so two near-simultaneous hook
+        # invocations (e.g. concurrent Edit calls) cannot race each other.
         project_dir = data.get("cwd", "") or os.environ.get("CLAUDE_PROJECT_DIR", "")
-        state = load_state(project_dir)
-        state["files"].append(file_path)
-        state["total_lines"] += lines_changed
+        project_key = get_project_state_key(project_dir)
+        suggestion: dict = {"triggered": False, "file_count": 0, "total_lines": 0}
 
-        if should_suggest_review(state):
-            # Capture pre-reset counts for the message before clearing the window.
-            file_count = len(set(state["files"]))
-            total_lines = state["total_lines"]
+        def _mutate(state: dict) -> dict:
+            state["files"].append(file_path)
+            state["total_lines"] += lines_changed
 
-            state["review_suggested"] = True
-            state["suggested_at"] = time.time()
-            state["files"] = []
-            state["total_lines"] = 0
-            save_state(project_dir, state)
+            if should_suggest_review(state):
+                # Capture pre-reset counts for the message before clearing the window.
+                suggestion["triggered"] = True
+                suggestion["file_count"] = len(set(state["files"]))
+                suggestion["total_lines"] = state["total_lines"]
 
+                state["review_suggested"] = True
+                state["suggested_at"] = time.time()
+                state["files"] = []
+                state["total_lines"] = 0
+
+            return state
+
+        update_project_scoped_state(STATE_FILE, project_key, _mutate, _DEFAULT_IMPL_REVIEW_STATE)
+
+        if suggestion["triggered"]:
             output = {
                 "hookSpecificOutput": {
                     "hookEventName": "PostToolUse",
                     "additionalContext": (
                         f"[Review Suggestion] Significant changes detected:\n"
-                        f"- {file_count} files modified\n"
-                        f"- ~{total_lines} lines changed\n\n"
+                        f"- {suggestion['file_count']} files modified\n"
+                        f"- ~{suggestion['total_lines']} lines changed\n\n"
                         "Consider running code review:\n"
                         "- `/review code` for code quality\n"
                         "- `/review security` for security issues\n"
@@ -134,8 +146,6 @@ def main():
                 }
             }
             print(json.dumps(output))
-        else:
-            save_state(project_dir, state)
 
         sys.exit(0)
 

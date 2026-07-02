@@ -8,6 +8,12 @@ post_test_analysis = load_module(
     "post_test_analysis", "packages/quality-gates/hooks/post-test-analysis.py"
 )
 
+# post_test_analysis's `from quality_gate_config import ...` (triggered by load_module
+# above) registers the real shared module under its natural name "quality_gate_config"
+# in sys.modules. Reuse that cached module to assert there is no locally-duplicated
+# default state dict drifting from the one shared with test-gate-checker.py.
+quality_gate_config = sys.modules["quality_gate_config"]
+
 
 def test_module_loads_without_ai_orchestra_dir(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("AI_ORCHESTRA_DIR", raising=False)
@@ -144,6 +150,26 @@ def test_record_test_result_resets_on_pass(_clean_state) -> None:
     assert reloaded["warned"] is False
     assert reloaded["last_test_result"]["passed"] is True
     assert reloaded["last_test_result"]["command"] == "pytest"
+
+
+# ---------------------------------------------------------------------------
+# DEFAULT_TEST_GATE_STATE de-duplication (shared with test-gate-checker.py)
+# ---------------------------------------------------------------------------
+
+
+def test_uses_shared_default_test_gate_state_constant() -> None:
+    """post-test-analysis.py must not define its own default state dict."""
+    assert not hasattr(post_test_analysis, "_DEFAULT_TEST_GATE_STATE")
+    assert post_test_analysis.DEFAULT_TEST_GATE_STATE is quality_gate_config.DEFAULT_TEST_GATE_STATE
+
+
+def test_load_test_gate_state_honors_shared_default(_clean_state, monkeypatch) -> None:
+    """load_test_gate_state must fall back to quality_gate_config's shared default."""
+    sentinel_default = {"files_modified_since_test": [], "sentinel": True}
+    monkeypatch.setattr(post_test_analysis, "DEFAULT_TEST_GATE_STATE", sentinel_default)
+
+    state = post_test_analysis.load_test_gate_state(FAKE_PROJECT)
+    assert state == sentinel_default
 
 
 def test_record_test_result_preserves_on_fail(_clean_state) -> None:

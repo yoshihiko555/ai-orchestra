@@ -1,4 +1,5 @@
 import json
+import sys
 
 import pytest
 
@@ -7,6 +8,37 @@ from tests.module_loader import load_module
 test_gate_checker = load_module(
     "test_gate_checker", "packages/quality-gates/hooks/test-gate-checker.py"
 )
+
+# test_gate_checker's `from quality_gate_config import ...` (triggered by load_module
+# above) registers the real shared module under its natural name "quality_gate_config"
+# in sys.modules (distinct from the "quality_gate_config_standalone" alias used by
+# test_quality_gate_config.py). Reuse that cached module to assert there is no
+# locally-duplicated default state dict drifting from the shared one.
+quality_gate_config = sys.modules["quality_gate_config"]
+
+
+# ---------------------------------------------------------------------------
+# DEFAULT_TEST_GATE_STATE de-duplication (shared with post-test-analysis.py)
+# ---------------------------------------------------------------------------
+
+
+def test_uses_shared_default_test_gate_state_constant() -> None:
+    """test-gate-checker.py must not define its own default state dict."""
+    assert not hasattr(test_gate_checker, "_DEFAULT_TEST_GATE_STATE")
+    assert test_gate_checker.DEFAULT_TEST_GATE_STATE is quality_gate_config.DEFAULT_TEST_GATE_STATE
+
+
+def test_load_test_gate_state_honors_shared_default(tmp_path, monkeypatch) -> None:
+    """load_test_gate_state must fall back to quality_gate_config's shared default."""
+    state_file = tmp_path / "test-gate-state.json"
+    monkeypatch.setattr(test_gate_checker, "TEST_GATE_STATE_FILE", state_file)
+    monkeypatch.setattr(test_gate_checker, "get_project_state_key", lambda project_dir: project_dir)
+
+    sentinel_default = {"files_modified_since_test": [], "sentinel": True}
+    monkeypatch.setattr(test_gate_checker, "DEFAULT_TEST_GATE_STATE", sentinel_default)
+
+    state = test_gate_checker.load_test_gate_state("/fake/project")
+    assert state == sentinel_default
 
 
 # ---------------------------------------------------------------------------

@@ -203,3 +203,51 @@ def test_main_suggests_review_once_then_suppresses_until_ttl(
     output3 = json.loads(capsys.readouterr().out)
     context3 = output3["hookSpecificOutput"]["additionalContext"]
     assert "[Review Suggestion]" in context3
+
+
+def test_main_uses_atomic_update_not_separate_load_and_save(
+    _clean_state, monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """main() must go through update_project_scoped_state (single critical
+    section) instead of a separate load_state()/save_state() pair, so the
+    accumulate-and-maybe-suggest decision can't race across processes.
+    """
+    save_state_calls = []
+    monkeypatch.setattr(
+        post_implementation_review,
+        "save_state",
+        lambda *args, **kwargs: save_state_calls.append((args, kwargs)),
+    )
+
+    update_calls = []
+    original_update = post_implementation_review.update_project_scoped_state
+
+    def _spy_update(state_file, project_key, mutate_fn, default_state):
+        update_calls.append((state_file, project_key))
+        return original_update(state_file, project_key, mutate_fn, default_state)
+
+    monkeypatch.setattr(post_implementation_review, "update_project_scoped_state", _spy_update)
+
+    _write_payload(monkeypatch, "src/module.py", "line\n", FAKE_PROJECT_A)
+    with pytest.raises(SystemExit) as exc_info:
+        post_implementation_review.main()
+    assert exc_info.value.code == 0
+
+    assert len(update_calls) == 1
+    assert save_state_calls == []
+
+
+def test_main_keeps_project_isolation_through_atomic_update(
+    _clean_state, monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Accumulating state for project A via main() must not affect project B."""
+    _write_payload(monkeypatch, "src/module.py", "line\n", FAKE_PROJECT_A)
+    with pytest.raises(SystemExit):
+        post_implementation_review.main()
+    capsys.readouterr()
+
+    state_b = post_implementation_review.load_state(FAKE_PROJECT_B)
+    assert state_b == post_implementation_review._DEFAULT_IMPL_REVIEW_STATE
+
+    state_a = post_implementation_review.load_state(FAKE_PROJECT_A)
+    assert state_a["files"] == ["src/module.py"]

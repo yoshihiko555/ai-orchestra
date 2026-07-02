@@ -30,6 +30,7 @@ if _orchestra_dir:
 
 from hook_common import load_package_config  # noqa: E402
 from quality_gate_config import (  # noqa: E402
+    DEFAULT_TEST_GATE_STATE,
     get_project_state_key,
     is_quality_gate_enabled,
     load_project_scoped_state,
@@ -46,18 +47,11 @@ CODE_EXTENSIONS = {".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java"}
 DEFAULT_FILE_THRESHOLD = 3
 DEFAULT_LINE_THRESHOLD = 100
 
-_DEFAULT_TEST_GATE_STATE: dict = {
-    "files_modified_since_test": [],
-    "lines_modified_since_test": 0,
-    "last_test_result": None,
-    "warned": False,
-}
-
 
 def load_test_gate_state(project_dir: str) -> dict:
     """Load the shared test-gate state from file (scoped to the current project)."""
     project_key = get_project_state_key(project_dir)
-    return load_project_scoped_state(TEST_GATE_STATE_FILE, project_key, _DEFAULT_TEST_GATE_STATE)
+    return load_project_scoped_state(TEST_GATE_STATE_FILE, project_key, DEFAULT_TEST_GATE_STATE)
 
 
 def save_test_gate_state(project_dir: str, state: dict) -> None:
