@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -20,6 +21,16 @@ def test_read_hook_input_invalid_json(monkeypatch) -> None:
     assert hook_common.read_hook_input() == {}
 
 
+def test_read_hook_input_returns_empty_dict_for_top_level_list(monkeypatch) -> None:
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps([1, 2])))
+    assert hook_common.read_hook_input() == {}
+
+
+def test_read_hook_input_returns_empty_dict_for_top_level_string(monkeypatch) -> None:
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps("just a string")))
+    assert hook_common.read_hook_input() == {}
+
+
 def test_get_field_returns_value_or_empty_string() -> None:
     data = {"name": "alice", "empty": "", "none": None, "zero": 0}
     assert hook_common.get_field(data, "name") == "alice"
@@ -27,6 +38,11 @@ def test_get_field_returns_value_or_empty_string() -> None:
     assert hook_common.get_field(data, "empty") == ""
     assert hook_common.get_field(data, "none") == ""
     assert hook_common.get_field(data, "zero") == ""
+
+
+def test_get_field_coerces_non_string_value_to_string() -> None:
+    assert hook_common.get_field({"x": 5}, "x") == "5"
+    assert hook_common.get_field({}, "x") == ""
 
 
 # =========================================================================
@@ -37,6 +53,57 @@ def test_get_field_returns_value_or_empty_string() -> None:
 def _write_json(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data))
+
+
+class TestWriteJson:
+    def test_write_json_round_trip(self, tmp_path: Path) -> None:
+        path = tmp_path / "data.json"
+        data = {"key": "value", "nested": {"a": 1}}
+
+        hook_common.write_json(str(path), data)
+
+        assert json.loads(path.read_text(encoding="utf-8")) == data
+
+    def test_write_json_does_not_leave_tmp_file(self, tmp_path: Path) -> None:
+        path = tmp_path / "data.json"
+
+        hook_common.write_json(str(path), {"key": "value"})
+
+        leftover_tmp_files = list(path.parent.glob(f"{path.name}.tmp.*"))
+        assert leftover_tmp_files == []
+
+    def test_write_json_overwrites_existing_file(self, tmp_path: Path) -> None:
+        path = tmp_path / "data.json"
+
+        hook_common.write_json(str(path), {"key": "first"})
+        hook_common.write_json(str(path), {"key": "second"})
+
+        assert json.loads(path.read_text(encoding="utf-8")) == {"key": "second"}
+
+    def test_write_json_reraises_and_removes_tmp_file_on_replace_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        path = tmp_path / "data.json"
+
+        def _raise_os_error(_src: str, _dst: str) -> None:
+            raise OSError("simulated replace failure")
+
+        monkeypatch.setattr(os, "replace", _raise_os_error)
+
+        with pytest.raises(OSError):
+            hook_common.write_json(str(path), {"key": "value"})
+
+        leftover_tmp_files = list(path.parent.glob(f"{path.name}.tmp.*"))
+        assert leftover_tmp_files == []
+
+    def test_write_json_preserves_existing_file_permissions(self, tmp_path: Path) -> None:
+        path = tmp_path / "data.json"
+        path.write_text(json.dumps({"key": "first"}), encoding="utf-8")
+        os.chmod(str(path), 0o600)
+
+        hook_common.write_json(str(path), {"key": "second"})
+
+        assert os.stat(str(path)).st_mode & 0o777 == 0o600
 
 
 class TestLoadPackageConfig:
