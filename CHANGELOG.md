@@ -26,6 +26,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - `$BASE` 解決失敗時は統合ブランチ（`main` / `master` / `develop` / `stage` / `staging`）上でのみブランチを作成し、それ以外は準備済み扱いでスキップ（統合ブランチでの直接作業を回避する安全側設計）
   - 編集ソースは facet `facets/instructions/issue-fix.md`。`.claude/skills/` と `.agents/skills/` の SKILL.md は facet build で再生成
 
+### Fixed
+
+- **`packages/tmux-monitor`: シェルインジェクション修正と hook ハング・リソースリーク対策（全パッケージレビュー指摘対応）**
+  - **ディレクトリ名経由のシェルコマンドインジェクション（Critical）**: `project_name`（`basename(cwd)`）を tmux が `$SHELL -c` で実行する文字列へ無エスケープ埋め込みしていた 2 箇所（respawn-pane / new-session）を修正。`shell_quote()` を `tmux_common.py` へ共通化し、`build_wait_cmd()` 抽出で動的値のみエスケープ（`$(date)` の意図的展開は維持）
+  - **`run_tmux()` / `ps` への timeout 追加**: 同期 hook から呼ばれる subprocess に timeout（5 秒）が無く、tmux/ps ハングが Claude Code 全操作のブロックに直結していた問題を修正。`TimeoutExpired` は非ゼロ returncode の疑似結果へフォールバック
+  - **孤児クリーンアップの整合**: PID 検出失敗時のフォールバックキー（16 進）のセッション・info ファイルが `isdigit()` 判定に合わず永久残留していた問題と、削除対象が 3 拡張子のみで `.shared-dir` / `.task-queue` と shared-dir 実体（`/tmp/claude-shared-*`）が異常終了時に永続リークしていた問題を修正。session-end と同じ 5 拡張子 + 実体削除に統一（`remove_session_files()` 共通化）
+  - **`tmux-subagent-start.py` の `main()` 分割**: 約 150 行・ネスト 4-5 段を責務ごとの 5 関数へ純粋抽出（挙動不変、回帰テスト付き）
+
 ## [0.2.9] - 2026-06-26
 
 ### Fixed

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from types import SimpleNamespace
 
@@ -15,12 +16,18 @@ tmux_common = load_module("tmux_common", "packages/tmux-monitor/hooks/tmux_commo
 tmux_format_output = load_module(
     "tmux_format_output", "packages/tmux-monitor/hooks/tmux-format-output.py"
 )
+tmux_session_start = load_module(
+    "tmux_session_start", "packages/tmux-monitor/hooks/tmux-session-start.py"
+)
+tmux_subagent_start = load_module(
+    "tmux_subagent_start", "packages/tmux-monitor/hooks/tmux-subagent-start.py"
+)
 
 
 def test_run_tmux_invokes_subprocess_with_expected_args(monkeypatch) -> None:
     captured: dict[str, list[str]] = {}
 
-    def fake_run(cmd, capture_output, text):
+    def fake_run(cmd, capture_output, text, timeout=None):
         captured["cmd"] = cmd
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
@@ -29,6 +36,17 @@ def test_run_tmux_invokes_subprocess_with_expected_args(monkeypatch) -> None:
     tmux_common.run_tmux("has-session", "-t", "abc")
 
     assert captured["cmd"] == ["tmux", "has-session", "-t", "abc"]
+
+
+def test_run_tmux_returns_failure_on_timeout(monkeypatch) -> None:
+    def fake_run(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=args[0], timeout=kwargs["timeout"])
+
+    monkeypatch.setattr(tmux_common.subprocess, "run", fake_run)
+
+    result = tmux_common.run_tmux("has-session", "-t", "x")
+
+    assert result.returncode != 0
 
 
 def test_tmux_has_session_returns_true_on_success(monkeypatch) -> None:
@@ -60,7 +78,7 @@ def test_is_tmux_monitoring_enabled_depends_on_tmux_binary(monkeypatch) -> None:
 def test_find_claude_pid_finds_parent_process(monkeypatch) -> None:
     monkeypatch.setattr(tmux_common.os, "getppid", lambda: 200)
 
-    def fake_run(cmd, capture_output, text):
+    def fake_run(cmd, capture_output, text, timeout=None):
         if cmd == ["ps", "-o", "comm=", "-p", "200"]:
             return SimpleNamespace(stdout="zsh\n")
         if cmd == ["ps", "-o", "ppid=", "-p", "200"]:
@@ -82,6 +100,173 @@ def test_find_claude_pid_returns_none_on_os_error(monkeypatch) -> None:
 
     monkeypatch.setattr(tmux_common.subprocess, "run", fake_run)
     assert tmux_common.find_claude_pid() is None
+
+
+def test_shell_quote_escapes_single_quote() -> None:
+    assert tmux_common.shell_quote("a'b") == "'a'\\''b'"
+
+
+def test_shell_quote_handles_empty_string() -> None:
+    assert tmux_common.shell_quote("") == "''"
+
+
+def test_shell_quote_wraps_normal_string() -> None:
+    assert tmux_common.shell_quote("abc") == "'abc'"
+
+
+def test_build_wait_cmd_escapes_project_name_and_keeps_date() -> None:
+    wait_cmd = tmux_session_start.build_wait_cmd("project'; touch /tmp/x; echo '", "abc1234")
+
+    assert "echo '(project'\\''; touch /tmp/x; echo '\\'' / PID:abc1234)'" in wait_cmd
+    assert "$(date)" in wait_cmd
+
+
+def test_cleanup_orphaned_sessions_keeps_alive_pid_session(monkeypatch, tmp_path) -> None:
+    calls = _run_orphan_cleanup(monkeypatch, tmp_path, "123", pid_tracked=False, pid_alive=True)
+
+    assert ("kill-session", "-t", "claude-project-123") not in calls
+
+
+def test_cleanup_orphaned_sessions_kills_dead_pid_session(monkeypatch, tmp_path) -> None:
+    calls = _run_orphan_cleanup(monkeypatch, tmp_path, "123", pid_tracked=False, pid_alive=False)
+
+    assert ("kill-session", "-t", "claude-project-123") in calls
+
+
+def test_cleanup_orphaned_sessions_keeps_tracked_fallback_session(monkeypatch, tmp_path) -> None:
+    calls = _run_orphan_cleanup(monkeypatch, tmp_path, "abc123f", pid_tracked=True, pid_alive=False)
+
+    assert ("kill-session", "-t", "claude-project-abc123f") not in calls
+
+
+def test_cleanup_orphaned_sessions_kills_untracked_fallback_session(monkeypatch, tmp_path) -> None:
+    calls = _run_orphan_cleanup(
+        monkeypatch, tmp_path, "abc123f", pid_tracked=False, pid_alive=False
+    )
+
+    assert ("kill-session", "-t", "claude-project-abc123f") in calls
+
+
+def test_cleanup_orphaned_sessions_removes_stale_fallback_files(monkeypatch, tmp_path) -> None:
+    session_info_dir = tmp_path / "session-info"
+    session_info_dir.mkdir()
+    shared_dir = tmp_path / "shared"
+    shared_dir.mkdir()
+    (shared_dir / "entry.json").write_text("{}")
+
+    session_id = "session"
+    session_key = "abc123f"
+    contents = {
+        ".tmux-session": f"claude-project-{session_key}",
+        ".lock-path": "/tmp/lock",
+        ".pid": session_key,
+        ".shared-dir": str(shared_dir),
+        ".task-queue": "task",
+    }
+    for extension, content in contents.items():
+        (session_info_dir / f"{session_id}{extension}").write_text(content)
+
+    monkeypatch.setattr(tmux_session_start, "SESSION_INFO_DIR", str(session_info_dir))
+    monkeypatch.setattr(tmux_common, "SESSION_INFO_DIR", str(session_info_dir))
+    monkeypatch.setattr(
+        tmux_session_start,
+        "run_tmux",
+        lambda *args: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(tmux_session_start, "tmux_has_session", lambda name: False)
+
+    tmux_session_start.cleanup_orphaned_sessions("project")
+
+    assert not shared_dir.exists()
+    for extension in tmux_common.SESSION_FILE_EXTENSIONS:
+        assert not (session_info_dir / f"{session_id}{extension}").exists()
+
+
+def _run_orphan_cleanup(
+    monkeypatch, tmp_path, session_key: str, pid_tracked: bool, pid_alive: bool
+) -> list[tuple[str, ...]]:
+    session_info_dir = tmp_path / "session-info"
+    session_info_dir.mkdir()
+    if pid_tracked:
+        (session_info_dir / "session.pid").write_text(session_key)
+
+    calls: list[tuple[str, ...]] = []
+
+    def fake_run_tmux(*args: str):
+        calls.append(args)
+        if args[:2] == ("ls", "-F"):
+            return SimpleNamespace(
+                returncode=0,
+                stdout=f"claude-project-{session_key}\n",
+                stderr="",
+            )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    def fake_kill(pid: int, signal: int) -> None:
+        if not pid_alive:
+            raise ProcessLookupError(pid)
+
+    monkeypatch.setattr(tmux_session_start, "SESSION_INFO_DIR", str(session_info_dir))
+    monkeypatch.setattr(tmux_common, "SESSION_INFO_DIR", str(session_info_dir))
+    monkeypatch.setattr(tmux_session_start, "run_tmux", fake_run_tmux)
+    monkeypatch.setattr(tmux_session_start.os, "kill", fake_kill)
+    monkeypatch.setattr(tmux_session_start, "tmux_has_session", lambda name: True)
+
+    tmux_session_start.cleanup_orphaned_sessions("project")
+    return calls
+
+
+def test_snapshot_panes_lists_once_and_parses_snapshot(monkeypatch) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def fake_run_tmux(*args: str):
+        calls.append(args)
+        return SimpleNamespace(
+            returncode=0,
+            stdout="%1\tDONE:first\n%2\twaiting\n%3\tDONE:second\n%4\tother\n",
+        )
+
+    monkeypatch.setattr(tmux_subagent_start, "tmux_has_session", lambda name: True)
+    monkeypatch.setattr(tmux_subagent_start, "run_tmux", fake_run_tmux)
+
+    done_panes, waiting_pane_id = tmux_subagent_start.snapshot_panes("session")
+
+    assert done_panes == ["%1", "%3"]
+    assert waiting_pane_id == "%2"
+    assert calls == [("list-panes", "-t", "session", "-F", "#{pane_id}\t#{pane_title}")]
+
+
+def test_create_agent_pane_preserves_split_layout_call_order(monkeypatch) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def fake_run_tmux(*args: str):
+        calls.append(args)
+        if args[0] == "split-window":
+            return SimpleNamespace(returncode=0, stdout="%2\n")
+        return SimpleNamespace(returncode=0, stdout="")
+
+    monkeypatch.setattr(tmux_subagent_start, "tmux_has_session", lambda name: True)
+    monkeypatch.setattr(
+        tmux_subagent_start.os, "mkdir", lambda path: (_ for _ in ()).throw(OSError())
+    )
+    monkeypatch.setattr(tmux_subagent_start, "run_tmux", fake_run_tmux)
+
+    pane_id = tmux_subagent_start.create_agent_pane("session", "/tmp/lock", "%1", "tail-command")
+
+    assert pane_id == "%2"
+    assert calls == [
+        ("select-layout", "-t", "session", "tiled"),
+        (
+            "split-window",
+            "-t",
+            "session",
+            "-P",
+            "-F",
+            "#{pane_id}",
+            "tail-command",
+        ),
+        ("select-layout", "-t", "session", "tiled"),
+    ]
 
 
 def test_format_tool_input_prioritizes_known_keys() -> None:

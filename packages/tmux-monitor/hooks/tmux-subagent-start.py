@@ -17,16 +17,12 @@ from tmux_common import (
     is_tmux_monitoring_enabled,
     read_hook_input,
     run_tmux,
+    shell_quote,
     tmux_has_session,
 )
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 FORMATTER = os.path.join(SCRIPT_DIR, "tmux-format-output.py")
-
-
-def shell_quote(s: str) -> str:
-    """シェル安全なシングルクォートエスケープ。"""
-    return "'" + s.replace("'", "'\\''") + "'"
 
 
 def read_file(path: str) -> str:
@@ -68,6 +64,119 @@ def get_current_pane_id(tmux_session: str) -> str:
     return ""
 
 
+def resolve_tmux_session(cwd: str, session_id: str) -> tuple[str, str]:
+    """保存済み情報またはフォールバックから tmux セッションを解決する。"""
+    tmux_session_file = os.path.join(SESSION_INFO_DIR, f"{session_id}.tmux-session")
+    lock_path_file = os.path.join(SESSION_INFO_DIR, f"{session_id}.lock-path")
+
+    tmux_session = read_file(tmux_session_file)
+    first_agent_lock = read_file(lock_path_file)
+
+    if tmux_session and first_agent_lock:
+        return tmux_session, first_agent_lock
+
+    project_name = os.path.basename(cwd)
+    claude_pid = find_claude_pid()
+    session_key = str(claude_pid) if claude_pid else session_id[:7]
+    return (
+        f"claude-{project_name}-{session_key}",
+        f"/tmp/claude-subagent-first-{session_key}",
+    )
+
+
+def snapshot_panes(tmux_session: str) -> tuple[list[str], str]:
+    """現在の DONE ペインと最初の待機ペインを一度だけ取得する。"""
+    if not tmux_has_session(tmux_session):
+        return [], ""
+
+    result = run_tmux("list-panes", "-t", tmux_session, "-F", "#{pane_id}\t#{pane_title}")
+    done_panes: list[str] = []
+    waiting_pane_id = ""
+    if result.returncode == 0:
+        lines = [line for line in result.stdout.strip().splitlines() if line]
+        for line in lines:
+            parts = line.split("\t", 1)
+            if len(parts) == 2:
+                if parts[1].startswith("DONE:"):
+                    done_panes.append(parts[0])
+                elif not waiting_pane_id:
+                    waiting_pane_id = parts[0]
+    return done_panes, waiting_pane_id
+
+
+def reuse_done_pane(session_id: str, tail_cmd: str, pane_title: str, done_panes: list[str]) -> str:
+    """DONE ペインを排他的に予約し、再利用できたペイン ID を返す。"""
+    for done_pane in done_panes:
+        claim_path = os.path.join(SESSION_INFO_DIR, f"{session_id}.claim-{done_pane}")
+        try:
+            os.mkdir(claim_path)
+        except OSError:
+            continue
+
+        resp = run_tmux("respawn-pane", "-t", done_pane, "-k", tail_cmd)
+        if resp.returncode == 0:
+            run_tmux("select-pane", "-t", done_pane, "-T", pane_title)
+            try:
+                os.rmdir(claim_path)
+            except OSError:
+                pass
+            return done_pane
+
+        try:
+            os.rmdir(claim_path)
+        except OSError:
+            pass
+    return ""
+
+
+def create_agent_pane(
+    tmux_session: str,
+    first_agent_lock: str,
+    waiting_pane_id: str,
+    tail_cmd: str,
+) -> str:
+    """待機ペインの置換、分割、または新規セッション作成でペインを用意する。"""
+    pane_id = ""
+    need_split = False
+    if tmux_has_session(tmux_session):
+        try:
+            os.mkdir(first_agent_lock)
+            target_pane = waiting_pane_id or get_current_pane_id(tmux_session)
+            resp = run_tmux("respawn-pane", "-t", target_pane, "-k", tail_cmd)
+            if resp.returncode == 0:
+                pane_id = target_pane
+            else:
+                need_split = True
+        except OSError:
+            need_split = True
+        if need_split:
+            MAX_SPLIT_RETRIES = 3
+            for _attempt in range(MAX_SPLIT_RETRIES):
+                run_tmux("select-layout", "-t", tmux_session, "tiled")
+                result = run_tmux(
+                    "split-window", "-t", tmux_session, "-P", "-F", "#{pane_id}", tail_cmd
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    pane_id = result.stdout.strip()
+                    break
+            run_tmux("select-layout", "-t", tmux_session, "tiled")
+    else:
+        run_tmux("new-session", "-d", "-s", tmux_session, tail_cmd)
+        pane_id = get_current_pane_id(tmux_session)
+    return pane_id
+
+
+def persist_pane_info(session_id: str, agent_id: str, tmux_session: str, pane_id: str) -> None:
+    """エージェントと tmux ペインの対応情報を保存する。"""
+    pane_info_file = os.path.join(SESSION_INFO_DIR, f"{session_id}.pane-{agent_id}")
+    try:
+        os.makedirs(SESSION_INFO_DIR, exist_ok=True)
+        with open(pane_info_file, "w") as f:
+            f.write(f"{tmux_session}\n{pane_id}")
+    except OSError:
+        pass
+
+
 def main() -> None:
     data = read_hook_input()
     cwd = get_field(data, "cwd")
@@ -83,22 +192,7 @@ def main() -> None:
     if not agent_id or not transcript_path or not session_id:
         return
 
-    # SessionStart が保存したセッション情報を読み込む
-    tmux_session_file = os.path.join(SESSION_INFO_DIR, f"{session_id}.tmux-session")
-    lock_path_file = os.path.join(SESSION_INFO_DIR, f"{session_id}.lock-path")
-
-    tmux_session = read_file(tmux_session_file)
-    first_agent_lock = read_file(lock_path_file)
-
-    if not tmux_session or not first_agent_lock:
-        # フォールバック: SessionStart が動いていない場合
-        project_name = os.path.basename(cwd)
-
-        claude_pid = find_claude_pid()
-        session_key = str(claude_pid) if claude_pid else session_id[:7]
-
-        tmux_session = f"claude-{project_name}-{session_key}"
-        first_agent_lock = f"/tmp/claude-subagent-first-{session_key}"
+    tmux_session, first_agent_lock = resolve_tmux_session(cwd, session_id)
 
     # sub agent の出力ファイルパスを構築
     session_dir = transcript_path.removesuffix(".jsonl")
@@ -122,89 +216,10 @@ def main() -> None:
     else:
         tail_cmd = wait_and_tail
 
-    # ペイン ID を追跡（並列起動時のレースコンディション回避）
-    pane_id = ""
-
-    # 現在のペイン一覧をスナップショットとして取得（並列 split-window の前に確定）
-    # waiting_pane_id: 最初のエージェントが respawn する対象
-    waiting_pane_id = ""
-    done_panes: list[str] = []
-
-    # DONE ペインの再利用（並列安全: 各エージェントが1つだけ予約）
-    respawned = False
-    if tmux_has_session(tmux_session):
-        result = run_tmux("list-panes", "-t", tmux_session, "-F", "#{pane_id}\t#{pane_title}")
-        if result.returncode == 0:
-            lines = [line for line in result.stdout.strip().splitlines() if line]
-            for line in lines:
-                parts = line.split("\t", 1)
-                if len(parts) == 2:
-                    if parts[1].startswith("DONE:"):
-                        done_panes.append(parts[0])
-                    elif not waiting_pane_id:
-                        # DONE でない最初のペイン = 待機ペイン候補
-                        waiting_pane_id = parts[0]
-
-            # DONE ペインを1つだけ予約して respawn（mkdir でアトミックに排他制御）
-            for dp in done_panes:
-                claim_path = os.path.join(SESSION_INFO_DIR, f"{session_id}.claim-{dp}")
-                try:
-                    os.mkdir(claim_path)
-                except OSError:
-                    # 他のプロセスが先に予約した → 次の DONE ペインを試す
-                    continue
-                # このプロセスが dp を予約できた
-                resp = run_tmux("respawn-pane", "-t", dp, "-k", tail_cmd)
-                if resp.returncode == 0:
-                    # タイトル設定後に claim 解放（二重取得防止）
-                    run_tmux("select-pane", "-t", dp, "-T", pane_title)
-                    try:
-                        os.rmdir(claim_path)
-                    except OSError:
-                        pass
-                    pane_id = dp
-                    respawned = True
-                    break
-                # respawn 失敗 → claim 解放して次の DONE ペインを試す
-                try:
-                    os.rmdir(claim_path)
-                except OSError:
-                    pass
-
-    # tmux セッションにペインを追加（DONE ペインを再利用しなかった場合）
-    need_split = False
-    if respawned:
-        pass  # respawn 済み、pane_id は設定済み
-    elif tmux_has_session(tmux_session):
-        # mkdir はアトミック操作 - 最初の1つだけが成功する
-        try:
-            os.mkdir(first_agent_lock)
-            # 最初の sub agent: 待機ペインを置き換え（明示的ペイン ID で競合回避）
-            target_pane = waiting_pane_id or get_current_pane_id(tmux_session)
-            resp = run_tmux("respawn-pane", "-t", target_pane, "-k", tail_cmd)
-            if resp.returncode == 0:
-                pane_id = target_pane
-            else:
-                # respawn 失敗 → split-window フォールバック
-                need_split = True
-        except OSError:
-            # 2つ目以降 → split-window
-            need_split = True
-        if need_split:
-            MAX_SPLIT_RETRIES = 3
-            for _attempt in range(MAX_SPLIT_RETRIES):
-                run_tmux("select-layout", "-t", tmux_session, "tiled")
-                result = run_tmux(
-                    "split-window", "-t", tmux_session, "-P", "-F", "#{pane_id}", tail_cmd
-                )
-                if result.returncode == 0 and result.stdout.strip():
-                    pane_id = result.stdout.strip()
-                    break
-            run_tmux("select-layout", "-t", tmux_session, "tiled")
-    else:
-        # SessionStart hook が動いていない場合のフォールバック
-        run_tmux("new-session", "-d", "-s", tmux_session, tail_cmd)
-        pane_id = get_current_pane_id(tmux_session)
+    done_panes, waiting_pane_id = snapshot_panes(tmux_session)
+    pane_id = reuse_done_pane(session_id, tail_cmd, pane_title, done_panes)
+    if not pane_id:
+        pane_id = create_agent_pane(tmux_session, first_agent_lock, waiting_pane_id, tail_cmd)
 
     # ペインタイトルを設定（明示的なペイン ID 指定で競合回避）
     if pane_id:
@@ -213,14 +228,7 @@ def main() -> None:
         # フォールバック: pane_id が取れなかった場合はセッション指定
         run_tmux("select-pane", "-t", tmux_session, "-T", pane_title)
 
-    # agent_id -> pane 情報を保存（pane_id も含めて保存）
-    pane_info_file = os.path.join(SESSION_INFO_DIR, f"{session_id}.pane-{agent_id}")
-    try:
-        os.makedirs(SESSION_INFO_DIR, exist_ok=True)
-        with open(pane_info_file, "w") as f:
-            f.write(f"{tmux_session}\n{pane_id}")
-    except OSError:
-        pass
+    persist_pane_info(session_id, agent_id, tmux_session, pane_id)
 
 
 if __name__ == "__main__":

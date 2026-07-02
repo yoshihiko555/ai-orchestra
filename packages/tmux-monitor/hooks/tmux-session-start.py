@@ -20,14 +20,33 @@ from tmux_common import (
     get_field,
     is_tmux_monitoring_enabled,
     read_hook_input,
+    remove_session_files,
     run_tmux,
+    shell_quote,
     tmux_has_session,
 )
 
 
 def cleanup_orphaned_sessions(project_name: str) -> None:
-    """孤児 tmux セッションと対応する session info ファイルを削除する。"""
+    """PID またはフォールバックキーを基に孤児セッションを削除する。
+
+    数値キーは PID の生存確認を行う。実 PID ではないフォールバックキーは
+    直接生存確認できないため、対応する PID ファイルまたは tmux セッションの
+    有無を追跡情報として扱う。
+    """
     prefix = f"claude-{project_name}-"
+    tracked_keys: set[str] = set()
+
+    if os.path.isdir(SESSION_INFO_DIR):
+        for filename in os.listdir(SESSION_INFO_DIR):
+            if not filename.endswith(".pid"):
+                continue
+            try:
+                stored_key = open(os.path.join(SESSION_INFO_DIR, filename)).read().strip()
+            except OSError:
+                continue
+            if stored_key:
+                tracked_keys.add(stored_key)
 
     # 孤児 tmux セッションの削除
     result = run_tmux("ls", "-F", "#{session_name}")
@@ -36,13 +55,15 @@ def cleanup_orphaned_sessions(project_name: str) -> None:
             if not name.startswith(prefix):
                 continue
             suffix = name[len(prefix) :]
-            # suffix が数値 (PID) の場合のみチェック
             if suffix.isdigit():
                 try:
                     os.kill(int(suffix), 0)
                 except OSError:
                     # プロセスが存在しない → 孤児セッション
                     run_tmux("kill-session", "-t", name)
+            elif suffix not in tracked_keys:
+                # 追跡情報のないフォールバックキー → 孤児セッション
+                run_tmux("kill-session", "-t", name)
 
     # 孤児 session info ファイルの削除
     if not os.path.isdir(SESSION_INFO_DIR):
@@ -52,21 +73,25 @@ def cleanup_orphaned_sessions(project_name: str) -> None:
             continue
         pid_path = os.path.join(SESSION_INFO_DIR, filename)
         try:
-            stored_pid = open(pid_path).read().strip()
+            stored_key = open(pid_path).read().strip()
         except OSError:
             continue
-        if not stored_pid.isdigit():
-            continue
-        try:
-            os.kill(int(stored_pid), 0)
-        except OSError:
-            # PID が死んでいる → 関連ファイルを削除
-            sid = filename[: -len(".pid")]
-            for ext in (".tmux-session", ".lock-path", ".pid"):
-                try:
-                    os.remove(os.path.join(SESSION_INFO_DIR, sid + ext))
-                except OSError:
-                    pass
+        sid = filename[: -len(".pid")]
+        if stored_key.isdigit():
+            try:
+                os.kill(int(stored_key), 0)
+            except OSError:
+                # PID が死んでいる → 関連ファイルを削除
+                remove_session_files(sid)
+        elif not tmux_has_session(f"{prefix}{stored_key}"):
+            # 対応する tmux セッションがない → 追跡情報を削除
+            remove_session_files(sid)
+
+
+def build_wait_cmd(project_name: str, session_key: str) -> str:
+    """待機ペインで実行するシェルコマンドを安全に構築する。"""
+    session_label = shell_quote(f"({project_name} / PID:{session_key})")
+    return f"echo 'Waiting for sub agents...' && echo {session_label} && echo '($(date))' && cat"
 
 
 def main() -> None:
@@ -108,6 +133,7 @@ def main() -> None:
         pass
 
     # tmux セッションの作成/再利用
+    wait_cmd = build_wait_cmd(project_name, session_key)
     if tmux_has_session(tmux_session):
         # /clear や /resume 時: セッションを維持し、古いペインだけ掃除する
         # （kill-session すると attach 中のクライアントが切断されるため）
@@ -116,7 +142,6 @@ def main() -> None:
             pane_ids = [p for p in result.stdout.strip().splitlines() if p]
             if pane_ids:
                 # 最初のペインを待機画面で respawn
-                wait_cmd = f"echo 'Waiting for sub agents...' && echo '({project_name} / PID:{session_key})' && echo '($(date))' && cat"
                 run_tmux("respawn-pane", "-t", pane_ids[0], "-k", wait_cmd)
                 # 残りのペインを削除
                 for pane_id in pane_ids[1:]:
@@ -127,7 +152,7 @@ def main() -> None:
             "-d",
             "-s",
             tmux_session,
-            f"echo 'Waiting for sub agents...' && echo '({project_name} / PID:{session_key})' && echo '($(date))' && cat",
+            wait_cmd,
         )
 
     # ペインボーダーにエージェント名を常時表示
