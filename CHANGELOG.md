@@ -26,6 +26,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - `$BASE` 解決失敗時は統合ブランチ（`main` / `master` / `develop` / `stage` / `staging`）上でのみブランチを作成し、それ以外は準備済み扱いでスキップ（統合ブランチでの直接作業を回避する安全側設計）
   - 編集ソースは facet `facets/instructions/issue-fix.md`。`.claude/skills/` と `.agents/skills/` の SKILL.md は facet build で再生成
 
+### Fixed
+
+- **`packages/fail-logs` / `packages/reverse`: 書き込み側パストラバーサル防御とドキュメント整合（全パッケージレビュー指摘対応）**
+  - **fail-logs 書き込み側のパストラバーサル防御**: 読み込み側（`inject-failure-summary.py`）には realpath 検証があるのに、書き込み側（`capture-failures.py`）は `logs_dir` config 値を無検証で結合しており、`.local.yaml` の `logs_dir: ../../..` でプロジェクト外に書き込めた非対称を修正。共通関数 `hook_common.resolve_path_within()` を新設して両 hook から使用し、project_dir 外を指す場合は `DEFAULT_LOGS_DIR` へフォールバック（失敗記録を黙って捨てない）
+  - **reverse README の Antigravity 表記更新**: 実装・配布先 SKILL.md は agy / `antigravity.enabled` へ完全移行済みなのに README だけ旧 Gemini 表記（`gemini.enabled` 等）のままで、設定が効かないと誤解を招く状態を修正（旧設定の読み替え互換の注記も追加）
+  - **reverse の manifest depends 宣言**: `depends: []` を実態（cli-tools.yaml と general-purpose / code-reviewer / security-reviewer エージェントへの依存）に合わせ `["core", "agent-routing"]` へ修正
+
 ## [0.2.9] - 2026-06-26
 
 ### Fixed

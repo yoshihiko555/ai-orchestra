@@ -37,6 +37,7 @@ for _candidate in [
 from hook_common import (  # noqa: E402
     load_package_config,
     read_hook_input,
+    resolve_path_within,
     safe_hook_execution,
 )
 
@@ -104,13 +105,10 @@ def _resolve_log_path(project_dir: str, logs_dir: str) -> str | None:
     """ログパスを解決し、project_dir 配下に収まることを検証する。
 
     `logs_dir` に `../` 等が含まれてプロジェクト外を指す場合は None を返す
-    （設定経由のパストラバーサル防御・防御的措置）。
+    （設定経由のパストラバーサル防御・防御的措置）。実体は hook_common
+    の共通関数に委譲する（capture-failures.py と検証ロジックを共有）。
     """
-    project_root = os.path.realpath(project_dir)
-    candidate = os.path.realpath(os.path.join(project_dir, logs_dir, LOG_FILE_NAME))
-    if candidate == project_root or candidate.startswith(project_root + os.sep):
-        return candidate
-    return None
+    return resolve_path_within(project_dir, logs_dir, LOG_FILE_NAME)
 
 
 def _read_tail_lines(log_path: str, max_records: int) -> list[str]:
