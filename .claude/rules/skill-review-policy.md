@@ -78,16 +78,16 @@
 
 変更ファイルのパスに以下のパターンが含まれる場合、対応するレビュアーを**追加**する:
 
-| パスパターン | 追加レビュアー | 理由 |
-|-------------|--------------|------|
-| `packages/core/`, `packages/*/hooks/` | + `architecture-reviewer` | インフラ・共通基盤 |
-| `auth`, `login`, `session`, `token`, `password`, `secret`, `permission` | + `security-reviewer` | 認証・認可関連 |
-| `api/`, `routes/`, `endpoints/`, `graphql/`, `handler` | + `security-reviewer` | API 変更 |
-| `db/`, `migration`, `schema`, `model`, `prisma`, `drizzle` | + `performance-reviewer` | データベース変更 |
-| `components/`, `pages/`, `views/`, `ui/`, `styles/`, `css` | + `ux-reviewer` | フロントエンド変更 |
-| `config/`, `settings`, `.env`, `docker`, `infra/`, `terraform` | + `security-reviewer` | インフラ・設定変更 |
-| `test`, `spec`, `__tests__` | （追加なし） | テストコード変更 |
-| `docs/`, `*.md`（ドキュメントのみの変更） | レビュー不要 | ドキュメントのみ |
+| パスパターン                                                            | 追加レビュアー            | 理由               |
+| ----------------------------------------------------------------------- | ------------------------- | ------------------ |
+| `packages/core/`, `packages/*/hooks/`                                   | + `architecture-reviewer` | インフラ・共通基盤 |
+| `auth`, `login`, `session`, `token`, `password`, `secret`, `permission` | + `security-reviewer`     | 認証・認可関連     |
+| `api/`, `routes/`, `endpoints/`, `graphql/`, `handler`                  | + `security-reviewer`     | API 変更           |
+| `db/`, `migration`, `schema`, `model`, `prisma`, `drizzle`              | + `performance-reviewer`  | データベース変更   |
+| `components/`, `pages/`, `views/`, `ui/`, `styles/`, `css`              | + `ux-reviewer`           | フロントエンド変更 |
+| `config/`, `settings`, `.env`, `docker`, `infra/`, `terraform`          | + `security-reviewer`     | インフラ・設定変更 |
+| `test`, `spec`, `__tests__`                                             | （追加なし）              | テストコード変更   |
+| `docs/`, `*.md`（ドキュメントのみの変更）                               | レビュー不要              | ドキュメントのみ   |
 
 ### 選定ルール
 
@@ -128,11 +128,11 @@ Tiered Output 形式（Critical/High/Medium/Low）で報告してください。
 
 レビュアーが Critical または High の指摘を返した場合:
 
-| 重要度 | 対応 |
-|--------|------|
-| **Critical** | 必ず修正してから次のフェーズに進む |
-| **High** | ユーザーに AskUserQuestion で対応を確認 |
-| **Medium/Low** | 報告のみ。次のフェーズに進んでよい |
+| 重要度         | 対応                                    |
+| -------------- | --------------------------------------- |
+| **Critical**   | 必ず修正してから次のフェーズに進む      |
+| **High**       | ユーザーに AskUserQuestion で対応を確認 |
+| **Medium/Low** | 報告のみ。次のフェーズに進んでよい      |
 
 ---
 
@@ -148,13 +148,13 @@ Tiered Output 形式（Critical/High/Medium/Low）で報告してください。
 
 ## `/review` スキルとの違い
 
-| | このポリシー（スキル内レビュー） | `/review`（スマート選定） | `/review all` |
-|-|-------------------------------|-------------------------|---------------|
-| レビュアー数 | 1-2（パスパターンのみ） | 2-3（パス + diff コンテンツスキャン） | 全 6 レビュアー |
-| 起動タイミング | スキル内レビューフェーズ | ユーザー明示的実行 | ユーザー明示的実行 |
-| 目的 | 変更に応じた最低限の品質確認 | 効率的な包括レビュー | リリース前の網羅的レビュー |
-| 選定ロジック | パスパターンのみ | パス + diff コンテンツスキャン | 選定なし（全員） |
-| 指摘への対応 | Critical は必須修正 | ユーザー判断 | ユーザー判断 |
+|                | このポリシー（スキル内レビュー） | `/review`（スマート選定）             | `/review all`              |
+| -------------- | -------------------------------- | ------------------------------------- | -------------------------- |
+| レビュアー数   | 1-2（パスパターンのみ）          | 2-3（パス + diff コンテンツスキャン） | 全 6 レビュアー            |
+| 起動タイミング | スキル内レビューフェーズ         | ユーザー明示的実行                    | ユーザー明示的実行         |
+| 目的           | 変更に応じた最低限の品質確認     | 効率的な包括レビュー                  | リリース前の網羅的レビュー |
+| 選定ロジック   | パスパターンのみ                 | パス + diff コンテンツスキャン        | 選定なし（全員）           |
+| 指摘への対応   | Critical は必須修正              | ユーザー判断                          | ユーザー判断               |
 
 ---
 
@@ -162,3 +162,23 @@ Tiered Output 形式（Critical/High/Medium/Low）で報告してください。
 
 - このポリシーは「スキル内レビューフェーズ」の最低基準を定義する。
 - マージ前の最終確認は `/review` や `/release-readiness` で補完する。
+
+---
+
+## 4 視点網羅オプション（成果物セルフレビュー）
+
+**用途**: スキルが生成した成果物を、パスパターンに依存せず 4 つの固定視点で網羅レビューしたい場合の
+オプション（Issue #5 の A 縮小版）。通常のパスパターン選定を置き換えるのではなく、明示的に
+「網羅レビューしたい」ときに上乗せする。
+
+| 視点         | 対応レビュアー         | 観点                                  |
+| ------------ | ---------------------- | ------------------------------------- |
+| **Security** | `security-reviewer`    | 脆弱性・認可・情報漏洩                |
+| **Perf**     | `performance-reviewer` | 計算量・I/O・ボトルネック             |
+| **Quality**  | `code-reviewer`        | 可読性・保守性・バグ                  |
+| **a11y**     | `ux-reviewer`          | UX・アクセシビリティ（UI 成果物のみ） |
+
+- a11y 視点は UI 成果物（`components/` `pages/` `views/` `ui/` 等）を含む場合のみ有効化する。
+- 4 視点は並列実行し、結果は Tiered Output（Critical/High/Medium/Low）に集約する。
+- スキル自己改善ループ（`packages/skill-evolution`）の二軸評価とは独立。こちらは「成果物の品質」を、
+  skill-evolution は「スキル実行そのものの品質」を対象とする（責務が異なる）。

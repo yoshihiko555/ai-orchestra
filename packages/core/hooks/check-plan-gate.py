@@ -18,7 +18,12 @@ if _orchestra_dir:
     if _core_hooks not in sys.path:
         sys.path.insert(0, _core_hooks)
 
-from hook_common import read_json_safe, safe_hook_execution  # noqa: E402
+from hook_common import (  # noqa: E402
+    get_field,
+    read_hook_input,
+    read_json_safe,
+    safe_hook_execution,
+)
 
 # 実装系エージェント（plan gate でブロック対象）
 IMPLEMENTATION_AGENTS: set[str] = {
@@ -46,14 +51,16 @@ def _get_gate_path(data: dict) -> str:
 
 @safe_hook_execution
 def main() -> None:
-    data = json.load(sys.stdin)
+    data = read_hook_input()
 
     # Agent ツール以外は無視（後方互換のため "Task" も許容）
     if data.get("tool_name") not in ("Agent", "Task"):
         sys.exit(0)
 
-    tool_input = data.get("tool_input", {})
-    subagent_type = tool_input.get("subagent_type", "").lower()
+    tool_input = data.get("tool_input") or {}
+    if not isinstance(tool_input, dict):
+        tool_input = {}
+    subagent_type = get_field(tool_input, "subagent_type").lower()
 
     # 対象外エージェントは無視
     is_impl = subagent_type in IMPLEMENTATION_AGENTS

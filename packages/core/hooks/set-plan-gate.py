@@ -19,7 +19,7 @@ if _orchestra_dir:
     if _core_hooks not in sys.path:
         sys.path.insert(0, _core_hooks)
 
-from hook_common import safe_hook_execution, write_json  # noqa: E402
+from hook_common import get_field, read_hook_input, safe_hook_execution, write_json  # noqa: E402
 
 # plan gate を設定するエージェント（subagent_type の完全一致のみ）
 PLAN_AGENTS: set[str] = {"plan", "planner"}
@@ -35,14 +35,16 @@ def _get_state_dir(data: dict) -> str:
 
 @safe_hook_execution
 def main() -> None:
-    data = json.load(sys.stdin)
+    data = read_hook_input()
 
     # Agent ツール以外は無視（後方互換のため "Task" も許容）
     if data.get("tool_name") not in ("Agent", "Task"):
         sys.exit(0)
 
-    tool_input = data.get("tool_input", {})
-    subagent_type = tool_input.get("subagent_type", "").lower()
+    tool_input = data.get("tool_input") or {}
+    if not isinstance(tool_input, dict):
+        tool_input = {}
+    subagent_type = get_field(tool_input, "subagent_type").lower()
 
     # plan エージェントでなければ無視（subagent_type の完全一致のみ）
     if subagent_type not in PLAN_AGENTS:
@@ -71,7 +73,7 @@ def main() -> None:
 
     gate_data = {
         "pending": True,
-        "agent": tool_input.get("subagent_type", "unknown"),
+        "agent": get_field(tool_input, "subagent_type") or "unknown",
         "set_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),  # noqa: UP017
     }
     write_json(gate_path, gate_data)
