@@ -39,6 +39,52 @@ def is_local_override(category: str, rel_path: Path) -> bool:
     return category == "config" and (name.endswith(".local.yaml") or name.endswith(".local.json"))
 
 
+# --- 配布時ハッシュ記録（uninstall / 再 install でのユーザー編集保護） ---
+
+
+def compute_file_hash(path: Path) -> str:
+    """ファイルの SHA-256 ハッシュ（16進文字列）を計算する。"""
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def record_file_hash(orch: dict, pkg_name: str, file_key: str, file_hash: str) -> None:
+    """orchestra.json の file_hashes[pkg_name][file_key] を更新する。"""
+    file_hashes = orch.setdefault("file_hashes", {})
+    pkg_hashes = file_hashes.setdefault(pkg_name, {})
+    pkg_hashes[file_key] = file_hash
+
+
+def get_recorded_file_hash(orch: dict, pkg_name: str, file_key: str) -> str | None:
+    """orchestra.json に記録された配布時ハッシュを返す（記録がなければ None）。
+
+    file_hashes キー自体が存在しない旧形式の orchestra.json でも None を返す
+    （後方互換）。
+    """
+    return orch.get("file_hashes", {}).get(pkg_name, {}).get(file_key)
+
+
+def collect_managed_agent_stems(orchestra_path: Path, installed_packages: list[str]) -> set[str]:
+    """インストール済みパッケージの manifest.agents からファイル名 stem 集合を収集する。
+
+    patch_all_agents() の allowlist として使い、パッケージが宣言していない
+    ユーザー独自エージェント .md を model パッチ対象から除外する。
+    """
+    stems: set[str] = set()
+    for pkg_name in installed_packages:
+        manifest_path = orchestra_path / "packages" / pkg_name / "manifest.json"
+        if not manifest_path.is_file():
+            continue
+        try:
+            with open(manifest_path, encoding="utf-8") as f:
+                manifest = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            continue
+        for rel_path in manifest.get("agents", []):
+            if isinstance(rel_path, str) and rel_path:
+                stems.add(Path(rel_path).stem)
+    return stems
+
+
 def remove_stale_files(
     claude_dir: Path,
     prev_synced: list[str],
