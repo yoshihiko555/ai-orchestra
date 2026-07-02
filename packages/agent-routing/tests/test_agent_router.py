@@ -93,6 +93,57 @@ def test_detect_agent_returns_none_for_empty_prompt() -> None:
 
 
 # ---------------------------------------------------------------------------
+# detect_agent: 単語境界による誤検知回帰テスト
+# ---------------------------------------------------------------------------
+
+
+def test_detect_agent_does_not_misfire_frontend_dev_on_quick() -> None:
+    """ "quick" の部分文字列 "ui" で frontend-dev が誤検知されないこと。"""
+    agent, _ = route_config.detect_agent("Let's build a quick prototype")
+    assert agent != "frontend-dev"
+
+
+def test_detect_agent_does_not_misfire_tester_on_latest() -> None:
+    """ "latest" の部分文字列 "test" で tester が誤検知されないこと。"""
+    agent, _ = route_config.detect_agent("what is the latest release")
+    assert agent != "tester"
+
+
+def test_detect_agent_does_not_misfire_backend_go_dev() -> None:
+    """ "go" は単語境界で判定されるが、辞書順で先に "plan" にマッチするため
+    backend-go-dev が誤って選ばれないこと（planner が選ばれるのは正当）。
+    """
+    agent, _ = route_config.detect_agent("let's go over the plan")
+    assert agent != "backend-go-dev"
+
+
+def test_detect_agent_still_detects_legitimate_ascii_trigger() -> None:
+    """単語境界化後も正当な ASCII トリガーは引き続き検出される。"""
+    agent, trigger = route_config.detect_agent("write a test for this")
+    assert agent == "tester"
+    assert trigger == "test"
+
+
+def test_detect_agent_still_detects_legitimate_mixed_ja_ascii_prompt() -> None:
+    """日本語文中の ASCII トリガー（React / UI）も引き続き検出される。"""
+    agent, trigger = route_config.detect_agent("React の UI を実装して")
+    assert agent == "frontend-dev"
+    assert trigger in {"React", "UI"}
+
+
+# ---------------------------------------------------------------------------
+# is_cli_enabled（hook_common からの re-export、後方互換確認）
+# ---------------------------------------------------------------------------
+
+
+def test_is_cli_enabled_backward_compat_import() -> None:
+    """route_config.is_cli_enabled は hook_common からの re-export として動作する。"""
+    assert route_config.is_cli_enabled("codex", {"codex": {"enabled": True}}) is True
+    assert route_config.is_cli_enabled("codex", {"codex": {"enabled": False}}) is False
+    assert route_config.is_cli_enabled("codex", {}) is True
+
+
+# ---------------------------------------------------------------------------
 # get_agent_tool
 # ---------------------------------------------------------------------------
 

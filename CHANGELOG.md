@@ -26,6 +26,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - `$BASE` 解決失敗時は統合ブランチ（`main` / `master` / `develop` / `stage` / `staging`）上でのみブランチを作成し、それ以外は準備済み扱いでスキップ（統合ブランチでの直接作業を回避する安全側設計）
   - 編集ソースは facet `facets/instructions/issue-fix.md`。`.claude/skills/` と `.agents/skills/` の SKILL.md は facet build で再生成
 
+### Fixed
+
+- **hook 判定精度と依存整理（agent-routing / codex-suggestions / antigravity-suggestions、全パッケージレビュー指摘対応）**
+  - **`is_cli_enabled` を core へ引き上げ**: codex-suggestions / antigravity-suggestions が agent-routing 所有の `route_config` へ try/except 外のトップレベル import で依存し、agent-routing 未導入構成で hook がハードクラッシュしていた問題を修正。`hook_common.is_cli_enabled` に移動し（route_config は再エクスポートで後方互換）、manifest の `depends: ["core"]` と実態を一致させた
+  - **agent-routing の単語境界マッチ化**: `"ui" in "quick"`、`"test" in "latest"` 等の部分文字列誤検知で UserPromptSubmit のほぼ毎回誤ルーティング提案が注入されていた問題を修正。英語トリガーは `\b` 境界の正規表現（コンパイルキャッシュ付き）、日本語トリガーは従来の部分一致を維持
+  - **codex-suggestions の誤抑制修正**: `str(tool_response)` への "error"/"failed" 部分一致で「エラーハンドリング設計」を含む正常な plan の提案が抑制されていた問題を、構造化フィールド（`is_error` / `error`）のみの判定へ変更
+  - **antigravity-suggestions の "version" 過剰抑制修正**: 研究シグナル（RESEARCH_INDICATORS）を抑制パターンより優先する順序に変更し、`"version"` は `"latest version"` / `"what version"` の具体的フレーズへ置き換え
+
 ## [0.2.9] - 2026-06-26
 
 ### Fixed
