@@ -43,6 +43,7 @@ from proxy_manager import (
     build_proxy_url,
     clear_session_state,
     get_proxy_state,
+    is_proxy_port_free,
     start_proxy_background,
     write_session_state,
 )
@@ -395,10 +396,18 @@ def main() -> None:
     if proxy_enabled and config:
         proxy_state = get_proxy_state(config, project_dir)
         if proxy_state.get("proxy_state") == "failed":
-            # proxy が恒久的に失敗している場合は stdio エントリへフォールバックする。
-            # 同一 tick 内での自動再起動は行わない（次回セッションで再評価される）。
-            proxy_enabled = False
-            fallback_message = "[cocoindex] proxy is in a failed state; falling back to stdio"
+            if is_proxy_port_free(config, project_dir):
+                # 一時的な失敗（ポート衝突やランチャー不調など）の可能性がある。
+                # ポートが解放されていれば別プロセスを乗っ取る心配がないため、
+                # stdio へ恒久降格せず後続の start_proxy_background() による
+                # 再起動を試みる（この tick では stdio のまま扱う従来挙動は
+                # proxy_ready=False の分岐が引き継ぐ）。
+                pass
+            else:
+                # ポートを他プロセスが握っており安全に再起動できない場合のみ
+                # stdio エントリへフォールバックする（乗っ取り/kill は行わない）。
+                proxy_enabled = False
+                fallback_message = "[cocoindex] proxy is in a failed state; falling back to stdio"
 
     session_uses_proxy = _session_uses_proxy(config, proxy_enabled) if config else False
 

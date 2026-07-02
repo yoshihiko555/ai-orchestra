@@ -11,6 +11,8 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from tests.module_loader import REPO_ROOT, load_module
 
 # hook_common を先に読み込む
@@ -22,6 +24,19 @@ proxy_mgr = load_module(
 )
 # @patch("proxy_manager.xxx") が解決できるよう sys.modules に登録
 sys.modules["proxy_manager"] = proxy_mgr
+
+
+@pytest.fixture(autouse=True)
+def _bind_proxy_manager_module() -> None:
+    """`@patch("proxy_manager.xxx")` が本ファイルの proxy_mgr を確実に指すよう再バインドする。
+
+    tests.module_loader.load_module は呼ばれるたびに新しいモジュールオブジェクトを
+    sys.modules["proxy_manager"] に登録するため、別ファイル（tests/unit/test_proxy_manager.py）が
+    収集時に後からロードすると sys.modules が上書きされ、文字列指定の @patch がこのファイルの
+    proxy_mgr とは別のオブジェクトを patch してしまう。各テスト直前に再バインドして収集順に依存しないようにする。
+    """
+    sys.modules["proxy_manager"] = proxy_mgr
+
 
 SAMPLE_CONFIG: dict = {
     "enabled": True,
@@ -306,6 +321,21 @@ class TestIsProxyRunning:
         )
 
         assert proxy_mgr.is_proxy_running(SAMPLE_CONFIG, str(tmp_path)) is True
+
+
+# =========================================================================
+# is_proxy_port_free
+# =========================================================================
+
+
+class TestIsProxyPortFree:
+    @patch("proxy_manager._is_port_in_use", return_value=False)
+    def test_returns_true_when_port_is_free(self, _port: MagicMock, tmp_path: Path) -> None:
+        assert proxy_mgr.is_proxy_port_free(SAMPLE_CONFIG, str(tmp_path)) is True
+
+    @patch("proxy_manager._is_port_in_use", return_value=True)
+    def test_returns_false_when_port_is_in_use(self, _port: MagicMock, tmp_path: Path) -> None:
+        assert proxy_mgr.is_proxy_port_free(SAMPLE_CONFIG, str(tmp_path)) is False
 
 
 # =========================================================================

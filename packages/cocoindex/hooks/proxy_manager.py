@@ -481,6 +481,18 @@ def is_proxy_running(config: dict, project_dir: str) -> bool:
     return state.get("proxy_state") in {"ready", "idle"}
 
 
+def is_proxy_port_free(config: dict, project_dir: str) -> bool:
+    """proxy 用ポートが未使用かを返す。
+
+    failed 状態が「一時的な起動失敗（ポート衝突やランチャー不調）」なのか
+    「別プロセスに恒久的に占有され再起動不可能」なのかを判定するために使う。
+    ポートが空いていれば、再起動しても別プロセスを乗っ取る心配がないため
+    安全に再試行できる。
+    """
+    proxy_cfg = get_proxy_config(config, project_dir)
+    return not _is_port_in_use(proxy_cfg["host"], proxy_cfg["port"])
+
+
 def cleanup_orphan(config: dict, project_dir: str) -> None:
     """stale supervisor / child プロセスをクリーンアップする。"""
     pid_path = resolve_pid_path(config, project_dir)

@@ -33,6 +33,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - **破損 JSON の無警告上書き防止**: 構文エラーのある `.mcp.json` / `.gemini/settings.json` を「空」とみなしてユーザーの手動編集ごと上書きしていた問題を修正。非空でパース不能な場合は stderr 警告を出して提供・削除をスキップ
   - **TOML エスケープ**: `.codex/config.toml` 生成時に `command` / `url` の `"` `\` をエスケープし、想定外の値でファイル全体が壊れる問題を修正
   - **proxy 恒久失敗時の stdio フォールバック**: `proxy_state == "failed"` の場合に SSE/HTTP エントリを書き続けて cocoindex-code が使用不能のままになる問題を修正。stdio エントリへフォールバックし "falling back to stdio" を出力（同一 tick 内の自動再起動はしない）
+  - **transient failure の永続降格を回避（PR #107 レビュー対応）**: 上記フォールバックが、一時的な起動失敗（ポート衝突・ランチャー不調）でも `failed` 状態を永続化させ、ポートが空いても stdio へ恒久降格したまま再起動されない問題を修正。`failed` かつ**ポートが空いている**場合は stdio に落とさず後続の `start_proxy_background()` による再起動を許し、**ポートを他プロセスが占有している場合のみ** stdio フォールバック（従来の PID 同一性検証による「無関係プロセスを kill しない」安全性は維持）
+  - **テストのモジュールロード衝突を解消**: `tests/module_loader.load_module` が呼び出しごとに新しいモジュールを `sys.modules["proxy_manager"]` へ登録するため、`tests/unit/test_proxy_manager.py` との併走時に文字列指定 `@patch("proxy_manager.xxx")` が別オブジェクトを patch して 16 件が収集順依存で失敗していた。package テストに autouse fixture を追加し、各テスト直前に本ファイルの proxy_mgr へ再バインドして収集順に依存しないようにした
 
 ## [0.2.9] - 2026-06-26
 

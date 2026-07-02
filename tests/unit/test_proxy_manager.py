@@ -259,6 +259,22 @@ class TestIsProxyRunning:
         assert result is True
 
 
+class TestIsProxyPortFree:
+    """is_proxy_port_free のテスト。"""
+
+    def test_returns_true_when_port_is_free(self, tmp_path):
+        config = {"proxy": {"port": 8792, "port_range": 0}}
+        with patch.object(proxy_mgr, "_is_port_in_use", return_value=False):
+            result = proxy_mgr.is_proxy_port_free(config, str(tmp_path))
+        assert result is True
+
+    def test_returns_false_when_port_is_in_use(self, tmp_path):
+        config = {"proxy": {"port": 8792, "port_range": 0}}
+        with patch.object(proxy_mgr, "_is_port_in_use", return_value=True):
+            result = proxy_mgr.is_proxy_port_free(config, str(tmp_path))
+        assert result is False
+
+
 class TestStartProxy:
     """start_proxy のテスト。"""
 

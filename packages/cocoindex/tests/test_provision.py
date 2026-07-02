@@ -750,8 +750,10 @@ class TestMain:
         assert not session_state_path.exists()
         start_mock.assert_called_once_with(config, str(project_dir))
 
-    def test_proxy_failed_state_falls_back_to_stdio(self, tmp_path: Path, monkeypatch) -> None:
-        """proxy_state が failed の場合は stdio エントリへフォールバックする。"""
+    def test_proxy_failed_state_with_occupied_port_falls_back_to_stdio(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """別プロセスがポートを占有する場合は乗っ取らず stdio へフォールバックする。"""
         project_dir = tmp_path
         mcp_path = project_dir / ".mcp.json"
         mcp_path.write_text("{}")
@@ -764,6 +766,7 @@ class TestMain:
         )
         start_mock = MagicMock(return_value=True)
         monkeypatch.setattr(provision, "start_proxy_background", start_mock)
+        monkeypatch.setattr(provision, "is_proxy_port_free", lambda *_: False)
 
         output = self._invoke(
             {"cwd": str(project_dir), "session_id": "sess-failed"},
@@ -784,6 +787,43 @@ class TestMain:
         assert entry["command"] == "uvx"
         assert "url" not in entry
         assert entry.get("type") != "sse"
+
+    def test_proxy_failed_state_with_free_port_retries_via_warmup(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        project_dir = tmp_path
+        mcp_path = project_dir / ".mcp.json"
+        mcp_path.write_text("{}")
+
+        monkeypatch.setattr(provision, "load_package_config", lambda *_: SAMPLE_CONFIG_V2)
+        monkeypatch.setattr(
+            provision,
+            "get_proxy_state",
+            lambda *_: {"proxy_state": "failed"},
+        )
+        monkeypatch.setattr(provision, "is_proxy_port_free", lambda *_: True)
+        start_mock = MagicMock(return_value=True)
+        monkeypatch.setattr(provision, "start_proxy_background", start_mock)
+
+        output = self._invoke(
+            {"cwd": str(project_dir), "session_id": "sess-retry"},
+            monkeypatch,
+        )
+
+        assert "falling back to stdio" not in output
+        assert "warmup started" in output
+        start_mock.assert_called_once_with(SAMPLE_CONFIG_V2, str(project_dir))
+
+        session_state = json.loads(
+            (
+                project_dir / ".claude" / "state" / "cocoindex-sessions" / "sess-retry.json"
+            ).read_text()
+        )
+        assert session_state["reconnect_required"] is True
+
+        data = json.loads(mcp_path.read_text())
+        entry = data["mcpServers"]["cocoindex-code"]
+        assert entry["type"] == "sse"
 
 
 class TestNormalizeTargets:
