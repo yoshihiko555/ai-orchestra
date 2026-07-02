@@ -236,6 +236,20 @@ class TestSetPlanGate:
         assert "Traceback" not in result.stderr
         assert not _gate_path(tmp_path).exists()
 
+    def test_subprocess_does_not_crash_when_subagent_type_is_non_string(
+        self, tmp_path: Path
+    ) -> None:
+        payload = {
+            "tool_name": "Task",
+            "tool_input": {"subagent_type": 42},
+            "tool_response": "## Plan: Feature X",
+            "cwd": str(tmp_path),
+        }
+        result = _run_hook("set-plan-gate.py", payload, tmp_path)
+
+        assert result.returncode == 0
+        assert "Traceback" not in result.stderr
+
 
 class TestCheckPlanGate:
     def test_implementation_agents_contains_expected_set(self) -> None:
@@ -348,6 +362,50 @@ class TestCheckPlanGate:
 
         assert result.returncode == 0
         assert "Traceback" not in result.stderr
+
+    def test_subprocess_does_not_crash_when_subagent_type_is_non_string(
+        self, tmp_path: Path
+    ) -> None:
+        _write_gate_file(tmp_path, pending=True, agent="planner")
+        payload = {
+            "tool_name": "Task",
+            "tool_input": {"subagent_type": 42},
+            "cwd": str(tmp_path),
+        }
+        result = _run_hook("check-plan-gate.py", payload, tmp_path)
+
+        assert result.returncode == 0
+        assert "Traceback" not in result.stderr
+
+
+class TestTopLevelJsonNotDict:
+    """stdin のトップレベル JSON が dict でない場合の fail-open 回帰テスト。
+
+    read_hook_input() が dict 以外を返すと呼び出し側の .get() で
+    AttributeError となり、safe_hook_execution が握りつぶして exit 0 で
+    plan gate が素通りする（fail-open）。dict 正規化後は例外を出さず
+    安全に何もしないことを確認する。
+    """
+
+    @pytest.mark.parametrize("script_name", ["set-plan-gate.py", "check-plan-gate.py"])
+    def test_subprocess_does_not_crash_when_top_level_json_is_list(
+        self, script_name: str, tmp_path: Path
+    ) -> None:
+        env = os.environ.copy()
+        env["AI_ORCHESTRA_DIR"] = str(REPO_ROOT)
+        result = subprocess.run(
+            [sys.executable, str(HOOKS_DIR / script_name)],
+            input=json.dumps([1, 2]),
+            text=True,
+            capture_output=True,
+            env=env,
+            cwd=str(tmp_path),
+            check=False,
+        )
+
+        assert result.returncode == 0
+        assert "Traceback" not in result.stderr
+        assert not _gate_path(tmp_path).exists()
 
 
 class TestClearPlanGate:

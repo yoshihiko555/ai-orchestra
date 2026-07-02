@@ -29,9 +29,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - **`packages/core`: `write_json` のアトミック化と plan-gate のフェイルオープン修正（全パッケージレビュー指摘対応）**: hook の並列実行・タイムアウト kill に対する書き込み安全性を改善
-  - **`write_json` アトミック化**: `open(path, "w")` の直接上書きを「一時ファイル書き込み → `os.replace()`」へ変更。書き込み途中に他 hook が読んで不完全 JSON を掴む競合（`working-context.json` / `plan-gate.json`）と、SessionStart の 15 秒タイムアウト kill による `.mcp.json` 等の破損（cocoindex の provision も本関数を使用）を防止。例外時は一時ファイルを削除して再送出
+  - **`write_json` アトミック化**: `open(path, "w")` の直接上書きを「一時ファイル書き込み → `os.replace()`」へ変更。書き込み途中に他 hook が読んで不完全 JSON を掴む競合（`working-context.json` / `plan-gate.json`）と、SessionStart の 15 秒タイムアウト kill による `.mcp.json` 等の破損（cocoindex の provision も本関数を使用）を防止。例外時は一時ファイルを削除して再送出。既存ファイルのパーミッション（例: mode 0600 の `.mcp.json`）は `os.replace` で失われないよう一時ファイルへ複製してから置換する
   - **plan-gate の `subagent_type: null` フェイルオープン修正**: `tool_input.get("subagent_type", "").lower()` は値が `null` のとき `None.lower()` で例外になり、`@safe_hook_execution` が握りつぶして「ブロックすべき実装エージェント呼び出しが素通り」していた。plan-gate 系 3 hook（check/set/clear）の stdin 読みを `hook_common.read_hook_input()` に、フィールド取得を None 安全な `get_field()` に統一
-  - 回帰テスト追加: `subagent_type: null` / `tool_input` 欠落・null の 6 ケース、`write_json` のラウンドトリップ・一時ファイル非残存・上書きの 3 ケース
+  - **入力バリデーションの底上げ（PR #106 レビュー対応）**: `read_hook_input()` はトップレベル JSON が dict でない（list / string 等）場合に `{}` を返すよう正規化し、`data.get(...)` での例外による同種のフェイルオープンを全 hook で防止。`get_field()` は非文字列 truthy 値（整数等）を `str` 化して後続の `.lower()` クラッシュを回避
+  - 回帰テスト追加: `subagent_type: null` / 非文字列 / `tool_input` 欠落・null / トップレベル非 dict、`write_json` のラウンドトリップ・一時ファイル非残存・パーミッション保持・`os.replace` 失敗時クリーンアップ
 
 ## [0.2.9] - 2026-06-26
 
