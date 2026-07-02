@@ -15,6 +15,7 @@ LLM を要する処理（シナリオ実行・改善案生成）は本 lib の�
 
 from __future__ import annotations
 
+import glob
 import json
 import os
 import random
@@ -134,9 +135,9 @@ def lessons_archive_path(project_dir: str, skill: str, config: dict | None = Non
     return os.path.join(data_dir(project_dir, config), "lessons", f"{_slug(skill)}.archive.md")
 
 
-def pending_path(project_dir: str, skill: str, config: dict | None = None) -> str:
-    """発火→完了の突合用 pending 記録（run_id・開始時刻）のパスを返す。"""
-    return os.path.join(data_dir(project_dir, config), "pending", f"{_slug(skill)}.json")
+def pending_path(project_dir: str, run_id: str, config: dict | None = None) -> str:
+    """発火→完了の突合用 pending 記録のパスを返す（run_id キー・並行実行安全）。"""
+    return os.path.join(data_dir(project_dir, config), "pending", f"{_slug(run_id)}.json")
 
 
 def lock_path(project_dir: str, skill: str, config: dict | None = None) -> str:
@@ -164,6 +165,59 @@ def gen_run_id(skill: str) -> str:
     stamp = datetime.now(tz=UTC).strftime("%Y%m%dT%H%M%S")
     suffix = f"{random.randint(0, 0xFFFF):04x}"
     return f"{_slug(skill)}-{stamp}-{suffix}"
+
+
+# ---------------------------------------------------------------------------
+# pending（発火→完了の突合。run_id キーで並行実行安全）
+# ---------------------------------------------------------------------------
+
+
+def write_pending(project_dir: str, run_id: str, config: dict | None = None) -> None:
+    """発火時に pending（run_id・開始時刻）を run_id キーで記録する（0o600）。"""
+    path = pending_path(project_dir, run_id, config)
+    _ensure_parent(path)
+    fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump({"run_id": run_id, "start_epoch": time.time(), "ts": now_iso()}, f)
+
+
+def consume_pending(
+    project_dir: str, run_id: str, skill: str, config: dict | None = None
+) -> tuple[str, int | None]:
+    """pending を読み取り (run_id, duration_ms) を返し、当該ファイルを削除する。
+
+    run_id が判明していればそれを優先。無ければ skill の最新 pending にフォールバックする
+    （self_report 欠落時の best-effort）。
+    """
+    path = ""
+    if run_id:
+        cand = pending_path(project_dir, run_id, config)
+        if os.path.isfile(cand):
+            path = cand
+    if not path and skill:
+        pending_dir = os.path.join(data_dir(project_dir, config), "pending")
+        matches = sorted(glob.glob(os.path.join(pending_dir, f"{_slug(skill)}-*.json")))
+        if matches:
+            path = matches[-1]
+    if not path:
+        return run_id, None
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return run_id, None
+    resolved = run_id or str(data.get("run_id") or "")
+    start = data.get("start_epoch")
+    try:
+        # clock skew で負になり得るため max(0, ...) でガード
+        duration = max(0, int((time.time() - float(start)) * 1000)) if start is not None else None
+    except (TypeError, ValueError):
+        duration = None
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+    return resolved, duration
 
 
 # ---------------------------------------------------------------------------
@@ -354,6 +408,30 @@ def critical_pass_rate(critical_results: dict[str, bool]) -> float:
 _SELF_REPORT_RE = re.compile(r"\[skill-self-report\](.*?)\[/skill-self-report\]", re.DOTALL)
 
 
+def extract_text(node: object) -> str:
+    """dict/list/str から文字列葉を再帰収集して連結する。
+
+    `json.dumps` すると自己申告ブロック内の `"` がエスケープされ `parse_self_report` が
+    読めなくなるため、生の文字列値をそのまま取り出す。
+    """
+    chunks: list[str] = []
+
+    def _walk(value: object) -> None:
+        if isinstance(value, str):
+            chunks.append(value)
+        elif isinstance(value, dict):
+            for item in value.values():
+                _walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                _walk(item)
+        elif value is not None and not isinstance(value, bool):
+            chunks.append(str(value))
+
+    _walk(node)
+    return "\n".join(chunks)
+
+
 def parse_self_report(text: str) -> dict | None:
     """テキストから `[skill-self-report]{json}[/skill-self-report]` を抽出する。
 
@@ -450,21 +528,41 @@ def score_run(record: dict) -> float:
     return round(base + quality, 2)
 
 
+def _avg_present(records: list[dict], key: str) -> float | None:
+    """machine[key] が None でない値のみで平均する。全て欠損なら None を返す。"""
+    vals = [
+        (r.get("machine") or {}).get(key)
+        for r in records
+        if (r.get("machine") or {}).get(key) is not None
+    ]
+    if not vals:
+        return None
+    return round(sum(float(v) for v in vals) / len(vals), 2)
+
+
 def summarize(records: list[dict]) -> dict:
-    """metrics 履歴のサマリ（件数・成功率・平均スコア・平均ステップ/時間）を返す。"""
+    """metrics 履歴のサマリ（件数・成功率・平均スコア・平均ステップ/時間）を返す。
+
+    tool_uses / duration_ms が欠損（None）の実行は平均計算から除外し、
+    全欠損時は None を返す（欠損を 0 と誤集計してステップ評価を歪めない）。
+    """
     if not records:
-        return {"count": 0, "success_rate": 0.0, "avg_score": 0.0, "avg_steps": 0.0, "avg_ms": 0.0}
+        return {
+            "count": 0,
+            "success_rate": 0.0,
+            "avg_score": 0.0,
+            "avg_steps": None,
+            "avg_ms": None,
+        }
     n = len(records)
     successes = sum(1 for r in records if r.get("success"))
     scores = [score_run(r) for r in records]
-    steps = [int((r.get("machine") or {}).get("tool_uses") or 0) for r in records]
-    times = [int((r.get("machine") or {}).get("duration_ms") or 0) for r in records]
     return {
         "count": n,
         "success_rate": round(successes / n, 3),
         "avg_score": round(sum(scores) / n, 2),
-        "avg_steps": round(sum(steps) / n, 2),
-        "avg_ms": round(sum(times) / n, 2),
+        "avg_steps": _avg_present(records, "tool_uses"),
+        "avg_ms": _avg_present(records, "duration_ms"),
     }
 
 
@@ -651,15 +749,19 @@ def evaluate_stop(history: list[IterationRecord], config: dict) -> StopDecision:
 LOCK_TTL_SECONDS = 3600  # この時間を超えたロックは stale とみなす
 
 
-def _is_stale_lock(path: str) -> bool:
-    """ロックが stale（保持プロセス死亡 or TTL 超過）かを判定する。
-
-    読めない/壊れたロックも stale 扱い（恒久デッドロックを避ける安全側）。
-    """
+def _read_lock(path: str) -> dict | None:
+    """ロックファイルを読む。読めない/壊れていれば None。"""
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
     except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _is_stale(data: dict | None) -> bool:
+    """ロック内容が stale（読めない / TTL 超過 / 保持プロセス死亡）かを判定する。"""
+    if data is None:
         return True
     epoch = data.get("epoch")
     if isinstance(epoch, (int, float)) and time.time() - epoch > LOCK_TTL_SECONDS:
@@ -678,6 +780,11 @@ def _is_stale_lock(path: str) -> bool:
     return False
 
 
+def _is_stale_lock(path: str) -> bool:
+    """パス指定で stale 判定する（後方互換の薄いラッパ）。"""
+    return _is_stale(_read_lock(path))
+
+
 def acquire_lock(project_dir: str, skill: str, config: dict | None = None) -> bool:
     """ロックを取得する。既存でも stale なら奪取する（同一スキルは同時 1 インスタンス）。"""
     path = lock_path(project_dir, skill, config)
@@ -685,10 +792,14 @@ def acquire_lock(project_dir: str, skill: str, config: dict | None = None) -> bo
     try:
         fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     except FileExistsError:
-        if not _is_stale_lock(path):
+        snapshot = _read_lock(path)
+        if not _is_stale(snapshot):
             return False
-        # stale ロックを奪取（削除 → 再作成を 1 回だけ試行）
+        # TOCTOU 緩和: 削除直前に内容が読んだ時点と同一のときだけ奪取する
+        # （他プロセスが既に新ロックを張っていたら諦め、その新ロックを消さない）。
         try:
+            if _read_lock(path) != snapshot:
+                return False
             os.remove(path)
             fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         except (OSError, FileExistsError):

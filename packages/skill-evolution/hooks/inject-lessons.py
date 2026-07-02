@@ -15,7 +15,6 @@ from __future__ import annotations
 import json
 import os
 import sys
-import time
 
 _HOOK_DIR = os.path.dirname(os.path.abspath(__file__))
 _LIB_DIR = os.path.join(os.path.dirname(_HOOK_DIR), "lib")
@@ -58,9 +57,10 @@ def build_injection(skill: str, lessons: str, run_id: str, max_chars: int) -> st
         "## 完了時の自己申告（必須）\n"
         "スキル完了時に以下のブロックを出力すること（値は実績で置換）:\n"
         "[skill-self-report]\n"
-        f'{{"run_id": "{run_id}", "skill": "{skill}", "ambiguities": 0, '
+        f'{{"run_id": "{run_id}", "skill": "{skill}", "tool_uses": 0, "ambiguities": 0, '
         '"discretion_fills": 0, "retries": 0, "critical": {"<項目>": true}}\n'
         "[/skill-self-report]\n"
+        "tool_uses は使用したツール呼び出し回数の概算。"
         "critical には lessons の [critical] チェックリスト各項目の達成可否(true/false)を入れる。"
     )
     return "\n\n".join(parts)
@@ -91,10 +91,7 @@ def main() -> None:
         return
 
     run_id = se.gen_run_id(skill)
-    pending = se.pending_path(project_dir, skill, config)
-    os.makedirs(os.path.dirname(pending), exist_ok=True)
-    with open(pending, "w", encoding="utf-8") as f:
-        json.dump({"run_id": run_id, "start_epoch": time.time(), "ts": se.now_iso()}, f)
+    se.write_pending(project_dir, run_id, config)  # run_id キー・並行実行安全
 
     lessons = se.read_lessons(project_dir, skill, config)
     max_chars = int((config.get("lessons") or {}).get("inject_max_chars") or 4000)

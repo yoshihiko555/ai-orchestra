@@ -63,12 +63,14 @@ def main() -> None:
     except (ValueError, json.JSONDecodeError):
         return
 
-    self_report = se.parse_self_report(raw)
+    # デコード済みの文字列葉から抽出（raw JSON だと " がエスケープされ parse できない）。
+    self_report = se.parse_self_report(se.extract_text(data))
     if not isinstance(self_report, dict):
         return
     skill = str(self_report.get("skill") or "").strip()
     run_id = str(self_report.get("run_id") or "").strip()
-    if not skill:
+    # skill と run_id の両方が必要（run_id 無しは重複排除できず二重記録になるため捨てる）。
+    if not skill or not run_id:
         return
 
     project_dir = _project_dir(data if isinstance(data, dict) else {})

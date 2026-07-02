@@ -15,7 +15,6 @@ from __future__ import annotations
 import json
 import os
 import sys
-import time
 
 _HOOK_DIR = os.path.dirname(os.path.abspath(__file__))
 _LIB_DIR = os.path.join(os.path.dirname(_HOOK_DIR), "lib")
@@ -46,43 +45,6 @@ def _project_dir(data: dict) -> str:
     return data.get("cwd") or os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())
 
 
-def _response_text(data: dict) -> str:
-    """tool_response を文字列化する（dict/list でも探索）。"""
-    resp = data.get("tool_response")
-    if isinstance(resp, str):
-        return resp
-    if resp is None:
-        return ""
-    try:
-        return json.dumps(resp, ensure_ascii=False)
-    except (TypeError, ValueError):
-        return str(resp)
-
-
-def _consume_pending(project_dir: str, skill: str, config: dict) -> tuple[str, int | None]:
-    """pending から run_id と duration_ms を得て pending を削除する。"""
-    path = se.pending_path(project_dir, skill, config)
-    if not os.path.isfile(path):
-        return "", None
-    try:
-        with open(path, encoding="utf-8") as f:
-            pending = json.load(f)
-    except (OSError, ValueError):
-        return "", None
-    run_id = str(pending.get("run_id") or "")
-    start = pending.get("start_epoch")
-    try:
-        # clock skew で負になり得るため max(0, ...) でガード
-        duration = max(0, int((time.time() - float(start)) * 1000)) if start is not None else None
-    except (TypeError, ValueError):
-        duration = None
-    try:
-        os.remove(path)
-    except OSError:
-        pass
-    return run_id, duration
-
-
 @_safe
 def main() -> None:
     """PostToolUse(Skill) hook のエントリポイント。"""
@@ -107,12 +69,16 @@ def main() -> None:
     if not config.get("enabled", True):
         return
 
-    self_report = se.parse_self_report(_response_text(data))
-    run_id, duration_ms = _consume_pending(project_dir, skill, config)
-    if not run_id and isinstance(self_report, dict):
-        run_id = str(self_report.get("run_id") or "")
+    # tool_response の文字列葉から自己申告ブロックを抽出（json.dumps だと " がエスケープされ読めない）。
+    self_report = se.parse_self_report(se.extract_text(data.get("tool_response")))
+    sr_run_id = str(self_report.get("run_id") or "") if isinstance(self_report, dict) else ""
+    run_id, duration_ms = se.consume_pending(project_dir, sr_run_id, skill, config)
 
-    record = se.build_metric_record(skill, run_id, self_report, duration_ms)
+    tool_uses = None
+    if isinstance(self_report, dict) and self_report.get("tool_uses") is not None:
+        tool_uses = se._safe_int(self_report.get("tool_uses"))
+
+    record = se.build_metric_record(skill, run_id, self_report, duration_ms, tool_uses=tool_uses)
     se.append_metric(project_dir, skill, record, config)
 
     # 失敗 or 不明瞭点があれば短い学びを追記（オンライン層の即時還元）。

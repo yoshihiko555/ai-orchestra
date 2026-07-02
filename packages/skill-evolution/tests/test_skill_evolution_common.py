@@ -205,6 +205,84 @@ def test_recent_run_ids(tmp_path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# レビュー反映（PR #105）
+# ---------------------------------------------------------------------------
+
+
+def test_extract_text_preserves_self_report_block() -> None:
+    # dict/list を json.dumps せず文字列葉を取り出すため、埋め込みブロックが読める
+    resp = {
+        "content": [
+            {
+                "text": 'done [skill-self-report]{"run_id": "r", "ambiguities": 0}[/skill-self-report]'
+            }
+        ]
+    }
+    sr = se.parse_self_report(se.extract_text(resp))
+    assert sr is not None and sr["run_id"] == "r"
+
+
+def test_extract_text_types() -> None:
+    assert se.extract_text("hi") == "hi"
+    assert se.extract_text(None) == ""
+    assert se.extract_text({"a": "x", "b": ["y", 1]}) == "x\ny\n1"
+
+
+def test_consume_pending_by_run_id(tmp_path) -> None:
+    p = str(tmp_path)
+    rid = "s-20260101T000000-abcd"
+    se.write_pending(p, rid)
+    got_id, dur = se.consume_pending(p, rid, "s")
+    assert got_id == rid and dur is not None and dur >= 0
+    # consume 済み → 2 回目は None
+    _id2, dur2 = se.consume_pending(p, rid, "s")
+    assert dur2 is None
+
+
+def test_consume_pending_fallback_by_skill(tmp_path) -> None:
+    p = str(tmp_path)
+    rid = "issue-fix-20260101T000000-aaaa"
+    se.write_pending(p, rid)
+    got_id, dur = se.consume_pending(p, "", "issue-fix")  # run_id 不明でも skill で拾う
+    assert got_id == rid and dur is not None
+
+
+def test_summarize_skips_null_metrics() -> None:
+    recs = [
+        {
+            "success": True,
+            "machine": {"critical_pass_rate": 1.0, "tool_uses": None, "duration_ms": None},
+            "self_report": None,
+        },
+        {
+            "success": True,
+            "machine": {"critical_pass_rate": 1.0, "tool_uses": 10, "duration_ms": 100},
+            "self_report": None,
+        },
+    ]
+    s = se.summarize(recs)
+    assert s["avg_steps"] == 10.0  # None を除外して 10 のみで平均
+    all_null = se.summarize(
+        [{"success": True, "machine": {"critical_pass_rate": 1.0}, "self_report": None}]
+    )
+    assert all_null["avg_steps"] is None
+
+
+def test_deep_merge_preserves_unset_keys() -> None:
+    base = {"a": 1, "b": {"x": 1, "y": 2}}
+    merged = se._deep_merge(base, {"b": {"y": 9}})
+    assert merged == {"a": 1, "b": {"x": 1, "y": 9}}
+    assert base["b"]["y"] == 2  # 入力は不変
+
+
+def test_build_metric_record_populates_tool_uses() -> None:
+    rec = se.build_metric_record(
+        "s", "r", {"run_id": "r", "critical": {"a": True}}, 100, tool_uses=7
+    )
+    assert rec["machine"]["tool_uses"] == 7
+
+
+# ---------------------------------------------------------------------------
 # 停止条件 ＋ 3 ガード
 # ---------------------------------------------------------------------------
 
