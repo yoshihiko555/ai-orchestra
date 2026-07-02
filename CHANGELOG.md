@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `handoff` スキルの指示書（`facets/instructions/handoff.md` および生成物）に含まれていた文字化け（U+FFFD）4 箇所を修正
+
 ## [0.2.10] - 2026-07-02
 
 ### Added

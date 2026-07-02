@@ -1,0 +1,29 @@
+# fail-logs: AI の失敗イベント記録設定
+#
+# プロジェクト固有の上書きは fail-logs.local.yaml で行う（config-loading ルール参照）。
+
+# 機能全体の有効/無効。false にすると一切記録しない。
+enabled: true
+
+# 失敗種別ごとの記録トグル
+targets:
+  tool_error: true # ツール実行エラー（Bash 非ゼロ終了・他ツールの明示エラー）
+  test_failure: true # pytest / npm test 等の失敗
+  lint_failure: true # ruff / mypy 等の失敗
+  cli_failure: true # codex / agy 等の外部 CLI 失敗
+
+# エラー要約（error_excerpt）の最大文字数
+max_excerpt_chars: 500
+
+# ログ保存ディレクトリ（プロジェクトルートからの相対パス）
+logs_dir: .claude/logs/fail-logs
+
+# 活用フェーズ: SessionStart で再発失敗サマリーをコンテキストへ注入する設定
+# 設計判断は ADR-20260630-027 を参照。
+summary:
+  enabled: true # SessionStart 注入の有効/無効
+  window_days: 7 # 直近何日分を対象にするか（0 で無期限）
+  max_records: 200 # 走査するログ行数の上限（末尾から）
+  min_occurrences: 2 # 再発とみなす最小回数（これ未満は注入しない）
+  top_signatures: 5 # 表示する再発シグネチャの上位件数
+  show_examples: true # 代表コマンド + エラー抜粋を表示するか
