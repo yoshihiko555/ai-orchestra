@@ -17,6 +17,7 @@
   },
   "files": [
     "hooks/event_logger.py",
+    "hooks/secret_masking.py",
     "hooks/audit-bootstrap.py",
     "hooks/audit-session-end.py",
     "hooks/audit-prompt.py",

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 
 _hook_dir = os.path.dirname(os.path.abspath(__file__))
@@ -44,7 +45,8 @@ from route_config import build_aliases, load_config
 def detect_route(data: dict) -> tuple[str | None, str, str]:
     """ツール呼び出しから実際のルートを検出する。
 
-    Bash コマンドが Codex/Gemini CLI を含む場合は `bash:codex` / `bash:gemini`、
+    Bash コマンドが Codex/Antigravity/Gemini CLI を含む場合は
+    `bash:codex` / `bash:agy` / `bash:gemini`、
     Task/Agent ツールは `task:<agent_type>`、Skill ツールは `skill:<name>` を返す。
 
     Args:
@@ -66,8 +68,12 @@ def detect_route(data: dict) -> tuple[str | None, str, str]:
             command = find_first_text(data, {"command", "cmd"})
 
         cmd_lower = command.lower()
+        # 優先順位は audit-cli.py の検出ロジック（codex > antigravity > gemini）に合わせる。
+        # gemini はレガシー検知のため最後に判定する。
         if "codex" in cmd_lower:
             return "bash:codex", command[:200], tool_name
+        if re.search(r"(?:^|[\s;|&])agy(?=\s|$)", cmd_lower):
+            return "bash:agy", command[:200], tool_name
         if "gemini" in cmd_lower:
             return "bash:gemini", command[:200], tool_name
         return None, command[:200], tool_name
@@ -178,7 +184,12 @@ def main() -> None:
 
     config = load_config(data)
     policy = load_package_config("audit", "delegation-policy.json", root)
-    all_aliases = {**build_aliases(config), **(policy.get("aliases") or {})}
+    # policy 側の aliases はキーごとに union する（丸ごと上書きすると
+    # build_aliases() が生成する task:<agent> 群が握りつぶされるため）。
+    all_aliases = build_aliases(config)
+    for key, extra in (policy.get("aliases") or {}).items():
+        merged = [*all_aliases.get(key, []), *(extra or [])]
+        all_aliases[key] = list(dict.fromkeys(merged))
 
     session_id = str(data.get("session_id") or "")
     trace = load_trace_state(project_dir=root)

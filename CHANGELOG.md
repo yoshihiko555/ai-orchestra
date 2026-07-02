@@ -26,6 +26,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - `$BASE` 解決失敗時は統合ブランチ（`main` / `master` / `develop` / `stage` / `staging`）上でのみブランチを作成し、それ以外は準備済み扱いでスキップ（統合ブランチでの直接作業を回避する安全側設計）
   - 編集ソースは facet `facets/instructions/issue-fix.md`。`.claude/skills/` と `.agents/skills/` の SKILL.md は facet build で再生成
 
+### Fixed
+
+- **`packages/audit`: ルーティング適合率メトリクスの修復と秘密情報マスキングの統一（全パッケージレビュー指摘対応）**: Antigravity（agy）移行後に壊れていた監査機能を修復
+  - **エイリアスマージの union 化（Critical）**: `delegation-policy.json` の `aliases` が `cli-tools.yaml` 由来のエイリアスを丸ごと上書きし、`claude-direct` ルーティングの Task 呼び出しが常に `matched=False` に誤記録されていた問題を修正。キーごとに順序保持・重複排除で union する
+  - **`detect_route()` の agy 検出追加（Critical）**: codex / gemini のみでルート一致判定から agy が漏れていた問題を修正。単語境界付き正規表現で `bash:agy` を検出し、判定順は `audit-cli.py` と統一（codex → agy → gemini）
+  - **`calc_cli_stats` の Counter 化**: antigravity 呼び出しが合計に入るのに内訳・グラフから消えていた問題を修正。`by_tool` 集計を追加し、`dashboard.py` / `dashboard-html.py` も antigravity を表示
+  - **SECRET_PATTERNS の共通化**: `audit-prompt.py` に Azure SAS / PEM 秘密鍵の redact パターンが無く、プロンプト経由の秘密情報がマスクされずログに残っていた問題を修正。新設の `hooks/secret_masking.py` に完全版パターンを集約し両 hook から参照
+
 ## [0.2.9] - 2026-06-26
 
 ### Fixed

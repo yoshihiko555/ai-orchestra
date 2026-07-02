@@ -52,12 +52,15 @@ def calc_cli_stats(events: list[dict]) -> dict:
         events: 集計対象のイベントリスト。
 
     Returns:
-        total / codex / gemini / success_rate / errors_by_type を含む辞書。
+        total / codex / gemini / antigravity / by_tool / success_rate /
+        errors_by_type を含む辞書。`by_tool` は全ツールの内訳（Counter 化）で、
+        `codex` / `gemini` / `antigravity` は後方互換のため個別キーとしても残す。
     """
     calls = [e for e in events if e.get("type") == "cli_call"]
     total = len(calls)
-    codex = sum(1 for c in calls if (c.get("data") or {}).get("tool") == "codex")
-    gemini = sum(1 for c in calls if (c.get("data") or {}).get("tool") == "gemini")
+    by_tool = Counter(
+        (c.get("data") or {}).get("tool") for c in calls if (c.get("data") or {}).get("tool")
+    )
     success = sum(1 for c in calls if (c.get("data") or {}).get("success", False))
 
     errors = Counter(
@@ -68,8 +71,10 @@ def calc_cli_stats(events: list[dict]) -> dict:
 
     return {
         "total": total,
-        "codex": codex,
-        "gemini": gemini,
+        "codex": by_tool.get("codex", 0),
+        "gemini": by_tool.get("gemini", 0),
+        "antigravity": by_tool.get("antigravity", 0),
+        "by_tool": dict(by_tool),
         "success": success,
         "success_rate": round((success / total) * 100, 1) if total > 0 else 0.0,
         "errors_by_type": dict(errors),
