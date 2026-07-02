@@ -26,6 +26,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - `$BASE` 解決失敗時は統合ブランチ（`main` / `master` / `develop` / `stage` / `staging`）上でのみブランチを作成し、それ以外は準備済み扱いでスキップ（統合ブランチでの直接作業を回避する安全側設計）
   - 編集ソースは facet `facets/instructions/issue-fix.md`。`.claude/skills/` と `.agents/skills/` の SKILL.md は facet build で再生成
 
+### Fixed
+
+- **`packages/quality-gates`: 共有状態のプロジェクトスコープ化と設定判定の一元化（全パッケージレビュー指摘対応）**
+  - **/tmp 状態ファイルのプロジェクトスコープ化**: `test-gate-checker` / `post-test-analysis` / `post-implementation-review` が固定パス `/tmp/claude-*-state.json` を共有し、複数プロジェクト並行時に編集件数・テスト結果が相互汚染して閾値判定が誤る問題（Issue #83 と同系統）を修正。`test-tampering-detector` と同じ `get_project_state_key()`（git-common-dir 優先）でプロジェクトごとにネストする形式へ変更し、共有ヘルパー `hooks/quality_gate_config.py` を新設（manifest 宣言済み）。同一リポジトリの worktree 間は tampering-detector と同様に意図的に状態を共有する
+  - **`quality_gate.enabled` デフォルトの一元化**: `test-gate-checker.py`（False）と `post-test-analysis.py`（True）で真逆だったデフォルトを、ベース config（`enabled: true`）と対称な True に統一（`QUALITY_GATE_ENABLED_DEFAULT` を共有モジュールに定義）
+  - **`review_suggested` のリセット経路追加**: 一度提案すると二度と提案されなかった `post-implementation-review` に TTL（24 時間、定数化）による再アームと、提案時のカウンタリセットを追加。7 フック中唯一テストが無かった同 hook に初のテスト（閾値・TTL・プロジェクト分離・main() E2E）を新設
+
 ## [0.2.9] - 2026-06-26
 
 ### Fixed

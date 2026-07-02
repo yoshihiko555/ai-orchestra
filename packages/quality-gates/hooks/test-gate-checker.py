@@ -7,12 +7,19 @@ test execution when the number of modified files or lines exceeds thresholds.
 
 The shared state file (/tmp/claude-test-gate-state.json) is also written by
 post-test-analysis.py, which resets counters on successful test runs.
+The state is scoped per project (see quality_gate_config.get_project_state_key)
+so concurrent worktrees/sessions on different projects do not contaminate
+each other's counters.
 """
 
 import json
 import os
 import sys
 from pathlib import Path
+
+_hook_dir = os.path.dirname(os.path.abspath(__file__))
+if _hook_dir not in sys.path:
+    sys.path.insert(0, _hook_dir)
 
 # hook_common を $AI_ORCHESTRA_DIR/packages/core/hooks/ から読み込む
 _orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
@@ -22,6 +29,12 @@ if _orchestra_dir:
         sys.path.insert(0, _core_hooks)
 
 from hook_common import load_package_config  # noqa: E402
+from quality_gate_config import (  # noqa: E402
+    get_project_state_key,
+    is_quality_gate_enabled,
+    load_project_scoped_state,
+    save_project_scoped_state,
+)
 
 # Shared state file with post-test-analysis.py
 TEST_GATE_STATE_FILE = Path("/tmp/claude-test-gate-state.json")
@@ -33,31 +46,24 @@ CODE_EXTENSIONS = {".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java"}
 DEFAULT_FILE_THRESHOLD = 3
 DEFAULT_LINE_THRESHOLD = 100
 
-
-def load_test_gate_state() -> dict:
-    """Load the shared test-gate state from file."""
-    try:
-        if TEST_GATE_STATE_FILE.exists():
-            with open(TEST_GATE_STATE_FILE, encoding="utf-8") as f:
-                return json.load(f)
-    except (json.JSONDecodeError, OSError):
-        pass
-    return {
-        "files_modified_since_test": [],
-        "lines_modified_since_test": 0,
-        "last_test_result": None,
-        "warned": False,
-    }
+_DEFAULT_TEST_GATE_STATE: dict = {
+    "files_modified_since_test": [],
+    "lines_modified_since_test": 0,
+    "last_test_result": None,
+    "warned": False,
+}
 
 
-def save_test_gate_state(state: dict) -> None:
-    """Save the shared test-gate state to file."""
-    try:
-        TEST_GATE_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(TEST_GATE_STATE_FILE, "w", encoding="utf-8") as f:
-            json.dump(state, f, ensure_ascii=False, indent=2)
-    except OSError:
-        pass
+def load_test_gate_state(project_dir: str) -> dict:
+    """Load the shared test-gate state from file (scoped to the current project)."""
+    project_key = get_project_state_key(project_dir)
+    return load_project_scoped_state(TEST_GATE_STATE_FILE, project_key, _DEFAULT_TEST_GATE_STATE)
+
+
+def save_test_gate_state(project_dir: str, state: dict) -> None:
+    """Save the shared test-gate state to file (scoped to the current project)."""
+    project_key = get_project_state_key(project_dir)
+    save_project_scoped_state(TEST_GATE_STATE_FILE, project_key, state)
 
 
 def is_code_file(file_path: str) -> bool:
@@ -77,12 +83,6 @@ def load_thresholds(project_dir: str) -> tuple[int, int]:
     file_threshold = quality_gate.get("test_file_threshold", DEFAULT_FILE_THRESHOLD)
     line_threshold = quality_gate.get("test_line_threshold", DEFAULT_LINE_THRESHOLD)
     return file_threshold, line_threshold
-
-
-def is_quality_gate_enabled(project_dir: str) -> bool:
-    """Check if the quality_gate feature is enabled."""
-    config = load_package_config("audit", "audit-flags.json", project_dir)
-    return config.get("features", {}).get("quality_gate", {}).get("enabled", False)
 
 
 def build_warning_message(file_count: int, line_count: int, has_test_history: bool) -> str:
@@ -129,7 +129,7 @@ def main() -> None:
         lines_changed = count_lines(content)
 
         # Update state
-        state = load_test_gate_state()
+        state = load_test_gate_state(project_dir)
         modified_files = state.get("files_modified_since_test", [])
         if file_path not in modified_files:
             modified_files.append(file_path)
@@ -150,7 +150,7 @@ def main() -> None:
 
         if should_warn:
             state["warned"] = True
-            save_test_gate_state(state)
+            save_test_gate_state(project_dir, state)
 
             has_test_history = state.get("last_test_result") is not None
             message = build_warning_message(file_count, line_count, has_test_history)
@@ -163,7 +163,7 @@ def main() -> None:
             }
             print(json.dumps(output))
         else:
-            save_test_gate_state(state)
+            save_test_gate_state(project_dir, state)
 
         sys.exit(0)
 

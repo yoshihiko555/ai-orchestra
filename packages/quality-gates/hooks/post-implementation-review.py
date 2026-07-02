@@ -4,11 +4,28 @@ PostToolUse hook: Suggest review after significant implementation.
 
 Tracks file edits across the session and suggests code review
 when 3+ files or 100+ lines have been modified.
+
+The state is scoped per project (see quality_gate_config.get_project_state_key)
+so concurrent worktrees/sessions on different projects do not contaminate
+each other's counters. A suggestion is re-armed after REVIEW_SUGGESTION_TTL_SECONDS
+has elapsed since it was last shown, instead of staying suppressed forever.
 """
 
 import json
+import os
 import sys
+import time
 from pathlib import Path
+
+_hook_dir = os.path.dirname(os.path.abspath(__file__))
+if _hook_dir not in sys.path:
+    sys.path.insert(0, _hook_dir)
+
+from quality_gate_config import (  # noqa: E402
+    get_project_state_key,
+    load_project_scoped_state,
+    save_project_scoped_state,
+)
 
 # Session state file for tracking modifications
 STATE_FILE = Path("/tmp/claude-impl-review-state.json")
@@ -17,26 +34,27 @@ STATE_FILE = Path("/tmp/claude-impl-review-state.json")
 FILE_THRESHOLD = 3
 LINE_THRESHOLD = 100
 
+# How long a review suggestion stays "already suggested" before it can fire again.
+REVIEW_SUGGESTION_TTL_SECONDS = 24 * 60 * 60  # 24 hours
 
-def load_state() -> dict:
-    """Load session state from file."""
-    try:
-        if STATE_FILE.exists():
-            with open(STATE_FILE, encoding="utf-8") as f:
-                return json.load(f)
-    except (json.JSONDecodeError, OSError):
-        pass
-    return {"files": [], "total_lines": 0, "review_suggested": False}
+_DEFAULT_IMPL_REVIEW_STATE: dict = {
+    "files": [],
+    "total_lines": 0,
+    "review_suggested": False,
+    "suggested_at": None,
+}
 
 
-def save_state(state: dict) -> None:
-    """Save session state to file."""
-    try:
-        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(STATE_FILE, "w", encoding="utf-8") as f:
-            json.dump(state, f)
-    except OSError:
-        pass
+def load_state(project_dir: str) -> dict:
+    """Load session state from file (scoped to the current project)."""
+    project_key = get_project_state_key(project_dir)
+    return load_project_scoped_state(STATE_FILE, project_key, _DEFAULT_IMPL_REVIEW_STATE)
+
+
+def save_state(project_dir: str, state: dict) -> None:
+    """Save session state to file (scoped to the current project)."""
+    project_key = get_project_state_key(project_dir)
+    save_project_scoped_state(STATE_FILE, project_key, state)
 
 
 def count_lines(content: str) -> int:
@@ -44,9 +62,17 @@ def count_lines(content: str) -> int:
     return len([line for line in content.split("\n") if line.strip()])
 
 
+def is_suggestion_stale(state: dict) -> bool:
+    """Return True when the last suggestion is older than the TTL (safe to re-suggest)."""
+    suggested_at = state.get("suggested_at")
+    if suggested_at is None:
+        return False
+    return (time.time() - suggested_at) >= REVIEW_SUGGESTION_TTL_SECONDS
+
+
 def should_suggest_review(state: dict) -> bool:
     """Check if review should be suggested."""
-    if state["review_suggested"]:
+    if state["review_suggested"] and not is_suggestion_stale(state):
         return False
 
     file_count = len(set(state["files"]))
@@ -77,16 +103,21 @@ def main():
         lines_changed = count_lines(content)
 
         # Update state
-        state = load_state()
+        project_dir = data.get("cwd", "") or os.environ.get("CLAUDE_PROJECT_DIR", "")
+        state = load_state(project_dir)
         state["files"].append(file_path)
         state["total_lines"] += lines_changed
 
         if should_suggest_review(state):
-            state["review_suggested"] = True
-            save_state(state)
-
+            # Capture pre-reset counts for the message before clearing the window.
             file_count = len(set(state["files"]))
             total_lines = state["total_lines"]
+
+            state["review_suggested"] = True
+            state["suggested_at"] = time.time()
+            state["files"] = []
+            state["total_lines"] = 0
+            save_state(project_dir, state)
 
             output = {
                 "hookSpecificOutput": {
@@ -104,7 +135,7 @@ def main():
             }
             print(json.dumps(output))
         else:
-            save_state(state)
+            save_state(project_dir, state)
 
         sys.exit(0)
 
