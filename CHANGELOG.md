@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`.gitignore` sync が `.claude/codd/` を毎回削除していた問題**: `scripts/lib/gitignore_sync.py` の管理ブロック（`>>> AI Orchestra (.claude) >>>`）は sync のたびに `ENTRIES` で丸ごと置換されるため、`ENTRIES` に無い `.claude/codd/`（codd スキルの生成物 `graph.jsonl` の出力先）はブロック内に手動追加しても次回 sync で消えていた。`ENTRIES` に `.claude/codd/` を追加し、SessionStart hook / orchestra-manager による sync で常に残るようにした（回帰テスト付き）
+
 ## [0.2.10] - 2026-07-02
 
 ### Added

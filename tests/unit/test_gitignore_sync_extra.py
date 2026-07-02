@@ -22,6 +22,11 @@ class TestBuildBlock:
         assert lines[1:-1] == gitignore_mod.ENTRIES
         assert block.endswith("\n")
 
+    def test_contains_codd_entry(self) -> None:
+        """codd の生成物ディレクトリが管理エントリに含まれる。"""
+        assert ".claude/codd/" in gitignore_mod.ENTRIES
+        assert ".claude/codd/" in gitignore_mod.build_block()
+
 
 class TestSyncGitignore:
     """sync_gitignore のテスト。"""
