@@ -33,6 +33,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - **`run_tmux()` / `ps` への timeout 追加**: 同期 hook から呼ばれる subprocess に timeout（5 秒）が無く、tmux/ps ハングが Claude Code 全操作のブロックに直結していた問題を修正。`TimeoutExpired` は非ゼロ returncode の疑似結果へフォールバック
   - **孤児クリーンアップの整合**: PID 検出失敗時のフォールバックキー（16 進）のセッション・info ファイルが `isdigit()` 判定に合わず永久残留していた問題と、削除対象が 3 拡張子のみで `.shared-dir` / `.task-queue` と shared-dir 実体（`/tmp/claude-shared-*`）が異常終了時に永続リークしていた問題を修正。session-end と同じ 5 拡張子 + 実体削除に統一（`remove_session_files()` 共通化）
   - **`tmux-subagent-start.py` の `main()` 分割**: 約 150 行・ネスト 4-5 段を責務ごとの 5 関数へ純粋抽出（挙動不変、回帰テスト付き）
+  - **フォールバッククリーンアップの誤削除防止（PR #109 レビュー対応）**: フォールバックキーのクリーンアップ判定が current `project_name` から tmux セッション名を再構成していたため、後続プロジェクトの起動時に別プロジェクトのフォールバックセッション（`.tmux-session` / `.shared-dir` / キュー）を誤削除しうる問題を修正。記録された `.tmux-session` の実名で生存判定し、現在の prefix で始まらない他プロジェクトの session info には触れない
 
 ## [0.2.9] - 2026-06-26
 

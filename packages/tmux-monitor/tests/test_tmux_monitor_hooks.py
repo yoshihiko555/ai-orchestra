@@ -182,6 +182,104 @@ def test_cleanup_orphaned_sessions_removes_stale_fallback_files(monkeypatch, tmp
         assert not (session_info_dir / f"{session_id}{extension}").exists()
 
 
+def test_cleanup_orphaned_sessions_does_not_delete_other_project_fallback_files(
+    monkeypatch, tmp_path
+) -> None:
+    """他プロジェクト (A) のフォールバックセッションが、別プロジェクト (B) の
+
+    起動時クリーンアップで誤って削除されないことを確認する回帰テスト。
+    session info は /tmp/claude-session-info にプロジェクト横断で置かれるため、
+    current project_name (B) でセッション名を再構成すると A の sid を誤って
+    孤児判定してしまうバグの再発防止。
+    """
+    session_info_dir = tmp_path / "session-info"
+    session_info_dir.mkdir()
+    shared_dir_a = tmp_path / "shared-a"
+    shared_dir_a.mkdir()
+    (shared_dir_a / "entry.json").write_text("{}")
+
+    session_id = "session-a"
+    session_key = "aaa1111"
+    contents = {
+        ".tmux-session": f"claude-projectA-{session_key}",
+        ".lock-path": "/tmp/lock-a",
+        ".pid": session_key,
+        ".shared-dir": str(shared_dir_a),
+        ".task-queue": "task",
+    }
+    for extension, content in contents.items():
+        (session_info_dir / f"{session_id}{extension}").write_text(content)
+
+    monkeypatch.setattr(tmux_session_start, "SESSION_INFO_DIR", str(session_info_dir))
+    monkeypatch.setattr(tmux_common, "SESSION_INFO_DIR", str(session_info_dir))
+    monkeypatch.setattr(
+        tmux_session_start,
+        "run_tmux",
+        lambda *args: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+    # A の tmux セッションは存在しない (かつ B の名前で問い合わせても当然存在しない)
+    monkeypatch.setattr(tmux_session_start, "tmux_has_session", lambda name: False)
+
+    # プロジェクト B の SessionStart から呼ばれた想定
+    tmux_session_start.cleanup_orphaned_sessions("projectB")
+
+    assert shared_dir_a.exists()
+    for extension in tmux_common.SESSION_FILE_EXTENSIONS:
+        assert (session_info_dir / f"{session_id}{extension}").exists()
+
+
+def test_cleanup_orphaned_sessions_uses_recorded_session_name_for_own_project(
+    monkeypatch, tmp_path
+) -> None:
+    """自プロジェクトのフォールバックセッションは、current project_name で
+
+    再構成した名前ではなく .tmux-session に記録された実際のセッション名で
+    生存判定されることを確認する (再構成すると常に一致してしまい検証にならない
+    ため、記録名だけを False にする fake で判定ロジックの参照先を明示する)。
+    """
+    session_info_dir = tmp_path / "session-info"
+    session_info_dir.mkdir()
+    shared_dir = tmp_path / "shared"
+    shared_dir.mkdir()
+    (shared_dir / "entry.json").write_text("{}")
+
+    session_id = "session"
+    session_key = "bbb2222"
+    recorded_session = f"claude-project-{session_key}"
+    contents = {
+        ".tmux-session": recorded_session,
+        ".lock-path": "/tmp/lock",
+        ".pid": session_key,
+        ".shared-dir": str(shared_dir),
+        ".task-queue": "task",
+    }
+    for extension, content in contents.items():
+        (session_info_dir / f"{session_id}{extension}").write_text(content)
+
+    monkeypatch.setattr(tmux_session_start, "SESSION_INFO_DIR", str(session_info_dir))
+    monkeypatch.setattr(tmux_common, "SESSION_INFO_DIR", str(session_info_dir))
+    monkeypatch.setattr(
+        tmux_session_start,
+        "run_tmux",
+        lambda *args: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+
+    queried_names: list[str] = []
+
+    def fake_tmux_has_session(name: str) -> bool:
+        queried_names.append(name)
+        return name != recorded_session
+
+    monkeypatch.setattr(tmux_session_start, "tmux_has_session", fake_tmux_has_session)
+
+    tmux_session_start.cleanup_orphaned_sessions("project")
+
+    assert recorded_session in queried_names
+    assert not shared_dir.exists()
+    for extension in tmux_common.SESSION_FILE_EXTENSIONS:
+        assert not (session_info_dir / f"{session_id}{extension}").exists()
+
+
 def _run_orphan_cleanup(
     monkeypatch, tmp_path, session_key: str, pid_tracked: bool, pid_alive: bool
 ) -> list[tuple[str, ...]]:

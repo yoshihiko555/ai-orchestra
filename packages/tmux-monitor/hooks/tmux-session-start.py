@@ -27,6 +27,14 @@ from tmux_common import (
 )
 
 
+def _read_stripped(path: str) -> str:
+    """ファイルの内容を読み取る。存在しなければ空文字を返す。"""
+    try:
+        return open(path).read().strip()
+    except OSError:
+        return ""
+
+
 def cleanup_orphaned_sessions(project_name: str) -> None:
     """PID またはフォールバックキーを基に孤児セッションを削除する。
 
@@ -83,8 +91,22 @@ def cleanup_orphaned_sessions(project_name: str) -> None:
             except OSError:
                 # PID が死んでいる → 関連ファイルを削除
                 remove_session_files(sid)
+            continue
+
+        # フォールバックキーの生存確認: session info は /tmp/claude-session-info に
+        # プロジェクト横断で置かれるため、現在の project_name でセッション名を
+        # 再構成すると別プロジェクトの sid を誤って孤児判定してしまう。
+        # 実際に記録された tmux セッション名 (.tmux-session) を優先して使う。
+        recorded_session = _read_stripped(os.path.join(SESSION_INFO_DIR, sid + ".tmux-session"))
+        if recorded_session:
+            if not recorded_session.startswith(prefix):
+                # 別プロジェクトの session info → 対象外 (誤削除防止)
+                continue
+            if not tmux_has_session(recorded_session):
+                # 対応する tmux セッションがない → 追跡情報を削除
+                remove_session_files(sid)
         elif not tmux_has_session(f"{prefix}{stored_key}"):
-            # 対応する tmux セッションがない → 追跡情報を削除
+            # .tmux-session が無い旧形式のみ現在の prefix で再構成してフォールバック判定
             remove_session_files(sid)
 
 
