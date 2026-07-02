@@ -16,12 +16,12 @@ if _orchestra_dir:
     _core_hooks = os.path.join(_orchestra_dir, "packages", "core", "hooks")
     if _core_hooks not in sys.path:
         sys.path.insert(0, _core_hooks)
-    _routing_hooks = os.path.join(_orchestra_dir, "packages", "agent-routing", "hooks")
-    if _routing_hooks not in sys.path:
-        sys.path.insert(0, _routing_hooks)
 
-from hook_common import load_package_config, normalize_cli_tools_config  # noqa: E402
-from route_config import is_cli_enabled  # noqa: E402
+from hook_common import (  # noqa: E402
+    is_cli_enabled,
+    load_package_config,
+    normalize_cli_tools_config,
+)
 
 # Keywords that suggest deep research would benefit from Antigravity
 RESEARCH_INDICATORS = [
@@ -43,10 +43,13 @@ RESEARCH_INDICATORS = [
 ]
 
 # Simple lookups that don't need Antigravity
+# 注意: "version" は "versioning" 等にも部分一致してしまうため、より具体的な
+# フレーズに限定する（例: "api versioning" のような強い研究シグナルを誤抑制しない）
 SIMPLE_LOOKUP_PATTERNS = [
     "error message",
     "stack trace",
-    "version",
+    "latest version",
+    "what version",
     "release notes",
     "changelog",
 ]
@@ -56,18 +59,24 @@ COMPLEX_QUERY_LENGTH = 100
 
 
 def should_suggest_antigravity(query: str, url: str = "") -> tuple[bool, str]:
-    """Determine if Antigravity should be suggested for this research."""
+    """Determine if Antigravity should be suggested for this research.
+
+    RESEARCH_INDICATORS（強い研究シグナル）を SIMPLE_LOOKUP_PATTERNS より
+    先に判定する。例えば "compare api versioning migration patterns" は
+    "migration" 等の研究シグナルを含むため、単純な version 確認とは区別して
+    提案対象にする。
+    """
     query_lower = query.lower()
     url_lower = url.lower()
     combined = f"{query_lower} {url_lower}"
 
-    for pattern in SIMPLE_LOOKUP_PATTERNS:
-        if pattern in combined:
-            return False, ""
-
     for indicator in RESEARCH_INDICATORS:
         if indicator in combined:
             return True, f"Research involves '{indicator}'"
+
+    for pattern in SIMPLE_LOOKUP_PATTERNS:
+        if pattern in combined:
+            return False, ""
 
     if len(query) > COMPLEX_QUERY_LENGTH:
         return True, "Complex research query detected"

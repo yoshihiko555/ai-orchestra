@@ -16,17 +16,14 @@ if _orchestra_dir:
     _core_hooks = os.path.join(_orchestra_dir, "packages", "core", "hooks")
     if _core_hooks not in sys.path:
         sys.path.insert(0, _core_hooks)
-    _routing_hooks = os.path.join(_orchestra_dir, "packages", "agent-routing", "hooks")
-    if _routing_hooks not in sys.path:
-        sys.path.insert(0, _routing_hooks)
 
 from hook_common import (  # noqa: E402
     DEFAULT_CODEX_FLAGS,
     DEFAULT_CODEX_MODEL,
     DEFAULT_CODEX_SANDBOX_ANALYSIS,
+    is_cli_enabled,
     load_package_config,
 )
-from route_config import is_cli_enabled  # noqa: E402
 
 # Input validation constants
 MAX_PATH_LENGTH = 4096

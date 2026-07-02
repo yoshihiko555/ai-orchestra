@@ -155,6 +155,35 @@ class TestLoadPackageConfig:
 
 
 # =========================================================================
+# is_cli_enabled
+#
+# 元々 agent-routing パッケージ所有だったが、codex-suggestions /
+# antigravity-suggestions が agent-routing に依存せず利用できるよう core に
+# 引き上げた（route_config.is_cli_enabled はここからの re-export）。
+# =========================================================================
+
+
+class TestIsCliEnabled:
+    def test_enabled_true(self) -> None:
+        assert hook_common.is_cli_enabled("codex", {"codex": {"enabled": True}}) is True
+
+    def test_enabled_false(self) -> None:
+        assert hook_common.is_cli_enabled("codex", {"codex": {"enabled": False}}) is False
+
+    def test_missing_section_defaults_to_true(self) -> None:
+        """CLI セクション自体が config に存在しない場合は後方互換で True。"""
+        assert hook_common.is_cli_enabled("codex", {}) is True
+
+    def test_non_dict_section_defaults_to_true(self) -> None:
+        """セクションが dict でない壊れた config でも True にフォールバック。"""
+        assert hook_common.is_cli_enabled("codex", {"codex": "not-a-dict"}) is True
+
+    def test_section_without_enabled_key_defaults_to_true(self) -> None:
+        """enabled キー自体が無いセクションは True（デフォルト有効）。"""
+        assert hook_common.is_cli_enabled("codex", {"codex": {"model": "gpt-5.5"}}) is True
+
+
+# =========================================================================
 # resolve_path_within
 # =========================================================================
 

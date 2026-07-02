@@ -146,6 +146,20 @@ def normalize_cli_tools_config(config: dict) -> dict:
     return normalized
 
 
+def is_cli_enabled(cli_name: str, config: dict) -> bool:
+    """CLI が有効かどうかを返す。未定義やセクション欠落時は True（後方互換）。
+
+    元々 agent-routing パッケージが所有していたが、codex-suggestions /
+    antigravity-suggestions など agent-routing に依存しないパッケージからも
+    利用するため core に引き上げた。route_config.is_cli_enabled はここからの
+    re-export として後方互換を維持する。
+    """
+    section = config.get(cli_name, {})
+    if not isinstance(section, dict):
+        return True
+    return bool(section.get("enabled", True))
+
+
 def read_hook_input() -> dict:
     """stdin から JSON を読み取って dict を返す。"""
     try:

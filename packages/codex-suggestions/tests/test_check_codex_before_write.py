@@ -1,9 +1,34 @@
-from tests.module_loader import load_module
+import sys
+
+from tests.module_loader import REPO_ROOT, load_module
 
 check_codex_before_write = load_module(
     "check_codex_before_write",
     "packages/codex-suggestions/hooks/check-codex-before-write.py",
 )
+
+
+def test_imports_without_agent_routing_hooks_on_path() -> None:
+    """agent-routing の hooks ディレクトリが sys.path に無くても import できる。
+
+    manifest.json の depends は ["core"] のみであり、is_cli_enabled は
+    hook_common（core）から直接 import するため agent-routing への暗黙依存が
+    無いことを保証する回帰テスト。
+    """
+    routing_hooks_dir = str(REPO_ROOT / "packages" / "agent-routing" / "hooks")
+    removed_paths = [p for p in sys.path if p == routing_hooks_dir]
+    for path in removed_paths:
+        sys.path.remove(path)
+    sys.modules.pop("route_config", None)
+    try:
+        assert routing_hooks_dir not in sys.path
+        module = load_module(
+            "check_codex_before_write_no_routing_dep",
+            "packages/codex-suggestions/hooks/check-codex-before-write.py",
+        )
+        assert hasattr(module, "is_cli_enabled")
+    finally:
+        sys.path.extend(removed_paths)
 
 
 def test_validate_input_accepts_reasonable_values() -> None:

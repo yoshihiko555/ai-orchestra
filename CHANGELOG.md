@@ -33,6 +33,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **hook 判定精度と依存整理（agent-routing / codex-suggestions / antigravity-suggestions、全パッケージレビュー指摘対応）**
+  - **`is_cli_enabled` を core へ引き上げ**: codex-suggestions / antigravity-suggestions が agent-routing 所有の `route_config` へ try/except 外のトップレベル import で依存し、agent-routing 未導入構成で hook がハードクラッシュしていた問題を修正。`hook_common.is_cli_enabled` に移動し（route_config は再エクスポートで後方互換）、manifest の `depends: ["core"]` と実態を一致させた
+  - **agent-routing の単語境界マッチ化**: `"ui" in "quick"`、`"test" in "latest"` 等の部分文字列誤検知で UserPromptSubmit のほぼ毎回誤ルーティング提案が注入されていた問題を修正。英語トリガーは `\b` 境界の正規表現（コンパイルキャッシュ付き）、日本語トリガーは従来の部分一致を維持
+  - **codex-suggestions の誤抑制修正**: `str(tool_response)` への "error"/"failed" 部分一致で「エラーハンドリング設計」を含む正常な plan の提案が抑制されていた問題を、構造化フィールド（`is_error` / `error`）のみの判定へ変更
+  - **antigravity-suggestions の "version" 過剰抑制修正**: 研究シグナル（RESEARCH_INDICATORS）を抑制パターンより優先する順序に変更し、`"version"` は `"latest version"` / `"what version"` の具体的フレーズへ置き換え
+  - **日本語隣接 ASCII トリガーの回帰修正（PR #111 レビュー対応）**: `\b` 単語境界マッチは Python が日本語文字を単語文字として扱うため `ReactのUIを実装して` の `UI` 等が境界なしと判定されマッチしなくなっていた。ASCII 限定 lookaround（`(?<![A-Za-z0-9_])...(?![A-Za-z0-9_])`）へ変更し、日本語隣接 ASCII を検出しつつ `quick` の `ui` 等の誤検知防止は維持
 - **`packages/fail-logs` / `packages/reverse`: 書き込み側パストラバーサル防御とドキュメント整合（全パッケージレビュー指摘対応）**
   - **fail-logs 書き込み側のパストラバーサル防御**: 読み込み側（`inject-failure-summary.py`）には realpath 検証があるのに、書き込み側（`capture-failures.py`）は `logs_dir` config 値を無検証で結合しており、`.local.yaml` の `logs_dir: ../../..` でプロジェクト外に書き込めた非対称を修正。共通関数 `hook_common.resolve_path_within()` を新設して両 hook から使用し、project_dir 外を指す場合は `DEFAULT_LOGS_DIR` へフォールバック（失敗記録を黙って捨てない）
   - **reverse README の Antigravity 表記更新**: 実装・配布先 SKILL.md は agy / `antigravity.enabled` へ完全移行済みなのに README だけ旧 Gemini 表記（`gemini.enabled` 等）のままで、設定が効かないと誤解を招く状態を修正（旧設定の読み替え互換の注記も追加）
