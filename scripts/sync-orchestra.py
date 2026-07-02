@@ -33,6 +33,7 @@ from lib.scaffold import ensure_claude_scaffold, sync_claudeignore  # noqa: E402
 from lib.sync_engine import (  # noqa: E402
     build_facets,
     collect_facet_managed_paths,
+    collect_managed_agent_stems,
     remove_stale_files,
     sync_hooks,
     sync_packages,
@@ -135,8 +136,9 @@ def main() -> None:
     prev_synced = orch.get("synced_files", [])
     removed_count = remove_stale_files(claude_dir, prev_synced, synced_files, facet_managed)
 
-    # サブエージェント model パッチ
-    patched_count = patch_all_agents(project_dir)
+    # サブエージェント model パッチ（インストール済みパッケージ宣言分のみ）
+    managed_agent_stems = collect_managed_agent_stems(orchestra_path, installed_packages)
+    patched_count = patch_all_agents(project_dir, managed_agent_stems)
 
     # orchestra.json を更新
     prev_set = set(prev_synced)

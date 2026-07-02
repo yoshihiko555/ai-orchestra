@@ -104,8 +104,13 @@ def patch_agent_model(file_path: Path, model: str) -> bool:
     return True
 
 
-def patch_all_agents(project_dir: Path) -> int:
-    """全エージェント .md の model をパッチし、変更数を返す。"""
+def patch_all_agents(project_dir: Path, managed_agent_stems: set[str] | None = None) -> int:
+    """全エージェント .md の model をパッチし、変更数を返す。
+
+    managed_agent_stems を指定すると、その stem 集合に含まれるファイルのみを
+    パッチ対象にする（インストール済みパッケージが宣言していないユーザー独自
+    エージェントの model を保護する）。None の場合は全件が対象（後方互換）。
+    """
     cli_tools_config = load_cli_tools_config(project_dir)
     agents_dir = project_dir / ".claude" / "agents"
     if not agents_dir.is_dir():
@@ -113,6 +118,8 @@ def patch_all_agents(project_dir: Path) -> int:
 
     patched_count = 0
     for agent_file in sorted(agents_dir.glob("*.md")):
+        if managed_agent_stems is not None and agent_file.stem not in managed_agent_stems:
+            continue
         model = resolve_agent_model(agent_file.stem, cli_tools_config)
         if not model:
             continue
