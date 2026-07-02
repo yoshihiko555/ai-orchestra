@@ -176,9 +176,16 @@ def read_json_safe(path: str) -> dict:
 
 
 def write_json(path: str, data: dict) -> None:
-    """dict を JSON ファイルに書き出す。"""
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    """dict を JSON ファイルにアトミックに書き出す。"""
+    tmp_path = f"{path}.tmp.{os.getpid()}"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, path)
+    except Exception:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
 
 
 def append_jsonl(path: str, record: dict) -> None:

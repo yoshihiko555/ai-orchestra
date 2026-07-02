@@ -39,6 +39,32 @@ def _write_json(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data))
 
 
+class TestWriteJson:
+    def test_write_json_round_trip(self, tmp_path: Path) -> None:
+        path = tmp_path / "data.json"
+        data = {"key": "value", "nested": {"a": 1}}
+
+        hook_common.write_json(str(path), data)
+
+        assert json.loads(path.read_text(encoding="utf-8")) == data
+
+    def test_write_json_does_not_leave_tmp_file(self, tmp_path: Path) -> None:
+        path = tmp_path / "data.json"
+
+        hook_common.write_json(str(path), {"key": "value"})
+
+        leftover_tmp_files = list(path.parent.glob(f"{path.name}.tmp.*"))
+        assert leftover_tmp_files == []
+
+    def test_write_json_overwrites_existing_file(self, tmp_path: Path) -> None:
+        path = tmp_path / "data.json"
+
+        hook_common.write_json(str(path), {"key": "first"})
+        hook_common.write_json(str(path), {"key": "second"})
+
+        assert json.loads(path.read_text(encoding="utf-8")) == {"key": "second"}
+
+
 class TestLoadPackageConfig:
     def test_project_local_overrides_orchestra_base(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

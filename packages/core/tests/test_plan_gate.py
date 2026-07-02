@@ -198,6 +198,44 @@ class TestSetPlanGate:
         assert result.returncode == 0
         assert not _gate_path(tmp_path).exists()
 
+    def test_subprocess_does_not_crash_when_subagent_type_is_null(self, tmp_path: Path) -> None:
+        payload = {
+            "tool_name": "Task",
+            "tool_input": {"subagent_type": None},
+            "tool_response": "## Plan: Feature X",
+            "cwd": str(tmp_path),
+        }
+        result = _run_hook("set-plan-gate.py", payload, tmp_path)
+
+        assert result.returncode == 0
+        assert "Traceback" not in result.stderr
+        assert not _gate_path(tmp_path).exists()
+
+    def test_subprocess_does_not_crash_when_tool_input_missing(self, tmp_path: Path) -> None:
+        payload = {
+            "tool_name": "Task",
+            "tool_response": "## Plan: Feature X",
+            "cwd": str(tmp_path),
+        }
+        result = _run_hook("set-plan-gate.py", payload, tmp_path)
+
+        assert result.returncode == 0
+        assert "Traceback" not in result.stderr
+        assert not _gate_path(tmp_path).exists()
+
+    def test_subprocess_does_not_crash_when_tool_input_is_null(self, tmp_path: Path) -> None:
+        payload = {
+            "tool_name": "Task",
+            "tool_input": None,
+            "tool_response": "## Plan: Feature X",
+            "cwd": str(tmp_path),
+        }
+        result = _run_hook("set-plan-gate.py", payload, tmp_path)
+
+        assert result.returncode == 0
+        assert "Traceback" not in result.stderr
+        assert not _gate_path(tmp_path).exists()
+
 
 class TestCheckPlanGate:
     def test_implementation_agents_contains_expected_set(self) -> None:
@@ -275,6 +313,41 @@ class TestCheckPlanGate:
         assert result.returncode == 0
         assert not result.stdout.strip()
         assert not result.stderr.strip()
+
+    def test_subprocess_does_not_crash_when_subagent_type_is_null(self, tmp_path: Path) -> None:
+        _write_gate_file(tmp_path, pending=True, agent="planner")
+        payload = {
+            "tool_name": "Task",
+            "tool_input": {"subagent_type": None},
+            "cwd": str(tmp_path),
+        }
+        result = _run_hook("check-plan-gate.py", payload, tmp_path)
+
+        assert result.returncode == 0
+        assert "Traceback" not in result.stderr
+
+    def test_subprocess_does_not_crash_when_tool_input_missing(self, tmp_path: Path) -> None:
+        _write_gate_file(tmp_path, pending=True, agent="planner")
+        payload = {
+            "tool_name": "Task",
+            "cwd": str(tmp_path),
+        }
+        result = _run_hook("check-plan-gate.py", payload, tmp_path)
+
+        assert result.returncode == 0
+        assert "Traceback" not in result.stderr
+
+    def test_subprocess_does_not_crash_when_tool_input_is_null(self, tmp_path: Path) -> None:
+        _write_gate_file(tmp_path, pending=True, agent="planner")
+        payload = {
+            "tool_name": "Task",
+            "tool_input": None,
+            "cwd": str(tmp_path),
+        }
+        result = _run_hook("check-plan-gate.py", payload, tmp_path)
+
+        assert result.returncode == 0
+        assert "Traceback" not in result.stderr
 
 
 class TestClearPlanGate:
