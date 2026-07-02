@@ -237,3 +237,38 @@ def test_empty_input_is_noop(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr("sys.stdin", io.StringIO(""))
     capture.main()
     assert _read_log(project) == []
+
+
+def test_traversal_logs_dir_falls_back_to_default(monkeypatch, tmp_path) -> None:
+    """logs_dir が project_dir 外を指す設定でも、デフォルトの場所へ安全に書き込む。"""
+    project = _make_project(tmp_path)
+    config_dir = project / ".claude" / "config" / "fail-logs"
+    config_dir.mkdir(parents=True)
+    (config_dir / "fail-logs.local.yaml").write_text("logs_dir: '../../../tmp/evil'\n")
+
+    _run_hook(
+        monkeypatch,
+        project,
+        {
+            "cwd": str(project),
+            "session_id": "sess-traversal",
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls /nope"},
+            "tool_response": {"exit_code": 2, "stdout": "no such file"},
+        },
+    )
+
+    # デフォルトの場所（project 配下）に記録される
+    records = _read_log(project)
+    assert len(records) == 1
+    assert records[0]["data"]["failure_type"] == "tool_error"
+
+    # project_dir の外（tmp_path の外側）には failures.jsonl が作られない
+    default_log_path = project / ".claude" / "logs" / "fail-logs" / "failures.jsonl"
+    jsonl_files = [
+        Path(root) / f
+        for root, _dirs, files in os.walk(tmp_path)
+        for f in files
+        if f == "failures.jsonl"
+    ]
+    assert jsonl_files == [default_log_path]

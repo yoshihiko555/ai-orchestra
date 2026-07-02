@@ -108,13 +108,19 @@ def write_graph_jsonl(result: ScanResult, output_path: Path) -> None:
 
 
 def _git_output(root: Path, args: list[str]) -> str | None:
-    """git コマンドを実行し stdout を返す。失敗時は None。"""
+    """git コマンドを実行し stdout を返す。失敗時は None。
+
+    非 ASCII パス（日本語ファイル名等）を正しく扱うため、デコードは明示的に
+    UTF-8 を指定する（未指定だと locale 依存の `getpreferredencoding()` になり、
+    環境によっては非 ASCII パスのデコードに失敗し得るため）。
+    """
     try:
         completed = subprocess.run(
             ["git", *args],
             cwd=root,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=False,
         )
     except OSError:
@@ -364,30 +370,54 @@ class ImpactResult:
 
 
 def diff_changed_paths(root: Path, ref: str) -> tuple[set[str], set[str]]:
-    """``git diff --name-status <ref>`` から変更パスと削除パスを返す。
+    """``git diff --name-status -z <ref>`` から変更パスと削除パスを返す。
 
     返り値は (changed, deleted)。rename は旧パスを deleted・新パスを changed に振る。
+    copy は新パスのみ changed に加える（旧パスは変更されていないため changed/deleted
+    いずれにも入れない）。
+
+    ``-z`` を付けず改行区切りでパースすると、``core.quotePath``（既定 true）により
+    非 ASCII パス（日本語ファイル名等）が ``"docs/\\346\\227\\245..."`` のように
+    quote + 8進エスケープされ、``path_to_id`` との突合に失敗して検出漏れになる。
+    ``-z`` は quotePath の影響を受けず NUL 区切りで raw パスを返すため、これを避ける。
+    NUL 区切りの各レコードは、R/C（rename/copy）ステータスのみ
+    ``status\\0old_path\\0new_path`` の3フィールド、それ以外は ``status\\0path`` の
+    2フィールドになる。
+
     パスはリポジトリルート相対の posix。``--root`` が git ルートと一致する前提
     （drift 検査と同じ運用、設計 4.5 H-3 と整合）。
     """
-    out = _git_output(root, ["diff", "--name-status", ref])
+    out = _git_output(root, ["diff", "--name-status", "-z", ref])
     if out is None:
         msg = f"git diff --name-status {ref!r} に失敗しました（無効な ref または git 実行エラー）"
         raise ImpactError(msg)
     changed: set[str] = set()
     deleted: set[str] = set()
-    for line in out.splitlines():
-        parts = line.split("\t")
-        if len(parts) < 2:
-            continue
-        status = parts[0]
-        if status.startswith("R") and len(parts) >= 3:
-            deleted.add(parts[1])
-            changed.add(parts[2])
+    tokens = out.split("\0")
+    index = 0
+    while index < len(tokens):
+        status = tokens[index]
+        index += 1
+        if not status:
+            continue  # 末尾の NUL による空トークン
+        if status.startswith(("R", "C")):
+            if index + 1 >= len(tokens):
+                break  # 出力が途中で切れている（想定外）
+            old_path, new_path = tokens[index], tokens[index + 1]
+            index += 2
+            if status.startswith("R"):
+                deleted.add(old_path)
+            changed.add(new_path)
         elif status.startswith("D"):
-            deleted.add(parts[1])
+            if index >= len(tokens):
+                break
+            deleted.add(tokens[index])
+            index += 1
         else:
-            changed.add(parts[1])
+            if index >= len(tokens):
+                break
+            changed.add(tokens[index])
+            index += 1
     return changed, deleted
 
 

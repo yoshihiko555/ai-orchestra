@@ -33,6 +33,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+<<<<<<< fix/audit-route-accuracy
 - **`packages/audit`: ルーティング適合率メトリクスの修復と秘密情報マスキングの統一（全パッケージレビュー指摘対応）**: Antigravity（agy）移行後に壊れていた監査機能を修復
   - **エイリアスマージの union 化（Critical）**: `delegation-policy.json` の `aliases` が `cli-tools.yaml` 由来のエイリアスを丸ごと上書きし、`claude-direct` ルーティングの Task 呼び出しが常に `matched=False` に誤記録されていた問題を修正。キーごとに順序保持・重複排除で union する
   - **`detect_route()` の agy 検出追加（Critical）**: codex / gemini のみでルート一致判定から agy が漏れていた問題を修正。単語境界付き正規表現で `bash:agy` を検出し、判定順は `audit-cli.py` と統一（codex → agy → gemini）
@@ -41,6 +42,46 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - **PEM 秘密鍵をブロック全体マスク（PR #108 レビュー対応 / P1）**: PEM パターンが BEGIN 行のみにマッチし鍵本文（base64）と END 行がログに残っていた問題を修正。`-----BEGIN ... PRIVATE KEY-----.*?-----END ... PRIVATE KEY-----`（`re.DOTALL`）でブロック全体を 1 マッチ redact
   - **`detect_route()` を実行ファイル分類へ変更（PR #108 レビュー対応）**: プロンプト本文の "codex"/"agy" 文字列で判定していたため `agy -p 'compare with codex'` が `bash:codex` に誤分類されていた。`_detect_cli_executable()` を新設し、コマンドを `&& || ; |` でセグメント分割して各先頭トークン（env 代入は読み飛ばし）の basename で実行ファイルを判定。プロンプト引数の文字列は分類根拠にしない
   - **テストの秘密情報リテラル分割（CI 対応）**: GitGuardian / Betterleaks が検出していたテスト内の Bearer token / PEM 直書きを文字列連結に分割（実行時の値は不変）
+=======
+- **`packages/cocoindex`: proxy プロセス管理と設定ファイル書き込みの安全性を強化（全パッケージレビュー指摘対応）**: 無関係プロセスの誤 kill と他ツール設定の破壊を防止
+  - **ポート占有 PID の同一性検証（Critical）**: `start_proxy` / `stop_proxy` / `cleanup_orphan` がポートから見つけた PID を無検証で採用・SIGTERM/SIGKILL していた問題を修正。`ps -o command=` で `mcp-proxy` / `proxy_supervisor` のプロセスであることを検証し、検証失敗時は採用せず（start は `proxy_state=failed` + 理由記録）、kill せずクリーンアップのみ行う
+  - **破損 JSON の無警告上書き防止**: 構文エラーのある `.mcp.json` / `.gemini/settings.json` を「空」とみなしてユーザーの手動編集ごと上書きしていた問題を修正。非空でパース不能な場合は stderr 警告を出して提供・削除をスキップ
+  - **TOML エスケープ**: `.codex/config.toml` 生成時に `command` / `url` の `"` `\` をエスケープし、想定外の値でファイル全体が壊れる問題を修正
+  - **proxy 恒久失敗時の stdio フォールバック**: `proxy_state == "failed"` の場合に SSE/HTTP エントリを書き続けて cocoindex-code が使用不能のままになる問題を修正。stdio エントリへフォールバックし "falling back to stdio" を出力（同一 tick 内の自動再起動はしない）
+  - **transient failure の永続降格を回避（PR #107 レビュー対応）**: 上記フォールバックが、一時的な起動失敗（ポート衝突・ランチャー不調）でも `failed` 状態を永続化させ、ポートが空いても stdio へ恒久降格したまま再起動されない問題を修正。`failed` かつ**ポートが空いている**場合は stdio に落とさず後続の `start_proxy_background()` による再起動を許し、**ポートを他プロセスが占有している場合のみ** stdio フォールバック（従来の PID 同一性検証による「無関係プロセスを kill しない」安全性は維持）
+  - **テストのモジュールロード衝突を解消**: `tests/module_loader.load_module` が呼び出しごとに新しいモジュールを `sys.modules["proxy_manager"]` へ登録するため、`tests/unit/test_proxy_manager.py` との併走時に文字列指定 `@patch("proxy_manager.xxx")` が別オブジェクトを patch して 16 件が収集順依存で失敗していた。package テストに autouse fixture を追加し、各テスト直前に本ファイルの proxy_mgr へ再バインドして収集順に依存しないようにした
+- **hook 判定精度と依存整理（agent-routing / codex-suggestions / antigravity-suggestions、全パッケージレビュー指摘対応）**
+  - **`is_cli_enabled` を core へ引き上げ**: codex-suggestions / antigravity-suggestions が agent-routing 所有の `route_config` へ try/except 外のトップレベル import で依存し、agent-routing 未導入構成で hook がハードクラッシュしていた問題を修正。`hook_common.is_cli_enabled` に移動し（route_config は再エクスポートで後方互換）、manifest の `depends: ["core"]` と実態を一致させた
+  - **agent-routing の単語境界マッチ化**: `"ui" in "quick"`、`"test" in "latest"` 等の部分文字列誤検知で UserPromptSubmit のほぼ毎回誤ルーティング提案が注入されていた問題を修正。英語トリガーは `\b` 境界の正規表現（コンパイルキャッシュ付き）、日本語トリガーは従来の部分一致を維持
+  - **codex-suggestions の誤抑制修正**: `str(tool_response)` への "error"/"failed" 部分一致で「エラーハンドリング設計」を含む正常な plan の提案が抑制されていた問題を、構造化フィールド（`is_error` / `error`）のみの判定へ変更
+  - **antigravity-suggestions の "version" 過剰抑制修正**: 研究シグナル（RESEARCH_INDICATORS）を抑制パターンより優先する順序に変更し、`"version"` は `"latest version"` / `"what version"` の具体的フレーズへ置き換え
+  - **日本語隣接 ASCII トリガーの回帰修正（PR #111 レビュー対応）**: `\b` 単語境界マッチは Python が日本語文字を単語文字として扱うため `ReactのUIを実装して` の `UI` 等が境界なしと判定されマッチしなくなっていた。ASCII 限定 lookaround（`(?<![A-Za-z0-9_])...(?![A-Za-z0-9_])`）へ変更し、日本語隣接 ASCII を検出しつつ `quick` の `ui` 等の誤検知防止は維持
+- **`packages/fail-logs` / `packages/reverse`: 書き込み側パストラバーサル防御とドキュメント整合（全パッケージレビュー指摘対応）**
+  - **fail-logs 書き込み側のパストラバーサル防御**: 読み込み側（`inject-failure-summary.py`）には realpath 検証があるのに、書き込み側（`capture-failures.py`）は `logs_dir` config 値を無検証で結合しており、`.local.yaml` の `logs_dir: ../../..` でプロジェクト外に書き込めた非対称を修正。共通関数 `hook_common.resolve_path_within()` を新設して両 hook から使用し、project_dir 外を指す場合は `DEFAULT_LOGS_DIR` へフォールバック（失敗記録を黙って捨てない）
+  - **reverse README の Antigravity 表記更新**: 実装・配布先 SKILL.md は agy / `antigravity.enabled` へ完全移行済みなのに README だけ旧 Gemini 表記（`gemini.enabled` 等）のままで、設定が効かないと誤解を招く状態を修正（旧設定の読み替え互換の注記も追加）
+  - **reverse の manifest depends 宣言**: `depends: []` を実態（cli-tools.yaml と general-purpose / code-reviewer / security-reviewer エージェントへの依存）に合わせ `["core", "agent-routing"]` へ修正
+  - **読み側の実効パスフォールバック（PR #114 レビュー対応）**: 書き込み側は無効な `logs_dir` を `DEFAULT_LOGS_DIR` へ退避するのに、読み側（`inject-failure-summary.py`）は設定パスのみ解決して無効なら return していたため、退避された失敗が再発サマリーに載らず学習ループが無効化されていた。読み側にも同じデフォルトフォールバックを適用し両 hook の実効パスを一致させた
+- **`packages/codd`: validate の無音化防止と非 ASCII ファイル名対応（全パッケージレビュー指摘対応）**
+  - **`checks:` の語彙バリデーション**: 検査レベルに typo（例: `dangling: eror`）があると Finding が error / warning のどちらにも集計されず validate が出力ゼロ・exit 0 になり、CI ゲートがサイレント無効化されていた問題を修正。`normalize_check_level` が `{error, warning, off}` 以外を `ValueError` で拒否する（YAML 1.1 の bare `off` → False 読み替えは維持）
+  - **`git diff --name-status -z` への切り替え**: `core.quotePath=true`（デフォルト）で日本語等の非 ASCII ファイル名が 8 進エスケープされ、impact の変更検出から漏れる（silent false negative）問題を修正。NUL 区切りパースで R（rename）/ C（copy）/ D も正しく処理し、C のコピー元を changed に誤算入していた挙動も併せて解消。`_git_output` に `encoding="utf-8"` を明示
+- **`packages/quality-gates`: 共有状態のプロジェクトスコープ化と設定判定の一元化（全パッケージレビュー指摘対応）**
+  - **/tmp 状態ファイルのプロジェクトスコープ化**: `test-gate-checker` / `post-test-analysis` / `post-implementation-review` が固定パス `/tmp/claude-*-state.json` を共有し、複数プロジェクト並行時に編集件数・テスト結果が相互汚染して閾値判定が誤る問題（Issue #83 と同系統）を修正。`test-tampering-detector` と同じ `get_project_state_key()`（git-common-dir 優先）でプロジェクトごとにネストする形式へ変更し、共有ヘルパー `hooks/quality_gate_config.py` を新設（manifest 宣言済み）。同一リポジトリの worktree 間は tampering-detector と同様に意図的に状態を共有する
+  - **`quality_gate.enabled` デフォルトの一元化**: `test-gate-checker.py`（False）と `post-test-analysis.py`（True）で真逆だったデフォルトを、ベース config（`enabled: true`）と対称な True に統一（`QUALITY_GATE_ENABLED_DEFAULT` を共有モジュールに定義）
+  - **`review_suggested` のリセット経路追加**: 一度提案すると二度と提案されなかった `post-implementation-review` に TTL（24 時間、定数化）による再アームと、提案時のカウンタリセットを追加。7 フック中唯一テストが無かった同 hook に初のテスト（閾値・TTL・プロジェクト分離・main() E2E）を新設
+  - **状態更新のロック + アトミック書き込み（PR #112 レビュー対応）**: プロジェクトスコープ状態の read-modify-write がロックなし・非アトミックで、並行 worktree/セッションで lost update や書き込み中断による JSON 破損（全プロジェクト分喪失）が起きうる問題を修正。単一トランザクション API `update_project_scoped_state()` を新設し、`fcntl.flock` による排他区間で read → mutate → write（tmp + `os.replace`）を実行して TOCTOU を構造的に排除（`context_store.py` の既存 flock パターンを踏襲）。`post-implementation-review` の更新もこの API 経由に統一
+  - **`DEFAULT_TEST_GATE_STATE` の重複解消（PR #112 レビュー対応）**: 同一の共有状態ファイルを使う `test-gate-checker` / `post-test-analysis` が独自に持っていたデフォルト状態辞書を `quality_gate_config.py` に集約し、両 hook から import してスキーマドリフトを防止
+- **`packages/core`: `write_json` のアトミック化と plan-gate のフェイルオープン修正（全パッケージレビュー指摘対応）**: hook の並列実行・タイムアウト kill に対する書き込み安全性を改善
+  - **`write_json` アトミック化**: `open(path, "w")` の直接上書きを「一時ファイル書き込み → `os.replace()`」へ変更。書き込み途中に他 hook が読んで不完全 JSON を掴む競合（`working-context.json` / `plan-gate.json`）と、SessionStart の 15 秒タイムアウト kill による `.mcp.json` 等の破損（cocoindex の provision も本関数を使用）を防止。例外時は一時ファイルを削除して再送出。既存ファイルのパーミッション（例: mode 0600 の `.mcp.json`）は `os.replace` で失われないよう一時ファイルへ複製してから置換する
+  - **plan-gate の `subagent_type: null` フェイルオープン修正**: `tool_input.get("subagent_type", "").lower()` は値が `null` のとき `None.lower()` で例外になり、`@safe_hook_execution` が握りつぶして「ブロックすべき実装エージェント呼び出しが素通り」していた。plan-gate 系 3 hook（check/set/clear）の stdin 読みを `hook_common.read_hook_input()` に、フィールド取得を None 安全な `get_field()` に統一
+  - **入力バリデーションの底上げ（PR #106 レビュー対応）**: `read_hook_input()` はトップレベル JSON が dict でない（list / string 等）場合に `{}` を返すよう正規化し、`data.get(...)` での例外による同種のフェイルオープンを全 hook で防止。`get_field()` は非文字列 truthy 値（整数等）を `str` 化して後続の `.lower()` クラッシュを回避
+  - 回帰テスト追加: `subagent_type: null` / 非文字列 / `tool_input` 欠落・null / トップレベル非 dict、`write_json` のラウンドトリップ・一時ファイル非残存・パーミッション保持・`os.replace` 失敗時クリーンアップ
+- **`packages/tmux-monitor`: シェルインジェクション修正と hook ハング・リソースリーク対策（全パッケージレビュー指摘対応）**
+  - **ディレクトリ名経由のシェルコマンドインジェクション（Critical）**: `project_name`（`basename(cwd)`）を tmux が `$SHELL -c` で実行する文字列へ無エスケープ埋め込みしていた 2 箇所（respawn-pane / new-session）を修正。`shell_quote()` を `tmux_common.py` へ共通化し、`build_wait_cmd()` 抽出で動的値のみエスケープ（`$(date)` の意図的展開は維持）
+  - **`run_tmux()` / `ps` への timeout 追加**: 同期 hook から呼ばれる subprocess に timeout（5 秒）が無く、tmux/ps ハングが Claude Code 全操作のブロックに直結していた問題を修正。`TimeoutExpired` は非ゼロ returncode の疑似結果へフォールバック
+  - **孤児クリーンアップの整合**: PID 検出失敗時のフォールバックキー（16 進）のセッション・info ファイルが `isdigit()` 判定に合わず永久残留していた問題と、削除対象が 3 拡張子のみで `.shared-dir` / `.task-queue` と shared-dir 実体（`/tmp/claude-shared-*`）が異常終了時に永続リークしていた問題を修正。session-end と同じ 5 拡張子 + 実体削除に統一（`remove_session_files()` 共通化）
+  - **`tmux-subagent-start.py` の `main()` 分割**: 約 150 行・ネスト 4-5 段を責務ごとの 5 関数へ純粋抽出（挙動不変、回帰テスト付き）
+  - **フォールバッククリーンアップの誤削除防止（PR #109 レビュー対応）**: フォールバックキーのクリーンアップ判定が current `project_name` から tmux セッション名を再構成していたため、後続プロジェクトの起動時に別プロジェクトのフォールバックセッション（`.tmux-session` / `.shared-dir` / キュー）を誤削除しうる問題を修正。記録された `.tmux-session` の実名で生存判定し、現在の prefix で始まらない他プロジェクトの session info には触れない
+>>>>>>> main
 - **配布基盤: ユーザー編集ファイルの保護（全パッケージレビュー指摘対応）**: 配布時 SHA-256 ハッシュを `orchestra.json`（`file_hashes`）に記録し、変更検知で破壊的操作を防止
   - **`uninstall` の無条件削除防止（Critical）**: config / agents ファイルを diff 確認なしで `unlink()` していた問題を修正。削除前にハッシュ比較し、ユーザー編集済み・ハッシュ未記録（旧 install 由来）は警告してスキップ（安全側）。dry-run でも同じ判定を表示
   - **`install` 再実行の無条件上書き防止**: `run_initial_sync()` に `sync_engine.needs_sync()` ゲートを追加し SessionStart 側の同期と挙動を一致。ユーザー変更が静かに消える問題を解消

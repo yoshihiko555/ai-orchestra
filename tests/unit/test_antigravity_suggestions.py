@@ -75,9 +75,16 @@ class TestShouldSuggestAntigravity:
         assert result is False
 
     def test_simple_lookup_in_url(self):
-        """URL に simple lookup pattern がある場合はスキップ。"""
+        """URL に simple lookup pattern がある場合はスキップ。
+
+        注意: ホスト名に "example" を含めると RESEARCH_INDICATORS の
+        "example" に意図せずマッチしてしまう（Fix 4 で research indicator を
+        simple lookup より優先するよう変更したため）。この test の意図は
+        純粋な simple lookup 抑制の確認なので、indicator と衝突しないホスト名
+        （他テストと同様の "acme.test"）を使う。
+        """
         result, _ = antigravity_hook.should_suggest_antigravity(
-            "check", url="https://releases.example.com/changelog"
+            "check", url="https://releases.acme.test/changelog"
         )
         assert result is False
 

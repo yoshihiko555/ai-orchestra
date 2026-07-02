@@ -13,9 +13,9 @@
 
 | Phase | 名前                              | 担当                                                                       | 成果物                             |
 | ----- | --------------------------------- | -------------------------------------------------------------------------- | ---------------------------------- |
-| 1     | 走査 (Scan)                       | Gemini + `collect-stats.py` + `find-entrypoints.py`                        | `scope.md`                         |
-| 2     | 依存グラフ (Graph)                | general-purpose 経由 Gemini + `generate-mermaid.py`                        | `dependency.md` + `dependency.mmd` |
-| 3     | 機能抽出 (Extract)                | Gemini                                                                     | `features.md`                      |
+| 1     | 走査 (Scan)                       | Antigravity + `collect-stats.py` + `find-entrypoints.py`                   | `scope.md`                         |
+| 2     | 依存グラフ (Graph)                | general-purpose 経由 Antigravity + `generate-mermaid.py`                   | `dependency.md` + `dependency.mmd` |
+| 3     | 機能抽出 (Extract)                | Antigravity                                                                | `features.md`                      |
 | 4     | ドキュメント化 (Document)         | Claude（集約）                                                             | `design.md`                        |
 | 5     | 負債/脆弱性レポート (Debt Report) | `code-reviewer` + `security-reviewer` (claude-direct) + `collect-todos.py` | `debt-report.md` (tiered-review)   |
 
@@ -45,15 +45,16 @@
 | `collect-todos.py`    | TODO/FIXME/HACK/XXX/DEPRECATED を集約（バイナリファイル自動除外）                                |
 | `generate-mermaid.py` | imports JSON を Mermaid graph 構文に変換                                                         |
 
-imports 抽出（依存関係抽出）は言語横断のため、Python スクリプトではなく instruction 内で `Task(subagent_type="general-purpose")` 経由で Gemini に委譲する。
+imports 抽出（依存関係抽出）は言語横断のため、Python スクリプトではなく instruction 内で `Task(subagent_type="general-purpose")` 経由で Antigravity に委譲する。
 
 ## CLI 連携
 
 `cli-tools.yaml` の設定に従う:
 
-- `gemini.enabled: true` の場合は Gemini 主体で大規模理解
-- `gemini.enabled: false` の場合は全フェーズ claude-direct フォールバック
+- `antigravity.enabled: true` の場合は Antigravity 主体で大規模理解
+- `antigravity.enabled: false` の場合は全フェーズ claude-direct フォールバック
 - `code-reviewer` / `security-reviewer` は `tool: claude-direct` 前提
+- 旧 `gemini.enabled: false`（`.local.yaml` 残存分）は `antigravity.enabled: false` として読み替えられる（後方互換）
 
 ## 関連スキル
 
