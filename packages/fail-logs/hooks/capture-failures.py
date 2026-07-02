@@ -36,6 +36,7 @@ import failure_detector as fd  # noqa: E402
 from hook_common import (  # noqa: E402
     load_package_config,
     read_hook_input,
+    resolve_path_within,
     safe_hook_execution,
 )
 
@@ -179,7 +180,13 @@ def main() -> None:
         },
     }
 
-    log_path = os.path.join(project_dir, logs_dir, LOG_FILE_NAME)
+    # logs_dir が project_dir 外を指す場合（設定経由のパストラバーサル）は
+    # 書き込みを黙って捨てず、安全なデフォルトへフォールバックする。
+    log_path = resolve_path_within(project_dir, logs_dir, LOG_FILE_NAME) or resolve_path_within(
+        project_dir, DEFAULT_LOGS_DIR, LOG_FILE_NAME
+    )
+    if log_path is None:
+        return
     _append_secure_jsonl(log_path, record)
 
 

@@ -155,6 +155,20 @@ def read_hook_input() -> dict:
     return result if isinstance(result, dict) else {}
 
 
+def resolve_path_within(project_dir: str, relative: str, filename: str) -> str | None:
+    """relative + filename を project_dir 配下に解決する。
+
+    config 値経由の `relative`（例: logs_dir）に `../` 等が含まれ project_dir
+    の外を指す場合は None を返す（設定経由のパストラバーサル防御）。
+    symlink による脱出も realpath 解決で検出する。
+    """
+    project_root = os.path.realpath(project_dir)
+    candidate = os.path.realpath(os.path.join(project_dir, relative, filename))
+    if candidate == project_root or candidate.startswith(project_root + os.sep):
+        return candidate
+    return None
+
+
 def get_field(data: dict, key: str) -> str:
     """dict からフィールドを取得する。存在しなければ空文字を返す。"""
     return str(data.get(key) or "")

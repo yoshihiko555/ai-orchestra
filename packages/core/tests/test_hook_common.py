@@ -152,3 +152,67 @@ class TestLoadPackageConfig:
             "mypkg", "settings.json", str(tmp_path / "project")
         )
         assert result == {"key": "base", "nested": {"a": 1}}
+
+
+# =========================================================================
+# resolve_path_within
+# =========================================================================
+
+
+class TestResolvePathWithin:
+    def test_normal_relative_path_resolves_under_project_dir(self, tmp_path: Path) -> None:
+        """通常の相対パスは project_dir 配下に解決される。"""
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+
+        result = hook_common.resolve_path_within(str(project_dir), "logs/sub", "out.jsonl")
+
+        assert result == str(project_dir / "logs" / "sub" / "out.jsonl")
+
+    def test_relative_path_with_parent_traversal_returns_none(self, tmp_path: Path) -> None:
+        """`../` で project_dir の外を指す場合は None を返す。"""
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        (tmp_path / "outside").mkdir()
+
+        result = hook_common.resolve_path_within(
+            str(project_dir), "../../../tmp/outside", "out.jsonl"
+        )
+
+        assert result is None
+
+    def test_absolute_path_outside_project_dir_returns_none(self, tmp_path: Path) -> None:
+        """絶対パスが project_dir の外を指す場合は None を返す。"""
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        outside_dir = tmp_path / "outside"
+        outside_dir.mkdir()
+
+        result = hook_common.resolve_path_within(str(project_dir), str(outside_dir), "out.jsonl")
+
+        assert result is None
+
+    def test_symlink_escaping_project_dir_returns_none(self, tmp_path: Path) -> None:
+        """project_dir 配下の symlink が外部を指す場合、realpath 解決で検出し None を返す。"""
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        outside_dir = tmp_path / "outside"
+        outside_dir.mkdir()
+
+        symlink_path = project_dir / "logs_link"
+        symlink_path.symlink_to(outside_dir, target_is_directory=True)
+
+        result = hook_common.resolve_path_within(str(project_dir), "logs_link", "out.jsonl")
+
+        assert result is None
+
+    def test_result_is_always_under_project_dir_when_not_none(self, tmp_path: Path) -> None:
+        """None でない場合、返り値は必ず project_dir 配下にある不変条件を検証する。"""
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        project_root = os.path.realpath(str(project_dir))
+
+        result = hook_common.resolve_path_within(str(project_dir), "a/b/c", "out.jsonl")
+
+        assert result is not None
+        assert result == project_root or result.startswith(project_root + os.sep)
