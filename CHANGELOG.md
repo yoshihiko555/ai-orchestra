@@ -32,6 +32,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - **fail-logs 書き込み側のパストラバーサル防御**: 読み込み側（`inject-failure-summary.py`）には realpath 検証があるのに、書き込み側（`capture-failures.py`）は `logs_dir` config 値を無検証で結合しており、`.local.yaml` の `logs_dir: ../../..` でプロジェクト外に書き込めた非対称を修正。共通関数 `hook_common.resolve_path_within()` を新設して両 hook から使用し、project_dir 外を指す場合は `DEFAULT_LOGS_DIR` へフォールバック（失敗記録を黙って捨てない）
   - **reverse README の Antigravity 表記更新**: 実装・配布先 SKILL.md は agy / `antigravity.enabled` へ完全移行済みなのに README だけ旧 Gemini 表記（`gemini.enabled` 等）のままで、設定が効かないと誤解を招く状態を修正（旧設定の読み替え互換の注記も追加）
   - **reverse の manifest depends 宣言**: `depends: []` を実態（cli-tools.yaml と general-purpose / code-reviewer / security-reviewer エージェントへの依存）に合わせ `["core", "agent-routing"]` へ修正
+  - **読み側の実効パスフォールバック（PR #114 レビュー対応）**: 書き込み側は無効な `logs_dir` を `DEFAULT_LOGS_DIR` へ退避するのに、読み側（`inject-failure-summary.py`）は設定パスのみ解決して無効なら return していたため、退避された失敗が再発サマリーに載らず学習ループが無効化されていた。読み側にも同じデフォルトフォールバックを適用し両 hook の実効パスを一致させた
 
 ## [0.2.9] - 2026-06-26
 

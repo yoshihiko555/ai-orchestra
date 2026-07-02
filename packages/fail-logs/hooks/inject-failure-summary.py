@@ -104,11 +104,16 @@ def _resolve_summary_config(config: dict) -> dict:
 def _resolve_log_path(project_dir: str, logs_dir: str) -> str | None:
     """ログパスを解決し、project_dir 配下に収まることを検証する。
 
-    `logs_dir` に `../` 等が含まれてプロジェクト外を指す場合は None を返す
-    （設定経由のパストラバーサル防御・防御的措置）。実体は hook_common
+    `logs_dir` に `../` 等が含まれてプロジェクト外を指す場合は
+    DEFAULT_LOGS_DIR へフォールバックする。capture-failures.py（書き込み側）
+    が同じ状況で DEFAULT_LOGS_DIR に書き込むため、読み側もここを見に行かないと
+    記録済みの失敗が再発サマリーから欠落してしまう（fail-logs 学習ループの
+    無効化を防ぐ・実効パスを書き込み側と一致させる）。実体は hook_common
     の共通関数に委譲する（capture-failures.py と検証ロジックを共有）。
     """
-    return resolve_path_within(project_dir, logs_dir, LOG_FILE_NAME)
+    return resolve_path_within(project_dir, logs_dir, LOG_FILE_NAME) or resolve_path_within(
+        project_dir, DEFAULT_LOGS_DIR, LOG_FILE_NAME
+    )
 
 
 def _read_tail_lines(log_path: str, max_records: int) -> list[str]:
