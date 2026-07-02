@@ -39,3 +39,4 @@ AI Orchestra プロジェクトの意思決定記録。
 | ADR-20260612-024 | Gemini CLI を Anti-Gravity CLI（agy）に完全置き換える                                   | accepted   | 2026-06-12 |
 | ADR-20260612-025 | 失敗ログ記録基盤 fail-logs の新設と失敗検知ロジックの共通化                             | accepted   | 2026-06-12 |
 | ADR-20260624-026 | CODD 整合性レイヤーの新設（思想借用・独立パッケージ・essential 化）                     | accepted   | 2026-06-24 |
+| ADR-20260630-027 | fail-logs 活用フェーズ — SessionStart で再発失敗シグネチャを注入する                    | accepted   | 2026-06-30 |

@@ -4,9 +4,10 @@
   "description": "AI の失敗イベント記録基盤（学習ループの入力。core 依存のみ）",
   "depends": ["core"],
   "hooks": {
-    "PostToolUse": ["capture-failures.py"]
+    "PostToolUse": ["capture-failures.py"],
+    "SessionStart": ["inject-failure-summary.py"]
   },
-  "files": ["hooks/capture-failures.py"],
+  "files": ["hooks/capture-failures.py", "hooks/inject-failure-summary.py"],
   "skills": [],
   "agents": [],
   "rules": [],
