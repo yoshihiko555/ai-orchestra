@@ -424,3 +424,65 @@ def test_score_run_penalty_from_raw_nonnumeric() -> None:
     # score_run が生の非数値 self_report でもクラッシュしない
     rec = {"machine": {"critical_pass_rate": 1.0}, "self_report": {"ambiguities": "x"}}
     assert se.score_run(rec) == 100.0
+
+
+# ---------------------------------------------------------------------------
+# レビュー反映（PR #105 第2ラウンド: Codex）
+# ---------------------------------------------------------------------------
+
+
+def test_coerce_bool_strict() -> None:
+    assert se._coerce_bool(True) is True
+    assert se._coerce_bool("true") is True
+    assert se._coerce_bool("false") is False  # 文字列 "false" を True にしない
+    assert se._coerce_bool("maybe") is False  # 未知文字列は安全側 False
+    assert se._coerce_bool(0) is False
+    assert se._coerce_bool(1) is True
+
+
+def test_build_metric_record_quoted_false_is_failure() -> None:
+    rec = se.build_metric_record("s", "r", {"run_id": "r", "critical": {"a": "false"}}, None)
+    assert rec["machine"]["critical_pass_rate"] == 0.0
+    assert rec["success"] is False
+
+
+def test_convergence_blocked_by_new_ambiguities() -> None:
+    cfg = {
+        "offline": {
+            "max_iterations": 10,
+            "max_cost_usd": 100,
+            "stop": {"consecutive": 2, "accuracy_delta_pt": 3, "steps_pct": 10, "time_pct": 15},
+            "guards": {"overfit_drop_pt": 15, "divergence_rounds": 3},
+        }
+    }
+    # score/steps/time は収束条件を満たすが、新規不明瞭点が残るので停止しない
+    hist = [
+        se.IterationRecord(80, 10, 1000, 80, new_ambiguities=1),
+        se.IterationRecord(81, 10.2, 1010, 81, new_ambiguities=1),
+        se.IterationRecord(82, 10.1, 1005, 82, new_ambiguities=1),
+    ]
+    assert se.evaluate_stop(hist, cfg).should_stop is False
+
+
+def test_lock_not_reclaimed_within_ttl(tmp_path) -> None:
+    import json
+    import time
+
+    p = str(tmp_path)
+    assert se.acquire_lock(p, "s") is True
+    # 死んだように見える PID でも epoch が新しければ TTL 内 → stale ではない（奪取しない）
+    with open(se.lock_path(p, "s"), "w", encoding="utf-8") as f:
+        json.dump({"pid": 2_000_000_000, "epoch": time.time(), "ts": "x"}, f)
+    assert se.acquire_lock(p, "s") is False
+
+
+def test_load_config_reads_project_override(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("AI_ORCHESTRA_DIR", os.getcwd())  # hook_common 解決用
+    cfg_dir = tmp_path / ".claude" / "config" / "skill-evolution"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "skill-evolution.yaml").write_text(
+        "trigger:\n  lessons_threshold: 3\n", encoding="utf-8"
+    )
+    cfg = se.load_config(str(tmp_path))
+    assert cfg["trigger"]["lessons_threshold"] == 3  # 上書き反映
+    assert cfg["offline"]["max_iterations"] == 10  # 未指定は DEFAULTS 保持

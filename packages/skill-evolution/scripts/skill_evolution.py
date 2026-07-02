@@ -63,23 +63,40 @@ def cmd_check_trigger(project: str, skill: str) -> int:
 def cmd_evaluate(project: str, history_path: str) -> int:
     """反復履歴 JSON に停止条件＋3ガードを適用し StopDecision を出力する。"""
     config = se.load_config(project)
-    raw = (
-        sys.stdin.read() if history_path == "-" else Path(history_path).read_text(encoding="utf-8")
-    )
-    data = json.loads(raw)
+    try:
+        raw = (
+            sys.stdin.read()
+            if history_path == "-"
+            else Path(history_path).read_text(encoding="utf-8")
+        )
+        data = json.loads(raw)
+    except OSError as e:
+        print(f"failed to read history: {e}", file=sys.stderr)
+        return 2
+    except json.JSONDecodeError as e:
+        print(f"invalid JSON: {e}", file=sys.stderr)
+        return 2
     if not isinstance(data, list):
         print("history must be a JSON array", file=sys.stderr)
         return 2
     if not all(isinstance(d, dict) for d in data):
         print("history elements must be JSON objects", file=sys.stderr)
         return 2
+
+    def _f(d: dict, key: str) -> float:
+        try:
+            return float(d.get(key) or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
     history = [
         se.IterationRecord(
-            score=float(d.get("score") or 0.0),
-            steps=float(d.get("steps") or 0.0),
-            time_ms=float(d.get("time_ms") or 0.0),
-            holdout_score=float(d.get("holdout_score") or 0.0),
-            cost_usd=float(d.get("cost_usd") or 0.0),
+            score=_f(d, "score"),
+            steps=_f(d, "steps"),
+            time_ms=_f(d, "time_ms"),
+            holdout_score=_f(d, "holdout_score"),
+            cost_usd=_f(d, "cost_usd"),
+            new_ambiguities=se._safe_int(d.get("new_ambiguities") or d.get("ambiguities")),
         )
         for d in data
     ]

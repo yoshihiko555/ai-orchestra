@@ -463,6 +463,28 @@ def _safe_int(value: object, default: int = 0) -> int:
     return default
 
 
+_TRUE_STRINGS = {"true", "1", "yes", "y", "on"}
+_FALSE_STRINGS = {"false", "0", "no", "n", "off", ""}
+
+
+def _coerce_bool(value: object) -> bool:
+    """信頼できない値を厳格に真偽化する。
+
+    `bool("false")` が True になる罠を避ける。認識できない文字列は安全側で False
+    （untrusted な自己申告で `[critical]` 未達を誤って成功にしない）。
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        s = value.strip().lower()
+        if s in _TRUE_STRINGS:
+            return True
+        return False  # _FALSE_STRINGS も未知文字列もすべて False（安全側）
+    return False
+
+
 def build_metric_record(
     skill: str,
     run_id: str,
@@ -479,7 +501,7 @@ def build_metric_record(
     if isinstance(self_report, dict):
         raw_critical = self_report.get("critical")
         if isinstance(raw_critical, dict):
-            critical = {str(k): bool(v) for k, v in raw_critical.items()}
+            critical = {str(k): _coerce_bool(v) for k, v in raw_critical.items()}
         sr_clean = {
             "ambiguities": _safe_int(self_report.get("ambiguities")),
             "discretion_fills": _safe_int(self_report.get("discretion_fills")),
@@ -655,6 +677,7 @@ class IterationRecord:
     time_ms: float  # 平均所要
     holdout_score: float = 0.0
     cost_usd: float = 0.0
+    new_ambiguities: int = 0  # この反復で新規に生じた不明瞭点（収束条件: 0 が必須）
 
 
 @dataclass
@@ -716,6 +739,10 @@ def evaluate_stop(history: list[IterationRecord], config: dict) -> StopDecision:
         time_pct = float(stop_cfg.get("time_pct") or DEFAULTS["offline"]["stop"]["time_pct"])
         converged = True
         for prev, cur in zip(window, window[1:]):
+            # 停止条件（設計 3.3）: 新規不明瞭点 0 が必須。1 つでも残れば未収束。
+            if cur.new_ambiguities != 0:
+                converged = False
+                break
             if abs(cur.score - prev.score) > acc_pt:
                 converged = False
                 break
@@ -760,24 +787,18 @@ def _read_lock(path: str) -> dict | None:
 
 
 def _is_stale(data: dict | None) -> bool:
-    """ロック内容が stale（読めない / TTL 超過 / 保持プロセス死亡）かを判定する。"""
+    """ロック内容が stale かを **TTL のみ**で判定する。
+
+    ロックは「オフライン実行セッション」を表し、`lock acquire` CLI は取得後すぐ終了する
+    （PID は短命）ため、PID 生存確認は使わない（使うと即 stale と誤判定して奪取されてしまう）。
+    保持プロセスがクラッシュしても TTL 経過で必ず解放され、恒久デッドロックにはならない。
+    """
     if data is None:
-        return True
+        return True  # 読めない/壊れたロックは stale 扱い
     epoch = data.get("epoch")
-    if isinstance(epoch, (int, float)) and time.time() - epoch > LOCK_TTL_SECONDS:
-        return True
-    pid = data.get("pid")
-    if not isinstance(pid, int) or pid <= 0:
-        return True
-    try:
-        os.kill(pid, 0)  # シグナル 0 = 生存確認のみ
-    except ProcessLookupError:
-        return True  # プロセス消滅 → stale
-    except PermissionError:
-        return False  # 別ユーザーの生存プロセス → 有効
-    except OSError:
-        return True
-    return False
+    if not isinstance(epoch, (int, float)):
+        return True  # epoch 不明は stale 扱い
+    return time.time() - epoch > LOCK_TTL_SECONDS
 
 
 def _is_stale_lock(path: str) -> bool:
