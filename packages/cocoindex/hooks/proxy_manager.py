@@ -276,21 +276,37 @@ def start_proxy(config: dict, project_dir: str) -> bool:
         )
 
         # PID ファイルが無効でもポートが使用中なら稼働中とみなす
+        # ただし、ポートを握っている PID が mcp-proxy/supervisor 自身であることを
+        # 検証してから採用する（別プロセスのポートを乗っ取らないため）
         if _is_port_in_use(proxy_cfg["host"], proxy_cfg["port"]):
-            pid_path = resolve_pid_path(config, project_dir)
             port_pid = _find_pid_by_port(proxy_cfg["port"])
-            if port_pid is not None:
+            if port_pid is not None and _looks_like_mcp_proxy(port_pid):
+                pid_path = resolve_pid_path(config, project_dir)
                 _write_pid(pid_path, port_pid)
-            else:
-                _remove_pid(pid_path)
+                update_proxy_state(
+                    project_dir,
+                    config,
+                    proxy_state="ready",
+                    pid=port_pid,
+                    last_error="",
+                )
+                return True
+
+            # 検証できなかった PID は採用しない。stale な PID ファイルも掃除しておく。
+            _remove_pid(resolve_pid_path(config, project_dir))
             update_proxy_state(
                 project_dir,
                 config,
-                proxy_state="ready",
-                pid=port_pid,
-                last_error="",
+                proxy_state="failed",
+                pid=None,
+                last_error=(
+                    f"port {proxy_cfg['port']} is occupied by an unverifiable process"
+                    f" (pid={port_pid})"
+                    if port_pid is not None
+                    else f"port {proxy_cfg['port']} is in use but owning PID could not be determined"
+                ),
             )
-            return True
+            return False
 
         cleanup_orphan(config, project_dir)
 
@@ -368,7 +384,9 @@ def stop_proxy(config: dict, project_dir: str) -> bool:
     if pid is None:
         proxy_cfg = get_proxy_config(config, project_dir)
         port_pid = _find_pid_by_port(proxy_cfg["port"])
-        if port_pid is None:
+        # ポート由来の PID は mcp-proxy/supervisor であることを検証してから使う。
+        # 検証に失敗した場合は別プロセスを kill しないよう、そのまま cleanup のみ行う。
+        if port_pid is None or not _looks_like_mcp_proxy(port_pid):
             _cleanup_child_process(project_dir)
             update_proxy_state(
                 project_dir,
@@ -472,7 +490,9 @@ def cleanup_orphan(config: dict, project_dir: str) -> None:
         _cleanup_child_process(project_dir)
         return
 
-    if _is_pid_alive(pid):
+    # PID ファイルの PID が mcp-proxy/supervisor であることを検証してから kill する。
+    # 検証に失敗した場合（PID の再利用等）は別プロセスを kill しない。
+    if _is_pid_alive(pid) and _looks_like_mcp_proxy(pid):
         try:
             os.kill(pid, signal.SIGTERM)
         except OSError:
@@ -580,6 +600,21 @@ def _find_pid_by_port(port: int) -> int | None:
         return first_pid if first_pid > 0 else None
     except (OSError, ValueError, subprocess.TimeoutExpired):
         return None
+
+
+def _looks_like_mcp_proxy(pid: int) -> bool:
+    """PID のコマンドラインが mcp-proxy / supervisor のものか検証する。"""
+    try:
+        out = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        cmdline = out.stdout.lower()
+        return "mcp-proxy" in cmdline or "proxy_supervisor" in cmdline
+    except (OSError, subprocess.TimeoutExpired):
+        return False
 
 
 def _build_proxy_command(config: dict, proxy_cfg: dict) -> list[str]:

@@ -269,16 +269,30 @@ class TestStartProxy:
         assert result is True
 
     def test_port_in_use_recovers(self, tmp_path):
-        """ポートが使用中の場合、PID を復元して True。"""
+        """ポートが使用中で所有プロセスが mcp-proxy と検証できた場合、PID を復元して True。"""
         with (
             patch.object(proxy_mgr, "is_proxy_running", return_value=False),
             patch.object(proxy_mgr, "_is_port_in_use", return_value=True),
             patch.object(proxy_mgr, "_find_pid_by_port", return_value=12345),
+            patch.object(proxy_mgr, "_looks_like_mcp_proxy", return_value=True),
             patch.object(proxy_mgr, "_write_pid") as mock_write,
         ):
             result = proxy_mgr.start_proxy({"command": "test"}, str(tmp_path))
         assert result is True
         mock_write.assert_called_once()
+
+    def test_port_in_use_by_unverified_process_fails(self, tmp_path):
+        """ポート占有プロセスが mcp-proxy と検証できない場合は乗っ取らず False。"""
+        with (
+            patch.object(proxy_mgr, "is_proxy_running", return_value=False),
+            patch.object(proxy_mgr, "_is_port_in_use", return_value=True),
+            patch.object(proxy_mgr, "_find_pid_by_port", return_value=12345),
+            patch.object(proxy_mgr, "_looks_like_mcp_proxy", return_value=False),
+            patch.object(proxy_mgr, "_write_pid") as mock_write,
+        ):
+            result = proxy_mgr.start_proxy({"command": "test"}, str(tmp_path))
+        assert result is False
+        mock_write.assert_not_called()
 
     def test_launches_supervisor(self, tmp_path):
         """起動時は raw mcp-proxy ではなく supervisor を立ち上げる。"""

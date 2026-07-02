@@ -26,6 +26,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - `$BASE` 解決失敗時は統合ブランチ（`main` / `master` / `develop` / `stage` / `staging`）上でのみブランチを作成し、それ以外は準備済み扱いでスキップ（統合ブランチでの直接作業を回避する安全側設計）
   - 編集ソースは facet `facets/instructions/issue-fix.md`。`.claude/skills/` と `.agents/skills/` の SKILL.md は facet build で再生成
 
+### Fixed
+
+- **`packages/cocoindex`: proxy プロセス管理と設定ファイル書き込みの安全性を強化（全パッケージレビュー指摘対応）**: 無関係プロセスの誤 kill と他ツール設定の破壊を防止
+  - **ポート占有 PID の同一性検証（Critical）**: `start_proxy` / `stop_proxy` / `cleanup_orphan` がポートから見つけた PID を無検証で採用・SIGTERM/SIGKILL していた問題を修正。`ps -o command=` で `mcp-proxy` / `proxy_supervisor` のプロセスであることを検証し、検証失敗時は採用せず（start は `proxy_state=failed` + 理由記録）、kill せずクリーンアップのみ行う
+  - **破損 JSON の無警告上書き防止**: 構文エラーのある `.mcp.json` / `.gemini/settings.json` を「空」とみなしてユーザーの手動編集ごと上書きしていた問題を修正。非空でパース不能な場合は stderr 警告を出して提供・削除をスキップ
+  - **TOML エスケープ**: `.codex/config.toml` 生成時に `command` / `url` の `"` `\` をエスケープし、想定外の値でファイル全体が壊れる問題を修正
+  - **proxy 恒久失敗時の stdio フォールバック**: `proxy_state == "failed"` の場合に SSE/HTTP エントリを書き続けて cocoindex-code が使用不能のままになる問題を修正。stdio エントリへフォールバックし "falling back to stdio" を出力（同一 tick 内の自動再起動はしない）
+
 ## [0.2.9] - 2026-06-26
 
 ### Fixed

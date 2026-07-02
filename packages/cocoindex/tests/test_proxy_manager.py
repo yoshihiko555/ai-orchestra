@@ -405,18 +405,23 @@ class TestStartProxy:
         result = proxy_mgr.start_proxy(SAMPLE_CONFIG, str(tmp_path))
         assert result is True
 
+    @patch("proxy_manager._looks_like_mcp_proxy", return_value=True)
+    @patch("proxy_manager._find_pid_by_port", return_value=77777)
     @patch("proxy_manager._is_port_in_use", return_value=True)
     @patch("proxy_manager.is_proxy_running", return_value=False)
     def test_port_in_use_skips_start(
         self,
         mock_running: MagicMock,
         mock_port_check: MagicMock,
+        mock_find: MagicMock,
+        mock_looks_like: MagicMock,
         tmp_path: Path,
     ) -> None:
-        """PID ファイルが無効でもポートが使用中なら True を返す。"""
+        """PID ファイルが無効でもポート所有者が mcp-proxy と検証できれば True を返す。"""
         result = proxy_mgr.start_proxy(SAMPLE_CONFIG, str(tmp_path))
         assert result is True
 
+    @patch("proxy_manager._looks_like_mcp_proxy", return_value=True)
     @patch("proxy_manager._find_pid_by_port", return_value=77777)
     @patch("proxy_manager._is_port_in_use", return_value=True)
     @patch("proxy_manager.is_proxy_running", return_value=False)
@@ -425,6 +430,7 @@ class TestStartProxy:
         mock_running: MagicMock,
         mock_port_check: MagicMock,
         mock_find: MagicMock,
+        mock_looks_like: MagicMock,
         tmp_path: Path,
     ) -> None:
         """ポート使用中で早期リターンする際に実プロセスの PID が復元される。"""
@@ -447,14 +453,37 @@ class TestStartProxy:
         mock_find: MagicMock,
         tmp_path: Path,
     ) -> None:
-        """lsof で PID を取得できない場合は stale PID ファイルを削除する。"""
+        """lsof で PID を取得できない場合は stale PID ファイルを削除し failed とする。"""
         pid_path = os.path.join(str(tmp_path), ".claude", ".mcp-proxy.pid")
         os.makedirs(os.path.dirname(pid_path), exist_ok=True)
         proxy_mgr._write_pid(pid_path, 99999)
 
         result = proxy_mgr.start_proxy(SAMPLE_CONFIG, str(tmp_path))
-        assert result is True
+        assert result is False
         assert proxy_mgr._read_pid(pid_path) is None
+
+    @patch("proxy_manager._looks_like_mcp_proxy", return_value=False)
+    @patch("proxy_manager._find_pid_by_port", return_value=66666)
+    @patch("proxy_manager._is_port_in_use", return_value=True)
+    @patch("proxy_manager.is_proxy_running", return_value=False)
+    def test_port_in_use_by_unverified_process_does_not_hijack(
+        self,
+        mock_running: MagicMock,
+        mock_port_check: MagicMock,
+        mock_find: MagicMock,
+        mock_looks_like: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """ポートを別プロセスが握っている場合は PID を採用せず failed を返す。"""
+        pid_path = os.path.join(str(tmp_path), ".claude", ".mcp-proxy.pid")
+
+        result = proxy_mgr.start_proxy(SAMPLE_CONFIG, str(tmp_path))
+        assert result is False
+        assert proxy_mgr._read_pid(pid_path) is None
+
+        state = proxy_mgr.read_proxy_state(str(tmp_path))
+        assert state["proxy_state"] == "failed"
+        assert state["pid"] is None
 
     @patch("proxy_manager.os.kill")
     @patch("proxy_manager._wait_for_port", return_value=False)
@@ -569,22 +598,39 @@ class TestStopProxy:
     @patch("proxy_manager._wait_for_exit", return_value=True)
     @patch("proxy_manager.os.kill")
     @patch("proxy_manager._is_pid_alive", return_value=True)
+    @patch("proxy_manager._looks_like_mcp_proxy", return_value=True)
     @patch("proxy_manager._find_pid_by_port", return_value=77777)
     def test_stop_via_port_fallback(
         self,
         mock_find: MagicMock,
+        mock_looks_like: MagicMock,
         mock_alive: MagicMock,
         mock_kill: MagicMock,
         mock_wait: MagicMock,
         tmp_path: Path,
     ) -> None:
-        """PID ファイルなしでもポートから PID を発見して停止できる。"""
+        """PID ファイルなしでもポートから検証済み PID を発見して停止できる。"""
         result = proxy_mgr.stop_proxy(SAMPLE_CONFIG, str(tmp_path))
         assert result is True
         # ポートから発見した PID に SIGTERM が送られている
         import signal
 
         mock_kill.assert_any_call(77777, signal.SIGTERM)
+
+    @patch("proxy_manager.os.kill")
+    @patch("proxy_manager._looks_like_mcp_proxy", return_value=False)
+    @patch("proxy_manager._find_pid_by_port", return_value=77777)
+    def test_stop_via_port_fallback_skips_unverified_pid(
+        self,
+        mock_find: MagicMock,
+        mock_looks_like: MagicMock,
+        mock_kill: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """ポートの PID が mcp-proxy と検証できない場合は kill しない。"""
+        result = proxy_mgr.stop_proxy(SAMPLE_CONFIG, str(tmp_path))
+        assert result is True
+        mock_kill.assert_not_called()
 
     @patch("proxy_manager._is_pid_alive", return_value=False)
     def test_removes_stale_pid(self, mock_alive: MagicMock, tmp_path: Path) -> None:
@@ -672,6 +718,43 @@ class TestFindPidByPort:
 
 
 # =========================================================================
+# _looks_like_mcp_proxy
+# =========================================================================
+
+
+class TestLooksLikeMcpProxy:
+    @patch("proxy_manager.subprocess.run")
+    def test_matches_mcp_proxy_command(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="mcp-proxy --pass-environment --host 127.0.0.1 --port 8792\n"
+        )
+        assert proxy_mgr._looks_like_mcp_proxy(12345) is True
+
+    @patch("proxy_manager.subprocess.run")
+    def test_matches_supervisor_command(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="python3 /path/to/proxy_supervisor.py /some/project\n"
+        )
+        assert proxy_mgr._looks_like_mcp_proxy(12345) is True
+
+    @patch("proxy_manager.subprocess.run")
+    def test_rejects_unrelated_command(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(returncode=0, stdout="/usr/bin/some-other-daemon\n")
+        assert proxy_mgr._looks_like_mcp_proxy(12345) is False
+
+    @patch("proxy_manager.subprocess.run", side_effect=OSError)
+    def test_returns_false_on_os_error(self, mock_run: MagicMock) -> None:
+        assert proxy_mgr._looks_like_mcp_proxy(12345) is False
+
+    @patch(
+        "proxy_manager.subprocess.run",
+        side_effect=proxy_mgr.subprocess.TimeoutExpired(cmd="ps", timeout=2),
+    )
+    def test_returns_false_on_timeout(self, mock_run: MagicMock) -> None:
+        assert proxy_mgr._looks_like_mcp_proxy(12345) is False
+
+
+# =========================================================================
 # cleanup_orphan
 # =========================================================================
 
@@ -691,10 +774,12 @@ class TestCleanupOrphan:
 
     @patch("proxy_manager._wait_for_exit", return_value=True)
     @patch("proxy_manager.os.kill")
+    @patch("proxy_manager._looks_like_mcp_proxy", return_value=True)
     @patch("proxy_manager._is_pid_alive", return_value=True)
     def test_kills_alive_orphan(
         self,
         mock_alive: MagicMock,
+        mock_looks_like: MagicMock,
         mock_kill: MagicMock,
         mock_wait: MagicMock,
         tmp_path: Path,
@@ -705,3 +790,26 @@ class TestCleanupOrphan:
 
         proxy_mgr.cleanup_orphan(SAMPLE_CONFIG, str(tmp_path))
         assert proxy_mgr._read_pid(pid_path) is None
+
+        import signal
+
+        mock_kill.assert_any_call(55555, signal.SIGTERM)
+
+    @patch("proxy_manager.os.kill")
+    @patch("proxy_manager._looks_like_mcp_proxy", return_value=False)
+    @patch("proxy_manager._is_pid_alive", return_value=True)
+    def test_does_not_kill_unverified_pid(
+        self,
+        mock_alive: MagicMock,
+        mock_looks_like: MagicMock,
+        mock_kill: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """PID ファイルの PID が mcp-proxy と検証できない場合は kill せず掃除のみ行う。"""
+        pid_path = os.path.join(str(tmp_path), ".claude", ".mcp-proxy.pid")
+        os.makedirs(os.path.dirname(pid_path), exist_ok=True)
+        proxy_mgr._write_pid(pid_path, 66666)
+
+        proxy_mgr.cleanup_orphan(SAMPLE_CONFIG, str(tmp_path))
+        assert proxy_mgr._read_pid(pid_path) is None
+        mock_kill.assert_not_called()
