@@ -131,6 +131,35 @@ def test_main_skips_failed_task() -> None:
     assert stdout == ""
 
 
+def test_main_skips_task_with_is_error_flag() -> None:
+    """構造化フィールド is_error による抑制は引き続き機能する。"""
+    data = {
+        "tool_name": "Task",
+        "tool_input": {"subagent_type": "Plan", "prompt": "plan something"},
+        "tool_response": {"is_error": True},
+    }
+    stdout, exit_code = _run_main_with_stdin(data)
+    assert exit_code == 0
+    assert stdout == ""
+
+
+def test_main_does_not_suppress_plan_mentioning_error_handling() -> None:
+    """ "エラーハンドリング設計" 等の正常な plan 内容を str() 部分一致で
+    誤って抑制しないこと（構造化フィールドのみを抑制根拠にする回帰テスト）。
+    """
+    data = {
+        "tool_name": "Task",
+        "tool_input": {"subagent_type": "Plan", "prompt": "計画: 認証機能"},
+        "tool_response": {"result": "Plan created for error handling module"},
+    }
+    stdout, exit_code = _run_main_with_stdin(data)
+    assert exit_code == 0
+
+    output = json.loads(stdout)
+    context = output["hookSpecificOutput"]["additionalContext"]
+    assert "[Codex Review Suggestion]" in context
+
+
 def test_main_handles_invalid_json_gracefully() -> None:
     import io
     import sys

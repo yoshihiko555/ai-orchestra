@@ -1,0 +1,28 @@
+{
+  "name": "skill-evolution",
+  "version": "0.1.0",
+  "description": "スキル自己改善ループ（二軸テレメトリ収集＋オフライン反復改善）。core 依存",
+  "depends": ["core"],
+  "hooks": {
+    "PreToolUse": [{ "file": "inject-lessons.py", "matcher": "Skill" }],
+    "PostToolUse": [
+      { "file": "capture-skill-telemetry.py", "matcher": "Skill" }
+    ],
+    "SubagentStop": ["capture-subagent-skill.py"]
+  },
+  "files": [
+    "hooks/inject-lessons.py",
+    "hooks/capture-skill-telemetry.py",
+    "hooks/capture-subagent-skill.py"
+  ],
+  "skills": [],
+  "agents": [],
+  "rules": [],
+  "scripts": [
+    {
+      "path": "scripts/skill_evolution.py",
+      "description": "スキル自己改善 CLI: status / check-trigger / evaluate / provenance / lock（オフライン反復の決定論部分）"
+    }
+  ],
+  "config": ["config/skill-evolution.yaml"]
+}

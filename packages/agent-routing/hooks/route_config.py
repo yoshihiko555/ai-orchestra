@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 
 _hook_dir = os.path.dirname(os.path.abspath(__file__))
@@ -20,6 +21,7 @@ from hook_common import (  # noqa: E402, F401
     DEFAULT_CODEX_FLAGS,
     DEFAULT_CODEX_MODEL,
     DEFAULT_CODEX_SANDBOX_ANALYSIS,
+    is_cli_enabled,
     load_package_config,
     normalize_cli_tools_config,
 )
@@ -168,14 +170,6 @@ def load_config(data: dict) -> dict:
     return normalize_cli_tools_config(config)
 
 
-def is_cli_enabled(cli_name: str, config: dict) -> bool:
-    """CLI が有効かどうかを返す。未定義やセクション欠落時は True（後方互換）。"""
-    section = config.get(cli_name, {})
-    if not isinstance(section, dict):
-        return True
-    return bool(section.get("enabled", True))
-
-
 def get_agent_tool(agent_name: str, config: dict) -> str:
     """config から指定エージェントの tool を取得。CLI 無効時は claude-direct にフォールバック。"""
     agents = config.get("agents", {})
@@ -195,13 +189,39 @@ def get_agent_tool(agent_name: str, config: dict) -> str:
     return tool
 
 
+# トリガー用の単語境界正規表現のキャッシュ（UserPromptSubmit で毎回走るため）
+_TRIGGER_REGEX_CACHE: dict[str, re.Pattern[str]] = {}
+
+
+def _compile_trigger_pattern(trigger_lower: str) -> re.Pattern[str]:
+    """ASCII トリガー用の単語境界付き正規表現を初回のみコンパイルしてキャッシュする。"""
+    pattern = _TRIGGER_REGEX_CACHE.get(trigger_lower)
+    if pattern is None:
+        pattern = re.compile(rf"(?<![A-Za-z0-9_]){re.escape(trigger_lower)}(?![A-Za-z0-9_])")
+        _TRIGGER_REGEX_CACHE[trigger_lower] = pattern
+    return pattern
+
+
+def _trigger_matches(trigger: str, prompt_lower: str) -> bool:
+    """トリガーがプロンプトにマッチするか判定する。
+
+    ASCII のみで構成されるトリガー（"UI" や "test" など）は単語境界で厳密に
+    判定し、"quick" への "UI" や "latest" への "test" のような誤検知を防ぐ。
+    日本語トリガーは分かち書きが無いため、従来どおり部分一致を維持する。
+    """
+    trigger_lower = trigger.lower()
+    if trigger_lower.isascii():
+        return _compile_trigger_pattern(trigger_lower).search(prompt_lower) is not None
+    return trigger_lower in prompt_lower
+
+
 def detect_agent(prompt: str) -> tuple[str | None, str]:
     """プロンプトからエージェントを検出。(agent_name, trigger) を返す。"""
     prompt_lower = prompt.lower()
     for agent, triggers in AGENT_TRIGGERS.items():
         for lang_triggers in triggers.values():
             for trigger in lang_triggers:
-                if trigger.lower() in prompt_lower:
+                if _trigger_matches(trigger, prompt_lower):
                     return agent, trigger
     return None, ""
 

@@ -483,6 +483,7 @@ DEFAULT_GRAPH_PATH = ".claude/codd/graph.jsonl"
 LEVEL_ERROR = "error"
 LEVEL_WARNING = "warning"
 LEVEL_OFF = "off"
+ALLOWED_CHECK_LEVELS = {LEVEL_ERROR, LEVEL_WARNING, LEVEL_OFF}
 
 
 def normalize_check_level(value: Any) -> str:
@@ -490,10 +491,16 @@ def normalize_check_level(value: Any) -> str:
 
     YAML 1.1 は bare `off` を boolean False として読むため、
     False / "off"（大文字小文字無視）を等しく `off` に揃える。
+    ``error`` / ``warning`` / ``off`` 以外の値（typo 等）は、Finding の level が
+    どの集計カテゴリにも一致せず validate が無音の成功になる（CI ゲートのサイレント
+    無効化）ことを防ぐため、ここで ValueError にする。
     """
     if value is False:
         return LEVEL_OFF
-    return str(value).strip().lower()
+    level = str(value).strip().lower()
+    if level not in ALLOWED_CHECK_LEVELS:
+        raise ValueError(f"Invalid check level: {value!r} (allowed: error / warning / off)")
+    return level
 
 
 @dataclass
