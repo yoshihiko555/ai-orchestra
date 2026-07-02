@@ -26,6 +26,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - `$BASE` 解決失敗時は統合ブランチ（`main` / `master` / `develop` / `stage` / `staging`）上でのみブランチを作成し、それ以外は準備済み扱いでスキップ（統合ブランチでの直接作業を回避する安全側設計）
   - 編集ソースは facet `facets/instructions/issue-fix.md`。`.claude/skills/` と `.agents/skills/` の SKILL.md は facet build で再生成
 
+### Fixed
+
+- **配布基盤: ユーザー編集ファイルの保護（全パッケージレビュー指摘対応）**: 配布時 SHA-256 ハッシュを `orchestra.json`（`file_hashes`）に記録し、変更検知で破壊的操作を防止
+  - **`uninstall` の無条件削除防止（Critical）**: config / agents ファイルを diff 確認なしで `unlink()` していた問題を修正。削除前にハッシュ比較し、ユーザー編集済み・ハッシュ未記録（旧 install 由来）は警告してスキップ（安全側）。dry-run でも同じ判定を表示
+  - **`install` 再実行の無条件上書き防止**: `run_initial_sync()` に `sync_engine.needs_sync()` ゲートを追加し SessionStart 側の同期と挙動を一致。ユーザー変更が静かに消える問題を解消
+  - **`patch_all_agents` の所有権チェック**: `.claude/agents/*.md` 全件を対象にしていた model パッチを、インストール済みパッケージの manifest `agents` 宣言から構築した allowlist のみに限定。ユーザー独自エージェントの `model:` が毎 SessionStart で上書きされる問題を解消
+  - 後方互換: `file_hashes` の無い既存 `orchestra.json` でも全機能が動作（未記録ファイルは削除スキップの安全側）
+
 ## [0.2.9] - 2026-06-26
 
 ### Fixed
