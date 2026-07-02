@@ -33,6 +33,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`packages/tmux-monitor`: シェルインジェクション修正と hook ハング・リソースリーク対策（全パッケージレビュー指摘対応）**
+  - **ディレクトリ名経由のシェルコマンドインジェクション（Critical）**: `project_name`（`basename(cwd)`）を tmux が `$SHELL -c` で実行する文字列へ無エスケープ埋め込みしていた 2 箇所（respawn-pane / new-session）を修正。`shell_quote()` を `tmux_common.py` へ共通化し、`build_wait_cmd()` 抽出で動的値のみエスケープ（`$(date)` の意図的展開は維持）
+  - **`run_tmux()` / `ps` への timeout 追加**: 同期 hook から呼ばれる subprocess に timeout（5 秒）が無く、tmux/ps ハングが Claude Code 全操作のブロックに直結していた問題を修正。`TimeoutExpired` は非ゼロ returncode の疑似結果へフォールバック
+  - **孤児クリーンアップの整合**: PID 検出失敗時のフォールバックキー（16 進）のセッション・info ファイルが `isdigit()` 判定に合わず永久残留していた問題と、削除対象が 3 拡張子のみで `.shared-dir` / `.task-queue` と shared-dir 実体（`/tmp/claude-shared-*`）が異常終了時に永続リークしていた問題を修正。session-end と同じ 5 拡張子 + 実体削除に統一（`remove_session_files()` 共通化）
+  - **`tmux-subagent-start.py` の `main()` 分割**: 約 150 行・ネスト 4-5 段を責務ごとの 5 関数へ純粋抽出（挙動不変、回帰テスト付き）
+  - **フォールバッククリーンアップの誤削除防止（PR #109 レビュー対応）**: フォールバックキーのクリーンアップ判定が current `project_name` から tmux セッション名を再構成していたため、後続プロジェクトの起動時に別プロジェクトのフォールバックセッション（`.tmux-session` / `.shared-dir` / キュー）を誤削除しうる問題を修正。記録された `.tmux-session` の実名で生存判定し、現在の prefix で始まらない他プロジェクトの session info には触れない
 - **配布基盤: ユーザー編集ファイルの保護（全パッケージレビュー指摘対応）**: 配布時 SHA-256 ハッシュを `orchestra.json`（`file_hashes`）に記録し、変更検知で破壊的操作を防止
   - **`uninstall` の無条件削除防止（Critical）**: config / agents ファイルを diff 確認なしで `unlink()` していた問題を修正。削除前にハッシュ比較し、ユーザー編集済み・ハッシュ未記録（旧 install 由来）は警告してスキップ（安全側）。dry-run でも同じ判定を表示
   - **`install` 再実行の無条件上書き防止**: `run_initial_sync()` に `sync_engine.needs_sync()` ゲートを追加し SessionStart 側の同期と挙動を一致。ユーザー変更が静かに消える問題を解消
