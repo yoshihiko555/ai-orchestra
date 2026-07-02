@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`packages/skill-evolution`: スキル自己改善ループ（Issue #5）**: スキル実行の品質を二軸（自己申告＋機械計測）で計測し、学び（lessons）を次回実行へ還元しつつ、停止条件付きのオフライン反復でスキル自体を改善する新パッケージ。設計は `req/design:skill-evolution` ＋ `ADR-20260701-027` に記録
+  - **二層アーキ**: オンライン層＝スキル発火ごとに軽量収集（`inject-lessons.py` が発火前に lessons 注入＋`run_id` 発行、`capture-skill-telemetry.py`／`capture-subagent-skill.py` が完了時に二軸テレメトリを `metrics/<skill>.jsonl` へ記録）。オフライン層＝`skill_evolution.py` CLI が停止条件・3ガード・スコアリング・ロックの決定論部分を提供（シナリオ実行と改善案生成は人間承認ゲート下の実行時作業）
+  - **発火検出**: `PreToolUse`/`PostToolUse` の `tool_name == "Skill"`（`tool_input.skill`）で捕捉（`packages/audit` の実績方式）。`context: fork` スキルは `SubagentStop` で補完
+  - **成功判定**: スキルごとの `[critical]` チェックリスト全達成で初めて成功。反映先は provenance で塩梅（facet 製→facet 昇格＋`facet build`、非 facet 製→lessons/SKILL.md diff、判別不能→lessons のみ）。数値ガード（コスト・反復・holdout・注入行数）は `skill-evolution.yaml` で調整可能
+- **`skill-review-policy`: 4視点網羅オプション（Security/Perf/Quality/a11y）**: 成果物をパスパターンに依存せず固定4視点で網羅レビューするオプションを追記（Issue #5 の A 縮小版。skill-evolution の「スキル実行品質」とは別に「成果物品質」を対象）
 - **`packages/fail-logs`: 活用フェーズ — SessionStart で再発失敗サマリーを注入（Issue #81 / ADR-20260630-027）**: 記録した失敗（`.claude/logs/fail-logs/failures.jsonl`）をセッション開始時に集計し、**再発している失敗シグネチャ**をオーケストレーターのコンテキストへ注入する SessionStart hook `inject-failure-summary.py` を追加。記録 → 活用の学習ループ第 2 段階
   - **集計軸**: `failure_type` 別カウント（行動指針にならない）ではなく「再発シグネチャ中心」を採用。シグネチャは command ベースで `(command_kind, 先頭トークン)`、非 Bash は `(tool, failure_type)` にフォールバック。`min_occurrences`（既定 2）以上の再発のみ注入し、見出しに `failure_type` 別内訳を 1 行で添える
   - **フィルタ/抑制**: ログ末尾からチャンク単位で遡って `max_records` 行のみ読む末尾シーク方式（全行走査せず I/O を一定に制限）、`window_days`（既定 7・0 で無期限）で期間フィルタ。再発ゼロなら何も注入しない（ノイズ抑制）。`config/fail-logs.yaml` の `summary:` ブロックで制御（`fail-logs.local.yaml` で上書き可）
@@ -32,6 +37,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - **/tmp 状態ファイルのプロジェクトスコープ化**: `test-gate-checker` / `post-test-analysis` / `post-implementation-review` が固定パス `/tmp/claude-*-state.json` を共有し、複数プロジェクト並行時に編集件数・テスト結果が相互汚染して閾値判定が誤る問題（Issue #83 と同系統）を修正。`test-tampering-detector` と同じ `get_project_state_key()`（git-common-dir 優先）でプロジェクトごとにネストする形式へ変更し、共有ヘルパー `hooks/quality_gate_config.py` を新設（manifest 宣言済み）。同一リポジトリの worktree 間は tampering-detector と同様に意図的に状態を共有する
   - **`quality_gate.enabled` デフォルトの一元化**: `test-gate-checker.py`（False）と `post-test-analysis.py`（True）で真逆だったデフォルトを、ベース config（`enabled: true`）と対称な True に統一（`QUALITY_GATE_ENABLED_DEFAULT` を共有モジュールに定義）
   - **`review_suggested` のリセット経路追加**: 一度提案すると二度と提案されなかった `post-implementation-review` に TTL（24 時間、定数化）による再アームと、提案時のカウンタリセットを追加。7 フック中唯一テストが無かった同 hook に初のテスト（閾値・TTL・プロジェクト分離・main() E2E）を新設
+- **配布基盤: ユーザー編集ファイルの保護（全パッケージレビュー指摘対応）**: 配布時 SHA-256 ハッシュを `orchestra.json`（`file_hashes`）に記録し、変更検知で破壊的操作を防止
+  - **`uninstall` の無条件削除防止（Critical）**: config / agents ファイルを diff 確認なしで `unlink()` していた問題を修正。削除前にハッシュ比較し、ユーザー編集済み・ハッシュ未記録（旧 install 由来）は警告してスキップ（安全側）。dry-run でも同じ判定を表示
+  - **`install` 再実行の無条件上書き防止**: `run_initial_sync()` に `sync_engine.needs_sync()` ゲートを追加し SessionStart 側の同期と挙動を一致。ユーザー変更が静かに消える問題を解消
+  - **`install` の config コピーもハッシュ保護（PR #110 レビュー対応）**: `run_initial_sync()` 以外に `install()` 内の config コピーループが hash 比較なしで無条件 `copy2` していたため、「編集 → uninstall（保護スキップ）→ 再 install」でユーザー編集が消えていた（Codex 実機再現）。`_copy_config_if_safe()` ヘルパーで uninstall と対称の変更検知を適用（編集済みは警告してスキップ。ただし hash 未記録時はコピーを通す＝非破壊操作の自己修復を優先）
+  - **`patch_all_agents` の所有権チェック**: `.claude/agents/*.md` 全件を対象にしていた model パッチを、インストール済みパッケージの manifest `agents` 宣言から構築した allowlist のみに限定。ユーザー独自エージェントの `model:` が毎 SessionStart で上書きされる問題を解消
+  - 後方互換: `file_hashes` の無い既存 `orchestra.json` でも全機能が動作（未記録ファイルは削除スキップの安全側）
 
 ## [0.2.9] - 2026-06-26
 
