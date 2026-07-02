@@ -116,11 +116,13 @@ class TestPostImplementationReview:
         state_file = tmp_path / "impl-review.json"
         monkeypatch.setattr(post_impl_review, "STATE_FILE", state_file)
         post_impl_review.save_state(
-            {"files": ["a.py", "b.py"], "total_lines": 20, "review_suggested": False}
+            str(tmp_path),
+            {"files": ["a.py", "b.py"], "total_lines": 20, "review_suggested": False},
         )
         _make_stdin(
             {
                 "tool_name": "Edit",
+                "cwd": str(tmp_path),
                 "tool_input": {"file_path": "c.py", "content": "print(1)\nprint(2)\n"},
             },
             monkeypatch,
@@ -132,9 +134,11 @@ class TestPostImplementationReview:
         captured = capsys.readouterr()
         output = json.loads(captured.out)
         assert "[Review Suggestion]" in output["hookSpecificOutput"]["additionalContext"]
-        state = post_impl_review.load_state()
+        # 提案時にカウンタはリセットされるため、直前の状態はメッセージにのみ残る。
+        assert "3 files modified" in output["hookSpecificOutput"]["additionalContext"]
+        state = post_impl_review.load_state(str(tmp_path))
         assert state["review_suggested"] is True
-        assert state["files"][-1] == "c.py"
+        assert state["files"] == []
 
     def test_main_skips_non_code_extension(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -163,17 +167,18 @@ class TestPostTestAnalysis:
         state_file = tmp_path / "test-gate.json"
         monkeypatch.setattr(post_test_analysis, "TEST_GATE_STATE_FILE", state_file)
         post_test_analysis.save_test_gate_state(
+            str(tmp_path),
             {
                 "files_modified_since_test": ["a.py"],
                 "lines_modified_since_test": 42,
                 "last_test_result": None,
                 "warned": True,
-            }
+            },
         )
 
-        post_test_analysis.record_test_result("pytest", passed=True)
+        post_test_analysis.record_test_result("pytest", True, str(tmp_path))
 
-        state = post_test_analysis.load_test_gate_state()
+        state = post_test_analysis.load_test_gate_state(str(tmp_path))
         assert state["files_modified_since_test"] == []
         assert state["lines_modified_since_test"] == 0
         assert state["warned"] is False
@@ -269,7 +274,7 @@ class TestPostTestAnalysis:
         captured = capsys.readouterr()
         output = json.loads(captured.out)
         assert "[Codex Debug Suggestion]" in output["hookSpecificOutput"]["additionalContext"]
-        state = post_test_analysis.load_test_gate_state()
+        state = post_test_analysis.load_test_gate_state(str(tmp_path))
         assert state["last_test_result"]["passed"] is False
         assert state["last_test_result"]["command"] == "pytest -q"
 
@@ -405,7 +410,7 @@ class TestTestGateChecker:
         captured = capsys.readouterr()
         output = json.loads(captured.out)
         assert "[Test Gate]" in output["hookSpecificOutput"]["additionalContext"]
-        state = test_gate_checker.load_test_gate_state()
+        state = test_gate_checker.load_test_gate_state(str(tmp_path))
         assert state["warned"] is True
         assert state["files_modified_since_test"] == ["src/main.py"]
 

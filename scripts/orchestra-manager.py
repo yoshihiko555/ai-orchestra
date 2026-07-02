@@ -29,7 +29,13 @@ from lib.facet_builder import FacetBuilder  # noqa: E402
 from lib.orchestra_context import ContextMixin  # noqa: E402
 from lib.orchestra_hooks import HooksMixin  # noqa: E402
 from lib.orchestra_models import Package  # noqa: E402
-from lib.sync_engine import collect_manifest_compositions  # noqa: E402
+from lib.sync_engine import (  # noqa: E402
+    collect_manifest_compositions,
+    compute_file_hash,
+    get_recorded_file_hash,
+    needs_sync,
+    record_file_hash,
+)
 
 
 def _fmt_inner_proxy(inner_port: object) -> str:
@@ -300,7 +306,12 @@ class OrchestraManager(ContextMixin, HooksMixin):
         return [dep for dep in pkg.depends if dep not in installed_packages]
 
     def run_initial_sync(self, project_dir: Path, dry_run: bool = False) -> None:
-        """初回同期を実行（sync-orchestra.py と同等のロジック）"""
+        """初回同期を実行（sync-orchestra.py と同等のロジック）。
+
+        SessionStart 側と同じ sync_engine.needs_sync() ゲートを適用し、
+        ユーザーが編集済みのファイルを黙って上書きしない。実際にコピーした
+        ファイルの SHA-256 ハッシュを orchestra.json の file_hashes に記録する。
+        """
         orch = self.load_orchestra_json(project_dir)
         installed = orch.get("installed_packages", [])
         orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
@@ -335,17 +346,25 @@ class OrchestraManager(ContextMixin, HooksMixin):
                                 continue
                             file_rel = str(src_file.relative_to(pkg_dir))
                             dst = claude_dir / file_rel
+                            if not needs_sync(src_file, dst):
+                                continue
                             if dry_run:
                                 print(f"[DRY-RUN] 同期: {file_rel}")
                                 continue
                             dst.parent.mkdir(parents=True, exist_ok=True)
                             shutil.copy2(src_file, dst)
+                            record_file_hash(orch, pkg_name, file_rel, compute_file_hash(dst))
                             synced_count += 1
                     else:
                         if category == "config":
                             dst = claude_dir / "config" / pkg_name / Path(rel_path).name
+                            file_key = f"config/{pkg_name}/{Path(rel_path).name}"
                         else:
                             dst = claude_dir / rel_path
+                            file_key = rel_path
+
+                        if not needs_sync(src, dst):
+                            continue
 
                         if dry_run:
                             print(f"[DRY-RUN] 同期: {category}/{rel_path}")
@@ -353,10 +372,13 @@ class OrchestraManager(ContextMixin, HooksMixin):
 
                         dst.parent.mkdir(parents=True, exist_ok=True)
                         shutil.copy2(src, dst)
+                        record_file_hash(orch, pkg_name, file_key, compute_file_hash(dst))
                         synced_count += 1
 
         if synced_count > 0:
             print(f"{synced_count} ファイルを同期しました")
+            if not dry_run:
+                self.save_orchestra_json(project_dir, orch)
 
     def _install_context_init_files(self, pkg: Package, project_dir: Path, dry_run: bool) -> None:
         """manifest.context_files.init に基づきテンプレートを初回配置する。
@@ -471,12 +493,17 @@ class OrchestraManager(ContextMixin, HooksMixin):
                 source = pkg.path / file_path
                 target = project_dir / ".claude" / "config" / pkg.name / filename
                 target.parent.mkdir(parents=True, exist_ok=True)
+                file_key = f"config/{pkg.name}/{filename}"
 
-                if dry_run:
-                    print(f"[DRY-RUN] ファイルコピー: {target} <- {source}")
-                else:
-                    shutil.copy2(source, target)
-                    print(f"ファイルコピー: {pkg.name}/{target.name}")
+                self._copy_config_if_safe(
+                    orch,
+                    pkg.name,
+                    file_key,
+                    source,
+                    target,
+                    dry_run,
+                    label=f"{pkg.name}/{target.name}",
+                )
 
         settings = self.load_settings(project_dir)
         self._apply_hooks(pkg, settings, "add", dry_run)
@@ -500,8 +527,80 @@ class OrchestraManager(ContextMixin, HooksMixin):
         else:
             print(f"\n✓ パッケージ '{package_name}' をインストールしました")
 
+    def _copy_config_if_safe(
+        self,
+        orch: dict[str, Any],
+        pkg_name: str,
+        file_key: str,
+        source: Path,
+        target: Path,
+        dry_run: bool,
+        label: str,
+    ) -> None:
+        """配布時ハッシュと現在のファイル内容を比較し、ユーザー編集済みなら上書きをスキップする。
+
+        対象が存在しない、またはハッシュが未記録（新規/初回 install）の場合は
+        通常どおりコピーする。dry_run 時も判定結果（コピー予定/スキップ予定）は
+        同じロジックで表示するが、ファイルおよび orch dict は変更しない。
+        """
+        if target.exists():
+            recorded = get_recorded_file_hash(orch, pkg_name, file_key)
+            if recorded is not None and compute_file_hash(target) != recorded:
+                print(
+                    f"警告: {target} はインストール後に変更されているため上書きをスキップしました"
+                )
+                return
+
+        if dry_run:
+            print(f"[DRY-RUN] ファイルコピー: {target} <- {source}")
+            return
+
+        shutil.copy2(source, target)
+        record_file_hash(orch, pkg_name, file_key, compute_file_hash(target))
+        print(f"ファイルコピー: {label}")
+
+    def _remove_if_unchanged(
+        self,
+        orch: dict[str, Any],
+        pkg_name: str,
+        file_key: str,
+        target: Path,
+        dry_run: bool,
+        label: str,
+        prefix: str = "ファイル削除",
+    ) -> None:
+        """配布時ハッシュと現在のファイル内容が一致する場合のみ削除する（安全側スキップ）。
+
+        ハッシュが未記録（旧 install 由来）、またはインストール後に変更が
+        検出された場合は削除せず警告を出す。dry_run 時も判定結果（削除予定/
+        スキップ予定）は同じロジックで表示する。
+        """
+        if not target.exists():
+            return
+
+        recorded = get_recorded_file_hash(orch, pkg_name, file_key)
+        if recorded is None:
+            print(f"警告: {target} は配布時ハッシュが記録されていないため削除をスキップしました")
+            return
+
+        if compute_file_hash(target) != recorded:
+            print(f"警告: {target} はインストール後に変更されているため削除をスキップしました")
+            return
+
+        if dry_run:
+            print(f"[DRY-RUN] {prefix}: {target}")
+            return
+
+        target.unlink()
+        print(f"{prefix}: {label}")
+
     def uninstall(self, package_name: str, project: str | None, dry_run: bool = False) -> None:
-        """パッケージをアンインストール"""
+        """パッケージをアンインストール
+
+        削除前に配布時ハッシュ（orchestra.json の file_hashes）と現在のファイル
+        内容を比較し、ユーザーが変更済みのファイル（またはハッシュ未記録の
+        ファイル）は削除せずスキップして警告する（安全側）。
+        """
         packages = self.load_packages()
         if package_name not in packages:
             print(f"エラー: パッケージ '{package_name}' が見つかりません", file=sys.stderr)
@@ -516,35 +615,35 @@ class OrchestraManager(ContextMixin, HooksMixin):
         if not dry_run:
             self.save_settings(project_dir, settings)
 
+        orch = self.load_orchestra_json(project_dir)
+
         for file_path in pkg.config:
             if file_path.startswith("config/"):
                 filename = Path(file_path).name
                 target = project_dir / ".claude" / "config" / pkg.name / filename
-
-                if dry_run:
-                    if target.exists():
-                        print(f"[DRY-RUN] ファイル削除: {target}")
-                else:
-                    if target.exists():
-                        target.unlink()
-                        print(f"ファイル削除: {pkg.name}/{target.name}")
+                file_key = f"config/{pkg.name}/{filename}"
+                self._remove_if_unchanged(
+                    orch, pkg.name, file_key, target, dry_run, label=f"{pkg.name}/{target.name}"
+                )
 
         claude_dir = project_dir / ".claude"
         for agent_path in pkg.agents:
             target = claude_dir / agent_path
-            if dry_run:
-                if target.exists():
-                    print(f"[DRY-RUN] 同期ファイル削除: {target}")
-            else:
-                if target.exists():
-                    target.unlink()
-                    print(f"同期ファイル削除: {agent_path}")
+            self._remove_if_unchanged(
+                orch,
+                pkg.name,
+                agent_path,
+                target,
+                dry_run,
+                label=agent_path,
+                prefix="同期ファイル削除",
+            )
 
-        orch = self.load_orchestra_json(project_dir)
         installed = set(orch.get("installed_packages", []))
         if pkg.name in installed:
             installed.discard(pkg.name)
             orch["installed_packages"] = sorted(installed)
+            orch.get("file_hashes", {}).pop(pkg.name, None)
 
             if not installed:
                 self.remove_sync_hook(settings)

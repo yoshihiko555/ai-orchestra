@@ -7,6 +7,9 @@ when the test run fails.
 
 Also records test results to the shared test-gate state file so that
 test-gate-checker.py can reset change counters after successful tests.
+The state is scoped per project (see quality_gate_config.get_project_state_key)
+so concurrent worktrees/sessions on different projects do not contaminate
+each other's counters.
 """
 
 import json
@@ -45,6 +48,13 @@ from hook_common import (  # noqa: E402
     DEFAULT_CODEX_MODEL,
     DEFAULT_CODEX_SANDBOX_ANALYSIS,
     load_package_config,
+)
+from quality_gate_config import (  # noqa: E402
+    DEFAULT_TEST_GATE_STATE,
+    get_project_state_key,
+    load_project_scoped_state,
+    resolve_quality_gate_enabled,
+    save_project_scoped_state,
 )
 
 # Test command patterns
@@ -92,39 +102,25 @@ def extract_failure_summary(output: str) -> str:
     return "Test failure detected"
 
 
-def load_test_gate_state() -> dict:
-    """Load the shared test-gate state from file."""
-    try:
-        if TEST_GATE_STATE_FILE.exists():
-            with open(TEST_GATE_STATE_FILE, encoding="utf-8") as f:
-                return json.load(f)
-    except (json.JSONDecodeError, OSError):
-        pass
-    return {
-        "files_modified_since_test": [],
-        "lines_modified_since_test": 0,
-        "last_test_result": None,
-        "warned": False,
-    }
+def load_test_gate_state(project_dir: str) -> dict:
+    """Load the shared test-gate state from file (scoped to the current project)."""
+    project_key = get_project_state_key(project_dir)
+    return load_project_scoped_state(TEST_GATE_STATE_FILE, project_key, DEFAULT_TEST_GATE_STATE)
 
 
-def save_test_gate_state(state: dict) -> None:
-    """Save the shared test-gate state to file."""
-    try:
-        TEST_GATE_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(TEST_GATE_STATE_FILE, "w", encoding="utf-8") as f:
-            json.dump(state, f, ensure_ascii=False, indent=2)
-    except OSError:
-        pass
+def save_test_gate_state(project_dir: str, state: dict) -> None:
+    """Save the shared test-gate state to file (scoped to the current project)."""
+    project_key = get_project_state_key(project_dir)
+    save_project_scoped_state(TEST_GATE_STATE_FILE, project_key, state)
 
 
-def record_test_result(command: str, passed: bool) -> None:
+def record_test_result(command: str, passed: bool, project_dir: str) -> None:
     """Record test result to the shared state file.
 
     On success: reset change counters and warned flag.
     On failure: keep counters (changes are not yet validated).
     """
-    state = load_test_gate_state()
+    state = load_test_gate_state(project_dir)
     state["last_test_result"] = {
         "timestamp": datetime.now(UTC).isoformat(),
         "passed": passed,
@@ -134,7 +130,7 @@ def record_test_result(command: str, passed: bool) -> None:
         state["files_modified_since_test"] = []
         state["lines_modified_since_test"] = 0
         state["warned"] = False
-    save_test_gate_state(state)
+    save_test_gate_state(project_dir, state)
 
 
 def load_quality_gate_config(project_dir: str) -> dict:
@@ -164,7 +160,7 @@ def emit_quality_gate_event(
     """
     project_dir = resolve_project_root_from_hook_data(data)
     quality_gate = load_quality_gate_config(project_dir)
-    if quality_gate.get("enabled", True) is False:
+    if not resolve_quality_gate_enabled(quality_gate):
         return False
 
     trace = load_trace_state(project_dir=project_dir)
@@ -205,6 +201,11 @@ def main():
     try:
         data = json.load(sys.stdin)
         tool_name = data.get("tool_name", "")
+        # test-gate-checker.py と同じ project_dir 解決方法に揃える。
+        # resolve_project_root_from_hook_data は cwd に .claude が無い場合に
+        # 別のパスへフォールバックするため、ここで使うと共有状態のキーが
+        # test-gate-checker.py 側とずれてしまう。
+        project_dir = data.get("cwd", "") or os.environ.get("CLAUDE_PROJECT_DIR", "")
 
         # Only process Bash tool calls
         if tool_name != "Bash":
@@ -230,7 +231,7 @@ def main():
         detected_by = failure.get("detected_by") if failure else None
 
         # Record test result to shared state (success resets counters)
-        record_test_result(command, gate_passed)
+        record_test_result(command, gate_passed, project_dir)
         blocking = emit_quality_gate_event(
             data,
             command=command,

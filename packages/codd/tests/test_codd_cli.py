@@ -626,3 +626,49 @@ def test_cmd_impact_returns_nonzero_on_invalid_ref(tmp_path, capsys) -> None:
 
     assert cli.cmd_impact(tmp_path, _config(), "no-such-ref", as_json=False) == 2
     assert "ERROR" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# diff_changed_paths（非 ASCII パス / quotePath 対応）
+# ---------------------------------------------------------------------------
+
+
+def test_diff_changed_paths_detects_non_ascii_modification(tmp_path) -> None:
+    # core.quotePath=true（既定）を明示設定し、-z パースが quote/エスケープの影響を
+    # 受けないことを再現性を持って確認する。
+    _init_repo(tmp_path)
+    _git(tmp_path, "config", "core.quotePath", "true")
+    target = _write(tmp_path, "docs/日本語ドキュメント.md", _doc("design:jp", "design"))
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "init")
+    target.write_text(_doc("design:jp", "design") + "\n変更\n", encoding="utf-8")
+
+    changed, deleted = cli.diff_changed_paths(tmp_path, "HEAD")
+    assert "docs/日本語ドキュメント.md" in changed
+    assert deleted == set()
+
+
+def test_diff_changed_paths_detects_non_ascii_rename(tmp_path) -> None:
+    _init_repo(tmp_path)
+    _git(tmp_path, "config", "core.quotePath", "true")
+    _write(tmp_path, "docs/旧名前.md", _doc("design:jp", "design"))
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "init")
+    _git(tmp_path, "mv", "docs/旧名前.md", "docs/新しい名前.md")
+
+    changed, deleted = cli.diff_changed_paths(tmp_path, "HEAD")
+    assert "docs/旧名前.md" in deleted
+    assert "docs/新しい名前.md" in changed
+
+
+def test_diff_changed_paths_detects_non_ascii_deletion(tmp_path) -> None:
+    _init_repo(tmp_path)
+    _git(tmp_path, "config", "core.quotePath", "true")
+    target = _write(tmp_path, "docs/削除予定.md", _doc("design:jp", "design"))
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "init")
+    target.unlink()
+
+    changed, deleted = cli.diff_changed_paths(tmp_path, "HEAD")
+    assert "docs/削除予定.md" in deleted
+    assert "docs/削除予定.md" not in changed

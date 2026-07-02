@@ -5,14 +5,14 @@
   "depends": ["core", "audit"],
   "hooks": {
     "PreToolUse": [
-      {"file": "check-context-optimization.py", "matcher": "Read|Grep|Bash"}
+      { "file": "check-context-optimization.py", "matcher": "Read|Grep|Bash" }
     ],
     "PostToolUse": [
-      {"file": "post-implementation-review.py", "matcher": "Edit|Write"},
-      {"file": "post-test-analysis.py", "matcher": "Bash"},
-      {"file": "lint-on-save.py", "matcher": "Edit|Write"},
+      { "file": "post-implementation-review.py", "matcher": "Edit|Write" },
+      { "file": "post-test-analysis.py", "matcher": "Bash" },
+      { "file": "lint-on-save.py", "matcher": "Edit|Write" },
       "test-tampering-detector.py",
-      {"file": "test-gate-checker.py", "matcher": "Edit|Write"}
+      { "file": "test-gate-checker.py", "matcher": "Edit|Write" }
     ],
     "Stop": ["turn-end-summary.py"]
   },
@@ -23,7 +23,8 @@
     "hooks/lint-on-save.py",
     "hooks/test-tampering-detector.py",
     "hooks/test-gate-checker.py",
-    "hooks/turn-end-summary.py"
+    "hooks/turn-end-summary.py",
+    "hooks/quality_gate_config.py"
   ],
   "skills": ["review", "tdd", "design-tracker", "release-readiness"],
   "agents": [],
