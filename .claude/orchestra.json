@@ -52,10 +52,12 @@
     "config/cocoindex/cocoindex.yaml",
     "config/codd/codd.yaml",
     "config/core/task-memory.yaml",
+    "config/fail-logs/fail-logs.yaml",
     "config/git-workflow/sandbox-requirements.json",
-    "config/image-generation/image-generation.yaml"
+    "config/image-generation/image-generation.yaml",
+    "config/skill-evolution/skill-evolution.yaml"
   ],
-  "last_sync": "2026-07-02T16:09:31.489108+00:00",
+  "last_sync": "2026-07-02T16:17:16.012185+00:00",
   "file_hashes": {
     "core": {
       "config/core/task-memory.yaml": "081c101ad10526344e4fe7831babbe6ef661d0a4ae7e49fad4eb3967c030b7d8"
