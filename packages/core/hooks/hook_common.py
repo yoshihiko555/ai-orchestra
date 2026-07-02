@@ -6,6 +6,7 @@ from __future__ import annotations
 import functools
 import json
 import os
+import stat
 import sys
 from collections.abc import Callable
 from typing import Any
@@ -162,14 +163,29 @@ def is_cli_enabled(cli_name: str, config: dict) -> bool:
 def read_hook_input() -> dict:
     """stdin から JSON を読み取って dict を返す。"""
     try:
-        return json.loads(sys.stdin.read())
+        result = json.loads(sys.stdin.read())
     except (json.JSONDecodeError, ValueError):
         return {}
+    return result if isinstance(result, dict) else {}
+
+
+def resolve_path_within(project_dir: str, relative: str, filename: str) -> str | None:
+    """relative + filename を project_dir 配下に解決する。
+
+    config 値経由の `relative`（例: logs_dir）に `../` 等が含まれ project_dir
+    の外を指す場合は None を返す（設定経由のパストラバーサル防御）。
+    symlink による脱出も realpath 解決で検出する。
+    """
+    project_root = os.path.realpath(project_dir)
+    candidate = os.path.realpath(os.path.join(project_dir, relative, filename))
+    if candidate == project_root or candidate.startswith(project_root + os.sep):
+        return candidate
+    return None
 
 
 def get_field(data: dict, key: str) -> str:
     """dict からフィールドを取得する。存在しなければ空文字を返す。"""
-    return data.get(key) or ""
+    return str(data.get(key) or "")
 
 
 # ---------------------------------------------------------------------------
@@ -190,9 +206,21 @@ def read_json_safe(path: str) -> dict:
 
 
 def write_json(path: str, data: dict) -> None:
-    """dict を JSON ファイルに書き出す。"""
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    """dict を JSON ファイルにアトミックに書き出す。"""
+    tmp_path = f"{path}.tmp.{os.getpid()}"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        try:
+            existing_mode = stat.S_IMODE(os.stat(path).st_mode)
+            os.chmod(tmp_path, existing_mode)
+        except FileNotFoundError:
+            pass  # 新規作成時はデフォルト（umask）のまま
+        os.replace(tmp_path, path)
+    except Exception:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
 
 
 def append_jsonl(path: str, record: dict) -> None:

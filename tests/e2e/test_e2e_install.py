@@ -122,6 +122,135 @@ class TestUninstall:
         assert result.returncode != 0
 
 
+class TestDistributionHashSafety:
+    """配布時ハッシュ記録によるユーザー編集ファイル保護のテスト。"""
+
+    def test_install_records_file_hashes(self, e2e_project: Path) -> None:
+        """install 後の orchestra.json に file_hashes が記録される"""
+        run_orchex("install", "core", project=e2e_project)
+        orch = json.loads((e2e_project / ".claude" / "orchestra.json").read_text(encoding="utf-8"))
+        assert "core" in orch.get("file_hashes", {})
+        assert "config/core/task-memory.yaml" in orch["file_hashes"]["core"]
+
+    def test_uninstall_removes_unchanged_file(self, e2e_project: Path) -> None:
+        """未変更のファイルは通常どおり削除される（回帰確認）"""
+        run_orchex("install", "core", project=e2e_project)
+        config_file = e2e_project / ".claude" / "config" / "core" / "task-memory.yaml"
+        assert config_file.is_file()
+
+        run_orchex("uninstall", "core", project=e2e_project)
+
+        assert not config_file.exists()
+
+    def test_uninstall_skips_user_edited_file(self, e2e_project: Path) -> None:
+        """ユーザー編集済みファイルは削除をスキップし警告する"""
+        run_orchex("install", "core", project=e2e_project)
+        config_file = e2e_project / ".claude" / "config" / "core" / "task-memory.yaml"
+        config_file.write_text("# user edited\n", encoding="utf-8")
+
+        result = run_orchex("uninstall", "core", project=e2e_project)
+
+        assert config_file.exists()
+        assert config_file.read_text(encoding="utf-8") == "# user edited\n"
+        assert "変更されているため削除をスキップ" in result.stdout
+
+    def test_uninstall_skips_when_hash_not_recorded(self, e2e_project: Path) -> None:
+        """file_hashes が記録されていない旧形式の orchestra.json では削除をスキップする"""
+        run_orchex("install", "core", project=e2e_project)
+        orch_path = e2e_project / ".claude" / "orchestra.json"
+        orch = json.loads(orch_path.read_text(encoding="utf-8"))
+        orch.pop("file_hashes", None)
+        orch_path.write_text(
+            json.dumps(orch, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+        config_file = e2e_project / ".claude" / "config" / "core" / "task-memory.yaml"
+
+        result = run_orchex("uninstall", "core", project=e2e_project)
+
+        assert config_file.exists()
+        assert "配布時ハッシュが記録されていない" in result.stdout
+
+    def test_uninstall_dry_run_shows_skip_decision(self, e2e_project: Path) -> None:
+        """--dry-run でもユーザー編集済みファイルのスキップ判定を表示する"""
+        run_orchex("install", "core", project=e2e_project)
+        config_file = e2e_project / ".claude" / "config" / "core" / "task-memory.yaml"
+        config_file.write_text("# user edited\n", encoding="utf-8")
+
+        result = run_orchex("uninstall", "core", "--dry-run", project=e2e_project)
+
+        assert config_file.exists()
+        assert config_file.read_text(encoding="utf-8") == "# user edited\n"
+        assert "変更されているため削除をスキップ" in result.stdout
+
+    def test_reinstall_preserves_user_edited_agent_file(self, e2e_project: Path) -> None:
+        """パッケージ再インストール時、ユーザー編集済みのエージェント .md は上書きされない"""
+        run_orchex("install", "core", project=e2e_project)
+        run_orchex("install", "agent-routing", project=e2e_project)
+        agent_file = e2e_project / ".claude" / "agents" / "planner.md"
+        assert agent_file.is_file()
+        agent_file.write_text("# user customized planner\n", encoding="utf-8")
+
+        run_orchex("install", "agent-routing", project=e2e_project)
+
+        assert agent_file.read_text(encoding="utf-8") == "# user customized planner\n"
+
+    def test_reinstall_preserves_user_edited_config_file(self, e2e_project: Path) -> None:
+        """パッケージ再インストール時、ユーザー編集済みの config ファイルは上書きされない"""
+        run_orchex("install", "core", project=e2e_project)
+        config_file = e2e_project / ".claude" / "config" / "core" / "task-memory.yaml"
+        config_file.write_text("# user edited\n", encoding="utf-8")
+
+        result = run_orchex("install", "core", project=e2e_project)
+
+        assert config_file.read_text(encoding="utf-8") == "# user edited\n"
+        assert "変更されているため上書きをスキップ" in result.stdout
+
+    def test_reinstall_updates_unchanged_config_file(self, e2e_project: Path) -> None:
+        """未変更の config ファイルは再インストールで通常どおり更新される（回帰確認）"""
+        run_orchex("install", "core", project=e2e_project)
+        config_file = e2e_project / ".claude" / "config" / "core" / "task-memory.yaml"
+        source_file = Path("packages/core/config/task-memory.yaml")
+
+        result = run_orchex("install", "core", project=e2e_project)
+
+        assert config_file.read_text(encoding="utf-8") == source_file.read_text(encoding="utf-8")
+        assert "上書きをスキップ" not in result.stdout
+
+    def test_reinstall_config_file_without_recorded_hash(self, e2e_project: Path) -> None:
+        """file_hashes が記録されていない旧形式の orchestra.json では上書きをスキップせず自己修復する"""
+        run_orchex("install", "core", project=e2e_project)
+        orch_path = e2e_project / ".claude" / "orchestra.json"
+        orch = json.loads(orch_path.read_text(encoding="utf-8"))
+        orch.pop("file_hashes", None)
+        orch_path.write_text(
+            json.dumps(orch, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+        config_file = e2e_project / ".claude" / "config" / "core" / "task-memory.yaml"
+
+        result = run_orchex("install", "core", project=e2e_project)
+
+        assert result.returncode == 0
+        assert config_file.is_file()
+        assert "変更されているため上書きをスキップ" not in result.stdout
+
+        updated_orch = json.loads(orch_path.read_text(encoding="utf-8"))
+        assert "config/core/task-memory.yaml" in updated_orch.get("file_hashes", {}).get("core", {})
+
+    def test_status_command_works_without_file_hashes(self, e2e_project: Path) -> None:
+        """file_hashes キーがない旧形式の orchestra.json でも status がクラッシュしない（後方互換）"""
+        run_orchex("install", "core", project=e2e_project)
+        orch_path = e2e_project / ".claude" / "orchestra.json"
+        orch = json.loads(orch_path.read_text(encoding="utf-8"))
+        orch.pop("file_hashes", None)
+        orch_path.write_text(
+            json.dumps(orch, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+
+        result = run_orchex("status", project=e2e_project)
+
+        assert result.returncode == 0
+
+
 class TestEnableDisable:
     """1.4 enable / disable"""
 

@@ -53,3 +53,28 @@ checks:
   missing_frontmatter: warning
   orphan: warning
   drift: warning
+
+# impact 分析（codd impact --diff <ref>）の信頼度スコア設定。
+# 変更ノードの下流を Green（自動更新可）/ Amber（要確認）/ Gray（参考）に分類する。
+# path_score = min(経路上の relation 重み) × decay^(hops-1)、ノードは全経路の最良値を採る。
+impact:
+  # relation 種別ごとの重み（強い派生ほど高信頼）。
+  relation_weights:
+    derives_from: 1.0
+    refines: 1.0
+    implements: 1.0
+    supersedes: 0.6
+    references: 0.3
+  # 1 hop ごとの距離減衰係数。
+  decay: 0.5
+  # 伝播を辿る最大ホップ数（decay=0.5 では 6 hop で score < 0.04 のため打ち切り）。
+  max_hops: 6
+  # 帯域の閾値（score >= green は Green、>= amber は Amber、それ未満は Gray）。
+  green_threshold: 0.8
+  amber_threshold: 0.4
+  # 直接事実とみなす relation 重みの下限（1 hop かつこの値以上で Corroboration 免除）。
+  strong_relation_min: 1.0
+  # Green に必要な裏付け起点数（直接事実でない推論的影響に適用）。
+  corroboration_min_origins: 2
+  # 複数の強起点が裏付ける場合の 1 起点あたり加点（弱リンク水増し防止）。
+  evidence_bonus: 0.05

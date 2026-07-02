@@ -351,3 +351,52 @@ def test_empty_stdin_falls_back_to_cwd(monkeypatch, tmp_path, capsys) -> None:
     inject.main()
     out = capsys.readouterr().out
     assert "×2" in out
+
+
+def test_traversal_logs_dir_reads_from_default_fallback(monkeypatch, tmp_path, capsys) -> None:
+    """logs_dir が project_dir 外を指す設定でも、書き込み側と同じ
+    DEFAULT_LOGS_DIR を読みに行き再発サマリーを出す（capture-failures.py の
+    書き込み側フォールバックと実効パスを一致させる）。"""
+    project = _make_project(tmp_path)
+    config_dir = project / ".claude" / "config" / "fail-logs"
+    config_dir.mkdir(parents=True)
+    (config_dir / "fail-logs.local.yaml").write_text("logs_dir: '../../../tmp/evil-read'\n")
+
+    # capture-failures.py はトラバーサル検知時に DEFAULT_LOGS_DIR へフォールバック
+    # して書き込むため、そこに再発シグネチャがある状態を再現する。
+    _write_log(
+        project,
+        [
+            _record(command_kind="test", command="pytest tests/a"),
+            _record(command_kind="test", command="pytest tests/b"),
+        ],
+    )
+
+    _run(monkeypatch, project)
+    out = capsys.readouterr().out
+    assert "×2" in out
+    assert "pytest" in out
+
+
+def test_valid_custom_logs_dir_is_read_without_fallback(monkeypatch, tmp_path, capsys) -> None:
+    """project_dir 配下の有効な logs_dir はそのまま読まれ、
+    DEFAULT_LOGS_DIR へのフォールバックは発生しない（既存挙動の回帰確認）。"""
+    project = _make_project(tmp_path)
+    config_dir = project / ".claude" / "config" / "fail-logs"
+    config_dir.mkdir(parents=True)
+    (config_dir / "fail-logs.local.yaml").write_text("logs_dir: custom/logs/dir\n")
+
+    custom_log_path = project / "custom" / "logs" / "dir" / "failures.jsonl"
+    custom_log_path.parent.mkdir(parents=True)
+    custom_log_path.write_text(
+        "\n".join(
+            json.dumps(_record(command_kind="test", command="pytest custom")) for _ in range(2)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    _run(monkeypatch, project)
+    out = capsys.readouterr().out
+    assert "×2" in out
+    assert "pytest custom" in out
