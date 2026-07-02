@@ -26,44 +26,7 @@ from event_logger import (
     resolve_project_root_from_hook_data,
 )
 from hook_common import read_hook_input, safe_hook_execution
-
-# ---------------------------------------------------------------------------
-# Secret masking patterns
-# ---------------------------------------------------------------------------
-
-# 機密情報パターン（API キー・トークン・パスワード・クラウド認証情報）
-SECRET_PATTERNS = [
-    re.compile(r"\bsk-[A-Za-z0-9_-]{20,}"),
-    re.compile(
-        r"\b[A-Za-z0-9_-]{0,20}(api[_-]?key|token|password|secret|credential)\b\s*[:=]\s*\S+",
-        re.IGNORECASE,
-    ),
-    re.compile(r"\bBearer\s+[A-Za-z0-9._-]+", re.IGNORECASE),
-    re.compile(r"\bghp_[A-Za-z0-9]{36}\b"),
-    # AWS Access Key ID (AKIA/ASIA/A3T 等)
-    re.compile(r"\b(AKIA|ASIA|A3T)[A-Z0-9]{16}\b"),
-    # Google API Key
-    re.compile(r"\bAIza[A-Za-z0-9_-]{35}\b"),
-    # Azure SAS token
-    re.compile(r"\bSharedAccessSignature\s*=\s*\S+", re.IGNORECASE),
-    # PEM private key block
-    re.compile(r"-----BEGIN (RSA |OPENSSH |EC |DSA )?PRIVATE KEY-----"),
-]
-
-
-def _mask_secrets(text: str) -> str:
-    """テキストから既知の機密情報パターンをマスクする。
-
-    Args:
-        text: 検査対象のテキスト。
-
-    Returns:
-        マスク済みテキスト。該当しない場合は元の文字列を返す。
-    """
-    for pattern in SECRET_PATTERNS:
-        text = pattern.sub("[REDACTED]", text)
-    return text
-
+from secret_masking import mask_secrets as _mask_secrets
 
 # ---------------------------------------------------------------------------
 # CLI detection patterns

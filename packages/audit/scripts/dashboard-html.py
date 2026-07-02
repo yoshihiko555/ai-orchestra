@@ -191,6 +191,7 @@ def _build_cli_section(cli: dict) -> str:
     rows = [
         ["Codex", str(cli.get("codex", 0))],
         ["Gemini", str(cli.get("gemini", 0))],
+        ["Antigravity", str(cli.get("antigravity", 0))],
         ["Success", str(cli.get("success", 0))],
         ["Success Rate", f"{_pct(cli.get('success_rate', 0.0))}%"],
     ]
@@ -261,9 +262,10 @@ def _build_chart_scripts(route: dict, cli: dict, sub: dict, quality: dict, dist:
         new Chart(document.getElementById('cliChart'), {{
           type: 'bar',
           data: {{
-            labels: ['Codex', 'Gemini'],
-            datasets: [{{ label: 'Calls', data: [{cli.get("codex", 0)}, {cli.get("gemini", 0)}],
-                          backgroundColor: ['{COLORS["blue"]}', '{COLORS["yellow"]}'] }}]
+            labels: ['Codex', 'Gemini', 'Antigravity'],
+            datasets: [{{ label: 'Calls',
+                          data: [{cli.get("codex", 0)}, {cli.get("gemini", 0)}, {cli.get("antigravity", 0)}],
+                          backgroundColor: ['{COLORS["blue"]}', '{COLORS["yellow"]}', '{COLORS["purple"]}'] }}]
           }},
           options: {{ responsive: true, scales: {{ y: {{ beginAtZero: true, ticks: {{ color: '{COLORS["text_secondary"]}' }} }},
                       x: {{ ticks: {{ color: '{COLORS["text_secondary"]}' }} }} }},

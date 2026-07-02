@@ -52,6 +52,10 @@ def sample_events() -> list[dict]:
             "data": {"tool": "gemini", "success": True},
         },
         {
+            "type": "cli_call",
+            "data": {"tool": "antigravity", "success": True},
+        },
+        {
             "type": "subagent_start",
             "data": {"agent_type": "Explore"},
         },
@@ -130,10 +134,16 @@ class TestCalcCliStats:
 
     def test_counts_tools(self, sample_events: list[dict]) -> None:
         result = calc_cli_stats(sample_events)
-        assert result["total"] == 3
+        assert result["total"] == 4
         assert result["codex"] == 2
         assert result["gemini"] == 1
-        assert result["success"] == 2
+        assert result["antigravity"] == 1
+        assert result["success"] == 3
+
+    def test_by_tool_breakdown(self, sample_events: list[dict]) -> None:
+        """`by_tool` が全ツールの内訳を Counter 化して保持することを確認する。"""
+        result = calc_cli_stats(sample_events)
+        assert result["by_tool"] == {"codex": 2, "gemini": 1, "antigravity": 1}
 
 
 # ---------------------------------------------------------------------------
@@ -187,7 +197,7 @@ class TestCalcEventDistribution:
         result = calc_event_distribution(sample_events)
         assert result["session_start"] == 2
         assert result["route_decision"] == 3
-        assert result["cli_call"] == 3
+        assert result["cli_call"] == 4
         assert result["quality_gate"] == 3
 
     def test_none_and_empty_type_mapped_to_unknown(self) -> None:

@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import io
+import json
 import os
 import sys
+from pathlib import Path
+
+import pytest
 
 from tests.module_loader import REPO_ROOT, load_module
 
@@ -42,6 +47,52 @@ class TestDetectRoute:
         data = {"tool_name": "Bash", "tool_input": {"command": "gemini -m model -p 'query'"}}
         route, _, _ = audit_route.detect_route(data)
         assert route == "bash:gemini"
+
+    def test_bash_agy(self) -> None:
+        """Bash で agy コマンドを検出した場合 bash:agy を返すことを確認する。"""
+        data = {"tool_name": "Bash", "tool_input": {"command": 'agy -p "query" --model x'}}
+        route, excerpt, tool = audit_route.detect_route(data)
+        assert route == "bash:agy"
+        assert "agy" in excerpt
+        assert tool == "Bash"
+
+    def test_bash_agy_after_pipe(self) -> None:
+        """パイプの後段に agy が来ても検出できることを確認する。"""
+        data = {"tool_name": "Bash", "tool_input": {"command": 'ls | agy -p "query"'}}
+        route, _, _ = audit_route.detect_route(data)
+        assert route == "bash:agy"
+
+    def test_bash_agy_after_semicolon(self) -> None:
+        """セミコロンの後段に agy が来ても検出できることを確認する。"""
+        data = {"tool_name": "Bash", "tool_input": {"command": 'ls; agy -p "query"'}}
+        route, _, _ = audit_route.detect_route(data)
+        assert route == "bash:agy"
+
+    def test_bash_agy_substring_not_matched(self) -> None:
+        """`agy` を含む別の単語（誤マッチ候補）には反応しないことを確認する。"""
+        data = {"tool_name": "Bash", "tool_input": {"command": "echo legacyagyversion"}}
+        route, _, _ = audit_route.detect_route(data)
+        assert route is None
+
+    def test_bash_agy_with_codex_in_prompt_body(self) -> None:
+        """agy 呼び出しのプロンプト本文に 'codex' が含まれても bash:agy に分類されることを確認する。"""
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": "agy -p 'compare this with codex' --model gemini-3.1-pro-high"
+            },
+        }
+        route, _, _ = audit_route.detect_route(data)
+        assert route == "bash:agy"
+
+    def test_bash_codex_with_agy_in_prompt_body(self) -> None:
+        """codex 呼び出しのプロンプト本文に 'agy' が含まれても bash:codex に分類されることを確認する。"""
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "codex exec --model gpt-5.5 '...agy...' < /dev/null"},
+        }
+        route, _, _ = audit_route.detect_route(data)
+        assert route == "bash:codex"
 
     def test_bash_other(self) -> None:
         """Bash だが CLI 呼び出しでない場合は None を返すことを確認する。"""
@@ -293,3 +344,68 @@ class TestSelectExpectedRoute:
         route, rule = audit_prompt.select_expected_route("please optimize this query", {}, policy)
         assert route == "codex"
         assert rule == "r1"
+
+
+# ---------------------------------------------------------------------------
+# main (from audit-route.py) — policy/config aliases の union 統合テスト
+# ---------------------------------------------------------------------------
+
+
+class TestMainAliasUnion:
+    """`main()` を通した alias union の統合テスト。"""
+
+    def test_policy_and_config_claude_direct_aliases_are_unioned(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """policy 側の claude-direct aliases が config 側（build_aliases）の
+        task:<agent> 群を握りつぶさず union されることを確認する。
+        """
+        project_dir = tmp_path
+        (project_dir / ".claude").mkdir()
+
+        # policy 側に claude-direct の skill エイリアスのみを定義する
+        # （code-reviewer の task alias は含まない = config 側からのみ得られる）
+        config_dir = project_dir / ".claude" / "config" / "audit"
+        config_dir.mkdir(parents=True)
+        policy = {
+            "version": 3,
+            "default_route": "claude-direct",
+            "helper_routes": [],
+            "rules": [],
+            "aliases": {"claude-direct": ["skill:custom-skill"]},
+        }
+        (config_dir / "delegation-policy.json").write_text(json.dumps(policy), encoding="utf-8")
+
+        # trace state: expected_route=claude-direct（code-reviewer の tool は
+        # cli-tools.yaml 上 claude-direct なので task:code-reviewer は config 側の
+        # build_aliases() でのみ生成される）
+        state_dir = project_dir / ".claude" / "state"
+        state_dir.mkdir(parents=True)
+        (state_dir / "audit-trace.json").write_text(
+            json.dumps({"tid": "t1", "session_id": "s1", "expected_route": "claude-direct"}),
+            encoding="utf-8",
+        )
+
+        data = {
+            "session_id": "s1",
+            "cwd": str(project_dir),
+            "tool_name": "Task",
+            "tool_input": {"subagent_type": "code-reviewer"},
+        }
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(data)))
+
+        captured: dict = {}
+
+        def fake_emit_event(event_type: str, payload: dict, **kwargs: object) -> dict:
+            captured["type"] = event_type
+            captured["payload"] = payload
+            return payload
+
+        monkeypatch.setattr(audit_route, "emit_event", fake_emit_event)
+
+        audit_route.main()
+
+        assert captured["type"] == "route_decision"
+        # union されていれば task:code-reviewer 経由でマッチする
+        assert captured["payload"]["matched"] is True
+        assert captured["payload"]["actual"] == {"tool": "task", "detail": "code-reviewer"}

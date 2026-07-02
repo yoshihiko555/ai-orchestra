@@ -68,6 +68,7 @@ def render_dashboard(events: list[dict], session_id: str | None = None) -> str:
     lines.append(
         f"  total: {cli_stats['total']} "
         f"(codex: {cli_stats['codex']}, gemini: {cli_stats['gemini']}, "
+        f"antigravity: {cli_stats['antigravity']}, "
         f"success_rate: {cli_stats['success_rate']}%)"
     )
     if cli_stats["errors_by_type"]:
