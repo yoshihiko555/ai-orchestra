@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`skill-evolution`: メインループ実行のスキルテレメトリが起動直後に確定記録されていた問題**: `capture-skill-telemetry.py`（PostToolUse: Skill）は Skill ツールの応答（起動メッセージのみ）から自己申告を探すため、メインループ実行では常に `self_report: null`・`duration_ms` 数十 ms で記録が確定していた。設計 3.8 節の縮退方針どおり Stop hook（`capture-skill-stop.py`）を新設し、transcript から `[skill-self-report]` ブロックを抽出して `run_id` で pending と突合、正しい duration と自己申告で記録するよう修正。PostToolUse 側は自己申告が無い場合 pending を温存して Stop hook に委譲する（自己申告が見つからない stale pending は `pending.stale_after_seconds`（既定 600 秒）経過後に機械計測のみでフォールバック記録）
+- **skill-evolution データの Git 管理を整備**: `.claude/skill-evolution/metrics/` と `.claude/skill-evolution/pending/`（環境ローカルなテレメトリ）を `.gitignore` sync の `ENTRIES` に追加。`lessons/`（人間可読の学習資産・注入対象）は Git 追跡対象のまま維持する
+- `docs/design/skill-evolution.md` の lessons/metrics 保存先記述を実装に合わせて修正（`packages/skill-evolution/` 配下 → `.claude/skill-evolution/` 配下、正本は config `skill-evolution.yaml` の `storage.dir`）
+
 - **`.gitignore` sync が `.claude/codd/` を毎回削除していた問題**: `scripts/lib/gitignore_sync.py` の管理ブロック（`>>> AI Orchestra (.claude) >>>`）は sync のたびに `ENTRIES` で丸ごと置換されるため、`ENTRIES` に無い `.claude/codd/`（codd スキルの生成物 `graph.jsonl` の出力先）はブロック内に手動追加しても次回 sync で消えていた。`ENTRIES` に `.claude/codd/` を追加し、SessionStart hook / orchestra-manager による sync で常に残るようにした（回帰テスト付き）
 - `handoff` スキルの指示書（`facets/instructions/handoff.md` および生成物）に含まれていた文字化け（U+FFFD）4 箇所を修正
 

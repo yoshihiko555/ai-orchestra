@@ -8,12 +8,14 @@
     "PostToolUse": [
       { "file": "capture-skill-telemetry.py", "matcher": "Skill" }
     ],
-    "SubagentStop": ["capture-subagent-skill.py"]
+    "SubagentStop": ["capture-subagent-skill.py"],
+    "Stop": ["capture-skill-stop.py"]
   },
   "files": [
     "hooks/inject-lessons.py",
     "hooks/capture-skill-telemetry.py",
-    "hooks/capture-subagent-skill.py"
+    "hooks/capture-subagent-skill.py",
+    "hooks/capture-skill-stop.py"
   ],
   "skills": [],
   "agents": [],

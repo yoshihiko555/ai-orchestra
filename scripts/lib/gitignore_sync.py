@@ -18,6 +18,8 @@ ENTRIES = [
     ".claude/checkpoints/",
     ".claude/context/",
     ".claude/codd/",
+    ".claude/skill-evolution/metrics/",
+    ".claude/skill-evolution/pending/",
     ".claude/.facet-packages-hash",
     ".claude/.facet-manifest.json",
     ".codex/.facet-manifest.json",

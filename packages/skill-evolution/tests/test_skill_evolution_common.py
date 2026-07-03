@@ -247,6 +247,89 @@ def test_consume_pending_fallback_by_skill(tmp_path) -> None:
     assert got_id == rid and dur is not None
 
 
+# ---------------------------------------------------------------------------
+# pending 一覧 / skill 保存 / 破棄（Stop hook フォールバック用）
+# ---------------------------------------------------------------------------
+
+
+def test_write_pending_stores_skill(tmp_path) -> None:
+    p = str(tmp_path)
+    rid = "issue-fix-20260101T000000-aaaa"
+    se.write_pending(p, rid, skill="issue-fix")
+    entries = se.list_pending(p)
+    assert len(entries) == 1
+    assert entries[0]["run_id"] == rid
+    assert entries[0]["skill"] == "issue-fix"
+
+
+def test_list_pending_recovers_skill_from_run_id_when_missing(tmp_path) -> None:
+    p = str(tmp_path)
+    rid = "issue-fix-20260101T000000-aaaa"
+    se.write_pending(p, rid)  # skill 未指定（旧形式 pending の想定）
+    entries = se.list_pending(p)
+    assert entries[0]["skill"] == "issue-fix"  # run_id から復元
+
+
+def test_list_pending_skips_broken_files(tmp_path) -> None:
+    p = str(tmp_path)
+    se.write_pending(p, "s-20260101T000000-aaaa", skill="s")
+    pending_dir = os.path.join(se.data_dir(p), "pending")
+    with open(os.path.join(pending_dir, "broken.json"), "w", encoding="utf-8") as f:
+        f.write("not json")
+    entries = se.list_pending(p)
+    assert len(entries) == 1
+
+
+def test_discard_pending_removes_file(tmp_path) -> None:
+    p = str(tmp_path)
+    rid = "s-20260101T000000-aaaa"
+    se.write_pending(p, rid, skill="s")
+    entries = se.list_pending(p)
+    se.discard_pending(entries[0]["path"])
+    assert se.list_pending(p) == []
+
+
+def test_discard_pending_missing_file_does_not_raise(tmp_path) -> None:
+    se.discard_pending(os.path.join(str(tmp_path), "does-not-exist.json"))  # クラッシュしない
+
+
+# ---------------------------------------------------------------------------
+# 複数自己申告ブロックのパース（Stop hook の transcript 走査用）
+# ---------------------------------------------------------------------------
+
+
+def test_parse_self_reports_returns_all_in_order() -> None:
+    text = (
+        '[skill-self-report]{"run_id": "1", "skill": "a"}[/skill-self-report] '
+        '[skill-self-report]{"run_id": "2", "skill": "b"}[/skill-self-report]'
+    )
+    reports = se.parse_self_reports(text)
+    assert [r["run_id"] for r in reports] == ["1", "2"]
+
+
+def test_parse_self_reports_skips_malformed_blocks() -> None:
+    text = (
+        "[skill-self-report]not json[/skill-self-report] "
+        '[skill-self-report]{"run_id": "ok"}[/skill-self-report]'
+    )
+    reports = se.parse_self_reports(text)
+    assert [r["run_id"] for r in reports] == ["ok"]
+
+
+def test_parse_self_reports_empty_when_no_block() -> None:
+    assert se.parse_self_reports("no block here") == []
+    assert se.parse_self_reports("") == []
+
+
+def test_parse_self_report_still_returns_last_wins() -> None:
+    # 既存の外部挙動（最後のブロック優先）は parse_self_reports へのリファクタ後も変わらない。
+    text = (
+        '[skill-self-report]{"run_id": "1"}[/skill-self-report] '
+        '[skill-self-report]{"run_id": "2"}[/skill-self-report]'
+    )
+    assert se.parse_self_report(text)["run_id"] == "2"
+
+
 def test_summarize_skips_null_metrics() -> None:
     recs = [
         {

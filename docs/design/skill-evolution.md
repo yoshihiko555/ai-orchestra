@@ -101,7 +101,7 @@ AI Orchestra の既存配布レール（packages / facets / hooks）に載せ、
 **保存先の分離（重要）**: `context-sharing` から流用するのは **inject 前後のロジックパターンのみ**。
 保存先は `context-sharing` のセッション領域（`session/` / `working-context.json`）を**使わない**。
 これらは `cleanup-session-context.py` が SessionEnd で削除するため、lessons を置くと毎セッション消える。
-lessons / metrics は **`packages/skill-evolution/` 配下の独立した永続ストレージ**に保持し、
+lessons / metrics は **`.claude/skill-evolution/` 配下の独立した永続ストレージ**（正本は config `skill-evolution.yaml` の `storage.dir`）に保持し、
 context-sharing の cleanup ロジックには一切触れない。
 
 ### 3.3 オフライン層（mizchi 型反復）
@@ -165,7 +165,7 @@ context-sharing の cleanup ロジックには一切触れない。
 - **肥大化管理（NF-01）**: 注入対象の lessons は**最大行数を上限**とし（既定: 直近 N 件）、
   超過分は要約圧縮して `lessons/<skill>.archive.md` へ退避する。無制限追記は注入コンテキストを
   膨らませ NF-01（レイテンシ・コンテキスト増を避ける）に違反するため必須。
-- 保存先は `packages/skill-evolution/` 配下のプロジェクトローカル領域（3.2 の分離方針）。
+- 保存先は `.claude/skill-evolution/` 配下のプロジェクトローカル領域（3.2 の分離方針）。
 
 ### 3.5 自己申告の収集メカニズム
 

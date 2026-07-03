@@ -27,6 +27,14 @@ class TestBuildBlock:
         assert ".claude/codd/" in gitignore_mod.ENTRIES
         assert ".claude/codd/" in gitignore_mod.build_block()
 
+    def test_contains_skill_evolution_data_entries(self) -> None:
+        """skill-evolution の metrics/pending は無視対象だが lessons/ は追跡対象のまま。"""
+        assert ".claude/skill-evolution/metrics/" in gitignore_mod.ENTRIES
+        assert ".claude/skill-evolution/pending/" in gitignore_mod.ENTRIES
+        assert ".claude/skill-evolution/metrics/" in gitignore_mod.build_block()
+        assert ".claude/skill-evolution/pending/" in gitignore_mod.build_block()
+        assert ".claude/skill-evolution/" not in gitignore_mod.ENTRIES
+
 
 class TestSyncGitignore:
     """sync_gitignore のテスト。"""
