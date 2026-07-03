@@ -12,6 +12,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - **構成**: `docs/evaluation/README.md`（共通フォーマット・hook 型 / CLI ツール型 / スキル型の類型別観点チェックリスト・共通テストレビュー判断基準 6 項目）+ `_template.md`（雛形）+ `<pkg>.md` × 14（責務定義 / 入出力・副作用 / 評価観点 `EV-NN`（正常・異常・境界 × must/should、仕様根拠付き）/ 類型別観点 / パッケージ固有レビュー基準）
   - **運用ルール**: `.claude/rules/evaluation-set-policy.md`（facet: `evaluation-set-policy`）を新設。テスト改修時は該当評価セットと突合し、must 観点のギャップゼロを完了条件とする。突合マトリクスは一時成果物とし、ギャップはパッケージ単位の GitHub Issue で追跡（評価セットには恒久記録しない）。テスト変更時の hook 自動化は Issue #123 で追跡
   - **初回突合**: 既存テスト（`packages/<pkg>/tests/` + `tests/unit` + `tests/e2e` の二層）との突合を実施し、ギャップをパッケージ別 Issue として登録
+### Changed
+
+- **PR 自動レビュー（Codex / CodeRabbit）の日本語化とレビュー観点の統一**: GitHub 連携の自動レビューが英語で出力され判断しづらい問題に対応
+  - **Codex**: `templates/context/codex.md`（正本）の言語プロトコルに「GitHub PR review は日本語で出力（コード例・識別子は原文のまま）」を追記。委譲フローの「Output: English → Claude が翻訳」設計は維持し、レビュー文脈のみ日本語を優先
+  - **Codex**: 公式推奨の `## Review Guidelines` セクションを新設。共通観点（後方互換性・セキュリティ・正確性・正本と生成物の整合性・ドキュメント/テスト追従）、パス別観点（hooks / agent-routing config / scripts / tests。ルート `AGENTS.md` のみ）、ノイズ防止（具体的リスクを示せる場合のみ指摘・不確実なら質問）、重要度ラベル（Critical/High/Medium/Low、`skill-review-policy` と同一語彙）を定義
+  - **CodeRabbit**: `.coderabbit.yaml` の `language` を `"ja"` → 正準ロケール `"ja-JP"` に修正。`path_instructions` に `path: "**"` の共通観点を追加し、Codex・内部 `/review` レビュアーと同じ観点・重要度語彙に統一
+  - これにより Codex / CodeRabbit / 内部 `/review` の 3 系統で指摘の基準と読み方が揃う（反映は本 PR の main マージ後の PR から）
 
 ### Fixed
 
