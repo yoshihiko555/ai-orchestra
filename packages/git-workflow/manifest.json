@@ -7,7 +7,7 @@
   "files": [],
   "skills": ["issue-create", "issue-fix", "pr-create"],
   "agents": [],
-  "rules": [],
+  "rules": ["changelog-policy"],
   "scripts": [
     {
       "path": "scripts/resolve_base_branch.py",
