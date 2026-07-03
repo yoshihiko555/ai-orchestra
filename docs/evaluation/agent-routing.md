@@ -3,7 +3,7 @@
 **パッケージ**: `packages/agent-routing`
 **類型**: 主: hook 型、副: 設定・エージェント定義の配布（README.md の 3 類型のうちどれにも完全一致しないため、共通チェックリストの「配布ライフサイクル」「後方互換性」で代替評価する。詳細は 4 節参照）
 **作成日**: 2026-07-03
-**最終レビュー日**: —（未レビュー）
+**最終レビュー日**: 2026-07-04（人間レビュー完了・指摘なし。評価観点の変更なし。テストギャップは Issue #124 で追跡）
 **情報源**: docs/reference/packages.md（agent-routing セクション）, .claude/rules/agent-routing-policy.md, .claude/rules/codex-delegation.md, .claude/rules/antigravity-delegation.md, .claude/rules/config-loading.md
 **補助参照（構成要素の列挙のみ）**: packages/agent-routing/manifest.json, packages/agent-routing/{hooks,agents,config}/ 配下のファイル名一覧
 

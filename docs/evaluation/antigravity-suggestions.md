@@ -3,7 +3,7 @@
 **パッケージ**: `packages/antigravity-suggestions`
 **類型**: hook 型
 **作成日**: 2026-07-03
-**最終レビュー日**: —（未レビュー）
+**最終レビュー日**: 2026-07-04（両キー競合時は Antigravity 優先を EV-13 で確定。現実装は逆挙動のため実装ギャップ・Issue #125）
 **情報源**: docs/reference/packages.md（antigravity-suggestions セクション）, .claude/rules/antigravity-suggestion-compliance.md, .claude/rules/antigravity-delegation.md（補助・後方互換の根拠のみ）, packages/antigravity-suggestions/manifest.json（構成要素列挙のみ）, packages/antigravity-suggestions/hooks/suggest-antigravity-research.py（構成要素列挙のみ、期待値導出には未使用）
 
 ## 1. 責務定義
@@ -28,7 +28,7 @@ WebSearch/WebFetch ツールの実行前に、Antigravity CLI（`agy`）での�
 - [ ] EV-01（正常 / must）: WebSearch ツール呼び出し前に PreToolUse hook が発火し `[Antigravity Suggestion]` を出力する — 根拠: docs/reference/packages.md
 - [ ] EV-02（正常 / must）: WebFetch ツール呼び出し前に PreToolUse hook が発火し `[Antigravity Suggestion]` を出力する — 根拠: docs/reference/packages.md
 - [ ] EV-03（異常 / must）: `antigravity.enabled: false` のとき、hook 自体が提案を抑制する（発火しない） — 根拠: .claude/rules/antigravity-suggestion-compliance.md
-- [ ] EV-04（異常 / should）: `.local.yaml` に旧 `gemini.enabled: false` が残っている場合も有効な無効化設定として尊重され、提案が抑制される — 根拠: .claude/rules/antigravity-delegation.md
+- [ ] EV-04（異常 / should）: `.local.yaml` に旧 `gemini.enabled: false` が残っており、かつ `antigravity.enabled` が明示設定されていない場合は、後方互換フォールバックとして有効な無効化設定と尊重され提案が抑制される — 根拠: .claude/rules/antigravity-delegation.md（両キー競合時の優先は EV-13）
 - [ ] EV-05（正常 / must）: `[Antigravity Suggestion]` を検知したオーケストレーターは、進行中の WebSearch/WebFetch 操作を一旦保留する — 根拠: .claude/rules/antigravity-suggestion-compliance.md
 - [ ] EV-06（正常 / must）: オーケストレーターはサブエージェント経由（`Task(subagent_type="general-purpose", ...)`）で Antigravity にリサーチを依頼する — 根拠: .claude/rules/antigravity-suggestion-compliance.md
 - [ ] EV-07（正常 / should）: Antigravity の結果を踏まえて、保留していた WebSearch/WebFetch 操作を続行する — 根拠: .claude/rules/antigravity-suggestion-compliance.md
@@ -40,7 +40,8 @@ WebSearch/WebFetch ツールの実行前に、Antigravity CLI（`agy`）での�
 
 - [ ] EV-11（正常 / must）: hook は WebSearch/WebFetch の実行自体をブロックせず、`[Antigravity Suggestion]` を含む追加コンテキストを注入する形で提案する（遵守は Claude 側のルールベース運用であり、hook が exit code で強制ブロックする仕様ではない） — 根拠: docs/reference/packages.md（「を出力」という記述）+ .claude/rules/antigravity-suggestion-compliance.md（手順が「保留」「続行」という Claude 側の運用として記述され、hook 側の強制停止としては記述されていない）
 - [ ] EV-12（境界 / should）: EV-11 の非ブロック方針の帰結として、hook は正常系の exit code（0 等の非ブロックコード）で終了し WebSearch/WebFetch 自体の実行を妨げない — 根拠: 同上（ドキュメントからの論理的導出）
-- （config 駆動）EV-03 / EV-04 で担保済み。新規 ID は割り当てない
+- [ ] EV-13（異常 / must）: config 駆動 - `antigravity.enabled` と旧 `gemini.enabled` が同時に設定され値が矛盾する場合、`antigravity.enabled` を優先する（新キーが正。旧 `gemini.enabled` は `antigravity` 未設定時のみ後方互換フォールバックとして作用する） — 根拠: 2026-07-04 人間レビュー裁定（現実装 `normalize_cli_tools_config` は `gemini.enabled: false` が `antigravity.enabled: true` を上書きする逆挙動のため実装ギャップ・Issue #125）
+- （config 駆動）EV-03 / EV-04 / EV-13 で担保
 - N/A: fail-safe 方針（hook 内部エラー時の fail-open/fail-closed の選択） — ドキュメントに記載なし
 - N/A: 冪等性（同一イベントでの重複発火抑制） — ドキュメントに記載なし。EV-09 はオーケストレーター側の「相談スキップ」判断であり、hook 自体の重複発火制御ではないため代替不可
 - N/A: 秘匿情報（提案文言への秘密情報混入防止） — ドキュメントに記載なし
@@ -49,4 +50,4 @@ WebSearch/WebFetch ツールの実行前に、Antigravity CLI（`agy`）での�
 ## 5. テストレビュー判断基準（パッケージ固有）
 
 - EV-05〜EV-09 は「hook の出力」ではなく「hook 出力を受けたオーケストレーターの振る舞い」を規定する観点である。hook 単体のユニットテストでは検証できないため、統合テストまたは手順ドキュメントとの突合で確認すること。
-- EV-03 / EV-04 の抑制テストでは、`antigravity.enabled` と旧 `gemini.enabled` の両キーが同時に設定された場合の優先順位をテストの期待値に持ち込まないこと（ドキュメントからは優先順位が確定できない。情報源に明記なし。仕様確定・文書化はパッケージ別ギャップ Issue で追跡）。
+- EV-03 / EV-04 / EV-13 の抑制テストでは、両キー競合時に `antigravity.enabled` を優先する（EV-13, 2026-07-04 裁定）ことを期待値とする。現実装は旧 `gemini.enabled: false` が `antigravity.enabled: true` を上書きする逆挙動のため、テストは現実装ではなく評価セットを正とし、実装追従は Issue #125 で行う。
