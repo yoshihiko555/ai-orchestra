@@ -2,7 +2,7 @@
 codd:
   node_id: "design:skill-evolution"
   kind: design
-  status: draft
+  status: active
   depends_on:
     - id: "req:skill-evolution"
       relation: derives_from
@@ -12,7 +12,7 @@ codd:
 # Skill Evolution（スキル自己改善ループ）設計ドキュメント
 
 **作成日**: 2026-07-01
-**ステータス**: draft（発火検出方式と自己申告収集は spike / 方針確定で詰める）
+**ステータス**: active（発火検出・自己申告収集・数値 config は確定済み。オフライン層の実装は Issue #139 で追跡）
 **対象**: `feat/5` ブランチ
 **関連**: `req:skill-evolution`, `adr:ADR-20260701-027`
 
@@ -119,8 +119,8 @@ context-sharing の cleanup ロジックには一切触れない。
 | 停止条件            | 連続 2 回で「新規不明瞭点 0 / 精度 +3pt 以内 / ステップ ±10% / 時間 ±15%」を全達成                                                                       |
 | 3 ガード            | ①発散（3 回改善なし）→ **人間へ通知してループ停止**（自動構造変更はしない＝NF-03）/ ②過学習（holdout 15pt 超下落）→ 停止 / ③コスト打ち切り＋最大反復上限 |
 
-- **コスト上限・最大反復上限は数値を config 化**する（`cli-tools.yaml` 等の `skill_evolution.max_cost` /
-  `skill_evolution.max_iterations`。既定値は実装時に確定）。未設定だとガードが実体を持たないため必須。
+- **コスト上限・最大反復上限は数値を config 化**済み（`skill-evolution.yaml` の `offline.max_cost_usd`（既定 5.0）/
+  `offline.max_iterations`（既定 10）。holdout 割合・停止しきい値・ガード値も同ファイルが正本）。
 - 「精度」の定義は judge 総合スコア。`success` 判定そのものは `[critical]` 全達成（3.6）で別管理。
 
 > 設計判断は `adr:ADR-20260701-027`（D2 二軸評価・停止条件）。出典: mizchi
@@ -176,11 +176,13 @@ context-sharing の cleanup ロジックには一切触れない。
   `run_id` と 3 項目（`ambiguities` / `discretion_fills` / `retries`）を出力する小ブロックを定義する。
 - **提供方法**: skill-evolution パッケージが**共通テンプレート**として申告ブロックを提供し、
   スキルはそれを末尾に差し込む。完了側 hook がブロックをパースして `metrics` に格納する。
-- **段階適用**: 全既存スキルへの一括侵入を避け、対象スキルから順次導入する（D5 既存レール尊重と整合）。
+- **一律注入（実装済み）**: `inject-lessons.py`（PreToolUse: Skill）がスキル発火時に自己申告ブロックの
+  テンプレートと `run_id` を全スキルへ一律注入するため、スキル個別の改修（テンプレート差し込み等）は
+  不要。段階適用は行わない。
 - **欠落時のフォールバック**: 申告ブロックが無い実行は `self_report` を `null` とし、機械計測のみで
   記録する（`success` 判定は `[critical]` 達成で成立するため自己申告欠落でも破綻しない）。
 
-> この決定は **Phase 2 着手前に確定が必要**（D2 自己申告軸の実装可否を左右する）。
+> この決定（D2 自己申告軸の実装可否）は確定済み。
 
 ### 3.6 `[critical]` チェックリストタグ規約
 
@@ -227,23 +229,30 @@ facet 製/非 facet 製で「改善の反映先」が異なるため、判別と
 
 **完了境界**:
 
-| スキルの実行形態                    | 完了検知                                      |
-| ----------------------------------- | --------------------------------------------- |
-| メインループ内実行                  | `PostToolUse`（`tool_name == "Skill"`）       |
-| `context: fork`（サブエージェント） | `SubagentStop`（＋ `SubagentStart` で開始側） |
-| セッション全体の区切り              | `Stop`                                        |
+| スキルの実行形態                    | 完了検知                                                                                  |
+| ----------------------------------- | ----------------------------------------------------------------------------------------- |
+| メインループ内実行                  | `Stop`（`capture-skill-stop.py`）。PostToolUse は起動直後に発火するため完了検知に使えない |
+| `context: fork`（サブエージェント） | `SubagentStop`（＋ `SubagentStart` で開始側）                                             |
+| セッション全体の区切り              | `Stop`                                                                                    |
+
+- **実測結果**: メインループでは Skill ツールが起動メッセージを返した時点で即完了扱いとなり、
+  `PostToolUse`（`tool_name == "Skill"`）は起動直後にしか発火しないことが判明した。そのため
+  `PostToolUse` は完了検知に使えず、完了側は `Stop` hook（`capture-skill-stop.py`）が transcript
+  から `[skill-self-report]` ブロックを抽出し、`run_id` で pending エントリと突合して記録する。
+  `PostToolUse` は tool_response に自己申告が含まれる場合のみ即時記録する経路として残す。
 
 **不採用・代替**:
 
 - 候補2（`UserPromptSubmit` で `/skill` 正規表現）は**不採用**。公式 docs によると slash は
   `UserPromptExpansion` で展開後に `UserPromptSubmit` へ渡るため literal を取りこぼす。ただし
   候補1が slash 起動も拾うため不要。literal が必要になった場合のみ `UserPromptExpansion` を使う。
-- 縮退方針（保険）: 万一メインループ Skill の PostToolUse が不安定なら、完了側は
-  `SubagentStop`/`Stop` ＋ `run_id` 突合で機械計測を確保する。
+- **縮退方針を本実装した**（2026-07-03）: 実測でメインループの `PostToolUse` が起動直後にしか
+  発火せず完了検知に使えないことが判明したため、`Stop` hook（`capture-skill-stop.py`）＋
+  `run_id` 突合による完了検知を本実装として採用した。
 
 > 出典: in-repo 実証（`audit-route.py`）＋ Claude Code hooks-guide（`UserPromptExpansion` /
-> `SubagentStart` / `SubagentStop` の存在を確認）。本節確定により発火検出の draft 要因は解消。
-> 残る draft 要因は自己申告フォーマット等（8 節）。
+> `SubagentStart` / `SubagentStop` の存在を確認）＋ 実測（`capture-skill-stop.py`）。
+> 発火検出・自己申告フォーマットとも確定済み（8 節参照）。
 
 ### 3.9 既存基盤の流用
 
@@ -309,9 +318,14 @@ facet 製/非 facet 製で「改善の反映先」が異なるため、判別と
 
 ---
 
-## 8. 未解決事項（実装着手前に詰める）
+## 8. 未解決事項の解消状況
 
-- 発火検出の確定方式（3.8 の spike 後に確定）。
-- コスト上限・最大反復上限・lessons 注入行数・holdout 割合の**具体値**（config 既定値）。
-- lessons 閾値（オフライン起動口のトリガー値）。
-- 自己申告ブロックの具体フォーマット（構造化出力 or 専用区切り）と既存スキルへの段階適用順。
+- 発火検出の確定方式 → 3.8 で確定（メインループ完了側は `Stop` hook `capture-skill-stop.py`）。
+- コスト上限・最大反復上限・lessons 注入行数・holdout 割合の具体値 →
+  `config/skill-evolution.yaml` に既定値を定義済み（`offline.*` / `lessons.*` /
+  `pending.stale_after_seconds`）。
+- lessons 閾値（オフライン起動口のトリガー値） → `trigger.lessons_threshold: 20`。
+- 自己申告ブロックの具体フォーマットと段階適用 → `[skill-self-report]` JSON ブロックとして実装済み。
+  `inject-lessons.py` の一律注入により、既存スキルへの段階適用は不要になった。
+
+オフライン層（runner / judge / 改善案生成 / 反映・昇格）の実装は未着手。Issue #139 で追跡する。
