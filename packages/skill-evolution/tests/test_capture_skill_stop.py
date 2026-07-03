@@ -141,6 +141,7 @@ def test_stop_hook_matches_self_report_in_transcript(
         tmp_path, [_assistant_line(_self_report_text(run_id, "issue-fix"))]
     )
 
+    monkeypatch.setattr(stop_hook, "_default_transcript_root", lambda: p)
     _set_stdin(monkeypatch, {"cwd": p, "transcript_path": transcript_path})
     stop_hook.main()
 
@@ -201,6 +202,7 @@ def test_stop_hook_skips_when_already_recorded_by_subagent_stop(
         tmp_path, [_assistant_line(_self_report_text(run_id, "issue-fix"))]
     )
 
+    monkeypatch.setattr(stop_hook, "_default_transcript_root", lambda: p)
     _set_stdin(monkeypatch, {"cwd": p, "transcript_path": transcript_path})
     stop_hook.main()
 
@@ -221,3 +223,45 @@ def test_stop_hook_disabled_via_config_does_nothing(
     stop_hook.main()
 
     assert len(se.list_pending(p)) == 1  # 無効時は一切手を出さない
+
+
+# ---------------------------------------------------------------------------
+# _read_transcript_tail: パストラバーサル防御（CWE-22）
+# ---------------------------------------------------------------------------
+
+
+def test_read_transcript_tail_rejects_path_outside_allowed_root(tmp_path) -> None:
+    allowed_root = tmp_path / "allowed"
+    allowed_root.mkdir()
+    outside = tmp_path / "outside" / "secret.jsonl"
+    outside.parent.mkdir()
+    outside.write_text("top secret\n", encoding="utf-8")
+
+    result = stop_hook._read_transcript_tail(str(outside), str(allowed_root))
+
+    assert result == ""
+
+
+def test_read_transcript_tail_rejects_symlink_escaping_allowed_root(tmp_path) -> None:
+    allowed_root = tmp_path / "allowed"
+    allowed_root.mkdir()
+    outside = tmp_path / "outside" / "secret.jsonl"
+    outside.parent.mkdir()
+    outside.write_text("top secret\n", encoding="utf-8")
+    symlink_path = allowed_root / "transcript.jsonl"
+    symlink_path.symlink_to(outside)
+
+    result = stop_hook._read_transcript_tail(str(symlink_path), str(allowed_root))
+
+    assert result == ""
+
+
+def test_read_transcript_tail_allows_path_within_allowed_root(tmp_path) -> None:
+    allowed_root = tmp_path / "allowed"
+    allowed_root.mkdir()
+    transcript_path = allowed_root / "transcript.jsonl"
+    transcript_path.write_text("hello\n", encoding="utf-8")
+
+    result = stop_hook._read_transcript_tail(str(transcript_path), str(allowed_root))
+
+    assert result == "hello\n"

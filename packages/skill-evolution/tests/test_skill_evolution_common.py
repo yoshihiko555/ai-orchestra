@@ -264,7 +264,7 @@ def test_write_pending_stores_skill(tmp_path) -> None:
 
 def test_list_pending_recovers_skill_from_run_id_when_missing(tmp_path) -> None:
     p = str(tmp_path)
-    rid = "issue-fix-20260101T000000-aaaa"
+    rid = se.gen_run_id("issue-fix")
     se.write_pending(p, rid)  # skill 未指定（旧形式 pending の想定）
     entries = se.list_pending(p)
     assert entries[0]["skill"] == "issue-fix"  # run_id から復元

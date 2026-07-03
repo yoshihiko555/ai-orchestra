@@ -19,12 +19,13 @@ skill-evolution は、スキル実行のたびに二軸テレメトリ（自己�
 
 ## 2. 期待する入出力・副作用
 
-| 構成要素                                                                                     | 入力                                                             | 期待する出力                                               | 副作用                                                                                          |
-| -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- | ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `inject-lessons.py`（PreToolUse, matcher: Skill）                                            | Skill 発火前の hook 入力 JSON（`tool_input` にスキル名）         | 対象スキルの `lessons/<skill>.md` 内容をコンテキストへ注入 | なし（読み取りのみ）                                                                            |
-| `capture-skill-telemetry.py`（PostToolUse, matcher: Skill）                                  | Skill 完了時の hook 入力 JSON（`tool_input`/`tool_response`）    | hook 応答（完了通知）                                      | `metrics/<skill>.jsonl` へ 1 行追記、`lessons/<skill>.md` の「学び」セクションへ要約追記        |
-| `capture-subagent-skill.py`（SubagentStop）                                                  | サブエージェント終了イベント（`context: fork` 実行スキルの完了） | hook 応答（完了通知）                                      | `metrics/<skill>.jsonl` への追記（メインループ外の完了経路）                                    |
-| `skill_evolution.py`（CLI: `status` / `check-trigger` / `evaluate` / `provenance` / `lock`） | サブコマンド引数（スキル名等）                                   | サブコマンドごとの状態表示・判定結果                       | `lock`: `<skill>.lock` の作成/解放。`evaluate`: オフライン反復の judge 結果・改善案テーマの生成 |
+| 構成要素                                                                                     | 入力                                                             | 期待する出力                                               | 副作用                                                                                                                                                                      |
+| -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- | ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `inject-lessons.py`（PreToolUse, matcher: Skill）                                            | Skill 発火前の hook 入力 JSON（`tool_input` にスキル名）         | 対象スキルの `lessons/<skill>.md` 内容をコンテキストへ注入 | なし（読み取りのみ）                                                                                                                                                        |
+| `capture-skill-telemetry.py`（PostToolUse, matcher: Skill）                                  | Skill 完了時の hook 入力 JSON（`tool_input`/`tool_response`）    | hook 応答（完了通知）                                      | `metrics/<skill>.jsonl` へ 1 行追記、`lessons/<skill>.md` の「学び」セクションへ要約追記                                                                                    |
+| `capture-subagent-skill.py`（SubagentStop）                                                  | サブエージェント終了イベント（`context: fork` 実行スキルの完了） | hook 応答（完了通知）                                      | `metrics/<skill>.jsonl` への追記（メインループ外の完了経路）                                                                                                                |
+| `capture-skill-stop.py`（Stop）                                                              | セッション区切りの hook 入力 JSON（`transcript_path`）           | hook 応答（完了通知）                                      | transcript 末尾から `[skill-self-report]` を抽出し `run_id` で pending と突合、正しい duration・自己申告で `metrics/<skill>.jsonl` へ確定記録（メインループ実行の完了経路） |
+| `skill_evolution.py`（CLI: `status` / `check-trigger` / `evaluate` / `provenance` / `lock`） | サブコマンド引数（スキル名等）                                   | サブコマンドごとの状態表示・判定結果                       | `lock`: `<skill>.lock` の作成/解放。`evaluate`: オフライン反復の judge 結果・改善案テーマの生成                                                                             |
 
 ## 3. 評価観点
 
@@ -54,6 +55,10 @@ skill-evolution は、スキル実行のたびに二軸テレメトリ（自己�
 - [ ] EV-20（正常 / must）: facet 製/非 facet 製の判別は `manifest.json` の `skills` リスト照合を正本とし、`facets/` ディレクトリの有無では判定しない — 根拠: design §3.7
 - [ ] EV-21（異常 / must）: 判別不能な場合、facet ソース・生成物のいずれにも書き込まず、lessons 蓄積のみに留める（安全側フォールバック） — 根拠: NF-05; design §3.7
 - [ ] EV-22（正常 / should）: `.claude/rules/skill-review-policy.md`（または対応するドキュメント）に Security/Perf/Quality/a11y の 4 視点網羅オプションが追記されている — 根拠: req FT-12
+- [ ] EV-31（正常 / must）: メインループで実行されたスキルは、Stop hook（`capture-skill-stop.py`）が transcript から `[skill-self-report]` ブロックを抽出し、`run_id` で pending と突合して正しい duration・自己申告で記録する — 根拠: design §3.8（完了境界）; CHANGELOG（Unreleased）
+- [ ] EV-32（正常 / must）: `capture-skill-telemetry.py`（PostToolUse）は自己申告が見つからない場合に記録を確定せず、pending を温存して Stop hook に委譲する — 根拠: CHANGELOG（Unreleased）
+- [ ] EV-33（境界 / must）: 自己申告が見つからない stale pending は `pending.stale_after_seconds`（既定 600 秒）経過後、機械計測のみでフォールバック記録される — 根拠: CHANGELOG（Unreleased）
+- [ ] EV-34（異常 / must）: stdin 由来の `transcript_path` は realpath で許可ルート（既定 `~/.claude`）配下か検証され、範囲外や symlink による脱出は空読み扱いとなる（任意ローカルファイル読み取りを防ぐ） — 根拠: 実装挙動（PR #140 セキュリティレビュー対応）
 
 ## 4. 類型別観点
 

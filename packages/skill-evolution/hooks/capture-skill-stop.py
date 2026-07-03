@@ -44,12 +44,34 @@ def _project_dir(data: dict) -> str:
     return data.get("cwd") or os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())
 
 
-def _read_transcript_tail(path: object) -> str:
-    """transcript の末尾を上限付きで読み、読めなければ空文字を返す。"""
+def _default_transcript_root() -> str:
+    """transcript 読み取りを許可するルートディレクトリを返す。
+
+    Claude Code の transcript は `~/.claude/projects/` 配下に生成される。
+    stdin の `transcript_path` は改ざんや symlink により任意ファイルを指しうる
+    ため（CWE-22）、ここで返すルート配下に realpath 解決後で収まる場合のみ
+    読み取りを許可する。テストからは本関数を monkeypatch して差し替える。
+    """
+    return os.path.expanduser("~/.claude")
+
+
+def _read_transcript_tail(path: object, allowed_root: str | None = None) -> str:
+    """transcript の末尾を上限付きで読み、読めなければ空文字を返す。
+
+    `allowed_root`（既定: `_default_transcript_root()`）配下に realpath 解決後で
+    収まらないパスは読み取りを拒否し空文字を返す。symlink による脱出も
+    realpath 解決で検出する（fail-logs の resolve_path_within と同じ方針）。
+    """
     if not isinstance(path, str) or not path:
         return ""
+    root = os.path.realpath(
+        allowed_root if allowed_root is not None else _default_transcript_root()
+    )
+    resolved = os.path.realpath(path)
+    if resolved != root and not resolved.startswith(root + os.sep):
+        return ""
     try:
-        with open(path, "rb") as transcript:
+        with open(resolved, "rb") as transcript:
             transcript.seek(0, os.SEEK_END)
             size = transcript.tell()
             transcript.seek(max(0, size - MAX_TRANSCRIPT_TAIL_BYTES))
@@ -164,7 +186,7 @@ def main() -> None:
     entries = se.list_pending(project_dir, config)
     if not entries:
         return
-    transcript_text = _read_transcript_tail(data.get("transcript_path"))
+    transcript_text = _read_transcript_tail(data.get("transcript_path"), _default_transcript_root())
     reports = _self_reports_by_run_id(transcript_text)
     _process_pending(project_dir, entries, reports, config)
 
