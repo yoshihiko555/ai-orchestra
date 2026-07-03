@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
 
-language: "ja"
+language: "ja-JP"
 
 reviews:
   profile: "chill"
@@ -38,7 +38,22 @@ reviews:
     - "!*.egg-info/**"
 
   # パス別レビュー指示
+  # 共通観点・重要度ラベルは AGENTS.md の Review Guidelines と揃える
   path_instructions:
+    - path: "**"
+      instructions: |
+        共通レビュー観点（重要度順）:
+        1. 後方互換性 — 既存 CLI コマンド・設定キー（.claude/config/**）を壊す具体的リスク。
+           *.local.yaml / *.local.json 上書きの仕組みを壊していないか【最重要】
+        2. セキュリティ — シークレット埋め込み・外部入力の未バリデーション・機密情報のログ出力
+        3. 正確性 — 明確なバグ・エラーハンドリング漏れ・境界条件（None・空入力・パス解決）
+        4. 正本と生成物の整合性 — 正本は templates/context/*.md。生成物（AGENTS.md 等）だけの
+           直接編集や、正本変更時の再生成漏れは指摘する
+        5. ドキュメント/テスト追従 — 仕様変更時の README・テスト同時更新
+           （機械的な変更や挙動が変わらない変更には要求しない）
+
+        指摘には重要度ラベル（Critical/High/Medium/Low）を付ける。
+        具体的なリスクや失敗シナリオを示せる場合のみ指摘し、確信が持てない場合は質問として書く。
     - path: "packages/*/hooks/**/*.py"
       instructions: |
         エージェントフックのコード。以下を重点確認:

@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **PR 自動レビュー（Codex / CodeRabbit）の日本語化とレビュー観点の統一**: GitHub 連携の自動レビューが英語で出力され判断しづらい問題に対応
+  - **Codex**: `templates/context/codex.md`（正本）の言語プロトコルに「GitHub PR review は日本語で出力（コード例・識別子は原文のまま）」を追記。委譲フローの「Output: English → Claude が翻訳」設計は維持し、レビュー文脈のみ日本語を優先
+  - **Codex**: 公式推奨の `## Review Guidelines` セクションを新設。共通観点（後方互換性・セキュリティ・正確性・正本と生成物の整合性・ドキュメント/テスト追従）、パス別観点（hooks / agent-routing config / scripts / tests。ルート `AGENTS.md` のみ）、ノイズ防止（具体的リスクを示せる場合のみ指摘・不確実なら質問）、重要度ラベル（Critical/High/Medium/Low、`skill-review-policy` と同一語彙）を定義
+  - **CodeRabbit**: `.coderabbit.yaml` の `language` を `"ja"` → 正準ロケール `"ja-JP"` に修正。`path_instructions` に `path: "**"` の共通観点を追加し、Codex・内部 `/review` レビュアーと同じ観点・重要度語彙に統一
+  - これにより Codex / CodeRabbit / 内部 `/review` の 3 系統で指摘の基準と読み方が揃う（反映は本 PR の main マージ後の PR から）
+
 ### Fixed
 
 - **`.gitignore` sync が `.claude/codd/` を毎回削除していた問題**: `scripts/lib/gitignore_sync.py` の管理ブロック（`>>> AI Orchestra (.claude) >>>`）は sync のたびに `ENTRIES` で丸ごと置換されるため、`ENTRIES` に無い `.claude/codd/`（codd スキルの生成物 `graph.jsonl` の出力先）はブロック内に手動追加しても次回 sync で消えていた。`ENTRIES` に `.claude/codd/` を追加し、SessionStart hook / orchestra-manager による sync で常に残るようにした（回帰テスト付き）
