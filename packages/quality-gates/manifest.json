@@ -28,7 +28,7 @@
   ],
   "skills": ["review", "tdd", "design-tracker", "release-readiness"],
   "agents": [],
-  "rules": ["skill-review-policy"],
+  "rules": ["skill-review-policy", "evaluation-set-policy"],
   "scripts": [],
   "config": []
 }
