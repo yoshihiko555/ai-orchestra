@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **評価セット（docs/evaluation/）の導入（ADR-20260703-028）**: 全 14 パッケージについて「正しい状態とは何か」を自然言語で定義した評価セットを新設。AI 生成テストが実装の都合ではなく「あるべき仕様」に沿っているかをレビューするための判断基準として使う
+  - **構成**: `docs/evaluation/README.md`（共通フォーマット・hook 型 / CLI ツール型 / スキル型の類型別観点チェックリスト・共通テストレビュー判断基準 6 項目）+ `_template.md`（雛形）+ `<pkg>.md` × 14（責務定義 / 入出力・副作用 / 評価観点 `EV-NN`（正常・異常・境界 × must/should、仕様根拠付き）/ 類型別観点 / パッケージ固有レビュー基準）
+  - **運用ルール**: `.claude/rules/evaluation-set-policy.md`（facet: `evaluation-set-policy`）を新設。テスト改修時は該当評価セットと突合し、must 観点のギャップゼロを完了条件とする。突合マトリクスは一時成果物とし、ギャップはパッケージ単位の GitHub Issue で追跡（評価セットには恒久記録しない）。テスト変更時の hook 自動化は Issue #123 で追跡
+  - **初回突合**: 既存テスト（`packages/<pkg>/tests/` + `tests/unit` + `tests/e2e` の二層）との突合を実施し、ギャップをパッケージ別 Issue として登録
+
 ### Fixed
 
 - **`skill-evolution`: メインループ実行のスキルテレメトリが起動直後に確定記録されていた問題**: `capture-skill-telemetry.py`（PostToolUse: Skill）は Skill ツールの応答（起動メッセージのみ）から自己申告を探すため、メインループ実行では常に `self_report: null`・`duration_ms` 数十 ms で記録が確定していた。設計 3.8 節の縮退方針どおり Stop hook（`capture-skill-stop.py`）を新設し、transcript から `[skill-self-report]` ブロックを抽出して `run_id` で pending と突合、正しい duration と自己申告で記録するよう修正。PostToolUse 側は自己申告が無い場合 pending を温存して Stop hook に委譲する（自己申告が見つからない stale pending は `pending.stale_after_seconds`（既定 600 秒）経過後に機械計測のみでフォールバック記録）

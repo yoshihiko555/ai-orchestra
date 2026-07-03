@@ -1,0 +1,73 @@
+# quality-gates 評価セット
+
+**パッケージ**: `packages/quality-gates`
+**類型**: hook 型
+**作成日**: 2026-07-03
+**最終レビュー日**: —（未レビュー）
+**情報源**: docs/reference/packages.md（quality-gates セクション）, .claude/rules/skill-review-policy.md, .claude/config/audit/audit-flags.json, packages/quality-gates/manifest.json, packages/quality-gates/hooks/\*.py（docstring・実装。`packages/quality-gates/README.md` は存在しないため未参照）
+
+## 1. 責務定義
+
+quality-gates は実装後の品質チェックを自動化する hook 群と、レビュー/TDD/リリース前確認のスキル群を提供する。編集直後の formatter/lint 実行、変更規模に応じたレビュー・テスト実行の提案、テスト実行結果の分析と Codex への相談提案、テスト改ざん（skip 追加・抑制コメント・テストファイル削除）の検知、ターン終了時の軽量サマリー通知を、セッションを止めずに（fail-open で）行う。
+
+### Non-Goals
+
+- 実際のテスト実行そのものは行わない（実行を提案するのみで、pytest/npm test 等の起動はユーザー/エージェント側の責務）
+- コードレビューの実施主体ではない（`review` スキルはサブエージェントへの委譲であり、hook 自体は判定を下さない）
+- CI/CD レベルのマージブロッキングゲートではない（`post-test-analysis.py` の exit code 2 はローカルセッションの当該 PostToolUse 呼び出しのみに影響する opt-in 動作）
+- マージ可否の最終判断は行わない（`release-readiness` スキルは人間の確認を前提とする）
+
+## 2. 期待する入出力・副作用
+
+| 構成要素                                                                    | 入力                                                                                         | 期待する出力                                                                                                           | 副作用                                                                                                    |
+| --------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `check-context-optimization.py` (PreToolUse Read/Grep/Bash)                 | `tool_name`, `tool_input`（file_path/offset/limit, output_mode/head_limit/pattern, command） | 閾値超過時のみ `hookSpecificOutput.additionalContext` に提案文言                                                       | なし（読み取り専用、状態ファイル書き込みなし）                                                            |
+| `post-implementation-review.py` (PostToolUse Edit/Write)                    | `tool_input.file_path`, `content`/`new_string`                                               | 3ファイル以上または100行以上の変更でレビュー提案（`additionalContext`）                                                | `/tmp/claude-impl-review-state.json` にプロジェクトスコープの状態を更新                                   |
+| `post-test-analysis.py` (PostToolUse Bash)                                  | `tool_input.command`, `tool_response.exit_code`/`stdout`                                     | 失敗検知時に Codex 相談コマンドを `additionalContext` に提示。`block_on_failed_test=true` かつ失敗時は stderr + exit 2 | `/tmp/claude-test-gate-state.json` を更新（成功時カウンタリセット）、audit イベント `quality_gate` を記録 |
+| `lint-on-save.py` (PostToolUse Edit/Write)                                  | `tool_input.file_path`                                                                       | 実行結果を `[Lint OK/Issues found]` として `additionalContext` に整形                                                  | 対象ファイルへの formatter/linter 実行（`--fix`/`--write` 等でファイル内容が書き換わる場合あり）          |
+| `test-tampering-detector.py` (PostToolUse Edit/Write/Bash/Delete/MultiEdit) | `tool_input`, git diff（追加行・削除ファイル）                                               | 新規検知時のみ `[Warning] Potential test tampering detected` を `additionalContext` に出力                             | `/tmp/claude-test-tampering-state.json` に報告済み finding を記録（再警告防止）                           |
+| `test-gate-checker.py` (PostToolUse Edit/Write)                             | `tool_input.file_path`/`content`                                                             | 3ファイル以上または100行以上の未テスト変更でテスト実行提案（`additionalContext`）                                      | `/tmp/claude-test-gate-state.json` を更新（`post-test-analysis.py` と共有・連携）                         |
+| `turn-end-summary.py` (Stop)                                                | working-context（modified_files）, `.claude/Plans.md`                                        | 変更ファイル数・Plans.md の WIP/TODO/blocked 件数を `systemMessage` として出力                                         | audit イベント `turn_end` を記録（`decision: block` は不使用）                                            |
+| `review` / `tdd` / `design-tracker` / `release-readiness` スキル            | ユーザーの明示的実行                                                                         | `review` はパスパターンに応じたレビュアー選定 + Tiered Output（Critical/High/Medium/Low）                              | 選定されたレビュアーをサブエージェントとして起動（Task 呼び出し）                                         |
+
+## 3. 評価観点
+
+- [ ] EV-01（正常 / must）: `check-context-optimization.py` は Read の offset/limit が未指定かつ行数が閾値（既定200行）を超える場合のみ提案し、offset/limit 指定時や閾値以下では何も出力しない — 根拠: 実装挙動
+- [ ] EV-02（正常 / must）: `lint-on-save.py` は編集ファイルの拡張子から対応する formatter/linter を判定して実行し、結果を `additionalContext` にまとめて報告する — 根拠: docs/reference/packages.md
+- [ ] EV-03（正常 / must）: `post-implementation-review.py` は変更ファイル数3以上または変更行数100以上でレビュー提案を1回出し、以後 24時間（TTL）は再提案しない — 根拠: 実装挙動
+- [ ] EV-04（正常 / must）: `test-gate-checker.py` はコード変更ファイル数3以上または変更行数100以上、かつ未警告状態でテスト実行を提案する — 根拠: 実装挙動
+- [ ] EV-05（正常 / must）: `post-test-analysis.py` はテストコマンド（pytest/npm test 等）実行後、失敗を検知した場合に Codex へのデバッグ相談コマンドを `additionalContext` に提示する — 根拠: docs/reference/packages.md
+- [ ] EV-06（正常 / must）: `test-tampering-detector.py` は追加行に `it.skip`/`test.skip`/`describe.skip` または `@pytest.mark.skip`/`@unittest.skip` を検知した場合に警告する — 根拠: docs/reference/packages.md
+- [ ] EV-07（正常 / must）: `test-tampering-detector.py` はテストファイル内の追加行に `eslint-disable`/`noqa`/`type: ignore` を検知した場合に警告する（テストファイル以外は対象外） — 根拠: 実装挙動
+- [ ] EV-08（正常 / must）: `test-tampering-detector.py` は git 管理下のテストファイルが `rm`/`git rm`（`bash -c` 経由含む）で削除された場合に警告する — 根拠: docs/reference/packages.md
+- [ ] EV-09（正常 / should）: `turn-end-summary.py` は Stop 時に working-context の変更ファイル数と Plans.md の WIP/TODO/blocked 件数を要約し `systemMessage` として出力する — 根拠: 実装挙動
+- [ ] EV-10（異常 / must）: 全 hook は `main()` 内の例外を捕捉して stderr にログを出し、exit code 0 を返す（内部エラーでセッションを継続不能にしない fail-open 設計） — 根拠: 実装挙動
+- [ ] EV-11（異常 / must）: `post-test-analysis.py` は `quality_gate.block_on_failed_test` の既定値 `false` のとき、テスト失敗を検知してもブロックせず `additionalContext` での提案のみに留める — 根拠: .claude/config/audit/audit-flags.json
+- [ ] EV-12（異常 / must）: `post-test-analysis.py` は `block_on_failed_test=true` かつテスト失敗検知時のみ stderr に理由を出力し exit code 2 で PostToolUse をブロックする（既定 OFF の opt-in 動作） — 根拠: 実装挙動
+- [ ] EV-13（異常 / must）: `test-gate-checker.py` は `audit-flags.json` の `quality_gate.enabled=false` のとき、テスト未実行警告を一切出さない — 根拠: 実装挙動
+- [ ] EV-14（境界 / must）: `lint-on-save.py` の各 formatter/linter コマンドは 15秒でタイムアウトし、未導入（`FileNotFoundError`）やタイムアウト時は次の候補コマンド（pnpm→npm→yarn→npx→直接実行）にフォールバックしてハングしない — 根拠: 実装挙動
+- [ ] EV-15（境界 / should）: `test-tampering-detector.py` は同一 finding（同一 file_path/label/snippet または同一削除ファイル）を一度警告した後、状態ファイルに記録し再警告しない — 根拠: 実装挙動
+- [ ] EV-16（境界 / should）: `quality_gate_config` の状態更新（`update_project_scoped_state`）は flock 排他ロック + 一時ファイル + `os.replace` で行われ、複数 worktree/セッションからの並行書き込みでも状態が破損・競合しない — 根拠: 実装挙動
+
+## 4. 類型別観点
+
+<!-- docs/evaluation/README.md の hook 型チェックリストを本パッケージの実情で具体化する -->
+
+- [ ] EV-17（境界 / must）: stdin/stdout 契約 — 各 hook は stdin の JSON（tool_name/tool_input/tool_response/cwd 等）をパースし、提案がある場合のみ `hookSpecificOutput.additionalContext`（Stop は `systemMessage`）を出力、無い場合は標準出力しない — 根拠: 実装挙動
+- [ ] EV-18（境界 / must）: exit code 規約 — 7 hook のうち exit code 2（ブロック）を使うのは `post-test-analysis.py`（EV-12）のみで、他の 6 hook は常に exit 0 で終わる — 根拠: 実装挙動
+- [ ] EV-19（異常 / must）: fail-safe 方針 — quality-gates 全体の既定は fail-open（`block_on_failed_test=false`, `quality_gate.enabled=true` でも警告のみ）であり、明示的に opt-in しない限りユーザー操作をブロックしない — 根拠: .claude/config/audit/audit-flags.json + 実装挙動
+- [ ] EV-20（境界 / should）: 冪等性 — `post-implementation-review.py` の TTL 再武装（EV-03）と `test-tampering-detector.py` の既報告 finding 抑制（EV-15）により、同一入力の繰り返しで二重提案が起きない — 根拠: 実装挙動
+- [ ] EV-21（異常 / should）: config 駆動 — `quality_gate.enabled` の尊重はパッケージ内で不均一。`test-gate-checker.py` は尊重するが、`post-implementation-review.py`/`lint-on-save.py`/`test-tampering-detector.py` には enabled チェックが無く、`post-test-analysis.py` も Codex 提案部分（additionalContext）は尊重しない（ブロック/audit イベント記録のみ enabled を見る） — 根拠: 実装挙動（情報源に明記なし。仕様確定・文書化はパッケージ別ギャップ Issue で追跡）
+- [ ] EV-22（境界 / should）: 秘匿情報 — `post-test-analysis.py` は `additionalContext` に含めるコマンド文字列・出力を 200 文字に切り詰めるが、APIキー等のパターンマスキング処理は実装上確認できない — 根拠: 実装挙動（情報源に明記なし。仕様確定・文書化はパッケージ別ギャップ Issue で追跡）
+- [ ] EV-23（境界 / should）: 性能 — PostToolUse 系 hook は git コマンド（5秒 timeout）や formatter（15秒 timeout）を同期的に subprocess 実行するため、対象ファイルが多い操作直後は数秒〜十数秒の遅延が生じ得る — 根拠: 実装挙動
+- [ ] EV-24（境界 / should）: ドキュメント整合 — `packages/quality-gates/README.md` が存在せず、責務定義の一次情報源は `docs/reference/packages.md` の概要記述と実装のみに限られる — 根拠: 実装挙動（ファイル不在を確認）
+- [ ] EV-25（境界 / should）: 後方互換性 — `audit-flags.json` の `quality_gate.*` キー（enabled/block_on_failed_test/test_file_threshold/test_line_threshold）が未定義・欠落していてもコード側デフォルト値（`QUALITY_GATE_ENABLED_DEFAULT=True` 等）にフォールバックし、config 未同期環境でも動作する — 根拠: 実装挙動
+- N/A: 生成物の同期 — quality-gates は hook スクリプトとスキル指示書のみで構成され、`templates/context/` 経由で生成される正本ファイルを持たない
+- N/A: 配布ライフサイクル（install/update/uninstall） — install/sync 機構自体は core パッケージの責務であり、quality-gates 固有のアンインストール時クリーンアップ処理（`/tmp/claude-*-state.json` 等の削除）はコード上確認できないため対象外とする（情報源に明記なし。仕様確定・文書化はパッケージ別ギャップ Issue で追跡）
+
+## 5. テストレビュー判断基準（パッケージ固有）
+
+- fail-safe 観点（`block_on_failed_test`/`quality_gate.enabled` のデフォルト値）を再現するテストを含めること。config 未定義時のデフォルト値が「fail-open」原則と一致するかを確認する
+- 状態ファイル（`/tmp/claude-*.json`）を扱うテストは他のテストと状態を共有しうるため、テスト前後のクリーンアップと `project_key`（git-common-dir）による分離が機能していることを確認する
+- `lint-on-save.py` 等の外部コマンド実行系テストは、実ツール未導入環境でも `is_missing_tool_output` によるフォールバックが機能することを確認する（CI 環境依存で不安定化させない）
+- `post-test-analysis.py` の exit code 2 分岐（EV-12）と、`quality_gate.enabled` がパッケージ内で不均一に扱われる点（EV-21）は、実装追認ではなく仕様として意図されたものかを人間レビューで重点確認する
