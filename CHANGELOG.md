@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`git-workflow`: CHANGELOG 記述ポリシー（`changelog-policy` ルール）**: CHANGELOG エントリを利用者向け変更のみ・見出し＋1〜2行に統制する新ルールを追加。パッケージの install / sync で `.claude/rules/changelog-policy.md` が配布される
+
 ### Changed
 
 - **PR 自動レビュー（Codex / CodeRabbit）の日本語化とレビュー観点の統一**: GitHub 連携の自動レビューが英語で出力され判断しづらい問題に対応
