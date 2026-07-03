@@ -122,6 +122,47 @@ Claude Code が再利用しやすい形で返答してください。
 - **Thinking**: English
 - **Code**: English
 - **Output**: English (Claude Code translates to Japanese for user)
+- **GitHub PR review**: 日本語（GitHub の Pull Request 上で直接コードレビューを行う場合、
+  レビューコメント・要約・提案はすべて日本語で出力する。この文脈ではユーザーが直接読むため、
+  上記「Output: English」より優先する。コード例・識別子は原文のまま）
+
+## Review Guidelines
+
+GitHub PR レビュー・コードレビュー依頼の際は、以下の観点で確認する。
+
+### 共通観点（重要度順）
+
+1. **後方互換性** — 既存の CLI コマンド・設定キー（`.claude/config/**`）・公開インターフェースを
+   壊す具体的なリスク【最重要】。`*.local.yaml` / `*.local.json` 上書きの仕組みを壊していないか
+2. **セキュリティ** — シークレットの埋め込み、外部入力の未バリデーション、機密情報のログ出力
+3. **正確性** — 明確なバグ、エラーハンドリング漏れ、境界条件（None・空入力・パス解決）の見落とし
+4. **正本と生成物の整合性** — 正本は `templates/context/*.md`。生成物（ルート `AGENTS.md`、
+   `templates/project/CLAUDE.md`、`templates/codex/AGENTS.md`）だけを直接編集する変更や、
+   正本変更時の再生成（`orchex context build`）漏れは指摘する
+5. **ドキュメント/テスト追従** — 仕様・挙動変更時に README とテストが同時更新されているか
+   （機械的な変更や挙動が変わらない変更には要求しない）
+
+### パス別観点
+
+- `packages/*/hooks/**`: hook は失敗しても Claude Code を止めない設計か、
+  `hook_common.py` の共通ユーティリティを正しく利用しているか
+- `packages/agent-routing/config/**`: キーの整合性、ツール参照の有効性、必須フィールドの存在
+- `scripts/**`: 引数解析の正確性、ファイルシステム操作の安全性（symlink・パス解決）、
+  エラー時の適切なメッセージ
+- `tests/**`: テストの網羅性とアサーションの適切さ
+
+### 指摘の抑制（ノイズ防止）
+
+- 具体的なリスクや失敗シナリオを示せる場合のみ指摘（finding）にする
+- 確信が持てない場合は指摘ではなく質問として書く
+
+### 報告形式
+
+- 各指摘に重要度ラベルを付ける: **Critical / High / Medium / Low**
+  - Critical: セキュリティ脆弱性、データ損失リスク、本番障害の可能性
+  - High: バグの可能性、設計上の問題、パフォーマンス劣化
+  - Medium: 保守性への将来コストが見込まれる問題
+  - Low: スタイル、命名、コメント改善
 
 ## Key Principles
 
