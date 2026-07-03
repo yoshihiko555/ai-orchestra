@@ -3,7 +3,7 @@
 **パッケージ**: `packages/tmux-monitor`
 **類型**: hook 型
 **作成日**: 2026-07-03
-**最終レビュー日**: —（未レビュー）
+**最終レビュー日**: 2026-07-03（人間レビュー完了・指摘なし。評価観点の変更なし。テストギャップは Issue #137 で追跡）
 **情報源**: docs/reference/packages.md（tmux-monitor セクション）, docs/reference/hooks.md（tmux-monitor フック一覧）
 **補助参照（構成要素の列挙のみ。期待値の導出には未使用）**: packages/tmux-monitor/manifest.json, packages/tmux-monitor/hooks/\*.py の docstring 冒頭
 
