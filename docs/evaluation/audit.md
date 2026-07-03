@@ -3,7 +3,7 @@
 **パッケージ**: `packages/audit`
 **類型**: 主: hook 型、副: CLI ツール型（ダッシュボード/KPI scripts）
 **作成日**: 2026-07-03
-**最終レビュー日**: —（未レビュー）
+**最終レビュー日**: 2026-07-04（EV-05 を agy 検出統一に確定。README 構成誤り・未文書化キー文書化・gemini レガシー撤去は Issue #126 で追跡）
 **情報源**: packages/audit/README.md, docs/reference/packages.md（audit セクション）, .claude/rules/config-loading.md（補助: packages/audit/manifest.json, hooks/scripts のファイル名と docstring 冒頭）
 
 ## 1. 責務定義
@@ -42,7 +42,7 @@ audit パッケージは、Claude Code セッション中のルーティング�
 - [ ] EV-02（正常 / must）: SessionEnd 時にイベント数・エラー数等のサマリーを含む `session_end` イベントを記録する — 根拠: packages/audit/README.md（フック一覧）
 - [ ] EV-03（正常 / must）: UserPromptSubmit 時に期待ルートを予測し `prompt` イベントとして記録する — 根拠: docs/reference/packages.md（audit セクション）
 - [ ] EV-04（正常 / must）: PostToolUse 時に実際のルートを検出し、予測ルートとの照合結果を `route_decision` イベントとして記録する — 根拠: docs/reference/packages.md（audit セクション）
-- [ ] EV-05（正常 / must）: Bash 実行時に CLI 呼び出しを検出し `cli_call` イベントとして記録する — 根拠: packages/audit/README.md（フック一覧）
+- [ ] EV-05（正常 / must）: Bash 実行時に CLI 呼び出し（codex / agy 等）を検出し `cli_call` イベントとして記録する。CLI 名称は **agy（Antigravity CLI）に統一**し、旧「gemini」表記・レガシー検出は用いない（README・docs/reference/packages.md・`audit-cli.py` の docstring/`tool` 値を agy へ寄せ、`GEMINI_EXEC_RE` 等のレガシー経路は撤去する） — 根拠: 2026-07-04 人間レビュー裁定（表記ゆれを agy 検出へ統一。現実装は agy と gemini を併存検出しているため実装ギャップあり・Issue #126）
 - [ ] EV-06（正常 / should）: SubagentStart / SubagentStop でそれぞれ `subagent_start` / `subagent_end` を記録し、`log-viewer --trace` でイベント連鎖を追跡できる — 根拠: packages/audit/README.md（log-viewer の `--trace` オプション説明）
 - [ ] EV-07（正常 / should）: InstructionsLoaded は読み込まれた指示書をログへ記録するが、stdout へ JSON 応答を出力しない観測専用フックである — 根拠: 実装挙動（audit-instructions-loaded.py モジュール docstring「stdout への JSON 出力は行わない（観測専用）」）
 - [ ] EV-08（正常 / must）: `route_audit.enabled=false` の場合、`prompt` / `route_decision` の記録が抑制される — 根拠: packages/audit/README.md（audit-flags.json フラグ表）

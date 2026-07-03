@@ -3,7 +3,7 @@
 **パッケージ**: `packages/codd`
 **類型**: CLI ツール型
 **作成日**: 2026-07-03
-**最終レビュー日**: —（未レビュー）
+**最終レビュー日**: 評価保留（2026-07-04）— パッケージ実装が未完了のため、実装完了後に改めて人間レビューを行う。それまで本評価セットの観点は暫定（ドラフト）扱いとし、テスト改修時の突合基準としては未確定とする。
 **情報源**: docs/design/codd-coherence-layer.md, docs/requirements/coherence-guardrail.md, .claude/rules/codd-frontmatter-policy.md（補助: packages/codd/manifest.json — 構成要素の列挙のみ）
 
 ## 1. 責務定義
