@@ -1,0 +1,8 @@
+# changelog-policy ルールのファセット構成定義
+name: changelog-policy
+description: CHANGELOG.md エントリの記述ポリシー（利用者向け変更のみ・簡潔に）
+type: rule
+
+# 参照するポリシー（facets/policies/ から解決）
+policies:
+  - changelog-writing
