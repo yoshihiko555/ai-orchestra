@@ -73,9 +73,7 @@ class TestGetProjectDir:
 
         assert result == str(tmp_path)
 
-    def test_resolves_nested_cwd_to_project_root(
-        self, tmp_path: Path, monkeypatch: object
-    ) -> None:
+    def test_resolves_nested_cwd_to_project_root(self, tmp_path: Path, monkeypatch: object) -> None:
         monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)  # type: ignore[attr-defined]
         (tmp_path / ".claude").mkdir()
         nested_cwd = tmp_path / "subdir" / "deeper"
@@ -85,9 +83,7 @@ class TestGetProjectDir:
 
         assert result == str(tmp_path)
 
-    def test_resolves_git_worktree_marker_file(
-        self, tmp_path: Path, monkeypatch: object
-    ) -> None:
+    def test_resolves_git_worktree_marker_file(self, tmp_path: Path, monkeypatch: object) -> None:
         monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)  # type: ignore[attr-defined]
         (tmp_path / ".git").write_text("gitdir: /tmp/example\n", encoding="utf-8")
         nested_cwd = tmp_path / "packages" / "core"
