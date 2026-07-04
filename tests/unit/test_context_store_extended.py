@@ -61,6 +61,42 @@ class TestGetProjectDir:
         result = get_project_dir({"cwd": "/some/project"})
         assert result == "/some/project"
 
+    def test_prefers_env_project_root_over_nested_cwd(
+        self, tmp_path: Path, monkeypatch: object
+    ) -> None:
+        (tmp_path / ".claude").mkdir()
+        nested_cwd = tmp_path / ".claude" / "config" / "agent-routing"
+        nested_cwd.mkdir(parents=True)
+        monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))  # type: ignore[attr-defined]
+
+        result = get_project_dir({"cwd": str(nested_cwd)})
+
+        assert result == str(tmp_path)
+
+    def test_resolves_nested_cwd_to_project_root(
+        self, tmp_path: Path, monkeypatch: object
+    ) -> None:
+        monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)  # type: ignore[attr-defined]
+        (tmp_path / ".claude").mkdir()
+        nested_cwd = tmp_path / "subdir" / "deeper"
+        nested_cwd.mkdir(parents=True)
+
+        result = get_project_dir({"cwd": str(nested_cwd)})
+
+        assert result == str(tmp_path)
+
+    def test_resolves_git_worktree_marker_file(
+        self, tmp_path: Path, monkeypatch: object
+    ) -> None:
+        monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)  # type: ignore[attr-defined]
+        (tmp_path / ".git").write_text("gitdir: /tmp/example\n", encoding="utf-8")
+        nested_cwd = tmp_path / "packages" / "core"
+        nested_cwd.mkdir(parents=True)
+
+        result = get_project_dir({"cwd": str(nested_cwd)})
+
+        assert result == str(tmp_path)
+
     def test_falls_back_to_env_var(self, monkeypatch: object) -> None:
 
         monkeypatch.setenv("CLAUDE_PROJECT_DIR", "/env/project")  # type: ignore[attr-defined]

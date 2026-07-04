@@ -99,18 +99,49 @@ def get_shared_dir(project_dir: str) -> str:
     return _shared_dir(project_dir)
 
 
+def _find_project_root(candidate: str) -> str | None:
+    """`.claude` または `.git` を持つ親ディレクトリを返す。"""
+    try:
+        path = Path(candidate).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return None
+
+    if not path.exists():
+        return None
+    if path.is_file():
+        path = path.parent
+
+    for current in (path, *path.parents):
+        if (current / ".claude").exists() or (current / ".git").exists():
+            return str(current)
+    return None
+
+
 def get_project_dir(data: dict) -> str:
     """hook 入力からプロジェクトディレクトリを取得する。
 
     優先順位:
-    1. data["cwd"]
-    2. 環境変数 CLAUDE_PROJECT_DIR
-    3. os.getcwd()
+    1. 環境変数 CLAUDE_PROJECT_DIR から解決できるプロジェクトルート
+    2. data["cwd"] から親方向に解決できるプロジェクトルート
+    3. 既存互換の raw cwd / CLAUDE_PROJECT_DIR / os.getcwd()
     """
     cwd = data.get("cwd") or ""
+    env_project_dir = os.environ.get("CLAUDE_PROJECT_DIR") or ""
+
+    for candidate in (env_project_dir, cwd):
+        if not candidate:
+            continue
+        project_root = _find_project_root(candidate)
+        if project_root:
+            return project_root
+
     if cwd:
         return cwd
-    return os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())
+    if env_project_dir:
+        return env_project_dir
+
+    fallback = os.getcwd()
+    return _find_project_root(fallback) or fallback
 
 
 def init_context_dir(project_dir: str) -> None:
