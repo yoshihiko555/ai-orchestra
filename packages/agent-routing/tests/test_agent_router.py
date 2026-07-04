@@ -275,3 +275,33 @@ def test_build_cli_suggestion_claude_direct_returns_none() -> None:
     config = {}
     result = route_config.build_cli_suggestion("claude-direct", "planner", "計画", config)
     assert result is None
+
+
+def test_build_cli_suggestion_antigravity_no_stdin_redirect() -> None:
+    """EV-11: agy -p は非対話完結のため stdin リダイレクト不要。
+
+    `< /dev/null` は含まれないこと（`2>/dev/null` は許容されるため
+    "/dev/null" 全体ではなく "< /dev/null" を厳密に検証する）。
+    """
+    config = {"antigravity": {"model": "gemini-3.1-pro-high"}}
+    result = route_config.build_cli_suggestion("antigravity", "researcher", "調べて", config)
+    assert result is not None
+    assert "< /dev/null" not in result
+
+
+def test_build_cli_suggestion_codex_shows_analysis_sandbox_only() -> None:
+    """EV-22: hook 提案は分析用（analysis）sandbox のみを表示する現状実装（仕様未文書化）の確認。
+
+    implementation sandbox の値は提案文字列に含まれないこと。
+    """
+    config = {
+        "codex": {
+            "model": "gpt-5.3-codex",
+            "sandbox": {"analysis": "dummy-analysis-mode", "implementation": "dummy-impl-mode"},
+            "flags": "--full-auto",
+        },
+    }
+    result = route_config.build_cli_suggestion("codex", "tester", "テスト", config)
+    assert result is not None
+    assert "dummy-analysis-mode" in result
+    assert "dummy-impl-mode" not in result
