@@ -93,6 +93,20 @@ class TestTaskStateSummary:
         assert "WIP: 1" in result.stdout
         assert "TODO: 1" in result.stdout
 
+    def test_nested_cwd_initializes_root_context_only(self, tmp_path: Path) -> None:
+        """SessionStart の cwd がサブディレクトリでも root の context を初期化する。"""
+        plans_dir = tmp_path / ".claude"
+        plans_dir.mkdir(parents=True)
+        (plans_dir / "Plans.md").write_text("# Plans\n\n- `cc:TODO` test\n", encoding="utf-8")
+        nested_cwd = tmp_path / ".claude" / "config" / "agent-routing"
+        nested_cwd.mkdir(parents=True)
+
+        result = _run_load_task_state(nested_cwd)
+
+        assert result.returncode == 0
+        assert _meta_path(tmp_path).is_file()
+        assert not (nested_cwd / ".claude" / "context").exists()
+
     def test_wip_displayed_before_todo(self, tmp_path: Path) -> None:
         """#2: WIP が TODO より先に表示される"""
         plans_dir = tmp_path / ".claude"
