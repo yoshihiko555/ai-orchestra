@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **スキルフロー評価セット（`docs/evaluation/skills/`）の新設**: 評価セットを二層構造に整理。パッケージ評価セット（pytest で強制、従来どおり `docs/evaluation/` 直下）と分離して、facets 由来スキル群の「あるべき振る舞い」をフロー単位で定義する層を追加。第 1 弾として `design-flow.md`（design + preflight + startproject の設計フロー、EV-01〜23）とスキル用 `_template.md` を作成。`evaluation-set-policy` ルールにスキル層の扱い（pytest 突合の対象外、PR レビュー時突合・`/config-analyze`・実行観察で検証）を追記
+
+- **`/design`: 各フェーズ末に二段品質ゲート（セルフチェック → 自動レビュー）を導入**: Phase 1-3 の受け入れ確認前に、reference 末尾のセルフチェックリストとフェーズ対応レビュアー（要件 = `requirements`、基本設計 = `architecture-reviewer` + 条件付き `security-reviewer`、詳細設計 = `spec-reviewer`）による設計書レビューを必須化。設計ドキュメント専用の重要度定義・ゲート通過条件（Critical=0、High 処理済み）・フェーズ間ドリフトプロトコルを `references/design-review.md` に定義
+- **`/preflight`: 設計要否判定（3 段階）と設計成果物の読み込みを追加**: 要件確定時に「設計不要 / 軽量設計メモ / フル設計（`/design` へ誘導）」を判定。Phase 2 で `docs/` 配下の既存設計書と impact-analysis をタスク分解の入力として読み込む
+
 - **評価セット（docs/evaluation/）の導入（ADR-20260703-028）**: 全 14 パッケージについて「正しい状態とは何か」を自然言語で定義した評価セットを新設。AI 生成テストが実装の都合ではなく「あるべき仕様」に沿っているかをレビューするための判断基準として使う
   - **構成**: `docs/evaluation/README.md`（共通フォーマット・hook 型 / CLI ツール型 / スキル型の類型別観点チェックリスト・共通テストレビュー判断基準 6 項目）+ `_template.md`（雛形）+ `<pkg>.md` × 14（責務定義 / 入出力・副作用 / 評価観点 `EV-NN`（正常・異常・境界 × must/should、仕様根拠付き）/ 類型別観点 / パッケージ固有レビュー基準）
   - **運用ルール**: `.claude/rules/evaluation-set-policy.md`（facet: `evaluation-set-policy`）を新設。テスト改修時は該当評価セットと突合し、must 観点のギャップゼロを完了条件とする。突合マトリクスは一時成果物とし、ギャップはパッケージ単位の GitHub Issue で追跡（評価セットには恒久記録しない）。テスト変更時の hook 自動化は Issue #123 で追跡
@@ -17,6 +22,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **`/startproject`: 設計成果物（`docs/`）との連携を明記**: Phase 2 で既存設計書を読み込んで再質問を削減、Phase 3 の設計レビューと Phase 7 の実装後レビュー（`spec-reviewer` による実装と設計書の突合）で設計書との整合確認を追加
+
 - **PR 自動レビュー（Codex / CodeRabbit）の日本語化とレビュー観点の統一**: GitHub 連携の自動レビューが英語で出力され判断しづらい問題に対応
   - **Codex**: `templates/context/codex.md`（正本）の言語プロトコルに「GitHub PR review は日本語で出力（コード例・識別子は原文のまま）」を追記。委譲フローの「Output: English → Claude が翻訳」設計は維持し、レビュー文脈のみ日本語を優先
   - **Codex**: 公式推奨の `## Review Guidelines` セクションを新設。共通観点（後方互換性・セキュリティ・正確性・正本と生成物の整合性・ドキュメント/テスト追従）、パス別観点（hooks / agent-routing config / scripts / tests。ルート `AGENTS.md` のみ）、ノイズ防止（具体的リスクを示せる場合のみ指摘・不確実なら質問）、重要度ラベル（Critical/High/Medium/Low、`skill-review-policy` と同一語彙）を定義
@@ -25,6 +32,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **配布先 `CLAUDE.md` の AI Orchestra テンプレート参照パスを修正**: `templates/context/claude.md` の正本・再生成コマンド表記を `$AI_ORCHESTRA_DIR/...` 形式にし、導入先プロジェクトで存在しない相対パスを指さないようにした
+- **`core`: サブエージェント結果の context 保存先が cwd に引きずられる問題**: `capture-task-result.py` がサブディレクトリ cwd を受け取っても、`CLAUDE_PROJECT_DIR` または親方向の `.claude` / `.git` 探索でプロジェクトルートを解決し、`.claude/context/` を誤った場所に生成しないよう修正
 - **`skill-evolution`: メインループ実行のスキルテレメトリが起動直後に確定記録されていた問題**: `capture-skill-telemetry.py`（PostToolUse: Skill）は Skill ツールの応答（起動メッセージのみ）から自己申告を探すため、メインループ実行では常に `self_report: null`・`duration_ms` 数十 ms で記録が確定していた。設計 3.8 節の縮退方針どおり Stop hook（`capture-skill-stop.py`）を新設し、transcript から `[skill-self-report]` ブロックを抽出して `run_id` で pending と突合、正しい duration と自己申告で記録するよう修正。PostToolUse 側は自己申告が無い場合 pending を温存して Stop hook に委譲する（自己申告が見つからない stale pending は `pending.stale_after_seconds`（既定 600 秒）経過後に機械計測のみでフォールバック記録）
 - **skill-evolution データの Git 管理を整備**: `.claude/skill-evolution/metrics/` と `.claude/skill-evolution/pending/`（環境ローカルなテレメトリ）を `.gitignore` sync の `ENTRIES` に追加。`lessons/`（人間可読の学習資産・注入対象）は Git 追跡対象のまま維持する
 - `docs/design/skill-evolution.md` の lessons/metrics 保存先記述を実装に合わせて修正（`packages/skill-evolution/` 配下 → `.claude/skill-evolution/` 配下、正本は config `skill-evolution.yaml` の `storage.dir`）
