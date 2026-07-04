@@ -337,10 +337,55 @@ def test_to_relative_path_handles_absolute_path(tmp_path) -> None:
     assert relative == "packages/quality-gates/tests/test_foo.py"
 
 
-def test_evaluation_set_check_enabled_defaults_to_true_when_missing(tmp_path) -> None:
-    assert evaluation_set_checker.evaluation_set_check_enabled(str(tmp_path)) is True
+def test_evaluation_set_check_enabled_defaults_to_true_when_missing() -> None:
+    assert evaluation_set_checker.evaluation_set_check_enabled({}) is True
 
 
-def test_evaluation_set_check_enabled_respects_false(tmp_path) -> None:
-    _write_flags(tmp_path, enabled=False)
-    assert evaluation_set_checker.evaluation_set_check_enabled(str(tmp_path)) is False
+def test_evaluation_set_check_enabled_respects_false() -> None:
+    config = {"features": {"evaluation_set_check": {"enabled": False}}}
+    assert evaluation_set_checker.evaluation_set_check_enabled(config) is False
+
+
+# ---------------------------------------------------------------------------
+# Ordering / config-read-once regressions (code review: cheap checks before
+# expensive config read; audit-flags.json read only once per invocation)
+# ---------------------------------------------------------------------------
+
+
+def test_config_not_read_for_non_test_files(monkeypatch, capsys, tmp_path) -> None:
+    """Non-test files short-circuit via is_target_test_file() before any
+    audit-flags.json read happens (cheap check first)."""
+
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("load_package_config must not be called for non-test files")
+
+    monkeypatch.setattr(evaluation_set_checker, "load_package_config", _fail_if_called)
+    payload = _build_payload("packages/foo/hooks/bar.py", tmp_path)
+
+    output = _run_main(monkeypatch, capsys, payload)
+
+    assert output == ""
+
+
+def test_config_read_only_once_per_invocation(monkeypatch, capsys, tmp_path) -> None:
+    """audit-flags.json is loaded exactly once per main() invocation, shared
+    between evaluation_set_check_enabled() and resolve_state_path()."""
+    _make_package_dir(tmp_path, "quality-gates")
+    _make_evaluation_doc(tmp_path, "quality-gates")
+
+    call_count = {"n": 0}
+    original_load_package_config = evaluation_set_checker.load_package_config
+
+    def _counting_load_package_config(*args, **kwargs):
+        call_count["n"] += 1
+        return original_load_package_config(*args, **kwargs)
+
+    monkeypatch.setattr(
+        evaluation_set_checker, "load_package_config", _counting_load_package_config
+    )
+    payload = _build_payload("packages/quality-gates/tests/test_foo.py", tmp_path)
+
+    output = _run_main(monkeypatch, capsys, payload)
+
+    assert output != ""
+    assert call_count["n"] == 1

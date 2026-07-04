@@ -183,9 +183,13 @@ def identify_package(relative_path: str, project_dir: str) -> str | None:
     return pkg
 
 
-def evaluation_set_check_enabled(project_dir: str) -> bool:
-    """Return whether the evaluation_set_check feature flag is enabled."""
-    config = load_package_config("audit", "audit-flags.json", project_dir)
+def evaluation_set_check_enabled(config: dict) -> bool:
+    """Return whether the evaluation_set_check feature flag is enabled.
+
+    Takes an already-loaded audit-flags.json config dict (see
+    load_package_config) so callers that need both the enabled flag and
+    resolve_state_path()'s paths.state_dir don't read the config file twice.
+    """
     feature = config.get("features", {}).get("evaluation_set_check", {})
     return bool(feature.get("enabled", True))
 
@@ -215,9 +219,12 @@ def build_message(pkg: str | None, doc_exists: bool) -> str:
     )
 
 
-def resolve_state_path(project_dir: str) -> str | None:
-    """Resolve the dedup state file path, honoring audit-flags.json's paths.state_dir."""
-    config = load_package_config("audit", "audit-flags.json", project_dir)
+def resolve_state_path(project_dir: str, config: dict) -> str | None:
+    """Resolve the dedup state file path, honoring audit-flags.json's paths.state_dir.
+
+    Takes an already-loaded audit-flags.json config dict (see
+    evaluation_set_check_enabled) to avoid reading the config file twice.
+    """
     state_dir_value = config.get("paths", {}).get("state_dir")
     state_dir = (
         state_dir_value
@@ -284,11 +291,17 @@ def main() -> None:
 
     session_id = str(data.get("session_id") or "")
 
-    if not evaluation_set_check_enabled(project_dir):
-        sys.exit(0)
-
+    # Cheap, filesystem/config-free checks first (path pattern matching only)
+    # before the more expensive audit-flags.json config read below (mirrors
+    # test-gate-checker.py's is_code_file()-before-config-read convention).
     relative_path = to_relative_path(file_path, project_dir)
     if not is_target_test_file(relative_path):
+        sys.exit(0)
+
+    # Read audit-flags.json once and reuse it for both the feature flag check
+    # and resolve_state_path()'s paths.state_dir lookup.
+    config = load_package_config("audit", "audit-flags.json", project_dir)
+    if not evaluation_set_check_enabled(config):
         sys.exit(0)
 
     pkg = identify_package(relative_path, project_dir)
@@ -297,7 +310,7 @@ def main() -> None:
     # are each still notified once per session.
     pkg_key = pkg if pkg is not None else f"unknown:{relative_path}"
 
-    state_path = resolve_state_path(project_dir)
+    state_path = resolve_state_path(project_dir, config)
     state = load_state(state_path) if state_path else dict(DEFAULT_STATE)
     if already_notified(state, session_id, pkg_key):
         sys.exit(0)
