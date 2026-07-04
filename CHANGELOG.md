@@ -31,6 +31,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **配布先 `CLAUDE.md` の AI Orchestra テンプレート参照パスを修正**: `templates/context/claude.md` の正本・再生成コマンド表記を `$AI_ORCHESTRA_DIR/...` 形式にし、導入先プロジェクトで存在しない相対パスを指さないようにした
 - **`core`: サブエージェント結果の context 保存先が cwd に引きずられる問題**: `capture-task-result.py` がサブディレクトリ cwd を受け取っても、`CLAUDE_PROJECT_DIR` または親方向の `.claude` / `.git` 探索でプロジェクトルートを解決し、`.claude/context/` を誤った場所に生成しないよう修正
 - **`skill-evolution`: メインループ実行のスキルテレメトリが起動直後に確定記録されていた問題**: `capture-skill-telemetry.py`（PostToolUse: Skill）は Skill ツールの応答（起動メッセージのみ）から自己申告を探すため、メインループ実行では常に `self_report: null`・`duration_ms` 数十 ms で記録が確定していた。設計 3.8 節の縮退方針どおり Stop hook（`capture-skill-stop.py`）を新設し、transcript から `[skill-self-report]` ブロックを抽出して `run_id` で pending と突合、正しい duration と自己申告で記録するよう修正。PostToolUse 側は自己申告が無い場合 pending を温存して Stop hook に委譲する（自己申告が見つからない stale pending は `pending.stale_after_seconds`（既定 600 秒）経過後に機械計測のみでフォールバック記録）
 - **skill-evolution データの Git 管理を整備**: `.claude/skill-evolution/metrics/` と `.claude/skill-evolution/pending/`（環境ローカルなテレメトリ）を `.gitignore` sync の `ENTRIES` に追加。`lessons/`（人間可読の学習資産・注入対象）は Git 追跡対象のまま維持する
