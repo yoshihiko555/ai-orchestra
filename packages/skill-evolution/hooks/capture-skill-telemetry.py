@@ -71,6 +71,8 @@ def main() -> None:
 
     # tool_response の文字列葉から自己申告ブロックを抽出（json.dumps だと " がエスケープされ読めない）。
     self_report = se.parse_self_report(se.extract_text(data.get("tool_response")))
+    if self_report is None:
+        return
     sr_run_id = str(self_report.get("run_id") or "") if isinstance(self_report, dict) else ""
     run_id, duration_ms = se.consume_pending(project_dir, sr_run_id, skill, config)
 

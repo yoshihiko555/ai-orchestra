@@ -16,6 +16,8 @@ scope:
   exclude:
     - "docs/adr/_template.md"
     - "docs/adr/DECISIONS.md"
+    # 評価セットは CODD 統合まで対象外（ADR-20260703-028: kind 語彙に eval がないため）
+    - "docs/evaluation/**/*.md"
 
 # 許可する kind 語彙（scope と整合させる）。
 kinds:

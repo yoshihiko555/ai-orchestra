@@ -39,6 +39,7 @@ DEFAULTS: dict[str, Any] = {
     "enabled": True,
     "storage": {"dir": ".claude/skill-evolution"},
     "lessons": {"max_lines": 40, "inject_max_chars": 4000},
+    "pending": {"stale_after_seconds": 600},
     "offline": {
         "max_iterations": 10,
         "max_cost_usd": 5.0,
@@ -172,13 +173,79 @@ def gen_run_id(skill: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def write_pending(project_dir: str, run_id: str, config: dict | None = None) -> None:
-    """発火時に pending（run_id・開始時刻）を run_id キーで記録する（0o600）。"""
+def write_pending(
+    project_dir: str, run_id: str, config: dict | None = None, skill: str = ""
+) -> None:
+    """発火時に pending（run_id・開始時刻・skill）を run_id キーで記録する（0o600）。
+
+    skill を保存しておくと、Stop hook の縮退記録（自己申告欠落時のフォールバック）で
+    run_id からの逆算なしに skill 名を参照できる。
+    """
     path = pending_path(project_dir, run_id, config)
     _ensure_parent(path)
+    record: dict[str, Any] = {"run_id": run_id, "start_epoch": time.time(), "ts": now_iso()}
+    if skill:
+        record["skill"] = skill
     fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump({"run_id": run_id, "start_epoch": time.time(), "ts": now_iso()}, f)
+        json.dump(record, f)
+
+
+_RUN_ID_SKILL_RE = re.compile(r"^(.*)-\d{8}T\d{6}-[0-9a-f]{4}$")
+
+
+def _skill_from_run_id(run_id: str) -> str:
+    """run_id（`<skill>-<stamp>-<suffix>`）から skill 部分を復元する。
+
+    旧形式（skill 未保存）の pending ファイルからの best-effort フォールバック。
+    """
+    match = _RUN_ID_SKILL_RE.match(run_id or "")
+    return match.group(1) if match else ""
+
+
+def _read_pending_file(path: str) -> dict | None:
+    """pending JSON を読む。読めない/壊れていれば None。"""
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def list_pending(project_dir: str, config: dict | None = None) -> list[dict]:
+    """pending/ 配下の全エントリを返す（run_id・skill・start_epoch・path）。
+
+    壊れた/不完全なファイルはスキップする。Stop hook の縮退記録が走査対象を得るための一覧化。
+    """
+    pending_dir = os.path.join(data_dir(project_dir, config), "pending")
+    if not os.path.isdir(pending_dir):
+        return []
+    entries: list[dict] = []
+    for name in sorted(os.listdir(pending_dir)):
+        if not name.endswith(".json"):
+            continue
+        path = os.path.join(pending_dir, name)
+        data = _read_pending_file(path)
+        if data is None:
+            continue
+        run_id = str(data.get("run_id") or "")
+        skill = str(data.get("skill") or "") or _skill_from_run_id(run_id)
+        start_epoch = data.get("start_epoch")
+        if not run_id or not skill or not isinstance(start_epoch, (int, float)):
+            continue
+        entries.append(
+            {"run_id": run_id, "skill": skill, "start_epoch": float(start_epoch), "path": path}
+        )
+    return entries
+
+
+def discard_pending(path: str) -> None:
+    """pending ファイルを破棄する（存在しない/権限エラーでもクラッシュしない）。"""
+    try:
+        os.remove(path)
+    except OSError:
+        pass
 
 
 def consume_pending(
@@ -432,21 +499,31 @@ def extract_text(node: object) -> str:
     return "\n".join(chunks)
 
 
+def parse_self_reports(text: str) -> list[dict]:
+    """テキストからすべての `[skill-self-report]{json}[/skill-self-report]` を抽出する。
+
+    見つからない/壊れている/辞書でなければ除外し、有効なものを出現順で返す。
+    """
+    if not text:
+        return []
+    reports = []
+    for raw in _SELF_REPORT_RE.findall(text):
+        try:
+            obj = json.loads(raw.strip())
+        except (ValueError, json.JSONDecodeError):
+            continue
+        if isinstance(obj, dict):
+            reports.append(obj)
+    return reports
+
+
 def parse_self_report(text: str) -> dict | None:
     """テキストから `[skill-self-report]{json}[/skill-self-report]` を抽出する。
 
     複数あれば最後のものを採用する。見つからない/壊れていれば None。
     """
-    if not text:
-        return None
-    matches = _SELF_REPORT_RE.findall(text)
-    if not matches:
-        return None
-    try:
-        obj = json.loads(matches[-1].strip())
-    except (ValueError, json.JSONDecodeError):
-        return None
-    return obj if isinstance(obj, dict) else None
+    reports = parse_self_reports(text)
+    return reports[-1] if reports else None
 
 
 def _safe_int(value: object, default: int = 0) -> int:

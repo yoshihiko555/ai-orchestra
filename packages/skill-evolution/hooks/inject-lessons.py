@@ -91,7 +91,7 @@ def main() -> None:
         return
 
     run_id = se.gen_run_id(skill)
-    se.write_pending(project_dir, run_id, config)  # run_id キー・並行実行安全
+    se.write_pending(project_dir, run_id, config, skill=skill)  # run_id キー・並行実行安全
 
     lessons = se.read_lessons(project_dir, skill, config)
     max_chars = int((config.get("lessons") or {}).get("inject_max_chars") or 4000)

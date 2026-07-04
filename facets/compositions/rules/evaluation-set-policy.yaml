@@ -1,0 +1,8 @@
+# evaluation-set-policy ルールのファセット構成定義
+name: evaluation-set-policy
+description: 評価セット（docs/evaluation/）との突合をテスト改修の完了条件とする運用ルール
+type: rule
+
+policies: []
+
+instruction: evaluation-set-policy
