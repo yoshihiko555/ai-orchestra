@@ -13,9 +13,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - **運用ルール**: `.claude/rules/evaluation-set-policy.md`（facet: `evaluation-set-policy`）を新設。テスト改修時は該当評価セットと突合し、must 観点のギャップゼロを完了条件とする。突合マトリクスは一時成果物とし、ギャップはパッケージ単位の GitHub Issue で追跡（評価セットには恒久記録しない）。テスト変更時の hook 自動化は Issue #123 で追跡
   - **初回突合**: 既存テスト（`packages/<pkg>/tests/` + `tests/unit` + `tests/e2e` の二層）との突合を実施し、ギャップをパッケージ別 Issue として登録
 - **`git-workflow`: CHANGELOG 記述ポリシー（`changelog-policy` ルール）**: CHANGELOG エントリを利用者向け変更のみ・見出し＋1〜2行に統制する新ルールを追加。パッケージの install / sync で `.claude/rules/changelog-policy.md` が配布される
+- **`codex-harness`: Codex CLI 向け repo-local ハーネスパッケージを新設**: hooks（secret scan / pre-tool-use policy / stop 時の JSON 検証）・rules・schemas を `.codex/` 配下に配布し、非対話タスク実行（`codex_run`）と read-only セルフレビュー（`codex_review`）を提供する。設計は `docs/design/codex-cli-harness.md` を参照
+- **`orchex install --force`**: `.codex/` 配下の配布ファイルがユーザー改変済みでも上書きインストールできるフラグを追加
 
 ### Changed
 
+- **パッケージ manifest に `codex_files` / `facet_targets` フィールドを追加**: パッケージ作者が Codex CLI 向け配布ファイル（`.codex/` 配下、hash 保護対象）とファセットビルド対象を manifest で宣言できるようになった
+- **`.codex/runs/` / `.codex/reports/` を `.gitignore` に自動追加**: codex-harness インストール時に run artifact / レビュー結果の出力先が自動的に無視されるようになった
+- **`.codex/config.toml` への `default_permissions` / `[permissions.*]` 自動マージ**: codex-harness インストール時に permission 設定を既存の `.codex/config.toml` へ非破壊マージするようになった（既存のコメント・他設定は保持）
 - **PR 自動レビュー（Codex / CodeRabbit）の日本語化とレビュー観点の統一**: GitHub 連携の自動レビューが英語で出力され判断しづらい問題に対応
   - **Codex**: `templates/context/codex.md`（正本）の言語プロトコルに「GitHub PR review は日本語で出力（コード例・識別子は原文のまま）」を追記。委譲フローの「Output: English → Claude が翻訳」設計は維持し、レビュー文脈のみ日本語を優先
   - **Codex**: 公式推奨の `## Review Guidelines` セクションを新設。共通観点（後方互換性・セキュリティ・正確性・正本と生成物の整合性・ドキュメント/テスト追従）、パス別観点（hooks / agent-routing config / scripts / tests。ルート `AGENTS.md` のみ）、ノイズ防止（具体的リスクを示せる場合のみ指摘・不確実なら質問）、重要度ラベル（Critical/High/Medium/Low、`skill-review-policy` と同一語彙）を定義

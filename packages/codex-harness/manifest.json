@@ -1,0 +1,51 @@
+{
+  "name": "codex-harness",
+  "version": "0.1.0",
+  "description": "Codex CLI 向け repo-local ハーネス（hooks によるガードレールと Stop 時検証の自動化）",
+  "depends": ["codex-suggestions"],
+  "hooks": {},
+  "files": [],
+  "skills": [],
+  "agents": [],
+  "rules": [],
+  "config": [],
+  "scripts": [
+    {
+      "path": "scripts/codex_run.py",
+      "description": "非対話タスクモードで codex exec --json を実行し、run artifact 一式を保存する"
+    },
+    {
+      "path": "scripts/codex_review.py",
+      "description": "read-only レビューモードで base ブランチとの diff を codex exec に渡し、構造化 findings を保存する"
+    }
+  ],
+  "facet_targets": ["codex"],
+  "codex_files": [
+    { "source": "codex/hooks.json", "target": ".codex/hooks.json" },
+    {
+      "source": "codex/hooks/user_prompt_secret_scan.py",
+      "target": ".codex/hooks/user_prompt_secret_scan.py"
+    },
+    {
+      "source": "codex/hooks/pre_tool_use_policy.py",
+      "target": ".codex/hooks/pre_tool_use_policy.py"
+    },
+    {
+      "source": "codex/hooks/stop_validate.py",
+      "target": ".codex/hooks/stop_validate.py"
+    },
+    {
+      "source": "codex/schemas/task_result.schema.json",
+      "target": ".codex/schemas/task_result.schema.json"
+    },
+    {
+      "source": "codex/schemas/review_result.schema.json",
+      "target": ".codex/schemas/review_result.schema.json"
+    },
+    {
+      "source": "codex/rules/codex-harness.rules",
+      "target": ".codex/rules/codex-harness.rules"
+    },
+    { "source": "codex/validation.json", "target": ".codex/validation.json" }
+  ]
+}

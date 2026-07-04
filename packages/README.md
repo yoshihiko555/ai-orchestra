@@ -4,18 +4,19 @@ AI Orchestra のパッケージ一覧と詳細。`packages/*/agents` と `packag
 
 ## パッケージ概要
 
-| パッケージ                                          | 概要                                                       | カテゴリ     |
-| --------------------------------------------------- | ---------------------------------------------------------- | ------------ |
-| [core](#core)                                       | 全パッケージ共通の基盤ライブラリ                           | 基盤         |
-| [agent-routing](#agent-routing)                     | cli-tools.yaml 駆動のエージェントルーティング提案          | 基盤         |
-| [quality-gates](#quality-gates)                     | 実装後レビュー・テスト分析・自動 lint の品質ゲート         | 品質         |
-| [codd](#codd)                                       | ドキュメント依存グラフの scan / validate（整合性レイヤー） | 整合性       |
-| [audit](#audit)                                     | 統一イベントログによるオーケストレーション監査基盤         | 監査         |
-| [codex-suggestions](#codex-suggestions)             | ファイル編集・プラン完了時の Codex 相談提案                | 提案         |
-| [antigravity-suggestions](#antigravity-suggestions) | Web 検索・fetch 時の Antigravity リサーチ提案              | 提案         |
-| [git-workflow](#git-workflow)                       | Git/GitHub ワークフロー（Issue・PR・開発フロー）           | ワークフロー |
-| [cocoindex](#cocoindex)                             | cocoindex MCP サーバーの自動プロビジョニング               | MCP          |
-| [tmux-monitor](#tmux-monitor)                       | tmux でサブエージェント出力をリアルタイム監視              | 監視         |
+| パッケージ                                          | 概要                                                                           | カテゴリ     |
+| --------------------------------------------------- | ------------------------------------------------------------------------------ | ------------ |
+| [core](#core)                                       | 全パッケージ共通の基盤ライブラリ                                               | 基盤         |
+| [agent-routing](#agent-routing)                     | cli-tools.yaml 駆動のエージェントルーティング提案                              | 基盤         |
+| [quality-gates](#quality-gates)                     | 実装後レビュー・テスト分析・自動 lint の品質ゲート                             | 品質         |
+| [codd](#codd)                                       | ドキュメント依存グラフの scan / validate（整合性レイヤー）                     | 整合性       |
+| [audit](#audit)                                     | 統一イベントログによるオーケストレーション監査基盤                             | 監査         |
+| [codex-suggestions](#codex-suggestions)             | ファイル編集・プラン完了時の Codex 相談提案                                    | 提案         |
+| [codex-harness](#codex-harness)                     | Codex CLI 向け repo-local ハーネス（hooks/rules/schemas + 非対話 run・review） | ハーネス     |
+| [antigravity-suggestions](#antigravity-suggestions) | Web 検索・fetch 時の Antigravity リサーチ提案                                  | 提案         |
+| [git-workflow](#git-workflow)                       | Git/GitHub ワークフロー（Issue・PR・開発フロー）                               | ワークフロー |
+| [cocoindex](#cocoindex)                             | cocoindex MCP サーバーの自動プロビジョニング                                   | MCP          |
+| [tmux-monitor](#tmux-monitor)                       | tmux でサブエージェント出力をリアルタイム監視                                  | 監視         |
 
 ---
 
@@ -136,6 +137,25 @@ AI Orchestra のパッケージ一覧と詳細。`packages/*/agents` と `packag
   - `AGENTS.md` — init/sync 時に配布（Codex CLI 用指示書）
   - `.codex/config.toml` — init 時に配布
   - `.codex/skills/context-loader/` — init 時に配布
+
+---
+
+### codex-harness
+
+Codex CLI を主たる利用面とする repo-local ハーネス。hooks（secret scan / pre-tool-use policy / stop 時の JSON 検証）と非対話実行スクリプト（run / read-only review）を `.codex/` 配下に hash 保護付きで配布する。詳細設計は [docs/design/codex-cli-harness.md](../docs/design/codex-cli-harness.md) を参照。
+
+- **バージョン**: 0.1.0
+- **依存**: codex-suggestions
+
+**提供するもの:**
+
+- scripts:
+  - `codex_run.py` — 非対話タスクモードで `codex exec --json` を実行し、run artifact 一式を保存
+  - `codex_review.py` — read-only レビューモードで base ブランチとの diff を渡し、構造化 findings を保存
+- context files（`codex_files`。hash 保護付き配布、`.codex/` 配下）:
+  - `.codex/hooks.json`, `.codex/hooks/user_prompt_secret_scan.py`, `.codex/hooks/pre_tool_use_policy.py`, `.codex/hooks/stop_validate.py`
+  - `.codex/schemas/task_result.schema.json`, `.codex/schemas/review_result.schema.json`
+  - `.codex/rules/codex-harness.rules`, `.codex/validation.json`
 
 ---
 

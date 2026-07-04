@@ -8,7 +8,9 @@ import re
 import shutil
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
+from typing import Any
 
 try:
     import yaml
@@ -24,6 +26,106 @@ from lib.hook_utils import (
     parse_pkg_from_command,
     remove_hook_from_settings,
 )
+from lib.toml_merge import (
+    find_toml_section,
+    upsert_toml_key_in_section,
+    upsert_toml_section,
+    upsert_toml_top_level_key,
+)
+
+_PERMISSIONS_SECTION_PREFIX = "permissions."
+_CODEX_HARNESS_CONFIG_REL = Path("codex") / "config-harness.toml"
+
+
+def _toml_scalar(value: Any) -> str:
+    """Python 値を TOML の値リテラル文字列に変換する（bool/str/int 限定の簡易実装）。"""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, str):
+        return json.dumps(value)
+    return str(value)
+
+
+def _iter_toml_sections(content: str, header_prefix: str) -> list[tuple[str, str]]:
+    """content 内の `[<header_prefix>...]` セクションをヘッダ名とセクション全文のペアで返す。"""
+    header_re = re.compile(rf"^\[({re.escape(header_prefix)}[^\]]*)\]", re.MULTILINE)
+    lines = content.splitlines()
+    sections: list[tuple[str, str]] = []
+    for match in header_re.finditer(content):
+        header = match.group(1)
+        span = find_toml_section(content, header)
+        if span is None:
+            continue
+        sections.append((header, "\n".join(lines[span[0] : span[1]])))
+    return sections
+
+
+def apply_codex_harness_config(
+    project_dir: Path,
+    orchestra_path: Path,
+    installed_packages: list[str],
+) -> bool:
+    """codex-harness の config-harness.toml をプロジェクトの `.codex/config.toml` へマージする。
+
+    codex-harness が未インストール、または `.codex/config.toml` が存在しない場合は
+    何もせず False を返す（config.toml の初期所有は codex-suggestions のため、
+    ここでは新規作成しない）。
+
+    マージ規則:
+      - `[permissions.*]` セクション: upsert（ハーネス所有、常に最新化）
+      - `default_permissions`（トップレベルキー）と `[features].hooks`:
+        add-if-missing（ユーザー値を上書きしない）
+
+    Returns:
+        True: config.toml を更新した。False: 変更なし、またはスキップした。
+    """
+    if "codex-harness" not in installed_packages:
+        return False
+
+    config_path = project_dir / ".codex" / "config.toml"
+    if not config_path.is_file():
+        print(
+            "[warn] .codex/config.toml が見つからないため codex-harness 設定マージをスキップしました"
+            "（config.toml の初期配置は codex-suggestions が担当）",
+            file=sys.stderr,
+        )
+        return False
+
+    harness_toml_path = orchestra_path / "packages" / "codex-harness" / _CODEX_HARNESS_CONFIG_REL
+    if not harness_toml_path.is_file():
+        return False
+
+    harness_content = harness_toml_path.read_text(encoding="utf-8")
+    try:
+        harness_data = tomllib.loads(harness_content)
+    except tomllib.TOMLDecodeError:
+        print(
+            "[warn] config-harness.toml が不正な TOML のためマージをスキップしました",
+            file=sys.stderr,
+        )
+        return False
+
+    original = config_path.read_text(encoding="utf-8")
+    content = original
+
+    if "default_permissions" in harness_data:
+        value = _toml_scalar(harness_data["default_permissions"])
+        content = upsert_toml_top_level_key(content, "default_permissions", value, overwrite=False)
+
+    if "hooks" in harness_data.get("features", {}):
+        value = _toml_scalar(harness_data["features"]["hooks"])
+        content = upsert_toml_key_in_section(content, "features", "hooks", value, overwrite=False)
+
+    for section_name, section_text in _iter_toml_sections(
+        harness_content, _PERMISSIONS_SECTION_PREFIX
+    ):
+        content = upsert_toml_section(content, section_name, section_text)
+
+    if content == original:
+        return False
+
+    config_path.write_text(content, encoding="utf-8")
+    return True
 
 
 def needs_sync(src: Path, dst: Path) -> bool:
@@ -203,6 +305,150 @@ def collect_manifest_compositions(
                         )
                     compositions[name] = pkg_name
     return compositions
+
+
+def sync_codex_files(
+    project_dir: Path,
+    orchestra_path: Path,
+    installed_packages: list[str],
+    orch: dict,
+    force: bool = False,
+) -> int:
+    """manifest.json の codex_files をプロジェクトへ同期する（配布時ハッシュ保護付き）。
+
+    ハッシュ台帳は orch["codex_file_hashes"][target] にフラット記録する
+    （agents/config 用の orch["file_hashes"][pkg_name][file_key] とは別台帳）。
+
+    Returns:
+        コピー/更新したファイル数
+    """
+    synced_count = 0
+    hashes: dict[str, str] = orch.setdefault("codex_file_hashes", {})
+
+    for pkg_name in installed_packages:
+        manifest_path = orchestra_path / "packages" / pkg_name / "manifest.json"
+        if not manifest_path.is_file():
+            continue
+
+        try:
+            with open(manifest_path, encoding="utf-8") as f:
+                manifest = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            continue
+
+        pkg_dir = orchestra_path / "packages" / pkg_name
+        for entry in manifest.get("codex_files", []):
+            source_rel = entry.get("source") if isinstance(entry, dict) else None
+            target_rel = entry.get("target") if isinstance(entry, dict) else None
+            if not source_rel or not target_rel:
+                continue
+
+            src = pkg_dir / source_rel
+            if not src.is_file():
+                continue
+
+            dst = project_dir / target_rel
+            if _sync_codex_file(src, dst, target_rel, hashes, force, project_dir):
+                synced_count += 1
+
+    return synced_count
+
+
+def _is_within_project(dst: Path, project_dir: Path) -> bool:
+    """dst の解決後パスが project_dir 配下（またはそれ自身）かどうかを判定する。
+
+    manifest.json の codex_files.target は本来プロジェクト相対パスの想定だが、
+    絶対パス（例: "/etc/passwd"）や `../` を含むパスが混入すると
+    `project_dir / target_rel` はプロジェクト外を指し得る（絶対パスの場合、
+    pathlib の `/` 演算子は左辺を無視して右辺の絶対パスに置き換わる）。
+    書き込み前にこのチェックで必ず脱出を検出する。
+    """
+    resolved_project = project_dir.resolve()
+    resolved_dst = dst.resolve()
+    return resolved_dst == resolved_project or resolved_project in resolved_dst.parents
+
+
+def _sync_codex_file(
+    src: Path,
+    dst: Path,
+    target_key: str,
+    hashes: dict[str, str],
+    force: bool,
+    project_dir: Path,
+) -> bool:
+    """1 ファイル分の codex_files 同期判定と適用。コピー/更新したら True。"""
+    if not _is_within_project(dst, project_dir):
+        print(
+            f"[warn] {target_key} はプロジェクト外を指すため同期をスキップしました"
+            "（絶対パスまたは ../ による脱出の疑い）"
+        )
+        return False
+
+    if not dst.exists():
+        _copy_codex_file(src, dst, target_key, hashes)
+        return True
+
+    current_hash = compute_file_hash(dst)
+    recorded_hash = hashes.get(target_key)
+
+    if recorded_hash is None:
+        if not force:
+            print(f"[warn] {dst} は配布記録がないため上書きをスキップしました（force で上書き可）")
+            return False
+        _copy_codex_file(src, dst, target_key, hashes)
+        return True
+
+    if current_hash != recorded_hash:
+        if not force:
+            print(
+                f"[warn] {dst} はインストール後に変更されているため上書きをスキップしました（force で上書き可）"
+            )
+            return False
+        _copy_codex_file(src, dst, target_key, hashes)
+        return True
+
+    if current_hash == compute_file_hash(src):
+        return False
+
+    _copy_codex_file(src, dst, target_key, hashes)
+    return True
+
+
+def _copy_codex_file(src: Path, dst: Path, target_key: str, hashes: dict[str, str]) -> None:
+    """codex_files の1ファイルをコピーし、ハッシュ台帳を更新する。"""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dst)
+    hashes[target_key] = compute_file_hash(dst)
+
+
+def collect_facet_build_targets(
+    orchestra_path: Path,
+    installed_packages: list[str] | None,
+) -> list[str]:
+    """installed_packages の manifest.facet_targets から追加ビルド対象を収集する。
+
+    "claude" は常に含む。パッケージ名の決め打ち（例: "codex-suggestions"）を廃し、
+    manifest の facet_targets 宣言（capability）で判定する。
+    """
+    targets = ["claude"]
+    if not installed_packages:
+        return targets
+
+    for pkg_name in installed_packages:
+        manifest_path = orchestra_path / "packages" / pkg_name / "manifest.json"
+        if not manifest_path.is_file():
+            continue
+        try:
+            with open(manifest_path, encoding="utf-8") as f:
+                manifest = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            continue
+
+        for target in manifest.get("facet_targets", []):
+            if target not in targets:
+                targets.append(target)
+
+    return targets
 
 
 def sync_hooks(
@@ -431,9 +677,7 @@ def build_facets(
     if not script.is_file():
         return 0
 
-    targets = ["claude"]
-    if installed_packages and "codex-suggestions" in installed_packages:
-        targets.append("codex")
+    targets = collect_facet_build_targets(orchestra_path, installed_packages)
 
     total_built = 0
     for target in targets:

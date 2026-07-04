@@ -195,3 +195,24 @@ class TestPackageLoad:
         assert pkg.agents == []
         assert pkg.rules == []
         assert pkg.hooks == {}
+        assert pkg.codex_files == []
+
+    def test_parses_codex_files(self, tmp_path: Path) -> None:
+        # Arrange
+        manifest_path = tmp_path / "manifest.json"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "name": "mypkg",
+                    "version": "1.0.0",
+                    "codex_files": [{"source": "codex/hooks.json", "target": ".codex/hooks.json"}],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        # Act
+        pkg = Package.load(manifest_path)
+
+        # Assert
+        assert pkg.codex_files == [{"source": "codex/hooks.json", "target": ".codex/hooks.json"}]

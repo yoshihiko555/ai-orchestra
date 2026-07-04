@@ -35,6 +35,13 @@ class TestBuildBlock:
         assert ".claude/skill-evolution/pending/" in gitignore_mod.build_block()
         assert ".claude/skill-evolution/" not in gitignore_mod.ENTRIES
 
+    def test_contains_codex_harness_generated_entries(self) -> None:
+        """Codex CLI Harness の実行成果物ディレクトリ（runs/reports）が無視対象。"""
+        assert ".codex/runs/" in gitignore_mod.ENTRIES
+        assert ".codex/reports/" in gitignore_mod.ENTRIES
+        assert ".codex/runs/" in gitignore_mod.build_block()
+        assert ".codex/reports/" in gitignore_mod.build_block()
+
 
 class TestSyncGitignore:
     """sync_gitignore のテスト。"""

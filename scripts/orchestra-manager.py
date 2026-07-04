@@ -14,6 +14,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tomllib
 from collections import deque
 from functools import cached_property  # noqa: F401 — used as decorator
 from pathlib import Path
@@ -30,12 +31,15 @@ from lib.orchestra_context import ContextMixin  # noqa: E402
 from lib.orchestra_hooks import HooksMixin  # noqa: E402
 from lib.orchestra_models import Package  # noqa: E402
 from lib.sync_engine import (  # noqa: E402
+    apply_codex_harness_config,
     collect_manifest_compositions,
     compute_file_hash,
     get_recorded_file_hash,
     needs_sync,
     record_file_hash,
+    sync_codex_files,
 )
+from lib.toml_merge import TomlMergeError  # noqa: E402
 
 
 def _fmt_inner_proxy(inner_port: object) -> str:
@@ -305,12 +309,15 @@ class OrchestraManager(ContextMixin, HooksMixin):
         """依存パッケージのチェック"""
         return [dep for dep in pkg.depends if dep not in installed_packages]
 
-    def run_initial_sync(self, project_dir: Path, dry_run: bool = False) -> None:
+    def run_initial_sync(
+        self, project_dir: Path, dry_run: bool = False, force: bool = False
+    ) -> None:
         """初回同期を実行（sync-orchestra.py と同等のロジック）。
 
         SessionStart 側と同じ sync_engine.needs_sync() ゲートを適用し、
         ユーザーが編集済みのファイルを黙って上書きしない。実際にコピーした
         ファイルの SHA-256 ハッシュを orchestra.json の file_hashes に記録する。
+        force=True の場合、codex_files の配布時ハッシュ不一致でも上書きする。
         """
         orch = self.load_orchestra_json(project_dir)
         installed = orch.get("installed_packages", [])
@@ -374,6 +381,22 @@ class OrchestraManager(ContextMixin, HooksMixin):
                         shutil.copy2(src, dst)
                         record_file_hash(orch, pkg_name, file_key, compute_file_hash(dst))
                         synced_count += 1
+
+        if not dry_run:
+            codex_synced_count = sync_codex_files(
+                project_dir, orchestra_path, installed, orch, force=force
+            )
+            synced_count += codex_synced_count
+            try:
+                config_updated = apply_codex_harness_config(project_dir, orchestra_path, installed)
+            except (TomlMergeError, tomllib.TOMLDecodeError, OSError) as e:
+                print(
+                    f"警告: .codex/config.toml マージに失敗したためスキップしました: {e}",
+                    file=sys.stderr,
+                )
+                config_updated = False
+            if config_updated:
+                print(".codex/config.toml を codex-harness 設定で更新しました")
 
         if synced_count > 0:
             print(f"{synced_count} ファイルを同期しました")
@@ -460,6 +483,7 @@ class OrchestraManager(ContextMixin, HooksMixin):
         project: str | None,
         dry_run: bool = False,
         _skip_dep_check: bool = False,
+        force: bool = False,
     ) -> None:
         """パッケージをインストール"""
         packages = self.load_packages()
@@ -520,7 +544,7 @@ class OrchestraManager(ContextMixin, HooksMixin):
             self.save_orchestra_json(project_dir, orch)
 
         self.context_sync(project, dry_run)
-        self.run_initial_sync(project_dir, dry_run)
+        self.run_initial_sync(project_dir, dry_run, force=force)
 
         if dry_run:
             print(f"\n[DRY-RUN] orchestra.json 記録: installed_packages に '{package_name}' を追加")
@@ -594,12 +618,53 @@ class OrchestraManager(ContextMixin, HooksMixin):
         target.unlink()
         print(f"{prefix}: {label}")
 
+    def _remove_codex_file_if_unchanged(
+        self,
+        orch: dict[str, Any],
+        target_key: str,
+        target: Path,
+        dry_run: bool,
+    ) -> None:
+        """codex_files（.codex/ 配下配布物）を配布時ハッシュ台帳と照合して削除する。
+
+        台帳（orch["codex_file_hashes"]）はパッケージ名で名前空間化されない
+        フラット構造（sync_engine.sync_codex_files() と同じキー形式）。
+        ハッシュが一致する（未改変の）ファイルのみ削除し、台帳エントリも
+        併せて削除する。ハッシュ未記録・改変済みのファイルは削除せず警告する
+        （安全側スキップ、_remove_if_unchanged と同じ方針）。
+        """
+        hashes = orch.setdefault("codex_file_hashes", {})
+
+        if not target.exists():
+            if not dry_run:
+                hashes.pop(target_key, None)
+            return
+
+        recorded = hashes.get(target_key)
+        if recorded is None:
+            print(f"警告: {target} は配布時ハッシュが記録されていないため削除をスキップしました")
+            return
+
+        if compute_file_hash(target) != recorded:
+            print(f"警告: {target} はインストール後に変更されているため削除をスキップしました")
+            return
+
+        if dry_run:
+            print(f"[DRY-RUN] ファイル削除: {target}")
+            return
+
+        target.unlink()
+        hashes.pop(target_key, None)
+        print(f"ファイル削除: {target_key}")
+
     def uninstall(self, package_name: str, project: str | None, dry_run: bool = False) -> None:
         """パッケージをアンインストール
 
-        削除前に配布時ハッシュ（orchestra.json の file_hashes）と現在のファイル
-        内容を比較し、ユーザーが変更済みのファイル（またはハッシュ未記録の
-        ファイル）は削除せずスキップして警告する（安全側）。
+        削除前に配布時ハッシュ（orchestra.json の file_hashes / codex_file_hashes）
+        と現在のファイル内容を比較し、ユーザーが変更済みのファイル（またはハッシュ
+        未記録のファイル）は削除せずスキップして警告する（安全側）。
+        codex_files（.codex/hooks/*.py 等、manifest.json の codex_files 宣言分）も
+        同じ方針で削除し、対応する codex_file_hashes 台帳エントリも削除する。
         """
         packages = self.load_packages()
         if package_name not in packages:
@@ -638,6 +703,13 @@ class OrchestraManager(ContextMixin, HooksMixin):
                 label=agent_path,
                 prefix="同期ファイル削除",
             )
+
+        for codex_file in pkg.codex_files:
+            target_rel = codex_file.get("target") if isinstance(codex_file, dict) else None
+            if not target_rel:
+                continue
+            target = project_dir / target_rel
+            self._remove_codex_file_if_unchanged(orch, target_rel, target, dry_run)
 
         installed = set(orch.get("installed_packages", []))
         if pkg.name in installed:
@@ -1044,6 +1116,11 @@ def main():
     install_parser.add_argument("package", nargs="+", help="パッケージ名（複数指定可）")
     install_parser.add_argument("--project", help="プロジェクトパス")
     install_parser.add_argument("--dry-run", action="store_true", help="実行内容を表示のみ")
+    install_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="ユーザー編集済みの codex_files も配布版で上書きする（デフォルトはスキップ）",
+    )
 
     uninstall_parser = subparsers.add_parser("uninstall", help="パッケージをアンインストール")
     uninstall_parser.add_argument("package", help="パッケージ名")
@@ -1165,11 +1242,17 @@ def main():
         manager.status(args.project)
     elif args.command == "install":
         if len(args.package) == 1:
-            manager.install(args.package[0], args.project, args.dry_run)
+            manager.install(args.package[0], args.project, args.dry_run, force=args.force)
         else:
             ordered = manager.resolve_install_order(args.package)
             for pkg_name in ordered:
-                manager.install(pkg_name, args.project, args.dry_run, _skip_dep_check=True)
+                manager.install(
+                    pkg_name,
+                    args.project,
+                    args.dry_run,
+                    _skip_dep_check=True,
+                    force=args.force,
+                )
     elif args.command == "uninstall":
         manager.uninstall(args.package, args.project, args.dry_run)
     elif args.command == "enable":

@@ -70,6 +70,7 @@ instruction: |
         "hook_utils.py",
         "sync_engine.py",
         "settings_io.py",
+        "toml_merge.py",
     ]:
         src_script = REPO_ROOT / "scripts" / "lib" / lib_name
         dst_script = lib_dst / lib_name

@@ -20,6 +20,7 @@
   "rules": ["codex-delegation", "codex-suggestion-compliance"],
   "scripts": [],
   "config": [],
+  "facet_targets": ["codex"],
   "context_files": {
     "source": "codex.md",
     "fragments": ["antigravity.md"],

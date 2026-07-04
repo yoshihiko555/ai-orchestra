@@ -67,6 +67,7 @@ class Package:
     rules: list[str]
     path: Path
     context_files: dict[str, Any] = field(default_factory=dict)
+    codex_files: list[dict[str, str]] = field(default_factory=list)
 
     @classmethod
     def load(cls, manifest_path: Path) -> Package:
@@ -92,4 +93,5 @@ class Package:
             rules=data.get("rules", []),
             path=manifest_path.parent,
             context_files=data.get("context_files", {}),
+            codex_files=data.get("codex_files", []),
         )

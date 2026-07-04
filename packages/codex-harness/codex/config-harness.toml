@@ -1,29 +1,19 @@
-# Codex CLI Project Configuration
-# This file enables project-specific Codex settings
+# codex-harness canonical config fragment (source of truth).
+#
+# This file is never copied verbatim into a project. Instead
+# `scripts/lib/sync_engine.py::apply_codex_harness_config()` reads it and
+# merges its pieces into the project's `.codex/config.toml`:
+#
+#   - `default_permissions` (top-level key) and `[features].hooks`:
+#     add-if-missing only (never overwrite a user-chosen value)
+#   - `[permissions.*]` sections: upsert (harness-owned, always kept in sync)
+#
+# See docs/design/codex-cli-harness.md §5.5 for rationale.
 
-# Default model configuration
-model = "gpt-5.4"
-model_reasoning_effort = "xhigh"
-model_reasoning_summary = "detailed"
-
-# Approval policy
-approval_policy = "on-request"
-
-# Feature toggles
 default_permissions = "project-edit"
+
 [features]
 hooks = true
-skills = true
-
-# Skills configuration - enable project skills
-[[skills.config]]
-enabled = true
-path = ".codex/skills/context-loader"
-
-[mcp_servers.cocoindex-code]
-command = "uvx"
-args = ["--prerelease=explicit", "--with", "cocoindex>=1.0.0a16", "cocoindex-code@latest"]
-enabled = true
 
 [permissions.project-edit]
 extends = ":workspace"
