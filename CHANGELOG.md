@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **スキルフロー評価セット（`docs/evaluation/skills/`）の新設**: 評価セットを二層構造に整理。パッケージ評価セット（pytest で強制、従来どおり `docs/evaluation/` 直下）と分離して、facets 由来スキル群の「あるべき振る舞い」をフロー単位で定義する層を追加。第 1 弾として `design-flow.md`（design + preflight + startproject の設計フロー、EV-01〜23）とスキル用 `_template.md` を作成。`evaluation-set-policy` ルールにスキル層の扱い（pytest 突合の対象外、PR レビュー時突合・`/config-analyze`・実行観察で検証）を追記
+
 - **`/design`: 各フェーズ末に二段品質ゲート（セルフチェック → 自動レビュー）を導入**: Phase 1-3 の受け入れ確認前に、reference 末尾のセルフチェックリストとフェーズ対応レビュアー（要件 = `requirements`、基本設計 = `architecture-reviewer` + 条件付き `security-reviewer`、詳細設計 = `spec-reviewer`）による設計書レビューを必須化。設計ドキュメント専用の重要度定義・ゲート通過条件（Critical=0、High 処理済み）・フェーズ間ドリフトプロトコルを `references/design-review.md` に定義
 - **`/preflight`: 設計要否判定（3 段階）と設計成果物の読み込みを追加**: 要件確定時に「設計不要 / 軽量設計メモ / フル設計（`/design` へ誘導）」を判定。Phase 2 で `docs/` 配下の既存設計書と impact-analysis をタスク分解の入力として読み込む
 
