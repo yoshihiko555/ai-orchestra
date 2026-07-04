@@ -67,14 +67,14 @@ UI の基礎値（色、フォント、スペーシング等）を Design Tokens
 
 #### 設計内容
 
-| カテゴリ | 定義する内容 |
-|---------|------------|
-| Color | プライマリ、セカンダリ、セマンティック（success, warning, error, info）、グレースケール |
-| Typography | フォントファミリー、サイズスケール、ウェイト、行間 |
-| Spacing | スペーシングスケール（4px ベース等） |
-| Border Radius | 角丸のサイズスケール |
-| Shadow | エレベーションレベル（shadow-sm, shadow-md 等） |
-| Z-index | レイヤー管理のスケール |
+| カテゴリ      | 定義する内容                                                                            |
+| ------------- | --------------------------------------------------------------------------------------- |
+| Color         | プライマリ、セカンダリ、セマンティック（success, warning, error, info）、グレースケール |
+| Typography    | フォントファミリー、サイズスケール、ウェイト、行間                                      |
+| Spacing       | スペーシングスケール（4px ベース等）                                                    |
+| Border Radius | 角丸のサイズスケール                                                                    |
+| Shadow        | エレベーションレベル（shadow-sm, shadow-md 等）                                         |
+| Z-index       | レイヤー管理のスケール                                                                  |
 
 #### 出力
 
@@ -87,78 +87,78 @@ UI の基礎値（色、フォント、スペーシング等）を Design Tokens
 
 ### Brand
 
-| Token | Value | 用途 |
-|-------|-------|------|
-| color-primary | {#hex} | メインアクション、ブランドカラー |
-| color-primary-hover | {#hex} | ホバー状態 |
-| color-secondary | {#hex} | サブアクション |
+| Token               | Value  | 用途                             |
+| ------------------- | ------ | -------------------------------- |
+| color-primary       | {#hex} | メインアクション、ブランドカラー |
+| color-primary-hover | {#hex} | ホバー状態                       |
+| color-secondary     | {#hex} | サブアクション                   |
 
 ### Semantic
 
-| Token | Value | 用途 |
-|-------|-------|------|
-| color-success | {#hex} | 成功状態 |
-| color-warning | {#hex} | 警告状態 |
-| color-error | {#hex} | エラー状態 |
-| color-info | {#hex} | 情報表示 |
+| Token         | Value  | 用途       |
+| ------------- | ------ | ---------- |
+| color-success | {#hex} | 成功状態   |
+| color-warning | {#hex} | 警告状態   |
+| color-error   | {#hex} | エラー状態 |
+| color-info    | {#hex} | 情報表示   |
 
 ### Neutral
 
-| Token | Value | 用途 |
-|-------|-------|------|
-| color-bg-primary | {#hex} | メイン背景 |
-| color-bg-secondary | {#hex} | セカンダリ背景 |
-| color-text-primary | {#hex} | メインテキスト |
-| color-text-secondary | {#hex} | サブテキスト |
-| color-border | {#hex} | ボーダー |
+| Token                | Value  | 用途           |
+| -------------------- | ------ | -------------- |
+| color-bg-primary     | {#hex} | メイン背景     |
+| color-bg-secondary   | {#hex} | セカンダリ背景 |
+| color-text-primary   | {#hex} | メインテキスト |
+| color-text-secondary | {#hex} | サブテキスト   |
+| color-border         | {#hex} | ボーダー       |
 
 ## Typography
 
-| Token | Value | 用途 |
-|-------|-------|------|
-| font-family-base | {フォント名} | 本文 |
-| font-family-heading | {フォント名} | 見出し |
-| font-family-mono | {フォント名} | コード |
-| font-size-xs | {rem} | 補足テキスト |
-| font-size-sm | {rem} | ラベル・キャプション |
-| font-size-base | {rem} | 本文 |
-| font-size-lg | {rem} | サブ見出し |
-| font-size-xl | {rem} | セクション見出し |
-| font-size-2xl | {rem} | ページタイトル |
-| line-height-tight | {値} | 見出し |
-| line-height-normal | {値} | 本文 |
+| Token               | Value        | 用途                 |
+| ------------------- | ------------ | -------------------- |
+| font-family-base    | {フォント名} | 本文                 |
+| font-family-heading | {フォント名} | 見出し               |
+| font-family-mono    | {フォント名} | コード               |
+| font-size-xs        | {rem}        | 補足テキスト         |
+| font-size-sm        | {rem}        | ラベル・キャプション |
+| font-size-base      | {rem}        | 本文                 |
+| font-size-lg        | {rem}        | サブ見出し           |
+| font-size-xl        | {rem}        | セクション見出し     |
+| font-size-2xl       | {rem}        | ページタイトル       |
+| line-height-tight   | {値}         | 見出し               |
+| line-height-normal  | {値}         | 本文                 |
 
 ## Spacing
 
 {4px ベースのスケール}
 
-| Token | Value |
-|-------|-------|
-| space-1 | 4px |
-| space-2 | 8px |
-| space-3 | 12px |
-| space-4 | 16px |
-| space-6 | 24px |
-| space-8 | 32px |
-| space-12 | 48px |
-| space-16 | 64px |
+| Token    | Value |
+| -------- | ----- |
+| space-1  | 4px   |
+| space-2  | 8px   |
+| space-3  | 12px  |
+| space-4  | 16px  |
+| space-6  | 24px  |
+| space-8  | 32px  |
+| space-12 | 48px  |
+| space-16 | 64px  |
 
 ## Border Radius
 
-| Token | Value | 用途 |
-|-------|-------|------|
-| radius-sm | {px} | 入力フィールド |
-| radius-md | {px} | カード・ボタン |
-| radius-lg | {px} | モーダル |
+| Token       | Value  | 用途             |
+| ----------- | ------ | ---------------- |
+| radius-sm   | {px}   | 入力フィールド   |
+| radius-md   | {px}   | カード・ボタン   |
+| radius-lg   | {px}   | モーダル         |
 | radius-full | 9999px | アバター・バッジ |
 
 ## Shadow
 
-| Token | Value | 用途 |
-|-------|-------|------|
-| shadow-sm | {値} | カード |
-| shadow-md | {値} | ドロップダウン |
-| shadow-lg | {値} | モーダル |
+| Token     | Value | 用途           |
+| --------- | ----- | -------------- |
+| shadow-sm | {値}  | カード         |
+| shadow-md | {値}  | ドロップダウン |
+| shadow-lg | {値}  | モーダル       |
 ```
 
 ---
@@ -181,26 +181,26 @@ UI で使用する共通コンポーネントを一覧化する。
 
 ## Atoms（基本要素）
 
-| ID | コンポーネント | 概要 | バリアント |
-|----|-------------|------|----------|
-| CMP-001 | Button | アクションボタン | primary, secondary, ghost, danger |
-| CMP-002 | Input | テキスト入力 | text, password, email, number |
-| CMP-003 | Badge | ステータス表示 | success, warning, error, info |
-| CMP-004 | Icon | アイコン表示 | {アイコンセット名} |
+| ID      | コンポーネント | 概要             | バリアント                        |
+| ------- | -------------- | ---------------- | --------------------------------- |
+| CMP-001 | Button         | アクションボタン | primary, secondary, ghost, danger |
+| CMP-002 | Input          | テキスト入力     | text, password, email, number     |
+| CMP-003 | Badge          | ステータス表示   | success, warning, error, info     |
+| CMP-004 | Icon           | アイコン表示     | {アイコンセット名}                |
 
 ## Molecules（組み合わせ）
 
-| ID | コンポーネント | 概要 | 構成要素 |
-|----|-------------|------|---------|
-| CMP-010 | FormField | ラベル付き入力 | Label + Input + ErrorMessage |
-| CMP-011 | SearchBar | 検索バー | Input + Button |
+| ID      | コンポーネント | 概要           | 構成要素                     |
+| ------- | -------------- | -------------- | ---------------------------- |
+| CMP-010 | FormField      | ラベル付き入力 | Label + Input + ErrorMessage |
+| CMP-011 | SearchBar      | 検索バー       | Input + Button               |
 
 ## Organisms（複合要素）
 
-| ID | コンポーネント | 概要 | 構成要素 |
-|----|-------------|------|---------|
-| CMP-020 | Header | グローバルヘッダー | Logo + Navigation + UserMenu |
-| CMP-021 | DataTable | データテーブル | Table + Pagination + Sort |
+| ID      | コンポーネント | 概要               | 構成要素                     |
+| ------- | -------------- | ------------------ | ---------------------------- |
+| CMP-020 | Header         | グローバルヘッダー | Logo + Navigation + UserMenu |
+| CMP-021 | DataTable      | データテーブル     | Table + Pagination + Sort    |
 ```
 
 ---
@@ -227,42 +227,42 @@ UI で使用する共通コンポーネントを一覧化する。
 
 ## バリアント
 
-| バリアント | 用途 | 背景色 | テキスト色 |
-|----------|------|--------|----------|
-| primary | メインアクション | color-primary | white |
-| secondary | サブアクション | transparent | color-primary |
-| ghost | テキストリンク風 | transparent | color-text-primary |
-| danger | 破壊的操作 | color-error | white |
+| バリアント | 用途             | 背景色        | テキスト色         |
+| ---------- | ---------------- | ------------- | ------------------ |
+| primary    | メインアクション | color-primary | white              |
+| secondary  | サブアクション   | transparent   | color-primary      |
+| ghost      | テキストリンク風 | transparent   | color-text-primary |
+| danger     | 破壊的操作       | color-error   | white              |
 
 ## サイズ
 
-| サイズ | padding | font-size | height |
-|--------|---------|-----------|--------|
-| sm | space-2 space-3 | font-size-sm | 32px |
-| md | space-2 space-4 | font-size-base | 40px |
-| lg | space-3 space-6 | font-size-lg | 48px |
+| サイズ | padding         | font-size      | height |
+| ------ | --------------- | -------------- | ------ |
+| sm     | space-2 space-3 | font-size-sm   | 32px   |
+| md     | space-2 space-4 | font-size-base | 40px   |
+| lg     | space-3 space-6 | font-size-lg   | 48px   |
 
 ## 状態
 
-| 状態 | 変化 |
-|------|------|
-| default | 通常表示 |
-| hover | 背景色を暗く / 明るく |
-| active | さらに暗く |
-| focus | フォーカスリング表示 |
+| 状態     | 変化                              |
+| -------- | --------------------------------- |
+| default  | 通常表示                          |
+| hover    | 背景色を暗く / 明るく             |
+| active   | さらに暗く                        |
+| focus    | フォーカスリング表示              |
 | disabled | opacity: 0.5, cursor: not-allowed |
-| loading | スピナー表示、テキスト非表示 |
+| loading  | スピナー表示、テキスト非表示      |
 
 ## Props
 
-| Prop | 型 | 必須 | デフォルト | 説明 |
-|------|-----|------|----------|------|
-| variant | 'primary' | 'secondary' | 'ghost' | 'danger' | No | 'primary' | ボタンの種類 |
-| size | 'sm' | 'md' | 'lg' | No | 'md' | サイズ |
-| disabled | boolean | No | false | 無効化 |
-| loading | boolean | No | false | ローディング状態 |
-| icon | ReactNode | No | - | 左側アイコン |
-| onClick | () => void | No | - | クリックハンドラ |
+| Prop     | 型         | 必須        | デフォルト | 説明             |
+| -------- | ---------- | ----------- | ---------- | ---------------- |
+| variant  | 'primary'  | 'secondary' | 'ghost'    | 'danger'         | No   | 'primary' | ボタンの種類 |
+| size     | 'sm'       | 'md'        | 'lg'       | No               | 'md' | サイズ    |
+| disabled | boolean    | No          | false      | 無効化           |
+| loading  | boolean    | No          | false      | ローディング状態 |
+| icon     | ReactNode  | No          | -          | 左側アイコン     |
+| onClick  | () => void | No          | -          | クリックハンドラ |
 
 ## アクセシビリティ
 
@@ -301,3 +301,30 @@ docs/design-system/
 - 小規模プロジェクト（画面数 5 以下）では、Design Tokens と主要コンポーネントのリストで十分
 - 既存の CSS フレームワーク（Tailwind, shadcn/ui 等）を使用する場合は、フレームワークの Tokens をベースにカスタマイズする方が効率的
 - コンポーネント詳細設計（Step 4）は、実装フレームワークに依存する部分が大きいため、技術スタック確定後に行う
+
+---
+
+## セルフチェックリスト（品質ゲート Stage 1）
+
+成果物の作成が終わったら、レビュアー起動・受け入れ確認の前にオーケストレーター自身が以下を検査する。
+未達項目があれば成果物を修正してから次に進む。
+
+### 完成基準
+
+- [ ] `tokens.md` の Color / Typography / Spacing の3カテゴリすべてに具体値が入っている（プレースホルダーのままでない）
+- [ ] `tokens.md` の Color に Brand / Semantic / Neutral の区分が漏れなく定義されている
+- [ ] `component-list.md` の全コンポーネントに一意な CMP-ID が採番されている
+- [ ] `component-list.md` の分類（Atoms/Molecules/Organisms）が `screen-list.md` の画面構成要素と対応している
+- [ ] Molecules / Organisms の「構成要素」欄が Atoms 側に実在するコンポーネント名を参照している
+- [ ] 個別コンポーネント詳細（`CMP-{ID}.md`）を作成した場合、hover/disabled/error 等の主要状態が定義されている
+- [ ] 命名規則（トークン名・コンポーネント名）がドキュメント全体で一貫している（同じ概念に複数の名前がない）
+- [ ] `principles.md` にアクセシビリティ方針（WCAG レベル等）が明記されている
+- [ ] 個別コンポーネント詳細を作成した場合、アクセシビリティ欄（aria属性等）が空欄でない
+
+### アンチパターン（該当したら要修正）
+
+- **ハードコード値の散在**: `tokens.md` に定義せず個別コンポーネントで色や余白の値を直書きしている → `tokens.md` のトークン参照に置き換える
+- **コンポーネントの重複定義**: 同じ役割のコンポーネントが異なる CMP-ID で二重登録されている → `component-list.md` を整理し統合する
+- **状態定義の欠落**: hover/disabled/loading 等、実装上必要な状態が定義されていない → Step 4 の状態表に追記する
+- **アクセシビリティの後回し**: 個別コンポーネント詳細にアクセシビリティ欄がない、または aria 属性の記載がない → 追記する
+- **命名の不統一**: 同じトークン/コンポーネントが `principles.md`, `tokens.md`, `component-list.md` で表記ゆれしている → 統一する

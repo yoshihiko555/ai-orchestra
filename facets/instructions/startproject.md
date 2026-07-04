@@ -93,6 +93,11 @@ Task tool parameters:
 
 **ユーザーに質問して要件を明確化。**
 
+まず既存の設計成果物を確認する:
+
+- `docs/requirements/`・`docs/architecture/`・`docs/api/`・`docs/database/`・`docs/screens/`（`/design` の出力）が存在すれば読み込み、要件質問と実装計画の前提にする
+- 設計書がある項目は再質問せず、差分（設計書に無い点・変わった点）に絞って質問する
+
 Ask in Japanese:
 
 1. **目的**: 何を達成したいですか？
@@ -100,7 +105,7 @@ Ask in Japanese:
 3. **技術的要件**: 特定のライブラリ、制約は？
 4. **成功基準**: 完了の判断基準は？
 
-**Draft implementation plan based on research output + user answers.**
+**Draft implementation plan based on research output + design docs + user answers.**
 
 ---
 
@@ -118,11 +123,15 @@ prompt: |
 
     Draft plan: {plan from Phase 2}
 
+    Context: if approved design documents exist under docs/ (architecture, api, database, screens),
+    list their paths here. Check the plan for consistency with them and flag deviations.
+
     Analyze:
     1. Approach assessment - is this the right architecture?
     2. Risk analysis - what could go wrong?
     3. Implementation order - what should be built first?
     4. Improvements - any better approaches?
+    5. Consistency with approved design docs - flag any deviation and whether it needs a design update
 
     Return CONCISE summary:
     - Top 3-5 recommendations
@@ -218,6 +227,7 @@ Task(subagent_type="backend-python-dev", prompt="""
 - プロジェクト: {feature}
 - 関連ファイル: {files}
 - 設計方針: {design decisions from Phase 3}
+- 設計書: {対応する docs/ 配下の設計書パス（API-001.md 等）。存在する場合は実装前に必ず読み、逸脱が必要なら実装前に報告すること}
 
 IMPORTANT: cli-tools.yaml の設定に従い、Codex CLI (workspace-write) で実装すること。
 エラー時は claude-direct にフォールバック。
@@ -318,6 +328,24 @@ prompt: |
     1. Security concerns
     2. Input validation
     3. Authentication/authorization
+
+    Report only Critical/High findings.
+```
+
+**設計書との突合**: `docs/` 配下に承認済みの設計書（`/design` の出力）が存在する場合は、上記に加えて `spec-reviewer` で実装と設計書の整合を確認する:
+
+```
+Agent: spec-reviewer
+prompt: |
+    Verify implementation against approved design documents for: {feature}
+
+    Changes: {git diff main...HEAD output}
+    Design docs: {docs/ 配下の該当設計書パスを列挙}
+
+    Check:
+    1. Implementation matches the design (API contracts, data model, screen behavior)
+    2. Undocumented deviations — flag each one; approved deviations must be noted with rationale
+    3. Design docs that need updating to reflect accepted changes
 
     Report only Critical/High findings.
 ```
