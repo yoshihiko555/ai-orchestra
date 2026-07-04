@@ -45,7 +45,8 @@ facets 由来のスキル群には、フロー単位の評価セット（`docs/e
 - スキルフローの仕様（フェーズ構成・ゲート条件・成果物パス等）を変更する PR では、該当する `skills/<flow>.md` と矛盾しないか突合する。仕様変更の場合は評価セットを先に更新し、人間レビューを経る
 - 検証手段は各評価セットの「検証方法」（PR レビュー時の突合 / `/config-analyze` / 実行観察）に従う
 
-## 将来の自動化
+## 自動化
 
-テストファイル変更時に該当評価セットとの突合確認を促す hook 化は Issue #123 で追跡する。
-それまでは本ルールの手順を手動（オーケストレーターの遵守）で運用する。
+テストファイル変更時の突合確認は、quality-gates パッケージの `evaluation-set-checker.py` hook（PostToolUse: Edit|Write）が案内する。有効/無効は `audit-flags.json` の `features.evaluation_set_check.enabled` で切替できる（`.local.json` で上書き可。Issue #123）。
+
+hook はあくまで確認を促す案内であり、突合作業自体（マトリクス生成・must 観点のカバレッジ確認・ギャップの Issue 追記）は上記「テスト改修時の手順（MUST）」に従いオーケストレーターが実施する。
