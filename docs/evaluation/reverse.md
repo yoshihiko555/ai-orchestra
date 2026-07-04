@@ -3,7 +3,7 @@
 **パッケージ**: `packages/reverse`
 **類型**: スキル型
 **作成日**: 2026-07-03
-**最終レビュー日**: —（未レビュー）
+**最終レビュー日**: 2026-07-04（人間レビュー完了・指摘なし。評価観点の変更なし。テストギャップは Issue #135 で追跡）
 **情報源**: packages/reverse/README.md, packages/reverse/agents/reverse-coordinator.md, facets/instructions/reverse.md（`.claude/skills/reverse/SKILL.md` の正本）, packages/reverse/manifest.json, facets/scripts/reverse/*.py（docstring・エラーハンドリング冒頭部分）
 
 ## 1. 責務定義

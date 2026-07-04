@@ -3,7 +3,7 @@
 **パッケージ**: `packages/git-workflow`
 **類型**: スキル型（単独）
 **作成日**: 2026-07-03
-**最終レビュー日**: —（未レビュー）
+**最終レビュー日**: 2026-07-04（人間レビュー完了・指摘なし。評価観点の変更なし。テストギャップは Issue #132 で追跡）
 **情報源**: docs/reference/packages.md, packages/git-workflow/manifest.json, facets/instructions/issue-create.md, facets/instructions/issue-fix.md, facets/instructions/pr-create.md, facets/policies/pr-standards.md, packages/git-workflow/scripts/resolve_base_branch.py, packages/git-workflow/config/sandbox-requirements.json
 
 > **類型分類について**: タスク開始時の想定は「主: スキル型 + 副: hook 型」だったが、`packages/git-workflow/manifest.json` の `"hooks": {}` は空であり、本パッケージに hook コンポーネントは存在しない。よって類型は **スキル型（単独）** に修正した。`scripts/resolve_base_branch.py` は独立 CLI ではなく 3 スキルが共通利用する内部ユーティリティであり、CLI ツール型（README 定義: 「lib + scripts で提供されるコマンド」）の要件である独立コマンド性を満たさないため副類型としない。
