@@ -37,7 +37,8 @@
 
 新しいパッケージを追加する際は、`docs/evaluation/_template.md` に従い評価セットも同時に作成する。
 
-## 将来の自動化
+## 自動化
 
-テストファイル変更時に該当評価セットとの突合確認を促す hook 化は Issue #123 で追跡する。
-それまでは本ルールの手順を手動（オーケストレーターの遵守）で運用する。
+テストファイル変更時の突合確認は、quality-gates パッケージの `evaluation-set-checker.py` hook（PostToolUse: Edit|Write）が案内する。有効/無効は `audit-flags.json` の `features.evaluation_set_check.enabled` で切替できる（`.local.json` で上書き可。Issue #123）。
+
+hook はあくまで確認を促す案内であり、突合作業自体（マトリクス生成・must 観点のカバレッジ確認・ギャップの Issue 追記）は上記「テスト改修時の手順（MUST）」に従いオーケストレーターが実施する。

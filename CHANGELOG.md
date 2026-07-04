@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - **運用ルール**: `.claude/rules/evaluation-set-policy.md`（facet: `evaluation-set-policy`）を新設。テスト改修時は該当評価セットと突合し、must 観点のギャップゼロを完了条件とする。突合マトリクスは一時成果物とし、ギャップはパッケージ単位の GitHub Issue で追跡（評価セットには恒久記録しない）。テスト変更時の hook 自動化は Issue #123 で追跡
   - **初回突合**: 既存テスト（`packages/<pkg>/tests/` + `tests/unit` + `tests/e2e` の二層）との突合を実施し、ギャップをパッケージ別 Issue として登録
 - **`git-workflow`: CHANGELOG 記述ポリシー（`changelog-policy` ルール）**: CHANGELOG エントリを利用者向け変更のみ・見出し＋1〜2行に統制する新ルールを追加。パッケージの install / sync で `.claude/rules/changelog-policy.md` が配布される
+- **テスト改修時の評価セット突合案内 hook（quality-gates）**: テストファイル変更時に該当パッケージの `docs/evaluation/<pkg>.md` との突合確認を自動案内する `evaluation-set-checker.py`（PostToolUse）を追加。`audit-flags.json` の `features.evaluation_set_check.enabled` で無効化可能（Issue #123）
 
 ### Changed
 
