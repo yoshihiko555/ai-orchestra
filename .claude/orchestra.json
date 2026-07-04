@@ -57,7 +57,7 @@
     "config/image-generation/image-generation.yaml",
     "config/skill-evolution/skill-evolution.yaml"
   ],
-  "last_sync": "2026-07-02T16:17:16.012185+00:00",
+  "last_sync": "2026-07-04T20:38:42.889767+00:00",
   "file_hashes": {
     "core": {
       "config/core/task-memory.yaml": "081c101ad10526344e4fe7831babbe6ef661d0a4ae7e49fad4eb3967c030b7d8"
@@ -67,7 +67,7 @@
     },
     "audit": {
       "config/audit/delegation-policy.json": "b092b5385d3ec51252c5781cdbafa2d2e55d075d9cb74d25e89b71e95279d231",
-      "config/audit/audit-flags.json": "e180f776465ed1bc4a8b3b44f2816f3549ce58278b8924a11844b7707fab2912"
+      "config/audit/audit-flags.json": "8c0059f9a982219e070ce8d5f61c2ea01d907a3be9c030721fd658924f97e519"
     },
     "cocoindex": {
       "config/cocoindex/cocoindex.yaml": "4263789df1e23f272410b8e452953b4c81d8ab3c64fa509829a06717eed94654"
@@ -85,7 +85,7 @@
       "config/fail-logs/fail-logs.yaml": "cff47ea7d188af706a796aa88149cf26b73561ec71a754e9244566264290e5b2"
     },
     "skill-evolution": {
-      "config/skill-evolution/skill-evolution.yaml": "5c2d623df07212aee0613351b40e2f7ce239ba79f22475e3007b987e16df8030"
+      "config/skill-evolution/skill-evolution.yaml": "40c1da27dd4ce3cff8f3a0c871916b22f17cb8623cee6559a7b008d0d56e9fac"
     }
   }
 }
