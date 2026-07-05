@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.11] - 2026-07-05
+
 ### Added
 
 - **スキルフロー評価セット（`docs/evaluation/skills/`）の新設**: 評価セットを二層構造に整理。パッケージ評価セット（pytest で強制、従来どおり `docs/evaluation/` 直下）と分離して、facets 由来スキル群の「あるべき振る舞い」をフロー単位で定義する層を追加。第 1 弾として `design-flow.md`（design + preflight + startproject の設計フロー、EV-01〜23）とスキル用 `_template.md` を作成。`evaluation-set-policy` ルールにスキル層の扱い（pytest 突合の対象外、PR レビュー時突合・`/config-analyze`・実行観察で検証）を追記
