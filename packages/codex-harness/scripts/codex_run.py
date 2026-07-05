@@ -48,6 +48,7 @@ SCHEMA_REL_PATH = ".codex/schemas/task_result.schema.json"
 VALIDATION_TARGET_REL = ".codex/validation.json"
 REQUIRED_CODEX_FILES = [
     ".codex/hooks.json",
+    ".codex/config.toml",
     SCHEMA_REL_PATH,
     VALIDATION_TARGET_REL,
 ]

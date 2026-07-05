@@ -18,6 +18,11 @@ from tests.module_loader import load_module
 
 sync_engine = load_module("sync_engine_harness_config", "scripts/lib/sync_engine.py")
 
+# Import the exact `lib.toml_merge` module instance that sync_engine imports
+# internally (via sys.modules caching), so `except TomlMergeError` below
+# matches the real exception class raised by sync_engine's merge calls.
+from lib.toml_merge import TomlMergeError  # noqa: E402
+
 HARNESS_TOML = """\
 default_permissions = "project-edit"
 
@@ -234,10 +239,10 @@ class TestMergeBehavior:
             pytest.fail(
                 "apply_codex_harness_config crashed with AttributeError for non-dict features"
             )
-        except Exception:
-            # A structural TOML conflict (e.g. TomlMergeError) is a separate,
-            # already fail-closed / caller-handled failure mode (see R19 /
-            # run_initial_sync's try/except around this call).
+        except TomlMergeError:
+            # A structural TOML conflict is a separate, already fail-closed /
+            # caller-handled failure mode (see R19 / run_initial_sync's
+            # try/except around this call).
             pass
 
     def test_does_not_touch_mcp_servers_section(self, tmp_path: Path) -> None:

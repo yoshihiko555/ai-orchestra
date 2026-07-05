@@ -111,6 +111,45 @@ class TestVerifyHooksTrust:
         assert result.trusted is False
         assert any("symlink" in reason for reason in result.reasons)
 
+    def test_untrusted_when_codex_file_hashes_is_null(self, tmp_path: Path) -> None:
+        """N3: codex_file_hashes: null must fail closed, not crash with AttributeError."""
+        project_dir = tmp_path / "project"
+        claude_dir = project_dir / ".claude"
+        claude_dir.mkdir(parents=True)
+        orch = {"codex_file_hashes": None}
+        (claude_dir / "orchestra.json").write_text(json.dumps(orch), encoding="utf-8")
+
+        result = harness_common.verify_hooks_trust(project_dir)
+
+        assert result.trusted is False
+        assert any("not a dict" in reason for reason in result.reasons)
+
+    def test_untrusted_when_codex_file_hashes_is_list(self, tmp_path: Path) -> None:
+        """N3: codex_file_hashes: [] (list) must fail closed, not crash."""
+        project_dir = tmp_path / "project"
+        claude_dir = project_dir / ".claude"
+        claude_dir.mkdir(parents=True)
+        orch = {"codex_file_hashes": ["not", "a", "dict"]}
+        (claude_dir / "orchestra.json").write_text(json.dumps(orch), encoding="utf-8")
+
+        result = harness_common.verify_hooks_trust(project_dir)
+
+        assert result.trusted is False
+        assert any("not a dict" in reason for reason in result.reasons)
+
+    def test_untrusted_when_codex_file_hashes_is_string(self, tmp_path: Path) -> None:
+        """N3: codex_file_hashes: "corrupted" (string) must fail closed, not crash."""
+        project_dir = tmp_path / "project"
+        claude_dir = project_dir / ".claude"
+        claude_dir.mkdir(parents=True)
+        orch = {"codex_file_hashes": "corrupted"}
+        (claude_dir / "orchestra.json").write_text(json.dumps(orch), encoding="utf-8")
+
+        result = harness_common.verify_hooks_trust(project_dir)
+
+        assert result.trusted is False
+        assert any("not a dict" in reason for reason in result.reasons)
+
     def test_rules_file_is_ledger_tracked(self, tmp_path: Path) -> None:
         """.codex/rules/*.rules must also be verified against the ledger (H4)."""
         project_dir = _write_ledger_project(tmp_path, '{"hooks": []}')
@@ -198,6 +237,48 @@ class TestIsLedgerEntryTrusted:
         claude_dir = project_dir / ".claude"
         claude_dir.mkdir()
         (claude_dir / "orchestra.json").write_text(json.dumps({"codex_file_hashes": {}}), "utf-8")
+
+        assert (
+            harness_common.is_ledger_entry_trusted(project_dir, ".codex/validation.json") is False
+        )
+
+    def test_untrusted_when_codex_file_hashes_is_null(self, tmp_path: Path) -> None:
+        """N3: codex_file_hashes: null must fail closed, not crash with AttributeError."""
+        project_dir = tmp_path / "project"
+        (project_dir / ".codex").mkdir(parents=True)
+        (project_dir / ".codex" / "validation.json").write_text("{}", encoding="utf-8")
+        claude_dir = project_dir / ".claude"
+        claude_dir.mkdir()
+        orch = {"codex_file_hashes": None}
+        (claude_dir / "orchestra.json").write_text(json.dumps(orch), encoding="utf-8")
+
+        assert (
+            harness_common.is_ledger_entry_trusted(project_dir, ".codex/validation.json") is False
+        )
+
+    def test_untrusted_when_codex_file_hashes_is_list(self, tmp_path: Path) -> None:
+        """N3: codex_file_hashes: [] (list) must fail closed, not crash."""
+        project_dir = tmp_path / "project"
+        (project_dir / ".codex").mkdir(parents=True)
+        (project_dir / ".codex" / "validation.json").write_text("{}", encoding="utf-8")
+        claude_dir = project_dir / ".claude"
+        claude_dir.mkdir()
+        orch = {"codex_file_hashes": ["not", "a", "dict"]}
+        (claude_dir / "orchestra.json").write_text(json.dumps(orch), encoding="utf-8")
+
+        assert (
+            harness_common.is_ledger_entry_trusted(project_dir, ".codex/validation.json") is False
+        )
+
+    def test_untrusted_when_codex_file_hashes_is_string(self, tmp_path: Path) -> None:
+        """N3: codex_file_hashes: "corrupted" (string) must fail closed, not crash."""
+        project_dir = tmp_path / "project"
+        (project_dir / ".codex").mkdir(parents=True)
+        (project_dir / ".codex" / "validation.json").write_text("{}", encoding="utf-8")
+        claude_dir = project_dir / ".claude"
+        claude_dir.mkdir()
+        orch = {"codex_file_hashes": "corrupted"}
+        (claude_dir / "orchestra.json").write_text(json.dumps(orch), encoding="utf-8")
 
         assert (
             harness_common.is_ledger_entry_trusted(project_dir, ".codex/validation.json") is False

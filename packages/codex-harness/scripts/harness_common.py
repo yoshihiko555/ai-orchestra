@@ -97,7 +97,11 @@ def verify_hooks_trust(project_root: Path) -> TrustResult:
     if orch is None:
         return TrustResult(trusted=False, reasons=["orchestra.json not found or unreadable"])
 
-    hashes: dict[str, str] = orch.get("codex_file_hashes", {})
+    hashes = orch.get("codex_file_hashes", {})
+    if not isinstance(hashes, dict):
+        return TrustResult(
+            trusted=False, reasons=["codex_file_hashes in orchestra.json is not a dict"]
+        )
     hook_entries = {k: v for k, v in hashes.items() if _is_hook_ledger_target(k)}
     if not hook_entries:
         return TrustResult(
@@ -126,7 +130,9 @@ def is_ledger_entry_trusted(project_root: Path, target_rel: str) -> bool:
     if orch is None:
         return False
 
-    hashes: dict[str, str] = orch.get("codex_file_hashes", {})
+    hashes = orch.get("codex_file_hashes", {})
+    if not isinstance(hashes, dict):
+        return False
     recorded_hash = hashes.get(target_rel)
     if recorded_hash is None:
         return False

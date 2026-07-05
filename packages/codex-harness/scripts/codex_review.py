@@ -44,6 +44,7 @@ DEFAULT_TIMEOUT_SECONDS = 600
 SCHEMA_REL_PATH = ".codex/schemas/review_result.schema.json"
 REQUIRED_CODEX_FILES = [
     ".codex/hooks.json",
+    ".codex/config.toml",
     SCHEMA_REL_PATH,
 ]
 FINAL_SCHEMA_REQUIRED_KEYS = {"status", "summary", "findings"}

@@ -73,6 +73,13 @@ def _compute_skip_lines(lines: list[str]) -> list[bool]:
         for delim in _TRIPLE_QUOTE_DELIMS:
             if line.count(delim) % 2 == 1:
                 in_triple_string = delim
+                # A newly opened multi-line string always resets any
+                # continuation state: even if this line's `endswith()` check
+                # above happened to match one of `_CONTINUATION_SUFFIXES`
+                # (e.g. the string body itself ends with "["), that state
+                # must not be carried across the string body and mistakenly
+                # applied to the real header line right after it closes.
+                in_continuation = False
                 break
 
     return skip

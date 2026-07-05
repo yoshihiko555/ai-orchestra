@@ -419,3 +419,18 @@ class TestMainEndToEnd:
         exit_code = codex_run.main(["task", "--project", str(repo_root)])
 
         assert exit_code == 1
+
+    def test_aborts_when_config_toml_missing(self, tmp_path: Path, monkeypatch, capsys) -> None:
+        """N1: .codex/config.toml is now required so the self-tamper-prevention
+        deny rule in the permission profile is guaranteed to be active before
+        any workspace-write run. Exercises the real (unmocked)
+        check_required_codex_files() against a repo missing config.toml."""
+        repo_root = self._init_repo(tmp_path)
+        assert ".codex/config.toml" in codex_run.REQUIRED_CODEX_FILES
+        assert not (repo_root / ".codex" / "config.toml").exists()
+        monkeypatch.setattr(codex_run, "run_version_gate", lambda label: True)
+
+        exit_code = codex_run.main(["task", "--project", str(repo_root)])
+
+        assert exit_code == 1
+        assert ".codex/config.toml" in capsys.readouterr().err

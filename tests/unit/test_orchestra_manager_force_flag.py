@@ -384,6 +384,10 @@ class TestUninstallCodexFilesPathTraversal:
 
         assert outside_file.exists()
         assert "警告" in capsys.readouterr().out
+        saved_orch = json.loads(
+            (project_dir / ".claude" / "orchestra.json").read_text(encoding="utf-8")
+        )
+        assert str(outside_file) in saved_orch.get("codex_file_hashes", {})
 
 
 class TestInstallCliForceFlag:

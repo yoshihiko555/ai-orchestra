@@ -66,6 +66,27 @@ class TestFindTomlSection:
         assert toml_merge.find_toml_section(content, "a") == (0, 2)
         assert toml_merge.find_toml_section(content, "b") == (2, 4)
 
+    def test_multiline_string_body_ending_with_bracket_does_not_skip_next_header(self) -> None:
+        # N4 (review repro): a line *inside* a multi-line """ string that
+        # happens to end with "[" must not leak continuation state into the
+        # real header that follows the string's closing delimiter.
+        content = '[a]\ns = """\ntext ending with [\n"""\n[b]\ny = 2\n'
+        assert toml_merge.find_toml_section(content, "a") == (0, 4)
+        assert toml_merge.find_toml_section(content, "b") == (4, 6)
+
+    def test_triple_quote_opening_line_ending_with_bracket_does_not_leak_continuation(
+        self,
+    ) -> None:
+        # N4: when the *opening* delimiter line itself ends with one of the
+        # continuation suffixes ("[", ",", "\\"), in_continuation must be
+        # reset by the triple-quote-open detection so it is not carried
+        # across the whole string body and past its closing line, which
+        # would otherwise cause the real header right after the string to be
+        # misdetected as still "inside a continuation" and skipped.
+        content = '[a]\ns = """[\ntext\n"""\n[b]\ny = 2\n'
+        assert toml_merge.find_toml_section(content, "a") == (0, 4)
+        assert toml_merge.find_toml_section(content, "b") == (4, 6)
+
 
 class TestUpsertTomlSection:
     def test_appends_when_missing(self) -> None:
