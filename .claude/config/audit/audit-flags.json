@@ -19,6 +19,9 @@
       "enabled": true,
       "read_line_threshold": 200,
       "max_file_size_bytes": 5242880
+    },
+    "evaluation_set_check": {
+      "enabled": true
     }
   },
   "paths": {
