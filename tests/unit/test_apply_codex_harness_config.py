@@ -165,6 +165,49 @@ class TestMergeBehavior:
 
         assert changed_again is False
 
+    def test_warns_when_features_hooks_kept_as_false(self, tmp_path: Path, capsys) -> None:
+        orchestra_path = tmp_path / "orchestra"
+        _write_harness_source(orchestra_path)
+        project_dir = _make_project(tmp_path, "[features]\nhooks = false\n")
+
+        sync_engine.apply_codex_harness_config(project_dir, orchestra_path, ["codex-harness"])
+
+        captured = capsys.readouterr()
+        assert "features.hooks=false" in captured.err
+
+    def test_warns_when_default_permissions_conflicts(self, tmp_path: Path, capsys) -> None:
+        orchestra_path = tmp_path / "orchestra"
+        _write_harness_source(orchestra_path)
+        project_dir = _make_project(tmp_path, 'default_permissions = "custom"\n')
+
+        sync_engine.apply_codex_harness_config(project_dir, orchestra_path, ["codex-harness"])
+
+        captured = capsys.readouterr()
+        assert "default_permissions" in captured.err
+        assert "custom" in captured.err
+
+    def test_no_warning_when_values_match_harness(self, tmp_path: Path, capsys) -> None:
+        orchestra_path = tmp_path / "orchestra"
+        _write_harness_source(orchestra_path)
+        project_dir = _make_project(
+            tmp_path, 'default_permissions = "project-edit"\n\n[features]\nhooks = true\n'
+        )
+
+        sync_engine.apply_codex_harness_config(project_dir, orchestra_path, ["codex-harness"])
+
+        captured = capsys.readouterr()
+        assert captured.err == ""
+
+    def test_no_warning_when_keys_missing_and_added(self, tmp_path: Path, capsys) -> None:
+        orchestra_path = tmp_path / "orchestra"
+        _write_harness_source(orchestra_path)
+        project_dir = _make_project(tmp_path, 'model = "gpt-5.5"\n')
+
+        sync_engine.apply_codex_harness_config(project_dir, orchestra_path, ["codex-harness"])
+
+        captured = capsys.readouterr()
+        assert captured.err == ""
+
     def test_does_not_touch_mcp_servers_section(self, tmp_path: Path) -> None:
         orchestra_path = tmp_path / "orchestra"
         _write_harness_source(orchestra_path)

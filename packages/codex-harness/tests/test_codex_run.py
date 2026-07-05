@@ -167,6 +167,45 @@ class TestRunValidation:
         assert results == []
         assert not (run_dir / "validation.log").exists()
 
+    def test_bare_string_entry_does_not_crash(self, tmp_path: Path) -> None:
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        (codex_dir / "validation.json").write_text(
+            json.dumps({"commands": ["ruff check ."]}), encoding="utf-8"
+        )
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+
+        results = codex_run.run_validation(tmp_path, run_dir)
+
+        assert [r["status"] for r in results] == ["failed"]
+
+    def test_list_entry_does_not_crash(self, tmp_path: Path) -> None:
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        (codex_dir / "validation.json").write_text(
+            json.dumps({"commands": [["ruff", "check", "."]]}), encoding="utf-8"
+        )
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+
+        results = codex_run.run_validation(tmp_path, run_dir)
+
+        assert [r["status"] for r in results] == ["failed"]
+
+    def test_string_timeout_is_coerced_and_command_runs(self, tmp_path: Path) -> None:
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        (codex_dir / "validation.json").write_text(
+            json.dumps({"commands": [{"command": "true", "timeout": "5"}]}), encoding="utf-8"
+        )
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+
+        results = codex_run.run_validation(tmp_path, run_dir)
+
+        assert [r["status"] for r in results] == ["passed"]
+
 
 class TestBuildReport:
     def test_includes_summary_files_validation_and_risks(self) -> None:

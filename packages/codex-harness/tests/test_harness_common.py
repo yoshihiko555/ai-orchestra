@@ -288,6 +288,26 @@ class TestCheckRequiredCodexFiles:
         assert missing == [".codex/validation.json"]
 
 
+class TestCoerceValidationTimeout:
+    def test_passes_through_int(self) -> None:
+        assert harness_common.coerce_validation_timeout(30, default=60) == 30
+
+    def test_converts_numeric_string(self) -> None:
+        assert harness_common.coerce_validation_timeout("30", default=60) == 30
+
+    def test_falls_back_on_non_numeric_string(self) -> None:
+        assert harness_common.coerce_validation_timeout("soon", default=60) == 60
+
+    def test_falls_back_on_missing_value(self) -> None:
+        assert harness_common.coerce_validation_timeout(None, default=60) == 60
+
+    def test_falls_back_on_bool(self) -> None:
+        assert harness_common.coerce_validation_timeout(True, default=60) == 60
+
+    def test_falls_back_on_list(self) -> None:
+        assert harness_common.coerce_validation_timeout([1, 2], default=60) == 60
+
+
 class TestParseEventsRealFormat:
     """codex-cli 0.142.x の実イベント形式（E2E で採取）に対する回帰テスト。"""
 

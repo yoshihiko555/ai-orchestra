@@ -36,6 +36,14 @@ codd:
   台帳・フック・ルールを改ざんされるリスクは `[permissions.*]` の deny 設定（`.codex/hooks/**`,
   `.codex/rules/**`, `.claude/orchestra.json` 等、§5.5 参照）で緩和するに留まる。署名付き配布や
   改ざん検知の強化は将来課題とする。
+- **hooks は `codex exec` で発火しない（0.142.5 実測）**: 正式スキーマの `.codex/hooks.json`・
+  インライン TOML・`--enable hooks`・trust 設定・`--dangerously-bypass-hook-trust` のすべてを
+  満たしても、exec 経由では SessionStart / UserPromptSubmit / PreToolUse / Stop のいずれも
+  発火しなかった。公式ドキュメントに exec での hooks 動作保証の記載はなく、upstream の
+  hook dispatch 実装バグ（openai/codex PR #26434 と同系統）の可能性が高い。このため本ハーネスは
+  hooks を「対話 TUI 向けの補助層」と位置づけ、**exec 経路の防御は rules + sandbox +
+  `codex_run.py` 自身による実行後 validation** で成立させる（§4.5 の deterministic validation は
+  Codex の Stop hook に依存しない）。upstream 修正後に hooks 発火を E2E で再検証する。
 
 ---
 

@@ -30,7 +30,7 @@
           {
             "type": "command",
             "command": "python3 .codex/hooks/stop_validate.py",
-            "timeout": 300,
+            "timeout": 600,
             "statusMessage": "Running validation"
           }
         ]

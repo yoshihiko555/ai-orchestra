@@ -12,10 +12,20 @@ written to stdout so the failure is visible without stopping the agent.
 
 If ``.codex/validation.json`` does not exist, or defines no commands,
 the hook does nothing and exits 0.
+
+Before running anything, ``.codex/validation.json`` itself is checked
+against the sync ledger (``.claude/orchestra.json``'s
+``codex_file_hashes``) so an agent cannot smuggle in arbitrary commands
+by rewriting the validation list. This mirrors (but does not import)
+``packages/codex-harness/scripts/harness_common.py::verify_hooks_trust``:
+this file is a standalone distribution artifact with no dependency on
+``scripts/`` at runtime, so the hash check is duplicated in miniature
+here (see ``is_validation_json_trusted`` below).
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shlex
@@ -28,7 +38,11 @@ from typing import Any
 DEFAULT_TIMEOUT_SECONDS = 300
 VALIDATION_RELATIVE_PATH = Path(".codex/validation.json")
 REPORTS_RELATIVE_DIR = Path(".codex/reports")
+ORCHESTRA_JSON_RELATIVE_PATH = Path(".claude/orchestra.json")
 TIMESTAMP_FORMAT = "%Y%m%d-%H%M%S"
+UNTRUSTED_VALIDATION_MESSAGE = (
+    "validation.json is not trusted (modified or unregistered); skipping validation"
+)
 
 # Mirrors packages/codex-harness/codex/hooks/user_prompt_secret_scan.py
 # SECRET_PATTERNS and packages/codex-harness/scripts/harness_common.py
@@ -82,6 +96,74 @@ def resolve_cwd(payload: dict[str, Any] | None) -> Path:
     return Path.cwd()
 
 
+def resolve_repo_root(cwd: Path) -> Path:
+    """Resolve the project root, falling back to `git rev-parse --show-toplevel`.
+
+    The Stop hook payload's ``cwd`` is expected to already be the project
+    root (see module docstring). This fallback exists only for robustness
+    in case a caller passes a subdirectory: it never raises and always
+    returns a usable path (``cwd`` itself when git can't resolve one).
+    """
+    if (cwd / ".claude").is_dir() or (cwd / ".git").exists():
+        return cwd
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=cwd,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return cwd
+    if completed.returncode != 0:
+        return cwd
+    toplevel = completed.stdout.strip()
+    return Path(toplevel) if toplevel else cwd
+
+
+def _load_recorded_validation_hash(root: Path) -> str | None:
+    """Read the recorded SHA-256 for .codex/validation.json from the sync ledger."""
+    orchestra_path = root / ORCHESTRA_JSON_RELATIVE_PATH
+    if not orchestra_path.is_file():
+        return None
+    try:
+        data = json.loads(orchestra_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    hashes = data.get("codex_file_hashes")
+    if not isinstance(hashes, dict):
+        return None
+    value = hashes.get(str(VALIDATION_RELATIVE_PATH))
+    return value if isinstance(value, str) else None
+
+
+def is_validation_json_trusted(root: Path) -> bool:
+    """Check .codex/validation.json's SHA-256 against the sync ledger.
+
+    Fail-closed: a missing ledger, missing ledger entry, missing file,
+    symlink, or hash mismatch is all treated as untrusted. See the module
+    docstring for how this relates to
+    harness_common.verify_hooks_trust().
+    """
+    validation_path = root / VALIDATION_RELATIVE_PATH
+    if validation_path.is_symlink() or not validation_path.is_file():
+        return False
+
+    recorded_hash = _load_recorded_validation_hash(root)
+    if recorded_hash is None:
+        return False
+
+    try:
+        current_hash = hashlib.sha256(validation_path.read_bytes()).hexdigest()
+    except OSError:
+        return False
+    return current_hash == recorded_hash
+
+
 def load_commands(root: Path) -> list[dict[str, Any]]:
     """Load the validation command list from .codex/validation.json."""
     path = root / VALIDATION_RELATIVE_PATH
@@ -95,10 +177,48 @@ def load_commands(root: Path) -> list[dict[str, Any]]:
     return commands if isinstance(commands, list) else []
 
 
+def _coerce_timeout(value: Any) -> int | float:
+    """Best-effort int conversion for a validation entry's `timeout` field.
+
+    Falls back to DEFAULT_TIMEOUT_SECONDS when `value` is missing, not a
+    number, and not a numeric string (e.g. a bool, a list, or "soon").
+    """
+    if isinstance(value, bool):
+        return DEFAULT_TIMEOUT_SECONDS
+    if isinstance(value, (int, float)):
+        return value
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_TIMEOUT_SECONDS
+
+
 def run_command(entry: dict[str, Any], cwd: Path) -> dict[str, Any]:
-    """Run a single validation command entry and capture its result."""
-    command = str(entry.get("command", ""))
-    timeout = entry.get("timeout", DEFAULT_TIMEOUT_SECONDS)
+    """Run a single validation command entry and capture its result.
+
+    `entry` is untrusted input from `.codex/validation.json` (though the
+    file itself is hash-verified by `is_validation_json_trusted` before
+    `main` gets here). Malformed entries (not a dict, non-string
+    `command`, non-numeric `timeout`) are converted into a failed result
+    instead of raising, so one bad entry can't crash the whole hook.
+    """
+    if not isinstance(entry, dict):
+        return {
+            "command": repr(entry),
+            "passed": False,
+            "output": "invalid validation entry: not an object",
+        }
+
+    raw_command = entry.get("command", "")
+    if not isinstance(raw_command, str):
+        return {
+            "command": repr(raw_command),
+            "passed": False,
+            "output": "invalid validation entry: command is not a string",
+        }
+    command = raw_command
+    timeout = _coerce_timeout(entry.get("timeout", DEFAULT_TIMEOUT_SECONDS))
+
     try:
         argv = shlex.split(command)
     except ValueError as exc:
@@ -150,13 +270,18 @@ def build_summary(results: list[dict[str, Any]]) -> str | None:
 def main() -> int:
     payload = read_stdin_payload()
     cwd = resolve_cwd(payload)
+    repo_root = resolve_repo_root(cwd)
 
-    commands = load_commands(cwd)
+    if not is_validation_json_trusted(repo_root):
+        print(json.dumps({"continue": True, "systemMessage": UNTRUSTED_VALIDATION_MESSAGE}))
+        return 0
+
+    commands = load_commands(repo_root)
     if not commands:
         return 0
 
-    results = [run_command(entry, cwd) for entry in commands]
-    write_log(cwd, results)
+    results = [run_command(entry, repo_root) for entry in commands]
+    write_log(repo_root, results)
 
     summary = build_summary(results)
     if summary is not None:

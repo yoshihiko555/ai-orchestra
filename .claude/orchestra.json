@@ -122,13 +122,13 @@
     }
   },
   "codex_file_hashes": {
-    ".codex/hooks.json": "8b7ffc6345683466fbb3d39600decac765d6c50ad887cfe25e8c5ab0289443c9",
+    ".codex/hooks.json": "5f5af56a63ceae90f61fb2bb9cd81d60d3cdc2614a3af971005ac376f2cd4e76",
     ".codex/hooks/user_prompt_secret_scan.py": "fb0edc6ac3f0568808b6c7d6fdd2fa2f8739ff815f15990c5109b2e7ec4383e9",
     ".codex/hooks/pre_tool_use_policy.py": "c5b673a958149f2dca590b5fe9d0b0d261e2e671e4d5dfdbb89a3976638240c5",
-    ".codex/hooks/stop_validate.py": "0f7a870ddbade9a5d5d21c8eecdd07299f0edb9ffb907f40d4e18242dab134bd",
+    ".codex/hooks/stop_validate.py": "59420a8ab2eddef15b320673cfa4cd33a01db4c76ff5f860ed266466e1d10b18",
     ".codex/schemas/task_result.schema.json": "17c338830f97f92c3b16600003649e4002395950222548d367e579c79cbf4998",
     ".codex/schemas/review_result.schema.json": "004555ff9a356d81f3b02d0c3e57647fd16476dfc02544bb90f6cf91e8df4c0e",
     ".codex/rules/codex-harness.rules": "65c0023c57ae9ea29e97385622d636763a988178ecdd12fa15596e0f11c5fcc7",
-    ".codex/validation.json": "318e6cba206ebef67e11ec38661f5b546d0c4534d793faa7664625441d3f2700"
+    ".codex/validation.json": "c8289813a29cfcd7ac55e0ba2a436fe17ad896d6b4d915788885b5a2ddaa209c"
   }
 }

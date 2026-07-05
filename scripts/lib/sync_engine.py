@@ -60,6 +60,28 @@ def _iter_toml_sections(content: str, header_prefix: str) -> list[tuple[str, str
     return sections
 
 
+def _warn_if_kept_value_conflicts(existing_value: Any, harness_value: Any, key_label: str) -> None:
+    """Warn to stderr when an add-if-missing key's kept value conflicts with the harness intent.
+
+    The merge behavior itself never changes (existing user values are always
+    kept as-is); this only surfaces a warning so the operator notices that
+    the harness's config is effectively disabled/overridden for that key.
+    """
+    if existing_value is None or existing_value == harness_value:
+        return
+    if key_label == "features.hooks" and existing_value is False:
+        print(
+            "[warn] codex-harness: features.hooks=false のためハーネスの hooks は無効のままです",
+            file=sys.stderr,
+        )
+        return
+    print(
+        f"[warn] codex-harness: {key_label} が {existing_value!r} のまま保持されました"
+        f"（ハーネス既定値は {harness_value!r}）",
+        file=sys.stderr,
+    )
+
+
 def apply_codex_harness_config(
     project_dir: Path,
     orchestra_path: Path,
@@ -74,7 +96,9 @@ def apply_codex_harness_config(
     マージ規則:
       - `[permissions.*]` セクション: upsert（ハーネス所有、常に最新化）
       - `default_permissions`（トップレベルキー）と `[features].hooks`:
-        add-if-missing（ユーザー値を上書きしない）
+        add-if-missing（ユーザー値を上書きしない）。既存値がハーネスの意図
+        （config-harness.toml の値）と異なる場合は、挙動は変えず stderr に
+        警告のみ出す（例: features.hooks=false のまま保持）。
 
     Returns:
         True: config.toml を更新した。False: 変更なし、またはスキップした。
@@ -108,12 +132,29 @@ def apply_codex_harness_config(
     original = config_path.read_text(encoding="utf-8")
     content = original
 
+    try:
+        original_data = tomllib.loads(original)
+    except tomllib.TOMLDecodeError:
+        original_data = {}
+
     if "default_permissions" in harness_data:
-        value = _toml_scalar(harness_data["default_permissions"])
+        harness_value = harness_data["default_permissions"]
+        _warn_if_kept_value_conflicts(
+            existing_value=original_data.get("default_permissions"),
+            harness_value=harness_value,
+            key_label="default_permissions",
+        )
+        value = _toml_scalar(harness_value)
         content = upsert_toml_top_level_key(content, "default_permissions", value, overwrite=False)
 
     if "hooks" in harness_data.get("features", {}):
-        value = _toml_scalar(harness_data["features"]["hooks"])
+        harness_value = harness_data["features"]["hooks"]
+        _warn_if_kept_value_conflicts(
+            existing_value=original_data.get("features", {}).get("hooks"),
+            harness_value=harness_value,
+            key_label="features.hooks",
+        )
+        value = _toml_scalar(harness_value)
         content = upsert_toml_key_in_section(content, "features", "hooks", value, overwrite=False)
 
     for section_name, section_text in _iter_toml_sections(

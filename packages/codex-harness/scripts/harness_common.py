@@ -176,6 +176,31 @@ def redact_secrets(text: str) -> str:
     return result
 
 
+# --- Validation entry hardening ----------------------------------------------
+#
+# Shared by codex_run.py's _run_validation_command(). Mirrors (but is not
+# imported by) packages/codex-harness/codex/hooks/stop_validate.py's
+# standalone `_coerce_timeout`, since that distributed hook file must not
+# depend on scripts/ at runtime.
+
+
+def coerce_validation_timeout(value: Any, default: int) -> int | float:
+    """Best-effort int conversion for a validation entry's `timeout` field.
+
+    Falls back to `default` when `value` is missing, not a number, and not
+    a numeric string (e.g. a bool, a list, or a non-numeric string like
+    "soon").
+    """
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, (int, float)):
+        return value
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 # --- Atomic write ------------------------------------------------------------
 
 

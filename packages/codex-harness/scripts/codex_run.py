@@ -29,6 +29,7 @@ if str(_SCRIPT_DIR) not in sys.path:
 
 from harness_common import (  # noqa: E402
     check_required_codex_files,
+    coerce_validation_timeout,
     find_repo_root,
     redact_secrets,
     resolve_trust_flags,
@@ -212,10 +213,35 @@ def run_validation(repo_root: Path, run_dir: Path) -> list[dict[str, str]]:
     return results
 
 
-def _run_validation_command(entry: dict[str, Any], repo_root: Path) -> tuple[dict[str, str], str]:
-    """Run a single validation command entry. Returns (result dict, log block)."""
-    command = str(entry.get("command", ""))
-    timeout = entry.get("timeout", DEFAULT_VALIDATION_TIMEOUT_SECONDS)
+def _run_validation_command(entry: Any, repo_root: Path) -> tuple[dict[str, str], str]:
+    """Run a single validation command entry. Returns (result dict, log block).
+
+    `entry` is untrusted input from `.codex/validation.json`. Malformed
+    entries (not a dict, non-string `command`, non-numeric `timeout`) are
+    converted into a failed result instead of raising. Mirrors the same
+    hardening in
+    packages/codex-harness/codex/hooks/stop_validate.py::run_command.
+    """
+    if not isinstance(entry, dict):
+        command = repr(entry)
+        output = "invalid validation entry: not an object"
+        result = {"command": command, "status": "failed", "summary": output[:2000]}
+        log_block = f"=== [FAILED] {command} ===\n{output}"
+        return result, log_block
+
+    raw_command = entry.get("command", "")
+    if not isinstance(raw_command, str):
+        command = repr(raw_command)
+        output = "invalid validation entry: command is not a string"
+        result = {"command": command, "status": "failed", "summary": output[:2000]}
+        log_block = f"=== [FAILED] {command} ===\n{output}"
+        return result, log_block
+
+    command = raw_command
+    timeout = coerce_validation_timeout(
+        entry.get("timeout", DEFAULT_VALIDATION_TIMEOUT_SECONDS),
+        DEFAULT_VALIDATION_TIMEOUT_SECONDS,
+    )
     try:
         argv = shlex.split(command)
     except ValueError as exc:
