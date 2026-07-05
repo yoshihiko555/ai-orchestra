@@ -58,6 +58,39 @@ prefix_rule(
     justification="Destructive recursive deletion is blocked by default; use a narrower, explicit command instead.",
 )
 
+# Spelling/ordering variants of `rm -rf` that a naive prefix match on
+# ["rm", "-rf"] alone would miss (e.g. flag reordering, combined single-char
+# flags in the other order, or long-form flag names).
+prefix_rule(
+    pattern=["rm", "-fr"],
+    decision="forbidden",
+    justification="Destructive recursive deletion is blocked by default; use a narrower, explicit command instead.",
+)
+
+prefix_rule(
+    pattern=["rm", "-r", "-f"],
+    decision="forbidden",
+    justification="Destructive recursive deletion is blocked by default; use a narrower, explicit command instead.",
+)
+
+prefix_rule(
+    pattern=["rm", "-f", "-r"],
+    decision="forbidden",
+    justification="Destructive recursive deletion is blocked by default; use a narrower, explicit command instead.",
+)
+
+prefix_rule(
+    pattern=["rm", "--recursive", "--force"],
+    decision="forbidden",
+    justification="Destructive recursive deletion is blocked by default; use a narrower, explicit command instead.",
+)
+
+prefix_rule(
+    pattern=["rm", "--force", "--recursive"],
+    decision="forbidden",
+    justification="Destructive recursive deletion is blocked by default; use a narrower, explicit command instead.",
+)
+
 prefix_rule(
     pattern=["git", "status"],
     decision="allow",

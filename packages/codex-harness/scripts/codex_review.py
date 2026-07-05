@@ -31,6 +31,7 @@ if str(_SCRIPT_DIR) not in sys.path:
 from harness_common import (  # noqa: E402
     check_required_codex_files,
     find_repo_root,
+    redact_files_in_place,
     redact_secrets,
     resolve_trust_flags,
     run_version_gate,
@@ -63,15 +64,25 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def run_git(repo_root: Path, args: list[str], timeout: int = 30) -> str:
-    """Run a git subcommand and return raw stdout (empty string on error)."""
+def run_git(repo_root: Path, args: list[str], timeout: int = 30) -> tuple[str, int | None]:
+    """Run a git subcommand. Returns ``(stdout, returncode)``.
+
+    ``returncode`` is ``None`` if the subprocess itself could not be
+    launched or timed out (git missing, timeout expired) -- callers should
+    treat this the same as a non-zero exit. A real git failure (e.g. an
+    unknown/missing ``--base`` ref) surfaces as a non-zero ``returncode``,
+    which callers can distinguish from a genuinely empty diff
+    (``returncode == 0`` and empty stdout). stderr is not returned here;
+    callers that need a diagnostic message on failure should re-run with
+    ``capture_output`` themselves or just report the ref/args used.
+    """
     try:
         completed = subprocess.run(
             ["git", *args], cwd=repo_root, capture_output=True, text=True, timeout=timeout
         )
     except (OSError, subprocess.TimeoutExpired):
-        return ""
-    return completed.stdout
+        return "", None
+    return completed.stdout, completed.returncode
 
 
 def preflight(repo_root: Path, allow_untrusted: bool) -> list[str] | None:
@@ -206,7 +217,15 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     run_dir = build_run_dir(repo_root)
-    diff_text = run_git(repo_root, ["diff", f"{args.base}...HEAD"], timeout=60)
+    diff_text, diff_returncode = run_git(repo_root, ["diff", f"{args.base}...HEAD"], timeout=60)
+    if diff_returncode != 0:
+        print(
+            f"[{LABEL}] error: `git diff {args.base}...HEAD` failed (exit"
+            f" {diff_returncode}); is '{args.base}' a valid ref?",
+            file=sys.stderr,
+        )
+        return 1
+
     input_diff_path = run_dir / "input.diff"
     # Redact before persisting *and* before feeding the diff to `codex exec`
     # via stdin, so secret-like substrings are never sent to the external
@@ -217,9 +236,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[{LABEL}] no changes between {args.base} and HEAD; nothing to review")
         return 0
 
-    status_before = run_git(repo_root, ["status", "--porcelain"])
+    status_before, _ = run_git(repo_root, ["status", "--porcelain"])
     exit_code = execute_codex_review(repo_root, run_dir, input_diff_path, trust_flags, args.timeout)
-    status_after = run_git(repo_root, ["status", "--porcelain"])
+    redact_files_in_place(run_dir / "events.jsonl", run_dir / "progress.log")
+    status_after, _ = run_git(repo_root, ["status", "--porcelain"])
 
     write_warning = None
     if status_before != status_after:

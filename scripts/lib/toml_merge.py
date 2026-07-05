@@ -27,6 +27,13 @@ _TOML_HEADER_RE = re.compile(r"^\[([^\[\]]+)\]\s*(?:#.*)?$")
 # (e.g. a bare "[3, 4]" as the last element of an array-of-arrays).
 _CONTINUATION_SUFFIXES = ("[", ",", "\\")
 
+# TOML multi-line string delimiters. A line that (re)opens one of these
+# puts every following line into "inside a string" mode until a line
+# containing the same delimiter closes it again -- during which time a
+# bracketed line (e.g. a "[section]"-looking line quoted inside the string
+# body) must never be mistaken for a section header.
+_TRIPLE_QUOTE_DELIMS = ('"""', "'''")
+
 
 def _is_toml_header_line(stripped: str) -> re.Match[str] | None:
     """Match `stripped` against the section-header pattern.
@@ -35,6 +42,40 @@ def _is_toml_header_line(stripped: str) -> re.Match[str] | None:
     header pattern's character class excludes nested ``[``.
     """
     return _TOML_HEADER_RE.match(stripped)
+
+
+def _compute_skip_lines(lines: list[str]) -> list[bool]:
+    """Return, per line, whether it must never be treated as a header candidate.
+
+    A line is skipped when it is still part of a multi-line construct
+    opened on an earlier line: either an array-literal/line-continuation
+    (``_CONTINUATION_SUFFIXES``) or a ``\"\"\"``/``'''`` multi-line string
+    literal. This is a line-oriented heuristic (not a full TOML tokenizer),
+    matching the rest of this module's approach; the result is always
+    re-validated via ``tomllib.loads()`` before being written (fail-closed).
+    """
+    skip = [False] * len(lines)
+    in_continuation = False
+    in_triple_string: str | None = None
+
+    for i, line in enumerate(lines):
+        if in_triple_string is not None:
+            skip[i] = True
+            if line.count(in_triple_string) % 2 == 1:
+                in_triple_string = None
+            continue
+
+        skip[i] = in_continuation
+
+        stripped = line.strip()
+        in_continuation = bool(stripped) and stripped.endswith(_CONTINUATION_SUFFIXES)
+
+        for delim in _TRIPLE_QUOTE_DELIMS:
+            if line.count(delim) % 2 == 1:
+                in_triple_string = delim
+                break
+
+    return skip
 
 
 class TomlMergeError(ValueError):
@@ -56,16 +97,12 @@ def find_toml_section(content: str, section_name: str) -> tuple[int, int] | None
     次のセクションヘッダまたは EOF を終端とする。見つからなければ None。
     """
     lines = content.splitlines()
+    skip = _compute_skip_lines(lines)
     start: int | None = None
-    in_continuation = False
     for i, line in enumerate(lines):
-        stripped = line.strip()
-        was_continuation = in_continuation
-        if stripped:
-            in_continuation = stripped.endswith(_CONTINUATION_SUFFIXES)
-        if was_continuation:
+        if skip[i]:
             continue
-
+        stripped = line.strip()
         match = _is_toml_header_line(stripped)
         if match is None:
             continue
@@ -237,16 +274,13 @@ def _line_value(line: str) -> str:
 def _find_first_header_index(lines: list[str]) -> int:
     """最初のセクションヘッダ行番号を返す。無ければ len(lines) を返す。
 
-    複数行配列（継続コンテキスト）内の行はヘッダ候補として扱わない。
+    複数行配列（継続コンテキスト）や複数行文字列リテラル内の行は
+    ヘッダ候補として扱わない。
     """
-    in_continuation = False
+    skip = _compute_skip_lines(lines)
     for i, line in enumerate(lines):
-        stripped = line.strip()
-        was_continuation = in_continuation
-        if stripped:
-            in_continuation = stripped.endswith(_CONTINUATION_SUFFIXES)
-        if was_continuation:
+        if skip[i]:
             continue
-        if _is_toml_header_line(stripped):
+        if _is_toml_header_line(line.strip()):
             return i
     return len(lines)

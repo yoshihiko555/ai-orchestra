@@ -22,10 +22,10 @@ MIN_TOKEN_LENGTH = 20
 MIN_GENERIC_KEY_LENGTH = 10
 
 SECRET_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
-    ("OPENAI_API_KEY assignment", re.compile(r"OPENAI_API_KEY\s*=")),
-    ("AWS_ACCESS_KEY_ID", re.compile(r"AWS_ACCESS_KEY_ID")),
-    ("AWS_SECRET_ACCESS_KEY", re.compile(r"AWS_SECRET_ACCESS_KEY")),
-    ("GITHUB_TOKEN", re.compile(r"GITHUB_TOKEN")),
+    ("OPENAI_API_KEY assignment", re.compile(r"OPENAI_API_KEY\s*=", re.IGNORECASE)),
+    ("AWS_ACCESS_KEY_ID", re.compile(r"AWS_ACCESS_KEY_ID", re.IGNORECASE)),
+    ("AWS_SECRET_ACCESS_KEY", re.compile(r"AWS_SECRET_ACCESS_KEY", re.IGNORECASE)),
+    ("GITHUB_TOKEN", re.compile(r"GITHUB_TOKEN", re.IGNORECASE)),
     ("GitHub PAT (ghp_)", re.compile(rf"\bghp_[A-Za-z0-9]{{{MIN_TOKEN_LENGTH},}}")),
     (
         "GitHub fine-grained PAT (github_pat_)",

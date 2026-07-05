@@ -31,6 +31,7 @@ from lib.orchestra_context import ContextMixin  # noqa: E402
 from lib.orchestra_hooks import HooksMixin  # noqa: E402
 from lib.orchestra_models import Package  # noqa: E402
 from lib.sync_engine import (  # noqa: E402
+    _is_within_project,
     apply_codex_harness_config,
     collect_manifest_compositions,
     compute_file_hash,
@@ -382,21 +383,22 @@ class OrchestraManager(ContextMixin, HooksMixin):
                         record_file_hash(orch, pkg_name, file_key, compute_file_hash(dst))
                         synced_count += 1
 
-        if not dry_run:
-            codex_synced_count = sync_codex_files(
-                project_dir, orchestra_path, installed, orch, force=force
+        codex_synced_count = sync_codex_files(
+            project_dir, orchestra_path, installed, orch, force=force, dry_run=dry_run
+        )
+        synced_count += codex_synced_count
+        try:
+            config_updated = apply_codex_harness_config(
+                project_dir, orchestra_path, installed, dry_run=dry_run
             )
-            synced_count += codex_synced_count
-            try:
-                config_updated = apply_codex_harness_config(project_dir, orchestra_path, installed)
-            except (TomlMergeError, tomllib.TOMLDecodeError, OSError) as e:
-                print(
-                    f"警告: .codex/config.toml マージに失敗したためスキップしました: {e}",
-                    file=sys.stderr,
-                )
-                config_updated = False
-            if config_updated:
-                print(".codex/config.toml を codex-harness 設定で更新しました")
+        except (TomlMergeError, tomllib.TOMLDecodeError, OSError) as e:
+            print(
+                f"警告: .codex/config.toml マージに失敗したためスキップしました: {e}",
+                file=sys.stderr,
+            )
+            config_updated = False
+        if config_updated and not dry_run:
+            print(".codex/config.toml を codex-harness 設定で更新しました")
 
         if synced_count > 0:
             print(f"{synced_count} ファイルを同期しました")
@@ -623,6 +625,7 @@ class OrchestraManager(ContextMixin, HooksMixin):
         orch: dict[str, Any],
         target_key: str,
         target: Path,
+        project_dir: Path,
         dry_run: bool,
     ) -> None:
         """codex_files（.codex/ 配下配布物）を配布時ハッシュ台帳と照合して削除する。
@@ -632,8 +635,20 @@ class OrchestraManager(ContextMixin, HooksMixin):
         ハッシュが一致する（未改変の）ファイルのみ削除し、台帳エントリも
         併せて削除する。ハッシュ未記録・改変済みのファイルは削除せず警告する
         （安全側スキップ、_remove_if_unchanged と同じ方針）。
+
+        target_key（manifest.json の codex_files.target）が絶対パスや ../ で
+        project_dir 外を指す場合は sync_codex_files() の _is_within_project()
+        と同じ境界チェックを適用し、削除せず警告する（H5 相当の防御を
+        uninstall 側にも適用）。
         """
         hashes = orch.setdefault("codex_file_hashes", {})
+
+        if not _is_within_project(target, project_dir):
+            print(
+                f"警告: {target_key} はプロジェクト外を指すため削除をスキップしました"
+                "（絶対パスまたは ../ による脱出の疑い）"
+            )
+            return
 
         if not target.exists():
             if not dry_run:
@@ -709,7 +724,7 @@ class OrchestraManager(ContextMixin, HooksMixin):
             if not target_rel:
                 continue
             target = project_dir / target_rel
-            self._remove_codex_file_if_unchanged(orch, target_rel, target, dry_run)
+            self._remove_codex_file_if_unchanged(orch, target_rel, target, project_dir, dry_run)
 
         installed = set(orch.get("installed_packages", []))
         if pkg.name in installed:

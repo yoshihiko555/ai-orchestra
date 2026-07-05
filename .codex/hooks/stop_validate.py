@@ -31,6 +31,7 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -43,6 +44,13 @@ TIMESTAMP_FORMAT = "%Y%m%d-%H%M%S"
 UNTRUSTED_VALIDATION_MESSAGE = (
     "validation.json is not trusted (modified or unregistered); skipping validation"
 )
+# Cumulative wall-clock budget for *all* validation commands combined,
+# deliberately kept below hooks.json's Stop hook timeout (600s as of this
+# writing) so this hook has headroom to write its log and exit cleanly
+# instead of being killed mid-run. Individual per-command `timeout` entries
+# already bound a single command, but not their sum.
+TOTAL_BUDGET_SECONDS = 540
+BUDGET_EXCEEDED_MESSAGE = "skipped: validation time budget exceeded"
 
 # Mirrors packages/codex-harness/codex/hooks/user_prompt_secret_scan.py
 # SECRET_PATTERNS and packages/codex-harness/scripts/harness_common.py
@@ -52,10 +60,13 @@ _MIN_TOKEN_LENGTH = 20
 _MIN_GENERIC_KEY_LENGTH = 10
 
 REDACTION_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
-    ("OPENAI_API_KEY assignment", re.compile(r"OPENAI_API_KEY\s*=\s*\S+")),
+    ("OPENAI_API_KEY assignment", re.compile(r"OPENAI_API_KEY\s*=\s*\S+", re.IGNORECASE)),
     ("AWS_ACCESS_KEY_ID value", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
-    ("AWS_SECRET_ACCESS_KEY assignment", re.compile(r"AWS_SECRET_ACCESS_KEY\s*=\s*\S+")),
-    ("GITHUB_TOKEN assignment", re.compile(r"GITHUB_TOKEN\s*=\s*\S+")),
+    (
+        "AWS_SECRET_ACCESS_KEY assignment",
+        re.compile(r"AWS_SECRET_ACCESS_KEY\s*=\s*\S+", re.IGNORECASE),
+    ),
+    ("GITHUB_TOKEN assignment", re.compile(r"GITHUB_TOKEN\s*=\s*\S+", re.IGNORECASE)),
     ("GitHub PAT (ghp_)", re.compile(rf"\bghp_[A-Za-z0-9]{{{_MIN_TOKEN_LENGTH},}}")),
     (
         "GitHub fine-grained PAT (github_pat_)",
@@ -137,7 +148,7 @@ def _load_recorded_validation_hash(root: Path) -> str | None:
     hashes = data.get("codex_file_hashes")
     if not isinstance(hashes, dict):
         return None
-    value = hashes.get(str(VALIDATION_RELATIVE_PATH))
+    value = hashes.get(VALIDATION_RELATIVE_PATH.as_posix())
     return value if isinstance(value, str) else None
 
 
@@ -224,6 +235,13 @@ def run_command(entry: dict[str, Any], cwd: Path) -> dict[str, Any]:
     except ValueError as exc:
         return {"command": command, "passed": False, "output": f"invalid command syntax: {exc}"}
 
+    if not argv:
+        return {
+            "command": command,
+            "passed": False,
+            "output": "invalid validation entry: command is empty",
+        }
+
     try:
         completed = subprocess.run(
             argv,
@@ -241,6 +259,38 @@ def run_command(entry: dict[str, Any], cwd: Path) -> dict[str, Any]:
     passed = completed.returncode == 0
     output = completed.stdout + completed.stderr
     return {"command": command, "passed": passed, "output": output}
+
+
+def run_commands_with_budget(
+    commands: list[dict[str, Any]],
+    cwd: Path,
+    total_budget_seconds: float = TOTAL_BUDGET_SECONDS,
+) -> list[dict[str, Any]]:
+    """Run `commands` in order, enforcing a cumulative wall-clock budget.
+
+    Individual commands each have their own `timeout`, but nothing
+    previously bounded their *sum*: a long enough command list could exceed
+    the Stop hook's overall timeout and be killed mid-run before writing
+    its log. Once `total_budget_seconds` has elapsed, remaining commands
+    are reported as skipped (not run) rather than executed anyway.
+    """
+    results: list[dict[str, Any]] = []
+    started_at = time.monotonic()
+    budget_exhausted = False
+
+    for entry in commands:
+        if not budget_exhausted and (time.monotonic() - started_at) >= total_budget_seconds:
+            budget_exhausted = True
+
+        if budget_exhausted:
+            raw_command = entry.get("command", "") if isinstance(entry, dict) else entry
+            command = raw_command if isinstance(raw_command, str) else repr(raw_command)
+            results.append({"command": command, "passed": False, "output": BUDGET_EXCEEDED_MESSAGE})
+            continue
+
+        results.append(run_command(entry, cwd))
+
+    return results
 
 
 def write_log(root: Path, results: list[dict[str, Any]]) -> Path:
@@ -280,7 +330,7 @@ def main() -> int:
     if not commands:
         return 0
 
-    results = [run_command(entry, repo_root) for entry in commands]
+    results = run_commands_with_budget(commands, repo_root)
     write_log(repo_root, results)
 
     summary = build_summary(results)

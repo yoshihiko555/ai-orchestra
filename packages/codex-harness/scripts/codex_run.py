@@ -31,6 +31,8 @@ from harness_common import (  # noqa: E402
     check_required_codex_files,
     coerce_validation_timeout,
     find_repo_root,
+    is_ledger_entry_trusted,
+    redact_files_in_place,
     redact_secrets,
     resolve_trust_flags,
     run_version_gate,
@@ -43,12 +45,14 @@ DEFAULT_TIMEOUT_SECONDS = 600
 DEFAULT_VALIDATION_TIMEOUT_SECONDS = 300
 SLUG_MAX_LENGTH = 40
 SCHEMA_REL_PATH = ".codex/schemas/task_result.schema.json"
+VALIDATION_TARGET_REL = ".codex/validation.json"
 REQUIRED_CODEX_FILES = [
     ".codex/hooks.json",
     SCHEMA_REL_PATH,
-    ".codex/validation.json",
+    VALIDATION_TARGET_REL,
 ]
 FINAL_SCHEMA_REQUIRED_KEYS = {"status", "summary", "files_changed", "validation", "risks"}
+UNTRUSTED_VALIDATION_SUMMARY = "skipped (untrusted validation.json)"
 
 
 def slugify(task: str) -> str:
@@ -148,8 +152,9 @@ def execute_codex(
     events_path = run_dir / "events.jsonl"
     progress_path = run_dir / "progress.log"
     # events.jsonl / progress.log are live subprocess stream targets (not
-    # pre-computed content), so they bypass write_atomic/redact_secrets by
-    # design (see manifest task spec item 8).
+    # pre-computed content), so they are written raw here and redacted in a
+    # post-run pass instead (see `_redact_run_artifacts_in_place`, called
+    # from main() once the subprocess has completed).
     with (
         open(events_path, "w", encoding="utf-8") as events_f,
         open(progress_path, "w", encoding="utf-8") as progress_f,
@@ -190,10 +195,29 @@ def capture_diff(repo_root: Path, run_dir: Path) -> None:
 
 
 def run_validation(repo_root: Path, run_dir: Path) -> list[dict[str, str]]:
-    """Run .codex/validation.json commands and write a combined validation.log."""
+    """Run .codex/validation.json commands and write a combined validation.log.
+
+    Before running anything, ``.codex/validation.json`` is checked against
+    the sync ledger (same fail-closed check as
+    ``harness_common.verify_hooks_trust``, applied to this single file via
+    ``is_ledger_entry_trusted``). If untrusted (modified after distribution,
+    unregistered, missing, or a symlink), validation is skipped entirely and
+    reported as a single "skipped" result rather than run.
+    """
     validation_path = repo_root / ".codex" / "validation.json"
     if not validation_path.is_file():
         return []
+
+    if not is_ledger_entry_trusted(repo_root, VALIDATION_TARGET_REL):
+        result = {
+            "command": "(validation.json)",
+            "status": "skipped",
+            "summary": UNTRUSTED_VALIDATION_SUMMARY,
+        }
+        log_block = f"=== [SKIPPED] validation.json ===\n{UNTRUSTED_VALIDATION_SUMMARY}"
+        write_atomic(run_dir / "validation.log", redact_secrets(log_block))
+        return [result]
+
     try:
         data = json.loads(validation_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
@@ -247,6 +271,13 @@ def _run_validation_command(entry: Any, repo_root: Path) -> tuple[dict[str, str]
     except ValueError as exc:
         passed = False
         output = f"invalid command syntax: {exc}"
+        status = "failed"
+        result = {"command": command, "status": status, "summary": output[:2000]}
+        log_block = f"=== [{status.upper()}] {command} ===\n{output}"
+        return result, log_block
+
+    if not argv:
+        output = "invalid validation entry: command is empty"
         status = "failed"
         result = {"command": command, "status": status, "summary": output[:2000]}
         log_block = f"=== [{status.upper()}] {command} ===\n{output}"
@@ -366,7 +397,7 @@ def main(argv: list[str] | None = None) -> int:
     run_dir = repo_root / ".codex" / "runs" / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    write_atomic(run_dir / "prompt.md", args.task + "\n")
+    write_atomic(run_dir / "prompt.md", redact_secrets(args.task + "\n"))
     metadata = build_metadata(run_id, repo_root, args.sandbox, "never", started_at_dt.isoformat())
     write_atomic(run_dir / "metadata.json", redact_secrets(json.dumps(metadata, indent=2) + "\n"))
 
@@ -374,6 +405,7 @@ def main(argv: list[str] | None = None) -> int:
     exit_code = execute_codex(
         repo_root, run_dir, args.task, args.sandbox, trust_flags, args.timeout
     )
+    redact_files_in_place(run_dir / "events.jsonl", run_dir / "progress.log")
     capture_git_status(repo_root, run_dir, "after")
     capture_diff(repo_root, run_dir)
 

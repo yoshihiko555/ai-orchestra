@@ -123,12 +123,12 @@
   },
   "codex_file_hashes": {
     ".codex/hooks.json": "5f5af56a63ceae90f61fb2bb9cd81d60d3cdc2614a3af971005ac376f2cd4e76",
-    ".codex/hooks/user_prompt_secret_scan.py": "fb0edc6ac3f0568808b6c7d6fdd2fa2f8739ff815f15990c5109b2e7ec4383e9",
-    ".codex/hooks/pre_tool_use_policy.py": "c5b673a958149f2dca590b5fe9d0b0d261e2e671e4d5dfdbb89a3976638240c5",
-    ".codex/hooks/stop_validate.py": "59420a8ab2eddef15b320673cfa4cd33a01db4c76ff5f860ed266466e1d10b18",
-    ".codex/schemas/task_result.schema.json": "17c338830f97f92c3b16600003649e4002395950222548d367e579c79cbf4998",
+    ".codex/hooks/user_prompt_secret_scan.py": "ccc28fc8fb5fefd8ca20db99bda44d12fe5e411b0c29b8c16d2a7d5f249c12e0",
+    ".codex/hooks/pre_tool_use_policy.py": "b6c451f8a543dd68dd9b69d558d52884ee9efa4fe7c2ca98e639e731afb24001",
+    ".codex/hooks/stop_validate.py": "85a85ecc914ef564f239fbea6dc26e29a0c5d504130f59edae4371543af1219f",
+    ".codex/schemas/task_result.schema.json": "b1c53c374e65fd1aafb4976625126689625f1eb45049df77005bb100642db1cb",
     ".codex/schemas/review_result.schema.json": "004555ff9a356d81f3b02d0c3e57647fd16476dfc02544bb90f6cf91e8df4c0e",
-    ".codex/rules/codex-harness.rules": "65c0023c57ae9ea29e97385622d636763a988178ecdd12fa15596e0f11c5fcc7",
+    ".codex/rules/codex-harness.rules": "93fa5323bf3a3604eaec815f97d1e714aa8b38dd487a1b4ad067a5e9ce35e9ac",
     ".codex/validation.json": "c8289813a29cfcd7ac55e0ba2a436fe17ad896d6b4d915788885b5a2ddaa209c"
   }
 }

@@ -6,6 +6,8 @@ import sys
 import tomllib
 from pathlib import Path
 
+import pytest
+
 # sync_engine は scripts/ からの相対 import を使うため sys.path にスクリプトルートを追加
 _repo_root = Path(__file__).resolve().parents[2]
 _scripts_dir = str(_repo_root / "scripts")
@@ -33,6 +35,7 @@ extends = ":workspace"
 "**/.codex/rules/**" = "deny"
 "**/.codex/validation.json" = "deny"
 "**/.codex/config.toml" = "deny"
+"**/.codex/schemas/**" = "deny"
 "**/.claude/orchestra.json" = "deny"
 """
 
@@ -123,6 +126,7 @@ class TestMergeBehavior:
         assert roots["**/.codex/rules/**"] == "deny"
         assert roots["**/.codex/validation.json"] == "deny"
         assert roots["**/.codex/config.toml"] == "deny"
+        assert roots["**/.codex/schemas/**"] == "deny"
         assert roots["**/.claude/orchestra.json"] == "deny"
 
     def test_does_not_overwrite_existing_default_permissions(self, tmp_path: Path) -> None:
@@ -207,6 +211,34 @@ class TestMergeBehavior:
 
         captured = capsys.readouterr()
         assert captured.err == ""
+
+    def test_non_dict_features_does_not_raise_attribute_error(self, tmp_path: Path) -> None:
+        """R11: 既存 `features` がテーブルでない（スカラー等）場合に AttributeError で
+        クラッシュしないこと。
+
+        `features = "oops"` は tomllib で正当にパースできるが辞書ではないため、
+        修正前は ``original_data.get("features", {}).get("hooks")`` が
+        ``AttributeError: 'str' object has no attribute 'get'`` を送出していた。
+        既存 `features` をテーブルへ書き換えること自体は別の構造的な TOML
+        競合になり得るため（``TomlMergeError`` として fail-closed、呼び出し元
+        `run_initial_sync` は既にこれを捕捉する）、ここでは AttributeError が
+        発生しないことだけを確認する。
+        """
+        orchestra_path = tmp_path / "orchestra"
+        _write_harness_source(orchestra_path)
+        project_dir = _make_project(tmp_path, 'features = "oops"\n')
+
+        try:
+            sync_engine.apply_codex_harness_config(project_dir, orchestra_path, ["codex-harness"])
+        except AttributeError:
+            pytest.fail(
+                "apply_codex_harness_config crashed with AttributeError for non-dict features"
+            )
+        except Exception:
+            # A structural TOML conflict (e.g. TomlMergeError) is a separate,
+            # already fail-closed / caller-handled failure mode (see R19 /
+            # run_initial_sync's try/except around this call).
+            pass
 
     def test_does_not_touch_mcp_servers_section(self, tmp_path: Path) -> None:
         orchestra_path = tmp_path / "orchestra"

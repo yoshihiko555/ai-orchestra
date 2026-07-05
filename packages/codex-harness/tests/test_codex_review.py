@@ -123,9 +123,19 @@ class TestBuildReport:
 
 class TestMainEmptyDiff:
     def _init_repo_with_no_diff(self, tmp_path: Path) -> Path:
+        """A repo with a real `main` ref and HEAD pointing at the same commit
+        (genuinely empty diff), as opposed to `main` simply not existing --
+        the latter must now surface as an error (R3/R7), not a silent
+        empty-diff result."""
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=repo_root, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=repo_root, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=repo_root, check=True)
+        (repo_root / "a.txt").write_text("v1\n", encoding="utf-8")
+        subprocess.run(["git", "add", "a.txt"], cwd=repo_root, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo_root, check=True)
+        subprocess.run(["git", "branch", "-m", "main"], cwd=repo_root, check=True)
         codex_dir = repo_root / ".codex"
         (codex_dir / "schemas").mkdir(parents=True)
         (codex_dir / "hooks.json").write_text("{}", encoding="utf-8")
@@ -155,6 +165,34 @@ class TestMainEmptyDiff:
         run_dirs = list((repo_root / ".codex" / "runs").iterdir())
         assert len(run_dirs) == 1
         assert (run_dirs[0] / "input.diff").read_text(encoding="utf-8") == ""
+        assert not (run_dirs[0] / "review.json").exists()
+
+    def test_returns_one_when_base_ref_does_not_exist(
+        self, tmp_path: Path, monkeypatch, capsys
+    ) -> None:
+        """R3/R7: an unknown --base ref must be a hard error, distinct from a
+        genuinely empty diff (previously both silently produced exit 0)."""
+        repo_root = self._init_repo_with_no_diff(tmp_path)
+        monkeypatch.setattr(codex_review, "run_version_gate", lambda label: True)
+        monkeypatch.setattr(codex_review, "check_required_codex_files", lambda root, files: [])
+        monkeypatch.setattr(
+            codex_review,
+            "resolve_trust_flags",
+            lambda root, allow, label: ["--dangerously-bypass-hook-trust"],
+        )
+
+        def fail_if_called(*args, **kwargs):
+            raise AssertionError("execute_codex_review must not be called for an invalid base ref")
+
+        monkeypatch.setattr(codex_review, "execute_codex_review", fail_if_called)
+
+        exit_code = codex_review.main(["--base", "no-such-ref", "--project", str(repo_root)])
+
+        assert exit_code == 1
+        assert "no-such-ref" in capsys.readouterr().err
+        run_dirs = list((repo_root / ".codex" / "runs").iterdir())
+        assert len(run_dirs) == 1
+        assert not (run_dirs[0] / "input.diff").exists()
         assert not (run_dirs[0] / "review.json").exists()
 
     def test_returns_one_when_not_in_git_repo(self, tmp_path: Path) -> None:

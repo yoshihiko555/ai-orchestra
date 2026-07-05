@@ -153,7 +153,7 @@ class TestSyncCodexFilesUserModified:
 
         assert count == 0
         assert target.read_text(encoding="utf-8") == '{"hooks": ["user-edited"]}'
-        assert "warn" in capsys.readouterr().out
+        assert "warn" in capsys.readouterr().err
 
     def test_overwrites_with_force(self, tmp_path: Path) -> None:
         orchestra_path, project_dir, orch = self._setup(tmp_path)
@@ -195,7 +195,7 @@ class TestSyncCodexFilesUntrackedExisting:
 
         assert count == 0
         assert target.read_text(encoding="utf-8") == '{"hooks": ["pre-existing"]}'
-        assert "warn" in capsys.readouterr().out
+        assert "warn" in capsys.readouterr().err
 
     def test_overwrites_with_force(self, tmp_path: Path) -> None:
         orchestra_path, project_dir, orch = self._setup(tmp_path)
@@ -232,7 +232,7 @@ class TestSyncCodexFilesPathTraversal:
 
         assert count == 0
         assert not outside_target.exists()
-        assert "warn" in capsys.readouterr().out
+        assert "warn" in capsys.readouterr().err
 
     def test_skips_dot_dot_escape_target(self, tmp_path: Path, capsys) -> None:
         orchestra_path = tmp_path / "orchestra"
@@ -254,7 +254,7 @@ class TestSyncCodexFilesPathTraversal:
 
         assert count == 0
         assert not (tmp_path / "outside" / "escaped.json").exists()
-        assert "warn" in capsys.readouterr().out
+        assert "warn" in capsys.readouterr().err
 
 
 class TestCollectFacetBuildTargets:

@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -20,6 +21,25 @@ codex_run = load_module(
     "codex_run",
     "packages/codex-harness/scripts/codex_run.py",
 )
+
+
+def _trust_validation_json(root: Path, content: str) -> None:
+    """Record `content`'s SHA-256 as the trusted ledger hash for validation.json.
+
+    run_validation() now checks .codex/validation.json against the sync
+    ledger (R1) before running any commands; tests that exercise the actual
+    command-execution path must set up a matching .claude/orchestra.json
+    ledger entry, mirroring what sync_codex_files() would record in a real
+    install.
+    """
+    claude_dir = root / ".claude"
+    claude_dir.mkdir(parents=True, exist_ok=True)
+    orch = {
+        "codex_file_hashes": {
+            ".codex/validation.json": hashlib.sha256(content.encode("utf-8")).hexdigest()
+        }
+    }
+    (claude_dir / "orchestra.json").write_text(json.dumps(orch), encoding="utf-8")
 
 
 class TestSlugify:
@@ -149,7 +169,9 @@ class TestRunValidation:
                 {"command": "false", "timeout": 5},
             ]
         }
-        (codex_dir / "validation.json").write_text(json.dumps(config), encoding="utf-8")
+        content = json.dumps(config)
+        (codex_dir / "validation.json").write_text(content, encoding="utf-8")
+        _trust_validation_json(tmp_path, content)
         run_dir = tmp_path / "run"
         run_dir.mkdir()
 
@@ -170,9 +192,9 @@ class TestRunValidation:
     def test_bare_string_entry_does_not_crash(self, tmp_path: Path) -> None:
         codex_dir = tmp_path / ".codex"
         codex_dir.mkdir()
-        (codex_dir / "validation.json").write_text(
-            json.dumps({"commands": ["ruff check ."]}), encoding="utf-8"
-        )
+        content = json.dumps({"commands": ["ruff check ."]})
+        (codex_dir / "validation.json").write_text(content, encoding="utf-8")
+        _trust_validation_json(tmp_path, content)
         run_dir = tmp_path / "run"
         run_dir.mkdir()
 
@@ -183,9 +205,9 @@ class TestRunValidation:
     def test_list_entry_does_not_crash(self, tmp_path: Path) -> None:
         codex_dir = tmp_path / ".codex"
         codex_dir.mkdir()
-        (codex_dir / "validation.json").write_text(
-            json.dumps({"commands": [["ruff", "check", "."]]}), encoding="utf-8"
-        )
+        content = json.dumps({"commands": [["ruff", "check", "."]]})
+        (codex_dir / "validation.json").write_text(content, encoding="utf-8")
+        _trust_validation_json(tmp_path, content)
         run_dir = tmp_path / "run"
         run_dir.mkdir()
 
@@ -196,15 +218,49 @@ class TestRunValidation:
     def test_string_timeout_is_coerced_and_command_runs(self, tmp_path: Path) -> None:
         codex_dir = tmp_path / ".codex"
         codex_dir.mkdir()
-        (codex_dir / "validation.json").write_text(
-            json.dumps({"commands": [{"command": "true", "timeout": "5"}]}), encoding="utf-8"
-        )
+        content = json.dumps({"commands": [{"command": "true", "timeout": "5"}]})
+        (codex_dir / "validation.json").write_text(content, encoding="utf-8")
+        _trust_validation_json(tmp_path, content)
         run_dir = tmp_path / "run"
         run_dir.mkdir()
 
         results = codex_run.run_validation(tmp_path, run_dir)
 
         assert [r["status"] for r in results] == ["passed"]
+
+    def test_empty_command_entry_does_not_crash(self, tmp_path: Path) -> None:
+        """R9/R22: an empty (or whitespace-only) `command` must not IndexError
+        in `subprocess.run([])` -- it should be reported as a failed entry."""
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        content = json.dumps({"commands": [{"command": "", "timeout": 5}, {"command": "   "}]})
+        (codex_dir / "validation.json").write_text(content, encoding="utf-8")
+        _trust_validation_json(tmp_path, content)
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+
+        results = codex_run.run_validation(tmp_path, run_dir)
+
+        assert [r["status"] for r in results] == ["failed", "failed"]
+
+    def test_skips_when_validation_json_untrusted(self, tmp_path: Path) -> None:
+        """R1: without a matching ledger entry, validation is skipped entirely
+        (fail-closed) rather than executing commands from an unverified file."""
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        config = {"commands": [{"command": "true", "timeout": 5}]}
+        (codex_dir / "validation.json").write_text(json.dumps(config), encoding="utf-8")
+        # No .claude/orchestra.json / ledger entry recorded.
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+
+        results = codex_run.run_validation(tmp_path, run_dir)
+
+        assert len(results) == 1
+        assert results[0]["status"] == "skipped"
+        assert "untrusted" in results[0]["summary"]
+        log = (run_dir / "validation.log").read_text(encoding="utf-8")
+        assert "untrusted" in log
 
 
 class TestBuildReport:
@@ -297,10 +353,11 @@ class TestMainEndToEnd:
 
         script_path = repo_root / "print_secret.py"
         script_path.write_text(f"print('token={secret}')\n", encoding="utf-8")
-        (repo_root / ".codex" / "validation.json").write_text(
-            json.dumps({"commands": [{"command": f"python3 {script_path}", "timeout": 10}]}),
-            encoding="utf-8",
+        validation_content = json.dumps(
+            {"commands": [{"command": f"python3 {script_path}", "timeout": 10}]}
         )
+        (repo_root / ".codex" / "validation.json").write_text(validation_content, encoding="utf-8")
+        _trust_validation_json(repo_root, validation_content)
 
         monkeypatch.setattr(codex_run, "run_version_gate", lambda label: True)
         monkeypatch.setattr(codex_run, "check_required_codex_files", lambda root, files: [])

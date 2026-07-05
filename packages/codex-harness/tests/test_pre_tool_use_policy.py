@@ -105,6 +105,28 @@ class TestFindViolations:
         # git subcommand — must not be flagged.
         assert policy.find_violations("git commit -m 'push later'") == []
 
+    def test_detects_rm_fr_root(self) -> None:
+        """R6: reversed short flags (-fr) must still be caught for root/home targets."""
+        assert "rm -rf /" in policy.find_violations("rm -fr /")
+
+    def test_detects_rm_split_short_flags_root(self) -> None:
+        assert "rm -rf /" in policy.find_violations("rm -r -f /")
+
+    def test_detects_rm_split_short_flags_reversed_root(self) -> None:
+        assert "rm -rf /" in policy.find_violations("rm -f -r /")
+
+    def test_detects_rm_long_flags_root(self) -> None:
+        assert "rm -rf /" in policy.find_violations("rm --recursive --force /")
+
+    def test_detects_rm_long_flags_reversed_root(self) -> None:
+        assert "rm -rf /" in policy.find_violations("rm --force --recursive /")
+
+    def test_detects_rm_fr_home(self) -> None:
+        assert "rm -rf ~" in policy.find_violations("rm -fr ~")
+
+    def test_detects_rm_split_short_flags_home(self) -> None:
+        assert "rm -rf ~" in policy.find_violations("rm -r -f ~")
+
 
 class TestMain:
     def test_exits_zero_when_stdin_is_invalid(self, monkeypatch) -> None:

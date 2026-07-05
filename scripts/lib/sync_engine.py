@@ -86,6 +86,7 @@ def apply_codex_harness_config(
     project_dir: Path,
     orchestra_path: Path,
     installed_packages: list[str],
+    dry_run: bool = False,
 ) -> bool:
     """codex-harness の config-harness.toml をプロジェクトの `.codex/config.toml` へマージする。
 
@@ -100,8 +101,12 @@ def apply_codex_harness_config(
         （config-harness.toml の値）と異なる場合は、挙動は変えず stderr に
         警告のみ出す（例: features.hooks=false のまま保持）。
 
+    dry_run=True の場合、マージ結果の計算までは行うが `.codex/config.toml`
+    は書き換えず、更新が発生する場合のみ `[DRY-RUN]` プレビューを表示する。
+
     Returns:
-        True: config.toml を更新した。False: 変更なし、またはスキップした。
+        True: config.toml を更新した（dry_run 時は更新予定）。
+        False: 変更なし、またはスキップした。
     """
     if "codex-harness" not in installed_packages:
         return False
@@ -149,8 +154,12 @@ def apply_codex_harness_config(
 
     if "hooks" in harness_data.get("features", {}):
         harness_value = harness_data["features"]["hooks"]
+        original_features = original_data.get("features")
+        existing_hooks_value = (
+            original_features.get("hooks") if isinstance(original_features, dict) else None
+        )
         _warn_if_kept_value_conflicts(
-            existing_value=original_data.get("features", {}).get("hooks"),
+            existing_value=existing_hooks_value,
             harness_value=harness_value,
             key_label="features.hooks",
         )
@@ -164,6 +173,10 @@ def apply_codex_harness_config(
 
     if content == original:
         return False
+
+    if dry_run:
+        print("[DRY-RUN] .codex/config.toml を codex-harness 設定で更新予定")
+        return True
 
     config_path.write_text(content, encoding="utf-8")
     return True
@@ -354,14 +367,17 @@ def sync_codex_files(
     installed_packages: list[str],
     orch: dict,
     force: bool = False,
+    dry_run: bool = False,
 ) -> int:
     """manifest.json の codex_files をプロジェクトへ同期する（配布時ハッシュ保護付き）。
 
     ハッシュ台帳は orch["codex_file_hashes"][target] にフラット記録する
     （agents/config 用の orch["file_hashes"][pkg_name][file_key] とは別台帳）。
+    dry_run=True の場合、実際のコピー/ハッシュ台帳更新は行わず、同期予定の
+    ファイルを `[DRY-RUN]` として表示するだけに留める。
 
     Returns:
-        コピー/更新したファイル数
+        コピー/更新した（dry_run 時は同期予定の）ファイル数
     """
     synced_count = 0
     hashes: dict[str, str] = orch.setdefault("codex_file_hashes", {})
@@ -389,7 +405,7 @@ def sync_codex_files(
                 continue
 
             dst = project_dir / target_rel
-            if _sync_codex_file(src, dst, target_rel, hashes, force, project_dir):
+            if _sync_codex_file(src, dst, target_rel, hashes, force, project_dir, dry_run):
                 synced_count += 1
 
     return synced_count
@@ -416,16 +432,21 @@ def _sync_codex_file(
     hashes: dict[str, str],
     force: bool,
     project_dir: Path,
+    dry_run: bool = False,
 ) -> bool:
-    """1 ファイル分の codex_files 同期判定と適用。コピー/更新したら True。"""
+    """1 ファイル分の codex_files 同期判定と適用。コピー/更新した（dry_run 時は予定）なら True。"""
     if not _is_within_project(dst, project_dir):
         print(
             f"[warn] {target_key} はプロジェクト外を指すため同期をスキップしました"
-            "（絶対パスまたは ../ による脱出の疑い）"
+            "（絶対パスまたは ../ による脱出の疑い）",
+            file=sys.stderr,
         )
         return False
 
     if not dst.exists():
+        if dry_run:
+            print(f"[DRY-RUN] 同期: {target_key}")
+            return True
         _copy_codex_file(src, dst, target_key, hashes)
         return True
 
@@ -434,23 +455,36 @@ def _sync_codex_file(
 
     if recorded_hash is None:
         if not force:
-            print(f"[warn] {dst} は配布記録がないため上書きをスキップしました（force で上書き可）")
+            print(
+                f"[warn] {dst} は配布記録がないため上書きをスキップしました（force で上書き可）",
+                file=sys.stderr,
+            )
             return False
+        if dry_run:
+            print(f"[DRY-RUN] 同期: {target_key}")
+            return True
         _copy_codex_file(src, dst, target_key, hashes)
         return True
 
     if current_hash != recorded_hash:
         if not force:
             print(
-                f"[warn] {dst} はインストール後に変更されているため上書きをスキップしました（force で上書き可）"
+                f"[warn] {dst} はインストール後に変更されているため上書きをスキップしました（force で上書き可）",
+                file=sys.stderr,
             )
             return False
+        if dry_run:
+            print(f"[DRY-RUN] 同期: {target_key}")
+            return True
         _copy_codex_file(src, dst, target_key, hashes)
         return True
 
     if current_hash == compute_file_hash(src):
         return False
 
+    if dry_run:
+        print(f"[DRY-RUN] 同期: {target_key}")
+        return True
     _copy_codex_file(src, dst, target_key, hashes)
     return True
 

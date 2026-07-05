@@ -44,6 +44,14 @@ COMMAND_LIKE_KEYS = ("command", "cmd", "script")
 # matching across unrelated command chains (e.g. ``git log | grep push``).
 _OPTION_TOKENS = r"(?:-\S+(?:\s+(?!-)\S+)?\s+){0,4}"
 
+# Spelling/ordering variants of the `-rf` flag pair that a plain `-rf`
+# literal would miss: `-fr` (reversed short flags), `-r -f` / `-f -r`
+# (split short flags), and the long-form `--recursive --force` (either
+# order). Used only for the narrow root/home-targeted patterns below; the
+# broader `rm -rf` (any target) prefix policy lives in
+# `.codex/rules/codex-harness.rules`.
+_RM_RF_FLAGS = r"(?:-rf|-fr|-r\s+-f|-f\s+-r|--recursive\s+--force|--force\s+--recursive)"
+
 FORBIDDEN_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("git push", re.compile(rf"\bgit\s+{_OPTION_TOKENS}push\b")),
     ("gh pr merge", re.compile(rf"\bgh\s+{_OPTION_TOKENS}pr\s+merge\b")),
@@ -53,8 +61,8 @@ FORBIDDEN_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("docker push", re.compile(rf"\bdocker\s+{_OPTION_TOKENS}push\b")),
     ("kubectl apply", re.compile(rf"\bkubectl\s+{_OPTION_TOKENS}apply\b")),
     ("terraform apply", re.compile(rf"\bterraform\s+{_OPTION_TOKENS}apply\b")),
-    ("rm -rf /", re.compile(r"\brm\s+-rf\s+/(?:\s|$)")),
-    ("rm -rf ~", re.compile(r"\brm\s+-rf\s+~(?:\s|/|$)")),
+    ("rm -rf /", re.compile(rf"\brm\s+{_RM_RF_FLAGS}\s+/(?:\s|$)")),
+    ("rm -rf ~", re.compile(rf"\brm\s+{_RM_RF_FLAGS}\s+~(?:\s|/|$)")),
     ("chmod -R 777", re.compile(r"\bchmod\s+-R\s+777\b")),
     ("curl/wget piped to shell", re.compile(r"\b(?:curl|wget)\b[^|]*\|\s*(?:sh|bash)\b")),
 ]

@@ -44,6 +44,28 @@ class TestFindTomlSection:
         assert toml_merge.find_toml_section(content, "a") == (0, 5)
         assert toml_merge.find_toml_section(content, "b") == (5, 7)
 
+    def test_triple_double_quoted_string_body_not_mistaken_for_header(self) -> None:
+        # R12: a bracketed-looking line quoted *inside* a multi-line """
+        # string literal must not be treated as a section header.
+        content = '[a]\nx = """\n[b]\nnot a real section\n"""\n[c]\ny = 2\n'
+        assert toml_merge.find_toml_section(content, "a") == (0, 5)
+        assert toml_merge.find_toml_section(content, "b") is None
+        assert toml_merge.find_toml_section(content, "c") == (5, 7)
+
+    def test_triple_single_quoted_string_body_not_mistaken_for_header(self) -> None:
+        # Same as above but for the ''' literal string variant.
+        content = "[a]\nx = '''\n[b]\nnot a real section\n'''\n[c]\ny = 2\n"
+        assert toml_merge.find_toml_section(content, "a") == (0, 5)
+        assert toml_merge.find_toml_section(content, "b") is None
+        assert toml_merge.find_toml_section(content, "c") == (5, 7)
+
+    def test_single_line_triple_quoted_string_does_not_start_continuation(self) -> None:
+        # A """...""" string fully opened and closed on one line must not
+        # put subsequent lines into "inside a string" mode.
+        content = '[a]\nx = """inline"""\n[b]\ny = 2\n'
+        assert toml_merge.find_toml_section(content, "a") == (0, 2)
+        assert toml_merge.find_toml_section(content, "b") == (2, 4)
+
 
 class TestUpsertTomlSection:
     def test_appends_when_missing(self) -> None:

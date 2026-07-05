@@ -154,6 +154,56 @@ class TestVerifyHooksTrust:
         assert any("hash mismatch" in reason for reason in tampered_result.reasons)
 
 
+class TestIsLedgerEntryTrusted:
+    """R1: is_ledger_entry_trusted() -- single-file ledger check used by
+    codex_run.py before running .codex/validation.json commands."""
+
+    def test_trusted_when_hash_matches(self, tmp_path: Path) -> None:
+        content = '{"commands": []}'
+        project_dir = tmp_path / "project"
+        (project_dir / ".codex").mkdir(parents=True)
+        (project_dir / ".codex" / "validation.json").write_text(content, encoding="utf-8")
+        claude_dir = project_dir / ".claude"
+        claude_dir.mkdir()
+        orch = {"codex_file_hashes": {".codex/validation.json": _sha256(content)}}
+        (claude_dir / "orchestra.json").write_text(json.dumps(orch), encoding="utf-8")
+
+        assert harness_common.is_ledger_entry_trusted(project_dir, ".codex/validation.json") is True
+
+    def test_untrusted_when_modified(self, tmp_path: Path) -> None:
+        project_dir = tmp_path / "project"
+        (project_dir / ".codex").mkdir(parents=True)
+        (project_dir / ".codex" / "validation.json").write_text("tampered", encoding="utf-8")
+        claude_dir = project_dir / ".claude"
+        claude_dir.mkdir()
+        orch = {"codex_file_hashes": {".codex/validation.json": _sha256('{"commands": []}')}}
+        (claude_dir / "orchestra.json").write_text(json.dumps(orch), encoding="utf-8")
+
+        assert (
+            harness_common.is_ledger_entry_trusted(project_dir, ".codex/validation.json") is False
+        )
+
+    def test_untrusted_when_no_orchestra_json(self, tmp_path: Path) -> None:
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+
+        assert (
+            harness_common.is_ledger_entry_trusted(project_dir, ".codex/validation.json") is False
+        )
+
+    def test_untrusted_when_no_ledger_entry(self, tmp_path: Path) -> None:
+        project_dir = tmp_path / "project"
+        (project_dir / ".codex").mkdir(parents=True)
+        (project_dir / ".codex" / "validation.json").write_text("{}", encoding="utf-8")
+        claude_dir = project_dir / ".claude"
+        claude_dir.mkdir()
+        (claude_dir / "orchestra.json").write_text(json.dumps({"codex_file_hashes": {}}), "utf-8")
+
+        assert (
+            harness_common.is_ledger_entry_trusted(project_dir, ".codex/validation.json") is False
+        )
+
+
 class TestResolveTrustFlags:
     def test_returns_bypass_flag_when_trusted(self, tmp_path: Path) -> None:
         project_dir = _write_ledger_project(tmp_path, '{"hooks": []}')
@@ -373,3 +423,13 @@ class TestParseEventsRealFormat:
             self._events_file(tmp_path, lines), 0, self.REQUIRED, self._fallback
         )
         assert result == {"status": "success", "summary": "plain answer"}
+
+    def test_invalid_utf8_does_not_crash(self, tmp_path: Path) -> None:
+        """R10/R21: a malformed UTF-8 byte sequence in events.jsonl must not
+        raise UnicodeDecodeError -- fall back to the generic notice instead."""
+        events_path = tmp_path / "events.jsonl"
+        events_path.write_bytes(b"\xff\xfe not valid utf-8\n")
+
+        result = harness_common.parse_events(events_path, 0, self.REQUIRED, self._fallback)
+
+        assert result["status"] == "success"

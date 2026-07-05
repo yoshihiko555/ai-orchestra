@@ -57,6 +57,23 @@ class TestFindMatches:
         matches = secret_scan.find_matches("sk-1")
         assert matches == []
 
+    def test_detects_lowercase_openai_api_key_assignment(self) -> None:
+        """R14: keyword patterns must be case-insensitive (e.g. lowercase env var names)."""
+        matches = secret_scan.find_matches("openai_api_key=sk-abcdefghijklmnopqrstuvwxyz")
+        assert "OPENAI_API_KEY assignment" in matches
+
+    def test_detects_lowercase_aws_access_key_id(self) -> None:
+        matches = secret_scan.find_matches("please use aws_access_key_id=AKIA...")
+        assert "AWS_ACCESS_KEY_ID" in matches
+
+    def test_detects_lowercase_aws_secret_access_key(self) -> None:
+        matches = secret_scan.find_matches("aws_secret_access_key=abc123")
+        assert "AWS_SECRET_ACCESS_KEY" in matches
+
+    def test_detects_lowercase_github_token_keyword(self) -> None:
+        matches = secret_scan.find_matches("export github_token=xxxx")
+        assert "GITHUB_TOKEN" in matches
+
 
 class TestReadStdinPayload:
     def test_returns_none_on_invalid_json(self, monkeypatch) -> None:

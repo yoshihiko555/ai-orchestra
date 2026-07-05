@@ -51,7 +51,12 @@ class TestTaskResultSchema:
         schema = json.loads(TASK_RESULT_SCHEMA_PATH.read_text(encoding="utf-8"))
         item_schema = schema["properties"]["risks"]["items"]
         assert set(item_schema["required"]) == {"severity", "description", "mitigation"}
-        assert item_schema["properties"]["severity"]["enum"] == ["low", "medium", "high"]
+        assert item_schema["properties"]["severity"]["enum"] == [
+            "low",
+            "medium",
+            "high",
+            "critical",
+        ]
 
 
 class TestReviewResultSchema:

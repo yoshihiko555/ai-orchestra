@@ -109,6 +109,138 @@ class TestRunInitialSyncForce:
 
         mock_apply.assert_called_once()
 
+    def test_dry_run_previews_codex_files_sync_without_writing(
+        self, tmp_path: Path, monkeypatch, capsys
+    ) -> None:
+        """R20: dry_run=True must still preview codex_files sync (no actual copy)."""
+        orchestra_dir = tmp_path / "orchestra"
+        (orchestra_dir / "packages").mkdir(parents=True)
+        _make_orchestra_with_codex_harness(orchestra_dir)
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(orchestra_dir))
+
+        project_dir = tmp_path / "project"
+        (project_dir / ".claude").mkdir(parents=True)
+        (project_dir / ".claude" / "orchestra.json").write_text(
+            json.dumps({"installed_packages": ["codex-harness"]}), encoding="utf-8"
+        )
+
+        manager = OrchestraManager(orchestra_dir)
+        manager.run_initial_sync(project_dir, dry_run=True)
+
+        assert not (project_dir / ".codex" / "hooks.json").exists()
+        assert "[DRY-RUN]" in capsys.readouterr().out
+
+    def test_dry_run_previews_config_merge_without_writing(
+        self, tmp_path: Path, monkeypatch, capsys
+    ) -> None:
+        """R20: dry_run=True must preview .codex/config.toml merge without writing it."""
+        orchestra_dir = tmp_path / "orchestra"
+        (orchestra_dir / "packages").mkdir(parents=True)
+        _make_orchestra_with_codex_harness(orchestra_dir)
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(orchestra_dir))
+
+        project_dir = tmp_path / "project"
+        (project_dir / ".claude").mkdir(parents=True)
+        (project_dir / ".codex").mkdir()
+        config_path = project_dir / ".codex" / "config.toml"
+        original_config = 'model = "gpt-5.5"\n'
+        config_path.write_text(original_config, encoding="utf-8")
+        (project_dir / ".claude" / "orchestra.json").write_text(
+            json.dumps({"installed_packages": ["codex-harness"]}), encoding="utf-8"
+        )
+
+        manager = OrchestraManager(orchestra_dir)
+        with patch.object(manager_mod, "apply_codex_harness_config") as mock_apply:
+            mock_apply.return_value = True
+            manager.run_initial_sync(project_dir, dry_run=True)
+
+        mock_apply.assert_called_once()
+        assert mock_apply.call_args.args[0] == project_dir
+        assert mock_apply.call_args.args[2] == ["codex-harness"]
+        assert mock_apply.call_args.kwargs == {"dry_run": True}
+        assert config_path.read_text(encoding="utf-8") == original_config
+
+    def test_continues_when_config_merge_raises_toml_merge_error(
+        self, tmp_path: Path, monkeypatch, capsys
+    ) -> None:
+        """R19: apply_codex_harness_config raising TomlMergeError must not crash
+        run_initial_sync (already fail-soft in the implementation; this pins it)."""
+        orchestra_dir = tmp_path / "orchestra"
+        (orchestra_dir / "packages").mkdir(parents=True)
+        _make_orchestra_with_codex_harness(orchestra_dir)
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(orchestra_dir))
+
+        project_dir = tmp_path / "project"
+        (project_dir / ".claude").mkdir(parents=True)
+        (project_dir / ".codex").mkdir()
+        (project_dir / ".claude" / "orchestra.json").write_text(
+            json.dumps({"installed_packages": ["codex-harness"]}), encoding="utf-8"
+        )
+
+        manager = OrchestraManager(orchestra_dir)
+        with patch.object(
+            manager_mod,
+            "apply_codex_harness_config",
+            side_effect=manager_mod.TomlMergeError("bad merge"),
+        ):
+            manager.run_initial_sync(project_dir, dry_run=False)
+
+        assert "警告" in capsys.readouterr().err
+
+    def test_continues_when_config_merge_raises_toml_decode_error(
+        self, tmp_path: Path, monkeypatch, capsys
+    ) -> None:
+        """R19: same as above but for tomllib.TOMLDecodeError."""
+        import tomllib
+
+        orchestra_dir = tmp_path / "orchestra"
+        (orchestra_dir / "packages").mkdir(parents=True)
+        _make_orchestra_with_codex_harness(orchestra_dir)
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(orchestra_dir))
+
+        project_dir = tmp_path / "project"
+        (project_dir / ".claude").mkdir(parents=True)
+        (project_dir / ".codex").mkdir()
+        (project_dir / ".claude" / "orchestra.json").write_text(
+            json.dumps({"installed_packages": ["codex-harness"]}), encoding="utf-8"
+        )
+
+        manager = OrchestraManager(orchestra_dir)
+        with patch.object(
+            manager_mod,
+            "apply_codex_harness_config",
+            side_effect=tomllib.TOMLDecodeError("bad toml", "doc", 0),
+        ):
+            manager.run_initial_sync(project_dir, dry_run=False)
+
+        assert "警告" in capsys.readouterr().err
+
+    def test_continues_when_config_merge_raises_os_error(
+        self, tmp_path: Path, monkeypatch, capsys
+    ) -> None:
+        """R19: same as above but for OSError (e.g. permission denied on write)."""
+        orchestra_dir = tmp_path / "orchestra"
+        (orchestra_dir / "packages").mkdir(parents=True)
+        _make_orchestra_with_codex_harness(orchestra_dir)
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(orchestra_dir))
+
+        project_dir = tmp_path / "project"
+        (project_dir / ".claude").mkdir(parents=True)
+        (project_dir / ".codex").mkdir()
+        (project_dir / ".claude" / "orchestra.json").write_text(
+            json.dumps({"installed_packages": ["codex-harness"]}), encoding="utf-8"
+        )
+
+        manager = OrchestraManager(orchestra_dir)
+        with patch.object(
+            manager_mod,
+            "apply_codex_harness_config",
+            side_effect=OSError("permission denied"),
+        ):
+            manager.run_initial_sync(project_dir, dry_run=False)
+
+        assert "警告" in capsys.readouterr().err
+
 
 class TestUninstallCodexFiles:
     """EV-48: uninstall() は codex_files（配布時ハッシュ一致分）を削除すること。"""
@@ -183,6 +315,75 @@ class TestUninstallCodexFiles:
             (project_dir / ".claude" / "orchestra.json").read_text(encoding="utf-8")
         )
         assert ".codex/hooks.json" in saved_orch.get("codex_file_hashes", {})
+
+
+class TestUninstallCodexFilesPathTraversal:
+    """R13: codex_files.target がプロジェクト外を指す場合は uninstall 側でも削除しない。"""
+
+    def _make_manifest_with_target(self, orchestra_dir: Path, target: str) -> None:
+        pkg_dir = orchestra_dir / "packages" / "codex-harness"
+        (pkg_dir / "codex").mkdir(parents=True)
+        (pkg_dir / "codex" / "hooks.json").write_text('{"hooks": {"new": true}}', encoding="utf-8")
+        manifest = {
+            "name": "codex-harness",
+            "version": "0.1.0",
+            "description": "",
+            "depends": [],
+            "hooks": {},
+            "codex_files": [{"source": "codex/hooks.json", "target": target}],
+        }
+        (pkg_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    def test_skips_dot_dot_escape_target(self, tmp_path: Path, capsys) -> None:
+        orchestra_dir = tmp_path / "orchestra"
+        (orchestra_dir / "packages").mkdir(parents=True)
+        escape_target = "../../outside/escaped.json"
+        self._make_manifest_with_target(orchestra_dir, escape_target)
+
+        project_dir = tmp_path / "nested" / "project"
+        (project_dir / ".claude").mkdir(parents=True)
+        outside_file = tmp_path / "outside" / "escaped.json"
+        outside_file.parent.mkdir(parents=True)
+        outside_file.write_text('{"hooks": {"pre-existing": true}}', encoding="utf-8")
+
+        orch = {
+            "installed_packages": ["codex-harness"],
+            "codex_file_hashes": {escape_target: _sha256('{"hooks": {"pre-existing": true}}')},
+        }
+        (project_dir / ".claude" / "orchestra.json").write_text(json.dumps(orch), encoding="utf-8")
+
+        manager = OrchestraManager(orchestra_dir)
+        manager.uninstall("codex-harness", str(project_dir), dry_run=False)
+
+        assert outside_file.exists()
+        assert "警告" in capsys.readouterr().out
+        saved_orch = json.loads(
+            (project_dir / ".claude" / "orchestra.json").read_text(encoding="utf-8")
+        )
+        assert escape_target in saved_orch.get("codex_file_hashes", {})
+
+    def test_skips_absolute_path_target(self, tmp_path: Path, capsys) -> None:
+        orchestra_dir = tmp_path / "orchestra"
+        (orchestra_dir / "packages").mkdir(parents=True)
+        outside_file = tmp_path / "outside" / "escaped.json"
+        outside_file.parent.mkdir(parents=True)
+        outside_file.write_text('{"hooks": {"pre-existing": true}}', encoding="utf-8")
+        self._make_manifest_with_target(orchestra_dir, str(outside_file))
+
+        project_dir = tmp_path / "project"
+        (project_dir / ".claude").mkdir(parents=True)
+
+        orch = {
+            "installed_packages": ["codex-harness"],
+            "codex_file_hashes": {str(outside_file): _sha256('{"hooks": {"pre-existing": true}}')},
+        }
+        (project_dir / ".claude" / "orchestra.json").write_text(json.dumps(orch), encoding="utf-8")
+
+        manager = OrchestraManager(orchestra_dir)
+        manager.uninstall("codex-harness", str(project_dir), dry_run=False)
+
+        assert outside_file.exists()
+        assert "警告" in capsys.readouterr().out
 
 
 class TestInstallCliForceFlag:

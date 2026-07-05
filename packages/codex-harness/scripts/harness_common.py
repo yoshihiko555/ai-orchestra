@@ -114,6 +114,28 @@ def verify_hooks_trust(project_root: Path) -> TrustResult:
     return TrustResult(trusted=not reasons, reasons=reasons)
 
 
+def is_ledger_entry_trusted(project_root: Path, target_rel: str) -> bool:
+    """Check a single ledger-tracked file's SHA-256 against codex_file_hashes.
+
+    Fail-closed: a missing orchestra.json, a missing ledger entry, a missing
+    file, a symlink, or a hash mismatch are all treated as untrusted. Shares
+    ``_check_single_hook_file`` with ``verify_hooks_trust`` so both checks
+    apply the same symlink/escape/hash rules.
+    """
+    orch = _load_orchestra_json(project_root)
+    if orch is None:
+        return False
+
+    hashes: dict[str, str] = orch.get("codex_file_hashes", {})
+    recorded_hash = hashes.get(target_rel)
+    if recorded_hash is None:
+        return False
+
+    resolved_root = project_root.resolve()
+    reason = _check_single_hook_file(project_root / target_rel, resolved_root, recorded_hash)
+    return reason is None
+
+
 def resolve_trust_flags(project_root: Path, allow_untrusted: bool, label: str) -> list[str] | None:
     """Resolve the `codex exec` flags implied by hook trust verification.
 
@@ -151,10 +173,13 @@ _MIN_TOKEN_LENGTH = 20
 _MIN_GENERIC_KEY_LENGTH = 10
 
 REDACTION_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
-    ("OPENAI_API_KEY assignment", re.compile(r"OPENAI_API_KEY\s*=\s*\S+")),
+    ("OPENAI_API_KEY assignment", re.compile(r"OPENAI_API_KEY\s*=\s*\S+", re.IGNORECASE)),
     ("AWS_ACCESS_KEY_ID value", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
-    ("AWS_SECRET_ACCESS_KEY assignment", re.compile(r"AWS_SECRET_ACCESS_KEY\s*=\s*\S+")),
-    ("GITHUB_TOKEN assignment", re.compile(r"GITHUB_TOKEN\s*=\s*\S+")),
+    (
+        "AWS_SECRET_ACCESS_KEY assignment",
+        re.compile(r"AWS_SECRET_ACCESS_KEY\s*=\s*\S+", re.IGNORECASE),
+    ),
+    ("GITHUB_TOKEN assignment", re.compile(r"GITHUB_TOKEN\s*=\s*\S+", re.IGNORECASE)),
     ("GitHub PAT (ghp_)", re.compile(rf"\bghp_[A-Za-z0-9]{{{_MIN_TOKEN_LENGTH},}}")),
     (
         "GitHub fine-grained PAT (github_pat_)",
@@ -163,7 +188,9 @@ REDACTION_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("API key (sk- prefix)", re.compile(rf"\bsk-[A-Za-z0-9]{{{_MIN_GENERIC_KEY_LENGTH},}}")),
     (
         "PEM private key block",
-        re.compile(r"-----BEGIN[ A-Z]*PRIVATE KEY-----[\s\S]*?-----END[ A-Z]*PRIVATE KEY-----"),
+        re.compile(
+            r"-----BEGIN[ A-Z]*PRIVATE KEY-----[\s\S]*?-----END[ A-Z]*PRIVATE KEY-----",
+        ),
     ),
 ]
 
@@ -174,6 +201,32 @@ def redact_secrets(text: str) -> str:
     for name, pattern in REDACTION_PATTERNS:
         result = pattern.sub(f"[REDACTED:{name}]", result)
     return result
+
+
+def redact_files_in_place(*paths: Path) -> None:
+    """Best-effort post-run redaction pass for live-streamed artifact files.
+
+    Shared by codex_run.py / codex_review.py: ``events.jsonl`` /
+    ``progress.log`` are written directly by the `codex exec` subprocess
+    (stdout/stderr piped straight to the open file handles), so they bypass
+    ``write_atomic``/``redact_secrets`` while the subprocess is running.
+    Once it has completed, this reads each file back, applies
+    ``redact_secrets``, and rewrites it atomically if anything changed.
+    ``redact_secrets`` only ever substitutes a matched span with a
+    ``[REDACTED:...]`` marker, so this cannot corrupt ``events.jsonl``'s
+    line structure (a line that becomes unparseable afterward is already
+    handled as a best-effort/skip case by ``parse_events``).
+    """
+    for path in paths:
+        if not path.is_file():
+            continue
+        try:
+            content = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        redacted = redact_secrets(content)
+        if redacted != content:
+            write_atomic(path, redacted)
 
 
 # --- Validation entry hardening ----------------------------------------------
@@ -395,7 +448,7 @@ def parse_events(
                     text = extract_agent_text(event)
                     if text is not None:
                         last_agent_text = text
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             pass
 
     if schema_result is None and last_agent_text is not None:

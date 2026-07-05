@@ -47,7 +47,10 @@
         "additionalProperties": false,
         "required": ["severity", "description", "mitigation"],
         "properties": {
-          "severity": { "type": "string", "enum": ["low", "medium", "high"] },
+          "severity": {
+            "type": "string",
+            "enum": ["low", "medium", "high", "critical"]
+          },
           "description": { "type": "string" },
           "mitigation": { "type": "string" }
         }

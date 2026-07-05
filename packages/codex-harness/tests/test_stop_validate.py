@@ -130,6 +130,37 @@ class TestRunCommand:
         result = stop_validate.run_command({"command": "true", "timeout": "soon"}, tmp_path)
         assert result["passed"] is True
 
+    def test_empty_command_entry_does_not_crash(self, tmp_path: Path) -> None:
+        """R9/R22: an empty (or whitespace-only) `command` must not IndexError
+        in `subprocess.run([])` -- it should be reported as a failed entry."""
+        result = stop_validate.run_command({"command": "", "timeout": 5}, tmp_path)
+        assert result["passed"] is False
+
+        result_whitespace = stop_validate.run_command({"command": "   "}, tmp_path)
+        assert result_whitespace["passed"] is False
+
+
+class TestRunCommandsWithBudget:
+    """R15: cumulative time budget across all validation commands."""
+
+    def test_runs_all_commands_within_budget(self, tmp_path: Path) -> None:
+        commands = [{"command": "true", "timeout": 5}, {"command": "false", "timeout": 5}]
+        results = stop_validate.run_commands_with_budget(commands, tmp_path)
+        assert [r["passed"] for r in results] == [True, False]
+
+    def test_skips_remaining_commands_once_budget_exhausted(self, tmp_path: Path) -> None:
+        commands = [
+            {"command": "true", "timeout": 5},
+            {"command": "true", "timeout": 5},
+            {"command": "false", "timeout": 5},
+        ]
+        # A budget of 0 is exhausted before the first command even starts.
+        results = stop_validate.run_commands_with_budget(commands, tmp_path, total_budget_seconds=0)
+
+        assert len(results) == 3
+        assert all(not r["passed"] for r in results)
+        assert all(stop_validate.BUDGET_EXCEEDED_MESSAGE in r["output"] for r in results)
+
 
 class TestBuildSummary:
     def test_none_when_all_passed(self) -> None:
