@@ -177,9 +177,12 @@ codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags
 
 ### Utility
 
-| Agent             | Role                    |
-| ----------------- | ----------------------- |
-| `general-purpose` | 汎用タスク・外部CLI委譲 |
+| Agent                                 | Role                    |
+| ------------------------------------- | ----------------------- |
+| `general-purpose`                     | 汎用タスク・外部CLI委譲 |
+| `specialized-mcp-builder`             | MCP サーバー設計・実装  |
+| `support-executive-summary-generator` | 経営層向けサマリー生成  |
+| `testing-reality-checker`             | 実装状況の現実性検証    |
 
 ---
 

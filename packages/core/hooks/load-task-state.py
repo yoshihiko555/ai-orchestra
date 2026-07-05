@@ -17,6 +17,10 @@ import sys
 from datetime import date
 from pathlib import Path
 
+_HOOK_DIR = Path(__file__).resolve().parent
+if str(_HOOK_DIR) not in sys.path:
+    sys.path.insert(0, str(_HOOK_DIR))
+
 # 状態マーカー定義
 DEFAULT_MARKERS = {
     "todo": "cc:TODO",
@@ -81,11 +85,16 @@ def read_hook_input() -> dict:
 
 
 def get_project_dir(data: dict) -> str:
-    """hook 入力からプロジェクトディレクトリを取得"""
-    cwd = data.get("cwd") or ""
-    if cwd:
-        return cwd
-    return os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())
+    """hook 入力からプロジェクトディレクトリを取得する。"""
+    try:
+        from context_store import get_project_dir as get_context_project_dir
+
+        return get_context_project_dir(data)
+    except Exception:
+        cwd = data.get("cwd") or ""
+        if cwd:
+            return cwd
+        return os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())
 
 
 def load_config(project_dir: str) -> dict:

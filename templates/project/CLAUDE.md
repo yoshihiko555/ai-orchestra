@@ -59,9 +59,9 @@
 
 ## 指示書テンプレートの責務
 
-- `templates/context/claude.md` を編集すると `templates/project/CLAUDE.md` と `<project>/CLAUDE.md` に反映される
-- `templates/context/codex.md` と `templates/context/antigravity.md` は `AGENTS.md` のソース（Codex CLI / Antigravity CLI 共用、セクション合成）
-- `templates/project/CLAUDE.md`, `templates/codex/AGENTS.md` は generated 扱いで直接編集しない
+- `$AI_ORCHESTRA_DIR/templates/context/claude.md` を編集すると `$AI_ORCHESTRA_DIR/templates/project/CLAUDE.md` と `<project>/CLAUDE.md` に反映される
+- `$AI_ORCHESTRA_DIR/templates/context/codex.md` と `$AI_ORCHESTRA_DIR/templates/context/antigravity.md` は `AGENTS.md` のソース（Codex CLI / Antigravity CLI 共用、セクション合成）
+- `$AI_ORCHESTRA_DIR/templates/project/CLAUDE.md`, `$AI_ORCHESTRA_DIR/templates/codex/AGENTS.md` は generated 扱いで直接編集しない
 
 ---
 
@@ -85,10 +85,10 @@
 運用メモ:
 
 - `*.local.yaml` / `*.local.json` はベース設定より優先される上書きとして扱う
-- 指示書の正本（source of truth）は `templates/context/*.md`
+- 指示書の正本（source of truth）は `$AI_ORCHESTRA_DIR/templates/context/*.md`
 - 変更後は必ず再生成と同期を実行する
-  - `python scripts/orchestra-manager.py context build`
-  - `python scripts/orchestra-manager.py context sync --project <path>`
+  - `python "$AI_ORCHESTRA_DIR/scripts/orchestra-manager.py" context build`
+  - `python "$AI_ORCHESTRA_DIR/scripts/orchestra-manager.py" context sync --project <path>`
 
 ---
 

@@ -6,13 +6,16 @@
 - get_agent_tool が cli-tools.yaml の実データに対して正しい tool を返す
 - build_aliases が全エージェントの tool 種別に合った alias を生成する
 - エージェント .md のフォールバックデフォルトが cli-tools.yaml と矛盾しない
+- manifest.json の agents 配列と docs/reference/packages.md のエージェント一覧表が一致する（EV-26）
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -415,3 +418,83 @@ class TestLegacyGeminiCompat:
         config = _make_legacy_config()
         aliases = route_config.build_aliases(config)
         assert "task:researcher" in aliases.get("antigravity", [])
+
+
+# ---------------------------------------------------------------------------
+# manifest.json ↔ docs/reference/packages.md のエージェント一覧突合（EV-26）
+# ---------------------------------------------------------------------------
+
+_MANIFEST_PATH = REPO_ROOT / "packages" / "agent-routing" / "manifest.json"
+_PACKAGES_DOC_PATH = REPO_ROOT / "docs" / "reference" / "packages.md"
+
+# 「### エージェント一覧」見出しから、次の水平線（---）行までを表セクションとして抜き出す
+_AGENT_LIST_SECTION_RE = re.compile(r"### エージェント一覧\n\n(?P<table>.*?)\n\n---", re.DOTALL)
+
+
+def _load_manifest_agents() -> list[str]:
+    """manifest.json の agents 配列からエージェント名（拡張子・ディレクトリ除去済み）を取得する。"""
+    data = json.loads(_MANIFEST_PATH.read_text(encoding="utf-8"))
+    return [Path(entry).stem for entry in data.get("agents", [])]
+
+
+def _extract_packages_doc_agents() -> list[str]:
+    """packages.md の「エージェント一覧」表からエージェント名を抽出する。
+
+    表のセルはバッククォートなしのカンマ区切りプレーンテキストだが、将来の記法変更に
+    備えバッククォートも防御的に除去する。他パッケージの表（例: essential プリセット表）
+    を誤って拾わないよう、見出し〜次の水平線までにセクションを限定する。
+    """
+    content = _PACKAGES_DOC_PATH.read_text(encoding="utf-8")
+    match = _AGENT_LIST_SECTION_RE.search(content)
+    assert match, "docs/reference/packages.md に「### エージェント一覧」セクションが見つかりません"
+
+    names: list[str] = []
+    for line in match.group("table").splitlines():
+        line = line.strip()
+        if not line.startswith("|"):
+            continue
+        if set(line.replace("|", "").strip()) <= {"-", " "}:
+            continue  # 区切り線行（|----|----|）
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if len(cells) < 2 or cells[0] == "カテゴリ":
+            continue  # ヘッダー行 or 想定外の行
+        for name in cells[1].split(","):
+            name = name.strip().strip("`")
+            if name:
+                names.append(name)
+    return names
+
+
+class TestManifestPackagesDocConsistency:
+    """manifest.json の agents 配列と packages.md のエージェント一覧表の整合性（EV-26）。
+
+    docs/evaluation/agent-routing.md の EV-26 に対応する。以下を検証する:
+    - packages/agent-routing/manifest.json の agents 配列と
+      docs/reference/packages.md のエージェント一覧表が、集合として一致すること
+    - 両方に重複エントリーがないこと
+
+    件数（現在 28）はハードコードせず、集合一致と重複なしのみで担保する。
+    """
+
+    def test_agent_sets_match(self) -> None:
+        manifest_agents = set(_load_manifest_agents())
+        doc_agents = set(_extract_packages_doc_agents())
+        only_in_manifest = manifest_agents - doc_agents
+        only_in_docs = doc_agents - manifest_agents
+        assert not only_in_manifest and not only_in_docs, (
+            f"manifest のみ: {sorted(only_in_manifest)}, docs のみ: {sorted(only_in_docs)}"
+        )
+
+    def test_manifest_agents_no_duplicates(self) -> None:
+        agents = _load_manifest_agents()
+        duplicates = sorted({name for name in agents if agents.count(name) > 1})
+        assert len(agents) == len(set(agents)), (
+            f"manifest.json の agents に重複があります: {duplicates}"
+        )
+
+    def test_doc_agents_no_duplicates(self) -> None:
+        agents = _extract_packages_doc_agents()
+        duplicates = sorted({name for name in agents if agents.count(name) > 1})
+        assert len(agents) == len(set(agents)), (
+            f"packages.md のエージェント一覧表に重複があります: {duplicates}"
+        )
