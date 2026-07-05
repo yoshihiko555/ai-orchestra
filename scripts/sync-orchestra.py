@@ -20,6 +20,7 @@ import datetime
 import json
 import os
 import sys
+import tomllib
 from pathlib import Path
 
 # scripts/ ディレクトリをモジュール検索パスに追加（lib/ を解決するため）
@@ -31,13 +32,16 @@ from lib.agent_model_patch import patch_all_agents  # noqa: E402
 from lib.gitignore_sync import sync_gitignore as _sync_gitignore  # noqa: E402
 from lib.scaffold import ensure_claude_scaffold, sync_claudeignore  # noqa: E402
 from lib.sync_engine import (  # noqa: E402
+    apply_codex_harness_config,
     build_facets,
     collect_facet_managed_paths,
     collect_managed_agent_stems,
     remove_stale_files,
+    sync_codex_files,
     sync_hooks,
     sync_packages,
 )
+from lib.toml_merge import TomlMergeError  # noqa: E402
 
 # リネームされたパッケージの読み替え表（旧名 → 新名）
 # 横展開先の orchestra.json に旧名が残っていても自動移行する
@@ -128,6 +132,23 @@ def main() -> None:
     synced_count, synced_files = sync_packages(
         claude_dir, orchestra_path, installed_packages, facet_managed
     )
+
+    # codex_files（.codex/ 配下配布物）の同期（ハッシュ保護付き、強制上書きなし）
+    codex_synced_count = sync_codex_files(project_dir, orchestra_path, installed_packages, orch)
+    synced_count += codex_synced_count
+
+    # codex-harness の config.toml マージ（default_permissions / [permissions.*] 等）
+    # マージ失敗（不正 TOML 生成 / 読み書き失敗）は SessionStart 同期全体を
+    # 巻き添えにせず、警告を出してスキップする（fail-soft）。
+    try:
+        config_updated = apply_codex_harness_config(project_dir, orchestra_path, installed_packages)
+    except (TomlMergeError, tomllib.TOMLDecodeError, OSError) as e:
+        print(
+            f"[warn] .codex/config.toml マージに失敗したためスキップしました: {e}", file=sys.stderr
+        )
+        config_updated = False
+    if config_updated:
+        print("[orchestra] .codex/config.toml updated with codex-harness settings")
 
     # ファセットビルド
     facet_built_count = build_facets(orchestra_path, project_dir, installed_packages)

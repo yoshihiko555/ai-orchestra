@@ -23,6 +23,8 @@ ENTRIES = [
     ".claude/.facet-packages-hash",
     ".claude/.facet-manifest.json",
     ".codex/.facet-manifest.json",
+    ".codex/runs/",
+    ".codex/reports/",
     ".claude/Plans.md",
     ".claude/Plans.archive.md",
 ]

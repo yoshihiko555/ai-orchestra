@@ -1,0 +1,8 @@
+{
+  "_comment": "Stop hook (stop_validate.py) が実行する検証コマンド一覧。プロジェクト側で自由に書き換え可能。ただし commands の timeout 合計は .codex/hooks.json の Stop エントリの timeout 未満に保つこと。",
+  "commands": [
+    { "command": "ruff check .", "timeout": 60 },
+    { "command": "ruff format --check .", "timeout": 60 },
+    { "command": "pytest -q", "timeout": 300 }
+  ]
+}

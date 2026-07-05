@@ -1,0 +1,40 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 .codex/hooks/user_prompt_secret_scan.py",
+            "timeout": 10,
+            "statusMessage": "Scanning prompt for secrets"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 .codex/hooks/pre_tool_use_policy.py",
+            "timeout": 30,
+            "statusMessage": "Checking command policy"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 .codex/hooks/stop_validate.py",
+            "timeout": 600,
+            "statusMessage": "Running validation"
+          }
+        ]
+      }
+    ]
+  }
+}

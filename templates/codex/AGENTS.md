@@ -157,6 +157,40 @@ GitHub PR レビュー・コードレビュー依頼の際は、以下の観点�
 3. **Be practical** — Claude Code が直ちに実行できる提案にする
 4. **Check context** — 提案前に参照優先順位を満たす
 
+## Harness ワークフロー
+
+このリポジトリには `.codex/hooks.json` によるガードレール（prompt secret scan / コマンドポリシー / Stop 時検証）が配布されています。詳細は `.codex/rules/*.rules` と `.claude/rules/codex-delegation.md` を参照してください。
+
+### Mission
+
+最小差分で、既存設計を尊重して変更する。
+
+### Required workflow
+
+1. 変更前に関連ファイルを読む。
+2. 実装前に短い plan を提示する。
+3. 変更後に Validation commands を実行する。
+4. 実行できなかった検証は理由を明記する。
+
+### Do not
+
+- `.env`、秘密鍵、認証情報を読まない・表示しない。
+- `git push`、deploy、release、destructive migration を実行しない。
+- 依頼範囲外の大規模リファクタリングをしない。
+
+### Validation commands
+
+- `ruff check .`
+- `ruff format --check .`
+- `pytest -q`
+
+### Final response format
+
+- Summary
+- Files changed
+- Validation
+- Risks / follow-ups
+
 ## CLI Logs
 
 Codex/Gemini への入出力は `.claude/logs/cli-tools.jsonl` に記録されています。

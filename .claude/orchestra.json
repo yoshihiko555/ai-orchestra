@@ -5,6 +5,7 @@
     "audit",
     "cocoindex",
     "codd",
+    "codex-harness",
     "codex-suggestions",
     "core",
     "fail-logs",
@@ -63,7 +64,35 @@
       "config/core/task-memory.yaml": "081c101ad10526344e4fe7831babbe6ef661d0a4ae7e49fad4eb3967c030b7d8"
     },
     "agent-routing": {
-      "config/agent-routing/cli-tools.yaml": "760cb36f85ca882924963a1371e0e8b4fe6376284226381011044471d9b7fd59"
+      "config/agent-routing/cli-tools.yaml": "760cb36f85ca882924963a1371e0e8b4fe6376284226381011044471d9b7fd59",
+      "agents/ai-architect.md": "fe85b51f631d8acb417d63afff3a664e1c7646684cee10a839aa820a030449f8",
+      "agents/ai-dev.md": "c8a55c156d17be58dfd9ccd58e51f9b28f053b0c73c947fe08ab66c2442da275",
+      "agents/api-designer.md": "87a0c1dec114a730a030acfd1a895b4fb7ed1299babd3a2e43c4ee1e928d023a",
+      "agents/architect.md": "8410efa67bcf68710c5461205e93c1e1cf2ef58a46f265e3ef423708de7aab38",
+      "agents/architecture-reviewer.md": "082869eaaf14d0b3bd92f02787f7acb33b1e95be79071637f1b4de9107935b2a",
+      "agents/auth-designer.md": "ef55fa0fc60358dc4214cc5947ef4f2db414c92fc8a8b22b3376f57fd163b95a",
+      "agents/backend-go-dev.md": "7ccd7f7fe2539e9541aaa1fe5514419fc1c927245413369552159ccc55e2be58",
+      "agents/backend-python-dev.md": "7899994aea2f133822e138ad4ecf13b2a8b5e03dfd85402c023983fcb256b60e",
+      "agents/code-reviewer.md": "cde375c82619ac70161f4852e3d0e0b637af661ed4425b0bc1fca63c9cedaf79",
+      "agents/data-modeler.md": "39a4c93f53424ad222849903ab63df2fea720188f216836feacb6a36bedc4e29",
+      "agents/debugger.md": "d52dca2c40e1efcd481f58e25a5926cc4ee626c466c3391052c1ac9cc981aea0",
+      "agents/docs-writer.md": "0575f5f5cb2db5c9d971433494d014208c55a78a7f623491f1fd10274f6b2896",
+      "agents/frontend-dev.md": "0b50c63b5e6276de52da07c53e953563654dee4052c79c76cc9a92a3369d1358",
+      "agents/general-purpose.md": "fb4e897ec79a7df5d48be2c45ad94712ace379b2ac999669463a250884899bf0",
+      "agents/performance-reviewer.md": "d1b6bc8469246751e1c7b2507a29657127f324ae18b63fad4fe0f0762143461e",
+      "agents/planner.md": "e8f9ad9de61e5d7403bf6c58a81a5e2bbc3402bf1005db2611ef3a748f998ca4",
+      "agents/prompt-engineer.md": "f1b28b81fbaae11313373c3a7121892e82b399c5a9eaeafe2afef73379d70080",
+      "agents/rag-engineer.md": "44b934a8be450375001258751162fdb1cac23d46033b92f1d2b7aeb58a2f78f6",
+      "agents/requirements.md": "c0eb7eec3a0d3ab4bdcfa3ac0479724c34ef8d2bbf68aefd21af1578b9f49bcc",
+      "agents/researcher.md": "809b20853943cc40eed520a5cedf145f202345eaddc92b0ab74aedf776408058",
+      "agents/security-reviewer.md": "f1736624758132eecd0a3e6abd18b1be23a3fc2dae7f9467fcef79d78ff63610",
+      "agents/specialized-mcp-builder.md": "3f8f1734b882d95b4fcd84b95e3334016fd80e147180bd80cad6587297a9fe37",
+      "agents/spec-reviewer.md": "cf7593f3427dca6d9f98a9f427ac73ac1e2a08adcb59321279bdd47e3abecd45",
+      "agents/support-executive-summary-generator.md": "298891fcf297de5d9b343e9ab9b63864317de63256b15c0c72e6cec172f8f0ff",
+      "agents/spec-writer.md": "a035b16708bbf1290ba19072815a8caeee960f4e020b89bebcafe6a6a953a163",
+      "agents/tester.md": "c4108c71b7c1e0fbbba80fc414b11a1ee22ba8f56425f7e50c87526bc55aa310",
+      "agents/testing-reality-checker.md": "18cecd444f9871d317b85174a48a0312d941511550ecb41de01bbc61daff7a25",
+      "agents/ux-reviewer.md": "b5fe9d6d08e7496e81af590395fbd46e15f70dcb3154e3f573efae30a15167e8"
     },
     "audit": {
       "config/audit/delegation-policy.json": "b092b5385d3ec51252c5781cdbafa2d2e55d075d9cb74d25e89b71e95279d231",
@@ -73,19 +102,33 @@
       "config/cocoindex/cocoindex.yaml": "4263789df1e23f272410b8e452953b4c81d8ab3c64fa509829a06717eed94654"
     },
     "codd": {
-      "config/codd/codd.yaml": "22378c70504274644ac4d54e1e509603d5a47aabeaa9a79d7f4cc32e25af216d"
+      "config/codd/codd.yaml": "34b39501ced4cf12868fe6c0eea0071350cc68dd7a0ae413d686ed8d39491bd2"
     },
     "git-workflow": {
       "config/git-workflow/sandbox-requirements.json": "4b2f9366201ed8f90d3f2f5e418502f75d977b4ca659f8dfc91b8369e5971e5e"
     },
     "image-generation": {
-      "config/image-generation/image-generation.yaml": "a643faa7e9555781989230449c4dd2293da9a7d069d302d20096319b6f71ab1f"
+      "config/image-generation/image-generation.yaml": "a643faa7e9555781989230449c4dd2293da9a7d069d302d20096319b6f71ab1f",
+      "agents/image-generator.md": "ef2625266e41c83a75bf7616ab6774fae84e0941f1ce6dc322c451a363629d70"
     },
     "fail-logs": {
       "config/fail-logs/fail-logs.yaml": "cff47ea7d188af706a796aa88149cf26b73561ec71a754e9244566264290e5b2"
     },
     "skill-evolution": {
       "config/skill-evolution/skill-evolution.yaml": "40c1da27dd4ce3cff8f3a0c871916b22f17cb8623cee6559a7b008d0d56e9fac"
+    },
+    "reverse": {
+      "agents/reverse-coordinator.md": "b4ba084e8d03e158ed5ab4d44b93655de2044a1506c22319df5a6bbf2ab6c574"
     }
+  },
+  "codex_file_hashes": {
+    ".codex/hooks.json": "5f5af56a63ceae90f61fb2bb9cd81d60d3cdc2614a3af971005ac376f2cd4e76",
+    ".codex/hooks/user_prompt_secret_scan.py": "ccc28fc8fb5fefd8ca20db99bda44d12fe5e411b0c29b8c16d2a7d5f249c12e0",
+    ".codex/hooks/pre_tool_use_policy.py": "b6c451f8a543dd68dd9b69d558d52884ee9efa4fe7c2ca98e639e731afb24001",
+    ".codex/hooks/stop_validate.py": "85a85ecc914ef564f239fbea6dc26e29a0c5d504130f59edae4371543af1219f",
+    ".codex/schemas/task_result.schema.json": "b1c53c374e65fd1aafb4976625126689625f1eb45049df77005bb100642db1cb",
+    ".codex/schemas/review_result.schema.json": "004555ff9a356d81f3b02d0c3e57647fd16476dfc02544bb90f6cf91e8df4c0e",
+    ".codex/rules/codex-harness.rules": "93fa5323bf3a3604eaec815f97d1e714aa8b38dd487a1b4ad067a5e9ce35e9ac",
+    ".codex/validation.json": "c8289813a29cfcd7ac55e0ba2a436fe17ad896d6b4d915788885b5a2ddaa209c"
   }
 }

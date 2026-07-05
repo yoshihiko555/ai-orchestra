@@ -37,6 +37,7 @@ Claude Code (Orchestrator)
     │   ├── core/                     # 共通ユーティリティ
     │   ├── audit/                    # 監査ログ・KPI・ダッシュボード
     │   ├── codex-suggestions/        # Codex 相談提案
+    │   ├── codex-harness/            # Codex CLI 向け repo-local ハーネス（hooks/rules/schemas + 非対話 run/review）
     │   ├── antigravity-suggestions/  # Antigravity リサーチ提案
     │   ├── quality-gates/      # 品質ゲート
     │   ├── codd/              # ドキュメント整合性レイヤー（scan/validate）
@@ -202,6 +203,12 @@ orchex context sync --project /path/to/project --force
 orchex run audit dashboard
 orchex run audit log-viewer --project /path/to/project -- --last 10
 
+# codex-harness: .codex/ へ hash 保護付き配布 + 非対話 run / read-only レビュー
+orchex install codex-harness --project /path/to/project
+orchex run codex-harness codex_run -- "<task>"
+orchex run codex-harness codex_review -- --base main
+# 設計資料: docs/design/codex-cli-harness.md
+
 # dry-run（変更内容を表示のみ）
 orchex setup essential --project . --dry-run
 orchex install <package> --project . --dry-run
@@ -348,6 +355,7 @@ ai-orchestra/
 │   ├── agent-routing/     # 28 エージェント定義 + ルーティング hooks
 │   ├── audit/             # 監査ログ・KPI・ダッシュボード
 │   ├── codex-suggestions/ # Codex 相談提案 hooks
+│   ├── codex-harness/     # Codex CLI 向け repo-local ハーネス（hooks/rules/schemas + 非対話 run/review スクリプト）
 │   ├── antigravity-suggestions/ # Antigravity リサーチ提案 hooks
 │   ├── quality-gates/     # 品質ゲート hooks
 │   ├── skill-evolution/  # スキル自己改善ループ（テレメトリ hooks + オフライン CLI）

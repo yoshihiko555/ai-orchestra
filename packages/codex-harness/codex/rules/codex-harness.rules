@@ -1,0 +1,110 @@
+# codex-harness distributed rules (repo-local policy)
+# Distributed by packages/codex-harness via manifest.json codex_files.
+# Do not edit .codex/rules/codex-harness.rules directly in a synced project;
+# edit this source file (packages/codex-harness/codex/rules/codex-harness.rules)
+# instead — it is the source of truth copied there by sync.
+
+prefix_rule(
+    pattern=["git", "push"],
+    decision="forbidden",
+    justification="Pushing must be performed by a human or a CI release job.",
+)
+
+prefix_rule(
+    pattern=["gh", "pr", "merge"],
+    decision="forbidden",
+    justification="PR merge is outside Codex harness scope; humans control merges.",
+)
+
+prefix_rule(
+    pattern=["gh", "release", "create"],
+    decision="forbidden",
+    justification="Release creation must be a human-controlled or CI-controlled action.",
+)
+
+prefix_rule(
+    pattern=["npm", "publish"],
+    decision="forbidden",
+    justification="Publishing packages must go through a reviewed, human-controlled pipeline.",
+)
+
+prefix_rule(
+    pattern=["pnpm", "publish"],
+    decision="forbidden",
+    justification="Publishing packages must go through a reviewed, human-controlled pipeline.",
+)
+
+prefix_rule(
+    pattern=["docker", "push"],
+    decision="forbidden",
+    justification="Pushing container images must be a human-controlled or CI-controlled action.",
+)
+
+prefix_rule(
+    pattern=["kubectl", "apply"],
+    decision="forbidden",
+    justification="Applying cluster manifests is a production-impacting action outside harness scope.",
+)
+
+prefix_rule(
+    pattern=["terraform", "apply"],
+    decision="forbidden",
+    justification="Applying infrastructure changes is a production-impacting action outside harness scope.",
+)
+
+prefix_rule(
+    pattern=["rm", "-rf"],
+    decision="forbidden",
+    justification="Destructive recursive deletion is blocked by default; use a narrower, explicit command instead.",
+)
+
+# Spelling/ordering variants of `rm -rf` that a naive prefix match on
+# ["rm", "-rf"] alone would miss (e.g. flag reordering, combined single-char
+# flags in the other order, or long-form flag names).
+prefix_rule(
+    pattern=["rm", "-fr"],
+    decision="forbidden",
+    justification="Destructive recursive deletion is blocked by default; use a narrower, explicit command instead.",
+)
+
+prefix_rule(
+    pattern=["rm", "-r", "-f"],
+    decision="forbidden",
+    justification="Destructive recursive deletion is blocked by default; use a narrower, explicit command instead.",
+)
+
+prefix_rule(
+    pattern=["rm", "-f", "-r"],
+    decision="forbidden",
+    justification="Destructive recursive deletion is blocked by default; use a narrower, explicit command instead.",
+)
+
+prefix_rule(
+    pattern=["rm", "--recursive", "--force"],
+    decision="forbidden",
+    justification="Destructive recursive deletion is blocked by default; use a narrower, explicit command instead.",
+)
+
+prefix_rule(
+    pattern=["rm", "--force", "--recursive"],
+    decision="forbidden",
+    justification="Destructive recursive deletion is blocked by default; use a narrower, explicit command instead.",
+)
+
+prefix_rule(
+    pattern=["git", "status"],
+    decision="allow",
+    match=["git status"],
+)
+
+prefix_rule(
+    pattern=["git", "diff"],
+    decision="allow",
+    match=["git diff"],
+)
+
+prefix_rule(
+    pattern=["git", "log"],
+    decision="allow",
+    match=["git log"],
+)
