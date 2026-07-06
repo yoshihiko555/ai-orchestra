@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-orchestra.dev/schemas/meta-harness/config_patch.schema.json",
+  "title": "Config Patch",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["file", "key_path", "value"],
+    "properties": {
+      "file": {
+        "type": "string",
+        "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+      },
+      "key_path": { "type": "string" },
+      "value": {}
+    }
+  }
+}

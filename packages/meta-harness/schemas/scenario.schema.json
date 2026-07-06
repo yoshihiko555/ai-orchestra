@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-orchestra.dev/schemas/meta-harness/scenario.schema.json",
+  "title": "Scenario",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "id",
+    "target",
+    "description",
+    "prompt",
+    "critical"
+  ],
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0" },
+    "id": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+    "target": {
+      "type": "string",
+      "pattern": "^(claude-harness|skill:[a-z0-9-]+)$"
+    },
+    "description": { "type": "string" },
+    "prompt": { "type": "string" },
+    "setup": { "type": "array", "items": { "type": "string" }, "default": [] },
+    "command_timeout_ms": { "type": "integer", "default": 60000 },
+    "critical": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/check_item" }
+    },
+    "checks": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/check_item" },
+      "default": []
+    },
+    "holdout": { "type": "boolean", "default": false },
+    "timeout_ms": { "type": "integer", "default": 300000 },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_turns": { "type": "integer", "default": 30 },
+        "max_budget_usd": { "type": "number", "default": 2.0 }
+      }
+    },
+    "repeat": { "type": "integer", "default": 1, "minimum": 1 }
+  },
+  "$defs": {
+    "check_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "text", "oracle"],
+      "properties": {
+        "id": { "type": "string" },
+        "text": { "type": "string" },
+        "oracle": {
+          "type": "string",
+          "enum": [
+            "artifact_exists",
+            "command_exit",
+            "json_schema",
+            "rubric_judge"
+          ]
+        },
+        "path": { "type": "string" },
+        "command": { "type": "string" },
+        "schema": { "type": "string" },
+        "rubric": { "type": "string" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "oracle": { "const": "artifact_exists" } } },
+          "then": { "required": ["path"] }
+        },
+        {
+          "if": { "properties": { "oracle": { "const": "command_exit" } } },
+          "then": { "required": ["command"] }
+        },
+        {
+          "if": { "properties": { "oracle": { "const": "json_schema" } } },
+          "then": { "required": ["path", "schema"] }
+        },
+        {
+          "if": { "properties": { "oracle": { "const": "rubric_judge" } } },
+          "then": { "required": ["rubric"] }
+        }
+      ]
+    }
+  }
+}

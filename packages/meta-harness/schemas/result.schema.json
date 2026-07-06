@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-orchestra.dev/schemas/meta-harness/result.schema.json",
+  "title": "Run Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "cand_id",
+    "scenario_id",
+    "verdict",
+    "critical",
+    "critical_pass_rate",
+    "checks",
+    "self_report",
+    "penalty",
+    "quality_score",
+    "cost",
+    "attempt",
+    "attempts_total",
+    "claude_version",
+    "errors"
+  ],
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0" },
+    "run_id": {
+      "type": "string",
+      "pattern": "^run-[0-9]{8}-[0-9]{6}-[a-z0-9-]+-a[0-9]+-[0-9a-f]{4}$"
+    },
+    "cand_id": { "type": "string" },
+    "scenario_id": { "type": "string" },
+    "verdict": { "type": "string", "enum": ["pass", "fail", "error"] },
+    "critical": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/check_result" }
+    },
+    "critical_pass_rate": { "type": "number", "minimum": 0, "maximum": 1 },
+    "checks": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/check_result" }
+    },
+    "self_report": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "ambiguities": { "type": "integer", "minimum": 0 },
+        "discretion_fills": { "type": "integer", "minimum": 0 },
+        "retries": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "penalty": { "type": "number", "minimum": 0 },
+    "quality_score": { "type": "number", "minimum": 0, "maximum": 100 },
+    "cost": { "$ref": "ledger.event.schema.json#/$defs/cost" },
+    "attempt": { "type": "integer", "minimum": 1 },
+    "attempts_total": { "type": "integer", "minimum": 1 },
+    "claude_version": { "type": "string" },
+    "errors": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/error_item" }
+    }
+  },
+  "$defs": {
+    "error_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stage", "type", "message"],
+      "properties": {
+        "stage": { "type": "string" },
+        "type": {
+          "type": "string",
+          "enum": [
+            "worktree_error",
+            "overlay_error",
+            "build_error",
+            "setup_error",
+            "run_error",
+            "oracle_error",
+            "schema_error",
+            "timeout",
+            "budget_exceeded",
+            "lock_error"
+          ]
+        },
+        "message": { "type": "string" }
+      }
+    },
+    "check_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "passed", "oracle", "detail"],
+      "properties": {
+        "id": { "type": "string" },
+        "passed": { "type": "boolean" },
+        "oracle": {
+          "type": "string",
+          "enum": [
+            "artifact_exists",
+            "command_exit",
+            "json_schema",
+            "rubric_judge"
+          ]
+        },
+        "detail": { "type": "string" }
+      }
+    }
+  }
+}

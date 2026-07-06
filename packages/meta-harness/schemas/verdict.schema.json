@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-orchestra.dev/schemas/meta-harness/verdict.schema.json",
+  "title": "Verdict",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["passed", "reason"],
+  "properties": {
+    "passed": { "type": "boolean" },
+    "reason": { "type": "string" }
+  }
+}

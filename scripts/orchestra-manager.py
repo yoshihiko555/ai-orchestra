@@ -1228,6 +1228,16 @@ def main():
     )
     facet_extract_parser.add_argument("--project", help="プロジェクトパス")
 
+    meta_parser = subparsers.add_parser(
+        "meta",
+        help="Meta-Harness（候補評価・進化基盤）CLI へ委譲",
+        description="packages/meta-harness/scripts/meta_harness.py へ全引数をパススルーする。"
+        " 例: orchestra-manager.py meta register --overlay <dir> --target <t>",
+    )
+    meta_parser.add_argument(
+        "meta_args", nargs=argparse.REMAINDER, help="meta_harness.py へパススルーする引数"
+    )
+
     setup_parser = subparsers.add_parser("setup", help="プリセットで一括セットアップ")
     setup_parser.add_argument(
         "preset", nargs="?", default=None, help="プリセット名（省略時は一覧表示）"
@@ -1325,6 +1335,10 @@ def main():
         else:
             facet_parser.print_help()
             sys.exit(1)
+    elif args.command == "meta":
+        meta_script = orchestra_dir / "packages" / "meta-harness" / "scripts" / "meta_harness.py"
+        result = subprocess.run([sys.executable, str(meta_script)] + args.meta_args)
+        sys.exit(result.returncode)
     elif args.command == "setup":
         if args.preset is None:
             manager.list_presets()
