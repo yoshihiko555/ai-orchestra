@@ -52,8 +52,14 @@ _OPTION_TOKENS = r"(?:-\S+(?:\s+(?!-)\S+)?\s+){0,4}"
 # `.codex/rules/codex-harness.rules`.
 _RM_RF_FLAGS = r"(?:-rf|-fr|-r\s+-f|-f\s+-r|--recursive\s+--force|--force\s+--recursive)"
 
+# NOTE: `git push` and `gh pr create` are deliberately NOT hard-blocked here.
+# They are governed by `.codex/rules/codex-harness.rules` with a `prompt`
+# decision (allowed after explicit human approval in interactive Codex). This
+# hook only knows allow (exit 0) / block (exit 2) — it cannot express "prompt"
+# — so a `git push` entry here would hard-block it and defeat the rules-layer
+# `prompt`. Keep the two layers consistent: prompt-decision commands stay out
+# of this forbidden list; only never-approvable commands belong here.
 FORBIDDEN_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
-    ("git push", re.compile(rf"\bgit\s+{_OPTION_TOKENS}push\b")),
     ("gh pr merge", re.compile(rf"\bgh\s+{_OPTION_TOKENS}pr\s+merge\b")),
     ("gh release create", re.compile(rf"\bgh\s+{_OPTION_TOKENS}release\s+create\b")),
     ("npm publish", re.compile(r"\bnpm\s+publish\b")),
