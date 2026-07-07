@@ -58,6 +58,26 @@ def test_load_and_validate_rejects_missing_required_key(tmp_path: Path) -> None:
         ld.load_and_validate(path)
 
 
+def test_load_and_validate_rejects_non_mapping_trigger(tmp_path: Path) -> None:
+    path = tmp_path / "bad.yaml"
+    _write(path, _definition().replace("trigger:\n  lp1:\n    skill: loop-issue", 'trigger: "bad"'))
+    with pytest.raises(ld.DefinitionValidationError, match="trigger must be a mapping"):
+        ld.load_and_validate(path)
+
+
+def test_load_and_validate_rejects_non_mapping_maker(tmp_path: Path) -> None:
+    path = tmp_path / "bad.yaml"
+    _write(
+        path,
+        _definition().replace(
+            "maker:\n      agent: auto\n      prompt_template: x.md#maker",
+            "maker: [not, a, mapping]",
+        ),
+    )
+    with pytest.raises(ld.DefinitionValidationError, match="maker must be a mapping"):
+        ld.load_and_validate(path)
+
+
 def test_load_and_validate_rejects_checker_without_mechanical_or_external(tmp_path: Path) -> None:
     path = tmp_path / "bad.yaml"
     _write(path, _definition().replace("mechanical:", "noop:"))

@@ -141,6 +141,8 @@ def _validate(raw: dict[str, Any], source_path: str) -> None:
     for key in ("id", "trigger", "phases"):
         if key not in raw:
             raise DefinitionValidationError(f"Missing required key '{key}': {source_path}")
+    if not isinstance(raw["trigger"], dict):
+        raise DefinitionValidationError(f"trigger must be a mapping: {source_path}")
     loop_id = _validate_loop_id(raw["id"], source_path)
     phases = _validate_phase_list(raw["phases"], loop_id, source_path)
     _validate_phase_transitions(phases, source_path)
@@ -176,6 +178,8 @@ def _validate_phase(phase: dict[str, Any], loop_id: str, source_path: str) -> No
     for key in required:
         if key not in phase:
             raise DefinitionValidationError(f"Missing phase key '{key}': {source_path}")
+    if not isinstance(phase["maker"], dict):
+        raise DefinitionValidationError(f"maker must be a mapping: {source_path}")
     _validate_checker(loop_id, str(phase["name"]), phase["checker"], source_path)
     _validate_guards(phase["guards"], source_path)
     _validate_success(phase["on_success"], source_path)

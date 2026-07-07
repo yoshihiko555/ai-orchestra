@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from tests.module_loader import load_module
 
 lc = load_module("loop_common_guards", "packages/loop-harness/lib/loop_common.py")
@@ -185,7 +187,9 @@ def test_lint_signature_falls_back_to_normalized_excerpt() -> None:
     assert first == second
 
 
-def test_run_mechanical_checks_invokes_failure_detector(tmp_path: Path, monkeypatch) -> None:
+def test_run_mechanical_checks_invokes_failure_detector(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     class FakeDetector:
         @staticmethod
         def analyze(_tool_name: str, tool_input: dict, tool_response: dict) -> dict | None:
@@ -224,3 +228,43 @@ def test_redact_payload_and_audit_payload_shape() -> None:
     assert payload["maker"]["agent"] == "backend-python-dev"
     assert payload["checker"]["llm_review"]["agent"] == "code-reviewer"
     assert payload["maker"]["token"] == "[REDACTED]"
+
+
+def test_redact_masks_full_multiline_pem_block() -> None:
+    text = (
+        "before\n"
+        "-----BEGIN RSA PRIVATE KEY-----\n"
+        "MIIEpAIBAAKCAQEAfakebase64line\n"
+        "anotherfakebase64line\n"
+        "-----END RSA PRIVATE KEY-----\n"
+        "after"
+    )
+
+    redacted = lc.redact(text)
+
+    assert redacted == "before\n[REDACTED]\nafter"
+    assert "PRIVATE KEY" not in redacted
+    assert "fakebase64line" not in redacted
+
+
+def test_redact_masks_multi_word_values_until_field_boundary() -> None:
+    assert lc.redact("password: my secret phrase") == "[REDACTED]"
+
+    redacted = lc.redact("token: abc123, next_field: keep_me")
+
+    assert redacted == "[REDACTED], next_field: keep_me"
+    assert "abc123" not in redacted
+
+
+def test_redact_payload_masks_sensitive_dict_keys_recursively() -> None:
+    payload = {
+        "maker": {"api_key": "xyz-no-prefix", "name": "backend-python-dev"},
+        "checker": {"nested": {"secret": "plain-value", "agent": "code-reviewer"}},
+    }
+
+    redacted = lc.redact_payload(payload)
+
+    assert redacted["maker"]["api_key"] == "[REDACTED]"
+    assert redacted["maker"]["name"] == "backend-python-dev"
+    assert redacted["checker"]["nested"]["secret"] == "[REDACTED]"
+    assert redacted["checker"]["nested"]["agent"] == "code-reviewer"

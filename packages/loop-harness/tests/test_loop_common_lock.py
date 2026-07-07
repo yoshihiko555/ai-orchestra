@@ -62,8 +62,22 @@ def test_propose_returns_stop_for_live_foreign_host_lease(
     assert lock is not None
     monkeypatch.setattr(lc.socket, "gethostname", lambda: "host-a")
     result = lc.propose("abcd1234-issue-1", project_dir, "wrong-token")
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    events = [
+        json.loads(line)
+        for line in lc.journal_path("abcd1234-issue-1", project_dir)
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
     assert result.action == lc.Action.STOP.value
     assert result.context["stop_reason"] == "foreign_live_lease"
+    assert state.status == "stopped"
+    assert state.stop_reason == "foreign_live_lease"
+    assert state.pending_action is None
+    assert any(
+        event["event"] == "stopped" and event["payload"]["stop_reason"] == "foreign_live_lease"
+        for event in events
+    )
 
 
 def test_is_lease_alive_uses_ttl_not_pid() -> None:

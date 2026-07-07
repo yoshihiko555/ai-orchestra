@@ -198,6 +198,28 @@ def test_reconcile_resolves_from_completed_journal(
     assert state.status == "running"
 
 
+def test_reconcile_completed_maker_sets_last_completed_action_for_next_propose(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir, lock = _setup_loop(tmp_path, monkeypatch)
+    proposal = lc.propose("abcd1234-issue-1", project_dir, lock.lease_token)
+    lc.append_journal_event(
+        "abcd1234-issue-1",
+        project_dir,
+        "completed",
+        "maker",
+        proposal.action_id,
+        {"action": lc.Action.RUN_MAKER.value, "result": {}},
+    )
+
+    lc.reconcile("abcd1234-issue-1", project_dir, lock.lease_token)
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    next_proposal = lc.propose("abcd1234-issue-1", project_dir, lock.lease_token)
+
+    assert state.last_completed_action.action_id == proposal.action_id
+    assert next_proposal.action == lc.Action.RUN_CHECKER.value
+
+
 def test_reconcile_resolves_checker_from_artifact(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -277,7 +299,85 @@ def test_passed_transition_verifies_journal_digest_only_for_passed(
         "abcd1234-issue-1",
         "act-check",
     )
-    assert state.status in {"running", "failed"}
+    assert state.status == "running"
+
+
+def test_checker_success_proposes_and_completes_advance_phase(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir, lock = _setup_loop(tmp_path, monkeypatch)
+    maker = lc.propose("abcd1234-issue-1", project_dir, lock.lease_token)
+    lc.complete(
+        "abcd1234-issue-1", project_dir, maker.action_id, maker.state_version, {}, lock.lease_token
+    )
+    checker = lc.propose("abcd1234-issue-1", project_dir, lock.lease_token)
+    phase_def = {
+        "on_success": {"disposition": "advance_phase", "next": "review"},
+        "on_failure": {"disposition": "exit_failure"},
+    }
+
+    lc.complete(
+        "abcd1234-issue-1",
+        project_dir,
+        checker.action_id,
+        checker.state_version,
+        {"check_result": _check_result(True), "phase_def": phase_def},
+        lock.lease_token,
+    )
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    advance = lc.propose("abcd1234-issue-1", project_dir, lock.lease_token)
+    lc.complete(
+        "abcd1234-issue-1",
+        project_dir,
+        advance.action_id,
+        advance.state_version,
+        {},
+        lock.lease_token,
+    )
+    advanced = lc.load_state("abcd1234-issue-1", project_dir)
+
+    assert state.phase == "implementation"
+    assert state.last_check_result["next_phase"] == "review"
+    assert advance.action == lc.Action.ADVANCE_PHASE.value
+    assert advanced.phase == "review"
+    assert "review" in advanced.guards
+
+
+def test_advance_phase_push_guard_stop_does_not_change_phase(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir, lock = _setup_loop(tmp_path, monkeypatch)
+    maker = lc.propose("abcd1234-issue-1", project_dir, lock.lease_token)
+    lc.complete(
+        "abcd1234-issue-1", project_dir, maker.action_id, maker.state_version, {}, lock.lease_token
+    )
+    checker = lc.propose("abcd1234-issue-1", project_dir, lock.lease_token)
+    phase_def = {
+        "on_success": {"disposition": "advance_phase", "next": "review"},
+        "on_failure": {"disposition": "exit_failure"},
+    }
+    lc.complete(
+        "abcd1234-issue-1",
+        project_dir,
+        checker.action_id,
+        checker.state_version,
+        {"check_result": _check_result(True), "phase_def": phase_def},
+        lock.lease_token,
+    )
+    advance = lc.propose("abcd1234-issue-1", project_dir, lock.lease_token)
+    lc.complete(
+        "abcd1234-issue-1",
+        project_dir,
+        advance.action_id,
+        advance.state_version,
+        {"push_guard": {"branch_ok": False, "repo_identity_ok": True, "reason": "default_branch"}},
+        lock.lease_token,
+    )
+    stopped = lc.load_state("abcd1234-issue-1", project_dir)
+
+    assert advance.action == lc.Action.ADVANCE_PHASE.value
+    assert stopped.phase == "implementation"
+    assert stopped.status == "stopped"
 
 
 def test_push_guard_violation_transitions_to_stopped() -> None:

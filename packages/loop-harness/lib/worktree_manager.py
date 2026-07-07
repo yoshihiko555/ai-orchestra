@@ -14,10 +14,15 @@ LIB_DIR = Path(__file__).resolve().parent
 if str(LIB_DIR) not in sys.path:
     sys.path.insert(0, str(LIB_DIR))
 
-from loop_common import GIT_TIMEOUT_SECONDS, RootResolutionError, resolve_root_worktree
+from loop_common import (
+    GIT_TIMEOUT_SECONDS,
+    LoopHarnessError,
+    RootResolutionError,
+    resolve_root_worktree,
+)
 
 
-class WorktreeError(RuntimeError):
+class WorktreeError(LoopHarnessError):
     """Raised when worktree operations fail."""
 
 
@@ -34,7 +39,7 @@ def resolve_repo_identity_hash(project_dir: str) -> str:
     """Return the 8-character repository identity hash."""
     material = _git(["config", "--get", "remote.origin.url"], project_dir)
     if not material:
-        material = _git(["rev-parse", "--show-toplevel"], project_dir)
+        material = _git(["rev-parse", "--path-format=absolute", "--git-common-dir"], project_dir)
     if not material:
         material = str(Path(project_dir).resolve())
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:8]
@@ -77,6 +82,9 @@ def create_worktree(
     if is_existing_loop_worktree(path, branch):
         return WorktreeInfo(path=path, branch=branch, repo_identity_hash=repo_hash)
     Path(path).parent.mkdir(parents=True, exist_ok=True)
+    if _branch_exists(project_dir, branch):
+        _run_git(["worktree", "add", path, branch], project_dir)
+        return WorktreeInfo(path=path, branch=branch, repo_identity_hash=repo_hash)
     base = base_branch or _default_base_branch(project_dir)
     _run_git(["worktree", "add", "-b", branch, path, base], project_dir)
     return WorktreeInfo(path=path, branch=branch, repo_identity_hash=repo_hash)
@@ -105,6 +113,11 @@ def _default_base_branch(project_dir: str) -> str:
         if _git(["rev-parse", "--verify", candidate], project_dir):
             return candidate
     raise WorktreeError("could not resolve base branch")
+
+
+def _branch_exists(project_dir: str, branch: str) -> bool:
+    """Return True when a local branch already exists."""
+    return bool(_git(["rev-parse", "--verify", f"refs/heads/{branch}"], project_dir))
 
 
 def _root_worktree(project_dir: str) -> Path:

@@ -44,7 +44,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
 SECRET_PATTERNS = [
     re.compile(r"\bsk-[A-Za-z0-9_-]{20,}"),
     re.compile(
-        r"\b[A-Za-z0-9_-]{0,20}(api[_-]?key|token|password|secret|credential)\b\s*[:=]\s*\S+",
+        r"\b[A-Za-z0-9_-]{0,20}(api[_-]?key|token|password|secret|credential)\b\s*[:=]\s*"
+        r"(\"[^\"]*\"|'[^']*'|[^,;\n]+)",
         re.IGNORECASE,
     ),
     re.compile(r"\bBearer\s+[A-Za-z0-9._-]+", re.IGNORECASE),
@@ -52,8 +53,13 @@ SECRET_PATTERNS = [
     re.compile(r"\b(AKIA|ASIA|A3T)[A-Z0-9]{16}\b"),
     re.compile(r"\bAIza[A-Za-z0-9_-]{35}\b"),
     re.compile(r"\bSharedAccessSignature\s*=\s*\S+", re.IGNORECASE),
-    re.compile(r"-----BEGIN (RSA |OPENSSH |EC |DSA )?PRIVATE KEY-----"),
+    re.compile(
+        r"-----BEGIN ((?:RSA|OPENSSH|EC|DSA) PRIVATE KEY|PRIVATE KEY)-----"
+        r".*?-----END \1-----",
+        re.DOTALL,
+    ),
 ]
+_SENSITIVE_KEY_RE = re.compile(r"(api[_-]?key|token|password|secret|credential)", re.IGNORECASE)
 
 _FAILED_NODEID_RE = re.compile(r"^FAILED\s+(\S+?)(?:\s+-\s+.*)?$", re.MULTILINE)
 _RUFF_RULE_RE = re.compile(r"^\S+:\d+:\d+:\s+([A-Z]{1,4}\d{2,4})\b", re.MULTILINE)
@@ -294,8 +300,16 @@ def redact_payload(value: Any) -> Any:
     if isinstance(value, list):
         return [redact_payload(item) for item in value]
     if isinstance(value, dict):
-        return {str(key): redact_payload(item) for key, item in value.items()}
+        return {
+            str(key): "[REDACTED]" if _is_sensitive_key(key) else redact_payload(item)
+            for key, item in value.items()
+        }
     return value
+
+
+def _is_sensitive_key(key: Any) -> bool:
+    """Return True when a payload key name indicates a secret value."""
+    return bool(_SENSITIVE_KEY_RE.search(str(key)))
 
 
 def loop_root(project_dir: str) -> Path:
@@ -526,6 +540,9 @@ def apply_action_effect(
         return
     if action == Action.WAIT_EXTERNAL_REVIEW.value:
         state.status = "waiting_external" if not result.get("completed") else "running"
+        return
+    if action == Action.ADVANCE_PHASE.value:
+        _apply_advance_phase(state, result)
         return
     if action == Action.STOP.value:
         state.status = "stopped"
@@ -918,6 +935,8 @@ def _next_action(state: LoopState, project_dir: str) -> str:
         return Action.EXIT_FAILURE.value
     if state.status == "stopped":
         return Action.STOP.value
+    if state.status == "running" and _pending_next_phase(state):
+        return Action.ADVANCE_PHASE.value
     last_action = _last_completed_action_name(state.loop_id, project_dir, state)
     return (
         Action.RUN_CHECKER.value
@@ -958,6 +977,27 @@ def _apply_safety_stop_if_needed(state: LoopState, action: str, result: dict[str
     return True
 
 
+def _pending_next_phase(state: LoopState) -> str | None:
+    """Return the durable pending phase advance target, if any."""
+    if not isinstance(state.last_check_result, dict):
+        return None
+    value = state.last_check_result.get("next_phase")
+    return str(value) if value else None
+
+
+def _apply_advance_phase(state: LoopState, result: dict[str, Any]) -> None:
+    """Apply a previously proposed phase advance."""
+    next_phase = _pending_next_phase(state) or result.get("next_phase")
+    if not next_phase:
+        state.status = "running"
+        return
+    state.phase = str(next_phase)
+    state.guards.setdefault(state.phase, GuardCounters())
+    state.status = "running"
+    if isinstance(state.last_check_result, dict):
+        state.last_check_result.pop("next_phase", None)
+
+
 def _apply_checker_result(
     state: LoopState,
     result: dict[str, Any],
@@ -973,8 +1013,8 @@ def _apply_checker_result(
         state.status = "running"
         return
     if decision.disposition == Action.ADVANCE_PHASE.value:
-        state.phase = decision.next_phase or state.phase
-        state.guards.setdefault(state.phase, GuardCounters())
+        if decision.next_phase:
+            state.last_check_result["next_phase"] = decision.next_phase
         state.status = "running"
         return
     if decision.disposition == Action.EXIT_SUCCESS.value:
@@ -1037,7 +1077,7 @@ def _reconcile_from_payload(
     payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
     result = payload.get("result") if isinstance(payload.get("result"), dict) else payload
     apply_action_effect(state, pending.action, result, project_dir, loop_id, pending.action_id)
-    return _finalize_reconciled(loop_id, project_dir, state, source)
+    return _finalize_reconciled(loop_id, project_dir, state, source, pending.action_id, result)
 
 
 def _reconcile_from_artifact(
@@ -1048,18 +1088,32 @@ def _reconcile_from_artifact(
         result = json.loads(artifact)
     except json.JSONDecodeError as exc:
         raise IntegrityError("invalid check_result artifact") from exc
+    if not isinstance(result, dict):
+        raise IntegrityError("invalid check_result artifact")
     apply_action_effect(state, Action.RUN_CHECKER.value, result, project_dir, loop_id, action_id)
-    return _finalize_reconciled(loop_id, project_dir, state, "artifact")
+    return _finalize_reconciled(loop_id, project_dir, state, "artifact", action_id, result)
 
 
 def _finalize_reconciled(
-    loop_id: str, project_dir: str, state: LoopState, source: str
+    loop_id: str,
+    project_dir: str,
+    state: LoopState,
+    source: str,
+    action_id: str,
+    result: dict[str, Any],
 ) -> ReconcileOutcome:
     """Append reconciled journal event and write state."""
-    action_id = state.pending_action.action_id if state.pending_action else None
+    previous_version = state.state_version
     state.pending_action = None
     state.state_version += 1
     state.updated_at = now_iso()
+    state.last_completed_action = LastCompletedAction(
+        action_id=action_id,
+        state_version_before=previous_version,
+        state_version_after=state.state_version,
+        result_digest=_digest_json(result),
+        completed_at=now_iso(),
+    )
     append_journal_event(
         loop_id, project_dir, "reconciled", "step", action_id, {"resolved_by": source}
     )
@@ -1343,10 +1397,14 @@ def _write_json_file(path: Path, data: dict[str, Any]) -> None:
 
 
 def _write_text(path: Path, content: str) -> None:
-    """Write text with 0600 permissions."""
-    fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, FILE_MODE)
+    """Atomically write text with 0600 permissions."""
+    _ensure_dir(path.parent)
+    tmp_path = path.with_name(f"{path.name}.tmp.{os.getpid()}")
+    fd = os.open(tmp_path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, FILE_MODE)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(content)
+    os.chmod(tmp_path, FILE_MODE)
+    os.replace(tmp_path, path)
     os.chmod(path, FILE_MODE)
 
 
@@ -1434,19 +1492,38 @@ def _acquire_existing_lock(
     path: Path, owner_id: str, ttl_seconds: int, host: str
 ) -> LockInfo | None:
     """Acquire an existing stale lock or reject live locks."""
-    snapshot = _read_lock(path)
-    if snapshot is not None and is_lease_alive(snapshot):
-        if snapshot.host != host:
-            raise ForeignLeaseError(snapshot)
+    fd = _open_lock_for_update(path)
+    if fd is None:
         return None
     try:
-        if _read_lock(path) != snapshot:
-            return None
-        path.unlink()
-        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, FILE_MODE)
-    except (OSError, FileExistsError):
+        with os.fdopen(fd, "r+", encoding="utf-8") as f:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            if not _fd_matches_path(f.fileno(), path):
+                return None
+            return _rewrite_stale_lock_stream(f, owner_id, ttl_seconds, host)
+    except OSError:
         return None
-    return _write_new_lock_fd(fd, owner_id, ttl_seconds, host)
+
+
+def _rewrite_stale_lock_stream(
+    stream: Any, owner_id: str, ttl_seconds: int, host: str
+) -> LockInfo | None:
+    """Rewrite an already-locked stale lock stream with a fresh lease."""
+    lock = _read_lock_stream(stream)
+    if _live_lock_blocks_acquire(lock, host):
+        return None
+    new_lock = _new_lock(owner_id, ttl_seconds, host)
+    _rewrite_locked_file(stream, asdict(new_lock))
+    return new_lock
+
+
+def _live_lock_blocks_acquire(lock: LockInfo | None, host: str) -> bool:
+    """Return True for live same-host locks; raise for live foreign-host locks."""
+    if lock is None or not is_lease_alive(lock):
+        return False
+    if lock.host != host:
+        raise ForeignLeaseError(lock)
+    return True
 
 
 def _replace_lock(
@@ -1533,6 +1610,13 @@ def _foreign_host_stop_result(loop_id: str, project_dir: str, lock: LockInfo) ->
     state = load_state(loop_id, project_dir)
     action_id = f"act-{secrets.token_hex(ACTION_ID_BYTES)}"
     context = {"stop_reason": "foreign_live_lease", "foreign_host": lock.host}
+    if state.status != "stopped":
+        state.status = "stopped"
+        state.stop_reason = "foreign_live_lease"
+        state.state_version += 1
+        state.updated_at = now_iso()
+        append_journal_event(loop_id, project_dir, "stopped", "step", None, context)
+        _write_state(state, project_dir)
     return ProposeResult(
         Action.STOP.value,
         action_id,
