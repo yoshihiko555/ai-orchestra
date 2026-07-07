@@ -1,0 +1,161 @@
+# loop-harness 評価セット
+
+**パッケージ**: `packages/loop-harness`
+**類型**: 主: CLI ツール型、副: スキル型
+**作成日**: 2026-07-07
+**最終レビュー日**: 評価保留（2026-07-07）— 実装前の先行作成、暫定ドラフト扱い。実装完了後に改めて人間レビューを行うまで、本評価セットの観点はテスト改修時の突合基準としては未確定とする。
+**情報源**: docs/requirements/loop-harness.md, docs/design/loop-harness.md（基本設計）, docs/design/loop-harness-core.md（詳細設計 core 編）, docs/design/loop-harness-cli.md（詳細設計 CLI/config 編）, docs/design/loop-harness-pr-review.md（詳細設計 PR レビュー対応/skill 編）
+
+> 値の食い違いがある場合は詳細設計 3 分冊（core / cli / pr-review）を正とする（基本設計は「何を・どう
+> 構成するか」の一覧であり、詳細設計が実装可能粒度まで確定した値で上書きする）。
+
+## 1. 責務定義
+
+loop-harness は「Trigger → Maker → Checker → 停止判定」の反復ループを、決定論的な Python コア
+（`loop_common.py`）を正本として駆動する汎用ループ実行基盤である。セッション内伴走型（LP-1、
+`loop_step.py` の two-phase プロトコル経由でオーケストレーターに次アクションを提案する）と、
+ローカル常駐の自律型（LP-2、`loop_scheduler.py` + `loop_driver.py` が `claude -p` で完全に自律駆動する）
+の 2 実行形態を同一コアで支える。ファーストユースケースである Issue 消化ループ（`/loop-issue`）では、
+worktree 隔離・機械検証＋ LLM レビューの二層 Checker・無進捗/反復上限ガード・PR 作成後の外部レビュー
+対応反復までを、人間の受容判断を挟まず一貫した合否基準（Critical=0 かつ High=0）で完結させる。
+
+### Non-Goals
+
+- skill-evolution（Issue #139 のオフライン層）の統合。目的が異なる（スキル定義の最適化 vs 開発タスクの消化）ため統合しない
+- PR の auto-merge。マージ判断は常に人間が行う（ユーザーの手動マージポリシー）
+- `core` の `log_common`（events.jsonl）への配線。既存 2 系統併存を悪化させないため行わない
+- スキル・エージェント定義の自動改善（skill-evolution の責務）
+- CI（GitHub Actions 等）上での LP-2 実行。本パッケージはローカルマシン常駐（cron / launchd）のみを対象とする
+- Codex 以外の外部レビュー連携（CodeRabbit 等）。当面は Codex の GitHub 連携自動レビューのみを対象とする
+- LP-2 の並列 worktree 管理の高度化（FT-21）。要件・基本設計双方で将来拡張として明示的に対象外とされており、本評価セットでも観点化しない
+
+## 2. 期待する入出力・副作用
+
+| 構成要素                                                          | 入力                                                                                                 | 期待する出力                                                                    | 副作用                                                                                                            |
+| ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `loop_common.py`                                                  | state/journal/lock への操作要求（`propose`/`complete`/`reconcile`/`resume`/`attach` の内部呼び出し） | `ProposeResult` / `CompleteResult` / `ReconcileOutcome` 等のデータクラス        | `.claude/loop/<loop_id>/{state.json,journal.jsonl,lock.json,artifacts/}` への読み書き（journal 先・state 後）     |
+| `loop_definition.py`                                              | `config/loops/*.yaml` + `.claude/config/loop-harness/loops/*.yaml`                                   | 検証済み `LoopDefinition`                                                       | なし（読み取り専用）。スキーマ違反時は `DefinitionValidationError`                                                |
+| `worktree_manager.py`                                             | `issue_number`, `project_dir`                                                                        | `WorktreeInfo`（path/branch/repo_identity_hash）                                | `git worktree add` によるディレクトリ作成、ブランチ作成                                                           |
+| `loop_step.py start --issue <N>`                                  | Issue 番号、ループ定義 ID（省略可）                                                                  | 1 行 JSON（`action`/`action_id`/`state_version`/`lease_token` 等）、stdout のみ | Issue ロック取得、worktree 作成、`state.json`/`journal.jsonl` 初回作成、audit `loop_start` emit                   |
+| `loop_step.py propose/complete/reconcile/heartbeat/resume/attach` | `--loop-id`, `--lease-token`, （`complete` は `--action-id`/`--state-version`/`--result`）           | 1 行 JSON、exit code 0/1/2/3                                                    | `state.json`/`journal.jsonl` 更新（`heartbeat` を除く）、audit `loop_iteration`/`loop_stop` emit                  |
+| `loop_driver.py`                                                  | `--loop-id`, `--project`                                                                             | なし（プロセス終了コードとログ）                                                | `claude -p` によるサブプロセス起動（Maker/Checker）、push/PR 作成（ガード通過後）、macOS 通知、Issue コメント投稿 |
+| `loop_scheduler.py`                                               | なし（常駐、discovery でラベル付き Issue キューをポーリング）                                        | なし（常駐プロセス）                                                            | `loop_driver.py` の spawn/監視/kill/restart、起動時 repo-identity 照合                                            |
+| `loop_status.py list/show/purge`                                  | `--status`/`--loop-id`/`--force`/`--dry-run` 等                                                      | 一覧・詳細表示（人間可読 or `--json`）                                          | `purge` 時のみ完了済みループランの state/journal/artifacts 削除                                                   |
+| `pr_review_wait.py`                                               | `pr_number`, baseline 情報、config（`pr_review.*`）                                                  | 完了シグナル種別、指摘一覧（発信元検証・severity 判定済み）                     | ポーリングによる `gh api` 呼び出し、`processed_comment_ids`/`findings` の state 更新                              |
+| `/loop-issue <Issue番号>` スキル                                  | ユーザー起動                                                                                         | 実行結果サマリ（要約のみ、Maker/Checker 生出力は含まない）                      | `loop_step` 呼び出し連鎖、Task 起動（agent-routing 経由）、PR 作成、Issue コメント、macOS 通知                    |
+
+## 3. 評価観点
+
+<!-- ID はファイル内一意の連番（欠番は再利用しない）。実装は 5 フェーズ
+     （①loop_common+loop_definition+worktree_manager → ②loop_step CLI → ③pr_review_wait
+       → ④/loop-issue スキル配線 → ⑤LP-2 常駐）で進むため、フェーズ別の小見出しで整理する。 -->
+
+### 3.1 フェーズ①: `loop_common.py` / `loop_definition.py` / `worktree_manager.py`
+
+- [ ] EV-01（正常 / must）: `status` は `pending → running → (waiting_external ⇄) → passed/failed`、および安全停止 3 条件による `→ stopped`、`failed`/`stopped` からの `resume --reset-counters` による `→ running` の遷移表に厳密に従う — 根拠: docs/design/loop-harness-core.md §1.2
+- [ ] EV-02（正常 / must）: `state_version` は `propose`/`complete`/`reconcile`/`resume` の書き込みでのみ 1 ずつ増分し、`heartbeat` では増分しない — 根拠: docs/design/loop-harness-core.md §1.4
+- [ ] EV-03（異常 / must）[検証フェーズ: ①]: `complete` は `pending_action.action_id`/`state.state_version` が引数と一致しない場合 `StaleActionError` を送出する（`loop_common.py` 単体で検証可能）。CLI 層での exit code `2` への変換は別観点（EV-24、フェーズ②）で検証するため、本観点は例外送出のみを対象とする — 根拠: docs/design/loop-harness-core.md §2.2・§2.3
+- [ ] EV-04（正常 / must）: 同一 `action_id` への `complete` 再送は state を再更新せず、`idempotent_replay=true` として前回確定結果をそのまま再応答する（二重カウント・二重副作用の防止） — 根拠: docs/design/loop-harness-core.md §2.1・§2.3
+- [ ] EV-05（異常 / must）: `reconcile` は孤立 `pending_action` を「① journal に `completed` イベントが存在すればそれで復元 → ② 無ければ `artifacts/<action_id>/check_result.json` から復元（`run_checker` のみ） → ③ どちらも無ければ `run_checker` のみ再実行、`run_maker` 等の副作用を持つアクションは `infrastructure_failure` として記録」の優先順位で解決する — 根拠: docs/design/loop-harness-core.md §2.4, docs/design/loop-harness.md §5.4
+- [ ] EV-06（正常 / must）: `evaluate_guards()` は安全停止 3 条件を扱わず、`infrastructure_failure` 分離トラック（合格/無進捗/反復上限の 3 段評価より前に判定）→ ①合格判定 → ②無進捗判定 → ③反復上限判定、の順序で評価する — 根拠: docs/design/loop-harness-core.md §3.2・§3.3, docs/requirements/loop-harness.md FT-08
+- [ ] EV-07（異常 / must）: `infrastructure_failure` カウンタが `max_retries`（既定 3）に到達した場合の遷移先は安全停止（`stopped`）ではなく、従来どおり `on_failure.disposition`（`exit_failure` → `failed`）である — 根拠: docs/design/loop-harness-core.md §3.2・§3.3
+- [ ] EV-08（異常 / must）: `combine_check_results` は `required_layers`（フェーズ定義が要求する `mechanical`/`llm_review`）のいずれかが `results` に存在しない場合、他層が合格していても暗黙合格にせず `infrastructure_failure=True` として不合格に倒す（`mechanical`・`llm_review` いずれの欠落も同じ扱い） — 根拠: docs/design/loop-harness-core.md §5.2（Codex レビュー指摘反映 P1）
+- [ ] EV-09（正常 / must）: `mechanical` 合格かつ `llm_review` のみ不合格の場合、フェーズシグネチャは空文字列固定ではなく `compute_llm_review_signature`（critical/high 指摘の正規化ハッシュ）を用いる（指摘内容が反復間で変化していれば別シグネチャとなり、無進捗と誤判定しない） — 根拠: docs/design/loop-harness-core.md §4.4・§5.2
+- [ ] EV-10（正常 / must）: `implementation` フェーズの失敗シグネチャはテスト失敗時 `failed_ids`（pytest nodeid 集合）が抽出できればそれを、抽出不能（collection error 等）な場合は正規化した excerpt のハッシュにフォールバックして計算する — 根拠: docs/design/loop-harness-core.md §4.2
+- [ ] EV-11（正常 / should）: lint 失敗時のシグネチャはルール ID（例 `F401`）集合を抽出し、抽出不能時は同様に excerpt ハッシュへフォールバックする — 根拠: docs/design/loop-harness-core.md §4.2
+- [ ] EV-12（正常 / must）: `complete`（`journal.jsonl` に `completed` を先に追記 → その後 `state.json` 更新）・`stop` 遷移・`resume` はいずれも journal 追記を state 更新より先に行う。この順序により journal・state 間でクラッシュしても reconcile（journal 優先復元）と整合する不整合パターンにのみ倒れる — 根拠: docs/design/loop-harness-core.md §2.3・§6.4, docs/design/loop-harness-cli.md §1.5・§1.8・§2.6・§3.4
+- [ ] EV-13（異常 / must）: `validate_lease()`（および `propose`/`complete`/`reconcile`/`heartbeat` の fencing 検証）は呼び出し側が明示的に渡した `lease_token` 引数と `lock.json.lease_token` を照合するのみとし、`lock.json` を独自に読み直して自己完結的に検証すること（呼び出し元の識別を伴わない自己参照チェック）はしない — 根拠: docs/design/loop-harness-core.md §2.1（lease_token 呼び出し契約）, docs/design/loop-harness-cli.md §1.9
+- [ ] EV-14（異常 / must）: `acquire_lock` は既存 lock が他ホストで生存中（TTL 内）の場合 `ForeignLeaseError` を送出する（同一ホストでの生存中は通常の取得失敗として `None` を返す、と区別する） — 根拠: docs/design/loop-harness-core.md §6.3
+- [ ] EV-15（境界 / must）: `is_lease_alive()` は PID 生存確認を行わず、`heartbeat_at + ttl > now` の epoch/TTL 判定のみで生存を判断する（短命プロセスの誤 stale 判定を避ける既存設計選択の踏襲） — 根拠: docs/design/loop-harness-core.md §6.3
+- [ ] EV-16（正常 / must）: `resume` は対象状態が `failed`/`stopped` のみに限定され、`--reset-counters`（`reset_counters=True`）が無い呼び出しは拒否される。旧 lease の生存確認は行わず無条件に新しい `lease_token` を発行する — 根拠: docs/design/loop-harness-core.md §2.1・§2.2, docs/design/loop-harness-cli.md §1.8
+- [ ] EV-17（正常 / must）: `attach` は対象が `running`/`waiting_external` のみに限定され、`reacquire_lease()` が旧 lease 生存中なら `ForeignLeaseError`（二重 attach 防止）で拒否し、非生存時のみ新しい `lease_token` を発行したうえで `propose` 相当（reconcile → ガード評価）を実行して次アクションを返す — 根拠: docs/design/loop-harness-core.md §2.1, docs/design/loop-harness-cli.md §1.10
+- [ ] EV-18（正常 / must）: `start`/`attach` の応答は「そのまま最初の `propose` 結果」として扱われる契約であり、呼び出し側は応答の action を実行・`complete` せずに続けて `propose` を呼んではならない（次の `propose` 呼び出し前に対応する `complete` を必ず挟む、という公開プロトコルの制約そのものを検証対象とする。誤った呼び出し順序が reconcile をどう誤解決させるかという特定の失敗形態までは期待値化しない） — 根拠: docs/design/loop-harness-cli.md §1.3, docs/design/loop-harness-pr-review.md §5.1
+- [ ] EV-19（正常 / must）: `worktree_manager` は同一 `loop_id`（同一 Issue）に対し二重に worktree を作成しない。既存 worktree が対象パスに存在し、かつ `git rev-parse --git-dir`/`--git-common-dir` の比較で独立 worktree と判定でき、かつ現在ブランチが期待値と一致する場合はそれを再利用する（冪等性） — 根拠: docs/design/loop-harness-core.md §9.1・§9.3
+- [ ] EV-20（正常 / must）[検証フェーズ: ①(ガード判定が `stop` を返すこと) + ②/⑤(実 subprocess レベルでの exec 未実行、CLI/driver 統合)]: push 前ガード（(a) push 先ブランチがデフォルトブランチと不一致であること、(b) repo-identity-hash の再計算値が一致すること）のいずれかに違反した場合、遷移先は失敗出口（`exit_failure`）ではなく `stop` action → `status="stopped"`（安全停止）である。この判定自体は `apply_action_effect()`（`loop_common.py`）単体で検証できるが、`push`/`pr_create`/`pr_create_draft` 等の書き込みを伴う `exec` が実際のプロセスとして一切実行されないことは、`loop_step.py`/`loop_driver.py` を通した統合レベルでのみ確認できる — 根拠: docs/design/loop-harness.md §5.6, docs/design/loop-harness-core.md §1.2・§3.2, docs/design/loop-harness-cli.md §2.6
+- [ ] EV-21（正常 / must）[検証フェーズ: ④(`/loop-issue` スキル配線)・⑤(`loop_scheduler.py` の repo-identity 不一致時)]: 安全停止（`stopped`）では macOS 通知を発生条件によらず常時発火し、Issue コメント投稿は repo-identity が検証済みの場合のみ行う（repo-identity 不一致自体が停止理由の場合は投稿しない）。通知の実発火は `loop_common.py` 単体の責務ではなく、通知呼び出しを行う `/loop-issue` スキル配線・`loop_scheduler.py` 側の実装で検証する — 根拠: docs/design/loop-harness.md §5.6, docs/design/loop-harness-pr-review.md §6.4, docs/design/loop-harness-cli.md §3.4
+- [ ] EV-65（正常 / must）: lock TTL の既定値は `lock.ttl_seconds.lp1=3600`（秒）、`lock.ttl_seconds.lp2=300`（秒）、`lock.heartbeat_interval_seconds=60`（秒、LP-1/LP-2 共通）である。LP-1 は各 `loop_step` サブコマンド呼び出し時に heartbeat を更新し、LP-2 は `loop_driver.py` 内のバックグラウンドスレッドが 60 秒間隔で自律更新する（更新主体が異なる点も含めて検証する） — 根拠: docs/design/loop-harness-core.md §6.2・§10, docs/design/loop-harness-cli.md §5.1・§5.2
+- [ ] EV-66（正常 / must）: guard の既定値は `guards.max_iterations=3`、`guards.no_progress.repeat=2`、`guards.infrastructure_failure.max_retries=3` である。ループ定義側の `guards.max_iterations`/`guards.no_progress.signature` はフェーズ単位のローカル指定として `loop-harness.yaml` の全体既定値を上書きできる — 根拠: docs/design/loop-harness-core.md §3・§10, docs/design/loop-harness-cli.md §5.1・§5.2
+- [ ] EV-67（正常 / must）: `apply_action_effect()` は `status` を `passed` へ遷移させる分岐でのみ、直近の `completed` journal イベント（同一 `action_id`）に埋め込まれた `CheckResult` のダイジェストと、これから `state.last_check_result` に書き込む内容のダイジェストが一致することを検証する（`_verify_journal_consistency`）。不一致の場合は `passed` への遷移を拒否し `IntegrityError` を送出する（`failed`/`stopped` 等、他の遷移では本検証を行わない） — 根拠: docs/design/loop-harness-core.md §7.4
+- [ ] EV-68（正常 / must）: `.claude/loop/<loop_id>/` 配下（`state.json`/`journal.jsonl`/`lock.json`）は常に **root worktree（main worktree）側**のパスに解決され、linked worktree 内から実行しても worktree 側の相対パスには依存しない。`state.json`/`lock.json`/`journal.jsonl` はいずれも `0600` で作成され、Maker/Checker のコマンド実行（`pytest`/`ruff` 等）は常に `worktree_path` を cwd として行われる（`.claude/loop/` を cwd に持つことはない） — 根拠: docs/design/loop-harness.md §5.1, docs/design/loop-harness-core.md §9
+
+### 3.2 フェーズ②: `loop_step.py`（LP-1 CLI）
+
+- [ ] EV-22（正常 / must）: 全サブコマンド（`start`/`attach`/`propose`/`complete`/`reconcile`/`heartbeat`/`resume`）は stdout に 1 行の JSON オブジェクトのみを出力し、人間可読ログは stderr に出す — 根拠: docs/design/loop-harness-cli.md §1.1
+- [ ] EV-23（正常 / must）: exit code は `0`=正常、`1`=一般エラー、`2`=検証拒否（stale な `action_id`/`state_version`、または `--lease-token` の不一致・欠落）、`3`=lock 取得失敗（`start` のロック取得失敗、または `attach` 実行時に旧 lease が生存中で拒否した場合）に統一される — 根拠: docs/design/loop-harness-cli.md §1.2
+- [ ] EV-24（異常 / must）: `complete` の `--action-id`/`--state-version` が現在の pending action と不一致（stale）の場合、exit `2` と `{"error": {"code": "stale_action", ...}}` を返す — 根拠: docs/design/loop-harness-cli.md §1.5
+- [ ] EV-25（異常 / must）: `propose`/`complete`/`reconcile`/`heartbeat` は `--lease-token` の不一致・欠落時、`lock.json` の実際の値がどうであれ exit `2` を返す（exit `3` は `start`/`attach` のロック取得失敗にのみ用いる） — 根拠: docs/design/loop-harness-cli.md §1.2・§1.9
+- [ ] EV-26（異常 / must）: `start` は対象 `loop_id` に既存 `state.json` がある場合、新規作成せず exit `1` の `{"error": {"code": "already_exists"}}` を返す — 根拠: docs/design/loop-harness-cli.md §1.3
+- [ ] EV-27（境界 / must）: `attach` は既存 lease が生存中（TTL 内かつ heartbeat 継続中）の場合、二重 attach を防ぐため exit `3` で拒否する — 根拠: docs/design/loop-harness-cli.md §1.10
+- [ ] EV-28（境界 / must）: `resume` は `--reset-counters` フラグが無い呼び出しを exit `1` の `{"error": {"code": "reset_counters_required"}}` で拒否する（誤操作による無制限リトライの防止） — 根拠: docs/design/loop-harness-cli.md §1.8, docs/design/loop-harness.md §5.5
+- [ ] EV-29（正常 / should）: `heartbeat` は `lock.json.heartbeat_at` のみを更新し、`state.json`（`state_version` を含む）には一切触れない — 根拠: docs/design/loop-harness-core.md §1.4, docs/design/loop-harness-cli.md §1.7
+
+### 3.3 フェーズ③: `pr_review_wait.py`
+
+- [ ] EV-30（正常 / must）: `baseline_review_id`/`baseline_recorded_at` は push（または初回 `pr_create`）を実行する**前**に記録する（`baseline_review_id` は push 前の `reviews` API 呼び出しで得られる最大 review id）。一方 `iteration_head_sha` は push **完了後**に `gh api .../pulls/{pr} --jq .head.sha` で別途取得する（push 前は値が定まらないため、記録順序は baseline とは逆になる）。「`iteration_head_sha` も push 前に記録する」という理解は誤りであり、この 2 系統の記録タイミングの分離自体を検証対象とする。push 完了後に `baseline_review_id` を記録する順序では、push〜記録の間隙に投稿されたレビューが誤って baseline に取り込まれ完了シグナルを取りこぼす欠陥があるため、`baseline_review_id` 側の順序は厳守する — 根拠: docs/design/loop-harness-pr-review.md §1.1
+- [ ] EV-31（正常 / must）: 完了シグナル検知は「レビュー未実行・実行中」と「完了かつ指摘ゼロ」を、コメント件数ではなく `id > baseline_review_id` の新規 review 提出、または `pr_review.checkrun_allowlist`（config、任意項目）が**設定されている場合に限り**対象 head sha の check-run 完了によって区別する。`checkrun_allowlist` が未設定（空リスト）の場合はこのフォールバック経路自体を無効化し、正シグナル（review 提出）のみで待機する（未設定時に無条件へフォールバックしてはならない） — 根拠: docs/design/loop-harness-pr-review.md §1.1, docs/requirements/loop-harness.md FT-13
+- [ ] EV-32（異常 / must）: `pr_review.timeout_seconds` 到達（完了待機の全体タイムアウト）は `infrastructure_failure` ではなく `pr_review_response` フェーズの無進捗カウントとして扱う。個々の `gh api` 呼び出し失敗（5xx/ネットワーク/rate limit）は `infrastructure_failure` として扱う（両者は別カウンタで責務分離する） — 根拠: docs/design/loop-harness-pr-review.md §1.2, docs/design/loop-harness.md §6.3, docs/requirements/loop-harness.md FT-13
+- [ ] EV-33（正常 / must）: `processed_comment_ids` は `{source}:{id}`（`review`/`review_comment`/`issue_comment` の 3 種）でネームスペースし、リソース種別間の ID 衝突を防いだうえで dedup する — 根拠: docs/design/loop-harness-pr-review.md §4.1
+- [ ] EV-34（異常 / must）: コメント取り込み条件は「baseline より後」**かつ**「未処理（`processed_comment_ids` 未含有）」の AND であり、OR ではない（OR だと baseline 以前の歴史的コメントが誤って現行反復の指摘として再処理される） — 根拠: docs/design/loop-harness-pr-review.md §1.3
+- [ ] EV-35（異常 / must）: 発信元検証で `pr_review.reviewer_allowlist` に一致しない投稿者のレビュー/コメントは severity 判定・Maker 入力に使わず、`ignored_untrusted_comment` として journal 記録し、Issue 結果コメント＋即時 macOS 通知の 2 経路で人間へ能動的にエスカレーションする — 根拠: docs/design/loop-harness-pr-review.md §2.1・§2.3
+- [ ] EV-36（異常 / must）: `pr_review.reviewer_allowlist` が未設定または空リストの場合、`pr_review_wait.py` は起動時にエラーで停止する（「未設定なら誰でも許可」という安全でないデフォルトは取らない） — 根拠: docs/design/loop-harness-pr-review.md §2.2
+- [ ] EV-37（正常 / must）: severity 判定は「Step1: 明示的表記の正規表現パース → Step2: 表記が無い場合の分類サブエージェント（4 段階） → Step3: `CONFIDENCE: low`・パース失敗・`[must]`/`blocking` 表記時は High へフォールバック」の 3 段階で確定する — 根拠: docs/design/loop-harness-pr-review.md §3.1〜§3.3
+- [ ] EV-38（正常 / must）: critical/high 相当の指摘は理由記録による見送りができず対応が必須。medium/low 相当のみ、対応しない場合は理由を記録して見送れる（`journal` に `dismissed` として記録） — 根拠: docs/design/loop-harness-pr-review.md §3.4, docs/requirements/loop-harness.md FT-14
+- [ ] EV-39（正常 / must）: 指摘シグネチャ正規化（`normalize_signature`）はパス正規化＋行番号丸め（5 行単位。`line` が null の場合は `original_line` にフォールバック）＋ Markdown/URL/署名除去とストップワード除去・トークンソート済み本文正規化ハッシュから計算する — 根拠: docs/design/loop-harness-pr-review.md §4.2
+- [ ] EV-40（正常 / must）: `pr_review_response` の無進捗判定は「同一指摘シグネチャの再提起（`this.signatures ∩ prev.signatures` が非空）」または「新規指摘件数（`new_count`）が前回反復から減少しない（非減少）」の OR で判定する。`new_count` は open 指摘の累計数ではなく、「今回反復で初めて `findings[sig].first_seen_iteration` が当該反復番号として記録されたシグネチャの件数（`dismissed` を除く）」と定義する — 根拠: docs/design/loop-harness-pr-review.md §4.3, docs/design/loop-harness.md §6.2
+
+### 3.4 フェーズ④: `/loop-issue` スキル配線
+
+- [ ] EV-41（正常 / must）: Maker のエージェント選定は `agent-routing` パッケージの `detect_agent()`/`get_agent_tool()`（`cli-tools.yaml` 由来）をそのまま用い、検出できない場合のみ loop-harness 自身の `config/loop-harness.yaml` の `maker.fallback_agent`（既定 `general-purpose`）にフォールバックする（`cli-tools.yaml` と混同しない） — 根拠: docs/design/loop-harness-pr-review.md §5.2.1
+- [ ] EV-42（正常 / must）: オーケストレーターは `start`/`attach` の応答を実行・`complete` せずに続けて `propose` を呼んではならない（孤立 `pending_action` を防ぐ、3.1 節 EV-18 と対応するプロトコル遵守観点） — 根拠: docs/design/loop-harness-pr-review.md §5.1
+- [ ] EV-43（正常 / must）: オーケストレーターは `propose` が返した `action` に厳密に一致するアクションのみを実行し、実装が完了したように見える等の理由で自己判断による先取り（例: `run_maker` が返ったのに `exit_success` を先取り）を行わない — 根拠: docs/design/loop-harness-pr-review.md §5.1
+- [ ] EV-44（正常 / must）: Maker/Checker の生出力はメインオーケストレーターのコンテキストへ返さず、要約と state/journal 参照のみで受け渡す — 根拠: docs/requirements/loop-harness.md NF-05, docs/design/loop-harness-pr-review.md §5.1・§5.2.2
+- [ ] EV-45（正常 / must）: `issue-loop` 定義の `implementation` フェーズは `checker.llm_review`（baseline `code-reviewer` + `skill-review-policy` 準拠の追加選定、最大 2 名）を省略できない。この制約は `id == "issue-loop" かつ phase.name == "implementation"` の組み合わせでのみ発火し、他ループ定義の同名フェーズには強制しない — 根拠: docs/requirements/loop-harness.md FT-06, docs/design/loop-harness-core.md §8.2
+- [ ] EV-69（正常 / must）: 成功出口・失敗出口の公開契約として、成功時は commit → push → PR 作成（`pr-create` 資産の再利用）が行われ、auto-merge は付与されず worktree は保持される。失敗出口（`implementation` フェーズの `on_failure.exec`）では既存 PR が無ければ Draft PR を作成し、既存であれば Draft へ戻す（`pr_review_response` フェーズでは `gh pr ready --undo` 相当）。いずれの出口でも反復履歴・Checker 結果が記録され、対象 Issue への結果コメントとローカル通知が発火する — 根拠: docs/requirements/loop-harness.md FT-12・FT-15・FT-16, docs/design/loop-harness-pr-review.md §5.4.1・§5.4.2
+
+### 3.5 フェーズ⑤: LP-2（`loop_driver.py` / `loop_scheduler.py` / `loop_status.py`）
+
+- [ ] EV-46（正常 / must）: `loop_scheduler.py` は同時実行 worker 数が `lp2.concurrency_limit`（既定 2）に達している間、discovery 結果があっても新規 worker を spawn しない — 根拠: docs/design/loop-harness-cli.md §3.2
+- [ ] EV-47（正常 / must）: `loop_driver.py` は起動からの経過時間が `lp2.wall_clock_timeout_seconds`（既定 7200 秒）に到達すると、実行中の子プロセスを kill-tree で強制終了し、`status="failed"`・`stop_reason="wall_clock_timeout"` として失敗出口へ遷移する（`on_failure.exec` は実行する。安全停止ではない） — 根拠: docs/design/loop-harness-cli.md §2.4
+- [ ] EV-48（正常 / must）: `loop_scheduler.py` は起動時に repo-identity-hash を再計算し、既存 `state.json` の記録値と照合する。不一致の場合は該当 `loop_id` を安全停止（`stopped`, `stop_reason="repo_identity_mismatch"`）とし、以後 spawn/restart 対象から除外する。macOS 通知は必ず発火し、Issue コメントは投稿しない — 根拠: docs/design/loop-harness-cli.md §3.4
+- [ ] EV-49（正常 / must）: `loop_driver.py` が Maker（`claude -p`）を起動するコマンド構成は、push/PR 作成/worktree 操作系コマンド（`git push`/`git remote`/`git worktree`/`gh pr`）を常に `--disallowedTools` に固定で含め、`--allowedTools` の動的な組み立てとは独立に多層防御する（push/PR 作成の実行主体は常に `loop_driver.py` 自身であり、Maker には push 能力を持たせない設計）。あわせて `--dangerously-skip-permissions`（包括的な承認バイパス）は使用せず、`--permission-mode acceptEdits`（ファイル編集は自動承認するが許可リスト外の危険操作はブロックされる標準モード）を明示的に指定していることを確認する — 根拠: docs/design/loop-harness-cli.md §2.2
+- [ ] EV-50（異常 / must）: heartbeat スレッドが `lease_token` 不一致（他プロセスに lease を奪取済み）を検知した場合、現在実行中の子プロセスを kill-tree で強制終了するが、このプロセス自身は `state.json`/`journal.jsonl` を一切書き換えない（fencing 上、書いても `validate_lease()` に通らない） — 根拠: docs/design/loop-harness-cli.md §2.3
+- [ ] EV-51（正常 / must）: `loop_scheduler.py` は worker の異常終了を検知した際、対象状態が `failed`/`stopped` でない場合のみ同一 `loop_id` で再起動する。`stopped`（安全停止）は人間の調査を要するため自動再起動しない — 根拠: docs/design/loop-harness-cli.md §3.3
+- [ ] EV-52（境界 / should）: 通常（`--force` 無し）の `loop_status.py purge` は `passed`/`failed` に確定したループランのうち、保持期間（既定 30 日）を超過したもののみ削除する（`stopped` は通常 purge の対象に含めない。安全停止は人間の調査を要するため）。`--force` 指定時は経過日数を無視し、`running`/`waiting_external` 以外（`passed`/`failed`/`stopped` を含む）の全ループランを即座に purge する。`--force` を指定しても `running`/`waiting_external` のループランは purge しない — 根拠: docs/design/loop-harness-cli.md §4.3
+- [ ] EV-70（正常 / must）: `loop_scheduler.py` の discovery は対象ループ定義の `trigger.lp2.label`（ハードコードしない）で絞り込んだラベル付き Issue キューを `created_at` 昇順（優先度ラベルがあれば最優先ソートキー）でポーリングし、`running`/`waiting_external` で既存 state が存在する Issue は対象から除外する。トリガーは cron/launchd から headless（`claude -p`）で起動し、既存 Claude Code ログイン認証をそのまま使う（追加の API キー設定は不要） — 根拠: docs/requirements/loop-harness.md FT-17, docs/design/loop-harness-cli.md §3.1
+
+### 3.6 横断的（既存互換性 NF-01）
+
+- [ ] EV-53（正常 / must）: loop-harness 追加前に存在した既存テストスイートが、追加後もすべて通過する — 根拠: docs/requirements/loop-harness.md NF-01・受け入れ基準
+- [ ] EV-54（正常 / must）: `packages/audit/hooks/event_logger.py` の `EVENT_TYPES` への `loop_start`/`loop_iteration`/`loop_stop` 追加は additive のみであり、既存の値（`session_start`/`quality_gate` 等）を変更・削除しない。既存の `.claude/config/**` キーにも変更を生じさせない — 根拠: docs/requirements/loop-harness.md NF-01, docs/design/loop-harness-cli.md §6.3
+- [ ] EV-71（正常 / must）: redaction（機密情報マスク）は `artifacts/<action_id>/*`（`save_artifact()` 内）、`journal.jsonl` の `payload`（`append_journal_event()` 内）、`audit.event_logger` への emit（payload 生成直後）、PR/Issue コメント・macOS 通知（投稿・表示直前）の全チャネルで共通の `redact()`（fail-logs `SECRET_PATTERNS` 移植）を通す。あわせて、ループが作成したコミット・PR 本文が既存 secret scan 資産を通過すること（機密情報が検出されないこと）を確認する — 根拠: docs/requirements/loop-harness.md NF-04, docs/design/loop-harness-core.md §7.3, docs/design/loop-harness-pr-review.md §6.3
+- [ ] EV-72（正常 / must）: audit イベントは `loop_start`（`loop_step.py start` の worktree 作成・state 初期化直後）、`loop_iteration`（`complete` の state 更新直後、1 反復＝1 イベント）、`loop_stop`（`propose` が `exit_success`/`exit_failure`/`stop` を返し state を確定した直後）の各タイミングで emit される。`loop_iteration` の payload は Maker/Checker の情報（`maker.agent`/`checker.mechanical`/`checker.llm_review` 等）を含み、`emit_event()` の `aid` 引数に agent-routing 解決済みのサブエージェント識別子を渡すことで、Maker と Checker（LLM レビュー）が別サブエージェントとして起動されたことを audit ログから事後確認できる — 根拠: docs/requirements/loop-harness.md FT-11・NF-03, docs/design/loop-harness-cli.md §6.1・§6.2
+
+## 4. 類型別観点
+
+<!-- docs/evaluation/README.md の CLI ツール型 + スキル型チェックリストを具体化。ID は EV-NN の連番を継続する -->
+
+- [ ] EV-55（異常 / must）: 入力バリデーション — `loop_definition.py` の `load_and_validate` は必須キー欠落（`id`/`trigger`/`phases`）や `checker` が `mechanical`/`external_signal` のいずれも持たない等のスキーマ違反を `DefinitionValidationError` で検出し、サイレントに受理しない — 根拠: docs/design/loop-harness-core.md §8.2
+- [ ] EV-56（正常 / must）: コマンド契約 — 2 本目以降のループ定義は `config/loops/*.yaml` または `.claude/config/loop-harness/loops/*.yaml` への YAML 追加のみで登録でき、`loop_common.py` の改修を要しない — 根拠: docs/requirements/loop-harness.md FT-01, docs/design/loop-harness-core.md §8.3
+- [ ] EV-57（正常 / should）: 出力の安定性 — `loop_step.py` の `propose`/`complete`/`start`/`attach` が返す JSON のフィールド構成（`action`/`action_id`/`state_version`/`phase`/`iteration`/`params`/`lease_token` 等）は詳細設計で定義されたスキーマから安定して導出される — 根拠: docs/design/loop-harness-cli.md §1.3・§1.4・§1.10
+- [ ] EV-58（正常 / must）: 設定レイヤリング — `loop-harness.yaml`（ベース）と `loop-harness.local.yaml`（プロジェクト上書き）はキー単位で `config-loading` ルールに従って解決される一方、`loops/*.yaml`（ループ定義）は `id` 単位の**全体置換**（フィールド単位の深いマージではない）でプロジェクト側が優先される — 根拠: docs/design/loop-harness-core.md §8.3, docs/design/loop-harness-cli.md §5.3
+- [ ] EV-59（正常 / must）: 非対話完結性 — `loop_driver.py` が起動する `claude -p` 呼び出しは stdin を `DEVNULL` で封じ、個別タイムアウト到達時は `SIGTERM` → 10 秒待機 → `SIGKILL` の kill-tree エスカレーションで確実に停止する（子孫プロセスの残存を防ぐ） — 根拠: docs/design/loop-harness-cli.md §2.2・§2.5
+- [ ] EV-60（正常 / must）: ルーティング尊重 — Maker の選定は `cli-tools.yaml` の `agents.<name>.tool` 解決に従い、ループ定義自体はツールを固定しない（config 変更のみでツールを切り替えられる） — 根拠: docs/requirements/loop-harness.md FT-04, docs/design/loop-harness.md §4
+- [ ] EV-61（正常 / should）: 成果物規約 — Checker 実行結果は `artifacts/<action_id>/`（`mechanical_<n>.log`/`llm_review_<reviewer>.json`/`check_result.json`）配下に 0600 で保存され、`check_result.json` は必ず `PhaseCheckResult` の JSON 表現である（reconcile の復元元契約） — 根拠: docs/design/loop-harness-core.md §7.2
+- N/A: 対話規約（AskUserQuestion） — `/loop-issue` は無人反復ループとして設計されており、Critical=0 かつ High=0 の合格基準を人間の受容判断を挟まず一律適用する方針（FT-06/NF-03）のため、対話フェーズそのものを持たない
+- [ ] EV-62（正常 / should）[検証方法: Claude セッションでの実機検証]: LP-2（`claude -p`）実行時に既存 hooks（`SessionStart` 等）が発火すること自体は Claude Code の一般的振る舞いとして `adr:ADR-20260421-017` で確認済みだが、loop-harness 固有シナリオでの副作用（起動遅延の実測値、`[Codex Suggestion]` 等の提案系 hook 出力が反復進行に与える具体的影響、`quality-gates` hook との重複記録の実測頻度）は未検証であり、単体テストでは代替できない — 根拠: docs/design/loop-harness.md §8・§12
+- [ ] EV-63（正常 / should）[検証方法: Claude セッションでの実機検証]: `--allowedTools`/`--disallowedTools` の組み合わせが実際に Claude Code の許可判定エンジン上で Maker の push 実行を構造的に阻止すること（EV-49 が保証するのはコマンド構成の静的な正しさであり、実際の許可判定結果は Claude Code CLI 自体の実装に依存する）はセッションでの実行観察でのみ確認できる — 根拠: docs/design/loop-harness-cli.md §2.2
+- [ ] EV-64（正常 / should）[検証方法: Claude セッションでの実機検証]: agent-routing 経由の `Task` 起動が、意図した通り既存の `agent-routing`/`audit`/`codex-suggestion-compliance` 等の hook 基盤を素通りさせずに通すこと（LP-1 をハイブリッド制御にした設計意図の実効性）は、セッション内での Task 実行観察でのみ確認できる — 根拠: docs/design/loop-harness.md §1.1（案C採用理由）・§7
+
+## 5. テストレビュー判断基準（パッケージ固有）
+
+- **評価セットの非改変**: 本評価セットは実装 PR（Codex 実装者を含む）が自身の実装内容に合わせて改変してはならない。仕様（評価セット）と実装が矛盾する場合は評価セットを正とし、評価セット自体が誤っていると思われる場合は人間に確認する運用（`.claude/rules/evaluation-set-policy.md`）に従う。特に「実装追認によりテストが緩む」ことを防ぐ目的の文書であるため、EV の削除・弱化は原則として人間レビューを経ずに行わない
+- **実装追認の兆候（特に注意すべきパターン）**:
+  - ガード評価順序（EV-06・EV-07）のテストが、`evaluate_guards()` の実装コードのif分岐をそのまま書き写しただけの期待値になっていないか（設計書の 3 段階評価順序から独立に期待値を導出しているか）
+  - two-phase の冪等性（EV-04）・stale 拒否（EV-03）が、実装の例外クラス名やメッセージ文言の一致だけで検証され、実際に「state が二重更新されない」「exit code が正しい」という振る舞いレベルの検証を欠いていないか
+  - `combine_check_results` の必須層欠落判定（EV-08）が、`mechanical` の欠落のみをテストし `llm_review` の欠落を独立したケースとして検証していないか（Codex レビューで発見された非対称バグの再発防止が目的のため、両者を必ず別ケースにする）
+  - lease fencing（EV-13・EV-14・EV-17）のテストが `lock.json` を直接書き換えて検証しており、CLI 引数経由の `lease_token` 受け渡し契約（呼び出し側保持）を経由しない形骸化したテストになっていないか
+  - 失敗シグネチャ正規化（EV-10・EV-11・EV-39）のテストが、実装の正規表現パターンをそのまま再掲しただけで、揮発情報（一時パス・行番号・タイムスタンプ）除去後も意味的に同一の入力から同一シグネチャが得られることを独立に検証していないか
+- **過剰なモック**: `loop_step.py` の CLI テストで `loop_common.py` の内部関数を過度にモックし、実際の `state.json`/`journal.jsonl` ファイル I/O・書き込み順序（journal 先・state 後、EV-12）を経由しないテストになっていないか。crash 整合性（journal 優先復元）は実ファイルベースの統合テストで最低 1 件は検証する
+- **異常系の独立性**: 安全停止 3 条件（push 前ガード違反・repo-identity 不一致・他ホスト生存 lease 検知、EV-20・EV-48）は、通常の失敗出口（`failed`）とは異なる状態遷移・異なる通知方針を持つため、正常系/通常異常系のテストのついでではなく、3 条件それぞれ独立したテストケースとして検証されているか
+- **LP-1/LP-2 実行形態の混同回避**: `loop_common.py`/`loop_definition.py`/`worktree_manager.py`（フェーズ①）はコア共有であり、LP-1（`loop_step.py`）専用の振る舞いと LP-2（`loop_driver.py`/`loop_scheduler.py`）専用の振る舞い（EV-46〜EV-51）を同一テストで混同していないか。特に heartbeat 主体・TTL 値は実行形態で異なる（core 編 §6.2）ため、テストの前提条件が実行形態を明示しているか
+- **Claude Code ランタイム依存観点の切り分け**: EV-62〜EV-64（hooks 発火・`--allowedTools` 実効性・agent-routing 経由 Task 起動）は pytest 等の単体テストで代替検証したと称するテストが紛れ込んでいないか（これらは「検証方法: Claude セッションでの実機検証」と明記した観点であり、モックによる代替テストは実装追認と同様のリスクを持つ）
