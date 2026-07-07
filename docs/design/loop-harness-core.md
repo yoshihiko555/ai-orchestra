@@ -112,7 +112,15 @@ class LoopState:
     pending_action: PendingAction | None
     last_completed_action: LastCompletedAction | None
     stop_reason: str | None
-    processed_review_comment_ids: list[str]  # dedup 用（9 節）
+    pr_review: dict | None  # pr_review_response フェーズの状態（Codex レビュー指摘反映。P2）。
+    # スキーマは pr-review 編を正とする（本節では概要のみ）:
+    #   - baseline: iteration_head_sha / baseline_review_id / baseline_recorded_at
+    #     （pr-review 編 1.1 節。フェーズ各反復開始時、push/PR 作成の実行前に記録）
+    #   - processed_comment_ids: "{source}:{id}" 形式で reviews/review_comments/issue_comments の
+    #     3 種をネームスペースした dedup 済み ID 集合（pr-review 編 4.1 節）
+    #   - findings: 指摘シグネチャ（pr-review 編 4.2 節）をキーとする dedup・無進捗判定用の
+    #     指摘履歴マップ（pr-review 編 4.1 節）
+    # `pr_review_response` フェーズに未到達の間は None。
     ignored_untrusted_comment_count: int  # 9.1 節
     created_at: str
     updated_at: str
@@ -163,7 +171,7 @@ class LoopState:
     "completed_at": "2026-07-06T10:14:50+09:00",
   },
   "stop_reason": null,
-  "processed_review_comment_ids": [],
+  "pr_review": null, // pr_review_response フェーズ到達前は null（詳細スキーマは pr-review 編 1.1 節・4.1 節）
   "ignored_untrusted_comment_count": 0,
   "created_at": "2026-07-06T10:00:00+09:00",
   "updated_at": "2026-07-06T10:15:00+09:00",
@@ -295,9 +303,12 @@ def complete(
 def reconcile(loop_id: str, project_dir: str) -> "ReconcileOutcome":
     """孤立した pending action（complete を経ずに終わった action）を解決する（2.4 節）。
 
-    propose() の内部から自動的に呼ばれる。CLI サブコマンドとしては公開しない
-    （基本設計 3 節・5.3 節: reconcile は「内部的な」処理として扱う）。デバッグ・テスト用に
-    loop_common.py の公開関数としては提供する。
+    propose() の内部から自動的に呼ばれるのが基本経路である。**加えて、手動診断・障害回復用に
+    `loop_step reconcile` として CLI サブコマンドにも公開する**（cli 編 1.6 節が正。Codex レビュー
+    指摘反映。P2）。旧記述は「CLI サブコマンドとしては公開しない」としていたが、これは cli 編 1.6 節
+    （`reconcile` を明示的に呼び出せる独立サブコマンドとして提供する）と矛盾していた。両立させる
+    設計とし、propose 内部からの自動呼び出しと、独立 CLI サブコマンドとしての手動呼び出しの
+    いずれも同じ本関数を呼ぶ（cli 編 1.6 節参照）。
     """
 
 
@@ -306,9 +317,19 @@ def heartbeat(loop_id: str, project_dir: str, lease_token: str) -> bool:
 
 
 def resume(
-    loop_id: str, project_dir: str, reset_counters: bool, lease_token: str
+    loop_id: str, project_dir: str, reset_counters: bool, owner_id: str, ttl_seconds: int
 ) -> LoopState:
-    """failed/stopped からの意図的再開（5.5 節）。reset_counters=False は拒否する。"""
+    """failed/stopped からの意図的再開（5.5 節）。reset_counters=False は拒否する。
+
+    **`lease_token` を引数に取らない（Codex レビュー指摘反映。P2）**: `resume` は前セッションが
+    消滅した後の `failed`/`stopped` ループランへの入口であり、呼び出し元はそもそも有効な旧
+    `lease_token` を持ち得ない（`lock.json` を読ませて自己申告させる経路は fencing 設計に反する）。
+    `attach`（同節）と同様に **発行側**として、`resume` 自身が新しい `lease_token` を発行し、
+    戻り値（`LoopState.pending_action` 等を含む状態、および cli 編 1.8 節の応答 JSON の
+    `lease_token` フィールド）で呼び出し元へ返す。`attach` と異なり、対象状態を `failed`/`stopped`
+    （ループが既に終了・安全停止済みで、正当な所有者が更新し続けている前提が無い状態）に限定して
+    いるため、旧 lease の生存確認（`is_lease_alive()`）は行わず無条件に新しい lease を発行する。
+    """
 
 
 def attach(loop_id: str, project_dir: str, owner_id: str, ttl_seconds: int) -> ProposeResult:
@@ -345,7 +366,7 @@ def attach(loop_id: str, project_dir: str, owner_id: str, ttl_seconds: int) -> P
 | `complete`  | `pending_action.action_id == action_id` かつ `state.state_version == state_version`。または `last_completed_action.action_id == action_id`（冪等再送） | `pending_action = None`；`last_completed_action` 更新；`state_version += 1`；journal に `completed` 追記。合否確定時は guards/phase/status も更新 |
 | `reconcile` | `pending_action != None` かつ対応する `completed` journal イベントが存在しない                                                                         | 副作用確認できれば `completed` 相当として記録・進行再開。確認不能なら `infrastructure_failure` として記録し新しい `propose` に委ねる              |
 | `heartbeat` | `lock.json` が存在し `lease_token` が有効                                                                                                              | `lock.json.heartbeat_at` のみ更新。`state.json` は不変（`state_version` 不変）                                                                    |
-| `resume`    | `state.status in {"failed", "stopped"}` かつ `reset_counters == True`                                                                                  | 対象フェーズの `guards` をリセット；`status → "running"`；`stop_reason = None`；`state_version += 1`                                              |
+| `resume`    | `state.status in {"failed", "stopped"}` かつ `reset_counters == True`（`lease_token` は事前条件に含まない。発行側のため。P2）                          | 対象フェーズの `guards` をリセット；`status → "running"`；`stop_reason = None`；`state_version += 1`；`lock.json` に新しい `lease_token` を発行   |
 
 `state_version` が不一致な `complete` 呼び出し（stale）はすべて拒否され、例外 `StaleActionError` を
 送出する。呼び出し側（オーケストレーター）はこれを検知したら `propose` から再実行する。
@@ -390,8 +411,15 @@ def complete(loop_id, project_dir, action_id, state_version, result, lease_token
     state.pending_action = None
     state.state_version = new_version
     state.updated_at = now_iso()
+
+    # 4. journal を先に書く（durable な記録。Codex レビュー指摘反映。P2。6.4 節の順序に従う）
+    append_journal_event(
+        loop_id, project_dir, event="completed", action_id=action_id, state_version=new_version, ...
+    )
+    # 5. journal 追記が成功した後にのみ state.json を更新する（この間でクラッシュしても、
+    #    journal にはイベントがあり state.json はまだ古い state_version のままという、
+    #    reconcile（7 章）が想定する不整合パターンにのみ倒れる）
     _write_state(state, project_dir)  # 0600・atomic replace（6 章の fencing 検証込み）
-    append_journal_event(loop_id, project_dir, event="completed", action_id=action_id, ...)
     return CompleteResult(ok=True, idempotent_replay=False, state_version=new_version, next_hint="call propose again")
 ```
 
@@ -683,10 +711,22 @@ def compute_implementation_signature(failures: list["MechanicalFailure"]) -> str
 `pr_review_response` フェーズの無進捗判定（同一指摘の再提起、または新規指摘件数の非減少）は
 9 節の実装（別紙で詳細化）に委ねるが、シグネチャ計算の型は本節と揃える。
 
+**指摘シグネチャベースに修正（Codex レビュー指摘反映。P2）**: 当初はコメント ID
+（`processed_comment_ids`）から直接フェーズシグネチャを計算していたが、この方式では同一の
+未解消指摘であっても、Bot が次の反復で新しいコメント ID として再投稿するたびに別シグネチャに
+なってしまい、「同一指摘の再提起」を検知できない欠陥があった。フェーズシグネチャは
+pr-review 編 4.2 節の `normalize_signature()`（パス正規化 + 行範囲丸め + 指摘要旨の正規化ハッシュ）
+が計算する**指摘シグネチャ**（dedup 後の `findings` マップ。pr-review 編 4.1 節）を入力とする。
+コメント ID（`processed_comment_ids`）は dedup（同一コメントの二重処理防止）専用の役割に限定し、
+フェーズシグネチャの計算には使わない。
+
 ```python
-def compute_pr_review_signature(comment_ids: list[str]) -> str:
-    """処理対象コメント ID 集合（許可リスト通過分）の正規化シグネチャ。"""
-    material = ",".join(sorted(set(comment_ids)))
+def compute_pr_review_signature(finding_signatures: list[str]) -> str:
+    """処理対象の指摘シグネチャ集合（pr-review 編 4.2 節の `normalize_signature()` が返す値。
+    dedup 後の `findings` マップ〔pr-review 編 4.1 節〕のキー集合）から、フェーズ全体の
+    無進捗判定キーを計算する。
+    """
+    material = "|".join(sorted(set(finding_signatures)))
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
 ```
 
@@ -983,13 +1023,20 @@ def check_foreign_host(loop_id: str, project_dir: str, local_host: str | None = 
     """
 ```
 
-### 6.4 書き込み手順の順序（基本設計 5.2 節の踏襲）
+### 6.4 書き込み手順の順序（基本設計 5.2 節の踏襲。Codex レビュー指摘反映。P2）
 
 `state.json` / `journal.jsonl` への書き込みは常に次の順序で行う。
 
 1. `validate_lease()` で `lease_token` を検証する（fencing）。
-2. `state.json` を更新する（`state_version` をインクリメント）。
-3. `journal.jsonl` に対応イベントを追記する。
+2. `journal.jsonl` に対応イベント（`completed`/`stopped` 等）を **先に** 追記する（durable な記録）。
+3. `journal.jsonl` の内容に基づき `state.json` を更新する（`state_version` をインクリメント）。
+
+当初は「`state.json` 更新 → `journal.jsonl` 追記」の順としていたが、この順序では両者の間で
+クラッシュした場合に「新しい `state_version` の `state.json` に対応する `completed` イベントが
+journal に存在しない」不整合を生み、journal を復元ソースとする reconcile（7 章）が当該反復の結果を
+復元できなくなる。journal を先に書く順序にすることで、クラッシュ時は必ず「journal にはイベントが
+あるが `state.json` がまだ古い `state_version` のまま」という、journal 優先で state を復元する
+reconcile 方針（7 章・基本設計 5.4 節）と首尾一貫する不整合パターンにのみ倒れるようにする。
 
 ---
 
@@ -1427,16 +1474,16 @@ def verify_repo_identity(worktree_path: str, expected_hash: str) -> bool:
 
 > 基本設計 10.3 節の「オーダーレンジのみ」だった項目を、本書 3 章・6 章の確定値で埋める。
 
-| キー                                        | 説明                                                          | 確定値 |
-| ------------------------------------------- | ------------------------------------------------------------- | ------ |
-| `guards.max_iterations`                     | フェーズ共通の反復上限                                        | `3`    |
-| `guards.no_progress.repeat`                 | 無進捗停止のしきい値                                          | `2`    |
-| `guards.infrastructure_failure.max_retries` | `infrastructure_failure` の連続許容回数                       | `3`    |
-| `lock.lp1.ttl_seconds`                      | LP-1 の lease TTL                                             | `3600` |
-| `lock.lp2.ttl_seconds`                      | LP-2 の lease TTL                                             | `300`  |
-| `lock.lp2.heartbeat_interval_seconds`       | LP-2 worker の heartbeat 間隔                                 | `60`   |
-| `pr_review.poll_interval_seconds`           | PR レビュー完了シグナルのポーリング間隔（基本設計既定を継続） | `120`  |
-| `pr_review.timeout_seconds`                 | 完了シグナル待機のタイムアウト（基本設計既定を継続）          | `3600` |
+| キー                                        | 説明                                                           | 確定値 |
+| ------------------------------------------- | -------------------------------------------------------------- | ------ |
+| `guards.max_iterations`                     | フェーズ共通の反復上限                                         | `3`    |
+| `guards.no_progress.repeat`                 | 無進捗停止のしきい値                                           | `2`    |
+| `guards.infrastructure_failure.max_retries` | `infrastructure_failure` の連続許容回数                        | `3`    |
+| `lock.ttl_seconds.lp1`                      | LP-1 の lease TTL（cli 編 5.1 節・5.2 節のキーパスに統一。P2） | `3600` |
+| `lock.ttl_seconds.lp2`                      | LP-2 の lease TTL（同上）                                      | `300`  |
+| `lock.heartbeat_interval_seconds`           | heartbeat 更新間隔（LP-1/LP-2 共通。同上）                     | `60`   |
+| `pr_review.poll_interval_seconds`           | PR レビュー完了シグナルのポーリング間隔（基本設計既定を継続）  | `120`  |
+| `pr_review.timeout_seconds`                 | 完了シグナル待機のタイムアウト（基本設計既定を継続）           | `3600` |
 
 `pr_review.reviewer_allowlist` / `lp2.concurrency_limit` / `lp2.wall_clock_timeout_seconds` /
 `retention.purge_after_days` は `loop_step.py`/`loop_scheduler.py`/`loop_status.py` の詳細設計

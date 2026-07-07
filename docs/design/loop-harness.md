@@ -374,12 +374,17 @@ linked worktree 内から実行された場合でも常に **root worktree（mai
 - **`host` フィールドの用途**: 記録用（どのマシンがループを保持しているかの可視化）に加え、起動時
   （LP-2 の worker 起動時・LP-1 のセッション開始時）に **他ホストの生存 lease（TTL 内）を検知したら
   起動を拒否する**判定にも使う。同一リポジトリを複数マシンから誤って同時運用することを防ぐ。
-- **書き込み手順の順序**: ① `lock.json` の `lease_token` を検証（fencing）→ ② `state.json` を更新
-  （`state_version` をインクリメント）→ ③ `journal.jsonl` に対応イベントを追記、の順で行う。
-  この順序では「`state.json` は更新されたが `journal.jsonl` への追記前にクラッシュした」不整合が
-  「`journal.jsonl` はあるが `state.json` が未更新」より起こりやすくなる。したがって 5.4 節の
-  reconcile は **journal を優先して state を復元する**（journal のイベント列を正として、古い
-  `state.json` があれば書き戻す）方針とする。
+- **書き込み手順の順序（ドリフト訂正。Codex レビュー指摘反映。P2）**: ① `lock.json` の
+  `lease_token` を検証（fencing）→ ② `journal.jsonl` に対応イベント（`completed`/`stopped` 等）を
+  **先に**追記（durable な記録）→ ③ `journal.jsonl` の内容に基づき `state.json` を更新
+  （`state_version` をインクリメント）、の順で行う。当初は「state.json 更新 → journal 追記」の
+  順としていたが、この順序では state 更新と journal 追記の間でクラッシュした場合に「新しい
+  `state.json`（`state_version` 増分済み）に対応する `completed` イベントが journal に存在しない」
+  不整合を生み、journal を復元ソースとする reconcile（5.4 節）が当該反復の結果を失ってしまう
+  （journal に無い completed 状態を、journal 優先の reconcile が復元できない）。journal を先に
+  書く順序にすることで、クラッシュ時は必ず「journal にイベントはあるが `state.json` がまだそれを
+  反映していない（旧 `state_version` のまま）」という、journal を優先して state を復元する 5.4 節の
+  reconcile 方針と首尾一貫する不整合パターンにのみ倒れるようにする。
 
 ロックは `skill-evolution` の TTL 判定パターン（`_is_stale`：PID 生存確認は行わず epoch/TTL のみで
 判定。短命プロセスの誤 stale 判定を避けるための既存の設計選択）を汎用化する。ただし本ハーネスの

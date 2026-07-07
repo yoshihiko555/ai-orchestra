@@ -259,8 +259,11 @@ python3 loop_step.py complete \
      そのまま再構築して exit `0` で返す（基本設計 5.3 節「`complete` の冪等性」）。
 3. `--result` の内容（CheckResult、Maker サマリ等）を `.claude/loop/<loop_id>/artifacts/<action_id>/`
    に保存する（5.4 節 reconcile の復元元）。
-4. `state.json` を更新（`state_version` をインクリメント、`phase`/`iteration`/`last_check_result` 等）し、
-   `journal.jsonl` に `event: "completed"` を追記する（10.2 節の redaction を通す）。
+4. `journal.jsonl` に `event: "completed"` を**先に**追記し（10.2 節の redaction を通す。durable な
+   記録。core 編 6.4 節の順序に従う）、その後 `state.json` を更新する（`state_version` を
+   インクリメント、`phase`/`iteration`/`last_check_result` 等）。この順序により、両者の間で
+   クラッシュしても journal 優先の reconcile（core 編 2.4 節・7 章）が確実に復元できる
+   （Codex レビュー指摘反映。P2）。
 5. 応答 JSON: `{"ok": true, "loop_id": ..., "state_version": <new>, "next": "call propose again"}`。
 
 ### 1.6 `reconcile`
@@ -317,11 +320,12 @@ python3 loop_step.py resume --loop-id a1b2c3d4-issue-42 --reset-counters --proje
 - `--reset-counters` フラグ必須。フラグなしでの呼び出しは exit `1`
   （`{"error": {"code": "reset_counters_required"}}`）とし、誤操作による無制限リトライを防ぐ
   （基本設計 5.5 節）。
-- 処理: 現在フェーズの `iteration` を `0` に、`no_progress` カウンタ・`infrastructure_failure`
-  カウンタをリセットし、`status` を `running` に戻す。`journal.jsonl` に
-  `event: "resumed", actor: "human"` を追記する。**新しい `lease_token` を発行して `lock.json` に
-  書き込む**（1.9 節。旧 token は以後無効。人間判断による再開のたびに lease を再発行し、失効済み
-  token を握った古い呼び出し元を確実に締め出す）。
+- 処理: `journal.jsonl` に `event: "resumed", actor: "human"` を**先に**追記し（durable な記録。
+  core 編 6.4 節の順序に従う）、その後 現在フェーズの `iteration` を `0` に、`no_progress` カウンタ・
+  `infrastructure_failure` カウンタをリセットし、`status` を `running` に戻す形で `state.json` を
+  更新する。あわせて**新しい `lease_token` を発行して `lock.json` に書き込む**（1.9 節。旧 token は
+  以後無効。人間判断による再開のたびに lease を再発行し、失効済み token を握った古い呼び出し元を
+  確実に締め出す）。
 - 応答: `propose` と同じ形式で、リセット後の最初のアクションを返す。加えて、新規発行した
   `lease_token` をレスポンスに含める（呼び出し側はこれを保持し、以後の `propose`/`complete`/
   `reconcile`/`heartbeat` に渡す。1.9 節）。
@@ -600,13 +604,15 @@ repo-identity 照合のいずれかに失敗した場合、`loop_driver.py` は�
 
 1. `push`/`pr_create` 等、**リポジトリへの書き込みを伴う exec を一切実行しない**（`on_success.exec`
    の残りステップを中断する）。
-2. `state.json.status = "stopped"`、`stop_reason = "push_guard_violation"` として記録する。
-3. macOS 通知を**必ず**発火する。
-4. Issue コメント投稿は、当該ループの repo-identity が検証済み（1.3 節の `start` 時点で記録した
+2. `journal.jsonl` に `event: "stopped", payload: {stop_reason: "push_guard_violation", ...}` を**先に**
+   追記し（durable な記録。core 編 6.4 節の順序に従う。Codex レビュー指摘反映。P2）、audit へ
+   `loop_stop`（`stop_reason` 付き）を emit する（6 節）。
+3. `journal.jsonl` への追記後、`state.json.status = "stopped"`、`stop_reason = "push_guard_violation"`
+   として記録する。
+4. macOS 通知を**必ず**発火する。
+5. Issue コメント投稿は、当該ループの repo-identity が検証済み（1.3 節の `start` 時点で記録した
    repo-identity と現在値が一致）の場合のみ行う。ブランチ検証違反のみで repo-identity 自体は正しい
    場合は投稿してよいが、repo-identity 不一致が絡むケース（3.4 節）は投稿しない。
-5. `journal.jsonl` に `event: "stopped", payload: {stop_reason: "push_guard_violation", ...}` を追記し、
-   audit へ `loop_stop`（`stop_reason` 付き）を emit する（6 節）。
 6. worktree・state/journal は保持する（人間の調査・再開判断のため。FT-23 と同様の方針）。
 
 ---
@@ -620,15 +626,17 @@ repo-identity 照合のいずれかに失敗した場合、`loop_driver.py` は�
 ```bash
 gh api repos/{owner}/{repo}/issues \
   --method GET \
-  -f labels=loop-ready \
+  -f labels=<trigger.lp2.label の解決値> \
   -f state=open \
   -f sort=created \
   -f direction=asc
 ```
 
-- ラベル `loop-ready` が付いた open Issue を取得する（ループ定義の `trigger.lp2.label` から解決。
-  基本設計 4 節の `issue-loop.yaml` 例では `label: "loop:queue"` としているが、実運用のラベル名は
-  `config/loops/*.yaml` 側で定義するためスケジューラ自体はラベル名をハードコードしない）。
+- `<trigger.lp2.label の解決値>` は、対象ループ定義（`config/loops/*.yaml`）の `trigger.lp2.label`
+  から解決する値であり、`loop_scheduler.py` 自体はラベル名をハードコードしない（Codex レビュー
+  指摘反映。P2。コマンド例のプレースホルダ表記を実際の解決方法と一致させた）。基本設計 4 節の
+  `issue-loop.yaml` 例では `label: "loop:queue"` としているが、実運用のラベル名はプロジェクトごとに
+  `config/loops/*.yaml` 側で定義する。
 - **優先度順**: `created_at` 昇順（先に登録された Issue を優先。公平性を優先し、複雑な優先度スコア
   は当面導入しない）。Issue に `priority:high` 等の追加ラベルがある場合はそれを最優先ソートキーとし、
   同順位内は `created_at` 昇順とする（優先度ラベルの語彙は config で定義。5 節）。
@@ -672,11 +680,12 @@ def spawn_worker(loop_id: str, project_root: Path) -> subprocess.Popen[bytes]:
   リポジトリで誤って起動された等）の場合、当該 `loop_id` は 2.6 節と同じ**安全停止**の扱いとする:
   1. その `loop_id` の worker（起動中であれば）を discovery/監視対象から除外し、以後
      spawn/restart の対象にしない。
-  2. `state.json.status = "stopped"`、`stop_reason = "repo_identity_mismatch"` として記録する。
-  3. macOS 通知を必ず発火する。**repo-identity 自体が不一致のケースでは Issue コメントは投稿しない**
+  2. `journal.jsonl` に `event: "stopped"` を**先に**追記し（durable な記録。core 編 6.4 節の順序に
+     従う。Codex レビュー指摘反映。P2）、audit へ `loop_stop`（`stop_reason` 付き）を emit する。
+  3. `journal.jsonl` への追記後、`state.json.status = "stopped"`、`stop_reason = "repo_identity_mismatch"`
+     として記録する。
+  4. macOS 通知を必ず発火する。**repo-identity 自体が不一致のケースでは Issue コメントは投稿しない**
      （どの Issue に紐づくループかを安全に確定できないため）。
-  4. `journal.jsonl` に `event: "stopped"` を追記し、audit へ `loop_stop`（`stop_reason` 付き）を
-     emit する。
   - stderr にも警告を出す（診断用）。
 - push 直前の repo-identity 再照合は `loop_driver.py`（2 節）側の責務であり、`loop_scheduler.py`
   は起動時の 1 回のみ行う。

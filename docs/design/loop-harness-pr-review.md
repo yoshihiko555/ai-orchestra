@@ -160,8 +160,17 @@ loop:
 - `pulls/{pr}/comments` を主とし、`issues/{pr}/comments` は補助（file/line を持たないため severity
   判定・修正指示には使えるが、dedup のシグネチャ計算ではファイルパス・行範囲を欠く扱いとなる。4.2 節
   で別扱いを定義する）。
-- 3 API すべてについて、baseline 以降（`created_at`/`submitted_at` が `baseline_recorded_at` 以降、
-  または ID が処理済み集合に含まれない）のエントリのみを対象にする。
+- **取り込み条件は AND（Codex レビュー指摘反映。P1）**: 3 API すべてについて、baseline **より後**
+  （`created_at`/`submitted_at` が `baseline_recorded_at` より後）**かつ**未処理（ID が
+  `processed_comment_ids` に含まれない）の**両方**を満たすエントリのみを対象にする。当初は
+  この 2 条件を `or` で結合していたため、baseline 以前に投稿された歴史的コメントが「処理済み集合に
+  無い」というだけで通過してしまい、既に無関係・解消済みの古い指摘を現行反復の指摘として
+  誤って再処理する欠陥があった。
+- **安全策（二重の防御）**: `pr_review_response` フェーズ開始時（baseline 記録と同時タイミング。
+  1.1 節）に、その時点で存在する baseline 以前の全コメント ID（`pulls/{pr}/comments` /
+  `issues/{pr}/comments` それぞれの既存エントリ全件）を `processed_comment_ids` へ初期記録する。
+  これにより、上記 AND 条件の時刻比較に万一のずれがあっても、processed 側の判定が歴史的コメントの
+  再処理を防ぐ二重の防御になる。
 
 ---
 
@@ -372,10 +381,15 @@ normalize_signature(comment) -> str:
     1. path_norm = comment.path を repo-relative POSIX パスに正規化（先頭 "./" を除去、
        区切り文字を "/" に統一）。issue_comment（file/line を持たない）の場合は
        path_norm = "__general__" とする。
-    2. line_bucket:
-       - review_comment（file/line を持つ）: floor(comment.line / 5) * 5
-         （行番号の軽微なズレ〔前後の反復での差分行移動〕を許容するため 5 行単位に丸める）
-       - issue_comment: line_bucket = "__none__"
+    2. line_bucket（Codex レビュー指摘反映。P2）:
+       - review_comment: line = comment.line が null でなければそれを使う。null の場合
+         （outdated/削除された diff 側のコメント。GitHub API は行削除時に `line` を null にし
+         `original_line` に投稿時点の行番号を残す）は comment.original_line にフォールバックする。
+         line が得られた場合: floor(line / 5) * 5（行番号の軽微なズレ〔前後の反復での差分行移動〕を
+         許容するため 5 行単位に丸める）
+       - line も original_line も得られない場合: line_bucket = "__none__" とし、path_norm +
+         body_norm のみ（行に依存しないシグネチャ）で退避する
+       - issue_comment（そもそも file/line を持たない）: line_bucket = "__none__"
     3. body_norm:
        a. コードブロック（```...```）を除去
        b. URL（https?://...）を除去
@@ -516,17 +530,27 @@ import sys, os
 sys.path.insert(0, os.path.join(os.environ["AI_ORCHESTRA_DIR"], "packages", "agent-routing", "hooks"))
 from route_config import detect_agent, load_config, get_agent_tool  # 既存資産をそのまま再利用（NF-07）
 
+# detect_agent()/get_agent_tool() には agent-routing 自身の config（cli-tools.yaml）を渡す
+routing_config = load_config()  # cli-tools.yaml（+ .local.yaml 上書き。config-loading ルール準拠）
+
 issue_text = f"{issue_title}\n{issue_body}\n{' '.join(issue_labels)}"
-agent_name, trigger = detect_agent(issue_text)
+agent_name, trigger = detect_agent(issue_text)  # cli-tools.yaml 由来のキーワードマッピングで検出
 if agent_name is None:
-    agent_name = config.get("loop_harness", {}).get("maker", {}).get("fallback_agent", "general-purpose")
-tool = get_agent_tool(agent_name, config)  # cli-tools.yaml の agents.<name>.tool 解決（FT-04）
+    # fallback_agent は cli-tools.yaml ではなく loop-harness 自身の config（config/loop-harness.yaml）
+    # に定義される（Codex レビュー指摘反映。P2）。config-loading ルールに従い
+    # config/loop-harness.yaml → config/loop-harness.local.yaml の順で読み込む専用ローダーを使う。
+    loop_harness_config = load_package_config("loop-harness")
+    agent_name = loop_harness_config.get("maker", {}).get("fallback_agent", "general-purpose")
+tool = get_agent_tool(agent_name, routing_config)  # cli-tools.yaml の agents.<name>.tool 解決（FT-04）
 ```
 
 - `detect_agent()` / `get_agent_tool()` は `packages/agent-routing/hooks/route_config.py` の既存
-  純粋関数をそのまま import して使う（新規実装ではなく再利用）。
-- 検出できなかった場合のフォールバック先は新規 config キー `loop-harness.yaml` の
-  `maker.fallback_agent`（既定値 `general-purpose`）で明示する（7 節・10 節参照）。
+  純粋関数をそのまま import して使い、いずれも `agent-routing` パッケージの config（`cli-tools.yaml`）
+  を引数に取る（agent 検出・tool 解決のロジックは agent-routing 側の設定に属するため）。
+- **`maker.fallback_agent` の読み出し元（Codex レビュー指摘反映。P2）**: 検出できなかった場合の
+  フォールバック先は `cli-tools.yaml` ではなく、本パッケージ自身の `config/loop-harness.yaml` の
+  `maker.fallback_agent`（既定値 `general-purpose`）から読む（7 節・10 節参照）。両者は別パッケージの
+  config であり、`load_config()`（`cli-tools.yaml` 用）と混同しない。
 
 #### 5.2.2 Maker への指示テンプレート
 
