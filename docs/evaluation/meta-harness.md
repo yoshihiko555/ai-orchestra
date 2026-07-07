@@ -55,7 +55,7 @@
 - [ ] EV-17（境界 / must）: quality_mean・tokens_mean が完全に同率の候補同士は `quality_min` が高い方を優先するタイブレークが機能する — 根拠: 詳細設計 §3-5
 - [ ] EV-18（正常 / must）: non-holdout シナリオのいずれかで `verdict=fail` または `error` の候補は frontier から除外される — 根拠: 詳細設計 §3-5
 - [ ] EV-19（境界 / must）: holdout シナリオの run 成果物は `.claude/meta-harness/holdout/runs/<run_id>/` に物理分離されて保存され、通常の `runs/` には現れない — 根拠: 詳細設計 §3-6
-- [ ] EV-20（正常 / should）: `frontier` は `--rebuild` 指定なしでは既存 `frontier.json` を返し、`--rebuild` 指定時のみ ledger から再計算して更新する（再生成可能キャッシュとしての性質） — 根拠: 詳細設計 §1-5
+- [ ] EV-20（正常 / should）: `frontier` は表示のたびに ledger から再計算し、`--rebuild` 指定時のみ frontier.json（再生成可能キャッシュ）へ永続化する。`--rebuild` なしではキャッシュを書き換えない — 根拠: 詳細設計 §6
 - [ ] EV-21（境界 / must）: `purge` は frontier 上の候補・`promoted` 済み候補を削除対象から除外する — 根拠: 基本設計 §3「retention/purge」、詳細設計 §6
 - [ ] EV-22（正常 / must）: `.claude/config/meta-harness/meta-harness.local.yaml` に設定したキーはベース `config/meta-harness.yaml` の値を上書きし、未設定キーはベースの値が使われる — 根拠: `config-loading.md`、詳細設計 §5
 - [ ] EV-23（境界 / must）: `result.json` の `self_report` が欠落またはパース不能の場合、`penalty = penalty_missing_report`（既定 6）が強制適用され `quality_score` のペナルティ項がゼロになる — 根拠: 詳細設計 §3-1
