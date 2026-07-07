@@ -8,6 +8,11 @@
   "skills": [],
   "agents": [],
   "rules": [],
-  "scripts": [],
+  "scripts": [
+    {
+      "path": "scripts/loop_step.py",
+      "description": "LP-1 loop_step CLI: start/attach/propose/complete/reconcile/heartbeat/resume with JSON output"
+    }
+  ],
   "config": ["config/loop-harness.yaml", "config/loops/issue-loop.yaml"]
 }

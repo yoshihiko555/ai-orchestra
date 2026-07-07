@@ -408,8 +408,15 @@ def propose(
         {"action": action, "expected_phase": state.phase},
     )
     _write_state(new_state, project_dir)
+    params = _proposal_params(new_state, action, project_dir)
     return ProposeResult(
-        action, action_id, new_state.state_version, state.phase, state.phase, iteration
+        action=action,
+        action_id=action_id,
+        state_version=new_state.state_version,
+        expected_phase=state.phase,
+        phase=state.phase,
+        iteration=iteration,
+        context={"params": params, **params},
     )
 
 
@@ -881,13 +888,13 @@ def _with_context(result: ProposeResult, values: dict[str, Any]) -> ProposeResul
     """Return a ProposeResult with added context."""
     context = {**result.context, **values}
     return ProposeResult(
-        result.action,
-        result.action_id,
-        result.state_version,
-        result.expected_phase,
-        result.phase,
-        result.iteration,
-        context,
+        action=result.action,
+        action_id=result.action_id,
+        state_version=result.state_version,
+        expected_phase=result.expected_phase,
+        phase=result.phase,
+        iteration=result.iteration,
+        context=context,
     )
 
 
@@ -965,6 +972,69 @@ def _next_action_iteration(state: LoopState, action: str) -> int:
     return max(counters.iteration, 1)
 
 
+def _proposal_params(state: LoopState, action: str, project_dir: str) -> dict[str, Any]:
+    """Build action-specific proposal params from durable state and loop definition."""
+    if action == Action.STOP.value:
+        return {"stop_reason": _normalize_stop_reason(state.stop_reason or "safety_stop")}
+    if action == Action.EXIT_SUCCESS.value:
+        return {"pr_number": state.pr_number}
+
+    phase_def = _load_phase_definition(state, project_dir)
+    if action == Action.RUN_MAKER.value:
+        return {
+            "maker_agent": _phase_nested(phase_def, ("maker", "agent"), None),
+            "prompt_template": _phase_nested(phase_def, ("maker", "prompt_template"), None),
+        }
+    if action == Action.RUN_CHECKER.value:
+        checker = _phase_nested(phase_def, ("checker",), {})
+        return copy.deepcopy(checker) if isinstance(checker, dict) else {}
+    if action == Action.WAIT_EXTERNAL_REVIEW.value:
+        external = _phase_nested(phase_def, ("checker", "external_signal"), {})
+        params = copy.deepcopy(external) if isinstance(external, dict) else {}
+        params["pr_number"] = state.pr_number
+        return params
+    if action == Action.ADVANCE_PHASE.value:
+        return {
+            "verified_branch": state.branch,
+            "next_phase": _pending_next_phase(state)
+            or _phase_nested(phase_def, ("on_success", "next"), None),
+            "exec": copy.deepcopy(_phase_nested(phase_def, ("on_success", "exec"), [])),
+        }
+    if action == Action.EXIT_FAILURE.value:
+        return {
+            "stop_reason": state.stop_reason or "guard_failed",
+            "draft_pr_exec": copy.deepcopy(_phase_nested(phase_def, ("on_failure", "exec"), [])),
+        }
+    return {}
+
+
+def _load_phase_definition(state: LoopState, project_dir: str) -> Any:
+    """Load the current phase definition, failing closed on config drift."""
+    lib_dir = Path(__file__).resolve().parent
+    if str(lib_dir) not in sys.path:
+        sys.path.insert(0, str(lib_dir))
+    import loop_definition
+
+    definition = loop_definition.load_all_definitions(project_dir).get(state.definition_id)
+    if definition is None:
+        raise InvalidStateError(f"loop definition not found: {state.definition_id}")
+    return loop_definition.phase_by_name(definition, state.phase)
+
+
+def _normalize_stop_reason(value: str) -> str:
+    """Normalize safety stop reasons to the public CLI enum."""
+    if value in {"push_guard_violation", "repo_identity_mismatch", "foreign_live_lease"}:
+        return value
+    return "push_guard_violation"
+
+
+def _push_guard_stop_reason(guard: dict[str, Any]) -> str:
+    """Return the public safety stop reason for push guard failure."""
+    if not guard.get("repo_identity_ok", True):
+        return "repo_identity_mismatch"
+    return "push_guard_violation"
+
+
 def _apply_safety_stop_if_needed(state: LoopState, action: str, result: dict[str, Any]) -> bool:
     """Apply safety stop for push guard violations."""
     guard = result.get("push_guard")
@@ -973,7 +1043,7 @@ def _apply_safety_stop_if_needed(state: LoopState, action: str, result: dict[str
     if guard.get("branch_ok", True) and guard.get("repo_identity_ok", True):
         return False
     state.status = "stopped"
-    state.stop_reason = str(guard.get("reason") or "push_guard_failed")
+    state.stop_reason = _push_guard_stop_reason(guard)
     return True
 
 
@@ -1609,22 +1679,22 @@ def _foreign_host_stop_result(loop_id: str, project_dir: str, lock: LockInfo) ->
     """Return a stop proposal for a live foreign-host lease."""
     state = load_state(loop_id, project_dir)
     action_id = f"act-{secrets.token_hex(ACTION_ID_BYTES)}"
-    context = {"stop_reason": "foreign_live_lease", "foreign_host": lock.host}
+    params = {"stop_reason": "foreign_live_lease", "foreign_host": lock.host}
     if state.status != "stopped":
         state.status = "stopped"
         state.stop_reason = "foreign_live_lease"
         state.state_version += 1
         state.updated_at = now_iso()
-        append_journal_event(loop_id, project_dir, "stopped", "step", None, context)
+        append_journal_event(loop_id, project_dir, "stopped", "step", None, params)
         _write_state(state, project_dir)
     return ProposeResult(
-        Action.STOP.value,
-        action_id,
-        state.state_version,
-        state.phase,
-        state.phase,
-        state.iteration,
-        context,
+        action=Action.STOP.value,
+        action_id=action_id,
+        state_version=state.state_version,
+        expected_phase=state.phase,
+        phase=state.phase,
+        iteration=state.iteration,
+        context={"params": params, **params},
     )
 
 

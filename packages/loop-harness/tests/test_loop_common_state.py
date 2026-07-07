@@ -390,7 +390,7 @@ def test_push_guard_violation_transitions_to_stopped() -> None:
         {"push_guard": {"branch_ok": False, "repo_identity_ok": True, "reason": "default_branch"}},
     )
     assert state.status == "stopped"
-    assert state.stop_reason == "default_branch"
+    assert state.stop_reason == "push_guard_violation"
 
 
 def test_repo_identity_guard_violation_transitions_to_stopped() -> None:
