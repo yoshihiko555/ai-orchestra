@@ -77,6 +77,11 @@ class TestExecuteCodexReview:
         assert "read-only" in captured["cmd"]
         assert "--output-schema" in captured["cmd"]
         assert codex_review.SCHEMA_REL_PATH in captured["cmd"]
+        # Non-interactive review pins approval_policy=never so the interactive
+        # `on-failure` default in config.toml cannot turn this into an
+        # escalation-prompting run (EV-53).
+        assert "-c" in captured["cmd"]
+        assert "approval_policy=never" in captured["cmd"]
         # stdin must be the opened diff file (not DEVNULL, not the sandbox arg)
         assert captured["kwargs"]["stdin"].name == str(input_diff_path)
 

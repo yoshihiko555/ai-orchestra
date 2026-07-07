@@ -3,12 +3,89 @@
 # Do not edit .codex/rules/codex-harness.rules directly in a synced project;
 # edit this source file (packages/codex-harness/codex/rules/codex-harness.rules)
 # instead — it is the source of truth copied there by sync.
+#
+# ---------------------------------------------------------------------------
+# ルールの読み方（prefix_rule のプロパティ）
+# ---------------------------------------------------------------------------
+# 各エントリは Codex CLI ネイティブの execpolicy で評価される prefix_rule。
+# コマンドの「先頭トークン列」がマッチしたとき decision を適用する。
+#
+#   pattern       マッチ対象の先頭トークン列（前方一致）。
+#                 例: ["git", "push"] は `git push ...` で始まるコマンドに一致。
+#   decision      マッチ時の挙動。取り得る値は次の3つ:
+#                   "allow"     … 承認を求めず即実行する。
+#                   "prompt"    … 実行前に人間へ承認を求める（対話時）。
+#                                 承認されれば実行、拒否されれば実行しない。
+#                   "forbidden" … 実行を禁止する。承認しても実行できない
+#                                 （ハードブロック）。
+#   justification ルールの理由（ログ/承認プロンプトに表示される人間向け説明）。
+#   match         任意。指定したときは、その「完全一致するコマンド文字列」に
+#                 限定してルールを適用する（例: ["git status"] は素の
+#                 `git status` のみを allow し、`git status --foo` には及ばない）。
+#
+# ---------------------------------------------------------------------------
+# 方針: 対話は「承認ベース」、破壊的/公開系はハード禁止を維持
+# ---------------------------------------------------------------------------
+# - branch push / PR 作成は「人間が承認すれば通す」= prompt。
+# - merge / release / publish / cluster/infra 適用 / 破壊的削除は、承認しても
+#   通さない = forbidden（本番影響・公開が不可逆なため人間/CI の直接操作に限る）。
+# - なお sandbox の filesystem / network 境界は別レイヤ（config.toml の
+#   permission profile と approval_policy）で制御する。ここは shell コマンドの
+#   ポリシーのみを扱う。
+# - PreToolUse hook（pre_tool_use_policy.py）は prompt を表現できない。
+#   そのため plain な prompt 対象（git push / gh pr create / gh pr new）は
+#   hook 側で許可する。一方、Codex prefix_rule で表現できない option 挿入形
+#   （例: `git -C ... push`, `gh pr --repo ... create`）や force-push は hook 側で
+#   hard block し、approval bypass を防ぐ。
+
+# --- 承認付きで許可（prompt）: 人間が承認すれば実行 ---
+
+# Force-push is never human-approvable in this harness. Put these before the
+# broad `git push` prompt rule so native prefix matching catches the common
+# immediate-flag forms; the hook catches force flags placed later in argv.
+prefix_rule(
+    pattern=["git", "push", "--force"],
+    decision="forbidden",
+    justification="Force-push rewrites shared history and is not allowed through Codex.",
+)
+
+prefix_rule(
+    pattern=["git", "push", "-f"],
+    decision="forbidden",
+    justification="Force-push rewrites shared history and is not allowed through Codex.",
+)
+
+prefix_rule(
+    pattern=["git", "push", "--force-with-lease"],
+    decision="forbidden",
+    justification="Force-push rewrites shared history and is not allowed through Codex.",
+)
+
+prefix_rule(
+    pattern=["git", "push", "--force-if-includes"],
+    decision="forbidden",
+    justification="Force-push rewrites shared history and is not allowed through Codex.",
+)
 
 prefix_rule(
     pattern=["git", "push"],
-    decision="forbidden",
-    justification="Pushing must be performed by a human or a CI release job.",
+    decision="prompt",
+    justification="Pushing a branch is allowed only after explicit human approval.",
 )
+
+prefix_rule(
+    pattern=["gh", "pr", "create"],
+    decision="prompt",
+    justification="Creating a PR is allowed only after explicit human approval.",
+)
+
+prefix_rule(
+    pattern=["gh", "pr", "new"],
+    decision="prompt",
+    justification="Creating a PR is allowed only after explicit human approval.",
+)
+
+# --- 常に禁止（forbidden）: 承認しても実行不可（本番影響・公開・破壊的操作）---
 
 prefix_rule(
     pattern=["gh", "pr", "merge"],
@@ -90,6 +167,8 @@ prefix_rule(
     decision="forbidden",
     justification="Destructive recursive deletion is blocked by default; use a narrower, explicit command instead.",
 )
+
+# --- 承認なしで許可（allow）: 読み取り専用の安全なコマンド ---
 
 prefix_rule(
     pattern=["git", "status"],

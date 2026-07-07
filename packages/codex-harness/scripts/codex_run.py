@@ -31,11 +31,13 @@ from harness_common import (  # noqa: E402
     check_required_codex_files,
     coerce_validation_timeout,
     find_repo_root,
-    is_ledger_entry_trusted,
+    is_ledger_entry_trusted_against_hashes,
+    load_codex_file_hashes,
     redact_files_in_place,
     redact_secrets,
     resolve_trust_flags,
     run_version_gate,
+    verify_hooks_trust_against_hashes,
     write_atomic,
 )
 from harness_common import parse_events as _shared_parse_events  # noqa: E402
@@ -145,6 +147,11 @@ def execute_codex(
         sandbox,
         # NOTE: `codex exec` (0.142.x) has no --ask-for-approval flag; exec is
         # non-interactive and never prompts (verified via E2E, see Plans.md).
+        # Pin approval_policy=never so this non-interactive run keeps a strict,
+        # no-escalation sandbox regardless of the interactive default in
+        # `.codex/config.toml` (which is `on-failure` for human-approved runs).
+        "-c",
+        "approval_policy=never",
         "--output-schema",
         SCHEMA_REL_PATH,
         *trust_flags,
@@ -195,27 +202,32 @@ def capture_diff(repo_root: Path, run_dir: Path) -> None:
     write_atomic(run_dir / "diff.patch", redact_secrets(diff_patch))
 
 
-def run_validation(repo_root: Path, run_dir: Path) -> list[dict[str, str]]:
+def run_validation(
+    repo_root: Path, run_dir: Path, pre_run_hashes: dict[str, str] | None
+) -> list[dict[str, str]]:
     """Run .codex/validation.json commands and write a combined validation.log.
 
-    Before running anything, ``.codex/validation.json`` is checked against
-    the sync ledger (same fail-closed check as
-    ``harness_common.verify_hooks_trust``, applied to this single file via
-    ``is_ledger_entry_trusted``). If untrusted (modified after distribution,
-    unregistered, missing, or a symlink), validation is skipped entirely and
-    reported as a single "skipped" result rather than run.
+    Before running anything, the hook/rule/validation files are checked against
+    the immutable hash snapshot captured before ``codex exec`` started. This
+    prevents a workspace-write task from editing both ``validation.json`` and
+    ``.claude/orchestra.json`` during the run and making a malicious validation
+    command appear trusted after the fact.
     """
     validation_path = repo_root / ".codex" / "validation.json"
     if not validation_path.is_file():
         return []
 
-    if not is_ledger_entry_trusted(repo_root, VALIDATION_TARGET_REL):
+    trust = verify_hooks_trust_against_hashes(repo_root, pre_run_hashes)
+    if not trust.trusted or not is_ledger_entry_trusted_against_hashes(
+        repo_root, VALIDATION_TARGET_REL, pre_run_hashes
+    ):
         result = {
             "command": "(validation.json)",
             "status": "skipped",
             "summary": UNTRUSTED_VALIDATION_SUMMARY,
         }
-        log_block = f"=== [SKIPPED] validation.json ===\n{UNTRUSTED_VALIDATION_SUMMARY}"
+        reasons = "; ".join(trust.reasons) if trust.reasons else UNTRUSTED_VALIDATION_SUMMARY
+        log_block = f"=== [SKIPPED] validation.json ===\n{UNTRUSTED_VALIDATION_SUMMARY}: {reasons}"
         write_atomic(run_dir / "validation.log", redact_secrets(log_block))
         return [result]
 
@@ -392,6 +404,7 @@ def main(argv: list[str] | None = None) -> int:
     trust_flags = preflight(repo_root, args.allow_untrusted_hooks)
     if trust_flags is None:
         return 1
+    pre_run_hashes = load_codex_file_hashes(repo_root)
 
     started_at_dt = datetime.datetime.now().astimezone()
     run_id = f"{started_at_dt.strftime('%Y%m%d-%H%M%S')}-{slugify(args.task)}"
@@ -410,7 +423,7 @@ def main(argv: list[str] | None = None) -> int:
     capture_git_status(repo_root, run_dir, "after")
     capture_diff(repo_root, run_dir)
 
-    validation_results = run_validation(repo_root, run_dir)
+    validation_results = run_validation(repo_root, run_dir, pre_run_hashes)
     final_result = parse_events(run_dir / "events.jsonl", exit_code)
     write_atomic(run_dir / "final.json", redact_secrets(json.dumps(final_result, indent=2) + "\n"))
 

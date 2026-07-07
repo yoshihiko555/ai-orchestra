@@ -23,7 +23,7 @@ codex_run = load_module(
 )
 
 
-def _trust_validation_json(root: Path, content: str) -> None:
+def _trust_validation_json(root: Path, content: str) -> dict[str, str]:
     """Record `content`'s SHA-256 as the trusted ledger hash for validation.json.
 
     run_validation() now checks .codex/validation.json against the sync
@@ -34,12 +34,10 @@ def _trust_validation_json(root: Path, content: str) -> None:
     """
     claude_dir = root / ".claude"
     claude_dir.mkdir(parents=True, exist_ok=True)
-    orch = {
-        "codex_file_hashes": {
-            ".codex/validation.json": hashlib.sha256(content.encode("utf-8")).hexdigest()
-        }
-    }
+    hashes = {".codex/validation.json": hashlib.sha256(content.encode("utf-8")).hexdigest()}
+    orch = {"codex_file_hashes": hashes}
     (claude_dir / "orchestra.json").write_text(json.dumps(orch), encoding="utf-8")
+    return hashes
 
 
 class TestSlugify:
@@ -143,6 +141,11 @@ class TestExecuteCodex:
         assert "--sandbox" in captured["cmd"]
         assert "read-only" in captured["cmd"]
         assert "--dangerously-bypass-hook-trust" in captured["cmd"]
+        # Non-interactive runs pin approval_policy=never so the interactive
+        # `on-failure` default in config.toml cannot turn this into an
+        # escalation-prompting run (EV-53).
+        assert "-c" in captured["cmd"]
+        assert "approval_policy=never" in captured["cmd"]
 
     def test_returns_124_on_timeout(self, tmp_path: Path, monkeypatch) -> None:
         run_dir = tmp_path / "run"
@@ -171,11 +174,11 @@ class TestRunValidation:
         }
         content = json.dumps(config)
         (codex_dir / "validation.json").write_text(content, encoding="utf-8")
-        _trust_validation_json(tmp_path, content)
+        pre_run_hashes = _trust_validation_json(tmp_path, content)
         run_dir = tmp_path / "run"
         run_dir.mkdir()
 
-        results = codex_run.run_validation(tmp_path, run_dir)
+        results = codex_run.run_validation(tmp_path, run_dir, pre_run_hashes)
 
         assert [r["status"] for r in results] == ["passed", "failed"]
         assert (run_dir / "validation.log").is_file()
@@ -184,7 +187,7 @@ class TestRunValidation:
         run_dir = tmp_path / "run"
         run_dir.mkdir()
 
-        results = codex_run.run_validation(tmp_path, run_dir)
+        results = codex_run.run_validation(tmp_path, run_dir, None)
 
         assert results == []
         assert not (run_dir / "validation.log").exists()
@@ -194,11 +197,11 @@ class TestRunValidation:
         codex_dir.mkdir()
         content = json.dumps({"commands": ["ruff check ."]})
         (codex_dir / "validation.json").write_text(content, encoding="utf-8")
-        _trust_validation_json(tmp_path, content)
+        pre_run_hashes = _trust_validation_json(tmp_path, content)
         run_dir = tmp_path / "run"
         run_dir.mkdir()
 
-        results = codex_run.run_validation(tmp_path, run_dir)
+        results = codex_run.run_validation(tmp_path, run_dir, pre_run_hashes)
 
         assert [r["status"] for r in results] == ["failed"]
 
@@ -207,11 +210,11 @@ class TestRunValidation:
         codex_dir.mkdir()
         content = json.dumps({"commands": [["ruff", "check", "."]]})
         (codex_dir / "validation.json").write_text(content, encoding="utf-8")
-        _trust_validation_json(tmp_path, content)
+        pre_run_hashes = _trust_validation_json(tmp_path, content)
         run_dir = tmp_path / "run"
         run_dir.mkdir()
 
-        results = codex_run.run_validation(tmp_path, run_dir)
+        results = codex_run.run_validation(tmp_path, run_dir, pre_run_hashes)
 
         assert [r["status"] for r in results] == ["failed"]
 
@@ -220,11 +223,11 @@ class TestRunValidation:
         codex_dir.mkdir()
         content = json.dumps({"commands": [{"command": "true", "timeout": "5"}]})
         (codex_dir / "validation.json").write_text(content, encoding="utf-8")
-        _trust_validation_json(tmp_path, content)
+        pre_run_hashes = _trust_validation_json(tmp_path, content)
         run_dir = tmp_path / "run"
         run_dir.mkdir()
 
-        results = codex_run.run_validation(tmp_path, run_dir)
+        results = codex_run.run_validation(tmp_path, run_dir, pre_run_hashes)
 
         assert [r["status"] for r in results] == ["passed"]
 
@@ -235,11 +238,11 @@ class TestRunValidation:
         codex_dir.mkdir()
         content = json.dumps({"commands": [{"command": "", "timeout": 5}, {"command": "   "}]})
         (codex_dir / "validation.json").write_text(content, encoding="utf-8")
-        _trust_validation_json(tmp_path, content)
+        pre_run_hashes = _trust_validation_json(tmp_path, content)
         run_dir = tmp_path / "run"
         run_dir.mkdir()
 
-        results = codex_run.run_validation(tmp_path, run_dir)
+        results = codex_run.run_validation(tmp_path, run_dir, pre_run_hashes)
 
         assert [r["status"] for r in results] == ["failed", "failed"]
 
@@ -254,13 +257,33 @@ class TestRunValidation:
         run_dir = tmp_path / "run"
         run_dir.mkdir()
 
-        results = codex_run.run_validation(tmp_path, run_dir)
+        results = codex_run.run_validation(tmp_path, run_dir, None)
 
         assert len(results) == 1
         assert results[0]["status"] == "skipped"
         assert "untrusted" in results[0]["summary"]
         log = (run_dir / "validation.log").read_text(encoding="utf-8")
         assert "untrusted" in log
+
+    def test_skips_when_validation_json_modified_after_snapshot(self, tmp_path: Path) -> None:
+        """A run cannot mutate validation.json and ledger after preflight to smuggle commands."""
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        trusted_content = json.dumps({"commands": [{"command": "true", "timeout": 5}]})
+        validation_path = codex_dir / "validation.json"
+        validation_path.write_text(trusted_content, encoding="utf-8")
+        pre_run_hashes = _trust_validation_json(tmp_path, trusted_content)
+
+        tampered_content = json.dumps({"commands": [{"command": "false", "timeout": 5}]})
+        validation_path.write_text(tampered_content, encoding="utf-8")
+        _trust_validation_json(tmp_path, tampered_content)
+
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        results = codex_run.run_validation(tmp_path, run_dir, pre_run_hashes)
+
+        assert len(results) == 1
+        assert results[0]["status"] == "skipped"
 
 
 class TestBuildReport:
@@ -421,10 +444,11 @@ class TestMainEndToEnd:
         assert exit_code == 1
 
     def test_aborts_when_config_toml_missing(self, tmp_path: Path, monkeypatch, capsys) -> None:
-        """N1: .codex/config.toml is now required so the self-tamper-prevention
-        deny rule in the permission profile is guaranteed to be active before
-        any workspace-write run. Exercises the real (unmocked)
-        check_required_codex_files() against a repo missing config.toml."""
+        """N1: .codex/config.toml remains a required harness runtime file.
+
+        Exercises the real (unmocked) check_required_codex_files() against a
+        repo missing config.toml.
+        """
         repo_root = self._init_repo(tmp_path)
         assert ".codex/config.toml" in codex_run.REQUIRED_CODEX_FILES
         assert not (repo_root / ".codex" / "config.toml").exists()

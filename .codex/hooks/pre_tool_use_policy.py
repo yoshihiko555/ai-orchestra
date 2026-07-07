@@ -43,6 +43,7 @@ COMMAND_LIKE_KEYS = ("command", "cmd", "script")
 # options (start with ``-``), not arbitrary subcommands, to avoid
 # matching across unrelated command chains (e.g. ``git log | grep push``).
 _OPTION_TOKENS = r"(?:-\S+(?:\s+(?!-)\S+)?\s+){0,4}"
+_OPTION_TOKENS_REQUIRED = r"(?:-\S+(?:\s+(?!-)\S+)?\s+){1,4}"
 
 # Spelling/ordering variants of the `-rf` flag pair that a plain `-rf`
 # literal would miss: `-fr` (reversed short flags), `-r -f` / `-f -r`
@@ -51,9 +52,47 @@ _OPTION_TOKENS = r"(?:-\S+(?:\s+(?!-)\S+)?\s+){0,4}"
 # broader `rm -rf` (any target) prefix policy lives in
 # `.codex/rules/codex-harness.rules`.
 _RM_RF_FLAGS = r"(?:-rf|-fr|-r\s+-f|-f\s+-r|--recursive\s+--force|--force\s+--recursive)"
+_SENSITIVE_PATH = (
+    r"(?:^|[\s\"'=])(?:"
+    r"\.env(?:$|[\s\"'/])"
+    r"|[^\s\"']+\.env(?:$|[\s\"'])"
+    r"|\.ssh(?:$|[\s\"'/])"
+    r"|\.aws(?:$|[\s\"'/])"
+    r"|[^\s\"']+\.(?:pem|key)(?:$|[\s\"'])"
+    r")"
+)
 
+# NOTE: Plain `git push`, PR creation, and its `new` alias are deliberately NOT
+# hard-blocked here.
+# They are governed by `.codex/rules/codex-harness.rules` with a `prompt`
+# decision (allowed after explicit human approval in interactive Codex). This
+# hook only knows allow (exit 0) / block (exit 2) — it cannot express "prompt"
+# — so a broad `git push` entry here would hard-block it and defeat the
+# rules-layer `prompt`.
+#
+# Codex prefix rules match exact argv prefixes and do not normalize option
+# insertion or aliases. Variants that would bypass the prompt rule are
+# hard-blocked here so users must use the plain prompt-covered form instead.
+# Force-push is also always forbidden, including cases where the force flag is
+# not an immediate prefix token.
 FORBIDDEN_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
-    ("git push", re.compile(rf"\bgit\s+{_OPTION_TOKENS}push\b")),
+    (
+        "git force-push",
+        re.compile(
+            rf"\bgit\s+{_OPTION_TOKENS}push\b[^\n]*\s"
+            r"(?:--force(?:=|\s|$)|--force-with-lease(?:=|\s|$)|"
+            r"--force-if-includes(?:=|\s|$)|-f(?:\s|$))"
+        ),
+    ),
+    ("git option-prefixed push", re.compile(rf"\bgit\s+{_OPTION_TOKENS_REQUIRED}push\b")),
+    (
+        "gh option-prefixed PR creation",
+        re.compile(
+            rf"\bgh\s+(?:{_OPTION_TOKENS_REQUIRED}pr\s+{_OPTION_TOKENS}"
+            rf"|{_OPTION_TOKENS}pr\s+{_OPTION_TOKENS_REQUIRED})(?:create|new)\b"
+        ),
+    ),
+    ("sensitive file path", re.compile(_SENSITIVE_PATH)),
     ("gh pr merge", re.compile(rf"\bgh\s+{_OPTION_TOKENS}pr\s+merge\b")),
     ("gh release create", re.compile(rf"\bgh\s+{_OPTION_TOKENS}release\s+create\b")),
     ("npm publish", re.compile(r"\bnpm\s+publish\b")),

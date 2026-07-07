@@ -10,6 +10,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **`meta-harness`: population ベースのハーネス最適化基盤（Phase 1a: 計測基盤）を新設**: 候補ハーネス（facet ソースへの宣言的オーバーレイ）の登録・append-only 台帳・品質×コストの Pareto frontier 算出を行う `orchex meta` サブコマンド群（`init` / `register` / `frontier` / `status` / `purge`）を追加。ストアは worktree の寿命に依存しないメインルート配下 `.claude/meta-harness/` に永続化する。評価実行（evaluate）以降は Phase 1b 以降で追加予定。設計は `docs/design/meta-harness.md`（基本）/ `docs/design/meta-harness-detailed.md`（詳細）を参照
 
+### Changed
+
+- **`codex-harness`: 旧 `project-edit` profile のアップグレード移行を追加**: 過去に同期済みの harness 所有 profile だけを限定検出して `.codex/config.toml` から削除し、Issue #161 の制限が既存導入先に残り続けないようにした
+- **`codex-harness`: force-push と approval bypass 形を禁止**: branch push / PR 作成の plain 形は引き続き人間承認に委譲しつつ、force-push と option 挿入で native prefix rule を迂回する形は hook で block する
+- **`codex-harness`: 非対話 runner の validation trust を pre-run snapshot 化**: workspace-write 実行中に validation 設定と台帳を同時改変しても、実行前 hash snapshot と不一致なら validation を実行しない
+- **`codex-harness`: 対話 Codex を「承認ベース」に緩和（Issue #161）**: 対話 `codex` 向けの既定 `approval_policy` を `on-request` → `on-failure` に変更。sandbox が拒否した操作（git worktree の実体 Git dir への書き込み＝ `git add`/`git commit`、`gh`/`git fetch` 等のネットワーク）を人間承認で実行できるようになった。非対話 runner（`codex_run` / `codex_review`）は `approval_policy=never` を明示指定し、従来どおり承認なしの厳格 sandbox を維持する
+- **`codex-harness`: `git push` / `gh pr create` を rules で `prompt`（人間承認付き許可）に緩和**: 従来のハードブロック（`forbidden`）から、対話時に人間が承認すれば実行できる `prompt` へ変更。`gh pr merge` / `gh release create` / `npm`・`pnpm publish` / `docker push` / `kubectl apply` / `terraform apply` / `rm -rf` 系は引き続き `forbidden`（承認不可）を維持
+
+### Fixed
+
+- **`codex-harness`: 対話 Codex が git worktree 内で `git add` / `git commit` に失敗する問題を解消（Issue #161）**: worktree の実体 Git dir が作業ディレクトリ外にあり sandbox 書き込みが拒否されていたが、承認ベース緩和により通常の Git ワークフローが実行できるようになった。あわせて `gh` / `git fetch` 等のネットワーク遮断も承認で通せるようになった
+
 ## [0.2.11] - 2026-07-05
 
 ### Added

@@ -14,7 +14,7 @@
 
 - Codex CLI の代替 TUI やモデル API プロキシを作ること（設計 §3.2 (1)(2)）
 - Codex の agent loop を自前実装すること、`danger-full-access` を前提にした自動化（設計 §3.2 (3)(4)）
-- CI からの本番 deploy / merge / release の自動化（設計 §3.2 (5)）。`codex_run.py` / `codex_review.py` は patch / findings artifact の生成のみを行い、`git push` や `gh pr merge` 等は rules・hook 双方で禁止する
+- CI からの本番 deploy / merge / release の自動化（設計 §3.2 (5)）。`codex_run.py` / `codex_review.py` は patch / findings artifact の生成のみを行う。`gh pr merge` / `gh release create` / publish 系は rules・hook 双方で禁止する（承認しても実行不可）。一方 `git push` / `gh pr create` は rules で `prompt`（対話 Codex で人間承認時のみ実行）とし、ハードブロックはしない（Issue #161 フォローアップ）
 - 全 repo への同一設定の強制（設計 §3.2 (6)）。config マージは add-if-missing / upsert のレイヤ判断でユーザー設定と共存する
 - `AGENTS.md` および `.codex/config.toml` の新規作成・初期所有。これらは `codex-suggestions` パッケージの責務であり、本パッケージは既存の `.codex/config.toml` への設定マージのみを行う（Plans.md Decisions 2026-07-04）
 - `cocoindex` 等 MCP サーバーの `.codex/config.toml` `[mcp_servers.*]` 設定管理（`cocoindex` パッケージの責務）。本パッケージの config マージはこのセクションに触れない
@@ -46,8 +46,8 @@
 - [ ] EV-05（正常 / must）: `sync_codex_files` — 現ハッシュが台帳ハッシュと一致し、配布元ファイルが更新されている場合は新しい内容で上書きし台帳を更新する — 根拠: 実装挙動
 - [ ] EV-06（正常 / must）: CLI `install --force` が `OrchestraManager.install(..., force=True)` → `run_initial_sync(force=True)` → `sync_codex_files(..., force=True)` まで配線され、EV-02 / EV-03 の抑制を解除する — 根拠: Plans.md Phase 1（`--force` の CLI フラグ配線）
 - [ ] EV-07（正常 / must）: `collect_facet_build_targets` は常に `"claude"` を含み、`installed_packages` の各 manifest の `facet_targets` を集約し重複を除去する（パッケージ名決め打ちではなく capability 判定） — 根拠: Plans.md Phase 1（facet build ゲートの capability 判定改修）
-- [ ] EV-08（正常 / must）: `apply_codex_harness_config` は `default_permissions`（トップレベルキー）と `[features].hooks` を add-if-missing で扱い、既存のユーザー値を上書きしない — 根拠: packages/codex-harness/codex/config-harness.toml 冒頭コメント + 設計 §5.5
-- [ ] EV-09（正常 / must）: `apply_codex_harness_config` は `[permissions.*]` セクションを upsert する（harness 所有、ユーザーが編集していても harness 側の値に揃える） — 根拠: 同上
+- [ ] EV-08（正常 / must）: `apply_codex_harness_config` は `[features].hooks` を add-if-missing で扱い、既存のユーザー値を上書きしない。現行 harness は `default_permissions` / `[permissions.*]` を新規追加しない — 根拠: packages/codex-harness/codex/config-harness.toml 冒頭コメント + 設計 §5.5 / Issue #161 フォローアップ
+- [ ] EV-09（正常 / must）: `apply_codex_harness_config` は過去に harness が配布した旧 `project-edit` profile を legacy generated shape と一致する場合だけ削除し、ユーザー管理の permission profile は保持する — 根拠: 実装挙動（旧 profile migration）
 - [ ] EV-10（境界 / must）: `apply_codex_harness_config` は次のいずれかの場合に何もせず `False` を返す: `codex-harness` が `installed_packages` に無い／プロジェクトの `.codex/config.toml` が存在しない（新規作成しない）／ `config-harness.toml` が存在しない — 根拠: 実装挙動（config.toml の初期所有は codex-suggestions のため新規作成しない）
 - [ ] EV-11（境界 / should）: `apply_codex_harness_config` は2回目実行で差分がなければ `False` を返す（冪等） — 根拠: 実装挙動
 - [ ] EV-12（境界 / must）: `apply_codex_harness_config` は `[mcp_servers.*]` 等、harness が所有しない既存セクションを変更しない — 根拠: 実装挙動（`_iter_toml_sections` は `permissions.` prefix のみ走査）
@@ -57,8 +57,8 @@
 - [ ] EV-13（正常 / must）: `user_prompt_secret_scan.py` は `OPENAI_API_KEY` / `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `GITHUB_TOKEN` / `ghp_` / `github_pat_` / `sk-` / PEM private key block の各パターンを検出し exit 2 でブロックする — 根拠: 設計 §10.4（secret policy 検出文字列例）
 - [ ] EV-14（異常 / must）: `user_prompt_secret_scan.py` は stdin が不正 JSON、または `prompt` フィールドが欠如する場合 fail-open（exit 0）とする — 根拠: 実装挙動（ファイル冒頭 docstring の fail-open 明記）
 - [ ] EV-15（境界 / should）: `user_prompt_secret_scan.py` は最小長未満の `sk-` のような文字列や秘密情報を含まない通常プロンプトを誤検知しない — 根拠: 実装挙動
-- [ ] EV-16（正常 / must）: `pre_tool_use_policy.py` は `git push` / `gh pr merge` / `gh release create` / `npm publish` / `pnpm publish` / `docker push` / `kubectl apply` / `terraform apply` / `rm -rf /` / `rm -rf ~` / `chmod -R 777` / curl・wget パイプ の各禁止コマンドを検出し exit 2 でブロックする — 根拠: 設計 §10.3（常に禁止コマンド一覧）
-- [ ] EV-17（境界 / should）: `pre_tool_use_policy.py` は `rm -rf ./build` のような狭い相対パス、および `git status` / `git diff` / `pytest -q` 等の許可コマンドを誤検知しない — 根拠: 実装挙動（word boundary によるナローイング。rules ファイル側の広い `rm -rf` prefix rule とは責務分担）
+- [ ] EV-16（正常 / must）: `pre_tool_use_policy.py` は `gh pr merge` / `gh release create` / `npm publish` / `pnpm publish` / `docker push` / `kubectl apply` / `terraform apply` / `rm -rf /` / `rm -rf ~` / `chmod -R 777` / curl・wget パイプ の各禁止コマンドを検出し exit 2 でブロックする — 根拠: 設計 §10.3（常に禁止コマンド一覧）。**注**: `git push` は本 hook のハードブロック対象から除外し（rules 層で `prompt` = 人間承認に委譲、hook は allow/block の二値で `prompt` を表現できないため）、`git push` 入力に対しては exit 0（allow）を返す（Issue #161 フォローアップ）
+- [ ] EV-17（境界 / should）: `pre_tool_use_policy.py` は `rm -rf ./build` のような狭い相対パス、および `git status` / `git diff` / `pytest -q` / `git push` / `gh pr create` 等の非ブロック対象コマンドを誤検知しない（`git push` / `gh pr create` は rules 層 `prompt` 管理のため hook では allow） — 根拠: 実装挙動（word boundary によるナローイング。rules ファイル側の広い `rm -rf` prefix rule とは責務分担）
 - [ ] EV-18（異常 / must）: `pre_tool_use_policy.py` は stdin が不正、または `tool_input` が欠如する場合 fail-open（exit 0）とする — 根拠: 実装挙動
 - [ ] EV-19（正常 / must）: `stop_validate.py` は `.codex/validation.json` のコマンドを順次実行し、結果（passed/failed）を集計してログファイルに書き込む — 根拠: 設計 §5.7（Stop: lint/typecheck/test/secret scan を実行しログとして残す）
 - [ ] EV-20（異常 / must）: `stop_validate.py` は検証コマンドが失敗しても Stop をブロックしない（常に exit 0）。失敗時のみ `systemMessage` で summary を出力する — 根拠: 設計 §4.5（deterministic validation はログとして残すが、Stop hook 自体は本パッケージの設計判断としてブロックしない実装挙動）
@@ -100,7 +100,7 @@
 - [ ] EV-44（異常 / must）: 入力バリデーション — `--project` が git リポジトリ外、または必須 `.codex` ファイル欠如の場合にエラーメッセージと exit 1 を返す。壊れた `validation.json` / `events.jsonl` は例外を出さず空扱い・フォールバックする — 根拠: 実装挙動
 - [ ] EV-45（正常 / must）: 破壊的操作の安全策 — hooks trust 検証が fail-closed であり、`--allow-untrusted-hooks` を明示しない限り改変された `.codex/hooks/` 配下での `codex exec` 実行（bypass フラグ付与）を許可しない — 根拠: 設計 §0
 - [ ] EV-46（正常 / must）: 出力の安定性 — `final.json` / `review.json` は `task_result.schema.json` / `review_result.schema.json` の必須キー・enum に準拠する — 根拠: 設計 §9.3
-- [ ] EV-47（境界 / must）: 設定レイヤリング — `config-harness.toml` のマージは add-if-missing（`default_permissions` / `[features].hooks`）と upsert（`[permissions.*]`）を明確に区別する（EV-08/EV-09 と同一観点の CLI ツール断面での確認） — 根拠: 設計 §5.5
+- [ ] EV-47（境界 / must）: 設定レイヤリング — `config-harness.toml` のマージは `[features].hooks` の add-if-missing と、旧 harness-owned permission profile の限定 migration を明確に区別する（EV-08/EV-09 と同一観点の CLI ツール断面での確認） — 根拠: 設計 §5.5 / Issue #161 フォローアップ
 - N/A: スキル型固有項目（対話規約・非対話完結性・フォールバック・ルーティング尊重・成果物規約） — 理由: 本パッケージはスキル指示書ではなく hook + CLI スクリプト配布パッケージであり、AskUserQuestion 等の対話フェーズを持たない
 
 ### 共通（全類型）
@@ -109,6 +109,8 @@
 - [ ] EV-49（正常 / must）: 後方互換性 — `codex_file_hashes` 台帳（本パッケージ用、フラット構造）と `file_hashes` 台帳（agents/config 用、`pkg_name` ネスト構造）は別キーとして共存し、互いを破壊しない — 根拠: 実装挙動（`sync_engine.py` の docstring でも別台帳と明記）
 - [ ] EV-50（境界 / should）: 生成物の同期 — `config-harness.toml` はソースであり、`.codex/config.toml` への反映は必ず `apply_codex_harness_config()` のマージ経由でのみ行われる（直接コピーしない） — 根拠: packages/codex-harness/codex/config-harness.toml 冒頭コメント（"This file is never copied verbatim into a project"）
 - [ ] EV-51（境界 / must）: ドキュメント整合 — README.md に `packages/codex-harness` の記載が追加され、実際の配布物（manifest の `codex_files` 8 件、`scripts` 2 件）と一致していること — 根拠: CLAUDE.md 変更ガードレール（仕様変更時は README.md と必要なテストを同時更新する）。**現状ギャップ**: 本評価セット作成時点で README.md に `codex-harness` の記載なし（.claude/Plans.md Phase 5 TODO「README / CHANGELOG（Unreleased）更新」が未完了）
+- [ ] EV-52（正常 / must）: rules 層の decision 分類 — `codex-harness.rules` は `git push` / `gh pr create` を `decision="prompt"`（人間承認付き許可）とし、`gh pr merge` / `gh release create` / `npm publish` / `pnpm publish` / `docker push` / `kubectl apply` / `terraform apply` / `rm -rf` 各種を `decision="forbidden"`（承認不可のハード禁止）とする — 根拠: 設計 §5.6 / §10.3 + Issue #161 フォローアップ（対話は承認ベース、公開/破壊系は禁止維持）
+- [ ] EV-53（境界 / must）: 非対話 runner の承認固定 — `codex_run.py` / `codex_review.py` は `codex exec` に `-c approval_policy=never` を付与し、対話向け既定（`config.toml` の `approval_policy="on-failure"`）に依存せず、承認エスカレーションを行わない厳格 sandbox 動作を維持する — 根拠: 実装挙動（runner は非対話でプロンプト不可）+ 設計 §5.2
 
 ## 5. テストレビュー判断基準（パッケージ固有）
 
