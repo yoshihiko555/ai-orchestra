@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 from tests.module_loader import load_module
@@ -88,16 +89,30 @@ class TestWorktreeCreationFailureIsRecordedAsError:
         assert metadata["finished_at"] is not None
 
 
+def _git_head(git_project: Path) -> str:
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=git_project, capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+
 class TestEachStageFailureForcesErrorVerdict:
-    def test_overlay_stage_failure_forces_error(self, tmp_path: Path, monkeypatch) -> None:
+    def test_overlay_stage_failure_forces_error(self, git_project: Path, monkeypatch) -> None:
+        """CodeRabbit 指摘（PR #168）: worktree 作成を実際に成功させ、overlay ステージの
+        エラー分類（`overlay_apply`/`overlay_error`）まで到達させて検証する（従来は無効な
+        commit で worktree_create が先に失敗し、overlay ステージに一度も到達しなかった）。"""
+
         def failing_apply_overlay(overlay_dir, config, worktree_dir, schema_dir):
             raise ev.EvaluatorStageError("overlay_apply", "overlay_error", "forced")
 
         monkeypatch.setattr(ev, "apply_overlay", failing_apply_overlay)
-        result, _main_root = _run_attempt(tmp_path, manifest_source_commit="0" * 40)
-        # 実 worktree 作成自体は無効な commit で失敗するため worktree_create が先に発生するが、
-        # いずれにせよ verdict=error であることが本テストの主眼。
+        result, _main_root = _run_attempt(
+            git_project, manifest_source_commit=_git_head(git_project)
+        )
+
         assert result["verdict"] == "error"
+        assert result["errors"]
+        assert result["errors"][0]["stage"] == "overlay_apply"
+        assert result["errors"][0]["type"] == "overlay_error"
 
     def test_generic_exception_in_lifecycle_is_caught_and_forces_error(
         self, tmp_path: Path, monkeypatch
@@ -107,7 +122,8 @@ class TestEachStageFailureForcesErrorVerdict:
 
         monkeypatch.setattr(ev, "_run_attempt_lifecycle", raising_lifecycle)
         try:
-            _run_attempt(tmp_path, manifest_source_commit="0" * 40)
+            result, _main_root = _run_attempt(tmp_path, manifest_source_commit="0" * 40)
+            assert result["verdict"] == "error"
         except RuntimeError:
             raise AssertionError(
                 "run_single_attempt must not propagate exceptions from the lifecycle"
@@ -126,3 +142,138 @@ class TestNoCriticalChecksIsRecordedAsError:
         events = mh.read_ledger_events(main_root, mh.DEFAULTS)
         run_completed = [e for e in events if e.get("event") == "run_completed"]
         assert run_completed[-1]["verdict"] == "error"
+
+
+class TestJudgeErrorForcesRunVerdictError:
+    """Codex 指摘（evaluator.py:746）: judge backend の error は fail-closed（Sec3-3）に従い、
+    check の fail や silent pass ではなく run 全体の verdict=error に伝播しなければならない。"""
+
+    def _run_with_rubric_judge(
+        self, git_project: Path, monkeypatch, *, judge_check_is_critical: bool
+    ) -> dict:
+        def noop_overlay(overlay_dir, config, worktree_dir, schema_dir):
+            return None
+
+        def noop_build(worktree_dir, *, runner=None):
+            return None
+
+        def noop_setup(scenario, worktree_dir, *, runner=None):
+            return None
+
+        def noop_headless_run(
+            scenario, config, worktree_dir, staging_dir, instruction, *, runner=None
+        ):
+            events_path = staging_dir / "events.jsonl"
+            staging_dir.mkdir(parents=True, exist_ok=True)
+            events_path.write_text(
+                json.dumps({"type": "result", "subtype": "success", "is_error": False}) + "\n",
+                encoding="utf-8",
+            )
+            return ev.HeadlessRunResult(
+                events_path=events_path,
+                progress_path=staging_dir / "progress.log",
+                timed_out=False,
+            )
+
+        def erroring_judge(rubric, worktree_dir, config, schema_dir, *, runner=None):
+            return ev.JudgeVerdict(False, "judge unavailable: forced for test", "codex", error=True)
+
+        monkeypatch.setattr(ev, "apply_overlay", noop_overlay)
+        monkeypatch.setattr(ev, "build_facet_and_context", noop_build)
+        monkeypatch.setattr(ev, "run_setup_commands", noop_setup)
+        monkeypatch.setattr(ev, "run_headless_scenario", noop_headless_run)
+        monkeypatch.setattr(ev, "run_rubric_judge", erroring_judge)
+
+        judge_check = {"id": "j1", "text": "n/a", "oracle": "rubric_judge", "rubric": "check it"}
+        # README.md は git_project フィクスチャの初期コミットに実在するため、
+        # 非 judge の critical check は本来ここでは pass する（judge error 以外の
+        # 理由で verdict=error にならないようにするための対照条件）。
+        passing_critical = {
+            "id": "c-readme",
+            "text": "n/a",
+            "oracle": "artifact_exists",
+            "path": "README.md",
+        }
+        scenario = {
+            "id": "summarize-readme",
+            "prompt": "irrelevant",
+            "setup": [],
+            "critical": [judge_check] if judge_check_is_critical else [passing_critical],
+            "checks": [] if judge_check_is_critical else [judge_check],
+            "holdout": False,
+        }
+        manifest = {"source_commit": _git_head(git_project), "config_hash": "b" * 64}
+        cli_capabilities = {"claude_version": "2.1.202", "ok": True}
+        return ev.run_single_attempt(
+            main_root=git_project,
+            config=mh.DEFAULTS,
+            schema_dir=_SCHEMA_DIR,
+            package_dir=_PACKAGE_DIR,
+            project_dir=git_project,
+            cand_id="cand-20260707-120000-slug-ab12",
+            cand_dir=git_project / "cand",
+            manifest=manifest,
+            target="claude-harness",
+            scenario=scenario,
+            scenario_path=_SCENARIO_PATH,
+            suite_hash="c" * 64,
+            evaluator_hash="d" * 64,
+            attempt=1,
+            attempts_total=1,
+            cli_capabilities=cli_capabilities,
+        )
+
+    def test_critical_rubric_judge_error_forces_verdict_error(
+        self, git_project: Path, monkeypatch
+    ) -> None:
+        result = self._run_with_rubric_judge(git_project, monkeypatch, judge_check_is_critical=True)
+        assert result["verdict"] == "error"
+        assert any(e["type"] == "oracle_error" for e in result["errors"])
+
+    def test_non_critical_rubric_judge_error_forces_verdict_error(
+        self, git_project: Path, monkeypatch
+    ) -> None:
+        """非 critical の judge check がエラーでも、他の critical check が pass しているという
+        理由だけで run 全体が pass 扱いにならないこと（judge が一度も実行されていないため）。"""
+        result = self._run_with_rubric_judge(
+            git_project, monkeypatch, judge_check_is_critical=False
+        )
+        assert result["verdict"] == "error"
+        assert any(e["type"] == "oracle_error" for e in result["errors"])
+
+
+class TestLedgerAppendLockConflictIsDiagnosable:
+    """Codex 指摘（evaluator.py:1372）: `cmd_evaluate` の `except mh.LockAcquisitionError`
+    は ledger 追記中の lock 競合を既に exit code 3 に正規化する（実測確認済み、`with
+    mh.evaluate_lock(...):` の内側で送出された例外は外側の try/except まで正常に伝播する）。
+    本テストは診断性向上の確認: 成果物が ledger 未記載のまま残る run_dir のパスが、
+    再送出される例外メッセージに含まれること。"""
+
+    def test_lock_acquisition_error_message_includes_run_dir(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        def fake_lifecycle(**kwargs):
+            checks = [{"id": "c1", "passed": True, "oracle": "artifact_exists", "detail": "ok"}]
+            return checks, [], False, []
+
+        monkeypatch.setattr(ev, "_run_attempt_lifecycle", fake_lifecycle)
+
+        def failing_append(main_root, config, event):
+            # `evaluator.py` 内の `except mh.LockAcquisitionError` は `ev` 自身が import した
+            # `meta_harness_common` インスタンス（`ev.mh`）のクラスでなければ捕捉できない
+            # （module_loader はテストファイルの `mh` とは別インスタンスとしてロードするため）。
+            raise ev.mh.LockAcquisitionError("store.lock is held by another process")
+
+        monkeypatch.setattr(ev, "append_run_completed_event", failing_append)
+
+        try:
+            _run_attempt(tmp_path, manifest_source_commit="0" * 40)
+        except ev.mh.LockAcquisitionError as exc:
+            run_dirs = list(mh.runs_dir(tmp_path, mh.DEFAULTS).glob("run-*"))
+            assert run_dirs
+            assert str(run_dirs[0]) in str(exc)
+            assert "not recorded in ledger.jsonl" in str(exc)
+        else:
+            raise AssertionError(
+                "LockAcquisitionError must propagate so the CLI can normalize it to exit 3"
+            )

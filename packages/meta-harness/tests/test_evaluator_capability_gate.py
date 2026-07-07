@@ -134,6 +134,7 @@ class TestCapabilityGateJudgeBackendSpecific:
 
     def test_claude_bare_missing_api_key_fails_gate(self, monkeypatch) -> None:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setattr(ev, "_api_key_helper_configured", lambda: False)
         config = {"evaluate": {"cli_version_pin": None}, "judge": {"tool": "claude-bare"}}
         caps = ev.check_cli_capabilities(config, runner=_always_ok_runner)
         assert caps.ok is False
@@ -141,6 +142,14 @@ class TestCapabilityGateJudgeBackendSpecific:
 
     def test_claude_bare_api_key_present_passes_that_check(self, monkeypatch) -> None:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-key-for-unit-test-only")
+        config = {"evaluate": {"cli_version_pin": None}, "judge": {"tool": "claude-bare"}}
+        caps = ev.check_cli_capabilities(config, runner=_always_ok_runner)
+        assert caps.checks["bare_api_key_present"] is True
+
+    def test_claude_bare_api_key_helper_configured_passes_that_check(self, monkeypatch) -> None:
+        """`ANTHROPIC_API_KEY` が無くても `apiKeyHelper` 構成があれば通す（Sec14-1）。"""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setattr(ev, "_api_key_helper_configured", lambda: True)
         config = {"evaluate": {"cli_version_pin": None}, "judge": {"tool": "claude-bare"}}
         caps = ev.check_cli_capabilities(config, runner=_always_ok_runner)
         assert caps.checks["bare_api_key_present"] is True
@@ -191,4 +200,73 @@ class TestCapabilityGateNoWorktreeOnFailure:
 
         exit_code = cli.cmd_evaluate(str(git_project), cand_id, None, None, False)
 
+        assert exit_code == cli.EXIT_VALIDATION_ERROR
+
+
+class TestEvaluateCandidateExceptionNormalization:
+    """CodeRabbit 指摘（meta_harness.py:558）: `load_scenario()` 由来の `OSError` /
+    `yaml.YAMLError` も `ValueError` と同様に `EXIT_VALIDATION_ERROR` に正規化され、
+    traceback を `main()` まで漏らさないこと。"""
+
+    def _prepare_cli(self, git_project, run_meta, default_overlay, tmp_path, monkeypatch):
+        cli = load_module(
+            "meta_harness_cli_exception_normalization_test",
+            "packages/meta-harness/scripts/meta_harness.py",
+        )
+        run_meta("init", project=git_project, check=True)
+        overlay_dir = default_overlay(tmp_path)
+        register_result = run_meta(
+            "register",
+            "--overlay",
+            str(overlay_dir),
+            "--target",
+            "claude-harness",
+            "--json",
+            project=git_project,
+            check=True,
+        )
+        import json as _json
+
+        cand_id = _json.loads(register_result.stdout)["cand_id"]
+
+        def fake_check_cli_capabilities(config, runner=None):
+            return cli.ev.CliCapabilities(
+                claude_version="2.1.202",
+                version_pin=None,
+                version_pin_match=None,
+                checks={},
+                judge_tool="codex",
+                ok=True,
+                reason=None,
+            )
+
+        monkeypatch.setattr(cli.ev, "check_cli_capabilities", fake_check_cli_capabilities)
+        return cli, cand_id
+
+    def test_yaml_error_from_evaluate_candidate_exits_2_not_traceback(
+        self, git_project, run_meta, default_overlay, tmp_path, monkeypatch
+    ) -> None:
+        cli, cand_id = self._prepare_cli(
+            git_project, run_meta, default_overlay, tmp_path, monkeypatch
+        )
+
+        def raising_evaluate_candidate(**kwargs):
+            raise cli.ev.yaml.YAMLError("forced malformed yaml for test")
+
+        monkeypatch.setattr(cli.ev, "evaluate_candidate", raising_evaluate_candidate)
+        exit_code = cli.cmd_evaluate(str(git_project), cand_id, None, None, False)
+        assert exit_code == cli.EXIT_VALIDATION_ERROR
+
+    def test_os_error_from_evaluate_candidate_exits_2_not_traceback(
+        self, git_project, run_meta, default_overlay, tmp_path, monkeypatch
+    ) -> None:
+        cli, cand_id = self._prepare_cli(
+            git_project, run_meta, default_overlay, tmp_path, monkeypatch
+        )
+
+        def raising_evaluate_candidate(**kwargs):
+            raise OSError("forced I/O error for test")
+
+        monkeypatch.setattr(cli.ev, "evaluate_candidate", raising_evaluate_candidate)
+        exit_code = cli.cmd_evaluate(str(git_project), cand_id, None, None, False)
         assert exit_code == cli.EXIT_VALIDATION_ERROR

@@ -502,6 +502,13 @@ def cmd_evaluate(
     main_root, config = ctx
     project_dir = Path(project).resolve()
 
+    if not mh.CAND_ID_PATTERN.match(candidate):
+        # `candidate` はこの後 `candidates_dir(...) / candidate / "manifest.json"` として
+        # パス結合される。`cand-...` の登録済み形式に一致しない値（`../` トラバーサル等）は
+        # manifest 読み込み前に拒否する。
+        print(f"error: invalid candidate id: {candidate}", file=sys.stderr)
+        return EXIT_VALIDATION_ERROR
+
     manifest = mh.read_candidate_manifest(main_root, config, candidate)
     if manifest is None:
         print(f"error: unknown candidate: {candidate}", file=sys.stderr)
@@ -546,7 +553,10 @@ def _run_evaluate_under_lock(
             repeat_override=repeat,
             cli_capabilities=caps.as_dict(),
         )
-    except ValueError as exc:
+    except (ValueError, OSError, ev.yaml.YAMLError) as exc:
+        # `load_scenario()` の `path.read_text()` / `yaml.safe_load()` 由来の OSError /
+        # yaml.YAMLError も ValueError と同様に入力検証エラーとして扱う（traceback を
+        # main() まで漏らさない、CodeRabbit 指摘）。
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_VALIDATION_ERROR
 

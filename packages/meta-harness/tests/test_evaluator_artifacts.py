@@ -102,6 +102,32 @@ class TestFinalizeArtifactsRedactionAndCompression:
         assert report_path.is_file()
         assert result["run_id"] in report_path.read_text(encoding="utf-8")
 
+    def test_result_json_and_report_md_are_redacted(self, tmp_path: Path) -> None:
+        """Codex 指摘（evaluator.py:1211）: result["errors"] の detail に紛れ込んだ
+        シークレット文字列が result.json/report.md へ平文で残らないこと。"""
+        run_dir = tmp_path / "run_dir"
+        run_dir.mkdir()
+        staging_dir = tmp_path / "staging"
+        staging_dir.mkdir()
+
+        result = _minimal_result()
+        result["verdict"] = "error"
+        result["errors"] = [
+            {"stage": "setup", "type": "setup_error", "message": f"leaked token: {_SECRET}"}
+        ]
+
+        ev._finalize_artifacts(run_dir, staging_dir, result)
+
+        result_content = (run_dir / "result.json").read_text(encoding="utf-8")
+        assert _SECRET not in result_content
+        assert "[REDACTED:" in result_content
+        # 依然として valid JSON であること（redaction が構造を壊していない）
+        assert json.loads(result_content)["run_id"] == result["run_id"]
+
+        report_content = (run_dir / "report.md").read_text(encoding="utf-8")
+        assert _SECRET not in report_content
+        assert "[REDACTED:" in report_content
+
     def test_missing_staging_files_do_not_crash(self, tmp_path: Path) -> None:
         run_dir = tmp_path / "run_dir"
         run_dir.mkdir()

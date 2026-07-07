@@ -78,6 +78,19 @@ class TestEvaluateArgparseContract:
         assert result.returncode == 2
         assert "--candidate" in result.stderr
 
+    def test_evaluate_invalid_candidate_id_exits_2_before_capability_gate(
+        self, git_project: Path, run_meta
+    ) -> None:
+        """Codex 指摘（meta_harness.py:505）: `candidate` はパス結合前に検証すること
+        （`../` トラバーサル対策）。この検証は CLI capability gate（実 `claude --version`
+        呼び出し）より前に行われるため、実 CLI が無い環境でも subprocess のまま検証できる。"""
+        run_meta("init", project=git_project, check=True)
+        result = run_meta(
+            "evaluate", "--candidate", "../../../etc/passwd", project=git_project, check=False
+        )
+        assert result.returncode == 2
+        assert "invalid candidate id" in result.stderr
+
 
 class TestPhase23Stubs:
     def test_propose_stub_exits_2(self, git_project: Path, run_meta) -> None:

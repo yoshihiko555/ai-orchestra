@@ -20,8 +20,9 @@ evaluate:
   cli_version_pin: null # null = バージョン一致検証をスキップ（capability smoke test は常に実施）
 scenario_run:
   max_turns_default: 30
-  max_budget_usd_default: 2.0
+  max_budget_usd_default: 3.0 # 2026-07-07 スパイク実測反映（Sec14）。実測 total_cost_usd=1.20 に余裕を持たせる
 judge:
+  tool: codex # codex | claude-bare（Sec3-3）。利用不能時は fail-closed（暗黙フォールバック禁止）
   model: null
   effort: high
   max_turns: 4

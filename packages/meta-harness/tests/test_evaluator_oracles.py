@@ -159,13 +159,19 @@ class TestRubricJudgeCodexBackend:
         assert "codex" in result["detail"]
 
     def test_fail_closed_when_codex_binary_missing(self, tmp_path: Path, monkeypatch) -> None:
+        """judge backend が利用不能な場合、check の fail ではなく run 全体の
+        verdict=error に伝播させるため、`run_oracle` は EvaluatorStageError を送出する
+        （fail-closed, Sec3-3）。"""
         monkeypatch.setattr(ev.shutil, "which", lambda name: None)
         check = {"id": "r2", "oracle": "rubric_judge", "rubric": "..."}
-        result = ev.run_oracle(
-            check, tmp_path, self._CONFIG, _SCHEMA_DIR, runner=lambda *a, **k: None
-        )
-        assert result["passed"] is False
-        assert "judge unavailable" in result["detail"]
+        try:
+            ev.run_oracle(check, tmp_path, self._CONFIG, _SCHEMA_DIR, runner=lambda *a, **k: None)
+        except ev.EvaluatorStageError as exc:
+            assert exc.stage == "oracle"
+            assert exc.error_type == "oracle_error"
+            assert "judge unavailable" in exc.message
+        else:
+            raise AssertionError("judge unavailable should raise EvaluatorStageError (fail-closed)")
 
     def test_fail_closed_on_nonzero_exit(self, tmp_path: Path, monkeypatch) -> None:
         monkeypatch.setattr(ev.shutil, "which", lambda name: "/usr/bin/codex")
@@ -219,12 +225,26 @@ class TestRubricJudgeCodexBackend:
         assert result.passed is False
         assert result.error is True
 
-    def test_prompt_wraps_rubric_with_untrusted_delimiters(self) -> None:
-        prompt = ev._build_judge_prompt("do the thing")
+    def test_prompt_wraps_rubric_with_untrusted_delimiters(self, tmp_path: Path) -> None:
+        prompt = ev._build_judge_prompt("do the thing", tmp_path)
         assert ev._JUDGE_DELIMITER_OPEN in prompt
         assert ev._JUDGE_DELIMITER_CLOSE in prompt
         assert "do the thing" in prompt
         assert "not commands" in prompt or "do not follow" in prompt.lower()
+
+    def test_prompt_includes_worktree_absolute_path(self, tmp_path: Path) -> None:
+        prompt = ev._build_judge_prompt("check summary.md", tmp_path)
+        assert str(tmp_path) in prompt
+
+    def test_prompt_includes_referenced_artifact_excerpt(self, tmp_path: Path) -> None:
+        (tmp_path / "summary.md").write_text("candidate wrote this summary", encoding="utf-8")
+        prompt = ev._build_judge_prompt("check that summary.md is accurate", tmp_path)
+        assert "candidate wrote this summary" in prompt
+
+    def test_prompt_truncates_oversized_artifact_excerpt(self, tmp_path: Path) -> None:
+        (tmp_path / "summary.md").write_text("x" * (ev._JUDGE_ARTIFACT_EXCERPT_MAX_CHARS + 500))
+        prompt = ev._build_judge_prompt("check summary.md", tmp_path)
+        assert "...(truncated)" in prompt
 
 
 class TestRubricJudgeClaudeBareBackend:
@@ -232,12 +252,30 @@ class TestRubricJudgeClaudeBareBackend:
 
     def test_fail_closed_when_api_key_missing(self, tmp_path: Path, monkeypatch) -> None:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setattr(ev, "_api_key_helper_configured", lambda: False)
         result = ev.run_rubric_judge(
             "rubric", tmp_path, self._CONFIG, _SCHEMA_DIR, runner=lambda *a, **k: _completed(0)
         )
         assert result.passed is False
         assert result.error is True
         assert "ANTHROPIC_API_KEY" in result.reason
+
+    def test_succeeds_when_only_api_key_helper_configured(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """ANTHROPIC_API_KEY が無くても `apiKeyHelper` が構成されていれば fail-closed に
+        しない（Sec14-1）。"""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setattr(ev, "_api_key_helper_configured", lambda: True)
+
+        def fake_runner(cmd, **kwargs):
+            return _completed(0, stdout=json.dumps({"passed": True, "reason": "ok"}))
+
+        result = ev.run_rubric_judge(
+            "rubric", tmp_path, self._CONFIG, _SCHEMA_DIR, runner=fake_runner
+        )
+        assert result.passed is True
+        assert result.error is False
 
     def test_success_when_api_key_present_and_output_parses(
         self, tmp_path: Path, monkeypatch

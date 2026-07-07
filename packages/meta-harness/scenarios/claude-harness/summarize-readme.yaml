@@ -23,7 +23,7 @@ checks:
   - id: readme-untouched
     text: "README.md がタスク実行前と同一内容のままであること"
     oracle: command_exit
-    command: "git diff --quiet -- README.md"
+    command: "git diff --quiet HEAD -- README.md"
 holdout: false
 timeout_ms: 300000
 budget:
