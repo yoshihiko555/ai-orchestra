@@ -286,3 +286,75 @@ class TestFrontierCliRebuildVsCache:
             (git_project / ".claude" / "meta-harness" / "frontier.json").read_text(encoding="utf-8")
         )
         assert mh.validate_against_schema(doc, schema, schema_dir) == []
+
+
+class TestFrontierHashReflectsLatestRunCompleted:
+    # frontier のトップレベル suite_hash/evaluator_hash は、points の比較スコープと
+    # 同じ「最新の run_completed」のペアであるべき（ledger 末尾イベントとは限らない）
+    def test_hash_metadata_uses_latest_run_completed_even_if_ledger_tail_is_not_run_completed(
+        self, git_project: Path, run_meta
+    ) -> None:
+        run_meta("init", project=git_project, check=True)
+        config = mh.load_config(git_project)
+        suite_hash = "a" * 64
+        evaluator_hash = "e" * 64
+        mh.append_ledger_event(
+            git_project,
+            config,
+            _run_completed(
+                "c1", quality_score=90, suite_hash=suite_hash, evaluator_hash=evaluator_hash
+            ),
+        )
+        # ledger 末尾を run_completed 以外のイベントにする（register 後に評価するのは通常運用）
+        mh.append_ledger_event(
+            git_project,
+            config,
+            {
+                "event": "candidate_registered",
+                "ts": mh.now_iso(),
+                "schema_version": "1.0",
+                "cand_id": "c2",
+                "parent_id": None,
+                "generation": 0,
+                "target": "claude-harness",
+                "created_by": "human",
+            },
+        )
+
+        result = run_meta("frontier", "--rebuild", "--json", project=git_project, check=True)
+        payload = json.loads(result.stdout)
+
+        assert payload["suite_hash"] == suite_hash
+        assert payload["evaluator_hash"] == evaluator_hash
+        cached = json.loads(
+            (git_project / ".claude" / "meta-harness" / "frontier.json").read_text(encoding="utf-8")
+        )
+        assert cached["suite_hash"] == suite_hash
+        assert cached["evaluator_hash"] == evaluator_hash
+
+    def test_hash_metadata_falls_back_to_zero_hash_when_no_run_completed_exists(
+        self, git_project: Path, run_meta
+    ) -> None:
+        run_meta("init", project=git_project, check=True)
+        config = mh.load_config(git_project)
+        mh.append_ledger_event(
+            git_project,
+            config,
+            {
+                "event": "candidate_registered",
+                "ts": mh.now_iso(),
+                "schema_version": "1.0",
+                "cand_id": "c1",
+                "parent_id": None,
+                "generation": 0,
+                "target": "claude-harness",
+                "created_by": "human",
+            },
+        )
+
+        result = run_meta("frontier", "--json", project=git_project, check=True)
+        payload = json.loads(result.stdout)
+
+        zero_hash = "0" * 64
+        assert payload["suite_hash"] == zero_hash
+        assert payload["evaluator_hash"] == zero_hash

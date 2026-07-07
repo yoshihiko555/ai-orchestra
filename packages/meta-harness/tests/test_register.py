@@ -322,6 +322,87 @@ class TestRegisterSourceCommit:
         assert manifest["source_commit"] == head
 
 
+def _git(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=True)
+
+
+def _add_feature_worktree(git_project: Path, name: str = "feat-source-commit") -> Path:
+    worktrees_root = git_project / ".worktrees"
+    worktrees_root.mkdir(parents=True, exist_ok=True)
+    worktree_dir = worktrees_root / name
+    _git("worktree", "add", "--detach", str(worktree_dir), "HEAD", cwd=git_project)
+    return worktree_dir
+
+
+class TestRegisterSourceCommitFromWorktree:
+    # register (EV-*, Sec2-0): source_commit / dirty 判定は main_root ではなく
+    # 登録元（--project）の worktree で解決されるべき
+    def test_source_commit_resolves_to_feature_worktree_head_not_main_root(
+        self, git_project: Path, tmp_path: Path, run_meta, default_overlay
+    ) -> None:
+        run_meta("init", project=git_project, check=True)
+        worktree_dir = _add_feature_worktree(git_project)
+
+        (worktree_dir / "extra.txt").write_text("worktree-only change\n", encoding="utf-8")
+        _git("add", "extra.txt", cwd=worktree_dir)
+        _git("commit", "-q", "-m", "worktree-only commit", cwd=worktree_dir)
+
+        main_root_head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=git_project,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        worktree_head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=worktree_dir,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        assert worktree_head != main_root_head
+
+        overlay_dir = default_overlay(tmp_path)
+        result = run_meta(
+            "register",
+            "--overlay",
+            str(overlay_dir),
+            "--target",
+            "claude-harness",
+            "--json",
+            project=worktree_dir,
+            check=True,
+        )
+        cand_id = json.loads(result.stdout)["cand_id"]
+        manifest = json.loads(
+            (_candidates_dir(git_project) / cand_id / "manifest.json").read_text(encoding="utf-8")
+        )
+
+        assert manifest["source_commit"] == worktree_head
+        assert manifest["source_commit"] != main_root_head
+
+    def test_dirty_warning_reflects_feature_worktree_not_main_root(
+        self, git_project: Path, tmp_path: Path, run_meta, default_overlay
+    ) -> None:
+        run_meta("init", project=git_project, check=True)
+        worktree_dir = _add_feature_worktree(git_project, name="feat-dirty-check")
+        (worktree_dir / "uncommitted.txt").write_text("dirty in worktree", encoding="utf-8")
+        overlay_dir = default_overlay(tmp_path)
+
+        result = run_meta(
+            "register",
+            "--overlay",
+            str(overlay_dir),
+            "--target",
+            "claude-harness",
+            project=worktree_dir,
+            check=True,
+        )
+
+        assert "dirty" in result.stderr.lower()
+
+
 class TestRegisterAtomicStaging:
     def test_successful_register_leaves_no_tmp_residue(
         self, git_project: Path, run_meta, tmp_path: Path, default_overlay

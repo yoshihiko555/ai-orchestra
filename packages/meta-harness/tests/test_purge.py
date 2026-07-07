@@ -30,7 +30,9 @@ def _manifest(cand_id: str, generation: int) -> dict:
     }
 
 
-def _register_candidate(main_root: Path, config: dict, cand_id: str, tmp_root: Path) -> None:
+def _register_candidate(
+    main_root: Path, config: dict, cand_id: str, tmp_root: Path, generation: int = 0
+) -> None:
     overlay_dir = tmp_root / f"overlay-{cand_id}"
     (overlay_dir / "facets" / "foo").mkdir(parents=True)
     (overlay_dir / "facets" / "foo" / "SKILL.md").write_text("x", encoding="utf-8")
@@ -38,7 +40,7 @@ def _register_candidate(main_root: Path, config: dict, cand_id: str, tmp_root: P
         main_root,
         config,
         cand_id=cand_id,
-        manifest=_manifest(cand_id, generation=0),
+        manifest=_manifest(cand_id, generation=generation),
         overlay_dir=overlay_dir,
         overlay_files=["facets/foo/SKILL.md"],
     )
@@ -51,7 +53,7 @@ def _register_candidate(main_root: Path, config: dict, cand_id: str, tmp_root: P
             "schema_version": "1.0",
             "cand_id": cand_id,
             "parent_id": None,
-            "generation": 0,
+            "generation": generation,
             "target": "claude-harness",
             "created_by": "human",
         },
@@ -160,15 +162,17 @@ class TestPurgeProtection:
         assert not (candidates_dir / "cand-20260101-000004-plain-cand").is_dir()
         assert payload["purged"] == ["cand-20260101-000004-plain-cand"]
 
-    def test_keep_generations_keeps_newest_n_unprotected_candidates(
+    def test_keep_generations_keeps_newest_generation_unprotected_candidates(
         self, git_project: Path, run_meta, tmp_path: Path
     ) -> None:
+        # keep-generations は「候補件数」ではなく「distinct generation の件数」を保持する
+        # 単位のため、それぞれ異なる generation を持つ候補で検証する。
         run_meta("init", project=git_project, check=True)
         config = mh.load_config(git_project)
 
         ids = [f"cand-20260101-00000{i}-plain" for i in range(1, 4)]
-        for cand_id in ids:
-            _register_candidate(git_project, config, cand_id, tmp_path)
+        for i, cand_id in enumerate(ids):
+            _register_candidate(git_project, config, cand_id, tmp_path, generation=i)
 
         result = run_meta(
             "purge", "--keep-generations", "1", "--json", project=git_project, check=True
@@ -176,8 +180,82 @@ class TestPurgeProtection:
         payload = json.loads(result.stdout)
 
         candidates_dir = git_project / ".claude" / "meta-harness" / "candidates"
-        # cand_id は日付時刻昇順の文字列なので、最新（辞書順で最大）の1件のみ残る
+        # generation の最大値（=最新世代）を持つ ids[-1] のみが保護される
         assert (candidates_dir / ids[-1]).is_dir()
         assert not (candidates_dir / ids[0]).is_dir()
         assert not (candidates_dir / ids[1]).is_dir()
         assert set(payload["purged"]) == {ids[0], ids[1]}
+
+
+class TestPurgeKeepGenerationsIsGenerationBased:
+    def test_keep_generations_1_protects_all_candidates_in_the_latest_generation(
+        self, git_project: Path, run_meta, tmp_path: Path
+    ) -> None:
+        run_meta("init", project=git_project, check=True)
+        config = mh.load_config(git_project)
+
+        gen0_ids = ["cand-20260101-000001-gen0-a", "cand-20260101-000002-gen0-b"]
+        gen1_ids = ["cand-20260101-000003-gen1-a", "cand-20260101-000004-gen1-b"]
+        for cand_id in gen0_ids:
+            _register_candidate(git_project, config, cand_id, tmp_path, generation=0)
+        for cand_id in gen1_ids:
+            _register_candidate(git_project, config, cand_id, tmp_path, generation=1)
+
+        result = run_meta(
+            "purge", "--keep-generations", "1", "--json", project=git_project, check=True
+        )
+        payload = json.loads(result.stdout)
+
+        candidates_dir = git_project / ".claude" / "meta-harness" / "candidates"
+        for cand_id in gen1_ids:
+            assert (candidates_dir / cand_id).is_dir()
+        for cand_id in gen0_ids:
+            assert not (candidates_dir / cand_id).is_dir()
+        assert set(payload["purged"]) == set(gen0_ids)
+
+    def test_keep_generations_0_purges_all_unprotected_regardless_of_generation(
+        self, git_project: Path, run_meta, tmp_path: Path
+    ) -> None:
+        run_meta("init", project=git_project, check=True)
+        config = mh.load_config(git_project)
+
+        gen0_ids = ["cand-20260101-000001-g0"]
+        gen1_ids = ["cand-20260101-000002-g1"]
+        for cand_id in gen0_ids:
+            _register_candidate(git_project, config, cand_id, tmp_path, generation=0)
+        for cand_id in gen1_ids:
+            _register_candidate(git_project, config, cand_id, tmp_path, generation=1)
+
+        result = run_meta(
+            "purge", "--keep-generations", "0", "--json", project=git_project, check=True
+        )
+        payload = json.loads(result.stdout)
+
+        candidates_dir = git_project / ".claude" / "meta-harness" / "candidates"
+        assert not (candidates_dir / gen0_ids[0]).is_dir()
+        assert not (candidates_dir / gen1_ids[0]).is_dir()
+        assert set(payload["purged"]) == {*gen0_ids, *gen1_ids}
+
+    def test_candidate_with_unreadable_manifest_is_excluded_from_purge_with_warning(
+        self, git_project: Path, run_meta, tmp_path: Path
+    ) -> None:
+        run_meta("init", project=git_project, check=True)
+        config = mh.load_config(git_project)
+
+        cand_id = "cand-20260101-000001-broken-manifest"
+        _register_candidate(git_project, config, cand_id, tmp_path, generation=0)
+        manifest_path = (
+            git_project / ".claude" / "meta-harness" / "candidates" / cand_id / "manifest.json"
+        )
+        manifest_path.unlink()
+
+        result = run_meta(
+            "purge", "--keep-generations", "0", "--json", project=git_project, check=True
+        )
+        payload = json.loads(result.stdout)
+
+        candidates_dir = git_project / ".claude" / "meta-harness" / "candidates"
+        assert (candidates_dir / cand_id).is_dir()
+        assert cand_id not in payload["purged"]
+        assert "warning" in result.stderr.lower()
+        assert cand_id in result.stderr

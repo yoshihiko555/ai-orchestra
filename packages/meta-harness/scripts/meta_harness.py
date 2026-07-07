@@ -79,16 +79,23 @@ def cmd_init(project: str, as_json: bool) -> int:
     return EXIT_OK
 
 
-def _git_head(main_root: Path) -> str | None:
+def _git_head(cwd: Path) -> str | None:
+    """`cwd` における `git rev-parse HEAD` の結果を返す（source_commit 解決用）。
+
+    【判断】`source_commit` は「overlay の差分先となるコミット」= register の登録元
+    （`--project`）の HEAD であり、共有 store のある main_root（feature worktree の
+    場合は別ディレクトリ）ではない。呼び出し側は必ず project_dir を渡すこと。
+    """
     completed = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=main_root, capture_output=True, text=True, timeout=10
+        ["git", "rev-parse", "HEAD"], cwd=cwd, capture_output=True, text=True, timeout=10
     )
     return completed.stdout.strip() if completed.returncode == 0 else None
 
 
-def _git_is_dirty(main_root: Path) -> bool:
+def _git_is_dirty(cwd: Path) -> bool:
+    """`cwd` の working tree が dirty かどうかを返す（`_git_head` と同じ理由で project_dir 必須）。"""
     completed = subprocess.run(
-        ["git", "status", "--porcelain"], cwd=main_root, capture_output=True, text=True, timeout=10
+        ["git", "status", "--porcelain"], cwd=cwd, capture_output=True, text=True, timeout=10
     )
     return bool(completed.stdout.strip())
 
@@ -155,12 +162,13 @@ def cmd_register(
             print(f"error: {v}", file=sys.stderr)
         return EXIT_VALIDATION_ERROR
 
-    if _git_is_dirty(main_root):
+    project_dir = Path(project).resolve()
+    if _git_is_dirty(project_dir):
         print(
             "warning: working tree is dirty; uncommitted changes are not part of the candidate",
             file=sys.stderr,
         )
-    resolved_source_commit = source_commit or _git_head(main_root)
+    resolved_source_commit = source_commit or _git_head(project_dir)
     if resolved_source_commit is None:
         print("error: could not resolve source_commit (git rev-parse HEAD failed)", file=sys.stderr)
         return EXIT_VALIDATION_ERROR
@@ -257,7 +265,12 @@ def _compute_frontier(main_root: Path, config: dict) -> dict:
     eligible, ineligible_ids = _eligible_and_ineligible(points)
     frontier_ids, dominated_ids = mh.compute_pareto_frontier(eligible)
     dominated_ids = sorted(set(dominated_ids) | set(ineligible_ids))
-    latest = events[-1] if events and events[-1].get("event") == "run_completed" else None
+    # 【判断】ledger 末尾のイベントが run_completed とは限らない（run 後に register 等が
+    # 入ることは正常な運用）。points の比較スコープ選定（mh.aggregate_run_points）と同じ
+    # 「最新の run_completed」を hash メタデータにも使う。末尾イベントに限定すると、
+    # points は非ゼロの hash ペアで計算されているのに suite_hash/evaluator_hash だけ
+    # ゼロ埋めになる不整合が生じる。
+    latest = next((e for e in reversed(events) if e.get("event") == "run_completed"), None)
     zero_hash = "0" * 64
     return {
         "schema_version": "1.0",
@@ -349,6 +362,14 @@ def cmd_status(project: str, candidate: str | None, as_json: bool) -> int:
 
 
 def _purge_eligible_ids(main_root: Path, config: dict, keep_generations: int) -> list[str]:
+    """削除対象候補の cand_id を返す（Sec12-3）。
+
+    保護対象（frontier 上・promoted・未解放 reservation）に加え、直近
+    `keep_generations` 世代（manifest.json の `generation` の distinct な値の
+    降順上位 N 件）に属する候補も保護する。同一世代の候補が複数あっても、その
+    世代が保護対象であれば全て残す（「N 世代」であって「N 候補」ではない）。
+    manifest が読めない候補は安全側（削除しない）として除外し、警告を出す。
+    """
     events = mh.read_ledger_events(main_root, config)
     states = mh.fold_candidate_states(events)
     frontier_ids = set(_compute_frontier(main_root, config)["frontier"])
@@ -360,11 +381,49 @@ def _purge_eligible_ids(main_root: Path, config: dict, keep_generations: int) ->
         if state.get("status") == "promoted" or state.get("has_active_promotion_hold"):
             protected.add(cand_id)
 
-    deletable = [c for c in all_ids if c not in protected]
-    deletable.sort(
-        reverse=True
-    )  # newest generation timestamps sort first (cand_id starts with date)
-    return deletable[keep_generations:]
+    deletable_candidates = [c for c in all_ids if c not in protected]
+    generations = _read_candidate_generations(main_root, config, deletable_candidates)
+    protected_generations = _top_n_generations(list(generations.values()), keep_generations)
+
+    return [
+        cand_id
+        for cand_id in deletable_candidates
+        if cand_id in generations and generations[cand_id] not in protected_generations
+    ]
+
+
+def _read_candidate_generations(
+    main_root: Path, config: dict, cand_ids: list[str]
+) -> dict[str, int]:
+    """purge 候補群の manifest.json から generation を読む（読めないものは除外 + 警告）。"""
+    generations: dict[str, int] = {}
+    for cand_id in cand_ids:
+        manifest = _safe_read_manifest(main_root, config, cand_id)
+        if manifest is None or "generation" not in manifest:
+            print(
+                f"warning: could not read manifest for {cand_id}; "
+                "skipping purge eligibility (safe default)",
+                file=sys.stderr,
+            )
+            continue
+        generations[cand_id] = int(manifest["generation"])
+    return generations
+
+
+def _safe_read_manifest(main_root: Path, config: dict, cand_id: str) -> dict | None:
+    """`mh.read_candidate_manifest` を壊れた JSON にも安全なようラップする。"""
+    try:
+        return mh.read_candidate_manifest(main_root, config, cand_id)
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _top_n_generations(generations: list[int], keep_generations: int) -> set[int]:
+    """distinct な generation を降順に並べ、上位 `keep_generations` 件を返す（保護対象世代）。"""
+    if keep_generations <= 0:
+        return set()
+    distinct_sorted = sorted(set(generations), reverse=True)
+    return set(distinct_sorted[:keep_generations])
 
 
 def cmd_purge(project: str, keep_generations: int | None, as_json: bool) -> int:
@@ -417,22 +476,38 @@ def cmd_phase1b_stub(sub: str) -> int:
     return EXIT_VALIDATION_ERROR
 
 
-def _add_common_args(parser: argparse.ArgumentParser) -> None:
+def _add_common_args(parser: argparse.ArgumentParser, *, is_top_level: bool = False) -> None:
     """--project / --json をどのサブコマンドの前後どちらに置いても解釈できるようにする。
 
-    argparse のサブパーサは、親パーサで既に設定済みの namespace 属性を自身の
-    デフォルト値で上書きしない（`hasattr` チェック）。そのため親・各サブパーサの
-    両方に同じ引数を定義しておけば、`meta_harness.py --json init` と
-    `meta_harness.py init --json` のどちらの語順でも動作する。
+    【判断】argparse のサブパーサは、自身の `--project`/`--json` に実値のデフォルト
+    （`os.getcwd()` / `False`）を持たせていると、サブコマンド側で明示指定が無い場合に
+    親パーサで既に解析済みの値をそのデフォルトで上書きしてしまう（`nargs=PARSER` の
+    サブパーサアクションは自身のデフォルト充填を独立に行うため、`hasattr` チェックは
+    トップレベルの実引数を保護しない。実測で `meta_harness.py --project X init` が
+    `args.project` を X ではなく cwd にしてしまうことを確認済み）。
+
+    そのため実際のデフォルト値は **トップレベルのみ** に持たせ、各サブパーサ側は
+    `default=argparse.SUPPRESS` にする。SUPPRESS はサブコマンド側で未指定の場合に
+    namespace 属性へ書き込みを行わない（＝トップレベルで設定済みの値がそのまま残る）
+    ため、`--project X init` / `init --project X` のどちらの語順でも X が使われ、
+    両方省略した場合はトップレベルの既定値（cwd / False）が使われる。
     """
-    parser.add_argument("--project", default=os.getcwd(), help="プロジェクトパス（既定: cwd）")
-    parser.add_argument("--json", action="store_true", help="機械可読出力")
+    if is_top_level:
+        parser.add_argument("--project", default=os.getcwd(), help="プロジェクトパス（既定: cwd）")
+        parser.add_argument("--json", action="store_true", help="機械可読出力")
+        return
+    parser.add_argument(
+        "--project", default=argparse.SUPPRESS, help="プロジェクトパス（既定: cwd）"
+    )
+    parser.add_argument(
+        "--json", action="store_true", default=argparse.SUPPRESS, help="機械可読出力"
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
     """CLI パーサを構築する。"""
     parser = argparse.ArgumentParser(prog="meta_harness", description="meta-harness CLI (Phase 1a)")
-    _add_common_args(parser)
+    _add_common_args(parser, is_top_level=True)
     sub = parser.add_subparsers(dest="command", required=True)
 
     _add_common_args(sub.add_parser("init", help="store ディレクトリ一式を初期化"))
