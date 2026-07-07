@@ -42,3 +42,4 @@ AI Orchestra プロジェクトの意思決定記録。
 | ADR-20260630-027 | fail-logs 活用フェーズ — SessionStart で再発失敗シグネチャを注入する                    | accepted   | 2026-06-30 |
 | ADR-20260703-028 | 評価セット（docs/evaluation/）の導入 — あるべき状態の自然言語定義でテストを判定する     | accepted   | 2026-07-03 |
 | ADR-20260705-029 | Codex Review Gate による PR required status check の導入                                | accepted   | 2026-07-05 |
+| ADR-20260706-030 | ループエンジニアリング基盤（loop-harness）の導入とコア共有型制御モデルの採用            | accepted   | 2026-07-06 |
