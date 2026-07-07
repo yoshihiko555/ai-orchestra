@@ -172,6 +172,64 @@ class TestStoreLockTakeoverCompareBeforeUnlink:
         assert mh._read_lock_snapshot(tmp_path / "does-not-exist.lock") is None
 
 
+class TestStoreLockSnapshotFirstOrdering:
+    # PR #162 レビュー指摘 (FIX P1): staleness 判定は snapshot-first でなければならない。
+    # 旧実装（別々のタイミングで stat → 内容再読）だと、判定と snapshot 取得の間に
+    # 別プロセスが lock を fresh に差し替えると、fresh lock が誤って奪取されてしまう。
+    def test_snapshot_first_prevents_stealing_lock_that_became_fresh_after_race(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        lock_path = tmp_path / "store.lock"
+        lock_path.write_text("stale-token", encoding="utf-8")
+        stale_time = time.time() - 120
+        os.utime(lock_path, (stale_time, stale_time))
+
+        original_read_snapshot = mh._read_lock_snapshot
+        call_count = {"n": 0}
+
+        def racy_read_snapshot(path: Path):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                # 別プロセスが、まさにこちらが snapshot を取る瞬間に fresh lock へ
+                # 差し替えたことを模す。
+                fresh_time = time.time()
+                path.write_text("fresh-token", encoding="utf-8")
+                os.utime(path, (fresh_time, fresh_time))
+            return original_read_snapshot(path)
+
+        monkeypatch.setattr(mh, "_read_lock_snapshot", racy_read_snapshot)
+
+        try:
+            mh._acquire_store_lock(lock_path, ttl_seconds=60)
+        except mh.LockAcquisitionError:
+            pass
+        else:
+            raise AssertionError("fresh lock (post-race) must not be stolen")
+
+        assert lock_path.read_text(encoding="utf-8") == "fresh-token"
+
+    def test_lock_disappearing_between_eexist_and_snapshot_read_retries_and_succeeds(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        lock_path = tmp_path / "store.lock"
+        lock_path.write_text("held-by-someone-else", encoding="utf-8")
+
+        original_read_snapshot = mh._read_lock_snapshot
+        call_count = {"n": 0}
+
+        def vanishing_read_snapshot(path: Path):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                path.unlink()  # lock が snapshot 取得の瞬間に消滅したことを模す
+                return None
+            return original_read_snapshot(path)
+
+        monkeypatch.setattr(mh, "_read_lock_snapshot", vanishing_read_snapshot)
+
+        token = mh._acquire_store_lock(lock_path, ttl_seconds=60)
+        assert lock_path.read_text(encoding="utf-8") == token
+
+
 class TestStoreLockCliExit3:
     def test_register_exits_3_when_lock_pre_held(
         self, git_project: Path, run_meta, default_overlay, tmp_path: Path

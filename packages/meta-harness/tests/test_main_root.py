@@ -116,6 +116,46 @@ class TestStorageRootOverride:
         assert "absolute" in result.stderr.lower()
 
 
+class TestStorageDirTraversal:
+    # PR #162 レビュー指摘 (FIX P2): storage.dir の '..' トラバーサルを拒否する
+    def test_store_dir_rejects_dotdot_traversal(self, tmp_path: Path) -> None:
+        config = {"storage": {"dir": "../escape"}}
+        try:
+            mh.store_dir(tmp_path, config)
+        except mh.MetaHarnessRootError:
+            pass
+        else:
+            raise AssertionError("storage.dir with '..' should raise MetaHarnessRootError")
+
+    def test_store_dir_rejects_resolved_escape_without_dotdot(self, tmp_path: Path) -> None:
+        # symlink 経由の脱出: 相対パス自体に '..' は無いが resolve すると main_root 外を指す
+        main_root = tmp_path / "main"
+        main_root.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        escape_link = main_root / "escape-link"
+        escape_link.symlink_to(outside)
+        config = {"storage": {"dir": "escape-link/meta-harness"}}
+        try:
+            mh.store_dir(main_root, config)
+        except mh.MetaHarnessRootError:
+            pass
+        else:
+            raise AssertionError("resolved storage.dir escaping main_root should raise")
+
+    def test_cli_exits_2_for_storage_dir_traversal(self, git_project: Path, run_meta) -> None:
+        local_config_dir = git_project / ".claude" / "config" / "meta-harness"
+        local_config_dir.mkdir(parents=True, exist_ok=True)
+        (local_config_dir / "meta-harness.local.yaml").write_text(
+            "storage:\n  dir: ../escape\n", encoding="utf-8"
+        )
+
+        result = run_meta("init", project=git_project, check=False)
+
+        assert result.returncode == 2
+        assert "storage.root" in result.stderr
+
+
 class TestBareRepoFailClosed:
     # EV-33
     def test_resolve_main_root_raises_for_bare_repo(self, tmp_path: Path) -> None:

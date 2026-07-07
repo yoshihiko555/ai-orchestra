@@ -240,11 +240,40 @@ CONFIG_PATCH_FILENAME = "config-patch.json"
 
 
 def store_dir(main_root: Path, config: dict) -> Path:
-    """store ルート（既定 `.claude/meta-harness`）の絶対パスを返す。"""
+    """store ルート（既定 `.claude/meta-harness`）の絶対パスを返す。
+
+    `storage.dir` はプロジェクト内の相対パスであることを前提とする（main_root 外への
+    書き込みを防ぐため）。以下の 2 段階で main_root 外への脱出を拒否する（PR #162
+    レビュー指摘）:
+
+    1. 相対パスの各セグメントに `..` を含む場合は即座に拒否する（最も一般的な
+       トラバーサル記法）。
+    2. `..` を含まない場合でも、シンボリックリンク経由で main_root 外を指す可能性が
+       残るため、`(main_root / rel).resolve()` が `main_root.resolve()` 配下にあることを
+       追加で検証する（defense in depth）。
+
+    main_root 外に store を意図的に配置したい場合は `storage.dir` ではなく
+    `storage.root`（絶対パス指定）を使う運用とする。
+    """
     rel = (config.get("storage") or {}).get("dir") or DEFAULTS["storage"]["dir"]
     rel_path = Path(rel)
     if rel_path.is_absolute():
         raise MetaHarnessRootError(f"storage.dir must be a relative path, got: {rel}")
+    if ".." in rel_path.parts:
+        raise MetaHarnessRootError(
+            f"storage.dir must not contain '..' path segments, got: {rel};"
+            " use storage.root (an absolute path) to place the store outside main_root"
+        )
+    resolved_main_root = main_root.resolve()
+    resolved_candidate = (main_root / rel_path).resolve()
+    if (
+        resolved_candidate != resolved_main_root
+        and resolved_main_root not in resolved_candidate.parents
+    ):
+        raise MetaHarnessRootError(
+            f"storage.dir must resolve to a path under main_root, got: {rel};"
+            " use storage.root (an absolute path) to place the store outside main_root"
+        )
     return main_root / rel_path
 
 
@@ -579,6 +608,32 @@ def latest_non_holdout_run_completed(events: list[dict]) -> dict | None:
     return None
 
 
+KNOWN_COST_FIELDS = frozenset(
+    {
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "tool_uses",
+        "duration_ms",
+        "total_cost_usd",
+        "num_turns",
+    }
+)
+
+
+def _validate_cost_axis(cost_axis: str) -> None:
+    """config `frontier.cost_axis` を result/ledger の cost オブジェクトの既知フィールド
+    allowlist に照らして検証する（PR #162 レビュー指摘）。
+
+    typo（例: `totl_tokens`）を無効な値のまま通すと、全 run のコストが黙って 0 として
+    扱われ Pareto frontier がコストを無視して計算されてしまう。ここで fail-closed する。
+    """
+    if cost_axis not in KNOWN_COST_FIELDS:
+        raise MetaHarnessRootError(
+            f"frontier.cost_axis must be one of {sorted(KNOWN_COST_FIELDS)}, got: {cost_axis!r}"
+        )
+
+
 def aggregate_run_points(events: list[dict], config: dict) -> list[dict]:
     """run_completed イベントを cand_id ごとに集計し frontier 用の point を作る（Sec3-4, Sec3-5）。
 
@@ -586,10 +641,37 @@ def aggregate_run_points(events: list[dict], config: dict) -> list[dict]:
     `(suite_hash, evaluator_hash)` の組に限定する（Sec3-5「frontier 比較のスコープ」）。
     holdout run が末尾にあっても non-holdout run のスコープを汚染しないよう、
     `latest_non_holdout_run_completed` で選定する。non-holdout run が 1 件も無ければ
-    空リストを返す。各 point には `eligible`（全 non-holdout run が `verdict=pass` か）を
-    含める。スコープ内では候補×シナリオごとに最新 attempt 群のみを集計対象にする（Sec3-4）。
+    空リストを返す。
+
+    候補の対象化は以下をすべて満たす場合のみ行う（PR #162 レビュー指摘を反映）:
+
+    - スコープ内の non-holdout run を持つこと（holdout-only 候補は points に一切
+      含めない。runs:0 の point は frontier.schema.json の `minimum: 1` に違反するため）。
+    - ledger 畳み込み状態（`fold_candidate_states`）が `evaluated` であること。
+      `retired` / `promoted` になった候補は畳み込み上の terminal 状態であり、
+      Sec3-5 の「支配されない **evaluated** 候補」という frontier の定義から外れる。
+      これらを points に残すと、purge（Sec12-3）の frontier 保護判定に誤って
+      巻き込まれてしまう。
+
+    各 point の `eligible` は以下の 2 条件がともに満たされる場合のみ True になる:
+
+    1. スコープ内の non-holdout run が全て `verdict=pass`（Sec3-5 の基本要件）。
+    2. スコープ内で観測された non-holdout `scenario_id` の全候補横断の**和集合**
+       （「要求シナリオ集合」）を、この候補の最新 attempt 群が全てカバーしていること。
+
+    【判断】2 の「要求シナリオ集合」は、`evaluate --scenario <id>` 等の部分評価で
+    1 本だけ pass した候補が frontier に紛れ込むのを防ぐための近似規則である。
+    設計書 Sec3-5 は「全 non-holdout シナリオで verdict=pass」とのみ規定し、
+    シナリオスイートの完全な一覧（`scenario.schema.json` 由来）を ledger だけからは
+    参照できないため、「同一比較スコープ内で実際に観測された scenario_id の和集合」を
+    スイート全体の近似として採用する。suite_hash がスイート内容そのものを固定する
+    （Sec3-5「hash 定義」）ため、同一 suite_hash 内で少なくとも 1 候補が実行した
+    シナリオ集合は、そのスイートが持つシナリオ集合の下界（部分集合）になる。実務上は
+    frontier 評価（`evaluate.repeat_frontier`）を経た候補が全シナリオを実行しているため、
+    この和集合はスイート全体に一致するとみなせる。
     """
     cost_axis = (config.get("frontier") or {}).get("cost_axis", DEFAULTS["frontier"]["cost_axis"])
+    _validate_cost_axis(cost_axis)
     run_events = [e for e in events if e.get("event") == "run_completed"]
     if not run_events:
         return []
@@ -597,15 +679,27 @@ def aggregate_run_points(events: list[dict], config: dict) -> list[dict]:
     if latest_non_holdout is None:
         return []
     latest_pair = (latest_non_holdout.get("suite_hash"), latest_non_holdout.get("evaluator_hash"))
+    # holdout run はここで完全に除外する（PR #162 レビュー指摘: holdout-only 候補が
+    # runs:0 の point として points に混入するのを防ぐ）。holdout run は元々
+    # `_summarize_candidate_runs` 内でも除外されていたため、集計結果への影響はない。
     matching = [
-        e for e in run_events if (e.get("suite_hash"), e.get("evaluator_hash")) == latest_pair
+        e
+        for e in run_events
+        if not e.get("holdout") and (e.get("suite_hash"), e.get("evaluator_hash")) == latest_pair
     ]
+    required_scenarios = frozenset(e.get("scenario_id") for e in matching)
 
+    states = fold_candidate_states(events)
     by_cand: dict[str, list[dict]] = {}
     for event in matching:
-        by_cand.setdefault(event["cand_id"], []).append(event)
+        cand_id = event["cand_id"]
+        if states.get(cand_id, {}).get("status") != "evaluated":
+            continue
+        by_cand.setdefault(cand_id, []).append(event)
     return [
-        _summarize_candidate_runs(cand_id, _latest_attempt_groups_per_scenario(runs), cost_axis)
+        _summarize_candidate_runs(
+            cand_id, _latest_attempt_groups_per_scenario(runs), cost_axis, required_scenarios
+        )
         for cand_id, runs in sorted(by_cand.items())
     ]
 
@@ -638,13 +732,24 @@ def _latest_attempt_groups_per_scenario(runs: list[dict]) -> list[dict]:
     return latest_runs
 
 
-def _summarize_candidate_runs(cand_id: str, runs: list[dict], cost_axis: str) -> dict:
+def _summarize_candidate_runs(
+    cand_id: str, runs: list[dict], cost_axis: str, required_scenarios: frozenset[str]
+) -> dict:
+    """cand_id 単位で run 群を集計し frontier point を作る。
+
+    `runs` は呼び出し元（`aggregate_run_points`）の時点で既に holdout run と
+    ledger 畳み込み terminal 状態の候補を除外済みである（PR #162 レビュー指摘）。
+    ここでの `non_holdout_runs` フィルタは冗長防御として維持する。
+    """
     non_holdout_runs = [r for r in runs if not r.get("holdout")]
     qualities = [r["quality_score"] for r in non_holdout_runs]
-    costs = [r.get("cost", {}).get(cost_axis, 0) for r in non_holdout_runs]
+    costs = [_run_cost(r, cost_axis) for r in non_holdout_runs]
     non_holdout_pass = bool(non_holdout_runs) and all(
         r.get("verdict") == "pass" for r in non_holdout_runs
     )
+    covered_scenarios = frozenset(r.get("scenario_id") for r in non_holdout_runs)
+    scenario_coverage_ok = required_scenarios <= covered_scenarios
+    eligible = non_holdout_pass and scenario_coverage_ok
     if not non_holdout_runs:
         return {
             "cand_id": cand_id,
@@ -664,8 +769,23 @@ def _summarize_candidate_runs(cand_id: str, runs: list[dict], cost_axis: str) ->
         "quality_min": min(qualities),
         "cost_mean": sum(costs) / len(costs),
         "runs": len(non_holdout_runs),
-        "eligible": non_holdout_pass,
+        "eligible": eligible,
     }
+
+
+def _run_cost(run: dict, cost_axis: str) -> float:
+    """run の cost オブジェクトから `cost_axis` フィールドを取り出す。
+
+    欠落している場合は黙って 0 にせず、run_id を含むエラーを送出する
+    （PR #162 レビュー指摘: cost_axis の typo/不整合を隠蔽しない）。
+    """
+    cost_obj = run.get("cost") or {}
+    if cost_axis not in cost_obj:
+        raise MetaHarnessRootError(
+            f"run {run.get('run_id')!r} is missing cost field {cost_axis!r}"
+            " required by frontier.cost_axis"
+        )
+    return cost_obj[cost_axis]
 
 
 def compute_pareto_frontier(points: list[dict]) -> tuple[list[str], list[str]]:
@@ -1037,13 +1157,27 @@ def _acquire_store_lock(lock_file: Path, ttl_seconds: float) -> str:
         try:
             fd = os.open(lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
-            if not _is_lock_stale(lock_file, ttl_seconds):
+            # 【判断】PR #162 レビュー指摘 (FIX P1): staleness 判定と snapshot 取得を
+            # 別々のタイミングで行うと（旧実装: `_is_lock_stale()` で mtime を stat →
+            # 別途 `_read_lock_snapshot()` で内容+mtime を再取得）、この 2 回の読み取りの
+            # 間に別プロセスが lock を unlink + 再作成すると、stale と判定したのは古い
+            # lock なのに、実際に compare-and-delete するのは（2 回目の読み取りで得た）
+            # 新しい fresh な lock になってしまう。fresh lock は当然「自分自身の
+            # snapshot と一致」するため無条件に削除されてしまう（stale 判定を回避した
+            # fresh lock が奪取される）。
+            # 修正: snapshot（内容 + mtime）を 1 回だけ取得し、その snapshot 自身の mtime
+            # を根拠に staleness を判定する。判定に使った snapshot をそのまま
+            # `_unlink_if_unchanged` に渡すことで、判定対象と削除対象を常に同一の
+            # 読み取り結果に固定する（TOCTOU ウィンドウをこの関数内では作らない）。
+            snapshot = _read_lock_snapshot(lock_file)
+            if snapshot is None:
+                # 既に別プロセスが unlink 済み（lock 消滅）。次のループで再取得を試みる。
+                continue
+            if not _is_snapshot_stale(snapshot, ttl_seconds):
                 raise LockAcquisitionError(
                     f"store.lock is held by another process: {lock_file}"
                 ) from None
-            snapshot = _read_lock_snapshot(lock_file)
-            if snapshot is not None:
-                _unlink_if_unchanged(lock_file, snapshot)
+            _unlink_if_unchanged(lock_file, snapshot)
             continue
         else:
             with os.fdopen(fd, "w") as handle:
@@ -1055,11 +1189,27 @@ def _acquire_store_lock(lock_file: Path, ttl_seconds: float) -> str:
 
 
 def _is_lock_stale(lock_file: Path, ttl_seconds: float) -> bool:
+    """lock ファイルを直接 stat して staleness を判定する（既存挙動、単体テスト用に維持）。
+
+    `_acquire_store_lock` の奪取判定では、この関数ではなく `_is_snapshot_stale` を使う
+    （snapshot-first の原則、PR #162 レビュー指摘）。
+    """
     try:
         age_seconds = time.time() - lock_file.stat().st_mtime
     except FileNotFoundError:
         return True
     return age_seconds > ttl_seconds
+
+
+def _is_snapshot_stale(snapshot: tuple[str, float], ttl_seconds: float) -> bool:
+    """既に取得済みの lock snapshot（内容 + mtime）の mtime を根拠に staleness を判定する。
+
+    `_acquire_store_lock` は staleness 判定と compare-and-delete の両方に同一の
+    snapshot を使うことで、判定対象と削除対象がすり替わる TOCTOU を避ける
+    （PR #162 レビュー指摘、FIX P1）。
+    """
+    _, mtime = snapshot
+    return time.time() - mtime > ttl_seconds
 
 
 # ---------------------------------------------------------------------------

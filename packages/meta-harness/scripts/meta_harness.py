@@ -296,24 +296,33 @@ def cmd_frontier(project: str, rebuild: bool, as_json: bool) -> int:
     if ctx is None:
         return EXIT_VALIDATION_ERROR
     main_root, config = ctx
-    frontier_doc = _compute_frontier(main_root, config)
 
     if rebuild:
-        event = {
-            "event": "frontier_updated",
-            "ts": mh.now_iso(),
-            "schema_version": "1.0",
-            "frontier": frontier_doc["frontier"],
-            "dominated": frontier_doc["dominated"],
-        }
+        # 【判断】PR #162 レビュー指摘 (FIX P2): frontier 計算（ledger 読み込み込み）を
+        # lock 取得前に行うと、lock 待ちの間に別 writer が run_completed を追記した場合、
+        # 「古い points + （lock 内で再読した）新しい ledger_line_count」という不整合な
+        # キャッシュができてしまい、しかも ledger_line_count が一致してしまうため
+        # status の陳腐化警告も出ない。修正: ledger 読み込み + frontier 計算 +
+        # frontier_updated 追記 + キャッシュ書き込みを、すべて同一の store_lock ブロック
+        # 内で行う。
         try:
             with mh.store_lock(main_root, config):
+                frontier_doc = _compute_frontier(main_root, config)
+                event = {
+                    "event": "frontier_updated",
+                    "ts": mh.now_iso(),
+                    "schema_version": "1.0",
+                    "frontier": frontier_doc["frontier"],
+                    "dominated": frontier_doc["dominated"],
+                }
                 mh.append_ledger_event(main_root, config, event)
                 frontier_doc["ledger_line_count"] = len(mh.read_ledger_events(main_root, config))
                 mh.write_frontier_cache(main_root, config, frontier_doc)
         except mh.LockAcquisitionError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return EXIT_LOCK_CONFLICT
+    else:
+        frontier_doc = _compute_frontier(main_root, config)
 
     _emit(
         frontier_doc,

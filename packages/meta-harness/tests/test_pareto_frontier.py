@@ -454,3 +454,212 @@ class TestFrontierHashReflectsLatestRunCompleted:
         zero_hash = "0" * 64
         assert payload["suite_hash"] == zero_hash
         assert payload["evaluator_hash"] == zero_hash
+
+
+class TestFrontierRebuildComputesInsideLock:
+    # PR #162 レビュー指摘 (FIX P2 / Fix 2): frontier 計算（ledger 読み込み含む）は
+    # store_lock 取得後に行われなければならない（lock 待ち中の追記との競合を防ぐため）
+    def test_compute_frontier_happens_while_store_lock_is_held(
+        self, git_project: Path, run_meta, monkeypatch
+    ) -> None:
+        run_meta("init", project=git_project, check=True)
+        config = mh.load_config(git_project)
+        mh.append_ledger_event(git_project, config, _run_completed("c1", quality_score=90))
+
+        lock_held = {"value": False}
+        original_read = mh_cli.mh.read_ledger_events
+
+        def tracking_read_ledger_events(main_root, cfg):
+            assert lock_held["value"] is True, (
+                "frontier computation (read_ledger_events) must happen while store.lock is held"
+            )
+            return original_read(main_root, cfg)
+
+        original_store_lock = mh_cli.mh.store_lock
+
+        from contextlib import contextmanager
+
+        @contextmanager
+        def tracking_store_lock(main_root, cfg):
+            with original_store_lock(main_root, cfg):
+                lock_held["value"] = True
+                try:
+                    yield
+                finally:
+                    lock_held["value"] = False
+
+        monkeypatch.setattr(mh_cli.mh, "read_ledger_events", tracking_read_ledger_events)
+        monkeypatch.setattr(mh_cli.mh, "store_lock", tracking_store_lock)
+
+        exit_code = mh_cli.cmd_frontier(str(git_project), True, False)
+        assert exit_code == 0
+
+    def test_frontier_rebuild_ledger_line_count_matches_actual_file_after_append(
+        self, git_project: Path, run_meta
+    ) -> None:
+        run_meta("init", project=git_project, check=True)
+        config = mh.load_config(git_project)
+        mh.append_ledger_event(git_project, config, _run_completed("c1", quality_score=90))
+
+        run_meta("frontier", "--rebuild", project=git_project, check=True)
+
+        ledger_path = git_project / ".claude" / "meta-harness" / "ledger.jsonl"
+        actual_line_count = len(
+            [ln for ln in ledger_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        )
+        cached = json.loads(
+            (git_project / ".claude" / "meta-harness" / "frontier.json").read_text(encoding="utf-8")
+        )
+        assert cached["ledger_line_count"] == actual_line_count
+
+
+class TestFrontierExcludesTerminalStates:
+    # PR #162 レビュー指摘 (FIX P2 / Fix 3): 畳み込み状態が retired/promoted の候補は
+    # points/frontier/dominated のいずれからも除外されること（Sec3-5「evaluated 候補」）
+    def test_retired_candidate_excluded_from_frontier_and_points_after_rebuild(
+        self, git_project: Path, run_meta
+    ) -> None:
+        run_meta("init", project=git_project, check=True)
+        config = mh.load_config(git_project)
+        mh.append_ledger_event(git_project, config, _run_completed("c1", quality_score=95))
+        mh.append_ledger_event(
+            git_project,
+            config,
+            {
+                "event": "status_changed",
+                "ts": mh.now_iso(),
+                "schema_version": "1.0",
+                "cand_id": "c1",
+                "from": "evaluated",
+                "to": "retired",
+                "reason": "superseded",
+            },
+        )
+
+        result = run_meta("frontier", "--rebuild", "--json", project=git_project, check=True)
+        payload = json.loads(result.stdout)
+
+        assert "c1" not in payload["frontier"]
+        assert "c1" not in payload["dominated"]
+        assert all(p["cand_id"] != "c1" for p in payload["points"])
+
+    def test_fold_candidate_states_terminal_is_excluded_at_lib_level(self) -> None:
+        events = [
+            _run_completed("c1", quality_score=95),
+            {
+                "event": "status_changed",
+                "ts": mh.now_iso(),
+                "schema_version": "1.0",
+                "cand_id": "c1",
+                "from": "evaluated",
+                "to": "promoted",
+                "reason": "merged",
+            },
+        ]
+        points = mh.aggregate_run_points(events, mh.DEFAULTS)
+        assert points == []
+
+
+class TestFrontierScenarioCoverageEligibility:
+    # PR #162 レビュー指摘 (FIX P2 / Fix 4): 部分評価（一部シナリオのみ pass）の候補は
+    # 要求シナリオ集合（同一スコープで観測された scenario_id の和集合）を満たさない限り
+    # ineligible とする
+    def test_candidate_missing_scenario_observed_by_others_is_ineligible(self) -> None:
+        events = [
+            _run_completed("a", quality_score=90, scenario_id="s1"),
+            _run_completed("a", quality_score=85, scenario_id="s2"),
+            _run_completed("b", quality_score=95, scenario_id="s1"),
+        ]
+        points = mh.aggregate_run_points(events, mh.DEFAULTS)
+        by_id = {p["cand_id"]: p for p in points}
+        assert by_id["a"]["eligible"] is True
+        assert by_id["b"]["eligible"] is False
+
+    def test_candidate_covering_all_observed_scenarios_is_eligible(self) -> None:
+        events = [
+            _run_completed("a", quality_score=90, scenario_id="s1"),
+            _run_completed("a", quality_score=85, scenario_id="s2"),
+            _run_completed("b", quality_score=95, scenario_id="s1"),
+            _run_completed("b", quality_score=88, scenario_id="s2"),
+        ]
+        points = mh.aggregate_run_points(events, mh.DEFAULTS)
+        by_id = {p["cand_id"]: p for p in points}
+        assert by_id["a"]["eligible"] is True
+        assert by_id["b"]["eligible"] is True
+
+
+class TestHoldoutOnlyCandidateExcludedFromPoints:
+    # PR #162 レビュー指摘 (FIX P2 / Fix 5): 通常 frontier 集計のグルーピング前に
+    # holdout run を除外し、holdout-only 候補は points にも dominated にも現れないこと
+    def test_holdout_only_candidate_in_shared_scope_produces_no_point(self) -> None:
+        events = [
+            _run_completed("c1", quality_score=90),
+            _run_completed("c2", quality_score=5, holdout=True),
+        ]
+        points = mh.aggregate_run_points(events, mh.DEFAULTS)
+        cand_ids = [p["cand_id"] for p in points]
+        assert "c2" not in cand_ids
+        assert cand_ids == ["c1"]
+
+    def test_holdout_only_candidate_absent_from_frontier_json_and_schema_valid(
+        self, git_project: Path, run_meta
+    ) -> None:
+        run_meta("init", project=git_project, check=True)
+        config = mh.load_config(git_project)
+        mh.append_ledger_event(git_project, config, _run_completed("c1", quality_score=90))
+        mh.append_ledger_event(
+            git_project, config, _run_completed("c2", quality_score=5, holdout=True)
+        )
+
+        result = run_meta("frontier", "--rebuild", "--json", project=git_project, check=True)
+        payload = json.loads(result.stdout)
+
+        assert all(p["cand_id"] != "c2" for p in payload["points"])
+        assert "c2" not in payload["frontier"]
+        assert "c2" not in payload["dominated"]
+
+        schema_dir = Path(__file__).resolve().parents[3] / "packages" / "meta-harness" / "schemas"
+        schema = mh.load_schema(schema_dir, "frontier.schema.json")
+        cached = json.loads(
+            (git_project / ".claude" / "meta-harness" / "frontier.json").read_text(encoding="utf-8")
+        )
+        assert mh.validate_against_schema(cached, schema, schema_dir) == []
+
+
+class TestCostAxisValidation:
+    # PR #162 レビュー指摘 (FIX P2 / Fix 7): cost_axis の typo / cost キー欠落を
+    # 黙って 0 にせず fail-closed する
+    def test_invalid_cost_axis_raises(self) -> None:
+        config = {**mh.DEFAULTS, "frontier": {"cost_axis": "totl_tokens"}}
+        events = [_run_completed("c1", quality_score=90)]
+        try:
+            mh.aggregate_run_points(events, config)
+        except mh.MetaHarnessRootError:
+            pass
+        else:
+            raise AssertionError("unknown cost_axis should raise MetaHarnessRootError")
+
+    def test_missing_cost_key_in_run_raises_with_run_id(self) -> None:
+        config = {**mh.DEFAULTS, "frontier": {"cost_axis": "total_cost_usd"}}
+        event = _run_completed("c1", quality_score=90)
+        del event["cost"]["total_cost_usd"]
+        try:
+            mh.aggregate_run_points([event], config)
+        except mh.MetaHarnessRootError as exc:
+            assert event["run_id"] in str(exc)
+        else:
+            raise AssertionError("missing cost field should raise MetaHarnessRootError")
+
+    def test_cli_frontier_exits_2_for_invalid_cost_axis(self, git_project: Path, run_meta) -> None:
+        run_meta("init", project=git_project, check=True)
+        config = mh.load_config(git_project)
+        mh.append_ledger_event(git_project, config, _run_completed("c1", quality_score=90))
+        local_config_dir = git_project / ".claude" / "config" / "meta-harness"
+        local_config_dir.mkdir(parents=True, exist_ok=True)
+        (local_config_dir / "meta-harness.local.yaml").write_text(
+            "frontier:\n  cost_axis: totl_tokens\n", encoding="utf-8"
+        )
+
+        result = run_meta("frontier", project=git_project, check=False)
+
+        assert result.returncode == 2
