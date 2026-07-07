@@ -1,0 +1,18 @@
+{
+  "name": "meta-harness",
+  "version": "0.1.0",
+  "description": "候補ハーネスの評価・進化基盤（Phase 1a: store I/O・ledger 畳み込み・Pareto 判定・schema 検証の決定論部分）",
+  "depends": ["core"],
+  "hooks": {},
+  "files": [],
+  "skills": [],
+  "agents": [],
+  "rules": [],
+  "scripts": [
+    {
+      "path": "scripts/meta_harness.py",
+      "description": "meta-harness CLI: init/register/frontier/status/purge（Phase 1a）。evaluate/propose/promote/loop は Phase 1b/2 のスタブ"
+    }
+  ],
+  "config": ["config/meta-harness.yaml"]
+}

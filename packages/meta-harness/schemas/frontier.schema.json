@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-orchestra.dev/schemas/meta-harness/frontier.schema.json",
+  "title": "Frontier Cache",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "generated_at",
+    "ledger_line_count",
+    "suite_hash",
+    "evaluator_hash",
+    "cost_axis",
+    "points",
+    "frontier",
+    "dominated"
+  ],
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0" },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "ledger_line_count": { "type": "integer", "minimum": 0 },
+    "suite_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "evaluator_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "cost_axis": { "type": "string" },
+    "points": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "cand_id",
+          "quality_mean",
+          "quality_var",
+          "quality_min",
+          "cost_mean",
+          "runs"
+        ],
+        "properties": {
+          "cand_id": { "type": "string" },
+          "quality_mean": { "type": "number" },
+          "quality_var": { "type": "number" },
+          "quality_min": { "type": "number" },
+          "cost_mean": { "type": "number" },
+          "runs": { "type": "integer", "minimum": 1 }
+        }
+      }
+    },
+    "frontier": { "type": "array", "items": { "type": "string" } },
+    "dominated": { "type": "array", "items": { "type": "string" } }
+  }
+}

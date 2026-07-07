@@ -1,0 +1,73 @@
+storage:
+  root: null # null = git-common-dir からメインルートを自動解決。絶対パスで明示上書き可（§2-0）
+  dir: .claude/meta-harness # storage.root（メインルート）相対
+evaluate:
+  worktree_root: .worktrees/meta # メインルート相対（§2-0）
+  repeat_default: 1
+  repeat_frontier: 3
+  timeout_ms_default: 300000
+  permission_mode: acceptEdits
+  allowed_tools:
+    - "Read"
+    - "Glob"
+    - "Grep"
+    - "Edit"
+    - "Write"
+    - "Bash(git *)"
+    - "Bash(python *)"
+    - "Bash(pytest *)"
+  model: null # null = セッション既定モデル
+  cli_version_pin: null # null = バージョン一致検証をスキップ（capability smoke test は常に実施）
+scenario_run:
+  max_turns_default: 30
+  max_budget_usd_default: 2.0
+judge:
+  model: null
+  effort: high
+  max_turns: 4
+scoring:
+  critical_weight: 70
+  penalty_base: 30
+  penalty_per_item: 5
+  penalty_missing_report: 6
+frontier:
+  cost_axis: total_tokens
+overlay:
+  allowed_prefixes:
+    - "facets/"
+  denied_prefixes:
+    - "packages/meta-harness/"
+    - ".claude/meta-harness/"
+    - "docs/evaluation/"
+    - ".github/"
+config_patch:
+  allowlist: [] # Phase 1: 常に空（config patch は全面拒否）。Phase 2 で
+    # agent-routing/cli-tools.yaml の agents.*.tool / codex.model /
+    # antigravity.model を追加予定
+proposer:
+  max_iterations: 10
+  divergence_rounds: 3
+  overfit_drop_pt: 15
+  budget_usd_per_iteration: 1.0 # 実測待ち。§14 参照
+  max_turns: 40
+  max_focus_runs: 5
+  max_overlay_bytes: 200000
+  model: null # null = セッション既定モデル
+  effort: high
+loop:
+  budget_usd: null # 実測後に既定を設定。§14 参照
+  quality_epsilon_pt: 0.5 # best_quality の改善判定閾値（§13-2）
+  convergence:
+    enabled: true
+    quality_band_pt: 3
+    rounds: 2
+promote:
+  verify_command: null # 例: "pytest -q"。null = 検証コマンドを実行しない
+  allow_stale: false # true にすると鮮度チェック（§12-1）を警告に緩和
+  reservation_ttl_hours: 24 # promotion_reserved の stale 判定閾値（§12-2）
+locks:
+  store_ttl_seconds: 60
+  evaluate_heartbeat_seconds: 60
+  evaluate_stale_seconds: 300
+retention:
+  keep_generations: 5

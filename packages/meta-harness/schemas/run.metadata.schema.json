@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-orchestra.dev/schemas/meta-harness/run.metadata.schema.json",
+  "title": "Run Metadata",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "cand_id",
+    "scenario_id",
+    "suite_id",
+    "suite_hash",
+    "scenario_hash",
+    "evaluator_hash",
+    "target",
+    "holdout",
+    "project_root",
+    "ai_orchestra_dir",
+    "source_commit",
+    "config_hash",
+    "model",
+    "claude_version",
+    "cli_capabilities",
+    "started_at",
+    "attempt",
+    "attempts_total"
+  ],
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0" },
+    "run_id": {
+      "type": "string",
+      "pattern": "^run-[0-9]{8}-[0-9]{6}-[a-z0-9-]+-a[0-9]+-[0-9a-f]{4}$"
+    },
+    "cand_id": { "type": "string" },
+    "scenario_id": { "type": "string" },
+    "suite_id": { "type": "string" },
+    "suite_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "scenario_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "evaluator_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "target": {
+      "type": "string",
+      "pattern": "^(claude-harness|skill:[a-z0-9-]+)$"
+    },
+    "holdout": { "type": "boolean" },
+    "project_root": { "type": "string" },
+    "ai_orchestra_dir": { "type": "string" },
+    "source_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "config_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "model": { "type": ["string", "null"] },
+    "claude_version": { "type": "string" },
+    "cli_capabilities": { "type": "object" },
+    "started_at": { "type": "string", "format": "date-time" },
+    "finished_at": { "type": ["string", "null"], "format": "date-time" },
+    "attempt": { "type": "integer", "minimum": 1 },
+    "attempts_total": { "type": "integer", "minimum": 1 }
+  }
+}

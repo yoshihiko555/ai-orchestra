@@ -1108,6 +1108,45 @@ class OrchestraManager(ContextMixin, HooksMixin):
         print(f"PIDファイル: {pid_path}")
 
 
+def _first_positional_command(argv: list[str]) -> str | None:
+    """argv の先頭にある既知のトップレベルオプション（`--orchestra-dir`）をスキップし、
+    最初の位置引数（サブコマンド名）を返す。位置引数が無ければ None。
+
+    `run -- <args>` パススルー分割（`main()` 内）は「argv[0] がサブコマンド run か」
+    ではなく「最初の位置引数が run か」で判定する必要がある。`--orchestra-dir <dir> run ...`
+    のようにグローバルオプションが前置されるケースでも run パススルーが機能するようにする
+    ための判定専用ヘルパー。
+    """
+    i = 0
+    while i < len(argv):
+        token = argv[i]
+        if token == "--orchestra-dir":
+            i += 2
+            continue
+        if token.startswith("--orchestra-dir="):
+            i += 1
+            continue
+        return token
+    return None
+
+
+def _split_run_passthrough(argv: list[str]) -> tuple[list[str], list[str]]:
+    """`run` サブコマンドの `-- <script_args>` パススルーを argv から切り出す。
+
+    最初の位置引数（`--orchestra-dir` 等のグローバルオプションをスキップした後の
+    先頭トークン）が `run` かつ argv に `--` が含まれる場合のみ分割する。`meta`
+    サブコマンド（`argparse.REMAINDER` で自前パススルーする）等、`run` 以外の
+    コマンドでは `--` を含んでいても一切分割しない。
+
+    戻り値は `(parser_argv, script_args)`。`parser_argv` は argparse にそのまま渡す
+    引数列（分割対象外なら入力 argv と同じ）。
+    """
+    if _first_positional_command(argv) == "run" and "--" in argv:
+        sep_idx = argv.index("--")
+        return argv[:sep_idx], argv[sep_idx + 1 :]
+    return argv, []
+
+
 def main():
     """メインエントリポイント"""
     parser = argparse.ArgumentParser(
@@ -1228,6 +1267,16 @@ def main():
     )
     facet_extract_parser.add_argument("--project", help="プロジェクトパス")
 
+    meta_parser = subparsers.add_parser(
+        "meta",
+        help="Meta-Harness（候補評価・進化基盤）CLI へ委譲",
+        description="packages/meta-harness/scripts/meta_harness.py へ全引数をパススルーする。"
+        " 例: orchestra-manager.py meta register --overlay <dir> --target <t>",
+    )
+    meta_parser.add_argument(
+        "meta_args", nargs=argparse.REMAINDER, help="meta_harness.py へパススルーする引数"
+    )
+
     setup_parser = subparsers.add_parser("setup", help="プリセットで一括セットアップ")
     setup_parser.add_argument(
         "preset", nargs="?", default=None, help="プリセット名（省略時は一覧表示）"
@@ -1235,12 +1284,7 @@ def main():
     setup_parser.add_argument("--project", help="プロジェクトパス")
     setup_parser.add_argument("--dry-run", action="store_true", help="実行内容を表示のみ")
 
-    argv = sys.argv[1:]
-    script_args: list[str] = []
-    if "--" in argv:
-        sep_idx = argv.index("--")
-        script_args = argv[sep_idx + 1 :]
-        argv = argv[:sep_idx]
+    argv, script_args = _split_run_passthrough(sys.argv[1:])
 
     args = parser.parse_args(argv)
 
@@ -1325,6 +1369,16 @@ def main():
         else:
             facet_parser.print_help()
             sys.exit(1)
+    elif args.command == "meta":
+        meta_script = orchestra_dir / "packages" / "meta-harness" / "scripts" / "meta_harness.py"
+        if not meta_script.is_file():
+            print(f"エラー: meta-harness スクリプトが存在しません: {meta_script}", file=sys.stderr)
+            sys.exit(1)
+        result = subprocess.run(
+            [sys.executable, str(meta_script)] + args.meta_args,
+            env={**os.environ, "AI_ORCHESTRA_DIR": str(orchestra_dir)},
+        )
+        sys.exit(result.returncode)
     elif args.command == "setup":
         if args.preset is None:
             manager.list_presets()

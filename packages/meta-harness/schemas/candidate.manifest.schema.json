@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-orchestra.dev/schemas/meta-harness/candidate.manifest.schema.json",
+  "title": "Candidate Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "cand_id",
+    "parent_id",
+    "generation",
+    "created_at",
+    "created_by",
+    "target",
+    "source_commit",
+    "config_hash",
+    "model_versions",
+    "overlay_files",
+    "description"
+  ],
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0" },
+    "cand_id": {
+      "type": "string",
+      "pattern": "^cand-[0-9]{8}-[0-9]{6}-[a-z0-9-]+$"
+    },
+    "parent_id": {
+      "type": ["string", "null"],
+      "pattern": "^cand-[0-9]{8}-[0-9]{6}-[a-z0-9-]+$"
+    },
+    "generation": { "type": "integer", "minimum": 0 },
+    "created_at": { "type": "string", "format": "date-time" },
+    "created_by": { "type": "string", "enum": ["human", "proposer"] },
+    "target": {
+      "type": "string",
+      "pattern": "^(claude-harness|skill:[a-z0-9-]+)$"
+    },
+    "source_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "config_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "model_versions": {
+      "type": "object",
+      "propertyNames": { "type": "string" },
+      "additionalProperties": { "type": "string" }
+    },
+    "overlay_files": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+      }
+    },
+    "description": { "type": "string" }
+  }
+}
