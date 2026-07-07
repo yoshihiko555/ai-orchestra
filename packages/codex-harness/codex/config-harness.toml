@@ -18,6 +18,10 @@
 # `.codex/rules/codex-harness.rules`, which do not depend on a permission
 # profile. Sandbox/approval posture is left to the user's Codex config.
 #
+# Upgrade note: `apply_codex_harness_config()` removes the old harness-owned
+# `project-edit` profile only when it matches the legacy generated shape. This
+# clears stale installs without deleting user-managed permission profiles.
+#
 # See docs/design/codex-cli-harness.md §5.5 / §10 for rationale.
 
 [features]

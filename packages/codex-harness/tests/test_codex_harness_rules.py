@@ -78,6 +78,21 @@ class TestApprovalBasedDecisions:
         content = _RULES_PATH.read_text(encoding="utf-8")
         assert _decision_for(content, '["gh", "pr", "create"]') == "prompt"
 
+    def test_gh_pr_new_alias_is_prompt(self) -> None:
+        content = _RULES_PATH.read_text(encoding="utf-8")
+        assert _decision_for(content, '["gh", "pr", "new"]') == "prompt"
+
+    def test_force_push_variants_are_forbidden(self) -> None:
+        content = _RULES_PATH.read_text(encoding="utf-8")
+        force_patterns = [
+            '["git", "push", "--force"]',
+            '["git", "push", "-f"]',
+            '["git", "push", "--force-with-lease"]',
+            '["git", "push", "--force-if-includes"]',
+        ]
+        for pattern in force_patterns:
+            assert _decision_for(content, pattern) == "forbidden", f"{pattern} must stay forbidden"
+
     def test_publish_and_merge_stay_forbidden(self) -> None:
         content = _RULES_PATH.read_text(encoding="utf-8")
         forbidden_patterns = [

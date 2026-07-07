@@ -68,6 +68,21 @@ def _load_orchestra_json(project_root: Path) -> dict | None:
         return None
 
 
+def load_codex_file_hashes(project_root: Path) -> dict[str, str] | None:
+    """Load a typed snapshot of codex_file_hashes from the distribution ledger."""
+    orch = _load_orchestra_json(project_root)
+    if orch is None:
+        return None
+    hashes = orch.get("codex_file_hashes", {})
+    if not isinstance(hashes, dict):
+        return None
+    snapshot: dict[str, str] = {}
+    for key, value in hashes.items():
+        if isinstance(key, str) and isinstance(value, str):
+            snapshot[key] = value
+    return snapshot
+
+
 def _check_single_hook_file(
     target_path: Path, resolved_root: Path, recorded_hash: str
 ) -> str | None:
@@ -87,21 +102,16 @@ def _check_single_hook_file(
     return None
 
 
-def verify_hooks_trust(project_root: Path) -> TrustResult:
-    """Verify .codex/hooks.json and .codex/hooks/*.py against the sync ledger.
+def verify_hooks_trust_against_hashes(
+    project_root: Path, hashes: dict[str, str] | None
+) -> TrustResult:
+    """Verify hook/rule/validation files against a supplied hash snapshot.
 
     Fail-closed: any missing ledger, missing/modified file, or symlink
     results in ``trusted=False``.
     """
-    orch = _load_orchestra_json(project_root)
-    if orch is None:
-        return TrustResult(trusted=False, reasons=["orchestra.json not found or unreadable"])
-
-    hashes = orch.get("codex_file_hashes", {})
-    if not isinstance(hashes, dict):
-        return TrustResult(
-            trusted=False, reasons=["codex_file_hashes in orchestra.json is not a dict"]
-        )
+    if hashes is None:
+        return TrustResult(trusted=False, reasons=["codex_file_hashes snapshot unavailable"])
     hook_entries = {k: v for k, v in hashes.items() if _is_hook_ledger_target(k)}
     if not hook_entries:
         return TrustResult(
@@ -118,7 +128,24 @@ def verify_hooks_trust(project_root: Path) -> TrustResult:
     return TrustResult(trusted=not reasons, reasons=reasons)
 
 
-def is_ledger_entry_trusted(project_root: Path, target_rel: str) -> bool:
+def verify_hooks_trust(project_root: Path) -> TrustResult:
+    """Verify .codex/hooks.json and .codex/hooks/*.py against the sync ledger."""
+    orch = _load_orchestra_json(project_root)
+    if orch is None:
+        return TrustResult(trusted=False, reasons=["orchestra.json not found or unreadable"])
+
+    hashes = orch.get("codex_file_hashes", {})
+    if not isinstance(hashes, dict):
+        return TrustResult(
+            trusted=False, reasons=["codex_file_hashes in orchestra.json is not a dict"]
+        )
+    typed_hashes = {k: v for k, v in hashes.items() if isinstance(k, str) and isinstance(v, str)}
+    return verify_hooks_trust_against_hashes(project_root, typed_hashes)
+
+
+def is_ledger_entry_trusted_against_hashes(
+    project_root: Path, target_rel: str, hashes: dict[str, str] | None
+) -> bool:
     """Check a single ledger-tracked file's SHA-256 against codex_file_hashes.
 
     Fail-closed: a missing orchestra.json, a missing ledger entry, a missing
@@ -126,12 +153,7 @@ def is_ledger_entry_trusted(project_root: Path, target_rel: str) -> bool:
     ``_check_single_hook_file`` with ``verify_hooks_trust`` so both checks
     apply the same symlink/escape/hash rules.
     """
-    orch = _load_orchestra_json(project_root)
-    if orch is None:
-        return False
-
-    hashes = orch.get("codex_file_hashes", {})
-    if not isinstance(hashes, dict):
+    if hashes is None:
         return False
     recorded_hash = hashes.get(target_rel)
     if recorded_hash is None:
@@ -140,6 +162,13 @@ def is_ledger_entry_trusted(project_root: Path, target_rel: str) -> bool:
     resolved_root = project_root.resolve()
     reason = _check_single_hook_file(project_root / target_rel, resolved_root, recorded_hash)
     return reason is None
+
+
+def is_ledger_entry_trusted(project_root: Path, target_rel: str) -> bool:
+    """Check a single ledger-tracked file against the current distribution ledger."""
+    return is_ledger_entry_trusted_against_hashes(
+        project_root, target_rel, load_codex_file_hashes(project_root)
+    )
 
 
 def resolve_trust_flags(project_root: Path, allow_untrusted: bool, label: str) -> list[str] | None:

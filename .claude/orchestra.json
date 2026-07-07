@@ -124,11 +124,11 @@
   "codex_file_hashes": {
     ".codex/hooks.json": "5f5af56a63ceae90f61fb2bb9cd81d60d3cdc2614a3af971005ac376f2cd4e76",
     ".codex/hooks/user_prompt_secret_scan.py": "ccc28fc8fb5fefd8ca20db99bda44d12fe5e411b0c29b8c16d2a7d5f249c12e0",
-    ".codex/hooks/pre_tool_use_policy.py": "b6c451f8a543dd68dd9b69d558d52884ee9efa4fe7c2ca98e639e731afb24001",
+    ".codex/hooks/pre_tool_use_policy.py": "931f8f2c7af48d24a08564b7070f97b3a6748e25622d8775ce72907ee076ee06",
     ".codex/hooks/stop_validate.py": "85a85ecc914ef564f239fbea6dc26e29a0c5d504130f59edae4371543af1219f",
     ".codex/schemas/task_result.schema.json": "b1c53c374e65fd1aafb4976625126689625f1eb45049df77005bb100642db1cb",
     ".codex/schemas/review_result.schema.json": "004555ff9a356d81f3b02d0c3e57647fd16476dfc02544bb90f6cf91e8df4c0e",
-    ".codex/rules/codex-harness.rules": "93fa5323bf3a3604eaec815f97d1e714aa8b38dd487a1b4ad067a5e9ce35e9ac",
+    ".codex/rules/codex-harness.rules": "31f6066eba5f21ea70d7f86a50036c9461a27324e14911c5caea3d4b1e3fc4dd",
     ".codex/validation.json": "c8289813a29cfcd7ac55e0ba2a436fe17ad896d6b4d915788885b5a2ddaa209c"
   }
 }

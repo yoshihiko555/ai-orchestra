@@ -353,21 +353,11 @@ hooks = true
 include_only = ["PATH", "HOME", "SHELL", "TMPDIR", "LANG", "LC_ALL"]
 ```
 
-権限を profile ベースで扱う場合の例:
-
-```toml
-default_permissions = "project-edit"
-
-[permissions.project-edit]
-extends = ":workspace"
-
-[permissions.project-edit.filesystem.":workspace_roots"]
-"." = "write"
-"**/.env" = "deny"
-"**/*.env" = "deny"
-"**/.ssh/**" = "deny"
-"**/.aws/**" = "deny"
-```
+現行の `codex-harness` は repo-local permission profile を配布しない。
+過去に配布していた `project-edit` profile は、git worktree / GitHub CLI / network の
+通常ワークフローを阻害したため、同期時に legacy generated shape と一致する場合だけ
+削除する（Issue #161 フォローアップ）。sandbox / approval posture はユーザーの
+Codex config に委譲し、ハーネス固有の制御は hooks / rules / trust ledger で担う。
 
 注: Codex の permission profile / sandbox / config syntax は変化し得るため、導入時点の `codex doctor`、公式 docs、実際の CLI version で確認する。
 
@@ -943,7 +933,7 @@ curl ... | sh
 wget ... | sh
 ```
 
-原則 prompt（対話 Codex で人間承認時のみ実行。PreToolUse hook はハードブロックしない）:
+原則 prompt（対話 Codex で人間承認時のみ実行。plain 形のみ対象）:
 
 ```text
 git push
@@ -958,9 +948,9 @@ docker build
 ```
 
 > Issue #161 フォローアップ: `git push` は「常に禁止」から「prompt（人間承認付き許可）」へ変更した。
-> 対話 Codex は人間が承認ゲートになるため、branch push / PR 作成はハードブロックせず承認で通す。
+> 対話 Codex は人間が承認ゲートになるため、plain な branch push / PR 作成はハードブロックせず承認で通す。
 > 一方 merge / release / publish / cluster/infra 適用 / 破壊的削除は不可逆・本番影響のため forbidden を維持する。
-> `git push` を prompt にする都合上、PreToolUse hook（`pre_tool_use_policy.py`）の forbidden 一覧からも `git push` を除外している（hook は allow/block の二値で prompt を表現できないため）。
+> force-push と option 挿入で native prefix rule を迂回する形は、PreToolUse hook（`pre_tool_use_policy.py`）で hard block する。
 
 許可しやすい:
 

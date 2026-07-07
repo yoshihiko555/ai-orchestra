@@ -24,6 +24,11 @@ sync_engine = load_module("sync_engine_harness_config", "scripts/lib/sync_engine
 from lib.toml_merge import TomlMergeError  # noqa: E402
 
 HARNESS_TOML = """\
+[features]
+hooks = true
+"""
+
+LEGACY_PROJECT_EDIT_CONFIG = """\
 default_permissions = "project-edit"
 
 [features]
@@ -35,6 +40,11 @@ extends = ":workspace"
 [permissions.project-edit.filesystem.":workspace_roots"]
 "." = "write"
 "**/.env" = "deny"
+"**/*.env" = "deny"
+"**/.ssh/**" = "deny"
+"**/.aws/**" = "deny"
+"**/*.pem" = "deny"
+"**/*.key" = "deny"
 "**/.codex/hooks/**" = "deny"
 "**/.codex/hooks.json" = "deny"
 "**/.codex/rules/**" = "deny"
@@ -98,7 +108,7 @@ class TestSkipConditions:
 
 
 class TestMergeBehavior:
-    def test_adds_missing_keys_and_sections(self, tmp_path: Path) -> None:
+    def test_adds_missing_hooks_feature_only(self, tmp_path: Path) -> None:
         orchestra_path = tmp_path / "orchestra"
         _write_harness_source(orchestra_path)
         project_dir = _make_project(tmp_path, 'model = "gpt-5.5"\n')
@@ -111,28 +121,26 @@ class TestMergeBehavior:
         parsed = tomllib.loads(content)
         assert changed is True
         assert parsed["model"] == "gpt-5.5"
-        assert parsed["default_permissions"] == "project-edit"
         assert parsed["features"]["hooks"] is True
-        assert parsed["permissions"]["project-edit"]["extends"] == ":workspace"
+        assert "default_permissions" not in parsed
+        assert "permissions" not in parsed
 
-    def test_denies_guardrail_self_tamper_paths(self, tmp_path: Path) -> None:
-        """Deny list must protect the agent's own guardrail files from self-edit."""
+    def test_removes_legacy_project_edit_profile(self, tmp_path: Path) -> None:
+        """Upgrade migration removes the old harness-owned permission profile."""
         orchestra_path = tmp_path / "orchestra"
         _write_harness_source(orchestra_path)
-        project_dir = _make_project(tmp_path, 'model = "gpt-5.5"\n')
+        project_dir = _make_project(tmp_path, LEGACY_PROJECT_EDIT_CONFIG)
 
-        sync_engine.apply_codex_harness_config(project_dir, orchestra_path, ["codex-harness"])
+        changed = sync_engine.apply_codex_harness_config(
+            project_dir, orchestra_path, ["codex-harness"]
+        )
 
         content = (project_dir / ".codex" / "config.toml").read_text(encoding="utf-8")
         parsed = tomllib.loads(content)
-        roots = parsed["permissions"]["project-edit"]["filesystem"][":workspace_roots"]
-        assert roots["**/.codex/hooks/**"] == "deny"
-        assert roots["**/.codex/hooks.json"] == "deny"
-        assert roots["**/.codex/rules/**"] == "deny"
-        assert roots["**/.codex/validation.json"] == "deny"
-        assert roots["**/.codex/config.toml"] == "deny"
-        assert roots["**/.codex/schemas/**"] == "deny"
-        assert roots["**/.claude/orchestra.json"] == "deny"
+        assert changed is True
+        assert parsed["features"]["hooks"] is True
+        assert "default_permissions" not in parsed
+        assert "permissions" not in parsed
 
     def test_does_not_overwrite_existing_default_permissions(self, tmp_path: Path) -> None:
         orchestra_path = tmp_path / "orchestra"
@@ -148,19 +156,21 @@ class TestMergeBehavior:
         assert parsed["default_permissions"] == "custom"
         assert parsed["features"]["hooks"] is False
 
-    def test_upserts_permissions_section_even_if_user_edited(self, tmp_path: Path) -> None:
+    def test_does_not_remove_user_edited_project_edit_profile(self, tmp_path: Path) -> None:
         orchestra_path = tmp_path / "orchestra"
         _write_harness_source(orchestra_path)
         project_dir = _make_project(
             tmp_path,
-            '[permissions.project-edit]\nextends = "stale-value"\n',
+            'default_permissions = "project-edit"\n\n'
+            '[permissions.project-edit]\nextends = "custom-parent"\n',
         )
 
         sync_engine.apply_codex_harness_config(project_dir, orchestra_path, ["codex-harness"])
 
         content = (project_dir / ".codex" / "config.toml").read_text(encoding="utf-8")
         parsed = tomllib.loads(content)
-        assert parsed["permissions"]["project-edit"]["extends"] == ":workspace"
+        assert parsed["default_permissions"] == "project-edit"
+        assert parsed["permissions"]["project-edit"]["extends"] == "custom-parent"
 
     def test_second_run_is_idempotent(self, tmp_path: Path) -> None:
         orchestra_path = tmp_path / "orchestra"
@@ -184,18 +194,7 @@ class TestMergeBehavior:
         captured = capsys.readouterr()
         assert "features.hooks=false" in captured.err
 
-    def test_warns_when_default_permissions_conflicts(self, tmp_path: Path, capsys) -> None:
-        orchestra_path = tmp_path / "orchestra"
-        _write_harness_source(orchestra_path)
-        project_dir = _make_project(tmp_path, 'default_permissions = "custom"\n')
-
-        sync_engine.apply_codex_harness_config(project_dir, orchestra_path, ["codex-harness"])
-
-        captured = capsys.readouterr()
-        assert "default_permissions" in captured.err
-        assert "custom" in captured.err
-
-    def test_no_warning_when_values_match_harness(self, tmp_path: Path, capsys) -> None:
+    def test_no_warning_when_existing_values_are_kept(self, tmp_path: Path, capsys) -> None:
         orchestra_path = tmp_path / "orchestra"
         _write_harness_source(orchestra_path)
         project_dir = _make_project(

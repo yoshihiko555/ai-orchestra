@@ -46,8 +46,8 @@
 - [ ] EV-05（正常 / must）: `sync_codex_files` — 現ハッシュが台帳ハッシュと一致し、配布元ファイルが更新されている場合は新しい内容で上書きし台帳を更新する — 根拠: 実装挙動
 - [ ] EV-06（正常 / must）: CLI `install --force` が `OrchestraManager.install(..., force=True)` → `run_initial_sync(force=True)` → `sync_codex_files(..., force=True)` まで配線され、EV-02 / EV-03 の抑制を解除する — 根拠: Plans.md Phase 1（`--force` の CLI フラグ配線）
 - [ ] EV-07（正常 / must）: `collect_facet_build_targets` は常に `"claude"` を含み、`installed_packages` の各 manifest の `facet_targets` を集約し重複を除去する（パッケージ名決め打ちではなく capability 判定） — 根拠: Plans.md Phase 1（facet build ゲートの capability 判定改修）
-- [ ] EV-08（正常 / must）: `apply_codex_harness_config` は `default_permissions`（トップレベルキー）と `[features].hooks` を add-if-missing で扱い、既存のユーザー値を上書きしない — 根拠: packages/codex-harness/codex/config-harness.toml 冒頭コメント + 設計 §5.5
-- [ ] EV-09（正常 / must）: `apply_codex_harness_config` は `[permissions.*]` セクションを upsert する（harness 所有、ユーザーが編集していても harness 側の値に揃える） — 根拠: 同上
+- [ ] EV-08（正常 / must）: `apply_codex_harness_config` は `[features].hooks` を add-if-missing で扱い、既存のユーザー値を上書きしない。現行 harness は `default_permissions` / `[permissions.*]` を新規追加しない — 根拠: packages/codex-harness/codex/config-harness.toml 冒頭コメント + 設計 §5.5 / Issue #161 フォローアップ
+- [ ] EV-09（正常 / must）: `apply_codex_harness_config` は過去に harness が配布した旧 `project-edit` profile を legacy generated shape と一致する場合だけ削除し、ユーザー管理の permission profile は保持する — 根拠: 実装挙動（旧 profile migration）
 - [ ] EV-10（境界 / must）: `apply_codex_harness_config` は次のいずれかの場合に何もせず `False` を返す: `codex-harness` が `installed_packages` に無い／プロジェクトの `.codex/config.toml` が存在しない（新規作成しない）／ `config-harness.toml` が存在しない — 根拠: 実装挙動（config.toml の初期所有は codex-suggestions のため新規作成しない）
 - [ ] EV-11（境界 / should）: `apply_codex_harness_config` は2回目実行で差分がなければ `False` を返す（冪等） — 根拠: 実装挙動
 - [ ] EV-12（境界 / must）: `apply_codex_harness_config` は `[mcp_servers.*]` 等、harness が所有しない既存セクションを変更しない — 根拠: 実装挙動（`_iter_toml_sections` は `permissions.` prefix のみ走査）
@@ -100,7 +100,7 @@
 - [ ] EV-44（異常 / must）: 入力バリデーション — `--project` が git リポジトリ外、または必須 `.codex` ファイル欠如の場合にエラーメッセージと exit 1 を返す。壊れた `validation.json` / `events.jsonl` は例外を出さず空扱い・フォールバックする — 根拠: 実装挙動
 - [ ] EV-45（正常 / must）: 破壊的操作の安全策 — hooks trust 検証が fail-closed であり、`--allow-untrusted-hooks` を明示しない限り改変された `.codex/hooks/` 配下での `codex exec` 実行（bypass フラグ付与）を許可しない — 根拠: 設計 §0
 - [ ] EV-46（正常 / must）: 出力の安定性 — `final.json` / `review.json` は `task_result.schema.json` / `review_result.schema.json` の必須キー・enum に準拠する — 根拠: 設計 §9.3
-- [ ] EV-47（境界 / must）: 設定レイヤリング — `config-harness.toml` のマージは add-if-missing（`default_permissions` / `[features].hooks`）と upsert（`[permissions.*]`）を明確に区別する（EV-08/EV-09 と同一観点の CLI ツール断面での確認） — 根拠: 設計 §5.5
+- [ ] EV-47（境界 / must）: 設定レイヤリング — `config-harness.toml` のマージは `[features].hooks` の add-if-missing と、旧 harness-owned permission profile の限定 migration を明確に区別する（EV-08/EV-09 と同一観点の CLI ツール断面での確認） — 根拠: 設計 §5.5 / Issue #161 フォローアップ
 - N/A: スキル型固有項目（対話規約・非対話完結性・フォールバック・ルーティング尊重・成果物規約） — 理由: 本パッケージはスキル指示書ではなく hook + CLI スクリプト配布パッケージであり、AskUserQuestion 等の対話フェーズを持たない
 
 ### 共通（全類型）

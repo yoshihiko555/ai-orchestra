@@ -32,11 +32,40 @@
 # - なお sandbox の filesystem / network 境界は別レイヤ（config.toml の
 #   permission profile と approval_policy）で制御する。ここは shell コマンドの
 #   ポリシーのみを扱う。
-# - PreToolUse hook（pre_tool_use_policy.py）は prompt を表現できない
-#   allow/block の二値のため、prompt 対象（git push / gh pr create）は hook 側の
-#   ハードブロック一覧から除外している。両者の役割分担に注意。
+# - PreToolUse hook（pre_tool_use_policy.py）は prompt を表現できない。
+#   そのため plain な prompt 対象（git push / gh pr create / gh pr new）は
+#   hook 側で許可する。一方、Codex prefix_rule で表現できない option 挿入形
+#   （例: `git -C ... push`, `gh pr --repo ... create`）や force-push は hook 側で
+#   hard block し、approval bypass を防ぐ。
 
 # --- 承認付きで許可（prompt）: 人間が承認すれば実行 ---
+
+# Force-push is never human-approvable in this harness. Put these before the
+# broad `git push` prompt rule so native prefix matching catches the common
+# immediate-flag forms; the hook catches force flags placed later in argv.
+prefix_rule(
+    pattern=["git", "push", "--force"],
+    decision="forbidden",
+    justification="Force-push rewrites shared history and is not allowed through Codex.",
+)
+
+prefix_rule(
+    pattern=["git", "push", "-f"],
+    decision="forbidden",
+    justification="Force-push rewrites shared history and is not allowed through Codex.",
+)
+
+prefix_rule(
+    pattern=["git", "push", "--force-with-lease"],
+    decision="forbidden",
+    justification="Force-push rewrites shared history and is not allowed through Codex.",
+)
+
+prefix_rule(
+    pattern=["git", "push", "--force-if-includes"],
+    decision="forbidden",
+    justification="Force-push rewrites shared history and is not allowed through Codex.",
+)
 
 prefix_rule(
     pattern=["git", "push"],
@@ -46,6 +75,12 @@ prefix_rule(
 
 prefix_rule(
     pattern=["gh", "pr", "create"],
+    decision="prompt",
+    justification="Creating a PR is allowed only after explicit human approval.",
+)
+
+prefix_rule(
+    pattern=["gh", "pr", "new"],
     decision="prompt",
     justification="Creating a PR is allowed only after explicit human approval.",
 )
