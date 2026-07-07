@@ -266,11 +266,12 @@ def _compute_frontier(main_root: Path, config: dict) -> dict:
     frontier_ids, dominated_ids = mh.compute_pareto_frontier(eligible)
     dominated_ids = sorted(set(dominated_ids) | set(ineligible_ids))
     # 【判断】ledger 末尾のイベントが run_completed とは限らない（run 後に register 等が
-    # 入ることは正常な運用）。points の比較スコープ選定（mh.aggregate_run_points）と同じ
-    # 「最新の run_completed」を hash メタデータにも使う。末尾イベントに限定すると、
-    # points は非ゼロの hash ペアで計算されているのに suite_hash/evaluator_hash だけ
-    # ゼロ埋めになる不整合が生じる。
-    latest = next((e for e in reversed(events) if e.get("event") == "run_completed"), None)
+    # 入ることは正常な運用）し、末尾の run_completed が holdout の場合もある。points の
+    # 比較スコープ選定（mh.aggregate_run_points）と全く同じ「最新の non-holdout
+    # run_completed」（mh.latest_non_holdout_run_completed）を hash メタデータにも使う。
+    # これを揃えないと、points は non-holdout の hash ペアで計算されているのに
+    # suite_hash/evaluator_hash だけ holdout（または末尾イベント）のものになる不整合が生じる。
+    latest = mh.latest_non_holdout_run_completed(events)
     zero_hash = "0" * 64
     return {
         "schema_version": "1.0",

@@ -106,6 +106,9 @@ def _run_completed(
     suite_hash: str = "a" * 64,
     evaluator_hash: str = "e" * 64,
     total_tokens: int = 1000,
+    scenario_id: str = "scenario-1",
+    attempt: int = 1,
+    attempts_total: int = 1,
 ) -> dict:
     return {
         "event": "run_completed",
@@ -113,7 +116,7 @@ def _run_completed(
         "schema_version": "1.0",
         "run_id": f"run-{cand_id}",
         "cand_id": cand_id,
-        "scenario_id": "scenario-1",
+        "scenario_id": scenario_id,
         "target": "claude-harness",
         "suite_id": "claude-harness",
         "suite_hash": suite_hash,
@@ -131,8 +134,8 @@ def _run_completed(
             "total_cost_usd": 0.01,
             "num_turns": 1,
         },
-        "attempt": 1,
-        "attempts_total": 1,
+        "attempt": attempt,
+        "attempts_total": attempts_total,
         "holdout": holdout,
     }
 
@@ -169,15 +172,16 @@ class TestAggregateRunPoints:
         assert points[0]["cost_mean"] == 100
         assert points[0]["runs"] == 1
 
-    def test_all_holdout_runs_makes_candidate_ineligible_not_vacuously_true(self) -> None:
+    def test_all_holdout_runs_yields_empty_points_not_a_zero_runs_point(self) -> None:
+        # PR #162 レビュー指摘: non-holdout run が 1 件も無い場合にスコープ選定不能な
+        # `runs: 0` の point を作ると frontier.schema.json の `minimum: 1` に違反する。
+        # 修正後は「non-holdout run が皆無」＝比較スコープを選定できないため、
+        # 空の points リストを返す（従来どおりの「no run_events」ケースと同じ扱い）。
         events = [
             _run_completed("c1", quality_score=10, total_tokens=99999, holdout=True),
         ]
         points = mh.aggregate_run_points(events, mh.DEFAULTS)
-        assert points[0]["eligible"] is False
-        assert points[0]["quality_mean"] == 0.0
-        assert points[0]["cost_mean"] == 0.0
-        assert points[0]["runs"] == 0
+        assert points == []
 
     def test_all_pass_is_eligible(self) -> None:
         events = [_run_completed("c1", quality_score=90, verdict="pass")]
@@ -195,6 +199,55 @@ class TestAggregateRunPoints:
         # 最後の run_completed（2番目）の hash ペアのみが集計対象になる
         assert len(points) == 1
         assert points[0]["quality_mean"] == 90
+
+    # PR #162 レビュー指摘 (FIX A): 末尾が holdout run かつ別 hash ペアでも、
+    # non-holdout run のスコープを維持すること
+    def test_trailing_holdout_with_different_hash_does_not_empty_the_scope(self) -> None:
+        events = [
+            _run_completed("c1", quality_score=70, suite_hash="a" * 64, evaluator_hash="e" * 64),
+            _run_completed("c1", quality_score=90, suite_hash="a" * 64, evaluator_hash="e" * 64),
+            # 末尾に別 suite_hash の holdout run を追記（EVALUATOR が変わった holdout 再評価等）
+            _run_completed(
+                "c1",
+                quality_score=5,
+                suite_hash="f" * 64,
+                evaluator_hash="e" * 64,
+                holdout=True,
+            ),
+        ]
+        points = mh.aggregate_run_points(events, mh.DEFAULTS)
+        assert len(points) == 1
+        assert points[0]["runs"] >= 1
+        assert points[0]["eligible"] is True
+        assert (
+            points[0]["quality_mean"] == 90
+        )  # 最新の non-holdout run のみ集計（別 scenario なし）
+
+    # PR #162 レビュー指摘 (FIX B): 同一 cand×scenario の再評価（fail→pass）は
+    # 最新 attempt 群のみが集計対象になる
+    def test_reevaluation_after_failure_uses_only_latest_attempt_group(self) -> None:
+        events = [
+            _run_completed("c1", quality_score=10, verdict="fail"),  # attempt=1（旧・失敗）
+            _run_completed("c1", quality_score=90, verdict="pass"),  # attempt=1（再評価・成功）
+        ]
+        points = mh.aggregate_run_points(events, mh.DEFAULTS)
+        assert len(points) == 1
+        assert points[0]["eligible"] is True
+        assert points[0]["quality_mean"] == 90
+        assert points[0]["runs"] == 1
+
+    # PR #162 レビュー指摘 (FIX B): repeat 評価（attempt=1,2,3）は単一グループとして
+    # 全件集計されること
+    def test_repeat_attempts_within_a_single_group_are_all_aggregated(self) -> None:
+        events = [
+            _run_completed("c1", quality_score=80, attempt=1, attempts_total=3),
+            _run_completed("c1", quality_score=90, attempt=2, attempts_total=3),
+            _run_completed("c1", quality_score=100, attempt=3, attempts_total=3),
+        ]
+        points = mh.aggregate_run_points(events, mh.DEFAULTS)
+        assert len(points) == 1
+        assert points[0]["runs"] == 3
+        assert points[0]["quality_mean"] == 90  # (80+90+100)/3
 
     def test_eligible_and_ineligible_split_helper(self) -> None:
         events = [
@@ -331,6 +384,49 @@ class TestFrontierHashReflectsLatestRunCompleted:
         )
         assert cached["suite_hash"] == suite_hash
         assert cached["evaluator_hash"] == evaluator_hash
+
+    # PR #162 レビュー指摘 (FIX A): 末尾が holdout run（別 hash ペア）でも、hash メタデータは
+    # non-holdout のスコープを反映し、points も空にならないこと
+    def test_hash_metadata_uses_latest_non_holdout_run_even_if_ledger_tail_is_holdout(
+        self, git_project: Path, run_meta
+    ) -> None:
+        run_meta("init", project=git_project, check=True)
+        config = mh.load_config(git_project)
+        suite_hash = "a" * 64
+        evaluator_hash = "e" * 64
+        mh.append_ledger_event(
+            git_project,
+            config,
+            _run_completed(
+                "c1", quality_score=90, suite_hash=suite_hash, evaluator_hash=evaluator_hash
+            ),
+        )
+        # ledger 末尾に別 suite_hash の holdout run を追記する
+        mh.append_ledger_event(
+            git_project,
+            config,
+            _run_completed(
+                "c1",
+                quality_score=5,
+                suite_hash="f" * 64,
+                evaluator_hash=evaluator_hash,
+                holdout=True,
+            ),
+        )
+
+        result = run_meta("frontier", "--rebuild", "--json", project=git_project, check=True)
+        payload = json.loads(result.stdout)
+
+        assert payload["suite_hash"] == suite_hash
+        assert payload["evaluator_hash"] == evaluator_hash
+        assert payload["points"] != []
+        assert all(p["runs"] >= 1 for p in payload["points"])
+        cached = json.loads(
+            (git_project / ".claude" / "meta-harness" / "frontier.json").read_text(encoding="utf-8")
+        )
+        assert cached["suite_hash"] == suite_hash
+        assert cached["evaluator_hash"] == evaluator_hash
+        assert cached["points"] != []
 
     def test_hash_metadata_falls_back_to_zero_hash_when_no_run_completed_exists(
         self, git_project: Path, run_meta

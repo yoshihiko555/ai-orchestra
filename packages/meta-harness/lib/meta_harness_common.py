@@ -565,18 +565,38 @@ def quality_score(critical_pass_rate: float, penalty: float, config: dict) -> fl
     )
 
 
+def latest_non_holdout_run_completed(events: list[dict]) -> dict | None:
+    """ledger イベント列から最新の non-holdout `run_completed` イベントを返す（Sec3-5 スコープ選定）。
+
+    frontier 比較スコープの (suite_hash, evaluator_hash) 選定は、holdout run により
+    scope が汚染されないよう、この関数で選ばれた non-holdout run を基準にする。
+    呼び出し側（`aggregate_run_points` と `meta_harness.py` の hash メタデータ算出）は
+    同じ選定結果を使い、points と表示メタデータの不整合を避けること。
+    """
+    for event in reversed(events):
+        if event.get("event") == "run_completed" and not event.get("holdout"):
+            return event
+    return None
+
+
 def aggregate_run_points(events: list[dict], config: dict) -> list[dict]:
     """run_completed イベントを cand_id ごとに集計し frontier 用の point を作る（Sec3-4, Sec3-5）。
 
-    比較スコープは ledger 内で最後に観測された `(suite_hash, evaluator_hash)` の
-    組に限定する（Sec3-5「frontier 比較のスコープ」）。各 point には `eligible`
-    （全 non-holdout run が `verdict=pass` かどうか）を含める。
+    比較スコープは ledger 内で最新の **non-holdout** `run_completed` が観測された
+    `(suite_hash, evaluator_hash)` の組に限定する（Sec3-5「frontier 比較のスコープ」）。
+    holdout run が末尾にあっても non-holdout run のスコープを汚染しないよう、
+    `latest_non_holdout_run_completed` で選定する。non-holdout run が 1 件も無ければ
+    空リストを返す。各 point には `eligible`（全 non-holdout run が `verdict=pass` か）を
+    含める。スコープ内では候補×シナリオごとに最新 attempt 群のみを集計対象にする（Sec3-4）。
     """
     cost_axis = (config.get("frontier") or {}).get("cost_axis", DEFAULTS["frontier"]["cost_axis"])
     run_events = [e for e in events if e.get("event") == "run_completed"]
     if not run_events:
         return []
-    latest_pair = (run_events[-1].get("suite_hash"), run_events[-1].get("evaluator_hash"))
+    latest_non_holdout = latest_non_holdout_run_completed(events)
+    if latest_non_holdout is None:
+        return []
+    latest_pair = (latest_non_holdout.get("suite_hash"), latest_non_holdout.get("evaluator_hash"))
     matching = [
         e for e in run_events if (e.get("suite_hash"), e.get("evaluator_hash")) == latest_pair
     ]
@@ -585,9 +605,37 @@ def aggregate_run_points(events: list[dict], config: dict) -> list[dict]:
     for event in matching:
         by_cand.setdefault(event["cand_id"], []).append(event)
     return [
-        _summarize_candidate_runs(cand_id, runs, cost_axis)
+        _summarize_candidate_runs(cand_id, _latest_attempt_groups_per_scenario(runs), cost_axis)
         for cand_id, runs in sorted(by_cand.items())
     ]
+
+
+def _latest_attempt_groups_per_scenario(runs: list[dict]) -> list[dict]:
+    """cand_id 内の run 群を scenario_id（かつ holdout 区分）ごとに絞り込み、各シナリオの
+    最新 attempt 群（Sec3-4）のみを残す。`runs` は ledger 出現順（追記順）であることを前提とする。
+
+    attempt == 1 のたびに新しい試行グループを開始する。`attempt` フィールドが欠落した run は
+    単独グループとして扱う。グループ化のキーは `(scenario_id, holdout)` とする。holdout
+    シナリオは物理的に別トラック（Sec3-6）であり、attempt 採番も non-holdout run とは独立
+    のため、シナリオ ID だけで束ねると holdout run が non-holdout run の attempt グループを
+    上書きしてしまう（逆も同様）。シナリオ（かつ holdout 区分）ごとに最後のグループのみを
+    集計対象として残す。
+    """
+    groups_by_key: dict[Any, list[list[dict]]] = {}
+    for run in runs:
+        key = (run.get("scenario_id"), bool(run.get("holdout")))
+        groups = groups_by_key.setdefault(key, [])
+        attempt = run.get("attempt")
+        starts_new_group = attempt is None or attempt == 1 or not groups
+        if starts_new_group:
+            groups.append([run])
+        else:
+            groups[-1].append(run)
+
+    latest_runs: list[dict] = []
+    for groups in groups_by_key.values():
+        latest_runs.extend(groups[-1])
+    return latest_runs
 
 
 def _summarize_candidate_runs(cand_id: str, runs: list[dict], cost_axis: str) -> dict:
@@ -864,10 +912,10 @@ def validate_overlay(overlay_dir: Path, config: dict) -> list[str]:
     errors: list[str] = []
     for entry in sorted(overlay_dir.rglob("*")):
         rel = entry.relative_to(overlay_dir).as_posix()
-        if rel == CONFIG_PATCH_FILENAME:
-            continue
         if entry.is_symlink():
             errors.append(f"{rel}: symlinks are not allowed")
+            continue
+        if rel == CONFIG_PATCH_FILENAME:
             continue
         if entry.is_dir():
             continue
@@ -894,16 +942,29 @@ def _validate_overlay_file(
     return errors
 
 
+# Phase 1a では config-patch.json を config.config_patch.allowlist の値に関わらず
+# 常に全面拒否する（Sec1-8）。Phase 2 でこの定数を True に切り替えると、下の allowlist
+# 検証ロジックが有効になる（allowlist が空なら拒否、非空なら許可）。
+CONFIG_PATCH_ENABLED = False
+
+
 def validate_config_patch(config_patch: list, config: dict, schema_dir: Path) -> list[str]:
     """config-patch.json の形状検証 + Phase 1a 全面拒否（Sec1-8）。"""
     schema = load_schema(schema_dir, "config_patch.schema.json")
     errors = validate_against_schema(config_patch, schema, schema_dir)
     if errors:
         return errors
-    allowlist = (config.get("config_patch") or {}).get("allowlist") or []
-    if config_patch and not allowlist:
+    if not config_patch:
+        return []
+    if not CONFIG_PATCH_ENABLED:
         return [
-            "config_patch is rejected in Phase 1a (config_patch.allowlist is always empty);"
+            "config_patch is rejected in Phase 1a (CONFIG_PATCH_ENABLED=False);"
+            " overlays must not include a config-patch.json"
+        ]
+    allowlist = (config.get("config_patch") or {}).get("allowlist") or []
+    if not allowlist:
+        return [
+            "config_patch is rejected: config_patch.allowlist is empty;"
             " overlays must not include a config-patch.json"
         ]
     return []
@@ -940,18 +1001,50 @@ def store_lock(main_root: Path, config: dict):
             pass
 
 
+def _read_lock_snapshot(lock_file: Path) -> tuple[str, float] | None:
+    """lock ファイルの内容 + mtime を返す。読めなければ None（既に消えている等）。"""
+    try:
+        content = lock_file.read_text(encoding="utf-8")
+        mtime = lock_file.stat().st_mtime
+    except (FileNotFoundError, OSError):
+        return None
+    return content, mtime
+
+
+def _unlink_if_unchanged(lock_file: Path, expected: tuple[str, float]) -> None:
+    """stale と判定した lock を compare-before-unlink で奪取する。
+
+    stale 判定時に読んだ token 内容 + mtime（`expected`）を、unlink 直前に再読して一致する
+    場合のみ unlink する。不一致（= 別プロセスが既に unlink + 再作成 済み）なら奪取を
+    スキップし、呼び出し側の再試行ループに委ねる。
+
+    既知の制約: 再読と unlink の間には極小の TOCTOU ウィンドウが残る（existence-based lock
+    方式の原理的な限界であり、完全な原子性は得られない）。store.lock 解放時の
+    compare-and-delete（`store_lock` の finally 節）と対になる、奪取側の対策として設けている。
+    """
+    current = _read_lock_snapshot(lock_file)
+    if current is None or current != expected:
+        return
+    try:
+        lock_file.unlink()
+    except FileNotFoundError:
+        pass
+
+
 def _acquire_store_lock(lock_file: Path, ttl_seconds: float) -> str:
     for _ in range(_LOCK_ACQUIRE_ATTEMPTS):
         token = f"{os.getpid()}:{time.time_ns()}:{os.urandom(4).hex()}"
         try:
             fd = os.open(lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
-            if _is_lock_stale(lock_file, ttl_seconds):
-                lock_file.unlink(missing_ok=True)
-                continue
-            raise LockAcquisitionError(
-                f"store.lock is held by another process: {lock_file}"
-            ) from None
+            if not _is_lock_stale(lock_file, ttl_seconds):
+                raise LockAcquisitionError(
+                    f"store.lock is held by another process: {lock_file}"
+                ) from None
+            snapshot = _read_lock_snapshot(lock_file)
+            if snapshot is not None:
+                _unlink_if_unchanged(lock_file, snapshot)
+            continue
         else:
             with os.fdopen(fd, "w") as handle:
                 handle.write(token)
@@ -986,6 +1079,12 @@ def slugify(text: str) -> str:
 
 
 def generate_cand_id(slug: str, now: datetime | None = None) -> str:
-    """`cand-<yyyymmdd>-<hhmmss>-<slug>` 形式の cand_id を生成する。"""
+    """`cand-<yyyymmdd>-<hhmmss>-<slug>-<nonce>` 形式の cand_id を生成する。
+
+    同一秒・同一 slug（既定 "manual"）でも衝突しないよう、4 桁 hex の nonce
+    （`os.urandom(2)` 由来）を付与する。nonce は `CAND_ID_PATTERN`（末尾 `[a-z0-9-]+`）の
+    範囲内に収まるため、schema / パターンの変更は不要。
+    """
     moment = now or datetime.now()
-    return f"cand-{moment:%Y%m%d}-{moment:%H%M%S}-{slugify(slug)}"
+    nonce = os.urandom(2).hex()
+    return f"cand-{moment:%Y%m%d}-{moment:%H%M%S}-{slugify(slug)}-{nonce}"

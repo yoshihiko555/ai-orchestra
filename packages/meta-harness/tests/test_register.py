@@ -100,6 +100,59 @@ class TestRegisterSuccess:
         assert registered[0]["cand_id"] == cand_id
 
 
+class TestGenerateCandIdNonceAvoidsCollision:
+    # PR #162 レビュー指摘 (FIX F): 同一秒・同一 slug でも 4 桁 hex nonce により
+    # cand_id が衝突しないこと
+    def test_same_second_same_slug_produces_different_cand_ids(self) -> None:
+        import datetime as _datetime
+
+        fixed_now = _datetime.datetime(2026, 1, 1, 0, 0, 0)
+
+        first = mh.generate_cand_id("manual", now=fixed_now)
+        second = mh.generate_cand_id("manual", now=fixed_now)
+
+        assert first != second
+        shared_prefix = "cand-20260101-000000-manual-"
+        assert first.startswith(shared_prefix)
+        assert second.startswith(shared_prefix)
+        assert mh.CAND_ID_PATTERN.match(first)
+        assert mh.CAND_ID_PATTERN.match(second)
+
+    # register_candidate は immutable（同名 cand_id は FileExistsError）なので、time を
+    # 固定 mock した同一秒・同一 slug の2連続 register が両方成功することを、実際に
+    # store へ書き込むレベルで決定論的に検証する（time.sleep 不使用）。
+    def test_two_registers_with_same_second_and_slug_both_succeed_end_to_end(
+        self, git_project: Path, tmp_path: Path, run_meta, default_overlay
+    ) -> None:
+        import datetime as _datetime
+
+        run_meta("init", project=git_project, check=True)
+        config = mh.load_config(git_project)
+        fixed_now = _datetime.datetime(2026, 1, 1, 0, 0, 0)
+
+        overlay_dir = git_project / "overlay-src"
+        (overlay_dir / "facets" / "example-facet").mkdir(parents=True)
+        (overlay_dir / "facets" / "example-facet" / "SKILL.md").write_text("v1", encoding="utf-8")
+        overlay_files = ["facets/example-facet/SKILL.md"]
+
+        cand_ids = [mh.generate_cand_id("manual", now=fixed_now) for _ in range(2)]
+        assert cand_ids[0] != cand_ids[1]  # 同一秒・同一 slug でも nonce により異なる
+
+        for cand_id in cand_ids:
+            manifest = _manifest(cand_id)
+            mh.register_candidate(
+                git_project,
+                config,
+                cand_id=cand_id,
+                manifest=manifest,
+                overlay_dir=overlay_dir,
+                overlay_files=overlay_files,
+            )
+
+        for cand_id in cand_ids:
+            assert (_candidates_dir(git_project) / cand_id).is_dir()
+
+
 class TestRegisterImmutability:
     # EV-03
     def test_reregistering_same_cand_id_is_rejected(self, git_project: Path, run_meta) -> None:
@@ -224,6 +277,68 @@ class TestRegisterConfigPatchRejection:
         assert "config_patch is rejected in Phase 1a" not in result.stderr
         assert "missing required key 'value'" in result.stderr
 
+    # PR #162 レビュー指摘 (FIX C): `.local.yaml` で config_patch.allowlist を非空にしても、
+    # Phase 1a では CONFIG_PATCH_ENABLED=False によりコードレベルで全面拒否されること
+    def test_config_patch_still_rejected_when_local_yaml_populates_allowlist(
+        self, git_project: Path, tmp_path: Path, run_meta, default_overlay
+    ) -> None:
+        run_meta("init", project=git_project, check=True)
+        local_config_dir = git_project / ".claude" / "config" / "meta-harness"
+        local_config_dir.mkdir(parents=True, exist_ok=True)
+        (local_config_dir / "meta-harness.local.yaml").write_text(
+            "config_patch:\n  allowlist:\n    - agent-routing/cli-tools.yaml#codex.model\n",
+            encoding="utf-8",
+        )
+        overlay_dir = default_overlay(tmp_path)
+        (overlay_dir / "config-patch.json").write_text(
+            json.dumps(
+                [{"file": "agent-routing/cli-tools.yaml", "key_path": "codex.model", "value": "x"}]
+            ),
+            encoding="utf-8",
+        )
+
+        result = run_meta(
+            "register",
+            "--overlay",
+            str(overlay_dir),
+            "--target",
+            "claude-harness",
+            project=git_project,
+            check=False,
+        )
+
+        assert result.returncode == 2
+        assert "rejected in Phase 1a" in result.stderr
+
+    # PR #162 レビュー指摘 (FIX D): overlay/config-patch.json が外部ファイルへの symlink の
+    # 場合、予約サイドカー名の早期 continue で迂回されず symlink として拒否されること
+    def test_config_patch_json_symlink_is_rejected(
+        self, git_project: Path, tmp_path: Path, run_meta, default_overlay
+    ) -> None:
+        run_meta("init", project=git_project, check=True)
+        overlay_dir = default_overlay(tmp_path)
+        outside_target = tmp_path / "outside-config-patch.json"
+        outside_target.write_text("[]", encoding="utf-8")
+        (overlay_dir / "config-patch.json").symlink_to(outside_target)
+
+        result = run_meta(
+            "register",
+            "--overlay",
+            str(overlay_dir),
+            "--target",
+            "claude-harness",
+            project=git_project,
+            check=False,
+        )
+
+        assert result.returncode == 2
+        assert "symlink" in result.stderr.lower()
+        assert (
+            not any(_candidates_dir(git_project).iterdir())
+            if _candidates_dir(git_project).is_dir()
+            else True
+        )
+
 
 class TestRegisterInputValidation:
     # EV-25
@@ -322,30 +437,24 @@ class TestRegisterSourceCommit:
         assert manifest["source_commit"] == head
 
 
-def _git(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=True)
-
-
-def _add_feature_worktree(git_project: Path, name: str = "feat-source-commit") -> Path:
-    worktrees_root = git_project / ".worktrees"
-    worktrees_root.mkdir(parents=True, exist_ok=True)
-    worktree_dir = worktrees_root / name
-    _git("worktree", "add", "--detach", str(worktree_dir), "HEAD", cwd=git_project)
-    return worktree_dir
-
-
 class TestRegisterSourceCommitFromWorktree:
     # register (EV-*, Sec2-0): source_commit / dirty 判定は main_root ではなく
     # 登録元（--project）の worktree で解決されるべき
     def test_source_commit_resolves_to_feature_worktree_head_not_main_root(
-        self, git_project: Path, tmp_path: Path, run_meta, default_overlay
+        self,
+        git_project: Path,
+        tmp_path: Path,
+        run_meta,
+        default_overlay,
+        add_feature_worktree,
+        git_run,
     ) -> None:
         run_meta("init", project=git_project, check=True)
-        worktree_dir = _add_feature_worktree(git_project)
+        worktree_dir = add_feature_worktree(git_project, name="feat-source-commit")
 
         (worktree_dir / "extra.txt").write_text("worktree-only change\n", encoding="utf-8")
-        _git("add", "extra.txt", cwd=worktree_dir)
-        _git("commit", "-q", "-m", "worktree-only commit", cwd=worktree_dir)
+        git_run("add", "extra.txt", cwd=worktree_dir)
+        git_run("commit", "-q", "-m", "worktree-only commit", cwd=worktree_dir)
 
         main_root_head = subprocess.run(
             ["git", "rev-parse", "HEAD"],
@@ -382,11 +491,30 @@ class TestRegisterSourceCommitFromWorktree:
         assert manifest["source_commit"] == worktree_head
         assert manifest["source_commit"] != main_root_head
 
+    def _ignore_worktrees_dir(self, git_project: Path, git_run) -> None:
+        # CodeRabbit review #162: `.worktrees/` を ignore しないと、worktree を
+        # 追加しただけで main_root 側の `git status --porcelain` が `?? .worktrees/`
+        # で dirty 扱いになり、main_root を見てしまう実装でもテストが偶然通ってしまう。
+        # main_root を真に clean な状態に保つため明示的に ignore + commit する。
+        gitignore = git_project / ".gitignore"
+        gitignore.write_text(
+            gitignore.read_text(encoding="utf-8") + ".worktrees/\n", encoding="utf-8"
+        )
+        git_run("add", ".gitignore", cwd=git_project)
+        git_run("commit", "-q", "-m", "ignore worktrees dir", cwd=git_project)
+
     def test_dirty_warning_reflects_feature_worktree_not_main_root(
-        self, git_project: Path, tmp_path: Path, run_meta, default_overlay
+        self,
+        git_project: Path,
+        tmp_path: Path,
+        run_meta,
+        default_overlay,
+        add_feature_worktree,
+        git_run,
     ) -> None:
         run_meta("init", project=git_project, check=True)
-        worktree_dir = _add_feature_worktree(git_project, name="feat-dirty-check")
+        self._ignore_worktrees_dir(git_project, git_run)
+        worktree_dir = add_feature_worktree(git_project, name="feat-dirty-check")
         (worktree_dir / "uncommitted.txt").write_text("dirty in worktree", encoding="utf-8")
         overlay_dir = default_overlay(tmp_path)
 
@@ -401,6 +529,39 @@ class TestRegisterSourceCommitFromWorktree:
         )
 
         assert "dirty" in result.stderr.lower()
+
+    # PR #162 レビュー指摘 (CodeRabbit, FIX 9): main_root が dirty で feature worktree が
+    # clean な負例を追加する。main_root ではなく --project（worktree）をスコープに
+    # dirty 判定していることを、上の正例と対にして証明する。
+    def test_dirty_main_root_alone_does_not_trigger_warning_from_clean_worktree(
+        self,
+        git_project: Path,
+        tmp_path: Path,
+        run_meta,
+        default_overlay,
+        add_feature_worktree,
+        git_run,
+    ) -> None:
+        run_meta("init", project=git_project, check=True)
+        self._ignore_worktrees_dir(git_project, git_run)
+        worktree_dir = add_feature_worktree(git_project, name="feat-clean-check")
+        # main_root 側だけを dirty にする（worktree 側は一切触れない）
+        (git_project / "main-root-only-dirty.txt").write_text(
+            "dirty in main root only", encoding="utf-8"
+        )
+        overlay_dir = default_overlay(tmp_path)
+
+        result = run_meta(
+            "register",
+            "--overlay",
+            str(overlay_dir),
+            "--target",
+            "claude-harness",
+            project=worktree_dir,
+            check=True,
+        )
+
+        assert "dirty" not in result.stderr.lower()
 
 
 class TestRegisterAtomicStaging:

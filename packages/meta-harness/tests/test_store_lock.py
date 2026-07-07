@@ -140,6 +140,38 @@ class TestStoreLockCompareAndDeleteOnRelease:
         assert not lock_path.is_file()
 
 
+class TestStoreLockTakeoverCompareBeforeUnlink:
+    # PR #162 レビュー指摘 (FIX E): stale lock 奪取は compare-before-unlink であるべき
+    # （stale 判定時に読んだ token 内容 + mtime を、unlink 直前に再読して一致する場合のみ
+    # unlink する）。real sleep は使わず、内容の書き換えだけで決定論的に検証する。
+    def test_takeover_skips_unlink_when_lock_content_changed_before_takeover(
+        self, tmp_path: Path
+    ) -> None:
+        lock_path = tmp_path / "store.lock"
+        lock_path.write_text("token-a", encoding="utf-8")
+        snapshot = mh._read_lock_snapshot(lock_path)
+
+        # 別プロセスが奪取直前に unlink + 再作成した状況を模す
+        lock_path.write_text("token-b", encoding="utf-8")
+
+        mh._unlink_if_unchanged(lock_path, snapshot)
+
+        assert lock_path.is_file()
+        assert lock_path.read_text(encoding="utf-8") == "token-b"
+
+    def test_takeover_unlinks_when_lock_content_unchanged(self, tmp_path: Path) -> None:
+        lock_path = tmp_path / "store.lock"
+        lock_path.write_text("token-a", encoding="utf-8")
+        snapshot = mh._read_lock_snapshot(lock_path)
+
+        mh._unlink_if_unchanged(lock_path, snapshot)
+
+        assert not lock_path.is_file()
+
+    def test_read_lock_snapshot_returns_none_for_missing_file(self, tmp_path: Path) -> None:
+        assert mh._read_lock_snapshot(tmp_path / "does-not-exist.lock") is None
+
+
 class TestStoreLockCliExit3:
     def test_register_exits_3_when_lock_pre_held(
         self, git_project: Path, run_meta, default_overlay, tmp_path: Path

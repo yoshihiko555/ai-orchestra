@@ -69,6 +69,43 @@ def git_project(tmp_path: Path) -> Path:
     return project
 
 
+def _git(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
+    """`_GIT_ENV`（決定論的な author/committer identity）を注入して git を実行する。
+
+    グローバル `user.name` / `user.email` が設定されていない CI/sandbox 環境でも
+    `git commit` 等が失敗しないようにする（PR #162 レビュー指摘）。
+    """
+    env = {**os.environ, **_GIT_ENV}
+    return subprocess.run(
+        ["git", *args], cwd=cwd, capture_output=True, text=True, check=True, env=env
+    )
+
+
+@pytest.fixture()
+def git_run() -> Callable[..., subprocess.CompletedProcess[str]]:
+    """`_git` ヘルパー（`_GIT_ENV` 注入済み git 実行）を返す fixture。
+
+    test_register.py / test_main_root.py で重複していたローカル `_git` 定義を統合した
+    共通ヘルパー（`_GIT_ENV` 未注入だった箇所での `git commit` 失敗を防ぐ）。
+    """
+    return _git
+
+
+def _add_feature_worktree(git_project: Path, name: str = "feat-x") -> Path:
+    """`git_project` に対する detached HEAD の feature worktree を `.worktrees/<name>/` に作る。"""
+    worktrees_root = git_project / ".worktrees"
+    worktrees_root.mkdir(parents=True, exist_ok=True)
+    worktree_dir = worktrees_root / name
+    _git("worktree", "add", "--detach", str(worktree_dir), "HEAD", cwd=git_project)
+    return worktree_dir
+
+
+@pytest.fixture()
+def add_feature_worktree() -> Callable[..., Path]:
+    """`_add_feature_worktree` ヘルパーを返す fixture。"""
+    return _add_feature_worktree
+
+
 def _run_meta(
     *args: str,
     project: Path,

@@ -19,24 +19,12 @@ mh = load_module(
 )
 
 
-def _git(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=True)
-
-
-def _add_feature_worktree(git_project: Path, name: str = "feat-x") -> Path:
-    worktrees_root = git_project / ".worktrees"
-    worktrees_root.mkdir(parents=True, exist_ok=True)
-    worktree_dir = worktrees_root / name
-    _git("worktree", "add", "--detach", str(worktree_dir), "HEAD", cwd=git_project)
-    return worktree_dir
-
-
 class TestMainRootFromWorktree:
     # EV-32
     def test_init_from_feature_worktree_resolves_store_to_main_root(
-        self, git_project: Path, run_meta
+        self, git_project: Path, run_meta, add_feature_worktree
     ) -> None:
-        worktree_dir = _add_feature_worktree(git_project)
+        worktree_dir = add_feature_worktree(git_project)
 
         result = run_meta("init", "--json", project=worktree_dir, check=True)
         payload = json.loads(result.stdout)
@@ -48,9 +36,9 @@ class TestMainRootFromWorktree:
 
     # EV-32
     def test_register_from_feature_worktree_shares_single_store(
-        self, git_project: Path, tmp_path: Path, run_meta, default_overlay
+        self, git_project: Path, tmp_path: Path, run_meta, default_overlay, add_feature_worktree
     ) -> None:
-        worktree_dir = _add_feature_worktree(git_project)
+        worktree_dir = add_feature_worktree(git_project)
         run_meta("init", project=git_project, check=True)
 
         overlay_dir = default_overlay(tmp_path)

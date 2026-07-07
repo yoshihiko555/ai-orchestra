@@ -100,6 +100,22 @@ class TestValidateOverlayRejects:
         errors = mh.validate_overlay(tmp_path / "does-not-exist", _DEFAULT_OVERLAY_CONFIG)
         assert any("does not exist" in e for e in errors)
 
+    # PR #162 レビュー指摘 (FIX D): config-patch.json という予約サイドカー名であっても、
+    # symlink なら（早期 continue で検査を迂回させず）symlink として拒否されること
+    def test_config_patch_json_symlink_is_rejected_not_exempted(self, tmp_path: Path) -> None:
+        overlay_dir = tmp_path / "overlay"
+        overlay_dir.mkdir(parents=True)
+        (overlay_dir / "facets" / "foo").mkdir(parents=True)
+        (overlay_dir / "facets" / "foo" / "SKILL.md").write_text("ok", encoding="utf-8")
+        outside_target = tmp_path / "outside-config-patch.json"
+        outside_target.write_text("[]", encoding="utf-8")
+        symlink_path = overlay_dir / mh.CONFIG_PATCH_FILENAME
+        symlink_path.symlink_to(outside_target)
+
+        errors = mh.validate_overlay(overlay_dir, _DEFAULT_OVERLAY_CONFIG)
+
+        assert any("symlink" in e for e in errors)
+
 
 class TestValidateConfigPatch:
     # EV-05 (lib レベル)
@@ -126,12 +142,20 @@ class TestValidateConfigPatch:
         assert any("value" in e for e in errors)
         assert not any("rejected in Phase 1a" in e for e in errors)
 
-    def test_allowlist_populated_does_not_reject_outright(self) -> None:
-        # allowlist が空でなければ Phase1a 拒否メッセージは出ない（allowlist 自体の
-        # チェックまでは Phase 1a では到達しない設計だが、関数の分岐自体は検証する）
+    def test_allowlist_populated_is_still_rejected_in_phase1a(self) -> None:
+        # PR #162 レビュー指摘: config_patch.allowlist を `.local.yaml` 等で非空にしても
+        # Phase 1a では CONFIG_PATCH_ENABLED=False によりコードレベルで常に全面拒否される
+        # （config 値に関わらない）。allowlist 自体の検証ロジックは Phase 2 でのみ有効になる。
         config = {"config_patch": {"allowlist": ["agent-routing/cli-tools.yaml#codex.model"]}}
         patch = [{"file": "agent-routing/cli-tools.yaml", "key_path": "codex.model", "value": "x"}]
 
         errors = mh.validate_config_patch(patch, config, SCHEMA_DIR)
 
-        assert errors == []
+        assert len(errors) == 1
+        assert "rejected in Phase 1a" in errors[0]
+        assert "CONFIG_PATCH_ENABLED" in errors[0]
+
+    def test_config_patch_enabled_flag_is_false_in_phase1a(self) -> None:
+        # モジュール定数そのものが Phase 1a では False であることを明示的に固定する
+        # （Phase 2 移行時にこの定数を切り替える前提のドキュメント兼リグレッションガード）。
+        assert mh.CONFIG_PATCH_ENABLED is False
