@@ -11,6 +11,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`loop-harness`: 反復ループ基盤の core パッケージを追加**: Phase 1 として loop 定義 loader、state/journal/lock の決定論的コア、worktree 命名ユーティリティ、既定 config を追加。CLI・スキル配線・LP-2 常駐実行は後続フェーズで追加予定。
 
 - **`meta-harness`: population ベースのハーネス最適化基盤（Phase 1a: 計測基盤）を新設**: 候補ハーネス（facet ソースへの宣言的オーバーレイ）の登録・append-only 台帳・品質×コストの Pareto frontier 算出を行う `orchex meta` サブコマンド群（`init` / `register` / `frontier` / `status` / `purge`）を追加。ストアは worktree の寿命に依存しないメインルート配下 `.claude/meta-harness/` に永続化する。評価実行（evaluate）以降は Phase 1b 以降で追加予定。設計は `docs/design/meta-harness.md`（基本）/ `docs/design/meta-harness-detailed.md`（詳細）を参照
+- **`meta-harness`: `orchex meta evaluate`（Phase 1b: evaluator）を追加**: 候補ハーネスを使い捨て worktree に実体化し、`claude -p` ヘッドレス実行 → oracle 判定（`command_exit` / `artifact_exists` / `rubric_judge`）→ 台帳記録までを自動実行する。CLI capability gate（バージョン pin + フラグ smoke test、fail-closed）、evaluate.lock（PID + heartbeat）、self-report 注入とペナルティ、baseline シナリオ 2 本を同梱。LLM judge は `judge.tool` 設定で Codex CLI（既定、ChatGPT OAuth で動作）と `claude --bare`（API キー必須）を切替可能
+
+### Fixed
+
+- **`meta-harness`: ストア用 `.gitignore` エントリが SessionStart 同期で消える問題を修正**: `.claude/meta-harness/` を gitignore 管理ブロックの生成元（`gitignore_sync.py`）に追加し、同期のたびに手動追記が失われる Phase 1a の実装漏れを解消
 
 ### Changed
 

@@ -69,30 +69,47 @@ class TestJsonFlagAllSubcommands:
         assert payload_before == payload_after
 
 
-class TestPhase1bStubs:
-    def test_evaluate_stub_exits_2_with_phase1a_message(self, git_project: Path, run_meta) -> None:
+class TestEvaluateArgparseContract:
+    # evaluate は Phase 1b で実装済み（`--candidate` 必須）。CLI capability gate 到達前の
+    # argparse レベルの契約のみをここで検証する（実 claude/codex は決して呼ばない）。
+    def test_evaluate_missing_candidate_exits_2(self, git_project: Path, run_meta) -> None:
         run_meta("init", project=git_project, check=True)
         result = run_meta("evaluate", project=git_project, check=False)
         assert result.returncode == 2
-        assert "not implemented in Phase 1a" in result.stderr
+        assert "--candidate" in result.stderr
 
+    def test_evaluate_invalid_candidate_id_exits_2_before_capability_gate(
+        self, git_project: Path, run_meta
+    ) -> None:
+        """Codex 指摘（meta_harness.py:505）: `candidate` はパス結合前に検証すること
+        （`../` トラバーサル対策）。この検証は CLI capability gate（実 `claude --version`
+        呼び出し）より前に行われるため、実 CLI が無い環境でも subprocess のまま検証できる。"""
+        run_meta("init", project=git_project, check=True)
+        result = run_meta(
+            "evaluate", "--candidate", "../../../etc/passwd", project=git_project, check=False
+        )
+        assert result.returncode == 2
+        assert "invalid candidate id" in result.stderr
+
+
+class TestPhase23Stubs:
     def test_propose_stub_exits_2(self, git_project: Path, run_meta) -> None:
         run_meta("init", project=git_project, check=True)
         result = run_meta("propose", project=git_project, check=False)
         assert result.returncode == 2
-        assert "not implemented in Phase 1a" in result.stderr
+        assert "not implemented yet" in result.stderr
 
     def test_promote_stub_exits_2(self, git_project: Path, run_meta) -> None:
         run_meta("init", project=git_project, check=True)
         result = run_meta("promote", project=git_project, check=False)
         assert result.returncode == 2
-        assert "not implemented in Phase 1a" in result.stderr
+        assert "not implemented yet" in result.stderr
 
     def test_loop_stub_exits_2(self, git_project: Path, run_meta) -> None:
         run_meta("init", project=git_project, check=True)
         result = run_meta("loop", project=git_project, check=False)
         assert result.returncode == 2
-        assert "not implemented in Phase 1a" in result.stderr
+        assert "not implemented yet" in result.stderr
 
 
 class TestValidationErrorExitCodes:

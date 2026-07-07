@@ -1,0 +1,24 @@
+schema_version: "1.0"
+id: create-version-file
+target: claude-harness
+description: >-
+  現在の git HEAD の short SHA を VERSION ファイルに書き出す基本タスク。
+  command_exit のみで判定する決定論的な baseline（rubric_judge 非依存）。
+prompt: |
+  `git rev-parse --short HEAD` を実行して得られる値だけを、リポジトリのルートに
+  VERSION というファイル名で書き出してください。末尾の改行以外の余分な文字
+  （空白・引用符・接頭辞など）を含めないでください。
+setup: []
+command_timeout_ms: 60000
+critical:
+  - id: version-file-matches-head
+    text: "VERSION の内容が git rev-parse --short HEAD の出力と一致すること"
+    oracle: command_exit
+    command: >-
+      test "$(cat VERSION | tr -d '[:space:]')" = "$(git rev-parse --short HEAD)"
+holdout: false
+timeout_ms: 300000
+budget:
+  max_turns: 10
+  max_budget_usd: 3.0
+repeat: 1

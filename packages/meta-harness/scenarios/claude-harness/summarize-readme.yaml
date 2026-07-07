@@ -1,0 +1,32 @@
+schema_version: "1.0"
+id: summarize-readme
+target: claude-harness
+description: >-
+  README.md を読み、その要約を summary.md に書き出す基本タスク。rubric_judge
+  非依存（artifact_exists + command_exit のみ）で完走できる決定論的な baseline。
+prompt: |
+  このリポジトリの README.md を読んでください。その内容を 200 words 以内で要約し、
+  リポジトリのルートに summary.md というファイル名で書き出してください。
+  README.md 自体や他の既存ファイルは変更しないでください。
+setup: []
+command_timeout_ms: 60000
+critical:
+  - id: summary-file-exists
+    text: "summary.md が生成され、内容が空でないこと"
+    oracle: artifact_exists
+    path: "summary.md"
+checks:
+  - id: summary-file-nontrivial-size
+    text: "summary.md が最低限の分量（20 バイト以上）を持つこと"
+    oracle: command_exit
+    command: "test $(wc -c < summary.md) -ge 20"
+  - id: readme-untouched
+    text: "README.md がタスク実行前と同一内容のままであること"
+    oracle: command_exit
+    command: "git diff --quiet HEAD -- README.md"
+holdout: false
+timeout_ms: 300000
+budget:
+  max_turns: 10
+  max_budget_usd: 3.0
+repeat: 1

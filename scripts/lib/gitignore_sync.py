@@ -20,6 +20,7 @@ ENTRIES = [
     ".claude/codd/",
     ".claude/skill-evolution/metrics/",
     ".claude/skill-evolution/pending/",
+    ".claude/meta-harness/",
     ".claude/.facet-packages-hash",
     ".claude/.facet-manifest.json",
     ".codex/.facet-manifest.json",

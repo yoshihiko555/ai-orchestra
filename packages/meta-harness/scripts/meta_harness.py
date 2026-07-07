@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""meta-harness CLI（`orchex meta <sub>`、Phase 1a）。
+"""meta-harness CLI（`orchex meta <sub>`、Phase 1a/1b）。
 
-docs/design/meta-harness-detailed.md が正本。Phase 1a で実装済みのサブコマンド:
-- init       store ディレクトリ一式を冪等に初期化する
-- register   overlay を検証し候補を immutable に登録する
-- frontier   Pareto frontier を算出する（--rebuild で frontier.json を再生成）
-- status     候補群の畳み込み状態を表示する
-- purge      古い世代・retired 候補を削除する（frontier/promoted/予約中は保護）
+docs/design/meta-harness-detailed.md が正本。実装済みのサブコマンド:
+- init       store ディレクトリ一式を冪等に初期化する（Phase 1a）
+- register   overlay を検証し候補を immutable に登録する（Phase 1a）
+- frontier   Pareto frontier を算出する（--rebuild で frontier.json を再生成、Phase 1a）
+- status     候補群の畳み込み状態を表示する（Phase 1a）
+- purge      古い世代・retired 候補を削除する（frontier/promoted/予約中は保護、Phase 1a）
+- evaluate   CLI capability gate → worktree ライフサイクル → oracle 判定を実行する（Phase 1b）
 
-`evaluate` / `propose` / `promote` / `loop` は Phase 1b / 2 のスタブ（exit 2）。
+`propose` / `promote` / `loop` は Phase 2/3 のスタブ（exit 2）。
 
 exit code（Sec6）: 0 成功 / 1 実行時エラー / 2 入力・スキーマ検証エラー / 3 lock 取得失敗・排他競合。
 """
@@ -29,6 +30,7 @@ _SCHEMA_DIR = _PACKAGE_DIR / "schemas"
 if str(_LIB_DIR) not in sys.path:
     sys.path.insert(0, str(_LIB_DIR))
 
+import evaluator as ev  # noqa: E402
 import meta_harness_common as mh  # noqa: E402
 
 EXIT_OK = 0
@@ -36,7 +38,7 @@ EXIT_RUNTIME_ERROR = 1
 EXIT_VALIDATION_ERROR = 2
 EXIT_LOCK_CONFLICT = 3
 
-_PHASE_1B_STUBS = ("evaluate", "propose", "promote", "loop")
+_PHASE_2_3_STUBS = ("propose", "promote", "loop")
 
 
 def _emit(data: dict, as_json: bool, human_lines: list[str] | None = None) -> None:
@@ -476,14 +478,94 @@ def _remove_candidate_dir(main_root: Path, config: dict, cand_id: str) -> None:
         shutil.rmtree(cand_dir)
 
 
-def cmd_phase1b_stub(sub: str) -> int:
-    """Phase 1b / 2 未実装サブコマンド。"""
+def cmd_phase23_stub(sub: str) -> int:
+    """Phase 2/3 未実装サブコマンド。"""
     print(
-        f"'{sub}' is not implemented in Phase 1a. See docs/design/meta-harness-detailed.md Sec9"
+        f"'{sub}' is not implemented yet. See docs/design/meta-harness-detailed.md Sec9"
         " for the phase boundary.",
         file=sys.stderr,
     )
     return EXIT_VALIDATION_ERROR
+
+
+def cmd_evaluate(
+    project: str,
+    candidate: str,
+    scenario_ids: list[str] | None,
+    repeat: int | None,
+    as_json: bool,
+) -> int:
+    """候補をシナリオ評価する（Sec2, Sec6 `evaluate`）。"""
+    ctx = _resolve_context(project)
+    if ctx is None:
+        return EXIT_VALIDATION_ERROR
+    main_root, config = ctx
+    project_dir = Path(project).resolve()
+
+    if not mh.CAND_ID_PATTERN.match(candidate):
+        # `candidate` はこの後 `candidates_dir(...) / candidate / "manifest.json"` として
+        # パス結合される。`cand-...` の登録済み形式に一致しない値（`../` トラバーサル等）は
+        # manifest 読み込み前に拒否する。
+        print(f"error: invalid candidate id: {candidate}", file=sys.stderr)
+        return EXIT_VALIDATION_ERROR
+
+    manifest = mh.read_candidate_manifest(main_root, config, candidate)
+    if manifest is None:
+        print(f"error: unknown candidate: {candidate}", file=sys.stderr)
+        return EXIT_VALIDATION_ERROR
+
+    try:
+        with mh.evaluate_lock(main_root, config):
+            return _run_evaluate_under_lock(
+                main_root, config, project_dir, candidate, manifest, scenario_ids, repeat, as_json
+            )
+    except mh.LockAcquisitionError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_LOCK_CONFLICT
+
+
+def _run_evaluate_under_lock(
+    main_root: Path,
+    config: dict,
+    project_dir: Path,
+    candidate: str,
+    manifest: dict,
+    scenario_ids: list[str] | None,
+    repeat: int | None,
+    as_json: bool,
+) -> int:
+    """evaluate.lock 保持下での capability gate + 評価実行本体（`cmd_evaluate` から分離）。"""
+    caps = ev.check_cli_capabilities(config)
+    if not caps.ok:
+        print(f"error: CLI capability gate failed: {caps.reason}", file=sys.stderr)
+        return EXIT_VALIDATION_ERROR
+
+    try:
+        results = ev.evaluate_candidate(
+            main_root=main_root,
+            config=config,
+            schema_dir=_SCHEMA_DIR,
+            package_dir=_PACKAGE_DIR,
+            project_dir=project_dir,
+            cand_id=candidate,
+            manifest=manifest,
+            scenario_ids=scenario_ids,
+            repeat_override=repeat,
+            cli_capabilities=caps.as_dict(),
+        )
+    except (ValueError, OSError, ev.yaml.YAMLError) as exc:
+        # `load_scenario()` の `path.read_text()` / `yaml.safe_load()` 由来の OSError /
+        # yaml.YAMLError も ValueError と同様に入力検証エラーとして扱う（traceback を
+        # main() まで漏らさない、CodeRabbit 指摘）。
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_VALIDATION_ERROR
+
+    _emit(
+        {"status": "ok", "runs": results},
+        as_json,
+        [f"{r['run_id']}: {r['verdict']} (quality={r['quality_score']:.2f})" for r in results],
+    )
+    return EXIT_OK if all(r["verdict"] != "error" for r in results) else EXIT_RUNTIME_ERROR
 
 
 def _add_common_args(parser: argparse.ArgumentParser, *, is_top_level: bool = False) -> None:
@@ -547,18 +629,31 @@ def build_parser() -> argparse.ArgumentParser:
         "--keep-generations", type=int, default=None, help="保持世代数（既定: config 値）"
     )
 
-    for stub_name in _PHASE_1B_STUBS:
-        _add_common_args(
-            sub.add_parser(stub_name, help=f"（Phase 1b/2 未実装スタブ: {stub_name}）")
-        )
+    p_evaluate = sub.add_parser("evaluate", help="候補をシナリオ評価する")
+    _add_common_args(p_evaluate)
+    p_evaluate.add_argument("--candidate", required=True, help="評価対象の cand_id")
+    p_evaluate.add_argument(
+        "--scenario",
+        action="append",
+        default=None,
+        help="評価するシナリオ id（複数指定可、省略時は suite 内の全シナリオ）",
+    )
+    p_evaluate.add_argument(
+        "--repeat", type=int, default=None, help="試行回数（省略時はシナリオの repeat 値）"
+    )
+
+    for stub_name in _PHASE_2_3_STUBS:
+        _add_common_args(sub.add_parser(stub_name, help=f"（Phase 2/3 未実装スタブ: {stub_name}）"))
 
     return parser
 
 
 def _dispatch(args: argparse.Namespace) -> int:
     """サブコマンドへ振り分ける。"""
-    if args.command in _PHASE_1B_STUBS:
-        return cmd_phase1b_stub(args.command)
+    if args.command in _PHASE_2_3_STUBS:
+        return cmd_phase23_stub(args.command)
+    if args.command == "evaluate":
+        return cmd_evaluate(args.project, args.candidate, args.scenario, args.repeat, args.json)
     if args.command == "init":
         return cmd_init(args.project, args.json)
     if args.command == "register":

@@ -1164,10 +1164,16 @@ Phase 1 では **複製**とし、`packages/codex-harness` の redaction パタ�
    capability smoke test（手順 2）は `null` の場合も必ず実施する（バージョン pin の有無に関わらず、
    evaluate が要求するフラグ群を CLI が受理できることの確認は独立した検査である）。
 2. **capability smoke test**: 軽量なヘッドレス実行（例: `claude -p "Reply OK" --output-format
-json --max-turns 1 --no-session-persistence` 相当）により、evaluate が依存する必須フラグ群
-   （`--output-format stream-json` / `--max-budget-usd` / `--json-schema` / `--bare`）が CLI に
-   よって受理されることを確認する。無効なフラグは CLI が起動直後にエラー終了するため、軽量な
-   呼び出しで検査可能である。いずれかのフラグが拒否された場合、exit code 2 で終了する。
+json --max-turns 1 --no-session-persistence` 相当）により、evaluate が依存する必須フラグ群が
+   CLI によって受理されることを確認する。無効なフラグは CLI が起動直後にエラー終了するため、
+   軽量な呼び出しで検査可能である（スパイクで確認: 未知フラグ・不正 JSON schema は即時 exit 1、
+   モデル呼び出し・課金なし。§8 項目8）。いずれかのフラグが拒否された場合、exit code 2 で終了する。
+   検査対象フラグは judge バックエンド（§3-3、config `judge.tool`）に応じて切り替える:
+   - 常時: `--output-format stream-json` / `--max-budget-usd`（scenario run が依存）
+   - `judge.tool: claude-bare` の場合のみ: `--json-schema` / `--bare`、および `--bare` 用認証
+     （`ANTHROPIC_API_KEY` 等）の存在確認
+   - `judge.tool: codex` の場合: `codex exec` の存在と `--output-schema` / `-o` / `--json` の
+     受理可否を同様の軽量呼び出しで検査する
 3. 検査結果（pin 一致有無・各フラグの受理可否）を `cli_capabilities` オブジェクトとして
    `run.metadata.schema.json`（§1-6）の `cli_capabilities` フィールドに記録する。
 
@@ -1206,27 +1212,86 @@ penalty = ambiguities + discretion_fills + retries   # 自己申告 3 項目の�
   quality_score の値に関わらず frontier から除外する（§3-5）。
 - 重み（`70` / `30` / ペナルティ係数 `5`）は config `scoring.*`（§5）で調整可能とする。
 
-### 3-3. rubric_judge の実行（確定形）
+### 3-3. rubric_judge の実行（pluggable backend 方式、2026-07-07 スパイク + レビュー反映）
+
+judge の要件は (1) 候補ハーネスの hooks/skills から隔離されていること（reward hacking 遮断）、
+(2) verdict（`{passed: bool, reason: string}`）が機械可読な形で強制されること、(3) バックエンドが
+利用不能な場合に fail-closed すること、の 3 点である。この要件を満たすバックエンドを
+**config `judge.tool` で差し替え可能**とし、既定は `codex` とする。
+
+**背景（スパイクで判明した制約）**: 当初設計は `claude -p --bare` 固定だったが、`--bare` は
+`ANTHROPIC_API_KEY` または `apiKeyHelper` が必須で OAuth/keychain 認証を一切使わない（2.1.202 で
+確認、§8 項目9）。OAuth のみの開発環境では judge が動作しないため、ChatGPT OAuth で認証済みの
+Codex CLI を既定バックエンドに採用する。
+
+#### backend: `codex`（既定）
+
+```bash
+codex exec -C <neutral-dir> --sandbox read-only --skip-git-repo-check \
+  --output-schema <verdict.schema.json の絶対パス> \
+  -o <verdict 出力ファイル> --json \
+  --model <config: judge.model> \
+  "<rubric + 対象成果物の抜粋>" < /dev/null
+```
+
+（`--skip-git-repo-check` は必須。neutral-dir はリポジトリツリー外の一時ディレクトリであり、
+codex は git 管理外ディレクトリを untrusted として `--skip-git-repo-check` なしでは即時エラー
+終了する。Phase 1b E2E で実機確認。）
+
+- **隔離**: `codex exec` は `.claude/` の hooks/skills を一切読まない（本リポジトリで実証済みの
+  性質。hooks 非発火 #157）。候補ハーネスからの隔離は `--bare` より構造的に強い。
+- **`-C <neutral-dir>` はリポジトリツリーの外**（例: store の `tmp/judge-<nonce>/`…ではなく、
+  メインルート外の一時ディレクトリ）に置く。codex は working root から AGENTS.md を探索・読込
+  するため、候補 worktree はもちろん、リポジトリ配下のディレクトリを `-C` に指定してはならない
+  （親方向探索で repo の AGENTS.md を拾う可能性）。成果物はパスをプロンプトで明示指定して読ませる
+  （`--sandbox read-only` は読み取りを制限しないため到達可能）。
+- **verdict 取得は `-o` ファイルを正とする**: `--output-schema` により最終メッセージが verdict
+  schema に強制され、`-o` でファイルに書き出される。JSONL ストリーム（`--json`）は診断ログ用に
+  保存するのみで、verdict のパースソースにしない（イベント種別が codex バージョンで変わりうるため）。
+  exit code 非ゼロ / `-o` ファイル欠落・空・schema 不整合はすべて `verdict=error`。
+- **コスト計測**: codex はサブスクリプションベースで per-call USD を返さない。judge コストは
+  frontier の cost 軸（scenario run のトークン数）に含まれないため、観測可能性の低下のみで許容する。
+- 副次的利点: クロスモデル判定（GPT が Claude の成果物を判定）となり、自己選好バイアスが減る。
+
+#### backend: `claude-bare`（API キー provision 済み環境向け）
 
 ```bash
 claude -p "<rubric + 対象成果物の抜粋>" \
   --bare --no-session-persistence \
   --output-format json --json-schema '<verdict schema: {passed: bool, reason: string}>' \
   --max-turns <config: judge.max_turns> --permission-mode dontAsk \
-  --allowedTools "Read" --add-dir <worktree> \
+  --allowedTools "Read(<worktree の絶対パス>/**)" \
   --model <config: judge.model> --effort <config: judge.effort>
 ```
 
-- **`--bare` は必須**とする。judge は候補ハーネスの hooks/skills の影響を受けてはならない。
-  候補オーバーレイが `.claude/` 配下の hooks・instructions を変更している場合、`--bare` を使わずに
-  judge を実行すると、候補ハーネス自身が judge の判定プロセスに介入し得る（例: judge 呼び出し時に
-  発火する PreToolUse hook が判定結果を誘導する）。これは reward hacking の一種であり、`--bare`
-  による完全隔離がその遮断策となる。
-- `--json-schema` により `structured_output` で機械可読な verdict（`{passed, reason}`）を強制する
-  （2.1.201 で確認済みフラグ）。判定結果は `result.json` の `critical[].detail` /
-  `checks[].detail` に格納する。
-- `--add-dir <worktree>` で対象成果物へのアクセスのみ許可し、`--allowedTools "Read"` で読み取り
-  専用に制限する。judge が worktree に書き込みを行うことは想定しない。
+- `--bare` で候補ハーネスの hooks/skills から隔離する（`ANTHROPIC_API_KEY`/`apiKeyHelper` 必須）。
+- **`--allowedTools` はパス scoped パターン必須**: スパイク実測（§8 項目9）で unscoped
+  `--allowedTools "Read"` は cwd/`--add-dir` に関わらず全ファイルシステムへの Read を許可することが
+  判明した。`Read(<pattern>)` 構文（`Read(//abs/path/**)` = 絶対、`Read(./...)` = cwd 相対、`*` =
+  単一セグメント、`**` = 再帰）で worktree 配下に scope する。`Glob`/`Grep` へのパス scoping は
+  公式に best-effort のため judge には許可しない（`Read` のみ）。
+
+#### 共通規則（バックエンド非依存）
+
+- **fail-closed・暗黙フォールバック禁止**: 設定されたバックエンドが利用不能（codex 未認証・
+  `--bare` の API キー不在・サンドボックス起動失敗等）の場合、**別バックエンドへ静かに降格せず**
+  `verdict=error` とし、`checks[].detail` に "judge unavailable: <理由>" を記録する。隔離保証の
+  異なるバックエンドへの暗黙切替は、判定条件の同一性（§3-5 の hash スコープの前提）を壊すため
+  禁止する。`result.json` には使用バックエンドとバージョンを記録する。
+- **プロンプトインジェクション対策**: 候補生成物のテキストは untrusted input としてデリミタで
+  囲い、「指示として扱うな」を rubric 側に常設する（§11-4 と同型）。`--output-schema` /
+  `--json-schema` は**形状のみ**を強制し、インジェクションによる `passed` の反転は防げないことを
+  前提に、セキュリティ関連 rubric は LLM judge 単独に委ねず `command_exit` 等のルールベース
+  oracle と併用する。
+- 判定結果は `result.json` の `critical[].detail` / `checks[].detail` に格納する。
+- **信頼インフラ改ざんへの注意（Phase 2/3 で対策必須）**: 候補ハーネスの scenario run は hooks
+  経由で任意コマンドを実行できるため、`~/.codex/config.toml` や `~/.claude/settings.json` 等の
+  judge 側信頼設定を書き換える持続的汚染の経路が理論上ある。Phase 1（human 登録候補のみ）では
+  リスクを許容するが、Phase 2/3（自動 proposer）ではこの経路も §11-3 の OS レベル隔離の対象に
+  含める（judge 設定ファイルのハッシュ照合トリップワイヤを最低限の対策として検討）。
+- Phase 1（人間が候補を register する運用のみ）では、候補ハーネスが意図的に judge を誘導する
+  reward hacking の実害リスクは Phase 2/3 より低い（Codex/claude-direct レビュー 2026-07-07）。
+  Phase 1b の judge 実装はこの設計で進めてよく、実装をブロックしない。
 
 ### 3-4. 反復評価と集計
 
@@ -1374,9 +1439,10 @@ scenario_run:
   max_turns_default: 30
   max_budget_usd_default: 2.0
 judge:
-  model: null
-  effort: high
-  max_turns: 4
+  tool: codex # codex | claude-bare（§3-3）。利用不能時は fail-closed（暗黙フォールバック禁止）
+  model: null # null = 各バックエンドの既定モデル
+  effort: high # claude-bare のみ使用
+  max_turns: 4 # claude-bare のみ使用
 scoring:
   critical_weight: 70
   penalty_base: 30
@@ -1533,6 +1599,24 @@ meta-harness-detailed.md` §5 の既定値に反映する（本スパイク後�
    実機確認する（§11-3）。判定基準: view 外パスを明示的に指定した `Read` / `Glob` 試行が
    すべて失敗し、view 配下のパスのみアクセスが成功すること。
 
+### 8-1. スパイク実施結果（2026-07-07、`claude` 2.1.202）
+
+| #   | 項目                      | 判定           | 備考                                                                                                                           |
+| --- | ------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| 1   | worktree 内 hooks 発火    | PASS           | marker hook 発火を確認                                                                                                         |
+| 2   | facet/context build       | PASS           | 想定されていた ImportError は今回未再現（既知事情は主に pytest 側の可能性）                                                    |
+| 3   | cost フィールド取得       | PASS（要注意） | budget 打ち切り時 `usage.*` が 0 化、`modelUsage.*` へのフォールバックが必要（§14-1）                                          |
+| 4   | `--max-budget-usd` 実停止 | PASS（要注意） | 実測コストが設定値の 2〜4 倍に達するオーバーシュートを観測（§14-1）                                                            |
+| 5   | `--json-schema` 準拠      | PASS           | `--bare` は認証不可のため非 bare で代替検証、10/10 で schema 準拠                                                              |
+| 6   | baseline シナリオ簡易 E2E | PASS           | 自己申告ブロックの出力・抽出を確認                                                                                             |
+| 7   | 評価コスト実測            | PASS           | `total_cost_usd=1.20`, in/out tokens=10073/582, duration=74.4s, turns=2                                                        |
+| 8   | CLI capability gate       | PASS           | 無効フラグ・不正 schema は即時 exit 1 で fail-fast                                                                             |
+| 9   | proposer cwd 隔離         | **DEVIATION**  | `--bare` は API key 未設定で検証不能。非 bare 近似では view 外絶対パスへの Read が無制限に成功（§11-3 に詳細と対応方針を記載） |
+
+**結論**: 項目9 の DEVIATION は Phase 2（proposer）実装の着手条件（§11-3 参照）として扱う。
+Phase 1b（judge を含む）の実装は、§3-3 に反映したパス scoped `Read` 対策と fail-closed 挙動を
+実装した上で、この DEVIATION によってブロックされない（Codex gpt-5.5 レビュー 2026-07-07 で確認）。
+
 ---
 
 ## 9. Phase 1a/1b の境界確定
@@ -1651,6 +1735,30 @@ cd <view-dir> && claude -p "<§11-4 のプロンプト>" \
   すれば `--add-dir` は不要かつ付けるべきではない。これにより proposer のファイルアクセスは
   view 配下に構造的に限定され、実 store・holdout・実 repo ソースへ物理的に到達できなくなる
   （§8 項目 9 の到達不能テストで実機検証する）。
+
+**【2026-07-07 スパイクにより判明した重大な設計ギャップ・Phase 2 実装ブロッカー】**: 上記の想定は
+実機検証で**成立しないことが判明した**（§8 項目9、§14）。`--bare` は本環境で
+`ANTHROPIC_API_KEY`/`apiKeyHelper` 未設定のため直接検証できなかったが、近似条件（cwd 固定 + `--add-dir`
+不使用 + unscoped `--allowedTools "Read" "Glob"`）では、view 外・worktree 外の絶対パスへの `Read` が
+**何の制限もなく成功した**。cwd 固定と `--add-dir` 省略は、Claude Code においてファイルシステム
+アクセスの境界を構成しない（Codex gpt-5.5 レビューでも同様の結論、2026-07-07）。
+
+このため、proposer の隔離は本節記載の方式のままでは **holdout・実 store・facet ソース本体への
+到達を防げない**。Phase 2 実装着手前に、以下のいずれかで隔離方式を再設計し、実機で到達不能性を
+証明する必要がある（**Phase 2 実装の着手条件**とする）:
+
+1. パス scoped `--allowedTools` パターン（`Read(<view-dir 絶対パス>/**)` 等、§3-3 で judge に適用した
+   ものと同方式）を `Read` に適用する。ただし `Glob`/`Grep` へのパス scoping は公式に best-effort
+   扱いのため、これのみでは holdout 保護の主境界にできない。
+2. OS/プロセスレベルの隔離（macOS `sandbox-exec`、Linux 名前空間ベースの sandbox 等、または
+   コンテナ/VM）で proposer プロセス自体を view 外にアクセスできないよう物理的に囲う。Codex の
+   推奨はこちらを主たる境界とし、パス scoped `Read` は defense-in-depth として併用する方式。
+3. 上記いずれかの方式で、§8 項目9 の到達不能テスト（view 外の絶対パス・holdout・facet ソース本体・
+   symlink 経由・`Glob`/`Grep` 経由のすべてを拒否できること）が実機で PASS することを Phase 2
+   実装着手前の必須条件とする。
+
+Phase 1（本 worktree のスコープ）は人間が候補を register する運用のみであり、自動 proposer が
+存在しないため、この隔離ギャップは Phase 1b の実装をブロックしない（Codex レビューで確認）。
 
 ### 11-4. proposer プロンプト構造
 
@@ -1882,15 +1990,35 @@ propose/evaluate 成果物は通常どおり store に残る（部分的な作�
 
 ---
 
-## 14. 実測待ちパラメータ一覧
+## 14. 実測待ちパラメータ一覧（2026-07-07 スパイク実測反映済み）
 
-以下はいずれも Phase 1b スパイク項目 7（コスト実測、§8）の結果で補正する値である。実装着手時に
-仮の既定値のまま先に進めてよいが、実測後は必ず本表と §5 config の該当値を更新すること。
+2026-07-07 に Phase 1b スパイク（§8）を実機実行（`claude` 2.1.202）した結果を反映する。
 
-| パラメータ                            | 現在の仮既定値 | 補正方針                                                                      |
-| ------------------------------------- | -------------- | ----------------------------------------------------------------------------- |
-| `scenario_run.max_budget_usd_default` | 2.0            | baseline シナリオの実測コストから妥当な上限を再設定                           |
-| `proposer.budget_usd_per_iteration`   | 1.0            | proposer 1 回あたりの実測コストから再設定                                     |
-| `loop.budget_usd`（既定 null）        | null（未設定） | 実測後、平均イテレーションコスト × 想定反復数から設定                         |
-| `evaluate.repeat_frontier`            | 3              | 判定分散の実測結果から必要な repeat 数を再設定                                |
-| シナリオ suite の規模（何本が適正か） | 未確定         | Phase 1b で baseline シナリオを実行し、実行時間・コストから適正本数を見積もる |
+| パラメータ                            | 旧仮既定値     | 実測反映後                                                                                                                                                                                                                                                                              |
+| ------------------------------------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `scenario_run.max_budget_usd_default` | 2.0            | **3.0 に引き上げ**。軽量な実務タスク（README 要約程度、2 turn）で `total_cost_usd=1.20`（cache creation 49,699 tokens・cache read 77,250 tokens が支配的）を実測。2.0 のままだと余裕が小さく、後述のオーバーシュート挙動と合わせて打ち切りリスクがあるため 3.0 に補正                   |
+| `proposer.budget_usd_per_iteration`   | 1.0            | **実測不能（据え置き、要再検証）**。proposer は `--bare` 前提だが本環境に `ANTHROPIC_API_KEY`/`apiKeyHelper` が無く `--bare` が認証エラーで動作しなかったため実測できていない。`--bare` は CLAUDE.md 自動読込・hooks 等を省略するため scenario_run より固定費が低い可能性が高いが未検証 |
+| `loop.budget_usd`（既定 null）        | null（未設定） | **据え置き（未設定のまま）**。proposer 実測が済んでいないため算出根拠がない                                                                                                                                                                                                             |
+| `evaluate.repeat_frontier`            | 3              | **据え置き**。ただし repeat_frontier=3 を踏まえると 1 候補・1 シナリオあたり `scenario_run` コストだけで最大 $3.6〜$4 程度に達する見込み（$1.2 × 3）                                                                                                                                    |
+| シナリオ suite の規模（何本が適正か） | 未確定         | **1 本あたり $1.2〜$2 程度を目安に見積もる**。suite 本数 × repeat_frontier × 単価でコスト予算を計算すること                                                                                                                                                                             |
+
+### 14-1. 新たに判明した実装上の注意点（スパイクで発見、既定値表に収まらないもの）
+
+1. **`--max-budget-usd` はオーバーシュートしうる**: budget チェックはターン完了後に行われるため、
+   1 ターン目の cache creation コストが budget を上回ってから初めて打ち切りが発動する。実測では
+   設定 $0.2〜$0.5 に対し実測 $0.74〜$1.19（2〜4倍）に達するケースを観測した。ただし §5 既定値
+   （3.0 に補正後）のように、想定コスト（$1.2〜$2）に対して十分な余裕を持たせた budget を設定
+   すれば、この現象自体が発生しない設定にできる。**`max_budget_usd` を実測コストのフロア値
+   （$1.2 前後）未満に設定しないこと**を実装・config 既定値決定時の注意点として明記する。
+2. **budget 打ち切り時、トップレベル `usage.input_tokens`/`usage.output_tokens` が 0 になる**:
+   `subtype: error_max_budget_usd` の場合、`result` イベントのトップレベル `usage.*` は 0 に潰れ、
+   実トークン数は `modelUsage.<model>.inputTokens`/`outputTokens` からのみ取得できる。
+   `lib/evaluator.py` のコスト抽出ロジックは、`usage.*` が 0 かつ `subtype` が `error_max_budget_usd`
+   の場合に `modelUsage.*` へフォールバックする実装が必須（`run.metadata.schema.json` の `cost` def
+   実装時の注意点）。
+3. **`--bare` は `ANTHROPIC_API_KEY` または `apiKeyHelper` が必須で、OAuth/keychain 認証を使わない**
+   （`claude --help` に明記）。この制約を受け、judge（§3-3）は pluggable backend 方式に変更し、
+   ChatGPT OAuth で認証済みの Codex CLI（`codex exec --output-schema`）を既定バックエンドとした
+   （`judge.tool: codex`）。`claude-bare` バックエンドは API キー provision 済み環境向けの選択肢
+   として残す。proposer（§11-3）の `--bare` 前提は Phase 2 の隔離方式再設計（OS レベル隔離）と
+   合わせて解決する。

@@ -23,6 +23,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from contextlib import contextmanager
 from datetime import datetime
@@ -58,8 +59,8 @@ DEFAULTS: dict[str, Any] = {
         "model": None,
         "cli_version_pin": None,
     },
-    "scenario_run": {"max_turns_default": 30, "max_budget_usd_default": 2.0},
-    "judge": {"model": None, "effort": "high", "max_turns": 4},
+    "scenario_run": {"max_turns_default": 30, "max_budget_usd_default": 3.0},
+    "judge": {"tool": "codex", "model": None, "effort": "high", "max_turns": 4},
     "scoring": {
         "critical_weight": 70,
         "penalty_base": 30,
@@ -1091,12 +1092,12 @@ def validate_config_patch(config_patch: list, config: dict, schema_dir: Path) ->
 
 
 # ---------------------------------------------------------------------------
-# 排他制御（Sec2-3。Phase 1a は store.lock のみ）
+# 排他制御（Sec2-3。store.lock は Phase 1a、evaluate.lock は Phase 1b で追加）
 # ---------------------------------------------------------------------------
 
 
 class LockAcquisitionError(RuntimeError):
-    """store.lock が取得できない場合に送出する（CLI は exit 3）。"""
+    """store.lock / evaluate.lock が取得できない場合に送出する（CLI は exit 3）。"""
 
 
 _LOCK_ACQUIRE_ATTEMPTS = 2
@@ -1210,6 +1211,93 @@ def _is_snapshot_stale(snapshot: tuple[str, float], ttl_seconds: float) -> bool:
     """
     _, mtime = snapshot
     return time.time() - mtime > ttl_seconds
+
+
+# ---------------------------------------------------------------------------
+# evaluate.lock（Sec2-3。`evaluate` コマンド全体を通して保持する PID + heartbeat 方式の長期 lock）
+# ---------------------------------------------------------------------------
+
+
+@contextmanager
+def evaluate_lock(main_root: Path, config: dict):
+    """`evaluate` コマンド全体を通して保持する長期 singleton lock（Sec2-3）。
+
+    固定 TTL ではなく heartbeat（既定 60 秒ごとに mtime 更新）+ staleness 閾値（既定 300 秒、
+    heartbeat が途絶えたプロセスクラッシュ時のみ奪取可）方式を採る。実行時間の長い evaluate が
+    固定 TTL 到達で誤って lock を奪われることを防ぐ。
+    """
+    lock_file = locks_dir(main_root, config) / "evaluate.lock"
+    lock_file.parent.mkdir(parents=True, exist_ok=True)
+    locks_cfg = config.get("locks") or {}
+    stale_seconds = locks_cfg.get(
+        "evaluate_stale_seconds", DEFAULTS["locks"]["evaluate_stale_seconds"]
+    )
+    heartbeat_seconds = locks_cfg.get(
+        "evaluate_heartbeat_seconds", DEFAULTS["locks"]["evaluate_heartbeat_seconds"]
+    )
+    token = _acquire_evaluate_lock(lock_file, stale_seconds)
+    stop_event = threading.Event()
+    heartbeat_thread = threading.Thread(
+        target=_evaluate_lock_heartbeat_loop,
+        args=(lock_file, heartbeat_seconds, stop_event),
+        daemon=True,
+    )
+    heartbeat_thread.start()
+    try:
+        yield
+    finally:
+        stop_event.set()
+        heartbeat_thread.join(timeout=heartbeat_seconds + 5)
+        _release_evaluate_lock(lock_file, token)
+
+
+def _acquire_evaluate_lock(lock_file: Path, stale_seconds: float) -> str:
+    """store_lock と同じ snapshot-first 奪取ロジックを stale 閾値違いで再利用する。"""
+    for _ in range(_LOCK_ACQUIRE_ATTEMPTS):
+        token = f"{os.getpid()}:{time.time_ns()}:{os.urandom(4).hex()}"
+        try:
+            fd = os.open(lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            snapshot = _read_lock_snapshot(lock_file)
+            if snapshot is None:
+                continue
+            if not _is_snapshot_stale(snapshot, stale_seconds):
+                raise LockAcquisitionError(
+                    f"evaluate.lock is held by another process: {lock_file}"
+                ) from None
+            _unlink_if_unchanged(lock_file, snapshot)
+            continue
+        else:
+            with os.fdopen(fd, "w") as handle:
+                handle.write(token)
+            return token
+    raise LockAcquisitionError(
+        f"could not acquire evaluate.lock after {_LOCK_ACQUIRE_ATTEMPTS} attempts: {lock_file}"
+    )
+
+
+def _release_evaluate_lock(lock_file: Path, token: str) -> None:
+    try:
+        if lock_file.read_text(encoding="utf-8") == token:
+            lock_file.unlink(missing_ok=True)
+    except (FileNotFoundError, OSError):
+        pass
+
+
+def _evaluate_lock_heartbeat_loop(
+    lock_file: Path, heartbeat_seconds: float, stop_event: threading.Event
+) -> None:
+    """`stop_event` がセットされるまで `heartbeat_seconds` ごとに lock の mtime を更新する。"""
+    while not stop_event.wait(heartbeat_seconds):
+        _touch_evaluate_lock(lock_file)
+
+
+def _touch_evaluate_lock(lock_file: Path) -> None:
+    """lock ファイルの mtime を現在時刻に更新する（heartbeat 1 回分、単体テストからも直接呼べる）。"""
+    try:
+        os.utime(lock_file, None)
+    except FileNotFoundError:
+        pass
 
 
 # ---------------------------------------------------------------------------

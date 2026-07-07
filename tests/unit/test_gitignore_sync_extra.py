@@ -42,6 +42,11 @@ class TestBuildBlock:
         assert ".codex/runs/" in gitignore_mod.build_block()
         assert ".codex/reports/" in gitignore_mod.build_block()
 
+    def test_contains_meta_harness_store_entry(self) -> None:
+        """meta-harness の store（candidates/runs/ledger 等）は無視対象（Phase 1a 実装漏れの修正）。"""
+        assert ".claude/meta-harness/" in gitignore_mod.ENTRIES
+        assert ".claude/meta-harness/" in gitignore_mod.build_block()
+
 
 class TestSyncGitignore:
     """sync_gitignore のテスト。"""
@@ -86,3 +91,19 @@ class TestSyncGitignore:
         content = path.read_text(encoding="utf-8")
         assert ".claude/old/" not in content
         assert ".claude/Plans.md" in content
+
+    def test_managed_block_regeneration_restores_meta_harness_entry(self, tmp_path: Path) -> None:
+        """Phase 1a の実装漏れ回帰確認: 手編集で `.claude/meta-harness/` 行が管理ブロック内から
+        消えていても、次回の同期（managed block 再生成）で復活すること。"""
+        path = tmp_path / ".gitignore"
+        stale_entries = [e for e in gitignore_mod.ENTRIES if e != ".claude/meta-harness/"]
+        stale_block = "\n".join(
+            [gitignore_mod.BLOCK_START, *stale_entries, gitignore_mod.BLOCK_END]
+        )
+        path.write_text(stale_block + "\n", encoding="utf-8")
+        assert ".claude/meta-harness/" not in path.read_text(encoding="utf-8")
+
+        changed = gitignore_mod.sync_gitignore(tmp_path)
+
+        assert changed is True
+        assert ".claude/meta-harness/" in path.read_text(encoding="utf-8")
