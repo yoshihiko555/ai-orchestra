@@ -448,12 +448,19 @@ two-phase プロトコルをオーケストレーター側の行動規範とし�
 ```markdown
 ## 実行プロトコル（MUST）
 
+起動時に `loop_step start --issue <N> ...`（既存ループの続行時は最初の `loop_step propose` 相当）
+を呼び、応答に含まれる `lease_token` を保持する（cli 編 1.3 節・1.9 節）。このスキルの実行中、
+以後のすべての `loop_step` 呼び出し（`propose`/`complete`/`reconcile`/`heartbeat`）に、保持している
+この `lease_token` を `--lease-token` で渡す。`resume` を呼んだ場合は、その応答に含まれる新しい
+`lease_token` に保持値を更新する（旧 token は以後無効。cli 編 1.8 節）。
+
 このスキルの実行中、次の 1 サイクルを繰り返す:
 
-1. `loop_step propose` を呼ぶ
+1. `loop_step propose --lease-token <保持している lease_token>` を呼ぶ
 2. 応答の `action` に**厳密に一致する**アクションだけを実行する
    （`run_maker` なら Task で Maker を起動する。それ以上でもそれ以下でもない）
-3. `loop_step complete --action-id <action_id> --result <json>` を呼ぶ
+3. `loop_step complete --action-id <action_id> --result <json> --lease-token <保持している lease_token>`
+   を呼ぶ
 4. 1 に戻る
 
 **MUST NOT（禁止事項）**:
@@ -464,6 +471,8 @@ two-phase プロトコルをオーケストレーター側の行動規範とし�
 - ガード（反復上限・無進捗）に達していないのに、実装が完了したように見えるという理由だけで
   反復を打ち切らない。停止は必ず `propose` が `exit_success` / `exit_failure` を返した時にのみ行う
 - `complete` を呼ばずに次の `propose` を呼ばない（two-phase プロトコルの整合性が壊れる）
+- `start`/`resume` で取得した `lease_token` を保持せず `--lease-token` を省略する、または古い値を
+  使い回す（cli 編 1.9 節。省略・不一致は exit code 2 で拒否される）
 - Maker/Checker の生出力をそのままユーザーへの応答に含めない（要約のみ。NF-05）
 
 action の実行方針に疑問がある場合は、その懸念を報告してよい。ただし懸念があっても

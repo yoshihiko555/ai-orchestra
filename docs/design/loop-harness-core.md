@@ -311,6 +311,15 @@ def resume(
     """failed/stopped からの意図的再開（5.5 節）。reset_counters=False は拒否する。"""
 ```
 
+**`lease_token` の呼び出し契約（Codex レビュー指摘反映。P1。`design:loop-harness-cli` 1.9 節参照）**:
+上記シグネチャの `lease_token: str` は、いずれも **呼び出し側（LP-1 オーケストレーター / LP-2
+`loop_driver`）が保持し、引数として明示的に渡す値**である。`propose`/`complete`/`reconcile`/
+`heartbeat` の実装は `validate_lease()`（6.3 節）でこの引数値と `lock.json.lease_token` を照合する
+のみとし、**`lock.json` を独自に読み直して自己完結的に検証すること（呼び出し元の識別を伴わない
+自己参照チェック）はしない**。この区別が無いと、TTL 失効後に別プロセスが新しい lease を取得した
+場合でも「その時点の `lock.json` の値と一致するか」を自分自身に問うだけになり fencing が機能しない
+（cli 編 1.9 節が詳細な CLI インターフェース契約を定義する）。
+
 ### 2.2 各操作の事前条件・事後条件（state 不変条件）
 
 | 操作        | 事前条件                                                                                                                                               | 事後条件                                                                                                                                          |

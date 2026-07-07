@@ -776,6 +776,11 @@ PR に投稿されるレビュー・コメントは、Codex の GitHub 連携以
 
 `log_common`（events.jsonl）への配線は行わない（既存 2 系統併存の悪化を避けるため。要件 3.2）。
 
+**依存宣言の根拠（Codex レビュー指摘反映。P2）**: 上表の `issue-fix`・`pr-create` は
+`packages/git-workflow` が配布元である。orchex の依存解決は直接依存のみをチェックするため、
+`manifest.json`（`design:loop-harness-cli` 7 節）の `depends` に `git-workflow` を明記する
+（間接的な資産再利用のままでは、`git-workflow` 未インストール環境でループの出口処理が機能しない）。
+
 **quality-gates hook との重複整理**（アーキテクチャレビュー反映）: ループの Checker が
 `pytest`/`ruff` を実行すると、`quality-gates` パッケージの `post-test-analysis` 等の既存 hook も
 反応し得る（8 節で修正した通り、`claude -p` では hooks が発火するため）。これは以下の方針で

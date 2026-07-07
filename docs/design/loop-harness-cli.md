@@ -49,12 +49,17 @@ codd:
 
 ```text
 loop_step.py start      --issue <N> [--definition <id>] [--project <path>]
-loop_step.py propose    --loop-id <id> [--project <path>]
-loop_step.py complete   --loop-id <id> --action-id <id> --state-version <n> --result <json|@file> [--project <path>]
-loop_step.py reconcile  --loop-id <id> [--project <path>]
-loop_step.py heartbeat  --loop-id <id> [--project <path>]
+loop_step.py propose    --loop-id <id> --lease-token <token> [--project <path>]
+loop_step.py complete   --loop-id <id> --action-id <id> --state-version <n> --result <json|@file> --lease-token <token> [--project <path>]
+loop_step.py reconcile  --loop-id <id> --lease-token <token> [--project <path>]
+loop_step.py heartbeat  --loop-id <id> --lease-token <token> [--project <path>]
 loop_step.py resume     --loop-id <id> --reset-counters [--project <path>]
 ```
+
+> **`--lease-token` の扱い（Codex レビュー指摘反映。P1。詳細は 1.9 節）**: `start` / `resume` は
+> 新規に lease を発行し、応答 JSON に `lease_token` を含める。それ以外の変更系サブコマンド
+> （`propose` / `complete` / `reconcile` / `heartbeat`）は、呼び出し側が保持するその `lease_token`
+> を `--lease-token` で**必須**渡しする。
 
 - 全サブコマンドは stdout に **1 行の JSON オブジェクト**のみを出力する（人間可読ログは stderr へ）。
 - `--project`省略時は `find_repo_root()`（`harness_common.py` と同じ「`.git` を上に探索」方式。
@@ -65,12 +70,12 @@ loop_step.py resume     --loop-id <id> --reset-counters [--project <path>]
 
 ### 1.2 exit code 規約（全サブコマンド共通）
 
-| exit code | 意味                                                                          |
-| --------- | ----------------------------------------------------------------------------- |
-| `0`       | 正常終了。stdout の JSON に結果が入る                                         |
-| `1`       | 一般エラー（引数不正、state/journal の読み書き失敗、Issue 未検出等）          |
-| `2`       | 検証拒否（`complete` の `action_id` / `state_version` 不一致＝stale。1.5 節） |
-| `3`       | lock 取得失敗（`start` の Issue ロック、`propose`/`complete` の lease 検証）  |
+| exit code | 意味                                                                                                                                                                            |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `0`       | 正常終了。stdout の JSON に結果が入る                                                                                                                                           |
+| `1`       | 一般エラー（引数不正、state/journal の読み書き失敗、Issue 未検出等）                                                                                                            |
+| `2`       | 検証拒否（`complete` の `action_id` / `state_version` 不一致＝stale。1.5 節。`propose`/`complete`/`reconcile`/`heartbeat` の `--lease-token` 不一致・欠落もここに含む。1.9 節） |
+| `3`       | lock 取得失敗（`start` の Issue ロック取得失敗のみ。lease_token の不一致・欠落は exit `2` に統一。1.9 節）                                                                      |
 
 - `1`〜`3` いずれの場合も stdout には `{"error": {"code": ..., "message": ...}}` 形式の JSON を出す
   （オーケストレーター側が exit code とあわせて機械的に判定できるようにする。stderr にも同内容を
@@ -111,7 +116,7 @@ python3 loop_step.py start --issue 42 --definition issue-loop --project /path/to
 7. 内部的に `propose` と同じロジックを呼び、最初のアクション（`run_maker`, `iteration=1`）を
    決定して返す。
 
-応答 JSON（`propose` と同じ形。1.4 節参照）:
+応答 JSON（`propose` と同じ形に加え `lease_token` を含む。1.4 節・1.9 節参照）:
 
 ```jsonc
 {
@@ -123,6 +128,7 @@ python3 loop_step.py start --issue 42 --definition issue-loop --project /path/to
   "iteration": 1,
   "params": {},
   "reason": "loop initialized; first maker run",
+  "lease_token": "6f1e...", // 呼び出し側が保持し、以後の propose/complete/reconcile/heartbeat に渡す（1.9 節）
 }
 ```
 
@@ -137,13 +143,22 @@ python3 loop_step.py start --issue 42 --definition issue-loop --project /path/to
 ### 1.4 `propose`
 
 ```bash
-python3 loop_step.py propose --loop-id a1b2c3d4-issue-42 --project /path/to/repo
+python3 loop_step.py propose --loop-id a1b2c3d4-issue-42 --lease-token 6f1e... --project /path/to/repo
 ```
+
+引数:
+
+| 引数            | 必須 | 説明                                                                                            |
+| --------------- | ---- | ----------------------------------------------------------------------------------------------- |
+| `--loop-id`     | ✓    |                                                                                                 |
+| `--lease-token` | ✓    | `start`/`resume` 応答で取得した lease_token（1.9 節）。呼び出し側が保持し続ける値をそのまま渡す |
+| `--project`     |      | プロジェクトルート（省略時は自動解決）                                                          |
 
 処理手順（基本設計 5.3〜6 節）:
 
-1. `lock.json` の `lease_token` を検証する（fencing）。他プロセスが新しい lease を保持していれば
-   exit `3`。
+1. `--lease-token` で渡された値と `lock.json.lease_token` を照合する（fencing）。**この検証は
+   `lock.json` の再読だけで自己完結させず、呼び出し側が保持する token との一致を必須の入力とする**
+   （1.9 節）。不一致・欠落は exit `2`。
 2. `reconcile`（1.5 節のロジックをそのまま内部呼び出し）を実行し、前回 `complete` が未確定のまま
    終了していないかを確認・復旧する。
 3. 直近の Checker 結果があればガード評価（基本設計 6.1 節: 合格判定 → 無進捗判定 → 反復上限判定）
@@ -202,6 +217,7 @@ python3 loop_step.py complete \
   --action-id act-000004 \
   --state-version 5 \
   --result @/tmp/result.json \
+  --lease-token 6f1e... \
   --project /path/to/repo
 ```
 
@@ -213,10 +229,12 @@ python3 loop_step.py complete \
 | `--action-id`     | ✓    | `propose` が返した `action_id`                               |
 | `--state-version` | ✓    | `propose` が返した `state_version`（提案時点のバージョン）   |
 | `--result`        | ✓    | JSON 文字列、または `@path` でファイル参照（CheckResult 等） |
+| `--lease-token`   | ✓    | `start`/`resume` 応答で取得した lease_token（1.9 節）        |
 
 検証手順:
 
-1. `lease_token` を検証（fencing）。不一致は exit `3`。
+1. `--lease-token` で渡された値と `lock.json.lease_token` を照合する（fencing。1.9 節。`lock.json`
+   の再読のみによる自己検証はしない）。不一致・欠落は exit `2`。
 2. 現在の pending action と `action_id` / `state_version` を照合する。
    - **一致**: 3 へ進む。
    - **不一致（stale）**: exit `2`、`{"error": {"code": "stale_action", "message": "..."}}`。
@@ -236,9 +254,11 @@ python3 loop_step.py complete \
 一見矛盾するが、両立させる設計とし 8 節で明記する）。
 
 ```bash
-python3 loop_step.py reconcile --loop-id a1b2c3d4-issue-42 --project /path/to/repo
+python3 loop_step.py reconcile --loop-id a1b2c3d4-issue-42 --lease-token 6f1e... --project /path/to/repo
 ```
 
+- `--lease-token`（必須）は `propose` と同じ検証を行う（1.9 節）。単体呼び出しも状態変更を伴う操作
+  であるため、fencing を省略しない。
 - `propose` 実行時に自動で呼ばれる経路と全く同じ内部関数（`loop_common.reconcile()`）を呼ぶ。
 - 単体で呼んだ場合も副作用（state 更新・journal 追記）は `propose` 経由と同一。ただし新しい
   `action` の提案（次に何をすべきか）までは行わず、reconcile の結果のみを返す:
@@ -256,10 +276,11 @@ python3 loop_step.py reconcile --loop-id a1b2c3d4-issue-42 --project /path/to/re
 ### 1.7 `heartbeat`
 
 ```bash
-python3 loop_step.py heartbeat --loop-id a1b2c3d4-issue-42 --project /path/to/repo
+python3 loop_step.py heartbeat --loop-id a1b2c3d4-issue-42 --lease-token 6f1e... --project /path/to/repo
 ```
 
-- `lock.json` の `heartbeat_at` を現在時刻で更新する（`lease_token` は変更しない）。
+- `--lease-token`（必須）と `lock.json.lease_token` を照合してから（1.9 節）、`lock.json` の
+  `heartbeat_at` を現在時刻で更新する（`lease_token` の値自体は変更しない）。不一致・欠落は exit `2`。
 - LP-1 では長時間の単一アクション（例: Checker の LLM レビューが長引く場合）の間、オーケストレーター
   が `propose`/`complete` を呼ばずに `heartbeat` のみを定期実行して lease を延命できる。
 - 応答: `{"loop_id": ..., "heartbeat_at": "...", "ttl": 3600}`。
@@ -281,8 +302,37 @@ python3 loop_step.py resume --loop-id a1b2c3d4-issue-42 --reset-counters --proje
   （基本設計 5.5 節）。
 - 処理: 現在フェーズの `iteration` を `0` に、`no_progress` カウンタ・`infrastructure_failure`
   カウンタをリセットし、`status` を `running` に戻す。`journal.jsonl` に
-  `event: "resumed", actor: "human"` を追記する。
-- 応答: `propose` と同じ形式で、リセット後の最初のアクションを返す。
+  `event: "resumed", actor: "human"` を追記する。**新しい `lease_token` を発行して `lock.json` に
+  書き込む**（1.9 節。旧 token は以後無効。人間判断による再開のたびに lease を再発行し、失効済み
+  token を握った古い呼び出し元を確実に締め出す）。
+- 応答: `propose` と同じ形式で、リセット後の最初のアクションを返す。加えて、新規発行した
+  `lease_token` をレスポンスに含める（呼び出し側はこれを保持し、以後の `propose`/`complete`/
+  `reconcile`/`heartbeat` に渡す。1.9 節）。
+
+### 1.9 `lease_token` の呼び出し契約（Codex レビュー指摘反映。P1）
+
+**問題**: 当初案は変更系サブコマンドが毎回 `lock.json` を読み直して自己完結的に検証する構造
+だった。この構造では「渡された値と照合する」対象がなく、実質的に「その時点の `lock.json` の
+値と一致するかどうか」を自分自身に対して確認するだけになり、fencing が機能しない。TTL 失効後に
+別プロセスが新しい lease を取得したケースでも、旧プロセスの書き込みが（旧プロセス自身が
+`lock.json` を読み直した時点で得る）新しい token との照合を素通りしてしまう。
+
+**修正**: `lease_token` は **呼び出し側（LP-1 のオーケストレーター、または LP-2 の
+`loop_driver`）が保持する契約**とし、CLI 引数として明示的に受け渡す。
+
+- `start`（1.3 節）・`resume`（1.8 節）は新規に lease を発行し、応答 JSON に `lease_token` を
+  含める。呼び出し側はこれをプロセス内で保持し続ける。
+- 変更系サブコマンド `propose`（1.4 節）・`complete`（1.5 節）・`reconcile`（1.6 節）・
+  `heartbeat`（1.7 節）は **`--lease-token <token>` を必須引数**として受け取り、渡された値と
+  `lock.json.lease_token` を照合する。**`lock.json` の再読のみによる自己検証はしない**（呼び出し側が
+  保持する token との一致を必須の入力とする）。
+- 不一致・欠落は **exit code `2`**（検証拒否。1.2 節）で棄却する。`lock.json` に対応する lease が
+  そもそも存在しない、または `start` 自体のロック取得に失敗した場合のみ exit `3` を用いる
+  （1.2 節で明確化）。
+- `loop_status.py`（4 節）の `list`/`show`（4.1 節・4.2 節）は read-only であり state/journal/lock
+  への書き込みを行わないため `--lease-token` は不要。`purge`（4.3 節）も、対象を完了済み
+  （`status` が `passed`/`failed` に確定し、lock が解放済み）のループランのみに限定しているため
+  同様に不要。
 
 ---
 
@@ -817,22 +867,13 @@ NF-03（Maker/Checker が別サブエージェントであることの事後確�
   "name": "loop-harness",
   "version": "0.1.0",
   "description": "Trigger → Maker → Checker → 停止判定の反復ループ実行基盤（LP-1 伴走型 / LP-2 自律型）",
-  "depends": ["audit", "quality-gates"],
+  "depends": ["audit", "quality-gates", "git-workflow"],
   "hooks": {},
   "files": [],
   "skills": ["loop-issue"],
   "agents": [],
   "rules": [],
-  "config": [
-    {
-      "path": "config/loop-harness.yaml",
-      "description": "ガード既定値・LP-2並列上限・ポーリング間隔・保持期間・通知設定",
-    },
-    {
-      "path": "config/loops/issue-loop.yaml",
-      "description": "Issue 消化ループ定義",
-    },
-  ],
+  "config": ["config/loop-harness.yaml", "config/loops/issue-loop.yaml"],
   "scripts": [
     {
       "path": "scripts/loop_step.py",
@@ -857,9 +898,23 @@ NF-03（Maker/Checker が別サブエージェントであることの事後確�
 
 - `hooks: {}` — 本パッケージは hook を配布しない（基本設計 8 節: 合否判定は hooks に依存しない
   決定論的検証のみで完結させる方針のため、既存 hook 基盤への新規フック追加は行わない）。
-- `depends: ["audit", "quality-gates"]` — `audit` は 6 節の emit 先、`quality-gates` は
-  Checker の機械検証（`failure_detector.analyze()`）の実体を提供する既存パッケージ（基本設計
-  10.1 節）。
+- `depends: ["audit", "quality-gates", "git-workflow"]`（Codex レビュー指摘反映。P2）:
+  - `audit` は 6 節の emit 先、`quality-gates` は Checker の機械検証（`failure_detector.analyze()`）
+    の実体を提供する既存パッケージ（基本設計 10.1 節）。
+  - `git-workflow` は `issue-fix`（worktree・ブランチ判定ロジックの移植元）・`pr-create`（成功出口
+    の PR 作成。基本設計 10.1 節の既存資産再利用表）の配布元パッケージ。orchex の依存解決は
+    **直接依存のみ**をチェックするため、間接的な資産再利用（ロジックの移植・スキルの踏襲）だけでは
+    `git-workflow` 未インストール環境で `pr-create` 等が解決できず、ループの出口処理が機能しない。
+    そのため `depends` に明示的に追加する。
+- `config: ["config/loop-harness.yaml", "config/loops/issue-loop.yaml"]`（Codex レビュー指摘反映。
+  P2）: 既存 `packages/*/manifest.json`（例: `packages/audit/manifest.json` の
+  `"config": ["config/delegation-policy.json", "config/audit-flags.json"]`）と同形式の
+  **文字列パスのリスト**とする。既存の package manager（`Package.load`/`install`/`sync`）は
+  `config` を文字列パスの list として処理する実装であり、dict エントリにすると orchex
+  install/sync が壊れる。dict 案で表現していた説明情報は失わず、以下に注記として残す:
+  - `config/loop-harness.yaml`: ガード既定値・LP-2 並列上限・ポーリング間隔・保持期間・通知設定
+    （5 節）
+  - `config/loops/issue-loop.yaml`: Issue 消化ループ定義（基本設計 4 節）
 - `skills: ["loop-issue"]` — `facets/instructions/loop-issue.md` +
   `facets/compositions/skills/loop-issue.yaml` から生成される `/loop-issue` スキル本体
   （基本設計 FT-02）。**両ファイルは本書執筆時点で未作成**であり、実装フェーズで新規作成が必要
