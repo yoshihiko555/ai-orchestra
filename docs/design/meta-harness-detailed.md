@@ -1234,6 +1234,16 @@ claude -p "<rubric + 対象成果物の抜粋>" \
 して個別に記録する。frontier 集計（§1-5）は候補 × シナリオごとの最新 attempt 群から
 `quality_mean` / `quality_var` / `quality_min`、`cost_mean` を算出する。
 
+「最新 attempt 群」の判定規則:
+
+- (cand_id, scenario_id, holdout) をグループ化キーとし、ledger 出現順に走査して
+  `attempt == 1` が現れるたびに新しい評価グループを開始する。集計対象は最後のグループのみ
+  （古い評価の fail が再評価後も残り続けることを防ぐ）。
+- グループ化キーに `holdout` を含めるのは、holdout run が物理的に別トラック（§3-6）であり、
+  non-holdout の attempt 採番と互いに独立しているため。holdout シナリオには専用の
+  scenario_id を割り当てる運用を推奨するが、同一 scenario_id を共有しても集計は混線しない。
+- `attempt` フィールドを欠く run は単独グループとして扱う。
+
 frontier 候補や promotion 検討中の候補は、単発評価の偶然の高スコアを frontier 判定根拠にしない
 ため、config `evaluate.repeat_frontier`（既定 3）で再評価する。
 
