@@ -2,7 +2,7 @@
 codd:
   node_id: "design:loop-harness-core"
   kind: design
-  status: draft
+  status: active
   depends_on:
     - id: "design:loop-harness"
       relation: refines
@@ -12,7 +12,7 @@ codd:
 # Loop Harness（反復ループ基盤）詳細設計ドキュメント — core 編
 
 **作成日**: 2026-07-06
-**ステータス**: draft（`loop_common.py` / `loop_definition.py` / `worktree_manager.py` の実装可能仕様）
+**ステータス**: active（`loop_common.py` / `loop_definition.py` / `worktree_manager.py` の実装可能仕様）
 **対象**: `feat/loop` ブランチ
 **関連**: `design:loop-harness`（基本設計）・`req:loop-harness`（要件）
 
@@ -668,6 +668,45 @@ def compute_pr_review_signature(comment_ids: list[str]) -> str:
 （基本設計 6.2 節）。件数比較自体は `GuardCounters` に持たせず、`PhaseCheckResult`（5 節）の
 `findings` 件数を `evaluate_guards` 呼び出し側（`loop_step.py`/`loop_driver.py`）が渡す想定とする。
 
+### 4.4 `implementation` フェーズ `llm_review` 層のシグネチャ（Codex レビュー指摘反映）
+
+**背景（ドリフト訂正）**: 従来の `combine_check_results`（5.2 節）は、`mechanical` が合格かつ
+`llm_review` のみ不合格（Critical/High が残存）の場合、フェーズシグネチャを空文字列 `""` に
+していた。この結果、指摘内容が反復ごとに変化（改善）していても、2 回連続で「レビューのみ不合格」
+であれば指摘内容の異同にかかわらず無条件に同一シグネチャ扱いとなり、`guards.no_progress.repeat`
+（既定 2）に誤ヒットする欠陥があった。
+
+**修正**: `llm_ok` が `False` の場合、フェーズシグネチャに `llm_review` の指摘集合（critical/high の
+み）から計算した正規化シグネチャを含める。正規化アルゴリズムは 4.2 節（PR レビュー指摘の
+`normalize_signature`）と同方式（ファイルパス正規化 + 行範囲丸め + 指摘要旨の正規化ハッシュ）を
+用いる。これにより指摘が変化していれば別シグネチャとなり、無進捗と誤判定されない。
+
+```python
+def _normalize_finding_key(f: "Finding") -> str:
+    """1 件の Finding を 4.2 節の `normalize_signature` と同方式で正規化したキー文字列に変換する。"""
+    path_norm = f.path.lstrip("./").replace("\\", "/") if f.path else "__general__"
+    line_bucket = (f.line // 5) * 5 if f.line is not None else "__none__"
+    body_norm = _normalize_excerpt_for_hash(f.summary)  # 4.1 節のヘルパーを流用
+    return f"{path_norm}:{line_bucket}:{body_norm}"
+
+
+def compute_llm_review_signature(findings: list["Finding"]) -> str:
+    """`llm_review` 層の指摘集合から、critical/high のみを対象に正規化シグネチャを計算する。
+
+    critical/high のみを対象とするのは、`pass_criteria` の合否判定自体が critical/high 件数のみを
+    見ているため（5.2 節）。medium/low の増減で無進捗判定が乱れないようにする。
+    """
+    target = [f for f in findings if f.severity in ("critical", "high")]
+    keys = sorted(_normalize_finding_key(f) for f in target)
+    material = "|".join(keys)
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
+```
+
+- `_normalize_excerpt_for_hash`（4.1 節）を summary の正規化にそのまま流用する（揮発情報除去の
+  ロジックを共通化するため）。
+- 本関数は 5.2 節の `combine_check_results` から、`mechanical` が合格かつ `llm_ok` が `False` の
+  場合にのみ呼び出される。
+
 ---
 
 ## 5. CheckResult スキーマ確定
@@ -685,6 +724,8 @@ class Finding:
     severity: Literal["critical", "high", "medium", "low"]
     summary: str
     source: str  # 例: "pytest" | "ruff" | "code-reviewer" | "security-reviewer"
+    path: str | None = None  # repo-relative POSIX パス。ファイルに紐づかない指摘は None（4.4 節）
+    line: int | None = None  # 対象行番号。ファイルに紐づかない指摘は None（4.4 節）
 
 
 @dataclass
@@ -712,7 +753,8 @@ class CheckResult:
 class PhaseCheckResult:
     passed: bool  # 全レイヤーが合格した場合のみ True
     results: list[CheckResult]  # 例: [mechanical の CheckResult, llm_review の CheckResult]
-    signature: str  # 無進捗判定キー（4 節）。mechanical 起因の失敗のみを対象とする
+    signature: str  # 無進捗判定キー（4 節）。mechanical 起因の失敗、または llm_review のみ不合格
+    # の場合の指摘正規化シグネチャ（4.4 節）のいずれか。両方合格時は ""
     infrastructure_failure: bool  # results いずれかが True なら True
 
 
@@ -749,7 +791,15 @@ def combine_check_results(
         llm_ok = crit <= pass_criteria.get("critical", 0) and high <= pass_criteria.get("high", 0)
 
     infra = any(r.infrastructure_failure for r in results)
-    signature = mechanical.signature if not mechanical.passed else ""
+    if not mechanical.passed:
+        signature = mechanical.signature
+    elif not llm_ok:
+        # mechanical 合格・llm_review のみ不合格（Codex レビュー指摘反映。4.4 節）:
+        # 指摘内容が反復間で変化していれば別シグネチャとなるよう、llm_review 指摘の正規化
+        # シグネチャを用いる（空文字列固定にしない）。
+        signature = compute_llm_review_signature(llm_review.findings if llm_review else [])
+    else:
+        signature = ""
     return PhaseCheckResult(
         passed=mechanical.passed and llm_ok,
         results=results,

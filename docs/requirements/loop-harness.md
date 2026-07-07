@@ -2,7 +2,7 @@
 codd:
   node_id: "req:loop-harness"
   kind: requirement
-  status: draft
+  status: active
   depends_on: []
   owner: ai-orchestra
 ---
@@ -10,7 +10,7 @@ codd:
 # Loop Harness（反復ループ基盤）要件定義
 
 **作成日**: 2026-07-06
-**ステータス**: draft
+**ステータス**: active
 **起点**: Impact Analysis `.claude/docs/impact-analysis/2026-07-06_loop-harness.md`
 **関連**: `design:loop-harness`（未作成。本要件を受けて `docs/design/loop-harness.md` を作成予定）
 

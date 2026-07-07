@@ -2,7 +2,7 @@
 codd:
   node_id: "design:loop-harness-cli"
   kind: design
-  status: draft
+  status: active
   depends_on:
     - id: "design:loop-harness"
       relation: refines
@@ -12,7 +12,7 @@ codd:
 # Loop Harness 詳細設計（CLI / config 編）
 
 **作成日**: 2026-07-06
-**ステータス**: draft（詳細設計。Phase 3 相当。`scripts/` 配下 4 CLI + config 全キーの実装可能仕様）
+**ステータス**: active（詳細設計。Phase 3 相当。`scripts/` 配下 4 CLI + config 全キーの実装可能仕様）
 **対象**: `feat/loop` ブランチ
 **関連**: `design:loop-harness`（基本設計。本書はこれを refines する）
 
@@ -303,14 +303,25 @@ CLI を経由せず、`loop_common.py` を直接呼び出す（8 節: 独立ド�
 
 Maker/Checker（LLM レビュー）はいずれも `claude -p`（`--print`、非対話実行モード）で起動する。
 
+> **`--allowedTools` の仕様訂正（Codex レビュー指摘反映。P1）**: `--allowedTools` は Claude Code CLI
+> の仕様上「確認なしで自動承認するツールの許可リスト」であり、利用可能なツールそのものを**制限**
+> するものではない。`Bash(git *)` のような広い自動承認パターンを与えると、driver の push ガード
+> （基本設計 5.6 節・2.6 節）を通る前に Maker（`claude -p`）自身が `git push` を実行できてしまう
+> （権限の「制限」と誤認していた設計上の欠陥）。権限制御は **`--disallowedTools`（明示拒否）と
+> 狭い許可パターンの `--allowedTools` の組み合わせ**で行う。
+
 ```bash
 claude -p \
   --output-format json \
   --permission-mode acceptEdits \
-  --allowedTools "Read,Grep,Glob,Edit,Write,Bash(git *),Bash(pytest *),Bash(ruff *)" \
+  --allowedTools "Read,Grep,Glob,Edit,Write,Bash(git add:*),Bash(git commit:*),Bash(git status:*),Bash(git diff:*),Bash(pytest *),Bash(ruff *)" \
+  --disallowedTools "Bash(git push:*),Bash(git remote:*),Bash(git worktree:*),Bash(gh pr:*)" \
   --add-dir <worktree_path> \
   "<prompt>" < /dev/null
 ```
+
+**設計原則: Maker プロセスは push 能力を構造的に持たない。** push・PR 作成は Maker には一切
+実行させず、push ガード（基本設計 5.6 節）通過後に `loop_driver.py`（Python、2.6 節）が自ら実行する。
 
 **権限方針（`--dangerously-skip-permissions` は使わない）**:
 
@@ -318,13 +329,17 @@ claude -p \
   は「任意コマンド実行を無条件許可」であり NF-04（秘匿情報保護）・5.1 節（state 直接改ざんの残存
   リスク）と両立しない。
 - 代わりに `--permission-mode acceptEdits`（ファイル編集は自動承認するが、許可リスト外の危険操作は
-  ブロックされる Claude Code 標準モード）+ `--allowedTools` の明示的許可リスト（`Read`/`Grep`/`Glob`/
-  `Edit`/`Write` と、`git`/`pytest`/`ruff` に限定した `Bash` プレフィックス許可）を用いる。
+  ブロックされる Claude Code 標準モード）+ `--allowedTools`（`Read`/`Grep`/`Glob`/`Edit`/`Write` と、
+  `git add`/`git commit`/`git status`/`git diff`/`pytest`/`ruff` に限定した狭い `Bash` プレフィックス
+  許可）+ `--disallowedTools`（`git push`/`git remote`/`git worktree`/`gh pr` 系の明示拒否）を
+  組み合わせる。
 - Maker が `.claude/loop/` へアクセスする必要は元々ない（基本設計 5.1 節: cwd は常に `worktree_path`）
   ため、許可リストにその経路を含めない。
 - ループ定義の `checker.mechanical.commands`（例: `pytest -q`, `ruff check .`）に応じて
   `--allowedTools` の `Bash(...)` 許可リストを動的に組み立てる（ループ定義に無いコマンドは
-  許可しない。ホワイトリスト方式）。
+  許可しない。ホワイトリスト方式）。push/PR 作成系コマンドは、このホワイトリスト組み立てとは
+  独立に常に `--disallowedTools` へ固定で含める（動的組み立ての不備でも push 系が漏れ出ない
+  ようにする多層防御）。
 
 **プロンプトテンプレートの骨子**（`facets/instructions/loop-issue.md` の `#maker` / `#checker`
 アンカーを参照する。実体は `loop_definition.py` がロードした `prompt_template` パスから読み込み、

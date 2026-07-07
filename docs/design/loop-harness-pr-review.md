@@ -2,7 +2,7 @@
 codd:
   node_id: "design:loop-harness-pr-review"
   kind: design
-  status: draft
+  status: active
   depends_on:
     - id: "design:loop-harness"
       relation: refines
@@ -12,7 +12,7 @@ codd:
 # Loop Harness — PR レビュー対応 / `/loop-issue` スキル 詳細設計書
 
 **作成日**: 2026-07-06
-**ステータス**: draft（詳細設計。実装可能粒度）
+**ステータス**: active（詳細設計。実装可能粒度）
 **対象**: `feat/loop` ブランチ
 **関連**: `design:loop-harness`（本書はその 7 節・9 節・9.1 節を精緻化する refines 文書）
 
@@ -55,31 +55,39 @@ _PR レビュー対応ループと Codex 自動レビューの関係を示す図
 `pr_review_wait.py` は「レビューが実行されたかどうか」を判定する。基本設計 9 節の要求どおり、
 **コメントの有無では判定しない**（コメント 0 件の完了と、未実行を区別する）。
 
-#### baseline 記録（push 直後）
+#### baseline 記録（push/PR 作成 直前）
 
-`on_success.exec` の `push` 完了直後、`pr_review_response` フェーズの各反復開始時に、以下を
+**手順の順序（ドリフト訂正。Codex レビュー指摘反映）**: ① baseline 記録 → ② push（または初回の
+`pr_create`）→ ③ ポーリング開始、の順序を必ず守る。`pr_review_response` フェーズの各反復開始時、
+`on_success.exec` が `push`（レビューをトリガーするイベント）を**実行する前**に、以下を
 `state.json` へ記録する。
 
 ```jsonc
 {
   "pr_review": {
-    "iteration_head_sha": "abcd1234...", // このイテレーションで push した head commit sha
-    "baseline_review_id": 918273645, // push 直前時点で存在した reviews の最大 id（無ければ 0）
-    "baseline_recorded_at": "2026-07-06T10:30:00+09:00",
+    "iteration_head_sha": "abcd1234...", // push 完了後に別途取得する、このイテレーションの head commit sha
+    "baseline_review_id": 918273645, // push/PR作成の実行前時点で存在した reviews の最大 id（無ければ 0）
+    "baseline_recorded_at": "2026-07-06T10:29:00+09:00", // push/PR作成より前の記録時刻
   },
 }
 ```
 
-- `baseline_review_id` は `gh api repos/{o}/{r}/pulls/{pr}/reviews` を push 直前（`pr_create` 実行直後
-  かつポーリング開始前）に 1 回呼び、返却された review オブジェクトの `id` の最大値を採る（PR 初回
-  作成時は 0）。
-- `iteration_head_sha` は `gh api repos/{o}/{r}/pulls/{pr} --jq .head.sha` で取得した push 後の head
-  commit sha。check-run はコミット sha にスコープされる GitHub API 仕様のため、この sha を使う限り
-  「前回反復の check-run」を誤って今回の完了シグナルとして拾うことは起きない（sha が変われば
-  check-run の集合も別物になる）。したがって check-run 側には reviews のような baseline id 管理は
-  不要で、「`iteration_head_sha` に対する check-run」を見るだけで自然にスコープが今回反復に限定される。
-- baseline 記録タイミングを **push 直後（ポーリング開始前）** に固定することで、「レビュー未実行・
-  実行中」（baseline 以降に新規 review が 0 件）と「完了かつ指摘ゼロ」（baseline 以降に新規 review が
+- `baseline_review_id` は `gh api repos/{o}/{r}/pulls/{pr}/reviews` を **`push`（または初回の
+  `pr_create`）を実行する前**に 1 回呼び、返却された review オブジェクトの `id` の最大値を採る
+  （PR がまだ存在しない初回作成前は 0）。
+- **レース条件への対処（ドリフト訂正）**: 当初は baseline を push 完了後に記録する順序としていたが、
+  push 完了から baseline 記録までの間隙に Codex 等の自動レビューが提出されると、そのレビューが
+  誤って baseline に取り込まれ、`id > baseline_review_id` フィルタで唯一のレビューを取りこぼし
+  （`pr_review.timeout_seconds` まで検知できない）不具合があった。baseline を push/PR 作成という
+  「レビューをトリガーするイベント」より**前**に記録することで、この間隙自体をなくす。
+- `iteration_head_sha` は `gh api repos/{o}/{r}/pulls/{pr} --jq .head.sha` で取得した push **完了後**の
+  head commit sha（baseline とは異なり、push 後にしか値が定まらないため取得順序は逆になる）。
+  check-run はコミット sha にスコープされる GitHub API 仕様のため、この sha を使う限り「前回反復の
+  check-run」を誤って今回の完了シグナルとして拾うことは起きない（sha が変われば check-run の集合も
+  別物になる）。したがって check-run 側には reviews のような baseline id 管理は不要で、
+  「`iteration_head_sha` に対する check-run」を見るだけで自然にスコープが今回反復に限定される。
+- baseline 記録タイミングを **push/PR 作成の実行前** に固定することで、「レビュー未実行・実行中」
+  （baseline 以降に新規 review が 0 件）と「完了かつ指摘ゼロ」（baseline 以降に新規 review が
   1 件以上あり、そのレビューに紐づく review comment が 0 件）を実装レベルで区別できる。
 
 #### 検知ロジック（正 / フォールバック）

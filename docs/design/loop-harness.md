@@ -2,7 +2,7 @@
 codd:
   node_id: "design:loop-harness"
   kind: design
-  status: draft
+  status: active
   depends_on:
     - id: "req:loop-harness"
       relation: derives_from
@@ -12,7 +12,7 @@ codd:
 # Loop Harness（反復ループ基盤）設計ドキュメント
 
 **作成日**: 2026-07-06
-**ステータス**: draft（基本設計。関数シグネチャの完全定義・config キーの全網羅は詳細設計〔Phase 3〕で確定する）
+**ステータス**: active（基本設計。関数シグネチャの完全定義・config キーの全網羅は詳細設計〔Phase 3〕で確定する）
 **対象**: `feat/loop` ブランチ
 **関連**: `req:loop-harness`
 
