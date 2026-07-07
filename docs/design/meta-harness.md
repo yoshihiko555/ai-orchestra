@@ -16,7 +16,7 @@ codd:
 **作成日**: 2026-07-06
 **ステータス**: draft
 **対象**: `feat/meta-harness` ブランチ
-**関連**: `req:meta-harness`, `adr:ADR-20260706-030`（予定）, arXiv:2603.28052, `design:meta-harness-detailed`
+**関連**: `req:meta-harness`, `adr:ADR-20260706-031`（予定）, arXiv:2603.28052, `design:meta-harness-detailed`
 
 > CODD 注記: 本書 → ADR は依存 edge を張らない（`design:skill-evolution` の慣行を踏襲。
 > ADR 側が本書を `references` する形にすることで `req → design ← adr` の循環を避ける）。

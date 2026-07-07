@@ -12,7 +12,7 @@ codd:
 **作成日**: 2026-07-06
 **ステータス**: draft
 **起点**: arXiv:2603.28052 "Meta-Harness: End-to-End Optimization of Model Harnesses"（Stanford/KRAFTON/MIT, 2026-03）
-**関連**: `design:meta-harness`（`docs/design/meta-harness.md`）, `adr:ADR-20260706-030`
+**関連**: `design:meta-harness`（`docs/design/meta-harness.md`）, `adr:ADR-20260706-031`
 
 ## 1. 背景
 
