@@ -1,0 +1,32 @@
+guards:
+  max_iterations: 3
+  no_progress:
+    repeat: 2
+  infrastructure_failure:
+    max_retries: 3
+
+lock:
+  ttl_seconds:
+    lp1: 3600
+    lp2: 300
+  heartbeat_interval_seconds: 60
+
+lp2:
+  concurrency_limit: 2
+  wall_clock_timeout_seconds: 7200
+
+pr_review:
+  poll_interval_seconds: 120
+  timeout_seconds: 3600
+  # reviewer_allowlist is intentionally project-local. Missing or empty values
+  # are rejected by the pr_review_wait phase, which is implemented later.
+
+retention:
+  purge_after_days: 30
+
+notifications:
+  macos_enabled: true
+  issue_comment_enabled: true
+
+maker:
+  fallback_agent: general-purpose

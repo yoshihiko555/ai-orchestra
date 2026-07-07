@@ -1,0 +1,69 @@
+id: issue-loop
+trigger:
+  lp1:
+    skill: loop-issue
+  lp2:
+    kind: label_queue
+    label: loop:issue
+    poll_interval_seconds: 300
+notifications:
+  issue_comment: true
+  macos_notification: true
+phases:
+  - name: implementation
+    maker:
+      agent: auto
+      prompt_template: facets/instructions/loop-issue.md#maker
+    checker:
+      mechanical:
+        commands:
+          - pytest -q
+          - ruff check .
+        analyzer: failure_detector.analyze
+      llm_review:
+        baseline: code-reviewer
+        selection: skill-review-policy
+        pass_criteria:
+          critical: 0
+          high: 0
+    guards:
+      max_iterations: 3
+      no_progress:
+        signature: implementation
+        repeat: 2
+    on_success:
+      disposition: advance_phase
+      next: pr_review_response
+      exec:
+        - commit
+        - push
+        - pr_create
+    on_failure:
+      disposition: exit_failure
+      exec:
+        - pr_create_draft
+        - notify
+  - name: pr_review_response
+    maker:
+      agent: auto
+      prompt_template: facets/instructions/loop-issue.md#pr-review-response
+    checker:
+      external_signal:
+        source: github
+        events:
+          - review_submitted
+          - check_run_completed
+        poll_interval_seconds: 120
+        timeout_seconds: 3600
+    guards:
+      max_iterations: 3
+      no_progress:
+        signature: pr_review
+        repeat: 2
+    on_success:
+      disposition: exit_success
+    on_failure:
+      disposition: exit_failure
+      exec:
+        - pr_mark_draft
+        - notify
