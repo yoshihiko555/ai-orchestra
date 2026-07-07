@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`loop-harness`: 反復ループ基盤の core パッケージを追加**: Phase 1 として loop 定義 loader、state/journal/lock の決定論的コア、worktree 命名ユーティリティ、既定 config を追加。CLI・スキル配線・LP-2 常駐実行は後続フェーズで追加予定。
+
 - **`meta-harness`: population ベースのハーネス最適化基盤（Phase 1a: 計測基盤）を新設**: 候補ハーネス（facet ソースへの宣言的オーバーレイ）の登録・append-only 台帳・品質×コストの Pareto frontier 算出を行う `orchex meta` サブコマンド群（`init` / `register` / `frontier` / `status` / `purge`）を追加。ストアは worktree の寿命に依存しないメインルート配下 `.claude/meta-harness/` に永続化する。評価実行（evaluate）以降は Phase 1b 以降で追加予定。設計は `docs/design/meta-harness.md`（基本）/ `docs/design/meta-harness-detailed.md`（詳細）を参照
 
 ### Changed
