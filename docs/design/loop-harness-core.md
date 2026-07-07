@@ -309,6 +309,17 @@ def resume(
     loop_id: str, project_dir: str, reset_counters: bool, lease_token: str
 ) -> LoopState:
     """failed/stopped からの意図的再開（5.5 節）。reset_counters=False は拒否する。"""
+
+
+def attach(loop_id: str, project_dir: str, owner_id: str, ttl_seconds: int) -> ProposeResult:
+    """`running`/`waiting_external` ループランに対し、新しい呼び出し元が `lease_token` を
+    再取得してから続行する（cli 編 1.10 節。FT-22。Codex レビュー指摘反映。P2）。
+
+    内部で `reacquire_lease()`（6.3 節。旧 lease が生存中なら `ForeignLeaseError`）を呼んで
+    新しい `lease_token` を取得したのち、`propose()` と同じ reconcile → ガード評価ロジックを
+    実行して次アクションを決定する。戻り値の `ProposeResult` は呼び出し側が保持すべき新しい
+    `lease_token` を含む（`ProposeResult.context` 経由。1.10 節の応答 JSON 参照）。
+    """
 ```
 
 **`lease_token` の呼び出し契約（Codex レビュー指摘反映。P1。`design:loop-harness-cli` 1.9 節参照）**:
@@ -319,6 +330,12 @@ def resume(
 自己参照チェック）はしない**。この区別が無いと、TTL 失効後に別プロセスが新しい lease を取得した
 場合でも「その時点の `lock.json` の値と一致するか」を自分自身に問うだけになり fencing が機能しない
 （cli 編 1.9 節が詳細な CLI インターフェース契約を定義する）。
+
+**`start`/`attach`/`resume` は lease_token を「発行する」側（Codex レビュー指摘反映。P2）**:
+`propose`/`complete`/`reconcile`/`heartbeat` が既存の `lease_token` を**検証する**のに対し、
+`start`（新規）・`attach`（クラッシュ・セッション断絶後の再取得。FT-22）・`resume`（正規終了・
+安全停止からの意図的再開）の 3 関数は、いずれも新しい `lease_token` を**発行し呼び出し側へ返す**
+側であるという非対称性を持つ。3 者の対象状態は排他的である（基本設計 5.5 節の表）。
 
 ### 2.2 各操作の事前条件・事後条件（state 不変条件）
 
@@ -768,24 +785,38 @@ class PhaseCheckResult:
 
 
 def combine_check_results(
-    results: list[CheckResult], pass_criteria: dict
+    results: list[CheckResult],
+    pass_criteria: dict,
+    required_layers: frozenset[str],
 ) -> PhaseCheckResult:
     """複数レイヤーの CheckResult を集約し、フェーズ全体の合否を判定する。
+
+    required_layers は現在フェーズの loop 定義（`checker.mechanical`/`checker.llm_review` の
+    宣言有無。基本設計 4 節・8.2 節）から呼び出し側が渡す、このフェーズで必須のレイヤー集合。
+    `mechanical` は FT-05（全ループ共通の必須要件）により、`combine_check_results` を経由する
+    フェーズでは常に `required_layers` へ含める。`llm_review` は `checker.llm_review` を宣言する
+    フェーズ（`issue-loop` の `implementation` 等。FT-06）でのみ含める。
 
     pass_criteria は loop_definition の `checker.llm_review.pass_criteria`
     （例: {"critical": 0, "high": 0}）。llm_review レイヤーは critical/high 件数が
     pass_criteria を満たさなければ不合格として扱う。
 
-    `mechanical` の CheckResult は FT-05（機械検証は全ループ共通の必須条件）・NF-03
-    （機械検証と LLM レビュー結果の両方を合否の必須条件とする）により、常に 1 件存在することを
-    前提とする。存在しない場合（Checker 実行自体が失敗した等）は **暗黙合格にせず**、
-    `infrastructure_failure` として不合格 + リトライ対象に倒す（3 節の infrastructure_failure
-    分離トラックへ委ねる）。FT-05/NF-03 の必須条件を静かに緩める抜け穴を作らないための措置。
+    **必須層の存在チェックを合否判定より先に行う（Codex レビュー指摘反映。P1）**: `required_layers`
+    に含まれる層の `CheckResult` が `results` に存在しない場合（Checker 実行自体が失敗した、
+    フェーズ定義上必須の `llm_review` が未実行のまま渡された等）は、他の層が合格していても
+    **暗黙合格にせず**、`infrastructure_failure` として不合格 + リトライ対象に倒す（3 節の
+    infrastructure_failure 分離トラックへ委ねる）。従来は `mechanical` の欠落のみをこの扱いとし
+    `llm_review` が欠落した場合は合否判定の初期値 `llm_ok = True` がそのまま通ってしまい、
+    FT-05/FT-06/NF-03 の必須条件が silent に緩む欠陥があった。両層を同じ扱いに統一することで
+    この抜け穴を塞ぐ。
     """
     mechanical = next((r for r in results if r.layer == "mechanical"), None)
     llm_review = next((r for r in results if r.layer == "llm_review"), None)
+    layer_by_name = {"mechanical": mechanical, "llm_review": llm_review}
 
-    if mechanical is None:
+    # 1. 必須層の存在チェック（mechanical・llm_review のいずれの欠落も同じ扱い）
+    missing_required = [name for name in required_layers if layer_by_name.get(name) is None]
+    if missing_required:
         return PhaseCheckResult(
             passed=False,
             results=results,
@@ -793,6 +824,7 @@ def combine_check_results(
             infrastructure_failure=True,
         )
 
+    # 2. 各層の合否（この時点で required_layers に含まれる層は全て存在する）
     llm_ok = True
     if llm_review is not None:
         crit = sum(1 for f in llm_review.findings if f.severity == "critical")
@@ -895,6 +927,28 @@ def acquire_lock(
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(asdict(info), f)
     return info
+
+
+def reacquire_lease(
+    loop_id: str, project_dir: str, owner_id: str, ttl_seconds: int, host: str | None = None
+) -> LockInfo:
+    """`attach`（cli 編 1.10 節）の実体。既存の `running`/`waiting_external` ループランに対し、
+    新しい呼び出し元（旧 `lease_token` を保持しない）が lease を再取得する（Codex レビュー指摘
+    反映。P2。FT-22）。
+
+    - 対象 `loop_id` に `lock.json` が存在しない場合は `LockNotFoundError` を送出する
+      （`attach` は既存ループ専用であり、新規作成には使わない。新規は `acquire_lock`
+      〔`start` の実体〕を使う）。
+    - 既存 lease が **生存中**（`is_lease_alive()` が True）の場合は `ForeignLeaseError` を送出する
+      （`attach` は exit `3` で拒否。1.10 節。二重 attach による同時書き込みを防ぐ）。
+    - 既存 lease が stale（TTL 超過、または heartbeat 途絶）の場合のみ、`acquire_lock` と同じ
+      TOCTOU 緩和パターンで `lock.json` を新しい `lease_token`（`secrets.token_hex(16)`）で
+      上書きする。`owner_id`/`host`/`started_at` も呼び出し元の値で更新する（`pid`/`heartbeat_at`
+      も再取得時刻で更新）。`ttl` は呼び出し元（LP-1/LP-2）の区分に応じた値を使う（6.2 節）。
+    - `state_version` は `lock.json` が持たないため（基本設計 5.2 節: 正本は `state.json` のみ）、
+      本関数は `state.json` に触れない。整合性は呼び出し元が続けて呼ぶ `propose`（内部で
+      reconcile を実行。core 編 2.4 節）に委ねる。
+    """
 
 
 def release_lock(loop_id: str, project_dir: str, lease_token: str) -> bool:

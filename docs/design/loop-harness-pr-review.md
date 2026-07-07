@@ -448,31 +448,53 @@ two-phase プロトコルをオーケストレーター側の行動規範とし�
 ```markdown
 ## 実行プロトコル（MUST）
 
-起動時に `loop_step start --issue <N> ...`（既存ループの続行時は最初の `loop_step propose` 相当）
-を呼び、応答に含まれる `lease_token` を保持する（cli 編 1.3 節・1.9 節）。このスキルの実行中、
-以後のすべての `loop_step` 呼び出し（`propose`/`complete`/`reconcile`/`heartbeat`）に、保持している
-この `lease_token` を `--lease-token` で渡す。`resume` を呼んだ場合は、その応答に含まれる新しい
-`lease_token` に保持値を更新する（旧 token は以後無効。cli 編 1.8 節）。
+### 起動時の入口選択（新規 / セッション再開 / 人間による再挑戦。Codex レビュー指摘反映。P1・P2）
 
-このスキルの実行中、次の 1 サイクルを繰り返す:
+対象 `loop_id` の状況に応じて、次の 3 つの入口から**1 つだけ**を呼ぶ（基本設計 5.5 節・cli 編 1.10 節）:
 
-1. `loop_step propose --lease-token <保持している lease_token>` を呼ぶ
-2. 応答の `action` に**厳密に一致する**アクションだけを実行する
-   （`run_maker` なら Task で Maker を起動する。それ以上でもそれ以下でもない）
+| 状況                                                                                  | 呼ぶコマンド                                       |
+| ------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| 新規 Issue（state 未存在）                                                            | `loop_step start --issue <N> ...`                  |
+| 既存ループの再開（前回セッションがクラッシュ・断絶し `lease_token` を保持していない） | `loop_step attach --loop-id <id>`                  |
+| 正規に `failed`/`stopped` で終了したループを、人間判断で再挑戦                        | `loop_step resume --loop-id <id> --reset-counters` |
+
+いずれの応答 JSON にも `lease_token` が含まれる。これを保持し、以後のすべての `loop_step` 呼び出し
+（`propose`/`complete`/`reconcile`/`heartbeat`）に `--lease-token` で渡す。
+
+**`start`/`attach` の応答は、そのまま最初の `propose` の結果として扱う（cli 編 1.3 節・1.10 節）。**
+応答を受け取った直後に、実行を挟まずあらためて `propose` を呼んではならない。`start`/`attach` は
+内部で最初（または reconcile 後）のアクションを既に `pending` として journal に記録済みであるため、
+ここでもう一度 `propose` を呼ぶと、実行されていない・`complete` されていないアクションが孤立し、
+reconcile が「孤立した pending action」として扱ってしまう（実行されたはずの初回 Maker 起動が欠落
+する、または `infrastructure_failure` に誤分類される）。
+
+このスキルの実行中、次の手順で進める:
+
+1. 上表から適切なコマンド（`start`/`attach`/`resume` のいずれか 1 つ）を呼ぶ
+2. 応答の `action` を実行する（`run_maker` なら Task で Maker を起動する。それ以上でもそれ以下でも
+   ない）
 3. `loop_step complete --action-id <action_id> --result <json> --lease-token <保持している lease_token>`
    を呼ぶ
-4. 1 に戻る
+4. 以後、次の 1 サイクルを繰り返す:
+   a. `loop_step propose --lease-token <保持している lease_token>` を呼ぶ
+   b. 応答の `action` に**厳密に一致する**アクションだけを実行する
+   c. `loop_step complete --action-id <action_id> --result <json> --lease-token <保持している lease_token>` を呼ぶ
+   d. a に戻る
 
 **MUST NOT（禁止事項）**:
 
+- `start`/`attach` の応答を受け取った直後、実行と `complete` を挟まずにもう一度 `propose` を呼ばない
+  （孤立 pending action を生む。上記参照）
 - `propose` が返した action 以外を自己判断で実行しない
   （例: `run_maker` が返ってきたのに「もう直ったはずだ」と判断して `run_checker` や
   `exit_success` を先取りしない）
 - ガード（反復上限・無進捗）に達していないのに、実装が完了したように見えるという理由だけで
   反復を打ち切らない。停止は必ず `propose` が `exit_success` / `exit_failure` を返した時にのみ行う
 - `complete` を呼ばずに次の `propose` を呼ばない（two-phase プロトコルの整合性が壊れる）
-- `start`/`resume` で取得した `lease_token` を保持せず `--lease-token` を省略する、または古い値を
-  使い回す（cli 編 1.9 節。省略・不一致は exit code 2 で拒否される）
+- `start`/`attach`/`resume` で取得した `lease_token` を保持せず `--lease-token` を省略する、または
+  古い値を使い回す（cli 編 1.9 節。省略・不一致は exit code 2 で拒否される）
+- 既存ループの再開に `start` を使う、または新規作成に `attach` を使う（対象状態が異なり、それぞれ
+  `already_exists`／対象外状態エラーで拒否される。上表参照）
 - Maker/Checker の生出力をそのままユーザーへの応答に含めない（要約のみ。NF-05）
 
 action の実行方針に疑問がある場合は、その懸念を報告してよい。ただし懸念があっても

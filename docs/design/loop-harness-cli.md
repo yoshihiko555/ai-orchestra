@@ -49,6 +49,7 @@ codd:
 
 ```text
 loop_step.py start      --issue <N> [--definition <id>] [--project <path>]
+loop_step.py attach     --loop-id <id> [--project <path>]
 loop_step.py propose    --loop-id <id> --lease-token <token> [--project <path>]
 loop_step.py complete   --loop-id <id> --action-id <id> --state-version <n> --result <json|@file> --lease-token <token> [--project <path>]
 loop_step.py reconcile  --loop-id <id> --lease-token <token> [--project <path>]
@@ -56,10 +57,14 @@ loop_step.py heartbeat  --loop-id <id> --lease-token <token> [--project <path>]
 loop_step.py resume     --loop-id <id> --reset-counters [--project <path>]
 ```
 
-> **`--lease-token` の扱い（Codex レビュー指摘反映。P1。詳細は 1.9 節）**: `start` / `resume` は
-> 新規に lease を発行し、応答 JSON に `lease_token` を含める。それ以外の変更系サブコマンド
+> **`--lease-token` の扱い（Codex レビュー指摘反映。P1。詳細は 1.9 節）**: `start` / `attach` /
+> `resume` は新規に lease を発行し、応答 JSON に `lease_token` を含める。それ以外の変更系サブコマンド
 > （`propose` / `complete` / `reconcile` / `heartbeat`）は、呼び出し側が保持するその `lease_token`
 > を `--lease-token` で**必須**渡しする。
+>
+> **`start` / `attach` / `resume` の使い分け（Codex レビュー指摘反映。P2。詳細は 1.10 節・基本設計
+> 5.5 節）**: 新規作成は `start`、クラッシュ・セッション断絶後の再取得は `attach`、正規の失敗終了・
+> 安全停止からの人間判断による再挑戦は `resume`。3 者は対象状態が排他的であり混同しない。
 
 - 全サブコマンドは stdout に **1 行の JSON オブジェクト**のみを出力する（人間可読ログは stderr へ）。
 - `--project`省略時は `find_repo_root()`（`harness_common.py` と同じ「`.git` を上に探索」方式。
@@ -70,12 +75,12 @@ loop_step.py resume     --loop-id <id> --reset-counters [--project <path>]
 
 ### 1.2 exit code 規約（全サブコマンド共通）
 
-| exit code | 意味                                                                                                                                                                            |
-| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `0`       | 正常終了。stdout の JSON に結果が入る                                                                                                                                           |
-| `1`       | 一般エラー（引数不正、state/journal の読み書き失敗、Issue 未検出等）                                                                                                            |
-| `2`       | 検証拒否（`complete` の `action_id` / `state_version` 不一致＝stale。1.5 節。`propose`/`complete`/`reconcile`/`heartbeat` の `--lease-token` 不一致・欠落もここに含む。1.9 節） |
-| `3`       | lock 取得失敗（`start` の Issue ロック取得失敗のみ。lease_token の不一致・欠落は exit `2` に統一。1.9 節）                                                                      |
+| exit code | 意味                                                                                                                                                                                                            |
+| --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `0`       | 正常終了。stdout の JSON に結果が入る                                                                                                                                                                           |
+| `1`       | 一般エラー（引数不正、state/journal の読み書き失敗、Issue 未検出等）                                                                                                                                            |
+| `2`       | 検証拒否（`complete` の `action_id` / `state_version` 不一致＝stale。1.5 節。`propose`/`complete`/`reconcile`/`heartbeat` の `--lease-token` 不一致・欠落もここに含む。1.9 節）                                 |
+| `3`       | lock 取得失敗（`start` の Issue ロック取得失敗、または `attach` 実行時に旧 lease が生存中〔TTL 内かつ heartbeat 継続中〕で再取得を拒否した場合。lease_token の不一致・欠落は exit `2` に統一。1.9 節・1.10 節） |
 
 - `1`〜`3` いずれの場合も stdout には `{"error": {"code": ..., "message": ...}}` 形式の JSON を出す
   （オーケストレーター側が exit code とあわせて機械的に判定できるようにする。stderr にも同内容を
@@ -105,7 +110,9 @@ python3 loop_step.py start --issue 42 --definition issue-loop --project /path/to
 1. `repo-identity-hash`（5.1 節）を算出し、`loop_id = f"{repo_identity_hash[:8]}-issue-{issue}"` を
    決定論的に採番する。
 2. `.claude/loop/<loop_id>/` に既存 `state.json` があれば `409` 相当のエラー（exit `1`、
-   `{"error": {"code": "already_exists", ...}}`）を返す。既存ループの続行は `propose` を使う。
+   `{"error": {"code": "already_exists", ...}}`）を返す。既存ループの続行は、`lease_token` を
+   既に保持している同一セッションなら `propose`、保持していない別セッション（クラッシュ後の
+   再開等）なら `attach`（1.10 節）を使う。
 3. Issue 単位のロック（`skill-evolution` の TTL 判定パターンを汎用化。基本設計 10.1 節・FT-07）を
    取得する。取得失敗（TTL 内の他プロセスが保持）は exit `3`。
 4. `worktree_manager.py` で worktree を作成する（`issue-fix.md` のブランチ判定ヒューリスティックを
@@ -131,6 +138,16 @@ python3 loop_step.py start --issue 42 --definition issue-loop --project /path/to
   "lease_token": "6f1e...", // 呼び出し側が保持し、以後の propose/complete/reconcile/heartbeat に渡す（1.9 節）
 }
 ```
+
+> **`start` の応答は初回 `propose` と等価である（Codex レビュー指摘反映。P1。pr-review 編 5.1 節
+> 参照）**: `start` は内部で最初のアクションを `pending` として journal に記録済みであるため、
+> **呼び出し側はこの応答をそのまま最初の `propose` の結果として扱い、実行後に `complete` を呼ぶ**。
+> `start` の直後に**あらためて `propose` を呼んではならない**。ここでもう一度 `propose` を呼ぶと、
+> `start` が記録した `pending` action が `complete` されないまま次の `propose` の対象になり、
+> reconcile（1.6 節）が「孤立した pending action」として扱ってしまう（実行されたはずの初回 Maker
+> 起動が欠落する、または `infrastructure_failure` に誤分類される）。正しい呼び出し順序は
+> ① `start` → ② その応答の `action` を実行 → ③ `complete --action-id <start 応答の action_id>` →
+> ④ 以後は `propose` → 実行 → `complete` のループ、である。
 
 **`start` と `propose`（state なし）の関係（基本設計との整合）**: 基本設計 7 節の図は
 「`loop_step propose`（state なし）」が初期化まで行うと描いているが、5.3 節のサブコマンド一覧には
@@ -320,19 +337,90 @@ python3 loop_step.py resume --loop-id a1b2c3d4-issue-42 --reset-counters --proje
 **修正**: `lease_token` は **呼び出し側（LP-1 のオーケストレーター、または LP-2 の
 `loop_driver`）が保持する契約**とし、CLI 引数として明示的に受け渡す。
 
-- `start`（1.3 節）・`resume`（1.8 節）は新規に lease を発行し、応答 JSON に `lease_token` を
-  含める。呼び出し側はこれをプロセス内で保持し続ける。
+- `start`（1.3 節）・`attach`（1.10 節）・`resume`（1.8 節）は新規に lease を発行し、応答 JSON に
+  `lease_token` を含める。呼び出し側はこれをプロセス内で保持し続ける。
 - 変更系サブコマンド `propose`（1.4 節）・`complete`（1.5 節）・`reconcile`（1.6 節）・
   `heartbeat`（1.7 節）は **`--lease-token <token>` を必須引数**として受け取り、渡された値と
   `lock.json.lease_token` を照合する。**`lock.json` の再読のみによる自己検証はしない**（呼び出し側が
   保持する token との一致を必須の入力とする）。
 - 不一致・欠落は **exit code `2`**（検証拒否。1.2 節）で棄却する。`lock.json` に対応する lease が
-  そもそも存在しない、または `start` 自体のロック取得に失敗した場合のみ exit `3` を用いる
-  （1.2 節で明確化）。
+  そもそも存在しない、`start` 自体のロック取得に失敗した場合、または `attach` 実行時に旧 lease が
+  生存中で再取得を拒否した場合のみ exit `3` を用いる（1.2 節で明確化）。
 - `loop_status.py`（4 節）の `list`/`show`（4.1 節・4.2 節）は read-only であり state/journal/lock
   への書き込みを行わないため `--lease-token` は不要。`purge`（4.3 節）も、対象を完了済み
   （`status` が `passed`/`failed` に確定し、lock が解放済み）のループランのみに限定しているため
   同様に不要。
+
+### 1.10 `attach --loop-id <id>`（クラッシュ・セッション断絶後の lease 再取得。Codex レビュー
+
+指摘反映。P2。FT-22）
+
+**問題**: `propose` は `--lease-token` を必須とするが、クラッシュ・セッション断絶により
+`lease_token` を保持していない**新しい呼び出し元**が、`running`/`waiting_external` のまま
+残された既存ループランを再開する経路が存在しなかった（`start` は state が既に存在するため
+`already_exists` で拒否し、`resume` は `failed`/`stopped` のみを対象とするため使えない）。この
+ままでは FT-22（クラッシュ回復）が LP-1 の実運用シナリオで実装不能だった。
+
+**修正**: `attach` を新設し、既存ループランに対して新しい呼び出し元が `lease_token` を再取得する
+専用の入口とする。
+
+```bash
+python3 loop_step.py attach --loop-id a1b2c3d4-issue-42 --project /path/to/repo
+```
+
+引数:
+
+| 引数        | 必須 | 説明                                   |
+| ----------- | ---- | -------------------------------------- |
+| `--loop-id` | ✓    |                                        |
+| `--project` |      | プロジェクトルート（省略時は自動解決） |
+
+処理手順:
+
+1. 対象 `loop_id` の `state.json.status` を確認する。`running`/`waiting_external` 以外
+   （`pending`/`passed`/`failed`/`stopped`）は exit `1`
+   （`{"error": {"code": "invalid_state", ...}}`）。`failed`/`stopped` からの再開は `resume`
+   （1.8 節）を使う。
+2. 現在の `lock.json` の lease が**生存中**（TTL 内かつ heartbeat が継続している。基本設計 6.3 節
+   `is_lease_alive()`）かどうかを判定する。生存中であれば、まだ別のプロセスが正当にループを保持
+   していると判断し **exit `3`** で拒否する（二重 attach による同時書き込みを防ぐ。旧プロセスが
+   実は生きている場合に誤って乗っ取らないための安全策）。
+3. lease が stale（TTL 超過、または heartbeat 途絶）であることを確認できた場合のみ、
+   `reacquire_lease()`（core 編 6.3 節）で新しい `lease_token` を発行し `lock.json` を更新する
+   （TOCTOU 緩和のうえで奪取。旧 token は以後 `validate_lease()` に通らなくなる）。
+4. `journal.jsonl` に `event: "attached", actor: "human"`（または LP-2 由来なら `actor: "scheduler"`）
+   を追記する。
+5. `state.json` の `pending_action` を確認し、内部的に `propose` と同じロジック（1.4 節の
+   reconcile → ガード評価）を呼び、次に実行すべきアクションを決定して返す。
+
+応答 JSON（`propose` と同じ形に加え `lease_token` を含む。1.4 節・1.9 節参照）:
+
+```jsonc
+{
+  "loop_id": "a1b2c3d4-issue-42",
+  "action": "run_maker",
+  "action_id": "act-000005",
+  "state_version": 6,
+  "phase": "implementation",
+  "iteration": 3,
+  "params": {},
+  "reason": "attached after lease expiry; resuming from reconciled state",
+  "lease_token": "9c2d...", // 新規発行。呼び出し側はこれを保持し、以後の propose/complete/reconcile/heartbeat に渡す
+}
+```
+
+- `attach` の応答は（`start` と異なり）**そのまま最初の propose 結果として実行してよい**が、
+  ここで返るのは reconcile 後の**既存の次アクション**であり、`start` の「新規ループの最初の
+  action」とは意味が異なる（`start` は初回 `run_maker` を新規に pending 化するのに対し、
+  `attach` は既存 `pending_action` を reconcile した結果、または reconcile 後にガード評価で
+  決定した次アクションを返す）。
+- LP-2: `loop_scheduler`（3.3 節）が worker の異常終了を検知して同一 `loop_id` を再起動する際、
+  再起動後の `loop_driver.py`（2.1 節）は内部的にこの `attach` と同じロジック
+  （`loop_common.reacquire_lease()`）を呼んで新しい `lease_token` を取得してから続行する。
+- `resume`（1.8 節）との違い: `attach` はガードカウンタに一切触れない（クラッシュからの技術的な
+  lease 再取得であり、ガード評価の結果はそのまま引き継ぐ）。`resume` はガードカウンタを明示的に
+  リセットする人間判断の再挑戦であり、対象状態も `failed`/`stopped` のみと排他的である
+  （基本設計 5.5 節）。
 
 ---
 
@@ -348,6 +436,21 @@ python3 loop_driver.py --loop-id a1b2c3d4-issue-42 --project /path/to/repo
 
 1 プロセス = 1 ループラン。`loop_scheduler.py`（3 節）が子プロセスとして起動する。`loop_step.py` の
 CLI を経由せず、`loop_common.py` を直接呼び出す（8 節: 独立ドライバ）。
+
+**起動時の `lease_token` 取得（Codex レビュー指摘反映。P1。1.9 節・1.10 節）**: `main()` は
+`loop_common` を直接呼ぶため CLI の `--lease-token` 引数は経由しないが、契約自体は 1.9 節・
+1.10 節と同一である。
+
+- 新規ループ（discovery で初めて検出した Issue。3.1 節）: 対象 `loop_id` の `state.json` が
+  存在しないため、`loop_common` の `start()` 相当の内部処理で lease を新規取得し `lease_token`
+  を得る。
+- 既存ループの再起動（`loop_scheduler` が worker の異常終了を検知し、同一 `loop_id` で
+  再起動した場合。3.3 節）: `loop_common.reacquire_lease()`（`attach` の実体。1.10 節・core 編
+  6.3 節）を呼び、新しい `lease_token` を取得する。旧 lease が生存中（TTL 内かつ heartbeat
+  継続中）と判定された場合は `ForeignLeaseError` 相当の例外を送出し、worker は即座に終了する
+  （二重起動防止。1.10 節の `attach` 拒否条件と同一）。
+- 取得した `lease_token` は `main()` のプロセス内メモリに保持し、以後のすべての `loop_common`
+  呼び出し（`propose`/`complete`/`heartbeat`）にそのまま引数で渡す（2.3 節）。
 
 ### 2.2 `claude -p` 起動コマンド構成
 
@@ -410,14 +513,34 @@ Checker（LLM レビュー）は `code-reviewer` 等のレビュアー定義プ�
 ### 2.3 バックグラウンド heartbeat スレッド
 
 ```python
-def _heartbeat_loop(loop_id: str, project_root: Path, interval: int, stop_event: threading.Event) -> None:
+def _heartbeat_loop(
+    loop_id: str,
+    project_root: Path,
+    lease_token: str,
+    interval: int,
+    stop_event: threading.Event,
+    on_lease_lost: Callable[[], None],
+) -> None:
     while not stop_event.wait(interval):
-        loop_common.heartbeat(loop_id, project_root)
+        if not loop_common.heartbeat(loop_id, project_root, lease_token):
+            # lease_token 不一致（他プロセスに lease を奪取された）。継続すると
+            # 二重書き込みのリスクがあるため、即座に安全停止相当で終了する。
+            on_lease_lost()
+            return
 ```
 
-- `loop_driver.py` の `main()` はワーカースレッドとして上記を起動し（`daemon=True`）、
-  `config.lock.heartbeat_interval_seconds`（既定 60 秒。5 節）ごとに `lock.json` の `heartbeat_at`
-  を更新する。
+- `loop_driver.py` の `main()` は 2.1 節で取得した `lease_token` をこのスレッドの引数として渡す。
+  ワーカースレッドとして起動し（`daemon=True`）、`config.lock.heartbeat_interval_seconds`
+  （既定 60 秒。5 節）ごとに `lock.json` の `heartbeat_at` を更新する（`loop_common.heartbeat()`
+  は `--lease-token` と同じ検証を内部で行う。1.9 節・core 編 6.3 節）。
+- **lease 喪失時の即時終了（Codex レビュー指摘反映。P1）**: `loop_common.heartbeat()` が
+  `lease_token` 不一致（TTL 失効後に別プロセス・別セッションが `attach` で新しい lease を取得
+  済み）で `False` を返した場合、`on_lease_lost` コールバックが現在実行中の子プロセス
+  （`claude -p` 等）を 2.5 節の kill-tree で強制終了し、`main()` に終了を要求する。この時点で
+  `state.json` の正当な所有者は新しい lease を保持する側であるため、**このプロセス自身は
+  `state.json`/`journal.jsonl` を書き換えない**（fencing 上、書いても `validate_lease()` に
+  通らない）。stderr へ警告ログを出し、macOS 通知を発火したうえで exit する（2.6 節の安全停止と
+  同様、書き込みを伴う exec は一切行わない）。
 - worker プロセスの終了時（正常/異常問わず）は `stop_event.set()` で確実に停止させる（`finally` 節）。
 
 ### 2.4 wall-clock 監視（NF-02）

@@ -472,19 +472,37 @@ Maker には冪等性契約を課す（既存ブランチ・PR・差分を確認
 
 ### 5.5 クラッシュ回復
 
-- LP-1: セッション再開時、オーケストレーターは対象 `loop_id` の `state.json` を確認し、
-  `propose` を呼ぶだけで reconcile を含めた続行判断が得られる（FT-22）。
+**3 つの入口の整理（Codex レビュー指摘反映。P2。cli 編 1 章が引数・exit code の詳細を確定する）**:
+ループランへの `loop_step` 呼び出しには、目的の異なる 3 つの入口がある。いずれも `lease_token` の
+新規発行を伴い、以後の `propose`/`complete`/`reconcile`/`heartbeat` はその token を引数で渡す
+契約（5.2 節）に従う。
+
+| 入口                                     | 対象状態                                                                | 目的                                                                                     |
+| ---------------------------------------- | ----------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `start --issue <N>`                      | state 未存在（新規）                                                    | ループラン新規作成                                                                       |
+| `attach --loop-id <id>`（新設。P2）      | `running`/`waiting_external`。旧 lease が TTL 失効または heartbeat 途絶 | クラッシュ・セッション断絶後、**別の呼び出し元**が続行のため lease を再取得する（FT-22） |
+| `resume --loop-id <id> --reset-counters` | `failed`/`stopped`（正規の失敗終了・安全停止）                          | 人間判断による意図的な再挑戦（ガードカウンタをリセットして再開）                         |
+
+- LP-1: セッション再開時、オーケストレーターは対象 `loop_id` の `state.json` を確認する。
+  **同一セッション内（既に有効な `lease_token` を保持している）場合はそのまま `propose` を呼べば
+  reconcile を含めた続行判断が得られる（FT-22）**。一方、クラッシュ・セッション断絶により
+  `lease_token` を保持していない**別の呼び出し元**が続行する場合は、`propose` を呼ぶ前に
+  **`loop_step attach`（cli 編 1.10 節）で新しい `lease_token` を再取得する**必要がある（`propose`
+  は `--lease-token` を必須引数とするため、token を持たない呼び出しはそもそも成立しない）。
 - LP-2: `loop_scheduler` が worker プロセスの異常終了を検知した場合、同一 `loop_id` で
-  `loop_driver` を再起動する。再起動後の `loop_driver` も同じ reconcile 経路（`loop_common`
-  経由）で state を検証してから続行する。
+  `loop_driver` を再起動する。再起動後の `loop_driver` は、起動時に内部的に `attach` 相当の処理
+  （新しい `lease_token` の取得）を行ってから、同じ reconcile 経路（`loop_common` 経由）で state を
+  検証して続行する（cli 編 2.1 節）。
 - いずれの経路も lock の TTL・lease_token による fencing（5.2 節）で、旧プロセスが復帰して
-  誤って state を上書きすることを防ぐ。
+  誤って state を上書きすることを防ぐ。**`attach` は旧 lease が生存中（TTL 内かつ heartbeat 継続中）
+  の場合は拒否する**（二重 attach による同時書き込みを防ぐ。cli 編 1.10 節）。
 - **意図的な再開（FT-22。アーキテクチャレビュー反映）**: ガード到達により正規に `failed` 終了した
   ループランを、人間判断であらためて再開したい場合のために `loop_step resume --reset-counters`
   相当のサブコマンドを用意する。ガードカウンタ（反復回数・無進捗カウント）のリセットは明示フラグ
   （`--reset-counters`）を要求し、フラグなしでは `failed` 状態のまま resume できない（誤操作による
   無制限リトライを防ぐ）。5.4 節の reconcile（クラッシュ由来の自動復旧）とは目的が異なり、こちらは
-  人間が明示的に再挑戦を指示する経路である。
+  人間が明示的に再挑戦を指示する経路である。`attach` とは対象状態が排他的（`attach` は
+  `running`/`waiting_external`、`resume` は `failed`/`stopped`）であり、混同しない。
 
 ### 5.6 push 前ガード（セキュリティレビュー反映）
 
