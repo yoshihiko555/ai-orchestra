@@ -1247,7 +1247,7 @@ def main():
 
     argv = sys.argv[1:]
     script_args: list[str] = []
-    if "--" in argv:
+    if argv and argv[0] == "run" and "--" in argv:
         sep_idx = argv.index("--")
         script_args = argv[sep_idx + 1 :]
         argv = argv[:sep_idx]
@@ -1337,7 +1337,13 @@ def main():
             sys.exit(1)
     elif args.command == "meta":
         meta_script = orchestra_dir / "packages" / "meta-harness" / "scripts" / "meta_harness.py"
-        result = subprocess.run([sys.executable, str(meta_script)] + args.meta_args)
+        if not meta_script.is_file():
+            print(f"エラー: meta-harness スクリプトが存在しません: {meta_script}", file=sys.stderr)
+            sys.exit(1)
+        result = subprocess.run(
+            [sys.executable, str(meta_script)] + args.meta_args,
+            env={**os.environ, "AI_ORCHESTRA_DIR": str(orchestra_dir)},
+        )
         sys.exit(result.returncode)
     elif args.command == "setup":
         if args.preset is None:

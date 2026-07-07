@@ -104,6 +104,29 @@ class TestStorageRootOverride:
         else:
             raise AssertionError("relative storage.root should raise MetaHarnessRootError")
 
+    def test_store_dir_rejects_absolute_path(self, tmp_path: Path) -> None:
+        config = {"storage": {"dir": "/tmp/absolute-not-allowed"}}
+        try:
+            mh.store_dir(tmp_path, config)
+        except mh.MetaHarnessRootError:
+            pass
+        else:
+            raise AssertionError("absolute storage.dir should raise MetaHarnessRootError")
+
+    def test_cli_exits_nonzero_when_storage_dir_is_absolute(
+        self, git_project: Path, run_meta
+    ) -> None:
+        local_config_dir = git_project / ".claude" / "config" / "meta-harness"
+        local_config_dir.mkdir(parents=True, exist_ok=True)
+        (local_config_dir / "meta-harness.local.yaml").write_text(
+            "storage:\n  dir: /some/absolute/path\n", encoding="utf-8"
+        )
+
+        result = run_meta("init", project=git_project, check=False)
+
+        assert result.returncode == 2
+        assert "absolute" in result.stderr.lower()
+
 
 class TestBareRepoFailClosed:
     # EV-33

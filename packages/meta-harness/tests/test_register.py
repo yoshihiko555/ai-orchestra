@@ -28,6 +28,28 @@ def _ledger_events(project: Path) -> list[dict]:
     ]
 
 
+def _tmp_register_dirs(project: Path) -> list[Path]:
+    tmp_dir = project / ".claude" / "meta-harness" / "tmp"
+    return sorted(tmp_dir.glob("register-*")) if tmp_dir.is_dir() else []
+
+
+def _manifest(cand_id: str, description: str = "candidate") -> dict:
+    return {
+        "schema_version": "1.0",
+        "cand_id": cand_id,
+        "parent_id": None,
+        "generation": 0,
+        "created_at": mh.now_iso(),
+        "created_by": "human",
+        "target": "claude-harness",
+        "source_commit": "a" * 40,
+        "config_hash": "b" * 64,
+        "model_versions": {},
+        "overlay_files": ["facets/example-facet/SKILL.md"],
+        "description": description,
+    }
+
+
 class TestRegisterSuccess:
     def test_register_writes_conformant_manifest_and_ledger_event(
         self, git_project: Path, tmp_path: Path, run_meta, default_overlay
@@ -298,3 +320,57 @@ class TestRegisterSourceCommit:
             (_candidates_dir(git_project) / cand_id / "manifest.json").read_text(encoding="utf-8")
         )
         assert manifest["source_commit"] == head
+
+
+class TestRegisterAtomicStaging:
+    def test_successful_register_leaves_no_tmp_residue(
+        self, git_project: Path, run_meta, tmp_path: Path, default_overlay
+    ) -> None:
+        run_meta("init", project=git_project, check=True)
+        config = mh.load_config(git_project)
+        overlay_dir = default_overlay(tmp_path)
+        cand_id = "cand-20260101-000000-atomic-success"
+
+        mh.register_candidate(
+            git_project,
+            config,
+            cand_id=cand_id,
+            manifest=_manifest(cand_id),
+            overlay_dir=overlay_dir,
+            overlay_files=["facets/example-facet/SKILL.md"],
+        )
+
+        assert _tmp_register_dirs(git_project) == []
+
+    def test_register_failure_due_to_existing_candidate_leaves_no_tmp_residue(
+        self, git_project: Path, run_meta, tmp_path: Path, default_overlay
+    ) -> None:
+        run_meta("init", project=git_project, check=True)
+        config = mh.load_config(git_project)
+        overlay_dir = default_overlay(tmp_path)
+        cand_id = "cand-20260101-000000-atomic-existing"
+
+        mh.register_candidate(
+            git_project,
+            config,
+            cand_id=cand_id,
+            manifest=_manifest(cand_id, "first"),
+            overlay_dir=overlay_dir,
+            overlay_files=["facets/example-facet/SKILL.md"],
+        )
+
+        try:
+            mh.register_candidate(
+                git_project,
+                config,
+                cand_id=cand_id,
+                manifest=_manifest(cand_id, "second"),
+                overlay_dir=overlay_dir,
+                overlay_files=["facets/example-facet/SKILL.md"],
+            )
+        except FileExistsError:
+            pass
+        else:
+            raise AssertionError("re-registering the same cand_id should raise FileExistsError")
+
+        assert _tmp_register_dirs(git_project) == []

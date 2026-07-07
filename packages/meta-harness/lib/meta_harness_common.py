@@ -20,6 +20,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -133,7 +134,13 @@ def load_config(project_dir: str | Path) -> dict:
         from hook_common import load_package_config
 
         loaded = load_package_config(PACKAGE_NAME, CONFIG_FILENAME, str(project_dir))
-    except Exception:
+    except ImportError:
+        loaded = {}
+    except Exception as exc:
+        print(
+            f"warning: failed to load meta-harness config, falling back to defaults: {exc}",
+            file=sys.stderr,
+        )
         loaded = {}
     return _deep_merge(DEFAULTS, loaded or {})
 
@@ -235,7 +242,10 @@ CONFIG_PATCH_FILENAME = "config-patch.json"
 def store_dir(main_root: Path, config: dict) -> Path:
     """store ルート（既定 `.claude/meta-harness`）の絶対パスを返す。"""
     rel = (config.get("storage") or {}).get("dir") or DEFAULTS["storage"]["dir"]
-    return main_root / rel
+    rel_path = Path(rel)
+    if rel_path.is_absolute():
+        raise MetaHarnessRootError(f"storage.dir must be a relative path, got: {rel}")
+    return main_root / rel_path
 
 
 def candidates_dir(main_root: Path, config: dict) -> Path:
@@ -397,15 +407,35 @@ def register_candidate(
     既に同名の候補ディレクトリが存在する場合は `FileExistsError` を送出する
     （immutability 原則、Sec1-1「基本設計からの変更点」参照）。
     """
-    cand_dir = candidates_dir(main_root, config) / cand_id
-    if cand_dir.exists():
-        raise FileExistsError(f"candidate already registered (immutable): {cand_id}")
-    cand_dir.mkdir(parents=True)
-    _copy_overlay_tree(overlay_dir, cand_dir / "overlay")
-    _write_json(cand_dir / "manifest.json", manifest)
-    _write_json(
-        cand_dir / "overlay-manifest.json", {"schema_version": "1.0", "files": overlay_files}
-    )
+    tmp_root = tmp_dir(main_root, config)
+    tmp_root.mkdir(parents=True, exist_ok=True)
+    staging_dir = tmp_root / f"register-{os.urandom(4).hex()}"
+    staging_dir.mkdir(parents=True)
+    try:
+        _copy_overlay_tree(overlay_dir, staging_dir / "overlay")
+        _write_json(staging_dir / "manifest.json", manifest)
+        _write_json(
+            staging_dir / "overlay-manifest.json",
+            {"schema_version": "1.0", "files": overlay_files},
+        )
+        base_dir = candidates_dir(main_root, config)
+        cand_dir = base_dir / cand_id
+        if cand_dir.exists():
+            raise FileExistsError(f"candidate already registered (immutable): {cand_id}")
+        base_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            os.rename(staging_dir, cand_dir)
+        except FileExistsError:
+            raise FileExistsError(f"candidate already registered (immutable): {cand_id}") from None
+        except OSError:
+            if cand_dir.exists():
+                raise FileExistsError(
+                    f"candidate already registered (immutable): {cand_id}"
+                ) from None
+            raise
+    finally:
+        if staging_dir.exists():
+            shutil.rmtree(staging_dir, ignore_errors=True)
     return cand_dir
 
 
@@ -561,9 +591,22 @@ def aggregate_run_points(events: list[dict], config: dict) -> list[dict]:
 
 
 def _summarize_candidate_runs(cand_id: str, runs: list[dict], cost_axis: str) -> dict:
-    qualities = [r["quality_score"] for r in runs]
-    costs = [r.get("cost", {}).get(cost_axis, 0) for r in runs]
-    non_holdout_pass = all(r.get("verdict") == "pass" for r in runs if not r.get("holdout"))
+    non_holdout_runs = [r for r in runs if not r.get("holdout")]
+    qualities = [r["quality_score"] for r in non_holdout_runs]
+    costs = [r.get("cost", {}).get(cost_axis, 0) for r in non_holdout_runs]
+    non_holdout_pass = bool(non_holdout_runs) and all(
+        r.get("verdict") == "pass" for r in non_holdout_runs
+    )
+    if not non_holdout_runs:
+        return {
+            "cand_id": cand_id,
+            "quality_mean": 0.0,
+            "quality_var": 0.0,
+            "quality_min": 0.0,
+            "cost_mean": 0.0,
+            "runs": 0,
+            "eligible": False,
+        }
     mean_quality = sum(qualities) / len(qualities)
     variance = sum((q - mean_quality) ** 2 for q in qualities) / len(qualities)
     return {
@@ -572,7 +615,7 @@ def _summarize_candidate_runs(cand_id: str, runs: list[dict], cost_axis: str) ->
         "quality_var": variance,
         "quality_min": min(qualities),
         "cost_mean": sum(costs) / len(costs),
-        "runs": len(runs),
+        "runs": len(non_holdout_runs),
         "eligible": non_holdout_pass,
     }
 
@@ -886,15 +929,20 @@ def store_lock(main_root: Path, config: dict):
     ttl_seconds = (config.get("locks") or {}).get(
         "store_ttl_seconds", DEFAULTS["locks"]["store_ttl_seconds"]
     )
-    _acquire_store_lock(lock_file, ttl_seconds)
+    token = _acquire_store_lock(lock_file, ttl_seconds)
     try:
         yield
     finally:
-        lock_file.unlink(missing_ok=True)
+        try:
+            if lock_file.read_text(encoding="utf-8") == token:
+                lock_file.unlink(missing_ok=True)
+        except (FileNotFoundError, OSError):
+            pass
 
 
-def _acquire_store_lock(lock_file: Path, ttl_seconds: float) -> None:
+def _acquire_store_lock(lock_file: Path, ttl_seconds: float) -> str:
     for _ in range(_LOCK_ACQUIRE_ATTEMPTS):
+        token = f"{os.getpid()}:{time.time_ns()}:{os.urandom(4).hex()}"
         try:
             fd = os.open(lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
@@ -906,8 +954,8 @@ def _acquire_store_lock(lock_file: Path, ttl_seconds: float) -> None:
             ) from None
         else:
             with os.fdopen(fd, "w") as handle:
-                handle.write(str(os.getpid()))
-            return
+                handle.write(token)
+            return token
     raise LockAcquisitionError(
         f"could not acquire store.lock after {_LOCK_ACQUIRE_ATTEMPTS} attempts: {lock_file}"
     )

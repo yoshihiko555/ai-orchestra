@@ -24,7 +24,7 @@ class TestStoreLockAcquireRelease:
         with mh.store_lock(tmp_path, config):
             lock_path = _lock_path(tmp_path, config)
             assert lock_path.is_file()
-            assert lock_path.read_text(encoding="utf-8") == str(os.getpid())
+            assert lock_path.read_text(encoding="utf-8").startswith(f"{os.getpid()}:")
 
     def test_lock_file_removed_after_context_exits(self, tmp_path: Path) -> None:
         config = {"locks": {"store_ttl_seconds": 60}}
@@ -70,7 +70,7 @@ class TestStoreLockStaleness:
         os.utime(lock_path, (stale_time, stale_time))
 
         with mh.store_lock(tmp_path, config):
-            assert lock_path.read_text(encoding="utf-8") == str(os.getpid())
+            assert lock_path.read_text(encoding="utf-8").startswith(f"{os.getpid()}:")
 
     def test_lock_newer_than_ttl_is_not_stolen(self, tmp_path: Path) -> None:
         config = {"locks": {"store_ttl_seconds": 60}}
@@ -100,6 +100,44 @@ class TestStoreLockStaleness:
 
     def test_is_lock_stale_missing_file_is_stale(self, tmp_path: Path) -> None:
         assert mh._is_lock_stale(tmp_path / "does-not-exist.lock", ttl_seconds=60) is True
+
+
+class TestStoreLockCompareAndDeleteOnRelease:
+    def test_release_does_not_delete_lock_when_content_no_longer_matches_own_token(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        config = {"locks": {"store_ttl_seconds": 60}}
+        lock_path = _lock_path(tmp_path, config)
+
+        def acquire_with_fixed_token(lock_file: Path, ttl_seconds: float) -> str:
+            lock_file.write_text("token-a", encoding="utf-8")
+            return "token-a"
+
+        monkeypatch.setattr(mh, "_acquire_store_lock", acquire_with_fixed_token)
+
+        with mh.store_lock(tmp_path, config):
+            assert lock_path.read_text(encoding="utf-8") == "token-a"
+            lock_path.write_text("token-b", encoding="utf-8")
+
+        assert lock_path.is_file()
+        assert lock_path.read_text(encoding="utf-8") == "token-b"
+
+    def test_release_deletes_lock_when_content_still_matches_own_token(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        config = {"locks": {"store_ttl_seconds": 60}}
+        lock_path = _lock_path(tmp_path, config)
+
+        def acquire_with_fixed_token(lock_file: Path, ttl_seconds: float) -> str:
+            lock_file.write_text("token-a", encoding="utf-8")
+            return "token-a"
+
+        monkeypatch.setattr(mh, "_acquire_store_lock", acquire_with_fixed_token)
+
+        with mh.store_lock(tmp_path, config):
+            assert lock_path.read_text(encoding="utf-8") == "token-a"
+
+        assert not lock_path.is_file()
 
 
 class TestStoreLockCliExit3:

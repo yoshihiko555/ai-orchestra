@@ -159,6 +159,26 @@ class TestAggregateRunPoints:
         points = mh.aggregate_run_points(events, mh.DEFAULTS)
         assert points[0]["eligible"] is True
 
+    def test_holdout_runs_excluded_from_quality_mean_and_cost_mean(self) -> None:
+        events = [
+            _run_completed("c1", quality_score=80, total_tokens=100),
+            _run_completed("c1", quality_score=10, total_tokens=99999, holdout=True),
+        ]
+        points = mh.aggregate_run_points(events, mh.DEFAULTS)
+        assert points[0]["quality_mean"] == 80
+        assert points[0]["cost_mean"] == 100
+        assert points[0]["runs"] == 1
+
+    def test_all_holdout_runs_makes_candidate_ineligible_not_vacuously_true(self) -> None:
+        events = [
+            _run_completed("c1", quality_score=10, total_tokens=99999, holdout=True),
+        ]
+        points = mh.aggregate_run_points(events, mh.DEFAULTS)
+        assert points[0]["eligible"] is False
+        assert points[0]["quality_mean"] == 0.0
+        assert points[0]["cost_mean"] == 0.0
+        assert points[0]["runs"] == 0
+
     def test_all_pass_is_eligible(self) -> None:
         events = [_run_completed("c1", quality_score=90, verdict="pass")]
         points = mh.aggregate_run_points(events, mh.DEFAULTS)

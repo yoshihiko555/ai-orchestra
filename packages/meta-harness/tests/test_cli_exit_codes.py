@@ -93,3 +93,35 @@ class TestPhase1bStubs:
         result = run_meta("loop", project=git_project, check=False)
         assert result.returncode == 2
         assert "not implemented in Phase 1a" in result.stderr
+
+
+class TestValidationErrorExitCodes:
+    def test_register_malformed_config_patch_json_exits_2_not_1(
+        self, git_project: Path, run_meta, tmp_path: Path, make_overlay
+    ) -> None:
+        run_meta("init", project=git_project, check=True)
+        overlay_dir = make_overlay(
+            tmp_path, {"facets/example-facet/SKILL.md": "# example facet\n\ncontent\n"}
+        )
+        (overlay_dir / "config-patch.json").write_text("{not valid json", encoding="utf-8")
+
+        result = run_meta(
+            "register",
+            "--overlay",
+            str(overlay_dir),
+            "--target",
+            "claude-harness",
+            project=git_project,
+            check=False,
+        )
+
+        assert result.returncode == 2
+        assert "not valid JSON" in result.stderr
+
+    def test_purge_negative_keep_generations_exits_2(self, git_project: Path, run_meta) -> None:
+        run_meta("init", project=git_project, check=True)
+
+        result = run_meta("purge", "--keep-generations", "-1", project=git_project, check=False)
+
+        assert result.returncode == 2
+        assert "keep-generations" in result.stderr

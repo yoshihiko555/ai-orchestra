@@ -144,8 +144,12 @@ def cmd_register(
     violations = mh.validate_overlay(overlay_dir, config)
     config_patch_path = overlay_dir / mh.CONFIG_PATCH_FILENAME
     if config_patch_path.is_file():
-        config_patch = json.loads(config_patch_path.read_text(encoding="utf-8"))
-        violations.extend(mh.validate_config_patch(config_patch, config, _SCHEMA_DIR))
+        try:
+            config_patch = json.loads(config_patch_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            violations.append(f"config-patch.json is not valid JSON: {exc}")
+        else:
+            violations.extend(mh.validate_config_patch(config_patch, config, _SCHEMA_DIR))
     if violations:
         for v in violations:
             print(f"error: {v}", file=sys.stderr)
@@ -290,8 +294,9 @@ def cmd_frontier(project: str, rebuild: bool, as_json: bool) -> int:
         }
         try:
             with mh.store_lock(main_root, config):
-                mh.write_frontier_cache(main_root, config, frontier_doc)
                 mh.append_ledger_event(main_root, config, event)
+                frontier_doc["ledger_line_count"] = len(mh.read_ledger_events(main_root, config))
+                mh.write_frontier_cache(main_root, config, frontier_doc)
         except mh.LockAcquisitionError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return EXIT_LOCK_CONFLICT
@@ -373,6 +378,9 @@ def cmd_purge(project: str, keep_generations: int | None, as_json: bool) -> int:
         if keep_generations is not None
         else config["retention"]["keep_generations"]
     )
+    if keep < 0:
+        print(f"error: --keep-generations must be >= 0, got: {keep}", file=sys.stderr)
+        return EXIT_VALIDATION_ERROR
 
     try:
         with mh.store_lock(main_root, config):
@@ -462,9 +470,8 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
-    """エントリポイント。"""
-    args = build_parser().parse_args(argv)
+def _dispatch(args: argparse.Namespace) -> int:
+    """サブコマンドへ振り分ける。"""
     if args.command in _PHASE_1B_STUBS:
         return cmd_phase1b_stub(args.command)
     if args.command == "init":
@@ -487,6 +494,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "purge":
         return cmd_purge(args.project, args.keep_generations, args.json)
     return EXIT_VALIDATION_ERROR
+
+
+def main(argv: list[str] | None = None) -> int:
+    """エントリポイント。"""
+    args = build_parser().parse_args(argv)
+    try:
+        return _dispatch(args)
+    except mh.MetaHarnessRootError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_VALIDATION_ERROR
 
 
 if __name__ == "__main__":
