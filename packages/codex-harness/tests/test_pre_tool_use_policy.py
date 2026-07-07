@@ -29,8 +29,15 @@ class TestExtractCommand:
 
 
 class TestFindViolations:
-    def test_detects_git_push(self) -> None:
-        assert "git push" in policy.find_violations("git push origin main")
+    def test_allows_git_push(self) -> None:
+        # `git push` is governed by the rules-layer `prompt` decision (human
+        # approval), not hard-blocked by this hook. It must NOT be flagged here.
+        assert policy.find_violations("git push origin main") == []
+
+    def test_allows_gh_pr_create(self) -> None:
+        # `gh pr create` is likewise a rules-layer `prompt` command, never a
+        # hook-level forbidden pattern.
+        assert policy.find_violations("gh pr create --fill") == []
 
     def test_detects_gh_pr_merge(self) -> None:
         assert "gh pr merge" in policy.find_violations("gh pr merge 42")
@@ -80,14 +87,12 @@ class TestFindViolations:
     def test_allows_pytest(self) -> None:
         assert policy.find_violations("pytest -q") == []
 
-    def test_detects_git_push_with_dash_c_option(self) -> None:
-        assert "git push" in policy.find_violations("git -C ../other push")
+    def test_allows_git_push_with_dash_c_option(self) -> None:
+        # git push (any flag variant) is intentionally not hook-blocked.
+        assert policy.find_violations("git -C ../other push") == []
 
-    def test_detects_git_push_with_no_pager_option(self) -> None:
-        assert "git push" in policy.find_violations("git --no-pager push origin main")
-
-    def test_detects_git_push_with_double_space(self) -> None:
-        assert "git push" in policy.find_violations("git  push")
+    def test_allows_git_push_with_no_pager_option(self) -> None:
+        assert policy.find_violations("git --no-pager push origin main") == []
 
     def test_detects_gh_pr_merge_with_repo_option(self) -> None:
         assert "gh pr merge" in policy.find_violations("gh --repo owner/repo pr merge 42")
@@ -151,8 +156,17 @@ class TestMain:
     def test_exits_two_for_forbidden_command(self, monkeypatch, capsys) -> None:
         import io
 
-        payload = '{"tool_input": {"command": "git push origin main"}}'
+        payload = '{"tool_input": {"command": "gh pr merge 42"}}'
         monkeypatch.setattr("sys.stdin", io.StringIO(payload))
         assert policy.main() == 2
         captured = capsys.readouterr()
-        assert "git push" in captured.err
+        assert "gh pr merge" in captured.err
+
+    def test_exits_zero_for_prompt_decision_command(self, monkeypatch) -> None:
+        # `git push` is a rules-layer `prompt` command, not a hook-forbidden one,
+        # so the hook must allow it (exit 0) and leave approval to the rules layer.
+        import io
+
+        payload = '{"tool_input": {"command": "git push origin main"}}'
+        monkeypatch.setattr("sys.stdin", io.StringIO(payload))
+        assert policy.main() == 0

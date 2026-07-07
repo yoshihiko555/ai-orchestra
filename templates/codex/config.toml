@@ -6,7 +6,11 @@ model = "gpt-5.4"
 model_reasoning_effort = "xhigh"
 model_reasoning_summary = "detailed"
 
-# Approval policy
+# Approval policy (対話 codex 向け)
+#   on-request: 対話 codex の承認モード。エージェントは sandbox 境界を超える必要が
+#               ある操作について人間へ承認を求める（承認で sandbox 外実行に昇格）。
+# 注: codex exec（非対話 runner: codex_run.py / codex_review.py）は -c approval_policy=never
+#     を明示指定し、承認に依存しない厳格な sandbox 動作を維持する。
 approval_policy = "on-request"
 
 # Feature toggles

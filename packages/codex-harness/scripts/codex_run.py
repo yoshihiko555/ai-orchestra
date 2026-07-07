@@ -145,6 +145,11 @@ def execute_codex(
         sandbox,
         # NOTE: `codex exec` (0.142.x) has no --ask-for-approval flag; exec is
         # non-interactive and never prompts (verified via E2E, see Plans.md).
+        # Pin approval_policy=never so this non-interactive run keeps a strict,
+        # no-escalation sandbox regardless of the interactive default in
+        # `.codex/config.toml` (which is `on-failure` for human-approved runs).
+        "-c",
+        "approval_policy=never",
         "--output-schema",
         SCHEMA_REL_PATH,
         *trust_flags,

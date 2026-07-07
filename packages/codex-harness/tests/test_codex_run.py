@@ -143,6 +143,11 @@ class TestExecuteCodex:
         assert "--sandbox" in captured["cmd"]
         assert "read-only" in captured["cmd"]
         assert "--dangerously-bypass-hook-trust" in captured["cmd"]
+        # Non-interactive runs pin approval_policy=never so the interactive
+        # `on-failure` default in config.toml cannot turn this into an
+        # escalation-prompting run (EV-53).
+        assert "-c" in captured["cmd"]
+        assert "approval_policy=never" in captured["cmd"]
 
     def test_returns_124_on_timeout(self, tmp_path: Path, monkeypatch) -> None:
         run_dir = tmp_path / "run"

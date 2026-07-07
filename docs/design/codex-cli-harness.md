@@ -340,7 +340,9 @@ Harness の config layer。model、approval、sandbox、permission profile、MCP
 
 ```toml
 model = "gpt-5.5"
-approval_policy = "on-request"
+# 対話 codex は on-failure（sandbox 拒否時に承認要求）。詳細は §10.2。
+# 非対話 runner は -c approval_policy=never で上書きし厳格運用する。
+approval_policy = "on-failure"
 sandbox_mode = "workspace-write"
 model_reasoning_effort = "high"
 
@@ -392,8 +394,8 @@ prefix_rule(
 
 prefix_rule(
     pattern = ["git", "push"],
-    decision = "forbidden",
-    justification = "Pushing must be performed by the human or CI release job.",
+    decision = "prompt",
+    justification = "Pushing a branch is allowed only after explicit human approval.",
 )
 
 prefix_rule(
@@ -906,13 +908,27 @@ full access / yolo:
   - 使う場合は外部コンテナ / disposable VM / throwaway worktree 内のみ
 ```
 
+#### 対話 vs 非対話の承認方針（Issue #161 フォローアップ）
+
+対話 `codex` と非対話 runner（`codex exec`）で承認の扱いを分ける。
+
+| 実行形態                                            | approval_policy            | filesystem / network の扱い                                                                        |
+| --------------------------------------------------- | -------------------------- | -------------------------------------------------------------------------------------------------- |
+| 対話 `codex`（`.codex/config.toml` 既定）           | `on-failure`               | sandbox が拒否した操作を「sandbox 外で実行してよいか」人間へ承認要求し、承認時に実行（escalation） |
+| 非対話 runner（`codex_run.py` / `codex_review.py`） | `never`（`-c` で明示固定） | 承認エスカレーションなし。read-only / workspace-write の sandbox 境界を厳格に維持する              |
+
+これにより、次の2つを事前に許可を広げずに対話で通せる（いずれも人間承認が前提）:
+
+- **worktree の Git 操作**: git worktree の実体 Git dir（`<repo>/.git/worktrees/<name>`）は workspace root の外にあり、workspace-write では書き込めない。そのため `git add` / `git commit` は sandbox で失敗するが、`on-failure` により承認を経て実行される。config に機器固有の絶対パスを writable root として埋め込まない方針。
+- **ネットワーク**: workspace-write は network 既定オフのため `gh` / `git fetch` 等は sandbox で失敗するが、同様に承認を経て実行される。network を profile で恒常的に開放しない。
+
+非対話 runner は人間が承認ゲートになれないため、上記いずれも通さず（`approval_policy=never`）、生成する artifact（patch / findings）の範囲に実行を限定する。
+
 ### 10.3 Command policy
 
-常に禁止:
+常に禁止（`forbidden`。承認しても実行不可。rules・PreToolUse hook 双方で強制）:
 
 ```text
-git push
-git push --force
 gh pr merge
 gh release create
 npm publish
@@ -927,9 +943,10 @@ curl ... | sh
 wget ... | sh
 ```
 
-原則 prompt:
+原則 prompt（対話 Codex で人間承認時のみ実行。PreToolUse hook はハードブロックしない）:
 
 ```text
+git push
 gh pr create
 gh issue comment
 git commit
@@ -939,6 +956,11 @@ pip install
 brew install
 docker build
 ```
+
+> Issue #161 フォローアップ: `git push` は「常に禁止」から「prompt（人間承認付き許可）」へ変更した。
+> 対話 Codex は人間が承認ゲートになるため、branch push / PR 作成はハードブロックせず承認で通す。
+> 一方 merge / release / publish / cluster/infra 適用 / 破壊的削除は不可逆・本番影響のため forbidden を維持する。
+> `git push` を prompt にする都合上、PreToolUse hook（`pre_tool_use_policy.py`）の forbidden 一覧からも `git push` を除外している（hook は allow/block の二値で prompt を表現できないため）。
 
 許可しやすい:
 
