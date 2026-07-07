@@ -4,7 +4,7 @@
 **類型**: 主: CLI ツール型、副: hook 型（config-loading レイヤリングへの依存）
 **作成日**: 2026-07-06
 **最終レビュー日**: 未レビュー（draft、パッケージ実装前に作成）
-**情報源**: docs/design/meta-harness.md（基本設計）, docs/design/meta-harness-detailed.md（詳細設計 §1〜§9）, docs/requirements/meta-harness.md, docs/adr/ADR-20260706-030.md
+**情報源**: docs/design/meta-harness.md（基本設計）, docs/design/meta-harness-detailed.md（詳細設計 §1〜§9）, docs/requirements/meta-harness.md, docs/adr/ADR-20260706-031.md
 
 ## 1. 責務定義
 
