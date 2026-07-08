@@ -619,6 +619,34 @@ def test_attach_propose_failure_returns_reclaimed_lease_token(
     assert payload["lease_token"] != lock.lease_token
 
 
+def test_attach_propose_validation_failure_preserves_exit_2(
+    tmp_path: Path, monkeypatch: Any, capsys: Any
+) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    lock = _write_running_state(repo)
+    stale_heartbeat = (datetime.now(UTC) - timedelta(seconds=7200)).isoformat()
+    _set_lock_heartbeat(repo, "abcd1234-issue-1", stale_heartbeat)
+
+    def fail_propose(
+        _loop_id: str,
+        _project: str,
+        _lease_token: str,
+        recover_orphans: bool = False,
+    ) -> Any:
+        raise loop_step.lc.ProtocolViolationError("pending action must be completed")
+
+    monkeypatch.setattr(loop_step.lc, "propose", fail_propose)
+
+    exit_code = loop_step.main(["attach", "--loop-id", "abcd1234-issue-1", "--project", str(repo)])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert exit_code == 2
+    assert payload["error"]["code"] == "protocol_violation"
+    assert payload["lease_token"] != lock.lease_token
+
+
 def test_resume_requires_reset_counters(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _init_repo(repo)
@@ -679,6 +707,32 @@ def test_resume_propose_failure_returns_new_lease_token(
     payload = json.loads(captured.out)
     assert exit_code == 1
     assert payload["error"]["code"] == "definition_invalid"
+    assert payload["lease_token"] != lock.lease_token
+
+
+def test_resume_propose_validation_failure_preserves_exit_2(
+    tmp_path: Path, monkeypatch: Any, capsys: Any
+) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    lock = _write_running_state(repo)
+    state = lc.load_state("abcd1234-issue-1", str(repo))
+    state.status = "failed"
+    lc._write_state(state, str(repo))
+
+    def fail_propose(_loop_id: str, _project: str, _lease_token: str) -> Any:
+        raise loop_step.lc.ProtocolViolationError("pending action must be completed")
+
+    monkeypatch.setattr(loop_step.lc, "propose", fail_propose)
+
+    exit_code = loop_step.main(
+        ["resume", "--loop-id", "abcd1234-issue-1", "--reset-counters", "--project", str(repo)]
+    )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert exit_code == 2
+    assert payload["error"]["code"] == "protocol_violation"
     assert payload["lease_token"] != lock.lease_token
 
 
@@ -796,7 +850,90 @@ def test_complete_terminal_action_returns_terminal_next_hint(tmp_path: Path) -> 
     assert payload["next"] == "loop terminal"
 
 
-def test_foreign_live_lease_safety_stop_is_surfaced_by_propose(tmp_path: Path) -> None:
+def test_external_signal_phase_proposes_wait_action(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    lock = _write_running_state(repo)
+    state = lc.load_state("abcd1234-issue-1", str(repo))
+    state.phase = "pr_review_response"
+    state.pr_number = 123
+    state.guards["pr_review_response"] = lc.GuardCounters()
+    state.last_completed_action = lc.LastCompletedAction(
+        action_id="act-maker",
+        state_version_before=1,
+        state_version_after=2,
+        result_digest="digest",
+        completed_at=lc.now_iso(),
+    )
+    state.state_version = 2
+    lc._write_state(state, str(repo))
+    lc.append_journal_event(
+        "abcd1234-issue-1",
+        str(repo),
+        "completed",
+        "maker",
+        "act-maker",
+        {"action": lc.Action.RUN_MAKER.value, "result": {}},
+    )
+
+    payload = _propose(repo, "abcd1234-issue-1", lock.lease_token)
+
+    assert payload["action"] == lc.Action.WAIT_EXTERNAL_REVIEW.value
+    assert payload["params"]["pr_number"] == 123
+
+
+def test_advance_proposal_stops_when_branch_mismatches(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    loop_id = "abcd1234-issue-1"
+    repo_hash = loop_step.wm.resolve_repo_identity_hash(str(repo))
+    state = lc._initial_state(
+        loop_id,
+        "issue-loop",
+        repo_hash,
+        str(repo),
+        "loop/issue-1",
+        "implementation",
+    )
+    state.status = "running"
+    state.last_check_result = {"next_phase": "pr_review_response"}
+    lc._write_state(state, str(repo))
+    lock = lc.acquire_lock(loop_id, str(repo), "owner", 3600, host=socket.gethostname())
+    assert lock is not None
+
+    payload = _propose(repo, loop_id, lock.lease_token)
+
+    assert payload["action"] == lc.Action.STOP.value
+    assert payload["params"]["stop_reason"] == "push_guard_violation"
+    assert lc.load_state(loop_id, str(repo)).status == "stopped"
+
+
+def test_advance_proposal_stops_when_repo_identity_mismatches(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    loop_id = "abcd1234-issue-1"
+    state = lc._initial_state(
+        loop_id,
+        "issue-loop",
+        "wronghash",
+        str(repo),
+        "main",
+        "implementation",
+    )
+    state.status = "running"
+    state.last_check_result = {"next_phase": "pr_review_response"}
+    lc._write_state(state, str(repo))
+    lock = lc.acquire_lock(loop_id, str(repo), "owner", 3600, host=socket.gethostname())
+    assert lock is not None
+
+    payload = _propose(repo, loop_id, lock.lease_token)
+
+    assert payload["action"] == lc.Action.STOP.value
+    assert payload["params"]["stop_reason"] == "repo_identity_mismatch"
+    assert lc.load_state(loop_id, str(repo)).status == "stopped"
+
+
+def test_foreign_live_lease_requires_valid_token_before_stop(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _init_repo(repo)
     loop_id = "abcd1234-issue-1"
@@ -826,10 +963,9 @@ def test_foreign_live_lease_safety_stop_is_surfaced_by_propose(tmp_path: Path) -
     )
     payload = _payload(proc)
 
-    assert proc.returncode == 0, proc.stderr
-    assert payload["action"] == lc.Action.STOP.value
-    assert payload["params"]["stop_reason"] == "foreign_live_lease"
-    assert lc.load_state(loop_id, str(repo)).status == "stopped"
+    assert proc.returncode == 2
+    assert payload["error"]["code"] == "lease_mismatch"
+    assert lc.load_state(loop_id, str(repo)).status == "running"
 
 
 def test_push_guard_stop_after_complete_is_visible_on_next_propose(tmp_path: Path) -> None:

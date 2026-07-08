@@ -169,8 +169,7 @@ def cmd_propose(args: argparse.Namespace) -> dict[str, Any]:
     """Handle propose."""
     project = _project_dir(args.project)
     lease_token = _required_lease_token(args)
-    if lc.check_foreign_host(args.loop_id, project) is None:
-        _refresh_lease_or_raise(args.loop_id, project, lease_token)
+    _refresh_lease_or_raise(args.loop_id, project, lease_token)
     result = lc.propose(args.loop_id, project, lease_token)
     return _proposal_response(args.loop_id, result, "next action proposed", project=project)
 
@@ -252,11 +251,8 @@ def cmd_resume(args: argparse.Namespace) -> dict[str, Any]:
     try:
         result = lc.propose(args.loop_id, project, resumed.lease_token)
     except Exception as exc:
-        raise CliFailure(
-            _error_code_for(exc),
-            _message(exc, "failed to propose after resume"),
-            EXIT_GENERAL_ERROR,
-            {"lease_token": resumed.lease_token},
+        raise _failure_with_lease(
+            exc, "failed to propose after resume", resumed.lease_token
         ) from exc
     result_with_lease = lc.ProposeResult(
         action=result.action,
@@ -412,6 +408,32 @@ def _refresh_lease_or_raise(loop_id: str, project: str, lease_token: str) -> Non
         )
 
 
+def _failure_with_lease(exc: BaseException, fallback: str, lease_token: str) -> CliFailure:
+    """Return a CliFailure that preserves normal classification and exposes the new lease."""
+    return CliFailure(
+        _error_code_for(exc),
+        _message(exc, fallback),
+        _exit_code_for(exc),
+        {"lease_token": lease_token},
+    )
+
+
+def _exit_code_for(exc: BaseException) -> int:
+    """Return the CLI exit code that main would use for a known exception."""
+    if isinstance(
+        exc,
+        (
+            lc.StaleActionError,
+            lc.WriteRejectedError,
+            lc.ProtocolViolationError,
+        ),
+    ):
+        return EXIT_VALIDATION_REJECTED
+    if isinstance(exc, (lc.ForeignLeaseError, lc.LockNotFoundError)):
+        return EXIT_LOCK_UNAVAILABLE
+    return EXIT_GENERAL_ERROR
+
+
 def _attach_with_token(loop_id: str, project: str) -> lc.ProposeResult:
     """Attach and preserve the reclaimed lease token even when proposal creation fails."""
     state = lc.load_state(loop_id, project)
@@ -421,12 +443,7 @@ def _attach_with_token(loop_id: str, project: str) -> lc.ProposeResult:
     try:
         result = lc.propose(loop_id, project, lock.lease_token, recover_orphans=True)
     except Exception as exc:
-        raise CliFailure(
-            _error_code_for(exc),
-            _message(exc, "failed to propose after attach"),
-            EXIT_GENERAL_ERROR,
-            {"lease_token": lock.lease_token},
-        ) from exc
+        raise _failure_with_lease(exc, "failed to propose after attach", lock.lease_token) from exc
     return lc.ProposeResult(
         action=result.action,
         action_id=result.action_id,
@@ -737,6 +754,16 @@ def _message(exc: BaseException, fallback: str) -> str:
 
 def _error_code_for(exc: BaseException) -> str:
     """Return a stable error code for known general errors."""
+    if isinstance(exc, lc.StaleActionError):
+        return "stale_action"
+    if isinstance(exc, lc.WriteRejectedError):
+        return "lease_mismatch"
+    if isinstance(exc, lc.ProtocolViolationError):
+        return "protocol_violation"
+    if isinstance(exc, (lc.ForeignLeaseError, lc.LockNotFoundError)):
+        return "lock_unavailable"
+    if isinstance(exc, lc.IntegrityError):
+        return "integrity_error"
     if isinstance(exc, lc.RootResolutionError):
         return "root_resolution_error"
     if isinstance(exc, wm.WorktreeError):

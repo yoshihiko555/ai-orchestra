@@ -393,15 +393,28 @@ def propose(
     loop_id: str, project_dir: str, lease_token: str, recover_orphans: bool = False
 ) -> ProposeResult:
     """Reconcile first, then create exactly one pending action."""
+    _ensure_valid_lease(loop_id, project_dir, lease_token)
     foreign = check_foreign_host(loop_id, project_dir)
     if foreign is not None:
         return _foreign_host_stop_result(loop_id, project_dir, foreign)
-    _ensure_valid_lease(loop_id, project_dir, lease_token)
     reconcile(loop_id, project_dir, lease_token, allow_side_effect_resolution=recover_orphans)
     state = load_state(loop_id, project_dir)
     if state.pending_action is not None:
         raise ProtocolViolationError("pending action must be completed before propose")
     action = _next_action(state, project_dir)
+    if _apply_preproposal_safety_stop_if_needed(state, action):
+        append_journal_event(
+            loop_id,
+            project_dir,
+            "stopped",
+            "step",
+            None,
+            {"stop_reason": state.stop_reason},
+        )
+        state.state_version += 1
+        state.updated_at = now_iso()
+        _write_state(state, project_dir)
+        action = Action.STOP.value
     action_id = f"act-{secrets.token_hex(ACTION_ID_BYTES)}"
     iteration = _next_action_iteration(state, action)
     params = _proposal_params(state, action, project_dir)
@@ -453,7 +466,7 @@ def complete(
 
     assert state.pending_action is not None
     action = state.pending_action.action
-    result = _normalize_complete_result(action, result)
+    result = _normalize_complete_result(state, action, result, project_dir)
     new_version = state.state_version + 1
     payload = _completed_payload(action, result)
     append_journal_event(loop_id, project_dir, "completed", _actor_for(action), action_id, payload)
@@ -962,13 +975,36 @@ def _completed_payload(action: str, result: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
-def _normalize_complete_result(action: str, result: dict[str, Any]) -> dict[str, Any]:
+def _normalize_complete_result(
+    state: LoopState, action: str, result: dict[str, Any], project_dir: str
+) -> dict[str, Any]:
     """Validate and normalize action result before writing durable journal records."""
-    if action != Action.ADVANCE_PHASE.value or result.get("pr_number") is None:
+    if action != Action.ADVANCE_PHASE.value or _has_failed_push_guard(result):
+        return result
+    if result.get("pr_number") is None:
+        if _advance_requires_pr_number(state, result, project_dir):
+            raise ValueError("pr_number is required for external review phase")
         return result
     normalized = dict(result)
     normalized["pr_number"] = _coerce_pr_number(result["pr_number"])
     return normalized
+
+
+def _has_failed_push_guard(result: dict[str, Any]) -> bool:
+    """Return True when an advance completion reports a failed push guard."""
+    guard = result.get("push_guard")
+    return isinstance(guard, dict) and not (
+        guard.get("branch_ok", True) and guard.get("repo_identity_ok", True)
+    )
+
+
+def _advance_requires_pr_number(state: LoopState, result: dict[str, Any], project_dir: str) -> bool:
+    """Return True when the next phase requires a PR number for external review."""
+    next_phase = _pending_next_phase(state) or result.get("next_phase")
+    if not next_phase:
+        return False
+    phase_def = _load_phase_definition_by_name(state, project_dir, str(next_phase))
+    return isinstance(_phase_nested(phase_def, ("checker", "external_signal"), None), dict)
 
 
 def _complete_next_hint(action: str) -> str:
@@ -1008,11 +1044,26 @@ def _next_action(state: LoopState, project_dir: str) -> str:
     if state.status == "running" and _pending_next_phase(state):
         return Action.ADVANCE_PHASE.value
     last_action = _last_completed_action_name(state.loop_id, project_dir, state)
-    return (
-        Action.RUN_CHECKER.value
-        if last_action == Action.RUN_MAKER.value
-        else Action.RUN_MAKER.value
-    )
+    if last_action == Action.RUN_MAKER.value:
+        if _phase_uses_external_signal(state, project_dir):
+            return Action.WAIT_EXTERNAL_REVIEW.value
+        return Action.RUN_CHECKER.value
+    return Action.RUN_MAKER.value
+
+
+def _apply_preproposal_safety_stop_if_needed(state: LoopState, action: str) -> bool:
+    """Stop before proposing unsafe advance params."""
+    if action != Action.ADVANCE_PHASE.value:
+        return False
+    if _repo_identity_hash(state.worktree_path) != state.repo_identity_hash:
+        state.status = "stopped"
+        state.stop_reason = "repo_identity_mismatch"
+        return True
+    if _current_branch(state.worktree_path) != state.branch:
+        state.status = "stopped"
+        state.stop_reason = "push_guard_violation"
+        return True
+    return False
 
 
 def _last_completed_action_name(loop_id: str, project_dir: str, state: LoopState) -> str:
@@ -1081,6 +1132,11 @@ def _proposal_context(params: dict[str, Any]) -> dict[str, Any]:
 
 def _load_phase_definition(state: LoopState, project_dir: str) -> Any:
     """Load the current phase definition, failing closed on config drift."""
+    return _load_phase_definition_by_name(state, project_dir, state.phase)
+
+
+def _load_phase_definition_by_name(state: LoopState, project_dir: str, phase: str) -> Any:
+    """Load a named phase definition, failing closed on config drift."""
     lib_dir = Path(__file__).resolve().parent
     if str(lib_dir) not in sys.path:
         sys.path.insert(0, str(lib_dir))
@@ -1089,7 +1145,45 @@ def _load_phase_definition(state: LoopState, project_dir: str) -> Any:
     definition = loop_definition.load_all_definitions(project_dir).get(state.definition_id)
     if definition is None:
         raise InvalidStateError(f"loop definition not found: {state.definition_id}")
-    return loop_definition.phase_by_name(definition, state.phase)
+    return loop_definition.phase_by_name(definition, phase)
+
+
+def _phase_uses_external_signal(state: LoopState, project_dir: str) -> bool:
+    """Return True when the current phase checker is an external wait."""
+    phase_def = _load_phase_definition(state, project_dir)
+    return isinstance(_phase_nested(phase_def, ("checker", "external_signal"), None), dict)
+
+
+def _current_branch(worktree_path: str) -> str:
+    """Return the current branch for a loop worktree."""
+    return _git_stdout(["branch", "--show-current"], worktree_path)
+
+
+def _repo_identity_hash(project_dir: str) -> str:
+    """Return the repository identity hash using the worktree manager algorithm."""
+    material = _git_stdout(["config", "--get", "remote.origin.url"], project_dir)
+    if not material:
+        material = _git_stdout(
+            ["rev-parse", "--path-format=absolute", "--git-common-dir"], project_dir
+        )
+    if not material:
+        material = str(Path(project_dir).resolve())
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:8]
+
+
+def _git_stdout(args: list[str], cwd: str) -> str:
+    """Run git and return stdout, or an empty string on failure."""
+    try:
+        completed = subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=GIT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return completed.stdout.strip() if completed.returncode == 0 else ""
 
 
 def _normalize_stop_reason(value: str) -> str:
@@ -1132,10 +1226,12 @@ def _coerce_pr_number(value: Any) -> int:
     """Return a positive PR number or reject invalid advance results before journaling."""
     if isinstance(value, bool):
         raise ValueError("pr_number must be a positive integer")
-    try:
-        number = int(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("pr_number must be a positive integer") from exc
+    if isinstance(value, int):
+        number = value
+    elif isinstance(value, str) and value.strip().isdigit():
+        number = int(value.strip())
+    else:
+        raise ValueError("pr_number must be a positive integer")
     if number < 1:
         raise ValueError("pr_number must be a positive integer")
     return number
