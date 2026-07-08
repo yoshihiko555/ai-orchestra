@@ -219,6 +219,76 @@ def test_loop_audit_events_are_emitted_when_trace_state_exists(tmp_path: Path) -
     assert loop_stop["data"]["stop_reason"] == "safety_stop"
 
 
+def test_loop_iteration_audit_preserves_advance_phase_result(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    lock = _write_running_state(repo)
+    pending_state = lc.load_state("abcd1234-issue-1", str(repo))
+    pending_state.pending_action = lc.PendingAction(
+        "act-advance", lc.Action.ADVANCE_PHASE.value, "implementation", 1, lc.now_iso()
+    )
+    pending_state.last_check_result = {"next_phase": "pr_review_response"}
+    pending_state.state_version = 1
+    lc._write_state(pending_state, str(repo))
+
+    result = lc.complete(
+        "abcd1234-issue-1",
+        str(repo),
+        "act-advance",
+        1,
+        {"pr_number": 123},
+        lock.lease_token,
+    )
+    captured: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        loop_step.lc,
+        "emit_loop_audit_event",
+        lambda event_type, _project, payload: captured.append((event_type, payload)),
+    )
+
+    assert result.next_hint == "call propose again"
+    loop_step._emit_loop_iteration(str(repo), pending_state, {"pr_number": 123})
+
+    assert captured[0][0] == "loop_iteration"
+    assert captured[0][1]["result"] == lc.Action.ADVANCE_PHASE.value
+
+
+def test_loop_stop_counts_successful_checker_attempts(tmp_path: Path, monkeypatch: Any) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    _write_running_state(repo)
+    check_result = {
+        "passed": True,
+        "signature": "sig-1",
+        "infrastructure_failure": False,
+        "results": [],
+    }
+    lc.append_journal_event(
+        "abcd1234-issue-1",
+        str(repo),
+        "completed",
+        "checker",
+        "act-check",
+        {"action": lc.Action.RUN_CHECKER.value, "result": {"check_result": check_result}},
+    )
+    state = lc.load_state("abcd1234-issue-1", str(repo))
+    state.status = "passed"
+    lc._write_state(state, str(repo))
+    captured: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        loop_step.lc,
+        "emit_loop_audit_event",
+        lambda event_type, _project, payload: captured.append((event_type, payload)),
+    )
+
+    loop_step._emit_loop_stop(str(repo), "abcd1234-issue-1", lc.Action.EXIT_SUCCESS.value, {})
+
+    assert captured[0][0] == "loop_stop"
+    assert captured[0][1]["iterations_total"] == 1
+
+
 def test_propose_checker_and_advance_phase_params_follow_definition(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _init_repo(repo)
@@ -647,6 +717,28 @@ def test_attach_propose_validation_failure_preserves_exit_2(
     assert payload["lease_token"] != lock.lease_token
 
 
+def test_attach_returns_rerunnable_pending_checker_after_reclaim(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    lock = _write_running_state(repo)
+    state = lc.load_state("abcd1234-issue-1", str(repo))
+    state.pending_action = lc.PendingAction(
+        "act-check", lc.Action.RUN_CHECKER.value, "implementation", 1, lc.now_iso()
+    )
+    state.state_version = 1
+    lc._write_state(state, str(repo))
+    stale_heartbeat = (datetime.now(UTC) - timedelta(seconds=7200)).isoformat()
+    _set_lock_heartbeat(repo, "abcd1234-issue-1", stale_heartbeat)
+
+    proc = _run_cli(["attach", "--loop-id", "abcd1234-issue-1", "--project", str(repo)])
+    payload = _payload(proc)
+
+    assert proc.returncode == 0, proc.stderr
+    assert payload["action"] == lc.Action.RUN_CHECKER.value
+    assert payload["action_id"] == "act-check"
+    assert payload["lease_token"] != lock.lease_token
+
+
 def test_resume_requires_reset_counters(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _init_repo(repo)
@@ -874,6 +966,40 @@ def test_external_signal_phase_proposes_wait_action(tmp_path: Path) -> None:
         "maker",
         "act-maker",
         {"action": lc.Action.RUN_MAKER.value, "result": {}},
+    )
+
+    payload = _propose(repo, "abcd1234-issue-1", lock.lease_token)
+
+    assert payload["action"] == lc.Action.WAIT_EXTERNAL_REVIEW.value
+    assert payload["params"]["pr_number"] == 123
+
+
+def test_external_signal_phase_waits_before_response_maker_after_advance(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    lock = _write_running_state(repo)
+    state = lc.load_state("abcd1234-issue-1", str(repo))
+    state.phase = "pr_review_response"
+    state.pr_number = 123
+    state.guards["pr_review_response"] = lc.GuardCounters()
+    state.last_completed_action = lc.LastCompletedAction(
+        action_id="act-advance",
+        state_version_before=1,
+        state_version_after=2,
+        result_digest="digest",
+        completed_at=lc.now_iso(),
+    )
+    state.state_version = 2
+    lc._write_state(state, str(repo))
+    lc.append_journal_event(
+        "abcd1234-issue-1",
+        str(repo),
+        "completed",
+        "loop_step",
+        "act-advance",
+        {"action": lc.Action.ADVANCE_PHASE.value, "result": {"pr_number": 123}},
     )
 
     payload = _propose(repo, "abcd1234-issue-1", lock.lease_token)

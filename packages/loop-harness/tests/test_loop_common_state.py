@@ -457,6 +457,34 @@ def test_proposal_context_does_not_let_params_override_reserved_keys() -> None:
     assert context.get("lease_token") is None
 
 
+def test_wait_external_review_params_include_config_defaults(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = lc._initial_state(
+        "loop", "issue-loop", "hash", "/tmp/wt", "loop/issue-1", "pr_review_response"
+    )
+    state.pr_number = 123
+    monkeypatch.setattr(
+        lc,
+        "_load_phase_definition",
+        lambda _state, _project: {"checker": {"external_signal": {"source": "github"}}},
+    )
+    monkeypatch.setattr(
+        lc,
+        "_load_loop_config",
+        lambda _project: {"pr_review": {"poll_interval_seconds": 77, "timeout_seconds": 88}},
+    )
+
+    params = lc._proposal_params(state, lc.Action.WAIT_EXTERNAL_REVIEW.value, str(tmp_path))
+
+    assert params == {
+        "source": "github",
+        "poll_interval_seconds": 77,
+        "timeout_seconds": 88,
+        "pr_number": 123,
+    }
+
+
 def test_advance_phase_persists_pr_number() -> None:
     state = lc._initial_state(
         "loop", "issue-loop", "hash", "/tmp/wt", "loop/issue-1", "implementation"
@@ -471,6 +499,31 @@ def test_advance_phase_persists_pr_number() -> None:
 
     assert state.phase == "pr_review_response"
     assert state.pr_number == 123
+
+
+def test_complete_stop_preserves_existing_stop_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir, lock = _setup_loop(tmp_path, monkeypatch, status="stopped")
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.stop_reason = "repo_identity_mismatch"
+    state.pending_action = lc.PendingAction(
+        "act-stop", lc.Action.STOP.value, "implementation", 1, lc.now_iso()
+    )
+    state.state_version = 1
+    lc._write_state(state, project_dir)
+
+    result = lc.complete(
+        "abcd1234-issue-1",
+        project_dir,
+        "act-stop",
+        1,
+        {},
+        lock.lease_token,
+    )
+
+    assert result.next_hint == "loop terminal"
+    assert lc.load_state("abcd1234-issue-1", project_dir).stop_reason == "repo_identity_mismatch"
 
 
 def test_invalid_pr_number_is_rejected_before_completed_journal(

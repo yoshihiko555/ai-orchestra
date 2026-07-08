@@ -606,7 +606,7 @@ def _emit_loop_iteration(project: str, pending_state: lc.LoopState, result: dict
     payload.update(
         {
             "guard_snapshot": _guard_snapshot(guard),
-            "result": _iteration_result(state),
+            "result": _iteration_result(state, pending.action),
         }
     )
     lc.emit_loop_audit_event("loop_iteration", project, payload)
@@ -624,7 +624,7 @@ def _emit_loop_stop(project: str, loop_id: str, action: str, params: dict[str, A
             "phase": state.phase,
             "final_status": final_status,
             "stop_reason": params.get("stop_reason") or state.stop_reason,
-            "iterations_total": sum(counter.iteration for counter in state.guards.values()),
+            "iterations_total": _iterations_total(project, loop_id, state),
             "pr_number": state.pr_number,
         },
     )
@@ -687,8 +687,10 @@ def _guard_snapshot(counter: lc.GuardCounters | None) -> dict[str, Any]:
     }
 
 
-def _iteration_result(state: lc.LoopState) -> str:
+def _iteration_result(state: lc.LoopState, action: str | None = None) -> str:
     """Map state after complete to loop_iteration.result."""
+    if action == lc.Action.ADVANCE_PHASE.value:
+        return lc.Action.ADVANCE_PHASE.value
     if state.status == "failed":
         return lc.Action.EXIT_FAILURE.value
     if state.status == "passed":
@@ -698,6 +700,32 @@ def _iteration_result(state: lc.LoopState) -> str:
     if isinstance(state.last_check_result, dict) and state.last_check_result.get("next_phase"):
         return lc.Action.ADVANCE_PHASE.value
     return "continue"
+
+
+def _iterations_total(project: str, loop_id: str, state: lc.LoopState) -> int:
+    """Count completed checker attempts, falling back to guard counters."""
+    guard_total = sum(counter.iteration for counter in state.guards.values())
+    checker_total = _completed_action_count(project, loop_id, lc.Action.RUN_CHECKER.value)
+    return max(guard_total, checker_total)
+
+
+def _completed_action_count(project: str, loop_id: str, action: str) -> int:
+    """Return completed journal event count for an action."""
+    path = lc.journal_path(loop_id, project)
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return 0
+    total = 0
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        if event.get("event") == "completed" and payload.get("action") == action:
+            total += 1
+    return total
 
 
 def _reconcile_resolution(action_taken: str) -> str:

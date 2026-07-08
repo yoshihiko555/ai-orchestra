@@ -397,8 +397,17 @@ def propose(
     foreign = check_foreign_host(loop_id, project_dir)
     if foreign is not None:
         return _foreign_host_stop_result(loop_id, project_dir, foreign)
-    reconcile(loop_id, project_dir, lease_token, allow_side_effect_resolution=recover_orphans)
+    reconcile_result = reconcile(
+        loop_id, project_dir, lease_token, allow_side_effect_resolution=recover_orphans
+    )
     state = load_state(loop_id, project_dir)
+    if (
+        recover_orphans
+        and reconcile_result.action_taken == "rerun_required"
+        and state.pending_action is not None
+        and state.pending_action.action == Action.RUN_CHECKER.value
+    ):
+        return _pending_proposal_result(state, state.pending_action, project_dir)
     if state.pending_action is not None:
         raise ProtocolViolationError("pending action must be completed before propose")
     action = _next_action(state, project_dir)
@@ -580,7 +589,7 @@ def apply_action_effect(
         return
     if action == Action.STOP.value:
         state.status = "stopped"
-        state.stop_reason = str(result.get("stop_reason") or "safety_stop")
+        state.stop_reason = str(result.get("stop_reason") or state.stop_reason or "safety_stop")
 
 
 def evaluate_guards(
@@ -1044,11 +1053,30 @@ def _next_action(state: LoopState, project_dir: str) -> str:
     if state.status == "running" and _pending_next_phase(state):
         return Action.ADVANCE_PHASE.value
     last_action = _last_completed_action_name(state.loop_id, project_dir, state)
+    if (
+        _phase_uses_external_signal(state, project_dir)
+        and last_action != Action.WAIT_EXTERNAL_REVIEW.value
+    ):
+        return Action.WAIT_EXTERNAL_REVIEW.value
     if last_action == Action.RUN_MAKER.value:
-        if _phase_uses_external_signal(state, project_dir):
-            return Action.WAIT_EXTERNAL_REVIEW.value
         return Action.RUN_CHECKER.value
     return Action.RUN_MAKER.value
+
+
+def _pending_proposal_result(
+    state: LoopState, pending: PendingAction, project_dir: str
+) -> ProposeResult:
+    """Return an existing rerunnable pending action without creating a new action."""
+    params = _proposal_params(state, pending.action, project_dir)
+    return ProposeResult(
+        action=pending.action,
+        action_id=pending.action_id,
+        state_version=state.state_version,
+        expected_phase=pending.phase,
+        phase=pending.phase,
+        iteration=pending.iteration,
+        context=_proposal_context(params),
+    )
 
 
 def _apply_preproposal_safety_stop_if_needed(state: LoopState, action: str) -> bool:
@@ -1105,6 +1133,15 @@ def _proposal_params(state: LoopState, action: str, project_dir: str) -> dict[st
     if action == Action.WAIT_EXTERNAL_REVIEW.value:
         external = _phase_nested(phase_def, ("checker", "external_signal"), {})
         params = copy.deepcopy(external) if isinstance(external, dict) else {}
+        config = _load_loop_config(project_dir)
+        params.setdefault(
+            "poll_interval_seconds",
+            _nested(config, ("pr_review", "poll_interval_seconds"), 120),
+        )
+        params.setdefault(
+            "timeout_seconds",
+            _nested(config, ("pr_review", "timeout_seconds"), 3600),
+        )
         params["pr_number"] = state.pr_number
         return params
     if action == Action.ADVANCE_PHASE.value:
@@ -1152,6 +1189,16 @@ def _phase_uses_external_signal(state: LoopState, project_dir: str) -> bool:
     """Return True when the current phase checker is an external wait."""
     phase_def = _load_phase_definition(state, project_dir)
     return isinstance(_phase_nested(phase_def, ("checker", "external_signal"), None), dict)
+
+
+def _load_loop_config(project_dir: str) -> dict[str, Any]:
+    """Load loop-harness config, including package defaults and project override."""
+    lib_dir = Path(__file__).resolve().parent
+    if str(lib_dir) not in sys.path:
+        sys.path.insert(0, str(lib_dir))
+    import loop_definition
+
+    return loop_definition.load_config(project_dir)
 
 
 def _current_branch(worktree_path: str) -> str:
