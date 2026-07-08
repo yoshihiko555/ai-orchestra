@@ -4,7 +4,7 @@
 **類型**: 主: CLI ツール型、副: hook 型（config-loading レイヤリングへの依存）
 **作成日**: 2026-07-06
 **最終レビュー日**: 未レビュー（draft、パッケージ実装前に作成）
-**情報源**: docs/design/meta-harness.md（基本設計）, docs/design/meta-harness-detailed.md（詳細設計 §1〜§9）, docs/requirements/meta-harness.md, docs/adr/ADR-20260706-031.md
+**情報源**: docs/design/meta-harness.md（基本設計）, docs/design/meta-harness-detailed.md（詳細設計 §1〜§14）, docs/requirements/meta-harness.md, docs/adr/ADR-20260706-031.md
 
 ## 1. 責務定義
 
@@ -72,13 +72,13 @@
 - [ ] EV-31（異常 / must）: overlay 拒否 — 絶対パス/`..`/symlink/禁止 prefix（packages/meta-harness 等）を含む overlay が `register` と `evaluate` の両方で拒否される — 根拠: 詳細設計 §1-7
 - [ ] EV-32（正常 / must）: メインルート解決 — feature worktree 内から実行しても store・評価用 worktree がメイン worktree ルート配下に解決される（`git rev-parse --git-common-dir` ベース） — 根拠: 詳細設計 §2-0
 - [ ] EV-33（異常 / must）: メインルートが導出できない環境（bare repo 等）で `storage.root` 未指定の場合、exit 2 で fail-closed する — 根拠: 詳細設計 §2-0
-- [ ] EV-34（異常 / must）: proposer の proposal が overlay 安全制約違反（allowlist 外パス・サイズ超過・holdout run 参照）の場合、候補登録されず exit 2、`rejected/` に診断保存される — 根拠: 詳細設計 §11-5
-- [ ] EV-35（正常 / must）: proposer は `--bare` + 読み取り専用ツールのみで起動され、filtered view に holdout 成果物が含まれない — 根拠: 詳細設計 §11-2, §11-3
+- [ ] EV-34（異常 / must）: proposer の proposal が overlay 安全制約違反（allowlist 外パス・サイズ超過・holdout run 参照）の場合、候補登録されず exit 2、`rejected/` に診断保存される。`based_on_runs` membership 照合・rejected 保存・exit 2 は propose CLI（M4）で実装する — 根拠: 詳細設計 §11-5
+- [ ] EV-35（正常 / must）: proposer は srt 隔離 backend で fail-closed 起動され、version pin・最小 env allowlist・空 `AGENTS.md` により backend/環境/自動注入経路が固定される — 根拠: 詳細設計 §11-3-2〜§11-3-5
 - [ ] EV-36（正常 / must）: `loop` が 4 停止条件（budget_exhausted / max_iterations / divergence / converged）のそれぞれで `loop_stopped` を記録して停止する — 根拠: 詳細設計 §13-2
 - [ ] EV-37（境界 / must）: `loop` が中断（SIGINT/エラー）されても `loop_stopped(interrupted/error)` が記録され、`--resume` で ledger から再開できる — 根拠: 詳細設計 §13-3
 - [ ] EV-38（異常 / must）: `promote` の前提条件（frontier 外・hash 陳腐化・鮮度チェック失敗）のいずれかで exit 2 になり、PR は作られない — 根拠: 詳細設計 §12-1
 - [ ] EV-39（正常 / must）: `promote` は auto-merge を付けず、`promoted` への状態遷移は `--confirm` 経由でのみ発生する — 根拠: 詳細設計 §12-2
-- [ ] EV-40（異常 / must）: proposer は cwd=filtered view で起動され、view 外（実 store・holdout・実 repo）への Read/Glob が到達不能である — 根拠: 詳細設計 §11-3, §8 項目 9
+- [ ] EV-40（異常 / must）: srt settings の allowRead が forbidden asset（実 store・holdout・facet ソース・実 `~/.codex` 等）と交差せず、view 外 read / `../` traversal / symlink escape / 非許可 network / env leak が到達不能である — 根拠: 詳細設計 §11-3-2〜§11-3-5
 - [ ] EV-41（境界 / must）: loop 中断で `loop_iteration` 未記録の孤児候補が残った場合、`--resume` がその反復の完了から再開する — 根拠: 詳細設計 §13-1
 - [ ] EV-42（異常 / must）: 未解放の `promotion_reserved` がある候補への二重 promote が exit 3 で拒否される — 根拠: 詳細設計 §12-2
 - [ ] EV-43（異常 / must）: `--confirm` は PR が MERGED かつ main 到達済みの場合のみ `promoted` に遷移させ、closed-unmerged は `promotion_released(pr_closed_unmerged)` になる — 根拠: 詳細設計 §12-2

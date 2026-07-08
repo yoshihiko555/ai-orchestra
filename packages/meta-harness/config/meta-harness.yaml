@@ -46,6 +46,7 @@ config_patch:
     # agent-routing/cli-tools.yaml の agents.*.tool / codex.model /
     # antigravity.model を追加予定
 proposer:
+  tool: codex # codex | claude-bare（Sec11-3-5）。利用不能時は fail-closed（暗黙フォールバック禁止）
   max_iterations: 10
   divergence_rounds: 3
   overfit_drop_pt: 15
@@ -55,6 +56,10 @@ proposer:
   max_overlay_bytes: 200000
   model: null # null = セッション既定モデル
   effort: high
+  isolation:
+    backend: srt # srt のみ（Phase 2 時点）。利用不能時は fail-closed（Sec11-3-2）
+    srt_version_pin: null # null = pin なし。設定時は srt --version と厳密一致
+    allow_read_extra: [] # CLI 起動に必要な追加 allowRead。store/holdout/facets 等は静的検査で拒否
 loop:
   budget_usd: null # 実測後に既定を設定。§14 参照
   quality_epsilon_pt: 0.5 # best_quality の改善判定閾値（§13-2）

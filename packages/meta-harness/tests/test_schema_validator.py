@@ -1,6 +1,6 @@
 """手書き JSON Schema 検証器のテスト（Sec7「schema 検証」, EV-24）。
 
-Phase 1a スコープの 8 スキーマ（`proposal.schema.json` は Phase 2 のため対象外）のうち、
+Phase 1a スコープの 8 スキーマ（`proposal.schema.json` は Phase 2 の専用テストで検証）のうち、
 代表として `candidate.manifest.schema.json` / `ledger.event.schema.json`
 （`$defs` + `oneOf` 経由） / `overlay.schema.json` / `result.schema.json`
 （他ファイル参照 `$ref` 経由） / `frontier.schema.json` / `scenario.schema.json` /
@@ -318,6 +318,15 @@ class TestRunMetadataSchema:
         instance = {k: v for k, v in self._VALID.items() if k != "claude_version"}
         errors = mh.validate_against_schema(instance, schema, SCHEMA_DIR)
         assert any("claude_version" in e for e in errors)
+
+    def test_isolation_subfields_are_required_when_isolation_is_present(self) -> None:
+        schema = _load("run.metadata.schema.json")
+        instance = {**self._VALID, "isolation": {}}
+
+        errors = mh.validate_against_schema(instance, schema, SCHEMA_DIR)
+
+        assert any("backend" in e for e in errors)
+        assert any("platform_profile_input_sha256" in e for e in errors)
 
 
 class TestConfigPatchSchema:

@@ -79,6 +79,7 @@ DEFAULTS: dict[str, Any] = {
     },
     "config_patch": {"allowlist": []},
     "proposer": {
+        "tool": "codex",
         "max_iterations": 10,
         "divergence_rounds": 3,
         "overfit_drop_pt": 15,
@@ -88,6 +89,11 @@ DEFAULTS: dict[str, Any] = {
         "max_overlay_bytes": 200000,
         "model": None,
         "effort": "high",
+        "isolation": {
+            "backend": "srt",
+            "srt_version_pin": None,
+            "allow_read_extra": [],
+        },
     },
     "loop": {
         "budget_usd": None,
