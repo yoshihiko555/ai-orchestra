@@ -7,6 +7,7 @@ import os
 import socket
 import subprocess
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -104,6 +105,17 @@ def _complete(
     )
     assert proc.returncode == 0, proc.stderr
     return _payload(proc)
+
+
+def _set_lock_heartbeat(repo: Path, loop_id: str, value: str) -> None:
+    path = lc.lock_path(loop_id, str(repo))
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["heartbeat_at"] = value
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+
+def _old_live_heartbeat() -> str:
+    return (datetime.now(UTC) - timedelta(seconds=60)).isoformat()
 
 
 def _write_running_state(repo: Path, loop_id: str = "abcd1234-issue-1") -> lc.LockInfo:
@@ -276,6 +288,28 @@ def test_complete_checker_persists_check_result_artifact(tmp_path: Path) -> None
     assert json.loads(artifact) == check_result
 
 
+def test_complete_checker_persists_raw_check_result_artifact(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    started = _start(repo)
+    _complete(repo, started["loop_id"], started, started["lease_token"])
+    checker = _propose(repo, started["loop_id"], started["lease_token"])
+    check_result = {
+        "passed": False,
+        "signature": "sig-raw",
+        "infrastructure_failure": False,
+        "results": [],
+    }
+
+    _complete(repo, started["loop_id"], checker, started["lease_token"], check_result)
+
+    artifact = lc.load_artifact(
+        started["loop_id"], str(repo), checker["action_id"], "check_result.json"
+    )
+    assert artifact is not None
+    assert json.loads(artifact) == check_result
+
+
 def test_start_existing_state_returns_already_exists(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _init_repo(repo)
@@ -376,6 +410,57 @@ def test_complete_wrong_live_same_host_lease_returns_exit_2(tmp_path: Path) -> N
 
     assert proc.returncode == 2
     assert payload["error"]["code"] == "lease_mismatch"
+
+
+def test_propose_refreshes_active_lease(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    started = _start(repo)
+    _complete(repo, started["loop_id"], started, started["lease_token"])
+    old_heartbeat = _old_live_heartbeat()
+    _set_lock_heartbeat(repo, started["loop_id"], old_heartbeat)
+
+    _propose(repo, started["loop_id"], started["lease_token"])
+
+    lock = json.loads(lc.lock_path(started["loop_id"], str(repo)).read_text(encoding="utf-8"))
+    assert lock["heartbeat_at"] != old_heartbeat
+
+
+def test_complete_refreshes_active_lease(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    started = _start(repo)
+    old_heartbeat = _old_live_heartbeat()
+    _set_lock_heartbeat(repo, started["loop_id"], old_heartbeat)
+
+    _complete(repo, started["loop_id"], started, started["lease_token"])
+
+    lock = json.loads(lc.lock_path(started["loop_id"], str(repo)).read_text(encoding="utf-8"))
+    assert lock["heartbeat_at"] != old_heartbeat
+
+
+def test_reconcile_refreshes_active_lease(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    started = _start(repo)
+    old_heartbeat = _old_live_heartbeat()
+    _set_lock_heartbeat(repo, started["loop_id"], old_heartbeat)
+
+    proc = _run_cli(
+        [
+            "reconcile",
+            "--loop-id",
+            started["loop_id"],
+            "--lease-token",
+            started["lease_token"],
+            "--project",
+            str(repo),
+        ]
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    lock = json.loads(lc.lock_path(started["loop_id"], str(repo)).read_text(encoding="utf-8"))
+    assert lock["heartbeat_at"] != old_heartbeat
 
 
 def test_complete_stale_action_returns_exit_2(tmp_path: Path) -> None:
@@ -504,6 +589,34 @@ def test_attach_rejects_live_lease_with_exit_3(tmp_path: Path) -> None:
 
     assert proc.returncode == 3
     assert payload["error"]["code"] == "lock_unavailable"
+
+
+def test_attach_propose_failure_returns_reclaimed_lease_token(
+    tmp_path: Path, monkeypatch: Any, capsys: Any
+) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    lock = _write_running_state(repo)
+    stale_heartbeat = (datetime.now(UTC) - timedelta(seconds=7200)).isoformat()
+    _set_lock_heartbeat(repo, "abcd1234-issue-1", stale_heartbeat)
+
+    def fail_propose(
+        _loop_id: str,
+        _project: str,
+        _lease_token: str,
+        recover_orphans: bool = False,
+    ) -> Any:
+        raise loop_step.ld.DefinitionValidationError("definition drift")
+
+    monkeypatch.setattr(loop_step.lc, "propose", fail_propose)
+
+    exit_code = loop_step.main(["attach", "--loop-id", "abcd1234-issue-1", "--project", str(repo)])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert exit_code == 1
+    assert payload["error"]["code"] == "definition_invalid"
+    assert payload["lease_token"] != lock.lease_token
 
 
 def test_resume_requires_reset_counters(tmp_path: Path) -> None:
@@ -668,6 +781,21 @@ def test_exit_failure_params_include_stop_reason_and_draft_exec(tmp_path: Path) 
     }
 
 
+def test_complete_terminal_action_returns_terminal_next_hint(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    lock = _write_running_state(repo)
+    state = lc.load_state("abcd1234-issue-1", str(repo))
+    state.status = "passed"
+    lc._write_state(state, str(repo))
+    proposal = _propose(repo, "abcd1234-issue-1", lock.lease_token)
+
+    payload = _complete(repo, "abcd1234-issue-1", proposal, lock.lease_token)
+
+    assert proposal["action"] == lc.Action.EXIT_SUCCESS.value
+    assert payload["next"] == "loop terminal"
+
+
 def test_foreign_live_lease_safety_stop_is_surfaced_by_propose(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _init_repo(repo)
@@ -819,6 +947,11 @@ def test_start_rolls_back_created_worktree_when_core_start_fails(
     monkeypatch.setattr(
         loop_step.wm, "worktree_path_for", lambda _project, _issue: str(worktree_path)
     )
+    fake_lock = loop_step.lc.LockInfo(
+        "owner", 1, "local", loop_step.lc.now_iso(), loop_step.lc.now_iso(), 3600, "lease"
+    )
+    monkeypatch.setattr(loop_step.lc, "acquire_lock", lambda *_args, **_kwargs: fake_lock)
+    monkeypatch.setattr(loop_step.lc, "release_lock", lambda *_args, **_kwargs: True)
 
     def create_worktree(_project: str, _issue: int) -> Any:
         worktree_path.mkdir()
@@ -846,6 +979,34 @@ def test_start_rolls_back_created_worktree_when_core_start_fails(
     assert removed == [(str(repo.resolve()), 7, True)]
 
 
+def test_start_does_not_create_worktree_when_lease_is_unavailable(
+    tmp_path: Path, monkeypatch: Any, capsys: Any
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    created: list[int] = []
+
+    monkeypatch.setattr(loop_step.wm, "compute_loop_id", lambda _project, _issue: "loop-7")
+    monkeypatch.setattr(loop_step.lc, "state_path", lambda _loop_id, _project: tmp_path / "state")
+    monkeypatch.setattr(
+        loop_step.wm, "worktree_path_for", lambda _project, _issue: str(tmp_path / "loop-issue-7")
+    )
+    monkeypatch.setattr(loop_step.lc, "acquire_lock", lambda *_args, **_kwargs: None)
+
+    def create_worktree(_project: str, issue: int) -> Any:
+        created.append(issue)
+        raise AssertionError("worktree creation should not run without a lease")
+
+    monkeypatch.setattr(loop_step.wm, "create_worktree", create_worktree)
+
+    exit_code = loop_step.main(["start", "--issue", "7", "--project", str(repo)])
+
+    captured = capsys.readouterr()
+    assert exit_code == 3
+    assert json.loads(captured.out)["error"]["code"] == "lock_unavailable"
+    assert created == []
+
+
 def test_start_does_not_rollback_when_state_race_loses(
     tmp_path: Path, monkeypatch: Any, capsys: Any
 ) -> None:
@@ -859,6 +1020,11 @@ def test_start_does_not_rollback_when_state_race_loses(
     monkeypatch.setattr(
         loop_step.wm, "worktree_path_for", lambda _project, _issue: str(worktree_path)
     )
+    fake_lock = loop_step.lc.LockInfo(
+        "owner", 1, "local", loop_step.lc.now_iso(), loop_step.lc.now_iso(), 3600, "lease"
+    )
+    monkeypatch.setattr(loop_step.lc, "acquire_lock", lambda *_args, **_kwargs: fake_lock)
+    monkeypatch.setattr(loop_step.lc, "release_lock", lambda *_args, **_kwargs: True)
 
     def create_worktree(_project: str, _issue: int) -> Any:
         worktree_path.mkdir()

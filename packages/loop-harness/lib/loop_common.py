@@ -370,13 +370,18 @@ def start(
     ttl_seconds: int,
     phase: str = "implementation",
     host: str | None = None,
+    preacquired_lock: LockInfo | None = None,
 ) -> ProposeResult:
     """Create initial state, acquire a lease, and return the first proposal."""
     if state_path(loop_id, project_dir).exists():
         raise InvalidStateError(f"state already exists: {loop_id}; use attach or resume")
-    lock = acquire_lock(loop_id, project_dir, owner_id, ttl_seconds, host)
-    if lock is None:
-        raise ForeignLeaseError(None)
+    if preacquired_lock is None:
+        lock = acquire_lock(loop_id, project_dir, owner_id, ttl_seconds, host)
+        if lock is None:
+            raise ForeignLeaseError(None)
+    else:
+        lock = preacquired_lock
+        _ensure_valid_lease(loop_id, project_dir, lock.lease_token)
     state = _initial_state(loop_id, definition_id, repo_identity_hash, worktree_path, branch, phase)
     append_journal_event(loop_id, project_dir, "loop_created", "step", None, asdict(state))
     _write_state(state, project_dir)
@@ -436,14 +441,19 @@ def complete(
     _ensure_valid_lease(loop_id, project_dir, lease_token)
     state = load_state(loop_id, project_dir)
     if state.last_completed_action and state.last_completed_action.action_id == action_id:
+        action = _last_completed_action_name(loop_id, project_dir, state)
         return CompleteResult(
-            True, True, state.last_completed_action.state_version_after, "call propose again"
+            True,
+            True,
+            state.last_completed_action.state_version_after,
+            _complete_next_hint(action),
         )
     if _is_stale_complete(state, action_id, state_version):
         raise StaleActionError(f"stale action: {action_id}")
 
     assert state.pending_action is not None
     action = state.pending_action.action
+    result = _normalize_complete_result(action, result)
     new_version = state.state_version + 1
     payload = _completed_payload(action, result)
     append_journal_event(loop_id, project_dir, "completed", _actor_for(action), action_id, payload)
@@ -459,7 +469,7 @@ def complete(
     state.state_version = new_version
     state.updated_at = now_iso()
     _write_state(state, project_dir)
-    return CompleteResult(True, False, new_version, "call propose again")
+    return CompleteResult(True, False, new_version, _complete_next_hint(action))
 
 
 def reconcile(
@@ -946,10 +956,30 @@ def _is_stale_complete(state: LoopState, action_id: str, state_version: int) -> 
 def _completed_payload(action: str, result: dict[str, Any]) -> dict[str, Any]:
     """Build completed journal payload."""
     payload = {"action": action, "result": result}
-    check_result = _extract_check_result_dict(result)
+    check_result = _extract_check_result_payload(result)
     if check_result is not None:
         payload["check_result"] = check_result
     return payload
+
+
+def _normalize_complete_result(action: str, result: dict[str, Any]) -> dict[str, Any]:
+    """Validate and normalize action result before writing durable journal records."""
+    if action != Action.ADVANCE_PHASE.value or result.get("pr_number") is None:
+        return result
+    normalized = dict(result)
+    normalized["pr_number"] = _coerce_pr_number(result["pr_number"])
+    return normalized
+
+
+def _complete_next_hint(action: str) -> str:
+    """Return the next hint after completing an action."""
+    if action in {
+        Action.EXIT_SUCCESS.value,
+        Action.EXIT_FAILURE.value,
+        Action.STOP.value,
+    }:
+        return "loop terminal"
+    return "call propose again"
 
 
 def _actor_for(action: str) -> str:
@@ -1098,10 +1128,23 @@ def _pending_next_phase(state: LoopState) -> str | None:
     return str(value) if value else None
 
 
+def _coerce_pr_number(value: Any) -> int:
+    """Return a positive PR number or reject invalid advance results before journaling."""
+    if isinstance(value, bool):
+        raise ValueError("pr_number must be a positive integer")
+    try:
+        number = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("pr_number must be a positive integer") from exc
+    if number < 1:
+        raise ValueError("pr_number must be a positive integer")
+    return number
+
+
 def _apply_advance_phase(state: LoopState, result: dict[str, Any]) -> None:
     """Apply a previously proposed phase advance."""
     if result.get("pr_number") is not None:
-        state.pr_number = int(result["pr_number"])
+        state.pr_number = _coerce_pr_number(result["pr_number"])
     next_phase = _pending_next_phase(state) or result.get("next_phase")
     if not next_phase:
         state.status = "running"
@@ -1150,6 +1193,24 @@ def _extract_check_result_dict(result: dict[str, Any]) -> dict[str, Any] | None:
     """Return check_result from a result wrapper if present."""
     check_result = result.get("check_result")
     return check_result if isinstance(check_result, dict) else None
+
+
+def _extract_check_result_payload(result: dict[str, Any]) -> dict[str, Any] | None:
+    """Return wrapper or raw PhaseCheckResult payload from a completion result."""
+    check_result = _extract_check_result_dict(result)
+    if check_result is not None:
+        return check_result
+    return result if _is_phase_check_result_dict(result) else None
+
+
+def _is_phase_check_result_dict(result: dict[str, Any]) -> bool:
+    """Return True for the raw PhaseCheckResult shape."""
+    return (
+        isinstance(result.get("passed"), bool)
+        and isinstance(result.get("signature"), str)
+        and isinstance(result.get("infrastructure_failure"), bool)
+        and isinstance(result.get("results"), list)
+    )
 
 
 def _require_journal_consistency(

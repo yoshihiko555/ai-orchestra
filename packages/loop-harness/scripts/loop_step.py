@@ -121,8 +121,12 @@ def cmd_start(args: argparse.Namespace) -> dict[str, Any]:
         raise CliFailure("already_exists", f"loop already exists: {loop_id}", EXIT_GENERAL_ERROR)
     worktree_path = Path(wm.worktree_path_for(project, args.issue))
     worktree_existed = worktree_path.exists()
-    worktree = wm.create_worktree(project, args.issue)
+    lock = lc.acquire_lock(loop_id, project, _owner_id(), _lp1_ttl(project))
+    if lock is None:
+        raise lc.ForeignLeaseError(None)
+    worktree: wm.WorktreeInfo | None = None
     try:
+        worktree = wm.create_worktree(project, args.issue)
         result = lc.start(
             loop_id=loop_id,
             project_dir=project,
@@ -133,16 +137,21 @@ def cmd_start(args: argparse.Namespace) -> dict[str, Any]:
             owner_id=_owner_id(),
             ttl_seconds=_lp1_ttl(project),
             phase=definition.phases[0].name,
+            preacquired_lock=lock,
         )
     except lc.InvalidStateError as exc:
         if "state already exists" not in str(exc):
             _rollback_created_worktree(project, args.issue, worktree_path, worktree_existed)
+        lc.release_lock(loop_id, project, lock.lease_token)
         raise
     except lc.ForeignLeaseError:
+        lc.release_lock(loop_id, project, lock.lease_token)
         raise
     except Exception:
         _rollback_created_worktree(project, args.issue, worktree_path, worktree_existed)
+        lc.release_lock(loop_id, project, lock.lease_token)
         raise
+    assert worktree is not None
     _emit_loop_start(project, args.issue, worktree)
     return _proposal_response(
         loop_id, result, "loop initialized; first action proposed", project=project
@@ -152,7 +161,7 @@ def cmd_start(args: argparse.Namespace) -> dict[str, Any]:
 def cmd_attach(args: argparse.Namespace) -> dict[str, Any]:
     """Handle attach."""
     project = _project_dir(args.project)
-    result = lc.attach(args.loop_id, project, _owner_id(), _lp1_ttl(project))
+    result = _attach_with_token(args.loop_id, project)
     return _proposal_response(args.loop_id, result, "attached after stale lease", project=project)
 
 
@@ -160,6 +169,8 @@ def cmd_propose(args: argparse.Namespace) -> dict[str, Any]:
     """Handle propose."""
     project = _project_dir(args.project)
     lease_token = _required_lease_token(args)
+    if lc.check_foreign_host(args.loop_id, project) is None:
+        _refresh_lease_or_raise(args.loop_id, project, lease_token)
     result = lc.propose(args.loop_id, project, lease_token)
     return _proposal_response(args.loop_id, result, "next action proposed", project=project)
 
@@ -169,11 +180,9 @@ def cmd_complete(args: argparse.Namespace) -> dict[str, Any]:
     project = _project_dir(args.project)
     lease_token = _required_lease_token(args)
     loaded_result = _load_result(args.result)
+    _refresh_lease_or_raise(args.loop_id, project, lease_token)
     pending_state = lc.load_state(args.loop_id, project)
-    if lc.validate_lease(args.loop_id, project, lease_token):
-        _save_checker_artifact(
-            args.loop_id, project, args.action_id, args.state_version, loaded_result
-        )
+    _save_checker_artifact(args.loop_id, project, args.action_id, args.state_version, loaded_result)
     result = lc.complete(
         args.loop_id,
         project,
@@ -197,6 +206,7 @@ def cmd_reconcile(args: argparse.Namespace) -> dict[str, Any]:
     """Handle reconcile."""
     project = _project_dir(args.project)
     lease_token = _required_lease_token(args)
+    _refresh_lease_or_raise(args.loop_id, project, lease_token)
     pending_action_id = _pending_action_id(args.loop_id, project)
     result = lc.reconcile(args.loop_id, project, lease_token)
     reconciled = result.action_taken in {
@@ -394,6 +404,40 @@ def _required_lease_token(args: argparse.Namespace) -> str:
     return str(token)
 
 
+def _refresh_lease_or_raise(loop_id: str, project: str, lease_token: str) -> None:
+    """Refresh the active LP-1 lease at the start of a mutating step call."""
+    if not lc.heartbeat(loop_id, project, lease_token):
+        raise CliFailure(
+            "lease_mismatch", "invalid or expired lease token", EXIT_VALIDATION_REJECTED
+        )
+
+
+def _attach_with_token(loop_id: str, project: str) -> lc.ProposeResult:
+    """Attach and preserve the reclaimed lease token even when proposal creation fails."""
+    state = lc.load_state(loop_id, project)
+    if state.status not in {"running", "waiting_external"}:
+        raise lc.InvalidStateError(f"cannot attach status={state.status}")
+    lock = lc.reacquire_lease(loop_id, project, _owner_id(), _lp1_ttl(project))
+    try:
+        result = lc.propose(loop_id, project, lock.lease_token, recover_orphans=True)
+    except Exception as exc:
+        raise CliFailure(
+            _error_code_for(exc),
+            _message(exc, "failed to propose after attach"),
+            EXIT_GENERAL_ERROR,
+            {"lease_token": lock.lease_token},
+        ) from exc
+    return lc.ProposeResult(
+        action=result.action,
+        action_id=result.action_id,
+        state_version=result.state_version,
+        expected_phase=result.expected_phase,
+        phase=result.phase,
+        iteration=result.iteration,
+        context={**result.context, "lease_token": lock.lease_token},
+    )
+
+
 def _load_result(value: str) -> dict[str, Any]:
     """Load a complete result from JSON text or @file."""
     raw = _read_result_text(value)
@@ -472,13 +516,13 @@ def _save_checker_artifact(
     """Persist checker output before state/journal completion for artifact recovery."""
     state = lc.load_state(loop_id, project)
     pending = state.pending_action
-    check_result = result.get("check_result")
+    check_result = _checker_artifact_payload(result)
     if (
         pending is None
         or pending.action != lc.Action.RUN_CHECKER.value
         or pending.action_id != action_id
         or state.state_version != state_version
-        or not isinstance(check_result, dict)
+        or check_result is None
     ):
         return
     lc.save_artifact(
@@ -487,6 +531,26 @@ def _save_checker_artifact(
         action_id,
         "check_result.json",
         json.dumps(check_result, ensure_ascii=False, separators=(",", ":")),
+    )
+
+
+def _checker_artifact_payload(result: dict[str, Any]) -> dict[str, Any] | None:
+    """Return wrapper or raw PhaseCheckResult payload for checker artifact recovery."""
+    check_result = result.get("check_result")
+    if isinstance(check_result, dict):
+        return check_result
+    if _looks_like_phase_check_result(result):
+        return result
+    return None
+
+
+def _looks_like_phase_check_result(result: dict[str, Any]) -> bool:
+    """Return True for the raw PhaseCheckResult shape accepted by loop_common."""
+    return (
+        isinstance(result.get("passed"), bool)
+        and isinstance(result.get("signature"), str)
+        and isinstance(result.get("infrastructure_failure"), bool)
+        and isinstance(result.get("results"), list)
     )
 
 

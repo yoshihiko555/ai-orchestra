@@ -96,6 +96,35 @@ def test_status_transitions_and_resume(tmp_path: Path, monkeypatch: pytest.Monke
     assert resumed.lease_token != lock.lease_token
 
 
+def test_complete_accepts_raw_passed_checker_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir, lock = _setup_loop(tmp_path, monkeypatch)
+    maker = lc.propose("abcd1234-issue-1", project_dir, lock.lease_token)
+    lc.complete(
+        "abcd1234-issue-1",
+        project_dir,
+        maker.action_id,
+        maker.state_version,
+        {},
+        lock.lease_token,
+    )
+    checker = lc.propose("abcd1234-issue-1", project_dir, lock.lease_token)
+
+    lc.complete(
+        "abcd1234-issue-1",
+        project_dir,
+        checker.action_id,
+        checker.state_version,
+        _check_result(True),
+        lock.lease_token,
+    )
+
+    event = lc.find_journal_event("abcd1234-issue-1", project_dir, checker.action_id, "completed")
+    assert lc.load_state("abcd1234-issue-1", project_dir).status == "passed"
+    assert event["payload"]["check_result"]["passed"] is True
+
+
 def test_state_version_increments_and_heartbeat_does_not(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -442,6 +471,34 @@ def test_advance_phase_persists_pr_number() -> None:
 
     assert state.phase == "pr_review_response"
     assert state.pr_number == 123
+
+
+def test_invalid_pr_number_is_rejected_before_completed_journal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir, lock = _setup_loop(tmp_path, monkeypatch, status="running")
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.pending_action = lc.PendingAction(
+        "act-advance", lc.Action.ADVANCE_PHASE.value, "implementation", 1, lc.now_iso()
+    )
+    state.last_check_result = {"next_phase": "pr_review_response"}
+    state.state_version = 1
+    lc._write_state(state, project_dir)
+
+    with pytest.raises(ValueError, match="pr_number"):
+        lc.complete(
+            "abcd1234-issue-1",
+            project_dir,
+            "act-advance",
+            1,
+            {"pr_number": "https://github.com/example/repo/pull/123"},
+            lock.lease_token,
+        )
+
+    assert (
+        lc.find_journal_event("abcd1234-issue-1", project_dir, "act-advance", "completed") is None
+    )
+    assert lc.load_state("abcd1234-issue-1", project_dir).pending_action is not None
 
 
 def test_artifact_is_redacted_and_owner_only(
