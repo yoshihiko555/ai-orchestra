@@ -1771,6 +1771,10 @@ cd <view-dir> && srt --settings <isolation-settings.json> \
 このため、proposer の隔離は本節記載の方式のままでは **holdout・実 store・facet ソース本体への
 到達を防げない**。Phase 1（人間が候補を register する運用のみ）はこのギャップの影響を受けないが、
 Phase 2 は以下の再設計方針（§11-3-1〜§11-3-4）の実機検証 PASS を着手条件とする。
+**→ 2026-07-08 に srt 実機スパイクを実施し、srt 境界の成立を確認済み。あわせて proposer
+backend を judge と同様の pluggable 方式（codex 既定）に変更した。実測結果・改訂後の起動
+コマンドは §11-3-5 を正とする（本節冒頭の `claude -p --bare` コマンドは claude-bare backend
+選択時の形として残る）。**
 
 #### 11-3-1. 脅威モデルの明確化（2026-07-08 再設計）
 
@@ -1858,6 +1862,84 @@ anthropic-experimental/sandbox-runtime、Apache-2.0）でラップする**こと
 (3) 起動前 self-test は「プロセスが起動した」の確認ではなく、**到達不能テストの縮小版（view 外
 read 1 件 + 非許可ドメイン接続 1 件が実際に拒否されること）を毎回のカナリアとして実行する**
 （sandbox が未対応環境で静かに no-op 化するケースを起動成功判定では検出できないため）。
+
+#### 11-3-5. srt 実機スパイク結果と proposer backend の codex 既定化（2026-07-08）
+
+**スパイク環境**: srt（`@anthropic-ai/sandbox-runtime`）0.0.64 / codex-cli 0.142.5 /
+claude 2.1.203 / macOS（seatbelt）。
+
+**srt 境界の実測（§11-3-4 ベクター対応）**:
+
+| 検証項目                                    | 結果                                                                                                                                    |
+| ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| view 外絶対パス read（repo・$HOME dotfile） | EPERM で遮断（ベクター1 PASS）                                                                                                          |
+| `../` トラバーサル                          | 遮断（ベクター2 PASS）                                                                                                                  |
+| view 内 symlink → view 外                   | 遮断。seatbelt は実体パスで判定（ベクター3 PASS）                                                                                       |
+| 非許可ドメイン・直 IP 接続                  | 遮断（curl exit 56）。許可ドメインのみ通過（ベクター6 PASS）                                                                            |
+| 環境変数                                    | **全継承**（カナリア素通し）。srt は env 境界を提供しない                                                                               |
+| ネスト sandbox（Claude Code Bash 内）       | mux 用 unix socket の `listen EPERM` で**起動自体が明示失敗**（静かな no-op 化ではない）                                                |
+| settings スキーマ                           | `network.deniedDomains`・`filesystem.denyWrite` 含む全キー必須。欠落時は既定 config へのフォールバックを拒否して起動失敗（fail-closed） |
+
+ベクター5（env リーク）は **srt では守られない**ことが確定したため、§11-3-3 の 5.
+（`env -i` 相当 + 明示 allowlist）は propose CLI の必須実装要件に格上げする。
+
+**backend 変更**: `claude -p --bare` は allowRead=[view] のみで CLI 起動と JSON 出力まで
+成功するが、認証は `ANTHROPIC_API_KEY`/`apiKeyHelper` 必須であり、本開発環境は API key を
+提供しない方針。judge（§3-3）と同じ理由で proposer も **pluggable backend 化し
+`proposer.tool: codex | claude-bare`（既定 `codex`）** とする。codex は ChatGPT OAuth で
+API key 不要、`.claude/` を読まないため候補ハーネスからの注入経路も構造的に狭い。
+backend 利用不能時は fail-closed（暗黙降格禁止、judge と同規則）。
+
+**codex backend の起動構成（実測で確立・E2E 確認済み）**:
+
+```bash
+cd <view-dir> && CODEX_HOME=<ephemeral-home> srt --settings <isolation-settings.json> \
+  codex exec --skip-git-repo-check --sandbox danger-full-access \
+  --output-schema <proposal.schema.json> -o <output.json> "<§11-4 プロンプト>" < /dev/null
+```
+
+- **CODEX_HOME=ephemeral 方式**: propose CLI が実行毎に一時ディレクトリ（`$TMPDIR` 配下、
+  0700）を生成し、`auth.json` のコピー（0600）と最小 `config.toml` のみを置く。
+  実 `~/.codex` への allowRead を**ゼロ**にでき、`history.jsonl`/`sessions/`
+  （リポジトリ情報を含む間接リーク経路）を構造的に遮断する。proposer 自身のセッション
+  書込も ephemeral 側に落ち、終了後に監査・破棄できる。srt の read には
+  deny-within-allow が存在しない（allowRead が denyRead に優先）ため、実 `~/.codex` を
+  丸ごと許可する構成では sessions を除外できない — ephemeral 方式はこの制約の回避策でも
+  ある。**auth.json コピーのライフサイクル**: `trap`（EXIT/INT/TERM）による確実な削除 +
+  kill -9 等で残存した孤児ディレクトリの起動時掃除を実装する（High リスク対応）。
+- **`--sandbox danger-full-access` が必須**: codex 自身の seatbelt は srt 内で
+  `sandbox_apply: Operation not permitted` となり shell 実行が全滅する（ネスト sandbox）。
+  境界は srt に一元化する。danger-full-access でも view 外 read・非許可ドメイン接続が
+  srt に遮断されることを実測確認済み。ただしこれは **srt が単一境界になる**ことを意味する
+  ため、§11-3-4 の srt ガード（プロファイルハッシュ記録・カナリア self-test）を必須とし、
+  view 内に実行可能ファイルを置かないことを view 構築の検証項目に追加する。
+- **srt settings**: `denyRead` は §11-3-2 の動的導出。`allowRead: [<view-dir>]` のみ
+  （ephemeral home は `$TMPDIR` 配下のため denyRead 対象外）。
+  `allowWrite: [<view-dir>, <ephemeral-home>, /private/tmp, /tmp]`。
+  `network.allowedDomains: ["chatgpt.com", "*.chatgpt.com", "*.openai.com", "openai.com"]`
+  （Phase 2 実装時に最小集合を再実測して縮小）+ `allowLocalBinding: true`（codex の
+  in-process app-server 初期化に必要。loopback 経由の迂回リスクがあるため、将来 srt が
+  ポート単位制御に対応したら限定する）。
+- **symlink 知見**: seatbelt は実体パスで判定するため、ファイル単位 allow は
+  「symlink ノード + 実体」の両方の許可が必要（dotfiles 運用の `~/.codex/config.toml` で
+  実測）。ephemeral 方式はこの問題自体を回避する。allowRead 導出実装は realpath 解決を
+  必ず挟むこと。
+
+**§11-3-4 ベクターの codex 版読み替え（Phase 2 実装時に常設テスト化）**:
+
+- ベクター4（Glob/Grep）: codex のツール実行は shell 経由のため、view 外 read 遮断・
+  非許可ドメイン遮断の実機テストでカバーする。
+- ベクター8（コンテキスト自動注入）: codex 版では **AGENTS.md 注入経路**（cwd 親方向探索 +
+  `$CODEX_HOME/AGENTS.md`）に読み替える。view 構築時に `AGENTS.md` 等の指示ファイル名を
+  ブロックリストで除外し、ephemeral home には空の `AGENTS.md` を明示配置して探索挙動を
+  固定する。view は repo 外（`$TMPDIR` 等）に配置し親方向探索も遮断する。
+- **budget 制御**: `codex exec` には `--max-budget-usd`/`--max-turns` 相当が無い。
+  propose CLI 側で (1) 単発 `exec` 呼び出しのみ（対話 session 化しない）、(2) wall-clock
+  timeout + 強制 kill、(3) loop 側のイテレーション上限（`proposer.max_iterations`）で
+  多重に抑制する。トークン実測は stdout の `tokens used` を記録する。
+- クロスベンダー品質（OpenAI モデルが Claude Code 固有仕様を誤解するリスク）は、既存の
+  「proposal は検証ゲート（schema 検証 + holdout 評価 + promote 前提条件）を必ず経由する」
+  方針で吸収する（セキュリティではなく品質の問題として扱う）。
 
 ### 11-4. proposer プロンプト構造
 
