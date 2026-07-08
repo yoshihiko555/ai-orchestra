@@ -1472,6 +1472,11 @@ proposer:
   max_overlay_bytes: 200000
   model: null # null = セッション既定モデル
   effort: high
+  isolation:
+    backend: srt # srt のみ（Phase 2 時点）。利用不能時は fail-closed（§11-3-2）
+    srt_version_pin: null # null = pin なし（到達不能テスト PASS 済みバージョンでの pin を推奨）
+    allow_read_extra: [] # CLI 動作に必要な追加 allowRead（Phase 2 スパイクで実測確定。
+      # store/holdout/facet ソースを含む値は静的検査で拒否する）
 loop:
   budget_usd: null # 実測後に既定を設定。§14 参照
   quality_epsilon_pt: 0.5 # best_quality の改善判定閾値（§13-2）
@@ -1694,32 +1699,52 @@ Phase 1b で初めて実 `claude -p` 呼び出しを含む evaluator を実装�
      `source_commit` に対する overlay 合成は不整合になる）。
 6. filtered view を `finally` で削除し、ledger へ登録イベントを追記する。
 
-### 11-2. filtered view 構築手順
+### 11-2. filtered view 構築手順（2026-07-08 ハードニング反映）
 
 - 配置: `.claude/meta-harness/tmp/view-<nonce>/`（メインルート配下、`finally` で削除）。
 - 内容:
   - `store/candidates/` — 全候補（候補定義に holdout 情報は含まれないためフィルタ不要）。
-  - `store/runs/` — `metadata.json` の `holdout: false` の run のみ（ハードリンク優先、不可なら
-    コピー）。
+  - `store/runs/` — `metadata.json` の `holdout: false` の run のみ。**コピーを既定とする**
+    （APFS 環境では `clonefile` 系の copy-on-write コピーで性能を確保する）。ハードリンクは
+    採用しない: inode を共有するため、元ファイルの就地更新が view に波及する経路と、
+    パーミッションがファイルレベルで共有される問題があり、holdout 隣接データの分離保証を
+    弱めるため（2026-07-08 再設計で hardlink 優先から変更）。
   - `store/ledger.jsonl` — **holdout 射影**: `run_completed` かつ `holdout: true` の行を除去した
     コピー（§3-6 の射影規則と同一）。
   - `store/frontier.json` — そのまま（non-holdout 集計のみを含むため安全）。
+  - `store/runs/<run_id>/events.jsonl.gz` は **view 内では伸長して `events.jsonl` として配置する**
+    （proposer は `Bash` を持たず gz を展開できないため。§11-4 の「選択的に検査」は伸長済み
+    ファイルへの `Read` offset/limit 指定で行う）。
   - `baseline/` — `git archive <source_commit> facets/ | tar -x` で展開した facet ソースの
-    読み取り専用参照（overlay の差分先を proposer が読むため）。
+    読み取り専用参照（overlay の差分先を proposer が読むため）。archive 展開のため `.git` を
+    含まず、`objects/info/alternates` 経由の外部参照は原理的に存在しない。
 - `holdout/runs/` は物理的に view に含まれない（§3-6 の filtered view 方式の実装形）。
+- **構築時の自己検証（必須）**: view 構築関数は完了直前に以下を機械検査し、1 つでも失敗したら
+  view を削除して exit 2 で中断する（射影・コピーロジックに将来バグが入っても検出できるように）:
+  1. view 配下に symlink が存在しないこと（コピー元に symlink が含まれる場合は実体化コピー
+     `cp -L` 相当で展開するか、対象 run を除外して警告する）
+  2. 射影後の `ledger.jsonl` に `"holdout": true` の `run_completed` 行が含まれないこと
+  3. view 配下に `.git` ディレクトリ・`.git` ファイル（worktree ポインタ）が存在しないこと
 
-### 11-3. proposer 起動コマンド（確定形）
+### 11-3. proposer 起動コマンド（2026-07-08 再設計版）
 
 ```bash
-cd <view-dir> && claude -p "<§11-4 のプロンプト>" \
+cd <view-dir> && srt --settings <isolation-settings.json> \
+  claude -p "<§11-4 のプロンプト>" \
   --bare --no-session-persistence \
-  --allowedTools "Read" "Glob" "Grep" \
+  --allowedTools "Read(<view-dir 絶対パス>/**)" \
   --permission-mode dontAsk \
   --output-format json --json-schema <view-dir からの絶対パスで proposal.schema.json> \
   --max-turns <proposer.max_turns 既定 40> \
   --max-budget-usd <proposer.budget_usd_per_iteration 既定 1.0> \
   --model <proposer.model 既定 null> --effort <proposer.effort 既定 high>
 ```
+
+`<isolation-settings.json>` は propose CLI が実行時に生成する srt 設定
+（`filesystem.denyRead: ["$HOME"]` + `filesystem.allowRead: ["<view-dir>", ...]` +
+`network.allowedDomains: ["api.anthropic.com"]`、§11-3-2）。`Glob`/`Grep` は
+`--allowedTools` から除外した（パス scoping が best-effort のため。view 内の探索は
+`Read` とプロンプトで案内するパス一覧で足りる。§11-3-3）。
 
 根拠:
 
@@ -1744,21 +1769,95 @@ cd <view-dir> && claude -p "<§11-4 のプロンプト>" \
 アクセスの境界を構成しない（Codex gpt-5.5 レビューでも同様の結論、2026-07-07）。
 
 このため、proposer の隔離は本節記載の方式のままでは **holdout・実 store・facet ソース本体への
-到達を防げない**。Phase 2 実装着手前に、以下のいずれかで隔離方式を再設計し、実機で到達不能性を
-証明する必要がある（**Phase 2 実装の着手条件**とする）:
+到達を防げない**。Phase 1（人間が候補を register する運用のみ）はこのギャップの影響を受けないが、
+Phase 2 は以下の再設計方針（§11-3-1〜§11-3-4）の実機検証 PASS を着手条件とする。
 
-1. パス scoped `--allowedTools` パターン（`Read(<view-dir 絶対パス>/**)` 等、§3-3 で judge に適用した
-   ものと同方式）を `Read` に適用する。ただし `Glob`/`Grep` へのパス scoping は公式に best-effort
-   扱いのため、これのみでは holdout 保護の主境界にできない。
-2. OS/プロセスレベルの隔離（macOS `sandbox-exec`、Linux 名前空間ベースの sandbox 等、または
-   コンテナ/VM）で proposer プロセス自体を view 外にアクセスできないよう物理的に囲う。Codex の
-   推奨はこちらを主たる境界とし、パス scoped `Read` は defense-in-depth として併用する方式。
-3. 上記いずれかの方式で、§8 項目9 の到達不能テスト（view 外の絶対パス・holdout・facet ソース本体・
-   symlink 経由・`Glob`/`Grep` 経由のすべてを拒否できること）が実機で PASS することを Phase 2
-   実装着手前の必須条件とする。
+#### 11-3-1. 脅威モデルの明確化（2026-07-08 再設計）
 
-Phase 1（本 worktree のスコープ）は人間が候補を register する運用のみであり、自動 proposer が
-存在しないため、この隔離ギャップは Phase 1b の実装をブロックしない（Codex レビューで確認）。
+守るべき資産は**列挙可能**である: (a) 実 store の `holdout/`、(b) 実 store 全体（ledger の
+非射影版・runs 本体）、(c) 実 repo の facet ソース、(d) `$HOME` 配下のユーザー機密
+（他リポジトリ・dotfiles・認証情報）。これらはすべて `$HOME` 配下に存在する。要件は
+「view 以外を一切読めない」という絶対的なものではなく、**「列挙した資産領域を読めない」**であり、
+`/usr` 等のシステムパスが読めることは脅威モデル上許容される（holdout データを含まないため）。
+
+#### 11-3-2. 主境界: OS レベル sandbox（`@anthropic-ai/sandbox-runtime`、fail-closed）
+
+proposer プロセス（`claude -p` 全体）を **`@anthropic-ai/sandbox-runtime`（srt、
+anthropic-experimental/sandbox-runtime、Apache-2.0）でラップする**ことを主境界とする。
+一次情報（README、2026-07-08 確認）に基づく採用根拠:
+
+- read 制限は **deny-then-allow 方式**（既定全許可 → `filesystem.denyRead` で広域拒否 →
+  `filesystem.allowRead` で再許可、allowRead が優先）。本設計では `denyRead` を**実行時に動的導出**
+  する: `dedupe([$HOME, <main repo root（git rev-parse、symlink 解決込み）>,
+<git worktree list で列挙される全 sibling worktree ルート>])`。`$HOME` 固定リテラルにしないのは、
+  repo が `$HOME` 外（CI の `/opt` チェックアウト等）にある場合に保護が無効化する欠陥を防ぐため。
+  `allowRead: ["<view-dir>", <CLI 動作に必要な最小パス群>]` で view のみ再許可する。
+  真の deny-default read モードは srt に存在しないが、脅威モデル上はこれで十分である。
+- ネットワークは **deny-default + `network.allowedDomains`（ドメイン単位 allowlist、プロキシ
+  強制方式）**。`api.anthropic.com` のみ許可することで、素の seatbelt プロファイルでは不可能な
+  ホスト単位のネットワーク制限（holdout 内容の外部送信経路の遮断を含む）が実現できる。
+- macOS は seatbelt（`sandbox-exec` プロファイル生成）、Linux は bubblewrap + network namespace
+  を裏で使う。CLI ラッパー（`srt --settings <json> <command>`）として Python の subprocess から
+  そのまま呼べる。
+- `allowRead` に追加する「CLI 動作に必要な最小パス群」（`~/.claude` 配下の CLI 内部状態等）は
+  Phase 2 スパイクで実測して確定する。ただし以下を**明示的な禁止対象**とし、allowRead 値が
+  これらと重複しないことを検証コードで機械的に強制する（静的検査 + テストケースとして固定化）:
+  store・holdout・facet ソース・view 外の repo、**`~/.claude/projects/**`（セッション transcript・
+  auto-memory）**。「CLI が起動しないから」という理由で `~/.claude` を丸ごと許可することは
+  禁止する（transcript/auto-memory には repo・store に関する記述が蓄積されており、間接リークに
+  なるため）。
+
+**fail-closed 規則**: srt が利用不能（未インストール・バージョン非互換・ネスト sandbox 環境での
+起動失敗等）の場合、`propose` は**非隔離での実行に降格せず exit 2 で中断する**。実装は
+`IsolationBackend` を抽象化し（`srt` を第一候補、将来 Linux CI 向け素の bubblewrap 等を追加可能な
+プラグイン構成）、`resolve_isolation_backend()` が「利用可能」かつ「起動前 self-test PASS」の
+バックエンドを解決できない場合に必ずエラーとする。ネスト sandbox 環境（orchex 自体が
+サンドボックス化されたシェル内で動いている場合）は起動失敗として同様に fail-closed する。
+
+#### 11-3-3. defense-in-depth（主境界の内側の多層防御）
+
+1. パス scoped `--allowedTools "Read(<view-dir 絶対パス>/**)"`（§3-3 の judge と同方式）。
+   `Glob`/`Grep` のパス scoping は公式に best-effort のため防御層としては数えない
+   （srt の OS 境界が主）。
+2. cwd を view に固定し `--add-dir` を付けない（従来方針を維持。境界ではなく作法として）。
+3. 書込ツール不付与・構造化出力のみ（従来方針を維持）。
+4. view 構築時の自己検証（§11-2: symlink 不在・holdout 射影・`.git` 不在）。
+5. 環境変数の最小化: proposer プロセスには `ANTHROPIC_API_KEY` 等の必要最小限のみを明示的に
+   渡し、親環境をそのまま継承しない（`env -i` 相当 + 明示 allowlist）。
+
+#### 11-3-4. 到達不能テスト（Phase 2 着手条件・回帰スイート常設）
+
+以下の escape ベクターすべてについて「拒否されること」を assertion とする実機テストを Phase 2
+実装の最初に作成し、**全 PASS を propose 実装着手の条件**とする。以後も回帰スイートとして常設し、
+1 つでも到達に成功したら fail とする:
+
+1. view 外への絶対パス `Read`（holdout・実 store・実 repo facet ソース・`$HOME` dotfiles）
+2. 相対パストラバーサル（`../../` で view 親方向への脱出）
+3. view 内に意図的に仕込んだ symlink 経由の view 外読み取り
+4. `Glob`/`Grep` のパターン・path 引数経由の view 外列挙
+5. 環境変数リーク（親環境の機密変数が proposer プロセスに継承されていないこと）
+6. ネットワーク: `api.anthropic.com` 以外への接続試行の拒否
+7. （Linux CI 追加時）`/proc/self/environ` 等の `/proc` 経由リーク
+8. **CLI 起動時のコンテキスト自動注入**: `--bare` 起動した proposer の最初のターンに実際に
+   渡っている入力をダンプし、プロジェクト固有情報（CLAUDE.md 由来・auto-memory 由来の文字列）が
+   一切混入していないことを検証する。1〜7 は「ツール呼び出しによる読み取り」の検査であり、
+   CLI 内部のコンテキスト組み立て経路はこの項目でのみカバーされる（`--bare` の効果を仕様記述
+   ではなく実挙動で確認する）
+9. **allowRead 確定値の静的差分検査**: スパイクで確定した allowRead リストが §11-3-2 の明示的
+   禁止対象（store/holdout/facet ソース/`~/.claude/projects/**` 等）と重複しないことを、
+   固定のテストケースとして常設する
+10. **ネットワーク検証の実質確認**: プロキシ強制方式が接続先の TLS SNI/証明書を実際に検証して
+    `api.anthropic.com` 以外を拒否していること（DNS 名や Host ヘッダーのみの判定で DNS
+    rebinding により迂回されないこと）を確認する
+
+**srt 自体のガード**: (1) バージョンは config で pin 可能とし（`proposer.isolation.srt_version_pin`、
+既定 null）、lockfile で integrity を固定、アップグレードは到達不能テスト全 PASS の再確認を
+ゲートとする明示的作業として扱う。(2) run metadata には srt バージョン・settings JSON のハッシュに
+加えて、**srt が生成したプラットフォーム固有プロファイル（seatbelt プロファイル文字列 / bubblewrap
+引数列）そのもののハッシュ**を記録する（settings が同一でも変換ロジックの退行を検出可能にする）。
+(3) 起動前 self-test は「プロセスが起動した」の確認ではなく、**到達不能テストの縮小版（view 外
+read 1 件 + 非許可ドメイン接続 1 件が実際に拒否されること）を毎回のカナリアとして実行する**
+（sandbox が未対応環境で静かに no-op 化するケースを起動成功判定では検出できないため）。
 
 ### 11-4. proposer プロンプト構造
 
