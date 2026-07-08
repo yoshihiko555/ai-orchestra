@@ -8,7 +8,7 @@ import json
 import os
 import socket
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +26,9 @@ EXIT_GENERAL_ERROR = 1
 EXIT_VALIDATION_REJECTED = 2
 EXIT_LOCK_UNAVAILABLE = 3
 DEFAULT_DEFINITION_ID = "issue-loop"
+TERMINAL_ACTIONS = frozenset(
+    {lc.Action.EXIT_SUCCESS.value, lc.Action.EXIT_FAILURE.value, lc.Action.STOP.value}
+)
 
 
 @dataclass(frozen=True)
@@ -35,6 +38,7 @@ class CliFailure(Exception):
     code: str
     message: str
     exit_code: int
+    details: dict[str, Any] = field(default_factory=dict)
 
 
 class JsonArgumentParser(argparse.ArgumentParser):
@@ -130,17 +134,26 @@ def cmd_start(args: argparse.Namespace) -> dict[str, Any]:
             ttl_seconds=_lp1_ttl(project),
             phase=definition.phases[0].name,
         )
+    except lc.InvalidStateError as exc:
+        if "state already exists" not in str(exc):
+            _rollback_created_worktree(project, args.issue, worktree_path, worktree_existed)
+        raise
+    except lc.ForeignLeaseError:
+        raise
     except Exception:
         _rollback_created_worktree(project, args.issue, worktree_path, worktree_existed)
         raise
-    return _proposal_response(loop_id, result, "loop initialized; first action proposed")
+    _emit_loop_start(project, args.issue, worktree)
+    return _proposal_response(
+        loop_id, result, "loop initialized; first action proposed", project=project
+    )
 
 
 def cmd_attach(args: argparse.Namespace) -> dict[str, Any]:
     """Handle attach."""
     project = _project_dir(args.project)
     result = lc.attach(args.loop_id, project, _owner_id(), _lp1_ttl(project))
-    return _proposal_response(args.loop_id, result, "attached after stale lease")
+    return _proposal_response(args.loop_id, result, "attached after stale lease", project=project)
 
 
 def cmd_propose(args: argparse.Namespace) -> dict[str, Any]:
@@ -148,21 +161,29 @@ def cmd_propose(args: argparse.Namespace) -> dict[str, Any]:
     project = _project_dir(args.project)
     lease_token = _required_lease_token(args)
     result = lc.propose(args.loop_id, project, lease_token)
-    return _proposal_response(args.loop_id, result, "next action proposed")
+    return _proposal_response(args.loop_id, result, "next action proposed", project=project)
 
 
 def cmd_complete(args: argparse.Namespace) -> dict[str, Any]:
     """Handle complete."""
     project = _project_dir(args.project)
     lease_token = _required_lease_token(args)
+    loaded_result = _load_result(args.result)
+    pending_state = lc.load_state(args.loop_id, project)
+    if lc.validate_lease(args.loop_id, project, lease_token):
+        _save_checker_artifact(
+            args.loop_id, project, args.action_id, args.state_version, loaded_result
+        )
     result = lc.complete(
         args.loop_id,
         project,
         args.action_id,
         args.state_version,
-        _load_result(args.result),
+        loaded_result,
         lease_token,
     )
+    if not result.idempotent_replay:
+        _emit_loop_iteration(project, pending_state, loaded_result)
     return {
         "ok": result.ok,
         "loop_id": args.loop_id,
@@ -218,7 +239,15 @@ def cmd_resume(args: argparse.Namespace) -> dict[str, Any]:
         )
     project = _project_dir(args.project)
     resumed = lc.resume(args.loop_id, project, True, _owner_id(), _lp1_ttl(project))
-    result = lc.propose(args.loop_id, project, resumed.lease_token)
+    try:
+        result = lc.propose(args.loop_id, project, resumed.lease_token)
+    except Exception as exc:
+        raise CliFailure(
+            _error_code_for(exc),
+            _message(exc, "failed to propose after resume"),
+            EXIT_GENERAL_ERROR,
+            {"lease_token": resumed.lease_token},
+        ) from exc
     result_with_lease = lc.ProposeResult(
         action=result.action,
         action_id=result.action_id,
@@ -228,7 +257,9 @@ def cmd_resume(args: argparse.Namespace) -> dict[str, Any]:
         iteration=result.iteration,
         context={**result.context, "lease_token": resumed.lease_token},
     )
-    return _proposal_response(args.loop_id, result_with_lease, "resumed; first action proposed")
+    return _proposal_response(
+        args.loop_id, result_with_lease, "resumed; first action proposed", project=project
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -239,7 +270,7 @@ def main(argv: list[str] | None = None) -> int:
         _write_json(response)
         return EXIT_SUCCESS
     except CliFailure as exc:
-        _write_error(exc.code, exc.message)
+        _write_error(exc.code, exc.message, exc.details)
         return exc.exit_code
     except lc.StaleActionError as exc:
         _write_error("stale_action", _message(exc, "stale action"))
@@ -390,7 +421,9 @@ def _read_result_text(value: str) -> str:
         ) from exc
 
 
-def _proposal_response(loop_id: str, result: lc.ProposeResult, reason: str) -> dict[str, Any]:
+def _proposal_response(
+    loop_id: str, result: lc.ProposeResult, reason: str, *, project: str | None = None
+) -> dict[str, Any]:
     """Serialize ProposeResult to the stable CLI response shape."""
     action = lc.Action(result.action).value
     context = dict(result.context)
@@ -411,15 +444,179 @@ def _proposal_response(loop_id: str, result: lc.ProposeResult, reason: str) -> d
     }
     if lease_token is not None:
         response["lease_token"] = lease_token
+    if project is not None and action in TERMINAL_ACTIONS:
+        _emit_loop_stop(project, loop_id, action, params)
     return response
+
+
+def _pending_action(loop_id: str, project: str) -> lc.PendingAction | None:
+    """Return the current pending action through loop_common."""
+    return lc.load_state(loop_id, project).pending_action
 
 
 def _pending_action_id(loop_id: str, project: str) -> str | None:
     """Return the current pending action id through loop_common."""
-    state = lc.load_state(loop_id, project)
-    if state.pending_action is None:
+    pending = _pending_action(loop_id, project)
+    if pending is None:
         return None
-    return state.pending_action.action_id
+    return pending.action_id
+
+
+def _save_checker_artifact(
+    loop_id: str,
+    project: str,
+    action_id: str,
+    state_version: int,
+    result: dict[str, Any],
+) -> None:
+    """Persist checker output before state/journal completion for artifact recovery."""
+    state = lc.load_state(loop_id, project)
+    pending = state.pending_action
+    check_result = result.get("check_result")
+    if (
+        pending is None
+        or pending.action != lc.Action.RUN_CHECKER.value
+        or pending.action_id != action_id
+        or state.state_version != state_version
+        or not isinstance(check_result, dict)
+    ):
+        return
+    lc.save_artifact(
+        loop_id,
+        project,
+        action_id,
+        "check_result.json",
+        json.dumps(check_result, ensure_ascii=False, separators=(",", ":")),
+    )
+
+
+def _emit_loop_start(project: str, issue: int, worktree: wm.WorktreeInfo) -> None:
+    """Emit loop_start after state/worktree initialization."""
+    loop_id = wm.compute_loop_id(project, issue)
+    state = lc.load_state(loop_id, project)
+    lc.emit_loop_audit_event(
+        "loop_start",
+        project,
+        {
+            "loop_id": loop_id,
+            "definition_id": state.definition_id,
+            "issue_number": issue,
+            "worktree_path": worktree.path,
+            "branch": worktree.branch,
+            "trigger": "lp1",
+        },
+    )
+
+
+def _emit_loop_iteration(project: str, pending_state: lc.LoopState, result: dict[str, Any]) -> None:
+    """Emit loop_iteration after a non-idempotent complete updates state."""
+    pending = pending_state.pending_action
+    if pending is None:
+        return
+    state = lc.load_state(pending_state.loop_id, project)
+    guard = state.guards.get(pending.phase)
+    payload = lc.build_audit_payload(
+        "loop_iteration",
+        state,
+        action_id=pending.action_id,
+        maker=_maker_audit_payload(pending.action, result),
+        checker=_checker_audit_payload(pending.action, result),
+    )
+    payload.update(
+        {
+            "guard_snapshot": _guard_snapshot(guard),
+            "result": _iteration_result(state),
+        }
+    )
+    lc.emit_loop_audit_event("loop_iteration", project, payload)
+
+
+def _emit_loop_stop(project: str, loop_id: str, action: str, params: dict[str, Any]) -> None:
+    """Emit loop_stop when propose returns a terminal action."""
+    state = lc.load_state(loop_id, project)
+    final_status = "stopped" if action == lc.Action.STOP.value else action
+    lc.emit_loop_audit_event(
+        "loop_stop",
+        project,
+        {
+            "loop_id": loop_id,
+            "phase": state.phase,
+            "final_status": final_status,
+            "stop_reason": params.get("stop_reason") or state.stop_reason,
+            "iterations_total": sum(counter.iteration for counter in state.guards.values()),
+            "pr_number": state.pr_number,
+        },
+    )
+
+
+def _maker_audit_payload(action: str, result: dict[str, Any]) -> dict[str, Any]:
+    """Return best-effort maker audit details from a complete result."""
+    if action != lc.Action.RUN_MAKER.value:
+        return {}
+    maker = result.get("maker")
+    return dict(maker) if isinstance(maker, dict) else {}
+
+
+def _checker_audit_payload(action: str, result: dict[str, Any]) -> dict[str, Any]:
+    """Return best-effort checker audit details from a checker result."""
+    if action != lc.Action.RUN_CHECKER.value:
+        return {}
+    check_result = (
+        result.get("check_result") if isinstance(result.get("check_result"), dict) else result
+    )
+    results = check_result.get("results") if isinstance(check_result, dict) else []
+    if not isinstance(results, list):
+        return {}
+    payload: dict[str, Any] = {}
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        layer = item.get("layer")
+        findings = item.get("findings") if isinstance(item.get("findings"), list) else []
+        if layer == "mechanical":
+            payload["mechanical"] = {
+                "passed": bool(item.get("passed")),
+                "signature": item.get("signature"),
+                "infrastructure_failure": bool(item.get("infrastructure_failure")),
+            }
+        if layer == "llm_review":
+            payload["llm_review"] = {
+                "passed": bool(item.get("passed")),
+                "critical": _finding_count(findings, "critical"),
+                "high": _finding_count(findings, "high"),
+            }
+    return payload
+
+
+def _finding_count(findings: list[Any], severity: str) -> int:
+    """Count checker findings by severity."""
+    return sum(
+        1 for item in findings if isinstance(item, dict) and item.get("severity") == severity
+    )
+
+
+def _guard_snapshot(counter: lc.GuardCounters | None) -> dict[str, Any]:
+    """Return audit-safe guard counter state."""
+    if counter is None:
+        return {}
+    return {
+        "iteration": counter.iteration,
+        "no_progress_count": counter.no_progress_streak,
+        "infrastructure_failure_count": counter.infrastructure_failure_count,
+    }
+
+
+def _iteration_result(state: lc.LoopState) -> str:
+    """Map state after complete to loop_iteration.result."""
+    if state.status == "failed":
+        return lc.Action.EXIT_FAILURE.value
+    if state.status == "passed":
+        return lc.Action.EXIT_SUCCESS.value
+    if state.status == "stopped":
+        return lc.Action.STOP.value
+    if isinstance(state.last_check_result, dict) and state.last_check_result.get("next_phase"):
+        return lc.Action.ADVANCE_PHASE.value
+    return "continue"
 
 
 def _reconcile_resolution(action_taken: str) -> str:
@@ -460,9 +657,12 @@ def _write_json(payload: dict[str, Any]) -> None:
     print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
 
 
-def _write_error(code: str, message: str) -> None:
+def _write_error(code: str, message: str, details: dict[str, Any] | None = None) -> None:
     """Write machine-readable stdout and human-readable stderr diagnostics."""
-    _write_json({"error": {"code": code, "message": message}})
+    payload: dict[str, Any] = {"error": {"code": code, "message": message}}
+    if details:
+        payload.update(details)
+    _write_json(payload)
     print(f"loop_step: {code}: {message}", file=sys.stderr)
 
 
@@ -479,6 +679,8 @@ def _error_code_for(exc: BaseException) -> str:
         return "worktree_error"
     if isinstance(exc, ld.DefinitionValidationError):
         return "definition_invalid"
+    if isinstance(exc, lc.InvalidStateError):
+        return "invalid_state"
     return "general_error"
 
 

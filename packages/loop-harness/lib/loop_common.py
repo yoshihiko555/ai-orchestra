@@ -28,6 +28,10 @@ HASH_LENGTH = 16
 GIT_TIMEOUT_SECONDS = 5
 _ROOT_CACHE: dict[str, Path] = {}
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+_RESERVED_PROPOSAL_CONTEXT_KEYS = frozenset({"lease_token", "params", "reason"})
+_PUBLIC_STOP_REASONS = frozenset(
+    {"safety_stop", "push_guard_violation", "repo_identity_mismatch", "foreign_live_lease"}
+)
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "guards": {
@@ -395,6 +399,7 @@ def propose(
     action = _next_action(state, project_dir)
     action_id = f"act-{secrets.token_hex(ACTION_ID_BYTES)}"
     iteration = _next_action_iteration(state, action)
+    params = _proposal_params(state, action, project_dir)
     new_state = copy.deepcopy(state)
     new_state.pending_action = PendingAction(action_id, action, state.phase, iteration, now_iso())
     new_state.state_version += 1
@@ -408,7 +413,6 @@ def propose(
         {"action": action, "expected_phase": state.phase},
     )
     _write_state(new_state, project_dir)
-    params = _proposal_params(new_state, action, project_dir)
     return ProposeResult(
         action=action,
         action_id=action_id,
@@ -416,7 +420,7 @@ def propose(
         expected_phase=state.phase,
         phase=state.phase,
         iteration=iteration,
-        context={"params": params, **params},
+        context=_proposal_context(params),
     )
 
 
@@ -735,6 +739,35 @@ def build_audit_payload(
     return redact_payload(payload)
 
 
+def emit_loop_audit_event(
+    event_type: str,
+    project_dir: str,
+    payload: dict[str, Any],
+    *,
+    aid: str | None = None,
+) -> dict[str, Any] | None:
+    """Emit a loop audit event without letting audit failures break the loop protocol."""
+    try:
+        audit_hooks_dir = Path(__file__).resolve().parents[2] / "audit" / "hooks"
+        if str(audit_hooks_dir) not in sys.path:
+            sys.path.insert(0, str(audit_hooks_dir))
+        import event_logger
+
+        trace = event_logger.load_trace_state(project_dir)
+        phase = payload.get("phase") if isinstance(payload.get("phase"), str) else None
+        return event_logger.emit_event(
+            event_type,
+            redact_payload(payload),
+            session_id=str(trace.get("session_id") or ""),
+            tid=str(trace.get("tid") or ""),
+            aid=aid,
+            ctx={"skill": "loop-harness", "phase": phase},
+            project_dir=project_dir,
+        )
+    except Exception:
+        return None
+
+
 def acquire_lock(
     loop_id: str,
     project_dir: str,
@@ -1008,6 +1041,14 @@ def _proposal_params(state: LoopState, action: str, project_dir: str) -> dict[st
     return {}
 
 
+def _proposal_context(params: dict[str, Any]) -> dict[str, Any]:
+    """Expose params both nested and legacy top-level, without reserved-key collisions."""
+    return {
+        "params": params,
+        **{k: v for k, v in params.items() if k not in _RESERVED_PROPOSAL_CONTEXT_KEYS},
+    }
+
+
 def _load_phase_definition(state: LoopState, project_dir: str) -> Any:
     """Load the current phase definition, failing closed on config drift."""
     lib_dir = Path(__file__).resolve().parent
@@ -1023,9 +1064,11 @@ def _load_phase_definition(state: LoopState, project_dir: str) -> Any:
 
 def _normalize_stop_reason(value: str) -> str:
     """Normalize safety stop reasons to the public CLI enum."""
-    if value in {"push_guard_violation", "repo_identity_mismatch", "foreign_live_lease"}:
+    if value in _PUBLIC_STOP_REASONS:
         return value
-    return "push_guard_violation"
+    if value in {"default_branch", "push_guard_failed"}:
+        return "push_guard_violation"
+    return "safety_stop"
 
 
 def _push_guard_stop_reason(guard: dict[str, Any]) -> str:
@@ -1057,6 +1100,8 @@ def _pending_next_phase(state: LoopState) -> str | None:
 
 def _apply_advance_phase(state: LoopState, result: dict[str, Any]) -> None:
     """Apply a previously proposed phase advance."""
+    if result.get("pr_number") is not None:
+        state.pr_number = int(result["pr_number"])
     next_phase = _pending_next_phase(state) or result.get("next_phase")
     if not next_phase:
         state.status = "running"
@@ -1694,7 +1739,7 @@ def _foreign_host_stop_result(loop_id: str, project_dir: str, lock: LockInfo) ->
         expected_phase=state.phase,
         phase=state.phase,
         iteration=state.iteration,
-        context={"params": params, **params},
+        context=_proposal_context(params),
     )
 
 

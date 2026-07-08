@@ -16,6 +16,9 @@ SCRIPT = REPO_ROOT / "packages" / "loop-harness" / "scripts" / "loop_step.py"
 
 lc = load_module("loop_common_for_loop_step_tests", "packages/loop-harness/lib/loop_common.py")
 loop_step = load_module("loop_step_cli_tests", "packages/loop-harness/scripts/loop_step.py")
+event_logger = load_module(
+    "event_logger_for_loop_step_tests", "packages/audit/hooks/event_logger.py"
+)
 
 
 def _git(args: list[str], cwd: Path) -> str:
@@ -103,7 +106,7 @@ def _complete(
     return _payload(proc)
 
 
-def _write_running_state(repo: Path, loop_id: str = "abcd1234-issue-1") -> object:
+def _write_running_state(repo: Path, loop_id: str = "abcd1234-issue-1") -> lc.LockInfo:
     state = lc._initial_state(
         loop_id,
         "issue-loop",
@@ -174,6 +177,36 @@ def test_start_and_complete_emit_single_line_json(tmp_path: Path) -> None:
     }
 
 
+def test_loop_audit_events_are_emitted_when_trace_state_exists(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    event_logger.save_trace_state(
+        "tid-loop",
+        session_id="session-loop",
+        expected_route="codex",
+        project_dir=str(repo),
+    )
+
+    started = _start(repo)
+    _complete(repo, started["loop_id"], started, started["lease_token"])
+    state = lc.load_state(started["loop_id"], str(repo))
+    state.status = "stopped"
+    state.stop_reason = "safety_stop"
+    state.pending_action = None
+    lc._write_state(state, str(repo))
+    _propose(repo, started["loop_id"], started["lease_token"])
+
+    log_path = Path(event_logger.get_session_log_path("session-loop", str(repo)))
+    events = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    event_types = [event["type"] for event in events]
+    assert "loop_start" in event_types
+    assert "loop_iteration" in event_types
+    assert "loop_stop" in event_types
+    loop_stop = next(event for event in events if event["type"] == "loop_stop")
+    assert loop_stop["data"]["final_status"] == "stopped"
+    assert loop_stop["data"]["stop_reason"] == "safety_stop"
+
+
 def test_propose_checker_and_advance_phase_params_follow_definition(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _init_repo(repo)
@@ -213,6 +246,34 @@ def test_propose_checker_and_advance_phase_params_follow_definition(tmp_path: Pa
         "next_phase": "pr_review_response",
         "exec": ["commit", "push", "pr_create"],
     }
+
+
+def test_complete_checker_persists_check_result_artifact(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    started = _start(repo)
+    _complete(repo, started["loop_id"], started, started["lease_token"])
+    checker = _propose(repo, started["loop_id"], started["lease_token"])
+    check_result = {
+        "passed": False,
+        "signature": "sig-1",
+        "infrastructure_failure": False,
+        "results": [],
+    }
+
+    _complete(
+        repo,
+        started["loop_id"],
+        checker,
+        started["lease_token"],
+        {"check_result": check_result},
+    )
+
+    artifact = lc.load_artifact(
+        started["loop_id"], str(repo), checker["action_id"], "check_result.json"
+    )
+    assert artifact is not None
+    assert json.loads(artifact) == check_result
 
 
 def test_start_existing_state_returns_already_exists(tmp_path: Path) -> None:
@@ -482,6 +543,32 @@ def test_resume_with_reset_returns_new_lease_and_proposal(tmp_path: Path) -> Non
     assert payload["lease_token"] != lock.lease_token
 
 
+def test_resume_propose_failure_returns_new_lease_token(
+    tmp_path: Path, monkeypatch: Any, capsys: Any
+) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    lock = _write_running_state(repo)
+    state = lc.load_state("abcd1234-issue-1", str(repo))
+    state.status = "failed"
+    lc._write_state(state, str(repo))
+
+    def fail_propose(_loop_id: str, _project: str, _lease_token: str) -> Any:
+        raise loop_step.ld.DefinitionValidationError("definition drift")
+
+    monkeypatch.setattr(loop_step.lc, "propose", fail_propose)
+
+    exit_code = loop_step.main(
+        ["resume", "--loop-id", "abcd1234-issue-1", "--reset-counters", "--project", str(repo)]
+    )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert exit_code == 1
+    assert payload["error"]["code"] == "definition_invalid"
+    assert payload["lease_token"] != lock.lease_token
+
+
 def test_reconcile_reports_marked_infrastructure_failure(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _init_repo(repo)
@@ -558,6 +645,9 @@ def test_propose_fails_when_phase_definition_loading_fails(tmp_path: Path) -> No
 
     assert proc.returncode == 1
     assert payload["error"]["code"] == "definition_invalid"
+    state = lc.load_state("abcd1234-issue-1", str(repo))
+    assert state.pending_action is None
+    assert state.state_version == 0
 
 
 def test_exit_failure_params_include_stop_reason_and_draft_exec(tmp_path: Path) -> None:
@@ -664,6 +754,21 @@ def test_push_guard_stop_after_complete_is_visible_on_next_propose(tmp_path: Pat
     assert payload["params"]["stop_reason"] == "push_guard_violation"
 
 
+def test_generic_safety_stop_reason_is_preserved(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    lock = _write_running_state(repo)
+    state = lc.load_state("abcd1234-issue-1", str(repo))
+    state.status = "stopped"
+    state.stop_reason = "safety_stop"
+    lc._write_state(state, str(repo))
+
+    payload = _propose(repo, "abcd1234-issue-1", lock.lease_token)
+
+    assert payload["action"] == lc.Action.STOP.value
+    assert payload["params"]["stop_reason"] == "safety_stop"
+
+
 def test_repo_identity_push_guard_stop_includes_stop_reason(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _init_repo(repo)
@@ -739,3 +844,43 @@ def test_start_rolls_back_created_worktree_when_core_start_fails(
     assert exit_code == 1
     assert json.loads(captured.out)["error"]["code"] == "invalid_state"
     assert removed == [(str(repo.resolve()), 7, True)]
+
+
+def test_start_does_not_rollback_when_state_race_loses(
+    tmp_path: Path, monkeypatch: Any, capsys: Any
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    worktree_path = tmp_path / "loop-issue-7"
+    removed: list[tuple[str, int, bool]] = []
+
+    monkeypatch.setattr(loop_step.wm, "compute_loop_id", lambda _project, _issue: "loop-7")
+    monkeypatch.setattr(loop_step.lc, "state_path", lambda _loop_id, _project: tmp_path / "state")
+    monkeypatch.setattr(
+        loop_step.wm, "worktree_path_for", lambda _project, _issue: str(worktree_path)
+    )
+
+    def create_worktree(_project: str, _issue: int) -> Any:
+        worktree_path.mkdir()
+        return loop_step.wm.WorktreeInfo(
+            path=str(worktree_path),
+            branch="loop/issue-7",
+            repo_identity_hash="abcd1234",
+        )
+
+    def fail_start(**_kwargs: Any) -> Any:
+        raise loop_step.lc.InvalidStateError("state already exists: loop-7")
+
+    def remove_worktree(project: str, issue: int, force: bool = False) -> None:
+        removed.append((project, issue, force))
+
+    monkeypatch.setattr(loop_step.wm, "create_worktree", create_worktree)
+    monkeypatch.setattr(loop_step.lc, "start", fail_start)
+    monkeypatch.setattr(loop_step.wm, "remove_worktree", remove_worktree)
+
+    exit_code = loop_step.main(["start", "--issue", "7", "--project", str(repo)])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert json.loads(captured.out)["error"]["code"] == "already_exists"
+    assert removed == []

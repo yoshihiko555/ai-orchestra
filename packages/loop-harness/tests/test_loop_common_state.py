@@ -15,7 +15,7 @@ lc = load_module("loop_common_state", "packages/loop-harness/lib/loop_common.py"
 
 def _setup_loop(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: str = "pending"
-) -> tuple[str, object]:
+) -> tuple[str, lc.LockInfo]:
     monkeypatch.setattr(lc, "resolve_root_worktree", lambda _project_dir: tmp_path)
     monkeypatch.setattr(lc.socket, "gethostname", lambda: "local")
     project_dir = str(tmp_path)
@@ -410,6 +410,38 @@ def test_repo_identity_guard_violation_transitions_to_stopped() -> None:
     )
     assert state.status == "stopped"
     assert state.stop_reason == "repo_identity_mismatch"
+
+
+def test_proposal_context_does_not_let_params_override_reserved_keys() -> None:
+    params = {
+        "params": "nested collision",
+        "reason": "spoofed reason",
+        "lease_token": "spoofed-token",
+        "mechanical": {"commands": ["pytest -q"]},
+    }
+
+    context = lc._proposal_context(params)
+
+    assert context["params"] == params
+    assert context["mechanical"] == {"commands": ["pytest -q"]}
+    assert context.get("reason") is None
+    assert context.get("lease_token") is None
+
+
+def test_advance_phase_persists_pr_number() -> None:
+    state = lc._initial_state(
+        "loop", "issue-loop", "hash", "/tmp/wt", "loop/issue-1", "implementation"
+    )
+    state.last_check_result = {"next_phase": "pr_review_response"}
+
+    lc.apply_action_effect(
+        state,
+        lc.Action.ADVANCE_PHASE.value,
+        {"pr_number": "123"},
+    )
+
+    assert state.phase == "pr_review_response"
+    assert state.pr_number == 123
 
 
 def test_artifact_is_redacted_and_owner_only(
