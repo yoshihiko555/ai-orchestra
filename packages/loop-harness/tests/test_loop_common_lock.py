@@ -61,7 +61,9 @@ def test_propose_returns_stop_for_live_foreign_host_lease(
     lock = lc.acquire_lock("abcd1234-issue-1", project_dir, "owner", 3600, host="host-b")
     assert lock is not None
     monkeypatch.setattr(lc.socket, "gethostname", lambda: "host-a")
-    result = lc.propose("abcd1234-issue-1", project_dir, "wrong-token")
+    with pytest.raises(lc.WriteRejectedError):
+        lc.propose("abcd1234-issue-1", project_dir, "wrong-token")
+    result = lc.propose("abcd1234-issue-1", project_dir, lock.lease_token)
     state = lc.load_state("abcd1234-issue-1", project_dir)
     events = [
         json.loads(line)

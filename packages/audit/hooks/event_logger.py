@@ -89,6 +89,9 @@ EVENT_TYPES = frozenset(
         "instructions_loaded",
         "turn_end",
         "precompact",
+        "loop_start",
+        "loop_iteration",
+        "loop_stop",
     }
 )
 

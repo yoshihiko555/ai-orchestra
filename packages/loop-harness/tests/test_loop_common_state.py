@@ -15,7 +15,7 @@ lc = load_module("loop_common_state", "packages/loop-harness/lib/loop_common.py"
 
 def _setup_loop(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: str = "pending"
-) -> tuple[str, object]:
+) -> tuple[str, lc.LockInfo]:
     monkeypatch.setattr(lc, "resolve_root_worktree", lambda _project_dir: tmp_path)
     monkeypatch.setattr(lc.socket, "gethostname", lambda: "local")
     project_dir = str(tmp_path)
@@ -23,9 +23,9 @@ def _setup_loop(
     state = lc._initial_state(
         loop_id,
         "issue-loop",
-        "abcd1234",
-        str(tmp_path / ".worktrees" / "loop-issue-1"),
-        "loop/issue-1",
+        lc._repo_identity_hash(project_dir),
+        project_dir,
+        lc._current_branch(project_dir),
         "implementation",
     )
     state.status = status
@@ -94,6 +94,35 @@ def test_status_transitions_and_resume(tmp_path: Path, monkeypatch: pytest.Monke
     resumed = lc.resume("abcd1234-issue-1", project_dir, True, "owner-2", 3600)
     assert resumed.state.status == "running"
     assert resumed.lease_token != lock.lease_token
+
+
+def test_complete_accepts_raw_passed_checker_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir, lock = _setup_loop(tmp_path, monkeypatch)
+    maker = lc.propose("abcd1234-issue-1", project_dir, lock.lease_token)
+    lc.complete(
+        "abcd1234-issue-1",
+        project_dir,
+        maker.action_id,
+        maker.state_version,
+        {},
+        lock.lease_token,
+    )
+    checker = lc.propose("abcd1234-issue-1", project_dir, lock.lease_token)
+
+    lc.complete(
+        "abcd1234-issue-1",
+        project_dir,
+        checker.action_id,
+        checker.state_version,
+        _check_result(True),
+        lock.lease_token,
+    )
+
+    event = lc.find_journal_event("abcd1234-issue-1", project_dir, checker.action_id, "completed")
+    assert lc.load_state("abcd1234-issue-1", project_dir).status == "passed"
+    assert event["payload"]["check_result"]["passed"] is True
 
 
 def test_state_version_increments_and_heartbeat_does_not(
@@ -312,7 +341,7 @@ def test_checker_success_proposes_and_completes_advance_phase(
     )
     checker = lc.propose("abcd1234-issue-1", project_dir, lock.lease_token)
     phase_def = {
-        "on_success": {"disposition": "advance_phase", "next": "review"},
+        "on_success": {"disposition": "advance_phase", "next": "pr_review_response"},
         "on_failure": {"disposition": "exit_failure"},
     }
 
@@ -331,16 +360,16 @@ def test_checker_success_proposes_and_completes_advance_phase(
         project_dir,
         advance.action_id,
         advance.state_version,
-        {},
+        {"pr_number": 123},
         lock.lease_token,
     )
     advanced = lc.load_state("abcd1234-issue-1", project_dir)
 
     assert state.phase == "implementation"
-    assert state.last_check_result["next_phase"] == "review"
+    assert state.last_check_result["next_phase"] == "pr_review_response"
     assert advance.action == lc.Action.ADVANCE_PHASE.value
-    assert advanced.phase == "review"
-    assert "review" in advanced.guards
+    assert advanced.phase == "pr_review_response"
+    assert "pr_review_response" in advanced.guards
 
 
 def test_advance_phase_push_guard_stop_does_not_change_phase(
@@ -390,7 +419,7 @@ def test_push_guard_violation_transitions_to_stopped() -> None:
         {"push_guard": {"branch_ok": False, "repo_identity_ok": True, "reason": "default_branch"}},
     )
     assert state.status == "stopped"
-    assert state.stop_reason == "default_branch"
+    assert state.stop_reason == "push_guard_violation"
 
 
 def test_repo_identity_guard_violation_transitions_to_stopped() -> None:
@@ -410,6 +439,173 @@ def test_repo_identity_guard_violation_transitions_to_stopped() -> None:
     )
     assert state.status == "stopped"
     assert state.stop_reason == "repo_identity_mismatch"
+
+
+def test_proposal_context_does_not_let_params_override_reserved_keys() -> None:
+    params = {
+        "params": "nested collision",
+        "reason": "spoofed reason",
+        "lease_token": "spoofed-token",
+        "mechanical": {"commands": ["pytest -q"]},
+    }
+
+    context = lc._proposal_context(params)
+
+    assert context["params"] == params
+    assert context["mechanical"] == {"commands": ["pytest -q"]}
+    assert context.get("reason") is None
+    assert context.get("lease_token") is None
+
+
+def test_wait_external_review_params_include_config_defaults(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = lc._initial_state(
+        "loop", "issue-loop", "hash", "/tmp/wt", "loop/issue-1", "pr_review_response"
+    )
+    state.pr_number = 123
+    monkeypatch.setattr(
+        lc,
+        "_load_phase_definition",
+        lambda _state, _project: {"checker": {"external_signal": {"source": "github"}}},
+    )
+    monkeypatch.setattr(
+        lc,
+        "_load_loop_config",
+        lambda _project: {"pr_review": {"poll_interval_seconds": 77, "timeout_seconds": 88}},
+    )
+
+    params = lc._proposal_params(state, lc.Action.WAIT_EXTERNAL_REVIEW.value, str(tmp_path))
+
+    assert params == {
+        "source": "github",
+        "poll_interval_seconds": 77,
+        "timeout_seconds": 88,
+        "pr_number": 123,
+    }
+
+
+def test_advance_phase_persists_pr_number() -> None:
+    state = lc._initial_state(
+        "loop", "issue-loop", "hash", "/tmp/wt", "loop/issue-1", "implementation"
+    )
+    state.last_check_result = {"next_phase": "pr_review_response"}
+
+    lc.apply_action_effect(
+        state,
+        lc.Action.ADVANCE_PHASE.value,
+        {"pr_number": "123"},
+    )
+
+    assert state.phase == "pr_review_response"
+    assert state.pr_number == 123
+
+
+def test_complete_stop_preserves_existing_stop_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir, lock = _setup_loop(tmp_path, monkeypatch, status="stopped")
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.stop_reason = "repo_identity_mismatch"
+    state.pending_action = lc.PendingAction(
+        "act-stop", lc.Action.STOP.value, "implementation", 1, lc.now_iso()
+    )
+    state.state_version = 1
+    lc._write_state(state, project_dir)
+
+    result = lc.complete(
+        "abcd1234-issue-1",
+        project_dir,
+        "act-stop",
+        1,
+        {},
+        lock.lease_token,
+    )
+
+    assert result.next_hint == "loop terminal"
+    assert lc.load_state("abcd1234-issue-1", project_dir).stop_reason == "repo_identity_mismatch"
+
+
+def test_invalid_pr_number_is_rejected_before_completed_journal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir, lock = _setup_loop(tmp_path, monkeypatch, status="running")
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.pending_action = lc.PendingAction(
+        "act-advance", lc.Action.ADVANCE_PHASE.value, "implementation", 1, lc.now_iso()
+    )
+    state.last_check_result = {"next_phase": "pr_review_response"}
+    state.state_version = 1
+    lc._write_state(state, project_dir)
+
+    with pytest.raises(ValueError, match="pr_number"):
+        lc.complete(
+            "abcd1234-issue-1",
+            project_dir,
+            "act-advance",
+            1,
+            {"pr_number": "https://github.com/example/repo/pull/123"},
+            lock.lease_token,
+        )
+
+    assert (
+        lc.find_journal_event("abcd1234-issue-1", project_dir, "act-advance", "completed") is None
+    )
+    assert lc.load_state("abcd1234-issue-1", project_dir).pending_action is not None
+
+
+def test_fractional_pr_number_is_rejected_before_completed_journal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir, lock = _setup_loop(tmp_path, monkeypatch, status="running")
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.pending_action = lc.PendingAction(
+        "act-advance", lc.Action.ADVANCE_PHASE.value, "implementation", 1, lc.now_iso()
+    )
+    state.last_check_result = {"next_phase": "pr_review_response"}
+    state.state_version = 1
+    lc._write_state(state, project_dir)
+
+    with pytest.raises(ValueError, match="pr_number"):
+        lc.complete(
+            "abcd1234-issue-1",
+            project_dir,
+            "act-advance",
+            1,
+            {"pr_number": 123.9},
+            lock.lease_token,
+        )
+
+    assert (
+        lc.find_journal_event("abcd1234-issue-1", project_dir, "act-advance", "completed") is None
+    )
+
+
+def test_external_review_advance_requires_pr_number_before_journal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir, lock = _setup_loop(tmp_path, monkeypatch, status="running")
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.pending_action = lc.PendingAction(
+        "act-advance", lc.Action.ADVANCE_PHASE.value, "implementation", 1, lc.now_iso()
+    )
+    state.last_check_result = {"next_phase": "pr_review_response"}
+    state.state_version = 1
+    lc._write_state(state, project_dir)
+
+    with pytest.raises(ValueError, match="pr_number"):
+        lc.complete(
+            "abcd1234-issue-1",
+            project_dir,
+            "act-advance",
+            1,
+            {},
+            lock.lease_token,
+        )
+
+    assert (
+        lc.find_journal_event("abcd1234-issue-1", project_dir, "act-advance", "completed") is None
+    )
 
 
 def test_artifact_is_redacted_and_owner_only(

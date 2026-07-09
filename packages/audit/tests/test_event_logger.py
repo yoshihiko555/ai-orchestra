@@ -95,6 +95,16 @@ class TestEmitEvent:
         with pytest.raises(ValueError, match="Unknown event_type"):
             event_logger.emit_event("invalid_type", {}, session_id="s1")
 
+    def test_loop_event_types_are_additive(self) -> None:
+        """loop-harness 用の audit event_type が既存 set に追加されていることを確認する。"""
+        assert {
+            "session_start",
+            "quality_gate",
+            "loop_start",
+            "loop_iteration",
+            "loop_stop",
+        } <= event_logger.EVENT_TYPES
+
     def test_no_session_id_returns_record_without_write(self, tmp_path: object) -> None:
         """session_id が空の場合、書き込みせずにレコードを返すことを確認する。"""
         record = event_logger.emit_event("session_start", {"packages": []})
