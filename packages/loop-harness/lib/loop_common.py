@@ -28,6 +28,10 @@ HASH_LENGTH = 16
 GIT_TIMEOUT_SECONDS = 5
 _ROOT_CACHE: dict[str, Path] = {}
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+_RESERVED_PROPOSAL_CONTEXT_KEYS = frozenset({"lease_token", "params", "reason"})
+_PUBLIC_STOP_REASONS = frozenset(
+    {"safety_stop", "push_guard_violation", "repo_identity_mismatch", "foreign_live_lease"}
+)
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "guards": {
@@ -366,13 +370,18 @@ def start(
     ttl_seconds: int,
     phase: str = "implementation",
     host: str | None = None,
+    preacquired_lock: LockInfo | None = None,
 ) -> ProposeResult:
     """Create initial state, acquire a lease, and return the first proposal."""
     if state_path(loop_id, project_dir).exists():
         raise InvalidStateError(f"state already exists: {loop_id}; use attach or resume")
-    lock = acquire_lock(loop_id, project_dir, owner_id, ttl_seconds, host)
-    if lock is None:
-        raise ForeignLeaseError(None)
+    if preacquired_lock is None:
+        lock = acquire_lock(loop_id, project_dir, owner_id, ttl_seconds, host)
+        if lock is None:
+            raise ForeignLeaseError(None)
+    else:
+        lock = preacquired_lock
+        _ensure_valid_lease(loop_id, project_dir, lock.lease_token)
     state = _initial_state(loop_id, definition_id, repo_identity_hash, worktree_path, branch, phase)
     append_journal_event(loop_id, project_dir, "loop_created", "step", None, asdict(state))
     _write_state(state, project_dir)
@@ -384,17 +393,40 @@ def propose(
     loop_id: str, project_dir: str, lease_token: str, recover_orphans: bool = False
 ) -> ProposeResult:
     """Reconcile first, then create exactly one pending action."""
+    _ensure_valid_lease(loop_id, project_dir, lease_token)
     foreign = check_foreign_host(loop_id, project_dir)
     if foreign is not None:
         return _foreign_host_stop_result(loop_id, project_dir, foreign)
-    _ensure_valid_lease(loop_id, project_dir, lease_token)
-    reconcile(loop_id, project_dir, lease_token, allow_side_effect_resolution=recover_orphans)
+    reconcile_result = reconcile(
+        loop_id, project_dir, lease_token, allow_side_effect_resolution=recover_orphans
+    )
     state = load_state(loop_id, project_dir)
+    if (
+        recover_orphans
+        and reconcile_result.action_taken == "rerun_required"
+        and state.pending_action is not None
+        and state.pending_action.action == Action.RUN_CHECKER.value
+    ):
+        return _pending_proposal_result(state, state.pending_action, project_dir)
     if state.pending_action is not None:
         raise ProtocolViolationError("pending action must be completed before propose")
     action = _next_action(state, project_dir)
+    if _apply_preproposal_safety_stop_if_needed(state, action):
+        append_journal_event(
+            loop_id,
+            project_dir,
+            "stopped",
+            "step",
+            None,
+            {"stop_reason": state.stop_reason},
+        )
+        state.state_version += 1
+        state.updated_at = now_iso()
+        _write_state(state, project_dir)
+        action = Action.STOP.value
     action_id = f"act-{secrets.token_hex(ACTION_ID_BYTES)}"
     iteration = _next_action_iteration(state, action)
+    params = _proposal_params(state, action, project_dir)
     new_state = copy.deepcopy(state)
     new_state.pending_action = PendingAction(action_id, action, state.phase, iteration, now_iso())
     new_state.state_version += 1
@@ -409,7 +441,13 @@ def propose(
     )
     _write_state(new_state, project_dir)
     return ProposeResult(
-        action, action_id, new_state.state_version, state.phase, state.phase, iteration
+        action=action,
+        action_id=action_id,
+        state_version=new_state.state_version,
+        expected_phase=state.phase,
+        phase=state.phase,
+        iteration=iteration,
+        context=_proposal_context(params),
     )
 
 
@@ -425,14 +463,19 @@ def complete(
     _ensure_valid_lease(loop_id, project_dir, lease_token)
     state = load_state(loop_id, project_dir)
     if state.last_completed_action and state.last_completed_action.action_id == action_id:
+        action = _last_completed_action_name(loop_id, project_dir, state)
         return CompleteResult(
-            True, True, state.last_completed_action.state_version_after, "call propose again"
+            True,
+            True,
+            state.last_completed_action.state_version_after,
+            _complete_next_hint(action),
         )
     if _is_stale_complete(state, action_id, state_version):
         raise StaleActionError(f"stale action: {action_id}")
 
     assert state.pending_action is not None
     action = state.pending_action.action
+    result = _normalize_complete_result(state, action, result, project_dir)
     new_version = state.state_version + 1
     payload = _completed_payload(action, result)
     append_journal_event(loop_id, project_dir, "completed", _actor_for(action), action_id, payload)
@@ -448,7 +491,7 @@ def complete(
     state.state_version = new_version
     state.updated_at = now_iso()
     _write_state(state, project_dir)
-    return CompleteResult(True, False, new_version, "call propose again")
+    return CompleteResult(True, False, new_version, _complete_next_hint(action))
 
 
 def reconcile(
@@ -546,7 +589,7 @@ def apply_action_effect(
         return
     if action == Action.STOP.value:
         state.status = "stopped"
-        state.stop_reason = str(result.get("stop_reason") or "safety_stop")
+        state.stop_reason = str(result.get("stop_reason") or state.stop_reason or "safety_stop")
 
 
 def evaluate_guards(
@@ -728,6 +771,35 @@ def build_audit_payload(
     return redact_payload(payload)
 
 
+def emit_loop_audit_event(
+    event_type: str,
+    project_dir: str,
+    payload: dict[str, Any],
+    *,
+    aid: str | None = None,
+) -> dict[str, Any] | None:
+    """Emit a loop audit event without letting audit failures break the loop protocol."""
+    try:
+        audit_hooks_dir = Path(__file__).resolve().parents[2] / "audit" / "hooks"
+        if str(audit_hooks_dir) not in sys.path:
+            sys.path.insert(0, str(audit_hooks_dir))
+        import event_logger
+
+        trace = event_logger.load_trace_state(project_dir)
+        phase = payload.get("phase") if isinstance(payload.get("phase"), str) else None
+        return event_logger.emit_event(
+            event_type,
+            redact_payload(payload),
+            session_id=str(trace.get("session_id") or ""),
+            tid=str(trace.get("tid") or ""),
+            aid=aid,
+            ctx={"skill": "loop-harness", "phase": phase},
+            project_dir=project_dir,
+        )
+    except Exception:
+        return None
+
+
 def acquire_lock(
     loop_id: str,
     project_dir: str,
@@ -881,13 +953,13 @@ def _with_context(result: ProposeResult, values: dict[str, Any]) -> ProposeResul
     """Return a ProposeResult with added context."""
     context = {**result.context, **values}
     return ProposeResult(
-        result.action,
-        result.action_id,
-        result.state_version,
-        result.expected_phase,
-        result.phase,
-        result.iteration,
-        context,
+        action=result.action,
+        action_id=result.action_id,
+        state_version=result.state_version,
+        expected_phase=result.expected_phase,
+        phase=result.phase,
+        iteration=result.iteration,
+        context=context,
     )
 
 
@@ -906,10 +978,53 @@ def _is_stale_complete(state: LoopState, action_id: str, state_version: int) -> 
 def _completed_payload(action: str, result: dict[str, Any]) -> dict[str, Any]:
     """Build completed journal payload."""
     payload = {"action": action, "result": result}
-    check_result = _extract_check_result_dict(result)
+    check_result = _extract_check_result_payload(result)
     if check_result is not None:
         payload["check_result"] = check_result
     return payload
+
+
+def _normalize_complete_result(
+    state: LoopState, action: str, result: dict[str, Any], project_dir: str
+) -> dict[str, Any]:
+    """Validate and normalize action result before writing durable journal records."""
+    if action != Action.ADVANCE_PHASE.value or _has_failed_push_guard(result):
+        return result
+    if result.get("pr_number") is None:
+        if _advance_requires_pr_number(state, result, project_dir):
+            raise ValueError("pr_number is required for external review phase")
+        return result
+    normalized = dict(result)
+    normalized["pr_number"] = _coerce_pr_number(result["pr_number"])
+    return normalized
+
+
+def _has_failed_push_guard(result: dict[str, Any]) -> bool:
+    """Return True when an advance completion reports a failed push guard."""
+    guard = result.get("push_guard")
+    return isinstance(guard, dict) and not (
+        guard.get("branch_ok", True) and guard.get("repo_identity_ok", True)
+    )
+
+
+def _advance_requires_pr_number(state: LoopState, result: dict[str, Any], project_dir: str) -> bool:
+    """Return True when the next phase requires a PR number for external review."""
+    next_phase = _pending_next_phase(state) or result.get("next_phase")
+    if not next_phase:
+        return False
+    phase_def = _load_phase_definition_by_name(state, project_dir, str(next_phase))
+    return isinstance(_phase_nested(phase_def, ("checker", "external_signal"), None), dict)
+
+
+def _complete_next_hint(action: str) -> str:
+    """Return the next hint after completing an action."""
+    if action in {
+        Action.EXIT_SUCCESS.value,
+        Action.EXIT_FAILURE.value,
+        Action.STOP.value,
+    }:
+        return "loop terminal"
+    return "call propose again"
 
 
 def _actor_for(action: str) -> str:
@@ -938,11 +1053,45 @@ def _next_action(state: LoopState, project_dir: str) -> str:
     if state.status == "running" and _pending_next_phase(state):
         return Action.ADVANCE_PHASE.value
     last_action = _last_completed_action_name(state.loop_id, project_dir, state)
-    return (
-        Action.RUN_CHECKER.value
-        if last_action == Action.RUN_MAKER.value
-        else Action.RUN_MAKER.value
+    if (
+        _phase_uses_external_signal(state, project_dir)
+        and last_action != Action.WAIT_EXTERNAL_REVIEW.value
+    ):
+        return Action.WAIT_EXTERNAL_REVIEW.value
+    if last_action == Action.RUN_MAKER.value:
+        return Action.RUN_CHECKER.value
+    return Action.RUN_MAKER.value
+
+
+def _pending_proposal_result(
+    state: LoopState, pending: PendingAction, project_dir: str
+) -> ProposeResult:
+    """Return an existing rerunnable pending action without creating a new action."""
+    params = _proposal_params(state, pending.action, project_dir)
+    return ProposeResult(
+        action=pending.action,
+        action_id=pending.action_id,
+        state_version=state.state_version,
+        expected_phase=pending.phase,
+        phase=pending.phase,
+        iteration=pending.iteration,
+        context=_proposal_context(params),
     )
+
+
+def _apply_preproposal_safety_stop_if_needed(state: LoopState, action: str) -> bool:
+    """Stop before proposing unsafe advance params."""
+    if action != Action.ADVANCE_PHASE.value:
+        return False
+    if _repo_identity_hash(state.worktree_path) != state.repo_identity_hash:
+        state.status = "stopped"
+        state.stop_reason = "repo_identity_mismatch"
+        return True
+    if _current_branch(state.worktree_path) != state.branch:
+        state.status = "stopped"
+        state.stop_reason = "push_guard_violation"
+        return True
+    return False
 
 
 def _last_completed_action_name(loop_id: str, project_dir: str, state: LoopState) -> str:
@@ -965,6 +1114,141 @@ def _next_action_iteration(state: LoopState, action: str) -> int:
     return max(counters.iteration, 1)
 
 
+def _proposal_params(state: LoopState, action: str, project_dir: str) -> dict[str, Any]:
+    """Build action-specific proposal params from durable state and loop definition."""
+    if action == Action.STOP.value:
+        return {"stop_reason": _normalize_stop_reason(state.stop_reason or "safety_stop")}
+    if action == Action.EXIT_SUCCESS.value:
+        return {"pr_number": state.pr_number}
+
+    phase_def = _load_phase_definition(state, project_dir)
+    if action == Action.RUN_MAKER.value:
+        return {
+            "maker_agent": _phase_nested(phase_def, ("maker", "agent"), None),
+            "prompt_template": _phase_nested(phase_def, ("maker", "prompt_template"), None),
+        }
+    if action == Action.RUN_CHECKER.value:
+        checker = _phase_nested(phase_def, ("checker",), {})
+        return copy.deepcopy(checker) if isinstance(checker, dict) else {}
+    if action == Action.WAIT_EXTERNAL_REVIEW.value:
+        external = _phase_nested(phase_def, ("checker", "external_signal"), {})
+        params = copy.deepcopy(external) if isinstance(external, dict) else {}
+        config = _load_loop_config(project_dir)
+        params.setdefault(
+            "poll_interval_seconds",
+            _nested(config, ("pr_review", "poll_interval_seconds"), 120),
+        )
+        params.setdefault(
+            "timeout_seconds",
+            _nested(config, ("pr_review", "timeout_seconds"), 3600),
+        )
+        params["pr_number"] = state.pr_number
+        return params
+    if action == Action.ADVANCE_PHASE.value:
+        return {
+            "verified_branch": state.branch,
+            "next_phase": _pending_next_phase(state)
+            or _phase_nested(phase_def, ("on_success", "next"), None),
+            "exec": copy.deepcopy(_phase_nested(phase_def, ("on_success", "exec"), [])),
+        }
+    if action == Action.EXIT_FAILURE.value:
+        return {
+            "stop_reason": state.stop_reason or "guard_failed",
+            "draft_pr_exec": copy.deepcopy(_phase_nested(phase_def, ("on_failure", "exec"), [])),
+        }
+    return {}
+
+
+def _proposal_context(params: dict[str, Any]) -> dict[str, Any]:
+    """Expose params both nested and legacy top-level, without reserved-key collisions."""
+    return {
+        "params": params,
+        **{k: v for k, v in params.items() if k not in _RESERVED_PROPOSAL_CONTEXT_KEYS},
+    }
+
+
+def _load_phase_definition(state: LoopState, project_dir: str) -> Any:
+    """Load the current phase definition, failing closed on config drift."""
+    return _load_phase_definition_by_name(state, project_dir, state.phase)
+
+
+def _load_phase_definition_by_name(state: LoopState, project_dir: str, phase: str) -> Any:
+    """Load a named phase definition, failing closed on config drift."""
+    lib_dir = Path(__file__).resolve().parent
+    if str(lib_dir) not in sys.path:
+        sys.path.insert(0, str(lib_dir))
+    import loop_definition
+
+    definition = loop_definition.load_all_definitions(project_dir).get(state.definition_id)
+    if definition is None:
+        raise InvalidStateError(f"loop definition not found: {state.definition_id}")
+    return loop_definition.phase_by_name(definition, phase)
+
+
+def _phase_uses_external_signal(state: LoopState, project_dir: str) -> bool:
+    """Return True when the current phase checker is an external wait."""
+    phase_def = _load_phase_definition(state, project_dir)
+    return isinstance(_phase_nested(phase_def, ("checker", "external_signal"), None), dict)
+
+
+def _load_loop_config(project_dir: str) -> dict[str, Any]:
+    """Load loop-harness config, including package defaults and project override."""
+    lib_dir = Path(__file__).resolve().parent
+    if str(lib_dir) not in sys.path:
+        sys.path.insert(0, str(lib_dir))
+    import loop_definition
+
+    return loop_definition.load_config(project_dir)
+
+
+def _current_branch(worktree_path: str) -> str:
+    """Return the current branch for a loop worktree."""
+    return _git_stdout(["branch", "--show-current"], worktree_path)
+
+
+def _repo_identity_hash(project_dir: str) -> str:
+    """Return the repository identity hash using the worktree manager algorithm."""
+    material = _git_stdout(["config", "--get", "remote.origin.url"], project_dir)
+    if not material:
+        material = _git_stdout(
+            ["rev-parse", "--path-format=absolute", "--git-common-dir"], project_dir
+        )
+    if not material:
+        material = str(Path(project_dir).resolve())
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:8]
+
+
+def _git_stdout(args: list[str], cwd: str) -> str:
+    """Run git and return stdout, or an empty string on failure."""
+    try:
+        completed = subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=GIT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return completed.stdout.strip() if completed.returncode == 0 else ""
+
+
+def _normalize_stop_reason(value: str) -> str:
+    """Normalize safety stop reasons to the public CLI enum."""
+    if value in _PUBLIC_STOP_REASONS:
+        return value
+    if value in {"default_branch", "push_guard_failed"}:
+        return "push_guard_violation"
+    return "safety_stop"
+
+
+def _push_guard_stop_reason(guard: dict[str, Any]) -> str:
+    """Return the public safety stop reason for push guard failure."""
+    if not guard.get("repo_identity_ok", True):
+        return "repo_identity_mismatch"
+    return "push_guard_violation"
+
+
 def _apply_safety_stop_if_needed(state: LoopState, action: str, result: dict[str, Any]) -> bool:
     """Apply safety stop for push guard violations."""
     guard = result.get("push_guard")
@@ -973,7 +1257,7 @@ def _apply_safety_stop_if_needed(state: LoopState, action: str, result: dict[str
     if guard.get("branch_ok", True) and guard.get("repo_identity_ok", True):
         return False
     state.status = "stopped"
-    state.stop_reason = str(guard.get("reason") or "push_guard_failed")
+    state.stop_reason = _push_guard_stop_reason(guard)
     return True
 
 
@@ -985,8 +1269,25 @@ def _pending_next_phase(state: LoopState) -> str | None:
     return str(value) if value else None
 
 
+def _coerce_pr_number(value: Any) -> int:
+    """Return a positive PR number or reject invalid advance results before journaling."""
+    if isinstance(value, bool):
+        raise ValueError("pr_number must be a positive integer")
+    if isinstance(value, int):
+        number = value
+    elif isinstance(value, str) and value.strip().isdigit():
+        number = int(value.strip())
+    else:
+        raise ValueError("pr_number must be a positive integer")
+    if number < 1:
+        raise ValueError("pr_number must be a positive integer")
+    return number
+
+
 def _apply_advance_phase(state: LoopState, result: dict[str, Any]) -> None:
     """Apply a previously proposed phase advance."""
+    if result.get("pr_number") is not None:
+        state.pr_number = _coerce_pr_number(result["pr_number"])
     next_phase = _pending_next_phase(state) or result.get("next_phase")
     if not next_phase:
         state.status = "running"
@@ -1035,6 +1336,24 @@ def _extract_check_result_dict(result: dict[str, Any]) -> dict[str, Any] | None:
     """Return check_result from a result wrapper if present."""
     check_result = result.get("check_result")
     return check_result if isinstance(check_result, dict) else None
+
+
+def _extract_check_result_payload(result: dict[str, Any]) -> dict[str, Any] | None:
+    """Return wrapper or raw PhaseCheckResult payload from a completion result."""
+    check_result = _extract_check_result_dict(result)
+    if check_result is not None:
+        return check_result
+    return result if _is_phase_check_result_dict(result) else None
+
+
+def _is_phase_check_result_dict(result: dict[str, Any]) -> bool:
+    """Return True for the raw PhaseCheckResult shape."""
+    return (
+        isinstance(result.get("passed"), bool)
+        and isinstance(result.get("signature"), str)
+        and isinstance(result.get("infrastructure_failure"), bool)
+        and isinstance(result.get("results"), list)
+    )
 
 
 def _require_journal_consistency(
@@ -1609,22 +1928,22 @@ def _foreign_host_stop_result(loop_id: str, project_dir: str, lock: LockInfo) ->
     """Return a stop proposal for a live foreign-host lease."""
     state = load_state(loop_id, project_dir)
     action_id = f"act-{secrets.token_hex(ACTION_ID_BYTES)}"
-    context = {"stop_reason": "foreign_live_lease", "foreign_host": lock.host}
+    params = {"stop_reason": "foreign_live_lease", "foreign_host": lock.host}
     if state.status != "stopped":
         state.status = "stopped"
         state.stop_reason = "foreign_live_lease"
         state.state_version += 1
         state.updated_at = now_iso()
-        append_journal_event(loop_id, project_dir, "stopped", "step", None, context)
+        append_journal_event(loop_id, project_dir, "stopped", "step", None, params)
         _write_state(state, project_dir)
     return ProposeResult(
-        Action.STOP.value,
-        action_id,
-        state.state_version,
-        state.phase,
-        state.phase,
-        state.iteration,
-        context,
+        action=Action.STOP.value,
+        action_id=action_id,
+        state_version=state.state_version,
+        expected_phase=state.phase,
+        phase=state.phase,
+        iteration=state.iteration,
+        context=_proposal_context(params),
     )
 
 
