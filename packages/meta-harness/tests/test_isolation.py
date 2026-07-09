@@ -239,8 +239,9 @@ class TestResolveIsolationBackend:
                 proposer_tool="unknown",
             )
 
-    def test_claude_bare_launch_is_explicitly_unimplemented(self, git_project, tmp_path) -> None:
+    def test_claude_bare_requires_api_key(self, git_project, tmp_path, monkeypatch) -> None:
         view_dir, ephemeral_home = _make_view_and_home(tmp_path)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
         with pytest.raises(iso.IsolationError, match="claude-bare"):
             iso.resolve_isolation_backend(
@@ -251,6 +252,38 @@ class TestResolveIsolationBackend:
                 settings_dir=tmp_path,
                 proposer_tool="claude-bare",
             )
+
+    def test_claude_bare_env_includes_api_key_only_when_available(
+        self, git_project, tmp_path, monkeypatch
+    ) -> None:
+        view_dir, ephemeral_home = _make_view_and_home(tmp_path)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-anthropic-key")
+        monkeypatch.setenv("META_HARNESS_CANARY_SECRET", "do-not-leak")
+        monkeypatch.setattr(iso.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+        def runner(cmd, **kwargs):
+            if cmd == ["/usr/bin/srt", "--version"]:
+                return _completed(0, stdout="0.0.64")
+            if cmd[:3] == ["git", "worktree", "list"]:
+                return _completed(0, stdout=f"worktree {git_project}\n")
+            if cmd[0] == "/usr/bin/srt":
+                assert kwargs["env"]["ANTHROPIC_API_KEY"] == "sk-test-anthropic-key"
+                assert "META_HARNESS_CANARY_SECRET" not in kwargs["env"]
+                return _completed(1, stderr="blocked by sandbox")
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        launch = iso.resolve_isolation_backend(
+            view_dir=view_dir,
+            main_root=git_project,
+            config=_config(),
+            ephemeral_home=ephemeral_home,
+            settings_dir=tmp_path,
+            proposer_tool="claude-bare",
+            runner=runner,
+        )
+
+        assert launch.env["ANTHROPIC_API_KEY"] == "sk-test-anthropic-key"
+        assert launch.settings["network"]["allowedDomains"] == iso.CLAUDE_BARE_ALLOWED_DOMAINS
 
     def test_missing_srt_fails_closed(self, git_project, tmp_path, monkeypatch) -> None:
         view_dir, ephemeral_home = _make_view_and_home(tmp_path)

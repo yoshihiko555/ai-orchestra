@@ -85,6 +85,7 @@ DEFAULTS: dict[str, Any] = {
         "overfit_drop_pt": 15,
         "budget_usd_per_iteration": 1.0,
         "max_turns": 40,
+        "timeout_seconds": 600,
         "max_focus_runs": 5,
         "max_overlay_bytes": 200000,
         "model": None,

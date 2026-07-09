@@ -92,13 +92,15 @@ class TestEvaluateArgparseContract:
         assert "invalid candidate id" in result.stderr
 
 
-class TestPhase23Stubs:
-    def test_propose_stub_exits_2(self, git_project: Path, run_meta) -> None:
+class TestProposeArgparseContract:
+    def test_propose_missing_target_exits_2(self, git_project: Path, run_meta) -> None:
         run_meta("init", project=git_project, check=True)
         result = run_meta("propose", project=git_project, check=False)
         assert result.returncode == 2
-        assert "not implemented yet" in result.stderr
+        assert "--target" in result.stderr
 
+
+class TestPhase23Stubs:
     def test_promote_stub_exits_2(self, git_project: Path, run_meta) -> None:
         run_meta("init", project=git_project, check=True)
         result = run_meta("promote", project=git_project, check=False)

@@ -85,6 +85,26 @@ class TestLedgerEventSchemaOneOf:
         }
         assert mh.validate_against_schema(instance, schema, SCHEMA_DIR) == []
 
+    def test_candidate_registered_proposal_tokens_used_is_allowed(self) -> None:
+        schema = _load("ledger.event.schema.json")
+        instance = {
+            "event": "candidate_registered",
+            "ts": "2026-01-01T00:00:00+09:00",
+            "schema_version": "1.0",
+            "cand_id": "cand-x",
+            "parent_id": None,
+            "generation": 0,
+            "target": "claude-harness",
+            "created_by": "proposer",
+            "proposal": {
+                "theme": "tighten example",
+                "based_on_runs": ["run-1"],
+                "cost_usd": 0.0,
+                "tokens_used": 123,
+            },
+        }
+        assert mh.validate_against_schema(instance, schema, SCHEMA_DIR) == []
+
     def test_ambiguous_or_no_match_event_is_reported(self) -> None:
         schema = _load("ledger.event.schema.json")
         instance = {"event": "not_a_real_event"}

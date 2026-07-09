@@ -106,11 +106,10 @@ class SrtBackend:
         proposer_tool: str,
         runner: SubprocessRunner = subprocess.run,
     ) -> IsolationLaunch:
-        if proposer_tool == "claude-bare":
-            raise IsolationError("proposer.tool 'claude-bare' launch is not implemented yet")
         verify_no_instruction_files(view_dir)
         if proposer_tool == "codex":
             ensure_empty_agents_file(ephemeral_home)
+        extra_env = _extra_env_for_tool(proposer_tool, ephemeral_home)
         srt_path = _require_srt_binary()
         srt_version = _get_srt_version(srt_path, runner=runner)
         _check_version_pin(config, srt_version)
@@ -123,7 +122,6 @@ class SrtBackend:
             runner=runner,
         )
         settings_path = write_srt_settings(settings, settings_dir)
-        extra_env = {"CODEX_HOME": str(ephemeral_home)} if proposer_tool == "codex" else {}
         env = build_minimal_env(extra_env)
         _run_srt_canary_self_test(
             srt_path=srt_path,
@@ -281,6 +279,17 @@ def ensure_empty_agents_file(ephemeral_home: Path) -> Path:
     with os.fdopen(fd, "w", encoding="utf-8"):
         pass
     return agents_path
+
+
+def _extra_env_for_tool(proposer_tool: str, ephemeral_home: Path) -> dict[str, str]:
+    if proposer_tool == "codex":
+        return {"CODEX_HOME": str(ephemeral_home)}
+    if proposer_tool == "claude-bare":
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise IsolationError("proposer.tool 'claude-bare' requires ANTHROPIC_API_KEY")
+        return {"ANTHROPIC_API_KEY": api_key}
+    raise IsolationError(f"unsupported proposer.tool: {proposer_tool!r}")
 
 
 def derive_deny_read_paths(

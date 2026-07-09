@@ -52,6 +52,7 @@ proposer:
   overfit_drop_pt: 15
   budget_usd_per_iteration: 1.0 # 実測待ち。§14 参照
   max_turns: 40
+  timeout_seconds: 600 # codex backend の wall-clock timeout（秒）。超過時は fail-closed
   max_focus_runs: 5
   max_overlay_bytes: 200000
   model: null # null = セッション既定モデル

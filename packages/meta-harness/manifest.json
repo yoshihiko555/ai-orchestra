@@ -1,7 +1,7 @@
 {
   "name": "meta-harness",
   "version": "0.1.0",
-  "description": "候補ハーネスの評価・進化基盤（Phase 1a: store I/O・ledger 畳み込み・Pareto 判定・schema 検証、Phase 1b: evaluate 実行機構）",
+  "description": "候補ハーネスの評価・進化基盤（Phase 1a: store I/O・ledger 畳み込み・Pareto 判定・schema 検証、Phase 1b: evaluate 実行機構、Phase 2: propose）",
   "depends": ["core"],
   "hooks": {},
   "files": [],
@@ -11,7 +11,7 @@
   "scripts": [
     {
       "path": "scripts/meta_harness.py",
-      "description": "meta-harness CLI: init/register/frontier/status/purge（Phase 1a）・evaluate（Phase 1b）。propose/promote/loop は Phase 2/3 のスタブ"
+      "description": "meta-harness CLI: init/register/frontier/status/purge（Phase 1a）・evaluate（Phase 1b）・propose（Phase 2）。promote/loop は Phase 2/3 のスタブ"
     }
   ],
   "config": ["config/meta-harness.yaml"]

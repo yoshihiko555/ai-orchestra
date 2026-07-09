@@ -86,18 +86,20 @@ class TestProposerPrompt:
             config={"proposer": {"max_overlay_bytes": 12345}},
             package_dir=PACKAGE_DIR,
             target="claude-harness",
-            focus_run_id="run-focus",
+            focus_run_ids=("run-focus-a", "run-focus-b"),
             focus_candidate_id="cand-focus",
         )
 
         assert str(view_dir.resolve()) in prompt
         assert "target: claude-harness" in prompt
-        assert "focus run: run-focus" in prompt
+        assert "focus runs: run-focus-a, run-focus-b" in prompt
         assert "focus candidate: cand-focus" in prompt
         assert "cand-frontier" in prompt
         assert "quality_mean=87.500" in prompt
         assert "cost_mean=1234.000" in prompt
         assert "変更合計は 12345 バイト以内" in prompt
+        assert "events.jsonl を選択的に検査" in prompt
+        assert "events.jsonl.gz" not in prompt
         assert "untrusted input" in prompt
         assert "$view_dir" not in prompt
         assert "$frontier_summary" not in prompt
@@ -111,7 +113,7 @@ class TestProposerPrompt:
             target="skill:example",
         )
 
-        assert "focus run: (none)" in prompt
+        assert "focus runs: (none)" in prompt
         assert "focus candidate: (none)" in prompt
         assert "- frontier: (none)" in prompt
         assert "変更合計は 200000 バイト以内" in prompt
