@@ -120,6 +120,23 @@ def test_ev30_records_baseline_before_iteration_head(
     ]
 
 
+def test_ev30_records_empty_baseline_when_pr_does_not_exist_yet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir = _setup_state(tmp_path, monkeypatch)
+    lease_token = _lease(project_dir)
+    client = FakeClient({})
+
+    baseline = prw.record_baseline("abcd1234-issue-1", project_dir, None, client, lease_token)
+
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    assert baseline.baseline_review_id == 0
+    assert baseline.processed_comment_ids == ()
+    assert state.pr_review["baseline_review_id"] == 0
+    assert state.pr_review["processed_comment_ids"] == []
+    assert client.calls == []
+
+
 def test_ev31_checkrun_fallback_is_disabled_when_allowlist_empty() -> None:
     client = FakeClient(
         {
@@ -164,6 +181,105 @@ def test_ev31_checkrun_fallback_requires_configured_allowlist() -> None:
     assert outcome.signal == "check_run_completed"
     assert outcome.completed is True
     assert outcome.check_run_names == ("Codex Review",)
+
+
+def test_checkrun_completion_preserves_observed_untrusted_reviews() -> None:
+    client = FakeClient(
+        {
+            "repos/owner/repo/pulls/12/reviews": [
+                _untrusted(
+                    {
+                        "id": 11,
+                        "state": "COMMENTED",
+                        "submitted_at": "2026-07-09T00:00:01+00:00",
+                        "body": "untrusted review",
+                    }
+                )
+            ],
+            "repos/owner/repo/commits/abc/check-runs": {
+                "check_runs": [{"name": "Codex Review", "status": "completed"}]
+            },
+        }
+    )
+
+    outcome = prw.wait_for_completion(
+        12,
+        {"baseline_review_id": 10, "iteration_head_sha": "abc"},
+        _config(checkruns=("Codex Review",)),
+        client,
+        sleeper=lambda _seconds: None,
+    )
+
+    assert outcome.signal == "check_run_completed"
+    assert outcome.ignored_untrusted_review_count == 1
+    assert outcome.ignored_untrusted_reviews[0].review_id == 11
+
+
+def test_wait_for_completion_ignores_unsubmitted_draft_reviews() -> None:
+    client = FakeClient(
+        {
+            "repos/owner/repo/pulls/12/reviews": [
+                _trusted({"id": 11, "state": "PENDING", "submitted_at": None, "body": "[P1] draft"})
+            ]
+        }
+    )
+
+    outcome = prw.wait_for_completion(
+        12,
+        {"baseline_review_id": 10},
+        _config(),
+        client,
+        sleeper=lambda _seconds: None,
+    )
+
+    assert outcome.signal == "timeout"
+    assert outcome.completed is False
+    assert outcome.ignored_untrusted_review_count == 0
+
+
+def test_wait_for_completion_returns_and_records_untrusted_submitted_reviews(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir = _setup_state(tmp_path, monkeypatch)
+    lease_token = _lease(project_dir)
+    client = FakeClient(
+        {
+            "repos/owner/repo/pulls/12/reviews": [
+                _untrusted(
+                    {
+                        "id": 11,
+                        "state": "COMMENTED",
+                        "submitted_at": "2026-07-09T00:00:01+00:00",
+                        "body": "[P1] untrusted submitted review",
+                    }
+                )
+            ]
+        }
+    )
+
+    outcome = prw.wait_for_completion(
+        12,
+        {"baseline_review_id": 10},
+        _config(),
+        client,
+        sleeper=lambda _seconds: None,
+    )
+    recorded = prw.record_ignored_untrusted_reviews(
+        "abcd1234-issue-1", project_dir, outcome, lease_token
+    )
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    journal = Path(project_dir) / ".claude" / "loop" / "abcd1234-issue-1" / "journal.jsonl"
+    events = [json.loads(line) for line in journal.read_text(encoding="utf-8").splitlines()]
+
+    assert outcome.signal == "timeout"
+    assert outcome.ignored_untrusted_review_count == 1
+    assert outcome.ignored_untrusted_reviews[0].review_id == 11
+    assert recorded == 1
+    assert state.ignored_untrusted_comment_count == 1
+    ignored_events = [event for event in events if event["event"] == "ignored_untrusted_comment"]
+    assert ignored_events[0]["payload"]["source"] == "review"
+    assert ignored_events[0]["payload"]["comment_id"] == "11"
+    assert ignored_events[0]["payload"]["notification_required"] is True
 
 
 def test_ev32_timeout_is_not_infrastructure_failure_but_api_error_is() -> None:
@@ -331,9 +447,98 @@ def test_ev33_ev34_ev35_collects_only_trusted_post_baseline_unprocessed_comments
     assert ignored_events[0]["payload"]["notification_required"] is True
 
 
+def test_collect_review_findings_accepts_same_second_post_baseline_comments(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={
+            "baseline_review_id": 10,
+            "baseline_recorded_at": "2026-07-09T00:00:00.900000+00:00",
+            "processed_comment_ids": [],
+            "findings": {},
+        },
+    )
+    client = FakeClient(
+        {
+            "repos/owner/repo/pulls/12/reviews": [],
+            "repos/owner/repo/pulls/12/comments": [
+                _trusted(
+                    {
+                        "id": 5,
+                        "created_at": "2026-07-09T00:00:00+00:00",
+                        "pull_request_review_id": 11,
+                        "body": "[P2] Same-second review comment",
+                        "path": "app.py",
+                        "line": 10,
+                    }
+                )
+            ],
+            "repos/owner/repo/issues/12/comments": [],
+        }
+    )
+
+    result = prw.collect_review_findings(
+        "abcd1234-issue-1", project_dir, 12, _config(), client, 1, _lease(project_dir)
+    )
+
+    assert [item.source_comment_id for item in result.findings] == ["review_comment:5"]
+
+
+def test_collect_review_findings_skips_positive_review_summaries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={
+            "baseline_review_id": 10,
+            "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+            "processed_comment_ids": [],
+            "findings": {},
+        },
+    )
+    client = FakeClient(
+        {
+            "repos/owner/repo/pulls/12/reviews": [
+                _trusted(
+                    {
+                        "id": 11,
+                        "state": "APPROVED",
+                        "submitted_at": "2026-07-09T00:00:01+00:00",
+                        "body": "LGTM",
+                    }
+                )
+            ],
+            "repos/owner/repo/pulls/12/comments": [],
+            "repos/owner/repo/issues/12/comments": [],
+        }
+    )
+
+    result = prw.collect_review_findings(
+        "abcd1234-issue-1", project_dir, 12, _config(), client, 1, _lease(project_dir)
+    )
+
+    assert result.findings == ()
+    assert "review:11" in result.processed_comment_ids
+
+
 def test_ev36_reviewer_allowlist_is_required() -> None:
     with pytest.raises(prw.ConfigError, match="reviewer_allowlist is required"):
         prw.parse_pr_review_config({"pr_review": {}})
+
+
+def test_ev37_custom_severity_marker_regex_is_validated() -> None:
+    with pytest.raises(prw.ConfigError, match="severity_markers"):
+        prw.parse_pr_review_config(
+            {
+                "pr_review": {
+                    "reviewer_allowlist": [{"app_slug": "codex-app"}],
+                    "severity_markers": {"high": "["},
+                }
+            }
+        )
 
 
 def test_ev37_severity_parsing_and_classification_failsafe() -> None:

@@ -485,6 +485,38 @@ def test_wait_external_review_params_include_config_defaults(
     }
 
 
+def test_wait_external_review_completion_applies_checker_guards(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir, lock = _setup_loop(tmp_path, monkeypatch, status="waiting_external")
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.phase = "pr_review_response"
+    state.pending_action = lc.PendingAction(
+        "act-wait",
+        lc.Action.WAIT_EXTERNAL_REVIEW.value,
+        "pr_review_response",
+        1,
+        lc.now_iso(),
+    )
+    state.state_version = 1
+    lc._write_state(state, project_dir)
+
+    result = lc.complete(
+        "abcd1234-issue-1",
+        project_dir,
+        "act-wait",
+        1,
+        {"completed": True, "check_result": _check_result(True, "")},
+        lock.lease_token,
+    )
+
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    assert result.ok is True
+    assert state.status == "passed"
+    assert state.last_check_result is not None
+    assert state.last_check_result["passed"] is True
+
+
 def test_advance_phase_persists_pr_number() -> None:
     state = lc._initial_state(
         "loop", "issue-loop", "hash", "/tmp/wt", "loop/issue-1", "implementation"

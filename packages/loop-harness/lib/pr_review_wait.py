@@ -32,6 +32,18 @@ EXCERPT_LIMIT = 240
 REVIEW_SOURCES = frozenset({"review", "review_comment", "issue_comment"})
 SEVERITY_ORDER = {"low": 0, "medium": 1, "high": 2, "critical": 3}
 SEVERITIES = frozenset(SEVERITY_ORDER)
+POSITIVE_REVIEW_SUMMARIES = frozenset(
+    {
+        "all good",
+        "approved",
+        "lgtm",
+        "looks good",
+        "looks good to me",
+        "no issues",
+        "no issues found",
+        "nothing to fix",
+    }
+)
 DEFAULT_STOPWORDS_EN = frozenset(
     {
         "a",
@@ -130,6 +142,17 @@ class BaselineRecord:
 
 
 @dataclass(frozen=True)
+class IgnoredUntrustedReview:
+    """Submitted review ignored because it does not match the reviewer allowlist."""
+
+    review_id: int
+    login: str | None
+    author_association: str | None
+    submitted_at: str | None
+    body_excerpt: str
+
+
+@dataclass(frozen=True)
 class CompletionOutcome:
     """Result of polling for external review completion."""
 
@@ -140,6 +163,7 @@ class CompletionOutcome:
     review_ids: tuple[int, ...] = ()
     check_run_names: tuple[str, ...] = ()
     ignored_untrusted_review_count: int = 0
+    ignored_untrusted_reviews: tuple[IgnoredUntrustedReview, ...] = ()
     error: str | None = None
 
 
@@ -263,7 +287,7 @@ def parse_pr_review_config(config: dict[str, Any]) -> PrReviewConfig:
 def record_baseline(
     loop_id: str,
     project_dir: str,
-    pr_number: int,
+    pr_number: int | None,
     client: GhApiClient,
     lease_token: str,
     *,
@@ -271,15 +295,22 @@ def record_baseline(
 ) -> BaselineRecord:
     """Record review/comment baseline before push or PR creation."""
     recorded_at = lc.now_iso()
-    reviews = _fetch_reviews(client, pr_number)
-    review_comments = _fetch_review_comments(client, pr_number)
-    issue_comments = _fetch_issue_comments(client, pr_number)
-    baseline_review_id = max([_int_or_zero(item.get("id")) for item in reviews] or [0])
-    processed_ids = {
-        *(_comment_key(_review_item_from_review(item)) for item in reviews),
-        *(_comment_key(_review_item_from_review_comment(item)) for item in review_comments),
-        *(_comment_key(_review_item_from_issue_comment(item)) for item in issue_comments),
-    }
+    if pr_number is None or pr_number <= 0:
+        reviews: list[dict[str, Any]] = []
+        review_comments: list[dict[str, Any]] = []
+        issue_comments: list[dict[str, Any]] = []
+        baseline_review_id = 0
+        processed_ids: set[str] = set()
+    else:
+        reviews = _fetch_reviews(client, pr_number)
+        review_comments = _fetch_review_comments(client, pr_number)
+        issue_comments = _fetch_issue_comments(client, pr_number)
+        baseline_review_id = max([_int_or_zero(item.get("id")) for item in reviews] or [0])
+        processed_ids = {
+            *(_comment_key(_review_item_from_review(item)) for item in reviews),
+            *(_comment_key(_review_item_from_review_comment(item)) for item in review_comments),
+            *(_comment_key(_review_item_from_issue_comment(item)) for item in issue_comments),
+        }
     state = lc.load_state(loop_id, project_dir)
     pr_review = _ensure_pr_review_state(state.pr_review)
     existing = set(_processed_comment_ids(pr_review))
@@ -356,23 +387,25 @@ def wait_for_completion(
 ) -> CompletionOutcome:
     """Poll until a trusted review or configured check-run completion appears."""
     start = monotonic()
-    ignored_keys: set[str] = set()
+    ignored_reviews: dict[str, IgnoredUntrustedReview] = {}
     while True:
         try:
             review_outcome = _review_completion_outcome(
-                pr_number, baseline, config, client, ignored_keys
+                pr_number, baseline, config, client, ignored_reviews
             )
             if review_outcome.completed:
                 return review_outcome
             check_outcome = _checkrun_completion_outcome(baseline, config, client)
             if check_outcome.completed:
-                return check_outcome
+                return _completion_outcome_with_ignored_reviews(check_outcome, ignored_reviews)
         except GitHubApiError as exc:
             return CompletionOutcome(
                 "api_error",
                 completed=False,
                 timed_out=False,
                 infrastructure_failure=True,
+                ignored_untrusted_review_count=len(ignored_reviews),
+                ignored_untrusted_reviews=_ignored_review_tuple(ignored_reviews),
                 error=str(exc),
             )
         if monotonic() - start >= config.timeout_seconds:
@@ -381,7 +414,8 @@ def wait_for_completion(
                 completed=False,
                 timed_out=True,
                 infrastructure_failure=False,
-                ignored_untrusted_review_count=len(ignored_keys),
+                ignored_untrusted_review_count=len(ignored_reviews),
+                ignored_untrusted_reviews=_ignored_review_tuple(ignored_reviews),
             )
         if heartbeat is not None:
             heartbeat()
@@ -586,11 +620,34 @@ def phase_check_from_review_findings(result: ReviewFindingsResult) -> lc.PhaseCh
 
 def phase_check_from_completion_outcome(outcome: CompletionOutcome) -> lc.PhaseCheckResult:
     """Represent timeout/API polling outcomes as checker-compatible results."""
+    metadata = _completion_outcome_metadata(outcome)
     if outcome.infrastructure_failure:
-        return lc.PhaseCheckResult(False, [], "pr_review_api_error", True)
+        return lc.PhaseCheckResult(False, [], "pr_review_api_error", True, metadata=metadata)
     if outcome.timed_out:
-        return lc.PhaseCheckResult(False, [], "pr_review_timeout", False)
-    return lc.PhaseCheckResult(True, [], "", False)
+        return lc.PhaseCheckResult(False, [], "pr_review_timeout", False, metadata=metadata)
+    return lc.PhaseCheckResult(True, [], "", False, metadata=metadata)
+
+
+def record_ignored_untrusted_reviews(
+    loop_id: str,
+    project_dir: str,
+    outcome: CompletionOutcome,
+    lease_token: str,
+    *,
+    action_id: str | None = None,
+) -> int:
+    """Persist untrusted submitted reviews observed while polling."""
+    if not outcome.ignored_untrusted_reviews:
+        return 0
+    state = lc.load_state(loop_id, project_dir)
+    state.ignored_untrusted_comment_count += len(outcome.ignored_untrusted_reviews)
+    state.state_version += 1
+    state.updated_at = lc.now_iso()
+    lc._ensure_valid_lease(loop_id, project_dir, lease_token)
+    for item in outcome.ignored_untrusted_reviews:
+        _journal_ignored_untrusted_review(loop_id, project_dir, action_id, item)
+    lc._write_state(state, project_dir)
+    return len(outcome.ignored_untrusted_reviews)
 
 
 def _fetch_reviews(client: GhApiClient, pr_number: int) -> list[dict[str, Any]]:
@@ -652,7 +709,7 @@ def _review_completion_outcome(
     baseline: dict[str, Any],
     config: PrReviewConfig,
     client: GhApiClient,
-    ignored_keys: set[str],
+    ignored_reviews: dict[str, IgnoredUntrustedReview],
 ) -> CompletionOutcome:
     baseline_id = _int_or_zero(baseline.get("baseline_review_id"))
     reviews = _fetch_reviews(client, pr_number)
@@ -661,17 +718,22 @@ def _review_completion_outcome(
         review_id = _int_or_zero(item.get("id"))
         if review_id <= baseline_id:
             continue
+        if not _is_submitted_review(item):
+            continue
         if verify_origin(item, config.reviewer_allowlist):
             trusted_ids.append(review_id)
             continue
-        ignored_keys.add(f"review:{review_id}")
+        ignored_reviews.setdefault(
+            f"review:{review_id}", _ignored_untrusted_review_from_review(item, review_id)
+        )
     if not trusted_ids:
         return CompletionOutcome(
             "pending",
             completed=False,
             timed_out=False,
             infrastructure_failure=False,
-            ignored_untrusted_review_count=len(ignored_keys),
+            ignored_untrusted_review_count=len(ignored_reviews),
+            ignored_untrusted_reviews=_ignored_review_tuple(ignored_reviews),
         )
     return CompletionOutcome(
         "review_submitted",
@@ -679,7 +741,8 @@ def _review_completion_outcome(
         timed_out=False,
         infrastructure_failure=False,
         review_ids=tuple(sorted(trusted_ids)),
-        ignored_untrusted_review_count=len(ignored_keys),
+        ignored_untrusted_review_count=len(ignored_reviews),
+        ignored_untrusted_reviews=_ignored_review_tuple(ignored_reviews),
     )
 
 
@@ -709,10 +772,79 @@ def _checkrun_completion_outcome(
     )
 
 
+def _completion_outcome_metadata(outcome: CompletionOutcome) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    if outcome.ignored_untrusted_review_count:
+        metadata["ignored_untrusted_review_count"] = outcome.ignored_untrusted_review_count
+    if outcome.ignored_untrusted_reviews:
+        metadata["ignored_untrusted_reviews"] = [
+            _ignored_untrusted_review_dict(item) for item in outcome.ignored_untrusted_reviews
+        ]
+    if outcome.error:
+        metadata["error"] = outcome.error
+    return metadata
+
+
+def _completion_outcome_with_ignored_reviews(
+    outcome: CompletionOutcome,
+    ignored_reviews: dict[str, IgnoredUntrustedReview],
+) -> CompletionOutcome:
+    if not ignored_reviews:
+        return outcome
+    return CompletionOutcome(
+        outcome.signal,
+        completed=outcome.completed,
+        timed_out=outcome.timed_out,
+        infrastructure_failure=outcome.infrastructure_failure,
+        review_ids=outcome.review_ids,
+        check_run_names=outcome.check_run_names,
+        ignored_untrusted_review_count=len(ignored_reviews),
+        ignored_untrusted_reviews=_ignored_review_tuple(ignored_reviews),
+        error=outcome.error,
+    )
+
+
+def _ignored_untrusted_review_dict(item: IgnoredUntrustedReview) -> dict[str, Any]:
+    return {
+        "review_id": item.review_id,
+        "login": item.login,
+        "author_association": item.author_association,
+        "submitted_at": item.submitted_at,
+        "body_excerpt": item.body_excerpt,
+    }
+
+
+def _ignored_review_tuple(
+    ignored_reviews: dict[str, IgnoredUntrustedReview],
+) -> tuple[IgnoredUntrustedReview, ...]:
+    return tuple(sorted(ignored_reviews.values(), key=lambda item: item.review_id))
+
+
+def _ignored_untrusted_review_from_review(
+    raw: dict[str, Any], review_id: int
+) -> IgnoredUntrustedReview:
+    user = raw.get("user") if isinstance(raw.get("user"), dict) else {}
+    return IgnoredUntrustedReview(
+        review_id=review_id,
+        login=_optional_str(user.get("login")),
+        author_association=_optional_str(raw.get("author_association")),
+        submitted_at=_optional_str(raw.get("submitted_at")),
+        body_excerpt=_redacted_excerpt(str(raw.get("body") or "")),
+    )
+
+
+def _is_submitted_review(raw: dict[str, Any]) -> bool:
+    if not _optional_str(raw.get("submitted_at")):
+        return False
+    return str(raw.get("state") or "").upper() != "PENDING"
+
+
 def _finding_from_item(
     item: ReviewItem, key: str, config: PrReviewConfig, iteration: int
 ) -> ImportedFinding | None:
     if not item.body.strip():
+        return None
+    if _is_positive_review_summary(item):
         return None
     severity = classify_severity(item.body, config)
     signature = normalize_signature(item, config.dedup)
@@ -725,6 +857,13 @@ def _finding_from_item(
         line=item.line if item.line is not None else item.original_line,
         needs_classification=severity.needs_classification,
     )
+
+
+def _is_positive_review_summary(item: ReviewItem) -> bool:
+    if item.source != "review":
+        return False
+    normalized = re.sub(r"\s+", " ", item.body).strip().casefold().rstrip(".!")
+    return normalized in POSITIVE_REVIEW_SUMMARIES
 
 
 def _review_item_signature_payload(item: ReviewItem) -> dict[str, Any]:
@@ -798,6 +937,26 @@ def _journal_ignored_untrusted(
     )
 
 
+def _journal_ignored_untrusted_review(
+    loop_id: str, project_dir: str, action_id: str | None, item: IgnoredUntrustedReview
+) -> None:
+    lc.append_journal_event(
+        loop_id,
+        project_dir,
+        "ignored_untrusted_comment",
+        "waiter",
+        action_id,
+        {
+            "source": "review",
+            "comment_id": str(item.review_id),
+            "login": item.login,
+            "author_association": item.author_association,
+            "body_excerpt": item.body_excerpt,
+            "notification_required": True,
+        },
+    )
+
+
 def _is_importable(
     item: ReviewItem, baseline: dict[str, Any], processed_comment_ids: set[str]
 ) -> bool:
@@ -817,7 +976,11 @@ def _is_after_baseline_time(item: ReviewItem, baseline_recorded_at: str) -> bool
     baseline_time = _parse_datetime(baseline_recorded_at)
     if item_time is None or baseline_time is None:
         return False
-    return item_time > baseline_time
+    return _truncate_to_second(item_time) >= _truncate_to_second(baseline_time)
+
+
+def _truncate_to_second(value: datetime) -> datetime:
+    return value.replace(microsecond=0)
 
 
 def _baseline_from_state(pr_review: dict[str, Any]) -> dict[str, Any]:
@@ -899,11 +1062,22 @@ def _parse_severity_markers(value: Any) -> tuple[tuple[str, str], ...]:
     markers: list[tuple[str, str]] = []
     for key, raw in value.items():
         if str(key) in SEVERITIES:
-            markers.extend((str(pattern), str(key)) for pattern in _string_list(raw))
+            for pattern in _string_list(raw):
+                markers.append(_validated_severity_marker(str(pattern), str(key)))
             continue
         if str(raw) in SEVERITIES:
-            markers.append((str(key), str(raw)))
+            markers.append(_validated_severity_marker(str(key), str(raw)))
     return tuple(markers)
+
+
+def _validated_severity_marker(pattern: str, severity: str) -> tuple[str, str]:
+    try:
+        re.compile(pattern)
+    except re.error as exc:
+        raise ConfigError(
+            f"invalid pr_review.severity_markers regex for {severity}: {pattern}"
+        ) from exc
+    return pattern, severity
 
 
 def _explicit_severity(

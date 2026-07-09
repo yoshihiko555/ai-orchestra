@@ -600,6 +600,9 @@ def apply_action_effect(
         _apply_checker_result(state, result, project_dir, loop_id, action_id)
         return
     if action == Action.WAIT_EXTERNAL_REVIEW.value:
+        if _extract_check_result_payload(result) is not None:
+            _apply_checker_result(state, result, project_dir, loop_id, action_id)
+            return
         state.status = "waiting_external" if not result.get("completed") else "running"
         return
     if action == Action.ADVANCE_PHASE.value:
