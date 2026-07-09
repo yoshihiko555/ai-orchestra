@@ -35,12 +35,18 @@ def _setup_loop(
     return project_dir, lock
 
 
-def _check_result(passed: bool, signature: str = "sig", infra: bool = False) -> dict:
+def _check_result(
+    passed: bool,
+    signature: str = "sig",
+    infra: bool = False,
+    metadata: dict[str, object] | None = None,
+) -> dict:
     result = lc.PhaseCheckResult(
         passed=passed,
         results=[],
         signature=signature,
         infrastructure_failure=infra,
+        metadata=metadata or {},
     )
     return lc.phase_check_to_dict(result)
 
@@ -491,6 +497,12 @@ def test_wait_external_review_completion_applies_checker_guards(
     project_dir, lock = _setup_loop(tmp_path, monkeypatch, status="waiting_external")
     state = lc.load_state("abcd1234-issue-1", project_dir)
     state.phase = "pr_review_response"
+    state.guards["pr_review_response"] = lc.GuardCounters(
+        iteration=2,
+        no_progress_streak=1,
+        last_signature="stale",
+        infrastructure_failure_count=1,
+    )
     state.pending_action = lc.PendingAction(
         "act-wait",
         lc.Action.WAIT_EXTERNAL_REVIEW.value,
@@ -506,7 +518,14 @@ def test_wait_external_review_completion_applies_checker_guards(
         project_dir,
         "act-wait",
         1,
-        {"completed": True, "check_result": _check_result(True, "")},
+        {
+            "completed": True,
+            "check_result": _check_result(
+                True,
+                "",
+                metadata={"current_iteration_findings": {"signatures": [], "new_count": 0}},
+            ),
+        },
         lock.lease_token,
     )
 
@@ -515,6 +534,13 @@ def test_wait_external_review_completion_applies_checker_guards(
     assert state.status == "passed"
     assert state.last_check_result is not None
     assert state.last_check_result["passed"] is True
+    assert state.last_check_result["metadata"] == {
+        "current_iteration_findings": {"signatures": [], "new_count": 0}
+    }
+    counters = state.guards["pr_review_response"]
+    assert counters.no_progress_streak == 0
+    assert counters.last_signature is None
+    assert counters.infrastructure_failure_count == 0
 
 
 def test_advance_phase_persists_pr_number() -> None:

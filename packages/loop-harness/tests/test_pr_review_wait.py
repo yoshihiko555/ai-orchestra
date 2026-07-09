@@ -240,20 +240,30 @@ def test_wait_for_completion_ignores_unsubmitted_draft_reviews() -> None:
 def test_wait_for_completion_returns_and_records_untrusted_submitted_reviews(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project_dir = _setup_state(tmp_path, monkeypatch)
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={
+            "baseline_review_id": 10,
+            "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+            "processed_comment_ids": [],
+            "findings": {},
+        },
+    )
     lease_token = _lease(project_dir)
+    untrusted_review = _untrusted(
+        {
+            "id": 11,
+            "state": "COMMENTED",
+            "submitted_at": "2026-07-09T00:00:01+00:00",
+            "body": "[P1] untrusted submitted review",
+        }
+    )
     client = FakeClient(
         {
-            "repos/owner/repo/pulls/12/reviews": [
-                _untrusted(
-                    {
-                        "id": 11,
-                        "state": "COMMENTED",
-                        "submitted_at": "2026-07-09T00:00:01+00:00",
-                        "body": "[P1] untrusted submitted review",
-                    }
-                )
-            ]
+            "repos/owner/repo/pulls/12/reviews": [untrusted_review],
+            "repos/owner/repo/pulls/12/comments": [],
+            "repos/owner/repo/issues/12/comments": [],
         }
     )
 
@@ -267,6 +277,12 @@ def test_wait_for_completion_returns_and_records_untrusted_submitted_reviews(
     recorded = prw.record_ignored_untrusted_reviews(
         "abcd1234-issue-1", project_dir, outcome, lease_token
     )
+    recorded_again = prw.record_ignored_untrusted_reviews(
+        "abcd1234-issue-1", project_dir, outcome, lease_token
+    )
+    collect_result = prw.collect_review_findings(
+        "abcd1234-issue-1", project_dir, 12, _config(), client, 1, lease_token
+    )
     state = lc.load_state("abcd1234-issue-1", project_dir)
     journal = Path(project_dir) / ".claude" / "loop" / "abcd1234-issue-1" / "journal.jsonl"
     events = [json.loads(line) for line in journal.read_text(encoding="utf-8").splitlines()]
@@ -275,8 +291,12 @@ def test_wait_for_completion_returns_and_records_untrusted_submitted_reviews(
     assert outcome.ignored_untrusted_review_count == 1
     assert outcome.ignored_untrusted_reviews[0].review_id == 11
     assert recorded == 1
+    assert recorded_again == 0
+    assert collect_result.ignored_untrusted_comment_count == 0
     assert state.ignored_untrusted_comment_count == 1
+    assert "review:11" in state.pr_review["processed_comment_ids"]
     ignored_events = [event for event in events if event["event"] == "ignored_untrusted_comment"]
+    assert len(ignored_events) == 1
     assert ignored_events[0]["payload"]["source"] == "review"
     assert ignored_events[0]["payload"]["comment_id"] == "11"
     assert ignored_events[0]["payload"]["notification_required"] is True
@@ -524,6 +544,43 @@ def test_collect_review_findings_skips_positive_review_summaries(
     assert "review:11" in result.processed_comment_ids
 
 
+def test_collect_review_findings_skips_positive_issue_comment_summaries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={
+            "baseline_review_id": 10,
+            "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+            "processed_comment_ids": [],
+            "findings": {},
+        },
+    )
+    client = FakeClient(
+        {
+            "repos/owner/repo/pulls/12/reviews": [],
+            "repos/owner/repo/pulls/12/comments": [],
+            "repos/owner/repo/issues/12/comments": [
+                _trusted(
+                    {
+                        "id": 12,
+                        "created_at": "2026-07-09T00:00:01+00:00",
+                        "body": "No issues found",
+                    }
+                )
+            ],
+        }
+    )
+
+    result = prw.collect_review_findings(
+        "abcd1234-issue-1", project_dir, 12, _config(), client, 1, _lease(project_dir)
+    )
+
+    assert result.findings == ()
+    assert "issue_comment:12" in result.processed_comment_ids
+
+
 def test_ev36_reviewer_allowlist_is_required() -> None:
     with pytest.raises(prw.ConfigError, match="reviewer_allowlist is required"):
         prw.parse_pr_review_config({"pr_review": {}})
@@ -565,6 +622,59 @@ def test_ev37_severity_parsing_and_classification_failsafe() -> None:
     )
     assert low_confidence.severity == "high"
     assert low_confidence.source == "fail_safe"
+
+
+def test_phase_check_requires_response_for_medium_low_findings() -> None:
+    result = prw.phase_check_from_review_findings(
+        prw.ReviewFindingsResult(
+            findings=(
+                prw.ImportedFinding(
+                    "sig-low", "low", "review_comment:1", "[P4] optional", "app.py", 10, False
+                ),
+            ),
+            iteration_findings=lc.IterationFindings(frozenset({"sig-low"}), 1),
+            previous_iteration_findings=lc.IterationFindings(frozenset(), 0),
+            processed_comment_ids=("review_comment:1",),
+            ignored_untrusted_comment_count=0,
+            needs_classification_count=0,
+        )
+    )
+
+    assert result.passed is False
+    assert result.results[0].passed is False
+    assert result.results[0].findings[0].severity == "low"
+
+
+def test_repeated_finding_preserves_highest_severity() -> None:
+    findings_map = {
+        "sig-a": {
+            "first_seen_iteration": 1,
+            "last_seen_iteration": 1,
+            "status": "open",
+            "severity": "medium",
+            "dismiss_reason": None,
+            "source_comment_ids": ["review_comment:1"],
+        }
+    }
+
+    prw._upsert_finding(
+        findings_map,
+        prw.ImportedFinding("sig-a", "critical", "review_comment:2", "[P1]", "app.py", 10, False),
+        2,
+    )
+    prw._upsert_finding(
+        findings_map,
+        prw.ImportedFinding("sig-a", "low", "review_comment:3", "[P4]", "app.py", 10, False),
+        3,
+    )
+
+    assert findings_map["sig-a"]["severity"] == "critical"
+    assert findings_map["sig-a"]["last_seen_iteration"] == 3
+    assert findings_map["sig-a"]["source_comment_ids"] == [
+        "review_comment:1",
+        "review_comment:2",
+        "review_comment:3",
+    ]
 
 
 def test_ev38_only_medium_low_findings_can_be_dismissed(
@@ -665,9 +775,9 @@ def test_ev40_no_progress_uses_reraised_signatures_or_non_decreasing_new_count()
     assert progress.no_progress is False
 
 
-def test_ev40_loop_common_uses_pr_review_metadata_in_guard_path() -> None:
+def test_ev40_loop_common_uses_pr_review_metadata_in_guard_path(tmp_path: Path) -> None:
     state = lc._initial_state(
-        "loop", "issue-loop", "hash", "/tmp/wt", "loop/issue-1", "pr_review_response"
+        "loop", "issue-loop", "hash", str(tmp_path), "loop/issue-1", "pr_review_response"
     )
     phase_def = {
         "guards": {"max_iterations": 5, "no_progress": {"signature": "pr_review", "repeat": 2}},
@@ -710,7 +820,7 @@ def test_ev40_loop_common_uses_pr_review_metadata_in_guard_path() -> None:
     assert second_decision.reason == "no_progress"
 
     state_without_phase_def = lc._initial_state(
-        "loop-2", "issue-loop", "hash", "/tmp/wt", "loop/issue-1", "pr_review_response"
+        "loop-2", "issue-loop", "hash", str(tmp_path), "loop/issue-1", "pr_review_response"
     )
     lc.evaluate_guards(state_without_phase_def, first, None, config)
     fallback_decision = lc.evaluate_guards(state_without_phase_def, second, None, config)

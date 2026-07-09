@@ -595,17 +595,17 @@ def phase_check_from_review_findings(result: ReviewFindingsResult) -> lc.PhaseCh
         )
         for item in result.findings
     ]
-    critical_high = [item for item in findings if item.severity in {"critical", "high"}]
+    unresolved = list(findings)
     signature = lc.compute_pr_review_signature(list(result.iteration_findings.signatures))
     check = lc.CheckResult(
-        passed=not critical_high,
+        passed=not unresolved,
         layer="llm_review",
         signature=signature,
         findings=findings,
         raw_artifact_path="",
     )
     return lc.PhaseCheckResult(
-        passed=not critical_high,
+        passed=not unresolved,
         results=[check],
         signature=signature,
         infrastructure_failure=False,
@@ -640,14 +640,26 @@ def record_ignored_untrusted_reviews(
     if not outcome.ignored_untrusted_reviews:
         return 0
     state = lc.load_state(loop_id, project_dir)
-    state.ignored_untrusted_comment_count += len(outcome.ignored_untrusted_reviews)
+    pr_review = _ensure_pr_review_state(state.pr_review)
+    processed = set(_processed_comment_ids(pr_review))
+    new_items = [
+        item
+        for item in outcome.ignored_untrusted_reviews
+        if _ignored_review_key(item) not in processed
+    ]
+    if not new_items:
+        return 0
+    processed.update(_ignored_review_key(item) for item in new_items)
+    pr_review["processed_comment_ids"] = sorted(processed)
+    state.pr_review = pr_review
+    state.ignored_untrusted_comment_count += len(new_items)
     state.state_version += 1
     state.updated_at = lc.now_iso()
     lc._ensure_valid_lease(loop_id, project_dir, lease_token)
-    for item in outcome.ignored_untrusted_reviews:
+    for item in new_items:
         _journal_ignored_untrusted_review(loop_id, project_dir, action_id, item)
     lc._write_state(state, project_dir)
-    return len(outcome.ignored_untrusted_reviews)
+    return len(new_items)
 
 
 def _fetch_reviews(client: GhApiClient, pr_number: int) -> list[dict[str, Any]]:
@@ -860,7 +872,7 @@ def _finding_from_item(
 
 
 def _is_positive_review_summary(item: ReviewItem) -> bool:
-    if item.source != "review":
+    if item.source not in {"review", "issue_comment"}:
         return False
     normalized = re.sub(r"\s+", " ", item.body).strip().casefold().rstrip(".!")
     return normalized in POSITIVE_REVIEW_SUMMARIES
@@ -902,6 +914,7 @@ def _upsert_finding(
         findings_map[finding.signature] = {
             **existing,
             "last_seen_iteration": iteration,
+            "severity": _highest_severity(existing.get("severity"), finding.severity),
             "source_comment_ids": source_ids,
         }
         return
@@ -914,6 +927,11 @@ def _upsert_finding(
         "dismiss_reason": None,
         "source_comment_ids": source_ids,
     }
+
+
+def _highest_severity(existing: Any, incoming: str) -> str:
+    existing_severity = str(existing) if str(existing) in SEVERITIES else incoming
+    return max((existing_severity, incoming), key=lambda item: SEVERITY_ORDER[item])
 
 
 def _journal_ignored_untrusted(
@@ -955,6 +973,10 @@ def _journal_ignored_untrusted_review(
             "notification_required": True,
         },
     )
+
+
+def _ignored_review_key(item: IgnoredUntrustedReview) -> str:
+    return f"review:{item.review_id}"
 
 
 def _is_importable(
