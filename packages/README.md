@@ -9,6 +9,7 @@ AI Orchestra のパッケージ一覧と詳細。`packages/*/agents` と `packag
 | [core](#core)                                       | 全パッケージ共通の基盤ライブラリ                                               | 基盤         |
 | [agent-routing](#agent-routing)                     | cli-tools.yaml 駆動のエージェントルーティング提案                              | 基盤         |
 | [quality-gates](#quality-gates)                     | 実装後レビュー・テスト分析・自動 lint の品質ゲート                             | 品質         |
+| [loop-harness](#loop-harness)                       | Issue 起点の Maker / Checker 反復と PR レビュー対応を安全に駆動                | ハーネス     |
 | [codd](#codd)                                       | ドキュメント依存グラフの scan / validate（整合性レイヤー）                     | 整合性       |
 | [audit](#audit)                                     | 統一イベントログによるオーケストレーション監査基盤                             | 監査         |
 | [codex-suggestions](#codex-suggestions)             | ファイル編集・プラン完了時の Codex 相談提案                                    | 提案         |
@@ -72,6 +73,22 @@ AI Orchestra のパッケージ一覧と詳細。`packages/*/agents` と `packag
   - `test-gate-checker.py` — テスト品質チェック
 - skills (facet build): `review`, `tdd`, `design-tracker`, `release-readiness`
 - rules (facet build): `skill-review-policy`
+
+---
+
+### loop-harness
+
+Issue 起点の反復ループを、永続 state / journal、lease fencing、two-phase の `propose` / `complete` 契約で安全に駆動する。LP-1 では `/loop-issue` が Maker と Checker を分離し、機械検証・LLM レビュー・外部 PR レビュー対応から成功／失敗／安全停止までをオーケストレーションする。
+
+- **バージョン**: 0.1.0
+- **依存**: audit, quality-gates, git-workflow
+
+**提供するもの:**
+
+- lib: `loop_common.py`（状態機械・lease・ガード・artifact）、`loop_definition.py`（設定解決）、`worktree_manager.py`（Issue worktree）、`pr_review_wait.py`（外部レビュー待機・指摘取り込み）
+- scripts: `loop_step.py`（LP-1 の JSON CLI。start / attach / resume、propose / complete、reconcile / heartbeat、Checker 実行）
+- skills (facet build): `loop-issue`（Issue 消化ループの LP-1 オーケストレーター）
+- config: `loop-harness.yaml`, `loops/issue-loop.yaml`
 
 ---
 
