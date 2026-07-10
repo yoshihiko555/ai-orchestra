@@ -216,6 +216,28 @@ def test_run_mechanical_checks_invokes_failure_detector(
     assert failures[0].failure_type == "test_failure"
 
 
+def test_run_mechanical_checks_heartbeats_after_each_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class FakeDetector:
+        @staticmethod
+        def analyze(_tool_name: str, _tool_input: dict, _tool_response: dict) -> None:
+            return None
+
+    heartbeats: list[str] = []
+    monkeypatch.setattr(lc, "_load_failure_detector", lambda: FakeDetector)
+
+    failures = lc.run_mechanical_checks(
+        ["printf first", "printf second"],
+        str(tmp_path),
+        5,
+        heartbeat=lambda: heartbeats.append("beat"),
+    )
+
+    assert failures == []
+    assert heartbeats == ["beat", "beat"]
+
+
 def test_redact_payload_and_audit_payload_shape() -> None:
     state = _state()
     payload = lc.build_audit_payload(

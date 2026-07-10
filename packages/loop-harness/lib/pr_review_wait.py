@@ -44,6 +44,9 @@ POSITIVE_REVIEW_SUMMARIES = frozenset(
         "nothing to fix",
     }
 )
+BASELINE_ACTIONS = frozenset({lc.Action.ADVANCE_PHASE.value, lc.Action.WAIT_EXTERNAL_REVIEW.value})
+COLLECT_ACTIONS = frozenset({lc.Action.WAIT_EXTERNAL_REVIEW.value})
+DISMISS_ACTIONS = frozenset({lc.Action.RUN_MAKER.value})
 DEFAULT_STOPWORDS_EN = frozenset(
     {
         "a",
@@ -318,9 +321,8 @@ def record_baseline(
     pr_review["baseline_recorded_at"] = recorded_at
     pr_review["processed_comment_ids"] = sorted(existing | processed_ids)
     state.pr_review = pr_review
-    state.state_version += 1
     state.updated_at = lc.now_iso()
-    lc._ensure_valid_lease(loop_id, project_dir, lease_token)
+    _fence_state_update(state, loop_id, project_dir, lease_token, action_id, BASELINE_ACTIONS)
     lc.append_journal_event(
         loop_id,
         project_dir,
@@ -360,9 +362,8 @@ def record_iteration_head(
     pr_review = _ensure_pr_review_state(state.pr_review)
     pr_review["iteration_head_sha"] = sha
     state.pr_review = pr_review
-    state.state_version += 1
     state.updated_at = lc.now_iso()
-    lc._ensure_valid_lease(loop_id, project_dir, lease_token)
+    _fence_state_update(state, loop_id, project_dir, lease_token, action_id, BASELINE_ACTIONS)
     lc.append_journal_event(
         loop_id,
         project_dir,
@@ -434,6 +435,7 @@ def collect_review_findings(
     action_id: str | None = None,
 ) -> ReviewFindingsResult:
     """Import trusted post-baseline review findings and update loop state."""
+    review_items = _fetch_all_review_items(client, pr_number)
     state = lc.load_state(loop_id, project_dir)
     pr_review = _ensure_pr_review_state(state.pr_review)
     baseline = _baseline_from_state(pr_review)
@@ -443,7 +445,7 @@ def collect_review_findings(
     imported: list[ImportedFinding] = []
     ignored_items: list[ReviewItem] = []
 
-    for item in _fetch_all_review_items(client, pr_number):
+    for item in review_items:
         key = _comment_key(item)
         if not _is_importable(item, baseline, processed):
             continue
@@ -461,10 +463,9 @@ def collect_review_findings(
     pr_review["findings"] = findings_map
     state.pr_review = pr_review
     state.ignored_untrusted_comment_count += len(ignored_items)
-    state.state_version += 1
     state.updated_at = lc.now_iso()
     iteration_findings = build_iteration_findings(pr_review, iteration)
-    lc._ensure_valid_lease(loop_id, project_dir, lease_token)
+    _fence_state_update(state, loop_id, project_dir, lease_token, action_id, COLLECT_ACTIONS)
     for item in ignored_items:
         _journal_ignored_untrusted(loop_id, project_dir, action_id, item)
     lc.append_journal_event(
@@ -569,9 +570,8 @@ def dismiss_finding(
     findings[signature] = updated
     pr_review["findings"] = findings
     state.pr_review = pr_review
-    state.state_version += 1
     state.updated_at = lc.now_iso()
-    lc._ensure_valid_lease(loop_id, project_dir, lease_token)
+    _fence_state_update(state, loop_id, project_dir, lease_token, action_id, DISMISS_ACTIONS)
     lc.append_journal_event(
         loop_id,
         project_dir,
@@ -653,13 +653,38 @@ def record_ignored_untrusted_reviews(
     pr_review["processed_comment_ids"] = sorted(processed)
     state.pr_review = pr_review
     state.ignored_untrusted_comment_count += len(new_items)
-    state.state_version += 1
     state.updated_at = lc.now_iso()
-    lc._ensure_valid_lease(loop_id, project_dir, lease_token)
+    _fence_state_update(state, loop_id, project_dir, lease_token, action_id, COLLECT_ACTIONS)
     for item in new_items:
         _journal_ignored_untrusted_review(loop_id, project_dir, action_id, item)
     lc._write_state(state, project_dir)
     return len(new_items)
+
+
+def _fence_state_update(
+    state: lc.LoopState,
+    loop_id: str,
+    project_dir: str,
+    lease_token: str,
+    action_id: str | None,
+    allowed_actions: frozenset[str],
+) -> None:
+    """Fence an auxiliary state write against the active pending action."""
+    lc._ensure_valid_lease(loop_id, project_dir, lease_token)
+    if action_id is None:
+        state.state_version += 1
+        return
+    fresh = lc.load_state(loop_id, project_dir)
+    pending = fresh.pending_action
+    if (
+        fresh.state_version != state.state_version
+        or pending is None
+        or pending.action_id != action_id
+        or pending.phase != fresh.phase
+    ):
+        raise lc.StaleActionError(f"stale PR review action: {action_id}")
+    if pending.action not in allowed_actions:
+        raise lc.ProtocolViolationError(f"action {pending.action} cannot update PR review state")
 
 
 def _fetch_reviews(client: GhApiClient, pr_number: int) -> list[dict[str, Any]]:

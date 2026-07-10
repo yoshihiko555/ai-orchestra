@@ -14,6 +14,7 @@ import socket
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -67,6 +68,21 @@ _SENSITIVE_KEY_RE = re.compile(r"(api[_-]?key|token|password|secret|credential)"
 
 _FAILED_NODEID_RE = re.compile(r"^FAILED\s+(\S+?)(?:\s+-\s+.*)?$", re.MULTILINE)
 _RUFF_RULE_RE = re.compile(r"^\S+:\d+:\d+:\s+([A-Z]{1,4}\d{2,4})\b", re.MULTILINE)
+_STRICT_CHECKER_LAYERS = frozenset({"mechanical", "llm_review"})
+_STRICT_PHASE_CHECK_KEYS = frozenset(
+    {"passed", "results", "signature", "infrastructure_failure", "metadata"}
+)
+_STRICT_CHECK_RESULT_KEYS = frozenset(
+    {
+        "passed",
+        "layer",
+        "signature",
+        "findings",
+        "raw_artifact_path",
+        "infrastructure_failure",
+    }
+)
+_STRICT_FINDING_KEYS = frozenset({"severity", "summary", "source", "path", "line"})
 
 
 class Action(StrEnum):
@@ -419,29 +435,23 @@ def propose(
         loop_id, project_dir, lease_token, allow_side_effect_resolution=recover_orphans
     )
     state = load_state(loop_id, project_dir)
-    if (
-        recover_orphans
-        and reconcile_result.action_taken == "rerun_required"
-        and state.pending_action is not None
-        and state.pending_action.action == Action.RUN_CHECKER.value
-    ):
-        return _pending_proposal_result(state, state.pending_action, project_dir)
-    if state.pending_action is not None:
-        raise ProtocolViolationError("pending action must be completed before propose")
-    action = _next_action(state, project_dir)
-    if _apply_preproposal_safety_stop_if_needed(state, action):
-        append_journal_event(
-            loop_id,
-            project_dir,
-            "stopped",
-            "step",
-            None,
-            {"stop_reason": state.stop_reason},
-        )
-        state.state_version += 1
-        state.updated_at = now_iso()
-        _write_state(state, project_dir)
+    if _apply_preproposal_safety_stop_if_needed(state, ""):
+        _persist_preproposal_stop(loop_id, project_dir, state, clear_pending=True)
         action = Action.STOP.value
+    else:
+        if (
+            recover_orphans
+            and reconcile_result.action_taken == "rerun_required"
+            and state.pending_action is not None
+            and state.pending_action.action == Action.RUN_CHECKER.value
+        ):
+            return _pending_proposal_result(state, state.pending_action, project_dir)
+        if state.pending_action is not None:
+            raise ProtocolViolationError("pending action must be completed before propose")
+        action = _next_action(state, project_dir)
+        if _apply_preproposal_safety_stop_if_needed(state, action):
+            _persist_preproposal_stop(loop_id, project_dir, state, clear_pending=False)
+            action = Action.STOP.value
     action_id = f"act-{secrets.token_hex(ACTION_ID_BYTES)}"
     iteration = _next_action_iteration(state, action)
     params = _proposal_params(state, action, project_dir)
@@ -494,6 +504,8 @@ def complete(
     assert state.pending_action is not None
     action = state.pending_action.action
     result = _normalize_complete_result(state, action, result, project_dir)
+    if action == Action.RUN_CHECKER.value:
+        validate_implementation_checker_result(state, result)
     new_version = state.state_version + 1
     payload = _completed_payload(action, result)
     append_journal_event(loop_id, project_dir, "completed", _actor_for(action), action_id, payload)
@@ -663,6 +675,122 @@ def combine_check_results(
     return PhaseCheckResult(mechanical_ok and llm_ok and not infra, results, signature, infra)
 
 
+def validate_implementation_checker_result(state: LoopState, result: dict[str, Any]) -> None:
+    """Validate the sealed issue-loop implementation checker contract."""
+    if state.definition_id != "issue-loop" or state.phase != "implementation":
+        return
+    raw = _extract_check_result_payload(result)
+    if not isinstance(raw, dict) or frozenset(raw) != _STRICT_PHASE_CHECK_KEYS:
+        raise ProtocolViolationError("sealed checker result has invalid phase schema")
+    if not isinstance(raw.get("passed"), bool):
+        raise ProtocolViolationError("sealed checker result has invalid passed value")
+    if not isinstance(raw.get("signature"), str) or not isinstance(
+        raw.get("infrastructure_failure"), bool
+    ):
+        raise ProtocolViolationError("sealed checker result has invalid phase fields")
+    reviewers = _strict_reviewer_manifest(raw.get("metadata"))
+    results = raw.get("results")
+    if not isinstance(results, list) or len(results) != len(_STRICT_CHECKER_LAYERS):
+        raise ProtocolViolationError("sealed checker result must contain two layers")
+    layers: set[str] = set()
+    for item in results:
+        layer = _validate_strict_check_result(item, reviewers)
+        if layer in layers:
+            raise ProtocolViolationError("sealed checker result contains duplicate layers")
+        layers.add(layer)
+    if layers != _STRICT_CHECKER_LAYERS:
+        raise ProtocolViolationError("sealed checker result is missing required layers")
+    _validate_checker_result_semantics(raw)
+
+
+def _validate_checker_result_semantics(raw: dict[str, Any]) -> None:
+    """Recompute checker semantics and reject contradictory serialized values."""
+    phase_check = phase_check_from_dict(raw)
+    layer_by_name = {item.layer: item for item in phase_check.results}
+    mechanical = layer_by_name["mechanical"]
+    llm_review = layer_by_name["llm_review"]
+    if mechanical.findings:
+        raise ProtocolViolationError("sealed checker mechanical findings must be empty")
+    if any(item.infrastructure_failure and item.passed for item in phase_check.results):
+        raise ProtocolViolationError("sealed checker infrastructure layer cannot pass")
+    expected_llm_passed = (
+        _llm_review_ok(llm_review, {"critical": 0, "high": 0})
+        and not llm_review.infrastructure_failure
+    )
+    if llm_review.passed != expected_llm_passed:
+        raise ProtocolViolationError("sealed checker LLM passed value is inconsistent")
+    expected_llm_signature = compute_llm_review_signature(llm_review.findings)
+    if llm_review.signature != expected_llm_signature:
+        raise ProtocolViolationError("sealed checker LLM signature is inconsistent")
+    expected = combine_check_results(
+        phase_check.results,
+        {"critical": 0, "high": 0},
+        _STRICT_CHECKER_LAYERS,
+    )
+    if (
+        phase_check.passed != expected.passed
+        or phase_check.infrastructure_failure != expected.infrastructure_failure
+        or phase_check.signature != expected.signature
+    ):
+        raise ProtocolViolationError("sealed checker aggregate result is inconsistent")
+
+
+def _strict_reviewer_manifest(metadata: Any) -> frozenset[str]:
+    """Return a validated reviewer manifest from phase metadata."""
+    if not isinstance(metadata, dict) or frozenset(metadata) != {"reviewers"}:
+        raise ProtocolViolationError("sealed checker reviewer manifest is required")
+    reviewers = metadata.get("reviewers")
+    if (
+        not isinstance(reviewers, list)
+        or not 1 <= len(reviewers) <= 2
+        or not all(isinstance(item, str) and item for item in reviewers)
+        or len(set(reviewers)) != len(reviewers)
+        or "code-reviewer" not in reviewers
+    ):
+        raise ProtocolViolationError("sealed checker reviewer manifest is invalid")
+    return frozenset(reviewers)
+
+
+def _validate_strict_check_result(value: Any, reviewers: frozenset[str]) -> str:
+    """Validate one serialized checker layer and return its name."""
+    if not isinstance(value, dict) or frozenset(value) != _STRICT_CHECK_RESULT_KEYS:
+        raise ProtocolViolationError("sealed checker layer schema is invalid")
+    layer = value.get("layer")
+    if layer not in _STRICT_CHECKER_LAYERS:
+        raise ProtocolViolationError("sealed checker layer is invalid")
+    if not isinstance(value.get("passed"), bool) or not isinstance(
+        value.get("infrastructure_failure"), bool
+    ):
+        raise ProtocolViolationError("sealed checker layer status is invalid")
+    if value.get("signature") is not None and not isinstance(value.get("signature"), str):
+        raise ProtocolViolationError("sealed checker layer signature is invalid")
+    if not isinstance(value.get("raw_artifact_path"), str):
+        raise ProtocolViolationError("sealed checker artifact reference is invalid")
+    findings = value.get("findings")
+    if not isinstance(findings, list):
+        raise ProtocolViolationError("sealed checker findings are invalid")
+    for finding in findings:
+        _validate_strict_finding(finding, reviewers if layer == "llm_review" else None)
+    return str(layer)
+
+
+def _validate_strict_finding(value: Any, reviewers: frozenset[str] | None) -> None:
+    """Validate one serialized finding and optional reviewer binding."""
+    if not isinstance(value, dict) or frozenset(value) != _STRICT_FINDING_KEYS:
+        raise ProtocolViolationError("sealed checker finding schema is invalid")
+    if value.get("severity") not in {"critical", "high", "medium", "low"}:
+        raise ProtocolViolationError("sealed checker finding severity is invalid")
+    if not isinstance(value.get("summary"), str) or not isinstance(value.get("source"), str):
+        raise ProtocolViolationError("sealed checker finding text is invalid")
+    if value.get("path") is not None and not isinstance(value.get("path"), str):
+        raise ProtocolViolationError("sealed checker finding path is invalid")
+    line = value.get("line")
+    if line is not None and (not isinstance(line, int) or isinstance(line, bool)):
+        raise ProtocolViolationError("sealed checker finding line is invalid")
+    if reviewers is not None and value["source"] not in reviewers:
+        raise ProtocolViolationError("sealed checker finding source is not a reviewer")
+
+
 def extract_failed_test_ids(output: str) -> list[str]:
     """Extract pytest failed node ids."""
     return sorted(set(_FAILED_NODEID_RE.findall(output or "")))
@@ -729,15 +857,22 @@ def evaluate_pr_review_no_progress(
 
 
 def run_mechanical_checks(
-    commands: list[str], cwd: str, timeout_seconds: int
+    commands: list[str],
+    cwd: str,
+    timeout_seconds: int,
+    heartbeat: Callable[[], None] | None = None,
 ) -> list[MechanicalFailure]:
     """Run mechanical checker commands and classify failures via failure_detector."""
     detector = _load_failure_detector()
     failures: list[MechanicalFailure] = []
     for command in commands:
-        output, exit_code = _run_mechanical_command(command, cwd, timeout_seconds)
-        response = {"exit_code": exit_code, "stdout": output}
-        result = detector.analyze("Bash", {"command": command}, response)
+        try:
+            output, exit_code = _run_mechanical_command(command, cwd, timeout_seconds)
+            response = {"exit_code": exit_code, "stdout": output}
+            result = detector.analyze("Bash", {"command": command}, response)
+        finally:
+            if heartbeat is not None:
+                heartbeat()
         if result is None:
             continue
         failures.append(
@@ -1140,17 +1275,40 @@ def _pending_proposal_result(
 
 def _apply_preproposal_safety_stop_if_needed(state: LoopState, action: str) -> bool:
     """Stop before proposing unsafe advance params."""
-    if action != Action.ADVANCE_PHASE.value:
-        return False
     if _repo_identity_hash(state.worktree_path) != state.repo_identity_hash:
         state.status = "stopped"
         state.stop_reason = "repo_identity_mismatch"
         return True
+    if action not in {Action.ADVANCE_PHASE.value, Action.WAIT_EXTERNAL_REVIEW.value}:
+        return False
     if _current_branch(state.worktree_path) != state.branch:
         state.status = "stopped"
         state.stop_reason = "push_guard_violation"
         return True
     return False
+
+
+def _persist_preproposal_stop(
+    loop_id: str,
+    project_dir: str,
+    state: LoopState,
+    *,
+    clear_pending: bool,
+) -> None:
+    """Persist a safety stop before issuing its terminal proposal."""
+    if clear_pending:
+        state.pending_action = None
+    append_journal_event(
+        loop_id,
+        project_dir,
+        "stopped",
+        "step",
+        None,
+        {"stop_reason": state.stop_reason},
+    )
+    state.state_version += 1
+    state.updated_at = now_iso()
+    _write_state(state, project_dir)
 
 
 def _last_completed_action_name(loop_id: str, project_dir: str, state: LoopState) -> str:
@@ -1185,6 +1343,8 @@ def _proposal_params(state: LoopState, action: str, project_dir: str) -> dict[st
         return {
             "maker_agent": _phase_nested(phase_def, ("maker", "agent"), None),
             "prompt_template": _phase_nested(phase_def, ("maker", "prompt_template"), None),
+            "worktree_path": state.worktree_path,
+            "branch": state.branch,
         }
     if action == Action.RUN_CHECKER.value:
         checker = _phase_nested(phase_def, ("checker",), {})
@@ -1202,6 +1362,10 @@ def _proposal_params(state: LoopState, action: str, project_dir: str) -> dict[st
             _nested(config, ("pr_review", "timeout_seconds"), 3600),
         )
         params["pr_number"] = state.pr_number
+        params["push_required"] = (
+            _last_completed_action_name(state.loop_id, project_dir, state) == Action.RUN_MAKER.value
+        )
+        params["verified_branch"] = state.branch
         return params
     if action == Action.ADVANCE_PHASE.value:
         return {
@@ -1311,7 +1475,10 @@ def _push_guard_stop_reason(guard: dict[str, Any]) -> str:
 def _apply_safety_stop_if_needed(state: LoopState, action: str, result: dict[str, Any]) -> bool:
     """Apply safety stop for push guard violations."""
     guard = result.get("push_guard")
-    if action != Action.ADVANCE_PHASE.value or not isinstance(guard, dict):
+    if action not in {
+        Action.ADVANCE_PHASE.value,
+        Action.WAIT_EXTERNAL_REVIEW.value,
+    } or not isinstance(guard, dict):
         return False
     if guard.get("branch_ok", True) and guard.get("repo_identity_ok", True):
         return False
@@ -1368,7 +1535,12 @@ def _apply_checker_result(
     """Apply checker result and guard decision."""
     phase_check = _phase_check_from_result(result)
     state.last_check_result = phase_check_to_dict(phase_check)
-    decision = evaluate_guards(state, phase_check, result.get("phase_def"), result.get("config"))
+    phase_def = result.get("phase_def")
+    config = result.get("config")
+    if project_dir:
+        phase_def = _load_phase_definition(state, project_dir)
+        config = _load_loop_config(project_dir)
+    decision = evaluate_guards(state, phase_check, phase_def, config)
     if decision.disposition == "continue" or decision.disposition == "retry":
         state.status = "running"
         return
@@ -1468,6 +1640,10 @@ def _reconcile_from_artifact(
         raise IntegrityError("invalid check_result artifact") from exc
     if not isinstance(result, dict):
         raise IntegrityError("invalid check_result artifact")
+    try:
+        validate_implementation_checker_result(state, result)
+    except ProtocolViolationError as exc:
+        raise IntegrityError(f"invalid sealed checker artifact: {exc}") from exc
     apply_action_effect(state, Action.RUN_CHECKER.value, result, project_dir, loop_id, action_id)
     return _finalize_reconciled(loop_id, project_dir, state, "artifact", action_id, result)
 
@@ -2152,24 +2328,54 @@ def _validate_safe_id(field: str, value: str) -> None:
 
 
 def _foreign_host_stop_result(loop_id: str, project_dir: str, lock: LockInfo) -> ProposeResult:
-    """Return a stop proposal for a live foreign-host lease."""
+    """Persist or replay a pending stop proposal for a live foreign-host lease."""
     state = load_state(loop_id, project_dir)
-    action_id = f"act-{secrets.token_hex(ACTION_ID_BYTES)}"
     params = {"stop_reason": "foreign_live_lease", "foreign_host": lock.host}
-    if state.status != "stopped":
-        state.status = "stopped"
-        state.stop_reason = "foreign_live_lease"
-        state.state_version += 1
-        state.updated_at = now_iso()
-        append_journal_event(loop_id, project_dir, "stopped", "step", None, params)
-        _write_state(state, project_dir)
+    pending = state.pending_action
+    if (
+        pending is not None
+        and pending.action == Action.STOP.value
+        and state.stop_reason == "foreign_live_lease"
+    ):
+        return ProposeResult(
+            action=pending.action,
+            action_id=pending.action_id,
+            state_version=state.state_version,
+            expected_phase=pending.phase,
+            phase=pending.phase,
+            iteration=pending.iteration,
+            context=_proposal_context(params),
+        )
+    action_id = f"act-{secrets.token_hex(ACTION_ID_BYTES)}"
+    iteration = _next_action_iteration(state, Action.STOP.value)
+    state.status = "stopped"
+    state.stop_reason = "foreign_live_lease"
+    state.pending_action = PendingAction(
+        action_id, Action.STOP.value, state.phase, iteration, now_iso()
+    )
+    state.state_version += 1
+    state.updated_at = now_iso()
+    append_journal_event(loop_id, project_dir, "stopped", "step", None, params)
+    append_journal_event(
+        loop_id,
+        project_dir,
+        "pending",
+        "step",
+        action_id,
+        {
+            "action": Action.STOP.value,
+            "expected_phase": state.phase,
+            "replaced_action_id": pending.action_id if pending is not None else None,
+        },
+    )
+    _write_state(state, project_dir)
     return ProposeResult(
         action=Action.STOP.value,
         action_id=action_id,
         state_version=state.state_version,
         expected_phase=state.phase,
         phase=state.phase,
-        iteration=state.iteration,
+        iteration=iteration,
         context=_proposal_context(params),
     )
 
