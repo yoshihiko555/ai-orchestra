@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`loop-harness`: PR レビュー待機・指摘取り込みの決定論モジュールを追加**: `pr_review_wait.py` で reviewer allowlist 必須検証、完了シグナル待機、severity 判定、dedup/state 更新を扱えるようにした。`checkrun_allowlist` / `severity_markers` / `dedup.*` 設定も追加。
+
 - **`loop-harness`: LP-1 向け `loop_step.py` CLI を追加**: `start` / `attach` / `propose` / `complete` / `reconcile` / `heartbeat` / `resume` を JSON 出力と exit code 0/1/2/3 で利用できるようにした。あわせて `loop_start` / `loop_iteration` / `loop_stop` の audit event と checker artifact 保存に対応した。
 
 - **`loop-harness`: 反復ループ基盤の core パッケージを追加**: Phase 1 として loop 定義 loader、state/journal/lock の決定論的コア、worktree 命名ユーティリティ、既定 config を追加。CLI・スキル配線・LP-2 常駐実行は後続フェーズで追加予定。

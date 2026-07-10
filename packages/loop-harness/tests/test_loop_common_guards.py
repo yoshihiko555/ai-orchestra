@@ -268,3 +268,70 @@ def test_redact_payload_masks_sensitive_dict_keys_recursively() -> None:
     assert redacted["maker"]["name"] == "backend-python-dev"
     assert redacted["checker"]["nested"]["secret"] == "[REDACTED]"
     assert redacted["checker"]["nested"]["agent"] == "code-reviewer"
+
+
+def _pr_review_phase_check(
+    current: lc.IterationFindings, previous: lc.IterationFindings, signature: str
+) -> lc.PhaseCheckResult:
+    return lc.PhaseCheckResult(
+        passed=False,
+        results=[],
+        signature=signature,
+        infrastructure_failure=False,
+        metadata={
+            "current_iteration_findings": current,
+            "previous_iteration_findings": previous,
+        },
+    )
+
+
+def test_pr_review_progress_resets_streak_so_single_stall_continues() -> None:
+    state = lc._initial_state(
+        "loop-np-1", "issue-loop", "hash", "/tmp/wt", "loop/issue-1", "pr_review_response"
+    )
+    config = {"guards": {"max_iterations": 10, "no_progress": {"repeat": 2}}}
+    progress = _pr_review_phase_check(
+        lc.IterationFindings(frozenset({"sig-x"}), 1),
+        lc.IterationFindings(frozenset({"sig-y"}), 2),
+        "sig-progress",
+    )
+    single_stall = _pr_review_phase_check(
+        lc.IterationFindings(frozenset({"sig-x"}), 0),
+        lc.IterationFindings(frozenset({"sig-x"}), 1),
+        "sig-stall-1",
+    )
+
+    first = lc.evaluate_guards(state, progress, None, config)
+    second = lc.evaluate_guards(state, single_stall, None, config)
+
+    assert first.reason != "no_progress"
+    assert second.reason != "no_progress"
+    assert state.guards["pr_review_response"].no_progress_streak == 1
+
+
+def test_pr_review_two_consecutive_stalls_fail_with_no_progress() -> None:
+    state = lc._initial_state(
+        "loop-np-2", "issue-loop", "hash", "/tmp/wt", "loop/issue-1", "pr_review_response"
+    )
+    config = {"guards": {"max_iterations": 10, "no_progress": {"repeat": 2}}}
+    progress = _pr_review_phase_check(
+        lc.IterationFindings(frozenset({"sig-x"}), 1),
+        lc.IterationFindings(frozenset({"sig-y"}), 2),
+        "sig-progress",
+    )
+    stall_one = _pr_review_phase_check(
+        lc.IterationFindings(frozenset({"sig-x"}), 0),
+        lc.IterationFindings(frozenset({"sig-x"}), 1),
+        "sig-stall-1",
+    )
+    stall_two = _pr_review_phase_check(
+        lc.IterationFindings(frozenset({"sig-x"}), 0),
+        lc.IterationFindings(frozenset({"sig-x"}), 0),
+        "sig-stall-2",
+    )
+
+    lc.evaluate_guards(state, progress, None, config)
+    lc.evaluate_guards(state, stall_one, None, config)
+    final = lc.evaluate_guards(state, stall_two, None, config)
+
+    assert final.reason == "no_progress"

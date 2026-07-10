@@ -210,6 +210,24 @@ class PhaseCheckResult:
     results: list[CheckResult]
     signature: str
     infrastructure_failure: bool
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class IterationFindings:
+    """PR review finding summary for one iteration."""
+
+    signatures: frozenset[str]
+    new_count: int
+
+
+@dataclass(frozen=True)
+class NoProgressResult:
+    """PR review no-progress decision."""
+
+    no_progress: bool
+    reason: Literal["reraised", "new_count_non_decreasing", "progress"]
+    reraised_signatures: frozenset[str] = field(default_factory=frozenset)
 
 
 @dataclass(frozen=True)
@@ -582,6 +600,9 @@ def apply_action_effect(
         _apply_checker_result(state, result, project_dir, loop_id, action_id)
         return
     if action == Action.WAIT_EXTERNAL_REVIEW.value:
+        if _extract_check_result_payload(result) is not None:
+            _apply_checker_result(state, result, project_dir, loop_id, action_id)
+            return
         state.status = "waiting_external" if not result.get("completed") else "running"
         return
     if action == Action.ADVANCE_PHASE.value:
@@ -614,7 +635,7 @@ def evaluate_guards(
         counters.last_signature = None
         counters.infrastructure_failure_count = 0
         return GuardDecision(_success_disposition(phase_def), next_phase=_success_next(phase_def))
-    _update_no_progress(counters, phase_check.signature)
+    _update_phase_no_progress(counters, phase_check, phase_def)
     if counters.no_progress_streak >= _phase_no_progress_repeat(phase_def, cfg):
         return GuardDecision(_failure_disposition(phase_def), "no_progress")
     counters.iteration += 1
@@ -667,6 +688,44 @@ def compute_llm_review_signature(findings: list[Finding]) -> str:
 def compute_pr_review_signature(finding_signatures: list[str]) -> str:
     """Compute a PR review phase signature from finding signatures."""
     return _short_hash("|".join(sorted(set(finding_signatures))))
+
+
+def normalize_pr_finding_signature(
+    comment: dict[str, Any], dedup_config: dict[str, Any] | None = None
+) -> str:
+    """Normalize one PR review comment into a stable finding signature."""
+    config = dedup_config or {}
+    bucket_size = _positive_int(config.get("line_bucket_size"), 5)
+    path = _normalize_pr_path(_optional_str(comment.get("path")))
+    line_bucket = _pr_line_bucket(comment, bucket_size)
+    body = _normalize_pr_body_for_hash(str(comment.get("body") or ""), config)
+    return _short_hash(f"{path}:{line_bucket}:{body}")
+
+
+def build_pr_iteration_findings(pr_review: dict[str, Any], iteration: int) -> IterationFindings:
+    """Build current-iteration open signature summary from state.pr_review."""
+    signatures: set[str] = set()
+    new_count = 0
+    for signature, record in _pr_findings_map(pr_review).items():
+        if record.get("status") == "dismissed":
+            continue
+        if int(record.get("last_seen_iteration") or 0) == iteration:
+            signatures.add(signature)
+        if int(record.get("first_seen_iteration") or 0) == iteration:
+            new_count += 1
+    return IterationFindings(frozenset(signatures), new_count)
+
+
+def evaluate_pr_review_no_progress(
+    previous: IterationFindings, current: IterationFindings
+) -> NoProgressResult:
+    """Evaluate PR review no-progress by reraised signatures or new-count plateau."""
+    reraised = current.signatures & previous.signatures
+    if reraised:
+        return NoProgressResult(True, "reraised", reraised)
+    if current.new_count >= previous.new_count:
+        return NoProgressResult(True, "new_count_non_decreasing")
+    return NoProgressResult(False, "progress")
 
 
 def run_mechanical_checks(
@@ -1463,13 +1522,51 @@ def _mark_unresolved_pending(loop_id: str, project_dir: str, state: LoopState) -
     return ReconcileOutcome("marked_infrastructure_failure", state.state_version)
 
 
+def _update_phase_no_progress(
+    counters: GuardCounters, phase_check: PhaseCheckResult, phase_def: Any | None
+) -> None:
+    """Update no-progress counters using phase-specific signature semantics."""
+    if _phase_no_progress_signature_kind(phase_def) == "pr_review" or _has_pr_review_metadata(
+        phase_check
+    ):
+        _update_pr_review_no_progress(counters, phase_check)
+        return
+    _update_no_progress(counters, phase_check.signature)
+
+
 def _update_no_progress(counters: GuardCounters, signature: str) -> None:
-    """Update no-progress counters."""
+    """Update generic exact-signature no-progress counters."""
     if signature == counters.last_signature:
         counters.no_progress_streak += 1
         return
     counters.no_progress_streak = 1
     counters.last_signature = signature
+
+
+def _update_pr_review_no_progress(counters: GuardCounters, phase_check: PhaseCheckResult) -> None:
+    """Update no-progress counters from PR review metadata."""
+    current = _metadata_iteration_findings(phase_check.metadata.get("current_iteration_findings"))
+    previous = _metadata_iteration_findings(phase_check.metadata.get("previous_iteration_findings"))
+    if current is None or previous is None:
+        _update_no_progress(counters, phase_check.signature)
+        return
+    result = evaluate_pr_review_no_progress(previous, current)
+    if result.no_progress:
+        counters.no_progress_streak = (
+            counters.no_progress_streak + 1 if counters.no_progress_streak else 1
+        )
+        counters.last_signature = phase_check.signature
+        return
+    counters.no_progress_streak = 0
+    counters.last_signature = phase_check.signature
+
+
+def _has_pr_review_metadata(phase_check: PhaseCheckResult) -> bool:
+    """Return True when PhaseCheckResult carries PR review iteration metadata."""
+    return (
+        "current_iteration_findings" in phase_check.metadata
+        and "previous_iteration_findings" in phase_check.metadata
+    )
 
 
 def _phase_max_iterations(phase_def: Any | None, config: dict[str, Any]) -> int:
@@ -1492,6 +1589,11 @@ def _phase_no_progress_repeat(phase_def: Any | None, config: dict[str, Any]) -> 
             _nested(config, ("guards", "no_progress", "repeat"), 2),
         )
     )
+
+
+def _phase_no_progress_signature_kind(phase_def: Any | None) -> str:
+    """Return the no-progress signature kind for a phase."""
+    return str(_phase_nested(phase_def, ("guards", "no_progress", "signature"), "implementation"))
 
 
 def _success_disposition(phase_def: Any | None) -> str:
@@ -1588,6 +1690,127 @@ def _normalize_finding_key(finding: Finding) -> str:
     return f"{path}:{line}:{body}"
 
 
+def _normalize_pr_path(path: str | None) -> str:
+    """Normalize a PR review file path."""
+    if not path:
+        return "__general__"
+    return path.replace("\\", "/").removeprefix("./")
+
+
+def _pr_line_bucket(comment: dict[str, Any], bucket_size: int) -> str:
+    """Return the PR review line bucket, falling back to original_line."""
+    line = _int_or_none(comment.get("line"))
+    if line is None:
+        line = _int_or_none(comment.get("original_line"))
+    if line is None:
+        return "__none__"
+    return str((line // bucket_size) * bucket_size)
+
+
+def _normalize_pr_body_for_hash(body: str, config: dict[str, Any]) -> str:
+    """Normalize PR review body text for stable signature hashing."""
+    text = re.sub(r"```.*?```", " ", body or "", flags=re.DOTALL)
+    text = re.sub(r"https?://\S+", " ", text)
+    for pattern in _string_list(config.get("signature_footer_patterns")) or [r"(?ms)^---\s*$.*\Z"]:
+        text = re.sub(pattern, " ", text)
+    text = re.sub(r"[#>*_`~\[\](){}:;,.!?/\\|+=-]", " ", text)
+    tokens = re.findall(r"\w+", text.lower(), flags=re.UNICODE)
+    stopwords = _default_pr_stopwords() | set(_string_list(config.get("stopwords_en")))
+    stopwords |= set(_string_list(config.get("stopwords_ja")))
+    return " ".join(sorted(set(token for token in tokens if token not in stopwords)))
+
+
+def _default_pr_stopwords() -> set[str]:
+    """Return built-in high-frequency stopwords for PR finding signatures."""
+    return {
+        "a",
+        "an",
+        "and",
+        "are",
+        "be",
+        "for",
+        "in",
+        "is",
+        "it",
+        "of",
+        "on",
+        "or",
+        "please",
+        "should",
+        "the",
+        "this",
+        "to",
+    }
+
+
+def _pr_findings_map(pr_review: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Return a sanitized PR review findings map."""
+    values = pr_review.get("findings")
+    if not isinstance(values, dict):
+        return {}
+    return {
+        str(key): dict(value)
+        for key, value in values.items()
+        if isinstance(key, str) and isinstance(value, dict)
+    }
+
+
+def _iteration_findings_to_dict(value: IterationFindings) -> dict[str, Any]:
+    """Serialize IterationFindings for PhaseCheckResult metadata."""
+    return {"signatures": sorted(value.signatures), "new_count": value.new_count}
+
+
+def _metadata_iteration_findings(value: Any) -> IterationFindings | None:
+    """Deserialize IterationFindings from PhaseCheckResult metadata."""
+    if isinstance(value, IterationFindings):
+        return value
+    if not isinstance(value, dict):
+        return None
+    signatures = value.get("signatures")
+    if not isinstance(signatures, list):
+        return None
+    return IterationFindings(
+        frozenset(str(signature) for signature in signatures),
+        int(value.get("new_count") or 0),
+    )
+
+
+def _int_or_none(value: Any) -> int | None:
+    """Return an integer unless the value is invalid or bool."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return None
+
+
+def _optional_str(value: Any) -> str | None:
+    """Return a non-empty string or None."""
+    return value if isinstance(value, str) and value else None
+
+
+def _string_list(value: Any) -> list[str]:
+    """Normalize a scalar/list config value to a string list."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item)]
+    return []
+
+
+def _positive_int(value: Any, default: int) -> int:
+    """Return a positive integer or a default."""
+    if isinstance(value, bool):
+        return default
+    try:
+        result = int(value)
+    except (TypeError, ValueError):
+        return default
+    return result if result > 0 else default
+
+
 def _short_hash(material: str) -> str:
     """Return a short sha256 digest."""
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:HASH_LENGTH]
@@ -1602,12 +1825,15 @@ def _digest_json(value: Any) -> str:
 
 def phase_check_to_dict(result: PhaseCheckResult) -> dict[str, Any]:
     """Serialize PhaseCheckResult."""
-    return {
+    data = {
         "passed": result.passed,
         "signature": result.signature,
         "infrastructure_failure": result.infrastructure_failure,
         "results": [check_result_to_dict(item) for item in result.results],
     }
+    if result.metadata:
+        data["metadata"] = result.metadata
+    return data
 
 
 def phase_check_from_dict(data: dict[str, Any]) -> PhaseCheckResult:
@@ -1617,6 +1843,7 @@ def phase_check_from_dict(data: dict[str, Any]) -> PhaseCheckResult:
         results=[check_result_from_dict(item) for item in data.get("results") or []],
         signature=str(data.get("signature") or ""),
         infrastructure_failure=bool(data.get("infrastructure_failure")),
+        metadata=dict(data.get("metadata") or {}),
     )
 
 
