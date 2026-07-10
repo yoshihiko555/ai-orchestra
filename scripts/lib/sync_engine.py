@@ -47,6 +47,16 @@ _LEGACY_CODEX_HARNESS_DENY_SENTINELS = (
 )
 
 
+def config_target_relative_path(package_name: str, manifest_path: str) -> Path:
+    """Map a manifest config path into its package-scoped project path."""
+    source_path = Path(manifest_path)
+    parts = source_path.parts
+    config_relative = Path(*parts[1:]) if parts and parts[0] == "config" else source_path
+    if config_relative.is_absolute() or ".." in config_relative.parts:
+        raise ValueError(f"unsafe config path: {manifest_path}")
+    return Path("config") / package_name / config_relative
+
+
 def _toml_scalar(value: Any) -> str:
     """Python 値を TOML の値リテラル文字列に変換する（bool/str/int 限定の簡易実装）。"""
     if isinstance(value, bool):
@@ -751,9 +761,9 @@ def sync_packages(
                         synced_count += 1
                 else:
                     if category == "config":
-                        filename = Path(rel_path).name
-                        dst = claude_dir / "config" / pkg_name / filename
-                        dst_key = f"config/{pkg_name}/{filename}"
+                        dst_key_path = config_target_relative_path(pkg_name, rel_path)
+                        dst = claude_dir / dst_key_path
+                        dst_key = str(dst_key_path)
                     else:
                         dst = claude_dir / rel_path
                         dst_key = rel_path

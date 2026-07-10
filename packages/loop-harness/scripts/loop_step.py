@@ -32,6 +32,7 @@ MECHANICAL_CHECK_TIMEOUT_SECONDS = 1800
 MAX_LLM_RESULT_BYTES = 1024 * 1024
 MAX_LLM_REVIEWERS = 2
 REQUIRED_CHECKER_LAYERS = frozenset({"mechanical", "llm_review"})
+MECHANICAL_CHECKER_LAYERS = frozenset({"mechanical"})
 _ISSUE_LOOP_ID_RE = re.compile(r"^[0-9a-f]{8}-issue-([1-9][0-9]*)$")
 _REVIEWER_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 TERMINAL_ACTIONS = frozenset(
@@ -300,8 +301,15 @@ def cmd_run_checker(args: argparse.Namespace) -> dict[str, Any]:
     _validate_pending_checker(state, args.action_id, args.state_version)
     phase = ld.phase_by_name(_load_definition(project, state.definition_id), state.phase)
     commands = _mechanical_commands(phase.checker)
-    pass_criteria = lc.checker_pass_criteria(state, project)
-    llm_results = _load_bound_llm_results(args.llm_result)
+    has_llm_review = isinstance(phase.checker.get("llm_review"), dict)
+    if has_llm_review:
+        pass_criteria = lc.checker_pass_criteria(state, project)
+        llm_results = _load_bound_llm_results(args.llm_result)
+    else:
+        if args.llm_result:
+            _raise_invalid_llm_result("llm results are not allowed for a mechanical-only checker")
+        pass_criteria = {}
+        llm_results = []
 
     def heartbeat_and_validate() -> None:
         _refresh_checker_fence(
@@ -337,16 +345,6 @@ def cmd_run_checker(args: argparse.Namespace) -> dict[str, Any]:
         args.loop_id, project, args.action_id, failures
     )
     mechanical_path = ",".join(mechanical_paths) or normalized_mechanical_path
-    llm_review = _combine_llm_results(
-        _save_llm_review_artifacts(
-            args.loop_id,
-            project,
-            args.action_id,
-            llm_results,
-            pass_criteria,
-        ),
-        pass_criteria,
-    )
     mechanical = lc.CheckResult(
         passed=not failures,
         layer="mechanical",
@@ -357,15 +355,30 @@ def cmd_run_checker(args: argparse.Namespace) -> dict[str, Any]:
             failure.failure_type == "infrastructure_failure" for failure in failures
         ),
     )
-    combined = lc.combine_check_results(
-        [mechanical, llm_review], pass_criteria, REQUIRED_CHECKER_LAYERS
-    )
+    results = [mechanical]
+    required_layers = MECHANICAL_CHECKER_LAYERS
+    metadata: dict[str, Any] = {}
+    if has_llm_review:
+        llm_review = _combine_llm_results(
+            _save_llm_review_artifacts(
+                args.loop_id,
+                project,
+                args.action_id,
+                llm_results,
+                pass_criteria,
+            ),
+            pass_criteria,
+        )
+        results.append(llm_review)
+        required_layers = REQUIRED_CHECKER_LAYERS
+        metadata["reviewers"] = _bound_reviewer_names(args.llm_result)
+    combined = lc.combine_check_results(results, pass_criteria, required_layers)
     sealed = lc.PhaseCheckResult(
         combined.passed,
         combined.results,
         combined.signature,
         combined.infrastructure_failure,
-        metadata={**combined.metadata, "reviewers": _bound_reviewer_names(args.llm_result)},
+        metadata={**combined.metadata, **metadata},
     )
     payload = lc.redact_payload(lc.phase_check_to_dict(sealed))
     heartbeat_and_validate()

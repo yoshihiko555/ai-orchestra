@@ -280,9 +280,7 @@ reviewer を infrastructure failure とする。レビュアーは Tiered Output
 ```bash
 umask 077
 review_result_1="$(mktemp "${TMPDIR:-/tmp}/loop-llm-review.XXXXXX")"
-test -f "$review_result_1" && test ! -L "$review_result_1"
-test "$(stat -f '%Lp' "$review_result_1")" = "600"
-test "$(stat -f '%z' "$review_result_1")" -le 1048576
+python3 -c 'import os, stat, sys; s = os.lstat(sys.argv[1]); ok = stat.S_ISREG(s.st_mode) and stat.S_IMODE(s.st_mode) == 0o600 and s.st_size <= 1048576; raise SystemExit(0 if ok else 1)' "$review_result_1"
 ```
 
 ```text
@@ -315,8 +313,7 @@ proposal の識別子で `python3 "$LOOP_STEP" run-checker` を呼ぶ。`--llm-r
 ```bash
 umask 077
 checker_result_file="$(mktemp "${TMPDIR:-/tmp}/loop-check-result.XXXXXX")"
-test -f "$checker_result_file" && test ! -L "$checker_result_file"
-test "$(stat -f '%Lp' "$checker_result_file")" = "600"
+python3 -c 'import os, stat, sys; s = os.lstat(sys.argv[1]); ok = stat.S_ISREG(s.st_mode) and stat.S_IMODE(s.st_mode) == 0o600 and s.st_size <= 1048576; raise SystemExit(0 if ok else 1)' "$checker_result_file"
 
 python3 "$LOOP_STEP" run-checker \
   --loop-id "$loop_id" \

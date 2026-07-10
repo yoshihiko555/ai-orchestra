@@ -880,6 +880,8 @@ def run_mechanical_checks(
     detector = _load_failure_detector()
     failures: list[MechanicalFailure] = []
     for index, command in enumerate(commands, start=1):
+        output: str | None = None
+        exit_code: int | None = None
         try:
             output, exit_code = _run_mechanical_command(command, cwd, timeout_seconds)
             response = {"exit_code": exit_code, "stdout": output}
@@ -887,8 +889,8 @@ def run_mechanical_checks(
         finally:
             if heartbeat is not None:
                 heartbeat()
-        if artifact_writer is not None:
-            artifact_writer(index, command, output, exit_code)
+            if artifact_writer is not None and output is not None and exit_code is not None:
+                artifact_writer(index, command, output, exit_code)
         if result is None:
             continue
         failures.append(

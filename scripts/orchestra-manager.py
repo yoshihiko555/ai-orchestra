@@ -35,6 +35,7 @@ from lib.sync_engine import (  # noqa: E402
     apply_codex_harness_config,
     collect_manifest_compositions,
     compute_file_hash,
+    config_target_relative_path,
     get_recorded_file_hash,
     needs_sync,
     record_file_hash,
@@ -365,8 +366,9 @@ class OrchestraManager(ContextMixin, HooksMixin):
                             synced_count += 1
                     else:
                         if category == "config":
-                            dst = claude_dir / "config" / pkg_name / Path(rel_path).name
-                            file_key = f"config/{pkg_name}/{Path(rel_path).name}"
+                            target_rel = config_target_relative_path(pkg_name, rel_path)
+                            dst = claude_dir / target_rel
+                            file_key = str(target_rel)
                         else:
                             dst = claude_dir / rel_path
                             file_key = rel_path
@@ -515,11 +517,11 @@ class OrchestraManager(ContextMixin, HooksMixin):
 
         for file_path in pkg.config:
             if file_path.startswith("config/"):
-                filename = Path(file_path).name
                 source = pkg.path / file_path
-                target = project_dir / ".claude" / "config" / pkg.name / filename
+                target_rel = config_target_relative_path(pkg.name, file_path)
+                target = project_dir / ".claude" / target_rel
                 target.parent.mkdir(parents=True, exist_ok=True)
-                file_key = f"config/{pkg.name}/{filename}"
+                file_key = str(target_rel)
 
                 self._copy_config_if_safe(
                     orch,
@@ -699,9 +701,9 @@ class OrchestraManager(ContextMixin, HooksMixin):
 
         for file_path in pkg.config:
             if file_path.startswith("config/"):
-                filename = Path(file_path).name
-                target = project_dir / ".claude" / "config" / pkg.name / filename
-                file_key = f"config/{pkg.name}/{filename}"
+                target_rel = config_target_relative_path(pkg.name, file_path)
+                target = project_dir / ".claude" / target_rel
+                file_key = str(target_rel)
                 self._remove_if_unchanged(
                     orch, pkg.name, file_key, target, dry_run, label=f"{pkg.name}/{target.name}"
                 )

@@ -367,6 +367,32 @@ class TestSyncPackages:
         assert count == 1
         assert "config/agent-routing/cli-tools.yaml" in files
 
+    def test_syncs_nested_config_file_without_flattening(self, tmp_path):
+        """config 配下の相対ディレクトリを package namespace 内で保持する。"""
+        orchestra_path = tmp_path / "orchestra"
+        pkg_dir = orchestra_path / "packages" / "loop-harness"
+        config_file = pkg_dir / "config" / "loops" / "issue-loop.yaml"
+        config_file.parent.mkdir(parents=True)
+        config_file.write_text("id: issue-loop\n", encoding="utf-8")
+        manifest = {
+            "name": "loop-harness",
+            "agents": [],
+            "config": ["config/loops/issue-loop.yaml"],
+        }
+        (pkg_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        claude_dir = tmp_path / "project" / ".claude"
+        claude_dir.mkdir(parents=True)
+
+        count, files = sync_engine.sync_packages(
+            claude_dir, orchestra_path, ["loop-harness"], set()
+        )
+
+        expected = "config/loop-harness/loops/issue-loop.yaml"
+        assert count == 1
+        assert expected in files
+        assert (claude_dir / expected).read_text(encoding="utf-8") == "id: issue-loop\n"
+        assert not (claude_dir / "config" / "loop-harness" / "issue-loop.yaml").exists()
+
     def test_skips_facet_managed(self, tmp_path):
         """facet_managed に含まれるファイルをスキップする。"""
         orchestra_path = tmp_path / "orchestra"

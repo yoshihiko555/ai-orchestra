@@ -413,7 +413,13 @@ def test_propose_checker_and_advance_phase_params_follow_definition(tmp_path: Pa
     assert advance["action"] == lc.Action.ADVANCE_PHASE.value
     assert advance["params"]["verified_branch"] == "loop/issue-7"
     assert advance["params"]["next_phase"] == "pr_review_response"
-    assert advance["params"]["exec"] == ["commit", "push", "pr_create"]
+    assert advance["params"]["exec"] == [
+        "commit",
+        "record_baseline",
+        "push",
+        "pr_create",
+        "record_iteration_head",
+    ]
     assert advance["params"]["issue_number"] == 7
     assert advance["params"]["repo_identity_verified"] is True
 
@@ -882,6 +888,74 @@ def test_run_checker_uses_state_and_definition_and_returns_complete_ready_json(
         ]
     )
     assert completed.returncode == 0, completed.stderr
+
+
+def test_run_checker_supports_mechanical_only_definition(tmp_path: Path, capsys: Any) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    definition_path = (
+        repo / ".claude" / "config" / "loop-harness" / "loops" / "mechanical-only.yaml"
+    )
+    definition_path.parent.mkdir(parents=True)
+    definition_path.write_text(
+        """id: mechanical-only
+trigger:
+  lp1:
+    skill: loop-issue
+phases:
+  - name: build
+    maker:
+      agent: auto
+      prompt_template: x.md#maker
+    checker:
+      mechanical:
+        commands: [printf mechanical-only]
+        analyzer: failure_detector.analyze
+    guards:
+      max_iterations: 3
+      no_progress:
+        signature: implementation
+        repeat: 2
+    on_success:
+      disposition: exit_success
+    on_failure:
+      disposition: exit_failure
+""",
+        encoding="utf-8",
+    )
+    start_proc = _run_cli(
+        [
+            "start",
+            "--issue",
+            "8",
+            "--definition",
+            "mechanical-only",
+            "--project",
+            str(repo),
+        ]
+    )
+    assert start_proc.returncode == 0, start_proc.stderr
+    started = _payload(start_proc)
+    _complete(repo, started["loop_id"], started, started["lease_token"])
+    checker = _propose(repo, started["loop_id"], started["lease_token"])
+
+    exit_code = loop_step.main(_run_checker_args(repo, started, checker, []))
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert payload["passed"] is True
+    assert "metadata" not in payload
+    assert [item["layer"] for item in payload["results"]] == ["mechanical"]
+
+    completed = _complete(
+        repo,
+        started["loop_id"],
+        checker,
+        started["lease_token"],
+        payload,
+    )
+
+    assert completed["ok"] is True
 
 
 def test_run_checker_seals_redacted_finding_that_complete_accepts(
