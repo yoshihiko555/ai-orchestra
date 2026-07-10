@@ -274,3 +274,26 @@ class TestFilteredViewSelfVerification:
                 view_dir,
                 known_holdout_run_ids={_HOLDOUT_RUN_ID},
             )
+
+
+class TestExpandEventsJsonlLimit:
+    def test_rejects_expansion_beyond_max_bytes(self, tmp_path: Path) -> None:
+        src = tmp_path / "events.jsonl.gz"
+        payload = b'{"event": "run_completed"}\n' * 1000
+        with gzip.open(src, "wb") as gz:
+            gz.write(payload)
+        dst = tmp_path / "events.jsonl"
+
+        with pytest.raises(proposer.ViewBuildError, match="expands beyond max_bytes"):
+            proposer._expand_events_jsonl(src, dst, max_bytes=100)
+
+    def test_expands_within_limit(self, tmp_path: Path) -> None:
+        src = tmp_path / "events.jsonl.gz"
+        payload = b'{"event": "run_completed"}\n'
+        with gzip.open(src, "wb") as gz:
+            gz.write(payload)
+        dst = tmp_path / "events.jsonl"
+
+        proposer._expand_events_jsonl(src, dst, max_bytes=1_000_000)
+
+        assert dst.read_bytes() == payload

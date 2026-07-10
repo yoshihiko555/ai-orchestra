@@ -34,6 +34,10 @@ from proposer_backend import ProposalValidationError, ProposerError  # noqa: E40
 PROPOSAL_SCHEMA_NAME = "proposal.schema.json"
 PROPOSER_PROMPT_TEMPLATE_NAME = "proposer-prompt-template.md"
 DEFAULT_MAX_OVERLAY_BYTES = 200000
+# events.jsonl.gz の展開上限（decompression-bomb ガード）。included run 数は
+# view snapshot で有界のため、per-file 上限で view 全体の展開量も有界になる。
+DEFAULT_MAX_EXPANDED_EVENTS_BYTES = 50_000_000
+_EXPAND_CHUNK_BYTES = 1 << 20
 _MISSING_FOCUS = "(none)"
 _VIEW_PREFIX = "meta-harness-view-"
 _INSTRUCTION_FILE_NAMES = {"AGENTS.md", "CLAUDE.md", "GEMINI.md"}
@@ -508,13 +512,25 @@ def _read_run_metadata(run_dir: Path) -> dict[str, Any]:
     return data
 
 
-def _expand_events_jsonl(src: Path, dst: Path) -> None:
+def _expand_events_jsonl(
+    src: Path, dst: Path, *, max_bytes: int = DEFAULT_MAX_EXPANDED_EVENTS_BYTES
+) -> None:
     if not src.is_file():
         return
     _assert_not_symlink(src)
+    written = 0
     try:
         with gzip.open(src, "rb") as gz, dst.open("wb") as out:
-            shutil.copyfileobj(gz, out)
+            while True:
+                chunk = gz.read(_EXPAND_CHUNK_BYTES)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > max_bytes:
+                    raise ViewBuildError(
+                        f"events.jsonl.gz expands beyond max_bytes={max_bytes}: {src}"
+                    )
+                out.write(chunk)
     except (OSError, gzip.BadGzipFile) as exc:
         raise ViewBuildError(f"could not expand events.jsonl.gz: {src}") from exc
     _remove_executable_bits(dst)

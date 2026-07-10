@@ -129,7 +129,7 @@ def _run_propose_pipeline(
     valid_based_on_run_ids = _citable_run_ids(snapshot, target)
     if not valid_based_on_run_ids:
         raise prop.ProposerError(f"no citable non-holdout runs for target: {target}")
-    with _temporary_proposer_home(tool) as home:
+    with _temporary_proposer_home(tool, config) as home:
         view = prop.build_filtered_view(
             main_root=main_root,
             config=config,
@@ -155,9 +155,11 @@ def _run_propose_pipeline(
 
 
 @contextmanager
-def _temporary_proposer_home(tool: str):
+def _temporary_proposer_home(tool: str, config: dict):
     if tool == "codex":
-        with pb.temporary_codex_home() as home:
+        with pb.temporary_codex_home(
+            min_token_ttl_seconds=pb.min_codex_token_ttl_seconds(config)
+        ) as home:
             yield home
         return
     with _temporary_empty_dir() as home:

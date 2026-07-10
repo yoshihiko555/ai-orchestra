@@ -111,7 +111,11 @@ class SrtBackend:
         verify_no_instruction_files(view_dir)
         if proposer_tool == "codex":
             ensure_empty_agents_file(ephemeral_home)
-        extra_env = _extra_env_for_tool(proposer_tool, ephemeral_home)
+        run_tmp_dir = _create_run_tmp_dir(settings_dir)
+        extra_env = {
+            **_extra_env_for_tool(proposer_tool, ephemeral_home),
+            **_tmp_env(run_tmp_dir),
+        }
         srt_path = _require_srt_binary()
         srt_version = _get_srt_version(srt_path, runner=runner)
         _check_version_pin(config, srt_version)
@@ -121,6 +125,7 @@ class SrtBackend:
             config=config,
             ephemeral_home=ephemeral_home,
             proposer_tool=proposer_tool,
+            run_tmp_dir=run_tmp_dir,
             runner=runner,
         )
         settings_path = write_srt_settings(settings, settings_dir)
@@ -197,6 +202,7 @@ def build_srt_settings(
     config: dict,
     ephemeral_home: Path,
     proposer_tool: str,
+    run_tmp_dir: Path | None = None,
     runner: SubprocessRunner = subprocess.run,
 ) -> dict:
     """Sec11-3-5 のフル settings JSON を生成する。"""
@@ -205,7 +211,7 @@ def build_srt_settings(
     allow_read = _dedupe_paths([resolved_view, *_configured_allow_read_extra(config)])
     forbidden = forbidden_read_paths(main_root, config)
     _assert_no_forbidden_allow_read(allow_read, forbidden)
-    allow_write = _allow_write_paths(resolved_view, resolved_home, proposer_tool)
+    allow_write = _allow_write_paths(resolved_view, resolved_home, proposer_tool, run_tmp_dir)
     return {
         "network": {
             "allowedDomains": _allowed_domains_for_tool(proposer_tool),
@@ -401,6 +407,7 @@ def _run_srt_canary_self_test(
             env=env,
             runner=runner,
             label="view-external read canary",
+            is_policy_denial=_read_canary_denied,
         )
         _assert_sandbox_rejects(
             wrap_srt_command(srt_path, settings_path, network_domain_cmd),
@@ -408,6 +415,7 @@ def _run_srt_canary_self_test(
             env=env,
             runner=runner,
             label="non-allowlisted network canary",
+            is_policy_denial=_network_canary_denied,
         )
         _assert_sandbox_rejects(
             wrap_srt_command(srt_path, settings_path, network_direct_ip_cmd),
@@ -415,9 +423,25 @@ def _run_srt_canary_self_test(
             env=env,
             runner=runner,
             label="direct-IP network canary",
+            is_policy_denial=_network_canary_denied,
         )
     finally:
         read_canary.unlink(missing_ok=True)
+
+
+# read 遮断の実測シグナル: seatbelt は EPERM（macOS）、bubblewrap は EACCES（Linux）。
+_READ_DENIAL_MARKERS = ("operation not permitted", "permission denied")
+# curl の遮断実測（§11-3-5）: 56 = 接続遮断、22 = `--fail` による srt proxy の 403 応答。
+_CURL_DENIAL_EXIT_CODES = frozenset({22, 56})
+
+
+def _read_canary_denied(completed: subprocess.CompletedProcess) -> bool:
+    output = f"{completed.stderr or ''}\n{completed.stdout or ''}".lower()
+    return any(marker in output for marker in _READ_DENIAL_MARKERS)
+
+
+def _network_canary_denied(completed: subprocess.CompletedProcess) -> bool:
+    return completed.returncode in _CURL_DENIAL_EXIT_CODES
 
 
 def _assert_sandbox_rejects(
@@ -427,6 +451,7 @@ def _assert_sandbox_rejects(
     env: dict[str, str],
     runner: SubprocessRunner,
     label: str,
+    is_policy_denial: Callable[[subprocess.CompletedProcess], bool],
 ) -> None:
     try:
         completed = runner(
@@ -446,6 +471,12 @@ def _assert_sandbox_rejects(
         raise IsolationError(
             f"srt canary could not prove isolation because srt failed to start ({label}): "
             f"{completed.stderr.strip()[:500]}"
+        )
+    if not is_policy_denial(completed):
+        # DNS 障害・タイムアウト・TLS エラー等の非ゼロ終了は隔離の証明にならない。
+        raise IsolationError(
+            f"srt canary failed without a sandbox-denial signal ({label}): "
+            f"exit={completed.returncode}, {(completed.stderr or '').strip()[:300]}"
         )
 
 
@@ -512,12 +543,35 @@ def _assert_no_forbidden_allow_read(allow_read: list[Path], forbidden: list[Path
                 )
 
 
-def _allow_write_paths(view_dir: Path, ephemeral_home: Path, proposer_tool: str) -> list[Path]:
+def _allow_write_paths(
+    view_dir: Path, ephemeral_home: Path, proposer_tool: str, run_tmp_dir: Path | None
+) -> list[Path]:
+    # 共有 /tmp・/private/tmp は許可しない: prompt injection された command が同一
+    # ユーザーの他プロセスの一時ファイル・socket・別実行の settings を変更できるため、
+    # per-run の専用 tmp（0700、TMPDIR/TMP/TEMP で固定）だけを許可する。
     paths = [view_dir]
     if proposer_tool == "codex":
         paths.append(ephemeral_home)
-    paths.extend([Path("/tmp"), Path("/private/tmp")])
+    if run_tmp_dir is not None:
+        paths.append(run_tmp_dir)
     return _dedupe_paths(paths)
+
+
+_RUN_TMP_DIR_NAME = "proposer-tmp"
+
+
+def _create_run_tmp_dir(settings_dir: Path) -> Path:
+    settings_dir.mkdir(parents=True, exist_ok=True)
+    settings_dir.chmod(0o700)
+    run_tmp = settings_dir / _RUN_TMP_DIR_NAME
+    run_tmp.mkdir(mode=0o700, exist_ok=True)
+    run_tmp.chmod(0o700)
+    return _realpath(run_tmp)
+
+
+def _tmp_env(run_tmp_dir: Path) -> dict[str, str]:
+    value = str(run_tmp_dir)
+    return {"TMPDIR": value, "TMP": value, "TEMP": value}
 
 
 def _allowed_domains_for_tool(proposer_tool: str) -> list[str]:

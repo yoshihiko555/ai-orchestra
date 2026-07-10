@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -28,6 +29,7 @@ BUILD_TIMEOUT_SECONDS = 300
 VERIFY_TIMEOUT_SECONDS = 900
 GIT_TIMEOUT_SECONDS = 120
 CAND_SLUG_MAX_LEN = 80
+CAND_SLUG_HASH_LEN = 8
 PR_BODY_TEXT_LIMIT = 2000
 PROMOTION_OPENED_RECORD_ATTEMPTS = 2
 SOURCE_COMMIT_PATTERN = re.compile(r"^[0-9a-f]{7,40}$")
@@ -303,13 +305,21 @@ def _compute_current_frontier(events: list[dict], config: dict) -> dict[str, Any
 
 
 def _has_passing_holdout(events: list[dict], cand_id: str) -> bool:
-    return any(
-        event.get("event") == "run_completed"
-        and event.get("cand_id") == cand_id
-        and bool(event.get("holdout"))
-        and event.get("verdict") == "pass"
-        for event in events
-    )
+    """最新の holdout run の verdict が `pass` のときのみ True を返す。
+
+    ledger は追記順のため、同一 cand_id の holdout run が複数あるときは最後に
+    出現したものを最新 attempt とみなす。古い `pass` の後に新しい `fail`/`error`
+    があれば promote を拒否する（過去の合格で publish されるのを防ぐ）。
+    """
+    latest_verdict: str | None = None
+    for event in events:
+        if (
+            event.get("event") == "run_completed"
+            and event.get("cand_id") == cand_id
+            and bool(event.get("holdout"))
+        ):
+            latest_verdict = event.get("verdict")
+    return latest_verdict == "pass"
 
 
 def _has_current_hash_pair(events: list[dict], cand_id: str, frontier_doc: dict[str, Any]) -> bool:
@@ -722,7 +732,18 @@ def _validate_cand_id(cand_id: str) -> None:
 
 
 def _cand_slug(cand_id: str) -> str:
-    return cand_id.removeprefix("cand-").replace("_", "-")[:CAND_SLUG_MAX_LEN]
+    """cand_id を branch/worktree 名向けの slug に変換する。
+
+    長い cand_id を単純 truncate すると末尾 nonce が脱落し、別候補が同一
+    branch に衝突しうる。上限超過時は cand_id 全体の short hash を末尾に付与し、
+    truncate 後も一意性を保つ。
+    """
+    body = cand_id.removeprefix("cand-").replace("_", "-")
+    if len(body) <= CAND_SLUG_MAX_LEN:
+        return body
+    digest = hashlib.sha256(cand_id.encode("utf-8")).hexdigest()[:CAND_SLUG_HASH_LEN]
+    keep = CAND_SLUG_MAX_LEN - CAND_SLUG_HASH_LEN - 1
+    return f"{body[:keep]}-{digest}"
 
 
 def _ref_exists(project_dir: Path, ref: str) -> bool:

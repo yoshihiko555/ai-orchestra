@@ -1960,7 +1960,14 @@ cd <view-dir> && CODEX_HOME=<ephemeral-home> srt --settings <isolation-settings.
   view 内に実行可能ファイルを置かないことを view 構築の検証項目に追加する。
 - **srt settings**: `denyRead` は §11-3-2 の動的導出。`allowRead: [<view-dir>]` のみ
   （ephemeral home は `$TMPDIR` 配下のため denyRead 対象外）。
-  `allowWrite: [<view-dir>, <ephemeral-home>, /private/tmp, /tmp]`。
+  `allowWrite: [<view-dir>, <ephemeral-home>, <per-run tmp>]`。
+  **共有 `/tmp`・`/private/tmp` は許可しない**（2026-07-10 レビュー反映: 同一ユーザーの
+  他プロセスの一時ファイル・socket への書込経路になるため）。propose CLI が実行ごとに
+  0700 の専用 tmp ディレクトリを作成し、proposer プロセスの `TMPDIR`/`TMP`/`TEMP` を
+  そこへ固定した上で、そのパスのみを allowWrite に加える。canary self-test は
+  「非ゼロ終了」ではなく**遮断シグナル**（read: EPERM/EACCES マーカー、curl: exit 56 または
+  `--fail` の 403 由来 exit 22）を要求し、DNS 障害等の無関係な失敗を隔離成功と
+  誤認しない（fail-closed）。
   `network.allowedDomains: ["chatgpt.com", "*.chatgpt.com", "*.openai.com", "openai.com"]`
   + `network.strictAllowlist: true`
   （Phase 2 実装時に最小集合を再実測して縮小）+ `allowLocalBinding: true`（codex の
@@ -2014,7 +2021,9 @@ srt の実測制約により「読めなくする」方向の対策は構造的�
 **設計方針**: 「持ち込む資格情報の価値の最小化」を主対策とし、唯一の exfil 経路である
 出力経路に検知層を重ねる。読取自体は防げない前提に立つ（防げると偽装する層は置かない）。
 
-**L1 — 資格情報の最小化（主対策、2026-07-10 スパイク実測反映・codex-cli 0.144.1）**:
+**L1 — 資格情報の最小化（主対策、2026-07-10 スパイク実測反映・codex-cli 0.144.1。
+同日、PR #174 レビュー対応で実装済み: `OPENAI_API_KEY` strip・`refresh_token` の
+canary 置換・JWT `exp` preflight。L2/L3 検知層は未実装で次 PR）**:
 
 1. staged `auth.json` から **`OPENAI_API_KEY` を除去**する。**実測 (a) PASS**:
    フィールドごと削除しても `codex exec` は完走する。本開発機では値自体 null だったが、
@@ -2165,7 +2174,9 @@ fail-closed とし、以下すべてを満たさなければ exit 2 とする。
 
 1. 候補の状態が `evaluated`（ledger 畳み込み、§1-2）。
 2. 現 frontier 上にある。
-3. holdout 評価済みで過学習フラグ（§3-6 の過学習ガード）なし。
+3. holdout 評価済みで過学習フラグ（§3-6 の過学習ガード）なし。同一候補に複数の
+   holdout run がある場合は**最新の holdout run の verdict を正とする**（§3-4 の
+   最新 attempt 集計と同じ原則。古い pass はより新しい fail/error で無効になる）。
 4. 候補の run 群の `suite_hash` / `evaluator_hash` が現行と一致する（不一致 = 評価が陳腐化して
    おり、再評価を要求する）。
 5. 候補 store 上の overlay 内容から再計算した `config_hash` が manifest の `config_hash` と一致する

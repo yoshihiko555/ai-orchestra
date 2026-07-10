@@ -3,18 +3,21 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
+import secrets
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
 from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +30,10 @@ import meta_harness_common as mh  # noqa: E402
 
 PROPOSAL_SCHEMA_NAME = "proposal.schema.json"
 DEFAULT_PROPOSER_TIMEOUT_SECONDS = 600
+PROCESS_KILL_DRAIN_SECONDS = 5
+MAX_PROPOSAL_OUTPUT_BYTES = 5_000_000
+CODEX_AUTH_CANARY_PREFIX = "meta-harness-canary-refresh-"
+AUTH_TOKEN_TTL_MARGIN_SECONDS = 120
 _CODEX_HOME_PREFIX = "meta-harness-codex-home-"
 _CODEX_ORPHAN_MAX_AGE = timedelta(hours=24)
 _CODEX_MODEL_CATALOG_FILES = ("models_cache.json", "version.json")
@@ -113,11 +120,10 @@ def launch_proposer_backend(
 
 def load_and_validate_proposal_output(output_path: Path, schema_dir: Path) -> dict[str, Any]:
     """`-o` output file だけを正として proposal JSON を読み込む。"""
-    if not output_path.is_file() or output_path.stat().st_size == 0:
-        raise ProposalValidationError("proposal output file is missing or empty")
+    raw = _read_proposal_output_bytes(output_path)
     try:
-        proposal = json.loads(output_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        proposal = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ProposalValidationError(f"proposal output is not valid JSON: {exc}") from exc
     if not isinstance(proposal, dict):
         raise ProposalValidationError("proposal output must be a JSON object")
@@ -128,9 +134,52 @@ def load_and_validate_proposal_output(output_path: Path, schema_dir: Path) -> di
     return proposal
 
 
+def _read_proposal_output_bytes(output_path: Path) -> bytes:
+    """backend が書ける領域の出力ファイルを symlink 非追従・上限付きで読む。
+
+    backend は view_dir に書込可能なため、output path を symlink に差し替えて
+    隔離外ファイルをホスト権限で読ませる攻撃を防ぐ（O_NOFOLLOW + fstat 検査）。
+    """
+    try:
+        fd = os.open(output_path, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        raise ProposalValidationError("proposal output file is missing or empty") from None
+    except OSError as exc:
+        raise ProposalValidationError(
+            f"proposal output is not a readable regular file: {exc}"
+        ) from exc
+    with os.fdopen(fd, "rb") as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode):
+            raise ProposalValidationError("proposal output must be a regular file")
+        if info.st_size == 0:
+            raise ProposalValidationError("proposal output file is missing or empty")
+        if info.st_size > MAX_PROPOSAL_OUTPUT_BYTES:
+            raise ProposalValidationError(
+                f"proposal output exceeds max bytes: {info.st_size} > {MAX_PROPOSAL_OUTPUT_BYTES}"
+            )
+        return handle.read(MAX_PROPOSAL_OUTPUT_BYTES + 1)
+
+
+def _write_proposal_output(output_path: Path, proposal: dict[str, Any]) -> None:
+    """backend 実行後の出力書込を symlink 非追従で行う（claude-bare 経路）。
+
+    backend が output path に symlink を先置きしてもホスト権限の書込が
+    隔離外ファイルへ向かわないよう、unlink 後に O_EXCL で新規作成する。
+    """
+    output_path.unlink(missing_ok=True)
+    fd = os.open(output_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(json.dumps(proposal, ensure_ascii=False) + "\n")
+
+
 @contextmanager
-def temporary_codex_home(source_home: Path | None = None):
-    """実 `auth.json` だけをコピーした ephemeral CODEX_HOME を用意する。"""
+def temporary_codex_home(
+    source_home: Path | None = None,
+    *,
+    min_token_ttl_seconds: int | None = None,
+):
+    """最小化した `auth.json` を持つ ephemeral CODEX_HOME を用意する（Sec11-3-6 L1）。"""
     _sweep_orphan_codex_homes()
     path = Path(tempfile.mkdtemp(prefix=_CODEX_HOME_PREFIX, dir=tempfile.gettempdir()))
     path.chmod(0o700)
@@ -142,7 +191,9 @@ def temporary_codex_home(source_home: Path | None = None):
 
     signal.signal(signal.SIGTERM, _handle_sigterm)
     try:
-        _populate_codex_home(path, source_home=source_home)
+        _populate_codex_home(
+            path, source_home=source_home, min_token_ttl_seconds=min_token_ttl_seconds
+        )
         yield path
     finally:
         signal.signal(signal.SIGTERM, previous_sigterm)
@@ -243,7 +294,7 @@ def _launch_claude_bare_backend(
         runner=runner,
     )
     proposal = _extract_claude_bare_json(completed.stdout or "")
-    output_path.write_text(json.dumps(proposal, ensure_ascii=False) + "\n", encoding="utf-8")
+    _write_proposal_output(output_path, proposal)
     return completed
 
 
@@ -306,9 +357,24 @@ def _run_process_tree(
         out, err = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as exc:
         _kill_process_group(process.pid)
-        out, err = process.communicate()
+        out, err = _drain_after_kill(process)
         raise subprocess.TimeoutExpired(args, timeout, output=out, stderr=err) from exc
+    finally:
+        # backend が daemon 化した子孫を残しても、正常・異常の両経路で必ず掃除する。
+        _kill_process_group(process.pid)
     return subprocess.CompletedProcess(args, process.returncode, out, err)
+
+
+def _drain_after_kill(process: subprocess.Popen) -> tuple[str | None, str | None]:
+    """kill 済みプロセスの残余出力を期限付きで回収する。
+
+    孤児化した孫プロセスが pipe を保持し続けると素の `communicate()` は
+    無期限に停止しうるため、期限超過時は出力回収を諦める。
+    """
+    try:
+        return process.communicate(timeout=PROCESS_KILL_DRAIN_SECONDS)
+    except (subprocess.TimeoutExpired, OSError):
+        return None, None
 
 
 def _error_excerpt(completed: subprocess.CompletedProcess) -> str:
@@ -326,10 +392,12 @@ def _kill_process_group(pid: int) -> None:
     try:
         pgid = os.getpgid(pid)
     except ProcessLookupError:
-        return
+        # start_new_session=True で起動しているため leader 終了後も pgid == pid。
+        # 残存メンバーがいる可能性があるので pid を pgid として kill を試みる。
+        pgid = pid
     try:
         os.killpg(pgid, signal.SIGKILL)
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):
         return
 
 
@@ -457,13 +525,24 @@ def _proposer_timeout_seconds(proposer_cfg: dict) -> int:
     return timeout
 
 
-def _populate_codex_home(ephemeral_home: Path, source_home: Path | None) -> None:
+def _populate_codex_home(
+    ephemeral_home: Path,
+    source_home: Path | None,
+    *,
+    min_token_ttl_seconds: int | None = None,
+) -> None:
     source = source_home or _default_codex_home()
     auth_src = source / "auth.json"
     if not auth_src.is_file():
         raise ProposerRuntimeError(f"codex auth.json not found: {auth_src}")
     auth_dst = ephemeral_home / "auth.json"
-    shutil.copyfile(auth_src, auth_dst)
+    auth_dst.write_text(
+        _minimize_codex_auth(
+            auth_src.read_text(encoding="utf-8"),
+            min_token_ttl_seconds=min_token_ttl_seconds,
+        ),
+        encoding="utf-8",
+    )
     auth_dst.chmod(0o600)
     config_dst = ephemeral_home / "config.toml"
     config_dst.write_text("# meta-harness ephemeral codex home\n", encoding="utf-8")
@@ -482,6 +561,67 @@ def _stage_codex_model_catalog(*, ephemeral_home: Path, source_home: Path) -> No
         dst = ephemeral_home / name
         shutil.copyfile(src, dst)
         dst.chmod(0o644)
+
+
+def _minimize_codex_auth(auth_raw: str, *, min_token_ttl_seconds: int | None) -> str:
+    """staged auth.json から長期資格情報を排除する（Sec11-3-6 L1）。
+
+    - `OPENAI_API_KEY` はフィールドごと削除（実測: 削除しても codex exec は完走）
+    - `refresh_token` はパーサ必須フィールドのため canary 値に置換
+      （実測: 非空の無効値でも完走。漏えい誘導時に盗まれるのは canary になる）
+    - access token は refresh 不能になるため、残存 TTL を preflight で検査し
+      不足時は fail-closed（実資格情報への refresh 代行は行わない）
+    """
+    try:
+        auth = json.loads(auth_raw)
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise ProposalValidationError(f"codex auth.json is not valid JSON: {exc}") from exc
+    if not isinstance(auth, dict):
+        raise ProposalValidationError("codex auth.json must be a JSON object")
+    auth.pop("OPENAI_API_KEY", None)
+    tokens = auth.get("tokens")
+    if isinstance(tokens, dict):
+        tokens["refresh_token"] = _generate_auth_canary()
+        access_token = tokens.get("access_token")
+        if min_token_ttl_seconds is not None and isinstance(access_token, str):
+            _assert_access_token_ttl(access_token, min_token_ttl_seconds)
+    return json.dumps(auth, ensure_ascii=False) + "\n"
+
+
+def _generate_auth_canary() -> str:
+    return f"{CODEX_AUTH_CANARY_PREFIX}{secrets.token_hex(16)}"
+
+
+def _assert_access_token_ttl(access_token: str, min_ttl_seconds: int) -> None:
+    exp = _jwt_exp_epoch(access_token)
+    remaining = exp - datetime.now(UTC).timestamp()
+    if remaining < min_ttl_seconds:
+        raise ProposalValidationError(
+            "codex access token expires too soon for a refresh-less proposer run "
+            f"(remaining={int(remaining)}s < required={min_ttl_seconds}s). "
+            "Run any normal codex command to refresh the token, then retry."
+        )
+
+
+def _jwt_exp_epoch(token: str) -> int:
+    parts = token.split(".")
+    if len(parts) != 3:
+        raise ProposalValidationError("codex access token is not a JWT; cannot verify its TTL")
+    payload = parts[1] + "=" * (-len(parts[1]) % 4)
+    try:
+        claims = json.loads(base64.urlsafe_b64decode(payload))
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise ProposalValidationError(f"codex access token payload is unreadable: {exc}") from exc
+    exp = claims.get("exp")
+    if not isinstance(exp, int):
+        raise ProposalValidationError("codex access token has no integer exp claim")
+    return exp
+
+
+def min_codex_token_ttl_seconds(config: dict) -> int:
+    """proposer timeout + 余裕分。staging 前の access token preflight に使う。"""
+    proposer_cfg = config.get("proposer") or {}
+    return _proposer_timeout_seconds(proposer_cfg) + AUTH_TOKEN_TTL_MARGIN_SECONDS
 
 
 def _default_codex_home() -> Path:

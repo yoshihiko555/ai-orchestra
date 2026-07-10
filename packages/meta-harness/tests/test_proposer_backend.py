@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import shutil
@@ -285,7 +286,7 @@ class TestProposerBackendHelpers:
 
         with backend.temporary_codex_home(source_home=source) as home:
             assert home.stat().st_mode & 0o777 == 0o700
-            assert (home / "auth.json").read_text(encoding="utf-8") == '{"token":"test"}\n'
+            assert json.loads((home / "auth.json").read_text(encoding="utf-8")) == {"token": "test"}
             assert (home / "auth.json").stat().st_mode & 0o777 == 0o600
             assert (home / "models_cache.json").read_text(encoding="utf-8") == '{"models":[]}\n'
             assert (home / "models_cache.json").stat().st_mode & 0o777 == 0o644
@@ -388,6 +389,43 @@ class TestProposerBackendHelpers:
             time.sleep(0.05)
         assert not _pid_exists(child_pid)
 
+    def test_run_process_tree_kills_lingering_child_on_success(self, tmp_path: Path) -> None:
+        pid_file = tmp_path / "child.pid"
+        child_code = (
+            "import sys, time, pathlib\n"
+            "pathlib.Path(sys.argv[1]).write_text(str(__import__('os').getpid()))\n"
+            "time.sleep(60)\n"
+        )
+        parent_code = (
+            "import pathlib, subprocess, sys, time\n"
+            "subprocess.Popen(\n"
+            "    [sys.executable, '-c', sys.argv[1], sys.argv[2]],\n"
+            "    stdout=subprocess.DEVNULL,\n"
+            "    stderr=subprocess.DEVNULL,\n"
+            ")\n"
+            "pid = pathlib.Path(sys.argv[2])\n"
+            "while not pid.exists():\n"
+            "    time.sleep(0.01)\n"
+        )
+
+        completed = backend._run_process_tree(
+            [sys.executable, "-c", parent_code, child_code, str(pid_file)],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            stdin=subprocess.DEVNULL,
+            env=os.environ.copy(),
+        )
+
+        assert completed.returncode == 0
+        child_pid = int(pid_file.read_text(encoding="utf-8"))
+        for _ in range(40):
+            if not _pid_exists(child_pid):
+                break
+            time.sleep(0.05)
+        assert not _pid_exists(child_pid)
+
 
 def _pid_exists(pid: int) -> bool:
     try:
@@ -395,3 +433,103 @@ def _pid_exists(pid: int) -> bool:
     except ProcessLookupError:
         return False
     return True
+
+
+class TestProposalOutputHardening:
+    def test_read_rejects_symlink_output(self, tmp_path: Path) -> None:
+        secret = tmp_path / "secret.json"
+        secret.write_text('{"schema_version": "1.0"}\n', encoding="utf-8")
+        output_path = tmp_path / "proposal-output.json"
+        output_path.symlink_to(secret)
+
+        with pytest.raises(backend.ProposalValidationError, match="regular file"):
+            backend._read_proposal_output_bytes(output_path)
+
+    def test_read_rejects_oversized_output(self, tmp_path: Path, monkeypatch) -> None:
+        output_path = tmp_path / "proposal-output.json"
+        output_path.write_text("x" * 64, encoding="utf-8")
+        monkeypatch.setattr(backend, "MAX_PROPOSAL_OUTPUT_BYTES", 16)
+
+        with pytest.raises(backend.ProposalValidationError, match="exceeds max bytes"):
+            backend._read_proposal_output_bytes(output_path)
+
+    def test_read_missing_file_reports_missing(self, tmp_path: Path) -> None:
+        with pytest.raises(backend.ProposalValidationError, match="missing or empty"):
+            backend._read_proposal_output_bytes(tmp_path / "absent.json")
+
+    def test_write_replaces_planted_symlink_without_following(self, tmp_path: Path) -> None:
+        victim = tmp_path / "victim.txt"
+        victim.write_text("original\n", encoding="utf-8")
+        output_path = tmp_path / "proposal-output.json"
+        output_path.symlink_to(victim)
+
+        backend._write_proposal_output(output_path, {"schema_version": "1.0"})
+
+        assert victim.read_text(encoding="utf-8") == "original\n"
+        assert not output_path.is_symlink()
+        assert json.loads(output_path.read_text(encoding="utf-8")) == {"schema_version": "1.0"}
+
+
+def _fake_jwt(exp_epoch: int) -> str:
+    header = base64.urlsafe_b64encode(json.dumps({"alg": "none"}).encode()).rstrip(b"=")
+    payload = base64.urlsafe_b64encode(json.dumps({"exp": exp_epoch}).encode()).rstrip(b"=")
+    return f"{header.decode()}.{payload.decode()}.signature"
+
+
+def _codex_source_home(tmp_path: Path, *, exp_epoch: int) -> Path:
+    source = tmp_path / "source-home"
+    source.mkdir()
+    auth = {
+        "auth_mode": "chatgpt",
+        "last_refresh": "2026-07-07T00:33:33Z",
+        "OPENAI_API_KEY": "sk-real-api-key-do-not-stage",
+        "tokens": {
+            "access_token": _fake_jwt(exp_epoch),
+            "id_token": "id.token.value",
+            "refresh_token": "real-refresh-token-value",
+            "account_id": "account-1234",
+        },
+    }
+    (source / "auth.json").write_text(json.dumps(auth), encoding="utf-8")
+    return source
+
+
+class TestCodexAuthMinimization:
+    def test_staged_auth_strips_long_lived_credentials(self, tmp_path: Path) -> None:
+        source = _codex_source_home(tmp_path, exp_epoch=int(time.time()) + 86400)
+
+        with backend.temporary_codex_home(source_home=source, min_token_ttl_seconds=600) as home:
+            staged = json.loads((home / "auth.json").read_text(encoding="utf-8"))
+
+        assert "OPENAI_API_KEY" not in staged
+        refresh = staged["tokens"]["refresh_token"]
+        assert refresh.startswith(backend.CODEX_AUTH_CANARY_PREFIX)
+        assert refresh != "real-refresh-token-value"
+        assert staged["tokens"]["access_token"] == _fake_jwt(int(time.time()) + 86400)
+        assert staged["tokens"]["account_id"] == "account-1234"
+
+    def test_expiring_access_token_fails_closed(self, tmp_path: Path) -> None:
+        source = _codex_source_home(tmp_path, exp_epoch=int(time.time()) + 60)
+
+        with pytest.raises(backend.ProposalValidationError, match="expires too soon"):
+            with backend.temporary_codex_home(source_home=source, min_token_ttl_seconds=600):
+                pytest.fail("must not launch with an expiring token")
+
+    def test_non_jwt_access_token_fails_closed(self, tmp_path: Path) -> None:
+        source = tmp_path / "source-home"
+        source.mkdir()
+        auth = {"tokens": {"access_token": "opaque-token", "refresh_token": "r"}}
+        (source / "auth.json").write_text(json.dumps(auth), encoding="utf-8")
+
+        with pytest.raises(backend.ProposalValidationError, match="not a JWT"):
+            with backend.temporary_codex_home(source_home=source, min_token_ttl_seconds=600):
+                pytest.fail("must not launch with an unverifiable token")
+
+    def test_minimization_applies_even_without_ttl_requirement(self, tmp_path: Path) -> None:
+        source = _codex_source_home(tmp_path, exp_epoch=int(time.time()) - 100)
+
+        with backend.temporary_codex_home(source_home=source) as home:
+            staged = json.loads((home / "auth.json").read_text(encoding="utf-8"))
+
+        assert "OPENAI_API_KEY" not in staged
+        assert staged["tokens"]["refresh_token"].startswith(backend.CODEX_AUTH_CANARY_PREFIX)

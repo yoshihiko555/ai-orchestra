@@ -209,6 +209,39 @@ def test_promote_rejects_candidate_without_passing_holdout(
     assert not any(event.get("event") == "promotion_reserved" for event in _events(git_project))
 
 
+def test_promote_rejects_when_latest_holdout_failed(
+    git_project: Path, git_run, tmp_path: Path
+) -> None:
+    cand_id = _register_candidate(git_project, git_run, tmp_path)
+    _append_run(git_project, cand_id, run_id="run-non-holdout", holdout=False)
+    _append_run(git_project, cand_id, run_id="run-holdout-old", holdout=True, verdict="pass")
+    _append_run(git_project, cand_id, run_id="run-holdout-new", holdout=True, verdict="fail")
+
+    exit_code = cli.cmd_promote(str(git_project), cand_id, False, False)
+
+    assert exit_code == cli.EXIT_VALIDATION_ERROR
+    assert not any(event.get("event") == "promotion_reserved" for event in _events(git_project))
+
+
+def test_cand_slug_preserves_uniqueness_for_long_ids() -> None:
+    prefix = "cand-20260710-190000-" + "a" * 90
+    cand_a = f"{prefix}-000a"
+    cand_b = f"{prefix}-000b"
+
+    slug_a = cli.prm._cand_slug(cand_a)
+    slug_b = cli.prm._cand_slug(cand_b)
+
+    assert len(slug_a) <= cli.prm.CAND_SLUG_MAX_LEN
+    assert len(slug_b) <= cli.prm.CAND_SLUG_MAX_LEN
+    assert slug_a != slug_b
+
+
+def test_cand_slug_leaves_short_ids_unchanged() -> None:
+    assert cli.prm._cand_slug("cand-20260710-190000-tidy-imports-1a2b") == (
+        "20260710-190000-tidy-imports-1a2b"
+    )
+
+
 def test_promote_rejects_tampered_overlay_hash(git_project: Path, git_run, tmp_path: Path) -> None:
     cand_id = _prepare_promotable_candidate(git_project, git_run, tmp_path)
     overlay_file = (

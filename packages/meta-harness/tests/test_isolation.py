@@ -274,7 +274,9 @@ class TestResolveIsolationBackend:
             if cmd[0] == "/usr/bin/srt":
                 assert kwargs["env"]["ANTHROPIC_API_KEY"] == "sk-test-anthropic-key"
                 assert "META_HARNESS_CANARY_SECRET" not in kwargs["env"]
-                return _completed(1, stderr="blocked by sandbox")
+                if "/bin/cat" in cmd:
+                    return _completed(1, stderr="cat: Operation not permitted")
+                return _completed(56, stderr="curl: (56) connection reset by proxy")
             raise AssertionError(f"unexpected command: {cmd}")
 
         launch = iso.resolve_isolation_backend(
@@ -379,7 +381,9 @@ class TestResolveIsolationBackend:
                 return _completed(0, stdout=f"worktree {git_project}\n")
             if cmd[0] == "/usr/bin/srt":
                 assert "META_HARNESS_CANARY_SECRET" not in kwargs["env"]
-                return _completed(1, stderr="blocked by sandbox")
+                if "/bin/cat" in cmd:
+                    return _completed(1, stderr="cat: Operation not permitted")
+                return _completed(56, stderr="curl: (56) connection reset by proxy")
             raise AssertionError(f"unexpected command: {cmd}")
 
         launch = iso.resolve_isolation_backend(
@@ -413,7 +417,9 @@ class TestResolveIsolationBackend:
             if cmd[:3] == ["git", "worktree", "list"]:
                 return _completed(0, stdout=f"worktree {git_project}\n")
             if cmd[0] == "/usr/bin/srt":
-                return _completed(1, stderr="blocked by sandbox")
+                if "/bin/cat" in cmd:
+                    return _completed(1, stderr="cat: Operation not permitted")
+                return _completed(56, stderr="curl: (56) connection reset by proxy")
             raise AssertionError(f"unexpected command: {cmd}")
 
         launch = iso.resolve_isolation_backend(
@@ -441,6 +447,60 @@ class TestResolveIsolationBackend:
             raise AssertionError(f"unexpected command: {cmd}")
 
         with pytest.raises(iso.IsolationError, match="unexpectedly succeeded"):
+            iso.resolve_isolation_backend(
+                view_dir=view_dir,
+                main_root=git_project,
+                config=_config(),
+                ephemeral_home=ephemeral_home,
+                settings_dir=tmp_path,
+                runner=runner,
+            )
+
+    def test_network_canary_dns_failure_does_not_prove_isolation(
+        self, git_project, tmp_path, monkeypatch
+    ) -> None:
+        view_dir, ephemeral_home = _make_view_and_home(tmp_path)
+        monkeypatch.setattr(iso.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+        def runner(cmd, **kwargs):
+            if cmd == ["/usr/bin/srt", "--version"]:
+                return _completed(0, stdout="0.0.64")
+            if cmd[:3] == ["git", "worktree", "list"]:
+                return _completed(0, stdout=f"worktree {git_project}\n")
+            if cmd[0] == "/usr/bin/srt":
+                if "/bin/cat" in cmd:
+                    return _completed(1, stderr="cat: Operation not permitted")
+                # DNS 解決失敗 (curl exit 6) は遮断の証明にならない
+                return _completed(6, stderr="curl: (6) Could not resolve host")
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        with pytest.raises(iso.IsolationError, match="without a sandbox-denial signal"):
+            iso.resolve_isolation_backend(
+                view_dir=view_dir,
+                main_root=git_project,
+                config=_config(),
+                ephemeral_home=ephemeral_home,
+                settings_dir=tmp_path,
+                runner=runner,
+            )
+
+    def test_read_canary_missing_file_does_not_prove_isolation(
+        self, git_project, tmp_path, monkeypatch
+    ) -> None:
+        view_dir, ephemeral_home = _make_view_and_home(tmp_path)
+        monkeypatch.setattr(iso.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+        def runner(cmd, **kwargs):
+            if cmd == ["/usr/bin/srt", "--version"]:
+                return _completed(0, stdout="0.0.64")
+            if cmd[:3] == ["git", "worktree", "list"]:
+                return _completed(0, stdout=f"worktree {git_project}\n")
+            if cmd[0] == "/usr/bin/srt":
+                # canary ファイル欠損等の失敗は遮断の証明にならない
+                return _completed(1, stderr="cat: No such file or directory")
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        with pytest.raises(iso.IsolationError, match="without a sandbox-denial signal"):
             iso.resolve_isolation_backend(
                 view_dir=view_dir,
                 main_root=git_project,
@@ -565,3 +625,56 @@ def test_real_srt_blocks_network_and_env_leak(git_project, tmp_path, monkeypatch
     assert domain.returncode != 0
     assert direct_ip.returncode != 0
     assert env_check.returncode == 0
+
+
+class TestPerRunTmpDir:
+    def test_allow_write_excludes_shared_tmp(self, git_project, tmp_path) -> None:
+        view_dir, ephemeral_home = _make_view_and_home(tmp_path)
+        run_tmp = tmp_path / "run-tmp"
+        run_tmp.mkdir(mode=0o700)
+
+        settings = iso.build_srt_settings(
+            view_dir=view_dir,
+            main_root=git_project,
+            config=_config(),
+            ephemeral_home=ephemeral_home,
+            proposer_tool="codex",
+            run_tmp_dir=run_tmp,
+        )
+
+        allow_write = settings["filesystem"]["allowWrite"]
+        assert "/tmp" not in allow_write
+        assert "/private/tmp" not in allow_write
+        assert str(run_tmp.resolve()) in allow_write
+
+    def test_resolve_pins_tmp_env_to_per_run_dir(self, git_project, tmp_path, monkeypatch) -> None:
+        view_dir, ephemeral_home = _make_view_and_home(tmp_path)
+        monkeypatch.setattr(iso.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+        def runner(cmd, **kwargs):
+            if cmd == ["/usr/bin/srt", "--version"]:
+                return _completed(0, stdout="0.0.64")
+            if cmd[:3] == ["git", "worktree", "list"]:
+                return _completed(0, stdout=f"worktree {git_project}\n")
+            if cmd[0] == "/usr/bin/srt":
+                if "/bin/cat" in cmd:
+                    return _completed(1, stderr="cat: Operation not permitted")
+                return _completed(56, stderr="curl: (56) connection reset by proxy")
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        launch = iso.resolve_isolation_backend(
+            view_dir=view_dir,
+            main_root=git_project,
+            config=_config(),
+            ephemeral_home=ephemeral_home,
+            settings_dir=tmp_path / "settings",
+            runner=runner,
+        )
+
+        run_tmp = Path(launch.env["TMPDIR"])
+        assert run_tmp.is_dir()
+        assert run_tmp.stat().st_mode & 0o777 == 0o700
+        assert run_tmp == (tmp_path / "settings" / "proposer-tmp").resolve()
+        assert launch.env["TMP"] == launch.env["TMPDIR"]
+        assert launch.env["TEMP"] == launch.env["TMPDIR"]
+        assert str(run_tmp) in launch.settings["filesystem"]["allowWrite"]

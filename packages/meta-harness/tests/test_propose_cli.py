@@ -43,8 +43,15 @@ if args[:1] == ["--version"]:
     raise SystemExit(0)
 if args[:1] == ["--settings"]:
     args = args[2:]
-if args and os.path.basename(args[0]) == "codex":
+base = os.path.basename(args[0]) if args else ""
+if base == "codex":
     os.execvp(args[0], args)
+if base == "cat":
+    print("cat: Operation not permitted", file=sys.stderr)
+    raise SystemExit(1)
+if base == "curl":
+    print("curl: (56) connection reset by proxy", file=sys.stderr)
+    raise SystemExit(56)
 raise SystemExit(1)
 """,
     )
