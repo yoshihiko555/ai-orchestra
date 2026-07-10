@@ -22,12 +22,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **`meta-harness`: population ベースのハーネス最適化基盤（Phase 1a: 計測基盤）を新設**: 候補ハーネス（facet ソースへの宣言的オーバーレイ）の登録・append-only 台帳・品質×コストの Pareto frontier 算出を行う `orchex meta` サブコマンド群（`init` / `register` / `frontier` / `status` / `purge`）を追加。ストアは worktree の寿命に依存しないメインルート配下 `.claude/meta-harness/` に永続化する。評価実行（evaluate）以降は Phase 1b 以降で追加予定。設計は `docs/design/meta-harness.md`（基本）/ `docs/design/meta-harness-detailed.md`（詳細）を参照
 - **`meta-harness`: `orchex meta evaluate`（Phase 1b: evaluator）を追加**: 候補ハーネスを使い捨て worktree に実体化し、`claude -p` ヘッドレス実行 → oracle 判定（`command_exit` / `artifact_exists` / `rubric_judge`）→ 台帳記録までを自動実行する。CLI capability gate（バージョン pin + フラグ smoke test、fail-closed）、evaluate.lock（PID + heartbeat）、self-report 注入とペナルティ、baseline シナリオ 2 本を同梱。LLM judge は `judge.tool` 設定で Codex CLI（既定、ChatGPT OAuth で動作）と `claude --bare`（API キー必須）を切替可能
+- **`meta-harness`: proposer 隔離設定（Phase 2 M1）を追加**: `proposer.tool` と `proposer.isolation.*`（srt backend / version pin / allowRead 追加）を導入
+- **`meta-harness`: `orchex meta propose`（Phase 2 M4）を追加**: filtered view を srt 隔離 backend 内の proposer（既定 codex）へ渡し、構造化 proposal を検証して候補登録する。無効 proposal は候補登録せず `rejected/` に診断保存する。`proposer.timeout_seconds` で codex backend の wall-clock timeout を制御し、timeout 時はプロセスグループごと強制終了する。proposal 登録イベントには codex stdout 由来の `tokens_used` も記録する
+- **`meta-harness`: `orchex meta promote`（Phase 2 M5）を追加**: frontier 上の候補を予約して promotion worktree に適用し、facet/context build と任意の `promote.verify_command` を通した上で PR を作成する。`--confirm` は PR merge と main 到達を検証した場合のみ `promoted` 遷移を記録する
 
 ### Fixed
 
 - **worktree からの install/init がグローバル参照先を上書きする問題を修正**: 同じ Git リポジトリの linked worktree から実行した場合、`~/.claude/settings.json` の既存 `AI_ORCHESTRA_DIR`（main worktree）を保持するようにした。
 
 - **`meta-harness`: ストア用 `.gitignore` エントリが SessionStart 同期で消える問題を修正**: `.claude/meta-harness/` を gitignore 管理ブロックの生成元（`gitignore_sync.py`）に追加し、同期のたびに手動追記が失われる Phase 1a の実装漏れを解消
+- **`meta-harness`: `orchex meta propose` の Codex 起動失敗を修正**: srt 隔離下で repo 内 `proposal.schema.json` が `denyRead` に遮断されないよう schema を ephemeral `CODEX_HOME` へ staging し、非 secret の `models_cache.json` / `version.json` だけを staging するようにした。構造化出力時の streaming 通信は Codex backend に限り srt の TLS 終端から除外し、proposal schema は OpenAI structured output 互換に調整した
 
 ### Changed
 

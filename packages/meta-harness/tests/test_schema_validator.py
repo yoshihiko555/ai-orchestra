@@ -1,6 +1,6 @@
 """手書き JSON Schema 検証器のテスト（Sec7「schema 検証」, EV-24）。
 
-Phase 1a スコープの 8 スキーマ（`proposal.schema.json` は Phase 2 のため対象外）のうち、
+Phase 1a スコープの 8 スキーマ（`proposal.schema.json` は Phase 2 の専用テストで検証）のうち、
 代表として `candidate.manifest.schema.json` / `ledger.event.schema.json`
 （`$defs` + `oneOf` 経由） / `overlay.schema.json` / `result.schema.json`
 （他ファイル参照 `$ref` 経由） / `frontier.schema.json` / `scenario.schema.json` /
@@ -85,6 +85,26 @@ class TestLedgerEventSchemaOneOf:
         }
         assert mh.validate_against_schema(instance, schema, SCHEMA_DIR) == []
 
+    def test_candidate_registered_proposal_tokens_used_is_allowed(self) -> None:
+        schema = _load("ledger.event.schema.json")
+        instance = {
+            "event": "candidate_registered",
+            "ts": "2026-01-01T00:00:00+09:00",
+            "schema_version": "1.0",
+            "cand_id": "cand-x",
+            "parent_id": None,
+            "generation": 0,
+            "target": "claude-harness",
+            "created_by": "proposer",
+            "proposal": {
+                "theme": "tighten example",
+                "based_on_runs": ["run-1"],
+                "cost_usd": 0.0,
+                "tokens_used": 123,
+            },
+        }
+        assert mh.validate_against_schema(instance, schema, SCHEMA_DIR) == []
+
     def test_ambiguous_or_no_match_event_is_reported(self) -> None:
         schema = _load("ledger.event.schema.json")
         instance = {"event": "not_a_real_event"}
@@ -142,6 +162,20 @@ class TestLedgerEventSchemaOneOf:
             "reason": "confirmed",
         }
         errors = mh.validate_against_schema(instance, schema["$defs"]["status_changed"], SCHEMA_DIR)
+        assert errors == []
+
+    def test_promotion_released_promoted_reason_has_zero_errors(self) -> None:
+        schema = _load("ledger.event.schema.json")
+        instance = {
+            "event": "promotion_released",
+            "ts": "2026-07-09T00:00:00+09:00",
+            "schema_version": "1.0",
+            "cand_id": "cand-20260709-010000-promote-abcd",
+            "reason": "promoted",
+        }
+        errors = mh.validate_against_schema(
+            instance, schema["$defs"]["promotion_released"], SCHEMA_DIR
+        )
         assert errors == []
 
 
@@ -318,6 +352,15 @@ class TestRunMetadataSchema:
         instance = {k: v for k, v in self._VALID.items() if k != "claude_version"}
         errors = mh.validate_against_schema(instance, schema, SCHEMA_DIR)
         assert any("claude_version" in e for e in errors)
+
+    def test_isolation_subfields_are_required_when_isolation_is_present(self) -> None:
+        schema = _load("run.metadata.schema.json")
+        instance = {**self._VALID, "isolation": {}}
+
+        errors = mh.validate_against_schema(instance, schema, SCHEMA_DIR)
+
+        assert any("backend" in e for e in errors)
+        assert any("platform_profile_input_sha256" in e for e in errors)
 
 
 class TestConfigPatchSchema:

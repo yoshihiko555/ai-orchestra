@@ -1,0 +1,195 @@
+# Machine-readable oracle seed for docs/evaluation/meta-harness.md.
+# The Markdown evaluation set remains the SSOT; this sidecar records Phase 2
+# must-item coverage that can be promoted into runnable checks.
+
+- ev_id: EV-30
+  phase: 2
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_filtered_view.py::TestFilteredViewBuilder::test_build_filtered_view_projects_non_holdout_store_and_baseline
+    packages/meta-harness/tests/test_filtered_view.py::TestFilteredViewSelfVerification::test_holdout_ledger_row_in_view_fails_closed
+    packages/meta-harness/tests/test_filtered_view.py::TestFilteredViewSelfVerification::test_holdout_run_id_in_file_content_fails_closed
+  covered_by:
+    - packages/meta-harness/tests/test_filtered_view.py::TestFilteredViewBuilder::test_build_filtered_view_projects_non_holdout_store_and_baseline
+    - packages/meta-harness/tests/test_filtered_view.py::TestFilteredViewSelfVerification::test_holdout_ledger_row_in_view_fails_closed
+    - packages/meta-harness/tests/test_filtered_view.py::TestFilteredViewSelfVerification::test_holdout_run_id_in_file_content_fails_closed
+  notes: filtered view excludes holdout runs, holdout ledger rows, and planted holdout run ids.
+
+- ev_id: EV-31
+  phase: 2
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_overlay_validation.py::TestValidateOverlayFileUnit::test_dot_dot_segment_is_rejected
+    packages/meta-harness/tests/test_overlay_validation.py::TestValidateOverlayRejects::test_symlink_is_rejected
+    packages/meta-harness/tests/test_overlay_validation.py::TestValidateOverlayRejects::test_path_outside_allowed_prefixes_is_rejected
+    packages/meta-harness/tests/test_overlay_validation.py::TestValidateOverlayRejects::test_default_denied_prefixes_reject_packages_meta_harness_path
+    packages/meta-harness/tests/test_evaluator_worktree_lifecycle.py::TestApplyOverlayReRejectsUnsafeOverlaysAtEvaluateTime::test_rejects_absolute_path_entry
+    packages/meta-harness/tests/test_evaluator_worktree_lifecycle.py::TestApplyOverlayReRejectsUnsafeOverlaysAtEvaluateTime::test_rejects_path_outside_allowed_prefixes
+  covered_by:
+    - packages/meta-harness/tests/test_overlay_validation.py::TestValidateOverlayFileUnit::test_dot_dot_segment_is_rejected
+    - packages/meta-harness/tests/test_overlay_validation.py::TestValidateOverlayRejects::test_symlink_is_rejected
+    - packages/meta-harness/tests/test_overlay_validation.py::TestValidateOverlayRejects::test_path_outside_allowed_prefixes_is_rejected
+    - packages/meta-harness/tests/test_overlay_validation.py::TestValidateOverlayRejects::test_default_denied_prefixes_reject_packages_meta_harness_path
+    - packages/meta-harness/tests/test_evaluator_worktree_lifecycle.py::TestApplyOverlayReRejectsUnsafeOverlaysAtEvaluateTime::test_rejects_absolute_path_entry
+    - packages/meta-harness/tests/test_evaluator_worktree_lifecycle.py::TestApplyOverlayReRejectsUnsafeOverlaysAtEvaluateTime::test_rejects_path_outside_allowed_prefixes
+  notes: register-side validation and evaluate-time defense-in-depth both reject unsafe overlays.
+
+- ev_id: EV-34
+  phase: 2
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_propose_cli.py::test_propose_rejects_invalid_proposal_and_saves_rejected_file
+    packages/meta-harness/tests/test_propose_cli.py::test_propose_rejects_overlay_size_excess_and_saves_rejected_file
+    packages/meta-harness/tests/test_propose_cli.py::test_propose_rejects_holdout_based_on_run_and_saves_rejected_file
+    packages/meta-harness/tests/test_propose_cli.py::test_focus_candidate_target_mismatch_exits_2_before_backend
+    packages/meta-harness/tests/test_propose_cli.py::test_propose_rejects_empty_citable_run_set_before_backend
+  covered_by:
+    - packages/meta-harness/tests/test_propose_cli.py::test_propose_rejects_invalid_proposal_and_saves_rejected_file
+    - packages/meta-harness/tests/test_propose_cli.py::test_propose_rejects_overlay_size_excess_and_saves_rejected_file
+    - packages/meta-harness/tests/test_propose_cli.py::test_propose_rejects_holdout_based_on_run_and_saves_rejected_file
+    - packages/meta-harness/tests/test_propose_cli.py::test_focus_candidate_target_mismatch_exits_2_before_backend
+    - packages/meta-harness/tests/test_propose_cli.py::test_propose_rejects_empty_citable_run_set_before_backend
+  notes: covers unsafe path, max_overlay_bytes, holdout based_on_runs, target mismatch, empty citable runs, no registration, exit 2, and rejected diagnostics.
+
+- ev_id: EV-35
+  phase: 2
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_isolation.py::TestSrtSettingsGeneration::test_build_srt_settings_for_codex_uses_full_schema
+    packages/meta-harness/tests/test_isolation.py::TestEnvironmentAndInstructionGuards::test_minimal_env_drops_unlisted_canary
+    packages/meta-harness/tests/test_isolation.py::TestEnvironmentAndInstructionGuards::test_empty_agents_file_is_created_in_ephemeral_home
+    packages/meta-harness/tests/test_isolation.py::TestResolveIsolationBackend::test_version_pin_mismatch_fails_closed
+    packages/meta-harness/tests/test_isolation.py::TestResolveIsolationBackend::test_resolve_runs_canaries_and_returns_metadata
+    packages/meta-harness/tests/test_isolation.py::TestResolveIsolationBackend::test_direct_ip_origin_http_error_does_not_prove_isolation
+    packages/meta-harness/tests/test_proposer_backend.py::TestProposerBackendHelpers::test_temporary_codex_home_populates_modes_and_cleans_on_exit
+    packages/meta-harness/tests/test_proposer_backend.py::TestProposerBackendHelpers::test_sigterm_handler_cleans_temporary_codex_home
+    packages/meta-harness/tests/test_proposer_backend.py::TestProposerBackendHelpers::test_sweep_orphan_codex_homes_removes_only_old_dirs
+    packages/meta-harness/tests/test_proposer_backend.py::TestProposerBackendHelpers::test_parse_tokens_used
+    packages/meta-harness/tests/test_isolation.py::TestResolveIsolationBackend::test_owned_temp_settings_dir_is_reported_on_success
+    packages/meta-harness/tests/test_propose_cli.py::test_propose_registers_candidate_from_stubbed_codex_backend
+    packages/meta-harness/tests/test_propose_cli.py::test_propose_rejects_invalid_proposal_and_saves_rejected_file
+  covered_by:
+    - packages/meta-harness/tests/test_isolation.py::TestSrtSettingsGeneration::test_build_srt_settings_for_codex_uses_full_schema
+    - packages/meta-harness/tests/test_isolation.py::TestEnvironmentAndInstructionGuards::test_minimal_env_drops_unlisted_canary
+    - packages/meta-harness/tests/test_isolation.py::TestEnvironmentAndInstructionGuards::test_empty_agents_file_is_created_in_ephemeral_home
+    - packages/meta-harness/tests/test_isolation.py::TestResolveIsolationBackend::test_version_pin_mismatch_fails_closed
+    - packages/meta-harness/tests/test_isolation.py::TestResolveIsolationBackend::test_resolve_runs_canaries_and_returns_metadata
+    - packages/meta-harness/tests/test_isolation.py::TestResolveIsolationBackend::test_direct_ip_origin_http_error_does_not_prove_isolation
+    - packages/meta-harness/tests/test_proposer_backend.py::TestProposerBackendHelpers::test_temporary_codex_home_populates_modes_and_cleans_on_exit
+    - packages/meta-harness/tests/test_proposer_backend.py::TestProposerBackendHelpers::test_sigterm_handler_cleans_temporary_codex_home
+    - packages/meta-harness/tests/test_proposer_backend.py::TestProposerBackendHelpers::test_sweep_orphan_codex_homes_removes_only_old_dirs
+    - packages/meta-harness/tests/test_proposer_backend.py::TestProposerBackendHelpers::test_parse_tokens_used
+    - packages/meta-harness/tests/test_isolation.py::TestResolveIsolationBackend::test_owned_temp_settings_dir_is_reported_on_success
+    - packages/meta-harness/tests/test_propose_cli.py::test_propose_registers_candidate_from_stubbed_codex_backend
+    - packages/meta-harness/tests/test_propose_cli.py::test_propose_rejects_invalid_proposal_and_saves_rejected_file
+  notes: covers srt fail-closed launch metadata, version pin, env allowlist, JSONL usage, and cleanup of ephemeral CODEX_HOME and owned srt settings on success/failure.
+
+- ev_id: EV-38
+  phase: 2
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_promote_cli.py::test_promote_rejects_unevaluated_candidate
+    packages/meta-harness/tests/test_promote_cli.py::test_promote_rejects_candidate_without_passing_holdout
+    packages/meta-harness/tests/test_promote_cli.py::test_promote_rejects_tampered_overlay_hash
+    packages/meta-harness/tests/test_promote_cli.py::test_promote_rejects_stale_overlay_paths_without_reserving
+    packages/meta-harness/tests/test_promote_cli.py::test_promote_rejects_candidate_outside_frontier
+    packages/meta-harness/tests/test_promote_cli.py::test_promote_rejects_stale_hash_pair
+    packages/meta-harness/tests/test_promote_cli.py::test_promote_rejects_when_latest_holdout_failed
+    packages/meta-harness/tests/test_promote_cli.py::test_promote_rejects_when_latest_holdout_hashes_are_stale
+    packages/meta-harness/tests/test_promote_cli.py::test_freshness_rejects_source_commit_outside_main
+  covered_by:
+    - packages/meta-harness/tests/test_promote_cli.py::test_promote_rejects_unevaluated_candidate
+    - packages/meta-harness/tests/test_promote_cli.py::test_promote_rejects_candidate_without_passing_holdout
+    - packages/meta-harness/tests/test_promote_cli.py::test_promote_rejects_tampered_overlay_hash
+    - packages/meta-harness/tests/test_promote_cli.py::test_promote_rejects_stale_overlay_paths_without_reserving
+    - packages/meta-harness/tests/test_promote_cli.py::test_promote_rejects_candidate_outside_frontier
+    - packages/meta-harness/tests/test_promote_cli.py::test_promote_rejects_stale_hash_pair
+    - packages/meta-harness/tests/test_promote_cli.py::test_promote_rejects_when_latest_holdout_failed
+    - packages/meta-harness/tests/test_promote_cli.py::test_promote_rejects_when_latest_holdout_hashes_are_stale
+    - packages/meta-harness/tests/test_promote_cli.py::test_freshness_rejects_source_commit_outside_main
+  notes: all Sec12-1 preconditions fail closed before PR creation or reservation side effects.
+
+- ev_id: EV-39
+  phase: 2
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_promote_cli.py::test_promote_opens_pr_without_marking_candidate_promoted
+    packages/meta-harness/tests/test_promote_cli.py::test_promote_confirm_merged_records_promoted_and_releases_hold
+    packages/meta-harness/tests/test_promote_cli.py::test_pr_creation_failure_cleans_pushed_remote_branch
+  covered_by:
+    - packages/meta-harness/tests/test_promote_cli.py::test_promote_opens_pr_without_marking_candidate_promoted
+    - packages/meta-harness/tests/test_promote_cli.py::test_promote_confirm_merged_records_promoted_and_releases_hold
+    - packages/meta-harness/tests/test_promote_cli.py::test_pr_creation_failure_cleans_pushed_remote_branch
+  notes: promote opens a non-auto-merge PR and only confirm records status_changed to promoted.
+
+- ev_id: EV-40
+  phase: 2
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_isolation.py::TestDenyReadAndStaticGuards::test_allow_read_extra_intersecting_codex_home_is_rejected
+    packages/meta-harness/tests/test_isolation.py::TestDenyReadAndStaticGuards::test_view_inside_store_is_rejected_by_static_guard
+    packages/meta-harness/tests/test_isolation.py::TestDenyReadAndStaticGuards::test_view_equal_to_main_root_is_rejected_by_static_guard
+    packages/meta-harness/tests/test_isolation.py::TestResolveIsolationBackend::test_read_canary_success_fails_closed
+    packages/meta-harness/tests/test_isolation.py::TestResolveIsolationBackend::test_srt_startup_failure_does_not_count_as_canary_rejection
+    packages/meta-harness/tests/test_isolation.py::test_real_srt_blocks_file_escape_vectors
+    packages/meta-harness/tests/test_isolation.py::test_real_srt_blocks_network_and_env_leak
+  covered_by:
+    - packages/meta-harness/tests/test_isolation.py::TestDenyReadAndStaticGuards::test_allow_read_extra_intersecting_codex_home_is_rejected
+    - packages/meta-harness/tests/test_isolation.py::TestDenyReadAndStaticGuards::test_view_inside_store_is_rejected_by_static_guard
+    - packages/meta-harness/tests/test_isolation.py::TestDenyReadAndStaticGuards::test_view_equal_to_main_root_is_rejected_by_static_guard
+    - packages/meta-harness/tests/test_isolation.py::TestResolveIsolationBackend::test_read_canary_success_fails_closed
+    - packages/meta-harness/tests/test_isolation.py::TestResolveIsolationBackend::test_srt_startup_failure_does_not_count_as_canary_rejection
+    - packages/meta-harness/tests/test_isolation.py::test_real_srt_blocks_file_escape_vectors
+    - packages/meta-harness/tests/test_isolation.py::test_real_srt_blocks_network_and_env_leak
+  notes: real srt reachability tests skip only when the host cannot run srt; fake-runner tests still enforce static guards and fail-closed canaries.
+
+- ev_id: EV-42
+  phase: 2
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_promote_cli.py::test_promote_rejects_active_reservation_with_exit_3
+  covered_by:
+    - packages/meta-harness/tests/test_promote_cli.py::test_promote_rejects_active_reservation_with_exit_3
+  notes: active promotion_reserved blocks duplicate promote with exit 3.
+
+- ev_id: EV-43
+  phase: 2
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_promote_cli.py::test_promote_confirm_merged_records_promoted_and_releases_hold
+    packages/meta-harness/tests/test_promote_cli.py::test_promote_confirm_closed_unmerged_releases_without_promoting
+    packages/meta-harness/tests/test_promote_cli.py::test_promote_confirm_wraps_subprocess_timeout_as_runtime_error
+  covered_by:
+    - packages/meta-harness/tests/test_promote_cli.py::test_promote_confirm_merged_records_promoted_and_releases_hold
+    - packages/meta-harness/tests/test_promote_cli.py::test_promote_confirm_closed_unmerged_releases_without_promoting
+    - packages/meta-harness/tests/test_promote_cli.py::test_promote_confirm_wraps_subprocess_timeout_as_runtime_error
+  notes: confirm requires MERGED plus main reachability for promoted, and closed-unmerged only releases the reservation.
+
+- ev_id: EV-44
+  phase: 2
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_propose_cli.py::test_propose_registers_candidate_from_stubbed_codex_backend
+  covered_by:
+    - packages/meta-harness/tests/test_propose_cli.py::test_propose_registers_candidate_from_stubbed_codex_backend
+  notes: proposer children retain unchanged parent overlay files while replacing proposal paths.

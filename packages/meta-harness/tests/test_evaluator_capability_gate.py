@@ -35,14 +35,16 @@ def _always_ok_runner(*args, **kwargs) -> subprocess.CompletedProcess:
 
 
 class TestCapabilityGateHappyPath:
-    def test_ok_when_all_checks_pass(self) -> None:
+    def test_ok_when_all_checks_pass(self, monkeypatch) -> None:
+        monkeypatch.setattr(ev.shutil, "which", lambda name: f"/usr/bin/{name}")
         config = {"evaluate": {"cli_version_pin": None}, "judge": {"tool": "codex"}}
         caps = ev.check_cli_capabilities(config, runner=_always_ok_runner)
         assert caps.ok is True
         assert caps.reason is None
         assert caps.claude_version == "2.1.202 (Claude Code)"
 
-    def test_version_pin_match_when_equal(self) -> None:
+    def test_version_pin_match_when_equal(self, monkeypatch) -> None:
+        monkeypatch.setattr(ev.shutil, "which", lambda name: f"/usr/bin/{name}")
         config = {
             "evaluate": {"cli_version_pin": "2.1.202 (Claude Code)"},
             "judge": {"tool": "codex"},

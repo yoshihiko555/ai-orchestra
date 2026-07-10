@@ -95,3 +95,26 @@ class TestConfigLocalOverride:
 
         assert config["retention"]["keep_generations"] == 5
         assert "warning" not in stderr.lower()
+
+    def test_import_error_fallback_applies_local_override(
+        self, git_project: Path, monkeypatch
+    ) -> None:
+        local_config_dir = git_project / ".claude" / "config" / "meta-harness"
+        local_config_dir.mkdir(parents=True, exist_ok=True)
+        (local_config_dir / "meta-harness.local.yaml").write_text(
+            "promote:\n  reservation_ttl_hours: 3\n", encoding="utf-8"
+        )
+        real_import = builtins.__import__
+
+        def import_without_hook_common(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "hook_common":
+                raise ImportError("hook_common unavailable")
+            return real_import(name, globals, locals, fromlist, level)
+
+        monkeypatch.delenv("AI_ORCHESTRA_DIR", raising=False)
+        monkeypatch.setattr(builtins, "__import__", import_without_hook_common)
+
+        config = mh.load_config(git_project)
+
+        assert config["promote"]["reservation_ttl_hours"] == 3
+        assert config["promote"]["allow_stale"] is False

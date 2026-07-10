@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""meta-harness CLI（`orchex meta <sub>`、Phase 1a/1b）。
+"""meta-harness CLI（`orchex meta <sub>`、Phase 1a/1b/2）。
 
 docs/design/meta-harness-detailed.md が正本。実装済みのサブコマンド:
 - init       store ディレクトリ一式を冪等に初期化する（Phase 1a）
@@ -8,8 +8,10 @@ docs/design/meta-harness-detailed.md が正本。実装済みのサブコマン�
 - status     候補群の畳み込み状態を表示する（Phase 1a）
 - purge      古い世代・retired 候補を削除する（frontier/promoted/予約中は保護、Phase 1a）
 - evaluate   CLI capability gate → worktree ライフサイクル → oracle 判定を実行する（Phase 1b）
+- propose    filtered view から候補 overlay を提案・登録する（Phase 2 M4）
+- promote    frontier 候補を PR ベースで昇格する（Phase 2 M5）
 
-`propose` / `promote` / `loop` は Phase 2/3 のスタブ（exit 2）。
+`loop` は Phase 3 のスタブ（exit 2）。
 
 exit code（Sec6）: 0 成功 / 1 実行時エラー / 2 入力・スキーマ検証エラー / 3 lock 取得失敗・排他競合。
 """
@@ -19,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -32,13 +35,22 @@ if str(_LIB_DIR) not in sys.path:
 
 import evaluator as ev  # noqa: E402
 import meta_harness_common as mh  # noqa: E402
+import promoter as prm  # noqa: E402
+import propose_cli  # noqa: E402
 
 EXIT_OK = 0
 EXIT_RUNTIME_ERROR = 1
 EXIT_VALIDATION_ERROR = 2
 EXIT_LOCK_CONFLICT = 3
 
-_PHASE_2_3_STUBS = ("propose", "promote", "loop")
+_PHASE_2_3_STUBS = ("loop",)
+
+# 旧 single-file CLI の内部名を直接 import する既存テスト・診断コード向けの互換エイリアス。
+prop = propose_cli.prop
+pb = propose_cli.pb
+iso = propose_cli.iso
+cmd_propose = propose_cli.cmd_propose
+_select_focus_run_ids = propose_cli._select_focus_run_ids
 
 
 def _emit(data: dict, as_json: bool, human_lines: list[str] | None = None) -> None:
@@ -81,52 +93,12 @@ def cmd_init(project: str, as_json: bool) -> int:
     return EXIT_OK
 
 
-def _git_head(cwd: Path) -> str | None:
-    """`cwd` における `git rev-parse HEAD` の結果を返す（source_commit 解決用）。
-
-    【判断】`source_commit` は「overlay の差分先となるコミット」= register の登録元
-    （`--project`）の HEAD であり、共有 store のある main_root（feature worktree の
-    場合は別ディレクトリ）ではない。呼び出し側は必ず project_dir を渡すこと。
-    """
-    completed = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=cwd, capture_output=True, text=True, timeout=10
-    )
-    return completed.stdout.strip() if completed.returncode == 0 else None
-
-
 def _git_is_dirty(cwd: Path) -> bool:
     """`cwd` の working tree が dirty かどうかを返す（`_git_head` と同じ理由で project_dir 必須）。"""
     completed = subprocess.run(
         ["git", "status", "--porcelain"], cwd=cwd, capture_output=True, text=True, timeout=10
     )
     return bool(completed.stdout.strip())
-
-
-def _build_manifest(
-    *,
-    cand_id: str,
-    parent_id: str | None,
-    generation: int,
-    target: str,
-    source_commit: str,
-    config_hash: str,
-    overlay_files: list[str],
-    description: str,
-) -> dict:
-    return {
-        "schema_version": "1.0",
-        "cand_id": cand_id,
-        "parent_id": parent_id,
-        "generation": generation,
-        "created_at": _now_iso(),
-        "created_by": "human",
-        "target": target,
-        "source_commit": source_commit,
-        "config_hash": config_hash,
-        "model_versions": {},
-        "overlay_files": overlay_files,
-        "description": description,
-    }
 
 
 def _now_iso() -> str:
@@ -170,7 +142,7 @@ def cmd_register(
             "warning: working tree is dirty; uncommitted changes are not part of the candidate",
             file=sys.stderr,
         )
-    resolved_source_commit = source_commit or _git_head(project_dir)
+    resolved_source_commit = source_commit or mh.git_head(project_dir)
     if resolved_source_commit is None:
         print("error: could not resolve source_commit (git rev-parse HEAD failed)", file=sys.stderr)
         return EXIT_VALIDATION_ERROR
@@ -185,7 +157,7 @@ def cmd_register(
 
     overlay_files = mh.list_overlay_files(overlay_dir)
     config_hash = mh.compute_config_hash(overlay_dir, config)
-    manifest = _build_manifest(
+    manifest = mh.build_candidate_manifest(
         cand_id=cand_id,
         parent_id=parent,
         generation=generation,
@@ -471,21 +443,70 @@ def cmd_purge(project: str, keep_generations: int | None, as_json: bool) -> int:
 
 
 def _remove_candidate_dir(main_root: Path, config: dict, cand_id: str) -> None:
-    import shutil
-
     cand_dir = mh.candidates_dir(main_root, config) / cand_id
     if cand_dir.is_dir():
         shutil.rmtree(cand_dir)
 
 
 def cmd_phase23_stub(sub: str) -> int:
-    """Phase 2/3 未実装サブコマンド。"""
+    """未実装サブコマンド。"""
     print(
         f"'{sub}' is not implemented yet. See docs/design/meta-harness-detailed.md Sec9"
         " for the phase boundary.",
         file=sys.stderr,
     )
     return EXIT_VALIDATION_ERROR
+
+
+def cmd_promote(project: str, candidate: str, confirm: bool, as_json: bool) -> int:
+    """frontier 候補を PR ベースで昇格する（Sec12）。"""
+    ctx = _resolve_context(project)
+    if ctx is None:
+        return EXIT_VALIDATION_ERROR
+    main_root, config = ctx
+    project_dir = Path(project).resolve()
+    try:
+        if confirm:
+            result = prm.confirm_promotion(
+                main_root=main_root,
+                config=config,
+                project_dir=project_dir,
+                cand_id=candidate,
+            )
+        else:
+            result = prm.promote_candidate(
+                main_root=main_root,
+                config=config,
+                project_dir=project_dir,
+                cand_id=candidate,
+                schema_dir=_SCHEMA_DIR,
+            )
+    except prm.PromotionConflictError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_LOCK_CONFLICT
+    except mh.LockAcquisitionError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_LOCK_CONFLICT
+    except prm.PromotionValidationError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_VALIDATION_ERROR
+    except prm.PromotionRuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_RUNTIME_ERROR
+
+    payload = {
+        key: value
+        for key, value in {
+            "status": result.status,
+            "cand_id": result.cand_id,
+            "branch": result.branch,
+            "worktree_dir": result.worktree_dir,
+            "pr_url": result.pr_url,
+        }.items()
+        if value is not None
+    }
+    _emit(payload, as_json, [f"promotion {result.status}: {candidate}"])
+    return EXIT_OK
 
 
 def cmd_evaluate(
@@ -598,7 +619,7 @@ def _add_common_args(parser: argparse.ArgumentParser, *, is_top_level: bool = Fa
 
 def build_parser() -> argparse.ArgumentParser:
     """CLI パーサを構築する。"""
-    parser = argparse.ArgumentParser(prog="meta_harness", description="meta-harness CLI (Phase 1a)")
+    parser = argparse.ArgumentParser(prog="meta_harness", description="meta-harness CLI")
     _add_common_args(parser, is_top_level=True)
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -642,8 +663,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--repeat", type=int, default=None, help="試行回数（省略時はシナリオの repeat 値）"
     )
 
+    p_propose = sub.add_parser("propose", help="filtered view から候補 overlay を提案・登録する")
+    _add_common_args(p_propose)
+    p_propose.add_argument("--target", required=True, help="対象（claude-harness | skill:<name>）")
+    p_propose.add_argument("--focus-run", default=None, help="重点分析する run_id")
+    p_propose.add_argument("--focus-candidate", default=None, help="親候補として使う cand_id")
+
+    p_promote = sub.add_parser("promote", help="frontier 候補を PR ベースで昇格する")
+    _add_common_args(p_promote)
+    p_promote.add_argument("candidate", help="昇格対象の cand_id")
+    p_promote.add_argument(
+        "--confirm",
+        action="store_true",
+        help="作成済み PR の merge 状態を確認して promoted 遷移を確定する",
+    )
+
     for stub_name in _PHASE_2_3_STUBS:
-        _add_common_args(sub.add_parser(stub_name, help=f"（Phase 2/3 未実装スタブ: {stub_name}）"))
+        _add_common_args(sub.add_parser(stub_name, help=f"（未実装スタブ: {stub_name}）"))
 
     return parser
 
@@ -652,6 +688,12 @@ def _dispatch(args: argparse.Namespace) -> int:
     """サブコマンドへ振り分ける。"""
     if args.command in _PHASE_2_3_STUBS:
         return cmd_phase23_stub(args.command)
+    if args.command == "promote":
+        return cmd_promote(args.project, args.candidate, args.confirm, args.json)
+    if args.command == "propose":
+        return cmd_propose(
+            args.project, args.target, args.focus_run, args.focus_candidate, args.json
+        )
     if args.command == "evaluate":
         return cmd_evaluate(args.project, args.candidate, args.scenario, args.repeat, args.json)
     if args.command == "init":

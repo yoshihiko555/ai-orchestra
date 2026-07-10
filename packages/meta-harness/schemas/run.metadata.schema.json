@@ -50,6 +50,22 @@
     "model": { "type": ["string", "null"] },
     "claude_version": { "type": "string" },
     "cli_capabilities": { "type": "object" },
+    "isolation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "backend",
+        "srt_version",
+        "settings_sha256",
+        "platform_profile_input_sha256"
+      ],
+      "properties": {
+        "backend": { "type": "string" },
+        "srt_version": { "type": "string" },
+        "settings_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "platform_profile_input_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
     "started_at": { "type": "string", "format": "date-time" },
     "finished_at": { "type": ["string", "null"], "format": "date-time" },
     "attempt": { "type": "integer", "minimum": 1 },
