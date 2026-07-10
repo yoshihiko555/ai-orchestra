@@ -602,9 +602,10 @@ LLM を介さないため `loop_step`（Python）が直接 subprocess 実行す�
 #### 5.3.2 LLM レビュー（`skill-review-policy` 準拠の追加選定）
 
 機械検証とは別に、`code-reviewer` をベースラインとし `skill-review-policy.md` のパスパターン
-マッピングに基づき最大 2 名まで追加選定する（`review.md` Phase 1 Step 2 相当。diff コンテンツ
-スキャンは行わず、パスパターンのみで選定する軽量版。理由: 無人反復で毎周回すため、選定コストを
-最小に保つ）。
+マッピングに基づき追加選定する（**ベースライン込みで合計最大 2 名**。skill-review-policy の
+「最大 2 レビュアー」ルールと同じ上限。フェーズ④実装レビュー反映で曖昧さを解消）。
+`review.md` Phase 1 Step 2 相当だが、diff コンテンツスキャンは行わず、パスパターンのみで
+選定する軽量版（理由: 無人反復で毎周回すため、選定コストを最小に保つ）。
 
 ```
 git diff --stat {base}..HEAD  # 変更ファイル一覧

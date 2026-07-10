@@ -798,7 +798,7 @@ class Finding:
 class CheckResult:
     passed: bool
     layer: Literal["mechanical", "llm_review"]
-    signature: str | None  # mechanical: 4 節の正規化シグネチャ。llm_review: None（無進捗判定は mechanical 優先）
+    signature: str | None  # mechanical: 4 節の正規化シグネチャ。llm_review: 4.4 節の指摘正規化シグネチャ（フェーズ④で None から変更。7.5 節の開封検証が再計算一致を要求する）
     findings: list[Finding]
     raw_artifact_path: str  # artifacts/<action_id>/ 配下の相対パス
     infrastructure_failure: bool = False
@@ -822,6 +822,8 @@ class PhaseCheckResult:
     signature: str  # 無進捗判定キー（4 節）。mechanical 起因の失敗、または llm_review のみ不合格
     # の場合の指摘正規化シグネチャ（4.4 節）のいずれか。両方合格時は ""
     infrastructure_failure: bool  # results いずれかが True なら True
+    metadata: dict = field(default_factory=dict)  # フェーズ④追加: run-checker が reviewer manifest
+    # （{"reviewers": [...]}) を格納する（7.5 節）。他の生成元では空 dict
 
 
 def combine_check_results(
@@ -1148,6 +1150,71 @@ def _verify_journal_consistency(
 
 `apply_action_effect()` は `status = "passed"` に遷移させる分岐でのみこの検証を呼ぶ（`failed`/
 `stopped` 等の遷移では検証しない。合格判定の改ざんによる不正な成功偽装を防ぐことが目的のため）。
+
+### 7.5 Checker 結果の封緘検証（sealed checker。フェーズ④実装レビュー反映）
+
+7.4 節の journal 突合が「state と journal の乖離」を検出するのに対し、本節は
+「オーケストレーター（LLM）が Checker 判定そのものを捏造・改変して `complete` に渡す」経路への
+追加緩和策である。FT-06（`issue-loop` の `implementation` フェーズにおける
+`checker.llm_review` 省略不可）の**実行時強制**でもある（8.2 節のスキーマロード時検証は定義の
+静的検証であり、実行時に渡される結果ペイロードの真正性は担保しないため、両者は補完関係にある）。
+
+> **保証範囲の限定（Codex 設計レビュー反映）**: 本機構は暗号学的な来歴証明（attestation）では
+> ない。shell 権限を持つ主体が自己整合的な封緘 artifact を直接書き込む攻撃は防げず、防御対象は
+> あくまで「サンクションされた CLI フロー（`run-checker` → `complete`）内での、オーケストレーターの
+> プロンプト逸脱・幻覚による判定の捏造・改変・取り違え」である。ファイルシステムレベルの改ざんへの
+> 緩和は 0600 パーミッション（7.2 節）と 7.4 節の journal 突合に委ねる。
+
+**適用範囲**: `definition_id == "issue-loop"` かつ `phase == "implementation"` の
+`run_checker` アクション完了のみ。他ループ定義・他フェーズには強制しない
+（`pr_review_response` フェーズの checker は `external_signal` 主体であり対象外）。
+
+**仕組み（two-stage）**:
+
+1. **封緘（seal）**: cli 編 1.11 節の `loop_step run-checker` が、機械検証の実行と LLM レビュー
+   結果ファイルの取り込み・集約を**決定論的に**行い、redaction 適用済みの `PhaseCheckResult`
+   JSON を `artifacts/<action_id>/check_result.json`（7.2 節の保存契約）に保存する。これが
+   「封緘 artifact」であり、Checker 判定の正本となる。
+2. **開封検証（verify-on-complete）**: `loop_step complete`（CLI レイヤ）は、対象が本節の
+   適用範囲に該当する場合、
+   (a) 封緘 artifact の存在を必須とし（欠落は `ProtocolViolationError`）、
+   (b) artifact 内容をスキーマ・意味論の両面で検証し（下記。この検証関数は `loop_common.py` に
+   置き、CLI から呼ぶ）、
+   (c) 呼び出し側が `--result` で渡したペイロード（wrapper 形式の場合はその `check_result`
+   フィールド。wrapper の兄弟フィールドは比較対象外）と封緘 artifact の **canonical JSON
+   （`sort_keys=True`・区切り最小化）一致**を強制する。不一致はオーケストレーターによる
+   改変とみなし拒否する。`reconcile` が artifact から `CheckResult` を復元する経路（5.2 節・
+   7.2 節）でも同じスキーマ・意味論検証を適用し、不合格は `IntegrityError` とする。
+
+**検証内容（`validate_implementation_checker_result()`）**:
+
+- **スキーマ完全一致**: `PhaseCheckResult`／各層 `CheckResult`／`Finding` のキー集合が 5.1・5.2 節
+  の確定スキーマと**過不足なく一致**すること（未知キーの混入も欠落も拒否）。キー集合定数は
+  `loop_common.py` を単一ソースとし、他モジュールは同定数を import して用いる（二重定義しない）
+- **層の構成**: `results` は `mechanical` と `llm_review` の 2 層をちょうど 1 つずつ含むこと
+  （欠落・重複は拒否。3.5 節の「必須層欠落 = infrastructure_failure」より手前の、ペイロード
+  形状そのものの検証）
+- **reviewer manifest**: `metadata` は `{"reviewers": [...]}` のみを持ち、レビュアーは 1〜2 名・
+  重複なし・`code-reviewer` を必ず含むこと（基本設計 FT-06 / pr-review 編 5.3.2 節の選定規則の
+  実行時対応物）。`llm_review` 層の各 `Finding.source` は manifest 内のレビュアーであること
+- **意味論の再計算**: `mechanical` 層の `findings` は空であること（4.1 節: 機械検証の詳細は
+  `raw_artifact_path` 先の生ログが正本）、`infrastructure_failure` な層が `passed=True` で
+  ないこと、`llm_review` の `passed`・`signature` を pass_criteria・4.4 節のシグネチャ計算で
+  再計算して一致すること、フェーズ集約（`passed`/`signature`/`infrastructure_failure`）を
+  `combine_check_results()` で再計算して一致すること。シリアライズ値と再計算値の矛盾は拒否する。
+  **pass_criteria の単一ソース**: 封緘（`run-checker`）と開封検証の両方が、ループ定義の
+  `checker.llm_review.pass_criteria` を同一の読み出し経路で参照する（片側のハードコード禁止。
+  両者の食い違いは「封緘は成功するが complete で常に拒否される」壊れ方をするため）。なお
+  `issue-loop` の `implementation` フェーズについては FT-06 の決定により `{critical: 0, high: 0}`
+  が規範値であり、8.2 節の定義検証はこれと異なる値を持つ定義（`.local` の全体置換を含む）を
+  `DefinitionValidationError` で拒否する。
+  **redaction と署名の順序**: 封緘 artifact には redaction（7.3 節）適用済みの findings が入る
+  ため、各層の `signature`・フェーズ集約 `signature` は **redaction 適用後の findings に対して**
+  計算して封緘する（redaction 前に計算すると、開封検証の再計算と一致せず正当な結果まで拒否される）
+
+**設計上の位置づけ**: 封緘 artifact は 7.2 節の `check_result.json` と同一ファイルであり、
+新たな保存先は増やさない。検証はすべて決定論的（LLM 呼び出しなし）で、検証失敗は
+「合格の暗黙成立」ではなく常に例外（拒否）に倒す（3.5 節の fail-safe 姿勢の踏襲）。
 
 ---
 
