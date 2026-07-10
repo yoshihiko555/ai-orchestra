@@ -11,6 +11,7 @@
     "fail-logs",
     "git-workflow",
     "image-generation",
+    "loop-harness",
     "meta-harness",
     "quality-gates",
     "reverse",
