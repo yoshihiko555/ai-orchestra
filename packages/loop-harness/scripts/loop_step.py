@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -35,17 +34,6 @@ MAX_LLM_REVIEWERS = 2
 REQUIRED_CHECKER_LAYERS = frozenset({"mechanical", "llm_review"})
 _ISSUE_LOOP_ID_RE = re.compile(r"^[0-9a-f]{8}-issue-([1-9][0-9]*)$")
 _REVIEWER_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
-_CHECK_RESULT_KEYS = frozenset(
-    {
-        "passed",
-        "layer",
-        "signature",
-        "findings",
-        "raw_artifact_path",
-        "infrastructure_failure",
-    }
-)
-_FINDING_KEYS = frozenset({"severity", "summary", "source", "path", "line"})
 TERMINAL_ACTIONS = frozenset(
     {lc.Action.EXIT_SUCCESS.value, lc.Action.EXIT_FAILURE.value, lc.Action.STOP.value}
 )
@@ -312,8 +300,8 @@ def cmd_run_checker(args: argparse.Namespace) -> dict[str, Any]:
     _validate_pending_checker(state, args.action_id, args.state_version)
     phase = ld.phase_by_name(_load_definition(project, state.definition_id), state.phase)
     commands = _mechanical_commands(phase.checker)
-    pass_criteria = _checker_pass_criteria(phase.checker)
-    llm_review = _combine_llm_results(args.llm_result, pass_criteria)
+    pass_criteria = lc.checker_pass_criteria(state, project)
+    llm_results = _load_bound_llm_results(args.llm_result)
 
     def heartbeat_and_validate() -> None:
         _refresh_checker_fence(
@@ -324,14 +312,41 @@ def cmd_run_checker(args: argparse.Namespace) -> dict[str, Any]:
             args.state_version,
         )
 
+    mechanical_paths: list[str] = []
+
+    def save_mechanical_log(index: int, _command: str, output: str, _exit_code: int) -> None:
+        mechanical_paths.append(
+            lc.save_artifact(
+                args.loop_id,
+                project,
+                args.action_id,
+                f"mechanical_{index}.log",
+                output,
+            )
+        )
+
     failures = lc.run_mechanical_checks(
         commands,
         state.worktree_path,
         MECHANICAL_CHECK_TIMEOUT_SECONDS,
         heartbeat=heartbeat_and_validate,
+        artifact_writer=save_mechanical_log,
     )
     heartbeat_and_validate()
-    mechanical_path = _save_mechanical_artifact(args.loop_id, project, args.action_id, failures)
+    normalized_mechanical_path = _save_mechanical_artifact(
+        args.loop_id, project, args.action_id, failures
+    )
+    mechanical_path = ",".join(mechanical_paths) or normalized_mechanical_path
+    llm_review = _combine_llm_results(
+        _save_llm_review_artifacts(
+            args.loop_id,
+            project,
+            args.action_id,
+            llm_results,
+            pass_criteria,
+        ),
+        pass_criteria,
+    )
     mechanical = lc.CheckResult(
         passed=not failures,
         layer="mechanical",
@@ -530,19 +545,6 @@ def _mechanical_commands(checker: dict[str, Any]) -> list[str]:
     return list(commands)
 
 
-def _checker_pass_criteria(checker: dict[str, Any]) -> dict[str, int]:
-    """Return validated LLM pass criteria from the durable loop definition."""
-    criteria = _nested(checker, ("llm_review", "pass_criteria"), None)
-    if not isinstance(criteria, dict):
-        raise ld.DefinitionValidationError("checker.llm_review.pass_criteria is required")
-    values = {name: criteria.get(name) for name in ("critical", "high")}
-    if any(not isinstance(value, int) or isinstance(value, bool) for value in values.values()):
-        raise ld.DefinitionValidationError(
-            "checker.llm_review.pass_criteria values must be integers"
-        )
-    return {name: int(value) for name, value in values.items()}
-
-
 def _save_mechanical_artifact(
     loop_id: str,
     project: str,
@@ -570,11 +572,12 @@ def _save_mechanical_artifact(
     )
 
 
-def _combine_llm_results(values: list[str], pass_criteria: dict[str, int]) -> lc.CheckResult:
+def _combine_llm_results(
+    loaded: list[tuple[str, lc.CheckResult]], pass_criteria: dict[str, int]
+) -> lc.CheckResult:
     """Aggregate reviewer-bound LLM review artifacts."""
-    loaded = _load_bound_llm_results(values)
-    findings = [finding for result in loaded for finding in result.findings]
-    infrastructure_failure = any(result.infrastructure_failure for result in loaded)
+    findings = [finding for _, result in loaded for finding in result.findings]
+    infrastructure_failure = any(result.infrastructure_failure for _, result in loaded)
     findings_pass = all(
         sum(finding.severity == severity for finding in findings) <= limit
         for severity, limit in pass_criteria.items()
@@ -584,12 +587,54 @@ def _combine_llm_results(values: list[str], pass_criteria: dict[str, int]) -> lc
         layer="llm_review",
         signature=lc.compute_llm_review_signature(findings),
         findings=findings,
-        raw_artifact_path=",".join(result.raw_artifact_path for result in loaded),
+        raw_artifact_path=",".join(result.raw_artifact_path for _, result in loaded),
         infrastructure_failure=infrastructure_failure,
     )
 
 
-def _load_bound_llm_results(values: list[str]) -> list[lc.CheckResult]:
+def _save_llm_review_artifacts(
+    loop_id: str,
+    project: str,
+    action_id: str,
+    loaded: list[tuple[str, lc.CheckResult]],
+    pass_criteria: dict[str, int],
+) -> list[tuple[str, lc.CheckResult]]:
+    """Copy normalized reviewer results into the action artifact directory."""
+    persisted: list[tuple[str, lc.CheckResult]] = []
+    for reviewer, result in loaded:
+        name = f"llm_review_{reviewer}.json"
+        relative_path = str(Path("artifacts") / action_id / name)
+        passed = (
+            all(
+                sum(finding.severity == severity for finding in result.findings) <= limit
+                for severity, limit in pass_criteria.items()
+            )
+            and not result.infrastructure_failure
+        )
+        copied = lc.CheckResult(
+            passed=passed,
+            layer=result.layer,
+            signature=lc.compute_llm_review_signature(result.findings),
+            findings=result.findings,
+            raw_artifact_path=relative_path,
+            infrastructure_failure=result.infrastructure_failure,
+        )
+        lc.save_artifact(
+            loop_id,
+            project,
+            action_id,
+            name,
+            json.dumps(
+                lc.check_result_to_dict(copied),
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+        )
+        persisted.append((reviewer, copied))
+    return persisted
+
+
+def _load_bound_llm_results(values: list[str]) -> list[tuple[str, lc.CheckResult]]:
     """Validate reviewer bindings and load each strict result file."""
     if not values or len(values) > MAX_LLM_REVIEWERS:
         _raise_invalid_llm_result(f"one to {MAX_LLM_REVIEWERS} reviewer results are required")
@@ -610,7 +655,7 @@ def _load_bound_llm_results(values: list[str]) -> list[lc.CheckResult]:
         bindings.append((reviewer, Path(file_reference[1:])))
     if "code-reviewer" not in seen:
         _raise_invalid_llm_result("code-reviewer result is required")
-    return [_load_llm_result_file(reviewer, path) for reviewer, path in bindings]
+    return [(reviewer, _load_llm_result_file(reviewer, path)) for reviewer, path in bindings]
 
 
 def _bound_reviewer_names(values: list[str]) -> list[str]:
@@ -669,9 +714,19 @@ def _load_llm_result_file(reviewer: str, path: Path) -> lc.CheckResult:
             f"review result has invalid schema: {path}",
             EXIT_VALIDATION_REJECTED,
         ) from exc
-    findings = [
+    bound_findings = [
         lc.Finding(finding.severity, finding.summary, reviewer, finding.path, finding.line)
         for finding in result.findings
+    ]
+    findings = [
+        lc.Finding(
+            finding.severity,
+            lc.redact(finding.summary),
+            lc.redact(finding.source),
+            lc.redact(finding.path) if finding.path is not None else None,
+            finding.line,
+        )
+        for finding in bound_findings
     ]
     return lc.CheckResult(
         passed=result.passed,
@@ -692,7 +747,7 @@ def _is_valid_llm_result(data: Any) -> bool:
     """Return whether data has the strict serialized LLM CheckResult shape."""
     if (
         not isinstance(data, dict)
-        or frozenset(data) != _CHECK_RESULT_KEYS
+        or frozenset(data) != lc.CHECK_RESULT_KEYS
         or data.get("layer") != "llm_review"
     ):
         return False
@@ -710,7 +765,7 @@ def _is_valid_llm_result(data: Any) -> bool:
 
 def _is_valid_finding(data: Any) -> bool:
     """Return whether data can be deserialized as a Finding."""
-    if not isinstance(data, dict) or frozenset(data) != _FINDING_KEYS:
+    if not isinstance(data, dict) or frozenset(data) != lc.FINDING_KEYS:
         return False
     if data.get("severity") not in {"critical", "high", "medium", "low"}:
         return False
@@ -845,7 +900,7 @@ def _common_proposal_params(loop_id: str, state: lc.LoopState) -> dict[str, Any]
         "issue_number": _issue_number_from_loop_id(loop_id),
         "worktree_path": state.worktree_path,
         "branch": state.branch,
-        "repo_identity_verified": _repo_identity_verified(state),
+        "repo_identity_verified": lc.is_repo_identity_verified(state),
     }
 
 
@@ -853,20 +908,6 @@ def _issue_number_from_loop_id(loop_id: str) -> int | None:
     """Parse a positive issue number from the canonical issue-loop id."""
     match = _ISSUE_LOOP_ID_RE.fullmatch(loop_id)
     return int(match.group(1)) if match is not None else None
-
-
-def _repo_identity_verified(state: lc.LoopState) -> bool:
-    """Verify repo identity without treating path fallback as evidence."""
-    material = lc._git_stdout(["config", "--get", "remote.origin.url"], state.worktree_path)
-    if not material:
-        material = lc._git_stdout(
-            ["rev-parse", "--path-format=absolute", "--git-common-dir"],
-            state.worktree_path,
-        )
-    if not material:
-        return False
-    actual = hashlib.sha256(material.encode("utf-8")).hexdigest()[:8]
-    return actual == state.repo_identity_hash
 
 
 def _previous_check_summary(state: lc.LoopState) -> dict[str, Any]:
@@ -982,7 +1023,7 @@ def _validate_sealed_checker_completion(
     if caller is None:
         raise lc.ProtocolViolationError("sealed checker result is invalid")
     state = lc.load_state(loop_id, project)
-    lc.validate_implementation_checker_result(state, sealed)
+    lc.validate_implementation_checker_result(state, sealed, project)
     if _canonical_json(sealed) != _canonical_json(caller):
         raise lc.ProtocolViolationError("caller checker result does not match sealed artifact")
 

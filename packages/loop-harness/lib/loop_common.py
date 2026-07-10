@@ -72,7 +72,7 @@ _STRICT_CHECKER_LAYERS = frozenset({"mechanical", "llm_review"})
 _STRICT_PHASE_CHECK_KEYS = frozenset(
     {"passed", "results", "signature", "infrastructure_failure", "metadata"}
 )
-_STRICT_CHECK_RESULT_KEYS = frozenset(
+CHECK_RESULT_KEYS = frozenset(
     {
         "passed",
         "layer",
@@ -82,7 +82,7 @@ _STRICT_CHECK_RESULT_KEYS = frozenset(
         "infrastructure_failure",
     }
 )
-_STRICT_FINDING_KEYS = frozenset({"severity", "summary", "source", "path", "line"})
+FINDING_KEYS = frozenset({"severity", "summary", "source", "path", "line"})
 
 
 class Action(StrEnum):
@@ -505,7 +505,7 @@ def complete(
     action = state.pending_action.action
     result = _normalize_complete_result(state, action, result, project_dir)
     if action == Action.RUN_CHECKER.value:
-        validate_implementation_checker_result(state, result)
+        validate_implementation_checker_result(state, result, project_dir)
     new_version = state.state_version + 1
     payload = _completed_payload(action, result)
     append_journal_event(loop_id, project_dir, "completed", _actor_for(action), action_id, payload)
@@ -675,7 +675,20 @@ def combine_check_results(
     return PhaseCheckResult(mechanical_ok and llm_ok and not infra, results, signature, infra)
 
 
-def validate_implementation_checker_result(state: LoopState, result: dict[str, Any]) -> None:
+def checker_pass_criteria(state: LoopState, project_dir: str) -> dict[str, int]:
+    """Load the current phase LLM pass criteria through one durable path."""
+    phase_def = _load_phase_definition(state, project_dir)
+    lib_dir = Path(__file__).resolve().parent
+    if str(lib_dir) not in sys.path:
+        sys.path.insert(0, str(lib_dir))
+    import loop_definition
+
+    return loop_definition.checker_pass_criteria(phase_def.checker)
+
+
+def validate_implementation_checker_result(
+    state: LoopState, result: dict[str, Any], project_dir: str | None = None
+) -> None:
     """Validate the sealed issue-loop implementation checker contract."""
     if state.definition_id != "issue-loop" or state.phase != "implementation":
         return
@@ -700,10 +713,11 @@ def validate_implementation_checker_result(state: LoopState, result: dict[str, A
         layers.add(layer)
     if layers != _STRICT_CHECKER_LAYERS:
         raise ProtocolViolationError("sealed checker result is missing required layers")
-    _validate_checker_result_semantics(raw)
+    durable_project_dir = project_dir or state.worktree_path
+    _validate_checker_result_semantics(raw, checker_pass_criteria(state, durable_project_dir))
 
 
-def _validate_checker_result_semantics(raw: dict[str, Any]) -> None:
+def _validate_checker_result_semantics(raw: dict[str, Any], pass_criteria: dict[str, int]) -> None:
     """Recompute checker semantics and reject contradictory serialized values."""
     phase_check = phase_check_from_dict(raw)
     layer_by_name = {item.layer: item for item in phase_check.results}
@@ -713,9 +727,8 @@ def _validate_checker_result_semantics(raw: dict[str, Any]) -> None:
         raise ProtocolViolationError("sealed checker mechanical findings must be empty")
     if any(item.infrastructure_failure and item.passed for item in phase_check.results):
         raise ProtocolViolationError("sealed checker infrastructure layer cannot pass")
-    expected_llm_passed = (
-        _llm_review_ok(llm_review, {"critical": 0, "high": 0})
-        and not llm_review.infrastructure_failure
+    expected_llm_passed = _llm_review_ok(llm_review, pass_criteria) and not (
+        llm_review.infrastructure_failure
     )
     if llm_review.passed != expected_llm_passed:
         raise ProtocolViolationError("sealed checker LLM passed value is inconsistent")
@@ -724,7 +737,7 @@ def _validate_checker_result_semantics(raw: dict[str, Any]) -> None:
         raise ProtocolViolationError("sealed checker LLM signature is inconsistent")
     expected = combine_check_results(
         phase_check.results,
-        {"critical": 0, "high": 0},
+        pass_criteria,
         _STRICT_CHECKER_LAYERS,
     )
     if (
@@ -753,7 +766,7 @@ def _strict_reviewer_manifest(metadata: Any) -> frozenset[str]:
 
 def _validate_strict_check_result(value: Any, reviewers: frozenset[str]) -> str:
     """Validate one serialized checker layer and return its name."""
-    if not isinstance(value, dict) or frozenset(value) != _STRICT_CHECK_RESULT_KEYS:
+    if not isinstance(value, dict) or frozenset(value) != CHECK_RESULT_KEYS:
         raise ProtocolViolationError("sealed checker layer schema is invalid")
     layer = value.get("layer")
     if layer not in _STRICT_CHECKER_LAYERS:
@@ -776,7 +789,7 @@ def _validate_strict_check_result(value: Any, reviewers: frozenset[str]) -> str:
 
 def _validate_strict_finding(value: Any, reviewers: frozenset[str] | None) -> None:
     """Validate one serialized finding and optional reviewer binding."""
-    if not isinstance(value, dict) or frozenset(value) != _STRICT_FINDING_KEYS:
+    if not isinstance(value, dict) or frozenset(value) != FINDING_KEYS:
         raise ProtocolViolationError("sealed checker finding schema is invalid")
     if value.get("severity") not in {"critical", "high", "medium", "low"}:
         raise ProtocolViolationError("sealed checker finding severity is invalid")
@@ -861,11 +874,12 @@ def run_mechanical_checks(
     cwd: str,
     timeout_seconds: int,
     heartbeat: Callable[[], None] | None = None,
+    artifact_writer: Callable[[int, str, str, int], None] | None = None,
 ) -> list[MechanicalFailure]:
     """Run mechanical checker commands and classify failures via failure_detector."""
     detector = _load_failure_detector()
     failures: list[MechanicalFailure] = []
-    for command in commands:
+    for index, command in enumerate(commands, start=1):
         try:
             output, exit_code = _run_mechanical_command(command, cwd, timeout_seconds)
             response = {"exit_code": exit_code, "stdout": output}
@@ -873,6 +887,8 @@ def run_mechanical_checks(
         finally:
             if heartbeat is not None:
                 heartbeat()
+        if artifact_writer is not None:
+            artifact_writer(index, command, output, exit_code)
         if result is None:
             continue
         failures.append(
@@ -1296,15 +1312,24 @@ def _persist_preproposal_stop(
     clear_pending: bool,
 ) -> None:
     """Persist a safety stop before issuing its terminal proposal."""
+    replaced = state.pending_action if clear_pending else None
     if clear_pending:
         state.pending_action = None
+    payload = {"stop_reason": state.stop_reason}
+    if replaced is not None:
+        payload.update(
+            {
+                "replaced_action_id": replaced.action_id,
+                "replaced_action": replaced.action,
+            }
+        )
     append_journal_event(
         loop_id,
         project_dir,
         "stopped",
         "step",
         None,
-        {"stop_reason": state.stop_reason},
+        payload,
     )
     state.state_version += 1
     state.updated_at = now_iso()
@@ -1376,6 +1401,7 @@ def _proposal_params(state: LoopState, action: str, project_dir: str) -> dict[st
         }
     if action == Action.EXIT_FAILURE.value:
         return {
+            "pr_number": state.pr_number,
             "stop_reason": state.stop_reason or "guard_failed",
             "draft_pr_exec": copy.deepcopy(_phase_nested(phase_def, ("on_failure", "exec"), [])),
         }
@@ -1431,14 +1457,27 @@ def _current_branch(worktree_path: str) -> str:
 
 def _repo_identity_hash(project_dir: str) -> str:
     """Return the repository identity hash using the worktree manager algorithm."""
-    material = _git_stdout(["config", "--get", "remote.origin.url"], project_dir)
-    if not material:
-        material = _git_stdout(
-            ["rev-parse", "--path-format=absolute", "--git-common-dir"], project_dir
-        )
+    material = _repo_identity_material(project_dir)
     if not material:
         material = str(Path(project_dir).resolve())
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:8]
+
+
+def is_repo_identity_verified(state: LoopState) -> bool:
+    """Verify state repo identity without accepting a path-only fallback."""
+    material = _repo_identity_material(state.worktree_path)
+    if not material:
+        return False
+    actual = hashlib.sha256(material.encode("utf-8")).hexdigest()[:8]
+    return actual == state.repo_identity_hash
+
+
+def _repo_identity_material(project_dir: str) -> str:
+    """Return stable git identity material, or empty when git cannot verify it."""
+    material = _git_stdout(["config", "--get", "remote.origin.url"], project_dir)
+    if material:
+        return material
+    return _git_stdout(["rev-parse", "--path-format=absolute", "--git-common-dir"], project_dir)
 
 
 def _git_stdout(args: list[str], cwd: str) -> str:
@@ -1641,7 +1680,7 @@ def _reconcile_from_artifact(
     if not isinstance(result, dict):
         raise IntegrityError("invalid check_result artifact")
     try:
-        validate_implementation_checker_result(state, result)
+        validate_implementation_checker_result(state, result, project_dir)
     except ProtocolViolationError as exc:
         raise IntegrityError(f"invalid sealed checker artifact: {exc}") from exc
     apply_action_effect(state, Action.RUN_CHECKER.value, result, project_dir, loop_id, action_id)

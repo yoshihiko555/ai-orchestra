@@ -453,6 +453,33 @@ def test_proposal_response_adds_common_state_context_to_every_action(
     assert response["params"]["repo_identity_verified"] is True
 
 
+def test_common_proposal_params_uses_public_repo_identity_api(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    state = lc._initial_state(
+        "abcd1234-issue-42",
+        "issue-loop",
+        loop_step.wm.resolve_repo_identity_hash(str(repo)),
+        str(repo),
+        "main",
+        "implementation",
+    )
+    verified_states: list[Any] = []
+
+    def verify(candidate: Any) -> bool:
+        verified_states.append(candidate)
+        return True
+
+    monkeypatch.setattr(loop_step.lc, "is_repo_identity_verified", verify)
+
+    params = loop_step._common_proposal_params("abcd1234-issue-42", state)
+
+    assert params["repo_identity_verified"] is True
+    assert verified_states == [state]
+
+
 def test_run_maker_params_include_only_redacted_previous_check_summary(
     tmp_path: Path,
 ) -> None:
@@ -790,10 +817,13 @@ def test_run_checker_uses_state_and_definition_and_returns_complete_ready_json(
         cwd: str,
         timeout_seconds: int,
         heartbeat: Any = None,
+        artifact_writer: Any = None,
     ) -> list[Any]:
         captured["mechanical"] = (actual_commands, cwd, timeout_seconds)
         if heartbeat is not None:
             heartbeat()
+        if artifact_writer is not None:
+            artifact_writer(1, actual_commands[0], "mechanical output", 0)
         return []
 
     def combine_check_results(
@@ -852,6 +882,70 @@ def test_run_checker_uses_state_and_definition_and_returns_complete_ready_json(
         ]
     )
     assert completed.returncode == 0, completed.stderr
+
+
+def test_run_checker_seals_redacted_finding_that_complete_accepts(
+    tmp_path: Path, monkeypatch: Any, capsys: Any
+) -> None:
+    repo = tmp_path / "repo"
+    started, checker = _prepare_pending_checker(repo)
+    secret = "super-secret-review-token"
+    finding = loop_step.lc.Finding(
+        "high",
+        f"api_key: {secret}, rotate it",
+        "code-reviewer",
+        "settings.py",
+        12,
+    )
+    llm_path = _write_llm_result(tmp_path / "review.json", findings=[finding])
+
+    monkeypatch.setattr(
+        loop_step.lc,
+        "run_mechanical_checks",
+        lambda *_args, **_kwargs: [],
+    )
+
+    exit_code = loop_step.main(_run_checker_args(repo, started, checker, [llm_path]))
+
+    output = capsys.readouterr().out
+    sealed = json.loads(output)
+    llm_review = next(item for item in sealed["results"] if item["layer"] == "llm_review")
+    assert exit_code == 0
+    assert secret not in output
+    assert llm_review["findings"][0]["summary"] == "[REDACTED], rotate it"
+    reviewer_artifact = lc.load_artifact(
+        started["loop_id"],
+        str(repo),
+        checker["action_id"],
+        "llm_review_code-reviewer.json",
+    )
+    assert reviewer_artifact is not None
+    reviewer_result = json.loads(reviewer_artifact)
+    assert reviewer_result["passed"] is False
+    assert reviewer_result["signature"] == llm_review["signature"]
+    assert reviewer_result["findings"] == llm_review["findings"]
+
+    result_path = tmp_path / "sealed-check-result.json"
+    result_path.write_text(output, encoding="utf-8")
+    completed = _run_cli(
+        [
+            "complete",
+            "--loop-id",
+            started["loop_id"],
+            "--action-id",
+            checker["action_id"],
+            "--state-version",
+            str(checker["state_version"]),
+            "--result",
+            f"@{result_path}",
+            "--lease-token",
+            started["lease_token"],
+            "--project",
+            str(repo),
+        ]
+    )
+
+    assert completed.returncode == 0, completed.stdout
 
 
 @pytest.mark.parametrize(
@@ -915,7 +1009,9 @@ def test_run_checker_revalidates_lease_before_writing_artifacts(
         _cwd: str,
         _timeout_seconds: int,
         heartbeat: Any = None,
+        artifact_writer: Any = None,
     ) -> list[Any]:
+        del artifact_writer
         lock_path = lc.lock_path(started["loop_id"], str(repo))
         lock = json.loads(lock_path.read_text(encoding="utf-8"))
         lock["lease_token"] = "replacement-token"
@@ -965,6 +1061,41 @@ def test_run_checker_persists_phase_and_mechanical_artifacts(
     assert "pytest -q" in json.dumps(mechanical_payload)
     assert "test_failure" in json.dumps(mechanical_payload)
     assert "FAILED tests/test_example.py::test_case" in json.dumps(mechanical_payload)
+
+
+def test_run_checker_persists_self_contained_layer_artifacts(tmp_path: Path, capsys: Any) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    _override_implementation_commands(repo, ["printf mechanical-raw-output"])
+    started = _start(repo)
+    _complete(repo, started["loop_id"], started, started["lease_token"])
+    checker = _propose(repo, started["loop_id"], started["lease_token"])
+    llm_path = _write_llm_result(tmp_path / "review.json")
+
+    exit_code = loop_step.main(_run_checker_args(repo, started, checker, [llm_path]))
+
+    payload = json.loads(capsys.readouterr().out)
+    mechanical = next(item for item in payload["results"] if item["layer"] == "mechanical")
+    llm_review = next(item for item in payload["results"] if item["layer"] == "llm_review")
+    mechanical_artifact = lc.artifact_path(
+        started["loop_id"], str(repo), checker["action_id"], "mechanical_1.log"
+    )
+    reviewer_artifact = lc.artifact_path(
+        started["loop_id"],
+        str(repo),
+        checker["action_id"],
+        "llm_review_code-reviewer.json",
+    )
+
+    assert exit_code == 0
+    assert mechanical["raw_artifact_path"] == (f"artifacts/{checker['action_id']}/mechanical_1.log")
+    assert llm_review["raw_artifact_path"] == (
+        f"artifacts/{checker['action_id']}/llm_review_code-reviewer.json"
+    )
+    assert mechanical_artifact.read_text(encoding="utf-8") == "mechanical-raw-output"
+    assert json.loads(reviewer_artifact.read_text(encoding="utf-8"))["layer"] == "llm_review"
+    assert mechanical_artifact.stat().st_mode & 0o777 == 0o600
+    assert reviewer_artifact.stat().st_mode & 0o777 == 0o600
 
 
 def test_run_checker_propagates_mechanical_infrastructure_failure(
@@ -1694,6 +1825,7 @@ def test_exit_failure_params_include_stop_reason_and_draft_exec(tmp_path: Path) 
     state = lc.load_state("abcd1234-issue-1", str(repo))
     state.status = "failed"
     state.stop_reason = "max_iterations"
+    state.pr_number = 123
     lc._write_state(state, str(repo))
 
     payload = _propose(repo, "abcd1234-issue-1", lock.lease_token)
@@ -1701,6 +1833,7 @@ def test_exit_failure_params_include_stop_reason_and_draft_exec(tmp_path: Path) 
     assert payload["action"] == lc.Action.EXIT_FAILURE.value
     assert payload["params"]["stop_reason"] == "max_iterations"
     assert payload["params"]["draft_pr_exec"] == ["pr_create_draft", "notify"]
+    assert payload["params"]["pr_number"] == 123
     assert payload["params"]["issue_number"] == 1
     assert payload["params"]["repo_identity_verified"] is True
 
@@ -1967,6 +2100,10 @@ def test_pending_checker_stops_before_replay_when_repo_identity_mismatches(
     assert response["params"]["stop_reason"] == "repo_identity_mismatch"
     assert response["params"]["repo_identity_verified"] is False
     assert stopped.status == "stopped"
+    stopped_event = lc.find_journal_event(loop_id, str(repo), None, "stopped")
+    assert stopped_event is not None
+    assert stopped_event["payload"]["replaced_action_id"] == "act-check"
+    assert stopped_event["payload"]["replaced_action"] == lc.Action.RUN_CHECKER.value
 
 
 def test_branch_mismatch_does_not_stop_non_advance_action(tmp_path: Path) -> None:
