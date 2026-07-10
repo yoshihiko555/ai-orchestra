@@ -34,6 +34,10 @@ def _completed(
     return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr=stderr)
 
 
+def _is_unsandboxed_canary(cmd: list[str]) -> bool:
+    return cmd[:1] == ["/bin/cat"] or (bool(cmd) and Path(cmd[0]).name == "curl")
+
+
 def _config() -> dict:
     return copy.deepcopy(mh.DEFAULTS)
 
@@ -283,6 +287,8 @@ class TestResolveIsolationBackend:
                 return _completed(0, stdout="0.0.64")
             if cmd[:3] == ["git", "worktree", "list"]:
                 return _completed(0, stdout=f"worktree {git_project}\n")
+            if _is_unsandboxed_canary(cmd):
+                return _completed(0, stdout="canary reachable")
             if cmd[0] == "/usr/bin/srt":
                 assert kwargs["env"]["ANTHROPIC_API_KEY"] == "sk-test-anthropic-key"
                 assert "META_HARNESS_CANARY_SECRET" not in kwargs["env"]
@@ -391,6 +397,8 @@ class TestResolveIsolationBackend:
                 return _completed(0, stdout="@anthropic-ai/sandbox-runtime 0.0.64")
             if cmd[:3] == ["git", "worktree", "list"]:
                 return _completed(0, stdout=f"worktree {git_project}\n")
+            if _is_unsandboxed_canary(cmd):
+                return _completed(0, stdout="canary reachable")
             if cmd[0] == "/usr/bin/srt":
                 assert "META_HARNESS_CANARY_SECRET" not in kwargs["env"]
                 if "/bin/cat" in cmd:
@@ -413,6 +421,7 @@ class TestResolveIsolationBackend:
         assert len(launch.metadata["settings_sha256"]) == 64
         assert len(launch.metadata["platform_profile_input_sha256"]) == 64
         assert sum(1 for cmd, _kwargs in calls if "--settings" in cmd) == 3
+        assert sum(1 for cmd, _kwargs in calls if _is_unsandboxed_canary(cmd)) == 3
         assert (ephemeral_home / "AGENTS.md").read_text(encoding="utf-8") == ""
 
     def test_owned_temp_settings_dir_is_reported_on_success(
@@ -436,6 +445,8 @@ class TestResolveIsolationBackend:
                 return _completed(0, stdout="0.0.64")
             if cmd[:3] == ["git", "worktree", "list"]:
                 return _completed(0, stdout=f"worktree {git_project}\n")
+            if _is_unsandboxed_canary(cmd):
+                return _completed(0, stdout="canary reachable")
             if cmd[0] == "/usr/bin/srt":
                 if "/bin/cat" in cmd:
                     return _completed(1, stderr="cat: Operation not permitted")
@@ -462,6 +473,8 @@ class TestResolveIsolationBackend:
                 return _completed(0, stdout="0.0.64")
             if cmd[:3] == ["git", "worktree", "list"]:
                 return _completed(0, stdout=f"worktree {git_project}\n")
+            if _is_unsandboxed_canary(cmd):
+                return _completed(0, stdout="canary reachable")
             if cmd[0] == "/usr/bin/srt":
                 return _completed(0, stdout="leaked")
             raise AssertionError(f"unexpected command: {cmd}")
@@ -487,6 +500,8 @@ class TestResolveIsolationBackend:
                 return _completed(0, stdout="0.0.64")
             if cmd[:3] == ["git", "worktree", "list"]:
                 return _completed(0, stdout=f"worktree {git_project}\n")
+            if _is_unsandboxed_canary(cmd):
+                return _completed(0, stdout="canary reachable")
             if cmd[0] == "/usr/bin/srt":
                 if "/bin/cat" in cmd:
                     return _completed(1, stderr="cat: Operation not permitted")
@@ -495,6 +510,37 @@ class TestResolveIsolationBackend:
             raise AssertionError(f"unexpected command: {cmd}")
 
         with pytest.raises(iso.IsolationError, match="without a sandbox-denial signal"):
+            iso.resolve_isolation_backend(
+                view_dir=view_dir,
+                main_root=git_project,
+                config=_config(),
+                ephemeral_home=ephemeral_home,
+                settings_dir=tmp_path,
+                runner=runner,
+            )
+
+    def test_direct_ip_origin_http_error_does_not_prove_isolation(
+        self, git_project, tmp_path, monkeypatch
+    ) -> None:
+        view_dir, ephemeral_home = _make_view_and_home(tmp_path)
+        monkeypatch.setattr(iso.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+        def runner(cmd, **kwargs):
+            if cmd == ["/usr/bin/srt", "--version"]:
+                return _completed(0, stdout="0.0.64")
+            if cmd[:3] == ["git", "worktree", "list"]:
+                return _completed(0, stdout=f"worktree {git_project}\n")
+            if _is_unsandboxed_canary(cmd):
+                if iso.NETWORK_DIRECT_IP_CANARY_URL in cmd:
+                    return _completed(22, stderr="curl: (22) HTTP response code said error")
+                return _completed(0, stdout="canary reachable")
+            if cmd[0] == "/usr/bin/srt":
+                if "/bin/cat" in cmd:
+                    return _completed(1, stderr="cat: Operation not permitted")
+                return _completed(56, stderr="curl: (56) connection reset by proxy")
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        with pytest.raises(iso.IsolationError, match="unsandboxed control failed"):
             iso.resolve_isolation_backend(
                 view_dir=view_dir,
                 main_root=git_project,
@@ -515,6 +561,8 @@ class TestResolveIsolationBackend:
                 return _completed(0, stdout="0.0.64")
             if cmd[:3] == ["git", "worktree", "list"]:
                 return _completed(0, stdout=f"worktree {git_project}\n")
+            if _is_unsandboxed_canary(cmd):
+                return _completed(0, stdout="canary reachable")
             if cmd[0] == "/usr/bin/srt":
                 # canary ファイル欠損等の失敗は遮断の証明にならない
                 return _completed(1, stderr="cat: No such file or directory")
@@ -541,6 +589,8 @@ class TestResolveIsolationBackend:
                 return _completed(0, stdout="1.0.0")
             if cmd[:3] == ["git", "worktree", "list"]:
                 return _completed(0, stdout=f"worktree {git_project}\n")
+            if _is_unsandboxed_canary(cmd):
+                return _completed(0, stdout="canary reachable")
             if cmd[0] == "/usr/bin/srt":
                 return _completed(
                     1,
@@ -634,7 +684,7 @@ def test_real_srt_blocks_network_and_env_leak(git_project, tmp_path, monkeypatch
     direct_ip = _run_real_srt(
         launch,
         view_dir,
-        [curl, "--fail", "--max-time", "3", "http://93.184.216.34"],
+        [curl, "--fail", "--max-time", "3", iso.NETWORK_DIRECT_IP_CANARY_URL],
     )
     env_check = _run_real_srt(
         launch,
@@ -676,6 +726,8 @@ class TestPerRunTmpDir:
                 return _completed(0, stdout="0.0.64")
             if cmd[:3] == ["git", "worktree", "list"]:
                 return _completed(0, stdout=f"worktree {git_project}\n")
+            if _is_unsandboxed_canary(cmd):
+                return _completed(0, stdout="canary reachable")
             if cmd[0] == "/usr/bin/srt":
                 if "/bin/cat" in cmd:
                     return _completed(1, stderr="cat: Operation not permitted")

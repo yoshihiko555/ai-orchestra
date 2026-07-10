@@ -41,6 +41,8 @@ SRT_STARTUP_FAILURE_MARKERS = (
 CODEX_ALLOWED_DOMAINS = ["chatgpt.com", "*.chatgpt.com", "*.openai.com", "openai.com"]
 CLAUDE_BARE_ALLOWED_DOMAINS = ["api.anthropic.com"]
 CODEX_TLS_TERMINATE_EXCLUDE_DOMAINS = ["chatgpt.com", "*.chatgpt.com"]
+NETWORK_DOMAIN_CANARY_URL = "https://example.com"
+NETWORK_DIRECT_IP_CANARY_URL = "https://1.1.1.1/cdn-cgi/trace"
 INSTRUCTION_FILE_NAMES = {"AGENTS.md", "CLAUDE.md", "GEMINI.md"}
 BASE_ENV_ALLOWLIST = (
     "PATH",
@@ -404,33 +406,42 @@ def _run_srt_canary_self_test(
     try:
         read_cmd = ["/bin/cat", str(read_canary)]
         curl_path = _require_curl_binary()
-        # 93.184.216.34 is example.com; update both canaries if that allocation changes.
-        network_domain_cmd = [curl_path, "--fail", "--max-time", "3", "https://example.com"]
-        network_direct_ip_cmd = [curl_path, "--fail", "--max-time", "3", "http://93.184.216.34"]
-        _assert_sandbox_rejects(
-            wrap_srt_command(srt_path, settings_path, read_cmd),
-            view_dir=view_dir,
-            env=env,
-            runner=runner,
-            label="view-external read canary",
-            is_policy_denial=_read_canary_denied,
+        network_domain_cmd = [
+            curl_path,
+            "--fail",
+            "--max-time",
+            "3",
+            NETWORK_DOMAIN_CANARY_URL,
+        ]
+        network_direct_ip_cmd = [
+            curl_path,
+            "--fail",
+            "--max-time",
+            "3",
+            NETWORK_DIRECT_IP_CANARY_URL,
+        ]
+        canaries = (
+            (read_cmd, "view-external read canary", _read_canary_denied),
+            (network_domain_cmd, "non-allowlisted network canary", _network_canary_denied),
+            (network_direct_ip_cmd, "direct-IP network canary", _network_canary_denied),
         )
-        _assert_sandbox_rejects(
-            wrap_srt_command(srt_path, settings_path, network_domain_cmd),
-            view_dir=view_dir,
-            env=env,
-            runner=runner,
-            label="non-allowlisted network canary",
-            is_policy_denial=_network_canary_denied,
-        )
-        _assert_sandbox_rejects(
-            wrap_srt_command(srt_path, settings_path, network_direct_ip_cmd),
-            view_dir=view_dir,
-            env=env,
-            runner=runner,
-            label="direct-IP network canary",
-            is_policy_denial=_network_canary_denied,
-        )
+        for command, label, _is_policy_denial in canaries:
+            _assert_unsandboxed_succeeds(
+                command,
+                view_dir=view_dir,
+                env=env,
+                runner=runner,
+                label=label,
+            )
+        for command, label, is_policy_denial in canaries:
+            _assert_sandbox_rejects(
+                wrap_srt_command(srt_path, settings_path, command),
+                view_dir=view_dir,
+                env=env,
+                runner=runner,
+                label=label,
+                is_policy_denial=is_policy_denial,
+            )
     finally:
         read_canary.unlink(missing_ok=True)
 
@@ -438,6 +449,7 @@ def _run_srt_canary_self_test(
 # read 遮断の実測シグナル: seatbelt は EPERM（macOS）、bubblewrap は EACCES（Linux）。
 _READ_DENIAL_MARKERS = ("operation not permitted", "permission denied")
 # curl の遮断実測（§11-3-5）: 56 = 接続遮断、22 = `--fail` による srt proxy の 403 応答。
+# 同一 command の sandbox 外成功を先に要求するため、origin 自身の 403 はここへ到達しない。
 _CURL_DENIAL_EXIT_CODES = frozenset({22, 56})
 
 
@@ -448,6 +460,35 @@ def _read_canary_denied(completed: subprocess.CompletedProcess) -> bool:
 
 def _network_canary_denied(completed: subprocess.CompletedProcess) -> bool:
     return completed.returncode in _CURL_DENIAL_EXIT_CODES
+
+
+def _assert_unsandboxed_succeeds(
+    cmd: list[str],
+    *,
+    view_dir: Path,
+    env: dict[str, str],
+    runner: SubprocessRunner,
+    label: str,
+) -> None:
+    """同一 canary が sandbox 外で成功することを対照実験として確認する。"""
+    try:
+        completed = runner(
+            cmd,
+            cwd=view_dir,
+            capture_output=True,
+            text=True,
+            timeout=SRT_SELF_TEST_TIMEOUT_SECONDS,
+            stdin=subprocess.DEVNULL,
+            env=env,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise IsolationError(f"srt canary unsandboxed control failed ({label}): {exc}") from exc
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "").strip()[:300]
+        raise IsolationError(
+            f"srt canary unsandboxed control failed ({label}): "
+            f"exit={completed.returncode}, {detail}"
+        )
 
 
 def _assert_sandbox_rejects(

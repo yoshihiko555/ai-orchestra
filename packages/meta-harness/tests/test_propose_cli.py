@@ -73,7 +73,8 @@ raise SystemExit(0)
     _write_executable(
         bin_dir / "curl",
         """#!/usr/bin/env python3
-raise SystemExit(1)
+print("canary reachable")
+raise SystemExit(0)
 """,
     )
 
@@ -101,6 +102,10 @@ def _prepare_store(git_project: Path, git_run) -> None:
     overlay_file = cand_dir / "overlay" / "facets" / "example" / "SKILL.md"
     overlay_file.parent.mkdir(parents=True)
     overlay_file.write_text("# Example\n\nParent overlay.\n", encoding="utf-8")
+    inherited_file = cand_dir / "overlay" / "facets" / "parent-only" / "SKILL.md"
+    inherited_file.parent.mkdir(parents=True)
+    inherited_file.write_text("# Parent only\n\nInherited content.\n", encoding="utf-8")
+    overlay_dir = cand_dir / "overlay"
     manifest = {
         "schema_version": "1.0",
         "cand_id": _PARENT_ID,
@@ -110,9 +115,9 @@ def _prepare_store(git_project: Path, git_run) -> None:
         "created_by": "human",
         "target": "claude-harness",
         "source_commit": source_commit,
-        "config_hash": "b" * 64,
+        "config_hash": mh.compute_config_hash(overlay_dir, config),
         "model_versions": {},
-        "overlay_files": ["facets/example/SKILL.md"],
+        "overlay_files": mh.list_overlay_files(overlay_dir),
         "description": "parent",
     }
     (cand_dir / "manifest.json").write_text(
@@ -282,6 +287,7 @@ def test_propose_registers_candidate_from_stubbed_codex_backend(
     cand_dir = mh.candidates_dir(git_project, mh.DEFAULTS) / cand_id
     manifest = json.loads((cand_dir / "manifest.json").read_text(encoding="utf-8"))
     overlay = cand_dir / "overlay" / "facets" / "example" / "SKILL.md"
+    inherited = cand_dir / "overlay" / "facets" / "parent-only" / "SKILL.md"
     events = _events(git_project)
     registered = [event for event in events if event.get("cand_id") == cand_id]
 
@@ -289,6 +295,11 @@ def test_propose_registers_candidate_from_stubbed_codex_backend(
     assert manifest["parent_id"] == _PARENT_ID
     assert manifest["generation"] == 1
     assert overlay.read_text(encoding="utf-8") == "# Example\n\nImproved by proposer.\n"
+    assert inherited.read_text(encoding="utf-8") == "# Parent only\n\nInherited content.\n"
+    assert manifest["overlay_files"] == [
+        "facets/example/SKILL.md",
+        "facets/parent-only/SKILL.md",
+    ]
     assert registered[-1]["created_by"] == "proposer"
     assert registered[-1]["proposal"]["based_on_runs"] == [_RUN_ID]
     assert registered[-1]["proposal"]["tokens_used"] == 10

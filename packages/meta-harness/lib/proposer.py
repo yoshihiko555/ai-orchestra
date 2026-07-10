@@ -84,7 +84,15 @@ def materialize_overlay_from_proposal(
     proposal: dict[str, Any], overlay_dir: Path, *, max_overlay_bytes: int
 ) -> list[str]:
     """proposal.changes を register 用 overlay ディレクトリへ実体化する。"""
-    total_bytes = 0
+    total_bytes = sum(
+        entry.stat().st_size
+        for entry in overlay_dir.rglob("*")
+        if entry.is_file() and not entry.is_symlink()
+    )
+    if total_bytes > max_overlay_bytes:
+        raise ProposalValidationError(
+            f"proposal overlay exceeds max_overlay_bytes={max_overlay_bytes}"
+        )
     seen: set[str] = set()
     overlay_dir.mkdir(parents=True, exist_ok=True)
     for change in proposal.get("changes", []):
@@ -96,12 +104,15 @@ def materialize_overlay_from_proposal(
         if _unsafe_overlay_path(rel):
             raise ProposalValidationError(f"unsafe proposal change path: {rel}")
         encoded = content.encode("utf-8")
-        total_bytes += len(encoded)
+        target = overlay_dir / rel
+        previous_bytes = (
+            target.stat().st_size if target.is_file() and not target.is_symlink() else 0
+        )
+        total_bytes += len(encoded) - previous_bytes
         if total_bytes > max_overlay_bytes:
             raise ProposalValidationError(
                 f"proposal overlay exceeds max_overlay_bytes={max_overlay_bytes}"
             )
-        target = overlay_dir / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(encoded)
         _remove_executable_bits(target)

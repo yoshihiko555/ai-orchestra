@@ -401,6 +401,8 @@ def _register_proposed_candidate(
     max_overlay_bytes = (config.get("proposer") or {}).get("max_overlay_bytes", 200000)
     with tempfile.TemporaryDirectory(prefix="meta-harness-proposal-overlay-") as raw_overlay:
         overlay_dir = Path(raw_overlay)
+        if parent_id is not None:
+            _inherit_parent_overlay(main_root, config, parent_id, overlay_dir)
         overlay_files = prop.materialize_overlay_from_proposal(
             proposal, overlay_dir, max_overlay_bytes=max_overlay_bytes
         )
@@ -456,6 +458,30 @@ def _register_proposed_candidate(
                 )
                 raise
             return cand_id
+
+
+def _inherit_parent_overlay(
+    main_root: Path, config: dict, parent_id: str, overlay_dir: Path
+) -> None:
+    """親候補の累積 overlay を子候補の materialize 前に引き継ぐ。"""
+    manifest = mh.read_candidate_manifest(main_root, config, parent_id)
+    if manifest is None:
+        raise prop.ProposerError(f"parent candidate not found: {parent_id}")
+    parent_overlay = mh.candidates_dir(main_root, config) / parent_id / "overlay"
+    violations = mh.validate_overlay(parent_overlay, config)
+    if violations:
+        raise prop.ProposerError(f"parent overlay is invalid: {'; '.join(violations[:5])}")
+    actual_files = mh.list_overlay_files(parent_overlay)
+    expected_files = sorted(str(path) for path in manifest.get("overlay_files") or [])
+    if actual_files != expected_files:
+        raise prop.ProposerError(f"parent overlay manifest mismatch: {parent_id}")
+    expected_hash = manifest.get("config_hash")
+    if (
+        not isinstance(expected_hash, str)
+        or mh.compute_config_hash(parent_overlay, config) != expected_hash
+    ):
+        raise prop.ProposerError(f"parent overlay hash mismatch: {parent_id}")
+    shutil.copytree(parent_overlay, overlay_dir, dirs_exist_ok=True)
 
 
 def _validate_proposer_registration(

@@ -87,6 +87,7 @@ def promote_candidate(
     _validate_cand_id(cand_id)
     preflight = _reserve_promotion(main_root, config, project_dir, cand_id)
     reservation_open = True
+    remote_branch_pushed = False
     pr_url: str | None = None
     try:
         pr_url = _find_open_pr_for_branch(project_dir, preflight.branch)
@@ -110,6 +111,7 @@ def promote_candidate(
         _commit_promotion(preflight.worktree_dir, preflight.cand_id, preflight.title)
         _revalidate_before_pr(main_root, config, project_dir, cand_id)
         _push_branch(preflight.worktree_dir, preflight.branch)
+        remote_branch_pushed = True
         pr_url = _create_pr(
             preflight.worktree_dir, preflight.branch, preflight.title, preflight.body
         )
@@ -126,6 +128,8 @@ def promote_candidate(
         if pr_url is not None:
             raise PromotionRuntimeError(_opened_record_failure_message(pr_url)) from None
         if reservation_open:
+            if remote_branch_pushed:
+                _delete_remote_branch_safely(project_dir, preflight.branch)
             _cleanup_worktree_safely(main_root, project_dir, preflight.branch)
             _release_promotion_safely(main_root, config, cand_id, "failed")
         raise
@@ -133,6 +137,8 @@ def promote_candidate(
         if pr_url is not None:
             raise PromotionRuntimeError(_opened_record_failure_message(pr_url)) from exc
         if reservation_open:
+            if remote_branch_pushed:
+                _delete_remote_branch_safely(project_dir, preflight.branch)
             _cleanup_worktree_safely(main_root, project_dir, preflight.branch)
             _release_promotion_safely(main_root, config, cand_id, _release_reason_for(exc))
         if isinstance(exc, (PromotionValidationError, PromotionConflictError)):
@@ -311,37 +317,53 @@ def _has_passing_holdout(events: list[dict], cand_id: str) -> bool:
     出現したものを最新 attempt とみなす。古い `pass` の後に新しい `fail`/`error`
     があれば promote を拒否する（過去の合格で publish されるのを防ぐ）。
     """
-    latest_verdict: str | None = None
-    for event in events:
+    latest = _latest_holdout_run(events, cand_id)
+    return latest is not None and latest.get("verdict") == "pass"
+
+
+def _latest_holdout_run(events: list[dict], cand_id: str) -> dict[str, Any] | None:
+    for event in reversed(events):
         if (
             event.get("event") == "run_completed"
             and event.get("cand_id") == cand_id
             and bool(event.get("holdout"))
         ):
-            latest_verdict = event.get("verdict")
-    return latest_verdict == "pass"
+            return event
+    return None
 
 
 def _has_current_hash_pair(events: list[dict], cand_id: str, frontier_doc: dict[str, Any]) -> bool:
     expected = (frontier_doc.get("suite_hash"), frontier_doc.get("evaluator_hash"))
-    return any(
+    latest_holdout = _latest_holdout_run(events, cand_id)
+    holdout_current = (
+        latest_holdout is not None
+        and (latest_holdout.get("suite_hash"), latest_holdout.get("evaluator_hash")) == expected
+    )
+    non_holdout_current = any(
         event.get("event") == "run_completed"
         and event.get("cand_id") == cand_id
         and not bool(event.get("holdout"))
         and (event.get("suite_hash"), event.get("evaluator_hash")) == expected
         for event in events
     )
+    return holdout_current and non_holdout_current
 
 
 def _check_freshness(project_dir: Path, manifest: dict[str, Any], config: dict) -> None:
     source_commit = manifest.get("source_commit")
     if not isinstance(source_commit, str) or not SOURCE_COMMIT_PATTERN.fullmatch(source_commit):
         raise PromotionValidationError("candidate manifest has invalid source_commit")
+    if not _ref_exists(project_dir, source_commit):
+        raise PromotionValidationError(f"candidate source_commit not found: {source_commit}")
+    if not _ref_exists(project_dir, MAIN_REF):
+        raise PromotionValidationError(f"main ref not found for freshness check: {MAIN_REF}")
+    if not _is_ancestor(project_dir, source_commit, MAIN_REF):
+        raise PromotionValidationError(
+            f"candidate source_commit is not an ancestor of {MAIN_REF}: {source_commit}"
+        )
     overlay_files = [str(path) for path in manifest.get("overlay_files") or []]
     if not overlay_files:
         return
-    if not _ref_exists(project_dir, MAIN_REF):
-        raise PromotionValidationError(f"main ref not found for freshness check: {MAIN_REF}")
     completed = _run(
         ["git", "diff", "--quiet", f"{source_commit}..{MAIN_REF}", "--", *overlay_files],
         cwd=project_dir,
@@ -458,6 +480,28 @@ def _commit_promotion(worktree_dir: Path, cand_id: str, title: str) -> None:
 
 def _push_branch(worktree_dir: Path, branch: str) -> None:
     _run(["git", "push", "-u", "origin", branch], cwd=worktree_dir, timeout=GIT_TIMEOUT_SECONDS)
+
+
+def _delete_remote_branch_safely(project_dir: Path, branch: str) -> None:
+    """PR 未作成の push 済み promotion branch を best-effort で削除する。"""
+    try:
+        completed = _run(
+            ["git", "push", "origin", "--delete", branch],
+            cwd=project_dir,
+            timeout=GIT_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except PromotionRuntimeError as exc:
+        print(
+            f"warning: remote promotion branch cleanup failed for {branch}: {exc}", file=sys.stderr
+        )
+        return
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip() or "unknown error"
+        print(
+            f"warning: remote promotion branch cleanup failed for {branch}: {detail}",
+            file=sys.stderr,
+        )
 
 
 def _create_pr(worktree_dir: Path, branch: str, title: str, body: str) -> str:
@@ -759,14 +803,21 @@ def _run(
     check: bool = True,
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    completed = _run_subprocess(
-        args,
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        env={**os.environ, **(env or {})},
-    )
+    try:
+        completed = _run_subprocess(
+            args,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env={**os.environ, **(env or {})},
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise PromotionRuntimeError(
+            f"{' '.join(args)} timed out after {exc.timeout} seconds"
+        ) from exc
+    except OSError as exc:
+        raise PromotionRuntimeError(f"could not run {' '.join(args)}: {exc}") from exc
     if check and completed.returncode != 0:
         stderr = completed.stderr.strip()
         stdout = completed.stdout.strip()

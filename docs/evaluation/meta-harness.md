@@ -74,15 +74,16 @@
 - [ ] EV-32（正常 / must）: メインルート解決 — feature worktree 内から実行しても store・評価用 worktree がメイン worktree ルート配下に解決される（`git rev-parse --git-common-dir` ベース） — 根拠: 詳細設計 §2-0
 - [ ] EV-33（異常 / must）: メインルートが導出できない環境（bare repo 等）で `storage.root` 未指定の場合、exit 2 で fail-closed する — 根拠: 詳細設計 §2-0
 - [ ] EV-34（異常 / must）: proposer の proposal が overlay 安全制約違反（allowlist 外パス・サイズ超過・holdout run 参照）の場合、候補登録されず exit 2、`rejected/` に診断保存される。`based_on_runs` membership 照合・rejected 保存・exit 2 は propose CLI（M4）で実装する — 根拠: 詳細設計 §11-5
-- [ ] EV-35（正常 / must）: proposer は srt 隔離 backend で fail-closed 起動され、version pin・最小 env allowlist・空 `AGENTS.md` により backend/環境/自動注入経路が固定される — 根拠: 詳細設計 §11-3-2〜§11-3-5
+- [ ] EV-35（正常 / must）: proposer は srt 隔離 backend で fail-closed 起動され、version pin・最小 env allowlist・空 `AGENTS.md` により backend/環境/自動注入経路が固定される。各 canary は sandbox 外の成功と sandbox 内の拒否を対照検証し、origin HTTP エラー等を拒否成功と誤認しない — 根拠: 詳細設計 §11-3-2〜§11-3-5
 - [ ] EV-36（正常 / must）: `loop` が 4 停止条件（budget_exhausted / max_iterations / divergence / converged）のそれぞれで `loop_stopped` を記録して停止する — 根拠: 詳細設計 §13-2
 - [ ] EV-37（境界 / must）: `loop` が中断（SIGINT/エラー）されても `loop_stopped(interrupted/error)` が記録され、`--resume` で ledger から再開できる — 根拠: 詳細設計 §13-3
-- [ ] EV-38（異常 / must）: `promote` の前提条件（状態が `evaluated` でない・frontier 外・passing holdout 不在・run hash 陳腐化・overlay hash 不一致・鮮度チェック失敗）のいずれかで exit 2 になり、PR は作られない — 根拠: 詳細設計 §12-1
-- [ ] EV-39（正常 / must）: `promote` は auto-merge を付けず、`promoted` への状態遷移は `--confirm` 経由でのみ発生する — 根拠: 詳細設計 §12-2
+- [ ] EV-38（異常 / must）: `promote` の前提条件（状態が `evaluated` でない・frontier 外・最新 passing holdout 不在・non-holdout/holdout run hash 陳腐化・overlay hash 不一致・`source_commit` が main の ancestor でない・鮮度チェック失敗）のいずれかで exit 2 になり、PR は作られない — 根拠: 詳細設計 §12-1
+- [ ] EV-39（正常 / must）: `promote` は auto-merge を付けず、`promoted` への状態遷移は `--confirm` 経由でのみ発生する。push 後の PR 作成失敗では remote branch を回収する — 根拠: 詳細設計 §12-2
 - [ ] EV-40（異常 / must）: srt settings の allowRead が forbidden asset（実 store・holdout・facet ソース・実 `~/.codex` 等）と交差せず、view 外 read / `../` traversal / symlink escape / 非許可 network / env leak が到達不能である — 根拠: 詳細設計 §11-3-2〜§11-3-5
 - [ ] EV-41（境界 / must）: loop 中断で `loop_iteration` 未記録の孤児候補が残った場合、`--resume` がその反復の完了から再開する — 根拠: 詳細設計 §13-1
 - [ ] EV-42（異常 / must）: 未解放の `promotion_reserved` がある候補への二重 promote が exit 3 で拒否される — 根拠: 詳細設計 §12-2
-- [ ] EV-43（異常 / must）: `--confirm` は PR が MERGED かつ main 到達済みの場合のみ `promoted` に遷移させて `promotion_released(promoted)` を記録し、closed-unmerged は `promotion_released(pr_closed_unmerged)` になる — 根拠: 詳細設計 §12-2
+- [ ] EV-43（異常 / must）: `--confirm` は PR が MERGED かつ main 到達済みの場合のみ `promoted` に遷移させて `promotion_released(promoted)` を記録し、closed-unmerged は `promotion_released(pr_closed_unmerged)` になる。subprocess 起動失敗・timeout は traceback ではなく exit 1 の runtime error になる — 根拠: 詳細設計 §12-2
+- [ ] EV-44（正常 / must）: parent 候補から生成する proposer 子候補は、proposal で上書きした path に加えて parent overlay の未変更 path も累積 overlay として継承する — 根拠: 詳細設計 §11-1
 - N/A: hook 型の類型別観点（PreToolUse/PostToolUse ブロック挙動等）は本パッケージが hook を持たないため非該当。config-loading への依存のみが hook 型的性質であり、EV-22 でカバーする
 
 ## 5. テストレビュー判断基準（パッケージ固有）

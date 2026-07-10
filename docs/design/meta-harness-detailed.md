@@ -1725,6 +1725,9 @@ Phase 1b で初めて実 `claude -p` 呼び出しを含む evaluator を実装�
    - `source_commit` は **parent 候補の `source_commit` を継承**する（baseline/ の展開もこの
      commit を基準に行う。overlay は同一 tree に対して合成されるため、parent と異なる
      `source_commit` に対する overlay 合成は不整合になる）。
+   - 子候補の overlay は parent overlay を起点とする**累積 overlay**として実体化し、proposal が
+     変更した path だけを上書きする。proposal に再掲されなかった parent の変更も継承し、同一
+     `source_commit` に対する完全な候補 tree を評価・昇格できるようにする。
    - candidate directory の配置と ledger 追記は `store.lock` 内で連続実行する。ledger 追記に失敗した
      場合は、配置直後の candidate directory を best-effort rollback して孤児候補を残さない。
 6. filtered view、ephemeral home、呼び出し側が所有する srt settings directory を `finally` で削除する。
@@ -1968,9 +1971,10 @@ cd <view-dir> && CODEX_HOME=<ephemeral-home> srt --settings <isolation-settings.
   allowWrite に加える。settings dir（`$TMPDIR` 配下の深いパス）に置くと srt mux socket /
   codex app-server socket が unix socket の sun_path 長上限（macOS 約 104 byte）を超えて
   `listen EINVAL` になるため、短いパスであることが機能要件（CI 実測）。canary self-test は
-  「非ゼロ終了」ではなく**遮断シグナル**（read: EPERM/EACCES マーカー、curl: exit 56 または
-  `--fail` の 403 由来 exit 22）を要求し、DNS 障害等の無関係な失敗を隔離成功と
-  誤認しない（fail-closed）。
+  各 command がまず sandbox 外で成功することを対照実験として確認し、その後の sandbox 内実行に
+  **遮断シグナル**（read: EPERM/EACCES マーカー、curl: exit 56 または `--fail` の 403 由来
+  exit 22）を要求する。direct-IP は到達時 2xx となる固定 endpoint を使い、origin 自身の 403・
+  DNS 障害・TLS 障害等を隔離成功と誤認しない（fail-closed）。
   `network.allowedDomains: ["chatgpt.com", "*.chatgpt.com", "*.openai.com", "openai.com"]`
   + `network.strictAllowlist: true`
   （Phase 2 実装時に最小集合を再実測して縮小）+ `allowLocalBinding: true`（codex の
@@ -2179,14 +2183,17 @@ fail-closed とし、以下すべてを満たさなければ exit 2 とする。
 2. 現 frontier 上にある。
 3. holdout 評価済みで過学習フラグ（§3-6 の過学習ガード）なし。同一候補に複数の
    holdout run がある場合は**最新の holdout run の verdict を正とする**（§3-4 の
-   最新 attempt 集計と同じ原則。古い pass はより新しい fail/error で無効になる）。
-4. 候補の run 群の `suite_hash` / `evaluator_hash` が現行と一致する（不一致 = 評価が陳腐化して
-   おり、再評価を要求する）。
+   最新 attempt 集計と同じ原則。古い pass はより新しい fail/error で無効になる）。最新 holdout
+   run の `suite_hash` / `evaluator_hash` も現行と一致しなければならない。
+4. 候補の non-holdout run と最新 holdout run の双方で `suite_hash` / `evaluator_hash` が現行と
+   一致する（不一致 = 評価または過学習ガードが陳腐化しており、再評価を要求する）。
 5. 候補 store 上の overlay 内容から再計算した `config_hash` が manifest の `config_hash` と一致する
    （不一致 = 登録後改ざんまたは store 破損として拒否する）。
-6. **鮮度チェック**: `git diff <source_commit>..main -- <overlay 対象パス>` が空であること。
+6. **鮮度チェック**: `<source_commit>` が `origin/main` の ancestor であり、その上で
+   `git diff <source_commit>..origin/main -- <overlay 対象パス>` が空であること。
    差分があれば「facet ソースが候補作成後に変更されている」ため中止し、新 `source_commit` での
-   再登録・再評価を案内する（`promote.allow_stale: false` が既定。`true` で警告に緩和する）。
+   再登録・再評価を案内する（`promote.allow_stale: false` が既定。`true` で path 差分だけを
+   警告に緩和できるが、ancestor 条件は緩和しない）。
 
 ### 12-2. PR 生成手順
 
@@ -2223,6 +2230,8 @@ promote は「予約（reservation）」→「worktree 作業」→「PR 作成�
    従う）。PR body テンプレート: 仮説 / 根拠（frontier 前後の品質・コスト差、`based_on_runs` の
    run_id 一覧）/ リスクと rollback（revert PR）/ **チェックリスト（CHANGELOG の Unreleased
    更新 — 配布されるスキル・ルールの挙動が変わるため利用者向け変更に該当。人間が記入）**。
+   push 成功後に PR 作成が失敗した場合は、再試行を non-fast-forward で妨げないよう remote branch
+   も best-effort で削除する。
 10. ledger へ新イベント `promotion_opened` {cand_id, pr_url, branch} を追記する（§1-2）。
    追記は少なくとも 1 回 retry する。PR 作成後にこの追記だけが失敗した場合は、PR が既に外部状態
    として存在するため `promotion_released` を記録せず、reservation を保持したまま PR URL 付きの
@@ -2240,11 +2249,13 @@ promote は「予約（reservation）」→「worktree 作業」→「PR 作成�
     - PR が `CLOSED`（未マージでクローズ）の場合は `promotion_released(pr_closed_unmerged)` を
       記録する。候補は `evaluated` のまま残り、reservation は解放されるため、人間が再度
       `promote` するか `status_changed {from: evaluated, to: retired}` を選べる。
+    - `gh pr view` / `git fetch` 等の subprocess 起動失敗・timeout は runtime error（exit 1）へ
+      正規化し、traceback を利用者へ露出しない。
 12. PR 作成前に promote が途中で中断・失敗した場合（worktree 作成失敗、`verify_command` 失敗、手順 8 の
     再検証失敗、その他の例外）は `finally` で必ず `promotion_released(aborted)` または
     `promotion_released(failed)` を記録し、promotion worktree とローカル branch を best-effort で
-    削除する（reservation を残さないため）。PR 作成済みの ledger 追記失敗だけは手順 10 の例外経路
-    として reservation を保持する。
+    削除する（reservation を残さないため）。push 済みで PR 未作成なら remote branch も削除する。
+    PR 作成済みの ledger 追記失敗だけは手順 10 の例外経路として reservation を保持する。
 
 **valid 遷移表（更新）**: `evaluated → promoted` は `--confirm`（PR MERGED + main 到達検証込み）
 経由のみであり、`promotion_opened` の記録単独では状態を変化させない（§1-2 参照）。
