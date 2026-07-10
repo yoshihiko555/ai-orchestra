@@ -6,6 +6,7 @@ OrchestraManager 経由で HooksMixin のメソッドをテストする。
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -416,6 +417,108 @@ class TestSetupEnvVar:
         captured = capsys.readouterr()
         assert "設定済み" in captured.out
         assert settings_path.read_text(encoding="utf-8") == before
+
+    def test_keeps_main_path_when_running_from_linked_worktree(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """linked worktree からの実行では既存の main パスを保持する。"""
+        main_dir = tmp_path / "main"
+        worktree_dir = tmp_path / "feature"
+        home_dir = tmp_path / "home"
+        main_dir.mkdir()
+        manager = _make_manager(worktree_dir)
+        monkeypatch.setattr(hooks_mod.Path, "home", lambda: home_dir)
+        monkeypatch.setattr(
+            hooks_mod,
+            "_is_linked_worktree_of",
+            lambda candidate, existing: (candidate, existing) == (worktree_dir, main_dir),
+            raising=False,
+        )
+
+        settings_path = home_dir / ".claude" / "settings.json"
+        settings_path.parent.mkdir(parents=True)
+        settings_path.write_text(
+            json.dumps({"env": {"AI_ORCHESTRA_DIR": str(main_dir)}}),
+            encoding="utf-8",
+        )
+        before = settings_path.read_text(encoding="utf-8")
+
+        manager.setup_env_var()
+
+        captured = capsys.readouterr()
+        assert "linked worktree" in captured.err
+        assert str(main_dir) in captured.err
+        assert settings_path.read_text(encoding="utf-8") == before
+
+    def test_replaces_existing_path_when_current_dir_is_not_its_worktree(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """別リポジトリへの切り替えは従来どおり許可する。"""
+        existing_dir = tmp_path / "existing"
+        current_dir = tmp_path / "current"
+        home_dir = tmp_path / "home"
+        manager = _make_manager(current_dir)
+        monkeypatch.setattr(hooks_mod.Path, "home", lambda: home_dir)
+        monkeypatch.setattr(
+            hooks_mod,
+            "_is_linked_worktree_of",
+            lambda _candidate, _existing: False,
+        )
+
+        settings_path = home_dir / ".claude" / "settings.json"
+        settings_path.parent.mkdir(parents=True)
+        settings_path.write_text(
+            json.dumps({"env": {"AI_ORCHESTRA_DIR": str(existing_dir)}}),
+            encoding="utf-8",
+        )
+
+        manager.setup_env_var()
+
+        saved = json.loads(settings_path.read_text(encoding="utf-8"))
+        assert saved["env"]["AI_ORCHESTRA_DIR"] == str(current_dir)
+
+    def test_detects_linked_worktree_from_git_metadata(self, tmp_path: Path) -> None:
+        """配置名に依存せず、Git metadata から main と linked worktree を判定する。"""
+        main_dir = tmp_path / "main"
+        worktree_dir = tmp_path / "arbitrary-location"
+        hooks_dir = tmp_path / "empty-hooks"
+        main_dir.mkdir()
+        hooks_dir.mkdir()
+        subprocess.run(
+            ["git", "init", "--template="], cwd=main_dir, check=True, capture_output=True
+        )
+        subprocess.run(
+            ["git", "config", "core.hooksPath", str(hooks_dir)],
+            cwd=main_dir,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.email", "test@example.com"],
+            cwd=main_dir,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Test User"],
+            cwd=main_dir,
+            check=True,
+        )
+        (main_dir / "README.md").write_text("test\n", encoding="utf-8")
+        subprocess.run(["git", "add", "README.md"], cwd=main_dir, check=True)
+        subprocess.run(
+            ["git", "commit", "--no-verify", "--no-gpg-sign", "-m", "initial"],
+            cwd=main_dir,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "worktree", "add", "-b", "test-worktree", str(worktree_dir)],
+            cwd=main_dir,
+            check=True,
+            capture_output=True,
+        )
+
+        assert hooks_mod._is_linked_worktree_of(worktree_dir, main_dir) is True
+        assert hooks_mod._is_linked_worktree_of(main_dir, worktree_dir) is False
 
 
 class TestSyncHookOperations:
