@@ -49,7 +49,7 @@ orchex install {package} --project /path/to/project
 | 処理                  | 内容                                                            |
 | --------------------- | --------------------------------------------------------------- |
 | ディレクトリ作成      | `.claude/{docs,logs,state,checkpoints}/`                        |
-| テンプレート配置      | `Plans.md`, `.claudeignore`, `CLAUDE.md`, `.codex/`, `.gemini/` |
+| テンプレート配置      | `Plans.md`, `CLAUDE.md`, `.codex/`, `.gemini/`                 |
 | orchestra.json 初期化 | `installed_packages: []`                                        |
 | 環境変数登録          | `$AI_ORCHESTRA_DIR` を `~/.claude/settings.json` に設定         |
 | hook 登録             | `sync-orchestra.py` を SessionStart hook に登録                 |
@@ -100,10 +100,7 @@ SessionStart hook 発火
 ├─ 6. Hook 同期
 │     manifest.json の hooks と settings.local.json を比較・更新
 │
-├─ 7. .claudeignore 生成
-│     テンプレート + .claudeignore.local をマージ
-│
-└─ 8. orchestra.json 更新
+└─ 7. orchestra.json 更新
       synced_files, last_sync を書き込み
 ```
 
