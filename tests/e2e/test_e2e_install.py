@@ -132,6 +132,25 @@ class TestDistributionHashSafety:
         assert "core" in orch.get("file_hashes", {})
         assert "config/core/task-memory.yaml" in orch["file_hashes"]["core"]
 
+    def test_install_records_nested_loop_harness_config_hashes(self, e2e_project: Path) -> None:
+        """nested config の同期先と配布時ハッシュを同じ相対パスで記録する。"""
+        run_orchex("install", "loop-harness", project=e2e_project)
+        orch = json.loads((e2e_project / ".claude" / "orchestra.json").read_text(encoding="utf-8"))
+        config_root = e2e_project / ".claude" / "config" / "loop-harness"
+
+        assert (config_root / "loop-harness.yaml").is_file()
+        assert (config_root / "loops" / "issue-loop.yaml").is_file()
+        assert not (config_root / "issue-loop.yaml").exists()
+        assert set(orch["file_hashes"]["loop-harness"]) == {
+            "config/loop-harness/loop-harness.yaml",
+            "config/loop-harness/loops/issue-loop.yaml",
+        }
+
+        run_orchex("uninstall", "loop-harness", project=e2e_project)
+
+        assert not (config_root / "loop-harness.yaml").exists()
+        assert not (config_root / "loops" / "issue-loop.yaml").exists()
+
     def test_uninstall_removes_unchanged_file(self, e2e_project: Path) -> None:
         """未変更のファイルは通常どおり削除される（回帰確認）"""
         run_orchex("install", "core", project=e2e_project)

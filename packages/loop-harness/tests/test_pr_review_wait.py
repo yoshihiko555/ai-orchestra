@@ -36,6 +36,8 @@ def _setup_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, pr_review: dict[str, Any] | None = None
 ) -> str:
     monkeypatch.setattr(lc, "resolve_root_worktree", lambda _project_dir: tmp_path)
+    monkeypatch.setattr(lc, "_repo_identity_hash", lambda _project_dir: "hash")
+    monkeypatch.setattr(lc, "_current_branch", lambda _project_dir: "loop/issue-1")
     state = lc._initial_state(
         "abcd1234-issue-1",
         "issue-loop",
@@ -112,12 +114,214 @@ def test_ev30_records_baseline_before_iteration_head(
     assert sha == "abc123"
     assert state.pr_review["baseline_review_id"] == 10
     assert state.pr_review["iteration_head_sha"] == "abc123"
+    assert state.state_version == 2
     assert client.calls == [
         "repos/owner/repo/pulls/12/reviews",
         "repos/owner/repo/pulls/12/comments",
         "repos/owner/repo/issues/12/comments",
         "repos/owner/repo/pulls/12",
     ]
+
+
+def test_pr_review_auxiliary_updates_preserve_pending_action_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir = _setup_state(tmp_path, monkeypatch)
+    lease_token = _lease(project_dir)
+    proposal = lc.propose("abcd1234-issue-1", project_dir, lease_token)
+    client = FakeClient(
+        {
+            "repos/owner/repo/pulls/12/reviews": [],
+            "repos/owner/repo/pulls/12/comments": [],
+            "repos/owner/repo/issues/12/comments": [],
+            "repos/owner/repo/pulls/12": {"head": {"sha": "abc123"}},
+        }
+    )
+
+    prw.record_baseline(
+        "abcd1234-issue-1",
+        project_dir,
+        12,
+        client,
+        lease_token,
+        action_id=proposal.action_id,
+    )
+    prw.record_iteration_head(
+        "abcd1234-issue-1",
+        project_dir,
+        12,
+        client,
+        lease_token,
+        action_id=proposal.action_id,
+    )
+    prw.collect_review_findings(
+        "abcd1234-issue-1",
+        project_dir,
+        12,
+        _config(),
+        client,
+        proposal.iteration,
+        lease_token,
+        action_id=proposal.action_id,
+    )
+
+    state_before_complete = lc.load_state("abcd1234-issue-1", project_dir)
+    completed = lc.complete(
+        "abcd1234-issue-1",
+        project_dir,
+        proposal.action_id,
+        proposal.state_version,
+        {"completed": False},
+        lease_token,
+    )
+
+    assert proposal.action == lc.Action.WAIT_EXTERNAL_REVIEW.value
+    assert state_before_complete.state_version == proposal.state_version
+    assert completed.ok is True
+
+
+def test_bound_baseline_rejects_action_replaced_during_external_api(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir = _setup_state(tmp_path, monkeypatch)
+    lease_token = _lease(project_dir)
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.pending_action = lc.PendingAction(
+        "act-old", lc.Action.WAIT_EXTERNAL_REVIEW.value, state.phase, 1, lc.now_iso()
+    )
+    state.state_version = 1
+    lc._write_state(state, project_dir)
+
+    class ReplacingClient(FakeClient):
+        replaced = False
+
+        def api(self, path: str) -> Any:
+            if not self.replaced:
+                current = lc.load_state("abcd1234-issue-1", project_dir)
+                current.pending_action = lc.PendingAction(
+                    "act-new",
+                    lc.Action.WAIT_EXTERNAL_REVIEW.value,
+                    current.phase,
+                    1,
+                    lc.now_iso(),
+                )
+                current.state_version += 1
+                lc._write_state(current, project_dir)
+                self.replaced = True
+            return super().api(path)
+
+    client = ReplacingClient(
+        {
+            "repos/owner/repo/pulls/12/reviews": [],
+            "repos/owner/repo/pulls/12/comments": [],
+            "repos/owner/repo/issues/12/comments": [],
+        }
+    )
+
+    with pytest.raises(lc.StaleActionError):
+        prw.record_baseline(
+            "abcd1234-issue-1",
+            project_dir,
+            12,
+            client,
+            lease_token,
+            action_id="act-old",
+        )
+
+    current = lc.load_state("abcd1234-issue-1", project_dir)
+    assert current.pr_review is None
+    journal = lc.journal_path("abcd1234-issue-1", project_dir)
+    assert not journal.exists()
+
+
+def test_bound_collect_rejects_action_replaced_during_external_api(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={
+            "baseline_review_id": 0,
+            "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+            "processed_comment_ids": [],
+            "findings": {},
+        },
+    )
+    lease_token = _lease(project_dir)
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.pending_action = lc.PendingAction(
+        "act-old", lc.Action.WAIT_EXTERNAL_REVIEW.value, state.phase, 1, lc.now_iso()
+    )
+    state.state_version = 1
+    lc._write_state(state, project_dir)
+
+    class ReplacingClient(FakeClient):
+        replaced = False
+
+        def api(self, path: str) -> Any:
+            if not self.replaced:
+                current = lc.load_state("abcd1234-issue-1", project_dir)
+                current.pending_action = lc.PendingAction(
+                    "act-new",
+                    lc.Action.WAIT_EXTERNAL_REVIEW.value,
+                    current.phase,
+                    1,
+                    lc.now_iso(),
+                )
+                current.state_version += 1
+                lc._write_state(current, project_dir)
+                self.replaced = True
+            return super().api(path)
+
+    client = ReplacingClient(
+        {
+            "repos/owner/repo/pulls/12/reviews": [],
+            "repos/owner/repo/pulls/12/comments": [],
+            "repos/owner/repo/issues/12/comments": [],
+        }
+    )
+
+    with pytest.raises(lc.StaleActionError):
+        prw.collect_review_findings(
+            "abcd1234-issue-1",
+            project_dir,
+            12,
+            _config(),
+            client,
+            1,
+            lease_token,
+            action_id="act-old",
+        )
+
+    current = lc.load_state("abcd1234-issue-1", project_dir)
+    assert current.pr_review["processed_comment_ids"] == []
+    journal = lc.journal_path("abcd1234-issue-1", project_dir)
+    assert not journal.exists()
+
+
+def test_bound_pr_review_update_rejects_disallowed_pending_action(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir = _setup_state(tmp_path, monkeypatch)
+    lease_token = _lease(project_dir)
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.pending_action = lc.PendingAction(
+        "act-maker", lc.Action.RUN_MAKER.value, state.phase, 1, lc.now_iso()
+    )
+    state.state_version = 1
+    lc._write_state(state, project_dir)
+
+    with pytest.raises(lc.ProtocolViolationError):
+        prw.record_baseline(
+            "abcd1234-issue-1",
+            project_dir,
+            None,
+            FakeClient({}),
+            lease_token,
+            action_id="act-maker",
+        )
+
+    assert lc.load_state("abcd1234-issue-1", project_dir).state_version == 1
 
 
 def test_ev30_records_empty_baseline_when_pr_does_not_exist_yet(

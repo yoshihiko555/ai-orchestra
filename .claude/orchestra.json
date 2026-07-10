@@ -11,6 +11,7 @@
     "fail-logs",
     "git-workflow",
     "image-generation",
+    "loop-harness",
     "meta-harness",
     "quality-gates",
     "reverse",
@@ -57,10 +58,12 @@
     "config/fail-logs/fail-logs.yaml",
     "config/git-workflow/sandbox-requirements.json",
     "config/image-generation/image-generation.yaml",
+    "config/loop-harness/loop-harness.yaml",
+    "config/loop-harness/loops/issue-loop.yaml",
     "config/meta-harness/meta-harness.yaml",
     "config/skill-evolution/skill-evolution.yaml"
   ],
-  "last_sync": "2026-07-07T09:37:33.367146+00:00",
+  "last_sync": "2026-07-10T14:41:09.597535+00:00",
   "file_hashes": {
     "core": {
       "config/core/task-memory.yaml": "081c101ad10526344e4fe7831babbe6ef661d0a4ae7e49fad4eb3967c030b7d8"
@@ -112,6 +115,10 @@
     "image-generation": {
       "config/image-generation/image-generation.yaml": "a643faa7e9555781989230449c4dd2293da9a7d069d302d20096319b6f71ab1f",
       "agents/image-generator.md": "ef2625266e41c83a75bf7616ab6774fae84e0941f1ce6dc322c451a363629d70"
+    },
+    "loop-harness": {
+      "config/loop-harness/loop-harness.yaml": "2b4addec36f4de01efa3b478ca16b48cedf6c29e9d780d31c2d76012865196dd",
+      "config/loop-harness/loops/issue-loop.yaml": "8c2bf3280a7d25dd4020349fa62728fb2c183522e44d7c8bb3fc900954d0161e"
     },
     "fail-logs": {
       "config/fail-logs/fail-logs.yaml": "cff47ea7d188af706a796aa88149cf26b73561ec71a754e9244566264290e5b2"

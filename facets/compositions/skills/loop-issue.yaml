@@ -1,0 +1,23 @@
+name: loop-issue
+description: Issue 起点の自律反復ループ（実装→検証→修正反復と PR レビュー対応反復を loop-harness で駆動）
+
+frontmatter:
+  name: loop-issue
+  description: |
+    GitHub Issue 番号を受け取り、loop-harness（LP-1）で実装→検証→修正の反復ループを駆動する。
+    合格後は pr-create 資産で PR を作成し、外部レビュー対応反復まで自動で継続する。
+    トリガー: /loop-issue
+  metadata:
+    short-description: Issue 消化ループ（伴走型自律反復）
+
+# 参照するポリシー
+policies:
+  - cli-language
+  - pr-standards
+
+# 参照する Output Contract（Checker の LLM レビューで Tiered Output を使用）
+output_contracts:
+  - tiered-review
+
+# スキル固有の instruction
+instruction: loop-issue

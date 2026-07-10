@@ -5,7 +5,7 @@
   "depends": ["audit", "quality-gates", "git-workflow"],
   "hooks": {},
   "files": [],
-  "skills": [],
+  "skills": ["loop-issue"],
   "agents": [],
   "rules": [],
   "scripts": [

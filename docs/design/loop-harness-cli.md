@@ -40,7 +40,7 @@ codd:
 
 ---
 
-## 1. `loop_step.py`（LP-1: propose / complete / reconcile / heartbeat / resume / start）
+## 1. `loop_step.py`（LP-1: propose / complete / reconcile / heartbeat / resume / start / run-checker）
 
 > 参照: 基本設計 3 節（コンポーネント表）、5.2〜5.6 節（state/lock/journal・two-phase・reconcile・
 > クラッシュ回復・push 前ガード）、7 節（LP-1 実行フロー）。
@@ -55,6 +55,7 @@ loop_step.py complete   --loop-id <id> --action-id <id> --state-version <n> --re
 loop_step.py reconcile  --loop-id <id> --lease-token <token> [--project <path>]
 loop_step.py heartbeat  --loop-id <id> --lease-token <token> [--project <path>]
 loop_step.py resume     --loop-id <id> --reset-counters [--project <path>]
+loop_step.py run-checker --loop-id <id> --action-id <id> --state-version <n> --lease-token <token> [--llm-result <reviewer>=@<file>]... [--project <path>]
 ```
 
 > **`--lease-token` の扱い（Codex レビュー指摘反映。P1。詳細は 1.9 節）**: `start` / `attach` /
@@ -206,6 +207,14 @@ python3 loop_step.py propose --loop-id a1b2c3d4-issue-42 --lease-token 6f1e... -
 ```
 
 `action` 別の `params` 内容:
+
+> **全 action 共通フィールド（フェーズ④実装レビュー反映）**: 下表の action 固有フィールドに
+> 加えて、`issue_number` / `worktree_path` / `branch` / `repo_identity_verified` の 4 つを
+> **全 action の `params` に共通付与**する。オーケストレーター（`/loop-issue` スキル）が
+> Maker への cwd 固定・出口処理の Issue コメント可否判定（`repo_identity_verified`。
+> pr-review 編 6.4 節）を、state.json を直接読まずに応答 JSON のみで行えるようにするため。
+> `repo_identity_verified` は repo-identity-hash の再計算一致で導出する（3.4 節と同じ検証。
+> 導出ロジックは `loop_common.py` の公開 API を単一ソースとして共有する）。
 
 | `action`               | `params` の主なフィールド                                                                                                                      |
 | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -427,6 +436,47 @@ python3 loop_step.py attach --loop-id a1b2c3d4-issue-42 --project /path/to/repo
   （基本設計 5.5 節）。
 
 ---
+
+### 1.11 `run-checker`（決定論的 Checker 実行と封緘 artifact。フェーズ④実装レビュー反映）
+
+> 参照: core 編 7.5 節（封緘検証の契約）、pr-review 編 5.3 節（Checker 実行の責務分担）。
+
+pr-review 編 5.3.1 節の「機械検証は LLM を介さず Python が直接 subprocess 実行する」を LP-1 で
+実現する配線。オーケストレーターは `propose` が `run_checker` を返したら、LLM レビュー
+（pr-review 編 5.3.2 節）を Task で実行して結果 JSON をファイルに保存したうえで、本サブコマンドを
+呼ぶ。本サブコマンドは**アクションを complete しない**（two-phase の complete は別途呼ぶ。
+core 編 7.5 節の封緘検証が、complete に渡された結果と本サブコマンドの生成 artifact の
+canonical JSON 一致を強制する）。
+
+**引数**: `--loop-id` / `--action-id` / `--state-version` / `--lease-token`（必須）/
+`--llm-result <reviewer>=@<file>`（繰り返し可。レビュアー名と結果 JSON ファイルの束縛）/
+`--project`。
+
+**処理順序**:
+
+1. **fence 検証**: lease を検証・更新し、`pending_action` が
+   `action_id`/`state_version`/`action == run_checker`/`phase` すべて一致することを確認する
+   （不一致は exit `2`。1.2 節の規約どおり）
+2. **LLM 結果の取り込み**: `--llm-result` は 1〜2 件（`code-reviewer` を必ず含み、レビュアー重複
+   禁止。pr-review 編 5.3.2 節の選定規則）。各ファイルは 5.1 節スキーマのキー集合完全一致で
+   検証し、違反は拒否する。ファイル読み込みは regular file 限定・シンボリックリンク拒否
+   （`O_NOFOLLOW`）・**パーミッション 0600 必須**・サイズ上限付きで行う。取り込んだ各 finding の
+   `source` は束縛されたレビュアー名で上書きする
+3. **機械検証の実行**: ループ定義の `checker.mechanical.commands` を `worktree_path` を cwd として
+   subprocess 実行し（タイムアウト既定 1800 秒/コマンド）、`failure_detector.analyze()` で正規化
+   する。heartbeat と fence 再検証は各コマンドの実行前後で行う（コマンド実行中の連続監視では
+   ない。長時間実行をまたぐ lease 失効・奪取をコマンド境界で検知する）
+4. **集約と封緘**: 機械層 + LLM 層を `combine_check_results()`（`pass_criteria` はループ定義の
+   `checker.llm_review.pass_criteria` 由来。core 編 7.5 節の単一ソース規則）で集約し、
+   `metadata.reviewers` に実際に取り込んだレビュアー名の manifest を付与、redaction を通して
+   `artifacts/<action_id>/check_result.json` に保存する（core 編 7.2 節の保存契約。これが
+   core 編 7.5 節の「封緘 artifact」。署名は redaction 適用後の findings に対して計算する）。
+   機械検証の生ログと LLM レビュー結果も core 編 7.2 節の命名（`mechanical_<n>.log` /
+   `llm_review_<reviewer>.json`）で同 artifact ディレクトリに保存し、各層の
+   `raw_artifact_path` は **artifacts 配下のこれらのパス**を指す（オーケストレーター側の
+   一時ファイルを指さない。reconcile・監査の復元元は artifacts 配下で自己完結させる）
+5. stdout に封緘した `PhaseCheckResult` JSON を 1 行で返す。オーケストレーターはこれを
+   **改変せずそのまま** `complete --result` に渡す
 
 ## 2. `loop_driver.py`（LP-2 worker）
 

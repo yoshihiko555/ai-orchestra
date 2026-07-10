@@ -6,7 +6,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import socket
+import stat
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -26,6 +28,13 @@ EXIT_GENERAL_ERROR = 1
 EXIT_VALIDATION_REJECTED = 2
 EXIT_LOCK_UNAVAILABLE = 3
 DEFAULT_DEFINITION_ID = "issue-loop"
+MECHANICAL_CHECK_TIMEOUT_SECONDS = 1800
+MAX_LLM_RESULT_BYTES = 1024 * 1024
+MAX_LLM_REVIEWERS = 2
+REQUIRED_CHECKER_LAYERS = frozenset({"mechanical", "llm_review"})
+MECHANICAL_CHECKER_LAYERS = frozenset({"mechanical"})
+_ISSUE_LOOP_ID_RE = re.compile(r"^[0-9a-f]{8}-issue-([1-9][0-9]*)$")
+_REVIEWER_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 TERMINAL_ACTIONS = frozenset(
     {lc.Action.EXIT_SUCCESS.value, lc.Action.EXIT_FAILURE.value, lc.Action.STOP.value}
 )
@@ -109,6 +118,16 @@ def build_parser() -> argparse.ArgumentParser:
     resume.add_argument("--reset-counters", action="store_true")
     _add_project(resume)
 
+    run_checker = subcommands.add_parser(
+        "run-checker", help="run deterministic checks for a pending checker action"
+    )
+    run_checker.add_argument("--loop-id", required=True)
+    run_checker.add_argument("--action-id", required=True)
+    run_checker.add_argument("--state-version", required=True, type=int)
+    run_checker.add_argument("--lease-token")
+    run_checker.add_argument("--llm-result", action="append", default=[])
+    _add_project(run_checker)
+
     return parser
 
 
@@ -181,7 +200,12 @@ def cmd_complete(args: argparse.Namespace) -> dict[str, Any]:
     loaded_result = _load_result(args.result)
     _refresh_lease_or_raise(args.loop_id, project, lease_token)
     pending_state = lc.load_state(args.loop_id, project)
-    _save_checker_artifact(args.loop_id, project, args.action_id, args.state_version, loaded_result)
+    if _requires_sealed_checker(pending_state, args.action_id, args.state_version):
+        _validate_sealed_checker_completion(args.loop_id, project, args.action_id, loaded_result)
+    else:
+        _save_checker_artifact(
+            args.loop_id, project, args.action_id, args.state_version, loaded_result
+        )
     result = lc.complete(
         args.loop_id,
         project,
@@ -268,6 +292,106 @@ def cmd_resume(args: argparse.Namespace) -> dict[str, Any]:
     )
 
 
+def cmd_run_checker(args: argparse.Namespace) -> dict[str, Any]:
+    """Run the checker layers without completing the pending action."""
+    project = _project_dir(args.project)
+    lease_token = _required_lease_token(args)
+    _refresh_lease_or_raise(args.loop_id, project, lease_token)
+    state = lc.load_state(args.loop_id, project)
+    _validate_pending_checker(state, args.action_id, args.state_version)
+    phase = ld.phase_by_name(_load_definition(project, state.definition_id), state.phase)
+    commands = _mechanical_commands(phase.checker)
+    has_llm_review = isinstance(phase.checker.get("llm_review"), dict)
+    if has_llm_review:
+        pass_criteria = lc.checker_pass_criteria(state, project)
+        llm_results = _load_bound_llm_results(args.llm_result)
+    else:
+        if args.llm_result:
+            _raise_invalid_llm_result("llm results are not allowed for a mechanical-only checker")
+        pass_criteria = {}
+        llm_results = []
+
+    def heartbeat_and_validate() -> None:
+        _refresh_checker_fence(
+            args.loop_id,
+            project,
+            lease_token,
+            args.action_id,
+            args.state_version,
+        )
+
+    mechanical_paths: list[str] = []
+
+    def save_mechanical_log(index: int, _command: str, output: str, _exit_code: int) -> None:
+        mechanical_paths.append(
+            lc.save_artifact(
+                args.loop_id,
+                project,
+                args.action_id,
+                f"mechanical_{index}.log",
+                output,
+            )
+        )
+
+    failures = lc.run_mechanical_checks(
+        commands,
+        state.worktree_path,
+        MECHANICAL_CHECK_TIMEOUT_SECONDS,
+        heartbeat=heartbeat_and_validate,
+        artifact_writer=save_mechanical_log,
+    )
+    heartbeat_and_validate()
+    normalized_mechanical_path = _save_mechanical_artifact(
+        args.loop_id, project, args.action_id, failures
+    )
+    mechanical_path = ",".join(mechanical_paths) or normalized_mechanical_path
+    mechanical = lc.CheckResult(
+        passed=not failures,
+        layer="mechanical",
+        signature=lc.compute_implementation_signature(failures),
+        findings=[],
+        raw_artifact_path=mechanical_path,
+        infrastructure_failure=any(
+            failure.failure_type == "infrastructure_failure" for failure in failures
+        ),
+    )
+    results = [mechanical]
+    required_layers = MECHANICAL_CHECKER_LAYERS
+    metadata: dict[str, Any] = {}
+    if has_llm_review:
+        llm_review = _combine_llm_results(
+            _save_llm_review_artifacts(
+                args.loop_id,
+                project,
+                args.action_id,
+                llm_results,
+                pass_criteria,
+            ),
+            pass_criteria,
+        )
+        results.append(llm_review)
+        required_layers = REQUIRED_CHECKER_LAYERS
+        metadata["reviewers"] = _bound_reviewer_names(args.llm_result)
+    combined = lc.combine_check_results(results, pass_criteria, required_layers)
+    sealed = lc.PhaseCheckResult(
+        combined.passed,
+        combined.results,
+        combined.signature,
+        combined.infrastructure_failure,
+        metadata={**combined.metadata, **metadata},
+    )
+    payload = lc.redact_payload(lc.phase_check_to_dict(sealed))
+    heartbeat_and_validate()
+    lc.save_artifact(
+        args.loop_id,
+        project,
+        args.action_id,
+        "check_result.json",
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+    )
+    return payload
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point."""
     try:
@@ -318,6 +442,7 @@ def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
         "reconcile": cmd_reconcile,
         "heartbeat": cmd_heartbeat,
         "resume": cmd_resume,
+        "run-checker": cmd_run_checker,
     }
     return handlers[args.command](args)
 
@@ -398,6 +523,271 @@ def _required_lease_token(args: argparse.Namespace) -> str:
             EXIT_VALIDATION_REJECTED,
         )
     return str(token)
+
+
+def _validate_pending_checker(state: lc.LoopState, action_id: str, state_version: int) -> None:
+    """Validate checker fencing inputs before launching any subprocess."""
+    pending = state.pending_action
+    if pending is None or pending.action_id != action_id or state.state_version != state_version:
+        raise lc.StaleActionError(f"stale action: {action_id}")
+    if pending.action != lc.Action.RUN_CHECKER.value or pending.phase != state.phase:
+        raise lc.ProtocolViolationError("pending action is not the current phase checker")
+
+
+def _refresh_checker_fence(
+    loop_id: str,
+    project: str,
+    lease_token: str,
+    action_id: str,
+    state_version: int,
+) -> None:
+    """Refresh the lease and revalidate the pending checker generation."""
+    _refresh_lease_or_raise(loop_id, project, lease_token)
+    _validate_pending_checker(lc.load_state(loop_id, project), action_id, state_version)
+
+
+def _mechanical_commands(checker: dict[str, Any]) -> list[str]:
+    """Return validated mechanical commands from the durable loop definition."""
+    commands = _nested(checker, ("mechanical", "commands"), None)
+    if (
+        not isinstance(commands, list)
+        or not commands
+        or not all(isinstance(command, str) and command for command in commands)
+    ):
+        raise ld.DefinitionValidationError("checker.mechanical.commands must be strings")
+    return list(commands)
+
+
+def _save_mechanical_artifact(
+    loop_id: str,
+    project: str,
+    action_id: str,
+    failures: list[lc.MechanicalFailure],
+) -> str:
+    """Persist normalized mechanical failures and return the artifact path."""
+    payload = {
+        "failures": [
+            {
+                "command": failure.command,
+                "failure_type": failure.failure_type,
+                "error_type": failure.error_type,
+                "output": failure.output,
+            }
+            for failure in failures
+        ]
+    }
+    return lc.save_artifact(
+        loop_id,
+        project,
+        action_id,
+        "mechanical.json",
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+    )
+
+
+def _combine_llm_results(
+    loaded: list[tuple[str, lc.CheckResult]], pass_criteria: dict[str, int]
+) -> lc.CheckResult:
+    """Aggregate reviewer-bound LLM review artifacts."""
+    findings = [finding for _, result in loaded for finding in result.findings]
+    infrastructure_failure = any(result.infrastructure_failure for _, result in loaded)
+    findings_pass = all(
+        sum(finding.severity == severity for finding in findings) <= limit
+        for severity, limit in pass_criteria.items()
+    )
+    return lc.CheckResult(
+        passed=findings_pass and not infrastructure_failure,
+        layer="llm_review",
+        signature=lc.compute_llm_review_signature(findings),
+        findings=findings,
+        raw_artifact_path=",".join(result.raw_artifact_path for _, result in loaded),
+        infrastructure_failure=infrastructure_failure,
+    )
+
+
+def _save_llm_review_artifacts(
+    loop_id: str,
+    project: str,
+    action_id: str,
+    loaded: list[tuple[str, lc.CheckResult]],
+    pass_criteria: dict[str, int],
+) -> list[tuple[str, lc.CheckResult]]:
+    """Copy normalized reviewer results into the action artifact directory."""
+    persisted: list[tuple[str, lc.CheckResult]] = []
+    for reviewer, result in loaded:
+        name = f"llm_review_{reviewer}.json"
+        relative_path = str(Path("artifacts") / action_id / name)
+        passed = (
+            all(
+                sum(finding.severity == severity for finding in result.findings) <= limit
+                for severity, limit in pass_criteria.items()
+            )
+            and not result.infrastructure_failure
+        )
+        copied = lc.CheckResult(
+            passed=passed,
+            layer=result.layer,
+            signature=lc.compute_llm_review_signature(result.findings),
+            findings=result.findings,
+            raw_artifact_path=relative_path,
+            infrastructure_failure=result.infrastructure_failure,
+        )
+        lc.save_artifact(
+            loop_id,
+            project,
+            action_id,
+            name,
+            json.dumps(
+                lc.check_result_to_dict(copied),
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+        )
+        persisted.append((reviewer, copied))
+    return persisted
+
+
+def _load_bound_llm_results(values: list[str]) -> list[tuple[str, lc.CheckResult]]:
+    """Validate reviewer bindings and load each strict result file."""
+    if not values or len(values) > MAX_LLM_REVIEWERS:
+        _raise_invalid_llm_result(f"one to {MAX_LLM_REVIEWERS} reviewer results are required")
+    bindings: list[tuple[str, Path]] = []
+    seen: set[str] = set()
+    for value in values:
+        reviewer, separator, file_reference = value.partition("=")
+        if (
+            not separator
+            or not _REVIEWER_RE.fullmatch(reviewer)
+            or not file_reference.startswith("@")
+            or not file_reference[1:]
+        ):
+            _raise_invalid_llm_result("llm result must use <reviewer>=@<file>")
+        if reviewer in seen:
+            _raise_invalid_llm_result(f"duplicate reviewer: {reviewer}")
+        seen.add(reviewer)
+        bindings.append((reviewer, Path(file_reference[1:])))
+    if "code-reviewer" not in seen:
+        _raise_invalid_llm_result("code-reviewer result is required")
+    return [(reviewer, _load_llm_result_file(reviewer, path)) for reviewer, path in bindings]
+
+
+def _bound_reviewer_names(values: list[str]) -> list[str]:
+    """Return reviewer names after reviewer bindings have been validated."""
+    return [value.partition("=")[0] for value in values]
+
+
+def _load_llm_result_file(reviewer: str, path: Path) -> lc.CheckResult:
+    """Load one 0600, regular, non-symlink reviewer result file."""
+    try:
+        file_stat = path.lstat()
+    except OSError as exc:
+        raise CliFailure(
+            "invalid_llm_result",
+            f"review result file is unavailable: {path}",
+            EXIT_VALIDATION_REJECTED,
+        ) from exc
+    if stat.S_ISLNK(file_stat.st_mode) or not stat.S_ISREG(file_stat.st_mode):
+        _raise_invalid_llm_result("review result must be a regular non-symlink file")
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(path, flags)
+    except OSError as exc:
+        raise CliFailure(
+            "invalid_llm_result",
+            f"review result file is unavailable: {path}",
+            EXIT_VALIDATION_REJECTED,
+        ) from exc
+    try:
+        opened_stat = os.fstat(fd)
+        if not stat.S_ISREG(opened_stat.st_mode):
+            _raise_invalid_llm_result("review result must be a regular non-symlink file")
+        if stat.S_IMODE(opened_stat.st_mode) != lc.FILE_MODE:
+            _raise_invalid_llm_result("review result file mode must be 0600")
+        if opened_stat.st_size > MAX_LLM_RESULT_BYTES:
+            _raise_invalid_llm_result("review result file exceeds size limit")
+        with os.fdopen(fd, encoding="utf-8") as file:
+            fd = -1
+            data = json.load(file)
+    except (OSError, json.JSONDecodeError, UnicodeError) as exc:
+        raise CliFailure(
+            "invalid_llm_result",
+            f"review result is not valid JSON: {path}",
+            EXIT_VALIDATION_REJECTED,
+        ) from exc
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    if not _is_valid_llm_result(data):
+        _raise_invalid_llm_result(f"review result has invalid schema: {path}")
+    try:
+        result = lc.check_result_from_dict(data)
+    except (TypeError, ValueError) as exc:
+        raise CliFailure(
+            "invalid_llm_result",
+            f"review result has invalid schema: {path}",
+            EXIT_VALIDATION_REJECTED,
+        ) from exc
+    bound_findings = [
+        lc.Finding(finding.severity, finding.summary, reviewer, finding.path, finding.line)
+        for finding in result.findings
+    ]
+    findings = [
+        lc.Finding(
+            finding.severity,
+            lc.redact(finding.summary),
+            lc.redact(finding.source),
+            lc.redact(finding.path) if finding.path is not None else None,
+            finding.line,
+        )
+        for finding in bound_findings
+    ]
+    return lc.CheckResult(
+        passed=result.passed,
+        layer="llm_review",
+        signature=result.signature,
+        findings=findings,
+        raw_artifact_path=result.raw_artifact_path,
+        infrastructure_failure=result.infrastructure_failure,
+    )
+
+
+def _raise_invalid_llm_result(message: str) -> None:
+    """Raise the stable reviewer result validation error."""
+    raise CliFailure("invalid_llm_result", message, EXIT_VALIDATION_REJECTED)
+
+
+def _is_valid_llm_result(data: Any) -> bool:
+    """Return whether data has the strict serialized LLM CheckResult shape."""
+    if (
+        not isinstance(data, dict)
+        or frozenset(data) != lc.CHECK_RESULT_KEYS
+        or data.get("layer") != "llm_review"
+    ):
+        return False
+    if not isinstance(data.get("passed"), bool):
+        return False
+    if not isinstance(data.get("infrastructure_failure"), bool):
+        return False
+    if not isinstance(data.get("raw_artifact_path"), str):
+        return False
+    if data.get("signature") is not None and not isinstance(data.get("signature"), str):
+        return False
+    findings = data.get("findings")
+    return isinstance(findings, list) and all(_is_valid_finding(item) for item in findings)
+
+
+def _is_valid_finding(data: Any) -> bool:
+    """Return whether data can be deserialized as a Finding."""
+    if not isinstance(data, dict) or frozenset(data) != lc.FINDING_KEYS:
+        return False
+    if data.get("severity") not in {"critical", "high", "medium", "low"}:
+        return False
+    if not isinstance(data.get("summary"), str) or not isinstance(data.get("source"), str):
+        return False
+    if data.get("path") is not None and not isinstance(data.get("path"), str):
+        return False
+    line = data.get("line")
+    return line is None or (isinstance(line, int) and not isinstance(line, bool))
 
 
 def _refresh_lease_or_raise(loop_id: str, project: str, lease_token: str) -> None:
@@ -492,6 +882,13 @@ def _proposal_response(
     params = context.pop("params", {})
     if not isinstance(params, dict):
         params = {}
+    if project is not None:
+        state = lc.load_state(loop_id, project)
+        params = {**params, **_common_proposal_params(loop_id, state)}
+        if action == lc.Action.RUN_MAKER.value:
+            previous_check = _previous_check_summary(state)
+            if previous_check:
+                params["previous_check"] = previous_check
     response_reason = str(context.pop("reason", reason) if "reason" in context else reason)
     response: dict[str, Any] = {
         "loop_id": loop_id,
@@ -508,6 +905,62 @@ def _proposal_response(
     if project is not None and action in TERMINAL_ACTIONS:
         _emit_loop_stop(project, loop_id, action, params)
     return response
+
+
+def _common_proposal_params(loop_id: str, state: lc.LoopState) -> dict[str, Any]:
+    """Return state-derived execution context shared by every action."""
+    return {
+        "issue_number": _issue_number_from_loop_id(loop_id),
+        "worktree_path": state.worktree_path,
+        "branch": state.branch,
+        "repo_identity_verified": lc.is_repo_identity_verified(state),
+    }
+
+
+def _issue_number_from_loop_id(loop_id: str) -> int | None:
+    """Parse a positive issue number from the canonical issue-loop id."""
+    match = _ISSUE_LOOP_ID_RE.fullmatch(loop_id)
+    return int(match.group(1)) if match is not None else None
+
+
+def _previous_check_summary(state: lc.LoopState) -> dict[str, Any]:
+    """Return only Maker-safe mechanical and must-fix review context."""
+    previous = state.last_check_result
+    if not isinstance(previous, dict):
+        return {}
+    mechanical: dict[str, Any] | None = None
+    findings: list[dict[str, Any]] = []
+    results = previous.get("results")
+    for item in results if isinstance(results, list) else []:
+        if not isinstance(item, dict):
+            continue
+        if item.get("layer") == "mechanical":
+            mechanical = {
+                "passed": bool(item.get("passed")),
+                "signature": item.get("signature"),
+                "infrastructure_failure": bool(item.get("infrastructure_failure")),
+                "raw_artifact_path": item.get("raw_artifact_path"),
+            }
+        item_findings = item.get("findings")
+        for finding in item_findings if isinstance(item_findings, list) else []:
+            if not isinstance(finding, dict) or finding.get("severity") not in {
+                "critical",
+                "high",
+            }:
+                continue
+            findings.append(
+                {
+                    "severity": finding.get("severity"),
+                    "summary": finding.get("summary"),
+                    "source": finding.get("source"),
+                    "path": finding.get("path"),
+                    "line": finding.get("line"),
+                }
+            )
+    summary: dict[str, Any] = {"critical_high": findings}
+    if mechanical is not None:
+        summary["mechanical"] = mechanical
+    return lc.redact_payload(summary)
 
 
 def _pending_action(loop_id: str, project: str) -> lc.PendingAction | None:
@@ -549,6 +1002,48 @@ def _save_checker_artifact(
         "check_result.json",
         json.dumps(check_result, ensure_ascii=False, separators=(",", ":")),
     )
+
+
+def _requires_sealed_checker(state: lc.LoopState, action_id: str, state_version: int) -> bool:
+    """Return whether this completion is the sealed implementation checker path."""
+    pending = state.pending_action
+    return bool(
+        state.definition_id == DEFAULT_DEFINITION_ID
+        and state.phase == "implementation"
+        and state.state_version == state_version
+        and pending is not None
+        and pending.action_id == action_id
+        and pending.action == lc.Action.RUN_CHECKER.value
+        and pending.phase == "implementation"
+    )
+
+
+def _validate_sealed_checker_completion(
+    loop_id: str,
+    project: str,
+    action_id: str,
+    caller_result: dict[str, Any],
+) -> None:
+    """Require a run-checker artifact that canonically matches the caller payload."""
+    artifact = lc.load_artifact(loop_id, project, action_id, "check_result.json")
+    if artifact is None:
+        raise lc.ProtocolViolationError("sealed checker artifact is required")
+    try:
+        sealed = json.loads(artifact)
+    except json.JSONDecodeError as exc:
+        raise lc.ProtocolViolationError("sealed checker artifact is invalid") from exc
+    caller = _checker_artifact_payload(caller_result)
+    if caller is None:
+        raise lc.ProtocolViolationError("sealed checker result is invalid")
+    state = lc.load_state(loop_id, project)
+    lc.validate_implementation_checker_result(state, sealed, project)
+    if _canonical_json(sealed) != _canonical_json(caller):
+        raise lc.ProtocolViolationError("caller checker result does not match sealed artifact")
+
+
+def _canonical_json(value: Any) -> str:
+    """Serialize a JSON-like value for canonical equality checks."""
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def _checker_artifact_payload(result: dict[str, Any]) -> dict[str, Any] | None:

@@ -43,6 +43,19 @@ phases:
 """
 
 
+def _issue_loop_implementation_definition(*, critical: int, high: int) -> str:
+    return _definition(loop_id="issue-loop", phase_name="implementation").replace(
+        "        analyzer: failure_detector.analyze",
+        f"""        analyzer: failure_detector.analyze
+      llm_review:
+        baseline: code-reviewer
+        selection: skill-review-policy
+        pass_criteria:
+          critical: {critical}
+          high: {high}""",
+    )
+
+
 def test_load_and_validate_accepts_valid_definition(tmp_path: Path) -> None:
     path = tmp_path / "loop.yaml"
     _write(path, _definition())
@@ -90,6 +103,25 @@ def test_issue_loop_implementation_requires_llm_review(tmp_path: Path) -> None:
     _write(path, _definition(loop_id="issue-loop", phase_name="implementation"))
     with pytest.raises(ld.DefinitionValidationError, match="requires llm_review"):
         ld.load_and_validate(path)
+
+
+@pytest.mark.parametrize(("critical", "high"), [(1, 0), (0, 1)])
+def test_issue_loop_implementation_rejects_relaxed_pass_criteria(
+    tmp_path: Path, critical: int, high: int
+) -> None:
+    path = tmp_path / "issue-loop.yaml"
+    _write(
+        path,
+        _issue_loop_implementation_definition(critical=critical, high=high),
+    )
+
+    with pytest.raises(ld.DefinitionValidationError, match="pass_criteria"):
+        ld.load_and_validate(path)
+
+
+def test_checker_pass_criteria_rejects_non_mapping_llm_review() -> None:
+    with pytest.raises(ld.DefinitionValidationError, match="llm_review"):
+        ld.checker_pass_criteria({"llm_review": ["not", "a", "mapping"]})
 
 
 def test_same_phase_name_in_other_loop_does_not_require_llm_review(tmp_path: Path) -> None:

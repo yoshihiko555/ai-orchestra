@@ -216,6 +216,56 @@ def test_run_mechanical_checks_invokes_failure_detector(
     assert failures[0].failure_type == "test_failure"
 
 
+def test_run_mechanical_checks_heartbeats_after_each_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class FakeDetector:
+        @staticmethod
+        def analyze(_tool_name: str, _tool_input: dict, _tool_response: dict) -> None:
+            return None
+
+    heartbeats: list[str] = []
+    monkeypatch.setattr(lc, "_load_failure_detector", lambda: FakeDetector)
+
+    failures = lc.run_mechanical_checks(
+        ["printf first", "printf second"],
+        str(tmp_path),
+        5,
+        heartbeat=lambda: heartbeats.append("beat"),
+    )
+
+    assert failures == []
+    assert heartbeats == ["beat", "beat"]
+
+
+def test_run_mechanical_checks_persists_output_when_analyzer_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class FailingDetector:
+        @staticmethod
+        def analyze(_tool_name: str, _tool_input: dict, _tool_response: dict) -> None:
+            raise RuntimeError("analyzer failed")
+
+    events: list[object] = []
+    monkeypatch.setattr(lc, "_load_failure_detector", lambda: FailingDetector)
+
+    with pytest.raises(RuntimeError, match="analyzer failed"):
+        lc.run_mechanical_checks(
+            ["printf captured-output"],
+            str(tmp_path),
+            5,
+            heartbeat=lambda: events.append("heartbeat"),
+            artifact_writer=lambda index, command, output, exit_code: events.append(
+                (index, command, output, exit_code)
+            ),
+        )
+
+    assert events == [
+        "heartbeat",
+        (1, "printf captured-output", "captured-output", 0),
+    ]
+
+
 def test_redact_payload_and_audit_payload_shape() -> None:
     state = _state()
     payload = lc.build_audit_payload(

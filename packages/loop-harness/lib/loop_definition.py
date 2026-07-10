@@ -15,6 +15,7 @@ PACKAGE_NAME = "loop-harness"
 CONFIG_FILENAME = "loop-harness.yaml"
 _ID_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 _SIGNATURE_KINDS = {"implementation", "pr_review"}
+ISSUE_LOOP_IMPLEMENTATION_PASS_CRITERIA = {"critical": 0, "high": 0}
 
 
 class DefinitionValidationError(ValueError):
@@ -127,6 +128,25 @@ def phase_by_name(definition: LoopDefinition, name: str) -> PhaseDefinition:
     raise DefinitionValidationError(f"Unknown phase: {name}")
 
 
+def checker_pass_criteria(checker: dict[str, Any]) -> dict[str, int]:
+    """Return a strictly shaped LLM review pass criteria mapping."""
+    llm_review = checker.get("llm_review")
+    if not isinstance(llm_review, dict):
+        raise DefinitionValidationError("checker.llm_review must be a mapping")
+    criteria = llm_review.get("pass_criteria")
+    expected_keys = set(ISSUE_LOOP_IMPLEMENTATION_PASS_CRITERIA)
+    if not isinstance(criteria, dict) or set(criteria) != expected_keys:
+        raise DefinitionValidationError(
+            "checker.llm_review.pass_criteria must contain critical and high"
+        )
+    if any(
+        not isinstance(criteria[name], int) or isinstance(criteria[name], bool)
+        for name in expected_keys
+    ):
+        raise DefinitionValidationError("checker.llm_review.pass_criteria values must be integers")
+    return {name: int(criteria[name]) for name in ISSUE_LOOP_IMPLEMENTATION_PASS_CRITERIA}
+
+
 def _definition_paths(directory: Path) -> list[Path]:
     """Return sorted loop YAML paths from a directory."""
     if not directory.is_dir():
@@ -200,8 +220,14 @@ def _validate_checker(loop_id: str, phase_name: str, checker: Any, source_path: 
             f"checker requires mechanical or external_signal: {source_path}"
         )
     if loop_id == "issue-loop" and phase_name == "implementation":
-        if not isinstance(checker.get("llm_review"), dict):
+        llm_review = checker.get("llm_review")
+        if not isinstance(llm_review, dict):
             raise DefinitionValidationError("issue-loop implementation requires llm_review")
+        pass_criteria = checker_pass_criteria(checker)
+        if pass_criteria != ISSUE_LOOP_IMPLEMENTATION_PASS_CRITERIA:
+            raise DefinitionValidationError(
+                "issue-loop implementation pass_criteria must be critical=0 and high=0"
+            )
     if has_mechanical:
         _validate_mechanical(checker["mechanical"], source_path)
 

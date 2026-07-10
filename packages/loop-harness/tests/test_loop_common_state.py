@@ -41,12 +41,26 @@ def _check_result(
     infra: bool = False,
     metadata: dict[str, object] | None = None,
 ) -> dict:
+    mechanical = lc.CheckResult(passed, "mechanical", signature, [], "mechanical.json", infra)
+    llm_review = lc.CheckResult(
+        not infra,
+        "llm_review",
+        lc.compute_llm_review_signature([]),
+        [],
+        "review.json",
+        infra,
+    )
+    combined = lc.combine_check_results(
+        [mechanical, llm_review],
+        {"critical": 0, "high": 0},
+        frozenset({"mechanical", "llm_review"}),
+    )
     result = lc.PhaseCheckResult(
-        passed=passed,
-        results=[],
-        signature=signature,
-        infrastructure_failure=infra,
-        metadata=metadata or {},
+        passed=combined.passed,
+        results=combined.results,
+        signature=combined.signature,
+        infrastructure_failure=combined.infrastructure_failure,
+        metadata={"reviewers": ["code-reviewer"], **(metadata or {})},
     )
     return lc.phase_check_to_dict(result)
 
@@ -92,7 +106,9 @@ def test_status_transitions_and_resume(tmp_path: Path, monkeypatch: pytest.Monke
         {"check_result": _check_result(True)},
         lock.lease_token,
     )
-    assert lc.load_state("abcd1234-issue-1", project_dir).status == "passed"
+    checked = lc.load_state("abcd1234-issue-1", project_dir)
+    assert checked.status == "running"
+    assert checked.last_check_result["next_phase"] == "pr_review_response"
 
     state = lc.load_state("abcd1234-issue-1", project_dir)
     state.status = "failed"
@@ -127,7 +143,9 @@ def test_complete_accepts_raw_passed_checker_result(
     )
 
     event = lc.find_journal_event("abcd1234-issue-1", project_dir, checker.action_id, "completed")
-    assert lc.load_state("abcd1234-issue-1", project_dir).status == "passed"
+    checked = lc.load_state("abcd1234-issue-1", project_dir)
+    assert checked.status == "running"
+    assert checked.last_check_result["next_phase"] == "pr_review_response"
     assert event["payload"]["check_result"]["passed"] is True
 
 
@@ -277,6 +295,163 @@ def test_reconcile_resolves_checker_from_artifact(
     assert lc.load_state("abcd1234-issue-1", project_dir).pending_action is None
 
 
+def test_reconcile_rejects_legacy_empty_checker_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir, lock = _setup_loop(tmp_path, monkeypatch, status="running")
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.pending_action = lc.PendingAction(
+        "act-check", lc.Action.RUN_CHECKER.value, "implementation", 1, lc.now_iso()
+    )
+    state.state_version = 1
+    lc._write_state(state, project_dir)
+    lc.save_artifact(
+        "abcd1234-issue-1",
+        project_dir,
+        "act-check",
+        "check_result.json",
+        json.dumps(
+            {
+                "passed": True,
+                "results": [],
+                "signature": "",
+                "infrastructure_failure": False,
+            }
+        ),
+    )
+
+    with pytest.raises(lc.IntegrityError, match="sealed checker"):
+        lc.reconcile("abcd1234-issue-1", project_dir, lock.lease_token)
+
+    assert lc.load_state("abcd1234-issue-1", project_dir).pending_action is not None
+
+
+@pytest.mark.parametrize("invalid_kind", ["missing_code_reviewer", "duplicate", "source"])
+def test_complete_rejects_invalid_checker_reviewer_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    invalid_kind: str,
+) -> None:
+    project_dir, lock = _setup_loop(tmp_path, monkeypatch)
+    maker = lc.propose("abcd1234-issue-1", project_dir, lock.lease_token)
+    lc.complete(
+        "abcd1234-issue-1", project_dir, maker.action_id, maker.state_version, {}, lock.lease_token
+    )
+    checker = lc.propose("abcd1234-issue-1", project_dir, lock.lease_token)
+    result = _check_result(False)
+    if invalid_kind == "missing_code_reviewer":
+        result["metadata"]["reviewers"] = ["security-reviewer"]
+    elif invalid_kind == "duplicate":
+        result["metadata"]["reviewers"] = ["code-reviewer", "code-reviewer"]
+    else:
+        result["results"][1]["findings"] = [
+            {
+                "severity": "high",
+                "summary": "must fix",
+                "source": "unbound-reviewer",
+                "path": "app.py",
+                "line": 1,
+            }
+        ]
+
+    with pytest.raises(lc.ProtocolViolationError, match="sealed checker"):
+        lc.complete(
+            "abcd1234-issue-1",
+            project_dir,
+            checker.action_id,
+            checker.state_version,
+            result,
+            lock.lease_token,
+        )
+
+    assert (
+        lc.find_journal_event("abcd1234-issue-1", project_dir, checker.action_id, "completed")
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "invalid_kind",
+    [
+        "top_passed",
+        "top_infrastructure",
+        "top_signature",
+        "llm_passed",
+        "llm_signature",
+        "infra_passed",
+        "mechanical_findings",
+    ],
+)
+def test_complete_rejects_semantically_inconsistent_checker_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    invalid_kind: str,
+) -> None:
+    project_dir, lock = _setup_loop(tmp_path, monkeypatch)
+    maker = lc.propose("abcd1234-issue-1", project_dir, lock.lease_token)
+    lc.complete(
+        "abcd1234-issue-1", project_dir, maker.action_id, maker.state_version, {}, lock.lease_token
+    )
+    checker = lc.propose("abcd1234-issue-1", project_dir, lock.lease_token)
+    result = _check_result(True)
+    if invalid_kind == "top_passed":
+        result["passed"] = False
+    elif invalid_kind == "top_infrastructure":
+        result["infrastructure_failure"] = True
+    elif invalid_kind == "top_signature":
+        result["signature"] = "forged"
+    elif invalid_kind == "llm_passed":
+        result["results"][1]["passed"] = False
+    elif invalid_kind == "llm_signature":
+        result["results"][1]["signature"] = "forged"
+    elif invalid_kind == "infra_passed":
+        result["results"][1]["infrastructure_failure"] = True
+    else:
+        result["results"][0]["findings"] = [
+            {
+                "severity": "high",
+                "summary": "unexpected mechanical finding",
+                "source": "mechanical",
+                "path": None,
+                "line": None,
+            }
+        ]
+
+    with pytest.raises(lc.ProtocolViolationError, match="sealed checker"):
+        lc.complete(
+            "abcd1234-issue-1",
+            project_dir,
+            checker.action_id,
+            checker.state_version,
+            result,
+            lock.lease_token,
+        )
+
+
+def test_reconcile_rejects_semantically_inconsistent_checker_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir, lock = _setup_loop(tmp_path, monkeypatch, status="running")
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.pending_action = lc.PendingAction(
+        "act-check", lc.Action.RUN_CHECKER.value, "implementation", 1, lc.now_iso()
+    )
+    state.state_version = 1
+    lc._write_state(state, project_dir)
+    result = _check_result(True)
+    result["passed"] = False
+    lc.save_artifact(
+        "abcd1234-issue-1",
+        project_dir,
+        "act-check",
+        "check_result.json",
+        json.dumps(result),
+    )
+
+    with pytest.raises(lc.IntegrityError, match="sealed checker"):
+        lc.reconcile("abcd1234-issue-1", project_dir, lock.lease_token)
+
+
 def test_reconcile_rerun_required_for_checker_without_artifact(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -308,6 +483,15 @@ def test_passed_transition_verifies_journal_digest_only_for_passed(
 ) -> None:
     project_dir, _lock = _setup_loop(tmp_path, monkeypatch, status="running")
     state = lc.load_state("abcd1234-issue-1", project_dir)
+    monkeypatch.setattr(
+        lc,
+        "_load_phase_definition",
+        lambda _state, _project: {
+            "on_success": {"disposition": lc.Action.EXIT_SUCCESS.value},
+            "on_failure": {"disposition": lc.Action.EXIT_FAILURE.value},
+        },
+    )
+    monkeypatch.setattr(lc, "_load_loop_config", lambda _project: {})
     lc.append_journal_event(
         "abcd1234-issue-1",
         project_dir,
@@ -346,17 +530,12 @@ def test_checker_success_proposes_and_completes_advance_phase(
         "abcd1234-issue-1", project_dir, maker.action_id, maker.state_version, {}, lock.lease_token
     )
     checker = lc.propose("abcd1234-issue-1", project_dir, lock.lease_token)
-    phase_def = {
-        "on_success": {"disposition": "advance_phase", "next": "pr_review_response"},
-        "on_failure": {"disposition": "exit_failure"},
-    }
-
     lc.complete(
         "abcd1234-issue-1",
         project_dir,
         checker.action_id,
         checker.state_version,
-        {"check_result": _check_result(True), "phase_def": phase_def},
+        {"check_result": _check_result(True)},
         lock.lease_token,
     )
     state = lc.load_state("abcd1234-issue-1", project_dir)
@@ -376,6 +555,32 @@ def test_checker_success_proposes_and_completes_advance_phase(
     assert advance.action == lc.Action.ADVANCE_PHASE.value
     assert advanced.phase == "pr_review_response"
     assert "pr_review_response" in advanced.guards
+
+
+def test_reconcile_passed_checker_artifact_uses_durable_phase_guards(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir, lock = _setup_loop(tmp_path, monkeypatch, status="running")
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.pending_action = lc.PendingAction(
+        "act-check", lc.Action.RUN_CHECKER.value, "implementation", 1, lc.now_iso()
+    )
+    state.state_version = 1
+    lc._write_state(state, project_dir)
+    lc.save_artifact(
+        "abcd1234-issue-1",
+        project_dir,
+        "act-check",
+        "check_result.json",
+        json.dumps(_check_result(True)),
+    )
+
+    outcome = lc.reconcile("abcd1234-issue-1", project_dir, lock.lease_token)
+    proposal = lc.propose("abcd1234-issue-1", project_dir, lock.lease_token)
+
+    assert outcome.action_taken == "resolved_from_artifact"
+    assert proposal.action == lc.Action.ADVANCE_PHASE.value
+    assert proposal.context["params"]["next_phase"] == "pr_review_response"
 
 
 def test_advance_phase_push_guard_stop_does_not_change_phase(
@@ -488,6 +693,8 @@ def test_wait_external_review_params_include_config_defaults(
         "poll_interval_seconds": 77,
         "timeout_seconds": 88,
         "pr_number": 123,
+        "push_required": False,
+        "verified_branch": "loop/issue-1",
     }
 
 
@@ -535,7 +742,8 @@ def test_wait_external_review_completion_applies_checker_guards(
     assert state.last_check_result is not None
     assert state.last_check_result["passed"] is True
     assert state.last_check_result["metadata"] == {
-        "current_iteration_findings": {"signatures": [], "new_count": 0}
+        "current_iteration_findings": {"signatures": [], "new_count": 0},
+        "reviewers": ["code-reviewer"],
     }
     counters = state.guards["pr_review_response"]
     assert counters.no_progress_streak == 0

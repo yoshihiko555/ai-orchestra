@@ -22,6 +22,7 @@ def _git(args: list[str], cwd: Path) -> None:
 def _write_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: str = "running") -> str:
     monkeypatch.setattr(lc, "resolve_root_worktree", lambda _project_dir: tmp_path)
     monkeypatch.setattr(lc.socket, "gethostname", lambda: "local")
+    monkeypatch.setattr(lc, "_repo_identity_hash", lambda _project_dir: "abcd1234")
     project_dir = str(tmp_path)
     state = lc._initial_state(
         "abcd1234-issue-1", "issue-loop", "abcd1234", "/tmp/wt", "loop/issue-1", "implementation"
@@ -75,7 +76,9 @@ def test_propose_returns_stop_for_live_foreign_host_lease(
     assert result.context["stop_reason"] == "foreign_live_lease"
     assert state.status == "stopped"
     assert state.stop_reason == "foreign_live_lease"
-    assert state.pending_action is None
+    assert state.pending_action is not None
+    assert state.pending_action.action == lc.Action.STOP.value
+    assert state.pending_action.action_id == result.action_id
     assert any(
         event["event"] == "stopped" and event["payload"]["stop_reason"] == "foreign_live_lease"
         for event in events
