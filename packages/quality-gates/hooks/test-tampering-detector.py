@@ -27,7 +27,7 @@ else:
     if str(_fallback_core_hooks) not in sys.path:
         sys.path.insert(0, str(_fallback_core_hooks))
 
-from hook_common import read_hook_input, safe_hook_execution  # noqa: E402
+from hook_common import is_test_path, read_hook_input, safe_hook_execution  # noqa: E402
 
 SKIP_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
@@ -53,14 +53,7 @@ STATE_FILE = Path("/tmp/claude-test-tampering-state.json")
 
 def is_test_file(file_path: str) -> bool:
     """Return True when the path looks like a test file."""
-    normalized = file_path.replace("\\", "/")
-    if re.search(r"(^|/)(tests?|__tests__)(/|$)", normalized):
-        return True
-    if re.search(r"(^|/)test_[^/]+\.py$", normalized):
-        return True
-    if re.search(r"(^|/)[^/]+_test\.py$", normalized):
-        return True
-    return bool(re.search(r"\.(?:test|spec)\.[cm]?[jt]sx?$", normalized))
+    return is_test_path(file_path, scope="any")
 
 
 def extract_added_lines(diff_text: str) -> list[str]:

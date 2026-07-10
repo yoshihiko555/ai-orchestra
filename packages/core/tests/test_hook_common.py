@@ -45,6 +45,44 @@ def test_get_field_coerces_non_string_value_to_string() -> None:
     assert hook_common.get_field({}, "x") == ""
 
 
+class TestIsTestPath:
+    @pytest.mark.parametrize(
+        ("path", "expected"),
+        [
+            ("tests/test_auth.py", True),
+            ("src/foo_test.py", True),
+            ("frontend/button.test.tsx", True),
+            ("frontend/__tests__/button.ts", True),
+            ("src/main.py", False),
+            ("", False),
+        ],
+    )
+    def test_any_scope_matches_existing_detector_behavior(self, path: str, expected: bool) -> None:
+        assert hook_common.is_test_path(path, scope="any") is expected
+
+    def test_any_scope_can_skip_javascript_patterns(self) -> None:
+        assert hook_common.is_test_path("frontend/button.test.tsx", scope="any")
+        assert not hook_common.is_test_path(
+            "frontend/button.test.tsx", scope="any", include_js=False
+        )
+
+    @pytest.mark.parametrize(
+        ("path", "expected"),
+        [
+            ("packages/quality-gates/tests/fixture.txt", True),
+            ("packages/core/tests/helpers/data.json", True),
+            ("packages\\core\\tests\\helpers\\data.json", True),
+            ("tests/unit/test_hook_common.py", True),
+            ("tests/unit/hook_common_test.py", True),
+            ("tests/unit/helper.py", False),
+            ("tests/unit/button.test.tsx", False),
+            ("src/__tests__/button.ts", False),
+        ],
+    )
+    def test_scoped_scope_matches_evaluation_set_behavior(self, path: str, expected: bool) -> None:
+        assert hook_common.is_test_path(path, scope="scoped") is expected
+
+
 # =========================================================================
 # load_package_config
 # =========================================================================
