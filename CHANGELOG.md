@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Removed
+
+- **`.claudeignore` の配布・生成を廃止**: `orchex setup` と SessionStart 同期で `.claudeignore` を作成しないようにした。除外設定は `.gitignore` で管理する。
+
 ### Added
 
 - **`loop-harness`: PR レビュー待機・指摘取り込みの決定論モジュールを追加**: `pr_review_wait.py` で reviewer allowlist 必須検証、完了シグナル待機、severity 判定、dedup/state 更新を扱えるようにした。`checkrun_allowlist` / `severity_markers` / `dedup.*` 設定も追加。

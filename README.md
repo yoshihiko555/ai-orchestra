@@ -270,7 +270,6 @@ SessionStart 時に `facet build` が自動実行されるため、通常は手�
 
 ### 自動管理されるファイル
 
-- `.claudeignore` — AI Orchestra が自動生成。プロジェクト固有の除外パターンは `.claudeignore.local` に記載
 - `.gitignore` — `orchex install` 時に AI Orchestra 用ブロックを追加（`.claude/docs/`, `.claude/logs/`, `.claude/state/` 等）
 
 ### 開発者向け: ソースからのインストール

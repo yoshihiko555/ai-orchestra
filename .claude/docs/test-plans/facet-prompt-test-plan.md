@@ -72,7 +72,7 @@
 
 | # | テスト内容 | 期待結果 | 結果 | 備考 |
 |---|----------|---------|------|------|
-| 13 | 新規セッション開始 | `sync-orchestra.py` が facet build 自動実行 | `PASS` | `.claudeignore updated, 16 facets built` |
+| 13 | 新規セッション開始 | `sync-orchestra.py` が facet build 自動実行 | `PASS` | 16 facets built |
 | 14 | facets ソースは同期されない | `.claude/facets/` が自動作成されない | `PASS` | orchestra 側を直接参照する設計（案 A） |
 | 15 | codex-suggestions パッケージあり | claude + codex 両ターゲットでビルド | `PASS` | 48 facets built（claude 24 + codex 24） |
 | 16 | codex-suggestions パッケージなし | claude ターゲットのみビルド | `PASS` | |

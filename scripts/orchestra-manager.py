@@ -800,13 +800,6 @@ class OrchestraManager(ContextMixin, HooksMixin):
         for src, dst in project_templates.items():
             self._copy_template_if_missing(src, dst, str(dst.relative_to(project_dir)), dry_run)
 
-        self._copy_template_if_missing(
-            templates_dir / "project" / ".claudeignore",
-            project_dir / ".claudeignore",
-            ".claudeignore",
-            dry_run,
-        )
-
         self.sync_gitignore(project_dir, dry_run)
 
         orch = self.load_orchestra_json(project_dir)

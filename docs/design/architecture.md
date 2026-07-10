@@ -46,7 +46,7 @@ ai-orchestra/
 │       ├── hook_utils.py      # Hook 操作共通関数
 │       ├── settings_io.py     # settings/orchestra.json I/O
 │       ├── sync_engine.py     # パッケージ同期コアロジック
-│       ├── scaffold.py        # scaffold / .claudeignore 管理
+│       ├── scaffold.py        # scaffold 管理
 │       ├── agent_model_patch.py # エージェント model パッチ
 │       ├── facet_builder.py   # Facet 合成ビルダー
 │       ├── gitignore_sync.py  # .gitignore ブロック管理
@@ -137,7 +137,6 @@ SessionStart hook として毎セッション自動実行。エントリポイ�
 
 - agents, config（パッケージごと）※ skills/rules は facet build で生成するため同期しない
 - facet build（`facets/` をソースに SKILL.md / ルールを再生成）
-- .claudeignore（`lib/scaffold.py` で実装）
 - agent .md ファイルの model フロントマター（`lib/agent_model_patch.py` で実装）
 
 **特徴**:
@@ -155,7 +154,7 @@ SessionStart hook として毎セッション自動実行。エントリポイ�
 | `hook_utils.py`        | Hook コマンド生成・検索・追加・削除の共通関数                  |
 | `settings_io.py`       | `settings.local.json` / `orchestra.json` の読み書き            |
 | `sync_engine.py`       | パッケージ同期・hook 同期・facet ビルドのコアロジック          |
-| `scaffold.py`          | プロジェクト scaffold と `.claudeignore` 管理                  |
+| `scaffold.py`          | プロジェクト scaffold 管理                                      |
 | `agent_model_patch.py` | エージェント `.md` の frontmatter model パッチ                 |
 | `facet_builder.py`     | Facet composition → SKILL.md / rule.md のビルダー              |
 | `gitignore_sync.py`    | `.gitignore` の AI Orchestra ブロック管理                      |
@@ -477,7 +476,7 @@ agents:
 | Hook       | コンテキスト注入・キャプチャ・クリーンアップ                     |
 | CLI 検出   | `codex exec` / `agy -p` の正規表現マッチング                  |
 | Facet      | composition 解決、policy 注入、エラーハンドリング                |
-| 同期       | agents/config の差分同期、.claudeignore 生成、agent model パッチ |
+| 同期       | agents/config の差分同期、agent model パッチ                    |
 | タスク状態 | Plans.md パース、マーカー更新、アーカイブ                        |
 
 **テストパターン**: `module_loader.py` による動的モジュールロード、`tmp_path` フィクスチャ、`monkeypatch`、`@pytest.mark.parametrize`
