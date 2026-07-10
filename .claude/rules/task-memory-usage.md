@@ -89,7 +89,7 @@ SessionStart hook が `.claude/Plans.md` を読み込み、以下を実行する
 ### アーカイブ
 
 - 完了済みプロジェクトは SessionStart 時に自動で `.claude/Plans.archive.md` に移動される
-- アーカイブファイルは参照用に保持される（`.claudeignore` に追加推奨）
+- アーカイブファイルは参照用に保持される（`.gitignore` に追加推奨）
 - Decisions / Notes は全プロジェクト完了時のみアーカイブに移動する（一部残存時は Plans.md に残る）
 
 ### 設計判断の記録

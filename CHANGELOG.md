@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Removed
+
+- **`.claudeignore` の配布・生成を廃止**: `orchex setup` と SessionStart 同期で `.claudeignore` を作成しないようにした。除外設定は `.gitignore` で管理する。
+
 ### Added
 
 - **`loop-harness`: `/loop-issue` LP-1 スキルを追加**: Issue の実装・決定論的 Checker・PR レビュー対応を two-phase 契約で反復し、成功／失敗／安全停止の出口まで自律駆動する facet スキルを配布する。
@@ -20,6 +24,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`meta-harness`: `orchex meta evaluate`（Phase 1b: evaluator）を追加**: 候補ハーネスを使い捨て worktree に実体化し、`claude -p` ヘッドレス実行 → oracle 判定（`command_exit` / `artifact_exists` / `rubric_judge`）→ 台帳記録までを自動実行する。CLI capability gate（バージョン pin + フラグ smoke test、fail-closed）、evaluate.lock（PID + heartbeat）、self-report 注入とペナルティ、baseline シナリオ 2 本を同梱。LLM judge は `judge.tool` 設定で Codex CLI（既定、ChatGPT OAuth で動作）と `claude --bare`（API キー必須）を切替可能
 
 ### Fixed
+
+- **worktree からの install/init がグローバル参照先を上書きする問題を修正**: 同じ Git リポジトリの linked worktree から実行した場合、`~/.claude/settings.json` の既存 `AI_ORCHESTRA_DIR`（main worktree）を保持するようにした。
 
 - **`meta-harness`: ストア用 `.gitignore` エントリが SessionStart 同期で消える問題を修正**: `.claude/meta-harness/` を gitignore 管理ブロックの生成元（`gitignore_sync.py`）に追加し、同期のたびに手動追記が失われる Phase 1a の実装漏れを解消
 

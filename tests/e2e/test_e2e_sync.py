@@ -277,30 +277,11 @@ class TestAgentModelPatching:
             assert "e2e-custom-model" in agent_file.read_text(encoding="utf-8")
 
 
-class TestClaudeignore:
-    """3.5 .claudeignore 生成"""
+class TestClaudeignoreRemoval:
+    """.claudeignore を生成しないことを確認する。"""
 
-    def test_claudeignore_generated(self, e2e_project: Path) -> None:
-        """#37: SessionStart で .claudeignore 生成"""
+    def test_setup_and_session_start_do_not_generate_claudeignore(self, e2e_project: Path) -> None:
         run_orchex("setup", "essential", project=e2e_project)
-        run_session_start(e2e_project, "s37")
-        assert (e2e_project / ".claudeignore").is_file()
+        run_session_start(e2e_project, "no-claudeignore")
 
-    def test_claudeignore_local_merged(self, e2e_project: Path) -> None:
-        """#38: .claudeignore.local がマージ"""
-        run_orchex("setup", "essential", project=e2e_project)
-        (e2e_project / ".claudeignore.local").write_text("e2e-custom-pattern/\n", encoding="utf-8")
-        run_session_start(e2e_project, "s38")
-        content = (e2e_project / ".claudeignore").read_text(encoding="utf-8")
-        assert "e2e-custom-pattern" in content
-
-    def test_claudeignore_no_rewrite_when_unchanged(self, e2e_project: Path) -> None:
-        """#39: .claudeignore 変更なし時は上書きされない"""
-        _setup_essential(e2e_project)
-        claudeignore = e2e_project / ".claudeignore"
-        mtime_before = claudeignore.stat().st_mtime
-
-        run_session_start(e2e_project, "s39")
-
-        mtime_after = claudeignore.stat().st_mtime
-        assert mtime_before == mtime_after
+        assert not (e2e_project / ".claudeignore").exists()

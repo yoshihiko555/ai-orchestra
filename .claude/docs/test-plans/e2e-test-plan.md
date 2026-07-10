@@ -118,16 +118,6 @@
 | 35 | `cli-tools.yaml` の model 変更 → SessionStart | agents/*.md の frontmatter が更新される | `PASS` | model: sonnet 確認 |
 | 36 | `cli-tools.local.yaml` で model 上書き | local の値が優先される | `PASS` | `1 agent models patched` |
 
-### 3.5 .claudeignore 生成
-
-| # | テスト内容 | 期待結果 | 結果 | 備考 |
-|---|----------|---------|------|------|
-| 37 | SessionStart でテンプレートから生成 | `.claudeignore` が生成される | `PASS` | |
-| 38 | `.claudeignore.local` 存在時 | テンプレート + local がマージされる | `PASS` | `my-custom-pattern` マージ確認 |
-| 39 | `.claudeignore` 変更なし時 | 上書きされない（内容ベース差分チェック） | `PASS` | mtime 不変確認 |
-
----
-
 ## 4. Config loading フロー
 
 | # | テスト内容 | 期待結果 | 結果 | 備考 |
@@ -253,5 +243,4 @@
 | # | 関連テスト | 重要度 | 内容 | 対応 |
 |---|----------|--------|------|------|
 | 1 | #73 | Medium | **解決済み**: パッケージ uninstall 後、`build_facets` の mtime スキップが `orchestra.json` の変更を考慮しないため、不要な facet 生成物が削除されない | `sync-orchestra.py`: `installed_packages` の内容ハッシュで変更検知 |
-| 2 | #25 | Medium | **解決済み**: 初回 SessionStart で `.claudeignore` 更新 → `orchestra.json` 再保存 → 次回 facet build の mtime スキップが無効化 | `sync-orchestra.py`: mtime ではなくパッケージハッシュ（`.facet-packages-hash`）で判定に変更 |
-| 3 | #54 | High | **解決済み**: capture-task-result / inject-shared-context が動作しない。Claude Code は `tool_name="Agent"` を送るが hook が `"Task"` を期待していた | 4 hook スクリプト + 3 manifest + settings.local.json の matcher を修正。e2e テスト 39 件追加 |
+| 2 | #54 | High | **解決済み**: capture-task-result / inject-shared-context が動作しない。Claude Code は `tool_name="Agent"` を送るが hook が `"Task"` を期待していた | 4 hook スクリプト + 3 manifest + settings.local.json の matcher を修正。e2e テスト 39 件追加 |

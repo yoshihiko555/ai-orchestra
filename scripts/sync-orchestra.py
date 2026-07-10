@@ -30,7 +30,7 @@ if _SCRIPTS_DIR not in sys.path:
 
 from lib.agent_model_patch import patch_all_agents  # noqa: E402
 from lib.gitignore_sync import sync_gitignore as _sync_gitignore  # noqa: E402
-from lib.scaffold import ensure_claude_scaffold, sync_claudeignore  # noqa: E402
+from lib.scaffold import ensure_claude_scaffold  # noqa: E402
 from lib.sync_engine import (  # noqa: E402
     apply_codex_harness_config,
     build_facets,
@@ -184,9 +184,6 @@ def main() -> None:
     # hooks 同期
     hooks_changed = sync_hooks(project_dir, orchestra_path, installed_packages)
 
-    # .claudeignore 同期
-    claudeignore_updated = sync_claudeignore(project_dir, orchestra_path)
-
     # .gitignore 同期
     gitignore_updated = _sync_gitignore(project_dir)
 
@@ -195,7 +192,6 @@ def main() -> None:
         synced_count > 0
         or removed_count > 0
         or hooks_changed > 0
-        or claudeignore_updated
         or gitignore_updated
         or scaffolded_count > 0
         or patched_count > 0
@@ -210,8 +206,6 @@ def main() -> None:
             parts.append(f"{removed_count} removed")
         if hooks_changed > 0:
             parts.append(f"{hooks_changed} hooks synced")
-        if claudeignore_updated:
-            parts.append(".claudeignore updated")
         if patched_count > 0:
             parts.append(f"{patched_count} agent models patched")
         if facet_built_count > 0:
