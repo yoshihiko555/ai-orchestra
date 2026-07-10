@@ -248,6 +248,8 @@ def _safe_read_text(path: Path) -> str | None:
 def _cleanup_isolation_launch(launch: iso.IsolationLaunch) -> None:
     if launch.owned_settings_dir is not None:
         shutil.rmtree(launch.owned_settings_dir, ignore_errors=True)
+    if launch.owned_tmp_dir is not None:
+        shutil.rmtree(launch.owned_tmp_dir, ignore_errors=True)
 
 
 @contextmanager

@@ -73,6 +73,7 @@ class IsolationLaunch:
     env: dict[str, str]
     metadata: dict
     owned_settings_dir: Path | None = None
+    owned_tmp_dir: Path | None = None
 
 
 class IsolationBackend(Protocol):
@@ -111,34 +112,38 @@ class SrtBackend:
         verify_no_instruction_files(view_dir)
         if proposer_tool == "codex":
             ensure_empty_agents_file(ephemeral_home)
-        run_tmp_dir = _create_run_tmp_dir(settings_dir)
-        extra_env = {
-            **_extra_env_for_tool(proposer_tool, ephemeral_home),
-            **_tmp_env(run_tmp_dir),
-        }
-        srt_path = _require_srt_binary()
-        srt_version = _get_srt_version(srt_path, runner=runner)
-        _check_version_pin(config, srt_version)
-        settings = build_srt_settings(
-            view_dir=view_dir,
-            main_root=main_root,
-            config=config,
-            ephemeral_home=ephemeral_home,
-            proposer_tool=proposer_tool,
-            run_tmp_dir=run_tmp_dir,
-            runner=runner,
-        )
-        settings_path = write_srt_settings(settings, settings_dir)
-        env = build_minimal_env(extra_env)
-        _run_srt_canary_self_test(
-            srt_path=srt_path,
-            settings_path=settings_path,
-            view_dir=view_dir,
-            main_root=main_root,
-            config=config,
-            env=env,
-            runner=runner,
-        )
+        run_tmp_dir = _create_run_tmp_dir()
+        try:
+            extra_env = {
+                **_extra_env_for_tool(proposer_tool, ephemeral_home),
+                **_tmp_env(run_tmp_dir),
+            }
+            srt_path = _require_srt_binary()
+            srt_version = _get_srt_version(srt_path, runner=runner)
+            _check_version_pin(config, srt_version)
+            settings = build_srt_settings(
+                view_dir=view_dir,
+                main_root=main_root,
+                config=config,
+                ephemeral_home=ephemeral_home,
+                proposer_tool=proposer_tool,
+                run_tmp_dir=run_tmp_dir,
+                runner=runner,
+            )
+            settings_path = write_srt_settings(settings, settings_dir)
+            env = build_minimal_env(extra_env)
+            _run_srt_canary_self_test(
+                srt_path=srt_path,
+                settings_path=settings_path,
+                view_dir=view_dir,
+                main_root=main_root,
+                config=config,
+                env=env,
+                runner=runner,
+            )
+        except Exception:
+            shutil.rmtree(run_tmp_dir, ignore_errors=True)
+            raise
         metadata = build_isolation_metadata(
             backend_name=self.name,
             srt_version=srt_version,
@@ -150,6 +155,7 @@ class SrtBackend:
             settings=settings,
             env=env,
             metadata=metadata,
+            owned_tmp_dir=run_tmp_dir,
         )
 
 
@@ -557,14 +563,19 @@ def _allow_write_paths(
     return _dedupe_paths(paths)
 
 
-_RUN_TMP_DIR_NAME = "proposer-tmp"
+_RUN_TMP_PREFIX = "mh-ptmp-"
 
 
-def _create_run_tmp_dir(settings_dir: Path) -> Path:
-    settings_dir.mkdir(parents=True, exist_ok=True)
-    settings_dir.chmod(0o700)
-    run_tmp = settings_dir / _RUN_TMP_DIR_NAME
-    run_tmp.mkdir(mode=0o700, exist_ok=True)
+def _create_run_tmp_dir() -> Path:
+    """proposer 専用 per-run tmp を**短いパス**（/tmp 直下）に 0700 で作る。
+
+    settings dir（$TMPDIR 配下の深いパス）に置くと、この TMPDIR に作られる
+    srt の mux socket / codex の app-server socket が unix socket の sun_path
+    長上限（macOS で約 104 byte）を超え `listen EINVAL` で起動不能になる
+    （CI 実測）。/tmp 直下の専用ディレクトリなら短さと per-run 分離を両立できる。
+    """
+    base = Path("/tmp").resolve()
+    run_tmp = Path(tempfile.mkdtemp(prefix=_RUN_TMP_PREFIX, dir=base))
     run_tmp.chmod(0o700)
     return _realpath(run_tmp)
 

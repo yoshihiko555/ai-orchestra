@@ -1963,8 +1963,11 @@ cd <view-dir> && CODEX_HOME=<ephemeral-home> srt --settings <isolation-settings.
   `allowWrite: [<view-dir>, <ephemeral-home>, <per-run tmp>]`。
   **共有 `/tmp`・`/private/tmp` は許可しない**（2026-07-10 レビュー反映: 同一ユーザーの
   他プロセスの一時ファイル・socket への書込経路になるため）。propose CLI が実行ごとに
-  0700 の専用 tmp ディレクトリを作成し、proposer プロセスの `TMPDIR`/`TMP`/`TEMP` を
-  そこへ固定した上で、そのパスのみを allowWrite に加える。canary self-test は
+  0700 の専用 tmp ディレクトリを **`/tmp` 直下の短いパス**（`mh-ptmp-*`）に作成し、
+  proposer プロセスの `TMPDIR`/`TMP`/`TEMP` をそこへ固定した上で、そのパスのみを
+  allowWrite に加える。settings dir（`$TMPDIR` 配下の深いパス）に置くと srt mux socket /
+  codex app-server socket が unix socket の sun_path 長上限（macOS 約 104 byte）を超えて
+  `listen EINVAL` になるため、短いパスであることが機能要件（CI 実測）。canary self-test は
   「非ゼロ終了」ではなく**遮断シグナル**（read: EPERM/EACCES マーカー、curl: exit 56 または
   `--fail` の 403 由来 exit 22）を要求し、DNS 障害等の無関係な失敗を隔離成功と
   誤認しない（fail-closed）。

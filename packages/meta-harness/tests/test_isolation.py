@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import shutil
 import stat
 import subprocess
 from pathlib import Path
@@ -35,6 +36,17 @@ def _completed(
 
 def _config() -> dict:
     return copy.deepcopy(mh.DEFAULTS)
+
+
+@pytest.fixture(autouse=True)
+def _cleanup_per_run_tmp_dirs():
+    """resolve 成功時の per-run tmp（/tmp/mh-ptmp-*）ownership は呼び出し側にあるため、
+    テストが明示 cleanup しない分をここで回収する。"""
+    base = Path("/tmp").resolve()
+    before = set(base.glob("mh-ptmp-*"))
+    yield
+    for path in set(base.glob("mh-ptmp-*")) - before:
+        shutil.rmtree(path, ignore_errors=True)
 
 
 def _make_view_and_home(tmp_path: Path) -> tuple[Path, Path]:
@@ -311,7 +323,7 @@ class TestResolveIsolationBackend:
         view_dir, ephemeral_home = _make_view_and_home(tmp_path)
         created_dirs: list[Path] = []
 
-        def fake_mkdtemp(prefix: str):
+        def fake_mkdtemp(prefix: str, dir: str | None = None):
             path = tmp_path / f"{prefix}owned"
             path.mkdir()
             created_dirs.append(path)
@@ -408,7 +420,15 @@ class TestResolveIsolationBackend:
     ) -> None:
         view_dir, ephemeral_home = _make_view_and_home(tmp_path)
         owned_dir = tmp_path / "meta-harness-srt-owned"
-        monkeypatch.setattr(iso.tempfile, "mkdtemp", lambda prefix: str(owned_dir))
+
+        def fake_mkdtemp(prefix: str, dir: str | None = None):
+            if prefix == "mh-ptmp-":
+                run_tmp = tmp_path / "run-tmp"
+                run_tmp.mkdir(exist_ok=True)
+                return str(run_tmp)
+            return str(owned_dir)
+
+        monkeypatch.setattr(iso.tempfile, "mkdtemp", fake_mkdtemp)
         monkeypatch.setattr(iso.shutil, "which", lambda name: f"/usr/bin/{name}")
 
         def runner(cmd, **kwargs):
@@ -672,9 +692,15 @@ class TestPerRunTmpDir:
         )
 
         run_tmp = Path(launch.env["TMPDIR"])
-        assert run_tmp.is_dir()
-        assert run_tmp.stat().st_mode & 0o777 == 0o700
-        assert run_tmp == (tmp_path / "settings" / "proposer-tmp").resolve()
-        assert launch.env["TMP"] == launch.env["TMPDIR"]
-        assert launch.env["TEMP"] == launch.env["TMPDIR"]
-        assert str(run_tmp) in launch.settings["filesystem"]["allowWrite"]
+        try:
+            assert run_tmp.is_dir()
+            assert run_tmp.stat().st_mode & 0o777 == 0o700
+            # unix socket の sun_path 上限対策で /tmp 直下の短いパスに作られる
+            assert run_tmp.parent == Path("/tmp").resolve()
+            assert run_tmp.name.startswith("mh-ptmp-")
+            assert launch.owned_tmp_dir == run_tmp
+            assert launch.env["TMP"] == launch.env["TMPDIR"]
+            assert launch.env["TEMP"] == launch.env["TMPDIR"]
+            assert str(run_tmp) in launch.settings["filesystem"]["allowWrite"]
+        finally:
+            shutil.rmtree(run_tmp, ignore_errors=True)
