@@ -17,7 +17,7 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
 
@@ -40,6 +40,7 @@ SRT_STARTUP_FAILURE_MARKERS = (
 
 CODEX_ALLOWED_DOMAINS = ["chatgpt.com", "*.chatgpt.com", "*.openai.com", "openai.com"]
 CLAUDE_BARE_ALLOWED_DOMAINS = ["api.anthropic.com"]
+CODEX_TLS_TERMINATE_EXCLUDE_DOMAINS = ["chatgpt.com", "*.chatgpt.com"]
 INSTRUCTION_FILE_NAMES = {"AGENTS.md", "CLAUDE.md", "GEMINI.md"}
 BASE_ENV_ALLOWLIST = (
     "PATH",
@@ -71,6 +72,7 @@ class IsolationLaunch:
     settings: dict
     env: dict[str, str]
     metadata: dict
+    owned_settings_dir: Path | None = None
 
 
 class IsolationBackend(Protocol):
@@ -170,7 +172,7 @@ def resolve_isolation_backend(
     launch_settings_dir = settings_dir or Path(tempfile.mkdtemp(prefix="meta-harness-srt-"))
     tool = proposer_tool or proposer_cfg.get("tool", "codex")
     try:
-        return SrtBackend().prepare_launch(
+        launch = SrtBackend().prepare_launch(
             view_dir=view_dir,
             main_root=main_root,
             config=config,
@@ -179,6 +181,9 @@ def resolve_isolation_backend(
             proposer_tool=tool,
             runner=runner,
         )
+        if not owns_settings_dir:
+            return launch
+        return replace(launch, owned_settings_dir=launch_settings_dir)
     except Exception:
         if owns_settings_dir:
             shutil.rmtree(launch_settings_dir, ignore_errors=True)
@@ -208,6 +213,7 @@ def build_srt_settings(
             "strictAllowlist": True,
             "allowUnixSockets": [],
             "allowLocalBinding": proposer_tool == "codex",
+            **_tls_terminate_settings_for_tool(proposer_tool),
         },
         "filesystem": {
             "denyRead": [str(path) for path in derive_deny_read_paths(main_root, runner=runner)],
@@ -519,6 +525,14 @@ def _allowed_domains_for_tool(proposer_tool: str) -> list[str]:
         return list(CODEX_ALLOWED_DOMAINS)
     if proposer_tool == "claude-bare":
         return list(CLAUDE_BARE_ALLOWED_DOMAINS)
+    raise IsolationError(f"unsupported proposer.tool: {proposer_tool!r}")
+
+
+def _tls_terminate_settings_for_tool(proposer_tool: str) -> dict:
+    if proposer_tool == "codex":
+        return {"tlsTerminate": {"excludeDomains": list(CODEX_TLS_TERMINATE_EXCLUDE_DOMAINS)}}
+    if proposer_tool == "claude-bare":
+        return {}
     raise IsolationError(f"unsupported proposer.tool: {proposer_tool!r}")
 
 

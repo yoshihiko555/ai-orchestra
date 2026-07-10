@@ -71,6 +71,7 @@ class TestSrtSettingsGeneration:
             "strictAllowlist",
             "allowUnixSockets",
             "allowLocalBinding",
+            "tlsTerminate",
         }
         assert set(settings["filesystem"]) == {
             "denyRead",
@@ -82,6 +83,9 @@ class TestSrtSettingsGeneration:
         assert settings["network"]["allowLocalBinding"] is True
         assert settings["network"]["strictAllowlist"] is True
         assert settings["network"]["deniedDomains"] == []
+        assert settings["network"]["tlsTerminate"] == {
+            "excludeDomains": iso.CODEX_TLS_TERMINATE_EXCLUDE_DOMAINS
+        }
         assert settings["filesystem"]["allowRead"] == [str(view_dir.resolve())]
         assert str(ephemeral_home.resolve()) in settings["filesystem"]["allowWrite"]
         assert str(git_project.resolve()) in settings["filesystem"]["denyRead"]
@@ -102,6 +106,7 @@ class TestSrtSettingsGeneration:
 
         assert settings["network"]["allowedDomains"] == iso.CLAUDE_BARE_ALLOWED_DOMAINS
         assert settings["network"]["allowLocalBinding"] is False
+        assert "tlsTerminate" not in settings["network"]
         assert str(ephemeral_home.resolve()) not in settings["filesystem"]["allowWrite"]
 
     def test_write_srt_settings_uses_canonical_json_and_0600(self, tmp_path) -> None:
@@ -388,10 +393,39 @@ class TestResolveIsolationBackend:
 
         assert launch.backend_name == "srt"
         assert launch.metadata["srt_version"] == "0.0.64"
+        assert launch.owned_settings_dir is None
         assert len(launch.metadata["settings_sha256"]) == 64
         assert len(launch.metadata["platform_profile_input_sha256"]) == 64
         assert sum(1 for cmd, _kwargs in calls if "--settings" in cmd) == 3
         assert (ephemeral_home / "AGENTS.md").read_text(encoding="utf-8") == ""
+
+    def test_owned_temp_settings_dir_is_reported_on_success(
+        self, git_project, tmp_path, monkeypatch
+    ) -> None:
+        view_dir, ephemeral_home = _make_view_and_home(tmp_path)
+        owned_dir = tmp_path / "meta-harness-srt-owned"
+        monkeypatch.setattr(iso.tempfile, "mkdtemp", lambda prefix: str(owned_dir))
+        monkeypatch.setattr(iso.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+        def runner(cmd, **kwargs):
+            if cmd == ["/usr/bin/srt", "--version"]:
+                return _completed(0, stdout="0.0.64")
+            if cmd[:3] == ["git", "worktree", "list"]:
+                return _completed(0, stdout=f"worktree {git_project}\n")
+            if cmd[0] == "/usr/bin/srt":
+                return _completed(1, stderr="blocked by sandbox")
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        launch = iso.resolve_isolation_backend(
+            view_dir=view_dir,
+            main_root=git_project,
+            config=_config(),
+            ephemeral_home=ephemeral_home,
+            runner=runner,
+        )
+
+        assert launch.owned_settings_dir == owned_dir
+        assert (owned_dir / iso.SRT_SETTINGS_FILENAME).is_file()
 
     def test_read_canary_success_fails_closed(self, git_project, tmp_path, monkeypatch) -> None:
         view_dir, ephemeral_home = _make_view_and_home(tmp_path)

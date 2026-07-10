@@ -9,8 +9,9 @@ docs/design/meta-harness-detailed.md が正本。実装済みのサブコマン�
 - purge      古い世代・retired 候補を削除する（frontier/promoted/予約中は保護、Phase 1a）
 - evaluate   CLI capability gate → worktree ライフサイクル → oracle 判定を実行する（Phase 1b）
 - propose    filtered view から候補 overlay を提案・登録する（Phase 2 M4）
+- promote    frontier 候補を PR ベースで昇格する（Phase 2 M5）
 
-`promote` / `loop` は Phase 2/3 のスタブ（exit 2）。
+`loop` は Phase 3 のスタブ（exit 2）。
 
 exit code（Sec6）: 0 成功 / 1 実行時エラー / 2 入力・スキーマ検証エラー / 3 lock 取得失敗・排他競合。
 """
@@ -23,8 +24,6 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
-from contextlib import contextmanager
 from pathlib import Path
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
@@ -35,17 +34,23 @@ if str(_LIB_DIR) not in sys.path:
     sys.path.insert(0, str(_LIB_DIR))
 
 import evaluator as ev  # noqa: E402
-import isolation as iso  # noqa: E402
 import meta_harness_common as mh  # noqa: E402
-import proposer as prop  # noqa: E402
-import proposer_backend as pb  # noqa: E402
+import promoter as prm  # noqa: E402
+import propose_cli  # noqa: E402
 
 EXIT_OK = 0
 EXIT_RUNTIME_ERROR = 1
 EXIT_VALIDATION_ERROR = 2
 EXIT_LOCK_CONFLICT = 3
 
-_PHASE_2_3_STUBS = ("promote", "loop")
+_PHASE_2_3_STUBS = ("loop",)
+
+# 旧 single-file CLI の内部名を直接 import する既存テスト・診断コード向けの互換エイリアス。
+prop = propose_cli.prop
+pb = propose_cli.pb
+iso = propose_cli.iso
+cmd_propose = propose_cli.cmd_propose
+_select_focus_run_ids = propose_cli._select_focus_run_ids
 
 
 def _emit(data: dict, as_json: bool, human_lines: list[str] | None = None) -> None:
@@ -88,53 +93,12 @@ def cmd_init(project: str, as_json: bool) -> int:
     return EXIT_OK
 
 
-def _git_head(cwd: Path) -> str | None:
-    """`cwd` における `git rev-parse HEAD` の結果を返す（source_commit 解決用）。
-
-    【判断】`source_commit` は「overlay の差分先となるコミット」= register の登録元
-    （`--project`）の HEAD であり、共有 store のある main_root（feature worktree の
-    場合は別ディレクトリ）ではない。呼び出し側は必ず project_dir を渡すこと。
-    """
-    completed = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=cwd, capture_output=True, text=True, timeout=10
-    )
-    return completed.stdout.strip() if completed.returncode == 0 else None
-
-
 def _git_is_dirty(cwd: Path) -> bool:
     """`cwd` の working tree が dirty かどうかを返す（`_git_head` と同じ理由で project_dir 必須）。"""
     completed = subprocess.run(
         ["git", "status", "--porcelain"], cwd=cwd, capture_output=True, text=True, timeout=10
     )
     return bool(completed.stdout.strip())
-
-
-def _build_manifest(
-    *,
-    cand_id: str,
-    parent_id: str | None,
-    generation: int,
-    target: str,
-    source_commit: str,
-    config_hash: str,
-    overlay_files: list[str],
-    description: str,
-    created_by: str = "human",
-) -> dict:
-    return {
-        "schema_version": "1.0",
-        "cand_id": cand_id,
-        "parent_id": parent_id,
-        "generation": generation,
-        "created_at": _now_iso(),
-        "created_by": created_by,
-        "target": target,
-        "source_commit": source_commit,
-        "config_hash": config_hash,
-        "model_versions": {},
-        "overlay_files": overlay_files,
-        "description": description,
-    }
 
 
 def _now_iso() -> str:
@@ -178,7 +142,7 @@ def cmd_register(
             "warning: working tree is dirty; uncommitted changes are not part of the candidate",
             file=sys.stderr,
         )
-    resolved_source_commit = source_commit or _git_head(project_dir)
+    resolved_source_commit = source_commit or mh.git_head(project_dir)
     if resolved_source_commit is None:
         print("error: could not resolve source_commit (git rev-parse HEAD failed)", file=sys.stderr)
         return EXIT_VALIDATION_ERROR
@@ -193,7 +157,7 @@ def cmd_register(
 
     overlay_files = mh.list_overlay_files(overlay_dir)
     config_hash = mh.compute_config_hash(overlay_dir, config)
-    manifest = _build_manifest(
+    manifest = mh.build_candidate_manifest(
         cand_id=cand_id,
         parent_id=parent,
         generation=generation,
@@ -484,406 +448,65 @@ def _remove_candidate_dir(main_root: Path, config: dict, cand_id: str) -> None:
         shutil.rmtree(cand_dir)
 
 
-def cmd_propose(
-    project: str,
-    target: str,
-    focus_run: str | None,
-    focus_candidate: str | None,
-    as_json: bool,
-) -> int:
-    """filtered view を構築し proposer を 1 回起動して候補登録する（Sec11）。"""
-    ctx = _resolve_context(project)
-    if ctx is None:
-        return EXIT_VALIDATION_ERROR
-    main_root, config = ctx
-    project_dir = Path(project).resolve()
-
-    try:
-        snapshot = _snapshot_propose_store(main_root, config)
-        cand_id = _run_propose_pipeline(
-            main_root=main_root,
-            config=config,
-            project_dir=project_dir,
-            target=target,
-            focus_run=focus_run,
-            focus_candidate=focus_candidate,
-            snapshot=snapshot,
-        )
-    except pb.ProposerRuntimeError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return EXIT_RUNTIME_ERROR
-    except (
-        prop.ProposerError,
-        prop.ViewBuildError,
-        iso.IsolationError,
-        ValueError,
-        OSError,
-    ) as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return EXIT_VALIDATION_ERROR
-    except mh.LockAcquisitionError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return EXIT_LOCK_CONFLICT
-
-    _emit({"status": "ok", "cand_id": cand_id}, as_json, [f"proposed candidate {cand_id}"])
-    return EXIT_OK
-
-
-def _snapshot_propose_store(main_root: Path, config: dict) -> prop.FilteredStoreSnapshot:
-    with mh.store_lock(main_root, config):
-        return prop.snapshot_filtered_store(main_root, config)
-
-
-def _run_propose_pipeline(
-    *,
-    main_root: Path,
-    config: dict,
-    project_dir: Path,
-    target: str,
-    focus_run: str | None,
-    focus_candidate: str | None,
-    snapshot: prop.FilteredStoreSnapshot,
-) -> str:
-    proposer_cfg = config.get("proposer") or {}
-    tool = proposer_cfg.get("tool", "codex")
-    parent_id = _select_proposal_parent(main_root, config, snapshot.frontier_doc, focus_candidate)
-    source_commit = _proposal_source_commit(main_root, config, project_dir, parent_id)
-    focus_run_ids = _select_focus_run_ids(
-        snapshot.ledger_events,
-        target=target,
-        focus_run=focus_run,
-        max_focus_runs=_proposer_max_focus_runs(config),
-    )
-    with _temporary_proposer_home(tool) as home:
-        view = prop.build_filtered_view(
-            main_root=main_root,
-            config=config,
-            source_commit=source_commit,
-            snapshot=snapshot,
-        )
-        try:
-            return _launch_and_register_proposal(
-                main_root=main_root,
-                config=config,
-                target=target,
-                parent_id=parent_id,
-                source_commit=source_commit,
-                focus_run_ids=focus_run_ids,
-                focus_candidate=focus_candidate,
-                view=view,
-                home=home,
-                tool=tool,
-                frontier_doc=snapshot.frontier_doc,
-            )
-        finally:
-            view.cleanup()
-
-
-@contextmanager
-def _temporary_proposer_home(tool: str):
-    if tool == "codex":
-        with pb.temporary_codex_home() as home:
-            yield home
-        return
-    with _temporary_empty_dir() as home:
-        yield home
-
-
-def _launch_and_register_proposal(
-    *,
-    main_root: Path,
-    config: dict,
-    target: str,
-    parent_id: str | None,
-    source_commit: str,
-    focus_run_ids: tuple[str, ...],
-    focus_candidate: str | None,
-    view: prop.FilteredView,
-    home: Path,
-    tool: str,
-    frontier_doc: dict,
-) -> str:
-    proposal_obj = None
-    try:
-        prompt = prop.render_proposer_prompt(
-            view_dir=view.path,
-            frontier_doc=frontier_doc,
-            config=config,
-            package_dir=_PACKAGE_DIR,
-            target=target,
-            focus_run_ids=focus_run_ids,
-            focus_candidate_id=focus_candidate,
-        )
-        launch = iso.resolve_isolation_backend(
-            view_dir=view.path,
-            main_root=main_root,
-            config=config,
-            ephemeral_home=home,
-            proposer_tool=tool,
-        )
-        result = pb.launch_proposer_backend(
-            view_dir=view.path,
-            prompt=prompt,
-            schema_dir=_SCHEMA_DIR,
-            config=config,
-            isolation_launch=launch,
-        )
-        proposal_obj = result.proposal
-        if result.tokens_used is None:
-            print("warning: proposer backend did not report tokens used", file=sys.stderr)
-        return _register_proposed_candidate(
-            main_root=main_root,
-            config=config,
-            target=target,
-            parent_id=parent_id,
-            source_commit=source_commit,
-            proposal=result.proposal,
-            included_run_ids=view.included_run_ids,
-            tokens_used=result.tokens_used,
-        )
-    except pb.ProposerRuntimeError:
-        raise
-    except prop.ProposerError as exc:
-        raw_output = _safe_read_text(view.path / "proposal-output.json")
-        rejected_path = prop.save_rejected_proposal(
-            main_root=main_root,
-            config=config,
-            reason=str(exc),
-            proposal=proposal_obj,
-            raw_output=raw_output,
-        )
-        raise pb.ProposalValidationError(f"{exc}; rejected saved to {rejected_path}") from exc
-
-
-def _safe_read_text(path: Path) -> str | None:
-    try:
-        return path.read_text(encoding="utf-8") if path.is_file() else None
-    except OSError:
-        return None
-
-
-@contextmanager
-def _temporary_empty_dir():
-    path = Path(tempfile.mkdtemp(prefix="meta-harness-proposer-home-"))
-    try:
-        yield path
-    finally:
-        shutil.rmtree(path, ignore_errors=True)
-
-
-def _select_proposal_parent(
-    main_root: Path, config: dict, frontier_doc: dict, focus_candidate: str | None
-) -> str | None:
-    if focus_candidate:
-        if mh.read_candidate_manifest(main_root, config, focus_candidate) is None:
-            raise prop.ProposerError(f"unknown focus candidate: {focus_candidate}")
-        return focus_candidate
-    frontier_ids = [str(cand_id) for cand_id in frontier_doc.get("frontier", [])]
-    if not frontier_ids:
-        return None
-    points = [p for p in frontier_doc.get("points", []) if isinstance(p, dict)]
-    quality_by_id = {str(p.get("cand_id")): float(p.get("quality_mean") or 0.0) for p in points}
-    return max(frontier_ids, key=lambda cand_id: quality_by_id.get(cand_id, 0.0))
-
-
-def _select_focus_run_ids(
-    events: tuple[dict, ...],
-    *,
-    target: str,
-    focus_run: str | None,
-    max_focus_runs: int,
-) -> tuple[str, ...]:
-    if focus_run is not None:
-        event = _find_run_completed_event(events, focus_run)
-        if event is None:
-            raise prop.ProposerError(f"unknown focus run: {focus_run}")
-        if bool(event.get("holdout")):
-            raise prop.ProposerError(f"focus run is holdout and cannot be exposed: {focus_run}")
-        if event.get("target") != target:
-            raise prop.ProposerError(
-                f"focus run target mismatch for {focus_run}: {event.get('target')}"
-            )
-        return (focus_run,)
-    if max_focus_runs <= 0:
-        return ()
-    selected: list[str] = []
-    seen: set[str] = set()
-    for event in reversed(events):
-        if event.get("event") != "run_completed" or bool(event.get("holdout")):
-            continue
-        if event.get("target") != target or event.get("verdict") not in ("fail", "error"):
-            continue
-        run_id = event.get("run_id")
-        if not run_id or str(run_id) in seen:
-            continue
-        seen.add(str(run_id))
-        selected.append(str(run_id))
-        if len(selected) >= max_focus_runs:
-            break
-    return tuple(selected)
-
-
-def _find_run_completed_event(events: tuple[dict, ...], run_id: str) -> dict | None:
-    for event in events:
-        if event.get("event") == "run_completed" and event.get("run_id") == run_id:
-            return event
-    return None
-
-
-def _proposer_max_focus_runs(config: dict) -> int:
-    value = (config.get("proposer") or {}).get("max_focus_runs", 5)
-    try:
-        max_focus_runs = int(value)
-    except (TypeError, ValueError) as exc:
-        raise prop.ProposerError(
-            f"proposer.max_focus_runs must be an integer, got: {value!r}"
-        ) from exc
-    if max_focus_runs < 0:
-        raise prop.ProposerError(f"proposer.max_focus_runs must be >= 0, got: {max_focus_runs}")
-    return max_focus_runs
-
-
-def _proposal_source_commit(
-    main_root: Path, config: dict, project_dir: Path, parent_id: str | None
-) -> str:
-    if parent_id is None:
-        head = _git_head(project_dir)
-        if head is None:
-            raise prop.ProposerError("could not resolve source_commit (git rev-parse HEAD failed)")
-        return head
-    manifest = mh.read_candidate_manifest(main_root, config, parent_id)
-    if manifest is None:
-        raise prop.ProposerError(f"parent candidate not found: {parent_id}")
-    source_commit = manifest.get("source_commit")
-    if not isinstance(source_commit, str):
-        raise prop.ProposerError(f"parent candidate missing source_commit: {parent_id}")
-    return source_commit
-
-
-def _register_proposed_candidate(
-    *,
-    main_root: Path,
-    config: dict,
-    target: str,
-    parent_id: str | None,
-    source_commit: str,
-    proposal: dict,
-    included_run_ids: frozenset[str],
-    tokens_used: int | None,
-) -> str:
-    max_overlay_bytes = (config.get("proposer") or {}).get("max_overlay_bytes", 200000)
-    with tempfile.TemporaryDirectory(prefix="meta-harness-proposal-overlay-") as raw_overlay:
-        overlay_dir = Path(raw_overlay)
-        overlay_files = prop.materialize_overlay_from_proposal(
-            proposal, overlay_dir, max_overlay_bytes=max_overlay_bytes
-        )
-        violations = mh.validate_overlay(overlay_dir, config)
-        if violations:
-            raise prop.ProposerError("; ".join(violations[:5]))
-        with mh.store_lock(main_root, config):
-            events = mh.read_ledger_events(main_root, config)
-            run_errors = prop.validate_based_on_runs(
-                proposal,
-                events=events,
-                target=target,
-                included_run_ids=included_run_ids,
-            )
-            if run_errors:
-                raise prop.ProposerError("; ".join(run_errors[:5]))
-            cand_id = mh.generate_cand_id(str(proposal["theme"]))
-            generation = mh.next_generation(main_root, config, parent_id)
-            manifest = _build_manifest(
-                cand_id=cand_id,
-                parent_id=parent_id,
-                generation=generation,
-                target=target,
-                source_commit=source_commit,
-                config_hash=mh.compute_config_hash(overlay_dir, config),
-                overlay_files=overlay_files,
-                description=str(proposal["hypothesis"]),
-                created_by="proposer",
-            )
-            _validate_proposer_registration(manifest, overlay_files, proposal, tokens_used)
-            mh.register_candidate(
-                main_root,
-                config,
-                cand_id=cand_id,
-                manifest=manifest,
-                overlay_dir=overlay_dir,
-                overlay_files=overlay_files,
-            )
-            mh.append_ledger_event(
-                main_root,
-                config,
-                _proposer_registered_event(
-                    cand_id, parent_id, generation, target, proposal, tokens_used
-                ),
-            )
-            return cand_id
-
-
-def _validate_proposer_registration(
-    manifest: dict, overlay_files: list[str], proposal: dict, tokens_used: int | None
-) -> None:
-    manifest_schema = mh.load_schema(_SCHEMA_DIR, "candidate.manifest.schema.json")
-    overlay_schema = mh.load_schema(_SCHEMA_DIR, "overlay.schema.json")
-    ledger_schema = mh.load_schema(_SCHEMA_DIR, "ledger.event.schema.json")
-    errors = mh.validate_against_schema(manifest, manifest_schema, _SCHEMA_DIR)
-    errors += mh.validate_against_schema(
-        {"schema_version": "1.0", "files": overlay_files}, overlay_schema, _SCHEMA_DIR
-    )
-    event = _proposer_registered_event(
-        manifest["cand_id"],
-        manifest["parent_id"],
-        manifest["generation"],
-        manifest["target"],
-        proposal,
-        tokens_used,
-    )
-    errors += mh.validate_against_schema(
-        event, ledger_schema["$defs"]["candidate_registered"], _SCHEMA_DIR
-    )
-    if errors:
-        raise prop.ProposerError("; ".join(errors[:5]))
-
-
-def _proposer_registered_event(
-    cand_id: str,
-    parent_id: str | None,
-    generation: int,
-    target: str,
-    proposal: dict,
-    tokens_used: int | None,
-) -> dict:
-    proposal_event = {
-        "theme": str(proposal["theme"]),
-        "based_on_runs": [str(run_id) for run_id in proposal["based_on_runs"]],
-        # codex stdout から USD は得られないため、捏造せず tokens_used を別記録する。
-        "cost_usd": 0.0,
-    }
-    if tokens_used is not None:
-        proposal_event["tokens_used"] = tokens_used
-    return {
-        "event": "candidate_registered",
-        "ts": mh.now_iso(),
-        "schema_version": "1.0",
-        "cand_id": cand_id,
-        "parent_id": parent_id,
-        "generation": generation,
-        "target": target,
-        "created_by": "proposer",
-        "proposal": proposal_event,
-    }
-
-
 def cmd_phase23_stub(sub: str) -> int:
-    """Phase 2/3 未実装サブコマンド。"""
+    """未実装サブコマンド。"""
     print(
         f"'{sub}' is not implemented yet. See docs/design/meta-harness-detailed.md Sec9"
         " for the phase boundary.",
         file=sys.stderr,
     )
     return EXIT_VALIDATION_ERROR
+
+
+def cmd_promote(project: str, candidate: str, confirm: bool, as_json: bool) -> int:
+    """frontier 候補を PR ベースで昇格する（Sec12）。"""
+    ctx = _resolve_context(project)
+    if ctx is None:
+        return EXIT_VALIDATION_ERROR
+    main_root, config = ctx
+    project_dir = Path(project).resolve()
+    try:
+        if confirm:
+            result = prm.confirm_promotion(
+                main_root=main_root,
+                config=config,
+                project_dir=project_dir,
+                cand_id=candidate,
+            )
+        else:
+            result = prm.promote_candidate(
+                main_root=main_root,
+                config=config,
+                project_dir=project_dir,
+                cand_id=candidate,
+                schema_dir=_SCHEMA_DIR,
+            )
+    except prm.PromotionConflictError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_LOCK_CONFLICT
+    except mh.LockAcquisitionError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_LOCK_CONFLICT
+    except prm.PromotionValidationError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_VALIDATION_ERROR
+    except prm.PromotionRuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_RUNTIME_ERROR
+
+    payload = {
+        key: value
+        for key, value in {
+            "status": result.status,
+            "cand_id": result.cand_id,
+            "branch": result.branch,
+            "worktree_dir": result.worktree_dir,
+            "pr_url": result.pr_url,
+        }.items()
+        if value is not None
+    }
+    _emit(payload, as_json, [f"promotion {result.status}: {candidate}"])
+    return EXIT_OK
 
 
 def cmd_evaluate(
@@ -996,7 +619,7 @@ def _add_common_args(parser: argparse.ArgumentParser, *, is_top_level: bool = Fa
 
 def build_parser() -> argparse.ArgumentParser:
     """CLI パーサを構築する。"""
-    parser = argparse.ArgumentParser(prog="meta_harness", description="meta-harness CLI (Phase 1a)")
+    parser = argparse.ArgumentParser(prog="meta_harness", description="meta-harness CLI")
     _add_common_args(parser, is_top_level=True)
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -1046,8 +669,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_propose.add_argument("--focus-run", default=None, help="重点分析する run_id")
     p_propose.add_argument("--focus-candidate", default=None, help="親候補として使う cand_id")
 
+    p_promote = sub.add_parser("promote", help="frontier 候補を PR ベースで昇格する")
+    _add_common_args(p_promote)
+    p_promote.add_argument("candidate", help="昇格対象の cand_id")
+    p_promote.add_argument(
+        "--confirm",
+        action="store_true",
+        help="作成済み PR の merge 状態を確認して promoted 遷移を確定する",
+    )
+
     for stub_name in _PHASE_2_3_STUBS:
-        _add_common_args(sub.add_parser(stub_name, help=f"（Phase 2/3 未実装スタブ: {stub_name}）"))
+        _add_common_args(sub.add_parser(stub_name, help=f"（未実装スタブ: {stub_name}）"))
 
     return parser
 
@@ -1056,6 +688,8 @@ def _dispatch(args: argparse.Namespace) -> int:
     """サブコマンドへ振り分ける。"""
     if args.command in _PHASE_2_3_STUBS:
         return cmd_phase23_stub(args.command)
+    if args.command == "promote":
+        return cmd_promote(args.project, args.candidate, args.confirm, args.json)
     if args.command == "propose":
         return cmd_propose(
             args.project, args.target, args.focus_run, args.focus_candidate, args.json

@@ -212,7 +212,7 @@
         "cand_id": { "type": "string" },
         "reason": {
           "type": "string",
-          "enum": ["aborted", "failed", "pr_closed_unmerged", "stale_takeover"]
+          "enum": ["aborted", "failed", "pr_closed_unmerged", "promoted", "stale_takeover"]
         }
       }
     },

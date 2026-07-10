@@ -29,6 +29,7 @@ PROPOSAL_SCHEMA_NAME = "proposal.schema.json"
 DEFAULT_PROPOSER_TIMEOUT_SECONDS = 600
 _CODEX_HOME_PREFIX = "meta-harness-codex-home-"
 _CODEX_ORPHAN_MAX_AGE = timedelta(hours=24)
+_CODEX_MODEL_CATALOG_FILES = ("models_cache.json", "version.json")
 
 SubprocessRunner = Callable[..., subprocess.CompletedProcess]
 
@@ -64,6 +65,8 @@ def launch_proposer_backend(
     schema_dir: Path,
     config: dict,
     isolation_launch: iso.IsolationLaunch,
+    ephemeral_home: Path | None = None,
+    allowed_based_on_runs: list[str] | tuple[str, ...] | None = None,
     runner: SubprocessRunner | None = None,
 ) -> ProposerBackendResult:
     """設定された proposer backend を srt 経由で 1 回だけ起動する。"""
@@ -80,6 +83,8 @@ def launch_proposer_backend(
             output_path=output_path,
             proposer_cfg=proposer_cfg,
             isolation_launch=isolation_launch,
+            ephemeral_home=ephemeral_home,
+            allowed_based_on_runs=allowed_based_on_runs,
             runner=runner,
         )
     elif tool == "claude-bare":
@@ -152,10 +157,17 @@ def _launch_codex_backend(
     output_path: Path,
     proposer_cfg: dict,
     isolation_launch: iso.IsolationLaunch,
+    ephemeral_home: Path | None,
+    allowed_based_on_runs: list[str] | tuple[str, ...] | None,
     runner: SubprocessRunner | None,
 ) -> subprocess.CompletedProcess:
     srt_path = _require_tool("srt")
     _require_tool("codex")
+    output_schema_path = _stage_codex_output_schema(
+        schema_dir=schema_dir,
+        ephemeral_home=_resolve_codex_home(ephemeral_home, isolation_launch),
+        allowed_based_on_runs=allowed_based_on_runs,
+    )
     command = [
         "codex",
         "exec",
@@ -163,7 +175,7 @@ def _launch_codex_backend(
         "--sandbox",
         "danger-full-access",
         "--output-schema",
-        str(schema_dir / PROPOSAL_SCHEMA_NAME),
+        str(output_schema_path),
         "-o",
         str(output_path),
         "--json",
@@ -263,7 +275,7 @@ def _run_isolated_backend(
         raise ProposerRuntimeError(f"{label} failed to run: {exc}") from exc
     if completed.returncode != 0:
         raise ProposerRuntimeError(
-            f"{label} exited {completed.returncode}: {(completed.stderr or '').strip()[:500]}"
+            f"{label} exited {completed.returncode}: {_error_excerpt(completed)}"
         )
     return completed
 
@@ -299,6 +311,17 @@ def _run_process_tree(
     return subprocess.CompletedProcess(args, process.returncode, out, err)
 
 
+def _error_excerpt(completed: subprocess.CompletedProcess) -> str:
+    stderr = (completed.stderr or "").strip()
+    stdout = (completed.stdout or "").strip()
+    parts = []
+    if stderr:
+        parts.append(f"stderr={stderr[:500]}")
+    if stdout:
+        parts.append(f"stdout={stdout[:500]}")
+    return "; ".join(parts) if parts else "(no output)"
+
+
 def _kill_process_group(pid: int) -> None:
     try:
         pgid = os.getpgid(pid)
@@ -311,14 +334,50 @@ def _kill_process_group(pid: int) -> None:
 
 
 _TOKENS_USED_RE = re.compile(r"\btokens\s+used:\s*([0-9][0-9,]*)\b", re.IGNORECASE)
+_CODEX_USAGE_EVENT_TYPE = "turn.completed"
 
 
 def parse_tokens_used(stdout: str) -> int | None:
-    """codex stdout の `tokens used: N` を抽出する。見つからなければ None。"""
+    """codex JSONL usage を抽出し、旧 plain-text 形式へ fallback する。"""
+    jsonl_tokens = _parse_codex_jsonl_tokens(stdout)
+    if jsonl_tokens is not None:
+        return jsonl_tokens
     match = _TOKENS_USED_RE.search(stdout)
     if match is None:
         return None
     return int(match.group(1).replace(",", ""))
+
+
+def _parse_codex_jsonl_tokens(stdout: str) -> int | None:
+    latest_tokens = None
+    for line in stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict) or event.get("type") != _CODEX_USAGE_EVENT_TYPE:
+            continue
+        usage = event.get("usage")
+        if not isinstance(usage, dict):
+            continue
+        token_count = _usage_token_count(usage)
+        if token_count is not None:
+            latest_tokens = token_count
+    return latest_tokens
+
+
+def _usage_token_count(usage: dict[str, Any]) -> int | None:
+    input_tokens = _nonnegative_int(usage.get("input_tokens"))
+    output_tokens = _nonnegative_int(usage.get("output_tokens"))
+    if input_tokens is None and output_tokens is None:
+        return None
+    return (input_tokens or 0) + (output_tokens or 0)
+
+
+def _nonnegative_int(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
 
 
 def _extract_claude_bare_json(stdout: str) -> dict[str, Any]:
@@ -351,6 +410,40 @@ def _require_tool(name: str) -> str:
     return path
 
 
+def _resolve_codex_home(ephemeral_home: Path | None, isolation_launch: iso.IsolationLaunch) -> Path:
+    if ephemeral_home is not None:
+        return ephemeral_home
+    codex_home = isolation_launch.env.get("CODEX_HOME")
+    if codex_home:
+        return Path(codex_home)
+    raise ProposerRuntimeError("codex proposer requires an ephemeral CODEX_HOME")
+
+
+def _stage_codex_output_schema(
+    *,
+    schema_dir: Path,
+    ephemeral_home: Path,
+    allowed_based_on_runs: list[str] | tuple[str, ...] | None = None,
+) -> Path:
+    schema_path = schema_dir / PROPOSAL_SCHEMA_NAME
+    if not schema_path.is_file():
+        raise ProposerRuntimeError(f"proposal schema file not found: {schema_path}")
+    ephemeral_home.mkdir(parents=True, exist_ok=True, mode=0o700)
+    staged_path = ephemeral_home / PROPOSAL_SCHEMA_NAME
+    if allowed_based_on_runs is None:
+        shutil.copyfile(schema_path, staged_path)
+    else:
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        schema["properties"]["based_on_runs"]["items"]["enum"] = sorted(
+            {str(run_id) for run_id in allowed_based_on_runs}
+        )
+        staged_path.write_text(
+            json.dumps(schema, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+    staged_path.chmod(0o644)
+    return staged_path
+
+
 def _proposer_timeout_seconds(proposer_cfg: dict) -> int:
     value = proposer_cfg.get("timeout_seconds", DEFAULT_PROPOSER_TIMEOUT_SECONDS)
     try:
@@ -375,9 +468,20 @@ def _populate_codex_home(ephemeral_home: Path, source_home: Path | None) -> None
     config_dst = ephemeral_home / "config.toml"
     config_dst.write_text("# meta-harness ephemeral codex home\n", encoding="utf-8")
     config_dst.chmod(0o600)
+    _stage_codex_model_catalog(ephemeral_home=ephemeral_home, source_home=source)
     agents_dst = ephemeral_home / "AGENTS.md"
     agents_dst.write_text("", encoding="utf-8")
     agents_dst.chmod(0o600)
+
+
+def _stage_codex_model_catalog(*, ephemeral_home: Path, source_home: Path) -> None:
+    for name in _CODEX_MODEL_CATALOG_FILES:
+        src = source_home / name
+        if not src.is_file():
+            continue
+        dst = ephemeral_home / name
+        shutil.copyfile(src, dst)
+        dst.chmod(0o644)
 
 
 def _default_codex_home() -> Path:

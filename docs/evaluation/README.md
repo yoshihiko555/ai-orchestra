@@ -25,8 +25,32 @@
 | `README.md`           | 本書。共通フォーマット・類型別観点・共通レビュー判断基準 |
 | `_template.md`        | 各パッケージ評価セットの雛形                             |
 | `<package>.md`        | パッケージごとの評価セット（packages/ 配下と 1:1 対応）  |
+| `<package>.checks.yaml` | must 観点を runnable check へ写像する自動化用 sidecar（任意） |
 | `skills/_template.md` | スキルフロー評価セットの雛形                             |
 | `skills/<flow>.md`    | スキルフロー単位の評価セット（下記「二層構造」参照）     |
+
+## checks sidecar
+
+`docs/evaluation/<package>.checks.yaml` は、評価セット Markdown を置き換えるものではなく、
+must 観点を将来 CI で実行可能な check へ写像する任意の sidecar である。Markdown 評価セットが
+引き続き SSOT であり、sidecar は機械可読の oracle seed として扱う。
+
+各 entry は次のキーを持つ。
+
+| キー         | 内容                                                         |
+| ------------ | ------------------------------------------------------------ |
+| `ev_id`      | 対応する評価観点 ID（例: `EV-38`）                           |
+| `phase`      | 実装フェーズ番号                                             |
+| `priority`   | `must` / `should`                                            |
+| `oracle`     | 判定方式（例: `command_exit`）                               |
+| `command`    | 代表実行コマンド                                             |
+| `covered_by` | 具体的なテスト nodeid の配列                                 |
+| `notes`      | カバレッジ範囲・未自動化条件の補足                           |
+
+更新者は、対象テストを追加・変更した実装者である。staleness は `covered_by` の pytest nodeid が
+存在することを CI またはレビュー時の `pytest --collect-only` 相当で検出する。これはレビュー時に
+一時生成する `EV ID | 対応テスト | 優先度 | covered/gap` マトリクスとは別物であり、恒久記録禁止の
+対象外とする。
 
 ## 二層構造（パッケージ / スキルフロー）
 

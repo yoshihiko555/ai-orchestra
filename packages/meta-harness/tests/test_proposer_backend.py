@@ -57,7 +57,17 @@ def _runner_writes(output: str | None, *, returncode: int = 0):
     def _runner(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess:
         if output is not None and "-o" in args:
             Path(args[args.index("-o") + 1]).write_text(output, encoding="utf-8")
-        return subprocess.CompletedProcess(args, returncode, "tokens used: 1,234\n", "boom\n")
+        usage_event = json.dumps(
+            {
+                "type": "turn.completed",
+                "usage": {
+                    "input_tokens": 1000,
+                    "cached_input_tokens": 250,
+                    "output_tokens": 234,
+                },
+            }
+        )
+        return subprocess.CompletedProcess(args, returncode, f"{usage_event}\n", "boom\n")
 
     return _runner
 
@@ -76,6 +86,7 @@ class TestProposerBackendLaunch:
                 schema_dir=SCHEMA_DIR,
                 config={"proposer": {"tool": "codex"}},
                 isolation_launch=_isolation_launch(tmp_path),
+                ephemeral_home=tmp_path / "codex-home",
                 runner=_runner_writes(None, returncode=7),
             )
 
@@ -92,6 +103,7 @@ class TestProposerBackendLaunch:
                 schema_dir=SCHEMA_DIR,
                 config={"proposer": {"tool": "codex"}},
                 isolation_launch=_isolation_launch(tmp_path),
+                ephemeral_home=tmp_path / "codex-home",
                 runner=_runner_writes(None),
             )
 
@@ -108,6 +120,7 @@ class TestProposerBackendLaunch:
                 schema_dir=SCHEMA_DIR,
                 config={"proposer": {"tool": "codex"}},
                 isolation_launch=_isolation_launch(tmp_path),
+                ephemeral_home=tmp_path / "codex-home",
                 runner=_runner_writes("{not-json"),
             )
 
@@ -123,11 +136,88 @@ class TestProposerBackendLaunch:
             schema_dir=SCHEMA_DIR,
             config={"proposer": {"tool": "codex"}},
             isolation_launch=_isolation_launch(tmp_path),
+            ephemeral_home=tmp_path / "codex-home",
             runner=_runner_writes(json.dumps(_valid_proposal())),
         )
 
         assert result.proposal["theme"] == "tighten example"
         assert result.tokens_used == 1234
+
+    def test_codex_backend_stages_output_schema_under_ephemeral_home(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _install_required_tools(tmp_path / "bin", "srt", "codex")
+        monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+        view_dir = tmp_path / "view"
+        view_dir.mkdir()
+        codex_home = tmp_path / "codex-home"
+        captured_args: list[str] = []
+
+        def runner(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess:
+            captured_args.extend(args)
+            output_schema = Path(args[args.index("--output-schema") + 1])
+            assert output_schema.is_file()
+            Path(args[args.index("-o") + 1]).write_text(
+                json.dumps(_valid_proposal()),
+                encoding="utf-8",
+            )
+            return subprocess.CompletedProcess(args, 0, "tokens used: 1\n", "")
+
+        backend.launch_proposer_backend(
+            view_dir=view_dir,
+            prompt="prompt",
+            schema_dir=SCHEMA_DIR,
+            config={"proposer": {"tool": "codex"}},
+            isolation_launch=_isolation_launch(tmp_path),
+            ephemeral_home=codex_home,
+            runner=runner,
+        )
+
+        output_schema = Path(captured_args[captured_args.index("--output-schema") + 1]).resolve()
+        assert output_schema == (codex_home / backend.PROPOSAL_SCHEMA_NAME).resolve()
+        assert SCHEMA_DIR.resolve() not in output_schema.parents
+        assert output_schema.read_text(encoding="utf-8") == (
+            SCHEMA_DIR / backend.PROPOSAL_SCHEMA_NAME
+        ).read_text(encoding="utf-8")
+        assert output_schema.stat().st_mode & 0o777 == 0o644
+
+    def test_codex_backend_stages_output_schema_with_allowed_based_on_runs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _install_required_tools(tmp_path / "bin", "srt", "codex")
+        monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+        view_dir = tmp_path / "view"
+        view_dir.mkdir()
+        captured_schema: dict = {}
+
+        def runner(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess:
+            output_schema = Path(args[args.index("--output-schema") + 1])
+            captured_schema.update(json.loads(output_schema.read_text(encoding="utf-8")))
+            Path(args[args.index("-o") + 1]).write_text(
+                json.dumps(_valid_proposal()),
+                encoding="utf-8",
+            )
+            return subprocess.CompletedProcess(args, 0, "tokens used: 1\n", "")
+
+        backend.launch_proposer_backend(
+            view_dir=view_dir,
+            prompt="prompt",
+            schema_dir=SCHEMA_DIR,
+            config={"proposer": {"tool": "codex"}},
+            isolation_launch=_isolation_launch(tmp_path),
+            ephemeral_home=tmp_path / "codex-home",
+            allowed_based_on_runs=(
+                "run-20260708-010000-base-scn-a2-beef",
+                "run-20260708-010000-base-scn-a1-abcd",
+            ),
+            runner=runner,
+        )
+
+        assert captured_schema["properties"]["based_on_runs"]["items"]["enum"] == [
+            "run-20260708-010000-base-scn-a1-abcd",
+            "run-20260708-010000-base-scn-a2-beef",
+        ]
+        assert captured_schema["properties"]["based_on_runs"]["items"]["pattern"] == "^run-"
 
     def test_claude_bare_backend_normalizes_nested_result(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -163,24 +253,71 @@ class TestProposerBackendHelpers:
             backend._proposer_timeout_seconds({"timeout_seconds": "soon"})
 
     def test_parse_tokens_used(self) -> None:
+        stdout = "\n".join(
+            [
+                json.dumps({"type": "thread.started", "thread_id": "t-1"}),
+                "not-json",
+                json.dumps(
+                    {
+                        "type": "turn.completed",
+                        "usage": {
+                            "input_tokens": 1000,
+                            "cached_input_tokens": 250,
+                            "output_tokens": 234,
+                        },
+                    }
+                ),
+            ]
+        )
+
+        assert backend.parse_tokens_used(stdout) == 1234
         assert backend.parse_tokens_used("tokens used: 42\n") == 42
         assert backend.parse_tokens_used("Tokens Used: 1,234\n") == 1234
         assert backend.parse_tokens_used("no usage here") is None
+        assert backend.parse_tokens_used("") is None
 
     def test_temporary_codex_home_populates_modes_and_cleans_on_exit(self, tmp_path: Path) -> None:
         source = tmp_path / "source"
         source.mkdir()
         (source / "auth.json").write_text('{"token":"test"}\n', encoding="utf-8")
+        (source / "models_cache.json").write_text('{"models":[]}\n', encoding="utf-8")
+        (source / "version.json").write_text('{"version":"0.143.0"}\n', encoding="utf-8")
 
         with backend.temporary_codex_home(source_home=source) as home:
             assert home.stat().st_mode & 0o777 == 0o700
             assert (home / "auth.json").read_text(encoding="utf-8") == '{"token":"test"}\n'
             assert (home / "auth.json").stat().st_mode & 0o777 == 0o600
+            assert (home / "models_cache.json").read_text(encoding="utf-8") == '{"models":[]}\n'
+            assert (home / "models_cache.json").stat().st_mode & 0o777 == 0o644
+            assert (home / "version.json").read_text(encoding="utf-8") == (
+                '{"version":"0.143.0"}\n'
+            )
+            assert (home / "version.json").stat().st_mode & 0o777 == 0o644
             assert (home / "config.toml").stat().st_mode & 0o777 == 0o600
             assert (home / "AGENTS.md").read_text(encoding="utf-8") == ""
             home_path = home
 
         assert not home_path.exists()
+
+    def test_temporary_codex_home_only_copies_allowlisted_state(self, tmp_path: Path) -> None:
+        source = tmp_path / "source"
+        source.mkdir()
+        (source / "auth.json").write_text('{"token":"test"}\n', encoding="utf-8")
+        (source / "history.jsonl").write_text('{"prompt":"secret"}\n', encoding="utf-8")
+        (source / "memories.json").write_text('{"repo":"memory"}\n', encoding="utf-8")
+        (source / "sessions").mkdir()
+        (source / "sessions" / "session.jsonl").write_text("session\n", encoding="utf-8")
+        (source / "rules").mkdir()
+        (source / "rules" / "rule.md").write_text("rule\n", encoding="utf-8")
+
+        with backend.temporary_codex_home(source_home=source) as home:
+            assert (home / "auth.json").is_file()
+            assert not (home / "history.jsonl").exists()
+            assert not (home / "memories.json").exists()
+            assert not (home / "sessions").exists()
+            assert not (home / "rules").exists()
+            assert not (home / "models_cache.json").exists()
+            assert not (home / "version.json").exists()
 
     def test_sigterm_handler_cleans_temporary_codex_home(self, tmp_path: Path) -> None:
         source = tmp_path / "source"

@@ -31,6 +31,7 @@
 | `evaluate`                           | `--candidate <id> [--scenario <id>...] [--repeat N]`           | `runs/<run_id>/result.json` 一式、ledger に `run_completed` 追記                 | 一時 worktree 作成・除去、`events.jsonl.gz` 等の成果物書き込み          |
 | `frontier`                           | `[--rebuild]`                                                  | Pareto frontier レポート（`--rebuild` 時は `frontier.json` 更新）                | `frontier.json` の書き込み（`--rebuild` 時のみ）                        |
 | `status`                             | `[--candidate <id>]`                                           | population / frontier の状態表示（畳み込み済み状態）                             | なし                                                                    |
+| `promote`                            | `<cand_id> [--confirm]`                                        | PR URL または confirm 結果                                                       | `promotion_reserved` / `promotion_opened` / `status_changed` 等の追記、promotion worktree 作成・PR 作成 |
 | `purge`                              | `[--keep-generations N]`                                       | 削除件数                                                                         | 古い世代・`retired` 候補ディレクトリの削除（frontier・promoted は除外） |
 | evaluator（worktree ライフサイクル） | `cand_id`, `scenario`                                          | `verdict` / `critical_pass_rate` / `quality_score` / `cost` を含む result        | 一時 worktree の作成・overlay 適用・config `.local.yaml` 実体化・除去   |
 
@@ -76,12 +77,12 @@
 - [ ] EV-35（正常 / must）: proposer は srt 隔離 backend で fail-closed 起動され、version pin・最小 env allowlist・空 `AGENTS.md` により backend/環境/自動注入経路が固定される — 根拠: 詳細設計 §11-3-2〜§11-3-5
 - [ ] EV-36（正常 / must）: `loop` が 4 停止条件（budget_exhausted / max_iterations / divergence / converged）のそれぞれで `loop_stopped` を記録して停止する — 根拠: 詳細設計 §13-2
 - [ ] EV-37（境界 / must）: `loop` が中断（SIGINT/エラー）されても `loop_stopped(interrupted/error)` が記録され、`--resume` で ledger から再開できる — 根拠: 詳細設計 §13-3
-- [ ] EV-38（異常 / must）: `promote` の前提条件（frontier 外・hash 陳腐化・鮮度チェック失敗）のいずれかで exit 2 になり、PR は作られない — 根拠: 詳細設計 §12-1
+- [ ] EV-38（異常 / must）: `promote` の前提条件（状態が `evaluated` でない・frontier 外・passing holdout 不在・run hash 陳腐化・overlay hash 不一致・鮮度チェック失敗）のいずれかで exit 2 になり、PR は作られない — 根拠: 詳細設計 §12-1
 - [ ] EV-39（正常 / must）: `promote` は auto-merge を付けず、`promoted` への状態遷移は `--confirm` 経由でのみ発生する — 根拠: 詳細設計 §12-2
 - [ ] EV-40（異常 / must）: srt settings の allowRead が forbidden asset（実 store・holdout・facet ソース・実 `~/.codex` 等）と交差せず、view 外 read / `../` traversal / symlink escape / 非許可 network / env leak が到達不能である — 根拠: 詳細設計 §11-3-2〜§11-3-5
 - [ ] EV-41（境界 / must）: loop 中断で `loop_iteration` 未記録の孤児候補が残った場合、`--resume` がその反復の完了から再開する — 根拠: 詳細設計 §13-1
 - [ ] EV-42（異常 / must）: 未解放の `promotion_reserved` がある候補への二重 promote が exit 3 で拒否される — 根拠: 詳細設計 §12-2
-- [ ] EV-43（異常 / must）: `--confirm` は PR が MERGED かつ main 到達済みの場合のみ `promoted` に遷移させ、closed-unmerged は `promotion_released(pr_closed_unmerged)` になる — 根拠: 詳細設計 §12-2
+- [ ] EV-43（異常 / must）: `--confirm` は PR が MERGED かつ main 到達済みの場合のみ `promoted` に遷移させて `promotion_released(promoted)` を記録し、closed-unmerged は `promotion_released(pr_closed_unmerged)` になる — 根拠: 詳細設計 §12-2
 - N/A: hook 型の類型別観点（PreToolUse/PostToolUse ブロック挙動等）は本パッケージが hook を持たないため非該当。config-loading への依存のみが hook 型的性質であり、EV-22 でカバーする
 
 ## 5. テストレビュー判断基準（パッケージ固有）

@@ -11,6 +11,10 @@ proposer = load_module(
     "meta_harness_proposer_test",
     "packages/meta-harness/lib/proposer.py",
 )
+evaluator = load_module(
+    "meta_harness_evaluator_proposal_schema_test",
+    "packages/meta-harness/lib/evaluator.py",
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 PACKAGE_DIR = REPO_ROOT / "packages" / "meta-harness"
@@ -48,13 +52,20 @@ class TestProposalSchema:
 
         assert any("does not match pattern" in e for e in errors)
 
-    def test_rejects_parent_directory_escape(self) -> None:
+    def test_materialize_rejects_parent_directory_escape(self, tmp_path: Path) -> None:
         proposal = json.loads(json.dumps(_VALID_PROPOSAL))
         proposal["changes"][0]["path"] = "facets/../secrets.txt"
 
-        errors = proposer.validate_proposal(proposal, SCHEMA_DIR)
-
-        assert any("does not match pattern" in e for e in errors)
+        try:
+            proposer.materialize_overlay_from_proposal(
+                proposal,
+                tmp_path / "overlay",
+                max_overlay_bytes=200000,
+            )
+        except proposer.ProposalValidationError as exc:
+            assert "unsafe proposal change path" in str(exc)
+        else:
+            raise AssertionError("expected parent directory escape to be rejected")
 
     def test_rejects_missing_based_on_runs(self) -> None:
         proposal = {k: v for k, v in _VALID_PROPOSAL.items() if k != "based_on_runs"}
@@ -62,6 +73,34 @@ class TestProposalSchema:
         errors = proposer.validate_proposal(proposal, SCHEMA_DIR)
 
         assert any("based_on_runs" in e for e in errors)
+
+    def test_rejects_candidate_id_in_based_on_runs(self) -> None:
+        proposal = json.loads(json.dumps(_VALID_PROPOSAL))
+        proposal["based_on_runs"] = ["cand-20260707-231339-phase1b-e2e-baseline-6e67"]
+
+        errors = proposer.validate_proposal(proposal, SCHEMA_DIR)
+
+        assert any("does not match pattern" in e for e in errors)
+
+    def test_accepts_run_prefixed_id_until_membership_validation(self) -> None:
+        proposal = json.loads(json.dumps(_VALID_PROPOSAL))
+        proposal["based_on_runs"] = ["run-20260707-231339-phase1b-e2e-baseline-6e67"]
+
+        errors = proposer.validate_proposal(proposal, SCHEMA_DIR)
+
+        assert errors == []
+
+    def test_evaluator_minted_run_id_passes_proposal_schema(self) -> None:
+        proposal = json.loads(json.dumps(_VALID_PROPOSAL))
+        proposal["based_on_runs"] = [
+            evaluator.generate_run_id(
+                "cand-20260710-010000-schema-compat-abcd",
+                "scenario-with-dashes",
+                1,
+            )
+        ]
+
+        assert proposer.validate_proposal(proposal, SCHEMA_DIR) == []
 
 
 class TestProposerPrompt:
@@ -87,13 +126,17 @@ class TestProposerPrompt:
             package_dir=PACKAGE_DIR,
             target="claude-harness",
             focus_run_ids=("run-focus-a", "run-focus-b"),
+            valid_based_on_run_ids=("run-valid-a", "run-valid-b", "run-valid-c"),
             focus_candidate_id="cand-focus",
         )
 
         assert str(view_dir.resolve()) in prompt
         assert "target: claude-harness" in prompt
-        assert "focus runs: run-focus-a, run-focus-b" in prompt
+        assert "focus runs（優先分析対象）: run-focus-a, run-focus-b" in prompt
+        assert "valid based_on_runs candidates: run-valid-a, run-valid-b, run-valid-c" in prompt
         assert "focus candidate: cand-focus" in prompt
+        assert "cand_id（`cand-` で始まる ID）は based_on_runs に絶対に入れない" in prompt
+        assert "run_id を推測・合成・変形しない" in prompt
         assert "cand-frontier" in prompt
         assert "quality_mean=87.500" in prompt
         assert "cost_mean=1234.000" in prompt
@@ -113,7 +156,8 @@ class TestProposerPrompt:
             target="skill:example",
         )
 
-        assert "focus runs: (none)" in prompt
+        assert "focus runs（優先分析対象）: (none)" in prompt
+        assert "valid based_on_runs candidates: (none)" in prompt
         assert "focus candidate: (none)" in prompt
         assert "- frontier: (none)" in prompt
         assert "変更合計は 200000 バイト以内" in prompt

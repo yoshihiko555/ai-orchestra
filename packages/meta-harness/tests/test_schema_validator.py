@@ -164,6 +164,20 @@ class TestLedgerEventSchemaOneOf:
         errors = mh.validate_against_schema(instance, schema["$defs"]["status_changed"], SCHEMA_DIR)
         assert errors == []
 
+    def test_promotion_released_promoted_reason_has_zero_errors(self) -> None:
+        schema = _load("ledger.event.schema.json")
+        instance = {
+            "event": "promotion_released",
+            "ts": "2026-07-09T00:00:00+09:00",
+            "schema_version": "1.0",
+            "cand_id": "cand-20260709-010000-promote-abcd",
+            "reason": "promoted",
+        }
+        errors = mh.validate_against_schema(
+            instance, schema["$defs"]["promotion_released"], SCHEMA_DIR
+        )
+        assert errors == []
+
 
 class TestOverlaySchema:
     def test_valid_instance_has_zero_errors(self) -> None:

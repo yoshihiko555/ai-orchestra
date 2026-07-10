@@ -30,12 +30,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 # ---------------------------------------------------------------------------
 # config
 # ---------------------------------------------------------------------------
 
 PACKAGE_NAME = "meta-harness"
 CONFIG_FILENAME = "meta-harness.yaml"
+PACKAGE_DIR = Path(__file__).resolve().parent.parent
 
 # config が読めない場合のフォールバック既定値（正本は config/meta-harness.yaml、Sec5）。
 DEFAULTS: dict[str, Any] = {
@@ -132,7 +135,7 @@ def load_config(project_dir: str | Path) -> dict:
     hook_common.load_package_config が使える場合はそれを使う（`.claude/config/
     meta-harness/meta-harness.yaml` > パッケージ既定 `config/meta-harness.yaml`、
     さらに `.local.yaml` 上書きを config-loading ルールどおり適用する）。
-    使えない場合は DEFAULTS のみを返す。
+    使えない場合も、このパッケージ自身で base/local YAML を読み込む。
     """
     try:
         orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
@@ -143,7 +146,14 @@ def load_config(project_dir: str | Path) -> dict:
 
         loaded = load_package_config(PACKAGE_NAME, CONFIG_FILENAME, str(project_dir))
     except ImportError:
-        loaded = {}
+        try:
+            loaded = _load_config_without_hook_common(Path(project_dir))
+        except Exception as exc:
+            print(
+                f"warning: failed to load meta-harness config, falling back to defaults: {exc}",
+                file=sys.stderr,
+            )
+            loaded = {}
     except Exception as exc:
         print(
             f"warning: failed to load meta-harness config, falling back to defaults: {exc}",
@@ -151,6 +161,23 @@ def load_config(project_dir: str | Path) -> dict:
         )
         loaded = {}
     return _deep_merge(DEFAULTS, loaded or {})
+
+
+def _load_config_without_hook_common(project_dir: Path) -> dict:
+    """hook_common 不在時の最小 config loader（config-loading ルールの fallback）。"""
+    base = _read_yaml_config(PACKAGE_DIR / "config" / CONFIG_FILENAME)
+    name, ext = os.path.splitext(CONFIG_FILENAME)
+    local = _read_yaml_config(
+        project_dir / ".claude" / "config" / PACKAGE_NAME / f"{name}.local{ext}"
+    )
+    return _deep_merge(base, local) if local else base
+
+
+def _read_yaml_config(path: Path) -> dict:
+    if not path.is_file():
+        return {}
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    return data if isinstance(data, dict) else {}
 
 
 # ---------------------------------------------------------------------------
@@ -234,6 +261,51 @@ def _is_bare_repository(project_dir: Path) -> bool:
     except (OSError, subprocess.TimeoutExpired):
         return False
     return completed.returncode == 0 and completed.stdout.strip() == "true"
+
+
+def git_head(cwd: Path) -> str | None:
+    """`cwd` における `git rev-parse HEAD` の結果を返す。"""
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=GIT_TIMEOUT_SECONDS,
+            stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return completed.stdout.strip() if completed.returncode == 0 else None
+
+
+def build_candidate_manifest(
+    *,
+    cand_id: str,
+    parent_id: str | None,
+    generation: int,
+    target: str,
+    source_commit: str,
+    config_hash: str,
+    overlay_files: list[str],
+    description: str,
+    created_by: str = "human",
+) -> dict[str, Any]:
+    """candidate manifest の共通組み立て処理。"""
+    return {
+        "schema_version": "1.0",
+        "cand_id": cand_id,
+        "parent_id": parent_id,
+        "generation": generation,
+        "created_at": now_iso(),
+        "created_by": created_by,
+        "target": target,
+        "source_commit": source_commit,
+        "config_hash": config_hash,
+        "model_versions": {},
+        "overlay_files": overlay_files,
+        "description": description,
+    }
 
 
 # ---------------------------------------------------------------------------

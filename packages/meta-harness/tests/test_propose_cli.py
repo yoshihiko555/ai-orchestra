@@ -13,6 +13,10 @@ mh = load_module(
     "meta_harness_common_propose_cli",
     "packages/meta-harness/lib/meta_harness_common.py",
 )
+propose_cli = load_module(
+    "meta_harness_propose_cli_test",
+    "packages/meta-harness/lib/propose_cli.py",
+)
 
 _PARENT_ID = "cand-20260708-020000-parent-abcd"
 _RUN_ID = "run-20260708-020000-parent-scn-a1-abcd"
@@ -55,7 +59,7 @@ out = args[args.index("-o") + 1]
 with open(out, "w", encoding="utf-8") as handle:
     handle.write({proposal_json!r})
     handle.write("\\n")
-print("tokens used: 10")
+print(json.dumps({{"type":"turn.completed","usage":{{"input_tokens":7,"output_tokens":3}}}}))
 raise SystemExit(0)
 """,
     )
@@ -164,12 +168,49 @@ def _prepare_stubbed_codex(tmp_path: Path, proposal: dict) -> dict[str, str]:
     bin_dir = tmp_path / "bin"
     fake_home = tmp_path / "home"
     fake_home.mkdir()
+    temp_root = tmp_path / "tmp"
+    temp_root.mkdir()
     _prepare_codex_auth(fake_home)
     _install_stub_tools(bin_dir, proposal)
     return {
         "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
         "HOME": str(fake_home),
         "CODEX_HOME": str(fake_home / ".codex"),
+        "TMPDIR": str(temp_root),
+    }
+
+
+def _set_env(monkeypatch, values: dict[str, str]) -> None:
+    for key, value in values.items():
+        monkeypatch.setenv(key, value)
+
+
+def _assert_no_srt_settings_dirs(tmp_path: Path) -> None:
+    assert not list((tmp_path / "tmp").glob("meta-harness-srt-*"))
+
+
+def _add_candidate_manifest(
+    git_project: Path, cand_id: str, *, target: str, quality_mean: float
+) -> dict:
+    parent_manifest = json.loads(
+        (mh.candidates_dir(git_project, mh.DEFAULTS) / _PARENT_ID / "manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    manifest = {**parent_manifest, "cand_id": cand_id, "target": target}
+    cand_dir = mh.candidates_dir(git_project, mh.DEFAULTS) / cand_id
+    cand_dir.mkdir(parents=True)
+    (cand_dir / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return {
+        "cand_id": cand_id,
+        "quality_mean": quality_mean,
+        "quality_var": 0.0,
+        "quality_min": quality_mean,
+        "cost_mean": 100.0,
+        "runs": 1,
     }
 
 
@@ -244,6 +285,7 @@ def test_propose_registers_candidate_from_stubbed_codex_backend(
     assert registered[-1]["created_by"] == "proposer"
     assert registered[-1]["proposal"]["based_on_runs"] == [_RUN_ID]
     assert registered[-1]["proposal"]["tokens_used"] == 10
+    _assert_no_srt_settings_dirs(tmp_path)
 
 
 def test_propose_rejects_invalid_proposal_and_saves_rejected_file(
@@ -273,6 +315,7 @@ def test_propose_rejects_invalid_proposal_and_saves_rejected_file(
     assert rejected_files
     rejected = json.loads(rejected_files[-1].read_text(encoding="utf-8"))
     assert "proposal schema mismatch" in rejected["reason"]
+    _assert_no_srt_settings_dirs(tmp_path)
 
 
 def test_propose_rejects_overlay_size_excess_and_saves_rejected_file(
@@ -321,3 +364,118 @@ def test_propose_rejects_holdout_based_on_run_and_saves_rejected_file(
     assert rejected_files
     rejected = json.loads(rejected_files[-1].read_text(encoding="utf-8"))
     assert "based_on_runs references holdout run_id" in rejected["reason"]
+
+
+def test_parent_selection_filters_mixed_target_frontier(git_project: Path, git_run) -> None:
+    _prepare_store(git_project, git_run)
+    other_id = "cand-20260710-010000-other-target-abcd"
+    other_point = _add_candidate_manifest(
+        git_project,
+        other_id,
+        target="skill:other",
+        quality_mean=99.0,
+    )
+    frontier_doc = {
+        "frontier": [other_id, _PARENT_ID],
+        "points": [other_point, {"cand_id": _PARENT_ID, "quality_mean": 80.0}],
+    }
+
+    selected = propose_cli._select_proposal_parent(
+        git_project,
+        mh.DEFAULTS,
+        frontier_doc,
+        target="claude-harness",
+        focus_candidate=None,
+    )
+
+    assert selected == _PARENT_ID
+
+
+def test_parent_selection_returns_none_without_same_target(git_project: Path, git_run) -> None:
+    _prepare_store(git_project, git_run)
+
+    selected = propose_cli._select_proposal_parent(
+        git_project,
+        mh.DEFAULTS,
+        {"frontier": [_PARENT_ID], "points": []},
+        target="skill:missing",
+        focus_candidate=None,
+    )
+
+    assert selected is None
+
+
+def test_focus_candidate_target_mismatch_exits_2_before_backend(
+    git_project: Path, git_run, monkeypatch, capsys
+) -> None:
+    _prepare_store(git_project, git_run)
+    before = set(mh.list_candidate_ids(git_project, mh.DEFAULTS))
+
+    def fail_if_launched(**_kwargs):
+        raise AssertionError("backend must not launch")
+
+    monkeypatch.setattr(propose_cli.pb, "launch_proposer_backend", fail_if_launched)
+
+    exit_code = propose_cli.cmd_propose(
+        str(git_project),
+        "skill:other",
+        None,
+        _PARENT_ID,
+        False,
+    )
+
+    assert exit_code == 2
+    assert set(mh.list_candidate_ids(git_project, mh.DEFAULTS)) == before
+    assert "expected skill:other, got claude-harness" in capsys.readouterr().err
+
+
+def test_propose_rolls_back_candidate_when_ledger_append_fails(
+    git_project: Path, git_run, tmp_path: Path, monkeypatch, capsys
+) -> None:
+    _prepare_store(git_project, git_run)
+    before_candidates = set(mh.list_candidate_ids(git_project, mh.DEFAULTS))
+    before_events = _events(git_project)
+    _set_env(monkeypatch, _prepare_stubbed_codex(tmp_path, _valid_proposal()))
+
+    def fail_append(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(propose_cli.mh, "append_ledger_event", fail_append)
+
+    exit_code = propose_cli.cmd_propose(
+        str(git_project),
+        "claude-harness",
+        None,
+        None,
+        False,
+    )
+
+    assert exit_code == 2
+    assert set(mh.list_candidate_ids(git_project, mh.DEFAULTS)) == before_candidates
+    assert _events(git_project) == before_events
+    assert "rolled back candidate after ledger append failure" in capsys.readouterr().err
+    _assert_no_srt_settings_dirs(tmp_path)
+
+
+def test_propose_rejects_empty_citable_run_set_before_backend(
+    git_project: Path, git_run, monkeypatch, capsys
+) -> None:
+    _commit_facets(git_project, git_run)
+    mh.init_store(git_project, mh.DEFAULTS)
+
+    def fail_if_launched(**_kwargs):
+        raise AssertionError("backend must not launch")
+
+    monkeypatch.setattr(propose_cli.pb, "launch_proposer_backend", fail_if_launched)
+
+    exit_code = propose_cli.cmd_propose(
+        str(git_project),
+        "claude-harness",
+        None,
+        None,
+        False,
+    )
+
+    assert exit_code == 2
+    assert mh.list_candidate_ids(git_project, mh.DEFAULTS) == []
+    assert "no citable non-holdout runs for target: claude-harness" in capsys.readouterr().err

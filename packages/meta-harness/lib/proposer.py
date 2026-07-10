@@ -244,6 +244,7 @@ def render_proposer_prompt(
     target: str,
     focus_run_id: str | None = None,
     focus_run_ids: list[str] | tuple[str, ...] | None = None,
+    valid_based_on_run_ids: list[str] | tuple[str, ...] | None = None,
     focus_candidate_id: str | None = None,
 ) -> str:
     """package resource の prompt template に実行時コンテキストを埋め込む。"""
@@ -251,10 +252,12 @@ def render_proposer_prompt(
     proposer_cfg = config.get("proposer") or {}
     max_overlay_bytes = proposer_cfg.get("max_overlay_bytes", DEFAULT_MAX_OVERLAY_BYTES)
     rendered_focus_runs = _format_focus_runs(focus_run_id, focus_run_ids)
+    rendered_valid_runs = _join_or_none([str(run_id) for run_id in valid_based_on_run_ids or ()])
     return Template(template).safe_substitute(
         view_dir=str(view_dir.resolve()),
         target=target,
         focus_run_ids=rendered_focus_runs,
+        valid_based_on_run_ids=rendered_valid_runs,
         focus_candidate_id=focus_candidate_id or _MISSING_FOCUS,
         max_overlay_bytes=max_overlay_bytes,
         frontier_summary=summarize_frontier(frontier_doc),
