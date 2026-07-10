@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +24,49 @@ from lib.settings_io import (
     save_orchestra_json,
     save_settings,
 )
+
+GIT_METADATA_TIMEOUT_SECONDS = 5
+
+
+def _git_directories(repo_dir: Path) -> tuple[Path, Path] | None:
+    """Git directory と common directory を絶対パスで返す。"""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--git-dir", "--git-common-dir"],
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            timeout=GIT_METADATA_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+    lines = result.stdout.splitlines()
+    if result.returncode != 0 or len(lines) != 2:
+        return None
+
+    def resolve_git_path(raw_path: str) -> Path:
+        path = Path(raw_path)
+        return path.resolve() if path.is_absolute() else (repo_dir / path).resolve()
+
+    return resolve_git_path(lines[0]), resolve_git_path(lines[1])
+
+
+def _is_linked_worktree_of(candidate_dir: Path, main_dir: Path) -> bool:
+    """candidate が main_dir と同じリポジトリの linked worktree か判定する。"""
+    candidate_git = _git_directories(candidate_dir)
+    main_git = _git_directories(main_dir)
+    if candidate_git is None or main_git is None:
+        return False
+
+    candidate_git_dir, candidate_common_dir = candidate_git
+    main_git_dir, main_common_dir = main_git
+    return (
+        candidate_git_dir != candidate_common_dir
+        and main_git_dir == main_common_dir
+        and candidate_common_dir == main_common_dir
+    )
 
 
 class HooksMixin:
@@ -152,9 +197,21 @@ class HooksMixin:
 
         env = global_settings.get("env", {})
         orchestra_dir_str = str(self.orchestra_dir)
+        existing_orchestra_dir = env.get("AI_ORCHESTRA_DIR")
 
-        if env.get("AI_ORCHESTRA_DIR") == orchestra_dir_str:
+        if existing_orchestra_dir == orchestra_dir_str:
             print(f"環境変数 AI_ORCHESTRA_DIR は設定済み: {orchestra_dir_str}")
+            return
+
+        if isinstance(existing_orchestra_dir, str) and _is_linked_worktree_of(
+            self.orchestra_dir, Path(existing_orchestra_dir)
+        ):
+            print(
+                "警告: linked worktree からの実行を検出したため、"
+                f"グローバル AI_ORCHESTRA_DIR={existing_orchestra_dir} を保持します "
+                f"(実行元: {orchestra_dir_str})",
+                file=sys.stderr,
+            )
             return
 
         if dry_run:
