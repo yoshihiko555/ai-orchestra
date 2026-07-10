@@ -112,6 +112,7 @@ worktree 隔離・機械検証＋ LLM レビューの二層 Checker・無進捗/
 - [ ] EV-44（正常 / must）: Maker/Checker の生出力はメインオーケストレーターのコンテキストへ返さず、要約と state/journal 参照のみで受け渡す — 根拠: docs/requirements/loop-harness.md NF-05, docs/design/loop-harness-pr-review.md §5.1・§5.2.2
 - [ ] EV-45（正常 / must）: `issue-loop` 定義の `implementation` フェーズは `checker.llm_review`（baseline `code-reviewer` + `skill-review-policy` 準拠の追加選定、最大 2 名）を省略できない。この制約は `id == "issue-loop" かつ phase.name == "implementation"` の組み合わせでのみ発火し、他ループ定義の同名フェーズには強制しない — 根拠: docs/requirements/loop-harness.md FT-06, docs/design/loop-harness-core.md §8.2
 - [ ] EV-69（正常 / must）: 成功出口・失敗出口の公開契約として、成功時は commit → push → PR 作成（`pr-create` 資産の再利用）が行われ、auto-merge は付与されず worktree は保持される。失敗出口（`implementation` フェーズの `on_failure.exec`）では既存 PR が無ければ Draft PR を作成し、既存であれば Draft へ戻す（`pr_review_response` フェーズでは `gh pr ready --undo` 相当）。いずれの出口でも反復履歴・Checker 結果が記録され、対象 Issue への結果コメントとローカル通知が発火する — 根拠: docs/requirements/loop-harness.md FT-12・FT-15・FT-16, docs/design/loop-harness-pr-review.md §5.4.1・§5.4.2
+- [ ] EV-74（異常 / must）[2026-07-11 追加（Issue #151 実 E2E で `detect_agent()` の誤検出を発見し追従）]: Maker 選定の `detect_agent()` 入力は `issue_title` と labels の連結のみとし、`issue_body` を含めない。`implementation`・`pr_review_response` いずれのフェーズでも同一のコードパスを使うため、この制約は両フェーズに適用される。本文中の偶発的なキーワード一致（例: 本文中の「スコープ」という語で `requirements` エージェントが誤選定される）による、コード変更不能なロールの Maker 誤選定を防ぐための入力範囲制限である — 根拠: docs/design/loop-harness-pr-review.md §5.2.1
 
 ### 3.5 フェーズ⑤: LP-2（`loop_driver.py` / `loop_scheduler.py` / `loop_status.py`）
 

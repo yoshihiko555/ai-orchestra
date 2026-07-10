@@ -410,7 +410,7 @@ params_worktree_path = params["worktree_path"]
 
 # agent-routing 設定: cli-tools.yaml + cli-tools.local.yaml
 routing_config = load_config({"cwd": params_worktree_path})
-issue_text = f"{issue_title}\n{issue_body}\n{' '.join(issue_labels)}"
+issue_text = f"{issue_title}\n{' '.join(issue_labels)}"  # 本文は含めない（誤検出対策。EV-74）
 agent_name, trigger = detect_agent(issue_text)
 
 if agent_name is None:
