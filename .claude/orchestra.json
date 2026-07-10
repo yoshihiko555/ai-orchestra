@@ -58,10 +58,12 @@
     "config/fail-logs/fail-logs.yaml",
     "config/git-workflow/sandbox-requirements.json",
     "config/image-generation/image-generation.yaml",
+    "config/loop-harness/issue-loop.yaml",
+    "config/loop-harness/loop-harness.yaml",
     "config/meta-harness/meta-harness.yaml",
     "config/skill-evolution/skill-evolution.yaml"
   ],
-  "last_sync": "2026-07-07T09:37:33.367146+00:00",
+  "last_sync": "2026-07-10T14:41:09.597535+00:00",
   "file_hashes": {
     "core": {
       "config/core/task-memory.yaml": "081c101ad10526344e4fe7831babbe6ef661d0a4ae7e49fad4eb3967c030b7d8"
