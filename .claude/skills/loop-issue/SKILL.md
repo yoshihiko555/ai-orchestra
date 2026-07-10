@@ -663,6 +663,25 @@ Task / subshell で実行し、current shell の cwd を使わない。`pr-creat
 PR 作成結果の `pr_number` と `params.next_phase` を結果 JSON に含め、補助 API 呼び出し前の proposal と
 同じ `state_version` で `complete` する。`exit_success` で PR を二重作成しない。
 
+PR 作成は次の Task テンプレートで実行する。`verified_branch` と cwd は proposal の値をそのまま渡し、
+Task 側で探索・再構成しない。
+
+```text
+Task(subagent_type="general-purpose", prompt="""
+`pr-create` スキルの Step 1〜4 に従い、implementation 成功時の PR を作成または再利用してください。
+
+- cwd: {params.worktree_path}
+- 対象ブランチ: {params.verified_branch}
+- Issue: {params.issue_number}
+- proposal の params.exec にある commit / record_baseline / push は実行済みです。追加 commit が無ければ
+  pr-create の push は繰り返さないでください
+- 既存 PR があれば新規作成せず、その PR を返してください
+- auto-merge を有効化せず、worktree を保持してください
+
+返却は PR 番号・URL・Open/Draft 状態の短い要約だけにし、Issue本文やコマンド生出力を含めないでください。
+""")
+```
+
 ## `exit_success`
 
 1. 既存 PR と反復履歴・Checker 結果を確認する。新しい PR は作らない。
@@ -686,6 +705,26 @@ proposal の `params.draft_pr_exec` を順序どおり実行する。
 - macOS 通知を発火する。
 - auto-merge は付与せず、worktree を保持する。
 - 投稿・通知の直前に redaction し、完了結果を `python3 "$LOOP_STEP" complete ...` して終了する。
+
+Draft PR の作成または既存 PR の Draft 化は次の Task テンプレートで実行する。proposal に PR 番号が
+無い場合だけ `pr-create` を使い、既存 PR がある場合は同じ PR を Draft に戻す。
+
+```text
+Task(subagent_type="general-purpose", prompt="""
+`exit_failure` proposal の失敗出口を、次の固定コンテキストで処理してください。
+
+- cwd: {params.worktree_path}
+- 対象ブランチ: {params.branch}
+- Issue: {params.issue_number}
+- 既存 PR: {params.pr_number}
+- params.draft_pr_exec の順序を変更・省略しないでください
+
+既存 PR が無い場合は `pr-create` スキルを再利用して Draft PR を作成してください。既存 PR がある場合は
+新規作成せず、cwd を固定した `gh pr ready --undo` 相当で同じ PR を Draft に戻してください。
+auto-merge を有効化せず、worktree を保持してください。返却は PR 番号・URL・Draft 状態、実行した
+params.draft_pr_exec の短い要約だけにし、レビュー本文やコマンド生出力を含めないでください。
+""")
+```
 
 ## 通常終了の Issue コメントと通知
 
