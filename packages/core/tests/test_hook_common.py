@@ -82,6 +82,10 @@ class TestIsTestPath:
     def test_scoped_scope_matches_evaluation_set_behavior(self, path: str, expected: bool) -> None:
         assert hook_common.is_test_path(path, scope="scoped") is expected
 
+    def test_unknown_scope_raises_value_error(self) -> None:
+        with pytest.raises(ValueError, match="Unknown scope"):
+            hook_common.is_test_path("tests/test_auth.py", scope="unknown")
+
 
 # =========================================================================
 # load_package_config
