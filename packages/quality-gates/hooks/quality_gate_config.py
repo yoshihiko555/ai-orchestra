@@ -48,6 +48,7 @@ else:
         sys.path.insert(0, str(_fallback_core_hooks))
 
 from hook_common import load_package_config, resolve_path_within  # noqa: E402
+from log_common import find_project_root  # noqa: E402
 
 # features.quality_gate.enabled が config に無い場合のデフォルト値。
 # audit-flags.json のベース値 (enabled: true) に合わせることで、
@@ -78,6 +79,16 @@ def resolve_state_path(project_dir: str, filename: str, config: dict | None = No
     関数を import して使う。Issue #154 のレビュー指摘: 同名関数の重複実装は
     契約のズレを招くため一本化した）。
 
+    `project_dir` には hook payload の `cwd` がそのまま渡ってくることがある。
+    Claude Code がリポジトリのサブディレクトリ（例: `packages/core`）から
+    起動された場合、payload の cwd もそのサブディレクトリになるため、正規化
+    せずに使うと state ファイルが repo root ではなくサブディレクトリ配下の
+    `.claude/state/` にアンカーされてしまう（PR #191 レビュー指摘）。そのため
+    `find_project_root()`（log_common、`.claude/` を持つ最寄りの親を探す既存
+    ユーティリティ）で project_dir をプロジェクトルートへ正規化してから
+    config 読み込み・パス解決を行う。`.claude/` が見つからない場合は元の
+    project_dir をそのまま使う（既存の呼び出し元・テストとの後方互換）。
+
     `config` に呼び出し側が事前読み込みした audit-flags.json の dict を渡すと、
     同一 hook 呼び出し内での重複読み込みを避けられる（省略時は内部で読み込む。
     既存呼び出し元との後方互換のためデフォルト None）。
@@ -86,10 +97,11 @@ def resolve_state_path(project_dir: str, filename: str, config: dict | None = No
     解決される場合は DEFAULT_STATE_DIR 直下へフォールバックする。常に非 None の
     str を返す。
     """
+    normalized_project_dir = find_project_root(project_dir) if project_dir else find_project_root()
     resolved_config = (
         config
         if config is not None
-        else load_package_config("audit", "audit-flags.json", project_dir)
+        else load_package_config("audit", "audit-flags.json", normalized_project_dir)
     )
     state_dir_value = resolved_config.get("paths", {}).get("state_dir")
     state_dir = (
@@ -97,11 +109,11 @@ def resolve_state_path(project_dir: str, filename: str, config: dict | None = No
         if isinstance(state_dir_value, str) and state_dir_value
         else DEFAULT_STATE_DIR
     )
-    resolved = resolve_path_within(project_dir, state_dir, filename)
+    resolved = resolve_path_within(normalized_project_dir, state_dir, filename)
     if resolved:
         return resolved
-    fallback = resolve_path_within(project_dir, DEFAULT_STATE_DIR, filename)
-    return fallback or os.path.join(project_dir, DEFAULT_STATE_DIR, filename)
+    fallback = resolve_path_within(normalized_project_dir, DEFAULT_STATE_DIR, filename)
+    return fallback or os.path.join(normalized_project_dir, DEFAULT_STATE_DIR, filename)
 
 
 def resolve_quality_gate_enabled(quality_gate: dict) -> bool:

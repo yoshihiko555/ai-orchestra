@@ -64,6 +64,36 @@ def test_get_project_state_key_falls_back_to_project_dir(monkeypatch) -> None:
 
 
 # ---------------------------------------------------------------------------
+# resolve_state_path (cwd normalization)
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_state_path_anchors_at_repo_root_from_subdir_cwd(tmp_path) -> None:
+    """PR #191 レビュー指摘: サブディレクトリ cwd でも repo root にアンカーする。"""
+    (tmp_path / ".claude").mkdir()
+    sub_dir = tmp_path / "packages" / "core"
+    sub_dir.mkdir(parents=True)
+
+    resolved = quality_gate_config.resolve_state_path(str(sub_dir), "test-state.json", config={})
+
+    assert resolved == str(tmp_path / ".claude" / "state" / "test-state.json")
+
+
+def test_resolve_state_path_falls_back_to_original_dir_when_no_claude_found(
+    tmp_path,
+) -> None:
+    """`.claude/` が見つからない場合は既存挙動どおり project_dir をそのまま使う。"""
+    isolated_dir = tmp_path / "isolated"
+    isolated_dir.mkdir()
+
+    resolved = quality_gate_config.resolve_state_path(
+        str(isolated_dir), "test-state.json", config={}
+    )
+
+    assert resolved == str(isolated_dir / ".claude" / "state" / "test-state.json")
+
+
+# ---------------------------------------------------------------------------
 # load_project_scoped_state / save_project_scoped_state
 # ---------------------------------------------------------------------------
 
