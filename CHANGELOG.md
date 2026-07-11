@@ -25,6 +25,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`meta-harness`: proposer 隔離設定（Phase 2 M1）を追加**: `proposer.tool` と `proposer.isolation.*`（srt backend / version pin / allowRead 追加）を導入
 - **`meta-harness`: `orchex meta propose`（Phase 2 M4）を追加**: filtered view を srt 隔離 backend 内の proposer（既定 codex）へ渡し、構造化 proposal を検証して候補登録する。無効 proposal は候補登録せず `rejected/` に診断保存する。`proposer.timeout_seconds` で codex backend の wall-clock timeout を制御し、timeout 時はプロセスグループごと強制終了する。proposal 登録イベントには codex stdout 由来の `tokens_used` も記録する
 - **`meta-harness`: `orchex meta promote`（Phase 2 M5）を追加**: frontier 上の候補を予約して promotion worktree に適用し、facet/context build と任意の `promote.verify_command` を通した上で PR を作成する。`--confirm` は PR merge と main 到達を検証した場合のみ `promoted` 遷移を記録する
+- **`meta-harness`: proposer 出力経路の資格情報検知（Phase 2 L2/L3）を追加**: 候補登録時に proposal・overlay を走査し、staged auth の canary（L2）や `sk-`/JWT 等の汎用 secret（L3）を検出したら登録を拒否して台帳へ `proposer_security_violation` を記録する。L3 スキャンは `promote` 前提条件でも再実行する（検知層であり主対策は認証情報の最小化）
 
 ### Fixed
 
