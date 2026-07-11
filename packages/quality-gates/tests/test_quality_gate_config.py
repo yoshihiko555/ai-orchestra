@@ -93,6 +93,24 @@ def test_resolve_state_path_falls_back_to_original_dir_when_no_claude_found(
     assert resolved == str(isolated_dir / ".claude" / "state" / "test-state.json")
 
 
+def test_resolve_state_path_sanitizes_traversal_filename(tmp_path) -> None:
+    """PR #191 CodeRabbit 指摘: `../` を含む filename でも project 外へ脱出しない。"""
+    (tmp_path / ".claude").mkdir()
+
+    resolved = quality_gate_config.resolve_state_path(str(tmp_path), "../../etc/passwd", config={})
+
+    assert resolved == str(tmp_path / ".claude" / "state" / "passwd")
+
+
+def test_resolve_state_path_sanitizes_absolute_filename(tmp_path) -> None:
+    """PR #191 CodeRabbit 指摘: 絶対パス filename でも project 外の生パスを返さない。"""
+    (tmp_path / ".claude").mkdir()
+
+    resolved = quality_gate_config.resolve_state_path(str(tmp_path), "/etc/passwd", config={})
+
+    assert resolved == str(tmp_path / ".claude" / "state" / "passwd")
+
+
 # ---------------------------------------------------------------------------
 # load_project_scoped_state / save_project_scoped_state
 # ---------------------------------------------------------------------------
@@ -251,3 +269,57 @@ def test_update_project_scoped_state_concurrent_threads_do_not_lose_updates(tmp_
 
     final = quality_gate_config.load_project_scoped_state(state_file, "project-a", default_state)
     assert final == {"count": increments_per_thread * thread_count}
+
+
+# ---------------------------------------------------------------------------
+# Lock acquisition failure — fail-open (PR #191 CodeRabbit 指摘)
+# ---------------------------------------------------------------------------
+
+
+def _raise_on_lock_ex(monkeypatch) -> None:
+    """`fcntl.flock` の排他ロック取得（LOCK_EX）だけを OSError で失敗させる。"""
+    import fcntl
+
+    def fake_flock(fd, operation):
+        if operation == fcntl.LOCK_EX:
+            raise OSError("simulated lock acquisition failure")
+        return None
+
+    monkeypatch.setattr(quality_gate_config.fcntl, "flock", fake_flock)
+
+
+def test_update_project_scoped_state_fails_open_when_lock_fails(tmp_path, monkeypatch) -> None:
+    _raise_on_lock_ex(monkeypatch)
+    state_file = tmp_path / "state.json"
+    default_state = {"count": 0, "items": []}
+
+    result = quality_gate_config.update_project_scoped_state(
+        state_file, "project-a", lambda state: {**state, "count": state["count"] + 1}, default_state
+    )
+
+    assert result == {"count": 1, "items": []}
+    assert not state_file.exists()
+
+
+def test_update_locked_json_state_fails_open_when_lock_fails(tmp_path, monkeypatch) -> None:
+    _raise_on_lock_ex(monkeypatch)
+    state_file = tmp_path / "flat-state.json"
+    default_state = {"count": 0}
+
+    result = quality_gate_config.update_locked_json_state(
+        state_file, lambda state: {"count": state["count"] + 1}, default_state
+    )
+
+    assert result == {"count": 1}
+    assert not state_file.exists()
+
+
+def test_load_project_scoped_state_fails_open_when_lock_fails(tmp_path, monkeypatch) -> None:
+    _raise_on_lock_ex(monkeypatch)
+    state_file = tmp_path / "state.json"
+    default_state = {"count": 0, "items": []}
+
+    result = quality_gate_config.load_project_scoped_state(state_file, "project-a", default_state)
+
+    assert result == default_state
+    assert not state_file.exists()

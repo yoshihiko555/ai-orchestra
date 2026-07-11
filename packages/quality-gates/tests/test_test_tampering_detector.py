@@ -329,3 +329,31 @@ def test_main_outputs_warning(monkeypatch, capsys: pytest.CaptureFixture[str]) -
     assert "[Warning]" in context
     assert "tests/test_auth.py" in context
     assert "it.skip()" in context
+
+
+def test_main_fails_open_when_state_persistence_raises(
+    monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """PR #191 CodeRabbit 指摘の検証: `get_unreported_deleted_test_files` /
+    `get_unreported_pattern_findings` が使う `update_locked_json_state`
+    （flock + tmpファイル書き込み）は `.claude/state` が読み取り専用等の場合に
+    `OSError` を送出しうる。`main()` はすでに `@safe_hook_execution` で全体を
+    ラップされているため、この経路の例外も stderr へのログ出力のみで
+    `sys.exit(0)` に丸め込まれ、フックプロセスを異常終了させないことを保証する。
+    """
+    payload = {
+        "tool_name": "Write",
+        "tool_input": {"file_path": "tests/test_auth.py", "content": "it.skip('x')\n"},
+    }
+    monkeypatch.setattr(sys, "stdin", StringIO(json.dumps(payload)))
+
+    def _raise(_data: dict) -> list:
+        raise OSError("simulated .claude/state lock acquisition failure")
+
+    monkeypatch.setattr(test_tampering_detector, "collect_tampering_findings", _raise)
+
+    with pytest.raises(SystemExit) as exc_info:
+        test_tampering_detector.main()
+
+    assert exc_info.value.code == 0
+    assert "Hook error" in capsys.readouterr().err

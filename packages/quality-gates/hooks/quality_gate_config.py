@@ -72,6 +72,23 @@ DEFAULT_TEST_GATE_STATE: dict = {
 DEFAULT_STATE_DIR = os.path.join(".claude", "state")
 
 
+def _sanitize_state_filename(filename: str) -> str:
+    """`filename` を単一の安全な basename に制限する。
+
+    PR #191 CodeRabbit レビュー指摘: `resolve_state_path` の最終フォールバックが
+    `resolve_path_within` に拒否された（project_dir の外を指す）`filename` を
+    そのまま `os.path.join` していたため、絶対パスなら project_dir 接頭辞ごと
+    捨てられ、`../` ならそのまま外部へ脱出できてしまっていた。`os.path.basename`
+    で末尾要素だけを取り出すことでディレクトリ区切りやトラバーサル要素を除去し、
+    basename が空文字・`.`・`..` に潰れる異常系は固定の安全な名前へフォールバック
+    する（常にディレクトリ区切りを含まない非空文字列を返す）。
+    """
+    name = os.path.basename(filename) if filename else ""
+    if not name or name in (os.curdir, os.pardir):
+        return "invalid-state-filename"
+    return name
+
+
 def resolve_state_path(project_dir: str, filename: str, config: dict | None = None) -> str:
     """<project_dir>/.claude/state/<filename> に解決する（paths.state_dir 上書き対応）。
 
@@ -93,9 +110,11 @@ def resolve_state_path(project_dir: str, filename: str, config: dict | None = No
     同一 hook 呼び出し内での重複読み込みを避けられる（省略時は内部で読み込む。
     既存呼び出し元との後方互換のためデフォルト None）。
 
-    resolve_path_within によるパストラバーサル防御込みで、project_dir の外に
-    解決される場合は DEFAULT_STATE_DIR 直下へフォールバックする。常に非 None の
-    str を返す。
+    `filename` は `_sanitize_state_filename` で単一の安全な basename に丸めて
+    から使う（PR #191 CodeRabbit レビュー指摘: 拒否パスを未検証の os.path.join
+    で復活させない）。resolve_path_within によるパストラバーサル防御込みで、
+    project_dir の外に解決される場合は DEFAULT_STATE_DIR 直下へフォールバック
+    する。常に非 None の str を返す。
     """
     normalized_project_dir = find_project_root(project_dir) if project_dir else find_project_root()
     resolved_config = (
@@ -109,11 +128,12 @@ def resolve_state_path(project_dir: str, filename: str, config: dict | None = No
         if isinstance(state_dir_value, str) and state_dir_value
         else DEFAULT_STATE_DIR
     )
-    resolved = resolve_path_within(normalized_project_dir, state_dir, filename)
+    safe_filename = _sanitize_state_filename(filename)
+    resolved = resolve_path_within(normalized_project_dir, state_dir, safe_filename)
     if resolved:
         return resolved
-    fallback = resolve_path_within(normalized_project_dir, DEFAULT_STATE_DIR, filename)
-    return fallback or os.path.join(normalized_project_dir, DEFAULT_STATE_DIR, filename)
+    fallback = resolve_path_within(normalized_project_dir, DEFAULT_STATE_DIR, safe_filename)
+    return fallback or os.path.join(normalized_project_dir, DEFAULT_STATE_DIR, safe_filename)
 
 
 def resolve_quality_gate_enabled(quality_gate: dict) -> bool:
@@ -207,11 +227,43 @@ def _write_state_file(state_file: Path, raw_state: dict) -> None:
         pass
 
 
-def _locked_state_section(state_file: Path):
-    """`state_file` 隣の `.lock` ファイルに対する排他ロック context manager。"""
-    state_file.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = Path(str(state_file) + ".lock")
-    return open(lock_path, "w", encoding="utf-8")
+def _run_locked(
+    state_file: Path,
+    fallback: Callable[[], dict],
+    body: Callable[[], dict],
+) -> dict:
+    """`state_file` 隣の `.lock` に対する排他ロックを取得し `body()` を実行する。
+
+    PR #191 CodeRabbit レビュー指摘: `.claude/state` が読み取り専用等の場合、
+    ロック用ディレクトリ作成（mkdir）・ロックファイル open・flock 取得のいずれ
+    からも `OSError` が発生しうるが、これを呼び出し元（フックの `main()`）まで
+    伝播させると「hook は失敗しても Claude Code を止めない」という fail-open
+    設計原則に反する。そのため、ロック取得系の `OSError` はすべて `fallback()`
+    （ディスクへの永続化を諦め、メモリ上のデフォルト状態に対して処理を続行する
+    関数）へのフォールバックに変換し、例外を外へ漏らさない。
+    """
+    try:
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = Path(str(state_file) + ".lock")
+        lock_file = open(lock_path, "w", encoding="utf-8")
+    except OSError:
+        return fallback()
+
+    try:
+        with lock_file:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            except OSError:
+                return fallback()
+            try:
+                return body()
+            finally:
+                try:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                except OSError:
+                    pass
+    except OSError:
+        return fallback()
 
 
 def update_project_scoped_state(
@@ -237,27 +289,32 @@ def update_project_scoped_state(
         default_state: プロジェクト未登録時に使うデフォルト状態。
 
     Returns:
-        永続化された新しいプロジェクト状態。
+        永続化された新しいプロジェクト状態。ロック取得（mkdir/open/flock）が
+        `.claude/state` の読み取り専用化等で失敗した場合は、ディスクへの
+        永続化を諦め、`default_state` に `mutate_fn` を適用したメモリ上の
+        結果を返す（fail-open。PR #191 CodeRabbit レビュー指摘）。
     """
-    with _locked_state_section(state_file) as lock_file:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-        try:
-            raw_state = _read_state_file(state_file)
-            state_by_project = raw_state.get("state_by_project", {})
-            current_project_state = state_by_project.get(project_key)
 
-            merged = copy.deepcopy(default_state)
-            if isinstance(current_project_state, dict):
-                merged.update(current_project_state)
+    def _fallback() -> dict:
+        return mutate_fn(copy.deepcopy(default_state))
 
-            new_project_state = mutate_fn(merged)
+    def _body() -> dict:
+        raw_state = _read_state_file(state_file)
+        state_by_project = raw_state.get("state_by_project", {})
+        current_project_state = state_by_project.get(project_key)
 
-            state_by_project[project_key] = new_project_state
-            raw_state["state_by_project"] = state_by_project
-            _write_state_file(state_file, raw_state)
-            return new_project_state
-        finally:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        merged = copy.deepcopy(default_state)
+        if isinstance(current_project_state, dict):
+            merged.update(current_project_state)
+
+        new_project_state = mutate_fn(merged)
+
+        state_by_project[project_key] = new_project_state
+        raw_state["state_by_project"] = state_by_project
+        _write_state_file(state_file, raw_state)
+        return new_project_state
+
+    return _run_locked(state_file, _fallback, _body)
 
 
 def update_locked_json_state(
@@ -283,20 +340,25 @@ def update_locked_json_state(
         default_state: ファイル未作成時に使うデフォルト状態。
 
     Returns:
-        永続化された新しい状態。
+        永続化された新しい状態。ロック取得（mkdir/open/flock）が
+        `.claude/state` の読み取り専用化等で失敗した場合は、ディスクへの
+        永続化を諦め、`default_state` に `mutate_fn` を適用したメモリ上の
+        結果を返す（fail-open。PR #191 CodeRabbit レビュー指摘）。
     """
-    with _locked_state_section(state_file) as lock_file:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-        try:
-            raw_state = _read_state_file(state_file)
-            merged = copy.deepcopy(default_state)
-            if isinstance(raw_state, dict):
-                merged.update(raw_state)
-            new_state = mutate_fn(merged)
-            _write_state_file(state_file, new_state)
-            return new_state
-        finally:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+    def _fallback() -> dict:
+        return mutate_fn(copy.deepcopy(default_state))
+
+    def _body() -> dict:
+        raw_state = _read_state_file(state_file)
+        merged = copy.deepcopy(default_state)
+        if isinstance(raw_state, dict):
+            merged.update(raw_state)
+        new_state = mutate_fn(merged)
+        _write_state_file(state_file, new_state)
+        return new_state
+
+    return _run_locked(state_file, _fallback, _body)
 
 
 def load_project_scoped_state(state_file: Path, project_key: str, default_state: dict) -> dict:
@@ -311,20 +373,26 @@ def load_project_scoped_state(state_file: Path, project_key: str, default_state:
 
     並行する `update_project_scoped_state` 呼び出しと read が interleave
     しないよう、読み込み自体も同じロックで保護する。
-    """
-    with _locked_state_section(state_file) as lock_file:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-        try:
-            raw_state = _read_state_file(state_file)
-            state_by_project = raw_state.get("state_by_project", {})
-            project_state = state_by_project.get(project_key)
 
-            merged = copy.deepcopy(default_state)
-            if isinstance(project_state, dict):
-                merged.update(project_state)
-            return merged
-        finally:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    ロック取得（mkdir/open/flock）が `.claude/state` の読み取り専用化等で
+    失敗した場合は、読み込みを諦めて `default_state` のコピーを返す
+    （fail-open。PR #191 CodeRabbit レビュー指摘）。
+    """
+
+    def _fallback() -> dict:
+        return copy.deepcopy(default_state)
+
+    def _body() -> dict:
+        raw_state = _read_state_file(state_file)
+        state_by_project = raw_state.get("state_by_project", {})
+        project_state = state_by_project.get(project_key)
+
+        merged = copy.deepcopy(default_state)
+        if isinstance(project_state, dict):
+            merged.update(project_state)
+        return merged
+
+    return _run_locked(state_file, _fallback, _body)
 
 
 def save_project_scoped_state(state_file: Path, project_key: str, project_state: dict) -> None:
