@@ -576,11 +576,23 @@ def _enforce_output_security(
     `prop.ProposerError` を送出し、登録拒否 + rejected 保存に合流させる。
     """
     named_texts = {"proposal": json.dumps(proposal, ensure_ascii=False)}
-    for rel in overlay_files:
+    for index, rel in enumerate(overlay_files):
+        named_texts[f"overlay-path:{index}"] = rel
         try:
-            named_texts[f"overlay:{rel}"] = (overlay_dir / rel).read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            continue
+            content = (overlay_dir / rel).read_bytes().decode("utf-8", errors="ignore")
+        except OSError:
+            reason = f"overlay file could not be scanned at index {index}"
+            _append_security_violation_event(
+                main_root,
+                config,
+                detector=psec.DETECTOR_SECRET_SCAN,
+                reason=reason,
+                target=target,
+            )
+            raise prop.ProposerError(
+                f"proposer output security violation ({psec.DETECTOR_SECRET_SCAN}): {reason}"
+            ) from None
+        named_texts[f"overlay-content:{index}"] = content
     violations = psec.scan_named_texts(named_texts, auth_canary=auth_canary)
     if not violations:
         return

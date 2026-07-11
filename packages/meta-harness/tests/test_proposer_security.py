@@ -50,6 +50,11 @@ class TestCanaryDetection:
         hits = psec.scan_text_for_canary(f"data:{encoded}", _CANARY)
         assert "hex" in hits
 
+    def test_uppercase_hex_variant_detected(self) -> None:
+        encoded = _CANARY.encode().hex().upper()
+        hits = psec.scan_text_for_canary(f"data:{encoded}", _CANARY)
+        assert "hex-uppercase" in hits
+
     def test_url_variant_detected(self) -> None:
         # URL エンコードで必ず変化する値を持つ canary を使う（空白入りは quote で %20 化）。
         canary = "canary token/with+special"
@@ -71,9 +76,9 @@ class TestSecretScan:
         assert "API key (sk- prefix)" in hits
 
     def test_hyphenated_sk_api_keys_detected(self) -> None:
-        for key_kind in ("proj", "svcacct"):
+        for key_kind in ("proj", "svcacct", "ant"):
             hits = psec.scan_text_for_secrets(f"token = {_sample_sk_key(key_kind)}")
-            assert "OpenAI API key (hyphenated sk- prefix)" in hits
+            assert "API key (hyphenated sk- prefix)" in hits
 
     def test_jwt_three_segment_detected(self) -> None:
         jwt = _sample_jwt()
@@ -96,10 +101,10 @@ class TestRedactForStorage:
         assert "[REDACTED:JWT (3-segment)]" in redacted
 
     def test_hyphenated_sk_api_key_is_masked(self) -> None:
-        key = _sample_sk_key("proj")
+        key = _sample_sk_key("ant")
         redacted = psec.redact_for_storage(f"api_key={key}")
         assert key not in redacted
-        assert "[REDACTED:OpenAI API key (hyphenated sk- prefix)]" in redacted
+        assert "[REDACTED:API key (hyphenated sk- prefix)]" in redacted
 
     def test_canary_variants_are_masked(self) -> None:
         encoded = base64.b64encode(_CANARY.encode()).decode()

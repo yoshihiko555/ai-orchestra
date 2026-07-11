@@ -46,12 +46,14 @@ def _register_candidate(
     cand_id: str = _CAND_ID,
     *,
     overlay_content: str | bytes = "# Example\n\nPromoted content.\n",
+    overlay_rel: str = "facets/example/SKILL.md",
     description: str = "Promote a better example facet.",
+    based_on_runs: list[str] | None = None,
 ) -> str:
     mh.init_store(git_project, mh.load_config(git_project))
     source_commit = git_run("rev-parse", "HEAD", cwd=git_project).stdout.strip()
     overlay_dir = tmp_path / f"overlay-{cand_id}"
-    overlay_file = overlay_dir / "facets" / "example" / "SKILL.md"
+    overlay_file = overlay_dir / overlay_rel
     overlay_file.parent.mkdir(parents=True, exist_ok=True)
     if isinstance(overlay_content, bytes):
         overlay_file.write_bytes(overlay_content)
@@ -69,7 +71,7 @@ def _register_candidate(
         "source_commit": source_commit,
         "config_hash": mh.compute_config_hash(overlay_dir, config),
         "model_versions": {},
-        "overlay_files": ["facets/example/SKILL.md"],
+        "overlay_files": [overlay_rel],
         "description": description,
     }
     mh.register_candidate(
@@ -94,7 +96,7 @@ def _register_candidate(
             "created_by": "proposer",
             "proposal": {
                 "theme": "promote example",
-                "based_on_runs": ["run-non-holdout"],
+                "based_on_runs": based_on_runs or ["run-non-holdout"],
                 "cost_usd": 0.0,
             },
         },
@@ -278,6 +280,62 @@ def test_promote_rejects_secret_in_pr_description(
 
     assert exit_code == cli.EXIT_VALIDATION_ERROR
     assert "manifest contains secret-like content in description" in capsys.readouterr().err
+    assert not any(event.get("event") == "promotion_reserved" for event in _events(git_project))
+
+
+def test_promote_rejects_secret_in_candidate_id(
+    git_project: Path, git_run, tmp_path: Path, capsys
+) -> None:
+    """GitHubへ公開される candidate id に secret が含まれる場合は拒否する。"""
+    cand_id = f"cand-20260709-010001-{_sample_sk_key('ant').lower()}"
+    _register_candidate(git_project, git_run, tmp_path, cand_id=cand_id)
+    _append_run(git_project, cand_id, run_id="run-non-holdout", holdout=False)
+    _append_run(git_project, cand_id, run_id="run-holdout", holdout=True)
+
+    exit_code = cli.cmd_promote(str(git_project), cand_id, False, False)
+
+    assert exit_code == cli.EXIT_VALIDATION_ERROR
+    assert "candidate id contains secret-like content" in capsys.readouterr().err
+    assert not any(event.get("event") == "promotion_reserved" for event in _events(git_project))
+
+
+def test_promote_rejects_secret_in_overlay_path(
+    git_project: Path, git_run, tmp_path: Path, capsys
+) -> None:
+    """GitHubのdiffへ公開される overlay path に secret が含まれる場合は拒否する。"""
+    cand_id = _register_candidate(
+        git_project,
+        git_run,
+        tmp_path,
+        overlay_rel=f"facets/{_sample_sk_key('ant')}/SKILL.md",
+    )
+    _append_run(git_project, cand_id, run_id="run-non-holdout", holdout=False)
+    _append_run(git_project, cand_id, run_id="run-holdout", holdout=True)
+
+    exit_code = cli.cmd_promote(str(git_project), cand_id, False, False)
+
+    assert exit_code == cli.EXIT_VALIDATION_ERROR
+    assert "overlay path contains secret-like content" in capsys.readouterr().err
+    assert not any(event.get("event") == "promotion_reserved" for event in _events(git_project))
+
+
+def test_promote_rejects_secret_in_constructed_pr_body(
+    git_project: Path, git_run, tmp_path: Path, capsys
+) -> None:
+    """PR本文の組み立て後に、manifest外から混入した secret も拒否する。"""
+    cand_id = _register_candidate(
+        git_project,
+        git_run,
+        tmp_path,
+        based_on_runs=[_sample_sk_key("ant")],
+    )
+    _append_run(git_project, cand_id, run_id="run-non-holdout", holdout=False)
+    _append_run(git_project, cand_id, run_id="run-holdout", holdout=True)
+
+    exit_code = cli.cmd_promote(str(git_project), cand_id, False, False)
+
+    assert exit_code == cli.EXIT_VALIDATION_ERROR
+    assert "promotion output contains secret-like content in PR body" in capsys.readouterr().err
     assert not any(event.get("event") == "promotion_reserved" for event in _events(git_project))
 
 

@@ -30,11 +30,11 @@ DETECTOR_CANARY = "L2_canary"
 DETECTOR_SECRET_SCAN = "L3_secret_scan"
 
 # L3: redaction の実績パターン（sk-, ghp_, AKIA, PEM 等）を検知層として再利用し、
-# ハイフンを含む OpenAI API key と、設計が明示する JWT 3 セグメント形式を追加する。
+# ハイフンを含む API key と、設計が明示する JWT 3 セグメント形式を追加する。
 # JWT は `eyJ`（`{"` の base64）で始まる 3 セグメント構造に限定し、汎用 base64
 # blob による誤検知を抑える。
-_HYPHENATED_SK_PATTERN_NAME = "OpenAI API key (hyphenated sk- prefix)"
-_HYPHENATED_SK_PATTERN = re.compile(r"\bsk-(?:proj|svcacct)-[A-Za-z0-9_-]{10,}\b")
+_HYPHENATED_SK_PATTERN_NAME = "API key (hyphenated sk- prefix)"
+_HYPHENATED_SK_PATTERN = re.compile(r"\bsk-[A-Za-z0-9]{2,}-[A-Za-z0-9_-]{10,}\b")
 _JWT_PATTERN = re.compile(r"\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\b")
 _L3_SECRET_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     *redaction.REDACTION_PATTERNS,
@@ -60,6 +60,7 @@ def canary_variants(canary: str) -> dict[str, str]:
         "base64-nopad": base64.b64encode(raw).decode("ascii").rstrip("="),
         "base64url": base64.urlsafe_b64encode(raw).decode("ascii").rstrip("="),
         "hex": raw.hex(),
+        "hex-uppercase": raw.hex().upper(),
         "url": urllib.parse.quote(canary, safe=""),
     }
     return {name: value for name, value in variants.items() if value}

@@ -25,6 +25,15 @@ _RUN_ID = "run-20260708-020000-parent-scn-a1-abcd"
 _HOLDOUT_RUN_ID = "run-20260708-020000-parent-scn-h1-abcd"
 
 
+def _sample_sk_key(key_kind: str | None = None) -> str:
+    """外部 scanner に触れるキーリテラルを置かず、検査用 sk- key を返す。"""
+    parts = ["sk"]
+    if key_kind:
+        parts.append(key_kind)
+    parts.append("abcdef0123456789ABCDEFghij")
+    return "-".join(parts)
+
+
 def _write_executable(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
     path.chmod(0o755)
@@ -96,7 +105,13 @@ def _commit_facets(git_project: Path, git_run) -> str:
     return git_run("rev-parse", "HEAD", cwd=git_project).stdout.strip()
 
 
-def _prepare_store(git_project: Path, git_run) -> None:
+def _prepare_store(
+    git_project: Path,
+    git_run,
+    *,
+    inherited_rel: str = "facets/parent-only/SKILL.md",
+    inherited_content: str | bytes = "# Parent only\n\nInherited content.\n",
+) -> None:
     config = mh.DEFAULTS
     source_commit = _commit_facets(git_project, git_run)
     mh.init_store(git_project, config)
@@ -104,9 +119,12 @@ def _prepare_store(git_project: Path, git_run) -> None:
     overlay_file = cand_dir / "overlay" / "facets" / "example" / "SKILL.md"
     overlay_file.parent.mkdir(parents=True)
     overlay_file.write_text("# Example\n\nParent overlay.\n", encoding="utf-8")
-    inherited_file = cand_dir / "overlay" / "facets" / "parent-only" / "SKILL.md"
+    inherited_file = cand_dir / "overlay" / inherited_rel
     inherited_file.parent.mkdir(parents=True)
-    inherited_file.write_text("# Parent only\n\nInherited content.\n", encoding="utf-8")
+    if isinstance(inherited_content, bytes):
+        inherited_file.write_bytes(inherited_content)
+    else:
+        inherited_file.write_text(inherited_content, encoding="utf-8")
     overlay_dir = cand_dir / "overlay"
     manifest = {
         "schema_version": "1.0",
@@ -501,15 +519,12 @@ def test_propose_rejects_empty_citable_run_set_before_backend(
     assert "no citable non-holdout runs for target: claude-harness" in capsys.readouterr().err
 
 
-_SK_SECRET = "sk-abcdef0123456789ABCDEFghij"
-
-
 def test_propose_rejects_secret_in_proposal_and_records_violation(
     git_project: Path, git_run, tmp_path: Path, run_meta
 ) -> None:
     """L3: proposal 本文に sk- 系 API key が混入したら登録拒否 + violation 記録。"""
     _prepare_store(git_project, git_run)
-    proposal = _valid_proposal(content=f"# Example\n\nleaked {_SK_SECRET}\n")
+    proposal = _valid_proposal(content=f"# Example\n\nleaked {_sample_sk_key()}\n")
 
     result = run_meta(
         "propose",
@@ -526,6 +541,56 @@ def test_propose_rejects_secret_in_proposal_and_records_violation(
     assert not any(e.get("event") == "candidate_registered" for e in events)
     assert sorted(mh.rejected_dir(git_project, mh.DEFAULTS).glob("*-proposal.json"))
     _assert_no_srt_settings_dirs(tmp_path)
+
+
+def test_propose_scans_non_utf8_inherited_overlay(
+    git_project: Path, git_run, tmp_path: Path, run_meta
+) -> None:
+    """非 UTF-8 の親overlayでもASCII部分のsecretを読み飛ばさない。"""
+    _prepare_store(
+        git_project,
+        git_run,
+        inherited_content=b"\xffleaked " + _sample_sk_key("ant").encode() + b"\n",
+    )
+
+    result = run_meta(
+        "propose",
+        "--target",
+        "claude-harness",
+        project=git_project,
+        env_extra=_prepare_stubbed_codex(tmp_path, _valid_proposal()),
+    )
+
+    violations = [
+        e for e in _events(git_project) if e.get("event") == "proposer_security_violation"
+    ]
+    assert result.returncode == 2
+    assert violations and violations[-1]["detector"] == "L3_secret_scan"
+
+
+def test_propose_scans_inherited_overlay_path(
+    git_project: Path, git_run, tmp_path: Path, run_meta
+) -> None:
+    """親から継承したoverlay path自体にsecretが含まれる場合も拒否する。"""
+    _prepare_store(
+        git_project,
+        git_run,
+        inherited_rel=f"facets/{_sample_sk_key('ant')}/SKILL.md",
+    )
+
+    result = run_meta(
+        "propose",
+        "--target",
+        "claude-harness",
+        project=git_project,
+        env_extra=_prepare_stubbed_codex(tmp_path, _valid_proposal()),
+    )
+
+    violations = [
+        e for e in _events(git_project) if e.get("event") == "proposer_security_violation"
+    ]
+    assert result.returncode == 2
+    assert violations and violations[-1]["detector"] == "L3_secret_scan"
 
 
 def _fake_jwt(exp_epoch: int) -> str:

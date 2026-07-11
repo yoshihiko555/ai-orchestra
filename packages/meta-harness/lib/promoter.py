@@ -274,13 +274,18 @@ def _validate_preconditions(
             f"candidate run hashes are stale; re-run evaluate for candidate: {cand_id}"
         )
     _check_overlay_integrity(main_root, config, manifest)
-    _check_output_secret_scan(main_root, config, manifest)
-    _check_freshness(project_dir, manifest, config)
-
     branch = f"meta/promote-{_cand_slug(cand_id)}"
     worktree_dir = main_root / ".worktrees" / f"meta-promote-{_cand_slug(cand_id)}"
     title = f"feat(meta-harness): promote {cand_id}"
     body = _build_pr_body(cand_id, manifest, frontier_doc, events)
+    _check_output_secret_scan(
+        main_root,
+        config,
+        manifest,
+        promotion_outputs={"branch": branch, "PR title": title, "PR body": body},
+    )
+    _check_freshness(project_dir, manifest, config)
+
     return PromotionPreflight(
         cand_id=cand_id,
         manifest=manifest,
@@ -860,13 +865,26 @@ def _check_overlay_integrity(main_root: Path, config: dict, manifest: dict[str, 
         )
 
 
-def _check_output_secret_scan(main_root: Path, config: dict, manifest: dict[str, Any]) -> None:
+def _check_output_secret_scan(
+    main_root: Path,
+    config: dict,
+    manifest: dict[str, Any],
+    *,
+    promotion_outputs: dict[str, str],
+) -> None:
     """PR 本文入力と overlay を secret scan で再走査する（Sec11-3-6 L3）。
 
     canary は run 固有で promote 時には未知のため、ここでは L3（汎用 secret）のみを
     走査する。scan 導入前に登録された候補が promote 経路から外部到達するのを防ぐ。
     """
     cand_id = str(manifest["cand_id"])
+    candidate_id_hits = psec.scan_text_for_secrets(cand_id)
+    if candidate_id_hits:
+        raise PromotionValidationError(
+            "candidate id contains secret-like content "
+            f"(patterns: {', '.join(candidate_id_hits)}); register a clean candidate"
+        )
+
     description_hits = psec.scan_text_for_secrets(str(manifest.get("description") or ""))
     if description_hits:
         raise PromotionValidationError(
@@ -875,7 +893,13 @@ def _check_output_secret_scan(main_root: Path, config: dict, manifest: dict[str,
         )
 
     overlay_dir = mh.candidates_dir(main_root, config) / cand_id / "overlay"
-    for rel in mh.list_overlay_files(overlay_dir):
+    for index, rel in enumerate(mh.list_overlay_files(overlay_dir)):
+        path_hits = psec.scan_text_for_secrets(rel)
+        if path_hits:
+            raise PromotionValidationError(
+                f"candidate overlay path contains secret-like content at index {index} "
+                f"(patterns: {', '.join(path_hits)}); re-register a clean candidate"
+            )
         try:
             content = (overlay_dir / rel).read_bytes().decode("utf-8", errors="ignore")
         except OSError as exc:
@@ -887,6 +911,14 @@ def _check_output_secret_scan(main_root: Path, config: dict, manifest: dict[str,
             raise PromotionValidationError(
                 f"candidate overlay contains secret-like content in {rel} "
                 f"(patterns: {', '.join(hits)}); re-register a clean candidate: {cand_id}"
+            )
+
+    for name, text in promotion_outputs.items():
+        hits = psec.scan_text_for_secrets(text)
+        if hits:
+            raise PromotionValidationError(
+                f"candidate promotion output contains secret-like content in {name} "
+                f"(patterns: {', '.join(hits)}); register a clean candidate"
             )
 
 
