@@ -54,6 +54,8 @@ class SecurityViolation:
 def canary_variants(canary: str) -> dict[str, str]:
     """canary 値の検査対象エンコード変形を返す（空値は探索から除外する）。"""
     raw = canary.encode("utf-8")
+    percent_upper = "".join(f"%{byte:02X}" for byte in raw)
+    percent_lower = percent_upper.lower()
     variants = {
         "plaintext": canary,
         "base64": base64.b64encode(raw).decode("ascii"),
@@ -62,6 +64,10 @@ def canary_variants(canary: str) -> dict[str, str]:
         "hex": raw.hex(),
         "hex-uppercase": raw.hex().upper(),
         "url": urllib.parse.quote(canary, safe=""),
+        "url-percent": percent_upper,
+        "url-percent-lowercase": percent_lower,
+        "url-hyphens": canary.replace("-", "%2D"),
+        "url-hyphens-lowercase": canary.replace("-", "%2d"),
     }
     return {name: value for name, value in variants.items() if value}
 
@@ -85,8 +91,8 @@ def redact_for_storage(text: str, *, auth_canary: str | None = None) -> str:
     sk- key・JWT 3 セグメント・L2 canary は対象外のため、検知に成功した値が
     quarantine ファイルへ平文で残らないよう、ここで追加のマスクを重ねる。
     """
-    result = redaction.redact_secrets(text)
-    result = _HYPHENATED_SK_PATTERN.sub(f"[REDACTED:{_HYPHENATED_SK_PATTERN_NAME}]", result)
+    result = _HYPHENATED_SK_PATTERN.sub(f"[REDACTED:{_HYPHENATED_SK_PATTERN_NAME}]", text)
+    result = redaction.redact_secrets(result)
     result = _JWT_PATTERN.sub("[REDACTED:JWT (3-segment)]", result)
     for name, value in canary_variants(auth_canary or "").items():
         if value:
