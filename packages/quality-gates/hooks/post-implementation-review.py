@@ -5,10 +5,14 @@ PostToolUse hook: Suggest review after significant implementation.
 Tracks file edits across the session and suggests code review
 when 3+ files or 100+ lines have been modified.
 
-The state is scoped per project (see quality_gate_config.get_project_state_key)
-so concurrent worktrees/sessions on different projects do not contaminate
-each other's counters. A suggestion is re-armed after REVIEW_SUGGESTION_TTL_SECONDS
-has elapsed since it was last shown, instead of staying suppressed forever.
+State is persisted to .claude/state/post-implementation-review.json
+(resolved via quality_gate_config.resolve_state_path), so separate worktrees
+of the same repo naturally get isolated counters. Within one project_dir,
+state is additionally scoped per git-common-dir (see
+quality_gate_config.get_project_state_key) for backward-compatible schema
+consistency with the other quality-gates hooks. A suggestion is re-armed
+after REVIEW_SUGGESTION_TTL_SECONDS has elapsed since it was last shown,
+instead of staying suppressed forever.
 """
 
 import json
@@ -24,12 +28,14 @@ if _hook_dir not in sys.path:
 from quality_gate_config import (  # noqa: E402
     get_project_state_key,
     load_project_scoped_state,
+    resolve_state_path,
     save_project_scoped_state,
     update_project_scoped_state,
 )
 
-# Session state file for tracking modifications
-STATE_FILE = Path("/tmp/claude-impl-review-state.json")
+# Session state filename for tracking modifications. The actual path is
+# resolved per-project via quality_gate_config.resolve_state_path().
+STATE_FILENAME = "post-implementation-review.json"
 
 # Thresholds for triggering review suggestion
 FILE_THRESHOLD = 3
@@ -49,13 +55,15 @@ _DEFAULT_IMPL_REVIEW_STATE: dict = {
 def load_state(project_dir: str) -> dict:
     """Load session state from file (scoped to the current project)."""
     project_key = get_project_state_key(project_dir)
-    return load_project_scoped_state(STATE_FILE, project_key, _DEFAULT_IMPL_REVIEW_STATE)
+    state_file = Path(resolve_state_path(project_dir, STATE_FILENAME))
+    return load_project_scoped_state(state_file, project_key, _DEFAULT_IMPL_REVIEW_STATE)
 
 
 def save_state(project_dir: str, state: dict) -> None:
     """Save session state to file (scoped to the current project)."""
     project_key = get_project_state_key(project_dir)
-    save_project_scoped_state(STATE_FILE, project_key, state)
+    state_file = Path(resolve_state_path(project_dir, STATE_FILENAME))
+    save_project_scoped_state(state_file, project_key, state)
 
 
 def count_lines(content: str) -> int:
@@ -128,7 +136,8 @@ def main():
 
             return state
 
-        update_project_scoped_state(STATE_FILE, project_key, _mutate, _DEFAULT_IMPL_REVIEW_STATE)
+        state_file = Path(resolve_state_path(project_dir, STATE_FILENAME))
+        update_project_scoped_state(state_file, project_key, _mutate, _DEFAULT_IMPL_REVIEW_STATE)
 
         if suggestion["triggered"]:
             output = {

@@ -30,15 +30,25 @@ def test_uses_shared_default_test_gate_state_constant() -> None:
 
 def test_load_test_gate_state_honors_shared_default(tmp_path, monkeypatch) -> None:
     """load_test_gate_state must fall back to quality_gate_config's shared default."""
-    state_file = tmp_path / "test-gate-state.json"
-    monkeypatch.setattr(test_gate_checker, "TEST_GATE_STATE_FILE", state_file)
     monkeypatch.setattr(test_gate_checker, "get_project_state_key", lambda project_dir: project_dir)
 
     sentinel_default = {"files_modified_since_test": [], "sentinel": True}
     monkeypatch.setattr(test_gate_checker, "DEFAULT_TEST_GATE_STATE", sentinel_default)
 
-    state = test_gate_checker.load_test_gate_state("/fake/project")
+    state = test_gate_checker.load_test_gate_state(str(tmp_path))
     assert state == sentinel_default
+
+
+def test_load_test_gate_state_resolves_under_claude_state_dir(tmp_path, monkeypatch) -> None:
+    """The state file must land under <project_dir>/.claude/state/, not /tmp."""
+    monkeypatch.setattr(test_gate_checker, "get_project_state_key", lambda project_dir: project_dir)
+
+    test_gate_checker.save_test_gate_state(
+        str(tmp_path), {"files_modified_since_test": ["a.py"], "lines_modified_since_test": 1}
+    )
+
+    expected = tmp_path / ".claude" / "state" / test_gate_checker.STATE_FILENAME
+    assert expected.is_file()
 
 
 # ---------------------------------------------------------------------------
@@ -92,35 +102,40 @@ def test_count_lines_ignores_empty_lines() -> None:
 # State management with tmp file
 # ---------------------------------------------------------------------------
 
-FAKE_PROJECT_A = "/fake/project-a"
-FAKE_PROJECT_B = "/fake/project-b"
-
 
 @pytest.fixture()
 def _clean_state(tmp_path, monkeypatch):
-    """Redirect state file to tmp_path and bypass real git lookups."""
-    state_file = tmp_path / "test-gate-state.json"
-    monkeypatch.setattr(test_gate_checker, "TEST_GATE_STATE_FILE", state_file)
+    """Provide isolated real project dirs and bypass real git lookups.
+
+    Project dirs must be real, writable directories (not fake path strings)
+    because the state file now resolves to
+    <project_dir>/.claude/state/test-gate-checker.json instead of a single
+    overridable /tmp constant.
+    """
     monkeypatch.setattr(test_gate_checker, "get_project_state_key", lambda project_dir: project_dir)
-    yield state_file
+    project_a = str(tmp_path / "project-a")
+    project_b = str(tmp_path / "project-b")
+    yield project_a, project_b
 
 
 def test_increments_file_count(_clean_state) -> None:
-    state = test_gate_checker.load_test_gate_state(FAKE_PROJECT_A)
+    project_a, _project_b = _clean_state
+    state = test_gate_checker.load_test_gate_state(project_a)
     assert state["files_modified_since_test"] == []
 
     # Simulate adding a file
     state["files_modified_since_test"].append("src/auth.py")
     state["lines_modified_since_test"] += 20
-    test_gate_checker.save_test_gate_state(FAKE_PROJECT_A, state)
+    test_gate_checker.save_test_gate_state(project_a, state)
 
-    reloaded = test_gate_checker.load_test_gate_state(FAKE_PROJECT_A)
+    reloaded = test_gate_checker.load_test_gate_state(project_a)
     assert reloaded["files_modified_since_test"] == ["src/auth.py"]
     assert reloaded["lines_modified_since_test"] == 20
 
 
 def test_no_duplicate_files(_clean_state) -> None:
-    state = test_gate_checker.load_test_gate_state(FAKE_PROJECT_A)
+    project_a, _project_b = _clean_state
+    state = test_gate_checker.load_test_gate_state(project_a)
     file_path = "src/auth.py"
 
     # Add same file twice (simulating two edits to same file)
@@ -134,13 +149,14 @@ def test_no_duplicate_files(_clean_state) -> None:
 
 
 def test_warns_at_threshold(_clean_state) -> None:
-    state = test_gate_checker.load_test_gate_state(FAKE_PROJECT_A)
+    project_a, _project_b = _clean_state
+    state = test_gate_checker.load_test_gate_state(project_a)
     state["files_modified_since_test"] = ["a.py", "b.py", "c.py"]
     state["lines_modified_since_test"] = 50
     state["warned"] = False
-    test_gate_checker.save_test_gate_state(FAKE_PROJECT_A, state)
+    test_gate_checker.save_test_gate_state(project_a, state)
 
-    reloaded = test_gate_checker.load_test_gate_state(FAKE_PROJECT_A)
+    reloaded = test_gate_checker.load_test_gate_state(project_a)
     file_count = len(reloaded["files_modified_since_test"])
     file_threshold = test_gate_checker.DEFAULT_FILE_THRESHOLD
 
@@ -150,31 +166,33 @@ def test_warns_at_threshold(_clean_state) -> None:
 
 
 def test_warns_only_once(_clean_state) -> None:
-    state = test_gate_checker.load_test_gate_state(FAKE_PROJECT_A)
+    project_a, _project_b = _clean_state
+    state = test_gate_checker.load_test_gate_state(project_a)
     state["files_modified_since_test"] = ["a.py", "b.py", "c.py", "d.py"]
     state["lines_modified_since_test"] = 200
     state["warned"] = True  # Already warned
-    test_gate_checker.save_test_gate_state(FAKE_PROJECT_A, state)
+    test_gate_checker.save_test_gate_state(project_a, state)
 
-    reloaded = test_gate_checker.load_test_gate_state(FAKE_PROJECT_A)
+    reloaded = test_gate_checker.load_test_gate_state(project_a)
     # Even though thresholds exceeded, warned=True prevents re-warning
     assert reloaded["warned"] is True
 
 
 def test_state_is_isolated_per_project(_clean_state) -> None:
     """Edits tracked for project A must not leak into project B's threshold judgement."""
-    state_a = test_gate_checker.load_test_gate_state(FAKE_PROJECT_A)
+    project_a, project_b = _clean_state
+    state_a = test_gate_checker.load_test_gate_state(project_a)
     state_a["files_modified_since_test"] = ["a.py", "b.py", "c.py"]
     state_a["lines_modified_since_test"] = 500
     state_a["warned"] = True
-    test_gate_checker.save_test_gate_state(FAKE_PROJECT_A, state_a)
+    test_gate_checker.save_test_gate_state(project_a, state_a)
 
-    state_b = test_gate_checker.load_test_gate_state(FAKE_PROJECT_B)
+    state_b = test_gate_checker.load_test_gate_state(project_b)
     assert state_b["files_modified_since_test"] == []
     assert state_b["lines_modified_since_test"] == 0
     assert state_b["warned"] is False
 
-    reloaded_a = test_gate_checker.load_test_gate_state(FAKE_PROJECT_A)
+    reloaded_a = test_gate_checker.load_test_gate_state(project_a)
     assert reloaded_a["files_modified_since_test"] == ["a.py", "b.py", "c.py"]
     assert reloaded_a["lines_modified_since_test"] == 500
 

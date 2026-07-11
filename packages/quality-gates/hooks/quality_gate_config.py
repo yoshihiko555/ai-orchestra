@@ -8,6 +8,8 @@
   get_project_state_key() と同じアルゴリズム）
 - プロジェクトスコープの状態ファイル読み書き（JSON, "state_by_project" にネスト）
 - テストゲート共有状態のデフォルトスキーマ（DEFAULT_TEST_GATE_STATE）
+- 状態ファイルの保存先解決（`.claude/state/` + resolve_path_within。
+  evaluation-set-checker.py と同じ規約。Issue #154 で /tmp からの移行に統一）
 
 test-gate-checker.py と post-test-analysis.py は同じ状態ファイルを共有して
 ゲート連携するため、それぞれが独自にこのロジックを複製すると実装がずれて
@@ -18,6 +20,9 @@ test-gate-checker.py と post-test-analysis.py は同じ状態ファイルを共
 `update_project_scoped_state()` は fcntl.flock による排他ロックと
 tmp ファイル + os.replace によるアトミック書き込みで
 read-modify-write 全体を単一のクリティカルセクションにまとめる。
+`update_locked_json_state()` はプロジェクトスコープのネストを持たない
+呼び出し元（test-tampering-detector.py 等）向けに同じロック/アトミック
+書き込み方式を提供する低レベルプリミティブ。
 """
 
 from __future__ import annotations
@@ -42,7 +47,7 @@ else:
     if str(_fallback_core_hooks) not in sys.path:
         sys.path.insert(0, str(_fallback_core_hooks))
 
-from hook_common import load_package_config  # noqa: E402
+from hook_common import load_package_config, resolve_path_within  # noqa: E402
 
 # features.quality_gate.enabled が config に無い場合のデフォルト値。
 # audit-flags.json のベース値 (enabled: true) に合わせることで、
@@ -58,6 +63,33 @@ DEFAULT_TEST_GATE_STATE: dict = {
     "last_test_result": None,
     "warned": False,
 }
+
+# .claude/state/ 配下に状態ファイルを解決する既定ディレクトリ。
+# evaluation-set-checker.py と同じ規約（audit-flags.json の paths.state_dir で
+# 上書き可能）。/tmp のグローバル共有ファイルはプロジェクト外に置かれるため、
+# パストラバーサル対策込みで worktree（= project_dir）配下に閉じ込める。
+DEFAULT_STATE_DIR = os.path.join(".claude", "state")
+
+
+def resolve_state_path(project_dir: str, filename: str) -> str:
+    """<project_dir>/.claude/state/<filename> に解決する（paths.state_dir 上書き対応）。
+
+    evaluation-set-checker.py の resolve_state_path() と同じ規約。
+    resolve_path_within によるパストラバーサル防御込みで、project_dir の外に
+    解決される場合は DEFAULT_STATE_DIR 直下へフォールバックする。
+    """
+    config = load_package_config("audit", "audit-flags.json", project_dir)
+    state_dir_value = config.get("paths", {}).get("state_dir")
+    state_dir = (
+        state_dir_value
+        if isinstance(state_dir_value, str) and state_dir_value
+        else DEFAULT_STATE_DIR
+    )
+    resolved = resolve_path_within(project_dir, state_dir, filename)
+    if resolved:
+        return resolved
+    fallback = resolve_path_within(project_dir, DEFAULT_STATE_DIR, filename)
+    return fallback or os.path.join(project_dir, DEFAULT_STATE_DIR, filename)
 
 
 def resolve_quality_gate_enabled(quality_gate: dict) -> bool:
@@ -200,6 +232,45 @@ def update_project_scoped_state(
             raw_state["state_by_project"] = state_by_project
             _write_state_file(state_file, raw_state)
             return new_project_state
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def update_locked_json_state(
+    state_file: Path,
+    mutate_fn: Callable[[dict], dict],
+    default_state: dict,
+) -> dict:
+    """プロジェクトスコープのネストを持たない状態ファイル向けの共通ロック済み更新。
+
+    `update_project_scoped_state` と同じ「flock 取得 → read → mutate_fn →
+    write（tmp + os.replace）→ unlock」の単一トランザクションを、
+    "state_by_project" ラップ無しでそのまま使いたい呼び出し元
+    （test-tampering-detector.py のようにファイル全体を1つのフラットな dict
+    として扱うケース）向けに提供する。
+
+    `mutate_fn` は現在の状態（`default_state` とのマージ済み dict）を受け取り、
+    永続化すべき新しい状態を返す。in-place で変更して同じ dict を返しても、
+    新しい dict を返してもよい。
+
+    Args:
+        state_file: 状態ファイルパス。
+        mutate_fn: 現在の状態を受け取り、新しい状態を返す関数。
+        default_state: ファイル未作成時に使うデフォルト状態。
+
+    Returns:
+        永続化された新しい状態。
+    """
+    with _locked_state_section(state_file) as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            raw_state = _read_state_file(state_file)
+            merged = copy.deepcopy(default_state)
+            if isinstance(raw_state, dict):
+                merged.update(raw_state)
+            new_state = mutate_fn(merged)
+            _write_state_file(state_file, new_state)
+            return new_state
         finally:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 

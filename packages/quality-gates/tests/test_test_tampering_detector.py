@@ -15,8 +15,16 @@ test_tampering_detector = load_module(
 
 
 @pytest.fixture()
-def _clean_state(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(test_tampering_detector, "STATE_FILE", tmp_path / "tampering-state.json")
+def _clean_state(tmp_path: Path, monkeypatch) -> str:
+    """Provide a real, writable project dir for state resolution.
+
+    The state file now resolves to
+    <project_dir>/.claude/state/test-tampering-detector.json instead of a
+    single overridable /tmp constant, so tests must point "cwd" at a real
+    directory rather than a fake path string.
+    """
+    project_dir = str(tmp_path)
+    return project_dir
 
 
 def test_is_test_file_detects_python_and_javascript_patterns() -> None:
@@ -94,7 +102,7 @@ def test_extract_deleted_test_files_filters_non_test_paths() -> None:
 def test_collect_tampering_findings_for_new_file_uses_tool_input(monkeypatch, _clean_state) -> None:
     payload = {
         "tool_name": "Write",
-        "cwd": "/repo",
+        "cwd": _clean_state,
         "tool_input": {
             "file_path": "tests/test_auth.py",
             "content": "@pytest.mark.skip\n# noqa: F401\n",
@@ -113,7 +121,7 @@ def test_collect_tampering_findings_for_new_file_uses_tool_input(monkeypatch, _c
 def test_collect_tampering_findings_detects_deleted_test_files(monkeypatch, _clean_state) -> None:
     payload = {
         "tool_name": "Bash",
-        "cwd": "/repo",
+        "cwd": _clean_state,
         "tool_input": {"command": "git rm tests/test_auth.py"},
     }
 
@@ -200,11 +208,65 @@ def test_get_unreported_deleted_test_files_suppresses_repeats(monkeypatch, _clea
         lambda _project_dir, _targets: ["tests/test_auth.py", "tests/test_other.py"],
     )
 
-    first = test_tampering_detector.get_unreported_deleted_test_files("/repo", ["tests/*.py"])
-    second = test_tampering_detector.get_unreported_deleted_test_files("/repo", ["tests/*.py"])
+    first = test_tampering_detector.get_unreported_deleted_test_files(_clean_state, ["tests/*.py"])
+    second = test_tampering_detector.get_unreported_deleted_test_files(_clean_state, ["tests/*.py"])
 
     assert first == ["tests/test_auth.py", "tests/test_other.py"]
     assert second == []
+
+
+def test_state_resolves_under_claude_state_dir(monkeypatch, _clean_state) -> None:
+    """The dedup state file must land under <project_dir>/.claude/state/, not /tmp."""
+    monkeypatch.setattr(
+        test_tampering_detector,
+        "get_all_deleted_test_files",
+        lambda _project_dir: ["tests/test_auth.py"],
+    )
+    monkeypatch.setattr(
+        test_tampering_detector,
+        "get_deleted_test_files",
+        lambda _project_dir, _targets: ["tests/test_auth.py"],
+    )
+
+    test_tampering_detector.get_unreported_deleted_test_files(_clean_state, ["tests/*.py"])
+
+    expected = Path(_clean_state) / ".claude" / "state" / test_tampering_detector.STATE_FILENAME
+    assert expected.is_file()
+
+
+def test_get_unreported_pattern_findings_concurrent_calls_do_not_lose_updates(
+    monkeypatch, _clean_state
+) -> None:
+    """Concurrent invocations sharing the same flock must not clobber each
+    other's dedup record (Issue #154: this hook previously read-modify-wrote
+    its state file with no exclusive lock).
+    """
+    import threading
+
+    findings = [
+        {"type": "pattern", "file_path": f"tests/test_{i}.py", "label": "skip", "snippet": "x"}
+        for i in range(20)
+    ]
+
+    results: list[list[dict[str, str]]] = []
+    lock = threading.Lock()
+
+    def worker(finding: dict[str, str]) -> None:
+        new_findings = test_tampering_detector.get_unreported_pattern_findings(
+            _clean_state, [finding]
+        )
+        with lock:
+            results.append(new_findings)
+
+    threads = [threading.Thread(target=worker, args=(finding,)) for finding in findings]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    # Every finding must be reported exactly once across all concurrent callers.
+    reported_keys = [f["file_path"] for result in results for f in result]
+    assert sorted(reported_keys) == sorted(f["file_path"] for f in findings)
 
 
 def test_get_project_state_key_prefers_git_common_dir(monkeypatch) -> None:
@@ -226,7 +288,7 @@ def test_collect_tampering_findings_suppresses_repeated_pattern_warnings(
 ) -> None:
     payload = {
         "tool_name": "Write",
-        "cwd": "/repo",
+        "cwd": _clean_state,
         "tool_input": {"file_path": "tests/test_auth.py", "content": "@pytest.mark.skip\n"},
     }
 

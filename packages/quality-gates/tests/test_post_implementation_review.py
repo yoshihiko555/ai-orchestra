@@ -13,19 +13,22 @@ post_implementation_review = load_module(
     "post_implementation_review", "packages/quality-gates/hooks/post-implementation-review.py"
 )
 
-FAKE_PROJECT_A = "/fake/project-a"
-FAKE_PROJECT_B = "/fake/project-b"
-
 
 @pytest.fixture()
 def _clean_state(tmp_path, monkeypatch):
-    """Redirect state file to tmp_path and bypass real git lookups."""
-    state_file = tmp_path / "impl-review-state.json"
-    monkeypatch.setattr(post_implementation_review, "STATE_FILE", state_file)
+    """Provide isolated real project dirs and bypass real git lookups.
+
+    Project dirs must be real, writable directories (not fake path strings)
+    because the state file now resolves to
+    <project_dir>/.claude/state/post-implementation-review.json instead of a
+    single overridable /tmp constant.
+    """
     monkeypatch.setattr(
         post_implementation_review, "get_project_state_key", lambda project_dir: project_dir
     )
-    yield state_file
+    project_a = str(tmp_path / "project-a")
+    project_b = str(tmp_path / "project-b")
+    yield project_a, project_b
 
 
 # ---------------------------------------------------------------------------
@@ -128,20 +131,33 @@ def test_should_suggest_review_true_after_ttl_when_thresholds_met_again() -> Non
 
 
 def test_state_is_isolated_per_project(_clean_state) -> None:
-    state_a = post_implementation_review.load_state(FAKE_PROJECT_A)
+    project_a, project_b = _clean_state
+    state_a = post_implementation_review.load_state(project_a)
     state_a["files"] = ["a.py", "b.py", "c.py"]
     state_a["total_lines"] = 500
     state_a["review_suggested"] = True
     state_a["suggested_at"] = time.time()
-    post_implementation_review.save_state(FAKE_PROJECT_A, state_a)
+    post_implementation_review.save_state(project_a, state_a)
 
-    state_b = post_implementation_review.load_state(FAKE_PROJECT_B)
+    state_b = post_implementation_review.load_state(project_b)
     assert state_b == post_implementation_review._DEFAULT_IMPL_REVIEW_STATE
 
-    reloaded_a = post_implementation_review.load_state(FAKE_PROJECT_A)
+    reloaded_a = post_implementation_review.load_state(project_a)
     assert reloaded_a["files"] == ["a.py", "b.py", "c.py"]
     assert reloaded_a["total_lines"] == 500
     assert reloaded_a["review_suggested"] is True
+
+
+def test_state_resolves_under_claude_state_dir(tmp_path, monkeypatch) -> None:
+    """The state file must land under <project_dir>/.claude/state/, not /tmp."""
+    monkeypatch.setattr(
+        post_implementation_review, "get_project_state_key", lambda project_dir: project_dir
+    )
+
+    post_implementation_review.save_state(str(tmp_path), {"files": ["a.py"], "total_lines": 1})
+
+    expected = tmp_path / ".claude" / "state" / post_implementation_review.STATE_FILENAME
+    assert expected.is_file()
 
 
 # ---------------------------------------------------------------------------
@@ -161,9 +177,11 @@ def _write_payload(monkeypatch, file_path: str, content: str, project_dir: str) 
 def test_main_suggests_review_once_then_suppresses_until_ttl(
     _clean_state, monkeypatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    project_a, _project_b = _clean_state
+
     # Large single edit crosses the line threshold immediately.
     big_content = "\n".join(f"line {i}" for i in range(150))
-    _write_payload(monkeypatch, "src/big_module.py", big_content, FAKE_PROJECT_A)
+    _write_payload(monkeypatch, "src/big_module.py", big_content, project_a)
 
     with pytest.raises(SystemExit) as exc_info:
         post_implementation_review.main()
@@ -173,7 +191,7 @@ def test_main_suggests_review_once_then_suppresses_until_ttl(
     context = output["hookSpecificOutput"]["additionalContext"]
     assert "[Review Suggestion]" in context
 
-    state = post_implementation_review.load_state(FAKE_PROJECT_A)
+    state = post_implementation_review.load_state(project_a)
     assert state["review_suggested"] is True
     assert state["suggested_at"] is not None
     # Counters reset so the next accumulation window starts fresh.
@@ -181,21 +199,21 @@ def test_main_suggests_review_once_then_suppresses_until_ttl(
     assert state["total_lines"] == 0
 
     # A second invocation right after should NOT suggest again.
-    _write_payload(monkeypatch, "src/other_module.py", "line\n", FAKE_PROJECT_A)
+    _write_payload(monkeypatch, "src/other_module.py", "line\n", project_a)
     with pytest.raises(SystemExit) as exc_info2:
         post_implementation_review.main()
     assert exc_info2.value.code == 0
     assert capsys.readouterr().out == ""
 
     # Simulate TTL expiry by rewriting the saved suggested_at to an old timestamp.
-    stale_state = post_implementation_review.load_state(FAKE_PROJECT_A)
+    stale_state = post_implementation_review.load_state(project_a)
     ttl = post_implementation_review.REVIEW_SUGGESTION_TTL_SECONDS
     stale_state["suggested_at"] = time.time() - (ttl + 10)
     stale_state["files"] = ["x.py", "y.py", "z.py"]
     stale_state["total_lines"] = 10
-    post_implementation_review.save_state(FAKE_PROJECT_A, stale_state)
+    post_implementation_review.save_state(project_a, stale_state)
 
-    _write_payload(monkeypatch, "src/another_module.py", "line\n", FAKE_PROJECT_A)
+    _write_payload(monkeypatch, "src/another_module.py", "line\n", project_a)
     with pytest.raises(SystemExit) as exc_info3:
         post_implementation_review.main()
     assert exc_info3.value.code == 0
@@ -212,6 +230,8 @@ def test_main_uses_atomic_update_not_separate_load_and_save(
     section) instead of a separate load_state()/save_state() pair, so the
     accumulate-and-maybe-suggest decision can't race across processes.
     """
+    project_a, _project_b = _clean_state
+
     save_state_calls = []
     monkeypatch.setattr(
         post_implementation_review,
@@ -228,7 +248,7 @@ def test_main_uses_atomic_update_not_separate_load_and_save(
 
     monkeypatch.setattr(post_implementation_review, "update_project_scoped_state", _spy_update)
 
-    _write_payload(monkeypatch, "src/module.py", "line\n", FAKE_PROJECT_A)
+    _write_payload(monkeypatch, "src/module.py", "line\n", project_a)
     with pytest.raises(SystemExit) as exc_info:
         post_implementation_review.main()
     assert exc_info.value.code == 0
@@ -241,13 +261,15 @@ def test_main_keeps_project_isolation_through_atomic_update(
     _clean_state, monkeypatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Accumulating state for project A via main() must not affect project B."""
-    _write_payload(monkeypatch, "src/module.py", "line\n", FAKE_PROJECT_A)
+    project_a, project_b = _clean_state
+
+    _write_payload(monkeypatch, "src/module.py", "line\n", project_a)
     with pytest.raises(SystemExit):
         post_implementation_review.main()
     capsys.readouterr()
 
-    state_b = post_implementation_review.load_state(FAKE_PROJECT_B)
+    state_b = post_implementation_review.load_state(project_b)
     assert state_b == post_implementation_review._DEFAULT_IMPL_REVIEW_STATE
 
-    state_a = post_implementation_review.load_state(FAKE_PROJECT_A)
+    state_a = post_implementation_review.load_state(project_a)
     assert state_a["files"] == ["src/module.py"]

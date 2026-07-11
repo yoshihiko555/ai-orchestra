@@ -116,22 +116,25 @@ def test_extract_failure_summary_returns_default_when_no_match() -> None:
 # ---------------------------------------------------------------------------
 
 
-FAKE_PROJECT = "/fake/project"
-
-
 @pytest.fixture()
 def _clean_state(tmp_path, monkeypatch):
-    """Redirect state file to tmp_path and bypass real git lookups."""
-    state_file = tmp_path / "test-gate-state.json"
-    monkeypatch.setattr(post_test_analysis, "TEST_GATE_STATE_FILE", state_file)
+    """Provide an isolated real project dir and bypass real git lookups.
+
+    project_dir must be a real, writable directory (not a fake path string)
+    because the state file now resolves to
+    <project_dir>/.claude/state/test-gate-checker.json instead of a single
+    overridable /tmp constant.
+    """
     monkeypatch.setattr(
         post_test_analysis, "get_project_state_key", lambda project_dir: project_dir
     )
-    yield state_file
+    yield str(tmp_path)
 
 
 def test_record_test_result_resets_on_pass(_clean_state) -> None:
     """Successful test run should reset counters and warned flag."""
+    project_dir = _clean_state
+
     # Set up pre-existing state with modifications
     state = {
         "files_modified_since_test": ["src/auth.py", "src/models.py"],
@@ -139,12 +142,12 @@ def test_record_test_result_resets_on_pass(_clean_state) -> None:
         "last_test_result": None,
         "warned": True,
     }
-    post_test_analysis.save_test_gate_state(FAKE_PROJECT, state)
+    post_test_analysis.save_test_gate_state(project_dir, state)
 
     # Record a passing test
-    post_test_analysis.record_test_result("pytest", True, FAKE_PROJECT)
+    post_test_analysis.record_test_result("pytest", True, project_dir)
 
-    reloaded = post_test_analysis.load_test_gate_state(FAKE_PROJECT)
+    reloaded = post_test_analysis.load_test_gate_state(project_dir)
     assert reloaded["files_modified_since_test"] == []
     assert reloaded["lines_modified_since_test"] == 0
     assert reloaded["warned"] is False
@@ -165,27 +168,31 @@ def test_uses_shared_default_test_gate_state_constant() -> None:
 
 def test_load_test_gate_state_honors_shared_default(_clean_state, monkeypatch) -> None:
     """load_test_gate_state must fall back to quality_gate_config's shared default."""
+    project_dir = _clean_state
+
     sentinel_default = {"files_modified_since_test": [], "sentinel": True}
     monkeypatch.setattr(post_test_analysis, "DEFAULT_TEST_GATE_STATE", sentinel_default)
 
-    state = post_test_analysis.load_test_gate_state(FAKE_PROJECT)
+    state = post_test_analysis.load_test_gate_state(project_dir)
     assert state == sentinel_default
 
 
 def test_record_test_result_preserves_on_fail(_clean_state) -> None:
     """Failed test run should keep counters (changes not validated)."""
+    project_dir = _clean_state
+
     state = {
         "files_modified_since_test": ["src/auth.py", "src/models.py"],
         "lines_modified_since_test": 85,
         "last_test_result": None,
         "warned": True,
     }
-    post_test_analysis.save_test_gate_state(FAKE_PROJECT, state)
+    post_test_analysis.save_test_gate_state(project_dir, state)
 
     # Record a failing test
-    post_test_analysis.record_test_result("pytest", False, FAKE_PROJECT)
+    post_test_analysis.record_test_result("pytest", False, project_dir)
 
-    reloaded = post_test_analysis.load_test_gate_state(FAKE_PROJECT)
+    reloaded = post_test_analysis.load_test_gate_state(project_dir)
     assert reloaded["files_modified_since_test"] == ["src/auth.py", "src/models.py"]
     assert reloaded["lines_modified_since_test"] == 85
     assert reloaded["warned"] is True
@@ -384,11 +391,12 @@ def test_test_gate_checker_and_post_test_analysis_interoperate_on_shared_state(
         "test_gate_checker_interop", "packages/quality-gates/hooks/test-gate-checker.py"
     )
 
-    shared_state_file = tmp_path / "shared-gate-state.json"
-    project_dir = "/fake/interop-project"
+    # Real, writable directory: the shared state file now resolves to
+    # <project_dir>/.claude/state/test-gate-checker.json (same STATE_FILENAME
+    # in both modules) instead of a single overridable /tmp constant.
+    project_dir = str(tmp_path / "interop-project")
 
     for module in (test_gate_checker, post_test_analysis):
-        monkeypatch.setattr(module, "TEST_GATE_STATE_FILE", shared_state_file)
         monkeypatch.setattr(module, "get_project_state_key", lambda p: p)
 
     # test-gate-checker.py が編集を蓄積する。

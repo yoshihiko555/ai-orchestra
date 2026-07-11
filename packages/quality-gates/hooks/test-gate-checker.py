@@ -5,11 +5,14 @@ PostToolUse hook: Suggest running tests after significant code changes.
 Tracks file edits across the session via a shared state file and suggests
 test execution when the number of modified files or lines exceeds thresholds.
 
-The shared state file (/tmp/claude-test-gate-state.json) is also written by
+The shared state file (.claude/state/test-gate-checker.json, resolved via
+quality_gate_config.resolve_state_path) is also written by
 post-test-analysis.py, which resets counters on successful test runs.
-The state is scoped per project (see quality_gate_config.get_project_state_key)
-so concurrent worktrees/sessions on different projects do not contaminate
-each other's counters.
+The state file lives under the current project_dir (worktree), so separate
+worktrees of the same repo naturally get isolated counters. Within one
+project_dir, state is additionally scoped per git-common-dir (see
+quality_gate_config.get_project_state_key) for backward-compatible schema
+consistency with the other quality-gates hooks.
 """
 
 import json
@@ -34,11 +37,13 @@ from quality_gate_config import (  # noqa: E402
     get_project_state_key,
     is_quality_gate_enabled,
     load_project_scoped_state,
+    resolve_state_path,
     save_project_scoped_state,
 )
 
-# Shared state file with post-test-analysis.py
-TEST_GATE_STATE_FILE = Path("/tmp/claude-test-gate-state.json")
+# Shared state filename with post-test-analysis.py. The actual path is
+# resolved per-project via quality_gate_config.resolve_state_path().
+STATE_FILENAME = "test-gate-checker.json"
 
 # Code file extensions to track
 CODE_EXTENSIONS = {".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java"}
@@ -51,13 +56,15 @@ DEFAULT_LINE_THRESHOLD = 100
 def load_test_gate_state(project_dir: str) -> dict:
     """Load the shared test-gate state from file (scoped to the current project)."""
     project_key = get_project_state_key(project_dir)
-    return load_project_scoped_state(TEST_GATE_STATE_FILE, project_key, DEFAULT_TEST_GATE_STATE)
+    state_file = Path(resolve_state_path(project_dir, STATE_FILENAME))
+    return load_project_scoped_state(state_file, project_key, DEFAULT_TEST_GATE_STATE)
 
 
 def save_test_gate_state(project_dir: str, state: dict) -> None:
     """Save the shared test-gate state to file (scoped to the current project)."""
     project_key = get_project_state_key(project_dir)
-    save_project_scoped_state(TEST_GATE_STATE_FILE, project_key, state)
+    state_file = Path(resolve_state_path(project_dir, STATE_FILENAME))
+    save_project_scoped_state(state_file, project_key, state)
 
 
 def is_code_file(file_path: str) -> bool:
