@@ -59,6 +59,30 @@ def _lease(project_dir: str) -> str:
     return lock.lease_token
 
 
+def _activate_pending_review_action(project_dir: str, action_id: str = "action-1") -> None:
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.pending_action = lc.PendingAction(
+        action_id,
+        lc.Action.WAIT_EXTERNAL_REVIEW.value,
+        state.phase,
+        1,
+        lc.now_iso(),
+    )
+    state.state_version += 1
+    lc._write_state(state, project_dir)
+
+
+def _empty_review_findings_result() -> prw.ReviewFindingsResult:
+    return prw.ReviewFindingsResult(
+        findings=(),
+        iteration_findings=lc.IterationFindings(frozenset(), 0),
+        previous_iteration_findings=lc.IterationFindings(frozenset(), 0),
+        processed_comment_ids=(),
+        ignored_untrusted_comment_count=0,
+        needs_classification_count=0,
+    )
+
+
 def _config(
     *,
     checkruns: tuple[str, ...] = (),
@@ -1529,6 +1553,328 @@ def test_pending_classification_is_reimported_after_collect_retry(
     assert second.findings[0].source_comment_id == "issue_comment:12"
     assert "issue_comment:12" not in second.processed_comment_ids
     assert state.pr_review["findings"][signature]["source_comment_ids"] == ["issue_comment:12"]
+
+
+def test_review_findings_snapshot_preserves_explicit_finding_across_process_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={
+            "baseline_review_id": 10,
+            "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+            "processed_comment_ids": [],
+            "findings": {},
+        },
+    )
+    client = FakeClient(
+        {
+            "repos/owner/repo/pulls/12/reviews": [],
+            "repos/owner/repo/pulls/12/comments": [],
+            "repos/owner/repo/issues/12/comments": [
+                _trusted(
+                    {
+                        "id": 12,
+                        "created_at": "2026-07-09T00:00:01+00:00",
+                        "body": "[HIGH] Explicit blocker",
+                    }
+                ),
+                _trusted(
+                    {
+                        "id": 13,
+                        "created_at": "2026-07-09T00:00:02+00:00",
+                        "body": "Please consider this edge case",
+                    }
+                ),
+            ],
+        }
+    )
+    lease_token = _lease(project_dir)
+    _activate_pending_review_action(project_dir)
+    collected = prw.collect_review_findings(
+        "abcd1234-issue-1",
+        project_dir,
+        12,
+        _config(),
+        client,
+        1,
+        lease_token,
+        action_id="action-1",
+    )
+
+    artifact_path = prw.save_review_findings_snapshot(
+        "abcd1234-issue-1", project_dir, "action-1", collected, lease_token
+    )
+    second_collect = prw.collect_review_findings(
+        "abcd1234-issue-1",
+        project_dir,
+        12,
+        _config(),
+        client,
+        1,
+        lease_token,
+        action_id="action-1",
+    )
+    restored = prw.load_review_findings_snapshot(
+        "abcd1234-issue-1", project_dir, "action-1", lease_token
+    )
+    applied = prw.apply_severity_classifications(
+        "abcd1234-issue-1",
+        project_dir,
+        restored,
+        _config(),
+        {"issue_comment:13": "SEVERITY: medium\nCONFIDENCE: high\n"},
+        1,
+        lease_token,
+        action_id="action-1",
+    )
+    phase_check = prw.phase_check_from_review_findings(applied.review_findings)
+
+    assert artifact_path == "artifacts/action-1/review_findings.json"
+    assert {item.source_comment_id for item in collected.findings} == {
+        "issue_comment:12",
+        "issue_comment:13",
+    }
+    assert [item.source_comment_id for item in second_collect.findings] == ["issue_comment:13"]
+    assert restored == collected
+    assert {item.source_comment_id for item in applied.review_findings.findings} == {
+        "issue_comment:12",
+        "issue_comment:13",
+    }
+    assert phase_check.passed is False
+    assert {item.severity for item in phase_check.results[0].findings} == {"high", "medium"}
+
+
+def test_review_findings_snapshot_uses_0600_and_redacts_secrets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir = _setup_state(tmp_path, monkeypatch)
+    lease_token = _lease(project_dir)
+    _activate_pending_review_action(project_dir)
+    result = prw.ReviewFindingsResult(
+        findings=(
+            prw.ImportedFinding(
+                "sig-a",
+                "high",
+                "review_comment:1",
+                "api_key: sensitive-value-xyz",
+                "token=another-secret-xyz",
+                10,
+                False,
+            ),
+        ),
+        iteration_findings=lc.IterationFindings(frozenset({"sig-a"}), 1),
+        previous_iteration_findings=lc.IterationFindings(frozenset(), 0),
+        processed_comment_ids=("review_comment:1",),
+        ignored_untrusted_comment_count=0,
+        needs_classification_count=0,
+    )
+
+    prw.save_review_findings_snapshot(
+        "abcd1234-issue-1", project_dir, "action-1", result, lease_token
+    )
+
+    path = lc.artifact_path("abcd1234-issue-1", project_dir, "action-1", "review_findings.json")
+    restored = prw.load_review_findings_snapshot(
+        "abcd1234-issue-1", project_dir, "action-1", lease_token
+    )
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert "sensitive-value-xyz" not in path.read_text(encoding="utf-8")
+    assert "another-secret-xyz" not in path.read_text(encoding="utf-8")
+    assert restored.findings[0].body_excerpt == "[REDACTED]"
+    assert restored.findings[0].path == "[REDACTED]"
+
+
+def test_load_review_findings_snapshot_fails_closed_when_artifact_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir = _setup_state(tmp_path, monkeypatch)
+    lease_token = _lease(project_dir)
+    _activate_pending_review_action(project_dir, "missing-action")
+
+    with pytest.raises(prw.PrReviewWaitError, match="snapshot artifact is missing"):
+        prw.load_review_findings_snapshot(
+            "abcd1234-issue-1", project_dir, "missing-action", lease_token
+        )
+
+
+def test_load_review_findings_snapshot_fails_closed_for_malformed_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir = _setup_state(tmp_path, monkeypatch)
+    lease_token = _lease(project_dir)
+    _activate_pending_review_action(project_dir)
+    lc.save_artifact("abcd1234-issue-1", project_dir, "action-1", "review_findings.json", "{")
+
+    with pytest.raises(prw.PrReviewWaitError, match="malformed JSON"):
+        prw.load_review_findings_snapshot("abcd1234-issue-1", project_dir, "action-1", lease_token)
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    [
+        ("schema_version", 2),
+        ("schema_version", True),
+        ("findings", "not-a-list"),
+        ("processed_comment_ids", [1]),
+        ("needs_classification_count", "0"),
+    ],
+)
+def test_load_review_findings_snapshot_fails_closed_for_invalid_schema(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    invalid_value: Any,
+) -> None:
+    project_dir = _setup_state(tmp_path, monkeypatch)
+    lease_token = _lease(project_dir)
+    _activate_pending_review_action(project_dir)
+    result = prw.ReviewFindingsResult(
+        findings=(),
+        iteration_findings=lc.IterationFindings(frozenset(), 0),
+        previous_iteration_findings=lc.IterationFindings(frozenset(), 0),
+        processed_comment_ids=(),
+        ignored_untrusted_comment_count=0,
+        needs_classification_count=0,
+    )
+    payload = {
+        **prw._review_findings_snapshot_dict(result),
+        "loop_id": "abcd1234-issue-1",
+        "action_id": "action-1",
+        field: invalid_value,
+    }
+    lc.save_artifact(
+        "abcd1234-issue-1",
+        project_dir,
+        "action-1",
+        "review_findings.json",
+        json.dumps(payload),
+    )
+
+    with pytest.raises(prw.PrReviewWaitError, match="invalid review findings snapshot"):
+        prw.load_review_findings_snapshot("abcd1234-issue-1", project_dir, "action-1", lease_token)
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    [("loop_id", "other-loop"), ("action_id", "other-action")],
+)
+def test_load_review_findings_snapshot_rejects_mismatched_envelope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    invalid_value: str,
+) -> None:
+    project_dir = _setup_state(tmp_path, monkeypatch)
+    lease_token = _lease(project_dir)
+    _activate_pending_review_action(project_dir)
+    prw.save_review_findings_snapshot(
+        "abcd1234-issue-1",
+        project_dir,
+        "action-1",
+        _empty_review_findings_result(),
+        lease_token,
+    )
+    content = lc.load_artifact("abcd1234-issue-1", project_dir, "action-1", "review_findings.json")
+    assert content is not None
+    payload = {**json.loads(content), field: invalid_value}
+    lc.save_artifact(
+        "abcd1234-issue-1",
+        project_dir,
+        "action-1",
+        "review_findings.json",
+        json.dumps(payload),
+    )
+
+    with pytest.raises(prw.PrReviewWaitError, match="does not match"):
+        prw.load_review_findings_snapshot("abcd1234-issue-1", project_dir, "action-1", lease_token)
+
+
+@pytest.mark.parametrize("operation", ["save", "load"])
+@pytest.mark.parametrize(
+    ("boundary", "expected_exception"),
+    [
+        ("pending_none", lc.StaleActionError),
+        ("stale_action_id", lc.StaleActionError),
+        ("phase_mismatch", lc.StaleActionError),
+        ("wrong_action", lc.ProtocolViolationError),
+        ("invalid_lease", lc.WriteRejectedError),
+    ],
+)
+def test_review_findings_snapshot_access_requires_active_action_and_lease(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+    boundary: str,
+    expected_exception: type[Exception],
+) -> None:
+    project_dir = _setup_state(tmp_path, monkeypatch)
+    lease_token = _lease(project_dir)
+    _activate_pending_review_action(project_dir)
+    result = _empty_review_findings_result()
+    if operation == "load":
+        prw.save_review_findings_snapshot(
+            "abcd1234-issue-1", project_dir, "action-1", result, lease_token
+        )
+
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    assert state.pending_action is not None
+    if boundary == "pending_none":
+        state.pending_action = None
+    elif boundary == "stale_action_id":
+        state.pending_action.action_id = "other-action"
+    elif boundary == "phase_mismatch":
+        state.pending_action.phase = "implementation"
+    elif boundary == "wrong_action":
+        state.pending_action.action = lc.Action.RUN_MAKER.value
+    lc._write_state(state, project_dir)
+    access_lease = "invalid-lease" if boundary == "invalid_lease" else lease_token
+
+    with pytest.raises(expected_exception):
+        if operation == "save":
+            prw.save_review_findings_snapshot(
+                "abcd1234-issue-1", project_dir, "action-1", result, access_lease
+            )
+        else:
+            prw.load_review_findings_snapshot(
+                "abcd1234-issue-1", project_dir, "action-1", access_lease
+            )
+
+
+@pytest.mark.parametrize("boundary", ["symlink", "mode", "size", "no_follow"])
+def test_load_review_findings_snapshot_rejects_unsafe_artifact_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    boundary: str,
+) -> None:
+    project_dir = _setup_state(tmp_path, monkeypatch)
+    lease_token = _lease(project_dir)
+    _activate_pending_review_action(project_dir)
+    prw.save_review_findings_snapshot(
+        "abcd1234-issue-1",
+        project_dir,
+        "action-1",
+        _empty_review_findings_result(),
+        lease_token,
+    )
+    path = lc.artifact_path("abcd1234-issue-1", project_dir, "action-1", "review_findings.json")
+    if boundary == "symlink":
+        source = tmp_path / "snapshot-source.json"
+        source.write_bytes(path.read_bytes())
+        source.chmod(0o600)
+        path.unlink()
+        path.symlink_to(source)
+    elif boundary == "mode":
+        path.chmod(0o644)
+    elif boundary == "size":
+        path.write_bytes(b" " * (prw.MAX_REVIEW_FINDINGS_SNAPSHOT_BYTES + 1))
+        path.chmod(0o600)
+    else:
+        monkeypatch.delattr(prw.os, "O_NOFOLLOW", raising=False)
+
+    with pytest.raises(prw.PrReviewWaitError, match="invalid review findings snapshot"):
+        prw.load_review_findings_snapshot("abcd1234-issue-1", project_dir, "action-1", lease_token)
 
 
 def test_apply_severity_classifications_drops_non_findings(
