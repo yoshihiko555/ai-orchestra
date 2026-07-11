@@ -269,7 +269,8 @@ pr_review:
 
 ### 3.2 Step 2: 表記が無い場合の分類サブエージェント
 
-Step 1 でマッチしなかったコメントは、分類専用サブエージェントで 4 段階分類する。
+Step 1 でマッチしなかったコメントは、分類専用サブエージェントで 4 段階の severity または
+finding 非該当の `none` に分類する。
 
 **エージェント選定**: 新規の専用サブエージェント種別は追加せず、既存の `code-reviewer`
 （読み取り専用の性質を持ち、Maker とは明確に別コンテキスト）を「分類専用モード」の専用プロンプトで
@@ -282,7 +283,7 @@ Task(subagent_type="code-reviewer", prompt="""
 [PR Review Comment Severity Classification — 読み取り専用・分類のみ]
 
 あなたはコードを修正しません。以下の既存レビューコメント 1 件を、
-critical / high / medium / low のいずれか 1 つに分類することだけが役割です。
+critical / high / medium / low / none のいずれか 1 つに分類することだけが役割です。
 
 ## 対象コメント（原文）
 {comment_body}
@@ -297,10 +298,11 @@ critical / high / medium / low のいずれか 1 つに分類することだけ�
 - critical: セキュリティ脆弱性・データ損失・本番障害に直結する指摘
 - high: バグの可能性・設計上の欠陥・重大なパフォーマンス劣化
 - medium: コード品質・可読性・軽微な改善提案
-- low: スタイル・命名・コメント表現の改善提案。修正要求を含まない肯定的・情報提供のみのコメントも low
+- low: スタイル・命名・コメント表現の改善提案
+- none: 修正要求を含まない肯定的・情報提供のみのコメント（finding ではない）
 
 ## 出力形式（これ以外のテキストを含めないこと）
-SEVERITY: <critical|high|medium|low>
+SEVERITY: <critical|high|medium|low|none>
 CONFIDENCE: <high|low>
 """)
 ```
@@ -312,6 +314,10 @@ CONFIDENCE: <high|low>
 - **応答の確定**: オーケストレーターは Task 応答を `pr_review_wait.classify_severity()` に
   `classification_response` として渡して確定する（パース失敗・`CONFIDENCE: low` の 3.3 節への丸めは
   同 API が決定論的に行う。呼び出し側で severity を手書きしない）。
+- **state への適用**: 全 Task 応答は `pr_review_wait.apply_severity_classifications()` へまとめて渡す。
+  同 API が確定 severity を同じ signature の永続 state へ反映し、`none` のコメントは
+  `state.pr_review["findings"]` と phase check 対象の両方から除外する。呼び出し側で一時的な
+  `ReviewFindingsResult` だけを差し替えない。
 
 - 応答パース失敗（形式不一致）、または `CONFIDENCE: low` の場合は 3.3 節を適用する。
 - 分類結果は `artifacts/<action_id>/severity_classifications.json` に保存し、次回反復での
@@ -323,7 +329,7 @@ CONFIDENCE: <high|low>
 
 - Step 1 の `[must]` / `MUST FIX` / `blocking` 表記（critical/high の区別が付かない）
 - Step 2 の応答が `CONFIDENCE: low`
-- Step 2 の応答パースに失敗した（形式不一致、severity 値が 4 種のいずれにも該当しない）
+- Step 2 の応答パースに失敗した（形式不一致、severity 値が 4 種または `none` のいずれにも該当しない）
 
 理由: ループは無人反復であり、人間の「Medium だと思うので見送る」判断を挟めない
 （基本設計 FT-06 の踏襲）。誤って見送るより誤って対応する方を安全側として優先する。
@@ -336,6 +342,7 @@ CONFIDENCE: <high|low>
 | high     | 対応必須（理由記録による見送り不可）                            |
 | medium   | 対応 or 理由付き見送り可（`journal` に `dismissed` として記録） |
 | low      | 対応 or 理由付き見送り可（`journal` に `dismissed` として記録） |
+| none     | finding 非該当として state / phase check 対象から除外           |
 
 `dismissed` の journal エントリには `signature`（4 節）・`reason`・`decided_by: "maker"` を含める。
 見送り理由は Maker が生成し、`run_checker` 側で「medium/low かつ理由が空でない」ことのみを機械的に
@@ -364,9 +371,11 @@ CONFIDENCE: <high|low>
         "first_seen_iteration": 1,
         "last_seen_iteration": 2,
         "status": "open", // open | resolved | dismissed
-        "severity": "high",
+        "severity": "high", // 分類待ちがあれば fail-safe high、なければ confirmed_severity
+        "confirmed_severity": "medium", // 確定前のみ null
+        "pending_classification_source_comment_ids": ["issue_comment:22334455"],
         "dismiss_reason": null,
-        "source_comment_ids": ["review_comment:918273645"],
+        "source_comment_ids": ["review_comment:918273645", "issue_comment:22334455"],
       },
     },
   },
@@ -378,6 +387,10 @@ CONFIDENCE: <high|low>
   衝突し得る）。
 - 再取得のたびに `processed_comment_ids` に含まれるコメント ID を除外してから 4.2 節のシグネチャ計算
   に回す（同一コメントの二重処理を防ぐ）。
+- `confirmed_severity` と `pending_classification_source_comment_ids` を分離し、分類待ちの暫定 `high` が
+  既存の確定 severity を上書きしないようにする。分類確定時は pending ID を除き、確定 severity を
+  `severity` へ反映する。`none` なら該当 source ID を除き、確定 finding も pending ID も残らない
+  signature は削除する。
 
 ### 4.2 指摘シグネチャの正規化アルゴリズム
 

@@ -588,6 +588,7 @@ artifact から復旧する `reconcile` も同じ validator を必ず通し、�
 - `record_ignored_untrusted_reviews(...)`
 - `collect_review_findings(...)`
 - `classify_severity(...)`（Step 2 分類応答の決定論パース。下記「severity 分類」参照）
+- `apply_severity_classifications(...)`（分類結果の state 永続化と finding 除外を一括適用）
 - `phase_check_from_completion_outcome(...)`
 - `phase_check_from_review_findings(...)`
 
@@ -625,24 +626,25 @@ API error は `phase_check_from_completion_outcome()` で変換する。独自�
 
 1. 対象 finding ごとに下記の分類専用 Task を起動する（読み取り専用・分類のみ。コメント本文は
    Task 側が `source_comment_id` から取得し、メインコンテキストへは 2 行の応答だけを返す）。
-2. Task の応答テキストをそのまま
-   `classify_severity(finding.body_excerpt, config, classification_response=<応答>)` に渡し、
-   `SeverityDecision` を得る。応答のパース失敗・`CONFIDENCE: low` は API が安全側で high に確定する
-   （設計 §3.3）。Step 3 相当の判定を独自実装しない。
-3. `dataclasses.replace(finding, severity=decision.severity, needs_classification=False)` で finding を
-   置き換え、`dataclasses.replace(result, findings=<置換後の tuple>)` で `ReviewFindingsResult` を
-   再構成する。この再構成後の result を `phase_check_from_review_findings()` に渡す。
-4. 分類結果（`signature` / 確定 `severity` / `decision.source` / `decision.reason`）を 0600 で
-   `artifacts/<action_id>/severity_classifications.json` に保存する（設計 §3.2。reconcile 復元用）。
-5. severity を手書きで決めない。Task 応答から直接 severity を採用せず、必ず `classify_severity()` を
-   経由する。`needs_classification` が `false` の finding（Step 1 で確定済み）は再分類しない。
+2. Task 応答を `source_comment_id` キーの map に集め、収集済み `result` とともに
+   `apply_severity_classifications(..., action_id=<現在の action_id>)` へ渡す。同 API が内部で
+   `classify_severity()` を呼び、応答のパース失敗・`CONFIDENCE: low` を安全側の high に確定する
+   （設計 §3.3）。Step 3 相当の判定、finding の差し替え、state 更新を独自実装しない。
+3. API が返す `ClassificationApplicationResult.review_findings` を
+   `phase_check_from_review_findings()` に渡す。確定 severity は同じ signature の
+   `state.pr_review["findings"]` に永続化され、`none` は state と戻り値の両方から finding を除外する。
+4. `ClassificationApplicationResult.classifications` を JSON 化し、`severity is null` は `none` として
+   0600 の `artifacts/<action_id>/severity_classifications.json` に保存する
+   （設計 §3.2。reconcile 復元用）。
+5. severity を手書きで決めない。Task 応答から直接 severity を採用せず、必ず上記 API を経由する。
+   `needs_classification` が `false` の finding（Step 1 で確定済み）は再分類しない。
 
 ```text
 Task(subagent_type="code-reviewer", prompt="""
 [PR Review Comment Severity Classification — 読み取り専用・分類のみ]
 
 あなたはコードを修正しません。次の PR レビューコメント 1 件を
-critical / high / medium / low のいずれか 1 つに分類することだけが役割です。
+critical / high / medium / low / none のいずれか 1 つに分類することだけが役割です。
 
 - cwd: {params.worktree_path}（`gh` はこの cwd に固定して実行すること）
 - PR: #{params.pr_number}
@@ -656,21 +658,23 @@ critical / high / medium / low のいずれか 1 つに分類することだけ�
 - critical: セキュリティ脆弱性・データ損失・本番障害に直結する指摘
 - high: バグの可能性・設計上の欠陥・重大なパフォーマンス劣化
 - medium: コード品質・可読性・軽微な改善提案
-- low: スタイル・命名・コメント表現の改善提案。修正要求を含まない肯定的・情報提供のみのコメントも low
+- low: スタイル・命名・コメント表現の改善提案
+- none: 修正要求を含まない肯定的・情報提供のみのコメント（finding ではない）
 
 ## 出力形式（これ以外のテキストを含めないこと。コメント本文を転載しないこと）
-SEVERITY: <critical|high|medium|low>
+SEVERITY: <critical|high|medium|low|none>
 CONFIDENCE: <high|low>
 """)
 ```
 
-`record_baseline(...)`、`record_iteration_head(...)`、`collect_review_findings(...)` は、Python 側で
+`record_baseline(...)`、`record_iteration_head(...)`、`collect_review_findings(...)`、
+`apply_severity_classifications(...)` は、Python 側で
 `state_version` を変更しない補助更新として実装された API だけを使う。各 API は対応する同じ pending
 action の `action_id` / `lease_token` と `params.worktree_path` を渡して呼べるが、proposal の
 `state_version` を取り直したり加算したりしない。`complete` は常に元 proposal と同じ
 `state_version` を渡す。action_id-bound API は現在の pending `action_id` と一致する場合だけ補助更新を
 許可し、旧 action の id は stale として拒否する。`action_id=None` の legacy mode は互換性のため
-`state_version` を increment するので、このスキルでは使用禁止。3 API すべてへ現在の `action_id` を
+`state_version` を increment するので、このスキルでは使用禁止。4 API すべてへ現在の `action_id` を
 必ず渡す。state / journal を直接編集してこの契約を模倣しない。
 
 repo identity 検証済みの `params.worktree_path` を cwd にして `GhApiClient` を構成し、current shell の
