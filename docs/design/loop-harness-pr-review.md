@@ -171,6 +171,13 @@ local branch には前回 push 済み head から進んだ commit が存在せ�
 省略してはならない。必ず既存の full flow（baseline 記録 → push → `record_iteration_head()` →
 wait / poll / collect）へフォールバックする。
 
+> **guard 合格後にだけ判定する**
+> no_new_commit ショートカットの判定は repo identity / branch guard の再検証に合格した後にのみ行う。
+> guard 不合格の場合はショートカットを検討せず、従来どおり `push_guard` を含む結果で complete し、
+> `_apply_safety_stop_if_needed()` による `push_guard_violation` / `repo_identity_mismatch` への安全停止を
+> 優先する。worktree のブランチがすり替わっていた場合等に、guard を経由せず `pr_review_timeout` として
+> 無進捗扱いにしてしまうことを防ぐための順序である。
+
 `no_new_commit` を検出した場合の結果は、新しい失敗カテゴリではない。library は
 `timed_out=True`、`infrastructure_failure=False` の timeout-shaped `CompletionOutcome` を返し、
 metadata に `shortcut_reason: "no_new_commit_to_push"` と比較に使った
