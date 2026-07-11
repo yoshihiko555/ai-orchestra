@@ -75,6 +75,16 @@ DEFAULT_AUTO_GENERATED_MARKERS: tuple[str, ...] = (
     "<!-- This is an auto-generated comment: summarize by coderabbit.ai",
     "<!-- This is an auto-generated comment: rate limited by coderabbit.ai",
     "<!-- This is an auto-generated comment: review in progress by coderabbit.ai",
+    "<!-- This is an auto-generated reply by CodeRabbit",
+)
+TERMINAL_VERDICT_PATTERNS: tuple[str, ...] = (
+    "didn't find any major issues",
+    "no major issues",
+    "didn't find any issues",
+    "review complete",
+    "lgtm",
+    "looks good to me",
+    "approved",
 )
 
 
@@ -175,12 +185,20 @@ class IgnoredUntrustedReview:
 class CompletionOutcome:
     """Result of polling for external review completion."""
 
-    signal: Literal["review_submitted", "check_run_completed", "timeout", "api_error", "pending"]
+    signal: Literal[
+        "review_submitted",
+        "issue_comment_completed",
+        "check_run_completed",
+        "timeout",
+        "api_error",
+        "pending",
+    ]
     completed: bool
     timed_out: bool
     infrastructure_failure: bool
     review_ids: tuple[int, ...] = ()
     check_run_names: tuple[str, ...] = ()
+    issue_comment_ids: tuple[str, ...] = ()
     ignored_untrusted_review_count: int = 0
     ignored_untrusted_reviews: tuple[IgnoredUntrustedReview, ...] = ()
     error: str | None = None
@@ -467,6 +485,13 @@ def wait_for_completion(
             )
             if review_outcome.completed:
                 return review_outcome
+            issue_comment_outcome = _issue_comment_completion_outcome(
+                pr_number, baseline, config, client
+            )
+            if issue_comment_outcome.completed:
+                return _completion_outcome_with_ignored_reviews(
+                    issue_comment_outcome, ignored_reviews
+                )
             check_outcome = _checkrun_completion_outcome(baseline, config, client)
             if check_outcome.completed:
                 return _completion_outcome_with_ignored_reviews(check_outcome, ignored_reviews)
@@ -952,6 +977,55 @@ def _review_completion_outcome(
     )
 
 
+def _is_issue_comment_completion_signal(
+    item: ReviewItem, baseline: dict[str, Any], config: PrReviewConfig
+) -> bool:
+    """Return True when a trusted, post-baseline issue comment is a terminal review verdict."""
+    if not verify_origin(item.raw, config.reviewer_allowlist):
+        return False
+    if not _is_after_baseline_time(item, str(baseline.get("baseline_recorded_at") or "")):
+        return False
+    if _is_auto_generated_comment(item.body, config):
+        return False
+    iteration_sha = baseline.get("iteration_head_sha")
+    if isinstance(iteration_sha, str) and iteration_sha and iteration_sha[:7] not in item.body:
+        return False
+    return _matches_terminal_verdict(item.body)
+
+
+def _matches_terminal_verdict(body: str) -> bool:
+    """Return True when body casefold-contains a terminal review verdict phrase."""
+    normalized = (body or "").casefold()
+    return any(pattern.casefold() in normalized for pattern in TERMINAL_VERDICT_PATTERNS)
+
+
+def _issue_comment_completion_outcome(
+    pr_number: int, baseline: dict[str, Any], config: PrReviewConfig, client: GhApiClient
+) -> CompletionOutcome:
+    """Return a completion outcome from trusted issue comments carrying a terminal verdict."""
+    if not baseline.get("baseline_recorded_at"):
+        return CompletionOutcome(
+            "pending", completed=False, timed_out=False, infrastructure_failure=False
+        )
+    items = [
+        _review_item_from_issue_comment(raw) for raw in _fetch_issue_comments(client, pr_number)
+    ]
+    matched = [
+        item for item in items if _is_issue_comment_completion_signal(item, baseline, config)
+    ]
+    if not matched:
+        return CompletionOutcome(
+            "pending", completed=False, timed_out=False, infrastructure_failure=False
+        )
+    return CompletionOutcome(
+        "issue_comment_completed",
+        completed=True,
+        timed_out=False,
+        infrastructure_failure=False,
+        issue_comment_ids=tuple(sorted(_comment_key(item) for item in matched)),
+    )
+
+
 def _checkrun_completion_outcome(
     baseline: dict[str, Any], config: PrReviewConfig, client: GhApiClient
 ) -> CompletionOutcome:
@@ -986,6 +1060,8 @@ def _completion_outcome_metadata(outcome: CompletionOutcome) -> dict[str, Any]:
         metadata["ignored_untrusted_reviews"] = [
             _ignored_untrusted_review_dict(item) for item in outcome.ignored_untrusted_reviews
         ]
+    if outcome.issue_comment_ids:
+        metadata["issue_comment_ids"] = list(outcome.issue_comment_ids)
     if outcome.error:
         metadata["error"] = outcome.error
     if outcome.shortcut_reason:
@@ -1010,6 +1086,7 @@ def _completion_outcome_with_ignored_reviews(
         infrastructure_failure=outcome.infrastructure_failure,
         review_ids=outcome.review_ids,
         check_run_names=outcome.check_run_names,
+        issue_comment_ids=outcome.issue_comment_ids,
         ignored_untrusted_review_count=len(ignored_reviews),
         ignored_untrusted_reviews=_ignored_review_tuple(ignored_reviews),
         error=outcome.error,

@@ -142,6 +142,67 @@ def test_ev30_records_baseline_before_iteration_head(
     ]
 
 
+def test_ev192_pre_rebaseline_collect_preserves_findings_across_next_record_baseline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A trusted review that arrives after an old baseline is not lost by the next re-baseline."""
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={
+            "baseline_review_id": 5,
+            "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+            "processed_comment_ids": [],
+            "findings": {},
+        },
+    )
+    lease_token = _lease(project_dir)
+    # A second reviewer (CodeRabbit) posts a CHANGES_REQUESTED review while the Maker is still
+    # working on the previous iteration's findings, i.e. after the OLD baseline was recorded.
+    late_review_comment = _trusted(
+        {
+            "id": 40,
+            "created_at": "2026-07-09T00:00:05+00:00",
+            "pull_request_review_id": 9,
+            "body": "[P2] Please handle this edge case",
+            "path": "app.py",
+            "line": 12,
+        }
+    )
+    client = FakeClient(
+        {
+            "repos/owner/repo/pulls/12/reviews": [{"id": 9}],
+            "repos/owner/repo/pulls/12/comments": [late_review_comment],
+            "repos/owner/repo/issues/12/comments": [],
+        }
+    )
+
+    # Pre-rebaseline drain: collect using the OLD (still baseline_review_id=5) baseline.
+    result = prw.collect_review_findings(
+        "abcd1234-issue-1", project_dir, 12, _config(), client, 1, lease_token
+    )
+    assert [item.source_comment_id for item in result.findings] == ["review_comment:40"]
+    state_after_collect = lc.load_state("abcd1234-issue-1", project_dir)
+    assert "review_comment:40" in _findings_signature_source_ids(state_after_collect)
+
+    # The Maker then pushes a fresh commit, and the orchestrator re-baselines. record_baseline
+    # fetches the SAME reviews/comments (now including id=9 / review_comment:40) again and marks
+    # them all "processed", but must not clobber the already-imported finding.
+    prw.record_baseline("abcd1234-issue-1", project_dir, 12, client, lease_token)
+
+    state_after_rebaseline = lc.load_state("abcd1234-issue-1", project_dir)
+    assert state_after_rebaseline.pr_review["baseline_review_id"] == 9
+    assert "review_comment:40" in _findings_signature_source_ids(state_after_rebaseline)
+
+
+def _findings_signature_source_ids(state: lc.LoopState) -> set[str]:
+    findings = state.pr_review.get("findings") if isinstance(state.pr_review, dict) else {}
+    source_ids: set[str] = set()
+    for record in (findings or {}).values():
+        source_ids.update(record.get("source_comment_ids") or [])
+    return source_ids
+
+
 def test_ev76_detects_no_new_commit_when_local_head_matches_iteration_head(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -698,6 +759,179 @@ def test_wait_for_completion_calls_heartbeat_during_poll_wait() -> None:
 
     assert outcome.signal == "timeout"
     assert heartbeats == ["beat"]
+
+
+def _terminal_issue_comment(
+    *, trusted: bool = True, sha: str = "abc1234def", body: str | None = None, **extra: Any
+) -> dict[str, Any]:
+    data = {
+        "id": 20,
+        "created_at": "2026-07-09T00:00:01+00:00",
+        "body": body
+        if body is not None
+        else f"Didn't find any major issues. Reviewed commit: {sha}.",
+        **extra,
+    }
+    return _trusted(data) if trusted else _untrusted(data)
+
+
+def test_ev194_issue_comment_completion_signal_true_for_trusted_terminal_verdict() -> None:
+    item = prw._review_item_from_issue_comment(_terminal_issue_comment())
+    baseline = {
+        "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+        "iteration_head_sha": "abc1234def",
+    }
+
+    assert prw._is_issue_comment_completion_signal(item, baseline, _config()) is True
+
+
+def test_ev194_issue_comment_completion_signal_false_for_untrusted() -> None:
+    item = prw._review_item_from_issue_comment(_terminal_issue_comment(trusted=False))
+    baseline = {
+        "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+        "iteration_head_sha": "abc1234def",
+    }
+
+    assert prw._is_issue_comment_completion_signal(item, baseline, _config()) is False
+
+
+def test_ev194_issue_comment_completion_signal_false_before_baseline() -> None:
+    item = prw._review_item_from_issue_comment(
+        _terminal_issue_comment(**{"created_at": "2026-07-08T23:59:59+00:00"})
+    )
+    baseline = {
+        "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+        "iteration_head_sha": "abc1234def",
+    }
+
+    assert prw._is_issue_comment_completion_signal(item, baseline, _config()) is False
+
+
+def test_ev194_issue_comment_completion_signal_false_when_sha_mismatch() -> None:
+    item = prw._review_item_from_issue_comment(_terminal_issue_comment(sha="ffffffffff"))
+    baseline = {
+        "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+        "iteration_head_sha": "abc1234def",
+    }
+
+    assert prw._is_issue_comment_completion_signal(item, baseline, _config()) is False
+
+
+def test_ev194_issue_comment_completion_signal_false_when_pattern_does_not_match() -> None:
+    item = prw._review_item_from_issue_comment(
+        _terminal_issue_comment(body="Still reviewing, will report back shortly.")
+    )
+    baseline = {
+        "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+        "iteration_head_sha": "abc1234def",
+    }
+
+    assert prw._is_issue_comment_completion_signal(item, baseline, _config()) is False
+
+
+def test_ev194_issue_comment_completion_signal_false_for_auto_generated_reply() -> None:
+    item = prw._review_item_from_issue_comment(
+        _terminal_issue_comment(
+            body="<!-- This is an auto-generated reply by CodeRabbit -->\nLGTM, rate limited, retrying."
+        )
+    )
+    baseline = {
+        "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+        "iteration_head_sha": "abc1234def",
+    }
+
+    assert prw._is_issue_comment_completion_signal(item, baseline, _config()) is False
+
+
+def test_wait_for_completion_returns_issue_comment_completed_for_trusted_terminal_comment() -> None:
+    client = FakeClient(
+        {
+            "repos/owner/repo/pulls/12/reviews": [],
+            "repos/owner/repo/issues/12/comments": [_terminal_issue_comment()],
+        }
+    )
+    baseline = {
+        "baseline_review_id": 10,
+        "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+        "iteration_head_sha": "abc1234def",
+    }
+
+    outcome = prw.wait_for_completion(
+        12, baseline, _config(), client, sleeper=lambda _seconds: None
+    )
+
+    assert outcome.signal == "issue_comment_completed"
+    assert outcome.completed is True
+    assert outcome.issue_comment_ids == ("issue_comment:20",)
+
+
+def test_wait_for_completion_ignores_rate_limited_issue_comment_reply() -> None:
+    client = FakeClient(
+        {
+            "repos/owner/repo/pulls/12/reviews": [],
+            "repos/owner/repo/issues/12/comments": [
+                _terminal_issue_comment(
+                    body="<!-- This is an auto-generated reply by CodeRabbit -->\nLGTM, rate limited."
+                )
+            ],
+        }
+    )
+    baseline = {
+        "baseline_review_id": 10,
+        "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+        "iteration_head_sha": "abc1234def",
+    }
+
+    outcome = prw.wait_for_completion(
+        12, baseline, _config(), client, sleeper=lambda _seconds: None
+    )
+
+    assert outcome.signal == "timeout"
+
+
+def test_wait_for_completion_ignores_untrusted_issue_comment_terminal_verdict() -> None:
+    client = FakeClient(
+        {
+            "repos/owner/repo/pulls/12/reviews": [],
+            "repos/owner/repo/issues/12/comments": [_terminal_issue_comment(trusted=False)],
+        }
+    )
+    baseline = {
+        "baseline_review_id": 10,
+        "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+        "iteration_head_sha": "abc1234def",
+    }
+
+    outcome = prw.wait_for_completion(
+        12, baseline, _config(), client, sleeper=lambda _seconds: None
+    )
+
+    assert outcome.signal == "timeout"
+
+
+def test_wait_for_completion_still_reaches_checkrun_when_issue_comments_are_not_terminal() -> None:
+    client = FakeClient(
+        {
+            "repos/owner/repo/pulls/12/reviews": [],
+            "repos/owner/repo/issues/12/comments": [
+                _terminal_issue_comment(body="Still working on this, more soon.")
+            ],
+            "repos/owner/repo/commits/abc1234def/check-runs": {
+                "check_runs": [{"name": "ci", "status": "completed"}]
+            },
+        }
+    )
+    baseline = {
+        "baseline_review_id": 10,
+        "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+        "iteration_head_sha": "abc1234def",
+    }
+
+    outcome = prw.wait_for_completion(
+        12, baseline, _config(checkruns=("ci",)), client, sleeper=lambda _seconds: None
+    )
+
+    assert outcome.signal == "check_run_completed"
 
 
 def test_state_writes_reject_invalid_lease_before_journal(

@@ -24,6 +24,7 @@ pr_review:
     - '<!-- This is an auto-generated comment: summarize by coderabbit.ai'
     - '<!-- This is an auto-generated comment: rate limited by coderabbit.ai'
     - '<!-- This is an auto-generated comment: review in progress by coderabbit.ai'
+    - '<!-- This is an auto-generated reply by CodeRabbit'
   dedup:
     line_bucket_size: 5
     stopwords_en:
