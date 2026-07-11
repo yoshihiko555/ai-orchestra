@@ -353,6 +353,8 @@ artifact から復旧する `reconcile` も同じ validator を必ず通し、�
 
 - `load_pr_review_config(params.worktree_path)`
 - repo identity 検証済みの repository で構成した `GhApiClient`
+- `detect_pr_review_push_delta(loop_id, params.worktree_path, params.worktree_path)`
+- `no_new_commit_completion_outcome(delta)`
 - `wait_for_completion(...)`
 - `record_ignored_untrusted_reviews(...)`
 - `collect_review_findings(...)`
@@ -365,11 +367,25 @@ artifact から復旧する `reconcile` も同じ validator を必ず通し、�
 追加 push が必要かを示す bool である。値を独自に推測せず、次の 2 経路だけを実行する。
 
 - `params.push_required is true`: `pr_review_response` の Maker が同じ local branch へ追加 commit した後の
-  経路。同じ `wait_external_review` action 内で、`params.worktree_path` に cwd を固定し、
-  `record_baseline(..., action_id=<現在の action_id>)` を push 前に実行する。repo identity と branch guard
-  を再検証してから `params.verified_branch` を一字も変更せず push し、push 後に
-  `record_iteration_head(..., action_id=<現在の action_id>)` を実行する。そのまま wait / poll / collect へ
-  進み、元 proposal と同じ `state_version` で `complete` する。
+  経路。同じ `wait_external_review` action 内で、`record_baseline(...)` を呼ぶ前に必ず
+  `detect_pr_review_push_delta(loop_id, params.worktree_path, params.worktree_path)` を呼び、戻り値 `delta.status`
+  で分岐する。`delta.status == "no_new_commit"` の場合、Maker は push すべき新規 commit を作っていない。
+  この場合は `record_baseline`、repo identity と branch guard の再検証、push、
+  `record_iteration_head`、wait / poll / collect をすべて実行しない。代わりに
+  `no_new_commit_completion_outcome(delta)` で `CompletionOutcome` を取得し、続けて
+  `phase_check_from_completion_outcome(outcome)` で `PhaseCheckResult` へ変換し、
+  既存の timeout / API error 経路と同じく `lc.phase_check_to_dict()` で ready-to-complete JSON に変換する。
+  その JSON を 0600 の result file として保存し、元 proposal と同じ `state_version` で `complete` する。
+  オーケストレーターが `CompletionOutcome` や `PhaseCheckResult` を手書きで構築することは禁止する。
+  必ず上記 2 つの library function を呼び、その戻り値をそのまま通す。この分岐は既存の
+  `pr_review_timeout` 無進捗経路（FT-13）上の純粋な高速化であり、新しい失敗カテゴリを導入しない。
+  `delta.status == "new_commit"` または `"unknown"` の場合は、既存フローを一切変更せず続行する。
+  すなわち `params.worktree_path` に cwd を固定し、`record_baseline(..., action_id=<現在の action_id>)` を
+  push 前に実行し、repo identity と branch guard を再検証してから `params.verified_branch` を一字も
+  変更せず push し、push 後に `record_iteration_head(..., action_id=<現在の action_id>)` を実行する。
+  そのまま wait / poll / collect へ進み、元 proposal と同じ `state_version` で `complete` する。
+  `"unknown"` は git コマンド失敗や `iteration_head_sha` 未記録などの安全側フォールバックであり、
+  ショートカットとして扱ってはならない。
 - `params.push_required is false`: 初回 PR 作成直後など、対象 commit がすでに push 済みの経路。
   `advance_phase` が保存した既存 baseline / iteration head を使って poll から開始する。baseline の再記録、
   re-push、iteration head の上書きを行わない。

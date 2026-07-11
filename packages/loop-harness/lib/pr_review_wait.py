@@ -152,6 +152,15 @@ class BaselineRecord:
 
 
 @dataclass(frozen=True)
+class PrReviewPushDelta:
+    """Read-only comparison result for PR review response pushes."""
+
+    status: str
+    local_head_sha: str | None
+    iteration_head_sha: str | None
+
+
+@dataclass(frozen=True)
 class IgnoredUntrustedReview:
     """Submitted review ignored because it does not match the reviewer allowlist."""
 
@@ -175,6 +184,9 @@ class CompletionOutcome:
     ignored_untrusted_review_count: int = 0
     ignored_untrusted_reviews: tuple[IgnoredUntrustedReview, ...] = ()
     error: str | None = None
+    shortcut_reason: str | None = None
+    local_head_sha: str | None = None
+    iteration_head_sha: str | None = None
 
 
 @dataclass(frozen=True)
@@ -403,6 +415,36 @@ def record_iteration_head(
     )
     lc._write_state(state, project_dir)
     return sha
+
+
+def detect_pr_review_push_delta(
+    loop_id: str, project_dir: str, worktree_path: str
+) -> PrReviewPushDelta:
+    """Read-only comparison of worktree HEAD vs the last recorded PR iteration head sha."""
+    local_head_sha = _local_head_sha(worktree_path)
+    state = lc.load_state(loop_id, project_dir)
+    pr_review = state.pr_review if isinstance(state.pr_review, dict) else {}
+    iteration_head_sha = _optional_str(pr_review.get("iteration_head_sha"))
+    if local_head_sha is None or iteration_head_sha is None:
+        return PrReviewPushDelta("unknown", local_head_sha, iteration_head_sha)
+    if local_head_sha == iteration_head_sha:
+        return PrReviewPushDelta("no_new_commit", local_head_sha, iteration_head_sha)
+    return PrReviewPushDelta("new_commit", local_head_sha, iteration_head_sha)
+
+
+def no_new_commit_completion_outcome(delta: PrReviewPushDelta) -> CompletionOutcome:
+    """Build a timeout-equivalent CompletionOutcome for the no_new_commit shortcut."""
+    if delta.status != "no_new_commit":
+        raise PrReviewWaitError("no_new_commit_completion_outcome requires status=no_new_commit")
+    return CompletionOutcome(
+        "timeout",
+        completed=False,
+        timed_out=True,
+        infrastructure_failure=False,
+        shortcut_reason="no_new_commit_to_push",
+        local_head_sha=delta.local_head_sha,
+        iteration_head_sha=delta.iteration_head_sha,
+    )
 
 
 def wait_for_completion(
@@ -946,6 +988,12 @@ def _completion_outcome_metadata(outcome: CompletionOutcome) -> dict[str, Any]:
         ]
     if outcome.error:
         metadata["error"] = outcome.error
+    if outcome.shortcut_reason:
+        metadata["shortcut_reason"] = outcome.shortcut_reason
+    if outcome.local_head_sha:
+        metadata["local_head_sha"] = outcome.local_head_sha
+    if outcome.iteration_head_sha:
+        metadata["iteration_head_sha"] = outcome.iteration_head_sha
     return metadata
 
 
@@ -965,7 +1013,26 @@ def _completion_outcome_with_ignored_reviews(
         ignored_untrusted_review_count=len(ignored_reviews),
         ignored_untrusted_reviews=_ignored_review_tuple(ignored_reviews),
         error=outcome.error,
+        shortcut_reason=outcome.shortcut_reason,
+        local_head_sha=outcome.local_head_sha,
+        iteration_head_sha=outcome.iteration_head_sha,
     )
+
+
+def _local_head_sha(worktree_path: str) -> str | None:
+    """Return worktree HEAD sha, or None when git cannot resolve it."""
+    try:
+        completed = subprocess.run(
+            ["git", "-C", worktree_path, "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=lc.GIT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    return _optional_str(completed.stdout.strip())
 
 
 def _ignored_untrusted_review_dict(item: IgnoredUntrustedReview) -> dict[str, Any]:

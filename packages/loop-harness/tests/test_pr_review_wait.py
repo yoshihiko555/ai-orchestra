@@ -80,6 +80,20 @@ def _config(
     )
 
 
+def _mock_git_head(
+    monkeypatch: pytest.MonkeyPatch, sha: str | None, *, returncode: int = 0
+) -> list[list[str]]:
+    calls: list[list[str]] = []
+
+    def fake_run(args: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        stdout = f"{sha}\n" if sha is not None else ""
+        return subprocess.CompletedProcess(args, returncode, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(prw.subprocess, "run", fake_run)
+    return calls
+
+
 def _trusted(extra: dict[str, Any] | None = None) -> dict[str, Any]:
     data = {
         "user": {"login": "codex[bot]", "type": "Bot"},
@@ -126,6 +140,105 @@ def test_ev30_records_baseline_before_iteration_head(
         "repos/owner/repo/issues/12/comments",
         "repos/owner/repo/pulls/12",
     ]
+
+
+def test_ev76_detects_no_new_commit_when_local_head_matches_iteration_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sha = "abc123"
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={"iteration_head_sha": sha, "processed_comment_ids": [], "findings": {}},
+    )
+    calls = _mock_git_head(monkeypatch, sha)
+
+    delta = prw.detect_pr_review_push_delta("abcd1234-issue-1", project_dir, project_dir)
+
+    assert delta.status == "no_new_commit"
+    assert delta.local_head_sha == sha
+    assert delta.iteration_head_sha == sha
+    assert calls == [["git", "-C", project_dir, "rev-parse", "HEAD"]]
+
+
+def test_ev76_detects_new_commit_when_local_head_differs_from_iteration_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={"iteration_head_sha": "old123", "processed_comment_ids": [], "findings": {}},
+    )
+    _mock_git_head(monkeypatch, "new456")
+
+    delta = prw.detect_pr_review_push_delta("abcd1234-issue-1", project_dir, project_dir)
+
+    assert delta.status == "new_commit"
+    assert delta.local_head_sha == "new456"
+    assert delta.iteration_head_sha == "old123"
+
+
+def test_ev76_detects_unknown_when_iteration_head_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={"processed_comment_ids": [], "findings": {}},
+    )
+    _mock_git_head(monkeypatch, "abc123")
+
+    delta = prw.detect_pr_review_push_delta("abcd1234-issue-1", project_dir, project_dir)
+
+    assert delta.status == "unknown"
+    assert delta.local_head_sha == "abc123"
+    assert delta.iteration_head_sha is None
+
+
+def test_ev76_detects_unknown_when_git_head_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={"iteration_head_sha": "abc123", "processed_comment_ids": [], "findings": {}},
+    )
+    _mock_git_head(monkeypatch, None, returncode=1)
+
+    delta = prw.detect_pr_review_push_delta("abcd1234-issue-1", project_dir, project_dir)
+
+    assert delta.status == "unknown"
+    assert delta.local_head_sha is None
+    assert delta.iteration_head_sha == "abc123"
+
+
+def test_ev76_no_new_commit_outcome_is_timeout_shaped_with_shortcut_metadata() -> None:
+    delta = prw.PrReviewPushDelta("no_new_commit", "abc123", "abc123")
+
+    outcome = prw.no_new_commit_completion_outcome(delta)
+    phase_check = prw.phase_check_from_completion_outcome(outcome)
+
+    assert outcome.signal == "timeout"
+    assert outcome.completed is False
+    assert outcome.timed_out is True
+    assert outcome.infrastructure_failure is False
+    assert outcome.shortcut_reason == "no_new_commit_to_push"
+    assert outcome.local_head_sha == "abc123"
+    assert outcome.iteration_head_sha == "abc123"
+    assert phase_check.passed is False
+    assert phase_check.signature == "pr_review_timeout"
+    assert phase_check.infrastructure_failure is False
+    assert phase_check.metadata["shortcut_reason"] == "no_new_commit_to_push"
+    assert phase_check.metadata["local_head_sha"] == "abc123"
+    assert phase_check.metadata["iteration_head_sha"] == "abc123"
+
+
+@pytest.mark.parametrize("status", ["new_commit", "unknown"])
+def test_ev76_no_new_commit_outcome_rejects_non_shortcut_status(status: str) -> None:
+    delta = prw.PrReviewPushDelta(status, "local", "recorded")
+
+    with pytest.raises(prw.PrReviewWaitError, match="status=no_new_commit"):
+        prw.no_new_commit_completion_outcome(delta)
 
 
 def test_pr_review_auxiliary_updates_preserve_pending_action_version(
@@ -540,6 +653,9 @@ def test_ev32_timeout_is_not_infrastructure_failure_but_api_error_is() -> None:
 
     assert timeout.infrastructure_failure is False
     assert timeout.signature == "pr_review_timeout"
+    assert "shortcut_reason" not in timeout.metadata
+    assert "local_head_sha" not in timeout.metadata
+    assert "iteration_head_sha" not in timeout.metadata
     assert api_error.infrastructure_failure is True
     assert api_error.signature == "pr_review_api_error"
 

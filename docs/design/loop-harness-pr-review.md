@@ -147,6 +147,46 @@ loop:
 > | 個々の `gh api` 呼び出し失敗（5xx、network error、rate limit 応答）                                  | `infrastructure_failure` カウンタ（基本設計 6.3 節）。指数バックオフで同一ポーリング周期内リトライし、`guards.infrastructure_failure.max_retries` 到達で失敗出口 |
 > | `pr_review.timeout_seconds` 到達（API 呼び出し自体は成功し続けたが、シグナルが一度も得られなかった） | 無進捗カウンタ（本節。要件定義 FT-13 準拠）                                                                                                                      |
 
+### 1.2.1 push_required 時の no_new_commit ショートカット
+
+`pr_review_response` フェーズの Maker がコード変更を作らない場合がある。たとえば、Maker が既存状態で
+レビュー指摘を満たしていると判断した場合、または実際には対応行動を取れなかった場合である。従来はこの場合も
+`push_required: true` 経路が no-op push 相当で進み、完了シグナルが得られないまま
+`pr_review.timeout_seconds`（既定 3600 秒 = 60 分）まで poll してから無進捗として検知していた。
+しかし「push すべき新規 commit が無い」ことは、待機前に決定論的に検出できる。
+
+検出シグナルは Maker の自己申告に依存しない。直前の正常な push 直後に `record_iteration_head()` が
+GitHub API から取得して `state.pr_review["iteration_head_sha"]` に保存した PR head sha と、現在の
+worktree で `git rev-parse HEAD` が返す local HEAD sha を比較する。両者が完全一致する場合、
+local branch には前回 push 済み head から進んだ commit が存在せず、push すべき新規 commit は無い。
+
+| 比較結果                                   | 扱い                                                                                                   |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------ |
+| `iteration_head_sha == git rev-parse HEAD` | `no_new_commit`。baseline 記録・push・poll を省略し、timeout 相当の無進捗結果へ直行する                |
+| 両 sha が取得でき、かつ不一致              | `new_commit`。従来どおり baseline 記録 → push → `record_iteration_head()` → wait / poll / collect する |
+| どちらかの値が取得できない                 | `unknown`。安全側フォールバックとして従来フローを続行する                                             |
+
+`unknown` はショートカットとして扱わない。git コマンド失敗、worktree が不正、または
+`iteration_head_sha` が未記録（初回反復の境界条件など）の場合は、情報不足だけを理由に push / poll を
+省略してはならない。必ず既存の full flow（baseline 記録 → push → `record_iteration_head()` →
+wait / poll / collect）へフォールバックする。
+
+`no_new_commit` を検出した場合の結果は、新しい失敗カテゴリではない。library は
+`timed_out=True`、`infrastructure_failure=False` の timeout-shaped `CompletionOutcome` を返し、
+metadata に `shortcut_reason: "no_new_commit_to_push"` と比較に使った
+`local_head_sha` / `iteration_head_sha` を載せる。この outcome は実際の poll timeout と同じ
+`phase_check_from_completion_outcome()` を通り、`pr_review_timeout` signature として
+FT-13 の無進捗 guard 経路に集計される。
+
+> **設定キーは追加しない**
+> この判定は常に有効である。完全一致した sha に基づく latency optimization であり、情報が欠ける場合は
+> 必ず既存フローへ戻るため、正しさのトレードオフや disable 用 config key は導入しない。
+
+オーケストレーター（`/loop-issue` の skill instructions）は `CompletionOutcome` や
+`PhaseCheckResult` を手書きで構築してはならない。必ず `pr_review_wait.py` の決定論 API である
+`detect_pr_review_push_delta()` と `no_new_commit_completion_outcome()` を呼び、その結果を
+`phase_check_from_completion_outcome()` へそのまま渡す。
+
 ### 1.3 コメント取得（3 API の使い分け）
 
 完了シグナル検知後、以下 3 種類の API を組み合わせて指摘一覧を構築する。
