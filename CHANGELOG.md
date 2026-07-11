@@ -29,7 +29,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- **`loop-harness`: bot の自動生成サマリコメントが phantom high 指摘として取り込まれる問題を修正**: CodeRabbit 等が投稿する自動生成サマリコメント（本文中に `High` 等の語を偶然含む）が explicit high severity の指摘として誤って取り込まれ、対応実体が無いまま `exit_success` に到達できなくなる不具合を修正した。`pr_review.auto_generated_markers`（config）で指定したマーカーを含むコメントは severity 判定前に除外される。
+- **`loop-harness`: bot の自動生成サマリコメントが phantom high 指摘として取り込まれる問題を修正**: CodeRabbit 等が投稿する非 actionable ステータスコメント（本文中に `High` 等の語を偶然含む）が explicit high severity の指摘として誤って取り込まれ、対応実体が無いまま `exit_success` に到達できなくなる不具合を修正した。`pr_review.auto_generated_markers`（config）で指定したマーカーを含むコメントは severity 判定前に除外される。
 
 - **worktree からの install/init がグローバル参照先を上書きする問題を修正**: 同じ Git リポジトリの linked worktree から実行した場合、`~/.claude/settings.json` の既存 `AI_ORCHESTRA_DIR`（main worktree）を保持するようにした。
 

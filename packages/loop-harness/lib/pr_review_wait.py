@@ -71,7 +71,11 @@ DEFAULT_STOPWORDS_EN = frozenset(
 )
 DEFAULT_STOPWORDS_JA = frozenset({"が", "です", "で", "と", "に", "の", "は", "ます", "を"})
 DEFAULT_FOOTER_PATTERNS = (r"(?ms)^---\s*$.*\Z",)
-DEFAULT_AUTO_GENERATED_MARKERS: tuple[str, ...] = ("<!-- This is an auto-generated comment",)
+DEFAULT_AUTO_GENERATED_MARKERS: tuple[str, ...] = (
+    "<!-- This is an auto-generated comment: summarize by coderabbit.ai",
+    "<!-- This is an auto-generated comment: rate limited by coderabbit.ai",
+    "<!-- This is an auto-generated comment: review in progress by coderabbit.ai",
+)
 
 
 class PrReviewWaitError(RuntimeError):

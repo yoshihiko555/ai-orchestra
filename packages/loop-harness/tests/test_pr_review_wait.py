@@ -850,6 +850,45 @@ def test_collect_review_findings_skips_auto_generated_bot_summary(
     assert "issue_comment:13" in result.processed_comment_ids
 
 
+def test_collect_review_findings_imports_actionable_coderabbit_comment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #183 / PR #188: actionable CodeRabbit comments must remain real findings."""
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={
+            "baseline_review_id": 10,
+            "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+            "processed_comment_ids": [],
+            "findings": {},
+        },
+    )
+    client = FakeClient(
+        {
+            "repos/owner/repo/pulls/12/reviews": [],
+            "repos/owner/repo/pulls/12/comments": [],
+            "repos/owner/repo/issues/12/comments": [
+                _trusted(
+                    {
+                        "id": 16,
+                        "created_at": "2026-07-09T00:00:01+00:00",
+                        "body": "<!-- This is an auto-generated comment by CodeRabbit -->\n"
+                        "**Actionable comments posted: 2**\n\n[HIGH] Something is broken here",
+                    }
+                )
+            ],
+        }
+    )
+
+    result = prw.collect_review_findings(
+        "abcd1234-issue-1", project_dir, 12, _config(), client, 1, _lease(project_dir)
+    )
+
+    assert result.findings
+    assert result.findings[0].severity == "high"
+
+
 def test_parse_pr_review_config_defaults_auto_generated_markers() -> None:
     config = prw.parse_pr_review_config(
         {"pr_review": {"reviewer_allowlist": [{"app_slug": "codex-app"}]}}
