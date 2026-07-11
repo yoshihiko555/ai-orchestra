@@ -71,6 +71,11 @@ DEFAULT_STOPWORDS_EN = frozenset(
 )
 DEFAULT_STOPWORDS_JA = frozenset({"が", "です", "で", "と", "に", "の", "は", "ます", "を"})
 DEFAULT_FOOTER_PATTERNS = (r"(?ms)^---\s*$.*\Z",)
+DEFAULT_AUTO_GENERATED_MARKERS: tuple[str, ...] = (
+    "<!-- This is an auto-generated comment: summarize by coderabbit.ai",
+    "<!-- This is an auto-generated comment: rate limited by coderabbit.ai",
+    "<!-- This is an auto-generated comment: review in progress by coderabbit.ai",
+)
 
 
 class PrReviewWaitError(RuntimeError):
@@ -119,6 +124,7 @@ class PrReviewConfig:
     dedup: DedupConfig = field(default_factory=DedupConfig)
     poll_interval_seconds: int = DEFAULT_POLL_INTERVAL_SECONDS
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
+    auto_generated_markers: tuple[str, ...] = DEFAULT_AUTO_GENERATED_MARKERS
 
 
 @dataclass(frozen=True)
@@ -304,6 +310,9 @@ def parse_pr_review_config(config: dict[str, Any]) -> PrReviewConfig:
             pr_review.get("poll_interval_seconds"), DEFAULT_POLL_INTERVAL_SECONDS
         ),
         timeout_seconds=_positive_int(pr_review.get("timeout_seconds"), DEFAULT_TIMEOUT_SECONDS),
+        auto_generated_markers=_parse_auto_generated_markers(
+            pr_review.get("auto_generated_markers")
+        ),
     )
 
 
@@ -999,6 +1008,8 @@ def _finding_from_item(
 ) -> ImportedFinding | None:
     if not item.body.strip():
         return None
+    if _is_auto_generated_comment(item.body, config):
+        return None
     if _is_positive_review_summary(item):
         return None
     severity = classify_severity(item.body, config)
@@ -1012,6 +1023,14 @@ def _finding_from_item(
         line=item.line if item.line is not None else item.original_line,
         needs_classification=severity.needs_classification,
     )
+
+
+def _is_auto_generated_comment(body: str, config: PrReviewConfig) -> bool:
+    """Return True when body contains a configured bot auto-generated comment marker."""
+    if not body or not config.auto_generated_markers:
+        return False
+    normalized_body = body.casefold()
+    return any(marker.casefold() in normalized_body for marker in config.auto_generated_markers)
 
 
 def _is_positive_review_summary(item: ReviewItem) -> bool:
@@ -1278,6 +1297,13 @@ def _parse_dedup_config(value: Any) -> DedupConfig:
             _string_list(dedup.get("signature_footer_patterns")) or DEFAULT_FOOTER_PATTERNS
         ),
     )
+
+
+def _parse_auto_generated_markers(value: Any) -> tuple[str, ...]:
+    """Parse pr_review.auto_generated_markers: absent means default, explicit list overrides."""
+    if value is None:
+        return DEFAULT_AUTO_GENERATED_MARKERS
+    return tuple(_string_list(value))
 
 
 def _parse_severity_markers(value: Any) -> tuple[tuple[str, str], ...]:

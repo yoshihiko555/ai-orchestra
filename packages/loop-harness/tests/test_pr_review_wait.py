@@ -59,7 +59,11 @@ def _lease(project_dir: str) -> str:
     return lock.lease_token
 
 
-def _config(*, checkruns: tuple[str, ...] = ()) -> prw.PrReviewConfig:
+def _config(
+    *,
+    checkruns: tuple[str, ...] = (),
+    auto_generated_markers: tuple[str, ...] = prw.DEFAULT_AUTO_GENERATED_MARKERS,
+) -> prw.PrReviewConfig:
     return prw.PrReviewConfig(
         reviewer_allowlist=(
             prw.ReviewerAllowlistEntry(
@@ -72,6 +76,7 @@ def _config(*, checkruns: tuple[str, ...] = ()) -> prw.PrReviewConfig:
         checkrun_allowlist=frozenset(checkruns),
         poll_interval_seconds=1,
         timeout_seconds=0,
+        auto_generated_markers=auto_generated_markers,
     )
 
 
@@ -802,6 +807,176 @@ def test_collect_review_findings_skips_positive_issue_comment_summaries(
 
     assert result.findings == ()
     assert "issue_comment:12" in result.processed_comment_ids
+
+
+_CODERABBIT_MARKER = "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->"
+
+
+def test_collect_review_findings_skips_auto_generated_bot_summary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #183: a bot summary comment containing 'High' must not become a phantom finding."""
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={
+            "baseline_review_id": 10,
+            "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+            "processed_comment_ids": [],
+            "findings": {},
+        },
+    )
+    client = FakeClient(
+        {
+            "repos/owner/repo/pulls/12/reviews": [],
+            "repos/owner/repo/pulls/12/comments": [],
+            "repos/owner/repo/issues/12/comments": [
+                _trusted(
+                    {
+                        "id": 13,
+                        "created_at": "2026-07-09T00:00:01+00:00",
+                        "body": f"{_CODERABBIT_MARKER}\n## Summary\n\nSeverity: High\n\nWalkthrough...",
+                    }
+                )
+            ],
+        }
+    )
+
+    result = prw.collect_review_findings(
+        "abcd1234-issue-1", project_dir, 12, _config(), client, 1, _lease(project_dir)
+    )
+
+    assert result.findings == ()
+    assert "issue_comment:13" in result.processed_comment_ids
+
+
+def test_collect_review_findings_imports_actionable_coderabbit_comment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #183 / PR #188: actionable CodeRabbit comments must remain real findings."""
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={
+            "baseline_review_id": 10,
+            "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+            "processed_comment_ids": [],
+            "findings": {},
+        },
+    )
+    client = FakeClient(
+        {
+            "repos/owner/repo/pulls/12/reviews": [],
+            "repos/owner/repo/pulls/12/comments": [],
+            "repos/owner/repo/issues/12/comments": [
+                _trusted(
+                    {
+                        "id": 16,
+                        "created_at": "2026-07-09T00:00:01+00:00",
+                        "body": "<!-- This is an auto-generated comment by CodeRabbit -->\n"
+                        "**Actionable comments posted: 2**\n\n[HIGH] Something is broken here",
+                    }
+                )
+            ],
+        }
+    )
+
+    result = prw.collect_review_findings(
+        "abcd1234-issue-1", project_dir, 12, _config(), client, 1, _lease(project_dir)
+    )
+
+    assert result.findings
+    assert result.findings[0].severity == "high"
+
+
+def test_parse_pr_review_config_defaults_auto_generated_markers() -> None:
+    config = prw.parse_pr_review_config(
+        {"pr_review": {"reviewer_allowlist": [{"app_slug": "codex-app"}]}}
+    )
+    assert config.auto_generated_markers == prw.DEFAULT_AUTO_GENERATED_MARKERS
+
+
+def test_parse_pr_review_config_empty_list_disables_auto_generated_filter() -> None:
+    config = prw.parse_pr_review_config(
+        {
+            "pr_review": {
+                "reviewer_allowlist": [{"app_slug": "codex-app"}],
+                "auto_generated_markers": [],
+            }
+        }
+    )
+    assert config.auto_generated_markers == ()
+
+
+def test_collect_review_findings_imports_when_auto_generated_filter_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={
+            "baseline_review_id": 10,
+            "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+            "processed_comment_ids": [],
+            "findings": {},
+        },
+    )
+    client = FakeClient(
+        {
+            "repos/owner/repo/pulls/12/reviews": [],
+            "repos/owner/repo/pulls/12/comments": [],
+            "repos/owner/repo/issues/12/comments": [
+                _trusted(
+                    {
+                        "id": 14,
+                        "created_at": "2026-07-09T00:00:01+00:00",
+                        "body": f"{_CODERABBIT_MARKER}\n[P2] Something is actually broken here",
+                    }
+                )
+            ],
+        }
+    )
+    disabled_config = _config(auto_generated_markers=())
+
+    result = prw.collect_review_findings(
+        "abcd1234-issue-1", project_dir, 12, disabled_config, client, 1, _lease(project_dir)
+    )
+
+    assert [item.source_comment_id for item in result.findings] == ["issue_comment:14"]
+    assert result.findings[0].severity == "high"
+
+
+def test_parse_pr_review_config_accepts_custom_auto_generated_marker() -> None:
+    config = prw.parse_pr_review_config(
+        {
+            "pr_review": {
+                "reviewer_allowlist": [{"app_slug": "codex-app"}],
+                "auto_generated_markers": ["[[bot-summary]]"],
+            }
+        }
+    )
+    assert config.auto_generated_markers == ("[[bot-summary]]",)
+    assert prw._is_auto_generated_comment("[[bot-summary]] High level notes", config) is True
+    assert prw._is_auto_generated_comment("no marker here, High severity bug", config) is False
+
+
+def test_finding_from_item_still_imports_explicit_high_without_auto_generated_marker() -> None:
+    """Regression: explicit severity markers must still classify normally when no bot marker is present."""
+    item = prw.ReviewItem(
+        source="issue_comment",
+        item_id="15",
+        body="[HIGH] real bug here",
+        created_at="2026-07-09T00:00:01+00:00",
+        path=None,
+        line=None,
+        original_line=None,
+        pull_request_review_id=None,
+        raw=_trusted({"id": 15}),
+    )
+    finding = prw._finding_from_item(item, "issue_comment:15", _config(), 1)
+    assert finding is not None
+    assert finding.severity == "high"
+    assert finding.needs_classification is False
 
 
 def test_ev36_reviewer_allowlist_is_required() -> None:

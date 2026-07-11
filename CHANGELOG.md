@@ -29,6 +29,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`loop-harness`: bot の自動生成サマリコメントが phantom high 指摘として取り込まれる問題を修正**: CodeRabbit 等が投稿する非 actionable ステータスコメント（本文中に `High` 等の語を偶然含む）が explicit high severity の指摘として誤って取り込まれ、対応実体が無いまま `exit_success` に到達できなくなる不具合を修正した。`pr_review.auto_generated_markers`（config）で指定したマーカーを含むコメントは severity 判定前に除外される。
+
 - **worktree からの install/init がグローバル参照先を上書きする問題を修正**: 同じ Git リポジトリの linked worktree から実行した場合、`~/.claude/settings.json` の既存 `AI_ORCHESTRA_DIR`（main worktree）を保持するようにした。
 
 - **`meta-harness`: ストア用 `.gitignore` エントリが SessionStart 同期で消える問題を修正**: `.claude/meta-harness/` を gitignore 管理ブロックの生成元（`gitignore_sync.py`）に追加し、同期のたびに手動追記が失われる Phase 1a の実装漏れを解消

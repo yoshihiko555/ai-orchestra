@@ -20,6 +20,10 @@ pr_review:
   timeout_seconds: 3600
   checkrun_allowlist: []
   severity_markers: {}
+  auto_generated_markers:
+    - '<!-- This is an auto-generated comment: summarize by coderabbit.ai'
+    - '<!-- This is an auto-generated comment: rate limited by coderabbit.ai'
+    - '<!-- This is an auto-generated comment: review in progress by coderabbit.ai'
   dedup:
     line_bucket_size: 5
     stopwords_en:

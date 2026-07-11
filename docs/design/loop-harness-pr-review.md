@@ -266,6 +266,17 @@ pr_review:
   severity を採用する**（安全側）。
 - マッピング表にない独自表記（プロジェクト固有の絵文字ルール等）は `pr_review.severity_markers`
   （config、任意の追加マッピング）で拡張できる。
+- 本文中の表記マッチによる誤検知（bot の自動生成サマリコメント本文中に `High` 等の語が偶然含まれる
+  ケース）を防ぐため、Step 1 の直前（`_finding_from_item` の空 body チェック直後、
+  `_is_positive_review_summary` の判定より前）で自動生成コメント除外フィルタを適用する。
+  `pr_review.auto_generated_markers`（config、既定値: CodeRabbit の非 actionable ステータスマーカー
+  3 種（summarize / rate limited / review in progress））に列挙したマーカーのいずれかが本文に**部分一致**（大文字小文字を無視する casefold 比較）
+  すれば、severity 判定・Maker 入力の対象にはせず `None` を返す。config キーが未設定（キー自体が無い）
+  場合は既定値を使うが、**空リストを明示すればフィルタ自体を無効化**できる（未設定と空リスト明示は
+  区別する）。除外されたコメントも他の `_finding_from_item` が `None` を返すケース（肯定コメント等）
+  と同様に `processed_comment_ids` へ追加され、以後のポーリングで再処理されない。
+  CodeRabbit の actionable コメントマーカー `<!-- This is an auto-generated comment by CodeRabbit -->`
+  （`comment` の後にコロンが無い形式）は実指摘を含むため、既定では除外しない。
 
 ### 3.2 Step 2: 表記が無い場合の分類サブエージェント
 
@@ -849,6 +860,7 @@ osascript -e 'display notification "安全停止: {stop_reason}" \
 | `pr_review.reviewer_allowlist`              | 発信元許可リスト（`app_slug`/`login`/`type`/`author_association`。2.2 節）                        | **必須。既定値なし（未設定はエラー）** |
 | `pr_review.checkrun_allowlist`              | check-run フォールバック対象の check 名（1.1 節。任意）                                           | `[]`（フォールバック無効）             |
 | `pr_review.severity_markers`                | 3.1 節のマッピング表への追加パターン（プロジェクト固有拡張）                                      | `{}`                                   |
+| `pr_review.auto_generated_markers`          | 3.1 節の自動生成コメント除外フィルタのマーカー一覧（部分一致・casefold。空リストで無効化）        | CodeRabbit 非 actionable ステータスマーカー 3 種: `("<!-- This is an auto-generated comment: summarize by coderabbit.ai", "<!-- This is an auto-generated comment: rate limited by coderabbit.ai", "<!-- This is an auto-generated comment: review in progress by coderabbit.ai")` |
 | `pr_review.dedup.line_bucket_size`          | 4.2 節の行番号丸め幅                                                                              | `5`                                    |
 | `pr_review.dedup.stopwords_ja` / `_en`      | 4.2 節のストップワードリスト                                                                      | 既定リスト（詳細設計内で別途定義）     |
 | `maker.fallback_agent`                      | `detect_agent()` が検出できなかった場合の Maker subagent_type（5.2.1 節）                         | `general-purpose`                      |
