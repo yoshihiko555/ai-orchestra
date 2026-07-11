@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,20 @@ ld = load_module("loop_definition", "packages/loop-harness/lib/loop_definition.p
 def _write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
+
+
+def _git(args: list[str], cwd: Path) -> None:
+    subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True)
+
+
+def _init_repo(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    _git(["init"], path)
+    _git(["config", "user.email", "test@example.com"], path)
+    _git(["config", "user.name", "Test User"], path)
+    _write(path / "README.md", "root\n")
+    _git(["add", "README.md"], path)
+    _git(["commit", "-m", "initial"], path)
 
 
 def _definition(loop_id: str = "custom-loop", phase_name: str = "build") -> str:
@@ -149,6 +164,32 @@ def test_load_config_applies_local_deep_merge(tmp_path: Path) -> None:
     assert config["guards"]["no_progress"]["repeat"] == 9
     assert config["lock"]["ttl_seconds"]["lp1"] == 3600
     assert config["lock"]["ttl_seconds"]["lp2"] == 300
+
+
+def test_load_config_resolves_local_override_from_root_worktree(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    _init_repo(root)
+    linked = tmp_path / "linked"
+    _git(["worktree", "add", str(linked), "-b", "loop/issue-1"], root)
+    local = root / ".claude" / "config" / "loop-harness" / "loop-harness.local.yaml"
+    _write(local, "guards:\n  no_progress:\n    repeat: 9\n")
+
+    config = ld.load_config(str(linked))
+
+    assert config["guards"]["no_progress"]["repeat"] == 9
+    assert config["guards"]["max_iterations"] == 3
+
+
+def test_load_config_applies_local_override_in_ordinary_repo(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    local = repo / ".claude" / "config" / "loop-harness" / "loop-harness.local.yaml"
+    _write(local, "guards:\n  no_progress:\n    repeat: 7\n")
+
+    config = ld.load_config(str(repo))
+
+    assert config["guards"]["no_progress"]["repeat"] == 7
+    assert config["guards"]["max_iterations"] == 3
 
 
 def test_load_all_definitions_project_definition_replaces_by_id(tmp_path: Path) -> None:

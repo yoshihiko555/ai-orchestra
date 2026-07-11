@@ -113,8 +113,6 @@ class TestPostImplementationReview:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         """3 ファイル目の変更でレビュー提案を出す。"""
-        state_file = tmp_path / "impl-review.json"
-        monkeypatch.setattr(post_impl_review, "STATE_FILE", state_file)
         post_impl_review.save_state(
             str(tmp_path),
             {"files": ["a.py", "b.py"], "total_lines": 20, "review_suggested": False},
@@ -144,16 +142,19 @@ class TestPostImplementationReview:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         """コード拡張子以外は state を作らない。"""
-        state_file = tmp_path / "impl-review.json"
-        monkeypatch.setattr(post_impl_review, "STATE_FILE", state_file)
         _make_stdin(
-            {"tool_name": "Write", "tool_input": {"file_path": "notes.md", "content": "memo"}},
+            {
+                "tool_name": "Write",
+                "cwd": str(tmp_path),
+                "tool_input": {"file_path": "notes.md", "content": "memo"},
+            },
             monkeypatch,
         )
 
         with pytest.raises(SystemExit, match="0"):
             post_impl_review.main()
 
+        state_file = tmp_path / ".claude" / "state" / post_impl_review.STATE_FILENAME
         assert not state_file.exists()
 
 
@@ -164,8 +165,6 @@ class TestPostTestAnalysis:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         """成功時は test gate カウンタをリセットする。"""
-        state_file = tmp_path / "test-gate.json"
-        monkeypatch.setattr(post_test_analysis, "TEST_GATE_STATE_FILE", state_file)
         post_test_analysis.save_test_gate_state(
             str(tmp_path),
             {
@@ -218,7 +217,7 @@ class TestPostTestAnalysis:
         monkeypatch.setattr(
             post_test_analysis,
             "load_quality_gate_config",
-            lambda _project_dir: {"enabled": True},
+            lambda _project_dir, config=None: {"enabled": True},
         )
         monkeypatch.setattr(
             post_test_analysis, "load_trace_state", lambda **_kwargs: {"tid": "tid-1"}
@@ -248,8 +247,6 @@ class TestPostTestAnalysis:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         """失敗したテストコマンドでは Codex 提案を出す。"""
-        state_file = tmp_path / "test-gate.json"
-        monkeypatch.setattr(post_test_analysis, "TEST_GATE_STATE_FILE", state_file)
         monkeypatch.setattr(
             post_test_analysis, "emit_quality_gate_event", lambda *_args, **_kwargs: False
         )
@@ -282,12 +279,10 @@ class TestPostTestAnalysis:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         """exit code 0 なら quality gate は block しない。"""
-        state_file = tmp_path / "test-gate.json"
-        monkeypatch.setattr(post_test_analysis, "TEST_GATE_STATE_FILE", state_file)
         monkeypatch.setattr(
             post_test_analysis,
             "load_quality_gate_config",
-            lambda _project_dir: {"enabled": True, "block_on_failed_test": True},
+            lambda _project_dir, config=None: {"enabled": True, "block_on_failed_test": True},
         )
         monkeypatch.setattr(
             post_test_analysis, "resolve_project_root_from_hook_data", lambda data: data["cwd"]
@@ -324,8 +319,6 @@ class TestPostTestAnalysis:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         """block_on_failed_test=true のときは exit 2 で止める。"""
-        state_file = tmp_path / "test-gate.json"
-        monkeypatch.setattr(post_test_analysis, "TEST_GATE_STATE_FILE", state_file)
         monkeypatch.setattr(
             post_test_analysis, "emit_quality_gate_event", lambda *_args, **_kwargs: True
         )
@@ -390,11 +383,25 @@ class TestTestGateChecker:
     def test_main_warns_when_threshold_reached(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """閾値到達時にテスト実行を促す。"""
-        state_file = tmp_path / "test-gate.json"
-        monkeypatch.setattr(test_gate_checker, "TEST_GATE_STATE_FILE", state_file)
-        monkeypatch.setattr(test_gate_checker, "is_quality_gate_enabled", lambda _: True)
-        monkeypatch.setattr(test_gate_checker, "load_thresholds", lambda _: (1, 100))
+        """閾値到達時にテスト実行を促す。
+
+        main() は audit-flags.json を一度だけ読んで enabled 判定と閾値取得を
+        兼ねる（Issue #154: 重複読み込み解消）ため、load_package_config を
+        monkeypatch して両方を一括で差し替える。
+        """
+        monkeypatch.setattr(
+            test_gate_checker,
+            "load_package_config",
+            lambda *args: {
+                "features": {
+                    "quality_gate": {
+                        "enabled": True,
+                        "test_file_threshold": 1,
+                        "test_line_threshold": 100,
+                    }
+                }
+            },
+        )
         _make_stdin(
             {
                 "tool_name": "Edit",
@@ -418,9 +425,11 @@ class TestTestGateChecker:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         """quality gate 無効時は state を更新しない。"""
-        state_file = tmp_path / "test-gate.json"
-        monkeypatch.setattr(test_gate_checker, "TEST_GATE_STATE_FILE", state_file)
-        monkeypatch.setattr(test_gate_checker, "is_quality_gate_enabled", lambda _: False)
+        monkeypatch.setattr(
+            test_gate_checker,
+            "load_package_config",
+            lambda *args: {"features": {"quality_gate": {"enabled": False}}},
+        )
         _make_stdin(
             {
                 "tool_name": "Write",
@@ -433,6 +442,7 @@ class TestTestGateChecker:
         with pytest.raises(SystemExit, match="0"):
             test_gate_checker.main()
 
+        state_file = tmp_path / ".claude" / "state" / test_gate_checker.STATE_FILENAME
         assert not state_file.exists()
 
 
@@ -470,18 +480,25 @@ class TestTestTamperingDetector:
         assert "[Warning]" in output["hookSpecificOutput"]["additionalContext"]
         assert "@pytest.mark.skip" in output["hookSpecificOutput"]["additionalContext"]
 
-    def test_collect_findings_for_delete_command(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_collect_findings_for_delete_command(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
         """削除コマンド時は deleted test file を報告する。"""
         monkeypatch.setattr(
             test_tampering_detector,
             "get_deleted_test_files",
             lambda _project_dir, _delete_targets: ["tests/x.py"],
         )
+        monkeypatch.setattr(
+            test_tampering_detector,
+            "get_all_deleted_test_files",
+            lambda _project_dir: ["tests/x.py"],
+        )
 
         findings = test_tampering_detector.collect_tampering_findings(
             {
                 "tool_name": "Bash",
-                "cwd": "/project",
+                "cwd": str(tmp_path),
                 "tool_input": {"command": "rm tests/x.py"},
             }
         )

@@ -27,7 +27,7 @@ Do NOT hardcode model names or CLI options — always refer to the config file.
 ### フォールバックデフォルト（設定ファイルが見つからない場合）
 
 - Tool: auto
-- Codex model: gpt-5.5
+- Codex model: gpt-5.6-sol
 - Antigravity model: (omit --model flag, use CLI default)
 - Codex sandbox: read-only (analysis), workspace-write (implementation)
 - Codex flags: --full-auto

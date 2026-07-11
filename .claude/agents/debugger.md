@@ -67,7 +67,7 @@ agy -p "{debugging question}" --model <antigravity.model> 2>/dev/null
 ### フォールバック
 
 - `codex.enabled: false` または Codex CLI 実行エラー時: claude-direct として処理する
-- 設定ファイル未検出時のデフォルト: codex (model: gpt-5.5, sandbox: read-only, flags: --full-auto)
+- 設定ファイル未検出時のデフォルト: codex (model: gpt-5.6-sol, sandbox: read-only, flags: --full-auto)
 
 ## When Called
 

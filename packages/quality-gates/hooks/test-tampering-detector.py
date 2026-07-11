@@ -4,6 +4,14 @@ PostToolUse hook: Detect newly introduced test tampering patterns.
 
 Warns when code edits add skip/disable markers, or when shell commands delete
 tracked test files.
+
+State (previously-reported findings, for dedup) is persisted to
+.claude/state/test-tampering-detector.json (resolved via
+quality_gate_config.resolve_state_path), so separate worktrees of the same
+repo naturally get isolated dedup state. Reads/writes go through
+quality_gate_config.update_locked_json_state, which wraps each
+read-modify-write in an fcntl.flock exclusive lock + atomic tmp-file replace
+so concurrent hook invocations cannot race each other (Issue #154).
 """
 
 from __future__ import annotations
@@ -17,6 +25,10 @@ import sys
 from fnmatch import fnmatchcase
 from pathlib import Path
 
+_hook_dir = os.path.dirname(os.path.abspath(__file__))
+if _hook_dir not in sys.path:
+    sys.path.insert(0, _hook_dir)
+
 _orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
 if _orchestra_dir:
     _core_hooks = os.path.join(_orchestra_dir, "packages", "core", "hooks")
@@ -28,6 +40,10 @@ else:
         sys.path.insert(0, str(_fallback_core_hooks))
 
 from hook_common import is_test_path, read_hook_input, safe_hook_execution  # noqa: E402
+from quality_gate_config import (  # noqa: E402
+    resolve_state_path,
+    update_locked_json_state,
+)
 
 SKIP_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
@@ -48,7 +64,10 @@ SUPPRESSION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 
 DELETE_COMMAND_PATTERN = re.compile(r"\b(?:rm|git\s+rm)\b")
 RELEVANT_TOOL_NAMES = {"Edit", "Write", "Bash", "Delete", "MultiEdit"}
-STATE_FILE = Path("/tmp/claude-test-tampering-state.json")
+
+# State filename resolved per-project via quality_gate_config.resolve_state_path().
+STATE_FILENAME = "test-tampering-detector.json"
+DEFAULT_STATE: dict = {"reported_deleted_files": {}, "reported_pattern_findings": {}}
 
 
 def is_test_file(file_path: str) -> bool:
@@ -128,27 +147,9 @@ def extract_deleted_test_files(name_status_output: str) -> list[str]:
     return sorted(set(deleted_files))
 
 
-def load_state() -> dict:
-    """Load persisted detector state."""
-    try:
-        if STATE_FILE.exists():
-            with open(STATE_FILE, encoding="utf-8") as f:
-                data = json.load(f)
-            if isinstance(data, dict):
-                return data
-    except (OSError, ValueError, json.JSONDecodeError):
-        pass
-    return {"reported_deleted_files": {}}
-
-
-def save_state(state: dict) -> None:
-    """Persist detector state."""
-    try:
-        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(STATE_FILE, "w", encoding="utf-8") as f:
-            json.dump(state, f, ensure_ascii=False, indent=2)
-    except OSError:
-        pass
+def _state_file_for(project_dir: str) -> Path:
+    """Resolve the detector's state file path for the given project_dir."""
+    return Path(resolve_state_path(project_dir, STATE_FILENAME))
 
 
 def run_git_command(project_dir: str, *args: str) -> str:
@@ -402,45 +403,58 @@ def get_deleted_test_files(project_dir: str, delete_targets: list[str]) -> list[
 
 def get_unreported_deleted_test_files(project_dir: str, delete_targets: list[str]) -> list[str]:
     """Return matched deleted test files that have not been warned yet."""
-    state = load_state()
-    reported_by_project = state.get("reported_deleted_files", {})
     project_key = get_project_state_key(project_dir)
     current_deleted = set(get_all_deleted_test_files(project_dir))
-    reported = set(reported_by_project.get(project_key, []))
-
-    reported &= current_deleted
-    reported_by_project[project_key] = sorted(reported)
-    state["reported_deleted_files"] = reported_by_project
-
     matched_deleted = get_deleted_test_files(project_dir, delete_targets)
-    new_deleted = [file_path for file_path in matched_deleted if file_path not in reported]
-    if new_deleted:
-        reported_by_project[project_key] = sorted(reported.union(new_deleted))
-        state["reported_deleted_files"] = reported_by_project
-    save_state(state)
+    state_file = _state_file_for(project_dir)
 
-    return new_deleted
+    # Captured inside the locked mutate_fn so the "which files are new"
+    # decision and the state write happen in a single critical section
+    # (no separate load-then-save race window).
+    outcome: dict[str, list[str]] = {"new_deleted": []}
+
+    def _mutate(state: dict) -> dict:
+        reported_by_project = state.get("reported_deleted_files", {})
+        reported = set(reported_by_project.get(project_key, [])) & current_deleted
+
+        new_deleted = [file_path for file_path in matched_deleted if file_path not in reported]
+        outcome["new_deleted"] = new_deleted
+        if new_deleted:
+            reported = reported.union(new_deleted)
+
+        reported_by_project[project_key] = sorted(reported)
+        state["reported_deleted_files"] = reported_by_project
+        return state
+
+    update_locked_json_state(state_file, _mutate, DEFAULT_STATE)
+    return outcome["new_deleted"]
 
 
 def get_unreported_pattern_findings(
     project_dir: str, pattern_findings: list[dict[str, str]]
 ) -> list[dict[str, str]]:
     """Return pattern findings that have not been warned yet in this project."""
-    state = load_state()
     project_key = get_project_state_key(project_dir)
-    reported_by_project = state.get("reported_pattern_findings", {})
-    reported = set(reported_by_project.get(project_key, []))
+    state_file = _state_file_for(project_dir)
 
-    new_findings = [
-        finding for finding in pattern_findings if _pattern_finding_key(finding) not in reported
-    ]
-    if new_findings:
-        reported.update(_pattern_finding_key(finding) for finding in new_findings)
-        reported_by_project[project_key] = sorted(reported)
-        state["reported_pattern_findings"] = reported_by_project
-        save_state(state)
+    outcome: dict[str, list[dict[str, str]]] = {"new_findings": []}
 
-    return new_findings
+    def _mutate(state: dict) -> dict:
+        reported_by_project = state.get("reported_pattern_findings", {})
+        reported = set(reported_by_project.get(project_key, []))
+
+        new_findings = [
+            finding for finding in pattern_findings if _pattern_finding_key(finding) not in reported
+        ]
+        outcome["new_findings"] = new_findings
+        if new_findings:
+            reported.update(_pattern_finding_key(finding) for finding in new_findings)
+            reported_by_project[project_key] = sorted(reported)
+            state["reported_pattern_findings"] = reported_by_project
+        return state
+
+    update_locked_json_state(state_file, _mutate, DEFAULT_STATE)
+    return outcome["new_findings"]
 
 
 def collect_tampering_findings(data: dict) -> list[dict[str, str]]:

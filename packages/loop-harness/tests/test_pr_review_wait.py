@@ -59,7 +59,11 @@ def _lease(project_dir: str) -> str:
     return lock.lease_token
 
 
-def _config(*, checkruns: tuple[str, ...] = ()) -> prw.PrReviewConfig:
+def _config(
+    *,
+    checkruns: tuple[str, ...] = (),
+    auto_generated_markers: tuple[str, ...] = prw.DEFAULT_AUTO_GENERATED_MARKERS,
+) -> prw.PrReviewConfig:
     return prw.PrReviewConfig(
         reviewer_allowlist=(
             prw.ReviewerAllowlistEntry(
@@ -72,7 +76,22 @@ def _config(*, checkruns: tuple[str, ...] = ()) -> prw.PrReviewConfig:
         checkrun_allowlist=frozenset(checkruns),
         poll_interval_seconds=1,
         timeout_seconds=0,
+        auto_generated_markers=auto_generated_markers,
     )
+
+
+def _mock_git_head(
+    monkeypatch: pytest.MonkeyPatch, sha: str | None, *, returncode: int = 0
+) -> list[list[str]]:
+    calls: list[list[str]] = []
+
+    def fake_run(args: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        stdout = f"{sha}\n" if sha is not None else ""
+        return subprocess.CompletedProcess(args, returncode, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(prw.subprocess, "run", fake_run)
+    return calls
 
 
 def _trusted(extra: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -121,6 +140,166 @@ def test_ev30_records_baseline_before_iteration_head(
         "repos/owner/repo/issues/12/comments",
         "repos/owner/repo/pulls/12",
     ]
+
+
+def test_ev192_pre_rebaseline_collect_preserves_findings_across_next_record_baseline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A trusted review that arrives after an old baseline is not lost by the next re-baseline."""
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={
+            "baseline_review_id": 5,
+            "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+            "processed_comment_ids": [],
+            "findings": {},
+        },
+    )
+    lease_token = _lease(project_dir)
+    # A second reviewer (CodeRabbit) posts a CHANGES_REQUESTED review while the Maker is still
+    # working on the previous iteration's findings, i.e. after the OLD baseline was recorded.
+    late_review_comment = _trusted(
+        {
+            "id": 40,
+            "created_at": "2026-07-09T00:00:05+00:00",
+            "pull_request_review_id": 9,
+            "body": "[P2] Please handle this edge case",
+            "path": "app.py",
+            "line": 12,
+        }
+    )
+    client = FakeClient(
+        {
+            "repos/owner/repo/pulls/12/reviews": [{"id": 9}],
+            "repos/owner/repo/pulls/12/comments": [late_review_comment],
+            "repos/owner/repo/issues/12/comments": [],
+        }
+    )
+
+    # Pre-rebaseline drain: collect using the OLD (still baseline_review_id=5) baseline.
+    result = prw.collect_review_findings(
+        "abcd1234-issue-1", project_dir, 12, _config(), client, 1, lease_token
+    )
+    assert [item.source_comment_id for item in result.findings] == ["review_comment:40"]
+    state_after_collect = lc.load_state("abcd1234-issue-1", project_dir)
+    assert "review_comment:40" in _findings_signature_source_ids(state_after_collect)
+
+    # The Maker then pushes a fresh commit, and the orchestrator re-baselines. record_baseline
+    # fetches the SAME reviews/comments (now including id=9 / review_comment:40) again and marks
+    # them all "processed", but must not clobber the already-imported finding.
+    prw.record_baseline("abcd1234-issue-1", project_dir, 12, client, lease_token)
+
+    state_after_rebaseline = lc.load_state("abcd1234-issue-1", project_dir)
+    assert state_after_rebaseline.pr_review["baseline_review_id"] == 9
+    assert "review_comment:40" in _findings_signature_source_ids(state_after_rebaseline)
+
+
+def _findings_signature_source_ids(state: lc.LoopState) -> set[str]:
+    findings = state.pr_review.get("findings") if isinstance(state.pr_review, dict) else {}
+    source_ids: set[str] = set()
+    for record in (findings or {}).values():
+        source_ids.update(record.get("source_comment_ids") or [])
+    return source_ids
+
+
+def test_ev76_detects_no_new_commit_when_local_head_matches_iteration_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sha = "abc123"
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={"iteration_head_sha": sha, "processed_comment_ids": [], "findings": {}},
+    )
+    calls = _mock_git_head(monkeypatch, sha)
+
+    delta = prw.detect_pr_review_push_delta("abcd1234-issue-1", project_dir, project_dir)
+
+    assert delta.status == "no_new_commit"
+    assert delta.local_head_sha == sha
+    assert delta.iteration_head_sha == sha
+    assert calls == [["git", "-C", project_dir, "rev-parse", "HEAD"]]
+
+
+def test_ev76_detects_new_commit_when_local_head_differs_from_iteration_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={"iteration_head_sha": "old123", "processed_comment_ids": [], "findings": {}},
+    )
+    _mock_git_head(monkeypatch, "new456")
+
+    delta = prw.detect_pr_review_push_delta("abcd1234-issue-1", project_dir, project_dir)
+
+    assert delta.status == "new_commit"
+    assert delta.local_head_sha == "new456"
+    assert delta.iteration_head_sha == "old123"
+
+
+def test_ev76_detects_unknown_when_iteration_head_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={"processed_comment_ids": [], "findings": {}},
+    )
+    _mock_git_head(monkeypatch, "abc123")
+
+    delta = prw.detect_pr_review_push_delta("abcd1234-issue-1", project_dir, project_dir)
+
+    assert delta.status == "unknown"
+    assert delta.local_head_sha == "abc123"
+    assert delta.iteration_head_sha is None
+
+
+def test_ev76_detects_unknown_when_git_head_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={"iteration_head_sha": "abc123", "processed_comment_ids": [], "findings": {}},
+    )
+    _mock_git_head(monkeypatch, None, returncode=1)
+
+    delta = prw.detect_pr_review_push_delta("abcd1234-issue-1", project_dir, project_dir)
+
+    assert delta.status == "unknown"
+    assert delta.local_head_sha is None
+    assert delta.iteration_head_sha == "abc123"
+
+
+def test_ev76_no_new_commit_outcome_is_timeout_shaped_with_shortcut_metadata() -> None:
+    delta = prw.PrReviewPushDelta("no_new_commit", "abc123", "abc123")
+
+    outcome = prw.no_new_commit_completion_outcome(delta)
+    phase_check = prw.phase_check_from_completion_outcome(outcome)
+
+    assert outcome.signal == "timeout"
+    assert outcome.completed is False
+    assert outcome.timed_out is True
+    assert outcome.infrastructure_failure is False
+    assert outcome.shortcut_reason == "no_new_commit_to_push"
+    assert outcome.local_head_sha == "abc123"
+    assert outcome.iteration_head_sha == "abc123"
+    assert phase_check.passed is False
+    assert phase_check.signature == "pr_review_timeout"
+    assert phase_check.infrastructure_failure is False
+    assert phase_check.metadata["shortcut_reason"] == "no_new_commit_to_push"
+    assert phase_check.metadata["local_head_sha"] == "abc123"
+    assert phase_check.metadata["iteration_head_sha"] == "abc123"
+
+
+@pytest.mark.parametrize("status", ["new_commit", "unknown"])
+def test_ev76_no_new_commit_outcome_rejects_non_shortcut_status(status: str) -> None:
+    delta = prw.PrReviewPushDelta(status, "local", "recorded")
+
+    with pytest.raises(prw.PrReviewWaitError, match="status=no_new_commit"):
+        prw.no_new_commit_completion_outcome(delta)
 
 
 def test_pr_review_auxiliary_updates_preserve_pending_action_version(
@@ -535,6 +714,9 @@ def test_ev32_timeout_is_not_infrastructure_failure_but_api_error_is() -> None:
 
     assert timeout.infrastructure_failure is False
     assert timeout.signature == "pr_review_timeout"
+    assert "shortcut_reason" not in timeout.metadata
+    assert "local_head_sha" not in timeout.metadata
+    assert "iteration_head_sha" not in timeout.metadata
     assert api_error.infrastructure_failure is True
     assert api_error.signature == "pr_review_api_error"
 
@@ -577,6 +759,200 @@ def test_wait_for_completion_calls_heartbeat_during_poll_wait() -> None:
 
     assert outcome.signal == "timeout"
     assert heartbeats == ["beat"]
+
+
+def _terminal_issue_comment(
+    *, trusted: bool = True, sha: str = "abc1234def", body: str | None = None, **extra: Any
+) -> dict[str, Any]:
+    data = {
+        "id": 20,
+        "created_at": "2026-07-09T00:00:01+00:00",
+        "body": body
+        if body is not None
+        else f"Didn't find any major issues. Reviewed commit: {sha}.",
+        **extra,
+    }
+    return _trusted(data) if trusted else _untrusted(data)
+
+
+def test_ev194_issue_comment_completion_signal_true_for_trusted_terminal_verdict() -> None:
+    item = prw._review_item_from_issue_comment(_terminal_issue_comment())
+    baseline = {
+        "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+        "iteration_head_sha": "abc1234def",
+    }
+
+    assert prw._is_issue_comment_completion_signal(item, baseline, _config()) is True
+
+
+def test_ev194_issue_comment_completion_signal_false_for_untrusted() -> None:
+    item = prw._review_item_from_issue_comment(_terminal_issue_comment(trusted=False))
+    baseline = {
+        "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+        "iteration_head_sha": "abc1234def",
+    }
+
+    assert prw._is_issue_comment_completion_signal(item, baseline, _config()) is False
+
+
+def test_ev194_issue_comment_completion_signal_false_before_baseline() -> None:
+    item = prw._review_item_from_issue_comment(
+        _terminal_issue_comment(**{"created_at": "2026-07-08T23:59:59+00:00"})
+    )
+    baseline = {
+        "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+        "iteration_head_sha": "abc1234def",
+    }
+
+    assert prw._is_issue_comment_completion_signal(item, baseline, _config()) is False
+
+
+def test_ev194_issue_comment_completion_signal_false_when_sha_mismatch() -> None:
+    item = prw._review_item_from_issue_comment(_terminal_issue_comment(sha="ffffffffff"))
+    baseline = {
+        "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+        "iteration_head_sha": "abc1234def",
+    }
+
+    assert prw._is_issue_comment_completion_signal(item, baseline, _config()) is False
+
+
+def test_ev194_issue_comment_completion_signal_false_when_pattern_does_not_match() -> None:
+    item = prw._review_item_from_issue_comment(
+        _terminal_issue_comment(body="Still reviewing, will report back shortly.")
+    )
+    baseline = {
+        "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+        "iteration_head_sha": "abc1234def",
+    }
+
+    assert prw._is_issue_comment_completion_signal(item, baseline, _config()) is False
+
+
+def test_ev194_issue_comment_completion_signal_false_for_auto_generated_reply() -> None:
+    item = prw._review_item_from_issue_comment(
+        _terminal_issue_comment(
+            body="<!-- This is an auto-generated reply by CodeRabbit -->\nLGTM, rate limited, retrying."
+        )
+    )
+    baseline = {
+        "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+        "iteration_head_sha": "abc1234def",
+    }
+
+    assert prw._is_issue_comment_completion_signal(item, baseline, _config()) is False
+
+
+def test_wait_for_completion_returns_issue_comment_completed_for_trusted_terminal_comment() -> None:
+    client = FakeClient(
+        {
+            "repos/owner/repo/pulls/12/reviews": [],
+            "repos/owner/repo/issues/12/comments": [_terminal_issue_comment()],
+        }
+    )
+    baseline = {
+        "baseline_review_id": 10,
+        "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+        "iteration_head_sha": "abc1234def",
+    }
+
+    outcome = prw.wait_for_completion(
+        12, baseline, _config(), client, sleeper=lambda _seconds: None
+    )
+
+    assert outcome.signal == "issue_comment_completed"
+    assert outcome.completed is True
+    assert outcome.issue_comment_ids == ("issue_comment:20",)
+
+
+def test_wait_for_completion_ignores_processed_terminal_issue_comment() -> None:
+    client = FakeClient(
+        {
+            "repos/owner/repo/pulls/12/reviews": [],
+            "repos/owner/repo/issues/12/comments": [_terminal_issue_comment()],
+        }
+    )
+    baseline = {
+        "baseline_review_id": 10,
+        "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+        "iteration_head_sha": "abc1234def",
+        "processed_comment_ids": ["issue_comment:20"],
+    }
+
+    outcome = prw.wait_for_completion(
+        12, baseline, _config(), client, sleeper=lambda _seconds: None
+    )
+
+    assert outcome.signal == "timeout"
+
+
+def test_wait_for_completion_ignores_rate_limited_issue_comment_reply() -> None:
+    client = FakeClient(
+        {
+            "repos/owner/repo/pulls/12/reviews": [],
+            "repos/owner/repo/issues/12/comments": [
+                _terminal_issue_comment(
+                    body="<!-- This is an auto-generated reply by CodeRabbit -->\nLGTM, rate limited."
+                )
+            ],
+        }
+    )
+    baseline = {
+        "baseline_review_id": 10,
+        "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+        "iteration_head_sha": "abc1234def",
+    }
+
+    outcome = prw.wait_for_completion(
+        12, baseline, _config(), client, sleeper=lambda _seconds: None
+    )
+
+    assert outcome.signal == "timeout"
+
+
+def test_wait_for_completion_ignores_untrusted_issue_comment_terminal_verdict() -> None:
+    client = FakeClient(
+        {
+            "repos/owner/repo/pulls/12/reviews": [],
+            "repos/owner/repo/issues/12/comments": [_terminal_issue_comment(trusted=False)],
+        }
+    )
+    baseline = {
+        "baseline_review_id": 10,
+        "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+        "iteration_head_sha": "abc1234def",
+    }
+
+    outcome = prw.wait_for_completion(
+        12, baseline, _config(), client, sleeper=lambda _seconds: None
+    )
+
+    assert outcome.signal == "timeout"
+
+
+def test_wait_for_completion_still_reaches_checkrun_when_issue_comments_are_not_terminal() -> None:
+    client = FakeClient(
+        {
+            "repos/owner/repo/pulls/12/reviews": [],
+            "repos/owner/repo/issues/12/comments": [
+                _terminal_issue_comment(body="Still working on this, more soon.")
+            ],
+            "repos/owner/repo/commits/abc1234def/check-runs": {
+                "check_runs": [{"name": "ci", "status": "completed"}]
+            },
+        }
+    )
+    baseline = {
+        "baseline_review_id": 10,
+        "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+        "iteration_head_sha": "abc1234def",
+    }
+
+    outcome = prw.wait_for_completion(
+        12, baseline, _config(checkruns=("ci",)), client, sleeper=lambda _seconds: None
+    )
+
+    assert outcome.signal == "check_run_completed"
 
 
 def test_state_writes_reject_invalid_lease_before_journal(
@@ -804,6 +1180,206 @@ def test_collect_review_findings_skips_positive_issue_comment_summaries(
     assert "issue_comment:12" in result.processed_comment_ids
 
 
+def test_collect_review_findings_skips_terminal_issue_comment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={
+            "baseline_review_id": 10,
+            "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+            "processed_comment_ids": [],
+            "findings": {},
+        },
+    )
+    client = FakeClient(
+        {
+            "repos/owner/repo/pulls/12/reviews": [],
+            "repos/owner/repo/pulls/12/comments": [],
+            "repos/owner/repo/issues/12/comments": [_terminal_issue_comment()],
+        }
+    )
+
+    result = prw.collect_review_findings(
+        "abcd1234-issue-1", project_dir, 12, _config(), client, 1, _lease(project_dir)
+    )
+
+    assert result.findings == ()
+    assert result.needs_classification_count == 0
+    assert "issue_comment:20" in result.processed_comment_ids
+
+
+_CODERABBIT_MARKER = "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->"
+
+
+def test_collect_review_findings_skips_auto_generated_bot_summary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #183: a bot summary comment containing 'High' must not become a phantom finding."""
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={
+            "baseline_review_id": 10,
+            "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+            "processed_comment_ids": [],
+            "findings": {},
+        },
+    )
+    client = FakeClient(
+        {
+            "repos/owner/repo/pulls/12/reviews": [],
+            "repos/owner/repo/pulls/12/comments": [],
+            "repos/owner/repo/issues/12/comments": [
+                _trusted(
+                    {
+                        "id": 13,
+                        "created_at": "2026-07-09T00:00:01+00:00",
+                        "body": f"{_CODERABBIT_MARKER}\n## Summary\n\nSeverity: High\n\nWalkthrough...",
+                    }
+                )
+            ],
+        }
+    )
+
+    result = prw.collect_review_findings(
+        "abcd1234-issue-1", project_dir, 12, _config(), client, 1, _lease(project_dir)
+    )
+
+    assert result.findings == ()
+    assert "issue_comment:13" in result.processed_comment_ids
+
+
+def test_collect_review_findings_imports_actionable_coderabbit_comment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #183 / PR #188: actionable CodeRabbit comments must remain real findings."""
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={
+            "baseline_review_id": 10,
+            "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+            "processed_comment_ids": [],
+            "findings": {},
+        },
+    )
+    client = FakeClient(
+        {
+            "repos/owner/repo/pulls/12/reviews": [],
+            "repos/owner/repo/pulls/12/comments": [],
+            "repos/owner/repo/issues/12/comments": [
+                _trusted(
+                    {
+                        "id": 16,
+                        "created_at": "2026-07-09T00:00:01+00:00",
+                        "body": "<!-- This is an auto-generated comment by CodeRabbit -->\n"
+                        "**Actionable comments posted: 2**\n\n[HIGH] Something is broken here",
+                    }
+                )
+            ],
+        }
+    )
+
+    result = prw.collect_review_findings(
+        "abcd1234-issue-1", project_dir, 12, _config(), client, 1, _lease(project_dir)
+    )
+
+    assert result.findings
+    assert result.findings[0].severity == "high"
+
+
+def test_parse_pr_review_config_defaults_auto_generated_markers() -> None:
+    config = prw.parse_pr_review_config(
+        {"pr_review": {"reviewer_allowlist": [{"app_slug": "codex-app"}]}}
+    )
+    assert config.auto_generated_markers == prw.DEFAULT_AUTO_GENERATED_MARKERS
+
+
+def test_parse_pr_review_config_empty_list_disables_auto_generated_filter() -> None:
+    config = prw.parse_pr_review_config(
+        {
+            "pr_review": {
+                "reviewer_allowlist": [{"app_slug": "codex-app"}],
+                "auto_generated_markers": [],
+            }
+        }
+    )
+    assert config.auto_generated_markers == ()
+
+
+def test_collect_review_findings_imports_when_auto_generated_filter_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={
+            "baseline_review_id": 10,
+            "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+            "processed_comment_ids": [],
+            "findings": {},
+        },
+    )
+    client = FakeClient(
+        {
+            "repos/owner/repo/pulls/12/reviews": [],
+            "repos/owner/repo/pulls/12/comments": [],
+            "repos/owner/repo/issues/12/comments": [
+                _trusted(
+                    {
+                        "id": 14,
+                        "created_at": "2026-07-09T00:00:01+00:00",
+                        "body": f"{_CODERABBIT_MARKER}\n[P2] Something is actually broken here",
+                    }
+                )
+            ],
+        }
+    )
+    disabled_config = _config(auto_generated_markers=())
+
+    result = prw.collect_review_findings(
+        "abcd1234-issue-1", project_dir, 12, disabled_config, client, 1, _lease(project_dir)
+    )
+
+    assert [item.source_comment_id for item in result.findings] == ["issue_comment:14"]
+    assert result.findings[0].severity == "high"
+
+
+def test_parse_pr_review_config_accepts_custom_auto_generated_marker() -> None:
+    config = prw.parse_pr_review_config(
+        {
+            "pr_review": {
+                "reviewer_allowlist": [{"app_slug": "codex-app"}],
+                "auto_generated_markers": ["[[bot-summary]]"],
+            }
+        }
+    )
+    assert config.auto_generated_markers == ("[[bot-summary]]",)
+    assert prw._is_auto_generated_comment("[[bot-summary]] High level notes", config) is True
+    assert prw._is_auto_generated_comment("no marker here, High severity bug", config) is False
+
+
+def test_finding_from_item_still_imports_explicit_high_without_auto_generated_marker() -> None:
+    """Regression: explicit severity markers must still classify normally when no bot marker is present."""
+    item = prw.ReviewItem(
+        source="issue_comment",
+        item_id="15",
+        body="[HIGH] real bug here",
+        created_at="2026-07-09T00:00:01+00:00",
+        path=None,
+        line=None,
+        original_line=None,
+        pull_request_review_id=None,
+        raw=_trusted({"id": 15}),
+    )
+    finding = prw._finding_from_item(item, "issue_comment:15", _config(), 1)
+    assert finding is not None
+    assert finding.severity == "high"
+    assert finding.needs_classification is False
+
+
 def test_ev36_reviewer_allowlist_is_required() -> None:
     with pytest.raises(prw.ConfigError, match="reviewer_allowlist is required"):
         prw.parse_pr_review_config({"pr_review": {}})
@@ -977,7 +1553,7 @@ def test_apply_severity_classifications_drops_non_findings(
                     {
                         "id": 12,
                         "created_at": "2026-07-09T00:00:01+00:00",
-                        "body": "Didn't find any major issues",
+                        "body": "This comment is informational only.",
                     }
                 )
             ],

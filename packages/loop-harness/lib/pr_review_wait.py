@@ -71,6 +71,21 @@ DEFAULT_STOPWORDS_EN = frozenset(
 )
 DEFAULT_STOPWORDS_JA = frozenset({"が", "です", "で", "と", "に", "の", "は", "ます", "を"})
 DEFAULT_FOOTER_PATTERNS = (r"(?ms)^---\s*$.*\Z",)
+DEFAULT_AUTO_GENERATED_MARKERS: tuple[str, ...] = (
+    "<!-- This is an auto-generated comment: summarize by coderabbit.ai",
+    "<!-- This is an auto-generated comment: rate limited by coderabbit.ai",
+    "<!-- This is an auto-generated comment: review in progress by coderabbit.ai",
+    "<!-- This is an auto-generated reply by CodeRabbit",
+)
+TERMINAL_VERDICT_PATTERNS: tuple[str, ...] = (
+    "didn't find any major issues",
+    "no major issues",
+    "didn't find any issues",
+    "review complete",
+    "lgtm",
+    "looks good to me",
+    "approved",
+)
 
 
 class PrReviewWaitError(RuntimeError):
@@ -119,6 +134,7 @@ class PrReviewConfig:
     dedup: DedupConfig = field(default_factory=DedupConfig)
     poll_interval_seconds: int = DEFAULT_POLL_INTERVAL_SECONDS
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
+    auto_generated_markers: tuple[str, ...] = DEFAULT_AUTO_GENERATED_MARKERS
 
 
 @dataclass(frozen=True)
@@ -146,6 +162,15 @@ class BaselineRecord:
 
 
 @dataclass(frozen=True)
+class PrReviewPushDelta:
+    """Read-only comparison result for PR review response pushes."""
+
+    status: str
+    local_head_sha: str | None
+    iteration_head_sha: str | None
+
+
+@dataclass(frozen=True)
 class IgnoredUntrustedReview:
     """Submitted review ignored because it does not match the reviewer allowlist."""
 
@@ -160,15 +185,26 @@ class IgnoredUntrustedReview:
 class CompletionOutcome:
     """Result of polling for external review completion."""
 
-    signal: Literal["review_submitted", "check_run_completed", "timeout", "api_error", "pending"]
+    signal: Literal[
+        "review_submitted",
+        "issue_comment_completed",
+        "check_run_completed",
+        "timeout",
+        "api_error",
+        "pending",
+    ]
     completed: bool
     timed_out: bool
     infrastructure_failure: bool
     review_ids: tuple[int, ...] = ()
     check_run_names: tuple[str, ...] = ()
+    issue_comment_ids: tuple[str, ...] = ()
     ignored_untrusted_review_count: int = 0
     ignored_untrusted_reviews: tuple[IgnoredUntrustedReview, ...] = ()
     error: str | None = None
+    shortcut_reason: str | None = None
+    local_head_sha: str | None = None
+    iteration_head_sha: str | None = None
 
 
 @dataclass(frozen=True)
@@ -304,6 +340,9 @@ def parse_pr_review_config(config: dict[str, Any]) -> PrReviewConfig:
             pr_review.get("poll_interval_seconds"), DEFAULT_POLL_INTERVAL_SECONDS
         ),
         timeout_seconds=_positive_int(pr_review.get("timeout_seconds"), DEFAULT_TIMEOUT_SECONDS),
+        auto_generated_markers=_parse_auto_generated_markers(
+            pr_review.get("auto_generated_markers")
+        ),
     )
 
 
@@ -396,6 +435,36 @@ def record_iteration_head(
     return sha
 
 
+def detect_pr_review_push_delta(
+    loop_id: str, project_dir: str, worktree_path: str
+) -> PrReviewPushDelta:
+    """Read-only comparison of worktree HEAD vs the last recorded PR iteration head sha."""
+    local_head_sha = _local_head_sha(worktree_path)
+    state = lc.load_state(loop_id, project_dir)
+    pr_review = state.pr_review if isinstance(state.pr_review, dict) else {}
+    iteration_head_sha = _optional_str(pr_review.get("iteration_head_sha"))
+    if local_head_sha is None or iteration_head_sha is None:
+        return PrReviewPushDelta("unknown", local_head_sha, iteration_head_sha)
+    if local_head_sha == iteration_head_sha:
+        return PrReviewPushDelta("no_new_commit", local_head_sha, iteration_head_sha)
+    return PrReviewPushDelta("new_commit", local_head_sha, iteration_head_sha)
+
+
+def no_new_commit_completion_outcome(delta: PrReviewPushDelta) -> CompletionOutcome:
+    """Build a timeout-equivalent CompletionOutcome for the no_new_commit shortcut."""
+    if delta.status != "no_new_commit":
+        raise PrReviewWaitError("no_new_commit_completion_outcome requires status=no_new_commit")
+    return CompletionOutcome(
+        "timeout",
+        completed=False,
+        timed_out=True,
+        infrastructure_failure=False,
+        shortcut_reason="no_new_commit_to_push",
+        local_head_sha=delta.local_head_sha,
+        iteration_head_sha=delta.iteration_head_sha,
+    )
+
+
 def wait_for_completion(
     pr_number: int,
     baseline: dict[str, Any],
@@ -416,6 +485,13 @@ def wait_for_completion(
             )
             if review_outcome.completed:
                 return review_outcome
+            issue_comment_outcome = _issue_comment_completion_outcome(
+                pr_number, baseline, config, client
+            )
+            if issue_comment_outcome.completed:
+                return _completion_outcome_with_ignored_reviews(
+                    issue_comment_outcome, ignored_reviews
+                )
             check_outcome = _checkrun_completion_outcome(baseline, config, client)
             if check_outcome.completed:
                 return _completion_outcome_with_ignored_reviews(check_outcome, ignored_reviews)
@@ -901,6 +977,57 @@ def _review_completion_outcome(
     )
 
 
+def _is_issue_comment_completion_signal(
+    item: ReviewItem, baseline: dict[str, Any], config: PrReviewConfig
+) -> bool:
+    """Return True when a trusted, post-baseline issue comment is a terminal review verdict."""
+    if _comment_key(item) in set(_string_list(baseline.get("processed_comment_ids"))):
+        return False
+    if not verify_origin(item.raw, config.reviewer_allowlist):
+        return False
+    if not _is_after_baseline_time(item, str(baseline.get("baseline_recorded_at") or "")):
+        return False
+    if _is_auto_generated_comment(item.body, config):
+        return False
+    iteration_sha = baseline.get("iteration_head_sha")
+    if isinstance(iteration_sha, str) and iteration_sha and iteration_sha[:7] not in item.body:
+        return False
+    return _matches_terminal_verdict(item.body)
+
+
+def _matches_terminal_verdict(body: str) -> bool:
+    """Return True when body casefold-contains a terminal review verdict phrase."""
+    normalized = (body or "").casefold()
+    return any(pattern.casefold() in normalized for pattern in TERMINAL_VERDICT_PATTERNS)
+
+
+def _issue_comment_completion_outcome(
+    pr_number: int, baseline: dict[str, Any], config: PrReviewConfig, client: GhApiClient
+) -> CompletionOutcome:
+    """Return a completion outcome from trusted issue comments carrying a terminal verdict."""
+    if not baseline.get("baseline_recorded_at"):
+        return CompletionOutcome(
+            "pending", completed=False, timed_out=False, infrastructure_failure=False
+        )
+    items = [
+        _review_item_from_issue_comment(raw) for raw in _fetch_issue_comments(client, pr_number)
+    ]
+    matched = [
+        item for item in items if _is_issue_comment_completion_signal(item, baseline, config)
+    ]
+    if not matched:
+        return CompletionOutcome(
+            "pending", completed=False, timed_out=False, infrastructure_failure=False
+        )
+    return CompletionOutcome(
+        "issue_comment_completed",
+        completed=True,
+        timed_out=False,
+        infrastructure_failure=False,
+        issue_comment_ids=tuple(sorted(_comment_key(item) for item in matched)),
+    )
+
+
 def _checkrun_completion_outcome(
     baseline: dict[str, Any], config: PrReviewConfig, client: GhApiClient
 ) -> CompletionOutcome:
@@ -935,8 +1062,16 @@ def _completion_outcome_metadata(outcome: CompletionOutcome) -> dict[str, Any]:
         metadata["ignored_untrusted_reviews"] = [
             _ignored_untrusted_review_dict(item) for item in outcome.ignored_untrusted_reviews
         ]
+    if outcome.issue_comment_ids:
+        metadata["issue_comment_ids"] = list(outcome.issue_comment_ids)
     if outcome.error:
         metadata["error"] = outcome.error
+    if outcome.shortcut_reason:
+        metadata["shortcut_reason"] = outcome.shortcut_reason
+    if outcome.local_head_sha:
+        metadata["local_head_sha"] = outcome.local_head_sha
+    if outcome.iteration_head_sha:
+        metadata["iteration_head_sha"] = outcome.iteration_head_sha
     return metadata
 
 
@@ -953,10 +1088,30 @@ def _completion_outcome_with_ignored_reviews(
         infrastructure_failure=outcome.infrastructure_failure,
         review_ids=outcome.review_ids,
         check_run_names=outcome.check_run_names,
+        issue_comment_ids=outcome.issue_comment_ids,
         ignored_untrusted_review_count=len(ignored_reviews),
         ignored_untrusted_reviews=_ignored_review_tuple(ignored_reviews),
         error=outcome.error,
+        shortcut_reason=outcome.shortcut_reason,
+        local_head_sha=outcome.local_head_sha,
+        iteration_head_sha=outcome.iteration_head_sha,
     )
+
+
+def _local_head_sha(worktree_path: str) -> str | None:
+    """Return worktree HEAD sha, or None when git cannot resolve it."""
+    try:
+        completed = subprocess.run(
+            ["git", "-C", worktree_path, "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=lc.GIT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    return _optional_str(completed.stdout.strip())
 
 
 def _ignored_untrusted_review_dict(item: IgnoredUntrustedReview) -> dict[str, Any]:
@@ -999,6 +1154,8 @@ def _finding_from_item(
 ) -> ImportedFinding | None:
     if not item.body.strip():
         return None
+    if _is_auto_generated_comment(item.body, config):
+        return None
     if _is_positive_review_summary(item):
         return None
     severity = classify_severity(item.body, config)
@@ -1014,11 +1171,21 @@ def _finding_from_item(
     )
 
 
+def _is_auto_generated_comment(body: str, config: PrReviewConfig) -> bool:
+    """Return True when body contains a configured bot auto-generated comment marker."""
+    if not body or not config.auto_generated_markers:
+        return False
+    normalized_body = body.casefold()
+    return any(marker.casefold() in normalized_body for marker in config.auto_generated_markers)
+
+
 def _is_positive_review_summary(item: ReviewItem) -> bool:
     if item.source not in {"review", "issue_comment"}:
         return False
     normalized = re.sub(r"\s+", " ", item.body).strip().casefold().rstrip(".!")
-    return normalized in POSITIVE_REVIEW_SUMMARIES
+    return normalized in POSITIVE_REVIEW_SUMMARIES or (
+        item.source == "issue_comment" and _matches_terminal_verdict(item.body)
+    )
 
 
 def _review_item_signature_payload(item: ReviewItem) -> dict[str, Any]:
@@ -1278,6 +1445,13 @@ def _parse_dedup_config(value: Any) -> DedupConfig:
             _string_list(dedup.get("signature_footer_patterns")) or DEFAULT_FOOTER_PATTERNS
         ),
     )
+
+
+def _parse_auto_generated_markers(value: Any) -> tuple[str, ...]:
+    """Parse pr_review.auto_generated_markers: absent means default, explicit list overrides."""
+    if value is None:
+        return DEFAULT_AUTO_GENERATED_MARKERS
+    return tuple(_string_list(value))
 
 
 def _parse_severity_markers(value: Any) -> tuple[tuple[str, str], ...]:

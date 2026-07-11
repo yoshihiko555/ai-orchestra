@@ -31,6 +31,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`quality-gates`: hook 状態ファイルの保存規約を統一し、worktree 分離と排他制御を追加**: `test-gate-checker.py` / `post-test-analysis.py` / `post-implementation-review.py` / `test-tampering-detector.py` の状態ファイルを、全プロジェクト共有だった `/tmp/claude-*.json` から `.claude/state/`（`evaluation-set-checker.py` と同じ規約、worktree = project_dir 配下に閉じ込め）へ移行した。あわせて `test-tampering-detector.py` の状態更新に flock 排他ロックを追加し、他 3 hook と同じ保護レベルに揃えた。
+
+- **`loop-harness`: bot の自動生成サマリコメントが phantom high 指摘として取り込まれる問題を修正**: CodeRabbit 等が投稿する非 actionable ステータスコメント（本文中に `High` 等の語を偶然含む）が explicit high severity の指摘として誤って取り込まれ、対応実体が無いまま `exit_success` に到達できなくなる不具合を修正した。`pr_review.auto_generated_markers`（config）で指定したマーカーを含むコメントは severity 判定前に除外される。
+
+- **`loop-harness`: PR レビュー再ベースライン時に未取り込みの信頼済み指摘が失われる問題を修正**: 追加 commit を push する直前の re-baseline が、直前反復の作業中に届いた別レビュアーの指摘を「処理済み」として取り込む前に握りつぶしてしまう不具合を修正した。re-baseline の前に必ず一度取り込み（drain）を行い、指摘が残っている場合は push・再ベースラインを行わず修正反復へ差し戻すようにした。
+
+- **`loop-harness`: Codex 等の issue コメント形式のレビュー応答が完了として検知されない問題を修正**: `@codex review` のようなコマンド応答が正式な GitHub review ではなく issue コメントとして投稿された場合、レビューが完了しているにもかかわらず毎回タイムアウトまで待機していた不具合を修正した。発信元検証済み・baseline 以降・非自動生成・終局判定文言に一致する issue コメントを完了シグナルとして扱うようにした。あわせて CodeRabbit のコマンド応答マーカーを自動生成コメント除外の既定リストに追加した。
+
+- **`loop-harness`: linked worktree からループ実行時にプロジェクト固有設定が反映されない問題を修正**: loop worktree（`git worktree add` で作成した作業ディレクトリ）から実行した場合、`.claude/config/loop-harness/loop-harness.local.yaml` が root worktree 側にしか存在せず、上書き設定が無視されていた不具合を修正した。
+
 - **worktree からの install/init がグローバル参照先を上書きする問題を修正**: 同じ Git リポジトリの linked worktree から実行した場合、`~/.claude/settings.json` の既存 `AI_ORCHESTRA_DIR`（main worktree）を保持するようにした。
 
 - **`meta-harness`: ストア用 `.gitignore` エントリが SessionStart 同期で消える問題を修正**: `.claude/meta-harness/` を gitignore 管理ブロックの生成元（`gitignore_sync.py`）に追加し、同期のたびに手動追記が失われる Phase 1a の実装漏れを解消
@@ -38,9 +48,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Codex の既定モデルを `gpt-5.6-sol` に更新**: エージェントルーティング、設定読込失敗時のフォールバック、新規導入用 `.codex/config.toml` テンプレートを同じモデルに揃えた。
+
 - **`codex-harness`: 旧 `project-edit` profile のアップグレード移行を追加**: 過去に同期済みの harness 所有 profile だけを限定検出して `.codex/config.toml` から削除し、Issue #161 の制限が既存導入先に残り続けないようにした
 - **`codex-harness`: force-push と approval bypass 形を禁止**: branch push / PR 作成の plain 形は引き続き人間承認に委譲しつつ、force-push と option 挿入で native prefix rule を迂回する形は hook で block する
 - **`codex-harness`: 非対話 runner の validation trust を pre-run snapshot 化**: workspace-write 実行中に validation 設定と台帳を同時改変しても、実行前 hash snapshot と不一致なら validation を実行しない
+- **`loop-harness`: `pr_review_response` で Maker が変更を作らなかった場合の無進捗検知を高速化**: Maker が新規 commit を作らなかった反復では、外部レビュー待機（最大 60 分のポーリング）をスキップし、決定論的な commit sha 比較で即座に無進捗判定するようにした。行き詰まり検知までの時間が約 2 時間 → 数分に短縮される。
 - **`codex-harness`: 対話 Codex を「承認ベース」に緩和（Issue #161）**: 対話 `codex` 向けの既定 `approval_policy` を `on-request` → `on-failure` に変更。sandbox が拒否した操作（git worktree の実体 Git dir への書き込み＝ `git add`/`git commit`、`gh`/`git fetch` 等のネットワーク）を人間承認で実行できるようになった。非対話 runner（`codex_run` / `codex_review`）は `approval_policy=never` を明示指定し、従来どおり承認なしの厳格 sandbox を維持する
 - **`codex-harness`: `git push` / `gh pr create` を rules で `prompt`（人間承認付き許可）に緩和**: 従来のハードブロック（`forbidden`）から、対話時に人間が承認すれば実行できる `prompt` へ変更。`gh pr merge` / `gh release create` / `npm`・`pnpm publish` / `docker push` / `kubectl apply` / `terraform apply` / `rm -rf` 系は引き続き `forbidden`（承認不可）を維持
 

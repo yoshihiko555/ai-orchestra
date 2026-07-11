@@ -147,6 +147,99 @@ loop:
 > | 個々の `gh api` 呼び出し失敗（5xx、network error、rate limit 応答）                                  | `infrastructure_failure` カウンタ（基本設計 6.3 節）。指数バックオフで同一ポーリング周期内リトライし、`guards.infrastructure_failure.max_retries` 到達で失敗出口 |
 > | `pr_review.timeout_seconds` 到達（API 呼び出し自体は成功し続けたが、シグナルが一度も得られなかった） | 無進捗カウンタ（本節。要件定義 FT-13 準拠）                                                                                                                      |
 
+### 1.2.1 push_required 時の no_new_commit ショートカット
+
+`pr_review_response` フェーズの Maker がコード変更を作らない場合がある。たとえば、Maker が既存状態で
+レビュー指摘を満たしていると判断した場合、または実際には対応行動を取れなかった場合である。従来はこの場合も
+`push_required: true` 経路が no-op push 相当で進み、完了シグナルが得られないまま
+`pr_review.timeout_seconds`（既定 3600 秒 = 60 分）まで poll してから無進捗として検知していた。
+しかし「push すべき新規 commit が無い」ことは、待機前に決定論的に検出できる。
+
+検出シグナルは Maker の自己申告に依存しない。直前の正常な push 直後に `record_iteration_head()` が
+GitHub API から取得して `state.pr_review["iteration_head_sha"]` に保存した PR head sha と、現在の
+worktree で `git rev-parse HEAD` が返す local HEAD sha を比較する。両者が完全一致する場合、
+local branch には前回 push 済み head から進んだ commit が存在せず、push すべき新規 commit は無い。
+
+| 比較結果                                   | 扱い                                                                                                   |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------ |
+| `iteration_head_sha == git rev-parse HEAD` | `no_new_commit`。baseline 記録・push・poll を省略し、timeout 相当の無進捗結果へ直行する                |
+| 両 sha が取得でき、かつ不一致              | `new_commit`。従来どおり baseline 記録 → push → `record_iteration_head()` → wait / poll / collect する |
+| どちらかの値が取得できない                 | `unknown`。安全側フォールバックとして従来フローを続行する                                             |
+
+`unknown` はショートカットとして扱わない。git コマンド失敗、worktree が不正、または
+`iteration_head_sha` が未記録（初回反復の境界条件など）の場合は、情報不足だけを理由に push / poll を
+省略してはならない。必ず既存の full flow（baseline 記録 → push → `record_iteration_head()` →
+wait / poll / collect）へフォールバックする。
+
+> **guard 合格後にだけ判定する**
+> no_new_commit ショートカットの判定は repo identity / branch guard の再検証に合格した後にのみ行う。
+> guard 不合格の場合はショートカットを検討せず、従来どおり `push_guard` を含む結果で complete し、
+> `_apply_safety_stop_if_needed()` による `push_guard_violation` / `repo_identity_mismatch` への安全停止を
+> 優先する。worktree のブランチがすり替わっていた場合等に、guard を経由せず `pr_review_timeout` として
+> 無進捗扱いにしてしまうことを防ぐための順序である。
+
+`no_new_commit` を検出した場合の結果は、新しい失敗カテゴリではない。library は
+`timed_out=True`、`infrastructure_failure=False` の timeout-shaped `CompletionOutcome` を返し、
+metadata に `shortcut_reason: "no_new_commit_to_push"` と比較に使った
+`local_head_sha` / `iteration_head_sha` を載せる。この outcome は実際の poll timeout と同じ
+`phase_check_from_completion_outcome()` を通り、`pr_review_timeout` signature として
+FT-13 の無進捗 guard 経路に集計される。
+
+> **設定キーは追加しない**
+> この判定は常に有効である。完全一致した sha に基づく latency optimization であり、情報が欠ける場合は
+> 必ず既存フローへ戻るため、正しさのトレードオフや disable 用 config key は導入しない。
+
+オーケストレーター（`/loop-issue` の skill instructions）は `CompletionOutcome` や
+`PhaseCheckResult` を手書きで構築してはならない。必ず `pr_review_wait.py` の決定論 API である
+`detect_pr_review_push_delta()` と `no_new_commit_completion_outcome()` を呼び、その結果を
+`phase_check_from_completion_outcome()` へそのまま渡す。
+
+### 1.2.2 pre-rebaseline drain（Issue #192。re-baseline 前の取りこぼし防止）
+
+**問題（データ損失）**: `push_required: true` 経路は、Maker の追加 commit を push する前に
+`record_baseline()` を再実行する（1.1 節）。`record_baseline()` はその時点で PR 上に存在する
+全レビュー/コメントを「処理済み」として `processed_comment_ids` に記録するため、直前の反復
+（前回の `wait_external_review` が完了シグナルを検知してから、この反復の `record_baseline()` が
+呼ばれるまでの間）に、まだ `collect_review_findings()` で import されていない信頼済みレビューが
+投稿されていた場合、それは import される機会を得ないまま `processed_comment_ids` に取り込まれ、
+`state.pr_review["findings"]` に一度も現れることなく永久に喪失する。実測（Issue #154 / PR #191
+の E2E）では、Codex のレビューに Maker が対応している間に CodeRabbit が独立に
+`CHANGES_REQUESTED` レビュー（High 指摘 3 件）を投稿し、次の re-baseline でそれらが丸ごと
+失われた。
+
+**対処（pre-rebaseline drain）**: `push_required: true` 経路の guard 合格後、`record_baseline()` を
+呼ぶ**前**に、既存（更新前）の baseline のまま `collect_review_findings(...)` を 1 回実行する
+（この呼び出しは baseline を変更しない。`record_baseline()` とは独立した既存 API である）。
+
+- drain の結果、severity 分類（3 節。`needs_classification` が残る場合はこの場でインラインに
+  Step 2 を実行する）後に actionable な finding が **1 件以上**残る場合は、`record_baseline()` /
+  push / `record_iteration_head()` / wait / poll のいずれも実行せず、
+  `phase_check_from_review_findings(...)` の結果（`passed: false`）でこの `wait_external_review`
+  action を complete する。この結果は 6 節（基本設計 6.1 節）のガード評価を通って修正反復
+  （Maker）へ差し戻される。今回反復では push が発生しないため、次回の `wait_external_review` は
+  再び `push_required: true`（`pr_review_response` の Maker が新しい commit を作った後）として
+  呼ばれ、その時点の baseline（今回の drain で更新済みの `findings`。ただし `baseline_review_id` /
+  `processed_comment_ids` 自体は今回変更していない）に対して同じ drain を再度行う。
+- drain の結果 finding が **0 件**の場合にのみ、1.2.1 節の `detect_pr_review_push_delta()` 判定へ
+  進む。**drain が 0 件であることを確認せずに `phase_check_from_review_findings()` を呼んで
+  complete することを禁止する**（findings が空の場合、`phase_check_from_review_findings()` は
+  `passed: true` を返すため、push もレビュー待機も行わずに誤って合格扱いとなってしまう）。
+
+**安全性の根拠（library レベルでの再検証）**: `record_baseline()` は `state.pr_review["findings"]`
+キーを一切変更しない（`baseline_review_id` / `baseline_recorded_at` / `processed_comment_ids` の
+3 キーのみ更新する）。したがって、pre-rebaseline drain で先に `collect_review_findings()` を
+呼んで finding を `state.pr_review["findings"]` へ取り込んでおけば、その後で `record_baseline()`
+が同じコメントを「処理済み」としてマークしても、既に import 済みの finding が消えることはない。
+この特性により、本節の対処は `pr_review_wait.py` のライブラリ関数自体を変更せず、
+`/loop-issue` の skill instructions（オーケストレーター側の呼び出し順序）のみで実現できる。
+
+> **FT-13 no_new_commit ショートカット（1.2.1 節）との関係**
+> pre-rebaseline drain は `detect_pr_review_push_delta()` より**前**に実行される。したがって
+> 1.2.1 節の `no_new_commit` ショートカットは「guard 合格 **かつ** pre-rebaseline drain が
+> 0 件」の場合にのみ適用される。drain で 1 件以上の finding が見つかった場合は
+> `detect_pr_review_push_delta()` 自体を呼ばないため、無進捗判定の対象にもならない
+> （そのまま `phase_check_from_review_findings()` の失敗結果として次の Maker 反復へ渡る）。
+
 ### 1.3 コメント取得（3 API の使い分け）
 
 完了シグナル検知後、以下 3 種類の API を組み合わせて指摘一覧を構築する。
@@ -236,6 +329,56 @@ pr_review:
      本節固有の通知本文は「件名レベル」（Issue 番号、`ignored_untrusted_comment` 件数、投稿者
      login）に留め、コメント本文は含めない（10.2 節の redaction 方針と整合）。
 
+### 2.4 issue コメントによる完了シグナル（Issue #194）
+
+**問題（偽陰性の待機）**: 1.1 節の完了シグナル検知は `pulls/{pr}/reviews`（正式な review オブジェクト）
+と check-run のみを見る。しかし Codex 等のレビュアーは、`@codex review` のようなスラッシュコマンド
+応答を issue コメント（`issues/{pr}/comments`）として投稿する実装形態を取る場合がある
+（実測: 「Didn't find any major issues. Reviewed commit: `<sha>`.」という信頼済み bot 発の issue
+コメント）。この場合、正式な review が一度も提出されないため、`wait_for_completion()` は
+`pr_review.timeout_seconds`（既定 3600 秒）まで無駄にポーリングし続けたのち、レビューが
+実際には即座に完了していたにもかかわらず timeout（無進捗）として扱ってしまう。
+
+**対処（issue コメント完了シグナル）**: `wait_for_completion()` は review 判定・check-run 判定に
+加えて、信頼済み issue コメントが「終局的な verdict」を含む場合もポーリングの完了シグナルとして
+扱う。判定順序は **review → issue コメント → check-run** の順（正シグナルを最優先し、
+issue コメントはフォールバックより優先度が高い準正シグナルとして扱う）。
+
+判定は 1 件の issue コメントに対して次の **AND 条件（すべて満たす場合のみ完了）** で行う。
+
+1. **発信元検証**: `verify_origin()`（2.1 節）が `pr_review.reviewer_allowlist` に対して合格する。
+2. **baseline で未処理**: `issue_comment:<id>` が `processed_comment_ids` に含まれない。
+3. **baseline より後**: コメントの `created_at` が `baseline_recorded_at` より後（1.3 節の
+   `_is_after_baseline_time` 判定を再利用。baseline より前の歴史的コメントを完了シグナルとして
+   誤検知しない）。
+4. **自動生成マーカーに非該当**: `pr_review.auto_generated_markers`（3.1 節。既定値には本節で
+   追加する CodeRabbit のコマンド応答マーカー `<!-- This is an auto-generated reply by CodeRabbit`
+   を含む）のいずれにも casefold 部分一致しない。レートリミット応答・進行中応答などの bot
+   ノイズを完了シグナルとして誤検知しないための除外である。
+5. **iteration head sha の一致（該当時のみ）**: `baseline.iteration_head_sha` が記録されている
+   場合、コメント本文にその sha の先頭 7 文字以上が部分文字列として含まれること。
+   `iteration_head_sha` が未記録（初回反復の境界条件等）の場合はこの条件をスキップする
+   （安全側フォールバック。存在しない情報を理由に完了シグナルを握りつぶさない）。
+6. **終局 verdict パターンへの一致**: 本文が `TERMINAL_VERDICT_PATTERNS`（casefold 部分一致。
+   既定: `didn't find any major issues` / `no major issues` / `didn't find any issues` /
+   `review complete` / `lgtm` / `looks good to me` / `approved`）のいずれかにマッチすること。
+
+6 条件すべてを満たす issue コメントが 1 件以上見つかった場合、`wait_for_completion()` は
+`signal: "issue_comment_completed"`、`completed: True` の `CompletionOutcome` を返し、
+マッチしたコメントの `issue_comment:<id>` 形式 ID を `issue_comment_ids` に含める。1 件も
+見つからない場合は既存どおり check-run 判定・timeout 判定へ進む。
+
+> **Issue #193（レートリミット→人間引き継ぎ）との独立性**
+> 条件 4 の自動生成マーカー除外は、CodeRabbit のレートリミット応答等が完了シグナルとして
+> 誤検知されるのを防ぐための negative-list であり、Issue #193 が計画する「レートリミット検知→
+> 人間引き継ぎ」とは別の関心事である。本節はレートリミット応答を「完了ではない」として無視する
+> だけであり、それを能動的に人間へエスカレーションする機構は持たない（Issue #193 のスコープ）。
+
+> **完了後の finding 取り込みとの関係**
+> issue コメント完了シグナルは「レビューが完了したこと」の検知のみを行う。完了検知後の
+> `collect_review_findings()` は同じ `TERMINAL_VERDICT_PATTERNS` を肯定的 summary の判定にも再利用し、
+> 完了シグナルとなった issue コメントを finding 化せず `processed_comment_ids` に記録する。
+
 ---
 
 ## 3. severity 判定ロジックの確定
@@ -266,6 +409,19 @@ pr_review:
   severity を採用する**（安全側）。
 - マッピング表にない独自表記（プロジェクト固有の絵文字ルール等）は `pr_review.severity_markers`
   （config、任意の追加マッピング）で拡張できる。
+- 本文中の表記マッチによる誤検知（bot の自動生成サマリコメント本文中に `High` 等の語が偶然含まれる
+  ケース）を防ぐため、Step 1 の直前（`_finding_from_item` の空 body チェック直後、
+  `_is_positive_review_summary` の判定より前）で自動生成コメント除外フィルタを適用する。
+  `pr_review.auto_generated_markers`（config、既定値: CodeRabbit の非 actionable ステータスマーカー
+  4 種（summarize / rate limited / review in progress / コマンド応答 reply。最後の 1 種は Issue #194
+  で追加。2.4 節の issue コメント完了シグナル判定でも同じフィルタを再利用する）に列挙したマーカーの
+  いずれかが本文に**部分一致**（大文字小文字を無視する casefold 比較）
+  すれば、severity 判定・Maker 入力の対象にはせず `None` を返す。config キーが未設定（キー自体が無い）
+  場合は既定値を使うが、**空リストを明示すればフィルタ自体を無効化**できる（未設定と空リスト明示は
+  区別する）。除外されたコメントも他の `_finding_from_item` が `None` を返すケース（肯定コメント等）
+  と同様に `processed_comment_ids` へ追加され、以後のポーリングで再処理されない。
+  CodeRabbit の actionable コメントマーカー `<!-- This is an auto-generated comment by CodeRabbit -->`
+  （`comment` の後にコロンが無い形式）は実指摘を含むため、既定では除外しない。
 
 ### 3.2 Step 2: 表記が無い場合の分類サブエージェント
 
@@ -849,6 +1005,8 @@ osascript -e 'display notification "安全停止: {stop_reason}" \
 | `pr_review.reviewer_allowlist`              | 発信元許可リスト（`app_slug`/`login`/`type`/`author_association`。2.2 節）                        | **必須。既定値なし（未設定はエラー）** |
 | `pr_review.checkrun_allowlist`              | check-run フォールバック対象の check 名（1.1 節。任意）                                           | `[]`（フォールバック無効）             |
 | `pr_review.severity_markers`                | 3.1 節のマッピング表への追加パターン（プロジェクト固有拡張）                                      | `{}`                                   |
+| `pr_review.auto_generated_markers`          | 3.1 節の自動生成コメント除外フィルタ・2.4 節の issue コメント完了シグナル判定 共通のマーカー一覧（部分一致・casefold。空リストで無効化） | CodeRabbit 非 actionable ステータスマーカー 4 種: `("<!-- This is an auto-generated comment: summarize by coderabbit.ai", "<!-- This is an auto-generated comment: rate limited by coderabbit.ai", "<!-- This is an auto-generated comment: review in progress by coderabbit.ai", "<!-- This is an auto-generated reply by CodeRabbit")` |
+| `pr_review` の `TERMINAL_VERDICT_PATTERNS`（定数。config キーではない） | 2.4 節の issue コメント完了シグナル判定に使う終局 verdict パターン一覧（部分一致・casefold。固定値） | `("didn't find any major issues", "no major issues", "didn't find any issues", "review complete", "lgtm", "looks good to me", "approved")` |
 | `pr_review.dedup.line_bucket_size`          | 4.2 節の行番号丸め幅                                                                              | `5`                                    |
 | `pr_review.dedup.stopwords_ja` / `_en`      | 4.2 節のストップワードリスト                                                                      | 既定リスト（詳細設計内で別途定義）     |
 | `maker.fallback_agent`                      | `detect_agent()` が検出できなかった場合の Maker subagent_type（5.2.1 節）                         | `general-purpose`                      |
