@@ -19,6 +19,12 @@ import re
 import sys
 from pathlib import Path
 
+# quality_gate_config.py lives alongside this file under packages/quality-gates/hooks/,
+# so add this file's own directory to sys.path before importing it.
+_hook_dir = os.path.dirname(os.path.abspath(__file__))
+if _hook_dir not in sys.path:
+    sys.path.insert(0, _hook_dir)
+
 _orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
 if _orchestra_dir:
     _core_hooks = os.path.join(_orchestra_dir, "packages", "core", "hooks")
@@ -34,14 +40,16 @@ from hook_common import (  # noqa: E402
     load_package_config,
     read_hook_input,
     read_json_safe,
-    resolve_path_within,
     safe_hook_execution,
     write_json,
 )
 
-# Fallback state directory when audit-flags.json's paths.state_dir is missing
-# or resolves outside project_dir (mirrors capture-failures.py's DEFAULT_LOGS_DIR).
-DEFAULT_STATE_DIR = os.path.join(".claude", "state")
+# resolve_state_path() is the single canonical implementation shared across
+# the quality-gates package (Issue #154 review: a local duplicate with a
+# diverging contract used to live here, which undermined the goal of
+# unifying the state-file convention).
+from quality_gate_config import resolve_state_path  # noqa: E402
+
 STATE_FILENAME = "evaluation-set-checker.json"
 
 PACKAGES_TEST_PATH_PATTERN = re.compile(r"^packages/([^/]+)/tests/")
@@ -217,23 +225,6 @@ def build_message(pkg: str | None, doc_exists: bool) -> str:
     )
 
 
-def resolve_state_path(project_dir: str, config: dict) -> str | None:
-    """Resolve the dedup state file path, honoring audit-flags.json's paths.state_dir.
-
-    Takes an already-loaded audit-flags.json config dict (see
-    evaluation_set_check_enabled) to avoid reading the config file twice.
-    """
-    state_dir_value = config.get("paths", {}).get("state_dir")
-    state_dir = (
-        state_dir_value
-        if isinstance(state_dir_value, str) and state_dir_value
-        else DEFAULT_STATE_DIR
-    )
-    return resolve_path_within(project_dir, state_dir, STATE_FILENAME) or resolve_path_within(
-        project_dir, DEFAULT_STATE_DIR, STATE_FILENAME
-    )
-
-
 def load_state(state_path: str) -> dict:
     """Load the dedup state, defaulting missing keys."""
     data = read_json_safe(state_path)
@@ -308,7 +299,10 @@ def main() -> None:
     # are each still notified once per session.
     pkg_key = pkg if pkg is not None else f"unknown:{relative_path}"
 
-    state_path = resolve_state_path(project_dir, config)
+    # config is already loaded above (shared with evaluation_set_check_enabled()),
+    # and resolve_state_path() always returns a non-None path (quality_gate_config's
+    # canonical contract).
+    state_path = resolve_state_path(project_dir, STATE_FILENAME, config=config)
     state = load_state(state_path) if state_path else dict(DEFAULT_STATE)
     if already_notified(state, session_id, pkg_key):
         sys.exit(0)

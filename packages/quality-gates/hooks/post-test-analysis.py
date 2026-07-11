@@ -5,11 +5,15 @@ PostToolUse hook: Suggest Codex debugging after test failures.
 Triggers after Bash tool calls containing test commands (pytest, npm test, etc.)
 when the test run fails.
 
-Also records test results to the shared test-gate state file so that
-test-gate-checker.py can reset change counters after successful tests.
-The state is scoped per project (see quality_gate_config.get_project_state_key)
-so concurrent worktrees/sessions on different projects do not contaminate
-each other's counters.
+Also records test results to the shared test-gate state file
+(.claude/state/test-gate-checker.json, resolved via
+quality_gate_config.resolve_state_path) so that test-gate-checker.py can
+reset change counters after successful tests. The state file lives under the
+current project_dir (worktree), so separate worktrees of the same repo
+naturally get isolated counters. Within one project_dir, state is
+additionally scoped per git-common-dir (see
+quality_gate_config.get_project_state_key) for backward-compatible schema
+consistency with the other quality-gates hooks.
 """
 
 import json
@@ -54,6 +58,7 @@ from quality_gate_config import (  # noqa: E402
     get_project_state_key,
     load_project_scoped_state,
     resolve_quality_gate_enabled,
+    resolve_state_path,
     save_project_scoped_state,
 )
 
@@ -73,8 +78,9 @@ TEST_COMMAND_PATTERNS = [
     r"\bmypy\b",
 ]
 
-# Shared state file with test-gate-checker.py
-TEST_GATE_STATE_FILE = Path("/tmp/claude-test-gate-state.json")
+# Shared state filename with test-gate-checker.py. The actual path is
+# resolved per-project via quality_gate_config.resolve_state_path().
+STATE_FILENAME = "test-gate-checker.json"
 
 
 def is_test_command(command: str) -> bool:
@@ -102,25 +108,41 @@ def extract_failure_summary(output: str) -> str:
     return "Test failure detected"
 
 
-def load_test_gate_state(project_dir: str) -> dict:
-    """Load the shared test-gate state from file (scoped to the current project)."""
+def load_test_gate_state(project_dir: str, config: dict | None = None) -> dict:
+    """Load the shared test-gate state from file (scoped to the current project).
+
+    `config` may be an already-loaded audit-flags.json dict (see main()) to
+    avoid re-reading the config file within the same hook invocation.
+    """
     project_key = get_project_state_key(project_dir)
-    return load_project_scoped_state(TEST_GATE_STATE_FILE, project_key, DEFAULT_TEST_GATE_STATE)
+    state_file = Path(resolve_state_path(project_dir, STATE_FILENAME, config=config))
+    return load_project_scoped_state(state_file, project_key, DEFAULT_TEST_GATE_STATE)
 
 
-def save_test_gate_state(project_dir: str, state: dict) -> None:
-    """Save the shared test-gate state to file (scoped to the current project)."""
+def save_test_gate_state(project_dir: str, state: dict, config: dict | None = None) -> None:
+    """Save the shared test-gate state to file (scoped to the current project).
+
+    `config` may be an already-loaded audit-flags.json dict (see main()) to
+    avoid re-reading the config file within the same hook invocation.
+    """
     project_key = get_project_state_key(project_dir)
-    save_project_scoped_state(TEST_GATE_STATE_FILE, project_key, state)
+    state_file = Path(resolve_state_path(project_dir, STATE_FILENAME, config=config))
+    save_project_scoped_state(state_file, project_key, state)
 
 
-def record_test_result(command: str, passed: bool, project_dir: str) -> None:
+def record_test_result(
+    command: str, passed: bool, project_dir: str, config: dict | None = None
+) -> None:
     """Record test result to the shared state file.
 
     On success: reset change counters and warned flag.
     On failure: keep counters (changes are not yet validated).
+
+    `config` may be an already-loaded audit-flags.json dict (see main()) so
+    the load+save pair below reads the config file at most once instead of
+    twice (Issue #154 review: architecture-reviewer).
     """
-    state = load_test_gate_state(project_dir)
+    state = load_test_gate_state(project_dir, config=config)
     state["last_test_result"] = {
         "timestamp": datetime.now(UTC).isoformat(),
         "passed": passed,
@@ -130,13 +152,21 @@ def record_test_result(command: str, passed: bool, project_dir: str) -> None:
         state["files_modified_since_test"] = []
         state["lines_modified_since_test"] = 0
         state["warned"] = False
-    save_test_gate_state(project_dir, state)
+    save_test_gate_state(project_dir, state, config=config)
 
 
-def load_quality_gate_config(project_dir: str) -> dict:
-    """audit-flags.json から quality_gate 設定を読み込む。"""
-    config = load_package_config("audit", "audit-flags.json", project_dir)
-    features = config.get("features", {})
+def load_quality_gate_config(project_dir: str, config: dict | None = None) -> dict:
+    """audit-flags.json から quality_gate 設定を読み込む。
+
+    `config` が渡された場合は再読み込みしない（main() で読み込み済みの
+    audit-flags.json を再利用する）。
+    """
+    resolved_config = (
+        config
+        if config is not None
+        else load_package_config("audit", "audit-flags.json", project_dir)
+    )
+    features = resolved_config.get("features", {})
     return features.get("quality_gate", {}) if isinstance(features, dict) else {}
 
 
@@ -148,6 +178,7 @@ def emit_quality_gate_event(
     gate_passed: bool,
     output: str,
     detected_by: str | None = None,
+    config: dict | None = None,
 ) -> bool:
     """品質ゲート結果を audit イベントログに記録する。
 
@@ -155,11 +186,15 @@ def emit_quality_gate_event(
     呼び出し側が導出して渡す。`exit_code` は payload 記録用に保持する
     （パイプで終了コードがマスクされても出力パターンで失敗を検知できる）。
 
+    `config` は main() で読み込み済みの audit-flags.json dict（project_dir が
+    resolve_project_root_from_hook_data(data) の解決結果と一致する場合のみ
+    呼び出し側が渡す想定）。渡されない場合はここで読み込む。
+
     Returns:
         `block_on_failed_test` によりブロックすべき場合は True。
     """
     project_dir = resolve_project_root_from_hook_data(data)
-    quality_gate = load_quality_gate_config(project_dir)
+    quality_gate = load_quality_gate_config(project_dir, config=config)
     if not resolve_quality_gate_enabled(quality_gate):
         return False
 
@@ -230,8 +265,23 @@ def main():
         analysis_failed = not gate_passed
         detected_by = failure.get("detected_by") if failure else None
 
+        # Read audit-flags.json once and reuse it for record_test_result's
+        # load+save pair and (when project_dir resolutions agree)
+        # emit_quality_gate_event's quality_gate lookup, instead of reading
+        # it independently up to 3x per invocation (Issue #154 review:
+        # architecture-reviewer).
+        config = load_package_config("audit", "audit-flags.json", project_dir)
+
         # Record test result to shared state (success resets counters)
-        record_test_result(command, gate_passed, project_dir)
+        record_test_result(command, gate_passed, project_dir, config=config)
+
+        # emit_quality_gate_event resolves its own project_dir via
+        # resolve_project_root_from_hook_data (which can fall back
+        # differently than the data.get("cwd") logic above when cwd lacks a
+        # .claude dir). Only reuse the config already read when both
+        # resolutions agree, to avoid applying the wrong project's config.
+        event_project_dir = resolve_project_root_from_hook_data(data)
+        reusable_config = config if event_project_dir == project_dir else None
         blocking = emit_quality_gate_event(
             data,
             command=command,
@@ -239,6 +289,7 @@ def main():
             gate_passed=gate_passed,
             output=output,
             detected_by=detected_by,
+            config=reusable_config,
         )
 
         if blocking:
