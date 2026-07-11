@@ -981,6 +981,8 @@ def _is_issue_comment_completion_signal(
     item: ReviewItem, baseline: dict[str, Any], config: PrReviewConfig
 ) -> bool:
     """Return True when a trusted, post-baseline issue comment is a terminal review verdict."""
+    if _comment_key(item) in set(_string_list(baseline.get("processed_comment_ids"))):
+        return False
     if not verify_origin(item.raw, config.reviewer_allowlist):
         return False
     if not _is_after_baseline_time(item, str(baseline.get("baseline_recorded_at") or "")):
@@ -1181,7 +1183,9 @@ def _is_positive_review_summary(item: ReviewItem) -> bool:
     if item.source not in {"review", "issue_comment"}:
         return False
     normalized = re.sub(r"\s+", " ", item.body).strip().casefold().rstrip(".!")
-    return normalized in POSITIVE_REVIEW_SUMMARIES
+    return normalized in POSITIVE_REVIEW_SUMMARIES or (
+        item.source == "issue_comment" and _matches_terminal_verdict(item.body)
+    )
 
 
 def _review_item_signature_payload(item: ReviewItem) -> dict[str, Any]:

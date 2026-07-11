@@ -865,6 +865,27 @@ def test_wait_for_completion_returns_issue_comment_completed_for_trusted_termina
     assert outcome.issue_comment_ids == ("issue_comment:20",)
 
 
+def test_wait_for_completion_ignores_processed_terminal_issue_comment() -> None:
+    client = FakeClient(
+        {
+            "repos/owner/repo/pulls/12/reviews": [],
+            "repos/owner/repo/issues/12/comments": [_terminal_issue_comment()],
+        }
+    )
+    baseline = {
+        "baseline_review_id": 10,
+        "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+        "iteration_head_sha": "abc1234def",
+        "processed_comment_ids": ["issue_comment:20"],
+    }
+
+    outcome = prw.wait_for_completion(
+        12, baseline, _config(), client, sleeper=lambda _seconds: None
+    )
+
+    assert outcome.signal == "timeout"
+
+
 def test_wait_for_completion_ignores_rate_limited_issue_comment_reply() -> None:
     client = FakeClient(
         {
@@ -1157,6 +1178,36 @@ def test_collect_review_findings_skips_positive_issue_comment_summaries(
 
     assert result.findings == ()
     assert "issue_comment:12" in result.processed_comment_ids
+
+
+def test_collect_review_findings_skips_terminal_issue_comment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={
+            "baseline_review_id": 10,
+            "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+            "processed_comment_ids": [],
+            "findings": {},
+        },
+    )
+    client = FakeClient(
+        {
+            "repos/owner/repo/pulls/12/reviews": [],
+            "repos/owner/repo/pulls/12/comments": [],
+            "repos/owner/repo/issues/12/comments": [_terminal_issue_comment()],
+        }
+    )
+
+    result = prw.collect_review_findings(
+        "abcd1234-issue-1", project_dir, 12, _config(), client, 1, _lease(project_dir)
+    )
+
+    assert result.findings == ()
+    assert result.needs_classification_count == 0
+    assert "issue_comment:20" in result.processed_comment_ids
 
 
 _CODERABBIT_MARKER = "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->"
@@ -1502,7 +1553,7 @@ def test_apply_severity_classifications_drops_non_findings(
                     {
                         "id": 12,
                         "created_at": "2026-07-09T00:00:01+00:00",
-                        "body": "Didn't find any major issues",
+                        "body": "This comment is informational only.",
                     }
                 )
             ],

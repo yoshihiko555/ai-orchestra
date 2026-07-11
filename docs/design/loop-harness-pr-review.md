@@ -347,38 +347,37 @@ issue コメントはフォールバックより優先度が高い準正シグ�
 判定は 1 件の issue コメントに対して次の **AND 条件（すべて満たす場合のみ完了）** で行う。
 
 1. **発信元検証**: `verify_origin()`（2.1 節）が `pr_review.reviewer_allowlist` に対して合格する。
-2. **baseline より後**: コメントの `created_at` が `baseline_recorded_at` より後（1.3 節の
+2. **baseline で未処理**: `issue_comment:<id>` が `processed_comment_ids` に含まれない。
+3. **baseline より後**: コメントの `created_at` が `baseline_recorded_at` より後（1.3 節の
    `_is_after_baseline_time` 判定を再利用。baseline より前の歴史的コメントを完了シグナルとして
    誤検知しない）。
-3. **自動生成マーカーに非該当**: `pr_review.auto_generated_markers`（3.1 節。既定値には本節で
+4. **自動生成マーカーに非該当**: `pr_review.auto_generated_markers`（3.1 節。既定値には本節で
    追加する CodeRabbit のコマンド応答マーカー `<!-- This is an auto-generated reply by CodeRabbit`
    を含む）のいずれにも casefold 部分一致しない。レートリミット応答・進行中応答などの bot
    ノイズを完了シグナルとして誤検知しないための除外である。
-4. **iteration head sha の一致（該当時のみ）**: `baseline.iteration_head_sha` が記録されている
+5. **iteration head sha の一致（該当時のみ）**: `baseline.iteration_head_sha` が記録されている
    場合、コメント本文にその sha の先頭 7 文字以上が部分文字列として含まれること。
    `iteration_head_sha` が未記録（初回反復の境界条件等）の場合はこの条件をスキップする
    （安全側フォールバック。存在しない情報を理由に完了シグナルを握りつぶさない）。
-5. **終局 verdict パターンへの一致**: 本文が `TERMINAL_VERDICT_PATTERNS`（casefold 部分一致。
+6. **終局 verdict パターンへの一致**: 本文が `TERMINAL_VERDICT_PATTERNS`（casefold 部分一致。
    既定: `didn't find any major issues` / `no major issues` / `didn't find any issues` /
    `review complete` / `lgtm` / `looks good to me` / `approved`）のいずれかにマッチすること。
 
-5 条件すべてを満たす issue コメントが 1 件以上見つかった場合、`wait_for_completion()` は
+6 条件すべてを満たす issue コメントが 1 件以上見つかった場合、`wait_for_completion()` は
 `signal: "issue_comment_completed"`、`completed: True` の `CompletionOutcome` を返し、
 マッチしたコメントの `issue_comment:<id>` 形式 ID を `issue_comment_ids` に含める。1 件も
 見つからない場合は既存どおり check-run 判定・timeout 判定へ進む。
 
 > **Issue #193（レートリミット→人間引き継ぎ）との独立性**
-> 条件 3 の自動生成マーカー除外は、CodeRabbit のレートリミット応答等が完了シグナルとして
+> 条件 4 の自動生成マーカー除外は、CodeRabbit のレートリミット応答等が完了シグナルとして
 > 誤検知されるのを防ぐための negative-list であり、Issue #193 が計画する「レートリミット検知→
 > 人間引き継ぎ」とは別の関心事である。本節はレートリミット応答を「完了ではない」として無視する
 > だけであり、それを能動的に人間へエスカレーションする機構は持たない（Issue #193 のスコープ）。
 
 > **完了後の finding 取り込みとの関係**
 > issue コメント完了シグナルは「レビューが完了したこと」の検知のみを行う。完了検知後の
-> `collect_review_findings()` は本節の判定と独立して、引き続き `_finding_from_item()` /
-> `classify_severity()`（3 節）の通常経路でこの issue コメントを処理する（終局 verdict
-> パターンにマッチした肯定的なコメントは、多くの場合 severity 判定で `none` となり finding
-> 化されない）。
+> `collect_review_findings()` は同じ `TERMINAL_VERDICT_PATTERNS` を肯定的 summary の判定にも再利用し、
+> 完了シグナルとなった issue コメントを finding 化せず `processed_comment_ids` に記録する。
 
 ---
 
