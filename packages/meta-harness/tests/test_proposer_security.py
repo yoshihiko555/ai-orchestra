@@ -62,6 +62,16 @@ class TestCanaryDetection:
         hits = psec.scan_text_for_canary(f"q={encoded}", canary)
         assert "url" in hits
 
+    def test_generated_canary_with_percent_encoded_hyphens_detected(self) -> None:
+        encoded = _CANARY.replace("-", "%2D")
+        hits = psec.scan_text_for_canary(f"q={encoded}", _CANARY)
+        assert "url-hyphens" in hits
+
+    def test_generated_canary_fully_percent_encoded_detected(self) -> None:
+        encoded = "".join(f"%{byte:02x}" for byte in _CANARY.encode())
+        hits = psec.scan_text_for_canary(f"q={encoded}", _CANARY)
+        assert "url-percent-lowercase" in hits
+
     def test_no_canary_when_absent(self) -> None:
         assert psec.scan_text_for_canary("clean overlay content", _CANARY) == []
 
@@ -106,6 +116,14 @@ class TestRedactForStorage:
         assert key not in redacted
         assert "[REDACTED:API key (hyphenated sk- prefix)]" in redacted
 
+    def test_hyphenated_sk_key_is_fully_masked_before_generic_pattern(self) -> None:
+        key = _sample_sk_key("abcdefghij")
+        suffix = key.split("-", 2)[-1]
+        redacted = psec.redact_for_storage(f"api_key={key}")
+        assert key not in redacted
+        assert suffix not in redacted
+        assert "[REDACTED:API key (hyphenated sk- prefix)]" in redacted
+
     def test_canary_variants_are_masked(self) -> None:
         encoded = base64.b64encode(_CANARY.encode()).decode()
         text = f"plain={_CANARY} b64={encoded}"
@@ -113,6 +131,12 @@ class TestRedactForStorage:
         assert _CANARY not in redacted
         assert encoded not in redacted
         assert "[REDACTED:auth canary" in redacted
+
+    def test_percent_encoded_canary_is_masked(self) -> None:
+        encoded = _CANARY.replace("-", "%2D")
+        redacted = psec.redact_for_storage(f"q={encoded}", auth_canary=_CANARY)
+        assert encoded not in redacted
+        assert "[REDACTED:auth canary (url-hyphens)]" in redacted
 
     def test_generic_secret_still_masked_without_canary(self) -> None:
         key = _sample_sk_key()

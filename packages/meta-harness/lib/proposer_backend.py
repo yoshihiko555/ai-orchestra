@@ -27,6 +27,7 @@ if str(_LIB_DIR) not in sys.path:
 
 import isolation as iso  # noqa: E402
 import meta_harness_common as mh  # noqa: E402
+import proposer_security as psec  # noqa: E402
 
 PROPOSAL_SCHEMA_NAME = "proposal.schema.json"
 DEFAULT_PROPOSER_TIMEOUT_SECONDS = 600
@@ -73,6 +74,7 @@ def launch_proposer_backend(
     config: dict,
     isolation_launch: iso.IsolationLaunch,
     ephemeral_home: Path | None = None,
+    auth_canary: str | None = None,
     allowed_based_on_runs: list[str] | tuple[str, ...] | None = None,
     runner: SubprocessRunner | None = None,
 ) -> ProposerBackendResult:
@@ -91,6 +93,7 @@ def launch_proposer_backend(
             proposer_cfg=proposer_cfg,
             isolation_launch=isolation_launch,
             ephemeral_home=ephemeral_home,
+            auth_canary=auth_canary,
             allowed_based_on_runs=allowed_based_on_runs,
             runner=runner,
         )
@@ -102,6 +105,7 @@ def launch_proposer_backend(
             output_path=output_path,
             proposer_cfg=proposer_cfg,
             isolation_launch=isolation_launch,
+            auth_canary=auth_canary,
             runner=runner,
         )
     else:
@@ -218,6 +222,7 @@ def _launch_codex_backend(
     proposer_cfg: dict,
     isolation_launch: iso.IsolationLaunch,
     ephemeral_home: Path | None,
+    auth_canary: str | None,
     allowed_based_on_runs: list[str] | tuple[str, ...] | None,
     runner: SubprocessRunner | None,
 ) -> subprocess.CompletedProcess:
@@ -252,6 +257,7 @@ def _launch_codex_backend(
         env=isolation_launch.env,
         timeout_seconds=_proposer_timeout_seconds(proposer_cfg),
         label="codex proposer",
+        auth_canary=auth_canary,
         runner=runner,
     )
 
@@ -264,6 +270,7 @@ def _launch_claude_bare_backend(
     output_path: Path,
     proposer_cfg: dict,
     isolation_launch: iso.IsolationLaunch,
+    auth_canary: str | None,
     runner: SubprocessRunner | None,
 ) -> subprocess.CompletedProcess:
     srt_path = _require_tool("srt")
@@ -300,6 +307,7 @@ def _launch_claude_bare_backend(
         env=isolation_launch.env,
         timeout_seconds=_proposer_timeout_seconds(proposer_cfg),
         label="claude-bare proposer",
+        auth_canary=auth_canary,
         runner=runner,
     )
     proposal = _extract_claude_bare_json(completed.stdout or "")
@@ -316,6 +324,7 @@ def _run_isolated_backend(
     env: dict[str, str],
     timeout_seconds: int,
     label: str,
+    auth_canary: str | None,
     runner: SubprocessRunner | None,
 ) -> subprocess.CompletedProcess:
     command_runner = runner or _run_process_tree
@@ -335,7 +344,8 @@ def _run_isolated_backend(
         raise ProposerRuntimeError(f"{label} failed to run: {exc}") from exc
     if completed.returncode != 0:
         raise ProposerRuntimeError(
-            f"{label} exited {completed.returncode}: {_error_excerpt(completed)}"
+            f"{label} exited {completed.returncode}: "
+            f"{_error_excerpt(completed, auth_canary=auth_canary)}"
         )
     return completed
 
@@ -386,9 +396,11 @@ def _drain_after_kill(process: subprocess.Popen) -> tuple[str | None, str | None
         return None, None
 
 
-def _error_excerpt(completed: subprocess.CompletedProcess) -> str:
-    stderr = (completed.stderr or "").strip()
-    stdout = (completed.stdout or "").strip()
+def _error_excerpt(
+    completed: subprocess.CompletedProcess, *, auth_canary: str | None = None
+) -> str:
+    stderr = psec.redact_for_storage((completed.stderr or "").strip(), auth_canary=auth_canary)
+    stdout = psec.redact_for_storage((completed.stdout or "").strip(), auth_canary=auth_canary)
     parts = []
     if stderr:
         parts.append(f"stderr={stderr[:500]}")

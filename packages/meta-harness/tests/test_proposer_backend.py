@@ -91,6 +91,40 @@ class TestProposerBackendLaunch:
                 runner=_runner_writes(None, returncode=7),
             )
 
+    def test_codex_backend_redacts_credentials_from_nonzero_exit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _install_required_tools(tmp_path / "bin", "srt", "codex")
+        monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+        canary = backend.generate_auth_canary()
+        jwt = _fake_jwt(int(time.time()) + 86400)
+
+        def leaking_runner(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess:
+            return subprocess.CompletedProcess(
+                args,
+                7,
+                f"stdout leaked {canary}\n",
+                f"stderr leaked {jwt}\n",
+            )
+
+        with pytest.raises(backend.ProposerRuntimeError) as exc_info:
+            backend.launch_proposer_backend(
+                view_dir=tmp_path,
+                prompt="prompt",
+                schema_dir=SCHEMA_DIR,
+                config={"proposer": {"tool": "codex"}},
+                isolation_launch=_isolation_launch(tmp_path),
+                ephemeral_home=tmp_path / "codex-home",
+                auth_canary=canary,
+                runner=leaking_runner,
+            )
+
+        message = str(exc_info.value)
+        assert canary not in message
+        assert jwt not in message
+        assert "[REDACTED:auth canary" in message
+        assert "[REDACTED:JWT (3-segment)]" in message
+
     def test_codex_backend_rejects_missing_output_file(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

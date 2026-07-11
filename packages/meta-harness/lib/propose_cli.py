@@ -217,6 +217,7 @@ def _launch_and_register_proposal(
                 config=config,
                 isolation_launch=launch,
                 ephemeral_home=home,
+                auth_canary=auth_canary,
                 allowed_based_on_runs=valid_based_on_run_ids,
             )
         finally:
