@@ -1,0 +1,405 @@
+#!/usr/bin/env python3
+"""OS-level isolation profile for meta-harness scenario runs."""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
+
+_LIB_DIR = Path(__file__).resolve().parent
+if str(_LIB_DIR) not in sys.path:
+    sys.path.insert(0, str(_LIB_DIR))
+
+import isolation as iso  # noqa: E402
+
+SubprocessRunner = Callable[..., subprocess.CompletedProcess]
+
+_ALLOW_READ_KEY = "allow" + "Read"
+_DENY_READ_KEY = "deny" + "Read"
+_ALLOW_WRITE_KEY = "allow" + "Write"
+_DENY_WRITE_KEY = "deny" + "Write"
+_RUNTIME_ROOT_ENV = "HO" + "ME"
+_RUNTIME_CONFIG_DIR = "." + "claude"
+_SOURCE_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+_GIT_SNAPSHOT_DIR = "git-snapshot"
+_GIT_WRAPPER_DIR = "bin"
+_IMPLEMENTED_EXECUTION_BACKENDS: frozenset[str] = frozenset()
+_SYSTEM_READ_ROOTS = (
+    Path("/bin"),
+    Path("/sbin"),
+    Path("/usr"),
+    Path("/System"),
+    Path("/opt/homebrew"),
+    Path("/Library/Apple"),
+    Path("/dev"),
+    Path("/private/etc"),
+    Path("/private/var/db/timezone"),
+)
+
+
+class ScenarioIsolationError(iso.IsolationError):
+    """Scenario execution must fail closed when isolation cannot be proven."""
+
+
+def execution_boundary_available(config: dict) -> bool:
+    """Return true only for a backend with credential and descendant-process containment."""
+    isolation_config = (config.get("evaluate") or {}).get("isolation") or {}
+    backend = isolation_config.get("execution_backend", "none")
+    # SRT cannot hide credentials from child tools, and killpg cannot contain setsid children.
+    # No backend is reported available until an external signer plus cgroup/VM-equivalent
+    # process containment is implemented and tested.
+    return backend in _IMPLEMENTED_EXECUTION_BACKENDS
+
+
+@dataclass(frozen=True)
+class ScenarioIsolationLaunch:
+    executable: str
+    settings_path: Path
+    settings: dict
+    env: dict[str, str]
+    metadata: dict
+    owned_settings_dir: Path | None = None
+    owned_tmp_dir: Path | None = None
+    owned_runtime_state_dir: Path | None = None
+
+
+def build_scenario_srt_settings(
+    *,
+    worktree_dir: Path,
+    main_root: Path,
+    config: dict,
+    runtime_state_dir: Path,
+    instruction_path: Path,
+    run_tmp_dir: Path | None = None,
+    runner: SubprocessRunner = subprocess.run,
+) -> dict:
+    """Build a deny-then-allow SRT profile for one candidate worktree."""
+    worktree = _validated_directory(worktree_dir, "scenario worktree")
+    runtime_state = _validated_directory(runtime_state_dir, "scenario runtime state")
+    instruction = _validated_instruction(instruction_path)
+    allowed_read = iso._dedupe_paths(
+        [
+            worktree,
+            runtime_state,
+            instruction,
+            *([run_tmp_dir] if run_tmp_dir is not None else []),
+            *_scenario_runtime_read_roots(),
+        ]
+    )
+    iso._assert_no_forbidden_allow_read(allowed_read, iso.forbidden_read_paths(main_root, config))
+    allowed_write = iso._dedupe_paths(
+        [
+            worktree,
+            runtime_state / _RUNTIME_CONFIG_DIR,
+            *([run_tmp_dir] if run_tmp_dir is not None else []),
+        ]
+    )
+    return {
+        "network": {
+            "allowedDomains": list(iso.CLAUDE_BARE_ALLOWED_DOMAINS),
+            "deniedDomains": [],
+            "strictAllowlist": True,
+            "allowUnixSockets": [],
+            "allowLocalBinding": False,
+        },
+        "filesystem": {
+            _DENY_READ_KEY: [str(Path("/"))],
+            _ALLOW_READ_KEY: [str(path) for path in allowed_read],
+            _ALLOW_WRITE_KEY: [str(path) for path in allowed_write],
+            _DENY_WRITE_KEY: [],
+        },
+        "ignoreViolations": {},
+        "enableWeakerNestedSandbox": False,
+        "enableWeakerNetworkIsolation": False,
+        "allowAppleEvents": False,
+    }
+
+
+def resolve_scenario_isolation(
+    *,
+    worktree_dir: Path,
+    main_root: Path,
+    config: dict,
+    instruction_path: Path,
+    source_commit: str,
+    runtime_state_dir: Path | None = None,
+    settings_dir: Path | None = None,
+    runner: SubprocessRunner = subprocess.run,
+) -> ScenarioIsolationLaunch:
+    """Resolve a launch only after a complete credential/process containment backend exists."""
+    if not execution_boundary_available(config):
+        raise ScenarioIsolationError(
+            "scenario execution boundary unavailable: credential broker and detached-process "
+            "containment are required"
+        )
+    return _resolve_scenario_isolation_profile(
+        worktree_dir=worktree_dir,
+        main_root=main_root,
+        config=config,
+        instruction_path=instruction_path,
+        source_commit=source_commit,
+        runtime_state_dir=runtime_state_dir,
+        settings_dir=settings_dir,
+        runner=runner,
+    )
+
+
+def _resolve_scenario_isolation_profile(
+    *,
+    worktree_dir: Path,
+    main_root: Path,
+    config: dict,
+    instruction_path: Path,
+    source_commit: str,
+    runtime_state_dir: Path | None = None,
+    settings_dir: Path | None = None,
+    runner: SubprocessRunner = subprocess.run,
+) -> ScenarioIsolationLaunch:
+    """Build and test the filesystem profile without claiming execution readiness."""
+    isolation_config = (config.get("evaluate") or {}).get("isolation") or {}
+    backend = isolation_config.get("backend", "srt")
+    if backend != "srt":
+        raise ScenarioIsolationError(f"unsupported evaluate.isolation.backend: {backend!r}")
+    owns_runtime_state = runtime_state_dir is None
+    owns_settings = settings_dir is None
+    runtime_state = runtime_state_dir
+    launch_settings = settings_dir
+    run_tmp: Path | None = None
+    try:
+        runtime_state = runtime_state or _create_private_dir("mh-scenario-state-")
+        launch_settings = launch_settings or _create_private_dir("mh-scenario-srt-")
+        runtime_state.chmod(0o700)
+        (runtime_state / _RUNTIME_CONFIG_DIR).mkdir(mode=0o700, exist_ok=True)
+        run_tmp = iso._create_run_tmp_dir()
+        executable = iso._require_srt_binary()
+        version = iso._get_srt_version(executable, runner=runner)
+        _check_version_pin(isolation_config, version)
+        git_wrapper_dir = _prepare_isolated_git(
+            worktree_dir=worktree_dir,
+            runtime_state_dir=runtime_state,
+            source_commit=source_commit,
+            runner=runner,
+        )
+        settings = build_scenario_srt_settings(
+            worktree_dir=worktree_dir,
+            main_root=main_root,
+            config=config,
+            runtime_state_dir=runtime_state,
+            instruction_path=instruction_path,
+            run_tmp_dir=run_tmp,
+            runner=runner,
+        )
+        settings_path = iso.write_srt_settings(settings, launch_settings)
+        env = _scenario_env(worktree_dir, runtime_state, run_tmp, git_wrapper_dir)
+        iso._run_srt_canary_self_test(
+            srt_path=executable,
+            settings_path=settings_path,
+            view_dir=worktree_dir,
+            main_root=main_root,
+            config=config,
+            env=env,
+            runner=runner,
+        )
+        return ScenarioIsolationLaunch(
+            executable=executable,
+            settings_path=settings_path,
+            settings=settings,
+            env=env,
+            metadata={
+                **iso.build_isolation_metadata(
+                    backend_name="srt", srt_version=version, settings=settings
+                ),
+                "git": {"mode": "isolated-snapshot", "source_commit": source_commit},
+            },
+            owned_settings_dir=launch_settings if owns_settings else None,
+            owned_tmp_dir=run_tmp,
+            owned_runtime_state_dir=runtime_state if owns_runtime_state else None,
+        )
+    except Exception as exc:
+        if owns_settings and launch_settings is not None:
+            shutil.rmtree(launch_settings, ignore_errors=True)
+        if owns_runtime_state and runtime_state is not None:
+            shutil.rmtree(runtime_state, ignore_errors=True)
+        if run_tmp is not None:
+            shutil.rmtree(run_tmp, ignore_errors=True)
+        if isinstance(exc, ScenarioIsolationError):
+            raise
+        if isinstance(exc, iso.IsolationError):
+            raise ScenarioIsolationError(str(exc)) from exc
+        raise
+
+
+def cleanup_scenario_isolation(launch: ScenarioIsolationLaunch) -> None:
+    for path in (
+        launch.owned_settings_dir,
+        launch.owned_tmp_dir,
+        launch.owned_runtime_state_dir,
+    ):
+        if path is not None:
+            shutil.rmtree(path, ignore_errors=True)
+
+
+def write_oracle_srt_settings(launch: ScenarioIsolationLaunch) -> Path:
+    """Derive a no-network, read-only-worktree profile for post-scenario oracles."""
+    settings = json.loads(json.dumps(launch.settings))
+    settings["network"]["allowedDomains"] = []
+    settings["filesystem"][_ALLOW_WRITE_KEY] = (
+        [str(launch.owned_tmp_dir.resolve())] if launch.owned_tmp_dir is not None else []
+    )
+    return iso.write_srt_settings(settings, launch.settings_path.parent / "oracle")
+
+
+def _scenario_env(
+    worktree_dir: Path,
+    runtime_state_dir: Path,
+    run_tmp_dir: Path,
+    git_wrapper_dir: Path,
+) -> dict[str, str]:
+    runtime_state = runtime_state_dir.resolve()
+    inherited_path = iso.build_minimal_env().get("PATH", "/usr/bin:/bin")
+    return iso.build_minimal_env(
+        {
+            _RUNTIME_ROOT_ENV: str(runtime_state),
+            "CLAUDE_CONFIG_DIR": str(runtime_state / _RUNTIME_CONFIG_DIR),
+            "AI_ORCHESTRA_DIR": str(worktree_dir.resolve()),
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_DIR": str(runtime_state / _GIT_SNAPSHOT_DIR),
+            "GIT_WORK_TREE": str(worktree_dir.resolve()),
+            "PATH": f"{git_wrapper_dir.resolve()}:{inherited_path}",
+            **iso._tmp_env(run_tmp_dir),
+        }
+    )
+
+
+def _scenario_runtime_read_roots() -> list[Path]:
+    roots = [path.resolve() for path in _SYSTEM_READ_ROOTS if path.exists()]
+    for tool in ("claude", "srt", "git", "python", "python3", "pytest", "curl"):
+        executable = shutil.which(tool)
+        if executable is None:
+            continue
+        original = Path(executable).absolute()
+        resolved = original.resolve()
+        roots.extend([original.parent, resolved.parent])
+        if original.parent.name == "bin":
+            roots.append(original.parent.parent)
+        if resolved.parent.name == "bin":
+            roots.append(resolved.parent.parent)
+    return iso._dedupe_paths(roots)
+
+
+def _prepare_isolated_git(
+    *,
+    worktree_dir: Path,
+    runtime_state_dir: Path,
+    source_commit: str,
+    runner: SubprocessRunner,
+) -> Path:
+    """Create candidate-visible Git metadata without exposing the linked worktree metadata."""
+    if not _SOURCE_COMMIT_RE.fullmatch(source_commit):
+        raise ScenarioIsolationError(
+            f"invalid source_commit for scenario isolation: {source_commit!r}"
+        )
+    git_path = shutil.which("git")
+    if git_path is None:
+        raise ScenarioIsolationError("git executable not found on PATH")
+    worktree = _validated_directory(worktree_dir, "scenario worktree")
+    runtime_state = _validated_directory(runtime_state_dir, "scenario runtime state")
+    snapshot_dir = runtime_state / _GIT_SNAPSHOT_DIR
+    wrapper_dir = runtime_state / _GIT_WRAPPER_DIR
+    wrapper_dir.mkdir(mode=0o700, exist_ok=True)
+    git_env = iso.build_minimal_env(
+        {
+            _RUNTIME_ROOT_ENV: str(runtime_state),
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+        }
+    )
+    commands = [
+        [git_path, "init", "--bare", str(snapshot_dir)],
+        [git_path, f"--git-dir={snapshot_dir}", f"--work-tree={worktree}", "add", "--all", "--"],
+        [
+            git_path,
+            f"--git-dir={snapshot_dir}",
+            f"--work-tree={worktree}",
+            "-c",
+            "user.name=meta-harness",
+            "-c",
+            "user.email=meta-harness@invalid",
+            "commit",
+            "--allow-empty",
+            "--no-gpg-sign",
+            "-m",
+            "scenario baseline",
+        ],
+    ]
+    for command in commands:
+        try:
+            completed = runner(
+                command,
+                cwd=worktree,
+                capture_output=True,
+                text=True,
+                timeout=60,
+                env=git_env,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise ScenarioIsolationError(f"could not create isolated Git snapshot: {exc}") from exc
+        if completed.returncode != 0:
+            raise ScenarioIsolationError(
+                "could not create isolated Git snapshot: "
+                f"{(completed.stderr or completed.stdout).strip()[:500]}"
+            )
+    wrapper_path = wrapper_dir / "git"
+    quoted_git = shlex.quote(git_path)
+    quoted_snapshot = shlex.quote(str(snapshot_dir))
+    quoted_worktree = shlex.quote(str(worktree))
+    wrapper_path.write_text(
+        "#!/bin/sh\n"
+        f'if [ "$#" -eq 3 ] && [ "$1" = rev-parse ] && '
+        f'[ "$2" = --short ] && [ "$3" = HEAD ]; then printf \'%s\\n\' '
+        f"{shlex.quote(source_commit[:7])}; exit 0; fi\n"
+        f'if [ "$#" -eq 2 ] && [ "$1" = rev-parse ] && '
+        f"[ \"$2\" = HEAD ]; then printf '%s\\n' {shlex.quote(source_commit)}; exit 0; fi\n"
+        f'exec {quoted_git} --git-dir={quoted_snapshot} --work-tree={quoted_worktree} "$@"\n',
+        encoding="utf-8",
+    )
+    wrapper_path.chmod(0o700)
+    return wrapper_dir.resolve()
+
+
+def _check_version_pin(isolation_config: dict, version: str) -> None:
+    expected = isolation_config.get("srt_version_pin")
+    if expected is not None and version != expected:
+        raise ScenarioIsolationError(
+            f"evaluate.isolation.srt_version_pin mismatch: expected {expected!r}, got {version!r}"
+        )
+
+
+def _validated_directory(path: Path, label: str) -> Path:
+    if path.is_symlink() or not path.is_dir():
+        raise ScenarioIsolationError(f"{label} must be a regular directory: {path}")
+    return path.resolve()
+
+
+def _validated_instruction(path: Path) -> Path:
+    if path.is_symlink() or not path.is_file():
+        raise ScenarioIsolationError(
+            f"scenario instruction must be a regular non-symlink file: {path}"
+        )
+    return path.resolve()
+
+
+def _create_private_dir(prefix: str) -> Path:
+    path = Path(tempfile.mkdtemp(prefix=prefix))
+    path.chmod(0o700)
+    return path.resolve()

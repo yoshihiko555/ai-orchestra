@@ -85,6 +85,7 @@
 - [ ] EV-43（異常 / must）: `--confirm` は PR が MERGED かつ main 到達済みの場合のみ `promoted` に遷移させて `promotion_released(promoted)` を記録し、closed-unmerged は `promotion_released(pr_closed_unmerged)` になる。subprocess 起動失敗・timeout は traceback ではなく exit 1 の runtime error になる — 根拠: 詳細設計 §12-2
 - [ ] EV-44（正常 / must）: parent 候補から生成する proposer 子候補は、proposal で上書きした path に加えて parent overlay の未変更 path も累積 overlay として継承する — 根拠: 詳細設計 §11-1
 - [ ] EV-45（異常 / must）: proposer 出力経路の資格情報検知（検知層。主対策は L1）— staged `auth.json` の canary（平文/base64/hex/URL 変形）を proposal・overlay に混入させた登録は L2 で拒否され `proposer_security_violation(L2_canary)` を記録する。`sk-` 系 API key・JWT 3 セグメント等の汎用 secret は L3 で登録時に拒否（`proposer_security_violation(L3_secret_scan)`）し、promote 前提条件でも同一スキャンを再実行して exit 2 で fail-closed する（スキャン導入前登録候補への遡及防御） — 根拠: 詳細設計 §11-3-6 L2/L3
+- [ ] EV-46（異常 / must）: candidate scenario用SRT profileはroot denyから対象worktree・実行単位runtime・必要system/toolだけを再許可し、global tmp・store・実repo・ユーザー領域を読めず、親envを継承しない。資格情報brokerと`setsid`離脱も回収するprocess containmentが未実装の間はworktree作成前にfail-closedする。oracleはread-only/no-networkを要求し、artifactは`openat(O_NOFOLLOW)`・regular file・サイズ上限で検査する — 根拠: 詳細設計 §2-2、ADR-20260711-032、ADR-20260711-033
 - N/A: hook 型の類型別観点（PreToolUse/PostToolUse ブロック挙動等）は本パッケージが hook を持たないため非該当。config-loading への依存のみが hook 型的性質であり、EV-22 でカバーする
 
 ## 5. テストレビュー判断基準（パッケージ固有）

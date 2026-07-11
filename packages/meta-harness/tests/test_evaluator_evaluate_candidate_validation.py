@@ -77,6 +77,7 @@ class TestRepeatValidation:
             return {"run_id": f"run-fake-{kwargs['attempt']}", "verdict": "pass"}
 
         monkeypatch.setattr(ev, "run_single_attempt", fake_run_single_attempt)
+        monkeypatch.setattr(ev.siso, "execution_boundary_available", lambda _config: True)
         results = _call_evaluate_candidate(
             tmp_path, scenario_ids=["summarize-readme"], repeat_override=None
         )

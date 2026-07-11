@@ -108,12 +108,12 @@ class TestPromoteArgparseContract:
         assert "candidate" in result.stderr
 
 
-class TestPhase23Stubs:
-    def test_loop_stub_exits_2(self, git_project: Path, run_meta) -> None:
+class TestLoopArgparseContract:
+    def test_loop_without_target_or_resume_exits_2(self, git_project: Path, run_meta) -> None:
         run_meta("init", project=git_project, check=True)
         result = run_meta("loop", project=git_project, check=False)
         assert result.returncode == 2
-        assert "not implemented yet" in result.stderr
+        assert "--target is required" in result.stderr
 
 
 class TestValidationErrorExitCodes:

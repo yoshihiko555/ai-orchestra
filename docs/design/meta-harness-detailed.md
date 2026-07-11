@@ -1112,6 +1112,34 @@ cd <worktree> && claude -p "<scenario.prompt>" \
   ことを防ぐ（`design:meta-harness` §5「隔離実行」の要件を満たす具体手段）。
 - `--dangerously-skip-permissions` は使用しない。代わりに `acceptEdits` + 明示的な
   `--allowedTools`（config `evaluate.allowed_tools`、§5）の組で権限範囲を絞る。
+- **Phase 2/3のscenario runはSRTによるOSレベル隔離を必須とする**（ADR-20260711-032）。
+  `claude -p`全体を`srt --settings <scenario-profile>`でラップし、実HOME・main repo・sibling
+  worktreeをdenyした上で、対象の評価worktree、ephemeral HOME、per-run tmp、固定self-report
+  instructionだけを再許可する。ネットワークは`api.anthropic.com`だけを許可する。
+- scenario子プロセスの環境はallowlistから再構築し、`HOME`/`CLAUDE_CONFIG_DIR`をephemeral HOME、
+  `AI_ORCHESTRA_DIR`を評価worktreeへ固定する。`ANTHROPIC_API_KEY`等の親secretは継承しない。
+  Claude CLIは通常モードで候補worktreeのproject/local settings・hooks・skillsを評価する一方、
+  `--setting-sources project,local`でuser settingsを除外する。
+- **資格情報境界（ADR-20260711-033）**: SRTはClaude本体と候補hooks/toolsを同じprocess treeとして扱い、
+  OAuth/keychainや環境変数credentialを子プロセスだけから隠せない。資格情報はprocess tree外のbrokerで
+  request signingし、token値を候補へ渡さない。broker未実装の間は
+  `evaluate.isolation.execution_backend: none`としてcapability gateでworktree作成前にfail-closedする。
+  OAuth/keychainやAPI keyへの暗黙降格は禁止する。
+- linked worktreeのGit metadataはmain repo側にあるためallowReadへ追加しない。scenario起動直前の
+  worktreeをephemeral runtime内の独立Git snapshotへcommitし、read-only wrapper経由で公開する。
+  `git rev-parse [--short] HEAD`はmanifestの`source_commit`を返し、`git diff`等はsnapshot baselineと
+  candidate worktreeを比較する。
+- process groupだけでは`setsid()`で離脱した子孫を回収できない。cgroup/PID namespace/VM相当の
+  containment backendが全子孫停止を保証し、`events.jsonl`/`progress.log`を各10MB以下に強制するまで
+  scenario/oracleのprocess起動はfail-closedする。
+- SRT filesystemはread既定許可のため`denyRead: ["/"]`を起点にし、対象worktree、runtime、固定
+  instruction、own tmp、実行に必要なsystem/tool installationだけを`allowRead`で再許可する。
+  global tmp、`/Volumes`、他runのephemeral auth領域は許可しない。
+- scenario終了後の`command_exit` oracleはnetworkなし・worktree read-onlyの別SRT profileで実行する。
+  artifact/json/rubric入力はsymlink非追従、regular file限定、5MB上限とする。judgeへは安全にstagingした
+  抜粋だけを渡し、candidate worktreeへのtool accessを与えない。
+- SRT unavailable、version pin不一致、起動前canary失敗は非隔離実行へ降格せずrun errorとする。
+  run metadataにはSRT version、settings hash、platform profile生成入力hashを記録する。
 - CLI にネイティブなプロセスタイムアウトフラグは無いため、外部タイムアウトとして
   `subprocess` の `timeout` に `scenario.timeout_ms` を指定する。
 
@@ -1149,7 +1177,8 @@ run-<yyyymmdd>-<hhmmss>-<cand_slug>-<scenario_id>-a<attempt>-<nonce>
 
 - `cand_slug` は `cand_id`（`cand-<yyyymmdd>-<hhmmss>-<slug>`）の末尾スラッグ部分。
 - `attempt` はシナリオの `repeat` 指定に基づく試行回数（1 始まり）。
-- `nonce` は `os.urandom(2)` を 16 進数化した 4 桁の hex 文字列。
+- `nonce` は `os.urandom(4)` を16進数化した8桁のhex文字列。16bitでは50件程度でもbirthday
+  collisionが実測されたため、Phase 3の反復評価では32bitへ拡張する。
 
 同一秒・同一 `cand_id` × `scenario_id` × `attempt` の並行実行（リトライや複数 worker からの
 起動）でも `run_id` が衝突しないよう、`nonce` により一意性を担保する。`attempts_total` と
@@ -1192,8 +1221,7 @@ json --max-turns 1 --no-session-persistence` 相当）により、evaluate が�
    - 常時: `--output-format stream-json` / `--max-budget-usd`（scenario run が依存）
    - `judge.tool: claude-bare` の場合のみ: `--json-schema` / `--bare`、および `--bare` 用認証
      （`ANTHROPIC_API_KEY` 等）の存在確認
-   - `judge.tool: codex` の場合: `codex exec` の存在と `--output-schema` / `-o` / `--json` の
-     受理可否を同様の軽量呼び出しで検査する
+   - `judge.tool: codex` はread deny不能のためcapability不成立としてfail-closedする
 3. 検査結果（pin 一致有無・各フラグの受理可否）を `cli_capabilities` オブジェクトとして
    `run.metadata.schema.json`（§1-6）の `cli_capabilities` フィールドに記録する。
 
@@ -1237,59 +1265,39 @@ penalty = ambiguities + discretion_fills + retries   # 自己申告 3 項目の�
 judge の要件は (1) 候補ハーネスの hooks/skills から隔離されていること（reward hacking 遮断）、
 (2) verdict（`{passed: bool, reason: string}`）が機械可読な形で強制されること、(3) バックエンドが
 利用不能な場合に fail-closed すること、の 3 点である。この要件を満たすバックエンドを
-**config `judge.tool` で差し替え可能**とし、既定は `codex` とする。
+**config `judge.tool` で差し替え可能**とし、既定はtool-lessな`claude-bare`とする。
 
 **背景（スパイクで判明した制約）**: 当初設計は `claude -p --bare` 固定だったが、`--bare` は
 `ANTHROPIC_API_KEY` または `apiKeyHelper` が必須で OAuth/keychain 認証を一切使わない（2.1.202 で
-確認、§8 項目9）。OAuth のみの開発環境では judge が動作しないため、ChatGPT OAuth で認証済みの
-Codex CLI を既定バックエンドに採用する。
+確認、§8 項目9）。OAuthのみの開発環境ではjudgeをfail-closedとする。
 
-#### backend: `codex`（既定）
+#### backend: `codex`（無効）
 
 ```bash
-codex exec -C <neutral-dir> --sandbox read-only --skip-git-repo-check \
-  --output-schema <verdict.schema.json の絶対パス> \
-  -o <verdict 出力ファイル> --json \
-  --model <config: judge.model> \
-  "<rubric + 対象成果物の抜粋>" < /dev/null
+judge unavailable: codex tools cannot be made read-deny by its read-only sandbox
 ```
 
-（`--skip-git-repo-check` は必須。neutral-dir はリポジトリツリー外の一時ディレクトリであり、
-codex は git 管理外ディレクトリを untrusted として `--skip-git-repo-check` なしでは即時エラー
-終了する。Phase 1b E2E で実機確認。）
+`--sandbox read-only`は書き込みだけを制限し、model-generated shellのread範囲を制限しない。候補抜粋の
+prompt injectionからHOME等を読ませられるため、OS-level read denyまたはtool-less modeが提供されるまで
+backend選択時はfail-closedとする。
 
-- **隔離**: `codex exec` は `.claude/` の hooks/skills を一切読まない（本リポジトリで実証済みの
-  性質。hooks 非発火 #157）。候補ハーネスからの隔離は `--bare` より構造的に強い。
-- **`-C <neutral-dir>` はリポジトリツリーの外**（例: store の `tmp/judge-<nonce>/`…ではなく、
-  メインルート外の一時ディレクトリ）に置く。codex は working root から AGENTS.md を探索・読込
-  するため、候補 worktree はもちろん、リポジトリ配下のディレクトリを `-C` に指定してはならない
-  （親方向探索で repo の AGENTS.md を拾う可能性）。成果物はパスをプロンプトで明示指定して読ませる
-  （`--sandbox read-only` は読み取りを制限しないため到達可能）。
-- **verdict 取得は `-o` ファイルを正とする**: `--output-schema` により最終メッセージが verdict
-  schema に強制され、`-o` でファイルに書き出される。JSONL ストリーム（`--json`）は診断ログ用に
-  保存するのみで、verdict のパースソースにしない（イベント種別が codex バージョンで変わりうるため）。
-  exit code 非ゼロ / `-o` ファイル欠落・空・schema 不整合はすべて `verdict=error`。
-- **コスト計測**: codex はサブスクリプションベースで per-call USD を返さない。judge コストは
-  frontier の cost 軸（scenario run のトークン数）に含まれないため、観測可能性の低下のみで許容する。
-- 副次的利点: クロスモデル判定（GPT が Claude の成果物を判定）となり、自己選好バイアスが減る。
-
-#### backend: `claude-bare`（API キー provision 済み環境向け）
+#### backend: `claude-bare`（既定、API キー provision 済み環境向け）
 
 ```bash
 claude -p "<rubric + 対象成果物の抜粋>" \
   --bare --no-session-persistence \
   --output-format json --json-schema '<verdict schema: {passed: bool, reason: string}>' \
   --max-turns <config: judge.max_turns> --permission-mode dontAsk \
-  --allowedTools "Read(<worktree の絶対パス>/**)" \
+  --allowedTools "" \
   --model <config: judge.model> --effort <config: judge.effort>
 ```
 
+候補成果物はevaluatorが`openat(O_NOFOLLOW)`でregular file・5MB以下に限定して読み、安全な抜粋だけを
+promptへstageする。worktree絶対パスは渡さず、judgeへfilesystem/tool accessを一切与えない。
+
 - `--bare` で候補ハーネスの hooks/skills から隔離する（`ANTHROPIC_API_KEY`/`apiKeyHelper` 必須）。
-- **`--allowedTools` はパス scoped パターン必須**: スパイク実測（§8 項目9）で unscoped
-  `--allowedTools "Read"` は cwd/`--add-dir` に関わらず全ファイルシステムへの Read を許可することが
-  判明した。`Read(<pattern>)` 構文（`Read(//abs/path/**)` = 絶対、`Read(./...)` = cwd 相対、`*` =
-  単一セグメント、`**` = 再帰）で worktree 配下に scope する。`Glob`/`Grep` へのパス scoping は
-  公式に best-effort のため judge には許可しない（`Read` のみ）。
+- **tool accessは空**: path-scoped `Read`でもsymlink/実装差異を含むread境界をClaude Code権限制御だけに
+  委ねない。evaluatorが安全にstageした抜粋以外へjudgeを到達させない。
 
 #### 共通規則（バックエンド非依存）
 
@@ -1458,11 +1466,15 @@ evaluate:
     - "Bash(pytest *)"
   model: null # null = セッション既定モデル
   cli_version_pin: null # null = バージョン一致検証をスキップ（capability smoke test は常に実施）
+  isolation:
+    backend: srt # scenario runnerは非隔離実行へ降格しない（ADR-20260711-032）
+    srt_version_pin: null # null = pinなし。設定時はsrt --versionと厳密一致
+    execution_backend: none # broker + cgroup/VM相当の実装まではfail-closed（ADR-20260711-033）
 scenario_run:
   max_turns_default: 30
   max_budget_usd_default: 2.0
 judge:
-  tool: codex # codex | claude-bare（§3-3）。利用不能時は fail-closed（暗黙フォールバック禁止）
+  tool: claude-bare # tool-less judge。codexはread deny不能のため無効（ADR-20260711-033）
   model: null # null = 各バックエンドの既定モデル
   effort: high # claude-bare のみ使用
   max_turns: 4 # claude-bare のみ使用
@@ -2402,8 +2414,7 @@ propose/evaluate 成果物は通常どおり store に残る（部分的な作�
    の場合に `modelUsage.*` へフォールバックする実装が必須（`run.metadata.schema.json` の `cost` def
    実装時の注意点）。
 3. **`--bare` は `ANTHROPIC_API_KEY` または `apiKeyHelper` が必須で、OAuth/keychain 認証を使わない**
-   （`claude --help` に明記）。この制約を受け、judge（§3-3）は pluggable backend 方式に変更し、
-   ChatGPT OAuth で認証済みの Codex CLI（`codex exec --output-schema`）を既定バックエンドとした
-   （`judge.tool: codex`）。`claude-bare` バックエンドは API キー provision 済み環境向けの選択肢
-   として残す。proposer（§11-3）の `--bare` 前提は Phase 2 の隔離方式再設計（OS レベル隔離）と
-   合わせて解決する。
+   （`claude --help` に明記）。judge（§3-3）はtool-less `claude-bare`を既定とし、API key provisionが
+   ない環境ではfail-closedする。Codexのread-only sandboxはread範囲を制限しないためjudge backend
+   として無効化する。proposerのCodex利用はfiltered viewをSRTで囲む別の信頼境界であり、この判断の
+   対象外とする。

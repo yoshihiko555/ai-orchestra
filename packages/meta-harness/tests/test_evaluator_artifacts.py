@@ -148,6 +148,15 @@ class TestHoldoutPhysicalSeparation:
         main_root = tmp_path
 
         def fake_lifecycle(**kwargs):
+            isolation = {
+                "backend": "srt",
+                "srt_version": "1.0.0",
+                "settings_sha256": "e" * 64,
+                "platform_profile_input_sha256": "f" * 64,
+            }
+            staging = kwargs["staging_dir"]
+            staging.mkdir(parents=True, exist_ok=True)
+            (staging / "isolation.json").write_text(json.dumps(isolation) + "\n", encoding="utf-8")
             checks = [{"id": "c1", "passed": True, "oracle": "command_exit", "detail": "exit=0"}]
             return checks, [], False, []
 
@@ -215,6 +224,8 @@ class TestHoldoutPhysicalSeparation:
         metadata = json.loads((run_dir / "metadata.json").read_text(encoding="utf-8"))
         assert metadata["finished_at"] is not None
         assert metadata["holdout"] is False
+        assert metadata["isolation"]["backend"] == "srt"
+        assert metadata["isolation"]["srt_version"] == "1.0.0"
 
     def test_result_json_records_claude_version(self, tmp_path: Path, monkeypatch) -> None:
         """EV-24: result.json に claude_version フィールドが必須として記録される。"""

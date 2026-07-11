@@ -18,11 +18,15 @@ evaluate:
     - "Bash(pytest *)"
   model: null # null = セッション既定モデル
   cli_version_pin: null # null = バージョン一致検証をスキップ（capability smoke test は常に実施）
+  isolation:
+    backend: srt # scenario runner は非隔離実行へ降格しない（ADR-20260711-032）
+    srt_version_pin: null # null = pin なし。設定時は srt --version と厳密一致
+    execution_backend: none # broker + cgroup/VM相当の実装まではfail-closed（ADR-20260711-033）
 scenario_run:
   max_turns_default: 30
   max_budget_usd_default: 3.0 # 2026-07-07 スパイク実測反映（Sec14）。実測 total_cost_usd=1.20 に余裕を持たせる
 judge:
-  tool: codex # codex | claude-bare（Sec3-3）。利用不能時は fail-closed（暗黙フォールバック禁止）
+  tool: claude-bare # tool-less judge。codexはread deny不能のため無効（ADR-20260711-033）
   model: null
   effort: high
   max_turns: 4

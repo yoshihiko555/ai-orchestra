@@ -110,6 +110,8 @@ def _run_propose_pipeline(
     focus_run: str | None,
     focus_candidate: str | None,
     snapshot: prop.FilteredStoreSnapshot,
+    loop_id: str | None = None,
+    iteration: int | None = None,
 ) -> str:
     proposer_cfg = config.get("proposer") or {}
     tool = proposer_cfg.get("tool", "codex")
@@ -151,6 +153,8 @@ def _run_propose_pipeline(
                 tool=tool,
                 frontier_doc=snapshot.frontier_doc,
                 auth_canary=auth_canary,
+                loop_id=loop_id,
+                iteration=iteration,
             )
         finally:
             view.cleanup()
@@ -189,6 +193,8 @@ def _launch_and_register_proposal(
     tool: str,
     frontier_doc: dict,
     auth_canary: str | None,
+    loop_id: str | None = None,
+    iteration: int | None = None,
 ) -> str:
     proposal_obj = None
     try:
@@ -235,6 +241,8 @@ def _launch_and_register_proposal(
             included_run_ids=frozenset(valid_based_on_run_ids),
             tokens_used=result.tokens_used,
             auth_canary=auth_canary,
+            loop_id=loop_id,
+            iteration=iteration,
         )
     except pb.ProposerRuntimeError:
         raise
@@ -411,6 +419,8 @@ def _register_proposed_candidate(
     included_run_ids: frozenset[str],
     tokens_used: int | None,
     auth_canary: str | None = None,
+    loop_id: str | None = None,
+    iteration: int | None = None,
 ) -> str:
     max_overlay_bytes = (config.get("proposer") or {}).get("max_overlay_bytes", 200000)
     with tempfile.TemporaryDirectory(prefix="meta-harness-proposal-overlay-") as raw_overlay:
@@ -455,7 +465,14 @@ def _register_proposed_candidate(
                 description=str(proposal["hypothesis"]),
                 created_by="proposer",
             )
-            _validate_proposer_registration(manifest, overlay_files, proposal, tokens_used)
+            _validate_proposer_registration(
+                manifest,
+                overlay_files,
+                proposal,
+                tokens_used,
+                loop_id=loop_id,
+                iteration=iteration,
+            )
             candidate_dir = mh.register_candidate(
                 main_root,
                 config,
@@ -469,7 +486,14 @@ def _register_proposed_candidate(
                     main_root,
                     config,
                     _proposer_registered_event(
-                        cand_id, parent_id, generation, target, proposal, tokens_used
+                        cand_id,
+                        parent_id,
+                        generation,
+                        target,
+                        proposal,
+                        tokens_used,
+                        loop_id=loop_id,
+                        iteration=iteration,
                     ),
                 )
             except BaseException:
@@ -508,7 +532,13 @@ def _inherit_parent_overlay(
 
 
 def _validate_proposer_registration(
-    manifest: dict, overlay_files: list[str], proposal: dict, tokens_used: int | None
+    manifest: dict,
+    overlay_files: list[str],
+    proposal: dict,
+    tokens_used: int | None,
+    *,
+    loop_id: str | None = None,
+    iteration: int | None = None,
 ) -> None:
     manifest_schema = mh.load_schema(_SCHEMA_DIR, "candidate.manifest.schema.json")
     overlay_schema = mh.load_schema(_SCHEMA_DIR, "overlay.schema.json")
@@ -524,6 +554,8 @@ def _validate_proposer_registration(
         manifest["target"],
         proposal,
         tokens_used,
+        loop_id=loop_id,
+        iteration=iteration,
     )
     errors += mh.validate_against_schema(
         event, ledger_schema["$defs"]["candidate_registered"], _SCHEMA_DIR
@@ -539,7 +571,12 @@ def _proposer_registered_event(
     target: str,
     proposal: dict,
     tokens_used: int | None,
+    *,
+    loop_id: str | None = None,
+    iteration: int | None = None,
 ) -> dict:
+    if (loop_id is None) != (iteration is None):
+        raise prop.ProposerError("loop_id and iteration must be provided together")
     proposal_event = {
         "theme": str(proposal["theme"]),
         "based_on_runs": [str(run_id) for run_id in proposal["based_on_runs"]],
@@ -548,6 +585,9 @@ def _proposer_registered_event(
     }
     if tokens_used is not None:
         proposal_event["tokens_used"] = tokens_used
+    if loop_id is not None and iteration is not None:
+        proposal_event["loop_id"] = loop_id
+        proposal_event["iteration"] = iteration
     return {
         "event": "candidate_registered",
         "ts": mh.now_iso(),

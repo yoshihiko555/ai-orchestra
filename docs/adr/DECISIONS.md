@@ -44,3 +44,5 @@ AI Orchestra プロジェクトの意思決定記録。
 | ADR-20260705-029 | Codex Review Gate による PR required status check の導入                                | accepted   | 2026-07-05 |
 | ADR-20260706-030 | ループエンジニアリング基盤（loop-harness）の導入とコア共有型制御モデルの採用            | accepted   | 2026-07-06 |
 | ADR-20260706-031 | メタハーネス機構の導入（population ベースのハーネス最適化基盤）                        | proposed   | 2026-07-06 |
+| ADR-20260711-032 | meta-harness scenario runnerをSRTでOS隔離する                                          | accepted   | 2026-07-11 |
+| ADR-20260711-033 | scenario資格情報を候補プロセスから分離できるまでfail-closedにする                     | accepted   | 2026-07-11 |

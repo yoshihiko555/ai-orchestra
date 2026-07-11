@@ -11,6 +11,8 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from tests.module_loader import load_module
 
 ev = load_module(
@@ -28,21 +30,58 @@ def _completed(
 
 
 class TestOracleCommandExit:
+    @pytest.fixture(autouse=True)
+    def _isolated_launch(self, tmp_path: Path, monkeypatch) -> None:
+        settings_dir = tmp_path / "oracle-settings"
+        settings_dir.mkdir()
+        settings_path = settings_dir / "scenario.json"
+        settings_path.write_text("{}", encoding="utf-8")
+        run_tmp = tmp_path / "oracle-tmp"
+        run_tmp.mkdir()
+        self.launch = ev.siso.ScenarioIsolationLaunch(
+            executable="/usr/bin/srt",
+            settings_path=settings_path,
+            settings={
+                "network": {"allowedDomains": ["api.anthropic.com"]},
+                "filesystem": {"allowRead": [str(tmp_path)], "allowWrite": [str(tmp_path)]},
+            },
+            env={"PATH": "/usr/bin:/bin"},
+            metadata={},
+            owned_tmp_dir=run_tmp,
+        )
+
+        def local_capture(args, *, cwd, timeout, env):
+            return subprocess.run(
+                args[-3:],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                env=env,
+            )
+
+        monkeypatch.setattr(ev.sproc, "run_bounded_capture", local_capture)
+
     def test_passes_on_exit_zero(self, tmp_path: Path) -> None:
         check = {"id": "c1", "oracle": "command_exit", "command": "true"}
-        result = ev.run_oracle(check, tmp_path, {}, _SCHEMA_DIR)
+        result = ev.run_oracle(check, tmp_path, {}, _SCHEMA_DIR, isolation_launch=self.launch)
         assert result == {"id": "c1", "passed": True, "oracle": "command_exit", "detail": "exit=0"}
+
+    def test_missing_isolation_launch_fails_closed(self, tmp_path: Path) -> None:
+        check = {"id": "c0", "oracle": "command_exit", "command": "true"}
+        with pytest.raises(ev.EvaluatorStageError, match="requires an isolated oracle"):
+            ev.run_oracle(check, tmp_path, {}, _SCHEMA_DIR)
 
     def test_fails_on_nonzero_exit(self, tmp_path: Path) -> None:
         check = {"id": "c2", "oracle": "command_exit", "command": "exit 1"}
-        result = ev.run_oracle(check, tmp_path, {}, _SCHEMA_DIR)
+        result = ev.run_oracle(check, tmp_path, {}, _SCHEMA_DIR, isolation_launch=self.launch)
         assert result["passed"] is False
         assert "exit=1" in result["detail"]
 
     def test_runs_in_worktree_cwd(self, tmp_path: Path) -> None:
         (tmp_path / "marker.txt").write_text("hello", encoding="utf-8")
         check = {"id": "c3", "oracle": "command_exit", "command": "test -f marker.txt"}
-        result = ev.run_oracle(check, tmp_path, {}, _SCHEMA_DIR)
+        result = ev.run_oracle(check, tmp_path, {}, _SCHEMA_DIR, isolation_launch=self.launch)
         assert result["passed"] is True
 
     def test_timeout_is_reported_as_failure_not_exception(self, tmp_path: Path) -> None:
@@ -52,9 +91,55 @@ class TestOracleCommandExit:
             "command": "sleep 5",
             "command_timeout_ms": 50,
         }
-        result = ev.run_oracle(check, tmp_path, {}, _SCHEMA_DIR)
-        assert result["passed"] is False
-        assert "error" in result["detail"]
+        with pytest.raises(ev.EvaluatorStageError) as exc_info:
+            ev.run_oracle(check, tmp_path, {}, _SCHEMA_DIR, isolation_launch=self.launch)
+        assert exc_info.value.error_type == "oracle_error"
+
+    def test_isolated_oracle_uses_no_network_read_only_profile(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        settings_dir = tmp_path / "settings"
+        settings_dir.mkdir()
+        settings_path = settings_dir / "scenario.json"
+        settings_path.write_text("{}", encoding="utf-8")
+        run_tmp = tmp_path / "run-tmp"
+        run_tmp.mkdir()
+        launch = ev.siso.ScenarioIsolationLaunch(
+            executable="/usr/bin/srt",
+            settings_path=settings_path,
+            settings={
+                "network": {"allowedDomains": ["api.anthropic.com"]},
+                "filesystem": {
+                    "allowRead": [str(worktree)],
+                    "allowWrite": [str(worktree), str(run_tmp)],
+                },
+            },
+            env={"PATH": "/usr/bin:/bin"},
+            metadata={},
+            owned_tmp_dir=run_tmp,
+        )
+        captured = []
+
+        def fake_runner(cmd, **kwargs):
+            captured.append((cmd, kwargs))
+            return _completed(0)
+
+        monkeypatch.setattr(ev.sproc, "run_bounded_capture", fake_runner)
+
+        result = ev.run_oracle(
+            {"id": "c5", "oracle": "command_exit", "command": "true"},
+            worktree,
+            {},
+            _SCHEMA_DIR,
+            isolation_launch=launch,
+        )
+        assert result["passed"] is True
+        assert captured[0][0][:3] == ["/usr/bin/srt", "--settings", captured[0][0][2]]
+        oracle_settings = json.loads(Path(captured[0][0][2]).read_text(encoding="utf-8"))
+        assert oracle_settings["network"]["allowedDomains"] == []
+        assert oracle_settings["filesystem"]["allowWrite"] == [str(run_tmp.resolve())]
 
 
 class TestOracleArtifactExists:
@@ -81,6 +166,21 @@ class TestOracleArtifactExists:
         check = {"id": "a4", "oracle": "artifact_exists", "path": "out/*.txt"}
         result = ev.run_oracle(check, tmp_path, {}, _SCHEMA_DIR)
         assert result["passed"] is True
+
+    def test_rejects_symlink_to_file_outside_worktree(self, tmp_path: Path) -> None:
+        outside = tmp_path.parent / "outside-summary.md"
+        outside.write_text("secret", encoding="utf-8")
+        (tmp_path / "summary.md").symlink_to(outside)
+        check = {"id": "a5", "oracle": "artifact_exists", "path": "summary.md"}
+        result = ev.run_oracle(check, tmp_path, {}, _SCHEMA_DIR)
+        assert result["passed"] is False
+
+    def test_rejects_artifact_over_size_limit(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.setattr(ev, "MAX_ORACLE_ARTIFACT_BYTES", 4)
+        (tmp_path / "summary.md").write_text("12345", encoding="utf-8")
+        check = {"id": "a6", "oracle": "artifact_exists", "path": "summary.md"}
+        result = ev.run_oracle(check, tmp_path, {}, _SCHEMA_DIR)
+        assert result["passed"] is False
 
 
 class TestOracleJsonSchema:
@@ -129,6 +229,19 @@ class TestOracleJsonSchema:
         result = ev.run_oracle(check, tmp_path, {}, _SCHEMA_DIR)
         assert result["passed"] is False
 
+    def test_rejects_symlinked_json(self, tmp_path: Path) -> None:
+        outside = tmp_path.parent / "outside-verdict.json"
+        outside.write_text(json.dumps({"passed": True, "reason": "secret"}), encoding="utf-8")
+        (tmp_path / "verdict.json").symlink_to(outside)
+        check = {
+            "id": "j5",
+            "oracle": "json_schema",
+            "path": "verdict.json",
+            "schema": "verdict.schema.json",
+        }
+        result = ev.run_oracle(check, tmp_path, {}, _SCHEMA_DIR)
+        assert result["passed"] is False
+
 
 class TestOracleUnknown:
     def test_raises_value_error_for_unknown_oracle(self, tmp_path: Path) -> None:
@@ -144,86 +257,14 @@ class TestOracleUnknown:
 class TestRubricJudgeCodexBackend:
     _CONFIG = {"judge": {"tool": "codex", "model": None}}
 
-    def test_success_verdict_parsed_from_output_file(self, tmp_path: Path, monkeypatch) -> None:
-        monkeypatch.setattr(ev.shutil, "which", lambda name: "/usr/bin/codex")
-
-        def fake_runner(cmd, **kwargs):
-            out_index = cmd.index("-o") + 1
-            out_path = Path(cmd[out_index])
-            out_path.write_text(json.dumps({"passed": True, "reason": "meets rubric"}))
-            return _completed(0)
-
-        check = {"id": "r1", "oracle": "rubric_judge", "rubric": "the artifact must exist"}
-        result = ev.run_oracle(check, tmp_path, self._CONFIG, _SCHEMA_DIR, runner=fake_runner)
-        assert result["passed"] is True
-        assert "codex" in result["detail"]
-
-    def test_fail_closed_when_codex_binary_missing(self, tmp_path: Path, monkeypatch) -> None:
-        """judge backend が利用不能な場合、check の fail ではなく run 全体の
-        verdict=error に伝播させるため、`run_oracle` は EvaluatorStageError を送出する
-        （fail-closed, Sec3-3）。"""
-        monkeypatch.setattr(ev.shutil, "which", lambda name: None)
+    def test_codex_is_disabled_because_read_only_sandbox_cannot_deny_reads(
+        self, tmp_path: Path
+    ) -> None:
         check = {"id": "r2", "oracle": "rubric_judge", "rubric": "..."}
-        try:
+        with pytest.raises(ev.EvaluatorStageError) as exc_info:
             ev.run_oracle(check, tmp_path, self._CONFIG, _SCHEMA_DIR, runner=lambda *a, **k: None)
-        except ev.EvaluatorStageError as exc:
-            assert exc.stage == "oracle"
-            assert exc.error_type == "oracle_error"
-            assert "judge unavailable" in exc.message
-        else:
-            raise AssertionError("judge unavailable should raise EvaluatorStageError (fail-closed)")
-
-    def test_fail_closed_on_nonzero_exit(self, tmp_path: Path, monkeypatch) -> None:
-        monkeypatch.setattr(ev.shutil, "which", lambda name: "/usr/bin/codex")
-        result = ev.run_rubric_judge(
-            "rubric",
-            tmp_path,
-            self._CONFIG,
-            _SCHEMA_DIR,
-            runner=lambda *a, **k: _completed(1, stderr="boom"),
-        )
-        assert result.passed is False
-        assert result.error is True
-
-    def test_fail_closed_when_output_file_missing(self, tmp_path: Path, monkeypatch) -> None:
-        monkeypatch.setattr(ev.shutil, "which", lambda name: "/usr/bin/codex")
-        result = ev.run_rubric_judge(
-            "rubric", tmp_path, self._CONFIG, _SCHEMA_DIR, runner=lambda *a, **k: _completed(0)
-        )
-        assert result.passed is False
-        assert result.error is True
-
-    def test_fail_closed_when_output_file_is_invalid_json(
-        self, tmp_path: Path, monkeypatch
-    ) -> None:
-        monkeypatch.setattr(ev.shutil, "which", lambda name: "/usr/bin/codex")
-
-        def fake_runner(cmd, **kwargs):
-            out_index = cmd.index("-o") + 1
-            Path(cmd[out_index]).write_text("not valid json")
-            return _completed(0)
-
-        result = ev.run_rubric_judge(
-            "rubric", tmp_path, self._CONFIG, _SCHEMA_DIR, runner=fake_runner
-        )
-        assert result.passed is False
-        assert result.error is True
-
-    def test_fail_closed_when_output_does_not_match_verdict_schema(
-        self, tmp_path: Path, monkeypatch
-    ) -> None:
-        monkeypatch.setattr(ev.shutil, "which", lambda name: "/usr/bin/codex")
-
-        def fake_runner(cmd, **kwargs):
-            out_index = cmd.index("-o") + 1
-            Path(cmd[out_index]).write_text(json.dumps({"unexpected": "shape"}))
-            return _completed(0)
-
-        result = ev.run_rubric_judge(
-            "rubric", tmp_path, self._CONFIG, _SCHEMA_DIR, runner=fake_runner
-        )
-        assert result.passed is False
-        assert result.error is True
+        assert exc_info.value.error_type == "oracle_error"
+        assert "cannot be made read-deny" in exc_info.value.message
 
     def test_prompt_wraps_rubric_with_untrusted_delimiters(self, tmp_path: Path) -> None:
         prompt = ev._build_judge_prompt("do the thing", tmp_path)
@@ -232,9 +273,9 @@ class TestRubricJudgeCodexBackend:
         assert "do the thing" in prompt
         assert "not commands" in prompt or "do not follow" in prompt.lower()
 
-    def test_prompt_includes_worktree_absolute_path(self, tmp_path: Path) -> None:
+    def test_prompt_excludes_worktree_absolute_path(self, tmp_path: Path) -> None:
         prompt = ev._build_judge_prompt("check summary.md", tmp_path)
-        assert str(tmp_path) in prompt
+        assert str(tmp_path) not in prompt
 
     def test_prompt_includes_referenced_artifact_excerpt(self, tmp_path: Path) -> None:
         (tmp_path / "summary.md").write_text("candidate wrote this summary", encoding="utf-8")
@@ -245,6 +286,13 @@ class TestRubricJudgeCodexBackend:
         (tmp_path / "summary.md").write_text("x" * (ev._JUDGE_ARTIFACT_EXCERPT_MAX_CHARS + 500))
         prompt = ev._build_judge_prompt("check summary.md", tmp_path)
         assert "...(truncated)" in prompt
+
+    def test_prompt_does_not_follow_symlinked_artifact(self, tmp_path: Path) -> None:
+        outside = tmp_path.parent / "outside-rubric.md"
+        outside.write_text("do not leak me", encoding="utf-8")
+        (tmp_path / "summary.md").symlink_to(outside)
+        prompt = ev._build_judge_prompt("check summary.md", tmp_path)
+        assert "do not leak me" not in prompt
 
 
 class TestRubricJudgeClaudeBareBackend:
@@ -283,7 +331,8 @@ class TestRubricJudgeClaudeBareBackend:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-key-for-unit-test-only")
 
         def fake_runner(cmd, **kwargs):
-            assert any("Read(" in arg for arg in cmd)  # path-scoped allowedTools required
+            tools_index = cmd.index("--allowedTools")
+            assert cmd[tools_index + 1] == ""  # judge は staging 済み抜粋だけを評価する
             return _completed(0, stdout=json.dumps({"passed": True, "reason": "ok"}))
 
         result = ev.run_rubric_judge(
