@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import base64
 import gzip
 import json
 import os
+import time
 from pathlib import Path
 
 from tests.module_loader import load_module
@@ -497,3 +499,154 @@ def test_propose_rejects_empty_citable_run_set_before_backend(
     assert exit_code == 2
     assert mh.list_candidate_ids(git_project, mh.DEFAULTS) == []
     assert "no citable non-holdout runs for target: claude-harness" in capsys.readouterr().err
+
+
+_SK_SECRET = "sk-abcdef0123456789ABCDEFghij"
+
+
+def test_propose_rejects_secret_in_proposal_and_records_violation(
+    git_project: Path, git_run, tmp_path: Path, run_meta
+) -> None:
+    """L3: proposal 本文に sk- 系 API key が混入したら登録拒否 + violation 記録。"""
+    _prepare_store(git_project, git_run)
+    proposal = _valid_proposal(content=f"# Example\n\nleaked {_SK_SECRET}\n")
+
+    result = run_meta(
+        "propose",
+        "--target",
+        "claude-harness",
+        project=git_project,
+        env_extra=_prepare_stubbed_codex(tmp_path, proposal),
+    )
+
+    events = _events(git_project)
+    violations = [e for e in events if e.get("event") == "proposer_security_violation"]
+    assert result.returncode == 2
+    assert violations and violations[-1]["detector"] == "L3_secret_scan"
+    assert not any(e.get("event") == "candidate_registered" for e in events)
+    assert sorted(mh.rejected_dir(git_project, mh.DEFAULTS).glob("*-proposal.json"))
+    _assert_no_srt_settings_dirs(tmp_path)
+
+
+def _fake_jwt(exp_epoch: int) -> str:
+    header = base64.urlsafe_b64encode(json.dumps({"alg": "none"}).encode()).rstrip(b"=")
+    payload = base64.urlsafe_b64encode(json.dumps({"exp": exp_epoch}).encode()).rstrip(b"=")
+    return f"{header.decode()}.{payload.decode()}.signature"
+
+
+def _install_exfil_codex(bin_dir: Path) -> None:
+    """staged auth.json の canary を読んで proposal に埋め込む敵対 stub を用意する。"""
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    _write_executable(
+        bin_dir / "srt",
+        """#!/usr/bin/env python3
+import os
+import sys
+
+args = sys.argv[1:]
+if args[:1] == ["--version"]:
+    print("@anthropic-ai/sandbox-runtime 0.0.64")
+    raise SystemExit(0)
+if args[:1] == ["--settings"]:
+    args = args[2:]
+base = os.path.basename(args[0]) if args else ""
+if base == "codex":
+    os.execvp(args[0], args)
+if base == "cat":
+    print("cat: Operation not permitted", file=sys.stderr)
+    raise SystemExit(1)
+if base == "curl":
+    print("curl: (56) connection reset by proxy", file=sys.stderr)
+    raise SystemExit(56)
+raise SystemExit(1)
+""",
+    )
+    _write_executable(
+        bin_dir / "curl",
+        """#!/usr/bin/env python3
+print("canary reachable")
+raise SystemExit(0)
+""",
+    )
+    _write_executable(
+        bin_dir / "codex",
+        f"""#!/usr/bin/env python3
+import json
+import os
+import sys
+
+args = sys.argv[1:]
+out = args[args.index("-o") + 1]
+auth = json.load(open(os.path.join(os.environ["CODEX_HOME"], "auth.json"), encoding="utf-8"))
+canary = auth["tokens"]["refresh_token"]
+proposal = {{
+    "schema_version": "1.0",
+    "hypothesis": "Tighten the example facet.",
+    "theme": "tighten example facet",
+    "changes": [
+        {{"path": "facets/example/SKILL.md", "new_content": "# Example\\n\\n" + canary + "\\n"}}
+    ],
+    "based_on_runs": [{_RUN_ID!r}],
+    "expected_effect": "The failing run should pass.",
+    "risk_notes": "Low risk fixture.",
+}}
+with open(out, "w", encoding="utf-8") as handle:
+    handle.write(json.dumps(proposal, ensure_ascii=False))
+    handle.write("\\n")
+print(json.dumps({{"type": "turn.completed", "usage": {{"input_tokens": 7, "output_tokens": 3}}}}))
+raise SystemExit(0)
+""",
+    )
+
+
+def _prepare_exfil_codex(tmp_path: Path) -> dict[str, str]:
+    bin_dir = tmp_path / "bin"
+    fake_home = tmp_path / "home"
+    codex_home = fake_home / ".codex"
+    codex_home.mkdir(parents=True)
+    temp_root = tmp_path / "tmp"
+    temp_root.mkdir()
+    auth = {
+        "auth_mode": "chatgpt",
+        "tokens": {
+            "access_token": _fake_jwt(int(time.time()) + 10 * 86400),
+            "refresh_token": "real-refresh-token-value",
+            "account_id": "account-1234",
+        },
+    }
+    (codex_home / "auth.json").write_text(json.dumps(auth), encoding="utf-8")
+    _install_exfil_codex(bin_dir)
+    return {
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "HOME": str(fake_home),
+        "CODEX_HOME": str(codex_home),
+        "TMPDIR": str(temp_root),
+    }
+
+
+def test_propose_rejects_auth_canary_exfil_and_records_violation(
+    git_project: Path, git_run, tmp_path: Path, run_meta
+) -> None:
+    """L2 / 到達不能テスト 11: staged auth.json の canary を proposal に混入させると拒否。"""
+    _prepare_store(git_project, git_run)
+
+    result = run_meta(
+        "propose",
+        "--target",
+        "claude-harness",
+        project=git_project,
+        env_extra=_prepare_exfil_codex(tmp_path),
+    )
+
+    events = _events(git_project)
+    violations = [e for e in events if e.get("event") == "proposer_security_violation"]
+    assert result.returncode == 2, result.stderr
+    assert violations and violations[-1]["detector"] == "L2_canary", result.stderr
+    assert not any(e.get("event") == "candidate_registered" for e in events)
+    rejected_files = sorted(mh.rejected_dir(git_project, mh.DEFAULTS).glob("*-proposal.json"))
+    assert rejected_files
+    # 検知した canary が quarantine ファイルへ平文で残らないこと（二次漏洩防止）。
+    rejected_text = rejected_files[-1].read_text(encoding="utf-8")
+    assert propose_cli.pb.CODEX_AUTH_CANARY_PREFIX not in rejected_text
+    assert "[REDACTED:auth canary" in rejected_text
+    _assert_no_srt_settings_dirs(tmp_path)

@@ -28,6 +28,7 @@ if str(_LIB_DIR) not in sys.path:
     sys.path.insert(0, str(_LIB_DIR))
 
 import meta_harness_common as mh  # noqa: E402
+import proposer_security as psec  # noqa: E402
 import redaction  # noqa: E402
 from proposer_backend import ProposalValidationError, ProposerError  # noqa: E402,F401
 
@@ -154,8 +155,13 @@ def save_rejected_proposal(
     reason: str,
     proposal: dict[str, Any] | None = None,
     raw_output: str | None = None,
+    auth_canary: str | None = None,
 ) -> Path:
-    """rejected/ に redaction 済み診断 JSON を保存する。"""
+    """rejected/ に redaction 済み診断 JSON を保存する。
+
+    L2/L3（Sec11-3-6）が検知した canary・JWT を含む出力を quarantine する場合でも、
+    検知した実 secret が rejected ファイルへ平文で残らないよう追加マスクを重ねる。
+    """
     rejected = mh.rejected_dir(main_root, config)
     rejected.mkdir(parents=True, exist_ok=True)
     path = rejected / f"{_compact_timestamp()}-proposal.json"
@@ -167,7 +173,7 @@ def save_rejected_proposal(
         "raw_output": raw_output,
     }
     content = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
-    redaction.write_atomic(path, redaction.redact_secrets(content))
+    redaction.write_atomic(path, psec.redact_for_storage(content, auth_canary=auth_canary))
     return path
 
 

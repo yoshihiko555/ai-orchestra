@@ -193,3 +193,25 @@
   covered_by:
     - packages/meta-harness/tests/test_propose_cli.py::test_propose_registers_candidate_from_stubbed_codex_backend
   notes: proposer children retain unchanged parent overlay files while replacing proposal paths.
+
+- ev_id: EV-45
+  phase: 2
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_proposer_security.py
+    packages/meta-harness/tests/test_propose_cli.py::test_propose_rejects_auth_canary_exfil_and_records_violation
+    packages/meta-harness/tests/test_propose_cli.py::test_propose_rejects_secret_in_proposal_and_records_violation
+    packages/meta-harness/tests/test_promote_cli.py::test_promote_rejects_candidate_with_secret_in_overlay
+  covered_by:
+    - packages/meta-harness/tests/test_proposer_security.py
+    - packages/meta-harness/tests/test_propose_cli.py::test_propose_rejects_auth_canary_exfil_and_records_violation
+    - packages/meta-harness/tests/test_propose_cli.py::test_propose_rejects_secret_in_proposal_and_records_violation
+    - packages/meta-harness/tests/test_promote_cli.py::test_promote_rejects_candidate_with_secret_in_overlay
+  notes: >-
+    L2 canary exfil (staged auth.json refresh_token planted into overlay) and L3
+    generic secret scan (sk-/JWT) are rejected at registration with a
+    proposer_security_violation event, and the L3 scan re-runs as a promote
+    precondition for retroactive defense. Detection layer only; L1 remains the
+    primary control.

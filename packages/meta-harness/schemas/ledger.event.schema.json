@@ -12,7 +12,8 @@
     { "$ref": "#/$defs/promotion_opened" },
     { "$ref": "#/$defs/loop_started" },
     { "$ref": "#/$defs/loop_iteration" },
-    { "$ref": "#/$defs/loop_stopped" }
+    { "$ref": "#/$defs/loop_stopped" },
+    { "$ref": "#/$defs/proposer_security_violation" }
   ],
   "$defs": {
     "cost": {
@@ -331,6 +332,23 @@
         },
         "iterations": { "type": "integer", "minimum": 0 },
         "total_cost_usd": { "type": "number", "minimum": 0 }
+      }
+    },
+    "proposer_security_violation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event", "ts", "schema_version", "detector", "reason", "target"],
+      "properties": {
+        "event": { "const": "proposer_security_violation" },
+        "ts": { "type": "string", "format": "date-time" },
+        "schema_version": { "type": "string", "const": "1.0" },
+        "detector": {
+          "type": "string",
+          "enum": ["L2_canary", "L3_secret_scan"]
+        },
+        "reason": { "type": "string" },
+        "target": { "type": "string" },
+        "cand_id": { "type": ["string", "null"] }
       }
     }
   }

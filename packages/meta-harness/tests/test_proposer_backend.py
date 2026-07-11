@@ -533,3 +533,13 @@ class TestCodexAuthMinimization:
 
         assert "OPENAI_API_KEY" not in staged
         assert staged["tokens"]["refresh_token"].startswith(backend.CODEX_AUTH_CANARY_PREFIX)
+
+    def test_explicit_canary_is_staged_verbatim(self, tmp_path: Path) -> None:
+        # L2 検知が使う canary と staged refresh_token が同一であることを保証する。
+        source = _codex_source_home(tmp_path, exp_epoch=int(time.time()) + 86400)
+        canary = backend.generate_auth_canary()
+
+        with backend.temporary_codex_home(source_home=source, auth_canary=canary) as home:
+            staged = json.loads((home / "auth.json").read_text(encoding="utf-8"))
+
+        assert staged["tokens"]["refresh_token"] == canary

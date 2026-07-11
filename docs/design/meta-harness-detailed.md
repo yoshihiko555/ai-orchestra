@@ -2030,7 +2030,7 @@ srt の実測制約により「読めなくする」方向の対策は構造的�
 
 **L1 — 資格情報の最小化（主対策、2026-07-10 スパイク実測反映・codex-cli 0.144.1。
 同日、PR #174 レビュー対応で実装済み: `OPENAI_API_KEY` strip・`refresh_token` の
-canary 置換・JWT `exp` preflight。L2/L3 検知層は未実装で次 PR）**:
+canary 置換・JWT `exp` preflight。L2/L3 検知層も 2026-07-11 に実装済み — 後述）**:
 
 1. staged `auth.json` から **`OPENAI_API_KEY` を除去**する。**実測 (a) PASS**:
    フィールドごと削除しても `codex exec` は完走する。本開発機では値自体 null だったが、
@@ -2054,24 +2054,35 @@ canary 置換・JWT `exp` preflight。L2/L3 検知層は未実装で次 PR）**:
    L1 単独で十分とはみなさず、L2/L3 検知層と「promote PR は人間レビュー必須」（§12-2）を
    恒常的な補完層として依存関係に明示する。
 
-**L2 — canary（検知層）**: strip 後も必須フィールドとして残る **`refresh_token` の席に
-canary 値（資格情報風・無効値）を置く**。「資格情報を盗め」という注入に従ったモデルが
-盗むのは canary になる（`OPENAI_API_KEY` の席は使わない — フィールドごと削除可能な上、
-値を置くと codex の auth mode 選択に影響するリスクがあるため）。登録時 validation
-（`_register_proposed_candidate`）で proposal 全文 + overlay 全ファイルに対し canary の
-平文・base64・hex・URL エンコード変形を照合し、hit したら登録拒否 + rejected 保存 +
-ledger へ **`proposer_security_violation` イベント（新規 event 種別、
-`ledger.event.schema.json` へ追加）**を記録する。
+**L2 — canary（検知層。2026-07-11 実装済み）**: strip 後も必須フィールドとして残る
+**`refresh_token` の席に canary 値（資格情報風・無効値）を置く**。「資格情報を盗め」という
+注入に従ったモデルが盗むのは canary になる（`OPENAI_API_KEY` の席は使わない — フィールドごと
+削除可能な上、値を置くと codex の auth mode 選択に影響するリスクがあるため）。登録時 validation
+（`_register_proposed_candidate` → `_enforce_output_security`）で proposal 全文 + overlay 全
+ファイルに対し canary の平文・base64・hex・URL エンコード変形を照合し、hit したら登録拒否 +
+rejected 保存 + ledger へ **`proposer_security_violation` イベント（`ledger.event.schema.json`
+の `$defs` に追加、`detector: L2_canary`）**を記録する。canary は run 固有で、`temporary_codex_home`
+に明示注入した値を propose pipeline（`_temporary_proposer_home`）から登録時検証まで受け渡す
+（staging と検知で同一値を保証）。照合ロジックは `lib/proposer_security.py` に集約する。
 **実測 (2026-07-10, V4)**: 非空の canary 値（55 文字のダミー資格情報風文字列）を
 `refresh_token` に置いても codex は通常モード・構造化出力モードとも完走（exit 0）。
 実 `~/.codex/auth.json` の `last_refresh`・token は無変更。canary は `refresh_token`
 フィールドに直接置ける。
 
-**L3 — 出力経路の secret scan（検知層・汎用）**: 同じ登録時 validation で汎用 secret
-パターン（`sk-` 系 API key 形式、JWT 3 セグメント形式等）をスキャンする。**promote 時にも
-同一スキャンを再実行**する（スキャン導入前に登録済みの候補への遡及防御。§12-1 前提条件へ
-追加）。エンコード・分割による回避が可能なため、**L2/L3 は単独対策ではなく検知層**であり
-主対策はあくまで L1、という位置づけを固定する（レビュー指摘のとおり scan 単独では不十分）。
+**L3 — 出力経路の secret scan（検知層・汎用。2026-07-11 実装済み）**: 同じ登録時 validation で
+汎用 secret パターン（`redaction.REDACTION_PATTERNS` の `sk-` 系 API key・`ghp_`・`AKIA`・PEM 等に
+加え、JWT 3 セグメント形式 `eyJ...` を追加）をスキャンする。**promote 前提条件（§12-1）でも
+同一スキャンを再実行**する（`_check_output_secret_scan`。スキャン導入前に登録済みの候補への
+遡及防御。canary は run 固有で promote 時には未知のため promote 側は L3 汎用パターンのみを走査し、
+hit で exit 2）。登録時 hit は `proposer_security_violation(detector: L3_secret_scan)` を記録する。
+promote 側は**ゲートのみ**（exit 2）で `proposer_security_violation` は記録しない（意図的な非対称）:
+promote は人間駆動で loud に停止し、前提条件は reserve と PR 直前再検証で二重に走るため二重記録を
+避ける。監査は登録時イベント + promote の exit 2 で足りる。**rejected 保存時の二次漏洩対策**として、
+検知した canary・JWT は `redaction.redact_secrets` の対象外のため、`proposer_security.redact_for_storage`
+で canary 全変形 + JWT を追加マスクしてから `rejected/` へ書き出す（検知に成功した実 access token が
+quarantine ファイルへ平文で残らないようにする）。
+エンコード・分割による回避が可能なため、**L2/L3 は単独対策ではなく検知層**であり主対策はあくまで
+L1、という位置づけを固定する（レビュー指摘のとおり scan 単独では不十分）。
 
 **L4 — 将来方向（追跡のみ、今回は不採用)**: 最終形は network 層での credential injection
 （sandbox 内は dummy 資格情報のみ、sandbox 外の proxy が Authorization を差し替え）。
@@ -2081,17 +2092,22 @@ ledger へ **`proposer_security_violation` イベント（新規 event 種別、
 
 **到達不能テストへの追加（§11-3-4 拡張、実装ゲート）**:
 
-11. **credential exfil E2E**: `$CODEX_HOME/auth.json` の読取と proposal への埋め込みを
-    指示する敵対 trace fixture を filtered view に注入 → 登録拒否 +
-    `proposer_security_violation` イベント記録を assert する
-12. **staged auth の内容検査**: staging 後の `auth.json` に長期資格情報が含まれない
-    ことを固定テストで常設する（`OPENAI_API_KEY` フィールド不在・`refresh_token` が
-    実 home の値と不一致（"" または canary）・access token の exp が preflight 条件を
-    満たす、の 3 点）
+11. **credential exfil E2E（2026-07-11 実装済み）**: 敵対 stub codex が staged
+    `$CODEX_HOME/auth.json` の canary（`refresh_token`）を読み取り proposal の overlay 本文へ
+    埋め込む → 登録拒否 + `proposer_security_violation(L2_canary)` 記録を assert する
+    （`test_propose_cli.py::test_propose_rejects_auth_canary_exfil_and_records_violation`）。
+    L3 版（proposal 本文に `sk-` を混入 → `L3_secret_scan` 記録）も併設。
+12. **staged auth の内容検査（実装済み）**: staging 後の `auth.json` に長期資格情報が
+    含まれないことを固定テストで常設する（`OPENAI_API_KEY` フィールド不在・`refresh_token` が
+    実 home の値と不一致（"" または canary）・access token の exp が preflight 条件を満たす、の
+    3 点。`test_proposer_backend.py::TestCodexAuthMinimization`。明示 canary の staging 一致も追加）。
 
 **受け入れ基準**: (1) 上記 11・12 の PASS、(2) real smoke で最小化 auth のまま propose が
-成功し `tokens_used > 0`、(3) canary を含む proposal を backend mock で返させる E2E で
-拒否 + ledger 記録を確認。これらを Phase 3（`orchex meta loop`）着手条件に追加する。
+成功し `tokens_used > 0`、(3) canary を含む proposal を stub backend で返させる E2E で
+拒否 + ledger 記録を確認 — **(1)(3) は 2026-07-11 に達成、(2) は 2026-07-11 の実機 smoke で
+達成済み（PR #174 マージ後、tokens_used=137,393・leak なし）**。Phase 3（`orchex meta loop`）
+着手条件はこれで充足する。残るスコープは Phase 3 本体（loop CLI・レポート生成・対象拡大）で
+あり、本層の未了項目はない。
 
 ### 11-4. proposer プロンプト構造
 

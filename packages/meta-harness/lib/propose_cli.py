@@ -24,6 +24,7 @@ import isolation as iso  # noqa: E402
 import meta_harness_common as mh  # noqa: E402
 import proposer as prop  # noqa: E402
 import proposer_backend as pb  # noqa: E402
+import proposer_security as psec  # noqa: E402
 
 EXIT_OK = 0
 EXIT_RUNTIME_ERROR = 1
@@ -129,7 +130,7 @@ def _run_propose_pipeline(
     valid_based_on_run_ids = _citable_run_ids(snapshot, target)
     if not valid_based_on_run_ids:
         raise prop.ProposerError(f"no citable non-holdout runs for target: {target}")
-    with _temporary_proposer_home(tool, config) as home:
+    with _temporary_proposer_home(tool, config) as (home, auth_canary):
         view = prop.build_filtered_view(
             main_root=main_root,
             config=config,
@@ -149,6 +150,7 @@ def _run_propose_pipeline(
                 home=home,
                 tool=tool,
                 frontier_doc=snapshot.frontier_doc,
+                auth_canary=auth_canary,
             )
         finally:
             view.cleanup()
@@ -156,14 +158,21 @@ def _run_propose_pipeline(
 
 @contextmanager
 def _temporary_proposer_home(tool: str, config: dict):
+    """proposer 用 ephemeral home を用意し、`(home, auth_canary)` を渡す。
+
+    codex backend では staged `refresh_token` に置いた canary（Sec11-3-6 L2）を
+    出力経路検知へ渡すため yield 値に含める。非 codex では canary は無い。
+    """
     if tool == "codex":
+        canary = pb.generate_auth_canary()
         with pb.temporary_codex_home(
-            min_token_ttl_seconds=pb.min_codex_token_ttl_seconds(config)
+            min_token_ttl_seconds=pb.min_codex_token_ttl_seconds(config),
+            auth_canary=canary,
         ) as home:
-            yield home
+            yield home, canary
         return
     with _temporary_empty_dir() as home:
-        yield home
+        yield home, None
 
 
 def _launch_and_register_proposal(
@@ -179,6 +188,7 @@ def _launch_and_register_proposal(
     home: Path,
     tool: str,
     frontier_doc: dict,
+    auth_canary: str | None,
 ) -> str:
     proposal_obj = None
     try:
@@ -223,6 +233,7 @@ def _launch_and_register_proposal(
             proposal=result.proposal,
             included_run_ids=frozenset(valid_based_on_run_ids),
             tokens_used=result.tokens_used,
+            auth_canary=auth_canary,
         )
     except pb.ProposerRuntimeError:
         raise
@@ -234,6 +245,7 @@ def _launch_and_register_proposal(
             reason=str(exc),
             proposal=proposal_obj,
             raw_output=raw_output,
+            auth_canary=auth_canary,
         )
         raise pb.ProposalValidationError(f"{exc}; rejected saved to {rejected_path}") from exc
 
@@ -397,6 +409,7 @@ def _register_proposed_candidate(
     proposal: dict,
     included_run_ids: frozenset[str],
     tokens_used: int | None,
+    auth_canary: str | None = None,
 ) -> str:
     max_overlay_bytes = (config.get("proposer") or {}).get("max_overlay_bytes", 200000)
     with tempfile.TemporaryDirectory(prefix="meta-harness-proposal-overlay-") as raw_overlay:
@@ -409,6 +422,15 @@ def _register_proposed_candidate(
         violations = mh.validate_overlay(overlay_dir, config)
         if violations:
             raise prop.ProposerError("; ".join(violations[:5]))
+        _enforce_output_security(
+            main_root=main_root,
+            config=config,
+            target=target,
+            proposal=proposal,
+            overlay_dir=overlay_dir,
+            overlay_files=overlay_files,
+            auth_canary=auth_canary,
+        )
         with mh.store_lock(main_root, config):
             events = mh.read_ledger_events(main_root, config)
             run_errors = prop.validate_based_on_runs(
@@ -536,3 +558,61 @@ def _proposer_registered_event(
         "created_by": "proposer",
         "proposal": proposal_event,
     }
+
+
+def _enforce_output_security(
+    *,
+    main_root: Path,
+    config: dict,
+    target: str,
+    proposal: dict,
+    overlay_dir: Path,
+    overlay_files: list[str],
+    auth_canary: str | None,
+) -> None:
+    """proposal 全文 + overlay 全ファイルを L2/L3 検知層で走査する（Sec11-3-6）。
+
+    hit した場合は `proposer_security_violation` を ledger へ記録してから
+    `prop.ProposerError` を送出し、登録拒否 + rejected 保存に合流させる。
+    """
+    named_texts = {"proposal": json.dumps(proposal, ensure_ascii=False)}
+    for rel in overlay_files:
+        try:
+            named_texts[f"overlay:{rel}"] = (overlay_dir / rel).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+    violations = psec.scan_named_texts(named_texts, auth_canary=auth_canary)
+    if not violations:
+        return
+    hit = violations[0]
+    _append_security_violation_event(
+        main_root, config, detector=hit.detector, reason=hit.reason, target=target
+    )
+    raise prop.ProposerError(f"proposer output security violation ({hit.detector}): {hit.reason}")
+
+
+def _append_security_violation_event(
+    main_root: Path,
+    config: dict,
+    *,
+    detector: str,
+    reason: str,
+    target: str,
+    cand_id: str | None = None,
+) -> None:
+    event = {
+        "event": "proposer_security_violation",
+        "ts": mh.now_iso(),
+        "schema_version": "1.0",
+        "detector": detector,
+        "reason": reason,
+        "target": target,
+        "cand_id": cand_id,
+    }
+    ledger_schema = mh.load_schema(_SCHEMA_DIR, "ledger.event.schema.json")
+    errors = mh.validate_against_schema(
+        event, ledger_schema["$defs"]["proposer_security_violation"], _SCHEMA_DIR
+    )
+    if errors:
+        raise prop.ProposerError("; ".join(errors[:5]))
+    mh.append_ledger_event(main_root, config, event)

@@ -30,13 +30,20 @@ def _completed(args: list[str], returncode: int = 0, stdout: str = "", stderr: s
     )
 
 
-def _register_candidate(git_project: Path, git_run, tmp_path: Path, cand_id: str = _CAND_ID) -> str:
+def _register_candidate(
+    git_project: Path,
+    git_run,
+    tmp_path: Path,
+    cand_id: str = _CAND_ID,
+    *,
+    overlay_content: str = "# Example\n\nPromoted content.\n",
+) -> str:
     mh.init_store(git_project, mh.load_config(git_project))
     source_commit = git_run("rev-parse", "HEAD", cwd=git_project).stdout.strip()
     overlay_dir = tmp_path / f"overlay-{cand_id}"
     overlay_file = overlay_dir / "facets" / "example" / "SKILL.md"
     overlay_file.parent.mkdir(parents=True, exist_ok=True)
-    overlay_file.write_text("# Example\n\nPromoted content.\n", encoding="utf-8")
+    overlay_file.write_text(overlay_content, encoding="utf-8")
     config = mh.load_config(git_project)
     manifest = {
         "schema_version": "1.0",
@@ -194,6 +201,25 @@ def test_promote_rejects_stale_hash_pair(
 
 def test_promote_rejects_unevaluated_candidate(git_project: Path, git_run, tmp_path: Path) -> None:
     cand_id = _register_candidate(git_project, git_run, tmp_path)
+
+    exit_code = cli.cmd_promote(str(git_project), cand_id, False, False)
+
+    assert exit_code == cli.EXIT_VALIDATION_ERROR
+    assert not any(event.get("event") == "promotion_reserved" for event in _events(git_project))
+
+
+def test_promote_rejects_candidate_with_secret_in_overlay(
+    git_project: Path, git_run, tmp_path: Path
+) -> None:
+    """Sec11-3-6 L3 の遡及防御: overlay に secret を含む候補は promote 前提条件で拒否。"""
+    cand_id = _register_candidate(
+        git_project,
+        git_run,
+        tmp_path,
+        overlay_content="# Example\n\nleaked sk-abcdef0123456789ABCDEF\n",
+    )
+    _append_run(git_project, cand_id, run_id="run-non-holdout", holdout=False)
+    _append_run(git_project, cand_id, run_id="run-holdout", holdout=True)
 
     exit_code = cli.cmd_promote(str(git_project), cand_id, False, False)
 

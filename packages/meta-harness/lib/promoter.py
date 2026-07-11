@@ -23,6 +23,7 @@ if str(_LIB_DIR) not in sys.path:
 
 import evaluator as ev  # noqa: E402
 import meta_harness_common as mh  # noqa: E402
+import proposer_security as psec  # noqa: E402
 
 MAIN_REF = "origin/main"
 BUILD_TIMEOUT_SECONDS = 300
@@ -273,6 +274,7 @@ def _validate_preconditions(
             f"candidate run hashes are stale; re-run evaluate for candidate: {cand_id}"
         )
     _check_overlay_integrity(main_root, config, manifest)
+    _check_output_secret_scan(main_root, config, manifest)
     _check_freshness(project_dir, manifest, config)
 
     branch = f"meta/promote-{_cand_slug(cand_id)}"
@@ -856,6 +858,27 @@ def _check_overlay_integrity(main_root: Path, config: dict, manifest: dict[str, 
         raise PromotionValidationError(
             f"candidate overlay hash mismatch; re-register and re-evaluate candidate: {cand_id}"
         )
+
+
+def _check_output_secret_scan(main_root: Path, config: dict, manifest: dict[str, Any]) -> None:
+    """overlay を汎用 secret scan で再走査する（Sec11-3-6 L3 の遡及防御）。
+
+    canary は run 固有で promote 時には未知のため、ここでは L3（汎用 secret）のみを
+    走査する。scan 導入前に登録された候補が promote 経路から外部到達するのを防ぐ。
+    """
+    cand_id = str(manifest["cand_id"])
+    overlay_dir = mh.candidates_dir(main_root, config) / cand_id / "overlay"
+    for rel in mh.list_overlay_files(overlay_dir):
+        try:
+            content = (overlay_dir / rel).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        hits = psec.scan_text_for_secrets(content)
+        if hits:
+            raise PromotionValidationError(
+                f"candidate overlay contains secret-like content in {rel} "
+                f"(patterns: {', '.join(hits)}); re-register a clean candidate: {cand_id}"
+            )
 
 
 def _fenced_pr_text(value: str) -> str:

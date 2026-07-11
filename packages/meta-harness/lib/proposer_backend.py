@@ -178,9 +178,15 @@ def temporary_codex_home(
     source_home: Path | None = None,
     *,
     min_token_ttl_seconds: int | None = None,
+    auth_canary: str | None = None,
 ):
-    """最小化した `auth.json` を持つ ephemeral CODEX_HOME を用意する（Sec11-3-6 L1）。"""
+    """最小化した `auth.json` を持つ ephemeral CODEX_HOME を用意する（Sec11-3-6 L1）。
+
+    staged `refresh_token` に置く canary は `auth_canary`（未指定なら内部生成）を使う。
+    呼び出し側は同じ値を出力経路検知（L2, Sec11-3-6）に渡せる。
+    """
     _sweep_orphan_codex_homes()
+    canary = auth_canary or generate_auth_canary()
     path = Path(tempfile.mkdtemp(prefix=_CODEX_HOME_PREFIX, dir=tempfile.gettempdir()))
     path.chmod(0o700)
     previous_sigterm = signal.getsignal(signal.SIGTERM)
@@ -192,7 +198,10 @@ def temporary_codex_home(
     signal.signal(signal.SIGTERM, _handle_sigterm)
     try:
         _populate_codex_home(
-            path, source_home=source_home, min_token_ttl_seconds=min_token_ttl_seconds
+            path,
+            source_home=source_home,
+            min_token_ttl_seconds=min_token_ttl_seconds,
+            auth_canary=canary,
         )
         yield path
     finally:
@@ -530,6 +539,7 @@ def _populate_codex_home(
     source_home: Path | None,
     *,
     min_token_ttl_seconds: int | None = None,
+    auth_canary: str | None = None,
 ) -> None:
     source = source_home or _default_codex_home()
     auth_src = source / "auth.json"
@@ -540,6 +550,7 @@ def _populate_codex_home(
         _minimize_codex_auth(
             auth_src.read_text(encoding="utf-8"),
             min_token_ttl_seconds=min_token_ttl_seconds,
+            auth_canary=auth_canary,
         ),
         encoding="utf-8",
     )
@@ -563,7 +574,9 @@ def _stage_codex_model_catalog(*, ephemeral_home: Path, source_home: Path) -> No
         dst.chmod(0o644)
 
 
-def _minimize_codex_auth(auth_raw: str, *, min_token_ttl_seconds: int | None) -> str:
+def _minimize_codex_auth(
+    auth_raw: str, *, min_token_ttl_seconds: int | None, auth_canary: str | None = None
+) -> str:
     """staged auth.json から長期資格情報を排除する（Sec11-3-6 L1）。
 
     - `OPENAI_API_KEY` はフィールドごと削除（実測: 削除しても codex exec は完走）
@@ -581,14 +594,16 @@ def _minimize_codex_auth(auth_raw: str, *, min_token_ttl_seconds: int | None) ->
     auth.pop("OPENAI_API_KEY", None)
     tokens = auth.get("tokens")
     if isinstance(tokens, dict):
-        tokens["refresh_token"] = _generate_auth_canary()
+        # tokens が dict でない auth.json では canary を置けないため L2 は事実上 no-op。
+        # 実 ChatGPT OAuth auth.json は常に tokens dict を持つ（実測）。
+        tokens["refresh_token"] = auth_canary or generate_auth_canary()
         access_token = tokens.get("access_token")
         if min_token_ttl_seconds is not None and isinstance(access_token, str):
             _assert_access_token_ttl(access_token, min_token_ttl_seconds)
     return json.dumps(auth, ensure_ascii=False) + "\n"
 
 
-def _generate_auth_canary() -> str:
+def generate_auth_canary() -> str:
     return f"{CODEX_AUTH_CANARY_PREFIX}{secrets.token_hex(16)}"
 
 
