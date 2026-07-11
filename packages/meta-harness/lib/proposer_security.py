@@ -30,11 +30,15 @@ DETECTOR_CANARY = "L2_canary"
 DETECTOR_SECRET_SCAN = "L3_secret_scan"
 
 # L3: redaction の実績パターン（sk-, ghp_, AKIA, PEM 等）を検知層として再利用し、
-# 設計が明示する JWT 3 セグメント形式を追加する。JWT は `eyJ`（`{"` の base64）で
-# 始まる 3 セグメント構造に限定し、汎用 base64 blob による誤検知を抑える。
+# ハイフンを含む OpenAI API key と、設計が明示する JWT 3 セグメント形式を追加する。
+# JWT は `eyJ`（`{"` の base64）で始まる 3 セグメント構造に限定し、汎用 base64
+# blob による誤検知を抑える。
+_HYPHENATED_SK_PATTERN_NAME = "OpenAI API key (hyphenated sk- prefix)"
+_HYPHENATED_SK_PATTERN = re.compile(r"\bsk-(?:proj|svcacct)-[A-Za-z0-9_-]{10,}\b")
 _JWT_PATTERN = re.compile(r"\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\b")
 _L3_SECRET_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     *redaction.REDACTION_PATTERNS,
+    (_HYPHENATED_SK_PATTERN_NAME, _HYPHENATED_SK_PATTERN),
     ("JWT (3-segment)", _JWT_PATTERN),
 ]
 
@@ -76,11 +80,12 @@ def scan_text_for_secrets(text: str) -> list[str]:
 def redact_for_storage(text: str, *, auth_canary: str | None = None) -> str:
     """rejected 保存用に L3 secret + canary + JWT をマスクする。
 
-    `redaction.redact_secrets` は sk-/ghp_ 等をカバーするが JWT 3 セグメントと
-    L2 canary は対象外のため、検知に成功した実 access token（JWT）や canary が
+    `redaction.redact_secrets` は従来の sk-/ghp_ 等をカバーするが、ハイフンを含む
+    sk- key・JWT 3 セグメント・L2 canary は対象外のため、検知に成功した値が
     quarantine ファイルへ平文で残らないよう、ここで追加のマスクを重ねる。
     """
     result = redaction.redact_secrets(text)
+    result = _HYPHENATED_SK_PATTERN.sub(f"[REDACTED:{_HYPHENATED_SK_PATTERN_NAME}]", result)
     result = _JWT_PATTERN.sub("[REDACTED:JWT (3-segment)]", result)
     for name, value in canary_variants(auth_canary or "").items():
         if value:

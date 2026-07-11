@@ -24,6 +24,15 @@ _SUITE_HASH = "a" * 64
 _EVALUATOR_HASH = "b" * 64
 
 
+def _sample_sk_key(key_kind: str | None = None) -> str:
+    """外部 scanner に触れるキーリテラルを置かず、検査用 sk- key を返す。"""
+    parts = ["sk"]
+    if key_kind:
+        parts.append(key_kind)
+    parts.append("abcdef0123456789ABCDEF")
+    return "-".join(parts)
+
+
 def _completed(args: list[str], returncode: int = 0, stdout: str = "", stderr: str = ""):
     return subprocess.CompletedProcess(
         args=args, returncode=returncode, stdout=stdout, stderr=stderr
@@ -36,14 +45,18 @@ def _register_candidate(
     tmp_path: Path,
     cand_id: str = _CAND_ID,
     *,
-    overlay_content: str = "# Example\n\nPromoted content.\n",
+    overlay_content: str | bytes = "# Example\n\nPromoted content.\n",
+    description: str = "Promote a better example facet.",
 ) -> str:
     mh.init_store(git_project, mh.load_config(git_project))
     source_commit = git_run("rev-parse", "HEAD", cwd=git_project).stdout.strip()
     overlay_dir = tmp_path / f"overlay-{cand_id}"
     overlay_file = overlay_dir / "facets" / "example" / "SKILL.md"
     overlay_file.parent.mkdir(parents=True, exist_ok=True)
-    overlay_file.write_text(overlay_content, encoding="utf-8")
+    if isinstance(overlay_content, bytes):
+        overlay_file.write_bytes(overlay_content)
+    else:
+        overlay_file.write_text(overlay_content, encoding="utf-8")
     config = mh.load_config(git_project)
     manifest = {
         "schema_version": "1.0",
@@ -57,7 +70,7 @@ def _register_candidate(
         "config_hash": mh.compute_config_hash(overlay_dir, config),
         "model_versions": {},
         "overlay_files": ["facets/example/SKILL.md"],
-        "description": "Promote a better example facet.",
+        "description": description,
     }
     mh.register_candidate(
         git_project,
@@ -209,14 +222,14 @@ def test_promote_rejects_unevaluated_candidate(git_project: Path, git_run, tmp_p
 
 
 def test_promote_rejects_candidate_with_secret_in_overlay(
-    git_project: Path, git_run, tmp_path: Path
+    git_project: Path, git_run, tmp_path: Path, capsys
 ) -> None:
     """Sec11-3-6 L3 の遡及防御: overlay に secret を含む候補は promote 前提条件で拒否。"""
     cand_id = _register_candidate(
         git_project,
         git_run,
         tmp_path,
-        overlay_content="# Example\n\nleaked sk-abcdef0123456789ABCDEF\n",
+        overlay_content=f"# Example\n\nleaked {_sample_sk_key()}\n",
     )
     _append_run(git_project, cand_id, run_id="run-non-holdout", holdout=False)
     _append_run(git_project, cand_id, run_id="run-holdout", holdout=True)
@@ -224,6 +237,47 @@ def test_promote_rejects_candidate_with_secret_in_overlay(
     exit_code = cli.cmd_promote(str(git_project), cand_id, False, False)
 
     assert exit_code == cli.EXIT_VALIDATION_ERROR
+    assert "candidate overlay contains secret-like content" in capsys.readouterr().err
+    assert not any(event.get("event") == "promotion_reserved" for event in _events(git_project))
+
+
+def test_promote_scans_non_utf8_overlay_for_secrets(
+    git_project: Path, git_run, tmp_path: Path, capsys
+) -> None:
+    """非 UTF-8 overlay でも ASCII 部分の secret を見落とさない。"""
+    cand_id = _register_candidate(
+        git_project,
+        git_run,
+        tmp_path,
+        overlay_content=(b"\xff# Example\n\nleaked " + _sample_sk_key().encode() + b"\n"),
+    )
+    _append_run(git_project, cand_id, run_id="run-non-holdout", holdout=False)
+    _append_run(git_project, cand_id, run_id="run-holdout", holdout=True)
+
+    exit_code = cli.cmd_promote(str(git_project), cand_id, False, False)
+
+    assert exit_code == cli.EXIT_VALIDATION_ERROR
+    assert "candidate overlay contains secret-like content" in capsys.readouterr().err
+    assert not any(event.get("event") == "promotion_reserved" for event in _events(git_project))
+
+
+def test_promote_rejects_secret_in_pr_description(
+    git_project: Path, git_run, tmp_path: Path, capsys
+) -> None:
+    """PR 本文へ転記される manifest.description も promote 前に拒否する。"""
+    cand_id = _register_candidate(
+        git_project,
+        git_run,
+        tmp_path,
+        description=f"leaked {_sample_sk_key('proj')}",
+    )
+    _append_run(git_project, cand_id, run_id="run-non-holdout", holdout=False)
+    _append_run(git_project, cand_id, run_id="run-holdout", holdout=True)
+
+    exit_code = cli.cmd_promote(str(git_project), cand_id, False, False)
+
+    assert exit_code == cli.EXIT_VALIDATION_ERROR
+    assert "manifest contains secret-like content in description" in capsys.readouterr().err
     assert not any(event.get("event") == "promotion_reserved" for event in _events(git_project))
 
 

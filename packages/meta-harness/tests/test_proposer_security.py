@@ -15,6 +15,25 @@ psec = load_module(
 _CANARY = "meta-harness-canary-refresh-deadbeefdeadbeefdeadbeefdeadbeef"
 
 
+def _sample_jwt() -> str:
+    """secret scanner に触れる JWT リテラルを置かず、検査用の 3 セグメント値を返す。"""
+    segments = [
+        base64.urlsafe_b64encode(b'{"alg":"HS256"}').decode().rstrip("="),
+        base64.urlsafe_b64encode(b'{"sub":"1234567890"}').decode().rstrip("="),
+        base64.urlsafe_b64encode(b"signature-placeholder-bytes").decode().rstrip("="),
+    ]
+    return ".".join(segments)
+
+
+def _sample_sk_key(key_kind: str | None = None) -> str:
+    """secret scanner に触れるキーリテラルを置かず、検査用 sk- key を返す。"""
+    parts = ["sk"]
+    if key_kind:
+        parts.append(key_kind)
+    parts.append("abcdef0123456789ABCDEF")
+    return "-".join(parts)
+
+
 class TestCanaryDetection:
     def test_plaintext_variant_detected(self) -> None:
         text = f"stolen credential: {_CANARY} end"
@@ -48,11 +67,16 @@ class TestCanaryDetection:
 
 class TestSecretScan:
     def test_sk_api_key_detected(self) -> None:
-        hits = psec.scan_text_for_secrets("token = sk-abcdef0123456789ABCDEF")
+        hits = psec.scan_text_for_secrets(f"token = {_sample_sk_key()}")
         assert "API key (sk- prefix)" in hits
 
+    def test_hyphenated_sk_api_keys_detected(self) -> None:
+        for key_kind in ("proj", "svcacct"):
+            hits = psec.scan_text_for_secrets(f"token = {_sample_sk_key(key_kind)}")
+            assert "OpenAI API key (hyphenated sk- prefix)" in hits
+
     def test_jwt_three_segment_detected(self) -> None:
-        jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N"
+        jwt = _sample_jwt()
         hits = psec.scan_text_for_secrets(f"access_token={jwt}")
         assert "JWT (3-segment)" in hits
 
@@ -66,10 +90,16 @@ class TestSecretScan:
 
 class TestRedactForStorage:
     def test_jwt_is_masked(self) -> None:
-        jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N"
+        jwt = _sample_jwt()
         redacted = psec.redact_for_storage(f"access_token={jwt}")
         assert jwt not in redacted
         assert "[REDACTED:JWT (3-segment)]" in redacted
+
+    def test_hyphenated_sk_api_key_is_masked(self) -> None:
+        key = _sample_sk_key("proj")
+        redacted = psec.redact_for_storage(f"api_key={key}")
+        assert key not in redacted
+        assert "[REDACTED:OpenAI API key (hyphenated sk- prefix)]" in redacted
 
     def test_canary_variants_are_masked(self) -> None:
         encoded = base64.b64encode(_CANARY.encode()).decode()
@@ -80,8 +110,9 @@ class TestRedactForStorage:
         assert "[REDACTED:auth canary" in redacted
 
     def test_generic_secret_still_masked_without_canary(self) -> None:
-        redacted = psec.redact_for_storage("key sk-abcdef0123456789ABCDEF")
-        assert "sk-abcdef0123456789ABCDEF" not in redacted
+        key = _sample_sk_key()
+        redacted = psec.redact_for_storage(f"key {key}")
+        assert key not in redacted
 
 
 class TestScanNamedTexts:
@@ -93,13 +124,13 @@ class TestScanNamedTexts:
         assert "facets/a/SKILL.md" in violations[0].reason
 
     def test_secret_hit_reports_l3_detector(self) -> None:
-        named = {"proposal": "sk-abcdef0123456789ABCDEF"}
+        named = {"proposal": _sample_sk_key()}
         violations = psec.scan_named_texts(named, auth_canary=_CANARY)
         assert len(violations) == 1
         assert violations[0].detector == psec.DETECTOR_SECRET_SCAN
 
     def test_canary_takes_precedence_over_secret_scan_in_same_text(self) -> None:
-        named = {"proposal": f"{_CANARY} sk-abcdef0123456789ABCDEF"}
+        named = {"proposal": f"{_CANARY} {_sample_sk_key()}"}
         violations = psec.scan_named_texts(named, auth_canary=_CANARY)
         assert [v.detector for v in violations] == [psec.DETECTOR_CANARY]
 
