@@ -33,6 +33,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **`loop-harness`: bot の自動生成サマリコメントが phantom high 指摘として取り込まれる問題を修正**: CodeRabbit 等が投稿する非 actionable ステータスコメント（本文中に `High` 等の語を偶然含む）が explicit high severity の指摘として誤って取り込まれ、対応実体が無いまま `exit_success` に到達できなくなる不具合を修正した。`pr_review.auto_generated_markers`（config）で指定したマーカーを含むコメントは severity 判定前に除外される。
 
+- **`loop-harness`: PR レビュー再ベースライン時に未取り込みの信頼済み指摘が失われる問題を修正**: 追加 commit を push する直前の re-baseline が、直前反復の作業中に届いた別レビュアーの指摘を「処理済み」として取り込む前に握りつぶしてしまう不具合を修正した。re-baseline の前に必ず一度取り込み（drain）を行い、指摘が残っている場合は push・再ベースラインを行わず修正反復へ差し戻すようにした。
+
+- **`loop-harness`: Codex 等の issue コメント形式のレビュー応答が完了として検知されない問題を修正**: `@codex review` のようなコマンド応答が正式な GitHub review ではなく issue コメントとして投稿された場合、レビューが完了しているにもかかわらず毎回タイムアウトまで待機していた不具合を修正した。発信元検証済み・baseline 以降・非自動生成・終局判定文言に一致する issue コメントを完了シグナルとして扱うようにした。あわせて CodeRabbit のコマンド応答マーカーを自動生成コメント除外の既定リストに追加した。
+
+- **`loop-harness`: linked worktree からループ実行時にプロジェクト固有設定が反映されない問題を修正**: loop worktree（`git worktree add` で作成した作業ディレクトリ）から実行した場合、`.claude/config/loop-harness/loop-harness.local.yaml` が root worktree 側にしか存在せず、上書き設定が無視されていた不具合を修正した。
+
 - **worktree からの install/init がグローバル参照先を上書きする問題を修正**: 同じ Git リポジトリの linked worktree から実行した場合、`~/.claude/settings.json` の既存 `AI_ORCHESTRA_DIR`（main worktree）を保持するようにした。
 
 - **`meta-harness`: ストア用 `.gitignore` エントリが SessionStart 同期で消える問題を修正**: `.claude/meta-harness/` を gitignore 管理ブロックの生成元（`gitignore_sync.py`）に追加し、同期のたびに手動追記が失われる Phase 1a の実装漏れを解消

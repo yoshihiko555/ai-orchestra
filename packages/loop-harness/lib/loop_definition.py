@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,19 @@ CONFIG_FILENAME = "loop-harness.yaml"
 _ID_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 _SIGNATURE_KINDS = {"implementation", "pr_review"}
 ISSUE_LOOP_IMPLEMENTATION_PASS_CRITERIA = {"critical": 0, "high": 0}
+
+
+def _resolve_local_override_root(project_dir: str) -> str:
+    """Resolve project_dir to the root worktree for .local.yaml lookup, failing open."""
+    lib_dir = Path(__file__).resolve().parent
+    if str(lib_dir) not in sys.path:
+        sys.path.insert(0, str(lib_dir))
+    import loop_common
+
+    try:
+        return str(loop_common.resolve_root_worktree(project_dir))
+    except loop_common.RootResolutionError:
+        return project_dir
 
 
 class DefinitionValidationError(ValueError):
@@ -76,8 +90,9 @@ def _read_yaml_dict(path: Path) -> dict[str, Any]:
 def load_config(project_dir: str) -> dict[str, Any]:
     """Load base config and project-local override using scalar-key deep merge."""
     base = _read_yaml_dict(package_root() / "config" / CONFIG_FILENAME)
+    override_root = _resolve_local_override_root(project_dir)
     local = _read_yaml_dict(
-        Path(project_dir) / ".claude" / "config" / PACKAGE_NAME / "loop-harness.local.yaml"
+        Path(override_root) / ".claude" / "config" / PACKAGE_NAME / "loop-harness.local.yaml"
     )
     return deep_merge(base, local) if local else base
 

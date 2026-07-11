@@ -607,29 +607,48 @@ artifact から復旧する `reconcile` も同じ validator を必ず通し、�
   push / poll も先取りせず、`push_guard` を含む失敗結果（例: `{"push_guard": {...}}`）で同じ action を
   `complete` して、次 proposal の停止判断（safety stop / `push_guard_violation` /
   `repo_identity_mismatch`）へ委ねる。`push_required` が欠落・bool 以外の場合も同様に安全側で失敗させ、
-  どちらかを推測しない。guard 合格後に初めて
-  `detect_pr_review_push_delta(loop_id, params.worktree_path, params.worktree_path)` を呼び、戻り値 `delta.status`
-  で分岐する。
-  - `delta.status == "no_new_commit"` の場合、Maker は push すべき新規 commit を作っていない。
-    この場合は `record_baseline`、push、`record_iteration_head`、wait / poll / collect をすべて実行しない。
-    代わりに `no_new_commit_completion_outcome(delta)` で `CompletionOutcome` を取得し、続けて
-    `phase_check_from_completion_outcome(outcome)` で `PhaseCheckResult` へ変換し、
-    既存の timeout / API error 経路と同じく `lc.phase_check_to_dict()` で ready-to-complete JSON に変換する。
-    その JSON を 0600 の result file として保存し、元 proposal と同じ `state_version` で `complete` する。
-    オーケストレーターが `CompletionOutcome` や `PhaseCheckResult` を手書きで構築することは禁止する。
-    必ず上記 2 つの library function を呼び、その戻り値をそのまま通す。この分岐は既存の
-    `pr_review_timeout` 無進捗経路（FT-13）上の純粋な高速化であり、新しい失敗カテゴリを導入しない。
-    ショートカットは guard 合格を前提条件とするため、guard をすり抜けて無進捗扱いにしてはならない。
-  - `delta.status == "new_commit"` または `"unknown"` の場合は、既存フローを続行する。すなわち
-    `record_baseline(..., action_id=<現在の action_id>)` を push 前に実行し、`params.verified_branch` を
-    一字も変更せず push し、push 後に `record_iteration_head(..., action_id=<現在の action_id>)` を実行する。
-    手順冒頭で guard は確認済みであり、この経路では push 直前の再検証を重複実行しない。guard 確認と
-    push の間に worktree を変更する操作は行わない。そのまま wait / poll / collect へ進み、元 proposal と
-    同じ `state_version` で `complete` する。`"unknown"` は git コマンド失敗や `iteration_head_sha` 未記録
-    などの安全側フォールバックであり、ショートカットとして扱ってはならない。
+  どちらかを推測しない。
+  - **pre-rebaseline drain（guard 合格後、`record_baseline` / `detect_pr_review_push_delta()` より前に
+    必ず実行する）**: 直前の反復（`advance_phase` または前回の `wait_external_review`）が記録した
+    既存 baseline をそのまま変更せず、`collect_review_findings(...)` を実行する。これは、直前の Maker
+    反復が作業している間に別の信頼済みレビュアーが投稿した、まだ import されていないレビュー（例:
+    2 人目のレビュアーによる `CHANGES_REQUESTED`）を、次の `record_baseline` が「処理済み」として
+    飲み込み永久に喪失させる前に取り込むための手順である。戻り値に `needs_classification` の finding
+    が 1 件以上含まれる場合は、上記「severity 分類（Step 2）」の手順をこの場でインラインに適用し、
+    `apply_severity_classifications(...)` まで完了させてから次の判定に進む（分類を次サイクルへ持ち越さない）。
+  - drain（severity 分類後）に actionable な finding が **1 件以上** 残る場合、`record_baseline`、push、
+    `record_iteration_head`、wait / poll をこの action では一切実行しない。代わりに
+    `phase_check_from_review_findings(...)` の戻り値（`passed: false` になるはず）をそのまま
+    `lc.phase_check_to_dict()` で ready-to-complete JSON に変換し、0600 の result file として保存して、
+    元 proposal と同じ `state_version` で `complete` する。`detect_pr_review_push_delta()` はこの分岐では
+    呼ばない。この complete の結果は次の guard 評価で修正反復（Maker）へ差し戻される。
+  - drain の結果 finding が **0 件** の場合に限り、`detect_pr_review_push_delta(loop_id,
+    params.worktree_path, params.worktree_path)` を呼び、戻り値 `delta.status` で以下のとおり分岐する。
+    **drain が 0 件であることを確認せずに `phase_check_from_review_findings()` を呼んで complete する
+    ことは禁止する**（findings が空だと `phase_check_from_review_findings()` は `passed: true` を返し、
+    push もレビュー待機も行わずに誤って合格扱いにしてしまうため）。
+    - `delta.status == "no_new_commit"` の場合、Maker は push すべき新規 commit を作っていない。
+      この場合は `record_baseline`、push、`record_iteration_head`、wait / poll / collect をすべて実行しない。
+      代わりに `no_new_commit_completion_outcome(delta)` で `CompletionOutcome` を取得し、続けて
+      `phase_check_from_completion_outcome(outcome)` で `PhaseCheckResult` へ変換し、
+      既存の timeout / API error 経路と同じく `lc.phase_check_to_dict()` で ready-to-complete JSON に変換する。
+      その JSON を 0600 の result file として保存し、元 proposal と同じ `state_version` で `complete` する。
+      オーケストレーターが `CompletionOutcome` や `PhaseCheckResult` を手書きで構築することは禁止する。
+      必ず上記 2 つの library function を呼び、その戻り値をそのまま通す。この分岐は既存の
+      `pr_review_timeout` 無進捗経路（FT-13）上の純粋な高速化であり、新しい失敗カテゴリを導入しない。
+      ショートカットは guard 合格 **かつ pre-rebaseline drain が 0 件** を前提条件とするため、
+      guard やこの drain をすり抜けて無進捗扱いにしてはならない。
+    - `delta.status == "new_commit"` または `"unknown"` の場合は、既存フローを続行する。すなわち
+      `record_baseline(..., action_id=<現在の action_id>)` を push 前に実行し、`params.verified_branch` を
+      一字も変更せず push し、push 後に `record_iteration_head(..., action_id=<現在の action_id>)` を実行する。
+      手順冒頭で guard は確認済みであり、この経路では push 直前の再検証を重複実行しない。guard 確認と
+      push の間に worktree を変更する操作は行わない。そのまま wait / poll / collect へ進み、元 proposal と
+      同じ `state_version` で `complete` する。`"unknown"` は git コマンド失敗や `iteration_head_sha` 未記録
+      などの安全側フォールバックであり、ショートカットとして扱ってはならない。
 - `params.push_required is false`: 初回 PR 作成直後など、対象 commit がすでに push 済みの経路。
   `advance_phase` が保存した既存 baseline / iteration head を使って poll から開始する。baseline の再記録、
-  re-push、iteration head の上書きを行わない。
+  re-push、iteration head の上書きを行わない。この経路は初回の baseline がまだ collect されていないため、
+  pre-rebaseline drain の対象ではない。
 
 `wait_for_completion()` の heartbeat callback から保持中 token を使って
 `python3 "$LOOP_STEP" heartbeat` を呼ぶ。完了シグナルが得られたら `collect_review_findings()` で許可済み
