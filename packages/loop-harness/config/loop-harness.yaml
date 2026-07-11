@@ -20,6 +20,8 @@ pr_review:
   timeout_seconds: 3600
   checkrun_allowlist: []
   severity_markers: {}
+  auto_generated_markers:
+    - '<!-- This is an auto-generated comment'
   dedup:
     line_bucket_size: 5
     stopwords_en:
