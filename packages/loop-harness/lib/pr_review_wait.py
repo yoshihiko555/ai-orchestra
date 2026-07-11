@@ -32,6 +32,7 @@ EXCERPT_LIMIT = 240
 REVIEW_SOURCES = frozenset({"review", "review_comment", "issue_comment"})
 SEVERITY_ORDER = {"low": 0, "medium": 1, "high": 2, "critical": 3}
 SEVERITIES = frozenset(SEVERITY_ORDER)
+Severity = Literal["critical", "high", "medium", "low"]
 POSITIVE_REVIEW_SUMMARIES = frozenset(
     {
         "all good",
@@ -174,7 +175,7 @@ class CompletionOutcome:
 class SeverityDecision:
     """Deterministic severity classification result."""
 
-    severity: Literal["critical", "high", "medium", "low"]
+    severity: Severity | None
     source: Literal["explicit", "external_classification", "fail_safe"]
     needs_classification: bool
     reason: str
@@ -185,7 +186,7 @@ class ImportedFinding:
     """Trusted imported PR review finding."""
 
     signature: str
-    severity: Literal["critical", "high", "medium", "low"]
+    severity: Severity
     source_comment_id: str
     body_excerpt: str
     path: str | None
@@ -207,6 +208,25 @@ class ReviewFindingsResult:
     processed_comment_ids: tuple[str, ...]
     ignored_untrusted_comment_count: int
     needs_classification_count: int
+
+
+@dataclass(frozen=True)
+class AppliedSeverityClassification:
+    """One classification persisted to PR review state."""
+
+    signature: str
+    source_comment_id: str
+    severity: Severity | None
+    source: Literal["explicit", "external_classification", "fail_safe"]
+    reason: str
+
+
+@dataclass(frozen=True)
+class ClassificationApplicationResult:
+    """State-backed result of applying external severity classifications."""
+
+    review_findings: ReviewFindingsResult
+    classifications: tuple[AppliedSeverityClassification, ...]
 
 
 class GhApiClient:
@@ -449,15 +469,18 @@ def collect_review_findings(
         key = _comment_key(item)
         if not _is_importable(item, baseline, processed):
             continue
-        processed.add(key)
         if not verify_origin(item.raw, config.reviewer_allowlist):
+            processed.add(key)
             ignored_items.append(item)
             continue
         finding = _finding_from_item(item, key, config, iteration)
         if finding is None:
+            processed.add(key)
             continue
         imported.append(finding)
         _upsert_finding(findings_map, finding, iteration)
+        if not finding.needs_classification:
+            processed.add(key)
 
     pr_review["processed_comment_ids"] = sorted(processed)
     pr_review["findings"] = findings_map
@@ -522,7 +545,102 @@ def classify_severity(
     severity, confidence = parsed
     if confidence != "high":
         return SeverityDecision("high", "fail_safe", False, "low_confidence")
+    if severity == "none":
+        return SeverityDecision(None, "external_classification", False, "not_a_finding")
     return SeverityDecision(severity, "external_classification", False, "classified")
+
+
+def apply_severity_classifications(
+    loop_id: str,
+    project_dir: str,
+    result: ReviewFindingsResult,
+    config: PrReviewConfig,
+    classification_responses: dict[str, str],
+    iteration: int,
+    lease_token: str,
+    *,
+    action_id: str | None = None,
+) -> ClassificationApplicationResult:
+    """Apply external classifications to the result and its persistent state."""
+    pending = [finding for finding in result.findings if finding.needs_classification]
+    if not pending:
+        return ClassificationApplicationResult(result, ())
+
+    state = lc.load_state(loop_id, project_dir)
+    pr_review = _ensure_pr_review_state(state.pr_review)
+    findings_map = _findings_map(pr_review)
+    processed = set(_processed_comment_ids(pr_review))
+    updated_findings: list[ImportedFinding] = []
+    applied: list[AppliedSeverityClassification] = []
+
+    for finding in result.findings:
+        if not finding.needs_classification:
+            updated_findings.append(finding)
+            continue
+        decision = classify_severity(
+            finding.body_excerpt,
+            config,
+            classification_response=classification_responses.get(finding.source_comment_id, ""),
+        )
+        _apply_classification_to_state(findings_map, finding, decision, iteration)
+        processed.add(finding.source_comment_id)
+        applied.append(
+            AppliedSeverityClassification(
+                signature=finding.signature,
+                source_comment_id=finding.source_comment_id,
+                severity=decision.severity,
+                source=decision.source,
+                reason=decision.reason,
+            )
+        )
+        if decision.severity is not None:
+            updated_findings.append(
+                ImportedFinding(
+                    signature=finding.signature,
+                    severity=decision.severity,
+                    source_comment_id=finding.source_comment_id,
+                    body_excerpt=finding.body_excerpt,
+                    path=finding.path,
+                    line=finding.line,
+                    needs_classification=False,
+                )
+            )
+
+    pr_review["findings"] = findings_map
+    pr_review["processed_comment_ids"] = sorted(processed)
+    state.pr_review = pr_review
+    state.updated_at = lc.now_iso()
+    iteration_findings = build_iteration_findings(pr_review, iteration)
+    _fence_state_update(state, loop_id, project_dir, lease_token, action_id, COLLECT_ACTIONS)
+    lc.append_journal_event(
+        loop_id,
+        project_dir,
+        "pr_review_severities_classified",
+        "waiter",
+        action_id,
+        {
+            "classifications": [
+                {
+                    "signature": item.signature,
+                    "source_comment_id": item.source_comment_id,
+                    "severity": item.severity,
+                    "source": item.source,
+                    "reason": item.reason,
+                }
+                for item in applied
+            ]
+        },
+    )
+    lc._write_state(state, project_dir)
+    updated_result = ReviewFindingsResult(
+        findings=tuple(updated_findings),
+        iteration_findings=iteration_findings,
+        previous_iteration_findings=result.previous_iteration_findings,
+        processed_comment_ids=tuple(pr_review["processed_comment_ids"]),
+        ignored_untrusted_comment_count=result.ignored_untrusted_comment_count,
+        needs_classification_count=0,
+    )
+    return ClassificationApplicationResult(updated_result, tuple(applied))
 
 
 def normalize_signature(item: ReviewItem, dedup: DedupConfig) -> str:
@@ -936,27 +1054,86 @@ def _upsert_finding(
         source_ids = sorted(
             set(existing.get("source_comment_ids") or []) | {finding.source_comment_id}
         )
+        pending_ids = set(existing.get("pending_classification_source_comment_ids") or [])
+        confirmed_severity = _confirmed_severity(existing)
+        if finding.needs_classification:
+            pending_ids.add(finding.source_comment_id)
+        else:
+            confirmed_severity = _highest_optional_severity(confirmed_severity, finding.severity)
         findings_map[finding.signature] = {
             **existing,
-            "last_seen_iteration": iteration,
-            "severity": _highest_severity(existing.get("severity"), finding.severity),
+            "last_seen_iteration": (
+                existing.get("last_seen_iteration") if finding.needs_classification else iteration
+            ),
+            "severity": "high" if pending_ids else confirmed_severity,
+            "confirmed_severity": confirmed_severity,
+            "pending_classification_source_comment_ids": sorted(pending_ids),
             "source_comment_ids": source_ids,
         }
         return
     source_ids = [finding.source_comment_id]
+    pending_ids = [finding.source_comment_id] if finding.needs_classification else []
+    confirmed_severity = None if finding.needs_classification else finding.severity
     findings_map[finding.signature] = {
         "first_seen_iteration": iteration,
         "last_seen_iteration": iteration,
         "status": "open",
-        "severity": finding.severity,
+        "severity": "high" if pending_ids else confirmed_severity,
+        "confirmed_severity": confirmed_severity,
+        "pending_classification_source_comment_ids": pending_ids,
         "dismiss_reason": None,
         "source_comment_ids": source_ids,
     }
 
 
-def _highest_severity(existing: Any, incoming: str) -> str:
-    existing_severity = str(existing) if str(existing) in SEVERITIES else incoming
-    return max((existing_severity, incoming), key=lambda item: SEVERITY_ORDER[item])
+def _apply_classification_to_state(
+    findings_map: dict[str, dict[str, Any]],
+    finding: ImportedFinding,
+    decision: SeverityDecision,
+    iteration: int,
+) -> None:
+    record = findings_map.get(finding.signature)
+    if not isinstance(record, dict):
+        raise PrReviewWaitError(f"missing finding state for classification: {finding.signature}")
+    source_ids = set(record.get("source_comment_ids") or [])
+    pending_ids = set(record.get("pending_classification_source_comment_ids") or [])
+    if finding.source_comment_id not in source_ids:
+        raise PrReviewWaitError(
+            f"finding source is missing from state: {finding.source_comment_id}"
+        )
+    pending_ids.discard(finding.source_comment_id)
+    confirmed_severity = _confirmed_severity(record)
+    if decision.severity is None:
+        source_ids.discard(finding.source_comment_id)
+    else:
+        confirmed_severity = _highest_optional_severity(confirmed_severity, decision.severity)
+    if confirmed_severity is None and not pending_ids:
+        del findings_map[finding.signature]
+        return
+    findings_map[finding.signature] = {
+        **record,
+        "last_seen_iteration": (
+            iteration if decision.severity is not None else record.get("last_seen_iteration")
+        ),
+        "severity": "high" if pending_ids else confirmed_severity,
+        "confirmed_severity": confirmed_severity,
+        "pending_classification_source_comment_ids": sorted(pending_ids),
+        "source_comment_ids": sorted(source_ids),
+    }
+
+
+def _confirmed_severity(record: dict[str, Any]) -> Severity | None:
+    if "confirmed_severity" in record:
+        value = record.get("confirmed_severity")
+        return value if value in SEVERITIES else None  # type: ignore[return-value]
+    value = record.get("severity")
+    return value if value in SEVERITIES else None  # type: ignore[return-value]
+
+
+def _highest_optional_severity(existing: Severity | None, incoming: Severity) -> Severity:
+    if existing is None:
+        return incoming
+    return max((existing, incoming), key=lambda item: SEVERITY_ORDER[item])
 
 
 def _journal_ignored_untrusted(
@@ -1127,9 +1304,7 @@ def _validated_severity_marker(pattern: str, severity: str) -> tuple[str, str]:
     return pattern, severity
 
 
-def _explicit_severity(
-    body: str, config: PrReviewConfig
-) -> tuple[Literal["critical", "high", "medium", "low"], str] | None:
+def _explicit_severity(body: str, config: PrReviewConfig) -> tuple[Severity, str] | None:
     matches: list[tuple[str, str]] = []
     for pattern, severity, reason in _default_severity_patterns():
         if re.search(pattern, body or "", re.IGNORECASE):
@@ -1159,8 +1334,10 @@ def _default_severity_patterns() -> tuple[tuple[str, str, str], ...]:
 
 def _parse_classification_response(
     value: str,
-) -> tuple[Literal["critical", "high", "medium", "low"], Literal["high", "low"]] | None:
-    severity_match = re.search(r"^SEVERITY:\s*(critical|high|medium|low)\s*$", value, re.I | re.M)
+) -> tuple[Severity | Literal["none"], Literal["high", "low"]] | None:
+    severity_match = re.search(
+        r"^SEVERITY:\s*(critical|high|medium|low|none)\s*$", value, re.I | re.M
+    )
     confidence_match = re.search(r"^CONFIDENCE:\s*(high|low)\s*$", value, re.I | re.M)
     if severity_match is None or confidence_match is None:
         return None

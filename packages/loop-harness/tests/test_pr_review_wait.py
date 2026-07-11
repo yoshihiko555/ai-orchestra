@@ -154,12 +154,31 @@ def test_pr_review_auxiliary_updates_preserve_pending_action_version(
         lease_token,
         action_id=proposal.action_id,
     )
-    prw.collect_review_findings(
+    client.routes["repos/owner/repo/issues/12/comments"] = [
+        _trusted(
+            {
+                "id": 200,
+                "created_at": "2099-01-01T00:00:00+00:00",
+                "body": "Please consider this edge case",
+            }
+        )
+    ]
+    collected = prw.collect_review_findings(
         "abcd1234-issue-1",
         project_dir,
         12,
         _config(),
         client,
+        proposal.iteration,
+        lease_token,
+        action_id=proposal.action_id,
+    )
+    prw.apply_severity_classifications(
+        "abcd1234-issue-1",
+        project_dir,
+        collected,
+        _config(),
+        {"issue_comment:200": "SEVERITY: medium\nCONFIDENCE: high\n"},
         proposal.iteration,
         lease_token,
         action_id=proposal.action_id,
@@ -826,6 +845,194 @@ def test_ev37_severity_parsing_and_classification_failsafe() -> None:
     )
     assert low_confidence.severity == "high"
     assert low_confidence.source == "fail_safe"
+    positive = prw.classify_severity(
+        "No marker",
+        config,
+        classification_response="SEVERITY: none\nCONFIDENCE: high\n",
+    )
+    assert positive.severity is None
+    assert positive.reason == "not_a_finding"
+
+
+def test_apply_severity_classifications_persists_medium_in_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={
+            "baseline_review_id": 10,
+            "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+            "processed_comment_ids": [],
+            "findings": {},
+        },
+    )
+    client = FakeClient(
+        {
+            "repos/owner/repo/pulls/12/reviews": [],
+            "repos/owner/repo/pulls/12/comments": [],
+            "repos/owner/repo/issues/12/comments": [
+                _trusted(
+                    {
+                        "id": 12,
+                        "created_at": "2026-07-09T00:00:01+00:00",
+                        "body": "Please consider this edge case",
+                    }
+                )
+            ],
+        }
+    )
+    lease_token = _lease(project_dir)
+    collected = prw.collect_review_findings(
+        "abcd1234-issue-1", project_dir, 12, _config(), client, 1, lease_token
+    )
+
+    applied = prw.apply_severity_classifications(
+        "abcd1234-issue-1",
+        project_dir,
+        collected,
+        _config(),
+        {"issue_comment:12": "SEVERITY: medium\nCONFIDENCE: high\n"},
+        1,
+        lease_token,
+    )
+
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    finding = applied.review_findings.findings[0]
+    record = state.pr_review["findings"][finding.signature]
+    assert finding.severity == "medium"
+    assert finding.needs_classification is False
+    assert record["severity"] == "medium"
+    assert record["confirmed_severity"] == "medium"
+    assert record["pending_classification_source_comment_ids"] == []
+    assert "issue_comment:12" in applied.review_findings.processed_comment_ids
+    assert "issue_comment:12" in state.pr_review["processed_comment_ids"]
+
+
+def test_pending_classification_is_reimported_after_collect_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={
+            "baseline_review_id": 10,
+            "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+            "processed_comment_ids": [],
+            "findings": {},
+        },
+    )
+    client = FakeClient(
+        {
+            "repos/owner/repo/pulls/12/reviews": [],
+            "repos/owner/repo/pulls/12/comments": [],
+            "repos/owner/repo/issues/12/comments": [
+                _trusted(
+                    {
+                        "id": 12,
+                        "created_at": "2026-07-09T00:00:01+00:00",
+                        "body": "Please consider this edge case",
+                    }
+                )
+            ],
+        }
+    )
+    lease_token = _lease(project_dir)
+
+    first = prw.collect_review_findings(
+        "abcd1234-issue-1", project_dir, 12, _config(), client, 1, lease_token
+    )
+    second = prw.collect_review_findings(
+        "abcd1234-issue-1", project_dir, 12, _config(), client, 1, lease_token
+    )
+
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    signature = first.findings[0].signature
+    assert first.needs_classification_count == 1
+    assert second.needs_classification_count == 1
+    assert second.findings[0].source_comment_id == "issue_comment:12"
+    assert "issue_comment:12" not in second.processed_comment_ids
+    assert state.pr_review["findings"][signature]["source_comment_ids"] == ["issue_comment:12"]
+
+
+def test_apply_severity_classifications_drops_non_findings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={
+            "baseline_review_id": 10,
+            "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+            "processed_comment_ids": [],
+            "findings": {},
+        },
+    )
+    client = FakeClient(
+        {
+            "repos/owner/repo/pulls/12/reviews": [],
+            "repos/owner/repo/pulls/12/comments": [],
+            "repos/owner/repo/issues/12/comments": [
+                _trusted(
+                    {
+                        "id": 12,
+                        "created_at": "2026-07-09T00:00:01+00:00",
+                        "body": "Didn't find any major issues",
+                    }
+                )
+            ],
+        }
+    )
+    lease_token = _lease(project_dir)
+    collected = prw.collect_review_findings(
+        "abcd1234-issue-1", project_dir, 12, _config(), client, 1, lease_token
+    )
+
+    applied = prw.apply_severity_classifications(
+        "abcd1234-issue-1",
+        project_dir,
+        collected,
+        _config(),
+        {"issue_comment:12": "SEVERITY: none\nCONFIDENCE: high\n"},
+        1,
+        lease_token,
+    )
+
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    phase_check = prw.phase_check_from_review_findings(applied.review_findings)
+    assert applied.review_findings.findings == ()
+    assert applied.review_findings.iteration_findings.signatures == frozenset()
+    assert applied.classifications[0].severity is None
+    assert state.pr_review["findings"] == {}
+    assert phase_check.passed is True
+
+
+def test_none_classification_preserves_existing_confirmed_finding() -> None:
+    findings_map = {
+        "sig-a": {
+            "first_seen_iteration": 1,
+            "last_seen_iteration": 1,
+            "status": "open",
+            "severity": "medium",
+            "dismiss_reason": None,
+            "source_comment_ids": ["review_comment:1"],
+        }
+    }
+    pending = prw.ImportedFinding(
+        "sig-a", "high", "review_comment:2", "informational", "app.py", 10, True
+    )
+    prw._upsert_finding(findings_map, pending, 2)
+
+    prw._apply_classification_to_state(
+        findings_map,
+        pending,
+        prw.SeverityDecision(None, "external_classification", False, "not_a_finding"),
+        2,
+    )
+
+    assert findings_map["sig-a"]["severity"] == "medium"
+    assert findings_map["sig-a"]["last_seen_iteration"] == 1
+    assert findings_map["sig-a"]["source_comment_ids"] == ["review_comment:1"]
 
 
 def test_phase_check_requires_response_for_medium_low_findings() -> None:
