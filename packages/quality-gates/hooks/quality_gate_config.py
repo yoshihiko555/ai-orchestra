@@ -71,15 +71,27 @@ DEFAULT_TEST_GATE_STATE: dict = {
 DEFAULT_STATE_DIR = os.path.join(".claude", "state")
 
 
-def resolve_state_path(project_dir: str, filename: str) -> str:
+def resolve_state_path(project_dir: str, filename: str, config: dict | None = None) -> str:
     """<project_dir>/.claude/state/<filename> に解決する（paths.state_dir 上書き対応）。
 
-    evaluation-set-checker.py の resolve_state_path() と同じ規約。
+    quality-gates パッケージ内の唯一の実装（evaluation-set-checker.py もこの
+    関数を import して使う。Issue #154 のレビュー指摘: 同名関数の重複実装は
+    契約のズレを招くため一本化した）。
+
+    `config` に呼び出し側が事前読み込みした audit-flags.json の dict を渡すと、
+    同一 hook 呼び出し内での重複読み込みを避けられる（省略時は内部で読み込む。
+    既存呼び出し元との後方互換のためデフォルト None）。
+
     resolve_path_within によるパストラバーサル防御込みで、project_dir の外に
-    解決される場合は DEFAULT_STATE_DIR 直下へフォールバックする。
+    解決される場合は DEFAULT_STATE_DIR 直下へフォールバックする。常に非 None の
+    str を返す。
     """
-    config = load_package_config("audit", "audit-flags.json", project_dir)
-    state_dir_value = config.get("paths", {}).get("state_dir")
+    resolved_config = (
+        config
+        if config is not None
+        else load_package_config("audit", "audit-flags.json", project_dir)
+    )
+    state_dir_value = resolved_config.get("paths", {}).get("state_dir")
     state_dir = (
         state_dir_value
         if isinstance(state_dir_value, str) and state_dir_value

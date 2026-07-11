@@ -206,7 +206,9 @@ def test_emit_quality_gate_event_records_audit_event(monkeypatch: pytest.MonkeyP
         post_test_analysis, "resolve_project_root_from_hook_data", lambda data: data["cwd"]
     )
     monkeypatch.setattr(
-        post_test_analysis, "load_quality_gate_config", lambda _project_dir: {"enabled": True}
+        post_test_analysis,
+        "load_quality_gate_config",
+        lambda _project_dir, config=None: {"enabled": True},
     )
     monkeypatch.setattr(
         post_test_analysis, "load_trace_state", lambda **_kwargs: {"tid": "tid-123"}
@@ -251,7 +253,7 @@ def test_emit_quality_gate_event_returns_blocking_when_configured(
     monkeypatch.setattr(
         post_test_analysis,
         "load_quality_gate_config",
-        lambda _project_dir: {"enabled": True, "block_on_failed_test": True},
+        lambda _project_dir, config=None: {"enabled": True, "block_on_failed_test": True},
     )
     monkeypatch.setattr(
         post_test_analysis, "load_trace_state", lambda **_kwargs: {"tid": "tid-123"}
@@ -286,7 +288,7 @@ def test_emit_quality_gate_event_records_failure_when_exit_code_masked(
     monkeypatch.setattr(
         post_test_analysis,
         "load_quality_gate_config",
-        lambda _project_dir: {"enabled": True, "block_on_failed_test": True},
+        lambda _project_dir, config=None: {"enabled": True, "block_on_failed_test": True},
     )
     monkeypatch.setattr(
         post_test_analysis, "load_trace_state", lambda **_kwargs: {"tid": "tid-123"}
@@ -350,7 +352,7 @@ def test_emit_quality_gate_event_treats_missing_enabled_key_as_enabled(
     monkeypatch.setattr(
         post_test_analysis,
         "load_quality_gate_config",
-        lambda _project_dir: {},  # `enabled` キーが存在しない
+        lambda _project_dir, config=None: {},  # `enabled` キーが存在しない
     )
     monkeypatch.setattr(
         post_test_analysis, "load_trace_state", lambda **_kwargs: {"tid": "tid-123"}
