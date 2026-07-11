@@ -60,9 +60,10 @@ issue_json="$(cd "$worktree_path" && gh issue view "$issue_number" --json number
 ```
 
 `issue_json` の labels は `.labels[].name` の文字列一覧へ正規化してから Maker 選定に渡す。生の
-`body` は Maker の routing 入力と Maker prompt だけに利用し、ユーザー応答、Issue コメント、audit、
-Checker prompt、結果ファイルへ転載しない。`attach` / `resume` でも例外なく、この入口応答の共通
-`params` から同じ検証・取得経路を使う。
+`body` は Maker prompt だけに利用し、Maker 選定の `detect_agent()` 入力（routing 入力）には含めない
+（本文中の偶発的なキーワード一致による誤選定を防ぐため。EV-74）。`body` はユーザー応答、Issue
+コメント、audit、Checker prompt、結果ファイルへも転載しない。`attach` / `resume` でも例外なく、この
+入口応答の共通 `params` から同じ検証・取得経路を使う。
 
 ### two-phase サイクル
 
