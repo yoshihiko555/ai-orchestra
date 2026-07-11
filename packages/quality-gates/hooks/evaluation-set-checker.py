@@ -30,6 +30,7 @@ else:
         sys.path.insert(0, str(_fallback_core_hooks))
 
 from hook_common import (  # noqa: E402
+    is_test_path,
     load_package_config,
     read_hook_input,
     read_json_safe,
@@ -43,7 +44,6 @@ from hook_common import (  # noqa: E402
 DEFAULT_STATE_DIR = os.path.join(".claude", "state")
 STATE_FILENAME = "evaluation-set-checker.json"
 
-TEST_FILENAME_PATTERN = re.compile(r"^(test_.+|.+_test)\.py$")
 PACKAGES_TEST_PATH_PATTERN = re.compile(r"^packages/([^/]+)/tests/")
 TOP_LEVEL_TESTS_PATTERN = re.compile(r"^tests/")
 
@@ -76,7 +76,8 @@ def to_relative_path(file_path: str, project_dir: str) -> str:
 
 def is_test_filename(basename: str) -> bool:
     """Return True when basename matches test_*.py or *_test.py."""
-    return bool(TEST_FILENAME_PATTERN.match(basename))
+    # Prefix with top-level tests/ so hook_common applies the scoped filename rule.
+    return is_test_path(f"tests/{basename}", scope="scoped")
 
 
 def is_valid_package_name(name: str) -> bool:
@@ -108,10 +109,7 @@ def is_top_level_tests_path(relative_path: str, basename: str) -> bool:
 
 def is_target_test_file(relative_path: str) -> bool:
     """Return True when relative_path is a test file this hook should react to."""
-    if extract_package_from_packages_path(relative_path) is not None:
-        return True
-    basename = Path(relative_path).name
-    return is_top_level_tests_path(relative_path, basename)
+    return is_test_path(relative_path, scope="scoped")
 
 
 def list_package_dirs(project_dir: str) -> list[str]:

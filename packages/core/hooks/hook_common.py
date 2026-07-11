@@ -6,10 +6,11 @@ from __future__ import annotations
 import functools
 import json
 import os
+import re
 import stat
 import sys
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
 # CLI ツール設定（cli-tools.yaml）が読めない場合のフォールバック既定値（SSOT）。
 #
@@ -186,6 +187,68 @@ def resolve_path_within(project_dir: str, relative: str, filename: str) -> str |
 def get_field(data: dict, key: str) -> str:
     """dict からフィールドを取得する。存在しなければ空文字を返す。"""
     return str(data.get(key) or "")
+
+
+# ---------------------------------------------------------------------------
+# テストファイル判定
+# ---------------------------------------------------------------------------
+
+_ANY_TEST_DIR_PATTERN = re.compile(r"(^|/)(tests?|__tests__)(/|$)")
+_PYTHON_TEST_FILENAME_SOURCE = r"(?:test_[^/]+|[^/]+_test)\.py"
+_PYTHON_TEST_PATH_PATTERN = re.compile(rf"(^|/){_PYTHON_TEST_FILENAME_SOURCE}$")
+_JS_TEST_PATH_PATTERN = re.compile(r"\.(?:test|spec)\.[cm]?[jt]sx?$")
+_SCOPED_PACKAGES_TEST_PATH_PATTERN = re.compile(r"^packages/[^/]+/tests/")
+_SCOPED_TOP_LEVEL_TESTS_PATTERN = re.compile(r"^tests/")
+
+
+def is_test_path(
+    path: str, *, scope: Literal["any", "scoped"] = "any", include_js: bool = True
+) -> bool:
+    """Return whether ``path`` should be treated as a test path.
+
+    テストファイル判定を共有するための関数。
+
+    Args:
+        path: File path. Both "/" and "\\" separators are accepted.
+        scope: 判定範囲。"any" はパス中の test/tests/__tests__ ディレクトリ、
+            Python の test_*.py/*_test.py、必要に応じて JS/TS の .test./.spec.
+            を検出する。"scoped" はリポジトリルート相対パスとして扱い、
+            packages/<pkg>/tests/ 配下は任意ファイル、トップレベル tests/ 配下は
+            Python の test_*.py/*_test.py だけを対象にする。
+        include_js: When ``scope`` is "any", include JS/TS .test./.spec. filename
+            patterns. This parameter has no effect when ``scope`` is "scoped".
+
+    Returns:
+        True if the path matches the selected test-file rules.
+
+    Raises:
+        ValueError: If ``scope`` is neither "any" nor "scoped". This is
+            fail-fast by design so a typo'd or newly-introduced scope value
+            cannot silently disable test-file detection.
+    """
+    if scope not in ("any", "scoped"):
+        raise ValueError(f"Unknown scope: {scope!r}. Expected 'any' or 'scoped'.")
+
+    if not path:
+        return False
+
+    normalized = path.replace("\\", "/")
+
+    if scope == "scoped":
+        if _SCOPED_PACKAGES_TEST_PATH_PATTERN.match(normalized):
+            return True
+        if not _SCOPED_TOP_LEVEL_TESTS_PATTERN.match(normalized):
+            return False
+        basename = normalized.rsplit("/", maxsplit=1)[-1]
+        return bool(_PYTHON_TEST_PATH_PATTERN.match(basename))
+
+    if _ANY_TEST_DIR_PATTERN.search(normalized):
+        return True
+    if _PYTHON_TEST_PATH_PATTERN.search(normalized):
+        return True
+    if not include_js:
+        return False
+    return bool(_JS_TEST_PATH_PATTERN.search(normalized))
 
 
 # ---------------------------------------------------------------------------
