@@ -339,7 +339,7 @@ Harness の config layer。model、approval、sandbox、permission profile、MCP
 最小例:
 
 ```toml
-model = "gpt-5.5"
+model = "gpt-5.6-sol"
 # 対話 codex は on-failure（sandbox 拒否時に承認要求）。詳細は §10.2。
 # 非対話 runner は -c approval_policy=never で上書きし厳格運用する。
 approval_policy = "on-failure"
@@ -789,7 +789,7 @@ CI 失敗時に Codex が修正 patch を提案する。ただし merge / push /
   "repo_root": "/path/to/repo",
   "base_ref": "main",
   "head_ref": "feature/foo",
-  "model": "gpt-5.5",
+  "model": "gpt-5.6-sol",
   "profile": "project-safe",
   "sandbox": "workspace-write",
   "approval_policy": "never",

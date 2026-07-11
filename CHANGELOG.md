@@ -40,6 +40,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Codex の既定モデルを `gpt-5.6-sol` に更新**: エージェントルーティング、設定読込失敗時のフォールバック、新規導入用 `.codex/config.toml` テンプレートを同じモデルに揃えた。
+
 - **`codex-harness`: 旧 `project-edit` profile のアップグレード移行を追加**: 過去に同期済みの harness 所有 profile だけを限定検出して `.codex/config.toml` から削除し、Issue #161 の制限が既存導入先に残り続けないようにした
 - **`codex-harness`: force-push と approval bypass 形を禁止**: branch push / PR 作成の plain 形は引き続き人間承認に委譲しつつ、force-push と option 挿入で native prefix rule を迂回する形は hook で block する
 - **`codex-harness`: 非対話 runner の validation trust を pre-run snapshot 化**: workspace-write 実行中に validation 設定と台帳を同時改変しても、実行前 hash snapshot と不一致なら validation を実行しない

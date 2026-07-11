@@ -20,7 +20,7 @@ from typing import Any, Literal
 # 重要: これらは cli-tools.yaml と意図的に独立しており、yaml のモデルを変更しても
 # ここを同期する必要はない（同期を強制するテストも置かない）。役割は「正本が読めない
 # 障害時にとにかく何か動く値を返す」こと。値が多少古くても安全網としては許容する。
-DEFAULT_CODEX_MODEL = "gpt-5.5"
+DEFAULT_CODEX_MODEL = "gpt-5.6-sol"
 DEFAULT_CODEX_SANDBOX_ANALYSIS = "read-only"
 DEFAULT_CODEX_FLAGS = "--full-auto"
 # 空文字 = --model フラグを省略し、Antigravity CLI のデフォルトモデルに委ねる意図。

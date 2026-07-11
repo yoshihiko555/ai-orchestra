@@ -15,7 +15,7 @@ codex:
   # .local.yaml で codex.enabled: false にすれば CLI 未インストール環境でも利用可能
   enabled: true
   # codex exec --model <この値> で指定される
-  model: gpt-5.5
+  model: gpt-5.6-sol
   sandbox:
     # 読み取り専用: 設計相談・分析・レビュー向け（ファイル変更不可）
     analysis: read-only
