@@ -905,6 +905,54 @@ def test_apply_severity_classifications_persists_medium_in_state(
     assert record["severity"] == "medium"
     assert record["confirmed_severity"] == "medium"
     assert record["pending_classification_source_comment_ids"] == []
+    assert "issue_comment:12" in applied.review_findings.processed_comment_ids
+    assert "issue_comment:12" in state.pr_review["processed_comment_ids"]
+
+
+def test_pending_classification_is_reimported_after_collect_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={
+            "baseline_review_id": 10,
+            "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+            "processed_comment_ids": [],
+            "findings": {},
+        },
+    )
+    client = FakeClient(
+        {
+            "repos/owner/repo/pulls/12/reviews": [],
+            "repos/owner/repo/pulls/12/comments": [],
+            "repos/owner/repo/issues/12/comments": [
+                _trusted(
+                    {
+                        "id": 12,
+                        "created_at": "2026-07-09T00:00:01+00:00",
+                        "body": "Please consider this edge case",
+                    }
+                )
+            ],
+        }
+    )
+    lease_token = _lease(project_dir)
+
+    first = prw.collect_review_findings(
+        "abcd1234-issue-1", project_dir, 12, _config(), client, 1, lease_token
+    )
+    second = prw.collect_review_findings(
+        "abcd1234-issue-1", project_dir, 12, _config(), client, 1, lease_token
+    )
+
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    signature = first.findings[0].signature
+    assert first.needs_classification_count == 1
+    assert second.needs_classification_count == 1
+    assert second.findings[0].source_comment_id == "issue_comment:12"
+    assert "issue_comment:12" not in second.processed_comment_ids
+    assert state.pr_review["findings"][signature]["source_comment_ids"] == ["issue_comment:12"]
 
 
 def test_apply_severity_classifications_drops_non_findings(

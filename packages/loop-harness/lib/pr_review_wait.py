@@ -469,15 +469,18 @@ def collect_review_findings(
         key = _comment_key(item)
         if not _is_importable(item, baseline, processed):
             continue
-        processed.add(key)
         if not verify_origin(item.raw, config.reviewer_allowlist):
+            processed.add(key)
             ignored_items.append(item)
             continue
         finding = _finding_from_item(item, key, config, iteration)
         if finding is None:
+            processed.add(key)
             continue
         imported.append(finding)
         _upsert_finding(findings_map, finding, iteration)
+        if not finding.needs_classification:
+            processed.add(key)
 
     pr_review["processed_comment_ids"] = sorted(processed)
     pr_review["findings"] = findings_map
@@ -566,6 +569,7 @@ def apply_severity_classifications(
     state = lc.load_state(loop_id, project_dir)
     pr_review = _ensure_pr_review_state(state.pr_review)
     findings_map = _findings_map(pr_review)
+    processed = set(_processed_comment_ids(pr_review))
     updated_findings: list[ImportedFinding] = []
     applied: list[AppliedSeverityClassification] = []
 
@@ -579,6 +583,7 @@ def apply_severity_classifications(
             classification_response=classification_responses.get(finding.source_comment_id, ""),
         )
         _apply_classification_to_state(findings_map, finding, decision, iteration)
+        processed.add(finding.source_comment_id)
         applied.append(
             AppliedSeverityClassification(
                 signature=finding.signature,
@@ -602,6 +607,7 @@ def apply_severity_classifications(
             )
 
     pr_review["findings"] = findings_map
+    pr_review["processed_comment_ids"] = sorted(processed)
     state.pr_review = pr_review
     state.updated_at = lc.now_iso()
     iteration_findings = build_iteration_findings(pr_review, iteration)
@@ -630,7 +636,7 @@ def apply_severity_classifications(
         findings=tuple(updated_findings),
         iteration_findings=iteration_findings,
         previous_iteration_findings=result.previous_iteration_findings,
-        processed_comment_ids=result.processed_comment_ids,
+        processed_comment_ids=tuple(pr_review["processed_comment_ids"]),
         ignored_untrusted_comment_count=result.ignored_untrusted_comment_count,
         needs_classification_count=0,
     )

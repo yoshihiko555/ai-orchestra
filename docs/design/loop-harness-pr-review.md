@@ -387,6 +387,9 @@ CONFIDENCE: <high|low>
   衝突し得る）。
 - 再取得のたびに `processed_comment_ids` に含まれるコメント ID を除外してから 4.2 節のシグネチャ計算
   に回す（同一コメントの二重処理を防ぐ）。
+- Step 2 の分類待ちコメントは、`collect_review_findings()` では `processed_comment_ids` に追加しない。
+  `apply_severity_classifications()` が分類結果と finding state を永続化する同じ action fence 内で追加する。
+  これにより collect 後・分類前に中断しても、同じコメントを次回 collect で再取得できる。
 - `confirmed_severity` と `pending_classification_source_comment_ids` を分離し、分類待ちの暫定 `high` が
   既存の確定 severity を上書きしないようにする。分類確定時は pending ID を除き、確定 severity を
   `severity` へ反映する。`none` なら該当 source ID を除き、確定 finding も pending ID も残らない
