@@ -297,13 +297,21 @@ critical / high / medium / low のいずれか 1 つに分類することだけ�
 - critical: セキュリティ脆弱性・データ損失・本番障害に直結する指摘
 - high: バグの可能性・設計上の欠陥・重大なパフォーマンス劣化
 - medium: コード品質・可読性・軽微な改善提案
-- low: スタイル・命名・コメント表現の改善提案
+- low: スタイル・命名・コメント表現の改善提案。修正要求を含まない肯定的・情報提供のみのコメントも low
 
 ## 出力形式（これ以外のテキストを含めないこと）
 SEVERITY: <critical|high|medium|low>
 CONFIDENCE: <high|low>
 """)
 ```
+
+- **コメント本文の受け渡し**: オーケストレーターがコメント原文をメインコンテキストに保持することは
+  NF-05（コンテキスト分離）に反するため、`{comment_body}` 等の値は分類 Task 自身が
+  `source_comment_id` から `gh api`（cwd は検証済み worktree に固定）で取得してよい。その場合、
+  Task の返却は出力形式の 2 行のみとし、コメント本文を転載しない。
+- **応答の確定**: オーケストレーターは Task 応答を `pr_review_wait.classify_severity()` に
+  `classification_response` として渡して確定する（パース失敗・`CONFIDENCE: low` の 3.3 節への丸めは
+  同 API が決定論的に行う。呼び出し側で severity を手書きしない）。
 
 - 応答パース失敗（形式不一致）、または `CONFIDENCE: low` の場合は 3.3 節を適用する。
 - 分類結果は `artifacts/<action_id>/severity_classifications.json` に保存し、次回反復での

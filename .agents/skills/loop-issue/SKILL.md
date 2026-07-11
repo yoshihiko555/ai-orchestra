@@ -587,6 +587,7 @@ artifact から復旧する `reconcile` も同じ validator を必ず通し、�
 - `wait_for_completion(...)`
 - `record_ignored_untrusted_reviews(...)`
 - `collect_review_findings(...)`
+- `classify_severity(...)`（Step 2 分類応答の決定論パース。下記「severity 分類」参照）
 - `phase_check_from_completion_outcome(...)`
 - `phase_check_from_review_findings(...)`
 
@@ -612,8 +613,56 @@ guard 不合格なら push / poll を先取りせず、同じ action を失敗�
 
 `wait_for_completion()` の heartbeat callback から保持中 token を使って
 `python3 "$LOOP_STEP" heartbeat` を呼ぶ。完了シグナルが得られたら `collect_review_findings()` で許可済み
-発信元だけを取り込み、`phase_check_from_review_findings()` で `PhaseCheckResult` に変換する。timeout /
+発信元だけを取り込み、下記「severity 分類（Step 2）」を適用してから
+`phase_check_from_review_findings()` で `PhaseCheckResult` に変換する。timeout /
 API error は `phase_check_from_completion_outcome()` で変換する。独自の `gh` polling は実装しない。
+
+### severity 分類（Step 2）
+
+`collect_review_findings()` の戻り値で `needs_classification` が `true` の finding（Step 1 の明示的
+表記にマッチしなかったコメント。fail-safe で暫定 high）が 1 件以上ある場合、
+`phase_check_from_review_findings()` を呼ぶ**前に**、設計 pr-review 編 §3.2 の分類を実行する。
+
+1. 対象 finding ごとに下記の分類専用 Task を起動する（読み取り専用・分類のみ。コメント本文は
+   Task 側が `source_comment_id` から取得し、メインコンテキストへは 2 行の応答だけを返す）。
+2. Task の応答テキストをそのまま
+   `classify_severity(finding.body_excerpt, config, classification_response=<応答>)` に渡し、
+   `SeverityDecision` を得る。応答のパース失敗・`CONFIDENCE: low` は API が安全側で high に確定する
+   （設計 §3.3）。Step 3 相当の判定を独自実装しない。
+3. `dataclasses.replace(finding, severity=decision.severity, needs_classification=False)` で finding を
+   置き換え、`dataclasses.replace(result, findings=<置換後の tuple>)` で `ReviewFindingsResult` を
+   再構成する。この再構成後の result を `phase_check_from_review_findings()` に渡す。
+4. 分類結果（`signature` / 確定 `severity` / `decision.source` / `decision.reason`）を 0600 で
+   `artifacts/<action_id>/severity_classifications.json` に保存する（設計 §3.2。reconcile 復元用）。
+5. severity を手書きで決めない。Task 応答から直接 severity を採用せず、必ず `classify_severity()` を
+   経由する。`needs_classification` が `false` の finding（Step 1 で確定済み）は再分類しない。
+
+```text
+Task(subagent_type="code-reviewer", prompt="""
+[PR Review Comment Severity Classification — 読み取り専用・分類のみ]
+
+あなたはコードを修正しません。次の PR レビューコメント 1 件を
+critical / high / medium / low のいずれか 1 つに分類することだけが役割です。
+
+- cwd: {params.worktree_path}（`gh` はこの cwd に固定して実行すること）
+- PR: #{params.pr_number}
+- 対象コメント: {finding.source_comment_id}
+  （`issue_comment:<id>` は `repos/<owner>/<repo>/issues/comments/<id>`、
+  `review_comment:<id>` は `repos/<owner>/<repo>/pulls/comments/<id>`、
+  `review:<id>` は `repos/<owner>/<repo>/pulls/{params.pr_number}/reviews/<id>` を
+  `gh api` で取得して本文を読むこと）
+
+## 分類基準
+- critical: セキュリティ脆弱性・データ損失・本番障害に直結する指摘
+- high: バグの可能性・設計上の欠陥・重大なパフォーマンス劣化
+- medium: コード品質・可読性・軽微な改善提案
+- low: スタイル・命名・コメント表現の改善提案。修正要求を含まない肯定的・情報提供のみのコメントも low
+
+## 出力形式（これ以外のテキストを含めないこと。コメント本文を転載しないこと）
+SEVERITY: <critical|high|medium|low>
+CONFIDENCE: <high|low>
+""")
+```
 
 `record_baseline(...)`、`record_iteration_head(...)`、`collect_review_findings(...)` は、Python 側で
 `state_version` を変更しない補助更新として実装された API だけを使う。各 API は対応する同じ pending
