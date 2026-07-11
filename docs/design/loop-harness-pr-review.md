@@ -533,7 +533,7 @@ from route_config import detect_agent, load_config, get_agent_tool  # 既存資�
 # detect_agent()/get_agent_tool() には agent-routing 自身の config（cli-tools.yaml）を渡す
 routing_config = load_config()  # cli-tools.yaml（+ .local.yaml 上書き。config-loading ルール準拠）
 
-issue_text = f"{issue_title}\n{issue_body}\n{' '.join(issue_labels)}"
+issue_text = f"{issue_title}\n{' '.join(issue_labels)}"  # 本文は含めない（誤検出対策。EV-74）
 agent_name, trigger = detect_agent(issue_text)  # cli-tools.yaml 由来のキーワードマッピングで検出
 if agent_name is None:
     # fallback_agent は cli-tools.yaml ではなく loop-harness 自身の config（config/loop-harness.yaml）
