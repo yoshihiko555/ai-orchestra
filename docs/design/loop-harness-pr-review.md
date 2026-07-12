@@ -100,14 +100,25 @@ loop:
         signal = REVIEW_SUBMITTED
         break
 
+    terminal_issue_comments = trusted_post_baseline_terminal_issue_comments()
+    if terminal_issue_comments:
+        signal = ISSUE_COMMENT_COMPLETED
+        break
+
     check_runs = gh api repos/{o}/{r}/commits/{iteration_head_sha}/check-runs
     allowlisted_runs = [c for c in check_runs if c.name in pr_review.checkrun_allowlist]
     if allowlisted_runs and all(c.status == "completed" for c in allowlisted_runs):
         signal = CHECK_RUN_COMPLETED
         break
 
+    rate_limit_replies = trusted_unprocessed_coderabbit_rate_limit_replies()
+    if rate_limit_replies:
+        remember REVIEWER_UNAVAILABLE
+        if no alternate reviewer or check-run path is configured:
+            break
+
     if elapsed >= pr_review.timeout_seconds:
-        signal = TIMEOUT
+        signal = REVIEWER_UNAVAILABLE if remembered else TIMEOUT
         break
 
     sleep(pr_review.poll_interval_seconds)
@@ -144,7 +155,7 @@ loop:
 >
 > | 事象                                                                                                 | 扱い                                                                                                                                                             |
 > | ---------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-> | 個々の `gh api` 呼び出し失敗（5xx、network error、rate limit 応答）                                  | `infrastructure_failure` カウンタ（基本設計 6.3 節）。指数バックオフで同一ポーリング周期内リトライし、`guards.infrastructure_failure.max_retries` 到達で失敗出口 |
+> | 個々の `gh api` 呼び出し失敗（5xx、network error、GitHub API 自体の rate limit 応答）                | `infrastructure_failure` カウンタ（基本設計 6.3 節）。指数バックオフで同一ポーリング周期内リトライし、`guards.infrastructure_failure.max_retries` 到達で失敗出口 |
 > | `pr_review.timeout_seconds` 到達（API 呼び出し自体は成功し続けたが、シグナルが一度も得られなかった） | 無進捗カウンタ（本節。要件定義 FT-13 準拠）                                                                                                                      |
 
 ### 1.2.1 push_required 時の no_new_commit ショートカット
@@ -417,16 +428,39 @@ issue コメントはフォールバックより優先度が高い準正シグ�
 マッチしたコメントの `issue_comment:<id>` 形式 ID を `issue_comment_ids` に含める。1 件も
 見つからない場合は既存どおり check-run 判定・timeout 判定へ進む。
 
-> **Issue #193（レートリミット→人間引き継ぎ）との独立性**
-> 条件 4 の自動生成マーカー除外は、CodeRabbit のレートリミット応答等が完了シグナルとして
-> 誤検知されるのを防ぐための negative-list であり、Issue #193 が計画する「レートリミット検知→
-> 人間引き継ぎ」とは別の関心事である。本節はレートリミット応答を「完了ではない」として無視する
-> だけであり、それを能動的に人間へエスカレーションする機構は持たない（Issue #193 のスコープ）。
-
 > **完了後の finding 取り込みとの関係**
 > issue コメント完了シグナルは「レビューが完了したこと」の検知のみを行う。完了検知後の
 > `collect_review_findings()` は同じ `TERMINAL_VERDICT_PATTERNS` を肯定的 summary の判定にも再利用し、
 > 完了シグナルとなった issue コメントを finding 化せず `processed_comment_ids` に記録する。
+
+### 2.5 CodeRabbit レート制限応答による人間引き継ぎ（Issue #193）
+
+CodeRabbit の issue コメントが次の条件をすべて満たす場合、外部レビュアー利用不可を検知する。
+
+1. `reviewer_allowlist` 内の CodeRabbit identity（`app_slug` または `login` に `coderabbit` を含む）と
+   発信元検証が一致する。
+2. `baseline_recorded_at` より後で、ID が `processed_comment_ids` に含まれない。
+3. `auto_generated_markers` 内の CodeRabbit `rate limited` マーカーまたは `auto-generated reply`
+   マーカーと、固定 `RATE_LIMIT_PATTERNS` 内のレート制限文言が本文に **AND** で一致する。summary /
+   review-in-progress マーカーは対象外とし、専用マーカーだけ、文言だけでも検知しない。
+
+完了シグナルの優先順位は formal review → 2.4 節の terminal issue comment → allowlisted check-run →
+reviewer unavailable とする。同じ poll 周期に正常シグナルがあれば常に正常処理を優先する。
+
+- CodeRabbit 以外の reviewer allowlist entry も check-run 経路も無い場合は、専用
+  `CompletionOutcome(signal="reviewer_unavailable", completed=true)` を即時返す。
+- CodeRabbit 以外の reviewer allowlist entry または `checkrun_allowlist` が 1 件以上ある場合は、利用不可を
+  プロセス内で記憶し、`pr_review.timeout_seconds` まで正常シグナルを待つ。Codex 等のレビューが後から
+  到着すれば通常処理へ進み、到着しなければ timeout の代わりに同じ専用 outcome を返す。
+- 専用 outcome は `external_reviewer_unavailable` signature へ変換し、no-progress / iteration /
+  infrastructure failure の各カウンタを変更せず `status=stopped`、
+  `stop_reason=external_reviewer_unavailable` とする。FAILED 出口や Draft 化へは進めない。
+- 専用停止を state へ適用する同じ `complete` で、検知済みの `issue_comment:<id>` を
+  `processed_comment_ids` へ追加する。通知後の `stop` action 完了と `resume` を経ても、同じ古い
+  レート制限応答で即時再停止しない。
+
+state / metadata / journal / 通知へ保存できるのは issue comment ID と理由コード `rate_limited` だけとし、
+コメント本文や GitHub API 生応答は含めない。本文はその場の AND 判定にだけ使用する。
 
 ---
 
@@ -928,7 +962,7 @@ instruction: loop-issue
 > 基本設計参照: 8 節（macOS 通知の粒度）、9 節（Issue コメント + macOS 通知の 2 経路）、10.2 節（redaction 方針）
 
 本節は 3 種類の終端パターンを扱う: 6.1〜6.3 は通常の **PASSED / FAILED**（成功出口・失敗出口）を、
-6.4 は **安全停止（stopped）** を扱う。両者は発生条件・通知経路の実行条件が異なる（6.4 節参照）。
+6.4 は **安全停止（stopped）**、6.5 は外部レビュアー利用不可時の専用人間引き継ぎを扱う。
 
 ### 6.1 Issue 結果コメントテンプレート
 
@@ -991,6 +1025,7 @@ osascript -e 'display notification "{結果: 成功/失敗} — 反復 {n} 回, 
   repo-identity-hash 照合失敗）
 - 他ホスト生存 lease の検知（`foreign_live_lease`。基本設計 5.2 節: 起動時に他ホストの生存 lease
   〔TTL 内〕を検知）
+- 外部レビュアー利用不可（`external_reviewer_unavailable`。2.5 節）
 
 **実行方針**: 安全停止時は、**リポジトリへの書き込みを伴う exec（push / pr_create / pr_to_draft 等）
 は一切実行しない**（安全停止という概念そのものがこれらの実行を止めることを目的とするため）。
@@ -1016,6 +1051,7 @@ audit の実値・6.4 節の通知テンプレートの埋め込み値のすべ�
 | `push_guard_violation`   | push 前ガード (a) 違反      |
 | `repo_identity_mismatch` | repo-identity 不一致（(b)） |
 | `foreign_live_lease`     | 他ホスト生存 lease の検知   |
+| `external_reviewer_unavailable` | 外部レビュアー利用不可 |
 
 **macOS 通知テンプレート（安全停止時）**:
 
@@ -1044,6 +1080,38 @@ osascript -e 'display notification "安全停止: {stop_reason}" \
 
 - 本節の macOS 通知・Issue コメントとも、6.3 節の redaction 適用の対象とする。
 
+### 6.5 外部レビュアー利用不可時の専用通知
+
+`stop_reason=external_reviewer_unavailable` は 6.4 節の汎用文面を使わず、人間による確認とマージ判断を
+明示的に依頼する。macOS 通知は常時実行し、GitHub コメントは repo identity 検証済みの場合だけ、既存 PR
+があれば PR、無ければ Issue へ投稿する。source repository の編集、commit、push、PR 作成・状態変更、
+Draft 化、auto-merge は行わず、許可する GitHub 書き込みはこの条件付きコメント投稿だけとする。
+
+```bash
+osascript -e 'display notification "外部レビュアーを利用できません。確認とマージ判断をお願いします" \
+  with title "Loop Issue #{issue_number} — HUMAN REVIEW REQUIRED" sound name "Basso"'
+```
+
+```markdown
+## Loop 停止: external_reviewer_unavailable
+
+**Loop ID**: `{loop_id}`
+**フェーズ**: `pr_review_response`
+**PR**: {pr_number | なし}
+**発生時刻**: {timestamp}
+
+外部レビュアーが現在利用できないため、無進捗や実装失敗として扱わず安全停止しました。
+コード変更、push、PR の Draft 化、auto-merge は行っていません。
+
+### 次のアクション
+
+PR の内容を人間が確認し、マージ可否を判断してください。再レビューが必要な場合は、外部レビュアーが
+利用可能になった後に `loop_step resume --reset-counters` で再開してください。
+```
+
+通知・コメント・result には reason code と Issue / PR / Loop の識別子だけを載せ、レート制限コメント
+本文や API 生応答を載せない。6.3 節の redaction も送信直前に適用する。
+
 ---
 
 ## 7. config 拡張（`loop-harness.yaml` への追加分）
@@ -1062,6 +1130,7 @@ osascript -e 'display notification "安全停止: {stop_reason}" \
 | `pr_review.severity_markers`                | 3.1 節のマッピング表への追加パターン（プロジェクト固有拡張）                                      | `{}`                                   |
 | `pr_review.auto_generated_markers`          | 3.1 節の自動生成コメント除外フィルタ・2.4 節の issue コメント完了シグナル判定 共通のマーカー一覧（部分一致・casefold。空リストで無効化） | CodeRabbit 非 actionable ステータスマーカー 4 種: `("<!-- This is an auto-generated comment: summarize by coderabbit.ai", "<!-- This is an auto-generated comment: rate limited by coderabbit.ai", "<!-- This is an auto-generated comment: review in progress by coderabbit.ai", "<!-- This is an auto-generated reply by CodeRabbit")` |
 | `pr_review` の `TERMINAL_VERDICT_PATTERNS`（定数。config キーではない） | 2.4 節の issue コメント完了シグナル判定に使う終局 verdict パターン一覧（部分一致・casefold。固定値） | `("didn't find any major issues", "no major issues", "didn't find any issues", "review complete", "lgtm", "looks good to me", "approved")` |
+| `pr_review` の `RATE_LIMIT_PATTERNS`（定数。config キーではない） | 2.5 節の CodeRabbit 利用不可判定に使う文言一覧（自動生成マーカーとの AND、部分一致・casefold） | `("more reviews will be available in", "rate limit", "rate-limit", "rate limited", "rate-limited", "review quota exceeded")` |
 | `pr_review.dedup.line_bucket_size`          | 4.2 節の行番号丸め幅                                                                              | `5`                                    |
 | `pr_review.dedup.stopwords_ja` / `_en`      | 4.2 節のストップワードリスト                                                                      | 既定リスト（詳細設計内で別途定義）     |
 | `maker.fallback_agent`                      | `detect_agent()` が検出できなかった場合の Maker subagent_type（5.2.1 節）                         | `general-purpose`                      |

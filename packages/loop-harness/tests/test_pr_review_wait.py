@@ -104,6 +104,30 @@ def _config(
     )
 
 
+def _coderabbit_config(
+    *,
+    alternate_reviewer: bool = False,
+    checkruns: tuple[str, ...] = (),
+    timeout_seconds: int = 60,
+) -> prw.PrReviewConfig:
+    reviewers = [
+        prw.ReviewerAllowlistEntry(
+            app_slug="coderabbitai",
+            login="coderabbitai[bot]",
+            user_type="Bot",
+            author_associations=frozenset({"NONE"}),
+        )
+    ]
+    if alternate_reviewer:
+        reviewers.append(_config().reviewer_allowlist[0])
+    return prw.PrReviewConfig(
+        reviewer_allowlist=tuple(reviewers),
+        checkrun_allowlist=frozenset(checkruns),
+        poll_interval_seconds=1,
+        timeout_seconds=timeout_seconds,
+    )
+
+
 def _mock_git_head(
     monkeypatch: pytest.MonkeyPatch, sha: str | None, *, returncode: int = 0
 ) -> list[list[str]]:
@@ -133,6 +157,30 @@ def _untrusted(extra: dict[str, Any] | None = None) -> dict[str, Any]:
         "author_association": "NONE",
     }
     return {**data, **(extra or {})}
+
+
+def _coderabbit_rate_limit_comment(
+    *, trusted: bool = True, body: str | None = None, **extra: Any
+) -> dict[str, Any]:
+    data = {
+        "id": 30,
+        "created_at": "2026-07-09T00:00:01+00:00",
+        "body": body
+        if body is not None
+        else (
+            "<!-- This is an auto-generated reply by CodeRabbit -->\n"
+            "Full review triggered. More reviews will be available in 52 minutes."
+        ),
+        **extra,
+    }
+    if not trusted:
+        return _untrusted(data)
+    return {
+        **data,
+        "user": {"login": "coderabbitai[bot]", "type": "Bot"},
+        "author_association": "NONE",
+        "performed_via_github_app": {"slug": "coderabbitai"},
+    }
 
 
 def test_ev30_records_baseline_before_iteration_head(
@@ -932,6 +980,186 @@ def test_wait_for_completion_ignores_rate_limited_issue_comment_reply() -> None:
     )
 
     assert outcome.signal == "timeout"
+
+
+def test_reviewer_unavailable_requires_trusted_post_baseline_unprocessed_comment() -> None:
+    config = _coderabbit_config()
+    baseline = {
+        "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+        "processed_comment_ids": [],
+    }
+
+    assert prw._is_reviewer_unavailable_signal(
+        prw._review_item_from_issue_comment(_coderabbit_rate_limit_comment()),
+        baseline,
+        config,
+    )
+    assert not prw._is_reviewer_unavailable_signal(
+        prw._review_item_from_issue_comment(_coderabbit_rate_limit_comment(trusted=False)),
+        baseline,
+        config,
+    )
+    assert not prw._is_reviewer_unavailable_signal(
+        prw._review_item_from_issue_comment(
+            _coderabbit_rate_limit_comment(created_at="2026-07-08T23:59:59+00:00")
+        ),
+        baseline,
+        config,
+    )
+    assert not prw._is_reviewer_unavailable_signal(
+        prw._review_item_from_issue_comment(_coderabbit_rate_limit_comment()),
+        {**baseline, "processed_comment_ids": ["issue_comment:30"]},
+        config,
+    )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "<!-- This is an auto-generated reply by CodeRabbit -->\nReview queued.",
+        "Full review triggered. More reviews will be available in 52 minutes.",
+        (
+            "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n"
+            "The rate limit section changed in this pull request."
+        ),
+        (
+            "<!-- This is an auto-generated comment: review in progress by coderabbit.ai -->\n"
+            "Waiting because of a rate limit."
+        ),
+    ],
+)
+def test_reviewer_unavailable_requires_specific_marker_and_rate_limit_phrase(
+    body: str,
+) -> None:
+    item = prw._review_item_from_issue_comment(_coderabbit_rate_limit_comment(body=body))
+    baseline = {"baseline_recorded_at": "2026-07-09T00:00:00+00:00"}
+
+    assert not prw._is_reviewer_unavailable_signal(item, baseline, _coderabbit_config())
+
+
+def test_wait_returns_reviewer_unavailable_immediately_when_coderabbit_is_only_path() -> None:
+    client = FakeClient(
+        {
+            "repos/owner/repo/pulls/12/reviews": [],
+            "repos/owner/repo/issues/12/comments": [_coderabbit_rate_limit_comment()],
+        }
+    )
+    baseline = {
+        "baseline_review_id": 10,
+        "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+        "processed_comment_ids": [],
+    }
+    heartbeats: list[str] = []
+
+    outcome = prw.wait_for_completion(
+        12,
+        baseline,
+        _coderabbit_config(),
+        client,
+        sleeper=lambda _seconds: None,
+        heartbeat=lambda: heartbeats.append("beat"),
+    )
+    phase_check = prw.phase_check_from_completion_outcome(outcome)
+
+    assert outcome.signal == "reviewer_unavailable"
+    assert outcome.completed is True
+    assert outcome.reviewer_unavailable_reason == "rate_limited"
+    assert outcome.reviewer_unavailable_comment_ids == ("issue_comment:30",)
+    assert heartbeats == []
+    assert phase_check.signature == "external_reviewer_unavailable"
+    assert phase_check.metadata == {
+        "reviewer_unavailable_comment_ids": ["issue_comment:30"],
+        "reviewer_unavailable_reason": "rate_limited",
+    }
+    assert "Full review triggered" not in str(phase_check.metadata)
+
+
+def test_wait_keeps_polling_for_slow_alternate_reviewer_before_handoff() -> None:
+    review_calls = 0
+
+    class SlowCodexClient(FakeClient):
+        def api(self, path: str) -> Any:
+            nonlocal review_calls
+            if path == "repos/owner/repo/pulls/12/reviews":
+                review_calls += 1
+                if review_calls == 2:
+                    return [
+                        _trusted(
+                            {
+                                "id": 11,
+                                "state": "COMMENTED",
+                                "submitted_at": "2026-07-09T00:00:02+00:00",
+                                "body": "Codex review complete",
+                            }
+                        )
+                    ]
+                return []
+            return super().api(path)
+
+    client = SlowCodexClient(
+        {"repos/owner/repo/issues/12/comments": [_coderabbit_rate_limit_comment()]}
+    )
+    times = iter([0.0, 0.0])
+    heartbeats: list[str] = []
+
+    outcome = prw.wait_for_completion(
+        12,
+        {
+            "baseline_review_id": 10,
+            "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+        },
+        _coderabbit_config(alternate_reviewer=True),
+        client,
+        monotonic=lambda: next(times),
+        sleeper=lambda _seconds: None,
+        heartbeat=lambda: heartbeats.append("beat"),
+    )
+
+    assert outcome.signal == "review_submitted"
+    assert outcome.review_ids == (11,)
+    assert heartbeats == ["beat"]
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        _coderabbit_config(alternate_reviewer=True, timeout_seconds=1),
+        _coderabbit_config(checkruns=("Codex Review",), timeout_seconds=1),
+    ],
+)
+def test_wait_converts_timeout_to_reviewer_unavailable_with_alternate_path(
+    config: prw.PrReviewConfig,
+) -> None:
+    client = FakeClient(
+        {
+            "repos/owner/repo/pulls/12/reviews": [],
+            "repos/owner/repo/issues/12/comments": [_coderabbit_rate_limit_comment()],
+            "repos/owner/repo/commits/abc/check-runs": {
+                "check_runs": [{"name": "Codex Review", "status": "in_progress"}]
+            },
+        }
+    )
+    times = iter([0.0, 0.0, 2.0])
+    heartbeats: list[str] = []
+
+    outcome = prw.wait_for_completion(
+        12,
+        {
+            "baseline_review_id": 10,
+            "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+            "iteration_head_sha": "abc",
+        },
+        config,
+        client,
+        monotonic=lambda: next(times),
+        sleeper=lambda _seconds: None,
+        heartbeat=lambda: heartbeats.append("beat"),
+    )
+
+    assert outcome.signal == "reviewer_unavailable"
+    assert outcome.completed is True
+    assert outcome.timed_out is False
+    assert heartbeats == ["beat"]
 
 
 def test_wait_for_completion_ignores_untrusted_issue_comment_terminal_verdict() -> None:

@@ -31,7 +31,13 @@ _ROOT_CACHE: dict[str, Path] = {}
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 _RESERVED_PROPOSAL_CONTEXT_KEYS = frozenset({"lease_token", "params", "reason"})
 _PUBLIC_STOP_REASONS = frozenset(
-    {"safety_stop", "push_guard_violation", "repo_identity_mismatch", "foreign_live_lease"}
+    {
+        "safety_stop",
+        "push_guard_violation",
+        "repo_identity_mismatch",
+        "foreign_live_lease",
+        "external_reviewer_unavailable",
+    }
 )
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -632,6 +638,11 @@ def evaluate_guards(
     config: dict[str, Any] | None,
 ) -> GuardDecision:
     """Evaluate infra failure, pass, no-progress, then iteration limit."""
+    if (
+        phase_check.signature == "external_reviewer_unavailable"
+        and phase_check.metadata.get("reviewer_unavailable_reason") == "rate_limited"
+    ):
+        return GuardDecision(Action.STOP.value, "external_reviewer_unavailable")
     cfg = config or DEFAULT_CONFIG
     counters = state.guards.setdefault(state.phase, GuardCounters())
     max_infra = int(_nested(cfg, ("guards", "infrastructure_failure", "max_retries"), 3))
@@ -1361,7 +1372,10 @@ def _next_action_iteration(state: LoopState, action: str) -> int:
 def _proposal_params(state: LoopState, action: str, project_dir: str) -> dict[str, Any]:
     """Build action-specific proposal params from durable state and loop definition."""
     if action == Action.STOP.value:
-        return {"stop_reason": _normalize_stop_reason(state.stop_reason or "safety_stop")}
+        return {
+            "stop_reason": _normalize_stop_reason(state.stop_reason or "safety_stop"),
+            "pr_number": state.pr_number,
+        }
     if action == Action.EXIT_SUCCESS.value:
         return {"pr_number": state.pr_number}
 
@@ -1594,8 +1608,34 @@ def _apply_checker_result(
         _require_journal_consistency(project_dir, loop_id, action_id, state.last_check_result)
         state.status = "passed"
         return
+    if decision.disposition == Action.STOP.value:
+        _record_reviewer_unavailable_comments(state, phase_check)
+        state.status = "stopped"
+        state.stop_reason = decision.reason or "safety_stop"
+        return
     state.status = "failed"
     state.stop_reason = decision.reason or "guard_failed"
+
+
+def _record_reviewer_unavailable_comments(state: LoopState, phase_check: PhaseCheckResult) -> None:
+    """Persist unavailable reply IDs so resume cannot stop again on the same comment."""
+    if phase_check.signature != "external_reviewer_unavailable":
+        return
+    raw_ids = phase_check.metadata.get("reviewer_unavailable_comment_ids")
+    if not isinstance(raw_ids, list):
+        return
+    comment_ids = {
+        item
+        for item in raw_ids
+        if isinstance(item, str) and re.fullmatch(r"issue_comment:\d+", item)
+    }
+    if not comment_ids:
+        return
+    pr_review = copy.deepcopy(state.pr_review) if isinstance(state.pr_review, dict) else {}
+    processed = pr_review.get("processed_comment_ids")
+    processed_ids = {str(item) for item in processed} if isinstance(processed, list) else set()
+    pr_review["processed_comment_ids"] = sorted(processed_ids | comment_ids)
+    state.pr_review = pr_review
 
 
 def _phase_check_from_result(result: dict[str, Any]) -> PhaseCheckResult:

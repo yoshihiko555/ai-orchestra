@@ -91,6 +91,15 @@ TERMINAL_VERDICT_PATTERNS: tuple[str, ...] = (
     "looks good to me",
     "approved",
 )
+REVIEWER_UNAVAILABLE_REASON = "rate_limited"
+RATE_LIMIT_PATTERNS: tuple[str, ...] = (
+    "more reviews will be available in",
+    "rate limit",
+    "rate-limit",
+    "rate limited",
+    "rate-limited",
+    "review quota exceeded",
+)
 
 
 class PrReviewWaitError(RuntimeError):
@@ -194,6 +203,7 @@ class CompletionOutcome:
         "review_submitted",
         "issue_comment_completed",
         "check_run_completed",
+        "reviewer_unavailable",
         "timeout",
         "api_error",
         "pending",
@@ -204,6 +214,8 @@ class CompletionOutcome:
     review_ids: tuple[int, ...] = ()
     check_run_names: tuple[str, ...] = ()
     issue_comment_ids: tuple[str, ...] = ()
+    reviewer_unavailable_comment_ids: tuple[str, ...] = ()
+    reviewer_unavailable_reason: str | None = None
     ignored_untrusted_review_count: int = 0
     ignored_untrusted_reviews: tuple[IgnoredUntrustedReview, ...] = ()
     error: str | None = None
@@ -483,6 +495,7 @@ def wait_for_completion(
     """Poll until a trusted review or configured check-run completion appears."""
     start = monotonic()
     ignored_reviews: dict[str, IgnoredUntrustedReview] = {}
+    reviewer_unavailable_outcome: CompletionOutcome | None = None
     while True:
         try:
             review_outcome = _review_completion_outcome(
@@ -500,6 +513,15 @@ def wait_for_completion(
             check_outcome = _checkrun_completion_outcome(baseline, config, client)
             if check_outcome.completed:
                 return _completion_outcome_with_ignored_reviews(check_outcome, ignored_reviews)
+            observed_unavailable = _reviewer_unavailable_outcome(
+                pr_number, baseline, config, client
+            )
+            if observed_unavailable is not None:
+                reviewer_unavailable_outcome = observed_unavailable
+                if not _has_alternate_review_path(config):
+                    return _completion_outcome_with_ignored_reviews(
+                        reviewer_unavailable_outcome, ignored_reviews
+                    )
         except GitHubApiError as exc:
             return CompletionOutcome(
                 "api_error",
@@ -511,6 +533,10 @@ def wait_for_completion(
                 error=str(exc),
             )
         if monotonic() - start >= config.timeout_seconds:
+            if reviewer_unavailable_outcome is not None:
+                return _completion_outcome_with_ignored_reviews(
+                    reviewer_unavailable_outcome, ignored_reviews
+                )
             return CompletionOutcome(
                 "timeout",
                 completed=False,
@@ -866,6 +892,10 @@ def phase_check_from_completion_outcome(outcome: CompletionOutcome) -> lc.PhaseC
     metadata = _completion_outcome_metadata(outcome)
     if outcome.infrastructure_failure:
         return lc.PhaseCheckResult(False, [], "pr_review_api_error", True, metadata=metadata)
+    if outcome.signal == "reviewer_unavailable":
+        return lc.PhaseCheckResult(
+            False, [], "external_reviewer_unavailable", False, metadata=metadata
+        )
     if outcome.timed_out:
         return lc.PhaseCheckResult(False, [], "pr_review_timeout", False, metadata=metadata)
     return lc.PhaseCheckResult(True, [], "", False, metadata=metadata)
@@ -1077,6 +1107,71 @@ def _issue_comment_completion_outcome(
     )
 
 
+def _reviewer_unavailable_outcome(
+    pr_number: int, baseline: dict[str, Any], config: PrReviewConfig, client: GhApiClient
+) -> CompletionOutcome | None:
+    """Return a safe outcome for trusted CodeRabbit rate-limit replies."""
+    if not baseline.get("baseline_recorded_at"):
+        return None
+    items = [
+        _review_item_from_issue_comment(raw) for raw in _fetch_issue_comments(client, pr_number)
+    ]
+    matched = [item for item in items if _is_reviewer_unavailable_signal(item, baseline, config)]
+    if not matched:
+        return None
+    return CompletionOutcome(
+        "reviewer_unavailable",
+        completed=True,
+        timed_out=False,
+        infrastructure_failure=False,
+        reviewer_unavailable_comment_ids=tuple(sorted(_comment_key(item) for item in matched)),
+        reviewer_unavailable_reason=REVIEWER_UNAVAILABLE_REASON,
+    )
+
+
+def _is_reviewer_unavailable_signal(
+    item: ReviewItem, baseline: dict[str, Any], config: PrReviewConfig
+) -> bool:
+    """Match only trusted, post-baseline, unprocessed CodeRabbit rate-limit replies."""
+    if _comment_key(item) in set(_string_list(baseline.get("processed_comment_ids"))):
+        return False
+    coderabbit_entries = tuple(
+        entry for entry in config.reviewer_allowlist if _is_coderabbit_entry(entry)
+    )
+    if not coderabbit_entries or not verify_origin(item.raw, coderabbit_entries):
+        return False
+    if not _is_after_baseline_time(item, str(baseline.get("baseline_recorded_at") or "")):
+        return False
+    normalized = item.body.casefold()
+    has_marker = any(
+        _is_coderabbit_rate_limit_marker(marker) and marker.casefold() in normalized
+        for marker in config.auto_generated_markers
+    )
+    has_rate_limit_phrase = any(pattern in normalized for pattern in RATE_LIMIT_PATTERNS)
+    return has_marker and has_rate_limit_phrase
+
+
+def _is_coderabbit_rate_limit_marker(marker: str) -> bool:
+    """Accept only CodeRabbit markers that explicitly represent an unavailable reply."""
+    normalized = marker.casefold()
+    return "coderabbit" in normalized and (
+        "rate limit" in normalized or "auto-generated reply by coderabbit" in normalized
+    )
+
+
+def _is_coderabbit_entry(entry: ReviewerAllowlistEntry) -> bool:
+    """Return True when an allowlist entry identifies CodeRabbit."""
+    identities = (entry.app_slug, entry.login)
+    return any("coderabbit" in value.casefold() for value in identities if value)
+
+
+def _has_alternate_review_path(config: PrReviewConfig) -> bool:
+    """Return True when a non-CodeRabbit reviewer or check-run can still complete."""
+    return bool(config.checkrun_allowlist) or any(
+        not _is_coderabbit_entry(entry) for entry in config.reviewer_allowlist
+    )
+
+
 def _checkrun_completion_outcome(
     baseline: dict[str, Any], config: PrReviewConfig, client: GhApiClient
 ) -> CompletionOutcome:
@@ -1113,6 +1208,12 @@ def _completion_outcome_metadata(outcome: CompletionOutcome) -> dict[str, Any]:
         ]
     if outcome.issue_comment_ids:
         metadata["issue_comment_ids"] = list(outcome.issue_comment_ids)
+    if outcome.reviewer_unavailable_comment_ids:
+        metadata["reviewer_unavailable_comment_ids"] = list(
+            outcome.reviewer_unavailable_comment_ids
+        )
+    if outcome.reviewer_unavailable_reason:
+        metadata["reviewer_unavailable_reason"] = outcome.reviewer_unavailable_reason
     if outcome.error:
         metadata["error"] = outcome.error
     if outcome.shortcut_reason:
@@ -1138,6 +1239,8 @@ def _completion_outcome_with_ignored_reviews(
         review_ids=outcome.review_ids,
         check_run_names=outcome.check_run_names,
         issue_comment_ids=outcome.issue_comment_ids,
+        reviewer_unavailable_comment_ids=outcome.reviewer_unavailable_comment_ids,
+        reviewer_unavailable_reason=outcome.reviewer_unavailable_reason,
         ignored_untrusted_review_count=len(ignored_reviews),
         ignored_untrusted_reviews=_ignored_review_tuple(ignored_reviews),
         error=outcome.error,

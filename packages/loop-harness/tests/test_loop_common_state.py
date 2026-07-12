@@ -704,6 +704,7 @@ def test_wait_external_review_completion_applies_checker_guards(
     project_dir, lock = _setup_loop(tmp_path, monkeypatch, status="waiting_external")
     state = lc.load_state("abcd1234-issue-1", project_dir)
     state.phase = "pr_review_response"
+    state.pr_number = 123
     state.guards["pr_review_response"] = lc.GuardCounters(
         iteration=2,
         no_progress_streak=1,
@@ -749,6 +750,123 @@ def test_wait_external_review_completion_applies_checker_guards(
     assert counters.no_progress_streak == 0
     assert counters.last_signature is None
     assert counters.infrastructure_failure_count == 0
+
+
+def test_wait_reviewer_unavailable_completion_stops_without_changing_counters(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir, lock = _setup_loop(tmp_path, monkeypatch, status="waiting_external")
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.phase = "pr_review_response"
+    state.pr_number = 123
+    state.guards["pr_review_response"] = lc.GuardCounters(
+        iteration=2,
+        no_progress_streak=1,
+        last_signature="previous",
+        infrastructure_failure_count=1,
+    )
+    state.pending_action = lc.PendingAction(
+        "act-wait",
+        lc.Action.WAIT_EXTERNAL_REVIEW.value,
+        "pr_review_response",
+        2,
+        lc.now_iso(),
+    )
+    state.state_version = 1
+    lc._write_state(state, project_dir)
+    check_result = lc.phase_check_to_dict(
+        lc.PhaseCheckResult(
+            passed=False,
+            results=[],
+            signature="external_reviewer_unavailable",
+            infrastructure_failure=False,
+            metadata={
+                "reviewer_unavailable_comment_ids": ["issue_comment:30"],
+                "reviewer_unavailable_reason": "rate_limited",
+            },
+        )
+    )
+
+    result = lc.complete(
+        "abcd1234-issue-1",
+        project_dir,
+        "act-wait",
+        1,
+        {"completed": True, "check_result": check_result},
+        lock.lease_token,
+    )
+
+    stopped = lc.load_state("abcd1234-issue-1", project_dir)
+    assert result.ok is True
+    assert stopped.status == "stopped"
+    assert stopped.stop_reason == "external_reviewer_unavailable"
+    assert stopped.pr_review["processed_comment_ids"] == ["issue_comment:30"]
+    assert stopped.guards["pr_review_response"] == lc.GuardCounters(
+        iteration=2,
+        no_progress_streak=1,
+        last_signature="previous",
+        infrastructure_failure_count=1,
+    )
+    assert lc._proposal_params(stopped, lc.Action.STOP.value, project_dir) == {
+        "stop_reason": "external_reviewer_unavailable",
+        "pr_number": 123,
+    }
+
+
+def test_reviewer_unavailable_processed_comment_survives_stop_completion_and_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir, lock = _setup_loop(tmp_path, monkeypatch, status="waiting_external")
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.phase = "pr_review_response"
+    state.pr_number = 123
+    state.guards["pr_review_response"] = lc.GuardCounters()
+    state.pending_action = lc.PendingAction(
+        "act-wait",
+        lc.Action.WAIT_EXTERNAL_REVIEW.value,
+        "pr_review_response",
+        1,
+        lc.now_iso(),
+    )
+    state.state_version = 1
+    lc._write_state(state, project_dir)
+    check_result = lc.phase_check_to_dict(
+        lc.PhaseCheckResult(
+            passed=False,
+            results=[],
+            signature="external_reviewer_unavailable",
+            infrastructure_failure=False,
+            metadata={
+                "reviewer_unavailable_comment_ids": ["issue_comment:30"],
+                "reviewer_unavailable_reason": "rate_limited",
+            },
+        )
+    )
+    lc.complete(
+        "abcd1234-issue-1",
+        project_dir,
+        "act-wait",
+        1,
+        {"completed": True, "check_result": check_result},
+        lock.lease_token,
+    )
+    stop = lc.propose("abcd1234-issue-1", project_dir, lock.lease_token)
+    lc.complete(
+        "abcd1234-issue-1",
+        project_dir,
+        stop.action_id,
+        stop.state_version,
+        {},
+        lock.lease_token,
+    )
+
+    resumed = lc.resume("abcd1234-issue-1", project_dir, True, "resume-owner", 3600)
+    wait = lc.propose("abcd1234-issue-1", project_dir, resumed.lease_token)
+    resumed_state = lc.load_state("abcd1234-issue-1", project_dir)
+
+    assert stop.action == lc.Action.STOP.value
+    assert wait.action == lc.Action.WAIT_EXTERNAL_REVIEW.value
+    assert resumed_state.pr_review["processed_comment_ids"] == ["issue_comment:30"]
 
 
 def test_advance_phase_persists_pr_number() -> None:

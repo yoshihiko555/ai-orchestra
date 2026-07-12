@@ -428,7 +428,18 @@ artifact から復旧する `reconcile` も同じ validator を必ず通し、�
 `python3 "$LOOP_STEP" heartbeat` を呼ぶ。完了シグナルが得られたら `collect_review_findings()` で許可済み
 発信元だけを取り込み、直後に `save_review_findings_snapshot(...)` で同じ action の snapshot を保存する。
 下記「severity 分類（Step 2）」を適用してから
-`phase_check_from_review_findings()` で `PhaseCheckResult` に変換する。timeout /
+`phase_check_from_review_findings()` で `PhaseCheckResult` に変換する。ただし
+`outcome.signal == "reviewer_unavailable"` の場合はレビュー取り込みへ進まず、その outcome を
+`phase_check_from_completion_outcome()` へそのまま渡す。timeout / API error も同じ API で変換する。
+変換後は `lc.phase_check_to_dict()` の ready-to-complete JSON を 0600 の result file に保存し、元 proposal
+と同じ `state_version` で complete する。専用 outcome や stop reason を手書きせず、独自の `gh` polling
+も実装しない。
+
+CodeRabbit のレート制限応答を検知しても、Codex 等の別 reviewer allowlist entry または
+`checkrun_allowlist` が構成されている場合、`wait_for_completion()` は既存 timeout まで正常シグナルを
+待つ。正常シグナルが到着すれば通常レビューを優先し、到着しなかった場合だけ
+`reviewer_unavailable` を返す。この待機をオーケストレーター側で短縮したり、CodeRabbit 応答だけを
+見て独自に停止したりしない。
 API error は `phase_check_from_completion_outcome()` で変換する。独自の `gh` polling は実装しない。
 
 ### severity 分類（Step 2）
@@ -648,6 +659,41 @@ Issue コメントには severity 件数・失敗シグネチャ種別だけを�
 または `params.stop_reason == "repo_identity_mismatch"` の場合は投稿禁止とする。
 `params.stop_reason == "foreign_live_lease"` であること自体は投稿禁止条件ではない。この場合も
 `params.repo_identity_verified is true` なら仕様どおり投稿し、`false` / 欠落なら投稿しない。
+
+### 外部レビュアー利用不可の人間引き継ぎ
+
+`params.stop_reason == "external_reviewer_unavailable"` の場合だけ、下記の専用通知とコメントを使用する。
+この停止でも source repository の編集、commit、push、PR 作成・状態変更、Draft 化、auto-merge は一切
+行わない。許可する GitHub 書き込みは、下記条件を満たすコメント投稿だけとする。レート制限コメント本文や
+GitHub API 生応答は通知・コメント・結果 JSON に含めず、理由コードと Issue / PR / Loop の識別子だけを使う。
+
+```bash
+osascript -e 'display notification "外部レビュアーを利用できません。確認とマージ判断をお願いします" with title "Loop Issue #{params.issue_number} — HUMAN REVIEW REQUIRED" sound name "Basso"'
+```
+
+`params.repo_identity_verified is true` の場合だけ、既存 `params.pr_number` があればその PR、無ければ
+`params.issue_number` の Issue に、`params.worktree_path` を cwd に固定して次を投稿する。
+
+```markdown
+## Loop 停止: external_reviewer_unavailable
+
+**Loop ID**: `{loop_id}`
+**フェーズ**: `pr_review_response`
+**PR**: {params.pr_number | なし}
+**発生時刻**: {timestamp}
+
+外部レビュアーが現在利用できないため、無進捗や実装失敗として扱わず安全停止しました。
+コード変更、push、PR の Draft 化、auto-merge は行っていません。
+
+### 次のアクション
+
+PR の内容を人間が確認し、マージ可否を判断してください。再レビューが必要な場合は、外部レビュアーが
+利用可能になった後に
+`python3 "$LOOP_STEP" resume --loop-id <loop_id> --reset-counters --project <project_root>` で再開してください。
+```
+
+専用通知と条件付きコメントを完了したら、下記の汎用安全停止通知・コメントは重ねて送らず、
+リポジトリ変更を含まない結果で同じ `stop` action を complete して終了する。
 
 ```bash
 osascript -e 'display notification "安全停止: {params.stop_reason}" with title "Loop Issue #{params.issue_number} — SAFETY STOP" sound name "Basso"'
