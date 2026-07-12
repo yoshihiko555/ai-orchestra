@@ -199,6 +199,7 @@ class LoopState:
     created_at: str
     updated_at: str
     state_version: int
+    maker_agent: str | None = None
 
 
 @dataclass(frozen=True)
@@ -510,6 +511,8 @@ def complete(
     assert state.pending_action is not None
     action = state.pending_action.action
     result = _normalize_complete_result(state, action, result, project_dir)
+    if action == Action.RUN_MAKER.value:
+        _selected_maker_from_result(state, result, project_dir)
     if action == Action.RUN_CHECKER.value:
         validate_implementation_checker_result(state, result, project_dir)
     new_version = state.state_version + 1
@@ -612,6 +615,7 @@ def apply_action_effect(
     if _apply_safety_stop_if_needed(state, action, result):
         return
     if action == Action.RUN_MAKER.value:
+        _persist_selected_maker(state, result, project_dir)
         state.status = "running"
         return
     if action == Action.RUN_CHECKER.value:
@@ -1382,7 +1386,7 @@ def _proposal_params(state: LoopState, action: str, project_dir: str) -> dict[st
     phase_def = _load_phase_definition(state, project_dir)
     if action == Action.RUN_MAKER.value:
         return {
-            "maker_agent": _phase_nested(phase_def, ("maker", "agent"), None),
+            "maker_agent": state.maker_agent or _phase_nested(phase_def, ("maker", "agent"), None),
             "prompt_template": _phase_nested(phase_def, ("maker", "prompt_template"), None),
             "worktree_path": state.worktree_path,
             "branch": state.branch,
@@ -1464,6 +1468,42 @@ def _load_loop_config(project_dir: str) -> dict[str, Any]:
     import loop_definition
 
     return loop_definition.load_config(project_dir)
+
+
+def _persist_selected_maker(
+    state: LoopState, result: dict[str, Any], project_dir: str | None
+) -> None:
+    """初回 Maker の選定結果だけを allowlist 検証後に永続化する。"""
+    agent = _selected_maker_from_result(state, result, project_dir)
+    if state.maker_agent is None and agent is not None:
+        state.maker_agent = agent
+
+
+def _selected_maker_from_result(
+    state: LoopState, result: dict[str, Any], project_dir: str | None
+) -> str | None:
+    """Maker result の agent を取得し、初回 allowlist と以後の同一性を検証する。"""
+    maker = result.get("maker")
+    if not isinstance(maker, dict):
+        if state.definition_id == "issue-loop" or state.maker_agent is not None:
+            raise ProtocolViolationError("maker result must include maker.agent")
+        return None
+    agent = maker.get("agent")
+    if not isinstance(agent, str) or not agent.strip():
+        if state.definition_id == "issue-loop" or state.maker_agent is not None:
+            raise ProtocolViolationError("maker agent must be a non-empty string")
+        return None
+    if state.maker_agent is not None:
+        if agent != state.maker_agent:
+            raise ProtocolViolationError(
+                f"maker agent mismatch: expected {state.maker_agent}, got {agent}"
+            )
+        return agent
+    config = _load_loop_config(project_dir or state.worktree_path)
+    allowed = _nested(config, ("maker", "allowed_agents"), [])
+    if not isinstance(allowed, list) or agent not in allowed:
+        raise ProtocolViolationError(f"maker agent is not allowed: {agent}")
+    return agent
 
 
 def _current_branch(worktree_path: str) -> str:
@@ -2169,6 +2209,7 @@ def _state_from_dict(data: dict[str, Any]) -> LoopState:
         created_at=str(data["created_at"]),
         updated_at=str(data["updated_at"]),
         state_version=int(data.get("state_version") or 0),
+        maker_agent=data.get("maker_agent") if isinstance(data.get("maker_agent"), str) else None,
     )
 
 

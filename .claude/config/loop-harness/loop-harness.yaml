@@ -69,3 +69,12 @@ notifications:
 
 maker:
   fallback_agent: general-purpose
+  allowed_agents:
+    - ai-dev
+    - backend-go-dev
+    - backend-python-dev
+    - frontend-dev
+    - general-purpose
+    - prompt-engineer
+    - rag-engineer
+    - tester

@@ -31,6 +31,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`loop-harness`: Maker に編集不能ロールが選ばれて反復が進まない問題を修正**: Maker 候補を実装可能ロールの allowlist に限定し、初回に選定した Maker を state に保存して実装反復・PR レビュー対応で一貫して再利用するようにした。
+
 - **`loop-harness`: CodeRabbit のレート制限を無進捗失敗として扱う問題を修正**: 信頼済みのレート制限応答を検知し、CodeRabbit だけの構成では即時、Codex 等の代替レビュー経路がある構成では既存 timeout まで待ってから、人間の確認・マージ判断へ安全に引き継ぐようにした。
 - **`loop-harness`: severity 分類を挟む PR レビュー取り込みで指摘が欠落する問題を修正**: 明示 severity の指摘と分類が必要な指摘が同時に届いた場合でも、action と lease に安全に束縛した snapshot で結果を引き継ぎ、分類後に一部の指摘が消えて誤って合格扱いにならないようにした。
 

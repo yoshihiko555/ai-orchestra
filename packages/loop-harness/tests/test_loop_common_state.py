@@ -65,6 +65,10 @@ def _check_result(
     return lc.phase_check_to_dict(result)
 
 
+def _maker_result(agent: str = "backend-python-dev") -> dict:
+    return {"maker": {"agent": agent, "tool": "codex"}}
+
+
 def test_state_to_dict_does_not_mutate_missing_phase_counter() -> None:
     state = lc._initial_state(
         "abcd1234-issue-1",
@@ -82,6 +86,212 @@ def test_state_to_dict_does_not_mutate_missing_phase_counter() -> None:
     assert state.guards == {}
 
 
+def test_maker_agent_state_roundtrip_and_legacy_compatibility() -> None:
+    state = lc._initial_state(
+        "abcd1234-issue-1",
+        "issue-loop",
+        "abcd1234",
+        "/tmp/wt",
+        "loop/issue-1",
+        "implementation",
+    )
+    state.maker_agent = "backend-python-dev"
+
+    data = lc._state_to_dict(state)
+    assert lc._state_from_dict(data).maker_agent == "backend-python-dev"
+
+    data.pop("maker_agent")
+    assert lc._state_from_dict(data).maker_agent is None
+
+
+def test_first_completed_maker_is_persisted_and_later_result_must_match(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir, lock = _setup_loop(tmp_path, monkeypatch)
+    proposal = lc.propose("abcd1234-issue-1", project_dir, lock.lease_token)
+    lc.complete(
+        "abcd1234-issue-1",
+        project_dir,
+        proposal.action_id,
+        proposal.state_version,
+        _maker_result(),
+        lock.lease_token,
+    )
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+
+    assert state.maker_agent == "backend-python-dev"
+
+    with pytest.raises(lc.ProtocolViolationError, match="maker agent mismatch"):
+        lc.apply_action_effect(
+            state,
+            lc.Action.RUN_MAKER.value,
+            {"maker": {"agent": "requirements", "tool": "claude-direct"}},
+            project_dir,
+        )
+    assert state.maker_agent == "backend-python-dev"
+
+
+def test_maker_agent_is_reused_in_pr_review_response_proposal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir, _lock = _setup_loop(tmp_path, monkeypatch, status="running")
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.phase = "pr_review_response"
+    state.guards[state.phase] = lc.GuardCounters()
+    state.maker_agent = "backend-python-dev"
+
+    params = lc._proposal_params(state, lc.Action.RUN_MAKER.value, project_dir)
+
+    assert params["maker_agent"] == "backend-python-dev"
+
+
+def test_unselected_maker_proposal_keeps_definition_auto(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir, _lock = _setup_loop(tmp_path, monkeypatch)
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+
+    params = lc._proposal_params(state, lc.Action.RUN_MAKER.value, project_dir)
+
+    assert params["maker_agent"] == "auto"
+
+
+def test_completed_maker_rejects_agent_outside_allowlist_before_journal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir, lock = _setup_loop(tmp_path, monkeypatch)
+    proposal = lc.propose("abcd1234-issue-1", project_dir, lock.lease_token)
+
+    with pytest.raises(lc.ProtocolViolationError, match="maker agent is not allowed"):
+        lc.complete(
+            "abcd1234-issue-1",
+            project_dir,
+            proposal.action_id,
+            proposal.state_version,
+            {"maker": {"agent": "requirements", "tool": "claude-direct"}},
+            lock.lease_token,
+        )
+
+    assert (
+        lc.find_journal_event("abcd1234-issue-1", project_dir, proposal.action_id, "completed")
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {},
+        {"maker": {}},
+        {"maker": {"agent": ""}},
+        {"maker": {"agent": 123}},
+    ],
+)
+def test_completed_maker_requires_non_empty_agent_before_journal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, result: dict
+) -> None:
+    project_dir, lock = _setup_loop(tmp_path, monkeypatch)
+    proposal = lc.propose("abcd1234-issue-1", project_dir, lock.lease_token)
+
+    with pytest.raises(lc.ProtocolViolationError, match="maker"):
+        lc.complete(
+            "abcd1234-issue-1",
+            project_dir,
+            proposal.action_id,
+            proposal.state_version,
+            result,
+            lock.lease_token,
+        )
+
+    assert (
+        lc.find_journal_event("abcd1234-issue-1", project_dir, proposal.action_id, "completed")
+        is None
+    )
+
+
+def test_completed_maker_rejects_agent_mismatch_before_journal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir, lock = _setup_loop(tmp_path, monkeypatch, status="running")
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.maker_agent = "backend-python-dev"
+    state.pending_action = lc.PendingAction(
+        "act-maker-2", lc.Action.RUN_MAKER.value, "implementation", 2, lc.now_iso()
+    )
+    state.state_version = 1
+    lc._write_state(state, project_dir)
+
+    with pytest.raises(lc.ProtocolViolationError, match="maker agent mismatch"):
+        lc.complete(
+            "abcd1234-issue-1",
+            project_dir,
+            "act-maker-2",
+            1,
+            _maker_result("requirements"),
+            lock.lease_token,
+        )
+
+    assert (
+        lc.find_journal_event("abcd1234-issue-1", project_dir, "act-maker-2", "completed") is None
+    )
+
+
+def test_reconcile_completed_maker_persists_selected_agent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir, lock = _setup_loop(tmp_path, monkeypatch)
+    proposal = lc.propose("abcd1234-issue-1", project_dir, lock.lease_token)
+    lc.append_journal_event(
+        "abcd1234-issue-1",
+        project_dir,
+        "completed",
+        "maker",
+        proposal.action_id,
+        {
+            "action": lc.Action.RUN_MAKER.value,
+            "result": {"maker": {"agent": "backend-python-dev", "tool": "codex"}},
+        },
+    )
+
+    lc.reconcile("abcd1234-issue-1", project_dir, lock.lease_token)
+
+    assert lc.load_state("abcd1234-issue-1", project_dir).maker_agent == "backend-python-dev"
+
+
+@pytest.mark.parametrize(
+    ("stored_agent", "result", "error"),
+    [
+        (None, {}, "maker result must include maker.agent"),
+        ("backend-python-dev", _maker_result("requirements"), "maker agent mismatch"),
+    ],
+)
+def test_reconcile_completed_maker_rejects_missing_or_mismatched_agent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stored_agent: str | None,
+    result: dict,
+    error: str,
+) -> None:
+    project_dir, lock = _setup_loop(tmp_path, monkeypatch)
+    proposal = lc.propose("abcd1234-issue-1", project_dir, lock.lease_token)
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.maker_agent = stored_agent
+    lc._write_state(state, project_dir)
+    lc.append_journal_event(
+        "abcd1234-issue-1",
+        project_dir,
+        "completed",
+        "maker",
+        proposal.action_id,
+        {"action": lc.Action.RUN_MAKER.value, "result": result},
+    )
+
+    with pytest.raises(lc.ProtocolViolationError, match=error):
+        lc.reconcile("abcd1234-issue-1", project_dir, lock.lease_token)
+
+    assert lc.load_state("abcd1234-issue-1", project_dir).pending_action is not None
+
+
 def test_status_transitions_and_resume(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     project_dir, lock = _setup_loop(tmp_path, monkeypatch)
     proposal = lc.propose("abcd1234-issue-1", project_dir, lock.lease_token)
@@ -91,7 +301,7 @@ def test_status_transitions_and_resume(tmp_path: Path, monkeypatch: pytest.Monke
         project_dir,
         proposal.action_id,
         proposal.state_version,
-        {},
+        _maker_result(),
         lock.lease_token,
     )
     assert lc.load_state("abcd1234-issue-1", project_dir).status == "running"
@@ -128,7 +338,7 @@ def test_complete_accepts_raw_passed_checker_result(
         project_dir,
         maker.action_id,
         maker.state_version,
-        {},
+        _maker_result(),
         lock.lease_token,
     )
     checker = lc.propose("abcd1234-issue-1", project_dir, lock.lease_token)
@@ -162,7 +372,7 @@ def test_state_version_increments_and_heartbeat_does_not(
         project_dir,
         proposal.action_id,
         proposal.state_version,
-        {},
+        _maker_result(),
         lock.lease_token,
     )
     assert result.state_version == 2
@@ -182,7 +392,7 @@ def test_complete_rejects_stale_action_and_replays_same_action(
         project_dir,
         proposal.action_id,
         proposal.state_version,
-        {},
+        _maker_result(),
         lock.lease_token,
     )
     replay = lc.complete(
@@ -222,7 +432,7 @@ def test_complete_appends_journal_before_state_write(
             project_dir,
             proposal.action_id,
             proposal.state_version,
-            {},
+            _maker_result(),
             lock.lease_token,
         )
     event = lc.find_journal_event("abcd1234-issue-1", project_dir, proposal.action_id, "completed")
@@ -242,7 +452,7 @@ def test_reconcile_resolves_from_completed_journal(
         "completed",
         "maker",
         proposal.action_id,
-        {"action": lc.Action.RUN_MAKER.value, "result": {}},
+        {"action": lc.Action.RUN_MAKER.value, "result": _maker_result()},
     )
     outcome = lc.reconcile("abcd1234-issue-1", project_dir, lock.lease_token)
     state = lc.load_state("abcd1234-issue-1", project_dir)
@@ -262,7 +472,7 @@ def test_reconcile_completed_maker_sets_last_completed_action_for_next_propose(
         "completed",
         "maker",
         proposal.action_id,
-        {"action": lc.Action.RUN_MAKER.value, "result": {}},
+        {"action": lc.Action.RUN_MAKER.value, "result": _maker_result()},
     )
 
     lc.reconcile("abcd1234-issue-1", project_dir, lock.lease_token)
@@ -335,7 +545,12 @@ def test_complete_rejects_invalid_checker_reviewer_manifest(
     project_dir, lock = _setup_loop(tmp_path, monkeypatch)
     maker = lc.propose("abcd1234-issue-1", project_dir, lock.lease_token)
     lc.complete(
-        "abcd1234-issue-1", project_dir, maker.action_id, maker.state_version, {}, lock.lease_token
+        "abcd1234-issue-1",
+        project_dir,
+        maker.action_id,
+        maker.state_version,
+        _maker_result(),
+        lock.lease_token,
     )
     checker = lc.propose("abcd1234-issue-1", project_dir, lock.lease_token)
     result = _check_result(False)
@@ -390,7 +605,12 @@ def test_complete_rejects_semantically_inconsistent_checker_result(
     project_dir, lock = _setup_loop(tmp_path, monkeypatch)
     maker = lc.propose("abcd1234-issue-1", project_dir, lock.lease_token)
     lc.complete(
-        "abcd1234-issue-1", project_dir, maker.action_id, maker.state_version, {}, lock.lease_token
+        "abcd1234-issue-1",
+        project_dir,
+        maker.action_id,
+        maker.state_version,
+        _maker_result(),
+        lock.lease_token,
     )
     checker = lc.propose("abcd1234-issue-1", project_dir, lock.lease_token)
     result = _check_result(True)
@@ -527,7 +747,12 @@ def test_checker_success_proposes_and_completes_advance_phase(
     project_dir, lock = _setup_loop(tmp_path, monkeypatch)
     maker = lc.propose("abcd1234-issue-1", project_dir, lock.lease_token)
     lc.complete(
-        "abcd1234-issue-1", project_dir, maker.action_id, maker.state_version, {}, lock.lease_token
+        "abcd1234-issue-1",
+        project_dir,
+        maker.action_id,
+        maker.state_version,
+        _maker_result(),
+        lock.lease_token,
     )
     checker = lc.propose("abcd1234-issue-1", project_dir, lock.lease_token)
     lc.complete(
@@ -589,7 +814,12 @@ def test_advance_phase_push_guard_stop_does_not_change_phase(
     project_dir, lock = _setup_loop(tmp_path, monkeypatch)
     maker = lc.propose("abcd1234-issue-1", project_dir, lock.lease_token)
     lc.complete(
-        "abcd1234-issue-1", project_dir, maker.action_id, maker.state_version, {}, lock.lease_token
+        "abcd1234-issue-1",
+        project_dir,
+        maker.action_id,
+        maker.state_version,
+        _maker_result(),
+        lock.lease_token,
     )
     checker = lc.propose("abcd1234-issue-1", project_dir, lock.lease_token)
     phase_def = {
