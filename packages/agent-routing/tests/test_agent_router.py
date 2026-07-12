@@ -106,6 +106,12 @@ def test_detect_agent_skips_disallowed_agent_and_finds_next_match() -> None:
     assert trigger.lower() == "python"
 
 
+def test_detect_agent_keeps_allowed_debugger_for_bug_fix() -> None:
+    agent, trigger = route_config.detect_agent("bug fix", {"debugger", "general-purpose"})
+    assert agent == "debugger"
+    assert trigger == "bug"
+
+
 def test_detect_agent_excludes_disallowed_non_implementation_role() -> None:
     agent, trigger = route_config.detect_agent("要件を整理する", {"general-purpose"})
     assert agent is None

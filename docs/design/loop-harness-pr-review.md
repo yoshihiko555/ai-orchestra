@@ -1143,7 +1143,7 @@ PR の内容を人間が確認し、マージ可否を判断してください�
 | `pr_review.dedup.line_bucket_size`          | 4.2 節の行番号丸め幅                                                                              | `5`                                    |
 | `pr_review.dedup.stopwords_ja` / `_en`      | 4.2 節のストップワードリスト                                                                      | 既定リスト（詳細設計内で別途定義）     |
 | `maker.fallback_agent`                      | `detect_agent()` が検出できなかった場合の Maker subagent_type（5.2.1 節）                         | `general-purpose`                      |
-| `maker.allowed_agents`                      | Maker に選定できる実装可能ロールの positive allowlist（5.2.1 節）                                | config の 8 ロール                     |
+| `maker.allowed_agents`                      | Maker に選定できる実装可能ロールの positive allowlist（5.2.1 節）                                | config の 9 ロール                     |
 | `guards.infrastructure_failure.max_retries` | 個々の `gh api` 呼び出し失敗のリトライ上限（1.2 節。基本設計 6.3 節の既存キーを本書で具体値確定） | `3`                                    |
 
 ---

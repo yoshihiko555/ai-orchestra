@@ -166,10 +166,10 @@ def test_load_config_applies_local_deep_merge(tmp_path: Path) -> None:
     assert config["lock"]["ttl_seconds"]["lp2"] == 300
     assert config["maker"]["fallback_agent"] in config["maker"]["allowed_agents"]
     assert "general-purpose" in config["maker"]["allowed_agents"]
+    assert "debugger" in config["maker"]["allowed_agents"]
     assert "requirements" not in config["maker"]["allowed_agents"]
     assert "planner" not in config["maker"]["allowed_agents"]
     assert "docs-writer" not in config["maker"]["allowed_agents"]
-    assert "debugger" not in config["maker"]["allowed_agents"]
     assert "specialized-mcp-builder" not in config["maker"]["allowed_agents"]
 
 

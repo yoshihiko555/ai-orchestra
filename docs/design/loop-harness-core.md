@@ -1553,7 +1553,7 @@ def verify_repo_identity(worktree_path: str, expected_hash: str) -> bool:
 | `lock.heartbeat_interval_seconds`           | heartbeat 更新間隔（LP-1/LP-2 共通。同上）                     | `60`   |
 | `pr_review.poll_interval_seconds`           | PR レビュー完了シグナルのポーリング間隔（基本設計既定を継続）  | `120`  |
 | `pr_review.timeout_seconds`                 | 完了シグナル待機のタイムアウト（基本設計既定を継続）           | `3600` |
-| `maker.allowed_agents`                      | `issue-loop` の auto Maker に選定できる positive allowlist     | config の 8 ロール |
+| `maker.allowed_agents`                      | `issue-loop` の auto Maker に選定できる positive allowlist     | config の 9 ロール |
 | `maker.fallback_agent`                      | 検出不能時の Maker。`allowed_agents` 内でなければならない       | `general-purpose` |
 
 `definition_id == "issue-loop"` の初回 `run_maker` の `complete` または completed journal の `reconcile` で
@@ -1562,7 +1562,9 @@ def verify_repo_identity(worktree_path: str, expected_hash: str) -> bool:
 agent が保存値と一致することを必須とし、不一致も拒否する。以後は上書きせず、`issue-loop` の
 `run_maker` proposal が保存済み値を返す。その他のループは state の保存値でフェーズ定義を上書きせず、
 各フェーズの `maker.agent` をそのまま返す。旧 state でフィールドが欠落する場合は `None` として読み、
-`issue-loop` の `maker.agent: auto` を返して初回選定を行う。
+`issue-loop` の `maker.agent: auto` を返して初回選定を行う。変更前に書かれた completed journal のうち、
+未選定 state に対する `maker` キーなしの結果だけは reconcile で受理し、次回 Maker 完了時に選定を行う。
+新規 `complete` と `maker` キーを含む不正な journal は従来どおり fail-closed とする。
 
 `pr_review.reviewer_allowlist` / `lp2.concurrency_limit` / `lp2.wall_clock_timeout_seconds` /
 `retention.purge_after_days` は `loop_step.py`/`loop_scheduler.py`/`loop_status.py` の詳細設計

@@ -905,6 +905,7 @@ maker:
     - ai-dev
     - backend-go-dev
     - backend-python-dev
+    - debugger
     - frontend-dev
     - general-purpose
     - prompt-engineer
@@ -930,7 +931,7 @@ maker:
 | `retention.purge_after_days`                | int                                                                                                   | `30`                                                         | 同上                                         |
 | `notifications.macos_enabled`               | bool                                                                                                  | `true`                                                       | 同上                                         |
 | `notifications.issue_comment_enabled`       | bool                                                                                                  | `true`                                                       | 同上                                         |
-| `maker.allowed_agents`                      | list[str]（`issue-loop` の auto Maker 用）                                                             | 実装可能な 8 ロール                                          | 上書き可                                     |
+| `maker.allowed_agents`                      | list[str]（`issue-loop` の auto Maker 用）                                                             | 実装可能な 9 ロール                                          | 上書き可                                     |
 | `maker.fallback_agent`                      | str（`allowed_agents` の要素）                                                                        | `general-purpose`                                            | 上書き可                                     |
 
 ループ定義側の `guards.max_iterations` / `guards.no_progress.signature`（基本設計 4 節）は

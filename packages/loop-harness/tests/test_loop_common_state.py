@@ -334,11 +334,11 @@ def test_reconcile_completed_maker_persists_selected_agent(
 @pytest.mark.parametrize(
     ("stored_agent", "result", "error"),
     [
-        (None, {}, "maker result must include maker.agent"),
+        (None, {"maker": {}}, "maker agent must be a non-empty string"),
         ("backend-python-dev", _maker_result("requirements"), "maker agent mismatch"),
     ],
 )
-def test_reconcile_completed_maker_rejects_missing_or_mismatched_agent(
+def test_reconcile_completed_maker_rejects_malformed_or_mismatched_agent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     stored_agent: str | None,
@@ -525,13 +525,14 @@ def test_reconcile_resolves_from_completed_journal(
         "completed",
         "maker",
         proposal.action_id,
-        {"action": lc.Action.RUN_MAKER.value, "result": _maker_result()},
+        {"action": lc.Action.RUN_MAKER.value, "result": {}},
     )
     outcome = lc.reconcile("abcd1234-issue-1", project_dir, lock.lease_token)
     state = lc.load_state("abcd1234-issue-1", project_dir)
     assert outcome.action_taken == "resolved_from_journal"
     assert state.pending_action is None
     assert state.status == "running"
+    assert state.maker_agent is None
 
 
 def test_reconcile_completed_maker_sets_last_completed_action_for_next_propose(

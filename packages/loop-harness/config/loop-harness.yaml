@@ -74,6 +74,7 @@ maker:
     - ai-dev
     - backend-go-dev
     - backend-python-dev
+    - debugger
     - frontend-dev
     - general-purpose
     - prompt-engineer

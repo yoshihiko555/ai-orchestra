@@ -620,13 +620,20 @@ def apply_action_effect(
     loop_id: str | None = None,
     action_id: str | None = None,
     selected_maker_agent: str | None = None,
+    allow_legacy_maker_result: bool = False,
 ) -> None:
     """Apply a completed action to state."""
     if _apply_safety_stop_if_needed(state, action, result):
         return
     if action == Action.RUN_MAKER.value:
         if state.definition_id == "issue-loop":
-            _persist_selected_maker(state, result, project_dir, selected_maker_agent)
+            _persist_selected_maker(
+                state,
+                result,
+                project_dir,
+                selected_maker_agent,
+                allow_legacy_maker_result,
+            )
         state.status = "running"
         return
     if action == Action.RUN_CHECKER.value:
@@ -1491,8 +1498,11 @@ def _persist_selected_maker(
     result: dict[str, Any],
     project_dir: str | None,
     selected_maker_agent: str | None = None,
+    allow_legacy_maker_result: bool = False,
 ) -> None:
     """初回 Maker の選定結果だけを allowlist 検証後に永続化する。"""
+    if allow_legacy_maker_result and state.maker_agent is None and "maker" not in result:
+        return
     agent = selected_maker_agent
     if agent is None:
         agent = _selected_maker_from_result(state, result, project_dir)
@@ -1764,7 +1774,21 @@ def _reconcile_from_payload(
         return ReconcileOutcome("none", state.state_version)
     payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
     result = payload.get("result") if isinstance(payload.get("result"), dict) else payload
-    apply_action_effect(state, pending.action, result, project_dir, loop_id, pending.action_id)
+    allow_legacy_maker_result = (
+        pending.action == Action.RUN_MAKER.value
+        and state.definition_id == "issue-loop"
+        and state.maker_agent is None
+        and "maker" not in result
+    )
+    apply_action_effect(
+        state,
+        pending.action,
+        result,
+        project_dir,
+        loop_id,
+        pending.action_id,
+        allow_legacy_maker_result=allow_legacy_maker_result,
+    )
     return _finalize_reconciled(loop_id, project_dir, state, source, pending.action_id, result)
 
 
