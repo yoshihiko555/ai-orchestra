@@ -63,6 +63,8 @@
 - [ ] EV-02（異常 / must）: `start`/`attach`/`resume` の応答直後に、action の実行と `complete` を挟まず `propose` を呼ばない（孤立 `pending_action` の防止） — 根拠: facets/instructions/loop-issue.md「3 入口の応答 JSON はすべて…」「MUST NOT（禁止事項）」1 / 検証: PR レビュー
 - [ ] EV-03（正常 / must）: two-phase サイクルの各ステップ（応答確認 → `action` に厳密一致する処理だけ実行 → 結果保存 → `complete` → 次 `propose`）を順守し、proposal が返した `action` と異なる処理を自己判断で実行しない（反復上限・無進捗ガードの先取りを含む） — 根拠: facets/instructions/loop-issue.md「two-phase サイクル」「MUST NOT（禁止事項）」2・3 / 検証: 実行観察
 - [ ] EV-04（異常 / must）: `complete` を省略して次の `propose` へ進まない。終端 action（`stop`/`exit_success`/`exit_failure`）も出口処理後に必ず `complete` し、`complete` 後は `propose` を呼ばない — 根拠: facets/instructions/loop-issue.md「two-phase サイクル」5、「終端 action の `stop` / `exit_success` / `exit_failure` も…」 / 検証: 実行観察
+- [ ] EV-50（正常 / must）: 実行開始時に `LOOP_STEP="$AI_ORCHESTRA_DIR/packages/loop-harness/scripts/loop_step.py"` を定義し、`start`/`attach`/`resume` を含むすべての `loop_step` subcommand を `python3 "$LOOP_STEP" ...` で呼ぶ。PATH や current shell の cwd にある同名コマンドへフォールバックしない — 根拠: facets/instructions/loop-issue.md「起動時の入口選択」「two-phase サイクル」 / 検証: PR レビュー
+- [ ] EV-51（異常 / must）: `start`/`attach`/`resume` の入口応答で取得した `lease_token` を保持し、以後の `propose`/`complete`/`reconcile`/`heartbeat`/`run-checker` へ同じ token を `--lease-token` で渡す。省略、古い token、別ループの token への差し替えを行わない — 根拠: facets/instructions/loop-issue.md「起動時の入口選択」「two-phase サイクル」「MUST NOT（禁止事項）」5 / 検証: 実行観察
 
 ### repo identity 検証とデータ取得境界
 
@@ -72,7 +74,7 @@
 
 ### `run_maker`
 
-- [ ] EV-08（正常 / must）: Maker 選定は `detect_agent()` で検出できればその `agent_name` を変更せず使用し、検出不能時のみ loop-harness config の `maker.fallback_agent`（既定 `general-purpose`）を使う。`fallback_agent` を `cli-tools.yaml` から読んだり、agent の tool を loop-harness config から読んだりしない — 根拠: facets/instructions/loop-issue.md「Maker の選定」 / 検証: PR レビュー
+- [ ] EV-08（正常 / must）: Maker 選定は `detect_agent()` で検出できればその `agent_name` を変更せず使用し、検出不能時のみ loop-harness config の `maker.fallback_agent`（既定 `general-purpose`）を使う。選定後は `get_agent_tool(agent_name, routing_config)` で `cli-tools.yaml` + `.local.yaml` の `agents.<name>.tool` を解決し、その戻り値を使う既存 agent-routing 経路で Task を起動する。`fallback_agent` を `cli-tools.yaml` から読んだり、agent の tool を loop-harness config から読んだり、tool 解決結果を固定値で上書きしたりしない — 根拠: facets/instructions/loop-issue.md「Maker の選定」 / 検証: PR レビュー
 - [ ] EV-09（正常 / must）: Maker Task の cwd は `params.worktree_path` に固定し、background process として起動しない — 根拠: facets/instructions/loop-issue.md「Maker Task」 / 検証: 実行観察
 - [ ] EV-10（異常 / must）: Maker への権限境界（push・`gh`・remote の作成/更新禁止、branch/worktree の作成・切替禁止、state/journal/artifact の直接編集禁止、background process 起動禁止、push/PR 作成・更新の禁止）を Task prompt に毎回含める — 根拠: facets/instructions/loop-issue.md「Maker Task」権限境界（MUST） / 検証: PR レビュー
 - [ ] EV-11（正常 / must）: Maker Task prompt に冪等性契約（既存 commit/diff の確認、前回反復の二重実装・二重 commit 禁止、既存 PR への追加 commit のみに留め push しない）を含める — 根拠: facets/instructions/loop-issue.md「Maker Task」冪等性契約（MUST） / 検証: PR レビュー
@@ -86,14 +88,18 @@
 - [ ] EV-16（異常 / must）: LLM レビュー結果ファイルは `umask 077` + `mktemp` でレビュアーごとに個別割当し、作成直後と Task 完了後の両方で regular file・非 symlink・permission 0600・サイズ 1 MiB 以下を検証する。1 つでも満たさなければ内容を読まず当該 reviewer を infrastructure failure とする — 根拠: facets/instructions/loop-issue.md「LLM レビュー結果ファイル」 / 検証: 実行観察
 - [ ] EV-17（異常 / must）: レビュアーの timeout・例外・空出力・不正 JSON・上記ファイル検証失敗があっても、その reviewer を `--llm-result` 引数から省略せず、`infrastructure_failure=True` の `lc.CheckResult` を同じ専用ファイルへ決定論的に保存する。成功扱いの JSON や finding を手書きで補わない — 根拠: facets/instructions/loop-issue.md「複数レビュアーは並列実行する…」 / 検証: 実行観察
 - [ ] EV-18（正常 / must）: 機械検証をオーケストレーターが独自実行したり、集約済み `CheckResult` を手書きしたりせず、同じ proposal 識別子で `loop_step run-checker` を呼び、`--llm-result` に `<reviewer>=@<file>` 形式で渡す。stdout はそのまま `complete --result @file` へ渡し、並べ替え・要約・手修正をしない — 根拠: facets/instructions/loop-issue.md「決定論的な Checker 集約」 / 検証: 実行観察
+- [ ] EV-52（正常 / must）: LLM レビュー層の合格条件は `critical == 0` かつ `high == 0` とし、Medium / Low だけなら合格として `run-checker` に集約させる。severity ごとの合否をオーケストレーターが独自に変更しない — 根拠: facets/instructions/loop-issue.md「run_checker」LLM レビュー 5 / 検証: PR レビュー
+- [ ] EV-53（異常 / must）: 各 reviewer の `lc.CheckResult` JSON は専用ファイルへ保存する直前に `lc.redact()` を適用し、finding 内の secret・API 断片を未加工のまま artifact に残さない — 根拠: facets/instructions/loop-issue.md「LLM レビュー結果ファイル」 / 検証: PR レビュー
+- [ ] EV-54（異常 / must）: `run-checker` の stdout を受ける `checker_result_file` も `umask 077` + `mktemp` で作成し、作成直後と CLI 完了後の両方で regular file・非 symlink・permission 0600・サイズ 1 MiB 以下を検証する。条件不成立時は内容を読まず `complete --result @file` に渡さない — 根拠: facets/instructions/loop-issue.md「決定論的な Checker 集約」 / 検証: 実行観察
 - [ ] EV-46（異常 / must）: Checker Task prompt には cwd を `params.worktree_path` に固定し、別 worktree・別 repository を参照しないことを明示する（レビュアーが loop worktree 以外を read-only 目的以外で操作することの防止） — 根拠: facets/instructions/loop-issue.md「LLM レビュー結果ファイル」Task テンプレート / 検証: PR レビュー
 - [ ] EV-47（異常 / must）: `run-checker` が保存した reviewer manifest・metadata・集約結果（`check_result.json`）をオーケストレーターが手書き・差し替えしない。artifact 不一致・CLI 失敗・欠落時も手書き result や `complete` の直接呼び出しで迂回せず、決定論経路の失敗として扱う — 根拠: facets/instructions/loop-issue.md「決定論的な Checker 集約」末尾 / 検証: PR レビュー
 
 ### `advance_phase`
 
 - [ ] EV-19（正常 / must）: `params.exec` の記載順（`commit → record_baseline → push → pr_create → record_iteration_head`）を変更・省略せず実行する — 根拠: facets/instructions/loop-issue.md「advance_phase」冒頭 / 検証: PR レビュー
-- [ ] EV-20（正常 / must）: `pr-create` には `params.verified_branch` を一字も組み替えず対象 branch として渡し、既存 PR があれば新規作成せず継続する。auto-merge は有効化せず worktree は保持する — 根拠: facets/instructions/loop-issue.md「advance_phase」中盤 / 検証: PR レビュー
+- [ ] EV-20（正常 / must）: `pr-create` には `params.verified_branch` を一字も組み替えず対象 branch として渡し、`--issue {params.issue_number}` で対象 Issue に紐付ける。既存 PR があれば新規作成せず継続し、auto-merge は有効化せず worktree を保持する — 根拠: facets/instructions/loop-issue.md「advance_phase」中盤 / 検証: PR レビュー
 - [ ] EV-21（境界 / must）: proposal が `advance_phase` を返した時点で `loop_step` 自体は commit/push を実行していないため、「push 済み」と誤認せず `params.exec` の `push` を実行する — 根拠: facets/instructions/loop-issue.md「advance_phase」「proposal が advance_phase を返した時点では…」 / 検証: 実行観察
+- [ ] EV-55（境界 / must）: `commit` step は worktree の既存 commit / diff を確認し、Maker が commit 済みなら二重 commit を作らず、未コミット差分がある場合だけ commit する。追加差分がない場合に空 commit を作らない — 根拠: facets/instructions/loop-issue.md「advance_phase」`commit` / 検証: 実行観察
 
 ### `wait_external_review`（`push_required: true`）
 
@@ -109,6 +115,10 @@
 ### `wait_external_review`（`push_required: false`）
 
 - [ ] EV-30（境界 / must）: `push_required: false` の経路（初回 PR 作成直後など、対象 commit が既に push 済み）では `advance_phase` が保存した既存 baseline / iteration head を使って poll から開始し、baseline の再記録・re-push・iteration head の上書きを行わない。この経路は pre-rebaseline drain の対象外（初回 baseline が未 collect のため） — 根拠: facets/instructions/loop-issue.md「wait_external_review」`push_required is false` 節 / 検証: PR レビュー
+
+### `wait_external_review`（poll 完了後の共通処理）
+
+- [ ] EV-56（正常 / must）: `wait_for_completion()` が完了シグナルを返した後は、`collect_review_findings()` → 同じ action の snapshot 保存 → 必要な severity 分類 Step 2 → `phase_check_from_review_findings()` の順で review finding を取り込んでから `complete` する。timeout / API error は `phase_check_from_completion_outcome()` で変換し、post-poll の collect・snapshot・classify・phase-check を独自経路や空結果で迂回しない — 根拠: facets/instructions/loop-issue.md「wait_external_review」完了シグナル後の処理 / 検証: 実行観察
 
 ### severity 分類（Step 2）
 
