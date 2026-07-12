@@ -180,21 +180,31 @@ params_worktree_path = params["worktree_path"]
 
 # agent-routing 設定: cli-tools.yaml + cli-tools.local.yaml
 routing_config = load_config({"cwd": params_worktree_path})
-issue_text = f"{issue_title}\n{' '.join(issue_labels)}"  # 本文は含めない（誤検出対策。EV-74）
-agent_name, trigger = detect_agent(issue_text)
-
-if agent_name is None:
+persisted_agent = params.get("maker_agent")
+if isinstance(persisted_agent, str) and persisted_agent != "auto":
+    # 初回 complete で state に保存済み。再検出せず、全反復・全フェーズで再利用する。
+    agent_name = persisted_agent
+    trigger = "persisted"
+else:
     # loop-harness 設定: loop-harness.yaml + loop-harness.local.yaml
     loop_harness_config = load_loop_harness_config(params_worktree_path)
-    agent_name = loop_harness_config.get("maker", {}).get(
-        "fallback_agent", "general-purpose"
-    )
+    maker_config = loop_harness_config.get("maker", {})
+    allowed_agents = set(maker_config.get("allowed_agents", []))
+    fallback_agent = maker_config.get("fallback_agent", "general-purpose")
+    if fallback_agent not in allowed_agents:
+        raise RuntimeError("maker.fallback_agent must be included in maker.allowed_agents")
+    issue_text = f"{issue_title}\n{' '.join(issue_labels)}"  # 本文は含めない（EV-74）
+    agent_name, trigger = detect_agent(issue_text, allowed_agents)
+    if agent_name is None:
+        agent_name = fallback_agent
 
 tool = get_agent_tool(agent_name, routing_config)
 ```
 
-- `detect_agent()` で検出できた場合は、その `agent_name` を変更しない。
-- 検出不能時だけ loop-harness config の `maker.fallback_agent` を使う。既定は `general-purpose`。
+- `params.maker_agent` が `auto` 以外の具体値なら state に保存済みの Maker として再検出せず再利用する。
+- 未選定時だけ `detect_agent(issue_text, allowed_agents)` を呼び、非許可ロールを飛ばして次候補を探す。
+- 検出不能時だけ loop-harness config の `maker.fallback_agent` を使う。fallback は
+  `maker.allowed_agents` に含まれていなければならず、既定は `general-purpose`。
 - `get_agent_tool()` は agent-routing config の `agents.<name>.tool` を解決する。返された `tool` を無視して
   別ツールへ固定せず、既存 agent-routing 経路で Task を起動する。
 - `maker.fallback_agent` を `cli-tools.yaml` から読んだり、agent の tool を loop-harness config から

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+from collections.abc import Collection
 
 _hook_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -215,10 +216,14 @@ def _trigger_matches(trigger: str, prompt_lower: str) -> bool:
     return trigger_lower in prompt_lower
 
 
-def detect_agent(prompt: str) -> tuple[str | None, str]:
-    """プロンプトからエージェントを検出。(agent_name, trigger) を返す。"""
+def detect_agent(
+    prompt: str, allowed_agents: Collection[str] | None = None
+) -> tuple[str | None, str]:
+    """プロンプトから許可されたエージェントを検出。(agent_name, trigger) を返す。"""
     prompt_lower = prompt.lower()
     for agent, triggers in AGENT_TRIGGERS.items():
+        if allowed_agents is not None and agent not in allowed_agents:
+            continue
         for lang_triggers in triggers.values():
             for trigger in lang_triggers:
                 if _trigger_matches(trigger, prompt_lower):
