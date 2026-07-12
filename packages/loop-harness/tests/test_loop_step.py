@@ -88,6 +88,8 @@ def _complete(
     lease_token: str,
     result: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if result is None and proposal["action"] == lc.Action.RUN_MAKER.value:
+        result = {"maker": {"agent": "backend-python-dev", "tool": "codex"}}
     proc = _run_cli(
         [
             "complete",
@@ -243,7 +245,7 @@ def test_start_and_complete_emit_single_line_json(tmp_path: Path) -> None:
             "--state-version",
             str(started["state_version"]),
             "--result",
-            "{}",
+            json.dumps({"maker": {"agent": "backend-python-dev", "tool": "codex"}}),
             "--lease-token",
             started["lease_token"],
             "--project",
@@ -1404,7 +1406,7 @@ def test_complete_missing_lease_token_is_validation_rejection(tmp_path: Path) ->
             "--state-version",
             str(started["state_version"]),
             "--result",
-            "{}",
+            json.dumps({"maker": {"agent": "backend-python-dev", "tool": "codex"}}),
             "--project",
             str(repo),
         ]
@@ -1531,7 +1533,7 @@ def test_complete_stale_action_returns_exit_2(tmp_path: Path) -> None:
             "--state-version",
             str(started["state_version"]),
             "--result",
-            "{}",
+            json.dumps({"maker": {"agent": "backend-python-dev", "tool": "codex"}}),
             "--lease-token",
             started["lease_token"],
             "--project",
@@ -1628,7 +1630,7 @@ def test_attach_rejects_live_lease_with_exit_3(tmp_path: Path) -> None:
             "--state-version",
             str(started["state_version"]),
             "--result",
-            "{}",
+            json.dumps({"maker": {"agent": "backend-python-dev", "tool": "codex"}}),
             "--lease-token",
             started["lease_token"],
             "--project",

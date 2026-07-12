@@ -802,20 +802,29 @@ from route_config import detect_agent, load_config, get_agent_tool  # 既存資�
 # detect_agent()/get_agent_tool() には agent-routing 自身の config（cli-tools.yaml）を渡す
 routing_config = load_config()  # cli-tools.yaml（+ .local.yaml 上書き。config-loading ルール準拠）
 
-issue_text = f"{issue_title}\n{' '.join(issue_labels)}"  # 本文は含めない（誤検出対策。EV-74）
-agent_name, trigger = detect_agent(issue_text)  # cli-tools.yaml 由来のキーワードマッピングで検出
-if agent_name is None:
-    # fallback_agent は cli-tools.yaml ではなく loop-harness 自身の config（config/loop-harness.yaml）
-    # に定義される（Codex レビュー指摘反映。P2）。config-loading ルールに従い
-    # config/loop-harness.yaml → config/loop-harness.local.yaml の順で読み込む専用ローダーを使う。
+if params["maker_agent"] != "auto":
+    agent_name, trigger = params["maker_agent"], "persisted"
+else:
     loop_harness_config = load_package_config("loop-harness")
-    agent_name = loop_harness_config.get("maker", {}).get("fallback_agent", "general-purpose")
+    maker_config = loop_harness_config.get("maker", {})
+    allowed_agents = set(maker_config.get("allowed_agents", []))
+    fallback_agent = maker_config.get("fallback_agent", "general-purpose")
+    if fallback_agent not in allowed_agents:
+        raise RuntimeError("maker.fallback_agent must be included in maker.allowed_agents")
+    issue_text = f"{issue_title}\n{' '.join(issue_labels)}"  # 本文は含めない（EV-74）
+    agent_name, trigger = detect_agent(issue_text, allowed_agents)
+    if agent_name is None:
+        agent_name = fallback_agent
 tool = get_agent_tool(agent_name, routing_config)  # cli-tools.yaml の agents.<name>.tool 解決（FT-04）
 ```
 
-- `detect_agent()` / `get_agent_tool()` は `packages/agent-routing/hooks/route_config.py` の既存
-  純粋関数をそのまま import して使い、いずれも `agent-routing` パッケージの config（`cli-tools.yaml`）
-  を引数に取る（agent 検出・tool 解決のロジックは agent-routing 側の設定に属するため）。
+- `detect_agent()` / `get_agent_tool()` は `packages/agent-routing/hooks/route_config.py` の公開 API を
+  import し、同等ロジックを複製しない。未選定時の `detect_agent()` には `maker.allowed_agents` を渡し、
+  非許可ロールに一致しても次候補を探索する。
+- 初回 `run_maker` 完了結果の `maker.agent` は必須で、core が allowlist 検証後に state へ一度だけ
+  保存する。欠落・空値・型不正は journal 書き込み前に拒否する。以後の反復と
+  `pr_review_response` は proposal の具体的な `params.maker_agent` を再利用し、完了結果が保存値と
+  異なる場合も拒否するため、再検出・上書きは発生しない。
 - **`maker.fallback_agent` の読み出し元（Codex レビュー指摘反映。P2）**: 検出できなかった場合の
   フォールバック先は `cli-tools.yaml` ではなく、本パッケージ自身の `config/loop-harness.yaml` の
   `maker.fallback_agent`（既定値 `general-purpose`）から読む（7 節・10 節参照）。両者は別パッケージの
@@ -1134,6 +1143,7 @@ PR の内容を人間が確認し、マージ可否を判断してください�
 | `pr_review.dedup.line_bucket_size`          | 4.2 節の行番号丸め幅                                                                              | `5`                                    |
 | `pr_review.dedup.stopwords_ja` / `_en`      | 4.2 節のストップワードリスト                                                                      | 既定リスト（詳細設計内で別途定義）     |
 | `maker.fallback_agent`                      | `detect_agent()` が検出できなかった場合の Maker subagent_type（5.2.1 節）                         | `general-purpose`                      |
+| `maker.allowed_agents`                      | Maker に選定できる実装可能ロールの positive allowlist（5.2.1 節）                                | config の 9 ロール                     |
 | `guards.infrastructure_failure.max_retries` | 個々の `gh api` 呼び出し失敗のリトライ上限（1.2 節。基本設計 6.3 節の既存キーを本書で具体値確定） | `3`                                    |
 
 ---

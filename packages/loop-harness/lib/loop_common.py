@@ -199,6 +199,7 @@ class LoopState:
     created_at: str
     updated_at: str
     state_version: int
+    maker_agent: str | None = None
 
 
 @dataclass(frozen=True)
@@ -510,12 +511,23 @@ def complete(
     assert state.pending_action is not None
     action = state.pending_action.action
     result = _normalize_complete_result(state, action, result, project_dir)
+    selected_maker_agent = None
+    if action == Action.RUN_MAKER.value and state.definition_id == "issue-loop":
+        selected_maker_agent = _selected_maker_from_result(state, result, project_dir)
     if action == Action.RUN_CHECKER.value:
         validate_implementation_checker_result(state, result, project_dir)
     new_version = state.state_version + 1
     payload = _completed_payload(action, result)
     append_journal_event(loop_id, project_dir, "completed", _actor_for(action), action_id, payload)
-    apply_action_effect(state, action, result, project_dir, loop_id, action_id)
+    apply_action_effect(
+        state,
+        action,
+        result,
+        project_dir,
+        loop_id,
+        action_id,
+        selected_maker_agent=selected_maker_agent,
+    )
     state.last_completed_action = LastCompletedAction(
         action_id=action_id,
         state_version_before=state_version,
@@ -607,11 +619,21 @@ def apply_action_effect(
     project_dir: str | None = None,
     loop_id: str | None = None,
     action_id: str | None = None,
+    selected_maker_agent: str | None = None,
+    allow_legacy_maker_result: bool = False,
 ) -> None:
     """Apply a completed action to state."""
     if _apply_safety_stop_if_needed(state, action, result):
         return
     if action == Action.RUN_MAKER.value:
+        if state.definition_id == "issue-loop":
+            _persist_selected_maker(
+                state,
+                result,
+                project_dir,
+                selected_maker_agent,
+                allow_legacy_maker_result,
+            )
         state.status = "running"
         return
     if action == Action.RUN_CHECKER.value:
@@ -1381,8 +1403,13 @@ def _proposal_params(state: LoopState, action: str, project_dir: str) -> dict[st
 
     phase_def = _load_phase_definition(state, project_dir)
     if action == Action.RUN_MAKER.value:
+        configured_agent = _phase_nested(phase_def, ("maker", "agent"), None)
         return {
-            "maker_agent": _phase_nested(phase_def, ("maker", "agent"), None),
+            "maker_agent": (
+                state.maker_agent
+                if state.definition_id == "issue-loop" and state.maker_agent
+                else configured_agent
+            ),
             "prompt_template": _phase_nested(phase_def, ("maker", "prompt_template"), None),
             "worktree_path": state.worktree_path,
             "branch": state.branch,
@@ -1464,6 +1491,46 @@ def _load_loop_config(project_dir: str) -> dict[str, Any]:
     import loop_definition
 
     return loop_definition.load_config(project_dir)
+
+
+def _persist_selected_maker(
+    state: LoopState,
+    result: dict[str, Any],
+    project_dir: str | None,
+    selected_maker_agent: str | None = None,
+    allow_legacy_maker_result: bool = False,
+) -> None:
+    """初回 Maker の選定結果だけを allowlist 検証後に永続化する。"""
+    if allow_legacy_maker_result and state.maker_agent is None and "maker" not in result:
+        return
+    agent = selected_maker_agent
+    if agent is None:
+        agent = _selected_maker_from_result(state, result, project_dir)
+    if state.maker_agent is None and agent is not None:
+        state.maker_agent = agent
+
+
+def _selected_maker_from_result(
+    state: LoopState, result: dict[str, Any], project_dir: str | None
+) -> str:
+    """Maker result の agent を取得し、初回 allowlist と以後の同一性を検証する。"""
+    maker = result.get("maker")
+    if not isinstance(maker, dict):
+        raise ProtocolViolationError("maker result must include maker.agent")
+    agent = maker.get("agent")
+    if not isinstance(agent, str) or not agent.strip():
+        raise ProtocolViolationError("maker agent must be a non-empty string")
+    if state.maker_agent is not None:
+        if agent != state.maker_agent:
+            raise ProtocolViolationError(
+                f"maker agent mismatch: expected {state.maker_agent}, got {agent}"
+            )
+        return agent
+    config = _load_loop_config(project_dir or state.worktree_path)
+    allowed = _nested(config, ("maker", "allowed_agents"), [])
+    if not isinstance(allowed, list) or agent not in allowed:
+        raise ProtocolViolationError(f"maker agent is not allowed: {agent}")
+    return agent
 
 
 def _current_branch(worktree_path: str) -> str:
@@ -1707,7 +1774,21 @@ def _reconcile_from_payload(
         return ReconcileOutcome("none", state.state_version)
     payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
     result = payload.get("result") if isinstance(payload.get("result"), dict) else payload
-    apply_action_effect(state, pending.action, result, project_dir, loop_id, pending.action_id)
+    allow_legacy_maker_result = (
+        pending.action == Action.RUN_MAKER.value
+        and state.definition_id == "issue-loop"
+        and state.maker_agent is None
+        and "maker" not in result
+    )
+    apply_action_effect(
+        state,
+        pending.action,
+        result,
+        project_dir,
+        loop_id,
+        pending.action_id,
+        allow_legacy_maker_result=allow_legacy_maker_result,
+    )
     return _finalize_reconciled(loop_id, project_dir, state, source, pending.action_id, result)
 
 
@@ -2169,6 +2250,7 @@ def _state_from_dict(data: dict[str, Any]) -> LoopState:
         created_at=str(data["created_at"]),
         updated_at=str(data["updated_at"]),
         state_version=int(data.get("state_version") or 0),
+        maker_agent=data.get("maker_agent") if isinstance(data.get("maker_agent"), str) else None,
     )
 
 
