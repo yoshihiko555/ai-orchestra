@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 from tests.module_loader import load_module
 
@@ -147,6 +148,53 @@ class TestFinallyRemovalOnLifecycleFailure:
         assert errors[0]["type"] == "run_error"
         root = git_project / ".worktrees" / "meta"
         assert not (root / "wt-run-test-unexpected").exists()
+
+    def test_worktree_removed_even_when_isolation_cleanup_fails(
+        self, git_project: Path, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(ev, "apply_overlay", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(ev, "build_facet_and_context", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(ev, "run_setup_commands", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(
+            ev,
+            "run_headless_scenario",
+            lambda *_args, **_kwargs: SimpleNamespace(isolation_launch=object()),
+        )
+
+        def failing_cleanup(_launch) -> None:
+            raise RuntimeError("forced cleanup failure")
+
+        monkeypatch.setattr(ev.siso, "cleanup_scenario_isolation", failing_cleanup)
+
+        _checks, _checks_nc, hard_failure, errors = ev._run_attempt_lifecycle(
+            main_root=git_project,
+            config={"evaluate": {"worktree_root": ".worktrees/meta"}},
+            schema_dir=_SCHEMA_DIR,
+            package_dir=Path("packages/meta-harness").resolve(),
+            cand_dir=git_project,
+            manifest={"source_commit": _git("rev-parse", "HEAD", cwd=git_project).stdout.strip()},
+            scenario={
+                "id": "s3",
+                "prompt": "irrelevant",
+                "setup": [],
+                "critical": [],
+                "checks": [],
+            },
+            run_id="run-test-cleanup-failure",
+            staging_dir=git_project / "staging3",
+            runner=subprocess.run,
+        )
+
+        assert hard_failure is True
+        assert errors == [
+            {
+                "stage": "isolation_cleanup",
+                "type": "cleanup_error",
+                "message": "forced cleanup failure",
+            }
+        ]
+        root = git_project / ".worktrees" / "meta"
+        assert not (root / "wt-run-test-cleanup-failure").exists()
 
 
 class TestApplyOverlayReRejectsUnsafeOverlaysAtEvaluateTime:

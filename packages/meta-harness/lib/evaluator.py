@@ -1622,7 +1622,17 @@ def _run_attempt_lifecycle(
         errors.append({"stage": "unknown", "type": "run_error", "message": str(exc)})
     finally:
         if scenario_result is not None and scenario_result.isolation_launch is not None:
-            siso.cleanup_scenario_isolation(scenario_result.isolation_launch)
+            try:
+                siso.cleanup_scenario_isolation(scenario_result.isolation_launch)
+            except Exception as exc:  # noqa: BLE001 - cleanup 失敗でも worktree 除去を継続する
+                hard_failure = True
+                errors.append(
+                    {
+                        "stage": "isolation_cleanup",
+                        "type": "cleanup_error",
+                        "message": str(exc),
+                    }
+                )
         if worktree_dir is not None:
             remove_worktree(main_root, worktree_dir, runner=runner)
     return checks, checks_non_critical, hard_failure, errors
