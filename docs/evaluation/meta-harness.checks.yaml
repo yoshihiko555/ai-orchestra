@@ -285,23 +285,7 @@
     implemented and verified) is covered now. Per ADR-20260712-034 the target
     backend is Docker + ephemeral broker (was SRT under ADR-032/033); the
     fail-closed guard, nofollow artifact reader, and read-only/no-network oracle
-    profile carry over unchanged. The Docker-specific mount/network coverage
-    lands with the backend implementation (see EV-47).
-
-- ev_id: EV-47
-  phase: 3
-  priority: must
-  status: gap
-  oracle: none
-  covered_by: []
-  notes: >-
-    GAP (no runnable check yet) until the Docker execution_backend + ephemeral
-    broker is implemented (ADR-20260712-034, spikes S1/S3 in design §8-2). Do NOT
-    treat this entry as a passing check — it has no command and status is `gap`.
-    Required coverage once implemented: candidate container holds no real
-    credential; broker injects Bearer + anthropic-beta:oauth and its egress is
-    limited to api.anthropic.com; scenario container on an internal network has no
-    direct egress; broker starts/stops in run scope with tmpfs token injection +
-    immediate unlink; docker rm -f reaps setsid escapees. Tracked in the
-    meta-harness gap Issue; replace with an oracle+covered_by entry when the
-    backend lands.
+    profile carry over unchanged. EV-47 (broker credential boundary) has no
+    runnable check yet; it is intentionally NOT listed in this sidecar and is
+    tracked as a gap in docs/evaluation/meta-harness.md + the meta-harness gap
+    Issue until the Docker backend lands.

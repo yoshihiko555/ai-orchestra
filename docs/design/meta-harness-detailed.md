@@ -1137,6 +1137,22 @@ cd <worktree> && claude -p "<scenario.prompt>" \
   次回起動時のname-prefix（`mh-run-*`）ベースstale cleanupで有限時間内に破棄する。
 - **broker自身のegress制限**: brokerの外部到達先はapi.anthropic.comに限定し、任意ホストへの中継
   （open proxy化）を構造的に禁止する。
+- **broker側の予算・悪用防止（呼び出し元束縛は不可能なため broker で強制）**: candidateコンテナ内の
+  Claude CLI・候補hooks・許可済みBash/Pythonはいずれも同一コンテナ・同一networkからbrokerへ到達する
+  ため、**ネットワーク層では「CLIの正規呼び出し」と「候補コードの呼び出し」を区別できない**（同一
+  送信元IP）。したがってCLIの`--max-budget-usd`や`result`のcost抽出だけに依存すると、候補が
+  brokerへ直接`/v1/messages`を投げてrun中に任意のAnthropic API利用・covert channelでの情報持ち出し・
+  予算超過を行える。これを防ぐため、**brokerが独立に以下を強制する**:
+  - **per-run予算強制**: brokerがレスポンスの`usage`を積算し、run予算（config`scenario_run.max_budget_usd`）
+    を超えたら以降のリクエストを拒否する（CLIフラグとは独立の hard cap）。
+  - **呼び出し計上・異常検知**: brokerは全リクエスト数・累積tokenを記録し、scenarioが想定する呼び出し
+    エンベロープ（概ねCLIの1 run分）を超える呼び出しをrun anomalyとしてmetadataに記録する。
+  - **per-run認証**: brokerはrunごとに生成した使い捨てトークン（candidateへ渡すダミーキー）を要求し、
+    他runのbrokerへは通らないようにする（token値自体は候補が読めるため機密ではないが、run間の
+    クロス利用と誤配線を防ぐ）。
+  - 残存リスクとして「候補がrun中にAPIをcovert channelとして使う」ことは egress が api.anthropic.com
+    限定 + broker予算cap + 出力経路のL2/L3スキャン（§11-3-6）の多層で抑止するが、構造的にゼロには
+    できない点を明記する（proposer隔離と同じ「価値最小化 + 検知」の思想）。
 - **token TTL**: brokerが保持するaccess tokenは静的（broker はrefreshしない）。起動時に`expiresAt`
   preflight（proposer L1のexp checkと同型）でrun想定時間より十分長いことを確認する。
 - scenario子プロセスの環境はallowlistから再構築し、`HOME`/`CLAUDE_CONFIG_DIR`をephemeral HOME、
@@ -1488,6 +1504,13 @@ packages/meta-harness/
 `config/meta-harness.yaml` の完全な既定値は以下の通り。`.claude/config/meta-harness/
 meta-harness.local.yaml` で上書き可能（`config-loading` ルール準拠）。
 
+> **注意（`evaluate.isolation` は目標状態）**: 下記の `isolation.backend: docker` + `broker` キーは
+> ADR-20260712-034 が定める**実装後の目標既定値**である。**実配布される
+> `packages/meta-harness/config/meta-harness.yaml` は、Docker backend の実装・封じ込め検証テストが
+> 揃うまで `backend: srt` / `execution_backend: none`（fail-closed）のまま**とする。実 config の
+> Docker 化は backend 実装 PR で同時に行う（本設計 PR は docs のみ）。検証時はこの乖離を踏まえ、
+> 「解禁前の実行時既定 = SRT/none」「解禁後の目標 = docker」を取り違えないこと。
+
 ```yaml
 storage:
   root: null # null = git-common-dir からメインルートを自動解決。絶対パスで明示上書き可（§2-0）
@@ -1710,7 +1733,8 @@ Phase 1b（judge を含む）の実装は、§3-3 に反映したパス scoped `
 ### 8-2. scenario 実行 backend スパイク結果（2026-07-12、ADR-20260712-034）
 
 Phase 2/3 の scenario 実行隔離を SRT から Docker + ephemeral broker へ移行する判断（ADR-034）の
-前提検証。手順書と生ログは `.claude/handoffs/20260712T-meta-harness-scenario-backend-spikes.md`。
+前提検証。**判定根拠の追跡可能な記録は `docs/design/meta-harness-scenario-backend-spikes.md`**
+（実行手順・作業メモは `.claude/handoffs/20260712T-meta-harness-scenario-backend-spikes.md`、作業用）。
 環境は Docker daemon = OrbStack 29.4.0。
 
 | ID  | 検証                      | 結果 | 要点                                                                                                     |
