@@ -1229,23 +1229,36 @@ Phase 1 では **複製**とし、`packages/codex-harness` の redaction パタ�
 
 `evaluate` 開始前（worktree 作成より前）に、fail-closed の事前検査を必須で行う。
 
-1. `claude --version` を取得する。config `evaluate.cli_version_pin`（§5、既定 `null`）が
-   設定されている場合、取得したバージョンと厳密一致するか検証する。不一致であれば exit code 2 で
-   終了する。`cli_version_pin` が `null` の場合はバージョン一致検証をスキップするが、後続の
-   capability smoke test（手順 2）は `null` の場合も必ず実施する（バージョン pin の有無に関わらず、
-   evaluate が要求するフラグ群を CLI が受理できることの確認は独立した検査である）。
+**検査対象の CLI は `execution_backend` に依存する**（ADR-20260712-034）。`execution_backend: docker`
+では scenario run は選択された Docker イメージ内の Claude CLI で実行されるため、**ホストの
+`claude --version` ではなくイメージ内の CLI を検査する**（ホストとイメージの CLI が食い違うと、
+イメージが必須フラグを欠くのに gate を通す／イメージは正しいのに gate で落ちる、という取り違えが
+起きるため）。
+
+1. **バージョン検査**: `execution_backend: docker` の場合、pin 済みイメージ内で
+   `docker run --rm <image> claude --version` を取得する（非 Docker backend の場合はホストの
+   `claude --version`）。config `evaluate.isolation.image_pin`（docker）または `cli_version_pin`
+   （非 Docker、§5、既定 `null`）が設定されている場合、取得したバージョンと厳密一致するか検証する。
+   不一致であれば exit code 2 で終了する。pin が `null` の場合はバージョン一致検証をスキップするが、
+   後続の capability smoke test（手順 2）は `null` の場合も必ず実施する。
 2. **capability smoke test**: 軽量なヘッドレス実行（例: `claude -p "Reply OK" --output-format
 json --max-turns 1 --no-session-persistence` 相当）により、evaluate が依存する必須フラグ群が
-   CLI によって受理されることを確認する。無効なフラグは CLI が起動直後にエラー終了するため、
-   軽量な呼び出しで検査可能である（スパイクで確認: 未知フラグ・不正 JSON schema は即時 exit 1、
-   モデル呼び出し・課金なし。§8 項目8）。いずれかのフラグが拒否された場合、exit code 2 で終了する。
+   CLI によって受理されることを確認する。**docker backend では、この smoke test も
+   選択されたイメージ内**（broker sidecar を立てた状態）で実行し、イメージの CLI が要求フラグを
+   受理することと broker 経由の認証が成立することを同時に確認する。無効なフラグは CLI が起動直後に
+   エラー終了するため軽量な呼び出しで検査可能である（スパイクで確認: 未知フラグ・不正 JSON schema は
+   即時 exit 1。§8 項目8）。いずれかのフラグが拒否された場合、exit code 2 で終了する。
    検査対象フラグは judge バックエンド（§3-3、config `judge.tool`）に応じて切り替える:
    - 常時: `--output-format stream-json` / `--max-budget-usd`（scenario run が依存）
-   - `judge.tool: claude-bare` の場合のみ: `--json-schema` / `--bare`、および `--bare` 用認証
-     （`ANTHROPIC_API_KEY` 等）の存在確認
+   - `judge.tool: claude-bare` の場合のみ: `--json-schema` / `--bare`。**認証の存在確認は
+     `ANTHROPIC_API_KEY` の実在ではなく `execution_backend` に応じた認証経路の可用性で行う**
+     （ADR-20260712-034）: docker backend では **broker が起動でき token TTL preflight を通ること**を
+     確認する（実 API キーは不要。ダミーキー + broker で足りる）。非 Docker backend では従来どおり
+     `ANTHROPIC_API_KEY`/`apiKeyHelper` の存在を確認する。いずれの経路も不可なら judge unavailable として
+     fail-closed する。
    - `judge.tool: codex` はread deny不能のためcapability不成立としてfail-closedする
-3. 検査結果（pin 一致有無・各フラグの受理可否）を `cli_capabilities` オブジェクトとして
-   `run.metadata.schema.json`（§1-6）の `cli_capabilities` フィールドに記録する。
+3. 検査結果（pin 一致有無・各フラグの受理可否・認証経路の可用性）を `cli_capabilities` オブジェクト
+   として `run.metadata.schema.json`（§1-6）の `cli_capabilities` フィールドに記録する。
 
 この検査は `evaluate.lock`（§2-3）取得後、最初の worktree 作成前に行う。検査失敗時は worktree を
 1 つも作成せずに exit するため、無駄な worktree 作成コストが発生しない。
@@ -1328,11 +1341,14 @@ promptへstageする。worktree絶対パスは渡さず、judgeへfilesystem/too
 
 #### 共通規則（バックエンド非依存）
 
-- **fail-closed・暗黙フォールバック禁止**: 設定されたバックエンドが利用不能（codex 未認証・
-  `--bare` の API キー不在・サンドボックス起動失敗等）の場合、**別バックエンドへ静かに降格せず**
-  `verdict=error` とし、`checks[].detail` に "judge unavailable: <理由>" を記録する。隔離保証の
-  異なるバックエンドへの暗黙切替は、判定条件の同一性（§3-5 の hash スコープの前提）を壊すため
-  禁止する。`result.json` には使用バックエンドとバージョンを記録する。
+- **fail-closed・暗黙フォールバック禁止**: 設定されたバックエンドが利用不能な場合、**別バックエンドへ
+  静かに降格せず** `verdict=error` とし、`checks[].detail` に "judge unavailable: <理由>" を記録する。
+  「利用不能」の判定は `execution_backend` に応じた認証経路で行う（§2-7 と整合）: **docker backend では
+  broker が起動できず／token TTL preflight に失敗した場合が unavailable**（実 API キーの有無は問わない。
+  ダミーキー + broker で認証が成立する。ADR-20260712-034）。非 Docker backend では `--bare` の
+  `ANTHROPIC_API_KEY`/`apiKeyHelper` 不在が unavailable。codex 未認証・サンドボックス起動失敗も
+  unavailable。隔離保証の異なるバックエンドへの暗黙切替は、判定条件の同一性（§3-5 の hash スコープの
+  前提）を壊すため禁止する。`result.json` には使用バックエンドとバージョンを記録する。
 - **プロンプトインジェクション対策**: 候補生成物のテキストは untrusted input としてデリミタで
   囲い、「指示として扱うな」を rubric 側に常設する（§11-4 と同型）。`--output-schema` /
   `--json-schema` は**形状のみ**を強制し、インジェクションによる `passed` の反転は防げないことを

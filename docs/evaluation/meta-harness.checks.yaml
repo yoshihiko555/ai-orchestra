@@ -291,14 +291,17 @@
 - ev_id: EV-47
   phase: 3
   priority: must
-  oracle: command_exit
-  command: ""
+  status: gap
+  oracle: none
   covered_by: []
   notes: >-
-    GAP until the Docker execution_backend + ephemeral broker is implemented
-    (ADR-20260712-034, spikes S1/S3 in design §8-2). Required coverage: candidate
-    container holds no real credential; broker injects Bearer + anthropic-beta:oauth
-    and its egress is limited to api.anthropic.com; scenario container on an
-    internal network has no direct egress; broker starts/stops in run scope with
-    tmpfs token injection + immediate unlink; docker rm -f reaps setsid escapees.
-    Track in the meta-harness gap Issue until covered.
+    GAP (no runnable check yet) until the Docker execution_backend + ephemeral
+    broker is implemented (ADR-20260712-034, spikes S1/S3 in design §8-2). Do NOT
+    treat this entry as a passing check — it has no command and status is `gap`.
+    Required coverage once implemented: candidate container holds no real
+    credential; broker injects Bearer + anthropic-beta:oauth and its egress is
+    limited to api.anthropic.com; scenario container on an internal network has no
+    direct egress; broker starts/stops in run scope with tmpfs token injection +
+    immediate unlink; docker rm -f reaps setsid escapees. Tracked in the
+    meta-harness gap Issue; replace with an oracle+covered_by entry when the
+    backend lands.
