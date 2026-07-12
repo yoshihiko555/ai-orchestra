@@ -612,12 +612,15 @@ def save_review_findings_snapshot(
             "action_id": action_id,
         }
     )
+    content = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+    if len(content.encode("utf-8")) > MAX_REVIEW_FINDINGS_SNAPSHOT_BYTES:
+        _raise_invalid_snapshot("artifact exceeds size limit")
     artifact_path = lc.save_artifact(
         loop_id,
         project_dir,
         action_id,
         REVIEW_FINDINGS_SNAPSHOT_ARTIFACT,
-        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+        content,
     )
     _validate_review_findings_snapshot_action(loop_id, project_dir, action_id, lease_token)
     return artifact_path
@@ -1447,10 +1450,10 @@ def _snapshot_iteration_findings(value: Any, field_name: str) -> IterationFindin
     signatures = _snapshot_string_tuple(data["signatures"], f"{field_name}.signatures")
     if len(signatures) != len(set(signatures)):
         _raise_invalid_snapshot(f"{field_name}.signatures contains duplicates")
-    return IterationFindings(
-        frozenset(signatures),
-        _snapshot_non_negative_int(data["new_count"], f"{field_name}.new_count"),
-    )
+    new_count = _snapshot_non_negative_int(data["new_count"], f"{field_name}.new_count")
+    if new_count > len(signatures):
+        _raise_invalid_snapshot(f"{field_name}.new_count exceeds signatures")
+    return IterationFindings(frozenset(signatures), new_count)
 
 
 def _snapshot_mapping(value: Any, expected_keys: set[str], field_name: str) -> dict[str, Any]:

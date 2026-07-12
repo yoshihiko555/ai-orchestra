@@ -1686,6 +1686,40 @@ def test_review_findings_snapshot_uses_0600_and_redacts_secrets(
     assert restored.findings[0].path == "[REDACTED]"
 
 
+def test_save_review_findings_snapshot_rejects_oversized_serialized_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir = _setup_state(tmp_path, monkeypatch)
+    lease_token = _lease(project_dir)
+    _activate_pending_review_action(project_dir)
+    result = prw.ReviewFindingsResult(
+        findings=(
+            prw.ImportedFinding(
+                "sig-a",
+                "high",
+                "review_comment:1",
+                "x" * prw.MAX_REVIEW_FINDINGS_SNAPSHOT_BYTES,
+                "app.py",
+                10,
+                False,
+            ),
+        ),
+        iteration_findings=lc.IterationFindings(frozenset({"sig-a"}), 1),
+        previous_iteration_findings=lc.IterationFindings(frozenset(), 0),
+        processed_comment_ids=("review_comment:1",),
+        ignored_untrusted_comment_count=0,
+        needs_classification_count=0,
+    )
+    path = lc.artifact_path("abcd1234-issue-1", project_dir, "action-1", "review_findings.json")
+
+    with pytest.raises(prw.PrReviewWaitError, match="artifact exceeds size limit"):
+        prw.save_review_findings_snapshot(
+            "abcd1234-issue-1", project_dir, "action-1", result, lease_token
+        )
+
+    assert not path.exists()
+
+
 def test_load_review_findings_snapshot_fails_closed_when_artifact_is_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1753,6 +1787,36 @@ def test_load_review_findings_snapshot_fails_closed_for_invalid_schema(
     )
 
     with pytest.raises(prw.PrReviewWaitError, match="invalid review findings snapshot"):
+        prw.load_review_findings_snapshot("abcd1234-issue-1", project_dir, "action-1", lease_token)
+
+
+@pytest.mark.parametrize("field_name", ["iteration_findings", "previous_iteration_findings"])
+def test_load_review_findings_snapshot_rejects_new_count_without_signatures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field_name: str
+) -> None:
+    project_dir = _setup_state(tmp_path, monkeypatch)
+    lease_token = _lease(project_dir)
+    _activate_pending_review_action(project_dir)
+    prw.save_review_findings_snapshot(
+        "abcd1234-issue-1",
+        project_dir,
+        "action-1",
+        _empty_review_findings_result(),
+        lease_token,
+    )
+    content = lc.load_artifact("abcd1234-issue-1", project_dir, "action-1", "review_findings.json")
+    assert content is not None
+    payload = json.loads(content)
+    payload[field_name] = {"signatures": [], "new_count": 1}
+    lc.save_artifact(
+        "abcd1234-issue-1",
+        project_dir,
+        "action-1",
+        "review_findings.json",
+        json.dumps(payload),
+    )
+
+    with pytest.raises(prw.PrReviewWaitError, match="new_count exceeds signatures"):
         prw.load_review_findings_snapshot("abcd1234-issue-1", project_dir, "action-1", lease_token)
 
 
