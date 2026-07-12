@@ -280,4 +280,12 @@
     - packages/meta-harness/tests/test_evaluator_capability_gate.py::TestCapabilityGateHappyPath::test_production_gate_rejects_missing_execution_boundary
     - packages/meta-harness/tests/test_loop_cli_e2e.py::test_loop_subprocess_fails_closed_before_candidate_worktree_without_execution_boundary
     - packages/meta-harness/tests/test_evaluator_artifacts.py::TestHoldoutPhysicalSeparation::test_metadata_records_finished_at_after_completion
-  notes: scenario runs remain unavailable until an external signer and cgroup/VM-equivalent descendant containment are implemented; the root-deny SRT profile and nofollow artifact reader are covered independently.
+  notes: >-
+    Fail-closed invariant (scenario runs unavailable until execution_backend is
+    implemented and verified) is covered now. Per ADR-20260712-034 the target
+    backend is Docker + ephemeral broker (was SRT under ADR-032/033); the
+    fail-closed guard, nofollow artifact reader, and read-only/no-network oracle
+    profile carry over unchanged. EV-47 (broker credential boundary) has no
+    runnable check yet; it is intentionally NOT listed in this sidecar and is
+    tracked as a gap in docs/evaluation/meta-harness.md + the meta-harness gap
+    Issue until the Docker backend lands.
