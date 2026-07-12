@@ -29,6 +29,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`loop-harness`: severity 分類を挟む PR レビュー取り込みで指摘が欠落する問題を修正**: 明示 severity の指摘と分類が必要な指摘が同時に届いた場合でも、action と lease に安全に束縛した snapshot で結果を引き継ぎ、分類後に一部の指摘が消えて誤って合格扱いにならないようにした。
+
 - **`quality-gates`: hook 状態ファイルの保存規約を統一し、worktree 分離と排他制御を追加**: `test-gate-checker.py` / `post-test-analysis.py` / `post-implementation-review.py` / `test-tampering-detector.py` の状態ファイルを、全プロジェクト共有だった `/tmp/claude-*.json` から `.claude/state/`（`evaluation-set-checker.py` と同じ規約、worktree = project_dir 配下に閉じ込め）へ移行した。あわせて `test-tampering-detector.py` の状態更新に flock 排他ロックを追加し、他 3 hook と同じ保護レベルに揃えた。
 
 - **`loop-harness`: bot の自動生成サマリコメントが phantom high 指摘として取り込まれる問題を修正**: CodeRabbit 等が投稿する非 actionable ステータスコメント（本文中に `High` 等の語を偶然含む）が explicit high severity の指摘として誤って取り込まれ、対応実体が無いまま `exit_success` に到達できなくなる不具合を修正した。`pr_review.auto_generated_markers`（config）で指定したマーカーを含むコメントは severity 判定前に除外される。
