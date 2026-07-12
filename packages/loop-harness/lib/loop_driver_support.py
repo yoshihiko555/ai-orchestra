@@ -324,25 +324,27 @@ def _persist_forced_terminal(
     updated).
 
     Raises `loop_common.WriteRejectedError` if the caller-held lease is no longer valid
-    (lease fencing: never write state/journal without a live lease).
+    (lease fencing: never write state/journal without a live lease). Lease validation and
+    the journal/state writes below run inside `lc.guarded_lease_section()` so a concurrent
+    lease reacquisition by another worker cannot race between the validity check and the
+    write (code review #3).
     """
-    if not lc.validate_lease(loop_id, project_dir, lease_token):
-        raise lc.WriteRejectedError(f"invalid lease for {loop_id}; refusing terminal write")
-    lc.append_journal_event(
-        loop_id,
-        project_dir,
-        journal_event,
-        "driver",
-        action_id,
-        {"stop_reason": stop_reason, **payload},
-    )
-    state = lc.load_state(loop_id, project_dir)
-    state.status = status
-    state.stop_reason = stop_reason
-    state.pending_action = None
-    state.state_version += 1
-    state.updated_at = lc.now_iso()
-    lc._write_state(state, project_dir)  # noqa: SLF001 - package-internal writer, see docstring
+    with lc.guarded_lease_section(loop_id, project_dir, lease_token):
+        lc.append_journal_event(
+            loop_id,
+            project_dir,
+            journal_event,
+            "driver",
+            action_id,
+            {"stop_reason": stop_reason, **payload},
+        )
+        state = lc.load_state(loop_id, project_dir)
+        state.status = status
+        state.stop_reason = stop_reason
+        state.pending_action = None
+        state.state_version += 1
+        state.updated_at = lc.now_iso()
+        lc._write_state(state, project_dir)  # noqa: SLF001 - package-internal writer, see docstring
 
 
 def persist_safe_stop(
@@ -412,7 +414,7 @@ def notify_macos(title: str, message: str) -> bool:
             timeout=5,
             check=False,
         )
-    except OSError:
+    except (OSError, subprocess.TimeoutExpired):
         return False
     return completed.returncode == 0
 
@@ -433,7 +435,7 @@ def post_issue_comment(cwd: str, issue_number: int, body: str) -> bool:
             timeout=30,
             check=False,
         )
-    except OSError:
+    except (OSError, subprocess.TimeoutExpired):
         return False
     return completed.returncode == 0
 

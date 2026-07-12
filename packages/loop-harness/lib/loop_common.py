@@ -10,11 +10,13 @@ import json
 import os
 import re
 import secrets
+import signal
 import socket
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -1147,6 +1149,33 @@ def validate_lease(loop_id: str, project_dir: str, lease_token: str) -> bool:
     if lock is None or not lease_token:
         return False
     return lock.lease_token == lease_token and is_lease_alive(lock)
+
+
+@contextmanager
+def guarded_lease_section(loop_id: str, project_dir: str, lease_token: str) -> Iterator[None]:
+    """Hold the lock-file's flock for the duration of a lease-gated write (review #3).
+
+    `validate_lease()` followed by unguarded journal/state writes has a TOCTOU window: the
+    lease can expire and be reacquired by another worker (`acquire_lock`/`reacquire_lease`,
+    which take this same lock-file flock) between the check and the write, letting a stale
+    worker clobber the new owner's state. Holding the flock here for validation and the
+    caller's writes serializes both against any concurrent lease (re)acquisition. Raises
+    `WriteRejectedError` (fail-closed) if the caller-held lease is invalid/stale when the
+    flock is acquired.
+    """
+    path = lock_path(loop_id, project_dir)
+    fd = _open_lock_for_update(path)
+    if fd is None:
+        raise WriteRejectedError(f"invalid lease for {loop_id}; refusing terminal write")
+    with os.fdopen(fd, "r+", encoding="utf-8") as f:
+        try:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            lock = _read_lock_stream(f) if _fd_matches_path(f.fileno(), path) else None
+        except OSError:
+            lock = None
+        if lock is None or lock.lease_token != lease_token or not is_lease_alive(lock):
+            raise WriteRejectedError(f"invalid lease for {loop_id}; refusing terminal write")
+        yield
 
 
 def is_lease_alive(lock: LockInfo, now: float | None = None) -> bool:
@@ -2304,26 +2333,62 @@ def _write_text(path: Path, content: str) -> None:
 def _run_mechanical_command(
     command: str, cwd: str, timeout_seconds: int, env: Mapping[str, str] | None = None
 ) -> tuple[str, int]:
-    """Run one mechanical command.
+    """Run one mechanical command, killing its whole process group on timeout (review #16).
 
     `env=None` (the default) inherits the caller's `os.environ`, matching
     `subprocess.run`'s own default and preserving pre-SEC-C1 behavior for LP-1 callers.
+
+    Runs in its own process group (`start_new_session=True`) so a timeout kills every
+    descendant the Maker-authored command spawned (e.g. a `pytest` run's own subprocesses),
+    not just the direct `bash` child; a plain `subprocess.run(..., timeout=...)` only ever
+    reaps the immediate child, leaking grandchildren on timeout.
+    """
+    proc = subprocess.Popen(
+        ["bash", "-lc", command],
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+        env=dict(env) if env is not None else None,
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        _kill_process_group(proc.pid)
+        stdout, stderr = proc.communicate()
+        return f"{stdout or ''}{stderr or ''}\ncommand timed out", 124
+    return f"{stdout or ''}{stderr or ''}", proc.returncode
+
+
+def _kill_process_group(pid: int, term_wait_seconds: float = 10.0) -> None:
+    """Escalate SIGTERM -> (wait) -> SIGKILL to an entire process group.
+
+    Standalone copy of `loop_driver_support.kill_process_tree()`'s logic: `loop_common`
+    cannot import `loop_driver_support` (the latter already imports `loop_common` as `lc`,
+    so a back-import would be circular).
+
+    `PermissionError` is treated the same as `ProcessLookupError` (group gone, stop
+    polling): once the group's session leader has died from SIGTERM, a same-UID
+    existence-check (`killpg(pid, 0)`) on the now-orphaned group can spuriously raise
+    `PermissionError` on macOS instead of `ProcessLookupError`, even though the group's
+    members are already terminating/terminated.
     """
     try:
-        proc = subprocess.run(
-            ["bash", "-lc", command],
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-            env=dict(env) if env is not None else None,
-        )
-    except subprocess.TimeoutExpired as exc:
-        stdout = exc.stdout if isinstance(exc.stdout, str) else ""
-        stderr = exc.stderr if isinstance(exc.stderr, str) else ""
-        return f"{stdout}{stderr}\ncommand timed out", 124
-    output = f"{proc.stdout or ''}{proc.stderr or ''}"
-    return output, proc.returncode
+        os.killpg(pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        return
+    deadline = time.monotonic() + term_wait_seconds
+    while time.monotonic() < deadline:
+        try:
+            os.killpg(pid, 0)
+        except (ProcessLookupError, PermissionError):
+            return
+        time.sleep(0.1)
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
 
 
 def _load_failure_detector() -> Any:

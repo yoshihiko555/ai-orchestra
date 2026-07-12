@@ -64,10 +64,10 @@ python3 packages/loop-harness/scripts/loop_status.py list [--status <phase>] [--
 python3 packages/loop-harness/scripts/loop_status.py show --loop-id <id> [--journal-lines N] [--full-journal]
 
 # 完了済みループの掃除（既定: 30日以上経過した passed/failed のみ）
-python3 packages/loop-harness/scripts/loop_status.py purge [--force] [--dry-run]
+python3 packages/loop-harness/scripts/loop_status.py purge [--force] [--dry-run] [--yes]
 ```
 
-`purge` は `running` / `waiting_external` を常に保護します（`--force` でも削除しません）。通常モードでは `passed` / `failed` かつ `retention.purge_after_days` 経過後のみが対象です。
+`purge` は `running` / `waiting_external` を常に保護します（`--force` でも削除しません。削除直前に state を再読込し、保護対象へ遷移していれば直前でもスキップします）。通常モードでは `passed` / `failed` かつ `retention.purge_after_days` 経過後のみが対象です。`--dry-run` を付けない実削除は対話確認（非対話環境では `--yes` 必須）を経て実行します。
 
 ## push 多層防御（安全性）
 

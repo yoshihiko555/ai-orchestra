@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -119,6 +120,48 @@ def test_load_and_validate_rejects_denylisted_mechanical_command(tmp_path: Path)
     _write(path, _definition().replace("commands: [pytest -q]", "commands: [git push origin main]"))
     with pytest.raises(ld.DefinitionValidationError, match="denylisted binary"):
         ld.load_and_validate(path)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "/usr/bin/git push origin main",
+        "git\tpush origin main",
+        "env git push origin main",
+        "command git push origin main",
+        "nice -n 10 git push origin main",
+        "timeout 30 git push origin main",
+        'bash -c "git push origin main"',
+        'sh -c "git push origin main"',
+        "pytest -q ; git push origin main",
+        "pytest -q && git push origin main",
+        "pytest -q || git push origin main",
+        "pytest -q | git push origin main",
+        "$(git push origin main)",
+        "`git push origin main`",
+    ],
+)
+def test_load_and_validate_rejects_mechanical_command_denylist_bypass(
+    tmp_path: Path, command: str
+) -> None:
+    """SEC-M1: normalization must catch path/whitespace/wrapper/shell-construct bypasses."""
+    path = tmp_path / "bad.yaml"
+    _write(
+        path,
+        _definition().replace("commands: [pytest -q]", f"commands: [{json.dumps(command)}]"),
+    )
+    with pytest.raises(ld.DefinitionValidationError, match="denylisted binary"):
+        ld.load_and_validate(path)
+
+
+def test_load_and_validate_accepts_mechanical_command_with_denylisted_word_as_argument(
+    tmp_path: Path,
+) -> None:
+    """The scan only checks command-position binaries, not arbitrary argument text."""
+    path = tmp_path / "ok.yaml"
+    _write(path, _definition().replace("commands: [pytest -q]", "commands: [pytest -k not_git]"))
+    definition = ld.load_and_validate(path)
+    assert definition.phases[0].checker["mechanical"]["commands"] == ["pytest -k not_git"]
 
 
 def test_issue_loop_implementation_requires_llm_review(tmp_path: Path) -> None:

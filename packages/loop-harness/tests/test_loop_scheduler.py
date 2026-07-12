@@ -11,6 +11,7 @@ monkeypatch, and worker spawning is monkeypatched to fake `Popen`-like objects.
 from __future__ import annotations
 
 import json
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -225,6 +226,25 @@ def test_discover_loop_ids_applies_configured_priority_labels(
     assert loop_ids == [wm.compute_loop_id(project_dir, 3), wm.compute_loop_id(project_dir, 1)]
 
 
+@pytest.mark.parametrize("status", ["passed", "failed", "stopped"])
+def test_discover_loop_ids_excludes_terminal_loops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: str
+) -> None:
+    """A loop_id that already reached a terminal outcome must not be regenerated just because
+    its Issue still carries the label (#10); resuming it is an explicit operator action."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    definition = ld.load_all_definitions(project_dir)["issue-loop"]
+
+    terminal_loop_id = wm.compute_loop_id(project_dir, 5)
+    _seed_state(tmp_path, terminal_loop_id, status=status)
+
+    fake_issues = [{"number": 5, "created_at": "2026-01-01T00:00:00Z", "labels": []}]
+    monkeypatch.setattr(scheduler, "list_labeled_issues", lambda project, label: fake_issues)
+
+    assert scheduler.discover_loop_ids(project_dir, definition) == []
+
+
 def test_discover_loop_ids_respects_in_memory_excluded_set(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -256,6 +276,75 @@ def test_list_labeled_issues_builds_expected_gh_invocation(
 
     assert captured["args"] == ("acme/widgets", "loop:issue")
     assert issues == [{"number": 9, "created_at": "2026-01-01T00:00:00Z", "labels": []}]
+
+
+def test_list_labeled_issues_excludes_pull_requests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`GET /repos/{repo}/issues` also returns PRs (they carry a `pull_request` key); those
+    must not be treated as loop-discovery candidates (#9)."""
+    monkeypatch.setattr(scheduler, "_repo_name_with_owner", lambda project_dir: "acme/widgets")
+    monkeypatch.setattr(
+        scheduler,
+        "_gh_list_issues",
+        lambda repo, label: json.dumps(
+            [
+                {"number": 1, "created_at": "2026-01-01T00:00:00Z", "labels": []},
+                {
+                    "number": 2,
+                    "created_at": "2026-01-02T00:00:00Z",
+                    "labels": [],
+                    "pull_request": {"url": "https://example/pulls/2"},
+                },
+            ]
+        ),
+    )
+
+    issues = scheduler.list_labeled_issues("/some/project", "loop:issue")
+
+    assert [item["number"] for item in issues] == [1]
+
+
+def test_list_labeled_issues_parses_multiple_paginated_json_arrays(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`gh api --paginate` writes one JSON array per page back-to-back with no separator and
+    no top-level wrapping array; parsing must not silently truncate at page 1 (#9)."""
+    monkeypatch.setattr(scheduler, "_repo_name_with_owner", lambda project_dir: "acme/widgets")
+    page_1 = json.dumps([{"number": 1, "created_at": "2026-01-01T00:00:00Z", "labels": []}])
+    page_2 = json.dumps([{"number": 2, "created_at": "2026-01-02T00:00:00Z", "labels": []}])
+    monkeypatch.setattr(scheduler, "_gh_list_issues", lambda repo, label: page_1 + page_2)
+
+    issues = scheduler.list_labeled_issues("/some/project", "loop:issue")
+
+    assert [item["number"] for item in issues] == [1, 2]
+
+
+def test_list_labeled_issues_returns_empty_on_gh_failure_without_raising(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed `gh` call must not raise and take the resident scheduler down with it (#34)."""
+    monkeypatch.setattr(scheduler, "_repo_name_with_owner", lambda project_dir: "acme/widgets")
+    monkeypatch.setattr(scheduler, "_gh_list_issues", lambda repo, label: "")
+
+    assert scheduler.list_labeled_issues("/some/project", "loop:issue") == []
+
+
+def test_gh_list_issues_returns_empty_string_on_nonzero_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`_gh_list_issues` itself must use `check=False` and swallow a nonzero exit (#34)."""
+
+    class _FakeCompleted:
+        returncode = 1
+        stdout = ""
+        stderr = "gh: some transient API error\n"
+
+    def fake_run(*args: object, **kwargs: object) -> _FakeCompleted:
+        assert kwargs.get("check") is False
+        return _FakeCompleted()
+
+    monkeypatch.setattr(scheduler.subprocess, "run", fake_run)
+
+    assert scheduler._gh_list_issues("acme/widgets", "loop:issue") == ""
 
 
 # --------------------------------------------------------------------------------------------
@@ -417,6 +506,61 @@ def test_reap_finished_workers_respawns_after_foreign_lease_cooldown_elapses(
     assert loop_id not in runtime.foreign_lease_cooldown_until
 
 
+def test_reap_finished_workers_does_not_respawn_cooldown_when_at_capacity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#11: an expired cooldown must respect the concurrency cap, not bypass it. Left in
+    `foreign_lease_cooldown_until` so it stays excluded from fresh discovery too."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    cooling_loop_id = "aaaaaaaa-issue-1"
+    _seed_state(tmp_path, cooling_loop_id, status="running")
+    # Fill both concurrency_limit(default 2) slots with unrelated already-running workers.
+    runtime = scheduler.SchedulerRuntime(
+        workers={"busy-1": _FakePopen(None), "busy-2": _FakePopen(None)},
+        foreign_lease_cooldown_until={cooling_loop_id: 500.0},
+    )
+    monkeypatch.setattr(scheduler.time, "monotonic", lambda: 1000.0)
+
+    def _fail_spawn(lid: str, project: str) -> None:
+        raise AssertionError("must not respawn past the concurrency cap")
+
+    monkeypatch.setattr(scheduler, "spawn_worker", _fail_spawn)
+
+    result = scheduler.reap_finished_workers(runtime, project_dir)
+
+    assert result == []
+    assert cooling_loop_id not in runtime.workers
+    assert cooling_loop_id in runtime.foreign_lease_cooldown_until
+
+
+def test_spawn_new_workers_excludes_ids_still_in_cooldown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#11: a loop_id mid-cooldown must not be spawned as a "new" discovery candidate even
+    though it holds no worker slot and is not in `stopped_loop_ids`."""
+    project_dir = str(tmp_path)
+    definition = ld.load_all_definitions(project_dir)["issue-loop"]
+    cooling_loop_id = "aaaaaaaa-issue-1"
+    runtime = scheduler.SchedulerRuntime(foreign_lease_cooldown_until={cooling_loop_id: 999.0})
+
+    captured_excluded: dict[str, frozenset[str]] = {}
+
+    def fake_discover(
+        project: str, defn: object, *, excluded: frozenset[str] = frozenset()
+    ) -> list[str]:
+        captured_excluded["excluded"] = excluded
+        return [lid for lid in ["a", cooling_loop_id] if lid not in excluded]
+
+    monkeypatch.setattr(scheduler, "discover_loop_ids", fake_discover)
+    monkeypatch.setattr(scheduler, "spawn_worker", lambda loop_id, project: _FakePopen(None))
+
+    spawned = scheduler.spawn_new_workers(runtime, project_dir, definition)
+
+    assert cooling_loop_id in captured_excluded["excluded"]
+    assert spawned == ["a"]
+
+
 # --------------------------------------------------------------------------------------------
 # spawn_new_workers: concurrency cap (EV-46)
 # --------------------------------------------------------------------------------------------
@@ -548,6 +692,30 @@ def test_run_scheduler_excludes_startup_stopped_loop_and_respects_max_cycles(
     assert lc.load_state(loop_id, project_dir).status == "stopped"
 
 
+def test_run_scheduler_continues_after_a_cycle_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#21: one poll cycle raising must not take the resident scheduler process down; it
+    should be logged and the loop should continue to the next cycle."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+
+    monkeypatch.setattr(scheduler.time, "sleep", lambda seconds: None)
+    cycle_calls: list[int] = []
+
+    def _flaky_cycle(runtime: object, project: str, definition: object) -> None:
+        cycle_calls.append(1)
+        if len(cycle_calls) == 2:
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(scheduler, "run_cycle", _flaky_cycle)
+
+    scheduler.run_scheduler(project_dir, max_cycles=3)
+
+    assert len(cycle_calls) == 3
+    assert "boom" in capsys.readouterr().err
+
+
 def test_run_scheduler_raises_for_unknown_definition(tmp_path: Path) -> None:
     _init_repo(tmp_path)
     with pytest.raises(ld.DefinitionValidationError):
@@ -573,6 +741,33 @@ def test_render_cron_entry_contains_pgrep_guard_and_project_path(tmp_path: Path)
     assert "pgrep -f" in entry
     assert str(tmp_path.resolve()) in entry
     assert entry.strip().startswith("*/5 * * * *")
+
+
+def test_render_launchd_plist_escapes_xml_special_characters(tmp_path: Path) -> None:
+    """#12: an unescaped `&`/`<`/`>` in project_dir would otherwise produce invalid plist
+    XML."""
+    project = tmp_path / "a & b <weird>"
+    project.mkdir()
+    plist = scheduler.render_launchd_plist(str(project))
+    assert "a & b <weird>" not in plist
+    assert "a &amp; b &lt;weird&gt;" in plist
+    import xml.etree.ElementTree as ET
+
+    ET.fromstring(plist)  # must parse as well-formed XML
+
+
+def test_render_cron_entry_shell_quotes_project_path_with_special_characters(
+    tmp_path: Path,
+) -> None:
+    """#12: an unquoted project_dir containing shell metacharacters would otherwise split
+    into extra tokens or inject additional commands into the crontab line."""
+    project = tmp_path / "weird; rm -rf ~ #"
+    project.mkdir()
+    entry = scheduler.render_cron_entry(str(project))
+    # If the path were interpolated unquoted, whitespace/`;`/`#` would split it into several
+    # separate shlex tokens instead of one; a properly quoted path stays a single token.
+    tokens = shlex.split(entry)
+    assert str(project.resolve()) in tokens
 
 
 def test_main_print_launchd_and_print_cron(

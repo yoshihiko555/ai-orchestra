@@ -17,11 +17,16 @@ CONFIG_FILENAME = "loop-harness.yaml"
 _ID_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 _SIGNATURE_KINDS = {"implementation", "pr_review"}
 ISSUE_LOOP_IMPLEMENTATION_PASS_CRITERIA = {"critical": 0, "high": 0}
-# SEC-M1: defense-in-depth denylist for `mechanical.commands` first tokens. This is
-# independent of layer 3 (`claude -p --disallowedTools`, which only constrains the Maker's own
-# tool calls) — it constrains what loop-harness itself will execute directly via `bash -lc` in
-# the checker phase. Does not replace layer 2/3; loop definitions are trusted-but-verified.
+# SEC-M1: defense-in-depth denylist for `mechanical.commands` command-position binaries. This
+# is independent of layer 3 (`claude -p --disallowedTools`, which only constrains the Maker's
+# own tool calls) — it constrains what loop-harness itself will execute directly via
+# `bash -lc` in the checker phase. Does not replace layer 2/3; loop definitions are
+# trusted-but-verified. The scan below normalizes common `bash -lc` bypasses (absolute paths,
+# tab/multi-space separators, `env`/`timeout`/`nice`/`command`/`bash -c`/`sh -c` wrappers, and
+# `;`/`&&`/`||`/`|`/`&`/`$(...)`/backtick command boundaries) but is not a full shell parser.
 _MECHANICAL_COMMAND_DENYLIST = frozenset({"git", "gh", "ssh", "curl", "wget", "docker", "sudo"})
+_MECHANICAL_COMMAND_WRAPPERS = frozenset({"env", "nice", "command", "timeout", "bash", "sh"})
+_COMMAND_SEGMENT_SPLIT_RE = re.compile(r"\$\(|`|;|&&|\|\||\||&|\n")
 
 
 def _resolve_local_override_root(project_dir: str) -> str:
@@ -260,11 +265,39 @@ def _validate_mechanical(mechanical: dict[str, Any], source_path: str) -> None:
     if mechanical.get("analyzer") != "failure_detector.analyze":
         raise DefinitionValidationError(f"Unsupported analyzer: {source_path}")
     for command in commands:
-        prefix = str(command).strip().split(" ", 1)[0] if str(command).strip() else ""
-        if prefix in _MECHANICAL_COMMAND_DENYLIST:
-            raise DefinitionValidationError(
-                f"mechanical.commands entry uses a denylisted binary ({prefix!r}): {source_path}"
-            )
+        for segment in _command_segments(str(command)):
+            binary = _segment_command_binary(segment)
+            if binary in _MECHANICAL_COMMAND_DENYLIST:
+                raise DefinitionValidationError(
+                    f"mechanical.commands entry uses a denylisted binary ({binary!r}): "
+                    f"{source_path}"
+                )
+
+
+def _command_segments(command: str) -> list[str]:
+    """Split a mechanical command string into shell-segment strings for denylist scanning.
+
+    Splits on command separators (`;`, `&&`, `||`, `|`, `&`, newline) and command
+    substitution openers (`$(`, backtick) so each gets its own "command position" checked.
+    The matching `)` from `$(...)` is left in the following segment's text; harmless since
+    it never itself resolves to a denylisted or wrapper binary name.
+    """
+    return [segment for segment in _COMMAND_SEGMENT_SPLIT_RE.split(command) if segment.strip()]
+
+
+def _segment_command_binary(segment: str) -> str | None:
+    """Return the resolved, wrapper-unwrapped command-position binary name for a segment."""
+    tokens = [token.strip("'\"") for token in re.split(r"\s+", segment.strip()) if token]
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        name = token.rsplit("/", 1)[-1]
+        if name not in _MECHANICAL_COMMAND_WRAPPERS:
+            return name or None
+        index += 1
+        while index < len(tokens) and (tokens[index].startswith("-") or tokens[index].isdigit()):
+            index += 1
+    return None
 
 
 def _validate_guards(guards: Any, source_path: str) -> None:

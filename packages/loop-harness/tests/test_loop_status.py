@@ -8,6 +8,7 @@ protection), per the evaluation set (EV-52) and the handoff's required coverage 
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -304,10 +305,25 @@ def test_main_purge_without_dry_run_deletes_candidates(tmp_path: Path) -> None:
     loop_id = "a-issue-1"
     _seed_state(tmp_path, loop_id, status_value="passed", updated_at=_iso(31))
 
-    exit_code = status.main(["purge", "--project", str(tmp_path)])
+    exit_code = status.main(["purge", "--project", str(tmp_path), "--yes"])
 
     assert exit_code == 0
     assert not lc.loop_dir(loop_id, str(tmp_path)).exists()
+
+
+def test_main_purge_without_yes_aborts_and_keeps_candidates(tmp_path: Path) -> None:
+    """#25: a real (non-dry-run) purge without `--yes` must not delete anything.
+
+    stdin is not a tty under pytest, so the confirmation prompt auto-declines.
+    """
+    _init_repo(tmp_path)
+    loop_id = "a-issue-1"
+    _seed_state(tmp_path, loop_id, status_value="passed", updated_at=_iso(31))
+
+    exit_code = status.main(["purge", "--project", str(tmp_path)])
+
+    assert exit_code == 1
+    assert lc.loop_dir(loop_id, str(tmp_path)).is_dir()
 
 
 def test_main_purge_respects_local_retention_override(tmp_path: Path) -> None:
@@ -320,7 +336,59 @@ def test_main_purge_respects_local_retention_override(tmp_path: Path) -> None:
         "retention:\n  purge_after_days: 5\n", encoding="utf-8"
     )
 
-    exit_code = status.main(["purge", "--project", str(tmp_path)])
+    exit_code = status.main(["purge", "--project", str(tmp_path), "--yes"])
 
     assert exit_code == 0
     assert not lc.loop_dir(loop_id, str(tmp_path)).exists()
+
+
+def test_purge_if_still_safe_reloads_state_and_skips_now_running(tmp_path: Path) -> None:
+    """#15: race guard — a loop that became `running` after candidate selection is spared."""
+    _init_repo(tmp_path)
+    loop_id = "a-issue-1"
+    _seed_state(tmp_path, loop_id, status_value="passed", updated_at=_iso(31))
+    # Simulate the loop transitioning back to running in the window between candidate
+    # collection and deletion (state.json is the source of truth `_purge_if_still_safe` re-reads).
+    state = lc.load_state(loop_id, str(tmp_path))
+    state.status = "running"
+    lc._write_state(state, str(tmp_path))
+
+    status._purge_if_still_safe(loop_id, str(tmp_path))
+
+    assert lc.loop_dir(loop_id, str(tmp_path)).is_dir()
+
+
+def test_purge_if_still_safe_deletes_when_status_unchanged(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    loop_id = "a-issue-1"
+    _seed_state(tmp_path, loop_id, status_value="passed", updated_at=_iso(31))
+
+    status._purge_if_still_safe(loop_id, str(tmp_path))
+
+    assert not lc.loop_dir(loop_id, str(tmp_path)).exists()
+
+
+def test_purge_loop_propagates_deletion_failure_as_loop_harness_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#14: a real removal failure must not be swallowed by `ignore_errors=True`."""
+    _init_repo(tmp_path)
+    loop_id = "a-issue-1"
+    _seed_state(tmp_path, loop_id, status_value="passed", updated_at=_iso(31))
+
+    def _boom(*_args: object, **_kwargs: object) -> None:
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(status.shutil, "rmtree", _boom)
+
+    with pytest.raises(lc.LoopHarnessError):
+        status.purge_loop(loop_id, str(tmp_path))
+
+
+def test_purge_loop_is_a_noop_when_directory_already_gone(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    loop_id = "a-issue-1"
+    _seed_state(tmp_path, loop_id, status_value="passed", updated_at=_iso(31))
+    shutil.rmtree(lc.loop_dir(loop_id, str(tmp_path)))
+
+    status.purge_loop(loop_id, str(tmp_path))  # must not raise

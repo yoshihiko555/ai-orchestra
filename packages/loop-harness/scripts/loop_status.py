@@ -87,9 +87,32 @@ def _run_purge(args: argparse.Namespace, project: str) -> int:
         print(loop_id, file=sys.stderr)
     if args.dry_run:
         return 0
+    if candidates and not args.yes and not _confirm_purge(len(candidates)):
+        print("loop_status: purge aborted (confirmation declined)", file=sys.stderr)
+        return 1
     for loop_id in candidates:
-        purge_loop(loop_id, project)
+        _purge_if_still_safe(loop_id, project)
     return 0
+
+
+def _confirm_purge(count: int) -> bool:
+    """Prompt for confirmation before a real (non-dry-run) deletion; decline if non-interactive."""
+    if not sys.stdin.isatty():
+        return False
+    answer = input(f"Purge {count} loop run(s)? Type 'yes' to confirm: ")
+    return answer.strip().lower() == "yes"
+
+
+def _purge_if_still_safe(loop_id: str, project_dir: str) -> None:
+    """Reload state immediately before deletion; skip if it became running/waiting_external.
+
+    Guards against the candidate list going stale between computation and deletion
+    (e.g. a loop transitioning back to `running` in that window).
+    """
+    state = _try_load_state(loop_id, project_dir)
+    if state is not None and state.status in _NEVER_PURGE_STATUSES:
+        return
+    purge_loop(loop_id, project_dir)
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -112,6 +135,9 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     purge_parser.add_argument("--project")
     purge_parser.add_argument("--force", action="store_true")
     purge_parser.add_argument("--dry-run", action="store_true")
+    purge_parser.add_argument(
+        "--yes", action="store_true", help="skip the confirmation prompt for real deletion"
+    )
 
     return parser.parse_args(argv)
 
@@ -366,11 +392,21 @@ def _days_since(updated_at: str, now: datetime) -> float:
 def purge_loop(loop_id: str, project_dir: str) -> None:
     """Delete a loop run's state.json/journal.jsonl/artifacts/ (worktree itself is untouched).
 
+    Deletion failures (permissions, locked files, etc.) propagate as `LoopHarnessError`
+    instead of being silently swallowed, so the CLI exits non-zero on partial purges.
+    A missing directory (already purged/never existed) is treated as a no-op.
+
     Future extension (out of scope here): a `--with-worktree` flag to also remove the
     associated `.worktrees/loop-issue-<N>` directory via `worktree_manager.remove_worktree`
     (docs/design/loop-harness-cli.md 4.3 節).
     """
-    shutil.rmtree(lc.loop_dir(loop_id, project_dir), ignore_errors=True)
+    target = lc.loop_dir(loop_id, project_dir)
+    try:
+        shutil.rmtree(target)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise lc.LoopHarnessError(f"failed to purge loop {loop_id!r}: {exc}") from exc
 
 
 if __name__ == "__main__":
