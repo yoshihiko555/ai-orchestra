@@ -161,7 +161,15 @@ class TestJudgeErrorForcesRunVerdictError:
             return None
 
         def noop_headless_run(
-            scenario, config, worktree_dir, staging_dir, instruction, *, runner=None
+            scenario,
+            config,
+            worktree_dir,
+            staging_dir,
+            instruction,
+            *,
+            main_root=None,
+            source_commit=None,
+            runner=None,
         ):
             events_path = staging_dir / "events.jsonl"
             staging_dir.mkdir(parents=True, exist_ok=True)

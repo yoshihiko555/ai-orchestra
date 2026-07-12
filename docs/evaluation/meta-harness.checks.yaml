@@ -1,5 +1,5 @@
 # Machine-readable oracle seed for docs/evaluation/meta-harness.md.
-# The Markdown evaluation set remains the SSOT; this sidecar records Phase 2
+# The Markdown evaluation set remains the SSOT; this sidecar records Phase 2/3
 # must-item coverage that can be promoted into runnable checks.
 
 - ev_id: EV-30
@@ -215,3 +215,69 @@
     proposer_security_violation event, and the L3 scan re-runs as a promote
     precondition for retroactive defense. Detection layer only; L1 remains the
     primary control.
+
+- ev_id: EV-36
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_loop_cli.py::test_four_stop_conditions_record_loop_stopped
+  covered_by:
+    - packages/meta-harness/tests/test_loop_cli.py::test_four_stop_conditions_record_loop_stopped
+  notes: all four normal stop reasons append loop_stopped before returning and generate a report.
+
+- ev_id: EV-37
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_loop_cli.py::test_interrupt_and_error_record_fail_safe_stop
+    packages/meta-harness/tests/test_loop_cli.py::test_resume_restores_frozen_values_from_loop_started
+    packages/meta-harness/tests/test_loop_cli.py::test_resume_replays_stop_decision_after_recorded_iteration
+  covered_by:
+    - packages/meta-harness/tests/test_loop_cli.py::test_interrupt_and_error_record_fail_safe_stop
+    - packages/meta-harness/tests/test_loop_cli.py::test_resume_restores_frozen_values_from_loop_started
+    - packages/meta-harness/tests/test_loop_cli.py::test_resume_replays_stop_decision_after_recorded_iteration
+  notes: SIGINT/error fail-safe events and frozen ledger-only resume parameters are covered.
+
+- ev_id: EV-41
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_loop_cli.py::test_resume_orphan_without_run_evaluates_before_recording
+    packages/meta-harness/tests/test_loop_cli.py::test_resume_orphan_with_run_records_without_reevaluation
+    packages/meta-harness/tests/test_loop_cli.py::test_partial_train_run_is_not_treated_as_complete
+  covered_by:
+    - packages/meta-harness/tests/test_loop_cli.py::test_resume_orphan_without_run_evaluates_before_recording
+    - packages/meta-harness/tests/test_loop_cli.py::test_resume_orphan_with_run_records_without_reevaluation
+    - packages/meta-harness/tests/test_loop_cli.py::test_partial_train_run_is_not_treated_as_complete
+  notes: orphan candidates resume from evaluate when no run exists and from loop_iteration otherwise.
+
+- ev_id: EV-46
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_scenario_isolation.py
+    packages/meta-harness/tests/test_scenario_process.py
+    packages/meta-harness/tests/test_evaluator_headless_run.py::TestRunHeadlessScenarioEnvironment
+    packages/meta-harness/tests/test_evaluator_oracles.py::TestOracleCommandExit::test_isolated_oracle_uses_no_network_read_only_profile
+    packages/meta-harness/tests/test_evaluator_oracles.py::TestOracleArtifactExists::test_rejects_symlink_to_file_outside_worktree
+    packages/meta-harness/tests/test_evaluator_capability_gate.py::TestCapabilityGateHappyPath::test_production_gate_rejects_missing_execution_boundary
+    packages/meta-harness/tests/test_loop_cli_e2e.py::test_loop_subprocess_fails_closed_before_candidate_worktree_without_execution_boundary
+    packages/meta-harness/tests/test_evaluator_artifacts.py::TestHoldoutPhysicalSeparation::test_metadata_records_finished_at_after_completion
+  covered_by:
+    - packages/meta-harness/tests/test_scenario_isolation.py
+    - packages/meta-harness/tests/test_scenario_process.py
+    - packages/meta-harness/tests/test_evaluator_headless_run.py::TestRunHeadlessScenarioEnvironment
+    - packages/meta-harness/tests/test_evaluator_oracles.py::TestOracleCommandExit::test_isolated_oracle_uses_no_network_read_only_profile
+    - packages/meta-harness/tests/test_evaluator_oracles.py::TestOracleArtifactExists::test_rejects_symlink_to_file_outside_worktree
+    - packages/meta-harness/tests/test_evaluator_capability_gate.py::TestCapabilityGateHappyPath::test_production_gate_rejects_missing_execution_boundary
+    - packages/meta-harness/tests/test_loop_cli_e2e.py::test_loop_subprocess_fails_closed_before_candidate_worktree_without_execution_boundary
+    - packages/meta-harness/tests/test_evaluator_artifacts.py::TestHoldoutPhysicalSeparation::test_metadata_records_finished_at_after_completion
+  notes: scenario runs remain unavailable until an external signer and cgroup/VM-equivalent descendant containment are implemented; the root-deny SRT profile and nofollow artifact reader are covered independently.

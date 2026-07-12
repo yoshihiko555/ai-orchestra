@@ -12,7 +12,7 @@ ev = load_module(
     "packages/meta-harness/lib/evaluator.py",
 )
 
-_RUN_ID_PATTERN = re.compile(r"^run-[0-9]{8}-[0-9]{6}-[a-z0-9-]+-a[0-9]+-[0-9a-f]{4}$")
+_RUN_ID_PATTERN = re.compile(r"^run-[0-9]{8}-[0-9]{6}-[a-z0-9-]+-a[0-9]+-[0-9a-f]{8}$")
 
 
 class TestRunIdFormat:

@@ -38,7 +38,7 @@ class TestCapabilityGateHappyPath:
     def test_ok_when_all_checks_pass(self, monkeypatch) -> None:
         monkeypatch.setattr(ev.shutil, "which", lambda name: f"/usr/bin/{name}")
         config = {"evaluate": {"cli_version_pin": None}, "judge": {"tool": "codex"}}
-        caps = ev.check_cli_capabilities(config, runner=_always_ok_runner)
+        caps = ev._check_cli_tool_capabilities(config, runner=_always_ok_runner)
         assert caps.ok is True
         assert caps.reason is None
         assert caps.claude_version == "2.1.202 (Claude Code)"
@@ -49,22 +49,29 @@ class TestCapabilityGateHappyPath:
             "evaluate": {"cli_version_pin": "2.1.202 (Claude Code)"},
             "judge": {"tool": "codex"},
         }
-        caps = ev.check_cli_capabilities(config, runner=_always_ok_runner)
+        caps = ev._check_cli_tool_capabilities(config, runner=_always_ok_runner)
         assert caps.ok is True
         assert caps.version_pin_match is True
+
+    def test_production_gate_rejects_missing_execution_boundary(self, tmp_path) -> None:
+        config = {"evaluate": {"cli_version_pin": None}, "judge": {"tool": "codex"}}
+        caps = ev.check_cli_capabilities(config, main_root=tmp_path, runner=_always_ok_runner)
+        assert caps.ok is False
+        assert caps.checks == {"scenario_execution_boundary": False}
+        assert "scenario_execution_boundary" in (caps.reason or "")
 
 
 class TestCapabilityGateVersionPinMismatch:
     def test_version_pin_mismatch_fails_gate(self) -> None:
         config = {"evaluate": {"cli_version_pin": "9.9.9"}, "judge": {"tool": "codex"}}
-        caps = ev.check_cli_capabilities(config, runner=_always_ok_runner)
+        caps = ev._check_cli_tool_capabilities(config, runner=_always_ok_runner)
         assert caps.ok is False
         assert caps.version_pin_match is False
         assert "mismatch" in caps.reason
 
     def test_version_pin_none_skips_match_check(self) -> None:
         config = {"evaluate": {"cli_version_pin": None}, "judge": {"tool": "codex"}}
-        caps = ev.check_cli_capabilities(config, runner=_always_ok_runner)
+        caps = ev._check_cli_tool_capabilities(config, runner=_always_ok_runner)
         assert caps.version_pin_match is None
 
 
@@ -78,7 +85,7 @@ class TestCapabilityGateFlagRejection:
             return _completed(0)
 
         config = {"evaluate": {"cli_version_pin": None}, "judge": {"tool": "codex"}}
-        caps = ev.check_cli_capabilities(config, runner=runner)
+        caps = ev._check_cli_tool_capabilities(config, runner=runner)
         assert caps.ok is False
         assert caps.checks["stream_json"] is False
         assert "stream_json" in caps.reason
@@ -92,7 +99,7 @@ class TestCapabilityGateFlagRejection:
             return _completed(0)
 
         config = {"evaluate": {"cli_version_pin": None}, "judge": {"tool": "codex"}}
-        caps = ev.check_cli_capabilities(config, runner=runner)
+        caps = ev._check_cli_tool_capabilities(config, runner=runner)
         assert caps.ok is False
         assert caps.checks["max_budget_usd"] is False
 
@@ -112,7 +119,7 @@ class TestCapabilityGateFlagRejection:
             return _completed(0, stdout='{"type": "result"}')
 
         config = {"evaluate": {"cli_version_pin": None}, "judge": {"tool": "codex"}}
-        caps = ev.check_cli_capabilities(config, runner=runner)
+        caps = ev._check_cli_tool_capabilities(config, runner=runner)
         assert caps.checks["max_budget_usd"] is True
 
     def test_claude_version_unavailable_fails_gate(self) -> None:
@@ -120,7 +127,7 @@ class TestCapabilityGateFlagRejection:
             raise OSError("claude: command not found")
 
         config = {"evaluate": {"cli_version_pin": None}, "judge": {"tool": "codex"}}
-        caps = ev.check_cli_capabilities(config, runner=runner)
+        caps = ev._check_cli_tool_capabilities(config, runner=runner)
         assert caps.ok is False
         assert caps.claude_version is None
         assert "could not determine" in caps.reason
@@ -130,7 +137,7 @@ class TestCapabilityGateJudgeBackendSpecific:
     def test_codex_missing_binary_fails_gate(self, monkeypatch) -> None:
         monkeypatch.setattr(ev.shutil, "which", lambda name: None)
         config = {"evaluate": {"cli_version_pin": None}, "judge": {"tool": "codex"}}
-        caps = ev.check_cli_capabilities(config, runner=_always_ok_runner)
+        caps = ev._check_cli_tool_capabilities(config, runner=_always_ok_runner)
         assert caps.ok is False
         assert caps.checks["codex_exec_present"] is False
 
@@ -138,14 +145,14 @@ class TestCapabilityGateJudgeBackendSpecific:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.setattr(ev, "_api_key_helper_configured", lambda: False)
         config = {"evaluate": {"cli_version_pin": None}, "judge": {"tool": "claude-bare"}}
-        caps = ev.check_cli_capabilities(config, runner=_always_ok_runner)
+        caps = ev._check_cli_tool_capabilities(config, runner=_always_ok_runner)
         assert caps.ok is False
         assert caps.checks["bare_api_key_present"] is False
 
     def test_claude_bare_api_key_present_passes_that_check(self, monkeypatch) -> None:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-key-for-unit-test-only")
         config = {"evaluate": {"cli_version_pin": None}, "judge": {"tool": "claude-bare"}}
-        caps = ev.check_cli_capabilities(config, runner=_always_ok_runner)
+        caps = ev._check_cli_tool_capabilities(config, runner=_always_ok_runner)
         assert caps.checks["bare_api_key_present"] is True
 
     def test_claude_bare_api_key_helper_configured_passes_that_check(self, monkeypatch) -> None:
@@ -153,7 +160,7 @@ class TestCapabilityGateJudgeBackendSpecific:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.setattr(ev, "_api_key_helper_configured", lambda: True)
         config = {"evaluate": {"cli_version_pin": None}, "judge": {"tool": "claude-bare"}}
-        caps = ev.check_cli_capabilities(config, runner=_always_ok_runner)
+        caps = ev._check_cli_tool_capabilities(config, runner=_always_ok_runner)
         assert caps.checks["bare_api_key_present"] is True
 
 
@@ -183,7 +190,7 @@ class TestCapabilityGateNoWorktreeOnFailure:
 
         cand_id = _json.loads(register_result.stdout)["cand_id"]
 
-        def fake_check_cli_capabilities(config, runner=None):
+        def fake_check_cli_capabilities(config, main_root=None, runner=None):
             return cli.ev.CliCapabilities(
                 claude_version=None,
                 version_pin=None,
@@ -231,7 +238,7 @@ class TestEvaluateCandidateExceptionNormalization:
 
         cand_id = _json.loads(register_result.stdout)["cand_id"]
 
-        def fake_check_cli_capabilities(config, runner=None):
+        def fake_check_cli_capabilities(config, main_root=None, runner=None):
             return cli.ev.CliCapabilities(
                 claude_version="2.1.202",
                 version_pin=None,

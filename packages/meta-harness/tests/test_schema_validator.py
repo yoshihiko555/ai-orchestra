@@ -200,7 +200,7 @@ class TestOverlaySchema:
 class TestResultSchema:
     _VALID = {
         "schema_version": "1.0",
-        "run_id": "run-20260101-000000-slug-scn-a1-abcd",
+        "run_id": "run-20260101-000000-slug-scn-a1-abcd1234",
         "cand_id": "cand-x",
         "scenario_id": "scenario-1",
         "verdict": "pass",
@@ -322,7 +322,7 @@ class TestScenarioSchema:
 class TestRunMetadataSchema:
     _VALID = {
         "schema_version": "1.0",
-        "run_id": "run-20260101-000000-slug-scn-a1-abcd",
+        "run_id": "run-20260101-000000-slug-scn-a1-abcd1234",
         "cand_id": "cand-x",
         "scenario_id": "scenario-1",
         "suite_id": "claude-harness",

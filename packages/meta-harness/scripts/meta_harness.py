@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""meta-harness CLI（`orchex meta <sub>`、Phase 1a/1b/2）。
+"""meta-harness CLI（`orchex meta <sub>`、Phase 1a/1b/2/3）。
 
 docs/design/meta-harness-detailed.md が正本。実装済みのサブコマンド:
 - init       store ディレクトリ一式を冪等に初期化する（Phase 1a）
@@ -10,8 +10,7 @@ docs/design/meta-harness-detailed.md が正本。実装済みのサブコマン�
 - evaluate   CLI capability gate → worktree ライフサイクル → oracle 判定を実行する（Phase 1b）
 - propose    filtered view から候補 overlay を提案・登録する（Phase 2 M4）
 - promote    frontier 候補を PR ベースで昇格する（Phase 2 M5）
-
-`loop` は Phase 3 のスタブ（exit 2）。
+- loop       ledger 駆動の自動探索を実行・再開する（Phase 3）
 
 exit code（Sec6）: 0 成功 / 1 実行時エラー / 2 入力・スキーマ検証エラー / 3 lock 取得失敗・排他競合。
 """
@@ -34,6 +33,7 @@ if str(_LIB_DIR) not in sys.path:
     sys.path.insert(0, str(_LIB_DIR))
 
 import evaluator as ev  # noqa: E402
+import loop_cli  # noqa: E402
 import meta_harness_common as mh  # noqa: E402
 import promoter as prm  # noqa: E402
 import propose_cli  # noqa: E402
@@ -43,13 +43,14 @@ EXIT_RUNTIME_ERROR = 1
 EXIT_VALIDATION_ERROR = 2
 EXIT_LOCK_CONFLICT = 3
 
-_PHASE_2_3_STUBS = ("loop",)
+_PHASE_2_3_STUBS: tuple[str, ...] = ()
 
 # 旧 single-file CLI の内部名を直接 import する既存テスト・診断コード向けの互換エイリアス。
 prop = propose_cli.prop
 pb = propose_cli.pb
 iso = propose_cli.iso
 cmd_propose = propose_cli.cmd_propose
+cmd_loop = loop_cli.cmd_loop
 _select_focus_run_ids = propose_cli._select_focus_run_ids
 
 
@@ -556,7 +557,7 @@ def _run_evaluate_under_lock(
     as_json: bool,
 ) -> int:
     """evaluate.lock 保持下での capability gate + 評価実行本体（`cmd_evaluate` から分離）。"""
-    caps = ev.check_cli_capabilities(config)
+    caps = ev.check_cli_capabilities(config, main_root=main_root)
     if not caps.ok:
         print(f"error: CLI capability gate failed: {caps.reason}", file=sys.stderr)
         return EXIT_VALIDATION_ERROR
@@ -678,6 +679,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="作成済み PR の merge 状態を確認して promoted 遷移を確定する",
     )
 
+    p_loop = sub.add_parser("loop", help="propose/evaluate の自動探索ループを実行・再開する")
+    _add_common_args(p_loop)
+    p_loop.add_argument(
+        "--target",
+        default=None,
+        help="対象（新規 loop では必須、claude-harness | skill:<name>）",
+    )
+    p_loop.add_argument("--resume", default=None, help="再開する loop_id")
+
     for stub_name in _PHASE_2_3_STUBS:
         _add_common_args(sub.add_parser(stub_name, help=f"（未実装スタブ: {stub_name}）"))
 
@@ -688,6 +698,8 @@ def _dispatch(args: argparse.Namespace) -> int:
     """サブコマンドへ振り分ける。"""
     if args.command in _PHASE_2_3_STUBS:
         return cmd_phase23_stub(args.command)
+    if args.command == "loop":
+        return cmd_loop(args.project, args.target, args.resume, args.json)
     if args.command == "promote":
         return cmd_promote(args.project, args.candidate, args.confirm, args.json)
     if args.command == "propose":

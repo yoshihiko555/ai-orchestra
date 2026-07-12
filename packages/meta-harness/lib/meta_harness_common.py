@@ -16,6 +16,7 @@ evaluator（worktree ライフサイクル・ヘッドレス実行・oracle 判�
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
@@ -61,9 +62,14 @@ DEFAULTS: dict[str, Any] = {
         ],
         "model": None,
         "cli_version_pin": None,
+        "isolation": {
+            "backend": "srt",
+            "srt_version_pin": None,
+            "execution_backend": "none",
+        },
     },
     "scenario_run": {"max_turns_default": 30, "max_budget_usd_default": 3.0},
-    "judge": {"tool": "codex", "model": None, "effort": "high", "max_turns": 4},
+    "judge": {"tool": "claude-bare", "model": None, "effort": "high", "max_turns": 4},
     "scoring": {
         "critical_weight": 70,
         "penalty_base": 30,
@@ -564,15 +570,34 @@ def _write_json(path: Path, data: dict) -> None:
 
 
 def append_ledger_event(main_root: Path, config: dict, event: dict) -> None:
-    """ledger.jsonl に 1 行追記する（O_APPEND + 単一 write + fsync、Sec2-3）。"""
+    """ledger.jsonl に 1 行追記する（O_APPEND + flock + fsync、Sec2-3）。"""
     path = ledger_path(main_root, config)
     path.parent.mkdir(parents=True, exist_ok=True)
-    line = (json.dumps(event, ensure_ascii=False) + "\n").encode("utf-8")
+    line = (json.dumps(event, ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8")
     fd = os.open(path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o644)
     try:
-        os.write(fd, line)
-        os.fsync(fd)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        start_size = os.fstat(fd).st_size
+        try:
+            view = memoryview(line)
+            written = 0
+            while written < len(line):
+                count = os.write(fd, view[written:])
+                if count <= 0:
+                    raise OSError(
+                        f"short ledger write: expected {len(line)} bytes, wrote {written}"
+                    )
+                written += count
+            os.fsync(fd)
+        except BaseException:
+            os.ftruncate(fd, start_size)
+            os.fsync(fd)
+            raise
     finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
         os.close(fd)
 
 
@@ -582,7 +607,7 @@ def read_ledger_events(main_root: Path, config: dict) -> list[dict]:
     if not path.is_file():
         return []
     events: list[dict] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in _read_ledger_lines(path):
         stripped = line.strip()
         if not stripped:
             continue
@@ -593,6 +618,35 @@ def read_ledger_events(main_root: Path, config: dict) -> list[dict]:
         if isinstance(event, dict):
             events.append(event)
     return events
+
+
+def read_ledger_events_strict(main_root: Path, config: dict) -> list[dict]:
+    """Read every non-empty ledger line or fail with its physical line number."""
+    path = ledger_path(main_root, config)
+    if not path.is_file():
+        return []
+    events: list[dict] = []
+    for line_number, line in enumerate(_read_ledger_lines(path), start=1):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            event = json.loads(stripped)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"invalid ledger JSON at line {line_number}: {exc.msg}") from exc
+        if not isinstance(event, dict):
+            raise ValueError(f"ledger line {line_number} must contain a JSON object")
+        events.append(event)
+    return events
+
+
+def _read_ledger_lines(path: Path) -> list[str]:
+    with path.open("r", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_SH)
+        try:
+            return handle.read().splitlines()
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def write_frontier_cache(main_root: Path, config: dict, frontier_doc: dict) -> None:
