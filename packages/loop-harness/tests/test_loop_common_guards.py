@@ -55,6 +55,32 @@ def test_evaluate_guards_infrastructure_failure_is_first_and_not_stopped() -> No
     assert state.status == "running"
 
 
+def test_external_reviewer_unavailable_stops_without_changing_guard_counters() -> None:
+    state = _state()
+    counters = state.guards["implementation"]
+    counters.iteration = 2
+    counters.no_progress_streak = 1
+    counters.last_signature = "previous"
+    counters.infrastructure_failure_count = 1
+    phase_check = lc.PhaseCheckResult(
+        passed=False,
+        results=[],
+        signature="external_reviewer_unavailable",
+        infrastructure_failure=False,
+        metadata={"reviewer_unavailable_reason": "rate_limited"},
+    )
+
+    decision = lc.evaluate_guards(state, phase_check, None, {})
+
+    assert decision == lc.GuardDecision(lc.Action.STOP.value, "external_reviewer_unavailable")
+    assert counters == lc.GuardCounters(
+        iteration=2,
+        no_progress_streak=1,
+        last_signature="previous",
+        infrastructure_failure_count=1,
+    )
+
+
 def test_evaluate_guards_pass_before_no_progress_and_iteration_limit() -> None:
     state = _state()
     counters = state.guards["implementation"]
