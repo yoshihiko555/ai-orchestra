@@ -45,7 +45,7 @@ AI Orchestra プロジェクトの意思決定記録。
 | ADR-20260706-030 | ループエンジニアリング基盤（loop-harness）の導入とコア共有型制御モデルの採用            | accepted   | 2026-07-06 |
 | ADR-20260706-031 | メタハーネス機構の導入（population ベースのハーネス最適化基盤）                        | proposed   | 2026-07-06 |
 | ADR-20260711-032 | meta-harness scenario runnerをSRTでOS隔離する                                          | accepted   | 2026-07-11 |
-| ADR-20260711-033 | scenario資格情報を候補プロセスから分離できるまでfail-closedにする                     | accepted   | 2026-07-11 |
-| ADR-20260712-034 | scenario 実行基盤を Docker コンテナ + ephemeral credential broker へ移行する           | proposed   | 2026-07-12 |
+| ADR-20260711-033 | scenario資格情報を候補プロセスから分離できるまでfail-closedにする                     | superseded | 2026-07-11 |
+| ADR-20260712-034 | scenario 実行基盤を Docker コンテナ + ephemeral credential broker へ移行する           | accepted   | 2026-07-12 |
 | ADR-20260701-032 | スキル自己改善ループの設計判断（二層構成・二軸評価・反映先の塩梅）                       | accepted   | 2026-07-01 |
 | ADR-20260712-032 | PR レビュー指摘を action-scoped snapshot でプロセス境界を越えて受け渡す                | accepted   | 2026-07-12 |
