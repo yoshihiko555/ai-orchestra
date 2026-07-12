@@ -165,11 +165,7 @@ orchex run audit analyze-cli-usage -- --days 30
 | `context_optimization.enabled`             | `true`     | コンテキスト最適化チェックの有効/無効 |
 | `context_optimization.read_line_threshold` | `200`      | 警告を出すファイル読み込み行数の閾値  |
 
-### delegation-policy.json — ルーティングポリシー
-
-キーワードベースのエージェントルーティングルールを定義します。`default_route` でフォールバック先を指定し、`rules` でキーワード→エージェントのマッピングを追加できます。
-
-`quality_gate` セクションは `audit` と `quality-gates` の共有設定です。プロジェクト固有の上書きは `.claude/config/audit/audit-flags.local.json` で行います（`config-loading` ルール準拠）。
+`features.quality_gate` セクションは `audit` と `quality-gates` の共有設定です。プロジェクト固有の上書きは `.claude/config/audit/audit-flags.local.json` で行います（`config-loading` ルール準拠）。
 
 ```json
 // .claude/config/audit/audit-flags.local.json
@@ -181,3 +177,7 @@ orchex run audit analyze-cli-usage -- --days 30
   }
 }
 ```
+
+### delegation-policy.json — ルーティングポリシー
+
+キーワードベースのエージェントルーティングルールを定義します。`default_route` でフォールバック先を指定し、`rules` でキーワード→エージェントのマッピングを追加できます。

@@ -62,4 +62,4 @@ codd:
 - 依存は循環させないこと（循環は error）。
 - `roots`（requirement / instruction）以外で参照ゼロのノードは孤立 warning になる。
 - 上流ノードを更新したら、下流ノードも追従して更新する（drift warning の回避）。
-- `off` を YAML に直接書くと boolean False と解釈されるため、検査レベルは引用符付き `"off"` で書く。
+- 検査レベルに `off` を書く場合、YAML 1.1 仕様では bare `off` が boolean `False` と解釈されるが、`normalize_check_level`（`packages/codd/lib/codd_common.py`）が `False` を含め `off` の大文字小文字違いも自動的に `LEVEL_OFF` へ正規化するため、引用符なしの bare `off` と引用符付き `"off"` はどちらも同じ扱いになる。

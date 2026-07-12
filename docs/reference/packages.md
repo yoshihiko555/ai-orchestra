@@ -11,7 +11,7 @@ codd:
 
 # パッケージリファレンス
 
-**更新日**: 2026-04-14
+**更新日**: 2026-07-12
 AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `packages/*/config` は `.claude/` に同期される配布元。
 
 ---
@@ -29,12 +29,20 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 | [git-workflow](#git-workflow)             | Git/GitHub ワークフロー（Issue・PR・開発フロー）  | ワークフロー |
 | [cocoindex](#cocoindex)                   | cocoindex MCP サーバーの自動プロビジョニング      | MCP          |
 | [tmux-monitor](#tmux-monitor)             | tmux でサブエージェント出力をリアルタイム監視     | 監視         |
+| [loop-harness](#loop-harness)             | Issue 起点の Maker/Checker 反復と PR レビュー対応を安全駆動 | ハーネス     |
+| [codd](#codd)                             | ドキュメント依存グラフの scan/validate/impact（整合性レイヤー） | 整合性       |
+| [codex-harness](#codex-harness)           | Codex CLI 向け repo-local ハーネス（hooks + 非対話 run/review） | ハーネス     |
+| [fail-logs](#fail-logs)                   | AI の失敗イベント記録基盤（学習ループの入力）     | 学習         |
+| [image-generation](#image-generation)     | Codex 組み込み image_gen による画像生成           | 生成         |
+| [meta-harness](#meta-harness)             | 候補ハーネスの評価・進化基盤（Pareto 判定・propose） | ハーネス     |
+| [reverse](#reverse)                       | 既存コードベースの 5 フェーズ対話型リバースエンジニアリング | 解析         |
+| [skill-evolution](#skill-evolution)       | スキル自己改善ループ（二軸テレメトリ＋オフライン反復改善） | 学習         |
 
 ### プリセット
 
 | プリセット  | 含まれるパッケージ                 |
 | ----------- | ---------------------------------- |
-| `essential` | core, agent-routing, audit, quality-gates |
+| `essential` | core, agent-routing, audit, quality-gates, codd |
 | `all`       | 全パッケージ                       |
 
 ---
@@ -287,6 +295,161 @@ tmux ペインでサブエージェントの起動・停止をリアルタイム
 ### 有効化
 
 専用の設定ファイルはなく、`tmux` バイナリが見つかる環境で自動的に有効になる。`tmux` が未インストールの場合、各 hook は no-op として終了する。
+
+---
+
+## loop-harness
+
+Issue 起点の反復ループを、永続 state / journal、lease fencing、two-phase の `propose` / `complete` 契約で安全に駆動する。`/loop-issue` が Maker と Checker を分離し、機械検証・LLM レビュー・外部 PR レビュー対応から成功／失敗／安全停止までをオーケストレーションする。
+
+- **バージョン**: 0.1.0
+- **依存**: audit, quality-gates, git-workflow
+
+### コンポーネント
+
+| 種別   | 名前                  | 説明                                                                              |
+| ------ | --------------------- | --------------------------------------------------------------------------------- |
+| lib    | `loop_common.py`      | 状態機械・lease・ガード・artifact 管理                                            |
+| lib    | `loop_definition.py`  | ループ設定解決                                                                     |
+| lib    | `worktree_manager.py` | Issue 単位の worktree 管理                                                         |
+| lib    | `pr_review_wait.py`   | 外部 PR レビュー待機・指摘取り込み                                                 |
+| script | `loop_step.py`        | JSON CLI。start / attach / resume、propose / complete、reconcile / heartbeat 等   |
+| skill  | `loop-issue`          | Issue 消化ループのオーケストレーター                                               |
+| config | `loop-harness.yaml`, `loops/issue-loop.yaml` | ループ動作・reviewer allowlist・severity 設定                      |
+
+---
+
+## codd
+
+ドキュメント間の依存関係をフロントマター（`codd:` ブロック）で宣言し、`scan` で依存グラフを構築、`validate` で整合性（リンク切れ・重複・循環・孤立・ドリフト・欠落）を検証、`impact` で変更影響を分類する整合性レイヤー。`essential` プリセットに含まれ常時有効。
+
+- **バージョン**: 0.2.0
+- **依存**: core
+
+### コンポーネント
+
+| 種別  | 名前                  | 説明                                                              |
+| ----- | --------------------- | ------------------------------------------------------------------ |
+| lib   | `codd_common.py`      | フロントマター parser・グラフモデル・config ローダー               |
+| script | `codd.py`             | `scan` / `validate` / `graph`（可視化）/ `impact`（変更影響分類）  |
+| skill | `codd-scan`, `codd-validate`, `codd-impact` | scan / validate / impact のスキル化                |
+| rule  | `codd-frontmatter-policy` | `codd:` フロントマター記法ポリシー                              |
+| config | `codd.yaml`           | scope glob・kind/relation 語彙・検査レベル・グラフ保存先           |
+
+---
+
+## codex-harness
+
+Codex CLI を主たる利用面とする repo-local ハーネス。hooks（secret scan / pre-tool-use policy / stop 時 JSON 検証）と非対話実行スクリプト（run / read-only review）を `.codex/` 配下に hash 保護付きで配布する。
+
+- **バージョン**: 0.1.0
+- **依存**: codex-suggestions
+
+### コンポーネント
+
+| 種別   | 名前                 | 説明                                                                    |
+| ------ | -------------------- | ------------------------------------------------------------------------ |
+| script | `codex_run.py`       | 非対話タスクモードで `codex exec --json` を実行し run artifact 一式を保存 |
+| script | `codex_review.py`    | read-only レビューモードで base ブランチとの diff を渡し構造化 findings を保存 |
+| codex_files | `.codex/hooks.json`, `.codex/hooks/*.py` | secret scan・pre-tool-use policy・stop 検証 hooks（hash 保護配布） |
+| codex_files | `.codex/schemas/*.schema.json` | task_result / review_result の JSON スキーマ                     |
+| codex_files | `.codex/rules/codex-harness.rules`, `.codex/validation.json` | ハーネスルールと検証設定             |
+
+---
+
+## fail-logs
+
+AI（Claude Code 等）の失敗イベントを記録する基盤。蓄積した失敗を次回以降の改善に活かす学習ループの入力を担う。
+
+- **バージョン**: 0.1.0
+- **依存**: core
+
+### コンポーネント
+
+| 種別 | 名前                          | 説明                                                                 |
+| ---- | ----------------------------- | ---------------------------------------------------------------------- |
+| hook | `capture-failures.py`         | PostToolUse: `tool_error` / `test_failure` / `lint_failure` / `cli_failure` を検知し記録 |
+| hook | `inject-failure-summary.py`   | SessionStart: 再発している失敗シグネチャをコンテキストへ注入（ADR-20260630-027） |
+| config | `fail-logs.yaml`             | 失敗種別ごとのトグル・抜粋文字数・ログ保存先                          |
+
+---
+
+## image-generation
+
+Codex CLI の組み込み `image_gen` スキル（OpenAI gpt-image、ChatGPT 認証・API キー不要）を Claude Code から呼び出して画像を生成する。設計判断は ADR-20260605-023 を参照。
+
+- **バージョン**: 0.1.0
+- **依存**: core
+
+### コンポーネント
+
+| 種別  | 名前                       | 説明                                             |
+| ----- | -------------------------- | ------------------------------------------------ |
+| skill | `image-gen`                | `/image-gen <プロンプト>` によるプロンプト→画像ワークフロー |
+| agent | `image-generator.md`       | Codex `image_gen` 呼び出し + 鮮度ガード付き検証   |
+| config | `image-generation.yaml`   | `image_model`（既定 `gpt-5.5`）                   |
+
+---
+
+## meta-harness
+
+候補ハーネスの評価・進化基盤。store I/O・ledger 畳み込み・Pareto 判定・schema 検証（Phase 1a）、evaluate 実行機構（Phase 1b）、population ベースの propose（Phase 2）を提供する。
+
+- **バージョン**: 0.1.0
+- **依存**: core
+
+### コンポーネント
+
+| 種別   | 名前                  | 説明                                                                                    |
+| ------ | --------------------- | ----------------------------------------------------------------------------------------- |
+| script | `meta_harness.py`     | CLI: init/register/frontier/status/purge（Phase 1a）・evaluate（Phase 1b）・propose（Phase 2） |
+| config | `meta-harness.yaml`   | ハーネス評価・進化の設定                                                                  |
+
+---
+
+## reverse
+
+既存コードベースのリバースエンジニアリングを 5 フェーズ対話型で実行する `/reverse` スキルを提供する。
+
+- **バージョン**: 0.1.0
+- **依存**: core, agent-routing
+
+### コンポーネント
+
+| 種別  | 名前                        | 説明                                                          |
+| ----- | --------------------------- | --------------------------------------------------------------- |
+| skill | `reverse`                   | Scan → Graph → Extract → Document → Debt Report の 5 フェーズ |
+| agent | `reverse-coordinator.md`    | フェーズオーケストレーションと受け入れ確認                     |
+
+### フェーズ構成
+
+| Phase | 名前                | 成果物             |
+| ----- | ------------------- | ------------------- |
+| 1     | 走査 (Scan)          | `scope.md`          |
+| 2     | 依存グラフ (Graph)   | `dependency.md` / `.mmd` |
+| 3     | 機能抽出 (Extract)   | `features.md`       |
+| 4     | ドキュメント化 (Document) | `design.md`      |
+| 5     | 負債/脆弱性レポート (Debt Report) | `debt-report.md` |
+
+---
+
+## skill-evolution
+
+スキル自己改善ループ（Issue #5）。スキル実行の品質を二軸（自己申告＋機械計測）で計測し、学び（lessons）を次回実行へ還元しつつ、停止条件付きのオフライン反復でスキル自体を改善する。設計判断は ADR-20260701-032 を参照。
+
+- **バージョン**: 0.1.0
+- **依存**: core
+
+### コンポーネント
+
+| 種別   | 名前                          | 説明                                                       |
+| ------ | ----------------------------- | ------------------------------------------------------------ |
+| hook   | `inject-lessons.py`           | PreToolUse(Skill): 過去の学びをスキル実行前に注入            |
+| hook   | `capture-skill-telemetry.py`  | PostToolUse(Skill): スキル実行のテレメトリを記録              |
+| hook   | `capture-subagent-skill.py`   | SubagentStop: サブエージェント経由のスキル実行を記録          |
+| hook   | `capture-skill-stop.py`       | Stop: セッション終了時にスキル実行結果を確定                  |
+| script | `skill_evolution.py`          | CLI: status / check-trigger / evaluate / provenance / lock  |
+| config | `skill-evolution.yaml`        | 二軸評価・停止条件・反映先の設定                              |
 
 ---
 
