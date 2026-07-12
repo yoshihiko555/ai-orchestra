@@ -358,6 +358,9 @@ artifact から復旧する `reconcile` も同じ validator を必ず通し、�
 - `wait_for_completion(...)`
 - `record_ignored_untrusted_reviews(...)`
 - `collect_review_findings(...)`
+- `save_review_findings_snapshot(...)`（active lease / action に束縛し、構造化 redaction 後の collect
+  結果全体を action-scoped artifact へ 0600 で保存）
+- `load_review_findings_snapshot(...)`（lease / action / envelope / ファイル境界を検証して厳格に復元）
 - `classify_severity(...)`（Step 2 分類応答の決定論パース。下記「severity 分類」参照）
 - `apply_severity_classifications(...)`（分類結果の state 永続化と finding 除外を一括適用）
 - `phase_check_from_completion_outcome(...)`
@@ -382,7 +385,9 @@ artifact から復旧する `reconcile` も同じ validator を必ず通し、�
     既存 baseline をそのまま変更せず、`collect_review_findings(...)` を実行する。これは、直前の Maker
     反復が作業している間に別の信頼済みレビュアーが投稿した、まだ import されていないレビュー（例:
     2 人目のレビュアーによる `CHANGES_REQUESTED`）を、次の `record_baseline` が「処理済み」として
-    飲み込み永久に喪失させる前に取り込むための手順である。戻り値に `needs_classification` の finding
+    飲み込み永久に喪失させる前に取り込むための手順である。collect の直後、別プロセスへ移る前に
+    `ReviewFindingsResult` 全体を `save_review_findings_snapshot(...)` で同じ action の
+    `artifacts/<action_id>/review_findings.json` へ保存する。戻り値に `needs_classification` の finding
     が 1 件以上含まれる場合は、上記「severity 分類（Step 2）」の手順をこの場でインラインに適用し、
     `apply_severity_classifications(...)` まで完了させてから次の判定に進む（分類を次サイクルへ持ち越さない）。
   - drain（severity 分類後）に actionable な finding が **1 件以上** 残る場合、`record_baseline`、push、
@@ -421,7 +426,8 @@ artifact から復旧する `reconcile` も同じ validator を必ず通し、�
 
 `wait_for_completion()` の heartbeat callback から保持中 token を使って
 `python3 "$LOOP_STEP" heartbeat` を呼ぶ。完了シグナルが得られたら `collect_review_findings()` で許可済み
-発信元だけを取り込み、下記「severity 分類（Step 2）」を適用してから
+発信元だけを取り込み、直後に `save_review_findings_snapshot(...)` で同じ action の snapshot を保存する。
+下記「severity 分類（Step 2）」を適用してから
 `phase_check_from_review_findings()` で `PhaseCheckResult` に変換する。ただし
 `outcome.signal == "reviewer_unavailable"` の場合はレビュー取り込みへ進まず、その outcome を
 `phase_check_from_completion_outcome()` へそのまま渡す。timeout / API error も同じ API で変換する。
@@ -434,6 +440,7 @@ CodeRabbit のレート制限応答を検知しても、Codex 等の別 reviewer
 待つ。正常シグナルが到着すれば通常レビューを優先し、到着しなかった場合だけ
 `reviewer_unavailable` を返す。この待機をオーケストレーター側で短縮したり、CodeRabbit 応答だけを
 見て独自に停止したりしない。
+API error は `phase_check_from_completion_outcome()` で変換する。独自の `gh` polling は実装しない。
 
 ### severity 分類（Step 2）
 
@@ -441,19 +448,30 @@ CodeRabbit のレート制限応答を検知しても、Codex 等の別 reviewer
 表記にマッチしなかったコメント。fail-safe で暫定 high）が 1 件以上ある場合、
 `phase_check_from_review_findings()` を呼ぶ**前に**、設計 pr-review 編 §3.2 の分類を実行する。
 
-1. 対象 finding ごとに下記の分類専用 Task を起動する（読み取り専用・分類のみ。コメント本文は
+1. `collect_review_findings()` を実行したプロセスで、その戻り値全体を直ちに
+   `save_review_findings_snapshot(loop_id, params.worktree_path, <現在の action_id>, result, lease_token)` へ
+   渡す。pre-rebaseline drain と通常の post-poll collect のどちらでも必須とし、分類 Task の起動を
+   先行させない。
+2. 対象 finding ごとに下記の分類専用 Task を起動する（読み取り専用・分類のみ。コメント本文は
    Task 側が `source_comment_id` から取得し、メインコンテキストへは 2 行の応答だけを返す）。
-2. Task 応答を `source_comment_id` キーの map に集め、収集済み `result` とともに
+3. Task 応答を受け取る別プロセスでは再 collect せず、
+   `load_review_findings_snapshot(loop_id, params.worktree_path, <現在の action_id>, lease_token)` で同じ
+   action の `review_findings.json` を復元する。別 loop / action の envelope、active lease 不一致、現在の
+   phase / `pending_action` が同じ `wait_external_review` でない場合、snapshot の欠損・不正 JSON・
+   不正スキーマ、symlink・非 regular file・0600 以外・1 MiB 超過はすべて fail-closed とする。空の
+   `ReviewFindingsResult` を補ったり state から再構成したり、汎用 artifact reader や直接のファイル読み取りで
+   検証を迂回したり、`phase_check_from_review_findings()` へ進んだりしない。
+4. Task 応答を `source_comment_id` キーの map に集め、復元した `result` とともに
    `apply_severity_classifications(..., action_id=<現在の action_id>)` へ渡す。同 API が内部で
    `classify_severity()` を呼び、応答のパース失敗・`CONFIDENCE: low` を安全側の high に確定する
    （設計 §3.3）。Step 3 相当の判定、finding の差し替え、state 更新を独自実装しない。
-3. API が返す `ClassificationApplicationResult.review_findings` を
+5. API が返す `ClassificationApplicationResult.review_findings` を
    `phase_check_from_review_findings()` に渡す。確定 severity は同じ signature の
    `state.pr_review["findings"]` に永続化され、`none` は state と戻り値の両方から finding を除外する。
-4. `ClassificationApplicationResult.classifications` を JSON 化し、`severity is null` は `none` として
+6. `ClassificationApplicationResult.classifications` を JSON 化し、`severity is null` は `none` として
    0600 の `artifacts/<action_id>/severity_classifications.json` に保存する
    （設計 §3.2。reconcile 復元用）。
-5. severity を手書きで決めない。Task 応答から直接 severity を採用せず、必ず上記 API を経由する。
+7. severity を手書きで決めない。Task 応答から直接 severity を採用せず、必ず上記 API を経由する。
    `needs_classification` が `false` の finding（Step 1 で確定済み）は再分類しない。
 
 ```text

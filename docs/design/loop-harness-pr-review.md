@@ -276,6 +276,55 @@ FT-13 の無進捗 guard 経路に集計される。
   これにより、上記 AND 条件の時刻比較に万一のずれがあっても、processed 側の判定が歴史的コメントの
   再処理を防ぐ二重の防御になる。
 
+### 1.3.1 collect 結果のプロセス境界契約（Issue #197）
+
+`collect_review_findings()` と severity 分類 Task の応答受領は、オーケストレーターの実行モデル上、
+別プロセスになる。collect 時に明示 severity が確定したコメントは `processed_comment_ids` へ追加されるため、
+分類 Task 後にもう一度 collect するとそのコメントは除外される。その再 collect 結果を
+`apply_severity_classifications()` や phase check に渡すと、分類待ちコメントだけが残り、同時に取得した
+明示 critical/high finding が消えて誤って合格し得る。
+
+このため、pre-rebaseline drain と通常の post-poll collect の両経路で次を必須契約とする。
+
+1. `collect_review_findings()` の直後、同じプロセス内で `save_review_findings_snapshot()` を呼び、
+   `ReviewFindingsResult` の全フィールドを schema version 付きの
+   `artifacts/<action_id>/review_findings.json` へ 0600 で保存する。保存前に JSON-like payload 全体へ
+   `redact_payload()` を適用してから JSON 化し、文字列化後の正規表現置換で JSON 構造を壊さない。
+2. 分類 Task の応答を受け取る別プロセスでは再 collect せず、
+   `load_review_findings_snapshot()` で同じ action の snapshot を復元し、その戻り値を
+   `apply_severity_classifications()` へ渡す。
+3. save / load の両方へ active `lease_token` を渡し、current state の phase と `pending_action` が同じ
+   `action_id` の `wait_external_review` であることを検証する。snapshot envelope 自体にも `loop_id` /
+   `action_id` を保存し、呼び出し引数との一致を検証する。
+4. snapshot の欠損、不正 JSON、不正スキーマ、binding / lease / pending action 不一致、安全でない
+   ファイルは fail-closed とする。空の結果への置換、state からの推測復元、再 collect、phase check の
+   続行は禁止する。
+
+公開 API の契約は次のとおりとする。
+
+- `save_review_findings_snapshot(loop_id, project_dir, action_id, result, lease_token) -> str` は artifact の
+  相対パスを返す。
+- `load_review_findings_snapshot(loop_id, project_dir, action_id, lease_token)` は厳格検証済みの
+  `ReviewFindingsResult` を返す。
+- JSON のトップレベル envelope は `schema_version: 1`、`loop_id`、`action_id` と
+  `ReviewFindingsResult` の 6 フィールド（`findings` / `iteration_findings` /
+  `previous_iteration_findings` / `processed_comment_ids` / `ignored_untrusted_comment_count` /
+  `needs_classification_count`）だけを持つ。必須キーの欠損・未知キー・
+  型不一致・未知 severity・負の件数・binding 不一致は `PrReviewWaitError` とし、部分復元しない。
+- save / load は active lease と state の current phase / pending action を検証し、`action_id` 一致に加えて
+  action が `wait_external_review` である場合に限り許可する。stale action、別 action、pending action 不在を
+  拒否する。
+- load は専用の hardened reader を使う。`lstat()` で symlink ではない regular file であることを確認して
+  device / inode を取得し、`O_NOFOLLOW` 付きで open する。続く `fstat()` で同一 device / inode、
+  regular file、mode 0600、size が `MAX_REVIEW_FINDINGS_SNAPSHOT_BYTES`（1 MiB）以下であることを
+  再検証して bounded read する。UTF-8 decode を含む違反は `PrReviewWaitError` とする。
+
+state からの再構成は採用しない。`state.pr_review["findings"]` は dedup・反復制御用の要約であり、
+元の `ReviewFindingsResult` が持つ `body_excerpt`、path、line、分類要否などを完全には保持しないためである。
+不足分を GitHub API から再取得すると、追加の外部依存と取得時点差による意味のずれを持ち込む。
+action-scoped artifact は collect 時点の入力をそのまま固定し、GitHub の再取得なしに分類適用へ渡せるため、
+プロセス境界の正本として用いる。
+
 ---
 
 ## 2. 発信元検証
@@ -508,6 +557,12 @@ CONFIDENCE: <high|low>
   同 API が確定 severity を同じ signature の永続 state へ反映し、`none` のコメントは
   `state.pr_review["findings"]` と phase check 対象の両方から除外する。呼び出し側で一時的な
   `ReviewFindingsResult` だけを差し替えない。
+- **プロセス境界**: collect 直後に `save_review_findings_snapshot()` で保存し、Task 応答受領後は
+  `load_review_findings_snapshot()` で復元した `ReviewFindingsResult` を適用する。これは
+  pre-rebaseline drain と通常の post-poll collect の両方で必須であり、分類後の再 collect で代用しない。
+  両 API へ active `lease_token` を渡し、loop / action envelope、current pending `wait_external_review`、
+  secure file 境界を検証する。snapshot の欠損・破損・スキーマ不一致・各 binding 不一致時は
+  fail-closed とし、分類適用や phase check を続行しない。
 
 - 応答パース失敗（形式不一致）、または `CONFIDENCE: low` の場合は 3.3 節を適用する。
 - 分類結果は `artifacts/<action_id>/severity_classifications.json` に保存し、次回反復での
