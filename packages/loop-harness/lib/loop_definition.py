@@ -17,6 +17,11 @@ CONFIG_FILENAME = "loop-harness.yaml"
 _ID_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 _SIGNATURE_KINDS = {"implementation", "pr_review"}
 ISSUE_LOOP_IMPLEMENTATION_PASS_CRITERIA = {"critical": 0, "high": 0}
+# SEC-M1: defense-in-depth denylist for `mechanical.commands` first tokens. This is
+# independent of layer 3 (`claude -p --disallowedTools`, which only constrains the Maker's own
+# tool calls) — it constrains what loop-harness itself will execute directly via `bash -lc` in
+# the checker phase. Does not replace layer 2/3; loop definitions are trusted-but-verified.
+_MECHANICAL_COMMAND_DENYLIST = frozenset({"git", "gh", "ssh", "curl", "wget", "docker", "sudo"})
 
 
 def _resolve_local_override_root(project_dir: str) -> str:
@@ -254,6 +259,12 @@ def _validate_mechanical(mechanical: dict[str, Any], source_path: str) -> None:
         raise DefinitionValidationError(f"mechanical.commands must be non-empty: {source_path}")
     if mechanical.get("analyzer") != "failure_detector.analyze":
         raise DefinitionValidationError(f"Unsupported analyzer: {source_path}")
+    for command in commands:
+        prefix = str(command).strip().split(" ", 1)[0] if str(command).strip() else ""
+        if prefix in _MECHANICAL_COMMAND_DENYLIST:
+            raise DefinitionValidationError(
+                f"mechanical.commands entry uses a denylisted binary ({prefix!r}): {source_path}"
+            )
 
 
 def _validate_guards(guards: Any, source_path: str) -> None:

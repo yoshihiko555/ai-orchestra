@@ -530,6 +530,61 @@ claude -p \
 **設計原則: Maker プロセスは push 能力を構造的に持たない。** push・PR 作成は Maker には一切
 実行させず、push ガード（基本設計 5.6 節）通過後に `loop_driver.py`（Python、2.6 節）が自ら実行する。
 
+> **多層防御（defense-in-depth）の追記（2026-07-12 実機検証反映。EV-49・EV-63）**: `claude -p`
+> の headless 権限挙動を実測した結果、`--disallowedTools "Bash(git push:*)"` は Maker が
+> **直接** `git push origin HEAD:main` をツール呼び出しした場合は拒否できるが、Maker が
+> `bash -c "git push origin HEAD:main"` のようにラッパー経由で実行すると **push が貫通する**
+> （disallow パターンはコマンド文字列のリテラル前方一致のみを検査し、サブシェル内のペイロードま
+> では検査しない）。実際に検証で bare remote への push が進行した。したがって
+> `--disallowedTools` は必要だが、単独では「Maker は push できない」という構造的保証にはならない
+> と確定した。これを踏まえ、以下 4 層を組み合わせて防御する（層2 が主軸）:
+>
+> - **層1（プロンプト）**: Maker には push/PR 作成を一切指示しない。Maker の責務は編集と
+>   `git commit` までとする（プロンプトテンプレートの骨子を参照）。
+> - **層2（env 認証隔離。主軸）**: `run_claude_p()`（2.5 節）が Maker の子プロセスへ渡す `env` から
+>   push 認証を剥奪する。具体的には `GIT_ASKPASS=/bin/false`・`GIT_TERMINAL_PROMPT=0` を設定し、
+>   `SSH_AUTH_SOCK` を unset、`GH_TOKEN`/`GITHUB_TOKEN` 等の認証トークン系 env を継承しない。
+>   remote が認証必須である前提のもとでは、`bash -c` を含むあらゆる wrapper 経由の push も認証段階
+>   で失敗するため、コマンド文字列のパターンマッチに依存しない構造的な保証になる。この隔離は
+>   Maker の子プロセス env のみに適用し、git worktree が共有する `.git/config` には触れないため、
+>   `loop_driver.py`（親プロセス）自身の push 能力には影響しない。
+> - **層3（disallowedTools + hook）**: 現行の `--disallowedTools
+>   "Bash(git push:*),Bash(git remote:*),Bash(git worktree:*),Bash(gh pr:*)"` は多層防御の一枚として
+>   維持する。加えて `claude -p` に渡す PreToolUse hook で Bash コマンド全文（`bash -c` のペイロード
+>   を含む）を検査し、push/remote/gh pr を含む場合は hard-deny する（disallowedTools のリテラル
+>   一致漏れを補う）。ただし文字列難読化（base64 化・変数展開等）で回避され得るため、層3 単独を
+>   構造的保証の境界として扱わない。
+> - **層4（push 後整合性検証。安全網）**: `loop_driver.py` が Maker 実行の前後で「期待する
+>   local HEAD」と「remote HEAD」を記録・照合し、想定外に remote HEAD が進行していた場合は
+>   integrity violation として安全停止する（2.6 節）。
+> - **層A（不採用）**: worktree の `origin` remote 除去・repoint は、git worktree が
+>   `remote.*` を含む `.git/config` を共有するため、素朴に実装すると親プロセス（`loop_driver.py`）
+>   の push も壊れる。既定では採用しない。どうしても worktree ローカルに remote 設定を分離したい
+>   場合は `extensions.worktreeConfig=true` + `git config --worktree`（git 2.20+）が唯一の正しい
+>   手段である。
+
+> **層2 が Checker（`mechanical.commands`）経由で迂回できる欠陥の修正（2026-07-12 LP-2 レビュー反映。
+> SEC-C1・EV-81）**: `checker.mechanical.commands`（例: `pytest -q`）は直前の Maker 反復が仕込んだ
+> コードを import/実行しうるにもかかわらず、`loop_common.run_mechanical_checks()` が
+> `env=` を渡さず driver 自身の push 権限付き env（`os.environ`）を継承していたため、層2（Maker の
+> `claude -p` 子プロセス env のみを隔離する）が Checker 経由で完全に迂回できた（Issue #196 相当を
+> Checker 経由で再現可能）。`run_mechanical_checks()`/`_run_mechanical_command()` に `env`
+> キーワード引数を追加し（省略時は従来どおり `os.environ` を継承。LP-1 の `loop_step.py` は
+> 省略のまま）、`loop_driver.py`（LP-2 `_run_checker`）からは Maker と同じ隔離 env（下記
+> `maker_env()` 強化版）を渡す。
+
+> **`maker_env()` の env 変数以外の認証経路も遮断（2026-07-12 LP-2 レビュー反映。SEC-H3・EV-83）**:
+> `GIT_ASKPASS`/`GIT_TERMINAL_PROMPT`/`SSH_AUTH_SOCK`/`GH_TOKEN`/`GITHUB_TOKEN` の剥奪だけでは
+> `GIT_SSH_COMMAND`（カスタム SSH 経由の push 認証）と `$HOME` 相対の認証経路（`~/.netrc`、
+> `credential.helper=store` の `~/.git-credentials`、macOS Keychain の `osxkeychain`、`gh` の
+> `~/.config/gh/hosts.yml`）が素通りする。`maker_env()` は追加で `GIT_SSH_COMMAND` を unset し、
+> `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` を常に `/dev/null` にリダイレクトして（`credential.helper`
+> を含む）グローバル/システム git config を一切読ませないようにする。さらに任意で `scratch_home`
+> （ループ単位の空ディレクトリ、`loop_driver_support.maker_scratch_home()`）を渡すと `HOME`/
+> `XDG_CONFIG_HOME` もそこへリダイレクトされ、`~/.netrc`・`gh` 設定探索も空になる。Maker/LLM
+> レビュアー/severity 分類/Checker（`mechanical.commands`。SEC-C1）の全 `claude -p` 子プロセス・
+> mechanical コマンド実行に、この強化版 env を一貫して適用する。
+
 **権限方針（`--dangerously-skip-permissions` は使わない）**:
 
 - headless 実行で人間の承認は得られないが、包括的な承認バイパス（`--dangerously-skip-permissions`）
@@ -664,6 +719,39 @@ repo-identity 照合のいずれかに失敗した場合、`loop_driver.py` は�
    repo-identity と現在値が一致）の場合のみ行う。ブランチ検証違反のみで repo-identity 自体は正しい
    場合は投稿してよいが、repo-identity 不一致が絡むケース（3.4 節）は投稿しない。
 6. worktree・state/journal は保持する（人間の調査・再開判断のため。FT-23 と同様の方針）。
+
+**push 後整合性検証（層4。2.2 節の多層防御）による安全停止**: 2.2 節の層2（env 認証隔離）を
+主軸としつつ、その安全網として `loop_driver.py` は `on_success.exec` の `push` 実行の前後で
+「期待する local HEAD」と「remote HEAD」を記録・照合する。具体的には、直前の反復完了時点の
+remote HEAD を baseline として記録しておき、Maker（`claude -p`）実行直後・`push` 実行直前に
+`git ls-remote origin <branch>` 等で現在の remote HEAD を取得し baseline と比較する。
+`loop_driver.py` 自身がまだ push していないにもかかわらず remote HEAD が baseline から進行して
+いた場合、Maker がガードを迂回して push した疑いがある（Issue #196 相当の「push したのに報告
+しない」ケース）ため、以下の**安全停止**を行う（本節 1〜6 と同じ順序契約。`stop_reason` のみ
+異なる）:
+
+1. `push`/`pr_create` 等、**リポジトリへの書き込みを伴う exec を一切実行しない**（`on_success.exec`
+   の残りステップを中断する。すでに想定外の push が行われているため、二重 push・PR 作成による
+   状態悪化を避ける）。
+2. `journal.jsonl` に `event: "stopped", payload: {stop_reason: "push_integrity_violation", ...}` を
+   **先に**追記し（durable な記録。core 編 6.4 節の順序に従う）、audit へ `loop_stop`（`stop_reason`
+   付き）を emit する（6 節）。
+3. `journal.jsonl` への追記後、`state.json.status = "stopped"`、`stop_reason = "push_integrity_violation"`
+   として記録する（baseline HEAD と検知時 remote HEAD の両方を payload に残す）。
+4. macOS 通知を**必ず**発火する。
+5. Issue コメント投稿は、当該ループの repo-identity が検証済みの場合のみ行う（本節 5 と同じ条件）。
+6. worktree・state/journal は保持する（人間の調査のため。想定外 push が到達した remote ブランチの
+   状態も含め証跡を残す。FT-23 と同様の方針）。
+
+> **fail-closed 化（2026-07-12 LP-2 レビュー反映。SEC-H1・EV-82）**: `git ls-remote` 失敗（sabotage・
+> ネットワーク障害等で current HEAD が取得不能）や baseline 未記録（`None`）を「違反なし」として
+> push を通過させる fail-open な実装は、層2を突破した攻撃者が `git ls-remote` を意図的に失敗させる
+> ことで層4を無力化できてしまう。`current_head` 取得は 1 回まで再試行したうえで、なお `None` の場合
+> （または `baseline_head` が `None` の場合）は「違反」でも「合格」でもなく **`stop_reason =
+> "push_integrity_unverifiable"`** として本節と全く同じ手順（journal 先行・状態停止・通知必須・
+> 条件付き Issue コメント・worktree/state 保持）で安全停止する（fail-closed）。baseline 未記録が
+> クラッシュ再起動直後の空白期間で起きないよう、`loop_driver.py` は `attach()` 直後（lease 取得
+> 直後）に一度 `git ls-remote` で baseline を再構築する。
 
 ---
 
@@ -882,6 +970,7 @@ lock:
 lp2:
   concurrency_limit: 2 # int. LP-2 の同時実行ループ数上限
   wall_clock_timeout_seconds: 7200 # int. LP-2 worker の壁時計時間上限（2時間）
+  priority_labels: [] # list[str]. discovery ソートで最優先扱いするラベル語彙（先頭ほど高優先）。§3.1 参照。既定 [] は created_at 昇順の純 FIFO
 
 pr_review:
   poll_interval_seconds: 120 # int. PR レビュー完了シグナルのポーリング間隔
@@ -925,6 +1014,7 @@ maker:
 | `lock.heartbeat_interval_seconds`           | int（秒）                                                                                             | `60`                                                         | 同上                                         |
 | `lp2.concurrency_limit`                     | int                                                                                                   | `2`                                                          | 同上                                         |
 | `lp2.wall_clock_timeout_seconds`            | int（秒）                                                                                             | `7200`                                                       | 同上                                         |
+| `lp2.priority_labels`                       | list[str]                                                                                             | `[]`                                                         | 同上（§3.1 の優先度ラベルソート語彙）        |
 | `pr_review.poll_interval_seconds`           | int（秒）                                                                                             | `120`                                                        | 同上                                         |
 | `pr_review.timeout_seconds`                 | int（秒）                                                                                             | `3600`                                                       | 同上                                         |
 | `pr_review.reviewer_allowlist`              | list[dict]（`app_slug`/`login`/`type`/`author_association` 等。実スキーマは pr-review 編 2.2 節が正） | **必須キー・既定値なし**（キー欠落・空リストは起動時エラー） | 上書き可（確定値は pr-review 編 2.2 節が正） |

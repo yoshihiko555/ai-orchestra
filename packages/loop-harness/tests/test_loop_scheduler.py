@@ -1,0 +1,612 @@
+"""Tests for the LP-2 resident scheduler (`loop_scheduler.py`).
+
+Covers discovery (label resolution, priority/created_at ordering, active-loop exclusion),
+the concurrency cap, restart-vs-terminal-status handling, startup repo-identity safety
+stop, and cron/launchd template generation, per the evaluation set (EV-46, EV-48, EV-51,
+EV-70) and the handoff's required coverage list. No real `gh`/`claude` process is ever
+invoked: `gh api`/`gh repo view` are isolated behind single functions that tests
+monkeypatch, and worker spawning is monkeypatched to fake `Popen`-like objects.
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from tests.module_loader import load_module
+
+lc = load_module("loop_common", "packages/loop-harness/lib/loop_common.py")
+ld = load_module("loop_definition", "packages/loop-harness/lib/loop_definition.py")
+wm = load_module("worktree_manager", "packages/loop-harness/lib/worktree_manager.py")
+lds = load_module("loop_driver_support", "packages/loop-harness/lib/loop_driver_support.py")
+scheduler = load_module("loop_scheduler", "packages/loop-harness/scripts/loop_scheduler.py")
+
+
+def _git(args: list[str], cwd: Path) -> str:
+    result = subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+    return result.stdout.strip()
+
+
+def _init_repo(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    _git(["init", "-b", "main"], path)
+    _git(["config", "user.email", "loop-harness@example.com"], path)
+    _git(["config", "user.name", "Loop Harness Test"], path)
+    (path / "README.md").write_text("root\n", encoding="utf-8")
+    _git(["add", "README.md"], path)
+    _git(["commit", "-m", "init"], path)
+
+
+def _seed_state(
+    tmp_path: Path,
+    loop_id: str,
+    *,
+    status: str = "running",
+    repo_identity_hash: str | None = None,
+    phase: str = "implementation",
+) -> lc.LoopState:
+    """Write a minimal state.json for loop_id, returning the in-memory state used."""
+    project_dir = str(tmp_path)
+    repo_hash = repo_identity_hash or wm.resolve_repo_identity_hash(project_dir)
+    state = lc._initial_state(loop_id, "issue-loop", repo_hash, project_dir, "main", phase)
+    state.status = status
+    lc._write_state(state, project_dir)
+    return state
+
+
+class _FakePopen:
+    """Minimal stand-in for subprocess.Popen used to avoid spawning real processes."""
+
+    def __init__(self, returncode: int | None = None) -> None:
+        self.returncode = returncode
+        self.spawned_for: str | None = None
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+
+# --------------------------------------------------------------------------------------------
+# config resolution (packages/loop-harness/config/loop-harness.yaml)
+# --------------------------------------------------------------------------------------------
+
+
+def test_concurrency_limit_default(tmp_path: Path) -> None:
+    assert scheduler.concurrency_limit(str(tmp_path)) == 2
+
+
+def test_concurrency_limit_local_override(tmp_path: Path) -> None:
+    override_dir = tmp_path / ".claude" / "config" / "loop-harness"
+    override_dir.mkdir(parents=True)
+    (override_dir / "loop-harness.local.yaml").write_text(
+        "lp2:\n  concurrency_limit: 5\n", encoding="utf-8"
+    )
+    assert scheduler.concurrency_limit(str(tmp_path)) == 5
+
+
+def test_priority_labels_default_empty(tmp_path: Path) -> None:
+    assert scheduler.priority_labels(str(tmp_path)) == []
+
+
+def test_priority_labels_local_override(tmp_path: Path) -> None:
+    override_dir = tmp_path / ".claude" / "config" / "loop-harness"
+    override_dir.mkdir(parents=True)
+    (override_dir / "loop-harness.local.yaml").write_text(
+        "lp2:\n  priority_labels:\n    - priority:high\n    - priority:medium\n",
+        encoding="utf-8",
+    )
+    assert scheduler.priority_labels(str(tmp_path)) == ["priority:high", "priority:medium"]
+
+
+# --------------------------------------------------------------------------------------------
+# loop-definition-derived discovery parameters (3.1 節: never hardcode the label)
+# --------------------------------------------------------------------------------------------
+
+
+def test_resolve_label_from_bundled_issue_loop_definition(tmp_path: Path) -> None:
+    definition = ld.load_all_definitions(str(tmp_path))["issue-loop"]
+    assert scheduler.resolve_label(definition) == "loop:issue"
+
+
+def test_resolve_poll_interval_from_bundled_issue_loop_definition(tmp_path: Path) -> None:
+    definition = ld.load_all_definitions(str(tmp_path))["issue-loop"]
+    assert scheduler.resolve_poll_interval(definition) == 300
+
+
+def test_resolve_label_requires_trigger_lp2() -> None:
+    definition = ld.LoopDefinition(id="x", trigger={}, phases=[], notifications={}, source_path="")
+    with pytest.raises(ld.DefinitionValidationError):
+        scheduler.resolve_label(definition)
+
+
+def test_resolve_label_requires_label_key() -> None:
+    definition = ld.LoopDefinition(
+        id="x", trigger={"lp2": {}}, phases=[], notifications={}, source_path=""
+    )
+    with pytest.raises(ld.DefinitionValidationError):
+        scheduler.resolve_label(definition)
+
+
+def test_resolve_poll_interval_defaults_when_key_absent() -> None:
+    definition = ld.LoopDefinition(
+        id="x", trigger={"lp2": {"label": "loop:x"}}, phases=[], notifications={}, source_path=""
+    )
+    assert scheduler.resolve_poll_interval(definition) == scheduler.DEFAULT_POLL_INTERVAL_SECONDS
+
+
+# --------------------------------------------------------------------------------------------
+# sort_candidates: priority label rank, then created_at ascending
+# --------------------------------------------------------------------------------------------
+
+
+def test_sort_candidates_orders_by_priority_then_created_at() -> None:
+    issues = [
+        {"number": 1, "created_at": "2026-01-01T00:00:00Z", "labels": []},
+        {"number": 2, "created_at": "2026-01-03T00:00:00Z", "labels": [{"name": "priority:high"}]},
+        {"number": 3, "created_at": "2026-01-02T00:00:00Z", "labels": []},
+    ]
+    ordered = scheduler.sort_candidates(issues, ["priority:high"])
+    assert [item["number"] for item in ordered] == [2, 1, 3]
+
+
+def test_sort_candidates_plain_created_at_when_no_priority_labels_configured() -> None:
+    issues = [
+        {"number": 3, "created_at": "2026-01-03T00:00:00Z", "labels": []},
+        {"number": 1, "created_at": "2026-01-01T00:00:00Z", "labels": []},
+        {"number": 2, "created_at": "2026-01-02T00:00:00Z", "labels": []},
+    ]
+    ordered = scheduler.sort_candidates(issues, [])
+    assert [item["number"] for item in ordered] == [1, 2, 3]
+
+
+# --------------------------------------------------------------------------------------------
+# active_loop_ids / discover_loop_ids (EV-70)
+# --------------------------------------------------------------------------------------------
+
+
+def test_active_loop_ids_filters_running_and_waiting_external(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _seed_state(tmp_path, "aaaaaaaa-issue-1", status="running")
+    _seed_state(tmp_path, "aaaaaaaa-issue-2", status="waiting_external")
+    _seed_state(tmp_path, "aaaaaaaa-issue-3", status="passed")
+    active = scheduler.active_loop_ids(str(tmp_path))
+    assert active == {"aaaaaaaa-issue-1", "aaaaaaaa-issue-2"}
+
+
+def test_discover_loop_ids_excludes_active_and_orders_by_created_at(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    definition = ld.load_all_definitions(project_dir)["issue-loop"]
+
+    issue_2_loop_id = wm.compute_loop_id(project_dir, 2)
+    _seed_state(tmp_path, issue_2_loop_id, status="running")
+
+    fake_issues = [
+        {"number": 3, "created_at": "2026-01-02T00:00:00Z", "labels": []},
+        {"number": 1, "created_at": "2026-01-01T00:00:00Z", "labels": []},
+        {"number": 2, "created_at": "2026-01-01T00:00:01Z", "labels": []},
+    ]
+    monkeypatch.setattr(
+        scheduler,
+        "list_labeled_issues",
+        lambda project, label: fake_issues if label == "loop:issue" else [],
+    )
+
+    loop_ids = scheduler.discover_loop_ids(project_dir, definition)
+
+    assert loop_ids == [wm.compute_loop_id(project_dir, 1), wm.compute_loop_id(project_dir, 3)]
+    assert issue_2_loop_id not in loop_ids
+
+
+def test_discover_loop_ids_applies_configured_priority_labels(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    definition = ld.load_all_definitions(project_dir)["issue-loop"]
+    override_dir = tmp_path / ".claude" / "config" / "loop-harness"
+    override_dir.mkdir(parents=True)
+    (override_dir / "loop-harness.local.yaml").write_text(
+        "lp2:\n  priority_labels:\n    - priority:high\n", encoding="utf-8"
+    )
+
+    fake_issues = [
+        {"number": 1, "created_at": "2026-01-01T00:00:00Z", "labels": []},
+        {"number": 3, "created_at": "2026-01-02T00:00:00Z", "labels": [{"name": "priority:high"}]},
+    ]
+    monkeypatch.setattr(scheduler, "list_labeled_issues", lambda project, label: fake_issues)
+
+    loop_ids = scheduler.discover_loop_ids(project_dir, definition)
+
+    assert loop_ids == [wm.compute_loop_id(project_dir, 3), wm.compute_loop_id(project_dir, 1)]
+
+
+def test_discover_loop_ids_respects_in_memory_excluded_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    definition = ld.load_all_definitions(project_dir)["issue-loop"]
+    fake_issues = [{"number": 7, "created_at": "2026-01-01T00:00:00Z", "labels": []}]
+    monkeypatch.setattr(scheduler, "list_labeled_issues", lambda project, label: fake_issues)
+    excluded = frozenset({wm.compute_loop_id(project_dir, 7)})
+    assert scheduler.discover_loop_ids(project_dir, definition, excluded=excluded) == []
+
+
+def test_list_labeled_issues_builds_expected_gh_invocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, tuple[str, str]] = {}
+
+    def fake_repo_name(project_dir: str) -> str:
+        return "acme/widgets"
+
+    def fake_gh_list(repo: str, label: str) -> str:
+        captured["args"] = (repo, label)
+        return json.dumps([{"number": 9, "created_at": "2026-01-01T00:00:00Z", "labels": []}])
+
+    monkeypatch.setattr(scheduler, "_repo_name_with_owner", fake_repo_name)
+    monkeypatch.setattr(scheduler, "_gh_list_issues", fake_gh_list)
+
+    issues = scheduler.list_labeled_issues("/some/project", "loop:issue")
+
+    assert captured["args"] == ("acme/widgets", "loop:issue")
+    assert issues == [{"number": 9, "created_at": "2026-01-01T00:00:00Z", "labels": []}]
+
+
+# --------------------------------------------------------------------------------------------
+# should_restart / reap_finished_workers (EV-51)
+# --------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ("running", True),
+        ("waiting_external", True),
+        ("pending", True),
+        ("failed", False),
+        ("stopped", False),
+    ],
+)
+def test_should_restart(status: str, expected: bool) -> None:
+    assert scheduler.should_restart(status) is expected
+
+
+def test_reap_finished_workers_restarts_abnormal_exit_when_not_terminal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    loop_id = "aaaaaaaa-issue-1"
+    _seed_state(tmp_path, loop_id, status="running")
+    runtime = scheduler.SchedulerRuntime(workers={loop_id: _FakePopen(returncode=1)})
+
+    respawned = _FakePopen(returncode=None)
+    monkeypatch.setattr(scheduler, "spawn_worker", lambda lid, project: respawned)
+
+    result = scheduler.reap_finished_workers(runtime, project_dir)
+
+    assert result == [loop_id]
+    assert runtime.workers[loop_id] is respawned
+
+
+def test_reap_finished_workers_does_not_restart_when_stopped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    loop_id = "aaaaaaaa-issue-1"
+    _seed_state(tmp_path, loop_id, status="stopped")
+    runtime = scheduler.SchedulerRuntime(workers={loop_id: _FakePopen(returncode=1)})
+
+    def _fail_spawn(lid: str, project: str) -> None:
+        raise AssertionError("must not restart a safety-stopped loop")
+
+    monkeypatch.setattr(scheduler, "spawn_worker", _fail_spawn)
+
+    result = scheduler.reap_finished_workers(runtime, project_dir)
+
+    assert result == []
+    assert loop_id not in runtime.workers
+
+
+def test_reap_finished_workers_does_not_restart_when_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    loop_id = "aaaaaaaa-issue-1"
+    _seed_state(tmp_path, loop_id, status="failed")
+    runtime = scheduler.SchedulerRuntime(workers={loop_id: _FakePopen(returncode=1)})
+
+    def _fail_spawn(lid: str, project: str) -> None:
+        raise AssertionError("must not restart a normally-failed loop")
+
+    monkeypatch.setattr(scheduler, "spawn_worker", _fail_spawn)
+
+    result = scheduler.reap_finished_workers(runtime, project_dir)
+
+    assert result == []
+
+
+def test_reap_finished_workers_leaves_still_running_children_alone(tmp_path: Path) -> None:
+    loop_id = "aaaaaaaa-issue-1"
+    runtime = scheduler.SchedulerRuntime(workers={loop_id: _FakePopen(returncode=None)})
+    result = scheduler.reap_finished_workers(runtime, str(tmp_path))
+    assert result == []
+    assert loop_id in runtime.workers
+
+
+def test_reap_finished_workers_skips_clean_exit_without_restart(tmp_path: Path) -> None:
+    loop_id = "aaaaaaaa-issue-1"
+    runtime = scheduler.SchedulerRuntime(workers={loop_id: _FakePopen(returncode=0)})
+    result = scheduler.reap_finished_workers(runtime, str(tmp_path))
+    assert result == []
+    assert loop_id not in runtime.workers
+
+
+# --------------------------------------------------------------------------------------------
+# reap_finished_workers: foreign-lease restart-storm cooldown (code H4)
+# --------------------------------------------------------------------------------------------
+
+
+def test_reap_finished_workers_does_not_immediately_respawn_foreign_lease_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A worker that foreign-lease-exits (returncode 3) never reaches `LoopDriver`, so
+    `state.json.status` stays "running" (owned by the foreign process). Respawning it every
+    cycle would restart-storm until the foreign lease's own TTL naturally expires."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    loop_id = "aaaaaaaa-issue-1"
+    _seed_state(tmp_path, loop_id, status="running")
+    runtime = scheduler.SchedulerRuntime(
+        workers={loop_id: _FakePopen(returncode=scheduler._EXIT_FOREIGN_LEASE)}
+    )
+
+    def _fail_spawn(lid: str, project: str) -> None:
+        raise AssertionError("must not respawn a foreign-lease-rejected worker immediately")
+
+    monkeypatch.setattr(scheduler, "spawn_worker", _fail_spawn)
+
+    result = scheduler.reap_finished_workers(runtime, project_dir)
+
+    assert result == []
+    assert loop_id not in runtime.workers
+    assert loop_id in runtime.foreign_lease_cooldown_until
+
+
+def test_reap_finished_workers_respawns_after_foreign_lease_cooldown_elapses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """code H4: once the cooldown window elapses, the loop_id becomes eligible again."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    loop_id = "aaaaaaaa-issue-1"
+    _seed_state(tmp_path, loop_id, status="running")
+    runtime = scheduler.SchedulerRuntime(
+        workers={loop_id: _FakePopen(returncode=scheduler._EXIT_FOREIGN_LEASE)}
+    )
+
+    fake_clock = {"now": 1000.0}
+    monkeypatch.setattr(scheduler.time, "monotonic", lambda: fake_clock["now"])
+    monkeypatch.setattr(scheduler, "lp2_lease_ttl_seconds", lambda _project: 300)
+
+    first = scheduler.reap_finished_workers(runtime, project_dir)
+    assert first == []
+    assert loop_id not in runtime.workers
+
+    # Still within the cooldown window: no respawn yet.
+    fake_clock["now"] += 100
+    respawned = _FakePopen(returncode=None)
+    monkeypatch.setattr(scheduler, "spawn_worker", lambda lid, project: respawned)
+    still_cooling = scheduler.reap_finished_workers(runtime, project_dir)
+    assert still_cooling == []
+    assert loop_id not in runtime.workers
+
+    # Past the cooldown window: eligible for restart again.
+    fake_clock["now"] += 300
+    after_cooldown = scheduler.reap_finished_workers(runtime, project_dir)
+    assert after_cooldown == [loop_id]
+    assert runtime.workers[loop_id] is respawned
+    assert loop_id not in runtime.foreign_lease_cooldown_until
+
+
+# --------------------------------------------------------------------------------------------
+# spawn_new_workers: concurrency cap (EV-46)
+# --------------------------------------------------------------------------------------------
+
+
+def test_spawn_new_workers_does_not_spawn_or_discover_when_cap_reached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir = str(tmp_path)
+    definition = ld.load_all_definitions(project_dir)["issue-loop"]
+    runtime = scheduler.SchedulerRuntime(
+        workers={"a": _FakePopen(None), "b": _FakePopen(None)}
+    )  # cap is 2 by default
+
+    def _fail_discover(*args: object, **kwargs: object) -> None:
+        raise AssertionError("discovery must not run while at capacity")
+
+    monkeypatch.setattr(scheduler, "discover_loop_ids", _fail_discover)
+
+    spawned = scheduler.spawn_new_workers(runtime, project_dir, definition)
+
+    assert spawned == []
+    assert len(runtime.workers) == 2
+
+
+def test_spawn_new_workers_spawns_only_up_to_available_capacity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir = str(tmp_path)
+    definition = ld.load_all_definitions(project_dir)["issue-loop"]
+    runtime = scheduler.SchedulerRuntime()  # cap 2, 0 running -> 2 slots available
+
+    monkeypatch.setattr(scheduler, "discover_loop_ids", lambda project, defn, **kw: ["a", "b", "c"])
+    monkeypatch.setattr(scheduler, "spawn_worker", lambda loop_id, project: _FakePopen(None))
+
+    spawned = scheduler.spawn_new_workers(runtime, project_dir, definition)
+
+    assert spawned == ["a", "b"]
+    assert set(runtime.workers) == {"a", "b"}
+
+
+# --------------------------------------------------------------------------------------------
+# verify_repo_identity_at_startup (EV-48)
+# --------------------------------------------------------------------------------------------
+
+
+def test_verify_repo_identity_at_startup_stops_mismatch_and_notifies_without_issue_comment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    loop_id = "deadbeef-issue-1"
+    _seed_state(tmp_path, loop_id, status="running", repo_identity_hash="deadbeef")
+
+    notified: list[str] = []
+    monkeypatch.setattr(
+        lds, "notify_macos", lambda title, message: notified.append(message) or True
+    )
+    monkeypatch.setattr(scheduler, "lds", lds)
+
+    def _fail_comment(*args: object, **kwargs: object) -> None:
+        raise AssertionError("must not post an Issue comment on repo-identity mismatch")
+
+    monkeypatch.setattr(lds, "post_issue_comment", _fail_comment)
+
+    stopped = scheduler.verify_repo_identity_at_startup(project_dir)
+
+    assert stopped == [loop_id]
+    state = lc.load_state(loop_id, project_dir)
+    assert state.status == "stopped"
+    assert state.stop_reason == "repo_identity_mismatch"
+    assert any("repo_identity_mismatch" in message for message in notified)
+
+    journal = lc.journal_path(loop_id, project_dir).read_text(encoding="utf-8").splitlines()
+    events = [json.loads(line) for line in journal]
+    assert any(
+        event["event"] == "stopped" and event["payload"]["stop_reason"] == "repo_identity_mismatch"
+        for event in events
+    )
+
+
+def test_verify_repo_identity_at_startup_ignores_matching_hash(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    matching_hash = wm.resolve_repo_identity_hash(project_dir)
+    loop_id = f"{matching_hash}-issue-1"
+    _seed_state(tmp_path, loop_id, status="running", repo_identity_hash=matching_hash)
+
+    stopped = scheduler.verify_repo_identity_at_startup(project_dir)
+
+    assert stopped == []
+    assert lc.load_state(loop_id, project_dir).status == "running"
+
+
+def test_verify_repo_identity_at_startup_skips_already_terminal_loops(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    loop_id = "deadbeef-issue-1"
+    _seed_state(tmp_path, loop_id, status="failed", repo_identity_hash="deadbeef")
+
+    stopped = scheduler.verify_repo_identity_at_startup(project_dir)
+
+    assert stopped == []
+    assert lc.load_state(loop_id, project_dir).status == "failed"
+
+
+# --------------------------------------------------------------------------------------------
+# run_scheduler: startup safety-stop feeds into the exclusion set, finite max_cycles
+# --------------------------------------------------------------------------------------------
+
+
+def test_run_scheduler_excludes_startup_stopped_loop_and_respects_max_cycles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    loop_id = "deadbeef-issue-1"
+    _seed_state(tmp_path, loop_id, status="running", repo_identity_hash="deadbeef")
+
+    monkeypatch.setattr(scheduler.time, "sleep", lambda seconds: None)
+    cycle_calls: list[int] = []
+    monkeypatch.setattr(
+        scheduler, "run_cycle", lambda runtime, project, definition: cycle_calls.append(1)
+    )
+
+    scheduler.run_scheduler(project_dir, max_cycles=3)
+
+    assert len(cycle_calls) == 3
+    assert lc.load_state(loop_id, project_dir).status == "stopped"
+
+
+def test_run_scheduler_raises_for_unknown_definition(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    with pytest.raises(ld.DefinitionValidationError):
+        scheduler.run_scheduler(str(tmp_path), "not-a-real-definition", max_cycles=1)
+
+
+# --------------------------------------------------------------------------------------------
+# cron / launchd templates (3.5 節)
+# --------------------------------------------------------------------------------------------
+
+
+def test_render_launchd_plist_contains_keepalive_and_paths(tmp_path: Path) -> None:
+    plist = scheduler.render_launchd_plist(str(tmp_path))
+    assert "<key>KeepAlive</key>" in plist
+    assert "<true/>" in plist
+    assert str(tmp_path.resolve()) in plist
+    assert "loop_scheduler.py" in plist
+    assert "com.ai-orchestra.loop-scheduler" in plist
+
+
+def test_render_cron_entry_contains_pgrep_guard_and_project_path(tmp_path: Path) -> None:
+    entry = scheduler.render_cron_entry(str(tmp_path))
+    assert "pgrep -f" in entry
+    assert str(tmp_path.resolve()) in entry
+    assert entry.strip().startswith("*/5 * * * *")
+
+
+def test_main_print_launchd_and_print_cron(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    exit_code = scheduler.main(["--project", str(tmp_path), "print-launchd"])
+    assert exit_code == 0
+    assert "KeepAlive" in capsys.readouterr().out
+
+    exit_code = scheduler.main(["--project", str(tmp_path), "print-cron"])
+    assert exit_code == 0
+    assert "pgrep -f" in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------------------------
+# spawn_worker: exact child argv (3.3 節)
+# --------------------------------------------------------------------------------------------
+
+
+def test_spawn_worker_builds_expected_argv(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_popen(cmd: list[str], **kwargs: object) -> _FakePopen:
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return _FakePopen(None)
+
+    monkeypatch.setattr(scheduler.subprocess, "Popen", fake_popen)
+
+    scheduler.spawn_worker("abcd1234-issue-1", "/some/project")
+
+    cmd = captured["cmd"]
+    assert cmd[0] == "python3"
+    assert cmd[1].endswith("loop_driver.py")
+    assert cmd[2:] == ["--loop-id", "abcd1234-issue-1", "--project", "/some/project"]
+    assert captured["kwargs"]["stdin"] == subprocess.DEVNULL
+    assert captured["kwargs"]["start_new_session"] is True

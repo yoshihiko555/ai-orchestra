@@ -14,7 +14,7 @@ import socket
 import subprocess
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -908,15 +908,23 @@ def run_mechanical_checks(
     timeout_seconds: int,
     heartbeat: Callable[[], None] | None = None,
     artifact_writer: Callable[[int, str, str, int], None] | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> list[MechanicalFailure]:
-    """Run mechanical checker commands and classify failures via failure_detector."""
+    """Run mechanical checker commands and classify failures via failure_detector.
+
+    `env` is optional and defaults to `None`, which preserves the historical behavior of
+    inheriting the caller's full `os.environ` (LP-1's `loop_step.py` relies on this default).
+    LP-2's `loop_driver.py` passes an isolated, push-credential-stripped env (SEC-C1) since
+    mechanical commands here execute Maker-authored code (e.g. `pytest -q` importing it) and
+    must not run with the driver's own push-capable environment.
+    """
     detector = _load_failure_detector()
     failures: list[MechanicalFailure] = []
     for index, command in enumerate(commands, start=1):
         output: str | None = None
         exit_code: int | None = None
         try:
-            output, exit_code = _run_mechanical_command(command, cwd, timeout_seconds)
+            output, exit_code = _run_mechanical_command(command, cwd, timeout_seconds, env=env)
             response = {"exit_code": exit_code, "stdout": output}
             result = detector.analyze("Bash", {"command": command}, response)
         finally:
@@ -2293,8 +2301,14 @@ def _write_text(path: Path, content: str) -> None:
     os.chmod(path, FILE_MODE)
 
 
-def _run_mechanical_command(command: str, cwd: str, timeout_seconds: int) -> tuple[str, int]:
-    """Run one mechanical command."""
+def _run_mechanical_command(
+    command: str, cwd: str, timeout_seconds: int, env: Mapping[str, str] | None = None
+) -> tuple[str, int]:
+    """Run one mechanical command.
+
+    `env=None` (the default) inherits the caller's `os.environ`, matching
+    `subprocess.run`'s own default and preserving pre-SEC-C1 behavior for LP-1 callers.
+    """
     try:
         proc = subprocess.run(
             ["bash", "-lc", command],
@@ -2302,6 +2316,7 @@ def _run_mechanical_command(command: str, cwd: str, timeout_seconds: int) -> tup
             capture_output=True,
             text=True,
             timeout=timeout_seconds,
+            env=dict(env) if env is not None else None,
         )
     except subprocess.TimeoutExpired as exc:
         stdout = exc.stdout if isinstance(exc.stdout, str) else ""

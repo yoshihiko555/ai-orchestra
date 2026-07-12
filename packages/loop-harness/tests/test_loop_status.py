@@ -1,0 +1,326 @@
+"""Tests for the LP-2 state inspection CLI (`loop_status.py`).
+
+Covers `list` (table + `--json` + `--status` filter), `show` (state + recent/full
+journal), and `purge` (30-day/`--force` boundaries, `running`/`waiting_external`
+protection), per the evaluation set (EV-52) and the handoff's required coverage list.
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+import pytest
+
+from tests.module_loader import load_module
+
+lc = load_module("loop_common", "packages/loop-harness/lib/loop_common.py")
+ld = load_module("loop_definition", "packages/loop-harness/lib/loop_definition.py")
+status = load_module("loop_status", "packages/loop-harness/scripts/loop_status.py")
+
+
+def _git(args: list[str], cwd: Path) -> str:
+    result = subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+    return result.stdout.strip()
+
+
+def _init_repo(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    _git(["init", "-b", "main"], path)
+    _git(["config", "user.email", "loop-harness@example.com"], path)
+    _git(["config", "user.name", "Loop Harness Test"], path)
+    (path / "README.md").write_text("root\n", encoding="utf-8")
+    _git(["add", "README.md"], path)
+    _git(["commit", "-m", "init"], path)
+
+
+def _seed_state(
+    tmp_path: Path,
+    loop_id: str,
+    *,
+    status_value: str = "running",
+    phase: str = "implementation",
+    updated_at: str | None = None,
+) -> lc.LoopState:
+    """Write a minimal state.json for loop_id, optionally back-dating updated_at."""
+    project_dir = str(tmp_path)
+    state = lc._initial_state(loop_id, "issue-loop", "abcd1234", project_dir, "main", phase)
+    state.status = status_value
+    if updated_at is not None:
+        state.updated_at = updated_at
+    lc._write_state(state, project_dir)
+    return state
+
+
+def _iso(days_ago: float) -> str:
+    return (datetime.now(tz=UTC) - timedelta(days=days_ago)).isoformat()
+
+
+# --------------------------------------------------------------------------------------------
+# 4.1 節: list
+# --------------------------------------------------------------------------------------------
+
+
+def test_collect_summaries_reads_all_loops_with_iteration_and_max_iterations(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _seed_state(tmp_path, "abcd1234-issue-1", status_value="running")
+    _seed_state(tmp_path, "abcd1234-issue-2", status_value="passed")
+
+    summaries = status.collect_summaries(str(tmp_path))
+
+    by_id = {s.loop_id: s for s in summaries}
+    assert set(by_id) == {"abcd1234-issue-1", "abcd1234-issue-2"}
+    assert by_id["abcd1234-issue-1"].status == "running"
+    assert by_id["abcd1234-issue-1"].definition_id == "issue-loop"
+    assert by_id["abcd1234-issue-1"].phase == "implementation"
+    # freshly-initialized state: no iterations recorded yet, phase cap from issue-loop.yaml
+    assert by_id["abcd1234-issue-1"].iteration == 0
+    assert by_id["abcd1234-issue-1"].max_iterations == 3
+
+
+def test_collect_summaries_status_filter(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _seed_state(tmp_path, "abcd1234-issue-1", status_value="running")
+    _seed_state(tmp_path, "abcd1234-issue-2", status_value="passed")
+
+    summaries = status.collect_summaries(str(tmp_path), status_filter="passed")
+
+    assert [s.loop_id for s in summaries] == ["abcd1234-issue-2"]
+
+
+def test_render_table_includes_expected_columns(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _seed_state(tmp_path, "abcd1234-issue-1", status_value="running")
+    summaries = status.collect_summaries(str(tmp_path))
+
+    table = status.render_table(summaries)
+
+    assert "LOOP_ID" in table
+    assert "PHASE" in table
+    assert "ITERATION" in table
+    assert "STATUS" in table
+    assert "ELAPSED" in table
+    assert "abcd1234-issue-1" in table
+    assert "0/3" in table
+    assert "running" in table
+
+
+def test_render_json_round_trips_expected_fields(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _seed_state(tmp_path, "abcd1234-issue-1", status_value="waiting_external")
+    summaries = status.collect_summaries(str(tmp_path))
+
+    data = json.loads(status.render_json(summaries))
+
+    assert data == [
+        {
+            "loop_id": "abcd1234-issue-1",
+            "definition_id": "issue-loop",
+            "phase": "implementation",
+            "iteration": 0,
+            "max_iterations": 3,
+            "status": "waiting_external",
+            "created_at": data[0]["created_at"],
+            "updated_at": data[0]["updated_at"],
+            "pr_number": None,
+        }
+    ]
+
+
+def test_elapsed_hhmmss_formats_duration() -> None:
+    created = "2026-07-06T10:00:00+00:00"
+    updated = "2026-07-06T10:14:32+00:00"
+    assert status._elapsed_hhmmss(created, updated) == "00:14:32"
+
+
+def test_elapsed_hhmmss_falls_back_on_tz_aware_naive_mismatch() -> None:
+    """M6: tz-aware minus tz-naive raises TypeError (not ValueError) on subtraction."""
+    created = "2026-07-06T10:00:00+00:00"
+    updated = "2026-07-06T10:14:32"  # naive (no tz offset)
+    assert status._elapsed_hhmmss(created, updated) == "00:00:00"
+
+
+def test_days_since_falls_back_on_tz_aware_naive_mismatch() -> None:
+    """M6: same TypeError fallback for `_days_since`."""
+    from datetime import UTC, datetime
+
+    now = datetime(2026, 7, 6, tzinfo=UTC)
+    assert status._days_since("2026-07-01T00:00:00", now) == 0.0
+
+
+def test_main_list_json_output(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    _init_repo(tmp_path)
+    _seed_state(tmp_path, "abcd1234-issue-1", status_value="running")
+
+    exit_code = status.main(["list", "--project", str(tmp_path), "--json"])
+
+    assert exit_code == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data[0]["loop_id"] == "abcd1234-issue-1"
+
+
+# --------------------------------------------------------------------------------------------
+# 4.2 節: show
+# --------------------------------------------------------------------------------------------
+
+
+def test_load_show_data_defaults_to_last_10_journal_entries(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    loop_id = "abcd1234-issue-1"
+    _seed_state(tmp_path, loop_id, status_value="running")
+    for index in range(15):
+        lc.append_journal_event(loop_id, str(tmp_path), "pending", "step", f"act-{index}", {})
+
+    state_dict, entries = status.load_show_data(loop_id, str(tmp_path))
+
+    assert state_dict["loop_id"] == loop_id
+    assert len(entries) == 10
+    assert entries[-1]["action_id"] == "act-14"
+    assert entries[0]["action_id"] == "act-5"
+
+
+def test_load_show_data_custom_journal_lines(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    loop_id = "abcd1234-issue-1"
+    _seed_state(tmp_path, loop_id, status_value="running")
+    for index in range(5):
+        lc.append_journal_event(loop_id, str(tmp_path), "pending", "step", f"act-{index}", {})
+
+    _state_dict, entries = status.load_show_data(loop_id, str(tmp_path), journal_lines=2)
+
+    assert [entry["action_id"] for entry in entries] == ["act-3", "act-4"]
+
+
+def test_load_show_data_full_journal_returns_all_entries(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    loop_id = "abcd1234-issue-1"
+    _seed_state(tmp_path, loop_id, status_value="running")
+    for index in range(15):
+        lc.append_journal_event(loop_id, str(tmp_path), "pending", "step", f"act-{index}", {})
+
+    _state_dict, entries = status.load_show_data(loop_id, str(tmp_path), full_journal=True)
+
+    assert len(entries) == 15
+
+
+def test_load_show_data_raises_for_unknown_loop_id(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    with pytest.raises(lc.InvalidStateError):
+        status.load_show_data("no-such-loop", str(tmp_path))
+
+
+def test_format_show_includes_state_and_journal_label() -> None:
+    text = status.format_show(
+        {"loop_id": "abcd1234-issue-1"}, [{"event": "pending"}], full_journal=False
+    )
+    assert '"loop_id": "abcd1234-issue-1"' in text
+    assert "last 1 journal entries" in text
+    assert '"event": "pending"' in text
+
+
+def test_main_show_raises_reports_error_and_exit_code(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _init_repo(tmp_path)
+    exit_code = status.main(["show", "--loop-id", "no-such-loop", "--project", str(tmp_path)])
+    assert exit_code == 1
+    assert "loop_status:" in capsys.readouterr().err
+
+
+# --------------------------------------------------------------------------------------------
+# 4.3 節: purge (EV-52)
+# --------------------------------------------------------------------------------------------
+
+
+def test_purge_candidates_normal_selects_only_passed_failed_past_retention(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _seed_state(tmp_path, "a-issue-1", status_value="passed", updated_at=_iso(31))
+    _seed_state(tmp_path, "a-issue-2", status_value="failed", updated_at=_iso(40))
+    _seed_state(tmp_path, "a-issue-3", status_value="passed", updated_at=_iso(5))  # too recent
+    _seed_state(tmp_path, "a-issue-4", status_value="stopped", updated_at=_iso(60))  # never normal
+    _seed_state(tmp_path, "a-issue-5", status_value="running", updated_at=_iso(100))  # never
+
+    candidates = status.purge_candidates(str(tmp_path), force=False, purge_after_days=30)
+
+    assert set(candidates) == {"a-issue-1", "a-issue-2"}
+
+
+def test_purge_candidates_boundary_at_exactly_purge_after_days(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _seed_state(tmp_path, "a-issue-1", status_value="passed", updated_at=_iso(30))
+
+    candidates = status.purge_candidates(str(tmp_path), force=False, purge_after_days=30)
+
+    assert candidates == ["a-issue-1"]
+
+
+def test_purge_candidates_force_includes_stopped_but_protects_running_and_waiting(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _seed_state(tmp_path, "a-issue-1", status_value="passed", updated_at=_iso(1))
+    _seed_state(tmp_path, "a-issue-2", status_value="stopped", updated_at=_iso(1))
+    _seed_state(tmp_path, "a-issue-3", status_value="running", updated_at=_iso(1000))
+    _seed_state(tmp_path, "a-issue-4", status_value="waiting_external", updated_at=_iso(1000))
+
+    candidates = status.purge_candidates(str(tmp_path), force=True, purge_after_days=30)
+
+    assert set(candidates) == {"a-issue-1", "a-issue-2"}
+
+
+def test_purge_loop_removes_loop_directory(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    loop_id = "a-issue-1"
+    _seed_state(tmp_path, loop_id, status_value="passed", updated_at=_iso(31))
+    assert lc.loop_dir(loop_id, str(tmp_path)).is_dir()
+
+    status.purge_loop(loop_id, str(tmp_path))
+
+    assert not lc.loop_dir(loop_id, str(tmp_path)).exists()
+
+
+def test_main_purge_dry_run_reports_candidates_without_deleting(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _init_repo(tmp_path)
+    loop_id = "a-issue-1"
+    _seed_state(tmp_path, loop_id, status_value="passed", updated_at=_iso(31))
+
+    exit_code = status.main(["purge", "--project", str(tmp_path), "--dry-run"])
+
+    assert exit_code == 0
+    assert loop_id in capsys.readouterr().err
+    assert lc.loop_dir(loop_id, str(tmp_path)).is_dir()
+
+
+def test_main_purge_without_dry_run_deletes_candidates(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    loop_id = "a-issue-1"
+    _seed_state(tmp_path, loop_id, status_value="passed", updated_at=_iso(31))
+
+    exit_code = status.main(["purge", "--project", str(tmp_path)])
+
+    assert exit_code == 0
+    assert not lc.loop_dir(loop_id, str(tmp_path)).exists()
+
+
+def test_main_purge_respects_local_retention_override(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    loop_id = "a-issue-1"
+    _seed_state(tmp_path, loop_id, status_value="passed", updated_at=_iso(10))
+    override_dir = tmp_path / ".claude" / "config" / "loop-harness"
+    override_dir.mkdir(parents=True)
+    (override_dir / "loop-harness.local.yaml").write_text(
+        "retention:\n  purge_after_days: 5\n", encoding="utf-8"
+    )
+
+    exit_code = status.main(["purge", "--project", str(tmp_path)])
+
+    assert exit_code == 0
+    assert not lc.loop_dir(loop_id, str(tmp_path)).exists()

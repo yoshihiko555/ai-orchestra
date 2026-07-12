@@ -1,0 +1,450 @@
+#!/usr/bin/env python3
+"""LP-2 loop_driver.py helpers: push defense, subprocess control, safe-stop persistence.
+
+This module holds the parts of the LP-2 headless worker that are pure enough (or thin
+enough wrappers around subprocess/git) to unit test in isolation, so that
+`scripts/loop_driver.py` itself can stay a thin orchestration layer. See
+`docs/design/loop-harness-cli.md` 2 節 for the authoritative design this implements.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import json
+import os
+import re
+import signal
+import subprocess
+import sys
+import time
+from collections.abc import Mapping, Sequence
+from pathlib import Path
+from typing import Any
+
+_LIB_DIR = Path(__file__).resolve().parent
+if str(_LIB_DIR) not in sys.path:
+    sys.path.insert(0, str(_LIB_DIR))
+
+import loop_common as lc  # noqa: E402
+
+# --- push multi-layer defense: layer 1/2/3 (claude -p command construction) ---------------
+
+# 層1: Maker には push/PR 作成を一切指示しない（プロンプト側の責務。呼び出し側で担保）。
+# 層3: push/remote/worktree/gh pr 系は allowedTools の動的組み立てと独立に常に固定 disallow する。
+MAKER_FIXED_DISALLOWED_TOOLS: tuple[str, ...] = (
+    "Bash(git push:*)",
+    "Bash(git remote:*)",
+    "Bash(git worktree:*)",
+    "Bash(gh pr:*)",
+)
+
+MAKER_BASE_ALLOWED_TOOLS: tuple[str, ...] = (
+    "Read",
+    "Grep",
+    "Glob",
+    "Edit",
+    "Write",
+    "Bash(git add:*)",
+    "Bash(git commit:*)",
+    "Bash(git status:*)",
+    "Bash(git diff:*)",
+)
+
+# 層2 (主軸): Maker/Checker の子プロセス env から push 認証を剥奪する。
+# GIT_ASKPASS/GIT_TERMINAL_PROMPT で対話認証を封じ、SSH_AUTH_SOCK と GH_TOKEN/GITHUB_TOKEN、
+# GIT_SSH_COMMAND を継承させないことで、bash -c 経由の push であっても認証段階で必ず失敗させる。
+_PUSH_AUTH_ENV_KEYS_TO_STRIP: tuple[str, ...] = (
+    "SSH_AUTH_SOCK",
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GIT_SSH_COMMAND",
+)
+
+
+def maker_env(base_env: Mapping[str, str], *, scratch_home: str | None = None) -> dict[str, str]:
+    """Return a copy of base_env with push authentication stripped (layer 2, defense-in-depth).
+
+    This isolation applies only to the Maker/Checker `claude -p` child process env; the
+    driver's own env (and therefore its own push capability) is untouched.
+
+    Beyond env-var-level credentials (SEC-H3), git can also authenticate via `$HOME`-relative
+    paths (`~/.netrc`, `~/.git-credentials` with `credential.helper=store`, macOS Keychain's
+    `osxkeychain` helper) or `gh`'s own `~/.config/gh/hosts.yml`. `GIT_CONFIG_GLOBAL`/
+    `GIT_CONFIG_SYSTEM` are always redirected to `/dev/null` so no global/system git config
+    (including any `credential.helper`) is read at all. If `scratch_home` is given, `HOME`/
+    `XDG_CONFIG_HOME` are also redirected there so `~/.netrc`/`gh`'s config directory resolve to
+    an empty scratch directory instead of the real one.
+    """
+    env = dict(base_env)
+    env["GIT_ASKPASS"] = "/bin/false"
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GIT_CONFIG_GLOBAL"] = "/dev/null"
+    env["GIT_CONFIG_SYSTEM"] = "/dev/null"
+    for key in _PUSH_AUTH_ENV_KEYS_TO_STRIP:
+        env.pop(key, None)
+    if scratch_home is not None:
+        env["HOME"] = scratch_home
+        env["XDG_CONFIG_HOME"] = str(Path(scratch_home) / ".config")
+    return env
+
+
+def maker_scratch_home(project_dir: str, loop_id: str) -> str:
+    """Return (creating if absent) an isolated `$HOME` scratch dir for one loop's child procs.
+
+    Reused across a loop's Maker/Checker/LLM-reviewer child processes (SEC-H3) so credential
+    lookups relative to `$HOME` (`~/.netrc`, `~/.git-credentials`, `gh`'s hosts.yml) resolve to
+    an empty directory instead of the driver's real home. Lives under the per-loop state
+    directory so `loop_status.py purge`'s existing directory-tree removal cleans it up too.
+    """
+    path = lc.loop_dir(loop_id, project_dir) / "maker_home"
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(path, 0o700)
+    return str(path)
+
+
+def _command_prefix(command: str) -> str | None:
+    """Return the first whitespace-delimited token of a mechanical command, if any."""
+    token = command.strip().split(" ", 1)[0] if command.strip() else ""
+    return token or None
+
+
+def build_allowed_tools(mechanical_commands: Sequence[str]) -> str:
+    """Build the --allowedTools value from the base list plus a dynamic mechanical whitelist.
+
+    Push/PR/worktree commands are never added here regardless of loop definition content;
+    they are excluded independently via `build_disallowed_tools()` (layer 3).
+    """
+    allowed = list(MAKER_BASE_ALLOWED_TOOLS)
+    for command in mechanical_commands:
+        prefix = _command_prefix(command)
+        if prefix is None:
+            continue
+        entry = f"Bash({prefix} *)"
+        if entry not in allowed:
+            allowed.append(entry)
+    return ",".join(allowed)
+
+
+def build_disallowed_tools() -> str:
+    """Return the fixed --disallowedTools value (layer 3)."""
+    return ",".join(MAKER_FIXED_DISALLOWED_TOOLS)
+
+
+def build_claude_p_command(
+    prompt: str,
+    *,
+    allowed_tools: str,
+    add_dirs: Sequence[str],
+    claude_bin: str = "claude",
+) -> list[str]:
+    """Build the full `claude -p` argv for a Maker/Checker headless run."""
+    cmd = [
+        claude_bin,
+        "-p",
+        "--output-format",
+        "json",
+        "--permission-mode",
+        "acceptEdits",
+        "--allowedTools",
+        allowed_tools,
+        "--disallowedTools",
+        build_disallowed_tools(),
+    ]
+    for add_dir in add_dirs:
+        cmd.extend(["--add-dir", add_dir])
+    cmd.append(prompt)
+    return cmd
+
+
+class ClaudePTimeoutError(RuntimeError):
+    """Raised when a `claude -p` child process is killed after exceeding its timeout."""
+
+
+def kill_process_tree(pid: int, term_wait_seconds: float = 10.0) -> None:
+    """Escalate SIGTERM -> (wait) -> SIGKILL to an entire process group."""
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    deadline = time.monotonic() + term_wait_seconds
+    while time.monotonic() < deadline:
+        try:
+            os.killpg(pid, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.1)
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
+def run_claude_p(
+    cmd: list[str],
+    cwd: str,
+    timeout_seconds: float,
+    env: Mapping[str, str],
+) -> subprocess.CompletedProcess[str]:
+    """Run one non-interactive `claude -p` child, kill-tree on timeout.
+
+    Note (code M2): `LoopDriver._run_child()` in `loop_driver.py` does not call this function
+    in production; it needs to additionally register the child pid (`_set_current_child`)
+    under `_child_lock` for heartbeat-triggered kill-tree (see code H3), which this simpler,
+    pid-tracking-free variant cannot express. Kept as a standalone, independently-testable
+    reference implementation of the kill-tree/non-interactive-subprocess contract rather than
+    unified with `_run_child`, to avoid adding risk to the H3 locking fix.
+
+    stdin is always DEVNULL so a hung `claude -p` never blocks on stdin. The child is
+    started in its own process group (`start_new_session=True`) so `kill_process_tree`
+    can reach any grandchildren (e.g. `pytest`/`git` spawned by the Bash tool).
+    """
+    proc = subprocess.Popen(
+        cmd,
+        cwd=cwd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+        env=dict(env),
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout_seconds)
+        return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+    except subprocess.TimeoutExpired:
+        kill_process_tree(proc.pid)
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            proc.communicate(timeout=_TERM_WAIT_GRACE_SECONDS)
+        raise ClaudePTimeoutError(f"claude -p timed out after {timeout_seconds}s") from None
+
+
+_TERM_WAIT_GRACE_SECONDS = 5.0
+
+
+def parse_claude_p_json(stdout: str) -> dict[str, Any]:
+    """Parse `claude -p --output-format json` stdout into its JSON object."""
+    data = json.loads(stdout)
+    if not isinstance(data, dict):
+        raise ValueError("claude -p --output-format json did not return a JSON object")
+    return data
+
+
+# --- push multi-layer defense: layer 4 (post-push integrity verification) -----------------
+
+
+def get_remote_head(cwd: str, branch: str, timeout_seconds: float = 10.0) -> str | None:
+    """Return the current remote HEAD sha for branch, or None if it cannot be determined."""
+    try:
+        completed = subprocess.run(
+            ["git", "ls-remote", "origin", f"refs/heads/{branch}"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    first_line = next(iter(completed.stdout.strip().splitlines()), "")
+    sha = first_line.split("\t", 1)[0].strip() if first_line else ""
+    return sha or None
+
+
+def classify_push_integrity(baseline_head: str | None, current_head: str | None) -> str:
+    """Classify layer-4 push integrity as `"ok"` / `"violation"` / `"unverifiable"` (SEC-H1).
+
+    `current_head is None` (e.g. `git ls-remote` sabotaged/failing) is fail-closed:
+    `"unverifiable"`, never silently `"ok"`, so an attacker cannot wave a push through by
+    disrupting remote-HEAD verification. `baseline_head is None` (no baseline recorded yet,
+    e.g. right after a crash-restart before reconstruction runs) is also `"unverifiable"`
+    rather than "assume ok", for the same reason; callers should reconstruct the baseline
+    right after `attach()` (see `loop_driver.py`) so this case is rare on the hot path.
+    """
+    if baseline_head is None or current_head is None:
+        return "unverifiable"
+    if current_head == baseline_head:
+        return "ok"
+    return "violation"
+
+
+def detect_push_integrity_violation(baseline_head: str | None, current_head: str | None) -> bool:
+    """Return True when remote HEAD advanced past baseline without the driver pushing.
+
+    Pure comparison (layer 4 of the push multi-layer defense, EV-80). Thin wrapper around
+    `classify_push_integrity()`: only the `"violation"` classification is True here: both
+    `"unverifiable"` (missing baseline/current) and `"ok"` are False, matching this function's
+    original "not a violation" contract for either side being unknown (callers that need to
+    additionally fail-closed on `"unverifiable"` should call `classify_push_integrity()`
+    directly, as `loop_driver.py`'s `_run_advance_phase` now does).
+    """
+    return classify_push_integrity(baseline_head, current_head) == "violation"
+
+
+# --- wall-clock monitoring -----------------------------------------------------------------
+
+
+def wall_clock_exceeded(start_monotonic: float, timeout_seconds: int) -> bool:
+    """Return True once timeout_seconds have elapsed since start_monotonic."""
+    return (time.monotonic() - start_monotonic) >= timeout_seconds
+
+
+def apportioned_timeout(remaining_seconds: float, fixed_cap_seconds: int) -> float:
+    """Return the per-child timeout apportioned from wall-clock remaining time (design 2.5 節).
+
+    Never exceeds `fixed_cap_seconds`; never negative (`remaining_seconds <= 0` yields `0`,
+    signaling to the caller that the wall-clock budget is already exhausted and no child
+    process should be spawned at all).
+    """
+    return max(min(fixed_cap_seconds, remaining_seconds), 0)
+
+
+# --- safe-stop persistence (journal-first, state-after) ------------------------------------
+
+
+def _persist_forced_terminal(
+    loop_id: str,
+    project_dir: str,
+    lease_token: str,
+    action_id: str | None,
+    *,
+    journal_event: str,
+    status: str,
+    stop_reason: str,
+    payload: dict[str, Any],
+) -> None:
+    """Write a driver-forced terminal status directly (journal first, then state).
+
+    Used when the driver must abandon the normal propose/complete two-phase cycle for a
+    condition that cycle cannot express as a pending-action result (there is no untrusted
+    caller between "compute the outcome" and "persist it", so this does not need the
+    byte-for-byte artifact re-validation `loop_step.py` applies to its untrusted CLI
+    callers). This mirrors the existing internal write order used by
+    `loop_common._persist_preproposal_stop` (durable journal event before `state.json` is
+    updated).
+
+    Raises `loop_common.WriteRejectedError` if the caller-held lease is no longer valid
+    (lease fencing: never write state/journal without a live lease).
+    """
+    if not lc.validate_lease(loop_id, project_dir, lease_token):
+        raise lc.WriteRejectedError(f"invalid lease for {loop_id}; refusing terminal write")
+    lc.append_journal_event(
+        loop_id,
+        project_dir,
+        journal_event,
+        "driver",
+        action_id,
+        {"stop_reason": stop_reason, **payload},
+    )
+    state = lc.load_state(loop_id, project_dir)
+    state.status = status
+    state.stop_reason = stop_reason
+    state.pending_action = None
+    state.state_version += 1
+    state.updated_at = lc.now_iso()
+    lc._write_state(state, project_dir)  # noqa: SLF001 - package-internal writer, see docstring
+
+
+def persist_safe_stop(
+    loop_id: str,
+    project_dir: str,
+    lease_token: str,
+    action_id: str | None,
+    stop_reason: str,
+    payload: dict[str, Any],
+) -> None:
+    """Persist a safety stop (`status="stopped"`) for a driver-detected condition.
+
+    Currently used for `push_integrity_violation` (layer 4 of the push multi-layer
+    defense), which the two-phase propose/complete cycle has no result shape for.
+    """
+    _persist_forced_terminal(
+        loop_id,
+        project_dir,
+        lease_token,
+        action_id,
+        journal_event="stopped",
+        status="stopped",
+        stop_reason=stop_reason,
+        payload=payload,
+    )
+
+
+def persist_forced_failure(
+    loop_id: str,
+    project_dir: str,
+    lease_token: str,
+    action_id: str | None,
+    stop_reason: str,
+    payload: dict[str, Any],
+) -> None:
+    """Persist a forced failure (`status="failed"`), e.g. wall-clock timeout (not a safety stop).
+
+    Unlike a safety stop, this is a normal failure exit: `on_failure.exec` (Draft PR, etc.)
+    still runs afterwards.
+    """
+    _persist_forced_terminal(
+        loop_id,
+        project_dir,
+        lease_token,
+        action_id,
+        journal_event=stop_reason,
+        status="failed",
+        stop_reason=stop_reason,
+        payload=payload,
+    )
+
+
+# --- notifications / issue comments (best-effort, non-fatal) -------------------------------
+
+
+def notify_macos(title: str, message: str) -> bool:
+    """Best-effort macOS notification; never raises."""
+    try:
+        script = (
+            f'display notification "{_escape_applescript(message)}" '
+            f'with title "{_escape_applescript(title)}"'
+        )
+        completed = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except OSError:
+        return False
+    return completed.returncode == 0
+
+
+def _escape_applescript(value: str) -> str:
+    """Escape a string for embedding in an AppleScript string literal."""
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def post_issue_comment(cwd: str, issue_number: int, body: str) -> bool:
+    """Best-effort `gh issue comment`; never raises."""
+    try:
+        completed = subprocess.run(
+            ["gh", "issue", "comment", str(issue_number), "--body", body],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except OSError:
+        return False
+    return completed.returncode == 0
+
+
+# --- misc -----------------------------------------------------------------------------------
+
+
+_ISSUE_LOOP_ID_RE = re.compile(r"^[0-9a-f]{8}-issue-([1-9][0-9]*)$")
+
+
+def issue_number_from_loop_id(loop_id: str) -> int | None:
+    """Parse the issue number out of the canonical `issue-loop` loop id, if present."""
+    match = _ISSUE_LOOP_ID_RE.fullmatch(loop_id)
+    return int(match.group(1)) if match is not None else None

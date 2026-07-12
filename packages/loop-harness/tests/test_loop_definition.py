@@ -113,6 +113,14 @@ def test_load_and_validate_rejects_checker_without_mechanical_or_external(tmp_pa
         ld.load_and_validate(path)
 
 
+def test_load_and_validate_rejects_denylisted_mechanical_command(tmp_path: Path) -> None:
+    """SEC-M1: mechanical.commands must not run a denylisted binary directly."""
+    path = tmp_path / "bad.yaml"
+    _write(path, _definition().replace("commands: [pytest -q]", "commands: [git push origin main]"))
+    with pytest.raises(ld.DefinitionValidationError, match="denylisted binary"):
+        ld.load_and_validate(path)
+
+
 def test_issue_loop_implementation_requires_llm_review(tmp_path: Path) -> None:
     path = tmp_path / "issue-loop.yaml"
     _write(path, _definition(loop_id="issue-loop", phase_name="implementation"))

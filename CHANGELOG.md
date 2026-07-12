@@ -14,6 +14,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **`meta-harness`: `orchex meta loop`（Phase 3）を追加**: `propose` と `evaluate` を ledger 駆動で自動反復し、予算・反復上限・発散・収束で停止する。`--resume` は中断時の孤児候補を含む状態を ledger から復元する。candidate scenario向けにroot-deny SRT profile・隔離Git・read-only oracleを追加したが、資格情報brokerと`setsid`離脱も回収するprocess containmentが未実装の間はworktree作成前にfail-closedする。
 
+- **`loop-harness`: LP-2 常駐トリガー（無人ループ）を追加**: ラベル付き Issue キューを検出して headless（`claude -p`）でループを自律駆動する常駐実行形態を追加した。`loop_scheduler.py`（discovery・同時実行上限・worker 再起動・cron/launchd テンプレート生成）、`loop_driver.py`（1 ループラン worker）、`loop_status.py`（`list`/`show`/`purge`）の 3 CLI を配布する。Maker と mechanical checker（`pytest` 等）は push 認証を剥奪した環境で実行し、push/PR 作成は worker 自身がガード通過後のみ実行する（多層防御）。`lp2.concurrency_limit`（既定 2）/ `lp2.wall_clock_timeout_seconds`（既定 7200）/ `lp2.priority_labels` 設定を追加。
+
 - **`loop-harness`: `/loop-issue` LP-1 スキルを追加**: Issue の実装・決定論的 Checker・PR レビュー対応を two-phase 契約で反復し、成功／失敗／安全停止の出口まで自律駆動する facet スキルを配布する。
 
 - **`loop-harness`: PR レビュー待機・指摘取り込みの決定論モジュールを追加**: `pr_review_wait.py` で reviewer allowlist 必須検証、完了シグナル待機、severity 判定・分類結果の state 反映、肯定コメント除外、dedup を扱えるようにした。`checkrun_allowlist` / `severity_markers` / `dedup.*` 設定も追加。

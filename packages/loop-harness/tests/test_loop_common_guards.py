@@ -292,6 +292,57 @@ def test_run_mechanical_checks_persists_output_when_analyzer_raises(
     ]
 
 
+def test_run_mechanical_command_env_none_inherits_os_environ(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SEC-C1 backward compatibility: omitting `env` keeps inheriting the real process env."""
+    monkeypatch.setenv("LOOP_HARNESS_ENV_PROBE", "inherited-value")
+    output, exit_code = lc._run_mechanical_command(
+        'printf "%s" "$LOOP_HARNESS_ENV_PROBE"', str(tmp_path), 5
+    )
+    assert exit_code == 0
+    assert output == "inherited-value"
+
+
+def test_run_mechanical_command_env_stripped_key_is_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SEC-C1: an explicit isolated `env` dict is what the child subprocess actually sees."""
+    monkeypatch.setenv("LOOP_HARNESS_ENV_PROBE", "should-not-be-visible")
+    stripped_env = {
+        k: v for k, v in __import__("os").environ.items() if k != "LOOP_HARNESS_ENV_PROBE"
+    }
+    output, exit_code = lc._run_mechanical_command(
+        'printf "%s" "${LOOP_HARNESS_ENV_PROBE:-absent}"', str(tmp_path), 5, env=stripped_env
+    )
+    assert exit_code == 0
+    assert output == "absent"
+
+
+def test_run_mechanical_checks_forwards_env_to_mechanical_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SEC-C1: `run_mechanical_checks()` threads its `env` kwarg through to each command."""
+
+    class FakeDetector:
+        @staticmethod
+        def analyze(_tool_name: str, _tool_input: dict, _tool_response: dict) -> None:
+            return None
+
+    monkeypatch.setattr(lc, "_load_failure_detector", lambda: FakeDetector)
+    captured: dict[str, object] = {}
+    original = lc._run_mechanical_command
+
+    def spy(command: str, cwd: str, timeout_seconds: int, env: object = None) -> tuple[str, int]:
+        captured["env"] = env
+        return original(command, cwd, timeout_seconds, env=env)
+
+    monkeypatch.setattr(lc, "_run_mechanical_command", spy)
+    isolated_env = {"PATH": "/usr/bin:/bin"}
+    lc.run_mechanical_checks(["printf ok"], str(tmp_path), 5, env=isolated_env)
+    assert captured["env"] == isolated_env
+
+
 def test_redact_payload_and_audit_payload_shape() -> None:
     state = _state()
     payload = lc.build_audit_payload(

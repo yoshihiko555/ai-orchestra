@@ -117,7 +117,7 @@
       "agents/image-generator.md": "ef2625266e41c83a75bf7616ab6774fae84e0941f1ce6dc322c451a363629d70"
     },
     "loop-harness": {
-      "config/loop-harness/loop-harness.yaml": "f98e3c6f0ed64307f5aca37860a6bb44f6f135cfdcc2d45a58b213d6c7d9e720",
+      "config/loop-harness/loop-harness.yaml": "5749d8daf7faf73ce7421d72b9865a677384af18b8fe733b78bc789a1ca3384b",
       "config/loop-harness/loops/issue-loop.yaml": "8c2bf3280a7d25dd4020349fa62728fb2c183522e44d7c8bb3fc900954d0161e"
     },
     "fail-logs": {
