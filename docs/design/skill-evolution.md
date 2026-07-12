@@ -14,9 +14,9 @@ codd:
 **作成日**: 2026-07-01
 **ステータス**: active（発火検出・自己申告収集・数値 config は確定済み。オフライン層の実装は Issue #139 で追跡）
 **対象**: `feat/5` ブランチ
-**関連**: `req:skill-evolution`, `adr:ADR-20260701-027`
+**関連**: `req:skill-evolution`, `adr:ADR-20260701-032`
 
-> CODD 注記: 本書 → ADR は依存 edge を張らない（ADR-027 が本書を `references` 済み。
+> CODD 注記: 本書 → ADR は依存 edge を張らない（ADR-032 が本書を `references` 済み。
 > 双方向に張ると `req → design ← adr` のグラフに循環が生じ `codd validate` が error を出すため）。
 
 ---
@@ -96,7 +96,7 @@ AI Orchestra の既存配布レール（packages / facets / hooks）に載せ、
 | テレメトリ捕捉 | `SubagentStop` / `Stop` hook で機械計測（`tool_uses`・`duration_ms` 等）を収集                           |
 | 追記           | `metrics/<skill>.jsonl` に 1 行 append、要約を `lessons/<skill>.md` に追記                               |
 
-> 設計判断は `adr:ADR-20260701-027`（D1 二層構成）。
+> 設計判断は `adr:ADR-20260701-032`（D1 二層構成）。
 
 **保存先の分離（重要）**: `context-sharing` から流用するのは **inject 前後のロジックパターンのみ**。
 保存先は `context-sharing` のセッション領域（`session/` / `working-context.json`）を**使わない**。
@@ -123,7 +123,7 @@ context-sharing の cleanup ロジックには一切触れない。
   `offline.max_iterations`（既定 10）。holdout 割合・停止しきい値・ガード値も同ファイルが正本）。
 - 「精度」の定義は judge 総合スコア。`success` 判定そのものは `[critical]` 全達成（3.6）で別管理。
 
-> 設計判断は `adr:ADR-20260701-027`（D2 二軸評価・停止条件）。出典: mizchi
+> 設計判断は `adr:ADR-20260701-032`（D2 二軸評価・停止条件）。出典: mizchi
 > 「empirical-prompt-tuning」（参考ノート `digital-garden/.../2026-04-21_ai-self-evaluation-loop-references.md`）。
 
 ### 3.4 データスキーマ
@@ -210,7 +210,7 @@ facet 製/非 facet 製で「改善の反映先」が異なるため、判別と
 | 非 facet 製 | lessons 蓄積＋注入、SKILL.md への diff 提示（人間承認）          |
 | 判別不能    | 安全側：lessons 蓄積のみ（生成物・facet ソースは触らない）       |
 
-> 設計判断は `adr:ADR-20260701-027`（D3 反映先の塩梅）。
+> 設計判断は `adr:ADR-20260701-032`（D3 反映先の塩梅）。
 > 誤判定の影響: 「facet→非 facet」誤判定は FT-11 未達（改善が配布されない）、「非 facet→facet」
 > 誤判定は導入先スキルを facet build 対象にしてしまう危険。manifest 照合でこれを防ぐ。
 
@@ -272,7 +272,7 @@ facet 製/非 facet 製で「改善の反映先」が異なるため、判別と
 ```
 
 - **無人での破壊的変更はしない**（NF-03）。承認なしにファイルへは書き込まない。
-- facet 完全自動昇格は当面しない（`adr:ADR-20260701-027` D3）。
+- facet 完全自動昇格は当面しない（`adr:ADR-20260701-032` D3）。
 
 ---
 
@@ -314,7 +314,7 @@ facet 製/非 facet 製で「改善の反映先」が異なるため、判別と
 - **D5**: 既存配布レール（packages/facets/hooks）に載せ、新規配布機構は作らない。
 - **D6**: 発火検出方式・自己申告収集は spike / 方針確定で詰めるまで draft とする。
 
-> D1〜D3 の採否理由は `adr:ADR-20260701-027` に記録。
+> D1〜D3 の採否理由は `adr:ADR-20260701-032` に記録。
 
 ---
 

@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import re
+import stat
 import subprocess
 import sys
 import time
@@ -13,7 +15,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 _LIB_DIR = Path(__file__).resolve().parent
 if str(_LIB_DIR) not in sys.path:
@@ -29,6 +31,9 @@ DEFAULT_GH_API_MAX_RETRIES = 3
 DEFAULT_GH_API_BACKOFF_SECONDS = 1.0
 DEFAULT_LINE_BUCKET_SIZE = 5
 EXCERPT_LIMIT = 240
+REVIEW_FINDINGS_SNAPSHOT_ARTIFACT = "review_findings.json"
+REVIEW_FINDINGS_SNAPSHOT_SCHEMA_VERSION = 1
+MAX_REVIEW_FINDINGS_SNAPSHOT_BYTES = 1024 * 1024
 REVIEW_SOURCES = frozenset({"review", "review_comment", "issue_comment"})
 SEVERITY_ORDER = {"low": 0, "medium": 1, "high": 2, "critical": 3}
 SEVERITIES = frozenset(SEVERITY_ORDER)
@@ -589,6 +594,50 @@ def collect_review_findings(
         ignored_untrusted_comment_count=len(ignored_items),
         needs_classification_count=sum(1 for item in imported if item.needs_classification),
     )
+
+
+def save_review_findings_snapshot(
+    loop_id: str,
+    project_dir: str,
+    action_id: str,
+    result: ReviewFindingsResult,
+    lease_token: str,
+) -> str:
+    """Persist one action's complete review findings result for later processes."""
+    _validate_review_findings_snapshot_action(loop_id, project_dir, action_id, lease_token)
+    payload = lc.redact_payload(
+        {
+            **_review_findings_snapshot_dict(result),
+            "loop_id": loop_id,
+            "action_id": action_id,
+        }
+    )
+    content = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+    if len(content.encode("utf-8")) > MAX_REVIEW_FINDINGS_SNAPSHOT_BYTES:
+        _raise_invalid_snapshot("artifact exceeds size limit")
+    artifact_path = lc.save_artifact(
+        loop_id,
+        project_dir,
+        action_id,
+        REVIEW_FINDINGS_SNAPSHOT_ARTIFACT,
+        content,
+    )
+    _validate_review_findings_snapshot_action(loop_id, project_dir, action_id, lease_token)
+    return artifact_path
+
+
+def load_review_findings_snapshot(
+    loop_id: str,
+    project_dir: str,
+    action_id: str,
+    lease_token: str,
+) -> ReviewFindingsResult:
+    """Load and strictly validate one action's review findings snapshot."""
+    _validate_review_findings_snapshot_action(loop_id, project_dir, action_id, lease_token)
+    payload = _load_review_findings_snapshot_artifact(loop_id, project_dir, action_id)
+    result = _review_findings_snapshot_from_dict(payload, loop_id, action_id)
+    _validate_review_findings_snapshot_action(loop_id, project_dir, action_id, lease_token)
+    return result
 
 
 def verify_origin(raw: dict[str, Any], allowlist: tuple[ReviewerAllowlistEntry, ...]) -> bool:
@@ -1211,6 +1260,228 @@ def _dedup_dict(dedup: DedupConfig) -> dict[str, Any]:
 def _iteration_findings_dict(value: IterationFindings) -> dict[str, Any]:
     """Serialize IterationFindings for PhaseCheckResult metadata."""
     return {"signatures": sorted(value.signatures), "new_count": value.new_count}
+
+
+def _review_findings_snapshot_dict(result: ReviewFindingsResult) -> dict[str, Any]:
+    """Serialize the complete action-scoped review findings result."""
+    return {
+        "schema_version": REVIEW_FINDINGS_SNAPSHOT_SCHEMA_VERSION,
+        "findings": [
+            {
+                "signature": item.signature,
+                "severity": item.severity,
+                "source_comment_id": item.source_comment_id,
+                "body_excerpt": item.body_excerpt,
+                "path": item.path,
+                "line": item.line,
+                "needs_classification": item.needs_classification,
+            }
+            for item in result.findings
+        ],
+        "iteration_findings": _iteration_findings_dict(result.iteration_findings),
+        "previous_iteration_findings": _iteration_findings_dict(result.previous_iteration_findings),
+        "processed_comment_ids": list(result.processed_comment_ids),
+        "ignored_untrusted_comment_count": result.ignored_untrusted_comment_count,
+        "needs_classification_count": result.needs_classification_count,
+    }
+
+
+def _review_findings_snapshot_from_dict(
+    value: Any, loop_id: str, action_id: str
+) -> ReviewFindingsResult:
+    """Strictly deserialize an action-scoped review findings snapshot."""
+    data = _snapshot_mapping(
+        value,
+        {
+            "schema_version",
+            "loop_id",
+            "action_id",
+            "findings",
+            "iteration_findings",
+            "previous_iteration_findings",
+            "processed_comment_ids",
+            "ignored_untrusted_comment_count",
+            "needs_classification_count",
+        },
+        "snapshot",
+    )
+    if _snapshot_string(data["loop_id"], "loop_id") != loop_id:
+        _raise_invalid_snapshot("loop_id does not match the requested loop")
+    if _snapshot_string(data["action_id"], "action_id") != action_id:
+        _raise_invalid_snapshot("action_id does not match the requested action")
+    schema_version = _snapshot_non_negative_int(data["schema_version"], "schema_version")
+    if schema_version != REVIEW_FINDINGS_SNAPSHOT_SCHEMA_VERSION:
+        _raise_invalid_snapshot("unsupported schema_version")
+    raw_findings = data["findings"]
+    if not isinstance(raw_findings, list):
+        _raise_invalid_snapshot("findings must be a list")
+    findings = tuple(
+        _snapshot_imported_finding(item, index) for index, item in enumerate(raw_findings)
+    )
+    needs_classification_count = _snapshot_non_negative_int(
+        data["needs_classification_count"], "needs_classification_count"
+    )
+    actual_pending_count = sum(item.needs_classification for item in findings)
+    if needs_classification_count != actual_pending_count:
+        _raise_invalid_snapshot("needs_classification_count does not match findings")
+    return ReviewFindingsResult(
+        findings=findings,
+        iteration_findings=_snapshot_iteration_findings(
+            data["iteration_findings"], "iteration_findings"
+        ),
+        previous_iteration_findings=_snapshot_iteration_findings(
+            data["previous_iteration_findings"], "previous_iteration_findings"
+        ),
+        processed_comment_ids=_snapshot_string_tuple(
+            data["processed_comment_ids"], "processed_comment_ids"
+        ),
+        ignored_untrusted_comment_count=_snapshot_non_negative_int(
+            data["ignored_untrusted_comment_count"], "ignored_untrusted_comment_count"
+        ),
+        needs_classification_count=needs_classification_count,
+    )
+
+
+def _validate_review_findings_snapshot_action(
+    loop_id: str, project_dir: str, action_id: str, lease_token: str
+) -> None:
+    """Bind snapshot access to the active external-review action and lease."""
+    lc._ensure_valid_lease(loop_id, project_dir, lease_token)
+    state = lc.load_state(loop_id, project_dir)
+    pending = state.pending_action
+    if pending is None or pending.action_id != action_id or pending.phase != state.phase:
+        raise lc.StaleActionError(f"stale PR review snapshot action: {action_id}")
+    if pending.action != lc.Action.WAIT_EXTERNAL_REVIEW.value:
+        raise lc.ProtocolViolationError(
+            f"action {pending.action} cannot access PR review findings snapshot"
+        )
+
+
+def _load_review_findings_snapshot_artifact(loop_id: str, project_dir: str, action_id: str) -> Any:
+    """Load one bounded 0600, regular, non-symlink snapshot JSON artifact."""
+    path = lc.artifact_path(loop_id, project_dir, action_id, REVIEW_FINDINGS_SNAPSHOT_ARTIFACT)
+    try:
+        path_stat = path.lstat()
+    except FileNotFoundError as exc:
+        raise PrReviewWaitError("review findings snapshot artifact is missing") from exc
+    except OSError as exc:
+        raise PrReviewWaitError("review findings snapshot artifact is unavailable") from exc
+    if stat.S_ISLNK(path_stat.st_mode) or not stat.S_ISREG(path_stat.st_mode):
+        _raise_invalid_snapshot("artifact must be a regular non-symlink file")
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    if no_follow is None:
+        _raise_invalid_snapshot("O_NOFOLLOW is unavailable")
+    try:
+        fd = os.open(path, os.O_RDONLY | no_follow)
+    except OSError as exc:
+        raise PrReviewWaitError("review findings snapshot artifact is unavailable") from exc
+    try:
+        opened_stat = os.fstat(fd)
+        if (
+            not stat.S_ISREG(opened_stat.st_mode)
+            or opened_stat.st_dev != path_stat.st_dev
+            or opened_stat.st_ino != path_stat.st_ino
+        ):
+            _raise_invalid_snapshot("artifact changed or is not a regular file")
+        if stat.S_IMODE(opened_stat.st_mode) != lc.FILE_MODE:
+            _raise_invalid_snapshot("artifact mode must be 0600")
+        if opened_stat.st_size > MAX_REVIEW_FINDINGS_SNAPSHOT_BYTES:
+            _raise_invalid_snapshot("artifact exceeds size limit")
+        with os.fdopen(fd, "rb") as file:
+            fd = -1
+            content = file.read(MAX_REVIEW_FINDINGS_SNAPSHOT_BYTES + 1)
+    except PrReviewWaitError:
+        raise
+    except OSError as exc:
+        raise PrReviewWaitError("review findings snapshot artifact is unavailable") from exc
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    if len(content) > MAX_REVIEW_FINDINGS_SNAPSHOT_BYTES:
+        _raise_invalid_snapshot("artifact exceeds size limit")
+    try:
+        return json.loads(content.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise PrReviewWaitError("invalid review findings snapshot: malformed JSON") from exc
+
+
+def _snapshot_imported_finding(value: Any, index: int) -> ImportedFinding:
+    field_name = f"findings[{index}]"
+    data = _snapshot_mapping(
+        value,
+        {
+            "signature",
+            "severity",
+            "source_comment_id",
+            "body_excerpt",
+            "path",
+            "line",
+            "needs_classification",
+        },
+        field_name,
+    )
+    severity = data["severity"]
+    if not isinstance(severity, str) or severity not in SEVERITIES:
+        _raise_invalid_snapshot(f"{field_name}.severity is invalid")
+    path = data["path"]
+    if path is not None and not isinstance(path, str):
+        _raise_invalid_snapshot(f"{field_name}.path must be a string or null")
+    line = data["line"]
+    if line is not None and (not isinstance(line, int) or isinstance(line, bool)):
+        _raise_invalid_snapshot(f"{field_name}.line must be an integer or null")
+    needs_classification = data["needs_classification"]
+    if not isinstance(needs_classification, bool):
+        _raise_invalid_snapshot(f"{field_name}.needs_classification must be a boolean")
+    return ImportedFinding(
+        signature=_snapshot_string(data["signature"], f"{field_name}.signature"),
+        severity=cast(Severity, severity),
+        source_comment_id=_snapshot_string(
+            data["source_comment_id"], f"{field_name}.source_comment_id"
+        ),
+        body_excerpt=_snapshot_string(data["body_excerpt"], f"{field_name}.body_excerpt"),
+        path=path,
+        line=line,
+        needs_classification=needs_classification,
+    )
+
+
+def _snapshot_iteration_findings(value: Any, field_name: str) -> IterationFindings:
+    data = _snapshot_mapping(value, {"signatures", "new_count"}, field_name)
+    signatures = _snapshot_string_tuple(data["signatures"], f"{field_name}.signatures")
+    if len(signatures) != len(set(signatures)):
+        _raise_invalid_snapshot(f"{field_name}.signatures contains duplicates")
+    new_count = _snapshot_non_negative_int(data["new_count"], f"{field_name}.new_count")
+    if new_count > len(signatures):
+        _raise_invalid_snapshot(f"{field_name}.new_count exceeds signatures")
+    return IterationFindings(frozenset(signatures), new_count)
+
+
+def _snapshot_mapping(value: Any, expected_keys: set[str], field_name: str) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != expected_keys:
+        _raise_invalid_snapshot(f"{field_name} has invalid fields")
+    return value
+
+
+def _snapshot_string_tuple(value: Any, field_name: str) -> tuple[str, ...]:
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        _raise_invalid_snapshot(f"{field_name} must be a list of strings")
+    return tuple(value)
+
+
+def _snapshot_string(value: Any, field_name: str) -> str:
+    if not isinstance(value, str):
+        _raise_invalid_snapshot(f"{field_name} must be a string")
+    return value
+
+
+def _snapshot_non_negative_int(value: Any, field_name: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        _raise_invalid_snapshot(f"{field_name} must be a non-negative integer")
+    return value
+
+
+def _raise_invalid_snapshot(reason: str) -> None:
+    raise PrReviewWaitError(f"invalid review findings snapshot: {reason}")
 
 
 def _upsert_finding(
