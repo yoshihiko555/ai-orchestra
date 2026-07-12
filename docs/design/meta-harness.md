@@ -294,7 +294,7 @@ meta-harness と skill-evolution は **sibling package + delegation** の関係�
 | 役割           | テレメトリ収集（`metrics/<skill>.jsonl` / `lessons/<skill>.md`） | 単一系譜の漸進改善                         | population ベースの探索・比較・Pareto frontier |
 | 本設計での扱い | 維持し、meta-harness のシグナル/シナリオ種として活用             | `meta-harness target=skill` への委譲で実現 | オフライン層の実装先を提供                     |
 
-ADR-20260701-027 の決定 D1（二層構成）・D2（二軸 judge）・D3（改善反映先の出自による塩梅、
+ADR-20260701-032 の決定 D1（二層構成）・D2（二軸 judge）・D3（改善反映先の出自による塩梅、
 facet 自動昇格は当面しない）は、この統合後も **保存** される。D1 のオンライン層はそのまま
 シグナル源として使い続け、D2 の二軸 judge ロジック（`score_run`）は meta-harness の evaluator に
 流用し、D3 の人間承認ゲート必須という方針は meta-harness の promotion 設計（`## 8`）にそのまま
