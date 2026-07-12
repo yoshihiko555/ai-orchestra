@@ -92,6 +92,38 @@ def test_detect_agent_returns_none_for_empty_prompt() -> None:
     assert trigger == ""
 
 
+def test_detect_agent_none_allowlist_preserves_existing_first_match() -> None:
+    agent, trigger = route_config.detect_agent("plan this implementation in python", None)
+    assert agent == "planner"
+    assert trigger == "plan"
+
+
+def test_detect_agent_skips_disallowed_agent_and_finds_next_match() -> None:
+    agent, trigger = route_config.detect_agent(
+        "plan this implementation in python", {"backend-python-dev"}
+    )
+    assert agent == "backend-python-dev"
+    assert trigger.lower() == "python"
+
+
+def test_detect_agent_keeps_allowed_debugger_for_bug_fix() -> None:
+    agent, trigger = route_config.detect_agent("bug fix", {"debugger", "general-purpose"})
+    assert agent == "debugger"
+    assert trigger == "bug"
+
+
+def test_detect_agent_excludes_disallowed_non_implementation_role() -> None:
+    agent, trigger = route_config.detect_agent("要件を整理する", {"general-purpose"})
+    assert agent is None
+    assert trigger == ""
+
+
+def test_detect_agent_empty_allowlist_returns_none() -> None:
+    agent, trigger = route_config.detect_agent("Pythonで実装する", set())
+    assert agent is None
+    assert trigger == ""
+
+
 # ---------------------------------------------------------------------------
 # detect_agent: 単語境界による誤検知回帰テスト
 # ---------------------------------------------------------------------------

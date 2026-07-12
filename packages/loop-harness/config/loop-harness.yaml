@@ -68,4 +68,15 @@ notifications:
   issue_comment_enabled: true
 
 maker:
+  # issue-loop の auto Maker 選定にのみ適用。custom loop は各 phase の maker.agent を使う。
   fallback_agent: general-purpose
+  allowed_agents:
+    - ai-dev
+    - backend-go-dev
+    - backend-python-dev
+    - debugger
+    - frontend-dev
+    - general-purpose
+    - prompt-engineer
+    - rag-engineer
+    - tester
