@@ -199,7 +199,7 @@ python3 loop_step.py propose --loop-id a1b2c3d4-issue-42 --lease-token 6f1e... -
     // action ごとに内容が変わる可変フィールド。advance_phase 応答の verified_branch は
     // 5.6 節の push 前ガード強制結線（基本設計 5.6 節）を実現するための必須フィールド。
     "verified_branch": null, // advance_phase のときのみ検証済みブランチ名を含める
-    "maker_agent": "backend-python-dev", // 保存済み Maker。未選定時だけループ定義の auto
+    "maker_agent": "backend-python-dev", // issue-loop の保存済み Maker。未選定時は定義の auto
     "prompt_template": null, // run_maker / run_checker のときのみ facets 参照パス
   },
   "reason": "iteration 2: previous check failed (test_failure), guard not reached",
@@ -218,7 +218,7 @@ python3 loop_step.py propose --loop-id a1b2c3d4-issue-42 --lease-token 6f1e... -
 
 | `action`               | `params` の主なフィールド                                                                                                                      |
 | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `run_maker`            | `maker_agent`（state に保存済みの具体値、未選定時は `auto`）、`prompt_template`                                                               |
+| `run_maker`            | `maker_agent`（`issue-loop` は保存済み値、未選定時は `auto`。他ループはフェーズ定義値）、`prompt_template`                                    |
 | `run_checker`          | `mechanical.commands`、`llm_review.baseline` / `selection`（ループ定義から転記）                                                               |
 | `wait_external_review` | `pr_number`、`poll_interval_seconds`、`timeout_seconds`（config 由来。5 節）                                                                   |
 | `advance_phase`        | `verified_branch`（5.6 節）、`next_phase`、`exec`（ループ定義の `on_success.exec` 転記）                                                       |
@@ -930,7 +930,7 @@ maker:
 | `retention.purge_after_days`                | int                                                                                                   | `30`                                                         | 同上                                         |
 | `notifications.macos_enabled`               | bool                                                                                                  | `true`                                                       | 同上                                         |
 | `notifications.issue_comment_enabled`       | bool                                                                                                  | `true`                                                       | 同上                                         |
-| `maker.allowed_agents`                      | list[str]                                                                                             | 実装可能な 8 ロール                                          | 上書き可                                     |
+| `maker.allowed_agents`                      | list[str]（`issue-loop` の auto Maker 用）                                                             | 実装可能な 8 ロール                                          | 上書き可                                     |
 | `maker.fallback_agent`                      | str（`allowed_agents` の要素）                                                                        | `general-purpose`                                            | 上書き可                                     |
 
 ループ定義側の `guards.max_iterations` / `guards.no_progress.signature`（基本設計 4 節）は

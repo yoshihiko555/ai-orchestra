@@ -125,7 +125,7 @@ class LoopState:
     created_at: str
     updated_at: str
     state_version: int
-    maker_agent: str | None = None  # 初回選定後に固定。旧 state の欠落は None として読む。
+    maker_agent: str | None = None  # issue-loop の初回選定後に固定。旧 state の欠落は None。
 ```
 
 `state.json` の JSON 例（`implementation` フェーズ 2 反復目・pending_action あり）:
@@ -1553,15 +1553,16 @@ def verify_repo_identity(worktree_path: str, expected_hash: str) -> bool:
 | `lock.heartbeat_interval_seconds`           | heartbeat 更新間隔（LP-1/LP-2 共通。同上）                     | `60`   |
 | `pr_review.poll_interval_seconds`           | PR レビュー完了シグナルのポーリング間隔（基本設計既定を継続）  | `120`  |
 | `pr_review.timeout_seconds`                 | 完了シグナル待機のタイムアウト（基本設計既定を継続）           | `3600` |
-| `maker.allowed_agents`                      | Maker に選定できる実装可能ロールの positive allowlist          | config の 8 ロール |
+| `maker.allowed_agents`                      | `issue-loop` の auto Maker に選定できる positive allowlist     | config の 8 ロール |
 | `maker.fallback_agent`                      | 検出不能時の Maker。`allowed_agents` 内でなければならない       | `general-purpose` |
 
-初回 `run_maker` の `complete` または completed journal の `reconcile` で
+`definition_id == "issue-loop"` の初回 `run_maker` の `complete` または completed journal の `reconcile` で
 `result.maker.agent` を `maker.allowed_agents` に照合し、合格した値だけを `state.maker_agent` に一度保存する。
 `issue-loop` では `maker.agent` の欠落・空値・非文字列を journal 書き込み前に拒否する。保存後は完了結果の
-agent が保存値と一致することを必須とし、不一致も拒否する。以後は上書きせず、すべての `run_maker`
-proposal が保存済み値を返す。旧 state でフィールドが欠落する場合は `None` として読み、ループ定義の
-`maker.agent: auto` を返して初回選定を行う。
+agent が保存値と一致することを必須とし、不一致も拒否する。以後は上書きせず、`issue-loop` の
+`run_maker` proposal が保存済み値を返す。その他のループは state の保存値でフェーズ定義を上書きせず、
+各フェーズの `maker.agent` をそのまま返す。旧 state でフィールドが欠落する場合は `None` として読み、
+`issue-loop` の `maker.agent: auto` を返して初回選定を行う。
 
 `pr_review.reviewer_allowlist` / `lp2.concurrency_limit` / `lp2.wall_clock_timeout_seconds` /
 `retention.purge_after_days` は `loop_step.py`/`loop_scheduler.py`/`loop_status.py` の詳細設計

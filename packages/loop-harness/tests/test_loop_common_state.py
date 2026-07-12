@@ -156,6 +156,79 @@ def test_unselected_maker_proposal_keeps_definition_auto(
     assert params["maker_agent"] == "auto"
 
 
+def test_custom_loop_proposal_keeps_phase_specific_maker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = lc._initial_state(
+        "custom-loop-id",
+        "custom-loop",
+        "abcd1234",
+        str(tmp_path),
+        "feature/custom",
+        "verification",
+    )
+    state.maker_agent = "backend-python-dev"
+    monkeypatch.setattr(
+        lc,
+        "_load_phase_definition",
+        lambda _state, _project: {"maker": {"agent": "tester"}},
+    )
+
+    params = lc._proposal_params(state, lc.Action.RUN_MAKER.value, str(tmp_path))
+
+    assert params["maker_agent"] == "tester"
+
+
+def test_custom_loop_complete_accepts_non_allowlisted_maker_without_persisting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir, lock = _setup_loop(tmp_path, monkeypatch)
+    proposal = lc.propose("abcd1234-issue-1", project_dir, lock.lease_token)
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.definition_id = "custom-loop"
+    lc._write_state(state, project_dir)
+
+    lc.complete(
+        "abcd1234-issue-1",
+        project_dir,
+        proposal.action_id,
+        proposal.state_version,
+        {"maker": {"agent": "custom-maker", "tool": "claude-direct"}},
+        lock.lease_token,
+    )
+
+    completed = lc.load_state("abcd1234-issue-1", project_dir)
+    assert completed.status == "running"
+    assert completed.maker_agent is None
+
+
+def test_custom_loop_reconcile_accepts_non_allowlisted_maker_without_persisting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir, lock = _setup_loop(tmp_path, monkeypatch)
+    proposal = lc.propose("abcd1234-issue-1", project_dir, lock.lease_token)
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.definition_id = "custom-loop"
+    lc._write_state(state, project_dir)
+    lc.append_journal_event(
+        "abcd1234-issue-1",
+        project_dir,
+        "completed",
+        "maker",
+        proposal.action_id,
+        {
+            "action": lc.Action.RUN_MAKER.value,
+            "result": {"maker": {"agent": "custom-maker", "tool": "claude-direct"}},
+        },
+    )
+
+    outcome = lc.reconcile("abcd1234-issue-1", project_dir, lock.lease_token)
+
+    completed = lc.load_state("abcd1234-issue-1", project_dir)
+    assert outcome.action_taken == "resolved_from_journal"
+    assert completed.maker_agent is None
+
+
 def test_completed_maker_rejects_agent_outside_allowlist_before_journal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
