@@ -61,11 +61,11 @@ codd は AI Orchestra 自身および導入先プロジェクトが生成する�
 - [ ] EV-22（異常 / should）: 入力バリデーション — 壊れた frontmatter（YAML パース不能）や存在しない scope パスに対して、CLI はクラッシュせず適切なエラーメッセージを返す — 根拠: 実装挙動（設計書・要件書に明示なし）
 - [ ] EV-23（境界 / should）: 破壊的操作の安全策 — `scan` による `graph.jsonl` の再構築時、書き込み失敗（中断等）が既存グラフを破損させない — 根拠: 実装挙動（設計書に上書き/追記方針の明記なし。仕様確定・文書化はパッケージ別ギャップ Issue で追跡）
 - [ ] EV-24（正常 / should）: 出力の安定性 — `impact --json` は機械可読 JSON を返す（フラグの存在は設計書に明記。フィールド構成は実装挙動） — 根拠: docs/design/codd-coherence-layer.md §4.5.1（フラグ存在）、実装挙動（スキーマ詳細）
-- [ ] EV-25（境界 / must）: 設定レイヤリング — `codd.yaml` の `checks` レベルは `codd.local.yaml` で上書き可能（`config-loading` ルール準拠、同期対象外で sync により消えない）。検査レベルを無効化する場合は bare `off`（YAML の boolean False と誤解釈される）ではなく引用符付き `"off"` と書く必要がある — 根拠: .claude/rules/codd-frontmatter-policy.md, .claude/rules/config-loading.md
+- [ ] EV-25（境界 / must）: 設定レイヤリング — `codd.yaml` の `checks` レベルは `codd.local.yaml` で上書き可能（`config-loading` ルール準拠、同期対象外で sync により消えない）。検査レベルに `off` を指定する場合、YAML 1.1 では bare `off` が boolean `False` と解釈されるが、`normalize_check_level`（`packages/codd/lib/codd_common.py`）が `False` を `LEVEL_OFF` へ正規化するため、bare `off` と引用符付き `"off"` はどちらも同じ扱いになる — 根拠: packages/codd/lib/codd_common.py（`normalize_check_level`）, .claude/rules/codd-frontmatter-policy.md, .claude/rules/config-loading.md
 
 ## 5. テストレビュー判断基準（パッケージ固有）
 
 - frontmatter parser のテストは、本文中のコードブロック内 YAML 例を誤って依存として拾わないことを、正常系とは独立したケースで検証しているか（EV-02, M-1）。
 - `impact` のスコア計算テストは、設計書の数値例（green_threshold=0.8, amber_threshold=0.4, decay=0.5, corroboration_min_origins=2）から期待値を導出しているか。CLI の現状出力をそのままコピーした期待値になっていないか（EV-15〜17）。
-- `checks` レベルの `"off"` クオート必須の挙動は、bare `off`（bool 誤読で無効化されない）との比較テストで検証しているか（EV-25）。
+- `checks` レベルの `off` 正規化の挙動は、bare `off`（YAML の boolean `False` と誤読される値）が `normalize_check_level` によって `LEVEL_OFF` へ正規化され、引用符付き `"off"` と同じ結果になることを比較テストで検証しているか（EV-25）。
 - status/kind/relation の許容語彙テストは、境界値（未定義語彙・kind 依存の語彙違反）を正常系のついでではなく独立したケースで検証しているか（EV-07, EV-11, EV-18）。
