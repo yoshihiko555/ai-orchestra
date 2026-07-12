@@ -29,7 +29,7 @@ _CONFIG = {
 }
 
 
-def _minimal_result(run_id: str = "run-20260707-120000-slug-scn-a1-abcd") -> dict:
+def _minimal_result(run_id: str = "run-20260707-120000-slug-scn-a1-abcd1234") -> dict:
     return {
         "schema_version": "1.0",
         "run_id": run_id,
