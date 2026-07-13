@@ -56,34 +56,92 @@ import sys
 # caught: the wrapped payload is embedded verbatim as text inside the outer command string
 # regardless of how many quoting layers surround it.
 #
-# `(?:\s+[^\s;&|]+){0,N}?` allows a small, bounded number of intervening tokens (git global
-# options like `-c foo=bar` or `--git-dir=...`, or wrapper tokens like `bash -c`) between the
-# leading binary name and the denied subcommand, without being able to cross an actual shell
-# command separator (`;`, `&&`, `||`, `|`): those separator characters are excluded from the
-# filler token's character class, so e.g. "git status && git push" is still caught (via the
-# second, separator-free "git push" occurrence) while filler expansion cannot itself "hop over"
-# a separator to falsely fuse two unrelated statements into one match.
+# `_SEP` is the separator between tokens in a denied invocation. Plain whitespace is the common
+# case, but shell IFS-substitution bypasses (`git${IFS}push`, `git$IFS'push'`, ...) replace the
+# literal space character entirely while keeping the exact same meaning to the shell, so a
+# `\s+`-only separator let e.g. `git${IFS}push` slip through undetected (SC2). `${IFS}`/`$IFS`
+# are matched here as literal text (this hook does no shell parsing/expansion of its own); a
+# trailing run of quote characters is also absorbed since `$IFS'push'` (an unbraced `$IFS`
+# immediately followed by a quote, a common idiom to stop word-splitting ambiguity) is a very
+# common form of this bypass — the `\b` word boundary immediately before/after the denied verb
+# in each pattern below still matches correctly regardless of an adjacent quote character.
+_SEP = r"(?:\s|\$\{IFS\}|\$IFS)+[\"']*"
+
+
+def _filler(max_tokens: int) -> str:
+    """Return a non-greedy `{0,max_tokens}` filler-token group, separated by `_SEP`.
+
+    Allows a small, bounded number of intervening tokens (git global options like `-c foo=bar`
+    or `--git-dir=...`, or wrapper tokens like `bash -c`) between the leading binary name and
+    the denied subcommand, without being able to cross an actual shell command separator (`;`,
+    `&&`, `||`, `|`): those separator characters are excluded from the filler token's character
+    class, so e.g. "git status && git push" is still caught (via the second, separator-free
+    "git push" occurrence) while filler expansion cannot itself "hop over" a separator to
+    falsely fuse two unrelated statements into one match.
+    """
+    return rf"(?:{_SEP}[^\s;&|]+){{0,{max_tokens}}}?"
+
+
 _DENY_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
-    re.compile(pattern)
-    for pattern in (
-        r"\bgit\b(?:\s+[^\s;&|]+){0,8}?\s+push\b",  # git push (incl. `git -c x=y push`, wrappers)
-        r"\bgit\b(?:\s+[^\s;&|]+){0,8}?\s+remote\b",  # git remote add/set-url/... (repoint push target)
-        r"\bgit\b(?:\s+[^\s;&|]+){0,8}?\s+send-pack\b",  # git send-pack (low-level push transport)
-        r"\bgit\b(?:\s+[^\s;&|]+){0,8}?\s+worktree\b",  # git worktree (align w/ MAKER_FIXED_DISALLOWED_TOOLS)
+    re.compile(pattern, flags)
+    for pattern, flags in (
+        (rf"\bgit\b{_filler(8)}{_SEP}push\b", 0),  # git push (incl. `git -c x=y push`, wrappers)
+        (
+            rf"\bgit\b{_filler(8)}{_SEP}remote\b",
+            0,
+        ),  # git remote add/set-url/... (repoint push target)
+        (rf"\bgit\b{_filler(8)}{_SEP}send-pack\b", 0),  # git send-pack (low-level push transport)
+        # SC1: the low-level transport binaries can also be invoked directly as a single,
+        # hyphenated token (`git-send-pack`/`git-receive-pack`/`git-upload-pack`, as e.g. the
+        # ssh push/fetch transport does) with no literal "git " prefix + whitespace before the
+        # subcommand word at all, so the `\bgit\b{_filler}{_SEP}send-pack\b`-shaped patterns
+        # above never get a chance to match: `\bgit\b` itself already matches inside
+        # "git-send-pack" (word boundary at the `t`/`-` transition), but the patterns above all
+        # require at least one `_SEP` between "git" and the subcommand, which a bare hyphen is
+        # not. Denied as their own standalone, prefix-free patterns instead.
+        (r"\bgit-send-pack\b", 0),
+        (r"\bgit-receive-pack\b", 0),
+        (r"\bgit-upload-pack\b", 0),  # fetch transport, denied by association (defense-in-depth)
+        (rf"\bgit\b{_filler(8)}{_SEP}worktree\b", 0),  # align w/ MAKER_FIXED_DISALLOWED_TOOLS
         # H1: `git -c alias.<name>=<value> <name> ...` defines a *temporary* (this-invocation-only)
         # alias and immediately invokes it, so a deny-verb value (e.g. `-c alias.p=push`) never
         # appears as a literal `push`/`remote`/... token the patterns above can match. Rather than
         # try to parse/resolve the alias's own value (which can itself be obfuscated further, e.g.
         # `-c alias.p='!git push'`), fail closed on the `-c alias.` construct itself: the Maker has
         # no legitimate need to define any git alias, temporary or not.
-        r"\bgit\b(?:\s+[^\s;&|]+){0,8}?\s+-c\s*alias\.",  # git -c alias.<name>=... (temporary alias)
+        (rf"\bgit\b{_filler(8)}{_SEP}-c{_SEP}alias\.", 0),  # git -c alias.<name>=... (temporary)
         # H1: `git config alias.<name> <value>` (optionally `--global`/`--local`/`--add`/...)
         # defines a *persistent* alias in gitconfig, which a later, separate Bash call could then
         # invoke under an innocuous-looking name. Same fail-closed rationale as above.
-        r"\bgit\b(?:\s+[^\s;&|]+){0,4}?\s+config\b(?:\s+[^\s;&|]+){0,4}?\s+alias\.",  # git config alias.<name>
-        r"\bgh\b(?:\s+[^\s;&|]+){0,4}?\s+pr\b",  # gh pr create/merge/close/edit/...
-        r"\bgh\b(?:\s+[^\s;&|]+){0,4}?\s+api\b",  # gh api (REST bypass for PR mutation)
-        r"\bssh\b",  # direct ssh (custom push transport / remote command execution)
+        (
+            rf"\bgit\b{_filler(4)}{_SEP}config\b{_filler(4)}{_SEP}alias\.",
+            0,
+        ),  # git config alias.<name>
+        # SC3: `git config url.<base>.insteadOf`/`pushUrl`/`remote.<name>.pushurl` can repoint
+        # where a later `git push` in the *driver's own* subsequent invocation actually lands
+        # (shared `.git/config` mutation), silently redirecting the driver's push to an
+        # attacker-controlled remote without ever touching a `push`/`remote` literal token
+        # itself. Case-insensitive substring match: git config keys are case-insensitive and
+        # this hook does no config-key parsing of its own, so matching the substring anywhere
+        # (regardless of surrounding `git config`/`git -c` wrapper shape) is the fail-closed
+        # choice here.
+        (r"insteadof", re.IGNORECASE),
+        (r"pushurl", re.IGNORECASE),
+        # SC3: deny `git config` wholesale (not just the `alias.`/`insteadOf`/`pushurl` special
+        # cases above) — the Maker never legitimately needs to read or write any git config at
+        # all (its committer identity is already env-injected via `GIT_AUTHOR_*`/
+        # `GIT_COMMITTER_*`, see `loop_driver_support.maker_env()`), so refusing every `git
+        # config` invocation outright is strictly safer than trying to enumerate every
+        # config key that could repoint a push or otherwise sabotage the repo.
+        (rf"\bgit\b{_filler(8)}{_SEP}config\b", 0),
+        # SC3: `git -c url.<base>.insteadOf=<evil> <anything>` rewrites the push/fetch URL for
+        # the *duration of this one invocation* without ever using the word "config" at all
+        # (the `-c` flag sets the config key inline), so it would otherwise evade the blanket
+        # `git ... config` deny above.
+        (rf"\bgit\b{_filler(8)}{_SEP}-c{_SEP}url\.", 0),
+        (rf"\bgh\b{_filler(4)}{_SEP}pr\b", 0),  # gh pr create/merge/close/edit/...
+        (rf"\bgh\b{_filler(4)}{_SEP}api\b", 0),  # gh api (REST bypass for PR mutation)
+        (r"\bssh\b", 0),  # direct ssh (custom push transport / remote command execution)
     )
 )
 

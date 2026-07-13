@@ -37,6 +37,13 @@ _PURGEABLE_STATUSES_NORMAL = frozenset({"passed", "failed"})
 # `--force` でも purge しない状態（実行中データの誤消去防止）。`pending`（初回 Maker 実行中、
 # まだ running に遷移する前）も lock が有効なまま purge されると実行中 run を破損しうるため対象外
 # とする（H6 レビュー指摘; docs/design/loop-harness-cli.md 4.3 節）。
+#
+# 例外（SM1）: ディレクトリ名に `lc.ORPHANED_PENDING_MARKER` を含む退避ディレクトリ
+# （`loop_scheduler.recover_orphaned_pending_loops` が lease 失効を確認済みの上で退避したもの）
+# は `status` が `pending` のままでも、この保護の対象外として扱う。post-mortem 用の凍結スナップ
+# ショットであり、以後 lock/state が更新されることも実行中 run が存在することもないため、
+# 通常 purge (30日) / --force のどちらでも安全に削除できる。See `purge_candidates` /
+# `_purge_if_state_allows`.
 _NEVER_PURGE_STATUSES = frozenset({"pending", "running", "waiting_external"})
 
 _STATUS_CHOICES = (
@@ -125,26 +132,52 @@ def _purge_if_still_safe(loop_id: str, project_dir: str) -> None:
     Guards against the candidate list going stale between computation and deletion
     (e.g. a loop transitioning back to `running` in that window). Holds the loop's
     lock-file flock across the reload + purge so a concurrent lease (re)acquisition
-    (`acquire_lock`/`reacquire_lease`, which take this same lock-file flock) cannot
-    race with the purge (TOCTOU). Falls back to the unlocked check-then-purge when
-    the lock file itself is absent (nothing to hold a lock against).
+    (`acquire_lock`/`reacquire_lease`/`resume`, which all take this same lock-file flock
+    before writing, see `loop_common._replace_lock`) cannot race with the purge (TOCTOU).
+
+    A `failed` loop's lease was already released (`release_lock` deletes lock.json), so the
+    common case here finds no lock file at all. Rather than falling back to an unlocked
+    check-then-purge (which would leave nothing to serialize against a concurrent
+    `resume()`), a placeholder lock file is created under `O_CREAT | O_EXCL` first purely to
+    have a path both sides can flock. If it turns out purge must be skipped (state changed
+    out from under it), the placeholder is removed again so no stray lock.json is left
+    behind for a loop this call did not actually purge.
     """
     lock_file = lc.lock_path(loop_id, project_dir)
-    fd = lc._open_lock_for_update(lock_file)  # noqa: SLF001 - reuse shared lock-open helper
+    created_placeholder = False
+    try:
+        fd = os.open(lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, lc.FILE_MODE)
+        created_placeholder = True
+    except FileExistsError:
+        fd = lc._open_lock_for_update(lock_file)  # noqa: SLF001 - reuse shared lock-open helper
     if fd is None:
         _purge_if_state_allows(loop_id, project_dir)
         return
     with os.fdopen(fd, "r+", encoding="utf-8") as f:
         fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-        _purge_if_state_allows(loop_id, project_dir)
+        purged = _purge_if_state_allows(loop_id, project_dir)
+    if created_placeholder and not purged and lock_file.exists():
+        lock_file.unlink()
 
 
-def _purge_if_state_allows(loop_id: str, project_dir: str) -> None:
-    """Reload state and purge unless it is currently running/waiting_external."""
+def _purge_if_state_allows(loop_id: str, project_dir: str) -> bool:
+    """Reload state and purge unless it is currently running/waiting_external.
+
+    `loop_id` here is a directory name from `_iter_loop_dirs`/`purge_candidates`, which for a
+    retired orphaned-pending dir (SM1) contains `lc.ORPHANED_PENDING_MARKER` and is exempt
+    from the `_NEVER_PURGE_STATUSES` `pending` guard: its lease was already verified expired
+    before `loop_scheduler.recover_orphaned_pending_loops` renamed it aside, so - unlike a
+    live `pending` loop - it carries no in-flight run left to protect, and its recorded
+    `status` field is simply frozen at whatever it was at retirement time (always `pending`).
+
+    Returns True when `purge_loop` actually ran (directory deleted), False when skipped.
+    """
     state = _try_load_state(loop_id, project_dir)
-    if state is not None and state.status in _NEVER_PURGE_STATUSES:
-        return
+    orphaned = lc.ORPHANED_PENDING_MARKER in loop_id
+    if state is not None and not orphaned and state.status in _NEVER_PURGE_STATUSES:
+        return False
     purge_loop(loop_id, project_dir)
+    return True
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -241,14 +274,23 @@ def collect_summaries(project_dir: str, *, status_filter: str | None = None) -> 
             continue
         if status_filter is not None and state.status != status_filter:
             continue
-        summaries.append(_summary_from_state(state, project_dir))
+        summaries.append(_summary_from_state(state, project_dir, entry.name))
     return summaries
 
 
-def _summary_from_state(state: lc.LoopState, project_dir: str) -> LoopSummary:
-    """Build a LoopSummary from a loaded LoopState."""
+def _summary_from_state(state: lc.LoopState, project_dir: str, dir_name: str) -> LoopSummary:
+    """Build a LoopSummary from a loaded LoopState.
+
+    `dir_name` (the actual `.claude/loop/<dir_name>/` directory name), not `state.loop_id`,
+    is used as the displayed identifier (SM1): a retired orphaned-pending dir
+    (`lc.ORPHANED_PENDING_MARKER` in its name, see `loop_scheduler.recover_orphaned_pending_loops`)
+    still carries the *original* (no-suffix) `loop_id` inside its frozen `state.json`, which
+    would otherwise display identically to - and be indistinguishable from - a live loop for
+    the same Issue. For a normal (non-orphaned) dir, `dir_name` and `state.loop_id` are the
+    same value, so this is a no-op for the common case.
+    """
     return LoopSummary(
-        loop_id=state.loop_id,
+        loop_id=dir_name,
         definition_id=state.definition_id,
         phase=state.phase,
         # `state.iteration` is round-tripped by `loop_common._state_to_dict` from the
@@ -391,20 +433,31 @@ def purge_candidates(
     purge_after_days: int,
     now: datetime | None = None,
 ) -> list[str]:
-    """Return loop_ids eligible for purge under the given mode (EV-52)."""
+    """Return loop_ids eligible for purge under the given mode (EV-52).
+
+    Returns each dir's actual directory name (not `state.loop_id`), which matters for a
+    retired orphaned-pending dir (SM1): its `state.json` still carries the *original*
+    (no-suffix) `loop_id`, but the directory itself lives at the renamed-aside path. Passing
+    the original loop_id to `purge_loop` would resolve to a directory that no longer exists
+    (a no-op) while the orphaned dir itself is silently skipped - the same mismatch bug fixed
+    for `verify_repo_identity_at_startup` (SH1). For a normal (non-orphaned) dir, directory
+    name and `state.loop_id` are the same value, so this is a no-op change for the common case.
+    """
     now = now or datetime.now(tz=UTC)
     candidates: list[str] = []
     for entry in _iter_loop_dirs(project_dir):
         state = _try_load_state(entry.name, project_dir)
-        if state is None or state.status in _NEVER_PURGE_STATUSES:
+        if state is None:
+            continue
+        orphaned = lc.ORPHANED_PENDING_MARKER in entry.name
+        if not orphaned and state.status in _NEVER_PURGE_STATUSES:
             continue
         if force:
-            candidates.append(state.loop_id)
+            candidates.append(entry.name)
             continue
-        if state.status in _PURGEABLE_STATUSES_NORMAL and _days_since(state.updated_at, now) >= (
-            purge_after_days
-        ):
-            candidates.append(state.loop_id)
+        purgeable_status = orphaned or state.status in _PURGEABLE_STATUSES_NORMAL
+        if purgeable_status and _days_since(state.updated_at, now) >= purge_after_days:
+            candidates.append(entry.name)
     return candidates
 
 

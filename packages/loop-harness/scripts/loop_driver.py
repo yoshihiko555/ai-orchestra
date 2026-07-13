@@ -57,6 +57,13 @@ _TERMINAL_ACTIONS = frozenset(
 _PUSH_BASELINE_JOURNAL_EVENT = "push_baseline_recorded"
 _PUSH_BASELINE_ACTION_ID = "__push_baseline__"
 
+# code DM1: journal event/action_id used to record the intended new head *before* a driver
+# push runs, so a crash between the push succeeding and `_persist_push_baseline` recording it
+# can be recovered on restart instead of misclassifying this driver's own legitimate push as
+# an out-of-band `push_integrity_violation`.
+_PUSH_INTENT_JOURNAL_EVENT = "push_intent_recorded"
+_PUSH_INTENT_ACTION_ID = "__push_intent__"
+
 
 class DriverTerminated(Exception):
     """Raised to unwind the main loop when a dispatch handler already wrote its own outcome."""
@@ -381,9 +388,24 @@ class LoopDriver:
         `_run_advance_phase` check, so `classify_push_integrity()` saw `baseline_head=None,
         current_head=None` and fail-closed into `push_integrity_unverifiable` forever,
         blocking every labeled new Issue's very first push/PR.
+
+        code DM1: checked *before* the journaled baseline above. If the driver crashed
+        between a push landing on the remote and `_persist_push_baseline` recording it, the
+        journaled baseline here is *stale* (still pointing at the previous, already-confirmed
+        push) even though the remote HEAD has already moved to this driver's own intended new
+        head. Using the stale baseline as-is would make the next `advance_phase`/
+        `wait_external_review` classify this driver's own legitimate (already-pushed) commit
+        as an out-of-band `push_integrity_violation`. `_recover_baseline_from_pending_push_intent`
+        detects exactly this case and durably fixes the baseline forward before it can matter.
         """
         state = lc.load_state(self.loop_id, self.project_dir)
         if not state.branch:
+            return
+        recovered = self._recover_baseline_from_pending_push_intent(
+            state.worktree_path, state.branch
+        )
+        if recovered is not None:
+            self._remote_head_baseline = recovered
             return
         persisted = self._load_persisted_push_baseline()
         if persisted is not None:
@@ -392,6 +414,51 @@ class LoopDriver:
         self._persist_push_baseline(
             lds.get_remote_head(state.worktree_path, state.branch), state.branch
         )
+
+    def _recover_baseline_from_pending_push_intent(
+        self, worktree_path: str, branch: str
+    ) -> str | None:
+        """DM1: recover a push that completed on the remote just before a crash.
+
+        Returns the recovered (and durably re-persisted) baseline sha when a previously
+        journaled push *intent* (see `_persist_push_intent`, written right before
+        `_push_verified_branch`'s `git push`) matches the live remote HEAD -- proof the push
+        actually landed even though `_persist_push_baseline` never got to run. Returns `None`
+        when there is no pending intent, or the live remote HEAD does not match it (the push
+        never happened, or something else has since moved the remote), leaving the caller to
+        fall back to its existing baseline-recovery logic unchanged.
+        """
+        intended = self._load_persisted_push_intent()
+        if intended is None:
+            return None
+        live_remote_head = lds.get_remote_head(worktree_path, branch)
+        if live_remote_head != intended:
+            return None
+        self._persist_push_baseline(live_remote_head, branch)
+        return live_remote_head
+
+    def _persist_push_intent(self, sha: str, branch: str) -> None:
+        """Durably journal the local HEAD about to be pushed, *before* `_push_verified_branch`
+        runs `git push` (DM1). See `_recover_baseline_from_pending_push_intent`."""
+        lc.append_journal_event(
+            self.loop_id,
+            self.project_dir,
+            _PUSH_INTENT_JOURNAL_EVENT,
+            "driver",
+            _PUSH_INTENT_ACTION_ID,
+            {"intended_head": sha, "branch": branch},
+        )
+
+    def _load_persisted_push_intent(self) -> str | None:
+        """Return the most recently journaled pending push-intent sha, if any (DM1)."""
+        record = lc.find_journal_event(
+            self.loop_id, self.project_dir, _PUSH_INTENT_ACTION_ID, _PUSH_INTENT_JOURNAL_EVENT
+        )
+        if record is None:
+            return None
+        payload = record.get("payload")
+        sha = payload.get("intended_head") if isinstance(payload, dict) else None
+        return str(sha) if sha else None
 
     def _persist_push_baseline(self, sha: str | None, branch: str) -> None:
         """Set and durably journal the layer-4 push-integrity baseline (code #5).
@@ -436,9 +503,23 @@ class LoopDriver:
             return
 
     def _set_current_child(self, pid: int | None) -> None:
-        """Record the currently running child pid so heartbeat loss can kill-tree it."""
+        """Record the currently running child pid so heartbeat loss can kill-tree it.
+
+        code DM2(1): `loop_common._run_mechanical_command`'s `Popen()` (this callback is its
+        `on_start`) runs *before* this registration, with no lock held across that gap. If
+        `_kill_current_child()`'s scan fires in that exact window, it reads the *previous*
+        child's pid (often `None`) and misses this new one entirely -- and since the
+        heartbeat thread that calls it only fires once and then stops, no later scan would
+        ever catch it, leaving this child to run to its full timeout despite the lease
+        already being lost. Checking `_lease_lost` here, under the same `_child_lock` used by
+        that scan, closes the gap: whichever of the two writers (this registration, or that
+        scan) runs second observes the other's effect and a doomed child is always killed.
+        """
         with self._child_lock:
             self._child_pid = pid
+            should_kill = pid is not None and self._lease_lost.is_set()
+        if should_kill:
+            lds.kill_process_tree(pid)
 
     def _kill_current_child(self) -> None:
         """Kill-tree whatever child process is currently running, if any (code H3).
@@ -554,7 +635,7 @@ class LoopDriver:
             params = {}
         action = proposal.action
         if action == lc.Action.RUN_MAKER.value:
-            return self._run_maker(state, params)
+            return self._run_maker(proposal, state, params)
         if action == lc.Action.RUN_CHECKER.value:
             return self._run_checker(proposal, state, params)
         if action == lc.Action.WAIT_EXTERNAL_REVIEW.value:
@@ -571,7 +652,9 @@ class LoopDriver:
 
     # -- run_maker (push multi-layer defense lives here) --------------------------------------
 
-    def _run_maker(self, state: lc.LoopState, params: dict[str, Any]) -> dict[str, Any]:
+    def _run_maker(
+        self, proposal: lc.ProposeResult, state: lc.LoopState, params: dict[str, Any]
+    ) -> dict[str, Any]:
         """Run Maker via `claude -p`, isolated from push credentials (layers 1/2/3)."""
         phase_def = ld.phase_by_name(
             ld.load_all_definitions(self.project_dir)[state.definition_id], state.phase
@@ -579,9 +662,8 @@ class LoopDriver:
         mechanical_commands = _mechanical_commands(phase_def.checker)
         allowed_tools = lds.build_allowed_tools(mechanical_commands)
         maker_agent = self._resolve_maker_agent(state, params)
-        self._persist_push_baseline(
-            lds.get_remote_head(state.worktree_path, state.branch), state.branch
-        )
+        live_remote_head = self._verify_maker_push_baseline_or_stop(proposal, state)
+        self._persist_push_baseline(live_remote_head, state.branch)
         # code H5: capture the *local* HEAD right before the Maker runs, so `_verify_maker_commit`
         # can detect a no-op Maker by comparing against this instead of the *remote* baseline
         # above (which is `REMOTE_HEAD_ABSENT`, never equal to a real local sha, on a brand-new
@@ -622,6 +704,58 @@ class LoopDriver:
             return {"maker": {"agent": maker_agent}, "infrastructure_failure": True}
         summary = _extract_claude_summary(completed.stdout)
         return {"maker": {"agent": maker_agent, "summary": summary}}
+
+    def _verify_maker_push_baseline_or_stop(
+        self, proposal: lc.ProposeResult, state: lc.LoopState
+    ) -> str | None:
+        """Verify the persisted layer-4 baseline against the live remote HEAD (SH3).
+
+        Before this fix, `_run_maker` unconditionally re-derived a "new" baseline from
+        whatever `lds.get_remote_head()` returns right now and journaled it over the previous
+        value, with no check at all — silently "laundering" any out-of-band push that landed
+        between the last verified baseline and this Maker run into the new trusted baseline. An
+        attacker (or a stray external push) that raced the driver between iterations would
+        never be detected; every subsequent `_verify_push_integrity_or_stop()` call would then
+        compare against this already-compromised baseline and see no drift at all.
+
+        Reuses `classify_push_integrity()` (SEC-H1, the same classification
+        `_verify_push_integrity_or_stop` uses for driver-owned pushes): proceeds (returns the
+        live head, for the caller to adopt as the fresh baseline) only when there is no
+        persisted baseline yet (this loop's very first `run_maker`, matching the previous
+        unconditional-adopt behavior) or the persisted baseline still matches the live remote
+        head. Any other outcome — including a `REMOTE_HEAD_ABSENT` <-> real-sha transition,
+        which `classify_push_integrity()` already treats as `"violation"` since it is not an
+        exact equality — stops the loop safely (journal-first) instead of silently overwriting
+        the baseline, mirroring `_verify_push_integrity_or_stop`'s own stop sequence.
+        """
+        persisted = self._load_persisted_push_baseline()
+        live_head = lds.get_remote_head(state.worktree_path, state.branch)
+        if persisted is None:
+            return live_head
+        classification = lds.classify_push_integrity(persisted, live_head)
+        if classification == "ok":
+            return live_head
+        stop_reason = (
+            "push_integrity_violation"
+            if classification == "violation"
+            else "push_integrity_unverifiable"
+        )
+        lds.persist_safe_stop(
+            self.loop_id,
+            self.project_dir,
+            self.lease_token,
+            proposal.action_id,
+            stop_reason,
+            {"baseline_head": persisted, "detected_head": live_head},
+        )
+        self._notify(state, stop_reason)
+        stopped_state = lc.load_state(self.loop_id, self.project_dir)
+        self._maybe_comment(
+            stopped_state,
+            f"loop-harness: {self.loop_id} stopped safely (push integrity check: {stop_reason}).",
+        )
+        self._emit_loop_stop_audit(stopped_state, "stop", stop_reason)
+        raise DriverTerminated(stop_reason)
 
     def _resolve_maker_agent(self, state: lc.LoopState, params: dict[str, Any]) -> str | None:
         """Resolve the Maker agent name, enforcing `maker.allowed_agents` (code #23).
@@ -684,7 +818,16 @@ class LoopDriver:
         finally:
             with self._child_lock:
                 self._child_pid = None
-                self._kill_requested = False
+                # code DM2(2): once the lease is lost, leave `_kill_requested` latched
+                # (sticky) instead of unconditionally clearing it here. The heartbeat thread
+                # that sets `_lease_lost` and calls `_kill_current_child()` only fires once
+                # and then stops; if this reset ran unconditionally, a *later* child started
+                # after this one (e.g. `_run_llm_reviewers` iterating to the next reviewer,
+                # which does not itself check `_lease_lost` between reviewers) would see
+                # `_kill_requested is False` at registration and run unchecked to its own
+                # full timeout, despite the lease already being gone.
+                if not self._lease_lost.is_set():
+                    self._kill_requested = False
 
     # -- run_checker (sealed artifact contract) -----------------------------------------------
 
@@ -773,6 +916,19 @@ class LoopDriver:
             combined.infrastructure_failure,
             metadata={**combined.metadata, **metadata},
         )
+        if self._lease_lost.is_set():
+            # code DH3: mirror the mechanical layer's `_MechanicalLeaseLostError` handling
+            # above for the LLM-review phase too. An LLM reviewer's `claude -p` child can be
+            # killed by the background heartbeat thread's loss-detection (`_heartbeat_loop`)
+            # mid-review without raising a lease-loss-specific error -- it just surfaces as an
+            # ordinary `ClaudeChildFailedError` -> infra-failure `CheckResult` from
+            # `_run_one_llm_reviewer`'s own except clause, with no `_lease_lost` check anywhere
+            # in that path. Without this guard immediately before the save below, a lease lost
+            # mid-LLM-review would still durably write `check_result.json`; `run()`'s dispatch
+            # loop would correctly skip `lc.complete()` for *this* worker (code G5's own
+            # `_lease_lost` check), but a restarted worker's `reconcile()` would find this
+            # artifact and treat it as a legitimate result instead of an aborted run.
+            return {}
         payload = lc.redact_payload(lc.phase_check_to_dict(sealed))
         lc.save_artifact(
             self.loop_id,
@@ -896,12 +1052,29 @@ class LoopDriver:
            check `advance_phase` uses gates the push (H8).
         3. After push, `record_iteration_head` (H9) refreshes `pr_review.iteration_head_sha`
            so the poll below waits for *this* push's review, not a stale one.
+
+        code DH5: if a driver crash lands between step 3 succeeding and the poll below
+        actually starting, a resumed action re-enters this method with the *same*
+        `push_required=True` params. Re-running steps 1-3 would be wasteful but harmless on
+        its own -- except `_drain_before_push`'s H12 shortcut would misread
+        `detect_pr_review_push_delta`'s "local HEAD already equals `iteration_head_sha`"
+        (true here precisely *because* step 3 already succeeded) as "nothing new to push,"
+        and skip waiting for the review that the already-completed push actually needs.
+        `_already_pushed_this_iteration` distinguishes that from the genuine H12 case (Maker
+        made no new commits since an *earlier* iteration) by requiring the recorded head to
+        belong to *this* iteration, and skips straight to the poll below when it does.
         """
         action_id = proposal.action_id
         pr_number = state.pr_number
         push_required = bool(params.get("push_required"))
         config = prw.load_pr_review_config(self.project_dir)
-        if push_required:
+        if (
+            push_required
+            and pr_number is not None
+            and self._already_pushed_this_iteration(state, proposal)
+        ):
+            pass
+        elif push_required:
             verified_branch = params["verified_branch"]
             branch_ok = _current_branch(state.worktree_path) == verified_branch
             repo_identity_ok = lc.is_repo_identity_verified(state)
@@ -918,6 +1091,7 @@ class LoopDriver:
             # remote change as `advance_phase`'s own push, so it must be gated by the same
             # layer-4 integrity check (previously only `advance_phase` performed this).
             self._verify_push_integrity_or_stop(proposal, state, verified_branch)
+            self._scan_for_leaked_secrets_or_stop(proposal, state)  # SH5
             self._push_verified_branch(state.worktree_path, verified_branch)
             if pr_number is not None:
                 # code H9: record the just-pushed PR head so the poll below cannot mistake a
@@ -930,6 +1104,7 @@ class LoopDriver:
                     prw.GhApiClient(repo),
                     self.lease_token,
                     action_id=action_id,
+                    iteration=proposal.iteration,
                 )
                 state = lc.load_state(self.loop_id, self.project_dir)
         # code F12: a `wait_external_review` proposal's own params (built by `propose()` from
@@ -1000,9 +1175,35 @@ class LoopDriver:
         prw.save_review_findings_snapshot(
             self.loop_id, self.project_dir, action_id, result, self.lease_token
         )
+        # code DC4: only mark explicit-severity findings processed once this durable snapshot
+        # exists, so a crash between `collect_review_findings` and this point safely
+        # re-surfaces them on retry instead of silently dropping them (see
+        # `confirm_review_findings_reported`'s docstring).
+        prw.confirm_review_findings_reported(
+            self.loop_id, self.project_dir, result, self.lease_token, action_id=action_id
+        )
         if result.needs_classification_count:
             result = self._classify_pending_findings(state, action_id, result, config)
         return lc.phase_check_to_dict(prw.phase_check_from_review_findings(result))
+
+    def _already_pushed_this_iteration(
+        self, state: lc.LoopState, proposal: lc.ProposeResult
+    ) -> bool:
+        """DH5: detect a driver crash between `record_iteration_head` succeeding and the poll
+        actually starting, so a resumed `wait_external_review` skips straight to polling
+        instead of re-running the push flow.
+
+        Distinguishes this from the genuine "nothing to push" case (Maker made no new
+        commits since an *earlier* iteration, H12) by requiring the recorded
+        `iteration_head_recorded_iteration` to match *this* proposal's iteration: only then
+        does `detect_pr_review_push_delta`'s "local HEAD == iteration_head_sha" mean "this
+        iteration's push already landed," rather than "there was never anything new to push."
+        """
+        pr_review = state.pr_review if isinstance(state.pr_review, dict) else {}
+        if pr_review.get("iteration_head_recorded_iteration") != proposal.iteration:
+            return False
+        delta = prw.detect_pr_review_push_delta(self.loop_id, self.project_dir, state.worktree_path)
+        return delta.status == "no_new_commit"
 
     def _drain_before_push(
         self,
@@ -1029,11 +1230,17 @@ class LoopDriver:
         """
         repo = _repo_name_with_owner(state.worktree_path)
         client = prw.GhApiClient(repo)
-        # code G2: drain any review findings still pending against the *old* baseline before
-        # record_baseline below resets baseline_review_id and marks every currently-visible
-        # review comment "processed" — without this drain, a comment posted between the
-        # previous collect and this push would be silently marked processed by record_baseline
-        # without ever being imported as a finding, permanently losing it.
+        # code G2 / DC3: drain any review findings still pending against the *old* baseline
+        # before record_baseline below resets baseline_review_id and marks every
+        # currently-visible review comment "processed" — without this drain, a comment
+        # posted before this snapshot was fetched would be silently marked processed by
+        # record_baseline without ever being imported as a finding, permanently losing it.
+        # Fetching one `review_items` snapshot here and passing it to *both*
+        # `collect_review_findings` and `record_baseline` below (instead of each fetching
+        # independently) closes the remaining race window between those two calls' own
+        # separate fetches, where a comment posted in between would fall through the same
+        # way (DC3).
+        review_items = prw.fetch_review_items(client, pr_number)
         drained = prw.collect_review_findings(
             self.loop_id,
             self.project_dir,
@@ -1043,9 +1250,15 @@ class LoopDriver:
             state.iteration,
             self.lease_token,
             action_id=action_id,
+            review_items=review_items,
         )
         prw.save_review_findings_snapshot(
             self.loop_id, self.project_dir, action_id, drained, self.lease_token
+        )
+        # code DC4: see `_run_wait_external_review`'s matching call for why this must happen
+        # only after the snapshot above durably exists.
+        prw.confirm_review_findings_reported(
+            self.loop_id, self.project_dir, drained, self.lease_token, action_id=action_id
         )
         if drained.needs_classification_count:
             # Classify before record_baseline marks these comments "processed" too (a superset
@@ -1078,6 +1291,7 @@ class LoopDriver:
             client,
             self.lease_token,
             action_id=action_id,
+            review_items=review_items,
         )
         return None
 
@@ -1160,9 +1374,39 @@ class LoopDriver:
         each call site) means every current and future push path keeps the baseline in sync,
         so a legitimate driver-initiated push (e.g. from `_run_wait_external_review`) never
         looks like an out-of-band `push_integrity_violation` to the *next* `advance_phase`.
+
+        SC4: this push runs in the *shared* worktree's `.git`, which a Maker child process
+        (layers 1-3 notwithstanding) could have written a malicious `hooks/pre-push` into if it
+        ever gained same-UID filesystem write access to that directory — a driver-owned push
+        run with the driver's real push credentials would then execute that hook as the
+        driver, defeating the whole credential-isolation design. `-c core.hooksPath=/dev/null`
+        makes git resolve every hook (there is nothing runnable at `/dev/null`) instead of the
+        worktree's own `.git/hooks/`, and `--no-verify` additionally skips the client-side
+        pre-push/pre-commit-style hook invocations git's push machinery would otherwise still
+        attempt; the two together are redundant with each other by design (belt-and-suspenders)
+        rather than either alone being trusted as sufficient.
+
+        code DM1: journals the intended new head *before* the push runs, so a crash between
+        the push landing on the remote and `_persist_push_baseline` below recording it can be
+        recovered on restart (`_recover_baseline_from_pending_push_intent`) instead of
+        misclassifying this driver's own legitimate push as an out-of-band
+        `push_integrity_violation`.
         """
+        intended_head = _local_head(worktree_path)
+        if intended_head is not None:
+            self._persist_push_intent(intended_head, branch)
         subprocess.run(
-            ["git", "-C", worktree_path, "push", "origin", f"HEAD:{branch}"],
+            [
+                "git",
+                "-C",
+                worktree_path,
+                "-c",
+                "core.hooksPath=/dev/null",
+                "push",
+                "--no-verify",
+                "origin",
+                f"HEAD:{branch}",
+            ],
             capture_output=True,
             text=True,
             timeout=60,
@@ -1223,6 +1467,53 @@ class LoopDriver:
         self._emit_loop_stop_audit(stopped_state, "stop", stop_reason)
         raise DriverTerminated(stop_reason)
 
+    def _scan_for_leaked_secrets_or_stop(
+        self, proposal: lc.ProposeResult, state: lc.LoopState
+    ) -> None:
+        """Hard-stop before a driver-owned push if its diff contains a plausible secret (SH5).
+
+        Defense-in-depth against a Maker that copies its own scratch-`$HOME` OAuth credential
+        files (or any other real-looking API token) into a tracked file and commits it, using
+        the driver's own subsequent push to exfiltrate it onto the (potentially public) remote.
+        Shared by both driver-owned push call sites (`_run_advance_phase`,
+        `_run_wait_external_review`'s `push_required` path), mirroring
+        `_verify_push_integrity_or_stop`'s shared-check shape.
+
+        Scans the diff of everything this push is about to send (`self._remote_head_baseline`
+        .. HEAD, or the whole tree for a first push) for two signal families: (1) the literal
+        scratch-credential values copied in for this loop (an exact-value leak) and (2) generic
+        vendor token prefixes that look like a real credential regardless of provenance. A diff
+        that cannot be computed at all (git error/timeout) fails *open* here — this is an
+        additional safety net on top of the existing 4-layer push defense (plus whatever
+        secret scanning GitHub itself applies to the remote), not the sole guard, so a
+        transient `git diff` hiccup must not itself block every push.
+        """
+        scratch_home = lds.maker_scratch_home(self.project_dir, self.loop_id)
+        known_secrets = lds.extract_known_secrets(scratch_home)
+        diff_text = lds.get_push_diff(state.worktree_path, self._remote_head_baseline)
+        if diff_text is None:
+            return
+        leaked = lds.find_leaked_secret(diff_text, known_secrets)
+        if leaked is None:
+            return
+        stop_reason = "secret_leak_detected"
+        lds.persist_safe_stop(
+            self.loop_id,
+            self.project_dir,
+            self.lease_token,
+            proposal.action_id,
+            stop_reason,
+            {"detected_signal": leaked},
+        )
+        self._notify(state, stop_reason)
+        stopped_state = lc.load_state(self.loop_id, self.project_dir)
+        self._maybe_comment(
+            stopped_state,
+            f"loop-harness: {self.loop_id} stopped safely (push integrity check: {stop_reason}).",
+        )
+        self._emit_loop_stop_audit(stopped_state, "stop", stop_reason)
+        raise DriverTerminated(stop_reason)
+
     # -- advance_phase (driver-owned push, layer 4 integrity check) --------------------------
 
     def _run_advance_phase(
@@ -1235,6 +1526,7 @@ class LoopDriver:
         if not (branch_ok and repo_identity_ok):
             return {"push_guard": {"branch_ok": branch_ok, "repo_identity_ok": repo_identity_ok}}
         self._verify_push_integrity_or_stop(proposal, state, verified_branch)
+        self._scan_for_leaked_secrets_or_stop(proposal, state)  # SH5
         try:
             pr_number = self._execute_advance_exec(
                 list(params.get("exec") or []), state, verified_branch, proposal.action_id
@@ -1309,7 +1601,7 @@ class LoopDriver:
                     raise MakerCommitVerificationError(reason)
             elif step == "record_baseline":
                 repo = _repo_name_with_owner(state.worktree_path)
-                # code G1: pass the pending action_id so `_fence_state_update` takes the
+                # code G1: pass the pending action_id so `_fenced_pr_review_write` takes the
                 # fenced branch (validates against the live pending action) instead of the
                 # legacy `action_id is None` branch, which just increments `state_version`
                 # on a stale in-memory `state` snapshot without checking it — that stray

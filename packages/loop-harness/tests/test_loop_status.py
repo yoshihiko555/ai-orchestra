@@ -290,6 +290,91 @@ def test_purge_candidates_force_never_includes_pending(tmp_path: Path) -> None:
     assert set(candidates) == {"a-issue-2"}
 
 
+def test_purge_candidates_includes_orphaned_pending_dir_past_retention(tmp_path: Path) -> None:
+    """SM1: a retired orphaned-pending dir (`lc.ORPHANED_PENDING_MARKER` in its dir name, see
+    `loop_scheduler.recover_orphaned_pending_loops`) must not accumulate forever just because
+    its frozen `status` field is still `pending` (normally protected by `_NEVER_PURGE_STATUSES`).
+    Its lease was already verified expired before being renamed aside, so it is safe to include
+    in the normal (30-day) purge, using the *directory name* (not `state.loop_id`, which still
+    holds the original no-suffix value) as the candidate id."""
+    _init_repo(tmp_path)
+    original_loop_id = "a-issue-1"
+    _seed_state(tmp_path, original_loop_id, status_value="pending", updated_at=_iso(40))
+    loop_dir = lc.loop_dir(original_loop_id, str(tmp_path))
+    orphaned_name = f"{original_loop_id}{lc.ORPHANED_PENDING_MARKER}1"
+    loop_dir.rename(loop_dir.parent / orphaned_name)
+
+    candidates = status.purge_candidates(str(tmp_path), force=False, purge_after_days=30)
+
+    assert candidates == [orphaned_name]
+
+
+def test_purge_candidates_excludes_orphaned_pending_dir_within_retention(tmp_path: Path) -> None:
+    """SM1: the orphaned-pending exemption only lifts the `pending` status guard; the normal
+    30-day age check still applies."""
+    _init_repo(tmp_path)
+    original_loop_id = "a-issue-1"
+    _seed_state(tmp_path, original_loop_id, status_value="pending", updated_at=_iso(5))
+    loop_dir = lc.loop_dir(original_loop_id, str(tmp_path))
+    orphaned_name = f"{original_loop_id}{lc.ORPHANED_PENDING_MARKER}1"
+    loop_dir.rename(loop_dir.parent / orphaned_name)
+
+    candidates = status.purge_candidates(str(tmp_path), force=False, purge_after_days=30)
+
+    assert candidates == []
+
+
+def test_purge_candidates_force_includes_orphaned_pending_dir(tmp_path: Path) -> None:
+    """SM1: `--force` must also include a retired orphaned-pending dir, unlike a live `pending`
+    loop (still protected, see `test_purge_candidates_force_never_includes_pending`)."""
+    _init_repo(tmp_path)
+    original_loop_id = "a-issue-1"
+    _seed_state(tmp_path, original_loop_id, status_value="pending", updated_at=_iso(1))
+    loop_dir = lc.loop_dir(original_loop_id, str(tmp_path))
+    orphaned_name = f"{original_loop_id}{lc.ORPHANED_PENDING_MARKER}1"
+    loop_dir.rename(loop_dir.parent / orphaned_name)
+
+    candidates = status.purge_candidates(str(tmp_path), force=True, purge_after_days=30)
+
+    assert candidates == [orphaned_name]
+
+
+def test_purge_orphaned_pending_dir_actually_deletes_it(tmp_path: Path) -> None:
+    """SM1 end-to-end: `_purge_if_still_safe` on an orphaned dir id must not be blocked by the
+    `_NEVER_PURGE_STATUSES` re-check (its frozen `status` is still `pending`), and must purge
+    the *renamed* directory itself, not resolve back to the (already-gone) original path."""
+    _init_repo(tmp_path)
+    original_loop_id = "a-issue-1"
+    _seed_state(tmp_path, original_loop_id, status_value="pending", updated_at=_iso(40))
+    loop_dir = lc.loop_dir(original_loop_id, str(tmp_path))
+    orphaned_name = f"{original_loop_id}{lc.ORPHANED_PENDING_MARKER}1"
+    orphaned_dir = loop_dir.parent / orphaned_name
+    loop_dir.rename(orphaned_dir)
+
+    status._purge_if_still_safe(orphaned_name, str(tmp_path))
+
+    assert not orphaned_dir.exists()
+
+
+def test_collect_summaries_displays_orphaned_dir_name_not_original_loop_id(
+    tmp_path: Path,
+) -> None:
+    """SM1: a retired orphaned-pending dir must be displayed under its actual directory name
+    (suffix included), not the original (no-suffix) `loop_id` still recorded in its frozen
+    state.json - otherwise it is indistinguishable in `list` output from a live loop for the
+    same Issue."""
+    _init_repo(tmp_path)
+    original_loop_id = "a-issue-1"
+    _seed_state(tmp_path, original_loop_id, status_value="pending")
+    loop_dir = lc.loop_dir(original_loop_id, str(tmp_path))
+    orphaned_name = f"{original_loop_id}{lc.ORPHANED_PENDING_MARKER}1"
+    loop_dir.rename(loop_dir.parent / orphaned_name)
+
+    summaries = status.collect_summaries(str(tmp_path))
+
+    assert [s.loop_id for s in summaries] == [orphaned_name]
+
+
 def test_purge_loop_removes_loop_directory(tmp_path: Path) -> None:
     _init_repo(tmp_path)
     loop_id = "a-issue-1"
@@ -444,7 +529,10 @@ def test_purge_if_still_safe_holds_lock_flock_during_reload_and_purge(
 
 
 def test_purge_if_still_safe_falls_back_when_lock_file_absent(tmp_path: Path) -> None:
-    """F19: with no lock.json for the loop, the safety check + purge still run (no lock to hold)."""
+    """F19/SH2(a): with no lock.json for the loop (the common case for a `failed` loop, whose
+    lease was already released), a placeholder lock file is created under `O_CREAT | O_EXCL`
+    purely to have a path to flock against a concurrent `resume()`/`reacquire_lease()`
+    (SH2(b)); the safety check + purge still run as before."""
     _init_repo(tmp_path)
     loop_id = "a-issue-1"
     _seed_state(tmp_path, loop_id, status_value="passed", updated_at=_iso(31))
@@ -453,6 +541,28 @@ def test_purge_if_still_safe_falls_back_when_lock_file_absent(tmp_path: Path) ->
     status._purge_if_still_safe(loop_id, str(tmp_path))
 
     assert not lc.loop_dir(loop_id, str(tmp_path)).exists()
+
+
+def test_purge_if_still_safe_removes_placeholder_lock_when_purge_skipped(
+    tmp_path: Path,
+) -> None:
+    """SH2(a): if the placeholder lock file created for a would-be lock-absent purge turns out
+    to be unneeded (the reloaded state is no longer purge-eligible), it must be removed again
+    so no stray lock.json is left behind for a loop this call did not actually purge."""
+    _init_repo(tmp_path)
+    loop_id = "a-issue-1"
+    _seed_state(tmp_path, loop_id, status_value="passed", updated_at=_iso(31))
+    assert not lc.lock_path(loop_id, str(tmp_path)).exists()
+    # Simulate the loop transitioning back to running in the window between candidate
+    # collection and this call (mirrors `test_purge_if_still_safe_reloads_state_and_skips_now_running`).
+    state = lc.load_state(loop_id, str(tmp_path))
+    state.status = "running"
+    lc._write_state(state, str(tmp_path))
+
+    status._purge_if_still_safe(loop_id, str(tmp_path))
+
+    assert lc.loop_dir(loop_id, str(tmp_path)).is_dir()
+    assert not lc.lock_path(loop_id, str(tmp_path)).exists()
 
 
 def test_confirm_purge_accepts_yes_on_interactive_stdin(monkeypatch: pytest.MonkeyPatch) -> None:

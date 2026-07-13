@@ -22,11 +22,16 @@ ISSUE_LOOP_IMPLEMENTATION_PASS_CRITERIA = {"critical": 0, "high": 0}
 # own tool calls) — it constrains what loop-harness itself will execute directly via
 # `bash -lc` in the checker phase. Does not replace layer 2/3; loop definitions are
 # trusted-but-verified. The scan below normalizes common `bash -lc` bypasses (absolute paths,
-# tab/multi-space separators, `env`/`timeout`/`nice`/`command`/`bash -c`/`sh -c` wrappers,
+# tab/multi-space separators, `env`/`timeout`/`nice`/`command`/`bash -c`/`sh -c`/`exec` wrappers,
 # leading `VAR=value` env-assignment prefixes, surrounding quotes/parentheses, and
 # `;`/`&&`/`||`/`|`/`&`/`$(...)`/backtick command boundaries) but is not a full shell parser.
 _MECHANICAL_COMMAND_DENYLIST = frozenset({"git", "gh", "ssh", "curl", "wget", "docker", "sudo"})
-_MECHANICAL_COMMAND_WRAPPERS = frozenset({"env", "nice", "command", "timeout", "bash", "sh"})
+# SN3: `exec` replaces the current shell with the given command (no subprocess spawned) - a
+# command-position wrapper exactly like `command`/`nice`, so `exec git push` must also be
+# unwrapped down to `git` instead of resolving to the literal name "exec".
+_MECHANICAL_COMMAND_WRAPPERS = frozenset(
+    {"env", "nice", "command", "timeout", "bash", "sh", "exec"}
+)
 _COMMAND_SEGMENT_SPLIT_RE = re.compile(r"\$\(|`|;|&&|\|\||\||&|\n")
 _ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 # G4: wrapper numeric arguments, e.g. `timeout 30 ...` or `timeout 30s ...` /
@@ -35,6 +40,14 @@ _ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 # denylist scan (the unrecognized "30s" token would be resolved as the
 # command-position binary instead of `git`).
 _WRAPPER_NUMERIC_ARG_RE = re.compile(r"^\d+(\.\d+)?[smhd]?$")
+# SN3: `env`'s flags that consume a following, space-separated value argument (e.g. `-u NAME`
+# to unset a var before exec'ing, `-C dir` to chdir first). The generic dash-prefixed-flag
+# skip below only consumes the flag token itself; without this, the flag's *value* token is
+# left as the next token and gets mis-resolved as env's command-position binary (e.g.
+# `env -u FOO git push` would resolve to "FOO", silently missing the denylisted `git`).
+_WRAPPER_VALUE_FLAGS: dict[str, frozenset[str]] = {
+    "env": frozenset({"-u", "-C", "-S", "--unset", "--chdir", "--split-string"}),
+}
 
 
 def _resolve_local_override_root(project_dir: str) -> str:
@@ -305,11 +318,19 @@ def _segment_command_binary(segment: str) -> str | None:
         name = token.rsplit("/", 1)[-1]
         if name not in _MECHANICAL_COMMAND_WRAPPERS:
             return name or None
+        value_flags = _WRAPPER_VALUE_FLAGS.get(name, frozenset())
         index += 1
-        while index < len(tokens) and (
-            tokens[index].startswith("-") or _WRAPPER_NUMERIC_ARG_RE.match(tokens[index])
-        ):
-            index += 1
+        while index < len(tokens):
+            current = tokens[index]
+            if current in value_flags:
+                # SN3: consume both the flag and its separate value argument (e.g. `-u FOO`)
+                # so the value itself is never mistaken for the wrapped command's binary.
+                index += 2
+                continue
+            if current.startswith("-") or _WRAPPER_NUMERIC_ARG_RE.match(current):
+                index += 1
+                continue
+            break
     return None
 
 

@@ -478,6 +478,110 @@ def detect_push_integrity_violation(baseline_head: str | None, current_head: str
     return classify_push_integrity(baseline_head, current_head) == "violation"
 
 
+# --- push multi-layer defense: secret-leak scan (SH5, additional safety net) ---------------
+
+# Generic vendor token prefixes checked against a pending push's diff regardless of provenance
+# (SH5). Intentionally a plain substring check, not a full-shape regex (unlike
+# `loop_common.SECRET_PATTERNS`, which this list deliberately does not replace/duplicate): the
+# goal here is a fast, cheap, low-false-negative last-mile check immediately before a
+# driver-owned push, not the canonical secret-redaction pass `loop_common.redact()` already
+# applies to artifacts/journal/audit output elsewhere.
+_SECRET_TOKEN_PREFIXES: tuple[str, ...] = ("sk-ant-", "ghp_", "gho_", "github_pat_")
+
+_EMPTY_TREE_SHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+"""Git's well-known empty-tree object hash: diffing against it yields "the whole tree" (used
+when there is no prior baseline commit to diff from, e.g. a brand-new branch's first push)."""
+
+
+def get_push_diff(cwd: str, baseline_head: str | None, timeout_seconds: float = 30.0) -> str | None:
+    """Return the diff of everything a pending push is about to send (SH5), or None on error.
+
+    `baseline_head` is the layer-4 push-integrity baseline (the last known-good remote HEAD):
+    when it is a real sha, diffs `baseline_head..HEAD` (only the commits this push newly
+    contributes). When it is `None` (no baseline known) or `REMOTE_HEAD_ABSENT` (a confirmed
+    brand-new branch that has never been pushed), there is no meaningful prior point to diff
+    from, so this diffs HEAD against git's empty-tree object instead (the whole current tree).
+
+    Returns `None` (not raising) on any git failure/timeout: this is an additional safety net
+    on top of the existing 4-layer push defense, not the sole guard, so a transient `git diff`
+    hiccup must not itself block every push.
+    """
+    if baseline_head is not None and baseline_head != REMOTE_HEAD_ABSENT:
+        diff_range = f"{baseline_head}..HEAD"
+    else:
+        diff_range = f"{_EMPTY_TREE_SHA}..HEAD"
+    try:
+        completed = subprocess.run(
+            ["git", "-C", cwd, "diff", diff_range],
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    return completed.stdout
+
+
+def extract_known_secrets(scratch_home: str) -> list[str]:
+    """Return credential-bearing string values copied into `scratch_home` (SH5).
+
+    Feeds `find_leaked_secret()`'s exact-value check: a Maker that copies its own scratch-
+    `$HOME` OAuth credential file contents into a tracked file and commits them would otherwise
+    only be caught (if at all) by the generic-prefix check, which cannot recognize a live
+    Claude Code session token by shape alone. Best-effort: a missing/unreadable/non-JSON file
+    yields fewer (or zero) values rather than raising, since this feeds a defense-in-depth scan
+    rather than being a hard dependency the driver must have to keep operating. Short strings
+    (under 16 chars) are dropped as not credential-shaped, to avoid every scan trivially
+    "matching" on some short, non-secret config value.
+    """
+    values: list[str] = []
+    for relative_path in (Path(".claude") / ".credentials.json", Path(".claude.json")):
+        values.extend(_string_leaves(_read_json_best_effort(Path(scratch_home) / relative_path)))
+    return [value for value in values if len(value) >= 16]
+
+
+def _read_json_best_effort(path: Path) -> Any:
+    """Return path's parsed JSON contents, or None if missing/unreadable/not valid JSON."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _string_leaves(value: Any) -> list[str]:
+    """Recursively collect every string leaf value out of a nested JSON-ish structure."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [leaf for item in value.values() for leaf in _string_leaves(item)]
+    if isinstance(value, list):
+        return [leaf for item in value for leaf in _string_leaves(item)]
+    return []
+
+
+def find_leaked_secret(diff_text: str, known_secrets: Sequence[str]) -> str | None:
+    """Return a redaction-safe label for the first leaked secret found in `diff_text` (SH5).
+
+    Checks two independent signal families, in order:
+    1. `known_secrets` (exact scratch-credential values, see `extract_known_secrets()`): a
+       substring match here means the Maker exfiltrated its own live scratch-`$HOME` OAuth
+       credentials into a commit.
+    2. `_SECRET_TOKEN_PREFIXES`: generic vendor token prefixes that look like a real credential
+       regardless of where it came from.
+    Returns `None` (not the matched text) when nothing is found; the returned label never
+    contains the secret value itself, so a caller can safely log/journal/notify with it.
+    """
+    for secret in known_secrets:
+        if secret and secret in diff_text:
+            return "scratch_credential_leak"
+    for prefix in _SECRET_TOKEN_PREFIXES:
+        if prefix in diff_text:
+            return f"token_prefix_leak:{prefix}"
+    return None
+
+
 # --- wall-clock monitoring -----------------------------------------------------------------
 
 

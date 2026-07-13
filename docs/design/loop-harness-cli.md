@@ -567,6 +567,11 @@ claude -p \
 >   の push も壊れる。既定では採用しない。どうしても worktree ローカルに remote 設定を分離したい
 >   場合は `extensions.worktreeConfig=true` + `git config --worktree`（git 2.20+）が唯一の正しい
 >   手段である。
+> - **残余リスク（同一 UID 前提）**: 層2〜4 はいずれも Maker/Checker の**子プロセス境界**（別プロセス
+>   としての env/権限分離）を防御対象としており、`.claude/loop/` 配下の journal/state ファイル自体
+>   への書き込みに対して、driver と同一 UID で動作する別プロセスからの改ざんに対する完全性保証は
+>   持たない。同一 UID 耐性の確保は本設計のスコープ外とし、Issue #211（Maker/Checker の完全プロセス
+>   隔離）で別途対応する。
 
 > **層2 が Checker（`mechanical.commands`）経由で迂回できる欠陥の修正（2026-07-12 LP-2 レビュー反映。
 > SEC-C1・EV-81）**: `checker.mechanical.commands`（例: `pytest -q`）は直前の Maker 反復が仕込んだ

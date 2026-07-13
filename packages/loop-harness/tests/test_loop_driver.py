@@ -358,6 +358,25 @@ def _run_bash_guard_hook(command: str) -> subprocess.CompletedProcess[str]:
         # call could then invoke the alias under an innocuous-looking name).
         "git config alias.p push",
         "git config --global alias.p '!git push'",
+        # SC1: the low-level transport binaries invoked as a single hyphenated token (no "git "
+        # prefix + separating whitespace before the subcommand word for the `git send-pack`-
+        # shaped patterns above to match against).
+        "git-send-pack ../bare-repo origin/main",
+        "git-receive-pack /path/to/repo.git",
+        "git-upload-pack /path/to/repo.git",
+        # SC2: shell IFS-substitution bypasses replace the literal space character while
+        # keeping the exact same meaning to the shell.
+        "git${IFS}push${IFS}origin${IFS}main",
+        "git$IFS'push'",
+        # SC3: git config url.insteadOf / remote.<name>.pushurl / `-c url.` rewrite where a
+        # later push actually lands (shared `.git/config` mutation) without ever using a
+        # literal `push`/`remote` token themselves.
+        "git config url.https://evil.example/.insteadOf https://github.com/",
+        "git config remote.origin.pushurl https://evil.example/evil.git",
+        "git -c url.https://evil.example/.insteadOf=https://github.com/ status",
+        # SC3: `git config` is denied wholesale, not just its `alias.`/`insteadOf`/`pushurl`
+        # special cases — the Maker never legitimately needs any git config read or write.
+        "git config user.email evil@example.com",
     ],
 )
 def test_maker_bash_guard_denies_push_and_pr_mutation_bypasses(command: str) -> None:
@@ -500,6 +519,105 @@ def test_get_remote_head_returns_none_when_query_itself_fails(tmp_path: Path) ->
 
 
 # --------------------------------------------------------------------------------------------
+# loop_driver_support: secret-leak scan before push (SH5, additional safety net)
+# --------------------------------------------------------------------------------------------
+
+
+def test_get_push_diff_covers_only_commits_since_baseline(tmp_path: Path) -> None:
+    """`get_push_diff` diffs `baseline_head..HEAD`, not the whole history, once a real baseline
+    sha is known."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    baseline = _git(["rev-parse", "HEAD"], repo)
+    (repo / "new.txt").write_text("token_prefix_marker_ghp_ABC\n", encoding="utf-8")
+    _git(["add", "new.txt"], repo)
+    _git(["commit", "-m", "add secret-looking file"], repo)
+
+    diff_text = lds.get_push_diff(str(repo), baseline)
+
+    assert diff_text is not None
+    assert "ghp_ABC" in diff_text
+
+
+def test_get_push_diff_covers_whole_tree_when_no_baseline_known(tmp_path: Path) -> None:
+    """No baseline yet (`None`/`REMOTE_HEAD_ABSENT`, brand-new branch never pushed) must diff
+    against git's empty tree instead of erroring out on an unresolvable range."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+
+    diff_none = lds.get_push_diff(str(repo), None)
+    diff_absent = lds.get_push_diff(str(repo), lds.REMOTE_HEAD_ABSENT)
+
+    assert diff_none is not None
+    assert "README.md" in diff_none
+    assert diff_absent is not None
+    assert "README.md" in diff_absent
+
+
+def test_get_push_diff_returns_none_on_unresolvable_baseline(tmp_path: Path) -> None:
+    """A baseline sha that git cannot resolve (e.g. a stale/garbage value) must fail *open*
+    (return `None`), not raise, so a data hiccup does not itself crash the driver."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    assert lds.get_push_diff(str(repo), "0" * 40) is None
+
+
+def test_find_leaked_secret_matches_known_scratch_credential_value() -> None:
+    diff_text = "+some line containing sk-live-actual-credential-value-xyz\n"
+    assert (
+        lds.find_leaked_secret(diff_text, ["sk-live-actual-credential-value-xyz"])
+        == "scratch_credential_leak"
+    )
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    ["sk-ant-", "ghp_", "gho_", "github_pat_"],
+)
+def test_find_leaked_secret_matches_generic_token_prefixes(prefix: str) -> None:
+    diff_text = f"+API_TOKEN={prefix}deadbeefdeadbeefdeadbeef\n"
+    leaked = lds.find_leaked_secret(diff_text, [])
+    assert leaked == f"token_prefix_leak:{prefix}"
+
+
+def test_find_leaked_secret_returns_none_for_clean_diff() -> None:
+    diff_text = "+def add(a, b):\n+    return a + b\n"
+    assert lds.find_leaked_secret(diff_text, ["some-other-scratch-value"]) is None
+
+
+def test_extract_known_secrets_reads_scratch_credentials_and_claude_json(
+    tmp_path: Path,
+) -> None:
+    scratch_home = tmp_path / "scratch"
+    claude_dir = scratch_home / ".claude"
+    claude_dir.mkdir(parents=True)
+    (claude_dir / ".credentials.json").write_text(
+        json.dumps({"accessToken": "a-long-enough-live-oauth-token-value"}),
+        encoding="utf-8",
+    )
+    (scratch_home / ".claude.json").write_text(
+        json.dumps({"nested": {"sessionKey": "another-long-enough-secret-value"}}),
+        encoding="utf-8",
+    )
+
+    secrets = lds.extract_known_secrets(str(scratch_home))
+
+    assert "a-long-enough-live-oauth-token-value" in secrets
+    assert "another-long-enough-secret-value" in secrets
+
+
+def test_extract_known_secrets_is_noop_when_no_auth_files_present(tmp_path: Path) -> None:
+    assert lds.extract_known_secrets(str(tmp_path / "scratch")) == []
+
+
+def test_extract_known_secrets_drops_short_non_secret_shaped_values(tmp_path: Path) -> None:
+    scratch_home = tmp_path / "scratch"
+    scratch_home.mkdir(parents=True)
+    (scratch_home / ".claude.json").write_text(json.dumps({"userId": "short"}), encoding="utf-8")
+    assert lds.extract_known_secrets(str(scratch_home)) == []
+
+
+# --------------------------------------------------------------------------------------------
 # loop_driver_support: wall-clock monitoring
 # --------------------------------------------------------------------------------------------
 
@@ -590,6 +708,19 @@ def _seed_running_loop(tmp_path: Path, loop_id: str = "abcd1234-issue-1") -> tup
     lock = lc.acquire_lock(loop_id, project_dir, "owner", 3600)
     assert lock is not None
     return project_dir, lock.lease_token
+
+
+def _run_maker_proposal(state: lc.LoopState, action_id: str = "act-run-maker") -> lc.ProposeResult:
+    """Minimal `run_maker`-shaped `ProposeResult` for `LoopDriver._run_maker()` call sites."""
+    return lc.ProposeResult(
+        action=lc.Action.RUN_MAKER.value,
+        action_id=action_id,
+        state_version=state.state_version,
+        expected_phase=state.phase,
+        phase=state.phase,
+        iteration=state.iteration,
+        context={},
+    )
 
 
 def test_persist_safe_stop_writes_journal_before_state(tmp_path: Path) -> None:
@@ -745,6 +876,99 @@ def test_run_child_kill_request_arriving_during_popen_still_kills_new_child(
     assert result.returncode != 0  # killed by SIGTERM, not a clean sleep-30 completion
 
 
+def test_set_current_child_kills_immediately_when_lease_already_lost(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DM2(1) regression: `loop_common._run_mechanical_command`'s `Popen()` runs before its
+    `on_start` callback (`_set_current_child`) registers the pid, with no lock held across
+    that gap. If `_kill_current_child()`'s scan fires in that exact window, it reads the
+    *previous* child's pid (often `None`) and misses this new one entirely -- and since the
+    heartbeat thread that triggers it only fires once and then stops, no later scan would
+    ever catch it. `_set_current_child` must self-detect an already-lost lease at
+    registration time and kill immediately instead of leaving this child to run unchecked."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    killed: list[int] = []
+    monkeypatch.setattr(lds, "kill_process_tree", lambda pid, **_: killed.append(pid))
+
+    # Simulate the heartbeat thread's `_kill_current_child()` scan having already run (and
+    # missed this pid, since it fired before this registration): the lease is lost.
+    d._lease_lost.set()
+
+    d._set_current_child(4343)
+
+    assert killed == [4343]
+    assert d._child_pid == 4343
+
+
+def test_set_current_child_does_not_kill_when_lease_is_still_alive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sanity counterpart: a normal registration (lease alive) must not trigger a kill."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    killed: list[int] = []
+    monkeypatch.setattr(lds, "kill_process_tree", lambda pid, **_: killed.append(pid))
+
+    d._set_current_child(4343)
+
+    assert killed == []
+    assert d._child_pid == 4343
+
+
+def test_run_child_leaves_kill_requested_latched_after_lease_lost(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DM2(2) regression: once the lease is lost, `_run_child`'s `finally` must not reset
+    `_kill_requested` back to `False`, or a *later* child (e.g. `_run_llm_reviewers` iterating
+    to the next reviewer, which never itself re-checks `_lease_lost` between reviewers) would
+    see `_kill_requested is False` at its own registration and run unchecked to its own full
+    timeout, despite the lease already being gone."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    kill_calls: list[int] = []
+    monkeypatch.setattr(lds, "kill_process_tree", lambda pid, **_: kill_calls.append(pid))
+
+    d._lease_lost.set()
+    d._kill_requested = True
+
+    # First child: killed immediately at registration (existing H3 behavior).
+    d._run_child(["true"], str(tmp_path), 5, dict(os.environ))
+    assert len(kill_calls) == 1
+
+    # DM2(2): `_kill_requested` must still be True for the *next* child to observe, instead
+    # of having been reset to False by the first child's `finally`.
+    assert d._kill_requested is True
+
+    d._run_child(["true"], str(tmp_path), 5, dict(os.environ))
+    assert len(kill_calls) == 2
+
+
+def test_run_child_resets_kill_requested_when_lease_is_still_alive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sanity counterpart: when the lease is *not* lost, `_kill_requested` must still reset
+    to `False` after each child (unchanged pre-DM2 behavior) so a one-off kill request does
+    not stick around and wrongly kill an unrelated future child."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    kill_calls: list[int] = []
+    monkeypatch.setattr(lds, "kill_process_tree", lambda pid, **_: kill_calls.append(pid))
+
+    d._kill_requested = True
+
+    d._run_child(["true"], str(tmp_path), 5, dict(os.environ))
+    assert len(kill_calls) == 1
+    assert d._kill_requested is False
+
+    d._run_child(["true"], str(tmp_path), 5, dict(os.environ))
+    assert len(kill_calls) == 1  # not killed again
+
+
 # --------------------------------------------------------------------------------------------
 # loop_driver.LoopDriver: wall-clock forced failure (EV-47)
 # --------------------------------------------------------------------------------------------
@@ -867,6 +1091,116 @@ def test_advance_phase_stops_safely_on_push_integrity_violation(
     final_state = lc.load_state(loop_id, project_dir)
     assert final_state.status == "stopped"
     assert final_state.stop_reason == "push_integrity_violation"
+
+
+def test_advance_phase_stops_safely_when_pending_diff_leaks_a_secret(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SH5: a Maker that commits its own scratch-`$HOME` OAuth credential (or any other
+    real-looking API token) must not have that secret exfiltrated onto the remote via the
+    driver's own subsequent push — the scan must stop the loop safely, before either the
+    layer-4-verified push or any other `on_success.exec` step (e.g. `pr_create`) runs."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.branch = "loop/issue-1"
+    state.pending_action = lc.PendingAction(
+        "act-000006", "advance_phase", "implementation", 2, lc.now_iso()
+    )
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    repo = Path(project_dir)
+    baseline = _git(["rev-parse", "HEAD"], repo)
+    (repo / "leaked.txt").write_text(
+        "GH_TOKEN=ghp_1234567890abcdefghijklmnopqrstuvwxyz\n", encoding="utf-8"
+    )
+    _git(["add", "leaked.txt"], repo)
+    _git(["commit", "-m", "oops committed a token"], repo)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    d._remote_head_baseline = baseline
+    monkeypatch.setattr(driver, "_current_branch", lambda _wt: "loop/issue-1")
+    monkeypatch.setattr(lc, "is_repo_identity_verified", lambda _state: True)
+    monkeypatch.setattr(lds, "get_remote_head", lambda _wt, _branch, **_: baseline)
+    push_calls: list[Any] = []
+    monkeypatch.setattr(d, "_push_verified_branch", lambda *a, **k: push_calls.append(a))
+    monkeypatch.setattr(d, "_execute_advance_exec", lambda *a, **k: push_calls.append("exec"))
+    monkeypatch.setattr(driver.lds, "issue_number_from_loop_id", lambda _loop_id: 1)
+    comment_calls: list[str] = []
+    monkeypatch.setattr(
+        lds,
+        "post_issue_comment",
+        lambda _cwd, _issue, body: comment_calls.append(body) or True,
+    )
+
+    proposal = lc.ProposeResult(
+        action="advance_phase",
+        action_id="act-000006",
+        state_version=state.state_version,
+        expected_phase="implementation",
+        phase="implementation",
+        iteration=2,
+        context={},
+    )
+    params = {"verified_branch": "loop/issue-1", "exec": ["commit", "push", "pr_create"]}
+
+    with pytest.raises(driver.DriverTerminated):
+        d._run_advance_phase(proposal, state, params)
+
+    assert push_calls == []  # push/exec must never run once a leaked secret is detected
+    final_state = lc.load_state(loop_id, project_dir)
+    assert final_state.status == "stopped"
+    assert final_state.stop_reason == "secret_leak_detected"
+
+
+def test_advance_phase_proceeds_when_pending_diff_has_no_leaked_secret(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SH5 (complement of the leak-detection test above): a real, clean commit diff must not
+    be mistaken for a leak and must not block an otherwise-healthy `advance_phase` push -- this
+    scan is an additional safety net, not a blanket blocker of every push."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.branch = "loop/issue-1"
+    state.pending_action = lc.PendingAction(
+        "act-000008", "advance_phase", "implementation", 2, lc.now_iso()
+    )
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    repo = Path(project_dir)
+    baseline = _git(["rev-parse", "HEAD"], repo)
+    (repo / "ordinary.txt").write_text("just an ordinary, non-secret change\n", encoding="utf-8")
+    _git(["add", "ordinary.txt"], repo)
+    _git(["commit", "-m", "ordinary change"], repo)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    d._remote_head_baseline = baseline
+    monkeypatch.setattr(driver, "_current_branch", lambda _wt: "loop/issue-1")
+    monkeypatch.setattr(lc, "is_repo_identity_verified", lambda _state: True)
+    monkeypatch.setattr(lds, "get_remote_head", lambda _wt, _branch, **_: baseline)
+    exec_calls: list[Any] = []
+    monkeypatch.setattr(d, "_execute_advance_exec", lambda *a, **k: exec_calls.append("exec") or 7)
+
+    proposal = lc.ProposeResult(
+        action="advance_phase",
+        action_id="act-000008",
+        state_version=state.state_version,
+        expected_phase="implementation",
+        phase="implementation",
+        iteration=2,
+        context={},
+    )
+    params = {"verified_branch": "loop/issue-1", "next_phase": "pr_review_response", "exec": []}
+
+    result = d._run_advance_phase(proposal, state, params)
+
+    assert exec_calls == ["exec"]
+    assert result["pr_number"] == 7
+    final_state = lc.load_state(loop_id, project_dir)
+    assert final_state.status == "running"
 
 
 def test_advance_phase_stops_safely_when_remote_head_unverifiable_after_retry(
@@ -1355,6 +1689,68 @@ def test_push_verified_branch_persists_baseline_to_journal(tmp_path: Path) -> No
     assert d2._remote_head_baseline == expected_head
 
 
+def test_push_verified_branch_command_includes_hook_bypass_flags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SC4: the driver's own push must disable shared-worktree git hooks (`-c
+    core.hooksPath=/dev/null`) and skip client-side hook invocation (`--no-verify`) — a Maker
+    that wrote a malicious `hooks/pre-push` into the shared worktree must not be able to make
+    this push execute it with the driver's own real push credentials."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    loop_id = "abcd1234-issue-1"
+    project_dir = str(repo)
+    lock = lc.acquire_lock(loop_id, project_dir, "owner", 3600)
+    assert lock is not None
+    d = driver.LoopDriver(loop_id, project_dir, lock.lease_token)
+
+    captured: dict[str, list[str]] = {}
+    real_run = driver.subprocess.run
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if cmd[0] == "git" and "push" in cmd:
+            captured["cmd"] = cmd
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr(driver.subprocess, "run", fake_run)
+    d._push_verified_branch(str(repo), "main")
+
+    cmd = captured["cmd"]
+    assert "core.hooksPath=/dev/null" in cmd
+    assert "--no-verify" in cmd
+    assert cmd.index("-c") < cmd.index("push") < cmd.index("--no-verify")
+
+
+def test_push_verified_branch_bypasses_shared_worktree_pre_push_hook(tmp_path: Path) -> None:
+    """SC4 (end-to-end): a malicious `.git/hooks/pre-push` planted in the shared worktree
+    (e.g. by a Maker that gained same-UID filesystem write access) must not run, and must not
+    be able to abort, the driver's own push."""
+    loop_id = "abcd1234-issue-1"
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_repo_with_remote(repo, remote)
+    project_dir = str(repo)
+    lock = lc.acquire_lock(loop_id, project_dir, "owner", 3600)
+    assert lock is not None
+
+    marker = tmp_path / "hook-ran.marker"
+    hooks_dir = repo / ".git" / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    pre_push = hooks_dir / "pre-push"
+    pre_push.write_text(f"#!/bin/sh\ntouch '{marker}'\nexit 1\n", encoding="utf-8")
+    pre_push.chmod(0o755)
+
+    (repo / "change.txt").write_text("update\n", encoding="utf-8")
+    _git(["add", "change.txt"], repo)
+    _git(["commit", "-m", "update"], repo)
+
+    d = driver.LoopDriver(loop_id, project_dir, lock.lease_token)
+    d._push_verified_branch(str(repo), "main")  # must not raise despite the failing hook
+
+    assert not marker.exists()
+
+
 def test_wait_external_review_refreshes_baseline_immediately_after_push(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1414,8 +1810,10 @@ def test_wait_external_review_refreshes_baseline_immediately_after_push(
         empty = lc.IterationFindings(frozenset(), 0)
         return prw.ReviewFindingsResult((), empty, empty, (), 0, 0)
 
+    monkeypatch.setattr(prw, "fetch_review_items", lambda *a, **k: [])
     monkeypatch.setattr(prw, "collect_review_findings", fake_collect_review_findings)
     monkeypatch.setattr(prw, "save_review_findings_snapshot", lambda *a, **k: None)
+    monkeypatch.setattr(prw, "confirm_review_findings_reported", lambda *a, **k: None)
 
     def fake_record_baseline(
         _loop_id: str,
@@ -1493,6 +1891,65 @@ def test_wait_external_review_refreshes_baseline_immediately_after_push(
 
     assert recorded_baseline_calls == [42]
     assert captured_baseline["baseline"]["baseline_review_id"] == 99
+
+
+def test_drain_before_push_shares_one_review_items_fetch_with_record_baseline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DC3 regression: `_drain_before_push` must fetch `review_items` exactly once and pass
+    the same snapshot into both `collect_review_findings` and `record_baseline`, instead of
+    each fetching independently -- otherwise a comment posted between those two separate
+    fetches would be silently marked `processed` by `record_baseline`'s own (later) fetch
+    without ever being imported as a finding by the drain's (earlier) fetch."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.pr_number = 42
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(driver, "_repo_name_with_owner", lambda _wt: "owner/repo")
+
+    sentinel_items = [object()]
+    fetch_calls: list[int] = []
+
+    def fake_fetch_review_items(_client: Any, pr_number: int) -> list[Any]:
+        fetch_calls.append(pr_number)
+        return sentinel_items
+
+    monkeypatch.setattr(prw, "fetch_review_items", fake_fetch_review_items)
+
+    seen_review_items: dict[str, Any] = {}
+    empty = lc.IterationFindings(frozenset(), 0)
+
+    def fake_collect_review_findings(
+        *_a: Any, review_items: Any = None, **_kw: Any
+    ) -> prw.ReviewFindingsResult:
+        seen_review_items["collect"] = review_items
+        return prw.ReviewFindingsResult((), empty, empty, (), 0, 0)
+
+    def fake_record_baseline(*_a: Any, review_items: Any = None, **_kw: Any) -> prw.BaselineRecord:
+        seen_review_items["baseline"] = review_items
+        return prw.BaselineRecord(0, lc.now_iso(), ())
+
+    monkeypatch.setattr(prw, "collect_review_findings", fake_collect_review_findings)
+    monkeypatch.setattr(prw, "save_review_findings_snapshot", lambda *a, **k: None)
+    monkeypatch.setattr(prw, "confirm_review_findings_reported", lambda *a, **k: None)
+    monkeypatch.setattr(prw, "record_baseline", fake_record_baseline)
+    monkeypatch.setattr(
+        prw,
+        "detect_pr_review_push_delta",
+        lambda *a, **k: prw.PrReviewPushDelta("new_commit", "a", "b"),
+    )
+    config = prw.PrReviewConfig(reviewer_allowlist=())
+
+    result = d._drain_before_push(state, "act-dc3-001", 42, config)
+
+    assert result is None
+    assert fetch_calls == [42]
+    assert seen_review_items["collect"] is sentinel_items
+    assert seen_review_items["baseline"] is sentinel_items
 
 
 def test_wait_external_review_param_overrides_take_precedence_over_packaged_config(
@@ -1584,8 +2041,10 @@ def test_wait_external_review_actionable_drain_short_circuits_before_rebaseline_
     current = lc.IterationFindings(frozenset({"sig-1"}), 1)
     empty = lc.IterationFindings(frozenset(), 0)
     drained = prw.ReviewFindingsResult((finding,), current, empty, (), 0, 0)
+    monkeypatch.setattr(prw, "fetch_review_items", lambda *a, **k: [])
     monkeypatch.setattr(prw, "collect_review_findings", lambda *a, **k: drained)
     monkeypatch.setattr(prw, "save_review_findings_snapshot", lambda *a, **k: None)
+    monkeypatch.setattr(prw, "confirm_review_findings_reported", lambda *a, **k: None)
 
     def _boom(*_a: Any, **_k: Any) -> None:
         raise AssertionError("must not run once an actionable finding is drained")
@@ -1643,12 +2102,14 @@ def test_wait_external_review_no_new_commit_shortcut_skips_push_and_poll(
     )
 
     empty = lc.IterationFindings(frozenset(), 0)
+    monkeypatch.setattr(prw, "fetch_review_items", lambda *a, **k: [])
     monkeypatch.setattr(
         prw,
         "collect_review_findings",
         lambda *a, **k: prw.ReviewFindingsResult((), empty, empty, (), 0, 0),
     )
     monkeypatch.setattr(prw, "save_review_findings_snapshot", lambda *a, **k: None)
+    monkeypatch.setattr(prw, "confirm_review_findings_reported", lambda *a, **k: None)
 
     def _boom(*_a: Any, **_k: Any) -> None:
         raise AssertionError("must not run once the no_new_commit shortcut applies")
@@ -1672,6 +2133,156 @@ def test_wait_external_review_no_new_commit_shortcut_skips_push_and_poll(
 
     assert result["signature"] == "pr_review_timeout"
     assert result["metadata"]["shortcut_reason"] == "no_new_commit_to_push"
+
+
+def test_wait_external_review_resumes_straight_to_poll_after_crash_past_record_iteration_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DH5 regression: a driver crash landing between `record_iteration_head` succeeding and
+    the poll actually starting leaves `iteration_head_sha` durably matching the just-pushed
+    local HEAD. A resumed `wait_external_review` (same `push_required=True` params) must
+    detect this and skip straight to polling -- otherwise `detect_pr_review_push_delta`'s
+    "local HEAD == iteration_head_sha" (true here *because* the push already succeeded) is
+    mistaken for "nothing to push" (H12) and the wait for that already-completed push's
+    review is silently skipped."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    local_head = _git(["rev-parse", "HEAD"], tmp_path)
+    state.pr_number = 42
+    state.pr_review = {
+        "baseline_review_id": 0,
+        "baseline_recorded_at": lc.now_iso(),
+        "processed_comment_ids": [],
+        "iteration_head_sha": local_head,
+        "iteration_head_recorded_iteration": 1,
+    }
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(driver, "_current_branch", lambda _wt: "main")
+    monkeypatch.setattr(lc, "is_repo_identity_verified", lambda _state: True)
+    monkeypatch.setattr(driver, "_repo_name_with_owner", lambda _wt: "owner/repo")
+    monkeypatch.setattr(
+        prw, "load_pr_review_config", lambda _project: prw.PrReviewConfig(reviewer_allowlist=())
+    )
+    monkeypatch.setattr(prw, "record_ignored_untrusted_reviews", lambda *a, **k: None)
+
+    def _boom(*_a: Any, **_k: Any) -> None:
+        raise AssertionError("must not re-run the push flow once already pushed this iteration")
+
+    monkeypatch.setattr(prw, "fetch_review_items", _boom)
+    monkeypatch.setattr(prw, "collect_review_findings", _boom)
+    monkeypatch.setattr(prw, "record_baseline", _boom)
+    monkeypatch.setattr(d, "_push_verified_branch", _boom)
+    monkeypatch.setattr(prw, "record_iteration_head", _boom)
+
+    poll_calls: list[str] = []
+
+    def fake_wait_for_completion(
+        _pr: int, _baseline: dict[str, Any], _config: Any, _client: Any, **_kw: Any
+    ) -> prw.CompletionOutcome:
+        poll_calls.append("polled")
+        return prw.CompletionOutcome(
+            "timeout", completed=False, timed_out=True, infrastructure_failure=False
+        )
+
+    monkeypatch.setattr(prw, "wait_for_completion", fake_wait_for_completion)
+
+    proposal = lc.ProposeResult(
+        action="wait_external_review",
+        action_id="act-dh5-001",
+        state_version=state.state_version,
+        expected_phase="implementation",
+        phase="implementation",
+        iteration=1,
+        context={},
+    )
+    result = d._run_wait_external_review(
+        proposal, state, {"push_required": True, "verified_branch": "main"}
+    )
+
+    assert poll_calls == ["polled"]
+    assert result["signature"] == "pr_review_timeout"
+
+
+def test_wait_external_review_confirms_findings_reported_after_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DC4 regression: `_run_wait_external_review` must call
+    `confirm_review_findings_reported` only *after* `save_review_findings_snapshot` has
+    durably captured the collected result, so a crash before that confirmation safely
+    re-surfaces the finding on a retried collect instead of silently dropping it."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.pr_number = 42
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(driver, "_repo_name_with_owner", lambda _wt: "owner/repo")
+    monkeypatch.setattr(
+        prw, "load_pr_review_config", lambda _project: prw.PrReviewConfig(reviewer_allowlist=())
+    )
+    monkeypatch.setattr(prw, "record_ignored_untrusted_reviews", lambda *a, **k: None)
+    monkeypatch.setattr(
+        prw,
+        "wait_for_completion",
+        lambda *a, **k: prw.CompletionOutcome(
+            "review_submitted", completed=True, timed_out=False, infrastructure_failure=False
+        ),
+    )
+
+    finding = prw.ImportedFinding(
+        signature="sig-1",
+        severity="high",
+        source_comment_id="c1",
+        body_excerpt="fix this",
+        path="foo.py",
+        line=10,
+        needs_classification=False,
+    )
+    empty = lc.IterationFindings(frozenset(), 0)
+    collected = prw.ReviewFindingsResult((finding,), empty, empty, (), 0, 0)
+    monkeypatch.setattr(prw, "collect_review_findings", lambda *a, **k: collected)
+
+    call_order: list[str] = []
+    confirmed_with: dict[str, Any] = {}
+
+    def fake_save_review_findings_snapshot(*_a: Any, **_k: Any) -> str:
+        call_order.append("snapshot")
+        return "artifacts/act/review_findings.json"
+
+    def fake_confirm_review_findings_reported(
+        _loop_id: str,
+        _project_dir: str,
+        result: prw.ReviewFindingsResult,
+        _lease_token: str,
+        **_kw: Any,
+    ) -> None:
+        call_order.append("confirm")
+        confirmed_with["result"] = result
+
+    monkeypatch.setattr(prw, "save_review_findings_snapshot", fake_save_review_findings_snapshot)
+    monkeypatch.setattr(
+        prw, "confirm_review_findings_reported", fake_confirm_review_findings_reported
+    )
+
+    proposal = lc.ProposeResult(
+        action="wait_external_review",
+        action_id="act-dc4-001",
+        state_version=state.state_version,
+        expected_phase="implementation",
+        phase="implementation",
+        iteration=1,
+        context={},
+    )
+    d._run_wait_external_review(proposal, state, {})
+
+    assert call_order == ["snapshot", "confirm"]
+    assert confirmed_with["result"] is collected
 
 
 def test_wait_external_review_push_stops_safely_on_push_integrity_violation(
@@ -1813,7 +2424,7 @@ def test_run_maker_builds_command_with_fixed_disallow_and_stripped_env(
         driver, "_fetch_issue_snapshot", lambda *_a, **_k: {"title": "", "body": ""}
     )
 
-    result = d._run_maker(state, {"maker_agent": "backend-python-dev"})
+    result = d._run_maker(_run_maker_proposal(state), state, {"maker_agent": "backend-python-dev"})
 
     assert result["maker"]["summary"] == "done"
     cmd = captured["cmd"]
@@ -1857,7 +2468,7 @@ def test_run_maker_apportions_timeout_from_wall_clock_remaining(
         driver, "_fetch_issue_snapshot", lambda *_a, **_k: {"title": "", "body": ""}
     )
 
-    d._run_maker(state, {"maker_agent": "backend-python-dev"})
+    d._run_maker(_run_maker_proposal(state), state, {"maker_agent": "backend-python-dev"})
 
     assert captured["timeout_seconds"] <= 5.5
     assert captured["timeout_seconds"] < driver.MAKER_TIMEOUT_SECONDS
@@ -1884,7 +2495,7 @@ def test_run_maker_short_circuits_without_spawning_child_when_wall_clock_exhaust
 
     monkeypatch.setattr(d, "_run_child", _boom)
 
-    result = d._run_maker(state, {"maker_agent": "backend-python-dev"})
+    result = d._run_maker(_run_maker_proposal(state), state, {"maker_agent": "backend-python-dev"})
 
     assert result["maker"]["timed_out"] is True
     assert result["infrastructure_failure"] is True
@@ -2026,6 +2637,63 @@ def test_run_checker_marks_infrastructure_failure_when_llm_reviewer_errors(
     artifact = lc.load_artifact(loop_id, project_dir, "act-000003", "check_result.json")
     assert artifact is not None
     assert json.loads(artifact) == payload  # driver's own payload == what it sealed
+
+
+def test_run_checker_writes_nothing_when_lease_lost_during_llm_review(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DH3: a lease lost by the background heartbeat thread *during* the LLM-review phase
+    (mechanical already passed) must not durably write `check_result.json`. An LLM
+    reviewer's `claude -p` child killed by `_kill_current_child()` surfaces as an ordinary
+    `ClaudeChildFailedError` -> infra-failure `CheckResult` with no lease-loss signal of its
+    own, so `_run_checker` must check `self._lease_lost` directly right before the final
+    artifact save -- otherwise a restarted worker's `reconcile()` would treat this artifact
+    as a legitimate result instead of an aborted run."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.worktree_path = project_dir
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(lc, "run_mechanical_checks", lambda *a, **k: [])
+    monkeypatch.setattr(lc, "checker_pass_criteria", lambda *a, **k: {"critical": 0, "high": 0})
+
+    def reviewer_that_loses_lease(_state: Any, _action_id: str, _reviewer: str) -> lc.CheckResult:
+        # Simulate the background heartbeat thread detecting lease loss mid-review; the
+        # reviewer itself still returns a normal, passing result (it was killed but its
+        # child process's failure was already absorbed elsewhere as an ordinary error).
+        d._lease_lost.set()
+        return lc.CheckResult(
+            passed=True,
+            layer="llm_review",
+            signature="",
+            findings=[],
+            raw_artifact_path="",
+            infrastructure_failure=False,
+        )
+
+    monkeypatch.setattr(d, "_run_one_llm_reviewer", reviewer_that_loses_lease)
+
+    proposal = lc.ProposeResult(
+        action="run_checker",
+        action_id="act-dh3-001",
+        state_version=state.state_version,
+        expected_phase="implementation",
+        phase="implementation",
+        iteration=1,
+        context={},
+    )
+    params = {
+        "mechanical": {"commands": ["pytest -q"]},
+        "llm_review": {"baseline": "code-reviewer"},
+    }
+    payload = d._run_checker(proposal, state, params)
+
+    assert payload == {}
+    assert d._lease_lost.is_set()
+    assert lc.load_artifact(loop_id, project_dir, "act-dh3-001", "check_result.json") is None
 
 
 def test_run_checker_passes_when_mechanical_and_llm_review_both_pass(
@@ -2629,7 +3297,7 @@ def test_run_maker_treats_nonzero_returncode_as_infrastructure_failure(
         ),
     )
 
-    result = d._run_maker(state, {"maker_agent": "backend-python-dev"})
+    result = d._run_maker(_run_maker_proposal(state), state, {"maker_agent": "backend-python-dev"})
 
     assert result["infrastructure_failure"] is True
     assert "summary" not in result["maker"]
@@ -2807,6 +3475,128 @@ def test_reconstruct_push_integrity_baseline_recovers_journaled_value_after_cras
     assert lds.classify_push_integrity(d2._remote_head_baseline, current_head) == "violation"
 
 
+def test_push_verified_branch_journals_intent_before_pushing(tmp_path: Path) -> None:
+    """DM1: `_push_verified_branch` must journal the intended new head *before* running
+    `git push`, so `_recover_baseline_from_pending_push_intent` has something to recover from
+    if the process crashes between the push landing and `_persist_push_baseline` recording
+    it."""
+    loop_id = "abcd1234-issue-1"
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_repo_with_remote(repo, remote)
+    project_dir = str(repo)
+    state = lc._initial_state(
+        loop_id, "issue-loop", "abcd1234", project_dir, "main", "implementation"
+    )
+    state.status = "running"
+    state.branch = "main"
+    state.worktree_path = project_dir
+    lc._write_state(state, project_dir)
+    lock = lc.acquire_lock(loop_id, project_dir, "owner", 3600)
+    assert lock is not None
+
+    (repo / "fix.txt").write_text("maker fix\n", encoding="utf-8")
+    _git(["add", "fix.txt"], repo)
+    _git(["commit", "-m", "fix"], repo)
+    expected_head = _git(["rev-parse", "HEAD"], repo)
+
+    d = driver.LoopDriver(loop_id, project_dir, lock.lease_token)
+    assert d._load_persisted_push_intent() is None
+
+    d._push_verified_branch(project_dir, "main")
+
+    assert d._load_persisted_push_intent() == expected_head
+    assert d._load_persisted_push_baseline() == expected_head
+
+
+def test_reconstruct_push_integrity_baseline_recovers_from_pending_push_intent_after_crash(
+    tmp_path: Path,
+) -> None:
+    """DM1 regression: a crash between `_push_verified_branch`'s `git push` landing on the
+    remote and `_persist_push_baseline` recording it must not make the restarted driver treat
+    its own just-completed, legitimate push as an out-of-band `push_integrity_violation`. The
+    journaled *intent* (this driver's own local HEAD, recorded right before the push) matching
+    the live remote HEAD is proof the push actually happened, so the baseline must be
+    recovered forward to that head instead of staying at the stale, already-confirmed value
+    from the *previous* push."""
+    loop_id = "abcd1234-issue-1"
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_repo_with_remote(repo, remote)
+    project_dir = str(repo)
+    state = lc._initial_state(
+        loop_id, "issue-loop", "abcd1234", project_dir, "main", "implementation"
+    )
+    state.status = "running"
+    state.branch = "main"
+    state.worktree_path = project_dir
+    lc._write_state(state, project_dir)
+    lock = lc.acquire_lock(loop_id, project_dir, "owner", 3600)
+    assert lock is not None
+
+    # A previous iteration's push already completed and was properly confirmed.
+    old_head = _git(["rev-parse", "HEAD"], repo)
+    d1 = driver.LoopDriver(loop_id, project_dir, lock.lease_token)
+    d1._persist_push_baseline(old_head, "main")
+
+    # This iteration's Maker commits a new fix, and the driver journals its *intent* to push
+    # it (mirroring `_push_verified_branch`'s ordering) right before the push actually lands
+    # on the remote -- then "crashes" before `_persist_push_baseline` can record it.
+    (repo / "fix.txt").write_text("maker fix\n", encoding="utf-8")
+    _git(["add", "fix.txt"], repo)
+    _git(["commit", "-m", "fix"], repo)
+    new_head = _git(["rev-parse", "HEAD"], repo)
+    assert new_head != old_head
+    d1._persist_push_intent(new_head, "main")
+    _git(["push", "origin", "main"], repo)
+
+    # Crash-restart: a fresh LoopDriver instance, as `loop_scheduler.py` would spawn.
+    d2 = driver.LoopDriver(loop_id, project_dir, lock.lease_token)
+    assert d2._remote_head_baseline is None
+
+    d2._reconstruct_push_integrity_baseline()
+
+    assert d2._remote_head_baseline == new_head
+    current_head = lds.get_remote_head(project_dir, "main")
+    assert lds.classify_push_integrity(d2._remote_head_baseline, current_head) == "ok"
+    # The recovery must be durably re-persisted, not just held in-memory on `d2`.
+    assert d2._load_persisted_push_baseline() == new_head
+
+
+def test_reconstruct_push_integrity_baseline_ignores_stale_or_unmatched_push_intent(
+    tmp_path: Path,
+) -> None:
+    """DM1: a journaled push intent that does *not* match the live remote HEAD (the push
+    never happened, or something else has since moved the remote) must not be recovered from
+    -- the caller falls back to its existing (unaffected) baseline-recovery logic."""
+    loop_id = "abcd1234-issue-1"
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_repo_with_remote(repo, remote)
+    project_dir = str(repo)
+    state = lc._initial_state(
+        loop_id, "issue-loop", "abcd1234", project_dir, "main", "implementation"
+    )
+    state.status = "running"
+    state.branch = "main"
+    state.worktree_path = project_dir
+    lc._write_state(state, project_dir)
+    lock = lc.acquire_lock(loop_id, project_dir, "owner", 3600)
+    assert lock is not None
+
+    known_good_head = _git(["rev-parse", "HEAD"], repo)
+    d1 = driver.LoopDriver(loop_id, project_dir, lock.lease_token)
+    d1._persist_push_baseline(known_good_head, "main")
+    # An intent was journaled for a push that never actually reached the remote (e.g. the
+    # driver crashed *before* the `git push` call itself, not after it).
+    d1._persist_push_intent("never-pushed-sha", "main")
+
+    d2 = driver.LoopDriver(loop_id, project_dir, lock.lease_token)
+    d2._reconstruct_push_integrity_baseline()
+
+    assert d2._remote_head_baseline == known_good_head
+
+
 def test_reconstruct_push_integrity_baseline_persists_first_live_read_to_journal(
     tmp_path: Path,
 ) -> None:
@@ -2857,10 +3647,80 @@ def test_run_maker_persists_expected_baseline_to_journal_before_invoking_claude_
         lambda *a, **k: subprocess.CompletedProcess([], 0, json.dumps({"result": "done"}), ""),
     )
 
-    d._run_maker(state, {"maker_agent": "backend-python-dev"})
+    d._run_maker(_run_maker_proposal(state), state, {"maker_agent": "backend-python-dev"})
 
     assert d._remote_head_baseline == "sha-pre-maker"
     assert d._load_persisted_push_baseline() == "sha-pre-maker"
+
+
+def test_run_maker_stops_safely_when_persisted_baseline_mismatches_live_remote_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SH3: before this fix, `_run_maker` unconditionally re-derived a "new" baseline from
+    whatever the live remote HEAD is right now and journaled it, silently laundering any
+    out-of-band push that landed between the last verified baseline and this Maker run into
+    the new trusted baseline. It must instead detect the mismatch and stop safely (journal-
+    first), mirroring `_verify_push_integrity_or_stop`, and must never spawn a Maker child or
+    overwrite the last known-good persisted baseline with the compromised live value."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.worktree_path = project_dir
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    d._persist_push_baseline("sha-old-known-good", state.branch)  # last verified baseline
+    monkeypatch.setattr(lc, "is_repo_identity_verified", lambda _state: False)
+
+    monkeypatch.setattr(lds, "get_remote_head", lambda *_a, **_k: "sha-out-of-band")
+
+    def _boom(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("must not spawn a Maker child once a baseline mismatch is detected")
+
+    monkeypatch.setattr(d, "_run_child", _boom)
+
+    with pytest.raises(driver.DriverTerminated):
+        d._run_maker(_run_maker_proposal(state), state, {"maker_agent": "backend-python-dev"})
+
+    # The compromised live head must never be adopted as the new "trusted" baseline.
+    assert d._load_persisted_push_baseline() == "sha-old-known-good"
+    stopped_state = lc.load_state(loop_id, project_dir)
+    assert stopped_state.status == "stopped"
+    assert stopped_state.stop_reason == "push_integrity_violation"
+
+
+def test_run_maker_adopts_live_head_when_persisted_baseline_transitions_from_absent_to_sha(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SH3: a `REMOTE_HEAD_ABSENT` <-> real-sha transition is also a violation (Issue F6's
+    sentinel is deliberately never equal to a real sha), not something `classify_push_integrity`
+    silently waves through just because one side was merely "unconfirmed" rather than known-bad."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.worktree_path = project_dir
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    d._persist_push_baseline(lds.REMOTE_HEAD_ABSENT, state.branch)  # confirmed-absent baseline
+    monkeypatch.setattr(lc, "is_repo_identity_verified", lambda _state: False)
+    monkeypatch.setattr(lds, "get_remote_head", lambda *_a, **_k: "sha-appeared-out-of-band")
+    monkeypatch.setattr(
+        d,
+        "_run_child",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("must not spawn a Maker child once a baseline mismatch is detected")
+        ),
+    )
+
+    with pytest.raises(driver.DriverTerminated):
+        d._run_maker(_run_maker_proposal(state), state, {"maker_agent": "backend-python-dev"})
+
+    assert d._load_persisted_push_baseline() == lds.REMOTE_HEAD_ABSENT
+    stopped_state = lc.load_state(loop_id, project_dir)
+    assert stopped_state.stop_reason == "push_integrity_violation"
 
 
 # --------------------------------------------------------------------------------------------
@@ -3207,7 +4067,7 @@ def test_maker_add_dir_never_includes_the_sealed_artifact_directory(
         lambda *a, **k: subprocess.CompletedProcess([], 0, json.dumps({"result": "done"}), ""),
     )
 
-    d._run_maker(state, {"maker_agent": "backend-python-dev"})
+    d._run_maker(_run_maker_proposal(state), state, {"maker_agent": "backend-python-dev"})
 
     loop_dir = lc.loop_dir(loop_id, project_dir)
     for add_dir in captured["add_dirs"]:

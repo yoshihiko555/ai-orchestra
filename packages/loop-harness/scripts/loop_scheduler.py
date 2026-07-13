@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import shlex
 import subprocess
 import sys
@@ -54,13 +55,31 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     project = _project_dir(args.project)
     if args.command == "print-launchd":
+        _ensure_scheduler_log_dir(project)
         print(render_launchd_plist(project, definition_id=args.definition))
         return 0
     if args.command == "print-cron":
+        _ensure_scheduler_log_dir(project)
         print(render_cron_entry(project, definition_id=args.definition))
         return 0
     run_scheduler(project, args.definition, max_cycles=args.max_cycles)
     return 0
+
+
+def _ensure_scheduler_log_dir(project_dir: str) -> None:
+    """Create `.claude/loop/` at template-generation time (SN4), not at job-start time.
+
+    launchd opens `StandardOutPath`/`StandardErrorPath` for redirection *before* it exec's
+    `ProgramArguments` - so the `mkdir -p ... && exec ...` wrapper baked into
+    `render_launchd_plist`'s template (#H17) very likely runs too late to matter: launchd may
+    already have failed to open the (nonexistent) log paths by the time that wrapper shell
+    starts. Creating the directory here, once, when the operator runs
+    `print-launchd`/`print-cron` to generate the install artifact, guarantees it exists before
+    the job is ever installed/loaded, independent of that in-template `mkdir -p`'s actual
+    effectiveness.
+    """
+    log_dir = Path(project_dir).resolve() / ".claude" / "loop"
+    log_dir.mkdir(parents=True, exist_ok=True)
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -166,8 +185,14 @@ def _repo_name_with_owner(project_dir: str) -> str:
     return completed.stdout.strip()
 
 
-def _gh_list_issues(repo: str, label: str) -> str:
+def _gh_list_issues(repo: str, label: str, project_dir: str) -> str:
     """Run `gh api .../issues` (paginated) and return its raw stdout, or "" on failure.
+
+    `cwd=project_dir` (SN5): without it, `gh` resolves the target host/auth from whatever
+    directory the resident scheduler process happens to have been started in (or its
+    parent's cwd), not the actual project repository - misresolving the host on GH
+    Enterprise setups (or any environment with per-directory `gh` auth/host config)
+    mirrors the fix already applied in `_repo_name_with_owner`.
 
     `check=False`: a failed `gh` call must not raise and take the resident scheduler process
     down with it (#34). Callers treat "" the same as an empty result set and log the failure.
@@ -203,6 +228,7 @@ def _gh_list_issues(repo: str, label: str) -> str:
                 "-f",
                 "direction=asc",
             ],
+            cwd=project_dir,
             capture_output=True,
             text=True,
             timeout=30,
@@ -268,7 +294,7 @@ def list_labeled_issues(project_dir: str, label: str) -> list[dict[str, Any]]:
     those must be excluded from loop discovery (#9).
     """
     repo = _repo_name_with_owner(project_dir)
-    raw = _gh_list_issues(repo, label)
+    raw = _gh_list_issues(repo, label, project_dir)
     data = _parse_paginated_json(raw)
     return [item for item in data if isinstance(item, dict) and "pull_request" not in item]
 
@@ -486,6 +512,28 @@ def _is_lease_expired(loop_id: str, project_dir: str) -> bool:
     return lock is None or not lc.is_lease_alive(lock)
 
 
+def _untracked_live_active_loop_ids(runtime: SchedulerRuntime, project_dir: str) -> set[str]:
+    """Return active (running/waiting_external) loop_ids with a live lease this process has
+    not tracked in `runtime.workers` (SN1).
+
+    This is exactly the set `respawn_orphaned_active_loops` correctly leaves alone (a live
+    lease means some owner - typically a previous scheduler process's still-running child
+    left behind by a scheduler restart - still holds it, so respawning would create a
+    duplicate worker). `discover_loop_ids` already excludes all of `active_loop_ids()`
+    (tracked or not) from fresh candidates, so these loop_ids can never be spawned as
+    duplicates. But they still occupy a real, live concurrency slot even though
+    `len(runtime.workers)` does not reflect it - without counting them here too,
+    `spawn_new_workers`'s naive `concurrency_limit - len(runtime.workers)` availability
+    calculation would undercount actual occupancy and spawn brand-new workers past the
+    configured cap.
+    """
+    return {
+        loop_id
+        for loop_id in active_loop_ids(project_dir)
+        if loop_id not in runtime.workers and not _is_lease_expired(loop_id, project_dir)
+    }
+
+
 def respawn_orphaned_active_loops(runtime: SchedulerRuntime, project_dir: str) -> list[str]:
     """Respawn active-status loops this process lost track of, e.g. after a restart (#F4).
 
@@ -521,8 +569,11 @@ def respawn_orphaned_active_loops(runtime: SchedulerRuntime, project_dir: str) -
 
 # Marker embedded in a retired `pending` loop's state-dir name (#H3/#H11). Real loop_ids are
 # always `<repo-identity-hash>-issue-<N>` (see `worktree_manager.compute_loop_id`), which never
-# contains this substring, so filtering on it cannot collide with a live loop_id.
-_ORPHANED_PENDING_MARKER = ".orphaned-"
+# contains this substring, so filtering on it cannot collide with a live loop_id. Defined in
+# `loop_common.py` (as `ORPHANED_PENDING_MARKER`, SM1) so `loop_status.py` shares the same
+# literal for purge-eligibility/display handling; aliased here under the historical private
+# name to avoid rewriting every call site in this file.
+_ORPHANED_PENDING_MARKER = lc.ORPHANED_PENDING_MARKER
 
 
 def recover_orphaned_pending_loops(runtime: SchedulerRuntime, project_dir: str) -> list[str]:
@@ -586,9 +637,17 @@ def _retire_orphaned_pending_dir(entry: Path) -> None:
 
 
 def reap_finished_workers(runtime: SchedulerRuntime, project_dir: str) -> list[str]:
-    """Poll tracked workers; restart abnormal exits unless failed/stopped. Return respawned ids."""
-    respawned = _respawn_expired_cooldowns(runtime, project_dir)
+    """Poll tracked workers; restart abnormal exits unless failed/stopped. Return respawned ids.
+
+    SN6: dead workers are reaped (freeing their concurrency slots in `runtime.workers`) *before*
+    `_respawn_expired_cooldowns` is checked, not after. Checking cooldowns first would compute
+    `_respawn_expired_cooldowns`'s own concurrency-cap headroom against the still-stale
+    `len(runtime.workers)` count - including workers that are about to be reaped by this very
+    call - starving a cooldown-elapsed loop of a slot that is in fact freeing up in this same
+    cycle, deferring its restart to (at least) the next poll interval instead.
+    """
     finished = [loop_id for loop_id, proc in runtime.workers.items() if proc.poll() is not None]
+    respawned: list[str] = []
     for loop_id in finished:
         proc = runtime.workers.pop(loop_id)
         if proc.returncode == 0 or loop_id in runtime.stopped_loop_ids:
@@ -607,14 +666,25 @@ def reap_finished_workers(runtime: SchedulerRuntime, project_dir: str) -> list[s
             continue
         runtime.workers[loop_id] = spawn_worker(loop_id, project_dir)
         respawned.append(loop_id)
+    respawned.extend(_respawn_expired_cooldowns(runtime, project_dir))
     return respawned
 
 
 def spawn_new_workers(
     runtime: SchedulerRuntime, project_dir: str, definition: ld.LoopDefinition
 ) -> list[str]:
-    """Spawn newly discovered workers up to the concurrency cap (3.2 節)."""
-    available = concurrency_limit(project_dir) - len(runtime.workers)
+    """Spawn newly discovered workers up to the concurrency cap (3.2 節).
+
+    SN1: occupancy also counts `_untracked_live_active_loop_ids` - active loops with a live
+    lease this process has not tracked in `runtime.workers` (e.g. left running by a previous
+    scheduler process across a restart). `respawn_orphaned_active_loops` correctly does not
+    touch them (their lease is still alive), so they never enter `runtime.workers`, but they
+    are still real, live workers occupying a concurrency slot. Without counting them here,
+    `concurrency_limit - len(runtime.workers)` alone would undercount actual occupancy and
+    spawn brand-new workers past the configured cap.
+    """
+    occupied = len(runtime.workers) + len(_untracked_live_active_loop_ids(runtime, project_dir))
+    available = concurrency_limit(project_dir) - occupied
     if available <= 0:
         return []
     # #11: loop_ids mid-cooldown must also be excluded so discovery does not treat a
@@ -631,13 +701,20 @@ def spawn_new_workers(
 
 
 def run_cycle(runtime: SchedulerRuntime, project_dir: str, definition: ld.LoopDefinition) -> None:
-    """One discovery -> cap check -> spawn / monitor / restart poll cycle."""
+    """One discovery -> cap check -> spawn / monitor / restart poll cycle.
+
+    SN6: `reap_finished_workers` (which frees dead workers' slots, then respawns any
+    cooldown-elapsed loop against the now-current slot count - see that function's docstring)
+    runs first, ahead of `recover_orphaned_pending_loops` and `respawn_orphaned_active_loops`,
+    so a slot a cooldown-elapsed loop is waiting on is never first handed to an unrelated
+    recovered/orphaned-active loop instead.
+    """
     reap_finished_workers(runtime, project_dir)
-    respawn_orphaned_active_loops(runtime, project_dir)
     # Must run before spawn_new_workers (#H3/#H11): retiring a stale `pending` state dir this
     # cycle lets discovery treat the same Issue as a fresh candidate in this same cycle,
     # instead of only on the next poll.
     recover_orphaned_pending_loops(runtime, project_dir)
+    respawn_orphaned_active_loops(runtime, project_dir)
     spawn_new_workers(runtime, project_dir, definition)
 
 
@@ -645,31 +722,69 @@ def run_cycle(runtime: SchedulerRuntime, project_dir: str, definition: ld.LoopDe
 
 
 def verify_repo_identity_at_startup(project_dir: str) -> list[str]:
-    """Safety-stop any existing loop whose recorded repo-identity mismatches; return stopped ids."""
+    """Safety-stop any existing loop whose recorded repo-identity mismatches; return stopped ids.
+
+    SN8: a mismatched loop whose lease is still alive is deliberately excluded from the
+    returned list (see `_safe_stop_repo_identity_mismatch`) - it is neither stopped nor
+    treated as already-handled, so it is re-evaluated on the next call (e.g. after the
+    scheduler process restarts) once the lease has actually expired.
+    """
     expected = wm.resolve_repo_identity_hash(project_dir)
     root = lc.loop_root(project_dir)
     if not root.is_dir():
         return []
     stopped: list[str] = []
     for entry in sorted(root.iterdir()):
+        # A retired orphaned-pending dir (see `recover_orphaned_pending_loops`) still carries
+        # the original `state.loop_id` inside its state.json, but its directory name has been
+        # renamed aside with `_ORPHANED_PENDING_MARKER`. Without this filter,
+        # `_safe_stop_repo_identity_mismatch(state, ...)` below would write a brand-new
+        # `stopped` state.json at the *original* (no-suffix) loop_dir path - which no longer
+        # exists - permanently orphaning both dirs: the original path becomes an unwanted
+        # terminal state blocking Issue rediscovery, and the renamed dir is left untouched
+        # (still `pending`, never cleaned up).
+        if not entry.is_dir() or _ORPHANED_PENDING_MARKER in entry.name:
+            continue
         state = _try_load_state(entry, project_dir)
         if state is None or state.status in _NON_RESTARTABLE_STATUSES:
             continue
         if state.repo_identity_hash == expected:
             continue
-        _safe_stop_repo_identity_mismatch(state, project_dir)
-        stopped.append(state.loop_id)
+        if _safe_stop_repo_identity_mismatch(state, project_dir):
+            stopped.append(state.loop_id)
     return stopped
 
 
-def _safe_stop_repo_identity_mismatch(state: lc.LoopState, project_dir: str) -> None:
+def _safe_stop_repo_identity_mismatch(state: lc.LoopState, project_dir: str) -> bool:
     """Journal-first -> state -> mandatory macOS notify -> no Issue comment (3.4 節).
+    Return True iff the stop was actually written.
 
     Written directly (not via `loop_driver_support.persist_safe_stop`) because the
     scheduler holds no lease for a loop it is refusing to touch precisely because the
     repository identity looks wrong; a foreign/stale lease token is not evidence this
     write is unsafe the way it is for the driver's own in-flight writes.
+
+    SN8: this function does not itself fence its `state.json` write against a live
+    lease (see above - it deliberately holds none). If `state.loop_id`'s lease is still
+    alive, a detached worker legitimately owns it and would overwrite this unfenced
+    `stopped` write with its own next in-flight persist moments later, silently
+    reverting the safety-stop. Guard against that by skipping the write entirely while
+    the lease is alive (logging a warning instead) - the loop is left untouched and
+    excluded from the returned `stopped` set, so it is retried (not permanently
+    swallowed) the next time `verify_repo_identity_at_startup` runs, by which point the
+    worker will have exited or its lease will have expired and this write can no longer
+    race a live owner.
     """
+    if not _is_lease_expired(state.loop_id, project_dir):
+        print(
+            lc.redact(
+                f"loop_scheduler: {state.loop_id} repo_identity_mismatch detected but its "
+                "lease is still held by a live worker; deferring safety-stop until the "
+                "lease expires"
+            ),
+            file=sys.stderr,
+        )
+        return False
     lc.append_journal_event(
         state.loop_id,
         project_dir,
@@ -700,6 +815,7 @@ def _safe_stop_repo_identity_mismatch(state: lc.LoopState, project_dir: str) -> 
         lc.redact(f"loop_scheduler: {state.loop_id} stopped (repo_identity_mismatch)"),
         file=sys.stderr,
     )
+    return True
 
 
 # -- main poll loop --------------------------------------------------------------------------
@@ -773,6 +889,15 @@ def render_launchd_plist(
     is missing - unlike a shell's `>>` redirection, launchd does not create it. `exec` replaces
     the shell so the scheduler still becomes the tracked/`KeepAlive`-monitored process,
     matching a plain direct invocation for restart purposes.
+
+    SN4: the in-template `mkdir -p` above is unlikely to actually help on its own - launchd
+    opens `StandardOutPath`/`StandardErrorPath` for redirection *before* `ProgramArguments` is
+    exec'd, so by the time `mkdir -p` in this wrapper shell runs, launchd may have already
+    failed to open those paths. The log dir is therefore also (redundantly, but authoritatively)
+    created eagerly by `main()`'s `print-launchd` handler at template-generation time - i.e. the
+    log dir is expected to already exist by the time this plist is ever installed/loaded. The
+    in-template `mkdir -p` is left in place as a harmless belt-and-suspenders guard (e.g. if the
+    log dir is deleted after generation but before install).
     """
     script = str(script_path or _SCRIPT_DIR / "loop_scheduler.py")
     project = str(Path(project_dir).resolve())
@@ -842,6 +967,16 @@ def render_cron_entry(
     any other project's already-running scheduler as "this project's scheduler is alive" and
     skip starting a new one for the current project entirely.
 
+    `script`/`project` are `re.escape`-d before being embedded in the `pgrep -f` pattern
+    (SM2): `pgrep -f` interprets its argument as a POSIX extended regular expression, not a
+    literal string, so an unescaped path containing ERE metacharacters (`( ) + [ ] * ? |`
+    etc. - all legal filesystem-path characters) could fail to match at all or match the
+    wrong process. This is unrelated to the `shlex.quote` calls elsewhere in this function,
+    which only protect *shell* parsing of the crontab line, not `pgrep`'s own regex parsing
+    of the (already shell-unescaped) pattern string it receives. `render_launchd_plist` has
+    no equivalent issue: its `ProgramArguments` array passes the script path as a literal
+    argv element (no shell/regex re-parsing), so no such escaping is needed there.
+
     The cron line is prefixed with `mkdir -p <log dir> &&` (#H17): `.claude/loop/` may not
     exist yet on a fresh checkout, and the shell's `>> ... 2>&1` redirection at the end of this
     line fails outright (whole command errors out, scheduler never starts) if its parent
@@ -857,6 +992,13 @@ def render_cron_entry(
     `loop_scheduler.py` at startup, which is a larger, riskier change than a
     template-rendering fix belongs in; left as a template TODO for a follow-up rather than
     bundled here.
+
+    Every literal `%` in the assembled line is escaped to `\\%` (SN7): `crontab` treats an
+    unescaped `%` as a newline at the crontab-file-parsing stage, *before* the shell ever
+    sees the line - splitting the command there (and feeding the remainder to the command's
+    stdin) regardless of any `shlex.quote` shell-quoting already applied. A `project_dir`
+    containing a literal `%` (a legal filesystem-path character) would otherwise silently
+    truncate this cron entry into a broken, partially-executed command.
     """
     script = str(script_path or _SCRIPT_DIR / "loop_scheduler.py")
     project = str(Path(project_dir).resolve())
@@ -866,13 +1008,19 @@ def render_cron_entry(
     definition_args = ""
     if definition_id != DEFAULT_DEFINITION_ID:
         definition_args = f" --definition {shlex.quote(definition_id)}"
-    pgrep_pattern = f"{script} --project {project}"
-    return (
+    # `pgrep -f <pattern>` treats <pattern> as a POSIX extended regular expression, not a
+    # literal string (SM2): an unescaped `script`/`project` containing ERE metacharacters
+    # (`( ) + [ ] * ? |` etc., all legal in a filesystem path) would either fail to match at
+    # all (e.g. an unbalanced `(`) or match something other than the literal path intended.
+    # `re.escape` backslash-escapes those metacharacters so pgrep matches them literally.
+    pgrep_pattern = f"{re.escape(script)} --project {re.escape(project)}"
+    line = (
         f"*/5 * * * * mkdir -p {shlex.quote(log_dir)} && "
         f"pgrep -f {shlex.quote(pgrep_pattern)} || "
         f"{shlex.quote(python)} {shlex.quote(script)} --project {shlex.quote(project)}"
         f"{definition_args} >> {shlex.quote(log_path)} 2>&1\n"
     )
+    return line.replace("%", "\\%")
 
 
 if __name__ == "__main__":

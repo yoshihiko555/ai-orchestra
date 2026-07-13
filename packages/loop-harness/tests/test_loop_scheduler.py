@@ -11,6 +11,7 @@ monkeypatch, and worker spawning is monkeypatched to fake `Popen`-like objects.
 from __future__ import annotations
 
 import json
+import re
 import shlex
 import subprocess
 import sys
@@ -286,7 +287,7 @@ def test_list_labeled_issues_builds_expected_gh_invocation(
     def fake_repo_name(project_dir: str) -> str:
         return "acme/widgets"
 
-    def fake_gh_list(repo: str, label: str) -> str:
+    def fake_gh_list(repo: str, label: str, project_dir: str) -> str:
         captured["args"] = (repo, label)
         return json.dumps([{"number": 9, "created_at": "2026-01-01T00:00:00Z", "labels": []}])
 
@@ -306,7 +307,7 @@ def test_list_labeled_issues_excludes_pull_requests(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(
         scheduler,
         "_gh_list_issues",
-        lambda repo, label: json.dumps(
+        lambda repo, label, project_dir: json.dumps(
             [
                 {"number": 1, "created_at": "2026-01-01T00:00:00Z", "labels": []},
                 {
@@ -332,7 +333,9 @@ def test_list_labeled_issues_parses_multiple_paginated_json_arrays(
     monkeypatch.setattr(scheduler, "_repo_name_with_owner", lambda project_dir: "acme/widgets")
     page_1 = json.dumps([{"number": 1, "created_at": "2026-01-01T00:00:00Z", "labels": []}])
     page_2 = json.dumps([{"number": 2, "created_at": "2026-01-02T00:00:00Z", "labels": []}])
-    monkeypatch.setattr(scheduler, "_gh_list_issues", lambda repo, label: page_1 + page_2)
+    monkeypatch.setattr(
+        scheduler, "_gh_list_issues", lambda repo, label, project_dir: page_1 + page_2
+    )
 
     issues = scheduler.list_labeled_issues("/some/project", "loop:issue")
 
@@ -344,7 +347,7 @@ def test_list_labeled_issues_returns_empty_on_gh_failure_without_raising(
 ) -> None:
     """A failed `gh` call must not raise and take the resident scheduler down with it (#34)."""
     monkeypatch.setattr(scheduler, "_repo_name_with_owner", lambda project_dir: "acme/widgets")
-    monkeypatch.setattr(scheduler, "_gh_list_issues", lambda repo, label: "")
+    monkeypatch.setattr(scheduler, "_gh_list_issues", lambda repo, label, project_dir: "")
 
     assert scheduler.list_labeled_issues("/some/project", "loop:issue") == []
 
@@ -361,11 +364,12 @@ def test_gh_list_issues_returns_empty_string_on_nonzero_exit(
 
     def fake_run(*args: object, **kwargs: object) -> _FakeCompleted:
         assert kwargs.get("check") is False
+        assert kwargs.get("cwd") == "/some/project"
         return _FakeCompleted()
 
     monkeypatch.setattr(scheduler.subprocess, "run", fake_run)
 
-    assert scheduler._gh_list_issues("acme/widgets", "loop:issue") == ""
+    assert scheduler._gh_list_issues("acme/widgets", "loop:issue", "/some/project") == ""
 
 
 def test_gh_list_issues_returns_empty_string_on_timeout(
@@ -380,7 +384,7 @@ def test_gh_list_issues_returns_empty_string_on_timeout(
 
     monkeypatch.setattr(scheduler.subprocess, "run", fake_run)
 
-    assert scheduler._gh_list_issues("acme/widgets", "loop:issue") == ""
+    assert scheduler._gh_list_issues("acme/widgets", "loop:issue", "/some/project") == ""
 
 
 def test_gh_list_issues_returns_empty_string_on_missing_gh_executable(
@@ -395,7 +399,7 @@ def test_gh_list_issues_returns_empty_string_on_missing_gh_executable(
 
     monkeypatch.setattr(scheduler.subprocess, "run", fake_run)
 
-    assert scheduler._gh_list_issues("acme/widgets", "loop:issue") == ""
+    assert scheduler._gh_list_issues("acme/widgets", "loop:issue", "/some/project") == ""
 
 
 # --------------------------------------------------------------------------------------------
@@ -610,6 +614,38 @@ def test_reap_finished_workers_does_not_respawn_cooldown_when_at_capacity(
     assert result == []
     assert cooling_loop_id not in runtime.workers
     assert cooling_loop_id in runtime.foreign_lease_cooldown_until
+
+
+def test_reap_finished_workers_respawns_cooldown_using_slot_freed_this_same_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SN6: a cooldown-elapsed loop must be able to use a concurrency slot freed by reaping a
+    dead worker within this *same* `reap_finished_workers` call, not only on a later cycle.
+    Checking cooldown-expiry before reaping would compute headroom against the stale
+    (pre-reap) worker count and starve the cooldown-elapsed loop for a full extra cycle."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    cooling_loop_id = "aaaaaaaa-issue-1"
+    finishing_loop_id = "aaaaaaaa-issue-2"
+    _seed_state(tmp_path, cooling_loop_id, status="running")
+    # Both concurrency_limit(default 2) slots are occupied at call-start: one still-running
+    # unrelated worker, and one that has just exited cleanly (returncode 0) and is about to be
+    # reaped by this same call.
+    runtime = scheduler.SchedulerRuntime(
+        workers={"busy-1": _FakePopen(None), finishing_loop_id: _FakePopen(returncode=0)},
+        foreign_lease_cooldown_until={cooling_loop_id: 500.0},
+    )
+    monkeypatch.setattr(scheduler.time, "monotonic", lambda: 1000.0)  # cooldown already elapsed
+
+    respawned_proc = _FakePopen(returncode=None)
+    monkeypatch.setattr(scheduler, "spawn_worker", lambda lid, project: respawned_proc)
+
+    result = scheduler.reap_finished_workers(runtime, project_dir)
+
+    assert cooling_loop_id in result
+    assert runtime.workers[cooling_loop_id] is respawned_proc
+    assert cooling_loop_id not in runtime.foreign_lease_cooldown_until
+    assert finishing_loop_id not in runtime.workers
 
 
 # --------------------------------------------------------------------------------------------
@@ -861,6 +897,7 @@ def test_spawn_new_workers_excludes_ids_still_in_cooldown(
 ) -> None:
     """#11: a loop_id mid-cooldown must not be spawned as a "new" discovery candidate even
     though it holds no worker slot and is not in `stopped_loop_ids`."""
+    _init_repo(tmp_path)
     project_dir = str(tmp_path)
     definition = ld.load_all_definitions(project_dir)["issue-loop"]
     cooling_loop_id = "aaaaaaaa-issue-1"
@@ -893,6 +930,7 @@ def test_spawn_new_workers_excludes_ids_still_in_cooldown(
 def test_spawn_new_workers_does_not_spawn_or_discover_when_cap_reached(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _init_repo(tmp_path)
     project_dir = str(tmp_path)
     definition = ld.load_all_definitions(project_dir)["issue-loop"]
     runtime = scheduler.SchedulerRuntime(
@@ -910,9 +948,40 @@ def test_spawn_new_workers_does_not_spawn_or_discover_when_cap_reached(
     assert len(runtime.workers) == 2
 
 
+def test_spawn_new_workers_counts_untracked_live_active_loops_against_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SN1: after a scheduler restart, active (running/waiting_external) loops left behind by
+    the previous process are untracked in a fresh `SchedulerRuntime.workers` even though their
+    lease is still alive (so `respawn_orphaned_active_loops` correctly leaves them alone). They
+    must still count against the concurrency cap - otherwise `spawn_new_workers` would spawn
+    brand-new workers on top of them and exceed the configured limit."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    definition = ld.load_all_definitions(project_dir)["issue-loop"]
+    loop_id_1 = "aaaaaaaa-issue-1"
+    loop_id_2 = "aaaaaaaa-issue-2"
+    _seed_state(tmp_path, loop_id_1, status="running")
+    _seed_state(tmp_path, loop_id_2, status="waiting_external")
+    lc.acquire_lock(loop_id_1, project_dir, "previous-process", 300)
+    lc.acquire_lock(loop_id_2, project_dir, "previous-process", 300)
+    runtime = scheduler.SchedulerRuntime()  # cap is 2 by default; workers empty (fresh restart)
+
+    def _fail_discover(*args: object, **kwargs: object) -> None:
+        raise AssertionError("discovery must not run while at capacity")
+
+    monkeypatch.setattr(scheduler, "discover_loop_ids", _fail_discover)
+
+    spawned = scheduler.spawn_new_workers(runtime, project_dir, definition)
+
+    assert spawned == []
+    assert runtime.workers == {}
+
+
 def test_spawn_new_workers_spawns_only_up_to_available_capacity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _init_repo(tmp_path)
     project_dir = str(tmp_path)
     definition = ld.load_all_definitions(project_dir)["issue-loop"]
     runtime = scheduler.SchedulerRuntime()  # cap 2, 0 running -> 2 slots available
@@ -934,6 +1003,7 @@ def test_spawn_new_workers_passes_definition_id_to_spawn_worker(
     """#G3: the definition actually used for discovery must be forwarded to `spawn_worker` so
     a brand-new loop's `loop_driver.py` child does not silently fall back to
     `DEFAULT_DEFINITION_ID` when the scheduler was started with a custom `--definition`."""
+    _init_repo(tmp_path)
     project_dir = str(tmp_path)
     definition = ld.LoopDefinition(
         id="custom-loop",
@@ -1022,6 +1092,86 @@ def test_verify_repo_identity_at_startup_skips_already_terminal_loops(tmp_path: 
 
     assert stopped == []
     assert lc.load_state(loop_id, project_dir).status == "failed"
+
+
+def test_verify_repo_identity_at_startup_ignores_orphaned_pending_dirs(tmp_path: Path) -> None:
+    """SH1: a retired orphaned-pending dir (`.orphaned-N` suffix, see
+    `recover_orphaned_pending_loops`) still carries the *original* (no-suffix) `loop_id`
+    inside its frozen state.json, with a mismatching `repo_identity_hash` (seeded here as
+    `deadbeef` vs. this repo's real hash). Without filtering it out, `_safe_stop_repo_identity_
+    mismatch` would write a brand-new `stopped` state.json at the *original* loop_dir path
+    (which no longer exists after retirement) - permanently blocking that Issue from being
+    rediscovered, while the orphaned dir itself is left untouched (still `pending`, never
+    cleaned up)."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    loop_id = "deadbeef-issue-1"
+    _seed_state(tmp_path, loop_id, status="pending", repo_identity_hash="deadbeef")
+    loop_dir = Path(project_dir) / ".claude" / "loop" / loop_id
+    orphaned_dir = loop_dir.parent / f"{loop_id}.orphaned-1"
+    loop_dir.rename(orphaned_dir)
+
+    stopped = scheduler.verify_repo_identity_at_startup(project_dir)
+
+    assert stopped == []
+    # The original (no-suffix) path must not be resurrected with a fresh `stopped` state.
+    assert not loop_dir.exists()
+    # The orphaned dir itself must be left completely untouched.
+    orphaned_state = lc.load_state(orphaned_dir.name, project_dir)
+    assert orphaned_state.status == "pending"
+
+
+def test_verify_repo_identity_at_startup_skips_write_when_lease_still_alive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SN8: `_safe_stop_repo_identity_mismatch` holds no lease of its own, so an unfenced
+    `stopped` write would race a live detached worker's own next in-flight persist and be
+    silently overwritten - making the safety-stop a no-op in practice. While the lease is
+    still alive the write must be skipped entirely (not just eventually overwritten), and
+    the mismatched loop_id must not be reported as stopped."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    loop_id = "deadbeef-issue-1"
+    _seed_state(tmp_path, loop_id, status="running", repo_identity_hash="deadbeef")
+    lc.acquire_lock(loop_id, project_dir, "detached-worker", 300)
+
+    notified: list[str] = []
+    monkeypatch.setattr(
+        lds, "notify_macos", lambda title, message: notified.append(message) or True
+    )
+    monkeypatch.setattr(scheduler, "lds", lds)
+
+    stopped = scheduler.verify_repo_identity_at_startup(project_dir)
+
+    assert stopped == []
+    state = lc.load_state(loop_id, project_dir)
+    assert state.status == "running"
+    assert state.stop_reason is None
+    assert notified == []
+    journal_file = lc.journal_path(loop_id, project_dir)
+    assert not journal_file.exists()
+
+
+def test_verify_repo_identity_at_startup_stops_once_lease_expires(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SN8: once the lease has actually expired (TTL elapsed, no live owner left), the
+    deferred safety-stop from a previous startup call takes effect normally."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    loop_id = "deadbeef-issue-1"
+    _seed_state(tmp_path, loop_id, status="running", repo_identity_hash="deadbeef")
+    lc.acquire_lock(loop_id, project_dir, "detached-worker", 0)
+
+    monkeypatch.setattr(lds, "notify_macos", lambda title, message: True)
+    monkeypatch.setattr(scheduler, "lds", lds)
+
+    stopped = scheduler.verify_repo_identity_at_startup(project_dir)
+
+    assert stopped == [loop_id]
+    state = lc.load_state(loop_id, project_dir)
+    assert state.status == "stopped"
+    assert state.stop_reason == "repo_identity_mismatch"
 
 
 # --------------------------------------------------------------------------------------------
@@ -1204,13 +1354,38 @@ def test_render_launchd_plist_label_stable_for_same_project(tmp_path: Path) -> N
 def test_render_cron_entry_pgrep_pattern_includes_project_path(tmp_path: Path) -> None:
     """#H16: the pgrep guard must match on `--project <path>` too, not just the script path,
     so a second project sharing the same `loop_scheduler.py` script cannot be mistaken for
-    this project's already-running scheduler."""
+    this project's already-running scheduler.
+
+    The project path is embedded `re.escape`-d (SM2, since `pgrep -f` treats its pattern as a
+    regex), so this checks for the escaped form rather than the raw path string."""
     entry = scheduler.render_cron_entry(str(tmp_path))
     pgrep_index = entry.index("pgrep -f ")
     pgrep_arg_end = entry.index(" || ", pgrep_index)
     pgrep_arg = entry[pgrep_index + len("pgrep -f ") : pgrep_arg_end]
     assert "--project" in pgrep_arg
-    assert str(tmp_path.resolve()) in pgrep_arg
+    assert re.escape(str(tmp_path.resolve())) in pgrep_arg
+
+
+def test_render_cron_entry_pgrep_pattern_escapes_regex_metacharacters(tmp_path: Path) -> None:
+    """SM2: `pgrep -f <pattern>` treats <pattern> as a POSIX extended regular expression, not
+    a literal string. An unescaped project path containing ERE metacharacters (all legal in a
+    filesystem path) would either fail to match at all (e.g. an unbalanced `(`) or match
+    something other than the literal path intended."""
+    project = tmp_path / "issue (42)+x[y]?a|b.c^d$e"
+    project.mkdir()
+
+    entry = scheduler.render_cron_entry(str(project))
+
+    pgrep_index = entry.index("pgrep -f ")
+    pgrep_arg_end = entry.index(" || ", pgrep_index)
+    pgrep_arg = entry[pgrep_index + len("pgrep -f ") : pgrep_arg_end]
+    # The raw (unescaped) path must not appear verbatim in the pgrep pattern...
+    assert str(project.resolve()) not in pgrep_arg
+    # ...but its regex-escaped form must, so `pgrep -f` matches it as a literal string.
+    assert re.escape(str(project.resolve())) in pgrep_arg
+    # The whole rendered pgrep pattern must itself compile as a valid regex (an unescaped
+    # unbalanced `(` in the raw path would otherwise raise `re.error` here).
+    re.compile(pgrep_arg.strip("'\""))
 
 
 def test_render_cron_entry_pgrep_pattern_differs_across_projects(tmp_path: Path) -> None:
@@ -1285,6 +1460,23 @@ def test_render_cron_entry_shell_quotes_project_path_with_special_characters(
     assert str(project.resolve()) in tokens
 
 
+def test_render_cron_entry_escapes_percent_in_project_path(tmp_path: Path) -> None:
+    """SN7: `crontab` treats an unescaped `%` as a newline at crontab-file-parsing time (before
+    the shell ever sees the line), splitting the command and feeding the remainder to stdin. A
+    project path containing a literal `%` (a legal filesystem-path character) must not be able
+    to truncate/split the rendered cron entry."""
+    project = tmp_path / "100%-done"
+    project.mkdir()
+
+    entry = scheduler.render_cron_entry(str(project))
+
+    assert "\\%" in entry
+    assert entry.count("\n") == 1  # only the trailing newline; no unescaped `%` split it
+    # Every literal `%` in the resolved path must be escaped, not left bare.
+    unescaped = entry.replace("\\%", "")
+    assert "%" not in unescaped
+
+
 def test_main_print_launchd_and_print_cron(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1295,6 +1487,36 @@ def test_main_print_launchd_and_print_cron(
     exit_code = scheduler.main(["--project", str(tmp_path), "print-cron"])
     assert exit_code == 0
     assert "pgrep -f" in capsys.readouterr().out
+
+
+def test_main_print_launchd_creates_log_dir(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """SN4: launchd opens `StandardOutPath`/`StandardErrorPath` before exec'ing
+    `ProgramArguments`, so the in-template `mkdir -p ... && exec ...` wrapper (#H17) likely
+    runs too late; the log dir must already exist by the time `print-launchd` is run."""
+    log_dir = tmp_path / ".claude" / "loop"
+    assert not log_dir.exists()
+
+    exit_code = scheduler.main(["--project", str(tmp_path), "print-launchd"])
+
+    assert exit_code == 0
+    capsys.readouterr()
+    assert log_dir.is_dir()
+
+
+def test_main_print_cron_creates_log_dir(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """SN4: mirrors the `print-launchd` fix for `print-cron`."""
+    log_dir = tmp_path / ".claude" / "loop"
+    assert not log_dir.exists()
+
+    exit_code = scheduler.main(["--project", str(tmp_path), "print-cron"])
+
+    assert exit_code == 0
+    capsys.readouterr()
+    assert log_dir.is_dir()
 
 
 # --------------------------------------------------------------------------------------------
