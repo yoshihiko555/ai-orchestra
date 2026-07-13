@@ -1151,7 +1151,9 @@ cd <worktree> && claude -p "<scenario.prompt>" \
   - **呼び出し計上・異常検知**: brokerは全リクエスト数・累積tokenを記録し、scenarioが想定する呼び出し
     エンベロープ（概ねCLIの1 run分）を超える呼び出しを拒否し、run anomalyとしてmetadataに記録する。
     `/v1/messages/count_tokens`のroot `input_tokens`も計上し、成功responseにusageが無い場合は予算不明として
-    fail-closedする。
+    fail-closedする。path/auth/query/transfer-encoding/header allowlist・値上限のpre-admission拒否はanomalyを
+    記録するが、入力検証ノイズだけでrunを使用不能にしないようbudgetはラッチしない。`begin_request()`後の
+    proxy/stream失敗はusage不明としてbudgetをラッチし、以降をfail-closedする。
   - **転送byte上限**: candidate由来headerは既知名だけを最大128 bytesで受け、`user-agent`等はbroker固定値へ
     正規化する。`x-stainless-*` wildcard転送は行わず、body + 転送headerのrun累積を
     `max_upstream_bytes`でhard-capしてtoken外covert channelを制限する。

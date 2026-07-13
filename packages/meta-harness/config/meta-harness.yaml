@@ -5,6 +5,7 @@ evaluate:
   worktree_root: .worktrees/meta # メインルート相対（§2-0）
   repeat_default: 1
   repeat_frontier: 3
+  # Container lifetime adds broker idle + 60s; larger per-check timeouts end at that cap first.
   timeout_ms_default: 300000
   permission_mode: acceptEdits
   allowed_tools:

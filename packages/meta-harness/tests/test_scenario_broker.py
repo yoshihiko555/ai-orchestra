@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import socket
 import threading
 from collections.abc import Generator
 from email.message import Message
@@ -115,6 +116,8 @@ def test_http_handler_rejects_invalid_run_token(
 
     assert status == 401
     assert state.metrics.request_count == 0
+    assert state.metrics.budget_exceeded is False
+    assert state.metrics.anomaly is True
 
 
 def test_http_handler_rejects_oversized_forwarded_header(
@@ -127,8 +130,78 @@ def test_http_handler_rejects_oversized_forwarded_header(
         headers={"anthropic-version": "2" * 129},
     )
 
-    assert status == 413
+    assert status == 431
+    assert state.metrics.request_count == 0
+    assert state.metrics.budget_exceeded is False
+    assert state.metrics.anomaly is True
+
+
+def test_http_handler_does_not_append_second_response_after_stream_failure(
+    http_broker: tuple[Any, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server, state = http_broker
+
+    class FailingResponse:
+        status = 200
+
+        def __init__(self) -> None:
+            self.sent_chunk = False
+
+        def getheaders(self) -> list[tuple[str, str]]:
+            return [("content-type", "application/json")]
+
+        def read1(self, _size: int) -> bytes:
+            if not self.sent_chunk:
+                self.sent_chunk = True
+                return b"partial-upstream-body"
+            raise RuntimeError("stream failed after response headers")
+
+    class FailingConnection:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            self.response = FailingResponse()
+
+        def request(self, *_args: Any, **_kwargs: Any) -> None:
+            return
+
+        def getresponse(self) -> FailingResponse:
+            return self.response
+
+        def close(self) -> None:
+            return
+
+    monkeypatch.setattr(broker.http.client, "HTTPSConnection", FailingConnection)
+    request = (
+        b"POST /v1/messages HTTP/1.1\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"x-api-key: run-token\r\n"
+        b"content-type: application/json\r\n"
+        b"content-length: 2\r\n"
+        b"connection: close\r\n\r\n{}"
+    )
+    raw_chunks: list[bytes] = []
+    with socket.create_connection(server.server_address, timeout=2) as client:
+        client.sendall(request)
+        while True:
+            chunk = client.recv(4096)
+            if not chunk:
+                break
+            raw_chunks.append(chunk)
+    raw_response = b"".join(raw_chunks)
+
+    assert raw_response.count(b"HTTP/1.1") == 1
+    assert b"partial-upstream-body" in raw_response
+    assert b'"type": "error"' not in raw_response
     assert state.metrics.budget_exceeded is True
+
+    with state.lock:
+        state.metrics.budget_exceeded = False
+        state.persist_metrics_locked()
+    monkeypatch.setattr(broker.BrokerHandler, "_proxy", _complete_proxy)
+
+    follow_up_status, _headers, _payload = _post(server)
+
+    assert follow_up_status == 200
+    assert follow_up_status != 429
 
 
 def test_http_handler_releases_slot_after_unexpected_proxy_exception(

@@ -312,6 +312,7 @@
     - packages/meta-harness/tests/test_claude_credentials.py
     - packages/meta-harness/tests/test_scenario_broker.py
     - packages/meta-harness/tests/test_scenario_broker.py::test_http_handler_releases_slot_after_unexpected_proxy_exception
+    - packages/meta-harness/tests/test_scenario_broker.py::test_http_handler_does_not_append_second_response_after_stream_failure
     - packages/meta-harness/tests/test_scenario_broker.py::test_http_handler_rejects_transfer_encoding_without_admission
     - packages/meta-harness/tests/test_scenario_docker.py::test_broker_token_is_injected_via_stdin_not_argv_or_env
     - packages/meta-harness/tests/test_scenario_docker_integration.py

@@ -318,6 +318,7 @@ def broker_env(config: dict, run_token: str, port: int) -> dict[str, str]:
 def container_max_lifetime_seconds(
     config: dict, *, timeout_seconds: int | float | None = None
 ) -> int:
+    """Return the container-internal cap; longer oracle/check timeouts end here first."""
     evaluate = config.get("evaluate") or {}
     broker = (evaluate.get("isolation") or {}).get("broker") or {}
     configured_timeout = evaluate.get("timeout_ms_default", 300000)

@@ -204,6 +204,9 @@ class BrokerState:
         self.upstream_slot.release()
 
     def reject(self, reason: str) -> None:
+        # Pre-admission input noise has no upstream cost, so latching the budget would let
+        # one malformed request brick the run. It is recorded as an anomaly; connection
+        # close requires a new connection per attempt, and absolute lifetime bounds duration.
         with self.lock:
             self.metrics.rejected_count += 1
             self._mark_anomaly_locked(reason)
@@ -312,6 +315,7 @@ class BrokerHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         self.close_connection = True
+        self._headers_sent = False
         path = self.path.partition("?")[0]
         if path != self.path:
             self.state.reject("query string is not allowed")
@@ -329,6 +333,12 @@ class BrokerHandler(BaseHTTPRequestHandler):
             self.state.reject("transfer encoding is not allowed")
             self._json_error(400, "transfer encoding is not allowed")
             return
+        try:
+            _upstream_headers(self.headers, self.state.oauth_token)
+        except ValueError as exc:
+            self.state.reject("invalid upstream header")
+            self._json_error(431, str(exc))
+            return
         started, reason = self.state.begin_request()
         if not started:
             self._json_error(429, reason)
@@ -340,15 +350,13 @@ class BrokerHandler(BaseHTTPRequestHandler):
             # Post-admission validation failures intentionally latch the run budget: once a
             # request owns the upstream slot, ambiguous accounting remains fail-closed.
             self.state.abort_request()
-            self._json_error(413, str(exc))
+            self._json_error_if_headers_unsent(413, str(exc))
         except (OSError, http.client.HTTPException, TimeoutError):
             self.state.abort_request()
-            if not self.wfile.closed:
-                self._json_error(502, "upstream request failed")
+            self._json_error_if_headers_unsent(502, "upstream request failed")
         except Exception:
             self.state.abort_request()
-            if not self.wfile.closed:
-                self._json_error(502, "upstream request failed")
+            self._json_error_if_headers_unsent(502, "upstream request failed")
 
     def _read_request_body(self) -> bytes:
         try:
@@ -379,6 +387,7 @@ class BrokerHandler(BaseHTTPRequestHandler):
                     self.send_header(name, value)
             self.send_header("connection", "close")
             self.end_headers()
+            self._headers_sent = True
             while True:
                 chunk = response.read1(64 * 1024)
                 if not chunk:
@@ -389,6 +398,11 @@ class BrokerHandler(BaseHTTPRequestHandler):
         finally:
             connection.close()
         self.state.finish_request(parser.finish(), usage_observed=parser.usage_observed)
+
+    def _json_error_if_headers_unsent(self, status: int, message: str) -> None:
+        if self._headers_sent or self.wfile.closed:
+            return
+        self._json_error(status, message)
 
     def _json_error(self, status: int, message: str) -> None:
         body = json.dumps({"type": "error", "error": {"message": message}}).encode() + b"\n"
