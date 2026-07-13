@@ -51,6 +51,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`meta-harness`: ストア用 `.gitignore` エントリが SessionStart 同期で消える問題を修正**: `.claude/meta-harness/` を gitignore 管理ブロックの生成元（`gitignore_sync.py`）に追加し、同期のたびに手動追記が失われる Phase 1a の実装漏れを解消
 - **`meta-harness`: `orchex meta propose` の Codex 起動失敗を修正**: srt 隔離下で repo 内 `proposal.schema.json` が `denyRead` に遮断されないよう schema を ephemeral `CODEX_HOME` へ staging し、非 secret の `models_cache.json` / `version.json` だけを staging するようにした。構造化出力時の streaming 通信は Codex backend に限り srt の TLS 終端から除外し、proposal schema は OpenAI structured output 互換に調整した
 
+### Security
+
+- **`reverse`: `generate-mermaid.py` の `escape_label` が改行・制御文字を素通しする問題を修正**: 解析対象コードベース由来のモジュール名/ラベルに改行を仕込むことで Mermaid ノード定義を複数行に分割し構文注入できる問題を修正した。`sanitize_cluster_name` と同様に制御文字を除去し、ノード定義が単一行を保つようにした。
+
 ### Changed
 
 - **Codex の既定モデルを `gpt-5.6-sol` に更新**: エージェントルーティング、設定読込失敗時のフォールバック、新規導入用 `.codex/config.toml` テンプレートを同じモデルに揃えた。
