@@ -20,6 +20,14 @@ mh = load_module(
 )
 
 
+def test_repository_synced_config_matches_package_default() -> None:
+    repository_root = Path(__file__).resolve().parents[3]
+    package_config = repository_root / "packages/meta-harness/config/meta-harness.yaml"
+    synced_config = repository_root / ".claude/config/meta-harness/meta-harness.yaml"
+
+    assert synced_config.read_bytes() == package_config.read_bytes()
+
+
 class TestConfigLocalOverride:
     # EV-22
     def test_local_yaml_overrides_base_value(self, git_project: Path, run_meta) -> None:
@@ -52,6 +60,14 @@ class TestConfigLocalOverride:
     def test_without_local_override_uses_package_default(self, git_project: Path) -> None:
         config = mh.load_config(git_project)
         assert config["retention"]["keep_generations"] == 5
+
+    def test_package_default_enables_verified_docker_backend(self, git_project: Path) -> None:
+        config = mh.load_config(git_project)
+        isolation = config["evaluate"]["isolation"]
+        assert isolation["backend"] == "docker"
+        assert isolation["execution_backend"] == "docker"
+        assert isolation["image_pin"] == "2.1.207 (Claude Code)"
+        assert isolation["broker"]["pricing_upper_bound_usd_per_million"]["output"] == 75.0
 
     def test_malformed_local_yaml_warns_and_falls_back_to_defaults(
         self, git_project: Path, monkeypatch, capsys

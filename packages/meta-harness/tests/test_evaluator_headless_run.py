@@ -171,16 +171,81 @@ class TestRunHeadlessScenarioEnvironment:
         metadata = json.loads((staging_dir / "isolation.json").read_text(encoding="utf-8"))
         assert metadata == launch.metadata
 
+    def test_effective_scenario_timeout_and_budget_reach_broker_config(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        launch = _install_isolation_launch(monkeypatch, tmp_path)
+        captured: dict = {}
+
+        def resolve(**kwargs):
+            captured.update(kwargs)
+            return launch
+
+        monkeypatch.setattr(ev.siso, "resolve_scenario_isolation", resolve)
+        worktree = tmp_path / "worktree"
+        staging = tmp_path / "staging"
+        instruction = tmp_path / "instruction.md"
+        worktree.mkdir()
+        staging.mkdir()
+        instruction.write_text("irrelevant")
+
+        def fake_runner(_cmd, **kwargs):
+            kwargs["stdout"].write(b'{"type":"result","subtype":"success","is_error":false}\n')
+            return _completed()
+
+        monkeypatch.setattr(ev.sproc, "run_bounded_process_tree", fake_runner)
+        ev.run_headless_scenario(
+            {
+                "id": "s1",
+                "prompt": "irrelevant",
+                "timeout_ms": 900000,
+                "budget": {"max_budget_usd": 1.25},
+            },
+            {"evaluate": {"timeout_ms_default": 300000}},
+            worktree,
+            staging,
+            instruction,
+            main_root=tmp_path,
+            source_commit="a" * 40,
+            runner=fake_runner,
+        )
+
+        assert captured["config"]["evaluate"]["timeout_ms_default"] == 900000
+        assert captured["config"]["scenario_run"]["max_budget_usd_default"] == 1.25
+
     def test_raises_when_result_event_indicates_budget_exceeded(
         self, tmp_path: Path, monkeypatch
     ) -> None:
-        _install_isolation_launch(monkeypatch, tmp_path)
+        launch = _install_isolation_launch(monkeypatch, tmp_path)
         worktree_dir = tmp_path / "worktree"
         worktree_dir.mkdir()
         staging_dir = tmp_path / "staging"
         staging_dir.mkdir()
         instruction_path = tmp_path / "self-report-instruction.md"
         instruction_path.write_text("irrelevant", encoding="utf-8")
+        lifecycle_events: list[str] = []
+
+        def refresh_metadata(refreshed_launch):
+            assert refreshed_launch is launch
+            lifecycle_events.append("refresh")
+            return {
+                **launch.metadata,
+                "broker": {
+                    "metrics": {
+                        "budget_exceeded": True,
+                        "anomaly": True,
+                    }
+                },
+            }
+
+        def cleanup(cleaned_launch):
+            assert cleaned_launch is launch
+            persisted = json.loads((staging_dir / "isolation.json").read_text())
+            assert persisted["broker"]["metrics"]["budget_exceeded"] is True
+            lifecycle_events.append("cleanup")
+
+        monkeypatch.setattr(ev.siso, "refresh_isolation_metadata", refresh_metadata)
+        monkeypatch.setattr(ev.siso, "cleanup_scenario_isolation", cleanup)
 
         def fake_runner(cmd, **kwargs):
             kwargs["stdout"].write(
@@ -214,6 +279,7 @@ class TestRunHeadlessScenarioEnvironment:
                 "budget-exceeded result event should raise EvaluatorStageError, not return"
                 " a HeadlessRunResult that lets oracle checks decide pass/fail"
             )
+        assert lifecycle_events == ["refresh", "cleanup"]
 
     def test_isolation_failure_is_fail_closed(self, tmp_path: Path, monkeypatch) -> None:
         worktree_dir = tmp_path / "worktree"

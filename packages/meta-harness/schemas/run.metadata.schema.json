@@ -52,19 +52,140 @@
     "cli_capabilities": { "type": "object" },
     "isolation": {
       "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "backend",
-        "srt_version",
-        "settings_sha256",
-        "platform_profile_input_sha256"
-      ],
-      "properties": {
-        "backend": { "type": "string" },
-        "srt_version": { "type": "string" },
-        "settings_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-        "platform_profile_input_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
-      }
+      "required": ["backend", "platform_profile_input_sha256"],
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "backend",
+            "srt_version",
+            "settings_sha256",
+            "platform_profile_input_sha256"
+          ],
+          "properties": {
+            "backend": { "const": "srt" },
+            "srt_version": { "type": "string" },
+            "settings_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            "platform_profile_input_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            "git": { "type": "object" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "backend",
+            "image",
+            "image_id",
+            "broker_image",
+            "broker_image_id",
+            "broker_settings_sha256",
+            "scenario_context_sha256",
+            "broker_context_sha256",
+            "scenario_base_image",
+            "broker_base_image",
+            "platform_profile_input_sha256",
+            "resources",
+            "git",
+            "broker"
+          ],
+          "properties": {
+            "backend": { "const": "docker" },
+            "image": { "type": "string", "minLength": 1 },
+            "image_id": { "type": "string", "minLength": 1 },
+            "broker_image": { "type": "string", "minLength": 1 },
+            "broker_image_id": { "type": "string", "minLength": 1 },
+            "broker_settings_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            "scenario_context_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            "broker_context_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            "scenario_base_image": { "type": "string", "pattern": "@sha256:[0-9a-f]{64}$" },
+            "broker_base_image": { "type": "string", "pattern": "@sha256:[0-9a-f]{64}$" },
+            "platform_profile_input_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            "resources": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "pids_limit",
+                "memory",
+                "cpus",
+                "workspace_size",
+                "workspace_max_files",
+                "max_lifetime_sec"
+              ],
+              "properties": {
+                "pids_limit": { "type": "integer", "minimum": 1 },
+                "memory": { "type": "string", "pattern": "^[1-9][0-9]*[kKmMgG]$" },
+                "cpus": { "type": "number", "exclusiveMinimum": 0 },
+                "workspace_size": { "type": "string", "pattern": "^[1-9][0-9]*[kKmMgG]$" },
+                "workspace_max_files": { "type": "integer", "minimum": 1 },
+                "max_lifetime_sec": { "type": "integer", "minimum": 1 }
+              }
+            },
+            "git": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["mode", "source_commit"],
+              "properties": {
+                "mode": { "const": "isolated-snapshot" },
+                "source_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+              }
+            },
+            "broker": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["metrics"],
+              "properties": {
+                "metrics": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "request_count",
+                    "rejected_count",
+                    "upstream_request_bytes",
+                    "usage",
+                    "estimated_cost_usd",
+                    "budget_exceeded",
+                    "anomaly",
+                    "anomaly_reasons"
+                  ],
+                  "properties": {
+                    "request_count": { "type": "integer", "minimum": 0 },
+                    "rejected_count": { "type": "integer", "minimum": 0 },
+                    "upstream_request_bytes": { "type": "integer", "minimum": 0 },
+                    "usage": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "input_tokens",
+                        "output_tokens",
+                        "cache_creation_input_tokens",
+                        "cache_read_input_tokens",
+                        "total_tokens"
+                      ],
+                      "properties": {
+                        "input_tokens": { "type": "integer", "minimum": 0 },
+                        "output_tokens": { "type": "integer", "minimum": 0 },
+                        "cache_creation_input_tokens": { "type": "integer", "minimum": 0 },
+                        "cache_read_input_tokens": { "type": "integer", "minimum": 0 },
+                        "total_tokens": { "type": "integer", "minimum": 0 }
+                      }
+                    },
+                    "estimated_cost_usd": { "type": "number", "minimum": 0 },
+                    "budget_exceeded": { "type": "boolean" },
+                    "anomaly": { "type": "boolean" },
+                    "anomaly_reasons": {
+                      "type": "array",
+                      "items": { "type": "string" },
+                      "uniqueItems": true
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
     },
     "started_at": { "type": "string", "format": "date-time" },
     "finished_at": { "type": ["string", "null"], "format": "date-time" },

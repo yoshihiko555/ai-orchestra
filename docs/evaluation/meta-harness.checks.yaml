@@ -107,6 +107,7 @@
     packages/meta-harness/tests/test_promote_cli.py::test_promote_rejects_when_latest_holdout_failed
     packages/meta-harness/tests/test_promote_cli.py::test_promote_rejects_when_latest_holdout_hashes_are_stale
     packages/meta-harness/tests/test_promote_cli.py::test_freshness_rejects_source_commit_outside_main
+    packages/meta-harness/tests/test_evaluator_scoring_and_verdict.py::TestEvaluatorHash
   covered_by:
     - packages/meta-harness/tests/test_promote_cli.py::test_promote_rejects_unevaluated_candidate
     - packages/meta-harness/tests/test_promote_cli.py::test_promote_rejects_candidate_without_passing_holdout
@@ -117,7 +118,8 @@
     - packages/meta-harness/tests/test_promote_cli.py::test_promote_rejects_when_latest_holdout_failed
     - packages/meta-harness/tests/test_promote_cli.py::test_promote_rejects_when_latest_holdout_hashes_are_stale
     - packages/meta-harness/tests/test_promote_cli.py::test_freshness_rejects_source_commit_outside_main
-  notes: all Sec12-1 preconditions fail closed before PR creation or reservation side effects.
+    - packages/meta-harness/tests/test_evaluator_scoring_and_verdict.py::TestEvaluatorHash
+  notes: all Sec12-1 preconditions fail closed before PR creation or reservation side effects; evaluator hash changes when Docker execution semantics change.
 
 - ev_id: EV-39
   phase: 2
@@ -262,30 +264,80 @@
   priority: must
   oracle: command_exit
   command: >-
-    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    META_HARNESS_REQUIRE_DOCKER=1 AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
     packages/meta-harness/tests/test_scenario_isolation.py
+    packages/meta-harness/tests/test_scenario_docker.py
+    packages/meta-harness/tests/test_scenario_docker_integration.py
     packages/meta-harness/tests/test_scenario_process.py
     packages/meta-harness/tests/test_evaluator_headless_run.py::TestRunHeadlessScenarioEnvironment
-    packages/meta-harness/tests/test_evaluator_oracles.py::TestOracleCommandExit::test_isolated_oracle_uses_no_network_read_only_profile
     packages/meta-harness/tests/test_evaluator_oracles.py::TestOracleArtifactExists::test_rejects_symlink_to_file_outside_worktree
-    packages/meta-harness/tests/test_evaluator_capability_gate.py::TestCapabilityGateHappyPath::test_production_gate_rejects_missing_execution_boundary
-    packages/meta-harness/tests/test_loop_cli_e2e.py::test_loop_subprocess_fails_closed_before_candidate_worktree_without_execution_boundary
+    packages/meta-harness/tests/test_evaluator_capability_gate.py::TestCapabilityGateHappyPath::test_docker_gate_uses_image_cli_and_broker_checks_not_host_cli
+    packages/meta-harness/tests/test_loop_cli_e2e.py::test_loop_subprocess_fails_closed_before_candidate_worktree_when_docker_capability_missing
     packages/meta-harness/tests/test_evaluator_artifacts.py::TestHoldoutPhysicalSeparation::test_metadata_records_finished_at_after_completion
   covered_by:
     - packages/meta-harness/tests/test_scenario_isolation.py
+    - packages/meta-harness/tests/test_scenario_docker.py
+    - packages/meta-harness/tests/test_scenario_docker.py::test_image_pin_mismatch_fails_capability_before_smoke
+    - packages/meta-harness/tests/test_scenario_docker.py::test_broker_startup_cleanup_failure_is_reported
+    - packages/meta-harness/tests/test_scenario_docker.py::test_preparation_preserves_primary_error_when_cleanup_also_fails
+    - packages/meta-harness/tests/test_scenario_docker.py::test_container_lifetime_matches_broker_absolute_bound
+    - packages/meta-harness/tests/test_scenario_docker.py::test_docker_resource_cleanup_requires_explicit_missing_object
+    - packages/meta-harness/tests/test_scenario_docker_integration.py
+    - packages/meta-harness/tests/test_scenario_docker_integration.py::test_scenario_image_defaults_to_non_root_user
+    - packages/meta-harness/tests/test_scenario_docker_integration.py::test_preparation_command_uses_isolated_git_snapshot
+    - packages/meta-harness/tests/test_scenario_docker_integration.py::test_linked_worktree_git_is_masked_and_snapshot_wrapper_works
+    - packages/meta-harness/tests/test_scenario_docker_integration.py::test_production_preparation_is_contained_and_exports_bounded_workspace
+    - packages/meta-harness/tests/test_scenario_docker_integration.py::test_preparation_workspace_quota_fails_closed
+    - packages/meta-harness/tests/test_scenario_docker_integration.py::test_preparation_container_self_terminates_at_absolute_lifetime
     - packages/meta-harness/tests/test_scenario_process.py
+    - packages/meta-harness/tests/test_scenario_process.py::test_cleanup_inspect_daemon_error_does_not_verify_container_absence
+    - packages/meta-harness/tests/test_scenario_process.py::test_cleanup_inspect_missing_object_verifies_container_absence
+    - packages/meta-harness/tests/test_scenario_process.py::test_timeout_is_preserved_when_cleanup_also_fails
     - packages/meta-harness/tests/test_evaluator_headless_run.py::TestRunHeadlessScenarioEnvironment
-    - packages/meta-harness/tests/test_evaluator_oracles.py::TestOracleCommandExit::test_isolated_oracle_uses_no_network_read_only_profile
     - packages/meta-harness/tests/test_evaluator_oracles.py::TestOracleArtifactExists::test_rejects_symlink_to_file_outside_worktree
-    - packages/meta-harness/tests/test_evaluator_capability_gate.py::TestCapabilityGateHappyPath::test_production_gate_rejects_missing_execution_boundary
-    - packages/meta-harness/tests/test_loop_cli_e2e.py::test_loop_subprocess_fails_closed_before_candidate_worktree_without_execution_boundary
+    - packages/meta-harness/tests/test_evaluator_capability_gate.py::TestCapabilityGateHappyPath::test_docker_gate_uses_image_cli_and_broker_checks_not_host_cli
+    - packages/meta-harness/tests/test_loop_cli_e2e.py::test_loop_subprocess_fails_closed_before_candidate_worktree_when_docker_capability_missing
     - packages/meta-harness/tests/test_evaluator_artifacts.py::TestHoldoutPhysicalSeparation::test_metadata_records_finished_at_after_completion
   notes: >-
-    Fail-closed invariant (scenario runs unavailable until execution_backend is
-    implemented and verified) is covered now. Per ADR-20260712-034 the target
-    backend is Docker + ephemeral broker (was SRT under ADR-032/033); the
-    fail-closed guard, nofollow artifact reader, and read-only/no-network oracle
-    profile carry over unchanged. EV-47 (broker credential boundary) has no
-    runnable check yet; it is intentionally NOT listed in this sidecar and is
-    tracked as a gap in docs/evaluation/meta-harness.md + the meta-harness gap
-    Issue until the Docker backend lands.
+    Docker daemon/image/broker failures remain fail-closed before candidate
+    worktree creation. Mount allowlisting, internal-only networking, read-only
+    oracle containers, bounded output, cgroup cleanup, host-independent absolute
+    container lifetimes, cleanup error precedence, and nofollow artifact reads are
+    covered by unit and real-Docker tests.
+
+- ev_id: EV-47
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    META_HARNESS_REQUIRE_DOCKER=1 AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_claude_credentials.py
+    packages/meta-harness/tests/test_scenario_broker.py
+    packages/meta-harness/tests/test_scenario_docker.py::test_broker_token_is_injected_via_stdin_not_argv_or_env
+    packages/meta-harness/tests/test_scenario_docker_integration.py
+    packages/meta-harness/tests/test_evaluator_failure_handling.py::TestBrokerMetricsForceRunError
+    packages/meta-harness/tests/test_evaluator_headless_run.py::TestRunHeadlessScenarioEnvironment::test_raises_when_result_event_indicates_budget_exceeded
+    packages/meta-harness/tests/test_evaluator_oracles.py::TestRubricJudgeClaudeBareBackend::test_docker_judge_uses_broker_container_without_host_api_key
+  covered_by:
+    - packages/meta-harness/tests/test_claude_credentials.py
+    - packages/meta-harness/tests/test_scenario_broker.py
+    - packages/meta-harness/tests/test_scenario_broker.py::test_http_handler_releases_slot_after_unexpected_proxy_exception
+    - packages/meta-harness/tests/test_scenario_broker.py::test_http_handler_does_not_append_second_response_after_stream_failure
+    - packages/meta-harness/tests/test_scenario_broker.py::test_http_handler_rejects_transfer_encoding_without_admission
+    - packages/meta-harness/tests/test_scenario_broker.py::test_token_envelope_latches_budget_and_rejects_following_request
+    - packages/meta-harness/tests/test_scenario_broker.py::test_direct_request_budget_is_rejected_before_upstream
+    - packages/meta-harness/tests/test_scenario_broker.py::test_idle_watchdog_does_not_exit_during_active_request
+    - packages/meta-harness/tests/test_scenario_docker.py::test_broker_session_keepalive_uses_health_endpoint
+    - packages/meta-harness/tests/test_scenario_docker.py::test_broker_token_is_injected_via_stdin_not_argv_or_env
+    - packages/meta-harness/tests/test_scenario_docker_integration.py
+    - packages/meta-harness/tests/test_evaluator_failure_handling.py::TestBrokerMetricsForceRunError
+    - packages/meta-harness/tests/test_evaluator_headless_run.py::TestRunHeadlessScenarioEnvironment::test_raises_when_result_event_indicates_budget_exceeded
+    - packages/meta-harness/tests/test_evaluator_oracles.py::TestRubricJudgeClaudeBareBackend::test_docker_judge_uses_broker_container_without_host_api_key
+  notes: >-
+    The real OAuth token is loaded with TTL preflight and injected through stdin
+    into broker tmpfs, never candidate argv/env/disk. Header replacement,
+    fixed api.anthropic.com upstream, per-run dummy authentication, HTTP framing
+    rejection, exception-safe request serialization, pre-forward worst-case
+    request admission, usage-based budget cap, active-stream/host-session
+    keepalive, anomaly accounting, broker lifecycle cleanup, and broker-routed
+    containerized claude-bare judge are covered.

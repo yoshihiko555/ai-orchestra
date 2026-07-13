@@ -81,7 +81,7 @@ class TestFinallyRemovalOnLifecycleFailure:
     def test_worktree_removed_even_when_build_step_fails(
         self, git_project: Path, monkeypatch
     ) -> None:
-        def failing_build(worktree_dir, *, runner=None):
+        def failing_build(worktree_dir, **_kwargs):
             raise ev.EvaluatorStageError("build", "build_error", "forced failure for test")
 
         monkeypatch.setattr(ev, "build_facet_and_context", failing_build)

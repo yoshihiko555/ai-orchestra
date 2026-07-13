@@ -20,6 +20,7 @@ if str(_LIB_DIR) not in sys.path:
     sys.path.insert(0, str(_LIB_DIR))
 
 import isolation as iso  # noqa: E402
+import scenario_docker as docker  # noqa: E402
 
 SubprocessRunner = Callable[..., subprocess.CompletedProcess]
 
@@ -32,7 +33,8 @@ _RUNTIME_CONFIG_DIR = "." + "claude"
 _SOURCE_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 _GIT_SNAPSHOT_DIR = "git-snapshot"
 _GIT_WRAPPER_DIR = "bin"
-_IMPLEMENTED_EXECUTION_BACKENDS: frozenset[str] = frozenset()
+_IMPLEMENTED_EXECUTION_BACKENDS: frozenset[str] = frozenset({"docker"})
+_SYSTEM_TOOL_SEARCH_PATH = "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"
 _SYSTEM_READ_ROOTS = (
     Path("/bin"),
     Path("/sbin"),
@@ -53,20 +55,20 @@ class ScenarioIsolationError(iso.IsolationError):
 def execution_boundary_available(config: dict) -> bool:
     """Return true only for a backend with credential and descendant-process containment."""
     isolation_config = (config.get("evaluate") or {}).get("isolation") or {}
+    isolation_backend = isolation_config.get("backend", "srt")
     backend = isolation_config.get("execution_backend", "none")
-    # SRT cannot hide credentials from child tools, and killpg cannot contain setsid children.
-    # No backend is reported available until an external signer plus cgroup/VM-equivalent
-    # process containment is implemented and tested.
-    return backend in _IMPLEMENTED_EXECUTION_BACKENDS
+    return isolation_backend == backend and backend in _IMPLEMENTED_EXECUTION_BACKENDS
 
 
 @dataclass(frozen=True)
 class ScenarioIsolationLaunch:
     executable: str
-    settings_path: Path
+    settings_path: Path | None
     settings: dict
     env: dict[str, str]
     metadata: dict
+    backend: str = "srt"
+    docker_launch: docker.DockerScenarioLaunch | None = None
     owned_settings_dir: Path | None = None
     owned_tmp_dir: Path | None = None
     owned_runtime_state_dir: Path | None = None
@@ -140,6 +142,36 @@ def resolve_scenario_isolation(
         raise ScenarioIsolationError(
             "scenario execution boundary unavailable: credential broker and detached-process "
             "containment are required"
+        )
+    isolation_config = (config.get("evaluate") or {}).get("isolation") or {}
+    backend = isolation_config.get("backend", "srt")
+    if backend == "docker":
+        try:
+            docker_launch = docker.resolve_docker_launch(
+                worktree_dir=worktree_dir,
+                main_root=main_root,
+                config=config,
+                instruction_path=instruction_path,
+                source_commit=source_commit,
+                runtime_state_dir=runtime_state_dir,
+                runner=runner,
+                prepare_git_snapshot=_prepare_isolated_git,
+            )
+        except (
+            docker.DockerScenarioError,
+            docker.dcli.DockerCliError,
+            docker.credentials.ClaudeCredentialError,
+            iso.IsolationError,
+        ) as exc:
+            raise ScenarioIsolationError(str(exc)) from exc
+        return ScenarioIsolationLaunch(
+            executable="docker",
+            settings_path=None,
+            settings={},
+            env=docker_launch.env,
+            metadata=docker_launch.metadata,
+            backend="docker",
+            docker_launch=docker_launch,
         )
     return _resolve_scenario_isolation_profile(
         worktree_dir=worktree_dir,
@@ -239,6 +271,9 @@ def _resolve_scenario_isolation_profile(
 
 
 def cleanup_scenario_isolation(launch: ScenarioIsolationLaunch) -> None:
+    if launch.backend == "docker" and launch.docker_launch is not None:
+        docker.cleanup_docker_launch(launch.docker_launch)
+        return
     for path in (
         launch.owned_settings_dir,
         launch.owned_tmp_dir,
@@ -250,12 +285,78 @@ def cleanup_scenario_isolation(launch: ScenarioIsolationLaunch) -> None:
 
 def write_oracle_srt_settings(launch: ScenarioIsolationLaunch) -> Path:
     """Derive a no-network, read-only-worktree profile for post-scenario oracles."""
+    if launch.backend != "srt" or launch.settings_path is None:
+        raise ScenarioIsolationError("SRT oracle settings requested for a non-SRT launch")
     settings = json.loads(json.dumps(launch.settings))
     settings["network"]["allowedDomains"] = []
     settings["filesystem"][_ALLOW_WRITE_KEY] = (
         [str(launch.owned_tmp_dir.resolve())] if launch.owned_tmp_dir is not None else []
     )
     return iso.write_srt_settings(settings, launch.settings_path.parent / "oracle")
+
+
+def build_scenario_command(
+    launch: ScenarioIsolationLaunch, raw_command: list[str]
+) -> tuple[list[str], list[str] | None]:
+    if launch.backend == "docker" and launch.docker_launch is not None:
+        return (
+            docker.build_scenario_command(launch.docker_launch, raw_command),
+            launch.docker_launch.cleanup_command,
+        )
+    if launch.settings_path is None:
+        raise ScenarioIsolationError("SRT launch has no settings path")
+    return [launch.executable, "--settings", str(launch.settings_path), *raw_command], None
+
+
+def build_oracle_command(
+    launch: ScenarioIsolationLaunch,
+    command: str,
+) -> tuple[list[str], list[str] | None]:
+    if launch.backend == "docker" and launch.docker_launch is not None:
+        container_name = f"{docker.NAME_PREFIX}oracle-{os.urandom(3).hex()}"
+        return (
+            docker.build_oracle_command(
+                launch.docker_launch,
+                command,
+                container_name=container_name,
+            ),
+            ["docker", "rm", "-f", container_name],
+        )
+    settings_path = write_oracle_srt_settings(launch)
+    return (
+        [launch.executable, "--settings", str(settings_path), "/bin/sh", "-c", command],
+        None,
+    )
+
+
+def build_judge_command(
+    launch: ScenarioIsolationLaunch,
+    claude_command: list[str],
+) -> tuple[list[str], list[str] | None]:
+    if launch.backend != "docker" or launch.docker_launch is None:
+        return claude_command, None
+    container_name = f"{docker.NAME_PREFIX}judge-{os.urandom(3).hex()}"
+    return (
+        docker.build_judge_command(
+            launch.docker_launch,
+            claude_command,
+            container_name=container_name,
+        ),
+        ["docker", "rm", "-f", container_name],
+    )
+
+
+def refresh_isolation_metadata(launch: ScenarioIsolationLaunch) -> dict:
+    if launch.backend == "docker" and launch.docker_launch is not None:
+        updated = docker.refresh_launch_metadata(launch.docker_launch)
+        launch.metadata.clear()
+        launch.metadata.update(updated)
+    return dict(launch.metadata)
+
+
+def export_scenario_workspace(launch: ScenarioIsolationLaunch) -> None:
+    if launch.backend == "docker" and launch.docker_launch is not None:
+        docker.export_docker_workspace(launch.docker_launch)
 
 
 def _scenario_env(
@@ -284,11 +385,13 @@ def _scenario_env(
 def _scenario_runtime_read_roots() -> list[Path]:
     roots = [path.resolve() for path in _SYSTEM_READ_ROOTS if path.exists()]
     for tool in ("claude", "srt", "git", "python", "python3", "pytest", "curl"):
-        executable = shutil.which(tool)
+        executable = shutil.which(tool, path=_SYSTEM_TOOL_SEARCH_PATH)
         if executable is None:
             continue
         original = Path(executable).absolute()
         resolved = original.resolve()
+        if _under_real_home(original) or _under_real_home(resolved):
+            continue
         roots.extend([original.parent, resolved.parent])
         if original.parent.name == "bin":
             roots.append(original.parent.parent)
@@ -303,6 +406,7 @@ def _prepare_isolated_git(
     runtime_state_dir: Path,
     source_commit: str,
     runner: SubprocessRunner,
+    container_paths: bool = False,
 ) -> Path:
     """Create candidate-visible Git metadata without exposing the linked worktree metadata."""
     if not _SOURCE_COMMIT_RE.fullmatch(source_commit):
@@ -316,7 +420,9 @@ def _prepare_isolated_git(
     runtime_state = _validated_directory(runtime_state_dir, "scenario runtime state")
     snapshot_dir = runtime_state / _GIT_SNAPSHOT_DIR
     wrapper_dir = runtime_state / _GIT_WRAPPER_DIR
-    wrapper_dir.mkdir(mode=0o700, exist_ok=True)
+    wrapper_mode = 0o711 if container_paths else 0o700
+    wrapper_dir.mkdir(mode=wrapper_mode, exist_ok=True)
+    wrapper_dir.chmod(wrapper_mode)
     git_env = iso.build_minimal_env(
         {
             _RUNTIME_ROOT_ENV: str(runtime_state),
@@ -360,9 +466,13 @@ def _prepare_isolated_git(
                 f"{(completed.stderr or completed.stdout).strip()[:500]}"
             )
     wrapper_path = wrapper_dir / "git"
-    quoted_git = shlex.quote(git_path)
-    quoted_snapshot = shlex.quote(str(snapshot_dir))
-    quoted_worktree = shlex.quote(str(worktree))
+    # The container path is supplied by docker/scenario/Dockerfile, which installs git.
+    wrapper_git = "/usr/bin/git" if container_paths else git_path
+    wrapper_snapshot = "/runtime/git-snapshot" if container_paths else str(snapshot_dir)
+    wrapper_worktree = "/workspace" if container_paths else str(worktree)
+    quoted_git = shlex.quote(wrapper_git)
+    quoted_snapshot = shlex.quote(wrapper_snapshot)
+    quoted_worktree = shlex.quote(wrapper_worktree)
     wrapper_path.write_text(
         "#!/bin/sh\n"
         f'if [ "$#" -eq 3 ] && [ "$1" = rev-parse ] && '
@@ -373,8 +483,16 @@ def _prepare_isolated_git(
         f'exec {quoted_git} --git-dir={quoted_snapshot} --work-tree={quoted_worktree} "$@"\n',
         encoding="utf-8",
     )
-    wrapper_path.chmod(0o700)
+    wrapper_path.chmod(0o755 if container_paths else 0o700)
     return wrapper_dir.resolve()
+
+
+def _under_real_home(path: Path) -> bool:
+    try:
+        path.resolve().relative_to(Path.home().resolve())
+    except ValueError:
+        return False
+    return True
 
 
 def _check_version_pin(isolation_config: dict, version: str) -> None:
