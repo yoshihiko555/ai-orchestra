@@ -416,6 +416,21 @@ def test_classify_push_integrity_unverifiable_when_either_side_unknown(
     assert lds.classify_push_integrity(baseline, current) == "unverifiable"
 
 
+def test_classify_push_integrity_ok_when_both_confirmed_absent() -> None:
+    """Issue F6 (PR #210 review): a brand-new Issue loop's branch has never been pushed, so
+    both baseline and current reads confirm the same "branch not on origin yet" state
+    (`REMOTE_HEAD_ABSENT`, not `None`). That must classify as `"ok"` (first push allowed),
+    not fail-closed `"unverifiable"`."""
+    assert lds.classify_push_integrity(lds.REMOTE_HEAD_ABSENT, lds.REMOTE_HEAD_ABSENT) == "ok"
+
+
+def test_classify_push_integrity_violation_when_branch_appears_without_baseline_push() -> None:
+    """A confirmed-absent baseline (nothing pushed yet by this driver) followed by a sha on the
+    current read means the branch appeared on `origin` out-of-band -- still a violation, not
+    "ok" and not "unverifiable"."""
+    assert lds.classify_push_integrity(lds.REMOTE_HEAD_ABSENT, "sha-out-of-band") == "violation"
+
+
 def test_get_remote_head_reads_real_remote(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     remote = tmp_path / "remote.git"
@@ -424,11 +439,26 @@ def test_get_remote_head_reads_real_remote(tmp_path: Path) -> None:
     assert lds.get_remote_head(str(repo), "main") == expected
 
 
-def test_get_remote_head_returns_none_for_unknown_branch(tmp_path: Path) -> None:
+def test_get_remote_head_returns_absent_sentinel_for_unknown_branch(tmp_path: Path) -> None:
+    """Issue F6 (PR #210 review): `git ls-remote` succeeding with no matching ref is a
+    *confirmed* absence, distinct from a failed query (`None`) -- see `REMOTE_HEAD_ABSENT`'s
+    docstring. Renamed/updated from the old `..._returns_none_for_unknown_branch`, which
+    asserted the pre-fix (buggy) behavior that collapsed "confirmed absent" into "unverifiable"
+    and blocked every new Issue loop's first push."""
     repo = tmp_path / "repo"
     remote = tmp_path / "remote.git"
     _init_repo_with_remote(repo, remote)
-    assert lds.get_remote_head(str(repo), "does-not-exist") is None
+    result = lds.get_remote_head(str(repo), "does-not-exist")
+    assert result == lds.REMOTE_HEAD_ABSENT
+    assert result is not None
+
+
+def test_get_remote_head_returns_none_when_query_itself_fails(tmp_path: Path) -> None:
+    """A repo with no `origin` remote configured at all makes `git ls-remote` fail (non-zero
+    exit): that must stay `None` (unverifiable), never `REMOTE_HEAD_ABSENT`."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    assert lds.get_remote_head(str(repo), "main") is None
 
 
 # --------------------------------------------------------------------------------------------
@@ -1718,6 +1748,158 @@ def test_reconstruct_push_integrity_baseline_skips_when_branch_unknown(tmp_path:
     d = driver.LoopDriver(loop_id, project_dir, token)
     d._reconstruct_push_integrity_baseline()
     assert d._remote_head_baseline is None
+
+
+def test_reconstruct_push_integrity_baseline_records_confirmed_absent_branch(
+    tmp_path: Path,
+) -> None:
+    """Issue F6 (PR #210 review): a brand-new Issue loop's branch exists locally but has never
+    been pushed to `origin`. Reconstruction must record the *confirmed*-absent sentinel (and
+    journal it, like any other baseline), not `None`, so the very first `advance_phase` can
+    tell "nothing pushed yet" apart from "remote query failed" and allow the first push
+    through instead of fail-closed `push_integrity_unverifiable` forever."""
+    loop_id = "abcd1234-issue-1"
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_repo_with_remote(repo, remote)
+    _git(["checkout", "-b", "loop/issue-1"], repo)
+    project_dir = str(repo)
+    state = lc._initial_state(
+        loop_id, "issue-loop", "abcd1234", project_dir, "main", "implementation"
+    )
+    state.status = "running"
+    state.branch = "loop/issue-1"
+    state.worktree_path = project_dir
+    lc._write_state(state, project_dir)
+    lock = lc.acquire_lock(loop_id, project_dir, "owner", 3600)
+    assert lock is not None
+
+    d = driver.LoopDriver(loop_id, project_dir, lock.lease_token)
+    d._reconstruct_push_integrity_baseline()
+
+    assert d._remote_head_baseline == lds.REMOTE_HEAD_ABSENT
+    assert d._load_persisted_push_baseline() == lds.REMOTE_HEAD_ABSENT
+
+
+def test_load_persisted_push_baseline_treats_legacy_null_as_unrecorded(tmp_path: Path) -> None:
+    """Backward compat: `_persist_push_baseline()` never journals when `sha is None`, so a
+    literal `baseline_head: null` payload should not occur in practice -- but an older/foreign
+    journal writer producing one must not crash `_load_persisted_push_baseline()`. It must be
+    treated the same as "nothing recorded yet" (`None`), so reconstruction falls back to a
+    fresh live `git ls-remote` read rather than trusting a bogus null baseline."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    lc.append_journal_event(
+        loop_id,
+        project_dir,
+        driver._PUSH_BASELINE_JOURNAL_EVENT,
+        "driver",
+        driver._PUSH_BASELINE_ACTION_ID,
+        {"baseline_head": None, "branch": "main"},
+    )
+
+    assert d._load_persisted_push_baseline() is None
+
+
+def test_advance_phase_allows_first_push_for_new_branch_not_yet_on_origin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue F6 (PR #210 review): a brand-new Issue loop's branch has never been pushed, so
+    `origin/loop/issue-N` does not exist yet. Both the baseline (captured at reconstruct time)
+    and the current check (just before push) read the same confirmed-absent sentinel, so
+    `classify_push_integrity` must classify this as `"ok"` and allow the first push/PR through,
+    instead of fail-closed `"unverifiable"` (the bug this test guards against)."""
+    loop_id = "abcd1234-issue-1"
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_repo_with_remote(repo, remote)
+    _git(["checkout", "-b", "loop/issue-1"], repo)
+    project_dir = str(repo)
+    state = lc._initial_state(
+        loop_id, "issue-loop", "abcd1234", project_dir, "main", "implementation"
+    )
+    state.status = "running"
+    state.branch = "loop/issue-1"
+    state.worktree_path = project_dir
+    state.pending_action = lc.PendingAction(
+        "act-000010", "advance_phase", "implementation", 1, lc.now_iso()
+    )
+    lc._write_state(state, project_dir)
+    lock = lc.acquire_lock(loop_id, project_dir, "owner", 3600)
+    assert lock is not None
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, lock.lease_token)
+    d._reconstruct_push_integrity_baseline()
+    assert d._remote_head_baseline == lds.REMOTE_HEAD_ABSENT
+
+    monkeypatch.setattr(driver, "_current_branch", lambda _wt: "loop/issue-1")
+    monkeypatch.setattr(lc, "is_repo_identity_verified", lambda _state: True)
+    monkeypatch.setattr(d, "_execute_advance_exec", lambda *a, **k: None)
+
+    proposal = lc.ProposeResult(
+        action="advance_phase",
+        action_id="act-000010",
+        state_version=state.state_version,
+        expected_phase="implementation",
+        phase="implementation",
+        iteration=1,
+        context={},
+    )
+    params = {"verified_branch": "loop/issue-1", "next_phase": "pr_review_response", "exec": []}
+
+    result = d._run_advance_phase(proposal, state, params)
+
+    assert result["push_guard"] == {"branch_ok": True, "repo_identity_ok": True}
+    assert "pr_number" not in result
+
+
+def test_advance_phase_stops_safely_when_branch_appears_without_driver_push(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Distinguishing confirmed-absent from failed-query must not paper over a genuine
+    violation: if the baseline was confirmed-absent (nothing pushed yet) but the branch now
+    exists on origin without *this* driver having pushed it, that is still `"violation"`, not
+    `"ok"`."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.branch = "loop/issue-1"
+    state.pending_action = lc.PendingAction(
+        "act-000011", "advance_phase", "implementation", 2, lc.now_iso()
+    )
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    d._remote_head_baseline = lds.REMOTE_HEAD_ABSENT
+    monkeypatch.setattr(driver, "_current_branch", lambda _wt: "loop/issue-1")
+    monkeypatch.setattr(lc, "is_repo_identity_verified", lambda _state: True)
+    monkeypatch.setattr(lds, "get_remote_head", lambda *_a, **_k: "sha-out-of-band")
+    monkeypatch.setattr(driver.lds, "issue_number_from_loop_id", lambda _loop_id: 1)
+    monkeypatch.setattr(lds, "post_issue_comment", lambda *a, **k: True)
+    notify_calls: list[str] = []
+    monkeypatch.setattr(d, "_notify", lambda _state, reason: notify_calls.append(reason))
+
+    proposal = lc.ProposeResult(
+        action="advance_phase",
+        action_id="act-000011",
+        state_version=state.state_version,
+        expected_phase="implementation",
+        phase="implementation",
+        iteration=2,
+        context={},
+    )
+    params = {"verified_branch": "loop/issue-1", "exec": ["push"]}
+
+    with pytest.raises(driver.DriverTerminated):
+        d._run_advance_phase(proposal, state, params)
+
+    assert notify_calls == ["push_integrity_violation"]
+    final_state = lc.load_state(loop_id, project_dir)
+    assert final_state.status == "stopped"
+    assert final_state.stop_reason == "push_integrity_violation"
 
 
 # --------------------------------------------------------------------------------------------

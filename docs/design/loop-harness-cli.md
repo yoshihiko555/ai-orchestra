@@ -758,6 +758,15 @@ remote HEAD を baseline として記録しておき、Maker（`claude -p`）実
 > クラッシュ再起動直後の空白期間で起きないよう、`loop_driver.py` は `attach()` 直後（lease 取得
 > 直後）に一度 `git ls-remote` で baseline を再構築する。
 
+> **確認できたブランチ不在の区別（2026-07-13 レビュー反映。Issue F6）**: 上記の「`git ls-remote`
+> 失敗」は「照会コマンド自体が失敗し、真偽を確認できない」場合であり、「照会は成功したが対象
+> ブランチが `origin` にまだ存在しない」場合（ラベル付き新規 Issue の loop が最初の push を行う
+> 前の状態）とは区別する。後者は `git ls-remote` が正常終了した上での確認済みの不在であり、
+> `get_remote_head()` は専用の sentinel（`REMOTE_HEAD_ABSENT`）を返すことで `None`（照会失敗）
+> と書き分ける。baseline・current の両方が確認済み不在の場合は初回 push の正当な状態として
+> `"ok"` を許可し、片方だけが確認済み不在（もう一方が sha）の場合は従来通り `"violation"` と
+> なる。照会自体が失敗した場合（`None`）のみ、引き続き fail-closed で `"unverifiable"` とする。
+
 ---
 
 ## 3. `loop_scheduler.py`

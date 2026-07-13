@@ -331,6 +331,14 @@ class LoopDriver:
         that unverified push, and re-reading it here would silently launder it into the new
         "trusted" baseline (code #5). Only fall back to a fresh live read (and persist it as
         the first known-good baseline) when nothing has been journaled yet.
+
+        For a brand-new Issue loop whose branch has never been pushed, this live read returns
+        `loop_driver_support.REMOTE_HEAD_ABSENT` (a *confirmed* absence), not `None`: it is
+        journaled just like a real sha (Issue F6). Without this distinction, the confirmed
+        absence used to collapse into `None` ("query failed") both here and at the matching
+        `_run_advance_phase` check, so `classify_push_integrity()` saw `baseline_head=None,
+        current_head=None` and fail-closed into `push_integrity_unverifiable` forever,
+        blocking every labeled new Issue's very first push/PR.
         """
         state = lc.load_state(self.loop_id, self.project_dir)
         if not state.branch:
@@ -1039,8 +1047,10 @@ class LoopDriver:
         before this iteration's `_run_maker` ran — equal to local HEAD in the healthy steady
         state, since the previous iteration's own `push` step already synced them) means the
         Maker committed nothing this iteration. Either way, proceeding to `push` next would
-        push stale or incomplete work. When no baseline was captured yet (e.g. nothing has ever
-        been pushed for this branch), only the dirty-worktree check applies.
+        push stale or incomplete work. When nothing has ever been pushed for this branch yet,
+        `self._remote_head_baseline` holds `loop_driver_support.REMOTE_HEAD_ABSENT` (Issue
+        F6), not a real commit sha, so it can never equal `current_head` here — this check
+        still passes as long as a local commit exists, exactly as if no baseline were captured.
         """
         status = subprocess.run(
             ["git", "-C", worktree_path, "status", "--porcelain"],

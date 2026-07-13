@@ -372,8 +372,27 @@ def parse_claude_p_json(stdout: str) -> dict[str, Any]:
 # --- push multi-layer defense: layer 4 (post-push integrity verification) -----------------
 
 
+REMOTE_HEAD_ABSENT = "<remote-branch-absent>"
+"""Sentinel `get_remote_head()` return value for a *confirmed* absence (Issue F6 / PR #210
+review): `git ls-remote` completed successfully but found no ref for `branch` on `origin` at
+all (e.g. a brand-new loop's branch that has never been pushed yet). Deliberately distinct
+from `None`, which means the query itself could not be completed (non-zero exit, timeout, or
+`OSError`) and is therefore unverifiable, not a confirmed answer. `classify_push_integrity()`
+relies on this distinction: without it, a new Issue loop's first `advance_phase` would see
+`baseline_head=None, current_head=None` (both "confirmed absent" collapsed into "unknown") and
+fail-closed into `push_integrity_unverifiable` forever, blocking every first-push new-Issue
+loop. Not a valid sha (non-hex), so it can never collide with a real commit sha."""
+
+
 def get_remote_head(cwd: str, branch: str, timeout_seconds: float = 10.0) -> str | None:
-    """Return the current remote HEAD sha for branch, or None if it cannot be determined."""
+    """Return the current remote HEAD sha for branch (Issue F6: three distinguishable outcomes).
+
+    - a real sha string: `git ls-remote` succeeded and found `branch` on `origin`.
+    - `REMOTE_HEAD_ABSENT`: `git ls-remote` succeeded but `branch` does not exist on `origin`
+      yet -- a confirmed, verifiable absence.
+    - `None`: the query itself could not be completed (process error, timeout, or non-zero
+      exit) -- unverifiable; callers must fail closed on this case (SEC-H1).
+    """
     try:
         completed = subprocess.run(
             ["git", "ls-remote", "origin", f"refs/heads/{branch}"],
@@ -386,9 +405,12 @@ def get_remote_head(cwd: str, branch: str, timeout_seconds: float = 10.0) -> str
         return None
     if completed.returncode != 0:
         return None
-    first_line = next(iter(completed.stdout.strip().splitlines()), "")
+    stdout = completed.stdout.strip()
+    if not stdout:
+        return REMOTE_HEAD_ABSENT
+    first_line = next(iter(stdout.splitlines()), "")
     sha = first_line.split("\t", 1)[0].strip() if first_line else ""
-    return sha or None
+    return sha or REMOTE_HEAD_ABSENT
 
 
 def classify_push_integrity(baseline_head: str | None, current_head: str | None) -> str:
@@ -400,6 +422,15 @@ def classify_push_integrity(baseline_head: str | None, current_head: str | None)
     e.g. right after a crash-restart before reconstruction runs) is also `"unverifiable"`
     rather than "assume ok", for the same reason; callers should reconstruct the baseline
     right after `attach()` (see `loop_driver.py`) so this case is rare on the hot path.
+
+    `get_remote_head()`'s `REMOTE_HEAD_ABSENT` sentinel (a *confirmed* "branch does not exist
+    on origin" answer, as opposed to `None`'s "the query failed") needs no special-casing here:
+    when both sides equal `REMOTE_HEAD_ABSENT` (a brand-new loop's first push -- nothing has
+    ever landed on `origin` for this branch), the plain equality check below already returns
+    `"ok"`. When only one side is `REMOTE_HEAD_ABSENT`, it already returns `"violation"` (e.g.
+    the branch appeared on `origin` without this driver having pushed it). Only an
+    actually-failed query (`None`) stays fail-closed; a confirmed absence does not (Issue F6 /
+    PR #210 review), otherwise every first-push new-Issue loop would be blocked forever.
     """
     if baseline_head is None or current_head is None:
         return "unverifiable"
