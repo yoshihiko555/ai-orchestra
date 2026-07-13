@@ -216,6 +216,8 @@ def check_docker_capabilities(
                     f"image_pin mismatch: expected {version_pin!r}, got {version!r}",
                 )
             checks["broker"] = True
+            model = (config.get("evaluate") or {}).get("model")
+            model_args = ["--model", model] if model else []
             stream = _run_smoke_container(
                 broker,
                 [
@@ -228,6 +230,7 @@ def check_docker_capabilities(
                     "--output-format",
                     "stream-json",
                     "--verbose",
+                    *model_args,
                 ],
                 runner=runner,
             )
@@ -245,6 +248,7 @@ def check_docker_capabilities(
                     "json",
                     "--max-budget-usd",
                     "0.02",
+                    *model_args,
                 ],
                 runner=runner,
             )

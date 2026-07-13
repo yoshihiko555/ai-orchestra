@@ -177,7 +177,19 @@ def run(
 
 
 def host_env() -> dict[str, str]:
-    allowed = ("PATH", "HOME", "DOCKER_HOST", "DOCKER_CONTEXT", "XDG_RUNTIME_DIR", "TMPDIR")
+    allowed = (
+        "PATH",
+        "HOME",
+        "DOCKER_API_VERSION",
+        "DOCKER_CERT_PATH",
+        "DOCKER_CONFIG",
+        "DOCKER_CONTEXT",
+        "DOCKER_HOST",
+        "DOCKER_TLS",
+        "DOCKER_TLS_VERIFY",
+        "XDG_RUNTIME_DIR",
+        "TMPDIR",
+    )
     return {key: os.environ[key] for key in allowed if os.environ.get(key)}
 
 

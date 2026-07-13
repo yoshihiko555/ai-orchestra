@@ -121,6 +121,27 @@ def test_docker_resource_cleanup_requires_explicit_missing_object(remove, missin
     assert remove(lambda *_args, **_kwargs: next(explicit_missing)) is True
 
 
+def test_docker_host_env_preserves_client_connection_settings(monkeypatch) -> None:
+    expected = {
+        "DOCKER_API_VERSION": "1.47",
+        "DOCKER_CERT_PATH": "/tmp/docker-certs",
+        "DOCKER_CONFIG": "/tmp/docker-config",
+        "DOCKER_CONTEXT": "remote-context",
+        "DOCKER_HOST": "tcp://docker.example:2376",
+        "DOCKER_TLS": "1",
+        "DOCKER_TLS_VERIFY": "1",
+    }
+    for key, value in expected.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("PARENT_SECRET", "must-not-cross")
+
+    env = docker.dcli.host_env()
+
+    for key, value in expected.items():
+        assert env[key] == value
+    assert "PARENT_SECRET" not in env
+
+
 def test_broker_session_keepalive_uses_health_endpoint(tmp_path: Path) -> None:
     session = _broker(tmp_path)
     commands: list[list[str]] = []
@@ -341,6 +362,38 @@ def test_image_pin_mismatch_fails_capability_before_smoke(tmp_path: Path, monkey
     assert result.ok is False
     assert result.version_pin_match is False
     assert "mismatch" in (result.reason or "")
+
+
+def test_capability_smoke_uses_configured_evaluate_model(tmp_path: Path, monkeypatch) -> None:
+    session = _broker(tmp_path)
+    session.cleaned = True
+    commands: list[list[str]] = []
+    config = copy.deepcopy(mh.DEFAULTS)
+    config["evaluate"]["model"] = "claude-custom-model"
+    monkeypatch.setattr(docker.dcli, "docker_daemon_available", lambda **_kwargs: True)
+    monkeypatch.setattr(docker, "sweep_stale_resources", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        docker, "docker_broker_session", lambda *_args, **_kwargs: docker._BrokerContext(session)
+    )
+    monkeypatch.setattr(
+        docker,
+        "_image_claude_version",
+        lambda *_args, **_kwargs: "2.1.207 (Claude Code)",
+    )
+
+    def run_smoke(_broker_session, command, **_kwargs):
+        commands.append(command)
+        return _completed(stdout='{"type":"result"}')
+
+    monkeypatch.setattr(docker, "_run_smoke_container", run_smoke)
+
+    result = docker.check_docker_capabilities(config, main_root=tmp_path, runner=session.runner)
+
+    assert result.ok is True
+    assert len(commands) == 3
+    for command in commands[:2]:
+        model_index = command.index("--model")
+        assert command[model_index + 1] == "claude-custom-model"
 
 
 def test_broker_startup_cleanup_failure_is_reported(tmp_path: Path, monkeypatch) -> None:

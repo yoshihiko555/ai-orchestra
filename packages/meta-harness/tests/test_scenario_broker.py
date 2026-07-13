@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import http.client
+import io
 import json
 import socket
 import threading
@@ -448,6 +449,26 @@ def test_token_file_is_unlinked_immediately_after_read(tmp_path: Path, monkeypat
 
     assert token == "real-oauth-token"
     assert not token_path.exists()
+
+
+def test_token_writer_publishes_only_after_complete_write(tmp_path: Path, monkeypatch) -> None:
+    token_path = tmp_path / "oauth-token"
+    token_input = type("TokenInput", (), {"buffer": io.BytesIO(b"real-oauth-token\n")})()
+    original_write = broker.os.write
+    final_path_seen_during_write: list[bool] = []
+
+    def checked_write(descriptor: int, payload: bytes) -> int:
+        final_path_seen_during_write.append(token_path.exists())
+        return original_write(descriptor, payload)
+
+    monkeypatch.setattr(broker, "TOKEN_PATH", token_path)
+    monkeypatch.setattr(broker.sys, "stdin", token_input)
+    monkeypatch.setattr(broker.os, "write", checked_write)
+
+    assert broker._write_token_from_stdin() == 0
+    assert final_path_seen_during_write
+    assert not any(final_path_seen_during_write)
+    assert token_path.read_text() == "real-oauth-token"
 
 
 def test_upstream_destination_is_compile_time_constant() -> None:

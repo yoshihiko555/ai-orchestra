@@ -20,6 +20,14 @@ mh = load_module(
 )
 
 
+def test_repository_synced_config_matches_package_default() -> None:
+    repository_root = Path(__file__).resolve().parents[3]
+    package_config = repository_root / "packages/meta-harness/config/meta-harness.yaml"
+    synced_config = repository_root / ".claude/config/meta-harness/meta-harness.yaml"
+
+    assert synced_config.read_bytes() == package_config.read_bytes()
+
+
 class TestConfigLocalOverride:
     # EV-22
     def test_local_yaml_overrides_base_value(self, git_project: Path, run_meta) -> None:

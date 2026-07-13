@@ -10,6 +10,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 import threading
 import time
 import urllib.request
@@ -523,13 +524,28 @@ def _write_token_from_stdin() -> int:
     token = sys.stdin.buffer.read(MAX_TOKEN_BYTES + 1)
     if not token or len(token) > MAX_TOKEN_BYTES:
         return 2
+    token = token.rstrip(b"\r\n")
+    if not token:
+        return 2
     TOKEN_PATH.parent.mkdir(parents=True, exist_ok=True)
-    descriptor = os.open(TOKEN_PATH, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{TOKEN_PATH.name}.", dir=TOKEN_PATH.parent
+    )
+    temporary_path = Path(temporary_name)
     try:
-        os.write(descriptor, token.rstrip(b"\r\n"))
-        os.fsync(descriptor)
+        try:
+            remaining = memoryview(token)
+            while remaining:
+                written = os.write(descriptor, remaining)
+                if written <= 0:
+                    raise OSError("failed to write OAuth token")
+                remaining = remaining[written:]
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        os.link(temporary_path, TOKEN_PATH)
     finally:
-        os.close(descriptor)
+        temporary_path.unlink(missing_ok=True)
     return 0
 
 
