@@ -107,6 +107,7 @@
     packages/meta-harness/tests/test_promote_cli.py::test_promote_rejects_when_latest_holdout_failed
     packages/meta-harness/tests/test_promote_cli.py::test_promote_rejects_when_latest_holdout_hashes_are_stale
     packages/meta-harness/tests/test_promote_cli.py::test_freshness_rejects_source_commit_outside_main
+    packages/meta-harness/tests/test_evaluator_scoring_and_verdict.py::TestEvaluatorHash
   covered_by:
     - packages/meta-harness/tests/test_promote_cli.py::test_promote_rejects_unevaluated_candidate
     - packages/meta-harness/tests/test_promote_cli.py::test_promote_rejects_candidate_without_passing_holdout
@@ -117,7 +118,8 @@
     - packages/meta-harness/tests/test_promote_cli.py::test_promote_rejects_when_latest_holdout_failed
     - packages/meta-harness/tests/test_promote_cli.py::test_promote_rejects_when_latest_holdout_hashes_are_stale
     - packages/meta-harness/tests/test_promote_cli.py::test_freshness_rejects_source_commit_outside_main
-  notes: all Sec12-1 preconditions fail closed before PR creation or reservation side effects.
+    - packages/meta-harness/tests/test_evaluator_scoring_and_verdict.py::TestEvaluatorHash
+  notes: all Sec12-1 preconditions fail closed before PR creation or reservation side effects; evaluator hash changes when Docker execution semantics change.
 
 - ev_id: EV-39
   phase: 2
@@ -280,10 +282,13 @@
     - packages/meta-harness/tests/test_scenario_docker.py::test_preparation_preserves_primary_error_when_cleanup_also_fails
     - packages/meta-harness/tests/test_scenario_docker.py::test_container_lifetime_matches_broker_absolute_bound
     - packages/meta-harness/tests/test_scenario_docker_integration.py
+    - packages/meta-harness/tests/test_scenario_docker_integration.py::test_linked_worktree_git_is_masked_and_snapshot_wrapper_works
     - packages/meta-harness/tests/test_scenario_docker_integration.py::test_production_preparation_is_contained_and_exports_bounded_workspace
     - packages/meta-harness/tests/test_scenario_docker_integration.py::test_preparation_workspace_quota_fails_closed
     - packages/meta-harness/tests/test_scenario_docker_integration.py::test_preparation_container_self_terminates_at_absolute_lifetime
     - packages/meta-harness/tests/test_scenario_process.py
+    - packages/meta-harness/tests/test_scenario_process.py::test_cleanup_inspect_daemon_error_does_not_verify_container_absence
+    - packages/meta-harness/tests/test_scenario_process.py::test_cleanup_inspect_missing_object_verifies_container_absence
     - packages/meta-harness/tests/test_scenario_process.py::test_timeout_is_preserved_when_cleanup_also_fails
     - packages/meta-harness/tests/test_evaluator_headless_run.py::TestRunHeadlessScenarioEnvironment
     - packages/meta-harness/tests/test_evaluator_oracles.py::TestOracleArtifactExists::test_rejects_symlink_to_file_outside_worktree
@@ -307,6 +312,8 @@
     packages/meta-harness/tests/test_scenario_broker.py
     packages/meta-harness/tests/test_scenario_docker.py::test_broker_token_is_injected_via_stdin_not_argv_or_env
     packages/meta-harness/tests/test_scenario_docker_integration.py
+    packages/meta-harness/tests/test_evaluator_failure_handling.py::TestBrokerMetricsForceRunError
+    packages/meta-harness/tests/test_evaluator_headless_run.py::TestRunHeadlessScenarioEnvironment::test_raises_when_result_event_indicates_budget_exceeded
     packages/meta-harness/tests/test_evaluator_oracles.py::TestRubricJudgeClaudeBareBackend::test_docker_judge_uses_broker_container_without_host_api_key
   covered_by:
     - packages/meta-harness/tests/test_claude_credentials.py
@@ -314,8 +321,11 @@
     - packages/meta-harness/tests/test_scenario_broker.py::test_http_handler_releases_slot_after_unexpected_proxy_exception
     - packages/meta-harness/tests/test_scenario_broker.py::test_http_handler_does_not_append_second_response_after_stream_failure
     - packages/meta-harness/tests/test_scenario_broker.py::test_http_handler_rejects_transfer_encoding_without_admission
+    - packages/meta-harness/tests/test_scenario_broker.py::test_token_envelope_latches_budget_and_rejects_following_request
     - packages/meta-harness/tests/test_scenario_docker.py::test_broker_token_is_injected_via_stdin_not_argv_or_env
     - packages/meta-harness/tests/test_scenario_docker_integration.py
+    - packages/meta-harness/tests/test_evaluator_failure_handling.py::TestBrokerMetricsForceRunError
+    - packages/meta-harness/tests/test_evaluator_headless_run.py::TestRunHeadlessScenarioEnvironment::test_raises_when_result_event_indicates_budget_exceeded
     - packages/meta-harness/tests/test_evaluator_oracles.py::TestRubricJudgeClaudeBareBackend::test_docker_judge_uses_broker_container_without_host_api_key
   notes: >-
     The real OAuth token is loaded with TTL preflight and injected through stdin

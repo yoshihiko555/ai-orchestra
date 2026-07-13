@@ -474,7 +474,7 @@ PR 作成時点で記録されるが、この時点では状態は `evaluated` �
 | `suite_id`       | `<target>` に対応するシナリオスイート識別子（例: `claude-harness`, `skill:<name>`）                                                         |
 | `scenario_hash`  | シナリオ YAML ファイル本体の sha256                                                                                                         |
 | `suite_hash`     | suite 内の全シナリオファイルの `scenario_hash` をファイル名順にソートし連結した文字列の sha256                                              |
-| `evaluator_hash` | `lib/evaluator.py` + `lib/meta_harness_common.py` の内容 + scoring 関連 config 値（`scoring.*`）のスナップショットを連結した文字列の sha256 |
+| `evaluator_hash` | evaluator本体・Docker実行境界（broker / profile / isolation / process runner / Dockerfile）の正本 + scoring関連config値（`scoring.*`）を、安定した相対パス順で連結したsha256 |
 
 ### 1-3. `scenario.schema.json`
 
@@ -1154,6 +1154,9 @@ cd <worktree> && claude -p "<scenario.prompt>" \
     fail-closedする。path/auth/query/transfer-encoding/header allowlist・値上限のpre-admission拒否はanomalyを
     記録するが、入力検証ノイズだけでrunを使用不能にしないようbudgetはラッチしない。`begin_request()`後の
     proxy/stream失敗はusage不明としてbudgetをラッチし、以降をfail-closedする。
+    累積token上限超過もbudgetをラッチして後続requestを拒否する。scenario / oracle / judge完了後にrefreshした
+    `broker.metrics.budget_exceeded`または`anomaly`がtrueなら、個別checkが成功していてもattempt全体をerrorとする。
+    headless run自体が失敗した場合もbroker cleanup前にmetricsをrefreshして`isolation.json`へ保存する。
   - **転送byte上限**: candidate由来headerは既知名だけを最大128 bytesで受け、`user-agent`等はbroker固定値へ
     正規化する。`x-stainless-*` wildcard転送は行わず、body + 転送headerのrun累積を
     `max_upstream_bytes`でhard-capしてtoken外covert channelを制限する。
@@ -1178,12 +1181,15 @@ cd <worktree> && claude -p "<scenario.prompt>" \
 - linked worktreeのGit metadataはmain repo側にあるためmountへ追加しない。scenario起動直前の
   worktreeをephemeral runtime内の独立Git snapshotへcommitし、read-only wrapper経由で公開する。
   `git rev-parse [--short] HEAD`はmanifestの`source_commit`を返し、`git diff`等はsnapshot baselineと
-  candidate worktreeを比較する。
+  candidate worktreeを比較する。`command_exit` oracleにもsnapshotとwrapperの2ディレクトリだけを
+  read-only mountし、同じ`GIT_DIR` / `GIT_WORK_TREE` / `PATH`を設定する（runtime全体はmountしない）。
 - **子孫プロセスの回収**: Dockerのcgroupにより`setsid()`で離脱した子孫を含む全プロセスを`docker rm -f`で
   確実に停止できる（スパイクS3実測: rm -f後にホスト残存プロセスゼロ）。この封じ込めと
   `events.jsonl`/`progress.log`の各10MB上限強制が整うまでscenario/oracleのprocess起動はfail-closedする。
   host orchestratorがSIGKILL/OOM等でcleanupを実行できない場合にも残存し続けないよう、broker以外の全run
-  コンテナは上記absolute lifetimeで自己終了し、`--rm`による自動削除へ進む。
+  コンテナは上記absolute lifetimeで自己終了し、`--rm`による自動削除へ進む。`docker rm -f`失敗後の
+  `docker inspect`は明示的な`No such container/object`だけを不在確認成功とし、daemon/context障害等の
+  非ゼロ終了はcleanup未検証としてrunをfail-closedする。
 - **mount設計とworkspace quota**: 対象worktreeは`/input`へro mountし、候補が書く`/workspace`は
   `workspace_size`上限付きtmpfsとする。実行単位runtime（ro）・固定self-report instruction（ro）・
   own tmp（tmpfs）以外はmountしない。bounded `timeout`待機プロセスのcontainerへ候補コマンドを
@@ -1203,7 +1209,8 @@ cd <worktree> && claude -p "<scenario.prompt>" \
   versionをmetadataへ固定し、tag差し替えを実行境界へ入れない。broker最終imageはshell/package managerを
   含まないdistroless runtimeとする。
 - scenario終了後の`command_exit` oracleはnetworkなし・worktree read-onlyの**別 Docker コンテナ**で
-  実行する（SRT への環境依存 fallback は行わない）。artifact/json/rubric入力はsymlink非追従、
+  実行する（SRT への環境依存 fallback は行わない）。oracleは候補と同じ独立Git snapshot / wrapperを
+  read-onlyで参照し、linked worktreeの実`.git`は参照しない。artifact/json/rubric入力はsymlink非追従、
   regular file限定、5MB上限とする。judgeへは安全にstagingした抜粋だけを渡し、candidate worktreeへの
   tool accessを与えない。
 - Docker daemon不在、イメージpin不一致、broker起動失敗、起動前canary失敗は非隔離実行へ降格せずrun error

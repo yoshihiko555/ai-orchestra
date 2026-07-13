@@ -95,6 +95,18 @@ def build_oracle_command(launch: Any, command: str, *, container_name: str) -> l
         _bind_mount(launch.worktree_dir, CONTAINER_WORKTREE, read_only=True),
         "--mount",
         _bind_mount(
+            launch.runtime_state_dir / "git-snapshot",
+            f"{CONTAINER_RUNTIME}/git-snapshot",
+            read_only=True,
+        ),
+        "--mount",
+        _bind_mount(
+            launch.runtime_state_dir / "bin",
+            f"{CONTAINER_RUNTIME}/bin",
+            read_only=True,
+        ),
+        "--mount",
+        _bind_mount(
             launch.runtime_state_dir / "git-link-mask",
             CONTAINER_GIT_LINK,
             read_only=True,
@@ -103,10 +115,17 @@ def build_oracle_command(launch: Any, command: str, *, container_name: str) -> l
         _tmpfs(CONTAINER_TMP, uid, gid, size="64m"),
         "--workdir",
         CONTAINER_WORKTREE,
-        "--env",
-        "HOME=/tmp",
-        "--env",
-        "GIT_CONFIG_GLOBAL=/dev/null",
+        *_container_env_args(
+            {
+                "HOME": CONTAINER_TMP,
+                "GIT_CONFIG_GLOBAL": "/dev/null",
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_OPTIONAL_LOCKS": "0",
+                "GIT_DIR": f"{CONTAINER_RUNTIME}/git-snapshot",
+                "GIT_WORK_TREE": CONTAINER_WORKTREE,
+                "PATH": f"{CONTAINER_RUNTIME}/bin:/usr/local/bin:/usr/bin:/bin",
+            }
+        ),
         launch.broker.image_id,
         *_bounded_container_command(launch.metadata["resources"], ["/bin/sh", "-c", command]),
     ]

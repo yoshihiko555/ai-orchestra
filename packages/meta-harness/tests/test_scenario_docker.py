@@ -140,8 +140,18 @@ def test_oracle_is_separate_no_network_read_only_container(tmp_path: Path) -> No
     assert "--network\nnone" in rendered
     assert f"src={launch.worktree_dir.resolve()},dst=/workspace,readonly" in rendered
     assert "ANTHROPIC_BASE_URL" not in rendered
-    assert "dst=/runtime" not in rendered
+    assert f"src={launch.runtime_state_dir.resolve()},dst=/runtime,readonly" not in rendered
+    assert (
+        f"src={(launch.runtime_state_dir / 'git-snapshot').resolve()},"
+        "dst=/runtime/git-snapshot,readonly" in rendered
+    )
+    assert (
+        f"src={(launch.runtime_state_dir / 'bin').resolve()},dst=/runtime/bin,readonly" in rendered
+    )
     assert "dst=/workspace/.git,readonly" in rendered
+    assert "GIT_DIR=/runtime/git-snapshot" in command
+    assert "GIT_WORK_TREE=/workspace" in command
+    assert "PATH=/runtime/bin:/usr/local/bin:/usr/bin:/bin" in command
     assert command[-7:] == [
         "/usr/bin/timeout",
         "--signal=TERM",

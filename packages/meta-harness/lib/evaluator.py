@@ -19,6 +19,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -47,6 +48,21 @@ SubprocessRunner = Callable[..., subprocess.CompletedProcess]
 
 _THIS_FILE = Path(__file__).resolve()
 _COMMON_FILE = _LIB_DIR / "meta_harness_common.py"
+_PACKAGE_DIR = _LIB_DIR.parent
+_EVALUATOR_SOURCE_FILES: tuple[tuple[str, Path], ...] = (
+    ("lib/evaluator.py", _THIS_FILE),
+    ("lib/meta_harness_common.py", _COMMON_FILE),
+    ("lib/claude_credentials.py", _LIB_DIR / "claude_credentials.py"),
+    ("lib/scenario_docker.py", _LIB_DIR / "scenario_docker.py"),
+    ("lib/scenario_docker_cli.py", _LIB_DIR / "scenario_docker_cli.py"),
+    ("lib/scenario_docker_profile.py", _LIB_DIR / "scenario_docker_profile.py"),
+    ("lib/scenario_isolation.py", _LIB_DIR / "scenario_isolation.py"),
+    ("lib/scenario_process.py", _LIB_DIR / "scenario_process.py"),
+    ("docker/broker/broker.py", _PACKAGE_DIR / "docker" / "broker" / "broker.py"),
+    ("docker/broker/Dockerfile", _PACKAGE_DIR / "docker" / "broker" / "Dockerfile"),
+    ("docker/scenario/Dockerfile", _PACKAGE_DIR / "docker" / "scenario" / "Dockerfile"),
+)
+_LOGGER = logging.getLogger(__name__)
 
 GIT_TIMEOUT_SECONDS = 10
 GIT_WORKTREE_TIMEOUT_SECONDS = 120
@@ -712,7 +728,38 @@ def run_headless_scenario(
         return result
     finally:
         if not succeeded:
-            siso.cleanup_scenario_isolation(launch)
+            in_flight_error = sys.exc_info()[0] is not None
+            try:
+                _persist_refreshed_isolation_metadata(launch, staging_dir)
+            except Exception as exc:  # noqa: BLE001 - preserve the original failed-run error
+                if not in_flight_error:
+                    raise
+                _LOGGER.error(
+                    "could not persist failed-run isolation metadata: %s",
+                    exc,
+                    exc_info=True,
+                )
+            try:
+                siso.cleanup_scenario_isolation(launch)
+            except Exception as exc:  # noqa: BLE001 - preserve the original failed-run error
+                if not in_flight_error:
+                    raise
+                _LOGGER.error(
+                    "could not clean failed-run scenario isolation: %s",
+                    exc,
+                    exc_info=True,
+                )
+
+
+def _persist_refreshed_isolation_metadata(
+    launch: siso.ScenarioIsolationLaunch, staging_dir: Path
+) -> dict:
+    metadata = siso.refresh_isolation_metadata(launch)
+    (staging_dir / "isolation.json").write_text(
+        json.dumps(metadata, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return metadata
 
 
 def _check_headless_run_outcome(
@@ -1318,13 +1365,24 @@ def compute_suite_hash(scenario_paths: list[Path]) -> str:
     return hashlib.sha256(concatenated.encode("utf-8")).hexdigest()
 
 
-def compute_evaluator_hash(scoring_config: dict) -> str:
-    """evaluator.py + meta_harness_common.py の内容 + scoring.* スナップショットの sha256。"""
-    evaluator_src = _THIS_FILE.read_text(encoding="utf-8")
-    common_src = _COMMON_FILE.read_text(encoding="utf-8")
+def _compute_evaluator_hash(
+    source_files: tuple[tuple[str, Path], ...], scoring_config: dict
+) -> str:
+    hasher = hashlib.sha256()
+    for label, source in source_files:
+        hasher.update(label.encode("utf-8"))
+        hasher.update(b"\0")
+        hasher.update(source.read_bytes())
+        hasher.update(b"\0")
     scoring_snapshot = json.dumps(scoring_config, sort_keys=True, ensure_ascii=False)
-    concatenated = evaluator_src + common_src + scoring_snapshot
-    return hashlib.sha256(concatenated.encode("utf-8")).hexdigest()
+    hasher.update(b"scoring.*\0")
+    hasher.update(scoring_snapshot.encode("utf-8"))
+    return hasher.hexdigest()
+
+
+def compute_evaluator_hash(scoring_config: dict) -> str:
+    """Evaluator and Docker execution semantics plus scoring.* snapshot sha256."""
+    return _compute_evaluator_hash(_EVALUATOR_SOURCE_FILES, scoring_config)
 
 
 # ---------------------------------------------------------------------------
@@ -1700,6 +1758,31 @@ def _run_attempt_lifecycle_safely(
         return [], [], True, [{"stage": "unknown", "type": "run_error", "message": str(exc)}]
 
 
+def _broker_metrics_failure(metadata: dict) -> dict[str, str] | None:
+    broker = metadata.get("broker")
+    metrics = broker.get("metrics") if isinstance(broker, dict) else None
+    if not isinstance(metrics, dict):
+        return None
+    budget_exceeded = metrics.get("budget_exceeded") is True
+    anomaly = metrics.get("anomaly") is True
+    if not budget_exceeded and not anomaly:
+        return None
+    raw_reasons = metrics.get("anomaly_reasons")
+    reasons = [str(reason) for reason in raw_reasons] if isinstance(raw_reasons, list) else []
+    detail = f": {', '.join(reasons)}" if reasons else ""
+    if budget_exceeded:
+        return {
+            "stage": "broker",
+            "type": "budget_exceeded",
+            "message": f"credential broker budget or usage envelope exceeded{detail}",
+        }
+    return {
+        "stage": "broker",
+        "type": "run_error",
+        "message": f"credential broker recorded an anomalous exchange{detail}",
+    }
+
+
 def _run_attempt_lifecycle(
     *,
     main_root: Path,
@@ -1778,13 +1861,13 @@ def _run_attempt_lifecycle(
         if scenario_result is not None and scenario_result.isolation_launch is not None:
             if isinstance(scenario_result.isolation_launch, siso.ScenarioIsolationLaunch):
                 try:
-                    refreshed_metadata = siso.refresh_isolation_metadata(
-                        scenario_result.isolation_launch
+                    refreshed_metadata = _persist_refreshed_isolation_metadata(
+                        scenario_result.isolation_launch, staging_dir
                     )
-                    (staging_dir / "isolation.json").write_text(
-                        json.dumps(refreshed_metadata, ensure_ascii=False, sort_keys=True) + "\n",
-                        encoding="utf-8",
-                    )
+                    broker_failure = _broker_metrics_failure(refreshed_metadata)
+                    if broker_failure is not None:
+                        hard_failure = True
+                        errors.append(broker_failure)
                 except Exception as exc:  # noqa: BLE001 - metadata 失敗でも cleanup を継続する
                     hard_failure = True
                     errors.append(

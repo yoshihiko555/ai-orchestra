@@ -216,13 +216,36 @@ class TestRunHeadlessScenarioEnvironment:
     def test_raises_when_result_event_indicates_budget_exceeded(
         self, tmp_path: Path, monkeypatch
     ) -> None:
-        _install_isolation_launch(monkeypatch, tmp_path)
+        launch = _install_isolation_launch(monkeypatch, tmp_path)
         worktree_dir = tmp_path / "worktree"
         worktree_dir.mkdir()
         staging_dir = tmp_path / "staging"
         staging_dir.mkdir()
         instruction_path = tmp_path / "self-report-instruction.md"
         instruction_path.write_text("irrelevant", encoding="utf-8")
+        lifecycle_events: list[str] = []
+
+        def refresh_metadata(refreshed_launch):
+            assert refreshed_launch is launch
+            lifecycle_events.append("refresh")
+            return {
+                **launch.metadata,
+                "broker": {
+                    "metrics": {
+                        "budget_exceeded": True,
+                        "anomaly": True,
+                    }
+                },
+            }
+
+        def cleanup(cleaned_launch):
+            assert cleaned_launch is launch
+            persisted = json.loads((staging_dir / "isolation.json").read_text())
+            assert persisted["broker"]["metrics"]["budget_exceeded"] is True
+            lifecycle_events.append("cleanup")
+
+        monkeypatch.setattr(ev.siso, "refresh_isolation_metadata", refresh_metadata)
+        monkeypatch.setattr(ev.siso, "cleanup_scenario_isolation", cleanup)
 
         def fake_runner(cmd, **kwargs):
             kwargs["stdout"].write(
@@ -256,6 +279,7 @@ class TestRunHeadlessScenarioEnvironment:
                 "budget-exceeded result event should raise EvaluatorStageError, not return"
                 " a HeadlessRunResult that lets oracle checks decide pass/fail"
             )
+        assert lifecycle_events == ["refresh", "cleanup"]
 
     def test_isolation_failure_is_fail_closed(self, tmp_path: Path, monkeypatch) -> None:
         worktree_dir = tmp_path / "worktree"

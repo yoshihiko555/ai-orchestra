@@ -420,7 +420,9 @@ def _prepare_isolated_git(
     runtime_state = _validated_directory(runtime_state_dir, "scenario runtime state")
     snapshot_dir = runtime_state / _GIT_SNAPSHOT_DIR
     wrapper_dir = runtime_state / _GIT_WRAPPER_DIR
-    wrapper_dir.mkdir(mode=0o700, exist_ok=True)
+    wrapper_mode = 0o711 if container_paths else 0o700
+    wrapper_dir.mkdir(mode=wrapper_mode, exist_ok=True)
+    wrapper_dir.chmod(wrapper_mode)
     git_env = iso.build_minimal_env(
         {
             _RUNTIME_ROOT_ENV: str(runtime_state),

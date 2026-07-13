@@ -320,16 +320,29 @@ def test_usage_budget_hard_cap_rejects_following_request(tmp_path: Path, monkeyp
     assert metrics["budget_exceeded"] is True
 
 
-def test_request_and_token_envelopes_record_anomaly(tmp_path: Path, monkeypatch) -> None:
-    state = _state(tmp_path, monkeypatch, max_requests=1, max_total_tokens=1)
+def test_request_envelope_records_anomaly(tmp_path: Path, monkeypatch) -> None:
+    state = _state(tmp_path, monkeypatch, max_requests=1, max_total_tokens=100)
     assert state.begin_request()[0] is True
-    state.finish_request(broker.Usage(input_tokens=2))
+    state.finish_request(broker.Usage(input_tokens=1))
     assert state.begin_request()[0] is False
 
     metrics = state.metrics.as_dict()
     assert metrics["anomaly"] is True
     assert "request envelope exceeded" in metrics["anomaly_reasons"]
-    assert "token envelope exceeded" in metrics["anomaly_reasons"]
+
+
+def test_token_envelope_latches_budget_and_rejects_following_request(
+    tmp_path: Path, monkeypatch
+) -> None:
+    state = _state(tmp_path, monkeypatch, max_requests=10, max_total_tokens=1)
+    assert state.begin_request()[0] is True
+
+    state.finish_request(broker.Usage(input_tokens=2))
+
+    assert state.metrics.budget_exceeded is True
+    started, reason = state.begin_request()
+    assert started is False
+    assert reason == "run budget exhausted"
 
 
 def test_missing_usage_fails_budget_closed(tmp_path: Path, monkeypatch) -> None:

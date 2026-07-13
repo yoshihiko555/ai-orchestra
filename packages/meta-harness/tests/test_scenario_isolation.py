@@ -229,6 +229,7 @@ def test_container_git_wrapper_uses_fixed_image_git_not_itself(
     wrapper = (wrapper_dir / "git").read_text()
     assert "exec /usr/bin/git --git-dir=/runtime/git-snapshot" in wrapper
     assert "--work-tree=/workspace" in wrapper
+    assert wrapper_dir.stat().st_mode & 0o777 == 0o711
 
 
 def test_real_scenario_srt_blocks_store_path(git_project: Path, tmp_path: Path) -> None:

@@ -333,5 +333,21 @@ def test_linked_worktree_git_is_masked_and_snapshot_wrapper_works(
         assert completed.stdout.strip() == source_commit[:7]
         assert (worktree / "result.txt").read_text() == "exported"
         assert (worktree / ".git").is_file()
+
+        oracle_name = f"mh-run-it-{secrets.token_hex(3)}-oracle"
+        oracle_command = docker.build_oracle_command(
+            launch,
+            "git rev-parse --short HEAD",
+            container_name=oracle_name,
+        )
+        oracle = docker.sproc.run_bounded_capture(
+            oracle_command,
+            cwd=worktree,
+            timeout=30,
+            env=docker._docker_host_env(),
+            cleanup_args=["docker", "rm", "-f", oracle_name],
+        )
+        assert oracle.returncode == 0, oracle.stderr
+        assert oracle.stdout.strip() == source_commit[:7]
     finally:
         docker.cleanup_docker_launch(launch)

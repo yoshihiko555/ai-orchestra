@@ -208,6 +208,8 @@ def _force_container_cleanup(cleanup_args: list[str]) -> bool:
         return True
     if cleanup_args[:3] != ["docker", "rm", "-f"] or len(cleanup_args) != 4:
         return False
+    if _reports_missing_container(completed):
+        return True
     try:
         inspected = subprocess.run(
             ["docker", "inspect", cleanup_args[3]],
@@ -218,7 +220,12 @@ def _force_container_cleanup(cleanup_args: list[str]) -> bool:
         )
     except (OSError, subprocess.TimeoutExpired):
         return False
-    return inspected.returncode != 0
+    return inspected.returncode != 0 and _reports_missing_container(inspected)
+
+
+def _reports_missing_container(completed: subprocess.CompletedProcess) -> bool:
+    output = f"{completed.stdout or ''}\n{completed.stderr or ''}".lower()
+    return "no such container:" in output or "no such object:" in output
 
 
 def _terminate_host_process_group(process: subprocess.Popen[bytes]) -> None:

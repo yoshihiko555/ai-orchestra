@@ -175,6 +175,7 @@ class BrokerState:
                 self.metrics.budget_exceeded = True
                 self._mark_anomaly_locked("upstream response omitted usage accounting")
             if self.metrics.usage.total_tokens > self.max_total_tokens:
+                self.metrics.budget_exceeded = True
                 self._mark_anomaly_locked("token envelope exceeded")
             if self.metrics.estimated_cost_usd >= self.budget_usd:
                 self.metrics.budget_exceeded = True

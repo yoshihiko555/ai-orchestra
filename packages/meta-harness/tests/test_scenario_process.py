@@ -144,3 +144,35 @@ def test_successful_command_fails_closed_when_container_cleanup_is_unverified(
             env={"PATH": "/usr/bin:/bin"},
             cleanup_args=["docker", "rm", "-f", "mh-run-cleanup-failure"],
         )
+
+
+def test_cleanup_inspect_daemon_error_does_not_verify_container_absence(monkeypatch) -> None:
+    def fake_run(args, **_kwargs):
+        if args[:3] == ["docker", "rm", "-f"]:
+            return subprocess.CompletedProcess(args, 1, stdout="", stderr="remove failed")
+        return subprocess.CompletedProcess(
+            args,
+            1,
+            stdout="",
+            stderr="Cannot connect to the Docker daemon at unix:///var/run/docker.sock",
+        )
+
+    monkeypatch.setattr(sproc.subprocess, "run", fake_run)
+
+    assert sproc._force_container_cleanup(["docker", "rm", "-f", "mh-run-test"]) is False
+
+
+def test_cleanup_inspect_missing_object_verifies_container_absence(monkeypatch) -> None:
+    def fake_run(args, **_kwargs):
+        if args[:3] == ["docker", "rm", "-f"]:
+            return subprocess.CompletedProcess(args, 1, stdout="", stderr="remove failed")
+        return subprocess.CompletedProcess(
+            args,
+            1,
+            stdout="",
+            stderr="Error: No such object: mh-run-test",
+        )
+
+    monkeypatch.setattr(sproc.subprocess, "run", fake_run)
+
+    assert sproc._force_container_cleanup(["docker", "rm", "-f", "mh-run-test"]) is True

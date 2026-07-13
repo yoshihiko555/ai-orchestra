@@ -9,6 +9,8 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from tests.module_loader import load_module
 
 ev = load_module(
@@ -142,6 +144,91 @@ class TestNoCriticalChecksIsRecordedAsError:
         events = mh.read_ledger_events(main_root, mh.DEFAULTS)
         run_completed = [e for e in events if e.get("event") == "run_completed"]
         assert run_completed[-1]["verdict"] == "error"
+
+
+class TestBrokerMetricsForceRunError:
+    @pytest.mark.parametrize(
+        ("metrics", "expected_type"),
+        [
+            ({"budget_exceeded": True, "anomaly": False, "anomaly_reasons": []}, "budget_exceeded"),
+            (
+                {
+                    "budget_exceeded": False,
+                    "anomaly": True,
+                    "anomaly_reasons": ["invalid upstream response"],
+                },
+                "run_error",
+            ),
+        ],
+    )
+    def test_refreshed_broker_violation_is_a_hard_failure(
+        self, tmp_path: Path, monkeypatch, metrics: dict, expected_type: str
+    ) -> None:
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        staging = tmp_path / "staging"
+        staging.mkdir()
+        launch = ev.siso.ScenarioIsolationLaunch(
+            executable="docker",
+            settings_path=None,
+            settings={},
+            env={},
+            metadata={"backend": "docker"},
+            backend="docker",
+        )
+        monkeypatch.setattr(ev, "worktree_root", lambda *_args: tmp_path / "worktrees")
+        monkeypatch.setattr(ev, "create_worktree", lambda *_args, **_kwargs: worktree)
+        monkeypatch.setattr(ev, "apply_overlay", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(ev, "build_facet_and_context", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(ev, "run_setup_commands", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(
+            ev,
+            "run_headless_scenario",
+            lambda *_args, **_kwargs: ev.HeadlessRunResult(
+                events_path=staging / "events.jsonl",
+                progress_path=staging / "progress.log",
+                timed_out=False,
+                isolation_launch=launch,
+            ),
+        )
+        monkeypatch.setattr(
+            ev,
+            "run_oracle",
+            lambda check, *_args, **_kwargs: {
+                "id": check["id"],
+                "passed": True,
+                "oracle": check["oracle"],
+                "detail": "ok",
+            },
+        )
+        monkeypatch.setattr(
+            ev.siso,
+            "refresh_isolation_metadata",
+            lambda _launch: {"backend": "docker", "broker": {"metrics": metrics}},
+        )
+        monkeypatch.setattr(ev.siso, "cleanup_scenario_isolation", lambda _launch: None)
+        monkeypatch.setattr(ev, "remove_worktree", lambda *_args, **_kwargs: None)
+
+        checks, _, hard_failure, errors = ev._run_attempt_lifecycle(
+            main_root=tmp_path,
+            config=mh.DEFAULTS,
+            schema_dir=_SCHEMA_DIR,
+            package_dir=_PACKAGE_DIR,
+            cand_dir=tmp_path / "candidate",
+            manifest={"source_commit": "a" * 40},
+            scenario={
+                "critical": [{"id": "c1", "text": "n/a", "oracle": "artifact_exists", "path": "x"}],
+                "checks": [],
+            },
+            run_id="run-test",
+            staging_dir=staging,
+            runner=subprocess.run,
+        )
+
+        assert checks[0]["passed"] is True
+        assert hard_failure is True
+        assert errors[-1]["stage"] == "broker"
+        assert errors[-1]["type"] == expected_type
 
 
 class TestJudgeErrorForcesRunVerdictError:
