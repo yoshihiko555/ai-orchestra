@@ -81,6 +81,20 @@ class MakerCommitVerificationError(RuntimeError):
     """
 
 
+class _MechanicalLeaseLostError(RuntimeError):
+    """Raised internally when heartbeat detects lease loss mid mechanical-check run (code G5).
+
+    `loop_common.run_mechanical_checks`'s `finally` block calls `heartbeat()` before
+    `artifact_writer()` for each command, so raising here (instead of only flipping
+    `_lease_lost` and returning `None`) also skips that command's own log write, and
+    propagating out of `run_mechanical_checks` skips every remaining command too.
+    `_run_checker` catches this to also skip any LLM reviewers and the final sealed
+    `check_result.json` artifact — otherwise a lease already lost mid-checker-run would still
+    leave those artifacts on disk for a restarted worker to (wrongly) trust, violating EV-50's
+    "lease 喪失時は書き込みゼロ" guarantee.
+    """
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point: `loop_driver.py --loop-id <id> --project <path>`."""
     args = _parse_args(argv)
@@ -628,8 +642,13 @@ class LoopDriver:
         has_llm_review = isinstance(params.get("llm_review"), dict)
 
         def heartbeat_and_check() -> None:
+            # code G5: raise (rather than only flipping `_lease_lost` and returning) so
+            # `run_mechanical_checks`'s `finally` block skips this command's own
+            # `artifact_writer` call too, and the exception unwinds out of the mechanical
+            # loop entirely, skipping every remaining command's write as well.
             if not lc.heartbeat(self.loop_id, self.project_dir, self.lease_token):
                 self._lease_lost.set()
+                raise _MechanicalLeaseLostError("lease lost during mechanical checks")
 
         mechanical_paths: list[str] = []
 
@@ -651,15 +670,23 @@ class LoopDriver:
         mechanical_timeout_seconds = lds.apportioned_timeout(
             self._remaining_wall_clock_seconds(), MECHANICAL_CHECK_TIMEOUT_SECONDS
         )
-        failures = lc.run_mechanical_checks(
-            commands,
-            state.worktree_path,
-            mechanical_timeout_seconds,
-            heartbeat=heartbeat_and_check,
-            artifact_writer=save_mechanical_log,
-            env=checker_env,
-            on_start=self._set_current_child,
-        )
+        try:
+            failures = lc.run_mechanical_checks(
+                commands,
+                state.worktree_path,
+                mechanical_timeout_seconds,
+                heartbeat=heartbeat_and_check,
+                artifact_writer=save_mechanical_log,
+                env=checker_env,
+                on_start=self._set_current_child,
+            )
+        except _MechanicalLeaseLostError:
+            # code G5: lease already lost; `self._lease_lost` is set, so `run()`'s dispatch
+            # loop returns EXIT_FOREIGN_LEASE without calling `lc.complete()` regardless of
+            # what this returns. Return without building/writing `check_result.json` (or
+            # running any LLM reviewer) so a restarted worker never sees stale artifacts from
+            # a run whose lease was already lost partway through.
+            return {}
         mechanical = lc.CheckResult(
             passed=not failures,
             layer="mechanical",
@@ -796,6 +823,7 @@ class LoopDriver:
         action_id = proposal.action_id
         pr_number = state.pr_number
         push_required = bool(params.get("push_required"))
+        config = prw.load_pr_review_config(self.project_dir)
         if push_required:
             branch_ok = _current_branch(state.worktree_path) == params.get("verified_branch")
             repo_identity_ok = lc.is_repo_identity_verified(state)
@@ -803,24 +831,52 @@ class LoopDriver:
                 return {
                     "push_guard": {"branch_ok": branch_ok, "repo_identity_ok": repo_identity_ok}
                 }
-            self._push_verified_branch(state.worktree_path, params["verified_branch"])
             if pr_number is not None:
-                # code F7: refresh the review baseline right after pushing the Maker's fix, so
-                # `wait_for_completion` below cannot mistake an *existing* (pre-fix) review —
-                # already `<= baseline_review_id` before this push — for the "new review"
-                # signal it is waiting for; without this, a review submitted before this
-                # iteration's push could be misread as covering the just-pushed fix.
                 repo_for_baseline = _repo_name_with_owner(state.worktree_path)
+                client_for_baseline = prw.GhApiClient(repo_for_baseline)
+                # code G2: drain any review findings still pending against the *old* baseline
+                # before record_baseline below resets baseline_review_id and marks every
+                # currently-visible review comment "processed" — without this drain, a
+                # comment posted between the previous collect and this push would be
+                # silently marked processed by record_baseline without ever being imported
+                # as a finding, permanently losing it.
+                drained = prw.collect_review_findings(
+                    self.loop_id,
+                    self.project_dir,
+                    pr_number,
+                    config,
+                    client_for_baseline,
+                    state.iteration,
+                    self.lease_token,
+                    action_id=action_id,
+                )
+                prw.save_review_findings_snapshot(
+                    self.loop_id, self.project_dir, action_id, drained, self.lease_token
+                )
+                if drained.needs_classification_count:
+                    # Classify before record_baseline marks these comments "processed" too
+                    # (a superset union, regardless of classification status) — otherwise a
+                    # finding still needing classification would never be revisited.
+                    state = lc.load_state(self.loop_id, self.project_dir)
+                    drained = self._classify_pending_findings(state, action_id, drained, config)
+                # code F7: refresh the review baseline right before pushing the Maker's fix,
+                # so `wait_for_completion` below cannot mistake an *existing* (pre-fix)
+                # review — already `<= baseline_review_id` at push time — for the "new
+                # review" signal it is waiting for; without this, a review submitted before
+                # this iteration's push could be misread as covering the just-pushed fix.
+                # Recording it here (immediately before push, after the drain above has
+                # already imported anything pending) keeps that guarantee while no longer
+                # losing pre-push comments to the drain gap (G2).
                 prw.record_baseline(
                     self.loop_id,
                     self.project_dir,
                     pr_number,
-                    prw.GhApiClient(repo_for_baseline),
+                    client_for_baseline,
                     self.lease_token,
                     action_id=action_id,
                 )
                 state = lc.load_state(self.loop_id, self.project_dir)
-        config = prw.load_pr_review_config(self.project_dir)
+            self._push_verified_branch(state.worktree_path, params["verified_branch"])
         # code F12: a `wait_external_review` proposal's own params (built by `propose()` from
         # the loop definition's phase yaml) take precedence over the packaged `pr_review`
         # config for poll_interval_seconds/timeout_seconds, so a loop definition author's
@@ -1016,7 +1072,7 @@ class LoopDriver:
             raise DriverTerminated(stop_reason)
         try:
             pr_number = self._execute_advance_exec(
-                list(params.get("exec") or []), state, verified_branch
+                list(params.get("exec") or []), state, verified_branch, proposal.action_id
             )
         except MakerCommitVerificationError as exc:
             # code F9: fold a failed commit verification into the same push_guard-shaped
@@ -1078,7 +1134,11 @@ class LoopDriver:
         return True, ""
 
     def _execute_advance_exec(
-        self, steps: list[str], state: lc.LoopState, verified_branch: str
+        self,
+        steps: list[str],
+        state: lc.LoopState,
+        verified_branch: str,
+        action_id: str,
     ) -> int | None:
         """Execute the on_success.exec token vocabulary in order; return PR number if known."""
         pr_number = state.pr_number
@@ -1089,12 +1149,19 @@ class LoopDriver:
                     raise MakerCommitVerificationError(reason)
             elif step == "record_baseline":
                 repo = _repo_name_with_owner(state.worktree_path)
+                # code G1: pass the pending action_id so `_fence_state_update` takes the
+                # fenced branch (validates against the live pending action) instead of the
+                # legacy `action_id is None` branch, which just increments `state_version`
+                # on a stale in-memory `state` snapshot without checking it — that stray
+                # increment then makes the *next* `lc.complete()` (still expecting the
+                # pre-increment version) crash on a state_version mismatch.
                 prw.record_baseline(
                     self.loop_id,
                     self.project_dir,
                     pr_number,
                     prw.GhApiClient(repo),
                     self.lease_token,
+                    action_id=action_id,
                 )
             elif step == "push":
                 self._push_verified_branch(state.worktree_path, verified_branch)
@@ -1103,12 +1170,14 @@ class LoopDriver:
             elif step == "record_iteration_head":
                 if pr_number is not None:
                     repo = _repo_name_with_owner(state.worktree_path)
+                    # code G1: same action_id fencing as record_baseline above.
                     prw.record_iteration_head(
                         self.loop_id,
                         self.project_dir,
                         pr_number,
                         prw.GhApiClient(repo),
                         self.lease_token,
+                        action_id=action_id,
                     )
             elif step == "notify":
                 self._notify(state, "advance_phase")

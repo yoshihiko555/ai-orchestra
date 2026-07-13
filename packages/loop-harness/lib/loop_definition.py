@@ -29,6 +29,12 @@ _MECHANICAL_COMMAND_DENYLIST = frozenset({"git", "gh", "ssh", "curl", "wget", "d
 _MECHANICAL_COMMAND_WRAPPERS = frozenset({"env", "nice", "command", "timeout", "bash", "sh"})
 _COMMAND_SEGMENT_SPLIT_RE = re.compile(r"\$\(|`|;|&&|\|\||\||&|\n")
 _ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+# G4: wrapper numeric arguments, e.g. `timeout 30 ...` or `timeout 30s ...` /
+# `timeout 1.5m ...`. Plain isdigit() misses duration-suffixed forms
+# (`s`/`m`/`h`/`d`), which let e.g. `timeout 30s git push` slip past the
+# denylist scan (the unrecognized "30s" token would be resolved as the
+# command-position binary instead of `git`).
+_WRAPPER_NUMERIC_ARG_RE = re.compile(r"^\d+(\.\d+)?[smhd]?$")
 
 
 def _resolve_local_override_root(project_dir: str) -> str:
@@ -300,7 +306,9 @@ def _segment_command_binary(segment: str) -> str | None:
         if name not in _MECHANICAL_COMMAND_WRAPPERS:
             return name or None
         index += 1
-        while index < len(tokens) and (tokens[index].startswith("-") or tokens[index].isdigit()):
+        while index < len(tokens) and (
+            tokens[index].startswith("-") or _WRAPPER_NUMERIC_ARG_RE.match(tokens[index])
+        ):
             index += 1
     return None
 

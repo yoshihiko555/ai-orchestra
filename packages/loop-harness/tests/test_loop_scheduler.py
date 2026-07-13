@@ -246,6 +246,26 @@ def test_discover_loop_ids_excludes_terminal_loops(
     assert scheduler.discover_loop_ids(project_dir, definition) == []
 
 
+def test_discover_loop_ids_excludes_pending_loops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A loop_id still `pending` (initial run_maker never completed) must not be re-spawned as
+    a "new" candidate either (#G10): `lc.attach()` rejects `pending`, so a duplicate worker
+    would fail to attach every cycle - a restart storm. Excluding it from discovery leaves it
+    for a human to investigate instead."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    definition = ld.load_all_definitions(project_dir)["issue-loop"]
+
+    pending_loop_id = wm.compute_loop_id(project_dir, 6)
+    _seed_state(tmp_path, pending_loop_id, status="pending")
+
+    fake_issues = [{"number": 6, "created_at": "2026-01-01T00:00:00Z", "labels": []}]
+    monkeypatch.setattr(scheduler, "list_labeled_issues", lambda project, label: fake_issues)
+
+    assert scheduler.discover_loop_ids(project_dir, definition) == []
+
+
 def test_discover_loop_ids_respects_in_memory_excluded_set(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -376,6 +396,7 @@ def test_gh_list_issues_returns_empty_string_on_timeout(
         ("pending", True),
         ("failed", False),
         ("stopped", False),
+        ("passed", False),
     ],
 )
 def test_should_restart(status: str, expected: bool) -> None:
@@ -437,6 +458,29 @@ def test_reap_finished_workers_does_not_restart_when_failed(
     result = scheduler.reap_finished_workers(runtime, project_dir)
 
     assert result == []
+
+
+def test_reap_finished_workers_does_not_restart_when_passed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """G7: a loop that already reached `passed` must never be restarted, even if the worker
+    process itself exits abnormally after writing the final status (e.g. killed mid-teardown).
+    """
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    loop_id = "aaaaaaaa-issue-1"
+    _seed_state(tmp_path, loop_id, status="passed")
+    runtime = scheduler.SchedulerRuntime(workers={loop_id: _FakePopen(returncode=1)})
+
+    def _fail_spawn(lid: str, project: str) -> None:
+        raise AssertionError("must not restart an already-passed loop")
+
+    monkeypatch.setattr(scheduler, "spawn_worker", _fail_spawn)
+
+    result = scheduler.reap_finished_workers(runtime, project_dir)
+
+    assert result == []
+    assert loop_id not in runtime.workers
 
 
 def test_reap_finished_workers_leaves_still_running_children_alone(tmp_path: Path) -> None:
@@ -670,7 +714,9 @@ def test_spawn_new_workers_excludes_ids_still_in_cooldown(
         return [lid for lid in ["a", cooling_loop_id] if lid not in excluded]
 
     monkeypatch.setattr(scheduler, "discover_loop_ids", fake_discover)
-    monkeypatch.setattr(scheduler, "spawn_worker", lambda loop_id, project: _FakePopen(None))
+    monkeypatch.setattr(
+        scheduler, "spawn_worker", lambda loop_id, project, definition_id: _FakePopen(None)
+    )
 
     spawned = scheduler.spawn_new_workers(runtime, project_dir, definition)
 
@@ -711,12 +757,45 @@ def test_spawn_new_workers_spawns_only_up_to_available_capacity(
     runtime = scheduler.SchedulerRuntime()  # cap 2, 0 running -> 2 slots available
 
     monkeypatch.setattr(scheduler, "discover_loop_ids", lambda project, defn, **kw: ["a", "b", "c"])
-    monkeypatch.setattr(scheduler, "spawn_worker", lambda loop_id, project: _FakePopen(None))
+    monkeypatch.setattr(
+        scheduler, "spawn_worker", lambda loop_id, project, definition_id: _FakePopen(None)
+    )
 
     spawned = scheduler.spawn_new_workers(runtime, project_dir, definition)
 
     assert spawned == ["a", "b"]
     assert set(runtime.workers) == {"a", "b"}
+
+
+def test_spawn_new_workers_passes_definition_id_to_spawn_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#G3: the definition actually used for discovery must be forwarded to `spawn_worker` so
+    a brand-new loop's `loop_driver.py` child does not silently fall back to
+    `DEFAULT_DEFINITION_ID` when the scheduler was started with a custom `--definition`."""
+    project_dir = str(tmp_path)
+    definition = ld.LoopDefinition(
+        id="custom-loop",
+        trigger={"lp2": {"label": "loop:custom"}},
+        phases=[],
+        notifications={},
+        source_path="",
+    )
+    runtime = scheduler.SchedulerRuntime()
+    monkeypatch.setattr(scheduler, "discover_loop_ids", lambda project, defn, **kw: ["a"])
+
+    captured: dict[str, object] = {}
+
+    def fake_spawn(loop_id: str, project: str, definition_id: str) -> _FakePopen:
+        captured["definition_id"] = definition_id
+        return _FakePopen(None)
+
+    monkeypatch.setattr(scheduler, "spawn_worker", fake_spawn)
+
+    spawned = scheduler.spawn_new_workers(runtime, project_dir, definition)
+
+    assert spawned == ["a"]
+    assert captured["definition_id"] == "custom-loop"
 
 
 # --------------------------------------------------------------------------------------------
@@ -853,11 +932,40 @@ def test_render_launchd_plist_contains_keepalive_and_paths(tmp_path: Path) -> No
     assert "com.ai-orchestra.loop-scheduler" in plist
 
 
+def test_render_launchd_plist_uses_sys_executable_not_hardcoded_python3(tmp_path: Path) -> None:
+    """#G8: a launchd job started with `/usr/bin/python3` cannot import a venv/uv-managed
+    dependency the scheduler was actually installed under, so a hardcoded system interpreter
+    would make the resident job die immediately on start."""
+    plist = scheduler.render_launchd_plist(str(tmp_path))
+    assert scheduler.xml_escape(sys.executable) in plist
+    assert "/usr/bin/python3" not in plist
+
+
+def test_render_launchd_plist_honors_explicit_python_bin_override(tmp_path: Path) -> None:
+    plist = scheduler.render_launchd_plist(str(tmp_path), python_bin="/custom/venv/bin/python3")
+    assert "/custom/venv/bin/python3" in plist
+    assert sys.executable not in plist
+
+
 def test_render_cron_entry_contains_pgrep_guard_and_project_path(tmp_path: Path) -> None:
     entry = scheduler.render_cron_entry(str(tmp_path))
     assert "pgrep -f" in entry
     assert str(tmp_path.resolve()) in entry
     assert entry.strip().startswith("*/5 * * * *")
+
+
+def test_render_cron_entry_uses_sys_executable_not_hardcoded_python3(tmp_path: Path) -> None:
+    """#G8: mirrors the same fix in `render_launchd_plist` for the cron fallback command."""
+    entry = scheduler.render_cron_entry(str(tmp_path))
+    tokens = shlex.split(entry)
+    assert sys.executable in tokens
+    assert "/usr/bin/python3" not in entry
+
+
+def test_render_cron_entry_honors_explicit_python_bin_override(tmp_path: Path) -> None:
+    entry = scheduler.render_cron_entry(str(tmp_path), python_bin="/custom/venv/bin/python3")
+    tokens = shlex.split(entry)
+    assert "/custom/venv/bin/python3" in tokens
 
 
 def test_render_launchd_plist_escapes_xml_special_characters(tmp_path: Path) -> None:
@@ -919,6 +1027,40 @@ def test_spawn_worker_builds_expected_argv(monkeypatch: pytest.MonkeyPatch) -> N
     cmd = captured["cmd"]
     assert cmd[0] == sys.executable
     assert cmd[1].endswith("loop_driver.py")
-    assert cmd[2:] == ["--loop-id", "abcd1234-issue-1", "--project", "/some/project"]
+    assert cmd[2:] == [
+        "--loop-id",
+        "abcd1234-issue-1",
+        "--project",
+        "/some/project",
+        "--definition",
+        scheduler.DEFAULT_DEFINITION_ID,
+    ]
     assert captured["kwargs"]["stdin"] == subprocess.DEVNULL
     assert captured["kwargs"]["start_new_session"] is True
+
+
+def test_spawn_worker_forwards_definition_id_to_child_argv(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#G3: `--definition` must reflect the definition actually used for discovery, not always
+    the hardcoded `DEFAULT_DEFINITION_ID` - otherwise a scheduler started with a custom
+    `--definition` silently falls back to `issue-loop` for every brand-new loop."""
+    captured: dict[str, object] = {}
+
+    def fake_popen(cmd: list[str], **kwargs: object) -> _FakePopen:
+        captured["cmd"] = cmd
+        return _FakePopen(None)
+
+    monkeypatch.setattr(scheduler.subprocess, "Popen", fake_popen)
+
+    scheduler.spawn_worker("abcd1234-issue-1", "/some/project", "custom-loop")
+
+    cmd = captured["cmd"]
+    assert cmd[2:] == [
+        "--loop-id",
+        "abcd1234-issue-1",
+        "--project",
+        "/some/project",
+        "--definition",
+        "custom-loop",
+    ]

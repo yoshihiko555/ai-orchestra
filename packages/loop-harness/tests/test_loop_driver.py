@@ -112,6 +112,36 @@ def test_maker_scratch_home_creates_directory_under_loop_dir(tmp_path: Path) -> 
     assert (Path(path).stat().st_mode & 0o777) == 0o700
 
 
+def test_maker_scratch_home_writes_loop_root_gitignore(tmp_path: Path) -> None:
+    """G6 (PR #210 review round 3): `.claude/loop/` must never be `git add`-able, since
+    `maker_home/` under it holds a copy of the operator's live OAuth credentials (code F14).
+    A `.claude/loop/.gitignore` (`*`) must exist after `maker_scratch_home()` regardless of
+    whatever the repo's own top-level `.gitignore` does or doesn't cover."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    loop_id = "abcd1234-issue-1"
+
+    lds.maker_scratch_home(project_dir, loop_id)
+
+    gitignore = lc.loop_root(project_dir) / ".gitignore"
+    assert gitignore.is_file()
+    assert gitignore.read_text(encoding="utf-8") == "*\n"
+
+
+def test_maker_scratch_home_gitignore_survives_repeated_call(tmp_path: Path) -> None:
+    """Repeated calls (one per Maker/Checker/reviewer child, code F14) must not fail or drop
+    the `.gitignore` even though it already exists from a previous call."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    loop_id = "abcd1234-issue-1"
+
+    lds.maker_scratch_home(project_dir, loop_id)
+    lds.maker_scratch_home(project_dir, loop_id)
+
+    gitignore = lc.loop_root(project_dir) / ".gitignore"
+    assert gitignore.read_text(encoding="utf-8") == "*\n"
+
+
 def test_maker_env_with_cwd_sets_git_identity_from_repo_config(tmp_path: Path) -> None:
     """code F15: `GIT_CONFIG_GLOBAL=/dev/null` hides `~/.gitconfig` from the Maker's env, so
     the resolved identity must be threaded through explicitly as
@@ -970,6 +1000,67 @@ def test_advance_phase_returns_push_guard_failure_without_touching_layer4(
 
 
 # --------------------------------------------------------------------------------------------
+# loop_driver.LoopDriver: advance-exec auxiliary writes stay fenced to the pending action_id
+# (code G1)
+# --------------------------------------------------------------------------------------------
+
+
+def test_execute_advance_exec_record_baseline_preserves_state_version_fence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """code G1 regression: `record_baseline`/`record_iteration_head` invoked from an
+    `advance_phase` proposal's own `exec` list must be fenced with that *same* pending
+    `action_id`, not `action_id=None`. Passing `None` takes `_fence_state_update`'s legacy
+    branch, which blindly increments `state_version` on a stale in-memory snapshot without
+    validating it against the live pending action — that stray increment then makes the
+    following `lc.complete()` (still carrying the proposal's pre-increment `state_version`)
+    raise `StaleActionError` even though nothing was actually stale."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.branch = "main"
+    state.worktree_path = project_dir
+    state.pr_number = None
+    action_id = "act-g1-001"
+    state.pending_action = lc.PendingAction(
+        action_id, "advance_phase", "implementation", 1, lc.now_iso()
+    )
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(driver, "_repo_name_with_owner", lambda _wt: "owner/repo")
+
+    proposal = lc.ProposeResult(
+        action="advance_phase",
+        action_id=action_id,
+        state_version=state.state_version,
+        expected_phase="implementation",
+        phase="implementation",
+        iteration=1,
+        context={},
+    )
+
+    # pr_number is None here, so record_baseline takes its no-PR-yet branch (no GH API call)
+    # while still exercising the same `_fence_state_update(..., action_id=...)` path.
+    pr_number = d._execute_advance_exec(["record_baseline"], state, "main", proposal.action_id)
+    assert pr_number is None
+
+    # Completing the still-pending advance_phase action with the proposal's original
+    # (pre-record_baseline) state_version must succeed, not raise StaleActionError.
+    lc.complete(
+        loop_id,
+        project_dir,
+        proposal.action_id,
+        proposal.state_version,
+        {"push_guard": {"branch_ok": True, "repo_identity_ok": True}},
+        token,
+    )
+    final_state = lc.load_state(loop_id, project_dir)
+    assert final_state.pending_action is None
+
+
+# --------------------------------------------------------------------------------------------
 # loop_driver.LoopDriver: `commit` advance-exec step actually verifies the Maker's commit
 # (code F9) instead of being a no-op
 # --------------------------------------------------------------------------------------------
@@ -1250,7 +1341,25 @@ def test_wait_external_review_refreshes_baseline_immediately_after_push(
     )
     monkeypatch.setattr(prw, "record_ignored_untrusted_reviews", lambda *a, **k: None)
 
+    call_order: list[str] = []
     recorded_baseline_calls: list[int | None] = []
+
+    def fake_collect_review_findings(
+        _loop_id: str,
+        _project_dir: str,
+        pr_number: int,
+        _config: Any,
+        _client: Any,
+        _iteration: int,
+        _lease_token: str,
+        **_kw: Any,
+    ) -> prw.ReviewFindingsResult:
+        call_order.append("drain")
+        empty = lc.IterationFindings(frozenset(), 0)
+        return prw.ReviewFindingsResult((), empty, empty, (), 0, 0)
+
+    monkeypatch.setattr(prw, "collect_review_findings", fake_collect_review_findings)
+    monkeypatch.setattr(prw, "save_review_findings_snapshot", lambda *a, **k: None)
 
     def fake_record_baseline(
         _loop_id: str,
@@ -1260,6 +1369,7 @@ def test_wait_external_review_refreshes_baseline_immediately_after_push(
         _lease_token: str,
         **_kw: Any,
     ) -> prw.BaselineRecord:
+        call_order.append("record_baseline")
         recorded_baseline_calls.append(pr_number)
         state_now = lc.load_state(loop_id, project_dir)
         state_now.pr_review = {
@@ -1272,11 +1382,20 @@ def test_wait_external_review_refreshes_baseline_immediately_after_push(
 
     monkeypatch.setattr(prw, "record_baseline", fake_record_baseline)
 
+    real_push_verified_branch = d._push_verified_branch
+
+    def tracked_push_verified_branch(worktree_path: str, branch: str) -> None:
+        call_order.append("push")
+        real_push_verified_branch(worktree_path, branch)
+
+    monkeypatch.setattr(d, "_push_verified_branch", tracked_push_verified_branch)
+
     captured_baseline: dict[str, Any] = {}
 
     def fake_wait_for_completion(
         _pr: int, baseline: dict[str, Any], _config: Any, _client: Any, **_kw: Any
     ) -> prw.CompletionOutcome:
+        call_order.append("wait")
         captured_baseline["baseline"] = baseline
         return prw.CompletionOutcome(
             "timeout", completed=False, timed_out=True, infrastructure_failure=False
@@ -1294,6 +1413,12 @@ def test_wait_external_review_refreshes_baseline_immediately_after_push(
         context={},
     )
     d._run_wait_external_review(proposal, state, {"push_required": True, "verified_branch": "main"})
+
+    # code G2 regression: drain (against the *old* baseline) must happen before the new
+    # baseline is recorded, and both must happen before push — otherwise a review comment
+    # posted between the previous collect and this push would be silently marked processed
+    # by record_baseline without ever being imported as a finding.
+    assert call_order == ["drain", "record_baseline", "push", "wait"]
 
     assert recorded_baseline_calls == [42]
     assert captured_baseline["baseline"]["baseline_review_id"] == 99
@@ -1501,6 +1626,52 @@ def test_run_checker_runs_mechanical_commands_with_isolated_env(
     assert env is not None
     assert env is not os.environ  # must be an isolated copy, not the driver's live env
     assert "GH_TOKEN" not in env
+
+
+def test_run_checker_writes_nothing_when_heartbeat_loses_lease_mid_mechanical_checks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """code G5 / EV-50 regression: a heartbeat failure detected *during* `run_mechanical_checks`
+    (not just between actions) must not leave any mechanical log or `check_result.json` on
+    disk for a restarted worker to (wrongly) trust. Before the fix, `heartbeat_and_check`
+    only flipped `_lease_lost` and returned `None`, so `run_mechanical_checks` kept running
+    every remaining command and `_run_checker` still built and sealed a full
+    `check_result.json` afterward."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.worktree_path = project_dir
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    heartbeat_calls: list[int] = []
+
+    def fake_heartbeat(_loop_id: str, _project_dir: str, _lease_token: str) -> bool:
+        heartbeat_calls.append(1)
+        return False  # lease already lost, as if reacquired by another process
+
+    monkeypatch.setattr(lc, "heartbeat", fake_heartbeat)
+
+    proposal = lc.ProposeResult(
+        action="run_checker",
+        action_id="act-g5-001",
+        state_version=state.state_version,
+        expected_phase="implementation",
+        phase="implementation",
+        iteration=1,
+        context={},
+    )
+    # Two real, fast mechanical commands: if the fix's exception did not propagate out of
+    # `run_mechanical_checks`, the second command would still run and get its own log written.
+    payload = d._run_checker(proposal, state, {"mechanical": {"commands": ["true", "true"]}})
+
+    assert payload == {}
+    assert d._lease_lost.is_set()
+    assert len(heartbeat_calls) == 1  # aborted after the first command, not both
+    assert lc.load_artifact(loop_id, project_dir, "act-g5-001", "mechanical_1.log") is None
+    assert lc.load_artifact(loop_id, project_dir, "act-g5-001", "mechanical_2.log") is None
+    assert lc.load_artifact(loop_id, project_dir, "act-g5-001", "check_result.json") is None
 
 
 def test_run_checker_marks_infrastructure_failure_when_llm_reviewer_errors(

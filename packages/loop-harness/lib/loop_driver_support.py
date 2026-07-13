@@ -155,12 +155,38 @@ def maker_scratch_home(project_dir: str, loop_id: str) -> str:
     operator's existing `claude` login) — without giving them any of the git/gh push
     credentials this scratch `$HOME` otherwise isolates from (SEC-H3): `~/.netrc`,
     `~/.git-credentials`, and `~/.config/gh` are never copied here.
+
+    G6 (PR #210 review round 3) defense-in-depth: copying live OAuth credentials under the
+    *root worktree's* `.claude/loop/` tree means a careless `git add -A`/`git add .` in that
+    worktree could stage them if `.claude/loop/` were ever untracked-but-not-ignored. This
+    call always (re)writes `.claude/loop/.gitignore` (`*`) first — see
+    `_ensure_loop_root_gitignore()` — so the whole per-loop state tree, including this
+    `maker_home/` copy, is excluded from `git add` regardless of the operator's own
+    `.gitignore` setup. This does not address the complementary risk that the Maker's own
+    sandboxed `claude -p` process can read its own `$HOME` (and therefore these credential
+    files): that access is inherent to giving the Maker a working `claude` login at all
+    (FT-17) and is not something a repo-side `.gitignore` can close.
     """
+    _ensure_loop_root_gitignore(project_dir)
     path = lc.loop_dir(loop_id, project_dir) / "maker_home"
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(path, 0o700)
     _copy_claude_auth_files(Path(os.path.expanduser("~")), path)
     return str(path)
+
+
+def _ensure_loop_root_gitignore(project_dir: str) -> None:
+    """Ensure `<root worktree>/.claude/loop/.gitignore` (`*`) exists (G6 defense-in-depth).
+
+    Idempotent and safe under concurrent callers: content is fixed, so a re-write by a
+    second worker racing this one is a no-op in effect. This is independent of whatever the
+    operator's own top-level `.gitignore` does or doesn't cover, so `maker_home/`'s copied
+    OAuth credentials (code F14) stay excluded from `git add -A`/`git add .` even in a fresh
+    checkout that has never customized its `.gitignore`.
+    """
+    root = lc.loop_root(project_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    (root / ".gitignore").write_text("*\n", encoding="utf-8")
 
 
 def _copy_claude_auth_files(real_home: Path, scratch_home: Path) -> None:
