@@ -34,8 +34,10 @@ DEFAULT_JOURNAL_LINES = 10
 # 通常 purge の対象（完了として確定した状態のみ）。`stopped`（安全停止）は人間の調査を要するため
 # 通常 purge には含めない（EV-52; docs/design/loop-harness-cli.md 4.3 節）。
 _PURGEABLE_STATUSES_NORMAL = frozenset({"passed", "failed"})
-# `--force` でも purge しない状態（実行中データの誤消去防止）。
-_NEVER_PURGE_STATUSES = frozenset({"running", "waiting_external"})
+# `--force` でも purge しない状態（実行中データの誤消去防止）。`pending`（初回 Maker 実行中、
+# まだ running に遷移する前）も lock が有効なまま purge されると実行中 run を破損しうるため対象外
+# とする（H6 レビュー指摘; docs/design/loop-harness-cli.md 4.3 節）。
+_NEVER_PURGE_STATUSES = frozenset({"pending", "running", "waiting_external"})
 
 _STATUS_CHOICES = (
     "pending",

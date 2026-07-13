@@ -70,6 +70,17 @@ _DENY_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
         r"\bgit\b(?:\s+[^\s;&|]+){0,8}?\s+remote\b",  # git remote add/set-url/... (repoint push target)
         r"\bgit\b(?:\s+[^\s;&|]+){0,8}?\s+send-pack\b",  # git send-pack (low-level push transport)
         r"\bgit\b(?:\s+[^\s;&|]+){0,8}?\s+worktree\b",  # git worktree (align w/ MAKER_FIXED_DISALLOWED_TOOLS)
+        # H1: `git -c alias.<name>=<value> <name> ...` defines a *temporary* (this-invocation-only)
+        # alias and immediately invokes it, so a deny-verb value (e.g. `-c alias.p=push`) never
+        # appears as a literal `push`/`remote`/... token the patterns above can match. Rather than
+        # try to parse/resolve the alias's own value (which can itself be obfuscated further, e.g.
+        # `-c alias.p='!git push'`), fail closed on the `-c alias.` construct itself: the Maker has
+        # no legitimate need to define any git alias, temporary or not.
+        r"\bgit\b(?:\s+[^\s;&|]+){0,8}?\s+-c\s*alias\.",  # git -c alias.<name>=... (temporary alias)
+        # H1: `git config alias.<name> <value>` (optionally `--global`/`--local`/`--add`/...)
+        # defines a *persistent* alias in gitconfig, which a later, separate Bash call could then
+        # invoke under an innocuous-looking name. Same fail-closed rationale as above.
+        r"\bgit\b(?:\s+[^\s;&|]+){0,4}?\s+config\b(?:\s+[^\s;&|]+){0,4}?\s+alias\.",  # git config alias.<name>
         r"\bgh\b(?:\s+[^\s;&|]+){0,4}?\s+pr\b",  # gh pr create/merge/close/edit/...
         r"\bgh\b(?:\s+[^\s;&|]+){0,4}?\s+api\b",  # gh api (REST bypass for PR mutation)
         r"\bssh\b",  # direct ssh (custom push transport / remote command execution)

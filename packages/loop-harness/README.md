@@ -82,7 +82,7 @@ LP-2 の Maker は `claude -p` で起動されますが、push や PR 作成は 
 
 ## config
 
-主要キーは `packages/loop-harness/config/loop-harness.yaml`（プロジェクト固有の上書きは `config/loop-harness.local.yaml`。`config-loading` ルール準拠）。
+主要キーは `packages/loop-harness/config/loop-harness.yaml`（プロジェクト固有の上書きは `.claude/config/loop-harness/loop-harness.local.yaml`。`config-loading` ルール準拠）。
 
 | キー                              | デフォルト | 説明                                                    |
 | --------------------------------- | ---------- | ------------------------------------------------------- |

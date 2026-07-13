@@ -277,6 +277,19 @@ def test_purge_candidates_force_includes_stopped_but_protects_running_and_waitin
     assert set(candidates) == {"a-issue-1", "a-issue-2"}
 
 
+def test_purge_candidates_force_never_includes_pending(tmp_path: Path) -> None:
+    """H6: `pending` (initial Maker run, before the first `running` transition) must be
+    protected from `--force` purge just like `running`/`waiting_external`, since the lock
+    is still live and a mid-run purge would corrupt the run."""
+    _init_repo(tmp_path)
+    _seed_state(tmp_path, "a-issue-1", status_value="pending", updated_at=_iso(1000))
+    _seed_state(tmp_path, "a-issue-2", status_value="passed", updated_at=_iso(1))
+
+    candidates = status.purge_candidates(str(tmp_path), force=True, purge_after_days=30)
+
+    assert set(candidates) == {"a-issue-2"}
+
+
 def test_purge_loop_removes_loop_directory(tmp_path: Path) -> None:
     _init_repo(tmp_path)
     loop_id = "a-issue-1"

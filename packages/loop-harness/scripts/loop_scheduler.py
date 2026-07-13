@@ -13,6 +13,7 @@ module must not deviate from.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import shlex
 import subprocess
@@ -53,10 +54,10 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     project = _project_dir(args.project)
     if args.command == "print-launchd":
-        print(render_launchd_plist(project))
+        print(render_launchd_plist(project, definition_id=args.definition))
         return 0
     if args.command == "print-cron":
-        print(render_cron_entry(project))
+        print(render_cron_entry(project, definition_id=args.definition))
         return 0
     run_scheduler(project, args.definition, max_cycles=args.max_cycles)
     return 0
@@ -178,6 +179,11 @@ def _gh_list_issues(repo: str, label: str) -> str:
     A `timeout=30` expiry is treated the same as a nonzero exit (#F20): `subprocess.run` raises
     `TimeoutExpired` instead of returning a `CompletedProcess`, which would otherwise violate
     this function's "failure returns \"\"" contract and take the resident scheduler down with it.
+
+    A missing `gh` executable (or any other launch failure) raises `FileNotFoundError`/`OSError`
+    instead of `TimeoutExpired` (#H2): without also catching `OSError` here, a `gh`-less
+    environment would raise on every single poll cycle and never reach the "failure returns
+    \"\"" contract at all.
     """
     try:
         completed = subprocess.run(
@@ -205,6 +211,15 @@ def _gh_list_issues(repo: str, label: str) -> str:
     except subprocess.TimeoutExpired:
         print(
             lc.redact(f"loop_scheduler: gh api issues timed out (repo={repo}, label={label})"),
+            file=sys.stderr,
+        )
+        return ""
+    except OSError as exc:
+        print(
+            lc.redact(
+                f"loop_scheduler: gh api issues failed to launch (repo={repo}, label={label}): "
+                f"{exc}"
+            ),
             file=sys.stderr,
         )
         return ""
@@ -399,8 +414,16 @@ def spawn_worker(
 
 
 def should_restart(status: str) -> bool:
-    """Return True unless status is a terminal state a human must investigate first (3.3 節)."""
-    return status not in _NON_RESTARTABLE_STATUSES
+    """Return True unless status is a terminal state a human must investigate first (3.3 節),
+    or still `pending` (#H3/#H11).
+
+    A `pending` loop's worker never completed its first action, so `lc.attach()` rejects it
+    outright (`InvalidStateError`) - restarting it here would just restart-storm against an
+    immediate attach failure every cycle. Recovery for a genuinely orphaned `pending` loop (dead
+    worker, expired lease) is handled separately by `recover_orphaned_pending_loops`, which
+    retires the stale state dir instead of respawning a worker against it.
+    """
+    return status not in _NON_RESTARTABLE_STATUSES and status != "pending"
 
 
 # Mirrors `loop_driver.EXIT_FOREIGN_LEASE`; kept as a local literal instead of importing
@@ -496,6 +519,72 @@ def respawn_orphaned_active_loops(runtime: SchedulerRuntime, project_dir: str) -
     return respawned
 
 
+# Marker embedded in a retired `pending` loop's state-dir name (#H3/#H11). Real loop_ids are
+# always `<repo-identity-hash>-issue-<N>` (see `worktree_manager.compute_loop_id`), which never
+# contains this substring, so filtering on it cannot collide with a live loop_id.
+_ORPHANED_PENDING_MARKER = ".orphaned-"
+
+
+def recover_orphaned_pending_loops(runtime: SchedulerRuntime, project_dir: str) -> list[str]:
+    """Retire genuinely orphaned `pending` loops so their Issue can be discovered afresh
+    (#H3/#H11).
+
+    `should_restart("pending")` now refuses to respawn a `pending` loop (its worker never
+    completed the first action, and `lc.attach()` rejects `pending` outright). But
+    `discover_loop_ids` also permanently excludes any still-`pending` loop_id from discovery
+    (#G10) - so, taken together, a `pending` loop whose worker died (or whose owning scheduler
+    process itself restarted) had no path back at all: not respawned, not rediscovered,
+    invisible forever even though its Issue still carries the label.
+
+    This does not respawn a worker - `lc.attach()` would reject `pending` regardless, and a
+    fresh worker cannot safely resume another worker's in-flight initial `run_maker` action.
+    Instead, once the loop's lease has genuinely expired (no live owner could still complete
+    it), the state dir is renamed aside to `<loop_id>.orphaned-<n>` under `.claude/loop/`
+    (automating the Issue #205 manual runbook step of moving the stale dir out of the way and
+    letting a fresh `start` reuse the Issue/worktree). Renaming (not deleting) preserves the
+    abandoned run's journal/state for post-mortem, while `wm.compute_loop_id` for the same
+    Issue number resolves to the same original `loop_id`, whose directory no longer exists, so
+    the next discovery cycle treats it as a brand-new candidate.
+
+    Loops still tracked in `runtime.workers` (this process's own in-flight worker, whose
+    `state.json` simply has not yet reflected the first completed action) are left untouched,
+    as is any loop whose lease is still alive (another owner might still complete it).
+    """
+    root = lc.loop_root(project_dir)
+    if not root.is_dir():
+        return []
+    recovered: list[str] = []
+    for entry in sorted(root.iterdir()):
+        if not entry.is_dir() or _ORPHANED_PENDING_MARKER in entry.name:
+            continue
+        loop_id = entry.name
+        if loop_id in runtime.workers:
+            continue
+        state = _try_load_state(entry, project_dir)
+        if state is None or state.status != "pending":
+            continue
+        if not _is_lease_expired(loop_id, project_dir):
+            continue
+        _retire_orphaned_pending_dir(entry)
+        recovered.append(loop_id)
+    return recovered
+
+
+def _retire_orphaned_pending_dir(entry: Path) -> None:
+    """Rename an orphaned-pending loop's state dir aside so discovery treats it as gone."""
+    root = entry.parent
+    suffix = 1
+    target = root / f"{entry.name}{_ORPHANED_PENDING_MARKER}{suffix}"
+    while target.exists():
+        suffix += 1
+        target = root / f"{entry.name}{_ORPHANED_PENDING_MARKER}{suffix}"
+    entry.rename(target)
+    print(
+        lc.redact(f"loop_scheduler: recovered orphaned pending loop {entry.name} -> {target.name}"),
+        file=sys.stderr,
+    )
+
+
 def reap_finished_workers(runtime: SchedulerRuntime, project_dir: str) -> list[str]:
     """Poll tracked workers; restart abnormal exits unless failed/stopped. Return respawned ids."""
     respawned = _respawn_expired_cooldowns(runtime, project_dir)
@@ -545,6 +634,10 @@ def run_cycle(runtime: SchedulerRuntime, project_dir: str, definition: ld.LoopDe
     """One discovery -> cap check -> spawn / monitor / restart poll cycle."""
     reap_finished_workers(runtime, project_dir)
     respawn_orphaned_active_loops(runtime, project_dir)
+    # Must run before spawn_new_workers (#H3/#H11): retiring a stale `pending` state dir this
+    # cycle lets discovery treat the same Issue as a fresh candidate in this same cycle,
+    # instead of only on the next poll.
+    recover_orphaned_pending_loops(runtime, project_dir)
     spawn_new_workers(runtime, project_dir, definition)
 
 
@@ -640,8 +733,22 @@ def run_scheduler(
 # -- cron / launchd templates (3.5 節: template generation only, no auto-install) ----------------
 
 
+def _project_slug(project_dir: str) -> str:
+    """Return a short stable hash of project_dir, for a per-project-unique launchd label
+    (#H16): multiple projects sharing the same `loop_scheduler.py` script path (e.g. installed
+    from the same ai-orchestra package into different repos) must not collide on one fixed
+    label - launchd treats the label as a unique job identifier, so a second project's
+    `launchctl load` would either silently no-op or clobber the first project's job.
+    """
+    material = str(Path(project_dir).resolve())
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:12]
+
+
 def render_launchd_plist(
-    project_dir: str, script_path: Path | None = None, python_bin: str | None = None
+    project_dir: str,
+    script_path: Path | None = None,
+    python_bin: str | None = None,
+    definition_id: str = DEFAULT_DEFINITION_ID,
 ) -> str:
     """Render a launchd plist template for `--install-launchd`-style manual setup.
 
@@ -652,12 +759,35 @@ def render_launchd_plist(
     started with the system interpreter cannot import a venv/uv-managed dependency the
     scheduler itself was actually installed under, so the resident job would die immediately
     on start. Mirrors the same fix already applied to `spawn_worker` (#F10).
+
+    `--definition` is only appended when it differs from `DEFAULT_DEFINITION_ID` (#H15):
+    without it, `--install-launchd`-generated jobs for a non-default loop definition would
+    silently poll the wrong (default) definition's label/interval forever.
+
+    The `Label` is suffixed with a hash of `project_dir` (#H16, see `_project_slug`) so
+    multiple projects never collide on one fixed launchd job identifier.
+
+    The `ProgramArguments` command is wrapped in `/bin/sh -c 'mkdir -p ... && exec ...'` (#H17):
+    `.claude/loop/` may not exist yet on a fresh checkout, and launchd's `StandardOutPath` /
+    `StandardErrorPath` redirection fails outright (job never starts) if its parent directory
+    is missing - unlike a shell's `>>` redirection, launchd does not create it. `exec` replaces
+    the shell so the scheduler still becomes the tracked/`KeepAlive`-monitored process,
+    matching a plain direct invocation for restart purposes.
     """
     script = str(script_path or _SCRIPT_DIR / "loop_scheduler.py")
     project = str(Path(project_dir).resolve())
     python = str(python_bin or sys.executable)
-    stdout_log = f"{project}/.claude/loop/scheduler.stdout.log"
-    stderr_log = f"{project}/.claude/loop/scheduler.stderr.log"
+    log_dir = f"{project}/.claude/loop"
+    stdout_log = f"{log_dir}/scheduler.stdout.log"
+    stderr_log = f"{log_dir}/scheduler.stderr.log"
+    label = f"com.ai-orchestra.loop-scheduler.{_project_slug(project)}"
+    definition_args = ""
+    if definition_id != DEFAULT_DEFINITION_ID:
+        definition_args = f" --definition {shlex.quote(definition_id)}"
+    exec_command = (
+        f"mkdir -p {shlex.quote(log_dir)} && exec {shlex.quote(python)} {shlex.quote(script)} "
+        f"--project {shlex.quote(project)}{definition_args}"
+    )
     return (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
@@ -665,13 +795,12 @@ def render_launchd_plist(
         '<plist version="1.0">\n'
         "<dict>\n"
         "  <key>Label</key>\n"
-        "  <string>com.ai-orchestra.loop-scheduler</string>\n"
+        f"  <string>{xml_escape(label)}</string>\n"
         "  <key>ProgramArguments</key>\n"
         "  <array>\n"
-        f"    <string>{xml_escape(python)}</string>\n"
-        f"    <string>{xml_escape(script)}</string>\n"
-        "    <string>--project</string>\n"
-        f"    <string>{xml_escape(project)}</string>\n"
+        "    <string>/bin/sh</string>\n"
+        "    <string>-c</string>\n"
+        f"    <string>{xml_escape(exec_command)}</string>\n"
         "  </array>\n"
         "  <key>RunAtLoad</key>\n"
         "  <true/>\n"
@@ -687,7 +816,10 @@ def render_launchd_plist(
 
 
 def render_cron_entry(
-    project_dir: str, script_path: Path | None = None, python_bin: str | None = None
+    project_dir: str,
+    script_path: Path | None = None,
+    python_bin: str | None = None,
+    definition_id: str = DEFAULT_DEFINITION_ID,
 ) -> str:
     """Render a cron entry template: `pgrep` guard that restarts the scheduler if it died.
 
@@ -700,24 +832,46 @@ def render_cron_entry(
     would otherwise invoke a system interpreter that cannot import a venv/uv-managed
     dependency the scheduler was actually installed under.
 
-    Known limitation (#13, accepted as-is): `pgrep -f <script>` can also match the cron
+    `--definition` is only appended when it differs from `DEFAULT_DEFINITION_ID` (#H15),
+    mirroring `render_launchd_plist`: otherwise a cron-restarted scheduler for a non-default
+    loop definition would silently fall back to polling the default definition's label.
+
+    `pgrep -f` matches against the *entire* pattern string given, so the guard now matches on
+    `<script> --project <project>` (not the script path alone) (#H16): with multiple projects
+    installed from the same `loop_scheduler.py` script, a script-path-only pattern would treat
+    any other project's already-running scheduler as "this project's scheduler is alive" and
+    skip starting a new one for the current project entirely.
+
+    The cron line is prefixed with `mkdir -p <log dir> &&` (#H17): `.claude/loop/` may not
+    exist yet on a fresh checkout, and the shell's `>> ... 2>&1` redirection at the end of this
+    line fails outright (whole command errors out, scheduler never starts) if its parent
+    directory is missing.
+
+    Known limitation (#13, accepted as-is): `pgrep -f <pattern>` can also match the cron
     wrapper shell's own argv, since the *entire* crontab command line (including this pgrep
-    invocation's own text) is visible to `pgrep -f` and literally contains the script path a
-    second time in the fallback `python3 <script>` invocation. A textual pattern tweak (e.g.
-    the classic `[l]oop_scheduler.py` bracket trick) cannot fix this because the self-match
-    comes from the fallback command's own text, not from the pgrep invocation. A correct fix
-    needs a pidfile/flock-based liveness check written by `loop_scheduler.py` at startup,
-    which is a larger, riskier change than a template-rendering fix belongs in; left as a
-    template TODO for a follow-up rather than bundled here.
+    invocation's own text) is visible to `pgrep -f` and literally contains the pattern text a
+    second time in the fallback `python3 <script> --project <project>` invocation. A textual
+    pattern tweak (e.g. the classic `[l]oop_scheduler.py` bracket trick) cannot fix this
+    because the self-match comes from the fallback command's own text, not from the pgrep
+    invocation. A correct fix needs a pidfile/flock-based liveness check written by
+    `loop_scheduler.py` at startup, which is a larger, riskier change than a
+    template-rendering fix belongs in; left as a template TODO for a follow-up rather than
+    bundled here.
     """
     script = str(script_path or _SCRIPT_DIR / "loop_scheduler.py")
     project = str(Path(project_dir).resolve())
     python = str(python_bin or sys.executable)
-    log_path = f"{project}/.claude/loop/scheduler.log"
+    log_dir = f"{project}/.claude/loop"
+    log_path = f"{log_dir}/scheduler.log"
+    definition_args = ""
+    if definition_id != DEFAULT_DEFINITION_ID:
+        definition_args = f" --definition {shlex.quote(definition_id)}"
+    pgrep_pattern = f"{script} --project {project}"
     return (
-        f"*/5 * * * * pgrep -f {shlex.quote(script)} || "
-        f"{shlex.quote(python)} {shlex.quote(script)} --project {shlex.quote(project)} "
-        f">> {shlex.quote(log_path)} 2>&1\n"
+        f"*/5 * * * * mkdir -p {shlex.quote(log_dir)} && "
+        f"pgrep -f {shlex.quote(pgrep_pattern)} || "
+        f"{shlex.quote(python)} {shlex.quote(script)} --project {shlex.quote(project)}"
+        f"{definition_args} >> {shlex.quote(log_path)} 2>&1\n"
     )
 
 

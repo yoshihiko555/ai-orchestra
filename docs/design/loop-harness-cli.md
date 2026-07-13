@@ -834,6 +834,16 @@ def spawn_worker(loop_id: str, project_root: Path) -> subprocess.Popen[bytes]:
   スケジューラはこの `loop_id` の再起動を `lp2.lease_ttl_seconds` 分クールダウンさせ、その間は
   discovery・再起動の対象から除外する（クールダウン経過後に再評価する。`SchedulerRuntime.
   foreign_lease_cooldown_until` で追跡）。
+- **`pending` 孤児回復（Codex レビュー指摘反映 #H3/#H11）**: `should_restart("pending")` は
+  `False` を返す（`lc.attach()` が `pending` を拒否するため、通常の再起動経路で respawn すると
+  restart-storm になる）。一方 `pending` は discovery からも常に除外される（3.1 節）ため、
+  worker が初回 `run_maker` 完了前に死んだ場合や scheduler 自体が再起動した場合、そのままでは
+  誰も拾えず永久に取り残される。`recover_orphaned_pending_loops` が毎サイクル
+  `spawn_new_workers` の前に実行され、lease が実際に失効した（生存 owner がいない）
+  `pending` loop のみを対象に、state dir を `.claude/loop/<loop_id>.orphaned-<n>` へリネーム
+  退避する（worker の respawn は行わない。Issue #205 の手動運用回避策の自動化）。これにより
+  当該 Issue は次サイクルで新規 `loop_id` として discovery され直す。lease が生存中の
+  `pending` loop には触れない。
 
 ### 3.4 起動時の repo-identity 照合（安全停止）
 

@@ -383,6 +383,21 @@ def test_gh_list_issues_returns_empty_string_on_timeout(
     assert scheduler._gh_list_issues("acme/widgets", "loop:issue") == ""
 
 
+def test_gh_list_issues_returns_empty_string_on_missing_gh_executable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#H2: `gh` not being installed raises `FileNotFoundError` (an `OSError` subclass), not
+    `TimeoutExpired`; without also catching `OSError` this would raise on every poll cycle
+    instead of honoring the "failure returns \"\"" contract."""
+
+    def fake_run(*args: object, **kwargs: object) -> None:
+        raise FileNotFoundError("gh: command not found")
+
+    monkeypatch.setattr(scheduler.subprocess, "run", fake_run)
+
+    assert scheduler._gh_list_issues("acme/widgets", "loop:issue") == ""
+
+
 # --------------------------------------------------------------------------------------------
 # should_restart / reap_finished_workers (EV-51)
 # --------------------------------------------------------------------------------------------
@@ -393,13 +408,16 @@ def test_gh_list_issues_returns_empty_string_on_timeout(
     [
         ("running", True),
         ("waiting_external", True),
-        ("pending", True),
+        ("pending", False),
         ("failed", False),
         ("stopped", False),
         ("passed", False),
     ],
 )
 def test_should_restart(status: str, expected: bool) -> None:
+    """#H3/#H11: `pending` must not restart via this path (immediate attach() rejection would
+    restart-storm); recovery for a genuinely orphaned `pending` loop is a separate mechanism
+    (`recover_orphaned_pending_loops`), not a restart."""
     assert scheduler.should_restart(status) is expected
 
 
@@ -695,6 +713,149 @@ def test_respawn_orphaned_active_loops_respects_concurrency_cap(
     assert len(runtime.workers) == 2
 
 
+# --------------------------------------------------------------------------------------------
+# recover_orphaned_pending_loops (#H3/#H11)
+# --------------------------------------------------------------------------------------------
+
+
+def test_recover_orphaned_pending_loops_retires_dir_when_lease_expired(
+    tmp_path: Path,
+) -> None:
+    """A `pending` loop with no live lease at all (no lock file) must be retired: renamed aside
+    so the next discovery cycle treats its Issue as a brand-new candidate."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    loop_id = "aaaaaaaa-issue-9"
+    _seed_state(tmp_path, loop_id, status="pending")
+    runtime = scheduler.SchedulerRuntime()
+    loop_dir = Path(project_dir) / ".claude" / "loop" / loop_id
+
+    result = scheduler.recover_orphaned_pending_loops(runtime, project_dir)
+
+    assert result == [loop_id]
+    assert not loop_dir.exists()
+    assert (loop_dir.parent / f"{loop_id}.orphaned-1").is_dir()
+
+
+def test_recover_orphaned_pending_loops_skips_when_lease_still_alive(
+    tmp_path: Path,
+) -> None:
+    """A live lease means some owner might still complete the pending loop; must not touch it."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    loop_id = "aaaaaaaa-issue-9"
+    _seed_state(tmp_path, loop_id, status="pending")
+    lc.acquire_lock(loop_id, project_dir, "someone-else", 300)
+    runtime = scheduler.SchedulerRuntime()
+    loop_dir = Path(project_dir) / ".claude" / "loop" / loop_id
+
+    result = scheduler.recover_orphaned_pending_loops(runtime, project_dir)
+
+    assert result == []
+    assert loop_dir.is_dir()
+
+
+def test_recover_orphaned_pending_loops_skips_loop_tracked_in_runtime_workers(
+    tmp_path: Path,
+) -> None:
+    """A loop this process's own runtime is still tracking (its worker just has not written
+    past `pending` yet) must not be treated as orphaned."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    loop_id = "aaaaaaaa-issue-9"
+    _seed_state(tmp_path, loop_id, status="pending")
+    runtime = scheduler.SchedulerRuntime(workers={loop_id: _FakePopen(None)})
+    loop_dir = Path(project_dir) / ".claude" / "loop" / loop_id
+
+    result = scheduler.recover_orphaned_pending_loops(runtime, project_dir)
+
+    assert result == []
+    assert loop_dir.is_dir()
+
+
+def test_recover_orphaned_pending_loops_ignores_non_pending_status(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    loop_id = "aaaaaaaa-issue-9"
+    _seed_state(tmp_path, loop_id, status="running")
+    runtime = scheduler.SchedulerRuntime()
+
+    result = scheduler.recover_orphaned_pending_loops(runtime, project_dir)
+
+    assert result == []
+
+
+def test_recover_orphaned_pending_loops_ignores_already_retired_dirs(
+    tmp_path: Path,
+) -> None:
+    """A dir previously renamed aside (`.orphaned-N`) must not be re-processed forever."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    loop_id = "aaaaaaaa-issue-9"
+    _seed_state(tmp_path, loop_id, status="pending")
+    loop_dir = Path(project_dir) / ".claude" / "loop" / loop_id
+    loop_dir.rename(loop_dir.parent / f"{loop_id}.orphaned-1")
+    runtime = scheduler.SchedulerRuntime()
+
+    result = scheduler.recover_orphaned_pending_loops(runtime, project_dir)
+
+    assert result == []
+    assert (loop_dir.parent / f"{loop_id}.orphaned-1").is_dir()
+
+
+def test_recover_orphaned_pending_loops_picks_next_free_suffix(
+    tmp_path: Path,
+) -> None:
+    """If `<loop_id>.orphaned-1` already exists (e.g. a prior recovery of a same-named retry),
+    the next free suffix is used instead of overwriting it."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    loop_id = "aaaaaaaa-issue-9"
+    _seed_state(tmp_path, loop_id, status="pending")
+    loop_dir = Path(project_dir) / ".claude" / "loop" / loop_id
+    existing_orphan = loop_dir.parent / f"{loop_id}.orphaned-1"
+    existing_orphan.mkdir(parents=True)
+    runtime = scheduler.SchedulerRuntime()
+
+    result = scheduler.recover_orphaned_pending_loops(runtime, project_dir)
+
+    assert result == [loop_id]
+    assert existing_orphan.is_dir()
+    assert (loop_dir.parent / f"{loop_id}.orphaned-2").is_dir()
+
+
+def test_run_cycle_recovers_orphaned_pending_before_spawning_new_workers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#H3/#H11: recovery must happen before `spawn_new_workers` within the same cycle so the
+    freed Issue is picked up immediately, not on a follow-up poll cycle."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    definition = ld.load_all_definitions(project_dir)["issue-loop"]
+    loop_id = wm.compute_loop_id(project_dir, 42)
+    _seed_state(tmp_path, loop_id, status="pending")
+
+    fake_issues = [{"number": 42, "created_at": "2026-01-01T00:00:00Z", "labels": []}]
+    monkeypatch.setattr(scheduler, "list_labeled_issues", lambda project, label: fake_issues)
+    spawned: list[str] = []
+
+    def fake_spawn(lid: str, project: str, definition_id: str = "issue-loop") -> _FakePopen:
+        spawned.append(lid)
+        return _FakePopen(returncode=None)
+
+    monkeypatch.setattr(scheduler, "spawn_worker", fake_spawn)
+
+    runtime = scheduler.SchedulerRuntime()
+    scheduler.run_cycle(runtime, project_dir, definition)
+
+    loop_dir = Path(project_dir) / ".claude" / "loop" / loop_id
+    assert spawned == [loop_id]
+    assert not loop_dir.exists()
+    assert (loop_dir.parent / f"{loop_id}.orphaned-1").is_dir()
+
+
 def test_spawn_new_workers_excludes_ids_still_in_cooldown(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -966,6 +1127,135 @@ def test_render_cron_entry_honors_explicit_python_bin_override(tmp_path: Path) -
     entry = scheduler.render_cron_entry(str(tmp_path), python_bin="/custom/venv/bin/python3")
     tokens = shlex.split(entry)
     assert "/custom/venv/bin/python3" in tokens
+
+
+# --------------------------------------------------------------------------------------------
+# --definition in cron/launchd templates (#H15)
+# --------------------------------------------------------------------------------------------
+
+
+def test_render_launchd_plist_omits_definition_flag_for_default(tmp_path: Path) -> None:
+    plist = scheduler.render_launchd_plist(str(tmp_path))
+    assert "--definition" not in plist
+
+
+def test_render_launchd_plist_includes_definition_flag_for_non_default(tmp_path: Path) -> None:
+    plist = scheduler.render_launchd_plist(str(tmp_path), definition_id="custom-loop")
+    assert "--definition" in plist
+    assert "custom-loop" in plist
+
+
+def test_render_cron_entry_omits_definition_flag_for_default(tmp_path: Path) -> None:
+    entry = scheduler.render_cron_entry(str(tmp_path))
+    assert "--definition" not in entry
+
+
+def test_render_cron_entry_includes_definition_flag_for_non_default(tmp_path: Path) -> None:
+    entry = scheduler.render_cron_entry(str(tmp_path), definition_id="custom-loop")
+    tokens = shlex.split(entry)
+    assert "--definition" in tokens
+    assert "custom-loop" in tokens
+
+
+def test_main_print_launchd_and_print_cron_forward_definition(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    exit_code = scheduler.main(
+        ["--project", str(tmp_path), "--definition", "custom-loop", "print-launchd"]
+    )
+    assert exit_code == 0
+    assert "custom-loop" in capsys.readouterr().out
+
+    exit_code = scheduler.main(
+        ["--project", str(tmp_path), "--definition", "custom-loop", "print-cron"]
+    )
+    assert exit_code == 0
+    assert "custom-loop" in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------------------------
+# multi-project pgrep guard / launchd label uniqueness (#H16)
+# --------------------------------------------------------------------------------------------
+
+
+def test_render_launchd_plist_label_is_unique_per_project(tmp_path: Path) -> None:
+    project_a = tmp_path / "a"
+    project_b = tmp_path / "b"
+    project_a.mkdir()
+    project_b.mkdir()
+
+    plist_a = scheduler.render_launchd_plist(str(project_a))
+    plist_b = scheduler.render_launchd_plist(str(project_b))
+
+    def _label(plist: str) -> str:
+        start = plist.index("<key>Label</key>")
+        return plist[start : start + 200].split("<string>")[1].split("</string>")[0]
+
+    assert _label(plist_a) != _label(plist_b)
+    assert _label(plist_a).startswith("com.ai-orchestra.loop-scheduler.")
+
+
+def test_render_launchd_plist_label_stable_for_same_project(tmp_path: Path) -> None:
+    plist_1 = scheduler.render_launchd_plist(str(tmp_path))
+    plist_2 = scheduler.render_launchd_plist(str(tmp_path))
+    assert plist_1 == plist_2
+
+
+def test_render_cron_entry_pgrep_pattern_includes_project_path(tmp_path: Path) -> None:
+    """#H16: the pgrep guard must match on `--project <path>` too, not just the script path,
+    so a second project sharing the same `loop_scheduler.py` script cannot be mistaken for
+    this project's already-running scheduler."""
+    entry = scheduler.render_cron_entry(str(tmp_path))
+    pgrep_index = entry.index("pgrep -f ")
+    pgrep_arg_end = entry.index(" || ", pgrep_index)
+    pgrep_arg = entry[pgrep_index + len("pgrep -f ") : pgrep_arg_end]
+    assert "--project" in pgrep_arg
+    assert str(tmp_path.resolve()) in pgrep_arg
+
+
+def test_render_cron_entry_pgrep_pattern_differs_across_projects(tmp_path: Path) -> None:
+    project_a = tmp_path / "a"
+    project_b = tmp_path / "b"
+    project_a.mkdir()
+    project_b.mkdir()
+
+    entry_a = scheduler.render_cron_entry(str(project_a))
+    entry_b = scheduler.render_cron_entry(str(project_b))
+
+    def _pgrep_arg(entry: str) -> str:
+        start = entry.index("pgrep -f ")
+        end = entry.index(" || ", start)
+        return entry[start:end]
+
+    assert _pgrep_arg(entry_a) != _pgrep_arg(entry_b)
+
+
+# --------------------------------------------------------------------------------------------
+# log-dir creation before redirection (#H17)
+# --------------------------------------------------------------------------------------------
+
+
+def test_render_cron_entry_creates_log_dir_before_redirect(tmp_path: Path) -> None:
+    """#H17: `.claude/loop/` may not exist yet on a fresh checkout; the shell's `>>` redirect
+    at the end of the cron line fails outright if its parent directory is missing."""
+    entry = scheduler.render_cron_entry(str(tmp_path))
+    assert entry.strip().startswith("*/5 * * * * mkdir -p")
+    mkdir_index = entry.index("mkdir -p ")
+    and_index = entry.index(" && ", mkdir_index)
+    mkdir_arg = entry[mkdir_index + len("mkdir -p ") : and_index]
+    assert mkdir_arg == shlex.quote(f"{tmp_path.resolve()}/.claude/loop")
+
+
+def test_render_launchd_plist_creates_log_dir_before_exec(tmp_path: Path) -> None:
+    """#H17: launchd's `StandardOutPath`/`StandardErrorPath` redirection fails to start the
+    job at all if its parent directory does not exist yet."""
+    plist = scheduler.render_launchd_plist(str(tmp_path))
+    command_start = plist.index("<string>mkdir -p")
+    command_end = plist.index("</string>", command_start)
+    command = plist[command_start + len("<string>") : command_end]
+    assert command.startswith("mkdir -p")
+    assert " &amp;&amp; exec " in command  # XML-escaped `&&`
+    assert str(tmp_path.resolve()) in command
 
 
 def test_render_launchd_plist_escapes_xml_special_characters(tmp_path: Path) -> None:
