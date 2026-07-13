@@ -29,7 +29,13 @@ def _completed(
 
 
 def _config() -> dict:
-    return copy.deepcopy(mh.DEFAULTS)
+    config = copy.deepcopy(mh.DEFAULTS)
+    config["evaluate"]["isolation"] = {
+        "backend": "srt",
+        "srt_version_pin": None,
+        "execution_backend": "none",
+    }
+    return config
 
 
 def _paths(tmp_path: Path) -> tuple[Path, Path, Path]:
@@ -92,6 +98,20 @@ def test_scenario_settings_allow_only_runtime_paths(git_project: Path, tmp_path:
     assert settings["filesystem"][deny_key] == ["/"]
 
 
+def test_runtime_tool_discovery_never_reexposes_real_home(monkeypatch) -> None:
+    real_home_tool = Path.home() / ".local" / "share" / "mise" / "bin" / "claude"
+
+    def fake_which(name: str, *, path: str | None = None) -> str | None:
+        assert path == siso._SYSTEM_TOOL_SEARCH_PATH
+        return str(real_home_tool) if name == "claude" else None
+
+    monkeypatch.setattr(siso.shutil, "which", fake_which)
+
+    roots = siso._scenario_runtime_read_roots()
+
+    assert all(not siso._under_real_home(root) for root in roots)
+
+
 def test_public_resolver_rejects_until_complete_execution_boundary_exists(
     git_project: Path, tmp_path: Path
 ) -> None:
@@ -111,7 +131,7 @@ def test_resolve_scenario_isolation_builds_launch(
     git_project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     worktree, runtime_state, instruction = _paths(tmp_path)
-    monkeypatch.setattr(siso.iso.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(siso.iso.shutil, "which", lambda name, **_kwargs: f"/usr/bin/{name}")
     launch = siso._resolve_scenario_isolation_profile(
         worktree_dir=worktree,
         main_root=git_project,
@@ -157,7 +177,7 @@ def test_scenario_isolation_rejects_version_mismatch(
     worktree, runtime_state, instruction = _paths(tmp_path)
     config = _config()
     config["evaluate"]["isolation"]["srt_version_pin"] = "0.0.64"
-    monkeypatch.setattr(siso.iso.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(siso.iso.shutil, "which", lambda name, **_kwargs: f"/usr/bin/{name}")
     with pytest.raises(siso.ScenarioIsolationError, match="srt_version_pin mismatch"):
         siso._resolve_scenario_isolation_profile(
             worktree_dir=worktree,
@@ -183,6 +203,32 @@ def test_scenario_isolation_rejects_symlink_instruction(git_project: Path, tmp_p
             runtime_state_dir=runtime_state,
             instruction_path=linked,
         )
+
+
+def test_container_git_wrapper_uses_fixed_image_git_not_itself(
+    git_project: Path, tmp_path: Path
+) -> None:
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    source_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=git_project,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+    wrapper_dir = siso._prepare_isolated_git(
+        worktree_dir=git_project,
+        runtime_state_dir=runtime,
+        source_commit=source_commit,
+        runner=subprocess.run,
+        container_paths=True,
+    )
+
+    wrapper = (wrapper_dir / "git").read_text()
+    assert "exec /usr/bin/git --git-dir=/runtime/git-snapshot" in wrapper
+    assert "--work-tree=/workspace" in wrapper
 
 
 def test_real_scenario_srt_blocks_store_path(git_project: Path, tmp_path: Path) -> None:

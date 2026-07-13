@@ -67,3 +67,6 @@ quote-style = "double"
 [tool.pytest.ini_options]
 testpaths = ["tests", "packages"]
 python_files = "test_*.py"
+markers = [
+    "docker: requires a working Docker daemon and may build local test images",
+]

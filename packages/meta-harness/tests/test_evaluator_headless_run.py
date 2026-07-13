@@ -171,6 +171,48 @@ class TestRunHeadlessScenarioEnvironment:
         metadata = json.loads((staging_dir / "isolation.json").read_text(encoding="utf-8"))
         assert metadata == launch.metadata
 
+    def test_effective_scenario_timeout_and_budget_reach_broker_config(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        launch = _install_isolation_launch(monkeypatch, tmp_path)
+        captured: dict = {}
+
+        def resolve(**kwargs):
+            captured.update(kwargs)
+            return launch
+
+        monkeypatch.setattr(ev.siso, "resolve_scenario_isolation", resolve)
+        worktree = tmp_path / "worktree"
+        staging = tmp_path / "staging"
+        instruction = tmp_path / "instruction.md"
+        worktree.mkdir()
+        staging.mkdir()
+        instruction.write_text("irrelevant")
+
+        def fake_runner(_cmd, **kwargs):
+            kwargs["stdout"].write(b'{"type":"result","subtype":"success","is_error":false}\n')
+            return _completed()
+
+        monkeypatch.setattr(ev.sproc, "run_bounded_process_tree", fake_runner)
+        ev.run_headless_scenario(
+            {
+                "id": "s1",
+                "prompt": "irrelevant",
+                "timeout_ms": 900000,
+                "budget": {"max_budget_usd": 1.25},
+            },
+            {"evaluate": {"timeout_ms_default": 300000}},
+            worktree,
+            staging,
+            instruction,
+            main_root=tmp_path,
+            source_commit="a" * 40,
+            runner=fake_runner,
+        )
+
+        assert captured["config"]["evaluate"]["timeout_ms_default"] == 900000
+        assert captured["config"]["scenario_run"]["max_budget_usd_default"] == 1.25
+
     def test_raises_when_result_event_indicates_budget_exceeded(
         self, tmp_path: Path, monkeypatch
     ) -> None:

@@ -12,7 +12,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- **`meta-harness`: `orchex meta loop`（Phase 3）を追加**: `propose` と `evaluate` を ledger 駆動で自動反復し、予算・反復上限・発散・収束で停止する。`--resume` は中断時の孤児候補を含む状態を ledger から復元する。candidate scenario向けにroot-deny SRT profile・隔離Git・read-only oracleを追加したが、資格情報brokerと`setsid`離脱も回収するprocess containmentが未実装の間はworktree作成前にfail-closedする。
+- **`meta-harness`: `orchex meta loop`（Phase 3）を追加**: `propose` と `evaluate` を ledger 駆動で自動反復し、予算・反復上限・発散・収束で停止する。`--resume` は中断時の孤児候補を含む状態を ledger から復元する。
+
+- **`meta-harness`: Docker 隔離 scenario 実行を解禁**: `orchex meta evaluate` / `loop` は internal network の候補コンテナと run-scoped OAuth broker を使い、実資格情報を候補へ渡さず scenario・oracle・tool-less judge を実行できるようになった。
 
 - **`loop-harness`: `/loop-issue` LP-1 スキルを追加**: Issue の実装・決定論的 Checker・PR レビュー対応を two-phase 契約で反復し、成功／失敗／安全停止の出口まで自律駆動する facet スキルを配布する。
 

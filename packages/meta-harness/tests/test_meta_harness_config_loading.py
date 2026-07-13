@@ -53,6 +53,14 @@ class TestConfigLocalOverride:
         config = mh.load_config(git_project)
         assert config["retention"]["keep_generations"] == 5
 
+    def test_package_default_enables_verified_docker_backend(self, git_project: Path) -> None:
+        config = mh.load_config(git_project)
+        isolation = config["evaluate"]["isolation"]
+        assert isolation["backend"] == "docker"
+        assert isolation["execution_backend"] == "docker"
+        assert isolation["image_pin"] == "2.1.207 (Claude Code)"
+        assert isolation["broker"]["pricing_upper_bound_usd_per_million"]["output"] == 75.0
+
     def test_malformed_local_yaml_warns_and_falls_back_to_defaults(
         self, git_project: Path, monkeypatch, capsys
     ) -> None:

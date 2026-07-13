@@ -362,6 +362,59 @@ class TestRunMetadataSchema:
         assert any("backend" in e for e in errors)
         assert any("platform_profile_input_sha256" in e for e in errors)
 
+    def test_docker_broker_metrics_are_strictly_validated(self) -> None:
+        schema = _load("run.metadata.schema.json")
+        metrics = {
+            "request_count": 1,
+            "rejected_count": 0,
+            "upstream_request_bytes": 128,
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 2,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "total_tokens": 12,
+            },
+            "estimated_cost_usd": 0.001,
+            "budget_exceeded": False,
+            "anomaly": False,
+            "anomaly_reasons": [],
+        }
+        isolation = {
+            "backend": "docker",
+            "image": "scenario:test",
+            "image_id": "sha256:" + "1" * 64,
+            "broker_image": "broker:test",
+            "broker_image_id": "sha256:" + "2" * 64,
+            "broker_settings_sha256": "3" * 64,
+            "scenario_context_sha256": "4" * 64,
+            "broker_context_sha256": "5" * 64,
+            "scenario_base_image": "node:test@sha256:" + "6" * 64,
+            "broker_base_image": "broker:test@sha256:" + "7" * 64,
+            "platform_profile_input_sha256": "8" * 64,
+            "resources": {
+                "pids_limit": 128,
+                "memory": "2g",
+                "cpus": 2.0,
+                "workspace_size": "512m",
+                "workspace_max_files": 10000,
+                "max_lifetime_sec": 660,
+            },
+            "git": {"mode": "isolated-snapshot", "source_commit": "a" * 40},
+            "broker": {"metrics": metrics},
+        }
+
+        assert (
+            mh.validate_against_schema({**self._VALID, "isolation": isolation}, schema, SCHEMA_DIR)
+            == []
+        )
+        errors = mh.validate_against_schema(
+            {**self._VALID, "isolation": {**isolation, "broker": {"metrics": {}}}},
+            schema,
+            SCHEMA_DIR,
+        )
+        assert errors
+
 
 class TestConfigPatchSchema:
     def test_valid_instance_has_zero_errors(self) -> None:

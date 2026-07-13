@@ -1133,8 +1133,10 @@ cd <worktree> && claude -p "<scenario.prompt>" \
   `ca-certificates`を含み、シェル/ツールを持たない最小構成とする。tokenはbrokerの`tmpfs`（例
   `/run/secrets`、noexec/nosuid）へ注入し、brokerが読んだ直後にunlinkする。呼び出し側env・ホストdiskに
   実tokenを残さない。brokerはCLIプロセスの子として起動し、正常終了・timeout・例外の経路で即時破棄する
-  （`evaluate.lock`と同じwithブロック規律）。SIGKILL・ホストクラッシュ等の異常経路はidle timeout自殺 +
-  次回起動時のname-prefix（`mh-run-*`）ベースstale cleanupで有限時間内に破棄する。
+  （`evaluate.lock`と同じwithブロック規律）。SIGKILL・ホストクラッシュ等の異常経路はbrokerのidle timeout
+  自殺 + absolute lifetime上限と、次回起動時のname-prefix（`mh-run-*`）ベースstale cleanupで有限時間内に
+  破棄する。scenario / preparation / oracle / judgeコンテナも、host側cleanupだけに依存せず、実効scenario
+  timeout + broker idle timeout + 60秒をabsolute lifetime上限として主プロセスを`timeout`で包む。
 - **broker自身のegress制限**: brokerの外部到達先はapi.anthropic.comに限定し、任意ホストへの中継
   （open proxy化）を構造的に禁止する。
 - **broker側の予算・悪用防止（呼び出し元束縛は不可能なため broker で強制）**: candidateコンテナ内の
@@ -1143,16 +1145,28 @@ cd <worktree> && claude -p "<scenario.prompt>" \
   送信元IP）。したがってCLIの`--max-budget-usd`や`result`のcost抽出だけに依存すると、候補が
   brokerへ直接`/v1/messages`を投げてrun中に任意のAnthropic API利用・covert channelでの情報持ち出し・
   予算超過を行える。これを防ぐため、**brokerが独立に以下を強制する**:
-  - **per-run予算強制**: brokerがレスポンスの`usage`を積算し、run予算（config`scenario_run.max_budget_usd`）
-    を超えたら以降のリクエストを拒否する（CLIフラグとは独立の hard cap）。
+  - **per-run予算強制**: brokerがレスポンスの`usage`を積算し、run予算（scenario固有値を反映した実効config
+    `scenario_run.max_budget_usd_default`）を超えたら以降のリクエストを拒否する（CLIフラグとは独立の
+    hard cap）。
   - **呼び出し計上・異常検知**: brokerは全リクエスト数・累積tokenを記録し、scenarioが想定する呼び出し
-    エンベロープ（概ねCLIの1 run分）を超える呼び出しをrun anomalyとしてmetadataに記録する。
+    エンベロープ（概ねCLIの1 run分）を超える呼び出しを拒否し、run anomalyとしてmetadataに記録する。
+    `/v1/messages/count_tokens`のroot `input_tokens`も計上し、成功responseにusageが無い場合は予算不明として
+    fail-closedする。
+  - **転送byte上限**: candidate由来headerは既知名だけを最大128 bytesで受け、`user-agent`等はbroker固定値へ
+    正規化する。`x-stainless-*` wildcard転送は行わず、body + 転送headerのrun累積を
+    `max_upstream_bytes`でhard-capしてtoken外covert channelを制限する。
   - **per-run認証**: brokerはrunごとに生成した使い捨てトークン（candidateへ渡すダミーキー）を要求し、
     他runのbrokerへは通らないようにする（token値自体は候補が読めるため機密ではないが、run間の
     クロス利用と誤配線を防ぐ）。
   - 残存リスクとして「候補がrun中にAPIをcovert channelとして使う」ことは egress が api.anthropic.com
     限定 + broker予算cap + 出力経路のL2/L3スキャン（§11-3-6）の多層で抑止するが、構造的にゼロには
     できない点を明記する（proposer隔離と同じ「価値最小化 + 検知」の思想）。
+- **broker の予算換算と並行性**: Anthropic API response は USD 金額を返さないため、broker は response
+  の `usage`（input/output/cache creation/cache read token）を config の**保守的な上限単価**で USD
+  換算する。未知モデルでも同じ上限単価を適用し、過少計上へ倒さない。broker は同時 upstream request を
+  1 件に制限し、並行リクエストによる複数応答分の budget overshoot を防ぐ。1 件の API 応答が hard cap を
+  超えた場合は当該応答の中断ではなく、その直後から後続 request を拒否する（API usage は応答完了まで
+  確定しないため）。CLI の `--max-budget-usd` と組み合わせて一層目の overshoot も抑止する。
 - **token TTL**: brokerが保持するaccess tokenは静的（broker はrefreshしない）。起動時に`expiresAt`
   preflight（proposer L1のexp checkと同型）でrun想定時間より十分長いことを確認する。
 - scenario子プロセスの環境はallowlistから再構築し、`HOME`/`CLAUDE_CONFIG_DIR`をephemeral HOME、
@@ -1166,13 +1180,28 @@ cd <worktree> && claude -p "<scenario.prompt>" \
 - **子孫プロセスの回収**: Dockerのcgroupにより`setsid()`で離脱した子孫を含む全プロセスを`docker rm -f`で
   確実に停止できる（スパイクS3実測: rm -f後にホスト残存プロセスゼロ）。この封じ込めと
   `events.jsonl`/`progress.log`の各10MB上限強制が整うまでscenario/oracleのprocess起動はfail-closedする。
-- **mount設計**: コンテナのfilesystemは対象worktree（rw）・実行単位runtime（ro）・固定self-report
-  instruction（ro）・own tmp（tmpfs）だけを許可する。実HOME・main repo・sibling worktree・store・
-  global tmp・`/Volumes`・他runのephemeral領域はmountしない（SRTの`denyRead:["/"]`起点 + allowlist
-  再許可の設計意図を、コンテナでは「必要なものだけをmountする」ホワイトリストとして具体化する。
-  SRT allowlistのmount tableへの正確な翻訳〔read-only mount/tmpfs/symlink挙動の再確認〕は実装時に行う）。
-- scenario終了後の`command_exit` oracleはnetworkなし・worktree read-onlyの別コンテナ（またはSRT
-  read-only profile）で実行する。実行機構は実装時に確定する。artifact/json/rubric入力はsymlink非追従、
+  host orchestratorがSIGKILL/OOM等でcleanupを実行できない場合にも残存し続けないよう、broker以外の全run
+  コンテナは上記absolute lifetimeで自己終了し、`--rm`による自動削除へ進む。
+- **mount設計とworkspace quota**: 対象worktreeは`/input`へro mountし、候補が書く`/workspace`は
+  `workspace_size`上限付きtmpfsとする。実行単位runtime（ro）・固定self-report instruction（ro）・
+  own tmp（tmpfs）以外はmountしない。bounded `timeout`待機プロセスのcontainerへ候補コマンドを
+  `docker exec`し、そのexecの実終了コードが0の場合だけ、container稼働中にtrusted `tar`でworkspaceを
+  stream exportする。候補と同一
+  UIDのfile markerは完了判定に使わない。host側はpath traversal・symlink・hardlink・special fileを拒否し、
+  regular fileとdirectoryだけを`workspace_size`/`workspace_max_files`上限内でdisposable worktreeへ反映して
+  から`docker rm -f`する。linked-worktreeの`.git`はexport対象外とする。実HOME・main repo・sibling
+  worktree・store・global tmp・`/Volumes`・他runのephemeral領域は候補から到達不能とする。
+- **overlay後の準備処理**: `facet build` / `context build` とscenario `setup`もhostで実行せず、同じ
+  ro input + bounded tmpfs workspace方式のnetworkなし・non-root preparation containerで実行する。
+  candidate-controlled facet/scriptが親HOMEや親envを読む経路を作らない。
+- **イメージ供給**: scenario/broker イメージは `packages/meta-harness/docker/` の Dockerfile を正本とし、
+  base imageを`FROM ...@sha256`で固定する。`auto_build_images:true`ではcapability gate中にno-cache buildし、
+  直後に解決したimage IDだけをrun/oracle/judgeへ渡す。`false`の場合はconfig image自体に`@sha256`を必須と
+  する。build後のimage ID、base image reference、Dockerfile/build-context hash、イメージ内Claude CLI
+  versionをmetadataへ固定し、tag差し替えを実行境界へ入れない。broker最終imageはshell/package managerを
+  含まないdistroless runtimeとする。
+- scenario終了後の`command_exit` oracleはnetworkなし・worktree read-onlyの**別 Docker コンテナ**で
+  実行する（SRT への環境依存 fallback は行わない）。artifact/json/rubric入力はsymlink非追従、
   regular file限定、5MB上限とする。judgeへは安全にstagingした抜粋だけを渡し、candidate worktreeへの
   tool accessを与えない。
 - Docker daemon不在、イメージpin不一致、broker起動失敗、起動前canary失敗は非隔離実行へ降格せずrun error
@@ -1504,12 +1533,9 @@ packages/meta-harness/
 `config/meta-harness.yaml` の完全な既定値は以下の通り。`.claude/config/meta-harness/
 meta-harness.local.yaml` で上書き可能（`config-loading` ルール準拠）。
 
-> **注意（`evaluate.isolation` は目標状態）**: 下記の `isolation.backend: docker` + `broker` キーは
-> ADR-20260712-034 が定める**実装後の目標既定値**である。**実配布される
-> `packages/meta-harness/config/meta-harness.yaml` は、Docker backend の実装・封じ込め検証テストが
-> 揃うまで `backend: srt` / `execution_backend: none`（fail-closed）のまま**とする。実 config の
-> Docker 化は backend 実装 PR で同時に行う（本設計 PR は docs のみ）。検証時はこの乖離を踏まえ、
-> 「解禁前の実行時既定 = SRT/none」「解禁後の目標 = docker」を取り違えないこと。
+> **実装状態**: 下記の `isolation.backend: docker` + `broker` キーは ADR-20260712-034 と EV-46/47 の
+> 封じ込め検証を実装した既定値である。Docker daemon・pin 済み image・Keychain OAuth・broker の
+> いずれかが利用不能な場合は capability gate で fail-closed し、SRT やホスト直接実行へ降格しない。
 
 ```yaml
 storage:
@@ -1535,15 +1561,33 @@ evaluate:
   isolation:
     # scenario runner は非隔離実行へ降格しない（ADR-20260712-034。SRT 方式から Docker へ移行）
     backend: docker # docker = コンテナ隔離 + dual-homed ephemeral broker sidecar
-    image_pin: null # null = pin なし。設定時は Docker イメージの Claude CLI version と厳密一致
-    execution_backend: none # 本実装（docker backend + broker + 封じ込め検証テスト）完了までは fail-closed
+    execution_backend: docker # 実装・封じ込め検証完了後の既定。非隔離 backend へは降格しない
+    image: ai-orchestra/meta-harness-scenario:2.1.207
+    image_pin: "2.1.207 (Claude Code)" # イメージ内 `claude --version` と厳密一致
+    auto_build_images: true # 同梱 Dockerfile をno-cache buildし、解決したimage IDをrun内で固定
+    resources:
+      pids_limit: 128
+      memory: 2g
+      cpus: 2.0
+      workspace_size: 512m # candidate workspace tmpfs と export bytes の上限
+      workspace_max_files: 10000 # exportするdirectory + regular fileの上限
     broker:
-      port_range: [8790, 8990] # sidecar broker の待受ポート範囲（run ごとに空きを選ぶ）
+      image: ai-orchestra/meta-harness-broker:0.1.0
+      port_range: [8790, 8990] # run 固有 internal network 内のみ。host へ publish しない
       idle_timeout_sec: 300 # 親プロセス消失時の自殺までのアイドル上限
+      startup_timeout_sec: 30
+      max_requests: 64 # CLI 1 run の想定 envelope。超過は metadata に anomaly として記録
+      max_total_tokens: 500000
+      max_upstream_bytes: 50000000 # body + 正規化済みheaderのrun累積hard cap
+      pricing_upper_bound_usd_per_million:
+        input: 15.0
+        output: 75.0
+        cache_creation: 18.75
+        cache_read: 1.5
       # broker は run スコープで起動・破棄。実 OAuth は broker のみ保持し候補コンテナへ渡さない
 scenario_run:
   max_turns_default: 30
-  max_budget_usd_default: 2.0
+  max_budget_usd_default: 3.0 # §14 の実測反映
 judge:
   tool: claude-bare # tool-less judge。codexはread deny不能のため無効（ADR-20260711-033）
   model: null # null = 各バックエンドの既定モデル

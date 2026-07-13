@@ -154,10 +154,10 @@ class TestJudgeErrorForcesRunVerdictError:
         def noop_overlay(overlay_dir, config, worktree_dir, schema_dir):
             return None
 
-        def noop_build(worktree_dir, *, runner=None):
+        def noop_build(worktree_dir, **_kwargs):
             return None
 
-        def noop_setup(scenario, worktree_dir, *, runner=None):
+        def noop_setup(scenario, worktree_dir, **_kwargs):
             return None
 
         def noop_headless_run(
@@ -183,7 +183,15 @@ class TestJudgeErrorForcesRunVerdictError:
                 timed_out=False,
             )
 
-        def erroring_judge(rubric, worktree_dir, config, schema_dir, *, runner=None):
+        def erroring_judge(
+            rubric,
+            worktree_dir,
+            config,
+            schema_dir,
+            *,
+            isolation_launch=None,
+            runner=None,
+        ):
             return ev.JudgeVerdict(False, "judge unavailable: forced for test", "codex", error=True)
 
         monkeypatch.setattr(ev, "apply_overlay", noop_overlay)
