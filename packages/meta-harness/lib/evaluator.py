@@ -471,12 +471,17 @@ def build_facet_and_context(
     *,
     config: dict | None = None,
     main_root: Path | None = None,
+    source_commit: str | None = None,
     runner: SubprocessRunner = subprocess.run,
 ) -> None:
     """`AI_ORCHESTRA_DIR=<worktree>` で facet build → context build を実行する（Sec2-1 手順4）。"""
     if _uses_docker_backend(config):
         if main_root is None:
             raise EvaluatorStageError("build", "build_error", "main_root is required for Docker")
+        if source_commit is None:
+            raise EvaluatorStageError(
+                "build", "build_error", "source_commit is required for Docker"
+            )
         command = [
             "/bin/sh",
             "-c",
@@ -488,6 +493,8 @@ def build_facet_and_context(
                 config=config or {},
                 main_root=main_root,
                 worktree_dir=worktree_dir,
+                source_commit=source_commit,
+                prepare_git_snapshot=siso._prepare_isolated_git,
                 raw_command=command,
                 timeout_seconds=BUILD_TIMEOUT_SECONDS * 2,
                 runner=runner,
@@ -542,6 +549,7 @@ def run_setup_commands(
     *,
     config: dict | None = None,
     main_root: Path | None = None,
+    source_commit: str | None = None,
     runner: SubprocessRunner = subprocess.run,
 ) -> None:
     """シナリオの `setup` コマンドを worktree 内で順次実行する（Sec2-1 手順5, Sec1-3）。"""
@@ -549,12 +557,18 @@ def run_setup_commands(
     if _uses_docker_backend(config):
         if main_root is None:
             raise EvaluatorStageError("setup", "setup_error", "main_root is required for Docker")
+        if source_commit is None:
+            raise EvaluatorStageError(
+                "setup", "setup_error", "source_commit is required for Docker"
+            )
         for command in scenario.get("setup") or []:
             try:
                 completed = siso.docker.run_preparation_command(
                     config=config or {},
                     main_root=main_root,
                     worktree_dir=worktree_dir,
+                    source_commit=source_commit,
+                    prepare_git_snapshot=siso._prepare_isolated_git,
                     raw_command=["/bin/sh", "-c", command],
                     timeout_seconds=timeout_ms / 1000,
                     runner=runner,
@@ -1810,12 +1824,19 @@ def _run_attempt_lifecycle(
             main_root, root, run_id, manifest["source_commit"], runner=runner
         )
         apply_overlay(cand_dir / "overlay", config, worktree_dir, schema_dir)
-        build_facet_and_context(worktree_dir, config=config, main_root=main_root, runner=runner)
+        build_facet_and_context(
+            worktree_dir,
+            config=config,
+            main_root=main_root,
+            source_commit=manifest["source_commit"],
+            runner=runner,
+        )
         run_setup_commands(
             scenario,
             worktree_dir,
             config=config,
             main_root=main_root,
+            source_commit=manifest["source_commit"],
             runner=runner,
         )
         instruction_path = package_dir / "config" / "self-report-instruction.md"
@@ -1829,6 +1850,8 @@ def _run_attempt_lifecycle(
             source_commit=manifest["source_commit"],
             runner=runner,
         )
+        if isinstance(scenario_result.isolation_launch, siso.ScenarioIsolationLaunch):
+            _persist_refreshed_isolation_metadata(scenario_result.isolation_launch, staging_dir)
         checks = [
             run_oracle(
                 c,

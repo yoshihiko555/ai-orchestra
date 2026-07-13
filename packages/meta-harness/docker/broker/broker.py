@@ -136,6 +136,7 @@ class BrokerState:
         self.metrics = BrokerMetrics()
         self.started_at = time.monotonic()
         self.last_activity = time.monotonic()
+        self.active_requests = 0
         self.lock = threading.Lock()
         self.upstream_slot = threading.BoundedSemaphore(1)
         self.persist_metrics()
@@ -163,9 +164,42 @@ class BrokerState:
                 self.upstream_slot.release()
                 return False, "run request envelope exhausted"
             self.metrics.request_count += 1
+            self.active_requests += 1
             self.last_activity = time.monotonic()
             self.persist_metrics_locked()
         return True, ""
+
+    def request_budget_error(self, path: str, body: bytes) -> str | None:
+        try:
+            payload = json.loads(body)
+        except (ValueError, json.JSONDecodeError):
+            return "request body must be a JSON object"
+        if not isinstance(payload, dict):
+            return "request body must be a JSON object"
+        output_tokens = 0
+        if path == "/v1/messages":
+            max_tokens = payload.get("max_tokens")
+            if not isinstance(max_tokens, int) or isinstance(max_tokens, bool) or max_tokens <= 0:
+                return "messages request must declare a positive max_tokens"
+            output_tokens = max_tokens
+        input_tokens_upper_bound = len(body)
+        with self.lock:
+            remaining_tokens = self.max_total_tokens - self.metrics.usage.total_tokens
+            requested_tokens = input_tokens_upper_bound + output_tokens
+            if requested_tokens > remaining_tokens:
+                return "request token upper bound exceeds the remaining run budget"
+            input_price = max(
+                self.pricing.input,
+                self.pricing.cache_creation,
+                self.pricing.cache_read,
+            )
+            request_cost_upper_bound = (
+                input_tokens_upper_bound * input_price + output_tokens * self.pricing.output
+            ) / 1_000_000
+            remaining_cost = self.budget_usd - self.metrics.estimated_cost_usd
+            if request_cost_upper_bound > remaining_cost:
+                return "request cost upper bound exceeds the remaining run budget"
+        return None
 
     def finish_request(self, usage: Usage, *, usage_observed: bool = True) -> None:
         with self.lock:
@@ -180,8 +214,13 @@ class BrokerState:
             if self.metrics.estimated_cost_usd >= self.budget_usd:
                 self.metrics.budget_exceeded = True
             self.last_activity = time.monotonic()
+            self.active_requests -= 1
             self.persist_metrics_locked()
         self.upstream_slot.release()
+
+    def touch_activity(self) -> None:
+        with self.lock:
+            self.last_activity = time.monotonic()
 
     def reserve_upstream_bytes(self, amount: int) -> bool:
         with self.lock:
@@ -189,6 +228,7 @@ class BrokerState:
                 self.metrics.rejected_count += 1
                 self.metrics.budget_exceeded = True
                 self._mark_anomaly_locked("upstream byte envelope exceeded")
+                self.active_requests -= 1
                 self.persist_metrics_locked()
                 self.upstream_slot.release()
                 return False
@@ -196,11 +236,19 @@ class BrokerState:
             self.persist_metrics_locked()
             return True
 
-    def abort_request(self) -> None:
+    def abort_request(
+        self,
+        reason: str = "upstream usage unknown after interrupted response",
+        *,
+        rejected: bool = False,
+    ) -> None:
         with self.lock:
+            if rejected:
+                self.metrics.rejected_count += 1
             self.metrics.budget_exceeded = True
-            self._mark_anomaly_locked("upstream usage unknown after interrupted response")
+            self._mark_anomaly_locked(reason)
             self.last_activity = time.monotonic()
+            self.active_requests -= 1
             self.persist_metrics_locked()
         self.upstream_slot.release()
 
@@ -306,6 +354,7 @@ class BrokerHandler(BaseHTTPRequestHandler):
         if self.path != "/healthz":
             self._json_error(404, "not found")
             return
+        self.state.touch_activity()
         body = b'{"status":"ok"}\n'
         self.send_response(200)
         self.send_header("content-type", "application/json")
@@ -369,6 +418,11 @@ class BrokerHandler(BaseHTTPRequestHandler):
         return self.rfile.read(length)
 
     def _proxy(self, body: bytes) -> None:
+        budget_error = self.state.request_budget_error(self.path, body)
+        if budget_error is not None:
+            self.state.abort_request(budget_error, rejected=True)
+            self._json_error(429, budget_error)
+            return
         headers = _upstream_headers(self.headers, self.state.oauth_token)
         forwarded_bytes = len(body) + sum(
             len(name) + len(value) + 4 for name, value in headers.items()
@@ -393,6 +447,7 @@ class BrokerHandler(BaseHTTPRequestHandler):
                 chunk = response.read1(64 * 1024)
                 if not chunk:
                     break
+                self.state.touch_activity()
                 parser.feed(chunk)
                 self.wfile.write(chunk)
                 self.wfile.flush()
@@ -514,7 +569,8 @@ def _idle_watchdog(
         with state.lock:
             idle = time.monotonic() - state.last_activity
             lifetime = time.monotonic() - state.started_at
-        if idle >= idle_timeout_seconds or (
+            active_request = state.active_requests > 0
+        if (not active_request and idle >= idle_timeout_seconds) or (
             max_lifetime_seconds is not None and lifetime >= max_lifetime_seconds
         ):
             exit_func(0)

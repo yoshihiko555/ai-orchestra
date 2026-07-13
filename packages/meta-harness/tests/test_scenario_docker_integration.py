@@ -87,6 +87,20 @@ def test_internal_network_blocks_direct_egress_and_has_no_docker_socket(images) 
         subprocess.run(["docker", "network", "rm", network], capture_output=True)
 
 
+def test_scenario_image_defaults_to_non_root_user(images) -> None:
+    scenario_image, _ = images
+
+    completed = subprocess.run(
+        ["docker", "run", "--rm", scenario_image, "id", "-u"],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+
+    assert completed.stdout.strip() == "65532"
+
+
 def test_force_remove_collects_setsid_descendant(images) -> None:
     scenario_image, _ = images
     name = f"mh-run-it-{secrets.token_hex(3)}-setsid"
@@ -128,10 +142,21 @@ def test_preparation_container_self_terminates_at_absolute_lifetime(images, tmp_
     name = f"mh-run-it-{secrets.token_hex(3)}-watchdog"
     resources = docker.profile.resources_config(copy.deepcopy(mh.DEFAULTS))
     resources["max_lifetime_sec"] = 1
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    siso._prepare_isolated_git(
+        worktree_dir=tmp_path,
+        runtime_state_dir=runtime,
+        source_commit="a" * 40,
+        runner=subprocess.run,
+        container_paths=True,
+    )
+    (runtime / "git-link-mask").write_text("")
     command = docker.profile.build_preparation_command(
         container_name=name,
         image_id=scenario_image,
         worktree=tmp_path,
+        runtime_state_dir=runtime,
         owner_labels=docker._resource_labels("integration-test"),
         resources=resources,
     )
@@ -227,6 +252,8 @@ def test_production_preparation_is_contained_and_exports_bounded_workspace(
         config=copy.deepcopy(mh.DEFAULTS),
         main_root=tmp_path,
         worktree_dir=worktree,
+        source_commit="a" * 40,
+        prepare_git_snapshot=siso._prepare_isolated_git,
         raw_command=["/bin/sh", "-c", command],
         timeout_seconds=20,
     )
@@ -242,6 +269,27 @@ def test_production_preparation_is_contained_and_exports_bounded_workspace(
     assert names.strip() == ""
 
 
+def test_preparation_command_uses_isolated_git_snapshot(images, tmp_path) -> None:
+    del images
+    worktree = tmp_path / "git-preparation-worktree"
+    worktree.mkdir()
+    (worktree / "README.md").write_text("input\n")
+    source_commit = "a" * 40
+
+    completed = docker.run_preparation_command(
+        config=copy.deepcopy(mh.DEFAULTS),
+        main_root=tmp_path,
+        worktree_dir=worktree,
+        source_commit=source_commit,
+        prepare_git_snapshot=siso._prepare_isolated_git,
+        raw_command=["/bin/sh", "-c", "git rev-parse --short HEAD > git-head.txt"],
+        timeout_seconds=20,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert (worktree / "git-head.txt").read_text().strip() == source_commit[:7]
+
+
 def test_preparation_workspace_quota_fails_closed(images, tmp_path) -> None:
     del images
     worktree = tmp_path / "quota-worktree"
@@ -253,6 +301,8 @@ def test_preparation_workspace_quota_fails_closed(images, tmp_path) -> None:
         config=config,
         main_root=tmp_path,
         worktree_dir=worktree,
+        source_commit="a" * 40,
+        prepare_git_snapshot=siso._prepare_isolated_git,
         raw_command=[
             "/bin/sh",
             "-c",

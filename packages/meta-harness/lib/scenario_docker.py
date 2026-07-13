@@ -92,8 +92,13 @@ class DockerBrokerSession:
     broker_base_image: str
     owner_labels: dict[str, str]
     runner: SubprocessRunner = field(repr=False)
+    idle_timeout_seconds: int = 300
     metrics: dict[str, Any] = field(default_factory=dict)
     cleaned: bool = False
+    _keepalive_stop: threading.Event = field(
+        default_factory=threading.Event, init=False, repr=False
+    )
+    _keepalive_thread: threading.Thread | None = field(default=None, init=False, repr=False)
 
     @property
     def base_url(self) -> str:
@@ -125,9 +130,28 @@ class DockerBrokerSession:
         self.metrics = value
         return dict(self.metrics)
 
+    def start_keepalive(self) -> None:
+        if self._keepalive_thread is not None:
+            return
+        interval = max(1, min(30, self.idle_timeout_seconds // 3))
+        self._keepalive_thread = threading.Thread(
+            target=_broker_keepalive_loop,
+            args=(self, self._keepalive_stop),
+            kwargs={"interval_seconds": interval},
+            daemon=True,
+        )
+        self._keepalive_thread.start()
+
+    def stop_keepalive(self) -> None:
+        self._keepalive_stop.set()
+        if self._keepalive_thread is not None:
+            self._keepalive_thread.join(timeout=11)
+            self._keepalive_thread = None
+
     def cleanup(self) -> None:
         if self.cleaned:
             return
+        self.stop_keepalive()
         errors: list[str] = []
         try:
             self.refresh_metrics()
@@ -380,6 +404,8 @@ def run_preparation_command(
     config: dict,
     main_root: Path,
     worktree_dir: Path,
+    source_commit: str,
+    prepare_git_snapshot: Callable[..., Path],
     raw_command: list[str],
     timeout_seconds: float,
     runner: SubprocessRunner = subprocess.run,
@@ -391,20 +417,34 @@ def run_preparation_command(
     if expected is not None and actual != expected:
         raise DockerScenarioError(f"image_pin mismatch: expected {expected!r}, got {actual!r}")
     container_name = f"{NAME_PREFIX}prepare-{secrets.token_hex(4)}"
-    resources = {
-        **profile.resources_config(config),
-        "max_lifetime_sec": profile.container_max_lifetime_seconds(
-            config, timeout_seconds=timeout_seconds
-        ),
-    }
-    start_command = profile.build_preparation_command(
-        container_name=container_name,
-        image_id=image_id,
-        worktree=_regular_directory(worktree_dir, "scenario worktree"),
-        owner_labels=_resource_labels(_owner_id(main_root)),
-        resources=resources,
-    )
+    worktree = _regular_directory(worktree_dir, "scenario worktree")
+    runtime = Path(tempfile.mkdtemp(prefix="mh-prepare-docker-"))
+    runtime.chmod(0o755)
     try:
+        resources = {
+            **profile.resources_config(config),
+            "max_lifetime_sec": profile.container_max_lifetime_seconds(
+                config, timeout_seconds=timeout_seconds
+            ),
+        }
+        prepare_git_snapshot(
+            worktree_dir=worktree,
+            runtime_state_dir=runtime,
+            source_commit=source_commit,
+            runner=runner,
+            container_paths=True,
+        )
+        git_link_mask = runtime / "git-link-mask"
+        git_link_mask.write_text("", encoding="utf-8")
+        git_link_mask.chmod(0o444)
+        start_command = profile.build_preparation_command(
+            container_name=container_name,
+            image_id=image_id,
+            worktree=worktree,
+            runtime_state_dir=runtime,
+            owner_labels=_resource_labels(_owner_id(main_root)),
+            resources=resources,
+        )
         _checked(
             start_command,
             runner=runner,
@@ -437,7 +477,10 @@ def run_preparation_command(
     ) as exc:
         raise DockerScenarioError(f"Docker preparation command failed: {exc}") from exc
     finally:
-        if not _remove_container(container_name, runner=runner):
+        removed = _remove_container(container_name, runner=runner)
+        if removed:
+            shutil.rmtree(runtime, ignore_errors=True)
+        if not removed:
             message = "could not remove Docker preparation container"
             if sys.exc_info()[0] is not None:
                 _LOGGER.error("%s while preserving the in-flight preparation error", message)
@@ -471,6 +514,7 @@ def _export_container_workspace(
                 "/usr/bin/tar",
                 "-C",
                 CONTAINER_WORKTREE,
+                "--exclude=./.git",
                 "-cf",
                 "-",
                 ".",
@@ -760,7 +804,7 @@ def _start_broker(
         )
         _inject_token(container_name, credential.access_token, runner=runner)
         _wait_for_broker(container_name, port, broker_cfg, runner=runner)
-        return DockerBrokerSession(
+        session = DockerBrokerSession(
             container_name=container_name,
             internal_network=internal_network,
             external_network=external_network,
@@ -777,7 +821,10 @@ def _start_broker(
             broker_base_image=dcli.base_image_reference("broker"),
             owner_labels=owner_labels,
             runner=runner,
+            idle_timeout_seconds=int(broker_cfg.get("idle_timeout_sec", 300)),
         )
+        session.start_keepalive()
+        return session
     except Exception as exc:
         cleanup_errors: list[str] = []
         if not _remove_container(container_name, runner=runner):
@@ -942,6 +989,27 @@ def _wait_for_broker(
             return
         time.sleep(0.1)
     raise DockerScenarioError("credential broker did not become healthy")
+
+
+def _broker_keepalive_loop(
+    session: DockerBrokerSession,
+    stop: threading.Event,
+    *,
+    interval_seconds: int,
+) -> None:
+    command = [
+        "docker",
+        "exec",
+        session.container_name,
+        "/usr/bin/python3",
+        CONTAINER_BROKER_SCRIPT,
+        "--health",
+        "--port",
+        str(session.port),
+    ]
+    while not stop.wait(interval_seconds):
+        if _run(command, runner=session.runner, timeout=10).returncode != 0:
+            return
 
 
 def _isolation_config(config: dict) -> dict:

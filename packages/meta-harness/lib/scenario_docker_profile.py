@@ -174,6 +174,7 @@ def build_preparation_command(
     container_name: str,
     image_id: str,
     worktree: Path,
+    runtime_state_dir: Path,
     owner_labels: dict[str, str],
     resources: dict[str, Any],
 ) -> list[str]:
@@ -200,6 +201,24 @@ def build_preparation_command(
         *_resource_args(resources),
         "--mount",
         _bind_mount(worktree, CONTAINER_INPUT, read_only=True),
+        "--mount",
+        _bind_mount(
+            runtime_state_dir / "git-snapshot",
+            f"{CONTAINER_RUNTIME}/git-snapshot",
+            read_only=True,
+        ),
+        "--mount",
+        _bind_mount(
+            runtime_state_dir / "bin",
+            f"{CONTAINER_RUNTIME}/bin",
+            read_only=True,
+        ),
+        "--mount",
+        _bind_mount(
+            runtime_state_dir / "git-link-mask",
+            CONTAINER_GIT_LINK,
+            read_only=True,
+        ),
         "--tmpfs",
         _tmpfs(
             CONTAINER_WORKTREE,
@@ -219,8 +238,11 @@ def build_preparation_command(
                 "AI_ORCHESTRA_DIR": CONTAINER_WORKTREE,
                 "GIT_CONFIG_GLOBAL": "/dev/null",
                 "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_OPTIONAL_LOCKS": "0",
+                "GIT_DIR": f"{CONTAINER_RUNTIME}/git-snapshot",
+                "GIT_WORK_TREE": CONTAINER_WORKTREE,
                 "TMPDIR": CONTAINER_TMP,
-                "PATH": "/usr/local/bin:/usr/bin:/bin",
+                "PATH": f"{CONTAINER_RUNTIME}/bin:/usr/local/bin:/usr/bin:/bin",
             }
         ),
         image_id,

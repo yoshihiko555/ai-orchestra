@@ -101,6 +101,30 @@ class TestCapabilityGateHappyPath:
         assert caps.checks["scenario_execution_boundary"] is True
         assert caps.checks["broker_auth"] is True
 
+    def test_docker_gate_reports_daemon_unavailable_without_fallback(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        config = {"evaluate": {"isolation": {"backend": "docker", "execution_backend": "docker"}}}
+        monkeypatch.setattr(ev.siso, "execution_boundary_available", lambda _config: True)
+        monkeypatch.setattr(
+            ev.siso.docker,
+            "check_docker_capabilities",
+            lambda *_args, **_kwargs: SimpleNamespace(
+                claude_version=None,
+                version_pin="2.1.207 (Claude Code)",
+                version_pin_match=None,
+                checks={"docker_daemon": False},
+                ok=False,
+                reason="Docker daemon unavailable",
+            ),
+        )
+
+        caps = ev.check_cli_capabilities(config, main_root=tmp_path, runner=_always_ok_runner)
+
+        assert caps.ok is False
+        assert caps.checks["docker_daemon"] is False
+        assert caps.reason == "Docker daemon unavailable"
+
 
 class TestCapabilityGateVersionPinMismatch:
     def test_version_pin_mismatch_fails_gate(self) -> None:

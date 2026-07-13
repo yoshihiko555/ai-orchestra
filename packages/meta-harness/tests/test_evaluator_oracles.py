@@ -405,6 +405,8 @@ class TestRubricJudgeClaudeBareBackend:
         assert result.passed is True
         assert captured["command"][:3] == ["docker", "run", "judge"]
         assert captured["kwargs"]["cleanup_args"] == ["docker", "rm", "-f", "judge"]
+        assert "ANTHROPIC_API_KEY" not in captured["kwargs"]["env"]
+        assert not any("sk-" in part for part in captured["command"])
 
 
 class TestRubricJudgeUnknownBackend:

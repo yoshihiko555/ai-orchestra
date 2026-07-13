@@ -31,6 +31,10 @@ def _completed(returncode: int = 0, stdout: str = "", stderr: str = ""):
     return subprocess.CompletedProcess([], returncode, stdout=stdout, stderr=stderr)
 
 
+def _prepare_git_snapshot(**kwargs):
+    return siso._prepare_isolated_git(**kwargs)
+
+
 def _broker(tmp_path: Path):
     return docker.DockerBrokerSession(
         container_name="mh-run-test-broker",
@@ -84,6 +88,65 @@ def _launch(tmp_path: Path):
         scenario_container_name="mh-run-test-scenario",
         owned_runtime_state_dir=None,
     )
+
+
+@pytest.mark.parametrize(
+    ("remove", "missing_error"),
+    [
+        (
+            lambda runner: docker.dcli.remove_container("gone", runner=runner),
+            "No such object: gone",
+        ),
+        (
+            lambda runner: docker.dcli.remove_network("gone", runner=runner),
+            "network gone not found",
+        ),
+    ],
+)
+def test_docker_resource_cleanup_requires_explicit_missing_object(remove, missing_error) -> None:
+    daemon_error = iter(
+        [
+            _completed(1, stderr="Cannot connect to the Docker daemon"),
+            _completed(1, stderr="Cannot connect to the Docker daemon"),
+        ]
+    )
+    assert remove(lambda *_args, **_kwargs: next(daemon_error)) is False
+
+    explicit_missing = iter(
+        [
+            _completed(1, stderr="remove failed"),
+            _completed(1, stderr=missing_error),
+        ]
+    )
+    assert remove(lambda *_args, **_kwargs: next(explicit_missing)) is True
+
+
+def test_broker_session_keepalive_uses_health_endpoint(tmp_path: Path) -> None:
+    session = _broker(tmp_path)
+    commands: list[list[str]] = []
+    session.runner = lambda command, **_kwargs: commands.append(command) or _completed()
+
+    class StopAfterOneProbe:
+        calls = 0
+
+        def wait(self, _interval: float) -> bool:
+            self.calls += 1
+            return self.calls > 1
+
+    docker._broker_keepalive_loop(session, StopAfterOneProbe(), interval_seconds=1)
+
+    assert commands == [
+        [
+            "docker",
+            "exec",
+            session.container_name,
+            "/usr/bin/python3",
+            docker.CONTAINER_BROKER_SCRIPT,
+            "--health",
+            "--port",
+            str(session.port),
+        ]
+    ]
 
 
 def test_execution_boundary_reports_only_matching_docker_backend() -> None:
@@ -432,22 +495,31 @@ def test_preparation_uses_named_bounded_no_network_container(tmp_path: Path, mon
         config=copy.deepcopy(mh.DEFAULTS),
         main_root=tmp_path,
         worktree_dir=worktree,
+        source_commit="a" * 40,
+        prepare_git_snapshot=_prepare_git_snapshot,
         raw_command=["python3", "-c", "print('ok')"],
         timeout_seconds=5,
         runner=runner,
     )
 
-    rendered = "\n".join(docker_commands[0])
+    start_command = next(command for command in docker_commands if command[:2] == ["docker", "run"])
+    exec_commands = [command for command in docker_commands if command[:2] == ["docker", "exec"]]
+    rendered = "\n".join(start_command)
     assert "--network\nnone" in rendered
     assert f"src={worktree.resolve()},dst=/input,readonly" in rendered
-    assert "dst=/workspace" not in rendered
-    assert "--name" in docker_commands[0]
+    assert "dst=/runtime/git-snapshot,readonly" in rendered
+    assert "dst=/runtime/bin,readonly" in rendered
+    assert "dst=/workspace/.git,readonly" in rendered
+    assert "GIT_DIR=/runtime/git-snapshot" in rendered
+    assert "GIT_WORK_TREE=/workspace" in rendered
+    assert f"src={worktree.resolve()},dst=/workspace" not in rendered
+    assert "--name" in start_command
     assert captured["kwargs"]["max_output_bytes"] == 10_000_000
-    assert docker_commands[1][:2] == ["docker", "exec"]
+    assert exec_commands[0][:2] == ["docker", "exec"]
     assert captured["command"][:2] == ["docker", "exec"]
     assert callable(captured["kwargs"]["success_callback"])
     assert captured["kwargs"]["cleanup_args"][:3] == ["docker", "rm", "-f"]
-    assert docker_commands[0][-6:] == [
+    assert start_command[-6:] == [
         "/usr/bin/timeout",
         "--signal=TERM",
         "--kill-after=5s",
@@ -481,6 +553,8 @@ def test_preparation_preserves_primary_error_when_cleanup_also_fails(
             config=copy.deepcopy(mh.DEFAULTS),
             main_root=tmp_path,
             worktree_dir=worktree,
+            source_commit="a" * 40,
+            prepare_git_snapshot=_prepare_git_snapshot,
             raw_command=["python3", "-c", "print('ok')"],
             timeout_seconds=5,
         )

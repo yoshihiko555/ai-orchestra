@@ -281,7 +281,10 @@
     - packages/meta-harness/tests/test_scenario_docker.py::test_broker_startup_cleanup_failure_is_reported
     - packages/meta-harness/tests/test_scenario_docker.py::test_preparation_preserves_primary_error_when_cleanup_also_fails
     - packages/meta-harness/tests/test_scenario_docker.py::test_container_lifetime_matches_broker_absolute_bound
+    - packages/meta-harness/tests/test_scenario_docker.py::test_docker_resource_cleanup_requires_explicit_missing_object
     - packages/meta-harness/tests/test_scenario_docker_integration.py
+    - packages/meta-harness/tests/test_scenario_docker_integration.py::test_scenario_image_defaults_to_non_root_user
+    - packages/meta-harness/tests/test_scenario_docker_integration.py::test_preparation_command_uses_isolated_git_snapshot
     - packages/meta-harness/tests/test_scenario_docker_integration.py::test_linked_worktree_git_is_masked_and_snapshot_wrapper_works
     - packages/meta-harness/tests/test_scenario_docker_integration.py::test_production_preparation_is_contained_and_exports_bounded_workspace
     - packages/meta-harness/tests/test_scenario_docker_integration.py::test_preparation_workspace_quota_fails_closed
@@ -322,6 +325,9 @@
     - packages/meta-harness/tests/test_scenario_broker.py::test_http_handler_does_not_append_second_response_after_stream_failure
     - packages/meta-harness/tests/test_scenario_broker.py::test_http_handler_rejects_transfer_encoding_without_admission
     - packages/meta-harness/tests/test_scenario_broker.py::test_token_envelope_latches_budget_and_rejects_following_request
+    - packages/meta-harness/tests/test_scenario_broker.py::test_direct_request_budget_is_rejected_before_upstream
+    - packages/meta-harness/tests/test_scenario_broker.py::test_idle_watchdog_does_not_exit_during_active_request
+    - packages/meta-harness/tests/test_scenario_docker.py::test_broker_session_keepalive_uses_health_endpoint
     - packages/meta-harness/tests/test_scenario_docker.py::test_broker_token_is_injected_via_stdin_not_argv_or_env
     - packages/meta-harness/tests/test_scenario_docker_integration.py
     - packages/meta-harness/tests/test_evaluator_failure_handling.py::TestBrokerMetricsForceRunError
@@ -331,6 +337,7 @@
     The real OAuth token is loaded with TTL preflight and injected through stdin
     into broker tmpfs, never candidate argv/env/disk. Header replacement,
     fixed api.anthropic.com upstream, per-run dummy authentication, HTTP framing
-    rejection, exception-safe request serialization, usage-based budget cap,
-    anomaly accounting, broker lifecycle cleanup, and broker-routed containerized
-    claude-bare judge are covered.
+    rejection, exception-safe request serialization, pre-forward worst-case
+    request admission, usage-based budget cap, active-stream/host-session
+    keepalive, anomaly accounting, broker lifecycle cleanup, and broker-routed
+    containerized claude-bare judge are covered.

@@ -112,16 +112,33 @@ def remove_container(name: str, *, runner: SubprocessRunner) -> bool:
     removed = run(["docker", "rm", "-f", name], runner=runner, timeout=20)
     if removed.returncode == 0:
         return True
+    if _reports_missing_resource(removed, kind="container"):
+        return True
     inspected = run(["docker", "inspect", name], runner=runner, timeout=10)
-    return inspected.returncode != 0
+    return inspected.returncode != 0 and _reports_missing_resource(inspected, kind="container")
 
 
 def remove_network(name: str, *, runner: SubprocessRunner) -> bool:
     removed = run(["docker", "network", "rm", name], runner=runner, timeout=20)
     if removed.returncode == 0:
         return True
+    if _reports_missing_resource(removed, kind="network"):
+        return True
     inspected = run(["docker", "network", "inspect", name], runner=runner, timeout=10)
-    return inspected.returncode != 0
+    return inspected.returncode != 0 and _reports_missing_resource(inspected, kind="network")
+
+
+def _reports_missing_resource(completed: subprocess.CompletedProcess, *, kind: str) -> bool:
+    detail = f"{completed.stdout or ''}\n{completed.stderr or ''}".lower()
+    if "no such object:" in detail:
+        return True
+    if kind == "container":
+        return "no such container:" in detail
+    if kind == "network":
+        return "no such network:" in detail or bool(
+            re.search(r"(?:error response from daemon:\s*)?network\s+\S+\s+not found", detail)
+        )
+    raise ValueError(f"unknown Docker resource kind: {kind}")
 
 
 def checked(

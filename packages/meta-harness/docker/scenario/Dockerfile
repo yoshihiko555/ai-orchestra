@@ -20,4 +20,6 @@ RUN apt-get update \
 
 WORKDIR /workspace
 
+USER 65532:65532
+
 ENTRYPOINT []

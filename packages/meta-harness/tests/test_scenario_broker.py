@@ -106,6 +106,21 @@ def test_http_handler_happy_path_closes_connection(
     assert state.metrics.request_count == 1
 
 
+def test_health_probe_refreshes_broker_activity(http_broker: tuple[Any, Any]) -> None:
+    server, state = http_broker
+    state.last_activity -= 60
+    previous = state.last_activity
+    connection = http.client.HTTPConnection(*server.server_address, timeout=2)
+
+    connection.request("GET", "/healthz")
+    response = connection.getresponse()
+    response.read()
+    connection.close()
+
+    assert response.status == 200
+    assert state.last_activity > previous
+
+
 def test_http_handler_rejects_invalid_run_token(
     http_broker: tuple[Any, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -170,13 +185,15 @@ def test_http_handler_does_not_append_second_response_after_stream_failure(
             return
 
     monkeypatch.setattr(broker.http.client, "HTTPSConnection", FailingConnection)
+    body = b'{"max_tokens":1}'
     request = (
         b"POST /v1/messages HTTP/1.1\r\n"
         b"Host: 127.0.0.1\r\n"
         b"x-api-key: run-token\r\n"
         b"content-type: application/json\r\n"
-        b"content-length: 2\r\n"
-        b"connection: close\r\n\r\n{}"
+        + f"content-length: {len(body)}\r\n".encode()
+        + b"connection: close\r\n\r\n"
+        + body
     )
     raw_chunks: list[bytes] = []
     with socket.create_connection(server.server_address, timeout=2) as client:
@@ -320,6 +337,27 @@ def test_usage_budget_hard_cap_rejects_following_request(tmp_path: Path, monkeyp
     assert metrics["budget_exceeded"] is True
 
 
+def test_direct_request_budget_is_rejected_before_upstream(
+    http_broker: tuple[Any, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server, state = http_broker
+
+    class UnexpectedConnection:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            raise AssertionError("over-budget request must not reach the upstream connection")
+
+    monkeypatch.setattr(broker.http.client, "HTTPSConnection", UnexpectedConnection)
+    body = json.dumps({"model": "claude-test", "max_tokens": 500_000, "messages": []}).encode()
+
+    status, _headers, payload = _post(server, body=body)
+
+    assert status == 429
+    assert b"budget" in payload
+    assert state.metrics.budget_exceeded is True
+    assert state.metrics.rejected_count == 1
+    assert state.metrics.upstream_request_bytes == 0
+
+
 def test_request_envelope_records_anomaly(tmp_path: Path, monkeypatch) -> None:
     state = _state(tmp_path, monkeypatch, max_requests=1, max_total_tokens=100)
     assert state.begin_request()[0] is True
@@ -425,6 +463,32 @@ def test_idle_watchdog_self_terminates_orphaned_broker(tmp_path: Path, monkeypat
 
     broker._idle_watchdog(state, 30, exit_func=exits.append)
 
+    assert exits == [0]
+
+
+def test_idle_watchdog_does_not_exit_during_active_request(tmp_path: Path, monkeypatch) -> None:
+    state = _state(tmp_path, monkeypatch)
+    assert state.begin_request()[0] is True
+    state.last_activity -= 60
+    exits: list[int] = []
+    sleeps = 0
+
+    def advance(_seconds: float) -> None:
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps == 2:
+            state.started_at -= 120
+
+    monkeypatch.setattr(broker.time, "sleep", advance)
+
+    broker._idle_watchdog(
+        state,
+        30,
+        max_lifetime_seconds=60,
+        exit_func=exits.append,
+    )
+
+    assert sleeps == 2
     assert exits == [0]
 
 

@@ -408,6 +408,14 @@ class TestRunMetadataSchema:
             mh.validate_against_schema({**self._VALID, "isolation": isolation}, schema, SCHEMA_DIR)
             == []
         )
+        invalid_memory = {
+            **isolation,
+            "resources": {**isolation["resources"], "memory": "unbounded"},
+        }
+        memory_errors = mh.validate_against_schema(
+            {**self._VALID, "isolation": invalid_memory}, schema, SCHEMA_DIR
+        )
+        assert memory_errors
         errors = mh.validate_against_schema(
             {**self._VALID, "isolation": {**isolation, "broker": {"metrics": {}}}},
             schema,

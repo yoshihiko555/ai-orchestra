@@ -115,7 +115,7 @@
               ],
               "properties": {
                 "pids_limit": { "type": "integer", "minimum": 1 },
-                "memory": { "type": "string", "minLength": 1 },
+                "memory": { "type": "string", "pattern": "^[1-9][0-9]*[kKmMgG]$" },
                 "cpus": { "type": "number", "exclusiveMinimum": 0 },
                 "workspace_size": { "type": "string", "pattern": "^[1-9][0-9]*[kKmMgG]$" },
                 "workspace_max_files": { "type": "integer", "minimum": 1 },

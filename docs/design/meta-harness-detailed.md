@@ -1135,7 +1135,10 @@ cd <worktree> && claude -p "<scenario.prompt>" \
   実tokenを残さない。brokerはCLIプロセスの子として起動し、正常終了・timeout・例外の経路で即時破棄する
   （`evaluate.lock`と同じwithブロック規律）。SIGKILL・ホストクラッシュ等の異常経路はbrokerのidle timeout
   自殺 + absolute lifetime上限と、次回起動時のname-prefix（`mh-run-*`）ベースstale cleanupで有限時間内に
-  破棄する。scenario / preparation / oracle / judgeコンテナも、host側cleanupだけに依存せず、実効scenario
+  破棄する。正常なrun中はhost sessionがbrokerのhealth endpointへidle timeout未満の間隔でkeepaliveを送り、
+  active upstream requestはidle判定から除外し、stream chunkごとにactivityを更新する。host消失時はkeepaliveも
+  停止するためidle自殺が復活し、active stream中もabsolute lifetimeは常に優先する。scenario / preparation /
+  oracle / judgeコンテナも、host側cleanupだけに依存せず、実効scenario
   timeout + broker idle timeout + 60秒をabsolute lifetime上限として主プロセスを`timeout`で包む。
 - **broker自身のegress制限**: brokerの外部到達先はapi.anthropic.comに限定し、任意ホストへの中継
   （open proxy化）を構造的に禁止する。
@@ -1147,14 +1150,17 @@ cd <worktree> && claude -p "<scenario.prompt>" \
   予算超過を行える。これを防ぐため、**brokerが独立に以下を強制する**:
   - **per-run予算強制**: brokerがレスポンスの`usage`を積算し、run予算（scenario固有値を反映した実効config
     `scenario_run.max_budget_usd_default`）を超えたら以降のリクエストを拒否する（CLIフラグとは独立の
-    hard cap）。
+    hard cap）。さらに`connection.request`より前にJSON bodyを検査し、body byte数をinput tokenの保守的上限、
+    `max_tokens`をoutput token上限として、残りの累積token envelopeと上限単価換算USDの双方に収まらない
+    単発requestを拒否する。これにより候補からbrokerへ直接送る最初の1 requestも上限を大幅超過できない。
   - **呼び出し計上・異常検知**: brokerは全リクエスト数・累積tokenを記録し、scenarioが想定する呼び出し
     エンベロープ（概ねCLIの1 run分）を超える呼び出しを拒否し、run anomalyとしてmetadataに記録する。
     `/v1/messages/count_tokens`のroot `input_tokens`も計上し、成功responseにusageが無い場合は予算不明として
     fail-closedする。path/auth/query/transfer-encoding/header allowlist・値上限のpre-admission拒否はanomalyを
     記録するが、入力検証ノイズだけでrunを使用不能にしないようbudgetはラッチしない。`begin_request()`後の
     proxy/stream失敗はusage不明としてbudgetをラッチし、以降をfail-closedする。
-    累積token上限超過もbudgetをラッチして後続requestを拒否する。scenario / oracle / judge完了後にrefreshした
+    累積token上限超過もbudgetをラッチして後続requestを拒否する。scenario直後にmetricsを一度永続化し、
+    oracle / judge完了後に再refreshした
     `broker.metrics.budget_exceeded`または`anomaly`がtrueなら、個別checkが成功していてもattempt全体をerrorとする。
     headless run自体が失敗した場合もbroker cleanup前にmetricsをrefreshして`isolation.json`へ保存する。
   - **転送byte上限**: candidate由来headerは既知名だけを最大128 bytesで受け、`user-agent`等はbroker固定値へ
@@ -1169,9 +1175,9 @@ cd <worktree> && claude -p "<scenario.prompt>" \
 - **broker の予算換算と並行性**: Anthropic API response は USD 金額を返さないため、broker は response
   の `usage`（input/output/cache creation/cache read token）を config の**保守的な上限単価**で USD
   換算する。未知モデルでも同じ上限単価を適用し、過少計上へ倒さない。broker は同時 upstream request を
-  1 件に制限し、並行リクエストによる複数応答分の budget overshoot を防ぐ。1 件の API 応答が hard cap を
+  1 件に制限し、並行リクエストによる複数応答分の budget overshoot を防ぐ。事前上限内でも実usageがhard capを
   超えた場合は当該応答の中断ではなく、その直後から後続 request を拒否する（API usage は応答完了まで
-  確定しないため）。CLI の `--max-budget-usd` と組み合わせて一層目の overshoot も抑止する。
+  確定しないため）。CLI の `--max-budget-usd` と組み合わせて多層で overshoot を抑止する。
 - **token TTL**: brokerが保持するaccess tokenは静的（broker はrefreshしない）。起動時に`expiresAt`
   preflight（proposer L1のexp checkと同型）でrun想定時間より十分長いことを確認する。
 - scenario子プロセスの環境はallowlistから再構築し、`HOME`/`CLAUDE_CONFIG_DIR`をephemeral HOME、
@@ -1183,13 +1189,16 @@ cd <worktree> && claude -p "<scenario.prompt>" \
   `git rev-parse [--short] HEAD`はmanifestの`source_commit`を返し、`git diff`等はsnapshot baselineと
   candidate worktreeを比較する。`command_exit` oracleにもsnapshotとwrapperの2ディレクトリだけを
   read-only mountし、同じ`GIT_DIR` / `GIT_WORK_TREE` / `PATH`を設定する（runtime全体はmountしない）。
+  preparation containerにも各command開始時点の独立snapshotとwrapperだけを同様にmountし、`setup`や
+  facet/context build内のGit参照がlinked worktreeの実`.git`へ触れずに動作するようにする。
 - **子孫プロセスの回収**: Dockerのcgroupにより`setsid()`で離脱した子孫を含む全プロセスを`docker rm -f`で
   確実に停止できる（スパイクS3実測: rm -f後にホスト残存プロセスゼロ）。この封じ込めと
   `events.jsonl`/`progress.log`の各10MB上限強制が整うまでscenario/oracleのprocess起動はfail-closedする。
   host orchestratorがSIGKILL/OOM等でcleanupを実行できない場合にも残存し続けないよう、broker以外の全run
   コンテナは上記absolute lifetimeで自己終了し、`--rm`による自動削除へ進む。`docker rm -f`失敗後の
-  `docker inspect`は明示的な`No such container/object`だけを不在確認成功とし、daemon/context障害等の
-  非ゼロ終了はcleanup未検証としてrunをfail-closedする。
+  containerの`docker inspect`は明示的な`No such container/object`、network inspectは明示的な
+  `No such network` / `network ... not found`だけを不在確認成功とし、daemon/context障害等の非ゼロ終了は
+  cleanup未検証としてrunをfail-closedする。
 - **mount設計とworkspace quota**: 対象worktreeは`/input`へro mountし、候補が書く`/workspace`は
   `workspace_size`上限付きtmpfsとする。実行単位runtime（ro）・固定self-report instruction（ro）・
   own tmp（tmpfs）以外はmountしない。bounded `timeout`待機プロセスのcontainerへ候補コマンドを
@@ -1201,6 +1210,7 @@ cd <worktree> && claude -p "<scenario.prompt>" \
   worktree・store・global tmp・`/Volumes`・他runのephemeral領域は候補から到達不能とする。
 - **overlay後の準備処理**: `facet build` / `context build` とscenario `setup`もhostで実行せず、同じ
   ro input + bounded tmpfs workspace方式のnetworkなし・non-root preparation containerで実行する。
+  イメージ自体の既定`USER`も65532とし、起動側の`--user`が欠落してもroot実行へ倒れない。
   candidate-controlled facet/scriptが親HOMEや親envを読む経路を作らない。
 - **イメージ供給**: scenario/broker イメージは `packages/meta-harness/docker/` の Dockerfile を正本とし、
   base imageを`FROM ...@sha256`で固定する。`auto_build_images:true`ではcapability gate中にno-cache buildし、

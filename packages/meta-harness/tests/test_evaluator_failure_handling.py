@@ -191,21 +191,24 @@ class TestBrokerMetricsForceRunError:
                 isolation_launch=launch,
             ),
         )
-        monkeypatch.setattr(
-            ev,
-            "run_oracle",
-            lambda check, *_args, **_kwargs: {
+        refresh_count = 0
+
+        def run_oracle(check, *_args, **_kwargs):
+            assert refresh_count == 1
+            return {
                 "id": check["id"],
                 "passed": True,
                 "oracle": check["oracle"],
                 "detail": "ok",
-            },
-        )
-        monkeypatch.setattr(
-            ev.siso,
-            "refresh_isolation_metadata",
-            lambda _launch: {"backend": "docker", "broker": {"metrics": metrics}},
-        )
+            }
+
+        def refresh_isolation_metadata(_launch):
+            nonlocal refresh_count
+            refresh_count += 1
+            return {"backend": "docker", "broker": {"metrics": metrics}}
+
+        monkeypatch.setattr(ev, "run_oracle", run_oracle)
+        monkeypatch.setattr(ev.siso, "refresh_isolation_metadata", refresh_isolation_metadata)
         monkeypatch.setattr(ev.siso, "cleanup_scenario_isolation", lambda _launch: None)
         monkeypatch.setattr(ev, "remove_worktree", lambda *_args, **_kwargs: None)
 
@@ -226,6 +229,7 @@ class TestBrokerMetricsForceRunError:
         )
 
         assert checks[0]["passed"] is True
+        assert refresh_count == 2
         assert hard_failure is True
         assert errors[-1]["stage"] == "broker"
         assert errors[-1]["type"] == expected_type
