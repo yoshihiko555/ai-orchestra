@@ -911,6 +911,7 @@ def run_mechanical_checks(
     heartbeat: Callable[[], None] | None = None,
     artifact_writer: Callable[[int, str, str, int], None] | None = None,
     env: Mapping[str, str] | None = None,
+    on_start: Callable[[int | None], None] | None = None,
 ) -> list[MechanicalFailure]:
     """Run mechanical checker commands and classify failures via failure_detector.
 
@@ -919,6 +920,9 @@ def run_mechanical_checks(
     LP-2's `loop_driver.py` passes an isolated, push-credential-stripped env (SEC-C1) since
     mechanical commands here execute Maker-authored code (e.g. `pytest -q` importing it) and
     must not run with the driver's own push-capable environment.
+
+    Callers needing heartbeat-triggered kill-tree parity may pass `on_start` to track each
+    subprocess pid (F5); omitting it preserves the previous behavior exactly.
     """
     detector = _load_failure_detector()
     failures: list[MechanicalFailure] = []
@@ -926,7 +930,9 @@ def run_mechanical_checks(
         output: str | None = None
         exit_code: int | None = None
         try:
-            output, exit_code = _run_mechanical_command(command, cwd, timeout_seconds, env=env)
+            output, exit_code = _run_mechanical_command(
+                command, cwd, timeout_seconds, env=env, on_start=on_start
+            )
             response = {"exit_code": exit_code, "stdout": output}
             result = detector.analyze("Bash", {"command": command}, response)
         finally:
@@ -2331,7 +2337,11 @@ def _write_text(path: Path, content: str) -> None:
 
 
 def _run_mechanical_command(
-    command: str, cwd: str, timeout_seconds: int, env: Mapping[str, str] | None = None
+    command: str,
+    cwd: str,
+    timeout_seconds: int,
+    env: Mapping[str, str] | None = None,
+    on_start: Callable[[int | None], None] | None = None,
 ) -> tuple[str, int]:
     """Run one mechanical command, killing its whole process group on timeout (review #16).
 
@@ -2342,6 +2352,9 @@ def _run_mechanical_command(
     descendant the Maker-authored command spawned (e.g. a `pytest` run's own subprocesses),
     not just the direct `bash` child; a plain `subprocess.run(..., timeout=...)` only ever
     reaps the immediate child, leaking grandchildren on timeout.
+
+    `on_start` optionally registers and clears the child pid for heartbeat-triggered
+    kill-tree handling (F5); omitting it preserves the previous behavior exactly.
     """
     proc = subprocess.Popen(
         ["bash", "-lc", command],
@@ -2352,13 +2365,19 @@ def _run_mechanical_command(
         start_new_session=True,
         env=dict(env) if env is not None else None,
     )
+    if on_start is not None:
+        on_start(proc.pid)
     try:
-        stdout, stderr = proc.communicate(timeout=timeout_seconds)
-    except subprocess.TimeoutExpired:
-        _kill_process_group(proc.pid)
-        stdout, stderr = proc.communicate()
-        return f"{stdout or ''}{stderr or ''}\ncommand timed out", 124
-    return f"{stdout or ''}{stderr or ''}", proc.returncode
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired:
+            _kill_process_group(proc.pid)
+            stdout, stderr = proc.communicate()
+            return f"{stdout or ''}{stderr or ''}\ncommand timed out", 124
+        return f"{stdout or ''}{stderr or ''}", proc.returncode
+    finally:
+        if on_start is not None:
+            on_start(None)
 
 
 def _kill_process_group(pid: int, term_wait_seconds: float = 10.0) -> None:

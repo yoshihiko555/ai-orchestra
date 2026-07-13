@@ -22,11 +22,13 @@ ISSUE_LOOP_IMPLEMENTATION_PASS_CRITERIA = {"critical": 0, "high": 0}
 # own tool calls) — it constrains what loop-harness itself will execute directly via
 # `bash -lc` in the checker phase. Does not replace layer 2/3; loop definitions are
 # trusted-but-verified. The scan below normalizes common `bash -lc` bypasses (absolute paths,
-# tab/multi-space separators, `env`/`timeout`/`nice`/`command`/`bash -c`/`sh -c` wrappers, and
+# tab/multi-space separators, `env`/`timeout`/`nice`/`command`/`bash -c`/`sh -c` wrappers,
+# leading `VAR=value` env-assignment prefixes, surrounding quotes/parentheses, and
 # `;`/`&&`/`||`/`|`/`&`/`$(...)`/backtick command boundaries) but is not a full shell parser.
 _MECHANICAL_COMMAND_DENYLIST = frozenset({"git", "gh", "ssh", "curl", "wget", "docker", "sudo"})
 _MECHANICAL_COMMAND_WRAPPERS = frozenset({"env", "nice", "command", "timeout", "bash", "sh"})
 _COMMAND_SEGMENT_SPLIT_RE = re.compile(r"\$\(|`|;|&&|\|\||\||&|\n")
+_ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
 
 def _resolve_local_override_root(project_dir: str) -> str:
@@ -287,10 +289,13 @@ def _command_segments(command: str) -> list[str]:
 
 def _segment_command_binary(segment: str) -> str | None:
     """Return the resolved, wrapper-unwrapped command-position binary name for a segment."""
-    tokens = [token.strip("'\"") for token in re.split(r"\s+", segment.strip()) if token]
+    tokens = [token.strip("'\"()") for token in re.split(r"\s+", segment.strip()) if token]
     index = 0
     while index < len(tokens):
         token = tokens[index]
+        if _ENV_ASSIGNMENT_RE.match(token):
+            index += 1
+            continue
         name = token.rsplit("/", 1)[-1]
         if name not in _MECHANICAL_COMMAND_WRAPPERS:
             return name or None

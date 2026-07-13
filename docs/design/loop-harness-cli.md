@@ -553,7 +553,12 @@ claude -p \
 >   維持する。加えて `claude -p` に渡す PreToolUse hook で Bash コマンド全文（`bash -c` のペイロード
 >   を含む）を検査し、push/remote/gh pr を含む場合は hard-deny する（disallowedTools のリテラル
 >   一致漏れを補う）。ただし文字列難読化（base64 化・変数展開等）で回避され得るため、層3 単独を
->   構造的保証の境界として扱わない。
+>   構造的保証の境界として扱わない。実体は `packages/loop-harness/lib/maker_bash_guard.py`
+>   （stdlib のみ・PreToolUse プロトコルで stdin JSON を受け取り deny 時 exit code 2）で、
+>   `loop_driver_support.build_claude_p_command()` が `maker_hook_settings_path()`（プロセス単位で
+>   メモ化した scratch settings JSON を生成し `matcher: "Bash"` の PreToolUse hook として同スクリプトを
+>   登録）の戻り値を常に `--settings` に付与して注入する（`loop_driver.py` 側の呼び出しコードは
+>   変更不要）。
 > - **層4（push 後整合性検証。安全網）**: `loop_driver.py` が Maker 実行の前後で「期待する
 >   local HEAD」と「remote HEAD」を記録・照合し、想定外に remote HEAD が進行していた場合は
 >   integrity violation として安全停止する（2.6 節）。
@@ -780,6 +785,10 @@ gh api repos/{owner}/{repo}/issues \
   同順位内は `created_at` 昇順とする（優先度ラベルの語彙は config で定義。5 節）。
 - 既に `loop_id`（`<repo-hash8>-issue-<N>` 決定論的採番）に対応する `state.json` が
   `running`/`waiting_external` で存在する Issue は discovery 対象から除外する（二重起動防止）。
+- 加えて、`state.json.status` が `passed`/`failed`/`stopped`（terminal）である `loop_id` の Issue も
+  discovery 対象から除外する。ラベルが外されないまま残っている完了済み Issue を、ラベルだけを見て
+  再度ループ生成しないようにするための除外である（`discover_loop_ids` で running/waiting_external と
+  同様に扱う）。
 
 ### 3.2 同時実行 cap
 
@@ -810,6 +819,12 @@ def spawn_worker(loop_id: str, project_root: Path) -> subprocess.Popen[bytes]:
 - 再起動回数には上限を設けず、`loop_common` 側のガード（`infrastructure_failure` の
   `max_retries=3`。5 節）が最終的な打ち切りを担う（スケジューラ自体は無限再起動しうるが、
   ガード評価が失敗出口へ導く）。
+- **foreign-lease cooldown（restart-storm 対策）**: worker が lease 取得時点で他プロセス保有と
+  思われる lease を検出して起動を拒否した場合、`state.json.status` はまだ `running`（旧所有者の
+  ものである可能性がある）ため、通常の異常終了と同様にすぐ再起動すると restart-storm を招く。
+  スケジューラはこの `loop_id` の再起動を `lp2.lease_ttl_seconds` 分クールダウンさせ、その間は
+  discovery・再起動の対象から除外する（クールダウン経過後に再評価する。`SchedulerRuntime.
+  foreign_lease_cooldown_until` で追跡）。
 
 ### 3.4 起動時の repo-identity 照合（安全停止）
 
@@ -930,7 +945,7 @@ python3 loop_status.py show --loop-id a1b2c3d4-issue-42 [--project <path>]
 ### 4.3 purge
 
 ```bash
-python3 loop_status.py purge [--project <path>] [--force]
+python3 loop_status.py purge [--project <path>] [--force] [--dry-run] [--yes]
 ```
 
 - **既定: 完了後（`status` が `passed`/`failed` に確定してから）30 日経過**したループランの
@@ -942,6 +957,9 @@ python3 loop_status.py purge [--project <path>] [--force]
   明示的な後始末コマンド（`loop_status.py purge --with-worktree` 等）を将来拡張として残す
   （本書では state/journal の purge のみを確定する）。
 - purge 前に対象 `loop_id` 一覧を stderr に出し、`--dry-run` で削除対象確認のみ行える。
+- **実削除時の対話確認**: `--dry-run` を指定しない実削除時は、誤操作防止のため確認を要求する。
+  TTY 実行時は `yes` の入力で削除を続行する。`--yes` フラグ指定時は確認をスキップする。
+  非対話 stdin・EOF・`yes` 以外の入力の場合は削除せず exit `1` とする。
 
 ---
 

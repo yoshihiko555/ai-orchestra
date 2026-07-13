@@ -305,6 +305,21 @@ def test_run_mechanical_command_env_none_inherits_os_environ(
     assert output == "inherited-value"
 
 
+def test_run_mechanical_command_on_start_receives_pid_then_none(tmp_path: Path) -> None:
+    child_pids: list[int | None] = []
+
+    output, exit_code = lc._run_mechanical_command(
+        "printf ok", str(tmp_path), 5, on_start=child_pids.append
+    )
+
+    assert output == "ok"
+    assert exit_code == 0
+    assert len(child_pids) == 2
+    assert isinstance(child_pids[0], int)
+    assert child_pids[0] > 0
+    assert child_pids[1] is None
+
+
 def test_run_mechanical_command_env_stripped_key_is_absent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -356,14 +371,40 @@ def test_run_mechanical_checks_forwards_env_to_mechanical_command(
     captured: dict[str, object] = {}
     original = lc._run_mechanical_command
 
-    def spy(command: str, cwd: str, timeout_seconds: int, env: object = None) -> tuple[str, int]:
+    def spy(
+        command: str,
+        cwd: str,
+        timeout_seconds: int,
+        env: object = None,
+        on_start: object = None,
+    ) -> tuple[str, int]:
         captured["env"] = env
-        return original(command, cwd, timeout_seconds, env=env)
+        return original(command, cwd, timeout_seconds, env=env, on_start=on_start)
 
     monkeypatch.setattr(lc, "_run_mechanical_command", spy)
     isolated_env = {"PATH": "/usr/bin:/bin"}
     lc.run_mechanical_checks(["printf ok"], str(tmp_path), 5, env=isolated_env)
     assert captured["env"] == isolated_env
+
+
+def test_run_mechanical_checks_forwards_on_start_to_mechanical_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class FakeDetector:
+        @staticmethod
+        def analyze(_tool_name: str, _tool_input: dict, _tool_response: dict) -> None:
+            return None
+
+    monkeypatch.setattr(lc, "_load_failure_detector", lambda: FakeDetector)
+    child_pids: list[int | None] = []
+
+    failures = lc.run_mechanical_checks(["printf ok"], str(tmp_path), 5, on_start=child_pids.append)
+
+    assert failures == []
+    assert len(child_pids) == 2
+    assert isinstance(child_pids[0], int)
+    assert child_pids[0] > 0
+    assert child_pids[1] is None
 
 
 def test_redact_payload_and_audit_payload_shape() -> None:

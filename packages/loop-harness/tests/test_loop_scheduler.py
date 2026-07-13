@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -347,6 +348,21 @@ def test_gh_list_issues_returns_empty_string_on_nonzero_exit(
     assert scheduler._gh_list_issues("acme/widgets", "loop:issue") == ""
 
 
+def test_gh_list_issues_returns_empty_string_on_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A `gh` call that exceeds the 30s timeout must not raise `TimeoutExpired` and take the
+    resident scheduler down with it; it must honor the same "failure returns \"\"" contract as
+    a nonzero exit (#F20)."""
+
+    def fake_run(*args: object, **kwargs: object) -> None:
+        raise subprocess.TimeoutExpired(cmd="gh api ...", timeout=30)
+
+    monkeypatch.setattr(scheduler.subprocess, "run", fake_run)
+
+    assert scheduler._gh_list_issues("acme/widgets", "loop:issue") == ""
+
+
 # --------------------------------------------------------------------------------------------
 # should_restart / reap_finished_workers (EV-51)
 # --------------------------------------------------------------------------------------------
@@ -532,6 +548,107 @@ def test_reap_finished_workers_does_not_respawn_cooldown_when_at_capacity(
     assert result == []
     assert cooling_loop_id not in runtime.workers
     assert cooling_loop_id in runtime.foreign_lease_cooldown_until
+
+
+# --------------------------------------------------------------------------------------------
+# respawn_orphaned_active_loops: scheduler-restart recovery (#F4)
+# --------------------------------------------------------------------------------------------
+
+
+def test_respawn_orphaned_active_loops_respawns_when_lease_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After a scheduler restart, `runtime.workers` starts empty even though a previous
+    process left this loop running; with no lock file at all there is no live owner, so the
+    loop must be respawned rather than permanently stranded."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    loop_id = "aaaaaaaa-issue-1"
+    _seed_state(tmp_path, loop_id, status="running")
+    runtime = scheduler.SchedulerRuntime()
+
+    respawned_proc = _FakePopen(returncode=None)
+    monkeypatch.setattr(scheduler, "spawn_worker", lambda lid, project: respawned_proc)
+
+    result = scheduler.respawn_orphaned_active_loops(runtime, project_dir)
+
+    assert result == [loop_id]
+    assert runtime.workers[loop_id] is respawned_proc
+
+
+def test_respawn_orphaned_active_loops_skips_when_lease_still_alive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A live lease means some other owner (another host/process, or this process's own
+    earlier-cycle child) still holds the loop; respawning would create a duplicate worker."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    loop_id = "aaaaaaaa-issue-1"
+    _seed_state(tmp_path, loop_id, status="running")
+    lc.acquire_lock(loop_id, project_dir, "someone-else", 300)
+    runtime = scheduler.SchedulerRuntime()
+
+    def _fail_spawn(lid: str, project: str) -> None:
+        raise AssertionError("must not respawn a loop with a live foreign lease")
+
+    monkeypatch.setattr(scheduler, "spawn_worker", _fail_spawn)
+
+    result = scheduler.respawn_orphaned_active_loops(runtime, project_dir)
+
+    assert result == []
+    assert loop_id not in runtime.workers
+
+
+@pytest.mark.parametrize("status", ["stopped", "failed"])
+def test_respawn_orphaned_active_loops_never_touches_terminal_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: str
+) -> None:
+    """EV-51: a safety-stopped (or normally-failed) loop must never be auto-restarted, even
+    with no lease at all."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    loop_id = "aaaaaaaa-issue-1"
+    _seed_state(tmp_path, loop_id, status=status)
+    runtime = scheduler.SchedulerRuntime()
+
+    def _fail_spawn(lid: str, project: str) -> None:
+        raise AssertionError(f"must not respawn a {status} loop")
+
+    monkeypatch.setattr(scheduler, "spawn_worker", _fail_spawn)
+
+    result = scheduler.respawn_orphaned_active_loops(runtime, project_dir)
+
+    assert result == []
+
+
+def test_respawn_orphaned_active_loops_respects_concurrency_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Multiple orphaned active loops must still respect the concurrency cap; only the
+    available slots get spawned this cycle."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    loop_id_1 = "aaaaaaaa-issue-1"
+    loop_id_2 = "aaaaaaaa-issue-2"
+    _seed_state(tmp_path, loop_id_1, status="running")
+    _seed_state(tmp_path, loop_id_2, status="waiting_external")
+    # Default concurrency_limit is 2; occupy one slot with an unrelated worker so only one of
+    # the two orphaned loops can be respawned this cycle.
+    runtime = scheduler.SchedulerRuntime(workers={"busy-1": _FakePopen(None)})
+
+    spawned_ids: list[str] = []
+
+    def fake_spawn(lid: str, project: str) -> _FakePopen:
+        spawned_ids.append(lid)
+        return _FakePopen(returncode=None)
+
+    monkeypatch.setattr(scheduler, "spawn_worker", fake_spawn)
+
+    result = scheduler.respawn_orphaned_active_loops(runtime, project_dir)
+
+    assert len(result) == 1
+    assert spawned_ids == result
+    assert len(runtime.workers) == 2
 
 
 def test_spawn_new_workers_excludes_ids_still_in_cooldown(
@@ -800,7 +917,7 @@ def test_spawn_worker_builds_expected_argv(monkeypatch: pytest.MonkeyPatch) -> N
     scheduler.spawn_worker("abcd1234-issue-1", "/some/project")
 
     cmd = captured["cmd"]
-    assert cmd[0] == "python3"
+    assert cmd[0] == sys.executable
     assert cmd[1].endswith("loop_driver.py")
     assert cmd[2:] == ["--loop-id", "abcd1234-issue-1", "--project", "/some/project"]
     assert captured["kwargs"]["stdin"] == subprocess.DEVNULL

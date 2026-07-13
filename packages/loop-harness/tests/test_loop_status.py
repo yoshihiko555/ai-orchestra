@@ -7,7 +7,9 @@ protection), per the evaluation set (EV-52) and the handoff's required coverage 
 
 from __future__ import annotations
 
+import fcntl
 import json
+import os
 import shutil
 import subprocess
 from datetime import UTC, datetime, timedelta
@@ -392,3 +394,81 @@ def test_purge_loop_is_a_noop_when_directory_already_gone(tmp_path: Path) -> Non
     shutil.rmtree(lc.loop_dir(loop_id, str(tmp_path)))
 
     status.purge_loop(loop_id, str(tmp_path))  # must not raise
+
+
+def test_purge_if_still_safe_holds_lock_flock_during_reload_and_purge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F19: the loop's lock-file flock must be held across the reload + purge window.
+
+    A concurrent `acquire_lock`/`reacquire_lease` takes the same lock-file flock, so
+    holding it here closes the TOCTOU window between the state reload and `purge_loop`.
+    """
+    _init_repo(tmp_path)
+    loop_id = "a-issue-1"
+    _seed_state(tmp_path, loop_id, status_value="passed", updated_at=_iso(31))
+    lc.acquire_lock(loop_id, str(tmp_path), "owner-1", ttl_seconds=60)
+
+    lock_was_free_during_purge = []
+
+    def _spy_purge_loop(loop_id_arg: str, project_dir_arg: str) -> None:
+        lock_file = lc.lock_path(loop_id_arg, project_dir_arg)
+        fd = os.open(lock_file, os.O_RDWR)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            lock_was_free_during_purge.append(True)
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            lock_was_free_during_purge.append(False)
+        finally:
+            os.close(fd)
+
+    monkeypatch.setattr(status, "purge_loop", _spy_purge_loop)
+
+    status._purge_if_still_safe(loop_id, str(tmp_path))
+
+    assert lock_was_free_during_purge == [False]
+
+
+def test_purge_if_still_safe_falls_back_when_lock_file_absent(tmp_path: Path) -> None:
+    """F19: with no lock.json for the loop, the safety check + purge still run (no lock to hold)."""
+    _init_repo(tmp_path)
+    loop_id = "a-issue-1"
+    _seed_state(tmp_path, loop_id, status_value="passed", updated_at=_iso(31))
+    assert not lc.lock_path(loop_id, str(tmp_path)).exists()
+
+    status._purge_if_still_safe(loop_id, str(tmp_path))
+
+    assert not lc.loop_dir(loop_id, str(tmp_path)).exists()
+
+
+def test_confirm_purge_accepts_yes_on_interactive_stdin(monkeypatch: pytest.MonkeyPatch) -> None:
+    """F22: isatty=True + input() == 'yes' -> confirmed."""
+    monkeypatch.setattr(status.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "yes")
+
+    assert status._confirm_purge(3) is True
+
+
+def test_confirm_purge_declines_on_eof(monkeypatch: pytest.MonkeyPatch) -> None:
+    """F18/F22: isatty=True + input() raising EOFError (Ctrl-D) -> declined, not propagated."""
+
+    def _raise_eof(_prompt: str) -> str:
+        raise EOFError
+
+    monkeypatch.setattr(status.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", _raise_eof)
+
+    assert status._confirm_purge(3) is False
+
+
+def test_confirm_purge_declines_on_non_interactive_stdin(monkeypatch: pytest.MonkeyPatch) -> None:
+    """F22: isatty=False -> declined without ever calling input()."""
+
+    def _fail_if_called(_prompt: str) -> str:
+        raise AssertionError("input() must not be called when stdin is non-interactive")
+
+    monkeypatch.setattr(status.sys.stdin, "isatty", lambda: False)
+    monkeypatch.setattr("builtins.input", _fail_if_called)
+
+    assert status._confirm_purge(3) is False

@@ -171,29 +171,40 @@ def _gh_list_issues(repo: str, label: str) -> str:
     `--paginate` and no `-q`/`--jq`, `gh api` writes one JSON array per page back-to-back
     (not a single combined array), so parsing must handle multiple concatenated JSON documents
     (see `_parse_paginated_json`).
+
+    A `timeout=30` expiry is treated the same as a nonzero exit (#F20): `subprocess.run` raises
+    `TimeoutExpired` instead of returning a `CompletedProcess`, which would otherwise violate
+    this function's "failure returns \"\"" contract and take the resident scheduler down with it.
     """
-    completed = subprocess.run(
-        [
-            "gh",
-            "api",
-            f"repos/{repo}/issues",
-            "--method",
-            "GET",
-            "--paginate",
-            "-f",
-            f"labels={label}",
-            "-f",
-            "state=open",
-            "-f",
-            "sort=created",
-            "-f",
-            "direction=asc",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
+    try:
+        completed = subprocess.run(
+            [
+                "gh",
+                "api",
+                f"repos/{repo}/issues",
+                "--method",
+                "GET",
+                "--paginate",
+                "-f",
+                f"labels={label}",
+                "-f",
+                "state=open",
+                "-f",
+                "sort=created",
+                "-f",
+                "direction=asc",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        print(
+            lc.redact(f"loop_scheduler: gh api issues timed out (repo={repo}, label={label})"),
+            file=sys.stderr,
+        )
+        return ""
     if completed.returncode != 0:
         print(
             lc.redact(
@@ -324,10 +335,15 @@ def discover_loop_ids(
 
 
 def spawn_worker(loop_id: str, project_dir: str) -> subprocess.Popen[bytes]:
-    """Spawn one `loop_driver.py --loop-id <id> --project <path>` child (detached session)."""
+    """Spawn one `loop_driver.py --loop-id <id> --project <path>` child (detached session).
+
+    Uses `sys.executable` rather than a hardcoded `"python3"` (#F10): the scheduler itself may
+    be running under a venv/uv-managed interpreter, and a hardcoded `python3` could resolve to
+    a different (or missing) interpreter for the worker child.
+    """
     return subprocess.Popen(
         [
-            "python3",
+            sys.executable,
             str(_SCRIPT_DIR / "loop_driver.py"),
             "--loop-id",
             loop_id,
@@ -398,6 +414,45 @@ def _respawn_expired_cooldowns(runtime: SchedulerRuntime, project_dir: str) -> l
     return respawned
 
 
+def _is_lease_expired(loop_id: str, project_dir: str) -> bool:
+    """Return True when loop_id's lease is absent or past its TTL (no live owner holds it)."""
+    lock = lc._read_lock(lc.lock_path(loop_id, project_dir))  # noqa: SLF001 - see _safe_stop_repo_identity_mismatch precedent
+    return lock is None or not lc.is_lease_alive(lock)
+
+
+def respawn_orphaned_active_loops(runtime: SchedulerRuntime, project_dir: str) -> list[str]:
+    """Respawn active-status loops this process lost track of, e.g. after a restart (#F4).
+
+    `discover_loop_ids` permanently excludes any loop_id in `active_loop_ids` (state.json
+    status running/waiting_external) so discovery never regenerates an already-active loop.
+    But `SchedulerRuntime.workers` is in-memory only: if the scheduler process itself
+    restarts, `workers` starts empty, so a loop left running/waiting_external by the previous
+    process becomes untracked *and* permanently invisible to discovery, with no path back to
+    a worker actually being spawned for it. Only loops whose lease has actually expired are
+    eligible here - a live lease means some owner (this process's own earlier-cycle child, or
+    another host/process) still holds it, so respawning would create a duplicate worker.
+
+    `stopped` (and `failed`) loops are never touched here because `active_loop_ids` only ever
+    returns running/waiting_external, never a terminal status - so EV-51 (a safety-stopped
+    loop is never auto-restarted) holds structurally, not via an extra check in this function.
+    """
+    available = concurrency_limit(project_dir) - len(runtime.workers)
+    respawned: list[str] = []
+    for loop_id in active_loop_ids(project_dir):
+        if available <= 0:
+            break
+        if loop_id in runtime.workers or loop_id in runtime.stopped_loop_ids:
+            continue
+        if loop_id in runtime.foreign_lease_cooldown_until:
+            continue
+        if not _is_lease_expired(loop_id, project_dir):
+            continue
+        runtime.workers[loop_id] = spawn_worker(loop_id, project_dir)
+        respawned.append(loop_id)
+        available -= 1
+    return respawned
+
+
 def reap_finished_workers(runtime: SchedulerRuntime, project_dir: str) -> list[str]:
     """Poll tracked workers; restart abnormal exits unless failed/stopped. Return respawned ids."""
     respawned = _respawn_expired_cooldowns(runtime, project_dir)
@@ -446,6 +501,7 @@ def spawn_new_workers(
 def run_cycle(runtime: SchedulerRuntime, project_dir: str, definition: ld.LoopDefinition) -> None:
     """One discovery -> cap check -> spawn / monitor / restart poll cycle."""
     reap_finished_workers(runtime, project_dir)
+    respawn_orphaned_active_loops(runtime, project_dir)
     spawn_new_workers(runtime, project_dir, definition)
 
 

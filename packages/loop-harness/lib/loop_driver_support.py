@@ -10,12 +10,14 @@ enough wrappers around subprocess/git) to unit test in isolation, so that
 from __future__ import annotations
 
 import contextlib
+import functools
 import json
 import os
 import re
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -61,7 +63,12 @@ _PUSH_AUTH_ENV_KEYS_TO_STRIP: tuple[str, ...] = (
 )
 
 
-def maker_env(base_env: Mapping[str, str], *, scratch_home: str | None = None) -> dict[str, str]:
+def maker_env(
+    base_env: Mapping[str, str],
+    *,
+    scratch_home: str | None = None,
+    cwd: str | None = None,
+) -> dict[str, str]:
     """Return a copy of base_env with push authentication stripped (layer 2, defense-in-depth).
 
     This isolation applies only to the Maker/Checker `claude -p` child process env; the
@@ -74,8 +81,19 @@ def maker_env(base_env: Mapping[str, str], *, scratch_home: str | None = None) -
     (including any `credential.helper`) is read at all. If `scratch_home` is given, `HOME`/
     `XDG_CONFIG_HOME` are also redirected there so `~/.netrc`/`gh`'s config directory resolve to
     an empty scratch directory instead of the real one.
+
+    If `cwd` is given, this also resolves the repository's git committer identity (local or
+    global config, read from the *ambient*, not-yet-sanitized environment) and threads it
+    through as `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL`/`GIT_COMMITTER_NAME`/`GIT_COMMITTER_EMAIL`
+    env vars (code F15): once `GIT_CONFIG_GLOBAL` is redirected to `/dev/null` below, the child
+    can no longer see `~/.gitconfig`'s `user.name`/`user.email`, so a Maker-authored
+    `git commit` would otherwise fail with "Author identity unknown". These are plain env-var
+    values only — no credential helper is invoked or threaded through, so this cannot
+    reintroduce push authentication.
     """
     env = dict(base_env)
+    if cwd is not None:
+        env.update(_git_identity_env(cwd))
     env["GIT_ASKPASS"] = "/bin/false"
     env["GIT_TERMINAL_PROMPT"] = "0"
     env["GIT_CONFIG_GLOBAL"] = "/dev/null"
@@ -88,6 +106,41 @@ def maker_env(base_env: Mapping[str, str], *, scratch_home: str | None = None) -
     return env
 
 
+def _git_identity_env(cwd: str) -> dict[str, str]:
+    """Resolve the caller's git committer identity as env-var overrides (code F15).
+
+    Reads via the ambient process environment (not the sanitized copy `maker_env()` is
+    building), so a global `~/.gitconfig` `user.name`/`user.email` resolves normally here even
+    though the child process's own env will have `GIT_CONFIG_GLOBAL=/dev/null`.
+    """
+    overrides: dict[str, str] = {}
+    name = _git_config_value(cwd, "user.name")
+    if name:
+        overrides["GIT_AUTHOR_NAME"] = name
+        overrides["GIT_COMMITTER_NAME"] = name
+    email = _git_config_value(cwd, "user.email")
+    if email:
+        overrides["GIT_AUTHOR_EMAIL"] = email
+        overrides["GIT_COMMITTER_EMAIL"] = email
+    return overrides
+
+
+def _git_config_value(cwd: str, key: str) -> str | None:
+    """Return one resolved (local-or-global) git config value, or None if unset/unavailable."""
+    try:
+        completed = subprocess.run(
+            ["git", "-C", cwd, "config", "--get", key],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    value = completed.stdout.strip()
+    return value if completed.returncode == 0 and value else None
+
+
 def maker_scratch_home(project_dir: str, loop_id: str) -> str:
     """Return (creating if absent) an isolated `$HOME` scratch dir for one loop's child procs.
 
@@ -95,11 +148,45 @@ def maker_scratch_home(project_dir: str, loop_id: str) -> str:
     lookups relative to `$HOME` (`~/.netrc`, `~/.git-credentials`, `gh`'s hosts.yml) resolve to
     an empty directory instead of the driver's real home. Lives under the per-loop state
     directory so `loop_status.py purge`'s existing directory-tree removal cleans it up too.
+
+    Also copies the operator's existing Claude Code OAuth session (`~/.claude.json`,
+    `~/.claude/.credentials.json`) into the scratch dir on every call (code F14, FT-17 "must":
+    headless Maker/Checker/reviewer `claude -p` children must be able to authenticate using the
+    operator's existing `claude` login) — without giving them any of the git/gh push
+    credentials this scratch `$HOME` otherwise isolates from (SEC-H3): `~/.netrc`,
+    `~/.git-credentials`, and `~/.config/gh` are never copied here.
     """
     path = lc.loop_dir(loop_id, project_dir) / "maker_home"
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(path, 0o700)
+    _copy_claude_auth_files(Path(os.path.expanduser("~")), path)
     return str(path)
+
+
+def _copy_claude_auth_files(real_home: Path, scratch_home: Path) -> None:
+    """Copy only Claude Code auth files from real_home into scratch_home (code F14).
+
+    No-op for any file that does not exist at the source: a fresh CI/sandbox environment
+    without a prior `claude` login still gets a usable (just unauthenticated) scratch dir
+    instead of failing `loop_driver.py` outright. Never copies `~/.netrc`, `~/.git-credentials`,
+    or `~/.config/gh` (git/gh push credentials, which this scratch `$HOME` must stay isolated
+    from per SEC-H3).
+    """
+    claude_json = real_home / ".claude.json"
+    if claude_json.is_file():
+        _copy_file_0600(claude_json, scratch_home / ".claude.json")
+    credentials = real_home / ".claude" / ".credentials.json"
+    if credentials.is_file():
+        target_dir = scratch_home / ".claude"
+        target_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(target_dir, 0o700)
+        _copy_file_0600(credentials, target_dir / ".credentials.json")
+
+
+def _copy_file_0600(source: Path, target: Path) -> None:
+    """Copy a file's contents with 0600 permissions (never inherits the source's own mode)."""
+    target.write_bytes(source.read_bytes())
+    os.chmod(target, 0o600)
 
 
 def _command_prefix(command: str) -> str | None:
@@ -130,6 +217,51 @@ def build_disallowed_tools() -> str:
     return ",".join(MAKER_FIXED_DISALLOWED_TOOLS)
 
 
+def _maker_hook_script_path() -> Path:
+    """Absolute path to the layer-3 PreToolUse Bash-guard hook script (`maker_bash_guard.py`).
+
+    Lives alongside this module so packaging/distribution always ships them together;
+    resolved via `__file__` (not a config lookup) so it works regardless of which
+    project/worktree `loop_driver.py` is invoked from.
+    """
+    return _LIB_DIR / "maker_bash_guard.py"
+
+
+def _maker_hook_settings_dict() -> dict[str, Any]:
+    """Return the `claude -p --settings` JSON dict wiring in the layer-3 Bash-guard hook."""
+    return {
+        "hooks": {
+            "PreToolUse": [
+                {
+                    "matcher": "Bash",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": f"{sys.executable} {_maker_hook_script_path()}",
+                        }
+                    ],
+                }
+            ]
+        }
+    }
+
+
+@functools.lru_cache(maxsize=1)
+def maker_hook_settings_path() -> str:
+    """Materialize (once per process) the layer-3 hook settings JSON and return its path.
+
+    Memoized: the settings content only depends on this module's own file location, so every
+    `build_claude_p_command()` call within one `loop_driver.py` process (one loop run = one
+    process; design doc 2.1 節) shares the same scratch file instead of writing a fresh temp
+    file for every Maker/Checker/reviewer child it launches. Tests can call
+    `maker_hook_settings_path.cache_clear()` to force regeneration.
+    """
+    directory = tempfile.mkdtemp(prefix="loop-harness-maker-hook-")
+    path = Path(directory) / "settings.json"
+    path.write_text(json.dumps(_maker_hook_settings_dict()), encoding="utf-8")
+    return str(path)
+
+
 def build_claude_p_command(
     prompt: str,
     *,
@@ -137,7 +269,13 @@ def build_claude_p_command(
     add_dirs: Sequence[str],
     claude_bin: str = "claude",
 ) -> list[str]:
-    """Build the full `claude -p` argv for a Maker/Checker headless run."""
+    """Build the full `claude -p` argv for a Maker/Checker headless run.
+
+    Always injects `--settings <layer-3 hook settings file>` alongside the fixed
+    `--disallowedTools`, wiring in the `maker_bash_guard.py` PreToolUse hook (design doc 2.2 節
+    層3; EV-49/EV-63) that hard-denies Bash push/remote/gh-pr commands even when wrapped in
+    `bash -c "..."` — a bypass `--disallowedTools`'s literal-prefix match alone cannot catch.
+    """
     cmd = [
         claude_bin,
         "-p",
@@ -149,6 +287,8 @@ def build_claude_p_command(
         allowed_tools,
         "--disallowedTools",
         build_disallowed_tools(),
+        "--settings",
+        maker_hook_settings_path(),
     ]
     for add_dir in add_dirs:
         cmd.extend(["--add-dir", add_dir])

@@ -12,6 +12,7 @@ import json
 import os
 import stat
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -111,6 +112,93 @@ def test_maker_scratch_home_creates_directory_under_loop_dir(tmp_path: Path) -> 
     assert (Path(path).stat().st_mode & 0o777) == 0o700
 
 
+def test_maker_env_with_cwd_sets_git_identity_from_repo_config(tmp_path: Path) -> None:
+    """code F15: `GIT_CONFIG_GLOBAL=/dev/null` hides `~/.gitconfig` from the Maker's env, so
+    the resolved identity must be threaded through explicitly as
+    `GIT_AUTHOR_*`/`GIT_COMMITTER_*` env vars, or `git commit` inside the Maker's isolated env
+    fails with an unknown identity."""
+    _init_repo(tmp_path)  # sets user.name/user.email at the (local) repo config level
+    env = lds.maker_env({"PATH": "/usr/bin"}, cwd=str(tmp_path))
+    assert env["GIT_AUTHOR_NAME"] == "Loop Harness Test"
+    assert env["GIT_AUTHOR_EMAIL"] == "loop-harness@example.com"
+    assert env["GIT_COMMITTER_NAME"] == "Loop Harness Test"
+    assert env["GIT_COMMITTER_EMAIL"] == "loop-harness@example.com"
+
+
+def test_maker_env_without_cwd_omits_git_identity_overrides() -> None:
+    """Backward compatible: omitting `cwd` adds no `GIT_AUTHOR_*`/`GIT_COMMITTER_*` keys."""
+    env = lds.maker_env({"PATH": "/usr/bin"})
+    assert "GIT_AUTHOR_NAME" not in env
+    assert "GIT_AUTHOR_EMAIL" not in env
+    assert "GIT_COMMITTER_NAME" not in env
+    assert "GIT_COMMITTER_EMAIL" not in env
+
+
+def test_maker_scratch_home_copies_claude_json_and_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """code F14 / FT-17: headless Maker/Checker/reviewer `claude -p` children must be able to
+    authenticate using the operator's existing Claude Code login."""
+    real_home = tmp_path / "real_home"
+    real_home.mkdir()
+    (real_home / ".claude.json").write_text('{"oauth": "token"}', encoding="utf-8")
+    claude_dir = real_home / ".claude"
+    claude_dir.mkdir()
+    (claude_dir / ".credentials.json").write_text('{"accessToken": "abc"}', encoding="utf-8")
+    monkeypatch.setenv("HOME", str(real_home))
+
+    project_dir = tmp_path / "project"
+    _init_repo(project_dir)
+    scratch = Path(lds.maker_scratch_home(str(project_dir), "abcd1234-issue-1"))
+
+    assert (scratch / ".claude.json").read_text(encoding="utf-8") == '{"oauth": "token"}'
+    assert (scratch / ".claude" / ".credentials.json").read_text(
+        encoding="utf-8"
+    ) == '{"accessToken": "abc"}'
+    assert (scratch / ".claude.json").stat().st_mode & 0o777 == 0o600
+
+
+def test_maker_scratch_home_does_not_copy_git_or_gh_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """code F14 (SEC-H3 regression guard): only the Claude Code auth files are copied; git/gh
+    push credentials must never leak into the scratch $HOME."""
+    real_home = tmp_path / "real_home"
+    real_home.mkdir()
+    (real_home / ".netrc").write_text("machine github.com\n", encoding="utf-8")
+    (real_home / ".git-credentials").write_text("https://x:y@github.com\n", encoding="utf-8")
+    gh_dir = real_home / ".config" / "gh"
+    gh_dir.mkdir(parents=True)
+    (gh_dir / "hosts.yml").write_text("github.com:\n", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(real_home))
+
+    project_dir = tmp_path / "project"
+    _init_repo(project_dir)
+    scratch = Path(lds.maker_scratch_home(str(project_dir), "abcd1234-issue-1"))
+
+    assert not (scratch / ".netrc").exists()
+    assert not (scratch / ".git-credentials").exists()
+    assert not (scratch / ".config").exists()
+
+
+def test_maker_scratch_home_is_noop_when_no_auth_files_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """code F14: a fresh environment without a prior `claude` login still gets a usable
+    (just unauthenticated) scratch dir instead of failing."""
+    real_home = tmp_path / "real_home"
+    real_home.mkdir()
+    monkeypatch.setenv("HOME", str(real_home))
+
+    project_dir = tmp_path / "project"
+    _init_repo(project_dir)
+    scratch = Path(lds.maker_scratch_home(str(project_dir), "abcd1234-issue-1"))
+
+    assert scratch.is_dir()
+    assert not (scratch / ".claude.json").exists()
+    assert not (scratch / ".claude").exists()
+
+
 def test_build_disallowed_tools_always_excludes_push_pr_remote_worktree() -> None:
     disallowed = lds.build_disallowed_tools()
     assert "Bash(git push:*)" in disallowed
@@ -163,6 +251,126 @@ def test_build_claude_p_command_never_skips_permissions_and_uses_accept_edits() 
     assert "--disallowedTools" in cmd
     disallowed_value = cmd[cmd.index("--disallowedTools") + 1]
     assert "Bash(git push:*)" in disallowed_value
+
+
+def test_build_claude_p_command_injects_settings_with_bash_guard_hook() -> None:
+    """Layer 3 addendum (EV-49/EV-63): `--settings` wires in the `maker_bash_guard.py`
+    PreToolUse hook so `bash -c "git push ..."` wrappers are caught too, not just literal
+    `--disallowedTools` prefix matches."""
+    lds.maker_hook_settings_path.cache_clear()
+    try:
+        cmd = lds.build_claude_p_command(
+            "do the thing", allowed_tools="Read,Edit", add_dirs=["/wt"]
+        )
+        assert "--settings" in cmd
+        settings_path = Path(cmd[cmd.index("--settings") + 1])
+        assert settings_path.is_file()
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        pre_tool_use = settings["hooks"]["PreToolUse"]
+        assert len(pre_tool_use) == 1
+        assert pre_tool_use[0]["matcher"] == "Bash"
+        hook_entries = pre_tool_use[0]["hooks"]
+        assert len(hook_entries) == 1
+        assert hook_entries[0]["type"] == "command"
+        hook_command = hook_entries[0]["command"]
+        assert hook_command.endswith("maker_bash_guard.py")
+        assert Path(hook_command.split(" ", 1)[1]).is_file()
+    finally:
+        lds.maker_hook_settings_path.cache_clear()
+
+
+def test_maker_hook_settings_path_is_memoized_across_calls() -> None:
+    """One `--settings` scratch file per process (not one per Maker/Checker/reviewer child)."""
+    lds.maker_hook_settings_path.cache_clear()
+    try:
+        first = lds.maker_hook_settings_path()
+        second = lds.maker_hook_settings_path()
+        assert first == second
+    finally:
+        lds.maker_hook_settings_path.cache_clear()
+
+
+def _run_bash_guard_hook(command: str) -> subprocess.CompletedProcess[str]:
+    hook_path = REPO_ROOT / "packages" / "loop-harness" / "lib" / "maker_bash_guard.py"
+    payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": command}})
+    return subprocess.run(
+        [sys.executable, str(hook_path)],
+        input=payload,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git push",
+        "git push origin main",
+        'bash -c "git push origin main"',
+        "sh -c 'git push origin HEAD:main'",
+        "git -c a=b push",
+        "git --git-dir=/x/.git push origin main",
+        "git remote set-url origin https://evil.example/repo.git",
+        "git remote add mirror https://evil.example/repo.git",
+        "git send-pack ../bare origin/main",
+        "git worktree remove ../other",
+        "gh pr create --title x --body y",
+        "gh pr merge 1",
+        "gh api -X POST repos/o/r/pulls/1/merge",
+        "git status && git push",
+        "ssh git@github.com git-receive-pack repo.git",
+    ],
+)
+def test_maker_bash_guard_denies_push_and_pr_mutation_bypasses(command: str) -> None:
+    """EV-49/EV-63: `bash -c`/`sh -c` wrappers and option-interleaved invocations are all
+    caught by full-string scanning, not just a literal command prefix."""
+    result = _run_bash_guard_hook(command)
+    assert result.returncode == 2
+    assert "maker-bash-guard" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git status",
+        "git commit -m x",
+        "git add -A",
+        "git diff --stat",
+        "git log --oneline -5",
+        "pytest -q",
+        "ruff check .",
+    ],
+)
+def test_maker_bash_guard_allows_ordinary_maker_commands(command: str) -> None:
+    result = _run_bash_guard_hook(command)
+    assert result.returncode == 0
+    assert result.stderr == ""
+
+
+def test_maker_bash_guard_allows_non_bash_tool_calls() -> None:
+    hook_path = REPO_ROOT / "packages" / "loop-harness" / "lib" / "maker_bash_guard.py"
+    payload = json.dumps({"tool_name": "Read", "tool_input": {"file_path": "/x"}})
+    result = subprocess.run(
+        [sys.executable, str(hook_path)],
+        input=payload,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0
+
+
+def test_maker_bash_guard_fails_open_on_malformed_stdin() -> None:
+    hook_path = REPO_ROOT / "packages" / "loop-harness" / "lib" / "maker_bash_guard.py"
+    result = subprocess.run(
+        [sys.executable, str(hook_path)],
+        input="not json",
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0
 
 
 # --------------------------------------------------------------------------------------------
@@ -732,6 +940,83 @@ def test_advance_phase_returns_push_guard_failure_without_touching_layer4(
 
 
 # --------------------------------------------------------------------------------------------
+# loop_driver.LoopDriver: `commit` advance-exec step actually verifies the Maker's commit
+# (code F9) instead of being a no-op
+# --------------------------------------------------------------------------------------------
+
+
+def test_verify_maker_commit_fails_when_worktree_dirty(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    d = driver.LoopDriver("abcd1234-issue-1", str(tmp_path), "token")
+    d._remote_head_baseline = _git(["rev-parse", "HEAD"], tmp_path)
+    (tmp_path / "dirty.txt").write_text("uncommitted\n", encoding="utf-8")
+
+    ok, reason = d._verify_maker_commit(str(tmp_path))
+
+    assert ok is False
+    assert "dirty" in reason
+
+
+def test_verify_maker_commit_fails_when_no_new_commit_since_baseline(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    d = driver.LoopDriver("abcd1234-issue-1", str(tmp_path), "token")
+    d._remote_head_baseline = _git(["rev-parse", "HEAD"], tmp_path)
+
+    ok, reason = d._verify_maker_commit(str(tmp_path))
+
+    assert ok is False
+    assert "no new commit" in reason
+
+
+def test_verify_maker_commit_passes_when_clean_and_new_commit_exists(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    d = driver.LoopDriver("abcd1234-issue-1", str(tmp_path), "token")
+    d._remote_head_baseline = _git(["rev-parse", "HEAD"], tmp_path)
+    (tmp_path / "change.txt").write_text("update\n", encoding="utf-8")
+    _git(["add", "change.txt"], tmp_path)
+    _git(["commit", "-m", "update"], tmp_path)
+
+    ok, reason = d._verify_maker_commit(str(tmp_path))
+
+    assert ok is True
+    assert reason == ""
+
+
+def test_advance_phase_returns_commit_guard_failure_when_no_new_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """code F9 regression: an advance_phase whose Maker made no new commit must fail via a
+    push_guard-shaped result (joining the existing push-guard failure path) instead of
+    silently proceeding to push a stale/no-op HEAD."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    d._remote_head_baseline = _git(["rev-parse", "HEAD"], Path(project_dir))
+    monkeypatch.setattr(driver, "_current_branch", lambda _wt: "main")
+    monkeypatch.setattr(lc, "is_repo_identity_verified", lambda _state: True)
+    monkeypatch.setattr(lds, "get_remote_head", lambda *_a, **_k: d._remote_head_baseline)
+
+    proposal = lc.ProposeResult(
+        action="advance_phase",
+        action_id="act-000013",
+        state_version=state.state_version,
+        expected_phase="implementation",
+        phase="implementation",
+        iteration=1,
+        context={},
+    )
+    result = d._run_advance_phase(
+        proposal, state, {"verified_branch": "main", "exec": ["commit", "push"]}
+    )
+
+    assert result["push_guard"]["branch_ok"] is False
+    assert result["push_guard"]["repo_identity_ok"] is True
+    assert result["push_guard"]["commit_ok"] is False
+
+
+# --------------------------------------------------------------------------------------------
 # loop_driver.LoopDriver: wait_external_review push updates layer-4 baseline (code C1)
 # --------------------------------------------------------------------------------------------
 
@@ -858,6 +1143,181 @@ def test_wait_external_review_push_then_advance_phase_does_not_false_positive(
     assert result["push_guard"] == {"branch_ok": True, "repo_identity_ok": True}
     final_state = lc.load_state(loop_id, project_dir)
     assert final_state.stop_reason != "push_integrity_violation"
+
+
+def test_push_verified_branch_persists_baseline_to_journal(tmp_path: Path) -> None:
+    """code F21: `_push_verified_branch`'s baseline update must be durably journaled, not just
+    an in-memory attribute — a crash immediately after this push must not make the restarted
+    driver's `_reconstruct_push_integrity_baseline()` recover a stale pre-push baseline and
+    misclassify this very push as a `push_integrity_violation`."""
+    loop_id = "abcd1234-issue-1"
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_repo_with_remote(repo, remote)
+    project_dir = str(repo)
+    state = lc._initial_state(
+        loop_id, "issue-loop", "abcd1234", project_dir, "main", "implementation"
+    )
+    state.status = "running"
+    state.branch = "main"
+    lc._write_state(state, project_dir)
+    lock = lc.acquire_lock(loop_id, project_dir, "owner", 3600)
+    assert lock is not None
+
+    (repo / "change.txt").write_text("update\n", encoding="utf-8")
+    _git(["add", "change.txt"], repo)
+    _git(["commit", "-m", "update"], repo)
+    expected_head = _git(["rev-parse", "HEAD"], repo)
+
+    d1 = driver.LoopDriver(loop_id, project_dir, lock.lease_token)
+    d1._push_verified_branch(str(repo), "main")
+    assert d1._remote_head_baseline == expected_head
+
+    # Crash-restart: a fresh LoopDriver instance, as `loop_scheduler.py` would spawn.
+    d2 = driver.LoopDriver(loop_id, project_dir, lock.lease_token)
+    assert d2._remote_head_baseline is None
+    d2._reconstruct_push_integrity_baseline()
+
+    assert d2._remote_head_baseline == expected_head
+
+
+def test_wait_external_review_refreshes_baseline_immediately_after_push(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """code F7 regression: after Maker's fix is pushed, the review baseline must be refreshed
+    *before* waiting, so a review that already existed prior to this push (id <= the old,
+    now-stale baseline) is not mistaken for the "new review" `wait_for_completion` is waiting
+    for."""
+    loop_id = "abcd1234-issue-1"
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_repo_with_remote(repo, remote)
+    project_dir = str(repo)
+    state = lc._initial_state(
+        loop_id, "issue-loop", "abcd1234", project_dir, "main", "implementation"
+    )
+    state.status = "running"
+    state.branch = "main"
+    state.pr_number = 42
+    lc._write_state(state, project_dir)
+    lock = lc.acquire_lock(loop_id, project_dir, "owner", 3600)
+    assert lock is not None
+    token = lock.lease_token
+    state = lc.load_state(loop_id, project_dir)
+
+    (repo / "change.txt").write_text("update\n", encoding="utf-8")
+    _git(["add", "change.txt"], repo)
+    _git(["commit", "-m", "update"], repo)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(driver, "_current_branch", lambda _wt: "main")
+    monkeypatch.setattr(lc, "is_repo_identity_verified", lambda _state: True)
+    monkeypatch.setattr(driver, "_repo_name_with_owner", lambda _wt: "owner/repo")
+    monkeypatch.setattr(
+        prw,
+        "load_pr_review_config",
+        lambda _project: prw.PrReviewConfig(reviewer_allowlist=()),
+    )
+    monkeypatch.setattr(prw, "record_ignored_untrusted_reviews", lambda *a, **k: None)
+
+    recorded_baseline_calls: list[int | None] = []
+
+    def fake_record_baseline(
+        _loop_id: str,
+        _project_dir: str,
+        pr_number: int | None,
+        _client: Any,
+        _lease_token: str,
+        **_kw: Any,
+    ) -> prw.BaselineRecord:
+        recorded_baseline_calls.append(pr_number)
+        state_now = lc.load_state(loop_id, project_dir)
+        state_now.pr_review = {
+            "baseline_review_id": 99,
+            "baseline_recorded_at": lc.now_iso(),
+            "processed_comment_ids": [],
+        }
+        lc._write_state(state_now, project_dir)
+        return prw.BaselineRecord(99, lc.now_iso(), ())
+
+    monkeypatch.setattr(prw, "record_baseline", fake_record_baseline)
+
+    captured_baseline: dict[str, Any] = {}
+
+    def fake_wait_for_completion(
+        _pr: int, baseline: dict[str, Any], _config: Any, _client: Any, **_kw: Any
+    ) -> prw.CompletionOutcome:
+        captured_baseline["baseline"] = baseline
+        return prw.CompletionOutcome(
+            "timeout", completed=False, timed_out=True, infrastructure_failure=False
+        )
+
+    monkeypatch.setattr(prw, "wait_for_completion", fake_wait_for_completion)
+
+    proposal = lc.ProposeResult(
+        action="wait_external_review",
+        action_id="act-000013",
+        state_version=state.state_version,
+        expected_phase="implementation",
+        phase="implementation",
+        iteration=1,
+        context={},
+    )
+    d._run_wait_external_review(proposal, state, {"push_required": True, "verified_branch": "main"})
+
+    assert recorded_baseline_calls == [42]
+    assert captured_baseline["baseline"]["baseline_review_id"] == 99
+
+
+def test_wait_external_review_param_overrides_take_precedence_over_packaged_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """code F12: a `wait_external_review` proposal's own params (`poll_interval_seconds`/
+    `timeout_seconds`, built by `propose()` from the loop definition's phase yaml) must take
+    precedence over the packaged `pr_review` config, not be silently shadowed by it."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.pr_number = 42
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(
+        prw,
+        "load_pr_review_config",
+        lambda _project: prw.PrReviewConfig(
+            reviewer_allowlist=(), poll_interval_seconds=30, timeout_seconds=3600
+        ),
+    )
+    monkeypatch.setattr(driver, "_repo_name_with_owner", lambda _wt: "owner/repo")
+    monkeypatch.setattr(prw, "record_ignored_untrusted_reviews", lambda *a, **k: None)
+    captured: dict[str, Any] = {}
+
+    def fake_wait_for_completion(_pr: Any, _baseline: Any, config: Any, _client: Any, **_kw: Any):
+        captured["poll_interval_seconds"] = config.poll_interval_seconds
+        captured["timeout_seconds"] = config.timeout_seconds
+        return prw.CompletionOutcome(
+            "timeout", completed=False, timed_out=True, infrastructure_failure=False
+        )
+
+    monkeypatch.setattr(prw, "wait_for_completion", fake_wait_for_completion)
+
+    proposal = lc.ProposeResult(
+        action="wait_external_review",
+        action_id="act-000032",
+        state_version=state.state_version,
+        expected_phase="implementation",
+        phase="implementation",
+        iteration=1,
+        context={},
+    )
+    d._run_wait_external_review(
+        proposal, state, {"poll_interval_seconds": 5, "timeout_seconds": 120}
+    )
+
+    assert captured["poll_interval_seconds"] == 5
+    assert captured["timeout_seconds"] == 120
 
 
 # --------------------------------------------------------------------------------------------
@@ -1555,6 +2015,55 @@ def test_run_one_llm_reviewer_treats_nonzero_returncode_as_infrastructure_failur
     assert result.infrastructure_failure is True
 
 
+def test_run_one_llm_reviewer_parses_json_string_result_field(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """code F3: `claude -p --output-format json`'s top-level "result" field is a JSON
+    *string* (the reviewer's raw text reply, per `_reviewer_prompt`'s "Reply with JSON only"
+    instruction), not an already-parsed object. Before the fix this crashed with an uncaught
+    AttributeError instead of building a normal CheckResult."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.worktree_path = project_dir
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    reviewer_payload = {
+        "passed": False,
+        "layer": "llm_review",
+        "signature": None,
+        "findings": [
+            {
+                "severity": "high",
+                "summary": "missing null check",
+                "source": "code-reviewer",
+                "path": "foo.py",
+                "line": 12,
+            }
+        ],
+        "raw_artifact_path": "",
+        "infrastructure_failure": False,
+    }
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(
+        d,
+        "_run_child",
+        lambda *a, **k: subprocess.CompletedProcess(
+            [], 0, json.dumps({"result": json.dumps(reviewer_payload)}), ""
+        ),
+    )
+
+    result = d._run_one_llm_reviewer(state, "act-000041", "code-reviewer")
+
+    assert result.passed is False
+    assert result.infrastructure_failure is False
+    assert len(result.findings) == 1
+    assert result.findings[0].severity == "high"
+    assert result.findings[0].path == "foo.py"
+
+
 def test_classify_one_finding_returns_empty_string_on_nonzero_returncode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2082,3 +2591,138 @@ def test_load_pr_review_config_resolves_local_override_from_worktree_path(
 
     assert config.timeout_seconds == 999
     assert any(entry.app_slug == "chatgpt-codex-connector" for entry in config.reviewer_allowlist)
+
+
+# --------------------------------------------------------------------------------------------
+# loop_driver: _run_one_llm_reviewer's "result" field is a JSON *string*, not an object
+# (code F3) — the happy path is covered by
+# test_run_one_llm_reviewer_parses_json_string_result_field above; this covers the fallback
+# when the parsed value is not a dict.
+# --------------------------------------------------------------------------------------------
+
+
+def test_run_one_llm_reviewer_falls_back_to_infra_failure_when_result_is_not_an_object(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """code F3: if the parsed `result` JSON string decodes to a non-dict value (e.g. a bare
+    list), `_run_one_llm_reviewer` must degrade to an infra-failure CheckResult instead of
+    crashing with an uncaught `AttributeError`/`TypeError` from `check_result_from_dict()`."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.worktree_path = project_dir
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    stdout = json.dumps({"type": "result", "result": json.dumps(["not", "an", "object"])})
+    monkeypatch.setattr(
+        d, "_run_child", lambda *a, **k: subprocess.CompletedProcess([], 0, stdout, "")
+    )
+
+    result = d._run_one_llm_reviewer(state, "act-000031", "code-reviewer")
+
+    assert result.passed is False
+    assert result.infrastructure_failure is True
+
+
+# --------------------------------------------------------------------------------------------
+# loop_driver: wait_external_review's own params override the packaged pr_review config for
+# poll_interval_seconds/timeout_seconds (code F12)
+# --------------------------------------------------------------------------------------------
+
+
+def test_apply_wait_external_review_param_overrides_prefers_params_over_config() -> None:
+    """code F12: a loop definition author's phase-specific poll/timeout override must not be
+    silently shadowed by the generic packaged `pr_review` config."""
+    config = prw.PrReviewConfig(
+        reviewer_allowlist=(), poll_interval_seconds=30, timeout_seconds=600
+    )
+    params = {"poll_interval_seconds": 5, "timeout_seconds": 60}
+
+    overridden = driver._apply_wait_external_review_param_overrides(config, params)
+
+    assert overridden.poll_interval_seconds == 5
+    assert overridden.timeout_seconds == 60
+
+
+def test_apply_wait_external_review_param_overrides_keeps_config_when_params_absent() -> None:
+    config = prw.PrReviewConfig(
+        reviewer_allowlist=(), poll_interval_seconds=30, timeout_seconds=600
+    )
+
+    overridden = driver._apply_wait_external_review_param_overrides(config, {})
+
+    assert overridden.poll_interval_seconds == 30
+    assert overridden.timeout_seconds == 600
+
+
+def test_apply_wait_external_review_param_overrides_ignores_invalid_values() -> None:
+    """A bool (subclass of int) or non-positive override value must not corrupt the config."""
+    config = prw.PrReviewConfig(
+        reviewer_allowlist=(), poll_interval_seconds=30, timeout_seconds=600
+    )
+    params = {"poll_interval_seconds": True, "timeout_seconds": -5}
+
+    overridden = driver._apply_wait_external_review_param_overrides(config, params)
+
+    assert overridden.poll_interval_seconds == 30
+    assert overridden.timeout_seconds == 600
+
+
+# --------------------------------------------------------------------------------------------
+# loop_driver_support.maker_scratch_home: copies only Claude Code auth files (code F14) — the
+# happy-path copy and the "no auth files present" no-op are covered by
+# test_maker_scratch_home_copies_claude_json_and_credentials /
+# test_maker_scratch_home_does_not_copy_git_or_gh_credentials /
+# test_maker_scratch_home_is_noop_when_no_auth_files_present above; this adds the
+# repeated-call refresh case.
+# --------------------------------------------------------------------------------------------
+
+
+def test_maker_scratch_home_refreshes_stale_copy_on_repeated_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """code F14: session info may refresh between calls (e.g. OAuth token refresh); a repeated
+    call must overwrite the previously-copied auth files, not skip because they already exist,
+    to keep the scratch copy's session freshness current."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    loop_id = "abcd1234-issue-1"
+
+    fake_home = tmp_path.parent / "fake_home_refresh"
+    fake_home.mkdir()
+    (fake_home / ".claude.json").write_text('{"oauthAccount": "old"}', encoding="utf-8")
+    monkeypatch.setenv("HOME", str(fake_home))
+
+    lds.maker_scratch_home(project_dir, loop_id)
+    (fake_home / ".claude.json").write_text('{"oauthAccount": "new"}', encoding="utf-8")
+    scratch = Path(lds.maker_scratch_home(project_dir, loop_id))
+
+    assert (scratch / ".claude.json").read_text(encoding="utf-8") == '{"oauthAccount": "new"}'
+
+
+# --------------------------------------------------------------------------------------------
+# loop_driver_support.maker_env: injects the caller's git committer identity (code F15) — the
+# happy path and the "no cwd given" cases are covered by
+# test_maker_env_with_cwd_sets_git_identity_from_repo_config /
+# test_maker_env_without_cwd_omits_git_identity_overrides above; this adds the "repo config
+# genuinely unset" edge case.
+# --------------------------------------------------------------------------------------------
+
+
+def test_maker_env_omits_git_identity_when_repo_config_unset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A repo with no local `user.name`/`user.email` configured, and global/system config
+    suppressed, must not inject empty-string identity env vars."""
+    repo = tmp_path / "no-identity-repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+
+    env = lds.maker_env({"PATH": "/usr/bin"}, cwd=str(repo))
+
+    assert "GIT_AUTHOR_NAME" not in env
+    assert "GIT_AUTHOR_EMAIL" not in env

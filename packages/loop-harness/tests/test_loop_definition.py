@@ -139,6 +139,8 @@ def test_load_and_validate_rejects_denylisted_mechanical_command(tmp_path: Path)
         "pytest -q | git push origin main",
         "$(git push origin main)",
         "`git push origin main`",
+        "FOO=bar git push origin main",
+        "(git push origin main)",
     ],
 )
 def test_load_and_validate_rejects_mechanical_command_denylist_bypass(

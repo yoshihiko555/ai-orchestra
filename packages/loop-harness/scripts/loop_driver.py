@@ -71,6 +71,16 @@ class ClaudeChildFailedError(RuntimeError):
     """
 
 
+class MakerCommitVerificationError(RuntimeError):
+    """Raised when the `commit` advance-exec step finds no new commit or a dirty worktree.
+
+    (code F9): the `commit` token in `on_success.exec` used to be a pure no-op ("Maker already
+    commits; nothing to do"), so it never actually verified the Maker's commit succeeded. A
+    dirty worktree or an unchanged local HEAD means the following `push` step would push stale
+    or incomplete work, which must be treated as a push-guard-style failure instead.
+    """
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point: `loop_driver.py --loop-id <id> --project <path>`."""
     args = _parse_args(argv)
@@ -516,7 +526,9 @@ class LoopDriver:
             claude_bin=self.claude_bin,
         )
         env = lds.maker_env(
-            os.environ, scratch_home=lds.maker_scratch_home(self.project_dir, self.loop_id)
+            os.environ,
+            scratch_home=lds.maker_scratch_home(self.project_dir, self.loop_id),
+            cwd=state.worktree_path,
         )
         try:
             completed = self._run_child(cmd, state.worktree_path, timeout_seconds, env)
@@ -621,7 +633,9 @@ class LoopDriver:
             )
 
         checker_env = lds.maker_env(
-            os.environ, scratch_home=lds.maker_scratch_home(self.project_dir, self.loop_id)
+            os.environ,
+            scratch_home=lds.maker_scratch_home(self.project_dir, self.loop_id),
+            cwd=state.worktree_path,
         )
         # code #7: cap the mechanical layer's per-command timeout by the wall-clock budget
         # remaining, not just the fixed MECHANICAL_CHECK_TIMEOUT_SECONDS cap, so a run_checker
@@ -636,6 +650,7 @@ class LoopDriver:
             heartbeat=heartbeat_and_check,
             artifact_writer=save_mechanical_log,
             env=checker_env,
+            on_start=self._set_current_child,
         )
         mechanical = lc.CheckResult(
             passed=not failures,
@@ -699,7 +714,9 @@ class LoopDriver:
             claude_bin=self.claude_bin,
         )
         env = lds.maker_env(
-            os.environ, scratch_home=lds.maker_scratch_home(self.project_dir, self.loop_id)
+            os.environ,
+            scratch_home=lds.maker_scratch_home(self.project_dir, self.loop_id),
+            cwd=state.worktree_path,
         )
         timeout_seconds = lds.apportioned_timeout(
             self._remaining_wall_clock_seconds(), CHECKER_LLM_TIMEOUT_SECONDS
@@ -718,7 +735,17 @@ class LoopDriver:
             if completed.returncode != 0:
                 raise ClaudeChildFailedError(f"claude -p exited {completed.returncode}")
             data = lds.parse_claude_p_json(completed.stdout)
-            check_result = lc.check_result_from_dict(data.get("result", data))
+            result_field = data.get("result", data)
+            # code F3: `claude -p --output-format json`'s top-level "result" field is the
+            # reviewer's raw text reply (a JSON *string*, per `_reviewer_prompt`'s "Reply with
+            # JSON only" instruction), not an already-parsed object; passing it straight to
+            # `check_result_from_dict()` used to call `.get()` on a `str` and crash with an
+            # uncaught `AttributeError` instead of degrading to an infra-failure CheckResult.
+            if isinstance(result_field, str):
+                result_field = json.loads(result_field)
+            if not isinstance(result_field, dict):
+                raise ValueError("claude -p reviewer result is not a JSON object")
+            check_result = lc.check_result_from_dict(result_field)
         except (
             lds.ClaudePTimeoutError,
             ClaudeChildFailedError,
@@ -769,7 +796,28 @@ class LoopDriver:
                     "push_guard": {"branch_ok": branch_ok, "repo_identity_ok": repo_identity_ok}
                 }
             self._push_verified_branch(state.worktree_path, params["verified_branch"])
+            if pr_number is not None:
+                # code F7: refresh the review baseline right after pushing the Maker's fix, so
+                # `wait_for_completion` below cannot mistake an *existing* (pre-fix) review —
+                # already `<= baseline_review_id` before this push — for the "new review"
+                # signal it is waiting for; without this, a review submitted before this
+                # iteration's push could be misread as covering the just-pushed fix.
+                repo_for_baseline = _repo_name_with_owner(state.worktree_path)
+                prw.record_baseline(
+                    self.loop_id,
+                    self.project_dir,
+                    pr_number,
+                    prw.GhApiClient(repo_for_baseline),
+                    self.lease_token,
+                    action_id=action_id,
+                )
+                state = lc.load_state(self.loop_id, self.project_dir)
         config = prw.load_pr_review_config(self.project_dir)
+        # code F12: a `wait_external_review` proposal's own params (built by `propose()` from
+        # the loop definition's phase yaml) take precedence over the packaged `pr_review`
+        # config for poll_interval_seconds/timeout_seconds, so a loop definition author's
+        # phase-specific override is not silently shadowed by the generic config.
+        config = _apply_wait_external_review_param_overrides(config, params)
         # code #7: cap the external-review poll's own timeout by the wall-clock budget
         # remaining, so a `wait_external_review` started with little budget left cannot poll
         # up to its full configured `pr_review.timeout_seconds` and blow the 2h wall-clock cap.
@@ -874,7 +922,9 @@ class LoopDriver:
             claude_bin=self.claude_bin,
         )
         env = lds.maker_env(
-            os.environ, scratch_home=lds.maker_scratch_home(self.project_dir, self.loop_id)
+            os.environ,
+            scratch_home=lds.maker_scratch_home(self.project_dir, self.loop_id),
+            cwd=state.worktree_path,
         )
         timeout_seconds = lds.apportioned_timeout(
             self._remaining_wall_clock_seconds(), CHECKER_LLM_TIMEOUT_SECONDS
@@ -905,7 +955,11 @@ class LoopDriver:
             timeout=60,
             check=True,
         )
-        self._remote_head_baseline = lds.get_remote_head(worktree_path, branch)
+        # code F21: journal the refreshed baseline (not just an in-memory attribute update) so
+        # a crash immediately after this push cannot make the restarted driver's
+        # `_reconstruct_push_integrity_baseline()` recover a *stale* pre-push baseline and
+        # misclassify this very push as an out-of-band `push_integrity_violation`.
+        self._persist_push_baseline(lds.get_remote_head(worktree_path, branch), branch)
 
     # -- advance_phase (driver-owned push, layer 4 integrity check) --------------------------
 
@@ -952,9 +1006,23 @@ class LoopDriver:
             )
             self._emit_loop_stop_audit(stopped_state, "stop", stop_reason)
             raise DriverTerminated(stop_reason)
-        pr_number = self._execute_advance_exec(
-            list(params.get("exec") or []), state, verified_branch
-        )
+        try:
+            pr_number = self._execute_advance_exec(
+                list(params.get("exec") or []), state, verified_branch
+            )
+        except MakerCommitVerificationError as exc:
+            # code F9: fold a failed commit verification into the same push_guard-shaped
+            # failure path already used above for branch/repo-identity mismatches, so it
+            # short-circuits the same way (no push happens) without needing any change to
+            # `loop_common.complete()`'s handling of an `advance_phase` result.
+            return {
+                "push_guard": {
+                    "branch_ok": False,
+                    "repo_identity_ok": True,
+                    "commit_ok": False,
+                    "reason": str(exc),
+                }
+            }
         result: dict[str, Any] = {
             "push_guard": {"branch_ok": True, "repo_identity_ok": True},
             "next_phase": params.get("next_phase"),
@@ -963,6 +1031,42 @@ class LoopDriver:
             result["pr_number"] = pr_number
         return result
 
+    def _verify_maker_commit(self, worktree_path: str) -> tuple[bool, str]:
+        """Return (ok, reason) verifying the Maker actually committed cleanly (code F9).
+
+        A dirty worktree means the Maker left uncommitted changes behind; an unchanged local
+        HEAD relative to `self._remote_head_baseline` (the remote HEAD captured immediately
+        before this iteration's `_run_maker` ran — equal to local HEAD in the healthy steady
+        state, since the previous iteration's own `push` step already synced them) means the
+        Maker committed nothing this iteration. Either way, proceeding to `push` next would
+        push stale or incomplete work. When no baseline was captured yet (e.g. nothing has ever
+        been pushed for this branch), only the dirty-worktree check applies.
+        """
+        status = subprocess.run(
+            ["git", "-C", worktree_path, "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        if status.returncode != 0:
+            return False, "git status failed"
+        if status.stdout.strip():
+            return False, "worktree is dirty"
+        head = subprocess.run(
+            ["git", "-C", worktree_path, "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        if head.returncode != 0:
+            return False, "git rev-parse HEAD failed"
+        current_head = head.stdout.strip()
+        if self._remote_head_baseline is not None and current_head == self._remote_head_baseline:
+            return False, "no new commit since pre-Maker baseline"
+        return True, ""
+
     def _execute_advance_exec(
         self, steps: list[str], state: lc.LoopState, verified_branch: str
     ) -> int | None:
@@ -970,7 +1074,9 @@ class LoopDriver:
         pr_number = state.pr_number
         for step in steps:
             if step == "commit":
-                continue  # Maker already commits; nothing to do (idempotency contract).
+                ok, reason = self._verify_maker_commit(state.worktree_path)
+                if not ok:
+                    raise MakerCommitVerificationError(reason)
             elif step == "record_baseline":
                 repo = _repo_name_with_owner(state.worktree_path)
                 prw.record_baseline(
@@ -1235,6 +1341,27 @@ def _mechanical_commands(checker: dict[str, Any]) -> list[str]:
     if not isinstance(commands, list):
         return []
     return [str(command) for command in commands if isinstance(command, str) and command]
+
+
+def _apply_wait_external_review_param_overrides(
+    config: prw.PrReviewConfig, params: dict[str, Any]
+) -> prw.PrReviewConfig:
+    """Override `poll_interval_seconds`/`timeout_seconds` from proposal params (code F12).
+
+    `loop_common.propose()` builds these two fields into `wait_external_review`'s params from
+    the loop definition's phase yaml (design 5.x 節): a different, more specific source than
+    the packaged `pr_review` config `prw.load_pr_review_config()` loads. Before this fix, that
+    packaged config always won even when a loop definition author intentionally configured a
+    phase-specific poll/timeout override, silently shadowing it.
+    """
+    overrides: dict[str, int] = {}
+    for field_name in ("poll_interval_seconds", "timeout_seconds"):
+        value = params.get(field_name)
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            overrides[field_name] = value
+    if not overrides:
+        return config
+    return dataclasses.replace(config, **overrides)
 
 
 def _select_reviewers(project_dir: str, state: lc.LoopState) -> list[str]:

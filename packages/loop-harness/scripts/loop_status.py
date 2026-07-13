@@ -10,7 +10,9 @@ module must not deviate from.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
+import os
 import shutil
 import sys
 from dataclasses import dataclass
@@ -77,7 +79,12 @@ def _dispatch(args: argparse.Namespace, project: str) -> int:
 
 
 def _run_purge(args: argparse.Namespace, project: str) -> int:
-    """Resolve retention config, print candidates, and delete unless --dry-run."""
+    """Resolve retention config, print candidates, and delete unless --dry-run.
+
+    Real (non-dry-run) deletion requires confirmation: `--yes` skips the prompt;
+    otherwise the user must type exactly 'yes'. Any other answer, EOF, or a
+    non-interactive stdin aborts the purge with no deletion and a non-zero exit.
+    """
     config = ld.load_config(project)
     purge_after_days = int(
         _nested(config, ("retention", "purge_after_days"), DEFAULT_PURGE_AFTER_DAYS)
@@ -96,10 +103,17 @@ def _run_purge(args: argparse.Namespace, project: str) -> int:
 
 
 def _confirm_purge(count: int) -> bool:
-    """Prompt for confirmation before a real (non-dry-run) deletion; decline if non-interactive."""
+    """Prompt for confirmation before a real (non-dry-run) deletion.
+
+    Declines (returns False) when stdin is non-interactive or the prompt hits EOF
+    (e.g. Ctrl-D), instead of letting `input()`'s `EOFError` propagate uncaught.
+    """
     if not sys.stdin.isatty():
         return False
-    answer = input(f"Purge {count} loop run(s)? Type 'yes' to confirm: ")
+    try:
+        answer = input(f"Purge {count} loop run(s)? Type 'yes' to confirm: ")
+    except EOFError:
+        return False
     return answer.strip().lower() == "yes"
 
 
@@ -107,8 +121,24 @@ def _purge_if_still_safe(loop_id: str, project_dir: str) -> None:
     """Reload state immediately before deletion; skip if it became running/waiting_external.
 
     Guards against the candidate list going stale between computation and deletion
-    (e.g. a loop transitioning back to `running` in that window).
+    (e.g. a loop transitioning back to `running` in that window). Holds the loop's
+    lock-file flock across the reload + purge so a concurrent lease (re)acquisition
+    (`acquire_lock`/`reacquire_lease`, which take this same lock-file flock) cannot
+    race with the purge (TOCTOU). Falls back to the unlocked check-then-purge when
+    the lock file itself is absent (nothing to hold a lock against).
     """
+    lock_file = lc.lock_path(loop_id, project_dir)
+    fd = lc._open_lock_for_update(lock_file)  # noqa: SLF001 - reuse shared lock-open helper
+    if fd is None:
+        _purge_if_state_allows(loop_id, project_dir)
+        return
+    with os.fdopen(fd, "r+", encoding="utf-8") as f:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        _purge_if_state_allows(loop_id, project_dir)
+
+
+def _purge_if_state_allows(loop_id: str, project_dir: str) -> None:
+    """Reload state and purge unless it is currently running/waiting_external."""
     state = _try_load_state(loop_id, project_dir)
     if state is not None and state.status in _NEVER_PURGE_STATUSES:
         return
