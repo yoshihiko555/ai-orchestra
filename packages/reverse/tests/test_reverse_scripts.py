@@ -183,6 +183,34 @@ def test_generate_mermaid_escape_label_doubles_backslashes() -> None:
     assert dangerous_label not in node_line
 
 
+def test_generate_mermaid_escape_label_does_not_neutralize_newlines_or_control_chars() -> None:
+    """Known gap (Issue #135 review): unlike `sanitize_cluster_name`,
+    `escape_label` only escapes backslashes/quotes. A label containing a raw
+    newline or control character is emitted verbatim, so the single-line
+    `N0["..."]` node definition is split across multiple physical lines and
+    the control byte survives unescaped in the output.
+
+    This test pins down the *current* (unmitigated) behavior so a future fix
+    to `escape_label` is a deliberate, visible change rather than a silent
+    regression. Fixing the underlying script is out of scope for this test
+    addition; see PR #214 / Issue #135 review thread."""
+    dangerous_label = "evil\ninjected line\x01ctrl"
+    imports = {"nodes": [{"id": "a.py", "label": dangerous_label}], "edges": []}
+
+    proc = _run(GENERATE_MERMAID, ["-"], stdin=json.dumps(imports))
+
+    assert proc.returncode == 0, proc.stderr
+    # Bug: the raw newline is not escaped/stripped, so it splits the single
+    # node statement into multiple output lines instead of staying on one.
+    lines = proc.stdout.rstrip("\n").splitlines()
+    assert lines[0] == "graph TD"
+    assert len(lines) == 3, lines
+    assert lines[1] == '  N0["evil'
+    assert lines[2] == 'injected line\x01ctrl"]'
+    # The control character is passed through unescaped/unstripped.
+    assert "\x01" in proc.stdout
+
+
 def test_generate_mermaid_sanitize_cluster_name_strips_injection_chars() -> None:
     """A 'module' field must not be able to break out of
     `subgraph "<name>"` via quotes/newlines and inject extra
