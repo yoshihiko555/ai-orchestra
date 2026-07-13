@@ -14,6 +14,7 @@ EV-13（antigravity.model 解決・allowlist 判定）は reverse-coordinator.md
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -132,6 +133,95 @@ def test_generate_mermaid_invalid_json_exits_1(tmp_path: Path) -> None:
 
     assert proc.returncode == 1
     assert proc.stdout == ""
+
+
+# ---------------------------------------------------------------------------
+# EV-06: generate-mermaid.py — escape_label / sanitize_cluster_name (security)
+#
+# These sanitizers are the only guard against Mermaid syntax injection when
+# node labels / module names originate from untrusted source-file content
+# (e.g. a docstring containing quotes, or a module path containing control
+# characters). Each test feeds a syntax-breaking payload and asserts the
+# *sanitized* output structure, not merely that the process exits 0.
+# ---------------------------------------------------------------------------
+
+
+def test_generate_mermaid_escape_label_neutralizes_unescaped_quotes() -> None:
+    """A label containing '"' must not be able to close the `N0["..."]`
+    string early and inject a fabricated edge/node into the graph."""
+    dangerous_label = 'x" ] --> N9["evil'
+    imports = {"nodes": [{"id": "a.py", "label": dangerous_label}], "edges": []}
+
+    proc = _run(GENERATE_MERMAID, ["-"], stdin=json.dumps(imports))
+
+    assert proc.returncode == 0, proc.stderr
+    lines = proc.stdout.rstrip("\n").splitlines()
+    # No injected extra syntax lines: header + exactly one node line.
+    assert lines[0] == "graph TD"
+    assert len(lines) == 2
+    node_line = lines[1]
+    assert re.match(r'^  N0\[".*"\]$', node_line), node_line
+    # Only the two delimiting quotes of N0["..."] may remain unescaped;
+    # every quote coming from the payload must be backslash-escaped.
+    unescaped_quotes = re.findall(r'(?<!\\)"', node_line)
+    assert len(unescaped_quotes) == 2, node_line
+    assert dangerous_label not in node_line
+
+
+def test_generate_mermaid_escape_label_doubles_backslashes() -> None:
+    """A label containing '\\' must be doubled so that, combined with quote
+    escaping, the resulting `\\"` sequence cannot be misread as an escaped
+    quote (which would re-open the string to injection)."""
+    dangerous_label = "C:\\evil\\path"
+    imports = {"nodes": [{"id": "a.py", "label": dangerous_label}], "edges": []}
+
+    proc = _run(GENERATE_MERMAID, ["-"], stdin=json.dumps(imports))
+
+    assert proc.returncode == 0, proc.stderr
+    node_line = proc.stdout.rstrip("\n").splitlines()[1]
+    assert "C:\\\\evil\\\\path" in node_line
+    assert dangerous_label not in node_line
+
+
+def test_generate_mermaid_sanitize_cluster_name_strips_injection_chars() -> None:
+    """A 'module' field must not be able to break out of
+    `subgraph "<name>"` via quotes/newlines and inject extra
+    subgraph/end directives."""
+    dangerous_module = 'evil"\nend\nsubgraph "x'
+    imports = {
+        "nodes": [{"id": "a.py", "label": "a", "module": dangerous_module}],
+        "edges": [],
+    }
+
+    proc = _run(GENERATE_MERMAID, ["-", "--cluster"], stdin=json.dumps(imports))
+
+    assert proc.returncode == 0, proc.stderr
+    lines = proc.stdout.rstrip("\n").splitlines()
+    subgraph_lines = [line for line in lines if line.strip().startswith("subgraph ")]
+    assert len(subgraph_lines) == 1, lines
+    match = re.match(r'^\s*subgraph "([^"]*)"$', subgraph_lines[0])
+    assert match, subgraph_lines[0]
+    sanitized_name = match.group(1)
+    assert re.fullmatch(r"[A-Za-z0-9_\-./ ]+", sanitized_name), sanitized_name
+    assert '"' not in sanitized_name
+    # No injected extra 'end' line beyond the single legitimate cluster close.
+    assert lines.count("  end") == 1
+
+
+def test_generate_mermaid_sanitize_cluster_name_falls_back_when_only_control_chars() -> None:
+    """A module name that is non-empty but sanitizes to an empty string
+    (only control characters) must fall back to 'uncategorized' rather than
+    emitting a malformed `subgraph ""` block."""
+    imports = {
+        "nodes": [{"id": "a.py", "label": "a", "module": "\x00"}],
+        "edges": [],
+    }
+
+    proc = _run(GENERATE_MERMAID, ["-", "--cluster"], stdin=json.dumps(imports))
+
+    assert proc.returncode == 0, proc.stderr
+    assert 'subgraph "uncategorized"' in proc.stdout
+    assert 'subgraph ""' not in proc.stdout
 
 
 # ---------------------------------------------------------------------------
