@@ -2576,15 +2576,66 @@ def test_create_or_reuse_pr_does_not_misattribute_unrelated_pr_after_failed_crea
     with pytest.raises(subprocess.CalledProcessError):
         d1._create_or_reuse_pr(state, "main", action_id)
 
-    # An unrelated PR (#55) appears on the same branch before the same action_id is retried.
+    # An unrelated PR (#55), authored by a third party, appears on the same branch before the
+    # same action_id is retried. The ownership check must reject it despite the lingering intent.
     d2 = driver.LoopDriver(loop_id, project_dir, token)
-    monkeypatch.setattr(
-        driver.subprocess, "run", lambda *_a, **_k: subprocess.CompletedProcess([], 0, "55\n", "")
-    )
+
+    def fake_run_third_party_pr(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if cmd[:3] == ["gh", "pr", "view"] and "author" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, "somebody-else\n", "")
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return subprocess.CompletedProcess(cmd, 0, "55\n", "")
+        if cmd[:3] == ["gh", "api", "user"]:
+            return subprocess.CompletedProcess(cmd, 0, "loop-bot\n", "")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(driver.subprocess, "run", fake_run_third_party_pr)
 
     pr_number, created = d2._create_or_reuse_pr(state, "main", action_id)
 
     assert (pr_number, created) == (55, False)
+
+
+def test_create_or_reuse_pr_heals_created_true_when_confirmed_write_was_lost(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #219 P2-5 follow-up (review High): a crash landing inside the `gh pr create`
+    round-trip (the PR exists remotely, but `_persist_pr_creation_confirmed` never ran) must
+    not permanently downgrade the retry to `created=False` -- that would re-open the review
+    loss P2-5 originally fixed. With the intent present and the PR's author matching the
+    authenticated `gh` user, the retry recovers `created=True` and journals the missing
+    confirmation so later retries take the fast path."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.branch = "main"
+    state.worktree_path = project_dir
+    action_id = "act-heal-001"
+
+    # Simulate the crash by journaling only the intent (what the first attempt persists
+    # before `gh pr create`), never the confirmation.
+    d1 = driver.LoopDriver(loop_id, project_dir, token)
+    d1._persist_pr_creation_intent(action_id, "main")
+
+    d2 = driver.LoopDriver(loop_id, project_dir, token)
+
+    def fake_run_own_pr(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if cmd[:3] == ["gh", "pr", "view"] and "author" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, "loop-bot\n", "")
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return subprocess.CompletedProcess(cmd, 0, "99\n", "")
+        if cmd[:3] == ["gh", "api", "user"]:
+            return subprocess.CompletedProcess(cmd, 0, "loop-bot\n", "")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(driver.subprocess, "run", fake_run_own_pr)
+
+    pr_number, created = d2._create_or_reuse_pr(state, "main", action_id)
+
+    assert (pr_number, created) == (99, True)
+    # The heal journals the missing confirmation, so a further retry no longer needs the
+    # ownership lookup at all.
+    assert d2._load_persisted_pr_creation_confirmed(action_id) == "main"
 
 
 # --------------------------------------------------------------------------------------------
@@ -5611,6 +5662,12 @@ def test_load_route_config_seeds_core_hooks_path_without_orchestra_dir(
     (whose own `hook_common` import is gated on `AI_ORCHESTRA_DIR`) via the package-relative
     layout when that env var is absent, so cron/launchd-respawned workers can still route."""
     monkeypatch.delenv("AI_ORCHESTRA_DIR", raising=False)
+    # Other test files (e.g. agent-routing's own, via tests/module_loader.py) register
+    # `route_config`/`hook_common` in sys.modules at collection time. Evict them so the
+    # `import route_config` below actually exercises sys.path resolution -- otherwise this
+    # regression test silently passes off the cache regardless of the seeding under test.
+    monkeypatch.delitem(sys.modules, "route_config", raising=False)
+    monkeypatch.delitem(sys.modules, "hook_common", raising=False)
 
     route_config = driver._load_route_config()
 

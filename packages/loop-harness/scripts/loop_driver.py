@@ -1064,7 +1064,12 @@ class LoopDriver:
         try:
             route_config = _load_route_config()
             agent_name, _trigger = route_config.detect_agent(issue_text, allowed_agents)
-        except Exception as exc:  # noqa: BLE001 -- best-effort; any failure falls back
+        except Exception as exc:  # noqa: BLE001
+            # Deliberately broad: covers not just the cron/launchd import failure this guard
+            # was added for, but also runtime errors inside `detect_agent()` itself (e.g. a
+            # corrupt cli-tools.yaml). Routing is a best-effort refinement, so any of these
+            # degrades to `maker.fallback_agent` (with the stderr line below as the
+            # observability trail) rather than crashing the dispatch loop.
             print(
                 f"loop_driver: auto Maker routing unavailable, using fallback: {exc}",
                 file=sys.stderr,
@@ -2195,6 +2200,17 @@ class LoopDriver:
             confirmed = self._load_persisted_pr_creation_confirmed(action_id) == branch
             if intended and confirmed:
                 return pr_number, True
+            if intended and self._pr_authored_by_us(state.worktree_path, branch):
+                # Heal the crash window between `gh pr create` returning (the PR now publicly
+                # exists) and `_persist_pr_creation_confirmed`'s journal write below: the intent
+                # alone cannot distinguish "our create succeeded, confirmed unrecorded" from
+                # "our create failed and someone else's PR appeared on this branch", but the PR
+                # author can -- an unrelated third-party PR fails this check and correctly stays
+                # `created=False`, while our own crash-orphaned creation regains P2-5's original
+                # `created=True` guarantee (preserving the zero baseline). Journal the missing
+                # confirmation now so later retries take the fast path above.
+                self._persist_pr_creation_confirmed(action_id, branch)
+                return pr_number, True
             return pr_number, False
         repo = _repo_name_with_owner(state.worktree_path)
         prw.record_baseline(
@@ -2219,7 +2235,14 @@ class LoopDriver:
         )
         # Journal the confirmation immediately after `gh pr create` succeeds (before the
         # `gh pr view` below): only now is it proven that *this* action created the PR, which the
-        # existing-PR reuse path above requires before reporting `created=True`.
+        # existing-PR reuse path above requires before reporting `created=True`. A crash landing
+        # between `gh pr create` returning (including its network round-trip: the PR may exist
+        # remotely before `subprocess.run` comes back) and this journal write leaves the PR
+        # created but unconfirmed; the retry then recovers `created=True` via the
+        # `_pr_authored_by_us` ownership check above rather than off the intent alone, so the
+        # misattribution window this confirmation closes stays closed. If that ownership lookup
+        # itself fails, the retry degrades to `created=False` (re-baseline; the safe direction,
+        # matching the pre-#219 reuse behavior).
         self._persist_pr_creation_confirmed(action_id, branch)
         created = subprocess.run(
             ["gh", "pr", "view", branch, "--json", "number", "-q", ".number"],
@@ -2284,6 +2307,40 @@ class LoopDriver:
         payload = record.get("payload")
         branch = payload.get("branch") if isinstance(payload, dict) else None
         return str(branch) if branch else None
+
+    def _pr_authored_by_us(self, worktree_path: str, branch: str) -> bool:
+        """Return True only when `branch`'s PR author is the authenticated `gh` user.
+
+        Ownership signal for the intent-without-confirmation recovery path in
+        `_create_or_reuse_pr` (Issue #219 P2-5 follow-up). Fail-closed: any lookup failure
+        (network, auth, missing PR) returns False, degrading to `created=False` -- the safe
+        direction, since re-baselining against the PR's real reviews merely repeats the
+        pre-#219 reuse behavior instead of trusting an unverified ownership claim.
+        """
+        try:
+            author = subprocess.run(
+                ["gh", "pr", "view", branch, "--json", "author", "-q", ".author.login"],
+                cwd=worktree_path,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+            me = subprocess.run(
+                ["gh", "api", "user", "--jq", ".login"],
+                cwd=worktree_path,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        if author.returncode != 0 or me.returncode != 0:
+            return False
+        author_login = author.stdout.strip()
+        my_login = me.stdout.strip()
+        return bool(author_login) and bool(my_login) and author_login == my_login
 
     # -- terminal actions -----------------------------------------------------------------------
 
