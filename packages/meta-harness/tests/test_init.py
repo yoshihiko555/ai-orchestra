@@ -30,10 +30,11 @@ class TestInitCreatesLayout:
         assert ledger.is_file()
         assert ledger.read_text(encoding="utf-8") == ""
 
-        frontier = store / "frontier.json"
+        frontier = store / "frontier-claude-harness.json"
         assert frontier.is_file()
         doc = json.loads(frontier.read_text(encoding="utf-8"))
         assert doc["schema_version"] == "1.0"
+        assert doc["target"] == "claude-harness"
         assert doc["ledger_line_count"] == 0
         assert doc["points"] == []
         assert doc["frontier"] == []

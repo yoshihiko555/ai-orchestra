@@ -4,7 +4,7 @@
 docs/design/meta-harness-detailed.md が正本。実装済みのサブコマンド:
 - init       store ディレクトリ一式を冪等に初期化する（Phase 1a）
 - register   overlay を検証し候補を immutable に登録する（Phase 1a）
-- frontier   Pareto frontier を算出する（--rebuild で frontier.json を再生成、Phase 1a）
+- frontier   target 別 Pareto frontier を算出する（--rebuild で cache を再生成、Phase 1a）
 - status     候補群の畳み込み状態を表示する（Phase 1a）
 - purge      古い世代・retired 候補を削除する（frontier/promoted/予約中は保護、Phase 1a）
 - evaluate   CLI capability gate → worktree ライフサイクル → oracle 判定を実行する（Phase 1b）
@@ -37,6 +37,7 @@ import loop_cli  # noqa: E402
 import meta_harness_common as mh  # noqa: E402
 import promoter as prm  # noqa: E402
 import propose_cli  # noqa: E402
+import skill_targets  # noqa: E402
 
 EXIT_OK = 0
 EXIT_RUNTIME_ERROR = 1
@@ -106,6 +107,40 @@ def _now_iso() -> str:
     return mh.now_iso()
 
 
+def _skill_registration_authority(
+    *,
+    project_dir: Path,
+    main_root: Path,
+    config: dict,
+    target: str,
+    source_commit: str,
+    overlay_dir: Path,
+    parent_manifest: dict | None,
+) -> tuple[skill_targets.SkillTargetResolution, Path | None, list[str]]:
+    inherited_overlay: Path | None = None
+    with skill_targets.materialized_baseline(project_dir, source_commit) as baseline:
+        if parent_manifest is not None:
+            ev.apply_registered_candidate_overlay(
+                main_root=main_root,
+                config=config,
+                manifest=parent_manifest,
+                worktree_dir=baseline,
+                schema_dir=_SCHEMA_DIR,
+            )
+            inherited_overlay = (
+                mh.candidates_dir(main_root, config) / str(parent_manifest["cand_id"]) / "overlay"
+            )
+        resolution = skill_targets.allowed_overlay_paths(baseline, target, config)
+        violations = mh.validate_overlay(
+            overlay_dir,
+            config,
+            target=target,
+            baseline_root=baseline,
+            inherited_overlay_dir=inherited_overlay,
+        )
+    return resolution, inherited_overlay, violations
+
+
 def cmd_register(
     project: str,
     overlay: str,
@@ -121,9 +156,66 @@ def cmd_register(
     if ctx is None:
         return EXIT_VALIDATION_ERROR
     main_root, config = ctx
+    project_dir = Path(project).resolve()
     overlay_dir = Path(overlay).resolve()
 
-    violations = mh.validate_overlay(overlay_dir, config)
+    parent_manifest: dict | None = None
+    try:
+        mh.validate_target(target)
+        ev.validate_target_suite(_PACKAGE_DIR, _SCHEMA_DIR, target)
+        if parent is not None:
+            parent_manifest = mh.read_candidate_manifest(main_root, config, parent)
+            if parent_manifest is None:
+                raise ValueError(f"parent candidate not found: {parent}")
+            if parent_manifest.get("target") != target:
+                raise ValueError(
+                    f"parent target mismatch: expected {target}, got {parent_manifest.get('target')}"
+                )
+    except (OSError, ValueError, ev.yaml.YAMLError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_VALIDATION_ERROR
+
+    if _git_is_dirty(project_dir):
+        print(
+            "warning: working tree is dirty; uncommitted changes are not part of the candidate",
+            file=sys.stderr,
+        )
+    inherited_source = (
+        str(parent_manifest.get("source_commit") or "")
+        if target.startswith("skill:") and parent_manifest is not None
+        else None
+    )
+    resolved_source_commit = source_commit or inherited_source or mh.git_head(project_dir)
+    if resolved_source_commit is None:
+        print("error: could not resolve source_commit (git rev-parse HEAD failed)", file=sys.stderr)
+        return EXIT_VALIDATION_ERROR
+    if inherited_source is not None and resolved_source_commit != inherited_source:
+        print(
+            "error: skill candidate source_commit must match its parent source_commit",
+            file=sys.stderr,
+        )
+        return EXIT_VALIDATION_ERROR
+
+    target_resolution: skill_targets.SkillTargetResolution | None = None
+    inherited_overlay: Path | None = None
+    try:
+        if target.startswith("skill:"):
+            target_resolution, inherited_overlay, violations = _skill_registration_authority(
+                project_dir=project_dir,
+                main_root=main_root,
+                config=config,
+                target=target,
+                source_commit=resolved_source_commit,
+                overlay_dir=overlay_dir,
+                parent_manifest=parent_manifest,
+            )
+        else:
+            violations = mh.validate_overlay(
+                overlay_dir, config, target=target, baseline_root=project_dir
+            )
+    except (OSError, ValueError, ev.EvaluatorStageError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_VALIDATION_ERROR
     config_patch_path = overlay_dir / mh.CONFIG_PATCH_FILENAME
     if config_patch_path.is_file():
         try:
@@ -135,17 +227,6 @@ def cmd_register(
     if violations:
         for v in violations:
             print(f"error: {v}", file=sys.stderr)
-        return EXIT_VALIDATION_ERROR
-
-    project_dir = Path(project).resolve()
-    if _git_is_dirty(project_dir):
-        print(
-            "warning: working tree is dirty; uncommitted changes are not part of the candidate",
-            file=sys.stderr,
-        )
-    resolved_source_commit = source_commit or mh.git_head(project_dir)
-    if resolved_source_commit is None:
-        print("error: could not resolve source_commit (git rev-parse HEAD failed)", file=sys.stderr)
         return EXIT_VALIDATION_ERROR
 
     slug_value = slug or mh.slugify(description) or "manual"
@@ -167,6 +248,7 @@ def cmd_register(
         config_hash=config_hash,
         overlay_files=overlay_files,
         description=description,
+        target_closure_hash=(target_resolution.closure_hash if target_resolution else None),
     )
 
     manifest_schema = mh.load_schema(_SCHEMA_DIR, "candidate.manifest.schema.json")
@@ -208,11 +290,20 @@ def cmd_register(
                 manifest=manifest,
                 overlay_dir=overlay_dir,
                 overlay_files=overlay_files,
+                target=target,
+                baseline_root=project_dir,
+                inherited_overlay_dir=inherited_overlay,
+                skill_allowed_paths=(
+                    target_resolution.private_paths if target_resolution else None
+                ),
             )
             mh.append_ledger_event(main_root, config, event)
     except mh.LockAcquisitionError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_LOCK_CONFLICT
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_VALIDATION_ERROR
     except FileExistsError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_RUNTIME_ERROR
@@ -234,9 +325,10 @@ def _eligible_and_ineligible(points: list[dict]) -> tuple[list[dict], list[str]]
     return eligible, ineligible_ids
 
 
-def _compute_frontier(main_root: Path, config: dict) -> dict:
+def _compute_frontier(main_root: Path, config: dict, target: str = mh.DEFAULT_TARGET) -> dict:
+    target = mh.validate_target(target)
     events = mh.read_ledger_events(main_root, config)
-    points = mh.aggregate_run_points(events, config)
+    points = mh.aggregate_run_points(events, config, target)
     eligible, ineligible_ids = _eligible_and_ineligible(points)
     frontier_ids, dominated_ids = mh.compute_pareto_frontier(eligible)
     dominated_ids = sorted(set(dominated_ids) | set(ineligible_ids))
@@ -246,10 +338,11 @@ def _compute_frontier(main_root: Path, config: dict) -> dict:
     # run_completed」（mh.latest_non_holdout_run_completed）を hash メタデータにも使う。
     # これを揃えないと、points は non-holdout の hash ペアで計算されているのに
     # suite_hash/evaluator_hash だけ holdout（または末尾イベント）のものになる不整合が生じる。
-    latest = mh.latest_non_holdout_run_completed(events)
+    latest = mh.latest_non_holdout_run_completed(events, target)
     zero_hash = "0" * 64
     return {
         "schema_version": "1.0",
+        "target": target,
         "generated_at": mh.now_iso(),
         "ledger_line_count": len(events),
         "suite_hash": (latest or {}).get("suite_hash", zero_hash),
@@ -257,7 +350,7 @@ def _compute_frontier(main_root: Path, config: dict) -> dict:
         "cost_axis": (config.get("frontier") or {}).get("cost_axis", "total_tokens"),
         # 【判断】points の各要素は内部計算用に `eligible` フラグを持つ（_eligible_and_ineligible
         # の判定用）が、frontier.schema.json（Sec1-5）の points item は
-        # additionalProperties: false かつ `eligible` を含まない。永続化する frontier.json が
+        # additionalProperties: false かつ `eligible` を含まない。永続化する target 別 cache が
         # schema に適合するよう、書き出し直前に内部専用フィールドを除去する。
         "points": [{k: v for k, v in p.items() if k != "eligible"} for p in points],
         "frontier": sorted(frontier_ids),
@@ -265,12 +358,22 @@ def _compute_frontier(main_root: Path, config: dict) -> dict:
     }
 
 
-def cmd_frontier(project: str, rebuild: bool, as_json: bool) -> int:
+def cmd_frontier(
+    project: str,
+    rebuild: bool,
+    as_json: bool,
+    target: str = mh.DEFAULT_TARGET,
+) -> int:
     """Pareto frontier を算出する（Sec6 `frontier`）。"""
     ctx = _resolve_context(project)
     if ctx is None:
         return EXIT_VALIDATION_ERROR
     main_root, config = ctx
+    try:
+        mh.validate_target(target)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_VALIDATION_ERROR
 
     if rebuild:
         # 【判断】PR #162 レビュー指摘 (FIX P2): frontier 計算（ledger 読み込み込み）を
@@ -282,22 +385,23 @@ def cmd_frontier(project: str, rebuild: bool, as_json: bool) -> int:
         # 内で行う。
         try:
             with mh.store_lock(main_root, config):
-                frontier_doc = _compute_frontier(main_root, config)
+                frontier_doc = _compute_frontier(main_root, config, target)
                 event = {
                     "event": "frontier_updated",
                     "ts": mh.now_iso(),
                     "schema_version": "1.0",
+                    "target": target,
                     "frontier": frontier_doc["frontier"],
                     "dominated": frontier_doc["dominated"],
                 }
                 mh.append_ledger_event(main_root, config, event)
                 frontier_doc["ledger_line_count"] = len(mh.read_ledger_events(main_root, config))
-                mh.write_frontier_cache(main_root, config, frontier_doc)
+                mh.write_frontier_cache(main_root, config, frontier_doc, target)
         except mh.LockAcquisitionError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return EXIT_LOCK_CONFLICT
     else:
-        frontier_doc = _compute_frontier(main_root, config)
+        frontier_doc = _compute_frontier(main_root, config, target)
 
     _emit(
         frontier_doc,
@@ -310,25 +414,46 @@ def cmd_frontier(project: str, rebuild: bool, as_json: bool) -> int:
     return EXIT_OK
 
 
-def _staleness_warning(main_root: Path, config: dict, current_line_count: int) -> str | None:
-    path = mh.frontier_path(main_root, config)
-    if not path.is_file():
+def _staleness_warning(
+    main_root: Path, config: dict, current_line_count: int, target: str
+) -> str | None:
+    try:
+        cached = mh.read_frontier_cache(main_root, config, target)
+    except FileNotFoundError:
         return None
-    cached = json.loads(path.read_text(encoding="utf-8"))
     if cached.get("ledger_line_count") != current_line_count:
-        return "frontier.json may be stale; run `orchex meta frontier --rebuild` to refresh"
+        return (
+            f"frontier cache for {target} may be stale; run "
+            f"`orchex meta frontier --target {target} --rebuild` to refresh"
+        )
     return None
 
 
-def cmd_status(project: str, candidate: str | None, as_json: bool) -> int:
+def cmd_status(
+    project: str,
+    candidate: str | None,
+    as_json: bool,
+    target: str = mh.DEFAULT_TARGET,
+) -> int:
     """候補群（または指定候補）の畳み込み状態を表示する（Sec6 `status`）。"""
     ctx = _resolve_context(project)
     if ctx is None:
         return EXIT_VALIDATION_ERROR
     main_root, config = ctx
+    try:
+        mh.validate_target(target)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_VALIDATION_ERROR
     events = mh.read_ledger_events(main_root, config)
     states = mh.fold_candidate_states(events)
-    warning = _staleness_warning(main_root, config, len(events))
+    target_ids = {
+        str(event["cand_id"])
+        for event in events
+        if event.get("event") == "candidate_registered" and event.get("target") == target
+    }
+    states = {cand_id: state for cand_id, state in states.items() if cand_id in target_ids}
+    warning = _staleness_warning(main_root, config, len(events), target)
 
     if candidate is not None:
         state = states.get(candidate)
@@ -357,7 +482,14 @@ def _purge_eligible_ids(main_root: Path, config: dict, keep_generations: int) ->
     """
     events = mh.read_ledger_events(main_root, config)
     states = mh.fold_candidate_states(events)
-    frontier_ids = set(_compute_frontier(main_root, config)["frontier"])
+    targets = {
+        str(event["target"])
+        for event in events
+        if event.get("event") == "candidate_registered" and event.get("target")
+    }
+    frontier_ids: set[str] = set()
+    for target in sorted(targets or {mh.DEFAULT_TARGET}):
+        frontier_ids.update(_compute_frontier(main_root, config, target)["frontier"])
     all_ids = mh.list_candidate_ids(main_root, config)
 
     protected = set(frontier_ids)
@@ -434,6 +566,9 @@ def cmd_purge(project: str, keep_generations: int | None, as_json: bool) -> int:
     except mh.LockAcquisitionError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_LOCK_CONFLICT
+    except (OSError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_VALIDATION_ERROR
 
     _emit(
         {"status": "ok", "purged": to_delete, "count": len(to_delete)},
@@ -639,10 +774,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_frontier = sub.add_parser("frontier", help="Pareto frontier を算出")
     _add_common_args(p_frontier)
-    p_frontier.add_argument("--rebuild", action="store_true", help="frontier.json を再生成")
+    p_frontier.add_argument(
+        "--target", default=mh.DEFAULT_TARGET, help="対象（claude-harness | skill:<name>）"
+    )
+    p_frontier.add_argument(
+        "--rebuild", action="store_true", help="target 別 frontier cache を再生成"
+    )
 
     p_status = sub.add_parser("status", help="候補群の状態表示")
     _add_common_args(p_status)
+    p_status.add_argument(
+        "--target", default=mh.DEFAULT_TARGET, help="対象（claude-harness | skill:<name>）"
+    )
     p_status.add_argument("--candidate", default=None, help="対象候補の cand_id")
 
     p_purge = sub.add_parser("purge", help="古い世代・retired 候補を削除")
@@ -722,9 +865,9 @@ def _dispatch(args: argparse.Namespace) -> int:
             args.json,
         )
     if args.command == "frontier":
-        return cmd_frontier(args.project, args.rebuild, args.json)
+        return cmd_frontier(args.project, args.rebuild, args.json, target=args.target)
     if args.command == "status":
-        return cmd_status(args.project, args.candidate, args.json)
+        return cmd_status(args.project, args.candidate, args.json, target=args.target)
     if args.command == "purge":
         return cmd_purge(args.project, args.keep_generations, args.json)
     return EXIT_VALIDATION_ERROR

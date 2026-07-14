@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -46,14 +47,25 @@ def cmd_check_trigger(project: str, skill: str) -> int:
     threshold = int((config.get("trigger") or {}).get("lessons_threshold") or 20)
     count = se.lessons_count(project, skill, config)
     triggered = count >= threshold
+    payload = {
+        "skill": skill,
+        "lessons_count": count,
+        "threshold": threshold,
+        "triggered": triggered,
+    }
+    if triggered:
+        slug = se._slug(skill)
+        if re.fullmatch(r"[a-z0-9-]+", slug):
+            payload["suggested_command"] = (
+                f"orchex meta propose --target skill:{slug} --project {project}"
+            )
+        else:
+            payload["suggested_command_skipped_reason"] = (
+                "skill name cannot be represented as a meta-harness target slug"
+            )
     print(
         json.dumps(
-            {
-                "skill": skill,
-                "lessons_count": count,
-                "threshold": threshold,
-                "triggered": triggered,
-            },
+            payload,
             ensure_ascii=False,
         )
     )

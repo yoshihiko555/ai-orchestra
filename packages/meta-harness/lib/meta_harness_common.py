@@ -40,6 +40,8 @@ import yaml
 PACKAGE_NAME = "meta-harness"
 CONFIG_FILENAME = "meta-harness.yaml"
 PACKAGE_DIR = Path(__file__).resolve().parent.parent
+TARGET_PATTERN = re.compile(r"^(?:claude-harness|skill:[a-z0-9-]+)$")
+DEFAULT_TARGET = "claude-harness"
 
 # config が読めない場合のフォールバック既定値（正本は config/meta-harness.yaml、Sec5）。
 DEFAULTS: dict[str, Any] = {
@@ -58,6 +60,7 @@ DEFAULTS: dict[str, Any] = {
             "Write",
             "Bash(git *)",
             "Bash(python *)",
+            "Bash(python3 *)",
             "Bash(pytest *)",
         ],
         "model": None,
@@ -92,7 +95,11 @@ DEFAULTS: dict[str, Any] = {
             },
         },
     },
-    "scenario_run": {"max_turns_default": 30, "max_budget_usd_default": 3.0},
+    "scenario_run": {
+        "max_turns_default": 30,
+        "max_budget_usd_default": 3.0,
+        "max_output_tokens_default": 4096,
+    },
     "judge": {"tool": "claude-bare", "model": None, "effort": "high", "max_turns": 4},
     "scoring": {
         "critical_weight": 70,
@@ -101,6 +108,7 @@ DEFAULTS: dict[str, Any] = {
         "penalty_missing_report": 6,
     },
     "frontier": {"cost_axis": "total_tokens"},
+    "regression": {"enabled": False},
     "overlay": {
         "allowed_prefixes": ["facets/"],
         "denied_prefixes": [
@@ -320,9 +328,10 @@ def build_candidate_manifest(
     overlay_files: list[str],
     description: str,
     created_by: str = "human",
+    target_closure_hash: str | None = None,
 ) -> dict[str, Any]:
     """candidate manifest の共通組み立て処理。"""
-    return {
+    manifest = {
         "schema_version": "1.0",
         "cand_id": cand_id,
         "parent_id": parent_id,
@@ -336,6 +345,9 @@ def build_candidate_manifest(
         "overlay_files": overlay_files,
         "description": description,
     }
+    if target_closure_hash is not None:
+        manifest["target_closure_hash"] = target_closure_hash
+    return manifest
 
 
 # ---------------------------------------------------------------------------
@@ -419,7 +431,23 @@ def ledger_path(main_root: Path, config: dict) -> Path:
     return store_dir(main_root, config) / "ledger.jsonl"
 
 
-def frontier_path(main_root: Path, config: dict) -> Path:
+def validate_target(target: str) -> str:
+    """Return a validated target or fail closed."""
+    if not TARGET_PATTERN.fullmatch(target):
+        raise ValueError(f"unknown target: {target!r}")
+    return target
+
+
+def target_slug(target: str) -> str:
+    """Map a target to its deterministic cache filename component."""
+    return validate_target(target).replace(":", "-")
+
+
+def frontier_path(main_root: Path, config: dict, target: str = DEFAULT_TARGET) -> Path:
+    return store_dir(main_root, config) / f"frontier-{target_slug(target)}.json"
+
+
+def legacy_frontier_path(main_root: Path, config: dict) -> Path:
     return store_dir(main_root, config) / "frontier.json"
 
 
@@ -445,15 +473,30 @@ def init_store(main_root: Path, config: dict) -> None:
     if not ledger.exists():
         ledger.touch()
 
-    if not frontier_path(main_root, config).exists():
-        write_frontier_cache(main_root, config, _empty_frontier_doc(config))
+    if not frontier_path(main_root, config, DEFAULT_TARGET).exists():
+        legacy = legacy_frontier_path(main_root, config)
+        if legacy.is_file():
+            write_frontier_cache(
+                main_root,
+                config,
+                read_frontier_cache(main_root, config, DEFAULT_TARGET),
+                DEFAULT_TARGET,
+            )
+        else:
+            write_frontier_cache(
+                main_root,
+                config,
+                _empty_frontier_doc(config, DEFAULT_TARGET),
+                DEFAULT_TARGET,
+            )
 
 
-def _empty_frontier_doc(config: dict) -> dict:
+def _empty_frontier_doc(config: dict, target: str = DEFAULT_TARGET) -> dict:
     """runs が 1 件も無い状態の frontier.json スタブ（Sec1-5）。"""
     zero_hash = "0" * 64
     return {
         "schema_version": "1.0",
+        "target": validate_target(target),
         "generated_at": now_iso(),
         "ledger_line_count": 0,
         "suite_hash": zero_hash,
@@ -540,6 +583,10 @@ def register_candidate(
     manifest: dict,
     overlay_dir: Path,
     overlay_files: list[str],
+    target: str = DEFAULT_TARGET,
+    baseline_root: Path | None = None,
+    inherited_overlay_dir: Path | None = None,
+    skill_allowed_paths: frozenset[str] | None = None,
 ) -> Path:
     """candidates/<cand_id>/ を immutable に配置する。
 
@@ -552,6 +599,19 @@ def register_candidate(
     staging_dir.mkdir(parents=True)
     try:
         _copy_overlay_tree(overlay_dir, staging_dir / "overlay")
+        copied_overlay = staging_dir / "overlay"
+        copied_errors = validate_overlay(
+            copied_overlay,
+            config,
+            target=target,
+            baseline_root=baseline_root,
+            inherited_overlay_dir=inherited_overlay_dir,
+            skill_allowed_paths=skill_allowed_paths,
+        )
+        if copied_errors:
+            raise ValueError(f"copied overlay validation failed: {'; '.join(copied_errors)}")
+        if list_overlay_files(copied_overlay) != sorted(overlay_files):
+            raise ValueError("copied overlay files differ from validated overlay manifest")
         _write_json(staging_dir / "manifest.json", manifest)
         _write_json(
             staging_dir / "overlay-manifest.json",
@@ -673,9 +733,45 @@ def _read_ledger_lines(path: Path) -> list[str]:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-def write_frontier_cache(main_root: Path, config: dict, frontier_doc: dict) -> None:
-    """frontier.json を atomic write する（tmp file + os.replace、Sec2-3）。"""
-    path = frontier_path(main_root, config)
+def read_frontier_cache(
+    main_root: Path, config: dict, target: str = DEFAULT_TARGET
+) -> dict[str, Any]:
+    """Read a target cache, with legacy fallback for claude-harness only."""
+    target = validate_target(target)
+    path = frontier_path(main_root, config, target)
+    if path.is_file():
+        source = path
+    elif target == DEFAULT_TARGET and legacy_frontier_path(main_root, config).is_file():
+        source = legacy_frontier_path(main_root, config)
+    else:
+        raise FileNotFoundError(f"frontier cache is missing: {path}")
+    try:
+        doc = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"frontier cache is invalid: {source}") from exc
+    if not isinstance(doc, dict):
+        raise ValueError(f"frontier cache must be an object: {source}")
+    normalized = {**doc, "target": doc.get("target", DEFAULT_TARGET)}
+    if normalized["target"] != target:
+        raise ValueError(
+            f"frontier cache target mismatch: expected {target!r}, got {normalized['target']!r}"
+        )
+    return normalized
+
+
+def write_frontier_cache(
+    main_root: Path,
+    config: dict,
+    frontier_doc: dict,
+    target: str = DEFAULT_TARGET,
+) -> None:
+    """Write one target frontier cache atomically."""
+    target = validate_target(target)
+    doc_target = frontier_doc.get("target", target)
+    if doc_target != target:
+        raise ValueError(f"frontier cache target mismatch: expected {target!r}, got {doc_target!r}")
+    frontier_doc = {**frontier_doc, "target": target}
+    path = frontier_path(main_root, config, target)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_name(f".{path.name}.tmp-{os.getpid()}")
     tmp_path.write_text(
@@ -752,7 +848,9 @@ def quality_score(critical_pass_rate: float, penalty: float, config: dict) -> fl
     )
 
 
-def latest_non_holdout_run_completed(events: list[dict]) -> dict | None:
+def latest_non_holdout_run_completed(
+    events: list[dict], target: str = DEFAULT_TARGET
+) -> dict | None:
     """ledger イベント列から最新の non-holdout `run_completed` イベントを返す（Sec3-5 スコープ選定）。
 
     frontier 比較スコープの (suite_hash, evaluator_hash) 選定は、holdout run により
@@ -760,8 +858,13 @@ def latest_non_holdout_run_completed(events: list[dict]) -> dict | None:
     呼び出し側（`aggregate_run_points` と `meta_harness.py` の hash メタデータ算出）は
     同じ選定結果を使い、points と表示メタデータの不整合を避けること。
     """
+    target = validate_target(target)
     for event in reversed(events):
-        if event.get("event") == "run_completed" and not event.get("holdout"):
+        if (
+            event.get("event") == "run_completed"
+            and event.get("target") == target
+            and not event.get("holdout")
+        ):
             return event
     return None
 
@@ -792,7 +895,9 @@ def _validate_cost_axis(cost_axis: str) -> None:
         )
 
 
-def aggregate_run_points(events: list[dict], config: dict) -> list[dict]:
+def aggregate_run_points(
+    events: list[dict], config: dict, target: str = DEFAULT_TARGET
+) -> list[dict]:
     """run_completed イベントを cand_id ごとに集計し frontier 用の point を作る（Sec3-4, Sec3-5）。
 
     比較スコープは ledger 内で最新の **non-holdout** `run_completed` が観測された
@@ -830,10 +935,13 @@ def aggregate_run_points(events: list[dict], config: dict) -> list[dict]:
     """
     cost_axis = (config.get("frontier") or {}).get("cost_axis", DEFAULTS["frontier"]["cost_axis"])
     _validate_cost_axis(cost_axis)
-    run_events = [e for e in events if e.get("event") == "run_completed"]
+    target = validate_target(target)
+    run_events = [
+        e for e in events if e.get("event") == "run_completed" and e.get("target") == target
+    ]
     if not run_events:
         return []
-    latest_non_holdout = latest_non_holdout_run_completed(events)
+    latest_non_holdout = latest_non_holdout_run_completed(events, target)
     if latest_non_holdout is None:
         return []
     latest_pair = (latest_non_holdout.get("suite_hash"), latest_non_holdout.get("evaluator_hash"))
@@ -1170,7 +1278,15 @@ def _validate_object(
 # ---------------------------------------------------------------------------
 
 
-def validate_overlay(overlay_dir: Path, config: dict) -> list[str]:
+def validate_overlay(
+    overlay_dir: Path,
+    config: dict,
+    *,
+    target: str,
+    baseline_root: Path | None = None,
+    inherited_overlay_dir: Path | None = None,
+    skill_allowed_paths: frozenset[str] | None = None,
+) -> list[str]:
     """overlay ディレクトリを安全制約（Sec1-7）に照らして検証する。
 
     `overlay/config-patch.json`（存在する場合のみ）は overlay コンテンツではなく
@@ -1179,6 +1295,10 @@ def validate_overlay(overlay_dir: Path, config: dict) -> list[str]:
     """
     if not overlay_dir.is_dir():
         return [f"overlay directory does not exist: {overlay_dir}"]
+    try:
+        validate_target(target)
+    except ValueError as exc:
+        return [str(exc)]
     overlay_cfg = config.get("overlay") or {}
     allowed_prefixes = tuple(
         overlay_cfg.get("allowed_prefixes") or DEFAULTS["overlay"]["allowed_prefixes"]
@@ -1187,7 +1307,28 @@ def validate_overlay(overlay_dir: Path, config: dict) -> list[str]:
         overlay_cfg.get("denied_prefixes") or DEFAULTS["overlay"]["denied_prefixes"]
     )
 
+    if target.startswith("skill:"):
+        if skill_allowed_paths is None:
+            if baseline_root is None:
+                return ["baseline_root is required for skill target overlay validation"]
+            try:
+                import skill_targets
+
+                resolution = skill_targets.allowed_overlay_paths(baseline_root, target, config)
+                skill_allowed_paths = resolution.private_paths
+            except (OSError, ValueError) as exc:
+                return [str(exc)]
+
+    inherited_files: dict[str, Path] = {}
+    if inherited_overlay_dir is not None:
+        if not inherited_overlay_dir.is_dir():
+            return [f"inherited overlay directory does not exist: {inherited_overlay_dir}"]
+        inherited_files = {
+            rel: inherited_overlay_dir / rel for rel in list_overlay_files(inherited_overlay_dir)
+        }
+
     errors: list[str] = []
+    current_files: set[str] = set()
     for entry in sorted(overlay_dir.rglob("*")):
         rel = entry.relative_to(overlay_dir).as_posix()
         if entry.is_symlink():
@@ -1197,7 +1338,30 @@ def validate_overlay(overlay_dir: Path, config: dict) -> list[str]:
             continue
         if entry.is_dir():
             continue
+        current_files.add(rel)
         errors.extend(_validate_overlay_file(entry, overlay_dir, allowed_prefixes, denied_prefixes))
+        inherited = inherited_files.get(rel)
+        # `inherited_overlay_dir` is an internal trust input: callers may pass only an
+        # immutable registered-candidate overlay whose manifest/hash was revalidated.
+        # Equality bypasses the current generation's category gate only for that exact
+        # inherited content; a changed byte is checked against `skill_allowed_paths`.
+        unchanged_inherited = (
+            inherited is not None
+            and inherited.is_file()
+            and not inherited.is_symlink()
+            and entry.read_bytes() == inherited.read_bytes()
+        )
+        if (
+            skill_allowed_paths is not None
+            and not unchanged_inherited
+            and rel not in skill_allowed_paths
+        ):
+            errors.append(f"{rel}: outside private facet closure for {target}")
+    missing_inherited = sorted(set(inherited_files) - current_files)
+    if missing_inherited:
+        errors.append(
+            "candidate overlay is missing inherited files: " + ", ".join(missing_inherited[:5])
+        )
     return errors
 
 

@@ -34,6 +34,37 @@ def test_check_trigger_not_triggered(tmp_path, capsys) -> None:
     rc = cli.main(["--project", p, "check-trigger", "s"])
     out = json.loads(capsys.readouterr().out)
     assert rc == 1 and out["triggered"] is False
+    assert "suggested_command" not in out
+
+
+def test_check_trigger_suggests_meta_harness_for_valid_slug(tmp_path, capsys) -> None:
+    p = str(tmp_path)
+    for index in range(20):
+        se.append_lesson(p, "issue-create", f"lesson-{index}")
+
+    rc = cli.main(["--project", p, "check-trigger", "issue-create"])
+
+    out = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert out["triggered"] is True
+    assert out["suggested_command"] == (
+        f"orchex meta propose --target skill:issue-create --project {tmp_path}"
+    )
+    assert "suggested_command_skipped_reason" not in out
+
+
+def test_check_trigger_skips_command_for_invalid_target_slug(tmp_path, capsys) -> None:
+    p = str(tmp_path)
+    for index in range(20):
+        se.append_lesson(p, "Issue_Create", f"lesson-{index}")
+
+    rc = cli.main(["--project", p, "check-trigger", "Issue_Create"])
+
+    out = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert out["triggered"] is True
+    assert "suggested_command" not in out
+    assert out["suggested_command_skipped_reason"]
 
 
 def test_provenance_unknown(tmp_path, capsys, monkeypatch) -> None:

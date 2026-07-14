@@ -7,7 +7,10 @@ import gzip
 import json
 import os
 import time
+from contextlib import contextmanager
 from pathlib import Path
+
+import pytest
 
 from tests.module_loader import load_module
 
@@ -517,6 +520,119 @@ def test_propose_rejects_empty_citable_run_set_before_backend(
     assert exit_code == 2
     assert mh.list_candidate_ids(git_project, mh.DEFAULTS) == []
     assert "no citable non-holdout runs for target: claude-harness" in capsys.readouterr().err
+
+
+def test_register_proposed_candidate_converts_parent_overlay_stage_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    parent_manifest = {
+        "cand_id": _PARENT_ID,
+        "target": "skill:issue-create",
+        "source_commit": "a" * 40,
+    }
+    baseline = tmp_path / "baseline"
+    baseline.mkdir()
+
+    @contextmanager
+    def materialized_baseline(*_args, **_kwargs):
+        yield baseline
+
+    def fail_overlay(*_args, **_kwargs):
+        raise propose_cli.ev.EvaluatorStageError(
+            "overlay_apply", "overlay_error", "forced parent overlay failure"
+        )
+
+    monkeypatch.setattr(propose_cli, "_inherit_parent_overlay", lambda *_args: None)
+    monkeypatch.setattr(
+        propose_cli.mh,
+        "read_candidate_manifest",
+        lambda *_args: parent_manifest,
+    )
+    monkeypatch.setattr(
+        propose_cli.skill_targets,
+        "materialized_baseline",
+        materialized_baseline,
+    )
+    monkeypatch.setattr(propose_cli.ev, "apply_registered_candidate_overlay", fail_overlay)
+
+    with pytest.raises(
+        propose_cli.prop.ProposerError,
+        match="parent overlay is invalid: forced parent overlay failure",
+    ):
+        propose_cli._register_proposed_candidate(
+            main_root=tmp_path,
+            config={},
+            target="skill:issue-create",
+            parent_id=_PARENT_ID,
+            source_commit="a" * 40,
+            proposal=_valid_proposal(),
+            included_run_ids=frozenset({_RUN_ID}),
+            tokens_used=10,
+        )
+
+
+def test_run_propose_pipeline_converts_parent_overlay_stage_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    target = "skill:issue-create"
+    parent_manifest = {
+        "cand_id": _PARENT_ID,
+        "target": target,
+        "source_commit": "a" * 40,
+    }
+    run_event = {
+        "event": "run_completed",
+        "run_id": _RUN_ID,
+        "target": target,
+        "holdout": False,
+    }
+    snapshot = propose_cli.prop.FilteredStoreSnapshot(
+        frontier_doc={"frontier": [], "points": []},
+        ledger_events=(run_event,),
+        candidate_ids=(_PARENT_ID,),
+        non_holdout_run_ids=(_RUN_ID,),
+        holdout_run_ids=frozenset(),
+    )
+    view_path = tmp_path / "filtered-view"
+    (view_path / "baseline").mkdir(parents=True)
+    view = propose_cli.prop.FilteredView(
+        path=view_path,
+        included_run_ids=frozenset({_RUN_ID}),
+        holdout_run_ids=frozenset(),
+    )
+
+    def fail_overlay(*_args, **_kwargs):
+        raise propose_cli.ev.EvaluatorStageError(
+            "overlay_apply", "overlay_error", "forced parent overlay failure"
+        )
+
+    monkeypatch.setattr(
+        propose_cli.mh,
+        "read_candidate_manifest",
+        lambda *_args: parent_manifest,
+    )
+    monkeypatch.setattr(
+        propose_cli.prop,
+        "build_filtered_view",
+        lambda **_kwargs: view,
+    )
+    monkeypatch.setattr(propose_cli.ev, "apply_registered_candidate_overlay", fail_overlay)
+
+    with pytest.raises(
+        propose_cli.prop.ProposerError,
+        match="parent overlay is invalid: forced parent overlay failure",
+    ):
+        propose_cli._run_propose_pipeline(
+            main_root=tmp_path,
+            config={"proposer": {"tool": "claude"}},
+            project_dir=tmp_path,
+            target=target,
+            focus_run=None,
+            focus_candidate=_PARENT_ID,
+            snapshot=snapshot,
+        )
+
+    assert not view_path.exists()
 
 
 def test_propose_rejects_secret_in_proposal_and_records_violation(

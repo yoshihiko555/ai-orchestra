@@ -22,13 +22,14 @@ import loop_state as state  # noqa: E402
 import meta_harness_common as mh  # noqa: E402
 import promoter as prm  # noqa: E402
 import propose_cli  # noqa: E402
+import skill_targets  # noqa: E402
 
 EXIT_OK = 0
 EXIT_RUNTIME_ERROR = 1
 EXIT_VALIDATION_ERROR = 2
 EXIT_LOCK_CONFLICT = 3
 
-TARGET_PATTERN = re.compile(r"^(claude-harness|skill:[a-z0-9-]+)$")
+TARGET_PATTERN = mh.TARGET_PATTERN
 LOOP_ID_PATTERN = re.compile(r"^loop-[0-9]{8}-[0-9]{6}-[a-z0-9-]+$")
 NORMAL_STOP_REASONS = frozenset({"budget_exhausted", "max_iterations", "divergence", "converged"})
 
@@ -276,21 +277,9 @@ def _validate_target(target: str) -> None:
     if not TARGET_PATTERN.fullmatch(target):
         raise LoopValidationError(f"invalid target: {target!r}")
     try:
-        suite_dir = ev.scenario_suite_dir(_PACKAGE_DIR, target)
-        paths = ev.discover_scenario_paths(suite_dir)
-    except (OSError, ev.yaml.YAMLError) as exc:
+        ev.validate_target_suite(_PACKAGE_DIR, _SCHEMA_DIR, target)
+    except (OSError, ValueError, ev.yaml.YAMLError) as exc:
         raise LoopValidationError(f"could not load target scenarios: {exc}") from exc
-    if not paths:
-        raise LoopValidationError(f"target is not allowlisted by a scenario suite: {target}")
-    for path in paths:
-        try:
-            scenario = ev.load_scenario(path, _SCHEMA_DIR)
-        except (OSError, ev.yaml.YAMLError) as exc:
-            raise LoopValidationError(f"could not load scenario {path}: {exc}") from exc
-        if scenario.get("target") != target:
-            raise LoopValidationError(
-                f"scenario target mismatch in {path}: expected {target}, got {scenario.get('target')}"
-            )
 
 
 def _drive_loop(main_root: Path, config: dict, project_dir: Path, spec: LoopSpec) -> str:
@@ -360,7 +349,7 @@ def _propose_candidate(
     spec: LoopSpec,
     iteration: int,
 ) -> str:
-    snapshot = propose_cli._snapshot_propose_store(main_root, config)
+    snapshot = propose_cli._snapshot_propose_store(main_root, config, spec.target)
     return propose_cli._run_propose_pipeline(
         main_root=main_root,
         config=config,
@@ -438,9 +427,28 @@ def _validate_loop_candidate(
             f"expected {spec.target}, got {manifest.get('target')}"
         )
     overlay_dir = mh.candidates_dir(main_root, config) / cand_id / "overlay"
-    violations = mh.validate_overlay(overlay_dir, config)
-    if violations:
-        raise LoopValidationError(f"loop candidate overlay is invalid: {'; '.join(violations[:5])}")
+    if spec.target.startswith("skill:"):
+        try:
+            with skill_targets.materialized_baseline(
+                main_root, str(manifest["source_commit"])
+            ) as baseline:
+                ev.apply_registered_candidate_overlay(
+                    main_root=main_root,
+                    config=config,
+                    manifest=manifest,
+                    worktree_dir=baseline,
+                    schema_dir=_SCHEMA_DIR,
+                )
+        except (OSError, ValueError, ev.EvaluatorStageError) as exc:
+            raise LoopValidationError(f"loop candidate overlay is invalid: {exc}") from exc
+    else:
+        violations = mh.validate_overlay(
+            overlay_dir, config, target=spec.target, baseline_root=main_root
+        )
+        if violations:
+            raise LoopValidationError(
+                f"loop candidate overlay is invalid: {'; '.join(violations[:5])}"
+            )
     if mh.list_overlay_files(overlay_dir) != sorted(manifest.get("overlay_files") or []):
         raise LoopValidationError(f"loop candidate overlay manifest mismatch: {cand_id}")
     if mh.compute_config_hash(overlay_dir, config) != manifest.get("config_hash"):
@@ -460,7 +468,7 @@ def _scenario_ids(target: str, *, holdout: bool) -> list[str]:
 def _candidate_on_frontier(main_root: Path, config: dict, target: str, cand_id: str) -> bool:
     events = mh.read_ledger_events_strict(main_root, config)
     frontier = prm._compute_current_frontier(
-        state.current_frontier_events(events, config, target), config
+        state.current_frontier_events(events, config, target), config, target
     )
     expected_hashes = state.current_hash_pair(config, target)
     actual_hashes = (frontier.get("suite_hash"), frontier.get("evaluator_hash"))
@@ -475,7 +483,7 @@ def _rebuild_frontier(main_root: Path, config: dict, target: str) -> None:
     with mh.store_lock(main_root, config):
         events = mh.read_ledger_events_strict(main_root, config)
         doc = prm._compute_current_frontier(
-            state.current_frontier_events(events, config, target), config
+            state.current_frontier_events(events, config, target), config, target
         )
         expected_hashes = state.current_hash_pair(config, target)
         actual_hashes = (doc.get("suite_hash"), doc.get("evaluator_hash"))
@@ -487,13 +495,14 @@ def _rebuild_frontier(main_root: Path, config: dict, target: str) -> None:
             "event": "frontier_updated",
             "ts": mh.now_iso(),
             "schema_version": "1.0",
+            "target": target,
             "frontier": doc["frontier"],
             "dominated": doc["dominated"],
         }
         _validate_event(event, "frontier_updated")
         mh.append_ledger_event(main_root, config, event)
         doc["ledger_line_count"] = len(mh.read_ledger_events_strict(main_root, config))
-        mh.write_frontier_cache(main_root, config, doc)
+        mh.write_frontier_cache(main_root, config, doc, target)
 
 
 def _retire_if_overfit(main_root: Path, config: dict, spec: LoopSpec, cand_id: str) -> bool:

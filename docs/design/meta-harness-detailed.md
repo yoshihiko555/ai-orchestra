@@ -283,11 +283,12 @@ codd:
     "frontier_updated": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["event", "ts", "schema_version", "frontier", "dominated"],
+      "required": ["event", "ts", "schema_version", "target", "frontier", "dominated"],
       "properties": {
         "event": { "const": "frontier_updated" },
         "ts": { "type": "string", "format": "date-time" },
         "schema_version": { "type": "string", "const": "1.0" },
+        "target": { "type": "string", "pattern": "^(claude-harness|skill:[a-z0-9-]+)$" },
         "frontier": { "type": "array", "items": { "type": "string" } },
         "dominated": { "type": "array", "items": { "type": "string" } }
       }
@@ -474,7 +475,7 @@ PR 作成時点で記録されるが、この時点では状態は `evaluated` �
 | `suite_id`       | `<target>` に対応するシナリオスイート識別子（例: `claude-harness`, `skill:<name>`）                                                         |
 | `scenario_hash`  | シナリオ YAML ファイル本体の sha256                                                                                                         |
 | `suite_hash`     | suite 内の全シナリオファイルの `scenario_hash` をファイル名順にソートし連結した文字列の sha256                                              |
-| `evaluator_hash` | evaluator本体・Docker実行境界（broker / profile / isolation / process runner / Dockerfile）の正本 + scoring関連config値（`scoring.*`）を、安定した相対パス順で連結したsha256 |
+| `evaluator_hash` | evaluator本体・Docker実行境界（broker / profile / isolation / process runner / Dockerfile）の正本 + scoring関連config値（`scoring.*`）+ scenario 不在時に fallback する実行設定（`evaluate.allowed_tools` / `permission_mode` / `model`、`scenario_run.max_output_tokens_default`）を、安定した相対パス順で連結したsha256 |
 
 ### 1-3. `scenario.schema.json`
 
@@ -504,6 +505,12 @@ PR 作成時点で記録されるが、この時点では状態は `evaluated` �
     },
     "description": { "type": "string" },
     "prompt": { "type": "string" },
+    "allowed_tools": { "type": "array", "items": { "type": "string" } },
+    "path_prepend": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9_-][A-Za-z0-9._-]*)*$" },
+      "uniqueItems": true
+    },
     "setup": { "type": "array", "items": { "type": "string" }, "default": [] },
     "command_timeout_ms": { "type": "integer", "default": 60000 },
     "critical": {
@@ -523,7 +530,8 @@ PR 作成時点で記録されるが、この時点では状態は `evaluated` �
       "additionalProperties": false,
       "properties": {
         "max_turns": { "type": "integer", "default": 30 },
-        "max_budget_usd": { "type": "number", "default": 2.0 }
+        "max_budget_usd": { "type": "number", "default": 2.0 },
+        "max_output_tokens": { "type": "integer", "minimum": 1 }
       }
     },
     "repeat": { "type": "integer", "default": 1, "minimum": 1 }
@@ -718,7 +726,7 @@ evaluate 全体をブロックしないようにする。
 | `budget_exceeded` | `--max-budget-usd` / `--max-turns` の上限超過による打ち切り         |
 | `lock_error`      | `store.lock` / `evaluate.lock` の取得に失敗                         |
 
-### 1-5. `frontier.json`
+### 1-5. `frontier-<target-slug>.json`
 
 再生成可能キャッシュ。ledger から都度再構築できるため store の SSOT ではないが、`orchex meta status`
 等の高速参照用に永続化する。
@@ -732,6 +740,7 @@ evaluate 全体をブロックしないようにする。
   "additionalProperties": false,
   "required": [
     "schema_version",
+    "target",
     "generated_at",
     "ledger_line_count",
     "suite_hash",
@@ -743,6 +752,7 @@ evaluate 全体をブロックしないようにする。
   ],
   "properties": {
     "schema_version": { "type": "string", "const": "1.0" },
+    "target": { "type": "string", "pattern": "^(claude-harness|skill:[a-z0-9-]+)$" },
     "generated_at": { "type": "string", "format": "date-time" },
     "ledger_line_count": { "type": "integer", "minimum": 0 },
     "suite_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
@@ -777,13 +787,19 @@ evaluate 全体をブロックしないようにする。
 }
 ```
 
-`ledger_line_count` は陳腐化検知に用いる。`orchex meta status` 実行時、現在の `ledger.jsonl` の
+target slug は `claude-harness` をそのまま、`skill:<name>` を `skill-<name>` へ写像する。新 cache と
+legacy `frontier.json` が両方ある場合は新 cache を優先する。新 cache が無い `claude-harness` の読み取り
+だけ legacy を許可し、`target: claude-harness` をメモリ上で補完する。次回 rebuild は新 cache に書き、
+legacy は後方互換のため残置する。skill target が legacy を読むことはない。
+
+`ledger_line_count` は cache 作成時点の**global ledger 全行数**を保持し、target 外 event の追記も stale と
+判定する保守的な契約とする。`orchex meta status --target <target>` 実行時、現在の `ledger.jsonl` の
 行数と `ledger_line_count` を比較し、不一致であれば「frontier キャッシュは陳腐化している可能性が
 ある」旨を警告する（自動再生成はしない。`orchex meta frontier --rebuild` を明示実行させる）。
 
 `suite_hash` / `evaluator_hash` は frontier 算出時点でのスイート・evaluator の hash を記録する
 （定義は §1-2「hash 定義」参照）。この 2 つの hash が現在の `suite_hash` / `evaluator_hash`
-（§2-7 で算出）と一致しない場合、`frontier.json` は陳腐化しているとみなし、`orchex meta status` は
+（§2-7 で算出）と一致しない場合、対象の `frontier-<target-slug>.json` は陳腐化しているとみなし、`orchex meta status` は
 「suite/evaluator が更新されたため frontier の再評価が必要」旨を警告する。`cost_axis` は
 config `frontier.cost_axis`（§5）の値をスナップショットしたものであり、`points[].cost_mean` が
 どの指標（例: `total_tokens` / `total_cost_usd`）の平均かを一意に示す。
@@ -1088,16 +1104,19 @@ filtered view しか見ていないため通常発生しないが、CLI 側で�
 ### 2-2. シナリオ実行コマンド（確認済み仕様に基づく確定形）
 
 ```bash
-cd <worktree> && claude -p "<scenario.prompt>" \
+cd <worktree> && CLAUDE_CODE_MAX_OUTPUT_TOKENS=<budget.max_output_tokens> \
+  claude -p "<scenario.prompt>" \
   --append-system-prompt-file packages/meta-harness/config/self-report-instruction.md \
   --output-format stream-json --verbose --include-hook-events \
   --max-turns <budget.max_turns> --max-budget-usd <budget.max_budget_usd> \
-  --permission-mode acceptEdits --allowedTools <config の allowlist> \
+  --permission-mode acceptEdits --allowedTools <scenario または config の allowlist> \
+  --tools <allowlist から導出した built-in tool 名> \
   --no-session-persistence --model <config: evaluate.model> \
   > events.jsonl 2> progress.log
 ```
 
-このコマンド形は Claude Code CLI 2.1.201 の実機検証で確認した以下の根拠に基づく。
+このコマンド形は Claude Code CLI 2.1.201 と、Docker image に固定した 2.1.207 の実機検証で確認した
+以下の根拠に基づく。
 
 - **`-p` は cwd の `.claude/`（settings/hooks/skills/CLAUDE.md）をデフォルトで読み込み、
   hooks も発火する**（2.1.201 で確認）。これにより、候補ハーネスの facet/config オーバーレイが
@@ -1111,7 +1130,16 @@ cd <worktree> && claude -p "<scenario.prompt>" \
 - `--no-session-persistence` によりステートレス実行にする。セッション履歴が他の run に汚染される
   ことを防ぐ（`design:meta-harness` §5「隔離実行」の要件を満たす具体手段）。
 - `--dangerously-skip-permissions` は使用しない。代わりに `acceptEdits` + 明示的な
-  `--allowedTools`（config `evaluate.allowed_tools`、§5）の組で権限範囲を絞る。
+  `--allowedTools` の組で権限範囲を絞る。scenario に `allowed_tools` が**存在する場合はその値を使用し**、
+  空配列は tool 権限なしを意味する。キーが存在しない場合だけ config `evaluate.allowed_tools` へ
+  fallback する（presence semantics）。同じ実効 allowlist の base 名から `--tools` を導出し、モデルへ
+  公開する built-in tool schema 自体も最小化する。`skill:<name>` target では slash command 展開に必要な
+  Skill 定義を読み込ませるため `Skill` を `--tools` に追加するが、slash command 起動自体には `Skill` を
+  `--allowedTools` へ加える必要はない（M0 実測）。
+- `CLAUDE_CODE_MAX_OUTPUT_TOKENS` は scenario の `budget.max_output_tokens` があればその値、なければ
+  `scenario_run.max_output_tokens_default` を設定する。固定 CLI の既定 64,000 token のままでは broker の
+  保守的な事前見積もりが通常の $3 run 予算を超えるためであり、出力上限を明示して API envelope を
+  run 予算内へ収める。
 - **Phase 2/3のscenario runはDockerコンテナによるOSレベル隔離を必須とする**（ADR-20260712-034。
   ADR-20260711-032のSRT方式を置換。SRTで設計したfilesystem/network境界は本節でコンテナのmount/network
   設計として引き継ぐ）。`claude -p`をLinuxコンテナ内で実行し、`docker run --rm`に加え
@@ -1124,9 +1152,14 @@ cd <worktree> && claude -p "<scenario.prompt>" \
 - **資格情報境界（ADR-20260712-034。ADR-20260711-033を置換）**: 資格情報は候補process treeへ置かない。
   run スコープの**ephemeral credential broker**（reverse proxy）が実OAuth tokenを保持し、コンテナ内の
   Claude CLIは`ANTHROPIC_BASE_URL`でbrokerへ向ける。brokerは受信リクエストの`x-api-key`/`authorization`を
-  剥離し`Authorization: Bearer <token>`と`anthropic-beta: oauth-2025-04-20`を注入してapi.anthropic.comへ
-  転送する（スパイクS1実測: この経路で`claude -p`が完走、endpointは`/v1/messages`のみ、SSE素通し可、
-  usage/total_cost_usd取得可。broker無しのdummyキー直アクセスは401）。
+  剥離し`Authorization: Bearer <token>`を注入する。`anthropic-beta` は broker 固定の
+  `oauth-2025-04-20` と、pin 済み CLI 2.1.207 が送る既知 feature の完全 allowlist の和集合だけを転送し、
+  未知・重複・不正文字を拒否する。任意の candidate header は転送しない（M0 で client beta を全剥離すると
+  `context_management: Extra inputs are not permitted` の 400 になることを実測）。この token は Claude Max
+  サブスクリプションの OAuth であり、従量課金 API key への fallback は実装しない。S1 ではこの経路で
+  `claude -p` が完走し、endpoint は `/v1/messages` のみ、SSE 素通し、usage/total_cost_usd 取得を確認した。
+  broker 無しの dummy key 直アクセスは 401 となる。`total_cost_usd` と `max_budget_usd` は CLI が返す
+  等価コストを run 内の比較・暴走防止に使う会計値であり、PAYG API key による課金経路を意味しない。
 - **broker配置（スパイクS3/S1で確定）**: brokerは**internal networkとexternal networkの両方に接続する
   dual-homed sidecarコンテナ**として起動する（`--internal`単独では外部到達不可、host.docker.internalも
   不可のため。host上の0.0.0.0 bindは認証プロキシのネットワーク露出になるため採らない）。sidecarイメージは
@@ -1165,8 +1198,9 @@ cd <worktree> && claude -p "<scenario.prompt>" \
     oracle / judge完了後に再refreshした
     `broker.metrics.budget_exceeded`または`anomaly`がtrueなら、個別checkが成功していてもattempt全体をerrorとする。
     headless run自体が失敗した場合もbroker cleanup前にmetricsをrefreshして`isolation.json`へ保存する。
-  - **転送byte上限**: candidate由来headerは既知名だけを最大128 bytesで受け、`user-agent`等はbroker固定値へ
-    正規化する。`x-stainless-*` wildcard転送は行わず、body + 転送headerのrun累積を
+  - **転送byte上限**: candidate由来headerは既知名だけを値上限付きで受ける。`anthropic-beta` は最大
+    1024 bytesかつ上記の固定 feature allowlist、その他の転送値は最大128 bytesとし、`user-agent`等は
+    broker固定値へ正規化する。`x-stainless-*` wildcard転送は行わず、body + 転送headerのrun累積を
     `max_upstream_bytes`でhard-capしてtoken外covert channelを制限する。
   - **per-run認証**: brokerはrunごとに生成した使い捨てトークン（candidateへ渡すダミーキー）を要求し、
     他runのbrokerへは通らないようにする（token値自体は候補が読めるため機密ではないが、run間の
@@ -1177,9 +1211,11 @@ cd <worktree> && claude -p "<scenario.prompt>" \
 - **broker の予算換算と並行性**: Anthropic API response は USD 金額を返さないため、broker は response
   の `usage`（input/output/cache creation/cache read token）を config の**保守的な上限単価**で USD
   換算する。未知モデルでも同じ上限単価を適用し、過少計上へ倒さない。broker は同時 upstream request を
-  1 件に制限し、並行リクエストによる複数応答分の budget overshoot を防ぐ。事前上限内でも実usageがhard capを
-  超えた場合は当該応答の中断ではなく、その直後から後続 request を拒否する（API usage は応答完了まで
-  確定しないため）。CLI の `--max-budget-usd` と組み合わせて多層で overshoot を抑止する。
+  1 件に制限し、並行リクエストによる複数応答分の budget overshoot を防ぐ。固定 CLI が `/messages` と
+  `/messages/count_tokens` を重ねる場合は 1 件だけ bounded waiter として直列化し、追加の並行要求は anomaly
+  として拒否する。事前上限内でも実usageがhard capを超えた場合は当該応答の中断ではなく、その直後から
+  後続 request を拒否する（API usage は応答完了まで確定しないため）。CLI の `--max-budget-usd` と
+  組み合わせて多層で overshoot を抑止する。
 - **token TTL**: brokerが保持するaccess tokenは静的（broker はrefreshしない）。起動時に`expiresAt`
   preflight（proposer L1のexp checkと同型）でrun想定時間より十分長いことを確認する。
 - scenario子プロセスの環境はallowlistから再構築し、`HOME`/`CLAUDE_CONFIG_DIR`をephemeral HOME、
@@ -1242,7 +1278,7 @@ cd <worktree> && claude -p "<scenario.prompt>" \
 
 2 種類の lock を用いる（`skill-evolution` の lock パターンを踏襲しつつ、全 writer に対象を拡張する）。
 
-- **`locks/store.lock`**: ledger 追記・`frontier.json` 書き込み・`candidates/` 登録のいずれかを
+- **`locks/store.lock`**: ledger 追記・target 別 frontier cache 書き込み・`candidates/` 登録のいずれかを
   行う**全コマンド**（`register` / `evaluate` / `promote` / `frontier --rebuild` / `purge`）が
   操作直前に取得する短期 lock。TTL 60 秒。取得失敗時は exit code 3 で即座に終了する（§6）。
 - **`locks/evaluate.lock`**: `evaluate` コマンド全体を通して保持する長期 singleton lock。
@@ -1253,7 +1289,7 @@ cd <worktree> && claude -p "<scenario.prompt>" \
   TTL 到達で誤って lock を奪われるリスクがあるため廃止した。取得失敗時は exit code 3 で終了する。
 
 ledger（`ledger.jsonl`）への追記は `O_APPEND` オープン + 1 行 1 write + `fsync` で行い、複数
-writer が同時に短い `store.lock` を取得しても行の途中破損が起きないようにする。`frontier.json`
+writer が同時に短い `store.lock` を取得しても行の途中破損が起きないようにする。target 別 frontier cache
 の書き込みは `write_atomic`（一時ファイルへ書き込み後 `os.replace` で置換、`packages/codex-harness`
 と同方式）で行い、読み取り側が書き込み途中の不完全な JSON を読むことを防ぐ。
 
@@ -1511,22 +1547,89 @@ proposer は同一 workspace 内で起動される限り、`Glob` / `Read` 等�
 
 - 結合は **CLI レベルのみ**とする。Python の import 結合は行わない。`packages/meta-harness/manifest.json`
   の `depends` は `[core]` のみを維持し、`skill-evolution` への依存は追加しない
-  （`design:meta-harness` §10 の方針を継続）。
-- skill-evolution の check-trigger（lessons 閾値超過検知）が、`orchex meta propose
---target skill:<name>` の実行を**提案する**形で連携する。meta-harness 側から skill-evolution の
-  内部状態を直接読みには行かず、あくまで「提案を受けて人間または自動化が CLI を起動する」疎結合を
-  維持する。
+  （`design:meta-harness` §10 の方針を継続）。責務境界は次の通り。
+
+| 責務 | 所有パッケージ | 契約 |
+| --- | --- | --- |
+| lessons / metrics の保存、trigger 判定、`[critical]` 正本 | skill-evolution | `check-trigger` JSON に実行候補を返す |
+| propose / evaluate / loop / promote、scenario suite、frontier | meta-harness | `target=skill:<slug>` を独立した探索対象として扱う |
+| パッケージ間連携 | どちらにも import 依存を置かない | `orchex meta propose --target skill:<slug>` という CLI 文字列のみ |
+
+- skill-evolution の check-trigger（lessons 閾値超過検知）は、slug が妥当な場合だけ JSON の
+  `suggested_command` として `orchex meta propose --target skill:<name>` を**提案する**。コマンドは
+  実行しない。meta-harness 側も skill-evolution の内部状態を直接読まない。
 - `orchex meta propose` が起動する proposer の実行隔離（filtered view + `--bare` + `--add-dir`）
   は target が `skill:<name>` の場合も含め共通の仕組みである（§3-6 参照）。skill 向けシナリオの
   holdout 分離も同じ filtered view 方式に従う。
 - スキル向けシナリオは `packages/meta-harness/scenarios/skill/<name>/*.yaml` に配置する。
-  critical 項目には当該スキルの `[critical]` チェックリスト項目（skill 定義内の運用基準）を
-  `rubric_judge` または `command_exit` oracle として写像する。写像方針は以下の通り。
+  `[critical]` の唯一の正本は `.claude/skill-evolution/lessons/<name>.md` の
+  `## [critical] チェックリスト` である。scenario oracle への写像は自動生成せず、人間が次の規則で
+  suite に明示的に固定する。
   - 機械判定可能な基準（成果物の存在・コマンドの exit code）→ `artifact_exists` / `command_exit`
   - 主観的・文章品質的な基準 → `rubric_judge`
-- 候補 overlay の対象は当該スキルの facet ソース（`facets/instructions/` `facets/policies/`
-  `facets/compositions/` のうち、そのスキルに関連する部分）に限定する。スキル対象の候補が
-  無関係な facet ソースへ手を伸ばすことは想定しない（overlay 適用範囲の allowlist で防御する）。
+- `skill:<slug>` の baseline は `facets/compositions/skills/<slug>.yaml` を起点に、composition が参照する
+  `facets/instructions/`、`facets/policies/`、`facets/output-contracts/`、`facets/knowledge/`、
+  `facets/scripts/` の**推移閉包**を facet builder と同じ解決規則で得た集合とする。baseline 解決結果が
+  target の権威であり、候補 overlay はその集合内にだけ書ける。絶対 path、`..`、symlink、repo 外 realpath、
+  directory、閉包外 path は register 前に拒否する。生成物 `.claude/skills/<slug>/` は候補 overlay に
+  含めず、評価 worktree 内で facet build して得る。root 候補の権威は working tree ではなく manifest の
+  `source_commit` から `git archive` した `facets/`、子候補の権威は同じ source commit に親の累積 overlay を
+  lineage 順で適用した状態とする。候補自身が composition に参照を追加しても同一候補の許可集合は広がらず、
+  その参照は次世代候補からだけ効く。manifest には適用前 closure の hash を保存し、evaluate / loop / promote
+  で lineage ごと再検証する。
+- `regression.enabled: false` の PR1 段階では、overlay は target skill のカテゴリ限定 private file、すなわち
+  `facets/compositions/skills/<slug>.yaml`、`facets/instructions/<slug>.md`、当該 composition が参照する
+  `facets/scripts/*` だけを許可する。refcount は権威判定に使わず、policy / output-contract / knowledge は
+  参照元が当該 skill だけでも常に拒否する。
+  `regression.enabled: true` は cross-skill suite が実装される PR2 まで fail-closed とし、未実装の回帰検査を
+  通過扱いにしない。
+  親候補からの累積 overlay を保つ `inherited_overlay_dir` は、manifest・ファイル一覧・hash を再検証済みの
+  immutable 登録候補だけを evaluator 内部から渡せる信頼入力とする。継承元とbyte同値のファイルだけは
+  現世代のカテゴリ判定を再適用せず保持できるが、1 byteでも変われば現世代の許可集合で再検証する。
+- frontier/cache は target 間で混ぜない。保存先は `frontier-<target-slug>.json` とし、既存
+  `frontier.json` は初回アクセス時に `claude-harness` target の cache としてのみ移行する。frontier 比較、
+  parent 既定選定、status、promote 前提、purge 保護はすべて同一 target 内で行う。purge は全 target の
+  frontier 保護集合の和集合を使う。
+- scenario の `allowed_tools` は optional とする。キーがある場合（空配列を含む）はその値、無い場合だけ
+  config `evaluate.allowed_tools` を使う。`--allowedTools` は実行 permission、base tool名から作る `--tools` は
+  modelへのschema公開であり、両者を区別する。skill target の `Skill` はschemaだけを公開しpermissionへは
+  暗黙追加しない。fixture CLI を使う scenario は、安全な相対 `path_prepend` を `/workspace` 基準でPATH先頭へ
+  環境注入できる。promptにPATH操作を指示せず、注入値はrun metadataへ記録する。
+- register / loop の target 検証では suite が train 1 本以上かつ holdout 1 本以上を持つことを必須とする。
+  初回は引用可能 run が無いため、empty overlay の baseline 候補を `register` → train/holdout を
+  `evaluate` → `frontier --target <target> --rebuild` の順で作る。その後に check-trigger が示す
+  `propose` を実行する。bootstrap 前の propose は exit 2 とこの手順を返す。
+- skill target の run metadata は、実効 `allowed_tools`、由来（scenario/global）、モデル公開 tool、
+  `max_output_tokens` と由来、`path_prepend` を保存する。global fallback 値は evaluator hash、scenario固有値は
+  suite/scenario hash に入るため、異なる実行 envelope の run を同じ frontier scope で比較しない。
+- skill 候補の promote freshness は、現在の `origin/main` へ親 lineage までを適用した pre-overlay baseline の
+  closure hash と manifest の `target_closure_hash` を比較する。composition または参照 facet が変わっていれば
+  overlay path 自体が未変更でも拒否する。
+
+### 4-1. M0 実測ゲート（2026-07-14）
+
+| 確認項目 | 結果 | 判断 |
+| --- | --- | --- |
+| `/handoff test` の headless 展開 | PASS | 固定 CLI 2.1.207 が skill 記載どおり `handoff.py` を Bash 起動した |
+| `Skill` の `--allowedTools` 追加 | 不要 | slash 展開は permission allowlist に `Skill` がなくても成立した |
+| Max OAuth 認証 | PASS | broker 経由の最初の upstream request が正常応答。401/429 ではなかった |
+| client beta 互換 | 要 allowlist | client beta 全剥離では 400。固定 CLI の既知 beta のみ転送する |
+| $3 broker 事前予算 | 要 envelope 最小化 | 全 tool + 64k output は約 $8.40 上限。最小 tool + 4k output は単発約 $2.29 だが二 request 目を拒否 |
+
+最初の skill 手順後の継続実行では、`python` 不在と二回目 request の保守的予算拒否も検出した。このため
+handoff の正本コマンドを `python3` に直し、handoff / issue-create の train/holdout scenario は
+`budget.max_output_tokens: 1024` と必要最小 tool を固定する。受け入れ条件は単発 admission ではなく、
+複数 request を含む run が $3 broker budget 内で完了することとする。
+M0 の skill 発火判定自体は、正本の Step 1 をモデルが実際に選択・起動した時点で PASS とする。
+この経路の回帰確認は `META_HARNESS_RUN_SUBSCRIPTION_E2E=1` を明示した opt-in Docker test で行い、
+baseline register → train evaluate → frontier 反映 → propose 前提充足と、Skill 未起動 prompt が
+evaluator の run error で fail-closed することを一周で検証する。
+
+ここで二回目 request を拒否した 429 は broker が upstream 送信前に生成したローカル admission エラーで、
+Max subscription の利用制限応答ではない。運用上は broker metrics の `budget_exceeded` / `rejected_requests`
+とエラー本文でローカル拒否を識別し、upstream 由来の 401/429 と混同して「認証切れ」「クラウド利用制限」
+と報告してはならない。M0 の最初の upstream 応答成功により、少なくとも当該実行時点の OAuth 認証成立は
+確認済みである。
 
 ---
 
@@ -1576,6 +1679,7 @@ evaluate:
     - "Write"
     - "Bash(git *)"
     - "Bash(python *)"
+    - "Bash(python3 *)"
     - "Bash(pytest *)"
   model: null # null = セッション既定モデル
   cli_version_pin: null # null = バージョン一致検証をスキップ（capability smoke test は常に実施）
@@ -1609,6 +1713,9 @@ evaluate:
 scenario_run:
   max_turns_default: 30
   max_budget_usd_default: 3.0 # §14 の実測反映
+  max_output_tokens_default: 4096 # broker pre-admission 用。scenario の budget で上書き可能
+regression:
+  enabled: false # true は cross-skill regression evaluator 実装まで fail-closed
 judge:
   tool: claude-bare # tool-less judge。codexはread deny不能のため無効（ADR-20260711-033）
   model: null # null = 各バックエンドの既定モデル
@@ -1688,11 +1795,11 @@ retention:
 
 | サブコマンド | 引数                                                                                       | 動作                                                                                                                                                                                                                                                                                                                                                |
 | ------------ | ------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `init`       | なし                                                                                       | `.claude/meta-harness/` の初期化（`candidates/` `runs/` `locks/` `holdout/runs/` `tmp/` `rejected/` `reports/` `ledger.jsonl` `frontier.json` を作成、既存時は冪等 no-op）                                                                                                                                                                          |
+| `init`       | なし                                                                                       | `.claude/meta-harness/` の初期化（`candidates/` `runs/` `locks/` `holdout/runs/` `tmp/` `rejected/` `reports/` `ledger.jsonl` `frontier-claude-harness.json` を作成、既存時は冪等 no-op）                                                                                                                                                           |
 | `register`   | `--overlay <dir> --target <t> [--parent <id>] [--source-commit <sha>] [--description ...]` | overlay の allowlist 検証（`overlay.schema.json` §1-7・`config_patch.schema.json` §1-8）・manifest schema 検証を通し、`candidates/<cand_id>/` を immutable に配置し、`ledger.jsonl` に `candidate_registered` を追記する。lock 取得失敗時は exit 3                                                                                                  |
 | `evaluate`   | `--candidate <id> [--scenario <id>...] [--repeat N]`                                       | CLI capability gate（§2-7）を通過後、対象候補に対しシナリオ実行（§2）を行い、`ledger.jsonl` に `run_completed` を追記する。lock 取得失敗時は exit 3                                                                                                                                                                                                 |
-| `frontier`   | `[--rebuild]`                                                                              | `ledger.jsonl` から Pareto frontier（§3-5）を算出する。`--rebuild` 指定時は `frontier.json` を再生成する。`--rebuild` は `store.lock` を取得し、失敗時は exit 3                                                                                                                                                                                     |
-| `status`     | `[--candidate <id>]`                                                                       | population / frontier の状態表示。指定候補があればその状態畳み込み結果（§1-2）を表示する                                                                                                                                                                                                                                                            |
+| `frontier`   | `[--target <t>] [--rebuild]`                                                               | 指定 target（既定 `claude-harness`）の ledger event だけから Pareto frontier（§3-5）を算出する。`--rebuild` 指定時は `frontier-<target-slug>.json` を再生成する。`--rebuild` は `store.lock` を取得し、失敗時は exit 3                                                                                                                               |
+| `status`     | `[--target <t>] [--candidate <id>]`                                                        | 指定 target の population / frontier 状態を表示する。指定候補があればその状態畳み込み結果（§1-2）を表示する                                                                                                                                                                                                                                        |
 | `propose`    | `--target <t> [--focus-run <run_id>] [--focus-candidate <cand_id>]`                        | filtered view（§3-6, §11-2）を構築し proposer を 1 回起動する（Phase 2, §11）。構造化出力を検証し合格すれば候補登録、不合格なら exit 2 で `rejected/` に保存（§11-5）                                                                                                                                                                               |
 | `loop`       | `[--target <t>] [--resume <loop_id>]`                                                      | 探索ループの自動反復（Phase 3, §13）。ledger 駆動の状態管理により `--resume` で中断後も再開可能                                                                                                                                                                                                                                                     |
 | `promote`    | `<cand_id> [--confirm]`                                                                    | 勝者候補の PR ベース昇格を行う（Phase 2, §12）。未解放の `promotion_reserved` が既にある場合は exit 3（§12-2 手順 1a）。前提条件チェック（§12-1）を満たさない場合は exit 2。`--confirm` 指定時は PR が MERGED かつ main 到達済みであることを検証してから `promoted` への状態遷移を確定する（§12-2 手順 10）。`store.lock` を取得し、失敗時は exit 3 |
@@ -1762,7 +1869,7 @@ evaluate → ledger → frontier の一連）を実施する。
    出力が verdict schema（`{passed, reason}`）に厳密に従うことを確認する。判定基準: 10 回の
    サンプル実行すべてで schema 検証が通ること。
 6. **baseline シナリオ 1 本の E2E**: register → evaluate → ledger → frontier の一連が実データで
-   通ることを確認する。判定基準: `frontier.json` に baseline 候補が反映されること。
+   通ることを確認する。判定基準: `frontier-claude-harness.json` に baseline 候補が反映されること。
 7. **評価コストの実測**: 1 候補あたりの評価コスト（トークン・実時間・USD）を実測し、config
    既定値（`max_budget_usd` 等、§5）の妥当性を見直す。判定基準: 実測値を `docs/design/
 meta-harness-detailed.md` §5 の既定値に反映する（本スパイク後に本ドキュメントを更新する）。
@@ -1806,7 +1913,7 @@ Phase 2/3 の scenario 実行隔離を SRT から Docker + ephemeral broker へ�
 | --- | ------------------------- | ---- | -------------------------------------------------------------------------------------------------------- |
 | S3  | Docker containment        | PASS | `setsid` 離脱子孫も `docker rm -f` でホスト残存ゼロ。`--pids-limit` 上限強制。`--internal` は egress・DNS フォワード・host.docker.internal を遮断。docker.sock 非マウント確認 |
 | S3b | broker 配置               | PASS | `--internal` から host も host.docker.internal も不可 → broker は **internal + external の dual-homed sidecar** に確定。sidecar は `ca-certificates` 必須 |
-| S1  | ephemeral broker 疎通     | PASS | ホスト + コンテナ内（dual-homed sidecar + internal-only scenario）で `claude -p` 完走・`result:"OK"`。broker が dummy キー→実 Bearer + `anthropic-beta:oauth` 注入。endpoint は `/v1/messages` のみ、SSE 素通し可、usage/cost 取得可。broker 無し dummy キー直アクセスは 401（broker が認証を担う証明）。scenario container の直 egress は遮断（exit 6） |
+| S1  | ephemeral broker 疎通     | PASS | ホスト + コンテナ内（dual-homed sidecar + internal-only scenario）で `claude -p` 完走・`result:"OK"`。broker が dummy キー→Max OAuth Bearerへ交換し、`oauth-2025-04-20` + 固定 CLI の既知 client beta のみを転送。endpoint は `/v1/messages` のみ、SSE 素通し可、usage/cost 取得可。broker 無し dummy キー直アクセスは 401（broker が認証を担う証明）。scenario container の直 egress は遮断（exit 6） |
 | S2  | L1 最小化 OAuth（fallback） | SKIP | S1 PASS のため不要                                                                                       |
 
 **結論**: 案B（Docker + ephemeral broker）成立。broker はコンテナ内に実 token を置かず `ANTHROPIC_BASE_URL`
@@ -1860,7 +1967,7 @@ Phase 1b で初めて実 `claude -p` 呼び出しを含む evaluator を実装�
 | 4   | self-report 欠落時のペナルティ（`penalty_missing_report`）を新設                                                            | 自己申告の欠落を無罰にすると「自己申告を抑制する」reward hacking が成立するため                   |
 | 5   | holdout の物理分離（`.claude/meta-harness/holdout/runs/`）                                                                  | proposer のアクセス範囲から機械的に排除し、過学習ガードの実効性を担保するため                     |
 | 6   | run metadata schema（§1-6）新設。hash 群を frontier/ledger に反映                                                           | frontier 比較の前提となる suite/evaluator の同一性を検証可能にするため                            |
-| 7   | lock を全 writer に拡張（`store.lock` + heartbeat 付き `evaluate.lock`）                                                    | register/promote/frontier --rebuild/purge も ledger・frontier.json に書き込むため                 |
+| 7   | lock を全 writer に拡張（`store.lock` + heartbeat 付き `evaluate.lock`）                                                    | register/promote/frontier --rebuild/purge も ledger・target 別 frontier cache に書き込むため       |
 | 8   | run_id に `cand_slug` + `nonce` を追加                                                                                      | 並行 attempt での run_id 衝突を防ぐため                                                           |
 | 9   | holdout を filtered view 方式で物理隔離                                                                                     | パス一覧除外だけでは proposer が Glob/Read で到達しうるため                                       |
 | 10  | CLI capability gate（§2-7）を新設                                                                                           | バージョン不一致・フラグ非対応時のサイレントな評価劣化を fail-closed で防ぐため                   |
@@ -2374,7 +2481,9 @@ fail-closed とし、以下すべてを満たさなければ exit 2 とする。
 5. 候補 store 上の overlay 内容から再計算した `config_hash` が manifest の `config_hash` と一致する
    （不一致 = 登録後改ざんまたは store 破損として拒否する）。
 6. **鮮度チェック**: `<source_commit>` が `origin/main` の ancestor であり、その上で
-   `git diff <source_commit>..origin/main -- <overlay 対象パス>` が空であること。
+   `git diff <source_commit>..origin/main -- <overlay 対象パス>` が空であること。skill target では
+   overlay path に加え、baseline の `facets/compositions/skills/<slug>.yaml` と、その時点の closure
+   解決入力全体が不変であることも検証する。
    差分があれば「facet ソースが候補作成後に変更されている」ため中止し、新 `source_commit` での
    再登録・再評価を案内する（`promote.allow_stale: false` が既定。`true` で path 差分だけを
    警告に緩和できるが、ancestor 条件は緩和しない）。
@@ -2550,8 +2659,8 @@ propose/evaluate 成果物は通常どおり store に残る（部分的な作�
 | パラメータ                            | 旧仮既定値     | 実測反映後                                                                                                                                                                                                                                                                              |
 | ------------------------------------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `scenario_run.max_budget_usd_default` | 2.0            | **3.0 に引き上げ**。軽量な実務タスク（README 要約程度、2 turn）で `total_cost_usd=1.20`（cache creation 49,699 tokens・cache read 77,250 tokens が支配的）を実測。2.0 のままだと余裕が小さく、後述のオーバーシュート挙動と合わせて打ち切りリスクがあるため 3.0 に補正                   |
-| `proposer.budget_usd_per_iteration`   | 1.0            | **実測不能（据え置き、要再検証）**。proposer は `--bare` 前提だが本環境に `ANTHROPIC_API_KEY`/`apiKeyHelper` が無く `--bare` が認証エラーで動作しなかったため実測できていない。`--bare` は CLAUDE.md 自動読込・hooks 等を省略するため scenario_run より固定費が低い可能性が高いが未検証 |
-| `loop.budget_usd`（既定 null）        | null（未設定） | **据え置き（未設定のまま）**。proposer 実測が済んでいないため算出根拠がない                                                                                                                                                                                                             |
+| `proposer.budget_usd_per_iteration`   | 1.0            | **設定値は据え置くが、既定 proposer は `codex exec` + ChatGPT OAuth**。Codex backend は信頼できる `cost_usd` を返さないため ledger には 0.0 を記録し、金額上限ではなく `max_iterations` / timeout で制御する。Claude API key は要求しない                                                                     |
+| `loop.budget_usd`（既定 null）        | null（未設定） | **据え置き（未設定のまま）**。Codex proposer の金額実測値が無いため、捏造した cost を停止判定へ使わない                                                                                                                                                                                   |
 | `evaluate.repeat_frontier`            | 3              | **据え置き**。ただし repeat_frontier=3 を踏まえると 1 候補・1 シナリオあたり `scenario_run` コストだけで最大 $3.6〜$4 程度に達する見込み（$1.2 × 3）                                                                                                                                    |
 | シナリオ suite の規模（何本が適正か） | 未確定         | **1 本あたり $1.2〜$2 程度を目安に見積もる**。suite 本数 × repeat_frontier × 単価でコスト予算を計算すること                                                                                                                                                                             |
 

@@ -117,6 +117,22 @@ class TestLoopArgparseContract:
 
 
 class TestValidationErrorExitCodes:
+    def test_frontier_invalid_target_exits_2(self, git_project: Path, run_meta) -> None:
+        run_meta("init", project=git_project, check=True)
+
+        result = run_meta("frontier", "--target", "skill:Invalid", project=git_project, check=False)
+
+        assert result.returncode == 2
+        assert "unknown target" in result.stderr
+
+    def test_status_invalid_target_exits_2(self, git_project: Path, run_meta) -> None:
+        run_meta("init", project=git_project, check=True)
+
+        result = run_meta("status", "--target", "skill:Invalid", project=git_project, check=False)
+
+        assert result.returncode == 2
+        assert "unknown target" in result.stderr
+
     def test_register_malformed_config_patch_json_exits_2_not_1(
         self, git_project: Path, run_meta, tmp_path: Path, make_overlay
     ) -> None:

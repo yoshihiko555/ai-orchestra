@@ -285,7 +285,7 @@ def test_partial_train_run_is_not_treated_as_complete(git_project: Path) -> None
     )
     scenarios = [loop_cli.ev.load_scenario(path, loop_cli._SCHEMA_DIR) for path in paths]
     suite_hash = loop_cli.ev.compute_suite_hash(paths)
-    evaluator_hash = loop_cli.ev.compute_evaluator_hash(config.get("scoring") or {})
+    evaluator_hash = loop_cli.ev.compute_configured_evaluator_hash(config)
     for scenario in scenarios:
         assert scenario["holdout"] is False
     _append_run(
@@ -313,6 +313,48 @@ def test_partial_train_run_is_not_treated_as_complete(git_project: Path) -> None
     assert loop_cli._evaluation_complete(
         _events(git_project, config), config, spec.target, cand_id, holdout=False
     )
+
+
+def test_evaluate_candidate_hash_matches_loop_current_scope(git_project: Path, monkeypatch) -> None:
+    config = _config()
+    config["evaluate"].update(
+        {
+            "allowed_tools": ["Read"],
+            "permission_mode": "dontAsk",
+            "model": "scope-test-model",
+        }
+    )
+    config["scenario_run"]["max_output_tokens_default"] = 1234
+    captured_hashes: list[str] = []
+
+    monkeypatch.setattr(loop_cli.ev.siso, "execution_boundary_available", lambda _config: True)
+
+    def fake_run_single_attempt(**kwargs):
+        captured_hashes.append(kwargs["evaluator_hash"])
+        return {"evaluator_hash": kwargs["evaluator_hash"]}
+
+    monkeypatch.setattr(loop_cli.ev, "run_single_attempt", fake_run_single_attempt)
+    scenario_path = loop_cli.ev.discover_scenario_paths(
+        loop_cli.ev.scenario_suite_dir(loop_cli._PACKAGE_DIR, "claude-harness")
+    )[0]
+    scenario_id = loop_cli.ev.load_scenario(scenario_path, loop_cli._SCHEMA_DIR)["id"]
+
+    results = loop_cli.ev.evaluate_candidate(
+        main_root=git_project,
+        config=config,
+        schema_dir=loop_cli._SCHEMA_DIR,
+        package_dir=loop_cli._PACKAGE_DIR,
+        project_dir=git_project,
+        cand_id="candidate",
+        manifest={"target": "claude-harness"},
+        scenario_ids=[scenario_id],
+        repeat_override=1,
+        cli_capabilities={},
+    )
+
+    loop_hash = loop_cli.state.current_hash_pair(config, "claude-harness")[1]
+    assert captured_hashes == [loop_hash]
+    assert results == [{"evaluator_hash": loop_hash}]
 
 
 def test_stale_hash_run_does_not_change_loop_quality_or_frontier(git_project: Path) -> None:
@@ -714,6 +756,7 @@ def test_report_failure_does_not_append_conflicting_error_stop(
             "event": "frontier_updated",
             "ts": mh.now_iso(),
             "schema_version": "1.0",
+            "target": "claude-harness",
             "frontier": ["cand-20260711-130000-later-abcd"],
             "dominated": [],
         },
@@ -751,6 +794,21 @@ id: review
 target: skill:review
 description: review skill scenario
 prompt: review the fixture
+critical:
+  - id: output
+    text: output exists
+    oracle: artifact_exists
+    path: output.md
+""",
+        encoding="utf-8",
+    )
+    (suite / "review-holdout.yaml").write_text(
+        """schema_version: "1.0"
+id: review-holdout
+target: skill:review
+description: review skill holdout scenario
+prompt: review the holdout fixture
+holdout: true
 critical:
   - id: output
     text: output exists

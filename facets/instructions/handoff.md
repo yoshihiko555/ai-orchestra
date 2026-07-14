@@ -26,7 +26,7 @@
 `scripts/handoff.py` を実行して構造化データを収集する:
 
 ```bash
-python .claude/skills/handoff/scripts/handoff.py
+python3 .claude/skills/handoff/scripts/handoff.py
 ```
 
 スクリプトが JSON を stdout に出力する。内容:

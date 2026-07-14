@@ -153,7 +153,7 @@ class TestProposerPrompt:
             frontier_doc=None,
             config={},
             package_dir=PACKAGE_DIR,
-            target="skill:example",
+            target="claude-harness",
         )
 
         assert "focus runs（優先分析対象）: (none)" in prompt

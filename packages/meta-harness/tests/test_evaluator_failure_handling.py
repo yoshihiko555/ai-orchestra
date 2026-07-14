@@ -103,7 +103,7 @@ class TestEachStageFailureForcesErrorVerdict:
         エラー分類（`overlay_apply`/`overlay_error`）まで到達させて検証する（従来は無効な
         commit で worktree_create が先に失敗し、overlay ステージに一度も到達しなかった）。"""
 
-        def failing_apply_overlay(overlay_dir, config, worktree_dir, schema_dir):
+        def failing_apply_overlay(overlay_dir, config, worktree_dir, schema_dir, **_kwargs):
             raise ev.EvaluatorStageError("overlay_apply", "overlay_error", "forced")
 
         monkeypatch.setattr(ev, "apply_overlay", failing_apply_overlay)
@@ -242,7 +242,7 @@ class TestJudgeErrorForcesRunVerdictError:
     def _run_with_rubric_judge(
         self, git_project: Path, monkeypatch, *, judge_check_is_critical: bool
     ) -> dict:
-        def noop_overlay(overlay_dir, config, worktree_dir, schema_dir):
+        def noop_overlay(overlay_dir, config, worktree_dir, schema_dir, **_kwargs):
             return None
 
         def noop_build(worktree_dir, **_kwargs):

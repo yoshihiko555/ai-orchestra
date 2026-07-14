@@ -530,7 +530,8 @@ def _codex_source_home(tmp_path: Path, *, exp_epoch: int) -> Path:
 
 class TestCodexAuthMinimization:
     def test_staged_auth_strips_long_lived_credentials(self, tmp_path: Path) -> None:
-        source = _codex_source_home(tmp_path, exp_epoch=int(time.time()) + 86400)
+        exp_epoch = int(time.time()) + 86400
+        source = _codex_source_home(tmp_path, exp_epoch=exp_epoch)
 
         with backend.temporary_codex_home(source_home=source, min_token_ttl_seconds=600) as home:
             staged = json.loads((home / "auth.json").read_text(encoding="utf-8"))
@@ -539,7 +540,7 @@ class TestCodexAuthMinimization:
         refresh = staged["tokens"]["refresh_token"]
         assert refresh.startswith(backend.CODEX_AUTH_CANARY_PREFIX)
         assert refresh != "real-refresh-token-value"
-        assert staged["tokens"]["access_token"] == _fake_jwt(int(time.time()) + 86400)
+        assert staged["tokens"]["access_token"] == _fake_jwt(exp_epoch)
         assert staged["tokens"]["account_id"] == "account-1234"
 
     def test_expiring_access_token_fails_closed(self, tmp_path: Path) -> None:

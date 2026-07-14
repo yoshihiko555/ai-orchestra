@@ -7,6 +7,7 @@
   priority: must
   oracle: command_exit
   command: >-
+    META_HARNESS_REQUIRE_DOCKER=1 META_HARNESS_RUN_SUBSCRIPTION_E2E=1
     AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
     packages/meta-harness/tests/test_filtered_view.py::TestFilteredViewBuilder::test_build_filtered_view_projects_non_holdout_store_and_baseline
     packages/meta-harness/tests/test_filtered_view.py::TestFilteredViewSelfVerification::test_holdout_ledger_row_in_view_fails_closed
@@ -107,6 +108,7 @@
     packages/meta-harness/tests/test_promote_cli.py::test_promote_rejects_when_latest_holdout_failed
     packages/meta-harness/tests/test_promote_cli.py::test_promote_rejects_when_latest_holdout_hashes_are_stale
     packages/meta-harness/tests/test_promote_cli.py::test_freshness_rejects_source_commit_outside_main
+    packages/meta-harness/tests/test_promote_cli.py::test_invalid_manifest_target_raises_promotion_validation_error
     packages/meta-harness/tests/test_evaluator_scoring_and_verdict.py::TestEvaluatorHash
   covered_by:
     - packages/meta-harness/tests/test_promote_cli.py::test_promote_rejects_unevaluated_candidate
@@ -118,8 +120,9 @@
     - packages/meta-harness/tests/test_promote_cli.py::test_promote_rejects_when_latest_holdout_failed
     - packages/meta-harness/tests/test_promote_cli.py::test_promote_rejects_when_latest_holdout_hashes_are_stale
     - packages/meta-harness/tests/test_promote_cli.py::test_freshness_rejects_source_commit_outside_main
+    - packages/meta-harness/tests/test_promote_cli.py::test_invalid_manifest_target_raises_promotion_validation_error
     - packages/meta-harness/tests/test_evaluator_scoring_and_verdict.py::TestEvaluatorHash
-  notes: all Sec12-1 preconditions fail closed before PR creation or reservation side effects; evaluator hash changes when Docker execution semantics change.
+  notes: all Sec12-1 preconditions fail closed before PR creation or reservation side effects (including an invalid manifest target, normalized to PromotionValidationError); evaluator hash changes when Docker execution semantics change.
 
 - ev_id: EV-39
   phase: 2
@@ -192,9 +195,17 @@
   command: >-
     AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
     packages/meta-harness/tests/test_propose_cli.py::test_propose_registers_candidate_from_stubbed_codex_backend
+    packages/meta-harness/tests/test_propose_cli.py::test_register_proposed_candidate_converts_parent_overlay_stage_error
+    packages/meta-harness/tests/test_propose_cli.py::test_run_propose_pipeline_converts_parent_overlay_stage_error
   covered_by:
     - packages/meta-harness/tests/test_propose_cli.py::test_propose_registers_candidate_from_stubbed_codex_backend
-  notes: proposer children retain unchanged parent overlay files while replacing proposal paths.
+    - packages/meta-harness/tests/test_propose_cli.py::test_register_proposed_candidate_converts_parent_overlay_stage_error
+    - packages/meta-harness/tests/test_propose_cli.py::test_run_propose_pipeline_converts_parent_overlay_stage_error
+  notes: >-
+    proposer children retain unchanged parent overlay files while replacing proposal paths;
+    an EvaluatorStageError raised while applying the parent's registered overlay is normalized
+    to prop.ProposerError (not leaked as a raw RuntimeError past cmd_propose), both from
+    _register_proposed_candidate and from _run_propose_pipeline.
 
 - ev_id: EV-45
   phase: 2
@@ -344,3 +355,95 @@
     request admission, usage-based budget cap, active-stream/host-session
     keepalive, anomaly accounting, broker lifecycle cleanup, and broker-routed
     containerized claude-bare judge are covered.
+
+- ev_id: EV-48
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_target_isolation.py
+    packages/meta-harness/tests/test_skill_scenarios.py::test_skill_suites_have_one_train_and_one_holdout
+    packages/meta-harness/tests/test_cli_exit_codes.py::TestValidationErrorExitCodes::test_frontier_invalid_target_exits_2
+    packages/meta-harness/tests/test_cli_exit_codes.py::TestValidationErrorExitCodes::test_status_invalid_target_exits_2
+  covered_by:
+    - packages/meta-harness/tests/test_target_isolation.py
+    - packages/meta-harness/tests/test_skill_scenarios.py::test_skill_suites_have_one_train_and_one_holdout
+    - packages/meta-harness/tests/test_cli_exit_codes.py::TestValidationErrorExitCodes::test_frontier_invalid_target_exits_2
+    - packages/meta-harness/tests/test_cli_exit_codes.py::TestValidationErrorExitCodes::test_status_invalid_target_exits_2
+  notes: >-
+    target-specific cache migration, aggregation, proposer visibility, and suite ownership are
+    isolated; malformed target slugs are rejected up front by the shared mh.validate_target gate
+    for frontier/status, returning exit 2 instead of a traceback.
+
+- ev_id: EV-49
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_skill_targets.py
+    packages/meta-harness/tests/test_promote_cli.py::test_freshness_rejects_changed_skill_closure
+  covered_by:
+    - packages/meta-harness/tests/test_skill_targets.py
+    - packages/meta-harness/tests/test_promote_cli.py::test_freshness_rejects_changed_skill_closure
+  notes: >-
+    Full closure resolution, private-only staging, source-commit authority,
+    no same-candidate self-expansion, parent lineage, traversal/symlink rejection,
+    and promotion freshness are covered.
+
+- ev_id: EV-50
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_target_isolation.py::TestPurgeTargetUnion::test_candidates_on_each_target_frontier_are_protected
+  covered_by:
+    - packages/meta-harness/tests/test_target_isolation.py::TestPurgeTargetUnion::test_candidates_on_each_target_frontier_are_protected
+  notes: purge recomputes every ledger target and protects the union rather than enumerating caches.
+
+- ev_id: EV-51
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_evaluator_headless_run.py::TestScenarioExecutionEnvelope
+    packages/meta-harness/tests/test_evaluator_artifacts.py::TestHoldoutPhysicalSeparation::test_metadata_records_finished_at_after_completion
+  covered_by:
+    - packages/meta-harness/tests/test_evaluator_headless_run.py::TestScenarioExecutionEnvelope
+    - packages/meta-harness/tests/test_evaluator_artifacts.py::TestHoldoutPhysicalSeparation::test_metadata_records_finished_at_after_completion
+  notes: explicit empty permissions, model tool exposure, output cap, evaluator hash, and run metadata are covered.
+
+- ev_id: EV-52
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_skill_scenarios.py
+    packages/meta-harness/tests/test_evaluator_headless_run.py::TestSkillActivationEvidence
+    packages/meta-harness/tests/test_scenario_broker.py::test_two_1024_token_requests_fit_three_dollar_run_budget
+    packages/meta-harness/tests/test_skill_target_docker_e2e.py::test_handoff_bootstrap_and_missing_activation_fail_closed
+  covered_by:
+    - packages/meta-harness/tests/test_skill_scenarios.py
+    - packages/meta-harness/tests/test_evaluator_headless_run.py::TestSkillActivationEvidence
+    - packages/meta-harness/tests/test_scenario_broker.py::test_two_1024_token_requests_fit_three_dollar_run_budget
+    - packages/meta-harness/tests/test_skill_target_docker_e2e.py::test_handoff_bootstrap_and_missing_activation_fail_closed
+  notes: >-
+    Train/holdout ownership and critical scenarios are schema-validated, slash
+    registration plus actual tool use is required per run, and two 1024-token
+    requests fit the three-dollar broker envelope. The opt-in Docker check uses
+    Max OAuth for a real handoff bootstrap and verifies missing activation fails closed.
+
+- ev_id: EV-53
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_skill_targets.py::TestRepositorySkillClosures::test_regression_enabled_fails_closed_until_evaluator_exists
+  covered_by:
+    - packages/meta-harness/tests/test_skill_targets.py::TestRepositorySkillClosures::test_regression_enabled_fails_closed_until_evaluator_exists
+  notes: PR1 rejects regression.enabled=true instead of enabling shared facet changes without regression evaluation.

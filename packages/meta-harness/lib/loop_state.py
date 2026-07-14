@@ -299,7 +299,7 @@ def _scenario_context(
         expected_ids,
         repeat,
         ev.compute_suite_hash(paths),
-        ev.compute_evaluator_hash(config.get("scoring") or {}),
+        ev.compute_configured_evaluator_hash(config),
         scenario_hashes,
     )
 

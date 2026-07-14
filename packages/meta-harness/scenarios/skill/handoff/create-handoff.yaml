@@ -1,0 +1,41 @@
+schema_version: "1.0"
+id: create-handoff
+target: skill:handoff
+description: Generate a restartable Codex handoff from an in-progress implementation task.
+prompt: |
+  /handoff --message "Continue the parser implementation. Run python3 -m pytest -q tests/test_parser.py, then inspect git diff. Do not push."
+
+  Treat the quoted message as the current task. Generate the handoff now without asking a follow-up question.
+setup:
+  - "mkdir -p .meta-harness .claude/handoffs"
+  - >-
+    printf '# Plans\n\n- `cc:WIP` Continue parser implementation\n- `cc:TODO` Run parser validation\n'
+    > .claude/Plans.md
+  - "touch -t 200001010000 .meta-harness/handoff-start"
+allowed_tools:
+  - "Bash(python3 *)"
+  - "Write"
+command_timeout_ms: 60000
+critical:
+  - id: handoff-file-created
+    text: ".claude/handoffs/ 配下に新しい handoff ファイルが生成される"
+    oracle: command_exit
+    command: >-
+      find .claude/handoffs -type f -newer .meta-harness/handoff-start -print -quit | grep -q .
+  - id: handoff-is-restartable
+    text: "現在状態・残作業・検証手順を含み、引き継ぎ先が単独で再開できる"
+    oracle: command_exit
+    command: >-
+      python3 -c "from pathlib import Path; m=Path('.meta-harness/handoff-start').stat().st_mtime; ps=[p for p in Path('.claude/handoffs').glob('*.md') if p.stat().st_mtime > m]; p=max(ps, key=lambda x:x.stat().st_mtime); s=p.read_text(); assert 'Current Task State' in s and ('Next Up' in s or 'TODO' in s) and ('pytest' in s or 'Validation' in s)"
+checks:
+  - id: handoff-content-quality
+    text: "引き継ぎ文書が簡潔で、次の担当者が追加の会話なしに行動できる"
+    oracle: rubric_judge
+    rubric: "The newest handoff file must clearly state current progress, concrete next work, constraints, and a validation command."
+holdout: false
+timeout_ms: 300000
+budget:
+  max_turns: 8
+  max_budget_usd: 3.0
+  max_output_tokens: 1024
+repeat: 1

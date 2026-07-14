@@ -18,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`meta-harness`: `target=skill:<slug>` の探索・評価に対応**: skill ごとの scenario suite、target 別 frontier、composition closure に限定した安全な overlay、`handoff` / `issue-create` の train・holdout 評価を追加。skill-evolution の trigger 出力から `orchex meta propose` へ疎結合で誘導する。
 - **`git-workflow`: `/review-respond` スキルを追加**: カレントブランチの PR に付いた bot レビュー指摘（CodeRabbit/Codex 等）を `pr_review_threads.py` で取得し、分類・修正・push・返信・スレッド解決までを単発実行で自動対応する。
 
 - **`meta-harness`: `orchex meta loop`（Phase 3）を追加**: `propose` と `evaluate` を ledger 駆動で自動反復し、予算・反復上限・発散・収束で停止する。`--resume` は中断時の孤児候補を含む状態を ledger から復元する。
@@ -43,9 +44,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`meta-harness` / `skill-evolution`: 無効な候補・target 入力で CLI が例外終了する問題を修正**: validation error として終了コード 2 を返し、skill 改善提案には対象プロジェクトを明示するようにした。
+
 - **`reverse`: Python 3.12 でスキャンスクリプトが失敗する問題を修正**: Python 3.13 で追加された `pathlib` API への依存を除き、シンボリックリンクを辿らない既存挙動を維持したままサポート対象の Python 3.12 で実行できるようにした。
 
-- **`meta-harness`: Docker broker が Claude CLI の `?beta=true` を拒否する問題を修正**: 既知queryを保持して Anthropic API へ中継し、Docker backend の scenario 実行が正常に完走するようにした。
+- **`meta-harness`: Docker broker が Claude CLI の既知トラフィックを拒否する問題を修正**: `?beta=true` と pin 済み CLI の client beta を allowlist で中継し、`/messages` と `/messages/count_tokens` の重なりを同時 upstream 1件のまま直列化して、Docker backend の scenario 実行が正常に完走するようにした。
 
 - **`cli-tools.yaml` の旧 `gemini.enabled: false` が明示設定済みの `antigravity.enabled` を無条件に上書きしていた問題を修正**: 両キーが競合する場合は `antigravity.enabled` を優先するようにした。旧 `gemini.enabled: false` は `antigravity.enabled` が未設定の場合のみ後方互換フォールバックとして働く。base 設定が `antigravity.enabled` を既定で明示している通常の移行済みプロジェクトでも、`.local.yaml` の旧 `gemini.enabled: false` だけによる無効化が正しく機能するようにした。
 

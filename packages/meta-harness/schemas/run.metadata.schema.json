@@ -22,6 +22,12 @@
     "model",
     "claude_version",
     "cli_capabilities",
+    "allowed_tools",
+    "allowed_tools_source",
+    "model_tools",
+    "max_output_tokens",
+    "max_output_tokens_source",
+    "path_prepend",
     "started_at",
     "attempt",
     "attempts_total"
@@ -50,6 +56,16 @@
     "model": { "type": ["string", "null"] },
     "claude_version": { "type": "string" },
     "cli_capabilities": { "type": "object" },
+    "allowed_tools": { "type": "array", "items": { "type": "string" } },
+    "allowed_tools_source": { "type": "string", "enum": ["scenario", "global"] },
+    "model_tools": { "type": "array", "items": { "type": "string" } },
+    "max_output_tokens": { "type": "integer", "minimum": 1 },
+    "max_output_tokens_source": { "type": "string", "enum": ["scenario", "global"] },
+    "path_prepend": {
+      "type": "array",
+      "items": { "type": "string" },
+      "uniqueItems": true
+    },
     "isolation": {
       "type": "object",
       "required": ["backend", "platform_profile_input_sha256"],

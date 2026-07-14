@@ -23,7 +23,9 @@ class TestValidateOverlayAccepts:
         (overlay_dir / "facets" / "foo").mkdir(parents=True)
         (overlay_dir / "facets" / "foo" / "SKILL.md").write_text("ok", encoding="utf-8")
 
-        assert mh.validate_overlay(overlay_dir, _DEFAULT_OVERLAY_CONFIG) == []
+        assert (
+            mh.validate_overlay(overlay_dir, _DEFAULT_OVERLAY_CONFIG, target="claude-harness") == []
+        )
 
 
 class TestValidateOverlayFileUnit:
@@ -53,7 +55,7 @@ class TestValidateOverlayRejects:
         symlink_path = overlay_dir / "facets" / "linked.txt"
         symlink_path.symlink_to(target)
 
-        errors = mh.validate_overlay(overlay_dir, _DEFAULT_OVERLAY_CONFIG)
+        errors = mh.validate_overlay(overlay_dir, _DEFAULT_OVERLAY_CONFIG, target="claude-harness")
 
         assert any("symlink" in e for e in errors)
 
@@ -63,7 +65,7 @@ class TestValidateOverlayRejects:
         (overlay_dir / "not-facets").mkdir(parents=True)
         (overlay_dir / "not-facets" / "file.txt").write_text("x", encoding="utf-8")
 
-        errors = mh.validate_overlay(overlay_dir, _DEFAULT_OVERLAY_CONFIG)
+        errors = mh.validate_overlay(overlay_dir, _DEFAULT_OVERLAY_CONFIG, target="claude-harness")
 
         assert any("outside allowed prefixes" in e for e in errors)
 
@@ -79,7 +81,7 @@ class TestValidateOverlayRejects:
             }
         }
 
-        errors = mh.validate_overlay(overlay_dir, config)
+        errors = mh.validate_overlay(overlay_dir, config, target="claude-harness")
 
         assert any("denied prefix" in e for e in errors)
 
@@ -91,13 +93,17 @@ class TestValidateOverlayRejects:
         (overlay_dir / "packages" / "meta-harness").mkdir(parents=True)
         (overlay_dir / "packages" / "meta-harness" / "hack.py").write_text("x", encoding="utf-8")
 
-        errors = mh.validate_overlay(overlay_dir, _DEFAULT_OVERLAY_CONFIG)
+        errors = mh.validate_overlay(overlay_dir, _DEFAULT_OVERLAY_CONFIG, target="claude-harness")
 
         # allowed_prefixes ("facets/") にも合致しないため、少なくとも1つエラーが出る
         assert errors != []
 
     def test_nonexistent_overlay_dir_is_rejected(self, tmp_path: Path) -> None:
-        errors = mh.validate_overlay(tmp_path / "does-not-exist", _DEFAULT_OVERLAY_CONFIG)
+        errors = mh.validate_overlay(
+            tmp_path / "does-not-exist",
+            _DEFAULT_OVERLAY_CONFIG,
+            target="claude-harness",
+        )
         assert any("does not exist" in e for e in errors)
 
     # PR #162 レビュー指摘 (FIX D): config-patch.json という予約サイドカー名であっても、
@@ -112,7 +118,7 @@ class TestValidateOverlayRejects:
         symlink_path = overlay_dir / mh.CONFIG_PATCH_FILENAME
         symlink_path.symlink_to(outside_target)
 
-        errors = mh.validate_overlay(overlay_dir, _DEFAULT_OVERLAY_CONFIG)
+        errors = mh.validate_overlay(overlay_dir, _DEFAULT_OVERLAY_CONFIG, target="claude-harness")
 
         assert any("symlink" in e for e in errors)
 

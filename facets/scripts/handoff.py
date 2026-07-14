@@ -8,7 +8,7 @@ Outputs JSON to stdout with:
 - Working context (modified files)
 
 Usage:
-    python handoff.py [--project-dir PATH]
+    python3 handoff.py [--project-dir PATH]
 """
 
 from __future__ import annotations

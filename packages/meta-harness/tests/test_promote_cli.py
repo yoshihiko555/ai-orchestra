@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -195,7 +197,7 @@ def test_promote_rejects_stale_hash_pair(
 ) -> None:
     cand_id = _prepare_promotable_candidate(git_project, git_run, tmp_path)
 
-    def stale_frontier(_events, _config):
+    def stale_frontier(_events, _config, _target):
         return {
             "suite_hash": "e" * 64,
             "evaluator_hash": "f" * 64,
@@ -221,6 +223,31 @@ def test_promote_rejects_unevaluated_candidate(git_project: Path, git_run, tmp_p
 
     assert exit_code == cli.EXIT_VALIDATION_ERROR
     assert not any(event.get("event") == "promotion_reserved" for event in _events(git_project))
+
+
+def test_invalid_manifest_target_raises_promotion_validation_error(
+    git_project: Path, git_run, tmp_path: Path
+) -> None:
+    cand_id = _prepare_promotable_candidate(git_project, git_run, tmp_path)
+    config = mh.load_config(git_project)
+    manifest_path = mh.candidates_dir(git_project, config) / cand_id / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest_path.write_text(
+        json.dumps({**manifest, "target": "skill:Invalid"}) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        cli.prm.PromotionValidationError,
+        match="candidate manifest has invalid target",
+    ):
+        cli.prm._validate_preconditions(
+            git_project,
+            config,
+            git_project,
+            cand_id,
+            _events(git_project),
+        )
 
 
 def test_promote_rejects_candidate_with_secret_in_overlay(
@@ -462,7 +489,9 @@ def test_promote_opens_pr_without_marking_candidate_promoted(
         return _completed(args)
 
     monkeypatch.setattr(cli.prm, "_ref_exists", lambda _project, _ref: True)
-    monkeypatch.setattr(cli.prm, "_check_freshness", lambda _project, _manifest, _config: None)
+    monkeypatch.setattr(
+        cli.prm, "_check_freshness", lambda _root, _project, _manifest, _config: None
+    )
     monkeypatch.setattr(cli.prm, "_find_open_pr_for_branch", lambda _project, _branch: None)
     monkeypatch.setattr(cli.prm, "_create_promotion_worktree", fake_worktree)
     monkeypatch.setattr(cli.prm.ev, "build_facet_and_context", lambda _worktree, runner: None)
@@ -499,7 +528,9 @@ def test_failed_promote_cleans_worktree_and_branch_then_retry_succeeds(
             raise cli.prm.PromotionRuntimeError("verify failed")
 
     monkeypatch.setattr(cli.prm, "_ref_exists", lambda _project, _ref: True)
-    monkeypatch.setattr(cli.prm, "_check_freshness", lambda _project, _manifest, _config: None)
+    monkeypatch.setattr(
+        cli.prm, "_check_freshness", lambda _root, _project, _manifest, _config: None
+    )
     monkeypatch.setattr(cli.prm, "_find_open_pr_for_branch", lambda _project, _branch: None)
     monkeypatch.setattr(cli.prm, "_create_promotion_worktree", fake_worktree)
     monkeypatch.setattr(cli.prm.ev, "build_facet_and_context", lambda _worktree, runner: None)
@@ -577,7 +608,9 @@ def test_pr_created_but_opened_record_fails_keeps_reservation(
         raise cli.prm.PromotionValidationError("ledger schema rejected event")
 
     monkeypatch.setattr(cli.prm, "_ref_exists", lambda _project, _ref: True)
-    monkeypatch.setattr(cli.prm, "_check_freshness", lambda _project, _manifest, _config: None)
+    monkeypatch.setattr(
+        cli.prm, "_check_freshness", lambda _root, _project, _manifest, _config: None
+    )
     monkeypatch.setattr(cli.prm, "_find_open_pr_for_branch", lambda _project, _branch: None)
     monkeypatch.setattr(
         cli.prm,
@@ -622,7 +655,9 @@ def test_stale_takeover_reuses_existing_open_pr(
     )
 
     monkeypatch.setattr(cli.prm, "_is_stale", lambda _ts, _config: True)
-    monkeypatch.setattr(cli.prm, "_check_freshness", lambda _project, _manifest, _config: None)
+    monkeypatch.setattr(
+        cli.prm, "_check_freshness", lambda _root, _project, _manifest, _config: None
+    )
     monkeypatch.setattr(
         cli.prm,
         "_find_open_pr_for_branch",
@@ -773,7 +808,31 @@ def test_freshness_rejects_source_commit_outside_main(git_project: Path, monkeyp
     monkeypatch.setattr(cli.prm, "_is_ancestor", lambda *_args: False)
 
     with pytest.raises(cli.prm.PromotionValidationError, match="not an ancestor"):
-        cli.prm._check_freshness(git_project, manifest, mh.DEFAULTS)
+        cli.prm._check_freshness(git_project, git_project, manifest, mh.DEFAULTS)
+
+
+def test_freshness_rejects_changed_skill_closure(git_project: Path, monkeypatch) -> None:
+    source_commit = "a" * 40
+    manifest = {
+        "cand_id": _CAND_ID,
+        "parent_id": None,
+        "source_commit": source_commit,
+        "target": "skill:handoff",
+        "target_closure_hash": "0" * 64,
+        "overlay_files": [],
+    }
+    repository = Path(__file__).resolve().parents[3]
+
+    @contextmanager
+    def baseline(*_args, **_kwargs):
+        yield repository
+
+    monkeypatch.setattr(cli.prm, "_ref_exists", lambda *_args: True)
+    monkeypatch.setattr(cli.prm, "_is_ancestor", lambda *_args: True)
+    monkeypatch.setattr(cli.prm.skill_targets, "materialized_baseline", baseline)
+
+    with pytest.raises(cli.prm.PromotionValidationError, match="closure inputs changed"):
+        cli.prm._check_freshness(git_project, git_project, manifest, mh.DEFAULTS)
 
 
 def test_promote_pr_body_fences_proposer_text() -> None:

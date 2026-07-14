@@ -273,7 +273,7 @@ class TestFrontierCliRebuildVsCache:
         self, git_project: Path, run_meta
     ) -> None:
         run_meta("init", project=git_project, check=True)
-        frontier_path = git_project / ".claude" / "meta-harness" / "frontier.json"
+        frontier_path = git_project / ".claude" / "meta-harness" / "frontier-claude-harness.json"
         cached_before = json.loads(frontier_path.read_text(encoding="utf-8"))
 
         config = mh.load_config(git_project)
@@ -314,7 +314,9 @@ class TestFrontierCliRebuildVsCache:
 
         assert payload["frontier"] == ["c1"]
         cached_after = json.loads(
-            (git_project / ".claude" / "meta-harness" / "frontier.json").read_text(encoding="utf-8")
+            (git_project / ".claude" / "meta-harness" / "frontier-claude-harness.json").read_text(
+                encoding="utf-8"
+            )
         )
         assert cached_after["frontier"] == ["c1"]
 
@@ -325,7 +327,9 @@ class TestFrontierCliRebuildVsCache:
             .splitlines()
             if line.strip()
         ]
-        assert any(e["event"] == "frontier_updated" for e in events)
+        frontier_events = [e for e in events if e["event"] == "frontier_updated"]
+        assert len(frontier_events) == 1
+        assert frontier_events[0]["target"] == "claude-harness"
 
     def test_frontier_json_matches_frontier_schema(self, git_project: Path, run_meta) -> None:
         run_meta("init", project=git_project, check=True)
@@ -336,7 +340,9 @@ class TestFrontierCliRebuildVsCache:
         schema_dir = Path(__file__).resolve().parents[3] / "packages" / "meta-harness" / "schemas"
         schema = mh.load_schema(schema_dir, "frontier.schema.json")
         doc = json.loads(
-            (git_project / ".claude" / "meta-harness" / "frontier.json").read_text(encoding="utf-8")
+            (git_project / ".claude" / "meta-harness" / "frontier-claude-harness.json").read_text(
+                encoding="utf-8"
+            )
         )
         assert mh.validate_against_schema(doc, schema, schema_dir) == []
 
@@ -380,7 +386,9 @@ class TestFrontierHashReflectsLatestRunCompleted:
         assert payload["suite_hash"] == suite_hash
         assert payload["evaluator_hash"] == evaluator_hash
         cached = json.loads(
-            (git_project / ".claude" / "meta-harness" / "frontier.json").read_text(encoding="utf-8")
+            (git_project / ".claude" / "meta-harness" / "frontier-claude-harness.json").read_text(
+                encoding="utf-8"
+            )
         )
         assert cached["suite_hash"] == suite_hash
         assert cached["evaluator_hash"] == evaluator_hash
@@ -422,7 +430,9 @@ class TestFrontierHashReflectsLatestRunCompleted:
         assert payload["points"] != []
         assert all(p["runs"] >= 1 for p in payload["points"])
         cached = json.loads(
-            (git_project / ".claude" / "meta-harness" / "frontier.json").read_text(encoding="utf-8")
+            (git_project / ".claude" / "meta-harness" / "frontier-claude-harness.json").read_text(
+                encoding="utf-8"
+            )
         )
         assert cached["suite_hash"] == suite_hash
         assert cached["evaluator_hash"] == evaluator_hash
@@ -508,7 +518,9 @@ class TestFrontierRebuildComputesInsideLock:
             [ln for ln in ledger_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
         )
         cached = json.loads(
-            (git_project / ".claude" / "meta-harness" / "frontier.json").read_text(encoding="utf-8")
+            (git_project / ".claude" / "meta-harness" / "frontier-claude-harness.json").read_text(
+                encoding="utf-8"
+            )
         )
         assert cached["ledger_line_count"] == actual_line_count
 
@@ -621,7 +633,9 @@ class TestHoldoutOnlyCandidateExcludedFromPoints:
         schema_dir = Path(__file__).resolve().parents[3] / "packages" / "meta-harness" / "schemas"
         schema = mh.load_schema(schema_dir, "frontier.schema.json")
         cached = json.loads(
-            (git_project / ".claude" / "meta-harness" / "frontier.json").read_text(encoding="utf-8")
+            (git_project / ".claude" / "meta-harness" / "frontier-claude-harness.json").read_text(
+                encoding="utf-8"
+            )
         )
         assert mh.validate_against_schema(cached, schema, schema_dir) == []
 
