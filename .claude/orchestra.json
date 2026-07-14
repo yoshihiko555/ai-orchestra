@@ -62,7 +62,7 @@
     "config/meta-harness/meta-harness.yaml",
     "config/skill-evolution/skill-evolution.yaml"
   ],
-  "last_sync": "2026-07-14T10:52:57.659350+00:00",
+  "last_sync": "2026-07-14T16:42:48.505615+00:00",
   "file_hashes": {
     "core": {
       "config/core/task-memory.yaml": "081c101ad10526344e4fe7831babbe6ef661d0a4ae7e49fad4eb3967c030b7d8"
@@ -113,7 +113,7 @@
     },
     "image-generation": {
       "config/image-generation/image-generation.yaml": "a643faa7e9555781989230449c4dd2293da9a7d069d302d20096319b6f71ab1f",
-      "agents/image-generator.md": "ef2625266e41c83a75bf7616ab6774fae84e0941f1ce6dc322c451a363629d70"
+      "agents/image-generator.md": "9c9aa937be679423ba6a7a867450e32a17899d8d28fcd878684a1a71f0f18dec"
     },
     "loop-harness": {
       "config/loop-harness/loop-harness.yaml": "5749d8daf7faf73ce7421d72b9865a677384af18b8fe733b78bc789a1ca3384b",
