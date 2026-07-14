@@ -8,6 +8,11 @@
   "skills": ["image-gen"],
   "agents": ["agents/image-generator.md"],
   "rules": [],
-  "scripts": [],
+  "scripts": [
+    {
+      "path": "scripts/check_image_gen_enabled.py",
+      "description": "codex.enabled kill-switch を判定する CLI（EV-16）。無効時は DISABLED / exit 3 を返す"
+    }
+  ],
   "config": ["config/image-generation.yaml"]
 }

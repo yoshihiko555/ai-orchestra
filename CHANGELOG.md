@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **`image-generation`: `codex.enabled: false` 時は画像生成を実行しないように変更**: `/image-gen` スキル・`image-generator` エージェントが `cli-tools.yaml`（+ `.local.yaml`）の `codex.enabled: false` を尊重し、無効時は画像生成を行わず「利用不可」を報告するようになった。
+
 - **`orchex setup all` から tmux-monitor を除外（opt-in 化）**: presets.json の `exclude` キーで除外した。必要な場合は `orchex install tmux-monitor` で明示的に導入する。
 
 ### Removed
