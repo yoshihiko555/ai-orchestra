@@ -267,13 +267,108 @@ def test_http_handler_rejects_transfer_encoding_without_admission(
     assert state.metrics.request_count == 0
 
 
-def test_http_handler_rejects_query_string(http_broker: tuple[Any, Any]) -> None:
+def test_http_handler_forwards_allowed_query_string(
+    http_broker: tuple[Any, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server, state = http_broker
+    requested_targets: list[str] = []
+
+    class UpstreamResponse:
+        status = 200
+
+        def __init__(self) -> None:
+            self.payload = b'{"usage":{"input_tokens":1,"output_tokens":1}}\n'
+
+        def getheaders(self) -> list[tuple[str, str]]:
+            return [("content-type", "application/json")]
+
+        def read1(self, _size: int) -> bytes:
+            payload, self.payload = self.payload, b""
+            return payload
+
+    class RecordingConnection:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            self.response = UpstreamResponse()
+
+        def request(
+            self,
+            method: str,
+            target: str,
+            *,
+            body: bytes,
+            headers: dict[str, str],
+        ) -> None:
+            assert method == "POST"
+            assert body
+            assert headers["authorization"] == "Bearer real-oauth-token"
+            requested_targets.append(target)
+
+        def getresponse(self) -> UpstreamResponse:
+            return self.response
+
+        def close(self) -> None:
+            return
+
+    monkeypatch.setattr(broker.http.client, "HTTPSConnection", RecordingConnection)
+
+    status, _headers, _payload = _post(
+        server,
+        path="/v1/messages?beta=true",
+        body=b'{"model":"claude-test","max_tokens":1,"messages":[]}',
+    )
+
+    assert status == 200
+    assert requested_targets == ["/v1/messages?beta=true"]
+    assert state.metrics.request_count == 1
+    assert state.metrics.rejected_count == 0
+    assert state.metrics.budget_exceeded is False
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "beta=false",
+        "foo=1",
+        "beta=true&x=1",
+        "beta=true&beta=true",
+    ],
+)
+def test_http_handler_rejects_unknown_query_string_without_latching_budget(
+    http_broker: tuple[Any, Any], query: str
+) -> None:
     server, state = http_broker
 
-    status, _headers, _payload = _post(server, path="/v1/messages?redirect=1")
+    status, _headers, _payload = _post(server, path=f"/v1/messages?{query}")
 
     assert status == 400
     assert state.metrics.request_count == 0
+    assert state.metrics.rejected_count == 1
+    assert state.metrics.budget_exceeded is False
+    assert state.metrics.anomaly is True
+
+
+def test_allowed_query_uses_path_for_request_budget_validation(
+    http_broker: tuple[Any, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server, state = http_broker
+
+    class UnexpectedConnection:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            raise AssertionError("invalid request must not reach the upstream connection")
+
+    monkeypatch.setattr(broker.http.client, "HTTPSConnection", UnexpectedConnection)
+
+    status, _headers, payload = _post(
+        server,
+        path="/v1/messages?beta=true",
+        body=b"{}",
+    )
+
+    assert status == 429
+    assert b"positive max_tokens" in payload
+    assert state.metrics.request_count == 1
+    assert state.metrics.rejected_count == 1
+    assert state.metrics.budget_exceeded is True
 
 
 def test_header_allowlist_strips_candidate_auth_and_forwarding_headers() -> None:

@@ -28,6 +28,7 @@ MAX_REQUEST_BODY_BYTES = 10_000_000
 MAX_TOKEN_BYTES = 16_384
 MAX_USAGE_PARSE_BUFFER_BYTES = 1_000_000
 ALLOWED_PATHS = frozenset({"/v1/messages", "/v1/messages/count_tokens"})
+ALLOWED_QUERIES = frozenset({"beta=true"})
 ALLOWED_REQUEST_HEADERS = frozenset(
     {
         "accept",
@@ -367,8 +368,8 @@ class BrokerHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         self.close_connection = True
         self._headers_sent = False
-        path = self.path.partition("?")[0]
-        if path != self.path:
+        path, separator, query = self.path.partition("?")
+        if separator and query not in ALLOWED_QUERIES:
             self.state.reject("query string is not allowed")
             self._json_error(400, "query string is not allowed")
             return
@@ -419,7 +420,8 @@ class BrokerHandler(BaseHTTPRequestHandler):
         return self.rfile.read(length)
 
     def _proxy(self, body: bytes) -> None:
-        budget_error = self.state.request_budget_error(self.path, body)
+        path = self.path.partition("?")[0]
+        budget_error = self.state.request_budget_error(path, body)
         if budget_error is not None:
             self.state.abort_request(budget_error, rejected=True)
             self._json_error(429, budget_error)

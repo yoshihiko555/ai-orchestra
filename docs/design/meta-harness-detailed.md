@@ -1156,8 +1156,10 @@ cd <worktree> && claude -p "<scenario.prompt>" \
   - **呼び出し計上・異常検知**: brokerは全リクエスト数・累積tokenを記録し、scenarioが想定する呼び出し
     エンベロープ（概ねCLIの1 run分）を超える呼び出しを拒否し、run anomalyとしてmetadataに記録する。
     `/v1/messages/count_tokens`のroot `input_tokens`も計上し、成功responseにusageが無い場合は予算不明として
-    fail-closedする。path/auth/query/transfer-encoding/header allowlist・値上限のpre-admission拒否はanomalyを
-    記録するが、入力検証ノイズだけでrunを使用不能にしないようbudgetはラッチしない。`begin_request()`後の
+    fail-closedする。query allowlistはS1実測（`meta-harness-scenario-backend-spikes.md`）に基づく
+    `beta=true`だけとし、許可したqueryはupstreamへ保持して転送する。path/auth/query/transfer-encoding/header
+    allowlist・値上限のpre-admission拒否はanomalyを記録するが、入力検証ノイズだけでrunを使用不能にしないよう
+    budgetはラッチしない。`begin_request()`後の
     proxy/stream失敗はusage不明としてbudgetをラッチし、以降をfail-closedする。
     累積token上限超過もbudgetをラッチして後続requestを拒否する。scenario直後にmetricsを一度永続化し、
     oracle / judge完了後に再refreshした
