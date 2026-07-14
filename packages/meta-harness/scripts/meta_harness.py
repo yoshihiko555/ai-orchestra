@@ -301,6 +301,9 @@ def cmd_register(
     except mh.LockAcquisitionError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_LOCK_CONFLICT
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_VALIDATION_ERROR
     except FileExistsError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_RUNTIME_ERROR
@@ -366,6 +369,11 @@ def cmd_frontier(
     if ctx is None:
         return EXIT_VALIDATION_ERROR
     main_root, config = ctx
+    try:
+        mh.validate_target(target)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_VALIDATION_ERROR
 
     if rebuild:
         # 【判断】PR #162 レビュー指摘 (FIX P2): frontier 計算（ledger 読み込み込み）を
@@ -432,6 +440,11 @@ def cmd_status(
     if ctx is None:
         return EXIT_VALIDATION_ERROR
     main_root, config = ctx
+    try:
+        mh.validate_target(target)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_VALIDATION_ERROR
     events = mh.read_ledger_events(main_root, config)
     states = mh.fold_candidate_states(events)
     target_ids = {

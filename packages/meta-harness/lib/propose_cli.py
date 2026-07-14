@@ -162,13 +162,16 @@ def _run_propose_pipeline(
                 parent_manifest = mh.read_candidate_manifest(main_root, config, parent_id)
                 if parent_manifest is None:
                     raise prop.ProposerError(f"parent candidate not found: {parent_id}")
-                ev.apply_registered_candidate_overlay(
-                    main_root=main_root,
-                    config=config,
-                    manifest=parent_manifest,
-                    worktree_dir=view.path / "baseline",
-                    schema_dir=_SCHEMA_DIR,
-                )
+                try:
+                    ev.apply_registered_candidate_overlay(
+                        main_root=main_root,
+                        config=config,
+                        manifest=parent_manifest,
+                        worktree_dir=view.path / "baseline",
+                        schema_dir=_SCHEMA_DIR,
+                    )
+                except (OSError, ValueError, ev.EvaluatorStageError) as exc:
+                    raise prop.ProposerError(f"parent overlay is invalid: {exc}") from exc
                 prop.verify_filtered_view(
                     view.path, known_holdout_run_ids=set(view.holdout_run_ids)
                 )
@@ -472,13 +475,16 @@ def _register_proposed_candidate(
             )
             with skill_targets.materialized_baseline(main_root, source_commit) as baseline:
                 if parent_manifest is not None:
-                    ev.apply_registered_candidate_overlay(
-                        main_root=main_root,
-                        config=config,
-                        manifest=parent_manifest,
-                        worktree_dir=baseline,
-                        schema_dir=_SCHEMA_DIR,
-                    )
+                    try:
+                        ev.apply_registered_candidate_overlay(
+                            main_root=main_root,
+                            config=config,
+                            manifest=parent_manifest,
+                            worktree_dir=baseline,
+                            schema_dir=_SCHEMA_DIR,
+                        )
+                    except (OSError, ValueError, ev.EvaluatorStageError) as exc:
+                        raise prop.ProposerError(f"parent overlay is invalid: {exc}") from exc
                     inherited_overlay = mh.candidates_dir(main_root, config) / parent_id / "overlay"
                 target_resolution = skill_targets.allowed_overlay_paths(baseline, target, config)
                 violations = mh.validate_overlay(

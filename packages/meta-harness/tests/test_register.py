@@ -12,6 +12,10 @@ mh = load_module(
     "meta_harness_common_register",
     "packages/meta-harness/lib/meta_harness_common.py",
 )
+cli = load_module(
+    "meta_harness_cli_register",
+    "packages/meta-harness/scripts/meta_harness.py",
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCHEMA_DIR = REPO_ROOT / "packages" / "meta-harness" / "schemas"
@@ -341,6 +345,31 @@ class TestRegisterConfigPatchRejection:
 
 
 class TestRegisterInputValidation:
+    def test_staging_revalidation_value_error_exits_2(
+        self, git_project: Path, tmp_path: Path, run_meta, default_overlay, monkeypatch, capsys
+    ) -> None:
+        run_meta("init", project=git_project, check=True)
+        overlay_dir = default_overlay(tmp_path)
+
+        def fail_staging_revalidation(*_args, **_kwargs):
+            raise ValueError("copied overlay validation failed")
+
+        monkeypatch.setattr(cli.mh, "register_candidate", fail_staging_revalidation)
+
+        exit_code = cli.cmd_register(
+            str(git_project),
+            str(overlay_dir),
+            "claude-harness",
+            None,
+            "candidate",
+            None,
+            None,
+            False,
+        )
+
+        assert exit_code == cli.EXIT_VALIDATION_ERROR
+        assert "copied overlay validation failed" in capsys.readouterr().err
+
     # EV-25
     def test_missing_overlay_arg_exits_2(self, git_project: Path, run_meta) -> None:
         run_meta("init", project=git_project, check=True)

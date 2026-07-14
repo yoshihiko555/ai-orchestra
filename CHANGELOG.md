@@ -41,6 +41,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`meta-harness` / `skill-evolution`: 無効な候補・target 入力で CLI が例外終了する問題を修正**: validation error として終了コード 2 を返し、skill 改善提案には対象プロジェクトを明示するようにした。
+
 - **`reverse`: Python 3.12 でスキャンスクリプトが失敗する問題を修正**: Python 3.13 で追加された `pathlib` API への依存を除き、シンボリックリンクを辿らない既存挙動を維持したままサポート対象の Python 3.12 で実行できるようにした。
 
 - **`meta-harness`: Docker broker が Claude CLI の既知トラフィックを拒否する問題を修正**: `?beta=true` と pin 済み CLI の client beta を allowlist で中継し、`/messages` と `/messages/count_tokens` の重なりを同時 upstream 1件のまま直列化して、Docker backend の scenario 実行が正常に完走するようにした。

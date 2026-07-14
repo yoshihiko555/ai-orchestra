@@ -265,7 +265,10 @@ def _validate_preconditions(
     if status != "evaluated":
         raise PromotionValidationError(f"candidate must be evaluated, got: {status}")
 
-    target = mh.validate_target(str(manifest.get("target") or ""))
+    try:
+        target = mh.validate_target(str(manifest.get("target") or ""))
+    except ValueError as exc:
+        raise PromotionValidationError(f"candidate manifest has invalid target: {exc}") from exc
     frontier_doc = _compute_current_frontier(events, config, target)
     if cand_id not in set(frontier_doc["frontier"]):
         raise PromotionValidationError(f"candidate is not on current frontier: {cand_id}")

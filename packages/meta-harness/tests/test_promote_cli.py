@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from contextlib import contextmanager
 from pathlib import Path
@@ -222,6 +223,31 @@ def test_promote_rejects_unevaluated_candidate(git_project: Path, git_run, tmp_p
 
     assert exit_code == cli.EXIT_VALIDATION_ERROR
     assert not any(event.get("event") == "promotion_reserved" for event in _events(git_project))
+
+
+def test_invalid_manifest_target_raises_promotion_validation_error(
+    git_project: Path, git_run, tmp_path: Path
+) -> None:
+    cand_id = _prepare_promotable_candidate(git_project, git_run, tmp_path)
+    config = mh.load_config(git_project)
+    manifest_path = mh.candidates_dir(git_project, config) / cand_id / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest_path.write_text(
+        json.dumps({**manifest, "target": "skill:Invalid"}) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        cli.prm.PromotionValidationError,
+        match="candidate manifest has invalid target",
+    ):
+        cli.prm._validate_preconditions(
+            git_project,
+            config,
+            git_project,
+            cand_id,
+            _events(git_project),
+        )
 
 
 def test_promote_rejects_candidate_with_secret_in_overlay(

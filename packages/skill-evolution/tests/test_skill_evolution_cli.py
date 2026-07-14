@@ -47,7 +47,9 @@ def test_check_trigger_suggests_meta_harness_for_valid_slug(tmp_path, capsys) ->
     out = json.loads(capsys.readouterr().out)
     assert rc == 0
     assert out["triggered"] is True
-    assert out["suggested_command"] == "orchex meta propose --target skill:issue-create"
+    assert out["suggested_command"] == (
+        f"orchex meta propose --target skill:issue-create --project {tmp_path}"
+    )
     assert "suggested_command_skipped_reason" not in out
 
 

@@ -59,7 +59,7 @@ skill-evolution は、スキル実行のたびに二軸テレメトリ（自己�
 - [ ] EV-32（正常 / must）: `capture-skill-telemetry.py`（PostToolUse）は自己申告が見つからない場合に記録を確定せず、pending を温存して Stop hook に委譲する — 根拠: CHANGELOG（Unreleased）
 - [ ] EV-33（境界 / must）: 自己申告が見つからない stale pending は `pending.stale_after_seconds`（既定 600 秒）経過後、機械計測のみでフォールバック記録される — 根拠: CHANGELOG（Unreleased）
 - [ ] EV-34（異常 / must）: stdin 由来の `transcript_path` は realpath で許可ルート（既定 `~/.claude`）配下か検証され、範囲外や symlink による脱出は空読み扱いとなる（任意ローカルファイル読み取りを防ぐ） — 根拠: 実装挙動（PR #140 セキュリティレビュー対応）
-- [ ] EV-35（正常 / must）: `check-trigger <valid-slug> --json` は trigger 成立時だけ `suggested_command: "orchex meta propose --target skill:<slug>"` を返すが、そのコマンドを実行せず、既存の trigger 判定・exit code を変えない — 根拠: design §3.3
+- [ ] EV-35（正常 / must）: `check-trigger <valid-slug> --json` は trigger 成立時だけ `suggested_command: "orchex meta propose --target skill:<slug> --project <resolved-project>"` を返すが、そのコマンドを実行せず、既存の trigger 判定・exit code を変えない — 根拠: design §3.3
 - [ ] EV-36（異常 / must）: `check-trigger` の skill 名が meta-harness target として不正な slug の場合は `suggested_command` を返さず、機械可読な理由を含める。trigger 判定と既存 exit code は維持する — 根拠: design §3.3
 
 ## 4. 類型別観点

@@ -56,7 +56,9 @@ def cmd_check_trigger(project: str, skill: str) -> int:
     if triggered:
         slug = se._slug(skill)
         if re.fullmatch(r"[a-z0-9-]+", slug):
-            payload["suggested_command"] = f"orchex meta propose --target skill:{slug}"
+            payload["suggested_command"] = (
+                f"orchex meta propose --target skill:{slug} --project {project}"
+            )
         else:
             payload["suggested_command_skipped_reason"] = (
                 "skill name cannot be represented as a meta-harness target slug"
