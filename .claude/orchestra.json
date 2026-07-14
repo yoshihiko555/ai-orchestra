@@ -118,7 +118,7 @@
     },
     "loop-harness": {
       "config/loop-harness/loop-harness.yaml": "5749d8daf7faf73ce7421d72b9865a677384af18b8fe733b78bc789a1ca3384b",
-      "config/loop-harness/loops/issue-loop.yaml": "8c2bf3280a7d25dd4020349fa62728fb2c183522e44d7c8bb3fc900954d0161e"
+      "config/loop-harness/loops/issue-loop.yaml": "1223f9a33727f404923ba77efe07467d85c7a412a04bfd8cb6a9215d4c4fdcee"
     },
     "fail-logs": {
       "config/fail-logs/fail-logs.yaml": "cff47ea7d188af706a796aa88149cf26b73561ec71a754e9244566264290e5b2"
@@ -130,7 +130,7 @@
       "agents/reverse-coordinator.md": "b4ba084e8d03e158ed5ab4d44b93655de2044a1506c22319df5a6bbf2ab6c574"
     },
     "meta-harness": {
-      "config/meta-harness/meta-harness.yaml": "fde413f9cf992eb64740c8c533acedc58a1cb1601093964a2fe98bdf8030b687"
+      "config/meta-harness/meta-harness.yaml": "a45d134a093c62db22d5fa6d4b86cf7e20c67b7844136ddd99f1652a63925a63"
     }
   },
   "codex_file_hashes": {

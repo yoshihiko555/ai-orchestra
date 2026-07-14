@@ -268,6 +268,75 @@ def test_record_baseline_reuses_injected_review_items_snapshot_without_refetchin
     assert "review:20" in record.processed_comment_ids
 
 
+def test_record_baseline_uses_snapshot_captured_at_instead_of_write_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """code L3: when a caller reuses a pre-fetched `review_items` snapshot and passes its own
+    fetch time via `snapshot_captured_at`, `record_baseline` must stamp `baseline_recorded_at`
+    with that captured time, not with "now" at the (potentially much later) write time. Before
+    this fix, a caller like `_drain_before_push()` that spends real time on severity
+    classification between fetching the snapshot and calling this function would get a
+    `baseline_recorded_at` stamped after that delay; a review/comment posted after the snapshot
+    but before that later write has a `created_at` older than the new baseline, so
+    `_is_importable()`'s `created_at > baseline_recorded_at` check would filter it out forever."""
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={
+            "baseline_review_id": 0,
+            "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+            "processed_comment_ids": [],
+            "findings": {},
+        },
+    )
+    lease_token = _lease(project_dir)
+    client = FakeClient(
+        {
+            "repos/owner/repo/pulls/12/reviews": [
+                _trusted({"id": 20, "submitted_at": "2026-07-09T00:00:01+00:00", "body": "LGTM"})
+            ],
+            "repos/owner/repo/pulls/12/comments": [],
+            "repos/owner/repo/issues/12/comments": [],
+        }
+    )
+    review_items = prw.fetch_review_items(client, 12)
+
+    # Stands in for the (much later) real write time, e.g. after severity classification
+    # finished -- it must never leak into `baseline_recorded_at` when `snapshot_captured_at`
+    # is explicitly supplied.
+    monkeypatch.setattr(lc, "now_iso", lambda: "2099-01-01T00:00:00+00:00")
+
+    record = prw.record_baseline(
+        "abcd1234-issue-1",
+        project_dir,
+        12,
+        client,
+        lease_token,
+        review_items=review_items,
+        snapshot_captured_at="2026-07-09T00:00:00.500000+00:00",
+    )
+
+    assert record.baseline_recorded_at == "2026-07-09T00:00:00.500000+00:00"
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    assert state.pr_review["baseline_recorded_at"] == "2026-07-09T00:00:00.500000+00:00"
+
+
+def test_record_baseline_falls_back_to_now_when_snapshot_captured_at_omitted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """code L3 complement: omitting `snapshot_captured_at` (the default, backward-compatible
+    call shape used by callers with no pre-fetched snapshot to share) must preserve the
+    original "stamp with now" behavior unchanged."""
+    project_dir = _setup_state(tmp_path, monkeypatch)
+    lease_token = _lease(project_dir)
+    client = FakeClient({"repos/owner/repo/pulls/12/reviews": []})
+    monkeypatch.setattr(lc, "now_iso", lambda: "2026-07-09T12:00:00+00:00")
+
+    record = prw.record_baseline("abcd1234-issue-1", project_dir, 12, client, lease_token)
+
+    assert record.baseline_recorded_at == "2026-07-09T12:00:00+00:00"
+
+
 def test_ev192_pre_rebaseline_collect_preserves_findings_across_next_record_baseline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

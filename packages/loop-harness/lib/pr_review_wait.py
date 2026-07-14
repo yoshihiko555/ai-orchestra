@@ -373,6 +373,7 @@ def record_baseline(
     *,
     action_id: str | None = None,
     review_items: list[ReviewItem] | None = None,
+    snapshot_captured_at: str | None = None,
 ) -> BaselineRecord:
     """Record review/comment baseline before push or PR creation.
 
@@ -384,8 +385,22 @@ def record_baseline(
     imported as a finding by the drain's (earlier) fetch, permanently losing it. When
     `review_items` is omitted, this fetches fresh itself (unchanged, backward-compatible
     behavior for callers that do not need to share a snapshot, e.g. PR-creation baselining).
+
+    code L3: `snapshot_captured_at` lets a caller reusing a pre-fetched `review_items` snapshot
+    also pass through *when that snapshot was fetched*, instead of this function stamping
+    `baseline_recorded_at` with "now". Without this, a caller like `_drain_before_push()` that
+    fetches `review_items` once, spends real time on severity classification (an LLM call per
+    finding needing it), and only *then* calls this function with the same stale snapshot would
+    get a `baseline_recorded_at` timestamped *after* that classification delay. A review/comment
+    posted after the snapshot but before that later write has a `created_at` older than the new
+    baseline, so `_is_importable()`'s `created_at > baseline_recorded_at` check would filter it
+    out forever -- the finding is silently and permanently lost, exactly the drain-gap failure
+    mode this function's baseline is meant to close. Passing the snapshot's own fetch time keeps
+    the baseline honest about what it actually reflects. Ignored (falls back to `lc.now_iso()`,
+    the original behavior) when `review_items` is also omitted, since there is then no shared
+    snapshot whose fetch time would matter here.
     """
-    recorded_at = lc.now_iso()
+    recorded_at = snapshot_captured_at if snapshot_captured_at is not None else lc.now_iso()
     if pr_number is None or pr_number <= 0:
         baseline_review_id = 0
         processed_ids: set[str] = set()
