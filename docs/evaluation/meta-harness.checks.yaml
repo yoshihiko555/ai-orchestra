@@ -324,6 +324,9 @@
     - packages/meta-harness/tests/test_scenario_broker.py::test_http_handler_releases_slot_after_unexpected_proxy_exception
     - packages/meta-harness/tests/test_scenario_broker.py::test_http_handler_does_not_append_second_response_after_stream_failure
     - packages/meta-harness/tests/test_scenario_broker.py::test_http_handler_rejects_transfer_encoding_without_admission
+    - packages/meta-harness/tests/test_scenario_broker.py::test_http_handler_forwards_allowed_query_string
+    - packages/meta-harness/tests/test_scenario_broker.py::test_http_handler_rejects_unknown_query_string_without_latching_budget
+    - packages/meta-harness/tests/test_scenario_broker.py::test_allowed_query_uses_path_for_request_budget_validation
     - packages/meta-harness/tests/test_scenario_broker.py::test_token_envelope_latches_budget_and_rejects_following_request
     - packages/meta-harness/tests/test_scenario_broker.py::test_direct_request_budget_is_rejected_before_upstream
     - packages/meta-harness/tests/test_scenario_broker.py::test_idle_watchdog_does_not_exit_during_active_request
@@ -336,8 +339,8 @@
   notes: >-
     The real OAuth token is loaded with TTL preflight and injected through stdin
     into broker tmpfs, never candidate argv/env/disk. Header replacement,
-    fixed api.anthropic.com upstream, per-run dummy authentication, HTTP framing
-    rejection, exception-safe request serialization, pre-forward worst-case
+    fixed api.anthropic.com upstream, strict beta=true query forwarding, per-run
+    dummy authentication, HTTP framing rejection, exception-safe request serialization, pre-forward worst-case
     request admission, usage-based budget cap, active-stream/host-session
     keepalive, anomaly accounting, broker lifecycle cleanup, and broker-routed
     containerized claude-bare judge are covered.
