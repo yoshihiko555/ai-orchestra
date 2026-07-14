@@ -2638,6 +2638,41 @@ def test_create_or_reuse_pr_heals_created_true_when_confirmed_write_was_lost(
     assert d2._load_persisted_pr_creation_confirmed(action_id) == "main"
 
 
+def test_create_or_reuse_pr_fails_safe_when_ownership_lookup_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ownership heal must fail closed: when the `gh api user` lookup itself fails
+    (non-zero exit), an intent-without-confirmation retry reports `created=False`
+    (re-baseline, the safe direction) and journals no confirmation off the unverified claim."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.branch = "main"
+    state.worktree_path = project_dir
+    action_id = "act-lookup-fail-001"
+
+    d1 = driver.LoopDriver(loop_id, project_dir, token)
+    d1._persist_pr_creation_intent(action_id, "main")
+
+    d2 = driver.LoopDriver(loop_id, project_dir, token)
+
+    def fake_run_lookup_fails(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if cmd[:3] == ["gh", "pr", "view"] and "author" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, "loop-bot\n", "")
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return subprocess.CompletedProcess(cmd, 0, "99\n", "")
+        if cmd[:3] == ["gh", "api", "user"]:
+            return subprocess.CompletedProcess(cmd, 1, "", "auth error")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(driver.subprocess, "run", fake_run_lookup_fails)
+
+    pr_number, created = d2._create_or_reuse_pr(state, "main", action_id)
+
+    assert (pr_number, created) == (99, False)
+    assert d2._load_persisted_pr_creation_confirmed(action_id) is None
+
+
 # --------------------------------------------------------------------------------------------
 # loop_driver.LoopDriver: `commit` advance-exec step actually verifies the Maker's commit
 # (code F9) instead of being a no-op
