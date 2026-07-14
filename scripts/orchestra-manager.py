@@ -130,7 +130,7 @@ class OrchestraManager(ContextMixin, HooksMixin):
         return packages
 
     def load_presets(self) -> dict[str, Any]:
-        """presets.json を読み込み、__all__ を全パッケージ名に展開"""
+        """presets.json を読み込み、__all__ を全パッケージ名に展開し、exclude 指定を除外して返す"""
         presets_path = self.orchestra_dir / "presets.json"
         if not presets_path.exists():
             print("エラー: presets.json が見つかりません", file=sys.stderr)
@@ -141,8 +141,11 @@ class OrchestraManager(ContextMixin, HooksMixin):
 
         all_package_names = sorted(self.load_packages().keys())
         for preset in presets.values():
-            if preset.get("packages") == "__all__":
-                preset["packages"] = all_package_names
+            packages = preset.get("packages")
+            if packages == "__all__":
+                packages = all_package_names
+            excluded_packages = set(preset.get("exclude", []))
+            preset["packages"] = [name for name in packages if name not in excluded_packages]
 
         return presets
 

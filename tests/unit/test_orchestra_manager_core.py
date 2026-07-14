@@ -37,6 +37,89 @@ def _write_manifest(
     return manifest_path
 
 
+class TestLoadPresets:
+    def test_all_preset_excludes_tmux_monitor(self, tmp_path: Path) -> None:
+        # Arrange
+        manager = _make_manager(tmp_path)
+        _write_manifest(tmp_path / "packages", "core")
+        _write_manifest(tmp_path / "packages", "tmux-monitor")
+        _write_manifest(tmp_path / "packages", "audit")
+        presets = {
+            "all": {
+                "description": "all packages",
+                "packages": "__all__",
+                "exclude": ["tmux-monitor"],
+            }
+        }
+        (tmp_path / "presets.json").write_text(json.dumps(presets), encoding="utf-8")
+
+        # Act
+        result = manager.load_presets()
+
+        # Assert
+        packages = result["all"]["packages"]
+        assert "tmux-monitor" not in packages
+        assert "core" in packages
+
+    def test_exclude_applies_to_explicit_package_list(self, tmp_path: Path) -> None:
+        # Arrange
+        manager = _make_manager(tmp_path)
+        presets = {
+            "custom": {
+                "description": "custom packages",
+                "packages": ["core", "tmux-monitor", "audit"],
+                "exclude": ["tmux-monitor"],
+            }
+        }
+        (tmp_path / "presets.json").write_text(json.dumps(presets), encoding="utf-8")
+
+        # Act
+        result = manager.load_presets()
+
+        # Assert
+        assert result["custom"]["packages"] == ["core", "audit"]
+
+    def test_preset_without_exclude_key_still_works(self, tmp_path: Path) -> None:
+        # Arrange
+        manager = _make_manager(tmp_path)
+        packages = ["core", "agent-routing", "audit", "quality-gates", "codd"]
+        presets = {
+            "essential": {
+                "description": "essential packages",
+                "packages": packages,
+            }
+        }
+        (tmp_path / "presets.json").write_text(json.dumps(presets), encoding="utf-8")
+
+        # Act
+        result = manager.load_presets()
+
+        # Assert
+        assert result["essential"]["packages"] == packages
+
+    def test_exclude_with_nonexistent_package_name_does_not_error(
+        self, tmp_path: Path
+    ) -> None:
+        # Arrange
+        manager = _make_manager(tmp_path)
+        _write_manifest(tmp_path / "packages", "core")
+        _write_manifest(tmp_path / "packages", "audit")
+        presets = {
+            "all": {
+                "description": "all packages",
+                "packages": "__all__",
+                "exclude": ["nonexistent"],
+            }
+        }
+        (tmp_path / "presets.json").write_text(json.dumps(presets), encoding="utf-8")
+
+        # Act
+        result = manager.load_presets()
+
+        # Assert
+        assert result["all"]["packages"] == ["audit", "core"]
+
+
 class TestCopyTemplateIfMissing:
     def test_copies_when_dst_absent_returns_true(self, tmp_path: Path) -> None:
         # Arrange

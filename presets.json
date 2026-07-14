@@ -4,7 +4,8 @@
     "packages": ["core", "agent-routing", "audit", "quality-gates", "codd"]
   },
   "all": {
-    "description": "全パッケージ（管理者・開発者向け）",
-    "packages": "__all__"
+    "description": "全パッケージ（管理者・開発者向け、tmux-monitor を除く）",
+    "packages": "__all__",
+    "exclude": ["tmux-monitor"]
   }
 }
