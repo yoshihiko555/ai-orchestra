@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import hashlib
 import json
 import os
 import re
@@ -25,6 +26,7 @@ import sys
 import threading
 import time
 from collections.abc import Sequence
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -73,6 +75,28 @@ _PUSH_INTENT_ACTION_ID = "__push_intent__"
 # the LLM reviewer fall back to a plain working-tree diff.
 _PRE_MAKER_HEAD_JOURNAL_EVENT = "pre_maker_head_recorded"
 _PRE_MAKER_HEAD_ACTION_ID = "__pre_maker_head__"
+
+# Issue #219 P2-4 (SEC): journal event/action_id used to durably pin the *first* trustworthy
+# `remote.origin.url` this driver ever resolved for this loop, so a later driver restart can
+# detect a Maker-authored rewrite of `remote.origin.url` (made while no driver process was
+# running to catch it live) instead of silently re-pinning the rewritten value as if it were
+# trusted. See `LoopDriver._reconstruct_push_integrity_baseline`'s own docstring for why this
+# is checked before `self._trusted_origin_url` is ever (re)assigned on a restart.
+_TRUSTED_ORIGIN_URL_JOURNAL_EVENT = "trusted_origin_url_recorded"
+_TRUSTED_ORIGIN_URL_ACTION_ID = "__trusted_origin_url__"
+
+# Issue #219 P2-5 (K2 crash-retry follow-up): journal event recording that a specific
+# `advance_phase` action_id already recorded the pre-creation zero review baseline and is
+# about to (or already did) create the PR for a branch -- see `_create_or_reuse_pr`'s own
+# docstring for why a crash-retry of the same action_id must recognize its own PR instead of
+# reusing/re-baselining it. Keyed per-action_id (not a fixed constant like the push-baseline
+# events above), mirroring `record_baseline`/`record_iteration_head`'s own G1 action_id fencing.
+_PR_CREATION_INTENT_JOURNAL_EVENT = "pr_creation_intent_recorded"
+# Journaled *after* `gh pr create` returns successfully, proving this exact action_id actually
+# created the PR (not merely intended to). `created=True` on the existing-PR reuse path requires
+# BOTH this and the intent event, so an unrelated PR that appears on the same branch after a
+# *failed* `gh pr create` is not misattributed as ours (Issue #219 P2-5 follow-up).
+_PR_CREATION_CONFIRMED_JOURNAL_EVENT = "pr_creation_confirmed"
 
 
 class DriverTerminated(Exception):
@@ -206,6 +230,71 @@ def _nested(source: dict[str, Any], path: tuple[str, ...], default: Any) -> Any:
             return default
         current = current[key]
     return current
+
+
+def _origin_url_fingerprint(url: str) -> str:
+    """Return the SHA-256 hex fingerprint of an origin URL (PR #226 review P1).
+
+    The trusted-origin pin is journaled, and `append_journal_event()` redacts payload strings
+    before writing: a URL with embedded credentials (`https://x-access-token:ghp_...@github.com/...`)
+    would round-trip as a redacted string and then never equal a fresh `resolve_origin_url()`
+    reading, hard-stopping the loop as `origin_url_rewritten` on every restart even though the
+    remote never changed. Comparing fingerprints instead keeps the journaled value stable under
+    redaction -- and never persists credential material in the journal at all.
+    """
+    return hashlib.sha256(url.encode("utf-8")).hexdigest()
+
+
+def _gh_host_from_origin_url(url: str | None) -> str | None:
+    """Best-effort GitHub host extraction from a git origin URL (PR #226 review P2).
+
+    `gh api user` defaults to `github.com` regardless of which host the repository lives on,
+    so on a GitHub Enterprise remote (without `GH_HOST` exported) the ownership check in
+    `_pr_authored_by_us` would compare a PR author from the Enterprise host against the login
+    of a possibly-different github.com account. Deriving the host from the pinned origin URL
+    lets the caller pass `--hostname` explicitly. Handles `https://` (with or without embedded
+    userinfo), `ssh://`, and scp-style (`git@host:owner/repo`) forms; anything else (e.g. a
+    local filesystem path remote) returns None, and the caller falls back to `gh`'s default
+    host resolution -- the pre-fix behavior.
+    """
+    if not url:
+        return None
+    https = re.match(r"https?://(?:[^@/]+@)?([^:/\s]+)", url)
+    if https:
+        return https.group(1)
+    ssh = re.match(r"(?:ssh://)?(?:[^@/\s]+@)([^:/\s]+)[:/]", url)
+    if ssh:
+        return ssh.group(1)
+    return None
+
+
+def _load_route_config() -> Any:
+    """Load agent-routing's `route_config` module lazily (Issue #219 P2-1, EV-41).
+
+    Mirrors `loop_common._load_failure_detector()`'s lazy-import pattern (a sibling package
+    imported on demand instead of at module load time, keeping `loop_driver.py` importable
+    even in a context where `packages/agent-routing` is not installed/needed). `route_config.py`
+    itself inserts `packages/core/hooks` onto `sys.path` for its own `hook_common` import, but
+    only when `AI_ORCHESTRA_DIR` is set. A headless worker respawned by cron/launchd does not
+    inherit that env var (`render_cron_entry()`/`render_launchd_plist()` pass a minimal
+    environment), so we also seed `packages/core/hooks` via the package-relative layout here --
+    letting the nested `hook_common` import succeed even without `AI_ORCHESTRA_DIR`, instead of
+    raising `ModuleNotFoundError` on `issue-loop`'s default `maker.agent: auto` path.
+    """
+    candidates = []
+    orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
+    packages_dir = Path(__file__).resolve().parents[2]
+    if orchestra_dir:
+        candidates.append(Path(orchestra_dir) / "packages" / "agent-routing" / "hooks")
+        candidates.append(Path(orchestra_dir) / "packages" / "core" / "hooks")
+    candidates.append(packages_dir / "agent-routing" / "hooks")
+    candidates.append(packages_dir / "core" / "hooks")
+    for path in candidates:
+        if path.is_dir() and str(path) not in sys.path:
+            sys.path.insert(0, str(path))
+    import route_config
+
+    return route_config
 
 
 def _acquire_initial_proposal(
@@ -458,8 +547,8 @@ class LoopDriver:
         # child has run), so no Maker `Edit` write into `.git/config` could have happened yet
         # to taint this resolution. See `self._trusted_origin_url`'s own comment and
         # `lds.resolve_origin_url()`'s docstring.
-        self._trusted_origin_url = lds.resolve_origin_url(state.worktree_path)
-        if self._trusted_origin_url is None:
+        resolved_origin_url = lds.resolve_origin_url(state.worktree_path)
+        if resolved_origin_url is None:
             # RH1 (LP-2 3rd-round Codex security review): a driver that cannot resolve
             # `origin`'s URL at all must never silently proceed and let a later driver-owned
             # push/`ls-remote` fall back to trusting the bare `"origin"` remote name instead
@@ -467,6 +556,31 @@ class LoopDriver:
             # pinning a literal URL -- exists to bypass in the first place, see RC1's comment
             # on `_DANGEROUS_LOCAL_CONFIG_KEY_RE`). Fail closed instead of proceeding.
             self._stop_for_unresolvable_origin_url(proposal, state)
+        # Issue #219 P2-4 (SEC): a *this-process-only* `self._trusted_origin_url` re-resolution
+        # is not enough to defeat a `remote.origin.url` rewrite that happened while no driver
+        # process was alive to catch it (e.g. a Maker `Edit`-write right before a crash, then a
+        # scheduler restart/attach): the fresh resolution above would simply read the
+        # already-rewritten URL and this method would go on to pin *that* as trusted, exactly
+        # the failure `resolve_origin_url()`'s "earliest trustworthy moment" framing assumes
+        # cannot happen. Cross-process durability requires comparing against a value persisted
+        # outside this process's memory -- the journal (mirrors `_persist_push_baseline`'s own
+        # crash-recovery rationale), which lives under `.claude/loop/<loop_id>/` in
+        # `project_dir`, not inside the shared worktree the Maker's `Edit` tool can reach.
+        pinned_fingerprint = self._load_persisted_trusted_origin_fingerprint()
+        resolved_fingerprint = _origin_url_fingerprint(resolved_origin_url)
+        if pinned_fingerprint is None:
+            # First resolution ever for this loop: nothing to compare against yet, so pin (and
+            # durably journal) this one, matching `_persist_push_baseline`'s own "first live
+            # read becomes the trusted value" precedent.
+            self._persist_trusted_origin_url(resolved_origin_url)
+        elif pinned_fingerprint != resolved_fingerprint:
+            # The previously-pinned origin URL fingerprint no longer matches what `.git/config`
+            # resolves today: a rewrite happened in a window this process was not alive to
+            # catch live. Fail closed instead of silently re-pinning the rewritten value.
+            self._stop_for_rewritten_origin_url(
+                proposal, state, pinned_fingerprint, resolved_fingerprint
+            )
+        self._trusted_origin_url = resolved_origin_url
         # I6: restore the pre-Maker local HEAD (code H5) journaled by `_persist_pre_maker_head()`
         # so a driver restart/attach recovers it instead of leaving `self._pre_maker_head` at its
         # in-memory `None` default -- see both methods' own docstrings. Runs unconditionally,
@@ -570,6 +684,60 @@ class LoopDriver:
         payload = record.get("payload")
         sha = payload.get("baseline_head") if isinstance(payload, dict) else None
         return str(sha) if sha else None
+
+    def _persist_trusted_origin_url(self, url: str) -> None:
+        """Durably journal the first `remote.origin.url` this loop ever pinned (Issue #219 P2-4).
+
+        Unlike `_persist_push_baseline` (which is updated on *every* driver-owned push), this
+        is written exactly once, the very first time `_reconstruct_push_integrity_baseline`
+        successfully resolves `origin`'s URL for this `loop_id` -- an operator-driven
+        `remote.origin.url` change (e.g. a legitimate repo migration) between loop runs is out
+        of scope; this only guards against an in-flight rewrite happening *during* a run, while
+        a Maker has filesystem access to the shared worktree's `.git/config` but no driver
+        process is alive to catch it live via `_verify_no_git_config_tampering_or_stop`.
+
+        Trust-on-first-use (TOFU) limitation, by design: a rewrite that already happened
+        *before* this first successful resolution (e.g. the very first `run()` of a brand-new
+        loop, if the shared worktree's `.git/config` were somehow pre-tampered before this
+        process ever attached) is indistinguishable from a legitimate first pin and cannot be
+        detected retroactively -- there is no earlier trustworthy reading to compare against.
+        This mirrors `resolve_origin_url()`'s own "earliest trustworthy moment" framing: this
+        mechanism only ever protects the delta *between* driver-observed resolutions, not the
+        very first one.
+
+        A journal-write failure here propagates out of `_reconstruct_push_integrity_baseline`
+        and aborts the run *before* any driver-owned push, consistent with the fail-closed
+        stance of every other push-integrity journal write (`_persist_push_baseline`): an
+        unpinnable trusted origin is treated as "cannot safely proceed", never "proceed
+        unprotected".
+        """
+        lc.append_journal_event(
+            self.loop_id,
+            self.project_dir,
+            _TRUSTED_ORIGIN_URL_JOURNAL_EVENT,
+            "driver",
+            _TRUSTED_ORIGIN_URL_ACTION_ID,
+            # PR #226 review P1: journal a SHA-256 fingerprint, never the raw URL -- the raw
+            # value would be redacted by `append_journal_event()` whenever it embeds
+            # credentials, making the round-tripped comparison value unstable (a guaranteed
+            # false `origin_url_rewritten` stop on the next restart) and needlessly writing
+            # credential-shaped material into the journal. See `_origin_url_fingerprint`.
+            {"origin_url_sha256": _origin_url_fingerprint(url)},
+        )
+
+    def _load_persisted_trusted_origin_fingerprint(self) -> str | None:
+        """Return the journaled fingerprint of the first-ever-pinned `origin` URL, if any."""
+        record = lc.find_journal_event(
+            self.loop_id,
+            self.project_dir,
+            _TRUSTED_ORIGIN_URL_ACTION_ID,
+            _TRUSTED_ORIGIN_URL_JOURNAL_EVENT,
+        )
+        if record is None:
+            return None
+        payload = record.get("payload")
+        fingerprint = payload.get("origin_url_sha256") if isinstance(payload, dict) else None
+        return str(fingerprint) if fingerprint else None
 
     def _persist_pre_maker_head(self, sha: str | None) -> None:
         """Set and durably journal the pre-Maker local HEAD (I6, code H5's own base).
@@ -793,7 +961,7 @@ class LoopDriver:
                 "maker": {"agent": maker_agent, "timed_out": True},
                 "infrastructure_failure": True,
             }
-        prompt = _maker_prompt(state, params)
+        prompt = _maker_prompt(state, params, maker_agent)
         cmd = lds.build_claude_p_command(
             prompt,
             allowed_tools=allowed_tools,
@@ -886,17 +1054,21 @@ class LoopDriver:
         raise DriverTerminated(stop_reason)
 
     def _resolve_maker_agent(self, state: lc.LoopState, params: dict[str, Any]) -> str | None:
-        """Resolve the Maker agent name, enforcing `maker.allowed_agents` (code #23).
+        """Resolve the Maker agent name, enforcing `maker.allowed_agents` (code #23, EV-41).
 
         Mirrors `loop_common._selected_maker_from_result`'s allowlist as a proactive guard
-        instead of only failing after the fact at `complete()` time: an unresolved `"auto"`
-        sentinel (fresh `issue-loop` runs; the loop definition's `maker.agent: auto`) or any
-        agent outside `maker.allowed_agents` falls back to `maker.fallback_agent` *before*
-        `claude -p` is ever invoked, matching the safety net `/loop-issue` (LP-1, SKILL.md)
-        applies via `route_config.detect_agent` + config fallback. Scoped to `issue-loop`
-        only (design 5.2 節: `maker.allowed_agents` is "issue-loop の auto Maker 用"); other
-        loop definitions may configure a fixed `maker.agent` outside that allowlist on
-        purpose and are passed through unchanged.
+        instead of only failing after the fact at `complete()` time: an already-selected
+        `maker_agent` outside `maker.allowed_agents` falls back to `maker.fallback_agent`
+        *before* `claude -p` is ever invoked. An unresolved `"auto"` sentinel (fresh
+        `issue-loop` runs; the loop definition's `maker.agent: auto`) is routed through
+        `_detect_maker_agent()` first (Issue #219 P2-1) -- matching the safety net
+        `/loop-issue` (LP-1, `facets/instructions/loop-issue.md`) applies via
+        `route_config.detect_agent()` + config fallback, which this driver's own docstring
+        already claimed to mirror before this fix but never actually invoked, silently
+        collapsing every `"auto"` request straight to `maker.fallback_agent` regardless of the
+        Issue's own content. Scoped to `issue-loop` only (design 5.2 節: `maker.allowed_agents`
+        is "issue-loop の auto Maker 用"); other loop definitions may configure a fixed
+        `maker.agent` outside that allowlist on purpose and are passed through unchanged.
         """
         requested = params.get("maker_agent")
         if state.definition_id != "issue-loop":
@@ -904,10 +1076,50 @@ class LoopDriver:
         config = ld.load_config(self.project_dir)
         allowed = _nested(config, ("maker", "allowed_agents"), [])
         allowed_set = set(allowed) if isinstance(allowed, list) else set()
-        if isinstance(requested, str) and requested in allowed_set:
+        fallback = str(_nested(config, ("maker", "fallback_agent"), "general-purpose"))
+        if isinstance(requested, str) and requested != "auto" and requested in allowed_set:
             return requested
-        fallback = _nested(config, ("maker", "fallback_agent"), "general-purpose")
-        return str(fallback)
+        if requested == "auto":
+            detected = self._detect_maker_agent(state, allowed_set)
+            if detected is not None:
+                return detected
+        return fallback
+
+    def _detect_maker_agent(self, state: lc.LoopState, allowed_agents: set[str]) -> str | None:
+        """Detect the Maker agent for an unresolved `"auto"` sentinel (Issue #219 P2-1, EV-41).
+
+        Uses `packages/agent-routing`'s own `detect_agent()` (`cli-tools.yaml`-driven trigger
+        table), restricted to `maker.allowed_agents` so a keyword match outside the roles this
+        loop is allowed to dispatch to can never be selected. Input is `title + labels` only,
+        never `body` (EV-74, Issue #151's real-world false-positive: a body keyword like
+        "スコープ" incidentally matching `requirements`'s trigger list must not steer Maker
+        selection away from a code-writing role). Returns `None` (letting the caller fall back
+        to `maker.fallback_agent`) whenever the Issue number cannot be derived from `loop_id`,
+        the `gh issue view` fetch fails, no allowed agent's trigger matches, or agent-routing
+        itself cannot be loaded -- routing is a best-effort refinement over `maker.fallback_agent`,
+        never a hard dependency of the dispatch loop, so any failure degrades to the fallback
+        rather than crashing the worker.
+        """
+        issue_number = lds.issue_number_from_loop_id(state.loop_id)
+        if issue_number is None:
+            return None
+        snapshot = _fetch_issue_snapshot(state.worktree_path, issue_number)
+        issue_text = f"{snapshot.get('title', '')}\n{' '.join(snapshot.get('labels', []))}"
+        try:
+            route_config = _load_route_config()
+            agent_name, _trigger = route_config.detect_agent(issue_text, allowed_agents)
+        except Exception as exc:  # noqa: BLE001
+            # Deliberately broad: covers not just the cron/launchd import failure this guard
+            # was added for, but also runtime errors inside `detect_agent()` itself (e.g. a
+            # corrupt cli-tools.yaml). Routing is a best-effort refinement, so any of these
+            # degrades to `maker.fallback_agent` (with the stderr line below as the
+            # observability trail) rather than crashing the dispatch loop.
+            print(
+                f"loop_driver: auto Maker routing unavailable, using fallback: {exc}",
+                file=sys.stderr,
+            )
+            return None
+        return agent_name
 
     def _run_child(
         self, cmd: list[str], cwd: str, timeout_seconds: float, env: dict[str, str]
@@ -1011,6 +1223,13 @@ class LoopDriver:
                 artifact_writer=save_mechanical_log,
                 env=checker_env,
                 on_start=self._set_current_child,
+                # Issue #219 P2-2: `mechanical_timeout_seconds` above only caps against the
+                # budget remaining *before this whole run_checker call started*. Re-evaluating
+                # `self._remaining_wall_clock_seconds()` before *each* command in `commands`
+                # (this callback) prevents N commands from each independently spending up to
+                # that same fixed cap and collectively overshooting the wall-clock deadline by
+                # up to N times over.
+                remaining_budget=self._remaining_wall_clock_seconds,
             )
         except _MechanicalLeaseLostError:
             # code G5: lease already lost; `self._lease_lost` is set, so `run()`'s dispatch
@@ -1742,6 +1961,53 @@ class LoopDriver:
         self._emit_loop_stop_audit(stopped_state, "stop", stop_reason)
         raise DriverTerminated(stop_reason)
 
+    def _stop_for_rewritten_origin_url(
+        self,
+        proposal: lc.ProposeResult | None,
+        state: lc.LoopState,
+        pinned_fingerprint: str,
+        resolved_fingerprint: str,
+    ) -> None:
+        """Hard-stop when `remote.origin.url` no longer matches the journaled pinned value.
+
+        Issue #219 P2-4 (SEC): closes a gap `_verify_no_git_config_tampering_or_stop()` and the
+        in-memory-only `self._trusted_origin_url` pin do not cover -- a Maker `Edit`-write that
+        rewrites `remote.origin.url` itself (not an `insteadOf`/`pushurl`/etc. entry, which the
+        dangerous-key scan already catches; a bare `remote.origin.url` value is deliberately
+        *excluded* from that scan, see `_DANGEROUS_LOCAL_CONFIG_KEY_RE`'s own RC1 comment,
+        because it is the expected, non-dangerous baseline every legitimate push depends on) --
+        while no driver process is alive to see it happen, followed by a crash/restart. Without
+        this check, `_reconstruct_push_integrity_baseline()` would simply re-resolve the
+        already-rewritten URL and pin it as if it were trustworthy, defeating the entire
+        "earliest trustworthy moment" pinning strategy `resolve_origin_url()` depends on.
+
+        `proposal` may be `None`, mirroring `_stop_for_unresolvable_origin_url()`'s own
+        `action_id=None` fallback for a pre-loop stop.
+        """
+        stop_reason = "origin_url_rewritten"
+        action_id = proposal.action_id if proposal is not None else None
+        lds.persist_safe_stop(
+            self.loop_id,
+            self.project_dir,
+            self.lease_token,
+            action_id,
+            stop_reason,
+            # Fingerprints only (PR #226 review P1): stable under journal redaction and free of
+            # credential material, unlike the raw URLs they stand in for.
+            {
+                "pinned_origin_url_sha256": pinned_fingerprint,
+                "detected_origin_url_sha256": resolved_fingerprint,
+            },
+        )
+        self._notify(state, stop_reason)
+        stopped_state = lc.load_state(self.loop_id, self.project_dir)
+        self._maybe_comment(
+            stopped_state,
+            f"loop-harness: {self.loop_id} stopped safely (push integrity check: {stop_reason}).",
+        )
+        self._emit_loop_stop_audit(stopped_state, "stop", stop_reason)
+        raise DriverTerminated(stop_reason)
+
     def _scan_for_leaked_secrets_or_stop(
         self, proposal: lc.ProposeResult, state: lc.LoopState
     ) -> None:
@@ -1955,6 +2221,19 @@ class LoopDriver:
         re-fetched snapshot). Reusing an *existing* PR must not baseline here: its own
         already-known reviews are meant to become the baseline via that later step instead,
         exactly as before this change (I3, PR #210 review round 5).
+
+        Issue #219 P2-5: `created=True` must also be reported on a crash-retry of *this exact*
+        `action_id`'s own PR creation, not just the first successful call. Without this, a
+        crash between `gh pr create` succeeding (the zero baseline above already recorded and
+        the PR now publicly visible) and `lc.complete()` persisting that outcome makes the
+        retried `advance_phase` action re-run this method from the top: `gh pr view` now finds
+        the PR this same action just created and (pre-fix) reported `created=False`, so the
+        caller's own later `record_baseline` exec step re-ran and re-fetched a *current*
+        baseline -- silently re-adopting any bot review posted in the crash-restart gap as
+        "pre-baseline" and never importing it as a finding. `_persist_pr_creation_intent()` is
+        journaled immediately before recording that zero baseline, keyed to this exact
+        `action_id`; recognizing it on this path preserves the original `created=True` outcome
+        (and therefore the original zero baseline) across the retry.
         """
         existing = subprocess.run(
             ["gh", "pr", "view", branch, "--json", "number", "-q", ".number"],
@@ -1965,7 +2244,31 @@ class LoopDriver:
             check=False,
         )
         if existing.returncode == 0 and existing.stdout.strip():
-            return int(existing.stdout.strip()), False
+            pr_number = int(existing.stdout.strip())
+            intended = self._load_persisted_pr_creation_intent(action_id) == branch
+            confirmed = self._load_persisted_pr_creation_confirmed(action_id) == branch
+            if intended and confirmed:
+                return pr_number, True
+            if (
+                intended
+                and self._pr_created_after_intent(state.worktree_path, branch, action_id)
+                and self._pr_authored_by_us(state.worktree_path, branch)
+            ):
+                # Heal the crash window between `gh pr create` returning (the PR now publicly
+                # exists) and `_persist_pr_creation_confirmed`'s journal write below: the intent
+                # alone cannot distinguish "our create succeeded, confirmed unrecorded" from
+                # "our create failed and someone else's PR appeared on this branch", but the PR
+                # author can -- an unrelated third-party PR fails this check and correctly stays
+                # `created=False`, while our own crash-orphaned creation regains P2-5's original
+                # `created=True` guarantee (preserving the zero baseline). PR #226 review P2:
+                # author alone is still not proof (a pre-existing PR of our own that the initial
+                # `gh pr view` missed as a false negative would pass it), so additionally require
+                # the PR's `createdAt` to postdate this action's journaled intent -- only a PR
+                # born after we declared we were about to create one can be ours. Journal the
+                # missing confirmation now so later retries take the fast path above.
+                self._persist_pr_creation_confirmed(action_id, branch)
+                return pr_number, True
+            return pr_number, False
         repo = _repo_name_with_owner(state.worktree_path)
         prw.record_baseline(
             self.loop_id,
@@ -1975,6 +2278,7 @@ class LoopDriver:
             self.lease_token,
             action_id=action_id,
         )
+        self._persist_pr_creation_intent(action_id, branch)
         issue_number = lds.issue_number_from_loop_id(state.loop_id)
         title = f"Fix #{issue_number}" if issue_number else f"loop-harness: {state.loop_id}"
         body = f"Closes #{issue_number}\n\nAutomated by loop-harness ({state.loop_id})."
@@ -1986,6 +2290,17 @@ class LoopDriver:
             timeout=60,
             check=True,
         )
+        # Journal the confirmation immediately after `gh pr create` succeeds (before the
+        # `gh pr view` below): only now is it proven that *this* action created the PR, which the
+        # existing-PR reuse path above requires before reporting `created=True`. A crash landing
+        # between `gh pr create` returning (including its network round-trip: the PR may exist
+        # remotely before `subprocess.run` comes back) and this journal write leaves the PR
+        # created but unconfirmed; the retry then recovers `created=True` via the
+        # `_pr_authored_by_us` ownership check above rather than off the intent alone, so the
+        # misattribution window this confirmation closes stays closed. If that ownership lookup
+        # itself fails, the retry degrades to `created=False` (re-baseline; the safe direction,
+        # matching the pre-#219 reuse behavior).
+        self._persist_pr_creation_confirmed(action_id, branch)
         created = subprocess.run(
             ["gh", "pr", "view", branch, "--json", "number", "-q", ".number"],
             cwd=state.worktree_path,
@@ -1995,6 +2310,144 @@ class LoopDriver:
             check=True,
         )
         return int(created.stdout.strip()), True
+
+    def _persist_pr_creation_intent(self, action_id: str, branch: str) -> None:
+        """Durably mark that `action_id` already recorded the pre-creation zero baseline and
+        is about to (or already did) create the PR for `branch` (Issue #219 P2-5).
+
+        Keyed to the exact `action_id` (like `record_baseline`/`record_iteration_head`'s own
+        G1 fencing), not a fixed constant: a much later, unrelated `advance_phase` action
+        reusing the same branch must not be mistaken for this specific creation.
+        """
+        lc.append_journal_event(
+            self.loop_id,
+            self.project_dir,
+            _PR_CREATION_INTENT_JOURNAL_EVENT,
+            "driver",
+            action_id,
+            {"branch": branch},
+        )
+
+    def _load_persisted_pr_creation_intent(self, action_id: str) -> str | None:
+        """Return the branch `_persist_pr_creation_intent` journaled for this `action_id`, if
+        any (Issue #219 P2-5)."""
+        return self._load_pr_creation_branch(action_id, _PR_CREATION_INTENT_JOURNAL_EVENT)
+
+    def _persist_pr_creation_confirmed(self, action_id: str, branch: str) -> None:
+        """Durably mark that `action_id`'s own `gh pr create` for `branch` actually succeeded
+        (Issue #219 P2-5 follow-up).
+
+        The pre-creation intent alone cannot distinguish "this action created the PR" from "this
+        action tried, `gh pr create` failed, and an unrelated PR later appeared on the same
+        branch": both leave only the intent event. Requiring this post-creation confirmation
+        before reporting `created=True` closes that misattribution window.
+        """
+        lc.append_journal_event(
+            self.loop_id,
+            self.project_dir,
+            _PR_CREATION_CONFIRMED_JOURNAL_EVENT,
+            "driver",
+            action_id,
+            {"branch": branch},
+        )
+
+    def _load_persisted_pr_creation_confirmed(self, action_id: str) -> str | None:
+        """Return the branch `_persist_pr_creation_confirmed` journaled for this `action_id`, if
+        any (Issue #219 P2-5 follow-up)."""
+        return self._load_pr_creation_branch(action_id, _PR_CREATION_CONFIRMED_JOURNAL_EVENT)
+
+    def _load_pr_creation_branch(self, action_id: str, event: str) -> str | None:
+        """Return the `branch` payload journaled for `action_id` under `event`, if any."""
+        record = lc.find_journal_event(self.loop_id, self.project_dir, action_id, event)
+        if record is None:
+            return None
+        payload = record.get("payload")
+        branch = payload.get("branch") if isinstance(payload, dict) else None
+        return str(branch) if branch else None
+
+    def _pr_authored_by_us(self, worktree_path: str, branch: str) -> bool:
+        """Return True only when `branch`'s PR author is the authenticated `gh` user.
+
+        Ownership signal for the intent-without-confirmation recovery path in
+        `_create_or_reuse_pr` (Issue #219 P2-5 follow-up). Fail-closed: any lookup failure
+        (network, auth, missing PR) returns False, degrading to `created=False` -- the safe
+        direction, since re-baselining against the PR's real reviews merely repeats the
+        pre-#219 reuse behavior instead of trusting an unverified ownership claim.
+        """
+        # PR #226 review P2: `gh api user` defaults to github.com even when the repository
+        # lives on a GitHub Enterprise host, so pin the request host to the one derived from
+        # the trusted origin URL whenever it is derivable (`gh pr view` needs no such pin -- it
+        # already resolves its host from the repo's own remote). Underivable (e.g. a local
+        # filesystem remote in tests) falls back to `gh`'s default resolution.
+        me_cmd = ["gh", "api", "user", "--jq", ".login"]
+        host = _gh_host_from_origin_url(self._trusted_origin_url)
+        if host:
+            me_cmd = ["gh", "api", "--hostname", host, "user", "--jq", ".login"]
+        try:
+            author = subprocess.run(
+                ["gh", "pr", "view", branch, "--json", "author", "-q", ".author.login"],
+                cwd=worktree_path,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+            me = subprocess.run(
+                me_cmd,
+                cwd=worktree_path,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        if author.returncode != 0 or me.returncode != 0:
+            return False
+        author_login = author.stdout.strip()
+        my_login = me.stdout.strip()
+        return bool(author_login) and bool(my_login) and author_login == my_login
+
+    def _pr_created_after_intent(self, worktree_path: str, branch: str, action_id: str) -> bool:
+        """Return True only when `branch`'s PR was created after this action journaled its intent.
+
+        Second ownership signal for `_create_or_reuse_pr`'s heal path (PR #226 review P2): the
+        author check alone cannot reject a *pre-existing* PR of our own that the initial
+        `gh pr view` missed as a transient false negative -- same author, but this action never
+        created it, so its already-known reviews must be re-baselined (`created=False`), not
+        zero-baselined. A PR whose `createdAt` predates the intent journal entry cannot have
+        been born from this action's own `gh pr create`. Fail-closed like `_pr_authored_by_us`:
+        any lookup/parse failure (and clock skew large enough to flip the comparison) degrades
+        to False -- `created=False` merely repeats the pre-#219 reuse behavior.
+        """
+        record = lc.find_journal_event(
+            self.loop_id, self.project_dir, action_id, _PR_CREATION_INTENT_JOURNAL_EVENT
+        )
+        intent_ts = record.get("ts") if record is not None else None
+        if not intent_ts:
+            return False
+        try:
+            created = subprocess.run(
+                ["gh", "pr", "view", branch, "--json", "createdAt", "-q", ".createdAt"],
+                cwd=worktree_path,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        if created.returncode != 0:
+            return False
+        created_raw = created.stdout.strip()
+        if not created_raw:
+            return False
+        try:
+            created_at = datetime.fromisoformat(created_raw.replace("Z", "+00:00"))
+            intent_at = datetime.fromisoformat(str(intent_ts))
+        except ValueError:
+            return False
+        return created_at >= intent_at
 
     # -- terminal actions -----------------------------------------------------------------------
 
@@ -2396,8 +2849,11 @@ def _combine_llm_results(
     )
 
 
-def _fetch_issue_snapshot(worktree_path: str, issue_number: int) -> dict[str, str]:
-    """Best-effort fetch of the Issue title/body via `gh issue view` (code #8).
+_EMPTY_ISSUE_SNAPSHOT: dict[str, Any] = {"title": "", "body": "", "labels": []}
+
+
+def _fetch_issue_snapshot(worktree_path: str, issue_number: int) -> dict[str, Any]:
+    """Best-effort fetch of the Issue title/body/labels via `gh issue view` (code #8, EV-41).
 
     Driver-only (the Maker's own `claude -p` invocation disallows `gh`; see layer 1/3 in
     `_run_maker`): the driver holds push/API credentials, the Maker does not, so this fetch
@@ -2405,10 +2861,16 @@ def _fetch_issue_snapshot(worktree_path: str, issue_number: int) -> dict[str, st
     Maker as its own tool call. Never raises; any failure (missing `gh`, auth error, network
     hiccup, malformed JSON) degrades to an empty snapshot so a Maker prompt can always be
     built, just without Issue context, rather than aborting the run_maker action outright.
+
+    `labels` (Issue #219 P2-1) is consumed by `_detect_maker_agent()` alongside `title` for
+    `route_config.detect_agent()` -- `body` is deliberately excluded from that routing input
+    (EV-74) to avoid an incidental keyword match inside free-form Issue body text silently
+    steering Maker selection; only `title`/`body` (never `labels`) are used for the actual
+    Maker prompt (`_maker_prompt`/`_format_untrusted_issue_block`).
     """
     try:
         completed = subprocess.run(
-            ["gh", "issue", "view", str(issue_number), "--json", "title,body"],
+            ["gh", "issue", "view", str(issue_number), "--json", "title,body,labels"],
             cwd=worktree_path,
             capture_output=True,
             text=True,
@@ -2416,21 +2878,33 @@ def _fetch_issue_snapshot(worktree_path: str, issue_number: int) -> dict[str, st
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return {"title": "", "body": ""}
+        return dict(_EMPTY_ISSUE_SNAPSHOT)
     if completed.returncode != 0:
-        return {"title": "", "body": ""}
+        return dict(_EMPTY_ISSUE_SNAPSHOT)
     try:
         data = json.loads(completed.stdout)
     except json.JSONDecodeError:
-        return {"title": "", "body": ""}
+        return dict(_EMPTY_ISSUE_SNAPSHOT)
     if not isinstance(data, dict):
-        return {"title": "", "body": ""}
+        return dict(_EMPTY_ISSUE_SNAPSHOT)
     title = data.get("title")
     body = data.get("body")
     return {
         "title": title if isinstance(title, str) else "",
         "body": body if isinstance(body, str) else "",
+        "labels": _label_names(data.get("labels")),
     }
+
+
+def _label_names(raw_labels: Any) -> list[str]:
+    """Extract label name strings from `gh issue view --json labels`' `[{"name": ...}, ...]`."""
+    if not isinstance(raw_labels, list):
+        return []
+    names = []
+    for item in raw_labels:
+        if isinstance(item, dict) and isinstance(item.get("name"), str):
+            names.append(item["name"])
+    return names
 
 
 _UNTRUSTED_BLOCK_SENTINELS: tuple[str, ...] = (
@@ -2457,7 +2931,7 @@ def _neutralize_untrusted_delimiters(text: str) -> str:
     return sanitized
 
 
-def _format_untrusted_issue_block(snapshot: dict[str, str]) -> str:
+def _format_untrusted_issue_block(snapshot: dict[str, Any]) -> str:
     """Format the Issue title/body as an explicitly-marked untrusted-data block (code #8).
 
     Framed as non-instructional external content, mirroring `_classify_one_finding`'s
@@ -2542,8 +3016,17 @@ def _format_pr_review_findings_block(findings: list[dict[str, Any]]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _maker_prompt(state: lc.LoopState, params: dict[str, Any]) -> str:
+def _maker_prompt(
+    state: lc.LoopState, params: dict[str, Any], maker_agent: str | None = None
+) -> str:
     """Build the Maker prompt (layer 1: never instructs push/PR creation).
+
+    PR #226 review P2: `maker_agent` (the `_resolve_maker_agent()` result, including
+    `detect_agent()`-routed `auto` selections) is threaded into the `[Role]` line so the
+    selected role actually shapes the `claude -p` child's behavior -- previously it was only
+    recorded in the completion metadata, so an `auto` detection of e.g. `frontend-dev` reported
+    a specialized Maker that the child never knew about. `claude -p` has no per-run
+    agent-selection flag, so the prompt is the threading point.
 
     code L2: in the `pr_review_response` phase, this also lists the imported PR review findings
     from `state.last_check_result` (see `_pr_review_findings_from_last_check()`), so the Maker
@@ -2573,8 +3056,9 @@ def _maker_prompt(state: lc.LoopState, params: dict[str, Any]) -> str:
         if state.phase == "pr_review_response"
         else ""
     )
+    role_prefix = f"Act as the `{maker_agent}` agent role. " if maker_agent else ""
     return (
-        f"[Role] You implement or fix Issue #{issue_number} in this repository.\n"
+        f"[Role] {role_prefix}You implement or fix Issue #{issue_number} in this repository.\n"
         f"[Context] cwd={state.worktree_path} branch={state.branch} phase={state.phase}\n"
         f"{issue_block}"
         f"{review_block}"

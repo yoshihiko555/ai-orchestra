@@ -1021,6 +1021,7 @@ def run_mechanical_checks(
     artifact_writer: Callable[[int, str, str, int], None] | None = None,
     env: Mapping[str, str] | None = None,
     on_start: Callable[[int | None], None] | None = None,
+    remaining_budget: Callable[[], float] | None = None,
 ) -> list[MechanicalFailure]:
     """Run mechanical checker commands and classify failures via failure_detector.
 
@@ -1032,16 +1033,32 @@ def run_mechanical_checks(
 
     Callers needing heartbeat-triggered kill-tree parity may pass `on_start` to track each
     subprocess pid (F5); omitting it preserves the previous behavior exactly.
+
+    `remaining_budget` (Issue #219 P2-2, optional): a zero-argument callable returning the
+    caller's current wall-clock budget remaining. Without it, every command reuses the same
+    `timeout_seconds` cap, so N commands can overshoot the caller's overall deadline by up to N
+    times `timeout_seconds`. Passing it caps each command's timeout to
+    `min(timeout_seconds, remaining_budget())`, re-evaluated per command; once the budget is
+    exhausted (`<= 0`), that command and every one after it is recorded as a synthetic timeout
+    (exit code 124, matching a real per-command timeout so `failure_detector` classifies it the
+    same) without spawning a subprocess. Omitting it preserves the previous behavior exactly.
     """
     detector = _load_failure_detector()
     failures: list[MechanicalFailure] = []
     for index, command in enumerate(commands, start=1):
         output: str | None = None
         exit_code: int | None = None
+        command_timeout = timeout_seconds
+        if remaining_budget is not None:
+            command_timeout = max(min(timeout_seconds, remaining_budget()), 0)
         try:
-            output, exit_code = _run_mechanical_command(
-                command, cwd, timeout_seconds, env=env, on_start=on_start
-            )
+            if command_timeout <= 0:
+                output = "\ncommand skipped: wall-clock budget exhausted"
+                exit_code = 124
+            else:
+                output, exit_code = _run_mechanical_command(
+                    command, cwd, command_timeout, env=env, on_start=on_start
+                )
             response = {"exit_code": exit_code, "stdout": output}
             result = detector.analyze("Bash", {"command": command}, response)
         finally:

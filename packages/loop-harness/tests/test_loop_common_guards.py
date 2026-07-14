@@ -444,6 +444,130 @@ def test_run_mechanical_checks_forwards_on_start_to_mechanical_command(
     assert child_pids[1] is None
 
 
+# --------------------------------------------------------------------------------------------
+# run_mechanical_checks: per-command wall-clock budget recomputation (Issue #219 P2-2)
+# --------------------------------------------------------------------------------------------
+
+
+def test_run_mechanical_checks_recomputes_timeout_per_command_from_remaining_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without `remaining_budget`, every command reuses the same fixed `timeout_seconds` cap
+    regardless of how much budget earlier commands in this same call already spent -- N
+    commands can then collectively overshoot the caller's wall-clock deadline by up to N times.
+    Passing `remaining_budget` must cap each command's own timeout to
+    `min(timeout_seconds, remaining_budget())`, recomputed immediately before each command."""
+
+    class FakeDetector:
+        @staticmethod
+        def analyze(_tool_name: str, _tool_input: dict, _tool_response: dict) -> None:
+            return None
+
+    monkeypatch.setattr(lc, "_load_failure_detector", lambda: FakeDetector)
+    captured_timeouts: list[int] = []
+    original = lc._run_mechanical_command
+
+    def spy(
+        command: str,
+        cwd: str,
+        timeout_seconds: int,
+        env: object = None,
+        on_start: object = None,
+    ) -> tuple[str, int]:
+        captured_timeouts.append(timeout_seconds)
+        return original(command, cwd, timeout_seconds, env=env, on_start=on_start)
+
+    monkeypatch.setattr(lc, "_run_mechanical_command", spy)
+    # Simulate a shrinking wall-clock budget: 100s remaining before the 1st command, 3s before
+    # the 2nd (as if the 1st command consumed most of the budget), which must cap the 2nd
+    # command's own timeout down from the fixed 100s cap.
+    remaining_values = iter([100.0, 3.0])
+
+    failures = lc.run_mechanical_checks(
+        ["printf first", "printf second"],
+        str(tmp_path),
+        100,
+        remaining_budget=lambda: next(remaining_values),
+    )
+
+    assert failures == []
+    assert captured_timeouts == [100, 3]
+
+
+def test_run_mechanical_checks_skips_command_without_spawning_when_budget_exhausted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Once the remaining budget hits (or drops below) zero, no further command may spawn a
+    subprocess at all -- it must be recorded as a synthetic timeout instead."""
+    classified: list[tuple[str, dict]] = []
+
+    class FakeDetector:
+        @staticmethod
+        def analyze(_tool_name: str, tool_input: dict, tool_response: dict) -> dict | None:
+            classified.append((tool_input["command"], tool_response))
+            if tool_response["exit_code"] == 124:
+                return {
+                    "failure_type": "infrastructure_failure",
+                    "error_type": "timeout",
+                    "detected_by": "exit_code",
+                    "command_kind": "test",
+                }
+            return None
+
+    monkeypatch.setattr(lc, "_load_failure_detector", lambda: FakeDetector)
+
+    def _boom(*_a: object, **_k: object) -> tuple[str, int]:
+        raise AssertionError("must not spawn a subprocess once the wall-clock budget is gone")
+
+    monkeypatch.setattr(lc, "_run_mechanical_command", _boom)
+
+    failures = lc.run_mechanical_checks(
+        ["printf should-be-skipped"],
+        str(tmp_path),
+        100,
+        remaining_budget=lambda: 0.0,
+    )
+
+    assert len(failures) == 1
+    assert failures[0].failure_type == "infrastructure_failure"
+    assert failures[0].error_type == "timeout"
+    assert classified == [
+        ("printf should-be-skipped", {"exit_code": 124, "stdout": classified[0][1]["stdout"]})
+    ]
+
+
+def test_run_mechanical_checks_without_remaining_budget_keeps_fixed_timeout_per_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Backward compatibility: omitting `remaining_budget` (LP-1's `loop_step.py` call sites)
+    must preserve the exact previous behavior of a fixed timeout for every command."""
+
+    class FakeDetector:
+        @staticmethod
+        def analyze(_tool_name: str, _tool_input: dict, _tool_response: dict) -> None:
+            return None
+
+    monkeypatch.setattr(lc, "_load_failure_detector", lambda: FakeDetector)
+    captured_timeouts: list[int] = []
+    original = lc._run_mechanical_command
+
+    def spy(
+        command: str,
+        cwd: str,
+        timeout_seconds: int,
+        env: object = None,
+        on_start: object = None,
+    ) -> tuple[str, int]:
+        captured_timeouts.append(timeout_seconds)
+        return original(command, cwd, timeout_seconds, env=env, on_start=on_start)
+
+    monkeypatch.setattr(lc, "_run_mechanical_command", spy)
+
+    lc.run_mechanical_checks(["printf first", "printf second"], str(tmp_path), 42)
+
+    assert captured_timeouts == [42, 42]
+
+
 def test_redact_payload_and_audit_payload_shape() -> None:
     state = _state()
     payload = lc.build_audit_payload(
