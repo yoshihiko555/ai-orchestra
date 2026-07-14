@@ -1918,6 +1918,75 @@ def test_render_cron_entry_pgrep_pattern_differs_across_definitions(tmp_path: Pa
     assert _pgrep_arg(entry_default) != _pgrep_arg(entry_custom)
 
 
+# --------------------------------------------------------------------------------------------
+# cron pgrep guard: self/ancestor-PID exclusion (Issue #219 P2-3, #13 follow-up)
+# --------------------------------------------------------------------------------------------
+
+
+def _extract_pgrep_guard_filter_suffix(entry: str) -> str:
+    """Return the ` | grep -vxF -e "$$" -e "$PPID" | grep -q .` suffix `render_cron_entry`
+    appends after the `pgrep -f '<pattern>'` clause, verbatim as rendered (not hand-copied), so
+    the following shell-semantics tests exercise the *actual* rendered text."""
+    filter_start = entry.index("| grep -vxF")
+    guard_end = entry.index(" || ", filter_start)
+    return entry[filter_start:guard_end]
+
+
+def test_render_cron_entry_pgrep_guard_includes_self_and_parent_pid_exclusion_filter(
+    tmp_path: Path,
+) -> None:
+    """Issue #219 P2-3: the rendered pgrep guard clause must pipe through a `$$`/`$PPID`
+    exclusion filter before the `|| <fallback>`, so the wrapping `/bin/sh -c` cron process's
+    own argv (which literally contains the fallback command's text, and therefore always
+    self-matches the raw `pgrep -f <pattern>` alone) cannot make a dead scheduler look alive
+    forever."""
+    entry = scheduler.render_cron_entry(str(tmp_path))
+    filter_suffix = _extract_pgrep_guard_filter_suffix(entry)
+    assert filter_suffix == '| grep -vxF -e "$$" -e "$PPID" | grep -q .'
+
+
+def test_pgrep_guard_filter_falls_back_when_only_the_wrapper_shells_own_pid_matched(
+    tmp_path: Path,
+) -> None:
+    """Real shell-semantics regression for the #13 self-match bug: when `pgrep -f` finds only
+    the wrapping shell's own PID (simulating the documented failure mode -- the cron wrapper's
+    argv contains the fallback command's text, so it always self-matches the bare pattern),
+    the exclusion filter must reduce that to "nothing found" and let the `||` fallback run.
+
+    Piping a fixed, single-line `printf` in place of the real `pgrep -f <pattern>` call lets
+    this test deterministically control what pgrep "found" without depending on this test
+    process's own OS/pgrep visibility semantics (observed to vary across environments) or
+    spawning a real scheduler subprocess."""
+    entry = scheduler.render_cron_entry(str(tmp_path))
+    filter_suffix = _extract_pgrep_guard_filter_suffix(entry)
+    # `$PPID` inside the `sh -c` subshell below is this pipeline's own parent -- the outer
+    # shell running this test command -- exactly mirroring how the real bug's only "match" is
+    # the cron wrapper shell (this subshell's own parent), not a genuinely different process.
+    command = f'printf "%s\\n" "$PPID" {filter_suffix} && echo REAL_MATCH || echo FALLBACK_RAN'
+    completed = subprocess.run(
+        ["sh", "-c", command], capture_output=True, text=True, timeout=10, check=False
+    )
+    assert completed.stdout.strip() == "FALLBACK_RAN"
+
+
+def test_pgrep_guard_filter_skips_fallback_when_a_genuinely_different_pid_remains(
+    tmp_path: Path,
+) -> None:
+    """The exclusion filter must not blanket-suppress every match -- a PID that is neither this
+    shell's own `$$` nor its `$PPID` (a genuinely different, still-alive scheduler process)
+    must still be recognized, so the guard does not spawn a duplicate scheduler."""
+    entry = scheduler.render_cron_entry(str(tmp_path))
+    filter_suffix = _extract_pgrep_guard_filter_suffix(entry)
+    command = (
+        f'printf "%s\\n%s\\n" "$PPID" 999999 {filter_suffix} && '
+        "echo REAL_MATCH || echo FALLBACK_RAN"
+    )
+    completed = subprocess.run(
+        ["sh", "-c", command], capture_output=True, text=True, timeout=10, check=False
+    )
+    assert completed.stdout.strip() == "REAL_MATCH"
+
+
 def _launchd_label(rendered_plist: str) -> str:
     start = rendered_plist.index("<key>Label</key>")
     return rendered_plist[start : start + 200].split("<string>")[1].split("</string>")[0]

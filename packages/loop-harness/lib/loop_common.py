@@ -1021,6 +1021,7 @@ def run_mechanical_checks(
     artifact_writer: Callable[[int, str, str, int], None] | None = None,
     env: Mapping[str, str] | None = None,
     on_start: Callable[[int | None], None] | None = None,
+    remaining_budget: Callable[[], float] | None = None,
 ) -> list[MechanicalFailure]:
     """Run mechanical checker commands and classify failures via failure_detector.
 
@@ -1032,16 +1033,41 @@ def run_mechanical_checks(
 
     Callers needing heartbeat-triggered kill-tree parity may pass `on_start` to track each
     subprocess pid (F5); omitting it preserves the previous behavior exactly.
+
+    `remaining_budget` (Issue #219 P2-2, optional): a zero-argument callable returning the
+    caller's own current wall-clock budget remaining (e.g. LP-2's
+    `LoopDriver._remaining_wall_clock_seconds`). Without it, every command in `commands` reuses
+    the *same* `timeout_seconds` cap regardless of how long earlier commands in this same call
+    already took -- for N commands this can overshoot the caller's overall wall-clock deadline
+    by up to N times `timeout_seconds`, even though each individual command call site already
+    caps `timeout_seconds` itself by the budget remaining *before this whole call started*
+    (e.g. `loop_driver.py`'s own `apportioned_timeout(self._remaining_wall_clock_seconds(), ...)`
+    call before invoking this function). Passing it re-evaluates the actual remaining budget
+    immediately before *each* command, capping that command's own timeout to
+    `min(timeout_seconds, remaining_budget())`; once the budget is exhausted (`<= 0`), no
+    further command is spawned at all -- it is recorded as a synthetic timeout (exit code 124,
+    mirroring `_run_mechanical_command`'s own real-timeout shape) so `failure_detector` classifies
+    it consistently with a genuine per-command timeout, and every command still after it in
+    `commands` is skipped the same way without ever spawning a subprocess. Omitting this
+    parameter preserves the previous behavior exactly (every command timeout is the fixed
+    `timeout_seconds` cap, unconditionally).
     """
     detector = _load_failure_detector()
     failures: list[MechanicalFailure] = []
     for index, command in enumerate(commands, start=1):
         output: str | None = None
         exit_code: int | None = None
+        command_timeout = timeout_seconds
+        if remaining_budget is not None:
+            command_timeout = max(min(timeout_seconds, remaining_budget()), 0)
         try:
-            output, exit_code = _run_mechanical_command(
-                command, cwd, timeout_seconds, env=env, on_start=on_start
-            )
+            if command_timeout <= 0:
+                output = "\ncommand skipped: wall-clock budget exhausted"
+                exit_code = 124
+            else:
+                output, exit_code = _run_mechanical_command(
+                    command, cwd, command_timeout, env=env, on_start=on_start
+                )
             response = {"exit_code": exit_code, "stdout": output}
             result = detector.analyze("Bash", {"command": command}, response)
         finally:

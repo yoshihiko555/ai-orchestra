@@ -2464,6 +2464,84 @@ def test_execute_advance_exec_records_zero_baseline_before_creating_new_pr(
     assert call_order == ["record_baseline:None", "gh_pr_create"]
 
 
+def test_create_or_reuse_pr_reports_created_on_crash_retry_of_own_action(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #219 P2-5 (K2 crash-retry follow-up): a crash landing after `gh pr create`
+    succeeds (and the pre-creation zero baseline is already recorded) but before
+    `lc.complete()` persists the outcome must not make a retry of the *same* `advance_phase`
+    action see the now-existing PR and report `created=False` -- that would let the caller's
+    later `record_baseline` exec step re-run and silently re-baseline away any bot review
+    posted in the crash-restart gap. Retrying with the same `action_id` must still report
+    `created=True`, preserving the original zero baseline."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.branch = "main"
+    state.worktree_path = project_dir
+    action_id = "act-k3-crash-001"
+
+    d1 = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(driver, "_repo_name_with_owner", lambda _wt: "owner/repo")
+    monkeypatch.setattr(driver.lds, "issue_number_from_loop_id", lambda _loop_id: 1)
+    monkeypatch.setattr(prw, "record_baseline", lambda *_a, **_k: None)
+
+    view_calls = 0
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        nonlocal view_calls
+        if cmd[:3] == ["gh", "pr", "view"]:
+            view_calls += 1
+            if view_calls == 1:
+                return subprocess.CompletedProcess(cmd, 1, "", "no PR found")
+            return subprocess.CompletedProcess(cmd, 0, "99\n", "")
+        if cmd[:3] == ["gh", "pr", "create"]:
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(driver.subprocess, "run", fake_run)
+
+    pr_number, created = d1._create_or_reuse_pr(state, "main", action_id)
+    assert (pr_number, created) == (99, True)
+
+    # Crash-restart: a fresh LoopDriver instance retries the *same* advance_phase action_id.
+    # `gh pr view` now finds the PR `d1` already created above.
+    d2 = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(
+        driver.subprocess, "run", lambda *_a, **_k: subprocess.CompletedProcess([], 0, "99\n", "")
+    )
+
+    retried_pr_number, retried_created = d2._create_or_reuse_pr(state, "main", action_id)
+
+    assert (retried_pr_number, retried_created) == (99, True)
+
+
+def test_create_or_reuse_pr_reuses_unrelated_preexisting_pr_as_before(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A genuinely pre-existing PR for `branch` -- one this loop never created itself under
+    *this* `action_id` -- must still be reported as `created=False` (I3's original reuse
+    behavior), so the caller's `record_baseline` step re-baselines against its real, current
+    review state exactly as before this fix."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.branch = "main"
+    state.worktree_path = project_dir
+    action_id = "act-k3-reuse-001"
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(
+        driver.subprocess,
+        "run",
+        lambda *_a, **_k: subprocess.CompletedProcess([], 0, "77\n", ""),
+    )
+
+    pr_number, created = d._create_or_reuse_pr(state, "main", action_id)
+
+    assert (pr_number, created) == (77, False)
+
+
 # --------------------------------------------------------------------------------------------
 # loop_driver.LoopDriver: `commit` advance-exec step actually verifies the Maker's commit
 # (code F9) instead of being a no-op
@@ -4132,6 +4210,121 @@ def test_reconstruct_push_integrity_baseline_fails_closed_when_origin_url_unreso
     assert final_state.stop_reason == "origin_url_unresolvable"
 
 
+def test_reconstruct_push_integrity_baseline_pins_and_persists_origin_url_on_first_resolution(
+    tmp_path: Path,
+) -> None:
+    """Issue #219 P2-4 (SEC): the very first successful `resolve_origin_url()` for a loop must
+    be durably journaled (not just held in-memory on `self._trusted_origin_url`), so a later
+    restart has something cross-process to compare a re-resolved URL against."""
+    loop_id = "abcd1234-issue-1"
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_repo_with_remote(repo, remote)
+    project_dir = str(repo)
+    state = lc._initial_state(
+        loop_id, "issue-loop", "abcd1234", project_dir, "main", "implementation"
+    )
+    state.status = "running"
+    state.branch = "main"
+    state.worktree_path = project_dir
+    lc._write_state(state, project_dir)
+    lock = lc.acquire_lock(loop_id, project_dir, "owner", 3600)
+    assert lock is not None
+
+    d = driver.LoopDriver(loop_id, project_dir, lock.lease_token)
+    assert d._load_persisted_trusted_origin_url() is None
+
+    d._reconstruct_push_integrity_baseline()
+
+    expected_url = lds.resolve_origin_url(project_dir)
+    assert d._trusted_origin_url == expected_url
+    assert d._load_persisted_trusted_origin_url() == expected_url
+
+
+def test_reconstruct_push_integrity_baseline_proceeds_when_origin_url_unchanged_across_restart(
+    tmp_path: Path,
+) -> None:
+    """A restart whose `remote.origin.url` still matches the journaled pin must proceed
+    normally (no false-positive stop just because the pin was already recorded)."""
+    loop_id = "abcd1234-issue-1"
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_repo_with_remote(repo, remote)
+    project_dir = str(repo)
+    state = lc._initial_state(
+        loop_id, "issue-loop", "abcd1234", project_dir, "main", "implementation"
+    )
+    state.status = "running"
+    state.branch = "main"
+    state.worktree_path = project_dir
+    lc._write_state(state, project_dir)
+    lock = lc.acquire_lock(loop_id, project_dir, "owner", 3600)
+    assert lock is not None
+
+    d1 = driver.LoopDriver(loop_id, project_dir, lock.lease_token)
+    d1._reconstruct_push_integrity_baseline()
+    expected_url = d1._trusted_origin_url
+
+    # Crash-restart: a fresh LoopDriver instance, as `loop_scheduler.py` would spawn.
+    d2 = driver.LoopDriver(loop_id, project_dir, lock.lease_token)
+    d2._reconstruct_push_integrity_baseline()
+
+    assert d2._trusted_origin_url == expected_url
+    final_state = lc.load_state(loop_id, project_dir)
+    assert final_state.status == "running"  # not stopped
+
+
+def test_reconstruct_push_integrity_baseline_stops_when_origin_url_rewritten_since_last_pin(
+    tmp_path: Path,
+) -> None:
+    """Issue #219 P2-4 (SEC): a Maker `Edit`-write that rewrites `remote.origin.url` while no
+    driver process is alive to catch it live (via `_verify_no_git_config_tampering_or_stop`,
+    which deliberately excludes the `origin` subsection -- see `_DANGEROUS_LOCAL_CONFIG_KEY_RE`'s
+    own RC1 comment) must not be silently re-pinned as trusted on the next restart/attach."""
+    loop_id = "abcd1234-issue-1"
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_repo_with_remote(repo, remote)
+    project_dir = str(repo)
+    state = lc._initial_state(
+        loop_id, "issue-loop", "abcd1234", project_dir, "main", "implementation"
+    )
+    state.status = "running"
+    state.branch = "main"
+    state.worktree_path = project_dir
+    lc._write_state(state, project_dir)
+    lock = lc.acquire_lock(loop_id, project_dir, "owner", 3600)
+    assert lock is not None
+
+    d1 = driver.LoopDriver(loop_id, project_dir, lock.lease_token)
+    d1._reconstruct_push_integrity_baseline()
+    pinned_url = d1._trusted_origin_url
+    assert pinned_url is not None
+
+    # Simulate a Maker `Edit`-write rewriting `remote.origin.url` to an attacker-controlled
+    # destination while no driver process is alive to catch it (RC3's own scan deliberately
+    # excludes the `origin` subsection itself -- only `insteadOf`/`pushurl`/etc. are covered).
+    evil_remote = tmp_path / "evil-remote.git"
+    _git(["init", "--bare", str(evil_remote)], tmp_path)
+    _git(["remote", "set-url", "origin", str(evil_remote)], repo)
+    rewritten_url = lds.resolve_origin_url(project_dir)
+    assert rewritten_url != pinned_url
+
+    # Crash-restart: a fresh LoopDriver instance, as `loop_scheduler.py` would spawn.
+    d2 = driver.LoopDriver(loop_id, project_dir, lock.lease_token)
+
+    with pytest.raises(driver.DriverTerminated) as exc_info:
+        d2._reconstruct_push_integrity_baseline()
+
+    assert str(exc_info.value) == "origin_url_rewritten"
+    assert d2._trusted_origin_url is None
+    final_state = lc.load_state(loop_id, project_dir)
+    assert final_state.status == "stopped"
+    assert final_state.stop_reason == "origin_url_rewritten"
+    # The rewritten URL must never have been re-pinned as the new "trusted" value.
+    assert d2._load_persisted_trusted_origin_url() == pinned_url
+
+
 def test_run_stops_immediately_when_origin_url_unresolvable(tmp_path: Path) -> None:
     """RH1/RC3 end-to-end: `run()` must catch the `DriverTerminated` its own
     `_reconstruct_push_integrity_baseline()` call can now raise and exit `EXIT_OK` (mirroring
@@ -5223,6 +5416,118 @@ def test_resolve_maker_agent_passes_through_unchanged_for_non_issue_loop_definit
     assert resolved == "a-project-specific-agent"
 
 
+def test_resolve_maker_agent_detects_agent_from_issue_title_when_auto(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #219 P2-1 (EV-41): an unresolved `"auto"` sentinel must route through
+    `agent-routing`'s `detect_agent()` (scoped to `maker.allowed_agents`) instead of always
+    collapsing straight to `maker.fallback_agent` regardless of the Issue's own content."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    config = ld.load_config(project_dir)
+    assert "backend-python-dev" in config["maker"]["allowed_agents"]
+    monkeypatch.setattr(
+        driver,
+        "_fetch_issue_snapshot",
+        lambda *_a, **_k: {"title": "Fix a Python FastAPI bug", "body": "", "labels": []},
+    )
+
+    resolved = d._resolve_maker_agent(state, {"maker_agent": "auto"})
+
+    assert resolved == "backend-python-dev"
+
+
+def test_resolve_maker_agent_detects_agent_from_issue_labels_when_auto(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #219 P2-1: label names (not just title) feed `detect_agent()`."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(
+        driver,
+        "_fetch_issue_snapshot",
+        lambda *_a, **_k: {"title": "Something is broken", "body": "", "labels": ["frontend"]},
+    )
+
+    resolved = d._resolve_maker_agent(state, {"maker_agent": "auto"})
+
+    assert resolved == "frontend-dev"
+
+
+def test_resolve_maker_agent_auto_detection_ignores_issue_body(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """EV-74: a keyword match only inside the Issue *body* (never `title`/`labels`) must not
+    steer Maker selection -- detection input is `title + labels` only."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    config = ld.load_config(project_dir)
+    expected_fallback = config["maker"]["fallback_agent"]
+    monkeypatch.setattr(
+        driver,
+        "_fetch_issue_snapshot",
+        lambda *_a, **_k: {
+            "title": "Something is broken",
+            "body": "This needs a Python FastAPI fix",
+            "labels": [],
+        },
+    )
+
+    resolved = d._resolve_maker_agent(state, {"maker_agent": "auto"})
+
+    assert resolved == expected_fallback
+
+
+def test_resolve_maker_agent_falls_back_when_auto_detection_finds_no_match(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    config = ld.load_config(project_dir)
+    expected_fallback = config["maker"]["fallback_agent"]
+    monkeypatch.setattr(
+        driver, "_fetch_issue_snapshot", lambda *_a, **_k: {"title": "", "body": "", "labels": []}
+    )
+
+    resolved = d._resolve_maker_agent(state, {"maker_agent": "auto"})
+
+    assert resolved == expected_fallback
+
+
+def test_resolve_maker_agent_auto_detection_falls_back_when_issue_number_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    config = ld.load_config(project_dir)
+    expected_fallback = config["maker"]["fallback_agent"]
+    monkeypatch.setattr(driver.lds, "issue_number_from_loop_id", lambda _loop_id: None)
+
+    def _boom(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("must not fetch an Issue snapshot without a resolvable issue number")
+
+    monkeypatch.setattr(driver, "_fetch_issue_snapshot", _boom)
+
+    resolved = d._resolve_maker_agent(state, {"maker_agent": "auto"})
+
+    assert resolved == expected_fallback
+
+
 # --------------------------------------------------------------------------------------------
 # loop_driver: blocking actions honor the wall-clock deadline (code #7)
 # --------------------------------------------------------------------------------------------
@@ -5264,6 +5569,43 @@ def test_run_checker_mechanical_timeout_is_capped_by_wall_clock_remaining(
 
     assert captured["timeout_seconds"] <= 5.5
     assert captured["timeout_seconds"] < driver.MECHANICAL_CHECK_TIMEOUT_SECONDS
+
+
+def test_run_checker_passes_remaining_wall_clock_seconds_as_per_command_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #219 P2-2: `_run_checker` must thread its own `_remaining_wall_clock_seconds`
+    bound method through to `run_mechanical_checks` as `remaining_budget`, so each mechanical
+    command's own timeout is recomputed from the budget remaining right before *that* command
+    runs, not just capped once up front for the whole batch."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.worktree_path = project_dir
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    captured: dict[str, Any] = {}
+
+    def fake_run_mechanical_checks(_commands: Any, _cwd: Any, _timeout_seconds: Any, **kw: Any):
+        captured["remaining_budget"] = kw.get("remaining_budget")
+        return []
+
+    monkeypatch.setattr(lc, "run_mechanical_checks", fake_run_mechanical_checks)
+
+    proposal = lc.ProposeResult(
+        action="run_checker",
+        action_id="act-000031",
+        state_version=state.state_version,
+        expected_phase="implementation",
+        phase="implementation",
+        iteration=1,
+        context={},
+    )
+    d._run_checker(proposal, state, {"mechanical": {"commands": ["pytest -q"]}})
+
+    assert captured["remaining_budget"] == d._remaining_wall_clock_seconds
 
 
 def test_wait_external_review_poll_timeout_is_capped_by_wall_clock_remaining(
@@ -5331,7 +5673,29 @@ def test_fetch_issue_snapshot_returns_title_and_body_on_success(
 
     snapshot = driver._fetch_issue_snapshot(str(tmp_path), 42)
 
-    assert snapshot == {"title": "Fix bug", "body": "Steps to reproduce..."}
+    assert snapshot == {"title": "Fix bug", "body": "Steps to reproduce...", "labels": []}
+
+
+def test_fetch_issue_snapshot_returns_label_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #219 P2-1: `labels` (name strings only) is threaded through for Maker-agent
+    detection (`_detect_maker_agent`), alongside `title`, excluding `body` (EV-74)."""
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        assert cmd[:3] == ["gh", "issue", "view"]
+        payload = {
+            "title": "Fix bug",
+            "body": "...",
+            "labels": [{"name": "bug"}, {"name": "python"}],
+        }
+        return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+
+    monkeypatch.setattr(driver.subprocess, "run", fake_run)
+
+    snapshot = driver._fetch_issue_snapshot(str(tmp_path), 42)
+
+    assert snapshot["labels"] == ["bug", "python"]
 
 
 def test_fetch_issue_snapshot_degrades_gracefully_on_gh_failure(
@@ -5342,7 +5706,11 @@ def test_fetch_issue_snapshot_degrades_gracefully_on_gh_failure(
         "run",
         lambda *a, **k: subprocess.CompletedProcess([], 1, "", "gh: not authenticated"),
     )
-    assert driver._fetch_issue_snapshot(str(tmp_path), 42) == {"title": "", "body": ""}
+    assert driver._fetch_issue_snapshot(str(tmp_path), 42) == {
+        "title": "",
+        "body": "",
+        "labels": [],
+    }
 
 
 def test_fetch_issue_snapshot_degrades_gracefully_when_gh_binary_is_missing(
@@ -5352,7 +5720,11 @@ def test_fetch_issue_snapshot_degrades_gracefully_when_gh_binary_is_missing(
         raise FileNotFoundError("gh not found")
 
     monkeypatch.setattr(driver.subprocess, "run", _boom)
-    assert driver._fetch_issue_snapshot(str(tmp_path), 42) == {"title": "", "body": ""}
+    assert driver._fetch_issue_snapshot(str(tmp_path), 42) == {
+        "title": "",
+        "body": "",
+        "labels": [],
+    }
 
 
 def test_maker_prompt_frames_issue_body_as_untrusted_external_data(

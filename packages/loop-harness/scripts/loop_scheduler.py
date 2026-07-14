@@ -1340,16 +1340,37 @@ def render_cron_entry(
     line fails outright (whole command errors out, scheduler never starts) if its parent
     directory is missing.
 
-    Known limitation (#13, accepted as-is): `pgrep -f <pattern>` can also match the cron
-    wrapper shell's own argv, since the *entire* crontab command line (including this pgrep
-    invocation's own text) is visible to `pgrep -f` and literally contains the pattern text a
-    second time in the fallback `python3 <script> --project <project>` invocation. A textual
-    pattern tweak (e.g. the classic `[l]oop_scheduler.py` bracket trick) cannot fix this
-    because the self-match comes from the fallback command's own text, not from the pgrep
-    invocation. A correct fix needs a pidfile/flock-based liveness check written by
-    `loop_scheduler.py` at startup, which is a larger, riskier change than a
-    template-rendering fix belongs in; left as a template TODO for a follow-up rather than
-    bundled here.
+    #13 / Issue #219 P2-3: `pgrep -f <pattern>` also matches the cron wrapper shell's own argv,
+    since the *entire* crontab command line (including this pgrep invocation's own text) is
+    visible to `pgrep -f` and literally contains the pattern text a second time in the fallback
+    `python3 <script> --project <project>` invocation. Left unaddressed, this self-match makes
+    `pgrep -f <pattern>` succeed on *every* cron tick regardless of whether the real scheduler
+    is actually alive -- a dead scheduler is then never restarted, since `||`'s fallback never
+    runs. A textual pattern tweak (e.g. the classic `[l]oop_scheduler.py` bracket trick) cannot
+    fix this because the self-match comes from the fallback command's own text, not from the
+    pgrep invocation's own argv.
+
+    Fixed by piping `pgrep -f <pattern>`'s output through `grep -vxF -e "$$" -e "$PPID"` before
+    checking whether anything remains (`| grep -q .`): `$$` is this cron-invoked shell's own
+    PID (the wrapper whose argv contains the fallback text and therefore self-matches) and
+    `$PPID` its parent, both portable POSIX/bash/dash shell built-ins evaluated fresh on every
+    tick (no Python `os.getpid()` call is possible here -- there is no live Python process
+    inside this shell one-liner until the fallback itself runs). `-x`/`-F` match each pgrep
+    output line (a bare PID) as a whole literal string, avoiding a partial-substring collision
+    between different PIDs. This closes the concrete "dead scheduler treated as alive forever"
+    failure mode without changing the pipeline's overall `... || <fallback>` exit-status
+    contract: if pgrep finds nothing beyond this shell's own PID/parent, the filtered pipeline's
+    final `grep -q .` exits non-zero and the fallback still runs; if a genuinely different,
+    still-alive scheduler process also matches, at least one non-excluded PID survives the
+    filter and the fallback is skipped, exactly as before.
+
+    Known residual limitation (accepted as-is, per Codex review of this exact fix): only this
+    shell's own PID and its immediate parent are excluded, not the full ancestor chain -- an
+    unrelated process that independently happens to contain the pattern text, or PIDs from a
+    concurrently-running second cron guard invocation, could still cause a false "alive" match.
+    A fully race-free liveness check needs a pidfile/flock written by `loop_scheduler.py`
+    itself at startup, which remains a larger, riskier redesign than belongs in a
+    template-rendering fix; left as a follow-up rather than bundled here.
 
     Every literal `%` in the assembled line is escaped to `\\%` (SN7): `crontab` treats an
     unescaped `%` as a newline at the crontab-file-parsing stage, *before* the shell ever
@@ -1396,7 +1417,7 @@ def render_cron_entry(
         pgrep_pattern += f" --definition {re.escape(definition_id)}"
     line = (
         f"*/5 * * * * mkdir -p {shlex.quote(log_dir)} && "
-        f"pgrep -f {shlex.quote(pgrep_pattern)} || "
+        f'pgrep -f {shlex.quote(pgrep_pattern)} | grep -vxF -e "$$" -e "$PPID" | grep -q . || '
         f"{shlex.quote(python)} {shlex.quote(script)} --project {shlex.quote(project)}"
         f"{definition_args} >> {shlex.quote(log_path)} 2>&1\n"
     )
