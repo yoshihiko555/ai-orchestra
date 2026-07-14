@@ -231,16 +231,21 @@ def _load_route_config() -> Any:
     Mirrors `loop_common._load_failure_detector()`'s lazy-import pattern (a sibling package
     imported on demand instead of at module load time, keeping `loop_driver.py` importable
     even in a context where `packages/agent-routing` is not installed/needed). `route_config.py`
-    itself inserts `packages/core/hooks` onto `sys.path` for its own `hook_common` import
-    (gated on `AI_ORCHESTRA_DIR`), so as long as that env var is set -- the same precondition
-    every other AI Orchestra hook/script in this repo already assumes -- that nested import
-    succeeds without loop-harness needing to duplicate its wiring.
+    itself inserts `packages/core/hooks` onto `sys.path` for its own `hook_common` import, but
+    only when `AI_ORCHESTRA_DIR` is set. A headless worker respawned by cron/launchd does not
+    inherit that env var (`render_cron_entry()`/`render_launchd_plist()` pass a minimal
+    environment), so we also seed `packages/core/hooks` via the package-relative layout here --
+    letting the nested `hook_common` import succeed even without `AI_ORCHESTRA_DIR`, instead of
+    raising `ModuleNotFoundError` on `issue-loop`'s default `maker.agent: auto` path.
     """
     candidates = []
     orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
+    packages_dir = Path(__file__).resolve().parents[2]
     if orchestra_dir:
         candidates.append(Path(orchestra_dir) / "packages" / "agent-routing" / "hooks")
-    candidates.append(Path(__file__).resolve().parents[2] / "agent-routing" / "hooks")
+        candidates.append(Path(orchestra_dir) / "packages" / "core" / "hooks")
+    candidates.append(packages_dir / "agent-routing" / "hooks")
+    candidates.append(packages_dir / "core" / "hooks")
     for path in candidates:
         if path.is_dir() and str(path) not in sys.path:
             sys.path.insert(0, str(path))
@@ -1035,15 +1040,25 @@ class LoopDriver:
         "スコープ" incidentally matching `requirements`'s trigger list must not steer Maker
         selection away from a code-writing role). Returns `None` (letting the caller fall back
         to `maker.fallback_agent`) whenever the Issue number cannot be derived from `loop_id`,
-        the `gh issue view` fetch fails, or no allowed agent's trigger matches.
+        the `gh issue view` fetch fails, no allowed agent's trigger matches, or agent-routing
+        itself cannot be loaded -- routing is a best-effort refinement over `maker.fallback_agent`,
+        never a hard dependency of the dispatch loop, so any failure degrades to the fallback
+        rather than crashing the worker.
         """
         issue_number = lds.issue_number_from_loop_id(state.loop_id)
         if issue_number is None:
             return None
         snapshot = _fetch_issue_snapshot(state.worktree_path, issue_number)
         issue_text = f"{snapshot.get('title', '')}\n{' '.join(snapshot.get('labels', []))}"
-        route_config = _load_route_config()
-        agent_name, _trigger = route_config.detect_agent(issue_text, allowed_agents)
+        try:
+            route_config = _load_route_config()
+            agent_name, _trigger = route_config.detect_agent(issue_text, allowed_agents)
+        except Exception as exc:  # noqa: BLE001 -- best-effort; any failure falls back
+            print(
+                f"loop_driver: auto Maker routing unavailable, using fallback: {exc}",
+                file=sys.stderr,
+            )
+            return None
         return agent_name
 
     def _run_child(

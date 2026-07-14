@@ -5528,6 +5528,50 @@ def test_resolve_maker_agent_auto_detection_falls_back_when_issue_number_unknown
     assert resolved == expected_fallback
 
 
+def test_resolve_maker_agent_auto_detection_falls_back_when_routing_import_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #219 P2-1 review Critical: agent-routing is a best-effort refinement, never a hard
+    dependency of the dispatch loop. A worker respawned by cron/launchd does not inherit
+    `AI_ORCHESTRA_DIR`, so `route_config`'s nested `hook_common` import can fail. `_detect_maker_agent`
+    must swallow that (degrading to `maker.fallback_agent`) instead of letting a bare
+    `ModuleNotFoundError` crash the worker on `issue-loop`'s default `maker.agent: auto` path."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    config = ld.load_config(project_dir)
+    expected_fallback = config["maker"]["fallback_agent"]
+    monkeypatch.setattr(
+        driver,
+        "_fetch_issue_snapshot",
+        lambda *_a, **_k: {"title": "Fix a Python FastAPI bug", "body": "", "labels": []},
+    )
+
+    def _import_fails() -> Any:
+        raise ModuleNotFoundError("No module named 'hook_common'")
+
+    monkeypatch.setattr(driver, "_load_route_config", _import_fails)
+
+    resolved = d._resolve_maker_agent(state, {"maker_agent": "auto"})
+
+    assert resolved == expected_fallback
+
+
+def test_load_route_config_seeds_core_hooks_path_without_orchestra_dir(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #219 P2-1 review Critical: `_load_route_config()` must resolve `route_config`
+    (whose own `hook_common` import is gated on `AI_ORCHESTRA_DIR`) via the package-relative
+    layout when that env var is absent, so cron/launchd-respawned workers can still route."""
+    monkeypatch.delenv("AI_ORCHESTRA_DIR", raising=False)
+
+    route_config = driver._load_route_config()
+
+    assert hasattr(route_config, "detect_agent")
+
+
 # --------------------------------------------------------------------------------------------
 # loop_driver: blocking actions honor the wall-clock deadline (code #7)
 # --------------------------------------------------------------------------------------------

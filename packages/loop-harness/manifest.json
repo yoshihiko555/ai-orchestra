@@ -2,7 +2,7 @@
   "name": "loop-harness",
   "version": "0.1.0",
   "description": "Trigger -> Maker -> Checker -> stop decision loop harness core",
-  "depends": ["audit", "quality-gates", "git-workflow"],
+  "depends": ["audit", "quality-gates", "git-workflow", "agent-routing"],
   "hooks": {},
   "files": [],
   "skills": ["loop-issue"],
