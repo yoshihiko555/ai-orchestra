@@ -1703,7 +1703,7 @@ def test_draft_pr_stops_safely_when_pending_diff_leaks_a_secret(
     repo = Path(project_dir)
     baseline = _git(["rev-parse", "HEAD"], repo)
     (repo / "leaked.txt").write_text(
-        "GH_TOKEN=ghp_1234567890abcdefghijklmnopqrstuvwxyz\n", encoding="utf-8"
+        "GH_TOKEN=" + "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz\n", encoding="utf-8"
     )
     _git(["add", "leaked.txt"], repo)
     _git(["commit", "-m", "oops committed a token"], repo)
@@ -1764,7 +1764,7 @@ def test_run_exit_failure_threads_proposal_into_draft_pr_push_guard(
     repo = Path(project_dir)
     baseline = _git(["rev-parse", "HEAD"], repo)
     (repo / "leaked.txt").write_text(
-        "GH_TOKEN=ghp_1234567890abcdefghijklmnopqrstuvwxyz\n", encoding="utf-8"
+        "GH_TOKEN=" + "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz\n", encoding="utf-8"
     )
     _git(["add", "leaked.txt"], repo)
     _git(["commit", "-m", "oops committed a token"], repo)
@@ -1874,7 +1874,7 @@ def test_advance_phase_stops_safely_when_pending_diff_leaks_a_secret(
     repo = Path(project_dir)
     baseline = _git(["rev-parse", "HEAD"], repo)
     (repo / "leaked.txt").write_text(
-        "GH_TOKEN=ghp_1234567890abcdefghijklmnopqrstuvwxyz\n", encoding="utf-8"
+        "GH_TOKEN=" + "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz\n", encoding="utf-8"
     )
     _git(["add", "leaked.txt"], repo)
     _git(["commit", "-m", "oops committed a token"], repo)
