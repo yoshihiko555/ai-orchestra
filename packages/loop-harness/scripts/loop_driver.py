@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import hashlib
 import json
 import os
 import re
@@ -25,6 +26,7 @@ import sys
 import threading
 import time
 from collections.abc import Sequence
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -228,6 +230,19 @@ def _nested(source: dict[str, Any], path: tuple[str, ...], default: Any) -> Any:
             return default
         current = current[key]
     return current
+
+
+def _origin_url_fingerprint(url: str) -> str:
+    """Return the SHA-256 hex fingerprint of an origin URL (PR #226 review P1).
+
+    The trusted-origin pin is journaled, and `append_journal_event()` redacts payload strings
+    before writing: a URL with embedded credentials (`https://x-access-token:ghp_...@github.com/...`)
+    would round-trip as a redacted string and then never equal a fresh `resolve_origin_url()`
+    reading, hard-stopping the loop as `origin_url_rewritten` on every restart even though the
+    remote never changed. Comparing fingerprints instead keeps the journaled value stable under
+    redaction -- and never persists credential material in the journal at all.
+    """
+    return hashlib.sha256(url.encode("utf-8")).hexdigest()
 
 
 def _load_route_config() -> Any:
@@ -528,18 +543,19 @@ class LoopDriver:
         # outside this process's memory -- the journal (mirrors `_persist_push_baseline`'s own
         # crash-recovery rationale), which lives under `.claude/loop/<loop_id>/` in
         # `project_dir`, not inside the shared worktree the Maker's `Edit` tool can reach.
-        pinned_origin_url = self._load_persisted_trusted_origin_url()
-        if pinned_origin_url is None:
+        pinned_fingerprint = self._load_persisted_trusted_origin_fingerprint()
+        resolved_fingerprint = _origin_url_fingerprint(resolved_origin_url)
+        if pinned_fingerprint is None:
             # First resolution ever for this loop: nothing to compare against yet, so pin (and
             # durably journal) this one, matching `_persist_push_baseline`'s own "first live
             # read becomes the trusted value" precedent.
             self._persist_trusted_origin_url(resolved_origin_url)
-        elif pinned_origin_url != resolved_origin_url:
-            # The literal, previously-pinned origin URL no longer matches what `.git/config`
+        elif pinned_fingerprint != resolved_fingerprint:
+            # The previously-pinned origin URL fingerprint no longer matches what `.git/config`
             # resolves today: a rewrite happened in a window this process was not alive to
             # catch live. Fail closed instead of silently re-pinning the rewritten value.
             self._stop_for_rewritten_origin_url(
-                proposal, state, pinned_origin_url, resolved_origin_url
+                proposal, state, pinned_fingerprint, resolved_fingerprint
             )
         self._trusted_origin_url = resolved_origin_url
         # I6: restore the pre-Maker local HEAD (code H5) journaled by `_persist_pre_maker_head()`
@@ -678,11 +694,16 @@ class LoopDriver:
             _TRUSTED_ORIGIN_URL_JOURNAL_EVENT,
             "driver",
             _TRUSTED_ORIGIN_URL_ACTION_ID,
-            {"origin_url": url},
+            # PR #226 review P1: journal a SHA-256 fingerprint, never the raw URL -- the raw
+            # value would be redacted by `append_journal_event()` whenever it embeds
+            # credentials, making the round-tripped comparison value unstable (a guaranteed
+            # false `origin_url_rewritten` stop on the next restart) and needlessly writing
+            # credential-shaped material into the journal. See `_origin_url_fingerprint`.
+            {"origin_url_sha256": _origin_url_fingerprint(url)},
         )
 
-    def _load_persisted_trusted_origin_url(self) -> str | None:
-        """Return the journaled, first-ever-pinned `origin` URL for this loop, if any."""
+    def _load_persisted_trusted_origin_fingerprint(self) -> str | None:
+        """Return the journaled fingerprint of the first-ever-pinned `origin` URL, if any."""
         record = lc.find_journal_event(
             self.loop_id,
             self.project_dir,
@@ -692,8 +713,8 @@ class LoopDriver:
         if record is None:
             return None
         payload = record.get("payload")
-        url = payload.get("origin_url") if isinstance(payload, dict) else None
-        return str(url) if url else None
+        fingerprint = payload.get("origin_url_sha256") if isinstance(payload, dict) else None
+        return str(fingerprint) if fingerprint else None
 
     def _persist_pre_maker_head(self, sha: str | None) -> None:
         """Set and durably journal the pre-Maker local HEAD (I6, code H5's own base).
@@ -1921,8 +1942,8 @@ class LoopDriver:
         self,
         proposal: lc.ProposeResult | None,
         state: lc.LoopState,
-        pinned_origin_url: str,
-        resolved_origin_url: str,
+        pinned_fingerprint: str,
+        resolved_fingerprint: str,
     ) -> None:
         """Hard-stop when `remote.origin.url` no longer matches the journaled pinned value.
 
@@ -1948,7 +1969,12 @@ class LoopDriver:
             self.lease_token,
             action_id,
             stop_reason,
-            {"pinned_origin_url": pinned_origin_url, "detected_origin_url": resolved_origin_url},
+            # Fingerprints only (PR #226 review P1): stable under journal redaction and free of
+            # credential material, unlike the raw URLs they stand in for.
+            {
+                "pinned_origin_url_sha256": pinned_fingerprint,
+                "detected_origin_url_sha256": resolved_fingerprint,
+            },
         )
         self._notify(state, stop_reason)
         stopped_state = lc.load_state(self.loop_id, self.project_dir)
@@ -2200,15 +2226,23 @@ class LoopDriver:
             confirmed = self._load_persisted_pr_creation_confirmed(action_id) == branch
             if intended and confirmed:
                 return pr_number, True
-            if intended and self._pr_authored_by_us(state.worktree_path, branch):
+            if (
+                intended
+                and self._pr_created_after_intent(state.worktree_path, branch, action_id)
+                and self._pr_authored_by_us(state.worktree_path, branch)
+            ):
                 # Heal the crash window between `gh pr create` returning (the PR now publicly
                 # exists) and `_persist_pr_creation_confirmed`'s journal write below: the intent
                 # alone cannot distinguish "our create succeeded, confirmed unrecorded" from
                 # "our create failed and someone else's PR appeared on this branch", but the PR
                 # author can -- an unrelated third-party PR fails this check and correctly stays
                 # `created=False`, while our own crash-orphaned creation regains P2-5's original
-                # `created=True` guarantee (preserving the zero baseline). Journal the missing
-                # confirmation now so later retries take the fast path above.
+                # `created=True` guarantee (preserving the zero baseline). PR #226 review P2:
+                # author alone is still not proof (a pre-existing PR of our own that the initial
+                # `gh pr view` missed as a false negative would pass it), so additionally require
+                # the PR's `createdAt` to postdate this action's journaled intent -- only a PR
+                # born after we declared we were about to create one can be ours. Journal the
+                # missing confirmation now so later retries take the fast path above.
                 self._persist_pr_creation_confirmed(action_id, branch)
                 return pr_number, True
             return pr_number, False
@@ -2341,6 +2375,47 @@ class LoopDriver:
         author_login = author.stdout.strip()
         my_login = me.stdout.strip()
         return bool(author_login) and bool(my_login) and author_login == my_login
+
+    def _pr_created_after_intent(self, worktree_path: str, branch: str, action_id: str) -> bool:
+        """Return True only when `branch`'s PR was created after this action journaled its intent.
+
+        Second ownership signal for `_create_or_reuse_pr`'s heal path (PR #226 review P2): the
+        author check alone cannot reject a *pre-existing* PR of our own that the initial
+        `gh pr view` missed as a transient false negative -- same author, but this action never
+        created it, so its already-known reviews must be re-baselined (`created=False`), not
+        zero-baselined. A PR whose `createdAt` predates the intent journal entry cannot have
+        been born from this action's own `gh pr create`. Fail-closed like `_pr_authored_by_us`:
+        any lookup/parse failure (and clock skew large enough to flip the comparison) degrades
+        to False -- `created=False` merely repeats the pre-#219 reuse behavior.
+        """
+        record = lc.find_journal_event(
+            self.loop_id, self.project_dir, action_id, _PR_CREATION_INTENT_JOURNAL_EVENT
+        )
+        intent_ts = record.get("ts") if record is not None else None
+        if not intent_ts:
+            return False
+        try:
+            created = subprocess.run(
+                ["gh", "pr", "view", branch, "--json", "createdAt", "-q", ".createdAt"],
+                cwd=worktree_path,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        if created.returncode != 0:
+            return False
+        created_raw = created.stdout.strip()
+        if not created_raw:
+            return False
+        try:
+            created_at = datetime.fromisoformat(created_raw.replace("Z", "+00:00"))
+            intent_at = datetime.fromisoformat(str(intent_ts))
+        except ValueError:
+            return False
+        return created_at >= intent_at
 
     # -- terminal actions -----------------------------------------------------------------------
 

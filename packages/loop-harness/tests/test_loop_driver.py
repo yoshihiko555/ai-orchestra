@@ -2583,6 +2583,8 @@ def test_create_or_reuse_pr_does_not_misattribute_unrelated_pr_after_failed_crea
     def fake_run_third_party_pr(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
         if cmd[:3] == ["gh", "pr", "view"] and "author" in cmd:
             return subprocess.CompletedProcess(cmd, 0, "somebody-else\n", "")
+        if cmd[:3] == ["gh", "pr", "view"] and "createdAt" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, "2999-01-01T00:00:00Z\n", "")
         if cmd[:3] == ["gh", "pr", "view"]:
             return subprocess.CompletedProcess(cmd, 0, "55\n", "")
         if cmd[:3] == ["gh", "api", "user"]:
@@ -2622,6 +2624,9 @@ def test_create_or_reuse_pr_heals_created_true_when_confirmed_write_was_lost(
     def fake_run_own_pr(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
         if cmd[:3] == ["gh", "pr", "view"] and "author" in cmd:
             return subprocess.CompletedProcess(cmd, 0, "loop-bot\n", "")
+        if cmd[:3] == ["gh", "pr", "view"] and "createdAt" in cmd:
+            # Created *after* the intent journaled above -- our own crash-orphaned creation.
+            return subprocess.CompletedProcess(cmd, 0, "2999-01-01T00:00:00Z\n", "")
         if cmd[:3] == ["gh", "pr", "view"]:
             return subprocess.CompletedProcess(cmd, 0, "99\n", "")
         if cmd[:3] == ["gh", "api", "user"]:
@@ -2636,6 +2641,46 @@ def test_create_or_reuse_pr_heals_created_true_when_confirmed_write_was_lost(
     # The heal journals the missing confirmation, so a further retry no longer needs the
     # ownership lookup at all.
     assert d2._load_persisted_pr_creation_confirmed(action_id) == "main"
+
+
+def test_create_or_reuse_pr_rejects_own_preexisting_pr_created_before_intent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR #226 review P2: the author check alone cannot reject a *pre-existing* PR of our own
+    that the initial `gh pr view` missed as a transient false negative -- same author, but this
+    action never created it. Its `createdAt` predates the journaled intent, so the heal must
+    refuse (`created=False`, re-baseline against its real reviews) and journal no
+    confirmation."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.branch = "main"
+    state.worktree_path = project_dir
+    action_id = "act-preexisting-001"
+
+    d1 = driver.LoopDriver(loop_id, project_dir, token)
+    d1._persist_pr_creation_intent(action_id, "main")
+
+    d2 = driver.LoopDriver(loop_id, project_dir, token)
+
+    def fake_run_old_own_pr(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if cmd[:3] == ["gh", "pr", "view"] and "author" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, "loop-bot\n", "")
+        if cmd[:3] == ["gh", "pr", "view"] and "createdAt" in cmd:
+            # Created long *before* the intent journaled above -- not this action's creation.
+            return subprocess.CompletedProcess(cmd, 0, "2000-01-01T00:00:00Z\n", "")
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return subprocess.CompletedProcess(cmd, 0, "42\n", "")
+        if cmd[:3] == ["gh", "api", "user"]:
+            return subprocess.CompletedProcess(cmd, 0, "loop-bot\n", "")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(driver.subprocess, "run", fake_run_old_own_pr)
+
+    pr_number, created = d2._create_or_reuse_pr(state, "main", action_id)
+
+    assert (pr_number, created) == (42, False)
+    assert d2._load_persisted_pr_creation_confirmed(action_id) is None
 
 
 def test_create_or_reuse_pr_fails_safe_when_ownership_lookup_fails(
@@ -2659,6 +2704,8 @@ def test_create_or_reuse_pr_fails_safe_when_ownership_lookup_fails(
     def fake_run_lookup_fails(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
         if cmd[:3] == ["gh", "pr", "view"] and "author" in cmd:
             return subprocess.CompletedProcess(cmd, 0, "loop-bot\n", "")
+        if cmd[:3] == ["gh", "pr", "view"] and "createdAt" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, "2999-01-01T00:00:00Z\n", "")
         if cmd[:3] == ["gh", "pr", "view"]:
             return subprocess.CompletedProcess(cmd, 0, "99\n", "")
         if cmd[:3] == ["gh", "api", "user"]:
@@ -4363,13 +4410,43 @@ def test_reconstruct_push_integrity_baseline_pins_and_persists_origin_url_on_fir
     assert lock is not None
 
     d = driver.LoopDriver(loop_id, project_dir, lock.lease_token)
-    assert d._load_persisted_trusted_origin_url() is None
+    assert d._load_persisted_trusted_origin_fingerprint() is None
 
     d._reconstruct_push_integrity_baseline()
 
     expected_url = lds.resolve_origin_url(project_dir)
     assert d._trusted_origin_url == expected_url
-    assert d._load_persisted_trusted_origin_url() == expected_url
+    assert expected_url is not None
+    assert d._load_persisted_trusted_origin_fingerprint() == driver._origin_url_fingerprint(
+        expected_url
+    )
+
+
+def test_trusted_origin_pin_round_trips_stably_for_credentialed_urls(
+    tmp_path: Path,
+) -> None:
+    """PR #226 review P1: `append_journal_event()` redacts payload strings, so journaling the
+    *raw* origin URL would round-trip a credentialed URL (`https://x-access-token:ghp_...@...`)
+    as a redacted string that never equals a fresh `resolve_origin_url()` reading -- a
+    guaranteed false `origin_url_rewritten` stop on every restart. The SHA-256 fingerprint must
+    survive the journal round-trip unchanged, and the raw credential must never reach the
+    journal file at all."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    # Runtime concatenation keeps the credential-shaped literal out of the source tree; the
+    # assembled value matches the redactor's `ghp_` pattern on disk exactly as a real one would.
+    fake_pat = "ghp_" + "a" * 36
+    credentialed_url = f"https://x-access-token:{fake_pat}@github.com/owner/repo.git"
+
+    d._persist_trusted_origin_url(credentialed_url)
+
+    assert d._load_persisted_trusted_origin_fingerprint() == driver._origin_url_fingerprint(
+        credentialed_url
+    )
+    journal_text = lc.journal_path(loop_id, project_dir).read_text(encoding="utf-8")
+    assert fake_pat not in journal_text
+    assert credentialed_url not in journal_text
 
 
 def test_reconstruct_push_integrity_baseline_proceeds_when_origin_url_unchanged_across_restart(
@@ -4453,7 +4530,9 @@ def test_reconstruct_push_integrity_baseline_stops_when_origin_url_rewritten_sin
     assert final_state.status == "stopped"
     assert final_state.stop_reason == "origin_url_rewritten"
     # The rewritten URL must never have been re-pinned as the new "trusted" value.
-    assert d2._load_persisted_trusted_origin_url() == pinned_url
+    assert d2._load_persisted_trusted_origin_fingerprint() == driver._origin_url_fingerprint(
+        pinned_url
+    )
 
 
 def test_run_stops_immediately_when_origin_url_unresolvable(tmp_path: Path) -> None:
