@@ -550,8 +550,8 @@ def _is_lease_expired(loop_id: str, project_dir: str) -> bool:
 
 
 def _untracked_live_active_loop_ids(runtime: SchedulerRuntime, project_dir: str) -> set[str]:
-    """Return active (running/waiting_external) loop_ids with a live lease this process has
-    not tracked in `runtime.workers` (SN1).
+    """Return active (running/waiting_external) *and* still-pending loop_ids with a live lease
+    this process has not tracked in `runtime.workers` (SN1, extended by #I2 for `pending`).
 
     This is exactly the set `respawn_orphaned_active_loops` correctly leaves alone (a live
     lease means some owner - typically a previous scheduler process's still-running child
@@ -563,17 +563,35 @@ def _untracked_live_active_loop_ids(runtime: SchedulerRuntime, project_dir: str)
     `spawn_new_workers`'s naive `concurrency_limit - len(runtime.workers)` availability
     calculation would undercount actual occupancy and spawn brand-new workers past the
     configured cap.
+
+    #I2: a `pending` loop with a live lease (its worker's first `run_maker` is still in
+    flight - typically left behind, like the active case above, by a previous scheduler
+    process across a restart) is likewise untracked in a fresh `runtime.workers`, and
+    `_pending_loop_ids` only keeps `discover_loop_ids` from re-spawning a duplicate for the
+    *same* Issue (#G10) - it has no effect on the cap used when spawning workers for *other*
+    Issues. Such a loop is never eligible for respawn/attach itself (`should_restart` and
+    `lc.attach()` both reject `pending`), but it still holds a real, live slot until it
+    finishes or its lease expires (at which point `recover_orphaned_pending_loops` retires it
+    and frees the slot for real). A `pending` loop whose lease has already expired is left out
+    here on purpose: it is orphan-recovery material (`recover_orphaned_pending_loops`), not a
+    live occupant of a slot.
     """
-    return {
+    live_active = {
         loop_id
         for loop_id in active_loop_ids(project_dir)
         if loop_id not in runtime.workers and not _is_lease_expired(loop_id, project_dir)
     }
+    live_pending = {
+        loop_id
+        for loop_id in _pending_loop_ids(project_dir)
+        if loop_id not in runtime.workers and not _is_lease_expired(loop_id, project_dir)
+    }
+    return live_active | live_pending
 
 
 def _available_worker_slots(runtime: SchedulerRuntime, project_dir: str) -> int:
     """Return concurrency slots still free, counting tracked workers *and* untracked-live
-    active loops (SN1).
+    active/pending loops (SN1, extended by #I2 for `pending`).
 
     `respawn_orphaned_active_loops` and the cooldown-respawn path (`_respawn_expired_
     cooldowns`) previously computed availability from `concurrency_limit - len(runtime.
@@ -651,10 +669,13 @@ def recover_orphaned_pending_loops(runtime: SchedulerRuntime, project_dir: str) 
     Instead, once the loop's lease has genuinely expired (no live owner could still complete
     it), the state dir is renamed aside to `<loop_id>.orphaned-<n>` under `.claude/loop/`
     (automating the Issue #205 manual runbook step of moving the stale dir out of the way and
-    letting a fresh `start` reuse the Issue/worktree). Renaming (not deleting) preserves the
-    abandoned run's journal/state for post-mortem, while `wm.compute_loop_id` for the same
-    Issue number resolves to the same original `loop_id`, whose directory no longer exists, so
-    the next discovery cycle treats it as a brand-new candidate.
+    letting a fresh `start` reuse the Issue) and the loop's worktree is best-effort cleaned up
+    (#I7, see `_retire_orphaned_pending_dir`) so the next `start` for the same Issue does not
+    silently resume from whatever uncommitted/partial edits the dead Maker left behind. Renaming
+    (not deleting) the state dir preserves the abandoned run's journal/state for post-mortem,
+    while `wm.compute_loop_id` for the same Issue number resolves to the same original
+    `loop_id`, whose directory no longer exists, so the next discovery cycle treats it as a
+    brand-new candidate.
 
     Loops still tracked in `runtime.workers` (this process's own in-flight worker, whose
     `state.json` simply has not yet reflected the first completed action) are left untouched,
@@ -675,24 +696,58 @@ def recover_orphaned_pending_loops(runtime: SchedulerRuntime, project_dir: str) 
             continue
         if not _is_lease_expired(loop_id, project_dir):
             continue
-        _retire_orphaned_pending_dir(entry)
+        _retire_orphaned_pending_dir(entry, project_dir)
         recovered.append(loop_id)
     return recovered
 
 
-def _retire_orphaned_pending_dir(entry: Path) -> None:
-    """Rename an orphaned-pending loop's state dir aside so discovery treats it as gone."""
+def _retire_orphaned_pending_dir(entry: Path, project_dir: str) -> None:
+    """Rename an orphaned-pending loop's state dir aside so discovery treats it as gone, and
+    best-effort clean up its worktree (#I7).
+
+    `worktree_manager.create_worktree` reuses an existing worktree directory on the expected
+    branch as-is (never resets/cleans it) - without this cleanup, a dead Maker's uncommitted or
+    partial edits would silently carry over into the fresh run this retirement is meant to
+    enable, and could later be committed/pushed as if the new run authored them. Worktree
+    removal is deliberately best-effort and never blocks retiring the state dir itself (that
+    rename is what actually frees the Issue for rediscovery): a missing/already-removed
+    worktree, or a `git worktree remove` failure, is only warned about.
+    """
     root = entry.parent
     suffix = 1
     target = root / f"{entry.name}{_ORPHANED_PENDING_MARKER}{suffix}"
     while target.exists():
         suffix += 1
         target = root / f"{entry.name}{_ORPHANED_PENDING_MARKER}{suffix}"
+    loop_id = entry.name
     entry.rename(target)
     print(
-        lc.redact(f"loop_scheduler: recovered orphaned pending loop {entry.name} -> {target.name}"),
+        lc.redact(f"loop_scheduler: recovered orphaned pending loop {loop_id} -> {target.name}"),
         file=sys.stderr,
     )
+    _cleanup_orphaned_pending_worktree(loop_id, project_dir)
+
+
+def _cleanup_orphaned_pending_worktree(loop_id: str, project_dir: str) -> None:
+    """Best-effort removal of the worktree left behind by a retired orphaned-pending loop
+    (#I7). Never raises: a cleanup failure must not block the state-dir retirement that already
+    happened - it is only warned about here."""
+    issue_number = lds.issue_number_from_loop_id(loop_id)
+    if issue_number is None:
+        return
+    worktree_path = Path(wm.worktree_path_for(project_dir, issue_number))
+    if not worktree_path.exists():
+        return
+    try:
+        wm.remove_worktree(project_dir, issue_number, force=True)
+    except wm.WorktreeError as exc:
+        print(
+            lc.redact(
+                f"loop_scheduler: failed to clean up worktree for retired pending loop "
+                f"{loop_id}: {exc}"
+            ),
+            file=sys.stderr,
+        )
 
 
 def reap_finished_workers(runtime: SchedulerRuntime, project_dir: str) -> list[str]:

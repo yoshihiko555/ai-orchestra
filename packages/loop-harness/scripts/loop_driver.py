@@ -64,6 +64,14 @@ _PUSH_BASELINE_ACTION_ID = "__push_baseline__"
 _PUSH_INTENT_JOURNAL_EVENT = "push_intent_recorded"
 _PUSH_INTENT_ACTION_ID = "__push_intent__"
 
+# I6 (PR #210 review round 5): journal event/action_id used to durably persist the pre-Maker
+# local HEAD (code H5's `self._pre_maker_head`) so a driver restart between `_run_maker` and
+# the following `commit`/LLM-reviewer step can recover it, instead of losing it as a purely
+# in-memory `None` that silently skips the no-op-Maker guard (`_verify_maker_commit`) and makes
+# the LLM reviewer fall back to a plain working-tree diff.
+_PRE_MAKER_HEAD_JOURNAL_EVENT = "pre_maker_head_recorded"
+_PRE_MAKER_HEAD_ACTION_ID = "__pre_maker_head__"
+
 
 class DriverTerminated(Exception):
     """Raised to unwind the main loop when a dispatch handler already wrote its own outcome."""
@@ -457,6 +465,14 @@ class LoopDriver:
             # pinning a literal URL -- exists to bypass in the first place, see RC1's comment
             # on `_DANGEROUS_LOCAL_CONFIG_KEY_RE`). Fail closed instead of proceeding.
             self._stop_for_unresolvable_origin_url(proposal, state)
+        # I6: restore the pre-Maker local HEAD (code H5) journaled by `_persist_pre_maker_head()`
+        # so a driver restart/attach recovers it instead of leaving `self._pre_maker_head` at its
+        # in-memory `None` default -- see both methods' own docstrings. Runs unconditionally,
+        # before every baseline-branch return below, so it applies regardless of which baseline
+        # path (recovered-from-intent / persisted / fresh) this reconstruction takes. A brand-new
+        # loop that has never run `_run_maker` yet simply has nothing journaled, so this is a
+        # no-op `None` in that case, matching the constructor's own default.
+        self._pre_maker_head = self._load_persisted_pre_maker_head()
         recovered = self._recover_baseline_from_pending_push_intent(
             state.worktree_path, state.branch
         )
@@ -551,6 +567,43 @@ class LoopDriver:
             return None
         payload = record.get("payload")
         sha = payload.get("baseline_head") if isinstance(payload, dict) else None
+        return str(sha) if sha else None
+
+    def _persist_pre_maker_head(self, sha: str | None) -> None:
+        """Set and durably journal the pre-Maker local HEAD (I6, code H5's own base).
+
+        Recorded as a journal event (mirroring `_persist_push_baseline`'s pattern), not a new
+        `state.json` field, so a crash/restart between `_run_maker` capturing this and the
+        following `commit`/LLM-reviewer step consuming it can recover the *same* value on
+        restart via `_reconstruct_push_integrity_baseline()` -> `_load_persisted_pre_maker_head()`
+        instead of losing it as a purely in-memory attribute (previously `None` after any
+        restart, silently skipping `_verify_maker_commit`'s no-op-Maker guard and making the LLM
+        reviewer fall back to a plain, often-empty working-tree diff).
+        """
+        self._pre_maker_head = sha
+        if sha is None:
+            return
+        lc.append_journal_event(
+            self.loop_id,
+            self.project_dir,
+            _PRE_MAKER_HEAD_JOURNAL_EVENT,
+            "driver",
+            _PRE_MAKER_HEAD_ACTION_ID,
+            {"pre_maker_head": sha},
+        )
+
+    def _load_persisted_pre_maker_head(self) -> str | None:
+        """Return the most recently journaled pre-Maker local HEAD sha, if any (I6)."""
+        record = lc.find_journal_event(
+            self.loop_id,
+            self.project_dir,
+            _PRE_MAKER_HEAD_ACTION_ID,
+            _PRE_MAKER_HEAD_JOURNAL_EVENT,
+        )
+        if record is None:
+            return None
+        payload = record.get("payload")
+        sha = payload.get("pre_maker_head") if isinstance(payload, dict) else None
         return str(sha) if sha else None
 
     def _heartbeat_loop(self) -> None:
@@ -729,7 +782,7 @@ class LoopDriver:
         # can detect a no-op Maker by comparing against this instead of the *remote* baseline
         # above (which is `REMOTE_HEAD_ABSENT`, never equal to a real local sha, on a brand-new
         # branch that has never been pushed).
-        self._pre_maker_head = _local_head(state.worktree_path)
+        self._persist_pre_maker_head(_local_head(state.worktree_path))
         timeout_seconds = lds.apportioned_timeout(
             self._remaining_wall_clock_seconds(), MAKER_TIMEOUT_SECONDS
         )
@@ -930,9 +983,15 @@ class LoopDriver:
                 )
             )
 
+        # SEC-P1 (PR #210 review round 5): mechanical checks execute code the Maker just wrote
+        # (pytest/ruff), so they must never see the operator's Claude Code OAuth session — use
+        # `checker_scratch_home()` (a credential-free directory) rather than `maker_scratch_home()`
+        # (which the Maker/LLM-reviewer children share and always populate with copied auth
+        # files); see `checker_scratch_home()`'s own docstring for why a separate directory,
+        # not just skipping the copy on this call site, is required.
         checker_env = lds.maker_env(
             os.environ,
-            scratch_home=lds.maker_scratch_home(self.project_dir, self.loop_id),
+            scratch_home=lds.checker_scratch_home(self.project_dir, self.loop_id),
             cwd=state.worktree_path,
         )
         # code #7: cap the mechanical layer's per-command timeout by the wall-clock budget

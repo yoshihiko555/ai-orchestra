@@ -703,6 +703,16 @@ def apply_action_effect(
                 selected_maker_agent,
                 allow_legacy_maker_result,
             )
+        if result.get("infrastructure_failure"):
+            # I5 (PR #210 review round 5): a Maker that times out or exits non-zero
+            # (`_run_maker`'s `infrastructure_failure: True` result) used to always complete
+            # as `status="running"` here, unconditionally treated as a normal run_maker
+            # success — `evaluate_guards()`'s infra-retry counter was only ever reachable via
+            # `_apply_checker_result` (RUN_CHECKER/WAIT_EXTERNAL_REVIEW), never RUN_MAKER, so
+            # repeated Maker infra failures never counted toward `guards.infrastructure_failure.
+            # max_retries` and could not turn into a real loop failure.
+            _apply_maker_infrastructure_failure(state, project_dir)
+            return
         state.status = "running"
         return
     if action == Action.RUN_CHECKER.value:
@@ -720,6 +730,38 @@ def apply_action_effect(
     if action == Action.STOP.value:
         state.status = "stopped"
         state.stop_reason = str(result.get("stop_reason") or state.stop_reason or "safety_stop")
+
+
+def _apply_maker_infrastructure_failure(state: LoopState, project_dir: str | None) -> None:
+    """Guard-count (and possibly fail) a Maker infra failure (I5, PR #210 review round 5).
+
+    Mirrors `_apply_checker_result`'s infrastructure-failure handling (and
+    `_mark_unresolved_pending`'s same `PhaseCheckResult(False, [], ..., True)` ->
+    `evaluate_guards()` pattern) so a Maker that repeatedly times out or exits non-zero
+    increments `state.guards[phase].infrastructure_failure_count` and, once
+    `guards.infrastructure_failure.max_retries` is reached, is converted into a real
+    `on_failure.disposition` outcome — instead of silently completing `run_maker` as
+    `status="running"` forever regardless of how many consecutive infra failures occurred.
+
+    `phase_check.passed` is always `False` here (a Maker infra failure is never itself a
+    "success" signal), so `evaluate_guards()`'s success branch (`Action.ADVANCE_PHASE.value`/
+    `Action.EXIT_SUCCESS.value`) can never be reached from this call site; only
+    `"continue"`/`"retry"` (not yet exhausted), `Action.STOP.value`, or the phase's configured
+    `on_failure.disposition` (commonly `Action.EXIT_FAILURE.value`) are possible outcomes.
+    """
+    phase_def = _load_phase_definition(state, project_dir) if project_dir else None
+    config = _load_loop_config(project_dir) if project_dir else DEFAULT_CONFIG
+    phase_check = PhaseCheckResult(False, [], "maker_infrastructure_failure", True)
+    decision = evaluate_guards(state, phase_check, phase_def, config)
+    if decision.disposition in ("continue", "retry"):
+        state.status = "running"
+        return
+    if decision.disposition == Action.STOP.value:
+        state.status = "stopped"
+        state.stop_reason = decision.reason or "safety_stop"
+        return
+    state.status = "failed"
+    state.stop_reason = decision.reason or "guard_failed"
 
 
 def evaluate_guards(

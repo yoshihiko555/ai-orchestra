@@ -56,6 +56,43 @@ def test_evaluate_guards_infrastructure_failure_is_first_and_not_stopped() -> No
     assert state.status == "running"
 
 
+def _maker_infra_failure_result(agent: str = "backend-python-dev") -> dict:
+    return {"maker": {"agent": agent, "tool": "codex"}, "infrastructure_failure": True}
+
+
+def test_apply_action_effect_run_maker_infra_failure_retries_below_max() -> None:
+    """I5 (PR #210 review round 5): a `run_maker` completion with `infrastructure_failure: True`
+    (Maker timeout / non-zero `claude -p` exit, see `loop_driver._run_maker`) must increment
+    the phase's infra-retry counter via `evaluate_guards()` -- previously this counter
+    (`GuardCounters.infrastructure_failure_count`) was only ever reachable through
+    `_apply_checker_result` (RUN_CHECKER/WAIT_EXTERNAL_REVIEW), so a Maker infra failure was
+    unconditionally completed as `status="running"` regardless of how many consecutive
+    failures occurred."""
+    state = _state()
+    counters = state.guards["implementation"]
+    assert counters.infrastructure_failure_count == 0
+
+    lc.apply_action_effect(state, lc.Action.RUN_MAKER.value, _maker_infra_failure_result(), None)
+
+    assert state.status == "running"
+    assert counters.infrastructure_failure_count == 1
+
+
+def test_apply_action_effect_run_maker_infra_failure_fails_loop_once_exhausted() -> None:
+    """I5: once the infra-retry counter reaches `guards.infrastructure_failure.max_retries`
+    (3 by `DEFAULT_CONFIG`), a further Maker infra failure must convert the loop into a real
+    failure (`on_failure.disposition`, `exit_failure` by default) instead of retrying forever."""
+    state = _state()
+
+    for _ in range(3):
+        lc.apply_action_effect(
+            state, lc.Action.RUN_MAKER.value, _maker_infra_failure_result(), None
+        )
+
+    assert state.status == "failed"
+    assert state.stop_reason == "infrastructure_failure_exhausted"
+
+
 def test_external_reviewer_unavailable_stops_without_changing_guard_counters() -> None:
     state = _state()
     counters = state.guards["implementation"]

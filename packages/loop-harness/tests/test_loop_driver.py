@@ -229,6 +229,104 @@ def test_maker_scratch_home_is_noop_when_no_auth_files_present(
     assert not (scratch / ".claude").exists()
 
 
+def test_checker_scratch_home_creates_separate_directory_under_loop_dir(tmp_path: Path) -> None:
+    """I1 (PR #210 review round 5): mechanical checks must not share `maker_scratch_home()`'s
+    `maker_home/` directory at all -- it must be a distinct `checker_home/` directory."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    loop_id = "abcd1234-issue-1"
+
+    path = lds.checker_scratch_home(project_dir, loop_id)
+
+    assert Path(path).is_dir()
+    assert Path(path) == lc.loop_dir(loop_id, project_dir) / "checker_home"
+    assert Path(path) != lc.loop_dir(loop_id, project_dir) / "maker_home"
+    assert (Path(path).stat().st_mode & 0o777) == 0o700
+
+
+def test_checker_scratch_home_never_copies_claude_auth(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """I1: mechanical checker commands (pytest/ruff executing code the Maker just wrote) must
+    never be able to read a live Claude Code OAuth session -- unlike `maker_scratch_home()`,
+    `checker_scratch_home()` must never copy `.claude.json`/`.claude/.credentials.json`
+    regardless of whether `maker_scratch_home()` was already called for this same loop_id (the
+    Maker always runs before the checker within one iteration, and would have already populated
+    a *shared* directory with live auth -- this is why the checker needs its own separate
+    directory, not merely a copy-skip on a shared one)."""
+    real_home = tmp_path / "real_home"
+    real_home.mkdir()
+    (real_home / ".claude.json").write_text('{"oauth": "token"}', encoding="utf-8")
+    claude_dir = real_home / ".claude"
+    claude_dir.mkdir()
+    (claude_dir / ".credentials.json").write_text('{"accessToken": "abc"}', encoding="utf-8")
+    monkeypatch.setenv("HOME", str(real_home))
+
+    project_dir = tmp_path / "project"
+    _init_repo(project_dir)
+    loop_id = "abcd1234-issue-1"
+    # Simulate the Maker having already run once this iteration (always populates maker_home/
+    # with live auth files, regardless of what the checker itself does).
+    lds.maker_scratch_home(str(project_dir), loop_id)
+
+    scratch = Path(lds.checker_scratch_home(str(project_dir), loop_id))
+
+    assert not (scratch / ".claude.json").exists()
+    assert not (scratch / ".claude").exists()
+
+
+def test_run_checker_mechanical_env_home_excludes_claude_auth(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """I1 (PR #210 review round 5): mechanical checker commands (pytest/ruff executing code the
+    Maker just wrote) must run with a `$HOME` that never contains a copy of the operator's live
+    Claude Code OAuth session -- a malicious or compromised Maker-authored test/lint invocation
+    could otherwise read it and exfiltrate it in a way the existing redaction patterns may not
+    recognize. Unlike `maker_scratch_home()` (shared by the Maker/LLM-reviewer/classification
+    children, which do need that copied auth per FT-17), `_run_checker`'s mechanical-check env
+    must come from the separate, credential-free `checker_scratch_home()`."""
+    real_home = tmp_path / "real_home"
+    real_home.mkdir()
+    (real_home / ".claude.json").write_text('{"oauth": "token"}', encoding="utf-8")
+    monkeypatch.setenv("HOME", str(real_home))
+
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.worktree_path = project_dir
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    captured: dict[str, Any] = {}
+
+    def fake_run_mechanical_checks(*_args: Any, **kwargs: Any) -> list[Any]:
+        captured["env"] = kwargs.get("env")
+        return []
+
+    monkeypatch.setattr(lc, "run_mechanical_checks", fake_run_mechanical_checks)
+
+    proposal = lc.ProposeResult(
+        action="run_checker",
+        action_id="act-i1-002",
+        state_version=state.state_version,
+        expected_phase="implementation",
+        phase="implementation",
+        iteration=1,
+        context={},
+    )
+    d._run_checker(proposal, state, {"mechanical": {"commands": ["pytest -q"]}})
+
+    checker_home = Path(captured["env"]["HOME"])
+    assert checker_home == lc.loop_dir(loop_id, project_dir) / "checker_home"
+    assert not (checker_home / ".claude.json").exists()
+    # The Maker/LLM-reviewer/classification-only directory, by contrast, does get live auth
+    # copied into it -- this asserts the checker's env is *not* that same directory, not merely
+    # that this particular call skipped copying into a shared one.
+    maker_home = Path(lds.maker_scratch_home(project_dir, loop_id))
+    assert (maker_home / ".claude.json").exists()
+
+
 def test_build_disallowed_tools_always_excludes_push_pr_remote_worktree() -> None:
     disallowed = lds.build_disallowed_tools()
     assert "Bash(git push:*)" in disallowed
@@ -835,7 +933,6 @@ def test_find_dangerous_local_git_config_ignores_legitimate_origin_url(tmp_path:
         (["core.fsmonitor", "/tmp/evil-fsmonitor.sh"], "core.fsmonitor"),
         (["core.sshCommand", "/tmp/evil-ssh.sh"], "core.sshcommand"),
         (["core.askpass", "/tmp/evil-askpass.sh"], "core.askpass"),
-        (["core.hooksPath", "/tmp/evil-hooks"], "core.hookspath"),
         (["diff.evil.command", "/tmp/evil-diff.sh"], "diff.evil.command"),
         (["diff.external", "/tmp/evil-diff.sh"], "diff.external"),
         (["filter.evil.clean", "/tmp/evil-clean.sh"], "filter.evil.clean"),
@@ -858,6 +955,24 @@ def test_find_dangerous_local_git_config_detects_rh2_additional_keys(
     matched = lds.find_dangerous_local_git_config(str(repo))
     assert matched is not None
     assert expected_key_substring in matched.lower()
+
+
+def test_find_dangerous_local_git_config_permits_preexisting_core_hookspath(
+    tmp_path: Path,
+) -> None:
+    """I8 (PR #210 review round 5): a legitimate, pre-existing `core.hooksPath` (e.g. a
+    repo-wide Husky setup; `git worktree add` shares the main repository's `.git/config`, not a
+    separate copy) must not be flagged as `git_config_tampered` -- every driver-owned git
+    invocation already forces `-c core.hooksPath=/dev/null` (`hardened_git_config_args()`, RM1),
+    so this key's actual value never executes as a hook during any of those calls regardless of
+    whether it predates the loop or was Maker-tampered. Unlike `insteadOf`/`pushurl`/the
+    `remote.*.url` family, a literal-URL push argument does not re-honor this override the way
+    it does an `insteadOf` rewrite, so excluding it here does not reopen RM1's fix."""
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_repo_with_remote(repo, remote)
+    _git(["config", "core.hooksPath", "/some/legitimate/husky/hooks"], repo)
+    assert lds.find_dangerous_local_git_config(str(repo)) is None
 
 
 def test_find_dangerous_local_git_config_scan_expands_includes(tmp_path: Path) -> None:
@@ -909,19 +1024,53 @@ def test_get_push_diff_covers_only_commits_since_baseline(tmp_path: Path) -> Non
     assert "ghp_ABC" in diff_text
 
 
-def test_get_push_diff_covers_whole_tree_when_no_baseline_known(tmp_path: Path) -> None:
-    """No baseline yet (`None`/`REMOTE_HEAD_ABSENT`, brand-new branch never pushed) must diff
-    against git's empty tree instead of erroring out on an unresolvable range."""
+def test_get_push_diff_scopes_to_new_commits_on_first_push(tmp_path: Path) -> None:
+    """I4 (PR #210 review round 5): a first push (no baseline yet -- `None`/`REMOTE_HEAD_ABSENT`,
+    a brand-new loop branch never pushed) must scope the scan to the commits this loop's branch
+    actually added on top of the repo's base branch, not the whole current tree. A loop branch
+    is created off the *existing* repository (`worktree_manager.create_worktree()`), so the old
+    empty-tree-diff behavior pulled in every pre-existing tracked file (including this repo's
+    own `README.md`, simulating a pre-existing token-looking string committed elsewhere) and
+    would trip SH5's generic secret-prefix check on it regardless of whether the Maker's own new
+    commit contained anything real."""
     repo = tmp_path / "repo"
     _init_repo(repo)
+    _git(["checkout", "-b", "issue-branch"], repo)
+    (repo / "new.txt").write_text("token_prefix_marker_ghp_ABC\n", encoding="utf-8")
+    _git(["add", "new.txt"], repo)
+    _git(["commit", "-m", "add new commit"], repo)
 
     diff_none = lds.get_push_diff(str(repo), None)
     diff_absent = lds.get_push_diff(str(repo), lds.REMOTE_HEAD_ABSENT)
 
     assert diff_none is not None
-    assert "README.md" in diff_none
+    assert "README.md" not in diff_none
+    assert "ghp_ABC" in diff_none
     assert diff_absent is not None
-    assert "README.md" in diff_absent
+    assert "README.md" not in diff_absent
+    assert "ghp_ABC" in diff_absent
+
+
+def test_get_push_diff_falls_back_to_whole_tree_when_base_branch_unresolvable(
+    tmp_path: Path,
+) -> None:
+    """I4 fallback: when no `origin/HEAD` and no `main`/`master` candidate exists at all (an
+    extreme edge case -- e.g. a repository whose only branch has some other name and no
+    `origin` remote), `get_push_diff` must still fall back to the previous whole-tree
+    empty-tree diff rather than silently scanning nothing."""
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True, exist_ok=True)
+    _git(["init", "-b", "custom-only-branch"], repo)
+    _git(["config", "user.email", "loop-harness@example.com"], repo)
+    _git(["config", "user.name", "Loop Harness Test"], repo)
+    (repo / "README.md").write_text("root\n", encoding="utf-8")
+    _git(["add", "README.md"], repo)
+    _git(["commit", "-m", "init"], repo)
+
+    diff_none = lds.get_push_diff(str(repo), None)
+
+    assert diff_none is not None
+    assert "README.md" in diff_none
 
 
 def test_get_push_diff_returns_none_on_unresolvable_baseline(tmp_path: Path) -> None:
@@ -1939,6 +2088,59 @@ def test_execute_advance_exec_record_baseline_preserves_state_version_fence(
     )
     final_state = lc.load_state(loop_id, project_dir)
     assert final_state.pending_action is None
+
+
+def test_execute_advance_exec_record_baseline_after_pr_create_uses_resolved_pr_number(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """I3 (PR #210 review round 5): `record_baseline` must run *after* `pr_create` resolves (or
+    reuses) the actual PR number -- `issue-loop.yaml`'s `on_success.exec` order is now
+    `[commit, push, pr_create, record_baseline, record_iteration_head]`. Before this fix,
+    `record_baseline` ran with `state.pr_number` still `None` whenever a PR was created/reused
+    during this same exec (e.g. an existing PR reused after a crash between `gh pr create` and
+    `complete()` persisting `pr_number`), recording an empty baseline (`baseline_review_id=0`)
+    that then made every pre-existing review/comment on that PR look "new" to the following
+    `wait_external_review` phase."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.branch = "main"
+    state.worktree_path = project_dir
+    state.pr_number = None
+    action_id = "act-i3-001"
+    state.pending_action = lc.PendingAction(
+        action_id, "advance_phase", "implementation", 1, lc.now_iso()
+    )
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(driver, "_repo_name_with_owner", lambda _wt: "owner/repo")
+    monkeypatch.setattr(d, "_push_verified_branch", lambda *_a, **_k: None)
+    monkeypatch.setattr(d, "_create_or_reuse_pr", lambda _state, _branch: 42)
+
+    recorded_pr_numbers: list[int | None] = []
+
+    def fake_record_baseline(
+        _loop_id: str,
+        _project_dir: str,
+        pr_number: int | None,
+        _client: Any,
+        _lease_token: str,
+        *,
+        action_id: str | None = None,
+        review_items: Any = None,
+    ) -> None:
+        recorded_pr_numbers.append(pr_number)
+
+    monkeypatch.setattr(prw, "record_baseline", fake_record_baseline)
+
+    pr_number = d._execute_advance_exec(
+        ["push", "pr_create", "record_baseline"], state, "main", action_id
+    )
+
+    assert pr_number == 42
+    assert recorded_pr_numbers == [42]
 
 
 # --------------------------------------------------------------------------------------------
@@ -4182,6 +4384,83 @@ def test_reconstruct_push_integrity_baseline_recovers_journaled_value_after_cras
     assert d2._remote_head_baseline != attacker_head
     current_head = lds.get_remote_head(project_dir, "main")
     assert lds.classify_push_integrity(d2._remote_head_baseline, current_head) == "violation"
+
+
+def test_reconstruct_push_integrity_baseline_restores_pre_maker_head_after_crash_restart(
+    tmp_path: Path,
+) -> None:
+    """I6 (PR #210 review round 5): the pre-Maker local HEAD (code H5's `self._pre_maker_head`)
+    must survive a driver restart. Before this fix it only ever lived in-memory (reset to
+    `None` by every fresh `LoopDriver.__init__`), so a restarted worker's `_verify_maker_commit`
+    no-op-Maker guard silently fell through to "ok" and the LLM reviewer fell back to a plain
+    working-tree diff, regardless of what the crashed process had actually captured for this
+    iteration."""
+    loop_id = "abcd1234-issue-1"
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_repo_with_remote(repo, remote)
+    project_dir = str(repo)
+    state = lc._initial_state(
+        loop_id, "issue-loop", "abcd1234", project_dir, "main", "implementation"
+    )
+    state.status = "running"
+    state.branch = "main"
+    state.worktree_path = project_dir
+    lc._write_state(state, project_dir)
+    lock = lc.acquire_lock(loop_id, project_dir, "owner", 3600)
+    assert lock is not None
+
+    pre_maker_head = _git(["rev-parse", "HEAD"], repo)
+    d1 = driver.LoopDriver(loop_id, project_dir, lock.lease_token)
+    d1._persist_pre_maker_head(pre_maker_head)
+
+    # Crash-restart: a fresh LoopDriver instance, as `loop_scheduler.py` would spawn.
+    d2 = driver.LoopDriver(loop_id, project_dir, lock.lease_token)
+    assert d2._pre_maker_head is None
+
+    d2._reconstruct_push_integrity_baseline()
+
+    assert d2._pre_maker_head == pre_maker_head
+
+
+def test_verify_maker_commit_no_op_guard_survives_restart(tmp_path: Path) -> None:
+    """I6: after a restart recovers the journaled pre-Maker head via
+    `_reconstruct_push_integrity_baseline()`, `_verify_maker_commit` must still catch a no-op
+    Maker (no new commit since that head) instead of silently waving it through -- the whole
+    point of persisting it across a restart."""
+    loop_id = "abcd1234-issue-1"
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_repo_with_remote(repo, remote)
+    project_dir = str(repo)
+    state = lc._initial_state(
+        loop_id, "issue-loop", "abcd1234", project_dir, "main", "implementation"
+    )
+    state.status = "running"
+    state.branch = "main"
+    state.worktree_path = project_dir
+    lc._write_state(state, project_dir)
+    lock = lc.acquire_lock(loop_id, project_dir, "owner", 3600)
+    assert lock is not None
+
+    # A real driver run always writes this (via `maker_scratch_home()`, e.g. from `_run_maker`)
+    # before `_verify_maker_commit` ever checks `git status --porcelain`; without it here, the
+    # loop's own untracked `.claude/loop/` state/lock/journal files would themselves make the
+    # worktree look "dirty", independent of this test's actual no-op-Maker scenario.
+    lds._ensure_loop_root_gitignore(project_dir)
+
+    pre_maker_head = _git(["rev-parse", "HEAD"], repo)
+    d1 = driver.LoopDriver(loop_id, project_dir, lock.lease_token)
+    d1._persist_pre_maker_head(pre_maker_head)
+
+    # Crash-restart with no new Maker commit landed in between (a no-op Maker run).
+    d2 = driver.LoopDriver(loop_id, project_dir, lock.lease_token)
+    d2._reconstruct_push_integrity_baseline()
+
+    ok, reason = d2._verify_maker_commit(project_dir)
+
+    assert ok is False
+    assert "no new commit" in reason
 
 
 def test_push_verified_branch_journals_intent_before_pushing(tmp_path: Path) -> None:

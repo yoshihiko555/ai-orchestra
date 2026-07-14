@@ -932,6 +932,60 @@ def test_recover_orphaned_pending_loops_retires_dir_when_lease_expired(
     assert (loop_dir.parent / f"{loop_id}.orphaned-1").is_dir()
 
 
+def test_recover_orphaned_pending_loops_removes_worktree_with_uncommitted_changes(
+    tmp_path: Path,
+) -> None:
+    """#I7: retiring an orphaned-pending loop must also clean up its worktree - otherwise a
+    dead Maker's uncommitted edits would silently carry over into the fresh run this retirement
+    is meant to enable, since `worktree_manager.create_worktree` reuses an existing worktree
+    on the expected branch as-is."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    issue_number = 9
+    loop_id = f"aaaaaaaa-issue-{issue_number}"
+    _seed_state(tmp_path, loop_id, status="pending")
+    worktree = wm.create_worktree(project_dir, issue_number)
+    dirty_path = Path(worktree.path) / "dead-maker-leftover.txt"
+    dirty_path.write_text("uncommitted edit from a dead Maker\n", encoding="utf-8")
+    assert dirty_path.exists()
+    runtime = scheduler.SchedulerRuntime()
+    loop_dir = Path(project_dir) / ".claude" / "loop" / loop_id
+
+    result = scheduler.recover_orphaned_pending_loops(runtime, project_dir)
+
+    assert result == [loop_id]
+    assert not loop_dir.exists()
+    assert not Path(worktree.path).exists()
+
+
+def test_recover_orphaned_pending_loops_warns_but_retires_on_worktree_cleanup_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#I7: worktree cleanup is best-effort - a `git worktree remove` failure must only be
+    warned about, never block retiring the state dir (that rename is what actually frees the
+    Issue for rediscovery)."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    issue_number = 9
+    loop_id = f"aaaaaaaa-issue-{issue_number}"
+    _seed_state(tmp_path, loop_id, status="pending")
+    wm.create_worktree(project_dir, issue_number)
+    runtime = scheduler.SchedulerRuntime()
+    loop_dir = Path(project_dir) / ".claude" / "loop" / loop_id
+
+    def _fail_remove(project: str, number: int, force: bool = False) -> None:
+        raise wm.WorktreeError("boom")
+
+    monkeypatch.setattr(wm, "remove_worktree", _fail_remove)
+
+    result = scheduler.recover_orphaned_pending_loops(runtime, project_dir)
+
+    assert result == [loop_id]
+    assert not loop_dir.exists()
+    assert (loop_dir.parent / f"{loop_id}.orphaned-1").is_dir()
+    assert "boom" in capsys.readouterr().err
+
+
 def test_recover_orphaned_pending_loops_skips_when_lease_still_alive(
     tmp_path: Path,
 ) -> None:
@@ -1135,6 +1189,39 @@ def test_spawn_new_workers_counts_untracked_live_active_loops_against_cap(
 
     assert spawned == []
     assert runtime.workers == {}
+
+
+def test_spawn_new_workers_counts_live_pending_lease_against_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#I2: after a scheduler restart, a `pending` loop with a live lease (its worker's first
+    `run_maker` is still in flight, left behind by the previous scheduler process) is untracked
+    in a fresh `SchedulerRuntime.workers`. `_pending_loop_ids` only stops `discover_loop_ids`
+    from re-spawning a duplicate for the *same* Issue (#G10); it must also count against the
+    concurrency cap for *other* Issues, or the scheduler would spawn brand-new workers on top of
+    it and exceed the configured limit."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    definition = ld.load_all_definitions(project_dir)["issue-loop"]
+    override_dir = tmp_path / ".claude" / "config" / "loop-harness"
+    override_dir.mkdir(parents=True)
+    (override_dir / "loop-harness.local.yaml").write_text(
+        "lp2:\n  concurrency_limit: 2\n", encoding="utf-8"
+    )
+    pending_loop_id = "aaaaaaaa-issue-1"
+    _seed_state(tmp_path, pending_loop_id, status="pending")
+    lc.acquire_lock(pending_loop_id, project_dir, "previous-process", 300)  # still alive
+    runtime = scheduler.SchedulerRuntime()  # fresh restart: workers empty, 1 slot already taken
+
+    monkeypatch.setattr(scheduler, "discover_loop_ids", lambda project, defn, **kw: ["b", "c"])
+    monkeypatch.setattr(
+        scheduler, "spawn_worker", lambda loop_id, project, definition_id: _FakePopen(None)
+    )
+
+    spawned = scheduler.spawn_new_workers(runtime, project_dir, definition)
+
+    assert spawned == ["b"]
+    assert set(runtime.workers) == {"b"}
 
 
 def test_spawn_new_workers_spawns_only_up_to_available_capacity(

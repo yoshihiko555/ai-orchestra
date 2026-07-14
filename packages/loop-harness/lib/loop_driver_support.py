@@ -277,18 +277,32 @@ _DANGEROUS_LOCAL_CONFIG_KEY_RE = re.compile(
     # driver-owned git invocation (run with the driver's own real credentials) shell out to a
     # Maker-supplied command or read a Maker-supplied file, none of which this scan covered
     # before:
-    #   - `core.fsmonitor`/`core.sshcommand`/`core.askpass`/`core.hooksPath`: each names an
-    #     external command/script git invokes as a subprocess.
+    #   - `core.fsmonitor`/`core.sshcommand`/`core.askpass`: each names an external
+    #     command/script git invokes as a subprocess.
     #   - `diff.*.command`/`diff.external`: an external diff driver git shells out to.
     #   - `filter.*.(clean|smudge|process)`: content filters git runs on checkout/commit.
     #   - `include.path`/`includeif.*`: pulls in a wholly separate, Maker-writable config file
     #     that could itself define any of the above -- see the `--includes` flag added to the
     #     `git config` invocation below, without which a key defined only inside such an
     #     included file would never even appear in the scanned output.
+    #
+    # I8 (PR #210 review round 5): `core.hooksPath` is deliberately *not* included here (it used
+    # to be, alongside the other RH2 keys above). This scan runs on every driver
+    # start/attach/resume via `_reconstruct_push_integrity_baseline()`, *before* any Maker child
+    # has run in this process (see that method's own docstring) -- so a repository that
+    # legitimately configures `core.hooksPath` repo-wide (e.g. Husky; `git worktree add` shares
+    # the main repository's `.git/config`, not a separate copy) would hard-stop every single
+    # loop run as `git_config_tampered`, even though no Maker ever touched it. Unlike
+    # `insteadOf`/`pushurl`/the `remote.*.url` family above -- which a literal-URL push argument
+    # still honors regardless of by-name resolution (see the RC1 comment) -- every driver-owned
+    # git invocation in this module already applies `hardened_git_config_args()`'s
+    # `-c core.hooksPath=/dev/null` override (RM1), so whatever `core.hooksPath` actually
+    # resolves to in `.git/config` never executes as a hook during any of those calls, pre-
+    # existing or Maker-tampered alike. Excluding it here removes a false-positive hard-stop
+    # without reopening the code-execution vector RM1 already closes at the invocation layer.
     r"|core\.fsmonitor"
     r"|core\.sshcommand"
     r"|core\.askpass"
-    r"|core\.hookspath"
     r"|diff\..*\.command"
     r"|diff\.external"
     r"|filter\..*\.(?:clean|smudge|process)"
@@ -385,6 +399,36 @@ def maker_scratch_home(project_dir: str, loop_id: str) -> str:
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(path, 0o700)
     _copy_claude_auth_files(Path(os.path.expanduser("~")), path)
+    return str(path)
+
+
+def checker_scratch_home(project_dir: str, loop_id: str) -> str:
+    """Return (creating if absent) a credential-free `$HOME` scratch dir for mechanical checks.
+
+    SEC-P1 (PR #210 review round 5): mechanical checker commands (`checker.mechanical.commands`,
+    typically `pytest`/`ruff` executing code the Maker just wrote) must never be able to read a
+    live Claude Code OAuth session — a malicious or compromised Maker-authored test/lint
+    invocation could otherwise read `$HOME/.claude.json`/`$HOME/.claude/.credentials.json` out
+    of `maker_scratch_home()`'s directory and print/exfiltrate them in a way the existing
+    redaction patterns may not recognize. Only the `claude -p` child processes (Maker, LLM
+    reviewer, severity classification) actually need that copied auth (FT-17).
+
+    Deliberately a *separate* directory (`checker_home/`, a sibling of `maker_scratch_home()`'s
+    `maker_home/`), not the same directory with the auth-copy step merely skipped: within one
+    loop iteration, `_run_maker` always calls `maker_scratch_home()` (which unconditionally
+    (re)writes the live OAuth files) before the checker ever runs, so reusing that same shared
+    directory for the checker would still expose the files already written there by the
+    preceding Maker/reviewer child, regardless of whether this call itself copies anything.
+
+    Still isolates `~/.netrc`/`~/.git-credentials`/`~/.config/gh` the same way
+    `maker_scratch_home()` does, via `maker_env()`'s `HOME`/`XDG_CONFIG_HOME` redirection when
+    this path is passed as its `scratch_home` argument. Lives under the same per-loop state
+    directory so `loop_status.py purge`'s existing directory-tree removal cleans it up too.
+    """
+    _ensure_loop_root_gitignore(project_dir)
+    path = lc.loop_dir(loop_id, project_dir) / "checker_home"
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(path, 0o700)
     return str(path)
 
 
@@ -736,14 +780,111 @@ _EMPTY_TREE_SHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 when there is no prior baseline commit to diff from, e.g. a brand-new branch's first push)."""
 
 
+_FIRST_PUSH_DIFF_QUERY_TIMEOUT_SECONDS = 10.0
+"""Timeout for each individual base-branch/merge-base resolution query `_first_push_diff_range()`
+issues (I4): a fixed, short budget independent of `get_push_diff()`'s own `timeout_seconds`
+(which governs the final `git diff` call only), matching this module's other quick git-plumbing
+queries (`resolve_origin_url()`, `_git_config_value()`, `get_remote_head()`)."""
+
+
+def _resolve_push_diff_base_ref(cwd: str) -> str | None:
+    """Resolve the repository's default/base branch ref for a first-push diff base (I4).
+
+    Prefers `origin/HEAD`'s configured symbolic ref (the repo's actual default branch) over a
+    fixed guess, then falls back to a few conventional candidates in order. Returns `None` (not
+    raising) if nothing resolves, letting the caller fall back to its own whole-tree behavior.
+    """
+    symbolic = _run_git_capture(
+        ["symbolic-ref", "refs/remotes/origin/HEAD"], cwd, _FIRST_PUSH_DIFF_QUERY_TIMEOUT_SECONDS
+    )
+    if symbolic is not None and symbolic.startswith("refs/remotes/origin/"):
+        return "origin/" + symbolic.removeprefix("refs/remotes/origin/")
+    for candidate in ("origin/main", "origin/master", "main", "master"):
+        if _git_ref_exists(cwd, candidate):
+            return candidate
+    return None
+
+
+def _git_ref_exists(cwd: str, ref: str) -> bool:
+    """Return True when `ref` resolves to a real commit in `cwd`'s repository."""
+    try:
+        completed = subprocess.run(
+            [
+                "git",
+                *hardened_git_config_args(),
+                "-C",
+                cwd,
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                ref,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=_FIRST_PUSH_DIFF_QUERY_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return completed.returncode == 0
+
+
+def _run_git_capture(args: Sequence[str], cwd: str, timeout_seconds: float) -> str | None:
+    """Run one `git <args>` in `cwd`, returning stripped stdout, or `None` on any failure."""
+    try:
+        completed = subprocess.run(
+            ["git", *hardened_git_config_args(), "-C", cwd, *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    stdout = completed.stdout.strip()
+    return stdout or None
+
+
+def _first_push_diff_range(cwd: str) -> str:
+    """Return the `git diff` range to scan for a first push with no prior remote baseline (I4).
+
+    Prefers `<merge-base with the repo's default/base branch>..HEAD` over the empty-tree range
+    the previous implementation always used: `worktree_manager.create_worktree()` branches a
+    loop's worktree off the *existing* repository, so diffing HEAD against git's empty-tree
+    object (`_EMPTY_TREE_SHA`) pulled in every pre-existing tracked file, not just the Maker's
+    new commits -- tripping SH5's generic vendor-token-prefix check (`ghp_`/`github_pat_`/etc.)
+    on any pre-existing token-*looking* string already committed elsewhere in the repository
+    (this repo's own docs/tests legitimately contain several) and safe-stopping every single
+    first push, regardless of whether the Maker's own new commits contained anything real.
+
+    Falls back to the previous whole-tree empty-tree behavior only when the base branch/
+    merge-base itself cannot be resolved at all (e.g. no discoverable `origin/HEAD`/`main`/
+    `master` and no local-only fallback either) -- an extreme edge case, not the common path.
+    """
+    base_ref = _resolve_push_diff_base_ref(cwd)
+    merge_base = (
+        _run_git_capture(
+            ["merge-base", "HEAD", base_ref], cwd, _FIRST_PUSH_DIFF_QUERY_TIMEOUT_SECONDS
+        )
+        if base_ref is not None
+        else None
+    )
+    if merge_base is not None:
+        return f"{merge_base}..HEAD"
+    return f"{_EMPTY_TREE_SHA}..HEAD"
+
+
 def get_push_diff(cwd: str, baseline_head: str | None, timeout_seconds: float = 30.0) -> str | None:
     """Return the diff of everything a pending push is about to send (SH5), or None on error.
 
     `baseline_head` is the layer-4 push-integrity baseline (the last known-good remote HEAD):
     when it is a real sha, diffs `baseline_head..HEAD` (only the commits this push newly
     contributes). When it is `None` (no baseline known) or `REMOTE_HEAD_ABSENT` (a confirmed
-    brand-new branch that has never been pushed), there is no meaningful prior point to diff
-    from, so this diffs HEAD against git's empty-tree object instead (the whole current tree).
+    brand-new branch that has never been pushed), there is no remote-side prior point to diff
+    from, so this diffs against the branch's merge-base with the repo's default/base branch
+    instead (see `_first_push_diff_range()`; I4) -- not the whole current tree.
 
     Returns `None` (not raising) on any git failure/timeout: this is an additional safety net
     on top of the existing 4-layer push defense, not the sole guard, so a transient `git diff`
@@ -752,7 +893,7 @@ def get_push_diff(cwd: str, baseline_head: str | None, timeout_seconds: float = 
     if baseline_head is not None and baseline_head != REMOTE_HEAD_ABSENT:
         diff_range = f"{baseline_head}..HEAD"
     else:
-        diff_range = f"{_EMPTY_TREE_SHA}..HEAD"
+        diff_range = _first_push_diff_range(cwd)
     try:
         completed = subprocess.run(
             ["git", *hardened_git_config_args(), "-C", cwd, "diff", diff_range],

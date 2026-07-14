@@ -415,11 +415,13 @@ def test_propose_checker_and_advance_phase_params_follow_definition(tmp_path: Pa
     assert advance["action"] == lc.Action.ADVANCE_PHASE.value
     assert advance["params"]["verified_branch"] == "loop/issue-7"
     assert advance["params"]["next_phase"] == "pr_review_response"
+    # I3 (PR #210 review round 5): record_baseline now runs after pr_create resolves the
+    # actual PR number, not before it (see issue-loop.yaml's on_success.exec).
     assert advance["params"]["exec"] == [
         "commit",
-        "record_baseline",
         "push",
         "pr_create",
+        "record_baseline",
         "record_iteration_head",
     ]
     assert advance["params"]["issue_number"] == 7
