@@ -19,6 +19,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -47,6 +48,21 @@ SubprocessRunner = Callable[..., subprocess.CompletedProcess]
 
 _THIS_FILE = Path(__file__).resolve()
 _COMMON_FILE = _LIB_DIR / "meta_harness_common.py"
+_PACKAGE_DIR = _LIB_DIR.parent
+_EVALUATOR_SOURCE_FILES: tuple[tuple[str, Path], ...] = (
+    ("lib/evaluator.py", _THIS_FILE),
+    ("lib/meta_harness_common.py", _COMMON_FILE),
+    ("lib/claude_credentials.py", _LIB_DIR / "claude_credentials.py"),
+    ("lib/scenario_docker.py", _LIB_DIR / "scenario_docker.py"),
+    ("lib/scenario_docker_cli.py", _LIB_DIR / "scenario_docker_cli.py"),
+    ("lib/scenario_docker_profile.py", _LIB_DIR / "scenario_docker_profile.py"),
+    ("lib/scenario_isolation.py", _LIB_DIR / "scenario_isolation.py"),
+    ("lib/scenario_process.py", _LIB_DIR / "scenario_process.py"),
+    ("docker/broker/broker.py", _PACKAGE_DIR / "docker" / "broker" / "broker.py"),
+    ("docker/broker/Dockerfile", _PACKAGE_DIR / "docker" / "broker" / "Dockerfile"),
+    ("docker/scenario/Dockerfile", _PACKAGE_DIR / "docker" / "scenario" / "Dockerfile"),
+)
+_LOGGER = logging.getLogger(__name__)
 
 GIT_TIMEOUT_SECONDS = 10
 GIT_WORKTREE_TIMEOUT_SECONDS = 120
@@ -257,10 +273,26 @@ def _codex_judge_smoke_checks(*, runner: SubprocessRunner) -> dict[str, bool]:
 def _check_cli_tool_capabilities(
     config: dict,
     *,
+    main_root: Path | None = None,
     runner: SubprocessRunner = subprocess.run,
 ) -> CliCapabilities:
     """Test CLI flags in isolation from the mandatory scenario execution boundary."""
     evaluate_cfg = config.get("evaluate") or {}
+    isolation_cfg = evaluate_cfg.get("isolation") or {}
+    if isolation_cfg.get("execution_backend") == "docker":
+        docker_caps = siso.docker.check_docker_capabilities(
+            config, main_root=main_root, runner=runner
+        )
+        return CliCapabilities(
+            claude_version=docker_caps.claude_version,
+            version_pin=docker_caps.version_pin,
+            version_pin_match=docker_caps.version_pin_match,
+            checks=docker_caps.checks,
+            judge_tool=(config.get("judge") or {}).get("tool", "claude-bare"),
+            ok=docker_caps.ok,
+            reason=docker_caps.reason,
+        )
+    del main_root
     version_pin = evaluate_cfg.get("cli_version_pin")
     version = get_claude_version(runner=runner)
     version_pin_match = None if version_pin is None else (version == version_pin)
@@ -291,23 +323,35 @@ def check_cli_capabilities(
     main_root: Path | None = None,
     runner: SubprocessRunner = subprocess.run,
 ) -> CliCapabilities:
-    """Fail closed before worktree creation until every scenario boundary is implemented."""
-    del main_root
-    version = get_claude_version(runner=runner)
-    evaluate_cfg = config.get("evaluate") or {}
-    version_pin = evaluate_cfg.get("cli_version_pin")
-    version_pin_match = None if version_pin is None else (version == version_pin)
+    """Apply the execution-boundary gate and backend-specific CLI checks in one path."""
     judge_tool = (config.get("judge") or {}).get("tool", "claude-bare")
-    checks = {"scenario_execution_boundary": siso.execution_boundary_available(config)}
-    reason = _capability_gate_failure_reason(version, version_pin, version_pin_match, checks)
+    boundary_available = siso.execution_boundary_available(config)
+    if not boundary_available:
+        return CliCapabilities(
+            claude_version=get_claude_version(runner=runner),
+            version_pin=(config.get("evaluate") or {}).get("cli_version_pin"),
+            version_pin_match=None,
+            checks={"scenario_execution_boundary": False},
+            judge_tool=judge_tool,
+            ok=False,
+            reason="CLI capability check(s) failed: scenario_execution_boundary",
+        )
+    capabilities = _check_cli_tool_capabilities(config, main_root=main_root, runner=runner)
+    checks = {"scenario_execution_boundary": True, **capabilities.checks}
     return CliCapabilities(
-        claude_version=version,
-        version_pin=version_pin,
-        version_pin_match=version_pin_match,
+        claude_version=capabilities.claude_version,
+        version_pin=capabilities.version_pin,
+        version_pin_match=capabilities.version_pin_match,
         checks=checks,
-        judge_tool=judge_tool,
-        ok=False,
-        reason=reason,
+        judge_tool=capabilities.judge_tool,
+        ok=capabilities.ok and all(checks.values()),
+        reason=capabilities.reason
+        or _capability_gate_failure_reason(
+            capabilities.claude_version,
+            capabilities.version_pin,
+            capabilities.version_pin_match,
+            checks,
+        ),
     )
 
 
@@ -423,9 +467,48 @@ def _apply_config_patch(config_patch_path: Path, config: dict, schema_dir: Path)
 
 
 def build_facet_and_context(
-    worktree_dir: Path, *, runner: SubprocessRunner = subprocess.run
+    worktree_dir: Path,
+    *,
+    config: dict | None = None,
+    main_root: Path | None = None,
+    source_commit: str | None = None,
+    runner: SubprocessRunner = subprocess.run,
 ) -> None:
     """`AI_ORCHESTRA_DIR=<worktree>` で facet build → context build を実行する（Sec2-1 手順4）。"""
+    if _uses_docker_backend(config):
+        if main_root is None:
+            raise EvaluatorStageError("build", "build_error", "main_root is required for Docker")
+        if source_commit is None:
+            raise EvaluatorStageError(
+                "build", "build_error", "source_commit is required for Docker"
+            )
+        command = [
+            "/bin/sh",
+            "-c",
+            "set -eu; python3 scripts/orchestra-manager.py facet build; "
+            "python3 scripts/orchestra-manager.py context build",
+        ]
+        try:
+            completed = siso.docker.run_preparation_command(
+                config=config or {},
+                main_root=main_root,
+                worktree_dir=worktree_dir,
+                source_commit=source_commit,
+                prepare_git_snapshot=siso._prepare_isolated_git,
+                raw_command=command,
+                timeout_seconds=BUILD_TIMEOUT_SECONDS * 2,
+                runner=runner,
+            )
+        except (siso.docker.DockerScenarioError, siso.docker.dcli.DockerCliError) as exc:
+            raise EvaluatorStageError("build", "build_error", str(exc)) from exc
+        if completed.returncode != 0:
+            raise EvaluatorStageError(
+                "build",
+                "build_error",
+                f"Docker facet/context build failed (exit {completed.returncode}): "
+                f"{completed.stderr.strip()}",
+            )
+        return
     orchestra_manager = worktree_dir / "scripts" / "orchestra-manager.py"
     env = {**os.environ, "AI_ORCHESTRA_DIR": str(worktree_dir)}
     for args in (["facet", "build"], ["context", "build"]):
@@ -461,12 +544,52 @@ def _run_build_step(
 
 
 def run_setup_commands(
-    scenario: dict, worktree_dir: Path, *, runner: SubprocessRunner = subprocess.run
+    scenario: dict,
+    worktree_dir: Path,
+    *,
+    config: dict | None = None,
+    main_root: Path | None = None,
+    source_commit: str | None = None,
+    runner: SubprocessRunner = subprocess.run,
 ) -> None:
     """シナリオの `setup` コマンドを worktree 内で順次実行する（Sec2-1 手順5, Sec1-3）。"""
     timeout_ms = scenario.get("command_timeout_ms", DEFAULT_COMMAND_TIMEOUT_MS)
+    if _uses_docker_backend(config):
+        if main_root is None:
+            raise EvaluatorStageError("setup", "setup_error", "main_root is required for Docker")
+        if source_commit is None:
+            raise EvaluatorStageError(
+                "setup", "setup_error", "source_commit is required for Docker"
+            )
+        for command in scenario.get("setup") or []:
+            try:
+                completed = siso.docker.run_preparation_command(
+                    config=config or {},
+                    main_root=main_root,
+                    worktree_dir=worktree_dir,
+                    source_commit=source_commit,
+                    prepare_git_snapshot=siso._prepare_isolated_git,
+                    raw_command=["/bin/sh", "-c", command],
+                    timeout_seconds=timeout_ms / 1000,
+                    runner=runner,
+                )
+            except (siso.docker.DockerScenarioError, siso.docker.dcli.DockerCliError) as exc:
+                raise EvaluatorStageError("setup", "setup_error", str(exc)) from exc
+            if completed.returncode != 0:
+                raise EvaluatorStageError(
+                    "setup",
+                    "setup_error",
+                    f"setup command exited {completed.returncode}: {command}: "
+                    f"{completed.stderr.strip()}",
+                )
+        return
     for command in scenario.get("setup") or []:
         _run_setup_command(command, worktree_dir, timeout_ms, runner=runner)
+
+
+def _uses_docker_backend(config: dict | None) -> bool:
+    isolation = ((config or {}).get("evaluate") or {}).get("isolation") or {}
+    return isolation.get("execution_backend") == "docker"
 
 
 def _run_setup_command(
@@ -533,10 +656,26 @@ def run_headless_scenario(
             "containment are required",
         )
     try:
+        budget = scenario.get("budget") or {}
+        scenario_run_cfg = config.get("scenario_run") or {}
+        timeout_ms = scenario.get(
+            "timeout_ms", (config.get("evaluate") or {}).get("timeout_ms_default", 300000)
+        )
+        broker_budget = budget.get(
+            "max_budget_usd", scenario_run_cfg.get("max_budget_usd_default", 3.0)
+        )
+        launch_config = {
+            **config,
+            "evaluate": {
+                **(config.get("evaluate") or {}),
+                "timeout_ms_default": timeout_ms,
+            },
+            "scenario_run": {**scenario_run_cfg, "max_budget_usd_default": broker_budget},
+        }
         launch = siso.resolve_scenario_isolation(
             worktree_dir=worktree_dir,
             main_root=main_root,
-            config=config,
+            config=launch_config,
             instruction_path=self_report_instruction,
             source_commit=source_commit,
             runner=runner,
@@ -546,18 +685,15 @@ def run_headless_scenario(
             "run", "run_error", f"scenario isolation unavailable: {exc}"
         ) from exc
     try:
-        raw_command = _build_headless_command(scenario, config, self_report_instruction)
-        cmd = [
-            launch.executable,
-            "--settings",
-            str(launch.settings_path),
-            *raw_command,
-        ]
+        instruction_argument = (
+            Path(siso.docker.CONTAINER_INSTRUCTION)
+            if launch.backend == "docker"
+            else self_report_instruction
+        )
+        raw_command = _build_headless_command(scenario, config, instruction_argument)
+        cmd, cleanup_command = siso.build_scenario_command(launch, raw_command)
         events_path = staging_dir / "events.jsonl"
         progress_path = staging_dir / "progress.log"
-        timeout_ms = scenario.get(
-            "timeout_ms", (config.get("evaluate") or {}).get("timeout_ms_default", 300000)
-        )
         (staging_dir / "isolation.json").write_text(
             json.dumps(launch.metadata, ensure_ascii=False, sort_keys=True) + "\n",
             encoding="utf-8",
@@ -574,6 +710,12 @@ def run_headless_scenario(
                     stderr=progress_f,
                     timeout=timeout_ms / 1000,
                     env=launch.env,
+                    cleanup_args=cleanup_command,
+                    success_callback=(
+                        (lambda: siso.export_scenario_workspace(launch))
+                        if launch.backend == "docker" and launch.docker_launch is not None
+                        else None
+                    ),
                 )
             except subprocess.TimeoutExpired:
                 timed_out = True
@@ -600,7 +742,38 @@ def run_headless_scenario(
         return result
     finally:
         if not succeeded:
-            siso.cleanup_scenario_isolation(launch)
+            in_flight_error = sys.exc_info()[0] is not None
+            try:
+                _persist_refreshed_isolation_metadata(launch, staging_dir)
+            except Exception as exc:  # noqa: BLE001 - preserve the original failed-run error
+                if not in_flight_error:
+                    raise
+                _LOGGER.error(
+                    "could not persist failed-run isolation metadata: %s",
+                    exc,
+                    exc_info=True,
+                )
+            try:
+                siso.cleanup_scenario_isolation(launch)
+            except Exception as exc:  # noqa: BLE001 - preserve the original failed-run error
+                if not in_flight_error:
+                    raise
+                _LOGGER.error(
+                    "could not clean failed-run scenario isolation: %s",
+                    exc,
+                    exc_info=True,
+                )
+
+
+def _persist_refreshed_isolation_metadata(
+    launch: siso.ScenarioIsolationLaunch, staging_dir: Path
+) -> dict:
+    metadata = siso.refresh_isolation_metadata(launch)
+    (staging_dir / "isolation.json").write_text(
+        json.dumps(metadata, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return metadata
 
 
 def _check_headless_run_outcome(
@@ -832,20 +1005,13 @@ def _oracle_command_exit(
             "oracle", "oracle_error", "command_exit requires an isolated oracle launch"
         )
     try:
-        settings_path = siso.write_oracle_srt_settings(isolation_launch)
-        isolated_command = [
-            isolation_launch.executable,
-            "--settings",
-            str(settings_path),
-            "/bin/sh",
-            "-c",
-            command,
-        ]
+        isolated_command, cleanup_command = siso.build_oracle_command(isolation_launch, command)
         completed = sproc.run_bounded_capture(
             isolated_command,
             cwd=worktree_dir,
             timeout=timeout_ms / 1000,
             env=isolation_launch.env,
+            cleanup_args=cleanup_command,
         )
     except (
         OSError,
@@ -894,9 +1060,17 @@ def _oracle_rubric_judge(
     config: dict,
     schema_dir: Path,
     *,
+    isolation_launch: siso.ScenarioIsolationLaunch | None = None,
     runner: SubprocessRunner = subprocess.run,
 ) -> dict:
-    verdict = run_rubric_judge(check["rubric"], worktree_dir, config, schema_dir, runner=runner)
+    verdict = run_rubric_judge(
+        check["rubric"],
+        worktree_dir,
+        config,
+        schema_dir,
+        isolation_launch=isolation_launch,
+        runner=runner,
+    )
     detail = f"[{verdict.backend}] {verdict.reason}"
     if verdict.error:
         # fail-closed（Sec3-3）: judge backend が利用不能・不正な verdict を返した場合は
@@ -925,7 +1099,14 @@ def run_oracle(
     if oracle == "json_schema":
         return _oracle_json_schema(check, worktree_dir, schema_dir)
     if oracle == "rubric_judge":
-        return _oracle_rubric_judge(check, worktree_dir, config, schema_dir, runner=runner)
+        return _oracle_rubric_judge(
+            check,
+            worktree_dir,
+            config,
+            schema_dir,
+            isolation_launch=isolation_launch,
+            runner=runner,
+        )
     raise ValueError(f"unknown oracle: {oracle!r}")
 
 
@@ -1005,6 +1186,7 @@ def run_rubric_judge(
     config: dict,
     schema_dir: Path,
     *,
+    isolation_launch: siso.ScenarioIsolationLaunch | None = None,
     runner: SubprocessRunner = subprocess.run,
 ) -> JudgeVerdict:
     """judge.tool に応じて backend を差し替える（Sec3-3）。fail-closed・暗黙フォール
@@ -1020,14 +1202,24 @@ def run_rubric_judge(
             error=True,
         )
     if tool == "claude-bare":
-        return _judge_via_claude_bare(prompt, judge_cfg, runner=runner)
+        return _judge_via_claude_bare(
+            prompt,
+            judge_cfg,
+            isolation_launch=isolation_launch,
+            runner=runner,
+        )
     return JudgeVerdict(False, f"judge unavailable: unknown judge.tool {tool!r}", tool, error=True)
 
 
 def _judge_via_claude_bare(
-    prompt: str, judge_cfg: dict, *, runner: SubprocessRunner
+    prompt: str,
+    judge_cfg: dict,
+    *,
+    isolation_launch: siso.ScenarioIsolationLaunch | None,
+    runner: SubprocessRunner,
 ) -> JudgeVerdict:
-    if not _has_bare_auth():
+    broker_available = isolation_launch is not None and isolation_launch.backend == "docker"
+    if not broker_available and not _has_bare_auth():
         return JudgeVerdict(
             False,
             "judge unavailable: claude-bare requires ANTHROPIC_API_KEY (or apiKeyHelper)",
@@ -1066,14 +1258,29 @@ def _judge_via_claude_bare(
     if effort:
         cmd += ["--effort", effort]
     try:
-        completed = runner(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=JUDGE_TIMEOUT_SECONDS,
-            stdin=subprocess.DEVNULL,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+        if broker_available and isolation_launch is not None:
+            isolated_command, cleanup_command = siso.build_judge_command(isolation_launch, cmd)
+            completed = sproc.run_bounded_capture(
+                isolated_command,
+                cwd=Path(tempfile.gettempdir()),
+                timeout=JUDGE_TIMEOUT_SECONDS,
+                env=isolation_launch.env,
+                cleanup_args=cleanup_command,
+            )
+        else:
+            completed = runner(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=JUDGE_TIMEOUT_SECONDS,
+                stdin=subprocess.DEVNULL,
+            )
+    except (
+        OSError,
+        subprocess.TimeoutExpired,
+        sproc.ScenarioOutputLimitError,
+        sproc.ScenarioContainmentUnavailable,
+    ) as exc:
         return JudgeVerdict(
             False,
             f"judge unavailable: claude --bare failed to run: {exc}",
@@ -1110,14 +1317,16 @@ def _parse_claude_bare_output(stdout: str) -> JudgeVerdict:
         not isinstance(verdict_obj, dict)
         or "passed" not in verdict_obj
         or "reason" not in verdict_obj
+        or not isinstance(verdict_obj["passed"], bool)
+        or not isinstance(verdict_obj["reason"], str)
     ):
         return JudgeVerdict(
             False,
-            "judge unavailable: --bare output missing passed/reason",
+            "judge unavailable: --bare output has invalid passed/reason fields",
             "claude-bare",
             error=True,
         )
-    return JudgeVerdict(bool(verdict_obj["passed"]), str(verdict_obj["reason"]), "claude-bare")
+    return JudgeVerdict(verdict_obj["passed"], verdict_obj["reason"], "claude-bare")
 
 
 def _extract_nested_result(payload: Any) -> Any:
@@ -1170,13 +1379,24 @@ def compute_suite_hash(scenario_paths: list[Path]) -> str:
     return hashlib.sha256(concatenated.encode("utf-8")).hexdigest()
 
 
-def compute_evaluator_hash(scoring_config: dict) -> str:
-    """evaluator.py + meta_harness_common.py の内容 + scoring.* スナップショットの sha256。"""
-    evaluator_src = _THIS_FILE.read_text(encoding="utf-8")
-    common_src = _COMMON_FILE.read_text(encoding="utf-8")
+def _compute_evaluator_hash(
+    source_files: tuple[tuple[str, Path], ...], scoring_config: dict
+) -> str:
+    hasher = hashlib.sha256()
+    for label, source in source_files:
+        hasher.update(label.encode("utf-8"))
+        hasher.update(b"\0")
+        hasher.update(source.read_bytes())
+        hasher.update(b"\0")
     scoring_snapshot = json.dumps(scoring_config, sort_keys=True, ensure_ascii=False)
-    concatenated = evaluator_src + common_src + scoring_snapshot
-    return hashlib.sha256(concatenated.encode("utf-8")).hexdigest()
+    hasher.update(b"scoring.*\0")
+    hasher.update(scoring_snapshot.encode("utf-8"))
+    return hasher.hexdigest()
+
+
+def compute_evaluator_hash(scoring_config: dict) -> str:
+    """Evaluator and Docker execution semantics plus scoring.* snapshot sha256."""
+    return _compute_evaluator_hash(_EVALUATOR_SOURCE_FILES, scoring_config)
 
 
 # ---------------------------------------------------------------------------
@@ -1552,6 +1772,31 @@ def _run_attempt_lifecycle_safely(
         return [], [], True, [{"stage": "unknown", "type": "run_error", "message": str(exc)}]
 
 
+def _broker_metrics_failure(metadata: dict) -> dict[str, str] | None:
+    broker = metadata.get("broker")
+    metrics = broker.get("metrics") if isinstance(broker, dict) else None
+    if not isinstance(metrics, dict):
+        return None
+    budget_exceeded = metrics.get("budget_exceeded") is True
+    anomaly = metrics.get("anomaly") is True
+    if not budget_exceeded and not anomaly:
+        return None
+    raw_reasons = metrics.get("anomaly_reasons")
+    reasons = [str(reason) for reason in raw_reasons] if isinstance(raw_reasons, list) else []
+    detail = f": {', '.join(reasons)}" if reasons else ""
+    if budget_exceeded:
+        return {
+            "stage": "broker",
+            "type": "budget_exceeded",
+            "message": f"credential broker budget or usage envelope exceeded{detail}",
+        }
+    return {
+        "stage": "broker",
+        "type": "run_error",
+        "message": f"credential broker recorded an anomalous exchange{detail}",
+    }
+
+
 def _run_attempt_lifecycle(
     *,
     main_root: Path,
@@ -1579,8 +1824,21 @@ def _run_attempt_lifecycle(
             main_root, root, run_id, manifest["source_commit"], runner=runner
         )
         apply_overlay(cand_dir / "overlay", config, worktree_dir, schema_dir)
-        build_facet_and_context(worktree_dir, runner=runner)
-        run_setup_commands(scenario, worktree_dir, runner=runner)
+        build_facet_and_context(
+            worktree_dir,
+            config=config,
+            main_root=main_root,
+            source_commit=manifest["source_commit"],
+            runner=runner,
+        )
+        run_setup_commands(
+            scenario,
+            worktree_dir,
+            config=config,
+            main_root=main_root,
+            source_commit=manifest["source_commit"],
+            runner=runner,
+        )
         instruction_path = package_dir / "config" / "self-report-instruction.md"
         scenario_result = run_headless_scenario(
             scenario,
@@ -1592,6 +1850,8 @@ def _run_attempt_lifecycle(
             source_commit=manifest["source_commit"],
             runner=runner,
         )
+        if isinstance(scenario_result.isolation_launch, siso.ScenarioIsolationLaunch):
+            _persist_refreshed_isolation_metadata(scenario_result.isolation_launch, staging_dir)
         checks = [
             run_oracle(
                 c,
@@ -1622,6 +1882,24 @@ def _run_attempt_lifecycle(
         errors.append({"stage": "unknown", "type": "run_error", "message": str(exc)})
     finally:
         if scenario_result is not None and scenario_result.isolation_launch is not None:
+            if isinstance(scenario_result.isolation_launch, siso.ScenarioIsolationLaunch):
+                try:
+                    refreshed_metadata = _persist_refreshed_isolation_metadata(
+                        scenario_result.isolation_launch, staging_dir
+                    )
+                    broker_failure = _broker_metrics_failure(refreshed_metadata)
+                    if broker_failure is not None:
+                        hard_failure = True
+                        errors.append(broker_failure)
+                except Exception as exc:  # noqa: BLE001 - metadata 失敗でも cleanup を継続する
+                    hard_failure = True
+                    errors.append(
+                        {
+                            "stage": "isolation_metadata",
+                            "type": "run_error",
+                            "message": str(exc),
+                        }
+                    )
             try:
                 siso.cleanup_scenario_isolation(scenario_result.isolation_launch)
             except Exception as exc:  # noqa: BLE001 - cleanup 失敗でも worktree 除去を継続する

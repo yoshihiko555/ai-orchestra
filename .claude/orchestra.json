@@ -15,8 +15,7 @@
     "meta-harness",
     "quality-gates",
     "reverse",
-    "skill-evolution",
-    "tmux-monitor"
+    "skill-evolution"
   ],
   "synced_files": [
     "agents/ai-architect.md",
@@ -63,7 +62,7 @@
     "config/meta-harness/meta-harness.yaml",
     "config/skill-evolution/skill-evolution.yaml"
   ],
-  "last_sync": "2026-07-14T04:16:36.943133+00:00",
+  "last_sync": "2026-07-14T10:52:57.659350+00:00",
   "file_hashes": {
     "core": {
       "config/core/task-memory.yaml": "081c101ad10526344e4fe7831babbe6ef661d0a4ae7e49fad4eb3967c030b7d8"

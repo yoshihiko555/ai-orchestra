@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from tests.module_loader import load_module
 
 ev = load_module(
@@ -65,6 +67,32 @@ class TestCriticalHardGate:
     def test_verdict_error_when_no_critical_checks_present(self) -> None:
         verdict = ev._determine_verdict(hard_failure=False, critical_checks=[])
         assert verdict == "error"
+
+
+class TestEvaluatorHash:
+    def test_docker_execution_sources_are_included(self) -> None:
+        labels = {label for label, _path in ev._EVALUATOR_SOURCE_FILES}
+        assert {
+            "lib/scenario_docker.py",
+            "lib/scenario_docker_profile.py",
+            "lib/scenario_isolation.py",
+            "lib/scenario_process.py",
+            "docker/broker/broker.py",
+            "docker/scenario/Dockerfile",
+        } <= labels
+
+    def test_hash_changes_when_backend_source_changes(self, tmp_path: Path) -> None:
+        evaluator = tmp_path / "evaluator.py"
+        backend = tmp_path / "scenario_docker.py"
+        evaluator.write_text("evaluator-v1", encoding="utf-8")
+        backend.write_text("backend-v1", encoding="utf-8")
+        sources = (("lib/evaluator.py", evaluator), ("lib/scenario_docker.py", backend))
+
+        before = ev._compute_evaluator_hash(sources, _CONFIG["scoring"])
+        backend.write_text("backend-v2", encoding="utf-8")
+        after = ev._compute_evaluator_hash(sources, _CONFIG["scoring"])
+
+        assert before != after
 
 
 class TestPassRate:

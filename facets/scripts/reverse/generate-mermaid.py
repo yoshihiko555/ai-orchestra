@@ -53,7 +53,12 @@ def resolve_label(node: dict[str, Any]) -> str:
 
 
 def escape_label(label: str) -> str:
-    return label.replace("\\", "\\\\").replace('"', '\\"')
+    import re
+
+    escaped = label.replace("\\", "\\\\").replace('"', '\\"')
+    # Prevent Mermaid syntax injection via newlines/control chars breaking the
+    # single-line node definition (untrusted module names, see EV-15).
+    return re.sub(r"[\x00-\x1f\x7f]", "", escaped)
 
 
 def sanitize_cluster_name(name: str) -> str:

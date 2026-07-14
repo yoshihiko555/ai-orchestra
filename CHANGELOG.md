@@ -6,13 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **`orchex setup all` から tmux-monitor を除外（opt-in 化）**: presets.json の `exclude` キーで除外した。必要な場合は `orchex install tmux-monitor` で明示的に導入する。
+
 ### Removed
 
 - **`.claudeignore` の配布・生成を廃止**: `orchex setup` と SessionStart 同期で `.claudeignore` を作成しないようにした。除外設定は `.gitignore` で管理する。
 
 ### Added
 
-- **`meta-harness`: `orchex meta loop`（Phase 3）を追加**: `propose` と `evaluate` を ledger 駆動で自動反復し、予算・反復上限・発散・収束で停止する。`--resume` は中断時の孤児候補を含む状態を ledger から復元する。candidate scenario向けにroot-deny SRT profile・隔離Git・read-only oracleを追加したが、資格情報brokerと`setsid`離脱も回収するprocess containmentが未実装の間はworktree作成前にfail-closedする。
+- **`meta-harness`: `orchex meta loop`（Phase 3）を追加**: `propose` と `evaluate` を ledger 駆動で自動反復し、予算・反復上限・発散・収束で停止する。`--resume` は中断時の孤児候補を含む状態を ledger から復元する。
+
+- **`meta-harness`: Docker 隔離 scenario 実行を解禁**: `orchex meta evaluate` / `loop` の既定実行 backend を Docker に変更し、internal network の候補コンテナと run-scoped OAuth broker を使って実資格情報を候補へ渡さず scenario・oracle・tool-less judge を実行する。Docker daemon・pin 済みイメージ・broker が利用できない場合は worktree 作成前に明示エラーで停止し、非隔離 backend へは降格しない。
 
 - **`loop-harness`: LP-2 常駐トリガー（無人ループ実行）を追加**: ラベル付き Issue を検出し、無人（`claude -p`）でループを最後まで自律駆動する常駐運用（`cron`/`launchd` 登録）を追加した。実行状況の確認・不要データの掃除は `loop_status.py`（`list`/`show`/`purge`）で行い、Maker は push/PR 作成ができない構造になっている。
 
@@ -33,6 +39,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`meta-harness`: Docker broker が Claude CLI の `?beta=true` を拒否する問題を修正**: 既知queryを保持して Anthropic API へ中継し、Docker backend の scenario 実行が正常に完走するようにした。
+
 - **`loop-harness`: `/loop-issue` の Maker に編集不能ロールが選ばれて反復が進まない問題を修正**: `debugger` を含む `issue-loop` の auto Maker 候補を実装可能ロールの allowlist に限定し、初回に選定した Maker を state に保存して実装反復・PR レビュー対応で一貫して再利用するようにした。custom loop のフェーズ固有 Maker と変更前の completed journal の reconcile は後方互換を維持する。
 
 - **`loop-harness`: CodeRabbit のレート制限を無進捗失敗として扱う問題を修正**: 信頼済みのレート制限応答を検知し、CodeRabbit だけの構成では即時、Codex 等の代替レビュー経路がある構成では既存 timeout まで待ってから、人間の確認・マージ判断へ安全に引き継ぐようにした。
@@ -52,6 +60,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **`meta-harness`: ストア用 `.gitignore` エントリが SessionStart 同期で消える問題を修正**: `.claude/meta-harness/` を gitignore 管理ブロックの生成元（`gitignore_sync.py`）に追加し、同期のたびに手動追記が失われる Phase 1a の実装漏れを解消
 - **`meta-harness`: `orchex meta propose` の Codex 起動失敗を修正**: srt 隔離下で repo 内 `proposal.schema.json` が `denyRead` に遮断されないよう schema を ephemeral `CODEX_HOME` へ staging し、非 secret の `models_cache.json` / `version.json` だけを staging するようにした。構造化出力時の streaming 通信は Codex backend に限り srt の TLS 終端から除外し、proposal schema は OpenAI structured output 互換に調整した
+
+### Security
+
+- **`reverse`: `generate-mermaid.py` の `escape_label` が改行・制御文字を素通しする問題を修正**: 解析対象コードベース由来のモジュール名/ラベルに改行を仕込むことで Mermaid ノード定義を複数行に分割し構文注入できる問題を修正した。`sanitize_cluster_name` と同様に制御文字を除去し、ノード定義が単一行を保つようにした。
 
 ### Changed
 
