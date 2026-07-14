@@ -515,6 +515,11 @@ def _respawn_expired_cooldowns(runtime: SchedulerRuntime, project_dir: str) -> l
     there is nothing expired to respawn - this function runs every poll cycle regardless of
     whether any foreign-lease cooldown is even pending, so paying for an occupancy
     calculation nobody needs on the common empty-cooldown cycle would be wasted work.
+
+    J1: `_recheck_repo_identity_before_respawn` re-verifies repo-identity immediately before
+    respawning any expired-cooldown loop_id here, for the same reason it guards
+    `respawn_orphaned_active_loops` and `reap_finished_workers`'s crash-restart branch - see
+    that helper's docstring.
     """
     now = time.monotonic()
     expired = [
@@ -526,6 +531,7 @@ def _respawn_expired_cooldowns(runtime: SchedulerRuntime, project_dir: str) -> l
         return []
     available = _available_worker_slots(runtime, project_dir)
     respawned: list[str] = []
+    expected_repo_identity_hash: str | None = None
     for loop_id in expired:
         if loop_id in runtime.workers or loop_id in runtime.stopped_loop_ids:
             del runtime.foreign_lease_cooldown_until[loop_id]
@@ -535,6 +541,13 @@ def _respawn_expired_cooldowns(runtime: SchedulerRuntime, project_dir: str) -> l
             del runtime.foreign_lease_cooldown_until[loop_id]
             continue
         if available <= 0:
+            continue
+        if expected_repo_identity_hash is None:
+            expected_repo_identity_hash = wm.resolve_repo_identity_hash(project_dir)
+        if not _recheck_repo_identity_before_respawn(
+            loop_id, project_dir, expected_repo_identity_hash, runtime, state=state
+        ):
+            del runtime.foreign_lease_cooldown_until[loop_id]
             continue
         del runtime.foreign_lease_cooldown_until[loop_id]
         runtime.workers[loop_id] = spawn_worker(loop_id, project_dir)
@@ -607,6 +620,47 @@ def _available_worker_slots(runtime: SchedulerRuntime, project_dir: str) -> int:
     return concurrency_limit(project_dir) - occupied
 
 
+def _recheck_repo_identity_before_respawn(
+    loop_id: str,
+    project_dir: str,
+    expected_repo_identity_hash: str,
+    runtime: SchedulerRuntime,
+    state: lc.LoopState | None = None,
+) -> bool:
+    """Re-verify `loop_id`'s recorded repo-identity immediately before any respawn path
+    (`respawn_orphaned_active_loops`, `_respawn_expired_cooldowns`, `reap_finished_workers`'s
+    crash-restart branch) actually spawns a worker for it (J1).
+
+    `verify_repo_identity_at_startup` only runs once, at scheduler startup. SN8 deliberately
+    leaves a mismatched loop whose lease was still alive at that moment neither stopped nor
+    tracked in `runtime.stopped_loop_ids` (see `_safe_stop_repo_identity_mismatch`'s own
+    docstring) - the intent being it gets re-evaluated once the lease actually expires.
+    But none of the three respawn paths re-ran the identity check on their own before this fix,
+    so once that lease later expired mid-poll-loop, each would happily spawn a fresh
+    `loop_driver.py` for a loop_id whose recorded repo-identity belongs to a different
+    repository entirely. This reuses `_safe_stop_repo_identity_mismatch`'s own lease-aware
+    stop/skip decision (and `_try_load_state`'s state (re)load, when the caller has not
+    already loaded one) instead of duplicating either.
+
+    Returns True when it is safe to respawn `loop_id` (repo identity matches, or the state
+    could not be (re)loaded / already reached a terminal status - the caller's own subsequent
+    handling covers that). Returns False when a mismatch was detected: the loop is either
+    safety-stopped just now (lease already expired - `loop_id` is also added to
+    `runtime.stopped_loop_ids` so later cycles stop reconsidering it) or left untouched for
+    now (lease still alive - deferred to the next call, mirroring
+    `verify_repo_identity_at_startup`'s own SN8 deferral).
+    """
+    if state is None:
+        state = _try_load_state(lc.loop_dir(loop_id, project_dir), project_dir)
+    if state is None or state.status in _NON_RESTARTABLE_STATUSES:
+        return True
+    if state.repo_identity_hash == expected_repo_identity_hash:
+        return True
+    if _safe_stop_repo_identity_mismatch(state, project_dir, expected_repo_identity_hash):
+        runtime.stopped_loop_ids.add(loop_id)
+    return False
+
+
 def respawn_orphaned_active_loops(runtime: SchedulerRuntime, project_dir: str) -> list[str]:
     """Respawn active-status loops this process lost track of, e.g. after a restart (#F4).
 
@@ -626,9 +680,15 @@ def respawn_orphaned_active_loops(runtime: SchedulerRuntime, project_dir: str) -
     SN1: availability is computed via `_available_worker_slots` (tracked workers plus
     untracked-live active loops), not `concurrency_limit - len(runtime.workers)` alone - see
     that helper's docstring for why the naive count undercounts real occupancy.
+
+    J1: `_recheck_repo_identity_before_respawn` re-verifies repo-identity immediately before
+    respawning any loop_id here - see that helper's docstring for why the once-at-startup
+    `verify_repo_identity_at_startup` check alone is insufficient for a loop whose lease was
+    still alive at startup and only expires later, mid-poll-loop.
     """
     available = _available_worker_slots(runtime, project_dir)
     respawned: list[str] = []
+    expected_repo_identity_hash: str | None = None
     for loop_id in active_loop_ids(project_dir):
         if available <= 0:
             break
@@ -637,6 +697,12 @@ def respawn_orphaned_active_loops(runtime: SchedulerRuntime, project_dir: str) -
         if loop_id in runtime.foreign_lease_cooldown_until:
             continue
         if not _is_lease_expired(loop_id, project_dir):
+            continue
+        if expected_repo_identity_hash is None:
+            expected_repo_identity_hash = wm.resolve_repo_identity_hash(project_dir)
+        if not _recheck_repo_identity_before_respawn(
+            loop_id, project_dir, expected_repo_identity_hash, runtime
+        ):
             continue
         runtime.workers[loop_id] = spawn_worker(loop_id, project_dir)
         respawned.append(loop_id)
@@ -772,9 +838,15 @@ def reap_finished_workers(runtime: SchedulerRuntime, project_dir: str) -> list[s
     once slots run out is simply not restarted this cycle (its `state.json` status stays
     non-terminal, so it is picked up again - once its lease actually expires - by
     `respawn_orphaned_active_loops` on a later cycle instead of being lost).
+
+    J1: `_recheck_repo_identity_before_respawn` re-verifies repo-identity immediately before
+    restarting any crash-restart candidate below - see that helper's docstring for why the
+    once-at-startup `verify_repo_identity_at_startup` check alone is insufficient here too.
+    `restart_candidates` carries each candidate's already-loaded `state` along with its
+    `loop_id` so the recheck does not need to reload state.json a second time.
     """
     finished = [loop_id for loop_id, proc in runtime.workers.items() if proc.poll() is not None]
-    restart_candidates: list[str] = []
+    restart_candidates: list[tuple[str, lc.LoopState]] = []
     for loop_id in finished:
         proc = runtime.workers.pop(loop_id)
         if proc.returncode == 0 or loop_id in runtime.stopped_loop_ids:
@@ -791,13 +863,20 @@ def reap_finished_workers(runtime: SchedulerRuntime, project_dir: str) -> list[s
         state = _try_load_state(lc.loop_dir(loop_id, project_dir), project_dir)
         if state is None or not should_restart(state.status):
             continue
-        restart_candidates.append(loop_id)
+        restart_candidates.append((loop_id, state))
     respawned: list[str] = []
     if restart_candidates:
         available = _available_worker_slots(runtime, project_dir)
-        for loop_id in restart_candidates:
+        expected_repo_identity_hash: str | None = None
+        for loop_id, state in restart_candidates:
             if available <= 0:
                 break
+            if expected_repo_identity_hash is None:
+                expected_repo_identity_hash = wm.resolve_repo_identity_hash(project_dir)
+            if not _recheck_repo_identity_before_respawn(
+                loop_id, project_dir, expected_repo_identity_hash, runtime, state=state
+            ):
+                continue
             runtime.workers[loop_id] = spawn_worker(loop_id, project_dir)
             respawned.append(loop_id)
             available -= 1
@@ -1116,6 +1195,17 @@ def render_launchd_plist(
     The `Label` is suffixed with a hash of `project_dir` (#H16, see `_project_slug`) so
     multiple projects never collide on one fixed launchd job identifier.
 
+    J6: the `Label` is additionally suffixed with `definition_id` whenever it differs from
+    `DEFAULT_DEFINITION_ID`, mirroring J4's cron-guard fix. `launchd.plist(5)` requires `Label`
+    to uniquely identify the job to launchd; without this, generating plists for both the
+    default loop and a non-default `--definition` in the same project would produce two plists
+    with identical labels (only `ProgramArguments` differs), and loading the second collides
+    with the first - one definition's label queue silently never gets scheduled. The raw
+    `definition_id` (not a hash/slug) is used as the suffix, same as it already appears
+    verbatim in `--definition` within `ProgramArguments` below - it needs no extra
+    sanitization beyond what this function already applies to it (the `_reject_launchd_unsafe_
+    chars` control-character check above, plus `xml_escape` on the assembled `label` itself).
+
     The `ProgramArguments` command is wrapped in `/bin/sh -c 'mkdir -p ... && exec ...'` (#H17):
     `.claude/loop/` may not exist yet on a fresh checkout, and launchd's `StandardOutPath` /
     `StandardErrorPath` redirection fails outright (job never starts) if its parent directory
@@ -1156,6 +1246,8 @@ def render_launchd_plist(
     definition_args = ""
     if definition_id != DEFAULT_DEFINITION_ID:
         definition_args = f" --definition {shlex.quote(definition_id)}"
+        # J6: keep the label unique per non-default definition too - see docstring above.
+        label += f".{definition_id}"
     exec_command = (
         f"mkdir -p {shlex.quote(log_dir)} && exec {shlex.quote(python)} {shlex.quote(script)} "
         f"--project {shlex.quote(project)}{definition_args}"
@@ -1224,6 +1316,15 @@ def render_cron_entry(
     any other project's already-running scheduler as "this project's scheduler is alive" and
     skip starting a new one for the current project entirely.
 
+    J4: when `definition_id` differs from `DEFAULT_DEFINITION_ID`, the pgrep pattern also
+    includes `--definition <definition_id>` (mirroring the `definition_args` already appended
+    to the fallback command). Without this, a project running multiple concurrent schedulers
+    for different non-default definitions (or one non-default definition alongside the
+    default) would have every non-default cron entry's liveness guard match on *any* already-
+    running scheduler for that project - including one for a completely different definition -
+    and skip starting the requested definition's own scheduler, leaving its label queue never
+    processed.
+
     `script`/`project` are `re.escape`-d before being embedded in the `pgrep -f` pattern
     (SM2): `pgrep -f` interprets its argument as a POSIX extended regular expression, not a
     literal string, so an unescaped path containing ERE metacharacters (`( ) + [ ] * ? |`
@@ -1288,6 +1389,11 @@ def render_cron_entry(
     # all (e.g. an unbalanced `(`) or match something other than the literal path intended.
     # `re.escape` backslash-escapes those metacharacters so pgrep matches them literally.
     pgrep_pattern = f"{re.escape(script)} --project {re.escape(project)}"
+    # J4: include the definition id in the liveness pattern whenever it is part of the actual
+    # command (i.e. non-default), so this guard cannot mistake a running scheduler for a
+    # *different* definition as proof this definition's own scheduler is already alive.
+    if definition_id != DEFAULT_DEFINITION_ID:
+        pgrep_pattern += f" --definition {re.escape(definition_id)}"
     line = (
         f"*/5 * * * * mkdir -p {shlex.quote(log_dir)} && "
         f"pgrep -f {shlex.quote(pgrep_pattern)} || "

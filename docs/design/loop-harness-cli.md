@@ -1033,6 +1033,19 @@ def spawn_worker(loop_id: str, project_root: Path) -> subprocess.Popen[bytes]:
   自体が消失している、(c) status が既に terminal（`failed`/`stopped`/`passed`）に遷移済み、
   (d) `state_version` が事前読み込み時点から変化している、(e) repo-identity 不一致が既に解消
   している。再検証後の値を使って初めて journal/state への書き込みを行う。
+- **lease 生存中は安全停止を保留する（SN8）**: `_safe_stop_repo_identity_mismatch` は自身で lease
+  を保有していないため、lease が生存中に安全停止を書き込むと、生存中の（他ホスト/他プロセスの）
+  worker が次の in-flight persist で無条件に上書きしてしまい、安全停止が黙って無効化される。lease
+  が生存中の不一致 loop は書き込みをスキップし、`stopped` にも `stopped_loop_ids` にも含めない
+  （警告ログのみ）。次回、lease が実際に失効した時点で再評価される想定だった。
+- **respawn 経路での再照合（6巡目レビュー指摘反映。J1）**: 起動時 1 回のみの照合という上記の設計
+  では、lease 生存中で保留された不一致 loop がその後 lease 失効した場合に、誰も repo-identity を
+  再チェックしないまま 3.3 節の 3 経路（`respawn_orphaned_active_loops`・foreign-lease cooldown
+  経過後の再起動・異常終了の即時再起動）のいずれかが worker を respawn してしまう欠陥があった。
+  各経路は実際に worker を spawn する直前に `_recheck_repo_identity_before_respawn`
+  （`_safe_stop_repo_identity_mismatch` を再利用）で repo-identity を再照合するようになった。
+  再照合の結果、lease が失効していれば安全停止（`stopped_loop_ids` へ追加）に回し、lease がまだ
+  生存中であれば起動時と同様に保留して当該サイクルでは何もしない（次サイクルで再評価）。
 
 ### 3.5 cron / launchd 登録例
 
@@ -1101,6 +1114,21 @@ cron 側は「落ちていたら起動し直す」監視役に留める）:
   パス/`--definition` 値のいずれかにこれらが含まれる場合、cron と同様に `ValueError` で
   fail-closed する（LF 単体は XML 1.0 上合法でパース時も変化しないため、cron 側と異なり拒否
   **しない**）。
+- **cron liveness guard への definition id 反映（6巡目レビュー指摘反映。J4）**: 非デフォルトの
+  `--definition` 向け cron エントリを生成する際、`pgrep -f` のパターンにこれまで definition id が
+  含まれていなかった。同一プロジェクトで別の（あるいはデフォルトの）loop definition 用の
+  scheduler が既に起動していると、このガードがそれを「自分の definition の scheduler は既に
+  生存している」と誤認し、当該 definition 用の scheduler を一切起動しないまま cron エントリが
+  無限にスキップされてしまう。`definition_id` が `DEFAULT_DEFINITION_ID` と異なる場合、
+  `re.escape` 済みの `--definition <definition_id>` を `script`/`project` と同様にパターンへ含める
+  ことで解消した。
+- **launchd label への definition id 反映（6巡目レビュー指摘反映。J6）**: 同一プロジェクトで
+  デフォルトの loop と非デフォルトの `--definition` の両方の plist を生成すると、
+  `ProgramArguments` は異なるが `Label` は（#H16 のプロジェクトハッシュ suffix のみで）同一になって
+  いた。`launchd.plist(5)` は `Label` がジョブを一意に識別すると規定しており、2 つ目の plist を
+  ロードすると 1 つ目と衝突し、片方の definition の label キューが永久にスケジュールされない。
+  `definition_id` が `DEFAULT_DEFINITION_ID` と異なる場合、`Label` に `.{definition_id}` を追加の
+  suffix として含めることで解消した。
 
 ---
 

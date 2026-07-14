@@ -18,11 +18,13 @@ import argparse
 import dataclasses
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
 import threading
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -1032,7 +1034,9 @@ class LoopDriver:
         metadata: dict[str, Any] = {}
         if has_llm_review:
             pass_criteria = lc.checker_pass_criteria(state, self.project_dir)
-            reviewers = _select_reviewers(self.project_dir, state)
+            reviewers = _select_reviewers(
+                params["llm_review"], state.worktree_path, self._pre_maker_head
+            )
             llm_results = self._run_llm_reviewers(state, action_id, reviewers)
             llm_review = _combine_llm_results(llm_results, pass_criteria)
             results.append(llm_review)
@@ -1160,11 +1164,24 @@ class LoopDriver:
             name,
             json.dumps(lc.check_result_to_dict(check_result), ensure_ascii=False),
         )
+        # code J5: redact secret-like text in each finding's summary *before* computing the
+        # llm_review signature (dedup key). `save_artifact` above already redacts the raw
+        # artifact on disk, but `check_result.findings` here is still the unredacted `claude -p`
+        # output. `_run_checker`'s later `lc.redact_payload(...)` call redacts the sealed
+        # `check_result.json` payload for storage, and `validate_implementation_checker_result`
+        # recomputes the signature from those *redacted* findings on read-back. Computing the
+        # signature here from unredacted findings would produce a value that mismatches that
+        # recomputation, tripping "sealed checker LLM signature is inconsistent" and forcing a
+        # restart instead of surfacing the finding.
+        redacted_findings = [
+            dataclasses.replace(finding, summary=lc.redact(finding.summary))
+            for finding in check_result.findings
+        ]
         return lc.CheckResult(
             passed=check_result.passed,
             layer="llm_review",
-            signature=lc.compute_llm_review_signature(check_result.findings),
-            findings=check_result.findings,
+            signature=lc.compute_llm_review_signature(redacted_findings),
+            findings=redacted_findings,
             raw_artifact_path=path,
             infrastructure_failure=check_result.infrastructure_failure,
         )
@@ -2154,14 +2171,113 @@ def _apply_wait_external_review_param_overrides(
     return dataclasses.replace(config, **overrides)
 
 
-def _select_reviewers(project_dir: str, state: lc.LoopState) -> list[str]:
-    """Select up to MAX_LLM_REVIEWERS reviewers, always including code-reviewer first."""
+# code J3: mirrors `.claude/rules/skill-review-policy.md`'s "パスパターンによる追加選定"
+# table. Order matters: `_skill_review_policy_reviewers` walks this in order and stops at the
+# first match, matching the policy's stated priority (security > code(baseline) > performance
+# > ux) for the one extra reviewer slot MAX_LLM_REVIEWERS leaves beyond the baseline.
+_REVIEWER_PATH_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(r"(?:^|/)packages/core/|(?:^|/)packages/[^/]+/hooks/"),
+        "architecture-reviewer",
+    ),
+    (
+        re.compile(
+            r"auth|login|session|token|password|secret|permission",
+            re.IGNORECASE,
+        ),
+        "security-reviewer",
+    ),
+    (
+        re.compile(r"(?:^|/)(?:api|routes|endpoints|graphql)/|handler", re.IGNORECASE),
+        "security-reviewer",
+    ),
+    (
+        re.compile(r"(?:^|/)db/|migration|schema|model|prisma|drizzle", re.IGNORECASE),
+        "performance-reviewer",
+    ),
+    (
+        re.compile(r"(?:^|/)(?:components|pages|views|ui|styles)/|\.css(?:$|[?#])", re.IGNORECASE),
+        "ux-reviewer",
+    ),
+    (
+        re.compile(r"(?:^|/)config/|settings|\.env|docker|(?:^|/)infra/|terraform", re.IGNORECASE),
+        "security-reviewer",
+    ),
+)
+_REVIEWER_PRIORITY: tuple[str, ...] = (
+    "security-reviewer",
+    "architecture-reviewer",
+    "performance-reviewer",
+    "ux-reviewer",
+)
+
+
+def _skill_review_policy_reviewers(changed_paths: Sequence[str]) -> list[str]:
+    """Select up to MAX_LLM_REVIEWERS reviewers per skill-review-policy's path-pattern table.
+
+    `code-reviewer` is always the baseline (first element). At most one additional reviewer is
+    added: the highest-`_REVIEWER_PRIORITY` reviewer whose pattern matches any changed path.
+    Changed paths matching only `test`/`spec`/`docs`/`*.md` patterns add nothing, per the
+    policy's "（追加なし）" / "レビュー不要" rows.
+    """
+    matched: set[str] = set()
+    for path in changed_paths:
+        for pattern, reviewer in _REVIEWER_PATH_RULES:
+            if pattern.search(path):
+                matched.add(reviewer)
     reviewers = ["code-reviewer"]
-    # Path-pattern based additional reviewer selection is intentionally deferred to a
-    # follow-up (see final report): a single fixed baseline reviewer keeps run_checker's
-    # sealed artifact contract exercisable end-to-end without depending on
-    # skill-review-policy's path matching, which has no importable Python API today.
+    for reviewer in _REVIEWER_PRIORITY:
+        if reviewer in matched:
+            reviewers.append(reviewer)
+            break
     return reviewers[:MAX_LLM_REVIEWERS]
+
+
+def _changed_paths_since(worktree_path: str, base_sha: str | None) -> list[str]:
+    """Return changed file paths for the Maker's diff (code H10's same base_sha convention).
+
+    Best-effort: any git failure (missing base, detached scratch worktree, timeout) degrades to
+    an empty list rather than raising, so a reviewer-selection hiccup never blocks run_checker --
+    it just leaves the additional-reviewer slot unfilled for this action.
+    """
+    diff_range = f"{base_sha}..HEAD" if base_sha else None
+    args = ["git", *lds.hardened_git_config_args(), "diff", "--name-only"]
+    args += [diff_range] if diff_range else []
+    try:
+        completed = subprocess.run(
+            args,
+            cwd=worktree_path,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if completed.returncode != 0:
+        return []
+    return [line for line in completed.stdout.splitlines() if line]
+
+
+def _select_reviewers(
+    llm_review_config: dict[str, Any], worktree_path: str, base_sha: str | None
+) -> list[str]:
+    """Select up to MAX_LLM_REVIEWERS reviewers per the phase's `checker.llm_review.selection`.
+
+    code J3: previously ignored `selection` entirely and always returned only `code-reviewer`,
+    silently downgrading loop definitions that request `selection: skill-review-policy` (e.g.
+    the packaged issue-loop) to a single reviewer -- missing Critical/High findings in the
+    domains skill-review-policy's path-pattern table would otherwise route to a specialist
+    reviewer. An unrecognized `selection` value is now rejected (`DefinitionValidationError`)
+    rather than silently downgraded, per review round 6 J3's explicit ask.
+    """
+    selection = llm_review_config.get("selection")
+    if selection != "skill-review-policy":
+        raise ld.DefinitionValidationError(
+            f"checker.llm_review.selection must be 'skill-review-policy', got {selection!r}"
+        )
+    changed_paths = _changed_paths_since(worktree_path, base_sha)
+    return _skill_review_policy_reviewers(changed_paths)
 
 
 def _combine_llm_results(

@@ -1421,6 +1421,133 @@ def test_verify_repo_identity_at_startup_stops_once_lease_expires(
 
 
 # --------------------------------------------------------------------------------------------
+# respawn paths must recheck repo-identity before respawning (J1)
+#
+# `verify_repo_identity_at_startup` only runs once, at scheduler startup. SN8 deliberately
+# leaves a mismatched loop whose lease was still alive at that moment neither stopped nor
+# tracked, so it is only re-evaluated once its lease actually expires. Each of the three
+# respawn paths below must perform that re-evaluation itself before spawning a worker for the
+# loop_id, or it would spawn `loop_driver.py` for a loop belonging to a different repository.
+# --------------------------------------------------------------------------------------------
+
+
+def test_respawn_orphaned_active_loops_safety_stops_instead_of_respawning_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A mismatched loop with no live lease (lease already expired, or absent entirely) must
+    be safety-stopped here, not respawned, even though it is otherwise eligible."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    loop_id = "deadbeef-issue-1"
+    _seed_state(tmp_path, loop_id, status="running", repo_identity_hash="deadbeef")
+    runtime = scheduler.SchedulerRuntime()
+
+    monkeypatch.setattr(lds, "notify_macos", lambda title, message: True)
+    monkeypatch.setattr(scheduler, "lds", lds)
+
+    def _fail_spawn(lid: str, project: str) -> None:
+        raise AssertionError("must not respawn a repo-identity-mismatched loop")
+
+    monkeypatch.setattr(scheduler, "spawn_worker", _fail_spawn)
+
+    result = scheduler.respawn_orphaned_active_loops(runtime, project_dir)
+
+    assert result == []
+    assert loop_id not in runtime.workers
+    assert loop_id in runtime.stopped_loop_ids
+    state = lc.load_state(loop_id, project_dir)
+    assert state.status == "stopped"
+    assert state.stop_reason == "repo_identity_mismatch"
+
+
+def test_respawn_expired_cooldowns_safety_stops_instead_of_respawning_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A repo-identity-mismatched loop must not be respawned just because its foreign-lease
+    cooldown elapsed - exercised via `reap_finished_workers`, which delegates to
+    `_respawn_expired_cooldowns` once no worker needs reaping."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    loop_id = "deadbeef-issue-1"
+    _seed_state(tmp_path, loop_id, status="running", repo_identity_hash="deadbeef")
+    runtime = scheduler.SchedulerRuntime(foreign_lease_cooldown_until={loop_id: 500.0})
+    monkeypatch.setattr(scheduler.time, "monotonic", lambda: 1000.0)  # cooldown already elapsed
+
+    monkeypatch.setattr(lds, "notify_macos", lambda title, message: True)
+    monkeypatch.setattr(scheduler, "lds", lds)
+
+    def _fail_spawn(lid: str, project: str) -> None:
+        raise AssertionError("must not respawn a repo-identity-mismatched loop")
+
+    monkeypatch.setattr(scheduler, "spawn_worker", _fail_spawn)
+
+    result = scheduler.reap_finished_workers(runtime, project_dir)
+
+    assert result == []
+    assert loop_id not in runtime.workers
+    assert loop_id not in runtime.foreign_lease_cooldown_until
+    state = lc.load_state(loop_id, project_dir)
+    assert state.status == "stopped"
+    assert state.stop_reason == "repo_identity_mismatch"
+
+
+def test_reap_finished_workers_safety_stops_instead_of_crash_restarting_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An abnormal-exit crash-restart candidate (RH4's immediate-restart branch) must also be
+    rechecked for repo-identity before being restarted."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    loop_id = "deadbeef-issue-1"
+    _seed_state(tmp_path, loop_id, status="running", repo_identity_hash="deadbeef")
+    runtime = scheduler.SchedulerRuntime(workers={loop_id: _FakePopen(returncode=1)})
+
+    monkeypatch.setattr(lds, "notify_macos", lambda title, message: True)
+    monkeypatch.setattr(scheduler, "lds", lds)
+
+    def _fail_spawn(lid: str, project: str) -> None:
+        raise AssertionError("must not respawn a repo-identity-mismatched loop")
+
+    monkeypatch.setattr(scheduler, "spawn_worker", _fail_spawn)
+
+    result = scheduler.reap_finished_workers(runtime, project_dir)
+
+    assert result == []
+    assert loop_id not in runtime.workers
+    state = lc.load_state(loop_id, project_dir)
+    assert state.status == "stopped"
+    assert state.stop_reason == "repo_identity_mismatch"
+
+
+def test_reap_finished_workers_defers_crash_restart_when_mismatch_lease_alive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the mismatch is detected but the loop's lease is still alive (e.g. another process
+    re-acquired it concurrently), neither respawn nor safety-stop happens this cycle - deferred
+    to a later cycle, mirroring SN8's own deferral in `verify_repo_identity_at_startup`."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    loop_id = "deadbeef-issue-1"
+    _seed_state(tmp_path, loop_id, status="running", repo_identity_hash="deadbeef")
+    lc.acquire_lock(loop_id, project_dir, "someone-else", 300)
+    runtime = scheduler.SchedulerRuntime(workers={loop_id: _FakePopen(returncode=1)})
+
+    def _fail_spawn(lid: str, project: str) -> None:
+        raise AssertionError("must not respawn a repo-identity-mismatched loop")
+
+    monkeypatch.setattr(scheduler, "spawn_worker", _fail_spawn)
+
+    result = scheduler.reap_finished_workers(runtime, project_dir)
+
+    assert result == []
+    assert loop_id not in runtime.workers
+    assert loop_id not in runtime.stopped_loop_ids
+    state = lc.load_state(loop_id, project_dir)
+    assert state.status == "running"
+    assert state.stop_reason is None
+
+
+# --------------------------------------------------------------------------------------------
 # _safe_stop_repo_identity_mismatch: stale pre-coord-lock read must be re-validated (RH1)
 # --------------------------------------------------------------------------------------------
 
@@ -1743,6 +1870,79 @@ def test_render_cron_entry_pgrep_pattern_differs_across_projects(tmp_path: Path)
         return entry[start:end]
 
     assert _pgrep_arg(entry_a) != _pgrep_arg(entry_b)
+
+
+# --------------------------------------------------------------------------------------------
+# definition id in cron pgrep guard / launchd label uniqueness (J4/J6)
+# --------------------------------------------------------------------------------------------
+
+
+def test_render_cron_entry_pgrep_pattern_includes_definition_id_for_non_default(
+    tmp_path: Path,
+) -> None:
+    """J4: without the definition id in the pgrep pattern, an already-running scheduler for a
+    *different* loop definition in the same project is mistaken for "this definition's
+    scheduler is already alive", and the cron entry never starts the requested definition's
+    own scheduler."""
+    entry = scheduler.render_cron_entry(str(tmp_path), definition_id="custom-loop")
+    pgrep_index = entry.index("pgrep -f ")
+    pgrep_arg_end = entry.index(" || ", pgrep_index)
+    pgrep_arg = entry[pgrep_index + len("pgrep -f ") : pgrep_arg_end]
+    assert "--definition" in pgrep_arg
+    # SM2: embedded `re.escape`-d, mirroring `script`/`project` above (a hyphen is escaped too).
+    assert re.escape("custom-loop") in pgrep_arg
+
+
+def test_render_cron_entry_pgrep_pattern_omits_definition_id_for_default(
+    tmp_path: Path,
+) -> None:
+    entry = scheduler.render_cron_entry(str(tmp_path))
+    pgrep_index = entry.index("pgrep -f ")
+    pgrep_arg_end = entry.index(" || ", pgrep_index)
+    pgrep_arg = entry[pgrep_index + len("pgrep -f ") : pgrep_arg_end]
+    assert "--definition" not in pgrep_arg
+
+
+def test_render_cron_entry_pgrep_pattern_differs_across_definitions(tmp_path: Path) -> None:
+    """J4: two definitions in the same project must not collide on the same liveness guard,
+    or a running scheduler for one definition would block the other's cron entry from ever
+    starting its own scheduler."""
+    entry_default = scheduler.render_cron_entry(str(tmp_path))
+    entry_custom = scheduler.render_cron_entry(str(tmp_path), definition_id="custom-loop")
+
+    def _pgrep_arg(entry: str) -> str:
+        start = entry.index("pgrep -f ")
+        end = entry.index(" || ", start)
+        return entry[start:end]
+
+    assert _pgrep_arg(entry_default) != _pgrep_arg(entry_custom)
+
+
+def _launchd_label(rendered_plist: str) -> str:
+    start = rendered_plist.index("<key>Label</key>")
+    return rendered_plist[start : start + 200].split("<string>")[1].split("</string>")[0]
+
+
+def test_render_launchd_plist_label_includes_definition_id_for_non_default(
+    tmp_path: Path,
+) -> None:
+    """J6: without the definition id in the label, generating plists for both the default
+    loop and a non-default `--definition` in the same project produces two plists with an
+    identical `Label`. `launchd.plist(5)` requires `Label` to uniquely identify the job to
+    launchd, so loading the second collides with the first."""
+    plist = scheduler.render_launchd_plist(str(tmp_path), definition_id="custom-loop")
+    assert _launchd_label(plist).endswith(".custom-loop")
+
+
+def test_render_launchd_plist_label_omits_definition_id_for_default(tmp_path: Path) -> None:
+    plist = scheduler.render_launchd_plist(str(tmp_path))
+    assert "custom-loop" not in _launchd_label(plist)
+
+
+def test_render_launchd_plist_label_differs_across_definitions(tmp_path: Path) -> None:
+    plist_default = scheduler.render_launchd_plist(str(tmp_path))
+    plist_custom = scheduler.render_launchd_plist(str(tmp_path), definition_id="custom-loop")
+    assert _launchd_label(plist_default) != _launchd_label(plist_custom)
 
 
 # --------------------------------------------------------------------------------------------

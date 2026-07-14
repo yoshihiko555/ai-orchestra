@@ -3422,7 +3422,7 @@ def test_run_checker_marks_infrastructure_failure_when_llm_reviewer_errors(
     )
     params = {
         "mechanical": {"commands": ["pytest -q"]},
-        "llm_review": {"baseline": "code-reviewer"},
+        "llm_review": {"baseline": "code-reviewer", "selection": "skill-review-policy"},
     }
     payload = d._run_checker(proposal, state, params)
 
@@ -3481,7 +3481,7 @@ def test_run_checker_writes_nothing_when_lease_lost_during_llm_review(
     )
     params = {
         "mechanical": {"commands": ["pytest -q"]},
-        "llm_review": {"baseline": "code-reviewer"},
+        "llm_review": {"baseline": "code-reviewer", "selection": "skill-review-policy"},
     }
     payload = d._run_checker(proposal, state, params)
 
@@ -3526,7 +3526,7 @@ def test_run_checker_passes_when_mechanical_and_llm_review_both_pass(
     )
     params = {
         "mechanical": {"commands": ["pytest -q"]},
-        "llm_review": {"baseline": "code-reviewer"},
+        "llm_review": {"baseline": "code-reviewer", "selection": "skill-review-policy"},
     }
     payload = d._run_checker(proposal, state, params)
     assert payload["passed"] is True
@@ -5242,6 +5242,226 @@ def test_run_one_llm_reviewer_threads_pre_maker_head_into_the_diff_instruction(
     d._run_one_llm_reviewer(state, "act-000054", "code-reviewer")
 
     assert "git diff base-sha-123..HEAD" in captured["cmd"][-1]
+
+
+def test_run_one_llm_reviewer_redacts_secret_before_computing_signature(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """code J5: a Critical/High finding summary containing a secret-like value must be
+    redacted *before* `signature` is computed, so the signature `_run_checker` seals matches
+    what `validate_implementation_checker_result` recomputes from the already-redacted
+    findings on read-back. Computing the signature from the unredacted summary would produce
+    a value that mismatches that recomputation and reject the checker result as
+    inconsistent -- surfacing as a spurious restart instead of the finding."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.worktree_path = project_dir
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    leaked_summary = "hardcoded credential sk-ant-deadbeefdeadbeefdeadbeefdeadbeef in config.py"
+    reviewer_payload = {
+        "passed": False,
+        "layer": "llm_review",
+        "signature": None,
+        "findings": [
+            {
+                "severity": "critical",
+                "summary": leaked_summary,
+                "source": "code-reviewer",
+                "path": "config.py",
+                "line": 3,
+            }
+        ],
+        "raw_artifact_path": "",
+        "infrastructure_failure": False,
+    }
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(
+        d,
+        "_run_child",
+        lambda *a, **k: subprocess.CompletedProcess(
+            [], 0, json.dumps({"result": reviewer_payload}), ""
+        ),
+    )
+
+    result = d._run_one_llm_reviewer(state, "act-000055", "code-reviewer")
+
+    assert "[REDACTED]" in result.findings[0].summary
+    assert "sk-ant-" not in result.findings[0].summary
+    # The sealed signature must be computed from the *redacted* findings, matching what
+    # `validate_implementation_checker_result` recomputes after `redact_payload()` runs.
+    assert result.signature == lc.compute_llm_review_signature(result.findings)
+
+
+# --------------------------------------------------------------------------------------------
+# loop_driver: implementation LLM-review reviewer selection follows skill-review-policy
+# (code J3)
+# --------------------------------------------------------------------------------------------
+
+
+def test_select_reviewers_rejects_unsupported_selection_value(tmp_path: Path) -> None:
+    """code J3: an unrecognized `checker.llm_review.selection` must be rejected outright
+    rather than silently downgraded to a single fixed reviewer."""
+    with pytest.raises(ld.DefinitionValidationError):
+        driver._select_reviewers({"selection": "some-other-mode"}, str(tmp_path), None)
+
+
+def test_select_reviewers_rejects_missing_selection_value(tmp_path: Path) -> None:
+    """code J3: a loop definition that omits `selection` entirely must not silently fall
+    back to the baseline-only reviewer either."""
+    with pytest.raises(ld.DefinitionValidationError):
+        driver._select_reviewers({"baseline": "code-reviewer"}, str(tmp_path), None)
+
+
+def test_select_reviewers_returns_baseline_only_when_nothing_changed(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+
+    reviewers = driver._select_reviewers({"selection": "skill-review-policy"}, str(repo), None)
+
+    assert reviewers == ["code-reviewer"]
+
+
+def test_select_reviewers_adds_security_reviewer_for_auth_path_changes(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    base_sha = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    (repo / "auth_handler.py").write_text("def login(): ...\n", encoding="utf-8")
+    _git(["add", "auth_handler.py"], repo)
+    _git(["commit", "-m", "add auth handler"], repo)
+
+    reviewers = driver._select_reviewers({"selection": "skill-review-policy"}, str(repo), base_sha)
+
+    assert reviewers == ["code-reviewer", "security-reviewer"]
+
+
+def test_select_reviewers_adds_ux_reviewer_for_component_path_changes(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    base_sha = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    (repo / "components").mkdir()
+    (repo / "components" / "Button.tsx").write_text("export const Button = () => null;\n")
+    _git(["add", "components/Button.tsx"], repo)
+    _git(["commit", "-m", "add button component"], repo)
+
+    reviewers = driver._select_reviewers({"selection": "skill-review-policy"}, str(repo), base_sha)
+
+    assert reviewers == ["code-reviewer", "ux-reviewer"]
+
+
+def test_select_reviewers_prioritizes_security_over_other_matches(tmp_path: Path) -> None:
+    """Priority order (security > architecture > performance > ux) caps the extra reviewer
+    slot at one pick even when multiple pattern categories match changed paths."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    base_sha = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    (repo / "components").mkdir()
+    (repo / "components" / "LoginForm.tsx").write_text("export const LoginForm = () => null;\n")
+    (repo / "auth_config.py").write_text("SECRET = 'x'\n", encoding="utf-8")
+    _git(["add", "-A"], repo)
+    _git(["commit", "-m", "add login form"], repo)
+
+    reviewers = driver._select_reviewers({"selection": "skill-review-policy"}, str(repo), base_sha)
+
+    assert reviewers == ["code-reviewer", "security-reviewer"]
+    assert len(reviewers) <= driver.MAX_LLM_REVIEWERS
+
+
+def test_select_reviewers_adds_nothing_for_docs_only_changes(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    base_sha = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    (repo / "docs").mkdir()
+    (repo / "docs" / "guide.md").write_text("# guide\n", encoding="utf-8")
+    _git(["add", "docs/guide.md"], repo)
+    _git(["commit", "-m", "add docs"], repo)
+
+    reviewers = driver._select_reviewers({"selection": "skill-review-policy"}, str(repo), base_sha)
+
+    assert reviewers == ["code-reviewer"]
+
+
+def test_run_checker_records_selected_reviewer_in_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Integration: `_run_checker` must thread its selected reviewer list into both the
+    `metadata.reviewers` manifest and the reviewers actually invoked, not a hardcoded
+    baseline-only list."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.worktree_path = project_dir
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    base_sha = subprocess.run(
+        ["git", "-C", project_dir, "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    (Path(project_dir) / "auth_login.py").write_text("def login(): ...\n", encoding="utf-8")
+    _git(["add", "auth_login.py"], Path(project_dir))
+    _git(["commit", "-m", "add auth login"], Path(project_dir))
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    d._pre_maker_head = base_sha
+    monkeypatch.setattr(lc, "run_mechanical_checks", lambda *a, **k: [])
+    monkeypatch.setattr(lc, "checker_pass_criteria", lambda *a, **k: {"critical": 0, "high": 0})
+    invoked: list[str] = []
+
+    def passing_reviewer(_state: Any, _action_id: str, reviewer: str) -> lc.CheckResult:
+        invoked.append(reviewer)
+        return lc.CheckResult(
+            passed=True,
+            layer="llm_review",
+            signature=None,
+            findings=[],
+            raw_artifact_path="",
+            infrastructure_failure=False,
+        )
+
+    monkeypatch.setattr(d, "_run_one_llm_reviewer", passing_reviewer)
+    proposal = lc.ProposeResult(
+        action="run_checker",
+        action_id="act-000005",
+        state_version=state.state_version,
+        expected_phase="implementation",
+        phase="implementation",
+        iteration=1,
+        context={},
+    )
+    params = {
+        "mechanical": {"commands": ["pytest -q"]},
+        "llm_review": {"baseline": "code-reviewer", "selection": "skill-review-policy"},
+    }
+    payload = d._run_checker(proposal, state, params)
+
+    assert payload["metadata"]["reviewers"] == ["code-reviewer", "security-reviewer"]
+    assert invoked == ["code-reviewer", "security-reviewer"]
 
 
 # --------------------------------------------------------------------------------------------
