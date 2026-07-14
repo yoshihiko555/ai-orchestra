@@ -39,6 +39,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`reverse`: Python 3.12 でスキャンスクリプトが失敗する問題を修正**: Python 3.13 で追加された `pathlib` API への依存を除き、シンボリックリンクを辿らない既存挙動を維持したままサポート対象の Python 3.12 で実行できるようにした。
+
 - **`meta-harness`: Docker broker が Claude CLI の `?beta=true` を拒否する問題を修正**: 既知queryを保持して Anthropic API へ中継し、Docker backend の scenario 実行が正常に完走するようにした。
 
 - **`cli-tools.yaml` の旧 `gemini.enabled: false` が明示設定済みの `antigravity.enabled` を無条件に上書きしていた問題を修正**: 両キーが競合する場合は `antigravity.enabled` を優先するようにした。旧 `gemini.enabled: false` は `antigravity.enabled` が未設定の場合のみ後方互換フォールバックとして働く。base 設定が `antigravity.enabled` を既定で明示している通常の移行済みプロジェクトでも、`.local.yaml` の旧 `gemini.enabled: false` だけによる無効化が正しく機能するようにした。

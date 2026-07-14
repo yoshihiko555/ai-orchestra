@@ -19,6 +19,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from tests.module_loader import REPO_ROOT
 
 SCRIPTS_DIR = REPO_ROOT / "facets" / "scripts" / "reverse"
@@ -61,6 +63,29 @@ def test_collect_stats_reports_language_stats(tmp_path: Path) -> None:
     assert any(d["path"] == "sub" for d in data["by_directory"])
 
 
+def test_collect_stats_skips_symlinks(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "real.py").write_text("x = 1\n", encoding="utf-8")
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    outside_file = outside / "linked.py"
+    outside_file.write_text("y = 2\n", encoding="utf-8")
+    try:
+        (project / "linked.py").symlink_to(outside_file)
+        (project / "linked-dir").symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlink unsupported in this environment")
+
+    proc = _run(COLLECT_STATS, [str(project)])
+
+    assert proc.returncode == 0, proc.stderr
+    data = json.loads(proc.stdout)
+    assert data["total_files"] == 1
+    assert data["by_language"]["Python"]["files"] == 1
+
+
 def test_collect_stats_nonexistent_directory_exits_2(tmp_path: Path) -> None:
     missing = tmp_path / "does-not-exist"
 
@@ -83,6 +108,32 @@ def test_find_entrypoints_detects_pyproject_scripts(tmp_path: Path) -> None:
     assert data["by_language"]["Python"] == 1
     assert data["entrypoints"][0]["name"] == "foo"
     assert data["entrypoints"][0]["entry"] == "pkg.mod:main"
+
+
+def test_find_entrypoints_skips_symlinked_directories(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    package = project / "package"
+    package.mkdir()
+    (package / "pyproject.toml").write_text(
+        '[project.scripts]\nreal = "pkg.mod:main"\n', encoding="utf-8"
+    )
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "pyproject.toml").write_text(
+        '[project.scripts]\nlinked = "outside.mod:main"\n', encoding="utf-8"
+    )
+    try:
+        (project / "linked-package").symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlink unsupported in this environment")
+
+    proc = _run(FIND_ENTRYPOINTS, [str(project)])
+
+    assert proc.returncode == 0, proc.stderr
+    data = json.loads(proc.stdout)
+    assert [entry["name"] for entry in data["entrypoints"]] == ["real"]
 
 
 def test_find_entrypoints_nonexistent_directory_exits_2(tmp_path: Path) -> None:
@@ -267,6 +318,29 @@ def test_collect_todos_finds_tagged_comments(tmp_path: Path) -> None:
     assert data["count_by_tag"] == {"TODO": 1, "FIXME": 1}
     tags = {item["tag"] for item in data["items"]}
     assert tags == {"TODO", "FIXME"}
+
+
+def test_collect_todos_skips_symlinks(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "real.py").write_text("# TODO: include\n", encoding="utf-8")
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    outside_file = outside / "linked.py"
+    outside_file.write_text("# FIXME: exclude\n", encoding="utf-8")
+    try:
+        (project / "linked.py").symlink_to(outside_file)
+        (project / "linked-dir").symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlink unsupported in this environment")
+
+    proc = _run(COLLECT_TODOS, [str(project)])
+
+    assert proc.returncode == 0, proc.stderr
+    data = json.loads(proc.stdout)
+    assert data["total"] == 1
+    assert data["items"][0]["message"] == "include"
 
 
 def test_collect_todos_nonexistent_directory_exits_1(tmp_path: Path) -> None:
