@@ -25,6 +25,11 @@ from typing import Any
 DEFAULT_GH_TIMEOUT_SECONDS = 30
 REVIEW_THREADS_PAGE_SIZE = 50
 THREAD_COMMENTS_PAGE_SIZE = 50
+BODY_EXCERPT_CHARS = 200
+
+# Fallback marker used only when loop-harness's `pr_review_wait` module (which carries
+# the full, config-driven `auto_generated_markers` list) cannot be imported.
+FALLBACK_AUTO_GENERATED_MARKER = "<!-- This is an auto-generated comment"
 
 _LOOP_HARNESS_LIB = Path(__file__).resolve().parents[2] / "loop-harness" / "lib"
 
@@ -54,6 +59,7 @@ query($owner: String!, $name: String!, $number: Int!, $cursor: String = null) {{
               body
               url
               createdAt
+              replyTo {{ databaseId }}
             }}
           }}
         }}
@@ -299,6 +305,19 @@ def fetch_review_comments_raw(
     return {item["id"]: item for item in items if isinstance(item, dict) and "id" in item}
 
 
+def _reply_target_id(raw: dict[str, Any]) -> int | None:
+    """Resolve the top-level comment id a reply must target.
+
+    `POST /pulls/{n}/comments/{id}/replies` fails when `{id}` is itself a reply's id;
+    it must be the root comment's id. GraphQL `replyTo` links a reply to its root, so
+    when present we normalize to `replyTo.databaseId`; top-level comments fall back to
+    their own `databaseId`.
+    """
+    reply_to = raw.get("replyTo") or {}
+    reply_to_id = reply_to.get("databaseId")
+    return reply_to_id if reply_to_id is not None else raw.get("databaseId")
+
+
 def _normalize_comment(
     raw: dict[str, Any], prw_module: Any | None, config: Any | None
 ) -> dict[str, Any]:
@@ -306,6 +325,7 @@ def _normalize_comment(
     body = raw.get("body") or ""
     return {
         "comment_id": raw.get("databaseId"),
+        "reply_target_id": _reply_target_id(raw),
         "author": author.get("login"),
         "body": body,
         "url": raw.get("url"),
@@ -323,19 +343,25 @@ def _normalize_thread(
     origin_verified: bool,
 ) -> dict[str, Any]:
     raw_comments = thread.get("comments", {}).get("nodes", [])
-    comments = [
-        _normalize_comment(raw, prw_module, config)
-        for raw in raw_comments
-        if not origin_verified
-        or prw_module.verify_origin(
+    comments: list[dict[str, Any]] = []
+    has_non_bot_comments = False
+    for raw in raw_comments:
+        is_bot_origin = not origin_verified or prw_module.verify_origin(
             _raw_for_origin_check(raw, rest_comments_by_id), config.reviewer_allowlist
         )
-    ]
+        if is_bot_origin:
+            comments.append(_normalize_comment(raw, prw_module, config))
+        else:
+            # Origin check dropped a non-bot (e.g. human) comment from this thread; the
+            # thread mixes bot and non-bot commentary, so callers should not blindly
+            # resolve it based on the (bot-only) comments returned here.
+            has_non_bot_comments = True
     return {
         "thread_id": thread.get("id"),
         "is_outdated": bool(thread.get("isOutdated", False)),
         "path": thread.get("path"),
         "line": thread.get("line"),
+        "has_non_bot_comments": has_non_bot_comments,
         "comments": comments,
     }
 
@@ -353,6 +379,18 @@ def _normalize_issue_comment(
         "created_at": raw.get("created_at"),
         "severity": _classify_severity(body, prw_module, config),
     }
+
+
+def _is_auto_generated_issue_comment(body: str, prw_module: Any | None, config: Any | None) -> bool:
+    """Detect auto-generated bot summaries/boilerplate that aren't actionable review items.
+
+    Prefers loop-harness's `pr_review.auto_generated_markers` (covers rate-limit and
+    in-progress boilerplate too) when available; otherwise falls back to the single
+    marker every CodeRabbit auto-generated comment shares.
+    """
+    if prw_module is not None and config is not None:
+        return bool(prw_module._is_auto_generated_comment(body, config))
+    return FALLBACK_AUTO_GENERATED_MARKER in body
 
 
 def _build_fetch_result(
@@ -374,15 +412,23 @@ def _build_fetch_result(
     ]
     if origin_verified:
         unresolved = [thread for thread in unresolved if thread["comments"]]
-    bot_comments = [
-        _normalize_issue_comment(raw, prw_module, config)
+    origin_matched_issue_comments = [
+        raw
         for raw in issue_comments
         if not origin_verified or prw_module.verify_origin(raw, config.reviewer_allowlist)
     ]
+    bot_comments: list[dict[str, Any]] = []
+    skipped_issue_comments = 0
+    for raw in origin_matched_issue_comments:
+        if _is_auto_generated_issue_comment(raw.get("body") or "", prw_module, config):
+            skipped_issue_comments += 1
+            continue
+        bot_comments.append(_normalize_issue_comment(raw, prw_module, config))
     return {
         "pr_number": pr_number,
         "unresolved_threads": unresolved,
         "bot_issue_comments": bot_comments,
+        "skipped_issue_comments": skipped_issue_comments,
         "origin_verified": origin_verified,
     }
 
@@ -400,6 +446,10 @@ def fetch_review_threads(pr_number: int, project_dir: str, timeout: int) -> dict
         config = prw_module.load_pr_review_config(project_dir)
     except prw_module.ConfigError as exc:
         return _allowlist_error(exc)
+    except Exception as exc:  # noqa: BLE001 - convert any unexpected config-loading
+        # failure (e.g. malformed YAML in loop-harness.local.yaml) to the same JSON
+        # error contract instead of letting it crash as a raw traceback.
+        return {"error": "pr_review_config_invalid", "detail": str(exc)}
     # REST join: only needed to verify origin, so fetch it after the allowlist is
     # confirmed to exist. Keeps this to exactly one extra (paginated) gh call.
     rest_comments_by_id = fetch_review_comments_raw(owner, name, pr_number, timeout)
@@ -433,7 +483,9 @@ def reply_to_comment(
         path = f"repos/{owner}/{name}/issues/{pr_number}/comments"
     else:
         path = f"repos/{owner}/{name}/pulls/{pr_number}/comments/{comment_id}/replies"
-    cmd = ["gh", "api", path, "-f", f"body=@{body_file}"]
+    # `-F/--field` (not `-f/--raw-field`) is required so `@<file>` is expanded to the
+    # file's contents by `gh`; `-f` sends the literal string `body=@/tmp/...` as-is.
+    cmd = ["gh", "api", path, "-F", f"body=@{body_file}"]
     payload = _run_gh_json(cmd, timeout)
     payload = payload if isinstance(payload, dict) else {}
     return {
@@ -475,6 +527,27 @@ def cmd_detect(args: argparse.Namespace) -> int:
     return 0
 
 
+def _excerpt_comment(comment: dict[str, Any]) -> dict[str, Any]:
+    """Replace a comment's full `body` with a `body_excerpt` (first `BODY_EXCERPT_CHARS`)."""
+    excerpted = {k: v for k, v in comment.items() if k != "body"}
+    excerpted["body_excerpt"] = (comment.get("body") or "")[:BODY_EXCERPT_CHARS]
+    return excerpted
+
+
+def _summarize_fetch_result(result: dict[str, Any], output_path: str) -> dict[str, Any]:
+    """Build a stdout-safe summary: same shape as `result`, bodies truncated to excerpts."""
+    summary = dict(result)
+    if "unresolved_threads" in summary:
+        summary["unresolved_threads"] = [
+            {**thread, "comments": [_excerpt_comment(c) for c in thread.get("comments", [])]}
+            for thread in summary["unresolved_threads"]
+        ]
+    if "bot_issue_comments" in summary:
+        summary["bot_issue_comments"] = [_excerpt_comment(c) for c in summary["bot_issue_comments"]]
+    summary["full_output"] = output_path
+    return summary
+
+
 def cmd_fetch(args: argparse.Namespace) -> int:
     project_dir = args.project_dir or str(Path.cwd())
     try:
@@ -482,7 +555,11 @@ def cmd_fetch(args: argparse.Namespace) -> int:
     except GhCommandError as exc:
         print(json.dumps(_error_payload(exc), ensure_ascii=False))
         return 1
-    print(json.dumps(result, ensure_ascii=False))
+    if args.output:
+        Path(args.output).write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+        print(json.dumps(_summarize_fetch_result(result, args.output), ensure_ascii=False))
+    else:
+        print(json.dumps(result, ensure_ascii=False))
     return 2 if "error" in result else 0
 
 
@@ -535,6 +612,14 @@ def build_parser() -> argparse.ArgumentParser:
     fetch_parser.add_argument("--pr", type=int, required=True)
     fetch_parser.add_argument(
         "--project-dir", default=None, help="Project dir for loop-harness config (default: cwd)."
+    )
+    fetch_parser.add_argument(
+        "--output",
+        default=None,
+        help=(
+            "Write the full JSON result to this path; stdout gets a summary with "
+            "comment bodies truncated to body_excerpt instead."
+        ),
     )
 
     reply_parser = subparsers.add_parser("reply", help="Reply to a review or issue comment.")

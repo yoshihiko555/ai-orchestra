@@ -94,6 +94,7 @@ def _comment(
     *,
     typename: str = "Bot",
     author_association: str = "NONE",
+    reply_to_database_id: int | None = None,
 ) -> dict[str, Any]:
     return {
         "databaseId": database_id,
@@ -102,6 +103,9 @@ def _comment(
         "body": body,
         "url": f"https://github.com/o/r/pull/1#discussion_r{database_id}",
         "createdAt": "2026-07-14T00:00:00Z",
+        "replyTo": {"databaseId": reply_to_database_id}
+        if reply_to_database_id is not None
+        else None,
     }
 
 
@@ -526,6 +530,263 @@ def test_fetch_bot_allowlist_rest_join_miss_falls_back_to_pseudo(
     assert comment_authors == ["coderabbitai[bot]"]
 
 
+# --- fetch: reply_target_id normalization (Fix B) --------------------------------
+
+
+def test_fetch_normalizes_reply_target_id_to_root_comment(
+    monkeypatch: pytest.MonkeyPatch, loop_harness_project: Path
+) -> None:
+    """A reply's `reply_target_id` must be the root comment's id, not its own."""
+    thread = _thread(
+        "T1",
+        comments=[
+            _comment(1, "coderabbitai[bot]", "root comment"),
+            _comment(2, "coderabbitai[bot]", "reply comment", reply_to_database_id=1),
+        ],
+    )
+    fake = FakeRun(
+        [
+            (_is_repo_view, _ok({"nameWithOwner": "o/r"})),
+            (_is_graphql, _ok(_threads_page([thread]))),
+            (_is_issue_comments, _ok([])),
+            (_is_review_comments, _ok([])),
+        ]
+    )
+    monkeypatch.setattr(prt.subprocess, "run", fake)
+    result = prt.fetch_review_threads(1, str(loop_harness_project), 30)
+    by_id = {c["comment_id"]: c for c in result["unresolved_threads"][0]["comments"]}
+    assert by_id[1]["reply_target_id"] == 1
+    assert by_id[2]["reply_target_id"] == 1
+
+
+# --- fetch: mixed-origin thread protection flag (Fix C) ---------------------------
+
+
+def test_fetch_flags_thread_with_dropped_non_bot_comments(
+    monkeypatch: pytest.MonkeyPatch, loop_harness_project: Path
+) -> None:
+    thread = _thread(
+        "T1",
+        comments=[
+            _comment(1, "coderabbitai[bot]", "bot says hi"),
+            _comment(2, "human-reviewer", "human says hi", typename="User"),
+        ],
+    )
+    fake = FakeRun(
+        [
+            (_is_repo_view, _ok({"nameWithOwner": "o/r"})),
+            (_is_graphql, _ok(_threads_page([thread]))),
+            (_is_issue_comments, _ok([])),
+            (_is_review_comments, _ok([])),
+        ]
+    )
+    monkeypatch.setattr(prt.subprocess, "run", fake)
+    result = prt.fetch_review_threads(1, str(loop_harness_project), 30)
+    assert result["unresolved_threads"][0]["has_non_bot_comments"] is True
+
+
+def test_fetch_bot_only_thread_has_non_bot_comments_false(
+    monkeypatch: pytest.MonkeyPatch, loop_harness_project: Path
+) -> None:
+    thread = _thread("T1", comments=[_comment(1, "coderabbitai[bot]", "bot says hi")])
+    fake = FakeRun(
+        [
+            (_is_repo_view, _ok({"nameWithOwner": "o/r"})),
+            (_is_graphql, _ok(_threads_page([thread]))),
+            (_is_issue_comments, _ok([])),
+            (_is_review_comments, _ok([])),
+        ]
+    )
+    monkeypatch.setattr(prt.subprocess, "run", fake)
+    result = prt.fetch_review_threads(1, str(loop_harness_project), 30)
+    assert result["unresolved_threads"][0]["has_non_bot_comments"] is False
+
+
+# --- fetch: auto-generated issue comment filtering (Fix D) ------------------------
+
+
+def test_fetch_skips_auto_generated_issue_comments(
+    monkeypatch: pytest.MonkeyPatch, loop_harness_project: Path
+) -> None:
+    auto_generated_body = (
+        "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\nSummary text"
+    )
+    fake = FakeRun(
+        [
+            (_is_repo_view, _ok({"nameWithOwner": "o/r"})),
+            (_is_graphql, _ok(_threads_page([]))),
+            (
+                _is_issue_comments,
+                _ok(
+                    [
+                        _issue_comment(10, "coderabbitai[bot]", auto_generated_body),
+                        _issue_comment(11, "coderabbitai[bot]", "actionable finding"),
+                    ]
+                ),
+            ),
+            (_is_review_comments, _ok([])),
+        ]
+    )
+    monkeypatch.setattr(prt.subprocess, "run", fake)
+    result = prt.fetch_review_threads(1, str(loop_harness_project), 30)
+    assert [c["comment_id"] for c in result["bot_issue_comments"]] == [11]
+    assert result["skipped_issue_comments"] == 1
+
+
+def test_fetch_no_skipped_issue_comments_when_none_auto_generated(
+    monkeypatch: pytest.MonkeyPatch, loop_harness_project: Path
+) -> None:
+    fake = FakeRun(
+        [
+            (_is_repo_view, _ok({"nameWithOwner": "o/r"})),
+            (_is_graphql, _ok(_threads_page([]))),
+            (
+                _is_issue_comments,
+                _ok([_issue_comment(10, "coderabbitai[bot]", "actionable finding")]),
+            ),
+            (_is_review_comments, _ok([])),
+        ]
+    )
+    monkeypatch.setattr(prt.subprocess, "run", fake)
+    result = prt.fetch_review_threads(1, str(loop_harness_project), 30)
+    assert result["skipped_issue_comments"] == 0
+
+
+# --- fetch: config loading error contract (Fix E) ----------------------------------
+
+
+def test_fetch_config_load_unexpected_exception_returns_json_error(
+    monkeypatch: pytest.MonkeyPatch, loop_harness_project: Path
+) -> None:
+    """Non-`ConfigError` failures (e.g. malformed YAML) must still hit the JSON contract."""
+    prw_module = prt._import_pr_review_wait()
+    assert prw_module is not None
+
+    def _raise(_project_dir: str) -> None:
+        raise ValueError("boom: invalid YAML")
+
+    monkeypatch.setattr(prw_module, "load_pr_review_config", _raise)
+    fake = FakeRun(
+        [
+            (_is_repo_view, _ok({"nameWithOwner": "o/r"})),
+            (_is_graphql, _ok(_threads_page([]))),
+            (_is_issue_comments, _ok([])),
+        ]
+    )
+    monkeypatch.setattr(prt.subprocess, "run", fake)
+    result = prt.fetch_review_threads(1, str(loop_harness_project), 30)
+    assert result == {"error": "pr_review_config_invalid", "detail": "boom: invalid YAML"}
+
+
+def test_cmd_fetch_config_load_unexpected_exception_exits_2(
+    monkeypatch: pytest.MonkeyPatch,
+    loop_harness_project: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    prw_module = prt._import_pr_review_wait()
+    assert prw_module is not None
+
+    def _raise(_project_dir: str) -> None:
+        raise ValueError("boom: invalid YAML")
+
+    monkeypatch.setattr(prw_module, "load_pr_review_config", _raise)
+    fake = FakeRun(
+        [
+            (_is_repo_view, _ok({"nameWithOwner": "o/r"})),
+            (_is_graphql, _ok(_threads_page([]))),
+            (_is_issue_comments, _ok([])),
+        ]
+    )
+    monkeypatch.setattr(prt.subprocess, "run", fake)
+    args = prt.build_parser().parse_args(
+        ["fetch", "--pr", "1", "--project-dir", str(loop_harness_project)]
+    )
+    exit_code = prt.cmd_fetch(args)
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    payload = json.loads(captured.out)
+    assert payload["error"] == "pr_review_config_invalid"
+    assert captured.err == ""
+
+
+# --- fetch: --output writes full JSON, stdout gets a body-excerpt summary (Fix F) --
+
+
+def test_cmd_fetch_output_option_writes_full_json_and_stdout_excerpt(
+    monkeypatch: pytest.MonkeyPatch,
+    loop_harness_project: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    long_body = "x" * 300
+    thread = _thread("T1", comments=[_comment(1, "coderabbitai[bot]", long_body)])
+    fake = FakeRun(
+        [
+            (_is_repo_view, _ok({"nameWithOwner": "o/r"})),
+            (_is_graphql, _ok(_threads_page([thread]))),
+            (_is_issue_comments, _ok([_issue_comment(10, "coderabbitai[bot]", long_body)])),
+            (_is_review_comments, _ok([])),
+        ]
+    )
+    monkeypatch.setattr(prt.subprocess, "run", fake)
+    output_path = tmp_path / "full.json"
+    args = prt.build_parser().parse_args(
+        [
+            "fetch",
+            "--pr",
+            "1",
+            "--project-dir",
+            str(loop_harness_project),
+            "--output",
+            str(output_path),
+        ]
+    )
+    exit_code = prt.cmd_fetch(args)
+    captured = capsys.readouterr()
+    assert exit_code == 0
+
+    full = json.loads(output_path.read_text(encoding="utf-8"))
+    assert full["unresolved_threads"][0]["comments"][0]["body"] == long_body
+    assert full["bot_issue_comments"][0]["body"] == long_body
+
+    summary = json.loads(captured.out)
+    assert summary["full_output"] == str(output_path)
+    summary_comment = summary["unresolved_threads"][0]["comments"][0]
+    assert "body" not in summary_comment
+    assert summary_comment["body_excerpt"] == long_body[: prt.BODY_EXCERPT_CHARS]
+    assert len(summary_comment["body_excerpt"]) == prt.BODY_EXCERPT_CHARS
+    summary_issue_comment = summary["bot_issue_comments"][0]
+    assert "body" not in summary_issue_comment
+    assert summary_issue_comment["body_excerpt"] == long_body[: prt.BODY_EXCERPT_CHARS]
+
+
+def test_cmd_fetch_without_output_prints_full_body(
+    monkeypatch: pytest.MonkeyPatch,
+    loop_harness_project: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Backward compat: omitting `--output` still prints the full JSON to stdout."""
+    thread = _thread("T1", comments=[_comment(1, "coderabbitai[bot]", "full body text")])
+    fake = FakeRun(
+        [
+            (_is_repo_view, _ok({"nameWithOwner": "o/r"})),
+            (_is_graphql, _ok(_threads_page([thread]))),
+            (_is_issue_comments, _ok([])),
+            (_is_review_comments, _ok([])),
+        ]
+    )
+    monkeypatch.setattr(prt.subprocess, "run", fake)
+    args = prt.build_parser().parse_args(
+        ["fetch", "--pr", "1", "--project-dir", str(loop_harness_project)]
+    )
+    exit_code = prt.cmd_fetch(args)
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    payload = json.loads(captured.out)
+    assert payload["unresolved_threads"][0]["comments"][0]["body"] == "full body text"
+    assert "full_output" not in payload
+
+
 # --- reply ----------------------------------------------------------------------
 
 
@@ -539,6 +800,12 @@ def test_reply_posts_body_via_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     reply_cmd = fake.calls[0]
     assert reply_cmd[2] == "repos/o/r/pulls/1/comments/123/replies"
     assert f"body=@{body_file}" in reply_cmd
+    # EV-26 / Fix A: must use `-F` (--field), not `-f` (--raw-field). `-f` sends the
+    # literal string `body=@/tmp/...` without expanding the file's contents.
+    assert "-F" in reply_cmd
+    assert "-f" not in reply_cmd
+    body_flag_index = reply_cmd.index(f"body=@{body_file}")
+    assert reply_cmd[body_flag_index - 1] == "-F"
 
 
 def test_reply_issue_comment_uses_issue_comments_endpoint(
