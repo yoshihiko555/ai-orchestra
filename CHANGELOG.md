@@ -20,6 +20,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **`meta-harness`: Docker 隔離 scenario 実行を解禁**: `orchex meta evaluate` / `loop` の既定実行 backend を Docker に変更し、internal network の候補コンテナと run-scoped OAuth broker を使って実資格情報を候補へ渡さず scenario・oracle・tool-less judge を実行する。Docker daemon・pin 済みイメージ・broker が利用できない場合は worktree 作成前に明示エラーで停止し、非隔離 backend へは降格しない。
 
+- **`loop-harness`: LP-2 常駐トリガー（無人ループ実行）を追加**: ラベル付き Issue を検出し、無人（`claude -p`）でループを最後まで自律駆動する常駐運用（`cron`/`launchd` 登録）を追加した。実行状況の確認・不要データの掃除は `loop_status.py`（`list`/`show`/`purge`）で行い、Maker は push/PR 作成ができない構造になっている。
+
 - **`loop-harness`: `/loop-issue` LP-1 スキルを追加**: Issue の実装・決定論的 Checker・PR レビュー対応を two-phase 契約で反復し、成功／失敗／安全停止の出口まで自律駆動する facet スキルを配布する。
 
 - **`loop-harness`: PR レビュー待機・指摘取り込みの決定論モジュールを追加**: `pr_review_wait.py` で reviewer allowlist 必須検証、完了シグナル待機、severity 判定・分類結果の state 反映、肯定コメント除外、dedup を扱えるようにした。`checkrun_allowlist` / `severity_markers` / `dedup.*` 設定も追加。

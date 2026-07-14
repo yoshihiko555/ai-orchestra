@@ -17,6 +17,71 @@ CONFIG_FILENAME = "loop-harness.yaml"
 _ID_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 _SIGNATURE_KINDS = {"implementation", "pr_review"}
 ISSUE_LOOP_IMPLEMENTATION_PASS_CRITERIA = {"critical": 0, "high": 0}
+# SEC-M1: defense-in-depth denylist for `mechanical.commands` command-position binaries. This
+# is independent of layer 3 (`claude -p --disallowedTools`, which only constrains the Maker's
+# own tool calls) — it constrains what loop-harness itself will execute directly via
+# `bash -lc` in the checker phase. Does not replace layer 2/3; loop definitions are
+# trusted-but-verified. The scan below normalizes common `bash -lc` bypasses (absolute paths,
+# tab/multi-space separators, `env`/`timeout`/`nice`/`command`/`bash -c`/`sh -c`/`exec` wrappers,
+# leading `VAR=value` env-assignment prefixes, surrounding quotes/parentheses, and
+# `;`/`&&`/`||`/`|`/`&`/`$(...)`/backtick command boundaries) but is not a full shell parser.
+# SN3-extra: also normalizes a `find ... -exec/-execdir/-ok/-okdir <cmd> ;`/`+` embedded
+# sub-command, an `env -S`/`--split-string '<cmd>'` embedded command string, and a
+# backslash-escaped binary name (e.g. `g\it`) - each of these previously slipped past the
+# scan entirely unchecked. This remains a best-effort, layer-2-primary normalization, not a
+# full shell parser (see module docstring above and each helper's own docstring for the exact
+# limitations still accepted as-is).
+#
+# SN3-accept (3巡目レビュー, 受容リスク化): further bypasses of this scan remain possible and
+# are *not* being patched one-by-one further - e.g. a nested `find -exec ... find -exec ... ;`
+# clause combination, piping the denylisted binary through `xargs` (`echo git push | xargs -I{}
+# sh -c '{}'`), a full `if/then/fi` (or other shell-grammar) construct wrapping the invocation,
+# a quoted-then-reassembled binary name split across shell-adjacent string literals
+# (`g''it push`), or an `env -Sfoo=bar` (attached, no space) form of the split-string flag. This
+# denylist is a best-effort static check over **trusted loop-definition authors'** YAML - its
+# purpose is to catch an accidental/careless denylisted binary in `mechanical.commands`, not to
+# withstand a deliberately adversarial author trying to bypass it. Preventing an actually
+# malicious/untrusted actor (the Maker) from running arbitrary commands is out of scope for this
+# denylist entirely; that boundary is enforced by layer 2 (env-based push-auth stripping,
+# EV-49/EV-83) and layer 3 (`--disallowedTools`/hook-based hard-deny, EV-49/EV-63), which do not
+# rely on any shell-text pattern matching. No further denylist-bypass patches are planned absent
+# a re-evaluation raising this above defense-in-depth severity for a *trusted-author* threat
+# model.
+_MECHANICAL_COMMAND_DENYLIST = frozenset({"git", "gh", "ssh", "curl", "wget", "docker", "sudo"})
+# SN3: `exec` replaces the current shell with the given command (no subprocess spawned) - a
+# command-position wrapper exactly like `command`/`nice`, so `exec git push` must also be
+# unwrapped down to `git` instead of resolving to the literal name "exec".
+_MECHANICAL_COMMAND_WRAPPERS = frozenset(
+    {"env", "nice", "command", "timeout", "bash", "sh", "exec"}
+)
+_COMMAND_SEGMENT_SPLIT_RE = re.compile(r"\$\(|`|;|&&|\|\||\||&|\n")
+_ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+# G4: wrapper numeric arguments, e.g. `timeout 30 ...` or `timeout 30s ...` /
+# `timeout 1.5m ...`. Plain isdigit() misses duration-suffixed forms
+# (`s`/`m`/`h`/`d`), which let e.g. `timeout 30s git push` slip past the
+# denylist scan (the unrecognized "30s" token would be resolved as the
+# command-position binary instead of `git`).
+_WRAPPER_NUMERIC_ARG_RE = re.compile(r"^\d+(\.\d+)?[smhd]?$")
+# SN3: `env`'s flags that consume a following, space-separated value argument (e.g. `-u NAME`
+# to unset a var before exec'ing, `-C dir` to chdir first). The generic dash-prefixed-flag
+# skip below only consumes the flag token itself; without this, the flag's *value* token is
+# left as the next token and gets mis-resolved as env's command-position binary (e.g.
+# `env -u FOO git push` would resolve to "FOO", silently missing the denylisted `git`).
+_WRAPPER_VALUE_FLAGS: dict[str, frozenset[str]] = {
+    "env": frozenset({"-u", "-C", "-S", "--unset", "--chdir", "--split-string"}),
+}
+# SN3-extra: `env -S`/`--split-string` does not take a single value argument like `-u NAME`/
+# `-C dir` - it makes the *entire remainder* of the command line env's embedded command
+# string. Generically skipping it as a flag+value pair (like the other `_WRAPPER_VALUE_FLAGS`
+# entries) would leave a denylisted binary passed this way (`env -S 'git push'`) completely
+# unscanned; this subset is checked explicitly in `_resolve_command_binary` instead.
+_ENV_SPLIT_STRING_FLAGS = frozenset({"-S", "--split-string"})
+# SN3-extra: `find`'s exec-a-command-per-match flags. `find` itself is not a
+# `_MECHANICAL_COMMAND_WRAPPERS` entry (it legitimately *is* the command being run, unlike
+# `env`/`nice`/etc.), so the generic wrapper-unwrap loop returns "find" immediately and never
+# looks inside a `-exec ... ;`/`-execdir ... +` clause - letting a denylisted binary run
+# entirely unscanned as `find`'s executed sub-command (e.g. `find . -exec git push \;`).
+_FIND_EXEC_FLAGS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
 
 
 def _resolve_local_override_root(project_dir: str) -> str:
@@ -254,6 +319,129 @@ def _validate_mechanical(mechanical: dict[str, Any], source_path: str) -> None:
         raise DefinitionValidationError(f"mechanical.commands must be non-empty: {source_path}")
     if mechanical.get("analyzer") != "failure_detector.analyze":
         raise DefinitionValidationError(f"Unsupported analyzer: {source_path}")
+    for command in commands:
+        for segment in _command_segments(str(command)):
+            tokens = _tokenize_segment(segment)
+            _reject_if_denylisted(_resolve_command_binary(tokens), source_path)
+            for embedded in _find_exec_clause_binaries(tokens):
+                _reject_if_denylisted(embedded, source_path)
+
+
+def _reject_if_denylisted(binary: str | None, source_path: str) -> None:
+    """Raise when a resolved command-position binary is on the SEC-M1 denylist."""
+    if binary in _MECHANICAL_COMMAND_DENYLIST:
+        raise DefinitionValidationError(
+            f"mechanical.commands entry uses a denylisted binary ({binary!r}): {source_path}"
+        )
+
+
+def _command_segments(command: str) -> list[str]:
+    """Split a mechanical command string into shell-segment strings for denylist scanning.
+
+    Splits on command separators (`;`, `&&`, `||`, `|`, `&`, newline) and command
+    substitution openers (`$(`, backtick) so each gets its own "command position" checked.
+    The matching `)` from `$(...)` is left in the following segment's text; harmless since
+    it never itself resolves to a denylisted or wrapper binary name.
+    """
+    return [segment for segment in _COMMAND_SEGMENT_SPLIT_RE.split(command) if segment.strip()]
+
+
+def _clean_token(token: str) -> str:
+    """Strip surrounding quote/paren characters, then all backslash characters, from a token.
+
+    SN3-extra: naive whitespace splitting of a quoted phrase (e.g. `'git push'`) produces one
+    token per word, each still carrying a leading/trailing quote character (`'git`, `push'`);
+    stripping those per-token reconstructs the unquoted words without needing real shell
+    quote-parsing. Backslash removal similarly normalizes a backslash-escaped binary name
+    (e.g. `g\\it`) back to its literal form. Best-effort only (not real shell escaping
+    semantics) - consistent with this module's stated scope (not a full shell parser).
+    """
+    return token.strip("'\"()").replace("\\", "")
+
+
+def _tokenize_segment(segment: str) -> list[str]:
+    """Split a command segment into cleaned, non-empty whitespace tokens."""
+    tokens: list[str] = []
+    for raw_token in re.split(r"\s+", segment.strip()):
+        if not raw_token:
+            continue
+        cleaned = _clean_token(raw_token)
+        if cleaned:
+            tokens.append(cleaned)
+    return tokens
+
+
+def _segment_command_binary(segment: str) -> str | None:
+    """Return the resolved, wrapper-unwrapped command-position binary name for a segment."""
+    return _resolve_command_binary(_tokenize_segment(segment))
+
+
+def _resolve_command_binary(tokens: list[str]) -> str | None:
+    """Resolve the command-position binary name from pre-tokenized, pre-cleaned tokens.
+
+    Shared by `_segment_command_binary` (top-level segment scan) and
+    `_find_exec_clause_binaries` (`find -exec`/`-execdir` sub-clause scan, SN3-extra), so both
+    apply identical env-assignment-skip / wrapper-unwrap logic.
+    """
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if _ENV_ASSIGNMENT_RE.match(token):
+            index += 1
+            continue
+        name = token.rsplit("/", 1)[-1]
+        if name not in _MECHANICAL_COMMAND_WRAPPERS:
+            return name or None
+        value_flags = _WRAPPER_VALUE_FLAGS.get(name, frozenset())
+        index += 1
+        while index < len(tokens):
+            current = tokens[index]
+            if name == "env" and current in _ENV_SPLIT_STRING_FLAGS:
+                # SN3-extra: the remainder of the command line is env's entire embedded
+                # command string, not a single value argument - resolve it as its own
+                # sub-command instead of just skipping past it (`env -S 'git push'`).
+                remainder = tokens[index + 1 :]
+                return _resolve_command_binary(remainder) if remainder else None
+            if current in value_flags:
+                # SN3: consume both the flag and its separate value argument (e.g. `-u FOO`)
+                # so the value itself is never mistaken for the wrapped command's binary.
+                index += 2
+                continue
+            if current.startswith("-") or _WRAPPER_NUMERIC_ARG_RE.match(current):
+                index += 1
+                continue
+            break
+    return None
+
+
+def _find_exec_clause_binaries(tokens: list[str]) -> list[str]:
+    """Return resolved command-position binaries from `find`'s `-exec`/`-execdir`/`-ok`/
+    `-okdir <command> ;`/`<command> +` clauses embedded in a tokenized segment (SN3-extra).
+
+    This is a best-effort scan for the common single `-exec`/`-execdir` clause case, not full
+    `find` argument grammar (e.g. multiple clauses combined with `-o`/parentheses) -
+    consistent with this module's stated scope (defense-in-depth, layer 2 primary; see module
+    docstring). The clause's own terminating `;` is frequently stripped away earlier by
+    `_command_segments`'s command-separator split (an escaped `\\;` still contains a bare `;`
+    character); when no terminator remains in `tokens`, the clause is simply read through to
+    the end of the segment instead, which still resolves the embedded binary correctly.
+    """
+    binaries: list[str] = []
+    index = 0
+    while index < len(tokens):
+        if tokens[index] in _FIND_EXEC_FLAGS:
+            index += 1
+            clause: list[str] = []
+            while index < len(tokens) and tokens[index] not in {";", "+"}:
+                clause.append(tokens[index])
+                index += 1
+            if clause:
+                binary = _resolve_command_binary(clause)
+                if binary is not None:
+                    binaries.append(binary)
+            continue
+        index += 1
+    return binaries
 
 
 def _validate_guards(guards: Any, source_path: str) -> None:

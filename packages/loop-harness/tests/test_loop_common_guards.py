@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -53,6 +54,43 @@ def test_evaluate_guards_infrastructure_failure_is_first_and_not_stopped() -> No
     assert decision.disposition == lc.Action.EXIT_FAILURE.value
     assert decision.reason == "infrastructure_failure_exhausted"
     assert state.status == "running"
+
+
+def _maker_infra_failure_result(agent: str = "backend-python-dev") -> dict:
+    return {"maker": {"agent": agent, "tool": "codex"}, "infrastructure_failure": True}
+
+
+def test_apply_action_effect_run_maker_infra_failure_retries_below_max() -> None:
+    """I5 (PR #210 review round 5): a `run_maker` completion with `infrastructure_failure: True`
+    (Maker timeout / non-zero `claude -p` exit, see `loop_driver._run_maker`) must increment
+    the phase's infra-retry counter via `evaluate_guards()` -- previously this counter
+    (`GuardCounters.infrastructure_failure_count`) was only ever reachable through
+    `_apply_checker_result` (RUN_CHECKER/WAIT_EXTERNAL_REVIEW), so a Maker infra failure was
+    unconditionally completed as `status="running"` regardless of how many consecutive
+    failures occurred."""
+    state = _state()
+    counters = state.guards["implementation"]
+    assert counters.infrastructure_failure_count == 0
+
+    lc.apply_action_effect(state, lc.Action.RUN_MAKER.value, _maker_infra_failure_result(), None)
+
+    assert state.status == "running"
+    assert counters.infrastructure_failure_count == 1
+
+
+def test_apply_action_effect_run_maker_infra_failure_fails_loop_once_exhausted() -> None:
+    """I5: once the infra-retry counter reaches `guards.infrastructure_failure.max_retries`
+    (3 by `DEFAULT_CONFIG`), a further Maker infra failure must convert the loop into a real
+    failure (`on_failure.disposition`, `exit_failure` by default) instead of retrying forever."""
+    state = _state()
+
+    for _ in range(3):
+        lc.apply_action_effect(
+            state, lc.Action.RUN_MAKER.value, _maker_infra_failure_result(), None
+        )
+
+    assert state.status == "failed"
+    assert state.stop_reason == "infrastructure_failure_exhausted"
 
 
 def test_external_reviewer_unavailable_stops_without_changing_guard_counters() -> None:
@@ -290,6 +328,120 @@ def test_run_mechanical_checks_persists_output_when_analyzer_raises(
         "heartbeat",
         (1, "printf captured-output", "captured-output", 0),
     ]
+
+
+def test_run_mechanical_command_env_none_inherits_os_environ(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SEC-C1 backward compatibility: omitting `env` keeps inheriting the real process env."""
+    monkeypatch.setenv("LOOP_HARNESS_ENV_PROBE", "inherited-value")
+    output, exit_code = lc._run_mechanical_command(
+        'printf "%s" "$LOOP_HARNESS_ENV_PROBE"', str(tmp_path), 5
+    )
+    assert exit_code == 0
+    assert output == "inherited-value"
+
+
+def test_run_mechanical_command_on_start_receives_pid_then_none(tmp_path: Path) -> None:
+    child_pids: list[int | None] = []
+
+    output, exit_code = lc._run_mechanical_command(
+        "printf ok", str(tmp_path), 5, on_start=child_pids.append
+    )
+
+    assert output == "ok"
+    assert exit_code == 0
+    assert len(child_pids) == 2
+    assert isinstance(child_pids[0], int)
+    assert child_pids[0] > 0
+    assert child_pids[1] is None
+
+
+def test_run_mechanical_command_env_stripped_key_is_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SEC-C1: an explicit isolated `env` dict is what the child subprocess actually sees."""
+    monkeypatch.setenv("LOOP_HARNESS_ENV_PROBE", "should-not-be-visible")
+    stripped_env = {
+        k: v for k, v in __import__("os").environ.items() if k != "LOOP_HARNESS_ENV_PROBE"
+    }
+    output, exit_code = lc._run_mechanical_command(
+        'printf "%s" "${LOOP_HARNESS_ENV_PROBE:-absent}"', str(tmp_path), 5, env=stripped_env
+    )
+    assert exit_code == 0
+    assert output == "absent"
+
+
+def test_run_mechanical_command_times_out_with_exit_124(tmp_path: Path) -> None:
+    output, exit_code = lc._run_mechanical_command("sleep 5", str(tmp_path), 0.2)
+    assert exit_code == 124
+    assert "command timed out" in output
+
+
+def test_run_mechanical_command_kills_grandchildren_on_timeout(tmp_path: Path) -> None:
+    """Code review #16: timeout must reap the whole process group, not just direct `bash`.
+
+    Without process-group kill, only the direct `bash -lc ...` child is killed and the
+    background `sleep` it spawned survives past the timeout.
+    """
+    pid_file = tmp_path / "child.pid"
+    command = f"sleep 5 & echo $! > {pid_file}; wait"
+    output, exit_code = lc._run_mechanical_command(command, str(tmp_path), 0.2)
+    assert exit_code == 124
+    assert "command timed out" in output
+    child_pid = int(pid_file.read_text(encoding="utf-8").strip())
+    with pytest.raises(ProcessLookupError):
+        os.kill(child_pid, 0)
+
+
+def test_run_mechanical_checks_forwards_env_to_mechanical_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SEC-C1: `run_mechanical_checks()` threads its `env` kwarg through to each command."""
+
+    class FakeDetector:
+        @staticmethod
+        def analyze(_tool_name: str, _tool_input: dict, _tool_response: dict) -> None:
+            return None
+
+    monkeypatch.setattr(lc, "_load_failure_detector", lambda: FakeDetector)
+    captured: dict[str, object] = {}
+    original = lc._run_mechanical_command
+
+    def spy(
+        command: str,
+        cwd: str,
+        timeout_seconds: int,
+        env: object = None,
+        on_start: object = None,
+    ) -> tuple[str, int]:
+        captured["env"] = env
+        return original(command, cwd, timeout_seconds, env=env, on_start=on_start)
+
+    monkeypatch.setattr(lc, "_run_mechanical_command", spy)
+    isolated_env = {"PATH": "/usr/bin:/bin"}
+    lc.run_mechanical_checks(["printf ok"], str(tmp_path), 5, env=isolated_env)
+    assert captured["env"] == isolated_env
+
+
+def test_run_mechanical_checks_forwards_on_start_to_mechanical_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class FakeDetector:
+        @staticmethod
+        def analyze(_tool_name: str, _tool_input: dict, _tool_response: dict) -> None:
+            return None
+
+    monkeypatch.setattr(lc, "_load_failure_detector", lambda: FakeDetector)
+    child_pids: list[int | None] = []
+
+    failures = lc.run_mechanical_checks(["printf ok"], str(tmp_path), 5, on_start=child_pids.append)
+
+    assert failures == []
+    assert len(child_pids) == 2
+    assert isinstance(child_pids[0], int)
+    assert child_pids[0] > 0
+    assert child_pids[1] is None
 
 
 def test_redact_payload_and_audit_payload_shape() -> None:

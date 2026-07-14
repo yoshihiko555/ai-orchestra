@@ -11,7 +11,8 @@ import stat
 import subprocess
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -371,25 +372,44 @@ def record_baseline(
     lease_token: str,
     *,
     action_id: str | None = None,
+    review_items: list[ReviewItem] | None = None,
+    snapshot_captured_at: str | None = None,
 ) -> BaselineRecord:
-    """Record review/comment baseline before push or PR creation."""
-    recorded_at = lc.now_iso()
+    """Record review/comment baseline before push or PR creation.
+
+    `review_items` is an optional pre-fetched snapshot (see `fetch_review_items`). Passing
+    the same snapshot a caller already fetched for `collect_review_findings` avoids a second,
+    later `gh api` round trip here (DC3): drain-then-rebaseline previously performed two
+    *separate* fetches, leaving a window where a comment posted between them would be
+    silently marked `processed` by this function's own (later) fetch without ever being
+    imported as a finding by the drain's (earlier) fetch, permanently losing it. When
+    `review_items` is omitted, this fetches fresh itself (unchanged, backward-compatible
+    behavior for callers that do not need to share a snapshot, e.g. PR-creation baselining).
+
+    code L3: `snapshot_captured_at` lets a caller reusing a pre-fetched `review_items` snapshot
+    also pass through *when that snapshot was fetched*, instead of this function stamping
+    `baseline_recorded_at` with "now". Without this, a caller like `_drain_before_push()` that
+    fetches `review_items` once, spends real time on severity classification (an LLM call per
+    finding needing it), and only *then* calls this function with the same stale snapshot would
+    get a `baseline_recorded_at` timestamped *after* that classification delay. A review/comment
+    posted after the snapshot but before that later write has a `created_at` older than the new
+    baseline, so `_is_importable()`'s `created_at > baseline_recorded_at` check would filter it
+    out forever -- the finding is silently and permanently lost, exactly the drain-gap failure
+    mode this function's baseline is meant to close. Passing the snapshot's own fetch time keeps
+    the baseline honest about what it actually reflects. Ignored (falls back to `lc.now_iso()`,
+    the original behavior) when `review_items` is also omitted, since there is then no shared
+    snapshot whose fetch time would matter here.
+    """
+    recorded_at = snapshot_captured_at if snapshot_captured_at is not None else lc.now_iso()
     if pr_number is None or pr_number <= 0:
-        reviews: list[dict[str, Any]] = []
-        review_comments: list[dict[str, Any]] = []
-        issue_comments: list[dict[str, Any]] = []
         baseline_review_id = 0
         processed_ids: set[str] = set()
     else:
-        reviews = _fetch_reviews(client, pr_number)
-        review_comments = _fetch_review_comments(client, pr_number)
-        issue_comments = _fetch_issue_comments(client, pr_number)
-        baseline_review_id = max([_int_or_zero(item.get("id")) for item in reviews] or [0])
-        processed_ids = {
-            *(_comment_key(_review_item_from_review(item)) for item in reviews),
-            *(_comment_key(_review_item_from_review_comment(item)) for item in review_comments),
-            *(_comment_key(_review_item_from_issue_comment(item)) for item in issue_comments),
-        }
+        items = review_items if review_items is not None else fetch_review_items(client, pr_number)
+        baseline_review_id = max(
+            [_int_or_zero(item.raw.get("id")) for item in items if item.source == "review"] or [0]
+        )
+        processed_ids = {_comment_key(item) for item in items}
     state = lc.load_state(loop_id, project_dir)
     pr_review = _ensure_pr_review_state(state.pr_review)
     existing = set(_processed_comment_ids(pr_review))
@@ -398,20 +418,22 @@ def record_baseline(
     pr_review["processed_comment_ids"] = sorted(existing | processed_ids)
     state.pr_review = pr_review
     state.updated_at = lc.now_iso()
-    _fence_state_update(state, loop_id, project_dir, lease_token, action_id, BASELINE_ACTIONS)
-    lc.append_journal_event(
-        loop_id,
-        project_dir,
-        "pr_review_baseline_recorded",
-        "waiter",
-        action_id,
-        {
-            "baseline_review_id": baseline_review_id,
-            "baseline_recorded_at": recorded_at,
-            "processed_comment_count": len(pr_review["processed_comment_ids"]),
-        },
-    )
-    lc._write_state(state, project_dir)
+    with _fenced_pr_review_write(
+        state, loop_id, project_dir, lease_token, action_id, BASELINE_ACTIONS
+    ):
+        lc.append_journal_event(
+            loop_id,
+            project_dir,
+            "pr_review_baseline_recorded",
+            "waiter",
+            action_id,
+            {
+                "baseline_review_id": baseline_review_id,
+                "baseline_recorded_at": recorded_at,
+                "processed_comment_count": len(pr_review["processed_comment_ids"]),
+            },
+        )
+        lc._write_state(state, project_dir)
     return BaselineRecord(
         baseline_review_id,
         recorded_at,
@@ -427,8 +449,17 @@ def record_iteration_head(
     lease_token: str,
     *,
     action_id: str | None = None,
+    iteration: int | None = None,
 ) -> str:
-    """Record the post-push PR head SHA for check-run fallback scoping."""
+    """Record the post-push PR head SHA for check-run fallback scoping.
+
+    `iteration` (DH5), when given, is durably recorded alongside `iteration_head_sha` as
+    `iteration_head_recorded_iteration`. This lets a resumed `wait_external_review` (e.g.
+    after a driver crash between this call succeeding and its poll actually starting)
+    distinguish "this push already happened for the *current* iteration, just go poll" from
+    the unrelated, genuinely-nothing-to-push case where `iteration_head_sha` is merely stale
+    from an earlier iteration (see `loop_driver._already_pushed_this_iteration`).
+    """
     payload = client.api(f"repos/{client.repo}/pulls/{pr_number}")
     head = payload.get("head") if isinstance(payload, dict) else None
     sha = head.get("sha") if isinstance(head, dict) else None
@@ -437,18 +468,22 @@ def record_iteration_head(
     state = lc.load_state(loop_id, project_dir)
     pr_review = _ensure_pr_review_state(state.pr_review)
     pr_review["iteration_head_sha"] = sha
+    if iteration is not None:
+        pr_review["iteration_head_recorded_iteration"] = iteration
     state.pr_review = pr_review
     state.updated_at = lc.now_iso()
-    _fence_state_update(state, loop_id, project_dir, lease_token, action_id, BASELINE_ACTIONS)
-    lc.append_journal_event(
-        loop_id,
-        project_dir,
-        "pr_review_iteration_head_recorded",
-        "waiter",
-        action_id,
-        {"iteration_head_sha": sha},
-    )
-    lc._write_state(state, project_dir)
+    with _fenced_pr_review_write(
+        state, loop_id, project_dir, lease_token, action_id, BASELINE_ACTIONS
+    ):
+        lc.append_journal_event(
+            loop_id,
+            project_dir,
+            "pr_review_iteration_head_recorded",
+            "waiter",
+            action_id,
+            {"iteration_head_sha": sha},
+        )
+        lc._write_state(state, project_dir)
     return sha
 
 
@@ -560,9 +595,28 @@ def collect_review_findings(
     lease_token: str,
     *,
     action_id: str | None = None,
+    review_items: list[ReviewItem] | None = None,
 ) -> ReviewFindingsResult:
-    """Import trusted post-baseline review findings and update loop state."""
-    review_items = _fetch_all_review_items(client, pr_number)
+    """Import trusted post-baseline review findings and update loop state.
+
+    `review_items` is an optional pre-fetched snapshot (see `fetch_review_items`, DC3); when
+    omitted this fetches fresh itself (unchanged, backward-compatible default).
+
+    A finding is *not* marked `processed` here even when it has an explicit severity (i.e.
+    does not need classification) (DC4). Marking it processed in this same write, before the
+    caller has durably reflected `result.findings` anywhere, means a crash between this
+    write and the caller's reflection would leave the comment permanently `processed` but
+    the finding itself never actually reported: a retried `collect_review_findings` call
+    would then treat the comment as already-handled and silently omit it from the returned
+    `findings`, even though nothing ever consumed it. Deferring `processed` marking to an
+    explicit caller confirmation (`confirm_review_findings_reported`, called only after the
+    caller has durably captured the result, e.g. via `save_review_findings_snapshot`) mirrors
+    the same defer-until-reflected discipline `apply_severity_classifications` already uses
+    for findings that need classification.
+    """
+    review_items = (
+        review_items if review_items is not None else fetch_review_items(client, pr_number)
+    )
     state = lc.load_state(loop_id, project_dir)
     pr_review = _ensure_pr_review_state(state.pr_review)
     baseline = _baseline_from_state(pr_review)
@@ -586,8 +640,6 @@ def collect_review_findings(
             continue
         imported.append(finding)
         _upsert_finding(findings_map, finding, iteration)
-        if not finding.needs_classification:
-            processed.add(key)
 
     pr_review["processed_comment_ids"] = sorted(processed)
     pr_review["findings"] = findings_map
@@ -595,23 +647,25 @@ def collect_review_findings(
     state.ignored_untrusted_comment_count += len(ignored_items)
     state.updated_at = lc.now_iso()
     iteration_findings = build_iteration_findings(pr_review, iteration)
-    _fence_state_update(state, loop_id, project_dir, lease_token, action_id, COLLECT_ACTIONS)
-    for item in ignored_items:
-        _journal_ignored_untrusted(loop_id, project_dir, action_id, item)
-    lc.append_journal_event(
-        loop_id,
-        project_dir,
-        "pr_review_findings_imported",
-        "waiter",
-        action_id,
-        {
-            "imported_count": len(imported),
-            "ignored_untrusted_comment_count": len(ignored_items),
-            "signatures": sorted(iteration_findings.signatures),
-            "new_count": iteration_findings.new_count,
-        },
-    )
-    lc._write_state(state, project_dir)
+    with _fenced_pr_review_write(
+        state, loop_id, project_dir, lease_token, action_id, COLLECT_ACTIONS
+    ):
+        for item in ignored_items:
+            _journal_ignored_untrusted(loop_id, project_dir, action_id, item)
+        lc.append_journal_event(
+            loop_id,
+            project_dir,
+            "pr_review_findings_imported",
+            "waiter",
+            action_id,
+            {
+                "imported_count": len(imported),
+                "ignored_untrusted_comment_count": len(ignored_items),
+                "signatures": sorted(iteration_findings.signatures),
+                "new_count": iteration_findings.new_count,
+            },
+        )
+        lc._write_state(state, project_dir)
     return ReviewFindingsResult(
         findings=tuple(imported),
         iteration_findings=iteration_findings,
@@ -620,6 +674,40 @@ def collect_review_findings(
         ignored_untrusted_comment_count=len(ignored_items),
         needs_classification_count=sum(1 for item in imported if item.needs_classification),
     )
+
+
+def confirm_review_findings_reported(
+    loop_id: str,
+    project_dir: str,
+    result: ReviewFindingsResult,
+    lease_token: str,
+    *,
+    action_id: str | None = None,
+) -> None:
+    """Mark explicit-severity (non-classification-pending) findings processed (DC4).
+
+    Call this only after the caller has durably captured `result` (e.g. after
+    `save_review_findings_snapshot` succeeds). `collect_review_findings` intentionally
+    leaves these comments out of `processed_comment_ids` so a crash before this call causes
+    the next `collect_review_findings` to safely re-import and re-report them instead of
+    silently dropping them. No-op when there is nothing to confirm.
+    """
+    confirmable = {
+        finding.source_comment_id for finding in result.findings if not finding.needs_classification
+    }
+    if not confirmable:
+        return
+    state = lc.load_state(loop_id, project_dir)
+    pr_review = _ensure_pr_review_state(state.pr_review)
+    processed = set(_processed_comment_ids(pr_review))
+    processed |= confirmable
+    pr_review["processed_comment_ids"] = sorted(processed)
+    state.pr_review = pr_review
+    state.updated_at = lc.now_iso()
+    with _fenced_pr_review_write(
+        state, loop_id, project_dir, lease_token, action_id, COLLECT_ACTIONS
+    ):
+        lc._write_state(state, project_dir)
 
 
 def save_review_findings_snapshot(
@@ -762,27 +850,29 @@ def apply_severity_classifications(
     state.pr_review = pr_review
     state.updated_at = lc.now_iso()
     iteration_findings = build_iteration_findings(pr_review, iteration)
-    _fence_state_update(state, loop_id, project_dir, lease_token, action_id, COLLECT_ACTIONS)
-    lc.append_journal_event(
-        loop_id,
-        project_dir,
-        "pr_review_severities_classified",
-        "waiter",
-        action_id,
-        {
-            "classifications": [
-                {
-                    "signature": item.signature,
-                    "source_comment_id": item.source_comment_id,
-                    "severity": item.severity,
-                    "source": item.source,
-                    "reason": item.reason,
-                }
-                for item in applied
-            ]
-        },
-    )
-    lc._write_state(state, project_dir)
+    with _fenced_pr_review_write(
+        state, loop_id, project_dir, lease_token, action_id, COLLECT_ACTIONS
+    ):
+        lc.append_journal_event(
+            loop_id,
+            project_dir,
+            "pr_review_severities_classified",
+            "waiter",
+            action_id,
+            {
+                "classifications": [
+                    {
+                        "signature": item.signature,
+                        "source_comment_id": item.source_comment_id,
+                        "severity": item.severity,
+                        "source": item.source,
+                        "reason": item.reason,
+                    }
+                    for item in applied
+                ]
+            },
+        )
+        lc._write_state(state, project_dir)
     updated_result = ReviewFindingsResult(
         findings=tuple(updated_findings),
         iteration_findings=iteration_findings,
@@ -840,16 +930,18 @@ def dismiss_finding(
     pr_review["findings"] = findings
     state.pr_review = pr_review
     state.updated_at = lc.now_iso()
-    _fence_state_update(state, loop_id, project_dir, lease_token, action_id, DISMISS_ACTIONS)
-    lc.append_journal_event(
-        loop_id,
-        project_dir,
-        "dismissed",
-        decided_by,
-        action_id,
-        {"signature": signature, "reason": reason, "decided_by": decided_by},
-    )
-    lc._write_state(state, project_dir)
+    with _fenced_pr_review_write(
+        state, loop_id, project_dir, lease_token, action_id, DISMISS_ACTIONS
+    ):
+        lc.append_journal_event(
+            loop_id,
+            project_dir,
+            "dismissed",
+            decided_by,
+            action_id,
+            {"signature": signature, "reason": reason, "decided_by": decided_by},
+        )
+        lc._write_state(state, project_dir)
 
 
 def phase_check_from_review_findings(result: ReviewFindingsResult) -> lc.PhaseCheckResult:
@@ -927,23 +1019,48 @@ def record_ignored_untrusted_reviews(
     state.pr_review = pr_review
     state.ignored_untrusted_comment_count += len(new_items)
     state.updated_at = lc.now_iso()
-    _fence_state_update(state, loop_id, project_dir, lease_token, action_id, COLLECT_ACTIONS)
-    for item in new_items:
-        _journal_ignored_untrusted_review(loop_id, project_dir, action_id, item)
-    lc._write_state(state, project_dir)
+    with _fenced_pr_review_write(
+        state, loop_id, project_dir, lease_token, action_id, COLLECT_ACTIONS
+    ):
+        for item in new_items:
+            _journal_ignored_untrusted_review(loop_id, project_dir, action_id, item)
+        lc._write_state(state, project_dir)
     return len(new_items)
 
 
-def _fence_state_update(
+@contextmanager
+def _fenced_pr_review_write(
     state: lc.LoopState,
     loop_id: str,
     project_dir: str,
     lease_token: str,
     action_id: str | None,
     allowed_actions: frozenset[str],
+) -> Iterator[None]:
+    """Fence an auxiliary state write against the active pending action (DH2).
+
+    The previous `_fence_state_update` validated the lease (`lc._ensure_valid_lease`) and,
+    when `action_id` is set, re-read state to check for staleness -- but returned before the
+    caller's journal/state write, leaving that write unguarded. A lease can expire and be
+    reacquired by another worker in the gap between this validation and the write, letting a
+    stale worker's write land after a new owner has already started mutating state (the same
+    class of TOCTOU DH1 closes for `loop_common`'s own propose/complete/reconcile). Wrapping
+    validation *and* the caller's write inside `loop_common.guarded_lease_section`'s held
+    flock closes this window for every `pr_review_wait` state mutator.
+    """
+    with lc.guarded_lease_section(loop_id, project_dir, lease_token):
+        _validate_pr_review_fence(state, loop_id, project_dir, action_id, allowed_actions)
+        yield
+
+
+def _validate_pr_review_fence(
+    state: lc.LoopState,
+    loop_id: str,
+    project_dir: str,
+    action_id: str | None,
+    allowed_actions: frozenset[str],
 ) -> None:
-    """Fence an auxiliary state write against the active pending action."""
-    lc._ensure_valid_lease(loop_id, project_dir, lease_token)
+    """Validate the pending action/state_version fencing for an auxiliary state write."""
     if action_id is None:
         state.state_version += 1
         return
@@ -986,6 +1103,17 @@ def _fetch_all_review_items(client: GhApiClient, pr_number: int) -> list[ReviewI
     ]
 
 
+def fetch_review_items(client: GhApiClient, pr_number: int) -> list[ReviewItem]:
+    """Fetch and normalize one snapshot of reviews/review-comments/issue-comments (DC3).
+
+    Public so a caller (e.g. `loop_driver._drain_before_push`) can fetch exactly once and
+    pass the same snapshot into both `collect_review_findings` and `record_baseline`,
+    instead of each function fetching independently and leaving a race window between the
+    two fetches where an in-between comment is silently dropped.
+    """
+    return _fetch_all_review_items(client, pr_number)
+
+
 def _loads_paginated_json(output: str) -> Any:
     """Parse single or concatenated JSON documents from `gh api --paginate`."""
     decoder = json.JSONDecoder()
@@ -1022,6 +1150,12 @@ def _review_completion_outcome(
     ignored_reviews: dict[str, IgnoredUntrustedReview],
 ) -> CompletionOutcome:
     baseline_id = _int_or_zero(baseline.get("baseline_review_id"))
+    # DH4: a review's `id` sorting after `baseline_id` only proves it is *new*, not that it
+    # reviewed *this iteration's* just-pushed commit -- GitHub lets a review be submitted
+    # against a stale diff (e.g. a reviewer with a stale page open). When this iteration's
+    # push has recorded a head sha, require the review's `commit_id` to match it before
+    # treating the review as a completion signal for this iteration.
+    iteration_head_sha = _optional_str(baseline.get("iteration_head_sha"))
     reviews = _fetch_reviews(client, pr_number)
     trusted_ids: list[int] = []
     for item in reviews:
@@ -1030,12 +1164,20 @@ def _review_completion_outcome(
             continue
         if not _is_submitted_review(item):
             continue
-        if verify_origin(item, config.reviewer_allowlist):
-            trusted_ids.append(review_id)
+        if not verify_origin(item, config.reviewer_allowlist):
+            ignored_reviews.setdefault(
+                f"review:{review_id}", _ignored_untrusted_review_from_review(item, review_id)
+            )
             continue
-        ignored_reviews.setdefault(
-            f"review:{review_id}", _ignored_untrusted_review_from_review(item, review_id)
-        )
+        if iteration_head_sha is not None and not _review_matches_iteration_head(
+            item, iteration_head_sha
+        ):
+            # Fail-safe, not fail-open: a review whose `commit_id` is missing or does not
+            # match this iteration's head is simply not adopted as a completion signal (it
+            # is still a legitimate review -- just not evidence *this* iteration's fix was
+            # reviewed), rather than being waved through because it happens to be trusted.
+            continue
+        trusted_ids.append(review_id)
     if not trusted_ids:
         return CompletionOutcome(
             "pending",
@@ -1054,6 +1196,14 @@ def _review_completion_outcome(
         ignored_untrusted_review_count=len(ignored_reviews),
         ignored_untrusted_reviews=_ignored_review_tuple(ignored_reviews),
     )
+
+
+def _review_matches_iteration_head(raw: dict[str, Any], iteration_head_sha: str) -> bool:
+    """Return True only when a review's `commit_id` is known and matches (DH4)."""
+    commit_id = _optional_str(raw.get("commit_id"))
+    if commit_id is None:
+        return False
+    return commit_id == iteration_head_sha
 
 
 def _is_issue_comment_completion_signal(

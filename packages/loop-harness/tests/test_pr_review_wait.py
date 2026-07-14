@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import subprocess
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -212,6 +215,126 @@ def test_ev30_records_baseline_before_iteration_head(
         "repos/owner/repo/issues/12/comments",
         "repos/owner/repo/pulls/12",
     ]
+
+
+def test_record_baseline_reuses_injected_review_items_snapshot_without_refetching(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DC3: `record_baseline` must reuse an injected `review_items` snapshot instead of
+    fetching again. Before this fix, `_drain_before_push`'s drain-then-rebaseline flow made
+    two *separate* fetches; a comment posted between them would be silently marked
+    `processed` by `record_baseline`'s own (later) fetch without ever being imported as a
+    finding by the drain's (earlier) fetch, permanently losing it. Sharing one snapshot
+    across both calls closes that window."""
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={
+            "baseline_review_id": 0,
+            "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+            "processed_comment_ids": [],
+            "findings": {},
+        },
+    )
+    lease_token = _lease(project_dir)
+    client = FakeClient(
+        {
+            "repos/owner/repo/pulls/12/reviews": [
+                _trusted({"id": 20, "submitted_at": "2026-07-09T00:00:01+00:00", "body": "LGTM"})
+            ],
+            "repos/owner/repo/pulls/12/comments": [],
+            "repos/owner/repo/issues/12/comments": [],
+        }
+    )
+
+    review_items = prw.fetch_review_items(client, 12)
+    assert client.calls == [
+        "repos/owner/repo/pulls/12/reviews",
+        "repos/owner/repo/pulls/12/comments",
+        "repos/owner/repo/issues/12/comments",
+    ]
+
+    record = prw.record_baseline(
+        "abcd1234-issue-1", project_dir, 12, client, lease_token, review_items=review_items
+    )
+
+    # No additional `gh api` round trips beyond the one snapshot fetch above.
+    assert client.calls == [
+        "repos/owner/repo/pulls/12/reviews",
+        "repos/owner/repo/pulls/12/comments",
+        "repos/owner/repo/issues/12/comments",
+    ]
+    assert record.baseline_review_id == 20
+    assert "review:20" in record.processed_comment_ids
+
+
+def test_record_baseline_uses_snapshot_captured_at_instead_of_write_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """code L3: when a caller reuses a pre-fetched `review_items` snapshot and passes its own
+    fetch time via `snapshot_captured_at`, `record_baseline` must stamp `baseline_recorded_at`
+    with that captured time, not with "now" at the (potentially much later) write time. Before
+    this fix, a caller like `_drain_before_push()` that spends real time on severity
+    classification between fetching the snapshot and calling this function would get a
+    `baseline_recorded_at` stamped after that delay; a review/comment posted after the snapshot
+    but before that later write has a `created_at` older than the new baseline, so
+    `_is_importable()`'s `created_at > baseline_recorded_at` check would filter it out forever."""
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={
+            "baseline_review_id": 0,
+            "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+            "processed_comment_ids": [],
+            "findings": {},
+        },
+    )
+    lease_token = _lease(project_dir)
+    client = FakeClient(
+        {
+            "repos/owner/repo/pulls/12/reviews": [
+                _trusted({"id": 20, "submitted_at": "2026-07-09T00:00:01+00:00", "body": "LGTM"})
+            ],
+            "repos/owner/repo/pulls/12/comments": [],
+            "repos/owner/repo/issues/12/comments": [],
+        }
+    )
+    review_items = prw.fetch_review_items(client, 12)
+
+    # Stands in for the (much later) real write time, e.g. after severity classification
+    # finished -- it must never leak into `baseline_recorded_at` when `snapshot_captured_at`
+    # is explicitly supplied.
+    monkeypatch.setattr(lc, "now_iso", lambda: "2099-01-01T00:00:00+00:00")
+
+    record = prw.record_baseline(
+        "abcd1234-issue-1",
+        project_dir,
+        12,
+        client,
+        lease_token,
+        review_items=review_items,
+        snapshot_captured_at="2026-07-09T00:00:00.500000+00:00",
+    )
+
+    assert record.baseline_recorded_at == "2026-07-09T00:00:00.500000+00:00"
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    assert state.pr_review["baseline_recorded_at"] == "2026-07-09T00:00:00.500000+00:00"
+
+
+def test_record_baseline_falls_back_to_now_when_snapshot_captured_at_omitted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """code L3 complement: omitting `snapshot_captured_at` (the default, backward-compatible
+    call shape used by callers with no pre-fetched snapshot to share) must preserve the
+    original "stamp with now" behavior unchanged."""
+    project_dir = _setup_state(tmp_path, monkeypatch)
+    lease_token = _lease(project_dir)
+    client = FakeClient({"repos/owner/repo/pulls/12/reviews": []})
+    monkeypatch.setattr(lc, "now_iso", lambda: "2026-07-09T12:00:00+00:00")
+
+    record = prw.record_baseline("abcd1234-issue-1", project_dir, 12, client, lease_token)
+
+    assert record.baseline_recorded_at == "2026-07-09T12:00:00+00:00"
 
 
 def test_ev192_pre_rebaseline_collect_preserves_findings_across_next_record_baseline(
@@ -709,6 +832,88 @@ def test_wait_for_completion_ignores_unsubmitted_draft_reviews() -> None:
     assert outcome.signal == "timeout"
     assert outcome.completed is False
     assert outcome.ignored_untrusted_review_count == 0
+
+
+def test_review_completion_requires_commit_id_match_with_iteration_head() -> None:
+    """DH4: a new `review_id` alone must not signal completion for *this* iteration -- GitHub
+    allows submitting a review against a stale diff. Once `iteration_head_sha` is recorded,
+    a trusted review whose `commit_id` is missing or does not match it must not be treated
+    as a completion signal (fail-safe, not fail-open); only a review whose `commit_id`
+    matches the just-pushed head counts."""
+    stale_review = _trusted(
+        {
+            "id": 11,
+            "state": "COMMENTED",
+            "submitted_at": "2026-07-09T00:00:01+00:00",
+            "body": "reviewed a stale diff",
+            "commit_id": "stale-sha",
+        }
+    )
+    stale_client = FakeClient({"repos/owner/repo/pulls/12/reviews": [stale_review]})
+
+    stale_outcome = prw.wait_for_completion(
+        12,
+        {"baseline_review_id": 10, "iteration_head_sha": "head-sha"},
+        _config(),
+        stale_client,
+        sleeper=lambda _seconds: None,
+    )
+
+    assert stale_outcome.signal == "timeout"
+    assert stale_outcome.completed is False
+
+    missing_commit_review = _trusted(
+        {
+            "id": 12,
+            "state": "COMMENTED",
+            "submitted_at": "2026-07-09T00:00:02+00:00",
+            "body": "commit_id absent from payload",
+        }
+    )
+    missing_client = FakeClient(
+        {"repos/owner/repo/pulls/12/reviews": [stale_review, missing_commit_review]}
+    )
+
+    missing_outcome = prw.wait_for_completion(
+        12,
+        {"baseline_review_id": 10, "iteration_head_sha": "head-sha"},
+        _config(),
+        missing_client,
+        sleeper=lambda _seconds: None,
+    )
+
+    assert missing_outcome.signal == "timeout"
+    assert missing_outcome.completed is False
+
+    matching_review = _trusted(
+        {
+            "id": 13,
+            "state": "COMMENTED",
+            "submitted_at": "2026-07-09T00:00:03+00:00",
+            "body": "reviewed the just-pushed fix",
+            "commit_id": "head-sha",
+        }
+    )
+    matching_client = FakeClient(
+        {
+            "repos/owner/repo/pulls/12/reviews": [
+                stale_review,
+                missing_commit_review,
+                matching_review,
+            ]
+        }
+    )
+
+    matching_outcome = prw.wait_for_completion(
+        12,
+        {"baseline_review_id": 10, "iteration_head_sha": "head-sha"},
+        _config(),
+        matching_client,
+        sleeper=lambda _seconds: None,
+    )
+
+    assert matching_outcome.signal == "review_submitted"
+    assert matching_outcome.review_ids == (13,)
 
 
 def test_wait_for_completion_returns_and_records_untrusted_submitted_reviews(
@@ -1298,8 +1503,9 @@ def test_ev33_ev34_ev35_collects_only_trusted_post_baseline_unprocessed_comments
         }
     )
 
+    lease_token = _lease(project_dir)
     result = prw.collect_review_findings(
-        "abcd1234-issue-1", project_dir, 12, _config(), client, 1, _lease(project_dir)
+        "abcd1234-issue-1", project_dir, 12, _config(), client, 1, lease_token
     )
     state = lc.load_state("abcd1234-issue-1", project_dir)
     journal = Path(project_dir) / ".claude" / "loop" / "abcd1234-issue-1" / "journal.jsonl"
@@ -1309,13 +1515,22 @@ def test_ev33_ev34_ev35_collects_only_trusted_post_baseline_unprocessed_comments
         "review_comment:3",
         "issue_comment:3",
     ]
-    assert "review_comment:3" in result.processed_comment_ids
-    assert "issue_comment:3" in result.processed_comment_ids
+    # DC4: explicit-severity findings are deliberately *not* marked processed by
+    # `collect_review_findings` itself -- only `confirm_review_findings_reported` (called
+    # after the caller has durably captured `result`) does, so a crash before that
+    # confirmation safely re-surfaces them on retry instead of silently dropping them.
+    assert "review_comment:3" not in result.processed_comment_ids
+    assert "issue_comment:3" not in result.processed_comment_ids
     assert result.ignored_untrusted_comment_count == 1
     assert state.ignored_untrusted_comment_count == 1
     ignored_events = [event for event in events if event["event"] == "ignored_untrusted_comment"]
     assert ignored_events[0]["payload"]["comment_id"] == "4"
     assert ignored_events[0]["payload"]["notification_required"] is True
+
+    prw.confirm_review_findings_reported("abcd1234-issue-1", project_dir, result, lease_token)
+    confirmed_state = lc.load_state("abcd1234-issue-1", project_dir)
+    assert "review_comment:3" in confirmed_state.pr_review["processed_comment_ids"]
+    assert "issue_comment:3" in confirmed_state.pr_review["processed_comment_ids"]
 
 
 def test_collect_review_findings_accepts_same_second_post_baseline_comments(
@@ -1833,6 +2048,12 @@ def test_review_findings_snapshot_preserves_explicit_finding_across_process_boun
 
     artifact_path = prw.save_review_findings_snapshot(
         "abcd1234-issue-1", project_dir, "action-1", collected, lease_token
+    )
+    # DC4: the explicit-severity finding (`issue_comment:12`) is only marked processed once
+    # the caller confirms it has durably captured `collected` -- mirroring how
+    # `loop_driver` calls this right after `save_review_findings_snapshot` succeeds.
+    prw.confirm_review_findings_reported(
+        "abcd1234-issue-1", project_dir, collected, lease_token, action_id="action-1"
     )
     second_collect = prw.collect_review_findings(
         "abcd1234-issue-1",
@@ -2450,6 +2671,67 @@ def test_ev40_loop_common_uses_pr_review_metadata_in_guard_path(tmp_path: Path) 
     lc.evaluate_guards(state_without_phase_def, first, None, config)
     fallback_decision = lc.evaluate_guards(state_without_phase_def, second, None, config)
     assert fallback_decision.reason == "no_progress"
+
+
+def test_confirm_review_findings_reported_blocks_on_concurrent_flock_holder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DH2: `_fenced_pr_review_write` must hold the lock-file's own flock across validation
+    and the write, so a concurrent flock holder on the same path (e.g. `loop_status.py`
+    purge, or another worker's lease reacquisition) is serialized against, not raced.
+    Before the fix, `_fence_state_update` validated the lease/pending-action and returned
+    without holding any flock across the caller's subsequent journal/state write."""
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={
+            "baseline_review_id": 0,
+            "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+            "processed_comment_ids": [],
+            "findings": {},
+        },
+    )
+    lease_token = _lease(project_dir)
+    result = prw.ReviewFindingsResult(
+        findings=(
+            prw.ImportedFinding(
+                "sig-a", "high", "review_comment:1", "explicit blocker", None, None, False
+            ),
+        ),
+        iteration_findings=lc.IterationFindings(frozenset({"sig-a"}), 1),
+        previous_iteration_findings=lc.IterationFindings(frozenset(), 0),
+        processed_comment_ids=(),
+        ignored_untrusted_comment_count=0,
+        needs_classification_count=0,
+    )
+
+    lock_file = lc.lock_path("abcd1234-issue-1", project_dir)
+    held = lock_file.open("r+", encoding="utf-8")
+    fcntl.flock(held.fileno(), fcntl.LOCK_EX)
+
+    events: list[str] = []
+
+    def _confirm() -> None:
+        prw.confirm_review_findings_reported("abcd1234-issue-1", project_dir, result, lease_token)
+        events.append("confirmed")
+
+    thread = threading.Thread(target=_confirm)
+    thread.start()
+    try:
+        time.sleep(0.2)
+        # While this test still holds the flock, the confirm's write must be blocked, not
+        # racing ahead to mutate state.json underneath it.
+        assert events == []
+        events.append("released")
+    finally:
+        fcntl.flock(held.fileno(), fcntl.LOCK_UN)
+        held.close()
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert events == ["released", "confirmed"]
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    assert "review_comment:1" in state.pr_review["processed_comment_ids"]
 
 
 def test_gh_api_client_uses_paginate_and_concatenates_array_pages(monkeypatch: Any) -> None:

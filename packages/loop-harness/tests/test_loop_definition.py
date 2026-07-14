@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from tests.module_loader import load_module
+from tests.module_loader import REPO_ROOT, load_module
 
 ld = load_module("loop_definition", "packages/loop-harness/lib/loop_definition.py")
+
+
+def _implementation_on_success_exec(definition: ld.LoopDefinition) -> list[str]:
+    phase = next(p for p in definition.phases if p.name == "implementation")
+    return list(phase.on_success["exec"])
 
 
 def _write(path: Path, content: str) -> None:
@@ -113,6 +119,68 @@ def test_load_and_validate_rejects_checker_without_mechanical_or_external(tmp_pa
         ld.load_and_validate(path)
 
 
+def test_load_and_validate_rejects_denylisted_mechanical_command(tmp_path: Path) -> None:
+    """SEC-M1: mechanical.commands must not run a denylisted binary directly."""
+    path = tmp_path / "bad.yaml"
+    _write(path, _definition().replace("commands: [pytest -q]", "commands: [git push origin main]"))
+    with pytest.raises(ld.DefinitionValidationError, match="denylisted binary"):
+        ld.load_and_validate(path)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "/usr/bin/git push origin main",
+        "git\tpush origin main",
+        "env git push origin main",
+        "command git push origin main",
+        "nice -n 10 git push origin main",
+        "timeout 30 git push origin main",
+        "timeout 30s git push origin main",
+        "timeout 1.5m git push origin main",
+        "timeout 2h git push origin main",
+        'bash -c "git push origin main"',
+        'sh -c "git push origin main"',
+        "pytest -q ; git push origin main",
+        "pytest -q && git push origin main",
+        "pytest -q || git push origin main",
+        "pytest -q | git push origin main",
+        "$(git push origin main)",
+        "`git push origin main`",
+        "FOO=bar git push origin main",
+        "(git push origin main)",
+        "exec git push origin main",
+        "env -u FOO git push origin main",
+        "find . -exec git push origin main \\;",
+        "find . -execdir git push origin main +",
+        "env -S 'git push origin main'",
+        "g\\it push origin main",
+    ],
+)
+def test_load_and_validate_rejects_mechanical_command_denylist_bypass(
+    tmp_path: Path, command: str
+) -> None:
+    """SEC-M1/SN3-extra: normalization must catch path/whitespace/wrapper/shell-construct/
+    find-exec/env-split-string/backslash-escape bypasses."""
+    path = tmp_path / "bad.yaml"
+    _write(
+        path,
+        _definition().replace("commands: [pytest -q]", f"commands: [{json.dumps(command)}]"),
+    )
+    with pytest.raises(ld.DefinitionValidationError, match="denylisted binary"):
+        ld.load_and_validate(path)
+
+
+def test_load_and_validate_accepts_mechanical_command_with_denylisted_word_as_argument(
+    tmp_path: Path,
+) -> None:
+    """The scan only checks command-position binaries, not arbitrary argument text."""
+    path = tmp_path / "ok.yaml"
+    _write(path, _definition().replace("commands: [pytest -q]", "commands: [pytest -k not_git]"))
+    definition = ld.load_and_validate(path)
+    assert definition.phases[0].checker["mechanical"]["commands"] == ["pytest -k not_git"]
+
+
 def test_issue_loop_implementation_requires_llm_review(tmp_path: Path) -> None:
     path = tmp_path / "issue-loop.yaml"
     _write(path, _definition(loop_id="issue-loop", phase_name="implementation"))
@@ -213,3 +281,35 @@ def test_load_all_definitions_adds_second_loop_without_core_change(tmp_path: Pat
     definitions = ld.load_all_definitions(str(tmp_path))
     assert "issue-loop" in definitions
     assert "second-loop" in definitions
+
+
+def test_bundled_issue_loop_records_baseline_after_push_and_pr_create() -> None:
+    """code J2 (source): the packaged issue-loop's `implementation.on_success.exec` must run
+    `push` and `pr_create` before `record_baseline` -- recording the baseline before the push
+    lands would let the next iteration's reviewer diff against a baseline that predates the
+    just-pushed commits."""
+    source_path = REPO_ROOT / "packages" / "loop-harness" / "config" / "loops" / "issue-loop.yaml"
+    definition = ld.load_and_validate(source_path)
+    exec_order = _implementation_on_success_exec(definition)
+    assert exec_order.index("push") < exec_order.index("record_baseline")
+    assert exec_order.index("pr_create") < exec_order.index("record_baseline")
+
+
+def test_project_override_issue_loop_is_not_shadowing_stale_exec_order() -> None:
+    """code J2 (shadow guard): `load_all_definitions()` full-replaces the packaged issue-loop
+    by id with this repo's own project override at
+    `.claude/config/loop-harness/loops/issue-loop.yaml` (this repo self-installs loop-harness
+    from its own `packages/` tree, see `project_worktree_test_env` memory). Before the fix,
+    that checked-in override still had the pre-I3 `record_baseline` before `push` ordering,
+    silently shadowing the source fix in every run against this project_dir. This asserts the
+    *effective* definition `load_all_definitions()` returns for this repo matches the packaged
+    source's exec order, so a future re-sort of the source can never again go stale in the
+    override without failing this test."""
+    override_path = REPO_ROOT / ".claude" / "config" / "loop-harness" / "loops" / "issue-loop.yaml"
+    if not override_path.exists():
+        pytest.skip("no project-local issue-loop override present in this checkout")
+    effective = ld.load_all_definitions(str(REPO_ROOT))["issue-loop"]
+    assert effective.source_path == str(override_path)
+    exec_order = _implementation_on_success_exec(effective)
+    assert exec_order.index("push") < exec_order.index("record_baseline")
+    assert exec_order.index("pr_create") < exec_order.index("record_baseline")

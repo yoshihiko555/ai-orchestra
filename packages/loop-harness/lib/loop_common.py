@@ -10,11 +10,13 @@ import json
 import os
 import re
 import secrets
+import signal
 import socket
 import subprocess
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -27,6 +29,13 @@ DIR_MODE = 0o700
 ACTION_ID_BYTES = 6
 HASH_LENGTH = 16
 GIT_TIMEOUT_SECONDS = 5
+# Marker embedded in a retired `pending` loop's state-dir name (#H3/#H11, see
+# `loop_scheduler.recover_orphaned_pending_loops`). Real loop_ids are always
+# `<repo-identity-hash>-issue-<N>` (see `worktree_manager.compute_loop_id`), which never
+# contains this substring, so filtering on it cannot collide with a live loop_id. Shared
+# between `loop_scheduler.py` (writes it) and `loop_status.py` (must treat it specially for
+# both display and purge eligibility, SM1) so both stay in sync on one literal.
+ORPHANED_PENDING_MARKER = ".orphaned-"
 _ROOT_CACHE: dict[str, Path] = {}
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 _RESERVED_PROPOSAL_CONTEXT_KEYS = frozenset({"lease_token", "params", "reason"})
@@ -383,6 +392,42 @@ def lock_path(loop_id: str, project_dir: str) -> Path:
     return loop_dir(loop_id, project_dir) / "lock.json"
 
 
+def coord_lock_path(loop_id: str, project_dir: str) -> Path:
+    """Return the fixed, purge-independent per-loop coordination lock path (SN-flock).
+
+    Unlike `lock_path` (`.claude/loop/<loop_id>/lock.json`, deleted together with the rest of
+    the per-loop directory by `loop_status.purge_loop`'s `rmtree`), this path lives directly
+    under `.claude/loop/` so its inode stays stable across a purge. A flock taken on
+    `lock.json` itself (the previous purge-vs-resume/attach guard) stops protecting anything
+    the moment `rmtree` removes that inode: a concurrent `resume`/`reacquire_lease` call
+    racing the purge would recreate a brand-new `lock.json` (a different inode) and never
+    contend with a flock still held on the now-deleted one. `purge`, `resume`, and the
+    scheduler's repo-identity safety-stop all acquire this same, never-deleted path instead
+    (via `held_coord_lock`), so they always contend on one stable file regardless of any
+    `lock.json`/state-dir churn happening underneath.
+    """
+    _validate_safe_id("loop_id", loop_id)
+    return loop_root(project_dir) / f"{loop_id}.coord.lock"
+
+
+@contextmanager
+def held_coord_lock(loop_id: str, project_dir: str) -> Iterator[None]:
+    """Acquire the per-loop coordination lock (SN-flock) for the duration of the block.
+
+    Creates the lock file if absent (`O_CREAT`); its content carries no meaning beyond being
+    a stable flock target, and it is never deleted (unlike `lock_path`'s lock.json, which
+    `purge_loop`'s `rmtree` removes) so every caller always flocks the same inode. Nests
+    safely with any lock taken on a *different* path (e.g. `lock.json`'s own flock inside
+    `resume`/`_purge_if_still_safe`) since `flock()` contention is per-file, not per-process.
+    """
+    path = coord_lock_path(loop_id, project_dir)
+    _ensure_dir(path.parent)
+    fd = os.open(path, os.O_CREAT | os.O_RDWR, FILE_MODE)
+    with os.fdopen(fd, "r+", encoding="utf-8") as f:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        yield
+
+
 def artifact_path(loop_id: str, project_dir: str, action_id: str, name: str) -> Path:
     """Return a safe artifact path."""
     _validate_safe_id("loop_id", loop_id)
@@ -466,15 +511,21 @@ def propose(
     new_state.pending_action = PendingAction(action_id, action, state.phase, iteration, now_iso())
     new_state.state_version += 1
     new_state.updated_at = now_iso()
-    append_journal_event(
-        loop_id,
-        project_dir,
-        "pending",
-        "step",
-        action_id,
-        {"action": action, "expected_phase": state.phase},
-    )
-    _write_state(new_state, project_dir)
+    # DH1: validate the lease and that `state` is still current *inside* one held flock
+    # section immediately around the write, closing the TOCTOU window between the
+    # `_ensure_valid_lease` check above and this write (a lease can expire and be
+    # reacquired by another worker in that gap otherwise).
+    with guarded_lease_section(loop_id, project_dir, lease_token):
+        _ensure_unchanged_since(loop_id, project_dir, state.state_version)
+        append_journal_event(
+            loop_id,
+            project_dir,
+            "pending",
+            "step",
+            action_id,
+            {"action": action, "expected_phase": state.phase},
+        )
+        _write_state(new_state, project_dir)
     return ProposeResult(
         action=action,
         action_id=action_id,
@@ -518,27 +569,32 @@ def complete(
         validate_implementation_checker_result(state, result, project_dir)
     new_version = state.state_version + 1
     payload = _completed_payload(action, result)
-    append_journal_event(loop_id, project_dir, "completed", _actor_for(action), action_id, payload)
-    apply_action_effect(
-        state,
-        action,
-        result,
-        project_dir,
-        loop_id,
-        action_id,
-        selected_maker_agent=selected_maker_agent,
-    )
-    state.last_completed_action = LastCompletedAction(
-        action_id=action_id,
-        state_version_before=state_version,
-        state_version_after=new_version,
-        result_digest=_digest_json(result),
-        completed_at=now_iso(),
-    )
-    state.pending_action = None
-    state.state_version = new_version
-    state.updated_at = now_iso()
-    _write_state(state, project_dir)
+    # DH1: see `propose()` for why validation and the write must share one held flock.
+    with guarded_lease_section(loop_id, project_dir, lease_token):
+        _ensure_unchanged_since(loop_id, project_dir, state.state_version)
+        append_journal_event(
+            loop_id, project_dir, "completed", _actor_for(action), action_id, payload
+        )
+        apply_action_effect(
+            state,
+            action,
+            result,
+            project_dir,
+            loop_id,
+            action_id,
+            selected_maker_agent=selected_maker_agent,
+        )
+        state.last_completed_action = LastCompletedAction(
+            action_id=action_id,
+            state_version_before=state_version,
+            state_version_after=new_version,
+            result_digest=_digest_json(result),
+            completed_at=now_iso(),
+        )
+        state.pending_action = None
+        state.state_version = new_version
+        state.updated_at = now_iso()
+        _write_state(state, project_dir)
     return CompleteResult(True, False, new_version, _complete_next_hint(action))
 
 
@@ -556,15 +612,19 @@ def reconcile(
     pending = state.pending_action
     completed = find_journal_event(loop_id, project_dir, pending.action_id, "completed")
     if completed is not None:
-        return _reconcile_from_payload(loop_id, project_dir, state, completed, "journal")
+        return _reconcile_from_payload(
+            loop_id, project_dir, state, completed, "journal", lease_token
+        )
     artifact = load_artifact(loop_id, project_dir, pending.action_id, "check_result.json")
     if artifact is not None and pending.action == Action.RUN_CHECKER.value:
-        return _reconcile_from_artifact(loop_id, project_dir, state, pending.action_id, artifact)
+        return _reconcile_from_artifact(
+            loop_id, project_dir, state, pending.action_id, artifact, lease_token
+        )
     if pending.action == Action.RUN_CHECKER.value:
         return ReconcileOutcome("rerun_required", state.state_version)
     if not allow_side_effect_resolution:
         return ReconcileOutcome("unresolved_pending", state.state_version)
-    return _mark_unresolved_pending(loop_id, project_dir, state)
+    return _mark_unresolved_pending(loop_id, project_dir, state, lease_token)
 
 
 def heartbeat(loop_id: str, project_dir: str, lease_token: str) -> bool:
@@ -580,25 +640,34 @@ def resume(
     ttl_seconds: int,
     host: str | None = None,
 ) -> ResumeResult:
-    """Resume a failed/stopped loop and issue a new lease."""
+    """Resume a failed/stopped loop and issue a new lease.
+
+    SN-flock: the reload-through-write section is held under `held_coord_lock` (a fixed,
+    purge-independent path) so a concurrent `loop_status.py purge` of this same loop_id
+    cannot race this call - either this call blocks until the purge finishes (and then
+    correctly fails with `InvalidStateError` once `load_state` finds nothing left to resume),
+    or the purge blocks until this call's write completes (and then finds the loop no longer
+    purge-eligible on its own post-lock reload).
+    """
     if not reset_counters:
         raise InvalidStateError("resume requires reset_counters=True")
-    state = load_state(loop_id, project_dir)
-    if state.status not in {"failed", "stopped"}:
-        raise InvalidStateError(f"cannot resume status={state.status}")
-    _replace_lock(loop_id, project_dir, owner_id, ttl_seconds, host)
-    lock = _read_lock(lock_path(loop_id, project_dir))
-    if lock is None:
-        raise LockNotFoundError("new lock not found")
-    for name in list(state.guards):
-        state.guards[name] = GuardCounters()
-    state.status = "running"
-    state.stop_reason = None
-    state.pending_action = None
-    state.state_version += 1
-    state.updated_at = now_iso()
-    append_journal_event(loop_id, project_dir, "resumed", "step", None, {"phase": state.phase})
-    _write_state(state, project_dir)
+    with held_coord_lock(loop_id, project_dir):
+        state = load_state(loop_id, project_dir)
+        if state.status not in {"failed", "stopped"}:
+            raise InvalidStateError(f"cannot resume status={state.status}")
+        _replace_lock(loop_id, project_dir, owner_id, ttl_seconds, host)
+        lock = _read_lock(lock_path(loop_id, project_dir))
+        if lock is None:
+            raise LockNotFoundError("new lock not found")
+        for name in list(state.guards):
+            state.guards[name] = GuardCounters()
+        state.status = "running"
+        state.stop_reason = None
+        state.pending_action = None
+        state.state_version += 1
+        state.updated_at = now_iso()
+        append_journal_event(loop_id, project_dir, "resumed", "step", None, {"phase": state.phase})
+        _write_state(state, project_dir)
     return ResumeResult(state, lock.lease_token)
 
 
@@ -634,6 +703,16 @@ def apply_action_effect(
                 selected_maker_agent,
                 allow_legacy_maker_result,
             )
+        if result.get("infrastructure_failure"):
+            # I5 (PR #210 review round 5): a Maker that times out or exits non-zero
+            # (`_run_maker`'s `infrastructure_failure: True` result) used to always complete
+            # as `status="running"` here, unconditionally treated as a normal run_maker
+            # success — `evaluate_guards()`'s infra-retry counter was only ever reachable via
+            # `_apply_checker_result` (RUN_CHECKER/WAIT_EXTERNAL_REVIEW), never RUN_MAKER, so
+            # repeated Maker infra failures never counted toward `guards.infrastructure_failure.
+            # max_retries` and could not turn into a real loop failure.
+            _apply_maker_infrastructure_failure(state, project_dir)
+            return
         state.status = "running"
         return
     if action == Action.RUN_CHECKER.value:
@@ -651,6 +730,38 @@ def apply_action_effect(
     if action == Action.STOP.value:
         state.status = "stopped"
         state.stop_reason = str(result.get("stop_reason") or state.stop_reason or "safety_stop")
+
+
+def _apply_maker_infrastructure_failure(state: LoopState, project_dir: str | None) -> None:
+    """Guard-count (and possibly fail) a Maker infra failure (I5, PR #210 review round 5).
+
+    Mirrors `_apply_checker_result`'s infrastructure-failure handling (and
+    `_mark_unresolved_pending`'s same `PhaseCheckResult(False, [], ..., True)` ->
+    `evaluate_guards()` pattern) so a Maker that repeatedly times out or exits non-zero
+    increments `state.guards[phase].infrastructure_failure_count` and, once
+    `guards.infrastructure_failure.max_retries` is reached, is converted into a real
+    `on_failure.disposition` outcome — instead of silently completing `run_maker` as
+    `status="running"` forever regardless of how many consecutive infra failures occurred.
+
+    `phase_check.passed` is always `False` here (a Maker infra failure is never itself a
+    "success" signal), so `evaluate_guards()`'s success branch (`Action.ADVANCE_PHASE.value`/
+    `Action.EXIT_SUCCESS.value`) can never be reached from this call site; only
+    `"continue"`/`"retry"` (not yet exhausted), `Action.STOP.value`, or the phase's configured
+    `on_failure.disposition` (commonly `Action.EXIT_FAILURE.value`) are possible outcomes.
+    """
+    phase_def = _load_phase_definition(state, project_dir) if project_dir else None
+    config = _load_loop_config(project_dir) if project_dir else DEFAULT_CONFIG
+    phase_check = PhaseCheckResult(False, [], "maker_infrastructure_failure", True)
+    decision = evaluate_guards(state, phase_check, phase_def, config)
+    if decision.disposition in ("continue", "retry"):
+        state.status = "running"
+        return
+    if decision.disposition == Action.STOP.value:
+        state.status = "stopped"
+        state.stop_reason = decision.reason or "safety_stop"
+        return
+    state.status = "failed"
+    state.stop_reason = decision.reason or "guard_failed"
 
 
 def evaluate_guards(
@@ -908,15 +1019,29 @@ def run_mechanical_checks(
     timeout_seconds: int,
     heartbeat: Callable[[], None] | None = None,
     artifact_writer: Callable[[int, str, str, int], None] | None = None,
+    env: Mapping[str, str] | None = None,
+    on_start: Callable[[int | None], None] | None = None,
 ) -> list[MechanicalFailure]:
-    """Run mechanical checker commands and classify failures via failure_detector."""
+    """Run mechanical checker commands and classify failures via failure_detector.
+
+    `env` is optional and defaults to `None`, which preserves the historical behavior of
+    inheriting the caller's full `os.environ` (LP-1's `loop_step.py` relies on this default).
+    LP-2's `loop_driver.py` passes an isolated, push-credential-stripped env (SEC-C1) since
+    mechanical commands here execute Maker-authored code (e.g. `pytest -q` importing it) and
+    must not run with the driver's own push-capable environment.
+
+    Callers needing heartbeat-triggered kill-tree parity may pass `on_start` to track each
+    subprocess pid (F5); omitting it preserves the previous behavior exactly.
+    """
     detector = _load_failure_detector()
     failures: list[MechanicalFailure] = []
     for index, command in enumerate(commands, start=1):
         output: str | None = None
         exit_code: int | None = None
         try:
-            output, exit_code = _run_mechanical_command(command, cwd, timeout_seconds)
+            output, exit_code = _run_mechanical_command(
+                command, cwd, timeout_seconds, env=env, on_start=on_start
+            )
             response = {"exit_code": exit_code, "stdout": output}
             result = detector.analyze("Bash", {"command": command}, response)
         finally:
@@ -1070,18 +1195,55 @@ def reacquire_lease(
     ttl_seconds: int,
     host: str | None = None,
 ) -> LockInfo:
-    """Reacquire an existing stale lease for attach."""
-    path = lock_path(loop_id, project_dir)
-    if not path.exists():
-        raise LockNotFoundError(str(path))
-    existing = _read_lock(path)
-    if existing is not None and is_lease_alive(existing):
-        raise ForeignLeaseError(existing)
-    _replace_lock(loop_id, project_dir, owner_id, ttl_seconds, host)
-    lock = _read_lock(path)
-    if lock is None:
-        raise LockNotFoundError(str(path))
-    return lock
+    """Reacquire an existing stale lease for attach.
+
+    SN-flock: held under the same purge-independent `held_coord_lock` as `resume` (see its
+    docstring), so `attach()` (which calls this) also correctly blocks against, and is
+    blocked by, a concurrent purge of this loop_id instead of racing it.
+    """
+    with held_coord_lock(loop_id, project_dir):
+        path = lock_path(loop_id, project_dir)
+        if not path.exists():
+            raise LockNotFoundError(str(path))
+        host = host or socket.gethostname()
+        lock = _reacquire_stale_lock(path, owner_id, ttl_seconds, host)
+        if lock is None:
+            raise LockNotFoundError(str(path))
+        return lock
+
+
+def _reacquire_stale_lock(
+    path: Path, owner_id: str, ttl_seconds: int, host: str
+) -> LockInfo | None:
+    """Validate staleness and issue a fresh lease within a single flock section (DC2).
+
+    The previous implementation read the existing lock (`_read_lock`), checked staleness,
+    then called `_replace_lock` (which re-flocks and unconditionally overwrites) and re-read
+    the result via a *second*, separately-flocked `_read_lock`. Two concurrent `attach`
+    callers could each pass the unguarded staleness check, then race inside `_replace_lock`'s
+    flock: whichever writes last "wins," but the loser's post-write `_read_lock` call
+    observes the winner's token and returns it as its own `LockInfo`, so both callers end up
+    believing they hold the lease exclusively (double-attach). Reading, validating, and
+    writing the new lease within one held flock section closes this window: the loser now
+    observes the winner's *live* new lease inside the very flock it is about to write under,
+    and raises `ForeignLeaseError` instead of silently adopting it.
+    """
+    fd = _open_lock_for_update(path)
+    if fd is None:
+        return None
+    try:
+        with os.fdopen(fd, "r+", encoding="utf-8") as f:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            if not _fd_matches_path(f.fileno(), path):
+                return None
+            existing = _read_lock_stream(f)
+            if existing is not None and is_lease_alive(existing):
+                raise ForeignLeaseError(existing)
+            new_lock = _new_lock(owner_id, ttl_seconds, host)
+            _rewrite_locked_file(f, asdict(new_lock))
+            return new_lock
+    except OSError:
+        return None
 
 
 def release_lock(loop_id: str, project_dir: str, lease_token: str) -> bool:
@@ -1139,6 +1301,33 @@ def validate_lease(loop_id: str, project_dir: str, lease_token: str) -> bool:
     if lock is None or not lease_token:
         return False
     return lock.lease_token == lease_token and is_lease_alive(lock)
+
+
+@contextmanager
+def guarded_lease_section(loop_id: str, project_dir: str, lease_token: str) -> Iterator[None]:
+    """Hold the lock-file's flock for the duration of a lease-gated write (review #3).
+
+    `validate_lease()` followed by unguarded journal/state writes has a TOCTOU window: the
+    lease can expire and be reacquired by another worker (`acquire_lock`/`reacquire_lease`,
+    which take this same lock-file flock) between the check and the write, letting a stale
+    worker clobber the new owner's state. Holding the flock here for validation and the
+    caller's writes serializes both against any concurrent lease (re)acquisition. Raises
+    `WriteRejectedError` (fail-closed) if the caller-held lease is invalid/stale when the
+    flock is acquired.
+    """
+    path = lock_path(loop_id, project_dir)
+    fd = _open_lock_for_update(path)
+    if fd is None:
+        raise WriteRejectedError(f"invalid lease for {loop_id}; refusing terminal write")
+    with os.fdopen(fd, "r+", encoding="utf-8") as f:
+        try:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            lock = _read_lock_stream(f) if _fd_matches_path(f.fileno(), path) else None
+        except OSError:
+            lock = None
+        if lock is None or lock.lease_token != lease_token or not is_lease_alive(lock):
+            raise WriteRejectedError(f"invalid lease for {loop_id}; refusing terminal write")
+        yield
 
 
 def is_lease_alive(lock: LockInfo, now: float | None = None) -> bool:
@@ -1212,6 +1401,19 @@ def _ensure_valid_lease(loop_id: str, project_dir: str, lease_token: str) -> Non
     """Raise when lease validation fails."""
     if not validate_lease(loop_id, project_dir, lease_token):
         raise WriteRejectedError(f"invalid lease for {loop_id}")
+
+
+def _ensure_unchanged_since(loop_id: str, project_dir: str, expected_version: int) -> None:
+    """Raise if state.json's version changed since it was read (DH1).
+
+    Used inside a `guarded_lease_section` immediately before a fenced write, in addition to
+    that section's own lease validation: it protects against a write landing on top of a
+    state.json that has moved on since this caller last read it, closing the TOCTOU gap
+    between `propose`/`complete`/`reconcile`'s initial `load_state` and their eventual write.
+    """
+    fresh = load_state(loop_id, project_dir)
+    if fresh.state_version != expected_version:
+        raise WriteRejectedError(f"state changed since read for {loop_id}; refusing stale write")
 
 
 def _is_stale_complete(state: LoopState, action_id: str, state_version: int) -> bool:
@@ -1767,6 +1969,7 @@ def _reconcile_from_payload(
     state: LoopState,
     event: dict[str, Any],
     source: str,
+    lease_token: str,
 ) -> ReconcileOutcome:
     """Resolve pending action from completed journal payload."""
     pending = state.pending_action
@@ -1789,11 +1992,18 @@ def _reconcile_from_payload(
         pending.action_id,
         allow_legacy_maker_result=allow_legacy_maker_result,
     )
-    return _finalize_reconciled(loop_id, project_dir, state, source, pending.action_id, result)
+    return _finalize_reconciled(
+        loop_id, project_dir, state, source, pending.action_id, result, lease_token
+    )
 
 
 def _reconcile_from_artifact(
-    loop_id: str, project_dir: str, state: LoopState, action_id: str, artifact: str
+    loop_id: str,
+    project_dir: str,
+    state: LoopState,
+    action_id: str,
+    artifact: str,
+    lease_token: str,
 ) -> ReconcileOutcome:
     """Resolve pending checker action from check_result.json artifact."""
     try:
@@ -1807,7 +2017,9 @@ def _reconcile_from_artifact(
     except ProtocolViolationError as exc:
         raise IntegrityError(f"invalid sealed checker artifact: {exc}") from exc
     apply_action_effect(state, Action.RUN_CHECKER.value, result, project_dir, loop_id, action_id)
-    return _finalize_reconciled(loop_id, project_dir, state, "artifact", action_id, result)
+    return _finalize_reconciled(
+        loop_id, project_dir, state, "artifact", action_id, result, lease_token
+    )
 
 
 def _finalize_reconciled(
@@ -1817,8 +2029,15 @@ def _finalize_reconciled(
     source: str,
     action_id: str,
     result: dict[str, Any],
+    lease_token: str,
 ) -> ReconcileOutcome:
-    """Append reconciled journal event and write state."""
+    """Append reconciled journal event and write state.
+
+    DH1: the write is guarded the same way as `propose`/`complete` (see `propose()`'s
+    docstring comment) so a lease that expires and is reacquired between `reconcile()`'s
+    initial validation and this write cannot let a stale worker's write land underneath a
+    new owner.
+    """
     previous_version = state.state_version
     state.pending_action = None
     state.state_version += 1
@@ -1830,14 +2049,18 @@ def _finalize_reconciled(
         result_digest=_digest_json(result),
         completed_at=now_iso(),
     )
-    append_journal_event(
-        loop_id, project_dir, "reconciled", "step", action_id, {"resolved_by": source}
-    )
-    _write_state(state, project_dir)
+    with guarded_lease_section(loop_id, project_dir, lease_token):
+        _ensure_unchanged_since(loop_id, project_dir, previous_version)
+        append_journal_event(
+            loop_id, project_dir, "reconciled", "step", action_id, {"resolved_by": source}
+        )
+        _write_state(state, project_dir)
     return ReconcileOutcome(f"resolved_from_{source}", state.state_version)
 
 
-def _mark_unresolved_pending(loop_id: str, project_dir: str, state: LoopState) -> ReconcileOutcome:
+def _mark_unresolved_pending(
+    loop_id: str, project_dir: str, state: LoopState, lease_token: str
+) -> ReconcileOutcome:
     """Mark side-effectful unresolved pending action as infrastructure failure."""
     phase_check = PhaseCheckResult(False, [], "pending_action_unresolved_after_crash", True)
     state.last_check_result = phase_check_to_dict(phase_check)
@@ -1845,18 +2068,22 @@ def _mark_unresolved_pending(loop_id: str, project_dir: str, state: LoopState) -
     if decision.disposition == Action.EXIT_FAILURE.value:
         state.status = "failed"
         state.stop_reason = decision.reason
+    previous_version = state.state_version
     state.pending_action = None
     state.state_version += 1
     state.updated_at = now_iso()
-    append_journal_event(
-        loop_id,
-        project_dir,
-        "reconciled",
-        "step",
-        None,
-        {"resolved_by": "infrastructure_failure", "reason": phase_check.signature},
-    )
-    _write_state(state, project_dir)
+    # DH1: see `_finalize_reconciled` for why validation and the write share one held flock.
+    with guarded_lease_section(loop_id, project_dir, lease_token):
+        _ensure_unchanged_since(loop_id, project_dir, previous_version)
+        append_journal_event(
+            loop_id,
+            project_dir,
+            "reconciled",
+            "step",
+            None,
+            {"resolved_by": "infrastructure_failure", "reason": phase_check.signature},
+        )
+        _write_state(state, project_dir)
     return ReconcileOutcome("marked_infrastructure_failure", state.state_version)
 
 
@@ -2293,22 +2520,78 @@ def _write_text(path: Path, content: str) -> None:
     os.chmod(path, FILE_MODE)
 
 
-def _run_mechanical_command(command: str, cwd: str, timeout_seconds: int) -> tuple[str, int]:
-    """Run one mechanical command."""
+def _run_mechanical_command(
+    command: str,
+    cwd: str,
+    timeout_seconds: int,
+    env: Mapping[str, str] | None = None,
+    on_start: Callable[[int | None], None] | None = None,
+) -> tuple[str, int]:
+    """Run one mechanical command, killing its whole process group on timeout (review #16).
+
+    `env=None` (the default) inherits the caller's `os.environ`, matching
+    `subprocess.run`'s own default and preserving pre-SEC-C1 behavior for LP-1 callers.
+
+    Runs in its own process group (`start_new_session=True`) so a timeout kills every
+    descendant the Maker-authored command spawned (e.g. a `pytest` run's own subprocesses),
+    not just the direct `bash` child; a plain `subprocess.run(..., timeout=...)` only ever
+    reaps the immediate child, leaking grandchildren on timeout.
+
+    `on_start` optionally registers and clears the child pid for heartbeat-triggered
+    kill-tree handling (F5); omitting it preserves the previous behavior exactly.
+    """
+    proc = subprocess.Popen(
+        ["bash", "-lc", command],
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+        env=dict(env) if env is not None else None,
+    )
+    if on_start is not None:
+        on_start(proc.pid)
     try:
-        proc = subprocess.run(
-            ["bash", "-lc", command],
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-        )
-    except subprocess.TimeoutExpired as exc:
-        stdout = exc.stdout if isinstance(exc.stdout, str) else ""
-        stderr = exc.stderr if isinstance(exc.stderr, str) else ""
-        return f"{stdout}{stderr}\ncommand timed out", 124
-    output = f"{proc.stdout or ''}{proc.stderr or ''}"
-    return output, proc.returncode
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired:
+            _kill_process_group(proc.pid)
+            stdout, stderr = proc.communicate()
+            return f"{stdout or ''}{stderr or ''}\ncommand timed out", 124
+        return f"{stdout or ''}{stderr or ''}", proc.returncode
+    finally:
+        if on_start is not None:
+            on_start(None)
+
+
+def _kill_process_group(pid: int, term_wait_seconds: float = 10.0) -> None:
+    """Escalate SIGTERM -> (wait) -> SIGKILL to an entire process group.
+
+    Standalone copy of `loop_driver_support.kill_process_tree()`'s logic: `loop_common`
+    cannot import `loop_driver_support` (the latter already imports `loop_common` as `lc`,
+    so a back-import would be circular).
+
+    `PermissionError` is treated the same as `ProcessLookupError` (group gone, stop
+    polling): once the group's session leader has died from SIGTERM, a same-UID
+    existence-check (`killpg(pid, 0)`) on the now-orphaned group can spuriously raise
+    `PermissionError` on macOS instead of `ProcessLookupError`, even though the group's
+    members are already terminating/terminated.
+    """
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        return
+    deadline = time.monotonic() + term_wait_seconds
+    while time.monotonic() < deadline:
+        try:
+            os.killpg(pid, 0)
+        except (ProcessLookupError, PermissionError):
+            return
+        time.sleep(0.1)
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
 
 
 def _load_failure_detector() -> Any:
@@ -2418,11 +2701,44 @@ def _replace_lock(
     ttl_seconds: int,
     host: str | None,
 ) -> None:
-    """Replace lock.json with a fresh lease without validating the old token."""
+    """Replace lock.json with a fresh lease without validating the old token.
+
+    Called by `resume`/`reacquire_lease` to reissue a lease with no live owner. Takes this
+    lock file's own flock before writing - whether or not the file already exists - mirroring
+    the `O_CREAT | O_EXCL`-then-fallback discipline `acquire_lock`/`_acquire_existing_lock`
+    already use. Without this, an unguarded `_write_json_file` atomic-rename write here never
+    touches the *existing* lock file's inode/flock at all, so a concurrent flock holder on
+    the same path (`loop_status.py` purge, which now holds this same flock across its
+    stale-status reload + directory delete precisely to guard against this race, see
+    `_purge_if_still_safe`) could delete the loop directory out from under this write, or this
+    write could resurrect a directory purge just deleted.
+    """
     path = lock_path(loop_id, project_dir)
     _ensure_dir(path.parent)
-    lock = _new_lock(owner_id, ttl_seconds, host or socket.gethostname())
-    _write_json_file(path, asdict(lock))
+    host = host or socket.gethostname()
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, FILE_MODE)
+    except FileExistsError:
+        _replace_existing_lock_file(path, owner_id, ttl_seconds, host)
+        return
+    _write_new_lock_fd(fd, owner_id, ttl_seconds, host)
+
+
+def _replace_existing_lock_file(path: Path, owner_id: str, ttl_seconds: int, host: str) -> None:
+    """Flock and overwrite an existing lock file unconditionally (no staleness check)."""
+    fd = _open_lock_for_update(path)
+    if fd is None:
+        # The file vanished between our O_EXCL failure above and this open (e.g. a
+        # concurrent purge deleted the whole loop dir in between). Recreate it directly;
+        # a fresh O_EXCL here cannot collide with that now-finished purge.
+        _ensure_dir(path.parent)
+        new_fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, FILE_MODE)
+        _write_new_lock_fd(new_fd, owner_id, ttl_seconds, host)
+        return
+    with os.fdopen(fd, "r+", encoding="utf-8") as f:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        new_lock = _new_lock(owner_id, ttl_seconds, host)
+        _rewrite_locked_file(f, asdict(new_lock))
 
 
 def _write_new_lock_fd(fd: int, owner_id: str, ttl_seconds: int, host: str) -> LockInfo:

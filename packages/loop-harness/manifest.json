@@ -12,6 +12,18 @@
     {
       "path": "scripts/loop_step.py",
       "description": "LP-1 loop_step CLI: start/attach/propose/complete/reconcile/heartbeat/resume with JSON output"
+    },
+    {
+      "path": "scripts/loop_driver.py",
+      "description": "LP-2 headless worker: drives Maker/Checker via `claude -p`, calls loop_common directly"
+    },
+    {
+      "path": "scripts/loop_scheduler.py",
+      "description": "LP-2 resident scheduler: label-queue discovery, concurrency cap, worker spawn/restart"
+    },
+    {
+      "path": "scripts/loop_status.py",
+      "description": "LP-2 status CLI: list/show/purge over loop-run state"
     }
   ],
   "config": ["config/loop-harness.yaml", "config/loops/issue-loop.yaml"]

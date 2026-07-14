@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -1309,4 +1310,67 @@ def test_artifact_is_redacted_and_owner_only(
     )
     path = lc.loop_dir("abcd1234-issue-1", project_dir) / rel
     assert "[REDACTED]" in path.read_text(encoding="utf-8")
+    assert oct(os.stat(path).st_mode & 0o777) == "0o600"
+
+
+def test_guarded_lease_section_yields_for_valid_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Code review #3: a valid lease still lets the caller run its guarded writes."""
+    project_dir, lock = _setup_loop(tmp_path, monkeypatch)
+    entered = False
+    with lc.guarded_lease_section("abcd1234-issue-1", project_dir, lock.lease_token):
+        entered = True
+    assert entered
+
+
+def test_guarded_lease_section_rejects_mismatched_lease_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Code review #3: a stale/foreign lease token must fail closed before any write runs."""
+    project_dir, _lock = _setup_loop(tmp_path, monkeypatch)
+    entered = False
+    with pytest.raises(lc.WriteRejectedError):
+        with lc.guarded_lease_section("abcd1234-issue-1", project_dir, "not-the-real-token"):
+            entered = True
+    assert not entered
+
+
+def test_guarded_lease_section_rejects_reacquired_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Code review #3: a lease invalidated by a concurrent reacquire must be rejected too.
+
+    Simulates the TOCTOU window the fix closes: worker A's token is still the one it was
+    handed, but its heartbeat has since lapsed and worker B reacquired the lease, so A's
+    in-hand token no longer matches lock.json (mirrors
+    `test_old_lease_cannot_release_or_heartbeat_after_reacquire` in test_loop_common_lock.py).
+    """
+    project_dir, stale_lock = _setup_loop(tmp_path, monkeypatch)
+    path = lc.lock_path("abcd1234-issue-1", project_dir)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["heartbeat_at"] = "1970-01-01T00:00:00+00:00"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    reacquired = lc.reacquire_lease("abcd1234-issue-1", project_dir, "other-owner", 3600)
+    assert reacquired.lease_token != stale_lock.lease_token
+    with pytest.raises(lc.WriteRejectedError):
+        with lc.guarded_lease_section("abcd1234-issue-1", project_dir, stale_lock.lease_token):
+            pass
+
+
+def test_guarded_lease_section_holds_lock_file_exclusively(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Code review #3: the section must hold the same flock `acquire_lock`/`reacquire_lease`
+    use, so a concurrent lease (re)acquisition attempt blocks instead of racing in.
+    """
+    project_dir, lock = _setup_loop(tmp_path, monkeypatch)
+    path = lc.lock_path("abcd1234-issue-1", project_dir)
+    with lc.guarded_lease_section("abcd1234-issue-1", project_dir, lock.lease_token):
+        probe_fd = os.open(path, os.O_RDWR)
+        try:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(probe_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            os.close(probe_fd)
     assert oct(os.stat(path).st_mode & 0o777) == "0o600"

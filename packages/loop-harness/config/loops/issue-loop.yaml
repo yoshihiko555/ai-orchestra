@@ -36,9 +36,9 @@ phases:
       next: pr_review_response
       exec:
         - commit
-        - record_baseline
         - push
         - pr_create
+        - record_baseline
         - record_iteration_head
     on_failure:
       disposition: exit_failure

@@ -155,3 +155,52 @@ class TestCollectManagedAgentStems:
         result = sync_engine.collect_managed_agent_stems(tmp_path, ["no-agents"])
 
         assert result == set()
+
+
+class TestOrchestraJsonLedgerConsistency:
+    """code L4: この worktree 自身の `.claude/orchestra.json` 台帳が、実際にコミットされた同期
+    済みファイル実体のハッシュと一致していることを検算する。
+
+    `record_file_hash()`（`sync_engine.sync_packages()` 経由）は同期先ファイル
+    (`.claude/<rel>` / `codex_file_hashes` は project root 直下の `<rel>`) の
+    `compute_file_hash()` を記録する契約なので、ここでは逆方向に「台帳の値」と「ディスク上の
+    実ファイルの実際のハッシュ」を突合する。install/uninstall の sync コードはこの台帳を
+    distributed-content baseline として信頼するため、ズレたまま放置すると次回 sync で誤って
+    「変更なし」判定される（PR #210 8巡目レビュー: `config/loop-harness/loops/issue-loop.yaml`
+    が旧ダイジェストのまま放置されていた）。
+    """
+
+    def _load_orchestra_json(self) -> dict:
+        path = _repo_root / ".claude" / "orchestra.json"
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def test_file_hashes_match_committed_synced_files(self) -> None:
+        """`file_hashes[pkg][rel]` は `.claude/<rel>` の実際の sha256 と一致する。"""
+        orch = self._load_orchestra_json()
+        mismatches = []
+        for pkg_name, files in orch.get("file_hashes", {}).items():
+            for rel_path, recorded_hash in files.items():
+                target = _repo_root / ".claude" / rel_path
+                assert target.is_file(), f"{pkg_name}/{rel_path}: synced file missing on disk"
+                actual_hash = sync_engine.compute_file_hash(target)
+                if actual_hash != recorded_hash:
+                    mismatches.append((pkg_name, rel_path, recorded_hash, actual_hash))
+
+        assert not mismatches, (
+            "orchestra.json file_hashes ledger is stale for: "
+            f"{mismatches} (re-run `python scripts/orchestra-manager.py context sync` "
+            "or update the ledger to match the committed file)"
+        )
+
+    def test_codex_file_hashes_match_committed_synced_files(self) -> None:
+        """`codex_file_hashes[rel]` は project root 直下の `<rel>` の実際の sha256 と一致する。"""
+        orch = self._load_orchestra_json()
+        mismatches = []
+        for rel_path, recorded_hash in orch.get("codex_file_hashes", {}).items():
+            target = _repo_root / rel_path
+            assert target.is_file(), f"{rel_path}: codex synced file missing on disk"
+            actual_hash = sync_engine.compute_file_hash(target)
+            if actual_hash != recorded_hash:
+                mismatches.append((rel_path, recorded_hash, actual_hash))
+
+        assert not mismatches, f"orchestra.json codex_file_hashes ledger is stale for: {mismatches}"

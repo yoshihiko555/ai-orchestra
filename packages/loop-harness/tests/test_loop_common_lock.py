@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -85,6 +87,64 @@ def test_propose_returns_stop_for_live_foreign_host_lease(
     )
 
 
+def test_ensure_unchanged_since_rejects_write_after_concurrent_state_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DH1: `_ensure_unchanged_since` must reject a fenced write when state.json has moved
+    on since the caller last read it, closing the gap between `propose`/`complete`/
+    `reconcile`'s initial `load_state` and their eventual guarded write."""
+    project_dir = _write_state(tmp_path, monkeypatch)
+    lock = lc.acquire_lock("abcd1234-issue-1", project_dir, "owner", 3600, host="local")
+    assert lock is not None
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+
+    lc._ensure_unchanged_since("abcd1234-issue-1", project_dir, state.state_version)
+
+    state.state_version += 1
+    lc._write_state(state, project_dir)
+    with pytest.raises(lc.WriteRejectedError, match="state changed since read"):
+        lc._ensure_unchanged_since("abcd1234-issue-1", project_dir, state.state_version - 1)
+
+
+def test_propose_write_blocks_on_concurrent_flock_holder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DH1: `propose()`'s final write must hold the lock-file's own flock (via
+    `guarded_lease_section`), so a concurrent flock holder on the same path is serialized
+    against instead of raced. Before the fix, `_ensure_valid_lease` validated the lease and
+    returned long before this write, leaving it unguarded."""
+    project_dir = _write_state(tmp_path, monkeypatch, status="running")
+    loop_id = "abcd1234-issue-1"
+    lock = lc.acquire_lock(loop_id, project_dir, "owner", 3600, host="local")
+    assert lock is not None
+    lock_file = lc.lock_path(loop_id, project_dir)
+
+    held = lock_file.open("r+", encoding="utf-8")
+    fcntl.flock(held.fileno(), fcntl.LOCK_EX)
+
+    events: list[str] = []
+
+    def _propose() -> None:
+        lc.propose(loop_id, project_dir, lock.lease_token)
+        events.append("proposed")
+
+    thread = threading.Thread(target=_propose)
+    thread.start()
+    try:
+        time.sleep(0.2)
+        assert events == []
+        events.append("released")
+    finally:
+        fcntl.flock(held.fileno(), fcntl.LOCK_UN)
+        held.close()
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert events == ["released", "proposed"]
+    state = lc.load_state(loop_id, project_dir)
+    assert state.pending_action is not None
+
+
 def test_is_lease_alive_uses_ttl_not_pid() -> None:
     lock = lc.LockInfo("owner", 2_000_000_000, "host", lc.now_iso(), lc.now_iso(), 3600, "token")
     assert lc.is_lease_alive(lock) is True
@@ -120,6 +180,148 @@ def test_resume_requires_failed_or_stopped_and_reset_counters(
     assert result.lease_token != lock.lease_token
     with pytest.raises(lc.InvalidStateError, match="cannot resume"):
         lc.resume("abcd1234-issue-1", project_dir, True, "owner-3", 3600)
+
+
+def test_resume_succeeds_when_lock_file_is_entirely_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SH2(b): `release_lock` deletes lock.json outright, so a `failed` loop's typical state
+    has no lock file at all when `resume()` is called. `_replace_lock`'s `O_CREAT | O_EXCL`
+    create branch (mirroring `acquire_lock`'s own discipline) must handle this cleanly."""
+    project_dir = _write_state(tmp_path, monkeypatch, status="failed")
+    lock_file = lc.lock_path("abcd1234-issue-1", project_dir)
+    assert not lock_file.exists()
+
+    result = lc.resume("abcd1234-issue-1", project_dir, True, "owner-2", 3600)
+
+    assert result.state.status == "running"
+    assert lock_file.is_file()
+    fresh = lc._read_lock(lock_file)
+    assert fresh is not None
+    assert fresh.lease_token == result.lease_token
+
+
+def test_replace_lock_blocks_on_concurrent_flock_holder_when_file_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SH2(b): `_replace_lock` (used by `resume`/`reacquire_lease`) must take this lock file's
+    own flock before overwriting it - whether or not the file already exists - mirroring the
+    `acquire_lock`/`_acquire_existing_lock` discipline. Without this, a concurrent flock holder
+    on the same path (`loop_status.py` purge, which holds this same flock across its
+    stale-status reload + directory delete precisely to guard against this race) could race an
+    in-flight `resume()`/`reacquire_lease()` write instead of being serialized against it."""
+    project_dir = _write_state(tmp_path, monkeypatch, status="failed")
+    loop_id = "abcd1234-issue-1"
+    lock = lc.acquire_lock(loop_id, project_dir, "owner", 3600, host="local")
+    assert lock is not None
+    lock_file = lc.lock_path(loop_id, project_dir)
+
+    held = lock_file.open("r+", encoding="utf-8")
+    fcntl.flock(held.fileno(), fcntl.LOCK_EX)
+
+    events: list[str] = []
+
+    def _resume() -> None:
+        lc.resume(loop_id, project_dir, True, "owner-2", 3600)
+        events.append("resumed")
+
+    thread = threading.Thread(target=_resume)
+    thread.start()
+    try:
+        time.sleep(0.2)
+        # While this test still holds the flock, resume()'s `_replace_lock` write must be
+        # blocked, not racing ahead to overwrite lock.json underneath it.
+        assert events == []
+        events.append("released")
+    finally:
+        fcntl.flock(held.fileno(), fcntl.LOCK_UN)
+        held.close()
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert events == ["released", "resumed"]
+    assert lc.load_state(loop_id, project_dir).status == "running"
+
+
+def test_resume_blocks_while_coord_lock_is_held_by_a_concurrent_purge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SN-flock: `resume`'s reload-through-write section is held under the same
+    purge-independent `held_coord_lock` `loop_status._purge_if_still_safe` takes (see its
+    docstring). Holding that fixed-path lock here (simulating a concurrent purge in-flight)
+    must block `resume()`, not let it race ahead - unlike the inner lock.json flock alone,
+    which stops protecting anything the instant a purge's `rmtree` swaps out that file's
+    inode."""
+    project_dir = _write_state(tmp_path, monkeypatch, status="failed")
+    loop_id = "abcd1234-issue-1"
+    lock = lc.acquire_lock(loop_id, project_dir, "owner", 3600, host="local")
+    assert lock is not None
+    coord_lock_file = lc.coord_lock_path(loop_id, project_dir)
+    coord_lock_file.parent.mkdir(parents=True, exist_ok=True)
+    held_fd = os.open(coord_lock_file, os.O_CREAT | os.O_RDWR, lc.FILE_MODE)
+    fcntl.flock(held_fd, fcntl.LOCK_EX)
+
+    events: list[str] = []
+
+    def _resume() -> None:
+        lc.resume(loop_id, project_dir, True, "owner-2", 3600)
+        events.append("resumed")
+
+    thread = threading.Thread(target=_resume)
+    thread.start()
+    try:
+        time.sleep(0.2)
+        # While this test still holds the coord lock, resume() must remain blocked.
+        assert events == []
+        events.append("released")
+    finally:
+        fcntl.flock(held_fd, fcntl.LOCK_UN)
+        os.close(held_fd)
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert events == ["released", "resumed"]
+    assert lc.load_state(loop_id, project_dir).status == "running"
+
+
+def test_attach_blocks_while_coord_lock_is_held_by_a_concurrent_purge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SN-flock: `attach` (via `reacquire_lease`) must also block against the same
+    purge-independent coord lock, mirroring `resume`'s equivalent test above."""
+    project_dir = _write_state(tmp_path, monkeypatch, status="running")
+    loop_id = "abcd1234-issue-1"
+    lock = lc.acquire_lock(loop_id, project_dir, "owner", 1, host="local")
+    assert lock is not None
+    path = lc.lock_path(loop_id, project_dir)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["heartbeat_at"] = "1970-01-01T00:00:00+00:00"
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    coord_lock_file = lc.coord_lock_path(loop_id, project_dir)
+    coord_lock_file.parent.mkdir(parents=True, exist_ok=True)
+    held_fd = os.open(coord_lock_file, os.O_CREAT | os.O_RDWR, lc.FILE_MODE)
+    fcntl.flock(held_fd, fcntl.LOCK_EX)
+
+    events: list[str] = []
+
+    def _attach() -> None:
+        lc.attach(loop_id, project_dir, "owner-2", 3600)
+        events.append("attached")
+
+    thread = threading.Thread(target=_attach)
+    thread.start()
+    try:
+        time.sleep(0.2)
+        assert events == []
+        events.append("released")
+    finally:
+        fcntl.flock(held_fd, fcntl.LOCK_UN)
+        os.close(held_fd)
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert events == ["released", "attached"]
 
 
 def test_attach_requires_existing_stale_lock_and_running_status(
@@ -272,6 +474,53 @@ def test_heartbeat_updates_lock_without_touching_state_version(
     assert lc.heartbeat_lock("abcd1234-issue-1", project_dir, lock.lease_token) is True
     after = lc.load_state("abcd1234-issue-1", project_dir).state_version
     assert after == before
+
+
+def test_concurrent_reacquire_lease_serializes_and_rejects_loser(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DC2: staleness-check + write must happen inside one flock section so two concurrent
+    `attach` callers cannot both end up believing they own the reacquired lease. Before the
+    fix, the staleness check (`_read_lock`) ran outside the flock and the post-write re-read
+    was a *second*, separately-flocked `_read_lock` call; a losing thread's re-read could
+    observe the winner's freshly-written token and return it as if it were its own lease.
+    With the fix, exactly one concurrent caller wins (gets a fresh `LockInfo` matching what
+    is durably on disk) and the other observes the winner's now-live lease and raises
+    `ForeignLeaseError` -- never both "succeeding" with conflicting beliefs of ownership."""
+    project_dir = _write_state(tmp_path, monkeypatch, status="running")
+    loop_id = "abcd1234-issue-1"
+    old = lc.acquire_lock(loop_id, project_dir, "owner", 1, host="local")
+    assert old is not None
+    path = lc.lock_path(loop_id, project_dir)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["heartbeat_at"] = "1970-01-01T00:00:00+00:00"
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    barrier = threading.Barrier(2)
+    results: dict[str, object] = {}
+
+    def _reacquire(owner: str) -> None:
+        barrier.wait()
+        try:
+            results[owner] = lc.reacquire_lease(loop_id, project_dir, owner, 3600, host="local")
+        except lc.ForeignLeaseError as exc:
+            results[owner] = exc
+
+    t1 = threading.Thread(target=_reacquire, args=("owner-a",))
+    t2 = threading.Thread(target=_reacquire, args=("owner-b",))
+    t1.start()
+    t2.start()
+    t1.join(timeout=5)
+    t2.join(timeout=5)
+
+    assert not t1.is_alive()
+    assert not t2.is_alive()
+    winners = [v for v in results.values() if isinstance(v, lc.LockInfo)]
+    losers = [v for v in results.values() if isinstance(v, lc.ForeignLeaseError)]
+    assert len(winners) == 1
+    assert len(losers) == 1
+    on_disk = lc._read_lock(path)
+    assert on_disk == winners[0]
 
 
 def test_old_lease_cannot_release_or_heartbeat_after_reacquire(
