@@ -93,9 +93,7 @@ def _append_run(
         loop_cli.ev.scenario_suite_dir(loop_cli._PACKAGE_DIR, "claude-harness")
     )
     suite_hash = suite_hash or loop_cli.ev.compute_suite_hash(paths)
-    evaluator_hash = evaluator_hash or loop_cli.ev.compute_evaluator_hash(
-        config.get("scoring") or {}
-    )
+    evaluator_hash = evaluator_hash or loop_cli.ev.compute_configured_evaluator_hash(config)
     scenario_path = next(
         path
         for path in paths

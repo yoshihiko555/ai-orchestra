@@ -390,6 +390,61 @@ def test_header_allowlist_strips_candidate_auth_and_forwarding_headers() -> None
     assert result["user-agent"] == "ai-orchestra-meta-harness-broker/0.1"
 
 
+def test_header_allowlist_forwards_only_pinned_cli_beta_features() -> None:
+    incoming = Message()
+    client_betas = ",".join(
+        [
+            "claude-code-20250219",
+            "context-1m-2025-08-07",
+            "interleaved-thinking-2025-05-14",
+            "thinking-token-count-2026-05-13",
+            "context-management-2025-06-27",
+            "prompt-caching-scope-2026-01-05",
+            "mid-conversation-system-2026-04-07",
+            "advisor-tool-2026-03-01",
+            "effort-2025-11-24",
+            "structured-outputs-2025-12-15",
+        ]
+    )
+    incoming["anthropic-beta"] = client_betas
+
+    result = broker._upstream_headers(incoming, "real-oauth-token")
+
+    assert result["anthropic-beta"] == f"oauth-2025-04-20,{client_betas}"
+
+
+@pytest.mark.parametrize(
+    "value,match",
+    [
+        ("unknown-feature-2026-07-14", "unsupported"),
+        ("context-management-2025-06-27,context-management-2025-06-27", "duplicate"),
+        ("context_management-2025-06-27", "invalid"),
+    ],
+)
+def test_header_allowlist_rejects_unapproved_cli_beta_features(value: str, match: str) -> None:
+    incoming = Message()
+    incoming["anthropic-beta"] = value
+
+    with pytest.raises(ValueError, match=match):
+        broker._upstream_headers(incoming, "oauth")
+
+
+def test_http_handler_records_safe_header_validation_category(
+    http_broker: tuple[Any, Any],
+) -> None:
+    server, state = http_broker
+
+    status, _headers, _payload = _post(
+        server,
+        headers={"anthropic-beta": "unknown-feature-2026-07-14"},
+    )
+
+    assert status == 431
+    assert state.metrics.anomaly_reasons == [
+        "invalid upstream header: unsupported anthropic-beta feature: unknown-feature-2026-07-14"
+    ]
+
+
 def test_header_values_and_upstream_bytes_are_bounded(tmp_path: Path, monkeypatch) -> None:
     incoming = Message()
     incoming["anthropic-version"] = "x" * 129
@@ -431,6 +486,66 @@ def test_usage_budget_hard_cap_rejects_following_request(tmp_path: Path, monkeyp
     metrics = json.loads((tmp_path / "metrics.json").read_text())
     assert metrics["estimated_cost_usd"] == 2.0
     assert metrics["budget_exceeded"] is True
+
+
+def test_two_1024_token_requests_fit_three_dollar_run_budget(tmp_path: Path, monkeypatch) -> None:
+    state = _state(
+        tmp_path,
+        monkeypatch,
+        max_requests=4,
+        max_total_tokens=500_000,
+    )
+    body = json.dumps(
+        {
+            "model": "claude-opus-4-8",
+            "max_tokens": 1024,
+            "messages": [{"role": "user", "content": "x" * 20_000}],
+        }
+    ).encode()
+
+    for _ in range(2):
+        started, reason = state.begin_request()
+        assert started is True, reason
+        assert state.request_budget_error("/v1/messages", body) is None
+        state.finish_request(broker.Usage(input_tokens=5_000, output_tokens=512))
+
+    assert state.metrics.request_count == 2
+    assert state.metrics.estimated_cost_usd < 3.0
+    assert state.metrics.budget_exceeded is False
+
+
+def test_one_parallel_request_waits_and_is_serialized(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = _state(tmp_path, monkeypatch, max_requests=4, max_total_tokens=500_000)
+    assert state.begin_request()[0] is True
+    waiting = threading.Event()
+    real_slot = state.upstream_slot
+
+    class NotifyingSlot:
+        def acquire(self, blocking: bool = True, timeout: float | None = None) -> bool:
+            if real_slot.acquire(blocking=False):
+                return True
+            waiting.set()
+            return real_slot.acquire(blocking=blocking, timeout=timeout)
+
+        def release(self) -> None:
+            real_slot.release()
+
+    state.upstream_slot = NotifyingSlot()
+    result: list[tuple[bool, str]] = []
+    thread = threading.Thread(target=lambda: result.append(state.begin_request()))
+    thread.start()
+    assert waiting.wait(timeout=1)
+    assert result == []
+
+    state.finish_request(broker.Usage(input_tokens=1))
+    thread.join(timeout=1)
+
+    assert result == [(True, "")]
+    assert state.metrics.request_count == 2
+    assert state.metrics.anomaly is False
+    state.finish_request(broker.Usage(input_tokens=1))
 
 
 def test_direct_request_budget_is_rejected_before_upstream(

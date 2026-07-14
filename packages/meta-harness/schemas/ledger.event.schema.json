@@ -182,11 +182,15 @@
     "frontier_updated": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["event", "ts", "schema_version", "frontier", "dominated"],
+      "required": ["event", "ts", "schema_version", "target", "frontier", "dominated"],
       "properties": {
         "event": { "const": "frontier_updated" },
         "ts": { "type": "string", "format": "date-time" },
         "schema_version": { "type": "string", "const": "1.0" },
+        "target": {
+          "type": "string",
+          "pattern": "^(claude-harness|skill:[a-z0-9-]+)$"
+        },
         "frontier": { "type": "array", "items": { "type": "string" } },
         "dominated": { "type": "array", "items": { "type": "string" } }
       }

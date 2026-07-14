@@ -6,6 +6,7 @@
   "additionalProperties": false,
   "required": [
     "schema_version",
+    "target",
     "generated_at",
     "ledger_line_count",
     "suite_hash",
@@ -17,6 +18,10 @@
   ],
   "properties": {
     "schema_version": { "type": "string", "const": "1.0" },
+    "target": {
+      "type": "string",
+      "pattern": "^(claude-harness|skill:[a-z0-9-]+)$"
+    },
     "generated_at": { "type": "string", "format": "date-time" },
     "ledger_line_count": { "type": "integer", "minimum": 0 },
     "suite_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },

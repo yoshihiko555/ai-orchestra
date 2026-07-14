@@ -30,6 +30,7 @@ if str(_LIB_DIR) not in sys.path:
 import meta_harness_common as mh  # noqa: E402
 import proposer_security as psec  # noqa: E402
 import redaction  # noqa: E402
+import skill_targets  # noqa: E402
 from proposer_backend import ProposalValidationError, ProposerError  # noqa: E402,F401
 
 PROPOSAL_SCHEMA_NAME = "proposal.schema.json"
@@ -182,6 +183,7 @@ def build_filtered_view(
     main_root: Path,
     config: dict,
     source_commit: str,
+    target: str = mh.DEFAULT_TARGET,
     snapshot: FilteredStoreSnapshot | None = None,
     view_parent: Path | None = None,
     runner: SubprocessRunner = subprocess.run,
@@ -191,7 +193,7 @@ def build_filtered_view(
     included_run_ids: set[str] = set()
     holdout_run_ids: set[str] = set()
     try:
-        store_snapshot = snapshot or snapshot_filtered_store(main_root, config)
+        store_snapshot = snapshot or snapshot_filtered_store(main_root, config, target)
         _build_view_contents(
             view_dir=view_dir,
             main_root=main_root,
@@ -213,11 +215,18 @@ def build_filtered_view(
     )
 
 
-def snapshot_filtered_store(main_root: Path, config: dict) -> FilteredStoreSnapshot:
+def snapshot_filtered_store(
+    main_root: Path, config: dict, target: str = mh.DEFAULT_TARGET
+) -> FilteredStoreSnapshot:
     """`store.lock` 保持中に呼ぶ、propose 用の短期 store スナップショット取得。"""
-    frontier_doc = _read_frontier_doc(main_root, config)
-    events = tuple(_read_ledger_events_strict(mh.ledger_path(main_root, config)))
-    candidate_ids = tuple(mh.list_candidate_ids(main_root, config))
+    target = mh.validate_target(target)
+    frontier_doc = _read_frontier_doc(main_root, config, target)
+    all_events = tuple(_read_ledger_events_strict(mh.ledger_path(main_root, config)))
+    candidate_ids = _candidate_ids_for_target(main_root, config, target)
+    candidate_id_set = set(candidate_ids)
+    events = tuple(
+        event for event in all_events if _event_matches_target(event, target, candidate_id_set)
+    )
     non_holdout_run_ids: list[str] = []
     seen_non_holdout: set[str] = set()
     holdout_run_ids: set[str] = set()
@@ -242,6 +251,32 @@ def snapshot_filtered_store(main_root: Path, config: dict) -> FilteredStoreSnaps
         non_holdout_run_ids=tuple(non_holdout_run_ids),
         holdout_run_ids=frozenset(holdout_run_ids),
     )
+
+
+def _candidate_ids_for_target(main_root: Path, config: dict, target: str) -> tuple[str, ...]:
+    candidate_ids: list[str] = []
+    for cand_id in mh.list_candidate_ids(main_root, config):
+        manifest = mh.read_candidate_manifest(main_root, config, cand_id)
+        if manifest is None:
+            raise ViewBuildError(f"candidate manifest is missing: {cand_id}")
+        manifest_target = str(manifest.get("target") or mh.DEFAULT_TARGET)
+        if manifest_target == target:
+            candidate_ids.append(cand_id)
+    return tuple(candidate_ids)
+
+
+def _event_matches_target(event: dict[str, Any], target: str, candidate_ids: set[str]) -> bool:
+    event_target = event.get("target")
+    if event_target is not None:
+        if event_target != target:
+            return False
+        cand_id = event.get("cand_id")
+        return cand_id is None or str(cand_id) in candidate_ids
+    cand_id = event.get("cand_id")
+    if cand_id is not None:
+        return str(cand_id) in candidate_ids
+    # target 導入前の対象なしイベントは claude-harness の履歴としてのみ扱う。
+    return target == mh.DEFAULT_TARGET
 
 
 def verify_filtered_view(view_dir: Path, *, known_holdout_run_ids: set[str]) -> None:
@@ -274,6 +309,11 @@ def render_proposer_prompt(
     max_overlay_bytes = proposer_cfg.get("max_overlay_bytes", DEFAULT_MAX_OVERLAY_BYTES)
     rendered_focus_runs = _format_focus_runs(focus_run_id, focus_run_ids)
     rendered_valid_runs = _join_or_none([str(run_id) for run_id in valid_based_on_run_ids or ()])
+    if target.startswith("skill:"):
+        resolution = skill_targets.allowed_overlay_paths(view_dir / "baseline", target, config)
+        allowed_paths = "\n".join(f"  - {path}" for path in sorted(resolution.private_paths))
+    else:
+        allowed_paths = "  - facets/**"
     return Template(template).safe_substitute(
         view_dir=str(view_dir.resolve()),
         target=target,
@@ -282,6 +322,7 @@ def render_proposer_prompt(
         focus_candidate_id=focus_candidate_id or _MISSING_FOCUS,
         max_overlay_bytes=max_overlay_bytes,
         frontier_summary=summarize_frontier(frontier_doc),
+        allowed_paths=allowed_paths,
     )
 
 
@@ -414,17 +455,13 @@ def _assert_view_outside_repo(view_dir: Path, main_root: Path, config: dict) -> 
             raise ViewBuildError(f"filtered view must be outside repo/store: {resolved_view}")
 
 
-def _read_frontier_doc(main_root: Path, config: dict) -> dict[str, Any]:
-    path = mh.frontier_path(main_root, config)
-    if not path.is_file():
-        raise ViewBuildError(f"frontier cache is missing: {path}")
+def _read_frontier_doc(
+    main_root: Path, config: dict, target: str = mh.DEFAULT_TARGET
+) -> dict[str, Any]:
     try:
-        doc = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ViewBuildError(f"frontier cache is invalid: {path}") from exc
-    if not isinstance(doc, dict):
-        raise ViewBuildError(f"frontier cache must be an object: {path}")
-    return doc
+        return mh.read_frontier_cache(main_root, config, target)
+    except (OSError, ValueError) as exc:
+        raise ViewBuildError(f"frontier cache is invalid for {target}: {exc}") from exc
 
 
 def _read_ledger_events_strict(path: Path) -> list[dict[str, Any]]:

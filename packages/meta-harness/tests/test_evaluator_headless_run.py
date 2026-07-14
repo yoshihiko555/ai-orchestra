@@ -34,6 +34,13 @@ def _write_result_event(events_path: Path, event: dict) -> None:
     events_path.write_text(json.dumps(event) + "\n", encoding="utf-8")
 
 
+def _write_events(events_path: Path, events: list[dict]) -> None:
+    events_path.write_text(
+        "".join(json.dumps(event) + "\n" for event in events),
+        encoding="utf-8",
+    )
+
+
 def _install_isolation_launch(monkeypatch, tmp_path: Path):
     settings_path = tmp_path / "settings.json"
     settings_path.write_text("{}\n", encoding="utf-8")
@@ -118,6 +125,159 @@ class TestCheckHeadlessRunOutcome:
             assert exc.error_type == "run_error"
         else:
             raise AssertionError("nonzero exit code should raise EvaluatorStageError")
+
+
+class TestScenarioExecutionEnvelope:
+    def test_explicit_empty_allowed_tools_does_not_fall_back_to_global(self) -> None:
+        execution = ev._effective_scenario_execution(
+            {
+                "target": "skill:handoff",
+                "allowed_tools": [],
+                "budget": {"max_output_tokens": 1024},
+            },
+            {
+                "evaluate": {"allowed_tools": ["Read", "Bash(python3 *)"]},
+                "scenario_run": {"max_output_tokens_default": 4096},
+            },
+        )
+
+        assert execution == {
+            "allowed_tools": [],
+            "allowed_tools_source": "scenario",
+            "model_tools": ["Skill"],
+            "max_output_tokens": 1024,
+            "max_output_tokens_source": "scenario",
+            "path_prepend": [],
+        }
+
+    def test_headless_command_contains_minimal_model_tools_and_output_limit(
+        self, tmp_path: Path
+    ) -> None:
+        command = ev._build_headless_command(
+            {
+                "target": "skill:handoff",
+                "prompt": "/handoff test",
+                "allowed_tools": ["Bash(python3 *)", "Write"],
+                "budget": {"max_output_tokens": 1024},
+            },
+            {},
+            tmp_path / "instruction.md",
+        )
+
+        assert command[:3] == [
+            "/usr/bin/env",
+            "CLAUDE_CODE_MAX_OUTPUT_TOKENS=1024",
+            "claude",
+        ]
+        assert command[command.index("--allowedTools") + 1] == "Bash(python3 *) Write"
+        assert command[command.index("--tools") + 1] == "Bash Write Skill"
+
+    def test_headless_command_prepends_safe_workspace_path(self, tmp_path: Path) -> None:
+        command = ev._build_headless_command(
+            {
+                "target": "skill:issue-create",
+                "prompt": "/issue-create task test",
+                "allowed_tools": ["Bash(gh *)"],
+                "path_prepend": ["bin"],
+            },
+            {},
+            tmp_path / "instruction.md",
+        )
+
+        assert command[:4] == [
+            "/usr/bin/env",
+            "CLAUDE_CODE_MAX_OUTPUT_TOKENS=4096",
+            "PATH=/workspace/bin:/runtime/bin:/usr/local/bin:/usr/bin:/bin",
+            "claude",
+        ]
+
+    def test_unsafe_path_prepend_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="safe relative paths"):
+            ev._effective_scenario_execution(
+                {"target": "skill:issue-create", "path_prepend": ["../bin"]},
+                {},
+            )
+
+    def test_evaluator_hash_changes_when_execution_fallback_changes(self) -> None:
+        first = ev.compute_evaluator_hash(
+            {}, {"allowed_tools": ["Read"], "max_output_tokens_default": 4096}
+        )
+        second = ev.compute_evaluator_hash(
+            {}, {"allowed_tools": ["Read"], "max_output_tokens_default": 2048}
+        )
+
+        assert first != second
+
+
+class TestSkillActivationEvidence:
+    def test_registered_slash_command_with_tool_use_passes(self, tmp_path: Path) -> None:
+        events_path = tmp_path / "events.jsonl"
+        _write_events(
+            events_path,
+            [
+                {"type": "system", "subtype": "init", "slash_commands": ["handoff"]},
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {"type": "tool_use", "name": "Bash", "input": {"command": "true"}}
+                        ]
+                    },
+                },
+            ],
+        )
+
+        ev._verify_headless_skill_activation(
+            {"target": "skill:handoff", "prompt": "/handoff test"},
+            events_path,
+        )
+
+    def test_registration_is_accumulated_across_multiple_init_events(self, tmp_path: Path) -> None:
+        events_path = tmp_path / "events.jsonl"
+        _write_events(
+            events_path,
+            [
+                {"type": "system", "subtype": "init", "slash_commands": ["handoff"]},
+                {"type": "system", "subtype": "init", "slash_commands": []},
+                {"type": "assistant", "message": {"content": [{"type": "tool_use"}]}},
+            ],
+        )
+
+        ev._verify_headless_skill_activation(
+            {"target": "skill:handoff", "prompt": "/handoff test"}, events_path
+        )
+
+    def test_missing_registered_slash_command_fails_closed(self, tmp_path: Path) -> None:
+        events_path = tmp_path / "events.jsonl"
+        _write_events(
+            events_path,
+            [
+                {"type": "system", "subtype": "init", "slash_commands": []},
+                {
+                    "type": "assistant",
+                    "message": {"content": [{"type": "tool_use", "name": "Bash"}]},
+                },
+            ],
+        )
+
+        with pytest.raises(ev.EvaluatorStageError, match="was not registered"):
+            ev._verify_headless_skill_activation(
+                {"target": "skill:handoff", "prompt": "/handoff test"},
+                events_path,
+            )
+
+    def test_registered_slash_without_tool_use_fails_closed(self, tmp_path: Path) -> None:
+        events_path = tmp_path / "events.jsonl"
+        _write_events(
+            events_path,
+            [{"type": "system", "subtype": "init", "slash_commands": ["handoff"]}],
+        )
+
+        with pytest.raises(ev.EvaluatorStageError, match="produced no tool use"):
+            ev._verify_headless_skill_activation(
+                {"target": "skill:handoff", "prompt": "/handoff test"},
+                events_path,
+            )
 
 
 class TestRunHeadlessScenarioEnvironment:

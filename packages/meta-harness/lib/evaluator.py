@@ -43,6 +43,7 @@ import meta_harness_common as mh  # noqa: E402
 import redaction  # noqa: E402
 import scenario_isolation as siso  # noqa: E402
 import scenario_process as sproc  # noqa: E402
+import skill_targets  # noqa: E402
 
 SubprocessRunner = Callable[..., subprocess.CompletedProcess]
 
@@ -434,9 +435,23 @@ def remove_worktree(
         pass  # best-effort: 除去失敗が全体フローをクラッシュさせてはならない
 
 
-def apply_overlay(overlay_dir: Path, config: dict, worktree_dir: Path, schema_dir: Path) -> None:
+def apply_overlay(
+    overlay_dir: Path,
+    config: dict,
+    worktree_dir: Path,
+    schema_dir: Path,
+    *,
+    target: str,
+    inherited_overlay_dir: Path | None = None,
+) -> None:
     """overlay を worktree に適用する（Sec2-1 手順2-3）。register 時と同じ検証を再実行する。"""
-    violations = mh.validate_overlay(overlay_dir, config)
+    violations = mh.validate_overlay(
+        overlay_dir,
+        config,
+        target=target,
+        baseline_root=worktree_dir,
+        inherited_overlay_dir=inherited_overlay_dir,
+    )
     if violations:
         raise EvaluatorStageError("overlay_apply", "overlay_error", "; ".join(violations))
     for rel in mh.list_overlay_files(overlay_dir):
@@ -450,6 +465,113 @@ def apply_overlay(overlay_dir: Path, config: dict, worktree_dir: Path, schema_di
     config_patch_path = overlay_dir / mh.CONFIG_PATCH_FILENAME
     if config_patch_path.is_file():
         _apply_config_patch(config_patch_path, config, schema_dir)
+
+
+def apply_registered_candidate_overlay(
+    *,
+    main_root: Path,
+    config: dict,
+    manifest: dict,
+    worktree_dir: Path,
+    schema_dir: Path,
+    overlay_dir: Path | None = None,
+) -> None:
+    """Revalidate and apply a candidate lineage against each pre-overlay baseline."""
+    target = str(manifest.get("target") or mh.DEFAULT_TARGET)
+    if not target.startswith("skill:"):
+        candidate_overlay = overlay_dir
+        if candidate_overlay is None:
+            candidate_overlay = (
+                mh.candidates_dir(main_root, config) / str(manifest["cand_id"]) / "overlay"
+            )
+        apply_overlay(
+            candidate_overlay,
+            config,
+            worktree_dir,
+            schema_dir,
+            target=target,
+        )
+        return
+
+    lineage = _candidate_lineage(main_root, config, manifest)
+    inherited_overlay: Path | None = None
+    source_commit = str(manifest.get("source_commit") or "")
+    for item in lineage:
+        cand_id = str(item.get("cand_id") or "")
+        if item.get("target") != target:
+            raise EvaluatorStageError(
+                "overlay_apply", "overlay_error", f"candidate lineage target mismatch: {cand_id}"
+            )
+        if item.get("source_commit") != source_commit:
+            raise EvaluatorStageError(
+                "overlay_apply",
+                "overlay_error",
+                f"candidate lineage source_commit mismatch: {cand_id}",
+            )
+        try:
+            closure_hash = skill_targets.allowed_overlay_paths(
+                worktree_dir, target, config
+            ).closure_hash
+        except (OSError, ValueError) as exc:
+            raise EvaluatorStageError("overlay_apply", "overlay_error", str(exc)) from exc
+        if item.get("target_closure_hash") != closure_hash:
+            raise EvaluatorStageError(
+                "overlay_apply",
+                "overlay_error",
+                f"candidate target closure hash is stale: {cand_id}",
+            )
+        overlay_dir = mh.candidates_dir(main_root, config) / cand_id / "overlay"
+        _verify_registered_overlay_integrity(item, overlay_dir)
+        apply_overlay(
+            overlay_dir,
+            config,
+            worktree_dir,
+            schema_dir,
+            target=target,
+            inherited_overlay_dir=inherited_overlay,
+        )
+        inherited_overlay = overlay_dir
+
+
+def _candidate_lineage(main_root: Path, config: dict, manifest: dict) -> list[dict]:
+    lineage: list[dict] = []
+    seen: set[str] = set()
+    current: dict | None = manifest
+    while current is not None:
+        cand_id = str(current.get("cand_id") or "")
+        if not cand_id or cand_id in seen:
+            raise EvaluatorStageError(
+                "overlay_apply", "overlay_error", "candidate lineage is invalid or cyclic"
+            )
+        seen.add(cand_id)
+        lineage.append(current)
+        parent_id = current.get("parent_id")
+        if parent_id is None:
+            break
+        current = mh.read_candidate_manifest(main_root, config, str(parent_id))
+        if current is None:
+            raise EvaluatorStageError(
+                "overlay_apply",
+                "overlay_error",
+                f"candidate lineage parent is missing: {parent_id}",
+            )
+    return list(reversed(lineage))
+
+
+def _verify_registered_overlay_integrity(manifest: dict, overlay_dir: Path) -> None:
+    if not overlay_dir.is_dir():
+        raise EvaluatorStageError(
+            "overlay_apply", "overlay_error", f"candidate overlay is missing: {overlay_dir}"
+        )
+    expected_files = sorted(str(path) for path in manifest.get("overlay_files") or [])
+    if mh.list_overlay_files(overlay_dir) != expected_files:
+        raise EvaluatorStageError(
+            "overlay_apply", "overlay_error", "candidate overlay manifest mismatch"
+        )
+    if mh.compute_config_hash(overlay_dir, {}) != manifest.get("config_hash"):
+        raise EvaluatorStageError(
+            "overlay_apply", "overlay_error", "candidate overlay hash mismatch"
+        )
 
 
 def _apply_config_patch(config_patch_path: Path, config: dict, schema_dir: Path) -> None:
@@ -690,7 +812,15 @@ def run_headless_scenario(
             if launch.backend == "docker"
             else self_report_instruction
         )
-        raw_command = _build_headless_command(scenario, config, instruction_argument)
+        workspace_root = (
+            Path(siso.docker.CONTAINER_WORKTREE) if launch.backend == "docker" else worktree_dir
+        )
+        raw_command = _build_headless_command(
+            scenario,
+            config,
+            instruction_argument,
+            workspace_root=workspace_root,
+        )
         cmd, cleanup_command = siso.build_scenario_command(launch, raw_command)
         events_path = staging_dir / "events.jsonl"
         progress_path = staging_dir / "progress.log"
@@ -732,6 +862,7 @@ def run_headless_scenario(
                 "run", "timeout", f"scenario run exceeded timeout_ms={timeout_ms}"
             )
         _check_headless_run_outcome(completed, events_path)
+        _verify_headless_skill_activation(scenario, events_path)
         result = HeadlessRunResult(
             events_path=events_path,
             progress_path=progress_path,
@@ -801,18 +932,61 @@ def _check_headless_run_outcome(
         raise EvaluatorStageError("run", "run_error", f"claude -p exited with code {exit_code}")
 
 
+def _verify_headless_skill_activation(scenario: dict, events_path: Path) -> None:
+    """Fail closed unless a skill slash command is registered and drives a tool call."""
+    target = str(scenario.get("target") or "")
+    if not target.startswith("skill:"):
+        return
+    skill = target.split(":", 1)[1]
+    prompt = str(scenario.get("prompt") or "").lstrip()
+    if not prompt.startswith(f"/{skill}"):
+        raise EvaluatorStageError(
+            "run", "run_error", f"skill scenario prompt must start with /{skill}"
+        )
+    slash_registered = False
+    assistant_tool_use = False
+    for event in _iter_jsonl(events_path):
+        if event.get("type") == "system" and event.get("subtype") == "init":
+            commands = event.get("slash_commands") or []
+            slash_registered = slash_registered or skill in commands or f"/{skill}" in commands
+        if event.get("type") != "assistant":
+            continue
+        for item in (event.get("message") or {}).get("content") or []:
+            if isinstance(item, dict) and item.get("type") == "tool_use":
+                assistant_tool_use = True
+    if not slash_registered:
+        raise EvaluatorStageError(
+            "run", "run_error", f"skill slash command was not registered: {skill}"
+        )
+    if not assistant_tool_use:
+        raise EvaluatorStageError(
+            "run", "run_error", f"skill slash command produced no tool use: {skill}"
+        )
+
+
 def _build_headless_command(
-    scenario: dict, config: dict, self_report_instruction: Path
+    scenario: dict,
+    config: dict,
+    self_report_instruction: Path,
+    *,
+    workspace_root: Path = Path(siso.docker.CONTAINER_WORKTREE),
 ) -> list[str]:
     evaluate_cfg = config.get("evaluate") or {}
-    scenario_run_cfg = config.get("scenario_run") or {}
     budget = scenario.get("budget") or {}
+    execution = _effective_scenario_execution(scenario, config)
+    scenario_run_cfg = config.get("scenario_run") or {}
     max_turns = budget.get("max_turns", scenario_run_cfg.get("max_turns_default", 30))
     max_budget_usd = budget.get(
         "max_budget_usd", scenario_run_cfg.get("max_budget_usd_default", 3.0)
     )
-    allowed_tools = evaluate_cfg.get("allowed_tools") or []
+    env_assignments = [f"CLAUDE_CODE_MAX_OUTPUT_TOKENS={execution['max_output_tokens']}"]
+    if execution["path_prepend"]:
+        prepended = [str(workspace_root / relative) for relative in execution["path_prepend"]]
+        base_path = f"{siso.docker.CONTAINER_RUNTIME}/bin:/usr/local/bin:/usr/bin:/bin"
+        env_assignments.append(f"PATH={':'.join([*prepended, base_path])}")
     cmd = [
+        "/usr/bin/env",
+        *env_assignments,
         "claude",
         "-p",
         scenario["prompt"],
@@ -831,14 +1005,64 @@ def _build_headless_command(
         "--setting-sources",
         "project,local",
         "--no-chrome",
+        "--allowedTools",
+        " ".join(execution["allowed_tools"]),
+        "--tools",
+        " ".join(execution["model_tools"]),
     ]
-    if allowed_tools:
-        cmd += ["--allowedTools", " ".join(allowed_tools)]
     cmd.append("--no-session-persistence")
     model = evaluate_cfg.get("model")
     if model:
         cmd += ["--model", model]
     return cmd
+
+
+def _effective_scenario_execution(scenario: dict, config: dict) -> dict[str, Any]:
+    """Resolve permission/model tool exposure and output limit with presence semantics."""
+    evaluate_cfg = config.get("evaluate") or {}
+    scenario_run_cfg = config.get("scenario_run") or {}
+    budget = scenario.get("budget") or {}
+    if "allowed_tools" in scenario:
+        allowed_tools = list(scenario["allowed_tools"])
+        allowed_tools_source = "scenario"
+    else:
+        allowed_tools = list(evaluate_cfg.get("allowed_tools") or [])
+        allowed_tools_source = "global"
+
+    model_tools: list[str] = []
+    for permission in allowed_tools:
+        tool_name = str(permission).split("(", 1)[0].strip()
+        if tool_name and tool_name not in model_tools:
+            model_tools.append(tool_name)
+    if str(scenario.get("target") or "").startswith("skill:") and "Skill" not in model_tools:
+        model_tools.append("Skill")
+
+    if "max_output_tokens" in budget:
+        max_output_tokens = int(budget["max_output_tokens"])
+        max_output_tokens_source = "scenario"
+    else:
+        max_output_tokens = int(scenario_run_cfg.get("max_output_tokens_default", 4096))
+        max_output_tokens_source = "global"
+    if max_output_tokens < 1:
+        raise ValueError("max_output_tokens must be >= 1")
+
+    path_prepend = list(scenario.get("path_prepend") or [])
+    if any(
+        not isinstance(relative, str)
+        or re.fullmatch(r"[A-Za-z0-9_-][A-Za-z0-9._-]*(?:/[A-Za-z0-9_-][A-Za-z0-9._-]*)*", relative)
+        is None
+        for relative in path_prepend
+    ):
+        raise ValueError("path_prepend entries must be safe relative paths")
+
+    return {
+        "allowed_tools": allowed_tools,
+        "allowed_tools_source": allowed_tools_source,
+        "model_tools": model_tools,
+        "max_output_tokens": max_output_tokens,
+        "max_output_tokens_source": max_output_tokens_source,
+        "path_prepend": path_prepend,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1394,9 +1618,32 @@ def _compute_evaluator_hash(
     return hasher.hexdigest()
 
 
-def compute_evaluator_hash(scoring_config: dict) -> str:
-    """Evaluator and Docker execution semantics plus scoring.* snapshot sha256."""
-    return _compute_evaluator_hash(_EVALUATOR_SOURCE_FILES, scoring_config)
+def compute_evaluator_hash(
+    scoring_config: dict, execution_config: dict[str, Any] | None = None
+) -> str:
+    """Evaluator sources plus scoring and global scenario fallback settings sha256."""
+    snapshot = {
+        "scoring": scoring_config,
+        "execution": execution_config or {},
+    }
+    return _compute_evaluator_hash(_EVALUATOR_SOURCE_FILES, snapshot)
+
+
+def evaluator_execution_snapshot(config: dict) -> dict[str, Any]:
+    """Return the global execution settings that define evaluator hash scope."""
+    evaluate_cfg = config.get("evaluate") or {}
+    scenario_run_cfg = config.get("scenario_run") or {}
+    return {
+        "allowed_tools": evaluate_cfg.get("allowed_tools") or [],
+        "permission_mode": evaluate_cfg.get("permission_mode", "acceptEdits"),
+        "model": evaluate_cfg.get("model"),
+        "max_output_tokens_default": scenario_run_cfg.get("max_output_tokens_default", 4096),
+    }
+
+
+def compute_configured_evaluator_hash(config: dict) -> str:
+    """Hash evaluator semantics from one complete runtime configuration."""
+    return compute_evaluator_hash(config.get("scoring") or {}, evaluator_execution_snapshot(config))
 
 
 # ---------------------------------------------------------------------------
@@ -1405,8 +1652,7 @@ def compute_evaluator_hash(scoring_config: dict) -> str:
 
 
 def scenario_suite_dir(package_dir: Path, target: str) -> Path:
-    if not re.fullmatch(r"(?:claude-harness|skill:[a-z0-9-]+)", target):
-        raise ValueError(f"unknown target: {target!r}")
+    mh.validate_target(target)
     if target == "claude-harness":
         return package_dir / "scenarios" / "claude-harness"
     if target.startswith("skill:"):
@@ -1418,6 +1664,29 @@ def discover_scenario_paths(scenarios_dir: Path) -> list[Path]:
     if not scenarios_dir.is_dir():
         return []
     return sorted(scenarios_dir.glob("*.yaml"))
+
+
+def validate_target_suite(package_dir: Path, schema_dir: Path, target: str) -> list[Path]:
+    """Validate target ownership and the train/holdout minimum for skill suites."""
+    paths = discover_scenario_paths(scenario_suite_dir(package_dir, target))
+    if not paths:
+        raise ValueError(f"target is not allowlisted by a scenario suite: {target}")
+    holdout_count = 0
+    train_count = 0
+    for path in paths:
+        scenario = load_scenario(path, schema_dir)
+        if scenario.get("target") != target:
+            raise ValueError(
+                f"scenario target mismatch in {path}: expected {target}, "
+                f"got {scenario.get('target')}"
+            )
+        if scenario.get("holdout"):
+            holdout_count += 1
+        else:
+            train_count += 1
+    if target.startswith("skill:") and (train_count < 1 or holdout_count < 1):
+        raise ValueError(f"skill target suite must contain train >= 1 and holdout >= 1: {target}")
+    return paths
 
 
 def load_scenario(path: Path, schema_dir: Path) -> dict:
@@ -1463,6 +1732,12 @@ def _build_metadata(
     model: str | None,
     claude_version: str | None,
     cli_capabilities: dict,
+    allowed_tools: list[str],
+    allowed_tools_source: str,
+    model_tools: list[str],
+    max_output_tokens: int,
+    max_output_tokens_source: str,
+    path_prepend: list[str],
     started_at: str,
     attempt: int,
     attempts_total: int,
@@ -1485,6 +1760,12 @@ def _build_metadata(
         "model": model,
         "claude_version": claude_version or "",
         "cli_capabilities": cli_capabilities,
+        "allowed_tools": allowed_tools,
+        "allowed_tools_source": allowed_tools_source,
+        "model_tools": model_tools,
+        "max_output_tokens": max_output_tokens,
+        "max_output_tokens_source": max_output_tokens_source,
+        "path_prepend": path_prepend,
         "started_at": started_at,
         "finished_at": None,
         "attempt": attempt,
@@ -1649,6 +1930,7 @@ def run_single_attempt(
     scenario_hash = compute_scenario_hash(scenario_path)
 
     started_at = mh.now_iso()
+    execution = _effective_scenario_execution(scenario, config)
     metadata = _build_metadata(
         run_id=run_id,
         cand_id=cand_id,
@@ -1666,6 +1948,12 @@ def run_single_attempt(
         model=(config.get("evaluate") or {}).get("model"),
         claude_version=cli_capabilities.get("claude_version"),
         cli_capabilities=cli_capabilities,
+        allowed_tools=execution["allowed_tools"],
+        allowed_tools_source=execution["allowed_tools_source"],
+        model_tools=execution["model_tools"],
+        max_output_tokens=execution["max_output_tokens"],
+        max_output_tokens_source=execution["max_output_tokens_source"],
+        path_prepend=execution["path_prepend"],
         started_at=started_at,
         attempt=attempt,
         attempts_total=attempts_total,
@@ -1823,7 +2111,14 @@ def _run_attempt_lifecycle(
         worktree_dir = create_worktree(
             main_root, root, run_id, manifest["source_commit"], runner=runner
         )
-        apply_overlay(cand_dir / "overlay", config, worktree_dir, schema_dir)
+        apply_registered_candidate_overlay(
+            main_root=main_root,
+            config=config,
+            manifest=manifest,
+            worktree_dir=worktree_dir,
+            schema_dir=schema_dir,
+            overlay_dir=cand_dir / "overlay",
+        )
         build_facet_and_context(
             worktree_dir,
             config=config,
@@ -1958,13 +2253,10 @@ def evaluate_candidate(
 
     target = manifest["target"]
     cand_dir = mh.candidates_dir(main_root, config) / cand_id
-    suite_dir = scenario_suite_dir(package_dir, target)
-    all_scenario_paths = discover_scenario_paths(suite_dir)
-    if not all_scenario_paths:
-        raise ValueError(f"no scenarios found for target {target!r} in {suite_dir}")
+    all_scenario_paths = validate_target_suite(package_dir, schema_dir, target)
 
     suite_hash = compute_suite_hash(all_scenario_paths)
-    evaluator_hash = compute_evaluator_hash(config.get("scoring") or {})
+    evaluator_hash = compute_configured_evaluator_hash(config)
 
     scenario_docs = [(p, load_scenario(p, schema_dir)) for p in all_scenario_paths]
     selected = _select_scenarios(scenario_docs, scenario_ids)

@@ -20,11 +20,13 @@ _SCHEMA_DIR = _PACKAGE_DIR / "schemas"
 if str(_LIB_DIR) not in sys.path:
     sys.path.insert(0, str(_LIB_DIR))
 
+import evaluator as ev  # noqa: E402
 import isolation as iso  # noqa: E402
 import meta_harness_common as mh  # noqa: E402
 import proposer as prop  # noqa: E402
 import proposer_backend as pb  # noqa: E402
 import proposer_security as psec  # noqa: E402
+import skill_targets  # noqa: E402
 
 EXIT_OK = 0
 EXIT_RUNTIME_ERROR = 1
@@ -47,7 +49,17 @@ def cmd_propose(
     project_dir = Path(project).resolve()
 
     try:
-        snapshot = _snapshot_propose_store(main_root, config)
+        mh.validate_target(target)
+        if focus_candidate is not None:
+            focus_manifest = mh.read_candidate_manifest(main_root, config, focus_candidate)
+            if focus_manifest is None:
+                raise prop.ProposerError(f"focus candidate not found: {focus_candidate}")
+            if focus_manifest.get("target") != target:
+                raise prop.ProposerError(
+                    f"focus candidate target mismatch: expected {target}, "
+                    f"got {focus_manifest.get('target')}"
+                )
+        snapshot = _snapshot_propose_store(main_root, config, target)
         cand_id = _run_propose_pipeline(
             main_root=main_root,
             config=config,
@@ -96,9 +108,11 @@ def _emit(data: dict, as_json: bool, human_lines: list[str] | None = None) -> No
         print(line)
 
 
-def _snapshot_propose_store(main_root: Path, config: dict) -> prop.FilteredStoreSnapshot:
+def _snapshot_propose_store(
+    main_root: Path, config: dict, target: str = mh.DEFAULT_TARGET
+) -> prop.FilteredStoreSnapshot:
     with mh.store_lock(main_root, config):
-        return prop.snapshot_filtered_store(main_root, config)
+        return prop.snapshot_filtered_store(main_root, config, target)
 
 
 def _run_propose_pipeline(
@@ -131,15 +145,33 @@ def _run_propose_pipeline(
     )
     valid_based_on_run_ids = _citable_run_ids(snapshot, target)
     if not valid_based_on_run_ids:
-        raise prop.ProposerError(f"no citable non-holdout runs for target: {target}")
+        raise prop.ProposerError(
+            f"no citable non-holdout runs for target: {target}; "
+            "register and evaluate a baseline candidate first"
+        )
     with _temporary_proposer_home(tool, config) as (home, auth_canary):
         view = prop.build_filtered_view(
             main_root=main_root,
             config=config,
             source_commit=source_commit,
+            target=target,
             snapshot=snapshot,
         )
         try:
+            if target.startswith("skill:") and parent_id is not None:
+                parent_manifest = mh.read_candidate_manifest(main_root, config, parent_id)
+                if parent_manifest is None:
+                    raise prop.ProposerError(f"parent candidate not found: {parent_id}")
+                ev.apply_registered_candidate_overlay(
+                    main_root=main_root,
+                    config=config,
+                    manifest=parent_manifest,
+                    worktree_dir=view.path / "baseline",
+                    schema_dir=_SCHEMA_DIR,
+                )
+                prop.verify_filtered_view(
+                    view.path, known_holdout_run_ids=set(view.holdout_run_ids)
+                )
             return _launch_and_register_proposal(
                 main_root=main_root,
                 config=config,
@@ -430,7 +462,36 @@ def _register_proposed_candidate(
         overlay_files = prop.materialize_overlay_from_proposal(
             proposal, overlay_dir, max_overlay_bytes=max_overlay_bytes
         )
-        violations = mh.validate_overlay(overlay_dir, config)
+        target_resolution: skill_targets.SkillTargetResolution | None = None
+        inherited_overlay: Path | None = None
+        if target.startswith("skill:"):
+            parent_manifest = (
+                mh.read_candidate_manifest(main_root, config, parent_id)
+                if parent_id is not None
+                else None
+            )
+            with skill_targets.materialized_baseline(main_root, source_commit) as baseline:
+                if parent_manifest is not None:
+                    ev.apply_registered_candidate_overlay(
+                        main_root=main_root,
+                        config=config,
+                        manifest=parent_manifest,
+                        worktree_dir=baseline,
+                        schema_dir=_SCHEMA_DIR,
+                    )
+                    inherited_overlay = mh.candidates_dir(main_root, config) / parent_id / "overlay"
+                target_resolution = skill_targets.allowed_overlay_paths(baseline, target, config)
+                violations = mh.validate_overlay(
+                    overlay_dir,
+                    config,
+                    target=target,
+                    baseline_root=baseline,
+                    inherited_overlay_dir=inherited_overlay,
+                )
+        else:
+            violations = mh.validate_overlay(
+                overlay_dir, config, target=target, baseline_root=main_root
+            )
         if violations:
             raise prop.ProposerError("; ".join(violations[:5]))
         _enforce_output_security(
@@ -464,6 +525,7 @@ def _register_proposed_candidate(
                 overlay_files=overlay_files,
                 description=str(proposal["hypothesis"]),
                 created_by="proposer",
+                target_closure_hash=(target_resolution.closure_hash if target_resolution else None),
             )
             _validate_proposer_registration(
                 manifest,
@@ -480,6 +542,12 @@ def _register_proposed_candidate(
                 manifest=manifest,
                 overlay_dir=overlay_dir,
                 overlay_files=overlay_files,
+                target=target,
+                baseline_root=main_root,
+                inherited_overlay_dir=inherited_overlay,
+                skill_allowed_paths=(
+                    target_resolution.private_paths if target_resolution else None
+                ),
             )
             try:
                 mh.append_ledger_event(
@@ -514,10 +582,28 @@ def _inherit_parent_overlay(
     manifest = mh.read_candidate_manifest(main_root, config, parent_id)
     if manifest is None:
         raise prop.ProposerError(f"parent candidate not found: {parent_id}")
+    target = str(manifest.get("target") or "")
     parent_overlay = mh.candidates_dir(main_root, config) / parent_id / "overlay"
-    violations = mh.validate_overlay(parent_overlay, config)
-    if violations:
-        raise prop.ProposerError(f"parent overlay is invalid: {'; '.join(violations[:5])}")
+    if target.startswith("skill:"):
+        try:
+            with skill_targets.materialized_baseline(
+                main_root, str(manifest.get("source_commit") or "")
+            ) as baseline:
+                ev.apply_registered_candidate_overlay(
+                    main_root=main_root,
+                    config=config,
+                    manifest=manifest,
+                    worktree_dir=baseline,
+                    schema_dir=_SCHEMA_DIR,
+                )
+        except (OSError, ValueError, ev.EvaluatorStageError) as exc:
+            raise prop.ProposerError(f"parent overlay is invalid: {exc}") from exc
+    else:
+        violations = mh.validate_overlay(
+            parent_overlay, config, target=target, baseline_root=main_root
+        )
+        if violations:
+            raise prop.ProposerError(f"parent overlay is invalid: {'; '.join(violations[:5])}")
     actual_files = mh.list_overlay_files(parent_overlay)
     expected_files = sorted(str(path) for path in manifest.get("overlay_files") or [])
     if actual_files != expected_files:

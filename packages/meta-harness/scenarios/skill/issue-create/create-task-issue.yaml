@@ -1,0 +1,40 @@
+schema_version: "1.0"
+id: create-task-issue
+target: skill:issue-create
+description: Create a task issue through a deterministic offline gh fixture.
+prompt: |
+  /issue-create task オフラインキャッシュのCI検証を追加
+
+  The task must require `python3 -m pytest -q tests/test_cache.py` as a completion condition.
+  The user has reviewed and approved creation, so complete the workflow now.
+setup:
+  - "mkdir -p bin .meta-harness && cp packages/meta-harness/scenarios/fixtures/fake-gh.py bin/gh && chmod +x bin/gh && rm -f .meta-harness/issue-create-call.json"
+allowed_tools:
+  - "Bash(gh *)"
+  - "Write"
+path_prepend:
+  - bin
+command_timeout_ms: 60000
+critical:
+  - id: task-template-body
+    text: "task テンプレート構成で本文が作られる"
+    oracle: command_exit
+    command: >-
+      python3 -c "import json; d=json.load(open('.meta-harness/issue-create-call.json')); assert '## タスク内容' in d['body'] and '## 完了条件' in d['body'] and 'tests/test_cache.py' in d['body']"
+  - id: task-label
+    text: "task ラベルが選定される"
+    oracle: command_exit
+    command: >-
+      python3 -c "import json; d=json.load(open('.meta-harness/issue-create-call.json')); assert d['label'] == 'task'"
+checks:
+  - id: issue-body-quality
+    text: "本文が実行可能な完了条件を含む"
+    oracle: rubric_judge
+    rubric: "The recorded issue body must be concise, use the task template, and contain an objectively verifiable pytest completion condition."
+holdout: false
+timeout_ms: 300000
+budget:
+  max_turns: 8
+  max_budget_usd: 3.0
+  max_output_tokens: 1024
+repeat: 1

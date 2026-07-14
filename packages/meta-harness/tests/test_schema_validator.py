@@ -252,6 +252,7 @@ class TestFrontierSchema:
         schema = _load("frontier.schema.json")
         instance = {
             "schema_version": "1.0",
+            "target": "claude-harness",
             "generated_at": "2026-01-01T00:00:00+09:00",
             "ledger_line_count": 0,
             "suite_hash": "0" * 64,
@@ -267,6 +268,7 @@ class TestFrontierSchema:
         schema = _load("frontier.schema.json")
         instance = {
             "schema_version": "1.0",
+            "target": "claude-harness",
             "generated_at": "2026-01-01T00:00:00+09:00",
             "ledger_line_count": 0,
             "suite_hash": "0" * 64,
@@ -318,6 +320,17 @@ class TestScenarioSchema:
         errors = mh.validate_against_schema(instance, schema, SCHEMA_DIR)
         assert any("does not match pattern" in e for e in errors)
 
+    def test_safe_path_prepend_is_accepted(self) -> None:
+        schema = _load("scenario.schema.json")
+        instance = {**self._VALID, "path_prepend": ["bin", "tools/local-bin"]}
+        assert mh.validate_against_schema(instance, schema, SCHEMA_DIR) == []
+
+    def test_path_prepend_traversal_is_rejected(self) -> None:
+        schema = _load("scenario.schema.json")
+        instance = {**self._VALID, "path_prepend": ["../bin"]}
+        errors = mh.validate_against_schema(instance, schema, SCHEMA_DIR)
+        assert any("does not match pattern" in error for error in errors)
+
 
 class TestRunMetadataSchema:
     _VALID = {
@@ -338,6 +351,12 @@ class TestRunMetadataSchema:
         "model": None,
         "claude_version": "2.1.201",
         "cli_capabilities": {},
+        "allowed_tools": ["Read"],
+        "allowed_tools_source": "global",
+        "model_tools": ["Read"],
+        "max_output_tokens": 4096,
+        "max_output_tokens_source": "global",
+        "path_prepend": [],
         "started_at": "2026-01-01T00:00:00+09:00",
         "attempt": 1,
         "attempts_total": 1,

@@ -1,0 +1,41 @@
+schema_version: "1.0"
+id: create-handoff-holdout
+target: skill:handoff
+description: Holdout handoff for a partially completed database migration task.
+prompt: |
+  /handoff --message "Resume migration safety work: dry-run is complete, rollback test remains. Validate with python3 -m pytest -q tests/test_migrations.py. Never deploy or push."
+
+  Generate the handoff now. Do not ask for more context.
+setup:
+  - "mkdir -p .meta-harness .claude/handoffs"
+  - >-
+    printf '# Plans\n\n- `cc:WIP` Migration safety work\n- `cc:TODO` Validate rollback behavior\n'
+    > .claude/Plans.md
+  - "touch -t 200001010000 .meta-harness/handoff-start"
+allowed_tools:
+  - "Bash(python3 *)"
+  - "Write"
+command_timeout_ms: 60000
+critical:
+  - id: handoff-file-created
+    text: ".claude/handoffs/ 配下に新しい handoff ファイルが生成される"
+    oracle: command_exit
+    command: >-
+      find .claude/handoffs -type f -newer .meta-harness/handoff-start -print -quit | grep -q .
+  - id: handoff-is-restartable
+    text: "現在状態・残作業・検証手順を含み、引き継ぎ先が単独で再開できる"
+    oracle: command_exit
+    command: >-
+      python3 -c "from pathlib import Path; m=Path('.meta-harness/handoff-start').stat().st_mtime; ps=[p for p in Path('.claude/handoffs').glob('*.md') if p.stat().st_mtime > m]; p=max(ps, key=lambda x:x.stat().st_mtime); s=p.read_text(); assert 'rollback' in s.lower() and 'test_migrations.py' in s and ('push' in s.lower() or 'deploy' in s.lower())"
+checks:
+  - id: handoff-content-quality
+    text: "未完了の rollback 検証と禁止事項を曖昧にしない"
+    oracle: rubric_judge
+    rubric: "The newest handoff must distinguish completed dry-run work from pending rollback validation and preserve the no-deploy/no-push constraint."
+holdout: true
+timeout_ms: 300000
+budget:
+  max_turns: 8
+  max_budget_usd: 3.0
+  max_output_tokens: 1024
+repeat: 1

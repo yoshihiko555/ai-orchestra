@@ -24,6 +24,7 @@ if str(_LIB_DIR) not in sys.path:
 import evaluator as ev  # noqa: E402
 import meta_harness_common as mh  # noqa: E402
 import proposer_security as psec  # noqa: E402
+import skill_targets  # noqa: E402
 
 MAIN_REF = "origin/main"
 BUILD_TIMEOUT_SECONDS = 300
@@ -264,12 +265,13 @@ def _validate_preconditions(
     if status != "evaluated":
         raise PromotionValidationError(f"candidate must be evaluated, got: {status}")
 
-    frontier_doc = _compute_current_frontier(events, config)
+    target = mh.validate_target(str(manifest.get("target") or ""))
+    frontier_doc = _compute_current_frontier(events, config, target)
     if cand_id not in set(frontier_doc["frontier"]):
         raise PromotionValidationError(f"candidate is not on current frontier: {cand_id}")
-    if not _has_passing_holdout(events, cand_id):
+    if not _has_passing_holdout(events, cand_id, target):
         raise PromotionValidationError(f"candidate has no passing holdout run: {cand_id}")
-    if not _has_current_hash_pair(events, cand_id, frontier_doc):
+    if not _has_current_hash_pair(events, cand_id, target, frontier_doc):
         raise PromotionValidationError(
             f"candidate run hashes are stale; re-run evaluate for candidate: {cand_id}"
         )
@@ -284,7 +286,7 @@ def _validate_preconditions(
         manifest,
         promotion_outputs={"branch": branch, "PR title": title, "PR body": body},
     )
-    _check_freshness(project_dir, manifest, config)
+    _check_freshness(main_root, project_dir, manifest, config)
 
     return PromotionPreflight(
         cand_id=cand_id,
@@ -297,15 +299,19 @@ def _validate_preconditions(
     )
 
 
-def _compute_current_frontier(events: list[dict], config: dict) -> dict[str, Any]:
-    points = mh.aggregate_run_points(events, config)
+def _compute_current_frontier(
+    events: list[dict], config: dict, target: str = mh.DEFAULT_TARGET
+) -> dict[str, Any]:
+    target = mh.validate_target(target)
+    points = mh.aggregate_run_points(events, config, target)
     eligible = [p for p in points if p["eligible"]]
     ineligible_ids = [p["cand_id"] for p in points if not p["eligible"]]
     frontier_ids, dominated_ids = mh.compute_pareto_frontier(eligible)
-    latest = mh.latest_non_holdout_run_completed(events)
+    latest = mh.latest_non_holdout_run_completed(events, target)
     zero_hash = "0" * 64
     return {
         "schema_version": "1.0",
+        "target": target,
         "generated_at": mh.now_iso(),
         "ledger_line_count": len(events),
         "suite_hash": (latest or {}).get("suite_hash", zero_hash),
@@ -317,31 +323,34 @@ def _compute_current_frontier(events: list[dict], config: dict) -> dict[str, Any
     }
 
 
-def _has_passing_holdout(events: list[dict], cand_id: str) -> bool:
+def _has_passing_holdout(events: list[dict], cand_id: str, target: str) -> bool:
     """最新の holdout run の verdict が `pass` のときのみ True を返す。
 
     ledger は追記順のため、同一 cand_id の holdout run が複数あるときは最後に
     出現したものを最新 attempt とみなす。古い `pass` の後に新しい `fail`/`error`
     があれば promote を拒否する（過去の合格で publish されるのを防ぐ）。
     """
-    latest = _latest_holdout_run(events, cand_id)
+    latest = _latest_holdout_run(events, cand_id, target)
     return latest is not None and latest.get("verdict") == "pass"
 
 
-def _latest_holdout_run(events: list[dict], cand_id: str) -> dict[str, Any] | None:
+def _latest_holdout_run(events: list[dict], cand_id: str, target: str) -> dict[str, Any] | None:
     for event in reversed(events):
         if (
             event.get("event") == "run_completed"
             and event.get("cand_id") == cand_id
+            and event.get("target") == target
             and bool(event.get("holdout"))
         ):
             return event
     return None
 
 
-def _has_current_hash_pair(events: list[dict], cand_id: str, frontier_doc: dict[str, Any]) -> bool:
+def _has_current_hash_pair(
+    events: list[dict], cand_id: str, target: str, frontier_doc: dict[str, Any]
+) -> bool:
     expected = (frontier_doc.get("suite_hash"), frontier_doc.get("evaluator_hash"))
-    latest_holdout = _latest_holdout_run(events, cand_id)
+    latest_holdout = _latest_holdout_run(events, cand_id, target)
     holdout_current = (
         latest_holdout is not None
         and (latest_holdout.get("suite_hash"), latest_holdout.get("evaluator_hash")) == expected
@@ -349,6 +358,7 @@ def _has_current_hash_pair(events: list[dict], cand_id: str, frontier_doc: dict[
     non_holdout_current = any(
         event.get("event") == "run_completed"
         and event.get("cand_id") == cand_id
+        and event.get("target") == target
         and not bool(event.get("holdout"))
         and (event.get("suite_hash"), event.get("evaluator_hash")) == expected
         for event in events
@@ -356,7 +366,9 @@ def _has_current_hash_pair(events: list[dict], cand_id: str, frontier_doc: dict[
     return holdout_current and non_holdout_current
 
 
-def _check_freshness(project_dir: Path, manifest: dict[str, Any], config: dict) -> None:
+def _check_freshness(
+    main_root: Path, project_dir: Path, manifest: dict[str, Any], config: dict
+) -> None:
     source_commit = manifest.get("source_commit")
     if not isinstance(source_commit, str) or not SOURCE_COMMIT_PATTERN.fullmatch(source_commit):
         raise PromotionValidationError("candidate manifest has invalid source_commit")
@@ -368,6 +380,38 @@ def _check_freshness(project_dir: Path, manifest: dict[str, Any], config: dict) 
         raise PromotionValidationError(
             f"candidate source_commit is not an ancestor of {MAIN_REF}: {source_commit}"
         )
+    target = str(manifest.get("target") or "")
+    if target.startswith("skill:"):
+        expected_closure_hash = manifest.get("target_closure_hash")
+        if not isinstance(expected_closure_hash, str):
+            raise PromotionValidationError("skill candidate is missing target_closure_hash")
+        try:
+            with skill_targets.materialized_baseline(project_dir, MAIN_REF) as baseline:
+                parent_id = manifest.get("parent_id")
+                if parent_id is not None:
+                    parent_manifest = mh.read_candidate_manifest(main_root, config, str(parent_id))
+                    if parent_manifest is None:
+                        raise PromotionValidationError(
+                            f"candidate lineage parent is missing: {parent_id}"
+                        )
+                    ev.apply_registered_candidate_overlay(
+                        main_root=main_root,
+                        config=config,
+                        manifest=parent_manifest,
+                        worktree_dir=baseline,
+                        schema_dir=_SCHEMA_DIR,
+                    )
+                current_closure_hash = skill_targets.resolve_skill_target(
+                    baseline, target
+                ).closure_hash
+        except (OSError, ValueError, ev.EvaluatorStageError) as exc:
+            raise PromotionValidationError(
+                f"could not resolve current skill closure: {exc}"
+            ) from exc
+        if current_closure_hash != expected_closure_hash:
+            raise PromotionValidationError(
+                "skill target composition or closure inputs changed since candidate registration"
+            )
     overlay_files = [str(path) for path in manifest.get("overlay_files") or []]
     if not overlay_files:
         return
@@ -451,15 +495,14 @@ def _apply_candidate_overlay(
     worktree_dir: Path,
     schema_dir: Path,
 ) -> None:
-    cand_id = str(manifest["cand_id"])
-    overlay_dir = mh.candidates_dir(main_root, config) / cand_id / "overlay"
     _check_overlay_integrity(main_root, config, manifest)
     try:
-        ev.apply_overlay(
-            overlay_dir,
-            config,
-            worktree_dir,
-            schema_dir,
+        ev.apply_registered_candidate_overlay(
+            main_root=main_root,
+            config=config,
+            manifest=manifest,
+            worktree_dir=worktree_dir,
+            schema_dir=schema_dir,
         )
     except ev.EvaluatorStageError as exc:
         raise PromotionValidationError(str(exc)) from exc

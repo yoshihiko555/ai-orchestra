@@ -35,6 +35,7 @@
       "type": "string",
       "pattern": "^(claude-harness|skill:[a-z0-9-]+)$"
     },
+    "target_closure_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "source_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
     "config_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "model_versions": {

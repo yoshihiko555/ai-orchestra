@@ -226,6 +226,12 @@ class TestHoldoutPhysicalSeparation:
         assert metadata["holdout"] is False
         assert metadata["isolation"]["backend"] == "srt"
         assert metadata["isolation"]["srt_version"] == "1.0.0"
+        assert metadata["allowed_tools"] == mh.DEFAULTS["evaluate"]["allowed_tools"]
+        assert metadata["allowed_tools_source"] == "global"
+        assert metadata["model_tools"] == ["Read", "Glob", "Grep", "Edit", "Write", "Bash"]
+        assert metadata["max_output_tokens"] == 4096
+        assert metadata["max_output_tokens_source"] == "global"
+        assert metadata["path_prepend"] == []
 
     def test_result_json_records_claude_version(self, tmp_path: Path, monkeypatch) -> None:
         """EV-24: result.json に claude_version フィールドが必須として記録される。"""

@@ -22,11 +22,27 @@ from typing import Any
 API_HOST = "api.anthropic.com"
 API_PORT = 443
 OAUTH_BETA = "oauth-2025-04-20"
+ALLOWED_CLIENT_BETAS = frozenset(
+    {
+        "claude-code-20250219",
+        "context-1m-2025-08-07",
+        "interleaved-thinking-2025-05-14",
+        "thinking-token-count-2026-05-13",
+        "context-management-2025-06-27",
+        "prompt-caching-scope-2026-01-05",
+        "mid-conversation-system-2026-04-07",
+        "advisor-tool-2026-03-01",
+        "effort-2025-11-24",
+        "structured-outputs-2025-12-15",
+    }
+)
 TOKEN_PATH = Path("/run/secrets/oauth-token")
 METRICS_PATH = Path("/run/state/metrics.json")
 MAX_REQUEST_BODY_BYTES = 10_000_000
 MAX_TOKEN_BYTES = 16_384
 MAX_USAGE_PARSE_BUFFER_BYTES = 1_000_000
+MAX_BETA_HEADER_BYTES = 1024
+UPSTREAM_SLOT_WAIT_SECONDS = 120
 ALLOWED_PATHS = frozenset({"/v1/messages", "/v1/messages/count_tokens"})
 ALLOWED_QUERIES = frozenset({"beta=true"})
 ALLOWED_REQUEST_HEADERS = frozenset(
@@ -34,9 +50,11 @@ ALLOWED_REQUEST_HEADERS = frozenset(
         "accept",
         "content-type",
         "anthropic-version",
+        "anthropic-beta",
     }
 )
 _ANTHROPIC_VERSION_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
+_ANTHROPIC_BETA_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 ALLOWED_RESPONSE_HEADERS = frozenset(
     {
         "content-type",
@@ -141,6 +159,7 @@ class BrokerState:
         self.active_requests = 0
         self.lock = threading.Lock()
         self.upstream_slot = threading.BoundedSemaphore(1)
+        self.pending_slot = threading.BoundedSemaphore(1)
         self.persist_metrics()
 
     def authorized(self, headers: Any) -> bool:
@@ -150,9 +169,16 @@ class BrokerState:
         return bool(supplied) and hmac.compare_digest(supplied, self.run_token)
 
     def begin_request(self) -> tuple[bool, str]:
-        if not self.upstream_slot.acquire(blocking=False):
-            self.reject("parallel request rejected")
-            return False, "parallel requests are not allowed"
+        if not self.pending_slot.acquire(blocking=False):
+            self.reject("parallel request queue exceeded")
+            return False, "parallel request queue is full"
+        try:
+            acquired = self.upstream_slot.acquire(timeout=UPSTREAM_SLOT_WAIT_SECONDS)
+        finally:
+            self.pending_slot.release()
+        if not acquired:
+            self.reject("parallel request wait timed out")
+            return False, "parallel request wait timed out"
         with self.lock:
             if self.metrics.budget_exceeded:
                 self.metrics.rejected_count += 1
@@ -388,7 +414,10 @@ class BrokerHandler(BaseHTTPRequestHandler):
         try:
             _upstream_headers(self.headers, self.state.oauth_token)
         except ValueError as exc:
-            self.state.reject("invalid upstream header")
+            # _upstream_headers emits only fixed validation categories and never
+            # includes credential or header values. Keep that category in metrics so
+            # operators can distinguish a pinned-CLI drift from auth/budget failures.
+            self.state.reject(f"invalid upstream header: {exc}")
             self._json_error(431, str(exc))
             return
         started, reason = self.state.begin_request()
@@ -481,9 +510,17 @@ class BrokerHandler(BaseHTTPRequestHandler):
 
 def _upstream_headers(headers: Any, oauth_token: str) -> dict[str, str]:
     result: dict[str, str] = {}
+    client_betas: list[str] = []
+    beta_header_seen = False
     for name, value in headers.items():
         lower = name.lower()
         if lower not in ALLOWED_REQUEST_HEADERS:
+            continue
+        if lower == "anthropic-beta":
+            if beta_header_seen:
+                raise ValueError("duplicate anthropic-beta header is not allowed")
+            beta_header_seen = True
+            client_betas = _validated_client_betas(value)
             continue
         if len(value) > 128:
             raise ValueError("upstream header value exceeds broker limit")
@@ -494,9 +531,25 @@ def _upstream_headers(headers: Any, oauth_token: str) -> dict[str, str]:
     result["content-type"] = "application/json"
     result["user-agent"] = "ai-orchestra-meta-harness-broker/0.1"
     result["authorization"] = f"Bearer {oauth_token}"
-    result["anthropic-beta"] = OAUTH_BETA
+    result["anthropic-beta"] = ",".join([OAUTH_BETA, *client_betas])
     result["host"] = API_HOST
     return result
+
+
+def _validated_client_betas(value: str) -> list[str]:
+    if len(value) > MAX_BETA_HEADER_BYTES:
+        raise ValueError("anthropic-beta header exceeds broker limit")
+    betas = [item.strip() for item in value.split(",")]
+    if not betas or any(not item for item in betas):
+        raise ValueError("invalid anthropic-beta header")
+    if len(set(betas)) != len(betas):
+        raise ValueError("duplicate anthropic-beta feature is not allowed")
+    if any(_ANTHROPIC_BETA_RE.fullmatch(item) is None for item in betas):
+        raise ValueError("invalid anthropic-beta feature")
+    unknown = sorted(set(betas) - ALLOWED_CLIENT_BETAS)
+    if unknown:
+        raise ValueError(f"unsupported anthropic-beta feature: {','.join(unknown)}")
+    return betas
 
 
 class BrokerServer(ThreadingHTTPServer):

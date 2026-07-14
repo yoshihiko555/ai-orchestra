@@ -1,0 +1,26 @@
+# Machine-readable oracle seed for docs/evaluation/skill-evolution.md.
+# The Markdown evaluation set remains the SSOT.
+
+- ev_id: EV-35
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/skill-evolution/tests/test_skill_evolution_cli.py::test_check_trigger_not_triggered
+    packages/skill-evolution/tests/test_skill_evolution_cli.py::test_check_trigger_suggests_meta_harness_for_valid_slug
+  covered_by:
+    - packages/skill-evolution/tests/test_skill_evolution_cli.py::test_check_trigger_not_triggered
+    - packages/skill-evolution/tests/test_skill_evolution_cli.py::test_check_trigger_suggests_meta_harness_for_valid_slug
+  notes: the command is returned only for a triggered valid slug and is never executed.
+
+- ev_id: EV-36
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/skill-evolution/tests/test_skill_evolution_cli.py::test_check_trigger_skips_command_for_invalid_target_slug
+  covered_by:
+    - packages/skill-evolution/tests/test_skill_evolution_cli.py::test_check_trigger_skips_command_for_invalid_target_slug
+  notes: invalid target slugs preserve trigger and exit semantics while returning a machine-readable skip reason.

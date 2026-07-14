@@ -124,7 +124,7 @@ class TestFinallyRemovalOnLifecycleFailure:
     def test_worktree_removed_even_on_unexpected_exception(
         self, git_project: Path, monkeypatch
     ) -> None:
-        def raising_apply_overlay(overlay_dir, config, worktree_dir, schema_dir):
+        def raising_apply_overlay(overlay_dir, config, worktree_dir, schema_dir, **_kwargs):
             raise RuntimeError("totally unexpected error")
 
         monkeypatch.setattr(ev, "apply_overlay", raising_apply_overlay)
@@ -218,7 +218,13 @@ class TestApplyOverlayReRejectsUnsafeOverlaysAtEvaluateTime:
 
         worktree_dir = git_project  # apply_overlay は検証失敗時 worktree に触れる前に例外を出す
         try:
-            ev.apply_overlay(overlay_dir, self._CONFIG, worktree_dir, _SCHEMA_DIR)
+            ev.apply_overlay(
+                overlay_dir,
+                self._CONFIG,
+                worktree_dir,
+                _SCHEMA_DIR,
+                target="claude-harness",
+            )
         except ev.EvaluatorStageError as exc:
             assert exc.stage == "overlay_apply"
             assert exc.error_type == "overlay_error"
@@ -233,7 +239,13 @@ class TestApplyOverlayReRejectsUnsafeOverlaysAtEvaluateTime:
         (overlay_dir / "not-facets" / "file.txt").write_text("x", encoding="utf-8")
 
         try:
-            ev.apply_overlay(overlay_dir, self._CONFIG, git_project, _SCHEMA_DIR)
+            ev.apply_overlay(
+                overlay_dir,
+                self._CONFIG,
+                git_project,
+                _SCHEMA_DIR,
+                target="claude-harness",
+            )
         except ev.EvaluatorStageError as exc:
             assert exc.stage == "overlay_apply"
         else:
@@ -250,7 +262,13 @@ class TestApplyOverlayReRejectsUnsafeOverlaysAtEvaluateTime:
             "# example\n", encoding="utf-8"
         )
 
-        ev.apply_overlay(overlay_dir, self._CONFIG, git_project, _SCHEMA_DIR)
+        ev.apply_overlay(
+            overlay_dir,
+            self._CONFIG,
+            git_project,
+            _SCHEMA_DIR,
+            target="claude-harness",
+        )
 
         assert (git_project / "facets" / "example-facet" / "SKILL.md").read_text(
             encoding="utf-8"

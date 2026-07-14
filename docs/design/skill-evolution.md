@@ -108,6 +108,18 @@ context-sharing の cleanup ロジックには一切触れない。
 
 明示的な起動でのみ動く深い改善ループ。
 
+skill-evolution は lessons 閾値を検出しても改善ループを直接実行しない。`check-trigger` は妥当な skill slug
+に限り JSON の `suggested_command` として
+`orchex meta propose --target skill:<slug>` を返し、人間または外部 automation が明示的に起動する。
+slug が不正なら command を返さず理由を記録し、既存の trigger 判定と exit code は変えない。
+
+| 責務 | skill-evolution | meta-harness |
+| --- | --- | --- |
+| lessons / metrics / trigger 判定 | 所有する | 読まない |
+| `[critical]` 正本 | `lessons/<skill>.md` を所有する | scenario oracle へ人手で写像する |
+| propose / evaluate / loop / promote | 実行せず CLI 文字列だけ提案する | 所有する |
+| Python 依存 | meta-harness を import しない | skill-evolution を import しない |
+
 | 要素                | 内容                                                                                                                                                     |
 | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 起動口              | 手動コマンド / スケジュール / lessons 閾値（蓄積量がしきい値超）                                                                                         |
@@ -188,7 +200,8 @@ context-sharing の cleanup ロジックには一切触れない。
 
 - スキルごとに「最小成功条件」を `[critical]` タグ付きチェックリストとして定義する。
 - **全 `[critical]` 達成で初めて `success=true`**。未達は定量スコアが高くても失敗扱い。
-- 規約の正本は `lessons/<skill>.md` の冒頭ブロック（または SKILL.md の専用セクション）。
+- 規約の唯一の正本は `lessons/<skill>.md` の冒頭 `## [critical] チェックリスト` ブロック。
+  `SKILL.md` や scenario は複製先であり、競合時は lessons を優先する。
 
 ### 3.7 スキルアダプタ抽象（facet 製/非 facet 製の判別）
 

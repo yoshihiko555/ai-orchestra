@@ -1,0 +1,41 @@
+schema_version: "1.0"
+id: create-bug-issue-holdout
+target: skill:issue-create
+description: Holdout bug issue through a deterministic offline gh fixture.
+prompt: |
+  /issue-create bug 設定読込失敗で起動できない
+
+  Include reproduction with a missing config file, expected fallback behavior, actual startup
+  failure, and Linux environment. The user has already reviewed the proposed bug issue and
+  explicitly approves creation now.
+setup:
+  - "mkdir -p bin .meta-harness && cp packages/meta-harness/scenarios/fixtures/fake-gh.py bin/gh && chmod +x bin/gh && rm -f .meta-harness/issue-create-call.json"
+allowed_tools:
+  - "Bash(gh *)"
+  - "Write"
+path_prepend:
+  - bin
+command_timeout_ms: 60000
+critical:
+  - id: bug-template-body
+    text: "bug テンプレート構成で本文が作られる"
+    oracle: command_exit
+    command: >-
+      python3 -c "import json; d=json.load(open('.meta-harness/issue-create-call.json')); b=d['body']; assert all(x in b for x in ['## バグの概要','## 再現手順','## 期待される動作','## 実際の動作','## 環境'])"
+  - id: bug-label
+    text: "bug ラベルが選定される"
+    oracle: command_exit
+    command: >-
+      python3 -c "import json; d=json.load(open('.meta-harness/issue-create-call.json')); assert d['label'] == 'bug'"
+checks:
+  - id: issue-body-quality
+    text: "再現条件と expected/actual が区別される"
+    oracle: rubric_judge
+    rubric: "The recorded bug body must provide reproducible missing-config steps and clearly distinguish expected fallback behavior from actual startup failure."
+holdout: true
+timeout_ms: 300000
+budget:
+  max_turns: 8
+  max_budget_usd: 3.0
+  max_output_tokens: 1024
+repeat: 1

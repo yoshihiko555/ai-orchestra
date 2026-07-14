@@ -31,7 +31,8 @@ view 内には以下のパスがあります:
 5. baseline/ の該当 facet ソースを読む
 
 [制約]
-- 変更対象は facets/** のみ（Phase 2 allowlist）
+- 変更対象は次の許可パスのみ:
+$allowed_paths
 - 1 仮説・最小差分に限定する
 - based_on_runs には valid based_on_runs candidates に表示された run_id のみを列挙する
 - cand_id（`cand-` で始まる ID）は based_on_runs に絶対に入れない
