@@ -149,15 +149,15 @@ def collect_stats(target: Path) -> dict:
             return
 
         for entry in entries:
-            if entry.is_dir(follow_symlinks=False):
-                # Skip directory symlinks to prevent traversal outside target boundary
-                if entry.is_symlink():
-                    continue
+            if entry.is_symlink():
+                continue
+
+            if entry.is_dir():
                 if not is_excluded_dir(entry):
                     walk(entry)
                 continue
 
-            if not entry.is_file(follow_symlinks=False):
+            if not entry.is_file():
                 continue
 
             if not is_valid_file(entry, target_resolved):

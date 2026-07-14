@@ -37,6 +37,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`reverse`: Python 3.12 でスキャンスクリプトが失敗する問題を修正**: Python 3.13 で追加された `pathlib` API への依存を除き、シンボリックリンクを辿らない既存挙動を維持したままサポート対象の Python 3.12 で実行できるようにした。
+
 - **`meta-harness`: Docker broker が Claude CLI の `?beta=true` を拒否する問題を修正**: 既知queryを保持して Anthropic API へ中継し、Docker backend の scenario 実行が正常に完走するようにした。
 
 - **`loop-harness`: `/loop-issue` の Maker に編集不能ロールが選ばれて反復が進まない問題を修正**: `debugger` を含む `issue-loop` の auto Maker 候補を実装可能ロールの allowlist に限定し、初回に選定した Maker を state に保存して実装反復・PR レビュー対応で一貫して再利用するようにした。custom loop のフェーズ固有 Maker と変更前の completed journal の reconcile は後方互換を維持する。
