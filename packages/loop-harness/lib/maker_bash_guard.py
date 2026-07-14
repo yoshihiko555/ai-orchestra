@@ -58,6 +58,17 @@ specifically, the driver-side hardening in `loop_driver_support.hardened_git_con
 `find_dangerous_local_git_config()`, both of which do not depend on recognizing every possible
 obfuscated Bash/Edit/Write invocation shape in advance.
 
+**Structural limit (LP-2 3rd-round Codex security review)**: every check in this module (and
+its `loop_driver_support.py` counterparts) is config/text-scan hardening layered on top of a
+single, unavoidable structural fact -- the Maker and the driver share the same OS-user (UID)
+filesystem access to this worktree's `.git/` tree, so nothing this module denies is a hard
+filesystem-permission boundary; it is all best-effort closing of *known* paths a same-UID
+process could otherwise use to tamper with `.git/config`/hooks. A sufficiently novel bypass this
+module does not yet recognize could still exist. Complete protection requires actually removing
+that shared same-UID access (a separate OS user or container running the Maker, so its
+filesystem writes to `.git/` fail at the kernel/permission level regardless of what this hook
+recognizes) -- tracked as Issue #211, not implemented by this module.
+
 Protocol: reads stdin per Claude Code's PreToolUse hook contract — a single JSON object with
 (among other fields) `tool_name` and `tool_input`. For the `Bash` tool, `tool_input.command`
 holds the full command string; for `Edit`/`Write`, `tool_input.file_path` holds the target path.
@@ -183,6 +194,19 @@ _DENY_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
         rf"\bgh\b{_filler(4)}{_SEP}pr\b",  # gh pr create/merge/close/edit/...
         rf"\bgh\b{_filler(4)}{_SEP}api\b",  # gh api (REST bypass for PR mutation)
         r"\bssh\b",  # direct ssh (custom push transport / remote command execution)
+        # RC2 (LP-2 3rd-round Codex security review): none of the patterns above are `git ...`/
+        # `gh ...` invocations at all, so a Maker could still write directly into the shared
+        # worktree's `.git/config` (or `.git/hooks/...`) via plain shell redirection --
+        # `printf '...' >> .git/config`, `echo ... > worktree/.git/config`, a heredoc piped into
+        # a redirect (`cat <<'EOF' > .git/config` -- still just a `>` redirect target textually,
+        # already covered by the same pattern), or `tee .git/hooks/pre-push` -- none of which
+        # this hook denied before. `is_git_metadata_path()` below already closes this gap for
+        # `Edit`/`Write` tool calls; these two patterns close the equivalent gap for `Bash`.
+        # Requires a `.git` path *segment* boundary (`/`, quote, whitespace, or end-of-string
+        # immediately after the literal `.git`), not merely the substring ".git", so a legitimate
+        # `> .gitignore`/`> .github/workflows/x.yml` redirect is not denied.
+        r">>?\s*[\"']?(?:[^\s;&|]*/)?\.git(?:/|[\"'\s]|$)",
+        r"\btee\b(?:\s+-[\w-]+)*\s+[\"']?(?:[^\s;&|]*/)?\.git(?:/|[\"'\s]|$)",
     )
 )
 
@@ -233,8 +257,14 @@ def is_git_metadata_path(file_path: str) -> bool:
     `.git` entry (a file, not a directory, pointing back at the shared repo's
     `.git/worktrees/<name>` -- itself also under a `.git` component and therefore already
     covered by this same check without needing to resolve that indirection at all).
+
+    RH3 (LP-2 3rd-round Codex security review): each path component is `casefold()`-ed before
+    comparison. On a case-insensitive-but-case-preserving filesystem (macOS's default APFS/
+    HFS+ configuration), `.GIT/config`/`.Git/config` resolve to the exact same on-disk file as
+    `.git/config` -- a strict `part == ".git"` comparison let a Maker route around this deny
+    entirely by writing to a differently-cased spelling of the same path.
     """
-    return any(part == ".git" for part in PurePath(file_path).parts)
+    return any(part.casefold() == ".git" for part in PurePath(file_path).parts)
 
 
 def _extract_edit_write_file_path(payload: dict[str, Any]) -> str | None:

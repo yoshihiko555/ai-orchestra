@@ -342,8 +342,17 @@ class LoopDriver:
         heartbeat_thread.start()
         start_monotonic = self._start_monotonic
         timeout_seconds = self._wall_clock_timeout_seconds
-        self._reconstruct_push_integrity_baseline()
         try:
+            try:
+                # RC3 (LP-2 3rd-round Codex security review): pass `first_proposal` through so
+                # a tampering/unresolvable-origin stop detected here (see
+                # `_reconstruct_push_integrity_baseline()`'s own docstring) can be persisted
+                # against a real, live pending action_id rather than `None`, and joins the same
+                # `except DriverTerminated: return EXIT_OK` contract every other safe-stop path
+                # in this method already uses.
+                self._reconstruct_push_integrity_baseline(first_proposal)
+            except DriverTerminated:
+                return EXIT_OK
             proposal = first_proposal
             while True:
                 if lds.wall_clock_exceeded(start_monotonic, timeout_seconds):
@@ -375,7 +384,9 @@ class LoopDriver:
         finally:
             self._stop_event.set()
 
-    def _reconstruct_push_integrity_baseline(self) -> None:
+    def _reconstruct_push_integrity_baseline(
+        self, proposal: lc.ProposeResult | None = None
+    ) -> None:
         """Reconstruct the layer-4 baseline right after lease acquisition (code H2 / #5).
 
         `self._remote_head_baseline` starts as `None` at construction. For a brand-new loop
@@ -407,16 +418,45 @@ class LoopDriver:
         `wait_external_review` classify this driver's own legitimate (already-pushed) commit
         as an out-of-band `push_integrity_violation`. `_recover_baseline_from_pending_push_intent`
         detects exactly this case and durably fixes the baseline forward before it can matter.
+
+        `proposal` (RC3, optional so direct unit-test call sites that predate this parameter
+        keep working unchanged) is only used as the `action_id` a tampering/unresolvable-origin
+        safe-stop is persisted against, when one is raised below; `None` (the default) simply
+        persists that stop against `action_id=None`, matching how other pre-loop safe stops in
+        this module behave before a pending action exists.
+
+        Raises `DriverTerminated` (via `_verify_no_git_config_tampering_or_stop()` /
+        `_stop_for_unresolvable_origin_url()`) instead of returning normally when either check
+        below fails closed; `run()` catches this around its own call site.
         """
         state = lc.load_state(self.loop_id, self.project_dir)
         if not state.branch:
             return
+        # RC3 (LP-2 3rd-round Codex security review): scan for tampering *before* trusting
+        # anything this reconstruction reads out of `.git/config`, including the very act of
+        # resolving `remote.origin.url` immediately below. This method's whole purpose is to
+        # run on a driver restart/attach/resume, at which point the shared worktree (and
+        # therefore its `.git/config`) already existed -- possibly already Maker-tampered --
+        # *before* this process even started, so there is no meaningfully "earlier" trustworthy
+        # moment than this to check first. Without this, a restart could pin an
+        # already-tampered `remote.origin.url` as if it were the trusted baseline the
+        # module-level SEC-CRIT comment above `hardened_git_config_args()` describes, defeating
+        # the whole point of pinning it "at the earliest trustworthy moment".
+        self._verify_no_git_config_tampering_or_stop(proposal, state)
         # SEC-CRIT: resolve+pin the trusted origin URL here, first — this is the earliest
         # trustworthy moment in this process (right after lease acquisition, before any Maker
         # child has run), so no Maker `Edit` write into `.git/config` could have happened yet
         # to taint this resolution. See `self._trusted_origin_url`'s own comment and
         # `lds.resolve_origin_url()`'s docstring.
         self._trusted_origin_url = lds.resolve_origin_url(state.worktree_path)
+        if self._trusted_origin_url is None:
+            # RH1 (LP-2 3rd-round Codex security review): a driver that cannot resolve
+            # `origin`'s URL at all must never silently proceed and let a later driver-owned
+            # push/`ls-remote` fall back to trusting the bare `"origin"` remote name instead
+            # (which is exactly the name-resolution indirection layer 1 of this defense --
+            # pinning a literal URL -- exists to bypass in the first place, see RC1's comment
+            # on `_DANGEROUS_LOCAL_CONFIG_KEY_RE`). Fail closed instead of proceeding.
+            self._stop_for_unresolvable_origin_url(proposal, state)
         recovered = self._recover_baseline_from_pending_push_intent(
             state.worktree_path, state.branch
         )
@@ -1413,12 +1453,13 @@ class LoopDriver:
         (layers 1-3 notwithstanding) could have written a malicious `hooks/pre-push` into if it
         ever gained same-UID filesystem write access to that directory — a driver-owned push
         run with the driver's real push credentials would then execute that hook as the
-        driver, defeating the whole credential-isolation design. `-c core.hooksPath=/dev/null`
-        makes git resolve every hook (there is nothing runnable at `/dev/null`) instead of the
-        worktree's own `.git/hooks/`, and `--no-verify` additionally skips the client-side
-        pre-push/pre-commit-style hook invocations git's push machinery would otherwise still
-        attempt; the two together are redundant with each other by design (belt-and-suspenders)
-        rather than either alone being trusted as sufficient.
+        driver, defeating the whole credential-isolation design. `lds.hardened_git_config_args()`
+        includes `-c core.hooksPath=/dev/null` (RM1: centralized there so every driver-owned git
+        invocation gets it uniformly, not just this one push call site) so git resolves every
+        hook to nothing runnable instead of the worktree's own `.git/hooks/`, and `--no-verify`
+        additionally skips the client-side pre-push/pre-commit-style hook invocations git's push
+        machinery would otherwise still attempt; the two together are redundant with each other
+        by design (belt-and-suspenders) rather than either alone being trusted as sufficient.
 
         code DM1: journals the intended new head *before* the push runs, so a crash between
         the push landing on the remote and `_persist_push_baseline` below recording it can be
@@ -1437,6 +1478,13 @@ class LoopDriver:
         # have written. Neither alone is sufficient against `insteadOf`/`pushurl` rewriting a
         # literal URL argument too -- callers must run `_verify_no_git_config_tampering_or_stop`
         # immediately beforehand (see its own docstring for why).
+        #
+        # RH1 (LP-2 3rd-round Codex security review): in production this `or "origin"` fallback
+        # is never actually exercised -- `_reconstruct_push_integrity_baseline()` already fails
+        # the loop closed (`origin_url_unresolvable`) the moment `resolve_origin_url()` cannot
+        # resolve a URL, before any driver-owned push can run. It is kept here only so this
+        # method's own direct unit tests (which construct a `LoopDriver` and call this method
+        # without going through `_reconstruct_push_integrity_baseline()` first) keep working.
         push_target = self._trusted_origin_url or "origin"
         subprocess.run(
             [
@@ -1444,8 +1492,6 @@ class LoopDriver:
                 "-C",
                 worktree_path,
                 *lds.hardened_git_config_args(),
-                "-c",
-                "core.hooksPath=/dev/null",
                 "push",
                 "--no-verify",
                 push_target,
@@ -1519,7 +1565,7 @@ class LoopDriver:
         raise DriverTerminated(stop_reason)
 
     def _verify_no_git_config_tampering_or_stop(
-        self, proposal: lc.ProposeResult, state: lc.LoopState
+        self, proposal: lc.ProposeResult | None, state: lc.LoopState
     ) -> None:
         """Hard-stop before a driver-owned push if `.git/config` was Maker-tampered (SEC-CRIT).
 
@@ -1543,18 +1589,61 @@ class LoopDriver:
         the loop (mirroring `_verify_push_integrity_or_stop`'s own stop sequence) the instant
         any of these keys is present, instead of trusting the pinned URL alone to be
         sufficient.
+
+        `proposal` (RC3) may be `None` when called from `_reconstruct_push_integrity_baseline()`
+        before this driver process has necessarily seen a pending action yet -- the resulting
+        safe stop is then persisted against `action_id=None`, same as any other pre-loop stop.
         """
         matched_key = lds.find_dangerous_local_git_config(state.worktree_path)
         if matched_key is None:
             return
         stop_reason = "git_config_tampered"
+        action_id = proposal.action_id if proposal is not None else None
         lds.persist_safe_stop(
             self.loop_id,
             self.project_dir,
             self.lease_token,
-            proposal.action_id,
+            action_id,
             stop_reason,
             {"matched_config_key": matched_key},
+        )
+        self._notify(state, stop_reason)
+        stopped_state = lc.load_state(self.loop_id, self.project_dir)
+        self._maybe_comment(
+            stopped_state,
+            f"loop-harness: {self.loop_id} stopped safely (push integrity check: {stop_reason}).",
+        )
+        self._emit_loop_stop_audit(stopped_state, "stop", stop_reason)
+        raise DriverTerminated(stop_reason)
+
+    def _stop_for_unresolvable_origin_url(
+        self, proposal: lc.ProposeResult | None, state: lc.LoopState
+    ) -> None:
+        """Hard-stop when `origin`'s URL cannot be resolved at all (RH1).
+
+        Called only from `_reconstruct_push_integrity_baseline()` immediately after
+        `lds.resolve_origin_url()` returns `None`. Both `_push_verified_branch()` (its
+        `push_target = self._trusted_origin_url or "origin"` fallback) and `get_remote_head()`
+        (its `origin_url` parameter's own documented fallback) would otherwise silently accept
+        the bare `"origin"` remote *name* for their own git invocation -- exactly the
+        name-resolution indirection pinning a literal URL exists to bypass (see RC1's comment
+        on `_DANGEROUS_LOCAL_CONFIG_KEY_RE` in `loop_driver_support.py` for how a Maker-added
+        remote can hijack that name lookup). Stopping here means a real driver process never
+        actually reaches either of those fallbacks with `self._trusted_origin_url is None`; they
+        keep their bare-name fallback only for their own generic-utility/unit-test call sites.
+
+        `proposal` may be `None`, mirroring `_verify_no_git_config_tampering_or_stop()`'s own
+        `action_id=None` fallback for a pre-loop stop.
+        """
+        stop_reason = "origin_url_unresolvable"
+        action_id = proposal.action_id if proposal is not None else None
+        lds.persist_safe_stop(
+            self.loop_id,
+            self.project_dir,
+            self.lease_token,
+            action_id,
+            stop_reason,
+            {},
         )
         self._notify(state, stop_reason)
         stopped_state = lc.load_state(self.loop_id, self.project_dir)

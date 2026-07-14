@@ -190,8 +190,25 @@ def hardened_git_config_args() -> list[str]:
     instead closed directly and protocol-agnostically by `find_dangerous_local_git_config()`
     below, which every driver-owned push call site consults immediately beforehand regardless of
     what protocol a rewrite target would use.
+
+    `core.hooksPath=/dev/null` (RM1, LP-2 3rd-round Codex security review): used to be applied
+    inline at the single `_push_verified_branch()` push call site only (see SC4's comment
+    there), leaving every *other* driver-owned git invocation (`git status --porcelain`,
+    `git branch --show-current`, `git rev-parse HEAD`, `git ls-remote`, `git diff`, the local
+    `git config --get`/`--list` reads above) still resolving hooks from the shared worktree's
+    own, possibly Maker-tampered, `.git/hooks/`. None of those other invocations are
+    push/network operations, so a malicious hook there could not itself redirect a push, but a
+    `core.hooksPath`-honoring hook (e.g. a fake `pre-commit`/`post-checkout`) could still run
+    arbitrary code with the driver's own privileges as a side effect of any of those "read-only"
+    calls. Centralizing it here (alongside `credential.helper=`) means every current and future
+    call site that already uses this helper gets the same hook-suppression uniformly, without
+    each call site needing its own copy of the flag. **Best-effort, not complete** (Issue #211):
+    this closes a known code-execution path through git's own hook mechanism specifically; it
+    does not, and cannot, prevent a same-UID Maker process from writing to this worktree's
+    `.git/` at the filesystem level in the first place (that requires the separate-user/
+    container isolation #211 tracks).
     """
-    return ["-c", "credential.helper="]
+    return ["-c", "credential.helper=", "-c", "core.hooksPath=/dev/null"]
 
 
 def resolve_origin_url(cwd: str, timeout_seconds: float = 10.0) -> str | None:
@@ -235,7 +252,49 @@ def resolve_origin_url(cwd: str, timeout_seconds: float = 10.0) -> str | None:
 
 
 _DANGEROUS_LOCAL_CONFIG_KEY_RE = re.compile(
-    r"insteadof|pushurl|credential\.helper|^alias\.", re.IGNORECASE
+    r"insteadof"
+    r"|pushurl"
+    r"|credential\.helper"
+    r"|^alias\."
+    # RC1 (LP-2 3rd-round Codex security review, real-machine-reproduced): git resolves a
+    # push/fetch/`ls-remote` argument against a *configured remote name* before ever falling
+    # back to treating it as a literal URL. A Maker `Edit`-write that adds a *second* remote
+    # whose name is crafted to equal the driver's own pre-resolved, pinned literal origin URL
+    # string (e.g. `git config remote.https://good.example/repo.git.url <evil>`) hijacks that
+    # name-resolution step and silently redirects even a pinned-literal-URL push/`ls-remote`
+    # call -- defeating `resolve_origin_url()`'s whole point of pinning a literal URL in the
+    # first place. Excludes the `origin` subsection specifically (`(?!origin\.)`): this
+    # codebase always names its one legitimate remote `origin` (`resolve_origin_url()` reads
+    # `remote.origin.url` by that exact name, and every push call site falls back to the bare
+    # `"origin"` name), so `remote.origin.url`/`remote.origin.pushurl` are the *expected*,
+    # non-dangerous baseline entries every legitimate push already depends on -- a blanket
+    # `remote\..*\.url` (no exclusion) would instead match on *every single push* against a
+    # normally-configured repo, making this check permanently fail-closed and therefore useless
+    # as a security control, not merely occasionally false-positive.
+    r"|remote\.(?!origin\.)\S+\.url"
+    r"|remote\.(?!origin\.)\S+\.pushurl"
+    # RH2 (LP-2 3rd-round Codex security review): additional config keys that let a later
+    # driver-owned git invocation (run with the driver's own real credentials) shell out to a
+    # Maker-supplied command or read a Maker-supplied file, none of which this scan covered
+    # before:
+    #   - `core.fsmonitor`/`core.sshcommand`/`core.askpass`/`core.hooksPath`: each names an
+    #     external command/script git invokes as a subprocess.
+    #   - `diff.*.command`/`diff.external`: an external diff driver git shells out to.
+    #   - `filter.*.(clean|smudge|process)`: content filters git runs on checkout/commit.
+    #   - `include.path`/`includeif.*`: pulls in a wholly separate, Maker-writable config file
+    #     that could itself define any of the above -- see the `--includes` flag added to the
+    #     `git config` invocation below, without which a key defined only inside such an
+    #     included file would never even appear in the scanned output.
+    r"|core\.fsmonitor"
+    r"|core\.sshcommand"
+    r"|core\.askpass"
+    r"|core\.hookspath"
+    r"|diff\..*\.command"
+    r"|diff\.external"
+    r"|filter\..*\.(?:clean|smudge|process)"
+    r"|include\.path"
+    r"|includeif\.",
+    re.IGNORECASE,
 )
 """Local git-config *keys* (not values) that must never be present in the shared worktree's
 `.git/config` before a driver-owned push/`ls-remote` (SEC-CRIT). Mirrors the same key families
@@ -249,15 +308,19 @@ def find_dangerous_local_git_config(cwd: str, timeout_seconds: float = 10.0) -> 
     """Return the first dangerous local git-config key found, or None if it looks clean (SEC-CRIT).
 
     Called by `LoopDriver._verify_no_git_config_tampering_or_stop()` immediately before every
-    driver-owned push/`ls-remote` against the shared worktree. Reads via `git config --local
-    --list` (this repo's own `.git/config`, not global/system) with `hardened_git_config_args()`
-    applied, so listing the config cannot itself invoke a rogue credential helper. Matched
-    line-by-line against `_DANGEROUS_LOCAL_CONFIG_KEY_RE`: not a full git-config parser (a
-    multi-line config value containing an embedded newline could in principle confuse this
-    simple per-line split), mirroring the same "text scan, not full parse" tradeoff
-    `maker_bash_guard.py` already documents for its own Bash-command scan -- a false positive
-    (an unrelated key merely containing one of these substrings) fails safe (refuses the push),
-    which is the accepted direction of error here.
+    driver-owned push/`ls-remote` against the shared worktree, and (RC3) by
+    `LoopDriver._reconstruct_push_integrity_baseline()` *before* it ever pins
+    `resolve_origin_url()`'s result as trusted. Reads via `git config --local --list --includes`
+    (this repo's own `.git/config`, not global/system) with `hardened_git_config_args()` applied,
+    so listing the config cannot itself invoke a rogue credential helper. `--includes` (RH2)
+    additionally expands any `include.path`/`includeif.*` directive so a dangerous key defined
+    only inside a separately Maker-writable included file is not missed just because it is absent
+    from `.git/config` itself. Matched line-by-line against `_DANGEROUS_LOCAL_CONFIG_KEY_RE`: not
+    a full git-config parser (a multi-line config value containing an embedded newline could in
+    principle confuse this simple per-line split), mirroring the same "text scan, not full parse"
+    tradeoff `maker_bash_guard.py` already documents for its own Bash-command scan -- a false
+    positive (an unrelated key merely containing one of these substrings) fails safe (refuses the
+    push), which is the accepted direction of error here.
 
     Returns `None` (fail-open) only when the query itself cannot be completed at all (process
     error/timeout) -- this is one of several layers (see the push call sites), not the sole
@@ -265,7 +328,16 @@ def find_dangerous_local_git_config(cwd: str, timeout_seconds: float = 10.0) -> 
     """
     try:
         completed = subprocess.run(
-            ["git", *hardened_git_config_args(), "-C", cwd, "config", "--local", "--list"],
+            [
+                "git",
+                *hardened_git_config_args(),
+                "-C",
+                cwd,
+                "config",
+                "--local",
+                "--list",
+                "--includes",
+            ],
             capture_output=True,
             text=True,
             timeout=timeout_seconds,
@@ -577,6 +649,17 @@ def get_remote_head(
     write, see the module-level SEC-CRIT comment above `hardened_git_config_args()`) after that
     resolution point cannot redirect this query. Falls back to the bare `"origin"` name when
     omitted/`None`, matching the pre-fix behavior (e.g. call sites that have no cached URL yet).
+
+    RH1 (LP-2 3rd-round Codex security review): this bare-name fallback is *intentionally* kept
+    here for this function's own generic-utility contract (some call sites legitimately have no
+    cached URL, e.g. this module's own tests) -- but `LoopDriver` itself must never actually
+    exercise it in production. `LoopDriver._reconstruct_push_integrity_baseline()` now fails the
+    loop closed (`origin_url_unresolvable`) the moment `resolve_origin_url()` cannot resolve a
+    URL at all, *before* any driver-owned call into this function runs, so a real driver process
+    always either has a real `origin_url` cached by the time it calls this, or has already
+    stopped. Best-effort (Issue #211): this still cannot stop a same-UID Maker from writing to
+    `.git/config` at the filesystem level; it only ensures the driver itself never silently
+    trusts an unresolvable remote name as if it were "origin".
     """
     remote = origin_url if origin_url else "origin"
     try:

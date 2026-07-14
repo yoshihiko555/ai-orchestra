@@ -704,9 +704,22 @@ def reap_finished_workers(runtime: SchedulerRuntime, project_dir: str) -> list[s
     `len(runtime.workers)` count - including workers that are about to be reaped by this very
     call - starving a cooldown-elapsed loop of a slot that is in fact freeing up in this same
     cycle, deferring its restart to (at least) the next poll interval instead.
+
+    RH4: crash-restart candidates (the abnormal-exit, non-terminal, non-foreign-lease branch
+    below) are collected into a list and spawned only *after* every finished worker has been
+    popped from `runtime.workers` - not spawned immediately inline per finished worker as this
+    used to do. Spawning immediately bypassed `_available_worker_slots` entirely: with cap=2,
+    one dead worker + one live tracked worker + one untracked-but-live active loop (SN1) already
+    fully occupies the cap, yet an inline immediate restart of the dead one would still spawn a
+    third concurrent worker regardless. Restarts are now capped by the same shared
+    `_available_worker_slots` occupancy calculation `_respawn_expired_cooldowns`,
+    `respawn_orphaned_active_loops`, and `spawn_new_workers` already use; any candidate left over
+    once slots run out is simply not restarted this cycle (its `state.json` status stays
+    non-terminal, so it is picked up again - once its lease actually expires - by
+    `respawn_orphaned_active_loops` on a later cycle instead of being lost).
     """
     finished = [loop_id for loop_id, proc in runtime.workers.items() if proc.poll() is not None]
-    respawned: list[str] = []
+    restart_candidates: list[str] = []
     for loop_id in finished:
         proc = runtime.workers.pop(loop_id)
         if proc.returncode == 0 or loop_id in runtime.stopped_loop_ids:
@@ -723,8 +736,16 @@ def reap_finished_workers(runtime: SchedulerRuntime, project_dir: str) -> list[s
         state = _try_load_state(lc.loop_dir(loop_id, project_dir), project_dir)
         if state is None or not should_restart(state.status):
             continue
-        runtime.workers[loop_id] = spawn_worker(loop_id, project_dir)
-        respawned.append(loop_id)
+        restart_candidates.append(loop_id)
+    respawned: list[str] = []
+    if restart_candidates:
+        available = _available_worker_slots(runtime, project_dir)
+        for loop_id in restart_candidates:
+            if available <= 0:
+                break
+            runtime.workers[loop_id] = spawn_worker(loop_id, project_dir)
+            respawned.append(loop_id)
+            available -= 1
     respawned.extend(_respawn_expired_cooldowns(runtime, project_dir))
     return respawned
 
@@ -810,12 +831,51 @@ def verify_repo_identity_at_startup(project_dir: str) -> list[str]:
             continue
         if state.repo_identity_hash == expected:
             continue
-        if _safe_stop_repo_identity_mismatch(state, project_dir):
+        if _safe_stop_repo_identity_mismatch(state, project_dir, expected):
             stopped.append(state.loop_id)
     return stopped
 
 
-def _safe_stop_repo_identity_mismatch(state: lc.LoopState, project_dir: str) -> bool:
+def _reload_for_safe_stop(
+    state: lc.LoopState, project_dir: str, expected_repo_identity_hash: str
+) -> lc.LoopState | None:
+    """Re-load `state.loop_id`'s current state right after acquiring its coord lock (RH1).
+
+    Return `None` whenever the stale, pre-lock `state` passed in must not be written through:
+    the state dir vanished (purged), a purge tombstone now exists for it, its status already
+    reached a terminal outcome, its `state_version` moved on (someone else wrote a newer state
+    under this same coord lock in the meantime), or its repo-identity mismatch has since
+    resolved itself. Otherwise return the freshly-reloaded state to write the stop onto.
+
+    `verify_repo_identity_at_startup` necessarily reads `state` (the value passed in here)
+    *before* acquiring this per-loop coord lock: the lock is keyed on `state.loop_id`, which is
+    only known once state.json has already been read once. Between that read and the caller
+    acquiring the lock, a concurrent `purge_loop` (RH3: tombstone-then-rmtree, both run under
+    this very coord lock) can complete entirely - leaving a now-purged, tombstoned loop with no
+    lock.json at all (`_is_lease_expired` returns True for a missing lock, so the existing
+    lease-liveness check alone does not catch this). Writing the stale `state` through
+    unconditionally at that point would resurrect a brand-new `stopped` state.json inside a
+    directory `purge_loop`'s `rmtree` just deleted (`lc._write_state` recreates the parent dir
+    via `_ensure_dir`), directly contradicting the tombstone that already marks this loop_id
+    terminal/purged.
+    """
+    if state.loop_id in _tombstoned_loop_ids(project_dir):
+        return None
+    current = _try_load_state(lc.loop_dir(state.loop_id, project_dir), project_dir)
+    if current is None:
+        return None
+    if current.status in _NON_RESTARTABLE_STATUSES:
+        return None
+    if current.state_version != state.state_version:
+        return None
+    if current.repo_identity_hash == expected_repo_identity_hash:
+        return None
+    return current
+
+
+def _safe_stop_repo_identity_mismatch(
+    state: lc.LoopState, project_dir: str, expected_repo_identity_hash: str
+) -> bool:
     """Journal-first -> state -> mandatory macOS notify -> no Issue comment (3.4 節).
     Return True iff the stop was actually written.
 
@@ -840,6 +900,11 @@ def _safe_stop_repo_identity_mismatch(state: lc.LoopState, project_dir: str) -> 
     `loop_common.resume`/`reacquire_lease`, see their docstrings), so this write cannot race a
     concurrent purge of the same `loop_id` either (not just a live worker's own lease as
     covered above).
+
+    RH1: `state` (the caller's pre-coord-lock read) is re-validated via `_reload_for_safe_stop`
+    immediately after the lease-liveness check above, once this call actually holds the coord
+    lock - see that helper's docstring for the stale-read race this closes. The rest of this
+    function writes the freshly-reloaded state (not the stale `state` argument).
     """
     with lc.held_coord_lock(state.loop_id, project_dir):
         if not _is_lease_expired(state.loop_id, project_dir):
@@ -852,6 +917,18 @@ def _safe_stop_repo_identity_mismatch(state: lc.LoopState, project_dir: str) -> 
                 file=sys.stderr,
             )
             return False
+        current = _reload_for_safe_stop(state, project_dir, expected_repo_identity_hash)
+        if current is None:
+            print(
+                lc.redact(
+                    f"loop_scheduler: {state.loop_id} repo_identity_mismatch stop skipped - its "
+                    "state was purged, changed, or already resolved while waiting for the "
+                    "coord lock"
+                ),
+                file=sys.stderr,
+            )
+            return False
+        state = current
         lc.append_journal_event(
             state.loop_id,
             project_dir,
@@ -927,6 +1004,40 @@ def _project_slug(project_dir: str) -> str:
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:12]
 
 
+# RM3: any C0 control character other than TAB (#x9) and LF (#xA) - this deliberately also
+# matches CR (#xD, 0x0D falls in the 0x0B-0x1F span below), see `_reject_launchd_unsafe_chars`.
+_LAUNCHD_UNSAFE_CHARS_RE = re.compile(r"[\x00-\x08\x0b-\x1f]")
+
+
+def _reject_launchd_unsafe_chars(value: str, field_name: str) -> None:
+    """Fail closed (RM3) when a launchd-interpolated value contains CR or another control
+    character XML 1.0 does not treat as plain, unchanged text.
+
+    `render_launchd_plist` XML-escapes `&`/`<`/`>` (#12), but that alone does not cover control
+    characters. A literal CR (`\\r`) is not illegal XML content, but XML 1.0 mandates line-ending
+    normalization at parse time (CR, CRLF, and a lone CR are all folded to a single LF) - so a
+    `project_dir`/script/interpreter/`--definition` value containing a literal CR would silently
+    resolve to a *different* string the moment any XML parser (including launchd's own plist
+    reader) reads this file back, with no error to signal the mismatch between what was
+    rendered here and what launchd actually invokes. Any other C0 control character outside the
+    small XML-1.0-legal set (TAB `#x9`, LF `#xA`, CR `#xD`) is not merely re-normalized but
+    outright illegal XML 1.0 content, producing a plist no XML parser can parse at all.
+
+    Neither failure mode has a character-level escape available at the plist-XML level (unlike
+    `&`/`<`/`>`, which `xml_escape` already handles) - refusing to render is the only safe
+    outcome here, mirroring `_reject_cron_unsafe_chars`'s CR/LF fail-closed precedent for
+    `render_cron_entry`. A lone LF is intentionally *not* rejected here (unlike the cron guard,
+    which fails closed on LF too): LF is XML-1.0-legal and passes through XML parsing completely
+    unchanged - no normalization applies to it - so it carries neither of the two failure modes
+    above.
+    """
+    if _LAUNCHD_UNSAFE_CHARS_RE.search(value):
+        raise ValueError(
+            f"{field_name} must not contain CR or other control characters for a launchd "
+            f"plist: {value!r}"
+        )
+
+
 def render_launchd_plist(
     project_dir: str,
     script_path: Path | None = None,
@@ -965,10 +1076,24 @@ def render_launchd_plist(
     log dir is expected to already exist by the time this plist is ever installed/loaded. The
     in-template `mkdir -p` is left in place as a harmless belt-and-suspenders guard (e.g. if the
     log dir is deleted after generation but before install).
+
+    RM3: every interpolated value (`script`/`project`/`python`/`definition_id`) is also
+    rejected outright (`ValueError`) if it contains a literal CR or any other XML-1.0-illegal
+    control character - see `_reject_launchd_unsafe_chars` for why `xml_escape` alone (which
+    only covers `&`/`<`/`>`) does not protect against those. This mirrors
+    `render_cron_entry`'s SN-cron CR/LF fail-closed guard, applied to launchd's XML format
+    instead of crontab's line-oriented one.
     """
     script = str(script_path or _SCRIPT_DIR / "loop_scheduler.py")
     project = str(Path(project_dir).resolve())
     python = str(python_bin or sys.executable)
+    for value, field_name in (
+        (script, "script_path"),
+        (project, "project_dir"),
+        (python, "python_bin"),
+        (definition_id, "definition_id"),
+    ):
+        _reject_launchd_unsafe_chars(value, field_name)
     log_dir = f"{project}/.claude/loop"
     stdout_log = f"{log_dir}/scheduler.stdout.log"
     stderr_log = f"{log_dir}/scheduler.stderr.log"

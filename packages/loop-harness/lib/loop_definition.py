@@ -31,6 +31,22 @@ ISSUE_LOOP_IMPLEMENTATION_PASS_CRITERIA = {"critical": 0, "high": 0}
 # scan entirely unchecked. This remains a best-effort, layer-2-primary normalization, not a
 # full shell parser (see module docstring above and each helper's own docstring for the exact
 # limitations still accepted as-is).
+#
+# SN3-accept (3巡目レビュー, 受容リスク化): further bypasses of this scan remain possible and
+# are *not* being patched one-by-one further - e.g. a nested `find -exec ... find -exec ... ;`
+# clause combination, piping the denylisted binary through `xargs` (`echo git push | xargs -I{}
+# sh -c '{}'`), a full `if/then/fi` (or other shell-grammar) construct wrapping the invocation,
+# a quoted-then-reassembled binary name split across shell-adjacent string literals
+# (`g''it push`), or an `env -Sfoo=bar` (attached, no space) form of the split-string flag. This
+# denylist is a best-effort static check over **trusted loop-definition authors'** YAML - its
+# purpose is to catch an accidental/careless denylisted binary in `mechanical.commands`, not to
+# withstand a deliberately adversarial author trying to bypass it. Preventing an actually
+# malicious/untrusted actor (the Maker) from running arbitrary commands is out of scope for this
+# denylist entirely; that boundary is enforced by layer 2 (env-based push-auth stripping,
+# EV-49/EV-83) and layer 3 (`--disallowedTools`/hook-based hard-deny, EV-49/EV-63), which do not
+# rely on any shell-text pattern matching. No further denylist-bypass patches are planned absent
+# a re-evaluation raising this above defense-in-depth severity for a *trusted-author* threat
+# model.
 _MECHANICAL_COMMAND_DENYLIST = frozenset({"git", "gh", "ssh", "curl", "wget", "docker", "sudo"})
 # SN3: `exec` replaces the current shell with the given command (no subprocess spawned) - a
 # command-position wrapper exactly like `command`/`nice`, so `exec git push` must also be

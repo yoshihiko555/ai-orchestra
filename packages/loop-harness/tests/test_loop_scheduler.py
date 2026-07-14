@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -709,6 +710,72 @@ def test_reap_finished_workers_respawns_cooldown_using_slot_freed_this_same_call
 
 
 # --------------------------------------------------------------------------------------------
+# reap_finished_workers: immediate-restart branch must respect the concurrency cap (RH4)
+# --------------------------------------------------------------------------------------------
+
+
+def test_reap_finished_workers_immediate_restart_respects_cap_with_untracked_live_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RH4: the reap-and-immediately-restart branch for an abnormally-exited, non-terminal
+    worker previously spawned unconditionally the moment `should_restart(state.status)` was
+    true, without ever consulting `_available_worker_slots`. With cap=2 (default), one dead
+    worker + one still-live tracked worker + one untracked-but-live active loop (SN1; e.g. left
+    running by a previous scheduler process across a restart) already fully occupies the cap -
+    immediately restarting the dead worker on top of that would run 3 workers concurrently,
+    past the configured limit."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    dead_loop_id = "aaaaaaaa-issue-1"
+    live_tracked_loop_id = "aaaaaaaa-issue-2"
+    untracked_live_loop_id = "aaaaaaaa-issue-3"
+    _seed_state(tmp_path, dead_loop_id, status="running")
+    _seed_state(tmp_path, live_tracked_loop_id, status="running")
+    _seed_state(tmp_path, untracked_live_loop_id, status="running")
+    lc.acquire_lock(untracked_live_loop_id, project_dir, "previous-process", 300)  # still alive
+    runtime = scheduler.SchedulerRuntime(
+        workers={
+            dead_loop_id: _FakePopen(returncode=1),
+            live_tracked_loop_id: _FakePopen(returncode=None),
+        }
+    )
+
+    def _fail_spawn(lid: str, project: str) -> None:
+        raise AssertionError("must not restart past the concurrency cap")
+
+    monkeypatch.setattr(scheduler, "spawn_worker", _fail_spawn)
+
+    result = scheduler.reap_finished_workers(runtime, project_dir)
+
+    assert result == []
+    assert dead_loop_id not in runtime.workers
+
+
+def test_reap_finished_workers_immediate_restart_uses_slot_when_available(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RH4 regression guard: the slot-aware immediate-restart path must still actually restart
+    a dead worker when a slot genuinely is free (cap not yet reached) - the fix must not
+    degenerate into "never immediately restart"."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    dead_loop_id = "aaaaaaaa-issue-1"
+    untracked_live_loop_id = "aaaaaaaa-issue-2"
+    _seed_state(tmp_path, dead_loop_id, status="running")
+    _seed_state(tmp_path, untracked_live_loop_id, status="running")
+    lc.acquire_lock(untracked_live_loop_id, project_dir, "previous-process", 300)  # still alive
+    runtime = scheduler.SchedulerRuntime(workers={dead_loop_id: _FakePopen(returncode=1)})
+
+    respawned = _FakePopen(returncode=None)
+    monkeypatch.setattr(scheduler, "spawn_worker", lambda lid, project: respawned)
+
+    result = scheduler.reap_finished_workers(runtime, project_dir)
+
+    assert result == [dead_loop_id]
+    assert runtime.workers[dead_loop_id] is respawned
+
+
+# --------------------------------------------------------------------------------------------
 # respawn_orphaned_active_loops: scheduler-restart recovery (#F4)
 # --------------------------------------------------------------------------------------------
 
@@ -1267,6 +1334,100 @@ def test_verify_repo_identity_at_startup_stops_once_lease_expires(
 
 
 # --------------------------------------------------------------------------------------------
+# _safe_stop_repo_identity_mismatch: stale pre-coord-lock read must be re-validated (RH1)
+# --------------------------------------------------------------------------------------------
+
+
+def test_safe_stop_repo_identity_mismatch_skips_write_when_purged_concurrently(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RH1: `verify_repo_identity_at_startup` necessarily reads `state` *before* acquiring the
+    per-loop coord lock (the lock is keyed on `state.loop_id`, only known once state.json has
+    already been read once). If a concurrent purge (tombstone-then-rmtree, RH3) completes
+    entirely in the window between that read and this call actually acquiring the coord lock,
+    the loop's lock.json is gone too - `_is_lease_expired` then returns True (no lock file), so
+    the existing lease-liveness check alone does not catch this stale-purge race. Without
+    re-validating after the coord lock is actually held, this call would write a brand-new
+    `stopped` state.json that resurrects the already-deleted, now-tombstoned directory."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    loop_id = "deadbeef-issue-1"
+    state = _seed_state(tmp_path, loop_id, status="running", repo_identity_hash="deadbeef")
+    expected = wm.resolve_repo_identity_hash(project_dir)
+
+    # Simulate a concurrent purge (state dir gone + tombstone written) having completed
+    # entirely in the window between `state` being read above and the coord lock being
+    # acquired inside `_safe_stop_repo_identity_mismatch`.
+    shutil.rmtree(lc.loop_dir(loop_id, project_dir))
+    tombstone_path = lc.loop_root(project_dir) / f"{loop_id}.tombstone.json"
+    tombstone_path.write_text(
+        json.dumps({"loop_id": loop_id, "status": "passed", "purged_at": lc.now_iso()}),
+        encoding="utf-8",
+    )
+
+    def _fail_notify(*args: object, **kwargs: object) -> None:
+        raise AssertionError("must not notify - the stop was never actually written")
+
+    monkeypatch.setattr(lds, "notify_macos", _fail_notify)
+    monkeypatch.setattr(scheduler, "lds", lds)
+
+    result = scheduler._safe_stop_repo_identity_mismatch(state, project_dir, expected)
+
+    assert result is False
+    assert not lc.loop_dir(loop_id, project_dir).exists()
+
+
+def test_safe_stop_repo_identity_mismatch_skips_write_when_status_became_terminal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RH1: if the loop reached a terminal status (e.g. via its own worker's normal exit) in
+    the window between the stale pre-lock read and this call acquiring the coord lock, the
+    stale `state` argument must not be written through - the freshly-reloaded state is now
+    terminal and the safety-stop no longer applies."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    loop_id = "deadbeef-issue-1"
+    state = _seed_state(tmp_path, loop_id, status="running", repo_identity_hash="deadbeef")
+    expected = wm.resolve_repo_identity_hash(project_dir)
+
+    current = lc.load_state(loop_id, project_dir)
+    current.status = "passed"
+    current.state_version += 1
+    lc._write_state(current, project_dir)
+
+    monkeypatch.setattr(lds, "notify_macos", lambda *a, **k: True)
+    monkeypatch.setattr(scheduler, "lds", lds)
+
+    result = scheduler._safe_stop_repo_identity_mismatch(state, project_dir, expected)
+
+    assert result is False
+    assert lc.load_state(loop_id, project_dir).status == "passed"
+
+
+def test_safe_stop_repo_identity_mismatch_writes_when_state_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RH1 regression guard: the reload-and-revalidate guard must not block the ordinary,
+    uncontended case - when nothing raced the stale read, the safety-stop still writes
+    normally."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    loop_id = "deadbeef-issue-1"
+    state = _seed_state(tmp_path, loop_id, status="running", repo_identity_hash="deadbeef")
+    expected = wm.resolve_repo_identity_hash(project_dir)
+
+    monkeypatch.setattr(lds, "notify_macos", lambda *a, **k: True)
+    monkeypatch.setattr(scheduler, "lds", lds)
+
+    result = scheduler._safe_stop_repo_identity_mismatch(state, project_dir, expected)
+
+    assert result is True
+    written = lc.load_state(loop_id, project_dir)
+    assert written.status == "stopped"
+    assert written.stop_reason == "repo_identity_mismatch"
+
+
+# --------------------------------------------------------------------------------------------
 # run_scheduler: startup safety-stop feeds into the exclusion set, finite max_cycles
 # --------------------------------------------------------------------------------------------
 
@@ -1582,6 +1743,38 @@ def test_render_cron_entry_fails_closed_on_cr_lf_in_project_path(
 
     with pytest.raises(ValueError, match="CR/LF"):
         scheduler.render_cron_entry(project_dir)
+
+
+@pytest.mark.parametrize("bad_char", ["\r", "\x0b", "\x1f"])
+def test_render_launchd_plist_fails_closed_on_cr_or_control_chars_in_project_path(
+    tmp_path: Path, bad_char: str
+) -> None:
+    """RM3: unlike cron's CR/LF fail-closed guard (SN-cron), a lone LF is XML-1.0-legal and
+    passes through XML parsing completely unchanged, so it is *not* rejected here (see the
+    sibling `..._allows_lone_lf_...` test below). CR and other C0 control characters outside
+    the small XML-1.0-legal set (TAB/LF/CR) must still fail closed: a literal CR is not itself
+    illegal XML content, but XML 1.0's mandatory line-ending normalization (CR/CRLF/lone-CR
+    folded to LF) would silently change the interpolated value the moment any XML parser
+    (including launchd's own plist reader) reads this file back; any other rejected control
+    character is outright illegal XML 1.0 content, producing an unparseable plist."""
+    project_dir = f"{tmp_path}{bad_char}evil"
+
+    with pytest.raises(ValueError, match="control characters"):
+        scheduler.render_launchd_plist(project_dir)
+
+
+def test_render_launchd_plist_allows_lone_lf_in_project_path(tmp_path: Path) -> None:
+    """RM3: a lone LF is XML-1.0-legal and passes through XML parsing completely unchanged (no
+    normalization applies to it, unlike CR) - it must not be rejected the way CR/other control
+    characters are."""
+    project = tmp_path / "weird\nname"
+    project.mkdir(parents=True)
+
+    plist = scheduler.render_launchd_plist(str(project))
+
+    import xml.etree.ElementTree as ET
+
+    ET.fromstring(plist)  # must still parse as well-formed XML
 
 
 def test_main_print_launchd_and_print_cron(

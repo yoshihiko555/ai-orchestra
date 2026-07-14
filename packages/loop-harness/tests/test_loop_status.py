@@ -386,11 +386,14 @@ def test_purge_loop_removes_loop_directory(tmp_path: Path) -> None:
     assert not lc.loop_dir(loop_id, str(tmp_path)).exists()
 
 
-def test_purge_loop_writes_tombstone_after_deletion(tmp_path: Path) -> None:
+def test_purge_loop_writes_tombstone(tmp_path: Path) -> None:
     """SN2: a purge must leave a lightweight tombstone behind so
     `loop_scheduler.discover_loop_ids` treats the loop_id as terminal (see
     `test_loop_scheduler.py::test_discover_loop_ids_excludes_tombstoned_loops`), instead of
-    re-spawning the same Issue the moment its label is (re-)detected."""
+    re-spawning the same Issue the moment its label is (re-)detected. RH3: the tombstone is
+    actually published *before* `rmtree` now (see `purge_loop`'s docstring), but this end-state
+    assertion (tombstone present with the right payload once `purge_loop` returns) is unaffected
+    by that internal ordering flip."""
     _init_repo(tmp_path)
     loop_id = "a-issue-1"
     _seed_state(tmp_path, loop_id, status_value="passed", updated_at=_iso(31))
@@ -405,9 +408,15 @@ def test_purge_loop_writes_tombstone_after_deletion(tmp_path: Path) -> None:
     assert payload["purged_at"]
 
 
-def test_purge_loop_does_not_write_tombstone_when_deletion_fails(
+def test_purge_loop_tombstone_persists_when_rmtree_fails_after_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """RH3: the tombstone is published *before* `rmtree` runs (deliberate ordering flip from
+    the previous rmtree-then-tombstone behavior), so a `rmtree` failure that happens after a
+    successful tombstone publish still raises `LoopHarnessError` (unchanged), but the tombstone
+    it already wrote is not rolled back. See `purge_loop`'s RH3 docstring for why a durable
+    tombstone-before-delete is preferred here over the small residual risk of the directory and
+    its tombstone briefly co-existing."""
     _init_repo(tmp_path)
     loop_id = "a-issue-1"
     _seed_state(tmp_path, loop_id, status_value="passed", updated_at=_iso(31))
@@ -421,28 +430,91 @@ def test_purge_loop_does_not_write_tombstone_when_deletion_fails(
         status.purge_loop(loop_id, str(tmp_path))
 
     tombstone_path = lc.loop_root(str(tmp_path)) / f"{loop_id}.tombstone.json"
+    assert tombstone_path.is_file()
+    payload = json.loads(tombstone_path.read_text(encoding="utf-8"))
+    assert payload["loop_id"] == loop_id
+
+
+def test_purge_loop_skips_rmtree_when_tombstone_write_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RH3: a tombstone-publish failure must raise `LoopHarnessError` *and* skip `rmtree`
+    entirely - the tombstone is written first specifically so a failure here can never result
+    in a deleted directory with no durable terminal record left behind at all."""
+    _init_repo(tmp_path)
+    loop_id = "a-issue-1"
+    _seed_state(tmp_path, loop_id, status_value="passed", updated_at=_iso(31))
+
+    def _rmtree_must_not_be_called(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("rmtree must not run when the tombstone write fails")
+
+    def _boom_replace(*_args: object, **_kwargs: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(status.shutil, "rmtree", _rmtree_must_not_be_called)
+    monkeypatch.setattr(status.os, "replace", _boom_replace)
+
+    with pytest.raises(lc.LoopHarnessError):
+        status.purge_loop(loop_id, str(tmp_path))
+
+    assert lc.loop_dir(loop_id, str(tmp_path)).is_dir()
+    tombstone_path = lc.loop_root(str(tmp_path)) / f"{loop_id}.tombstone.json"
     assert not tombstone_path.exists()
 
 
-def test_purge_loop_uses_original_loop_id_for_tombstone_on_orphaned_dir(
+def test_write_tombstone_publishes_atomically_via_temp_file_and_replace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RH3: `_write_tombstone` must publish through a temp file + `os.replace` (the shared
+    `lc._write_text` atomic-write helper also used for state.json/journal.jsonl), not a direct
+    `path.write_text` - pins the call actually goes through it rather than regressing to a
+    non-atomic write that could leave a truncated tombstone behind on a mid-write crash."""
+    _init_repo(tmp_path)
+    loop_id = "a-issue-1"
+    _seed_state(tmp_path, loop_id, status_value="passed", updated_at=_iso(31))
+
+    replace_calls: list[tuple[str, str]] = []
+    real_replace = os.replace
+
+    def _spy_replace(src: object, dst: object) -> None:
+        replace_calls.append((str(src), str(dst)))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(status.os, "replace", _spy_replace)
+
+    status.purge_loop(loop_id, str(tmp_path))
+
+    tombstone_path = lc.loop_root(str(tmp_path)) / f"{loop_id}.tombstone.json"
+    assert tombstone_path.is_file()
+    assert len(replace_calls) == 1
+    src, dst = replace_calls[0]
+    assert dst == str(tombstone_path)
+    assert src != dst
+    assert ".tmp." in src
+
+
+def test_purge_loop_does_not_write_tombstone_for_orphaned_snapshot_dir(
     tmp_path: Path,
 ) -> None:
-    """SN2/SM1: an orphaned-pending dir's directory name (with `.orphaned-N` suffix) must not
-    leak into the tombstone - `loop_scheduler.discover_loop_ids` compares candidates against
-    the original, no-suffix `loop_id`."""
+    """RH2: purging a retired orphaned-pending snapshot dir (`.orphaned-N` suffix) must not
+    write a tombstone under the original (no-suffix) loop_id at all. Doing so would tombstone
+    that loop_id from inside a coord lock keyed on the snapshot's own (different) directory
+    name - never holding the original loop_id's own coord lock - racing a concurrently
+    resumed/re-spawned run for the same Issue that legitimately does hold it. The snapshot
+    directory itself is still deleted normally."""
     _init_repo(tmp_path)
     original_loop_id = "a-issue-1"
     _seed_state(tmp_path, original_loop_id, status_value="pending", updated_at=_iso(40))
     loop_dir = lc.loop_dir(original_loop_id, str(tmp_path))
     orphaned_name = f"{original_loop_id}{lc.ORPHANED_PENDING_MARKER}1"
-    loop_dir.rename(loop_dir.parent / orphaned_name)
+    orphaned_dir = loop_dir.parent / orphaned_name
+    loop_dir.rename(orphaned_dir)
 
     status.purge_loop(orphaned_name, str(tmp_path))
 
+    assert not orphaned_dir.exists()
     tombstone_path = lc.loop_root(str(tmp_path)) / f"{original_loop_id}.tombstone.json"
-    assert tombstone_path.is_file()
-    payload = json.loads(tombstone_path.read_text(encoding="utf-8"))
-    assert payload["loop_id"] == original_loop_id
+    assert not tombstone_path.exists()
 
 
 def test_collect_summaries_shows_tombstoned_loop_with_terminal_status(tmp_path: Path) -> None:
@@ -515,6 +587,48 @@ def test_main_purge_respects_local_retention_override(tmp_path: Path) -> None:
 
     assert exit_code == 0
     assert not lc.loop_dir(loop_id, str(tmp_path)).exists()
+
+
+# --------------------------------------------------------------------------------------------
+# RM2: untombstone
+# --------------------------------------------------------------------------------------------
+
+
+def test_main_untombstone_removes_tombstone_file(tmp_path: Path) -> None:
+    """RM2: `untombstone --loop-id <id>` removes the tombstone so the Issue can be
+    discovered/resumed as a fresh run again - the only prior recourse was deleting the
+    `.tombstone.json` file on disk by hand."""
+    _init_repo(tmp_path)
+    loop_id = "a-issue-1"
+    _seed_state(tmp_path, loop_id, status_value="passed", updated_at=_iso(31))
+    status.purge_loop(loop_id, str(tmp_path))
+    tombstone_path = lc.loop_root(str(tmp_path)) / f"{loop_id}.tombstone.json"
+    assert tombstone_path.is_file()
+
+    exit_code = status.main(["untombstone", "--loop-id", loop_id, "--project", str(tmp_path)])
+
+    assert exit_code == 0
+    assert not tombstone_path.exists()
+
+
+def test_main_untombstone_reports_failure_when_no_tombstone_exists(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+
+    exit_code = status.main(
+        ["untombstone", "--loop-id", "no-such-loop", "--project", str(tmp_path)]
+    )
+
+    assert exit_code == 1
+
+
+def test_main_untombstone_rejects_unsafe_loop_id(tmp_path: Path) -> None:
+    """RM2: `--loop-id` is used to build a filesystem path directly, so a path-traversal-style
+    value (e.g. containing `..` or a path separator) must be rejected rather than resolved."""
+    _init_repo(tmp_path)
+
+    exit_code = status.main(["untombstone", "--loop-id", "../escape", "--project", str(tmp_path)])
+
+    assert exit_code == 1
 
 
 def test_purge_if_still_safe_reloads_state_and_skips_now_running(tmp_path: Path) -> None:

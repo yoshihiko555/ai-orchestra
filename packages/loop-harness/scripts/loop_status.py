@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""LP-2 loop-harness state inspection CLI: list / show / purge loop runs.
+"""LP-2 loop-harness state inspection CLI: list / show / purge / untombstone loop runs.
 
 Reads root-worktree-side `.claude/loop/<loop_id>/state.json` (and `journal.jsonl` for
 `show`) written by `loop_step.py` (LP-1) / `loop_driver.py` (LP-2). See
@@ -64,7 +64,7 @@ _STATUS_CHOICES = (
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI entry point: `loop_status.py list|show|purge ...`."""
+    """CLI entry point: `loop_status.py list|show|purge|untombstone ...`."""
     args = _parse_args(argv)
     project = _project_dir(args.project)
     try:
@@ -91,7 +91,40 @@ def _dispatch(args: argparse.Namespace, project: str) -> int:
         return 0
     if args.command == "purge":
         return _run_purge(args, project)
+    if args.command == "untombstone":
+        return _run_untombstone(args, project)
     return 1
+
+
+def _run_untombstone(args: argparse.Namespace, project: str) -> int:
+    """Remove a purge tombstone (RM2) so its Issue can be resumed as a deliberate fresh run.
+
+    There is otherwise no operator-facing way to undo a tombstone: `purge`/`--force` never
+    re-purge or touch an already-tombstoned loop_id, and `loop_scheduler.discover_loop_ids`
+    permanently excludes any tombstoned loop_id from discovery (SN2) - the only prior recourse
+    was manually deleting the `<loop_id>.tombstone.json` file on disk. This runs under
+    `lc.held_coord_lock` (the same fixed, purge-independent per-`loop_id` lock
+    `_purge_if_still_safe`/`resume`/`reacquire_lease`/the scheduler's safety-stop all share,
+    see their docstrings), so it cannot race a concurrent purge of the same loop_id recreating
+    the tombstone the instant after this removes it.
+    """
+    try:
+        lc._validate_safe_id("loop_id", args.loop_id)  # noqa: SLF001 - reuse shared id-safety guard
+    except ValueError as exc:
+        print(f"loop_status: {exc}", file=sys.stderr)
+        return 1
+    with lc.held_coord_lock(args.loop_id, project):
+        path = lc.loop_root(project) / f"{args.loop_id}{_TOMBSTONE_SUFFIX}"
+        if not path.is_file():
+            print(f"loop_status: no tombstone found for {args.loop_id!r}", file=sys.stderr)
+            return 1
+        path.unlink()
+    print(
+        f"loop_status: removed tombstone for {args.loop_id!r}; its Issue can now be "
+        "discovered/resumed as a fresh run",
+        file=sys.stderr,
+    )
+    return 0
 
 
 def _run_purge(args: argparse.Namespace, project: str) -> int:
@@ -221,6 +254,13 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     purge_parser.add_argument(
         "--yes", action="store_true", help="skip the confirmation prompt for real deletion"
     )
+
+    untombstone_parser = subparsers.add_parser(
+        "untombstone",
+        help="remove a purge tombstone (RM2) so the Issue can be resumed as a fresh run",
+    )
+    untombstone_parser.add_argument("--loop-id", required=True)
+    untombstone_parser.add_argument("--project")
 
     return parser.parse_args(argv)
 
@@ -557,39 +597,68 @@ def purge_loop(loop_id: str, project_dir: str) -> None:
 
     Deletion failures (permissions, locked files, etc.) propagate as `LoopHarnessError`
     instead of being silently swallowed, so the CLI exits non-zero on partial purges.
-    A missing directory (already purged/never existed) is treated as a no-op.
+    A missing directory (already purged/never existed) is treated as a no-op (no tombstone
+    write is attempted in that case either - nothing was actually purged by this call).
 
-    SN2: after a successful deletion, a lightweight tombstone is written so
-    `loop_scheduler.discover_loop_ids` does not immediately treat the same, still-labeled
-    Issue as a brand-new candidate on the next poll cycle (resuming a purged loop is meant to
-    be an explicit operator action, not an automatic side effect of purge). No tombstone is
-    written when deletion fails or the directory was already gone (nothing was actually
-    purged by this call).
+    RH3: the tombstone is written *before* `rmtree`, not after (the previous ordering), and
+    atomically (temp file + `os.replace`, via the shared `lc._write_text` writer) rather than
+    a direct `path.write_text`. The whole call already runs under `lc.held_coord_lock`
+    (`_purge_if_still_safe`), so this reordering does not introduce any new race with a
+    concurrent `resume`/`attach` - but it does close a different, purge-internal gap: the
+    previous rmtree-then-write ordering left a window where the directory was already gone but
+    the tombstone had not yet landed (or, with a non-atomic write, could land truncated on a
+    mid-write crash). A crash/kill in that exact window left neither a live state.json nor a
+    valid tombstone behind, so `loop_scheduler.discover_loop_ids` would treat the already-
+    purged Issue as a brand-new candidate on the very next poll cycle - defeating the point of
+    purging it. Publishing the tombstone atomically first means it is durably in place before
+    any deletion happens at all; a tombstone I/O failure now raises `LoopHarnessError` (via
+    `_write_tombstone`) and this function returns before ever calling `rmtree`.
+
+    RH2/SN2: no tombstone is written when `loop_id` is a retired orphaned-pending snapshot dir
+    (`lc.ORPHANED_PENDING_MARKER` in its *directory name*; see
+    `loop_scheduler.recover_orphaned_pending_loops`). Such a dir's frozen `state.json` still
+    carries the *original* (no-suffix) `loop_id`, but the coord lock this call runs under
+    (`_purge_if_still_safe`/`held_coord_lock`) is keyed on the directory name passed in here,
+    not on that original loop_id. Writing a tombstone under the original loop_id from inside a
+    lock keyed on the snapshot's own (different) name would tombstone the original loop_id
+    without ever holding *its* coord lock - racing a concurrently resumed/re-spawned run for the
+    same Issue that legitimately does hold it. The snapshot itself is simply deleted here; the
+    original loop's own terminal record (tombstone) is written only if/when that original loop
+    is itself later purged, under its own (matching) coord lock.
 
     Future extension (out of scope here): a `--with-worktree` flag to also remove the
     associated `.worktrees/loop-issue-<N>` directory via `worktree_manager.remove_worktree`
     (docs/design/loop-harness-cli.md 4.3 節).
     """
     target = lc.loop_dir(loop_id, project_dir)
-    state = _try_load_state(loop_id, project_dir)
+    if not target.is_dir():
+        return
+    if lc.ORPHANED_PENDING_MARKER not in loop_id:
+        state = _try_load_state(loop_id, project_dir)
+        _write_tombstone(loop_id, project_dir, state)
     try:
         shutil.rmtree(target)
     except FileNotFoundError:
         return
     except OSError as exc:
         raise lc.LoopHarnessError(f"failed to purge loop {loop_id!r}: {exc}") from exc
-    _write_tombstone(loop_id, project_dir, state)
 
 
 def _write_tombstone(loop_id: str, project_dir: str, state: lc.LoopState | None) -> None:
-    """Write a minimal purge tombstone (SN2): `{loop_id, status, purged_at}`.
+    """Atomically publish a minimal purge tombstone (SN2): `{loop_id, status, purged_at}`.
 
     Uses `state.loop_id` (the durable identifier `loop_scheduler.discover_loop_ids` actually
-    compares candidates against) rather than the `loop_id` argument here, which for a retired
-    orphaned-pending dir is a directory name carrying the `lc.ORPHANED_PENDING_MARKER` suffix
-    the real loop_id never has (SM1) - the same distinction `purge_candidates` already makes.
-    Falls back to the argument itself when no state could be loaded (best effort; still
-    prevents immediate re-discovery for the common case where state.json was readable).
+    compares candidates against) rather than the `loop_id` argument here - falls back to the
+    argument itself only when no state could be loaded (best effort; still prevents immediate
+    re-discovery for the common case where state.json was readable). `purge_loop` never calls
+    this for an orphaned-pending snapshot dir (RH2, see its docstring), so `loop_id` here is
+    always a real, no-suffix loop_id already equal to `state.loop_id` whenever `state` loaded.
+
+    RH3: published via `lc._write_text` (temp file + `os.replace`, the same atomic-write helper
+    `state.json`/`journal.jsonl` use) instead of a direct `path.write_text`, so a crash mid-write
+    can never leave a truncated tombstone at the final path. Raises `LoopHarnessError` (instead
+    of letting a raw `OSError` propagate) on failure, so `purge_loop` can rely on this call
+    either fully succeeding or raising - never partially writing - before it goes on to `rmtree`.
     """
     real_loop_id = state.loop_id if state is not None else loop_id
     payload = {
@@ -598,8 +667,12 @@ def _write_tombstone(loop_id: str, project_dir: str, state: lc.LoopState | None)
         "purged_at": lc.now_iso(),
     }
     path = lc.loop_root(project_dir) / f"{real_loop_id}{_TOMBSTONE_SUFFIX}"
-    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    os.chmod(path, lc.FILE_MODE)
+    try:
+        lc._write_text(path, json.dumps(payload, ensure_ascii=False))  # noqa: SLF001 - reuse shared atomic writer (RH3)
+    except OSError as exc:
+        raise lc.LoopHarnessError(
+            f"failed to write purge tombstone for {real_loop_id!r}: {exc}"
+        ) from exc
 
 
 if __name__ == "__main__":

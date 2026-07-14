@@ -497,6 +497,12 @@ def test_maker_bash_guard_allows_edit_write_outside_git_metadata(
         ("/wt/.git", True),
         (".git/config", True),
         ("/wt/sub/.git/index", True),
+        # RH3 (LP-2 3rd-round Codex security review): macOS's default case-insensitive-but-
+        # case-preserving filesystem resolves `.GIT`/`.Git` to the exact same on-disk `.git`
+        # entry, so a differently-cased spelling must be denied too.
+        ("/wt/.GIT/config", True),
+        ("/wt/.Git/config", True),
+        ("/wt/sub/.GiT/hooks/pre-push", True),
         ("/wt/src/app.py", False),
         ("/wt/gitignore_helper.py", False),
     ],
@@ -504,6 +510,18 @@ def test_maker_bash_guard_allows_edit_write_outside_git_metadata(
 def test_is_git_metadata_path(file_path: str, expected: bool) -> None:
     guard = load_module("maker_bash_guard", "packages/loop-harness/lib/maker_bash_guard.py")
     assert guard.is_git_metadata_path(file_path) is expected
+
+
+@pytest.mark.parametrize("tool_name", ["Edit", "Write"])
+@pytest.mark.parametrize("file_path", ["/wt/.GIT/config", "/wt/.Git/hooks/pre-push"])
+def test_maker_bash_guard_denies_edit_write_into_differently_cased_git_metadata(
+    tool_name: str, file_path: str
+) -> None:
+    """RH3 end-to-end: the hook itself (not just `is_git_metadata_path()` in isolation) must
+    deny a differently-cased `.git` path component."""
+    result = _run_edit_write_guard_hook(tool_name, file_path)
+    assert result.returncode == 2
+    assert "maker-bash-guard" in result.stderr
 
 
 # --------------------------------------------------------------------------------------------
@@ -531,6 +549,48 @@ def test_maker_bash_guard_denies_sec_med_bypasses(command: str) -> None:
     result = _run_bash_guard_hook(command)
     assert result.returncode == 2
     assert "maker-bash-guard" in result.stderr
+
+
+# --------------------------------------------------------------------------------------------
+# maker_bash_guard: RC2 (LP-2 3rd-round Codex security review) -- Bash redirect/`tee` into a
+# `.git` path (a bypass none of the git/gh-verb-shaped patterns above ever covered)
+# --------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "printf '[credential]\\n\\thelper = evil\\n' >> .git/config",
+        "echo x > worktree/.git/config",
+        "tee .git/hooks/pre-push",
+        "tee -a .git/config",
+        "cat <<'EOF' > .git/config\n[credential]\nhelper = evil\nEOF",
+        "echo x >> sub/.git/hooks/post-checkout",
+    ],
+)
+def test_maker_bash_guard_denies_redirect_and_tee_into_git_metadata(command: str) -> None:
+    result = _run_bash_guard_hook(command)
+    assert result.returncode == 2
+    assert "maker-bash-guard" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo x > output.txt",
+        "printf 'hi\\n' >> log.txt",
+        "echo x > .gitignore",
+        "echo x > .github/workflows/ci.yml",
+        "tee build.log",
+        "git diff --stat > /tmp/out.txt",
+    ],
+)
+def test_maker_bash_guard_allows_ordinary_redirects_and_tee(command: str) -> None:
+    """RC2 complement: an ordinary redirect/`tee` target that is not a `.git` path segment
+    (including the legitimately similar-looking `.gitignore`/`.github`) must not be denied."""
+    result = _run_bash_guard_hook(command)
+    assert result.returncode == 0
+    assert result.stderr == ""
 
 
 # --------------------------------------------------------------------------------------------
@@ -629,7 +689,50 @@ def test_get_remote_head_returns_none_when_query_itself_fails(tmp_path: Path) ->
 
 def test_hardened_git_config_args_clears_credential_helper() -> None:
     args = lds.hardened_git_config_args()
-    assert args == ["-c", "credential.helper="]
+    assert args == ["-c", "credential.helper=", "-c", "core.hooksPath=/dev/null"]
+
+
+def test_hardened_git_config_args_disables_hooks_path() -> None:
+    """RM1 (LP-2 3rd-round Codex security review): `core.hooksPath=/dev/null` must be part of
+    the *shared* helper every driver-owned git invocation applies -- not only inline at the
+    `_push_verified_branch` push call site -- so every other driver-owned call
+    (`_verify_maker_commit`'s `git status`, `_current_branch`'s `git branch --show-current`,
+    `_local_head`'s `git rev-parse HEAD`, `get_remote_head`'s `git ls-remote`, the local
+    `git config --get`/`--list` reads) also refuses to run a Maker-planted hook, not just the
+    push itself."""
+    args = lds.hardened_git_config_args()
+    assert args.count("-c") == 2
+    assert "core.hooksPath=/dev/null" in args
+
+
+def test_push_verified_branch_command_no_longer_duplicates_hooks_path_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RM1: the inline `-c core.hooksPath=/dev/null` that used to be duplicated at the push
+    call site is removed now that `hardened_git_config_args()` already supplies it -- the push
+    command must still contain exactly one `core.hooksPath=/dev/null` occurrence, not two."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    loop_id = "abcd1234-issue-1"
+    project_dir = str(repo)
+    lock = lc.acquire_lock(loop_id, project_dir, "owner", 3600)
+    assert lock is not None
+    d = driver.LoopDriver(loop_id, project_dir, lock.lease_token)
+
+    captured: dict[str, list[str]] = {}
+    real_run = driver.subprocess.run
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if cmd[0] == "git" and "push" in cmd:
+            captured["cmd"] = cmd
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr(driver.subprocess, "run", fake_run)
+    d._push_verified_branch(str(repo), "main")
+
+    cmd = captured["cmd"]
+    assert cmd.count("core.hooksPath=/dev/null") == 1
 
 
 def test_resolve_origin_url_returns_configured_url(tmp_path: Path) -> None:
@@ -693,6 +796,96 @@ def test_find_dangerous_local_git_config_detects_tampering(
     matched = lds.find_dangerous_local_git_config(str(repo))
     assert matched is not None
     assert expected_key_substring in matched.lower()
+
+
+def test_find_dangerous_local_git_config_detects_url_pin_invalidation_remote(
+    tmp_path: Path,
+) -> None:
+    """RC1 (LP-2 3rd-round Codex security review, real-machine-reproduced): git resolves a
+    push/`ls-remote` argument against a configured *remote name* before ever treating it as a
+    literal URL, so a Maker-added remote whose *name* equals the driver's own pinned literal
+    origin URL string hijacks that name lookup and silently redirects even a pinned-literal-URL
+    push. This must be detected regardless of the `origin` remote's own, expected
+    `remote.origin.url` entry existing alongside it."""
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_repo_with_remote(repo, remote)
+    # A rogue remote whose name is itself a URL string (simulating one crafted to match a
+    # pinned literal origin URL), added via `git config` directly (mirrors a Maker `Edit`
+    # write into `.git/config`, per this scan's own docstring).
+    _git(["config", "remote.https://x/.url", "evil"], repo)
+    matched = lds.find_dangerous_local_git_config(str(repo))
+    assert matched is not None
+    assert matched == "remote.https://x/.url"
+
+
+def test_find_dangerous_local_git_config_ignores_legitimate_origin_url(tmp_path: Path) -> None:
+    """RC1 complement: the expected, legitimate `remote.origin.url` entry every real push
+    already depends on must never itself be flagged -- a blanket (non-origin-excluding) pattern
+    would make this check fire on every single push against a normally-configured repo."""
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_repo_with_remote(repo, remote)
+    assert lds.find_dangerous_local_git_config(str(repo)) is None
+
+
+@pytest.mark.parametrize(
+    ("config_args", "expected_key_substring"),
+    [
+        (["core.fsmonitor", "/tmp/evil-fsmonitor.sh"], "core.fsmonitor"),
+        (["core.sshCommand", "/tmp/evil-ssh.sh"], "core.sshcommand"),
+        (["core.askpass", "/tmp/evil-askpass.sh"], "core.askpass"),
+        (["core.hooksPath", "/tmp/evil-hooks"], "core.hookspath"),
+        (["diff.evil.command", "/tmp/evil-diff.sh"], "diff.evil.command"),
+        (["diff.external", "/tmp/evil-diff.sh"], "diff.external"),
+        (["filter.evil.clean", "/tmp/evil-clean.sh"], "filter.evil.clean"),
+        (["filter.evil.smudge", "/tmp/evil-smudge.sh"], "filter.evil.smudge"),
+        (["filter.evil.process", "/tmp/evil-process.sh"], "filter.evil.process"),
+        (["include.path", "/tmp/evil-include.gitconfig"], "include.path"),
+        (["includeif.onbranch:main.path", "/tmp/evil-include.gitconfig"], "includeif."),
+    ],
+)
+def test_find_dangerous_local_git_config_detects_rh2_additional_keys(
+    tmp_path: Path, config_args: list[str], expected_key_substring: str
+) -> None:
+    """RH2 (LP-2 3rd-round Codex security review): each of these keys can make a later
+    driver-owned git invocation shell out to a Maker-supplied command or read a Maker-supplied
+    file; none of them were scanned for before."""
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_repo_with_remote(repo, remote)
+    _git(["config", *config_args], repo)
+    matched = lds.find_dangerous_local_git_config(str(repo))
+    assert matched is not None
+    assert expected_key_substring in matched.lower()
+
+
+def test_find_dangerous_local_git_config_scan_expands_includes(tmp_path: Path) -> None:
+    """RH2: the scan must use `git config --local --list --includes` (expanding
+    `include.path`/`includeif.*` directives), not a plain `--list` of `.git/config`'s own
+    top-level keys, so a dangerous key defined *only* inside a separately Maker-writable
+    included file is not missed. `include.path` itself is now also a dangerous key on its own
+    (a Maker adding *any* include at all is already suspicious), so this asserts the underlying
+    `--includes`-expanded output actually surfaces the included file's own key, rather than
+    asserting which of the two dangerous keys `find_dangerous_local_git_config()` happens to
+    return first."""
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_repo_with_remote(repo, remote)
+    included = tmp_path / "included.gitconfig"
+    included.write_text("[core]\n\tfsmonitor = /tmp/evil-fsmonitor.sh\n", encoding="utf-8")
+    _git(["config", "include.path", str(included)], repo)
+
+    completed = subprocess.run(
+        ["git", "-C", str(repo), "config", "--local", "--list", "--includes"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "core.fsmonitor=/tmp/evil-fsmonitor.sh" in completed.stdout
+
+    matched = lds.find_dangerous_local_git_config(str(repo))
+    assert matched is not None  # fail-closed regardless of which dangerous key matches first
 
 
 # --------------------------------------------------------------------------------------------
@@ -3279,6 +3472,123 @@ def test_reconstruct_push_integrity_baseline_populates_from_real_remote_after_at
 
     expected_head = _git(["rev-parse", "HEAD"], repo)
     assert d._remote_head_baseline == expected_head
+
+
+def test_reconstruct_push_integrity_baseline_stops_before_pinning_a_tampered_config(
+    tmp_path: Path,
+) -> None:
+    """RC3 (LP-2 3rd-round Codex security review): a driver restart/attach/resume must scan
+    for `.git/config` tampering *before* ever pinning `resolve_origin_url()`'s result as
+    trusted -- otherwise an already-tampered config (e.g. from a Maker `Edit`-write that
+    happened before this process even started) would be pinned as if it were the trustworthy
+    baseline the whole point of `_reconstruct_push_integrity_baseline()` running "at the
+    earliest trustworthy moment" depends on."""
+    loop_id = "abcd1234-issue-1"
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_repo_with_remote(repo, remote)
+    project_dir = str(repo)
+    state = lc._initial_state(
+        loop_id, "issue-loop", "abcd1234", project_dir, "main", "implementation"
+    )
+    state.status = "running"
+    state.branch = "main"
+    state.worktree_path = project_dir
+    lc._write_state(state, project_dir)
+    lock = lc.acquire_lock(loop_id, project_dir, "owner", 3600)
+    assert lock is not None
+
+    # Simulate the worktree's `.git/config` already being tampered *before* this driver
+    # process starts (e.g. a Maker `Edit`-write from a previous, now-crashed iteration).
+    _git(["config", "url.file:///tmp/evil.insteadOf", "https://github.com/o/r.git"], repo)
+
+    d = driver.LoopDriver(loop_id, project_dir, lock.lease_token)
+
+    with pytest.raises(driver.DriverTerminated) as exc_info:
+        d._reconstruct_push_integrity_baseline()
+
+    assert str(exc_info.value) == "git_config_tampered"
+    # The trusted origin URL must never be pinned once tampering was detected first.
+    assert d._trusted_origin_url is None
+    final_state = lc.load_state(loop_id, project_dir)
+    assert final_state.status == "stopped"
+    assert final_state.stop_reason == "git_config_tampered"
+
+
+def test_reconstruct_push_integrity_baseline_fails_closed_when_origin_url_unresolvable(
+    tmp_path: Path,
+) -> None:
+    """RH1 (LP-2 3rd-round Codex security review): when `resolve_origin_url()` cannot resolve
+    `origin`'s URL at all (e.g. no `origin` remote configured), the driver must stop the loop
+    (`origin_url_unresolvable`) rather than silently proceed and let a later driver-owned
+    push/`ls-remote` fall back to trusting the bare `"origin"` remote *name*."""
+    loop_id = "abcd1234-issue-1"
+    repo = tmp_path / "repo"
+    _init_repo(repo)  # no `origin` remote configured at all
+    project_dir = str(repo)
+    state = lc._initial_state(
+        loop_id, "issue-loop", "abcd1234", project_dir, "main", "implementation"
+    )
+    state.status = "running"
+    state.branch = "main"
+    state.worktree_path = project_dir
+    lc._write_state(state, project_dir)
+    lock = lc.acquire_lock(loop_id, project_dir, "owner", 3600)
+    assert lock is not None
+
+    d = driver.LoopDriver(loop_id, project_dir, lock.lease_token)
+
+    with pytest.raises(driver.DriverTerminated) as exc_info:
+        d._reconstruct_push_integrity_baseline()
+
+    assert str(exc_info.value) == "origin_url_unresolvable"
+    assert d._trusted_origin_url is None
+    assert d._remote_head_baseline is None  # never proceeded to reconstruct a baseline either
+    final_state = lc.load_state(loop_id, project_dir)
+    assert final_state.status == "stopped"
+    assert final_state.stop_reason == "origin_url_unresolvable"
+
+
+def test_run_stops_immediately_when_origin_url_unresolvable(tmp_path: Path) -> None:
+    """RH1/RC3 end-to-end: `run()` must catch the `DriverTerminated` its own
+    `_reconstruct_push_integrity_baseline()` call can now raise and exit `EXIT_OK` (mirroring
+    every other dispatch-time safe stop), rather than letting it propagate uncaught out of
+    `run()` before the main dispatch loop even starts."""
+    loop_id = "abcd1234-issue-1"
+    repo = tmp_path / "repo"
+    _init_repo(repo)  # no `origin` remote configured at all
+    project_dir = str(repo)
+    state = lc._initial_state(
+        loop_id, "issue-loop", "abcd1234", project_dir, "main", "implementation"
+    )
+    state.status = "running"
+    state.branch = "main"
+    state.worktree_path = project_dir
+    state.pending_action = lc.PendingAction(
+        "act-000001", "run_maker", "implementation", 1, lc.now_iso()
+    )
+    lc._write_state(state, project_dir)
+    lock = lc.acquire_lock(loop_id, project_dir, "owner", 3600)
+    assert lock is not None
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, lock.lease_token)
+    proposal = lc.ProposeResult(
+        action="run_maker",
+        action_id="act-000001",
+        state_version=state.state_version,
+        expected_phase="implementation",
+        phase="implementation",
+        iteration=1,
+        context={},
+    )
+
+    exit_code = d.run(proposal)
+
+    assert exit_code == driver.EXIT_OK
+    final_state = lc.load_state(loop_id, project_dir)
+    assert final_state.status == "stopped"
+    assert final_state.stop_reason == "origin_url_unresolvable"
 
 
 def test_reconstruct_push_integrity_baseline_skips_when_branch_unknown(tmp_path: Path) -> None:
