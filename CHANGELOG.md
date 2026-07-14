@@ -16,6 +16,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`git-workflow`: `/review-respond` スキルを追加**: カレントブランチの PR に付いた bot レビュー指摘（CodeRabbit/Codex 等）を `pr_review_threads.py` で取得し、分類・修正・push・返信・スレッド解決までを単発実行で自動対応する。
+
 - **`meta-harness`: `orchex meta loop`（Phase 3）を追加**: `propose` と `evaluate` を ledger 駆動で自動反復し、予算・反復上限・発散・収束で停止する。`--resume` は中断時の孤児候補を含む状態を ledger から復元する。
 
 - **`meta-harness`: Docker 隔離 scenario 実行を解禁**: `orchex meta evaluate` / `loop` の既定実行 backend を Docker に変更し、internal network の候補コンテナと run-scoped OAuth broker を使って実資格情報を候補へ渡さず scenario・oracle・tool-less judge を実行する。Docker daemon・pin 済みイメージ・broker が利用できない場合は worktree 作成前に明示エラーで停止し、非隔離 backend へは降格しない。
