@@ -97,9 +97,7 @@ class TestLoadPresets:
         # Assert
         assert result["essential"]["packages"] == packages
 
-    def test_exclude_with_nonexistent_package_name_does_not_error(
-        self, tmp_path: Path
-    ) -> None:
+    def test_exclude_with_nonexistent_package_name_does_not_error(self, tmp_path: Path) -> None:
         # Arrange
         manager = _make_manager(tmp_path)
         _write_manifest(tmp_path / "packages", "core")
