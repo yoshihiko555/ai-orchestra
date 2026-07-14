@@ -245,6 +245,29 @@ def _origin_url_fingerprint(url: str) -> str:
     return hashlib.sha256(url.encode("utf-8")).hexdigest()
 
 
+def _gh_host_from_origin_url(url: str | None) -> str | None:
+    """Best-effort GitHub host extraction from a git origin URL (PR #226 review P2).
+
+    `gh api user` defaults to `github.com` regardless of which host the repository lives on,
+    so on a GitHub Enterprise remote (without `GH_HOST` exported) the ownership check in
+    `_pr_authored_by_us` would compare a PR author from the Enterprise host against the login
+    of a possibly-different github.com account. Deriving the host from the pinned origin URL
+    lets the caller pass `--hostname` explicitly. Handles `https://` (with or without embedded
+    userinfo), `ssh://`, and scp-style (`git@host:owner/repo`) forms; anything else (e.g. a
+    local filesystem path remote) returns None, and the caller falls back to `gh`'s default
+    host resolution -- the pre-fix behavior.
+    """
+    if not url:
+        return None
+    https = re.match(r"https?://(?:[^@/]+@)?([^:/\s]+)", url)
+    if https:
+        return https.group(1)
+    ssh = re.match(r"(?:ssh://)?(?:[^@/\s]+@)([^:/\s]+)[:/]", url)
+    if ssh:
+        return ssh.group(1)
+    return None
+
+
 def _load_route_config() -> Any:
     """Load agent-routing's `route_config` module lazily (Issue #219 P2-1, EV-41).
 
@@ -938,7 +961,7 @@ class LoopDriver:
                 "maker": {"agent": maker_agent, "timed_out": True},
                 "infrastructure_failure": True,
             }
-        prompt = _maker_prompt(state, params)
+        prompt = _maker_prompt(state, params, maker_agent)
         cmd = lds.build_claude_p_command(
             prompt,
             allowed_tools=allowed_tools,
@@ -2351,6 +2374,15 @@ class LoopDriver:
         direction, since re-baselining against the PR's real reviews merely repeats the
         pre-#219 reuse behavior instead of trusting an unverified ownership claim.
         """
+        # PR #226 review P2: `gh api user` defaults to github.com even when the repository
+        # lives on a GitHub Enterprise host, so pin the request host to the one derived from
+        # the trusted origin URL whenever it is derivable (`gh pr view` needs no such pin -- it
+        # already resolves its host from the repo's own remote). Underivable (e.g. a local
+        # filesystem remote in tests) falls back to `gh`'s default resolution.
+        me_cmd = ["gh", "api", "user", "--jq", ".login"]
+        host = _gh_host_from_origin_url(self._trusted_origin_url)
+        if host:
+            me_cmd = ["gh", "api", "--hostname", host, "user", "--jq", ".login"]
         try:
             author = subprocess.run(
                 ["gh", "pr", "view", branch, "--json", "author", "-q", ".author.login"],
@@ -2361,7 +2393,7 @@ class LoopDriver:
                 check=False,
             )
             me = subprocess.run(
-                ["gh", "api", "user", "--jq", ".login"],
+                me_cmd,
                 cwd=worktree_path,
                 capture_output=True,
                 text=True,
@@ -2984,8 +3016,17 @@ def _format_pr_review_findings_block(findings: list[dict[str, Any]]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _maker_prompt(state: lc.LoopState, params: dict[str, Any]) -> str:
+def _maker_prompt(
+    state: lc.LoopState, params: dict[str, Any], maker_agent: str | None = None
+) -> str:
     """Build the Maker prompt (layer 1: never instructs push/PR creation).
+
+    PR #226 review P2: `maker_agent` (the `_resolve_maker_agent()` result, including
+    `detect_agent()`-routed `auto` selections) is threaded into the `[Role]` line so the
+    selected role actually shapes the `claude -p` child's behavior -- previously it was only
+    recorded in the completion metadata, so an `auto` detection of e.g. `frontend-dev` reported
+    a specialized Maker that the child never knew about. `claude -p` has no per-run
+    agent-selection flag, so the prompt is the threading point.
 
     code L2: in the `pr_review_response` phase, this also lists the imported PR review findings
     from `state.last_check_result` (see `_pr_review_findings_from_last_check()`), so the Maker
@@ -3015,8 +3056,9 @@ def _maker_prompt(state: lc.LoopState, params: dict[str, Any]) -> str:
         if state.phase == "pr_review_response"
         else ""
     )
+    role_prefix = f"Act as the `{maker_agent}` agent role. " if maker_agent else ""
     return (
-        f"[Role] You implement or fix Issue #{issue_number} in this repository.\n"
+        f"[Role] {role_prefix}You implement or fix Issue #{issue_number} in this repository.\n"
         f"[Context] cwd={state.worktree_path} branch={state.branch} phase={state.phase}\n"
         f"{issue_block}"
         f"{review_block}"

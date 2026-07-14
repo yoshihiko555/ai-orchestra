@@ -2720,6 +2720,66 @@ def test_create_or_reuse_pr_fails_safe_when_ownership_lookup_fails(
     assert d2._load_persisted_pr_creation_confirmed(action_id) is None
 
 
+def test_gh_host_from_origin_url_extracts_host_across_url_forms() -> None:
+    """PR #226 review P2: host derivation for `gh api --hostname` must cover https (with and
+    without embedded userinfo), ssh://, and scp-style origin URLs, and decline (None) on
+    anything else so the caller can fall back to `gh`'s default resolution."""
+    assert driver._gh_host_from_origin_url("https://ghe.example.com/o/r.git") == "ghe.example.com"
+    fake_pat = "ghp_" + "b" * 36
+    assert (
+        driver._gh_host_from_origin_url(f"https://x-access-token:{fake_pat}@ghe.example.com/o/r")
+        == "ghe.example.com"
+    )
+    assert driver._gh_host_from_origin_url("git@ghe.example.com:o/r.git") == "ghe.example.com"
+    assert driver._gh_host_from_origin_url("ssh://git@ghe.example.com/o/r.git") == "ghe.example.com"
+    assert driver._gh_host_from_origin_url("/tmp/local-remote.git") is None
+    assert driver._gh_host_from_origin_url(None) is None
+
+
+def test_pr_authored_by_us_pins_gh_api_host_from_trusted_origin_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR #226 review P2: on a GitHub Enterprise remote, `gh api user` must be pinned to the
+    repository's own host (derived from the trusted origin URL) instead of defaulting to
+    github.com and comparing against the wrong account."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    d._trusted_origin_url = "https://ghe.example.com/owner/repo.git"
+    seen_me_cmds: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return subprocess.CompletedProcess(cmd, 0, "loop-bot\n", "")
+        if cmd[:2] == ["gh", "api"]:
+            seen_me_cmds.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "loop-bot\n", "")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(driver.subprocess, "run", fake_run)
+
+    assert d._pr_authored_by_us(project_dir, "main") is True
+    assert seen_me_cmds == [
+        ["gh", "api", "--hostname", "ghe.example.com", "user", "--jq", ".login"]
+    ]
+
+
+def test_maker_prompt_threads_selected_agent_into_role_line(tmp_path: Path) -> None:
+    """PR #226 review P2: the resolved Maker agent must shape the `claude -p` child's own
+    prompt, not just the completion metadata -- otherwise an `auto` detection of e.g.
+    `frontend-dev` reports a specialized Maker that the child never knew about."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, _token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.worktree_path = project_dir
+
+    with_agent = driver._maker_prompt(state, {}, "frontend-dev")
+    without_agent = driver._maker_prompt(state, {})
+
+    assert "Act as the `frontend-dev` agent role." in with_agent
+    assert "Act as the" not in without_agent
+
+
 # --------------------------------------------------------------------------------------------
 # loop_driver.LoopDriver: `commit` advance-exec step actually verifies the Maker's commit
 # (code F9) instead of being a no-op
