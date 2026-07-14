@@ -2542,6 +2542,51 @@ def test_create_or_reuse_pr_reuses_unrelated_preexisting_pr_as_before(
     assert (pr_number, created) == (77, False)
 
 
+def test_create_or_reuse_pr_does_not_misattribute_unrelated_pr_after_failed_create(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #219 P2-5 follow-up (review Medium): the pre-creation intent is journaled *before*
+    `gh pr create`. If that create then fails and an unrelated PR later appears on the same
+    branch, a retry of the same `action_id` must NOT report `created=True` off the lingering
+    intent alone -- the PR was never actually created by us, so its real reviews must be
+    re-baselined (`created=False`). Only intent AND a post-create confirmation together prove
+    ownership."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.branch = "main"
+    state.worktree_path = project_dir
+    action_id = "act-misattrib-001"
+
+    d1 = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(driver, "_repo_name_with_owner", lambda _wt: "owner/repo")
+    monkeypatch.setattr(driver.lds, "issue_number_from_loop_id", lambda _loop_id: 1)
+    monkeypatch.setattr(prw, "record_baseline", lambda *_a, **_k: None)
+
+    def fake_run_create_fails(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return subprocess.CompletedProcess(cmd, 1, "", "no PR found")
+        if cmd[:3] == ["gh", "pr", "create"]:
+            raise subprocess.CalledProcessError(1, cmd, "", "gh pr create failed")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(driver.subprocess, "run", fake_run_create_fails)
+
+    # First attempt journals the pre-creation intent, then `gh pr create` fails and propagates.
+    with pytest.raises(subprocess.CalledProcessError):
+        d1._create_or_reuse_pr(state, "main", action_id)
+
+    # An unrelated PR (#55) appears on the same branch before the same action_id is retried.
+    d2 = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(
+        driver.subprocess, "run", lambda *_a, **_k: subprocess.CompletedProcess([], 0, "55\n", "")
+    )
+
+    pr_number, created = d2._create_or_reuse_pr(state, "main", action_id)
+
+    assert (pr_number, created) == (55, False)
+
+
 # --------------------------------------------------------------------------------------------
 # loop_driver.LoopDriver: `commit` advance-exec step actually verifies the Maker's commit
 # (code F9) instead of being a no-op

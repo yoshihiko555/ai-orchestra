@@ -90,6 +90,11 @@ _TRUSTED_ORIGIN_URL_ACTION_ID = "__trusted_origin_url__"
 # reusing/re-baselining it. Keyed per-action_id (not a fixed constant like the push-baseline
 # events above), mirroring `record_baseline`/`record_iteration_head`'s own G1 action_id fencing.
 _PR_CREATION_INTENT_JOURNAL_EVENT = "pr_creation_intent_recorded"
+# Journaled *after* `gh pr create` returns successfully, proving this exact action_id actually
+# created the PR (not merely intended to). `created=True` on the existing-PR reuse path requires
+# BOTH this and the intent event, so an unrelated PR that appears on the same branch after a
+# *failed* `gh pr create` is not misattributed as ours (Issue #219 P2-5 follow-up).
+_PR_CREATION_CONFIRMED_JOURNAL_EVENT = "pr_creation_confirmed"
 
 
 class DriverTerminated(Exception):
@@ -660,6 +665,12 @@ class LoopDriver:
         This mirrors `resolve_origin_url()`'s own "earliest trustworthy moment" framing: this
         mechanism only ever protects the delta *between* driver-observed resolutions, not the
         very first one.
+
+        A journal-write failure here propagates out of `_reconstruct_push_integrity_baseline`
+        and aborts the run *before* any driver-owned push, consistent with the fail-closed
+        stance of every other push-integrity journal write (`_persist_push_baseline`): an
+        unpinnable trusted origin is treated as "cannot safely proceed", never "proceed
+        unprotected".
         """
         lc.append_journal_event(
             self.loop_id,
@@ -2180,7 +2191,9 @@ class LoopDriver:
         )
         if existing.returncode == 0 and existing.stdout.strip():
             pr_number = int(existing.stdout.strip())
-            if self._load_persisted_pr_creation_intent(action_id) == branch:
+            intended = self._load_persisted_pr_creation_intent(action_id) == branch
+            confirmed = self._load_persisted_pr_creation_confirmed(action_id) == branch
+            if intended and confirmed:
                 return pr_number, True
             return pr_number, False
         repo = _repo_name_with_owner(state.worktree_path)
@@ -2204,6 +2217,10 @@ class LoopDriver:
             timeout=60,
             check=True,
         )
+        # Journal the confirmation immediately after `gh pr create` succeeds (before the
+        # `gh pr view` below): only now is it proven that *this* action created the PR, which the
+        # existing-PR reuse path above requires before reporting `created=True`.
+        self._persist_pr_creation_confirmed(action_id, branch)
         created = subprocess.run(
             ["gh", "pr", "view", branch, "--json", "number", "-q", ".number"],
             cwd=state.worktree_path,
@@ -2234,9 +2251,34 @@ class LoopDriver:
     def _load_persisted_pr_creation_intent(self, action_id: str) -> str | None:
         """Return the branch `_persist_pr_creation_intent` journaled for this `action_id`, if
         any (Issue #219 P2-5)."""
-        record = lc.find_journal_event(
-            self.loop_id, self.project_dir, action_id, _PR_CREATION_INTENT_JOURNAL_EVENT
+        return self._load_pr_creation_branch(action_id, _PR_CREATION_INTENT_JOURNAL_EVENT)
+
+    def _persist_pr_creation_confirmed(self, action_id: str, branch: str) -> None:
+        """Durably mark that `action_id`'s own `gh pr create` for `branch` actually succeeded
+        (Issue #219 P2-5 follow-up).
+
+        The pre-creation intent alone cannot distinguish "this action created the PR" from "this
+        action tried, `gh pr create` failed, and an unrelated PR later appeared on the same
+        branch": both leave only the intent event. Requiring this post-creation confirmation
+        before reporting `created=True` closes that misattribution window.
+        """
+        lc.append_journal_event(
+            self.loop_id,
+            self.project_dir,
+            _PR_CREATION_CONFIRMED_JOURNAL_EVENT,
+            "driver",
+            action_id,
+            {"branch": branch},
         )
+
+    def _load_persisted_pr_creation_confirmed(self, action_id: str) -> str | None:
+        """Return the branch `_persist_pr_creation_confirmed` journaled for this `action_id`, if
+        any (Issue #219 P2-5 follow-up)."""
+        return self._load_pr_creation_branch(action_id, _PR_CREATION_CONFIRMED_JOURNAL_EVENT)
+
+    def _load_pr_creation_branch(self, action_id: str, event: str) -> str | None:
+        """Return the `branch` payload journaled for `action_id` under `event`, if any."""
+        record = lc.find_journal_event(self.loop_id, self.project_dir, action_id, event)
         if record is None:
             return None
         payload = record.get("payload")

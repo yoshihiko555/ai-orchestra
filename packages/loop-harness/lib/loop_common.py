@@ -1035,22 +1035,13 @@ def run_mechanical_checks(
     subprocess pid (F5); omitting it preserves the previous behavior exactly.
 
     `remaining_budget` (Issue #219 P2-2, optional): a zero-argument callable returning the
-    caller's own current wall-clock budget remaining (e.g. LP-2's
-    `LoopDriver._remaining_wall_clock_seconds`). Without it, every command in `commands` reuses
-    the *same* `timeout_seconds` cap regardless of how long earlier commands in this same call
-    already took -- for N commands this can overshoot the caller's overall wall-clock deadline
-    by up to N times `timeout_seconds`, even though each individual command call site already
-    caps `timeout_seconds` itself by the budget remaining *before this whole call started*
-    (e.g. `loop_driver.py`'s own `apportioned_timeout(self._remaining_wall_clock_seconds(), ...)`
-    call before invoking this function). Passing it re-evaluates the actual remaining budget
-    immediately before *each* command, capping that command's own timeout to
-    `min(timeout_seconds, remaining_budget())`; once the budget is exhausted (`<= 0`), no
-    further command is spawned at all -- it is recorded as a synthetic timeout (exit code 124,
-    mirroring `_run_mechanical_command`'s own real-timeout shape) so `failure_detector` classifies
-    it consistently with a genuine per-command timeout, and every command still after it in
-    `commands` is skipped the same way without ever spawning a subprocess. Omitting this
-    parameter preserves the previous behavior exactly (every command timeout is the fixed
-    `timeout_seconds` cap, unconditionally).
+    caller's current wall-clock budget remaining. Without it, every command reuses the same
+    `timeout_seconds` cap, so N commands can overshoot the caller's overall deadline by up to N
+    times `timeout_seconds`. Passing it caps each command's timeout to
+    `min(timeout_seconds, remaining_budget())`, re-evaluated per command; once the budget is
+    exhausted (`<= 0`), that command and every one after it is recorded as a synthetic timeout
+    (exit code 124, matching a real per-command timeout so `failure_detector` classifies it the
+    same) without spawning a subprocess. Omitting it preserves the previous behavior exactly.
     """
     detector = _load_failure_detector()
     failures: list[MechanicalFailure] = []

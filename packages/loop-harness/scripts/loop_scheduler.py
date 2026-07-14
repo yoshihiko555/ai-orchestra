@@ -1415,6 +1415,13 @@ def render_cron_entry(
     # *different* definition as proof this definition's own scheduler is already alive.
     if definition_id != DEFAULT_DEFINITION_ID:
         pgrep_pattern += f" --definition {re.escape(definition_id)}"
+    # `grep -vxF -e "$$" -e "$PPID"` drops the pgrep self-match: the cron wrapper shell's own
+    # `pgrep -f` argv contains the fallback launch command, so without this the guard would see
+    # itself and conclude a scheduler is already alive. Residual (best-effort) limitations,
+    # accepted here because layer-2 lease fencing is the real single-writer guarantee: only the
+    # wrapper's own pid (`$$`) and immediate parent (`$PPID`) are excluded, not the full ancestor
+    # chain, and concurrent cron firings are not coordinated with each other. A pidfile/flock
+    # redesign is the complete fix and is tracked as a separate follow-up.
     line = (
         f"*/5 * * * * mkdir -p {shlex.quote(log_dir)} && "
         f'pgrep -f {shlex.quote(pgrep_pattern)} | grep -vxF -e "$$" -e "$PPID" | grep -q . || '
