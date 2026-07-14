@@ -247,6 +247,31 @@ def test_discover_loop_ids_excludes_terminal_loops(
     assert scheduler.discover_loop_ids(project_dir, definition) == []
 
 
+def test_discover_loop_ids_excludes_tombstoned_loops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SN2: a loop_id whose state dir was purged (leaving a tombstone) must not be regenerated
+    just because its Issue still carries the label - same rationale as
+    `test_discover_loop_ids_excludes_terminal_loops`, extended to the purged case where
+    state.json no longer exists at all to report a terminal status."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    definition = ld.load_all_definitions(project_dir)["issue-loop"]
+
+    purged_loop_id = wm.compute_loop_id(project_dir, 5)
+    lc.loop_root(project_dir).mkdir(parents=True, exist_ok=True)
+    tombstone_path = lc.loop_root(project_dir) / f"{purged_loop_id}.tombstone.json"
+    tombstone_path.write_text(
+        json.dumps({"loop_id": purged_loop_id, "status": "passed", "purged_at": lc.now_iso()}),
+        encoding="utf-8",
+    )
+
+    fake_issues = [{"number": 5, "created_at": "2026-01-01T00:00:00Z", "labels": []}]
+    monkeypatch.setattr(scheduler, "list_labeled_issues", lambda project, label: fake_issues)
+
+    assert scheduler.discover_loop_ids(project_dir, definition) == []
+
+
 def test_discover_loop_ids_excludes_pending_loops(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -616,6 +641,41 @@ def test_reap_finished_workers_does_not_respawn_cooldown_when_at_capacity(
     assert cooling_loop_id in runtime.foreign_lease_cooldown_until
 
 
+def test_reap_finished_workers_counts_untracked_live_loop_against_cooldown_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SN1: an untracked-but-live active loop (left running by a previous scheduler process
+    across a restart, not tracked in `runtime.workers`) must count against the concurrency cap
+    for the cooldown-respawn path too - previously only `spawn_new_workers` counted it
+    (`_untracked_live_active_loop_ids`), so this path could respawn a cooldown-elapsed loop
+    past the configured limit whenever an untracked-live loop was occupying a slot."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    override_dir = tmp_path / ".claude" / "config" / "loop-harness"
+    override_dir.mkdir(parents=True)
+    (override_dir / "loop-harness.local.yaml").write_text(
+        "lp2:\n  concurrency_limit: 1\n", encoding="utf-8"
+    )
+    occupying_loop_id = "aaaaaaaa-issue-1"
+    cooldown_loop_id = "aaaaaaaa-issue-2"
+    _seed_state(tmp_path, occupying_loop_id, status="running")
+    lc.acquire_lock(occupying_loop_id, project_dir, "previous-process", 300)  # still alive
+    _seed_state(tmp_path, cooldown_loop_id, status="running")  # foreign lease already expired
+    runtime = scheduler.SchedulerRuntime(foreign_lease_cooldown_until={cooldown_loop_id: 500.0})
+    monkeypatch.setattr(scheduler.time, "monotonic", lambda: 1000.0)
+
+    def _fail_spawn(lid: str, project: str) -> None:
+        raise AssertionError("must not respawn past the concurrency cap")
+
+    monkeypatch.setattr(scheduler, "spawn_worker", _fail_spawn)
+
+    result = scheduler.reap_finished_workers(runtime, project_dir)
+
+    assert result == []
+    assert cooldown_loop_id not in runtime.workers
+    assert cooldown_loop_id in runtime.foreign_lease_cooldown_until
+
+
 def test_reap_finished_workers_respawns_cooldown_using_slot_freed_this_same_call(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -747,6 +807,38 @@ def test_respawn_orphaned_active_loops_respects_concurrency_cap(
     assert len(result) == 1
     assert spawned_ids == result
     assert len(runtime.workers) == 2
+
+
+def test_respawn_orphaned_active_loops_counts_untracked_live_loop_against_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SN1: an untracked-but-live active loop (its lease still held by another owner, not
+    tracked in `runtime.workers`) must count against the concurrency cap here too - previously
+    only `spawn_new_workers` counted it, so this path could respawn a second, lease-expired
+    orphaned loop past the configured limit whenever an untracked-live loop occupied a slot."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    override_dir = tmp_path / ".claude" / "config" / "loop-harness"
+    override_dir.mkdir(parents=True)
+    (override_dir / "loop-harness.local.yaml").write_text(
+        "lp2:\n  concurrency_limit: 1\n", encoding="utf-8"
+    )
+    live_loop_id = "aaaaaaaa-issue-1"
+    expired_loop_id = "aaaaaaaa-issue-2"
+    _seed_state(tmp_path, live_loop_id, status="running")
+    _seed_state(tmp_path, expired_loop_id, status="running")
+    lc.acquire_lock(live_loop_id, project_dir, "previous-process", 300)  # still alive
+    runtime = scheduler.SchedulerRuntime()  # fresh restart; workers empty
+
+    def _fail_spawn(lid: str, project: str) -> None:
+        raise AssertionError("must not respawn past the concurrency cap")
+
+    monkeypatch.setattr(scheduler, "spawn_worker", _fail_spawn)
+
+    result = scheduler.respawn_orphaned_active_loops(runtime, project_dir)
+
+    assert result == []
+    assert expired_loop_id not in runtime.workers
 
 
 # --------------------------------------------------------------------------------------------
@@ -1475,6 +1567,21 @@ def test_render_cron_entry_escapes_percent_in_project_path(tmp_path: Path) -> No
     # Every literal `%` in the resolved path must be escaped, not left bare.
     unescaped = entry.replace("\\%", "")
     assert "%" not in unescaped
+
+
+@pytest.mark.parametrize("bad_char", ["\n", "\r"])
+def test_render_cron_entry_fails_closed_on_cr_lf_in_project_path(
+    tmp_path: Path, bad_char: str
+) -> None:
+    """SN-cron: unlike `%` (escaped to `\\%`, SN7), an embedded CR/LF cannot be escaped away at
+    the crontab-file-parsing stage - `shlex.quote` only protects *shell* parsing of the
+    already-assembled line, not crontab's own line-splitting of the raw file. A project_dir
+    containing a literal CR/LF (legal in a POSIX filename, if vanishingly rare) must fail
+    closed instead of silently rendering a malformed multi-line crontab entry."""
+    project_dir = f"{tmp_path}{bad_char}evil"
+
+    with pytest.raises(ValueError, match="CR/LF"):
+        scheduler.render_cron_entry(project_dir)
 
 
 def test_main_print_launchd_and_print_cron(

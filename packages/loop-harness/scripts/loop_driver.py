@@ -310,6 +310,16 @@ class LoopDriver:
         self._child_pid: int | None = None
         self._kill_requested = False
         self._remote_head_baseline: str | None = None
+        # SEC-CRIT (LP-2 2nd-round Codex security review): the `origin` remote's literal URL,
+        # resolved exactly once via `lds.resolve_origin_url()` at the earliest trustworthy
+        # moment (`_reconstruct_push_integrity_baseline()`, called right after lease
+        # acquisition and before any Maker child has had a chance to run in this process).
+        # Threaded through to every later driver-owned push/`ls-remote` call as an explicit URL
+        # argument instead of the bare `"origin"` remote name, so a later Maker `Edit` write
+        # into the shared worktree's `.git/config` (e.g. `remote.origin.url`) cannot redirect
+        # them. `None` until that first resolution runs (or if it fails to resolve at all, in
+        # which case callers fall back to the bare `"origin"` name, matching pre-fix behavior).
+        self._trusted_origin_url: str | None = None
         # code H5: the *local* worktree HEAD captured immediately before the most recent
         # `_run_maker` invocation. Distinct from `_remote_head_baseline` (a *remote* HEAD
         # snapshot): for a brand-new branch never pushed yet, `_remote_head_baseline` holds
@@ -401,6 +411,12 @@ class LoopDriver:
         state = lc.load_state(self.loop_id, self.project_dir)
         if not state.branch:
             return
+        # SEC-CRIT: resolve+pin the trusted origin URL here, first — this is the earliest
+        # trustworthy moment in this process (right after lease acquisition, before any Maker
+        # child has run), so no Maker `Edit` write into `.git/config` could have happened yet
+        # to taint this resolution. See `self._trusted_origin_url`'s own comment and
+        # `lds.resolve_origin_url()`'s docstring.
+        self._trusted_origin_url = lds.resolve_origin_url(state.worktree_path)
         recovered = self._recover_baseline_from_pending_push_intent(
             state.worktree_path, state.branch
         )
@@ -412,7 +428,10 @@ class LoopDriver:
             self._remote_head_baseline = persisted
             return
         self._persist_push_baseline(
-            lds.get_remote_head(state.worktree_path, state.branch), state.branch
+            lds.get_remote_head(
+                state.worktree_path, state.branch, origin_url=self._trusted_origin_url
+            ),
+            state.branch,
         )
 
     def _recover_baseline_from_pending_push_intent(
@@ -431,7 +450,9 @@ class LoopDriver:
         intended = self._load_persisted_push_intent()
         if intended is None:
             return None
-        live_remote_head = lds.get_remote_head(worktree_path, branch)
+        live_remote_head = lds.get_remote_head(
+            worktree_path, branch, origin_url=self._trusted_origin_url
+        )
         if live_remote_head != intended:
             return None
         self._persist_push_baseline(live_remote_head, branch)
@@ -727,9 +748,21 @@ class LoopDriver:
         which `classify_push_integrity()` already treats as `"violation"` since it is not an
         exact equality — stops the loop safely (journal-first) instead of silently overwriting
         the baseline, mirroring `_verify_push_integrity_or_stop`'s own stop sequence.
+
+        SEC-LOW (LP-2 2nd-round Codex security review, accepted as out of scope): there is a
+        TOCTOU window between this check's `get_remote_head()` read and `_run_maker`'s
+        subsequent use of its return value as the new trusted baseline — an out-of-band push
+        landing in that exact window would not be caught. Not fixed here: closing it would
+        require re-verifying immediately before every baseline adoption, which does not change
+        the fundamental race (a push can always land one instant later); the existing layer-4
+        checks (`_verify_push_integrity_or_stop`) already re-verify the baseline again on the
+        next driver-owned push, bounding this window's practical impact to "detected one
+        iteration later" rather than "never detected."
         """
         persisted = self._load_persisted_push_baseline()
-        live_head = lds.get_remote_head(state.worktree_path, state.branch)
+        live_head = lds.get_remote_head(
+            state.worktree_path, state.branch, origin_url=self._trusted_origin_url
+        )
         if persisted is None:
             return live_head
         classification = lds.classify_push_integrity(persisted, live_head)
@@ -1090,6 +1123,7 @@ class LoopDriver:
             # code H8: a driver-owned push here is just as capable of racing an out-of-band
             # remote change as `advance_phase`'s own push, so it must be gated by the same
             # layer-4 integrity check (previously only `advance_phase` performed this).
+            self._verify_no_git_config_tampering_or_stop(proposal, state)  # SEC-CRIT
             self._verify_push_integrity_or_stop(proposal, state, verified_branch)
             self._scan_for_leaked_secrets_or_stop(proposal, state)  # SH5
             self._push_verified_branch(state.worktree_path, verified_branch)
@@ -1395,16 +1429,26 @@ class LoopDriver:
         intended_head = _local_head(worktree_path)
         if intended_head is not None:
             self._persist_push_intent(intended_head, branch)
+        # SEC-CRIT: push to the pre-resolved, pinned `origin` URL (falling back to the bare
+        # "origin" name only if it could not be resolved at all, matching pre-fix behavior)
+        # instead of the bare remote name, so a Maker `Edit` write into `.git/config`'s
+        # `remote.origin.url` after that resolution cannot redirect this push. `*lds.
+        # hardened_git_config_args()` additionally clears any `credential.helper` a Maker may
+        # have written. Neither alone is sufficient against `insteadOf`/`pushurl` rewriting a
+        # literal URL argument too -- callers must run `_verify_no_git_config_tampering_or_stop`
+        # immediately beforehand (see its own docstring for why).
+        push_target = self._trusted_origin_url or "origin"
         subprocess.run(
             [
                 "git",
                 "-C",
                 worktree_path,
+                *lds.hardened_git_config_args(),
                 "-c",
                 "core.hooksPath=/dev/null",
                 "push",
                 "--no-verify",
-                "origin",
+                push_target,
                 f"HEAD:{branch}",
             ],
             capture_output=True,
@@ -1416,7 +1460,10 @@ class LoopDriver:
         # a crash immediately after this push cannot make the restarted driver's
         # `_reconstruct_push_integrity_baseline()` recover a *stale* pre-push baseline and
         # misclassify this very push as an out-of-band `push_integrity_violation`.
-        self._persist_push_baseline(lds.get_remote_head(worktree_path, branch), branch)
+        self._persist_push_baseline(
+            lds.get_remote_head(worktree_path, branch, origin_url=self._trusted_origin_url),
+            branch,
+        )
 
     def _verify_push_integrity_or_stop(
         self, proposal: lc.ProposeResult, state: lc.LoopState, verified_branch: str
@@ -1432,11 +1479,15 @@ class LoopDriver:
         `loop_stop` audit event, then raises `DriverTerminated` so the caller's dispatch never
         reaches its own push.
         """
-        current_remote_head = lds.get_remote_head(state.worktree_path, verified_branch)
+        current_remote_head = lds.get_remote_head(
+            state.worktree_path, verified_branch, origin_url=self._trusted_origin_url
+        )
         if current_remote_head is None:
             # SEC-H1: retry once before treating remote-HEAD lookup as unverifiable, to
             # tolerate a single transient `git ls-remote` blip without a spurious safe stop.
-            current_remote_head = lds.get_remote_head(state.worktree_path, verified_branch)
+            current_remote_head = lds.get_remote_head(
+                state.worktree_path, verified_branch, origin_url=self._trusted_origin_url
+            )
         classification = lds.classify_push_integrity(
             self._remote_head_baseline, current_remote_head
         )
@@ -1457,6 +1508,53 @@ class LoopDriver:
                 "baseline_head": self._remote_head_baseline,
                 "detected_head": current_remote_head,
             },
+        )
+        self._notify(state, stop_reason)
+        stopped_state = lc.load_state(self.loop_id, self.project_dir)
+        self._maybe_comment(
+            stopped_state,
+            f"loop-harness: {self.loop_id} stopped safely (push integrity check: {stop_reason}).",
+        )
+        self._emit_loop_stop_audit(stopped_state, "stop", stop_reason)
+        raise DriverTerminated(stop_reason)
+
+    def _verify_no_git_config_tampering_or_stop(
+        self, proposal: lc.ProposeResult, state: lc.LoopState
+    ) -> None:
+        """Hard-stop before a driver-owned push if `.git/config` was Maker-tampered (SEC-CRIT).
+
+        Layer 3's `maker_bash_guard.py` PreToolUse hook used to only ever inspect the Maker's
+        *Bash* tool calls; its other allowed tools (`Edit`/`Write`) were never checked at all,
+        so a Maker could write directly into the shared worktree's `.git/config` (e.g. via
+        `Edit`) and add a `url.<base>.insteadOf`/`pushurl`/`credential.helper` entry there
+        without ever running a single denied Bash command (this hook's matcher is now widened
+        to also cover `Edit`/`Write`, see `loop_driver_support._maker_hook_settings_dict()`, but
+        this driver-side check remains as its own independent layer regardless).
+
+        Pinning a pre-resolved, literal origin URL for push/`ls-remote`
+        (`self._trusted_origin_url`, see `lds.resolve_origin_url()`) defeats a bare
+        `remote.origin.url` rewrite, but *not* an `insteadOf`/`pushurl` entry: git still
+        rewrites even a literal URL argument that matches an `insteadOf` base, regardless of
+        whether it was ever looked up by remote name (confirmed empirically during the 2nd
+        review round — a driver push using the pinned literal URL was silently redirected to a
+        second, attacker-designated local repo once a matching `insteadOf` entry existed in
+        `.git/config`). This check closes that gap directly: it inspects the *actual* current
+        local git config immediately before every driver-owned push/`ls-remote` and hard-stops
+        the loop (mirroring `_verify_push_integrity_or_stop`'s own stop sequence) the instant
+        any of these keys is present, instead of trusting the pinned URL alone to be
+        sufficient.
+        """
+        matched_key = lds.find_dangerous_local_git_config(state.worktree_path)
+        if matched_key is None:
+            return
+        stop_reason = "git_config_tampered"
+        lds.persist_safe_stop(
+            self.loop_id,
+            self.project_dir,
+            self.lease_token,
+            proposal.action_id,
+            stop_reason,
+            {"matched_config_key": matched_key},
         )
         self._notify(state, stop_reason)
         stopped_state = lc.load_state(self.loop_id, self.project_dir)
@@ -1525,6 +1623,7 @@ class LoopDriver:
         repo_identity_ok = lc.is_repo_identity_verified(state)
         if not (branch_ok and repo_identity_ok):
             return {"push_guard": {"branch_ok": branch_ok, "repo_identity_ok": repo_identity_ok}}
+        self._verify_no_git_config_tampering_or_stop(proposal, state)  # SEC-CRIT
         self._verify_push_integrity_or_stop(proposal, state, verified_branch)
         self._scan_for_leaked_secrets_or_stop(proposal, state)  # SH5
         try:
@@ -1568,7 +1667,7 @@ class LoopDriver:
         first iteration of a fresh branch.
         """
         status = subprocess.run(
-            ["git", "-C", worktree_path, "status", "--porcelain"],
+            ["git", *lds.hardened_git_config_args(), "-C", worktree_path, "status", "--porcelain"],
             capture_output=True,
             text=True,
             timeout=10,
@@ -1777,7 +1876,7 @@ class LoopDriver:
 def _current_branch(worktree_path: str) -> str:
     """Return the current branch checked out at worktree_path."""
     completed = subprocess.run(
-        ["git", "branch", "--show-current"],
+        ["git", *lds.hardened_git_config_args(), "branch", "--show-current"],
         cwd=worktree_path,
         capture_output=True,
         text=True,
@@ -1790,7 +1889,7 @@ def _current_branch(worktree_path: str) -> str:
 def _local_head(worktree_path: str) -> str | None:
     """Return the worktree's local HEAD sha, or None if `git rev-parse HEAD` fails (code H5)."""
     completed = subprocess.run(
-        ["git", "-C", worktree_path, "rev-parse", "HEAD"],
+        ["git", *lds.hardened_git_config_args(), "-C", worktree_path, "rev-parse", "HEAD"],
         capture_output=True,
         text=True,
         timeout=10,

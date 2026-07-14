@@ -146,12 +146,17 @@ def test_load_and_validate_rejects_denylisted_mechanical_command(tmp_path: Path)
         "(git push origin main)",
         "exec git push origin main",
         "env -u FOO git push origin main",
+        "find . -exec git push origin main \\;",
+        "find . -execdir git push origin main +",
+        "env -S 'git push origin main'",
+        "g\\it push origin main",
     ],
 )
 def test_load_and_validate_rejects_mechanical_command_denylist_bypass(
     tmp_path: Path, command: str
 ) -> None:
-    """SEC-M1: normalization must catch path/whitespace/wrapper/shell-construct bypasses."""
+    """SEC-M1/SN3-extra: normalization must catch path/whitespace/wrapper/shell-construct/
+    find-exec/env-split-string/backslash-escape bypasses."""
     path = tmp_path / "bad.yaml"
     _write(
         path,

@@ -338,6 +338,11 @@ python3 loop_step.py resume --loop-id a1b2c3d4-issue-42 --reset-counters --proje
 - 応答: `propose` と同じ形式で、リセット後の最初のアクションを返す。加えて、新規発行した
   `lease_token` をレスポンスに含める（呼び出し側はこれを保持し、以後の `propose`/`complete`/
   `reconcile`/`heartbeat` に渡す。1.9 節）。
+- **`loop_status.py purge` との TOCTOU 対策（2巡目レビュー反映。SN-flock）**: reload〜lease 発行〜
+  `state.json` 書き込みの全区間を `loop_common.held_coord_lock`（削除対象外の固定パス
+  `.claude/loop/<loop_id>.coord.lock`）で保護する。同一 `loop_id` に対する `purge`（4.3 節）が
+  進行中であれば `resume` はその完了までブロックされ、`lock.json` 自体の inode 差し替え
+  （`rmtree` による削除）を経由したレースは発生しない（詳細は 4.3 節）。
 
 ### 1.9 `lease_token` の呼び出し契約（Codex レビュー指摘反映。P1）
 
@@ -401,6 +406,8 @@ python3 loop_step.py attach --loop-id a1b2c3d4-issue-42 --project /path/to/repo
 3. lease が stale（TTL 超過、または heartbeat 途絶）であることを確認できた場合のみ、
    `reacquire_lease()`（core 編 6.3 節）で新しい `lease_token` を発行し `lock.json` を更新する
    （TOCTOU 緩和のうえで奪取。旧 token は以後 `validate_lease()` に通らなくなる）。
+   `reacquire_lease()` は 1.8 節と同じ `held_coord_lock`（SN-flock）でこの区間全体を保護するため、
+   同一 `loop_id` に対する `purge`（4.3 節）が進行中であれば `attach` もその完了までブロックされる。
 4. `journal.jsonl` に `event: "attached", actor: "human"`（または LP-2 由来なら `actor: "scheduler"`）
    を追記する。
 5. `state.json` の `pending_action` を確認し、内部的に `propose` と同じロジック（1.4 節の
@@ -595,7 +602,62 @@ claude -p \
 > レビュアー/severity 分類/Checker（`mechanical.commands`。SEC-C1）の全 `claude -p` 子プロセス・
 > mechanical コマンド実行に、この強化版 env を一貫して適用する。
 
-**権限方針（`--dangerously-skip-permissions` は使わない）**:
+> **層3の `Edit`/`Write` 迂回の修正 + driver 側 git config hardening（2026-07-14 LP-2 2巡目
+> Codex セキュリティレビュー反映。SEC-CRIT）**: 層3 `maker_bash_guard.py` は `matcher: "Bash"`
+> でのみ発火しており、Maker に無制限許可されている `Edit`/`Write`（`MAKER_BASE_ALLOWED_TOOLS`）
+> は一切検査対象外だった。Maker は Bash を経由せず `Edit` で共有 worktree の `.git/config` を直接
+> 書き換え、`[remote "origin"] url` の repoint や `[url "<evil>"] insteadOf`/`pushurl`/
+> `credential.helper` エントリを仕込める。前者は「driver が `"origin"` という remote 名で解決する
+> 先」を、後者は「driver が使う任意の URL 引数そのもの」を書き換え可能で、driver 自身が実資格情報
+> で行う push/`ls-remote` を攻撃者リモートへリダイレクトさせ得る（**実機検証で確認**: 解決済みの
+> 生 URL をリテラル引数として渡した push でも、`.git/config` に一致する `insteadOf` エントリが
+> あれば依然としてリダイレクトされた — 単に remote 名解決を経由しないだけでは不十分）。
+> 対応は 2 段構え（両方が揃って初めて十分。片方だけでは不十分）:
+>
+> 1. **主対策（driver 側 git config hardening）**: `loop_driver_support.hardened_git_config_args()`
+>    （`-c credential.helper=`）を driver 発の全 git subprocess 呼び出しに付与する。加えて
+>    `resolve_origin_url()` で `origin` の生 URL を**信頼できる最初のタイミング**（lease 取得直後、
+>    このプロセスで Maker が一度も走っていない時点。`_reconstruct_push_integrity_baseline()`）で
+>    一度だけ解決し `LoopDriver._trusted_origin_url` にキャッシュ、以降の push/`ls-remote`
+>    （`get_remote_head()` の `origin_url` 引数）はこの生 URL を直接指定する（`"origin"` という
+>    remote 名は二度と解決に使わない）。ただしこれだけでは `insteadOf`/`pushurl` によるリテラル
+>    URL 引数の書き換えを防げない（上記実機検証）ため、`find_dangerous_local_git_config()` が
+>    driver-owned push/`ls-remote` の**直前に毎回**共有 worktree のローカル git config を実際に
+>    走査し、`insteadof`/`pushurl`/`credential\.helper`/`^alias\.` のいずれかが存在すれば
+>    `LoopDriver._verify_no_git_config_tampering_or_stop()` が `git_config_tampered` として安全
+>    停止する（`_verify_push_integrity_or_stop`/`_scan_for_leaked_secrets_or_stop` と同じ停止
+>    シーケンス）。`protocol.file.allow=never` は意図的に含めない — このパッケージ自身のテスト
+>    群がローカルパス remote を使うため、tamper の有無にかかわらず file transport を一律拒否する
+>    ことになり、無害な既存構成まで壊す（実機検証で確認）。
+> 2. **補助対策（層3 の `Edit`/`Write` 拡張）**: `maker_hook_settings_path()` の
+>    matcher を `"Bash"` から `"Bash|Edit|Write"` に拡張し、`maker_bash_guard.py` が
+>    `Edit`/`Write` の `tool_input.file_path` も検査、`.git` パスコンポーネントを含む書き込みを
+>    hard-deny する（`is_git_metadata_path()`）。層3 はあくまでベストエフォートの補助層であり
+>    （完全な shell 解析は目的としない）、主たる構造的保証は上記 1 の driver 側 hardening。
+
+> **層3 の残バイパス強化（2026-07-14 LP-2 2巡目レビュー反映。SEC-MED、ベストエフォート）**:
+> `maker_bash_guard.py` の全 deny パターンを大文字小文字を区別しない照合に統一し、クオート/
+> バックスラッシュを除去した正規化テキストでも再スキャンする（`g"i"t push` のようなトークン分断
+> 回避への対処）。また `GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*`/`GIT_CONFIG_COUNT`（env var 経由の
+> git config 注入。`-c`/`config` という文字列を一切含まずに同じキーを設定できる）と
+> `credential.helper` も deny 対象に追加した。これらはいずれも完全な shell 解析を代替するもの
+> ではなく、層2（env 認証隔離）+ 上記 driver 側 git config hardening が構造的保証である点は
+> 変わらない。
+
+> **`_verify_maker_push_baseline_or_stop()` の TOCTOU（SEC-LOW、対応不要・受容）**: この関数の
+> `get_remote_head()` 読み取りと `_run_maker` がその戻り値を新ベースラインとして採用するまでの
+> 間に理論上の TOCTOU window があるが、この window で走る out-of-band push は次の driver-owned
+> push 時点の層4チェック（`_verify_push_integrity_or_stop`）で改めて検出されるため「検出漏れ」
+> ではなく「検出が1周期遅れる」だけであり、脅威モデル外として対応しない。
+
+> **`mechanical.commands` denylist の追加バイパス対策（2巡目レビュー反映。SN3-extra）**:
+> `loop_definition._validate_mechanical` の SEC-M1 denylist スキャンは、`find . -exec git push
+> \;`（`find` 自身は wrapper 扱いではないため `-exec`/`-execdir`/`-ok`/`-okdir` 節の中身が
+> 未走査だった）、`env -S 'git push'`（`--split-string` は単一の値引数ではなく埋め込みコマンド
+> 文字列全体を意味するため、他の `env` フラグと同様に単純スキップすると中身が未検査になる）、
+> `g\it push`（バックスラッシュでの命令名分断）の 3 パターンについて追加の正規化を行う。
+> いずれも「層2主軸・完全な shell 解析は目的としない」というスキャンの既存スコープの範囲内の
+> 部分対処であり、`find` の複数 `-exec` 節や `-o`/括弧を用いた複雑な条件式までは対象としない。
 
 - headless 実行で人間の承認は得られないが、包括的な承認バイパス（`--dangerously-skip-permissions`）
   は「任意コマンド実行を無条件許可」であり NF-04（秘匿情報保護）・5.1 節（state 直接改ざんの残存
@@ -803,12 +865,26 @@ gh api repos/{owner}/{repo}/issues \
   discovery 対象から除外する。ラベルが外されないまま残っている完了済み Issue を、ラベルだけを見て
   再度ループ生成しないようにするための除外である（`discover_loop_ids` で running/waiting_external と
   同様に扱う）。
+- **purge 済み loop の tombstone 除外（2巡目レビュー反映。SN2）**: `loop_status.py purge` は
+  `state.json`/`journal.jsonl`/`artifacts/` を削除した後、`<loop_id>.tombstone.json`（最小構成:
+  `loop_id`/`status`/`purged_at`）を `.claude/loop/` 直下に残す。`_terminal_loop_ids` はこの
+  tombstone も terminal 扱いに含めるため、purge 済み Issue のラベルが残っていても discovery が
+  同一 `loop_id` を即座に再生成することはない（上記の terminal 除外と同じ理由）。tombstone 自体は
+  purge の対象外（`--force` でも削除しない）。`loop_status.py list` は tombstone を
+  purge 時点の status のまま 1 行として表示し続ける（`PHASE` 列には `purged` を表示）。
 
 ### 3.2 同時実行 cap
 
 - **確定値: 2（`lp2.concurrency_limit=2`、config で変更可）**。
 - `loop_scheduler.py` は起動中の worker プロセス数を内部で追跡し、cap に達している間は discovery
   結果があっても新規 worker を spawn しない（次回ポーリング時に再評価）。
+- **occupancy 計算は 3 経路で共通化（2巡目レビュー反映。SN1）**: cap の空き枠計算は
+  `_available_worker_slots`（`runtime.workers` の追跡数 + 未追跡だが lease が生存中の
+  active loop 数）に一本化されている。`spawn_new_workers`（新規 discovery からの spawn）だけでなく、
+  `respawn_orphaned_active_loops`（3.3 節の scheduler-restart 復旧）と foreign-lease cooldown 経過後の
+  再起動（3.3 節）も同じ計算を使う。以前はこの 2 経路が `concurrency_limit - len(runtime.workers)`
+  のみで空き枠を判定しており、scheduler 再起動直後などに存在する「未追跡だが lease 生存中」の
+  active loop を勘定に入れず、cap を超えて worker を spawn しうる欠陥があった。
 
 ### 3.3 worker の spawn / 監視 / kill / restart
 
@@ -909,6 +985,20 @@ cron 側は「落ちていたら起動し直す」監視役に留める）:
 - 実際の配置パス（`~/Library/LaunchAgents/com.ai-orchestra.loop-scheduler.plist`）へのインストール
   手順は `loop_scheduler.py --install-launchd` 等の補助コマンドとして実装するかは、実装フェーズで
   費用対効果を見て判断する（本書では手動配置の骨子のみ確定する）。
+- **cron エントリの CR/LF fail-closed（2巡目レビュー反映。SN-cron）**: `render_cron_entry` に
+  補間される `project_dir`/スクリプトパス/インタプリタパス/`--definition` 値のいずれかに
+  literal な CR/LF が含まれる場合は `ValueError` で fail-closed する。`%` は既存の SN7 対策
+  （`\%` へのエスケープ）で crontab のファイル解析段階での改行分割を防げるが、CR/LF 自体は
+  crontab レベルでエスケープする手段がなく（`shlex.quote` はシェル側の語分割/メタ文字のみを
+  防ぐもので、crontab ファイル解析自体の行分割は防げない）、レンダリングを拒否する以外に安全な
+  対処がないため。
+- **`pgrep -f` の自己一致（既知の限界。#13、受容済みリスク）**: cron 版の生存確認 `pgrep -f
+  <pattern>` は、cron 行自身のテキスト（フォールバックの `python3 <script> --project <project>`
+  呼び出し部分）にも一致しうるため、liveness チェックとして完全ではない。正規表現ベースの
+  liveness には構造的な限界があり、確実な単一起動保証には pidfile/flock ベースの liveness
+  チェックへの移行が必要（`loop_scheduler.py` 起動時に自身で pidfile を書き、cron 側はそれを
+  見る方式等）。テンプレートレンダリングの修正で閉じられる範囲を超えるため、本レビューでは
+  現状のまま受容し、別 Issue でのフォローアップを提案する。
 
 ---
 
@@ -984,6 +1074,18 @@ python3 loop_status.py purge [--project <path>] [--force] [--dry-run] [--yes]
 - **実削除時の対話確認**: `--dry-run` を指定しない実削除時は、誤操作防止のため確認を要求する。
   TTY 実行時は `yes` の入力で削除を続行する。`--yes` フラグ指定時は確認をスキップする。
   非対話 stdin・EOF・`yes` 以外の入力の場合は削除せず exit `1` とする。
+- purge 完了後は `state.json`/`journal.jsonl`/`artifacts/` に加え、tombstone を残す（3.1 節
+  「purge 済み loop の tombstone 除外」参照）。
+- **purge/resume/attach 間の inode 差し替えレース対策（2巡目レビュー反映。SN-flock）**:
+  `_purge_if_still_safe` は削除対象の `.claude/loop/<loop_id>/lock.json` 自体への flock（F19）に
+  加え、`.claude/loop/<loop_id>.coord.lock`（`loop_common.held_coord_lock`。削除対象**外**の固定
+  パスで、purge 後も消えない）を reload〜purge の全区間で保持する。`lock.json` 自体への flock は
+  `rmtree` でそのファイルの inode ごと消えるため、purge の途中で `resume`/`attach`
+  （`loop_common.reacquire_lease`）が新しい `lock.json`（別 inode）を作って書き込んでも、既に
+  失効した inode 上の flock とは競合しない。`resume`/`reacquire_lease` 側もこの同じ固定パスを
+  reload〜書き込みの全区間で保持するよう変更済みのため、purge と resume/attach は常にこの
+  1 本の固定ロックで直列化される（1.8 節・1.10 節も参照）。`loop_scheduler.py` の
+  `_safe_stop_repo_identity_mismatch`（3.4 節の安全停止書き込み）も同じロックを使う。
 
 ---
 

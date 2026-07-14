@@ -129,7 +129,7 @@ def _git_config_value(cwd: str, key: str) -> str | None:
     """Return one resolved (local-or-global) git config value, or None if unset/unavailable."""
     try:
         completed = subprocess.run(
-            ["git", "-C", cwd, "config", "--get", key],
+            ["git", *hardened_git_config_args(), "-C", cwd, "config", "--get", key],
             capture_output=True,
             text=True,
             timeout=10,
@@ -139,6 +139,147 @@ def _git_config_value(cwd: str, key: str) -> str | None:
         return None
     value = completed.stdout.strip()
     return value if completed.returncode == 0 and value else None
+
+
+# --- SEC-CRIT (LP-2 2nd-round Codex security review): driver-owned git config hardening ----
+#
+# The Maker's *other* allowed tools (`Edit`/`Write`, see `MAKER_BASE_ALLOWED_TOOLS` above) are
+# never inspected by the layer-3 `maker_bash_guard.py` PreToolUse hook at all -- that hook's
+# `matcher` only ever fired for `Bash` tool calls (see its own docstring/2nd-round fix). A Maker
+# therefore has a straightforward path that layers 1-3 as documented never accounted for: use
+# `Edit` to write directly into the *shared* worktree's `.git/config` and add a
+# `[url "<evil>"] insteadOf = <origin-url>` / `pushurl` / `credential.helper` entry there. Every
+# later driver-owned git invocation that still resolves "origin" (or authenticates) through that
+# same, now-tampered `.git/config` would then silently redirect the driver's own real-credential
+# push/`ls-remote` to an attacker-controlled destination, or shell out to an attacker-supplied
+# credential helper.
+#
+# Two complementary fixes close this, applied together (neither is sufficient alone -- see each
+# docstring for why):
+#   1. `resolve_origin_url()` + `hardened_git_config_args()`: pin the *literal* origin URL once,
+#      at the earliest trustworthy moment (right after lease acquisition, before any Maker has
+#      had a chance to run in this process -- see `LoopDriver._reconstruct_push_integrity_
+#      baseline()`), and pass that literal string directly to every later push/`ls-remote`
+#      instead of the bare `"origin"` remote name. This defeats a `remote.origin.url` rewrite
+#      outright (there is no longer any remote-name lookup for a rewrite to intercept).
+#   2. `find_dangerous_local_git_config()`: even a *literal*, previously-pinned URL is not safe
+#      from `url.<base>.insteadOf`/`pushurl` rewriting -- git still rewrites a literal URL
+#      argument that matches an `insteadOf` base, regardless of whether it was ever looked up by
+#      remote name (empirically confirmed during the 2nd review round: a push using a pinned
+#      literal URL was silently redirected to a second, attacker-designated local repo once a
+#      matching `insteadOf` entry existed in `.git/config`). This function scans the *actual*
+#      current local config immediately before every driver-owned push and lets the caller
+#      (`LoopDriver._verify_no_git_config_tampering_or_stop`) hard-stop the loop the instant any
+#      of these keys is present, closing the gap fix (1) alone cannot.
+
+
+def hardened_git_config_args() -> list[str]:
+    """Return `-c` overrides every driver-owned git invocation should apply (SEC-CRIT).
+
+    `credential.helper=`: clears any credential helper `.git/config` might define (pre-existing,
+    or Maker-written via `Edit`), so a driver-owned git invocation started with the driver's own
+    real push credentials never shells out to an attacker-supplied helper command.
+
+    Deliberately does *not* include a blanket `protocol.file.allow=never` here, even though an
+    `insteadOf` rewrite could in principle redirect a push/fetch to a local `file://` path: this
+    package's own test suite (and some legitimate on-disk "origin" setups) intentionally uses
+    local-path remotes, so disabling the file transport outright would reject those too,
+    indiscriminately, alongside any actual attack (confirmed empirically: `git -c
+    protocol.file.allow=never push <local-path-remote> ...` fails with "transport 'file' not
+    allowed" even with no tampering involved at all). The `insteadOf`/`pushurl` attack vector is
+    instead closed directly and protocol-agnostically by `find_dangerous_local_git_config()`
+    below, which every driver-owned push call site consults immediately beforehand regardless of
+    what protocol a rewrite target would use.
+    """
+    return ["-c", "credential.helper="]
+
+
+def resolve_origin_url(cwd: str, timeout_seconds: float = 10.0) -> str | None:
+    """Resolve and return `origin`'s literal configured URL once, for trusted reuse (SEC-CRIT).
+
+    Callers should invoke this exactly once per driver process, at the earliest trustworthy
+    point (right after lease acquisition, before any Maker child has had a chance to run in this
+    process -- see `LoopDriver._reconstruct_push_integrity_baseline()`), cache the result on the
+    driver instance, and thread it through to every later driver-owned push/`ls-remote` call
+    (`get_remote_head()`'s `origin_url` parameter) as an explicit URL argument instead of the
+    bare `"origin"` remote name. See the module-level SEC-CRIT comment above for the full
+    rationale and why this is only one of two complementary fixes.
+
+    Returns `None` if the URL cannot be resolved (e.g. no `origin` remote configured, or the
+    query itself errors/times out) -- callers must fail closed on `None` (fall back to the bare
+    `"origin"` name only when there is truly no better option, never silently trust a `None` as
+    if it were a resolved value).
+    """
+    try:
+        completed = subprocess.run(
+            [
+                "git",
+                *hardened_git_config_args(),
+                "-C",
+                cwd,
+                "config",
+                "--get",
+                "remote.origin.url",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    value = completed.stdout.strip()
+    return value or None
+
+
+_DANGEROUS_LOCAL_CONFIG_KEY_RE = re.compile(
+    r"insteadof|pushurl|credential\.helper|^alias\.", re.IGNORECASE
+)
+"""Local git-config *keys* (not values) that must never be present in the shared worktree's
+`.git/config` before a driver-owned push/`ls-remote` (SEC-CRIT). Mirrors the same key families
+`maker_bash_guard.py`'s SC3/H1 deny patterns target for Maker *Bash* commands, but checked here
+against the actual current config state (not a text scan of a command string), which is what
+catches a Maker `Edit`-write into `.git/config` directly -- something the Bash-only hook can
+never see at all."""
+
+
+def find_dangerous_local_git_config(cwd: str, timeout_seconds: float = 10.0) -> str | None:
+    """Return the first dangerous local git-config key found, or None if it looks clean (SEC-CRIT).
+
+    Called by `LoopDriver._verify_no_git_config_tampering_or_stop()` immediately before every
+    driver-owned push/`ls-remote` against the shared worktree. Reads via `git config --local
+    --list` (this repo's own `.git/config`, not global/system) with `hardened_git_config_args()`
+    applied, so listing the config cannot itself invoke a rogue credential helper. Matched
+    line-by-line against `_DANGEROUS_LOCAL_CONFIG_KEY_RE`: not a full git-config parser (a
+    multi-line config value containing an embedded newline could in principle confuse this
+    simple per-line split), mirroring the same "text scan, not full parse" tradeoff
+    `maker_bash_guard.py` already documents for its own Bash-command scan -- a false positive
+    (an unrelated key merely containing one of these substrings) fails safe (refuses the push),
+    which is the accepted direction of error here.
+
+    Returns `None` (fail-open) only when the query itself cannot be completed at all (process
+    error/timeout) -- this is one of several layers (see the push call sites), not the sole
+    guard, so a transient failure here must not itself deadlock every push.
+    """
+    try:
+        completed = subprocess.run(
+            ["git", *hardened_git_config_args(), "-C", cwd, "config", "--local", "--list"],
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    for line in completed.stdout.splitlines():
+        key = line.split("=", 1)[0]
+        if _DANGEROUS_LOCAL_CONFIG_KEY_RE.search(key):
+            return key
+    return None
 
 
 def maker_scratch_home(project_dir: str, loop_id: str) -> str:
@@ -254,12 +395,21 @@ def _maker_hook_script_path() -> Path:
 
 
 def _maker_hook_settings_dict() -> dict[str, Any]:
-    """Return the `claude -p --settings` JSON dict wiring in the layer-3 Bash-guard hook."""
+    """Return the `claude -p --settings` JSON dict wiring in the layer-3 guard hook.
+
+    SEC-CRIT (LP-2 2nd-round Codex security review): the matcher used to be `"Bash"` only, so
+    `maker_bash_guard.py` never even saw an `Edit`/`Write` tool call -- a Maker could write
+    directly into the shared worktree's `.git/config` (see the SEC-CRIT comment above
+    `hardened_git_config_args()` in this module) without the layer-3 hook being invoked at all.
+    `maker_bash_guard.py` now also hard-denies `Edit`/`Write` writes anywhere under a `.git`
+    path component (`is_git_metadata_path()`), so the matcher is widened to `"Bash|Edit|Write"`
+    to route those tool calls through the same hook script too.
+    """
     return {
         "hooks": {
             "PreToolUse": [
                 {
-                    "matcher": "Bash",
+                    "matcher": "Bash|Edit|Write",
                     "hooks": [
                         {
                             "type": "command",
@@ -410,7 +560,9 @@ fail-closed into `push_integrity_unverifiable` forever, blocking every first-pus
 loop. Not a valid sha (non-hex), so it can never collide with a real commit sha."""
 
 
-def get_remote_head(cwd: str, branch: str, timeout_seconds: float = 10.0) -> str | None:
+def get_remote_head(
+    cwd: str, branch: str, *, origin_url: str | None = None, timeout_seconds: float = 10.0
+) -> str | None:
     """Return the current remote HEAD sha for branch (Issue F6: three distinguishable outcomes).
 
     - a real sha string: `git ls-remote` succeeded and found `branch` on `origin`.
@@ -418,10 +570,18 @@ def get_remote_head(cwd: str, branch: str, timeout_seconds: float = 10.0) -> str
       yet -- a confirmed, verifiable absence.
     - `None`: the query itself could not be completed (process error, timeout, or non-zero
       exit) -- unverifiable; callers must fail closed on this case (SEC-H1).
+
+    `origin_url` (SEC-CRIT): when given, queried directly instead of the bare `"origin"` remote
+    name -- pass the process's own pre-resolved, trusted URL (`resolve_origin_url()`, cached on
+    the driver instance) so a `.git/config` rewrite of what `"origin"` resolves to (Maker `Edit`
+    write, see the module-level SEC-CRIT comment above `hardened_git_config_args()`) after that
+    resolution point cannot redirect this query. Falls back to the bare `"origin"` name when
+    omitted/`None`, matching the pre-fix behavior (e.g. call sites that have no cached URL yet).
     """
+    remote = origin_url if origin_url else "origin"
     try:
         completed = subprocess.run(
-            ["git", "ls-remote", "origin", f"refs/heads/{branch}"],
+            ["git", *hardened_git_config_args(), "ls-remote", remote, f"refs/heads/{branch}"],
             cwd=cwd,
             capture_output=True,
             text=True,
@@ -512,7 +672,7 @@ def get_push_diff(cwd: str, baseline_head: str | None, timeout_seconds: float = 
         diff_range = f"{_EMPTY_TREE_SHA}..HEAD"
     try:
         completed = subprocess.run(
-            ["git", "-C", cwd, "diff", diff_range],
+            ["git", *hardened_git_config_args(), "-C", cwd, "diff", diff_range],
             capture_output=True,
             text=True,
             timeout=timeout_seconds,

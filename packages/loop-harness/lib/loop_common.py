@@ -392,6 +392,42 @@ def lock_path(loop_id: str, project_dir: str) -> Path:
     return loop_dir(loop_id, project_dir) / "lock.json"
 
 
+def coord_lock_path(loop_id: str, project_dir: str) -> Path:
+    """Return the fixed, purge-independent per-loop coordination lock path (SN-flock).
+
+    Unlike `lock_path` (`.claude/loop/<loop_id>/lock.json`, deleted together with the rest of
+    the per-loop directory by `loop_status.purge_loop`'s `rmtree`), this path lives directly
+    under `.claude/loop/` so its inode stays stable across a purge. A flock taken on
+    `lock.json` itself (the previous purge-vs-resume/attach guard) stops protecting anything
+    the moment `rmtree` removes that inode: a concurrent `resume`/`reacquire_lease` call
+    racing the purge would recreate a brand-new `lock.json` (a different inode) and never
+    contend with a flock still held on the now-deleted one. `purge`, `resume`, and the
+    scheduler's repo-identity safety-stop all acquire this same, never-deleted path instead
+    (via `held_coord_lock`), so they always contend on one stable file regardless of any
+    `lock.json`/state-dir churn happening underneath.
+    """
+    _validate_safe_id("loop_id", loop_id)
+    return loop_root(project_dir) / f"{loop_id}.coord.lock"
+
+
+@contextmanager
+def held_coord_lock(loop_id: str, project_dir: str) -> Iterator[None]:
+    """Acquire the per-loop coordination lock (SN-flock) for the duration of the block.
+
+    Creates the lock file if absent (`O_CREAT`); its content carries no meaning beyond being
+    a stable flock target, and it is never deleted (unlike `lock_path`'s lock.json, which
+    `purge_loop`'s `rmtree` removes) so every caller always flocks the same inode. Nests
+    safely with any lock taken on a *different* path (e.g. `lock.json`'s own flock inside
+    `resume`/`_purge_if_still_safe`) since `flock()` contention is per-file, not per-process.
+    """
+    path = coord_lock_path(loop_id, project_dir)
+    _ensure_dir(path.parent)
+    fd = os.open(path, os.O_CREAT | os.O_RDWR, FILE_MODE)
+    with os.fdopen(fd, "r+", encoding="utf-8") as f:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        yield
+
+
 def artifact_path(loop_id: str, project_dir: str, action_id: str, name: str) -> Path:
     """Return a safe artifact path."""
     _validate_safe_id("loop_id", loop_id)
@@ -604,25 +640,34 @@ def resume(
     ttl_seconds: int,
     host: str | None = None,
 ) -> ResumeResult:
-    """Resume a failed/stopped loop and issue a new lease."""
+    """Resume a failed/stopped loop and issue a new lease.
+
+    SN-flock: the reload-through-write section is held under `held_coord_lock` (a fixed,
+    purge-independent path) so a concurrent `loop_status.py purge` of this same loop_id
+    cannot race this call - either this call blocks until the purge finishes (and then
+    correctly fails with `InvalidStateError` once `load_state` finds nothing left to resume),
+    or the purge blocks until this call's write completes (and then finds the loop no longer
+    purge-eligible on its own post-lock reload).
+    """
     if not reset_counters:
         raise InvalidStateError("resume requires reset_counters=True")
-    state = load_state(loop_id, project_dir)
-    if state.status not in {"failed", "stopped"}:
-        raise InvalidStateError(f"cannot resume status={state.status}")
-    _replace_lock(loop_id, project_dir, owner_id, ttl_seconds, host)
-    lock = _read_lock(lock_path(loop_id, project_dir))
-    if lock is None:
-        raise LockNotFoundError("new lock not found")
-    for name in list(state.guards):
-        state.guards[name] = GuardCounters()
-    state.status = "running"
-    state.stop_reason = None
-    state.pending_action = None
-    state.state_version += 1
-    state.updated_at = now_iso()
-    append_journal_event(loop_id, project_dir, "resumed", "step", None, {"phase": state.phase})
-    _write_state(state, project_dir)
+    with held_coord_lock(loop_id, project_dir):
+        state = load_state(loop_id, project_dir)
+        if state.status not in {"failed", "stopped"}:
+            raise InvalidStateError(f"cannot resume status={state.status}")
+        _replace_lock(loop_id, project_dir, owner_id, ttl_seconds, host)
+        lock = _read_lock(lock_path(loop_id, project_dir))
+        if lock is None:
+            raise LockNotFoundError("new lock not found")
+        for name in list(state.guards):
+            state.guards[name] = GuardCounters()
+        state.status = "running"
+        state.stop_reason = None
+        state.pending_action = None
+        state.state_version += 1
+        state.updated_at = now_iso()
+        append_journal_event(loop_id, project_dir, "resumed", "step", None, {"phase": state.phase})
+        _write_state(state, project_dir)
     return ResumeResult(state, lock.lease_token)
 
 
@@ -1108,15 +1153,21 @@ def reacquire_lease(
     ttl_seconds: int,
     host: str | None = None,
 ) -> LockInfo:
-    """Reacquire an existing stale lease for attach."""
-    path = lock_path(loop_id, project_dir)
-    if not path.exists():
-        raise LockNotFoundError(str(path))
-    host = host or socket.gethostname()
-    lock = _reacquire_stale_lock(path, owner_id, ttl_seconds, host)
-    if lock is None:
-        raise LockNotFoundError(str(path))
-    return lock
+    """Reacquire an existing stale lease for attach.
+
+    SN-flock: held under the same purge-independent `held_coord_lock` as `resume` (see its
+    docstring), so `attach()` (which calls this) also correctly blocks against, and is
+    blocked by, a concurrent purge of this loop_id instead of racing it.
+    """
+    with held_coord_lock(loop_id, project_dir):
+        path = lock_path(loop_id, project_dir)
+        if not path.exists():
+            raise LockNotFoundError(str(path))
+        host = host or socket.gethostname()
+        lock = _reacquire_stale_lock(path, owner_id, ttl_seconds, host)
+        if lock is None:
+            raise LockNotFoundError(str(path))
+        return lock
 
 
 def _reacquire_stale_lock(

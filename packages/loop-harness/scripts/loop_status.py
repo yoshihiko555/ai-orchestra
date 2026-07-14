@@ -31,6 +31,13 @@ import loop_definition as ld  # noqa: E402
 DEFAULT_PURGE_AFTER_DAYS = 30
 DEFAULT_JOURNAL_LINES = 10
 
+# SN2: suffix for a purged loop's lightweight tombstone file, written directly under
+# `.claude/loop/` (never inside a per-loop dir, so it survives that dir's `rmtree`). Mirrors
+# `loop_scheduler._EXIT_FOREIGN_LEASE`'s precedent of a shared literal kept local in each
+# sibling script instead of a script-to-script import (`loop_scheduler.py` reads this same
+# suffix to exclude tombstoned loop_ids from discovery; see its `_tombstoned_loop_ids`).
+_TOMBSTONE_SUFFIX = ".tombstone.json"
+
 # 通常 purge の対象（完了として確定した状態のみ）。`stopped`（安全停止）は人間の調査を要するため
 # 通常 purge には含めない（EV-52; docs/design/loop-harness-cli.md 4.3 節）。
 _PURGEABLE_STATUSES_NORMAL = frozenset({"passed", "failed"})
@@ -142,22 +149,33 @@ def _purge_if_still_safe(loop_id: str, project_dir: str) -> None:
     have a path both sides can flock. If it turns out purge must be skipped (state changed
     out from under it), the placeholder is removed again so no stray lock.json is left
     behind for a loop this call did not actually purge.
+
+    SN-flock: the whole reload-through-purge section is additionally wrapped in
+    `lc.held_coord_lock` (a fixed, purge-independent path - see its docstring). The inner
+    lock-file flock above stops protecting anything the instant `purge_loop`'s `rmtree`
+    deletes that lock.json's inode: a concurrent `resume`/`reacquire_lease` racing this call
+    would recreate a brand-new lock.json (a different inode) and never contend with the flock
+    still (uselessly) held on the deleted one. The outer coord lock is what actually closes
+    that race; the inner lock-file flock is left in place unchanged for its own existing
+    contract/tests (double-locking on two different files is not a deadlock risk - `flock()`
+    contention is per-file, not per-process).
     """
-    lock_file = lc.lock_path(loop_id, project_dir)
-    created_placeholder = False
-    try:
-        fd = os.open(lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, lc.FILE_MODE)
-        created_placeholder = True
-    except FileExistsError:
-        fd = lc._open_lock_for_update(lock_file)  # noqa: SLF001 - reuse shared lock-open helper
-    if fd is None:
-        _purge_if_state_allows(loop_id, project_dir)
-        return
-    with os.fdopen(fd, "r+", encoding="utf-8") as f:
-        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-        purged = _purge_if_state_allows(loop_id, project_dir)
-    if created_placeholder and not purged and lock_file.exists():
-        lock_file.unlink()
+    with lc.held_coord_lock(loop_id, project_dir):
+        lock_file = lc.lock_path(loop_id, project_dir)
+        created_placeholder = False
+        try:
+            fd = os.open(lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, lc.FILE_MODE)
+            created_placeholder = True
+        except FileExistsError:
+            fd = lc._open_lock_for_update(lock_file)  # noqa: SLF001 - reuse shared lock-open helper
+        if fd is None:
+            _purge_if_state_allows(loop_id, project_dir)
+            return
+        with os.fdopen(fd, "r+", encoding="utf-8") as f:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            purged = _purge_if_state_allows(loop_id, project_dir)
+        if created_placeholder and not purged and lock_file.exists():
+            lock_file.unlink()
 
 
 def _purge_if_state_allows(loop_id: str, project_dir: str) -> bool:
@@ -266,7 +284,12 @@ class LoopSummary:
 
 
 def collect_summaries(project_dir: str, *, status_filter: str | None = None) -> list[LoopSummary]:
-    """Collect one LoopSummary per loop run, optionally filtered by status."""
+    """Collect one LoopSummary per loop run, optionally filtered by status.
+
+    SN2: also includes one synthetic row per purge tombstone, so a purged loop still shows up
+    in `list` (with its frozen-at-purge-time terminal status) instead of vanishing without a
+    trace the moment its directory is deleted.
+    """
     summaries: list[LoopSummary] = []
     for entry in _iter_loop_dirs(project_dir):
         state = _try_load_state(entry.name, project_dir)
@@ -275,7 +298,62 @@ def collect_summaries(project_dir: str, *, status_filter: str | None = None) -> 
         if status_filter is not None and state.status != status_filter:
             continue
         summaries.append(_summary_from_state(state, project_dir, entry.name))
+    for tombstone in _load_tombstones(project_dir):
+        if status_filter is not None and tombstone["status"] != status_filter:
+            continue
+        summaries.append(_summary_from_tombstone(tombstone))
     return summaries
+
+
+def _load_tombstones(project_dir: str) -> list[dict[str, str]]:
+    """Read all valid purge tombstones (SN2) under `.claude/loop/`, sorted by loop_id."""
+    root = lc.loop_root(project_dir)
+    if not root.is_dir():
+        return []
+    tombstones: list[dict[str, str]] = []
+    for path in sorted(root.glob(f"*{_TOMBSTONE_SUFFIX}")):
+        tombstone = _try_load_tombstone(path)
+        if tombstone is not None:
+            tombstones.append(tombstone)
+    return tombstones
+
+
+def _try_load_tombstone(path: Path) -> dict[str, str] | None:
+    """Read one tombstone file, or None if absent/malformed."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    loop_id, status_value, purged_at = (
+        data.get("loop_id"),
+        data.get("status"),
+        data.get("purged_at"),
+    )
+    if not all(isinstance(v, str) and v for v in (loop_id, status_value, purged_at)):
+        return None
+    return {"loop_id": loop_id, "status": status_value, "purged_at": purged_at}
+
+
+def _summary_from_tombstone(tombstone: dict[str, str]) -> LoopSummary:
+    """Build a synthetic LoopSummary for a purged (tombstoned) loop_id (SN2).
+
+    Per-phase/iteration/definition detail is gone along with the purged state.json; only the
+    identifier and its frozen-at-purge-time status are still meaningful, so those fields use
+    sentinel/zero values rather than inventing data that no longer exists.
+    """
+    return LoopSummary(
+        loop_id=tombstone["loop_id"],
+        definition_id="",
+        phase="purged",
+        iteration=0,
+        max_iterations=0,
+        status=tombstone["status"],
+        created_at=tombstone["purged_at"],
+        updated_at=tombstone["purged_at"],
+        pr_number=None,
+    )
 
 
 def _summary_from_state(state: lc.LoopState, project_dir: str, dir_name: str) -> LoopSummary:
@@ -481,17 +559,47 @@ def purge_loop(loop_id: str, project_dir: str) -> None:
     instead of being silently swallowed, so the CLI exits non-zero on partial purges.
     A missing directory (already purged/never existed) is treated as a no-op.
 
+    SN2: after a successful deletion, a lightweight tombstone is written so
+    `loop_scheduler.discover_loop_ids` does not immediately treat the same, still-labeled
+    Issue as a brand-new candidate on the next poll cycle (resuming a purged loop is meant to
+    be an explicit operator action, not an automatic side effect of purge). No tombstone is
+    written when deletion fails or the directory was already gone (nothing was actually
+    purged by this call).
+
     Future extension (out of scope here): a `--with-worktree` flag to also remove the
     associated `.worktrees/loop-issue-<N>` directory via `worktree_manager.remove_worktree`
     (docs/design/loop-harness-cli.md 4.3 節).
     """
     target = lc.loop_dir(loop_id, project_dir)
+    state = _try_load_state(loop_id, project_dir)
     try:
         shutil.rmtree(target)
     except FileNotFoundError:
         return
     except OSError as exc:
         raise lc.LoopHarnessError(f"failed to purge loop {loop_id!r}: {exc}") from exc
+    _write_tombstone(loop_id, project_dir, state)
+
+
+def _write_tombstone(loop_id: str, project_dir: str, state: lc.LoopState | None) -> None:
+    """Write a minimal purge tombstone (SN2): `{loop_id, status, purged_at}`.
+
+    Uses `state.loop_id` (the durable identifier `loop_scheduler.discover_loop_ids` actually
+    compares candidates against) rather than the `loop_id` argument here, which for a retired
+    orphaned-pending dir is a directory name carrying the `lc.ORPHANED_PENDING_MARKER` suffix
+    the real loop_id never has (SM1) - the same distinction `purge_candidates` already makes.
+    Falls back to the argument itself when no state could be loaded (best effort; still
+    prevents immediate re-discovery for the common case where state.json was readable).
+    """
+    real_loop_id = state.loop_id if state is not None else loop_id
+    payload = {
+        "loop_id": real_loop_id,
+        "status": state.status if state is not None else "unknown",
+        "purged_at": lc.now_iso(),
+    }
+    path = lc.loop_root(project_dir) / f"{real_loop_id}{_TOMBSTONE_SUFFIX}"
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    os.chmod(path, lc.FILE_MODE)
 
 
 if __name__ == "__main__":

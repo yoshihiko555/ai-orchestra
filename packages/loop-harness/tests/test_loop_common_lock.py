@@ -243,6 +243,87 @@ def test_replace_lock_blocks_on_concurrent_flock_holder_when_file_present(
     assert lc.load_state(loop_id, project_dir).status == "running"
 
 
+def test_resume_blocks_while_coord_lock_is_held_by_a_concurrent_purge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SN-flock: `resume`'s reload-through-write section is held under the same
+    purge-independent `held_coord_lock` `loop_status._purge_if_still_safe` takes (see its
+    docstring). Holding that fixed-path lock here (simulating a concurrent purge in-flight)
+    must block `resume()`, not let it race ahead - unlike the inner lock.json flock alone,
+    which stops protecting anything the instant a purge's `rmtree` swaps out that file's
+    inode."""
+    project_dir = _write_state(tmp_path, monkeypatch, status="failed")
+    loop_id = "abcd1234-issue-1"
+    lock = lc.acquire_lock(loop_id, project_dir, "owner", 3600, host="local")
+    assert lock is not None
+    coord_lock_file = lc.coord_lock_path(loop_id, project_dir)
+    coord_lock_file.parent.mkdir(parents=True, exist_ok=True)
+    held_fd = os.open(coord_lock_file, os.O_CREAT | os.O_RDWR, lc.FILE_MODE)
+    fcntl.flock(held_fd, fcntl.LOCK_EX)
+
+    events: list[str] = []
+
+    def _resume() -> None:
+        lc.resume(loop_id, project_dir, True, "owner-2", 3600)
+        events.append("resumed")
+
+    thread = threading.Thread(target=_resume)
+    thread.start()
+    try:
+        time.sleep(0.2)
+        # While this test still holds the coord lock, resume() must remain blocked.
+        assert events == []
+        events.append("released")
+    finally:
+        fcntl.flock(held_fd, fcntl.LOCK_UN)
+        os.close(held_fd)
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert events == ["released", "resumed"]
+    assert lc.load_state(loop_id, project_dir).status == "running"
+
+
+def test_attach_blocks_while_coord_lock_is_held_by_a_concurrent_purge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SN-flock: `attach` (via `reacquire_lease`) must also block against the same
+    purge-independent coord lock, mirroring `resume`'s equivalent test above."""
+    project_dir = _write_state(tmp_path, monkeypatch, status="running")
+    loop_id = "abcd1234-issue-1"
+    lock = lc.acquire_lock(loop_id, project_dir, "owner", 1, host="local")
+    assert lock is not None
+    path = lc.lock_path(loop_id, project_dir)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["heartbeat_at"] = "1970-01-01T00:00:00+00:00"
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    coord_lock_file = lc.coord_lock_path(loop_id, project_dir)
+    coord_lock_file.parent.mkdir(parents=True, exist_ok=True)
+    held_fd = os.open(coord_lock_file, os.O_CREAT | os.O_RDWR, lc.FILE_MODE)
+    fcntl.flock(held_fd, fcntl.LOCK_EX)
+
+    events: list[str] = []
+
+    def _attach() -> None:
+        lc.attach(loop_id, project_dir, "owner-2", 3600)
+        events.append("attached")
+
+    thread = threading.Thread(target=_attach)
+    thread.start()
+    try:
+        time.sleep(0.2)
+        assert events == []
+        events.append("released")
+    finally:
+        fcntl.flock(held_fd, fcntl.LOCK_UN)
+        os.close(held_fd)
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert events == ["released", "attached"]
+
+
 def test_attach_requires_existing_stale_lock_and_running_status(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

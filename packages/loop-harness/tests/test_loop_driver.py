@@ -286,7 +286,11 @@ def test_build_claude_p_command_never_skips_permissions_and_uses_accept_edits() 
 def test_build_claude_p_command_injects_settings_with_bash_guard_hook() -> None:
     """Layer 3 addendum (EV-49/EV-63): `--settings` wires in the `maker_bash_guard.py`
     PreToolUse hook so `bash -c "git push ..."` wrappers are caught too, not just literal
-    `--disallowedTools` prefix matches."""
+    `--disallowedTools` prefix matches.
+
+    SEC-CRIT (2nd-round Codex security review): the matcher also covers `Edit`/`Write` now, so
+    the same hook script additionally sees (and can hard-deny) a Maker's `Edit`/`Write` writes
+    into the shared worktree's `.git/` tree, not just its Bash tool calls."""
     lds.maker_hook_settings_path.cache_clear()
     try:
         cmd = lds.build_claude_p_command(
@@ -298,7 +302,7 @@ def test_build_claude_p_command_injects_settings_with_bash_guard_hook() -> None:
         settings = json.loads(settings_path.read_text(encoding="utf-8"))
         pre_tool_use = settings["hooks"]["PreToolUse"]
         assert len(pre_tool_use) == 1
-        assert pre_tool_use[0]["matcher"] == "Bash"
+        assert pre_tool_use[0]["matcher"] == "Bash|Edit|Write"
         hook_entries = pre_tool_use[0]["hooks"]
         assert len(hook_entries) == 1
         assert hook_entries[0]["type"] == "command"
@@ -431,6 +435,105 @@ def test_maker_bash_guard_fails_open_on_malformed_stdin() -> None:
 
 
 # --------------------------------------------------------------------------------------------
+# maker_bash_guard: SEC-CRIT (2nd-round Codex security review) -- Edit/Write `.git/` write deny
+# --------------------------------------------------------------------------------------------
+
+
+def _run_edit_write_guard_hook(tool_name: str, file_path: str) -> subprocess.CompletedProcess[str]:
+    hook_path = REPO_ROOT / "packages" / "loop-harness" / "lib" / "maker_bash_guard.py"
+    payload = json.dumps({"tool_name": tool_name, "tool_input": {"file_path": file_path}})
+    return subprocess.run(
+        [sys.executable, str(hook_path)],
+        input=payload,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+
+@pytest.mark.parametrize("tool_name", ["Edit", "Write"])
+@pytest.mark.parametrize(
+    "file_path",
+    [
+        "/wt/.git/config",
+        "/wt/.git/hooks/pre-push",
+        "/wt/.git",
+        "/wt/sub/.git/index",
+        ".git/config",
+    ],
+)
+def test_maker_bash_guard_denies_edit_write_into_git_metadata(
+    tool_name: str, file_path: str
+) -> None:
+    """SEC-CRIT: the Maker's only-ever-Bash-checked hook must now also hard-deny `Edit`/`Write`
+    writes anywhere under a `.git` path component -- the whole gap this fix closes."""
+    result = _run_edit_write_guard_hook(tool_name, file_path)
+    assert result.returncode == 2
+    assert "maker-bash-guard" in result.stderr
+
+
+@pytest.mark.parametrize("tool_name", ["Edit", "Write"])
+@pytest.mark.parametrize(
+    "file_path",
+    [
+        "/wt/src/app.py",
+        "/wt/gitignore_helper.py",
+        "/wt/mygit/file.py",
+        "/wt/README.md",
+    ],
+)
+def test_maker_bash_guard_allows_edit_write_outside_git_metadata(
+    tool_name: str, file_path: str
+) -> None:
+    result = _run_edit_write_guard_hook(tool_name, file_path)
+    assert result.returncode == 0
+    assert result.stderr == ""
+
+
+@pytest.mark.parametrize(
+    ("file_path", "expected"),
+    [
+        ("/wt/.git/config", True),
+        ("/wt/.git", True),
+        (".git/config", True),
+        ("/wt/sub/.git/index", True),
+        ("/wt/src/app.py", False),
+        ("/wt/gitignore_helper.py", False),
+    ],
+)
+def test_is_git_metadata_path(file_path: str, expected: bool) -> None:
+    guard = load_module("maker_bash_guard", "packages/loop-harness/lib/maker_bash_guard.py")
+    assert guard.is_git_metadata_path(file_path) is expected
+
+
+# --------------------------------------------------------------------------------------------
+# maker_bash_guard: SEC-MED (2nd-round Codex security review) -- best-effort bypass hardening
+# --------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # case-insensitivity
+        "GIT PUSH",
+        "Git Push origin main",
+        # quote/backslash-stripped normalization (split denied token across quote boundaries)
+        'g"i"t push',
+        "gi\\t push",
+        # GIT_CONFIG_KEY_*/GIT_CONFIG_VALUE_*/GIT_CONFIG_COUNT env-var config injection
+        "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=url.evil.insteadof GIT_CONFIG_VALUE_0=x git status",
+        # credential.helper repointing
+        "git config credential.helper '!echo pwned'",
+        "git -c credential.helper=evil status",
+    ],
+)
+def test_maker_bash_guard_denies_sec_med_bypasses(command: str) -> None:
+    result = _run_bash_guard_hook(command)
+    assert result.returncode == 2
+    assert "maker-bash-guard" in result.stderr
+
+
+# --------------------------------------------------------------------------------------------
 # loop_driver_support: layer 4 (post-push integrity verification, EV-80)
 # --------------------------------------------------------------------------------------------
 
@@ -516,6 +619,80 @@ def test_get_remote_head_returns_none_when_query_itself_fails(tmp_path: Path) ->
     repo = tmp_path / "repo"
     _init_repo(repo)
     assert lds.get_remote_head(str(repo), "main") is None
+
+
+# --------------------------------------------------------------------------------------------
+# loop_driver_support: SEC-CRIT (2nd-round Codex security review) driver-side git config
+# hardening -- resolved-origin-URL pinning + dangerous local git-config scan
+# --------------------------------------------------------------------------------------------
+
+
+def test_hardened_git_config_args_clears_credential_helper() -> None:
+    args = lds.hardened_git_config_args()
+    assert args == ["-c", "credential.helper="]
+
+
+def test_resolve_origin_url_returns_configured_url(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_repo_with_remote(repo, remote)
+    assert lds.resolve_origin_url(str(repo)) == str(remote)
+
+
+def test_resolve_origin_url_returns_none_without_origin_remote(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    assert lds.resolve_origin_url(str(repo)) is None
+
+
+def test_get_remote_head_uses_given_origin_url_instead_of_remote_name(tmp_path: Path) -> None:
+    """SEC-CRIT: passing `origin_url` must query *that* URL directly, not the `"origin"` remote
+    name -- so a later `.git/config` rewrite of what `"origin"` resolves to cannot redirect this
+    query once a caller has pinned the URL up front."""
+    repo = tmp_path / "repo"
+    good_remote = tmp_path / "good.git"
+    evil_remote = tmp_path / "evil.git"
+    _init_repo_with_remote(repo, good_remote)
+    evil_remote.mkdir(parents=True, exist_ok=True)
+    _git(["init", "--bare", "-b", "main"], evil_remote)
+    good_head = _git(["rev-parse", "HEAD"], repo)
+    # Simulate a Maker `Edit`-write tampering `remote.origin.url` *after* the trusted URL was
+    # already resolved and cached by the caller.
+    _git(["remote", "set-url", "origin", str(evil_remote)], repo)
+    assert lds.get_remote_head(str(repo), "main") is lds.REMOTE_HEAD_ABSENT  # "origin" now empty
+    assert lds.get_remote_head(str(repo), "main", origin_url=str(good_remote)) == good_head
+
+
+def test_find_dangerous_local_git_config_returns_none_for_clean_repo(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_repo_with_remote(repo, remote)
+    assert lds.find_dangerous_local_git_config(str(repo)) is None
+
+
+@pytest.mark.parametrize(
+    ("config_args", "expected_key_substring"),
+    [
+        (["url.file:///tmp/evil.insteadOf", "https://github.com/o/r.git"], "insteadof"),
+        (["remote.origin.pushurl", "https://evil.example/evil.git"], "pushurl"),
+        (["credential.helper", "!echo pwned"], "credential.helper"),
+        (["alias.p", "push"], "alias."),
+    ],
+)
+def test_find_dangerous_local_git_config_detects_tampering(
+    tmp_path: Path, config_args: list[str], expected_key_substring: str
+) -> None:
+    """SEC-CRIT: a Maker `Edit`-write into `.git/config` adding any of these keys must be
+    detected by this scan, regardless of how the key got there (this test writes it via `git
+    config` for setup convenience, but the scan itself only ever inspects the resulting file
+    state, not how it was written)."""
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_repo_with_remote(repo, remote)
+    _git(["config", *config_args], repo)
+    matched = lds.find_dangerous_local_git_config(str(repo))
+    assert matched is not None
+    assert expected_key_substring in matched.lower()
 
 
 # --------------------------------------------------------------------------------------------
@@ -1152,6 +1329,153 @@ def test_advance_phase_stops_safely_when_pending_diff_leaks_a_secret(
     final_state = lc.load_state(loop_id, project_dir)
     assert final_state.status == "stopped"
     assert final_state.stop_reason == "secret_leak_detected"
+
+
+def test_advance_phase_stops_safely_when_git_config_tampered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SEC-CRIT (2nd-round Codex security review): a Maker `Edit`-write into `.git/config`
+    adding an `insteadOf` entry must be caught by `_verify_no_git_config_tampering_or_stop`
+    *before* the push-integrity check or any push/exec runs — this is the driver-side guard
+    that closes the gap the widened `Bash|Edit|Write` hook matcher alone does not (this test
+    exercises the real `find_dangerous_local_git_config()` scan, not a monkeypatched stand-in,
+    against an actual tampered `.git/config`)."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.branch = "loop/issue-1"
+    state.pending_action = lc.PendingAction(
+        "act-000007", "advance_phase", "implementation", 2, lc.now_iso()
+    )
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    repo = Path(project_dir)
+    # Simulate a Maker `Edit`-write directly into the shared worktree's `.git/config`.
+    _git(["config", "url.file:///tmp/evil.insteadOf", "https://github.com/o/r.git"], repo)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    d._remote_head_baseline = "sha-baseline"
+    monkeypatch.setattr(driver, "_current_branch", lambda _wt: "loop/issue-1")
+    monkeypatch.setattr(lc, "is_repo_identity_verified", lambda _state: True)
+    monkeypatch.setattr(lds, "get_remote_head", lambda _wt, _branch, **_: "sha-baseline")
+    push_calls: list[Any] = []
+    monkeypatch.setattr(d, "_push_verified_branch", lambda *a, **k: push_calls.append(a))
+    monkeypatch.setattr(d, "_execute_advance_exec", lambda *a, **k: push_calls.append("exec"))
+    notify_calls: list[str] = []
+    monkeypatch.setattr(d, "_notify", lambda _state, reason: notify_calls.append(reason))
+    monkeypatch.setattr(driver.lds, "issue_number_from_loop_id", lambda _loop_id: 1)
+    comment_calls: list[str] = []
+    monkeypatch.setattr(
+        lds,
+        "post_issue_comment",
+        lambda _cwd, _issue, body: comment_calls.append(body) or True,
+    )
+
+    proposal = lc.ProposeResult(
+        action="advance_phase",
+        action_id="act-000007",
+        state_version=state.state_version,
+        expected_phase="implementation",
+        phase="implementation",
+        iteration=2,
+        context={},
+    )
+    params = {"verified_branch": "loop/issue-1", "exec": ["commit", "push", "pr_create"]}
+
+    with pytest.raises(driver.DriverTerminated):
+        d._run_advance_phase(proposal, state, params)
+
+    assert push_calls == []  # push/exec must never run once config tampering is detected
+    assert notify_calls == ["git_config_tampered"]
+    final_state = lc.load_state(loop_id, project_dir)
+    assert final_state.status == "stopped"
+    assert final_state.stop_reason == "git_config_tampered"
+
+
+def test_advance_phase_proceeds_when_git_config_is_clean(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Complement of the tampering test above: a clean `.git/config` must not block the push."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.branch = "loop/issue-1"
+    state.pending_action = lc.PendingAction(
+        "act-000008", "advance_phase", "implementation", 2, lc.now_iso()
+    )
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    d._remote_head_baseline = "sha-baseline"
+    monkeypatch.setattr(driver, "_current_branch", lambda _wt: "loop/issue-1")
+    monkeypatch.setattr(lc, "is_repo_identity_verified", lambda _state: True)
+    monkeypatch.setattr(lds, "get_remote_head", lambda _wt, _branch, **_: "sha-baseline")
+    monkeypatch.setattr(lds, "get_push_diff", lambda *_a, **_k: "")
+    push_calls: list[Any] = []
+    monkeypatch.setattr(d, "_push_verified_branch", lambda *a, **k: push_calls.append(a))
+    monkeypatch.setattr(d, "_execute_advance_exec", lambda *a, **k: push_calls.append("exec"))
+
+    proposal = lc.ProposeResult(
+        action="advance_phase",
+        action_id="act-000008",
+        state_version=state.state_version,
+        expected_phase="implementation",
+        phase="implementation",
+        iteration=2,
+        context={},
+    )
+    params = {"verified_branch": "loop/issue-1", "exec": ["commit", "push", "pr_create"]}
+
+    d._run_advance_phase(proposal, state, params)
+
+    assert push_calls == ["exec"]
+
+
+def test_push_verified_branch_uses_pinned_origin_url_over_tampered_remote(
+    tmp_path: Path,
+) -> None:
+    """SEC-CRIT end-to-end: once the trusted origin URL is resolved and cached (as
+    `_reconstruct_push_integrity_baseline()` does at the earliest trustworthy moment), a later
+    `.git/config` rewrite of `remote.origin.url` (simulating a Maker `Edit`-write) must not
+    redirect the driver's own subsequent push — it must still land on the originally-resolved
+    remote."""
+    loop_id = "abcd1234-issue-1"
+    repo = tmp_path / "repo"
+    good_remote = tmp_path / "good.git"
+    evil_remote = tmp_path / "evil.git"
+    _init_repo_with_remote(repo, good_remote)
+    evil_remote.mkdir(parents=True, exist_ok=True)
+    _git(["init", "--bare", "-b", "main"], evil_remote)
+    project_dir = str(repo)
+    state = lc._initial_state(
+        loop_id, "issue-loop", "abcd1234", project_dir, "main", "implementation"
+    )
+    state.status = "running"
+    state.branch = "main"
+    lc._write_state(state, project_dir)
+    lock = lc.acquire_lock(loop_id, project_dir, "owner", 3600)
+    assert lock is not None
+
+    d = driver.LoopDriver(loop_id, project_dir, lock.lease_token)
+    d._reconstruct_push_integrity_baseline()  # resolves + caches self._trusted_origin_url
+    assert d._trusted_origin_url == str(good_remote)
+
+    # Simulate a Maker `Edit`-write tampering `remote.origin.url` *after* resolution.
+    _git(["remote", "set-url", "origin", str(evil_remote)], repo)
+
+    (repo / "change.txt").write_text("update\n", encoding="utf-8")
+    _git(["add", "change.txt"], repo)
+    _git(["commit", "-m", "update"], repo)
+    expected_head = _git(["rev-parse", "HEAD"], repo)
+
+    d._push_verified_branch(str(repo), "main")
+
+    good_head = _git(["--git-dir", str(good_remote), "rev-parse", "main"], tmp_path)
+    assert good_head == expected_head
+    evil_refs = _git(["--git-dir", str(evil_remote), "for-each-ref"], tmp_path)
+    assert evil_refs == ""  # nothing landed on the tampered/evil remote
 
 
 def test_advance_phase_proceeds_when_pending_diff_has_no_leaked_secret(
@@ -2334,6 +2658,81 @@ def test_wait_external_review_push_stops_safely_on_push_integrity_violation(
     final_state = lc.load_state(loop_id, project_dir)
     assert final_state.status == "stopped"
     assert final_state.stop_reason == "push_integrity_violation"
+
+
+def test_wait_external_review_push_stops_safely_on_git_config_tampering(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SEC-CRIT (2nd-round Codex security review): the `wait_external_review`'s own
+    `push_required` push path must be gated by `_verify_no_git_config_tampering_or_stop` too,
+    mirroring `test_advance_phase_stops_safely_when_git_config_tampered` — not just
+    `advance_phase`'s own push (code H8's same "both driver-owned push sites must share every
+    layer-4-shaped guard" principle, applied to this newer guard)."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.branch = "main"
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    repo = Path(project_dir)
+    _git(["config", "credential.helper", "!echo pwned"], repo)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    d._remote_head_baseline = "sha-baseline"
+    monkeypatch.setattr(driver, "_current_branch", lambda _wt: "main")
+    monkeypatch.setattr(lc, "is_repo_identity_verified", lambda _state: True)
+    monkeypatch.setattr(lds, "get_remote_head", lambda _wt, _branch, **_: "sha-baseline")
+    monkeypatch.setattr(driver, "_repo_name_with_owner", lambda _wt: "owner/repo")
+    monkeypatch.setattr(
+        prw, "load_pr_review_config", lambda _project: prw.PrReviewConfig(reviewer_allowlist=())
+    )
+    monkeypatch.setattr(driver.lds, "issue_number_from_loop_id", lambda _loop_id: 1)
+    monkeypatch.setattr(lds, "post_issue_comment", lambda *a, **k: True)
+    push_calls: list[Any] = []
+    monkeypatch.setattr(d, "_push_verified_branch", lambda *a, **k: push_calls.append(a))
+    notify_calls: list[str] = []
+    monkeypatch.setattr(d, "_notify", lambda _state, reason: notify_calls.append(reason))
+
+    proposal = lc.ProposeResult(
+        action="wait_external_review",
+        action_id="act-000054",
+        state_version=state.state_version,
+        expected_phase="implementation",
+        phase="implementation",
+        iteration=1,
+        context={},
+    )
+    with pytest.raises(driver.DriverTerminated):
+        d._run_wait_external_review(
+            proposal, state, {"push_required": True, "verified_branch": "main"}
+        )
+
+    assert push_calls == []
+    assert notify_calls == ["git_config_tampered"]
+    final_state = lc.load_state(loop_id, project_dir)
+    assert final_state.status == "stopped"
+    assert final_state.stop_reason == "git_config_tampered"
+
+
+def test_verify_no_git_config_tampering_or_stop_allows_clean_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unit-level complement: a clean `.git/config` must not raise/stop at all."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    proposal = lc.ProposeResult(
+        action="advance_phase",
+        action_id="act-clean-config",
+        state_version=state.state_version,
+        expected_phase=state.phase,
+        phase=state.phase,
+        iteration=state.iteration,
+        context={},
+    )
+    d._verify_no_git_config_tampering_or_stop(proposal, state)  # must not raise
 
 
 def test_wait_external_review_heartbeat_loss_aborts_wait_without_writes(

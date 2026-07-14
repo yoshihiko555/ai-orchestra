@@ -386,6 +386,81 @@ def test_purge_loop_removes_loop_directory(tmp_path: Path) -> None:
     assert not lc.loop_dir(loop_id, str(tmp_path)).exists()
 
 
+def test_purge_loop_writes_tombstone_after_deletion(tmp_path: Path) -> None:
+    """SN2: a purge must leave a lightweight tombstone behind so
+    `loop_scheduler.discover_loop_ids` treats the loop_id as terminal (see
+    `test_loop_scheduler.py::test_discover_loop_ids_excludes_tombstoned_loops`), instead of
+    re-spawning the same Issue the moment its label is (re-)detected."""
+    _init_repo(tmp_path)
+    loop_id = "a-issue-1"
+    _seed_state(tmp_path, loop_id, status_value="passed", updated_at=_iso(31))
+
+    status.purge_loop(loop_id, str(tmp_path))
+
+    tombstone_path = lc.loop_root(str(tmp_path)) / f"{loop_id}.tombstone.json"
+    assert tombstone_path.is_file()
+    payload = json.loads(tombstone_path.read_text(encoding="utf-8"))
+    assert payload["loop_id"] == loop_id
+    assert payload["status"] == "passed"
+    assert payload["purged_at"]
+
+
+def test_purge_loop_does_not_write_tombstone_when_deletion_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _init_repo(tmp_path)
+    loop_id = "a-issue-1"
+    _seed_state(tmp_path, loop_id, status_value="passed", updated_at=_iso(31))
+
+    def _boom(*_args: object, **_kwargs: object) -> None:
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(status.shutil, "rmtree", _boom)
+
+    with pytest.raises(lc.LoopHarnessError):
+        status.purge_loop(loop_id, str(tmp_path))
+
+    tombstone_path = lc.loop_root(str(tmp_path)) / f"{loop_id}.tombstone.json"
+    assert not tombstone_path.exists()
+
+
+def test_purge_loop_uses_original_loop_id_for_tombstone_on_orphaned_dir(
+    tmp_path: Path,
+) -> None:
+    """SN2/SM1: an orphaned-pending dir's directory name (with `.orphaned-N` suffix) must not
+    leak into the tombstone - `loop_scheduler.discover_loop_ids` compares candidates against
+    the original, no-suffix `loop_id`."""
+    _init_repo(tmp_path)
+    original_loop_id = "a-issue-1"
+    _seed_state(tmp_path, original_loop_id, status_value="pending", updated_at=_iso(40))
+    loop_dir = lc.loop_dir(original_loop_id, str(tmp_path))
+    orphaned_name = f"{original_loop_id}{lc.ORPHANED_PENDING_MARKER}1"
+    loop_dir.rename(loop_dir.parent / orphaned_name)
+
+    status.purge_loop(orphaned_name, str(tmp_path))
+
+    tombstone_path = lc.loop_root(str(tmp_path)) / f"{original_loop_id}.tombstone.json"
+    assert tombstone_path.is_file()
+    payload = json.loads(tombstone_path.read_text(encoding="utf-8"))
+    assert payload["loop_id"] == original_loop_id
+
+
+def test_collect_summaries_shows_tombstoned_loop_with_terminal_status(tmp_path: Path) -> None:
+    """SN2: a purged loop must still show up in `list`, with its frozen-at-purge-time
+    (terminal) status, instead of vanishing without a trace."""
+    _init_repo(tmp_path)
+    loop_id = "a-issue-1"
+    _seed_state(tmp_path, loop_id, status_value="passed", updated_at=_iso(31))
+
+    status.purge_loop(loop_id, str(tmp_path))
+
+    summaries = status.collect_summaries(str(tmp_path))
+
+    assert len(summaries) == 1
+    assert summaries[0].loop_id == loop_id
+    assert summaries[0].status == "passed"
+
+
 def test_main_purge_dry_run_reports_candidates_without_deleting(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -526,6 +601,40 @@ def test_purge_if_still_safe_holds_lock_flock_during_reload_and_purge(
     status._purge_if_still_safe(loop_id, str(tmp_path))
 
     assert lock_was_free_during_purge == [False]
+
+
+def test_purge_if_still_safe_holds_coord_lock_during_reload_and_purge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SN-flock: `_purge_if_still_safe` must hold the fixed, purge-independent coord lock
+    (`lc.held_coord_lock`) across the whole reload+purge window - unlike the inner lock.json
+    flock (F19, tested above), which stops protecting anything the instant `purge_loop`'s
+    `rmtree` deletes that file's inode. A concurrent `resume`/`reacquire_lease` (which now
+    also take this same coord lock, see `test_loop_common_lock.py`) must actually contend on
+    this path, not race a purge in-flight."""
+    _init_repo(tmp_path)
+    loop_id = "a-issue-1"
+    _seed_state(tmp_path, loop_id, status_value="passed", updated_at=_iso(31))
+
+    coord_lock_was_free_during_purge = []
+
+    def _spy_purge_loop(loop_id_arg: str, project_dir_arg: str) -> None:
+        coord_lock_file = lc.coord_lock_path(loop_id_arg, project_dir_arg)
+        fd = os.open(coord_lock_file, os.O_RDWR)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            coord_lock_was_free_during_purge.append(True)
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            coord_lock_was_free_during_purge.append(False)
+        finally:
+            os.close(fd)
+
+    monkeypatch.setattr(status, "purge_loop", _spy_purge_loop)
+
+    status._purge_if_still_safe(loop_id, str(tmp_path))
+
+    assert coord_lock_was_free_during_purge == [False]
 
 
 def test_purge_if_still_safe_falls_back_when_lock_file_absent(tmp_path: Path) -> None:
