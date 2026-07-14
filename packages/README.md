@@ -17,7 +17,7 @@ AI Orchestra のパッケージ一覧と詳細。`packages/*/agents` と `packag
 | [antigravity-suggestions](#antigravity-suggestions) | Web 検索・fetch 時の Antigravity リサーチ提案                                  | 提案         |
 | [git-workflow](#git-workflow)                       | Git/GitHub ワークフロー（Issue・PR・開発フロー）                               | ワークフロー |
 | [cocoindex](#cocoindex)                             | cocoindex MCP サーバーの自動プロビジョニング                                   | MCP          |
-| [tmux-monitor](#tmux-monitor)                       | tmux でサブエージェント出力をリアルタイム監視                                  | 監視         |
+| [tmux-monitor](#tmux-monitor)                       | tmux でサブエージェント出力をリアルタイム監視（opt-in、`setup all` 対象外）    | 監視         |
 
 ---
 
@@ -230,6 +230,8 @@ cocoindex-code MCP サーバーを Claude Code / Codex CLI / Antigravity CLI に
 ### tmux-monitor
 
 tmux ペインでサブエージェントの起動・停止をリアルタイム表示する。マルチエージェント並列実行の可視化に使用する。
+
+> **opt-in パッケージ**: `orchex setup all` には含まれないため、`orchex install tmux-monitor` で明示的にインストールする。
 
 - **バージョン**: 0.2.0
 - **依存**: core

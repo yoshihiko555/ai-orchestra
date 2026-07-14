@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **`orchex setup all` から tmux-monitor を除外（opt-in 化）**: presets.json の `exclude` キーで除外した。必要な場合は `orchex install tmux-monitor` で明示的に導入する。
+
 ### Removed
 
 - **`.claudeignore` の配布・生成を廃止**: `orchex setup` と SessionStart 同期で `.claudeignore` を作成しないようにした。除外設定は `.gitignore` で管理する。
