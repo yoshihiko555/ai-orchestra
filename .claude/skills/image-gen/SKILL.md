@@ -94,6 +94,11 @@ Adobe Firefly などを使うまでもない簡単な画像を、Claude Code の
 独自のルーティング登録は持たない。description に基づく Claude のネイティブ
 ディスパッチ、または下記の明示 `Task()` で起動する）。
 
+委譲先のエージェントは、実際の生成処理に入る前に Step 0 として
+`codex.enabled`（`cli-tools.yaml` の kill-switch）を確認する。`false` の場合は
+プロンプト組み立てや `codex exec` を一切実行せず、「利用不可」として即座に
+報告を返す（詳細は image-generator エージェント定義の Step 0 を参照）。
+
 ```
 Task(subagent_type="image-generator", prompt="""
 次の画像を生成してください:
@@ -119,8 +124,8 @@ Task(subagent_type="image-generator", prompt="""
 3. **フォールバック検知（失敗）**: AI 生成ではなく Pillow 等の代替描画が疑われる場合、
    その旨と推定原因（直近の連打によるレートリミット）を報告し、少し時間を置いての
    再実行を提案する。代替画像ファイルのパスも示し、削除可能であることを伝える。
-4. **利用不可**: Codex CLI が未インストール/未認証等で使えない場合、その旨を報告する
-   （Pillow 等での代替描画は行わない）。
+4. **利用不可**: Codex CLI が未インストール/未認証、または `codex.enabled: false`
+   （kill-switch）等で使えない場合、その旨を報告する（Pillow 等での代替描画は行わない）。
 
 ## 注意事項
 

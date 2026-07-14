@@ -3,7 +3,7 @@
 **パッケージ**: `packages/image-generation`
 **類型**: スキル型（`/image-gen` スキル + `image-generator` エージェント）
 **作成日**: 2026-07-03
-**最終レビュー日**: 2026-07-04（codex.enabled: false 時の利用不可を EV-16 で確定。現状 codex.enabled 未参照のため実装ギャップ・Issue #133）
+**最終レビュー日**: 2026-07-04（codex.enabled: false 時の利用不可を EV-16 で確定。`image-generator` Step 0 の kill-switch チェックとして実装済み・Issue #133）
 **情報源**: packages/image-generation/README.md, docs/adr/ADR-20260605-023.md, facets/instructions/image-gen.md（`/image-gen` スキル指示書）, packages/image-generation/agents/image-generator.md（エージェント指示書）, packages/image-generation/config/image-generation.yaml, packages/image-generation/manifest.json（補助参照: 構成要素の列挙のみ）
 
 ## 1. 責務定義
@@ -47,12 +47,12 @@
 - [ ] EV-12（対話規約 / 正常 / should）: 対話（AskUserQuestion）はプロンプトが空の場合のみ発生し、それ以外のフェーズ（出力先解決・委譲・報告）は非対話で完結する — 根拠: facets/instructions/image-gen.md（Phase 1-3）。なお本パッケージ独自の「Dialog Rules Policy」参照は `.claude/rules/` 配下に存在せず、対話条件はスキル指示書の記述のみが根拠。
 - [ ] EV-13（非対話完結性 / 異常 / must）: `codex exec` 呼び出しは `< /dev/null` で stdin を封じ、Bash `timeout` を `180000` に設定し、exit code / stdout マーカーで成否を判定する（ハングしない） — 根拠: packages/image-generation/agents/image-generator.md（Step 3）
 - [ ] EV-14（フォールバック / 異常 / must）: Codex 利用不能時は claude-direct 相当の代替画像生成を行わず、「利用不可」を明示報告して停止する（本パッケージには AI 画像生成の claude-direct 代替経路が存在しないため、フォールバック先は「機能停止の明示報告」であり「別ツールでの続行」ではない） — 根拠: packages/image-generation/agents/image-generator.md（Fallback）
-- [ ] EV-16（config 駆動 / 異常 / must）: ルーティング尊重 — `cli-tools.yaml`（+ `.local.yaml`）の `codex.enabled: false` のとき、`/image-gen` スキル・`image-generator` エージェントは画像生成を実行せず「利用不可」を明示報告する。`image-generator` は `codex exec` を直接呼ぶ設計（`agents.<name>.tool` ルーティングには ADR-023 で不参加）だが、Codex CLI 依存機能であるためグローバル無効化スイッチ `codex.enabled` は尊重する — 根拠: 2026-07-04 人間レビュー裁定（現状は codex.enabled を参照しない直接呼び出しのため実装ギャップ・Issue #133）
+- [ ] EV-16（config 駆動 / 異常 / must）: ルーティング尊重 — `cli-tools.yaml`（+ `.local.yaml`）の `codex.enabled: false` のとき、`/image-gen` スキル・`image-generator` エージェントは画像生成を実行せず「利用不可」を明示報告する。`image-generator` は `codex exec` を直接呼ぶ設計（`agents.<name>.tool` ルーティングには ADR-023 で不参加）だが、Codex CLI 依存機能であるためグローバル無効化スイッチ `codex.enabled` は尊重する — 根拠: 2026-07-04 人間レビュー裁定。`packages/image-generation/scripts/check_image_gen_enabled.py` による Step 0 kill-switch チェックとして実装済み（Issue #133）
 - [ ] EV-15（成果物規約 / 正常 / must）: 生成画像の保存先は既定 `generated-images/<slug>.png`（`.gitignore` 管理）、または EV-04 で検証済みの `--out` パスに限られ、それ以外の場所へは書き込まない — 根拠: packages/image-generation/README.md（出力先）, facets/instructions/image-gen.md（トリガーと引数）
 
 ## 5. テストレビュー判断基準（パッケージ固有）
 
-このパッケージは現状テストが 1 つも存在しない。AI 生成テストをレビューする際は、検証手段の性質によって以下を区別する。
+このパッケージには EV-16（`codex.enabled: false` 時の kill-switch 分岐）を検証するユニットテストが追加されている。EV-01/02/04/05/06/09/13/14 等その他の自動テスト可能な観点は、指示書（`image-generator.md`）に該当手順が記述されているかを検証する契約テスト（構造テスト）でカバーする。ただし EV-07/08/10/11/12/15、および EV-14 の実際の挙動面（本当に代替描画へ倒れていないか）は、実 Codex CLI・実ネットワーク・実ファイルシステム権限に依存するため引き続き手動確認に頼る。AI 生成テストをレビューする際は、検証手段の性質によって以下を区別する。
 
 ### 自動テスト可能な範囲（Codex 実 CLI 呼び出しを伴わない）
 
@@ -64,7 +64,7 @@
 - EV-06: 生成物検証（PNG magic bytes 判定、サイズ閾値判定、フォールバックマーカー文字列検知は固定 stdout 文字列 + 固定バイト列で完全に決定的）
 - EV-09: モデル名のブロックリスト判定（`gpt-5.3-codex` 等を弾くロジック）
 - EV-13: `codex exec` コマンドライン組み立て（`< /dev/null` / `timeout` / 必須フラグの有無）を文字列組み立てレベルで検証
-- EV-16: `codex.enabled: false` を設定した config を読み込ませ、`codex exec` を呼ばず「利用不可」を報告する分岐（実 CLI を呼ばずに検証可能）
+- EV-16: `codex.enabled: false` を設定した config を読み込ませ、`codex exec` を呼ばず「利用不可」を報告する分岐（実 CLI を呼ばずに検証可能）。`packages/image-generation/tests/test_check_image_gen_enabled.py` でユニットテスト済み
 
 ### 手動 E2E でしか検証できない範囲（実 Codex CLI・ChatGPT 認証・実ネットワークが必要）
 
