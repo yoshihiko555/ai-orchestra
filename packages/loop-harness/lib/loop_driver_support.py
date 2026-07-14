@@ -14,6 +14,7 @@ import functools
 import json
 import os
 import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -521,6 +522,13 @@ def _maker_hook_settings_dict() -> dict[str, Any]:
     path component (`is_git_metadata_path()`), so the matcher is widened to `"Bash|Edit|Write"`
     to route those tool calls through the same hook script too.
     """
+    # code K3: Claude Code command hooks without an `args` array run in shell form (the
+    # `command` string is handed to a shell, not exec'd as a literal argv), so an unquoted
+    # `sys.executable`/hook-script path containing a space or shell metacharacter would be
+    # split/misinterpreted instead of naming a single file. `shlex.quote()` each path
+    # independently (matching the existing `loop_scheduler.py` shell-command-construction
+    # pattern) so this guard hook launches correctly regardless of install path.
+    command = f"{shlex.quote(sys.executable)} {shlex.quote(str(_maker_hook_script_path()))}"
     return {
         "hooks": {
             "PreToolUse": [
@@ -529,7 +537,7 @@ def _maker_hook_settings_dict() -> dict[str, Any]:
                     "hooks": [
                         {
                             "type": "command",
-                            "command": f"{sys.executable} {_maker_hook_script_path()}",
+                            "command": command,
                         }
                     ],
                 }
