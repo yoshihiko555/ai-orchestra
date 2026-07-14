@@ -35,7 +35,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **`meta-harness`: Docker broker が Claude CLI の `?beta=true` を拒否する問題を修正**: 既知queryを保持して Anthropic API へ中継し、Docker backend の scenario 実行が正常に完走するようにした。
 
-- **`cli-tools.yaml` の旧 `gemini.enabled: false` が明示設定済みの `antigravity.enabled` を無条件に上書きしていた問題を修正**: 両キーが競合する場合は `antigravity.enabled` を優先するようにした。旧 `gemini.enabled: false` は `antigravity.enabled` が未設定の場合のみ後方互換フォールバックとして働く。
+- **`cli-tools.yaml` の旧 `gemini.enabled: false` が明示設定済みの `antigravity.enabled` を無条件に上書きしていた問題を修正**: 両キーが競合する場合は `antigravity.enabled` を優先するようにした。旧 `gemini.enabled: false` は `antigravity.enabled` が未設定の場合のみ後方互換フォールバックとして働く。base 設定が `antigravity.enabled` を既定で明示している通常の移行済みプロジェクトでも、`.local.yaml` の旧 `gemini.enabled: false` だけによる無効化が正しく機能するようにした。
 
 - **`loop-harness`: `/loop-issue` の Maker に編集不能ロールが選ばれて反復が進まない問題を修正**: `debugger` を含む `issue-loop` の auto Maker 候補を実装可能ロールの allowlist に限定し、初回に選定した Maker を state に保存して実装反復・PR レビュー対応で一貫して再利用するようにした。custom loop のフェーズ固有 Maker と変更前の completed journal の reconcile は後方互換を維持する。
 

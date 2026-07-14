@@ -23,8 +23,7 @@ from hook_common import (  # noqa: E402, F401
     DEFAULT_CODEX_MODEL,
     DEFAULT_CODEX_SANDBOX_ANALYSIS,
     is_cli_enabled,
-    load_package_config,
-    normalize_cli_tools_config,
+    load_cli_tools_config,
 )
 
 # エージェントルーティング設定（25エージェント分）
@@ -162,13 +161,13 @@ def _project_dir_from_data(data: dict) -> str:
 
 
 def load_config(data: dict) -> dict:
-    """cli-tools.yaml を読み込む（load_package_config に委譲）。
+    """cli-tools.yaml を読み込む（load_cli_tools_config に委譲）。
 
-    旧 gemini 系設定（.local.yaml 残存分）は antigravity に正規化される。
+    旧 gemini 系設定（.local.yaml 残存分）は base/local レイヤーごとに
+    antigravity へ正規化されてからマージされる（Issue #125）。
     """
     project_dir = _project_dir_from_data(data)
-    config = load_package_config("agent-routing", "cli-tools.yaml", project_dir)
-    return normalize_cli_tools_config(config)
+    return load_cli_tools_config(project_dir)
 
 
 def get_agent_tool(agent_name: str, config: dict) -> str:

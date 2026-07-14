@@ -19,8 +19,7 @@ if _orchestra_dir:
 
 from hook_common import (  # noqa: E402
     is_cli_enabled,
-    load_package_config,
-    normalize_cli_tools_config,
+    load_cli_tools_config,
 )
 
 # Keywords that suggest deep research would benefit from Antigravity
@@ -110,9 +109,7 @@ def main():
 
         # Antigravity CLI が無効化されている場合は提案をスキップ
         project_dir = data.get("cwd", "") or os.environ.get("CLAUDE_PROJECT_DIR", "")
-        config = normalize_cli_tools_config(
-            load_package_config("agent-routing", "cli-tools.yaml", project_dir)
-        )
+        config = load_cli_tools_config(project_dir)
         if not is_cli_enabled("antigravity", config):
             sys.exit(0)
 

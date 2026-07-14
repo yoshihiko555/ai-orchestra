@@ -139,7 +139,7 @@ class TestAntigravityMain:
     def test_antigravity_disabled_exits(self, monkeypatch):
         """Antigravity 無効時は exit(0)。"""
         monkeypatch.setattr(antigravity_hook, "is_cli_enabled", lambda *a: False)
-        monkeypatch.setattr(antigravity_hook, "load_package_config", lambda *a: {})
+        monkeypatch.setattr(antigravity_hook, "load_cli_tools_config", lambda *a: {})
         monkeypatch.setattr(
             "sys.stdin",
             io.StringIO(
@@ -156,11 +156,19 @@ class TestAntigravityMain:
             antigravity_hook.main()
 
     def test_legacy_gemini_disabled_exits(self, monkeypatch, capsys):
-        """旧 gemini.enabled: false（.local.yaml 残存）でも提案を抑制する。"""
+        """旧 gemini.enabled: false（.local.yaml 残存）でも提案を抑制する。
+
+        load_cli_tools_config は base/local 正規化・マージ済みの結果を返すため、
+        ここではその結果として得られる正規化後の dict（antigravity.enabled: False
+        にフォールバック済み）をモックする。
+        """
         monkeypatch.setattr(
             antigravity_hook,
-            "load_package_config",
-            lambda *a: {"gemini": {"enabled": False}},
+            "load_cli_tools_config",
+            lambda *a: {
+                "antigravity": {"enabled": False},
+                "gemini": {"enabled": False},
+            },
         )
         monkeypatch.setattr(
             "sys.stdin",
@@ -183,7 +191,7 @@ class TestAntigravityMain:
     def test_websearch_suggestion(self, monkeypatch, capsys):
         """WebSearch で indicator マッチ時に提案出力。"""
         monkeypatch.setattr(antigravity_hook, "is_cli_enabled", lambda *a: True)
-        monkeypatch.setattr(antigravity_hook, "load_package_config", lambda *a: {})
+        monkeypatch.setattr(antigravity_hook, "load_cli_tools_config", lambda *a: {})
         monkeypatch.setattr(
             "sys.stdin",
             io.StringIO(
@@ -207,7 +215,7 @@ class TestAntigravityMain:
     def test_webfetch_with_url(self, monkeypatch, capsys):
         """WebFetch の URL で indicator マッチ時に提案出力。"""
         monkeypatch.setattr(antigravity_hook, "is_cli_enabled", lambda *a: True)
-        monkeypatch.setattr(antigravity_hook, "load_package_config", lambda *a: {})
+        monkeypatch.setattr(antigravity_hook, "load_cli_tools_config", lambda *a: {})
         monkeypatch.setattr(
             "sys.stdin",
             io.StringIO(
@@ -233,7 +241,7 @@ class TestAntigravityMain:
     def test_no_suggestion(self, monkeypatch, capsys):
         """indicator なしの場合は出力なし。"""
         monkeypatch.setattr(antigravity_hook, "is_cli_enabled", lambda *a: True)
-        monkeypatch.setattr(antigravity_hook, "load_package_config", lambda *a: {})
+        monkeypatch.setattr(antigravity_hook, "load_cli_tools_config", lambda *a: {})
         monkeypatch.setattr(
             "sys.stdin",
             io.StringIO(

@@ -3,7 +3,7 @@
 **パッケージ**: `packages/antigravity-suggestions`
 **類型**: hook 型
 **作成日**: 2026-07-03
-**最終レビュー日**: 2026-07-04（両キー競合時は Antigravity 優先を EV-13 で確定。実装ギャップは Issue #125 で解消済み — `normalize_cli_tools_config` が antigravity.enabled 明示設定を優先するよう修正、EV-13/EV-10 テスト追加済み）
+**最終レビュー日**: 2026-07-04（両キー競合時は Antigravity 優先を EV-13 で確定。実装ギャップは Issue #125 で解消済み — `normalize_cli_tools_config` が antigravity.enabled 明示設定を優先するよう修正、EV-13/EV-10 テスト追加済み。PR #220 レビュー指摘への追加対応: base/local を merge してから正規化すると base の既定値 antigravity.enabled: true のせいで移行済みプロジェクトの local 限定 gemini.enabled: false フォールバックが機能しない regression が判明したため、base/local をレイヤーごとに正規化してから merge する `load_cli_tools_config`（packages/core/hooks/hook_common.py）に置き換え済み）
 **情報源**: docs/reference/packages.md（antigravity-suggestions セクション）, .claude/rules/antigravity-suggestion-compliance.md, .claude/rules/antigravity-delegation.md（補助・後方互換の根拠のみ）, packages/antigravity-suggestions/manifest.json（構成要素列挙のみ）, packages/antigravity-suggestions/hooks/suggest-antigravity-research.py（構成要素列挙のみ、期待値導出には未使用）
 
 ## 1. 責務定義
@@ -51,4 +51,5 @@ WebSearch/WebFetch ツールの実行前に、Antigravity CLI（`agy`）での�
 
 - EV-05〜EV-09 は「hook の出力」ではなく「hook 出力を受けたオーケストレーターの振る舞い」を規定する観点である。hook 単体のユニットテストでは検証できないため、統合テストまたは手順ドキュメントとの突合で確認すること（Issue #125 時点で手動チェックリスト化は未実施。必要になった時点で本ドキュメントの検証手段として追記する）。
 - EV-03 / EV-04 / EV-13 の抑制テストは、両キー競合時に `antigravity.enabled` を優先する（EV-13, 2026-07-04 裁定）ことを期待値とする。`normalize_cli_tools_config` は Issue #125 でこの優先順位に修正済み（`tests/unit/test_agent_routing_consistency.py::TestLegacyGeminiCompat`, `tests/e2e/test_e2e_config.py::TestConfigLoading` で検証）。
+- EV-04 の「移行済みプロジェクト」ケース（base が antigravity.enabled を明示し、local に旧 gemini.enabled: false のみが残る）は、base/local を merge してから正規化すると base の既定値に紛れて誤判定されるため、`load_cli_tools_config`（base/local を個別に正規化してから merge）で検証する（`tests/unit/test_hook_common.py::TestLoadCliToolsConfig`, `tests/e2e/test_e2e_config.py::TestConfigLoading::test_legacy_gemini_disabled_applies_fallback_in_migrated_project` で検証。PR #220 レビュー指摘対応）。
 - EV-10 は関数レベルでは `packages/antigravity-suggestions/tests/test_suggest_antigravity_research.py` の manifest matcher 値検証 + 非対象 tool_name での非発火検証でカバーする（実際の matcher ディスパッチは Claude Code 本体の責務であり hook 内では再現できないため、defense-in-depth の確認に留まる）。
