@@ -9,6 +9,8 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from tests.module_loader import load_module
 
 ev = load_module(
@@ -144,6 +146,95 @@ class TestNoCriticalChecksIsRecordedAsError:
         assert run_completed[-1]["verdict"] == "error"
 
 
+class TestBrokerMetricsForceRunError:
+    @pytest.mark.parametrize(
+        ("metrics", "expected_type"),
+        [
+            ({"budget_exceeded": True, "anomaly": False, "anomaly_reasons": []}, "budget_exceeded"),
+            (
+                {
+                    "budget_exceeded": False,
+                    "anomaly": True,
+                    "anomaly_reasons": ["invalid upstream response"],
+                },
+                "run_error",
+            ),
+        ],
+    )
+    def test_refreshed_broker_violation_is_a_hard_failure(
+        self, tmp_path: Path, monkeypatch, metrics: dict, expected_type: str
+    ) -> None:
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        staging = tmp_path / "staging"
+        staging.mkdir()
+        launch = ev.siso.ScenarioIsolationLaunch(
+            executable="docker",
+            settings_path=None,
+            settings={},
+            env={},
+            metadata={"backend": "docker"},
+            backend="docker",
+        )
+        monkeypatch.setattr(ev, "worktree_root", lambda *_args: tmp_path / "worktrees")
+        monkeypatch.setattr(ev, "create_worktree", lambda *_args, **_kwargs: worktree)
+        monkeypatch.setattr(ev, "apply_overlay", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(ev, "build_facet_and_context", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(ev, "run_setup_commands", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(
+            ev,
+            "run_headless_scenario",
+            lambda *_args, **_kwargs: ev.HeadlessRunResult(
+                events_path=staging / "events.jsonl",
+                progress_path=staging / "progress.log",
+                timed_out=False,
+                isolation_launch=launch,
+            ),
+        )
+        refresh_count = 0
+
+        def run_oracle(check, *_args, **_kwargs):
+            assert refresh_count == 1
+            return {
+                "id": check["id"],
+                "passed": True,
+                "oracle": check["oracle"],
+                "detail": "ok",
+            }
+
+        def refresh_isolation_metadata(_launch):
+            nonlocal refresh_count
+            refresh_count += 1
+            return {"backend": "docker", "broker": {"metrics": metrics}}
+
+        monkeypatch.setattr(ev, "run_oracle", run_oracle)
+        monkeypatch.setattr(ev.siso, "refresh_isolation_metadata", refresh_isolation_metadata)
+        monkeypatch.setattr(ev.siso, "cleanup_scenario_isolation", lambda _launch: None)
+        monkeypatch.setattr(ev, "remove_worktree", lambda *_args, **_kwargs: None)
+
+        checks, _, hard_failure, errors = ev._run_attempt_lifecycle(
+            main_root=tmp_path,
+            config=mh.DEFAULTS,
+            schema_dir=_SCHEMA_DIR,
+            package_dir=_PACKAGE_DIR,
+            cand_dir=tmp_path / "candidate",
+            manifest={"source_commit": "a" * 40},
+            scenario={
+                "critical": [{"id": "c1", "text": "n/a", "oracle": "artifact_exists", "path": "x"}],
+                "checks": [],
+            },
+            run_id="run-test",
+            staging_dir=staging,
+            runner=subprocess.run,
+        )
+
+        assert checks[0]["passed"] is True
+        assert refresh_count == 2
+        assert hard_failure is True
+        assert errors[-1]["stage"] == "broker"
+        assert errors[-1]["type"] == expected_type
+
+
 class TestJudgeErrorForcesRunVerdictError:
     """Codex 指摘（evaluator.py:746）: judge backend の error は fail-closed（Sec3-3）に従い、
     check の fail や silent pass ではなく run 全体の verdict=error に伝播しなければならない。"""
@@ -154,10 +245,10 @@ class TestJudgeErrorForcesRunVerdictError:
         def noop_overlay(overlay_dir, config, worktree_dir, schema_dir):
             return None
 
-        def noop_build(worktree_dir, *, runner=None):
+        def noop_build(worktree_dir, **_kwargs):
             return None
 
-        def noop_setup(scenario, worktree_dir, *, runner=None):
+        def noop_setup(scenario, worktree_dir, **_kwargs):
             return None
 
         def noop_headless_run(
@@ -183,7 +274,15 @@ class TestJudgeErrorForcesRunVerdictError:
                 timed_out=False,
             )
 
-        def erroring_judge(rubric, worktree_dir, config, schema_dir, *, runner=None):
+        def erroring_judge(
+            rubric,
+            worktree_dir,
+            config,
+            schema_dir,
+            *,
+            isolation_launch=None,
+            runner=None,
+        ):
             return ev.JudgeVerdict(False, "judge unavailable: forced for test", "codex", error=True)
 
         monkeypatch.setattr(ev, "apply_overlay", noop_overlay)

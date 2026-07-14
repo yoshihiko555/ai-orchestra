@@ -221,7 +221,7 @@ def _prepare_seed_store(git_project: Path, source_commit: str) -> None:
     )
 
 
-def test_loop_subprocess_fails_closed_before_candidate_worktree_without_execution_boundary(
+def test_loop_subprocess_fails_closed_before_candidate_worktree_when_docker_capability_missing(
     git_project: Path, git_run, tmp_path: Path, run_meta
 ) -> None:
     source_commit = _prepare_project(git_project, git_run)
@@ -263,7 +263,7 @@ def test_loop_subprocess_fails_closed_before_candidate_worktree_without_executio
     )
 
     assert result.returncode == 2
-    assert "scenario_execution_boundary" in result.stderr
+    assert "CLI capability gate failed" in result.stderr
     events = mh.read_ledger_events(git_project, mh.DEFAULTS)
     assert events[-1]["event"] == "loop_stopped"
     assert events[-1]["reason"] == "error"

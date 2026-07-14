@@ -5,6 +5,7 @@ evaluate:
   worktree_root: .worktrees/meta # メインルート相対（§2-0）
   repeat_default: 1
   repeat_frontier: 3
+  # Container lifetime adds broker idle + 60s; larger per-check timeouts end at that cap first.
   timeout_ms_default: 300000
   permission_mode: acceptEdits
   allowed_tools:
@@ -19,9 +20,30 @@ evaluate:
   model: null # null = セッション既定モデル
   cli_version_pin: null # null = バージョン一致検証をスキップ（capability smoke test は常に実施）
   isolation:
-    backend: srt # scenario runner は非隔離実行へ降格しない（ADR-20260711-032）
-    srt_version_pin: null # null = pin なし。設定時は srt --version と厳密一致
-    execution_backend: none # broker + cgroup/VM相当の実装まではfail-closed（ADR-20260711-033）
+    backend: docker # Docker + dual-homed ephemeral broker（ADR-20260712-034）
+    execution_backend: docker # 非隔離 backend へは降格しない
+    image: ai-orchestra/meta-harness-scenario:2.1.207
+    image_pin: "2.1.207 (Claude Code)"
+    auto_build_images: true
+    resources:
+      pids_limit: 128
+      memory: 2g
+      cpus: 2.0
+      workspace_size: 512m
+      workspace_max_files: 10000
+    broker:
+      image: ai-orchestra/meta-harness-broker:0.1.0
+      port_range: [8790, 8990]
+      idle_timeout_sec: 300
+      startup_timeout_sec: 30
+      max_requests: 64
+      max_total_tokens: 500000
+      max_upstream_bytes: 50000000
+      pricing_upper_bound_usd_per_million:
+        input: 15.0
+        output: 75.0
+        cache_creation: 18.75
+        cache_read: 1.5
 scenario_run:
   max_turns_default: 30
   max_budget_usd_default: 3.0 # 2026-07-07 スパイク実測反映（Sec14）。実測 total_cost_usd=1.20 に余裕を持たせる

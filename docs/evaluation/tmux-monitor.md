@@ -33,6 +33,13 @@ tmux-monitor は、tmux がインストールされた環境において、Claud
 - [ ] EV-01（正常 / must）: tmux がインストールされた環境で、SessionStart hook が `claude-{project_name}-{session_key}` 形式の tmux セッションを作成または再利用する — 根拠: 実装挙動
 - [ ] EV-02（異常 / must）: tmux バイナリが見つからない環境では、全 hook（SessionStart/SessionEnd/PreToolUse/SubagentStart/SubagentStop）が no-op として即座に終了し、Claude Code 本体のセッション進行に影響を与えない — 根拠: docs/reference/packages.md（有効化）
 - [ ] EV-03（異常 / must）: tmux はインストール済みだが対象の tmux セッション/ペインが存在しない（未起動・削除済み等）場合、SubagentStart/SubagentStop hook はエラーを発生させず何もせず終了する — 根拠: 実装挙動
+
+<!-- 補足（Issue #137 調査所感）: SubagentStop はセッション不在時に本当に no-op で return する
+     （tmux-subagent-stop.py:102-103）が、SubagentStart は create_agent_pane() 内でセッション不在時に
+     「何もしない」のではなく新規セッション作成へフォールバックする（tmux-subagent-start.py:163-165）。
+     エラーを発生させない点は文言と整合するが「何もせず終了」とは異なる挙動のため、EV-03 の文言修正要否は
+     人間レビューで判断してほしい。テスト側は SubagentStop の no-op 分岐と SubagentStart のフォールバック
+     挙動をそれぞれ別観点として tests/unit/test_tmux_monitor_hooks.py で直接検証している。 -->
 - [ ] EV-04（異常 / must）: tmux/ps コマンド呼び出しがタイムアウトした場合も hook は例外を発生させず処理を継続する（`returncode=1` として扱われる） — 根拠: 実装挙動
 - [ ] EV-05（正常 / should）: SubagentStart hook は PreToolUse hook が保存した description をキューから FIFO で取得し、ペインタイトルに反映する — 根拠: 実装挙動
 - [ ] EV-06（正常 / should）: SubagentStop hook はペインを kill せず、タイトルに `DONE:` を付与し境界色を変更するのみで、`tail -f` による出力表示を維持する — 根拠: 実装挙動（docstring: tmux-subagent-stop.py）

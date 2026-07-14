@@ -116,6 +116,31 @@ class TestTmuxPreTask:
         lines = queue_file.read_text(encoding="utf-8").splitlines()
         assert json.loads(lines[0]) == {"description": "Fix flaky tests"}
 
+    def test_main_noop_when_tmux_monitoring_disabled(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """tmux 未インストール環境では main() が即座に exit(0) し、キューに書き込まない (EV-02)。"""
+        queue_dir = tmp_path / "session-info"
+        monkeypatch.setattr(tmux_pre_task, "SESSION_INFO_DIR", str(queue_dir))
+        monkeypatch.setattr(tmux_pre_task, "is_tmux_monitoring_enabled", lambda _: False)
+        monkeypatch.setattr(
+            "sys.stdin",
+            io.StringIO(
+                json.dumps(
+                    {
+                        "cwd": str(tmp_path),
+                        "session_id": "sess-1",
+                        "tool_input": {"description": "Fix flaky tests"},
+                    }
+                )
+            ),
+        )
+
+        with pytest.raises(SystemExit, match="0"):
+            tmux_pre_task.main()
+
+        assert not queue_dir.exists()
+
 
 class TestTmuxSessionEnd:
     """tmux-session-end.py のテスト。"""
@@ -167,6 +192,26 @@ class TestTmuxSessionEnd:
         assert not shared_a.exists()
         assert not shared_b.exists()
 
+    def test_main_noop_when_tmux_monitoring_disabled(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """tmux 未インストール環境では main() が即座に return し、何も削除しない (EV-02)。"""
+        info_dir = tmp_path / "session-info"
+        info_dir.mkdir()
+        (info_dir / "sess-1.pid").write_text("123", encoding="utf-8")
+
+        monkeypatch.setattr(tmux_session_end, "SESSION_INFO_DIR", str(info_dir))
+        monkeypatch.setattr(tmux_session_end, "is_tmux_monitoring_enabled", lambda _: False)
+        monkeypatch.setattr(
+            tmux_session_end,
+            "read_hook_input",
+            lambda: {"cwd": str(tmp_path), "session_id": "sess-1"},
+        )
+
+        tmux_session_end.main()
+
+        assert (info_dir / "sess-1.pid").exists()
+
 
 class TestTmuxSessionStart:
     """tmux-session-start.py のテスト。"""
@@ -207,6 +252,65 @@ class TestTmuxSessionStart:
         assert meta["session_key"] == "4321"
         assert meta["project"] == "proj"
         assert any(call[:3] == ("new-session", "-d", "-s") for call in calls)
+
+    def test_main_noop_when_tmux_monitoring_disabled(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """tmux 未インストール環境では main() が即座に return し、何も作成しない (EV-02)。"""
+        info_dir = tmp_path / "session-info"
+        monkeypatch.setattr(tmux_session_start, "SESSION_INFO_DIR", str(info_dir))
+        monkeypatch.setattr(tmux_session_start, "is_tmux_monitoring_enabled", lambda _: False)
+        monkeypatch.setattr(
+            tmux_session_start,
+            "read_hook_input",
+            lambda: {"cwd": str(tmp_path / "proj"), "session_id": "abcdef123456"},
+        )
+
+        def fail_run_tmux(*args: str) -> SimpleNamespace:
+            raise AssertionError("run_tmux は tmux 未インストール時に呼ばれてはいけない")
+
+        monkeypatch.setattr(tmux_session_start, "run_tmux", fail_run_tmux)
+
+        tmux_session_start.main()
+
+        assert not info_dir.exists()
+
+    def test_main_reuses_existing_session_and_cleans_extra_panes(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """既存セッションがある場合は kill せず、先頭ペインを respawn し残りを削除する (EV-07)。"""
+        info_dir = tmp_path / "session-info"
+        shared_prefix = str(tmp_path / "shared-")
+        calls: list[tuple[str, ...]] = []
+
+        def fake_run_tmux(*args: str) -> SimpleNamespace:
+            calls.append(args)
+            if args[:3] == ("list-panes", "-t", "claude-proj-4321"):
+                return SimpleNamespace(returncode=0, stdout="%1\n%2\n%3\n", stderr="")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(tmux_session_start, "SESSION_INFO_DIR", str(info_dir))
+        monkeypatch.setattr(tmux_session_start, "SHARED_STORE_PREFIX", shared_prefix)
+        monkeypatch.setattr(tmux_session_start, "is_tmux_monitoring_enabled", lambda _: True)
+        monkeypatch.setattr(
+            tmux_session_start,
+            "read_hook_input",
+            lambda: {"cwd": str(tmp_path / "proj"), "session_id": "abcdef123456"},
+        )
+        monkeypatch.setattr(tmux_session_start, "find_claude_pid", lambda: 4321)
+        monkeypatch.setattr(tmux_session_start, "cleanup_orphaned_sessions", lambda _: None)
+        monkeypatch.setattr(tmux_session_start, "tmux_has_session", lambda _: True)
+        monkeypatch.setattr(tmux_session_start, "run_tmux", fake_run_tmux)
+
+        tmux_session_start.main()
+
+        respawn_calls = [call for call in calls if call[0] == "respawn-pane"]
+        assert len(respawn_calls) == 1
+        assert respawn_calls[0][:3] == ("respawn-pane", "-t", "%1")
+        assert respawn_calls[0][3] == "-k"
+        assert ("kill-pane", "-t", "%2") in calls
+        assert ("kill-pane", "-t", "%3") in calls
+        assert not any(call[0] == "new-session" for call in calls)
 
 
 class TestTmuxSubagentStart:
@@ -277,6 +381,80 @@ class TestTmuxSubagentStart:
         assert pane_info.splitlines() == ["claude-proj-sess123", "%1"]
         assert any(call[:3] == ("new-session", "-d", "-s") for call in calls)
 
+    def test_main_noop_when_tmux_monitoring_disabled(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """tmux 未インストール環境では main() が即座に return し、何も作成しない (EV-02)。"""
+        info_dir = tmp_path / "session-info"
+        monkeypatch.setattr(tmux_subagent_start, "SESSION_INFO_DIR", str(info_dir))
+        monkeypatch.setattr(tmux_subagent_start, "is_tmux_monitoring_enabled", lambda _: False)
+        monkeypatch.setattr(
+            tmux_subagent_start,
+            "read_hook_input",
+            lambda: {
+                "cwd": str(tmp_path / "proj"),
+                "agent_id": "agent1234567",
+                "agent_type": "tester",
+                "session_id": "sess123456",
+                "transcript_path": str(tmp_path / "transcript.jsonl"),
+            },
+        )
+
+        def fail_run_tmux(*args: str) -> SimpleNamespace:
+            raise AssertionError("run_tmux は tmux 未インストール時に呼ばれてはいけない")
+
+        monkeypatch.setattr(tmux_subagent_start, "run_tmux", fail_run_tmux)
+
+        tmux_subagent_start.main()
+
+        assert not info_dir.exists()
+
+    def test_main_uses_raw_description_in_pane_title_without_masking(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """description は加工・マスキングされずそのままペインタイトルに使われる (EV-13)。
+
+        現状の実装がそうなっていることの確認に留め、マスキングの要否は判断しない
+        （docs/evaluation/tmux-monitor.md 5節のテストレビュー判断基準に従う）。
+        """
+        info_dir = tmp_path / "session-info"
+        info_dir.mkdir()
+        calls: list[tuple[str, ...]] = []
+        raw_description = "token=SECRET-abc123 rm -rf /"
+
+        def fake_run_tmux(*args: str) -> SimpleNamespace:
+            calls.append(args)
+            if args[:4] == ("display-message", "-t", "claude-proj-sess123", "-p"):
+                return SimpleNamespace(returncode=0, stdout="%1\n", stderr="")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(tmux_subagent_start, "SESSION_INFO_DIR", str(info_dir))
+        monkeypatch.setattr(tmux_subagent_start, "is_tmux_monitoring_enabled", lambda _: True)
+        monkeypatch.setattr(
+            tmux_subagent_start,
+            "read_hook_input",
+            lambda: {
+                "cwd": str(tmp_path / "proj"),
+                "agent_id": "agent1234567",
+                "agent_type": "tester",
+                "session_id": "sess123456",
+                "transcript_path": str(tmp_path / "transcript.jsonl"),
+            },
+        )
+        monkeypatch.setattr(tmux_subagent_start, "find_claude_pid", lambda: None)
+        monkeypatch.setattr(tmux_subagent_start, "tmux_has_session", lambda _: False)
+        monkeypatch.setattr(tmux_subagent_start, "run_tmux", fake_run_tmux)
+        monkeypatch.setattr(tmux_subagent_start, "pop_task_description", lambda _: raw_description)
+        monkeypatch.setattr(tmux_subagent_start.os.path, "isfile", lambda _: False)
+        monkeypatch.setattr(tmux_subagent_start.os, "access", lambda *_: False)
+
+        tmux_subagent_start.main()
+
+        expected_title = f"{raw_description} (tester:agent12)"
+        select_pane_calls = [call for call in calls if call[0] == "select-pane"]
+        assert select_pane_calls
+        assert ("select-pane", "-t", "%1", "-T", expected_title) in select_pane_calls
+
 
 class TestTmuxSubagentStop:
     """tmux-subagent-stop.py のテスト。"""
@@ -324,3 +502,94 @@ class TestTmuxSubagentStop:
         assert not pane_info_file.exists()
         assert ("select-pane", "-t", "%3", "-T", "DONE: tester:agent12") in calls
         assert ("set-option", "-t", "%3", "pane-border-style", "fg=green") in calls
+
+    def test_main_never_kills_pane_and_only_changes_border_color(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """SubagentStop はペインを kill せず、境界色変更のみ行い tail -f を維持する (EV-06)。"""
+        info_dir = tmp_path / "session-info"
+        info_dir.mkdir()
+        pane_info_file = info_dir / "sess-1.pane-agent1234567"
+        pane_info_file.write_text("tmux-sess\n%3\n", encoding="utf-8")
+        calls: list[tuple[str, ...]] = []
+
+        def fake_run_tmux(*args: str) -> SimpleNamespace:
+            calls.append(args)
+            if args[:4] == ("list-panes", "-t", "tmux-sess", "-F"):
+                return SimpleNamespace(returncode=0, stdout="%3\n", stderr="")
+            if args[:4] == ("display-message", "-t", "%3", "-p"):
+                return SimpleNamespace(returncode=0, stdout="tester:agent12\n", stderr="")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(tmux_subagent_stop, "SESSION_INFO_DIR", str(info_dir))
+        monkeypatch.setattr(tmux_subagent_stop, "is_tmux_monitoring_enabled", lambda _: True)
+        monkeypatch.setattr(
+            tmux_subagent_stop,
+            "read_hook_input",
+            lambda: {"cwd": str(tmp_path), "agent_id": "agent1234567", "session_id": "sess-1"},
+        )
+        monkeypatch.setattr(tmux_subagent_stop, "tmux_has_session", lambda _: True)
+        monkeypatch.setattr(tmux_subagent_stop, "run_tmux", fake_run_tmux)
+
+        tmux_subagent_stop.main()
+
+        assert not any(call[0] == "kill-pane" for call in calls)
+        assert ("set-option", "-t", "%3", "pane-border-style", "fg=green") in calls
+        assert ("set-option", "-t", "%3", "pane-active-border-style", "fg=green") in calls
+
+    def test_main_noop_when_tmux_monitoring_disabled(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """tmux 未インストール環境では main() が即座に return し、pane info にも触れない (EV-02)。"""
+        info_dir = tmp_path / "session-info"
+        info_dir.mkdir()
+        pane_info_file = info_dir / "sess-1.pane-agent1234567"
+        pane_info_file.write_text("tmux-sess\n%3\n", encoding="utf-8")
+
+        monkeypatch.setattr(tmux_subagent_stop, "SESSION_INFO_DIR", str(info_dir))
+        monkeypatch.setattr(tmux_subagent_stop, "is_tmux_monitoring_enabled", lambda _: False)
+        monkeypatch.setattr(
+            tmux_subagent_stop,
+            "read_hook_input",
+            lambda: {"cwd": str(tmp_path), "agent_id": "agent1234567", "session_id": "sess-1"},
+        )
+
+        def fail_run_tmux(*args: str) -> SimpleNamespace:
+            raise AssertionError("run_tmux は tmux 未インストール時に呼ばれてはいけない")
+
+        monkeypatch.setattr(tmux_subagent_stop, "run_tmux", fail_run_tmux)
+
+        tmux_subagent_stop.main()
+
+        assert pane_info_file.exists()
+
+    def test_main_noop_when_tmux_session_missing(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """tmux インストール済でも対象セッションが存在しなければ何もせず終了する (EV-03)。"""
+        info_dir = tmp_path / "session-info"
+        info_dir.mkdir()
+        pane_info_file = info_dir / "sess-1.pane-agent1234567"
+        pane_info_file.write_text("tmux-sess\n%3\n", encoding="utf-8")
+        calls: list[tuple[str, ...]] = []
+
+        def fake_run_tmux(*args: str) -> SimpleNamespace:
+            calls.append(args)
+            return SimpleNamespace(returncode=1, stdout="", stderr="")
+
+        monkeypatch.setattr(tmux_subagent_stop, "SESSION_INFO_DIR", str(info_dir))
+        monkeypatch.setattr(tmux_subagent_stop, "is_tmux_monitoring_enabled", lambda _: True)
+        monkeypatch.setattr(
+            tmux_subagent_stop,
+            "read_hook_input",
+            lambda: {"cwd": str(tmp_path), "agent_id": "agent1234567", "session_id": "sess-1"},
+        )
+        monkeypatch.setattr(tmux_subagent_stop, "tmux_has_session", lambda _: False)
+        monkeypatch.setattr(tmux_subagent_stop, "run_tmux", fake_run_tmux)
+
+        tmux_subagent_stop.main()
+
+        # select-pane や set-option (境界色変更) は一切呼ばれない
+        assert calls == []
+        # 早期 return のため pane info ファイルも削除されない
+        assert pane_info_file.exists()

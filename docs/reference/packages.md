@@ -28,7 +28,7 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 | [antigravity-suggestions](#antigravity-suggestions) | Web 検索時の Antigravity リサーチ提案                  | 提案         |
 | [git-workflow](#git-workflow)             | Git/GitHub ワークフロー（Issue・PR・開発フロー）  | ワークフロー |
 | [cocoindex](#cocoindex)                   | cocoindex MCP サーバーの自動プロビジョニング      | MCP          |
-| [tmux-monitor](#tmux-monitor)             | tmux でサブエージェント出力をリアルタイム監視     | 監視         |
+| [tmux-monitor](#tmux-monitor)             | tmux でサブエージェント出力をリアルタイム監視（opt-in、`setup all` 対象外） | 監視         |
 | [loop-harness](#loop-harness)             | Issue 起点の Maker/Checker 反復と PR レビュー対応を安全駆動 | ハーネス     |
 | [codd](#codd)                             | ドキュメント依存グラフの scan/validate/impact（整合性レイヤー） | 整合性       |
 | [codex-harness](#codex-harness)           | Codex CLI 向け repo-local ハーネス（hooks + 非対話 run/review） | ハーネス     |
@@ -43,7 +43,7 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 | プリセット  | 含まれるパッケージ                 |
 | ----------- | ---------------------------------- |
 | `essential` | core, agent-routing, audit, quality-gates, codd |
-| `all`       | 全パッケージ                       |
+| `all`       | 全パッケージ（tmux-monitor を除く） |
 
 ---
 
@@ -294,7 +294,7 @@ tmux ペインでサブエージェントの起動・停止をリアルタイム
 
 ### 有効化
 
-専用の設定ファイルはなく、`tmux` バイナリが見つかる環境で自動的に有効になる。`tmux` が未インストールの場合、各 hook は no-op として終了する。
+専用の設定ファイルはなく、インストールされている場合、`tmux` バイナリが見つかる環境で自動的に有効になる。`tmux` が未インストールの場合、各 hook は no-op として終了する。`orchex setup all` には含まれないため、`orchex install tmux-monitor` で明示的にインストールする。
 
 ---
 

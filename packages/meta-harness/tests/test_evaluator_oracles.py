@@ -50,7 +50,7 @@ class TestOracleCommandExit:
             owned_tmp_dir=run_tmp,
         )
 
-        def local_capture(args, *, cwd, timeout, env):
+        def local_capture(args, *, cwd, timeout, env, cleanup_args=None):
             return subprocess.run(
                 args[-3:],
                 cwd=cwd,
@@ -363,6 +363,50 @@ class TestRubricJudgeClaudeBareBackend:
         )
         assert result.passed is False
         assert result.error is True
+
+    def test_docker_judge_uses_broker_container_without_host_api_key(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        launch = ev.siso.ScenarioIsolationLaunch(
+            executable="docker",
+            settings_path=None,
+            settings={},
+            env={"PATH": "/usr/bin:/bin"},
+            metadata={},
+            backend="docker",
+            docker_launch=object(),
+        )
+        captured: dict = {}
+        monkeypatch.setattr(
+            ev.siso,
+            "build_judge_command",
+            lambda _launch, cmd: (
+                ["docker", "run", "judge", *cmd],
+                ["docker", "rm", "-f", "judge"],
+            ),
+        )
+
+        def fake_capture(command, **kwargs):
+            captured["command"] = command
+            captured["kwargs"] = kwargs
+            return _completed(0, stdout=json.dumps({"passed": True, "reason": "ok"}))
+
+        monkeypatch.setattr(ev.sproc, "run_bounded_capture", fake_capture)
+
+        result = ev.run_rubric_judge(
+            "rubric",
+            tmp_path,
+            self._CONFIG,
+            _SCHEMA_DIR,
+            isolation_launch=launch,
+        )
+
+        assert result.passed is True
+        assert captured["command"][:3] == ["docker", "run", "judge"]
+        assert captured["kwargs"]["cleanup_args"] == ["docker", "rm", "-f", "judge"]
+        assert "ANTHROPIC_API_KEY" not in captured["kwargs"]["env"]
+        assert not any("sk-" in part for part in captured["command"])
 
 
 class TestRubricJudgeUnknownBackend:

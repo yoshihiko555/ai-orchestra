@@ -5,6 +5,7 @@ evaluate:
   worktree_root: .worktrees/meta # メインルート相対（§2-0）
   repeat_default: 1
   repeat_frontier: 3
+  # Container lifetime adds broker idle + 60s; larger per-check timeouts end at that cap first.
   timeout_ms_default: 300000
   permission_mode: acceptEdits
   allowed_tools:
@@ -18,11 +19,36 @@ evaluate:
     - "Bash(pytest *)"
   model: null # null = セッション既定モデル
   cli_version_pin: null # null = バージョン一致検証をスキップ（capability smoke test は常に実施）
+  isolation:
+    backend: docker # Docker + dual-homed ephemeral broker（ADR-20260712-034）
+    execution_backend: docker # 非隔離 backend へは降格しない
+    image: ai-orchestra/meta-harness-scenario:2.1.207
+    image_pin: "2.1.207 (Claude Code)"
+    auto_build_images: true
+    resources:
+      pids_limit: 128
+      memory: 2g
+      cpus: 2.0
+      workspace_size: 512m
+      workspace_max_files: 10000
+    broker:
+      image: ai-orchestra/meta-harness-broker:0.1.0
+      port_range: [8790, 8990]
+      idle_timeout_sec: 300
+      startup_timeout_sec: 30
+      max_requests: 64
+      max_total_tokens: 500000
+      max_upstream_bytes: 50000000
+      pricing_upper_bound_usd_per_million:
+        input: 15.0
+        output: 75.0
+        cache_creation: 18.75
+        cache_read: 1.5
 scenario_run:
   max_turns_default: 30
   max_budget_usd_default: 3.0 # 2026-07-07 スパイク実測反映（Sec14）。実測 total_cost_usd=1.20 に余裕を持たせる
 judge:
-  tool: codex # codex | claude-bare（Sec3-3）。利用不能時は fail-closed（暗黙フォールバック禁止）
+  tool: claude-bare # tool-less judge。codexはread deny不能のため無効（ADR-20260711-033）
   model: null
   effort: high
   max_turns: 4
@@ -46,15 +72,21 @@ config_patch:
     # agent-routing/cli-tools.yaml の agents.*.tool / codex.model /
     # antigravity.model を追加予定
 proposer:
+  tool: codex # codex | claude-bare（Sec11-3-5）。利用不能時は fail-closed（暗黙フォールバック禁止）
   max_iterations: 10
   divergence_rounds: 3
   overfit_drop_pt: 15
   budget_usd_per_iteration: 1.0 # 実測待ち。§14 参照
   max_turns: 40
+  timeout_seconds: 600 # codex backend の wall-clock timeout（秒）。超過時は fail-closed
   max_focus_runs: 5
   max_overlay_bytes: 200000
   model: null # null = セッション既定モデル
   effort: high
+  isolation:
+    backend: srt # srt のみ（Phase 2 時点）。利用不能時は fail-closed（Sec11-3-2）
+    srt_version_pin: null # null = pin なし。設定時は srt --version と厳密一致
+    allow_read_extra: [] # CLI 起動に必要な追加 allowRead。store/holdout/facets 等は静的検査で拒否
 loop:
   budget_usd: null # 実測後に既定を設定。§14 参照
   quality_epsilon_pt: 0.5 # best_quality の改善判定閾値（§13-2）
