@@ -1,3 +1,5 @@
+import io
+import json
 import sys
 
 from tests.module_loader import REPO_ROOT, load_module
@@ -85,3 +87,65 @@ def test_should_suggest_antigravity_false_for_simple_version_lookup() -> None:
     )
     assert should_suggest is False
     assert reason == ""
+
+
+# --- EV-10: matcher スコープ（WebSearch|WebFetch 限定）---
+
+
+def test_manifest_matcher_is_limited_to_websearch_webfetch() -> None:
+    """manifest.json の PreToolUse matcher が WebSearch|WebFetch に限定されている。"""
+    manifest_path = REPO_ROOT / "packages" / "antigravity-suggestions" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    matchers = [entry["matcher"] for entry in manifest["hooks"]["PreToolUse"]]
+    assert matchers == ["WebSearch|WebFetch"]
+
+
+def _run_main_with_stdin(data: dict) -> tuple[str, str | int]:
+    """main() を stdin モックで実行し (stdout, exit_code) を返す。"""
+    old_stdin = sys.stdin
+    old_stdout = sys.stdout
+    sys.stdin = io.StringIO(json.dumps(data))
+    sys.stdout = io.StringIO()
+
+    exit_code = 0
+    try:
+        suggest_antigravity_research.main()
+    except SystemExit as e:
+        exit_code = e.code if e.code is not None else 0
+
+    stdout = sys.stdout.getvalue()
+    sys.stdin = old_stdin
+    sys.stdout = old_stdout
+    return stdout, exit_code
+
+
+def test_main_does_not_suggest_for_non_matching_tool() -> None:
+    """EV-10: WebSearch/WebFetch 以外の tool_name では、research 系キーワードを
+    含む入力があっても提案が発火しない（matcher スコープ外の関数レベル検証）。
+
+    hook 本体は tool_name が WebSearch/WebFetch のときのみ query/url を
+    tool_input から取り出すため、非対象ツールでは常に空クエリとなり
+    should_suggest_antigravity が False を返す。
+    """
+    data = {
+        "tool_name": "Read",
+        "tool_input": {"query": "fastapi best practice for dependency injection"},
+    }
+    stdout, exit_code = _run_main_with_stdin(data)
+    assert exit_code == 0
+    assert stdout == ""
+
+
+def test_main_suggests_for_matching_tool_webfetch() -> None:
+    """比較対象: WebFetch では同等の research シグナルで提案が発火する。"""
+    data = {
+        "tool_name": "WebFetch",
+        "tool_input": {
+            "url": "https://docs.acme.test/tutorial/python",
+            "prompt": "fastapi best practice for dependency injection",
+        },
+    }
+    stdout, exit_code = _run_main_with_stdin(data)
+    assert exit_code == 0
+    output = json.loads(stdout)
+    assert "[Antigravity Suggestion]" in output["hookSpecificOutput"]["additionalContext"]

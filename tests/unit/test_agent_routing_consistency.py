@@ -386,12 +386,22 @@ class TestLegacyGeminiCompat:
         config = hook_common.normalize_cli_tools_config(_make_legacy_config())
         assert config["agents"]["researcher"]["tool"] == "antigravity"
 
-    def test_normalize_applies_legacy_disabled(self) -> None:
-        """形態 2: gemini.enabled: false → antigravity.enabled: false。"""
+    def test_normalize_applies_legacy_disabled_when_antigravity_unset(self) -> None:
+        """形態 2: antigravity.enabled が未設定の場合のみ gemini.enabled: false が
+        フォールバックとして反映される（EV-04）。"""
+        config = _make_legacy_config(gemini={"enabled": False})
+        config["antigravity"] = {"model": "gemini-3.1-pro-high"}  # enabled キー無し
+        config = hook_common.normalize_cli_tools_config(config)
+        assert config["antigravity"]["enabled"] is False
+
+    def test_normalize_antigravity_explicit_wins_over_legacy_gemini(self) -> None:
+        """EV-13（2026-07-04 人間レビュー裁定）: 両キー競合時は antigravity.enabled
+        が明示設定されている場合、それを優先する（gemini.enabled: false で
+        上書きされない）。"""
         config = hook_common.normalize_cli_tools_config(
             _make_legacy_config(gemini={"enabled": False})
         )
-        assert config["antigravity"]["enabled"] is False
+        assert config["antigravity"]["enabled"] is True
 
     def test_normalize_ignores_legacy_model(self) -> None:
         """形態 3: gemini.model（Gemini CLI 固有値）は引き継がない。"""

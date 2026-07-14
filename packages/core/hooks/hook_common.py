@@ -78,30 +78,36 @@ def _read_config_file(path: str) -> dict:
     return read_json_safe(path)
 
 
+def _find_local_config_path(
+    package_name: str, filename: str, project_dir: str, base_path: str
+) -> str:
+    """local override ファイルのパスを解決する（存在しなくてもパス文字列を返す）。
+
+    探索順:
+    1. {project_dir}/.claude/config/{package_name}/{name}.local.{ext}
+    2. base_path と同じディレクトリ（フォールバック）
+    """
+    name, ext = os.path.splitext(filename)
+    local_filename = f"{name}.local{ext}"
+
+    project_local = os.path.join(project_dir, ".claude", "config", package_name, local_filename)
+    if os.path.isfile(project_local):
+        return project_local
+    return os.path.join(os.path.dirname(base_path), local_filename)
+
+
 def load_package_config(package_name: str, filename: str, project_dir: str) -> dict:
     """パッケージ config を読み込み、.local.{ext} があればマージする。
 
-    local override の探索順:
-    1. {project_dir}/.claude/config/{package_name}/{name}.local.{ext}
-    2. base_path と同じディレクトリ（フォールバック）
+    local override の探索順は ``_find_local_config_path`` を参照。
     """
     base_path = find_package_config(package_name, filename, project_dir)
     if not base_path:
         return {}
 
     base = _read_config_file(base_path)
-
-    name, ext = os.path.splitext(filename)
-    local_filename = f"{name}.local{ext}"
-
-    # プロジェクトディレクトリを優先的に検索
-    project_local = os.path.join(project_dir, ".claude", "config", package_name, local_filename)
-    if os.path.isfile(project_local):
-        local = _read_config_file(project_local)
-    else:
-        # フォールバック: base_path と同じディレクトリ
-        local_path = os.path.join(os.path.dirname(base_path), local_filename)
-        local = _read_config_file(local_path)
+    local_path = _find_local_config_path(package_name, filename, project_dir, base_path)
+    local = _read_config_file(local_path)
 
     if local:
         return deep_merge(base, local)
@@ -114,12 +120,25 @@ def normalize_cli_tools_config(config: dict) -> dict:
     横展開先プロジェクトの .local.yaml に残る旧キーへの後方互換:
 
     1. トップレベル ``gemini:`` キーの ``enabled: false`` は
-       ``antigravity.enabled`` に反映する（無効化の意図を引き継ぐ。
-       ``model`` / ``flags`` は Gemini CLI 固有値のため引き継がない）
+       ``antigravity.enabled`` が明示設定されていない場合に限り
+       ``antigravity.enabled`` へフォールバックとして反映する（無効化の意図を
+       引き継ぐ。``model`` / ``flags`` は Gemini CLI 固有値のため引き継がない）。
+       両キーが競合する場合（``antigravity.enabled`` が既に明示設定されている
+       場合）は ``antigravity.enabled`` を優先する
+       （2026-07-04 人間レビュー裁定・EV-13、Issue #125）。
     2. ``agents.<name>.tool: "gemini"`` は ``"antigravity"`` に読み替える
 
+    重要: この関数は「渡された 1 つの dict の中で両キーが競合しているか」だけを
+    判定する。base config と local override をあらかじめ deep_merge した dict を
+    渡すと、base 側の既定値（例: ``antigravity.enabled: true``）が「ユーザーが
+    明示した値」と区別できず、local だけに残る旧 ``gemini.enabled: false`` の
+    フォールバックが機能しなくなる（migrated-project regression。Issue #125 PR
+    レビュー指摘）。cli-tools.yaml を読み込む場合は、base/local を merge する前に
+    レイヤーごとに本関数へ通す ``load_cli_tools_config`` を使うこと。
+
     Args:
-        config: load_package_config が返した cli-tools.yaml の dict。
+        config: cli-tools.yaml 相当の dict（base 単体 / local 単体 / 呼び出し元が
+            意図的に単一レイヤーとして扱いたい dict）。
 
     Returns:
         正規化済みの新しい dict（入力は変更しない）。
@@ -132,8 +151,9 @@ def normalize_cli_tools_config(config: dict) -> dict:
     legacy = normalized.get("gemini")
     if isinstance(legacy, dict) and legacy.get("enabled") is False:
         antigravity = dict(normalized.get("antigravity") or {})
-        antigravity["enabled"] = False
-        normalized["antigravity"] = antigravity
+        if "enabled" not in antigravity:
+            antigravity["enabled"] = False
+            normalized["antigravity"] = antigravity
 
     agents = normalized.get("agents")
     if isinstance(agents, dict):
@@ -145,6 +165,50 @@ def normalize_cli_tools_config(config: dict) -> dict:
         normalized["agents"] = new_agents
 
     return normalized
+
+
+def load_cli_tools_config(project_dir: str) -> dict:
+    """cli-tools.yaml を base/local レイヤーごとに正規化してから読み込む。
+
+    ``load_package_config`` は base と local を deep_merge してから返すため、
+    その結果を ``normalize_cli_tools_config`` に渡すと base の既定値
+    （現行 base は ``antigravity.enabled: true`` を明示）が「ユーザーによる
+    明示設定」と誤認され、local だけに残る旧 ``gemini.enabled: false`` の
+    後方互換フォールバックが機能しない（migrated-project regression。
+    Issue #125 PR レビュー指摘）。
+
+    本関数は base dict と local dict を merge 前に個別に正規化し、その後で
+    deep_merge することでこれを解消する:
+
+    - base に ``antigravity.enabled`` の明示設定があり、local が旧
+      ``gemini.enabled: false`` のみを持つ場合 → local 単体の正規化で
+      ``antigravity.enabled: false`` が生成され、merge 後もそれが優先される
+      （EV-04: フォールバックが正しく効く）。
+    - 同一レイヤー（例: local）内で ``antigravity.enabled`` と旧
+      ``gemini.enabled: false`` が両方明示されている場合 → そのレイヤーの
+      正規化時点で ``antigravity.enabled`` が既に存在するためフォールバックは
+      適用されず、``antigravity.enabled`` が優先される
+      （EV-13, 2026-07-04 人間レビュー裁定）。
+
+    Args:
+        project_dir: プロジェクトディレクトリ。
+
+    Returns:
+        正規化・マージ済みの cli-tools.yaml 相当の dict。
+    """
+    package_name, filename = "agent-routing", "cli-tools.yaml"
+
+    base_path = find_package_config(package_name, filename, project_dir)
+    if not base_path:
+        return {}
+
+    base = normalize_cli_tools_config(_read_config_file(base_path))
+    local_path = _find_local_config_path(package_name, filename, project_dir, base_path)
+    local = _read_config_file(local_path)
+
+    if not local:
+        return base
+    return deep_merge(base, normalize_cli_tools_config(local))
 
 
 def is_cli_enabled(cli_name: str, config: dict) -> bool:

@@ -126,7 +126,7 @@
 | 41 | `cli-tools.yaml` + `cli-tools.local.yaml` | local のキーで上書き、未定義キーはベース | `PASS` | |
 | 42 | local でネストされたキーの一部を上書き | deep merge が正しく動作 | `PASS` | model 上書き + sandbox 維持 |
 | 43 | local で `codex.enabled: false` | Codex CLI の呼び出しが全て無効化 | `PASS` | |
-| 44 | local で `gemini.enabled: false` | Gemini CLI の呼び出しが全て無効化 | `PASS` | |
+| 44 | local で `gemini.enabled: false`（base に `antigravity.enabled` の明示設定が無い場合） | 後方互換フォールバックとして Antigravity CLI の呼び出しが無効化 | `PASS` | EV-13 (2026-07-04裁定): `antigravity.enabled` が明示設定済みの場合はそちらが優先され、`gemini.enabled: false` では上書きされない |
 
 ---
 

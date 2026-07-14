@@ -269,6 +269,73 @@ class TestLoadPackageConfig:
         assert result == {}
 
 
+class TestLoadCliToolsConfig:
+    """load_cli_tools_config のテスト（Issue #125: レイヤーごとの正規化）。"""
+
+    def _write_configs(self, tmp_path, base_yaml: str, local_yaml: str | None) -> str:
+        config_dir = tmp_path / ".claude" / "config" / "agent-routing"
+        config_dir.mkdir(parents=True)
+        (config_dir / "cli-tools.yaml").write_text(base_yaml, encoding="utf-8")
+        if local_yaml is not None:
+            (config_dir / "cli-tools.local.yaml").write_text(local_yaml, encoding="utf-8")
+        return str(tmp_path)
+
+    def test_migrated_project_legacy_gemini_disables_antigravity(self, tmp_path, monkeypatch):
+        """EV-04 (migrated-project regression): base が antigravity.enabled: true を
+        明示し、local に旧 gemini.enabled: false のみが残る場合、
+        antigravity.enabled は False にフォールバックされる。
+
+        base/local を先に merge してから normalize_cli_tools_config を適用する
+        旧実装では、base の既定値のせいでこのフォールバックが機能しなかった
+        （Issue #125 PR レビュー指摘）。
+        """
+        monkeypatch.delenv("AI_ORCHESTRA_DIR", raising=False)
+        project_dir = self._write_configs(
+            tmp_path,
+            base_yaml="antigravity:\n  enabled: true\n  model: gemini-3.1-pro-high\n",
+            local_yaml="gemini:\n  enabled: false\n",
+        )
+
+        result = hook_common.load_cli_tools_config(project_dir)
+        assert result["antigravity"]["enabled"] is False
+        # base の model は保持される（フォールバックは enabled のみ反映）
+        assert result["antigravity"]["model"] == "gemini-3.1-pro-high"
+
+    def test_explicit_local_antigravity_wins_over_same_layer_legacy_gemini(
+        self, tmp_path, monkeypatch
+    ):
+        """EV-13（2026-07-04 人間レビュー裁定）: 同一レイヤー（local）内で
+        antigravity.enabled と旧 gemini.enabled: false が両方明示されている
+        場合、antigravity.enabled が優先される。"""
+        monkeypatch.delenv("AI_ORCHESTRA_DIR", raising=False)
+        project_dir = self._write_configs(
+            tmp_path,
+            base_yaml="antigravity:\n  enabled: true\n",
+            local_yaml="antigravity:\n  enabled: true\ngemini:\n  enabled: false\n",
+        )
+
+        result = hook_common.load_cli_tools_config(project_dir)
+        assert result["antigravity"]["enabled"] is True
+
+    def test_base_only_no_local_override(self, tmp_path, monkeypatch):
+        """local override が無い場合、正規化済みの base をそのまま返す。"""
+        monkeypatch.delenv("AI_ORCHESTRA_DIR", raising=False)
+        project_dir = self._write_configs(
+            tmp_path,
+            base_yaml="gemini:\n  enabled: false\n",
+            local_yaml=None,
+        )
+
+        result = hook_common.load_cli_tools_config(project_dir)
+        assert result["antigravity"]["enabled"] is False
+
+    def test_config_not_found_returns_empty_dict(self, tmp_path, monkeypatch):
+        """base config が存在しない場合、空辞書を返す。"""
+        monkeypatch.delenv("AI_ORCHESTRA_DIR", raising=False)
+        result = hook_common.load_cli_tools_config(str(tmp_path))
+        assert result == {}
+
+
 class TestSafeHookExecution:
     """safe_hook_execution のテスト。"""
 
