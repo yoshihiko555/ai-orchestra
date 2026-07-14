@@ -114,8 +114,12 @@ def normalize_cli_tools_config(config: dict) -> dict:
     横展開先プロジェクトの .local.yaml に残る旧キーへの後方互換:
 
     1. トップレベル ``gemini:`` キーの ``enabled: false`` は
-       ``antigravity.enabled`` に反映する（無効化の意図を引き継ぐ。
-       ``model`` / ``flags`` は Gemini CLI 固有値のため引き継がない）
+       ``antigravity.enabled`` が明示設定されていない場合に限り
+       ``antigravity.enabled`` へフォールバックとして反映する（無効化の意図を
+       引き継ぐ。``model`` / ``flags`` は Gemini CLI 固有値のため引き継がない）。
+       両キーが競合する場合（``antigravity.enabled`` が既に明示設定されている
+       場合）は ``antigravity.enabled`` を優先する
+       （2026-07-04 人間レビュー裁定・EV-13、Issue #125）。
     2. ``agents.<name>.tool: "gemini"`` は ``"antigravity"`` に読み替える
 
     Args:
@@ -132,8 +136,9 @@ def normalize_cli_tools_config(config: dict) -> dict:
     legacy = normalized.get("gemini")
     if isinstance(legacy, dict) and legacy.get("enabled") is False:
         antigravity = dict(normalized.get("antigravity") or {})
-        antigravity["enabled"] = False
-        normalized["antigravity"] = antigravity
+        if "enabled" not in antigravity:
+            antigravity["enabled"] = False
+            normalized["antigravity"] = antigravity
 
     agents = normalized.get("agents")
     if isinstance(agents, dict):

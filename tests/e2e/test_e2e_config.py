@@ -77,7 +77,26 @@ class TestConfigLoading:
         assert config["antigravity"]["enabled"] is False
 
     def test_legacy_gemini_disabled_normalizes_to_antigravity(self, e2e_project: Path) -> None:
-        """#44: 旧 gemini.enabled: false の .local.yaml が antigravity に正規化される。"""
+        """#44 (EV-04): base に antigravity.enabled の明示設定が無い場合、
+        旧 gemini.enabled: false の .local.yaml がフォールバックとして
+        antigravity.enabled: false に正規化される。"""
+        _setup_with_config(e2e_project)
+        config_dir = e2e_project / ".claude" / "config" / "agent-routing"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        # プロジェクト直下の base を「antigravity 未対応の旧バージョン」相当で上書きし、
+        # antigravity.enabled が一切明示されていない状態を再現する。
+        (config_dir / "cli-tools.yaml").write_text("gemini:\n  enabled: false\n", encoding="utf-8")
+        config = normalize_cli_tools_config(
+            load_package_config("agent-routing", "cli-tools.yaml", str(e2e_project))
+        )
+        assert config["antigravity"]["enabled"] is False
+
+    def test_legacy_gemini_disabled_does_not_override_explicit_antigravity(
+        self, e2e_project: Path
+    ) -> None:
+        """EV-13（2026-07-04 人間レビュー裁定）: base が antigravity.enabled: true を
+        明示設定している場合、.local.yaml に残る旧 gemini.enabled: false があっても
+        antigravity.enabled は上書きされない（antigravity 優先、Issue #125）。"""
         _setup_with_config(e2e_project)
         config_dir = e2e_project / ".claude" / "config" / "agent-routing"
         config_dir.mkdir(parents=True, exist_ok=True)
@@ -87,7 +106,9 @@ class TestConfigLoading:
         config = normalize_cli_tools_config(
             load_package_config("agent-routing", "cli-tools.yaml", str(e2e_project))
         )
-        assert config["antigravity"]["enabled"] is False
+        # base（packages/agent-routing/config/cli-tools.yaml）は antigravity.enabled: true を
+        # 明示しているため、legacy gemini.enabled: false では上書きされない。
+        assert config["antigravity"]["enabled"] is True
 
     def test_legacy_tool_gemini_normalizes_to_antigravity(self, e2e_project: Path) -> None:
         """旧 agents.*.tool: gemini の .local.yaml が antigravity に読み替えられる。"""
