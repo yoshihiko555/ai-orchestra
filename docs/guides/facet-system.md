@@ -323,6 +323,7 @@ orchex facet build --name my-skill --project .
 | `preflight`                         | skill | core                            | —                                        | —             |
 | `release-readiness`                 | skill | quality-gates                   | —                                        | tiered-review |
 | `review`                            | skill | quality-gates                   | —                                        | tiered-review |
+| `review-respond`                    | skill | git-workflow                    | cli-language                             | —             |
 | `skill-review-policy`               | rule  | quality-gates                   | —                                        | tiered-review |
 | `startproject`                      | skill | core                            | —                                        | —             |
 | `task-memory-usage`                 | rule  | core                            | —                                        | —             |

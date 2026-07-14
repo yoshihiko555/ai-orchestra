@@ -5,13 +5,17 @@
   "depends": [],
   "hooks": {},
   "files": [],
-  "skills": ["issue-create", "issue-fix", "pr-create"],
+  "skills": ["issue-create", "issue-fix", "pr-create", "review-respond"],
   "agents": [],
   "rules": ["changelog-policy"],
   "scripts": [
     {
       "path": "scripts/resolve_base_branch.py",
       "description": "PR の base branch を --base 引数・環境変数・merge-base 自動推定の優先順で解決する"
+    },
+    {
+      "path": "scripts/pr_review_threads.py",
+      "description": "PR の unresolved bot レビュー指摘の検出・取得・返信・resolve を行う（/review-respond 用）。loop-harness 併用を推奨し、未インストール環境では origin_verified: false の全件返却にフォールバックする"
     }
   ],
   "config": ["config/sandbox-requirements.json"]

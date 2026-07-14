@@ -1,0 +1,23 @@
+# review-respond スキルのファセット構成定義
+name: review-respond
+description: 手動で作成・push 済みの PR に付いた bot レビュー指摘を検出・分類・修正・返信・resolve まで自動対応する
+
+# フロントマター（生成される SKILL.md に付与）
+frontmatter:
+  name: review-respond
+  description: |
+    カレントブランチの PR に付いた bot（CodeRabbit / Codex 等）のレビュー指摘を
+    pr_review_threads.py で取得し、severity と対応方針（採用/非採用）を分類したうえで、
+    採用した指摘を implementation subagent へ委譲して修正・テスト・commit・push し、
+    全指摘に返信してスレッドを resolve する。
+    「レビュー対応して」「レビュー指摘対応」「bot レビューに対応」等のリクエストで使用する。
+    トリガー: /review-respond
+  metadata:
+    short-description: PR の bot レビュー指摘への自動対応
+
+# 参照するポリシー
+policies:
+  - cli-language
+
+# スキル固有の instruction（ファイル参照）
+instruction: review-respond
