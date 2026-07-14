@@ -240,6 +240,8 @@ GitHub Issue の登録・開発フロー・PR 作成を含む Git/GitHub ワー�
 | skill  | `issue-create`              | GitHub Issue の作成と計画策定         |
 | skill  | `issue-fix`                 | 計画→実装→テスト→レビューの開発フロー |
 | skill  | `pr-create`                 | Pull Request の作成                   |
+| skill  | `review-respond`            | PR の bot レビュー指摘への自動対応（検出→修正→返信→resolve） |
+| script | `pr_review_threads.py`      | PR の unresolved bot レビュー指摘の検出・取得・返信・resolve（`/review-respond` 用） |
 | config | `sandbox-requirements.json` | sandbox 設定（`gh` コマンドの除外）   |
 
 ---
