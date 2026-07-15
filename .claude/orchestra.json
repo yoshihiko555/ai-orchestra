@@ -50,7 +50,6 @@
     "config/agent-routing/cli-tools.yaml",
     "config/audit/audit-flags.json",
     "config/audit/delegation-policy.json",
-    "config/cocoindex/cocoindex.yaml",
     "config/codd/codd.yaml",
     "config/core/task-memory.yaml",
     "config/fail-logs/fail-logs.yaml",
@@ -100,9 +99,6 @@
     "audit": {
       "config/audit/delegation-policy.json": "b092b5385d3ec51252c5781cdbafa2d2e55d075d9cb74d25e89b71e95279d231",
       "config/audit/audit-flags.json": "8c0059f9a982219e070ce8d5f61c2ea01d907a3be9c030721fd658924f97e519"
-    },
-    "cocoindex": {
-      "config/cocoindex/cocoindex.yaml": "4263789df1e23f272410b8e452953b4c81d8ab3c64fa509829a06717eed94654"
     },
     "codd": {
       "config/codd/codd.yaml": "34b39501ced4cf12868fe6c0eea0071350cc68dd7a0ae413d686ed8d39491bd2"
