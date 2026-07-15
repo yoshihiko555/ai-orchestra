@@ -2,12 +2,14 @@
 
 Trigger → Maker → Checker → stop decision を繰り返す、自律改善ループの基盤。Issue 起点でコードを実装し、機械チェック（テスト/lint）と LLM レビューを経て PR を作成・完了させるまでを自動化します。
 
+> **利用者向けガイド**: `/loop-issue` の使い方・ループの仕組み（図解）は [`docs/guides/loop-harness.md`](../../docs/guides/loop-harness.md) を参照してください。本 README はパッケージの構成・config・cron/launchd セットアップ手順を扱います。
+
 ## 概要
 
 loop-harness には 2 つの実行形態があります。
 
 - **LP-1（`/loop-issue` スキル）**: `loop_step.py` を人間（オーケストレーター）が対話的に呼び出し、1 ステップずつ進める方式。既存の `/loop-issue` スキルフローの内部実装。
-- **LP-2（常駐 scheduler）**: `loop_scheduler.py` が常駐し、ラベル付き Issue をポーリングして `loop_driver.py`（headless worker）を自動起動する無人運用方式。人手を介さず複数 Issue を並行して回す。
+- **LP-2（常駐 scheduler）**: `loop_scheduler.py` が常駐し、ラベル付き Issue をポーリングして `loop_driver.py`（headless worker）を自動起動する無人運用方式。人手を介さず複数 Issue を並行して回す。**experimental**: Maker/Checker のプロセス隔離が未完成（Issue #211）のため、信頼できるリポジトリでのみ自己責任で使用してください。
 
 両者とも `lib/loop_common.py`（状態機械・ロック・journal）を共有し、状態は `.claude/loop/<loop_id>/state.json` に永続化されます。
 
@@ -36,7 +38,7 @@ scheduler 自身は cron/launchd の登録テンプレートを生成するの�
 python3 packages/loop-harness/scripts/loop_scheduler.py --project /path/to/repo print-cron
 ```
 
-出力された 1 行（`*/5 * * * * pgrep -f ... || /usr/bin/python3 ... --project ... >> .../scheduler.log 2>&1`）を `crontab -e` で追記します。5 分おきに `pgrep` で生存確認し、死んでいれば再起動するガード付きエントリです。
+出力された 1 行（`*/5 * * * * ... loop_scheduler.py --project ... is-alive || ... loop_scheduler.py --project ... >> .../scheduler.log 2>&1`）を `crontab -e` で追記します。5 分おきに `is-alive` サブコマンド（pidfile + flock による単一起動判定。Issue #216。旧 `pgrep` ベースの生存確認から置き換え済み）で生存確認し、死んでいれば再起動するガード付きエントリです。
 
 ### launchd の場合
 
