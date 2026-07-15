@@ -78,6 +78,26 @@ class TestFileSync:
         assert local_file.is_file()
         assert "test" in local_file.read_text(encoding="utf-8")
 
+    def test_user_edited_agent_file_preserved_on_resync(
+        self, e2e_project: Path, orchestra_dir: Path
+    ) -> None:
+        """Issue #241: ユーザー編集済み agents ファイルは再同期で上書きされない。"""
+        _setup_essential(e2e_project)
+        dst = e2e_project / ".claude" / "agents" / "planner.md"
+        assert dst.is_file()
+        dst.write_text("# user edited planner\n", encoding="utf-8")
+
+        agent_source = orchestra_dir / "packages" / "agent-routing" / "agents" / "planner.md"
+        original_mtime = agent_source.stat().st_mtime
+        try:
+            future = time.time() + 100
+            os.utime(agent_source, (future, future))
+            result = run_session_start(e2e_project, "s6")
+            assert dst.read_text(encoding="utf-8") == "# user edited planner\n"
+            assert "user" in result.stderr.lower() or "warn" in result.stderr.lower()
+        finally:
+            os.utime(agent_source, (original_mtime, original_mtime))
+
 
 class TestStaleCleanup:
     """3.2 Stale file cleanup"""

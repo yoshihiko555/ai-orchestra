@@ -320,6 +320,21 @@ def get_recorded_file_hash(orch: dict, pkg_name: str, file_key: str) -> str | No
     return orch.get("file_hashes", {}).get(pkg_name, {}).get(file_key)
 
 
+def is_user_modified(orch: dict, pkg_name: str, file_key: str, dst: Path) -> bool:
+    """dst が配布時記録ハッシュと異なる（= ユーザーが編集済み）かどうかを判定する。
+
+    dst が存在しない、またはハッシュ未記録（初回同期・旧形式の orchestra.json）の
+    場合は False を返し、従来どおりの上書きを許可する（保護は record 開始以降のみ
+    有効。_copy_config_if_safe と同じ「安全側だが後方互換」の方針）。
+    """
+    if not dst.exists():
+        return False
+    recorded = get_recorded_file_hash(orch, pkg_name, file_key)
+    if recorded is None:
+        return False
+    return compute_file_hash(dst) != recorded
+
+
 def collect_managed_agent_stems(orchestra_path: Path, installed_packages: list[str]) -> set[str]:
     """インストール済みパッケージの manifest.agents からファイル名 stem 集合を収集する。
 
@@ -715,14 +730,22 @@ def sync_packages(
     orchestra_path: Path,
     installed_packages: list[str],
     facet_managed: set[str],
+    orch: dict | None = None,
 ) -> tuple[int, set[str]]:
     """パッケージ単位のファイル同期を実行する。
+
+    orch を渡すと agents カテゴリのみ配布時ハッシュ台帳（orch["file_hashes"]）で
+    ユーザー編集を保護する: needs_sync（mtime）が同期を示した場合のみ
+    is_user_modified() でハッシュ検証するため、無変更時の毎セッションコストは
+    増えない。orch が None の場合は従来どおり mtime のみで判定する
+    （呼び出し側が台帳を持たないテスト等との後方互換）。
 
     Returns:
         (synced_count, synced_files)
     """
     synced_count = 0
     synced_files: set[str] = set()
+    file_hashes = orch.setdefault("file_hashes", {}) if orch is not None else None
 
     for pkg_name in installed_packages:
         manifest_path = orchestra_path / "packages" / pkg_name / "manifest.json"
@@ -756,8 +779,21 @@ def sync_packages(
                         dst = claude_dir / file_rel
                         if not needs_sync(src_file, dst):
                             continue
+                        if (
+                            category == "agents"
+                            and file_hashes is not None
+                            and is_user_modified(orch, pkg_name, file_rel, dst)
+                        ):
+                            print(
+                                f"[warn] {dst} はユーザーにより変更されているため"
+                                "同期をスキップしました",
+                                file=sys.stderr,
+                            )
+                            continue
                         dst.parent.mkdir(parents=True, exist_ok=True)
                         shutil.copy2(src_file, dst)
+                        if category == "agents" and file_hashes is not None:
+                            record_file_hash(orch, pkg_name, file_rel, compute_file_hash(dst))
                         synced_count += 1
                 else:
                     if category == "config":
@@ -776,8 +812,21 @@ def sync_packages(
                     if not needs_sync(src, dst):
                         continue
 
+                    if (
+                        category == "agents"
+                        and file_hashes is not None
+                        and is_user_modified(orch, pkg_name, dst_key, dst)
+                    ):
+                        print(
+                            f"[warn] {dst} はユーザーにより変更されているため同期をスキップしました",
+                            file=sys.stderr,
+                        )
+                        continue
+
                     dst.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(src, dst)
+                    if category == "agents" and file_hashes is not None:
+                        record_file_hash(orch, pkg_name, dst_key, compute_file_hash(dst))
                     synced_count += 1
 
     return synced_count, synced_files

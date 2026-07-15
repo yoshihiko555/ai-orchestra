@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import sys
+import time
 from pathlib import Path
 
 # sync_engine は scripts/ からの相対 import を使うため sys.path にスクリプトルートを追加
@@ -29,8 +32,6 @@ class TestNeedsSync:
 
     def test_src_newer(self, tmp_path):
         """src が dst より新しい場合、True を返す。"""
-        import os
-        import time
 
         dst = tmp_path / "dst.txt"
         dst.write_text("old")
@@ -45,8 +46,6 @@ class TestNeedsSync:
 
     def test_dst_newer(self, tmp_path):
         """dst が src より新しい場合、False を返す。"""
-        import os
-        import time
 
         src = tmp_path / "src.txt"
         src.write_text("old")
@@ -444,3 +443,95 @@ class TestSyncPackages:
 
         count, files = sync_engine.sync_packages(claude_dir, orchestra_path, ["core"], set())
         assert count == 2
+
+
+class TestSyncPackagesAgentsHashGuard:
+    """sync_packages() の agents ハッシュガードのテスト（Issue #241）。"""
+
+    def _sha256(self, text: str) -> str:
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    def _setup_pkg(self, tmp_path: Path, distributed_content: str) -> tuple[Path, Path, Path]:
+        orchestra_path = tmp_path / "orchestra"
+        pkg_dir = orchestra_path / "packages" / "core"
+        pkg_dir.mkdir(parents=True)
+        agent_file = pkg_dir / "agents" / "foo.md"
+        agent_file.parent.mkdir()
+        agent_file.write_text(distributed_content, encoding="utf-8")
+        manifest = {"name": "core", "agents": ["agents/foo.md"], "config": []}
+        (pkg_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+        claude_dir = tmp_path / "project" / ".claude"
+        claude_dir.mkdir(parents=True)
+        return orchestra_path, claude_dir, agent_file
+
+    def test_user_modified_agent_file_is_not_overwritten(self, tmp_path: Path, capsys) -> None:
+        """記録ハッシュと現在の内容が異なる（ユーザー編集済み）場合は上書きしない。"""
+        orchestra_path, claude_dir, agent_file = self._setup_pkg(tmp_path, "v2 distributed")
+
+        dst = claude_dir / "agents" / "foo.md"
+        dst.parent.mkdir(parents=True)
+        dst.write_text("user edited", encoding="utf-8")
+        # source を dst より新しくする（ガード無しなら needs_sync=True で上書きされる）
+        future = time.time() + 10
+        os.utime(agent_file, (future, future))
+
+        orch = {"file_hashes": {"core": {"agents/foo.md": self._sha256("v1 distributed")}}}
+
+        count, files = sync_engine.sync_packages(claude_dir, orchestra_path, ["core"], set(), orch)
+
+        assert count == 0
+        assert "agents/foo.md" in files
+        assert dst.read_text(encoding="utf-8") == "user edited"
+        assert "warn" in capsys.readouterr().err
+
+    def test_unmodified_agent_file_still_syncs_and_updates_hash(self, tmp_path: Path) -> None:
+        """記録ハッシュと現在の内容が一致（未編集）なら同期し、ハッシュ台帳を更新する。"""
+        orchestra_path, claude_dir, agent_file = self._setup_pkg(tmp_path, "v2 distributed")
+
+        dst = claude_dir / "agents" / "foo.md"
+        dst.parent.mkdir(parents=True)
+        dst.write_text("v1 distributed", encoding="utf-8")
+        future = time.time() + 10
+        os.utime(agent_file, (future, future))
+
+        orch = {"file_hashes": {"core": {"agents/foo.md": self._sha256("v1 distributed")}}}
+
+        count, files = sync_engine.sync_packages(claude_dir, orchestra_path, ["core"], set(), orch)
+
+        assert count == 1
+        assert dst.read_text(encoding="utf-8") == "v2 distributed"
+        assert orch["file_hashes"]["core"]["agents/foo.md"] == self._sha256("v2 distributed")
+
+    def test_no_ledger_entry_syncs_and_starts_recording(self, tmp_path: Path) -> None:
+        """未記録（旧 orchestra.json 由来）の場合は従来どおり同期し、以後の記録を開始する。"""
+        orchestra_path, claude_dir, agent_file = self._setup_pkg(tmp_path, "v2 distributed")
+
+        dst = claude_dir / "agents" / "foo.md"
+        dst.parent.mkdir(parents=True)
+        dst.write_text("v1 distributed", encoding="utf-8")
+        future = time.time() + 10
+        os.utime(agent_file, (future, future))
+
+        orch: dict = {"file_hashes": {}}
+
+        count, files = sync_engine.sync_packages(claude_dir, orchestra_path, ["core"], set(), orch)
+
+        assert count == 1
+        assert dst.read_text(encoding="utf-8") == "v2 distributed"
+        assert orch["file_hashes"]["core"]["agents/foo.md"] == self._sha256("v2 distributed")
+
+    def test_orch_none_preserves_legacy_mtime_only_behavior(self, tmp_path: Path) -> None:
+        """orch を渡さない場合は従来どおり mtime のみで判定する（呼び出し側の後方互換）。"""
+        orchestra_path, claude_dir, agent_file = self._setup_pkg(tmp_path, "v2 distributed")
+
+        dst = claude_dir / "agents" / "foo.md"
+        dst.parent.mkdir(parents=True)
+        dst.write_text("user edited", encoding="utf-8")
+        future = time.time() + 10
+        os.utime(agent_file, (future, future))
+
+        count, files = sync_engine.sync_packages(claude_dir, orchestra_path, ["core"], set())
+
+        assert count == 1
+        assert dst.read_text(encoding="utf-8") == "v2 distributed"

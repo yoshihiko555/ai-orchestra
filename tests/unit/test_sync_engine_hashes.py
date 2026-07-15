@@ -86,6 +86,48 @@ class TestRecordAndGetFileHash:
         assert sync_engine.get_recorded_file_hash(orch, "mypkg", "agents/bar.md") is None
 
 
+class TestIsUserModified:
+    """is_user_modified のテスト（Issue #241: agents 再同期ハッシュガード）。"""
+
+    def test_dst_missing_returns_false(self, tmp_path: Path) -> None:
+        """dst が存在しない場合は False（保護対象なし、通常どおり同期させる）。"""
+        orch: dict = {"file_hashes": {"mypkg": {"agents/foo.md": "hash"}}}
+        dst = tmp_path / "agents" / "foo.md"
+
+        assert sync_engine.is_user_modified(orch, "mypkg", "agents/foo.md", dst) is False
+
+    def test_no_recorded_hash_returns_false(self, tmp_path: Path) -> None:
+        """ハッシュ未記録（旧形式 orchestra.json 含む）の場合は False（後方互換で上書きを許可）。"""
+        orch: dict = {"file_hashes": {}}
+        dst = tmp_path / "agents" / "foo.md"
+        dst.parent.mkdir(parents=True)
+        dst.write_text("anything", encoding="utf-8")
+
+        assert sync_engine.is_user_modified(orch, "mypkg", "agents/foo.md", dst) is False
+
+    def test_hash_mismatch_returns_true(self, tmp_path: Path) -> None:
+        """現在の内容が配布時ハッシュと異なれば True（ユーザー編集済み）。"""
+        dst = tmp_path / "agents" / "foo.md"
+        dst.parent.mkdir(parents=True)
+        dst.write_text("user edited", encoding="utf-8")
+        orch: dict = {
+            "file_hashes": {"mypkg": {"agents/foo.md": hashlib.sha256(b"distributed").hexdigest()}}
+        }
+
+        assert sync_engine.is_user_modified(orch, "mypkg", "agents/foo.md", dst) is True
+
+    def test_hash_match_returns_false(self, tmp_path: Path) -> None:
+        """現在の内容が配布時ハッシュと一致すれば False（未編集）。"""
+        dst = tmp_path / "agents" / "foo.md"
+        dst.parent.mkdir(parents=True)
+        dst.write_text("distributed", encoding="utf-8")
+        orch: dict = {
+            "file_hashes": {"mypkg": {"agents/foo.md": hashlib.sha256(b"distributed").hexdigest()}}
+        }
+
+        assert sync_engine.is_user_modified(orch, "mypkg", "agents/foo.md", dst) is False
+
+
 class TestCollectManagedAgentStems:
     """collect_managed_agent_stems のテスト。"""
 

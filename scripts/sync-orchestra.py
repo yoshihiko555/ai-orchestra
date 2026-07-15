@@ -128,9 +128,9 @@ def main() -> None:
     # facet composition で管理される skill/rule パスを収集（sync スキップ対象）
     facet_managed = collect_facet_managed_paths(orchestra_path, project_dir)
 
-    # パッケージ単位の同期
+    # パッケージ単位の同期（agents は orch の file_hashes 台帳でユーザー編集を保護）
     synced_count, synced_files = sync_packages(
-        claude_dir, orchestra_path, installed_packages, facet_managed
+        claude_dir, orchestra_path, installed_packages, facet_managed, orch
     )
 
     # codex_files（.codex/ 配下配布物）の同期（ハッシュ保護付き、強制上書きなし）
