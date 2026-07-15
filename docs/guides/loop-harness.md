@@ -39,6 +39,11 @@ codd:
 
 ### ① 全体フロー
 
+![loop-harness 全体フロー](../assets/loop-harness/loop-harness-overview-ja.png)
+
+<details>
+<summary>Mermaid ソース（正確なフロー定義）</summary>
+
 ```mermaid
 flowchart TD
     A[Issue] --> B["start"]
@@ -62,9 +67,16 @@ flowchart TD
     E -- 無進捗/反復上限 --> G
 ```
 
+</details>
+
 `implementation` フェーズは機械検証（`pytest`/`ruff` 等）と LLM レビュー（`code-reviewer` + パスパターンで追加選定、最大 2 名）の両方が Critical=0・High=0 になるまで、Maker と Checker を交互に反復する。合格すると PR を作成し `pr_review_response` フェーズへ進む。
 
 ### ② 状態機械
+
+![loop-harness 状態機械](../assets/loop-harness/loop-harness-state-machine-ja.png)
+
+<details>
+<summary>Mermaid ソース（正確な遷移定義）</summary>
 
 ```mermaid
 stateDiagram-v2
@@ -89,9 +101,16 @@ stateDiagram-v2
     end note
 ```
 
+</details>
+
 `status` は `pending`（初回 Maker 未実行）/ `running`（反復中）/ `waiting_external`（外部レビュー待ち）/ `passed`（合格）/ `failed`（ガード到達）/ `stopped`（安全停止）の 6 種類。`attach` はクラッシュ・セッション断絶後に別の呼び出し元が lease を再取得して続行する経路（`pending` も対象。以前は `running`/`waiting_external` のみだったが復旧範囲が広がった）、`resume --reset-counters` は `failed`/`stopped` から人間判断でガードカウンタをリセットして再挑戦する経路。両者は対象状態が排他的で混同しない。
 
 ### ③ two-phase プロトコル
+
+![loop-harness two-phase プロトコル](../assets/loop-harness/loop-harness-two-phase-sequence-ja.png)
+
+<details>
+<summary>Mermaid ソース（正確なシーケンス定義）</summary>
 
 ```mermaid
 sequenceDiagram
@@ -108,9 +127,16 @@ sequenceDiagram
     Note over O,L: 長時間の反復中は heartbeat で lease を延命する
 ```
 
+</details>
+
 `loop_step` は「次に何をすべきか」を決定するだけで、実行そのもの（Task 起動）は常にオーケストレーター側が行う分業になっている。これにより agent-routing / audit 等の既存 hook 基盤をそのまま素通りできる。
 
 ### ④ PR レビュー反復
+
+![loop-harness PR レビュー反復](../assets/loop-harness/loop-harness-pr-review-loop-ja.png)
+
+<details>
+<summary>Mermaid ソース（正確なフロー定義）</summary>
 
 ```mermaid
 flowchart TD
@@ -121,6 +147,8 @@ flowchart TD
     C -->|"critical/high ゼロ（medium/low のみ or 指摘なし）"| E[合格]
     E --> F["成功コメントに<br/>non_blocking_open（残存 medium/low）を列挙"]
 ```
+
+</details>
 
 外部レビューの合格基準は「unresolved な Critical/High がゼロ」であること。Low/Medium は非ブロッキングであり、対応しなくても合格を妨げない（残存分は成功コメントに一覧として残る）。無進捗判定も Critical/High（blocking）のシグネチャ集合が前回反復と完全一致した場合のみ発生する。
 
