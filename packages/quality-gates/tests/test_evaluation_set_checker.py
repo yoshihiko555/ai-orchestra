@@ -71,6 +71,23 @@ def _write_mapping_config(project_dir: Path, mappings: list[dict]) -> None:
     )
 
 
+def _write_local_mapping_config(project_dir: Path, mappings: list[dict]) -> None:
+    """Write .claude/config/quality-gates/evaluation-set-mapping.local.yaml."""
+    config_dir = project_dir / ".claude" / "config" / "quality-gates"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config = {"mappings": mappings}
+    (config_dir / "evaluation-set-mapping.local.yaml").write_text(
+        yaml.safe_dump(config), encoding="utf-8"
+    )
+
+
+def _write_raw_mapping_config(project_dir: Path, text: str) -> None:
+    """Write a raw (possibly malformed) evaluation-set-mapping.yaml body."""
+    config_dir = project_dir / ".claude" / "config" / "quality-gates"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "evaluation-set-mapping.yaml").write_text(text, encoding="utf-8")
+
+
 # ---------------------------------------------------------------------------
 # End-to-end scenarios (required by the issue)
 # ---------------------------------------------------------------------------
@@ -405,6 +422,50 @@ def test_load_evaluation_set_mapping_skips_malformed_entries(tmp_path) -> None:
     ]
 
 
+def test_load_evaluation_set_mapping_malformed_root_does_not_raise(monkeypatch, tmp_path) -> None:
+    """PR #243 review: a .yaml whose document root is a bare list (e.g. a user
+    forgetting the `mappings:` key) must not raise AttributeError."""
+    monkeypatch.delenv("AI_ORCHESTRA_DIR", raising=False)
+    _write_raw_mapping_config(tmp_path, "- package: orchex-cli\n- test_globs: [x]\n")
+    assert evaluation_set_checker.load_evaluation_set_mapping(str(tmp_path)) == []
+
+
+def test_load_evaluation_set_mapping_local_addition_preserves_base_entries(tmp_path) -> None:
+    """PR #243 review: a project-local mapping addition must not silently drop
+    shipped base entries (e.g. orchex-cli) via a naive whole-list replace."""
+    _write_mapping_config(
+        tmp_path,
+        [{"package": "orchex-cli", "test_globs": ["tests/unit/test_orchestra_manager_*.py"]}],
+    )
+    _write_local_mapping_config(
+        tmp_path,
+        [{"package": "my-project", "test_globs": ["tests/unit/test_my_project_*.py"]}],
+    )
+
+    mappings = evaluation_set_checker.load_evaluation_set_mapping(str(tmp_path))
+
+    assert {entry["package"] for entry in mappings} == {"orchex-cli", "my-project"}
+
+
+def test_load_evaluation_set_mapping_local_override_replaces_same_package_entry(
+    tmp_path,
+) -> None:
+    """A local entry for the same `package` as a base entry replaces it (rather
+    than being appended alongside it or merging test_globs)."""
+    _write_mapping_config(
+        tmp_path,
+        [{"package": "orchex-cli", "test_globs": ["tests/unit/test_orchestra_manager_*.py"]}],
+    )
+    _write_local_mapping_config(
+        tmp_path,
+        [{"package": "orchex-cli", "test_globs": ["tests/unit/test_custom_*.py"]}],
+    )
+
+    mappings = evaluation_set_checker.load_evaluation_set_mapping(str(tmp_path))
+
+    assert mappings == [{"package": "orchex-cli", "test_globs": ["tests/unit/test_custom_*.py"]}]
+
+
 @pytest.mark.parametrize(
     ("name", "expected"),
     [
@@ -488,10 +549,11 @@ def test_config_not_read_for_non_test_files(monkeypatch, capsys, tmp_path) -> No
 
 def test_config_read_only_once_per_invocation(monkeypatch, capsys, tmp_path) -> None:
     """audit-flags.json is loaded exactly once per main() invocation, shared
-    between evaluation_set_check_enabled() and resolve_state_path(). The new
-    evaluation-set-mapping.yaml lookup (Issue #237) is a separate config file
-    and is read once on its own; it must not cause audit-flags.json to be
-    re-read."""
+    between evaluation_set_check_enabled() and resolve_state_path(). The
+    evaluation-set-mapping.yaml lookup (Issue #237 / PR #243) reads base/local
+    layers directly via _read_config_file (not load_package_config, since it
+    needs a per-package merge rather than deep_merge()'s whole-list replace),
+    so it must not appear here at all."""
     _make_package_dir(tmp_path, "quality-gates")
     _make_evaluation_doc(tmp_path, "quality-gates")
 
@@ -510,5 +572,32 @@ def test_config_read_only_once_per_invocation(monkeypatch, capsys, tmp_path) -> 
     output = _run_main(monkeypatch, capsys, payload)
 
     assert output != ""
-    assert call_counts["audit-flags.json"] == 1
-    assert call_counts["evaluation-set-mapping.yaml"] == 1
+    assert call_counts == {"audit-flags.json": 1}
+
+
+def test_mapping_config_files_each_read_once_per_invocation(monkeypatch, capsys, tmp_path) -> None:
+    """The base and local evaluation-set-mapping.yaml layers are each read
+    exactly once per main() invocation (PR #243 review follow-up: the
+    per-package merge reads _read_config_file directly instead of going
+    through load_package_config)."""
+    _make_package_dir(tmp_path, "quality-gates")
+    _make_evaluation_doc(tmp_path, "quality-gates")
+    _write_mapping_config(
+        tmp_path,
+        [{"package": "quality-gates", "test_globs": ["packages/quality-gates/tests/*.py"]}],
+    )
+
+    call_count = {"n": 0}
+    original_read_config_file = evaluation_set_checker._read_config_file
+
+    def _counting_read_config_file(path):
+        call_count["n"] += 1
+        return original_read_config_file(path)
+
+    monkeypatch.setattr(evaluation_set_checker, "_read_config_file", _counting_read_config_file)
+    payload = _build_payload("packages/quality-gates/tests/test_foo.py", tmp_path)
+
+    output = _run_main(monkeypatch, capsys, payload)
+
+    assert output != ""
+    assert call_count["n"] == 2  # base + local (local file need not exist)

@@ -10,8 +10,13 @@
 # 除く）と一致させる。test_globs はプロジェクトルート相対の POSIX パス
 # （forward slash）に対する fnmatch パターンのリスト。
 #
-# プロジェクト固有の追加・上書きは同名の *.local.yaml で行う
-# （.claude/rules/config-loading.md 参照）。
+# プロジェクト固有の追加・上書きは同名の *.local.yaml で行う。ただし本ファイルは
+# config-loading.md の一般的な deep_merge（キー単位の上書き）ではなく、
+# evaluation-set-checker.py 側で package 単位のマージを行う（PR #243 レビュー
+# 対応）。*.local.yaml に mappings を1件追加しても、この package 一致マージに
+# より他の package（本ファイルの orchex-cli 等）のエントリは保持される。
+# 同じ package を local 側で再定義した場合はそのエントリ全体（test_globs 含む）
+# が置き換わる。
 mappings:
   - package: orchex-cli
     test_globs:

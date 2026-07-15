@@ -37,6 +37,9 @@ else:
         sys.path.insert(0, str(_fallback_core_hooks))
 
 from hook_common import (  # noqa: E402
+    _find_local_config_path,
+    _read_config_file,
+    find_package_config,
     is_test_path,
     load_package_config,
     read_hook_input,
@@ -180,18 +183,16 @@ def match_package_by_filename(basename: str, package_dirs: list[str]) -> str | N
     return None
 
 
-def load_evaluation_set_mapping(project_dir: str) -> list[dict]:
-    """Load the evaluation-set-mapping.yaml explicit package/test-glob mapping.
+def _extract_mapping_entries(config: dict) -> list[dict]:
+    """Extract and validate ``mappings`` entries from a single loaded config layer.
 
-    A missing or malformed config yields an empty list, so identify_package()
-    transparently falls back to the packages/<pkg>/tests/ directory convention
-    and the filename-token heuristic below (Issue #237: those two heuristics
-    alone cannot recognize SSOT targets, such as orchex CLI, that own tests
-    without a packages/<pkg>/ directory).
+    Guards against a malformed root (e.g. a ``.local.yaml`` that omits the
+    ``mappings:`` key and defines a bare list at the document root) as well as
+    malformed individual entries, so a misconfigured file degrades to "no
+    entries from this layer" rather than raising (PR #243 review).
     """
-    config = load_package_config(
-        EVALUATION_SET_MAPPING_PACKAGE, EVALUATION_SET_MAPPING_FILENAME, project_dir
-    )
+    if not isinstance(config, dict):
+        return []
     mappings = config.get("mappings", [])
     if not isinstance(mappings, list):
         return []
@@ -202,6 +203,44 @@ def load_evaluation_set_mapping(project_dir: str) -> list[dict]:
         and isinstance(entry.get("package"), str)
         and isinstance(entry.get("test_globs"), list)
     ]
+
+
+def load_evaluation_set_mapping(project_dir: str) -> list[dict]:
+    """Load the evaluation-set-mapping.yaml explicit package/test-glob mapping.
+
+    A missing or malformed config yields an empty list, so identify_package()
+    transparently falls back to the packages/<pkg>/tests/ directory convention
+    and the filename-token heuristic below (Issue #237: those two heuristics
+    alone cannot recognize SSOT targets, such as orchex CLI, that own tests
+    without a packages/<pkg>/ directory).
+
+    Base and local (``*.local.yaml``) entries are merged per ``package`` name
+    rather than via the generic load_package_config()/deep_merge() whole-value
+    override (PR #243 review): deep_merge() replaces the entire ``mappings``
+    list when a local file defines that key at all, so a project adding one
+    local mapping would silently drop every shipped entry (e.g. orchex-cli),
+    reopening the exact "core" misroute this file exists to prevent. A local
+    entry overrides the base entry with the same ``package``; entries present
+    in only one layer pass through unchanged.
+    """
+    base_path = find_package_config(
+        EVALUATION_SET_MAPPING_PACKAGE, EVALUATION_SET_MAPPING_FILENAME, project_dir
+    )
+    base_entries = _extract_mapping_entries(_read_config_file(base_path))
+    if not base_path:
+        return base_entries
+
+    local_path = _find_local_config_path(
+        EVALUATION_SET_MAPPING_PACKAGE, EVALUATION_SET_MAPPING_FILENAME, project_dir, base_path
+    )
+    local_entries = _extract_mapping_entries(_read_config_file(local_path))
+    if not local_entries:
+        return base_entries
+
+    merged_by_package = {entry["package"]: entry for entry in base_entries}
+    for entry in local_entries:
+        merged_by_package[entry["package"]] = entry
+    return list(merged_by_package.values())
 
 
 def match_explicit_mapping(relative_path: str, mappings: list[dict]) -> str | None:
