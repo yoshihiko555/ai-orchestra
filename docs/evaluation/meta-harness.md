@@ -93,6 +93,7 @@
 - [ ] EV-51（境界 / must）: scenario の `allowed_tools` は presence semantics に従う。キーなしは global allowlist、空配列は tool 権限なし、値ありはその値を `--allowedTools` とモデル公開用 `--tools` に反映し、skill slash 起動のための `Skill` は権限 allowlist へ暗黙追加しない — 根拠: 詳細設計 §2-2、§4
 - [ ] EV-52（正常 / must）: skill target の scenario suite は train 1 本以上 + holdout 1 本以上を持ち、target skill の `[critical]` 正本を oracle へ明示写像し、固定 CLI 2.1.207 の headless run で slash skill を起動できる。handoff / issue-create は `max_output_tokens=1024` と最小 tool 公開範囲で、複数 request を含む run 全体が broker の $3 budget 内に完了する — 根拠: 詳細設計 §4-1
 - [ ] EV-53（異常 / must）: `regression.enabled=true` の実装後は shared facet を参照する全 cross-skill scenario が pass しなければ candidate を frontier/promote 対象にしない。PR1 ではこの設定を受理せず fail-closed する — 根拠: 詳細設計 §4
+- [ ] EV-54（正常 / must）: Docker CLI・security profile・broker/resource lifecycle を `docker-runtime` へ抽出した後も、meta-harness の既存 command、例外、cleanup、capability gate の振る舞いを変更しない。共有 runtime source は evaluator hash の入力へ含める — 根拠: `docs/design/loop-harness-isolation.md` §8 Phase 0
 - N/A: hook 型の類型別観点（PreToolUse/PostToolUse ブロック挙動等）は本パッケージが hook を持たないため非該当。config-loading への依存のみが hook 型的性質であり、EV-22 でカバーする
 
 ## 5. テストレビュー判断基準（パッケージ固有）

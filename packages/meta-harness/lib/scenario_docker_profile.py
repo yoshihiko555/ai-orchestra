@@ -3,13 +3,17 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import math
-import os
-import re
+import sys
 from pathlib import Path
 from typing import Any
+
+_PACKAGE_DIR = Path(__file__).resolve().parent.parent
+_DOCKER_RUNTIME_LIB = _PACKAGE_DIR.parent / "docker-runtime" / "lib"
+if str(_DOCKER_RUNTIME_LIB) not in sys.path:
+    sys.path.insert(0, str(_DOCKER_RUNTIME_LIB))
+
+import docker_runtime_profile as runtime
 
 NAME_PREFIX = "mh-run-"
 BROKER_ALIAS = "mh-broker"
@@ -22,11 +26,7 @@ CONTAINER_HOME = "/home/meta"
 CONTAINER_TMP = "/tmp"
 CONTAINER_LIFETIME_MARGIN_SECONDS = 60
 CONTAINER_TIMEOUT_KILL_AFTER_SECONDS = 5
-_SAFE_NAME_RE = re.compile(r"[^a-z0-9_.-]+")
-
-
-class DockerProfileError(RuntimeError):
-    """A Docker mount/resource profile cannot be represented safely."""
+DockerProfileError = runtime.DockerProfileError
 
 
 def build_scenario_container_command(launch: Any) -> list[str]:
@@ -378,8 +378,7 @@ def container_max_lifetime_seconds(
 
 
 def safe_name(value: str) -> str:
-    cleaned = _SAFE_NAME_RE.sub("-", value.lower()).strip("-.")
-    return (cleaned or "run")[:40]
+    return runtime.safe_name(value, max_length=40, strip_chars="-.")
 
 
 def container_env_args(env: dict[str, str]) -> list[str]:
@@ -413,37 +412,19 @@ def _candidate_env(launch: Any) -> dict[str, str]:
 
 
 def _resource_args(resources: dict[str, Any]) -> list[str]:
-    return [
-        "--pids-limit",
-        str(resources["pids_limit"]),
-        "--memory",
-        str(resources["memory"]),
-        "--cpus",
-        str(resources["cpus"]),
-    ]
+    return runtime.resource_args(resources)
 
 
 def _bounded_container_command(resources: dict[str, Any], command: list[str]) -> list[str]:
-    try:
-        max_lifetime = int(resources["max_lifetime_sec"])
-    except (KeyError, TypeError, ValueError) as exc:
-        raise DockerProfileError("container max_lifetime_sec must be an integer") from exc
-    if max_lifetime <= 0:
-        raise DockerProfileError("container max_lifetime_sec must be positive")
-    return [
-        "/usr/bin/timeout",
-        "--signal=TERM",
-        f"--kill-after={CONTAINER_TIMEOUT_KILL_AFTER_SECONDS}s",
-        f"{max_lifetime}s",
-        *command,
-    ]
+    return runtime.bounded_container_command(
+        resources,
+        command,
+        kill_after_seconds=CONTAINER_TIMEOUT_KILL_AFTER_SECONDS,
+    )
 
 
 def _container_env_args(env: dict[str, str]) -> list[str]:
-    args: list[str] = []
-    for key, value in sorted(env.items()):
-        args.extend(["--env", f"{key}={value}"])
-    return args
+    return runtime.container_env_args(env)
 
 
 def _run_label_args(launch: Any) -> list[str]:
@@ -474,24 +455,16 @@ def _empty_broker_metrics() -> dict[str, Any]:
 
 
 def _bind_mount(source: Path, target: str, *, read_only: bool) -> str:
-    resolved = str(source.resolve())
-    if "," in resolved:
-        raise DockerProfileError(f"Docker bind source contains unsupported comma: {source}")
-    suffix = ",readonly" if read_only else ""
-    return f"type=bind,src={resolved},dst={target}{suffix}"
+    return runtime.bind_mount(source, target, read_only=read_only)
 
 
 def _tmpfs(target: str, uid: int, gid: int, *, size: str) -> str:
-    return f"{target}:rw,noexec,nosuid,nodev,size={size},uid={uid},gid={gid},mode=0700"
+    return runtime.tmpfs(target, uid, gid, size=size)
 
 
 def _non_root_identity() -> tuple[int, int]:
-    uid, gid = os.getuid(), os.getgid()
-    if uid == 0:
-        return 65532, 65532
-    return uid, gid
+    return runtime.non_root_identity()
 
 
 def _sha256_json(value: Any) -> str:
-    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
-    return hashlib.sha256(encoded).hexdigest()
+    return runtime.sha256_json(value)

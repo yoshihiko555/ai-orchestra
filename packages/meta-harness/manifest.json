@@ -2,7 +2,7 @@
   "name": "meta-harness",
   "version": "0.1.0",
   "description": "候補ハーネスの評価・進化基盤（Phase 1: 計測・評価、Phase 2: propose/promote、Phase 3: 自動探索 loop）",
-  "depends": ["core"],
+  "depends": ["core", "docker-runtime"],
   "hooks": {},
   "files": [],
   "skills": [],

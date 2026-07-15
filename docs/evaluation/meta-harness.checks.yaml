@@ -447,3 +447,18 @@
   covered_by:
     - packages/meta-harness/tests/test_skill_targets.py::TestRepositorySkillClosures::test_regression_enabled_fails_closed_until_evaluator_exists
   notes: PR1 rejects regression.enabled=true instead of enabling shared facet changes without regression evaluation.
+
+- ev_id: EV-54
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_scenario_docker.py
+    packages/meta-harness/tests/test_evaluator_scoring_and_verdict.py
+    packages/docker-runtime/tests/test_docker_runtime.py
+  covered_by:
+    - packages/meta-harness/tests/test_scenario_docker.py
+    - packages/meta-harness/tests/test_evaluator_scoring_and_verdict.py::TestEvaluatorHash
+    - packages/docker-runtime/tests/test_docker_runtime.py
+  notes: existing meta-harness Docker tests remain unchanged while the shared runtime owns common behavior.
