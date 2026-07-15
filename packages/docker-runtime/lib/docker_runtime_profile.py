@@ -17,6 +17,9 @@ class DockerProfileError(RuntimeError):
     """A Docker mount/resource profile cannot be represented safely."""
 
 
+# These defaults are looser than the pre-Phase-0 meta-harness values (40 and "-.").
+# packages/meta-harness/lib/scenario_docker_profile.py overrides both to preserve
+# historical behavior; new callers that omit them receive these shared defaults.
 def safe_name(
     value: str,
     *,

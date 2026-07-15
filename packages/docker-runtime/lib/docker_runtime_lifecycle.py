@@ -211,8 +211,8 @@ def sweep_stale_resources(
     runner: SubprocessRunner,
     run_command: Callable[..., subprocess.CompletedProcess],
     best_effort: Callable[..., None],
-    container_stale: Callable[[dict[str, Any], str], bool] | None = None,
-    network_stale: Callable[[dict[str, Any], str], bool] | None = None,
+    container_stale: Callable[[dict[str, Any], str], bool],
+    network_stale: Callable[[dict[str, Any], str], bool],
 ) -> None:
     containers = run_command(
         [
@@ -230,12 +230,7 @@ def sweep_stale_resources(
     if containers.returncode == 0:
         for container in containers.stdout.split():
             inspected = inspect_resource(container, runner=runner, run_command=run_command)
-            is_stale = (
-                container_stale(inspected, owner_id)
-                if inspected is not None and container_stale is not None
-                else inspected is not None
-                and container_is_stale(inspected, owner_id, labels=labels)
-            )
+            is_stale = inspected is not None and container_stale(inspected, owner_id)
             if is_stale:
                 best_effort(["docker", "rm", "-f", container], runner=runner)
     networks = run_command(
@@ -260,11 +255,7 @@ def sweep_stale_resources(
                 runner=runner,
                 run_command=run_command,
             )
-            is_stale = (
-                network_stale(inspected, owner_id)
-                if inspected is not None and network_stale is not None
-                else inspected is not None and network_is_stale(inspected, owner_id, labels=labels)
-            )
+            is_stale = inspected is not None and network_stale(inspected, owner_id)
             if is_stale:
                 best_effort(["docker", "network", "rm", network], runner=runner)
 
@@ -318,13 +309,13 @@ def inspect_resource(
 
 def container_is_stale(
     inspected: dict[str, Any],
-    owner_id: str,
+    owner: str,
     *,
     labels: RuntimeLabels,
     pid_checker: Callable[[int], bool] | None = None,
 ) -> bool:
     resource_labels_value = (inspected.get("Config") or {}).get("Labels") or {}
-    if resource_labels_value.get(labels.owner_label) != owner_id:
+    if resource_labels_value.get(labels.owner_label) != owner:
         return False
     try:
         created_at = int(resource_labels_value[labels.created_at_label])
@@ -338,17 +329,19 @@ def container_is_stale(
         parent_pid = int(resource_labels_value[labels.parent_pid_label])
     except (KeyError, TypeError, ValueError):
         return True
+    # PID reuse can delay reclamation until STALE_MAX_AGE_SECONDS, but every run container
+    # also has an independent absolute lifetime and cannot remain active indefinitely.
     return not (pid_checker or pid_alive)(parent_pid)
 
 
 def network_is_stale(
     inspected: dict[str, Any],
-    owner_id: str,
+    owner: str,
     *,
     labels: RuntimeLabels,
 ) -> bool:
     resource_labels_value = inspected.get("Labels") or {}
-    return resource_labels_value.get(labels.owner_label) == owner_id and not (
+    return resource_labels_value.get(labels.owner_label) == owner and not (
         inspected.get("Containers") or {}
     )
 

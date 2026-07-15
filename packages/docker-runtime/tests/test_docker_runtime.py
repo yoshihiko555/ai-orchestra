@@ -181,3 +181,62 @@ def test_runtime_labels_keep_harness_namespaces_independent() -> None:
     assert meta.owner_label == "ai.orchestra.meta-harness.owner"
     assert loop.owner_label == "ai.orchestra.loop-harness.owner"
     assert meta.owner_label != loop.owner_label
+
+
+def test_sweep_stale_resources_removes_only_stale_containers_and_networks() -> None:
+    """EV-11: Only resources selected by the injected stale checks are removed."""
+    labels = lifecycle.RuntimeLabels("ai.orchestra.test")
+    stale_container = "container-stale"
+    active_container = "container-active"
+    stale_network = "network-stale"
+    active_network = "network-active"
+    removed: list[list[str]] = []
+
+    def run_command(command: list[str], **_kwargs) -> subprocess.CompletedProcess:
+        if command[:3] == ["docker", "ps", "-aq"]:
+            return _completed(stdout=f"{stale_container} {active_container}\n")
+        if command[:4] == ["docker", "network", "ls", "-q"]:
+            return _completed(stdout=f"{stale_network} {active_network}\n")
+        return _completed(stdout='[{"Id": "' + command[-1] + '"}]')
+
+    def container_stale(inspected: dict, _owner: str) -> bool:
+        return inspected["Id"] == stale_container
+
+    def network_stale(inspected: dict, _owner: str) -> bool:
+        return inspected["Id"] == stale_network
+
+    def best_effort(command: list[str], **_kwargs) -> None:
+        removed.append(command)
+
+    lifecycle.sweep_stale_resources(
+        labels,
+        "owner-test",
+        runner=subprocess.run,
+        run_command=run_command,
+        best_effort=best_effort,
+        container_stale=container_stale,
+        network_stale=network_stale,
+    )
+
+    assert removed == [
+        ["docker", "rm", "-f", stale_container],
+        ["docker", "network", "rm", stale_network],
+    ]
+    assert ["docker", "rm", "-f", active_container] not in removed
+    assert ["docker", "network", "rm", active_network] not in removed
+
+
+def test_container_is_stale_returns_false_for_owner_mismatch() -> None:
+    """EV-12: A container owned by another caller is never stale."""
+    labels = lifecycle.RuntimeLabels("ai.orchestra.test")
+    inspected = {"Config": {"Labels": {labels.owner_label: "other-owner"}}}
+
+    assert lifecycle.container_is_stale(inspected, "owner-test", labels=labels) is False
+
+
+def test_network_is_stale_returns_false_for_owner_mismatch() -> None:
+    """EV-12: A network owned by another caller is never stale."""
+    labels = lifecycle.RuntimeLabels("ai.orchestra.test")
+    inspected = {"Labels": {labels.owner_label: "other-owner"}}
+
+    assert lifecycle.network_is_stale(inspected, "owner-test", labels=labels) is False

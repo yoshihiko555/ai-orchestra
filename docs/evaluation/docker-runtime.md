@@ -16,6 +16,7 @@ meta-harness と loop-harness の resource が交差しない状態で fail-clos
 
 - harness 固有の worktree、git metadata、成果物、設定スキーマは扱わない。
 - Phase 0 では image prune、BuildKit GC、並行 build lock の挙動を追加しない。
+- `docker/broker/broker.py` の env var 契約（`MH_BROKER_*` / `MH_PRICE_*` prefix）と `server_version`/user-agent の汎化は Phase 1 で行う。`lib/` 配下（lifecycle/profile/cli builder）は namespace 注入型で共有化済みだが、`docker/broker/broker.py` 本体は meta-harness 固有のままである（既知のギャップ）。
 
 ## 2. 期待する入出力・副作用
 
@@ -40,6 +41,8 @@ meta-harness と loop-harness の resource が交差しない状態で fail-clos
 
 - [ ] EV-09（正常 / must）: 後方互換性 — meta-harness の既存公開関数・例外・Docker command profile と既存テストを変更せず維持する — 根拠: `docs/design/loop-harness-isolation.md` §8 Phase 0
 - [ ] EV-10（正常 / must）: 配布ライフサイクル — `meta-harness` manifest が `docker-runtime` へ依存し、package install 時に共有実装が欠落しない — 根拠: Phase 0 package 分割
+- [ ] EV-11（正常 / must）: `sweep_stale_resources` は owner label が一致し、かつ stale 判定（`container_is_stale`/`network_is_stale`）が true のコンテナ・ネットワークのみ削除し、稼働中で owner が一致し stale でないリソースは削除しない — 根拠: `packages/docker-runtime/lib/docker_runtime_lifecycle.py`（`sweep_stale_resources`／`container_is_stale`／`network_is_stale`）
+- [ ] EV-12（境界 / must）: `container_is_stale`/`network_is_stale` は owner label が呼び出し元の owner id と一致しないリソースに対して常に `False`（非 stale）を返し、他 owner のリソースを誤って stale 判定・削除対象にしない — 根拠: `packages/docker-runtime/lib/docker_runtime_lifecycle.py`（`container_is_stale`／`network_is_stale` の owner label 比較）
 - N/A: 独立 CLI コマンドを公開しないため、引数・exit code・JSON 出力の契約は持たない。
 - N/A: config を所有しないため、`*.local.*` レイヤリングは呼び出し元 harness の責務である。
 
