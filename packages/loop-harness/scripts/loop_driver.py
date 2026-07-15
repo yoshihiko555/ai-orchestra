@@ -2465,9 +2465,7 @@ class LoopDriver:
     def _run_exit_success(self, state: lc.LoopState, params: dict[str, Any]) -> dict[str, Any]:
         """Success terminal action: notify + Issue comment; no additional repo writes here."""
         self._notify(state, "exit_success")
-        self._maybe_comment(
-            state, f"loop-harness: implementation succeeded (PR #{state.pr_number})."
-        )
+        self._maybe_comment(state, _exit_success_comment(state, params))
         return {}
 
     def _run_exit_failure(
@@ -2959,7 +2957,7 @@ def _format_untrusted_issue_block(snapshot: dict[str, Any]) -> str:
 
 
 def _pr_review_findings_from_last_check(state: lc.LoopState) -> list[dict[str, Any]]:
-    """Extract `source == "pr_review"` findings from `state.last_check_result` (code L2).
+    """Extract blocking `source == "pr_review"` findings from `state.last_check_result` (code L2).
 
     `state.last_check_result` is whatever the most recently *completed* action wrote via
     `lc.complete()`; in the `pr_review_response` phase, `run_maker` is only ever proposed after
@@ -2970,6 +2968,10 @@ def _pr_review_findings_from_last_check(state: lc.LoopState) -> list[dict[str, A
     `source == "pr_review"` filter is still applied defensively rather than trusting phase alone,
     mirroring this module's existing "verify, don't just assume" posture (e.g. `_draft_pr`'s
     guard calls, code L1).
+
+    Only `severity in lc.BLOCKING_SEVERITIES` (critical/high) findings are returned (issue
+    #213): the Maker fixes what actually blocks the phase from passing, never re-litigating
+    medium/low findings a reviewer left as non-blocking commentary.
     """
     last_check = state.last_check_result
     if not isinstance(last_check, dict):
@@ -2982,9 +2984,39 @@ def _pr_review_findings_from_last_check(state: lc.LoopState) -> list[dict[str, A
         if not isinstance(result, dict):
             continue
         for finding in result.get("findings") or []:
-            if isinstance(finding, dict) and finding.get("source") == "pr_review":
+            if (
+                isinstance(finding, dict)
+                and finding.get("source") == "pr_review"
+                and finding.get("severity") in lc.BLOCKING_SEVERITIES
+            ):
                 findings.append(finding)
     return findings
+
+
+def _exit_success_comment(state: lc.LoopState, params: dict[str, Any]) -> str:
+    """Build the `exit_success` Issue comment, listing any still-open non-blocking findings.
+
+    `params["non_blocking_open"]` is `loop_common._non_blocking_open_from_last_check()`'s
+    output (empty unless this loop just exited `pr_review_response` with blocking-free,
+    open medium/low findings nobody dismissed -- issue #213/B). Falls back to the previous
+    plain success message when there is nothing non-blocking to report, matching prior
+    behavior exactly for every other exit path (e.g. `implementation`-phase success).
+    """
+    base = f"loop-harness: implementation succeeded (PR #{state.pr_number})."
+    open_items = params.get("non_blocking_open")
+    if not isinstance(open_items, list) or not open_items:
+        return base
+    lines = [base, "", f"Non-blocking findings still open ({len(open_items)}), not dismissed:"]
+    for item in open_items:
+        if not isinstance(item, dict):
+            continue
+        severity = item.get("severity") or "unknown"
+        path = item.get("path") or "(no path)"
+        line = item.get("line")
+        location = f"{path}:{line}" if line is not None else str(path)
+        excerpt = str(item.get("body_excerpt") or "").strip()
+        lines.append(f"- [{severity}] {location}: {excerpt}")
+    return "\n".join(lines)
 
 
 def _format_pr_review_findings_block(findings: list[dict[str, Any]]) -> str:

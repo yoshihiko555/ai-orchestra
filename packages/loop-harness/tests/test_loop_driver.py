@@ -3164,7 +3164,7 @@ def test_wait_external_review_refreshes_baseline_immediately_after_push(
     ) -> prw.ReviewFindingsResult:
         call_order.append("drain")
         empty = lc.IterationFindings(frozenset(), 0)
-        return prw.ReviewFindingsResult((), empty, empty, (), 0, 0)
+        return prw.ReviewFindingsResult((), empty, empty, (), (), 0, 0)
 
     monkeypatch.setattr(prw, "fetch_review_items", lambda *a, **k: [])
     monkeypatch.setattr(prw, "collect_review_findings", fake_collect_review_findings)
@@ -3283,7 +3283,7 @@ def test_drain_before_push_shares_one_review_items_fetch_with_record_baseline(
         *_a: Any, review_items: Any = None, **_kw: Any
     ) -> prw.ReviewFindingsResult:
         seen_review_items["collect"] = review_items
-        return prw.ReviewFindingsResult((), empty, empty, (), 0, 0)
+        return prw.ReviewFindingsResult((), empty, empty, (), (), 0, 0)
 
     def fake_record_baseline(*_a: Any, review_items: Any = None, **_kw: Any) -> prw.BaselineRecord:
         seen_review_items["baseline"] = review_items
@@ -3341,7 +3341,7 @@ def test_drain_before_push_passes_snapshot_fetch_time_to_record_baseline(
         # Real-world equivalent of the delay this fix targets (e.g. one `claude -p` severity
         # classification call per finding) would happen here, strictly after the snapshot's
         # own fetch/capture above.
-        return prw.ReviewFindingsResult((), empty, empty, (), 0, 0)
+        return prw.ReviewFindingsResult((), empty, empty, (), (), 0, 0)
 
     seen: dict[str, Any] = {}
 
@@ -3456,7 +3456,7 @@ def test_wait_external_review_actionable_drain_short_circuits_before_rebaseline_
     )
     current = lc.IterationFindings(frozenset({"sig-1"}), 1)
     empty = lc.IterationFindings(frozenset(), 0)
-    drained = prw.ReviewFindingsResult((finding,), current, empty, (), 0, 0)
+    drained = prw.ReviewFindingsResult((finding,), current, empty, (), (), 0, 0)
     monkeypatch.setattr(prw, "fetch_review_items", lambda *a, **k: [])
     monkeypatch.setattr(prw, "collect_review_findings", lambda *a, **k: drained)
     monkeypatch.setattr(prw, "save_review_findings_snapshot", lambda *a, **k: None)
@@ -3522,7 +3522,7 @@ def test_wait_external_review_no_new_commit_shortcut_skips_push_and_poll(
     monkeypatch.setattr(
         prw,
         "collect_review_findings",
-        lambda *a, **k: prw.ReviewFindingsResult((), empty, empty, (), 0, 0),
+        lambda *a, **k: prw.ReviewFindingsResult((), empty, empty, (), (), 0, 0),
     )
     monkeypatch.setattr(prw, "save_review_findings_snapshot", lambda *a, **k: None)
     monkeypatch.setattr(prw, "confirm_review_findings_reported", lambda *a, **k: None)
@@ -3661,7 +3661,7 @@ def test_wait_external_review_confirms_findings_reported_after_snapshot(
         needs_classification=False,
     )
     empty = lc.IterationFindings(frozenset(), 0)
-    collected = prw.ReviewFindingsResult((finding,), empty, empty, (), 0, 0)
+    collected = prw.ReviewFindingsResult((finding,), empty, empty, (), (), 0, 0)
     monkeypatch.setattr(prw, "collect_review_findings", lambda *a, **k: collected)
 
     call_order: list[str] = []
@@ -4890,6 +4890,49 @@ def test_notify_and_comment_redact_secrets_before_sending(
 # --------------------------------------------------------------------------------------------
 # loop_driver.LoopDriver: _run_stop posts a conditional Issue comment (code C2, design §2.6.5)
 # --------------------------------------------------------------------------------------------
+
+
+def test_exit_success_comment_lists_non_blocking_open_findings(tmp_path: Path) -> None:
+    """issue #213/B: when `pr_review_response` exits successfully with open (non-dismissed)
+    medium/low findings still on the PR, the Issue comment must list them so nobody has to
+    dig through PR review history to find what's still outstanding."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, _token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.pr_number = 55
+    params = {
+        "non_blocking_open": [
+            {
+                "signature": "sig-low",
+                "severity": "low",
+                "path": "app.py",
+                "line": 5,
+                "body_excerpt": "consider renaming this variable",
+            }
+        ]
+    }
+
+    comment = driver._exit_success_comment(state, params)
+
+    assert "PR #55" in comment
+    assert "Non-blocking findings still open (1)" in comment
+    assert "[low] app.py:5: consider renaming this variable" in comment
+
+
+def test_exit_success_comment_falls_back_to_plain_message_when_nothing_open(
+    tmp_path: Path,
+) -> None:
+    """Every other exit path (e.g. a plain `implementation`-phase success, or a
+    `pr_review_response` exit with everything dismissed) must keep exactly the previous plain
+    success message -- no regression for the common case."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, _token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.pr_number = 55
+    expected = "loop-harness: implementation succeeded (PR #55)."
+
+    assert driver._exit_success_comment(state, {}) == expected
+    assert driver._exit_success_comment(state, {"non_blocking_open": []}) == expected
 
 
 def test_run_stop_posts_issue_comment_when_repo_identity_verified(
@@ -6275,6 +6318,30 @@ def test_pr_review_findings_from_last_check_filters_non_pr_review_sources(
 
     assert len(findings) == 1
     assert findings[0]["summary"] == "actual PR comment"
+
+
+def test_pr_review_findings_from_last_check_filters_to_blocking_severities(
+    tmp_path: Path,
+) -> None:
+    """issue #213: the Maker only ever sees critical/high `pr_review` findings -- medium/low
+    findings a reviewer left as non-blocking commentary must never reach the Maker prompt,
+    even though `phase_check_from_review_findings` keeps every severity in `findings` for
+    observability."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, _token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.last_check_result = _pr_review_last_check_result(
+        [
+            {"severity": "critical", "summary": "sql injection", "source": "pr_review"},
+            {"severity": "high", "summary": "null deref", "source": "pr_review"},
+            {"severity": "medium", "summary": "naming nit", "source": "pr_review"},
+            {"severity": "low", "summary": "style nit", "source": "pr_review"},
+        ]
+    )
+
+    findings = driver._pr_review_findings_from_last_check(state)
+
+    assert {item["summary"] for item in findings} == {"sql injection", "null deref"}
 
 
 def test_pr_review_findings_from_last_check_returns_empty_when_absent(tmp_path: Path) -> None:

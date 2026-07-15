@@ -687,3 +687,84 @@ def test_pr_review_two_consecutive_stalls_fail_with_no_progress() -> None:
     final = lc.evaluate_guards(state, stall_two, None, config)
 
     assert final.reason == "no_progress"
+
+
+def test_pr_review_new_and_partial_signature_changes_are_progress_and_reset_streak() -> None:
+    """issue #213/A: `{A,B} -> {A,C}` (a completely different second finding) and, after
+    another stall, `{A,C} -> {A}` (dropping one of two findings) both count as progress and
+    reset an already-nonzero streak -- not just "start at zero", but an actual reset after a
+    real stall was recorded."""
+    state = lc._initial_state(
+        "loop-np-3", "issue-loop", "hash", "/tmp/wt", "loop/issue-1", "pr_review_response"
+    )
+    config = {"guards": {"max_iterations": 10, "no_progress": {"repeat": 2}}}
+
+    stall_ab = _pr_review_phase_check(
+        lc.IterationFindings(frozenset({"sig-a", "sig-b"}), 0),
+        lc.IterationFindings(frozenset({"sig-a", "sig-b"}), 2),
+        "sig-stall-ab",
+    )
+    swap_to_ac = _pr_review_phase_check(
+        lc.IterationFindings(frozenset({"sig-a", "sig-c"}), 1),
+        lc.IterationFindings(frozenset({"sig-a", "sig-b"}), 0),
+        "sig-swap-ac",
+    )
+    stall_ac = _pr_review_phase_check(
+        lc.IterationFindings(frozenset({"sig-a", "sig-c"}), 0),
+        lc.IterationFindings(frozenset({"sig-a", "sig-c"}), 1),
+        "sig-stall-ac",
+    )
+    resolve_to_a = _pr_review_phase_check(
+        lc.IterationFindings(frozenset({"sig-a"}), 1),
+        lc.IterationFindings(frozenset({"sig-a", "sig-c"}), 0),
+        "sig-resolve-a",
+    )
+
+    lc.evaluate_guards(state, stall_ab, None, config)
+    assert state.guards["pr_review_response"].no_progress_streak == 1
+
+    lc.evaluate_guards(state, swap_to_ac, None, config)
+    assert state.guards["pr_review_response"].no_progress_streak == 0
+
+    lc.evaluate_guards(state, stall_ac, None, config)
+    assert state.guards["pr_review_response"].no_progress_streak == 1
+
+    final = lc.evaluate_guards(state, resolve_to_a, None, config)
+    assert final.reason != "no_progress"
+    assert state.guards["pr_review_response"].no_progress_streak == 0
+
+
+def test_pr_review_always_new_signature_never_stalls_but_hits_max_iterations() -> None:
+    """issue #213/A: a Maker that keeps introducing genuinely new blocking findings every
+    round is never stopped by the no-progress guard (each round's signature set differs from
+    the last), only by `max_iterations` -- runaway iteration without convergence is bounded
+    by that separate guard, exactly as designed."""
+    state = lc._initial_state(
+        "loop-np-4", "issue-loop", "hash", "/tmp/wt", "loop/issue-1", "pr_review_response"
+    )
+    config = {"guards": {"max_iterations": 3, "no_progress": {"repeat": 2}}}
+    phase_def = {"on_failure": {"disposition": lc.Action.EXIT_FAILURE.value}}
+
+    round1 = _pr_review_phase_check(
+        lc.IterationFindings(frozenset({"sig-1"}), 1), lc.IterationFindings(frozenset(), 0), "s1"
+    )
+    round2 = _pr_review_phase_check(
+        lc.IterationFindings(frozenset({"sig-2"}), 1),
+        lc.IterationFindings(frozenset({"sig-1"}), 1),
+        "s2",
+    )
+    round3 = _pr_review_phase_check(
+        lc.IterationFindings(frozenset({"sig-3"}), 1),
+        lc.IterationFindings(frozenset({"sig-2"}), 1),
+        "s3",
+    )
+
+    first = lc.evaluate_guards(state, round1, phase_def, config)
+    second = lc.evaluate_guards(state, round2, phase_def, config)
+    third = lc.evaluate_guards(state, round3, phase_def, config)
+
+    assert first.disposition == "continue"
+    assert second.disposition == "continue"
+    assert state.guards["pr_review_response"].no_progress_streak == 0
+    assert third.disposition == lc.Action.EXIT_FAILURE.value
+    assert third.reason == "max_iterations"
