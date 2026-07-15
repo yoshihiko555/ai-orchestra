@@ -335,6 +335,30 @@ def is_user_modified(orch: dict, pkg_name: str, file_key: str, dst: Path) -> boo
     return compute_file_hash(dst) != recorded
 
 
+def refresh_patched_agent_hashes(orch: dict, claude_dir: Path, patched_paths: list[Path]) -> None:
+    """model パッチ適用後の agents ファイルについて、file_hashes 台帳を最新内容で更新する。
+
+    patch_all_agents_paths() が model: 行を書き換えた直後に呼び出す。パッチ前の
+    内容で記録されたハッシュのままだと、次回セッションで is_user_modified() が
+    パッチ済み内容を「ユーザー編集」と誤判定し、正当な上流更新までスキップして
+    しまうため（PR #244 レビュー指摘）、パッチ後の内容でハッシュを記録し直す。
+    file_hashes に該当エントリが無いパッケージ/ファイルは何もしない。
+    """
+    file_hashes = orch.get("file_hashes")
+    if not file_hashes:
+        return
+
+    for patched_path in patched_paths:
+        try:
+            file_key = str(patched_path.relative_to(claude_dir))
+        except ValueError:
+            continue
+        new_hash = compute_file_hash(patched_path)
+        for pkg_hashes in file_hashes.values():
+            if file_key in pkg_hashes:
+                pkg_hashes[file_key] = new_hash
+
+
 def collect_managed_agent_stems(orchestra_path: Path, installed_packages: list[str]) -> set[str]:
     """インストール済みパッケージの manifest.agents からファイル名 stem 集合を収集する。
 
