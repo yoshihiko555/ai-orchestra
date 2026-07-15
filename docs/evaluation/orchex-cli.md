@@ -46,13 +46,13 @@ orchex CLI（`scripts/orchestra-manager.py`、配布後は `orchex` / `ai-orches
 - [ ] EV-05（異常 / must）: 依存関係に循環が検出された場合、`resolve_install_order` は警告を出力し元の指定順にフォールバックする（クラッシュしない） — 根拠: 実装挙動
 - [ ] EV-06（正常 / must）: プロジェクトが未初期化の状態で `install` を実行すると、`init` を自動実行してから続行する — 根拠: 実装挙動
 - [ ] EV-07（異常 / should）: 依存パッケージが未インストールの場合、`install` は警告を出すが処理はブロックせず継続する — 根拠: 実装挙動
-- [ ] EV-08（異常 / must）: 配布済み config/agents ファイルがインストール後にユーザーに変更されている場合、再インストール時は配布時ハッシュとの比較により上書きをスキップし警告する — 根拠: 実装挙動（`_copy_config_if_safe`）
+- [ ] EV-08（異常 / must）: 配布済み **config** ファイルがインストール後にユーザーに変更されている場合、再インストール時は配布時ハッシュとの比較により上書きをスキップし警告する — 根拠: 実装挙動（`_copy_config_if_safe`。`pkg.config` のうち `config/` プレフィックスのファイルのみが対象）。**既知のギャップ**: agents ファイルは `run_initial_sync`/`sync_packages` 経由で `needs_sync()`（mtime 比較のみ）により同期され、config と同等のハッシュガードは適用されない
 - [ ] EV-09（正常 / must）: 未変更の配布ファイルは再インストール時に最新版へ更新される — 根拠: 実装挙動
 - [ ] EV-10（異常 / must）: `uninstall` は配布時ハッシュと現在の内容が一致するファイルのみを削除し、ユーザー変更済み・ハッシュ未記録のファイルは削除せず警告する（安全側スキップ） — 根拠: 実装挙動（`_remove_if_unchanged`）
 - [ ] EV-11（境界 / must）: `.codex/` 配下配布物の削除は、manifest の target が絶対パスまたは `../` でプロジェクト外を指す場合に削除をスキップし警告する — 根拠: 実装挙動（`_remove_codex_file_if_unchanged` の `_is_within_project` 境界チェック）
 - [ ] EV-12（正常 / must）: `install`/`uninstall`/`enable`/`disable` はいずれも `settings.local.json` へのフック登録・解除を冪等に行う（再実行しても重複登録・二重削除エラーが起きない） — 根拠: 実装挙動
-- [ ] EV-13（正常 / must）: `disable` はフック登録のみを解除し `installed_packages` からは削除しない。`enable` は解除済みフックのみを復元する — 根拠: 実装挙動
-- [ ] EV-14（正常 / must）: `status` は各パッケージを installed／active（他パッケージの依存として有効）／partial（一部フック欠落）／not_found のいずれかに分類する — 根拠: 実装挙動（`get_package_status`）
+- [ ] EV-13（正常 / must）: `disable` はフック登録のみを解除し `installed_packages` からは削除しない — 根拠: 実装挙動（`disable`）。**既知のギャップ**: `enable` は `installed_packages` を確認せず `_apply_hooks` を呼ぶため、未インストールのパッケージに対して実行してもフックが登録されてしまう（「解除済みフックのみを復元する」というスコープ限定は実装で保証されていない）
+- [ ] EV-14（正常 / must）: `status` は各パッケージを installed／active（他パッケージの依存として有効）／partial（一部フック欠落）／`not found`（スペース区切り。アンダースコアではない）のいずれかに分類する — 根拠: 実装挙動（`get_package_status`）
 - [ ] EV-15（境界 / must）: `init` は複数回実行しても既存ディレクトリ・既存テンプレートファイル・`orchestra.json` を破壊せず、初回実行時と同じ結果になる（ディレクトリは `exist_ok`、テンプレートは欠落時のみコピー） — 根拠: 実装挙動
 - [ ] EV-16（正常 / must）: `setup <preset>` は preset 解決後のパッケージ一覧を依存順でインストールし、preset 省略時は一覧表示に切り替わる — 根拠: 実装挙動
 - [ ] EV-17（正常 / must）: `context build` はテンプレートソース（`templates/context/*.md`）から `templates/project/CLAUDE.md` 等の生成物と `AGENTS.md`（Codex/Antigravity セクション合成）を再生成する — 根拠: README.md「指示書テンプレートの責務」
@@ -60,7 +60,7 @@ orchex CLI（`scripts/orchestra-manager.py`、配布後は `orchex` / `ai-orches
 - [ ] EV-19（正常 / must）: `context sync --project` は欠落ファイルを作成し、`--force` 無指定では既存ファイルを保持する。`--force` 指定時のみ既存ファイルを上書きする — 根拠: 実装挙動
 - [ ] EV-20（境界 / must）: `context sync` はシンボリックリンクされたターゲット、およびプロジェクト外を指すシンボリックリンク親ディレクトリへの書き込みをスキップする — 根拠: 実装挙動（symlink escape 防御）
 - [ ] EV-21（正常 / must）: 旧命名の生成物（例: 生成された `GEMINI.md`）は `sync` 時に削除されるが、手書きの `GEMINI.md` は保持される — 根拠: 実装挙動（agy 移行に伴う後方互換）
-- [ ] EV-22（正常 / must）: config 同期は `config-loading` ルールに従い、ベース設定と `*.local.yaml`/`*.local.json` をディープマージし、local 未定義キーはベース値を継続使用する — 根拠: `.claude/rules/config-loading.md`
+- [ ] EV-22（正常 / must）: config 同期（`install`/`context sync`）はベース設定ファイルのコピーのみを行い、`*.local.yaml`/`*.local.json` は書き換えずそのまま保持する。`config-loading` ルールが定めるベース設定と local override のディープマージ（local 未定義キーはベース値を継続使用）は、同期時ではなく読み込み時に消費側の `hook_common.load_package_config()` が行う — 根拠: 実装挙動（`_copy_config_if_safe`、`packages/core/hooks/hook_common.py` の `deep_merge`/`load_package_config`）、`.claude/rules/config-loading.md`
 - [ ] EV-23（正常 / must）: 旧 `gemini.enabled: false` / `tool: gemini` は `antigravity.enabled: false` / `tool: antigravity` として読み替えられ、明示的な `antigravity` 設定を上書きしない — 根拠: `.claude/rules/antigravity-delegation.md`（移行エイリアス節）
 - [ ] EV-24（異常 / must）: sync の stale ファイル削除は、配布物として同期しなくなったファイルのみを対象とし、`*.local.*` および facet 管理下のファイル・参照は削除しない — 根拠: 実装挙動
 
@@ -71,8 +71,8 @@ orchex CLI（`scripts/orchestra-manager.py`、配布後は `orchex` / `ai-orches
 - [ ] EV-25（正常 / must）: コマンド契約 — `orchex run <package> <script> [-- args...]` は `--` 以降を対象スクリプトへの引数として分離し、`--orchestra-dir` 等のグローバルオプションと混同しない — 根拠: 実装挙動（`_split_run_passthrough`）
 - [ ] EV-26（異常 / must）: 入力バリデーション — `run_script`/`resolve_script_path` はパッケージ manifest の `scripts` エントリに対してのみ短縮名・ファイル名・フルパスの3形式で解決するホワイトリスト方式であり、未登録の名前・存在しないパッケージ・存在しないスクリプトファイルに対しては非ゼロ終了のエラーメッセージ（利用可能一覧を含む）を返す — 根拠: 実装挙動
 - [ ] EV-27（異常 / must）: 入力バリデーション — 存在しないパッケージ名・preset 名を指定した `install`/`uninstall`/`enable`/`disable`/`setup` はクラッシュせず、エラーメッセージを stderr に出力し非ゼロ終了する — 根拠: 実装挙動
-- [ ] EV-28（境界 / must）: 破壊的操作の安全策 — `install`/`uninstall`/`context sync` の `--dry-run` は実ファイルの書き込み・削除・`orchestra.json`/`settings.local.json` の変更を一切行わない — 根拠: 実装挙動
-- [ ] EV-29（正常 / should）: コマンド契約 — `proxy stop`/`proxy status` は cocoindex パッケージの `proxy_manager` に処理を委譲し、cocoindex 未導入時はエラーメッセージを返して非ゼロ終了する — 根拠: 実装挙動（`_load_proxy_modules`）
+- [ ] EV-28（境界 / must）: 破壊的操作の安全策 — `install`/`uninstall`/`context sync` の `--dry-run` は実ファイルの書き込み・削除・`orchestra.json`/`settings.local.json` の変更を一切行わないことが望ましい — 根拠: 実装挙動。**既知のギャップ**: `uninstall --dry-run` で対象パッケージが最後の `installed_packages` エントリだった場合、`remove_sync_hook(settings)` と `save_settings()` が `dry_run` 分岐の外側で無条件に呼ばれるため `settings.local.json` が実際に書き換わる（`scripts/orchestra-manager.py` `uninstall()` の `if not installed:` ブロック）
+- [ ] EV-29（正常 / should）: コマンド契約 — `proxy stop`/`proxy status` は cocoindex パッケージの `proxy_manager` に処理を委譲する。導入判定は `.claude/orchestra.json` の `installed_packages` ではなく、`hook_common.load_package_config()`（`find_package_config()`: プロジェクト `.claude/config/cocoindex/` → `$AI_ORCHESTRA_DIR/packages/cocoindex/config/` の順で探索）が config を発見できるか否かで行われ、発見できない場合のみエラーメッセージを返して非ゼロ終了する — 根拠: 実装挙動（`_load_proxy_modules`、`hook_common.find_package_config`）。**既知のギャップ**: `AI_ORCHESTRA_DIR` が ai-orchestra リポジトリ自体を指す通常構成では、対象プロジェクトが cocoindex を未導入でもベース設定が常に発見されるため、このエラー分岐は実質的に発火しない
 - [ ] EV-30（正常 / must）: コマンド契約 — `meta` サブコマンドは `AI_ORCHESTRA_DIR` を継承した subprocess で `packages/meta-harness/scripts/meta_harness.py` に残り引数をそのまま渡し、その終了コードをそのまま返す — 根拠: 実装挙動
 - [ ] EV-31（異常 / must）: 入力バリデーション — `orchex` エントリポイント（`ai_orchestra/cli.py`）は AI Orchestra ルートを「同梱パッケージ内 → 開発時のリポジトリ直下 → `AI_ORCHESTRA_DIR` 環境変数」の順に解決し、いずれも解決できない場合はエラーメッセージを出し非ゼロ終了する — 根拠: 実装挙動（`get_orchestra_dir`）
 - [ ] EV-32（正常 / should）: コマンド契約 — `orchex -v`/`--version` は `orchestra-manager.py` への委譲を行わず `ai_orchestra.__version__` を出力する — 根拠: 実装挙動
