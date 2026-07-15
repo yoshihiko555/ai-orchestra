@@ -44,6 +44,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`loop-harness`: 死んだ scheduler が cron から復旧しない問題を修正**: 常駐 scheduler の cron 生存確認を、cron ラッパー自身のコマンド文字列に誤って一致しうる `pgrep -f` の正規表現マッチから、pidfile への `flock` に基づく `is-alive` チェックへ変更した。scheduler は起動時に自身で pidfile をロックするため、二重起動は cron/launchd/手動起動のいずれからでも確実に防止される。
 - **`loop-harness`: 外部レビューが Low/Nitpick のみでも PR レビュー対応ループが無進捗失敗する問題を修正**: 実質的な指摘（Critical/High）が無いにもかかわらず Draft 化されていた不具合を修正した。Low/Medium の指摘は合格をブロックしない非ブロッキング扱いとし、残存分は成功時の Issue コメントに一覧で記録する。
 - **`loop-harness`: 遅れて届いた新規の Critical/High 指摘が「無進捗」と誤判定される問題を修正**: 修正が正しく進んでいても、前回反復から新規の重大指摘が 1 件見つかっただけで反復せず失敗していた不具合を修正した。
 
