@@ -17,6 +17,8 @@ import shlex
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -1003,6 +1005,86 @@ def test_recover_orphaned_pending_loops_skips_when_lease_still_alive(
 
     assert result == []
     assert loop_dir.is_dir()
+
+
+def test_recover_orphaned_pending_loops_blocks_while_coord_lock_is_held(
+    tmp_path: Path,
+) -> None:
+    """SN-flock (PR #229 review, #205-race): retirement's re-check-then-rename must be
+    serialized against a concurrent `attach()` through the same per-loop coord lock -
+    otherwise a `pending` loop's `attach()` (Issue #205) could load a still-`pending` state,
+    then have this function rename its directory out from under it before
+    `reacquire_lease`/`propose` run, surfacing as a spurious failure for an attach that
+    arrived just in time to legitimately recover the loop. This asserts retirement actually
+    blocks while the coord lock is externally held (mirrors
+    `test_attach_blocks_while_coord_lock_is_held_by_a_concurrent_purge` in
+    test_loop_common_lock.py) and only proceeds once it is released."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    loop_id = "aaaaaaaa-issue-9"
+    _seed_state(tmp_path, loop_id, status="pending")
+    runtime = scheduler.SchedulerRuntime()
+    loop_dir = Path(project_dir) / ".claude" / "loop" / loop_id
+
+    coord_lock_file = lc.coord_lock_path(loop_id, project_dir)
+    coord_lock_file.parent.mkdir(parents=True, exist_ok=True)
+    held_fd = os.open(coord_lock_file, os.O_CREAT | os.O_RDWR, lc.FILE_MODE)
+    fcntl.flock(held_fd, fcntl.LOCK_EX)
+
+    events: list[str] = []
+
+    def _recover() -> None:
+        scheduler.recover_orphaned_pending_loops(runtime, project_dir)
+        events.append("retired")
+
+    thread = threading.Thread(target=_recover)
+    thread.start()
+    try:
+        time.sleep(0.2)
+        assert events == []
+        events.append("released")
+    finally:
+        fcntl.flock(held_fd, fcntl.LOCK_UN)
+        os.close(held_fd)
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert events == ["released", "retired"]
+    assert not loop_dir.exists()
+    assert (loop_dir.parent / f"{loop_id}.orphaned-1").is_dir()
+
+
+def test_retire_if_still_orphaned_pending_skips_when_attach_reclaims_lease_first(
+    tmp_path: Path,
+) -> None:
+    """#205-race: if `attach()` reclaims the lease for a `pending` loop before retirement's
+    coord-lock-guarded re-check runs, retirement must no-op rather than rename the directory
+    out from under the freshly attached run. `recover_orphaned_pending_loops`'s own scan is
+    only a cheap, unlocked pre-filter (mirrors `loop_status._purge_if_still_safe`'s
+    candidate-list pattern) - the re-check inside `_retire_if_still_orphaned_pending`'s coord
+    lock is what actually closes the race, so this calls it directly to exercise that
+    re-check in isolation, simulating `attach()` having won the race in the gap between the
+    outer pre-filter and the inner lock acquisition."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    loop_id = "aaaaaaaa-issue-9"
+    _seed_state(tmp_path, loop_id, status="pending")
+    loop_dir = Path(project_dir) / ".claude" / "loop" / loop_id
+    lock = lc.acquire_lock(loop_id, project_dir, "owner", 1, host="local")
+    assert lock is not None
+    lock_path = lc.lock_path(loop_id, project_dir)
+    data = json.loads(lock_path.read_text(encoding="utf-8"))
+    data["heartbeat_at"] = "1970-01-01T00:00:00+00:00"
+    lock_path.write_text(json.dumps(data), encoding="utf-8")
+
+    result = lc.attach(loop_id, project_dir, "new-owner", 3600)
+    assert result.action == lc.Action.RUN_MAKER.value
+
+    retired = scheduler._retire_if_still_orphaned_pending(loop_id, project_dir)
+
+    assert retired is False
+    assert loop_dir.is_dir()
+    assert lc.load_state(loop_id, project_dir).status == "pending"
 
 
 def test_recover_orphaned_pending_loops_skips_loop_tracked_in_runtime_workers(
