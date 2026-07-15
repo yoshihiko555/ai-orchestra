@@ -13,6 +13,7 @@ identified) so the same reminder is not repeated on every edit.
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import os
 import re
@@ -36,6 +37,9 @@ else:
         sys.path.insert(0, str(_fallback_core_hooks))
 
 from hook_common import (  # noqa: E402
+    _find_local_config_path,
+    _read_config_file,
+    find_package_config,
     is_test_path,
     load_package_config,
     read_hook_input,
@@ -59,6 +63,14 @@ TOP_LEVEL_TESTS_PATTERN = re.compile(r"^tests/")
 # identifier is limited to alphanumerics, "-", "_" (no path separators,
 # newlines, or other characters that could leak into log/message output).
 PACKAGE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+# Explicit evaluation-set-mapping.yaml config (Issue #237): the package/filename
+# heuristics below only recognize SSOT targets that live under packages/<pkg>/.
+# Some evaluation sets (e.g. orchex-cli) own tests without any packages/<pkg>/
+# directory, so this config lets them opt in to the same reconciliation nudge
+# without relying on directory conventions or filename-token guessing.
+EVALUATION_SET_MAPPING_PACKAGE = "quality-gates"
+EVALUATION_SET_MAPPING_FILENAME = "evaluation-set-mapping.yaml"
 
 DEFAULT_STATE: dict = {"session_id": "", "notified": []}
 
@@ -171,14 +183,98 @@ def match_package_by_filename(basename: str, package_dirs: list[str]) -> str | N
     return None
 
 
+def _extract_mapping_entries(config: dict) -> list[dict]:
+    """Extract and validate ``mappings`` entries from a single loaded config layer.
+
+    Guards against a malformed root (e.g. a ``.local.yaml`` that omits the
+    ``mappings:`` key and defines a bare list at the document root) as well as
+    malformed individual entries, so a misconfigured file degrades to "no
+    entries from this layer" rather than raising (PR #243 review).
+    """
+    if not isinstance(config, dict):
+        return []
+    mappings = config.get("mappings", [])
+    if not isinstance(mappings, list):
+        return []
+    return [
+        entry
+        for entry in mappings
+        if isinstance(entry, dict)
+        and isinstance(entry.get("package"), str)
+        and isinstance(entry.get("test_globs"), list)
+    ]
+
+
+def load_evaluation_set_mapping(project_dir: str) -> list[dict]:
+    """Load the evaluation-set-mapping.yaml explicit package/test-glob mapping.
+
+    A missing or malformed config yields an empty list, so identify_package()
+    transparently falls back to the packages/<pkg>/tests/ directory convention
+    and the filename-token heuristic below (Issue #237: those two heuristics
+    alone cannot recognize SSOT targets, such as orchex CLI, that own tests
+    without a packages/<pkg>/ directory).
+
+    Base and local (``*.local.yaml``) entries are merged per ``package`` name
+    rather than via the generic load_package_config()/deep_merge() whole-value
+    override (PR #243 review): deep_merge() replaces the entire ``mappings``
+    list when a local file defines that key at all, so a project adding one
+    local mapping would silently drop every shipped entry (e.g. orchex-cli),
+    reopening the exact "core" misroute this file exists to prevent. A local
+    entry overrides the base entry with the same ``package``; entries present
+    in only one layer pass through unchanged.
+    """
+    base_path = find_package_config(
+        EVALUATION_SET_MAPPING_PACKAGE, EVALUATION_SET_MAPPING_FILENAME, project_dir
+    )
+    base_entries = _extract_mapping_entries(_read_config_file(base_path))
+    if not base_path:
+        return base_entries
+
+    local_path = _find_local_config_path(
+        EVALUATION_SET_MAPPING_PACKAGE, EVALUATION_SET_MAPPING_FILENAME, project_dir, base_path
+    )
+    local_entries = _extract_mapping_entries(_read_config_file(local_path))
+    if not local_entries:
+        return base_entries
+
+    merged_by_package = {entry["package"]: entry for entry in base_entries}
+    for entry in local_entries:
+        merged_by_package[entry["package"]] = entry
+    return list(merged_by_package.values())
+
+
+def match_explicit_mapping(relative_path: str, mappings: list[dict]) -> str | None:
+    """Return the package of the first mapping entry whose test_globs matches.
+
+    Uses fnmatch.fnmatchcase (not fnmatch.fnmatch) so glob matching is
+    case-sensitive regardless of the host OS, keeping behavior identical
+    across contributors' machines and CI.
+    """
+    for entry in mappings:
+        for pattern in entry["test_globs"]:
+            if isinstance(pattern, str) and fnmatch.fnmatchcase(relative_path, pattern):
+                return entry["package"]
+    return None
+
+
 def identify_package(relative_path: str, project_dir: str) -> str | None:
     """Identify the owning package for a given test file path.
+
+    Explicit evaluation-set-mapping.yaml entries are checked first and take
+    priority over the packages/<pkg>/tests/ directory convention and the
+    filename-token heuristic below, so SSOT targets without a packages/<pkg>/
+    directory can be routed correctly and coincidental token collisions
+    (e.g. "test_orchestra_manager_core.py" containing the token "core") don't
+    misroute to an unrelated evaluation set (Issue #237).
 
     The result always passes through is_valid_package_name() here (the single
     validation point) so that regex captures derived from an untrusted
     file_path can never yield an unsafe package identifier.
     """
-    pkg = extract_package_from_packages_path(relative_path)
+    pkg = match_explicit_mapping(relative_path, load_evaluation_set_mapping(project_dir))
+
+    if pkg is None:
+        pkg = extract_package_from_packages_path(relative_path)
     if pkg is None:
         basename = Path(relative_path).name
         if is_top_level_tests_path(relative_path, basename):

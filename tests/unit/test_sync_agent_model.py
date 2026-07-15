@@ -17,6 +17,7 @@ _patch_agent_model = sync_mod.patch_agent_model
 _load_cli_tools_config = sync_mod.load_cli_tools_config
 _deep_merge = sync_mod._deep_merge
 patch_all_agents = sync_mod.patch_all_agents
+patch_all_agents_paths = sync_mod.patch_all_agents_paths
 
 
 FRONTMATTER_TEMPLATE = """\
@@ -247,3 +248,46 @@ class TestPatchAllAgentsAllowlist:
 
         assert patched_count == 0
         assert "model: sonnet" in agent.read_text(encoding="utf-8")
+
+
+class TestPatchAllAgentsPaths:
+    """patch_all_agents_paths のテスト（PR #244: file_hashes 台帳更新のための実パス取得）。"""
+
+    def _setup_project(self, tmp_path: Path) -> Path:
+        project_dir = tmp_path / "project"
+        config_dir = project_dir / ".claude" / "config" / "agent-routing"
+        _write_yaml(config_dir / "cli-tools.yaml", {"subagent": {"default_model": "opus"}})
+        return project_dir
+
+    def test_returns_actually_patched_paths(self, tmp_path: Path) -> None:
+        """パッチが実際に適用されたファイルのみをパスのリストで返す。"""
+        project_dir = self._setup_project(tmp_path)
+        patched_target = project_dir / ".claude" / "agents" / "known.md"
+        already_opus = project_dir / ".claude" / "agents" / "already-opus.md"
+        _write_agent_md(patched_target, "sonnet")
+        _write_agent_md(already_opus, "opus")
+
+        result = patch_all_agents_paths(project_dir)
+
+        assert result == [patched_target]
+
+    def test_count_matches_patch_all_agents(self, tmp_path: Path) -> None:
+        """patch_all_agents() の件数と patch_all_agents_paths() の要素数が一致する。"""
+        project_dir = self._setup_project(tmp_path)
+        _write_agent_md(project_dir / ".claude" / "agents" / "a.md", "sonnet")
+        _write_agent_md(project_dir / ".claude" / "agents" / "b.md", "sonnet")
+
+        count = patch_all_agents(project_dir)
+        # 2回目呼び出し用に再度パッチ前の状態へ戻す
+        _write_agent_md(project_dir / ".claude" / "agents" / "a.md", "sonnet")
+        _write_agent_md(project_dir / ".claude" / "agents" / "b.md", "sonnet")
+        paths = patch_all_agents_paths(project_dir)
+
+        assert count == 2
+        assert len(paths) == 2
+
+    def test_empty_when_agents_dir_missing(self, tmp_path: Path) -> None:
+        """.claude/agents ディレクトリが無ければ空リストを返す。"""
+        project_dir = tmp_path / "project"
+
+        assert patch_all_agents_paths(project_dir) == []

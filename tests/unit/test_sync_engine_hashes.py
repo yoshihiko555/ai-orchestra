@@ -86,6 +86,120 @@ class TestRecordAndGetFileHash:
         assert sync_engine.get_recorded_file_hash(orch, "mypkg", "agents/bar.md") is None
 
 
+class TestIsUserModified:
+    """is_user_modified のテスト（Issue #241: agents 再同期ハッシュガード）。"""
+
+    def test_dst_missing_returns_false(self, tmp_path: Path) -> None:
+        """dst が存在しない場合は False（保護対象なし、通常どおり同期させる）。"""
+        orch: dict = {"file_hashes": {"mypkg": {"agents/foo.md": "hash"}}}
+        dst = tmp_path / "agents" / "foo.md"
+
+        assert sync_engine.is_user_modified(orch, "mypkg", "agents/foo.md", dst) is False
+
+    def test_no_recorded_hash_returns_false(self, tmp_path: Path) -> None:
+        """ハッシュ未記録（旧形式 orchestra.json 含む）の場合は False（後方互換で上書きを許可）。"""
+        orch: dict = {"file_hashes": {}}
+        dst = tmp_path / "agents" / "foo.md"
+        dst.parent.mkdir(parents=True)
+        dst.write_text("anything", encoding="utf-8")
+
+        assert sync_engine.is_user_modified(orch, "mypkg", "agents/foo.md", dst) is False
+
+    def test_hash_mismatch_returns_true(self, tmp_path: Path) -> None:
+        """現在の内容が配布時ハッシュと異なれば True（ユーザー編集済み）。"""
+        dst = tmp_path / "agents" / "foo.md"
+        dst.parent.mkdir(parents=True)
+        dst.write_text("user edited", encoding="utf-8")
+        orch: dict = {
+            "file_hashes": {"mypkg": {"agents/foo.md": hashlib.sha256(b"distributed").hexdigest()}}
+        }
+
+        assert sync_engine.is_user_modified(orch, "mypkg", "agents/foo.md", dst) is True
+
+    def test_hash_match_returns_false(self, tmp_path: Path) -> None:
+        """現在の内容が配布時ハッシュと一致すれば False（未編集）。"""
+        dst = tmp_path / "agents" / "foo.md"
+        dst.parent.mkdir(parents=True)
+        dst.write_text("distributed", encoding="utf-8")
+        orch: dict = {
+            "file_hashes": {"mypkg": {"agents/foo.md": hashlib.sha256(b"distributed").hexdigest()}}
+        }
+
+        assert sync_engine.is_user_modified(orch, "mypkg", "agents/foo.md", dst) is False
+
+
+class TestRefreshPatchedAgentHashes:
+    """refresh_patched_agent_hashes のテスト（PR #244: model patch 後の誤判定防止）。"""
+
+    def test_updates_hash_to_patched_content(self, tmp_path: Path) -> None:
+        """記録済みハッシュを、パッチ後の実際の内容のハッシュに更新する。"""
+        claude_dir = tmp_path / ".claude"
+        dst = claude_dir / "agents" / "foo.md"
+        dst.parent.mkdir(parents=True)
+        dst.write_text("patched content", encoding="utf-8")
+
+        orch: dict = {
+            "file_hashes": {"mypkg": {"agents/foo.md": hashlib.sha256(b"pre-patch").hexdigest()}}
+        }
+
+        sync_engine.refresh_patched_agent_hashes(orch, claude_dir, [dst])
+
+        assert (
+            orch["file_hashes"]["mypkg"]["agents/foo.md"]
+            == hashlib.sha256(b"patched content").hexdigest()
+        )
+
+    def test_no_recorded_entry_is_noop(self, tmp_path: Path) -> None:
+        """file_hashes に該当エントリが無ければ何もしない（KeyError を起こさない）。"""
+        claude_dir = tmp_path / ".claude"
+        dst = claude_dir / "agents" / "unmanaged.md"
+        dst.parent.mkdir(parents=True)
+        dst.write_text("content", encoding="utf-8")
+
+        orch: dict = {"file_hashes": {"mypkg": {"agents/foo.md": "unrelated-hash"}}}
+
+        sync_engine.refresh_patched_agent_hashes(orch, claude_dir, [dst])
+
+        assert orch["file_hashes"] == {"mypkg": {"agents/foo.md": "unrelated-hash"}}
+
+    def test_empty_file_hashes_is_noop(self, tmp_path: Path) -> None:
+        """file_hashes 自体が空/未設定でもエラーにならない。"""
+        claude_dir = tmp_path / ".claude"
+        dst = claude_dir / "agents" / "foo.md"
+        dst.parent.mkdir(parents=True)
+        dst.write_text("content", encoding="utf-8")
+
+        orch: dict = {}
+
+        sync_engine.refresh_patched_agent_hashes(orch, claude_dir, [dst])
+
+        assert orch == {}
+
+    def test_after_refresh_is_user_modified_returns_false(self, tmp_path: Path) -> None:
+        """回帰シナリオ: パッチ後にハッシュを更新すれば、パッチ済み内容は誤って
+        ユーザー編集扱いされない（PR #244 が報告した誤判定の再現・修正確認）。"""
+        claude_dir = tmp_path / ".claude"
+        dst = claude_dir / "agents" / "foo.md"
+        dst.parent.mkdir(parents=True)
+        dst.write_text("distributed content", encoding="utf-8")
+
+        orch: dict = {
+            "file_hashes": {
+                "mypkg": {"agents/foo.md": hashlib.sha256(b"distributed content").hexdigest()}
+            }
+        }
+
+        # patch_all_agents 相当: 配布直後の内容を書き換える
+        dst.write_text("distributed content\nmodel: opus\n", encoding="utf-8")
+
+        # 修正前提: ハッシュ台帳を更新しないと誤ってユーザー編集判定される
+        assert sync_engine.is_user_modified(orch, "mypkg", "agents/foo.md", dst) is True
+
+        sync_engine.refresh_patched_agent_hashes(orch, claude_dir, [dst])
+
+        assert sync_engine.is_user_modified(orch, "mypkg", "agents/foo.md", dst) is False
+
+
 class TestCollectManagedAgentStems:
     """collect_managed_agent_stems のテスト。"""
 

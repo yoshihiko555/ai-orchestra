@@ -37,6 +37,7 @@ from lib.sync_engine import (  # noqa: E402
     compute_file_hash,
     config_target_relative_path,
     get_recorded_file_hash,
+    is_user_modified,
     needs_sync,
     record_file_hash,
     sync_codex_files,
@@ -375,6 +376,15 @@ class OrchestraManager(ContextMixin, HooksMixin):
                         else:
                             dst = claude_dir / rel_path
                             file_key = rel_path
+
+                        if category in ("config", "agents") and is_user_modified(
+                            orch, pkg_name, file_key, dst
+                        ):
+                            print(
+                                f"警告: {dst} はインストール後に変更されているため"
+                                "上書きをスキップしました"
+                            )
+                            continue
 
                         if not needs_sync(src, dst):
                             continue
@@ -738,8 +748,11 @@ class OrchestraManager(ContextMixin, HooksMixin):
             orch.get("file_hashes", {}).pop(pkg.name, None)
 
             if not installed:
-                self.remove_sync_hook(settings)
-                self.save_settings(project_dir, settings)
+                if dry_run:
+                    print("[DRY-RUN] 同期フック解除: settings.local.json (SessionStart)")
+                else:
+                    self.remove_sync_hook(settings)
+                    self.save_settings(project_dir, settings)
 
             if dry_run:
                 print(f"[DRY-RUN] orchestra.json: '{package_name}' を削除")
@@ -844,6 +857,16 @@ class OrchestraManager(ContextMixin, HooksMixin):
 
         pkg = packages[package_name]
         project_dir = self.get_project_dir(project)
+        orch = self.load_orchestra_json(project_dir)
+        installed_packages = set(orch.get("installed_packages", []))
+        if package_name not in installed_packages:
+            print(
+                f"エラー: パッケージ '{package_name}' はインストールされていません"
+                "（先に install を実行してください）",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
         settings = self.load_settings(project_dir)
         self._apply_hooks(pkg, settings, "add", dry_run)
 
@@ -1047,6 +1070,19 @@ class OrchestraManager(ContextMixin, HooksMixin):
     # proxy 管理
     # ------------------------------------------------------------------
 
+    def _require_cocoindex_installed(self, project_dir: Path) -> None:
+        """cocoindex が `.claude/orchestra.json` の installed_packages に無ければエラー終了する。
+
+        config ファイルの発見可否だけに頼ると、AI_ORCHESTRA_DIR が ai-orchestra
+        リポジトリ自体を指す通常構成ではベース設定が常に発見されてしまい、
+        未導入プロジェクトでもエラー分岐が実質的に発火しない（Issue #236）。
+        """
+        orch = self.load_orchestra_json(project_dir)
+        installed_packages = set(orch.get("installed_packages", []))
+        if "cocoindex" not in installed_packages:
+            print("エラー: cocoindex パッケージがインストールされていません", file=sys.stderr)
+            sys.exit(1)
+
     def _load_proxy_modules(self) -> tuple:
         """proxy_manager と hook_common をインポートして返す。"""
         core_hooks = str(self.orchestra_dir / "packages" / "core" / "hooks")
@@ -1064,6 +1100,8 @@ class OrchestraManager(ContextMixin, HooksMixin):
         """mcp-proxy を停止する"""
         hook_common, proxy_manager = self._load_proxy_modules()
         project_dir = self.get_project_dir(project)
+
+        self._require_cocoindex_installed(project_dir)
 
         config = hook_common.load_package_config("cocoindex", "cocoindex.yaml", str(project_dir))
         if not config:
@@ -1084,6 +1122,8 @@ class OrchestraManager(ContextMixin, HooksMixin):
         """mcp-proxy の状態を表示する"""
         hook_common, proxy_manager = self._load_proxy_modules()
         project_dir = self.get_project_dir(project)
+
+        self._require_cocoindex_installed(project_dir)
 
         config = hook_common.load_package_config("cocoindex", "cocoindex.yaml", str(project_dir))
         if not config:
