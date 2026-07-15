@@ -677,9 +677,20 @@ def resume(
 
 
 def attach(loop_id: str, project_dir: str, owner_id: str, ttl_seconds: int) -> ProposeResult:
-    """Reacquire a stale lease for running/waiting_external loops, then propose."""
+    """Reacquire a stale lease for pending/running/waiting_external loops, then propose.
+
+    `pending` is accepted (Issue #205): a caller that crashes between `start`'s initial
+    `run_maker` proposal and its `complete` call otherwise has no recovery entry point,
+    since `resume` only handles `failed`/`stopped`. `propose(recover_orphans=True)`'s
+    existing reconcile path (`_mark_unresolved_pending`) already treats an orphaned
+    side-effectful pending action as an infrastructure failure and re-proposes (or fails
+    via guard exhaustion) independent of `state.status`, so this only widens which
+    statuses may reach it. Note `loop_scheduler.py` deliberately continues to exclude
+    `pending` from automatic discovery/respawn (#G10) even though this function can now
+    recover it - only an explicit, manual (or LP-1-driven) `attach` call does.
+    """
     state = load_state(loop_id, project_dir)
-    if state.status not in {"running", "waiting_external"}:
+    if state.status not in {"pending", "running", "waiting_external"}:
         raise InvalidStateError(f"cannot attach status={state.status}")
     lock = reacquire_lease(loop_id, project_dir, owner_id, ttl_seconds)
     result = propose(loop_id, project_dir, lock.lease_token, recover_orphans=True)

@@ -1726,6 +1726,48 @@ def test_attach_returns_rerunnable_pending_checker_after_reclaim(tmp_path: Path)
     assert payload["lease_token"] != lock.lease_token
 
 
+def test_attach_recovers_pending_loop_after_session_crash(tmp_path: Path) -> None:
+    """Issue #205: `start` writes `status="pending"` plus an initial `run_maker` pending
+    action before the caller ever gets a chance to `complete` it. If the calling session
+    crashes right there (before `complete`), the loop was previously stuck forever - `resume`
+    only handles `failed`/`stopped`, and `attach` rejected `pending` outright. `attach` must
+    now recover it: reclaim the stale lease and re-propose `run_maker` with a fresh action_id
+    (the crash is recorded as an infrastructure failure, matching the existing running-status
+    orphaned-maker recovery)."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    started = _start(repo)
+    assert lc.load_state(started["loop_id"], str(repo)).status == "pending"
+    stale_heartbeat = (datetime.now(UTC) - timedelta(seconds=7200)).isoformat()
+    _set_lock_heartbeat(repo, started["loop_id"], stale_heartbeat)
+
+    proc = _run_cli(["attach", "--loop-id", started["loop_id"], "--project", str(repo)])
+    payload = _payload(proc)
+
+    assert proc.returncode == 0, proc.stderr
+    assert payload["action"] == lc.Action.RUN_MAKER.value
+    assert payload["action_id"] != started["action_id"]
+    assert payload["lease_token"] != started["lease_token"]
+    state = lc.load_state(started["loop_id"], str(repo))
+    assert state.status == "pending"
+    assert state.last_check_result["infrastructure_failure"] is True
+
+
+def test_attach_rejects_pending_with_live_lease_exit_3(tmp_path: Path) -> None:
+    """Issue #205 safety: a `pending` loop whose lease is still alive (owner may still be
+    about to `complete`) must keep being rejected with exit 3, exactly like `running`."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    started = _start(repo)
+    assert lc.load_state(started["loop_id"], str(repo)).status == "pending"
+
+    proc = _run_cli(["attach", "--loop-id", started["loop_id"], "--project", str(repo)])
+    payload = _payload(proc)
+
+    assert proc.returncode == 3
+    assert payload["error"]["code"] == "lock_unavailable"
+
+
 def test_resume_requires_reset_counters(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _init_repo(repo)

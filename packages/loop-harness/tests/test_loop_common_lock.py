@@ -362,6 +362,47 @@ def test_attach_recovers_orphaned_maker_pending_after_stale_lease(
     assert result.action == lc.Action.RUN_MAKER.value
 
 
+def test_attach_recovers_pending_status_with_orphaned_initial_maker_after_stale_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #205: a session that crashes between `start`'s initial `run_maker` proposal and
+    its `complete` call leaves `state.status == "pending"` with an orphaned pending action and
+    no recovery entry point (`resume` is `failed`/`stopped`-only). `attach` must now recover
+    this the same way it already recovers an orphaned `run_maker` pending action while
+    `status == "running"` (see `test_attach_recovers_orphaned_maker_pending_after_stale_lease`
+    above): mark it an infrastructure failure via reconcile, then re-propose `run_maker`."""
+    project_dir = _write_state(tmp_path, monkeypatch, status="pending")
+    lock = lc.acquire_lock("abcd1234-issue-1", project_dir, "owner", 1, host="local")
+    assert lock is not None
+    pending = lc.propose("abcd1234-issue-1", project_dir, lock.lease_token)
+    assert pending.action == lc.Action.RUN_MAKER.value
+
+    path = lc.lock_path("abcd1234-issue-1", project_dir)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["heartbeat_at"] = "1970-01-01T00:00:00+00:00"
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    result = lc.attach("abcd1234-issue-1", project_dir, "owner-2", 3600)
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    assert state.status == "pending"
+    assert state.last_check_result["infrastructure_failure"] is True
+    assert result.action == lc.Action.RUN_MAKER.value
+    assert result.context["lease_token"] != lock.lease_token
+
+
+def test_attach_rejects_pending_with_live_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #205 safety: pending recovery must not bypass the existing live-lease guard - a
+    still-alive owner (TTL within, heartbeat continuing) must still block attach with
+    `ForeignLeaseError` (exit 3 at the CLI layer) exactly as it does for `running`."""
+    project_dir = _write_state(tmp_path, monkeypatch, status="pending")
+    lock = lc.acquire_lock("abcd1234-issue-1", project_dir, "owner", 1, host="local")
+    assert lock is not None
+    with pytest.raises(lc.ForeignLeaseError):
+        lc.attach("abcd1234-issue-1", project_dir, "owner-2", 3600)
+
+
 def test_attach_missing_lock_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     project_dir = _write_state(tmp_path, monkeypatch, status="running")
     with pytest.raises(lc.LockNotFoundError):

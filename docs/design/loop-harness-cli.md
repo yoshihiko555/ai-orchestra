@@ -395,10 +395,21 @@ python3 loop_step.py attach --loop-id a1b2c3d4-issue-42 --project /path/to/repo
 
 処理手順:
 
-1. 対象 `loop_id` の `state.json.status` を確認する。`running`/`waiting_external` 以外
-   （`pending`/`passed`/`failed`/`stopped`）は exit `1`
-   （`{"error": {"code": "invalid_state", ...}}`）。`failed`/`stopped` からの再開は `resume`
-   （1.8 節）を使う。
+1. 対象 `loop_id` の `state.json.status` を確認する。`pending`/`running`/`waiting_external`
+   以外（`passed`/`failed`/`stopped`）は exit `1`（`{"error": {"code": "invalid_state", ...}}`）。
+   `failed`/`stopped` からの再開は `resume`（1.8 節）を使う。
+   > **`pending` の受理（Issue #205 反映）**: `start` は初回 `run_maker` を pending 化した
+   > 直後、呼び出し元がまだ `complete` を呼んでいない段階では `state.json.status` が
+   > `pending` のまま残る。この段階で呼び出し元セッションが断絶すると、`resume` は
+   > `failed`/`stopped` 専用で使えず、従来は復旧経路が存在しなかった（state ディレクトリを
+   > 手動削除して `start` をやり直すしかなく、journal を失う）。`attach` は `pending` も
+   > 受理し、旧 lease が stale であれば手順 3〜5 と同じ reconcile 経路（1.4 節の
+   > `_mark_unresolved_pending`）で孤立した初回 `run_maker` pending action を infrastructure
+   > failure として reconcile し、`run_maker` を再度 propose する（同一 `loop_id`・journal を
+   > 維持したまま復旧できる）。ガードの `infrastructure_failure.max_retries` を使い切っていれば
+   > 通常のガード評価どおり `failed` に倒れる。なお `loop_scheduler.py`（3.3 節）は `pending`
+   > を discovery・自動 respawn から引き続き除外する（#G10、restart storm 回避）。この手動
+   > `attach` 経路は、その除外方針とは独立した、人間／LP-1 が明示的に呼び出す復旧手段である。
 2. 現在の `lock.json` の lease が**生存中**（TTL 内かつ heartbeat が継続している。基本設計 6.3 節
    `is_lease_alive()`）かどうかを判定する。生存中であれば、まだ別のプロセスが正当にループを保持
    していると判断し **exit `3`** で拒否する（二重 attach による同時書き込みを防ぐ。旧プロセスが
@@ -993,16 +1004,22 @@ def spawn_worker(loop_id: str, project_root: Path) -> subprocess.Popen[bytes]:
   スケジューラはこの `loop_id` の再起動を `lp2.lease_ttl_seconds` 分クールダウンさせ、その間は
   discovery・再起動の対象から除外する（クールダウン経過後に再評価する。`SchedulerRuntime.
   foreign_lease_cooldown_until` で追跡）。
-- **`pending` 孤児回復（Codex レビュー指摘反映 #H3/#H11）**: `should_restart("pending")` は
-  `False` を返す（`lc.attach()` が `pending` を拒否するため、通常の再起動経路で respawn すると
-  restart-storm になる）。一方 `pending` は discovery からも常に除外される（3.1 節）ため、
-  worker が初回 `run_maker` 完了前に死んだ場合や scheduler 自体が再起動した場合、そのままでは
-  誰も拾えず永久に取り残される。`recover_orphaned_pending_loops` が毎サイクル
-  `spawn_new_workers` の前に実行され、lease が実際に失効した（生存 owner がいない）
-  `pending` loop のみを対象に、state dir を `.claude/loop/<loop_id>.orphaned-<n>` へリネーム
-  退避する（worker の respawn は行わない。Issue #205 の手動運用回避策の自動化）。これにより
-  当該 Issue は次サイクルで新規 `loop_id` として discovery され直す。lease が生存中の
-  `pending` loop には触れない。
+- **`pending` 孤児回復（Codex レビュー指摘反映 #H3/#H11。1.10 節の Issue #205 反映で `attach`
+  自体は `pending` を受理できるようになったが、本節の自動 respawn 抑止方針は変更しない）**:
+  `should_restart("pending")` は `False` を返す。`lc.attach()` 自体はもはや `pending` を
+  拒否しないが（1.10 節）、scheduler はこれを**自動で**呼び出さない設計を維持する — 毎サイクル
+  無条件に auto-respawn すると、旧 worker がまだ正当に完了しつつある最中でも re-attach を
+  試み続け restart-storm になりうるため（#G10）。一方 `pending` は discovery からも常に
+  除外される（3.1 節）ため、worker が初回 `run_maker` 完了前に死んだ場合や scheduler 自体が
+  再起動した場合、そのままでは誰も拾えず永久に取り残される。`recover_orphaned_pending_loops`
+  が毎サイクル `spawn_new_workers` の前に実行され、lease が実際に失効した（生存 owner が
+  いない）`pending` loop のみを対象に、state dir を `.claude/loop/<loop_id>.orphaned-<n>` へ
+  リネーム退避する（worker の respawn は行わない。Issue #205 の手動運用回避策の自動化）。
+  これにより当該 Issue は次サイクルで新規 `loop_id` として discovery され直す（元の
+  `loop_id`・journal は post-mortem 用に退避されるのみで失われないが、再開はされない）。
+  lease が生存中の `pending` loop には触れない。人間／LP-1 が `recover_orphaned_pending_loops`
+  による退避より前に気づいた場合は、`attach`（1.10 節）で同一 `loop_id`・journal を維持した
+  まま直接復旧することもできる。
 
 ### 3.4 起動時の repo-identity 照合（安全停止）
 

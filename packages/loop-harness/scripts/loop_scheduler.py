@@ -381,13 +381,16 @@ def _tombstoned_loop_ids(project_dir: str) -> set[str]:
 def _pending_loop_ids(project_dir: str) -> set[str]:
     """Return loop_ids whose state.json status is "pending" (initial run_maker in flight).
 
-    `lc.attach()` only accepts `running`/`waiting_external` status and raises
-    `InvalidStateError` for `pending` - a `loop_id` still in `pending` has never completed its
-    first action, so a duplicate worker spawned for the same still-labeled Issue would try to
-    attach, fail immediately, and (per `should_restart`) be retried again next cycle: a
-    restart storm (#G10). Unlike a terminal status, there is no automatic resolution here -
-    something is wrong with the original worker - so this is treated as "exclude from
-    discovery, wait for a human" rather than respawned.
+    `lc.attach()` can now recover a `pending` loop directly (Issue #205: it treats an
+    orphaned initial `run_maker` the same as any other orphaned pending action). But this
+    scheduler deliberately still excludes `pending` from *automatic* discovery/respawn: a
+    duplicate worker auto-spawned for the same still-labeled Issue would attach, and (unlike
+    a deliberate human/LP-1 attach) would do so blindly every poll cycle regardless of
+    whether the original worker might still legitimately be about to complete - retrying
+    that every cycle risks a restart storm (#G10). Unlike a terminal status, there is no
+    automatic resolution here - something may be wrong with the original worker - so this is
+    treated as "exclude from discovery, wait for a human (`attach`) or lease-expiry-driven
+    `recover_orphaned_pending_loops`" rather than respawned.
     """
     root = lc.loop_root(project_dir)
     if not root.is_dir():
@@ -409,8 +412,9 @@ def discover_loop_ids(
     """Discover new loop_ids: labeled open Issues, priority/created_at ordered, minus active,
     terminal, and pending ones (#10: a terminal loop_id must not be regenerated just because
     its Issue still carries the label, resuming it is an explicit operator action; #G10: a
-    still-pending loop_id cannot be attached to either, so re-spawning it would only restart-
-    storm against an immediate attach failure)."""
+    still-pending loop_id is deliberately never auto-respawned even though `lc.attach()` can
+    now recover it manually (Issue #205) - re-spawning it automatically here would restart-
+    storm, see `_pending_loop_ids`)."""
     label = resolve_label(definition)
     issues = list_labeled_issues(project_dir, label)
     ordered = sort_candidates(issues, priority_labels(project_dir))
@@ -471,11 +475,15 @@ def should_restart(status: str) -> bool:
     """Return True unless status is a terminal state a human must investigate first (3.3 節),
     or still `pending` (#H3/#H11).
 
-    A `pending` loop's worker never completed its first action, so `lc.attach()` rejects it
-    outright (`InvalidStateError`) - restarting it here would just restart-storm against an
-    immediate attach failure every cycle. Recovery for a genuinely orphaned `pending` loop (dead
-    worker, expired lease) is handled separately by `recover_orphaned_pending_loops`, which
-    retires the stale state dir instead of respawning a worker against it.
+    A `pending` loop's worker never completed its first action. `lc.attach()` can now
+    recover a `pending` loop when called explicitly (Issue #205), but this scheduler
+    deliberately does not do so automatically here - blindly retrying an auto-respawn every
+    poll cycle would restart-storm regardless of whether the original worker might still be
+    about to complete. Recovery for a genuinely orphaned `pending` loop (dead worker, expired
+    lease) is instead handled separately by `recover_orphaned_pending_loops`, which retires
+    the stale state dir (freeing the Issue for fresh discovery under a new `loop_id`) rather
+    than respawning a worker against it; a human/LP-1 operator may also `attach` directly to
+    resume the same `loop_id`/journal before that retirement happens.
     """
     return status not in _NON_RESTARTABLE_STATUSES and status != "pending"
 
@@ -582,12 +590,14 @@ def _untracked_live_active_loop_ids(runtime: SchedulerRuntime, project_dir: str)
     process across a restart) is likewise untracked in a fresh `runtime.workers`, and
     `_pending_loop_ids` only keeps `discover_loop_ids` from re-spawning a duplicate for the
     *same* Issue (#G10) - it has no effect on the cap used when spawning workers for *other*
-    Issues. Such a loop is never eligible for respawn/attach itself (`should_restart` and
-    `lc.attach()` both reject `pending`), but it still holds a real, live slot until it
-    finishes or its lease expires (at which point `recover_orphaned_pending_loops` retires it
-    and frees the slot for real). A `pending` loop whose lease has already expired is left out
-    here on purpose: it is orphan-recovery material (`recover_orphaned_pending_loops`), not a
-    live occupant of a slot.
+    Issues. Such a loop is never eligible for *automatic* respawn/attach here (`should_restart`
+    rejects `pending` outright, and while `lc.attach()` itself can now recover a `pending`
+    loop when called explicitly - Issue #205 - a live lease still makes any such attach raise
+    `ForeignLeaseError` regardless), but it still holds a real, live slot until it finishes or
+    its lease expires (at which point `recover_orphaned_pending_loops` retires it and frees
+    the slot for real). A `pending` loop whose lease has already expired is left out here on
+    purpose: it is orphan-recovery material (`recover_orphaned_pending_loops`, or a manual
+    `attach`), not a live occupant of a slot.
     """
     live_active = {
         loop_id
@@ -723,25 +733,30 @@ def recover_orphaned_pending_loops(runtime: SchedulerRuntime, project_dir: str) 
     """Retire genuinely orphaned `pending` loops so their Issue can be discovered afresh
     (#H3/#H11).
 
-    `should_restart("pending")` now refuses to respawn a `pending` loop (its worker never
-    completed the first action, and `lc.attach()` rejects `pending` outright). But
-    `discover_loop_ids` also permanently excludes any still-`pending` loop_id from discovery
-    (#G10) - so, taken together, a `pending` loop whose worker died (or whose owning scheduler
-    process itself restarted) had no path back at all: not respawned, not rediscovered,
-    invisible forever even though its Issue still carries the label.
+    `should_restart("pending")` refuses to *automatically* respawn a `pending` loop (its
+    worker never completed the first action, and an unconditional auto-respawn would restart-
+    storm - see `should_restart`'s own docstring). `discover_loop_ids` also permanently
+    excludes any still-`pending` loop_id from discovery (#G10) - so, taken together, a
+    `pending` loop whose worker died (or whose owning scheduler process itself restarted) had
+    no *automatic* path back at all: not respawned, not rediscovered, invisible forever even
+    though its Issue still carries the label.
 
-    This does not respawn a worker - `lc.attach()` would reject `pending` regardless, and a
-    fresh worker cannot safely resume another worker's in-flight initial `run_maker` action.
-    Instead, once the loop's lease has genuinely expired (no live owner could still complete
-    it), the state dir is renamed aside to `<loop_id>.orphaned-<n>` under `.claude/loop/`
-    (automating the Issue #205 manual runbook step of moving the stale dir out of the way and
-    letting a fresh `start` reuse the Issue) and the loop's worktree is best-effort cleaned up
-    (#I7, see `_retire_orphaned_pending_dir`) so the next `start` for the same Issue does not
-    silently resume from whatever uncommitted/partial edits the dead Maker left behind. Renaming
-    (not deleting) the state dir preserves the abandoned run's journal/state for post-mortem,
-    while `wm.compute_loop_id` for the same Issue number resolves to the same original
-    `loop_id`, whose directory no longer exists, so the next discovery cycle treats it as a
-    brand-new candidate.
+    This function does not respawn a worker or attach - a fresh worker cannot safely resume
+    another worker's in-flight initial `run_maker` action, and this is deliberately an
+    unattended, automatic recovery path rather than the explicit, journal-preserving `attach`
+    recovery (Issue #205; `lc.attach()` can now recover a `pending` loop directly when a
+    human/LP-1 caller invokes it, resuming the *same* `loop_id` and journal - see `attach`'s
+    own docstring). Instead, once the loop's lease has genuinely expired (no live owner could
+    still complete it), the state dir is renamed aside to `<loop_id>.orphaned-<n>` under
+    `.claude/loop/` (automating the manual runbook step of moving the stale dir out of the
+    way and letting a fresh `start` reuse the Issue, for the case no one attaches first) and
+    the loop's worktree is best-effort cleaned up (#I7, see `_retire_orphaned_pending_dir`)
+    so the next `start` for the same Issue does
+    not silently resume from whatever uncommitted/partial edits the dead Maker left behind.
+    Renaming (not deleting) the state dir preserves the abandoned run's journal/state for
+    post-mortem, while `wm.compute_loop_id` for the same Issue number resolves to the same
+    original `loop_id`, whose directory no longer exists, so the next discovery cycle treats
+    it as a brand-new candidate.
 
     Loops still tracked in `runtime.workers` (this process's own in-flight worker, whose
     `state.json` simply has not yet reflected the first completed action) are left untouched,

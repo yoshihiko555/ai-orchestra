@@ -75,6 +75,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`meta-harness`: ストア用 `.gitignore` エントリが SessionStart 同期で消える問題を修正**: `.claude/meta-harness/` を gitignore 管理ブロックの生成元（`gitignore_sync.py`）に追加し、同期のたびに手動追記が失われる Phase 1a の実装漏れを解消
 - **`meta-harness`: `orchex meta propose` の Codex 起動失敗を修正**: srt 隔離下で repo 内 `proposal.schema.json` が `denyRead` に遮断されないよう schema を ephemeral `CODEX_HOME` へ staging し、非 secret の `models_cache.json` / `version.json` だけを staging するようにした。構造化出力時の streaming 通信は Codex backend に限り srt の TLS 終端から除外し、proposal schema は OpenAI structured output 互換に調整した
 
+- **`loop-harness`: `start` 直後にセッションが断絶したループを復旧できない問題を修正**: 初回 `run_maker` の pending 化直後（`status=pending`）にセッションがクラッシュすると、`attach` が `pending` を拒否し `resume` も対象外のため復旧経路が無く、state ディレクトリを手動削除して journal を失いながら `start` をやり直すしかなかった。`attach` が `pending` も受理し、同一 `loop_id`・journal を維持したまま復旧できるようにした。
+
 ### Security
 
 - **`reverse`: `generate-mermaid.py` の `escape_label` が改行・制御文字を素通しする問題を修正**: 解析対象コードベース由来のモジュール名/ラベルに改行を仕込むことで Mermaid ノード定義を複数行に分割し構文注入できる問題を修正した。`sanitize_cluster_name` と同様に制御文字を除去し、ノード定義が単一行を保つようにした。
