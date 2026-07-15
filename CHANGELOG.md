@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`orchex uninstall --dry-run` が最後のパッケージ削除時に `settings.local.json` を書き換えていた不具合を修正**: dry-run では実ファイルを一切変更せず、プレビュー表示のみ行うようにした。
+- **`orchex enable` が未インストールのパッケージにもフックを登録していた不具合を修正**: 対象パッケージが `install` 済みでない場合はエラーを表示し、フック登録を行わないようにした。
+- **`orchex install` でユーザー変更済み config ファイルが上書きされ得る不具合を修正**: 配布時ハッシュとの比較で保護されたはずの config ファイルが、同一 `install` 実行内の後続同期処理で再上書きされないようにした。
+- **`orchex proxy stop`/`proxy status` の cocoindex 未導入判定を修正**: 判定基準をプロジェクトの `installed_packages` に基づくものに変更し、未導入時に確実にエラーとなるようにした。
+
 ### Changed
 
 - **`image-generation`: `codex.enabled: false` 時は画像生成を実行しないように変更**: `/image-gen` スキル・`image-generator` エージェントが `cli-tools.yaml`（+ `.local.yaml`）の `codex.enabled: false` を尊重し、無効時は画像生成を行わず「利用不可」を報告するようになった。
