@@ -631,17 +631,21 @@ artifact から復旧する `reconcile` も同じ validator を必ず通し、�
     `artifacts/<action_id>/review_findings.json` へ保存する。戻り値に `needs_classification` の finding
     が 1 件以上含まれる場合は、上記「severity 分類（Step 2）」の手順をこの場でインラインに適用し、
     `apply_severity_classifications(...)` まで完了させてから次の判定に進む（分類を次サイクルへ持ち越さない）。
-  - drain（severity 分類後）に actionable な finding が **1 件以上** 残る場合、`record_baseline`、push、
+  - drain（severity 分類後）に **critical/high** の finding が **1 件以上** 残る場合、`record_baseline`、push、
     `record_iteration_head`、wait / poll をこの action では一切実行しない。代わりに
     `phase_check_from_review_findings(...)` の戻り値（`passed: false` になるはず）をそのまま
     `lc.phase_check_to_dict()` で ready-to-complete JSON に変換し、0600 の result file として保存して、
     元 proposal と同じ `state_version` で `complete` する。`detect_pr_review_push_delta()` はこの分岐では
-    呼ばない。この complete の結果は次の guard 評価で修正反復（Maker）へ差し戻される。
-  - drain の結果 finding が **0 件** の場合に限り、`detect_pr_review_push_delta(loop_id,
+    呼ばない。この complete の結果は次の guard 評価で修正反復（Maker）へ差し戻される。medium/low のみが
+    残っている場合はこの分岐に該当しない（下記へ進む。B 軸: medium/low は非ブロッキング）。
+  - drain の結果 **critical/high の finding が 0 件**（medium/low のみ残存、または finding 自体が
+    0 件）の場合に限り、`detect_pr_review_push_delta(loop_id,
     params.worktree_path, params.worktree_path)` を呼び、戻り値 `delta.status` で以下のとおり分岐する。
-    **drain が 0 件であることを確認せずに `phase_check_from_review_findings()` を呼んで complete する
-    ことは禁止する**（findings が空だと `phase_check_from_review_findings()` は `passed: true` を返し、
-    push もレビュー待機も行わずに誤って合格扱いにしてしまうため）。
+    **drain の critical/high が 0 件であることを確認せずに `phase_check_from_review_findings()` を呼んで
+    complete することは禁止する**（critical/high finding が存在しない場合、
+    `phase_check_from_review_findings()` は `passed: true` を返すため、push もレビュー待機も行わずに
+    誤って合格扱いにしてしまう。medium/low が `open` のまま残っていても非ブロッキングとして合格しうる
+    点に注意する）。
     - `delta.status == "no_new_commit"` の場合、Maker は push すべき新規 commit を作っていない。
       この場合は `record_baseline`、push、`record_iteration_head`、wait / poll / collect をすべて実行しない。
       代わりに `no_new_commit_completion_outcome(delta)` で `CompletionOutcome` を取得し、続けて
@@ -813,13 +817,17 @@ Task(subagent_type="general-purpose", prompt="""
 
 1. 既存 PR と反復履歴・Checker 結果を確認する。新しい PR は作らない。
 2. 下記「通常終了の Issue コメント」に `PASSED` と要約を入れ、`params.issue_number` の対象 Issue へ
-   投稿する。
+   投稿する。critical/high はゼロだが medium/low が `open`（未 dismiss）のまま残っている場合も
+   `exit_success` に到達しうる（非ブロッキング。Issue #213 B 軸）。この場合、`params` が提供する
+   `non_blocking_open`（全反復累積の非 dismissed medium/low 一覧）を「残存した非ブロッキング指摘」
+   セクションへ列挙する。0 件ならセクション自体を省略する。
 3. macOS 通知を発火する。
 4. 投稿・通知の直前に redaction を適用する。
 5. auto-merge は付与せず、worktree を保持する。
 6. 出口処理の結果を同じ proposal 識別子で `python3 "$LOOP_STEP" complete ...` し、終了する。
 
-マージ判断は人間が行う。
+マージ判断は人間が行う。残存した非ブロッキング指摘がある場合は、上記コメントの一覧を参考に
+人間が任意で対応するかを判断する（ループ自体はそれを理由に失敗させない）。
 
 ## `exit_failure`
 
@@ -873,10 +881,18 @@ params.draft_pr_exec の短い要約だけにし、レビュー本文やコマ�
 
 - {count} 件（許可リスト不一致のため対象外。詳細は journal 参照）
 
+### 残存した非ブロッキング指摘（Low/Medium）
+
+{PASSED かつ `params.non_blocking_open` が 1 件以上ある場合のみ表示。0 件ならこのセクション自体を省略する}
+
+| severity | path:line | 抜粋（200 字まで） |
+| -------- | --------- | ------------------- |
+| {medium\|low} | `{path}:{line}` | {レビュー本文の抜粋} |
+
 ### 次のアクション
 
 {FAILED: Draft PR を確認し、手動対応するか `python3 "$LOOP_STEP" resume --loop-id <loop_id> --reset-counters --project <project_root>` で再開してください}
-{PASSED: マージ判断は人間が行ってください（auto-merge は付与されません）}
+{PASSED: マージ判断は人間が行ってください（auto-merge は付与されません）。残存した非ブロッキング指摘がある場合は上記一覧を確認してください}
 ```
 
 ```bash
@@ -884,8 +900,9 @@ osascript -e 'display notification "{結果: 成功/失敗} — 反復 {n} 回, 
 ```
 
 Issue コメントには severity 件数・失敗シグネチャ種別だけを載せ、レビュー本文やコマンド生出力を
-載せない。通知は Issue 番号・結果・停止理由コードの件名レベルに限定する。通常終了の Issue / PR
-操作も `params.repo_identity_verified is true` を確認し、`params.worktree_path` を cwd に固定してから
+載せない（「残存した非ブロッキング指摘」の抜粋は 200 字までの短い引用に限り可とする）。通知は
+Issue 番号・結果・停止理由コードの件名レベルに限定する。通常終了の Issue / PR 操作も
+`params.repo_identity_verified is true` を確認し、`params.worktree_path` を cwd に固定してから
 行う。current shell の cwd で `gh` / `pr-create` を呼ばない。
 
 ## `stop` — 安全停止

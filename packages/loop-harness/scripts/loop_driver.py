@@ -1641,10 +1641,17 @@ class LoopDriver:
             # classification would never be revisited.
             state = lc.load_state(self.loop_id, self.project_dir)
             drained = self._classify_pending_findings(state, action_id, drained, config)
-        # code H4: an actionable finding drained against the old baseline must be surfaced
-        # immediately, not silently swallowed by rebaselining/pushing past it.
-        if drained.findings:
-            return lc.phase_check_to_dict(prw.phase_check_from_review_findings(drained))
+        # code H4 / issue #213+#228 review: only a *blocking* (critical/high) finding drained
+        # against the old baseline must be surfaced immediately, not silently swallowed by
+        # rebaselining/pushing past it. A non-blocking (medium/low) drain result must not
+        # short-circuit here -- doing so would strand a Maker's already-committed fix unpushed
+        # just because a nitpick arrived against the *old* baseline, even though nothing
+        # blocks this iteration from proceeding. `phase_check_from_review_findings`'s `passed`
+        # already encodes exactly this blocking/non-blocking distinction (see its docstring),
+        # so reuse it here rather than re-deriving the severity check.
+        drained_check = prw.phase_check_from_review_findings(drained)
+        if not drained_check.passed:
+            return lc.phase_check_to_dict(drained_check)
         # code H12: no drained findings and no new Maker commit means there is nothing worth
         # pushing/polling for yet; short-circuit the same way LP-1's no_new_commit shortcut
         # does instead of burning a full push + poll_interval/timeout cycle on a no-op push.
@@ -2465,9 +2472,7 @@ class LoopDriver:
     def _run_exit_success(self, state: lc.LoopState, params: dict[str, Any]) -> dict[str, Any]:
         """Success terminal action: notify + Issue comment; no additional repo writes here."""
         self._notify(state, "exit_success")
-        self._maybe_comment(
-            state, f"loop-harness: implementation succeeded (PR #{state.pr_number})."
-        )
+        self._maybe_comment(state, _exit_success_comment(state, params))
         return {}
 
     def _run_exit_failure(
@@ -2959,7 +2964,7 @@ def _format_untrusted_issue_block(snapshot: dict[str, Any]) -> str:
 
 
 def _pr_review_findings_from_last_check(state: lc.LoopState) -> list[dict[str, Any]]:
-    """Extract `source == "pr_review"` findings from `state.last_check_result` (code L2).
+    """Extract blocking `source == "pr_review"` findings from `state.last_check_result` (code L2).
 
     `state.last_check_result` is whatever the most recently *completed* action wrote via
     `lc.complete()`; in the `pr_review_response` phase, `run_maker` is only ever proposed after
@@ -2970,6 +2975,10 @@ def _pr_review_findings_from_last_check(state: lc.LoopState) -> list[dict[str, A
     `source == "pr_review"` filter is still applied defensively rather than trusting phase alone,
     mirroring this module's existing "verify, don't just assume" posture (e.g. `_draft_pr`'s
     guard calls, code L1).
+
+    Only `severity in lc.BLOCKING_SEVERITIES` (critical/high) findings are returned (issue
+    #213): the Maker fixes what actually blocks the phase from passing, never re-litigating
+    medium/low findings a reviewer left as non-blocking commentary.
     """
     last_check = state.last_check_result
     if not isinstance(last_check, dict):
@@ -2982,9 +2991,43 @@ def _pr_review_findings_from_last_check(state: lc.LoopState) -> list[dict[str, A
         if not isinstance(result, dict):
             continue
         for finding in result.get("findings") or []:
-            if isinstance(finding, dict) and finding.get("source") == "pr_review":
+            if (
+                isinstance(finding, dict)
+                and finding.get("source") == "pr_review"
+                and finding.get("severity") in lc.BLOCKING_SEVERITIES
+            ):
                 findings.append(finding)
     return findings
+
+
+def _exit_success_comment(state: lc.LoopState, params: dict[str, Any]) -> str:
+    """Build the `exit_success` Issue comment, listing any still-open non-blocking findings.
+
+    `params["non_blocking_open"]` is `loop_common._non_blocking_open_from_last_check()`'s
+    output (empty unless this loop just exited `pr_review_response` with blocking-free,
+    open medium/low findings nobody dismissed -- issue #213/B). Falls back to the previous
+    plain success message when there is nothing non-blocking to report, matching prior
+    behavior exactly for every other exit path (e.g. `implementation`-phase success).
+    """
+    base = f"loop-harness: implementation succeeded (PR #{state.pr_number})."
+    open_items = params.get("non_blocking_open")
+    if not isinstance(open_items, list) or not open_items:
+        return base
+    lines = [base, "", f"Non-blocking findings still open ({len(open_items)}), not dismissed:"]
+    for item in open_items:
+        if not isinstance(item, dict):
+            continue
+        severity = item.get("severity") or "unknown"
+        path = item.get("path") or "(no path)"
+        line = item.get("line")
+        location = f"{path}:{line}" if line is not None else str(path)
+        # PR#228 review: a multi-line body_excerpt would otherwise break the `- [...]: ...`
+        # bullet across lines, corrupting the Markdown list. `_open_non_blocking_findings()`
+        # already normalizes this at the source; this is a second, independent normalization
+        # so the comment is correct even if `params["non_blocking_open"]` came from elsewhere.
+        excerpt = " ".join(str(item.get("body_excerpt") or "").split())
+        lines.append(f"- [{severity}] {location}: {excerpt}")
+    return "\n".join(lines)
 
 
 def _format_pr_review_findings_block(findings: list[dict[str, Any]]) -> str:

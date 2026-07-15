@@ -211,6 +211,11 @@ class LoopState:
     maker_agent: str | None = None
 
 
+#: Severities that block phase progress (pr_review_response no-progress guard, Maker prompt
+#: input filtering). Medium/low findings are reported but never block or feed the guard.
+BLOCKING_SEVERITIES = frozenset({"critical", "high"})
+
+
 @dataclass(frozen=True)
 class Finding:
     """LLM or mechanical finding."""
@@ -987,12 +992,22 @@ def normalize_pr_finding_signature(
     return _short_hash(f"{path}:{line_bucket}:{body}")
 
 
-def build_pr_iteration_findings(pr_review: dict[str, Any], iteration: int) -> IterationFindings:
-    """Build current-iteration open signature summary from state.pr_review."""
+def build_pr_iteration_findings(
+    pr_review: dict[str, Any], iteration: int, *, severities: frozenset[str] | None = None
+) -> IterationFindings:
+    """Build current-iteration open signature summary from state.pr_review.
+
+    When `severities` is given, only records whose `severity` is a member contribute to
+    `signatures`/`new_count` (dismissed records are always excluded regardless of severity).
+    Callers feeding the no-progress guard pass `severities=BLOCKING_SEVERITIES` so low/medium
+    findings can never contribute to a no-progress determination (issue #213).
+    """
     signatures: set[str] = set()
     new_count = 0
     for signature, record in _pr_findings_map(pr_review).items():
         if record.get("status") == "dismissed":
+            continue
+        if severities is not None and record.get("severity") not in severities:
             continue
         if int(record.get("last_seen_iteration") or 0) == iteration:
             signatures.add(signature)
@@ -1004,12 +1019,19 @@ def build_pr_iteration_findings(pr_review: dict[str, Any], iteration: int) -> It
 def evaluate_pr_review_no_progress(
     previous: IterationFindings, current: IterationFindings
 ) -> NoProgressResult:
-    """Evaluate PR review no-progress by reraised signatures or new-count plateau."""
-    reraised = current.signatures & previous.signatures
-    if reraised:
-        return NoProgressResult(True, "reraised", reraised)
-    if current.new_count >= previous.new_count:
-        return NoProgressResult(True, "new_count_non_decreasing")
+    """Evaluate PR review no-progress by exact re-raise of the same blocking signature set.
+
+    Callers must pass severity-filtered `IterationFindings` (`severities=BLOCKING_SEVERITIES`,
+    see `build_pr_iteration_findings`) so this only ever compares critical/high signatures.
+    Only an identical, non-empty blocking signature set re-raised across iterations counts as
+    no-progress. A completely new signature set, or any partial reduction of the previous set
+    (e.g. `{A, B}` -> `{A, C}` or `{A, B}` -> `{A}`), counts as progress: the Maker made *some*
+    change even if it didn't fully resolve every finding. Runaway iteration without full
+    convergence is bounded separately by the `max_iterations` and `no_new_commit` guards, not
+    by this signature comparison (issue #213).
+    """
+    if current.signatures and current.signatures == previous.signatures:
+        return NoProgressResult(True, "reraised", current.signatures)
     return NoProgressResult(False, "progress")
 
 
@@ -1590,6 +1612,26 @@ def _persist_preproposal_stop(
     _write_state(state, project_dir)
 
 
+def _non_blocking_open_from_last_check(state: LoopState) -> list[dict[str, Any]]:
+    """Return the non-blocking (medium/low) findings still open at `exit_success` time.
+
+    Sourced from the last completed phase check's `non_blocking_open` metadata (see
+    `pr_review_wait.phase_check_from_review_findings`). Empty for phases/loop definitions that
+    don't produce that metadata key (e.g. `exit_success` reached from a non-`pr_review_response`
+    phase), so this is always safe to call regardless of which phase is exiting (issue #213).
+    """
+    last_check = state.last_check_result
+    if not isinstance(last_check, dict):
+        return []
+    metadata = last_check.get("metadata")
+    if not isinstance(metadata, dict):
+        return []
+    items = metadata.get("non_blocking_open")
+    if not isinstance(items, list):
+        return []
+    return [item for item in items if isinstance(item, dict)]
+
+
 def _last_completed_action_name(loop_id: str, project_dir: str, state: LoopState) -> str:
     """Infer last completed action from last_check_result and status."""
     if state.last_completed_action is not None:
@@ -1618,7 +1660,10 @@ def _proposal_params(state: LoopState, action: str, project_dir: str) -> dict[st
             "pr_number": state.pr_number,
         }
     if action == Action.EXIT_SUCCESS.value:
-        return {"pr_number": state.pr_number}
+        return {
+            "pr_number": state.pr_number,
+            "non_blocking_open": _non_blocking_open_from_last_check(state),
+        }
 
     phase_def = _load_phase_definition(state, project_dir)
     if action == Action.RUN_MAKER.value:

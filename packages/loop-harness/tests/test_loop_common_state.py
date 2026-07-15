@@ -180,6 +180,68 @@ def test_custom_loop_proposal_keeps_phase_specific_maker(
     assert params["maker_agent"] == "tester"
 
 
+def test_exit_success_proposal_params_include_non_blocking_open_from_last_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """issue #213/B: `exit_success` proposal params must mirror the last completed phase
+    check's `non_blocking_open` metadata (see `pr_review_wait.phase_check_from_review_findings`)
+    so LP-1's skill-facing CLI response can report residual non-blocking findings too, not
+    just LP-2's own Issue comment."""
+    project_dir, _lock = _setup_loop(tmp_path, monkeypatch, status="running")
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.pr_number = 77
+    state.last_check_result = {
+        "passed": True,
+        "signature": "sig",
+        "infrastructure_failure": False,
+        "results": [],
+        "metadata": {
+            "non_blocking_open": [
+                {
+                    "signature": "sig-low",
+                    "severity": "low",
+                    "path": "app.py",
+                    "line": 10,
+                    "body_excerpt": "[P4] optional",
+                }
+            ]
+        },
+    }
+
+    params = lc._proposal_params(state, lc.Action.EXIT_SUCCESS.value, project_dir)
+
+    assert params["pr_number"] == 77
+    assert params["non_blocking_open"] == [
+        {
+            "signature": "sig-low",
+            "severity": "low",
+            "path": "app.py",
+            "line": 10,
+            "body_excerpt": "[P4] optional",
+        }
+    ]
+
+
+def test_exit_success_proposal_params_non_blocking_open_defaults_to_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Phases without pr_review metadata (e.g. a plain `implementation`-phase success) must
+    not error and must report an empty list, matching prior behavior exactly."""
+    project_dir, _lock = _setup_loop(tmp_path, monkeypatch, status="running")
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.pr_number = 77
+    state.last_check_result = {
+        "passed": True,
+        "signature": "sig",
+        "infrastructure_failure": False,
+        "results": [],
+    }
+
+    params = lc._proposal_params(state, lc.Action.EXIT_SUCCESS.value, project_dir)
+
+    assert params == {"pr_number": 77, "non_blocking_open": []}
+
+
 def test_custom_loop_complete_accepts_non_allowlisted_maker_without_persisting(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
