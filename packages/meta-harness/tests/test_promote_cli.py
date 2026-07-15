@@ -22,8 +22,10 @@ mh = load_module(
 
 _CAND_ID = "cand-20260709-010000-promote-abcd"
 _PROMOTE_BRANCH = "meta/promote-20260709-010000-promote-abcd"
-_SUITE_HASH = "a" * 64
-_EVALUATOR_HASH = "b" * 64
+_SUITE_HASH = cli.prm.ev.compute_suite_hash(
+    cli.prm.ev.validate_target_suite(cli.prm._PACKAGE_DIR, cli.prm._SCHEMA_DIR, "claude-harness")
+)
+_EVALUATOR_HASH = cli.prm.ev.compute_configured_evaluator_hash(mh.DEFAULTS)
 
 
 def _sample_sk_key(key_kind: str | None = None) -> str:
@@ -116,31 +118,113 @@ def _append_run(
     quality: float = 90.0,
     suite_hash: str = _SUITE_HASH,
     evaluator_hash: str = _EVALUATOR_HASH,
+    evaluation_id: str | None = None,
 ) -> None:
+    config = mh.load_config(git_project)
+    manifest = mh.read_candidate_manifest(git_project, config, cand_id)
+    assert manifest is not None
+    run_event = {
+        "event": "run_completed",
+        "ts": mh.now_iso(),
+        "schema_version": "1.0",
+        "run_id": run_id,
+        "cand_id": cand_id,
+        "scenario_id": "holdout" if holdout else "train",
+        "target": "claude-harness",
+        "suite_id": "claude-harness",
+        "suite_hash": suite_hash,
+        "scenario_hash": "d" * 64,
+        "evaluator_hash": evaluator_hash,
+        "verdict": verdict,
+        "quality_score": quality,
+        "critical_pass_rate": 1.0 if verdict == "pass" else 0.0,
+        "cost": {
+            "input_tokens": 50,
+            "output_tokens": 50,
+            "total_tokens": 100,
+            "tool_uses": 0,
+            "duration_ms": 1,
+            "total_cost_usd": 0.01,
+            "num_turns": 1,
+        },
+        "attempt": 1,
+        "attempts_total": 1,
+        "holdout": holdout,
+    }
+    mh.append_ledger_event(git_project, config, run_event)
+    events = mh.read_ledger_events(git_project, config)
+    # A `holdout=False` call and its paired `holdout=True` call (the pattern used throughout
+    # this file) must share one evaluation_id, matching production behavior where
+    # `evaluator.evaluate_candidate` generates the id once per `evaluate` invocation and reuses
+    # it for both sub-batches. Count non-holdout `run_completed` events already in the ledger
+    # (this already includes the run just appended above when `holdout` is False, but never
+    # counts a `holdout=True` run), so the paired holdout call reuses the same batch number as
+    # its preceding non-holdout call, while a later independent non-holdout call starts a new
+    # batch number.
+    batch_number = sum(
+        event.get("event") == "run_completed" and not event.get("holdout") for event in events
+    )
+    resolved_evaluation_id = evaluation_id or f"eval-20260709-010000-{batch_number:08x}"
     mh.append_ledger_event(
         git_project,
-        mh.load_config(git_project),
+        config,
         {
-            "event": "run_completed",
+            "event": "evaluation_completed",
             "ts": mh.now_iso(),
             "schema_version": "1.0",
-            "run_id": run_id,
+            "evaluation_id": resolved_evaluation_id,
             "cand_id": cand_id,
-            "scenario_id": "holdout" if holdout else "train",
             "target": "claude-harness",
-            "suite_id": "suite",
-            "suite_hash": suite_hash,
-            "scenario_hash": "d" * 64,
-            "evaluator_hash": evaluator_hash,
-            "verdict": verdict,
-            "quality_score": quality,
-            "critical_pass_rate": 1.0 if verdict == "pass" else 0.0,
-            "cost": {"total_tokens": 100, "duration_ms": 1},
-            "attempt": 1,
-            "attempts_total": 1,
             "holdout": holdout,
+            "own_run_ids": [run_id],
+            "own_suite_hash": suite_hash,
+            "evaluator_hash": evaluator_hash,
+            "own_critical_pass": verdict == "pass",
+            "regression_results": [],
+            "verdict": verdict,
+            "unverified_impacts": [],
+            "evaluation_base_commit": manifest["source_commit"],
+            "impacted_targets": [],
+            "impact_input_hash": "c" * 64,
+            "regression_cost_usd": 0.0,
         },
     )
+
+
+def _register_child_candidate(
+    git_project: Path,
+    tmp_path: Path,
+    *,
+    parent_id: str,
+    cand_id: str,
+    overlay_rel: str,
+    overlay_content: str,
+) -> dict:
+    config = mh.load_config(git_project)
+    parent = mh.read_candidate_manifest(git_project, config, parent_id)
+    assert parent is not None
+    overlay_dir = tmp_path / f"overlay-{cand_id}"
+    overlay_file = overlay_dir / overlay_rel
+    overlay_file.parent.mkdir(parents=True, exist_ok=True)
+    overlay_file.write_text(overlay_content, encoding="utf-8")
+    manifest = {
+        **parent,
+        "cand_id": cand_id,
+        "parent_id": parent_id,
+        "generation": int(parent["generation"]) + 1,
+        "config_hash": mh.compute_config_hash(overlay_dir, config),
+        "overlay_files": [overlay_rel],
+        "description": "child candidate",
+    }
+    mh.register_candidate(
+        git_project,
+        config,
+        cand_id=cand_id,
+        manifest=manifest,
+        overlay_dir=overlay_dir,
+        overlay_files=manifest["overlay_files"],
+    )
+    return manifest
 
 
 def _prepare_promotable_candidate(git_project: Path, git_run, tmp_path: Path) -> str:
@@ -405,12 +489,37 @@ def test_promote_rejects_when_latest_holdout_hashes_are_stale(
         evaluator_hash="f" * 64,
     )
     _append_run(git_project, cand_id, run_id="run-non-holdout-current", holdout=False)
-    monkeypatch.setattr(cli.prm, "_check_freshness", lambda *_args: None)
+    monkeypatch.setattr(cli.prm, "_check_freshness", lambda *_args, **_kwargs: None)
 
     exit_code = cli.cmd_promote(str(git_project), cand_id, False, False)
 
     assert exit_code == cli.EXIT_VALIDATION_ERROR
     assert "run hashes are stale" in capsys.readouterr().err
+    assert not any(event.get("event") == "promotion_reserved" for event in _events(git_project))
+
+
+def test_promote_rejects_train_holdout_evaluation_id_mismatch(
+    git_project: Path, git_run, tmp_path: Path
+) -> None:
+    cand_id = _register_candidate(git_project, git_run, tmp_path)
+    _append_run(
+        git_project,
+        cand_id,
+        run_id="run-non-holdout",
+        holdout=False,
+        evaluation_id="eval-batch-a",
+    )
+    _append_run(
+        git_project,
+        cand_id,
+        run_id="run-holdout",
+        holdout=True,
+        evaluation_id="eval-batch-b",
+    )
+
+    exit_code = cli.cmd_promote(str(git_project), cand_id, False, False)
+
+    assert exit_code == cli.EXIT_VALIDATION_ERROR
     assert not any(event.get("event") == "promotion_reserved" for event in _events(git_project))
 
 
@@ -489,9 +598,7 @@ def test_promote_opens_pr_without_marking_candidate_promoted(
         return _completed(args)
 
     monkeypatch.setattr(cli.prm, "_ref_exists", lambda _project, _ref: True)
-    monkeypatch.setattr(
-        cli.prm, "_check_freshness", lambda _root, _project, _manifest, _config: None
-    )
+    monkeypatch.setattr(cli.prm, "_check_freshness", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(cli.prm, "_find_open_pr_for_branch", lambda _project, _branch: None)
     monkeypatch.setattr(cli.prm, "_create_promotion_worktree", fake_worktree)
     monkeypatch.setattr(cli.prm.ev, "build_facet_and_context", lambda _worktree, runner: None)
@@ -528,9 +635,7 @@ def test_failed_promote_cleans_worktree_and_branch_then_retry_succeeds(
             raise cli.prm.PromotionRuntimeError("verify failed")
 
     monkeypatch.setattr(cli.prm, "_ref_exists", lambda _project, _ref: True)
-    monkeypatch.setattr(
-        cli.prm, "_check_freshness", lambda _root, _project, _manifest, _config: None
-    )
+    monkeypatch.setattr(cli.prm, "_check_freshness", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(cli.prm, "_find_open_pr_for_branch", lambda _project, _branch: None)
     monkeypatch.setattr(cli.prm, "_create_promotion_worktree", fake_worktree)
     monkeypatch.setattr(cli.prm.ev, "build_facet_and_context", lambda _worktree, runner: None)
@@ -562,7 +667,7 @@ def test_pr_creation_failure_cleans_pushed_remote_branch(
     cand_id = _prepare_promotable_candidate(git_project, git_run, tmp_path)
     deleted: list[tuple[Path, str]] = []
 
-    monkeypatch.setattr(cli.prm, "_check_freshness", lambda *_args: None)
+    monkeypatch.setattr(cli.prm, "_check_freshness", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(cli.prm, "_find_open_pr_for_branch", lambda *_args: None)
     monkeypatch.setattr(
         cli.prm,
@@ -608,9 +713,7 @@ def test_pr_created_but_opened_record_fails_keeps_reservation(
         raise cli.prm.PromotionValidationError("ledger schema rejected event")
 
     monkeypatch.setattr(cli.prm, "_ref_exists", lambda _project, _ref: True)
-    monkeypatch.setattr(
-        cli.prm, "_check_freshness", lambda _root, _project, _manifest, _config: None
-    )
+    monkeypatch.setattr(cli.prm, "_check_freshness", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(cli.prm, "_find_open_pr_for_branch", lambda _project, _branch: None)
     monkeypatch.setattr(
         cli.prm,
@@ -655,9 +758,7 @@ def test_stale_takeover_reuses_existing_open_pr(
     )
 
     monkeypatch.setattr(cli.prm, "_is_stale", lambda _ts, _config: True)
-    monkeypatch.setattr(
-        cli.prm, "_check_freshness", lambda _root, _project, _manifest, _config: None
-    )
+    monkeypatch.setattr(cli.prm, "_check_freshness", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         cli.prm,
         "_find_open_pr_for_branch",
@@ -829,10 +930,74 @@ def test_freshness_rejects_changed_skill_closure(git_project: Path, monkeypatch)
 
     monkeypatch.setattr(cli.prm, "_ref_exists", lambda *_args: True)
     monkeypatch.setattr(cli.prm, "_is_ancestor", lambda *_args: True)
-    monkeypatch.setattr(cli.prm.skill_targets, "materialized_baseline", baseline)
+    monkeypatch.setattr(cli.prm.ev, "materialized_candidate_baseline", baseline)
 
     with pytest.raises(cli.prm.PromotionValidationError, match="closure inputs changed"):
         cli.prm._check_freshness(git_project, git_project, manifest, mh.DEFAULTS)
+
+
+def test_freshness_checks_parent_lineage_overlay_paths(
+    git_project: Path, git_run, tmp_path: Path, monkeypatch
+) -> None:
+    parent_id = "cand-20260709-010010-parent-abcd"
+    child_id = "cand-20260709-010011-child-abcd"
+    _register_candidate(
+        git_project,
+        git_run,
+        tmp_path,
+        cand_id=parent_id,
+        overlay_rel="facets/parent.md",
+    )
+    manifest = _register_child_candidate(
+        git_project,
+        tmp_path,
+        parent_id=parent_id,
+        cand_id=child_id,
+        overlay_rel="facets/child.md",
+        overlay_content="child\n",
+    )
+    observed: list[str] = []
+
+    def changed(args, **_kwargs):
+        observed.extend(args)
+        return _completed(args, returncode=1)
+
+    monkeypatch.setattr(cli.prm, "_ref_exists", lambda *_args: True)
+    monkeypatch.setattr(cli.prm, "_is_ancestor", lambda *_args: True)
+    monkeypatch.setattr(cli.prm, "_run", changed)
+
+    with pytest.raises(cli.prm.PromotionValidationError, match="overlay target paths changed"):
+        cli.prm._check_freshness(git_project, git_project, manifest, mh.DEFAULTS)
+    assert "facets/parent.md" in observed
+    assert "facets/child.md" in observed
+
+
+def test_secret_scan_checks_parent_lineage_overlay(
+    git_project: Path, git_run, tmp_path: Path
+) -> None:
+    parent_id = "cand-20260709-010012-parent-abcd"
+    child_id = "cand-20260709-010013-child-abcd"
+    _register_candidate(
+        git_project,
+        git_run,
+        tmp_path,
+        cand_id=parent_id,
+        overlay_rel="facets/parent.md",
+        overlay_content=_sample_sk_key(),
+    )
+    manifest = _register_child_candidate(
+        git_project,
+        tmp_path,
+        parent_id=parent_id,
+        cand_id=child_id,
+        overlay_rel="facets/child.md",
+        overlay_content="child\n",
+    )
+
+    with pytest.raises(cli.prm.PromotionValidationError, match="overlay contains secret-like"):
+        cli.prm._check_output_secret_scan(
+            git_project, mh.load_config(git_project), manifest, promotion_outputs={}
+        )
 
 
 def test_promote_pr_body_fences_proposer_text() -> None:

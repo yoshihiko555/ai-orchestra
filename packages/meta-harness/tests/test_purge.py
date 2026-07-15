@@ -91,6 +91,29 @@ def _run_completed(cand_id: str, quality_score: float, verdict: str = "pass") ->
     }
 
 
+def _evaluation_completed(run: dict) -> dict:
+    return {
+        "event": "evaluation_completed",
+        "ts": mh.now_iso(),
+        "schema_version": "1.0",
+        "evaluation_id": "eval-20260711-120000-00000001",
+        "cand_id": run["cand_id"],
+        "target": run["target"],
+        "holdout": False,
+        "own_run_ids": [run["run_id"]],
+        "own_suite_hash": run["suite_hash"],
+        "evaluator_hash": run["evaluator_hash"],
+        "own_critical_pass": run["verdict"] == "pass",
+        "regression_results": [],
+        "verdict": run["verdict"],
+        "unverified_impacts": [],
+        "evaluation_base_commit": "a" * 40,
+        "impacted_targets": [],
+        "impact_input_hash": "c" * 64,
+        "regression_cost_usd": 0.0,
+    }
+
+
 class TestPurgeProtection:
     # EV-21
     def test_frontier_candidate_promoted_candidate_and_reserved_candidate_are_protected(
@@ -105,9 +128,9 @@ class TestPurgeProtection:
         _register_candidate(git_project, config, "cand-20260101-000004-plain-cand", tmp_path)
 
         # frontier candidate: high quality run + frontier --rebuild
-        mh.append_ledger_event(
-            git_project, config, _run_completed("cand-20260101-000001-frontier-cand", 95)
-        )
+        frontier_run = _run_completed("cand-20260101-000001-frontier-cand", 95)
+        mh.append_ledger_event(git_project, config, frontier_run)
+        mh.append_ledger_event(git_project, config, _evaluation_completed(frontier_run))
         run_meta("frontier", "--rebuild", project=git_project, check=True)
 
         # promoted candidate

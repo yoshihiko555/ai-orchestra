@@ -231,7 +231,7 @@ def snapshot_filtered_store(
     seen_non_holdout: set[str] = set()
     holdout_run_ids: set[str] = set()
     for event in events:
-        if event.get("event") != "run_completed":
+        if event.get("event") not in {"run_completed", "regression_run_completed"}:
             continue
         run_id = event.get("run_id")
         if not run_id:
@@ -311,7 +311,9 @@ def render_proposer_prompt(
     rendered_valid_runs = _join_or_none([str(run_id) for run_id in valid_based_on_run_ids or ()])
     if target.startswith("skill:"):
         resolution = skill_targets.allowed_overlay_paths(view_dir / "baseline", target, config)
-        allowed_paths = "\n".join(f"  - {path}" for path in sorted(resolution.private_paths))
+        allowed_paths = "\n".join(
+            f"  - {path}" for path in sorted(skill_targets.overlay_allowlist(resolution, config))
+        )
     else:
         allowed_paths = "  - facets/**"
     return Template(template).safe_substitute(
@@ -595,10 +597,16 @@ def _project_ledger_events(events: tuple[dict[str, Any], ...], store_view: Path)
     holdout_run_ids: set[str] = set()
     projected_lines: list[str] = []
     for event in events:
-        if event.get("event") == "run_completed" and bool(event.get("holdout")):
+        kind = event.get("event")
+        if kind in {"run_completed", "regression_run_completed"} and bool(event.get("holdout")):
             run_id = event.get("run_id")
             if run_id:
                 holdout_run_ids.add(str(run_id))
+            continue
+        if kind == "evaluation_completed" and bool(event.get("holdout")):
+            holdout_run_ids.update(str(run_id) for run_id in event.get("own_run_ids") or [])
+            for result in event.get("regression_results") or []:
+                holdout_run_ids.update(str(run_id) for run_id in result.get("run_ids") or [])
             continue
         projected_lines.append(json.dumps(event, ensure_ascii=False, sort_keys=True))
     dst.write_text("\n".join(projected_lines) + ("\n" if projected_lines else ""), encoding="utf-8")
@@ -752,10 +760,13 @@ def _verify_no_holdout_ledger_rows(view_dir: Path) -> None:
             raise ViewBuildError(f"filtered view ledger is invalid at line {line_no}") from exc
         if not isinstance(event, dict):
             raise ViewBuildError(f"filtered view ledger event must be an object at line {line_no}")
-        if event.get("event") == "run_completed" and bool(event.get("holdout")):
-            raise ViewBuildError(
-                f"holdout run_completed leaked into filtered view at line {line_no}"
-            )
+        if event.get("event") in {
+            "run_completed",
+            "regression_run_completed",
+            "evaluation_completed",
+        } and bool(event.get("holdout")):
+            kind = str(event.get("event"))
+            raise ViewBuildError(f"holdout {kind} leaked into filtered view at line {line_no}")
 
 
 def _verify_holdout_ids_absent(view_dir: Path, known_holdout_run_ids: set[str]) -> None:

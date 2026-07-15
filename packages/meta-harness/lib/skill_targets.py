@@ -34,13 +34,44 @@ class SkillTargetResolution:
     closure_hash: str
 
 
+@dataclass(frozen=True)
+class SkillImpactContext:
+    impacted_targets: tuple[str, ...]
+    input_hash: str
+
+
+def _ref_has_facets(project_root: Path, source_ref: str) -> bool:
+    """Return True only if ``facets`` exists as a tracked tree at ``source_ref``."""
+    try:
+        completed = subprocess.run(
+            ["git", "cat-file", "-e", f"{source_ref}:facets"],
+            cwd=project_root,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return completed.returncode == 0
+
+
 @contextmanager
 def materialized_baseline(
     project_root: Path,
     source_ref: str,
 ) -> Iterator[Path]:
-    """Materialize tracked ``facets/`` from one immutable git ref."""
+    """Materialize tracked ``facets/`` from one immutable git ref.
+
+    A ref with no tracked ``facets/`` directory (e.g. a downstream project that never
+    adopted facets) yields an empty baseline instead of failing, matching
+    ``resolve_skill_impacts``'s zero-impact treatment for the same deployment shape.
+    """
     project_root = project_root.resolve()
+    if not _ref_has_facets(project_root, source_ref):
+        with tempfile.TemporaryDirectory(prefix="meta-harness-skill-baseline-") as raw_dir:
+            yield Path(raw_dir)
+        return
     try:
         completed = subprocess.run(
             ["git", "archive", "--format=tar", source_ref, "facets"],
@@ -91,13 +122,65 @@ def resolve_skill_target(root: Path, target: str) -> SkillTargetResolution:
 
 
 def allowed_overlay_paths(root: Path, target: str, config: dict) -> SkillTargetResolution:
-    """Return the full resolution and enforce the PR1 regression staging gate."""
-    regression_enabled = bool((config.get("regression") or {}).get("enabled", False))
-    if regression_enabled:
-        raise SkillTargetError(
-            "regression.enabled=true requires the cross-skill regression evaluator (not available)"
-        )
+    """Return the target resolution used by the configured overlay authority."""
     return resolve_skill_target(root, target)
+
+
+def overlay_allowlist(resolution: SkillTargetResolution, config: dict) -> frozenset[str]:
+    """Use the full closure when regression protection is enabled, otherwise private paths."""
+    if bool((config.get("regression") or {}).get("enabled", True)):
+        return resolution.closure_paths
+    return resolution.private_paths
+
+
+def resolve_skill_impacts(
+    root: Path,
+    overlay_paths: set[str] | frozenset[str] | list[str],
+    *,
+    candidate_target: str,
+) -> SkillImpactContext:
+    """Resolve skills whose baseline closure intersects the candidate overlay."""
+    root = root.resolve()
+    composition_dir = root / "facets" / "compositions" / "skills"
+    if composition_dir.is_symlink():
+        raise SkillTargetError(f"skill composition directory is missing: {composition_dir}")
+    if composition_dir.exists() and not composition_dir.is_dir():
+        raise SkillTargetError(f"skill composition directory is missing: {composition_dir}")
+    # Non-facets-based deployments (no facets/compositions/skills at all) have no skill
+    # targets to resolve; treat as zero impact instead of failing evaluate/promote. Irregular
+    # cases (symlink, or a regular file at this path) are still rejected above. `glob()` on a
+    # missing directory below returns an empty iterator (no OSError), so `resolutions` stays
+    # empty and this naturally yields a deterministic empty-input SkillImpactContext.
+
+    resolutions: list[SkillTargetResolution] = []
+    for path in sorted(composition_dir.glob("*.yaml"), key=lambda item: item.name):
+        if path.is_symlink() or not path.is_file():
+            raise SkillTargetError(f"skill composition must be a regular file: {path}")
+        slug = path.stem
+        if not _SLUG_RE.fullmatch(slug):
+            raise SkillTargetError(f"invalid skill composition slug: {slug!r}")
+        resolutions.append(resolve_skill_target(root, f"skill:{slug}"))
+
+    hasher = hashlib.sha256()
+    impacted: list[str] = []
+    changed = frozenset(str(path) for path in overlay_paths if str(path).startswith("facets/"))
+    for resolution in resolutions:
+        hasher.update(resolution.target.encode("utf-8"))
+        hasher.update(b"\0")
+        hasher.update(resolution.closure_hash.encode("ascii"))
+        hasher.update(b"\0")
+        for relative in sorted(resolution.closure_paths):
+            hasher.update(relative.encode("utf-8"))
+            hasher.update(b"\0")
+        if changed.intersection(resolution.closure_paths):
+            impacted.append(resolution.target)
+
+    if candidate_target.startswith("skill:"):
+        impacted = [target for target in impacted if target != candidate_target]
+    return SkillImpactContext(
+        impacted_targets=tuple(sorted(impacted)),
+        input_hash=hasher.hexdigest(),
+    )
 
 
 def _target_skill_slug(target: str) -> str:

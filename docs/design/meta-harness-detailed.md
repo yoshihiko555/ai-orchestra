@@ -1577,12 +1577,11 @@ proposer は同一 workspace 内で起動される限り、`Glob` / `Read` 等�
   lineage 順で適用した状態とする。候補自身が composition に参照を追加しても同一候補の許可集合は広がらず、
   その参照は次世代候補からだけ効く。manifest には適用前 closure の hash を保存し、evaluate / loop / promote
   で lineage ごと再検証する。
-- `regression.enabled: false` の PR1 段階では、overlay は target skill のカテゴリ限定 private file、すなわち
-  `facets/compositions/skills/<slug>.yaml`、`facets/instructions/<slug>.md`、当該 composition が参照する
-  `facets/scripts/*` だけを許可する。refcount は権威判定に使わず、policy / output-contract / knowledge は
-  参照元が当該 skill だけでも常に拒否する。
-  `regression.enabled: true` は cross-skill suite が実装される PR2 まで fail-closed とし、未実装の回帰検査を
-  通過扱いにしない。
+- `regression.enabled: true`（既定）では、overlay は pre-overlay baseline の composition 参照 closure 全体を
+  許可し、共有 policy / output-contract / knowledge を含む変更を cross-skill 回帰評価で保護する。
+  `false` は PR1 の専有縮退を維持し、`facets/compositions/skills/<slug>.yaml`、
+  `facets/instructions/<slug>.md`、当該 composition が参照する `facets/scripts/*` だけを許可する。
+  refcount はどちらのモードでも権威判定に使わない。
   親候補からの累積 overlay を保つ `inherited_overlay_dir` は、manifest・ファイル一覧・hash を再検証済みの
   immutable 登録候補だけを evaluator 内部から渡せる信頼入力とする。継承元とbyte同値のファイルだけは
   現世代のカテゴリ判定を再適用せず保持できるが、1 byteでも変われば現世代の許可集合で再検証する。
@@ -1606,7 +1605,46 @@ proposer は同一 workspace 内で起動される限り、`Glob` / `Read` 等�
   closure hash と manifest の `target_closure_hash` を比較する。composition または参照 facet が変わっていれば
   overlay path 自体が未変更でも拒否する。
 
-### 4-1. M0 実測ゲート（2026-07-14）
+### 4-1. cross-skill 回帰評価
+
+- baseline snapshot の唯一の定義は、候補 manifest の `source_commit` から materialize した `facets/` に
+  **親候補 lineage の累積 overlay だけ**を適用した tree とする。候補自身の overlay は適用しない。
+  register/propose の closure、影響スキル逆引き、evaluate の impact context、promote freshness は同じ helper を
+  使う。promote の再計算だけは source ref を最新 `origin/main` に置き換え、親 lineage は同じ順序で適用する。
+- baseline の `facets/compositions/skills/*.yaml` を全走査し、各 skill の参照 closure から
+  `facet path -> skill target set` の逆写像を作る。候補 overlay path と closure が交差する skill を影響対象とし、
+  候補自身が `skill:<slug>` の場合だけ同 target を除く。この判定は候補 target 種別に依存せず、
+  `claude-harness` 候補が共有 facet を変更した場合も適用する。候補 overlay による参照追加・削除は同一候補の
+  逆写像を変更せず、次世代候補からだけ反映する。
+- evaluate 1 回に `evaluation_id` を割り当てる。own suite は既存 `run_completed`、影響 suite は
+  `regression_run_completed` で記録し、最後に `evaluation_completed` を追記する。サマリには own critical、
+  suite 別 regression critical、合成 verdict、`unverified_impacts`、own/regression run id、
+  `evaluation_base_commit`、影響 skill 集合、逆写像入力 hash を保存する。各新イベントは append 前に
+  `ledger.event.schema.json` で検証する。own run と regression run は別の per-attempt worktree を使い、
+  regression run の識別キーは `(suite_id, scenario_id)` とする。
+- 通常 evaluate / loop は影響 suite の train だけを追加実行する。合成 verdict は
+  `own_critical_pass AND regression_critical_pass` の hard gate とし、最新の完了した non-holdout
+  `evaluation_completed` が pass の候補だけを frontier eligible にする。own run 後に回帰が中断し、サマリが
+  無い評価バッチは未完了であり frontier に載せない。quality/cost 軸は own `run_completed` だけから算出する。
+- promote は、同一 `evaluation_id` の holdout `evaluation_completed` で own と全影響 suite の holdout が
+  pass した場合だけ許可する。skill suite は現在の全 holdout scenario を `evaluate.repeat_frontier` 回ずつ
+  完走した run id 集合との完全一致も要求し、`--scenario` / `--repeat 1` による部分評価を昇格根拠にしない。
+  suite hash は own frontier hash を流用せず suite ごとに現在値と照合する。
+  さらに最新 `origin/main` baseline で影響 skill 集合と逆写像入力 hash を再計算し、記録済み impact context と
+  一致しなければ再評価を要求して拒否する。suite が無い影響 skill は `unverified_impacts` に記録して評価を
+  継続し、promote PR 本文の警告セクションに表示する。評価後に suite が追加されて検証可能になった場合も
+  `unverified_impacts` の鮮度不一致として昇格を拒否し、holdout 再評価を要求する。親を含む候補 lineage の
+  overlay path 全集合を `origin/main` との差分対象にし、全 manifest/overlay の integrity と L3 secret scan を
+  PR 作成直前に再検証する。
+- 回帰コストは `regression.max_affected_suites`（既定 4）と evaluation 単位の
+  `regression.max_budget_usd`（既定 12.0）の二層で制限する。超過は黙って skip せず evaluation error とする。
+  1 CLI 呼び出しが train / holdout の両バッチを含む場合も `evaluation_id` と残予算を共有する。run cost は
+  scenario CLI の申告値だけでなく、同じ broker を使う rubric judge を含む
+  `broker.metrics.estimated_cost_usd` との大きい方を正とし、metrics 欠落・異常時は attempt 割当額を消費済みと
+  みなす。regression run の `total_cost_usd` は loop の `budget_usd` に算入する。`regression.*` は evaluator
+  hash に含め、enabled 切替や上限変更前の評価を current と扱わない。`regression_skipped` 状態は設けない。
+
+### 4-2. M0 実測ゲート（2026-07-14）
 
 | 確認項目 | 結果 | 判断 |
 | --- | --- | --- |
@@ -1715,7 +1753,9 @@ scenario_run:
   max_budget_usd_default: 3.0 # §14 の実測反映
   max_output_tokens_default: 4096 # broker pre-admission 用。scenario の budget で上書き可能
 regression:
-  enabled: false # true は cross-skill regression evaluator 実装まで fail-closed
+  enabled: true # false は skill target の専有 facet allowlist へ縮退
+  max_affected_suites: 4
+  max_budget_usd: 12.0 # evaluation 単位の regression run 合計上限
 judge:
   tool: claude-bare # tool-less judge。codexはread deny不能のため無効（ADR-20260711-033）
   model: null # null = 各バックエンドの既定モデル
@@ -2347,8 +2387,9 @@ rejected 保存 + ledger へ **`proposer_security_violation` イベント（`led
 **L3 — 出力経路の secret scan（検知層・汎用。2026-07-11 実装済み）**: 同じ登録時 validation で
 汎用 secret パターン（`redaction.REDACTION_PATTERNS` の `sk-` 系 API key・`ghp_`・`AKIA`・PEM 等に
 加え、JWT 3 セグメント形式 `eyJ...` を追加）をスキャンする。**promote 前提条件（§12-1）でも
-同一スキャンを再実行**する（`_check_output_secret_scan`。スキャン導入前に登録済みの候補への
-遡及防御。canary は run 固有で promote 時には未知のため promote 側は L3 汎用パターンのみを走査し、
+同一スキャンを全候補 lineage の manifest/overlay へ再実行**する（`_check_output_secret_scan`。
+スキャン導入前に登録済みの親候補を含む遡及防御。canary は run 固有で promote 時には未知のため promote 側は
+L3 汎用パターンのみを走査し、
 hit で exit 2）。登録時 hit は `proposer_security_violation(detector: L3_secret_scan)` を記録する。
 promote 側は**ゲートのみ**（exit 2）で `proposer_security_violation` は記録しない（意図的な非対称）:
 promote は人間駆動で loud に停止し、前提条件は reserve と PR 直前再検証で二重に走るため二重記録を
