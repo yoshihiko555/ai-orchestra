@@ -2243,6 +2243,78 @@ def test_load_review_findings_snapshot_fails_closed_for_invalid_schema(
         prw.load_review_findings_snapshot("abcd1234-issue-1", project_dir, "action-1", lease_token)
 
 
+def test_load_review_findings_snapshot_accepts_legacy_v1_payload_without_open_non_blocking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR#228 review: a v1 snapshot (pre-#213, no `open_non_blocking` key) persisted by an
+    in-flight loop before this package upgraded must still be readable, defaulting
+    `open_non_blocking` to `()` -- failing closed here would strand that loop unable to
+    resume/classify."""
+    project_dir = _setup_state(tmp_path, monkeypatch)
+    lease_token = _lease(project_dir)
+    _activate_pending_review_action(project_dir)
+    payload = {
+        **prw._review_findings_snapshot_dict(_empty_review_findings_result()),
+        "loop_id": "abcd1234-issue-1",
+        "action_id": "action-1",
+        "schema_version": 1,
+    }
+    del payload["open_non_blocking"]
+    lc.save_artifact(
+        "abcd1234-issue-1", project_dir, "action-1", "review_findings.json", json.dumps(payload)
+    )
+
+    restored = prw.load_review_findings_snapshot(
+        "abcd1234-issue-1", project_dir, "action-1", lease_token
+    )
+
+    assert restored.open_non_blocking == ()
+
+
+def test_load_review_findings_snapshot_rejects_v1_payload_with_open_non_blocking_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `schema_version: 1` payload that *does* carry an `open_non_blocking` key is still
+    rejected -- v1's own key set stays exact; only its *absence* is tolerated."""
+    project_dir = _setup_state(tmp_path, monkeypatch)
+    lease_token = _lease(project_dir)
+    _activate_pending_review_action(project_dir)
+    payload = {
+        **prw._review_findings_snapshot_dict(_empty_review_findings_result()),
+        "loop_id": "abcd1234-issue-1",
+        "action_id": "action-1",
+        "schema_version": 1,
+    }
+    lc.save_artifact(
+        "abcd1234-issue-1", project_dir, "action-1", "review_findings.json", json.dumps(payload)
+    )
+
+    with pytest.raises(prw.PrReviewWaitError, match="invalid review findings snapshot"):
+        prw.load_review_findings_snapshot("abcd1234-issue-1", project_dir, "action-1", lease_token)
+
+
+def test_load_review_findings_snapshot_rejects_unsupported_future_schema_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A schema version newer than what this package knows how to read (e.g. 3) must fail
+    closed, not silently coerce to the current shape."""
+    project_dir = _setup_state(tmp_path, monkeypatch)
+    lease_token = _lease(project_dir)
+    _activate_pending_review_action(project_dir)
+    payload = {
+        **prw._review_findings_snapshot_dict(_empty_review_findings_result()),
+        "loop_id": "abcd1234-issue-1",
+        "action_id": "action-1",
+        "schema_version": 3,
+    }
+    lc.save_artifact(
+        "abcd1234-issue-1", project_dir, "action-1", "review_findings.json", json.dumps(payload)
+    )
+
+    with pytest.raises(prw.PrReviewWaitError, match="unsupported schema_version"):
+        prw.load_review_findings_snapshot("abcd1234-issue-1", project_dir, "action-1", lease_token)
+
+
 @pytest.mark.parametrize("field_name", ["iteration_findings", "previous_iteration_findings"])
 def test_load_review_findings_snapshot_rejects_new_count_without_signatures(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field_name: str
@@ -2610,6 +2682,28 @@ def test_phase_check_fail_safe_high_from_unclassified_finding_blocks() -> None:
             )
         )
         assert result.passed is False
+
+
+def test_open_non_blocking_findings_normalizes_multiline_body_excerpt() -> None:
+    """PR#228 review: a multi-line reviewer comment must not leak newlines into
+    `NonBlockingFinding.body_excerpt` -- consumers (e.g. `loop_driver._exit_success_comment()`)
+    render it as a single Markdown bullet line, and an embedded newline would corrupt that.
+    Whitespace normalization happens *before* the 200-char truncation."""
+    findings_map = {
+        "sig-a": {
+            "status": "open",
+            "severity": "low",
+            "path": "app.py",
+            "line": 5,
+            "body_excerpt": "line one\n\n   line two  \nline three",
+        }
+    }
+
+    result = prw._open_non_blocking_findings(findings_map)
+
+    assert len(result) == 1
+    assert result[0].body_excerpt == "line one line two line three"
+    assert "\n" not in result[0].body_excerpt
 
 
 def test_repeated_finding_preserves_highest_severity() -> None:

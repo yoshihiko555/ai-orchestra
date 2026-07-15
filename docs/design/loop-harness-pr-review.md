@@ -314,7 +314,11 @@ FT-13 の無進捗 guard 経路に集計される。
   `ReviewFindingsResult` の 7 フィールド（`findings` / `iteration_findings` /
   `previous_iteration_findings` / `processed_comment_ids` / `ignored_untrusted_comment_count` /
   `needs_classification_count` / `open_non_blocking`）だけを持つ（`open_non_blocking` の追加に伴い
-  schema_version を 1 → 2 に更新。#213 対応）。必須キーの欠損・未知キー・
+  schema_version を 1 → 2 に更新。#213 対応）。後方互換として `schema_version: 1` の artifact は
+  `open_non_blocking` キー不在を許容し `()` をデフォルトに読み込む（アップグレード時に
+  `wait_external_review` 中の in-flight ループが resume 不能にならないため。v1 に
+  `open_non_blocking` が存在する場合や `schema_version` が 2 超の場合は従来どおり拒否する）。
+  上記以外の必須キーの欠損・未知キー・
   型不一致・未知 severity・負の件数・binding 不一致は `PrReviewWaitError` とし、部分復元しない。
 - save / load は active lease と state の current phase / pending action を検証し、`action_id` 一致に加えて
   action が `wait_external_review` である場合に限り許可する。stale action、別 action、pending action 不在を

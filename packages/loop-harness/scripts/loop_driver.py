@@ -1641,10 +1641,17 @@ class LoopDriver:
             # classification would never be revisited.
             state = lc.load_state(self.loop_id, self.project_dir)
             drained = self._classify_pending_findings(state, action_id, drained, config)
-        # code H4: an actionable finding drained against the old baseline must be surfaced
-        # immediately, not silently swallowed by rebaselining/pushing past it.
-        if drained.findings:
-            return lc.phase_check_to_dict(prw.phase_check_from_review_findings(drained))
+        # code H4 / issue #213+#228 review: only a *blocking* (critical/high) finding drained
+        # against the old baseline must be surfaced immediately, not silently swallowed by
+        # rebaselining/pushing past it. A non-blocking (medium/low) drain result must not
+        # short-circuit here -- doing so would strand a Maker's already-committed fix unpushed
+        # just because a nitpick arrived against the *old* baseline, even though nothing
+        # blocks this iteration from proceeding. `phase_check_from_review_findings`'s `passed`
+        # already encodes exactly this blocking/non-blocking distinction (see its docstring),
+        # so reuse it here rather than re-deriving the severity check.
+        drained_check = prw.phase_check_from_review_findings(drained)
+        if not drained_check.passed:
+            return lc.phase_check_to_dict(drained_check)
         # code H12: no drained findings and no new Maker commit means there is nothing worth
         # pushing/polling for yet; short-circuit the same way LP-1's no_new_commit shortcut
         # does instead of burning a full push + poll_interval/timeout cycle on a no-op push.
@@ -3014,7 +3021,11 @@ def _exit_success_comment(state: lc.LoopState, params: dict[str, Any]) -> str:
         path = item.get("path") or "(no path)"
         line = item.get("line")
         location = f"{path}:{line}" if line is not None else str(path)
-        excerpt = str(item.get("body_excerpt") or "").strip()
+        # PR#228 review: a multi-line body_excerpt would otherwise break the `- [...]: ...`
+        # bullet across lines, corrupting the Markdown list. `_open_non_blocking_findings()`
+        # already normalizes this at the source; this is a second, independent normalization
+        # so the comment is correct even if `params["non_blocking_open"]` came from elsewhere.
+        excerpt = " ".join(str(item.get("body_excerpt") or "").split())
         lines.append(f"- [{severity}] {location}: {excerpt}")
     return "\n".join(lines)
 

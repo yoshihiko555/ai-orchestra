@@ -3488,6 +3488,82 @@ def test_wait_external_review_actionable_drain_short_circuits_before_rebaseline_
     assert findings[0]["severity"] == "high"
 
 
+def test_wait_external_review_non_blocking_only_drain_still_pushes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR#228 review (issue #213 follow-up): a drain result with only non-blocking (low/medium)
+    findings must NOT short-circuit like an actionable (H4) drain -- the Maker's
+    already-committed fix must still be pushed and reviewed, not stranded just because a
+    nitpick arrived against the *old* baseline. Only a blocking (critical/high) drained
+    finding may skip record_baseline/push (see the sibling H4 test above)."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.pr_number = 42
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(driver, "_current_branch", lambda _wt: "main")
+    monkeypatch.setattr(lc, "is_repo_identity_verified", lambda _state: True)
+    monkeypatch.setattr(driver, "_repo_name_with_owner", lambda _wt: "owner/repo")
+    monkeypatch.setattr(
+        prw, "load_pr_review_config", lambda _project: prw.PrReviewConfig(reviewer_allowlist=())
+    )
+
+    finding = prw.ImportedFinding(
+        signature="sig-low",
+        severity="low",
+        source_comment_id="c1",
+        body_excerpt="nit",
+        path="foo.py",
+        line=10,
+        needs_classification=False,
+    )
+    empty = lc.IterationFindings(frozenset(), 0)
+    drained = prw.ReviewFindingsResult((finding,), empty, empty, (), (), 0, 0)
+    monkeypatch.setattr(prw, "fetch_review_items", lambda *a, **k: [])
+    monkeypatch.setattr(prw, "collect_review_findings", lambda *a, **k: drained)
+    monkeypatch.setattr(prw, "save_review_findings_snapshot", lambda *a, **k: None)
+    monkeypatch.setattr(prw, "confirm_review_findings_reported", lambda *a, **k: None)
+
+    calls: list[str] = []
+    monkeypatch.setattr(prw, "record_baseline", lambda *a, **k: calls.append("record_baseline"))
+    monkeypatch.setattr(d, "_verify_no_git_config_tampering_or_stop", lambda *a, **k: None)
+    monkeypatch.setattr(d, "_verify_push_integrity_or_stop", lambda *a, **k: None)
+    monkeypatch.setattr(d, "_scan_for_leaked_secrets_or_stop", lambda *a, **k: None)
+    monkeypatch.setattr(d, "_push_verified_branch", lambda *a, **k: calls.append("push"))
+    monkeypatch.setattr(
+        prw,
+        "record_iteration_head",
+        lambda *a, **k: calls.append("record_iteration_head"),
+    )
+    monkeypatch.setattr(
+        prw,
+        "wait_for_completion",
+        lambda *a, **k: prw.CompletionOutcome(
+            "timeout", completed=False, timed_out=True, infrastructure_failure=False
+        ),
+    )
+
+    proposal = lc.ProposeResult(
+        action="wait_external_review",
+        action_id="act-000053",
+        state_version=state.state_version,
+        expected_phase="implementation",
+        phase="implementation",
+        iteration=1,
+        context={},
+    )
+    result = d._run_wait_external_review(
+        proposal, state, {"push_required": True, "verified_branch": "main"}
+    )
+
+    assert calls == ["record_baseline", "push", "record_iteration_head"]
+    assert result["passed"] is False
+    assert result["signature"] == "pr_review_timeout"
+
+
 def test_wait_external_review_no_new_commit_shortcut_skips_push_and_poll(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -4933,6 +5009,34 @@ def test_exit_success_comment_falls_back_to_plain_message_when_nothing_open(
 
     assert driver._exit_success_comment(state, {}) == expected
     assert driver._exit_success_comment(state, {"non_blocking_open": []}) == expected
+
+
+def test_exit_success_comment_renders_multiline_body_excerpt_as_one_bullet_line(
+    tmp_path: Path,
+) -> None:
+    """PR#228 review: a multi-line `body_excerpt` (e.g. from a `params` payload that didn't
+    already go through `pr_review_wait._open_non_blocking_findings()`'s own normalization)
+    must still render as a single-line Markdown bullet, not break the list across lines."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, _token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.pr_number = 55
+    params = {
+        "non_blocking_open": [
+            {
+                "signature": "sig-low",
+                "severity": "low",
+                "path": "app.py",
+                "line": 5,
+                "body_excerpt": "line one\n\n  line two  \nline three",
+            }
+        ]
+    }
+
+    comment = driver._exit_success_comment(state, params)
+
+    bullet_lines = [line for line in comment.splitlines() if line.startswith("- ")]
+    assert bullet_lines == ["- [low] app.py:5: line one line two line three"]
 
 
 def test_run_stop_posts_issue_comment_when_repo_identity_verified(

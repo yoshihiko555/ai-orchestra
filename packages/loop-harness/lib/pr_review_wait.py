@@ -1603,32 +1603,53 @@ def _review_findings_snapshot_dict(result: ReviewFindingsResult) -> dict[str, An
     }
 
 
+_SNAPSHOT_BASE_FIELDS = frozenset(
+    {
+        "schema_version",
+        "loop_id",
+        "action_id",
+        "findings",
+        "iteration_findings",
+        "previous_iteration_findings",
+        "processed_comment_ids",
+        "ignored_untrusted_comment_count",
+        "needs_classification_count",
+    }
+)
+# v1 predates `open_non_blocking` (#213/PR#228 review). An in-flight loop mid-
+# `wait_external_review` may have durably persisted a v1 snapshot before this package was
+# upgraded; failing closed on it would strand that loop unable to resume/classify, so v1
+# payloads are still readable (defaulting `open_non_blocking` to `()`). A v1 payload that
+# *does* carry an `open_non_blocking` key is still rejected below (unknown key for that
+# version) -- v1's own key set stays exact, only its absence is tolerated.
+_LEGACY_SNAPSHOT_SCHEMA_VERSIONS = frozenset({1})
+
+
 def _review_findings_snapshot_from_dict(
     value: Any, loop_id: str, action_id: str
 ) -> ReviewFindingsResult:
-    """Strictly deserialize an action-scoped review findings snapshot."""
-    data = _snapshot_mapping(
-        value,
-        {
-            "schema_version",
-            "loop_id",
-            "action_id",
-            "findings",
-            "iteration_findings",
-            "previous_iteration_findings",
-            "open_non_blocking",
-            "processed_comment_ids",
-            "ignored_untrusted_comment_count",
-            "needs_classification_count",
-        },
-        "snapshot",
+    """Strictly deserialize an action-scoped review findings snapshot (v1 or current)."""
+    if not isinstance(value, dict):
+        _raise_invalid_snapshot("snapshot has invalid fields")
+    raw_schema_version = value.get("schema_version")
+    is_legacy = (
+        isinstance(raw_schema_version, int)
+        and not isinstance(raw_schema_version, bool)
+        and raw_schema_version in _LEGACY_SNAPSHOT_SCHEMA_VERSIONS
     )
+    expected_keys = (
+        _SNAPSHOT_BASE_FIELDS if is_legacy else _SNAPSHOT_BASE_FIELDS | {"open_non_blocking"}
+    )
+    data = _snapshot_mapping(value, expected_keys, "snapshot")
     if _snapshot_string(data["loop_id"], "loop_id") != loop_id:
         _raise_invalid_snapshot("loop_id does not match the requested loop")
     if _snapshot_string(data["action_id"], "action_id") != action_id:
         _raise_invalid_snapshot("action_id does not match the requested action")
     schema_version = _snapshot_non_negative_int(data["schema_version"], "schema_version")
-    if schema_version != REVIEW_FINDINGS_SNAPSHOT_SCHEMA_VERSION:
+    if schema_version not in (
+        *_LEGACY_SNAPSHOT_SCHEMA_VERSIONS,
+        REVIEW_FINDINGS_SNAPSHOT_SCHEMA_VERSION,
+    ):
         _raise_invalid_snapshot("unsupported schema_version")
     raw_findings = data["findings"]
     if not isinstance(raw_findings, list):
@@ -1642,6 +1663,11 @@ def _review_findings_snapshot_from_dict(
     actual_pending_count = sum(item.needs_classification for item in findings)
     if needs_classification_count != actual_pending_count:
         _raise_invalid_snapshot("needs_classification_count does not match findings")
+    open_non_blocking = (
+        ()
+        if schema_version in _LEGACY_SNAPSHOT_SCHEMA_VERSIONS
+        else _snapshot_open_non_blocking(data["open_non_blocking"], "open_non_blocking")
+    )
     return ReviewFindingsResult(
         findings=findings,
         iteration_findings=_snapshot_iteration_findings(
@@ -1650,9 +1676,7 @@ def _review_findings_snapshot_from_dict(
         previous_iteration_findings=_snapshot_iteration_findings(
             data["previous_iteration_findings"], "previous_iteration_findings"
         ),
-        open_non_blocking=_snapshot_open_non_blocking(
-            data["open_non_blocking"], "open_non_blocking"
-        ),
+        open_non_blocking=open_non_blocking,
         processed_comment_ids=_snapshot_string_tuple(
             data["processed_comment_ids"], "processed_comment_ids"
         ),
@@ -2059,13 +2083,19 @@ def _open_non_blocking_findings(
             continue
         path = record.get("path")
         line = record.get("line")
+        # PR#228 review: normalize whitespace (collapse newlines/runs of spaces) *before*
+        # truncating, so a multi-line reviewer comment can never break a consumer's
+        # single-line bullet rendering (e.g. `loop_driver._exit_success_comment()`) and so the
+        # 200-char limit applies to the normalized text a reader actually sees, not to
+        # whatever's left after an arbitrary mid-newline cut.
+        normalized_excerpt = " ".join(str(record.get("body_excerpt") or "").split())
         items.append(
             NonBlockingFinding(
                 signature=signature,
                 severity=cast(Severity, severity),
                 path=path if isinstance(path, str) else None,
                 line=line if isinstance(line, int) and not isinstance(line, bool) else None,
-                body_excerpt=str(record.get("body_excerpt") or "")[:NON_BLOCKING_EXCERPT_LIMIT],
+                body_excerpt=normalized_excerpt[:NON_BLOCKING_EXCERPT_LIMIT],
             )
         )
     return tuple(items)
