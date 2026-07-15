@@ -331,9 +331,34 @@ def test_evaluate_candidate_hash_matches_loop_current_scope(git_project: Path, m
 
     def fake_run_single_attempt(**kwargs):
         captured_hashes.append(kwargs["evaluator_hash"])
-        return {"evaluator_hash": kwargs["evaluator_hash"]}
+        return {
+            "run_id": "run-scope-test",
+            "cand_id": kwargs["cand_id"],
+            "scenario_id": kwargs["scenario"]["id"],
+            "evaluator_hash": kwargs["evaluator_hash"],
+            "verdict": "pass",
+            "quality_score": 100.0,
+            "critical_pass_rate": 1.0,
+            "cost": {
+                "input_tokens": 1,
+                "output_tokens": 1,
+                "total_tokens": 2,
+                "tool_uses": 0,
+                "duration_ms": 1,
+                "total_cost_usd": 0.0,
+                "num_turns": 1,
+            },
+            "attempt": kwargs["attempt"],
+            "attempts_total": kwargs["attempts_total"],
+        }
 
     monkeypatch.setattr(loop_cli.ev, "run_single_attempt", fake_run_single_attempt)
+    monkeypatch.setattr(
+        loop_cli.ev,
+        "candidate_impact_context",
+        lambda **_kwargs: loop_cli.ev.skill_targets.SkillImpactContext((), "c" * 64),
+    )
+    monkeypatch.setattr(loop_cli.ev, "_append_evaluation_events", lambda *_args, **_kwargs: None)
     scenario_path = loop_cli.ev.discover_scenario_paths(
         loop_cli.ev.scenario_suite_dir(loop_cli._PACKAGE_DIR, "claude-harness")
     )[0]
@@ -346,7 +371,7 @@ def test_evaluate_candidate_hash_matches_loop_current_scope(git_project: Path, m
         package_dir=loop_cli._PACKAGE_DIR,
         project_dir=git_project,
         cand_id="candidate",
-        manifest={"target": "claude-harness"},
+        manifest={"target": "claude-harness", "source_commit": "a" * 40},
         scenario_ids=[scenario_id],
         repeat_override=1,
         cli_capabilities={},
@@ -354,7 +379,7 @@ def test_evaluate_candidate_hash_matches_loop_current_scope(git_project: Path, m
 
     loop_hash = loop_cli.state.current_hash_pair(config, "claude-harness")[1]
     assert captured_hashes == [loop_hash]
-    assert results == [{"evaluator_hash": loop_hash}]
+    assert results[0]["evaluator_hash"] == loop_hash
 
 
 def test_stale_hash_run_does_not_change_loop_quality_or_frontier(git_project: Path) -> None:

@@ -77,13 +77,17 @@ class TestRepositorySkillClosures:
         assert "facets/policies/dialog-rules.md" not in resolution.private_paths
         assert "facets/instructions/issue-create.md" in resolution.private_paths
 
-    def test_regression_enabled_fails_closed_until_evaluator_exists(self) -> None:
-        with pytest.raises(skill_targets.SkillTargetError, match="not available"):
-            skill_targets.allowed_overlay_paths(
-                REPO_ROOT,
-                "skill:handoff",
-                {"regression": {"enabled": True}},
-            )
+    def test_regression_enabled_uses_full_closure(self) -> None:
+        resolution = skill_targets.allowed_overlay_paths(
+            REPO_ROOT,
+            "skill:handoff",
+            {"regression": {"enabled": True}},
+        )
+
+        assert (
+            skill_targets.overlay_allowlist(resolution, {"regression": {"enabled": True}})
+            == resolution.closure_paths
+        )
 
 
 class TestSkillOverlayValidation:
@@ -103,7 +107,7 @@ class TestSkillOverlayValidation:
             == []
         )
 
-    def test_shared_policy_is_rejected(self, tmp_path: Path) -> None:
+    def test_shared_policy_is_accepted_when_regression_is_enabled(self, tmp_path: Path) -> None:
         overlay = tmp_path / "overlay"
         path = overlay / "facets" / "policies" / "cli-language.md"
         path.parent.mkdir(parents=True)
@@ -112,6 +116,22 @@ class TestSkillOverlayValidation:
         errors = mh.validate_overlay(
             overlay,
             mh.DEFAULTS,
+            target="skill:handoff",
+            baseline_root=REPO_ROOT,
+        )
+
+        assert errors == []
+
+    def test_shared_policy_is_rejected_when_regression_is_disabled(self, tmp_path: Path) -> None:
+        overlay = tmp_path / "overlay"
+        path = overlay / "facets" / "policies" / "cli-language.md"
+        path.parent.mkdir(parents=True)
+        path.write_text("updated\n", encoding="utf-8")
+        config = {**mh.DEFAULTS, "regression": {"enabled": False}}
+
+        errors = mh.validate_overlay(
+            overlay,
+            config,
             target="skill:handoff",
             baseline_root=REPO_ROOT,
         )
@@ -126,7 +146,7 @@ class TestSkillOverlayValidation:
             "baseline_root is required for skill target overlay validation"
         ]
 
-    def test_uniquely_referenced_policy_is_still_rejected(self, tmp_path: Path) -> None:
+    def test_uniquely_referenced_policy_is_allowed_with_regression(self, tmp_path: Path) -> None:
         composition = tmp_path / "facets" / "compositions" / "skills" / "alpha.yaml"
         instruction = tmp_path / "facets" / "instructions" / "alpha.md"
         policy = tmp_path / "facets" / "policies" / "alpha-only.md"
@@ -153,7 +173,60 @@ class TestSkillOverlayValidation:
 
         assert "facets/policies/alpha-only.md" in resolution.closure_paths
         assert "facets/policies/alpha-only.md" not in resolution.private_paths
-        assert any("outside private facet closure" in error for error in errors)
+        assert errors == []
+
+
+class TestSkillImpactResolution:
+    def test_shared_policy_maps_to_other_referencing_skills(self) -> None:
+        impact = skill_targets.resolve_skill_impacts(
+            REPO_ROOT,
+            ["facets/policies/cli-language.md"],
+            candidate_target="skill:handoff",
+        )
+
+        assert "skill:handoff" not in impact.impacted_targets
+        assert "skill:antigravity-system" in impact.impacted_targets
+        assert "skill:pr-create" in impact.impacted_targets
+        assert len(impact.input_hash) == 64
+
+    def test_private_instruction_has_no_cross_skill_impact(self) -> None:
+        impact = skill_targets.resolve_skill_impacts(
+            REPO_ROOT,
+            ["facets/instructions/handoff.md"],
+            candidate_target="skill:handoff",
+        )
+
+        assert impact.impacted_targets == ()
+
+    def test_overlay_reference_addition_does_not_expand_same_candidate_impact(
+        self, tmp_path: Path
+    ) -> None:
+        compositions = tmp_path / "facets" / "compositions" / "skills"
+        instructions = tmp_path / "facets" / "instructions"
+        policies = tmp_path / "facets" / "policies"
+        compositions.mkdir(parents=True)
+        instructions.mkdir(parents=True)
+        policies.mkdir(parents=True)
+        (compositions / "alpha.yaml").write_text(
+            "name: alpha\nfrontmatter: {}\ninstruction: alpha\n", encoding="utf-8"
+        )
+        (compositions / "beta.yaml").write_text(
+            "name: beta\nfrontmatter: {}\ninstruction: beta\n", encoding="utf-8"
+        )
+        (instructions / "alpha.md").write_text("alpha\n", encoding="utf-8")
+        (instructions / "beta.md").write_text("beta\n", encoding="utf-8")
+        (policies / "new-shared.md").write_text("shared\n", encoding="utf-8")
+
+        impact = skill_targets.resolve_skill_impacts(
+            tmp_path,
+            [
+                "facets/compositions/skills/alpha.yaml",
+                "facets/policies/new-shared.md",
+            ],
+            candidate_target="skill:alpha",
+        )
+
+        assert impact.impacted_targets == ()
 
 
 class TestSkillTargetSafety:
@@ -331,6 +404,81 @@ class TestBaselineAuthority:
         )
 
         assert any("facets/scripts/beta.py" in error for error in errors)
+
+    def test_shared_baseline_helper_applies_full_non_skill_parent_lineage(
+        self, git_project: Path, git_run
+    ) -> None:
+        facets = git_project / "facets"
+        facets.mkdir()
+        (facets / "baseline.txt").write_text("baseline\n", encoding="utf-8")
+        git_run("add", "facets", cwd=git_project)
+        git_run("commit", "-m", "add baseline facets", cwd=git_project)
+        source_commit = git_run("rev-parse", "HEAD", cwd=git_project).stdout.strip()
+        mh.init_store(git_project, mh.DEFAULTS)
+
+        def store(cand_id: str, parent_id: str | None, relative: str) -> dict:
+            candidate = mh.candidates_dir(git_project, mh.DEFAULTS) / cand_id
+            overlay = candidate / "overlay"
+            path = overlay / relative
+            path.parent.mkdir(parents=True)
+            path.write_text(f"{cand_id}\n", encoding="utf-8")
+            manifest = mh.build_candidate_manifest(
+                cand_id=cand_id,
+                parent_id=parent_id,
+                generation=0 if parent_id is None else 1,
+                target="claude-harness",
+                source_commit=source_commit,
+                config_hash=mh.compute_config_hash(overlay, mh.DEFAULTS),
+                overlay_files=[relative],
+                description=cand_id,
+            )
+            (candidate / "manifest.json").write_text(json.dumps(manifest) + "\n", encoding="utf-8")
+            return manifest
+
+        parent = store(
+            "cand-20260715-120000-parent-abcd",
+            None,
+            "facets/parent.txt",
+        )
+        child_parent = store(
+            "cand-20260715-120001-child-parent-abcd",
+            parent["cand_id"],
+            "facets/child-parent.txt",
+        )
+        candidate = {
+            "cand_id": "cand-20260715-120002-candidate-abcd",
+            "parent_id": child_parent["cand_id"],
+            "target": "claude-harness",
+            "source_commit": source_commit,
+        }
+
+        with ev.materialized_candidate_baseline(
+            main_root=git_project,
+            config=mh.DEFAULTS,
+            schema_dir=REPO_ROOT / "packages" / "meta-harness" / "schemas",
+            manifest=candidate,
+        ) as baseline:
+            assert (baseline / "facets" / "parent.txt").read_text() == (
+                "cand-20260715-120000-parent-abcd\n"
+            )
+            assert (baseline / "facets" / "child-parent.txt").read_text() == (
+                "cand-20260715-120001-child-parent-abcd\n"
+            )
+
+        with skill_targets.materialized_baseline(git_project, source_commit) as evaluation:
+            ev.apply_registered_candidate_overlay(
+                main_root=git_project,
+                config=mh.DEFAULTS,
+                manifest=child_parent,
+                worktree_dir=evaluation,
+                schema_dir=REPO_ROOT / "packages" / "meta-harness" / "schemas",
+            )
+            assert (evaluation / "facets" / "parent.txt").read_text() == (
+                "cand-20260715-120000-parent-abcd\n"
+            )
+            assert (evaluation / "facets" / "child-parent.txt").read_text() == (
+                "cand-20260715-120001-child-parent-abcd\n"
+            )
 
     def test_parent_composition_change_expands_only_child_authority(
         self, git_project: Path, git_run

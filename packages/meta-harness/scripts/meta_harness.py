@@ -118,15 +118,17 @@ def _skill_registration_authority(
     parent_manifest: dict | None,
 ) -> tuple[skill_targets.SkillTargetResolution, Path | None, list[str]]:
     inherited_overlay: Path | None = None
-    with skill_targets.materialized_baseline(project_dir, source_commit) as baseline:
+    provisional_manifest = {
+        "source_commit": source_commit,
+        "parent_id": parent_manifest.get("cand_id") if parent_manifest is not None else None,
+    }
+    with ev.materialized_candidate_baseline(
+        main_root=main_root,
+        config=config,
+        schema_dir=_SCHEMA_DIR,
+        manifest=provisional_manifest,
+    ) as baseline:
         if parent_manifest is not None:
-            ev.apply_registered_candidate_overlay(
-                main_root=main_root,
-                config=config,
-                manifest=parent_manifest,
-                worktree_dir=baseline,
-                schema_dir=_SCHEMA_DIR,
-            )
             inherited_overlay = (
                 mh.candidates_dir(main_root, config) / str(parent_manifest["cand_id"]) / "overlay"
             )
@@ -137,6 +139,7 @@ def _skill_registration_authority(
             target=target,
             baseline_root=baseline,
             inherited_overlay_dir=inherited_overlay,
+            skill_allowed_paths=skill_targets.overlay_allowlist(resolution, config),
         )
     return resolution, inherited_overlay, violations
 
@@ -294,7 +297,9 @@ def cmd_register(
                 baseline_root=project_dir,
                 inherited_overlay_dir=inherited_overlay,
                 skill_allowed_paths=(
-                    target_resolution.private_paths if target_resolution else None
+                    skill_targets.overlay_allowlist(target_resolution, config)
+                    if target_resolution
+                    else None
                 ),
             )
             mh.append_ledger_event(main_root, config, event)
@@ -710,6 +715,9 @@ def _run_evaluate_under_lock(
             repeat_override=repeat,
             cli_capabilities=caps.as_dict(),
         )
+    except ev.EvaluationBatchError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_RUNTIME_ERROR
     except (ValueError, OSError, ev.yaml.YAMLError) as exc:
         # `load_scenario()` の `path.read_text()` / `yaml.safe_load()` 由来の OSError /
         # yaml.YAMLError も ValueError と同様に入力検証エラーとして扱う（traceback を

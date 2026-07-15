@@ -108,7 +108,11 @@ DEFAULTS: dict[str, Any] = {
         "penalty_missing_report": 6,
     },
     "frontier": {"cost_axis": "total_tokens"},
-    "regression": {"enabled": False},
+    "regression": {
+        "enabled": True,
+        "max_affected_suites": 4,
+        "max_budget_usd": 12.0,
+    },
     "overlay": {
         "allowed_prefixes": ["facets/"],
         "denied_prefixes": [
@@ -869,6 +873,32 @@ def latest_non_holdout_run_completed(
     return None
 
 
+def latest_evaluation_completed(
+    events: list[dict],
+    cand_id: str,
+    target: str,
+    *,
+    holdout: bool,
+    suite_hash: str | None = None,
+    evaluator_hash: str | None = None,
+) -> dict | None:
+    """Return the latest completed evaluation batch matching one candidate scope."""
+    for event in reversed(events):
+        if (
+            event.get("event") != "evaluation_completed"
+            or event.get("cand_id") != cand_id
+            or event.get("target") != target
+            or bool(event.get("holdout")) != holdout
+        ):
+            continue
+        if suite_hash is not None and event.get("own_suite_hash") != suite_hash:
+            continue
+        if evaluator_hash is not None and event.get("evaluator_hash") != evaluator_hash:
+            continue
+        return event
+    return None
+
+
 KNOWN_COST_FIELDS = frozenset(
     {
         "input_tokens",
@@ -962,12 +992,28 @@ def aggregate_run_points(
         if states.get(cand_id, {}).get("status") != "evaluated":
             continue
         by_cand.setdefault(cand_id, []).append(event)
-    return [
-        _summarize_candidate_runs(
-            cand_id, _latest_attempt_groups_per_scenario(runs), cost_axis, required_scenarios
+    points: list[dict] = []
+    for cand_id, runs in sorted(by_cand.items()):
+        latest_runs = _latest_attempt_groups_per_scenario(runs)
+        point = _summarize_candidate_runs(cand_id, latest_runs, cost_axis, required_scenarios)
+        evaluation = latest_evaluation_completed(
+            events,
+            cand_id,
+            target,
+            holdout=False,
+            suite_hash=str(latest_pair[0]),
+            evaluator_hash=str(latest_pair[1]),
         )
-        for cand_id, runs in sorted(by_cand.items())
-    ]
+        run_ids = {str(run.get("run_id")) for run in latest_runs}
+        evaluation_run_ids = {str(run_id) for run_id in (evaluation or {}).get("own_run_ids") or []}
+        point["eligible"] = bool(
+            point["eligible"]
+            and evaluation is not None
+            and evaluation.get("verdict") == "pass"
+            and run_ids == evaluation_run_ids
+        )
+        points.append(point)
+    return points
 
 
 def _latest_attempt_groups_per_scenario(runs: list[dict]) -> list[dict]:
@@ -1315,7 +1361,7 @@ def validate_overlay(
                 import skill_targets
 
                 resolution = skill_targets.allowed_overlay_paths(baseline_root, target, config)
-                skill_allowed_paths = resolution.private_paths
+                skill_allowed_paths = skill_targets.overlay_allowlist(resolution, config)
             except (OSError, ValueError) as exc:
                 return [str(exc)]
 

@@ -34,6 +34,7 @@ view 内には以下のパスがあります:
 - 変更対象は次の許可パスのみ:
 $allowed_paths
 - 1 仮説・最小差分に限定する
+- 共有 facet の変更は影響 skill の回帰コストと hard gate を伴うため、仮説を満たす最小の blast radius を優先する
 - based_on_runs には valid based_on_runs candidates に表示された run_id のみを列挙する
 - cand_id（`cand-` で始まる ID）は based_on_runs に絶対に入れない
 - focus runs が `(none)` でない場合は優先的に分析し、根拠にした run_id を based_on_runs に入れる

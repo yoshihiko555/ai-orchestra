@@ -100,36 +100,78 @@ def _append_run(
         if loop_cli.ev.load_scenario(path, loop_cli._SCHEMA_DIR)["id"] == scenario_id
     )
     scenario_hash = scenario_hash or loop_cli.ev.compute_scenario_hash(scenario_path)
+    run_event = {
+        "event": "run_completed",
+        "ts": mh.now_iso(),
+        "schema_version": "1.0",
+        "run_id": f"run-{'holdout-' if holdout else ''}{cand_id}-{scenario_id}-{attempt}",
+        "cand_id": cand_id,
+        "scenario_id": scenario_id,
+        "target": "claude-harness",
+        "suite_id": "claude-harness",
+        "suite_hash": suite_hash,
+        "scenario_hash": scenario_hash,
+        "evaluator_hash": evaluator_hash,
+        "verdict": "pass",
+        "quality_score": quality,
+        "critical_pass_rate": 1.0,
+        "cost": {
+            "input_tokens": 1,
+            "output_tokens": 1,
+            "total_tokens": 2,
+            "tool_uses": 0,
+            "duration_ms": 1,
+            "total_cost_usd": cost,
+            "num_turns": 1,
+        },
+        "attempt": attempt,
+        "attempts_total": attempts_total,
+        "holdout": holdout,
+    }
+    mh.append_ledger_event(project, config, run_event)
+    _append_evaluation_summary(project, config, cand_id, holdout=holdout)
+
+
+def _append_evaluation_summary(project: Path, config: dict, cand_id: str, *, holdout: bool) -> None:
+    events = _events(project, config)
+    candidate_runs = [
+        event
+        for event in events
+        if event.get("event") == "run_completed"
+        and event.get("cand_id") == cand_id
+        and bool(event.get("holdout")) == holdout
+    ]
+    latest_run = candidate_runs[-1]
+    matching_runs = [
+        event
+        for event in candidate_runs
+        if event.get("suite_hash") == latest_run["suite_hash"]
+        and event.get("evaluator_hash") == latest_run["evaluator_hash"]
+    ]
+    latest_runs = mh._latest_attempt_groups_per_scenario(matching_runs)
+    evaluation_number = sum(event.get("event") == "evaluation_completed" for event in events) + 1
     mh.append_ledger_event(
         project,
         config,
         {
-            "event": "run_completed",
+            "event": "evaluation_completed",
             "ts": mh.now_iso(),
             "schema_version": "1.0",
-            "run_id": f"run-{'holdout-' if holdout else ''}{cand_id}-{scenario_id}-{attempt}",
+            "evaluation_id": f"eval-20260711-120000-{evaluation_number:08x}",
             "cand_id": cand_id,
-            "scenario_id": scenario_id,
             "target": "claude-harness",
-            "suite_id": "claude-harness",
-            "suite_hash": suite_hash,
-            "scenario_hash": scenario_hash,
-            "evaluator_hash": evaluator_hash,
-            "verdict": "pass",
-            "quality_score": quality,
-            "critical_pass_rate": 1.0,
-            "cost": {
-                "input_tokens": 1,
-                "output_tokens": 1,
-                "total_tokens": 2,
-                "tool_uses": 0,
-                "duration_ms": 1,
-                "total_cost_usd": cost,
-                "num_turns": 1,
-            },
-            "attempt": attempt,
-            "attempts_total": attempts_total,
             "holdout": holdout,
+            "own_run_ids": [str(event["run_id"]) for event in latest_runs],
+            "own_suite_hash": latest_run["suite_hash"],
+            "evaluator_hash": latest_run["evaluator_hash"],
+            "own_critical_pass": True,
+            "regression_results": [],
+            "verdict": "pass",
+            "unverified_impacts": [],
+            "evaluation_base_commit": "a" * 40,
+            "impacted_targets": [],
+            "impact_input_hash": _HASH,
+            "regression_cost_usd": 0.0,
         },
     )
 

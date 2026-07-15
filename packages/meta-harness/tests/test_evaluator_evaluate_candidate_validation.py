@@ -74,10 +74,34 @@ class TestRepeatValidation:
 
         def fake_run_single_attempt(**kwargs):
             calls.append(kwargs["attempt"])
-            return {"run_id": f"run-fake-{kwargs['attempt']}", "verdict": "pass"}
+            return {
+                "run_id": f"run-fake-{kwargs['attempt']}",
+                "cand_id": kwargs["cand_id"],
+                "scenario_id": kwargs["scenario"]["id"],
+                "verdict": "pass",
+                "quality_score": 100.0,
+                "critical_pass_rate": 1.0,
+                "cost": {
+                    "input_tokens": 1,
+                    "output_tokens": 1,
+                    "total_tokens": 2,
+                    "tool_uses": 0,
+                    "duration_ms": 1,
+                    "total_cost_usd": 0.0,
+                    "num_turns": 1,
+                },
+                "attempt": kwargs["attempt"],
+                "attempts_total": kwargs["attempts_total"],
+            }
 
         monkeypatch.setattr(ev, "run_single_attempt", fake_run_single_attempt)
         monkeypatch.setattr(ev.siso, "execution_boundary_available", lambda _config: True)
+        monkeypatch.setattr(
+            ev,
+            "candidate_impact_context",
+            lambda **_kwargs: ev.skill_targets.SkillImpactContext((), "c" * 64),
+        )
+        monkeypatch.setattr(ev, "_append_evaluation_events", lambda *_args, **_kwargs: None)
         results = _call_evaluate_candidate(
             tmp_path, scenario_ids=["summarize-readme"], repeat_override=None
         )

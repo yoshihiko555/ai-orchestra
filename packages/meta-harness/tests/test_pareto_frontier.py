@@ -114,7 +114,10 @@ def _run_completed(
         "event": "run_completed",
         "ts": mh.now_iso(),
         "schema_version": "1.0",
-        "run_id": f"run-{cand_id}",
+        "run_id": (
+            f"run-{cand_id}-{scenario_id}-{'holdout' if holdout else 'train'}-"
+            f"{attempt}-{quality_score}"
+        ),
         "cand_id": cand_id,
         "scenario_id": scenario_id,
         "target": "claude-harness",
@@ -140,18 +143,85 @@ def _run_completed(
     }
 
 
+def _evaluation_summaries(
+    events: list[dict], *, cand_ids: set[str] | None = None, start_index: int = 0
+) -> list[dict]:
+    latest = mh.latest_non_holdout_run_completed(events)
+    if latest is None:
+        return []
+    matching = [
+        event
+        for event in events
+        if event.get("event") == "run_completed"
+        and not event.get("holdout")
+        and event.get("suite_hash") == latest["suite_hash"]
+        and event.get("evaluator_hash") == latest["evaluator_hash"]
+        and (cand_ids is None or event.get("cand_id") in cand_ids)
+    ]
+    summaries: list[dict] = []
+    for offset, cand_id in enumerate(sorted({str(event["cand_id"]) for event in matching}), 1):
+        candidate_runs = [event for event in matching if event["cand_id"] == cand_id]
+        latest_runs = mh._latest_attempt_groups_per_scenario(candidate_runs)
+        verdict = (
+            "error"
+            if any(event["verdict"] == "error" for event in latest_runs)
+            else "pass"
+            if all(event["verdict"] == "pass" for event in latest_runs)
+            else "fail"
+        )
+        summaries.append(
+            {
+                "event": "evaluation_completed",
+                "ts": mh.now_iso(),
+                "schema_version": "1.0",
+                "evaluation_id": f"eval-20260711-120000-{start_index + offset:08x}",
+                "cand_id": cand_id,
+                "target": "claude-harness",
+                "holdout": False,
+                "own_run_ids": [str(event["run_id"]) for event in latest_runs],
+                "own_suite_hash": latest["suite_hash"],
+                "evaluator_hash": latest["evaluator_hash"],
+                "own_critical_pass": verdict == "pass",
+                "regression_results": [],
+                "verdict": verdict,
+                "unverified_impacts": [],
+                "evaluation_base_commit": "a" * 40,
+                "impacted_targets": [],
+                "impact_input_hash": "c" * 64,
+                "regression_cost_usd": 0.0,
+            }
+        )
+    return summaries
+
+
+def _evaluated(events: list[dict]) -> list[dict]:
+    return [*events, *_evaluation_summaries(events)]
+
+
+def _append_evaluated_run(project: Path, config: dict, event: dict) -> None:
+    mh.append_ledger_event(project, config, event)
+    if event.get("holdout"):
+        return
+    events = mh.read_ledger_events(project, config)
+    start_index = sum(item.get("event") == "evaluation_completed" for item in events)
+    for summary in _evaluation_summaries(
+        events, cand_ids={str(event["cand_id"])}, start_index=start_index
+    ):
+        mh.append_ledger_event(project, config, summary)
+
+
 class TestAggregateRunPoints:
     # EV-18 (via eligible flag)
     def test_non_holdout_fail_makes_candidate_ineligible(self) -> None:
         events = [
             _run_completed("c1", quality_score=90, verdict="fail"),
         ]
-        points = mh.aggregate_run_points(events, mh.DEFAULTS)
+        points = mh.aggregate_run_points(_evaluated(events), mh.DEFAULTS)
         assert points[0]["eligible"] is False
 
     def test_non_holdout_error_makes_candidate_ineligible(self) -> None:
         events = [_run_completed("c1", quality_score=90, verdict="error")]
-        points = mh.aggregate_run_points(events, mh.DEFAULTS)
+        points = mh.aggregate_run_points(_evaluated(events), mh.DEFAULTS)
         assert points[0]["eligible"] is False
 
     def test_holdout_fail_does_not_affect_eligibility(self) -> None:
@@ -159,7 +229,7 @@ class TestAggregateRunPoints:
             _run_completed("c1", quality_score=90, verdict="pass"),
             _run_completed("c1", quality_score=10, verdict="fail", holdout=True),
         ]
-        points = mh.aggregate_run_points(events, mh.DEFAULTS)
+        points = mh.aggregate_run_points(_evaluated(events), mh.DEFAULTS)
         assert points[0]["eligible"] is True
 
     def test_holdout_runs_excluded_from_quality_mean_and_cost_mean(self) -> None:
@@ -167,7 +237,7 @@ class TestAggregateRunPoints:
             _run_completed("c1", quality_score=80, total_tokens=100),
             _run_completed("c1", quality_score=10, total_tokens=99999, holdout=True),
         ]
-        points = mh.aggregate_run_points(events, mh.DEFAULTS)
+        points = mh.aggregate_run_points(_evaluated(events), mh.DEFAULTS)
         assert points[0]["quality_mean"] == 80
         assert points[0]["cost_mean"] == 100
         assert points[0]["runs"] == 1
@@ -180,12 +250,12 @@ class TestAggregateRunPoints:
         events = [
             _run_completed("c1", quality_score=10, total_tokens=99999, holdout=True),
         ]
-        points = mh.aggregate_run_points(events, mh.DEFAULTS)
+        points = mh.aggregate_run_points(_evaluated(events), mh.DEFAULTS)
         assert points == []
 
     def test_all_pass_is_eligible(self) -> None:
         events = [_run_completed("c1", quality_score=90, verdict="pass")]
-        points = mh.aggregate_run_points(events, mh.DEFAULTS)
+        points = mh.aggregate_run_points(_evaluated(events), mh.DEFAULTS)
         assert points[0]["eligible"] is True
 
     def test_only_latest_hash_pair_is_aggregated(self) -> None:
@@ -195,7 +265,7 @@ class TestAggregateRunPoints:
                 "c1", quality_score=90, suite_hash="a" * 63 + "f", evaluator_hash="e" * 64
             ),
         ]
-        points = mh.aggregate_run_points(events, mh.DEFAULTS)
+        points = mh.aggregate_run_points(_evaluated(events), mh.DEFAULTS)
         # 最後の run_completed（2番目）の hash ペアのみが集計対象になる
         assert len(points) == 1
         assert points[0]["quality_mean"] == 90
@@ -215,7 +285,7 @@ class TestAggregateRunPoints:
                 holdout=True,
             ),
         ]
-        points = mh.aggregate_run_points(events, mh.DEFAULTS)
+        points = mh.aggregate_run_points(_evaluated(events), mh.DEFAULTS)
         assert len(points) == 1
         assert points[0]["runs"] >= 1
         assert points[0]["eligible"] is True
@@ -230,7 +300,7 @@ class TestAggregateRunPoints:
             _run_completed("c1", quality_score=10, verdict="fail"),  # attempt=1（旧・失敗）
             _run_completed("c1", quality_score=90, verdict="pass"),  # attempt=1（再評価・成功）
         ]
-        points = mh.aggregate_run_points(events, mh.DEFAULTS)
+        points = mh.aggregate_run_points(_evaluated(events), mh.DEFAULTS)
         assert len(points) == 1
         assert points[0]["eligible"] is True
         assert points[0]["quality_mean"] == 90
@@ -244,7 +314,7 @@ class TestAggregateRunPoints:
             _run_completed("c1", quality_score=90, attempt=2, attempts_total=3),
             _run_completed("c1", quality_score=100, attempt=3, attempts_total=3),
         ]
-        points = mh.aggregate_run_points(events, mh.DEFAULTS)
+        points = mh.aggregate_run_points(_evaluated(events), mh.DEFAULTS)
         assert len(points) == 1
         assert points[0]["runs"] == 3
         assert points[0]["quality_mean"] == 90  # (80+90+100)/3
@@ -254,7 +324,7 @@ class TestAggregateRunPoints:
             _run_completed("c1", quality_score=90, verdict="pass"),
             _run_completed("c2", quality_score=10, verdict="fail"),
         ]
-        points = mh.aggregate_run_points(events, mh.DEFAULTS)
+        points = mh.aggregate_run_points(_evaluated(events), mh.DEFAULTS)
         eligible, ineligible_ids = mh_cli._eligible_and_ineligible(points)
         assert [p["cand_id"] for p in eligible] == ["c1"]
         assert ineligible_ids == ["c2"]
@@ -277,7 +347,7 @@ class TestFrontierCliRebuildVsCache:
         cached_before = json.loads(frontier_path.read_text(encoding="utf-8"))
 
         config = mh.load_config(git_project)
-        mh.append_ledger_event(git_project, config, _run_completed("c1", quality_score=90))
+        _append_evaluated_run(git_project, config, _run_completed("c1", quality_score=90))
 
         result = run_meta("frontier", "--json", project=git_project, check=True)
         payload = json.loads(result.stdout)
@@ -294,7 +364,7 @@ class TestFrontierCliRebuildVsCache:
         run_meta("init", project=git_project, check=True)
         ledger_path = git_project / ".claude" / "meta-harness" / "ledger.jsonl"
         config = mh.load_config(git_project)
-        mh.append_ledger_event(git_project, config, _run_completed("c1", quality_score=90))
+        _append_evaluated_run(git_project, config, _run_completed("c1", quality_score=90))
         line_count_before = len(ledger_path.read_text(encoding="utf-8").splitlines())
 
         run_meta("frontier", "--json", project=git_project, check=True)
@@ -307,7 +377,7 @@ class TestFrontierCliRebuildVsCache:
     ) -> None:
         run_meta("init", project=git_project, check=True)
         config = mh.load_config(git_project)
-        mh.append_ledger_event(git_project, config, _run_completed("c1", quality_score=90))
+        _append_evaluated_run(git_project, config, _run_completed("c1", quality_score=90))
 
         result = run_meta("frontier", "--rebuild", "--json", project=git_project, check=True)
         payload = json.loads(result.stdout)
@@ -334,7 +404,7 @@ class TestFrontierCliRebuildVsCache:
     def test_frontier_json_matches_frontier_schema(self, git_project: Path, run_meta) -> None:
         run_meta("init", project=git_project, check=True)
         config = mh.load_config(git_project)
-        mh.append_ledger_event(git_project, config, _run_completed("c1", quality_score=90))
+        _append_evaluated_run(git_project, config, _run_completed("c1", quality_score=90))
         run_meta("frontier", "--rebuild", project=git_project, check=True)
 
         schema_dir = Path(__file__).resolve().parents[3] / "packages" / "meta-harness" / "schemas"
@@ -357,7 +427,7 @@ class TestFrontierHashReflectsLatestRunCompleted:
         config = mh.load_config(git_project)
         suite_hash = "a" * 64
         evaluator_hash = "e" * 64
-        mh.append_ledger_event(
+        _append_evaluated_run(
             git_project,
             config,
             _run_completed(
@@ -402,7 +472,7 @@ class TestFrontierHashReflectsLatestRunCompleted:
         config = mh.load_config(git_project)
         suite_hash = "a" * 64
         evaluator_hash = "e" * 64
-        mh.append_ledger_event(
+        _append_evaluated_run(
             git_project,
             config,
             _run_completed(
@@ -474,7 +544,7 @@ class TestFrontierRebuildComputesInsideLock:
     ) -> None:
         run_meta("init", project=git_project, check=True)
         config = mh.load_config(git_project)
-        mh.append_ledger_event(git_project, config, _run_completed("c1", quality_score=90))
+        _append_evaluated_run(git_project, config, _run_completed("c1", quality_score=90))
 
         lock_held = {"value": False}
         original_read = mh_cli.mh.read_ledger_events
@@ -509,7 +579,7 @@ class TestFrontierRebuildComputesInsideLock:
     ) -> None:
         run_meta("init", project=git_project, check=True)
         config = mh.load_config(git_project)
-        mh.append_ledger_event(git_project, config, _run_completed("c1", quality_score=90))
+        _append_evaluated_run(git_project, config, _run_completed("c1", quality_score=90))
 
         run_meta("frontier", "--rebuild", project=git_project, check=True)
 
@@ -533,7 +603,7 @@ class TestFrontierExcludesTerminalStates:
     ) -> None:
         run_meta("init", project=git_project, check=True)
         config = mh.load_config(git_project)
-        mh.append_ledger_event(git_project, config, _run_completed("c1", quality_score=95))
+        _append_evaluated_run(git_project, config, _run_completed("c1", quality_score=95))
         mh.append_ledger_event(
             git_project,
             config,
@@ -568,7 +638,7 @@ class TestFrontierExcludesTerminalStates:
                 "reason": "merged",
             },
         ]
-        points = mh.aggregate_run_points(events, mh.DEFAULTS)
+        points = mh.aggregate_run_points(_evaluated(events), mh.DEFAULTS)
         assert points == []
 
 
@@ -582,7 +652,7 @@ class TestFrontierScenarioCoverageEligibility:
             _run_completed("a", quality_score=85, scenario_id="s2"),
             _run_completed("b", quality_score=95, scenario_id="s1"),
         ]
-        points = mh.aggregate_run_points(events, mh.DEFAULTS)
+        points = mh.aggregate_run_points(_evaluated(events), mh.DEFAULTS)
         by_id = {p["cand_id"]: p for p in points}
         assert by_id["a"]["eligible"] is True
         assert by_id["b"]["eligible"] is False
@@ -594,7 +664,7 @@ class TestFrontierScenarioCoverageEligibility:
             _run_completed("b", quality_score=95, scenario_id="s1"),
             _run_completed("b", quality_score=88, scenario_id="s2"),
         ]
-        points = mh.aggregate_run_points(events, mh.DEFAULTS)
+        points = mh.aggregate_run_points(_evaluated(events), mh.DEFAULTS)
         by_id = {p["cand_id"]: p for p in points}
         assert by_id["a"]["eligible"] is True
         assert by_id["b"]["eligible"] is True
@@ -608,7 +678,7 @@ class TestHoldoutOnlyCandidateExcludedFromPoints:
             _run_completed("c1", quality_score=90),
             _run_completed("c2", quality_score=5, holdout=True),
         ]
-        points = mh.aggregate_run_points(events, mh.DEFAULTS)
+        points = mh.aggregate_run_points(_evaluated(events), mh.DEFAULTS)
         cand_ids = [p["cand_id"] for p in points]
         assert "c2" not in cand_ids
         assert cand_ids == ["c1"]
@@ -618,7 +688,7 @@ class TestHoldoutOnlyCandidateExcludedFromPoints:
     ) -> None:
         run_meta("init", project=git_project, check=True)
         config = mh.load_config(git_project)
-        mh.append_ledger_event(git_project, config, _run_completed("c1", quality_score=90))
+        _append_evaluated_run(git_project, config, _run_completed("c1", quality_score=90))
         mh.append_ledger_event(
             git_project, config, _run_completed("c2", quality_score=5, holdout=True)
         )
@@ -647,7 +717,7 @@ class TestCostAxisValidation:
         config = {**mh.DEFAULTS, "frontier": {"cost_axis": "totl_tokens"}}
         events = [_run_completed("c1", quality_score=90)]
         try:
-            mh.aggregate_run_points(events, config)
+            mh.aggregate_run_points(_evaluated(events), config)
         except mh.MetaHarnessRootError:
             pass
         else:
@@ -658,7 +728,7 @@ class TestCostAxisValidation:
         event = _run_completed("c1", quality_score=90)
         del event["cost"]["total_cost_usd"]
         try:
-            mh.aggregate_run_points([event], config)
+            mh.aggregate_run_points(_evaluated([event]), config)
         except mh.MetaHarnessRootError as exc:
             assert event["run_id"] in str(exc)
         else:
@@ -667,7 +737,7 @@ class TestCostAxisValidation:
     def test_cli_frontier_exits_2_for_invalid_cost_axis(self, git_project: Path, run_meta) -> None:
         run_meta("init", project=git_project, check=True)
         config = mh.load_config(git_project)
-        mh.append_ledger_event(git_project, config, _run_completed("c1", quality_score=90))
+        _append_evaluated_run(git_project, config, _run_completed("c1", quality_score=90))
         local_config_dir = git_project / ".claude" / "config" / "meta-harness"
         local_config_dir.mkdir(parents=True, exist_ok=True)
         (local_config_dir / "meta-harness.local.yaml").write_text(

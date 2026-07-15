@@ -525,35 +525,19 @@ def test_propose_rejects_empty_citable_run_set_before_backend(
 def test_register_proposed_candidate_converts_parent_overlay_stage_error(
     tmp_path: Path, monkeypatch
 ) -> None:
-    parent_manifest = {
-        "cand_id": _PARENT_ID,
-        "target": "skill:issue-create",
-        "source_commit": "a" * 40,
-    }
-    baseline = tmp_path / "baseline"
-    baseline.mkdir()
-
     @contextmanager
-    def materialized_baseline(*_args, **_kwargs):
-        yield baseline
-
-    def fail_overlay(*_args, **_kwargs):
+    def fail_baseline(*_args, **_kwargs):
         raise propose_cli.ev.EvaluatorStageError(
             "overlay_apply", "overlay_error", "forced parent overlay failure"
         )
+        yield
 
     monkeypatch.setattr(propose_cli, "_inherit_parent_overlay", lambda *_args: None)
     monkeypatch.setattr(
-        propose_cli.mh,
-        "read_candidate_manifest",
-        lambda *_args: parent_manifest,
+        propose_cli.ev,
+        "materialized_candidate_baseline",
+        fail_baseline,
     )
-    monkeypatch.setattr(
-        propose_cli.skill_targets,
-        "materialized_baseline",
-        materialized_baseline,
-    )
-    monkeypatch.setattr(propose_cli.ev, "apply_registered_candidate_overlay", fail_overlay)
 
     with pytest.raises(
         propose_cli.prop.ProposerError,
@@ -616,7 +600,7 @@ def test_run_propose_pipeline_converts_parent_overlay_stage_error(
         "build_filtered_view",
         lambda **_kwargs: view,
     )
-    monkeypatch.setattr(propose_cli.ev, "apply_registered_candidate_overlay", fail_overlay)
+    monkeypatch.setattr(propose_cli.ev, "apply_parent_lineage_to_baseline", fail_overlay)
 
     with pytest.raises(
         propose_cli.prop.ProposerError,

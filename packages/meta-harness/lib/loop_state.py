@@ -161,6 +161,16 @@ def non_holdout_summary(
     runs = current_run_events(events, config, target, cand_id, holdout=False)
     if not runs:
         return None
+    evaluation = mh.latest_evaluation_completed(
+        events,
+        cand_id,
+        target,
+        holdout=False,
+        suite_hash=str(runs[0]["suite_hash"]),
+        evaluator_hash=str(runs[0]["evaluator_hash"]),
+    )
+    if evaluation is None or evaluation.get("verdict") != "pass":
+        return None
     return {
         "quality_mean": sum(float(run["quality_score"]) for run in runs) / len(runs),
         "critical_pass": all(float(run.get("critical_pass_rate", 0)) == 1.0 for run in runs),
@@ -218,7 +228,8 @@ def iteration_cost(
     run_cost = sum(
         _validated_run_cost(event, target)
         for event in events
-        if event.get("event") == "run_completed" and event.get("cand_id") == cand_id
+        if event.get("event") in {"run_completed", "regression_run_completed"}
+        and event.get("cand_id") == cand_id
     )
     return proposer_cost + run_cost
 
@@ -274,7 +285,23 @@ def current_run_events(
         _attempt_group_complete(by_scenario.get(scenario_id, []), repeat)
         for scenario_id in expected_ids
     )
-    if not complete or any(event.get("verdict") == "error" for event in latest):
+    evaluation = mh.latest_evaluation_completed(
+        events,
+        cand_id,
+        target,
+        holdout=holdout,
+        suite_hash=suite_hash,
+        evaluator_hash=evaluator_hash,
+    )
+    evaluation_run_ids = {str(run_id) for run_id in (evaluation or {}).get("own_run_ids") or []}
+    latest_run_ids = {str(event.get("run_id")) for event in latest}
+    if (
+        not complete
+        or any(event.get("verdict") == "error" for event in latest)
+        or evaluation is None
+        or evaluation.get("verdict") == "error"
+        or evaluation_run_ids != latest_run_ids
+    ):
         return []
     return latest
 
@@ -379,6 +406,10 @@ def _validate_candidate_state_sequence(
                 raise ValueError(f"run precedes candidate registration: {cand_id}")
             if states[cand_id] not in terminal:
                 states[cand_id] = "evaluated"
+        elif kind in {"regression_run_completed", "evaluation_completed"}:
+            validate_event(event, str(kind))
+            if event.get("target") != target or cand_id not in states:
+                raise ValueError(f"evaluation event target mismatch: {cand_id}")
         elif kind == "status_changed":
             validate_event(event, "status_changed")
             if states.get(cand_id) != event["from"]:
@@ -476,7 +507,14 @@ def _loop_started_context(events: list[dict], loop_id: str) -> tuple[int, str]:
 
 
 def _validated_run_cost(event: dict, target: str) -> float:
-    validate_event(event, "run_completed")
-    if event.get("target") != target or event.get("suite_id") != target:
+    definition = str(event.get("event"))
+    if definition not in {"run_completed", "regression_run_completed"}:
+        raise ValueError(f"unexpected run event: {definition}")
+    validate_event(event, definition)
+    if event.get("target") != target:
         raise ValueError(f"run target mismatch: {event.get('run_id')}")
+    if definition == "run_completed" and event.get("suite_id") != target:
+        raise ValueError(f"own run suite mismatch: {event.get('run_id')}")
+    if definition == "regression_run_completed" and event.get("suite_id") == target:
+        raise ValueError(f"regression run suite mismatch: {event.get('run_id')}")
     return float(event["cost"]["total_cost_usd"])
