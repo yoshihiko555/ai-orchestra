@@ -224,6 +224,37 @@ class TestIsCliEnabled:
         """enabled キー自体が無いセクションは True（デフォルト有効）。"""
         assert hook_common.is_cli_enabled("codex", {"codex": {"model": "gpt-5.5"}}) is True
 
+    # --- default 引数（Issue #129, EV-15: codex-suggestions 向けの呼び出し元限定デフォルト）---
+
+    def test_missing_section_honors_explicit_default_false(self) -> None:
+        """セクション未定義時、呼び出し元が default=False を渡せば False になる。
+
+        codex-suggestions は 2026-07-03 人間レビュー裁定によりこの呼び出し方を採用する。
+        他の呼び出し元（agent-routing 等）は default を渡さず True のまま。
+        """
+        assert hook_common.is_cli_enabled("codex", {}, default=False) is False
+
+    def test_non_dict_section_honors_explicit_default_false(self) -> None:
+        """セクションが dict でない壊れた config でも default=False を尊重する。"""
+        assert hook_common.is_cli_enabled("codex", {"codex": "not-a-dict"}, default=False) is False
+
+    def test_explicit_enabled_true_overrides_default_false(self) -> None:
+        """enabled: true が明示されていれば default=False でも True になる。"""
+        assert (
+            hook_common.is_cli_enabled("codex", {"codex": {"enabled": True}}, default=False) is True
+        )
+
+    def test_explicit_enabled_false_overrides_default_true(self) -> None:
+        """enabled: false が明示されていれば default（省略時 True）に関わらず False になる。"""
+        assert hook_common.is_cli_enabled("codex", {"codex": {"enabled": False}}) is False
+
+    def test_section_without_enabled_key_honors_explicit_default_false(self) -> None:
+        """セクションはあるが enabled キーが無い場合も default=False を尊重する。"""
+        assert (
+            hook_common.is_cli_enabled("codex", {"codex": {"model": "gpt-5.5"}}, default=False)
+            is False
+        )
+
 
 # =========================================================================
 # resolve_path_within

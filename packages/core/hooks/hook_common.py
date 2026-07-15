@@ -211,18 +211,28 @@ def load_cli_tools_config(project_dir: str) -> dict:
     return deep_merge(base, normalize_cli_tools_config(local))
 
 
-def is_cli_enabled(cli_name: str, config: dict) -> bool:
-    """CLI が有効かどうかを返す。未定義やセクション欠落時は True（後方互換）。
+def is_cli_enabled(cli_name: str, config: dict, default: bool = True) -> bool:
+    """CLI が有効かどうかを返す。
+
+    セクション自体が未定義（またはセクションが dict でない壊れた config）の
+    場合、および ``enabled`` キーが省略されている場合は ``default`` を返す。
+    呼び出し側が ``default`` を指定しなければ True（既存呼び出し元との後方互換）。
 
     元々 agent-routing パッケージが所有していたが、codex-suggestions /
     antigravity-suggestions など agent-routing に依存しないパッケージからも
     利用するため core に引き上げた。route_config.is_cli_enabled はここからの
     re-export として後方互換を維持する。
+
+    codex-suggestions は 2026-07-03 人間レビュー裁定（Issue #129, EV-15）により
+    ``codex`` セクション未定義時はデフォルト無効（``default=False``）として
+    呼び出す。他パッケージ（agent-routing / antigravity-suggestions /
+    image-generation 等）の呼び出しには影響しない（それらは default 省略で
+    従来どおり True）。
     """
     section = config.get(cli_name, {})
     if not isinstance(section, dict):
-        return True
-    return bool(section.get("enabled", True))
+        return default
+    return bool(section.get("enabled", default))
 
 
 def read_hook_input() -> dict:

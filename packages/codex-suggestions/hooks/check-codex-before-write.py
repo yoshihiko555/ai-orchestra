@@ -124,10 +124,13 @@ def main():
     try:
         data = json.load(sys.stdin)
 
-        # Codex CLI が無効化されている場合は提案をスキップ
+        # Codex CLI が無効化されている場合は提案をスキップ。
+        # codex セクション自体が未定義の場合はデフォルト無効（2026-07-03 人間
+        # レビュー裁定、EV-15）。他パッケージが共有する is_cli_enabled の
+        # デフォルト（True）には影響しない。
         project_dir = data.get("cwd", "") or os.environ.get("CLAUDE_PROJECT_DIR", "")
         config = load_package_config("agent-routing", "cli-tools.yaml", project_dir)
-        if not is_cli_enabled("codex", config):
+        if not is_cli_enabled("codex", config, default=False):
             sys.exit(0)
 
         tool_input = data.get("tool_input", {})
