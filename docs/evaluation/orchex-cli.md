@@ -2,7 +2,7 @@
 
 **対象**: `scripts/orchestra-manager.py`（CLI 本体）+ `scripts/lib/*.py`（`orchestra_hooks` / `orchestra_context` / `sync_engine` / `facet_builder` / `orchestra_models` / `gitignore_sync` / `toml_merge` / `agent_model_patch` / `settings_io` / `scaffold`）+ `ai_orchestra/cli.py`（`pip install orchex` 経由のエントリポイント）
 **対象テストファイル（SSOT、参考）**: `tests/unit/test_orchestra_manager_core.py`, `test_orchestra_manager_context.py`, `test_orchestra_manager_force_flag.py`, `test_orchestra_manager_gitignore.py`, `test_orchestra_manager_run_passthrough.py`, `test_orchestra_manager_proxy.py`, `test_orchestra_manager_cocoindex_uninstall.py`, `test_orchestra_manager_gaps.py`, `test_ai_orchestra_cli.py`
-**既知の制約（テスト所有権マッピング）**: `packages/quality-gates/hooks/evaluation-set-checker.py` は `packages/<pkg>/tests/` ディレクトリ名、またはトップレベル `tests/` 配下ファイル名のパッケージ名トークンマッチでのみ担当パッケージを判定する。`scripts/orchestra-manager.py`/`ai_orchestra/cli.py` は `packages/` 配下のディレクトリではないため自動識別されず、上記テストファイル群は原則ヒットしない（例外: `test_orchestra_manager_core.py` は `core` パッケージへの誤マッチが起き得る）。テスト変更時の本評価セットとの突合は、上記「対象テストファイル」一覧を人手で参照して行う必要がある。checker 側のマッピング拡張は別 Issue で対応する
+**テスト所有権マッピング（解消済み、Issue #237）**: `packages/quality-gates/hooks/evaluation-set-checker.py` はかつて `packages/<pkg>/tests/` ディレクトリ名、またはトップレベル `tests/` 配下ファイル名のパッケージ名トークンマッチでのみ担当パッケージを判定していたため、`packages/` 配下にディレクトリを持たない本評価セットのテストファイル群は自動識別されず（`test_orchestra_manager_core.py` は `core` パッケージへの誤マッチも発生していた）、人手での突合が必要だった。`.claude/config/quality-gates/evaluation-set-mapping.yaml`（`orchex-cli` の `test_globs` に `tests/unit/test_orchestra_manager_*.py`/`tests/unit/test_ai_orchestra_cli.py` を明示登録）の追加により、上記テストファイル群は自動的に本評価セットへ誘導されるようになった
 **類型**: CLI ツール型
 **作成日**: 2026-07-15
 **最終レビュー日**: 未レビュー（本 PR で新規作成。人間レビュー後に更新する）

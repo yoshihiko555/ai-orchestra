@@ -32,5 +32,5 @@
   "agents": [],
   "rules": ["skill-review-policy", "evaluation-set-policy"],
   "scripts": [],
-  "config": []
+  "config": ["config/evaluation-set-mapping.yaml"]
 }
