@@ -34,7 +34,7 @@ cocoindex パッケージは、cocoindex-code MCP サーバーの接続設定を
 - [ ] EV-05（異常 / must）: `targets.<cli>.enabled: false` を設定した CLI のみエントリが削除され、他の CLI の設定ファイルは変更されない — 根拠: `.claude/rules/cocoindex-usage.md`
 - [ ] EV-06（境界 / must）: `.local.yaml` に旧キー `targets.gemini.enabled: false` が残存している場合でも `targets.antigravity` の設定として読み替えられ、有効な上書きとして尊重される — 根拠: `.claude/rules/cocoindex-usage.md`
 - [ ] EV-07（正常 / should）: `.claude/config/cocoindex/cocoindex.local.yaml` で `args`（例: cocoindex / cocoindex-code のバージョン固定）を上書きできる — 根拠: `.claude/rules/cocoindex-usage.md`
-- [ ] EV-08（正常 / must）: `proxy.enabled: true` のとき、SessionStart で `start_proxy()` が冪等に呼び出され、既に起動済みならスキップする — 根拠: `.claude/rules/cocoindex-usage.md`
+- [ ] EV-08（正常 / must）: `proxy.enabled: true` のとき、SessionStart（`provision-mcp-servers.py`）は非同期の `start_proxy_background()` を呼び出して proxy 起動をトリガーする。実際に冪等判定（既に起動済み・ready ならスキップ）を行う同期処理 `start_proxy()` は、そこから spawn されるバックグラウンドヘルパー（`start-mcp-proxy.py`）側で実行され、SessionStart hook 自体はその完了を待たない（非同期 warmup の詳細は EV-18 を参照） — 根拠: `.claude/rules/cocoindex-usage.md`
 - [ ] EV-09（正常 / must）: `proxy.enabled: true` のとき、SessionEnd では proxy プロセスを停止せず、次セッションで再利用するために起動状態を維持する — 根拠: `.claude/rules/cocoindex-usage.md`
 - [ ] EV-10（正常 / should）: proxy の手動停止は `orchestra-manager.py proxy stop --project .` の実行によってのみ行われる（hook からは停止されない） — 根拠: `.claude/rules/cocoindex-usage.md`
 - [ ] EV-11（境界 / must）: proxy 未起動状態からの初回セッションでは MCP 接続が確立されず、ユーザーが `/mcp` で手動リコネクトするまで cocoindex-code ツールが利用できない — 根拠: `.claude/rules/cocoindex-usage.md`
