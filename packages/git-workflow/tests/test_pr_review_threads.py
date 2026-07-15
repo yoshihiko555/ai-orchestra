@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -159,10 +160,30 @@ def _issue_comment(
 
 
 def _patch_loop_harness_root(monkeypatch: pytest.MonkeyPatch, project_dir: Path) -> None:
-    """Avoid loop_common's real `git rev-parse` call, which the fake gh/git run() intercepts."""
+    """Avoid loop_common's real `git rev-parse` call, which the fake gh/git run() intercepts.
+
+    `loop_definition._resolve_local_override_root()` re-imports `loop_common` fresh on every
+    call (a plain `import loop_common` inside the function body) rather than reusing
+    `prw_module.lc`'s cached reference. In an isolated run those two resolve to the same
+    object, so patching only `prw_module.lc` is enough. But when the full suite collects
+    `packages/loop-harness/tests/test_loop_driver.py` (and `test_loop_scheduler.py` /
+    `test_loop_status.py`), those files intentionally `load_module()` `loop_common` under its
+    *real* module name (so the driver-under-test's `except lc.SomeError` clauses match) — each
+    doing so reassigns `sys.modules["loop_common"]` to a fresh object. By the time this fixture
+    runs, `prw_module.lc` can be a stale pre-reassignment object while `_resolve_local_override_root`
+    picks up the newer `sys.modules["loop_common"]`, so patching only `prw_module.lc` silently
+    misses the actual call path. Patch both to stay correct regardless of collection order.
+    """
     prw_module = prt._import_pr_review_wait()
     assert prw_module is not None
-    monkeypatch.setattr(prw_module.lc, "resolve_root_worktree", lambda _project_dir: project_dir)
+
+    def fake_resolve(_project_dir: str) -> Path:
+        return project_dir
+
+    monkeypatch.setattr(prw_module.lc, "resolve_root_worktree", fake_resolve)
+    live_loop_common = sys.modules.get("loop_common")
+    if live_loop_common is not None and live_loop_common is not prw_module.lc:
+        monkeypatch.setattr(live_loop_common, "resolve_root_worktree", fake_resolve)
 
 
 @pytest.fixture()
