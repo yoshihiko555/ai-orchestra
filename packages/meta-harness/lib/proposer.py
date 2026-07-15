@@ -311,7 +311,9 @@ def render_proposer_prompt(
     rendered_valid_runs = _join_or_none([str(run_id) for run_id in valid_based_on_run_ids or ()])
     if target.startswith("skill:"):
         resolution = skill_targets.allowed_overlay_paths(view_dir / "baseline", target, config)
-        allowed_paths = "\n".join(f"  - {path}" for path in sorted(resolution.private_paths))
+        allowed_paths = "\n".join(
+            f"  - {path}" for path in sorted(skill_targets.overlay_allowlist(resolution, config))
+        )
     else:
         allowed_paths = "  - facets/**"
     return Template(template).safe_substitute(

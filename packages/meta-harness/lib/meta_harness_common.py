@@ -924,6 +924,7 @@ def latest_evaluation_completed(
     holdout: bool,
     suite_hash: str | None = None,
     evaluator_hash: str | None = None,
+    evaluation_id: str | None = None,
 ) -> dict | None:
     """Return the latest completed evaluation batch matching one candidate scope."""
     for event in reversed(events):
@@ -937,6 +938,8 @@ def latest_evaluation_completed(
         if suite_hash is not None and event.get("own_suite_hash") != suite_hash:
             continue
         if evaluator_hash is not None and event.get("evaluator_hash") != evaluator_hash:
+            continue
+        if evaluation_id is not None and event.get("evaluation_id") != evaluation_id:
             continue
         return event
     return None

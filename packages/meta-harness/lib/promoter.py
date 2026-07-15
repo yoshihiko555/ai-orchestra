@@ -406,6 +406,7 @@ def _has_current_hash_pair(
         holdout=False,
         suite_hash=str(expected[0]),
         evaluator_hash=str(expected[1]),
+        evaluation_id=evaluation.get("evaluation_id"),
     )
     return non_holdout is not None and non_holdout.get("verdict") == "pass"
 

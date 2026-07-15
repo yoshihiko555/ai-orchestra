@@ -40,13 +40,38 @@ class SkillImpactContext:
     input_hash: str
 
 
+def _ref_has_facets(project_root: Path, source_ref: str) -> bool:
+    """Return True only if ``facets`` exists as a tracked tree at ``source_ref``."""
+    try:
+        completed = subprocess.run(
+            ["git", "cat-file", "-e", f"{source_ref}:facets"],
+            cwd=project_root,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return completed.returncode == 0
+
+
 @contextmanager
 def materialized_baseline(
     project_root: Path,
     source_ref: str,
 ) -> Iterator[Path]:
-    """Materialize tracked ``facets/`` from one immutable git ref."""
+    """Materialize tracked ``facets/`` from one immutable git ref.
+
+    A ref with no tracked ``facets/`` directory (e.g. a downstream project that never
+    adopted facets) yields an empty baseline instead of failing, matching
+    ``resolve_skill_impacts``'s zero-impact treatment for the same deployment shape.
+    """
     project_root = project_root.resolve()
+    if not _ref_has_facets(project_root, source_ref):
+        with tempfile.TemporaryDirectory(prefix="meta-harness-skill-baseline-") as raw_dir:
+            yield Path(raw_dir)
+        return
     try:
         completed = subprocess.run(
             ["git", "archive", "--format=tar", source_ref, "facets"],

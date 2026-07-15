@@ -393,6 +393,42 @@ class TestBaselineAuthority:
         assert "facets/instructions/alpha.md" in resolution.closure_paths
         assert "facets/instructions/beta.md" not in resolution.closure_paths
 
+    def test_materialized_baseline_returns_empty_tree_when_ref_has_no_facets(
+        self, git_project: Path, git_run
+    ) -> None:
+        """`git_project` の初期コミットは facets/ を一切 track していない（downstream
+        プロジェクト想定）。`git archive` の fatal エラーで落ちず、resolve_skill_impacts
+        の zero-impact フォールバックに正しく到達することを確認する。"""
+        head = git_run("rev-parse", "HEAD", cwd=git_project).stdout.strip()
+
+        with skill_targets.materialized_baseline(git_project, head) as baseline:
+            assert not (baseline / "facets").exists()
+            impact = skill_targets.resolve_skill_impacts(
+                baseline, ["facets/policies/example.md"], candidate_target="skill:alpha"
+            )
+
+        assert impact.impacted_targets == ()
+
+    def test_candidate_impact_context_survives_untracked_facets_ref(
+        self, git_project: Path, git_run
+    ) -> None:
+        head = git_run("rev-parse", "HEAD", cwd=git_project).stdout.strip()
+        manifest = {
+            "target": "claude-harness",
+            "source_commit": head,
+            "parent_id": None,
+            "overlay_files": [],
+        }
+
+        impact = ev.candidate_impact_context(
+            main_root=git_project,
+            config=mh.DEFAULTS,
+            schema_dir=REPO_ROOT / "packages" / "meta-harness" / "schemas",
+            manifest=manifest,
+        )
+
+        assert impact.impacted_targets == ()
+
     def test_composition_change_cannot_expand_same_candidate_authority(
         self, tmp_path: Path
     ) -> None:

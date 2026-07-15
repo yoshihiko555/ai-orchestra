@@ -698,6 +698,7 @@ def test_promote_checks_each_regression_suite_hash(monkeypatch: pytest.MonkeyPat
     }
     train_summary = {
         "event": "evaluation_completed",
+        "evaluation_id": EVALUATION_ID,
         "cand_id": CAND_ID,
         "target": TARGET,
         "holdout": False,
@@ -761,6 +762,80 @@ def test_promote_checks_each_regression_suite_hash(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(prm.ev, "compute_configured_evaluator_hash", lambda _config: "f" * 64)
     assert not prm._has_current_hash_pair(
         events,
+        CAND_ID,
+        TARGET,
+        frontier,
+        config,
+        holdout_evaluation=holdout_summary,
+    )
+
+
+def test_promote_rejects_train_holdout_evaluation_id_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """train (non-holdout) の evaluation_completed が holdout batch と別 evaluation_id
+    (= 別バッチ) だと、regression 予算の分離を暗黙にバイパスして promote してしまう
+    回帰の防止。"""
+    suite_hash = "a" * 64
+    evaluator_hash = "d" * 64
+    own = _holdout_own_event(
+        run_id="run-own-holdout",
+        suite_hash=suite_hash,
+        evaluator_hash=evaluator_hash,
+    )
+    holdout_summary = {
+        "event": "evaluation_completed",
+        "evaluation_id": EVALUATION_ID,
+        "cand_id": CAND_ID,
+        "target": TARGET,
+        "holdout": True,
+        "own_run_ids": [own["run_id"]],
+        "own_suite_hash": suite_hash,
+        "evaluator_hash": evaluator_hash,
+        "own_critical_pass": True,
+        "regression_results": [],
+        "verdict": "pass",
+        "unverified_impacts": [],
+        "impacted_targets": [],
+    }
+    train_same_batch = {
+        "event": "evaluation_completed",
+        "evaluation_id": EVALUATION_ID,
+        "cand_id": CAND_ID,
+        "target": TARGET,
+        "holdout": False,
+        "own_suite_hash": suite_hash,
+        "evaluator_hash": evaluator_hash,
+        "verdict": "pass",
+    }
+    train_other_batch = {**train_same_batch, "evaluation_id": "eval-20260715-120000-99999999"}
+    monkeypatch.setattr(
+        prm.ev,
+        "validate_target_suite",
+        lambda _package, _schema, suite_id: [Path(f"{suite_id}.yaml")],
+    )
+    monkeypatch.setattr(
+        prm.ev,
+        "load_scenario",
+        lambda path, _schema: {"id": "holdout", "holdout": True},
+    )
+    monkeypatch.setattr(prm.ev, "compute_suite_hash", lambda _paths: suite_hash)
+    monkeypatch.setattr(prm.ev, "compute_configured_evaluator_hash", lambda _config: evaluator_hash)
+    monkeypatch.setattr(prm.ev, "compute_scenario_hash", lambda _path: "b" * 64)
+    config = copy.deepcopy(mh.DEFAULTS)
+    config["evaluate"]["repeat_frontier"] = 1
+    frontier = {"suite_hash": suite_hash, "evaluator_hash": evaluator_hash}
+
+    assert prm._has_current_hash_pair(
+        [own, train_same_batch, holdout_summary],
+        CAND_ID,
+        TARGET,
+        frontier,
+        config,
+        holdout_evaluation=holdout_summary,
+    )
+    assert not prm._has_current_hash_pair(
+        [own, train_other_batch, holdout_summary],
         CAND_ID,
         TARGET,
         frontier,

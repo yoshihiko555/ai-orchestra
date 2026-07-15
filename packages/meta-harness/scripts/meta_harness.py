@@ -184,9 +184,7 @@ def cmd_register(
             file=sys.stderr,
         )
     inherited_source = (
-        str(parent_manifest.get("source_commit") or "")
-        if target.startswith("skill:") and parent_manifest is not None
-        else None
+        str(parent_manifest.get("source_commit") or "") if parent_manifest is not None else None
     )
     resolved_source_commit = source_commit or inherited_source or mh.git_head(project_dir)
     if resolved_source_commit is None:
@@ -194,7 +192,7 @@ def cmd_register(
         return EXIT_VALIDATION_ERROR
     if inherited_source is not None and resolved_source_commit != inherited_source:
         print(
-            "error: skill candidate source_commit must match its parent source_commit",
+            "error: candidate source_commit must match its parent source_commit",
             file=sys.stderr,
         )
         return EXIT_VALIDATION_ERROR

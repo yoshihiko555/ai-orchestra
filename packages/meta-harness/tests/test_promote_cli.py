@@ -118,6 +118,7 @@ def _append_run(
     quality: float = 90.0,
     suite_hash: str = _SUITE_HASH,
     evaluator_hash: str = _EVALUATOR_HASH,
+    evaluation_id: str | None = None,
 ) -> None:
     config = mh.load_config(git_project)
     manifest = mh.read_candidate_manifest(git_project, config, cand_id)
@@ -152,7 +153,18 @@ def _append_run(
     }
     mh.append_ledger_event(git_project, config, run_event)
     events = mh.read_ledger_events(git_project, config)
-    evaluation_number = sum(event.get("event") == "evaluation_completed" for event in events) + 1
+    # A `holdout=False` call and its paired `holdout=True` call (the pattern used throughout
+    # this file) must share one evaluation_id, matching production behavior where
+    # `evaluator.evaluate_candidate` generates the id once per `evaluate` invocation and reuses
+    # it for both sub-batches. Count non-holdout `run_completed` events already in the ledger
+    # (this already includes the run just appended above when `holdout` is False, but never
+    # counts a `holdout=True` run), so the paired holdout call reuses the same batch number as
+    # its preceding non-holdout call, while a later independent non-holdout call starts a new
+    # batch number.
+    batch_number = sum(
+        event.get("event") == "run_completed" and not event.get("holdout") for event in events
+    )
+    resolved_evaluation_id = evaluation_id or f"eval-20260709-010000-{batch_number:08x}"
     mh.append_ledger_event(
         git_project,
         config,
@@ -160,7 +172,7 @@ def _append_run(
             "event": "evaluation_completed",
             "ts": mh.now_iso(),
             "schema_version": "1.0",
-            "evaluation_id": f"eval-20260709-010000-{evaluation_number:08x}",
+            "evaluation_id": resolved_evaluation_id,
             "cand_id": cand_id,
             "target": "claude-harness",
             "holdout": holdout,
@@ -483,6 +495,31 @@ def test_promote_rejects_when_latest_holdout_hashes_are_stale(
 
     assert exit_code == cli.EXIT_VALIDATION_ERROR
     assert "run hashes are stale" in capsys.readouterr().err
+    assert not any(event.get("event") == "promotion_reserved" for event in _events(git_project))
+
+
+def test_promote_rejects_train_holdout_evaluation_id_mismatch(
+    git_project: Path, git_run, tmp_path: Path
+) -> None:
+    cand_id = _register_candidate(git_project, git_run, tmp_path)
+    _append_run(
+        git_project,
+        cand_id,
+        run_id="run-non-holdout",
+        holdout=False,
+        evaluation_id="eval-batch-a",
+    )
+    _append_run(
+        git_project,
+        cand_id,
+        run_id="run-holdout",
+        holdout=True,
+        evaluation_id="eval-batch-b",
+    )
+
+    exit_code = cli.cmd_promote(str(git_project), cand_id, False, False)
+
+    assert exit_code == cli.EXIT_VALIDATION_ERROR
     assert not any(event.get("event") == "promotion_reserved" for event in _events(git_project))
 
 
