@@ -118,15 +118,17 @@ def _skill_registration_authority(
     parent_manifest: dict | None,
 ) -> tuple[skill_targets.SkillTargetResolution, Path | None, list[str]]:
     inherited_overlay: Path | None = None
-    with skill_targets.materialized_baseline(project_dir, source_commit) as baseline:
+    provisional_manifest = {
+        "source_commit": source_commit,
+        "parent_id": parent_manifest.get("cand_id") if parent_manifest is not None else None,
+    }
+    with ev.materialized_candidate_baseline(
+        main_root=main_root,
+        config=config,
+        schema_dir=_SCHEMA_DIR,
+        manifest=provisional_manifest,
+    ) as baseline:
         if parent_manifest is not None:
-            ev.apply_registered_candidate_overlay(
-                main_root=main_root,
-                config=config,
-                manifest=parent_manifest,
-                worktree_dir=baseline,
-                schema_dir=_SCHEMA_DIR,
-            )
             inherited_overlay = (
                 mh.candidates_dir(main_root, config) / str(parent_manifest["cand_id"]) / "overlay"
             )
@@ -137,6 +139,7 @@ def _skill_registration_authority(
             target=target,
             baseline_root=baseline,
             inherited_overlay_dir=inherited_overlay,
+            skill_allowed_paths=skill_targets.overlay_allowlist(resolution, config),
         )
     return resolution, inherited_overlay, violations
 
@@ -181,9 +184,7 @@ def cmd_register(
             file=sys.stderr,
         )
     inherited_source = (
-        str(parent_manifest.get("source_commit") or "")
-        if target.startswith("skill:") and parent_manifest is not None
-        else None
+        str(parent_manifest.get("source_commit") or "") if parent_manifest is not None else None
     )
     resolved_source_commit = source_commit or inherited_source or mh.git_head(project_dir)
     if resolved_source_commit is None:
@@ -191,7 +192,7 @@ def cmd_register(
         return EXIT_VALIDATION_ERROR
     if inherited_source is not None and resolved_source_commit != inherited_source:
         print(
-            "error: skill candidate source_commit must match its parent source_commit",
+            "error: candidate source_commit must match its parent source_commit",
             file=sys.stderr,
         )
         return EXIT_VALIDATION_ERROR
@@ -294,7 +295,9 @@ def cmd_register(
                 baseline_root=project_dir,
                 inherited_overlay_dir=inherited_overlay,
                 skill_allowed_paths=(
-                    target_resolution.private_paths if target_resolution else None
+                    skill_targets.overlay_allowlist(target_resolution, config)
+                    if target_resolution
+                    else None
                 ),
             )
             mh.append_ledger_event(main_root, config, event)
@@ -710,6 +713,9 @@ def _run_evaluate_under_lock(
             repeat_override=repeat,
             cli_capabilities=caps.as_dict(),
         )
+    except ev.EvaluationBatchError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_RUNTIME_ERROR
     except (ValueError, OSError, ev.yaml.YAMLError) as exc:
         # `load_scenario()` の `path.read_text()` / `yaml.safe_load()` 由来の OSError /
         # yaml.YAMLError も ValueError と同様に入力検証エラーとして扱う（traceback を
@@ -804,7 +810,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="評価するシナリオ id（複数指定可、省略時は suite 内の全シナリオ）",
     )
     p_evaluate.add_argument(
-        "--repeat", type=int, default=None, help="試行回数（省略時はシナリオの repeat 値）"
+        "--repeat",
+        type=int,
+        default=None,
+        help="試行回数（省略時は holdout に応じた evaluate.repeat_default / repeat_frontier）",
     )
 
     p_propose = sub.add_parser("propose", help="filtered view から候補 overlay を提案・登録する")

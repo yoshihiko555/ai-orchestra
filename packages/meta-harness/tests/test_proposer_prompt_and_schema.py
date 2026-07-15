@@ -161,3 +161,38 @@ class TestProposerPrompt:
         assert "focus candidate: (none)" in prompt
         assert "- frontier: (none)" in prompt
         assert "変更合計は 200000 バイト以内" in prompt
+
+    def test_prompt_reflects_register_time_allowlist_for_skill_target(self, tmp_path: Path) -> None:
+        baseline = tmp_path / "view" / "baseline"
+        composition_dir = baseline / "facets" / "compositions" / "skills"
+        composition_dir.mkdir(parents=True)
+        (composition_dir / "alpha.yaml").write_text(
+            "name: alpha\nfrontmatter: {}\ninstruction: alpha\npolicies:\n  - shared-policy\n",
+            encoding="utf-8",
+        )
+        instructions_dir = baseline / "facets" / "instructions"
+        instructions_dir.mkdir(parents=True)
+        (instructions_dir / "alpha.md").write_text("alpha baseline\n", encoding="utf-8")
+        policies_dir = baseline / "facets" / "policies"
+        policies_dir.mkdir(parents=True)
+        (policies_dir / "shared-policy.md").write_text("shared\n", encoding="utf-8")
+
+        enabled_prompt = proposer.render_proposer_prompt(
+            view_dir=tmp_path / "view",
+            frontier_doc=None,
+            config={"regression": {"enabled": True}},
+            package_dir=PACKAGE_DIR,
+            target="skill:alpha",
+        )
+        disabled_prompt = proposer.render_proposer_prompt(
+            view_dir=tmp_path / "view",
+            frontier_doc=None,
+            config={"regression": {"enabled": False}},
+            package_dir=PACKAGE_DIR,
+            target="skill:alpha",
+        )
+
+        assert "facets/policies/shared-policy.md" in enabled_prompt
+        assert "facets/policies/shared-policy.md" not in disabled_prompt
+        assert "facets/instructions/alpha.md" in enabled_prompt
+        assert "facets/instructions/alpha.md" in disabled_prompt

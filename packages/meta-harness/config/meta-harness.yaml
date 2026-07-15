@@ -50,7 +50,9 @@ scenario_run:
   max_budget_usd_default: 3.0 # 2026-07-07 スパイク実測反映（Sec14）。実測 total_cost_usd=1.20 に余裕を持たせる
   max_output_tokens_default: 4096
 regression:
-  enabled: false # true は cross-skill regression evaluator 実装まで fail-closed
+  enabled: true # false = skill target を専有 facet allowlist へ縮退
+  max_affected_suites: 4
+  max_budget_usd: 12.0 # evaluation 単位の回帰 run 合計上限
 judge:
   tool: claude-bare # tool-less judge。codexはread deny不能のため無効（ADR-20260711-033）
   model: null

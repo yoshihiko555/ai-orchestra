@@ -16,10 +16,12 @@
 
 from __future__ import annotations
 
+import copy
 import gzip
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -27,6 +29,7 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -73,6 +76,7 @@ JUDGE_TIMEOUT_SECONDS = 120
 DEFAULT_COMMAND_TIMEOUT_MS = 60000
 MAX_ORACLE_ARTIFACT_BYTES = 5_000_000
 RUN_ID_NONCE_BYTES = 4
+EVALUATION_ID_NONCE_BYTES = 4
 
 ZERO_COST: dict[str, Any] = {
     "input_tokens": 0,
@@ -98,6 +102,18 @@ class EvaluatorStageError(RuntimeError):
         self.stage = stage
         self.error_type = error_type
         self.message = message
+
+
+class EvaluationBatchError(RuntimeError):
+    """A regression evaluation batch could not complete within its hard limits."""
+
+
+class RegressionBudgetExceeded(EvaluationBatchError):
+    """A regression scenario set exhausted its evaluation-level budget."""
+
+    def __init__(self, message: str, results: list[dict]):
+        super().__init__(message)
+        self.results = results
 
 
 # ---------------------------------------------------------------------------
@@ -478,14 +494,14 @@ def apply_registered_candidate_overlay(
 ) -> None:
     """Revalidate and apply a candidate lineage against each pre-overlay baseline."""
     target = str(manifest.get("target") or mh.DEFAULT_TARGET)
-    if not target.startswith("skill:"):
-        candidate_overlay = overlay_dir
-        if candidate_overlay is None:
-            candidate_overlay = (
-                mh.candidates_dir(main_root, config) / str(manifest["cand_id"]) / "overlay"
+    cand_id = str(manifest.get("cand_id") or "")
+    if not cand_id:
+        if target.startswith("skill:") or overlay_dir is None:
+            raise EvaluatorStageError(
+                "overlay_apply", "overlay_error", "candidate manifest is missing cand_id"
             )
         apply_overlay(
-            candidate_overlay,
+            overlay_dir,
             config,
             worktree_dir,
             schema_dir,
@@ -508,29 +524,84 @@ def apply_registered_candidate_overlay(
                 "overlay_error",
                 f"candidate lineage source_commit mismatch: {cand_id}",
             )
-        try:
-            closure_hash = skill_targets.allowed_overlay_paths(
-                worktree_dir, target, config
-            ).closure_hash
-        except (OSError, ValueError) as exc:
-            raise EvaluatorStageError("overlay_apply", "overlay_error", str(exc)) from exc
-        if item.get("target_closure_hash") != closure_hash:
-            raise EvaluatorStageError(
-                "overlay_apply",
-                "overlay_error",
-                f"candidate target closure hash is stale: {cand_id}",
-            )
-        overlay_dir = mh.candidates_dir(main_root, config) / cand_id / "overlay"
-        _verify_registered_overlay_integrity(item, overlay_dir)
+        if target.startswith("skill:"):
+            try:
+                closure_hash = skill_targets.allowed_overlay_paths(
+                    worktree_dir, target, config
+                ).closure_hash
+            except (OSError, ValueError) as exc:
+                raise EvaluatorStageError("overlay_apply", "overlay_error", str(exc)) from exc
+            if item.get("target_closure_hash") != closure_hash:
+                raise EvaluatorStageError(
+                    "overlay_apply",
+                    "overlay_error",
+                    f"candidate target closure hash is stale: {cand_id}",
+                )
+        item_overlay = (
+            overlay_dir
+            if cand_id == str(manifest["cand_id"]) and overlay_dir is not None
+            else mh.candidates_dir(main_root, config) / cand_id / "overlay"
+        )
+        _verify_registered_overlay_integrity(item, item_overlay)
         apply_overlay(
-            overlay_dir,
+            item_overlay,
             config,
             worktree_dir,
             schema_dir,
             target=target,
-            inherited_overlay_dir=inherited_overlay,
+            inherited_overlay_dir=inherited_overlay if target.startswith("skill:") else None,
         )
-        inherited_overlay = overlay_dir
+        inherited_overlay = item_overlay
+
+
+def apply_parent_lineage_to_baseline(
+    *,
+    main_root: Path,
+    config: dict,
+    schema_dir: Path,
+    baseline_root: Path,
+    parent_id: str | None,
+) -> None:
+    """Apply only the immutable parent lineage to a pre-candidate baseline."""
+    if parent_id is None:
+        return
+    parent_manifest = mh.read_candidate_manifest(main_root, config, parent_id)
+    if parent_manifest is None:
+        raise EvaluatorStageError(
+            "overlay_apply", "overlay_error", f"candidate lineage parent is missing: {parent_id}"
+        )
+    apply_registered_candidate_overlay(
+        main_root=main_root,
+        config=config,
+        manifest=parent_manifest,
+        worktree_dir=baseline_root,
+        schema_dir=schema_dir,
+    )
+
+
+@contextmanager
+def materialized_candidate_baseline(
+    *,
+    main_root: Path,
+    config: dict,
+    schema_dir: Path,
+    manifest: dict,
+    source_ref: str | None = None,
+) -> Iterator[Path]:
+    """Materialize source facets plus parent lineage, before the candidate overlay."""
+    ref = source_ref or str(manifest.get("source_commit") or "")
+    if not ref:
+        raise ValueError("candidate baseline requires source_commit")
+    parent_id = manifest.get("parent_id")
+    with skill_targets.materialized_baseline(main_root, ref) as baseline:
+        apply_parent_lineage_to_baseline(
+            main_root=main_root,
+            config=config,
+            schema_dir=schema_dir,
+            baseline_root=baseline,
+            parent_id=str(parent_id) if parent_id is not None else None,
+        )
+        yield baseline
 
 
 def _candidate_lineage(main_root: Path, config: dict, manifest: dict) -> list[dict]:
@@ -877,6 +948,7 @@ def run_headless_scenario(
             try:
                 _persist_refreshed_isolation_metadata(launch, staging_dir)
             except Exception as exc:  # noqa: BLE001 - preserve the original failed-run error
+                _mark_isolation_metrics_stale(staging_dir)
                 if not in_flight_error:
                     raise
                 _LOGGER.error(
@@ -905,6 +977,31 @@ def _persist_refreshed_isolation_metadata(
         encoding="utf-8",
     )
     return metadata
+
+
+def _mark_isolation_metrics_stale(staging_dir: Path) -> None:
+    """Persist a schema-compatible fail-closed marker after metrics refresh failure."""
+    metadata = _load_isolation_metadata(staging_dir)
+    broker = metadata.get("broker") if isinstance(metadata, dict) else None
+    metrics = broker.get("metrics") if isinstance(broker, dict) else None
+    if (
+        not isinstance(metadata, dict)
+        or not isinstance(broker, dict)
+        or not isinstance(metrics, dict)
+    ):
+        return
+    reasons = [str(reason) for reason in metrics.get("anomaly_reasons") or []]
+    marker = "broker metrics refresh failed"
+    if marker not in reasons:
+        reasons.append(marker)
+    metadata["broker"] = {
+        **broker,
+        "metrics": {**metrics, "anomaly": True, "anomaly_reasons": reasons},
+    }
+    (staging_dir / "isolation.json").write_text(
+        json.dumps(metadata, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _check_headless_run_outcome(
@@ -1587,6 +1684,12 @@ def generate_run_id(
     return f"run-{moment:%Y%m%d}-{moment:%H%M%S}-{_cand_slug(cand_id)}-{scenario_id}-a{attempt}-{nonce}"
 
 
+def generate_evaluation_id(*, now: datetime | None = None) -> str:
+    moment = now or datetime.now()
+    nonce = os.urandom(EVALUATION_ID_NONCE_BYTES).hex()
+    return f"eval-{moment:%Y%m%d}-{moment:%H%M%S}-{nonce}"
+
+
 # ---------------------------------------------------------------------------
 # hash 算出（Sec1-2 hash 定義）
 # ---------------------------------------------------------------------------
@@ -1638,6 +1741,7 @@ def evaluator_execution_snapshot(config: dict) -> dict[str, Any]:
         "permission_mode": evaluate_cfg.get("permission_mode", "acceptEdits"),
         "model": evaluate_cfg.get("model"),
         "max_output_tokens_default": scenario_run_cfg.get("max_output_tokens_default", 4096),
+        "regression": config.get("regression") or {},
     }
 
 
@@ -1888,8 +1992,48 @@ def _build_run_completed_event(
     }
 
 
+def _build_regression_run_completed_event(
+    result: dict,
+    *,
+    evaluation_id: str,
+    target: str,
+    suite_id: str,
+    suite_hash: str,
+    scenario_hash: str,
+    evaluator_hash: str,
+    holdout: bool,
+) -> dict:
+    return {
+        "event": "regression_run_completed",
+        "ts": mh.now_iso(),
+        "schema_version": "1.0",
+        "evaluation_id": evaluation_id,
+        "run_id": result["run_id"],
+        "cand_id": result["cand_id"],
+        "target": target,
+        "suite_id": suite_id,
+        "suite_hash": suite_hash,
+        "scenario_id": result["scenario_id"],
+        "scenario_hash": scenario_hash,
+        "evaluator_hash": evaluator_hash,
+        "verdict": result["verdict"],
+        "cost": result["cost"],
+        "attempt": result["attempt"],
+        "attempts_total": result["attempts_total"],
+        "holdout": holdout,
+    }
+
+
+def _validate_ledger_event(schema_dir: Path, event: dict) -> None:
+    schema = mh.load_schema(schema_dir, "ledger.event.schema.json")
+    errors = mh.validate_against_schema(event, schema, schema_dir)
+    if errors:
+        raise ValueError("; ".join(errors[:5]))
+
+
 def append_run_completed_event(main_root: Path, config: dict, event: dict) -> None:
     """run_completed イベントを ledger に追記する（store.lock 短期取得、Sec2-3）。"""
+    _validate_ledger_event(_PACKAGE_DIR / "schemas", event)
     with mh.store_lock(main_root, config):
         mh.append_ledger_event(main_root, config, event)
 
@@ -1910,6 +2054,9 @@ def run_single_attempt(
     cand_dir: Path,
     manifest: dict,
     target: str,
+    suite_id: str | None = None,
+    evaluation_id: str | None = None,
+    append_event: bool = True,
     scenario: dict,
     scenario_path: Path,
     suite_hash: str,
@@ -1921,6 +2068,7 @@ def run_single_attempt(
 ) -> dict:
     """worktree ライフサイクル全体を実行し、どの段階で失敗しても verdict=error の result.json +
     ledger 追記を必ず行う（Sec2-5）。"""
+    effective_suite_id = suite_id or target
     run_id = generate_run_id(cand_id, scenario["id"], attempt)
     holdout = bool(scenario.get("holdout"))
     run_dir = (mh.holdout_runs_dir if holdout else mh.runs_dir)(main_root, config) / run_id
@@ -1935,7 +2083,7 @@ def run_single_attempt(
         run_id=run_id,
         cand_id=cand_id,
         scenario_id=scenario["id"],
-        suite_id=target,
+        suite_id=effective_suite_id,
         suite_hash=suite_hash,
         scenario_hash=scenario_hash,
         evaluator_hash=evaluator_hash,
@@ -1992,7 +2140,9 @@ def run_single_attempt(
     # `errors` に記録済み（hard_failure=True）。ここでの cost 抽出は error 時も
     # 可能な範囲で行い、result.json に反映する（Sec14-1）。
     events_path = staging_dir / "events.jsonl"
-    cost = extract_cost(events_path)
+    cost = _account_cost_with_broker_metrics(
+        extract_cost(events_path), isolation_metadata, scenario, config
+    )
     self_report, penalty = compute_self_report_and_penalty(events_path, config)
 
     critical_pass_rate = _pass_rate(checks)
@@ -2021,25 +2171,37 @@ def run_single_attempt(
     result = _enforce_result_schema(result, schema_dir)
 
     _finalize_artifacts(run_dir, staging_dir, result)
-    event = _build_run_completed_event(
-        result,
-        target=target,
-        suite_id=target,
-        suite_hash=suite_hash,
-        scenario_hash=scenario_hash,
-        evaluator_hash=evaluator_hash,
-        holdout=holdout,
-    )
-    try:
-        append_run_completed_event(main_root, config, event)
-    except mh.LockAcquisitionError as exc:
-        # exit code 自体は呼び出し元（`cmd_evaluate`）の `except mh.LockAcquisitionError`
-        # で exit 3 に正規化されるが、result.json/report.md（run_dir）はここまでに書き込み
-        # 済みで ledger.jsonl には記載されない不整合状態が生じる。診断できるよう run_dir の
-        # パスをメッセージに含めて再送出する。
-        raise mh.LockAcquisitionError(
-            f"{exc} (run artifacts already written to {run_dir}, but not recorded in ledger.jsonl)"
-        ) from exc
+    if effective_suite_id == target:
+        event = _build_run_completed_event(
+            result,
+            target=target,
+            suite_id=effective_suite_id,
+            suite_hash=suite_hash,
+            scenario_hash=scenario_hash,
+            evaluator_hash=evaluator_hash,
+            holdout=holdout,
+        )
+    else:
+        if evaluation_id is None:
+            raise ValueError("regression run requires evaluation_id")
+        event = _build_regression_run_completed_event(
+            result,
+            evaluation_id=evaluation_id,
+            target=target,
+            suite_id=effective_suite_id,
+            suite_hash=suite_hash,
+            scenario_hash=scenario_hash,
+            evaluator_hash=evaluator_hash,
+            holdout=holdout,
+        )
+    if append_event:
+        try:
+            append_run_completed_event(main_root, config, event)
+        except mh.LockAcquisitionError as exc:
+            raise mh.LockAcquisitionError(
+                f"{exc} (run artifacts already written to {run_dir}, "
+                "but not recorded in ledger.jsonl)"
+            ) from exc
     shutil.rmtree(staging_dir, ignore_errors=True)
     return result
 
@@ -2082,6 +2244,36 @@ def _broker_metrics_failure(metadata: dict) -> dict[str, str] | None:
         "stage": "broker",
         "type": "run_error",
         "message": f"credential broker recorded an anomalous exchange{detail}",
+    }
+
+
+def _account_cost_with_broker_metrics(
+    cost: dict[str, Any], isolation_metadata: dict | None, scenario: dict, config: dict
+) -> dict[str, Any]:
+    """Include broker-wide scenario + judge spend in the persisted run cost."""
+    budget = scenario.get("budget") or {}
+    attempt_budget = float(
+        budget.get(
+            "max_budget_usd",
+            (config.get("scenario_run") or {}).get("max_budget_usd_default", 3.0),
+        )
+    )
+    broker = isolation_metadata.get("broker") if isinstance(isolation_metadata, dict) else None
+    metrics = broker.get("metrics") if isinstance(broker, dict) else None
+    broker_cost: float | None = None
+    if isinstance(metrics, dict):
+        raw_cost = metrics.get("estimated_cost_usd")
+        if isinstance(raw_cost, (int, float)) and not isinstance(raw_cost, bool):
+            value = float(raw_cost)
+            if math.isfinite(value) and value >= 0:
+                broker_cost = value
+        if metrics.get("budget_exceeded") is True or metrics.get("anomaly") is True:
+            broker_cost = attempt_budget
+    if broker_cost is None:
+        broker_cost = attempt_budget
+    return {
+        **cost,
+        "total_cost_usd": max(float(cost.get("total_cost_usd") or 0.0), broker_cost),
     }
 
 
@@ -2187,6 +2379,7 @@ def _run_attempt_lifecycle(
                         hard_failure = True
                         errors.append(broker_failure)
                 except Exception as exc:  # noqa: BLE001 - metadata 失敗でも cleanup を継続する
+                    _mark_isolation_metrics_stale(staging_dir)
                     hard_failure = True
                     errors.append(
                         {
@@ -2245,18 +2438,16 @@ def evaluate_candidate(
     scenario_ids: list[str] | None,
     repeat_override: int | None,
     cli_capabilities: dict,
+    evaluation_id: str | None = None,
     runner: SubprocessRunner = subprocess.run,
 ) -> list[dict]:
-    """指定候補に対しシナリオ評価を実行し、run 結果のリストを返す（Sec6 `evaluate`）。"""
+    """Evaluate own scenarios plus affected skill suites in atomic ledger batches."""
     if repeat_override is not None and repeat_override < 1:
         raise ValueError(f"--repeat must be >= 1, got: {repeat_override}")
 
     target = manifest["target"]
     cand_dir = mh.candidates_dir(main_root, config) / cand_id
     all_scenario_paths = validate_target_suite(package_dir, schema_dir, target)
-
-    suite_hash = compute_suite_hash(all_scenario_paths)
-    evaluator_hash = compute_configured_evaluator_hash(config)
 
     scenario_docs = [(p, load_scenario(p, schema_dir)) for p in all_scenario_paths]
     selected = _select_scenarios(scenario_docs, scenario_ids)
@@ -2268,31 +2459,467 @@ def evaluate_candidate(
         )
 
     results: list[dict] = []
-    for scenario_path, scenario in selected:
+    if evaluation_id is None:
+        evaluation_id = generate_evaluation_id()
+    regression_budget = {
+        "remaining_usd": _non_negative_float_config(
+            (config.get("regression") or {}).get("max_budget_usd", 12.0),
+            "regression.max_budget_usd",
+        )
+    }
+    for holdout in (False, True):
+        batch_scenarios = [item for item in selected if bool(item[1].get("holdout")) == holdout]
+        if not batch_scenarios:
+            continue
+        results.extend(
+            _evaluate_scenario_batch(
+                main_root=main_root,
+                config=config,
+                schema_dir=schema_dir,
+                package_dir=package_dir,
+                project_dir=project_dir,
+                cand_id=cand_id,
+                cand_dir=cand_dir,
+                manifest=manifest,
+                target=target,
+                own_suite_paths=all_scenario_paths,
+                own_scenarios=batch_scenarios,
+                holdout=holdout,
+                repeat_override=repeat_override,
+                cli_capabilities=cli_capabilities,
+                runner=runner,
+                evaluation_id=evaluation_id,
+                regression_budget=regression_budget,
+            )
+        )
+    return results
+
+
+def candidate_impact_context(
+    *,
+    main_root: Path,
+    config: dict,
+    schema_dir: Path,
+    manifest: dict,
+    source_ref: str | None = None,
+) -> skill_targets.SkillImpactContext:
+    """Resolve impact authority from the shared pre-candidate baseline helper."""
+    if not bool((config.get("regression") or {}).get("enabled", True)):
+        return skill_targets.SkillImpactContext(
+            impacted_targets=(),
+            input_hash=hashlib.sha256(b"regression-disabled").hexdigest(),
+        )
+    with materialized_candidate_baseline(
+        main_root=main_root,
+        config=config,
+        schema_dir=schema_dir,
+        manifest=manifest,
+        source_ref=source_ref,
+    ) as baseline:
+        return skill_targets.resolve_skill_impacts(
+            baseline,
+            [str(path) for path in manifest.get("overlay_files") or []],
+            candidate_target=str(manifest.get("target") or mh.DEFAULT_TARGET),
+        )
+
+
+def _evaluate_scenario_batch(
+    *,
+    main_root: Path,
+    config: dict,
+    schema_dir: Path,
+    package_dir: Path,
+    project_dir: Path,
+    cand_id: str,
+    cand_dir: Path,
+    manifest: dict,
+    target: str,
+    own_suite_paths: list[Path],
+    own_scenarios: list[tuple[Path, dict]],
+    holdout: bool,
+    repeat_override: int | None,
+    cli_capabilities: dict,
+    runner: SubprocessRunner,
+    evaluation_id: str | None = None,
+    regression_budget: dict[str, float] | None = None,
+) -> list[dict]:
+    evaluation_id = evaluation_id or generate_evaluation_id()
+    resolved_repeat = repeat_override
+    if resolved_repeat is None:
+        repeat_key = "repeat_frontier" if holdout else "repeat_default"
+        evaluate_cfg = config.get("evaluate") or {}
+        resolved_repeat = _positive_int_config(
+            evaluate_cfg.get(repeat_key, mh.DEFAULTS["evaluate"][repeat_key]),
+            f"evaluate.{repeat_key}",
+        )
+    evaluator_hash = compute_configured_evaluator_hash(config)
+    own_suite_hash = compute_suite_hash(own_suite_paths)
+    impact = candidate_impact_context(
+        main_root=main_root,
+        config=config,
+        schema_dir=schema_dir,
+        manifest=manifest,
+    )
+    regression_suites, unverified = _resolve_regression_suites(
+        package_dir, schema_dir, impact.impacted_targets, holdout=holdout
+    )
+    regression_cfg = config.get("regression") or {}
+    max_suites = _positive_int_config(
+        regression_cfg.get("max_affected_suites", 4), "regression.max_affected_suites"
+    )
+    configured_max_budget = _non_negative_float_config(
+        regression_cfg.get("max_budget_usd", 12.0), "regression.max_budget_usd"
+    )
+    max_budget = (
+        min(configured_max_budget, float(regression_budget["remaining_usd"]))
+        if regression_budget is not None
+        else configured_max_budget
+    )
+    if len(regression_suites) > max_suites:
+        summary = _build_evaluation_completed_event(
+            evaluation_id=evaluation_id,
+            cand_id=cand_id,
+            target=target,
+            holdout=holdout,
+            own_results=[],
+            own_suite_hash=own_suite_hash,
+            evaluator_hash=evaluator_hash,
+            regression_results=[],
+            unverified_impacts=unverified,
+            manifest=manifest,
+            impact=impact,
+            regression_cost_usd=0.0,
+            errors=[f"affected regression suites exceed max_affected_suites={max_suites}"],
+        )
+        _append_evaluation_events(main_root, config, schema_dir, [summary])
+        raise EvaluationBatchError(summary["errors"][0])
+
+    results: list[dict] = []
+    ledger_events: list[dict] = []
+    own_results = _run_scenario_set(
+        main_root=main_root,
+        config=config,
+        schema_dir=schema_dir,
+        package_dir=package_dir,
+        project_dir=project_dir,
+        cand_id=cand_id,
+        cand_dir=cand_dir,
+        manifest=manifest,
+        target=target,
+        suite_id=target,
+        scenario_docs=own_scenarios,
+        suite_hash=own_suite_hash,
+        evaluator_hash=evaluator_hash,
+        evaluation_id=evaluation_id,
+        repeat_override=resolved_repeat,
+        cli_capabilities=cli_capabilities,
+        runner=runner,
+    )
+    results.extend(own_results)
+    ledger_events.extend(
+        _events_for_results(
+            own_results,
+            target=target,
+            suite_id=target,
+            suite_hash=own_suite_hash,
+            evaluator_hash=evaluator_hash,
+            scenario_docs=own_scenarios,
+            evaluation_id=evaluation_id,
+        )
+    )
+
+    regression_summaries: list[dict] = []
+    regression_cost = 0.0
+    batch_errors: list[str] = []
+    for suite_id, suite_paths, scenario_docs in regression_suites:
+        suite_hash = compute_suite_hash(suite_paths)
+        budget_exceeded = False
+        try:
+            suite_results = _run_scenario_set(
+                main_root=main_root,
+                config=config,
+                schema_dir=schema_dir,
+                package_dir=package_dir,
+                project_dir=project_dir,
+                cand_id=cand_id,
+                cand_dir=cand_dir,
+                manifest=manifest,
+                target=target,
+                suite_id=suite_id,
+                scenario_docs=scenario_docs,
+                suite_hash=suite_hash,
+                evaluator_hash=evaluator_hash,
+                evaluation_id=evaluation_id,
+                repeat_override=resolved_repeat,
+                cli_capabilities=cli_capabilities,
+                runner=runner,
+                max_total_cost_usd=max(0.0, max_budget - regression_cost),
+            )
+        except RegressionBudgetExceeded as exc:
+            suite_results = exc.results
+            budget_exceeded = True
+        results.extend(suite_results)
+        ledger_events.extend(
+            _events_for_results(
+                suite_results,
+                target=target,
+                suite_id=suite_id,
+                suite_hash=suite_hash,
+                evaluator_hash=evaluator_hash,
+                scenario_docs=scenario_docs,
+                evaluation_id=evaluation_id,
+            )
+        )
+        regression_cost += sum(float(result["cost"]["total_cost_usd"]) for result in suite_results)
+        suite_verdict = _combined_result_verdict(suite_results)
+        regression_summaries.append(
+            {
+                "suite_id": suite_id,
+                "suite_hash": suite_hash,
+                "run_ids": [str(result["run_id"]) for result in suite_results],
+                "verdict": suite_verdict,
+                "critical_pass": suite_verdict == "pass",
+            }
+        )
+        if budget_exceeded or regression_cost > max_budget:
+            batch_errors.append(f"regression cost exceeds max_budget_usd={max_budget}")
+            break
+
+    summary = _build_evaluation_completed_event(
+        evaluation_id=evaluation_id,
+        cand_id=cand_id,
+        target=target,
+        holdout=holdout,
+        own_results=own_results,
+        own_suite_hash=own_suite_hash,
+        evaluator_hash=evaluator_hash,
+        regression_results=regression_summaries,
+        unverified_impacts=unverified,
+        manifest=manifest,
+        impact=impact,
+        regression_cost_usd=regression_cost,
+        errors=batch_errors,
+    )
+    if regression_budget is not None:
+        regression_budget["remaining_usd"] = max(
+            0.0, float(regression_budget["remaining_usd"]) - regression_cost
+        )
+    _append_evaluation_events(main_root, config, schema_dir, [*ledger_events, summary])
+    if batch_errors:
+        raise EvaluationBatchError("; ".join(batch_errors))
+    return results
+
+
+def _resolve_regression_suites(
+    package_dir: Path,
+    schema_dir: Path,
+    impacted_targets: tuple[str, ...],
+    *,
+    holdout: bool,
+) -> tuple[list[tuple[str, list[Path], list[tuple[Path, dict]]]], list[str]]:
+    suites: list[tuple[str, list[Path], list[tuple[Path, dict]]]] = []
+    unverified: list[str] = []
+    for suite_id in impacted_targets:
+        suite_dir = scenario_suite_dir(package_dir, suite_id)
+        if not suite_dir.is_dir() or not discover_scenario_paths(suite_dir):
+            unverified.append(suite_id)
+            continue
+        suite_paths = validate_target_suite(package_dir, schema_dir, suite_id)
+        docs = [(path, load_scenario(path, schema_dir)) for path in suite_paths]
+        selected = [item for item in docs if bool(item[1].get("holdout")) == holdout]
+        suites.append((suite_id, suite_paths, selected))
+    return suites, unverified
+
+
+def _run_scenario_set(
+    *,
+    main_root: Path,
+    config: dict,
+    schema_dir: Path,
+    package_dir: Path,
+    project_dir: Path,
+    cand_id: str,
+    cand_dir: Path,
+    manifest: dict,
+    target: str,
+    suite_id: str,
+    scenario_docs: list[tuple[Path, dict]],
+    suite_hash: str,
+    evaluator_hash: str,
+    evaluation_id: str,
+    repeat_override: int | None,
+    cli_capabilities: dict,
+    runner: SubprocessRunner,
+    max_total_cost_usd: float | None = None,
+) -> list[dict]:
+    results: list[dict] = []
+    total_cost_usd = 0.0
+    for scenario_path, scenario in scenario_docs:
         repeat = repeat_override or scenario.get("repeat", 1)
         for attempt in range(1, repeat + 1):
-            results.append(
-                run_single_attempt(
-                    main_root=main_root,
-                    config=config,
-                    schema_dir=schema_dir,
-                    package_dir=package_dir,
-                    project_dir=project_dir,
-                    cand_id=cand_id,
-                    cand_dir=cand_dir,
-                    manifest=manifest,
-                    target=target,
-                    scenario=scenario,
-                    scenario_path=scenario_path,
-                    suite_hash=suite_hash,
-                    evaluator_hash=evaluator_hash,
-                    attempt=attempt,
-                    attempts_total=repeat,
-                    cli_capabilities=cli_capabilities,
-                    runner=runner,
+            effective_scenario = scenario
+            if max_total_cost_usd is not None:
+                remaining = max_total_cost_usd - total_cost_usd
+                if remaining <= 0:
+                    raise RegressionBudgetExceeded(
+                        "regression evaluation budget exhausted before all attempts completed",
+                        results,
+                    )
+                effective_scenario = copy.deepcopy(scenario)
+                budget = dict(effective_scenario.get("budget") or {})
+                attempt_budget = float(
+                    budget.get(
+                        "max_budget_usd",
+                        (config.get("scenario_run") or {}).get("max_budget_usd_default", 3.0),
+                    )
                 )
+                budget["max_budget_usd"] = min(attempt_budget, remaining)
+                effective_scenario["budget"] = budget
+            result = run_single_attempt(
+                main_root=main_root,
+                config=config,
+                schema_dir=schema_dir,
+                package_dir=package_dir,
+                project_dir=project_dir,
+                cand_id=cand_id,
+                cand_dir=cand_dir,
+                manifest=manifest,
+                target=target,
+                suite_id=suite_id,
+                evaluation_id=evaluation_id,
+                append_event=False,
+                scenario=effective_scenario,
+                scenario_path=scenario_path,
+                suite_hash=suite_hash,
+                evaluator_hash=evaluator_hash,
+                attempt=attempt,
+                attempts_total=repeat,
+                cli_capabilities=cli_capabilities,
+                runner=runner,
             )
+            results.append(result)
+            if max_total_cost_usd is not None:
+                total_cost_usd += float(result["cost"]["total_cost_usd"])
+                if total_cost_usd > max_total_cost_usd:
+                    raise RegressionBudgetExceeded(
+                        "regression evaluation cost exceeded its hard limit",
+                        results,
+                    )
     return results
+
+
+def _events_for_results(
+    results: list[dict],
+    *,
+    target: str,
+    suite_id: str,
+    suite_hash: str,
+    evaluator_hash: str,
+    scenario_docs: list[tuple[Path, dict]],
+    evaluation_id: str,
+) -> list[dict]:
+    paths_by_id = {str(scenario["id"]): path for path, scenario in scenario_docs}
+    events: list[dict] = []
+    for result in results:
+        scenario_path = paths_by_id[str(result["scenario_id"])]
+        holdout = bool(next(s["holdout"] for p, s in scenario_docs if p == scenario_path))
+        kwargs = {
+            "target": target,
+            "suite_id": suite_id,
+            "suite_hash": suite_hash,
+            "scenario_hash": compute_scenario_hash(scenario_path),
+            "evaluator_hash": evaluator_hash,
+            "holdout": holdout,
+        }
+        if suite_id == target:
+            events.append(_build_run_completed_event(result, **kwargs))
+        else:
+            events.append(
+                _build_regression_run_completed_event(result, evaluation_id=evaluation_id, **kwargs)
+            )
+    return events
+
+
+def _build_evaluation_completed_event(
+    *,
+    evaluation_id: str,
+    cand_id: str,
+    target: str,
+    holdout: bool,
+    own_results: list[dict],
+    own_suite_hash: str,
+    evaluator_hash: str,
+    regression_results: list[dict],
+    unverified_impacts: list[str],
+    manifest: dict,
+    impact: skill_targets.SkillImpactContext,
+    regression_cost_usd: float,
+    errors: list[str],
+) -> dict:
+    own_verdict = _combined_result_verdict(own_results)
+    regression_error = any(item["verdict"] == "error" for item in regression_results)
+    regression_pass = all(item["critical_pass"] for item in regression_results)
+    if errors or own_verdict == "error" or regression_error:
+        verdict = "error"
+    elif own_verdict == "pass" and regression_pass:
+        verdict = "pass"
+    else:
+        verdict = "fail"
+    event = {
+        "event": "evaluation_completed",
+        "ts": mh.now_iso(),
+        "schema_version": "1.0",
+        "evaluation_id": evaluation_id,
+        "cand_id": cand_id,
+        "target": target,
+        "holdout": holdout,
+        "own_run_ids": [str(result["run_id"]) for result in own_results],
+        "own_suite_hash": own_suite_hash,
+        "evaluator_hash": evaluator_hash,
+        "own_critical_pass": own_verdict == "pass",
+        "regression_results": regression_results,
+        "verdict": verdict,
+        "unverified_impacts": sorted(unverified_impacts),
+        "evaluation_base_commit": str(manifest["source_commit"]),
+        "impacted_targets": list(impact.impacted_targets),
+        "impact_input_hash": impact.input_hash,
+        "regression_cost_usd": regression_cost_usd,
+    }
+    if errors:
+        event["errors"] = errors
+    return event
+
+
+def _append_evaluation_events(
+    main_root: Path, config: dict, schema_dir: Path, events: list[dict]
+) -> None:
+    for event in events:
+        _validate_ledger_event(schema_dir, event)
+    with mh.store_lock(main_root, config):
+        mh.append_ledger_events_atomically(main_root, config, events)
+
+
+def _combined_result_verdict(results: list[dict]) -> str:
+    if not results or any(result.get("verdict") == "error" for result in results):
+        return "error"
+    if all(result.get("verdict") == "pass" for result in results):
+        return "pass"
+    return "fail"
+
+
+def _positive_int_config(value: Any, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"{label} must be a positive integer")
+    return value
+
+
+def _non_negative_float_config(value: Any, label: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{label} must be a non-negative finite number")
+    result = float(value)
+    if not math.isfinite(result) or result < 0:
+        raise ValueError(f"{label} must be a non-negative finite number")
+    return result
 
 
 def _select_scenarios(

@@ -5,6 +5,8 @@
   "oneOf": [
     { "$ref": "#/$defs/candidate_registered" },
     { "$ref": "#/$defs/run_completed" },
+    { "$ref": "#/$defs/regression_run_completed" },
+    { "$ref": "#/$defs/evaluation_completed" },
     { "$ref": "#/$defs/status_changed" },
     { "$ref": "#/$defs/frontier_updated" },
     { "$ref": "#/$defs/promotion_reserved" },
@@ -123,6 +125,131 @@
         "attempt": { "type": "integer", "minimum": 1 },
         "attempts_total": { "type": "integer", "minimum": 1 },
         "holdout": { "type": "boolean" }
+      }
+    },
+    "regression_run_completed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "event",
+        "ts",
+        "schema_version",
+        "evaluation_id",
+        "run_id",
+        "cand_id",
+        "target",
+        "suite_id",
+        "suite_hash",
+        "scenario_id",
+        "scenario_hash",
+        "evaluator_hash",
+        "verdict",
+        "cost",
+        "attempt",
+        "attempts_total",
+        "holdout"
+      ],
+      "properties": {
+        "event": { "const": "regression_run_completed" },
+        "ts": { "type": "string", "format": "date-time" },
+        "schema_version": { "type": "string", "const": "1.0" },
+        "evaluation_id": {
+          "type": "string",
+          "pattern": "^eval-[0-9]{8}-[0-9]{6}-[0-9a-f]{8}$"
+        },
+        "run_id": { "type": "string" },
+        "cand_id": { "type": "string" },
+        "target": {
+          "type": "string",
+          "pattern": "^(claude-harness|skill:[a-z0-9-]+)$"
+        },
+        "suite_id": { "type": "string", "pattern": "^skill:[a-z0-9-]+$" },
+        "suite_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "scenario_id": { "type": "string" },
+        "scenario_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "evaluator_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "verdict": { "type": "string", "enum": ["pass", "fail", "error"] },
+        "cost": { "$ref": "#/$defs/cost" },
+        "attempt": { "type": "integer", "minimum": 1 },
+        "attempts_total": { "type": "integer", "minimum": 1 },
+        "holdout": { "type": "boolean" }
+      }
+    },
+    "evaluation_completed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "event",
+        "ts",
+        "schema_version",
+        "evaluation_id",
+        "cand_id",
+        "target",
+        "holdout",
+        "own_run_ids",
+        "own_suite_hash",
+        "evaluator_hash",
+        "own_critical_pass",
+        "regression_results",
+        "verdict",
+        "unverified_impacts",
+        "evaluation_base_commit",
+        "impacted_targets",
+        "impact_input_hash",
+        "regression_cost_usd"
+      ],
+      "properties": {
+        "event": { "const": "evaluation_completed" },
+        "ts": { "type": "string", "format": "date-time" },
+        "schema_version": { "type": "string", "const": "1.0" },
+        "evaluation_id": {
+          "type": "string",
+          "pattern": "^eval-[0-9]{8}-[0-9]{6}-[0-9a-f]{8}$"
+        },
+        "cand_id": { "type": "string" },
+        "target": {
+          "type": "string",
+          "pattern": "^(claude-harness|skill:[a-z0-9-]+)$"
+        },
+        "holdout": { "type": "boolean" },
+        "own_run_ids": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "own_suite_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "evaluator_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "own_critical_pass": { "type": "boolean" },
+        "regression_results": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["suite_id", "suite_hash", "run_ids", "verdict", "critical_pass"],
+            "properties": {
+              "suite_id": { "type": "string", "pattern": "^skill:[a-z0-9-]+$" },
+              "suite_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+              "run_ids": {
+                "type": "array",
+                "items": { "type": "string" },
+                "uniqueItems": true
+              },
+              "verdict": { "type": "string", "enum": ["pass", "fail", "error"] },
+              "critical_pass": { "type": "boolean" }
+            }
+          }
+        },
+        "verdict": { "type": "string", "enum": ["pass", "fail", "error"] },
+        "unverified_impacts": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^skill:[a-z0-9-]+$" },
+          "uniqueItems": true
+        },
+        "evaluation_base_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "impacted_targets": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^skill:[a-z0-9-]+$" },
+          "uniqueItems": true
+        },
+        "impact_input_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "regression_cost_usd": { "type": "number", "minimum": 0 },
+        "errors": { "type": "array", "items": { "type": "string" } }
       }
     },
     "status_changed": {

@@ -217,11 +217,13 @@
     packages/meta-harness/tests/test_propose_cli.py::test_propose_rejects_auth_canary_exfil_and_records_violation
     packages/meta-harness/tests/test_propose_cli.py::test_propose_rejects_secret_in_proposal_and_records_violation
     packages/meta-harness/tests/test_promote_cli.py::test_promote_rejects_candidate_with_secret_in_overlay
+    packages/meta-harness/tests/test_promote_cli.py::test_secret_scan_checks_parent_lineage_overlay
   covered_by:
     - packages/meta-harness/tests/test_proposer_security.py
     - packages/meta-harness/tests/test_propose_cli.py::test_propose_rejects_auth_canary_exfil_and_records_violation
     - packages/meta-harness/tests/test_propose_cli.py::test_propose_rejects_secret_in_proposal_and_records_violation
     - packages/meta-harness/tests/test_promote_cli.py::test_promote_rejects_candidate_with_secret_in_overlay
+    - packages/meta-harness/tests/test_promote_cli.py::test_secret_scan_checks_parent_lineage_overlay
   notes: >-
     L2 canary exfil (staged auth.json refresh_token planted into overlay) and L3
     generic secret scan (sk-/JWT) are rejected at registration with a
@@ -443,7 +445,103 @@
   oracle: command_exit
   command: >-
     AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
-    packages/meta-harness/tests/test_skill_targets.py::TestRepositorySkillClosures::test_regression_enabled_fails_closed_until_evaluator_exists
+    packages/meta-harness/tests/test_skill_targets.py::TestRepositorySkillClosures::test_regression_enabled_uses_full_closure
+    packages/meta-harness/tests/test_skill_targets.py::TestSkillOverlayValidation::test_shared_policy_is_accepted_when_regression_is_enabled
+    packages/meta-harness/tests/test_skill_targets.py::TestSkillOverlayValidation::test_shared_policy_is_rejected_when_regression_is_disabled
   covered_by:
-    - packages/meta-harness/tests/test_skill_targets.py::TestRepositorySkillClosures::test_regression_enabled_fails_closed_until_evaluator_exists
-  notes: PR1 rejects regression.enabled=true instead of enabling shared facet changes without regression evaluation.
+    - packages/meta-harness/tests/test_skill_targets.py::TestRepositorySkillClosures::test_regression_enabled_uses_full_closure
+    - packages/meta-harness/tests/test_skill_targets.py::TestSkillOverlayValidation::test_shared_policy_is_accepted_when_regression_is_enabled
+    - packages/meta-harness/tests/test_skill_targets.py::TestSkillOverlayValidation::test_shared_policy_is_rejected_when_regression_is_disabled
+  notes: enabled uses the full baseline closure; disabled retains the private-only fallback.
+
+- ev_id: EV-54
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_cross_skill_regression.py::test_regression_failure_is_hard_gate_and_does_not_pollute_frontier_axes
+    packages/meta-harness/tests/test_cross_skill_regression.py::test_incomplete_batch_with_only_own_pass_is_not_frontier_eligible
+  covered_by:
+    - packages/meta-harness/tests/test_cross_skill_regression.py::test_regression_failure_is_hard_gate_and_does_not_pollute_frontier_axes
+    - packages/meta-harness/tests/test_cross_skill_regression.py::test_incomplete_batch_with_only_own_pass_is_not_frontier_eligible
+  notes: regression failure and a missing evaluation summary both block frontier eligibility while own quality/cost remain isolated.
+
+- ev_id: EV-55
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_cross_skill_regression.py::test_promote_batch_rejects_earlier_regression_fail_even_when_later_suite_passes
+    packages/meta-harness/tests/test_cross_skill_regression.py::test_promote_checks_each_regression_suite_hash
+    packages/meta-harness/tests/test_cross_skill_regression.py::test_promote_requires_every_holdout_scenario_at_frontier_repeat
+    packages/meta-harness/tests/test_cross_skill_regression.py::test_promote_requires_complete_affected_holdouts_for_claude_harness
+  covered_by:
+    - packages/meta-harness/tests/test_cross_skill_regression.py::test_promote_batch_rejects_earlier_regression_fail_even_when_later_suite_passes
+    - packages/meta-harness/tests/test_cross_skill_regression.py::test_promote_checks_each_regression_suite_hash
+    - packages/meta-harness/tests/test_cross_skill_regression.py::test_promote_requires_every_holdout_scenario_at_frontier_repeat
+    - packages/meta-harness/tests/test_cross_skill_regression.py::test_promote_requires_complete_affected_holdouts_for_claude_harness
+  notes: promotion validates the whole holdout batch, requires the complete repeated holdout set, and refreshes the own suite, each affected suite, and evaluator hashes independently.
+
+- ev_id: EV-56
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_skill_targets.py::TestSkillImpactResolution
+    packages/meta-harness/tests/test_cross_skill_regression.py::test_unverified_impact_is_recorded_without_failing_the_batch
+    packages/meta-harness/tests/test_cross_skill_regression.py::test_promote_rejects_changed_impact_context
+    packages/meta-harness/tests/test_cross_skill_regression.py::test_promote_pr_body_warns_about_unverified_impacts
+    packages/meta-harness/tests/test_cross_skill_regression.py::test_promote_detects_unverified_suite_becoming_available
+    packages/meta-harness/tests/test_promote_cli.py::test_freshness_checks_parent_lineage_overlay_paths
+  covered_by:
+    - packages/meta-harness/tests/test_skill_targets.py::TestSkillImpactResolution
+    - packages/meta-harness/tests/test_cross_skill_regression.py::test_unverified_impact_is_recorded_without_failing_the_batch
+    - packages/meta-harness/tests/test_cross_skill_regression.py::test_promote_rejects_changed_impact_context
+    - packages/meta-harness/tests/test_cross_skill_regression.py::test_promote_pr_body_warns_about_unverified_impacts
+    - packages/meta-harness/tests/test_cross_skill_regression.py::test_promote_detects_unverified_suite_becoming_available
+    - packages/meta-harness/tests/test_promote_cli.py::test_freshness_checks_parent_lineage_overlay_paths
+  notes: baseline-only impact mapping, freshness including suite availability, missing-suite recording, and PR warnings are covered.
+
+- ev_id: EV-57
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_cross_skill_regression.py::test_too_many_regression_suites_fails_before_own_runs
+    packages/meta-harness/tests/test_cross_skill_regression.py::test_regression_budget_excess_records_error_summary_and_raises
+    packages/meta-harness/tests/test_cross_skill_regression.py::test_regression_attempt_uses_remaining_evaluation_budget
+    packages/meta-harness/tests/test_cross_skill_regression.py::test_broker_cost_includes_judge_and_fail_closed_fallback
+    packages/meta-harness/tests/test_cross_skill_regression.py::test_train_and_holdout_batches_share_evaluation_id_and_regression_budget
+    packages/meta-harness/tests/test_cross_skill_regression.py::test_regression_cost_is_included_in_loop_iteration_budget
+    packages/meta-harness/tests/test_cross_skill_regression.py::test_regression_config_toggle_changes_evaluator_hash
+  covered_by:
+    - packages/meta-harness/tests/test_cross_skill_regression.py::test_too_many_regression_suites_fails_before_own_runs
+    - packages/meta-harness/tests/test_cross_skill_regression.py::test_regression_budget_excess_records_error_summary_and_raises
+    - packages/meta-harness/tests/test_cross_skill_regression.py::test_regression_attempt_uses_remaining_evaluation_budget
+    - packages/meta-harness/tests/test_cross_skill_regression.py::test_broker_cost_includes_judge_and_fail_closed_fallback
+    - packages/meta-harness/tests/test_cross_skill_regression.py::test_train_and_holdout_batches_share_evaluation_id_and_regression_budget
+    - packages/meta-harness/tests/test_cross_skill_regression.py::test_regression_cost_is_included_in_loop_iteration_budget
+    - packages/meta-harness/tests/test_cross_skill_regression.py::test_regression_config_toggle_changes_evaluator_hash
+  notes: suite and shared evaluation budget limits fail closed, broker-wide spend reaches the loop budget, and configuration changes stale old runs.
+
+- ev_id: EV-58
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_cross_skill_regression.py::test_same_scenario_id_is_distinguished_by_suite_and_event_type
+    packages/meta-harness/tests/test_evaluator_worktree_lifecycle.py::TestFinallyRemovalOnLifecycleFailure
+  covered_by:
+    - packages/meta-harness/tests/test_cross_skill_regression.py::test_regression_failure_is_hard_gate_and_does_not_pollute_frontier_axes
+    - packages/meta-harness/tests/test_cross_skill_regression.py::test_same_scenario_id_is_distinguished_by_suite_and_event_type
+    - packages/meta-harness/tests/test_evaluator_worktree_lifecycle.py::TestFinallyRemovalOnLifecycleFailure
+    - packages/meta-harness/tests/test_skill_target_docker_e2e.py::test_shared_policy_candidate_runs_affected_skill_train_regression
+  notes: >-
+    Ledger event schemas are enforced before append, suite identity disambiguates
+    scenario ids, and every attempt retains the existing isolated worktree lifecycle.
+    The final covered_by entry is an opt-in real Docker + Max OAuth E2E.

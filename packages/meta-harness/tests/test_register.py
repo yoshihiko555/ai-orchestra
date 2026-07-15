@@ -644,4 +644,98 @@ class TestRegisterAtomicStaging:
         else:
             raise AssertionError("re-registering the same cand_id should raise FileExistsError")
 
+
+class TestRegisterParentSourceCommitInheritance:
+    # register (Sec6): --parent 指定時の source_commit 継承は skill:* target に限定されて
+    # いたが、lineage 整合チェック（promoter._promotion_lineage 等）は target を問わず
+    # 無条件で親の source_commit 一致を要求するため、非 skill target（claude-harness 等）で
+    # --parent 指定・--source-commit 省略のまま HEAD が進むと register は通っても
+    # evaluate/promote で lineage mismatch になる回帰を防止する。
+    def test_parent_source_commit_is_inherited_for_non_skill_target(
+        self, git_project: Path, tmp_path: Path, run_meta, default_overlay, git_run
+    ) -> None:
+        run_meta("init", project=git_project, check=True)
+        overlay_dir = default_overlay(tmp_path)
+
+        parent_result = run_meta(
+            "register",
+            "--overlay",
+            str(overlay_dir),
+            "--target",
+            "claude-harness",
+            "--json",
+            project=git_project,
+            check=True,
+        )
+        parent_cand_id = json.loads(parent_result.stdout)["cand_id"]
+        parent_manifest = json.loads(
+            (_candidates_dir(git_project) / parent_cand_id / "manifest.json").read_text(
+                encoding="utf-8"
+            )
+        )
+
+        (git_project / "extra.txt").write_text("advance head\n", encoding="utf-8")
+        git_run("add", "extra.txt", cwd=git_project)
+        git_run("commit", "-q", "-m", "advance head", cwd=git_project)
+
+        child_result = run_meta(
+            "register",
+            "--overlay",
+            str(overlay_dir),
+            "--target",
+            "claude-harness",
+            "--parent",
+            parent_cand_id,
+            "--json",
+            project=git_project,
+            check=True,
+        )
+        child_cand_id = json.loads(child_result.stdout)["cand_id"]
+        child_manifest = json.loads(
+            (_candidates_dir(git_project) / child_cand_id / "manifest.json").read_text(
+                encoding="utf-8"
+            )
+        )
+
+        assert child_manifest["source_commit"] == parent_manifest["source_commit"]
+
+    def test_parent_source_commit_mismatch_is_rejected_for_non_skill_target(
+        self, git_project: Path, tmp_path: Path, run_meta, default_overlay, git_run
+    ) -> None:
+        run_meta("init", project=git_project, check=True)
+        overlay_dir = default_overlay(tmp_path)
+
+        parent_result = run_meta(
+            "register",
+            "--overlay",
+            str(overlay_dir),
+            "--target",
+            "claude-harness",
+            "--json",
+            project=git_project,
+            check=True,
+        )
+        parent_cand_id = json.loads(parent_result.stdout)["cand_id"]
+
+        (git_project / "extra.txt").write_text("advance head\n", encoding="utf-8")
+        git_run("add", "extra.txt", cwd=git_project)
+        git_run("commit", "-q", "-m", "advance head", cwd=git_project)
+        new_head = git_run("rev-parse", "HEAD", cwd=git_project).stdout.strip()
+
+        result = run_meta(
+            "register",
+            "--overlay",
+            str(overlay_dir),
+            "--target",
+            "claude-harness",
+            "--parent",
+            parent_cand_id,
+            "--source-commit",
+            new_head,
+            project=git_project,
+        )
+
+        assert result.returncode == cli.EXIT_VALIDATION_ERROR
+        assert "source_commit must match its parent" in result.stderr
+
         assert _tmp_register_dirs(git_project) == []

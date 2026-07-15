@@ -108,7 +108,11 @@ DEFAULTS: dict[str, Any] = {
         "penalty_missing_report": 6,
     },
     "frontier": {"cost_axis": "total_tokens"},
-    "regression": {"enabled": False},
+    "regression": {
+        "enabled": True,
+        "max_affected_suites": 4,
+        "max_budget_usd": 12.0,
+    },
     "overlay": {
         "allowed_prefixes": ["facets/"],
         "denied_prefixes": [
@@ -685,6 +689,49 @@ def append_ledger_event(main_root: Path, config: dict, event: dict) -> None:
         os.close(fd)
 
 
+def append_ledger_events_atomically(main_root: Path, config: dict, events: list[dict]) -> None:
+    """ledger.jsonl に複数イベントを 1 回の書き込みで原子的に追記する。
+
+    `append_ledger_event`（単一イベント版）と同じ耐障害パターン（O_APPEND + flock + fsync、
+    失敗時は開始サイズへ ftruncate）を踏襲しつつ、複数イベントを事前に encode してから
+    単一の write にまとめる。これにより、書き込み途中でプロセスが死んでも「一部のイベントだけ
+    ledger に残る」状態を防ぐ（全イベントが書けるか、何も書けないかの二値になる）。
+    """
+    if not events:
+        return
+    path = ledger_path(main_root, config)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = b"".join(
+        (json.dumps(event, ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8")
+        for event in events
+    )
+    fd = os.open(path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        start_size = os.fstat(fd).st_size
+        try:
+            view = memoryview(lines)
+            written = 0
+            while written < len(lines):
+                count = os.write(fd, view[written:])
+                if count <= 0:
+                    raise OSError(
+                        f"short ledger write: expected {len(lines)} bytes, wrote {written}"
+                    )
+                written += count
+            os.fsync(fd)
+        except BaseException:
+            os.ftruncate(fd, start_size)
+            os.fsync(fd)
+            raise
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        os.close(fd)
+
+
 def read_ledger_events(main_root: Path, config: dict) -> list[dict]:
     """ledger.jsonl の全イベントを時系列順に読む（不正な行は無視する）。"""
     path = ledger_path(main_root, config)
@@ -869,6 +916,50 @@ def latest_non_holdout_run_completed(
     return None
 
 
+def latest_evaluation_completed(
+    events: list[dict],
+    cand_id: str,
+    target: str,
+    *,
+    holdout: bool,
+    suite_hash: str | None = None,
+    evaluator_hash: str | None = None,
+    evaluation_id: str | None = None,
+) -> dict | None:
+    """Return the latest completed evaluation batch matching one candidate scope."""
+    for event in reversed(events):
+        if (
+            event.get("event") != "evaluation_completed"
+            or event.get("cand_id") != cand_id
+            or event.get("target") != target
+            or bool(event.get("holdout")) != holdout
+        ):
+            continue
+        if suite_hash is not None and event.get("own_suite_hash") != suite_hash:
+            continue
+        if evaluator_hash is not None and event.get("evaluator_hash") != evaluator_hash:
+            continue
+        if evaluation_id is not None and event.get("evaluation_id") != evaluation_id:
+            continue
+        return event
+    return None
+
+
+def candidate_has_evaluation_completed(events: list[dict], cand_id: str) -> bool:
+    """Return True if this candidate has any evaluation_completed event in the ledger.
+
+    Used to gate the strict `evaluation_completed`-based frontier/loop-resume checks
+    introduced for cross-skill regression (b92dd84): candidates evaluated before that
+    change never gain such an event retroactively, so callers fall back to the legacy
+    attempt-completeness check for them instead of silently dropping them from
+    frontier/loop resumption.
+    """
+    return any(
+        event.get("event") == "evaluation_completed" and event.get("cand_id") == cand_id
+        for event in events
+    )
+
+
 KNOWN_COST_FIELDS = frozenset(
     {
         "input_tokens",
@@ -962,12 +1053,36 @@ def aggregate_run_points(
         if states.get(cand_id, {}).get("status") != "evaluated":
             continue
         by_cand.setdefault(cand_id, []).append(event)
-    return [
-        _summarize_candidate_runs(
-            cand_id, _latest_attempt_groups_per_scenario(runs), cost_axis, required_scenarios
+    points: list[dict] = []
+    for cand_id, runs in sorted(by_cand.items()):
+        latest_runs = _latest_attempt_groups_per_scenario(runs)
+        point = _summarize_candidate_runs(cand_id, latest_runs, cost_axis, required_scenarios)
+        # No legacy-ledger fallback here (unlike `loop_state.current_run_events`): a candidate
+        # whose own run(s) completed but has no evaluation_completed event is exactly the
+        # "batch interrupted after own run" state that EV-54 requires frontier to exclude
+        # (see test_incomplete_batch_with_only_own_pass_is_not_frontier_eligible). Ledger
+        # content alone cannot distinguish that state from a genuinely pre-b92dd84 legacy
+        # candidate, so relaxing this check would reopen the reward-hacking gap the strict
+        # evaluation_completed gate was added to close. Legacy candidates regain frontier
+        # eligibility once `evaluate` is re-run for them (see docs/evaluation/meta-harness.md).
+        evaluation = latest_evaluation_completed(
+            events,
+            cand_id,
+            target,
+            holdout=False,
+            suite_hash=str(latest_pair[0]),
+            evaluator_hash=str(latest_pair[1]),
         )
-        for cand_id, runs in sorted(by_cand.items())
-    ]
+        run_ids = {str(run.get("run_id")) for run in latest_runs}
+        evaluation_run_ids = {str(run_id) for run_id in (evaluation or {}).get("own_run_ids") or []}
+        point["eligible"] = bool(
+            point["eligible"]
+            and evaluation is not None
+            and evaluation.get("verdict") == "pass"
+            and run_ids == evaluation_run_ids
+        )
+        points.append(point)
+    return points
 
 
 def _latest_attempt_groups_per_scenario(runs: list[dict]) -> list[dict]:
@@ -1315,7 +1430,7 @@ def validate_overlay(
                 import skill_targets
 
                 resolution = skill_targets.allowed_overlay_paths(baseline_root, target, config)
-                skill_allowed_paths = resolution.private_paths
+                skill_allowed_paths = skill_targets.overlay_allowlist(resolution, config)
             except (OSError, ValueError) as exc:
                 return [str(exc)]
 

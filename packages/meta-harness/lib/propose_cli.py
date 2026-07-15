@@ -159,16 +159,13 @@ def _run_propose_pipeline(
         )
         try:
             if target.startswith("skill:") and parent_id is not None:
-                parent_manifest = mh.read_candidate_manifest(main_root, config, parent_id)
-                if parent_manifest is None:
-                    raise prop.ProposerError(f"parent candidate not found: {parent_id}")
                 try:
-                    ev.apply_registered_candidate_overlay(
+                    ev.apply_parent_lineage_to_baseline(
                         main_root=main_root,
                         config=config,
-                        manifest=parent_manifest,
-                        worktree_dir=view.path / "baseline",
                         schema_dir=_SCHEMA_DIR,
+                        baseline_root=view.path / "baseline",
+                        parent_id=parent_id,
                     )
                 except (OSError, ValueError, ev.EvaluatorStageError) as exc:
                     raise prop.ProposerError(f"parent overlay is invalid: {exc}") from exc
@@ -468,32 +465,34 @@ def _register_proposed_candidate(
         target_resolution: skill_targets.SkillTargetResolution | None = None
         inherited_overlay: Path | None = None
         if target.startswith("skill:"):
-            parent_manifest = (
-                mh.read_candidate_manifest(main_root, config, parent_id)
-                if parent_id is not None
-                else None
-            )
-            with skill_targets.materialized_baseline(main_root, source_commit) as baseline:
-                if parent_manifest is not None:
-                    try:
-                        ev.apply_registered_candidate_overlay(
-                            main_root=main_root,
-                            config=config,
-                            manifest=parent_manifest,
-                            worktree_dir=baseline,
-                            schema_dir=_SCHEMA_DIR,
-                        )
-                    except (OSError, ValueError, ev.EvaluatorStageError) as exc:
-                        raise prop.ProposerError(f"parent overlay is invalid: {exc}") from exc
-                    inherited_overlay = mh.candidates_dir(main_root, config) / parent_id / "overlay"
-                target_resolution = skill_targets.allowed_overlay_paths(baseline, target, config)
-                violations = mh.validate_overlay(
-                    overlay_dir,
-                    config,
-                    target=target,
-                    baseline_root=baseline,
-                    inherited_overlay_dir=inherited_overlay,
+            provisional_manifest = {"source_commit": source_commit, "parent_id": parent_id}
+            try:
+                baseline_context = ev.materialized_candidate_baseline(
+                    main_root=main_root,
+                    config=config,
+                    schema_dir=_SCHEMA_DIR,
+                    manifest=provisional_manifest,
                 )
+                with baseline_context as baseline:
+                    if parent_id is not None:
+                        inherited_overlay = (
+                            mh.candidates_dir(main_root, config) / parent_id / "overlay"
+                        )
+                    target_resolution = skill_targets.allowed_overlay_paths(
+                        baseline, target, config
+                    )
+                    violations = mh.validate_overlay(
+                        overlay_dir,
+                        config,
+                        target=target,
+                        baseline_root=baseline,
+                        inherited_overlay_dir=inherited_overlay,
+                        skill_allowed_paths=skill_targets.overlay_allowlist(
+                            target_resolution, config
+                        ),
+                    )
+            except (OSError, ValueError, ev.EvaluatorStageError) as exc:
+                raise prop.ProposerError(f"parent overlay is invalid: {exc}") from exc
         else:
             violations = mh.validate_overlay(
                 overlay_dir, config, target=target, baseline_root=main_root
@@ -552,7 +551,9 @@ def _register_proposed_candidate(
                 baseline_root=main_root,
                 inherited_overlay_dir=inherited_overlay,
                 skill_allowed_paths=(
-                    target_resolution.private_paths if target_resolution else None
+                    skill_targets.overlay_allowlist(target_resolution, config)
+                    if target_resolution
+                    else None
                 ),
             )
             try:

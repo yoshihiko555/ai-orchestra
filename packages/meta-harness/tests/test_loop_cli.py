@@ -183,6 +183,70 @@ def test_resume_orphan_with_run_records_without_reevaluation(
     assert iteration_events[1]["quality_best_after"] == 75.0
 
 
+def test_resume_reuses_train_evaluation_id_for_holdout(
+    git_project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(
+        proposer={"max_iterations": 1},
+        evaluate={"repeat_default": 1, "repeat_frontier": 1},
+    )
+    mh.init_store(git_project, config)
+    spec = loop_cli._start_loop(git_project, config, "skill:handoff")
+    cand_id = _register_loop_candidate(git_project, config, spec, 1)
+    evaluation_id = "eval-20260715-120000-00000001"
+    _append_run(
+        git_project,
+        config,
+        cand_id,
+        90.0,
+        scenario_id="create-handoff",
+        target=spec.target,
+        evaluation_id=evaluation_id,
+    )
+    loop_cli._stop_loop(git_project, config, spec, "interrupted")
+    restored = loop_cli._restore_loop(git_project, config, spec.loop_id, None)
+    capabilities = loop_cli.ev.CliCapabilities(
+        claude_version="2.1.207",
+        version_pin="2.1.207",
+        version_pin_match=True,
+        checks={},
+        judge_tool="codex",
+        ok=True,
+    )
+    monkeypatch.setattr(
+        loop_cli.ev, "check_cli_capabilities", lambda *_args, **_kwargs: capabilities
+    )
+    monkeypatch.setattr(loop_cli, "_validate_loop_candidate", lambda *_args: None)
+
+    def evaluate_holdout(**kwargs):
+        assert kwargs["evaluation_id"] == evaluation_id
+        assert kwargs["scenario_ids"] == ["create-handoff-holdout"]
+        _append_run(
+            git_project,
+            config,
+            cand_id,
+            90.0,
+            holdout=True,
+            scenario_id="create-handoff-holdout",
+            target=spec.target,
+            evaluation_id=kwargs["evaluation_id"],
+        )
+        return [{"verdict": "pass"}]
+
+    monkeypatch.setattr(loop_cli.ev, "evaluate_candidate", evaluate_holdout)
+
+    reason = loop_cli._drive_loop(git_project, config, git_project, restored)
+
+    evaluations = [
+        event
+        for event in _events(git_project, config)
+        if event.get("event") == "evaluation_completed" and event.get("cand_id") == cand_id
+    ]
+    ids_by_holdout = {bool(event["holdout"]): event["evaluation_id"] for event in evaluations}
+    assert reason == "max_iterations"
+    assert ids_by_holdout == {False: evaluation_id, True: evaluation_id}
+
+
 def test_resume_replays_stop_decision_after_recorded_iteration(
     git_project: Path, monkeypatch
 ) -> None:
@@ -331,9 +395,34 @@ def test_evaluate_candidate_hash_matches_loop_current_scope(git_project: Path, m
 
     def fake_run_single_attempt(**kwargs):
         captured_hashes.append(kwargs["evaluator_hash"])
-        return {"evaluator_hash": kwargs["evaluator_hash"]}
+        return {
+            "run_id": "run-scope-test",
+            "cand_id": kwargs["cand_id"],
+            "scenario_id": kwargs["scenario"]["id"],
+            "evaluator_hash": kwargs["evaluator_hash"],
+            "verdict": "pass",
+            "quality_score": 100.0,
+            "critical_pass_rate": 1.0,
+            "cost": {
+                "input_tokens": 1,
+                "output_tokens": 1,
+                "total_tokens": 2,
+                "tool_uses": 0,
+                "duration_ms": 1,
+                "total_cost_usd": 0.0,
+                "num_turns": 1,
+            },
+            "attempt": kwargs["attempt"],
+            "attempts_total": kwargs["attempts_total"],
+        }
 
     monkeypatch.setattr(loop_cli.ev, "run_single_attempt", fake_run_single_attempt)
+    monkeypatch.setattr(
+        loop_cli.ev,
+        "candidate_impact_context",
+        lambda **_kwargs: loop_cli.ev.skill_targets.SkillImpactContext((), "c" * 64),
+    )
+    monkeypatch.setattr(loop_cli.ev, "_append_evaluation_events", lambda *_args, **_kwargs: None)
     scenario_path = loop_cli.ev.discover_scenario_paths(
         loop_cli.ev.scenario_suite_dir(loop_cli._PACKAGE_DIR, "claude-harness")
     )[0]
@@ -346,7 +435,7 @@ def test_evaluate_candidate_hash_matches_loop_current_scope(git_project: Path, m
         package_dir=loop_cli._PACKAGE_DIR,
         project_dir=git_project,
         cand_id="candidate",
-        manifest={"target": "claude-harness"},
+        manifest={"target": "claude-harness", "source_commit": "a" * 40},
         scenario_ids=[scenario_id],
         repeat_override=1,
         cli_capabilities={},
@@ -354,7 +443,7 @@ def test_evaluate_candidate_hash_matches_loop_current_scope(git_project: Path, m
 
     loop_hash = loop_cli.state.current_hash_pair(config, "claude-harness")[1]
     assert captured_hashes == [loop_hash]
-    assert results == [{"evaluator_hash": loop_hash}]
+    assert results[0]["evaluator_hash"] == loop_hash
 
 
 def test_stale_hash_run_does_not_change_loop_quality_or_frontier(git_project: Path) -> None:

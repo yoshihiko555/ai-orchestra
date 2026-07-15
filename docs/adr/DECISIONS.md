@@ -49,6 +49,7 @@ AI Orchestra プロジェクトの意思決定記録。
 | ADR-20260712-034 | scenario 実行基盤を Docker コンテナ + ephemeral credential broker へ移行する           | accepted   | 2026-07-12 |
 | ADR-20260712-035 | Maker 選定を実装可能ロールへ限定し初回結果を state に固定する                          | accepted   | 2026-07-12 |
 | ADR-20260714-036 | 固定 CLI の beta allowlist と最小 request envelope を broker で強制する                 | accepted   | 2026-07-14 |
+| ADR-20260715-038 | 共有 facet の変更を cross-skill 回帰バッチで hard gate する                           | accepted   | 2026-07-15 |
 | ADR-20260701-032 | スキル自己改善ループの設計判断（二層構成・二軸評価・反映先の塩梅）                       | accepted   | 2026-07-01 |
 | ADR-20260712-032 | PR レビュー指摘を action-scoped snapshot でプロセス境界を越えて受け渡す                | accepted   | 2026-07-12 |
 | ADR-20260715-037 | loop-harness LP-2（Maker/Checker）の実行基盤を Docker 完全隔離へ移行する               | proposed   | 2026-07-15 |
