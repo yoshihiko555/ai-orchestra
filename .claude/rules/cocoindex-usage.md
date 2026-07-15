@@ -76,7 +76,10 @@ proxy:
 
 proxy はセッション間で**永続化**する運用を推奨する。
 
-- `SessionStart` で `start_proxy()` が冪等に呼ばれる（起動済みならスキップ）
+- `SessionStart` で proxy 起動が冪等にトリガーされる（起動済み・ready ならスキップ）。
+  SessionStart hook 自身は非同期の `start_proxy_background()` を呼ぶだけで、実際の同期起動
+  （`start_proxy()`、完了まで約 6 秒）はそこから spawn されるバックグラウンドヘルパー
+  （`start-mcp-proxy.py`、detached process）側で行われる（詳細は下記「warmup は非同期」）
 - `SessionEnd` では proxy を**停止しない**（次セッションで再利用）
 - 手動停止: `orchestra-manager.py proxy stop --project .`
 

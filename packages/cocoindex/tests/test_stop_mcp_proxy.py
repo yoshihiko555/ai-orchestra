@@ -52,17 +52,37 @@ class TestMain:
         return buffer.getvalue()
 
     def test_does_not_import_stop_proxy(self) -> None:
-        """stop-mcp-proxy.py は proxy_manager.stop_proxy を一切 import しない（EV-09）。"""
+        """stop-mcp-proxy.py は proxy_manager.stop_proxy を（alias import 含め）
+        一切 import しない（EV-09）。
+
+        `from proxy_manager import stop_proxy as _stop_proxy` のような alias import は
+        `hasattr(stop_hook, "stop_proxy")` では検出できないため、モジュール内の全属性を
+        object identity で proxy_manager.stop_proxy と比較する。
+        """
         assert not hasattr(stop_hook, "stop_proxy")
+        aliased = [
+            name for name, value in vars(stop_hook).items() if value is proxy_manager.stop_proxy
+        ]
+        assert aliased == [], f"stop_proxy が alias import されている: {aliased}"
 
     def test_main_never_calls_stop_proxy_when_proxy_running(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """proxy 稼働中に SessionEnd が発火しても stop_proxy() は呼ばれない（EV-09）。"""
+        """proxy 稼働中に SessionEnd が発火しても stop_proxy() は呼ばれない（EV-09）。
+
+        `import proxy_manager; proxy_manager.stop_proxy(...)` 経由の呼び出しだけでなく、
+        `from proxy_manager import stop_proxy as _stop_proxy` のような alias import 経由の
+        呼び出しも見逃さないよう、stop_hook モジュール内で元の stop_proxy 関数オブジェクトを
+        参照している全属性（alias 名不問）にも同じ spy を当てる。
+        """
         monkeypatch.setattr(stop_hook, "load_package_config", lambda *_: PROXY_CONFIG)
         monkeypatch.setattr(stop_hook, "is_proxy_running", lambda *_: True)
+        original_stop_proxy = proxy_manager.stop_proxy
         stop_proxy_spy = MagicMock()
         monkeypatch.setattr(proxy_manager, "stop_proxy", stop_proxy_spy)
+        for name, value in vars(stop_hook).items():
+            if value is original_stop_proxy:
+                monkeypatch.setattr(stop_hook, name, stop_proxy_spy)
 
         output = self._invoke({"cwd": str(tmp_path), "session_id": "sess-persist"}, monkeypatch)
 

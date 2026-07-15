@@ -905,11 +905,12 @@ class TestMainReconcileIntegration:
         codex_dir = tmp_path / ".codex"
         codex_dir.mkdir()
         toml_path = codex_dir / "config.toml"
-        toml_path.write_text("")
+        # 無関係な既存エントリを seed し、reconcile が丸ごと上書きしていないことを検証する
+        toml_path.write_text('[mcp_servers.other]\ncommand = "y"\nargs = []\nenabled = true\n')
         gemini_dir = tmp_path / ".gemini"
         gemini_dir.mkdir()
         settings_path = gemini_dir / "settings.json"
-        settings_path.write_text("{}")
+        settings_path.write_text(json.dumps({"mcpServers": {"other-server": {"command": "z"}}}))
 
         config = {
             **SAMPLE_CONFIG,
@@ -929,9 +930,13 @@ class TestMainReconcileIntegration:
         assert "other-server" in mcp_data["mcpServers"]
 
         # codex / antigravity は provision される（他は不変どころか正しく反映される）
-        assert "[mcp_servers.cocoindex-code]" in toml_path.read_text()
+        # かつ無関係な既存エントリは丸ごと上書きされず残存する
+        toml_content = toml_path.read_text()
+        assert "[mcp_servers.cocoindex-code]" in toml_content
+        assert "[mcp_servers.other]" in toml_content
         settings_data = json.loads(settings_path.read_text())
         assert SERVER_NAME in settings_data["mcpServers"]
+        assert "other-server" in settings_data["mcpServers"]
 
     def test_legacy_gemini_local_yaml_disables_antigravity_end_to_end(
         self, tmp_path: Path, monkeypatch
