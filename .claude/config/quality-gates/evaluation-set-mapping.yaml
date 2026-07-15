@@ -1,0 +1,19 @@
+# evaluation-set-checker.py (Issue #237) 用の明示マッピング設定。
+#
+# `packages/<pkg>/tests/` ディレクトリ規約やファイル名トークンマッチでは
+# 担当パッケージ（= 突合先の docs/evaluation/<package>.md）を判定できない
+# SSOT（packages/ 配下に実体を持たない対象）を、テストパスの glob で
+# 明示的に評価セットへ紐付ける。ここに列挙したエントリは他の判定ロジック
+# より優先される。
+#
+# 各エントリの package は docs/evaluation/<package>.md のファイル名（拡張子
+# 除く）と一致させる。test_globs はプロジェクトルート相対の POSIX パス
+# （forward slash）に対する fnmatch パターンのリスト。
+#
+# プロジェクト固有の追加・上書きは同名の *.local.yaml で行う
+# （.claude/rules/config-loading.md 参照）。
+mappings:
+  - package: orchex-cli
+    test_globs:
+      - "tests/unit/test_orchestra_manager_*.py"
+      - "tests/unit/test_ai_orchestra_cli.py"

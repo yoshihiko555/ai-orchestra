@@ -6,6 +6,7 @@ from io import StringIO
 from pathlib import Path
 
 import pytest
+import yaml
 
 from tests.module_loader import load_module
 
@@ -53,6 +54,21 @@ def _write_flags(project_dir: Path, enabled: bool = True) -> None:
     config_dir.mkdir(parents=True, exist_ok=True)
     config = {"features": {"evaluation_set_check": {"enabled": enabled}}}
     (config_dir / "audit-flags.json").write_text(json.dumps(config), encoding="utf-8")
+
+
+def _write_mapping_config(project_dir: Path, mappings: list[dict]) -> None:
+    """Write .claude/config/quality-gates/evaluation-set-mapping.yaml.
+
+    Writing the project-level override (rather than relying on the packages/
+    quality-gates/config/ fallback) keeps tests isolated from whatever
+    AI_ORCHESTRA_DIR happens to point at in the running environment.
+    """
+    config_dir = project_dir / ".claude" / "config" / "quality-gates"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config = {"mappings": mappings}
+    (config_dir / "evaluation-set-mapping.yaml").write_text(
+        yaml.safe_dump(config), encoding="utf-8"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -202,6 +218,44 @@ def test_hardcore_logic_does_not_match_core_package(monkeypatch, capsys, tmp_pat
     assert "対象パッケージを特定できませんでした" in message
 
 
+def test_explicit_mapping_overrides_core_false_match(monkeypatch, capsys, tmp_path) -> None:
+    """Issue #237: test_orchestra_manager_core.py must route to the explicit
+    mapping's package (orchex-cli), not fall through to the filename-token
+    heuristic's "core" false match."""
+    _make_package_dir(tmp_path, "core")
+    _make_evaluation_doc(tmp_path, "orchex-cli")
+    _write_mapping_config(
+        tmp_path,
+        [{"package": "orchex-cli", "test_globs": ["tests/unit/test_orchestra_manager_*.py"]}],
+    )
+    payload = _build_payload("tests/unit/test_orchestra_manager_core.py", tmp_path)
+
+    output = _run_main(monkeypatch, capsys, payload)
+
+    data = json.loads(output)
+    message = data["hookSpecificOutput"]["additionalContext"]
+    assert "docs/evaluation/orchex-cli.md" in message
+
+
+def test_explicit_mapping_identifies_ssot_without_packages_dir(
+    monkeypatch, capsys, tmp_path
+) -> None:
+    """Issue #237: a test file for an SSOT target with no packages/<pkg>/
+    directory (e.g. orchex CLI) is identified via the explicit mapping."""
+    _make_evaluation_doc(tmp_path, "orchex-cli")
+    _write_mapping_config(
+        tmp_path,
+        [{"package": "orchex-cli", "test_globs": ["tests/unit/test_ai_orchestra_cli.py"]}],
+    )
+    payload = _build_payload("tests/unit/test_ai_orchestra_cli.py", tmp_path)
+
+    output = _run_main(monkeypatch, capsys, payload)
+
+    data = json.loads(output)
+    message = data["hookSpecificOutput"]["additionalContext"]
+    assert "docs/evaluation/orchex-cli.md" in message
+
+
 def test_distinct_unidentified_files_each_get_notified(monkeypatch, capsys, tmp_path) -> None:
     """(c) Two distinct unidentified test files are each notified once (not
     collapsed into a single shared "unknown" dedup bucket)."""
@@ -300,6 +354,57 @@ def test_match_package_by_filename_requires_token_boundary() -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# Explicit evaluation-set-mapping.yaml (Issue #237)
+# ---------------------------------------------------------------------------
+
+
+def test_match_explicit_mapping_matches_glob() -> None:
+    mappings = [{"package": "orchex-cli", "test_globs": ["tests/unit/test_orchestra_manager_*.py"]}]
+    pkg = evaluation_set_checker.match_explicit_mapping(
+        "tests/unit/test_orchestra_manager_core.py", mappings
+    )
+    assert pkg == "orchex-cli"
+
+
+def test_match_explicit_mapping_returns_none_when_no_pattern_matches() -> None:
+    mappings = [{"package": "orchex-cli", "test_globs": ["tests/unit/test_orchestra_manager_*.py"]}]
+    pkg = evaluation_set_checker.match_explicit_mapping(
+        "tests/unit/test_unrelated_thing.py", mappings
+    )
+    assert pkg is None
+
+
+def test_match_explicit_mapping_is_case_sensitive() -> None:
+    """fnmatchcase (not fnmatch) is used, so casing differences don't match."""
+    mappings = [{"package": "orchex-cli", "test_globs": ["Tests/Unit/*.py"]}]
+    pkg = evaluation_set_checker.match_explicit_mapping("tests/unit/test_x.py", mappings)
+    assert pkg is None
+
+
+def test_load_evaluation_set_mapping_missing_config_returns_empty(monkeypatch, tmp_path) -> None:
+    # Isolate from the real repo's packages/quality-gates/config/ fallback,
+    # which find_package_config() would otherwise consult via AI_ORCHESTRA_DIR.
+    monkeypatch.delenv("AI_ORCHESTRA_DIR", raising=False)
+    assert evaluation_set_checker.load_evaluation_set_mapping(str(tmp_path)) == []
+
+
+def test_load_evaluation_set_mapping_skips_malformed_entries(tmp_path) -> None:
+    _write_mapping_config(
+        tmp_path,
+        [
+            {"package": "orchex-cli", "test_globs": ["tests/unit/test_ai_orchestra_cli.py"]},
+            {"package": "no-globs-key"},
+            {"test_globs": ["tests/unit/*.py"]},
+            "not-a-dict",
+        ],
+    )
+    mappings = evaluation_set_checker.load_evaluation_set_mapping(str(tmp_path))
+    assert mappings == [
+        {"package": "orchex-cli", "test_globs": ["tests/unit/test_ai_orchestra_cli.py"]}
+    ]
+
+
 @pytest.mark.parametrize(
     ("name", "expected"),
     [
@@ -329,6 +434,20 @@ def test_identify_package_for_top_level_tests(tmp_path) -> None:
         "tests/unit/test_agent_routing_gaps.py", str(tmp_path)
     )
     assert pkg == "agent-routing"
+
+
+def test_identify_package_explicit_mapping_takes_priority_over_packages_dir(tmp_path) -> None:
+    """Issue #237: an explicit mapping entry wins even when the file also sits
+    under a matching packages/<pkg>/tests/ directory."""
+    _make_package_dir(tmp_path, "quality-gates")
+    _write_mapping_config(
+        tmp_path,
+        [{"package": "other-set", "test_globs": ["packages/quality-gates/tests/test_foo.py"]}],
+    )
+    pkg = evaluation_set_checker.identify_package(
+        "packages/quality-gates/tests/test_foo.py", str(tmp_path)
+    )
+    assert pkg == "other-set"
 
 
 def test_to_relative_path_handles_absolute_path(tmp_path) -> None:
@@ -369,16 +488,19 @@ def test_config_not_read_for_non_test_files(monkeypatch, capsys, tmp_path) -> No
 
 def test_config_read_only_once_per_invocation(monkeypatch, capsys, tmp_path) -> None:
     """audit-flags.json is loaded exactly once per main() invocation, shared
-    between evaluation_set_check_enabled() and resolve_state_path()."""
+    between evaluation_set_check_enabled() and resolve_state_path(). The new
+    evaluation-set-mapping.yaml lookup (Issue #237) is a separate config file
+    and is read once on its own; it must not cause audit-flags.json to be
+    re-read."""
     _make_package_dir(tmp_path, "quality-gates")
     _make_evaluation_doc(tmp_path, "quality-gates")
 
-    call_count = {"n": 0}
+    call_counts: dict[str, int] = {}
     original_load_package_config = evaluation_set_checker.load_package_config
 
-    def _counting_load_package_config(*args, **kwargs):
-        call_count["n"] += 1
-        return original_load_package_config(*args, **kwargs)
+    def _counting_load_package_config(package_name, filename, project_dir):
+        call_counts[filename] = call_counts.get(filename, 0) + 1
+        return original_load_package_config(package_name, filename, project_dir)
 
     monkeypatch.setattr(
         evaluation_set_checker, "load_package_config", _counting_load_package_config
@@ -388,4 +510,5 @@ def test_config_read_only_once_per_invocation(monkeypatch, capsys, tmp_path) -> 
     output = _run_main(monkeypatch, capsys, payload)
 
     assert output != ""
-    assert call_count["n"] == 1
+    assert call_counts["audit-flags.json"] == 1
+    assert call_counts["evaluation-set-mapping.yaml"] == 1

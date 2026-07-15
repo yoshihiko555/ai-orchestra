@@ -13,6 +13,7 @@ identified) so the same reminder is not repeated on every edit.
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import os
 import re
@@ -59,6 +60,14 @@ TOP_LEVEL_TESTS_PATTERN = re.compile(r"^tests/")
 # identifier is limited to alphanumerics, "-", "_" (no path separators,
 # newlines, or other characters that could leak into log/message output).
 PACKAGE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+# Explicit evaluation-set-mapping.yaml config (Issue #237): the package/filename
+# heuristics below only recognize SSOT targets that live under packages/<pkg>/.
+# Some evaluation sets (e.g. orchex-cli) own tests without any packages/<pkg>/
+# directory, so this config lets them opt in to the same reconciliation nudge
+# without relying on directory conventions or filename-token guessing.
+EVALUATION_SET_MAPPING_PACKAGE = "quality-gates"
+EVALUATION_SET_MAPPING_FILENAME = "evaluation-set-mapping.yaml"
 
 DEFAULT_STATE: dict = {"session_id": "", "notified": []}
 
@@ -171,14 +180,62 @@ def match_package_by_filename(basename: str, package_dirs: list[str]) -> str | N
     return None
 
 
+def load_evaluation_set_mapping(project_dir: str) -> list[dict]:
+    """Load the evaluation-set-mapping.yaml explicit package/test-glob mapping.
+
+    A missing or malformed config yields an empty list, so identify_package()
+    transparently falls back to the packages/<pkg>/tests/ directory convention
+    and the filename-token heuristic below (Issue #237: those two heuristics
+    alone cannot recognize SSOT targets, such as orchex CLI, that own tests
+    without a packages/<pkg>/ directory).
+    """
+    config = load_package_config(
+        EVALUATION_SET_MAPPING_PACKAGE, EVALUATION_SET_MAPPING_FILENAME, project_dir
+    )
+    mappings = config.get("mappings", [])
+    if not isinstance(mappings, list):
+        return []
+    return [
+        entry
+        for entry in mappings
+        if isinstance(entry, dict)
+        and isinstance(entry.get("package"), str)
+        and isinstance(entry.get("test_globs"), list)
+    ]
+
+
+def match_explicit_mapping(relative_path: str, mappings: list[dict]) -> str | None:
+    """Return the package of the first mapping entry whose test_globs matches.
+
+    Uses fnmatch.fnmatchcase (not fnmatch.fnmatch) so glob matching is
+    case-sensitive regardless of the host OS, keeping behavior identical
+    across contributors' machines and CI.
+    """
+    for entry in mappings:
+        for pattern in entry["test_globs"]:
+            if isinstance(pattern, str) and fnmatch.fnmatchcase(relative_path, pattern):
+                return entry["package"]
+    return None
+
+
 def identify_package(relative_path: str, project_dir: str) -> str | None:
     """Identify the owning package for a given test file path.
+
+    Explicit evaluation-set-mapping.yaml entries are checked first and take
+    priority over the packages/<pkg>/tests/ directory convention and the
+    filename-token heuristic below, so SSOT targets without a packages/<pkg>/
+    directory can be routed correctly and coincidental token collisions
+    (e.g. "test_orchestra_manager_core.py" containing the token "core") don't
+    misroute to an unrelated evaluation set (Issue #237).
 
     The result always passes through is_valid_package_name() here (the single
     validation point) so that regex captures derived from an untrusted
     file_path can never yield an unsafe package identifier.
     """
-    pkg = extract_package_from_packages_path(relative_path)
+    pkg = match_explicit_mapping(relative_path, load_evaluation_set_mapping(project_dir))
+
+    if pkg is None:
+        pkg = extract_package_from_packages_path(relative_path)
     if pkg is None:
         basename = Path(relative_path).name
         if is_top_level_tests_path(relative_path, basename):
