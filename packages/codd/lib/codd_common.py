@@ -50,10 +50,11 @@ NODE_ID_PREFIX_BY_KIND: dict[str, str] = {
 def node_id_prefix(node_id: str) -> str | None:
     """node_id の `:` より前のプレフィックスを返す（EV-12: `<kind>:<file-slug>` 形式検証）。
 
-    コロンが無い、またはプレフィックス/スラッグのどちらかが空の場合は None
-    （`<kind>:<file-slug>` 形式を満たさない）。
+    コロンが無い、コロンが複数個ある（余分なセパレータ）、または
+    プレフィックス/スラッグのどちらかが空の場合は None
+    （`<kind>:<file-slug>` 形式はコロンがちょうど 1 個であることを要求する）。
     """
-    if ":" not in node_id:
+    if node_id.count(":") != 1:
         return None
     prefix, _, slug = node_id.partition(":")
     if not prefix or not slug:

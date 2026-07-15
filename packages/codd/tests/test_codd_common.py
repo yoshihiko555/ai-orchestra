@@ -195,6 +195,21 @@ def test_node_id_prefix_none_when_prefix_or_slug_empty() -> None:
     assert codd.node_id_prefix("design:") is None  # スラッグ空
 
 
+def test_node_id_prefix_none_with_extra_separator() -> None:
+    # EV-12: コロンが複数個ある node_id（余分なセパレータ）は
+    # `<kind>:<file-slug>` 形式（コロンちょうど1個）を満たさず None になる。
+    assert codd.node_id_prefix("design:foo:bar") is None
+    assert codd.node_id_prefix("adr:ADR-20260624-010:extra") is None
+
+
+def test_node_id_prefix_still_accepts_valid_ids() -> None:
+    # EV-12: 既存の正当な node_id（file-slug 内にコロンを含まない）は
+    # 複数セパレータ拒否の追加後も引き続き受理される。
+    assert codd.node_id_prefix("req:feature-list") == "req"
+    assert codd.node_id_prefix("adr:ADR-20260624-010") == "adr"
+    assert codd.node_id_prefix("design:codd-coherence-layer") == "design"
+
+
 def test_node_id_prefix_by_kind_matches_design_table() -> None:
     # 設計 4.3 の表: requirement のみ "req" に略記、他は kind 名と同一。
     assert codd.NODE_ID_PREFIX_BY_KIND == {

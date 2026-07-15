@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -101,13 +103,25 @@ def write_graph_jsonl(result: ScanResult, output_path: Path) -> None:
     EV-23: 一時ファイルへ書いてから rename する atomic write にし、書き込み失敗
     （中断・ディスク容量不足等）が既存の `graph.jsonl` を壊れた/半端な内容で
     上書きしないようにする（rename は同一ファイルシステム内で不可分）。
+
+    temp ファイル名は `tempfile.mkstemp` で出力先と同一ディレクトリに一意生成する
+    （固定名だと並行 `codd scan` 実行同士が同じ temp ファイルを共有し破壊し合うため）。
+    rename の atomicity を保つため、同一ファイルシステム＝同ディレクトリに置く。
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
     lines = [json.dumps(node_to_record(node), ensure_ascii=False) for node in result.nodes]
     content = "\n".join(lines) + ("\n" if lines else "")
-    tmp_path = output_path.with_name(output_path.name + ".tmp")
-    tmp_path.write_text(content, encoding="utf-8")
-    tmp_path.replace(output_path)
+    fd, tmp_name = tempfile.mkstemp(
+        dir=output_path.parent, prefix=f".{output_path.name}.", suffix=".tmp"
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as tmp_file:
+            tmp_file.write(content)
+        os.replace(tmp_path, output_path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -214,13 +228,14 @@ def _check_unknown(result: ScanResult, config: cc.CoddConfig) -> list[Finding]:
         if not node.node_id:
             findings.append(Finding("unknown", cc.LEVEL_ERROR, f"{node.path}: node_id が空"))
         elif cc.node_id_prefix(node.node_id) is None:
-            # EV-12: node_id は `<kind>:<file-slug>` 形式（コロン区切り）である必要がある。
+            # EV-12: node_id は `<kind>:<file-slug>` 形式（コロンがちょうど 1 個）である必要がある。
+            # コロン無し／複数（余分なセパレータ）はどちらも不正。
             findings.append(
                 Finding(
                     "unknown",
                     cc.LEVEL_ERROR,
                     f"{node.path}: node_id '{node.node_id}' が"
-                    " '<kind>:<file-slug>' 形式でない（コロン無し）",
+                    " '<kind>:<file-slug>' 形式でない（コロンが無いか複数ある）",
                 )
             )
         if node.kind not in config.kinds:

@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import tempfile
+import unittest.mock
 from pathlib import Path
 
 import pytest
@@ -222,7 +224,20 @@ def test_validate_unknown_flags_node_id_without_colon(tmp_path) -> None:
     grouped = _checks(result, _config(), tmp_path)
     messages = " ".join(f.message for f in grouped.get("unknown", []))
     assert "designwithoutcolon" in messages
-    assert "コロン無し" in messages
+    assert "コロンが無いか複数ある" in messages
+
+
+def test_validate_unknown_flags_node_id_with_extra_separator(tmp_path) -> None:
+    # EV-12: node_id にコロンが複数個ある（余分なセパレータ）場合も unknown error。
+    # `partition(":")` は先頭コロンで区切ってしまい "design" を prefix として誤って
+    # 受理する回帰があったため、明示的にこのケースを検証する。
+    doc = "---\ncodd:\n  node_id: design:foo:bar\n  kind: design\n  status: draft\n---\n# body\n"
+    _write(tmp_path, "docs/s.md", doc)
+    result = cli.scan_project(tmp_path, _config())
+    grouped = _checks(result, _config(), tmp_path)
+    messages = " ".join(f.message for f in grouped.get("unknown", []))
+    assert "design:foo:bar" in messages
+    assert "コロンが無いか複数ある" in messages
 
 
 def test_validate_unknown_flags_kind_node_id_prefix_mismatch(tmp_path) -> None:
@@ -273,7 +288,7 @@ def test_validate_flags_node_id_with_empty_prefix_or_slug(tmp_path) -> None:
     result = cli.scan_project(tmp_path, _config())
     grouped = _checks(result, _config(), tmp_path)
     messages = [f.message for f in grouped.get("unknown", [])]
-    assert sum("コロン無し" in m for m in messages) == 2
+    assert sum("コロンが無いか複数ある" in m for m in messages) == 2
 
 
 def test_validate_unmapped_custom_kind_skips_prefix_check(tmp_path) -> None:
@@ -821,20 +836,48 @@ def test_write_graph_jsonl_failure_preserves_existing_graph(tmp_path, monkeypatc
     _write(tmp_path, "docs/design.md", _doc("design:d", "design"))
     result = cli.scan_project(tmp_path, _config())
 
-    original_write_text = Path.write_text
+    def _boom(*args, **kwargs):
+        raise OSError("simulated replace failure")
 
-    def _boom(self: Path, *args, **kwargs):
-        if self.name.endswith(".tmp"):
-            raise OSError("simulated write failure")
-        return original_write_text(self, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "write_text", _boom)
+    monkeypatch.setattr(os, "replace", _boom)
 
     with pytest.raises(OSError):
         cli.write_graph_jsonl(result, out)
 
     # 書き込み失敗前の既存グラフがそのまま残る（半端な内容で壊れていない）。
     assert out.read_text(encoding="utf-8") == existing_content
+    # temp ファイルも後始末される（失敗後に残骸を残さない）。
+    assert list(out.parent.glob(f".{out.name}.*")) == []
+
+
+def test_write_graph_jsonl_uses_unique_tmp_name_for_concurrent_writes(tmp_path) -> None:
+    # Codex レビュー反映（Issue #128）: 固定 temp ファイル名（`graph.jsonl.tmp`）だと
+    # 2 つの並行 `codd scan` が同じ temp ファイルを共有し破壊し合う。
+    # `tempfile.mkstemp` による一意生成を検証するため、書き込み中に temp ファイル名を
+    # 収集し、2 回連続実行しても名前が重複しないことを確認する。
+    out = tmp_path / ".claude/codd/graph.jsonl"
+    _write(tmp_path, "docs/design.md", _doc("design:d", "design"))
+    result = cli.scan_project(tmp_path, _config())
+
+    seen_tmp_names: list[str] = []
+    original_mkstemp = tempfile.mkstemp
+
+    def _spy_mkstemp(*args, **kwargs):
+        fd, name = original_mkstemp(*args, **kwargs)
+        seen_tmp_names.append(name)
+        return fd, name
+
+    with unittest.mock.patch("tempfile.mkstemp", side_effect=_spy_mkstemp):
+        cli.write_graph_jsonl(result, out)
+        cli.write_graph_jsonl(result, out)
+
+    assert len(seen_tmp_names) == 2
+    assert seen_tmp_names[0] != seen_tmp_names[1]
+    # temp ファイルは出力先と同じディレクトリに作られる（rename の atomicity のため）。
+    for name in seen_tmp_names:
+        assert Path(name).parent == out.parent
+    # 実行後は正常な最終ファイルのみが残り、temp ファイルは残らない。
+    assert list(out.parent.glob(f".{out.name}.*")) == []
 
 
 # ---------------------------------------------------------------------------
