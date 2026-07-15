@@ -96,10 +96,18 @@ def node_to_record(node: cc.CoddNode) -> dict[str, Any]:
 
 
 def write_graph_jsonl(result: ScanResult, output_path: Path) -> None:
-    """グラフを JSONL として書き出す（1 ノード 1 行）。"""
+    """グラフを JSONL として書き出す（1 ノード 1 行）。
+
+    EV-23: 一時ファイルへ書いてから rename する atomic write にし、書き込み失敗
+    （中断・ディスク容量不足等）が既存の `graph.jsonl` を壊れた/半端な内容で
+    上書きしないようにする（rename は同一ファイルシステム内で不可分）。
+    """
     output_path.parent.mkdir(parents=True, exist_ok=True)
     lines = [json.dumps(node_to_record(node), ensure_ascii=False) for node in result.nodes]
-    output_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+    content = "\n".join(lines) + ("\n" if lines else "")
+    tmp_path = output_path.with_name(output_path.name + ".tmp")
+    tmp_path.write_text(content, encoding="utf-8")
+    tmp_path.replace(output_path)
 
 
 # ---------------------------------------------------------------------------
@@ -205,6 +213,16 @@ def _check_unknown(result: ScanResult, config: cc.CoddConfig) -> list[Finding]:
     for node in result.nodes:
         if not node.node_id:
             findings.append(Finding("unknown", cc.LEVEL_ERROR, f"{node.path}: node_id が空"))
+        elif cc.node_id_prefix(node.node_id) is None:
+            # EV-12: node_id は `<kind>:<file-slug>` 形式（コロン区切り）である必要がある。
+            findings.append(
+                Finding(
+                    "unknown",
+                    cc.LEVEL_ERROR,
+                    f"{node.path}: node_id '{node.node_id}' が"
+                    " '<kind>:<file-slug>' 形式でない（コロン無し）",
+                )
+            )
         if node.kind not in config.kinds:
             findings.append(
                 Finding("unknown", cc.LEVEL_ERROR, f"{node.path}: 未定義 kind '{node.kind}'")
@@ -218,6 +236,20 @@ def _check_unknown(result: ScanResult, config: cc.CoddConfig) -> list[Finding]:
                         "unknown",
                         cc.LEVEL_ERROR,
                         f"{node.path}: kind '{node.kind}' に不正な status '{node.status}'",
+                    )
+                )
+            # EV-12: node_id プレフィックスが declare された kind と対応しているか
+            # （設計 4.3 の表: requirement は "req" に略記、他は kind 名と同一）。
+            expected_prefix = cc.NODE_ID_PREFIX_BY_KIND.get(node.kind)
+            actual_prefix = cc.node_id_prefix(node.node_id)
+            if expected_prefix and actual_prefix and actual_prefix != expected_prefix:
+                findings.append(
+                    Finding(
+                        "unknown",
+                        cc.LEVEL_ERROR,
+                        f"{node.path}: node_id '{node.node_id}' のプレフィックス"
+                        f" '{actual_prefix}' が kind '{node.kind}' の想定プレフィックス"
+                        f" '{expected_prefix}:' と不一致",
                     )
                 )
         for dep in node.depends_on:

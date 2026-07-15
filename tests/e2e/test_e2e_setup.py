@@ -27,6 +27,8 @@ class TestSetup:
         assert "core" in pkgs
         assert "agent-routing" in pkgs
         assert "quality-gates" in pkgs
+        # EV-20: codd は essential プリセットに含まれる（presets.json 参照）。
+        assert "codd" in pkgs
 
     def test_setup_essential_hooks(self, e2e_project: Path) -> None:
         """#20: setup 後に全パッケージの hooks が登録"""

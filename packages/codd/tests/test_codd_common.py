@@ -175,6 +175,38 @@ def test_valid_statuses_by_kind() -> None:
     assert codd.valid_statuses("unknown") == []
 
 
+# ---------------------------------------------------------------------------
+# node_id 形式（EV-12: `<kind>:<file-slug>` 形式検証）
+# ---------------------------------------------------------------------------
+
+
+def test_node_id_prefix_extracts_prefix_before_colon() -> None:
+    assert codd.node_id_prefix("design:architecture") == "design"
+    assert codd.node_id_prefix("req:coherence-guardrail") == "req"
+
+
+def test_node_id_prefix_none_without_colon() -> None:
+    # コロン無し node_id は `<kind>:<file-slug>` 形式を満たさない。
+    assert codd.node_id_prefix("designarchitecture") is None
+
+
+def test_node_id_prefix_none_when_prefix_or_slug_empty() -> None:
+    assert codd.node_id_prefix(":architecture") is None  # プレフィックス空
+    assert codd.node_id_prefix("design:") is None  # スラッグ空
+
+
+def test_node_id_prefix_by_kind_matches_design_table() -> None:
+    # 設計 4.3 の表: requirement のみ "req" に略記、他は kind 名と同一。
+    assert codd.NODE_ID_PREFIX_BY_KIND == {
+        "requirement": "req",
+        "design": "design",
+        "adr": "adr",
+        "plan": "plan",
+        "rule": "rule",
+        "instruction": "instruction",
+    }
+
+
 def test_deep_merge_overrides_and_preserves() -> None:
     base = {"a": 1, "nested": {"x": 1, "y": 2}}
     override = {"nested": {"y": 9}, "b": 3}

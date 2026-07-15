@@ -212,6 +212,81 @@ def test_validate_unknown_flags_empty_node_id(tmp_path) -> None:
     assert "node_id" in messages
 
 
+def test_validate_unknown_flags_node_id_without_colon(tmp_path) -> None:
+    # EV-12: node_id は `<kind>:<file-slug>` 形式。コロンが無ければ unknown error。
+    doc = (
+        "---\ncodd:\n  node_id: designwithoutcolon\n  kind: design\n  status: draft\n---\n# body\n"
+    )
+    _write(tmp_path, "docs/s.md", doc)
+    result = cli.scan_project(tmp_path, _config())
+    grouped = _checks(result, _config(), tmp_path)
+    messages = " ".join(f.message for f in grouped.get("unknown", []))
+    assert "designwithoutcolon" in messages
+    assert "コロン無し" in messages
+
+
+def test_validate_unknown_flags_kind_node_id_prefix_mismatch(tmp_path) -> None:
+    # EV-12: kind は正しい語彙だが node_id のプレフィックスが kind と対応しない
+    # （例: kind=requirement なのに node_id は "design:" プレフィックス）。
+    _write(tmp_path, "docs/req.md", _doc("design:mismatched", "requirement"))
+    result = cli.scan_project(tmp_path, _config())
+    grouped = _checks(result, _config(), tmp_path)
+    messages = " ".join(f.message for f in grouped.get("unknown", []))
+    assert "design:mismatched" in messages
+    assert "不一致" in messages
+
+
+def test_validate_accepts_requirement_abbreviated_req_prefix(tmp_path) -> None:
+    # EV-12: requirement kind は "req" プレフィックスへ略記される（設計 4.3 の表）。
+    # これは不一致ではなく正常系として通ること。
+    _write(tmp_path, "docs/req.md", _doc("req:coherence-guardrail", "requirement"))
+    result = cli.scan_project(tmp_path, _config())
+    grouped = _checks(result, _config(), tmp_path)
+    assert grouped.get("unknown", []) == []
+
+
+def test_validate_node_id_without_colon_reports_single_finding(tmp_path) -> None:
+    # Codex レビュー反映: 形式不正（コロン無し）と kind プレフィックス不一致を
+    # 二重報告しない（1 ノードにつき unknown finding は 1 件のみ）。
+    doc = (
+        "---\ncodd:\n  node_id: designwithoutcolon\n  kind: design\n  status: draft\n---\n# body\n"
+    )
+    _write(tmp_path, "docs/s.md", doc)
+    result = cli.scan_project(tmp_path, _config())
+    grouped = _checks(result, _config(), tmp_path)
+    node_id_findings = [f for f in grouped.get("unknown", []) if "designwithoutcolon" in f.message]
+    assert len(node_id_findings) == 1
+
+
+def test_validate_flags_node_id_with_empty_prefix_or_slug(tmp_path) -> None:
+    # EV-12: プレフィックス側・スラッグ側どちらが空でも `<kind>:<file-slug>` 形式でない。
+    _write(
+        tmp_path,
+        "docs/a.md",
+        '---\ncodd:\n  node_id: ":a"\n  kind: design\n  status: draft\n---\n# body\n',
+    )
+    _write(
+        tmp_path,
+        "docs/b.md",
+        '---\ncodd:\n  node_id: "design:"\n  kind: design\n  status: draft\n---\n# body\n',
+    )
+    result = cli.scan_project(tmp_path, _config())
+    grouped = _checks(result, _config(), tmp_path)
+    messages = [f.message for f in grouped.get("unknown", [])]
+    assert sum("コロン無し" in m for m in messages) == 2
+
+
+def test_validate_unmapped_custom_kind_skips_prefix_check(tmp_path) -> None:
+    # Codex レビュー反映: config.kinds に NODE_ID_PREFIX_BY_KIND 未定義の独自 kind を
+    # 追加しても、プレフィックス照合をスキップし誤検知（false positive）しない。
+    _write(tmp_path, "docs/e.md", _doc("eval:e", "eval", status="draft"))
+    config = _config(kinds=[*BASE_CONFIG["kinds"], "eval"])
+    result = cli.scan_project(tmp_path, config)
+    grouped = _checks(result, config, tmp_path)
+    messages = " ".join(f.message for f in grouped.get("unknown", []))
+    assert "プレフィックス" not in messages  # 未マッピング kind は照合スキップ（誤検知しない）
+
+
 def test_validate_missing_frontmatter_warning(tmp_path) -> None:
     _write(tmp_path, "docs/none.md", "# no frontmatter\n")
     result = cli.scan_project(tmp_path, _config())
@@ -321,6 +396,15 @@ def _impact_cfg(**overrides):
 
 def _by_id(impacted) -> dict:
     return {n.node_id: n for n in impacted}
+
+
+def test_band_for_score_boundaries() -> None:
+    # EV-15: score>=0.8 は Green、>=0.4 は Amber、それ未満は Gray（境界値そのもの）。
+    cfg = _impact_cfg()
+    assert cc._band_for_score(0.8, cfg) == cc.BAND_GREEN  # ちょうど green_threshold
+    assert cc._band_for_score(0.7999, cfg) == cc.BAND_AMBER  # green 未満は amber
+    assert cc._band_for_score(0.4, cfg) == cc.BAND_AMBER  # ちょうど amber_threshold
+    assert cc._band_for_score(0.3999, cfg) == cc.BAND_GRAY  # amber 未満は gray
 
 
 def test_impact_direct_strong_is_green() -> None:
@@ -672,3 +756,169 @@ def test_diff_changed_paths_detects_non_ascii_deletion(tmp_path) -> None:
     changed, deleted = cli.diff_changed_paths(tmp_path, "HEAD")
     assert "docs/削除予定.md" in deleted
     assert "docs/削除予定.md" not in changed
+
+
+# ---------------------------------------------------------------------------
+# EV-19: 依存宣言の正本はフロントマター1箇所のみ（外部サイドカーの二重管理否定）
+# ---------------------------------------------------------------------------
+
+
+def test_codd_config_has_no_external_links_field() -> None:
+    # EV-19: 依存宣言の正本はフロントマター1箇所のみ。config スキーマに doc_links
+    # 等の外部依存宣言ファイルを指すフィールドが存在しないことを確認する
+    # （「存在しないこと」の裏付け）。
+    import dataclasses
+
+    field_names = {f.name for f in dataclasses.fields(cc.CoddConfig)}
+    forbidden = {"doc_links", "links_file", "dependencies_file", "deps_path", "links_path"}
+    assert field_names.isdisjoint(forbidden)
+
+
+def test_scan_ignores_external_doc_links_sidecar(tmp_path) -> None:
+    # EV-19: scope 内に外部の依存宣言サイドカー（doc_links.yaml 等）を置いても、
+    # scan はそれを一切読まず、フロントマターに書かれた依存のみをグラフに反映する。
+    _write(tmp_path, "docs/design.md", _doc("design:d", "design"))
+    _write(tmp_path, "docs/doc_links.yaml", "design:d:\n  - req:phantom\n")
+    config = _config(scope={"include": ["docs/**/*.md"], "exclude": []})
+    result = cli.scan_project(tmp_path, config)
+    node = result.graph.nodes["design:d"]
+    # サイドカー由来の依存（req:phantom）は取り込まれない。
+    assert node.depends_on == ()
+    assert not result.graph.has("req:phantom")
+
+
+# ---------------------------------------------------------------------------
+# EV-22: 壊れた入力・存在しない scope でもクラッシュしない
+# ---------------------------------------------------------------------------
+
+
+def test_scan_survives_malformed_frontmatter_without_crash(tmp_path) -> None:
+    # 壊れた YAML（閉じられていない配列）はクラッシュせず missing_frontmatter 扱い。
+    _write(tmp_path, "docs/broken.md", "---\ncodd: [unclosed\n---\n# body\n")
+    result = cli.scan_project(tmp_path, _config())
+    assert result.nodes == []
+    assert result.missing_frontmatter == ["docs/broken.md"]
+    assert cli.cmd_validate(tmp_path, _config()) == 0
+
+
+def test_cmd_validate_survives_missing_root_directory(tmp_path) -> None:
+    # 存在しない --root パスでもクラッシュせず、対象 0 件として正常終了する。
+    missing_root = tmp_path / "does-not-exist"
+    assert cli.cmd_validate(missing_root, _config()) == 0
+
+
+# ---------------------------------------------------------------------------
+# EV-23: graph.jsonl の書き込み失敗が既存グラフを破損させない（atomic write）
+# ---------------------------------------------------------------------------
+
+
+def test_write_graph_jsonl_failure_preserves_existing_graph(tmp_path, monkeypatch) -> None:
+    out = tmp_path / ".claude/codd/graph.jsonl"
+    out.parent.mkdir(parents=True)
+    existing_content = '{"node_id": "design:existing"}\n'
+    out.write_text(existing_content, encoding="utf-8")
+
+    _write(tmp_path, "docs/design.md", _doc("design:d", "design"))
+    result = cli.scan_project(tmp_path, _config())
+
+    original_write_text = Path.write_text
+
+    def _boom(self: Path, *args, **kwargs):
+        if self.name.endswith(".tmp"):
+            raise OSError("simulated write failure")
+        return original_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", _boom)
+
+    with pytest.raises(OSError):
+        cli.write_graph_jsonl(result, out)
+
+    # 書き込み失敗前の既存グラフがそのまま残る（半端な内容で壊れていない）。
+    assert out.read_text(encoding="utf-8") == existing_content
+
+
+# ---------------------------------------------------------------------------
+# EV-13（should）: AI Orchestra 自身のドキュメントに対する dogfood validate
+# ---------------------------------------------------------------------------
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def test_codd_validate_dogfoods_ai_orchestra_docs_with_zero_errors() -> None:
+    # EV-13: AI Orchestra 自身のドキュメント群に対して validate を実行すると
+    # error 0 で通る（ドッグフード）。warning（drift/orphan/missing_frontmatter 等）
+    # は許容する。
+    config_path = _REPO_ROOT / ".claude" / "config" / "codd" / "codd.yaml"
+    if not config_path.exists():
+        pytest.skip("codd config が未導入のためスキップ")
+    config = cc.load_config(config_path)
+    result = cli.scan_project(_REPO_ROOT, config)
+    findings = cli.run_checks(result, config, _REPO_ROOT)
+    errors = [f for f in findings if f.level == cc.LEVEL_ERROR]
+    assert errors == [], "\n".join(f"{f.check}: {f.message}" for f in errors)
+
+
+# ---------------------------------------------------------------------------
+# EV-21: `orchex run codd codd -- <subcommand>` の後方互換サブプロセス起動
+# ---------------------------------------------------------------------------
+
+_ORCHESTRA_MANAGER = _REPO_ROOT / "scripts" / "orchestra-manager.py"
+
+_MINIMAL_CODD_YAML = """\
+enabled: true
+scope:
+  include: ["docs/**/*.md"]
+  exclude: []
+kinds: [requirement, design, adr, plan, rule, instruction]
+relations: [derives_from, refines, implements, references, supersedes]
+roots: [requirement, instruction]
+graph_store:
+  format: jsonl
+  path: ".claude/codd/graph.jsonl"
+checks:
+  dangling: error
+  duplicate: error
+  cycle: error
+  unknown: error
+  missing_frontmatter: warning
+  orphan: warning
+  drift: warning
+"""
+
+
+def _run_orchex_codd(project: Path, *subcommand_args: str) -> subprocess.CompletedProcess[str]:
+    """`orchex run codd codd -- <subcommand>` 相当のサブプロセス起動。"""
+    import sys
+
+    cmd = [
+        sys.executable,
+        str(_ORCHESTRA_MANAGER),
+        "run",
+        "codd",
+        "codd",
+        "--project",
+        str(project),
+        "--",
+        *subcommand_args,
+    ]
+    env = {**os.environ, "AI_ORCHESTRA_DIR": str(_REPO_ROOT)}
+    return subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=60)
+
+
+def test_orchex_run_codd_scan_and_validate_backward_compatible(tmp_path) -> None:
+    # EV-21: scan / validate は `orchex run codd codd -- <subcommand>` として
+    # サブプロセス起動・引数パースが後方互換に動作する。
+    project = tmp_path / "project"
+    _write(project, "docs/req.md", _doc("req:r", "requirement"))
+    config_dir = project / ".claude" / "config" / "codd"
+    config_dir.mkdir(parents=True)
+    (config_dir / "codd.yaml").write_text(_MINIMAL_CODD_YAML, encoding="utf-8")
+
+    scan_result = _run_orchex_codd(project, "scan")
+    assert scan_result.returncode == 0, scan_result.stderr
+    assert "[codd scan]" in scan_result.stdout
+    assert (project / ".claude" / "codd" / "graph.jsonl").exists()
+
+    validate_result = _run_orchex_codd(project, "validate")
+    assert validate_result.returncode == 0, validate_result.stderr
+    assert "[codd validate]" in validate_result.stdout
