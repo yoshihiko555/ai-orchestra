@@ -1131,7 +1131,10 @@ cron 側は「落ちていたら起動し直す」監視役に留める）:
   liveness には構造的な限界があり、確実な単一起動保証には pidfile/flock ベースの liveness
   チェックへの移行が必要（`loop_scheduler.py` 起動時に自身で pidfile を書き、cron 側はそれを
   見る方式等）。テンプレートレンダリングの修正で閉じられる範囲を超えるため、本レビューでは
-  現状のまま受容し、別 Issue でのフォローアップを提案する。
+  現状のまま受容し、別 Issue でのフォローアップを提案する。**2026-07-15 追記（Issue #216 で
+  pidfile/flock 方式へ全面置換。詳細は本節末尾の新規記述を参照）**: 上記の pgrep 自己一致問題
+  および `$$`/`$PPID` 除外フィルタ（#219 P2-3）は、`is-alive` サブコマンドの pidfile/flock
+  liveness チェックへの移行により解消・撤去された。
 - **launchd plist の CR/制御文字 fail-closed（3巡目レビュー反映。RM3）**: 上記 cron の CR/LF
   fail-closed（SN-cron）は launchd 側（`render_launchd_plist`）には未適用だった。`&`/`<`/`>` は
   `xml_escape` で escape 済みだが、それだけでは制御文字を防げない: literal な CR はそれ自体は
@@ -1158,6 +1161,45 @@ cron 側は「落ちていたら起動し直す」監視役に留める）:
   ロードすると 1 つ目と衝突し、片方の definition の label キューが永久にスケジュールされない。
   `definition_id` が `DEFAULT_DEFINITION_ID` と異なる場合、`Label` に `.{definition_id}` を追加の
   suffix として含めることで解消した。
+- **scheduler 単一起動保証を pidfile/flock 方式へ全面置換（Issue #216）**: cron の生存確認は
+  `pgrep -f <pattern>` の正規表現マッチから、`loop_scheduler.py <script> --project <project>
+  [--definition <id>] is-alive` サブコマンドへ置き換えた。`loop_scheduler.py` は起動
+  （`run_scheduler`）時に、プロジェクト・loop definition ごとに固定された pidfile
+  （`.claude/loop/scheduler.pid`、非デフォルト definition は
+  `.claude/loop/scheduler.<definition_id>.pid`）へ `flock(LOCK_EX | LOCK_NB)` を試み、取得できな
+  ければ即座に終了する。これが実際の単一起動保証であり、`is-alive`／cron の `|| フォールバック`
+  はあくまで無駄な起動試行を避ける最適化に過ぎない — 二重起動が発生しても、後から起動した側の
+  flock 取得は必ず失敗し、ループ状態には一切触れずに終了する。liveness の正本は「flock を保持
+  しているか」のみであり、pid の生存確認は行わない（stale pidfile・pid 再利用問題を構造的に回避
+  する）。この方式は cron・launchd・手動起動のいずれから起動されたかによらず一様に適用される。
+  pgrep 方式の構造的限界（#13 の自己一致、`$$`/`$PPID` 除外フィルタの祖先チェーン非対応、#219
+  P2-3）はすべて解消され、対応する pgrep ベースのコード・テスト・上記の受容済みリスク注記は撤去
+  した。pidfile はプロジェクト単位ではなく (project_dir, definition_id) 単位で分離されており、
+  J4 の cron liveness パターン方針を踏襲して、同一プロジェクトで複数の非デフォルト definition
+  の scheduler を並行起動できる既存の意図的な運用を妨げない。launchd は `KeepAlive: true` による
+  既存の自動再起動があるため pgrep 相当のテンプレートガードを元々持たず、そちらの変更は不要
+  だった（手動起動と launchd の併存等の二重起動は、上記の scheduler 自身の起動時 flock によって
+  防がれる）。
+- **pidfile のパス解決を root worktree 基準へ修正（PR #230 Codex P1 反映）**: 上記初版実装の
+  `scheduler_pidfile_path` は `Path(project_dir).resolve() / ".claude" / "loop"`（`--project` に
+  渡された worktree をそのまま使う単純な resolve）で pidfile を配置していたが、ループ状態
+  （`state.json`/`journal.jsonl`/coord lock、いずれも `loop_common.loop_root` 経由で root
+  worktree に解決される）は `--project` にどの worktree を渡しても常に root worktree 側
+  `.claude/loop/` に集約される。そのため `--project <linked-worktree>` で起動した scheduler と
+  `--project <root-worktree>` で起動した scheduler が**別々の pidfile**を持ってしまい、flock が
+  競合せず、同じ共有状態に対して 2 つの scheduler が discovery/spawn できてしまう（単一起動保証と
+  同時実行 cap の破れ）。`scheduler_pidfile_path` を `loop_common.loop_root`（root-worktree 解決込
+  み）ベースに変更し、`run_scheduler`・`is_scheduler_alive`・cron テンプレートの `is-alive` 呼び
+  出しの 3 者が worktree に依らず常に同一 pidfile に一致するよう修正した。「git subprocess を挟み
+  たくない」という初版の判断より、単一起動保証の正しさを優先している。
+  **root worktree 解決失敗時（git 不在・非 git ディレクトリ等）は fail-closed**: `loop_root`/
+  `resolve_root_worktree` は解決不能な場合 `RootResolutionError` を送出する（既存の fail-closed
+  設計を踏襲）。`run_scheduler` はこれを「他の scheduler が既に起動中」と同じ扱いで捕捉し、
+  ループ状態に一切触れず起動を拒否する（保護が確認できない状態で無防備に起動を続けるより安全）。
+  `is_scheduler_alive`（`is-alive` CLI・cron の liveness プローブ）は `False`（=生存なし）を返して
+  フォールバックの起動試行に委ねる — その起動試行も同じ理由で `run_scheduler` 側が起動を拒否する
+  ため、プローブ側で例外を送出してトレースバックをログに残すより、実際の単一起動保証を担う
+  `run_scheduler` 側のメッセージに一本化する設計とした。
 
 ---
 
