@@ -413,14 +413,16 @@ def _has_current_hash_pair(
 def _evaluation_covers_current_holdouts(
     events: list[dict], evaluation: dict[str, Any], target: str, config: dict
 ) -> bool:
-    if not target.startswith("skill:"):
-        return True
     repeat = (config.get("evaluate") or {}).get(
         "repeat_frontier", mh.DEFAULTS["evaluate"]["repeat_frontier"]
     )
     if isinstance(repeat, bool) or not isinstance(repeat, int) or repeat < 1:
         return False
-    suites = {target: {str(run_id) for run_id in evaluation.get("own_run_ids") or []}}
+    suites = (
+        {target: {str(run_id) for run_id in evaluation.get("own_run_ids") or []}}
+        if target.startswith("skill:")
+        else {}
+    )
     suites.update(
         {
             str(result["suite_id"]): {str(run_id) for run_id in result.get("run_ids") or []}

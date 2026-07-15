@@ -544,9 +544,11 @@ def test_regression_config_toggle_changes_evaluator_hash() -> None:
     )
 
 
-def _holdout_own_event(*, run_id: str, suite_hash: str, evaluator_hash: str) -> dict:
+def _holdout_own_event(
+    *, run_id: str, suite_hash: str, evaluator_hash: str, target: str = TARGET
+) -> dict:
     result = _result(
-        suite_id=TARGET,
+        suite_id=target,
         scenario_id="holdout",
         verdict="pass",
         cost_usd=0.1,
@@ -555,8 +557,8 @@ def _holdout_own_event(*, run_id: str, suite_hash: str, evaluator_hash: str) -> 
     result["run_id"] = run_id
     return ev._build_run_completed_event(
         result,
-        target=TARGET,
-        suite_id=TARGET,
+        target=target,
+        suite_id=target,
         suite_hash=suite_hash,
         scenario_hash="b" * 64,
         evaluator_hash=evaluator_hash,
@@ -571,6 +573,7 @@ def _holdout_regression_event(
     verdict: str,
     suite_hash: str,
     evaluator_hash: str,
+    target: str = TARGET,
 ) -> dict:
     result = _result(
         suite_id=suite_id,
@@ -583,7 +586,7 @@ def _holdout_regression_event(
     return ev._build_regression_run_completed_event(
         result,
         evaluation_id=EVALUATION_ID,
-        target=TARGET,
+        target=target,
         suite_id=suite_id,
         suite_hash=suite_hash,
         scenario_hash="f" * 64,
@@ -811,6 +814,54 @@ def test_promote_requires_every_holdout_scenario_at_frontier_repeat(
     assert not prm._evaluation_covers_current_holdouts([own, regression], summary, TARGET, config)
     config["evaluate"]["repeat_frontier"] = 1
     assert prm._evaluation_covers_current_holdouts([own, regression], summary, TARGET, config)
+
+
+def test_promote_requires_complete_affected_holdouts_for_claude_harness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = "claude-harness"
+    evaluator_hash = "d" * 64
+    own = _holdout_own_event(
+        run_id="run-claude-holdout",
+        suite_hash="a" * 64,
+        evaluator_hash=evaluator_hash,
+        target=target,
+    )
+    regression = _holdout_regression_event(
+        run_id="run-issue-holdout",
+        suite_id=REGRESSION_TARGET,
+        verdict="pass",
+        suite_hash="e" * 64,
+        evaluator_hash=evaluator_hash,
+        target=target,
+    )
+    summary = {
+        "evaluation_id": EVALUATION_ID,
+        "own_run_ids": [own["run_id"]],
+        "regression_results": [{"suite_id": REGRESSION_TARGET, "run_ids": [regression["run_id"]]}],
+    }
+    monkeypatch.setattr(
+        prm.ev,
+        "validate_target_suite",
+        lambda _package, _schema, suite_id: [Path(f"{suite_id}.yaml")],
+    )
+    monkeypatch.setattr(
+        prm.ev,
+        "load_scenario",
+        lambda path, _schema: {
+            "id": "holdout" if "claude-harness" in str(path) else "shared-holdout",
+            "holdout": True,
+        },
+    )
+    monkeypatch.setattr(
+        prm.ev,
+        "compute_scenario_hash",
+        lambda path: ("b" if "claude-harness" in str(path) else "f") * 64,
+    )
+
+    assert not prm._evaluation_covers_current_holdouts(
+        [own, regression], summary, target, copy.deepcopy(mh.DEFAULTS)
+    )
 
 
 def test_promote_detects_unverified_suite_becoming_available(

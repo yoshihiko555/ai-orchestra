@@ -159,10 +159,14 @@ def _issue_comment(
 
 
 def _patch_loop_harness_root(monkeypatch: pytest.MonkeyPatch, project_dir: Path) -> None:
-    """Avoid loop_common's real `git rev-parse` call, which the fake gh/git run() intercepts."""
+    """Avoid the config loader's real `git rev-parse`, which the fake run() intercepts."""
     prw_module = prt._import_pr_review_wait()
     assert prw_module is not None
-    monkeypatch.setattr(prw_module.lc, "resolve_root_worktree", lambda _project_dir: project_dir)
+    monkeypatch.setattr(
+        prw_module.ld,
+        "_resolve_local_override_root",
+        lambda _project_dir: str(project_dir),
+    )
 
 
 @pytest.fixture()

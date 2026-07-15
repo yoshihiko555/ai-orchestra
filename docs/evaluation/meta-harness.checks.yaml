@@ -476,10 +476,12 @@
     packages/meta-harness/tests/test_cross_skill_regression.py::test_promote_batch_rejects_earlier_regression_fail_even_when_later_suite_passes
     packages/meta-harness/tests/test_cross_skill_regression.py::test_promote_checks_each_regression_suite_hash
     packages/meta-harness/tests/test_cross_skill_regression.py::test_promote_requires_every_holdout_scenario_at_frontier_repeat
+    packages/meta-harness/tests/test_cross_skill_regression.py::test_promote_requires_complete_affected_holdouts_for_claude_harness
   covered_by:
     - packages/meta-harness/tests/test_cross_skill_regression.py::test_promote_batch_rejects_earlier_regression_fail_even_when_later_suite_passes
     - packages/meta-harness/tests/test_cross_skill_regression.py::test_promote_checks_each_regression_suite_hash
     - packages/meta-harness/tests/test_cross_skill_regression.py::test_promote_requires_every_holdout_scenario_at_frontier_repeat
+    - packages/meta-harness/tests/test_cross_skill_regression.py::test_promote_requires_complete_affected_holdouts_for_claude_harness
   notes: promotion validates the whole holdout batch, requires the complete repeated holdout set, and refreshes the own suite, each affected suite, and evaluator hashes independently.
 
 - ev_id: EV-56
