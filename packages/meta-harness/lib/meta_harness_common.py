@@ -689,6 +689,49 @@ def append_ledger_event(main_root: Path, config: dict, event: dict) -> None:
         os.close(fd)
 
 
+def append_ledger_events_atomically(main_root: Path, config: dict, events: list[dict]) -> None:
+    """ledger.jsonl に複数イベントを 1 回の書き込みで原子的に追記する。
+
+    `append_ledger_event`（単一イベント版）と同じ耐障害パターン（O_APPEND + flock + fsync、
+    失敗時は開始サイズへ ftruncate）を踏襲しつつ、複数イベントを事前に encode してから
+    単一の write にまとめる。これにより、書き込み途中でプロセスが死んでも「一部のイベントだけ
+    ledger に残る」状態を防ぐ（全イベントが書けるか、何も書けないかの二値になる）。
+    """
+    if not events:
+        return
+    path = ledger_path(main_root, config)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = b"".join(
+        (json.dumps(event, ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8")
+        for event in events
+    )
+    fd = os.open(path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        start_size = os.fstat(fd).st_size
+        try:
+            view = memoryview(lines)
+            written = 0
+            while written < len(lines):
+                count = os.write(fd, view[written:])
+                if count <= 0:
+                    raise OSError(
+                        f"short ledger write: expected {len(lines)} bytes, wrote {written}"
+                    )
+                written += count
+            os.fsync(fd)
+        except BaseException:
+            os.ftruncate(fd, start_size)
+            os.fsync(fd)
+            raise
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        os.close(fd)
+
+
 def read_ledger_events(main_root: Path, config: dict) -> list[dict]:
     """ledger.jsonl の全イベントを時系列順に読む（不正な行は無視する）。"""
     path = ledger_path(main_root, config)
@@ -899,6 +942,21 @@ def latest_evaluation_completed(
     return None
 
 
+def candidate_has_evaluation_completed(events: list[dict], cand_id: str) -> bool:
+    """Return True if this candidate has any evaluation_completed event in the ledger.
+
+    Used to gate the strict `evaluation_completed`-based frontier/loop-resume checks
+    introduced for cross-skill regression (b92dd84): candidates evaluated before that
+    change never gain such an event retroactively, so callers fall back to the legacy
+    attempt-completeness check for them instead of silently dropping them from
+    frontier/loop resumption.
+    """
+    return any(
+        event.get("event") == "evaluation_completed" and event.get("cand_id") == cand_id
+        for event in events
+    )
+
+
 KNOWN_COST_FIELDS = frozenset(
     {
         "input_tokens",
@@ -996,6 +1054,14 @@ def aggregate_run_points(
     for cand_id, runs in sorted(by_cand.items()):
         latest_runs = _latest_attempt_groups_per_scenario(runs)
         point = _summarize_candidate_runs(cand_id, latest_runs, cost_axis, required_scenarios)
+        # No legacy-ledger fallback here (unlike `loop_state.current_run_events`): a candidate
+        # whose own run(s) completed but has no evaluation_completed event is exactly the
+        # "batch interrupted after own run" state that EV-54 requires frontier to exclude
+        # (see test_incomplete_batch_with_only_own_pass_is_not_frontier_eligible). Ledger
+        # content alone cannot distinguish that state from a genuinely pre-b92dd84 legacy
+        # candidate, so relaxing this check would reopen the reward-hacking gap the strict
+        # evaluation_completed gate was added to close. Legacy candidates regain frontier
+        # eligibility once `evaluate` is re-run for them (see docs/evaluation/meta-harness.md).
         evaluation = latest_evaluation_completed(
             events,
             cand_id,

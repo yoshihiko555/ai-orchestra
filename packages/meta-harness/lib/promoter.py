@@ -418,11 +418,7 @@ def _evaluation_covers_current_holdouts(
     )
     if isinstance(repeat, bool) or not isinstance(repeat, int) or repeat < 1:
         return False
-    suites = (
-        {target: {str(run_id) for run_id in evaluation.get("own_run_ids") or []}}
-        if target.startswith("skill:")
-        else {}
-    )
+    suites = {target: {str(run_id) for run_id in evaluation.get("own_run_ids") or []}}
     suites.update(
         {
             str(result["suite_id"]): {str(run_id) for run_id in result.get("run_ids") or []}
@@ -441,7 +437,11 @@ def _evaluation_covers_current_holdouts(
         except (OSError, ValueError, ev.yaml.YAMLError):
             return False
         if not expected:
-            return False
+            # A suite with zero holdout scenarios by design (e.g. `claude-harness` today) has
+            # nothing to cover, so it is vacuously satisfied. `skill:` suites always have
+            # holdout >= 1 enforced by `validate_target_suite`, so `expected` can only be empty
+            # here for suites that legitimately have no holdout scenarios at all.
+            continue
         event_type = "run_completed" if suite_id == target else "regression_run_completed"
         matching = [
             event

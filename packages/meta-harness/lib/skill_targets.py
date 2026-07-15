@@ -117,8 +117,15 @@ def resolve_skill_impacts(
     """Resolve skills whose baseline closure intersects the candidate overlay."""
     root = root.resolve()
     composition_dir = root / "facets" / "compositions" / "skills"
-    if not composition_dir.is_dir() or composition_dir.is_symlink():
+    if composition_dir.is_symlink():
         raise SkillTargetError(f"skill composition directory is missing: {composition_dir}")
+    if composition_dir.exists() and not composition_dir.is_dir():
+        raise SkillTargetError(f"skill composition directory is missing: {composition_dir}")
+    # Non-facets-based deployments (no facets/compositions/skills at all) have no skill
+    # targets to resolve; treat as zero impact instead of failing evaluate/promote. Irregular
+    # cases (symlink, or a regular file at this path) are still rejected above. `glob()` on a
+    # missing directory below returns an empty iterator (no OSError), so `resolutions` stays
+    # empty and this naturally yields a deterministic empty-input SkillImpactContext.
 
     resolutions: list[SkillTargetResolution] = []
     for path in sorted(composition_dir.glob("*.yaml"), key=lambda item: item.name):

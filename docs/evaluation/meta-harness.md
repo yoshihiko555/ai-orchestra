@@ -100,6 +100,10 @@
 - [ ] EV-58（正常 / must）: `regression_run_completed` と `evaluation_completed` は append 前に schema 検証され、回帰 attempt ごとに own run と独立した worktree を作成・破棄する。同名 scenario は `(suite_id, scenario_id)` で区別する — 根拠: 詳細設計 §1-2、§2-1、§4-1
 - N/A: hook 型の類型別観点（PreToolUse/PostToolUse ブロック挙動等）は本パッケージが hook を持たないため非該当。config-loading への依存のみが hook 型的性質であり、EV-22 でカバーする
 
+### 運用メモ
+
+- `evaluation_completed` は b92dd84 で新規追加されたイベント種別のため、それ以前に評価済みの既存候補は ledger にこのイベントを持たない。`loop_state.current_run_events`（loop 再開判定）はこの種の候補を旧来判定（attempt 完了性 + error verdict 無し）へ自動フォールバックするため壊れない。一方 `meta_harness_common.aggregate_run_points`（frontier 適格性）は意図的にフォールバックしない。own run 完了後・`evaluation_completed` 記録前に中断したバッチは、旧 ledger の未移行候補と ledger 上区別できないため、フォールバックすると EV-54 の中断バッチ排除ゲートが弱まってしまう。既存候補を frontier 対象に戻したい場合は、一度 `evaluate` を再実行して `evaluation_completed` を記録すること。
+
 ## 5. テストレビュー判断基準（パッケージ固有）
 
 - reward hacking 対策系のテスト（evaluator/シナリオの hash 照合、judge の `--bare` 隔離）は、

@@ -285,6 +285,15 @@ def current_run_events(
         _attempt_group_complete(by_scenario.get(scenario_id, []), repeat)
         for scenario_id in expected_ids
     )
+    if not mh.candidate_has_evaluation_completed(events, cand_id):
+        # Legacy ledger fallback (pre-b92dd84): this candidate predates the
+        # evaluation_completed event and can never gain one retroactively, so require only
+        # attempt completeness + no error verdict, matching the pre-cross-skill-regression
+        # behavior. Re-running `evaluate` for the candidate records evaluation_completed and
+        # moves it onto the strict check below.
+        if not complete or any(event.get("verdict") == "error" for event in latest):
+            return []
+        return latest
     evaluation = mh.latest_evaluation_completed(
         events,
         cand_id,

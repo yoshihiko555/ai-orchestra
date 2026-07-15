@@ -2886,8 +2886,7 @@ def _append_evaluation_events(
     for event in events:
         _validate_ledger_event(schema_dir, event)
     with mh.store_lock(main_root, config):
-        for event in events:
-            mh.append_ledger_event(main_root, config, event)
+        mh.append_ledger_events_atomically(main_root, config, events)
 
 
 def _combined_result_verdict(results: list[dict]) -> str:

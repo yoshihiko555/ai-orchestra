@@ -864,6 +864,52 @@ def test_promote_requires_complete_affected_holdouts_for_claude_harness(
     )
 
 
+def test_promote_rejects_missing_own_holdout_for_claude_harness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """claude-harness (non-``skill:``) ターゲットの own holdout coverage が suites 構築から
+    漏れていた回帰を検知する。own_run_ids が指す run が ledger に存在しなくても、regression
+    suite の coverage さえ完全なら promote を誤って許可してしまうバグの再発防止テスト。
+    """
+    target = "claude-harness"
+    evaluator_hash = "d" * 64
+    regression = _holdout_regression_event(
+        run_id="run-issue-holdout",
+        suite_id=REGRESSION_TARGET,
+        verdict="pass",
+        suite_hash="e" * 64,
+        evaluator_hash=evaluator_hash,
+        target=target,
+    )
+    summary = {
+        "evaluation_id": EVALUATION_ID,
+        "own_run_ids": ["run-missing-own-holdout"],
+        "regression_results": [{"suite_id": REGRESSION_TARGET, "run_ids": [regression["run_id"]]}],
+    }
+    monkeypatch.setattr(
+        prm.ev,
+        "validate_target_suite",
+        lambda _package, _schema, suite_id: [Path(f"{suite_id}.yaml")],
+    )
+    monkeypatch.setattr(
+        prm.ev,
+        "load_scenario",
+        lambda path, _schema: {
+            "id": "holdout" if "claude-harness" in str(path) else "shared-holdout",
+            "holdout": True,
+        },
+    )
+    monkeypatch.setattr(
+        prm.ev,
+        "compute_scenario_hash",
+        lambda path: ("b" if "claude-harness" in str(path) else "f") * 64,
+    )
+    config = copy.deepcopy(mh.DEFAULTS)
+    config["evaluate"]["repeat_frontier"] = 1
+
+    assert not prm._evaluation_covers_current_holdouts([regression], summary, target, config)
+
+
 def test_promote_detects_unverified_suite_becoming_available(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

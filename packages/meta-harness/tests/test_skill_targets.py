@@ -228,6 +228,20 @@ class TestSkillImpactResolution:
 
         assert impact.impacted_targets == ()
 
+    def test_missing_composition_directory_returns_empty_impact(self, tmp_path: Path) -> None:
+        """facets ベース構成を持たない既存導入先（facets/compositions/skills が存在しない）は
+        SkillTargetError で落ちず、空の SkillImpactContext を返す（regression.enabled 既定 true
+        化による既存導入先クラッシュの回帰防止）。
+        """
+        impact = skill_targets.resolve_skill_impacts(
+            tmp_path,
+            ["facets/policies/cli-language.md"],
+            candidate_target="claude-harness",
+        )
+
+        assert impact.impacted_targets == ()
+        assert len(impact.input_hash) == 64
+
 
 class TestSkillTargetSafety:
     def test_inline_instruction_does_not_become_a_path(self, tmp_path: Path) -> None:
