@@ -1,6 +1,8 @@
 # orchex CLI（orchestra-manager）評価セット
 
 **対象**: `scripts/orchestra-manager.py`（CLI 本体）+ `scripts/lib/*.py`（`orchestra_hooks` / `orchestra_context` / `sync_engine` / `facet_builder` / `orchestra_models` / `gitignore_sync` / `toml_merge` / `agent_model_patch` / `settings_io` / `scaffold`）+ `ai_orchestra/cli.py`（`pip install orchex` 経由のエントリポイント）
+**対象テストファイル（SSOT、参考）**: `tests/unit/test_orchestra_manager_core.py`, `test_orchestra_manager_context.py`, `test_orchestra_manager_force_flag.py`, `test_orchestra_manager_gitignore.py`, `test_orchestra_manager_run_passthrough.py`, `test_ai_orchestra_cli.py`
+**既知の制約（テスト所有権マッピング）**: `packages/quality-gates/hooks/evaluation-set-checker.py` は `packages/<pkg>/tests/` ディレクトリ名、またはトップレベル `tests/` 配下ファイル名のパッケージ名トークンマッチでのみ担当パッケージを判定する。`scripts/orchestra-manager.py`/`ai_orchestra/cli.py` は `packages/` 配下のディレクトリではないため自動識別されず、上記テストファイル群は原則ヒットしない（例外: `test_orchestra_manager_core.py` は `core` パッケージへの誤マッチが起き得る）。テスト変更時の本評価セットとの突合は、上記「対象テストファイル」一覧を人手で参照して行う必要がある。checker 側のマッピング拡張は別 Issue で対応する
 **類型**: CLI ツール型
 **作成日**: 2026-07-15
 **最終レビュー日**: 未レビュー（本 PR で新規作成。人間レビュー後に更新する）
@@ -22,7 +24,7 @@ orchex CLI（`scripts/orchestra-manager.py`、配布後は `orchex` / `ai-orches
 | 構成要素                          | 入力                                                      | 期待する出力                                                     | 副作用                                                                                     |
 | --------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
 | `list`                            | なし                                                        | パッケージ一覧を標準出力                                            | なし（読み取り専用）                                                                          |
-| `status [--project]`              | プロジェクトパス                                            | 各パッケージの installed/active/partial/not_found 状態表              | なし（読み取り専用）                                                                          |
+| `status [--project]`              | プロジェクトパス                                            | 各パッケージの installed/active/partial/`not found`（スペース区切り）状態表 | なし（読み取り専用）                                                                          |
 | `install <package...> [--dry-run] [--force]` | パッケージ名（複数可）・プロジェクトパス                    | インストール結果の標準出力                                          | `.claude/` 配下への config/agents/context ファイルコピー、`settings.local.json` へのフック登録、`orchestra.json` 更新（installed_packages・file_hashes） |
 | `uninstall <package> [--dry-run]` | パッケージ名                                                | アンインストール結果の標準出力                                       | 未変更配布ファイルの削除、フック解除、`orchestra.json` 更新                                    |
 | `enable <package>` / `disable <package>` | パッケージ名                                                | 有効化/無効化結果                                                    | `settings.local.json` のフックエントリ追加/削除のみ（`installed_packages` は不変）             |
@@ -31,7 +33,7 @@ orchex CLI（`scripts/orchestra-manager.py`、配布後は `orchex` / `ai-orches
 | `context build [--dry-run]`       | `templates/context/*.md`                                   | `templates/project/CLAUDE.md` 等の生成物                             | テンプレートソースからの再生成                                                                 |
 | `context check`                   | 生成物 vs テンプレートソース                                | ドリフト有無（bool、CLI は非ゼロ終了で通知）                          | なし（読み取り専用）                                                                          |
 | `context sync --project [--dry-run] [--force]` | プロジェクトパス                                            | 同期結果の標準出力                                                   | 欠落ファイルの作成（`--force` 時のみ既存ファイル上書き）、legacy 生成物（旧 `GEMINI.md` 等）の削除 |
-| `proxy stop` / `proxy status`     | プロジェクトパス                                            | mcp-proxy の停止結果 / 状態表示                                      | cocoindex `proxy_manager` への委譲（cocoindex 未導入時はエラー終了）                            |
+| `proxy stop` / `proxy status`     | プロジェクトパス                                            | mcp-proxy の停止結果 / 状態表示                                      | cocoindex `proxy_manager` への委譲（`installed_packages` ではなく config ファイルが発見できない場合にエラー終了。詳細は EV-29）    |
 | `facet build [--name] [--target]` / `facet extract` | composition 名（任意）・プロジェクトパス                    | SKILL.md 等の生成結果                                                | `.claude/skills/` 等への生成物書き込み                                                        |
 | `meta <args...>`                  | meta-harness への引数                                        | meta-harness の標準出力をそのまま透過                                | `AI_ORCHESTRA_DIR` を継承した subprocess 実行、終了コードをそのまま返す                        |
 | `setup [<preset>] [--project] [--dry-run]` | preset 名（省略可）                                          | preset 省略時は一覧表示、指定時はインストール結果                     | 解決済みパッケージ群を依存順で `install` するのと同じ副作用                                    |
@@ -46,7 +48,7 @@ orchex CLI（`scripts/orchestra-manager.py`、配布後は `orchex` / `ai-orches
 - [ ] EV-05（異常 / must）: 依存関係に循環が検出された場合、`resolve_install_order` は警告を出力し元の指定順にフォールバックする（クラッシュしない） — 根拠: 実装挙動
 - [ ] EV-06（正常 / must）: プロジェクトが未初期化の状態で `install` を実行すると、`init` を自動実行してから続行する — 根拠: 実装挙動
 - [ ] EV-07（異常 / should）: 依存パッケージが未インストールの場合、`install` は警告を出すが処理はブロックせず継続する — 根拠: 実装挙動
-- [ ] EV-08（異常 / must）: 配布済み **config** ファイルがインストール後にユーザーに変更されている場合、再インストール時は配布時ハッシュとの比較により上書きをスキップし警告する — 根拠: 実装挙動（`_copy_config_if_safe`。`pkg.config` のうち `config/` プレフィックスのファイルのみが対象）。**既知のギャップ**: agents ファイルは `run_initial_sync`/`sync_packages` 経由で `needs_sync()`（mtime 比較のみ）により同期され、config と同等のハッシュガードは適用されない
+- [ ] EV-08（異常 / must）: 配布済み **config** ファイルがインストール後にユーザーに変更されている場合、再インストール時は配布時ハッシュとの比較により上書きをスキップし警告する — 根拠: 実装挙動（`_copy_config_if_safe`。`pkg.config` のうち `config/` プレフィックスのファイルのみが対象）。**既知のギャップ**: agents ファイルは `run_initial_sync`/`sync_packages` 経由で `needs_sync()`（mtime 比較のみ）により同期され、config と同等のハッシュガードは適用されない。**既知のギャップ（追加）**: `install()` は `_copy_config_if_safe` によるハッシュ保護コピーの直後に、同一呼び出し内で `run_initial_sync()` を実行する。`run_initial_sync()` は `("agents", "config")` の両カテゴリを対象に独立した `needs_sync()`（mtime 比較のみ、ハッシュ比較なし）で再同期するため、ハッシュ保護によりスキップされたはずの config ファイルも、配布元の mtime がターゲットより新しければこの後続ステップで上書きされ得る（`scripts/orchestra-manager.py` `run_initial_sync`）
 - [ ] EV-09（正常 / must）: 未変更の配布ファイルは再インストール時に最新版へ更新される — 根拠: 実装挙動
 - [ ] EV-10（異常 / must）: `uninstall` は配布時ハッシュと現在の内容が一致するファイルのみを削除し、ユーザー変更済み・ハッシュ未記録のファイルは削除せず警告する（安全側スキップ） — 根拠: 実装挙動（`_remove_if_unchanged`）
 - [ ] EV-11（境界 / must）: `.codex/` 配下配布物の削除は、manifest の target が絶対パスまたは `../` でプロジェクト外を指す場合に削除をスキップし警告する — 根拠: 実装挙動（`_remove_codex_file_if_unchanged` の `_is_within_project` 境界チェック）
@@ -60,7 +62,7 @@ orchex CLI（`scripts/orchestra-manager.py`、配布後は `orchex` / `ai-orches
 - [ ] EV-19（正常 / must）: `context sync --project` は欠落ファイルを作成し、`--force` 無指定では既存ファイルを保持する。`--force` 指定時のみ既存ファイルを上書きする — 根拠: 実装挙動
 - [ ] EV-20（境界 / must）: `context sync` はシンボリックリンクされたターゲット、およびプロジェクト外を指すシンボリックリンク親ディレクトリへの書き込みをスキップする — 根拠: 実装挙動（symlink escape 防御）
 - [ ] EV-21（正常 / must）: 旧命名の生成物（例: 生成された `GEMINI.md`）は `sync` 時に削除されるが、手書きの `GEMINI.md` は保持される — 根拠: 実装挙動（agy 移行に伴う後方互換）
-- [ ] EV-22（正常 / must）: config 同期（`install`/`context sync`）はベース設定ファイルのコピーのみを行い、`*.local.yaml`/`*.local.json` は書き換えずそのまま保持する。`config-loading` ルールが定めるベース設定と local override のディープマージ（local 未定義キーはベース値を継続使用）は、同期時ではなく読み込み時に消費側の `hook_common.load_package_config()` が行う — 根拠: 実装挙動（`_copy_config_if_safe`、`packages/core/hooks/hook_common.py` の `deep_merge`/`load_package_config`）、`.claude/rules/config-loading.md`
+- [ ] EV-22（正常 / must）: config 同期（`install`）はベース設定ファイルのコピーのみを行い、`*.local.yaml`/`*.local.json` は書き換えずそのまま保持する。`config-loading` ルールが定めるベース設定と local override のディープマージ（local 未定義キーはベース値を継続使用）は、同期時ではなく読み込み時に消費側の `hook_common.load_package_config()` が行う — 根拠: 実装挙動（`_copy_config_if_safe`、`packages/core/hooks/hook_common.py` の `deep_merge`/`load_package_config`）、`.claude/rules/config-loading.md`。**注記**: `context sync`（`orchestra_context.py` の `context_sync`）は `.claude/config/**` を一切扱わない。トップレベルの `CLAUDE.md`/`AGENTS.md` 等（`CONTEXT_SPECS`、manifest の `context_files` 由来）の同期と legacy `GEMINI.md` の cleanup のみが対象であり、本 EV の「config 同期」には含まれない
 - [ ] EV-23（正常 / must）: 旧 `gemini.enabled: false` / `tool: gemini` は `antigravity.enabled: false` / `tool: antigravity` として読み替えられ、明示的な `antigravity` 設定を上書きしない — 根拠: `.claude/rules/antigravity-delegation.md`（移行エイリアス節）
 - [ ] EV-24（異常 / must）: sync の stale ファイル削除は、配布物として同期しなくなったファイルのみを対象とし、`*.local.*` および facet 管理下のファイル・参照は削除しない — 根拠: 実装挙動
 
