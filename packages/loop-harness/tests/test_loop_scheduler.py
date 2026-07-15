@@ -10,8 +10,9 @@ monkeypatch, and worker spawning is monkeypatched to fake `Popen`-like objects.
 
 from __future__ import annotations
 
+import fcntl
 import json
-import re
+import os
 import shlex
 import shutil
 import subprocess
@@ -1725,9 +1726,13 @@ def test_render_launchd_plist_honors_explicit_python_bin_override(tmp_path: Path
     assert sys.executable not in plist
 
 
-def test_render_cron_entry_contains_pgrep_guard_and_project_path(tmp_path: Path) -> None:
+def test_render_cron_entry_contains_is_alive_guard_and_project_path(tmp_path: Path) -> None:
+    """Issue #216: the old `pgrep -f` liveness guard is replaced by an `is-alive` pidfile/flock
+    probe (see `is_scheduler_alive`) - the same invocation prefix (`<python> <script> --project
+    <project>`) used for the fallback spawn, with an `is-alive` subcommand appended."""
     entry = scheduler.render_cron_entry(str(tmp_path))
-    assert "pgrep -f" in entry
+    assert "pgrep" not in entry
+    assert "is-alive" in entry
     assert str(tmp_path.resolve()) in entry
     assert entry.strip().startswith("*/5 * * * *")
 
@@ -1791,7 +1796,7 @@ def test_main_print_launchd_and_print_cron_forward_definition(
 
 
 # --------------------------------------------------------------------------------------------
-# multi-project pgrep guard / launchd label uniqueness (#H16)
+# multi-project launchd label uniqueness (#H16)
 # --------------------------------------------------------------------------------------------
 
 
@@ -1818,44 +1823,20 @@ def test_render_launchd_plist_label_stable_for_same_project(tmp_path: Path) -> N
     assert plist_1 == plist_2
 
 
-def test_render_cron_entry_pgrep_pattern_includes_project_path(tmp_path: Path) -> None:
-    """#H16: the pgrep guard must match on `--project <path>` too, not just the script path,
-    so a second project sharing the same `loop_scheduler.py` script cannot be mistaken for
-    this project's already-running scheduler.
-
-    The project path is embedded `re.escape`-d (SM2, since `pgrep -f` treats its pattern as a
-    regex), so this checks for the escaped form rather than the raw path string."""
+def test_render_cron_entry_is_alive_command_includes_project_path(tmp_path: Path) -> None:
+    """#H16 (carried over to Issue #216's `is-alive` guard): the liveness probe must be scoped
+    to `--project <path>` too, not just the script path, so a second project sharing the same
+    `loop_scheduler.py` script cannot be mistaken for this project's already-running
+    scheduler."""
     entry = scheduler.render_cron_entry(str(tmp_path))
-    pgrep_index = entry.index("pgrep -f ")
-    pgrep_arg_end = entry.index(" || ", pgrep_index)
-    pgrep_arg = entry[pgrep_index + len("pgrep -f ") : pgrep_arg_end]
-    assert "--project" in pgrep_arg
-    assert re.escape(str(tmp_path.resolve())) in pgrep_arg
+    is_alive_index = entry.index("is-alive")
+    is_alive_start = entry.rindex(" && ", 0, is_alive_index)
+    is_alive_command = entry[is_alive_start + len(" && ") : is_alive_index + len("is-alive")]
+    assert "--project" in is_alive_command
+    assert str(tmp_path.resolve()) in is_alive_command
 
 
-def test_render_cron_entry_pgrep_pattern_escapes_regex_metacharacters(tmp_path: Path) -> None:
-    """SM2: `pgrep -f <pattern>` treats <pattern> as a POSIX extended regular expression, not
-    a literal string. An unescaped project path containing ERE metacharacters (all legal in a
-    filesystem path) would either fail to match at all (e.g. an unbalanced `(`) or match
-    something other than the literal path intended."""
-    project = tmp_path / "issue (42)+x[y]?a|b.c^d$e"
-    project.mkdir()
-
-    entry = scheduler.render_cron_entry(str(project))
-
-    pgrep_index = entry.index("pgrep -f ")
-    pgrep_arg_end = entry.index(" || ", pgrep_index)
-    pgrep_arg = entry[pgrep_index + len("pgrep -f ") : pgrep_arg_end]
-    # The raw (unescaped) path must not appear verbatim in the pgrep pattern...
-    assert str(project.resolve()) not in pgrep_arg
-    # ...but its regex-escaped form must, so `pgrep -f` matches it as a literal string.
-    assert re.escape(str(project.resolve())) in pgrep_arg
-    # The whole rendered pgrep pattern must itself compile as a valid regex (an unescaped
-    # unbalanced `(` in the raw path would otherwise raise `re.error` here).
-    re.compile(pgrep_arg.strip("'\""))
-
-
-def test_render_cron_entry_pgrep_pattern_differs_across_projects(tmp_path: Path) -> None:
+def test_render_cron_entry_is_alive_command_differs_across_projects(tmp_path: Path) -> None:
     project_a = tmp_path / "a"
     project_b = tmp_path / "b"
     project_a.mkdir()
@@ -1864,127 +1845,221 @@ def test_render_cron_entry_pgrep_pattern_differs_across_projects(tmp_path: Path)
     entry_a = scheduler.render_cron_entry(str(project_a))
     entry_b = scheduler.render_cron_entry(str(project_b))
 
-    def _pgrep_arg(entry: str) -> str:
-        start = entry.index("pgrep -f ")
+    def _is_alive_command(entry: str) -> str:
+        start = entry.rindex(" && ", 0, entry.index("is-alive"))
         end = entry.index(" || ", start)
         return entry[start:end]
 
-    assert _pgrep_arg(entry_a) != _pgrep_arg(entry_b)
+    assert _is_alive_command(entry_a) != _is_alive_command(entry_b)
 
 
 # --------------------------------------------------------------------------------------------
-# definition id in cron pgrep guard / launchd label uniqueness (J4/J6)
+# definition id in cron `is-alive` guard / launchd label uniqueness (J4/J6, Issue #216)
 # --------------------------------------------------------------------------------------------
 
 
-def test_render_cron_entry_pgrep_pattern_includes_definition_id_for_non_default(
+def test_render_cron_entry_is_alive_command_includes_definition_id_for_non_default(
     tmp_path: Path,
 ) -> None:
-    """J4: without the definition id in the pgrep pattern, an already-running scheduler for a
-    *different* loop definition in the same project is mistaken for "this definition's
-    scheduler is already alive", and the cron entry never starts the requested definition's
-    own scheduler."""
+    """J4 (carried over to Issue #216's `is-alive` guard): without the definition id, an
+    already-running scheduler for a *different* loop definition in the same project would be
+    mistaken for "this definition's scheduler is already alive", and the cron entry would
+    never start the requested definition's own scheduler."""
     entry = scheduler.render_cron_entry(str(tmp_path), definition_id="custom-loop")
-    pgrep_index = entry.index("pgrep -f ")
-    pgrep_arg_end = entry.index(" || ", pgrep_index)
-    pgrep_arg = entry[pgrep_index + len("pgrep -f ") : pgrep_arg_end]
-    assert "--definition" in pgrep_arg
-    # SM2: embedded `re.escape`-d, mirroring `script`/`project` above (a hyphen is escaped too).
-    assert re.escape("custom-loop") in pgrep_arg
+    is_alive_index = entry.index("is-alive")
+    is_alive_start = entry.rindex(" && ", 0, is_alive_index)
+    is_alive_command = entry[is_alive_start + len(" && ") : is_alive_index + len("is-alive")]
+    assert "--definition" in is_alive_command
+    assert "custom-loop" in is_alive_command
 
 
-def test_render_cron_entry_pgrep_pattern_omits_definition_id_for_default(
+def test_render_cron_entry_is_alive_command_omits_definition_id_for_default(
     tmp_path: Path,
 ) -> None:
     entry = scheduler.render_cron_entry(str(tmp_path))
-    pgrep_index = entry.index("pgrep -f ")
-    pgrep_arg_end = entry.index(" || ", pgrep_index)
-    pgrep_arg = entry[pgrep_index + len("pgrep -f ") : pgrep_arg_end]
-    assert "--definition" not in pgrep_arg
+    is_alive_index = entry.index("is-alive")
+    is_alive_start = entry.rindex(" && ", 0, is_alive_index)
+    is_alive_command = entry[is_alive_start + len(" && ") : is_alive_index + len("is-alive")]
+    assert "--definition" not in is_alive_command
 
 
-def test_render_cron_entry_pgrep_pattern_differs_across_definitions(tmp_path: Path) -> None:
-    """J4: two definitions in the same project must not collide on the same liveness guard,
-    or a running scheduler for one definition would block the other's cron entry from ever
+def test_render_cron_entry_is_alive_command_differs_across_definitions(tmp_path: Path) -> None:
+    """J4: two definitions in the same project must not collide on the same liveness guard, or
+    a running scheduler for one definition would block the other's cron entry from ever
     starting its own scheduler."""
     entry_default = scheduler.render_cron_entry(str(tmp_path))
     entry_custom = scheduler.render_cron_entry(str(tmp_path), definition_id="custom-loop")
 
-    def _pgrep_arg(entry: str) -> str:
-        start = entry.index("pgrep -f ")
+    def _is_alive_command(entry: str) -> str:
+        start = entry.rindex(" && ", 0, entry.index("is-alive"))
         end = entry.index(" || ", start)
         return entry[start:end]
 
-    assert _pgrep_arg(entry_default) != _pgrep_arg(entry_custom)
+    assert _is_alive_command(entry_default) != _is_alive_command(entry_custom)
+
+
+def test_render_cron_entry_is_alive_and_fallback_share_project_and_definition_args(
+    tmp_path: Path,
+) -> None:
+    """Issue #216: the `is-alive` probe and the `||` fallback spawn are built from the same
+    `--project`/`--definition` argument string (`project_args`), so - unlike the old
+    `pgrep_pattern`, a separately-constructed regex that J4 had to keep in sync by hand - there
+    is no separate pattern that can drift out of sync with the actual fallback invocation."""
+    entry = scheduler.render_cron_entry(str(tmp_path), definition_id="custom-loop")
+    project_args = f"--project {shlex.quote(str(tmp_path.resolve()))} --definition custom-loop"
+    assert entry.count(project_args) == 2
 
 
 # --------------------------------------------------------------------------------------------
-# cron pgrep guard: self/ancestor-PID exclusion (Issue #219 P2-3, #13 follow-up)
+# scheduler single-instance guard: pidfile path (Issue #216)
 # --------------------------------------------------------------------------------------------
 
 
-def _extract_pgrep_guard_filter_suffix(entry: str) -> str:
-    """Return the ` | grep -vxF -e "$$" -e "$PPID" | grep -q .` suffix `render_cron_entry`
-    appends after the `pgrep -f '<pattern>'` clause, verbatim as rendered (not hand-copied), so
-    the following shell-semantics tests exercise the *actual* rendered text."""
-    filter_start = entry.index("| grep -vxF")
-    guard_end = entry.index(" || ", filter_start)
-    return entry[filter_start:guard_end]
+def test_scheduler_pidfile_path_default_definition(tmp_path: Path) -> None:
+    path = scheduler.scheduler_pidfile_path(str(tmp_path))
+    assert path == tmp_path.resolve() / ".claude" / "loop" / "scheduler.pid"
 
 
-def test_render_cron_entry_pgrep_guard_includes_self_and_parent_pid_exclusion_filter(
+def test_scheduler_pidfile_path_non_default_definition_suffixes_filename(
     tmp_path: Path,
 ) -> None:
-    """Issue #219 P2-3: the rendered pgrep guard clause must pipe through a `$$`/`$PPID`
-    exclusion filter before the `|| <fallback>`, so the wrapping `/bin/sh -c` cron process's
-    own argv (which literally contains the fallback command's text, and therefore always
-    self-matches the raw `pgrep -f <pattern>` alone) cannot make a dead scheduler look alive
-    forever."""
-    entry = scheduler.render_cron_entry(str(tmp_path))
-    filter_suffix = _extract_pgrep_guard_filter_suffix(entry)
-    assert filter_suffix == '| grep -vxF -e "$$" -e "$PPID" | grep -q .'
+    """Scoped per (project, definition_id) - not per-project alone - mirroring J4's cron
+    liveness-pattern precedent: concurrent schedulers for different `--definition` values in
+    the same project are an intentional, supported configuration and must not mutually
+    exclude each other."""
+    path = scheduler.scheduler_pidfile_path(str(tmp_path), definition_id="custom-loop")
+    assert path == tmp_path.resolve() / ".claude" / "loop" / "scheduler.custom-loop.pid"
+    assert path != scheduler.scheduler_pidfile_path(str(tmp_path))
 
 
-def test_pgrep_guard_filter_falls_back_when_only_the_wrapper_shells_own_pid_matched(
-    tmp_path: Path,
+def test_scheduler_pidfile_path_rejects_unsafe_definition_id(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="Unsafe"):
+        scheduler.scheduler_pidfile_path(str(tmp_path), definition_id="../escape")
+
+
+# --------------------------------------------------------------------------------------------
+# scheduler single-instance guard: flock acquisition + liveness probe (Issue #216)
+# --------------------------------------------------------------------------------------------
+
+
+def test_acquire_scheduler_lock_writes_pid_and_returns_open_handle(tmp_path: Path) -> None:
+    handle = scheduler._acquire_scheduler_lock(str(tmp_path), scheduler.DEFAULT_DEFINITION_ID)
+    try:
+        assert handle is not None
+        path = scheduler.scheduler_pidfile_path(str(tmp_path))
+        written = json.loads(path.read_text(encoding="utf-8"))
+        assert written["pid"] == os.getpid()
+        assert "started_at" in written
+    finally:
+        if handle is not None:
+            handle.close()
+
+
+def test_acquire_scheduler_lock_returns_none_when_already_held(tmp_path: Path) -> None:
+    path = scheduler.scheduler_pidfile_path(str(tmp_path))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    probe_fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    fcntl.flock(probe_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        result = scheduler._acquire_scheduler_lock(str(tmp_path), scheduler.DEFAULT_DEFINITION_ID)
+        assert result is None
+    finally:
+        os.close(probe_fd)
+
+
+def test_acquire_scheduler_lock_is_scoped_per_definition(tmp_path: Path) -> None:
+    """Holding the default definition's lock must not block a concurrent scheduler for a
+    different `--definition` in the same project (J4-equivalent scoping, Issue #216)."""
+    default_handle = scheduler._acquire_scheduler_lock(
+        str(tmp_path), scheduler.DEFAULT_DEFINITION_ID
+    )
+    try:
+        custom_handle = scheduler._acquire_scheduler_lock(str(tmp_path), "custom-loop")
+        try:
+            assert custom_handle is not None
+        finally:
+            if custom_handle is not None:
+                custom_handle.close()
+    finally:
+        if default_handle is not None:
+            default_handle.close()
+
+
+def test_is_scheduler_alive_false_when_no_scheduler_running(tmp_path: Path) -> None:
+    assert scheduler.is_scheduler_alive(str(tmp_path)) is False
+
+
+def test_is_scheduler_alive_true_when_lock_held(tmp_path: Path) -> None:
+    handle = scheduler._acquire_scheduler_lock(str(tmp_path), scheduler.DEFAULT_DEFINITION_ID)
+    assert handle is not None
+    try:
+        assert scheduler.is_scheduler_alive(str(tmp_path)) is True
+    finally:
+        handle.close()
+
+
+def test_is_scheduler_alive_scoped_per_definition(tmp_path: Path) -> None:
+    handle = scheduler._acquire_scheduler_lock(str(tmp_path), scheduler.DEFAULT_DEFINITION_ID)
+    assert handle is not None
+    try:
+        assert scheduler.is_scheduler_alive(str(tmp_path), definition_id="custom-loop") is False
+    finally:
+        handle.close()
+
+
+def test_is_scheduler_alive_does_not_leave_the_probe_holding_the_lock(tmp_path: Path) -> None:
+    """The probe must release its own flock attempt immediately - otherwise a dead scheduler's
+    stale pidfile would become permanently "alive" the moment anything ever probes it."""
+    assert scheduler.is_scheduler_alive(str(tmp_path)) is False
+    handle = scheduler._acquire_scheduler_lock(str(tmp_path), scheduler.DEFAULT_DEFINITION_ID)
+    assert handle is not None
+    handle.close()
+
+
+# --------------------------------------------------------------------------------------------
+# run_scheduler / CLI `is-alive`: single-instance enforcement (Issue #216)
+# --------------------------------------------------------------------------------------------
+
+
+def test_run_scheduler_exits_immediately_when_lock_already_held(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Real shell-semantics regression for the #13 self-match bug: when `pgrep -f` finds only
-    the wrapping shell's own PID (simulating the documented failure mode -- the cron wrapper's
-    argv contains the fallback command's text, so it always self-matches the bare pattern),
-    the exclusion filter must reduce that to "nothing found" and let the `||` fallback run.
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    path = scheduler.scheduler_pidfile_path(project_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    probe_fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    fcntl.flock(probe_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
-    Piping a fixed, single-line `printf` in place of the real `pgrep -f <pattern>` call lets
-    this test deterministically control what pgrep "found" without depending on this test
-    process's own OS/pgrep visibility semantics (observed to vary across environments) or
-    spawning a real scheduler subprocess."""
-    entry = scheduler.render_cron_entry(str(tmp_path))
-    filter_suffix = _extract_pgrep_guard_filter_suffix(entry)
-    # `$PPID` inside the `sh -c` subshell below is this pipeline's own parent -- the outer
-    # shell running this test command -- exactly mirroring how the real bug's only "match" is
-    # the cron wrapper shell (this subshell's own parent), not a genuinely different process.
-    command = f'printf "%s\\n" "$PPID" {filter_suffix} && echo REAL_MATCH || echo FALLBACK_RAN'
-    completed = subprocess.run(
-        ["sh", "-c", command], capture_output=True, text=True, timeout=10, check=False
+    cycle_calls: list[int] = []
+    monkeypatch.setattr(
+        scheduler, "run_cycle", lambda runtime, project, definition: cycle_calls.append(1)
     )
-    assert completed.stdout.strip() == "FALLBACK_RAN"
+
+    try:
+        scheduler.run_scheduler(project_dir, max_cycles=3)
+    finally:
+        os.close(probe_fd)
+
+    assert cycle_calls == []
+    assert "already running" in capsys.readouterr().err
 
 
-def test_pgrep_guard_filter_skips_fallback_when_a_genuinely_different_pid_remains(
-    tmp_path: Path,
-) -> None:
-    """The exclusion filter must not blanket-suppress every match -- a PID that is neither this
-    shell's own `$$` nor its `$PPID` (a genuinely different, still-alive scheduler process)
-    must still be recognized, so the guard does not spawn a duplicate scheduler."""
-    entry = scheduler.render_cron_entry(str(tmp_path))
-    filter_suffix = _extract_pgrep_guard_filter_suffix(entry)
-    command = (
-        f'printf "%s\\n%s\\n" "$PPID" 999999 {filter_suffix} && '
-        "echo REAL_MATCH || echo FALLBACK_RAN"
-    )
-    completed = subprocess.run(
-        ["sh", "-c", command], capture_output=True, text=True, timeout=10, check=False
-    )
-    assert completed.stdout.strip() == "REAL_MATCH"
+def test_main_is_alive_returns_0_when_a_scheduler_holds_the_lock(tmp_path: Path) -> None:
+    path = scheduler.scheduler_pidfile_path(str(tmp_path))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    probe_fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    fcntl.flock(probe_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        exit_code = scheduler.main(["--project", str(tmp_path), "is-alive"])
+    finally:
+        os.close(probe_fd)
+    assert exit_code == 0
+
+
+def test_main_is_alive_returns_1_when_no_scheduler_is_running(tmp_path: Path) -> None:
+    exit_code = scheduler.main(["--project", str(tmp_path), "is-alive"])
+    assert exit_code == 1
 
 
 def _launchd_label(rendered_plist: str) -> str:
@@ -2142,7 +2217,7 @@ def test_main_print_launchd_and_print_cron(
 
     exit_code = scheduler.main(["--project", str(tmp_path), "print-cron"])
     assert exit_code == 0
-    assert "pgrep -f" in capsys.readouterr().out
+    assert "is-alive" in capsys.readouterr().out
 
 
 def test_main_print_launchd_creates_log_dir(

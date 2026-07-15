@@ -1102,7 +1102,10 @@ cron 側は「落ちていたら起動し直す」監視役に留める）:
   liveness には構造的な限界があり、確実な単一起動保証には pidfile/flock ベースの liveness
   チェックへの移行が必要（`loop_scheduler.py` 起動時に自身で pidfile を書き、cron 側はそれを
   見る方式等）。テンプレートレンダリングの修正で閉じられる範囲を超えるため、本レビューでは
-  現状のまま受容し、別 Issue でのフォローアップを提案する。
+  現状のまま受容し、別 Issue でのフォローアップを提案する。**2026-07-15 追記（Issue #216 で
+  pidfile/flock 方式へ全面置換。詳細は本節末尾の新規記述を参照）**: 上記の pgrep 自己一致問題
+  および `$$`/`$PPID` 除外フィルタ（#219 P2-3）は、`is-alive` サブコマンドの pidfile/flock
+  liveness チェックへの移行により解消・撤去された。
 - **launchd plist の CR/制御文字 fail-closed（3巡目レビュー反映。RM3）**: 上記 cron の CR/LF
   fail-closed（SN-cron）は launchd 側（`render_launchd_plist`）には未適用だった。`&`/`<`/`>` は
   `xml_escape` で escape 済みだが、それだけでは制御文字を防げない: literal な CR はそれ自体は
@@ -1129,6 +1132,25 @@ cron 側は「落ちていたら起動し直す」監視役に留める）:
   ロードすると 1 つ目と衝突し、片方の definition の label キューが永久にスケジュールされない。
   `definition_id` が `DEFAULT_DEFINITION_ID` と異なる場合、`Label` に `.{definition_id}` を追加の
   suffix として含めることで解消した。
+- **scheduler 単一起動保証を pidfile/flock 方式へ全面置換（Issue #216）**: cron の生存確認は
+  `pgrep -f <pattern>` の正規表現マッチから、`loop_scheduler.py <script> --project <project>
+  [--definition <id>] is-alive` サブコマンドへ置き換えた。`loop_scheduler.py` は起動
+  （`run_scheduler`）時に、プロジェクト・loop definition ごとに固定された pidfile
+  （`.claude/loop/scheduler.pid`、非デフォルト definition は
+  `.claude/loop/scheduler.<definition_id>.pid`）へ `flock(LOCK_EX | LOCK_NB)` を試み、取得できな
+  ければ即座に終了する。これが実際の単一起動保証であり、`is-alive`／cron の `|| フォールバック`
+  はあくまで無駄な起動試行を避ける最適化に過ぎない — 二重起動が発生しても、後から起動した側の
+  flock 取得は必ず失敗し、ループ状態には一切触れずに終了する。liveness の正本は「flock を保持
+  しているか」のみであり、pid の生存確認は行わない（stale pidfile・pid 再利用問題を構造的に回避
+  する）。この方式は cron・launchd・手動起動のいずれから起動されたかによらず一様に適用される。
+  pgrep 方式の構造的限界（#13 の自己一致、`$$`/`$PPID` 除外フィルタの祖先チェーン非対応、#219
+  P2-3）はすべて解消され、対応する pgrep ベースのコード・テスト・上記の受容済みリスク注記は撤去
+  した。pidfile はプロジェクト単位ではなく (project_dir, definition_id) 単位で分離されており、
+  J4 の cron liveness パターン方針を踏襲して、同一プロジェクトで複数の非デフォルト definition
+  の scheduler を並行起動できる既存の意図的な運用を妨げない。launchd は `KeepAlive: true` による
+  既存の自動再起動があるため pgrep 相当のテンプレートガードを元々持たず、そちらの変更は不要
+  だった（手動起動と launchd の併存等の二重起動は、上記の scheduler 自身の起動時 flock によって
+  防がれる）。
 
 ---
 
