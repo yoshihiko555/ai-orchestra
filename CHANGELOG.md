@@ -18,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`loop-harness`: 利用者ガイド（図解つき）を追加**: `docs/guides/loop-harness.md` に `/loop-issue` の使い方・ループの仕組み（全体フロー・状態機械・PR レビュー反復・停止判定の Mermaid 図解）をまとめた。`packages/loop-harness/README.md` から導線を追加し、cron セットアップの記述を `is-alive`（pidfile/flock）方式に更新した。
 - **`meta-harness`: `target=skill:<slug>` の探索・評価に対応**: skill ごとの scenario suite、target 別 frontier、composition closure に限定した安全な overlay、`handoff` / `issue-create` の train・holdout 評価を追加。skill-evolution の trigger 出力から `orchex meta propose` へ疎結合で誘導する。
 - **`git-workflow`: `/review-respond` スキルを追加**: カレントブランチの PR に付いた bot レビュー指摘（CodeRabbit/Codex 等）を `pr_review_threads.py` で取得し、分類・修正・push・返信・スレッド解決までを単発実行で自動対応する。
 
