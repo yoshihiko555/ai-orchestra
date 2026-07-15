@@ -1151,6 +1151,26 @@ cron 側は「落ちていたら起動し直す」監視役に留める）:
   既存の自動再起動があるため pgrep 相当のテンプレートガードを元々持たず、そちらの変更は不要
   だった（手動起動と launchd の併存等の二重起動は、上記の scheduler 自身の起動時 flock によって
   防がれる）。
+- **pidfile のパス解決を root worktree 基準へ修正（PR #230 Codex P1 反映）**: 上記初版実装の
+  `scheduler_pidfile_path` は `Path(project_dir).resolve() / ".claude" / "loop"`（`--project` に
+  渡された worktree をそのまま使う単純な resolve）で pidfile を配置していたが、ループ状態
+  （`state.json`/`journal.jsonl`/coord lock、いずれも `loop_common.loop_root` 経由で root
+  worktree に解決される）は `--project` にどの worktree を渡しても常に root worktree 側
+  `.claude/loop/` に集約される。そのため `--project <linked-worktree>` で起動した scheduler と
+  `--project <root-worktree>` で起動した scheduler が**別々の pidfile**を持ってしまい、flock が
+  競合せず、同じ共有状態に対して 2 つの scheduler が discovery/spawn できてしまう（単一起動保証と
+  同時実行 cap の破れ）。`scheduler_pidfile_path` を `loop_common.loop_root`（root-worktree 解決込
+  み）ベースに変更し、`run_scheduler`・`is_scheduler_alive`・cron テンプレートの `is-alive` 呼び
+  出しの 3 者が worktree に依らず常に同一 pidfile に一致するよう修正した。「git subprocess を挟み
+  たくない」という初版の判断より、単一起動保証の正しさを優先している。
+  **root worktree 解決失敗時（git 不在・非 git ディレクトリ等）は fail-closed**: `loop_root`/
+  `resolve_root_worktree` は解決不能な場合 `RootResolutionError` を送出する（既存の fail-closed
+  設計を踏襲）。`run_scheduler` はこれを「他の scheduler が既に起動中」と同じ扱いで捕捉し、
+  ループ状態に一切触れず起動を拒否する（保護が確認できない状態で無防備に起動を続けるより安全）。
+  `is_scheduler_alive`（`is-alive` CLI・cron の liveness プローブ）は `False`（=生存なし）を返して
+  フォールバックの起動試行に委ねる — その起動試行も同じ理由で `run_scheduler` 側が起動を拒否する
+  ため、プローブ側で例外を送出してトレースバックをログに残すより、実際の単一起動保証を担う
+  `run_scheduler` 側のメッセージに一本化する設計とした。
 
 ---
 

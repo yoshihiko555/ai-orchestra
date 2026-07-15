@@ -1122,19 +1122,31 @@ def scheduler_pidfile_path(project_dir: str, definition_id: str = DEFAULT_DEFINI
     an intentional, supported configuration, and each such scheduler must be guarded
     independently rather than mutually excluding each other.
 
-    Uses the same plain `Path(project_dir).resolve() / ".claude" / "loop"` convention as
-    `_ensure_scheduler_log_dir`/`render_cron_entry`/`render_launchd_plist` (not
-    `loop_common.loop_root`, which additionally shells out to resolve a root-worktree path):
-    every caller here - `run_scheduler`, `is_scheduler_alive`, and the rendered cron guard's
-    own `is-alive` invocation - must agree on exactly one inode without an extra git subprocess
-    call at render/probe time, or the guard and the real scheduler could silently flock two
-    different files and never contend with each other at all.
+    Uses `loop_common.loop_root` (root-worktree-resolved `.claude/loop/`) rather than a plain
+    `Path(project_dir).resolve() / ".claude" / "loop"` (PR #230 Codex P1 fix): loop state
+    (`state.json`/`journal.jsonl`/`coord.lock`, all addressed via `loop_root` too) always lives
+    under the *root* worktree regardless of which worktree `--project` points at, per the
+    repo's linked-worktree layout. A scheduler started with `--project <linked-worktree>` and
+    one started with `--project <root-worktree>` therefore discover/spawn/monitor against the
+    exact same shared state - so their single-instance guard must flock the exact same pidfile
+    too, or two "different" schedulers (by pidfile) could concurrently drive one shared set of
+    loops, breaking both the single-instance guarantee and the concurrency cap. The earlier
+    plain-resolve choice optimized for avoiding an extra git subprocess call at
+    render/probe/startup time, but that correctness gap outweighs the cost; every caller here -
+    `run_scheduler`, `is_scheduler_alive`, and the rendered cron guard's own runtime `is-alive`
+    invocation - now agrees on exactly one inode via this same resolution.
+
+    `loop_root`/`resolve_root_worktree` fails closed (raises `RootResolutionError`) when git
+    resolution itself fails (e.g. not a git repo, `git` unavailable) rather than falling back to
+    an unverified guess; see `run_scheduler`'s and `is_scheduler_alive`'s docstrings for how
+    each caller handles that.
     """
-    log_dir = Path(project_dir).resolve() / ".claude" / "loop"
+    if definition_id != DEFAULT_DEFINITION_ID:
+        lc._validate_safe_id("definition_id", definition_id)  # noqa: SLF001 - reuse shared id-safety guard
+    state_root = lc.loop_root(project_dir)
     if definition_id == DEFAULT_DEFINITION_ID:
-        return log_dir / "scheduler.pid"
-    lc._validate_safe_id("definition_id", definition_id)  # noqa: SLF001 - reuse shared id-safety guard
-    return log_dir / f"scheduler.{definition_id}.pid"
+        return state_root / "scheduler.pid"
+    return state_root / f"scheduler.{definition_id}.pid"
 
 
 def _acquire_scheduler_lock(project_dir: str, definition_id: str) -> Any:
@@ -1183,8 +1195,20 @@ def is_scheduler_alive(project_dir: str, definition_id: str = DEFAULT_DEFINITION
     `_acquire_scheduler_lock` call a live scheduler takes at startup and holds for its entire
     lifetime, released automatically the instant that process exits or crashes (stale-pidfile-
     safe by construction - there is no separate pid-liveness check to go stale).
+
+    Fail-closed design (PR #230 Codex P1 follow-up): if `scheduler_pidfile_path` cannot resolve
+    the root worktree (`loop_common.RootResolutionError` - not a git repo, `git` unavailable,
+    etc.), this returns `False` ("not alive") rather than raising. That is safe, not fail-open:
+    the actual single-instance guarantee lives in `run_scheduler`/`_acquire_scheduler_lock`,
+    which independently hits the exact same `RootResolutionError` on the exact same input and
+    refuses to start (see its docstring) - so a `False` here only ever triggers a harmless
+    fallback-spawn attempt that itself declines to start, instead of this probe crashing with a
+    bare traceback on every cron tick.
     """
-    path = scheduler_pidfile_path(project_dir, definition_id)
+    try:
+        path = scheduler_pidfile_path(project_dir, definition_id)
+    except lc.RootResolutionError:
+        return False
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(path, os.O_CREAT | os.O_RDWR, lc.FILE_MODE)
     try:
@@ -1216,8 +1240,25 @@ def run_scheduler(
     be mistaken for a live one and never restarted; the pidfile/flock check here is enforced by
     the scheduler itself at startup, independent of which mechanism (cron, launchd, or a manual
     invocation) started it.
+
+    Also refuses to start, fail-closed, if `scheduler_pidfile_path` cannot resolve the root
+    worktree (`loop_common.RootResolutionError`, PR #230 Codex P1 follow-up: not a git repo,
+    `git` unavailable, etc.). Proceeding anyway would mean running with no verified
+    single-instance guard at all - silently reintroducing the exact double-start risk this
+    Issue closes - so an unresolvable root worktree is treated the same as "another scheduler
+    already holds the lock": log and exit without touching any loop state.
     """
-    lock_handle = _acquire_scheduler_lock(project_dir, definition_id)
+    try:
+        lock_handle = _acquire_scheduler_lock(project_dir, definition_id)
+    except lc.RootResolutionError as exc:
+        print(
+            lc.redact(
+                f"loop_scheduler: could not resolve the root worktree for {project_dir} "
+                f"({exc}); refusing to start without a verified single-instance guard"
+            ),
+            file=sys.stderr,
+        )
+        return
     if lock_handle is None:
         print(
             lc.redact(

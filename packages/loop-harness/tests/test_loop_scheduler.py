@@ -1915,26 +1915,61 @@ def test_render_cron_entry_is_alive_and_fallback_share_project_and_definition_ar
 # --------------------------------------------------------------------------------------------
 
 
-def test_scheduler_pidfile_path_default_definition(tmp_path: Path) -> None:
+def test_scheduler_pidfile_path_default_definition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(lc, "resolve_root_worktree", lambda _project_dir: tmp_path)
     path = scheduler.scheduler_pidfile_path(str(tmp_path))
     assert path == tmp_path.resolve() / ".claude" / "loop" / "scheduler.pid"
 
 
 def test_scheduler_pidfile_path_non_default_definition_suffixes_filename(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Scoped per (project, definition_id) - not per-project alone - mirroring J4's cron
     liveness-pattern precedent: concurrent schedulers for different `--definition` values in
     the same project are an intentional, supported configuration and must not mutually
     exclude each other."""
+    monkeypatch.setattr(lc, "resolve_root_worktree", lambda _project_dir: tmp_path)
     path = scheduler.scheduler_pidfile_path(str(tmp_path), definition_id="custom-loop")
     assert path == tmp_path.resolve() / ".claude" / "loop" / "scheduler.custom-loop.pid"
     assert path != scheduler.scheduler_pidfile_path(str(tmp_path))
 
 
 def test_scheduler_pidfile_path_rejects_unsafe_definition_id(tmp_path: Path) -> None:
+    """The id-safety check must fail before ever attempting root-worktree resolution (no git
+    repo needed here to observe the rejection)."""
     with pytest.raises(ValueError, match="Unsafe"):
         scheduler.scheduler_pidfile_path(str(tmp_path), definition_id="../escape")
+
+
+def test_scheduler_pidfile_path_resolves_through_root_worktree_not_plain_resolve(
+    tmp_path: Path,
+) -> None:
+    """PR #230 Codex P1: a scheduler started with `--project <linked-worktree>` and one
+    started with `--project <root-worktree>` must flock the exact same pidfile, because loop
+    state (`state.json`/`journal.jsonl`/coord locks, all resolved via `loop_common.loop_root`)
+    always lives under the root worktree regardless of which worktree `--project` points at. A
+    plain `Path(project_dir).resolve()`-based pidfile (the pre-fix behavior) would instead let
+    the two schedulers flock two different files while driving the same shared state."""
+    main = tmp_path / "repo"
+    main.mkdir()
+    _git(["init", "-b", "main"], main)
+    _git(["config", "user.email", "loop-harness@example.com"], main)
+    _git(["config", "user.name", "Loop Harness Test"], main)
+    (main / "README.md").write_text("root\n", encoding="utf-8")
+    _git(["add", "README.md"], main)
+    _git(["commit", "-m", "init"], main)
+    linked = tmp_path / "linked"
+    _git(["worktree", "add", "-b", "loop/issue-1", str(linked), "HEAD"], main)
+
+    lc._ROOT_CACHE.clear()
+
+    root_pidfile = scheduler.scheduler_pidfile_path(str(main))
+    linked_pidfile = scheduler.scheduler_pidfile_path(str(linked))
+
+    assert root_pidfile == linked_pidfile
+    assert root_pidfile == main.resolve() / ".claude" / "loop" / "scheduler.pid"
 
 
 # --------------------------------------------------------------------------------------------
@@ -1942,7 +1977,10 @@ def test_scheduler_pidfile_path_rejects_unsafe_definition_id(tmp_path: Path) -> 
 # --------------------------------------------------------------------------------------------
 
 
-def test_acquire_scheduler_lock_writes_pid_and_returns_open_handle(tmp_path: Path) -> None:
+def test_acquire_scheduler_lock_writes_pid_and_returns_open_handle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(lc, "resolve_root_worktree", lambda _project_dir: tmp_path)
     handle = scheduler._acquire_scheduler_lock(str(tmp_path), scheduler.DEFAULT_DEFINITION_ID)
     try:
         assert handle is not None
@@ -1955,7 +1993,10 @@ def test_acquire_scheduler_lock_writes_pid_and_returns_open_handle(tmp_path: Pat
             handle.close()
 
 
-def test_acquire_scheduler_lock_returns_none_when_already_held(tmp_path: Path) -> None:
+def test_acquire_scheduler_lock_returns_none_when_already_held(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(lc, "resolve_root_worktree", lambda _project_dir: tmp_path)
     path = scheduler.scheduler_pidfile_path(str(tmp_path))
     path.parent.mkdir(parents=True, exist_ok=True)
     probe_fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
@@ -1967,9 +2008,12 @@ def test_acquire_scheduler_lock_returns_none_when_already_held(tmp_path: Path) -
         os.close(probe_fd)
 
 
-def test_acquire_scheduler_lock_is_scoped_per_definition(tmp_path: Path) -> None:
+def test_acquire_scheduler_lock_is_scoped_per_definition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Holding the default definition's lock must not block a concurrent scheduler for a
     different `--definition` in the same project (J4-equivalent scoping, Issue #216)."""
+    monkeypatch.setattr(lc, "resolve_root_worktree", lambda _project_dir: tmp_path)
     default_handle = scheduler._acquire_scheduler_lock(
         str(tmp_path), scheduler.DEFAULT_DEFINITION_ID
     )
@@ -1985,11 +2029,27 @@ def test_acquire_scheduler_lock_is_scoped_per_definition(tmp_path: Path) -> None
             default_handle.close()
 
 
-def test_is_scheduler_alive_false_when_no_scheduler_running(tmp_path: Path) -> None:
+def test_acquire_scheduler_lock_raises_root_resolution_error_for_non_git_project(
+    tmp_path: Path,
+) -> None:
+    """PR #230 Codex P1 follow-up: with no mock and no real git repo at `tmp_path`,
+    `_acquire_scheduler_lock` must propagate `RootResolutionError` (fail closed) instead of
+    silently falling back to an unverified pidfile location."""
+    with pytest.raises(lc.RootResolutionError):
+        scheduler._acquire_scheduler_lock(str(tmp_path), scheduler.DEFAULT_DEFINITION_ID)
+
+
+def test_is_scheduler_alive_false_when_no_scheduler_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(lc, "resolve_root_worktree", lambda _project_dir: tmp_path)
     assert scheduler.is_scheduler_alive(str(tmp_path)) is False
 
 
-def test_is_scheduler_alive_true_when_lock_held(tmp_path: Path) -> None:
+def test_is_scheduler_alive_true_when_lock_held(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(lc, "resolve_root_worktree", lambda _project_dir: tmp_path)
     handle = scheduler._acquire_scheduler_lock(str(tmp_path), scheduler.DEFAULT_DEFINITION_ID)
     assert handle is not None
     try:
@@ -1998,7 +2058,10 @@ def test_is_scheduler_alive_true_when_lock_held(tmp_path: Path) -> None:
         handle.close()
 
 
-def test_is_scheduler_alive_scoped_per_definition(tmp_path: Path) -> None:
+def test_is_scheduler_alive_scoped_per_definition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(lc, "resolve_root_worktree", lambda _project_dir: tmp_path)
     handle = scheduler._acquire_scheduler_lock(str(tmp_path), scheduler.DEFAULT_DEFINITION_ID)
     assert handle is not None
     try:
@@ -2007,13 +2070,26 @@ def test_is_scheduler_alive_scoped_per_definition(tmp_path: Path) -> None:
         handle.close()
 
 
-def test_is_scheduler_alive_does_not_leave_the_probe_holding_the_lock(tmp_path: Path) -> None:
+def test_is_scheduler_alive_does_not_leave_the_probe_holding_the_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The probe must release its own flock attempt immediately - otherwise a dead scheduler's
     stale pidfile would become permanently "alive" the moment anything ever probes it."""
+    monkeypatch.setattr(lc, "resolve_root_worktree", lambda _project_dir: tmp_path)
     assert scheduler.is_scheduler_alive(str(tmp_path)) is False
     handle = scheduler._acquire_scheduler_lock(str(tmp_path), scheduler.DEFAULT_DEFINITION_ID)
     assert handle is not None
     handle.close()
+
+
+def test_is_scheduler_alive_fails_closed_to_false_when_root_worktree_unresolvable(
+    tmp_path: Path,
+) -> None:
+    """PR #230 Codex P1 follow-up: with no mock and no real git repo at `tmp_path`,
+    `is_scheduler_alive` must swallow `RootResolutionError` and return `False` rather than
+    raising - the real single-instance guard is `run_scheduler`'s own fail-closed refusal to
+    start, not this probe (see its docstring)."""
+    assert scheduler.is_scheduler_alive(str(tmp_path)) is False
 
 
 # --------------------------------------------------------------------------------------------
@@ -2045,7 +2121,30 @@ def test_run_scheduler_exits_immediately_when_lock_already_held(
     assert "already running" in capsys.readouterr().err
 
 
-def test_main_is_alive_returns_0_when_a_scheduler_holds_the_lock(tmp_path: Path) -> None:
+def test_run_scheduler_refuses_to_start_when_root_worktree_unresolvable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """PR #230 Codex P1 follow-up: no real git repo at `tmp_path`, so `_acquire_scheduler_lock`
+    raises `RootResolutionError`. `run_scheduler` must fail closed - refuse to start, run zero
+    cycles, and never construct a `SchedulerRuntime` - rather than proceeding without a
+    verified single-instance guard."""
+    project_dir = str(tmp_path)
+
+    cycle_calls: list[int] = []
+    monkeypatch.setattr(
+        scheduler, "run_cycle", lambda runtime, project, definition: cycle_calls.append(1)
+    )
+
+    scheduler.run_scheduler(project_dir, max_cycles=3)
+
+    assert cycle_calls == []
+    assert "could not resolve the root worktree" in capsys.readouterr().err
+
+
+def test_main_is_alive_returns_0_when_a_scheduler_holds_the_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(lc, "resolve_root_worktree", lambda _project_dir: tmp_path)
     path = scheduler.scheduler_pidfile_path(str(tmp_path))
     path.parent.mkdir(parents=True, exist_ok=True)
     probe_fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
@@ -2057,7 +2156,17 @@ def test_main_is_alive_returns_0_when_a_scheduler_holds_the_lock(tmp_path: Path)
     assert exit_code == 0
 
 
-def test_main_is_alive_returns_1_when_no_scheduler_is_running(tmp_path: Path) -> None:
+def test_main_is_alive_returns_1_when_no_scheduler_is_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(lc, "resolve_root_worktree", lambda _project_dir: tmp_path)
+    exit_code = scheduler.main(["--project", str(tmp_path), "is-alive"])
+    assert exit_code == 1
+
+
+def test_main_is_alive_returns_1_when_root_worktree_unresolvable(tmp_path: Path) -> None:
+    """PR #230 Codex P1 follow-up: no real git repo at `tmp_path` and no mock, so the CLI
+    `is-alive` path goes through `is_scheduler_alive`'s fail-closed `False` (not a crash)."""
     exit_code = scheduler.main(["--project", str(tmp_path), "is-alive"])
     assert exit_code == 1
 
