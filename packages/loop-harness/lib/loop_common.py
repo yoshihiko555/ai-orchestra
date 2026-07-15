@@ -2134,10 +2134,23 @@ def _finalize_reconciled(
 def _mark_unresolved_pending(
     loop_id: str, project_dir: str, state: LoopState, lease_token: str
 ) -> ReconcileOutcome:
-    """Mark side-effectful unresolved pending action as infrastructure failure."""
+    """Mark side-effectful unresolved pending action as infrastructure failure.
+
+    Loads the real phase definition and project config (PR #229 review) instead of always
+    evaluating against `phase_def=None`/`DEFAULT_CONFIG`: this reconcile path is reachable
+    from any `attach()` on any status (`running`/`waiting_external` for a later-iteration
+    orphaned action, and now `pending` for an orphaned initial `run_maker`, Issue #205) and,
+    before this fix, silently ignored a project's `guards.infrastructure_failure.max_retries`
+    override in `loop-harness.local.yaml`, always retrying up to the package default
+    (`DEFAULT_CONFIG`'s `max_retries: 3`) regardless of a lower configured value. Mirrors
+    `_apply_maker_infrastructure_failure`'s sibling `if project_dir else` pattern, but without
+    the `None` guard since `project_dir` is required here (`reconcile()`'s own signature).
+    """
     phase_check = PhaseCheckResult(False, [], "pending_action_unresolved_after_crash", True)
     state.last_check_result = phase_check_to_dict(phase_check)
-    decision = evaluate_guards(state, phase_check, None, DEFAULT_CONFIG)
+    phase_def = _load_phase_definition(state, project_dir)
+    config = _load_loop_config(project_dir)
+    decision = evaluate_guards(state, phase_check, phase_def, config)
     if decision.disposition == Action.EXIT_FAILURE.value:
         state.status = "failed"
         state.stop_reason = decision.reason

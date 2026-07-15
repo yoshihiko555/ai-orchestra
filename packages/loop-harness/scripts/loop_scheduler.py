@@ -761,6 +761,19 @@ def recover_orphaned_pending_loops(runtime: SchedulerRuntime, project_dir: str) 
     Loops still tracked in `runtime.workers` (this process's own in-flight worker, whose
     `state.json` simply has not yet reflected the first completed action) are left untouched,
     as is any loop whose lease is still alive (another owner might still complete it).
+
+    SN-flock (PR #229 review, #205-race): the initial scan below is a cheap, unlocked
+    pre-filter (mirrors `loop_status._purge_if_still_safe`'s candidate-list pattern) - the
+    actual re-verification and rename happen inside `_retire_if_still_orphaned_pending`,
+    under the same per-loop `held_coord_lock` `attach()` (via `reacquire_lease`) takes. Without
+    that shared lock, a `pending` loop's `attach()` (Issue #205) could load a still-`pending`
+    state here, then have this function rename its directory out from under it before
+    `reacquire_lease`/`propose` run - surfacing as a spurious `lock_unavailable`/`invalid_state`
+    for an attach that arrived just in time to legitimately recover the loop. Serializing both
+    through the same coord lock, with a fresh lease-expiry re-check taken *inside* it
+    immediately before the rename, closes that window: whichever of `attach()` or this
+    retirement acquires the lock first "wins," and the loser's own fresh re-check (lease now
+    alive because `attach()` reacquired it, or directory now gone) correctly no-ops.
     """
     root = lc.loop_root(project_dir)
     if not root.is_dir():
@@ -777,9 +790,33 @@ def recover_orphaned_pending_loops(runtime: SchedulerRuntime, project_dir: str) 
             continue
         if not _is_lease_expired(loop_id, project_dir):
             continue
-        _retire_orphaned_pending_dir(entry, project_dir)
-        recovered.append(loop_id)
+        if _retire_if_still_orphaned_pending(loop_id, project_dir):
+            recovered.append(loop_id)
     return recovered
+
+
+def _retire_if_still_orphaned_pending(loop_id: str, project_dir: str) -> bool:
+    """Re-verify `loop_id` is still an orphaned `pending` loop under the coord lock, then
+    retire it (SN-flock, PR #229 review, #205-race - see `recover_orphaned_pending_loops`'s
+    own docstring for the race this closes).
+
+    Held under the same `lc.held_coord_lock` as `attach()` (via `reacquire_lease`), `resume`,
+    and `purge`, so this cannot interleave with a concurrent `attach()` reclaiming the lease
+    for the same `loop_id`. Both `state.status` and lease-expiry are reloaded fresh *inside*
+    the lock - the caller's own pre-filter check is only a cheap, TOCTOU-prone hint, mirroring
+    `loop_status._purge_if_still_safe`'s reload-immediately-before-mutating pattern. Returns
+    False (no-op) when the loop no longer qualifies: status moved on, or `attach()` already
+    reclaimed a live lease for it.
+    """
+    with lc.held_coord_lock(loop_id, project_dir):
+        entry = lc.loop_dir(loop_id, project_dir)
+        state = _try_load_state(entry, project_dir)
+        if state is None or state.status != "pending":
+            return False
+        if not _is_lease_expired(loop_id, project_dir):
+            return False
+        _retire_orphaned_pending_dir(entry, project_dir)
+        return True
 
 
 def _retire_orphaned_pending_dir(entry: Path, project_dir: str) -> None:

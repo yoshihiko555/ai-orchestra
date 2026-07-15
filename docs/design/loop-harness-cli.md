@@ -406,9 +406,14 @@ python3 loop_step.py attach --loop-id a1b2c3d4-issue-42 --project /path/to/repo
    > 受理し、旧 lease が stale であれば手順 3〜5 と同じ reconcile 経路（1.4 節の
    > `_mark_unresolved_pending`）で孤立した初回 `run_maker` pending action を infrastructure
    > failure として reconcile し、`run_maker` を再度 propose する（同一 `loop_id`・journal を
-   > 維持したまま復旧できる）。ガードの `infrastructure_failure.max_retries` を使い切っていれば
-   > 通常のガード評価どおり `failed` に倒れる。なお `loop_scheduler.py`（3.3 節）は `pending`
-   > を discovery・自動 respawn から引き続き除外する（#G10、restart storm 回避）。この手動
+   > 維持したまま復旧できる）。ガードは対象プロジェクトの実効 config（5 節。
+   > `loop-harness.local.yaml` の上書きを含む）で評価される（PR #229 レビュー反映。以前は
+   > パッケージ既定値 `DEFAULT_CONFIG` に固定されており、プロジェクトが
+   > `guards.infrastructure_failure.max_retries` を下げていても既定値まで re-propose し続ける
+   > 不具合があった。`status` が `running` の場合の同経路にも共通する既存不具合であり、
+   > `pending` 固有ではない）。`infrastructure_failure.max_retries` を使い切っていれば通常の
+   > ガード評価どおり `failed` に倒れる。なお `loop_scheduler.py`（3.3 節）は `pending` を
+   > discovery・自動 respawn から引き続き除外する（#G10、restart storm 回避）。この手動
    > `attach` 経路は、その除外方針とは独立した、人間／LP-1 が明示的に呼び出す復旧手段である。
 2. 現在の `lock.json` の lease が**生存中**（TTL 内かつ heartbeat が継続している。基本設計 6.3 節
    `is_lease_alive()`）かどうかを判定する。生存中であれば、まだ別のプロセスが正当にループを保持
@@ -1020,6 +1025,13 @@ def spawn_worker(loop_id: str, project_root: Path) -> subprocess.Popen[bytes]:
   lease が生存中の `pending` loop には触れない。人間／LP-1 が `recover_orphaned_pending_loops`
   による退避より前に気づいた場合は、`attach`（1.10 節）で同一 `loop_id`・journal を維持した
   まま直接復旧することもできる。
+  > **retirement と attach の競合対策（PR #229 レビュー反映。SN-flock）**: 上記の事前フィルタ
+  > （lease 失効チェック）は unlocked かつ TOCTOU の余地がある安価な絞り込みに過ぎない。実際の
+  > rename は per-loop coord lock（1.10 節・4.3 節参照。`attach()` の `reacquire_lease` と同じ
+  > 固定パス）の下で state・lease を再読込・再検証してから行うため、`attach` が僅差でこの
+  > retirement に先行して lease を再取得していた場合はロック内の再検証で正しく no-op する
+  > （逆に retirement が先にロックを取得していれば `attach` 側が `lock_unavailable`/
+  > `invalid_state` で正しく失敗する）。
 
 ### 3.4 起動時の repo-identity 照合（安全停止）
 
@@ -1260,6 +1272,14 @@ python3 loop_status.py untombstone --loop-id <id> [--project <path>]
   reload〜書き込みの全区間で保持するよう変更済みのため、purge と resume/attach は常にこの
   1 本の固定ロックで直列化される（1.8 節・1.10 節も参照）。`loop_scheduler.py` の
   `_safe_stop_repo_identity_mismatch`（3.4 節の安全停止書き込み）も同じロックを使う。
+  **`loop_scheduler.recover_orphaned_pending_loops`（`_retire_if_still_orphaned_pending`。3.3
+  節、PR #229 レビュー反映）も同じ固定ロックの下で reload〜rename を行う**: `attach` が
+  `pending` を受理するようになったこと（Issue #205、1.10 節）により、この retirement 経路の
+  rename と `attach()`（`reacquire_lease`）の lease 再取得が同一 `loop_id` に対して競合しうる
+  ようになったため（retirement 側の cheap な事前フィルタは `state.json` を読んだ直後に
+  ディレクトリが rename される TOCTOU の余地を残す）、いずれか一方が coord lock を先に取得した
+  側が「勝ち」、負けた側はロック内での再読込・再検証（`state.status`・lease 生存性）が
+  最新状態を反映して自然に no-op する。
 
 ---
 
