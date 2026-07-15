@@ -159,7 +159,16 @@ def _issue_comment(
 
 
 def _patch_loop_harness_root(monkeypatch: pytest.MonkeyPatch, project_dir: Path) -> None:
-    """Avoid the config loader's real `git rev-parse`, which the fake run() intercepts."""
+    """Avoid the config loader's real `git rev-parse`, which the fake run() intercepts.
+
+    Patch the outer `loop_definition._resolve_local_override_root` rather than the inner
+    `loop_common.resolve_root_worktree`: `_resolve_local_override_root()` re-imports
+    `loop_common` fresh on every call, and the full-suite collection of
+    `packages/loop-harness/tests/test_loop_driver.py` (and `test_loop_scheduler.py` /
+    `test_loop_status.py`) reassigns `sys.modules["loop_common"]` to a fresh object. Patching
+    the outer function on the stable `loop_definition` module short-circuits before any
+    `loop_common` instance is touched, so it stays correct regardless of collection order.
+    """
     prw_module = prt._import_pr_review_wait()
     assert prw_module is not None
     monkeypatch.setattr(

@@ -826,6 +826,182 @@ class TestMain:
         assert entry["type"] == "sse"
 
 
+class TestMainReconcileIntegration:
+    """main() を通しての reconcile / クリーンアップ統合テスト。
+
+    対象観点（docs/evaluation/cocoindex.md）:
+    - EV-04（must）: `enabled: false` で 3 CLI 全エントリ削除（クリーンアップ）
+    - EV-05（must）: `targets.<cli>.enabled: false` で該当 CLI のみ削除、他は不変
+    - EV-06（must）: 旧 `targets.gemini`（`.local.yaml` 残存）読み替えの end-to-end 検証
+    """
+
+    def _invoke(self, payload: dict, monkeypatch) -> str:
+        buffer = io.StringIO()
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
+        monkeypatch.setattr(sys, "stdout", buffer)
+        provision.main()
+        return buffer.getvalue()
+
+    def test_enabled_false_removes_all_three_cli_entries_and_preserves_unrelated(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """EV-04: enabled=false は main() 経由で 3 CLI 全エントリを削除し、
+        cocoindex 以外の既存エントリは削除しない。
+        """
+        mcp_path = tmp_path / ".mcp.json"
+        mcp_path.write_text(
+            json.dumps(
+                {"mcpServers": {SERVER_NAME: {"command": "uvx"}, "other-server": {"command": "x"}}}
+            )
+        )
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        toml_path = codex_dir / "config.toml"
+        toml_path.write_text(
+            '[mcp_servers.cocoindex-code]\ncommand = "uvx"\nargs = []\nenabled = true\n\n'
+            '[mcp_servers.other]\ncommand = "y"\nargs = []\nenabled = true\n'
+        )
+        gemini_dir = tmp_path / ".gemini"
+        gemini_dir.mkdir()
+        settings_path = gemini_dir / "settings.json"
+        settings_path.write_text(
+            json.dumps(
+                {"mcpServers": {SERVER_NAME: {"command": "uvx"}, "other-server": {"command": "z"}}}
+            )
+        )
+
+        disabled_config = {**SAMPLE_CONFIG, "enabled": False}
+        monkeypatch.setattr(provision, "load_package_config", lambda *_: disabled_config)
+
+        output = self._invoke({"cwd": str(tmp_path), "session_id": "sess-disable-all"}, monkeypatch)
+
+        mcp_data = json.loads(mcp_path.read_text())
+        assert SERVER_NAME not in mcp_data.get("mcpServers", {})
+        assert "other-server" in mcp_data["mcpServers"]
+
+        toml_content = toml_path.read_text()
+        assert "[mcp_servers.cocoindex-code]" not in toml_content
+        assert "[mcp_servers.other]" in toml_content
+
+        settings_data = json.loads(settings_path.read_text())
+        assert SERVER_NAME not in settings_data.get("mcpServers", {})
+        assert "other-server" in settings_data["mcpServers"]
+
+        # cleanup 側でも changed 扱いになるため claude/codex/antigravity 全てが報告される
+        assert "claude" in output
+        assert "codex" in output
+        assert "antigravity" in output
+
+    def test_target_level_disable_only_removes_that_cli(self, tmp_path: Path, monkeypatch) -> None:
+        """EV-05: targets.<cli>.enabled=false は該当 CLI のみ削除し、
+        他の CLI の設定ファイルはエントリの追加・削除を含め一切変更されない。
+        """
+        mcp_path = tmp_path / ".mcp.json"
+        mcp_path.write_text(
+            json.dumps(
+                {"mcpServers": {SERVER_NAME: {"command": "uvx"}, "other-server": {"command": "x"}}}
+            )
+        )
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        toml_path = codex_dir / "config.toml"
+        # codex は元々有効かつ cocoindex-code が既にプロビジョニング済みの状態を seed する
+        # （無関係な既存エントリも含む）。実装のビルダーで生成した内容と一致させることで、
+        # 「有効な CLI は provision_fn が no-op と判定し、ファイルに一切書き込まない」
+        # ケースを厳密に再現する。
+        existing_codex_section = provision._build_toml_section(
+            SERVER_NAME, SAMPLE_CONFIG, proxy_enabled=False, project_dir=str(tmp_path)
+        )
+        codex_before = (
+            '[mcp_servers.other]\ncommand = "y"\nargs = []\nenabled = true\n\n'
+            + existing_codex_section
+            + "\n"
+        )
+        toml_path.write_text(codex_before)
+
+        gemini_dir = tmp_path / ".gemini"
+        gemini_dir.mkdir()
+        settings_path = gemini_dir / "settings.json"
+        existing_antigravity_entry = provision._build_antigravity_entry(
+            SAMPLE_CONFIG, proxy_enabled=False, project_dir=str(tmp_path)
+        )
+        antigravity_before = {
+            "mcpServers": {
+                "other-server": {"command": "z"},
+                SERVER_NAME: existing_antigravity_entry,
+            }
+        }
+        settings_path.write_text(json.dumps(antigravity_before))
+
+        config = {
+            **SAMPLE_CONFIG,
+            "targets": {
+                "claude": {"enabled": False, "type": "stdio"},
+                "codex": {"enabled": True},
+                "antigravity": {"enabled": True},
+            },
+        }
+        monkeypatch.setattr(provision, "load_package_config", lambda *_: config)
+
+        self._invoke({"cwd": str(tmp_path), "session_id": "sess-target-disable"}, monkeypatch)
+
+        # claude だけエントリが消え、無関係な既存エントリは残る
+        mcp_data = json.loads(mcp_path.read_text())
+        assert SERVER_NAME not in mcp_data.get("mcpServers", {})
+        assert "other-server" in mcp_data["mcpServers"]
+
+        # codex / antigravity は enabled のまま据え置かれ、reconcile 前後で
+        # ファイル内容が完全に不変であることを検証する（追加も削除もされない）
+        assert toml_path.read_text() == codex_before
+        assert json.loads(settings_path.read_text()) == antigravity_before
+
+    def test_legacy_gemini_local_yaml_disables_antigravity_end_to_end(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """EV-06: `.local.yaml` に残存する旧 targets.gemini.enabled=false が
+        実際の load_package_config によるマージを経て antigravity を無効化する。
+        """
+        config_dir = tmp_path / ".claude" / "config" / "cocoindex"
+        config_dir.mkdir(parents=True)
+        (config_dir / "cocoindex.yaml").write_text(
+            "enabled: true\n"
+            "server_name: cocoindex-code\n"
+            "command: uvx\n"
+            "args: []\n"
+            "targets:\n"
+            "  claude:\n"
+            "    enabled: true\n"
+            "    type: stdio\n"
+            "  codex:\n"
+            "    enabled: true\n"
+            "  antigravity:\n"
+            "    enabled: true\n"
+        )
+        (config_dir / "cocoindex.local.yaml").write_text(
+            "targets:\n  gemini:\n    enabled: false\n"
+        )
+
+        gemini_dir = tmp_path / ".gemini"
+        gemini_dir.mkdir()
+        settings_path = gemini_dir / "settings.json"
+        settings_path.write_text(
+            json.dumps(
+                {"mcpServers": {SERVER_NAME: {"command": "uvx"}, "other-server": {"command": "z"}}}
+            )
+        )
+
+        self._invoke({"cwd": str(tmp_path), "session_id": "sess-legacy-gemini"}, monkeypatch)
+
+        # antigravity は旧 targets.gemini 読み替えにより無効化されエントリが消える
+        settings_data = json.loads(settings_path.read_text())
+        assert SERVER_NAME not in settings_data.get("mcpServers", {})
+        assert "other-server" in settings_data["mcpServers"]
+
+        # claude は legacy 読み替えの影響を受けず、通常どおり provision される
+        mcp_data = json.loads((tmp_path / ".mcp.json").read_text())
+        assert SERVER_NAME in mcp_data["mcpServers"]
+
+
 class TestNormalizeTargets:
     """旧 targets.gemini（.local.yaml 残存分）の読み替え。"""
 

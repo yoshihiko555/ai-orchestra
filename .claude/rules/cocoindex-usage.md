@@ -76,9 +76,23 @@ proxy:
 
 proxy はセッション間で**永続化**する運用を推奨する。
 
-- `SessionStart` で `start_proxy()` が冪等に呼ばれる（起動済みならスキップ）
+- `SessionStart` で proxy 起動が冪等にトリガーされる（起動済み・ready ならスキップ）。
+  SessionStart hook 自身は非同期の `start_proxy_background()` を呼ぶだけで、実際の同期起動
+  （`start_proxy()`、完了まで約 6 秒）はそこから spawn されるバックグラウンドヘルパー
+  （`start-mcp-proxy.py`、detached process）側で行われる（詳細は下記「warmup は非同期」）
 - `SessionEnd` では proxy を**停止しない**（次セッションで再利用）
 - 手動停止: `orchestra-manager.py proxy stop --project .`
+
+#### warmup は非同期（バックグラウンド）実行（仕様確定: 2026-07-15, Issue #127）
+
+`provision-mcp-servers.py`（SessionStart）は proxy 未 ready のとき `start_proxy_background()` を
+呼び出す。これはヘルパープロセスを `subprocess.Popen(..., start_new_session=True)` で起動して
+即座に制御を返す **非同期処理**であり、proxy warmup の完了（`ready`/`idle` になるまで）を
+同期的に待たない。そのため SessionStart hook 自体は warmup 完了を待たずに数秒以内に終了する。
+
+- hook の返り値・終了は warmup 完了とは無関係（fire-and-forget）
+- warmup の進捗は `.claude/state/` 配下の proxy state ファイルで追跡する
+- 現在セッションの MCP 接続を warmup 完了後に救済する仕組みはない（上記「なぜ永続化するのか」参照）
 
 #### なぜ永続化するのか（検証結果: 2026-03-06）
 
@@ -103,3 +117,34 @@ Claude Code の起動シーケンスは以下の順序で行われる:
 
 初回（proxy 未起動）のセッションでは MCP 接続が失敗する。`/mcp` でリコネクトが必要。
 2 回目以降は proxy が永続化されているため自動接続される。
+
+## uninstall 時のクリーンアップ（仕様確定: 2026-07-15, Issue #127）
+
+`orchestra-manager.py uninstall cocoindex` は `packages/cocoindex` 配下のパッケージファイル
+（config / hooks 参照エントリ）と `orchestra.json` の `installed_packages` を対象としたパッケージ
+共通のアンインストール処理のみを行う。**cocoindex 固有の以下の状態はクリーンアップの対象外**であり、
+uninstall 実行後も残存する:
+
+- 各 CLI 設定ファイルへ書き込み済みの cocoindex-code エントリ（`.mcp.json` / `.codex/config.toml` /
+  `.gemini/settings.json`）
+- 起動中の mcp-proxy プロセス（proxy モード使用時）
+- `.claude/state/cocoindex-sessions/` 配下のセッション state ファイル
+
+これは意図的な仕様であり、`uninstall` は「配布ファイルの削除」のみを責務とし、実行中プロセスの停止や
+他 CLI 設定ファイルへの書き込み変更は行わない（`uninstall` 実行時に対象プロジェクトで Claude Code
+セッションが起動していない可能性があり、hook 経由の reconcile ロジックを安全に再利用できないため）。
+
+### 手動クリーンアップの推奨手順
+
+cocoindex を完全に無効化したい場合は、uninstall の前後に以下を実行する:
+
+1. `.claude/config/cocoindex/cocoindex.local.yaml` に `enabled: false` を設定し、
+   一度セッションを起動して `provision-mcp-servers.py`（SessionStart hook）に
+   3 CLI 設定ファイルからのエントリ削除（クリーンアップモード）を実行させる
+2. proxy モードを使用していた場合は `orchestra-manager.py proxy stop --project .` で
+   mcp-proxy プロセスを停止する
+3. `orchestra-manager.py uninstall cocoindex --project .` でパッケージファイルを削除する
+4. 必要であれば `.claude/state/cocoindex-sessions/` を手動で削除する
+
+> **Note**: `uninstall` 自体に自動クリーンアップを統合することは将来の改善候補として残っている
+> （既存の `uninstall` の挙動を変更しない、小さく安全な変更を優先する方針のため今回は見送り）。

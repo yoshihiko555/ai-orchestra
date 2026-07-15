@@ -613,6 +613,31 @@ class TestStartProxyBackground:
         assert result is False
         mock_popen.assert_not_called()
 
+    @patch("proxy_manager.subprocess.Popen")
+    @patch("proxy_manager.get_proxy_state", return_value={"proxy_state": "stopped"})
+    def test_does_not_block_on_helper_process(
+        self,
+        mock_state: MagicMock,
+        mock_popen: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """EV-18: warmup はバックグラウンド起動後、helper の終了を待たずに返る
+        （SessionStart hook が同期的にブロックしないことの根拠。Issue #127 仕様確定）。
+        """
+        helper_process = MagicMock()
+        mock_popen.return_value = helper_process
+
+        result = proxy_mgr.start_proxy_background(SAMPLE_CONFIG, str(tmp_path))
+
+        assert result is True
+        # start_new_session=True でデタッチし、wait()/communicate() で helper の
+        # 終了を待つことはしない（fire-and-forget）。poll() を繰り返して終了を
+        # 待つ同期的な実装も許容しない。
+        assert mock_popen.call_args.kwargs.get("start_new_session") is True
+        helper_process.wait.assert_not_called()
+        helper_process.communicate.assert_not_called()
+        helper_process.poll.assert_not_called()
+
 
 # =========================================================================
 # stop_proxy
