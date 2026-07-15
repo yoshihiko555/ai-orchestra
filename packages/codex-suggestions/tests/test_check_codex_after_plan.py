@@ -86,7 +86,8 @@ def _run_main_with_stdin(data: dict) -> tuple[str, str | int]:
     return stdout, exit_code
 
 
-def test_main_outputs_suggestion_for_plan_task() -> None:
+def test_main_outputs_suggestion_for_plan_task(monkeypatch) -> None:
+    monkeypatch.setattr(check_codex_after_plan, "has_project_config", lambda *_: True)
     data = {
         "tool_name": "Task",
         "tool_input": {"subagent_type": "Plan", "prompt": "計画: 認証機能"},
@@ -145,10 +146,11 @@ def test_main_skips_task_with_is_error_flag() -> None:
     assert stdout == ""
 
 
-def test_main_does_not_suppress_plan_mentioning_error_handling() -> None:
+def test_main_does_not_suppress_plan_mentioning_error_handling(monkeypatch) -> None:
     """ "エラーハンドリング設計" 等の正常な plan 内容を str() 部分一致で
     誤って抑制しないこと（構造化フィールドのみを抑制根拠にする回帰テスト）。
     """
+    monkeypatch.setattr(check_codex_after_plan, "has_project_config", lambda *_: True)
     data = {
         "tool_name": "Task",
         "tool_input": {"subagent_type": "Plan", "prompt": "計画: 認証機能"},
@@ -196,6 +198,7 @@ def test_main_handles_invalid_json_gracefully() -> None:
 def test_main_no_output_when_codex_section_undefined(monkeypatch) -> None:
     """codex セクション自体が config に未定義の場合、デフォルト無効として提案を
     出力しない（2026-07-03 人間レビュー裁定, Issue #129）。"""
+    monkeypatch.setattr(check_codex_after_plan, "has_project_config", lambda *_: True)
     monkeypatch.setattr(check_codex_after_plan, "load_package_config", lambda *_: {})
     data = {
         "tool_name": "Task",
@@ -210,6 +213,7 @@ def test_main_no_output_when_codex_section_undefined(monkeypatch) -> None:
 
 def test_main_outputs_suggestion_when_codex_explicitly_enabled(monkeypatch) -> None:
     """codex.enabled: true が明示された場合は従来どおり提案を出力する（回帰確認）。"""
+    monkeypatch.setattr(check_codex_after_plan, "has_project_config", lambda *_: True)
     monkeypatch.setattr(
         check_codex_after_plan, "load_package_config", lambda *_: {"codex": {"enabled": True}}
     )
@@ -218,6 +222,59 @@ def test_main_outputs_suggestion_when_codex_explicitly_enabled(monkeypatch) -> N
         "tool_input": {"subagent_type": "Plan", "prompt": "計画: 認証機能"},
         "tool_response": {"result": "Plan created successfully"},
         "cwd": "/project",
+    }
+    stdout, exit_code = _run_main_with_stdin(data)
+    assert exit_code == 0
+    output = json.loads(stdout)
+    assert "[Codex Review Suggestion]" in output["hookSpecificOutput"]["additionalContext"]
+
+
+# --- EV-15: package fallback config を project opt-in 扱いしない
+# (Issue #129 PR #247 レビュー指摘の回帰テスト) ---
+
+
+def test_main_no_output_when_only_package_fallback_config_exists(tmp_path, monkeypatch) -> None:
+    """project-local な cli-tools.yaml が無く、パッケージ同梱フォールバックのみ
+    存在する場合（agent-routing 未導入で codex-suggestions のみ導入した
+    project を想定）は、フォールバック側の codex.enabled: true を project の
+    明示 opt-in として扱わず no-op（無出力・exit 0）になる。"""
+    orchestra_dir = tmp_path / "orchestra"
+    project_dir = tmp_path / "project"
+
+    fallback_path = orchestra_dir / "packages" / "agent-routing" / "config" / "cli-tools.yaml"
+    fallback_path.parent.mkdir(parents=True)
+    fallback_path.write_text("codex:\n  enabled: true\n", encoding="utf-8")
+
+    (project_dir / ".claude").mkdir(parents=True)
+
+    monkeypatch.setenv("AI_ORCHESTRA_DIR", str(orchestra_dir))
+
+    data = {
+        "tool_name": "Task",
+        "tool_input": {"subagent_type": "Plan", "prompt": "計画: 認証機能"},
+        "tool_response": {"result": "Plan created successfully"},
+        "cwd": str(project_dir),
+    }
+    stdout, exit_code = _run_main_with_stdin(data)
+    assert exit_code == 0
+    assert stdout == ""
+
+
+def test_main_outputs_suggestion_when_project_local_config_exists(tmp_path, monkeypatch) -> None:
+    """project-local な cli-tools.yaml に codex.enabled: true がある通常環境
+    （agent-routing 導入済み）では、従来どおり提案が出る（後方互換の回帰確認）。"""
+    project_dir = tmp_path / "project"
+    config_path = project_dir / ".claude" / "config" / "agent-routing" / "cli-tools.yaml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text("codex:\n  enabled: true\n", encoding="utf-8")
+
+    monkeypatch.delenv("AI_ORCHESTRA_DIR", raising=False)
+
+    data = {
+        "tool_name": "Task",
+        "tool_input": {"subagent_type": "Plan", "prompt": "計画: 認証機能"},
+        "tool_response": {"result": "Plan created successfully"},
+        "cwd": str(project_dir),
     }
     stdout, exit_code = _run_main_with_stdin(data)
     assert exit_code == 0

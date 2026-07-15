@@ -197,6 +197,53 @@ class TestLoadPackageConfig:
 
 
 # =========================================================================
+# has_project_config
+#
+# project 自身が package config を明示導入しているか（base または .local）を
+# 判定するヘルパー。パッケージ同梱フォールバックを opt-in と誤認しないための
+# ガードとして codex-suggestions が利用する（Issue #129 PR #247 レビュー指摘）。
+# =========================================================================
+
+
+class TestHasProjectConfig:
+    def test_true_when_base_config_exists(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "project" / ".claude" / "config" / "mypkg"
+        _write_json(config_dir / "settings.json", {"key": "base"})
+
+        assert hook_common.has_project_config("mypkg", "settings.json", str(tmp_path / "project"))
+
+    def test_true_when_only_local_override_exists(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "project" / ".claude" / "config" / "mypkg"
+        _write_json(config_dir / "settings.local.json", {"key": "local"})
+
+        assert hook_common.has_project_config("mypkg", "settings.json", str(tmp_path / "project"))
+
+    def test_false_when_only_bundled_fallback_exists(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """project-local な config が無く $AI_ORCHESTRA_DIR 同梱の config のみ
+        存在する場合は False（package fallback は project の opt-in ではない）。"""
+        orchestra_dir = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        _write_json(
+            orchestra_dir / "packages" / "mypkg" / "config" / "settings.json", {"key": "base"}
+        )
+        (project_dir / ".claude").mkdir(parents=True)
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(orchestra_dir))
+
+        assert not hook_common.has_project_config("mypkg", "settings.json", str(project_dir))
+
+    def test_false_when_neither_exists(self, tmp_path: Path) -> None:
+        assert not hook_common.has_project_config(
+            "mypkg", "settings.json", str(tmp_path / "project")
+        )
+
+    def test_false_when_project_dir_empty(self) -> None:
+        """project_dir が空文字の場合はカレントディレクトリを誤検出せず無条件で False。"""
+        assert not hook_common.has_project_config("mypkg", "settings.json", "")
+
+
+# =========================================================================
 # is_cli_enabled
 #
 # 元々 agent-routing パッケージ所有だったが、codex-suggestions /

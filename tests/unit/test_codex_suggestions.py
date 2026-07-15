@@ -184,6 +184,7 @@ class TestCodexWriteMain:
 
     def test_suggestion_output(self, monkeypatch, capsys):
         """提案がある場合、hookSpecificOutput を出力。"""
+        monkeypatch.setattr(codex_write, "has_project_config", lambda *a, **kw: True)
         monkeypatch.setattr(codex_write, "is_cli_enabled", lambda *a, **kw: True)
         monkeypatch.setattr(codex_write, "load_package_config", lambda *a: {})
         monkeypatch.setattr(
@@ -311,6 +312,7 @@ class TestCodexPlanMain:
 
     def test_successful_plan_outputs_suggestion(self, monkeypatch, capsys):
         """正常なプラン完了後に提案を出力。"""
+        monkeypatch.setattr(codex_plan, "has_project_config", lambda *a, **kw: True)
         monkeypatch.setattr(codex_plan, "is_cli_enabled", lambda *a, **kw: True)
         monkeypatch.setattr(codex_plan, "load_package_config", lambda *a: {})
         monkeypatch.setattr(
