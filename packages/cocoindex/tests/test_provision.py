@@ -894,7 +894,7 @@ class TestMainReconcileIntegration:
 
     def test_target_level_disable_only_removes_that_cli(self, tmp_path: Path, monkeypatch) -> None:
         """EV-05: targets.<cli>.enabled=false は該当 CLI のみ削除し、
-        他の CLI はプロビジョニングされたまま変わらない。
+        他の CLI の設定ファイルはエントリの追加・削除を含め一切変更されない。
         """
         mcp_path = tmp_path / ".mcp.json"
         mcp_path.write_text(
@@ -905,12 +905,33 @@ class TestMainReconcileIntegration:
         codex_dir = tmp_path / ".codex"
         codex_dir.mkdir()
         toml_path = codex_dir / "config.toml"
-        # 無関係な既存エントリを seed し、reconcile が丸ごと上書きしていないことを検証する
-        toml_path.write_text('[mcp_servers.other]\ncommand = "y"\nargs = []\nenabled = true\n')
+        # codex は元々有効かつ cocoindex-code が既にプロビジョニング済みの状態を seed する
+        # （無関係な既存エントリも含む）。実装のビルダーで生成した内容と一致させることで、
+        # 「有効な CLI は provision_fn が no-op と判定し、ファイルに一切書き込まない」
+        # ケースを厳密に再現する。
+        existing_codex_section = provision._build_toml_section(
+            SERVER_NAME, SAMPLE_CONFIG, proxy_enabled=False, project_dir=str(tmp_path)
+        )
+        codex_before = (
+            '[mcp_servers.other]\ncommand = "y"\nargs = []\nenabled = true\n\n'
+            + existing_codex_section
+            + "\n"
+        )
+        toml_path.write_text(codex_before)
+
         gemini_dir = tmp_path / ".gemini"
         gemini_dir.mkdir()
         settings_path = gemini_dir / "settings.json"
-        settings_path.write_text(json.dumps({"mcpServers": {"other-server": {"command": "z"}}}))
+        existing_antigravity_entry = provision._build_antigravity_entry(
+            SAMPLE_CONFIG, proxy_enabled=False, project_dir=str(tmp_path)
+        )
+        antigravity_before = {
+            "mcpServers": {
+                "other-server": {"command": "z"},
+                SERVER_NAME: existing_antigravity_entry,
+            }
+        }
+        settings_path.write_text(json.dumps(antigravity_before))
 
         config = {
             **SAMPLE_CONFIG,
@@ -924,19 +945,15 @@ class TestMainReconcileIntegration:
 
         self._invoke({"cwd": str(tmp_path), "session_id": "sess-target-disable"}, monkeypatch)
 
-        # claude だけエントリが消え、無関係な既存エントリは残る（他は不変）
+        # claude だけエントリが消え、無関係な既存エントリは残る
         mcp_data = json.loads(mcp_path.read_text())
         assert SERVER_NAME not in mcp_data.get("mcpServers", {})
         assert "other-server" in mcp_data["mcpServers"]
 
-        # codex / antigravity は provision される（他は不変どころか正しく反映される）
-        # かつ無関係な既存エントリは丸ごと上書きされず残存する
-        toml_content = toml_path.read_text()
-        assert "[mcp_servers.cocoindex-code]" in toml_content
-        assert "[mcp_servers.other]" in toml_content
-        settings_data = json.loads(settings_path.read_text())
-        assert SERVER_NAME in settings_data["mcpServers"]
-        assert "other-server" in settings_data["mcpServers"]
+        # codex / antigravity は enabled のまま据え置かれ、reconcile 前後で
+        # ファイル内容が完全に不変であることを検証する（追加も削除もされない）
+        assert toml_path.read_text() == codex_before
+        assert json.loads(settings_path.read_text()) == antigravity_before
 
     def test_legacy_gemini_local_yaml_disables_antigravity_end_to_end(
         self, tmp_path: Path, monkeypatch

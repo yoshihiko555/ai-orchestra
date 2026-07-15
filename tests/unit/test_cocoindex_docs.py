@@ -81,12 +81,18 @@ class TestPackagesDocMatchesManifest:
         assert documented_hooks == manifest_hooks
 
     def test_manifest_files_include_all_declared_hooks(self) -> None:
-        """manifest.json の hooks で参照されるファイルは files リストにも含まれる。"""
+        """manifest.json の hooks で参照されるファイルは files リストにも
+        配布パス（`hooks/...`）単位で含まれる。
+
+        basename のみの突合だと `docs/provision-mcp-servers.py` のような
+        無関係なパスでも誤って一致してしまうため、配布パス全体で比較する。
+        """
         manifest = json.loads(MANIFEST_JSON.read_text(encoding="utf-8"))
         manifest_hooks = _flatten_manifest_hook_files(manifest["hooks"])
-        declared_files = {Path(f).name for f in manifest["files"]}
+        declared_files = set(manifest["files"])
+        expected_hook_files = {f"hooks/{name}" for name in manifest_hooks}
 
-        assert manifest_hooks <= declared_files
+        assert expected_hook_files <= declared_files
 
 
 class TestSqliteLimitationDocumented:

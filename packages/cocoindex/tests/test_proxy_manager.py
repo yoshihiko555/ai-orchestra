@@ -631,10 +631,12 @@ class TestStartProxyBackground:
 
         assert result is True
         # start_new_session=True でデタッチし、wait()/communicate() で helper の
-        # 終了を待つことはしない（fire-and-forget）
+        # 終了を待つことはしない（fire-and-forget）。poll() を繰り返して終了を
+        # 待つ同期的な実装も許容しない。
         assert mock_popen.call_args.kwargs.get("start_new_session") is True
         helper_process.wait.assert_not_called()
         helper_process.communicate.assert_not_called()
+        helper_process.poll.assert_not_called()
 
 
 # =========================================================================

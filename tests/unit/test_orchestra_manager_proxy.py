@@ -78,3 +78,24 @@ class TestProxyStop:
 
         with pytest.raises(SystemExit):
             manager.proxy_stop(str(tmp_path))
+
+    def test_stop_proxy_failure_exits_with_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """is_proxy_running=True かつ stop_proxy=False の場合はエラー終了する。"""
+        manager = _make_manager()
+        _hook_common, proxy_manager = manager._load_proxy_modules()
+
+        monkeypatch.setattr(
+            _hook_common, "load_package_config", lambda *_args, **_kwargs: SAMPLE_CONFIG
+        )
+        monkeypatch.setattr(proxy_manager, "is_proxy_running", lambda *_: True)
+        stop_spy = MagicMock(return_value=False)
+        monkeypatch.setattr(proxy_manager, "stop_proxy", stop_spy)
+
+        with pytest.raises(SystemExit) as exc_info:
+            manager.proxy_stop(str(tmp_path))
+
+        assert exc_info.value.code == 1
+        stop_spy.assert_called_once_with(SAMPLE_CONFIG, str(tmp_path.resolve()))
+        assert "停止に失敗しました" in capsys.readouterr().err
