@@ -17,10 +17,11 @@ CLI レベルのテストは `packages/meta-harness/scripts/meta_harness.py` を
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 from pathlib import Path
 
 import pytest
@@ -49,24 +50,37 @@ def _sandbox_safe_base(tmp_path: Path) -> Path:
 
 
 @pytest.fixture()
-def git_project(tmp_path: Path) -> Path:
+def git_project(tmp_path: Path) -> Generator[Path, None, None]:
     """git 初期化済み・1 コミット済みの一時プロジェクトを作る（main root として使う）。"""
     base = _sandbox_safe_base(tmp_path)
-    project = base / "project"
-    project.mkdir(parents=True, exist_ok=True)
-    (project / "README.md").write_text("# meta-harness test project\n", encoding="utf-8")
-    # 実リポジトリの .gitignore（`.claude/meta-harness/` を無視）を再現する。無いと `init` 直後の
-    # store 作成だけで working tree が dirty 扱いになり、dirty-repo 系テストが意味を失う。
-    (project / ".gitignore").write_text(".claude/meta-harness/\n", encoding="utf-8")
-    env = {**os.environ, **_GIT_ENV}
-    subprocess.run(
-        ["git", "init", "-q", "--template="], cwd=project, check=True, capture_output=True, env=env
-    )
-    subprocess.run(["git", "add", "."], cwd=project, check=True, capture_output=True, env=env)
-    subprocess.run(
-        ["git", "commit", "-q", "-m", "init"], cwd=project, check=True, capture_output=True, env=env
-    )
-    return project
+    owns_base = base != tmp_path
+    try:
+        project = base / "project"
+        project.mkdir(parents=True, exist_ok=True)
+        (project / "README.md").write_text("# meta-harness test project\n", encoding="utf-8")
+        # 実リポジトリの .gitignore（`.claude/meta-harness/` を無視）を再現する。無いと `init` 直後の
+        # store 作成だけで working tree が dirty 扱いになり、dirty-repo 系テストが意味を失う。
+        (project / ".gitignore").write_text(".claude/meta-harness/\n", encoding="utf-8")
+        env = {**os.environ, **_GIT_ENV}
+        subprocess.run(
+            ["git", "init", "-q", "--template="],
+            cwd=project,
+            check=True,
+            capture_output=True,
+            env=env,
+        )
+        subprocess.run(["git", "add", "."], cwd=project, check=True, capture_output=True, env=env)
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "init"],
+            cwd=project,
+            check=True,
+            capture_output=True,
+            env=env,
+        )
+        yield project
+    finally:
+        if owns_base:
+            shutil.rmtree(base, ignore_errors=True)
 
 
 def _git(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
