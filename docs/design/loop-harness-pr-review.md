@@ -223,7 +223,7 @@ FT-13 の無進捗 guard 経路に集計される。
 （この呼び出しは baseline を変更しない。`record_baseline()` とは独立した既存 API である）。
 
 - drain の結果、severity 分類（3 節。`needs_classification` が残る場合はこの場でインラインに
-  Step 2 を実行する）後に actionable な finding が **1 件以上**残る場合は、`record_baseline()` /
+  Step 2 を実行する）後に **critical/high の finding が 1 件以上**残る場合は、`record_baseline()` /
   push / `record_iteration_head()` / wait / poll のいずれも実行せず、
   `phase_check_from_review_findings(...)` の結果（`passed: false`）でこの `wait_external_review`
   action を complete する。この結果は 6 節（基本設計 6.1 節）のガード評価を通って修正反復
@@ -231,10 +231,14 @@ FT-13 の無進捗 guard 経路に集計される。
   再び `push_required: true`（`pr_review_response` の Maker が新しい commit を作った後）として
   呼ばれ、その時点の baseline（今回の drain で更新済みの `findings`。ただし `baseline_review_id` /
   `processed_comment_ids` 自体は今回変更していない）に対して同じ drain を再度行う。
-- drain の結果 finding が **0 件**の場合にのみ、1.2.1 節の `detect_pr_review_push_delta()` 判定へ
-  進む。**drain が 0 件であることを確認せずに `phase_check_from_review_findings()` を呼んで
-  complete することを禁止する**（findings が空の場合、`phase_check_from_review_findings()` は
-  `passed: true` を返すため、push もレビュー待機も行わずに誤って合格扱いとなってしまう）。
+- drain の結果 **critical/high の finding が 0 件**（low/medium のみ、または finding 自体が
+  0 件）の場合にのみ、1.2.1 節の `detect_pr_review_push_delta()` 判定へ進む。**drain の
+  critical/high が 0 件であることを確認せずに `phase_check_from_review_findings()` を呼んで
+  complete することを禁止する**（critical/high finding が存在しない場合、
+  `phase_check_from_review_findings()` は `passed: true` を返すため、push もレビュー待機も行わずに
+  誤って合格扱いとなってしまう。3.4 節・4.3 節の severity 化により、この判定基準は「finding が
+  空」ではなく「critical/high finding が空」であることに注意。low/medium は非ブロッキングであり
+  残存したまま合格しうる）。
 
 **安全性の根拠（library レベルでの再検証）**: `record_baseline()` は `state.pr_review["findings"]`
 キーを一切変更しない（`baseline_review_id` / `baseline_recorded_at` / `processed_comment_ids` の
@@ -306,10 +310,15 @@ FT-13 の無進捗 guard 経路に集計される。
   相対パスを返す。
 - `load_review_findings_snapshot(loop_id, project_dir, action_id, lease_token)` は厳格検証済みの
   `ReviewFindingsResult` を返す。
-- JSON のトップレベル envelope は `schema_version: 1`、`loop_id`、`action_id` と
-  `ReviewFindingsResult` の 6 フィールド（`findings` / `iteration_findings` /
+- JSON のトップレベル envelope は `schema_version: 2`、`loop_id`、`action_id` と
+  `ReviewFindingsResult` の 7 フィールド（`findings` / `iteration_findings` /
   `previous_iteration_findings` / `processed_comment_ids` / `ignored_untrusted_comment_count` /
-  `needs_classification_count`）だけを持つ。必須キーの欠損・未知キー・
+  `needs_classification_count` / `open_non_blocking`）だけを持つ（`open_non_blocking` の追加に伴い
+  schema_version を 1 → 2 に更新。#213 対応）。後方互換として `schema_version: 1` の artifact は
+  `open_non_blocking` キー不在を許容し `()` をデフォルトに読み込む（アップグレード時に
+  `wait_external_review` 中の in-flight ループが resume 不能にならないため。v1 に
+  `open_non_blocking` が存在する場合や `schema_version` が 2 超の場合は従来どおり拒否する）。
+  上記以外の必須キーの欠損・未知キー・
   型不一致・未知 severity・負の件数・binding 不一致は `PrReviewWaitError` とし、部分復元しない。
 - save / load は active lease と state の current phase / pending action を検証し、`action_id` 一致に加えて
   action が `wait_external_review` である場合に限り許可する。stale action、別 action、pending action 不在を
@@ -320,7 +329,8 @@ FT-13 の無進捗 guard 経路に集計される。
   再検証して bounded read する。UTF-8 decode を含む違反は `PrReviewWaitError` とする。
 
 state からの再構成は採用しない。`state.pr_review["findings"]` は dedup・反復制御用の要約であり、
-元の `ReviewFindingsResult` が持つ `body_excerpt`、path、line、分類要否などを完全には保持しないためである。
+残存一覧の報告用に `path` / `line` / `body_excerpt`（200 字切詰、再掲のたびに最新値へ更新。#213 対応）は
+保持するものの、元の `ReviewFindingsResult` が持つ完全な本文や分類要否までは保持しないためである。
 不足分を GitHub API から再取得すると、追加の外部依存と取得時点差による意味のずれを持ち込む。
 action-scoped artifact は collect 時点の入力をそのまま固定し、GitHub の再取得なしに分類適用へ渡せるため、
 プロセス境界の正本として用いる。
@@ -593,6 +603,13 @@ CONFIDENCE: <high|low>
 見送り理由は Maker が生成し、`run_checker` 側で「medium/low かつ理由が空でない」ことのみを機械的に
 検証する（理由の妥当性そのものは検証しない。無人反復の限界として受容する）。
 
+**dismiss と非ブロッキング判定の関係（Issue #213 B 軸）**: 5.4.1 節・6.1 節の合格基準
+（`phase_check_from_review_findings`）は critical/high finding の有無のみで判定するため、
+medium/low は `dismissed` にしなくても合格をブロックしない（非ブロッキング）。`dismiss` は
+「対応不要と判断した」ことを明示的に記録する行為であり、合格可否そのものには影響しない。
+未 dismiss のまま `open` で残った medium/low は 6.1 節の成功コメントに残存指摘として列挙される
+（`dismissed` 済みのものは列挙対象から除く）。
+
 ---
 
 ## 4. dedup 機構
@@ -621,6 +638,11 @@ CONFIDENCE: <high|low>
         "pending_classification_source_comment_ids": ["issue_comment:22334455"],
         "dismiss_reason": null,
         "source_comment_ids": ["review_comment:918273645", "issue_comment:22334455"],
+        // 残存した非ブロッキング指摘の報告用（成功コメント / non_blocking_open）。
+        // 再掲のたびに最新値へ更新する（#213 対応）
+        "path": "packages/foo/bar.py",
+        "line": 42,
+        "body_excerpt": "…（200 字切詰）",
       },
     },
   },
@@ -676,43 +698,54 @@ normalize_signature(comment) -> str:
   将来拡張の余地として 9 節に申し送る）。
 - `path_norm` を `line_bucket` の前に置くことで、同一ファイル内の別行の指摘を確実に区別する。
 
-### 4.3 無進捗判定（同一指摘の再提起検知）とシグネチャの再利用
+### 4.3 無進捗判定（同一指摘の再提起検知）とシグネチャの再利用（Issue #213 A 軸で改訂）
 
-基本設計 6.2 節の `pr_review_response` 無進捗判定（「同一指摘シグネチャの再提起」「新規指摘件数が
-前回反復から減少しない」）は、本節 4.2 のシグネチャをそのまま入力として使う。
+基本設計 6.2 節の `pr_review_response` 無進捗判定は、本節 4.2 のシグネチャをそのまま入力として
+使う。判定対象は **critical/high（blocking）の finding シグネチャ集合に限定**し、
+「その集合が前回反復と完全一致した場合（= blocking 指摘が一切変化していない）にのみ
+no_progress とする」。
 
-**「新規指摘件数」の定義（要件用語表準拠）**: 今回反復で新規に検出された指摘の件数、すなわち
-**前回までに記録済みの指摘シグネチャ（`findings[sig].first_seen_iteration` が過去の反復番号のもの）
-に含まれない**シグネチャの件数を指す。open 状態の指摘の総数（累計）ではない。したがって
-`this.new_count` は「今回初めて `first_seen_iteration == 今回の反復番号` として記録されたシグネチャ
-の件数」として計算する（4.1 節の `findings` 辞書から算出できる）。
+> **廃止（Issue #213 A 軸）**: 旧仕様にあった「新規指摘件数が前回反復から減少しない」という
+> new_count プラトー判定は廃止した。この判定は、前反復から blocking 指摘が部分的に解消された
+> ケース（例: `{A, B}` → `{A, C}` や `{A, B}` → `{A}`）や、まったく新しい blocking 指摘が
+> 遅れて検出されたケース（外部レビューの到着順序に起因）を誤って no_progress（無進捗）と
+> 判定してしまう欠陥があった。特に、修正は正しく進んでいるのに新規 critical/high 指摘が
+> 1 件追加で見つかっただけで `exit_failure` してしまう問題（green PR の無進捗誤判定）が
+> 実運用で確認された。停滞防御自体は `max_iterations`（既定 3）と `no_new_commit`/timeout 経路
+> （1.2.1 節）が引き続き担うため、new_count 判定を落としても無限ループにはならない。
+
+**判定対象の集合**: `IterationFindings.signatures` は 3.4 節の severity 判定で **critical/high**
+と確定した finding のシグネチャのみを含む（medium/low/none は含めない。dismissed も除く）。
+4.1 節の `findings` 辞書でいえば `severity in {"critical", "high"}` かつ `status == "open"` の
+シグネチャ集合に相当する。この集合は 6.1 節の合格基準（`phase_check_from_review_findings`）が
+参照する「blocking finding」の定義と同一であり、phase signature（`compute_pr_review_signature`）
+にもこの blocking-only 集合を使う。
 
 擬似コードでは、反復ごとの集計結果を単一のデータ構造 `IterationFindings` に統一し、
 辞書アクセスと属性アクセスの型混在を解消する。
 
 ```text
 IterationFindings = {
-    signatures: set[str],  # 当該反復で確認された指摘シグネチャの集合（open のみ。dismissed を除く）
-    new_count: int,        # 新規指摘件数（上記定義。this.signatures のうち
-                            # findings[sig].first_seen_iteration == 当該反復番号 であるものの件数）
+    signatures: set[str],  # 当該反復で確認された blocking（critical/high, open）指摘シグネチャの集合
 }
 
 evaluate_no_progress(prev: IterationFindings, this: IterationFindings) -> Result:
-    reraised = this.signatures & prev.signatures  # 同一指摘シグネチャの再提起
-    if reraised:
-        return NO_PROGRESS  # 同一指摘の再提起
-    if this.new_count >= prev.new_count:
-        return NO_PROGRESS  # 新規指摘件数が前回反復から減少しない
+    if this.signatures == prev.signatures and this.signatures:
+        return NO_PROGRESS  # blocking シグネチャ集合が前回反復と完全一致（かつ非空）＝再提起
     return PROGRESS
 ```
 
 - `prev` / `this` はいずれも `IterationFindings` 型で統一し、`findings_prev_iteration[sig]` のような
   辞書アクセスと `.new_open_count` のような属性アクセスが混在しないようにする。
-- `reraised` の判定は `this.signatures` と `prev.signatures`（いずれも `set[str]`）の積集合で行う。
+- 集合が両方とも空（blocking finding が存在しない）の場合は `evaluate_no_progress` 自体が
+  呼ばれない前提とする（1.2.2 節の drain で critical/high が 0 件なら push/wait 経路へ進むため）。
+- `this.signatures == prev.signatures` の完全一致判定であり、旧仕様の `new_count` フィールドは
+  `IterationFindings` から削除した。
 
 dedup（4.1〜4.2 節）と無進捗判定（本節）は同じシグネチャ計算関数を共有するため、実装は
 `loop_common.py` に一箇所（`normalize_pr_finding_signature()`）だけ持つ。`IterationFindings` の
-構築（`this.signatures` / `this.new_count` の算出）も同モジュール内の単一関数に集約する。
+構築（`this.signatures` の算出。blocking のみへの絞り込みを含む）も同モジュール内の単一関数に
+集約する。
 
 ---
 
@@ -996,14 +1029,29 @@ instruction: loop-issue
 
 - {n} 件（許可リスト不一致のため対応対象外。詳細は journal 参照）
 
+### 残存した非ブロッキング指摘（Low/Medium）
+
+{PASSED かつ非ブロッキング指摘が 1 件以上残っている場合のみ表示。0 件ならこのセクション自体を省略する}
+
+| severity | path:line          | 抜粋（200 字まで）   |
+| -------- | ------------------- | --------------------- |
+| medium   | `src/foo.py:42`      | {レビュー本文の抜粋}  |
+| low      | `src/bar.py:10`       | {レビュー本文の抜粋}  |
+
 ### 次のアクション
 
 {FAILED の場合: "Draft PR の内容を確認し、手動で対応するか `loop_step resume --reset-counters` で再開してください"}
-{PASSED の場合: "マージ判断は人間が行ってください（auto-merge は付与されません）"}
+{PASSED の場合: "マージ判断は人間が行ってください（auto-merge は付与されません）。残存した非ブロッキング指摘がある場合は上記一覧を確認してください"}
 ```
 
 - テーブルの Checker 結果は要約（severity 件数、失敗シグネチャの種別）のみを載せ、指摘本文の
   全文は載せない（10.2 節の redaction 方針。詳細は PR 側の Draft 化コメント／journal を参照させる）。
+- 「残存した非ブロッキング指摘」セクションは、Issue #213 B 軸（severity 化された合格基準）により
+  critical/high がゼロでも medium/low が `open`（未 dismiss）のまま残った状態で `exit_success` に
+  到達しうるようになったことを受けて追加した。一覧の抜粋は 200 字までの短い引用に限り、
+  レビューコメントの生本文や外部コマンドの生出力をそのまま貼らない（10.2 節の redaction 方針を
+  踏襲）。列挙対象は全反復を通じて累積した非 dismissed の medium/low finding（`phase_check`
+  metadata の `non_blocking_open`）であり、`dismissed` 済みのものは含めない。
 
 ### 6.2 macOS 通知（osascript）
 

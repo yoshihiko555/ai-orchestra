@@ -46,6 +46,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`loop-harness`: 外部レビューが Low/Nitpick のみでも PR レビュー対応ループが無進捗失敗する問題を修正**: 実質的な指摘（Critical/High）が無いにもかかわらず Draft 化されていた不具合を修正した。Low/Medium の指摘は合格をブロックしない非ブロッキング扱いとし、残存分は成功時の Issue コメントに一覧で記録する。
+- **`loop-harness`: 遅れて届いた新規の Critical/High 指摘が「無進捗」と誤判定される問題を修正**: 修正が正しく進んでいても、前回反復から新規の重大指摘が 1 件見つかっただけで反復せず失敗していた不具合を修正した。
+
 - **`meta-harness` / `skill-evolution`: 無効な候補・target 入力で CLI が例外終了する問題を修正**: validation error として終了コード 2 を返し、skill 改善提案には対象プロジェクトを明示するようにした。
 
 - **`reverse`: Python 3.12 でスキャンスクリプトが失敗する問題を修正**: Python 3.13 で追加された `pathlib` API への依存を除き、シンボリックリンクを辿らない既存挙動を維持したままサポート対象の Python 3.12 で実行できるようにした。

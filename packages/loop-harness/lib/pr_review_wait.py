@@ -32,8 +32,10 @@ DEFAULT_GH_API_MAX_RETRIES = 3
 DEFAULT_GH_API_BACKOFF_SECONDS = 1.0
 DEFAULT_LINE_BUCKET_SIZE = 5
 EXCERPT_LIMIT = 240
+NON_BLOCKING_EXCERPT_LIMIT = 200
 REVIEW_FINDINGS_SNAPSHOT_ARTIFACT = "review_findings.json"
-REVIEW_FINDINGS_SNAPSHOT_SCHEMA_VERSION = 1
+# v2 (#213) added `open_non_blocking` to the snapshot payload.
+REVIEW_FINDINGS_SNAPSHOT_SCHEMA_VERSION = 2
 MAX_REVIEW_FINDINGS_SNAPSHOT_BYTES = 1024 * 1024
 REVIEW_SOURCES = frozenset({"review", "review_comment", "issue_comment"})
 SEVERITY_ORDER = {"low": 0, "medium": 1, "high": 2, "critical": 3}
@@ -253,12 +255,28 @@ NoProgressResult = lc.NoProgressResult
 
 
 @dataclass(frozen=True)
+class NonBlockingFinding:
+    """Currently open (non-dismissed), non-blocking (medium/low) PR review finding.
+
+    Reported to Maker-facing exit surfaces (issue #213) so a `passed=true` exit from
+    `pr_review_response` still surfaces low/medium findings nobody explicitly dismissed.
+    """
+
+    signature: str
+    severity: Severity
+    path: str | None
+    line: int | None
+    body_excerpt: str
+
+
+@dataclass(frozen=True)
 class ReviewFindingsResult:
     """Result of importing trusted review findings."""
 
     findings: tuple[ImportedFinding, ...]
     iteration_findings: IterationFindings
     previous_iteration_findings: IterationFindings
+    open_non_blocking: tuple[NonBlockingFinding, ...]
     processed_comment_ids: tuple[str, ...]
     ignored_untrusted_comment_count: int
     needs_classification_count: int
@@ -622,7 +640,13 @@ def collect_review_findings(
     baseline = _baseline_from_state(pr_review)
     processed = set(_processed_comment_ids(pr_review))
     findings_map = _findings_map(pr_review)
-    previous_iteration_findings = lc.build_pr_iteration_findings(pr_review, iteration - 1)
+    # Blocking-only (critical/high) on purpose: this feeds the no-progress guard and the phase
+    # signature via `phase_check_from_review_findings`, and low/medium churn must never affect
+    # either (issue #213). The all-severity summary used for journal observability is computed
+    # separately below, after `findings_map` reflects this action's imports.
+    previous_iteration_findings = lc.build_pr_iteration_findings(
+        pr_review, iteration - 1, severities=lc.BLOCKING_SEVERITIES
+    )
     imported: list[ImportedFinding] = []
     ignored_items: list[ReviewItem] = []
 
@@ -646,7 +670,13 @@ def collect_review_findings(
     state.pr_review = pr_review
     state.ignored_untrusted_comment_count += len(ignored_items)
     state.updated_at = lc.now_iso()
-    iteration_findings = build_iteration_findings(pr_review, iteration)
+    # All-severity summary, unchanged from prior behavior: kept for journal observability only
+    # (not fed into the no-progress guard).
+    all_severity_iteration_findings = build_iteration_findings(pr_review, iteration)
+    iteration_findings = lc.build_pr_iteration_findings(
+        pr_review, iteration, severities=lc.BLOCKING_SEVERITIES
+    )
+    open_non_blocking = _open_non_blocking_findings(findings_map)
     with _fenced_pr_review_write(
         state, loop_id, project_dir, lease_token, action_id, COLLECT_ACTIONS
     ):
@@ -661,8 +691,8 @@ def collect_review_findings(
             {
                 "imported_count": len(imported),
                 "ignored_untrusted_comment_count": len(ignored_items),
-                "signatures": sorted(iteration_findings.signatures),
-                "new_count": iteration_findings.new_count,
+                "signatures": sorted(all_severity_iteration_findings.signatures),
+                "new_count": all_severity_iteration_findings.new_count,
             },
         )
         lc._write_state(state, project_dir)
@@ -670,6 +700,7 @@ def collect_review_findings(
         findings=tuple(imported),
         iteration_findings=iteration_findings,
         previous_iteration_findings=previous_iteration_findings,
+        open_non_blocking=open_non_blocking,
         processed_comment_ids=tuple(pr_review["processed_comment_ids"]),
         ignored_untrusted_comment_count=len(ignored_items),
         needs_classification_count=sum(1 for item in imported if item.needs_classification),
@@ -849,7 +880,13 @@ def apply_severity_classifications(
     pr_review["processed_comment_ids"] = sorted(processed)
     state.pr_review = pr_review
     state.updated_at = lc.now_iso()
-    iteration_findings = build_iteration_findings(pr_review, iteration)
+    # Blocking-only, matching `collect_review_findings` (issue #213): classification can move a
+    # finding from the "high" fail-safe placeholder down to its confirmed medium/low severity,
+    # which must drop it out of the no-progress guard's signature set here too.
+    iteration_findings = lc.build_pr_iteration_findings(
+        pr_review, iteration, severities=lc.BLOCKING_SEVERITIES
+    )
+    open_non_blocking = _open_non_blocking_findings(findings_map)
     with _fenced_pr_review_write(
         state, loop_id, project_dir, lease_token, action_id, COLLECT_ACTIONS
     ):
@@ -877,6 +914,7 @@ def apply_severity_classifications(
         findings=tuple(updated_findings),
         iteration_findings=iteration_findings,
         previous_iteration_findings=result.previous_iteration_findings,
+        open_non_blocking=open_non_blocking,
         processed_comment_ids=tuple(pr_review["processed_comment_ids"]),
         ignored_untrusted_comment_count=result.ignored_untrusted_comment_count,
         needs_classification_count=0,
@@ -945,7 +983,16 @@ def dismiss_finding(
 
 
 def phase_check_from_review_findings(result: ReviewFindingsResult) -> lc.PhaseCheckResult:
-    """Convert imported PR review findings into the shared checker result shape."""
+    """Convert imported PR review findings into the shared checker result shape.
+
+    `passed` (both the phase-level and single-check-level flag) reflects only blocking
+    (critical/high) findings (issue #213): a result with only medium/low findings is
+    `passed=true`, so `pr_review_response` has an exit path even when nobody has dismissed
+    every non-blocking comment. `findings` still carries every severity for observability (the
+    Maker-facing filter to critical/high happens downstream, see
+    `loop_driver._pr_review_findings_from_last_check`). `metadata["non_blocking_open"]`
+    separately reports every currently open medium/low finding for exit-time reporting.
+    """
     findings = [
         lc.Finding(
             severity=item.severity,
@@ -956,17 +1003,17 @@ def phase_check_from_review_findings(result: ReviewFindingsResult) -> lc.PhaseCh
         )
         for item in result.findings
     ]
-    unresolved = list(findings)
+    blocking = [item for item in findings if item.severity in lc.BLOCKING_SEVERITIES]
     signature = lc.compute_pr_review_signature(list(result.iteration_findings.signatures))
     check = lc.CheckResult(
-        passed=not unresolved,
+        passed=not blocking,
         layer="llm_review",
         signature=signature,
         findings=findings,
         raw_artifact_path="",
     )
     return lc.PhaseCheckResult(
-        passed=not unresolved,
+        passed=not blocking,
         results=[check],
         signature=signature,
         infrastructure_failure=False,
@@ -975,6 +1022,9 @@ def phase_check_from_review_findings(result: ReviewFindingsResult) -> lc.PhaseCh
                 result.previous_iteration_findings
             ),
             "current_iteration_findings": _iteration_findings_dict(result.iteration_findings),
+            "non_blocking_open": [
+                _non_blocking_finding_dict(item) for item in result.open_non_blocking
+            ],
         },
     )
 
@@ -1515,6 +1565,17 @@ def _iteration_findings_dict(value: IterationFindings) -> dict[str, Any]:
     return {"signatures": sorted(value.signatures), "new_count": value.new_count}
 
 
+def _non_blocking_finding_dict(value: NonBlockingFinding) -> dict[str, Any]:
+    """Serialize NonBlockingFinding for PhaseCheckResult metadata / snapshot payloads."""
+    return {
+        "signature": value.signature,
+        "severity": value.severity,
+        "path": value.path,
+        "line": value.line,
+        "body_excerpt": value.body_excerpt,
+    }
+
+
 def _review_findings_snapshot_dict(result: ReviewFindingsResult) -> dict[str, Any]:
     """Serialize the complete action-scoped review findings result."""
     return {
@@ -1533,37 +1594,62 @@ def _review_findings_snapshot_dict(result: ReviewFindingsResult) -> dict[str, An
         ],
         "iteration_findings": _iteration_findings_dict(result.iteration_findings),
         "previous_iteration_findings": _iteration_findings_dict(result.previous_iteration_findings),
+        "open_non_blocking": [
+            _non_blocking_finding_dict(item) for item in result.open_non_blocking
+        ],
         "processed_comment_ids": list(result.processed_comment_ids),
         "ignored_untrusted_comment_count": result.ignored_untrusted_comment_count,
         "needs_classification_count": result.needs_classification_count,
     }
 
 
+_SNAPSHOT_BASE_FIELDS = frozenset(
+    {
+        "schema_version",
+        "loop_id",
+        "action_id",
+        "findings",
+        "iteration_findings",
+        "previous_iteration_findings",
+        "processed_comment_ids",
+        "ignored_untrusted_comment_count",
+        "needs_classification_count",
+    }
+)
+# v1 predates `open_non_blocking` (#213/PR#228 review). An in-flight loop mid-
+# `wait_external_review` may have durably persisted a v1 snapshot before this package was
+# upgraded; failing closed on it would strand that loop unable to resume/classify, so v1
+# payloads are still readable (defaulting `open_non_blocking` to `()`). A v1 payload that
+# *does* carry an `open_non_blocking` key is still rejected below (unknown key for that
+# version) -- v1's own key set stays exact, only its absence is tolerated.
+_LEGACY_SNAPSHOT_SCHEMA_VERSIONS = frozenset({1})
+
+
 def _review_findings_snapshot_from_dict(
     value: Any, loop_id: str, action_id: str
 ) -> ReviewFindingsResult:
-    """Strictly deserialize an action-scoped review findings snapshot."""
-    data = _snapshot_mapping(
-        value,
-        {
-            "schema_version",
-            "loop_id",
-            "action_id",
-            "findings",
-            "iteration_findings",
-            "previous_iteration_findings",
-            "processed_comment_ids",
-            "ignored_untrusted_comment_count",
-            "needs_classification_count",
-        },
-        "snapshot",
+    """Strictly deserialize an action-scoped review findings snapshot (v1 or current)."""
+    if not isinstance(value, dict):
+        _raise_invalid_snapshot("snapshot has invalid fields")
+    raw_schema_version = value.get("schema_version")
+    is_legacy = (
+        isinstance(raw_schema_version, int)
+        and not isinstance(raw_schema_version, bool)
+        and raw_schema_version in _LEGACY_SNAPSHOT_SCHEMA_VERSIONS
     )
+    expected_keys = (
+        _SNAPSHOT_BASE_FIELDS if is_legacy else _SNAPSHOT_BASE_FIELDS | {"open_non_blocking"}
+    )
+    data = _snapshot_mapping(value, expected_keys, "snapshot")
     if _snapshot_string(data["loop_id"], "loop_id") != loop_id:
         _raise_invalid_snapshot("loop_id does not match the requested loop")
     if _snapshot_string(data["action_id"], "action_id") != action_id:
         _raise_invalid_snapshot("action_id does not match the requested action")
     schema_version = _snapshot_non_negative_int(data["schema_version"], "schema_version")
-    if schema_version != REVIEW_FINDINGS_SNAPSHOT_SCHEMA_VERSION:
+    if schema_version not in (
+        *_LEGACY_SNAPSHOT_SCHEMA_VERSIONS,
+        REVIEW_FINDINGS_SNAPSHOT_SCHEMA_VERSION,
+    ):
         _raise_invalid_snapshot("unsupported schema_version")
     raw_findings = data["findings"]
     if not isinstance(raw_findings, list):
@@ -1577,6 +1663,11 @@ def _review_findings_snapshot_from_dict(
     actual_pending_count = sum(item.needs_classification for item in findings)
     if needs_classification_count != actual_pending_count:
         _raise_invalid_snapshot("needs_classification_count does not match findings")
+    open_non_blocking = (
+        ()
+        if schema_version in _LEGACY_SNAPSHOT_SCHEMA_VERSIONS
+        else _snapshot_open_non_blocking(data["open_non_blocking"], "open_non_blocking")
+    )
     return ReviewFindingsResult(
         findings=findings,
         iteration_findings=_snapshot_iteration_findings(
@@ -1585,6 +1676,7 @@ def _review_findings_snapshot_from_dict(
         previous_iteration_findings=_snapshot_iteration_findings(
             data["previous_iteration_findings"], "previous_iteration_findings"
         ),
+        open_non_blocking=open_non_blocking,
         processed_comment_ids=_snapshot_string_tuple(
             data["processed_comment_ids"], "processed_comment_ids"
         ),
@@ -1698,6 +1790,37 @@ def _snapshot_imported_finding(value: Any, index: int) -> ImportedFinding:
     )
 
 
+def _snapshot_open_non_blocking(value: Any, field_name: str) -> tuple[NonBlockingFinding, ...]:
+    if not isinstance(value, list):
+        _raise_invalid_snapshot(f"{field_name} must be a list")
+    return tuple(
+        _snapshot_non_blocking_finding(item, f"{field_name}[{index}]")
+        for index, item in enumerate(value)
+    )
+
+
+def _snapshot_non_blocking_finding(value: Any, field_name: str) -> NonBlockingFinding:
+    data = _snapshot_mapping(
+        value, {"signature", "severity", "path", "line", "body_excerpt"}, field_name
+    )
+    severity = data["severity"]
+    if not isinstance(severity, str) or severity not in {"medium", "low"}:
+        _raise_invalid_snapshot(f"{field_name}.severity must be 'medium' or 'low'")
+    path = data["path"]
+    if path is not None and not isinstance(path, str):
+        _raise_invalid_snapshot(f"{field_name}.path must be a string or null")
+    line = data["line"]
+    if line is not None and (not isinstance(line, int) or isinstance(line, bool)):
+        _raise_invalid_snapshot(f"{field_name}.line must be an integer or null")
+    return NonBlockingFinding(
+        signature=_snapshot_string(data["signature"], f"{field_name}.signature"),
+        severity=cast(Severity, severity),
+        path=path,
+        line=line,
+        body_excerpt=_snapshot_string(data["body_excerpt"], f"{field_name}.body_excerpt"),
+    )
+
+
 def _snapshot_iteration_findings(value: Any, field_name: str) -> IterationFindings:
     data = _snapshot_mapping(value, {"signatures", "new_count"}, field_name)
     signatures = _snapshot_string_tuple(data["signatures"], f"{field_name}.signatures")
@@ -1760,6 +1883,11 @@ def _upsert_finding(
             "confirmed_severity": confirmed_severity,
             "pending_classification_source_comment_ids": sorted(pending_ids),
             "source_comment_ids": source_ids,
+            # Refreshed to the latest re-raise's location/text (display-only, not part of the
+            # signature identity) so a stale early comment doesn't linger in reports (#213).
+            "path": finding.path,
+            "line": finding.line,
+            "body_excerpt": finding.body_excerpt,
         }
         return
     source_ids = [finding.source_comment_id]
@@ -1774,6 +1902,9 @@ def _upsert_finding(
         "pending_classification_source_comment_ids": pending_ids,
         "dismiss_reason": None,
         "source_comment_ids": source_ids,
+        "path": finding.path,
+        "line": finding.line,
+        "body_excerpt": finding.body_excerpt,
     }
 
 
@@ -1931,6 +2062,43 @@ def _findings_map(pr_review: dict[str, Any]) -> dict[str, dict[str, Any]]:
         for key, value in values.items()
         if isinstance(value, dict) and isinstance(key, str)
     }
+
+
+def _open_non_blocking_findings(
+    findings_map: dict[str, dict[str, Any]],
+) -> tuple[NonBlockingFinding, ...]:
+    """Collect all currently open (non-dismissed), medium/low findings, sorted by signature.
+
+    Cumulative across every iteration recorded in `findings_map` (issue #213) -- not just the
+    findings imported by the current action -- so a `pr_review_response` exit surfaces every
+    non-blocking finding nobody dismissed, even ones re-raised many iterations ago.
+    """
+    items: list[NonBlockingFinding] = []
+    for signature in sorted(findings_map):
+        record = findings_map[signature]
+        if record.get("status") == "dismissed":
+            continue
+        severity = record.get("severity")
+        if severity not in {"medium", "low"}:
+            continue
+        path = record.get("path")
+        line = record.get("line")
+        # PR#228 review: normalize whitespace (collapse newlines/runs of spaces) *before*
+        # truncating, so a multi-line reviewer comment can never break a consumer's
+        # single-line bullet rendering (e.g. `loop_driver._exit_success_comment()`) and so the
+        # 200-char limit applies to the normalized text a reader actually sees, not to
+        # whatever's left after an arbitrary mid-newline cut.
+        normalized_excerpt = " ".join(str(record.get("body_excerpt") or "").split())
+        items.append(
+            NonBlockingFinding(
+                signature=signature,
+                severity=cast(Severity, severity),
+                path=path if isinstance(path, str) else None,
+                line=line if isinstance(line, int) and not isinstance(line, bool) else None,
+                body_excerpt=normalized_excerpt[:NON_BLOCKING_EXCERPT_LIMIT],
+            )
+        )
+    return tuple(items)
 
 
 def _parse_reviewer_allowlist(value: Any) -> tuple[ReviewerAllowlistEntry, ...]:

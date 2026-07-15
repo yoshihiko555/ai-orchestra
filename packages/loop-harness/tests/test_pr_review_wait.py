@@ -80,6 +80,7 @@ def _empty_review_findings_result() -> prw.ReviewFindingsResult:
         findings=(),
         iteration_findings=lc.IterationFindings(frozenset(), 0),
         previous_iteration_findings=lc.IterationFindings(frozenset(), 0),
+        open_non_blocking=(),
         processed_comment_ids=(),
         ignored_untrusted_comment_count=0,
         needs_classification_count=0,
@@ -2115,6 +2116,7 @@ def test_review_findings_snapshot_uses_0600_and_redacts_secrets(
         ),
         iteration_findings=lc.IterationFindings(frozenset({"sig-a"}), 1),
         previous_iteration_findings=lc.IterationFindings(frozenset(), 0),
+        open_non_blocking=(),
         processed_comment_ids=("review_comment:1",),
         ignored_untrusted_comment_count=0,
         needs_classification_count=0,
@@ -2155,6 +2157,7 @@ def test_save_review_findings_snapshot_rejects_oversized_serialized_content(
         ),
         iteration_findings=lc.IterationFindings(frozenset({"sig-a"}), 1),
         previous_iteration_findings=lc.IterationFindings(frozenset(), 0),
+        open_non_blocking=(),
         processed_comment_ids=("review_comment:1",),
         ignored_untrusted_comment_count=0,
         needs_classification_count=0,
@@ -2197,7 +2200,7 @@ def test_load_review_findings_snapshot_fails_closed_for_malformed_json(
 @pytest.mark.parametrize(
     ("field", "invalid_value"),
     [
-        ("schema_version", 2),
+        ("schema_version", prw.REVIEW_FINDINGS_SNAPSHOT_SCHEMA_VERSION + 1),
         ("schema_version", True),
         ("findings", "not-a-list"),
         ("processed_comment_ids", [1]),
@@ -2217,6 +2220,7 @@ def test_load_review_findings_snapshot_fails_closed_for_invalid_schema(
         findings=(),
         iteration_findings=lc.IterationFindings(frozenset(), 0),
         previous_iteration_findings=lc.IterationFindings(frozenset(), 0),
+        open_non_blocking=(),
         processed_comment_ids=(),
         ignored_untrusted_comment_count=0,
         needs_classification_count=0,
@@ -2236,6 +2240,78 @@ def test_load_review_findings_snapshot_fails_closed_for_invalid_schema(
     )
 
     with pytest.raises(prw.PrReviewWaitError, match="invalid review findings snapshot"):
+        prw.load_review_findings_snapshot("abcd1234-issue-1", project_dir, "action-1", lease_token)
+
+
+def test_load_review_findings_snapshot_accepts_legacy_v1_payload_without_open_non_blocking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR#228 review: a v1 snapshot (pre-#213, no `open_non_blocking` key) persisted by an
+    in-flight loop before this package upgraded must still be readable, defaulting
+    `open_non_blocking` to `()` -- failing closed here would strand that loop unable to
+    resume/classify."""
+    project_dir = _setup_state(tmp_path, monkeypatch)
+    lease_token = _lease(project_dir)
+    _activate_pending_review_action(project_dir)
+    payload = {
+        **prw._review_findings_snapshot_dict(_empty_review_findings_result()),
+        "loop_id": "abcd1234-issue-1",
+        "action_id": "action-1",
+        "schema_version": 1,
+    }
+    del payload["open_non_blocking"]
+    lc.save_artifact(
+        "abcd1234-issue-1", project_dir, "action-1", "review_findings.json", json.dumps(payload)
+    )
+
+    restored = prw.load_review_findings_snapshot(
+        "abcd1234-issue-1", project_dir, "action-1", lease_token
+    )
+
+    assert restored.open_non_blocking == ()
+
+
+def test_load_review_findings_snapshot_rejects_v1_payload_with_open_non_blocking_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `schema_version: 1` payload that *does* carry an `open_non_blocking` key is still
+    rejected -- v1's own key set stays exact; only its *absence* is tolerated."""
+    project_dir = _setup_state(tmp_path, monkeypatch)
+    lease_token = _lease(project_dir)
+    _activate_pending_review_action(project_dir)
+    payload = {
+        **prw._review_findings_snapshot_dict(_empty_review_findings_result()),
+        "loop_id": "abcd1234-issue-1",
+        "action_id": "action-1",
+        "schema_version": 1,
+    }
+    lc.save_artifact(
+        "abcd1234-issue-1", project_dir, "action-1", "review_findings.json", json.dumps(payload)
+    )
+
+    with pytest.raises(prw.PrReviewWaitError, match="invalid review findings snapshot"):
+        prw.load_review_findings_snapshot("abcd1234-issue-1", project_dir, "action-1", lease_token)
+
+
+def test_load_review_findings_snapshot_rejects_unsupported_future_schema_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A schema version newer than what this package knows how to read (e.g. 3) must fail
+    closed, not silently coerce to the current shape."""
+    project_dir = _setup_state(tmp_path, monkeypatch)
+    lease_token = _lease(project_dir)
+    _activate_pending_review_action(project_dir)
+    payload = {
+        **prw._review_findings_snapshot_dict(_empty_review_findings_result()),
+        "loop_id": "abcd1234-issue-1",
+        "action_id": "action-1",
+        "schema_version": 3,
+    }
+    lc.save_artifact(
+        "abcd1234-issue-1", project_dir, "action-1", "review_findings.json", json.dumps(payload)
+    )
+
+    with pytest.raises(prw.PrReviewWaitError, match="unsupported schema_version"):
         prw.load_review_findings_snapshot("abcd1234-issue-1", project_dir, "action-1", lease_token)
 
 
@@ -2470,7 +2546,18 @@ def test_none_classification_preserves_existing_confirmed_finding() -> None:
     assert findings_map["sig-a"]["source_comment_ids"] == ["review_comment:1"]
 
 
-def test_phase_check_requires_response_for_medium_low_findings() -> None:
+def test_phase_check_passes_for_medium_low_only_findings_and_reports_non_blocking_open() -> None:
+    """issue #213/B: a medium/low-only result must be `passed=true` -- otherwise
+    `pr_review_response` has no exit path once every blocking finding is resolved but nobody
+    explicitly dismissed a low nitpick (deadlock). `findings` still carries the low severity
+    for observability, and `non_blocking_open` metadata reports it for exit-time reporting."""
+    non_blocking = prw.NonBlockingFinding(
+        signature="sig-low",
+        severity="low",
+        path="app.py",
+        line=10,
+        body_excerpt="[P4] optional",
+    )
     result = prw.phase_check_from_review_findings(
         prw.ReviewFindingsResult(
             findings=(
@@ -2478,17 +2565,145 @@ def test_phase_check_requires_response_for_medium_low_findings() -> None:
                     "sig-low", "low", "review_comment:1", "[P4] optional", "app.py", 10, False
                 ),
             ),
-            iteration_findings=lc.IterationFindings(frozenset({"sig-low"}), 1),
+            iteration_findings=lc.IterationFindings(frozenset(), 0),
             previous_iteration_findings=lc.IterationFindings(frozenset(), 0),
+            open_non_blocking=(non_blocking,),
             processed_comment_ids=("review_comment:1",),
             ignored_untrusted_comment_count=0,
             needs_classification_count=0,
         )
     )
 
-    assert result.passed is False
-    assert result.results[0].passed is False
+    assert result.passed is True
+    assert result.results[0].passed is True
     assert result.results[0].findings[0].severity == "low"
+    assert result.metadata["non_blocking_open"] == [
+        {
+            "signature": "sig-low",
+            "severity": "low",
+            "path": "app.py",
+            "line": 10,
+            "body_excerpt": "[P4] optional",
+        }
+    ]
+
+
+def test_phase_check_mixed_high_and_low_blocks_only_until_high_resolves() -> None:
+    """issue #213: a re-raised low alongside a newly-raised high must still block
+    (`passed=false`) -- only blocking severities gate `passed`, but `findings` keeps every
+    severity for observability. Once the high finding resolves and only the low remains,
+    `passed` flips to true (issue #213/B) while the low is still reported via
+    `non_blocking_open`."""
+    low = prw.NonBlockingFinding(
+        signature="sig-low", severity="low", path="app.py", line=5, body_excerpt="nit"
+    )
+    mixed = prw.phase_check_from_review_findings(
+        prw.ReviewFindingsResult(
+            findings=(
+                prw.ImportedFinding(
+                    "sig-low", "low", "review_comment:1", "nit", "app.py", 5, False
+                ),
+                prw.ImportedFinding(
+                    "sig-high", "high", "review_comment:2", "fix", "app.py", 20, False
+                ),
+            ),
+            iteration_findings=lc.IterationFindings(frozenset({"sig-high"}), 1),
+            previous_iteration_findings=lc.IterationFindings(frozenset(), 0),
+            open_non_blocking=(low,),
+            processed_comment_ids=("review_comment:1", "review_comment:2"),
+            ignored_untrusted_comment_count=0,
+            needs_classification_count=0,
+        )
+    )
+
+    assert mixed.passed is False
+    assert mixed.results[0].passed is False
+    assert {item.severity for item in mixed.results[0].findings} == {"low", "high"}
+
+    resolved = prw.phase_check_from_review_findings(
+        prw.ReviewFindingsResult(
+            findings=(
+                prw.ImportedFinding(
+                    "sig-low", "low", "review_comment:1", "nit", "app.py", 5, False
+                ),
+            ),
+            iteration_findings=lc.IterationFindings(frozenset(), 0),
+            previous_iteration_findings=lc.IterationFindings(frozenset({"sig-high"}), 1),
+            open_non_blocking=(low,),
+            processed_comment_ids=("review_comment:1",),
+            ignored_untrusted_comment_count=0,
+            needs_classification_count=0,
+        )
+    )
+
+    assert resolved.passed is True
+    assert resolved.metadata["non_blocking_open"][0]["signature"] == "sig-low"
+
+
+def test_phase_check_fail_safe_high_from_unclassified_finding_blocks() -> None:
+    """issue #213: `classify_severity`'s existing fail-safe-to-`high` behavior (empty/invalid/
+    low-confidence classification response, code review B7) must still result in a blocking
+    `passed=false` once threaded through `phase_check_from_review_findings` -- fail-safe
+    findings are never silently downgraded to non-blocking."""
+    config = _config()
+
+    missing_response = prw.classify_severity("Please consider this edge case", config)
+    invalid_response = prw.classify_severity(
+        "Please consider this edge case", config, classification_response="not a valid response"
+    )
+    low_confidence = prw.classify_severity(
+        "Please consider this edge case",
+        config,
+        classification_response="SEVERITY: medium\nCONFIDENCE: low\n",
+    )
+
+    for decision in (missing_response, invalid_response, low_confidence):
+        assert decision.severity == "high"
+        assert decision.source == "fail_safe"
+        result = prw.phase_check_from_review_findings(
+            prw.ReviewFindingsResult(
+                findings=(
+                    prw.ImportedFinding(
+                        "sig-a",
+                        decision.severity,
+                        "review_comment:1",
+                        "Please consider this edge case",
+                        "app.py",
+                        1,
+                        False,
+                    ),
+                ),
+                iteration_findings=lc.IterationFindings(frozenset({"sig-a"}), 1),
+                previous_iteration_findings=lc.IterationFindings(frozenset(), 0),
+                open_non_blocking=(),
+                processed_comment_ids=("review_comment:1",),
+                ignored_untrusted_comment_count=0,
+                needs_classification_count=0,
+            )
+        )
+        assert result.passed is False
+
+
+def test_open_non_blocking_findings_normalizes_multiline_body_excerpt() -> None:
+    """PR#228 review: a multi-line reviewer comment must not leak newlines into
+    `NonBlockingFinding.body_excerpt` -- consumers (e.g. `loop_driver._exit_success_comment()`)
+    render it as a single Markdown bullet line, and an embedded newline would corrupt that.
+    Whitespace normalization happens *before* the 200-char truncation."""
+    findings_map = {
+        "sig-a": {
+            "status": "open",
+            "severity": "low",
+            "path": "app.py",
+            "line": 5,
+            "body_excerpt": "line one\n\n   line two  \nline three",
+        }
+    }
+
+    result = prw._open_non_blocking_findings(findings_map)
+
+    assert len(result) == 1
+    assert result[0].body_excerpt == "line one line two line three"
+    assert "\n" not in result[0].body_excerpt
 
 
 def test_repeated_finding_preserves_highest_severity() -> None:
@@ -2607,21 +2822,103 @@ def test_ev39_signature_normalizes_path_line_bucket_and_body_tokens() -> None:
     assert prw.normalize_signature(first, dedup) != prw.normalize_signature(different_bucket, dedup)
 
 
-def test_ev40_no_progress_uses_reraised_signatures_or_non_decreasing_new_count() -> None:
-    prev = prw.IterationFindings(frozenset({"sig-a"}), 2)
+def test_ev40_no_progress_requires_identical_blocking_signature_set() -> None:
+    """issue #213/A: only an *exact* re-raise of the same (non-empty) blocking signature set
+    counts as no-progress. A completely new signature set, and any partial reduction of the
+    previous set, both count as progress -- the Maker made *some* change even if it didn't
+    fully resolve every finding. `evaluate_no_progress`'s callers must already have filtered
+    to `lc.BLOCKING_SEVERITIES` (see `build_pr_iteration_findings`)."""
+    prev = prw.IterationFindings(frozenset({"sig-a", "sig-b"}), 2)
 
-    reraised = prw.evaluate_no_progress(prev, prw.IterationFindings(frozenset({"sig-a"}), 1))
-    non_decreasing = prw.evaluate_no_progress(prev, prw.IterationFindings(frozenset({"sig-b"}), 2))
-    progress = prw.evaluate_no_progress(prev, prw.IterationFindings(frozenset({"sig-b"}), 1))
+    reraised = prw.evaluate_no_progress(
+        prev, prw.IterationFindings(frozenset({"sig-a", "sig-b"}), 2)
+    )
+    new_signature_set = prw.evaluate_no_progress(
+        prev, prw.IterationFindings(frozenset({"sig-a", "sig-c"}), 2)
+    )
+    partial_resolution = prw.evaluate_no_progress(
+        prev, prw.IterationFindings(frozenset({"sig-a"}), 1)
+    )
+    fully_resolved = prw.evaluate_no_progress(prev, prw.IterationFindings(frozenset(), 0))
 
     assert reraised.no_progress is True
     assert reraised.reason == "reraised"
-    assert non_decreasing.no_progress is True
-    assert non_decreasing.reason == "new_count_non_decreasing"
-    assert progress.no_progress is False
+    assert reraised.reraised_signatures == frozenset({"sig-a", "sig-b"})
+    assert new_signature_set.no_progress is False
+    assert new_signature_set.reason == "progress"
+    assert partial_resolution.no_progress is False
+    assert partial_resolution.reason == "progress"
+    assert fully_resolved.no_progress is False
+    assert fully_resolved.reason == "progress"
+
+
+def test_ev101_iteration_findings_severities_filter_excludes_medium_low() -> None:
+    """issue #213/B (EV-101): the no-progress guard and phase signature consume
+    `build_pr_iteration_findings(severities=lc.BLOCKING_SEVERITIES)`, so open medium/low
+    findings must appear neither in the blocking signature set nor in `new_count` --
+    their arrival or churn can never pollute the no-progress streak. Dismissed records
+    stay excluded regardless of severity."""
+
+    def record(severity: str, status: str, first_seen: int, last_seen: int) -> dict[str, object]:
+        return {
+            "severity": severity,
+            "status": status,
+            "first_seen_iteration": first_seen,
+            "last_seen_iteration": last_seen,
+        }
+
+    pr_review = {
+        "findings": {
+            "sig-crit": record("critical", "open", 1, 2),
+            "sig-high": record("high", "open", 2, 2),
+            "sig-med": record("medium", "open", 2, 2),
+            "sig-low": record("low", "open", 2, 2),
+            "sig-dismissed-high": record("high", "dismissed", 2, 2),
+        }
+    }
+
+    unfiltered = lc.build_pr_iteration_findings(pr_review, 2)
+    blocking = lc.build_pr_iteration_findings(pr_review, 2, severities=lc.BLOCKING_SEVERITIES)
+
+    assert unfiltered.signatures == frozenset({"sig-crit", "sig-high", "sig-med", "sig-low"})
+    assert unfiltered.new_count == 3
+    assert blocking.signatures == frozenset({"sig-crit", "sig-high"})
+    assert blocking.new_count == 1
+    # Identical blocking set across iterations stays no-progress even while lows churn.
+    assert lc.evaluate_pr_review_no_progress(blocking, blocking).no_progress is True
+
+
+def _pr_review_round(
+    source_comment_id: str,
+    previous_signatures: tuple[str, ...],
+    current_signatures: tuple[str, ...],
+) -> lc.PhaseCheckResult:
+    """Build a `phase_check_from_review_findings()` result for one blocking-signature round."""
+    return prw.phase_check_from_review_findings(
+        prw.ReviewFindingsResult(
+            findings=(
+                prw.ImportedFinding("sig-a", "high", source_comment_id, "A", "app.py", 10, False),
+            ),
+            iteration_findings=lc.IterationFindings(
+                frozenset(current_signatures), len(current_signatures)
+            ),
+            previous_iteration_findings=lc.IterationFindings(
+                frozenset(previous_signatures), len(previous_signatures)
+            ),
+            open_non_blocking=(),
+            processed_comment_ids=(source_comment_id,),
+            ignored_untrusted_comment_count=0,
+            needs_classification_count=0,
+        )
+    )
 
 
 def test_ev40_loop_common_uses_pr_review_metadata_in_guard_path(tmp_path: Path) -> None:
+    """issue #213/A: the guard routes through PR-review-specific metadata (not the phase's raw
+    signature) and only treats an *exact* re-raise of the same blocking signature set as
+    no-progress. Round 1 introduces `sig-a` (nothing preceded it: progress). Round 2 re-raises
+    the identical `sig-a` set unchanged (no-progress, streak 1). Round 3 re-raises it again
+    (streak 2 == `repeat`, EXIT_FAILURE)."""
     state = lc._initial_state(
         "loop", "issue-loop", "hash", str(tmp_path), "loop/issue-1", "pr_review_response"
     )
@@ -2631,45 +2928,25 @@ def test_ev40_loop_common_uses_pr_review_metadata_in_guard_path(tmp_path: Path) 
     }
     config = {"guards": {"max_iterations": 5, "no_progress": {"repeat": 2}}}
 
-    first = prw.phase_check_from_review_findings(
-        prw.ReviewFindingsResult(
-            findings=(
-                prw.ImportedFinding("sig-a", "high", "review_comment:1", "A", "app.py", 10, False),
-            ),
-            iteration_findings=lc.IterationFindings(frozenset({"sig-a"}), 1),
-            previous_iteration_findings=lc.IterationFindings(frozenset(), 0),
-            processed_comment_ids=("review_comment:1",),
-            ignored_untrusted_comment_count=0,
-            needs_classification_count=0,
-        )
-    )
-    second = prw.phase_check_from_review_findings(
-        prw.ReviewFindingsResult(
-            findings=(
-                prw.ImportedFinding("sig-a", "high", "review_comment:2", "A", "app.py", 10, False),
-                prw.ImportedFinding("sig-b", "high", "review_comment:3", "B", "app.py", 20, False),
-            ),
-            iteration_findings=lc.IterationFindings(frozenset({"sig-a", "sig-b"}), 1),
-            previous_iteration_findings=lc.IterationFindings(frozenset({"sig-a"}), 1),
-            processed_comment_ids=("review_comment:2", "review_comment:3"),
-            ignored_untrusted_comment_count=0,
-            needs_classification_count=0,
-        )
-    )
+    round1 = _pr_review_round("review_comment:1", (), ("sig-a",))
+    round2 = _pr_review_round("review_comment:2", ("sig-a",), ("sig-a",))
+    round3 = _pr_review_round("review_comment:3", ("sig-a",), ("sig-a",))
 
-    first_decision = lc.evaluate_guards(state, first, phase_def, config)
-    second_decision = lc.evaluate_guards(state, second, phase_def, config)
+    first_decision = lc.evaluate_guards(state, round1, phase_def, config)
+    second_decision = lc.evaluate_guards(state, round2, phase_def, config)
+    third_decision = lc.evaluate_guards(state, round3, phase_def, config)
 
     assert first_decision.disposition == "continue"
-    assert first.signature != second.signature
-    assert second_decision.disposition == lc.Action.EXIT_FAILURE.value
-    assert second_decision.reason == "no_progress"
+    assert second_decision.disposition == "continue"
+    assert third_decision.disposition == lc.Action.EXIT_FAILURE.value
+    assert third_decision.reason == "no_progress"
 
     state_without_phase_def = lc._initial_state(
         "loop-2", "issue-loop", "hash", str(tmp_path), "loop/issue-1", "pr_review_response"
     )
-    lc.evaluate_guards(state_without_phase_def, first, None, config)
-    fallback_decision = lc.evaluate_guards(state_without_phase_def, second, None, config)
+    lc.evaluate_guards(state_without_phase_def, round1, None, config)
+    lc.evaluate_guards(state_without_phase_def, round2, None, config)
+    fallback_decision = lc.evaluate_guards(state_without_phase_def, round3, None, config)
     assert fallback_decision.reason == "no_progress"
 
 
@@ -2700,6 +2977,7 @@ def test_confirm_review_findings_reported_blocks_on_concurrent_flock_holder(
         ),
         iteration_findings=lc.IterationFindings(frozenset({"sig-a"}), 1),
         previous_iteration_findings=lc.IterationFindings(frozenset(), 0),
+        open_non_blocking=(),
         processed_comment_ids=(),
         ignored_untrusted_comment_count=0,
         needs_classification_count=0,
