@@ -46,6 +46,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`loop-harness`: 死んだ scheduler が cron から復旧しない問題を修正**: 常駐 scheduler の cron 生存確認を、cron ラッパー自身のコマンド文字列に誤って一致しうる `pgrep -f` の正規表現マッチから、pidfile への `flock` に基づく `is-alive` チェックへ変更した。scheduler は起動時に自身で pidfile をロックするため、二重起動は cron/launchd/手動起動のいずれからでも確実に防止される。
 - **`loop-harness`: 外部レビューが Low/Nitpick のみでも PR レビュー対応ループが無進捗失敗する問題を修正**: 実質的な指摘（Critical/High）が無いにもかかわらず Draft 化されていた不具合を修正した。Low/Medium の指摘は合格をブロックしない非ブロッキング扱いとし、残存分は成功時の Issue コメントに一覧で記録する。
 - **`loop-harness`: 遅れて届いた新規の Critical/High 指摘が「無進捗」と誤判定される問題を修正**: 修正が正しく進んでいても、前回反復から新規の重大指摘が 1 件見つかっただけで反復せず失敗していた不具合を修正した。
 
@@ -76,6 +77,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **`meta-harness`: ストア用 `.gitignore` エントリが SessionStart 同期で消える問題を修正**: `.claude/meta-harness/` を gitignore 管理ブロックの生成元（`gitignore_sync.py`）に追加し、同期のたびに手動追記が失われる Phase 1a の実装漏れを解消
 - **`meta-harness`: `orchex meta propose` の Codex 起動失敗を修正**: srt 隔離下で repo 内 `proposal.schema.json` が `denyRead` に遮断されないよう schema を ephemeral `CODEX_HOME` へ staging し、非 secret の `models_cache.json` / `version.json` だけを staging するようにした。構造化出力時の streaming 通信は Codex backend に限り srt の TLS 終端から除外し、proposal schema は OpenAI structured output 互換に調整した
+
+- **`loop-harness`: `start` 直後にセッションが断絶したループを復旧できない問題を修正**: 初回 `run_maker` の pending 化直後（`status=pending`）にセッションがクラッシュすると、`attach` が `pending` を拒否し `resume` も対象外のため復旧経路が無く、state ディレクトリを手動削除して journal を失いながら `start` をやり直すしかなかった。`attach` が `pending` も受理し、同一 `loop_id`・journal を維持したまま復旧できるようにした。
 
 ### Security
 

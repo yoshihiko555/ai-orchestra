@@ -13,8 +13,10 @@ module must not deviate from.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -57,7 +59,8 @@ _TOMBSTONE_SUFFIX = ".tombstone.json"
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI entry point: `loop_scheduler.py [--project <path>] [print-launchd|print-cron]`."""
+    """CLI entry point:
+    `loop_scheduler.py [--project <path>] [print-launchd|print-cron|is-alive]`."""
     args = _parse_args(argv)
     project = _project_dir(args.project)
     if args.command == "print-launchd":
@@ -68,6 +71,8 @@ def main(argv: list[str] | None = None) -> int:
         _ensure_scheduler_log_dir(project)
         print(render_cron_entry(project, definition_id=args.definition))
         return 0
+    if args.command == "is-alive":
+        return 0 if is_scheduler_alive(project, definition_id=args.definition) else 1
     run_scheduler(project, args.definition, max_cycles=args.max_cycles)
     return 0
 
@@ -102,6 +107,13 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     subparsers = parser.add_subparsers(dest="command")
     subparsers.add_parser("print-launchd", help="print a launchd plist template to stdout")
     subparsers.add_parser("print-cron", help="print a cron entry template to stdout")
+    subparsers.add_parser(
+        "is-alive",
+        help=(
+            "exit 0 if a resident scheduler already holds the pidfile flock for "
+            "--project/--definition (Issue #216), exit 1 otherwise"
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -381,13 +393,16 @@ def _tombstoned_loop_ids(project_dir: str) -> set[str]:
 def _pending_loop_ids(project_dir: str) -> set[str]:
     """Return loop_ids whose state.json status is "pending" (initial run_maker in flight).
 
-    `lc.attach()` only accepts `running`/`waiting_external` status and raises
-    `InvalidStateError` for `pending` - a `loop_id` still in `pending` has never completed its
-    first action, so a duplicate worker spawned for the same still-labeled Issue would try to
-    attach, fail immediately, and (per `should_restart`) be retried again next cycle: a
-    restart storm (#G10). Unlike a terminal status, there is no automatic resolution here -
-    something is wrong with the original worker - so this is treated as "exclude from
-    discovery, wait for a human" rather than respawned.
+    `lc.attach()` can now recover a `pending` loop directly (Issue #205: it treats an
+    orphaned initial `run_maker` the same as any other orphaned pending action). But this
+    scheduler deliberately still excludes `pending` from *automatic* discovery/respawn: a
+    duplicate worker auto-spawned for the same still-labeled Issue would attach, and (unlike
+    a deliberate human/LP-1 attach) would do so blindly every poll cycle regardless of
+    whether the original worker might still legitimately be about to complete - retrying
+    that every cycle risks a restart storm (#G10). Unlike a terminal status, there is no
+    automatic resolution here - something may be wrong with the original worker - so this is
+    treated as "exclude from discovery, wait for a human (`attach`) or lease-expiry-driven
+    `recover_orphaned_pending_loops`" rather than respawned.
     """
     root = lc.loop_root(project_dir)
     if not root.is_dir():
@@ -409,8 +424,9 @@ def discover_loop_ids(
     """Discover new loop_ids: labeled open Issues, priority/created_at ordered, minus active,
     terminal, and pending ones (#10: a terminal loop_id must not be regenerated just because
     its Issue still carries the label, resuming it is an explicit operator action; #G10: a
-    still-pending loop_id cannot be attached to either, so re-spawning it would only restart-
-    storm against an immediate attach failure)."""
+    still-pending loop_id is deliberately never auto-respawned even though `lc.attach()` can
+    now recover it manually (Issue #205) - re-spawning it automatically here would restart-
+    storm, see `_pending_loop_ids`)."""
     label = resolve_label(definition)
     issues = list_labeled_issues(project_dir, label)
     ordered = sort_candidates(issues, priority_labels(project_dir))
@@ -471,11 +487,15 @@ def should_restart(status: str) -> bool:
     """Return True unless status is a terminal state a human must investigate first (3.3 節),
     or still `pending` (#H3/#H11).
 
-    A `pending` loop's worker never completed its first action, so `lc.attach()` rejects it
-    outright (`InvalidStateError`) - restarting it here would just restart-storm against an
-    immediate attach failure every cycle. Recovery for a genuinely orphaned `pending` loop (dead
-    worker, expired lease) is handled separately by `recover_orphaned_pending_loops`, which
-    retires the stale state dir instead of respawning a worker against it.
+    A `pending` loop's worker never completed its first action. `lc.attach()` can now
+    recover a `pending` loop when called explicitly (Issue #205), but this scheduler
+    deliberately does not do so automatically here - blindly retrying an auto-respawn every
+    poll cycle would restart-storm regardless of whether the original worker might still be
+    about to complete. Recovery for a genuinely orphaned `pending` loop (dead worker, expired
+    lease) is instead handled separately by `recover_orphaned_pending_loops`, which retires
+    the stale state dir (freeing the Issue for fresh discovery under a new `loop_id`) rather
+    than respawning a worker against it; a human/LP-1 operator may also `attach` directly to
+    resume the same `loop_id`/journal before that retirement happens.
     """
     return status not in _NON_RESTARTABLE_STATUSES and status != "pending"
 
@@ -582,12 +602,14 @@ def _untracked_live_active_loop_ids(runtime: SchedulerRuntime, project_dir: str)
     process across a restart) is likewise untracked in a fresh `runtime.workers`, and
     `_pending_loop_ids` only keeps `discover_loop_ids` from re-spawning a duplicate for the
     *same* Issue (#G10) - it has no effect on the cap used when spawning workers for *other*
-    Issues. Such a loop is never eligible for respawn/attach itself (`should_restart` and
-    `lc.attach()` both reject `pending`), but it still holds a real, live slot until it
-    finishes or its lease expires (at which point `recover_orphaned_pending_loops` retires it
-    and frees the slot for real). A `pending` loop whose lease has already expired is left out
-    here on purpose: it is orphan-recovery material (`recover_orphaned_pending_loops`), not a
-    live occupant of a slot.
+    Issues. Such a loop is never eligible for *automatic* respawn/attach here (`should_restart`
+    rejects `pending` outright, and while `lc.attach()` itself can now recover a `pending`
+    loop when called explicitly - Issue #205 - a live lease still makes any such attach raise
+    `ForeignLeaseError` regardless), but it still holds a real, live slot until it finishes or
+    its lease expires (at which point `recover_orphaned_pending_loops` retires it and frees
+    the slot for real). A `pending` loop whose lease has already expired is left out here on
+    purpose: it is orphan-recovery material (`recover_orphaned_pending_loops`, or a manual
+    `attach`), not a live occupant of a slot.
     """
     live_active = {
         loop_id
@@ -723,29 +745,47 @@ def recover_orphaned_pending_loops(runtime: SchedulerRuntime, project_dir: str) 
     """Retire genuinely orphaned `pending` loops so their Issue can be discovered afresh
     (#H3/#H11).
 
-    `should_restart("pending")` now refuses to respawn a `pending` loop (its worker never
-    completed the first action, and `lc.attach()` rejects `pending` outright). But
-    `discover_loop_ids` also permanently excludes any still-`pending` loop_id from discovery
-    (#G10) - so, taken together, a `pending` loop whose worker died (or whose owning scheduler
-    process itself restarted) had no path back at all: not respawned, not rediscovered,
-    invisible forever even though its Issue still carries the label.
+    `should_restart("pending")` refuses to *automatically* respawn a `pending` loop (its
+    worker never completed the first action, and an unconditional auto-respawn would restart-
+    storm - see `should_restart`'s own docstring). `discover_loop_ids` also permanently
+    excludes any still-`pending` loop_id from discovery (#G10) - so, taken together, a
+    `pending` loop whose worker died (or whose owning scheduler process itself restarted) had
+    no *automatic* path back at all: not respawned, not rediscovered, invisible forever even
+    though its Issue still carries the label.
 
-    This does not respawn a worker - `lc.attach()` would reject `pending` regardless, and a
-    fresh worker cannot safely resume another worker's in-flight initial `run_maker` action.
-    Instead, once the loop's lease has genuinely expired (no live owner could still complete
-    it), the state dir is renamed aside to `<loop_id>.orphaned-<n>` under `.claude/loop/`
-    (automating the Issue #205 manual runbook step of moving the stale dir out of the way and
-    letting a fresh `start` reuse the Issue) and the loop's worktree is best-effort cleaned up
-    (#I7, see `_retire_orphaned_pending_dir`) so the next `start` for the same Issue does not
-    silently resume from whatever uncommitted/partial edits the dead Maker left behind. Renaming
-    (not deleting) the state dir preserves the abandoned run's journal/state for post-mortem,
-    while `wm.compute_loop_id` for the same Issue number resolves to the same original
-    `loop_id`, whose directory no longer exists, so the next discovery cycle treats it as a
-    brand-new candidate.
+    This function does not respawn a worker or attach - a fresh worker cannot safely resume
+    another worker's in-flight initial `run_maker` action, and this is deliberately an
+    unattended, automatic recovery path rather than the explicit, journal-preserving `attach`
+    recovery (Issue #205; `lc.attach()` can now recover a `pending` loop directly when a
+    human/LP-1 caller invokes it, resuming the *same* `loop_id` and journal - see `attach`'s
+    own docstring). Instead, once the loop's lease has genuinely expired (no live owner could
+    still complete it), the state dir is renamed aside to `<loop_id>.orphaned-<n>` under
+    `.claude/loop/` (automating the manual runbook step of moving the stale dir out of the
+    way and letting a fresh `start` reuse the Issue, for the case no one attaches first) and
+    the loop's worktree is best-effort cleaned up (#I7, see `_retire_orphaned_pending_dir`)
+    so the next `start` for the same Issue does
+    not silently resume from whatever uncommitted/partial edits the dead Maker left behind.
+    Renaming (not deleting) the state dir preserves the abandoned run's journal/state for
+    post-mortem, while `wm.compute_loop_id` for the same Issue number resolves to the same
+    original `loop_id`, whose directory no longer exists, so the next discovery cycle treats
+    it as a brand-new candidate.
 
     Loops still tracked in `runtime.workers` (this process's own in-flight worker, whose
     `state.json` simply has not yet reflected the first completed action) are left untouched,
     as is any loop whose lease is still alive (another owner might still complete it).
+
+    SN-flock (PR #229 review, #205-race): the initial scan below is a cheap, unlocked
+    pre-filter (mirrors `loop_status._purge_if_still_safe`'s candidate-list pattern) - the
+    actual re-verification and rename happen inside `_retire_if_still_orphaned_pending`,
+    under the same per-loop `held_coord_lock` `attach()` (via `reacquire_lease`) takes. Without
+    that shared lock, a `pending` loop's `attach()` (Issue #205) could load a still-`pending`
+    state here, then have this function rename its directory out from under it before
+    `reacquire_lease`/`propose` run - surfacing as a spurious `lock_unavailable`/`invalid_state`
+    for an attach that arrived just in time to legitimately recover the loop. Serializing both
+    through the same coord lock, with a fresh lease-expiry re-check taken *inside* it
+    immediately before the rename, closes that window: whichever of `attach()` or this
+    retirement acquires the lock first "wins," and the loser's own fresh re-check (lease now
+    alive because `attach()` reacquired it, or directory now gone) correctly no-ops.
     """
     root = lc.loop_root(project_dir)
     if not root.is_dir():
@@ -762,9 +802,33 @@ def recover_orphaned_pending_loops(runtime: SchedulerRuntime, project_dir: str) 
             continue
         if not _is_lease_expired(loop_id, project_dir):
             continue
-        _retire_orphaned_pending_dir(entry, project_dir)
-        recovered.append(loop_id)
+        if _retire_if_still_orphaned_pending(loop_id, project_dir):
+            recovered.append(loop_id)
     return recovered
+
+
+def _retire_if_still_orphaned_pending(loop_id: str, project_dir: str) -> bool:
+    """Re-verify `loop_id` is still an orphaned `pending` loop under the coord lock, then
+    retire it (SN-flock, PR #229 review, #205-race - see `recover_orphaned_pending_loops`'s
+    own docstring for the race this closes).
+
+    Held under the same `lc.held_coord_lock` as `attach()` (via `reacquire_lease`), `resume`,
+    and `purge`, so this cannot interleave with a concurrent `attach()` reclaiming the lease
+    for the same `loop_id`. Both `state.status` and lease-expiry are reloaded fresh *inside*
+    the lock - the caller's own pre-filter check is only a cheap, TOCTOU-prone hint, mirroring
+    `loop_status._purge_if_still_safe`'s reload-immediately-before-mutating pattern. Returns
+    False (no-op) when the loop no longer qualifies: status moved on, or `attach()` already
+    reclaimed a live lease for it.
+    """
+    with lc.held_coord_lock(loop_id, project_dir):
+        entry = lc.loop_dir(loop_id, project_dir)
+        state = _try_load_state(entry, project_dir)
+        if state is None or state.status != "pending":
+            return False
+        if not _is_lease_expired(loop_id, project_dir):
+            return False
+        _retire_orphaned_pending_dir(entry, project_dir)
+        return True
 
 
 def _retire_orphaned_pending_dir(entry: Path, project_dir: str) -> None:
@@ -1096,6 +1160,120 @@ def _safe_stop_repo_identity_mismatch(
     return True
 
 
+# -- single-instance guard (Issue #216: pidfile + flock, replaces regex-based pgrep liveness) --
+
+
+def scheduler_pidfile_path(project_dir: str, definition_id: str = DEFAULT_DEFINITION_ID) -> Path:
+    """Return the fixed pidfile path a resident scheduler flocks for the duration of its run
+    (Issue #216), and the sole liveness signal `is_scheduler_alive`/the `is-alive` CLI
+    subcommand probe against.
+
+    Scoped per (project_dir, definition_id) - not per-project alone - matching J4's existing
+    cron pgrep-pattern precedent: a project running multiple concurrent schedulers for
+    different `--definition` values (or one non-default definition alongside the default) is
+    an intentional, supported configuration, and each such scheduler must be guarded
+    independently rather than mutually excluding each other.
+
+    Uses `loop_common.loop_root` (root-worktree-resolved `.claude/loop/`) rather than a plain
+    `Path(project_dir).resolve() / ".claude" / "loop"` (PR #230 Codex P1 fix): loop state
+    (`state.json`/`journal.jsonl`/`coord.lock`, all addressed via `loop_root` too) always lives
+    under the *root* worktree regardless of which worktree `--project` points at, per the
+    repo's linked-worktree layout. A scheduler started with `--project <linked-worktree>` and
+    one started with `--project <root-worktree>` therefore discover/spawn/monitor against the
+    exact same shared state - so their single-instance guard must flock the exact same pidfile
+    too, or two "different" schedulers (by pidfile) could concurrently drive one shared set of
+    loops, breaking both the single-instance guarantee and the concurrency cap. The earlier
+    plain-resolve choice optimized for avoiding an extra git subprocess call at
+    render/probe/startup time, but that correctness gap outweighs the cost; every caller here -
+    `run_scheduler`, `is_scheduler_alive`, and the rendered cron guard's own runtime `is-alive`
+    invocation - now agrees on exactly one inode via this same resolution.
+
+    `loop_root`/`resolve_root_worktree` fails closed (raises `RootResolutionError`) when git
+    resolution itself fails (e.g. not a git repo, `git` unavailable) rather than falling back to
+    an unverified guess; see `run_scheduler`'s and `is_scheduler_alive`'s docstrings for how
+    each caller handles that.
+    """
+    if definition_id != DEFAULT_DEFINITION_ID:
+        lc._validate_safe_id("definition_id", definition_id)  # noqa: SLF001 - reuse shared id-safety guard
+    state_root = lc.loop_root(project_dir)
+    if definition_id == DEFAULT_DEFINITION_ID:
+        return state_root / "scheduler.pid"
+    return state_root / f"scheduler.{definition_id}.pid"
+
+
+def _acquire_scheduler_lock(project_dir: str, definition_id: str) -> Any:
+    """Try to become the single resident scheduler for (project_dir, definition_id) by taking
+    a non-blocking exclusive flock on `scheduler_pidfile_path` (Issue #216).
+
+    Returns the open file handle on success - the caller MUST keep a reference to it for as
+    long as this process is acting as the scheduler; the flock is released automatically by
+    the kernel the moment the fd is closed or this process exits (including a crash), so no
+    explicit unlock call is needed or attempted. Returns None if another live scheduler already
+    holds the lock, in which case the caller must not proceed.
+
+    This is the actual single-instance guarantee (the `is-alive` CLI probe below, and cron's
+    `is-alive || fallback` guard, only avoid a redundant spawn attempt as an optimization): even
+    if two schedulers were started concurrently (e.g. a manual start racing launchd's
+    `KeepAlive` restart, or two cron ticks firing back to back), only one can ever win this
+    flock - the loser calls this, gets None, and exits immediately without touching any loop
+    state.
+    """
+    path = scheduler_pidfile_path(project_dir, definition_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_CREAT | os.O_RDWR, lc.FILE_MODE)
+    handle = os.fdopen(fd, "r+", encoding="utf-8")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        return None
+    handle.seek(0)
+    handle.truncate()
+    handle.write(json.dumps({"pid": os.getpid(), "started_at": lc.now_iso()}) + "\n")
+    handle.flush()
+    return handle
+
+
+def is_scheduler_alive(project_dir: str, definition_id: str = DEFAULT_DEFINITION_ID) -> bool:
+    """Probe whether a resident scheduler for (project_dir, definition_id) currently holds
+    `scheduler_pidfile_path`'s flock (Issue #216) - the liveness check backing the `is-alive`
+    CLI subcommand cron's restart guard now calls, replacing the old `pgrep -f <pattern>`
+    regex-over-argv match (removed here; see `render_cron_entry`'s prior #13 self-match
+    docstring for why that approach was structurally unreliable).
+
+    Unlike a regex match over process command lines, this can never be fooled by an unrelated
+    process - including the cron wrapper shell invoking this very probe - whose argv happens to
+    contain matching text: the kernel enforces flock mutual exclusion directly against the same
+    `_acquire_scheduler_lock` call a live scheduler takes at startup and holds for its entire
+    lifetime, released automatically the instant that process exits or crashes (stale-pidfile-
+    safe by construction - there is no separate pid-liveness check to go stale).
+
+    Fail-closed design (PR #230 Codex P1 follow-up): if `scheduler_pidfile_path` cannot resolve
+    the root worktree (`loop_common.RootResolutionError` - not a git repo, `git` unavailable,
+    etc.), this returns `False` ("not alive") rather than raising. That is safe, not fail-open:
+    the actual single-instance guarantee lives in `run_scheduler`/`_acquire_scheduler_lock`,
+    which independently hits the exact same `RootResolutionError` on the exact same input and
+    refuses to start (see its docstring) - so a `False` here only ever triggers a harmless
+    fallback-spawn attempt that itself declines to start, instead of this probe crashing with a
+    bare traceback on every cron tick.
+    """
+    try:
+        path = scheduler_pidfile_path(project_dir, definition_id)
+    except lc.RootResolutionError:
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_CREAT | os.O_RDWR, lc.FILE_MODE)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    else:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return False
+    finally:
+        os.close(fd)
+
+
 # -- main poll loop --------------------------------------------------------------------------
 
 
@@ -1105,23 +1283,62 @@ def run_scheduler(
     *,
     max_cycles: int | None = None,
 ) -> None:
-    """Run the resident scheduler loop (forever unless max_cycles is given for tests)."""
-    definition = ld.load_all_definitions(project_dir).get(definition_id)
-    if definition is None:
-        raise ld.DefinitionValidationError(f"loop definition not found: {definition_id}")
-    runtime = SchedulerRuntime()
-    runtime.stopped_loop_ids.update(verify_repo_identity_at_startup(project_dir))
-    poll_interval = resolve_poll_interval(definition)
-    cycles = 0
-    while max_cycles is None or cycles < max_cycles:
-        try:
-            run_cycle(runtime, project_dir, definition)
-        except Exception as exc:  # noqa: BLE001 - a resident poller must survive a bad cycle (#21)
-            print(lc.redact(f"loop_scheduler: poll cycle failed: {exc}"), file=sys.stderr)
-        cycles += 1
-        if max_cycles is not None and cycles >= max_cycles:
-            break
-        time.sleep(poll_interval)
+    """Run the resident scheduler loop (forever unless max_cycles is given for tests).
+
+    Refuses to start (Issue #216) when another live scheduler for the same
+    (project_dir, definition_id) already holds `scheduler_pidfile_path`'s flock - see
+    `_acquire_scheduler_lock`. This replaces the old cron-only, regex-based `pgrep -f
+    <pattern>` liveness guard, whose self-match limitation (#13) meant a dead scheduler could
+    be mistaken for a live one and never restarted; the pidfile/flock check here is enforced by
+    the scheduler itself at startup, independent of which mechanism (cron, launchd, or a manual
+    invocation) started it.
+
+    Also refuses to start, fail-closed, if `scheduler_pidfile_path` cannot resolve the root
+    worktree (`loop_common.RootResolutionError`, PR #230 Codex P1 follow-up: not a git repo,
+    `git` unavailable, etc.). Proceeding anyway would mean running with no verified
+    single-instance guard at all - silently reintroducing the exact double-start risk this
+    Issue closes - so an unresolvable root worktree is treated the same as "another scheduler
+    already holds the lock": log and exit without touching any loop state.
+    """
+    try:
+        lock_handle = _acquire_scheduler_lock(project_dir, definition_id)
+    except lc.RootResolutionError as exc:
+        print(
+            lc.redact(
+                f"loop_scheduler: could not resolve the root worktree for {project_dir} "
+                f"({exc}); refusing to start without a verified single-instance guard"
+            ),
+            file=sys.stderr,
+        )
+        return
+    if lock_handle is None:
+        print(
+            lc.redact(
+                f"loop_scheduler: a scheduler for definition {definition_id!r} is already "
+                f"running in {project_dir}; exiting"
+            ),
+            file=sys.stderr,
+        )
+        return
+    try:
+        definition = ld.load_all_definitions(project_dir).get(definition_id)
+        if definition is None:
+            raise ld.DefinitionValidationError(f"loop definition not found: {definition_id}")
+        runtime = SchedulerRuntime()
+        runtime.stopped_loop_ids.update(verify_repo_identity_at_startup(project_dir))
+        poll_interval = resolve_poll_interval(definition)
+        cycles = 0
+        while max_cycles is None or cycles < max_cycles:
+            try:
+                run_cycle(runtime, project_dir, definition)
+            except Exception as exc:  # noqa: BLE001 - a resident poller must survive a bad cycle (#21)
+                print(lc.redact(f"loop_scheduler: poll cycle failed: {exc}"), file=sys.stderr)
+            cycles += 1
+            if max_cycles is not None and cycles >= max_cycles:
+                break
+            time.sleep(poll_interval)
+    finally:
+        lock_handle.close()
 
 
 # -- cron / launchd templates (3.5 節: template generation only, no auto-install) ----------------
@@ -1228,6 +1445,12 @@ def render_launchd_plist(
     only covers `&`/`<`/`>`) does not protect against those. This mirrors
     `render_cron_entry`'s SN-cron CR/LF fail-closed guard, applied to launchd's XML format
     instead of crontab's line-oriented one.
+
+    Issue #216: unlike `render_cron_entry`, this template has never needed a pgrep-style
+    liveness guard of its own - `KeepAlive: true` already restarts a scheduler that exits or
+    crashes, and a duplicate resident (e.g. a manual invocation started alongside an
+    already-loaded launchd job) is now rejected by the scheduler's own startup flock in
+    `run_scheduler`/`_acquire_scheduler_lock`, independent of which mechanism started it.
     """
     script = str(script_path or _SCRIPT_DIR / "loop_scheduler.py")
     project = str(Path(project_dir).resolve())
@@ -1295,7 +1518,8 @@ def render_cron_entry(
     python_bin: str | None = None,
     definition_id: str = DEFAULT_DEFINITION_ID,
 ) -> str:
-    """Render a cron entry template: `pgrep` guard that restarts the scheduler if it died.
+    """Render a cron entry template: an `is-alive` pidfile/flock probe restarts the scheduler
+    if it died (Issue #216).
 
     Every interpolated path is shell-quoted individually (#12): an unescaped `project_dir`
     containing whitespace or shell metacharacters (`;`, `|`, `&`, ...) would otherwise split
@@ -1310,67 +1534,24 @@ def render_cron_entry(
     mirroring `render_launchd_plist`: otherwise a cron-restarted scheduler for a non-default
     loop definition would silently fall back to polling the default definition's label.
 
-    `pgrep -f` matches against the *entire* pattern string given, so the guard now matches on
-    `<script> --project <project>` (not the script path alone) (#H16): with multiple projects
-    installed from the same `loop_scheduler.py` script, a script-path-only pattern would treat
-    any other project's already-running scheduler as "this project's scheduler is alive" and
-    skip starting a new one for the current project entirely.
-
-    J4: when `definition_id` differs from `DEFAULT_DEFINITION_ID`, the pgrep pattern also
-    includes `--definition <definition_id>` (mirroring the `definition_args` already appended
-    to the fallback command). Without this, a project running multiple concurrent schedulers
-    for different non-default definitions (or one non-default definition alongside the
-    default) would have every non-default cron entry's liveness guard match on *any* already-
-    running scheduler for that project - including one for a completely different definition -
-    and skip starting the requested definition's own scheduler, leaving its label queue never
-    processed.
-
-    `script`/`project` are `re.escape`-d before being embedded in the `pgrep -f` pattern
-    (SM2): `pgrep -f` interprets its argument as a POSIX extended regular expression, not a
-    literal string, so an unescaped path containing ERE metacharacters (`( ) + [ ] * ? |`
-    etc. - all legal filesystem-path characters) could fail to match at all or match the
-    wrong process. This is unrelated to the `shlex.quote` calls elsewhere in this function,
-    which only protect *shell* parsing of the crontab line, not `pgrep`'s own regex parsing
-    of the (already shell-unescaped) pattern string it receives. `render_launchd_plist` has
-    no equivalent issue: its `ProgramArguments` array passes the script path as a literal
-    argv element (no shell/regex re-parsing), so no such escaping is needed there.
-
     The cron line is prefixed with `mkdir -p <log dir> &&` (#H17): `.claude/loop/` may not
     exist yet on a fresh checkout, and the shell's `>> ... 2>&1` redirection at the end of this
     line fails outright (whole command errors out, scheduler never starts) if its parent
     directory is missing.
 
-    #13 / Issue #219 P2-3: `pgrep -f <pattern>` also matches the cron wrapper shell's own argv,
-    since the *entire* crontab command line (including this pgrep invocation's own text) is
-    visible to `pgrep -f` and literally contains the pattern text a second time in the fallback
-    `python3 <script> --project <project>` invocation. Left unaddressed, this self-match makes
-    `pgrep -f <pattern>` succeed on *every* cron tick regardless of whether the real scheduler
-    is actually alive -- a dead scheduler is then never restarted, since `||`'s fallback never
-    runs. A textual pattern tweak (e.g. the classic `[l]oop_scheduler.py` bracket trick) cannot
-    fix this because the self-match comes from the fallback command's own text, not from the
-    pgrep invocation's own argv.
-
-    Fixed by piping `pgrep -f <pattern>`'s output through `grep -vxF -e "$$" -e "$PPID"` before
-    checking whether anything remains (`| grep -q .`): `$$` is this cron-invoked shell's own
-    PID (the wrapper whose argv contains the fallback text and therefore self-matches) and
-    `$PPID` its parent, both portable POSIX/bash/dash shell built-ins evaluated fresh on every
-    tick (no Python `os.getpid()` call is possible here -- there is no live Python process
-    inside this shell one-liner until the fallback itself runs). `-x`/`-F` match each pgrep
-    output line (a bare PID) as a whole literal string, avoiding a partial-substring collision
-    between different PIDs. This closes the concrete "dead scheduler treated as alive forever"
-    failure mode without changing the pipeline's overall `... || <fallback>` exit-status
-    contract: if pgrep finds nothing beyond this shell's own PID/parent, the filtered pipeline's
-    final `grep -q .` exits non-zero and the fallback still runs; if a genuinely different,
-    still-alive scheduler process also matches, at least one non-excluded PID survives the
-    filter and the fallback is skipped, exactly as before.
-
-    Known residual limitation (accepted as-is, per Codex review of this exact fix): only this
-    shell's own PID and its immediate parent are excluded, not the full ancestor chain -- an
-    unrelated process that independently happens to contain the pattern text, or PIDs from a
-    concurrently-running second cron guard invocation, could still cause a false "alive" match.
-    A fully race-free liveness check needs a pidfile/flock written by `loop_scheduler.py`
-    itself at startup, which remains a larger, riskier redesign than belongs in a
-    template-rendering fix; left as a follow-up rather than bundled here.
+    Issue #216 (supersedes #13's `pgrep -f <pattern>` self-match guard and J4's matching
+    definition-id-in-pattern fix, both removed here): the liveness guard is now
+    `<script> --project <project>[--definition <id>] is-alive` (see `is_scheduler_alive`),
+    which flocks the exact same `scheduler_pidfile_path` a live scheduler holds for its entire
+    run - not a regex over process command lines. This closes the old self-match failure mode
+    structurally rather than by best-effort PID exclusion: a `pgrep -f` pattern could always
+    coincidentally match the cron wrapper shell's own argv (which literally contains the
+    fallback command's text a second time), making a dead scheduler look alive forever and
+    permanently skip the restart. `is-alive`'s exit code depends only on whether the flock is
+    actually held, so it cannot self-match. Both the `is-alive` probe and the fallback spawn
+    share the same `--project`/`--definition` argument construction (`project_args`) as a
+    single source of truth, so there is no separate pattern to keep in sync with the fallback
+    command the way the old `pgrep_pattern` was.
 
     Every literal `%` in the assembled line is escaped to `\\%` (SN7): `crontab` treats an
     unescaped `%` as a newline at the crontab-file-parsing stage, *before* the shell ever
@@ -1404,29 +1585,14 @@ def render_cron_entry(
     definition_args = ""
     if definition_id != DEFAULT_DEFINITION_ID:
         definition_args = f" --definition {shlex.quote(definition_id)}"
-    # `pgrep -f <pattern>` treats <pattern> as a POSIX extended regular expression, not a
-    # literal string (SM2): an unescaped `script`/`project` containing ERE metacharacters
-    # (`( ) + [ ] * ? |` etc., all legal in a filesystem path) would either fail to match at
-    # all (e.g. an unbalanced `(`) or match something other than the literal path intended.
-    # `re.escape` backslash-escapes those metacharacters so pgrep matches them literally.
-    pgrep_pattern = f"{re.escape(script)} --project {re.escape(project)}"
-    # J4: include the definition id in the liveness pattern whenever it is part of the actual
-    # command (i.e. non-default), so this guard cannot mistake a running scheduler for a
-    # *different* definition as proof this definition's own scheduler is already alive.
-    if definition_id != DEFAULT_DEFINITION_ID:
-        pgrep_pattern += f" --definition {re.escape(definition_id)}"
-    # `grep -vxF -e "$$" -e "$PPID"` drops the pgrep self-match: the cron wrapper shell's own
-    # `pgrep -f` argv contains the fallback launch command, so without this the guard would see
-    # itself and conclude a scheduler is already alive. Residual (best-effort) limitations,
-    # accepted here because layer-2 lease fencing is the real single-writer guarantee: only the
-    # wrapper's own pid (`$$`) and immediate parent (`$PPID`) are excluded, not the full ancestor
-    # chain, and concurrent cron firings are not coordinated with each other. A pidfile/flock
-    # redesign is the complete fix and is tracked as a separate follow-up.
+    project_args = f"--project {shlex.quote(project)}{definition_args}"
+    is_alive_command = f"{shlex.quote(python)} {shlex.quote(script)} {project_args} is-alive"
+    fallback_command = (
+        f"{shlex.quote(python)} {shlex.quote(script)} {project_args} >> "
+        f"{shlex.quote(log_path)} 2>&1"
+    )
     line = (
-        f"*/5 * * * * mkdir -p {shlex.quote(log_dir)} && "
-        f'pgrep -f {shlex.quote(pgrep_pattern)} | grep -vxF -e "$$" -e "$PPID" | grep -q . || '
-        f"{shlex.quote(python)} {shlex.quote(script)} --project {shlex.quote(project)}"
-        f"{definition_args} >> {shlex.quote(log_path)} 2>&1\n"
+        f"*/5 * * * * mkdir -p {shlex.quote(log_dir)} && {is_alive_command} || {fallback_command}\n"
     )
     return line.replace("%", "\\%")
 

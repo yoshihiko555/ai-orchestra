@@ -825,9 +825,18 @@ def _exit_code_for(exc: BaseException) -> int:
 
 
 def _attach_with_token(loop_id: str, project: str) -> lc.ProposeResult:
-    """Attach and preserve the reclaimed lease token even when proposal creation fails."""
+    """Attach and preserve the reclaimed lease token even when proposal creation fails.
+
+    `pending` is accepted alongside `running`/`waiting_external` (Issue #205): a session
+    that crashes between `start`'s initial `run_maker` proposal and its `complete` call
+    leaves the loop permanently stuck in `pending` with no recovery entry point, since
+    `resume` is `failed`/`stopped`-only. `propose(recover_orphans=True)`'s existing
+    reconcile path already treats an orphaned side-effectful pending action as an
+    infrastructure failure and re-proposes (or fails via guard exhaustion) regardless of
+    `state.status`, so this only widens which statuses may reach that path.
+    """
     state = lc.load_state(loop_id, project)
-    if state.status not in {"running", "waiting_external"}:
+    if state.status not in {"pending", "running", "waiting_external"}:
         raise lc.InvalidStateError(f"cannot attach status={state.status}")
     lock = lc.reacquire_lease(loop_id, project, _owner_id(), _lp1_ttl(project))
     try:
