@@ -215,24 +215,32 @@ fast-forward-only の `fetch` + 期待値照合つき `update-ref`（CAS）を�
    （アクション単位。既存の journal/state ディレクトリとは独立し、driver がアクション完了後に
    `shutil.rmtree` する使い捨てディレクトリ）。
 4. `git init --bare <ephemeral_dir>`
-5. `echo <common_dir>/objects > <ephemeral_dir>/objects/info/alternates`
+5. **[Fix-6] commit identity の seed**:
+   `git --git-dir=<ephemeral_dir> config user.name "loop-harness-maker"` /
+   `git --git-dir=<ephemeral_dir> config user.email "loop-harness-maker@invalid"`
+   （コンテナの `HOME` は `maker_scratch_home()` の空 scratch ディレクトリであり `~/.gitconfig` を
+   持たない。共有 `common_dir/config` の `user.*` もコンテナには見せない設計のため、これを行わないと
+   Maker の `git commit` が `Author identity unknown` で失敗する。meta-harness の
+   `_prepare_isolated_git()` が使い捨てスナップショットに `-c user.name=meta-harness` を与える
+   のと同じ考え方で、repo ローカルの ephemeral repo にのみ設定する合成 identity とする）
+6. `echo <common_dir>/objects > <ephemeral_dir>/objects/info/alternates`
    （**host パスをそのまま書く**。4.4 節の「1:1 パスマウント」により、コンテナ内でも同じパスで
    解決できるため、パス変換は不要）
-6. `git --git-dir=<ephemeral_dir> update-ref refs/heads/<branch> <baseline_sha>`
+7. `git --git-dir=<ephemeral_dir> update-ref refs/heads/<branch> <baseline_sha>`
    （ネットワーク・オブジェクト転送なしの ref 作成のみ。baseline はすでに alternates 経由で
    読めるオブジェクトなので追加の fetch は不要）
-7. `git --git-dir=<ephemeral_dir> symbolic-ref HEAD refs/heads/<branch>`
-8. **[Fix-1] `GIT_DIR=<ephemeral_dir> git read-tree <baseline_sha>`**
+8. `git --git-dir=<ephemeral_dir> symbolic-ref HEAD refs/heads/<branch>`
+9. **[Fix-1] `GIT_DIR=<ephemeral_dir> git read-tree <baseline_sha>`**
    （ephemeral repo の index を baseline のツリー内容で初期化する。これを省略すると
    ephemeral repo の index は空のままになり、Maker が変更ファイルだけ `git add` しても
    「baseline の全ファイルが削除された」commit が生成されてしまう。alternates 経由で
    baseline のオブジェクトは既に読めるため、追加の fetch なしでこの操作は完結する）
-9. **[Fix-3] `.git` ポインタの改ざん防止準備**: `<worktree_path>/.git` は本来
-   `gitdir: <common_dir>/worktrees/<name>` を指すテキストファイルである。この内容を
-   `pinned_git_pointer = <runtime dir>/pinned-dotgit` にコピーしておく（コンテナ起動前、
-   trusted な内容として一度だけスナップショット）。4.3.2 節でこのファイルを
-   `<worktree_path>/.git` に **ro で上書き bind mount** することで、worktree 自体は rw でも
-   `.git` ポインタだけはコンテナから書き換え不能にする。
+10. **[Fix-3] `.git` ポインタの改ざん防止準備**: `<worktree_path>/.git` は本来
+    `gitdir: <common_dir>/worktrees/<name>` を指すテキストファイルである。この内容を
+    `pinned_git_pointer = <runtime dir>/pinned-dotgit` にコピーしておく（コンテナ起動前、
+    trusted な内容として一度だけスナップショット）。4.3.2 節でこのファイルを
+    `<worktree_path>/.git` に **ro で上書き bind mount** することで、worktree 自体は rw でも
+    `.git` ポインタだけはコンテナから書き換え不能にする。
 
 #### 4.3.2 コンテナ実行
 
@@ -259,21 +267,39 @@ fast-forward-only の `fetch` + 期待値照合つき `update-ref`（CAS）を�
 > `refusing to fetch into branch ... checked out` として拒否するため実行不能だった。
 > 一時 ref を経由し、`update-ref <ref> <new> <old>` の原子的 CAS で確定する手順に修正する。**
 
-1. `new_sha = git --git-dir=<ephemeral_dir> rev-parse refs/heads/<branch>`
+> **[Fix-5. 2026-07-16 PR #245 レビュー指摘反映。Critical]** `<ephemeral_dir>` はコンテナ内で
+> Maker が rw で書き込めるディレクトリであり、その `config` ファイル自体も Maker が自由に
+> 書き換えられる。コンテナ破棄後、**host（driver、フルホスト権限）** がこの `<ephemeral_dir>` を
+> 対象に複数回 git コマンドを実行するため、Maker が `<ephemeral_dir>/config` に
+> `core.fsmonitor=<悪意あるコマンド>` を仕込んでいた場合、以下の手順3（`git status`）実行時に
+> host 権限でそのコマンドが実行される（`core.hooksPath=/dev/null` は `core.fsmonitor` を
+> カバーしない、別の config キーのため）。同様に手順4の `git fetch <ephemeral_dir> ...` は
+> `<ephemeral_dir>` を fetch の**転送元**として `git upload-pack` を起動するため、
+> `uploadpack.packObjectsHook` が仕込まれていれば同じく host 権限でコマンド実行され得る。
+> **`<ephemeral_dir>` に触れる全ての host 側 git 呼び出し（手順1・3・4のすべて）は、
+> 既存の `hardened_git_config_args()`（`-c credential.helper= -c core.hooksPath=/dev/null`）に加えて
+> `-c core.fsmonitor= -c uploadpack.packObjectsHook=` を明示的に追加した引数で実行する**こと
+> （`<ephemeral_dir>` は共有 common dir とは異なり Maker が config ファイルそのものを完全に
+> 所有しているため、既存ヘルパーがカバーする脅威モデルより広い上書きが必要。実装時は
+> `hardened_git_config_args()` を拡張するか、ephemeral dir 専用の派生ヘルパーを新設する）。
+
+1. `new_sha = git --git-dir=<ephemeral_dir> <hardened args + Fix-5 追加分> rev-parse refs/heads/<branch>`
 2. `new_sha == baseline_sha` なら「Maker がコミットしなかった」として扱う（既存 `_verify_maker_commit`
    のロジックを、比較対象を「worktree の `git status --porcelain`」から「ephemeral repo の ref 移動」
    へ差し替える形で継続利用する）。
-3. **[Fix-1 検証]** コミットがある場合、`GIT_DIR=<ephemeral_dir> GIT_WORK_TREE=<worktree_path>
-   git status --porcelain` が**空であること**を必須検証する（Maker の最終 commit 後に
-   working directory と ephemeral repo の index/HEAD が完全一致していることの確認。空でなければ
-   「未コミットの変更が残っている」infrastructure failure として扱い、共有 common dir への
-   書き戻しは行わない）。
+3. **[Fix-1 検証 / Fix-5 適用]** コミットがある場合、`GIT_DIR=<ephemeral_dir>
+   GIT_WORK_TREE=<worktree_path> git <hardened args + Fix-5 追加分> status --porcelain` が
+   **空であること**を必須検証する（Maker の最終 commit 後に working directory と ephemeral repo
+   の index/HEAD が完全一致していることの確認。空でなければ「未コミットの変更が残っている」
+   infrastructure failure として扱い、共有 common dir への書き戻しは行わない）。
 4. コミットがある場合、共有 common dir への書き戻しを次の手順で行う（`ephemeral_dir` 自体は
    checkout されていないため fetch 可能。宛先を一時 ref にすることで「checkout 済みブランチへの
    fetch 拒否」を回避する）:
    - `import_ref = refs/loop-import/<action_id>`
-   - `git -C <common_dir> fetch <ephemeral_dir> <branch>:<import_ref>`
-     （`<import_ref>` はどの worktree にも checkout されていないため拒否されない）
+   - `git -C <common_dir> <hardened args + Fix-5 追加分> fetch <ephemeral_dir> <branch>:<import_ref>`
+     （`<import_ref>` はどの worktree にも checkout されていないため拒否されない。
+     Fix-5 追加分は fetch の転送元である `<ephemeral_dir>` 側の `uploadpack.packObjectsHook`
+     を無効化するために必須）
    - `imported_sha = git -C <common_dir> rev-parse <import_ref>`
    - `git -C <common_dir> merge-base --is-ancestor <baseline_sha> <imported_sha>`
      （fast-forward であることを明示的に検証。非 ff なら安全停止。`git_ref_not_fast_forward`
@@ -287,12 +313,15 @@ fast-forward-only の `fetch` + 期待値照合つき `update-ref`（CAS）を�
      新しい commit tree に合わせる。**working directory のファイルには触れない** —
      Maker が実 worktree 上で直接編集済みのため、reset 前後でファイル内容は変化しない。
      `.git` は 4.3.1/4.3.2 節で ro 保護済みの正規ポインタを指したままなので、この操作は
-     汚染された gitdir を踏まない）
+     汚染された gitdir を踏まない。この `reset` 自体は `<common_dir>` を `--git-dir` として
+     解決するため `<ephemeral_dir>` の汚染config は影響しない）
 5. `shutil.rmtree(ephemeral_dir)`。`pinned_git_pointer` の ro bind mount も併せて解除する。
 
 この手順により、共有 common dir への書き込みは**手順 4 の一時 ref 経由 fetch + CAS update-ref +
 reset のみ**に限定され、いずれも driver（host、信頼境界内のトラステッドコード）が実行する。
-コンテナ内プロセスが共有 ref・config・hooks に触れる経路は存在しない。
+コンテナ内プロセスが共有 ref・config・hooks に触れる経路は存在しない。`<ephemeral_dir>` に触れる
+呼び出しは全て Fix-5 の追加 config 上書きを適用するため、Maker が同ディレクトリの `config` を
+どう書き換えても host 側でのコード実行には至らない。
 
 #### 4.3.4 Checker 向けの sanitized ephemeral GIT_DIR（ro）
 
@@ -301,9 +330,12 @@ reset のみ**に限定され、いずれも driver（host、信頼境界内の�
 > reflog・hooks の**閲覧**は防げない。Checker も敵対的実行主体である前提（1.1 節）に反するため、
 > Maker と同様の sanitized ephemeral GIT_DIR を Checker 専用に生成し ro で渡す。**
 
-1. Checker 用にも 4.3.1 節と同じ手順（1〜4, 6〜8）で `ephemeral_dir_checker` を生成する
-   （baseline は Checker 実行時点のブランチ tip。Checker は commit しないため手順5・7の
-   `HEAD`/ref 作成は同一のまま流用してよい）。
+1. **[PR #245 レビュー指摘反映]** Checker 用にも 4.3.1 節と**全く同じ手順（1〜10。除外なし）**で
+   `ephemeral_dir_checker` を生成する（baseline は Checker 実行時点のブランチ tip）。初版は
+   手順6（alternates 設定）を誤って除外していたため、Checker のコンテナが `<common_dir>/objects`
+   を後でマウントしても `update-ref`/`read-tree` が baseline のオブジェクトを解決できず
+   起動不能になる不備があった。Checker は commit しないため手順5（commit identity の seed）は
+   実質使われないが、選択的な除外がまた別の抜け漏れを生む再発防止のため一律で同じ手順を適用する。
 2. コンテナには `<worktree_path>` を **ro**（確定方針 6）、`ephemeral_dir_checker` を **ro**、
    `<common_dir>/objects` を **ro** でマウントする。`.git` の ro overlay（4.3.1 節 Fix-3）は
    Checker のコンテナにも同様に適用する（Checker は書き込まないため実害は小さいが、
@@ -501,7 +533,7 @@ config で切替可能な追加バックエンドとして導入する（確定�
 | Phase 1  | loop-harness 用 scenario イメージ新設（loop-harness 専用 Dockerfile）、image ensure/prune/lock（5 節）の実装 | イメージ再利用・prune の単体テスト整備          |
 | Phase 2  | ephemeral GIT_DIR + alternates + driver 側 CAS 書き戻し（4 節）の実装。Maker 専用                              | 単体テスト + 実機での commit 往復検証           |
 | Phase 3  | Checker 専用 sanitized ephemeral GIT_DIR（ro）の実装（4.3.4 節。書き戻し不要なぶん Phase 2 より単純） | 単体テスト                                     |
-| Phase 4  | `loop_driver.py` への配線（`isolation.backend: docker` 分岐）、封じ込め検証テスト（cgroup 回収・network 遮断。meta-harness スパイク S3 相当）| 封じ込め検証 PASS 後に `execution_backend: docker` を有効化可能にする |
+| Phase 4  | `loop_driver.py` への配線。**実行可否の分岐は必ず `isolation.execution_backend: docker` で行う**（`backend` はイメージ・実装ロジックの選択のみに使い、単独では実行を許可しない。7 節の fail-closed 原則）。封じ込め検証テスト（cgroup 回収・network 遮断。meta-harness スパイク S3 相当）を整備 | 封じ込め検証テストが揃うまで `execution_backend` の既定値は `none` のまま。PASS 後に初めて `execution_backend: docker` を有効化可能にする |
 | Phase 5  | 受容リスクの再評価・ドキュメント更新（`design:loop-harness-cli` §2.2 の残余リスク欄を本設計の内容で更新）        | 人間レビュー                                   |
 
 各フェーズは独立した PR とし、Phase 4 完了までは `execution_backend` の既定値を `none` に保つ。
