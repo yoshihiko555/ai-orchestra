@@ -2438,6 +2438,7 @@ def evaluate_candidate(
     scenario_ids: list[str] | None,
     repeat_override: int | None,
     cli_capabilities: dict,
+    evaluation_id: str | None = None,
     runner: SubprocessRunner = subprocess.run,
 ) -> list[dict]:
     """Evaluate own scenarios plus affected skill suites in atomic ledger batches."""
@@ -2458,7 +2459,8 @@ def evaluate_candidate(
         )
 
     results: list[dict] = []
-    evaluation_id = generate_evaluation_id()
+    if evaluation_id is None:
+        evaluation_id = generate_evaluation_id()
     regression_budget = {
         "remaining_usd": _non_negative_float_config(
             (config.get("regression") or {}).get("max_budget_usd", 12.0),
@@ -2542,6 +2544,14 @@ def _evaluate_scenario_batch(
     regression_budget: dict[str, float] | None = None,
 ) -> list[dict]:
     evaluation_id = evaluation_id or generate_evaluation_id()
+    resolved_repeat = repeat_override
+    if resolved_repeat is None:
+        repeat_key = "repeat_frontier" if holdout else "repeat_default"
+        evaluate_cfg = config.get("evaluate") or {}
+        resolved_repeat = _positive_int_config(
+            evaluate_cfg.get(repeat_key, mh.DEFAULTS["evaluate"][repeat_key]),
+            f"evaluate.{repeat_key}",
+        )
     evaluator_hash = compute_configured_evaluator_hash(config)
     own_suite_hash = compute_suite_hash(own_suite_paths)
     impact = candidate_impact_context(
@@ -2601,7 +2611,7 @@ def _evaluate_scenario_batch(
         suite_hash=own_suite_hash,
         evaluator_hash=evaluator_hash,
         evaluation_id=evaluation_id,
-        repeat_override=repeat_override,
+        repeat_override=resolved_repeat,
         cli_capabilities=cli_capabilities,
         runner=runner,
     )
@@ -2640,7 +2650,7 @@ def _evaluate_scenario_batch(
                 suite_hash=suite_hash,
                 evaluator_hash=evaluator_hash,
                 evaluation_id=evaluation_id,
-                repeat_override=repeat_override,
+                repeat_override=resolved_repeat,
                 cli_capabilities=cli_capabilities,
                 runner=runner,
                 max_total_cost_usd=max(0.0, max_budget - regression_cost),

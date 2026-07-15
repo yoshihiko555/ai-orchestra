@@ -161,6 +161,12 @@ def non_holdout_summary(
     runs = current_run_events(events, config, target, cand_id, holdout=False)
     if not runs:
         return None
+    summary = {
+        "quality_mean": sum(float(run["quality_score"]) for run in runs) / len(runs),
+        "critical_pass": all(float(run.get("critical_pass_rate", 0)) == 1.0 for run in runs),
+    }
+    if not mh.candidate_has_evaluation_completed(events, cand_id):
+        return summary
     evaluation = mh.latest_evaluation_completed(
         events,
         cand_id,
@@ -171,10 +177,7 @@ def non_holdout_summary(
     )
     if evaluation is None or evaluation.get("verdict") != "pass":
         return None
-    return {
-        "quality_mean": sum(float(run["quality_score"]) for run in runs) / len(runs),
-        "critical_pass": all(float(run.get("critical_pass_rate", 0)) == 1.0 for run in runs),
-    }
+    return summary
 
 
 def holdout_quality(

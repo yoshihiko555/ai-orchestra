@@ -88,9 +88,11 @@ def _append_run(
     scenario_hash: str | None = None,
     attempt: int = 1,
     attempts_total: int = 1,
+    target: str = "claude-harness",
+    evaluation_id: str | None = None,
 ) -> None:
     paths = loop_cli.ev.discover_scenario_paths(
-        loop_cli.ev.scenario_suite_dir(loop_cli._PACKAGE_DIR, "claude-harness")
+        loop_cli.ev.scenario_suite_dir(loop_cli._PACKAGE_DIR, target)
     )
     suite_hash = suite_hash or loop_cli.ev.compute_suite_hash(paths)
     evaluator_hash = evaluator_hash or loop_cli.ev.compute_configured_evaluator_hash(config)
@@ -107,8 +109,8 @@ def _append_run(
         "run_id": f"run-{'holdout-' if holdout else ''}{cand_id}-{scenario_id}-{attempt}",
         "cand_id": cand_id,
         "scenario_id": scenario_id,
-        "target": "claude-harness",
-        "suite_id": "claude-harness",
+        "target": target,
+        "suite_id": target,
         "suite_hash": suite_hash,
         "scenario_hash": scenario_hash,
         "evaluator_hash": evaluator_hash,
@@ -129,10 +131,25 @@ def _append_run(
         "holdout": holdout,
     }
     mh.append_ledger_event(project, config, run_event)
-    _append_evaluation_summary(project, config, cand_id, holdout=holdout)
+    _append_evaluation_summary(
+        project,
+        config,
+        cand_id,
+        holdout=holdout,
+        target=target,
+        evaluation_id=evaluation_id,
+    )
 
 
-def _append_evaluation_summary(project: Path, config: dict, cand_id: str, *, holdout: bool) -> None:
+def _append_evaluation_summary(
+    project: Path,
+    config: dict,
+    cand_id: str,
+    *,
+    holdout: bool,
+    target: str,
+    evaluation_id: str | None,
+) -> None:
     events = _events(project, config)
     candidate_runs = [
         event
@@ -157,9 +174,9 @@ def _append_evaluation_summary(project: Path, config: dict, cand_id: str, *, hol
             "event": "evaluation_completed",
             "ts": mh.now_iso(),
             "schema_version": "1.0",
-            "evaluation_id": f"eval-20260711-120000-{evaluation_number:08x}",
+            "evaluation_id": evaluation_id or f"eval-20260711-120000-{evaluation_number:08x}",
             "cand_id": cand_id,
-            "target": "claude-harness",
+            "target": target,
             "holdout": holdout,
             "own_run_ids": [str(event["run_id"]) for event in latest_runs],
             "own_suite_hash": latest_run["suite_hash"],

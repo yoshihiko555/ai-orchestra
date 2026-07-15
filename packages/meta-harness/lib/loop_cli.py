@@ -312,11 +312,29 @@ def _drive_loop(main_root: Path, config: dict, project_dir: Path, spec: LoopSpec
             events = mh.read_ledger_events_strict(main_root, config)
             if not _evaluation_complete(events, config, spec.target, cand_id, holdout=False):
                 raise LoopValidationError(f"non-holdout evaluation is incomplete: {cand_id}")
+        train_evaluation = mh.latest_evaluation_completed(
+            events, cand_id, spec.target, holdout=False
+        )
+        train_evaluation_id = (train_evaluation or {}).get("evaluation_id")
+        if not isinstance(train_evaluation_id, str) or not train_evaluation_id:
+            train_evaluation_id = None
         entered_frontier = _candidate_on_frontier(main_root, config, spec.target, cand_id)
         if entered_frontier:
             events = mh.read_ledger_events_strict(main_root, config)
             if not _evaluation_complete(events, config, spec.target, cand_id, holdout=True):
-                _evaluate_candidate(main_root, config, project_dir, cand_id, holdout=True)
+                evaluation_kwargs = (
+                    {"evaluation_id": train_evaluation_id}
+                    if train_evaluation_id is not None
+                    else {}
+                )
+                _evaluate_candidate(
+                    main_root,
+                    config,
+                    project_dir,
+                    cand_id,
+                    holdout=True,
+                    **evaluation_kwargs,
+                )
                 events = mh.read_ledger_events_strict(main_root, config)
                 if not _evaluation_complete(events, config, spec.target, cand_id, holdout=True):
                     raise LoopValidationError(f"holdout evaluation is incomplete: {cand_id}")
@@ -370,6 +388,7 @@ def _evaluate_candidate(
     cand_id: str,
     *,
     holdout: bool,
+    evaluation_id: str | None = None,
 ) -> list[dict]:
     manifest = mh.read_candidate_manifest(main_root, config, cand_id)
     if manifest is None:
@@ -394,6 +413,7 @@ def _evaluate_candidate(
         scenario_ids=scenario_ids,
         repeat_override=repeat,
         cli_capabilities=caps.as_dict(),
+        evaluation_id=evaluation_id,
     )
     if any(result.get("verdict") == "error" for result in results):
         raise RuntimeError(f"candidate evaluation failed: {cand_id}")

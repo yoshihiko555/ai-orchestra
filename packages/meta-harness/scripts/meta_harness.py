@@ -810,7 +810,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="評価するシナリオ id（複数指定可、省略時は suite 内の全シナリオ）",
     )
     p_evaluate.add_argument(
-        "--repeat", type=int, default=None, help="試行回数（省略時はシナリオの repeat 値）"
+        "--repeat",
+        type=int,
+        default=None,
+        help="試行回数（省略時は holdout に応じた evaluate.repeat_default / repeat_frontier）",
     )
 
     p_propose = sub.add_parser("propose", help="filtered view から候補 overlay を提案・登録する")

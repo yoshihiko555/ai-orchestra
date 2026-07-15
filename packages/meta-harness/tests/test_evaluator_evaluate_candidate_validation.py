@@ -14,6 +14,7 @@ runner を使う機会自体が無い）。
 
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 
 from tests.module_loader import load_module
@@ -69,7 +70,7 @@ class TestRepeatValidation:
             )
 
     def test_repeat_none_is_allowed(self, tmp_path: Path, monkeypatch) -> None:
-        """--repeat 省略時（None）はシナリオ既定値を使うため検証エラーにならない。"""
+        """--repeat 省略時（None）は設定既定値を使うため検証エラーにならない。"""
         calls: list[int] = []
 
         def fake_run_single_attempt(**kwargs):
@@ -107,6 +108,75 @@ class TestRepeatValidation:
         )
         assert len(results) >= 1
         assert calls  # run_single_attempt was actually invoked
+
+    def test_repeat_none_uses_holdout_dependent_config_defaults(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        config = copy.deepcopy(mh.DEFAULTS)
+        config["evaluate"]["repeat_default"] = 2
+        config["evaluate"]["repeat_frontier"] = 3
+        emitted: list[dict] = []
+
+        def fake_run_single_attempt(**kwargs):
+            scenario_id = kwargs["scenario"]["id"]
+            attempt = kwargs["attempt"]
+            return {
+                "run_id": f"run-{scenario_id}-{attempt}",
+                "cand_id": kwargs["cand_id"],
+                "scenario_id": scenario_id,
+                "verdict": "pass",
+                "quality_score": 100.0,
+                "critical_pass_rate": 1.0,
+                "cost": {
+                    "input_tokens": 1,
+                    "output_tokens": 1,
+                    "total_tokens": 2,
+                    "tool_uses": 0,
+                    "duration_ms": 1,
+                    "total_cost_usd": 0.0,
+                    "num_turns": 1,
+                },
+                "attempt": attempt,
+                "attempts_total": kwargs["attempts_total"],
+            }
+
+        monkeypatch.setattr(ev, "run_single_attempt", fake_run_single_attempt)
+        monkeypatch.setattr(ev.siso, "execution_boundary_available", lambda _config: True)
+        monkeypatch.setattr(
+            ev,
+            "candidate_impact_context",
+            lambda **_kwargs: ev.skill_targets.SkillImpactContext((), "c" * 64),
+        )
+        monkeypatch.setattr(
+            ev,
+            "_append_evaluation_events",
+            lambda _root, _config, _schema, events: emitted.extend(events),
+        )
+
+        ev.evaluate_candidate(
+            main_root=tmp_path,
+            config=config,
+            schema_dir=_SCHEMA_DIR,
+            package_dir=_PACKAGE_DIR,
+            project_dir=tmp_path,
+            cand_id="cand-20260715-120000-repeat-ab12",
+            manifest={"target": "skill:handoff", "source_commit": "0" * 40},
+            scenario_ids=None,
+            repeat_override=None,
+            cli_capabilities={"claude_version": "2.1.207", "ok": True},
+        )
+
+        run_events = [event for event in emitted if event["event"] == "run_completed"]
+        train_events = [event for event in run_events if not event["holdout"]]
+        holdout_events = [event for event in run_events if event["holdout"]]
+        assert len(train_events) == config["evaluate"]["repeat_default"]
+        assert {event["attempts_total"] for event in train_events} == {
+            config["evaluate"]["repeat_default"]
+        }
+        assert len(holdout_events) == config["evaluate"]["repeat_frontier"]
+        assert {event["attempts_total"] for event in holdout_events} == {
+            config["evaluate"]["repeat_frontier"]
+        }
 
 
 class TestScenarioIdValidation:

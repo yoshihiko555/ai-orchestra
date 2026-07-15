@@ -200,6 +200,41 @@ def test_regression_failure_is_hard_gate_and_does_not_pollute_frontier_axes(
     assert loop_state.non_holdout_summary(events, config, CAND_ID, TARGET) is None
 
 
+def test_non_holdout_summary_uses_legacy_runs_without_evaluation_summary() -> None:
+    config = copy.deepcopy(mh.DEFAULTS)
+    target = "claude-harness"
+    paths = ev.validate_target_suite(PACKAGE_DIR, SCHEMA_DIR, target)
+    scenario_docs = [(path, ev.load_scenario(path, SCHEMA_DIR)) for path in paths]
+    results = []
+    for quality, (_, scenario) in zip((80.0, 100.0), scenario_docs, strict=True):
+        result = _result(
+            suite_id=TARGET,
+            scenario_id=str(scenario["id"]),
+            verdict="pass",
+            cost_usd=0.1,
+            tokens=10,
+        )
+        result["run_id"] = f"run-legacy-{scenario['id']}"
+        result["quality_score"] = quality
+        results.append(result)
+    results[-1]["critical_pass_rate"] = 0.0
+    events = ev._events_for_results(
+        results,
+        target=target,
+        suite_id=target,
+        suite_hash=ev.compute_suite_hash(paths),
+        evaluator_hash=ev.compute_configured_evaluator_hash(config),
+        scenario_docs=scenario_docs,
+        evaluation_id=EVALUATION_ID,
+    )
+
+    assert not mh.candidate_has_evaluation_completed(events, CAND_ID)
+    assert loop_state.non_holdout_summary(events, config, CAND_ID, target) == {
+        "quality_mean": 90.0,
+        "critical_pass": False,
+    }
+
+
 def test_unverified_impact_is_recorded_without_failing_the_batch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
