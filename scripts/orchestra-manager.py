@@ -37,6 +37,7 @@ from lib.sync_engine import (  # noqa: E402
     compute_file_hash,
     config_target_relative_path,
     get_recorded_file_hash,
+    is_user_modified,
     needs_sync,
     record_file_hash,
     sync_codex_files,
@@ -376,14 +377,14 @@ class OrchestraManager(ContextMixin, HooksMixin):
                             dst = claude_dir / rel_path
                             file_key = rel_path
 
-                        if category == "config" and dst.exists():
-                            recorded = get_recorded_file_hash(orch, pkg_name, file_key)
-                            if recorded is not None and compute_file_hash(dst) != recorded:
-                                print(
-                                    f"警告: {dst} はインストール後に変更されているため"
-                                    "上書きをスキップしました"
-                                )
-                                continue
+                        if category in ("config", "agents") and is_user_modified(
+                            orch, pkg_name, file_key, dst
+                        ):
+                            print(
+                                f"警告: {dst} はインストール後に変更されているため"
+                                "上書きをスキップしました"
+                            )
+                            continue
 
                         if not needs_sync(src, dst):
                             continue

@@ -242,3 +242,100 @@ class TestRunInitialSyncPreservesUserModifiedConfig:
         manager.run_initial_sync(project_dir, dry_run=False)
 
         assert dst.read_text(encoding="utf-8") == "distributed: v2"
+
+
+class TestRunInitialSyncPreservesUserModifiedAgent:
+    """Issue #241: agents カテゴリにも config と同じハッシュガードを適用する。"""
+
+    def test_hash_mismatch_skips_overwrite_even_when_source_is_newer(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        orchestra_dir = tmp_path / "orchestra"
+        (orchestra_dir / "packages").mkdir(parents=True)
+        pkg_dir = orchestra_dir / "packages" / "mypkg"
+        (pkg_dir / "agents").mkdir(parents=True)
+        (pkg_dir / "agents" / "foo.md").write_text("distributed: v2", encoding="utf-8")
+        _write_manifest(orchestra_dir / "packages", "mypkg", agents=["agents/foo.md"])
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(orchestra_dir))
+
+        project_dir = tmp_path / "project"
+        claude_dir = project_dir / ".claude"
+        dst = claude_dir / "agents" / "foo.md"
+        dst.parent.mkdir(parents=True)
+        dst.write_text("user edited", encoding="utf-8")
+
+        # 配布時ハッシュは "distributed: v1"（現在の "user edited" とは異なる
+        # = install 後にユーザーが変更した状態を再現）
+        orch = {
+            "installed_packages": ["mypkg"],
+            "file_hashes": {"mypkg": {"agents/foo.md": _sha256("distributed: v1")}},
+        }
+        (claude_dir / "orchestra.json").write_text(json.dumps(orch), encoding="utf-8")
+
+        # source を dst より確実に新しくする（ガード無しなら needs_sync=True で上書きされる）
+        future = time.time() + 10
+        os.utime(pkg_dir / "agents" / "foo.md", (future, future))
+
+        manager = OrchestraManager(orchestra_dir)
+        manager.run_initial_sync(project_dir, dry_run=False)
+
+        assert dst.read_text(encoding="utf-8") == "user edited"
+
+    def test_hash_match_still_syncs_when_source_is_newer(self, tmp_path: Path, monkeypatch) -> None:
+        """対照テスト: ハッシュが一致（未変更）なら従来どおり同期される。"""
+        orchestra_dir = tmp_path / "orchestra"
+        (orchestra_dir / "packages").mkdir(parents=True)
+        pkg_dir = orchestra_dir / "packages" / "mypkg"
+        (pkg_dir / "agents").mkdir(parents=True)
+        (pkg_dir / "agents" / "foo.md").write_text("distributed: v2", encoding="utf-8")
+        _write_manifest(orchestra_dir / "packages", "mypkg", agents=["agents/foo.md"])
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(orchestra_dir))
+
+        project_dir = tmp_path / "project"
+        claude_dir = project_dir / ".claude"
+        dst = claude_dir / "agents" / "foo.md"
+        dst.parent.mkdir(parents=True)
+        dst.write_text("distributed: v1", encoding="utf-8")
+
+        orch = {
+            "installed_packages": ["mypkg"],
+            "file_hashes": {"mypkg": {"agents/foo.md": _sha256("distributed: v1")}},
+        }
+        (claude_dir / "orchestra.json").write_text(json.dumps(orch), encoding="utf-8")
+
+        future = time.time() + 10
+        os.utime(pkg_dir / "agents" / "foo.md", (future, future))
+
+        manager = OrchestraManager(orchestra_dir)
+        manager.run_initial_sync(project_dir, dry_run=False)
+
+        assert dst.read_text(encoding="utf-8") == "distributed: v2"
+
+    def test_no_ledger_entry_syncs_and_starts_recording(self, tmp_path: Path, monkeypatch) -> None:
+        """未記録（旧 orchestra.json 由来）の場合は従来どおり同期し、以後の記録を開始する。"""
+        orchestra_dir = tmp_path / "orchestra"
+        (orchestra_dir / "packages").mkdir(parents=True)
+        pkg_dir = orchestra_dir / "packages" / "mypkg"
+        (pkg_dir / "agents").mkdir(parents=True)
+        (pkg_dir / "agents" / "foo.md").write_text("distributed: v2", encoding="utf-8")
+        _write_manifest(orchestra_dir / "packages", "mypkg", agents=["agents/foo.md"])
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(orchestra_dir))
+
+        project_dir = tmp_path / "project"
+        claude_dir = project_dir / ".claude"
+        dst = claude_dir / "agents" / "foo.md"
+        dst.parent.mkdir(parents=True)
+        dst.write_text("distributed: v1", encoding="utf-8")
+
+        orch = {"installed_packages": ["mypkg"], "file_hashes": {}}
+        (claude_dir / "orchestra.json").write_text(json.dumps(orch), encoding="utf-8")
+
+        future = time.time() + 10
+        os.utime(pkg_dir / "agents" / "foo.md", (future, future))
+
+        manager = OrchestraManager(orchestra_dir)
+        manager.run_initial_sync(project_dir, dry_run=False)
+
+        assert dst.read_text(encoding="utf-8") == "distributed: v2"
+        orch_after = json.loads((claude_dir / "orchestra.json").read_text())
+        assert orch_after["file_hashes"]["mypkg"]["agents/foo.md"] == _sha256("distributed: v2")

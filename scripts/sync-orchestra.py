@@ -28,7 +28,7 @@ _SCRIPTS_DIR = str(Path(__file__).resolve().parent)
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
-from lib.agent_model_patch import patch_all_agents  # noqa: E402
+from lib.agent_model_patch import patch_all_agents_paths  # noqa: E402
 from lib.gitignore_sync import sync_gitignore as _sync_gitignore  # noqa: E402
 from lib.scaffold import ensure_claude_scaffold  # noqa: E402
 from lib.sync_engine import (  # noqa: E402
@@ -36,6 +36,7 @@ from lib.sync_engine import (  # noqa: E402
     build_facets,
     collect_facet_managed_paths,
     collect_managed_agent_stems,
+    refresh_patched_agent_hashes,
     remove_stale_files,
     sync_codex_files,
     sync_hooks,
@@ -128,9 +129,9 @@ def main() -> None:
     # facet composition で管理される skill/rule パスを収集（sync スキップ対象）
     facet_managed = collect_facet_managed_paths(orchestra_path, project_dir)
 
-    # パッケージ単位の同期
+    # パッケージ単位の同期（agents は orch の file_hashes 台帳でユーザー編集を保護）
     synced_count, synced_files = sync_packages(
-        claude_dir, orchestra_path, installed_packages, facet_managed
+        claude_dir, orchestra_path, installed_packages, facet_managed, orch
     )
 
     # codex_files（.codex/ 配下配布物）の同期（ハッシュ保護付き、強制上書きなし）
@@ -159,7 +160,11 @@ def main() -> None:
 
     # サブエージェント model パッチ（インストール済みパッケージ宣言分のみ）
     managed_agent_stems = collect_managed_agent_stems(orchestra_path, installed_packages)
-    patched_count = patch_all_agents(project_dir, managed_agent_stems)
+    patched_paths = patch_all_agents_paths(project_dir, managed_agent_stems)
+    patched_count = len(patched_paths)
+    # パッチ後の内容で file_hashes 台帳を更新し直す（PR #244: is_user_modified の誤判定防止）
+    if patched_paths:
+        refresh_patched_agent_hashes(orch, claude_dir, patched_paths)
 
     # orchestra.json を更新
     prev_set = set(prev_synced)
