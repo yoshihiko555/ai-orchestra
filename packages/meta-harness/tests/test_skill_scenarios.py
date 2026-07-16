@@ -90,3 +90,25 @@ def test_routing_config_suite_dispatch_and_split_minimum(tmp_path: Path) -> None
     )
     paths = ev.validate_target_suite(package_dir, SCHEMA_DIR, "routing-config")
     assert [path.name for path in paths] == ["holdout.yaml", "train.yaml"]
+
+
+def test_routing_config_suite_uses_deterministic_critical_oracles() -> None:
+    paths = ev.validate_target_suite(PACKAGE_DIR, SCHEMA_DIR, "routing-config")
+    scenarios = [ev.load_scenario(path, SCHEMA_DIR) for path in paths]
+
+    assert len(scenarios) == 2
+    assert sum(not scenario["holdout"] for scenario in scenarios) == 1
+    assert sum(scenario["holdout"] for scenario in scenarios) == 1
+    for scenario in scenarios:
+        critical = {item["id"]: item for item in scenario["critical"]}
+        assert critical["routing-local-config-exists"]["oracle"] == "artifact_exists"
+        assert critical["routing-local-config-is-effective"]["oracle"] == "command_exit"
+        assert critical["agent-routing-regression-suite-passes"]["oracle"] == "command_exit"
+        assert (
+            "packages/agent-routing/tests"
+            in critical["agent-routing-regression-suite-passes"]["command"]
+        )
+        assert all(item["oracle"] != "rubric_judge" for item in scenario["critical"])
+        assert scenario["budget"]["max_budget_usd"] <= 3.0
+
+    assert (PACKAGE_DIR / "scenarios/fixtures/assert-routing-config-layer.py").is_file()

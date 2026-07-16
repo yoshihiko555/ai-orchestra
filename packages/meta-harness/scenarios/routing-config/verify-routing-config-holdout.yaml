@@ -1,0 +1,32 @@
+schema_version: "1.0"
+id: verify-routing-config-holdout
+target: routing-config
+description: Holdout verification for routing config layering and agent-routing behavior.
+prompt: |
+  この評価 worktree の routing config override が有効であることを確認してください。
+  既存ファイルには触れず、確認結果だけを簡潔に報告してください。
+allowed_tools:
+  - Read
+setup: []
+command_timeout_ms: 120000
+critical:
+  - id: routing-local-config-exists
+    text: "評価 worktree に cli-tools.local.yaml が materialize されている"
+    oracle: artifact_exists
+    path: ".claude/config/agent-routing/cli-tools.local.yaml"
+  - id: routing-local-config-is-effective
+    text: "load_cli_tools_config の結果に全 patch 値が反映される"
+    oracle: command_exit
+    command: "python3 packages/meta-harness/scenarios/fixtures/assert-routing-config-layer.py"
+  - id: agent-routing-regression-suite-passes
+    text: "materialize 済み local override の下で agent-routing tests が通過する"
+    oracle: command_exit
+    command: "python3 -m pytest -q packages/agent-routing/tests"
+checks: []
+holdout: true
+timeout_ms: 300000
+budget:
+  max_turns: 3
+  max_budget_usd: 0.5
+  max_output_tokens: 512
+repeat: 1
