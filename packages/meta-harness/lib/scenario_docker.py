@@ -729,7 +729,13 @@ def _start_broker(
             "environment": {
                 key: value
                 for key, value in effective_broker_env.items()
-                if key not in {"MH_BROKER_RUN_TOKEN", "MH_BROKER_PORT"}
+                if key
+                not in {
+                    "DR_BROKER_RUN_TOKEN",
+                    "DR_BROKER_PORT",
+                    "MH_BROKER_RUN_TOKEN",
+                    "MH_BROKER_PORT",
+                }
             },
         }
     )

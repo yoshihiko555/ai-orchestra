@@ -21,6 +21,10 @@ profile = load_module(
     "docker_runtime_profile_tests",
     "packages/docker-runtime/lib/docker_runtime_profile.py",
 )
+broker = load_module(
+    "docker_runtime_broker_tests",
+    "packages/docker-runtime/docker/broker/broker.py",
+)
 
 IMAGE_ID = "sha256:" + "a" * 64
 
@@ -181,6 +185,160 @@ def test_runtime_labels_keep_harness_namespaces_independent() -> None:
     assert meta.owner_label == "ai.orchestra.meta-harness.owner"
     assert loop.owner_label == "ai.orchestra.loop-harness.owner"
     assert meta.owner_label != loop.owner_label
+
+
+def _replace_broker_environment(monkeypatch: pytest.MonkeyPatch, values: dict[str, str]) -> None:
+    names = {
+        "DR_BROKER_NAMESPACE",
+        "DR_BROKER_RUN_TOKEN",
+        "DR_BROKER_PORT",
+        "DR_BROKER_BUDGET_USD",
+        "DR_BROKER_IDLE_TIMEOUT_SEC",
+        "DR_BROKER_MAX_LIFETIME_SEC",
+        "DR_BROKER_STARTUP_TIMEOUT_SEC",
+        "DR_BROKER_MAX_REQUESTS",
+        "DR_BROKER_MAX_TOTAL_TOKENS",
+        "DR_BROKER_MAX_UPSTREAM_BYTES",
+        "DR_PRICE_INPUT",
+        "DR_PRICE_OUTPUT",
+        "DR_PRICE_CACHE_CREATION",
+        "DR_PRICE_CACHE_READ",
+        "MH_BROKER_RUN_TOKEN",
+        "MH_BROKER_PORT",
+        "MH_BROKER_BUDGET_USD",
+        "MH_BROKER_IDLE_TIMEOUT_SEC",
+        "MH_BROKER_MAX_LIFETIME_SEC",
+        "MH_BROKER_STARTUP_TIMEOUT_SEC",
+        "MH_BROKER_MAX_REQUESTS",
+        "MH_BROKER_MAX_TOTAL_TOKENS",
+        "MH_BROKER_MAX_UPSTREAM_BYTES",
+        "MH_PRICE_INPUT",
+        "MH_PRICE_OUTPUT",
+        "MH_PRICE_CACHE_CREATION",
+        "MH_PRICE_CACHE_READ",
+    }
+    for name in names:
+        monkeypatch.delenv(name, raising=False)
+    for name, value in values.items():
+        monkeypatch.setenv(name, value)
+
+
+def test_broker_environment_falls_back_to_legacy_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _replace_broker_environment(
+        monkeypatch,
+        {
+            "MH_BROKER_RUN_TOKEN": "legacy-token",
+            "MH_BROKER_PORT": "8787",
+            "MH_BROKER_BUDGET_USD": "3.0",
+            "MH_BROKER_IDLE_TIMEOUT_SEC": "300",
+            "MH_BROKER_MAX_LIFETIME_SEC": "660",
+            "MH_BROKER_STARTUP_TIMEOUT_SEC": "30",
+            "MH_BROKER_MAX_REQUESTS": "64",
+            "MH_BROKER_MAX_TOTAL_TOKENS": "500000",
+            "MH_BROKER_MAX_UPSTREAM_BYTES": "50000000",
+            "MH_PRICE_INPUT": "15.0",
+            "MH_PRICE_OUTPUT": "75.0",
+            "MH_PRICE_CACHE_CREATION": "18.75",
+            "MH_PRICE_CACHE_READ": "1.5",
+        },
+    )
+
+    settings = broker._broker_settings_from_env()
+
+    assert settings == broker.BrokerSettings(
+        port=8787,
+        startup_timeout_seconds=30,
+        run_token="legacy-token",
+        budget_usd=3.0,
+        pricing=broker.Pricing(15.0, 75.0, 18.75, 1.5),
+        max_requests=64,
+        max_total_tokens=500000,
+        max_upstream_bytes=50000000,
+        idle_timeout_seconds=300,
+        max_lifetime_seconds=660,
+        identity=broker.BrokerIdentity(
+            "meta-harness-broker",
+            "ai-orchestra-meta-harness-broker/0.1",
+        ),
+    )
+
+
+def test_broker_environment_prefers_generic_names(monkeypatch: pytest.MonkeyPatch) -> None:
+    legacy = {
+        "MH_BROKER_RUN_TOKEN": "legacy-token",
+        "MH_BROKER_PORT": "8787",
+        "MH_BROKER_BUDGET_USD": "3.0",
+        "MH_BROKER_IDLE_TIMEOUT_SEC": "300",
+        "MH_BROKER_MAX_LIFETIME_SEC": "660",
+        "MH_BROKER_STARTUP_TIMEOUT_SEC": "30",
+        "MH_BROKER_MAX_REQUESTS": "64",
+        "MH_BROKER_MAX_TOTAL_TOKENS": "500000",
+        "MH_BROKER_MAX_UPSTREAM_BYTES": "50000000",
+        "MH_PRICE_INPUT": "15.0",
+        "MH_PRICE_OUTPUT": "75.0",
+        "MH_PRICE_CACHE_CREATION": "18.75",
+        "MH_PRICE_CACHE_READ": "1.5",
+    }
+    generic = {
+        "DR_BROKER_NAMESPACE": "loop-harness",
+        "DR_BROKER_RUN_TOKEN": "generic-token",
+        "DR_BROKER_PORT": "9001",
+        "DR_BROKER_BUDGET_USD": "4.5",
+        "DR_BROKER_IDLE_TIMEOUT_SEC": "301",
+        "DR_BROKER_MAX_LIFETIME_SEC": "661",
+        "DR_BROKER_STARTUP_TIMEOUT_SEC": "31",
+        "DR_BROKER_MAX_REQUESTS": "65",
+        "DR_BROKER_MAX_TOTAL_TOKENS": "500001",
+        "DR_BROKER_MAX_UPSTREAM_BYTES": "50000001",
+        "DR_PRICE_INPUT": "16.0",
+        "DR_PRICE_OUTPUT": "76.0",
+        "DR_PRICE_CACHE_CREATION": "19.0",
+        "DR_PRICE_CACHE_READ": "2.0",
+    }
+    _replace_broker_environment(monkeypatch, {**legacy, **generic})
+
+    settings = broker._broker_settings_from_env()
+
+    assert settings == broker.BrokerSettings(
+        port=9001,
+        startup_timeout_seconds=31,
+        run_token="generic-token",
+        budget_usd=4.5,
+        pricing=broker.Pricing(16.0, 76.0, 19.0, 2.0),
+        max_requests=65,
+        max_total_tokens=500001,
+        max_upstream_bytes=50000001,
+        idle_timeout_seconds=301,
+        max_lifetime_seconds=661,
+        identity=broker.BrokerIdentity(
+            "loop-harness-broker",
+            "ai-orchestra-loop-harness-broker/0.1",
+        ),
+    )
+
+
+def test_broker_environment_falls_back_per_missing_generic_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _replace_broker_environment(
+        monkeypatch,
+        {
+            "DR_BROKER_PORT": "9001",
+            "MH_BROKER_PORT": "8787",
+            "MH_PRICE_INPUT": "15.0",
+        },
+    )
+
+    assert broker._env_value("DR_BROKER_PORT", "MH_BROKER_PORT") == "9001"
+    assert broker._env_value("DR_PRICE_INPUT", "MH_PRICE_INPUT") == "15.0"
+
+
+@pytest.mark.parametrize("namespace", ["", "Loop-Harness", "../loop", "x" * 64])
+def test_broker_identity_rejects_invalid_namespace(namespace: str) -> None:
+    with pytest.raises(ValueError, match="broker namespace"):
+        broker._broker_identity(namespace)
 
 
 def test_sweep_stale_resources_removes_only_stale_containers_and_networks() -> None:

@@ -1,6 +1,6 @@
 # Machine-readable oracle seed for docs/evaluation/docker-runtime.md.
 # The Markdown evaluation set remains the SSOT; this sidecar records Phase 1
-# image-lifecycle coverage that can be promoted into runnable checks.
+# runtime coverage that can be promoted into runnable checks.
 
 - ev_id: EV-13
   phase: 1
@@ -122,3 +122,35 @@
     - packages/docker-runtime/tests/test_docker_runtime_image.py::test_exclusive_file_lock_preserves_critical_section_oserror
     - packages/docker-runtime/tests/test_docker_runtime_image.py::test_exclusive_file_lock_wraps_acquisition_oserror
   notes: critical-section errors propagate unchanged while acquisition errors keep the lock-specific wrapper.
+
+- ev_id: EV-21
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/docker-runtime/tests/test_docker_runtime.py::test_broker_environment_falls_back_to_legacy_names
+    packages/docker-runtime/tests/test_docker_runtime.py::test_broker_environment_prefers_generic_names
+    packages/docker-runtime/tests/test_docker_runtime.py::test_broker_environment_falls_back_per_missing_generic_key
+  covered_by:
+    - packages/docker-runtime/tests/test_docker_runtime.py::test_broker_environment_falls_back_to_legacy_names
+    - packages/docker-runtime/tests/test_docker_runtime.py::test_broker_environment_prefers_generic_names
+    - packages/docker-runtime/tests/test_docker_runtime.py::test_broker_environment_falls_back_per_missing_generic_key
+  notes: every broker and pricing setting prefers DR_* while preserving per-key MH_* fallback.
+
+- ev_id: EV-22
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/docker-runtime/tests/test_docker_runtime.py::test_broker_environment_falls_back_to_legacy_names
+    packages/docker-runtime/tests/test_docker_runtime.py::test_broker_identity_rejects_invalid_namespace
+    packages/meta-harness/tests/test_scenario_broker.py::test_header_allowlist_strips_candidate_auth_and_forwarding_headers
+    packages/meta-harness/tests/test_scenario_broker.py::test_injected_namespace_derives_server_and_user_agent
+  covered_by:
+    - packages/docker-runtime/tests/test_docker_runtime.py::test_broker_environment_falls_back_to_legacy_names
+    - packages/docker-runtime/tests/test_docker_runtime.py::test_broker_identity_rejects_invalid_namespace
+    - packages/meta-harness/tests/test_scenario_broker.py::test_header_allowlist_strips_candidate_auth_and_forwarding_headers
+    - packages/meta-harness/tests/test_scenario_broker.py::test_injected_namespace_derives_server_and_user_agent
+  notes: the legacy default identity stays exact; explicit valid namespaces derive both identifiers and invalid values fail closed.

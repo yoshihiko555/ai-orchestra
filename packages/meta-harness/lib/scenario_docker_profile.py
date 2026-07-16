@@ -17,6 +17,7 @@ import docker_runtime_profile as runtime
 
 NAME_PREFIX = "mh-run-"
 BROKER_ALIAS = "mh-broker"
+BROKER_NAMESPACE = "meta-harness"
 CONTAINER_WORKTREE = "/workspace"
 CONTAINER_INPUT = "/input"
 CONTAINER_RUNTIME = "/runtime"
@@ -340,6 +341,20 @@ def broker_env(config: dict, run_token: str, port: int) -> dict[str, str]:
     scenario_run = config.get("scenario_run") or {}
     idle_timeout = int(broker.get("idle_timeout_sec", 300))
     return {
+        "DR_BROKER_NAMESPACE": BROKER_NAMESPACE,
+        "DR_BROKER_RUN_TOKEN": run_token,
+        "DR_BROKER_PORT": str(port),
+        "DR_BROKER_BUDGET_USD": str(scenario_run.get("max_budget_usd_default", 3.0)),
+        "DR_BROKER_IDLE_TIMEOUT_SEC": str(idle_timeout),
+        "DR_BROKER_MAX_LIFETIME_SEC": str(container_max_lifetime_seconds(config)),
+        "DR_BROKER_STARTUP_TIMEOUT_SEC": str(broker.get("startup_timeout_sec", 30)),
+        "DR_BROKER_MAX_REQUESTS": str(broker.get("max_requests", 64)),
+        "DR_BROKER_MAX_TOTAL_TOKENS": str(broker.get("max_total_tokens", 500000)),
+        "DR_BROKER_MAX_UPSTREAM_BYTES": str(broker.get("max_upstream_bytes", 50000000)),
+        "DR_PRICE_INPUT": str(pricing.get("input", 15.0)),
+        "DR_PRICE_OUTPUT": str(pricing.get("output", 75.0)),
+        "DR_PRICE_CACHE_CREATION": str(pricing.get("cache_creation", 18.75)),
+        "DR_PRICE_CACHE_READ": str(pricing.get("cache_read", 1.5)),
         "MH_BROKER_RUN_TOKEN": run_token,
         "MH_BROKER_PORT": str(port),
         "MH_BROKER_BUDGET_USD": str(scenario_run.get("max_budget_usd_default", 3.0)),

@@ -390,6 +390,41 @@ def test_header_allowlist_strips_candidate_auth_and_forwarding_headers() -> None
     assert result["user-agent"] == "ai-orchestra-meta-harness-broker/0.1"
 
 
+def test_injected_namespace_derives_server_and_user_agent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity = broker._broker_identity("loop-harness")
+    state = _state(tmp_path, monkeypatch, user_agent=identity.user_agent)
+    server = broker.BrokerServer(
+        ("127.0.0.1", 0),
+        state,
+        server_version=identity.server_version,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = http.client.HTTPConnection(*server.server_address, timeout=2)
+        connection.request("GET", "/healthz")
+        response = connection.getresponse()
+        response.read()
+        server_header = response.getheader("server")
+        connection.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    result = broker._upstream_headers(
+        Message(),
+        "real-oauth-token",
+        user_agent=state.user_agent,
+    )
+
+    assert server_header is not None
+    assert server_header.startswith("loop-harness-broker ")
+    assert result["user-agent"] == "ai-orchestra-loop-harness-broker/0.1"
+
+
 def test_header_allowlist_forwards_only_pinned_cli_beta_features() -> None:
     incoming = Message()
     client_betas = ",".join(

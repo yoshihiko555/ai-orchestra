@@ -720,6 +720,28 @@ def test_container_lifetime_matches_broker_absolute_bound() -> None:
     assert broker_env["MH_BROKER_MAX_LIFETIME_SEC"] == "70"
 
 
+def test_broker_env_sends_generic_and_legacy_contracts() -> None:
+    broker_env = docker.profile.broker_env(copy.deepcopy(mh.DEFAULTS), "run-token", 8787)
+
+    assert broker_env["DR_BROKER_NAMESPACE"] == "meta-harness"
+    for generic_name, legacy_name in (
+        ("DR_BROKER_RUN_TOKEN", "MH_BROKER_RUN_TOKEN"),
+        ("DR_BROKER_PORT", "MH_BROKER_PORT"),
+        ("DR_BROKER_BUDGET_USD", "MH_BROKER_BUDGET_USD"),
+        ("DR_BROKER_IDLE_TIMEOUT_SEC", "MH_BROKER_IDLE_TIMEOUT_SEC"),
+        ("DR_BROKER_MAX_LIFETIME_SEC", "MH_BROKER_MAX_LIFETIME_SEC"),
+        ("DR_BROKER_STARTUP_TIMEOUT_SEC", "MH_BROKER_STARTUP_TIMEOUT_SEC"),
+        ("DR_BROKER_MAX_REQUESTS", "MH_BROKER_MAX_REQUESTS"),
+        ("DR_BROKER_MAX_TOTAL_TOKENS", "MH_BROKER_MAX_TOTAL_TOKENS"),
+        ("DR_BROKER_MAX_UPSTREAM_BYTES", "MH_BROKER_MAX_UPSTREAM_BYTES"),
+        ("DR_PRICE_INPUT", "MH_PRICE_INPUT"),
+        ("DR_PRICE_OUTPUT", "MH_PRICE_OUTPUT"),
+        ("DR_PRICE_CACHE_CREATION", "MH_PRICE_CACHE_CREATION"),
+        ("DR_PRICE_CACHE_READ", "MH_PRICE_CACHE_READ"),
+    ):
+        assert broker_env[generic_name] == broker_env[legacy_name]
+
+
 def test_prebuilt_images_require_digest_and_accept_multiarch_reference() -> None:
     config = copy.deepcopy(mh.DEFAULTS)
     config["evaluate"]["isolation"]["auto_build_images"] = False

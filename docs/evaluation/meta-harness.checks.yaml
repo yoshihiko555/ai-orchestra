@@ -573,3 +573,14 @@
     - packages/meta-harness/tests/test_scenario_docker.py::test_image_pin_semver_versions_produce_validated_build_args
     - packages/meta-harness/tests/test_scenario_docker.py::test_image_pin_rejects_invalid_versions_before_build
   notes: only the validated semver token reaches the scenario image build argument.
+
+- ev_id: EV-61
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_scenario_docker.py::test_broker_env_sends_generic_and_legacy_contracts
+  covered_by:
+    - packages/meta-harness/tests/test_scenario_docker.py::test_broker_env_sends_generic_and_legacy_contracts
+  notes: meta-harness sends equal DR_* and MH_* values plus its explicit namespace during migration.
