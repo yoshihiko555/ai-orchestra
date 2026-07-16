@@ -5,6 +5,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+import yaml
+
 from tests.module_loader import load_module
 
 load_module(
@@ -112,3 +115,111 @@ def test_routing_config_suite_uses_deterministic_critical_oracles() -> None:
         assert scenario["budget"]["max_budget_usd"] <= 3.0
 
     assert (PACKAGE_DIR / "scenarios/fixtures/assert-routing-config-layer.py").is_file()
+
+
+def _routing_config_oracle_fixture():
+    return load_module(
+        "assert_routing_config_layer_fixture",
+        "packages/meta-harness/scenarios/fixtures/assert-routing-config-layer.py",
+    )
+
+
+def _stub_hook_common() -> None:
+    # `assert-routing-config-layer.py` の `main()` は
+    # `sys.path.insert(0, str(project_root / "packages/core/hooks"))` の後に
+    # `from hook_common import load_cli_tools_config` する。テストでは架空の
+    # tmp_path project_root を使うため、実物の hook_common を `sys.modules["hook_common"]`
+    # へ事前登録しておく（import 解決はキャッシュ優先のため、fake project_root 配下に
+    # packages/core/hooks が実在しなくても解決できる）。
+    load_module("hook_common", "packages/core/hooks/hook_common.py")
+
+
+def _write_routing_config_files(
+    project_root: Path, *, local_overrides: dict, base: dict | None = None
+) -> None:
+    base = base if base is not None else {"codex": {"model": "base-model"}}
+    config_dir = project_root / ".claude" / "config" / "agent-routing"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "cli-tools.yaml").write_text(yaml.safe_dump(base), encoding="utf-8")
+    (config_dir / "cli-tools.local.yaml").write_text(
+        yaml.safe_dump(local_overrides), encoding="utf-8"
+    )
+
+
+def _write_applied_config_patch(project_root: Path, items: list[dict]) -> None:
+    patch_dir = project_root / ".claude" / "meta-harness"
+    patch_dir.mkdir(parents=True, exist_ok=True)
+    (patch_dir / "applied-config-patch.json").write_text(
+        json.dumps(items, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+class TestRoutingConfigOracleFixtureScopedAllowlist:
+    """`assert-routing-config-layer.py` の scoped allowlist チェック（PR #252 R2-4）。"""
+
+    def test_passes_when_patch_keys_match_despite_unrelated_local_override(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """候補が patch した `codex.model` が正しく反映されていれば、無関係な
+        既存 local override（`unrelated.nested.value`）が混在していても oracle は通る
+        （patch scope に絞る前は全リーフを見て失敗していた）。"""
+        _stub_hook_common()
+        fixture = _routing_config_oracle_fixture()
+        _write_routing_config_files(
+            tmp_path,
+            local_overrides={
+                "codex": {"model": "patched-model"},
+                "unrelated": {"nested": {"value": True}},
+            },
+        )
+        _write_applied_config_patch(
+            tmp_path,
+            [
+                {
+                    "file": "agent-routing/cli-tools.yaml",
+                    "key_path": "codex.model",
+                    "value": "patched-model",
+                }
+            ],
+        )
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
+
+        fixture.main()
+
+    def test_fails_when_patched_key_is_not_effective(self, tmp_path: Path, monkeypatch) -> None:
+        _stub_hook_common()
+        fixture = _routing_config_oracle_fixture()
+        _write_routing_config_files(
+            tmp_path,
+            local_overrides={"codex": {"model": "different-model"}},
+        )
+        _write_applied_config_patch(
+            tmp_path,
+            [
+                {
+                    "file": "agent-routing/cli-tools.yaml",
+                    "key_path": "codex.model",
+                    "value": "patched-model",
+                }
+            ],
+        )
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
+
+        with pytest.raises(AssertionError, match="layering mismatch"):
+            fixture.main()
+
+    def test_fails_without_patch_artifact_when_local_has_non_allowlisted_key(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """`applied-config-patch.json` が無い場合は従来どおり全リーフを厳格に検査する
+        （後方互換フォールバック）。"""
+        _stub_hook_common()
+        fixture = _routing_config_oracle_fixture()
+        _write_routing_config_files(
+            tmp_path,
+            local_overrides={"unrelated": {"nested": {"value": True}}},
+        )
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
+
+        with pytest.raises(AssertionError, match="non-allowlisted"):
+            fixture.main()

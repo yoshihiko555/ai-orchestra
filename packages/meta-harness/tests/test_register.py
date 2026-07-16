@@ -103,6 +103,23 @@ class TestLedgerProvenance:
 
 
 class TestRegisterArgumentConsistency:
+    def test_manifest_cand_id_must_match_register_cand_id(self, tmp_path: Path) -> None:
+        manifest = {
+            **_manifest("cand-id-mismatch"),
+            "cand_id": "cand-a-completely-different-id",
+        }
+
+        with pytest.raises(ValueError, match="manifest cand_id does not match register cand_id"):
+            mh.register_candidate(
+                tmp_path,
+                mh.DEFAULTS,
+                cand_id="cand-id-mismatch",
+                manifest=manifest,
+                overlay_dir=tmp_path / "unused-overlay",
+                overlay_files=[],
+                target="claude-harness",
+            )
+
     def test_manifest_target_must_match_register_target(self, tmp_path: Path) -> None:
         manifest = {
             **_manifest("cand-target-mismatch"),

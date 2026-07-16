@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 from contextlib import contextmanager
@@ -1099,6 +1100,63 @@ def test_routing_config_promotion_edits_ssot_and_mirror_only(tmp_path: Path) -> 
     assert (developer_ssot.read_bytes(), developer_mirror.read_bytes()) == developer_before
 
 
+def test_routing_config_promotion_refreshes_orchestra_json_mirror_hash(tmp_path: Path) -> None:
+    """R2-6: promote writer が mirror を書き換えた後、`.claude/orchestra.json` の
+    `file_hashes["agent-routing"]["config/agent-routing/cli-tools.yaml"]` も
+    パッチ後の実バイト列と一致するよう更新されなければならない（さもないと
+    sync_engine.is_user_modified() が誤って「ユーザー編集」と判定してしまう）。"""
+    worktree, _original = _prepare_routing_config_worktree(tmp_path)
+    orchestra_json_path = worktree / ".claude" / "orchestra.json"
+    orchestra_json_path.parent.mkdir(parents=True, exist_ok=True)
+    orchestra_json_path.write_text(
+        json.dumps(
+            {
+                "file_hashes": {
+                    "agent-routing": {
+                        "config/agent-routing/cli-tools.yaml": "0" * 64,
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    patch_items = [
+        {
+            "file": cli.prm.ROUTING_CONFIG_PATCH_FILE,
+            "key_path": "codex.model",
+            "value": "gpt-5.3-codex",
+        }
+    ]
+
+    cli.prm._apply_routing_config_patch(worktree, patch_items)
+
+    mirror_path = worktree / cli.prm.ROUTING_CONFIG_MIRROR_RELATIVE
+    expected_hash = hashlib.sha256(mirror_path.read_bytes()).hexdigest()
+    refreshed = json.loads(orchestra_json_path.read_text(encoding="utf-8"))
+    assert (
+        refreshed["file_hashes"]["agent-routing"]["config/agent-routing/cli-tools.yaml"]
+        == expected_hash
+    )
+    assert expected_hash != "0" * 64
+
+
+def test_routing_config_promotion_without_orchestra_json_does_not_raise(tmp_path: Path) -> None:
+    """`.claude/orchestra.json` が worktree に存在しない場合は何もしない（graceful no-op）。"""
+    worktree, _original = _prepare_routing_config_worktree(tmp_path)
+    assert not (worktree / ".claude" / "orchestra.json").exists()
+    patch_items = [
+        {
+            "file": cli.prm.ROUTING_CONFIG_PATCH_FILE,
+            "key_path": "codex.model",
+            "value": "gpt-5.3-codex",
+        }
+    ]
+
+    cli.prm._apply_routing_config_patch(worktree, patch_items)
+
+    assert not (worktree / ".claude" / "orchestra.json").exists()
+
+
 def test_routing_config_pr_body_uses_promotion_base_values(tmp_path: Path) -> None:
     worktree, _original = _prepare_routing_config_worktree(tmp_path)
     patch_items = [
@@ -1183,6 +1241,32 @@ def _commit_routing_config(git_project: Path, git_run, content: str, message: st
     git_run("add", ssot.relative_to(git_project).as_posix(), cwd=git_project)
     git_run("commit", "-m", message, cwd=git_project)
     return git_run("rev-parse", "HEAD", cwd=git_project).stdout.strip()
+
+
+def test_git_ref_file_hash_hashes_raw_crlf_blob_bytes(git_project: Path, git_run) -> None:
+    """R2-2: `git_ref_file_hash` は `text=True` の universal-newlines 変換を避け、`git show`
+    の raw stdout bytes をそのまま hash しなければならない。text mode で CRLF blob を hash
+    すると LF に化けた内容を hash してしまい、実際の git blob 内容と異なるハッシュになる
+    （CRLF↔LF drift が検出不能になる、PR #252 レビュー指摘）。"""
+    git_run("config", "core.autocrlf", "false", cwd=git_project)
+    relative_path = Path("crlf-config.yaml")
+    (git_project / relative_path).write_bytes(b"codex:\r\n  model: crlf-model\r\n")
+    git_run("add", relative_path.as_posix(), cwd=git_project)
+    git_run("commit", "-m", "add crlf file", cwd=git_project)
+
+    raw_blob = subprocess.run(
+        ["git", "show", f"HEAD:{relative_path.as_posix()}"],
+        cwd=git_project,
+        capture_output=True,
+        text=False,
+        check=True,
+    ).stdout
+    assert b"\r\n" in raw_blob  # sanity check: the blob actually retains CRLF bytes
+
+    expected_hash = hashlib.sha256(raw_blob).hexdigest()
+    actual_hash = mh.git_ref_file_hash(git_project, "HEAD", relative_path)
+
+    assert actual_hash == expected_hash
 
 
 def test_routing_config_freshness_rejects_ssot_drift(
@@ -1275,6 +1359,58 @@ def test_routing_config_freshness_accepts_unchanged_ssot(
     )
 
     assert evaluator_hash == promoter_hash
+    cli.prm._check_freshness(
+        git_project,
+        git_project,
+        manifest,
+        mh.DEFAULTS,
+        holdout_evaluation=evaluation,
+    )
+
+
+def test_routing_config_freshness_ignores_unrelated_impact_context_drift(
+    git_project: Path, git_run, monkeypatch
+) -> None:
+    """R2-7: routing-config 候補は overlay を持たないため、SSOT hash が一致していれば
+    無関係な skill/facet composition の変更（impact_input_hash の drift）で promotion を
+    拒否してはならない（`resolve_skill_impacts` の input_hash は全 skill composition
+    closure を吸収するため、routing-config には無関係な drift も検出してしまっていた）。"""
+    source_commit = _commit_routing_config(
+        git_project,
+        git_run,
+        "codex:\n  model: stable-model\n",
+        "add stable routing config",
+    )
+    git_run("branch", "origin/main", "HEAD", cwd=git_project)
+    evaluator_hash = cli.prm.ev.compute_routing_config_base_hash(git_project, source_commit)
+    promoter_hash = cli.prm._git_ref_file_hash(
+        git_project,
+        cli.prm.MAIN_REF,
+        cli.prm.ROUTING_CONFIG_SSOT_RELATIVE,
+    )
+    manifest = {
+        "cand_id": _CAND_ID,
+        "parent_id": None,
+        "source_commit": source_commit,
+        "target": "routing-config",
+        "overlay_files": [],
+    }
+    evaluation = {
+        "routing_config_base_hash": evaluator_hash,
+        "impacted_targets": [],
+        # recorded at evaluate-time
+        "impact_input_hash": "c" * 64,
+    }
+    # simulate an unrelated skill composition change between evaluate and promote:
+    # candidate_impact_context now recomputes to a DIFFERENT input_hash.
+    monkeypatch.setattr(
+        cli.prm.ev,
+        "candidate_impact_context",
+        lambda **_kwargs: cli.prm.ev.skill_targets.SkillImpactContext((), "d" * 64),
+    )
+
+    assert evaluator_hash == promoter_hash
+
     cli.prm._check_freshness(
         git_project,
         git_project,

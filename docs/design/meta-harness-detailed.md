@@ -2583,7 +2583,12 @@ fail-closed とし、以下すべてを満たさなければ exit 2 とする。
    overlay path が空でも hash 不一致を stale evaluation として拒否する。
    差分があれば「facet ソースが候補作成後に変更されている」ため中止し、新 `source_commit` での
    再登録・再評価を案内する（`promote.allow_stale: false` が既定。`true` で path 差分だけを
-   警告に緩和できるが、ancestor 条件は緩和しない）。
+   警告に緩和できるが、ancestor 条件は緩和しない）。routing-config target は SSOT content hash の
+   突合が成功した時点でこの手順6を完了とし、以降の generic な impact-context 再検証（`skill:*`
+   target 向けの、evaluate 時に記録した `impact_input_hash` / `impacted_targets` と現在の
+   `candidate_impact_context` の再突合）は適用しない。routing-config 候補は overlay を持たず
+   skill impact が常に空集合であるため、この再検証はそもそも意味を持たず、無関係な facet/skill
+   composition の変更だけで promotion を誤って拒否してしまう（false freshness mismatch）ことを防ぐ。
 7. 全候補 lineage の manifest/overlay に加え、`config-patch.json` sidecar と patch 適用後の YAML diff を
    L3 secret scan / canary re-scan の対象にする。PR body の data fence は長さ制限や表示用途があるため、
    scan の代替にしてはならない。
@@ -2617,7 +2622,12 @@ promote は「予約（reservation）」→「worktree 作業」→「PR 作成�
    `.claude/config/agent-routing/cli-tools.yaml` に適用し、2 ファイルの byte equality を確認する。
    全 patch item が promotion base に対して no-op（`old == new`）である場合は PR を作らず拒否する。一部の item
    だけが no-op で他に実質変更がある場合は、そのまま許容し、per-item のスキップは行わない。
-   `.claude/config/` だけの編集と `*.local.yaml` への promotion 書き込みは禁止する。
+   `.claude/config/` だけの編集と `*.local.yaml` への promotion 書き込みは禁止する。tracked mirror の書き込み
+   直後、promotion worktree の `.claude/orchestra.json` に `file_hashes["agent-routing"]["config/agent-routing/cli-tools.yaml"]`
+   エントリが存在すれば、そのエントリをパッチ後の実バイト列の hash で更新し直す（PR #244 の agents .md 向け
+   `refresh_patched_agent_hashes` と同じ原理）。これを怠ると `sync_engine.is_user_modified()` が promote 直後の
+   mirror を「ユーザー編集」と誤判定し、以後の upstream sync を skip してしまう。この `orchestra.json` の更新も
+   手順7の `git add -A` でコミット対象に含まれる。
 5. `AI_ORCHESTRA_DIR=<worktree>` で `facet build` → `context build` を実行し、生成物の整合を
    取る（生成物もコミット対象）。
 6. `promote.verify_command`（既定 null、例: `pytest -q`）が設定されていれば実行し、失敗時は

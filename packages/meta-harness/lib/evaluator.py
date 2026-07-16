@@ -752,29 +752,44 @@ def _apply_config_patch(
                 tuple(str(item["key_path"]).split(".")),
                 item["value"],
             )
-        local_path.parent.mkdir(parents=True, exist_ok=True)
         rendered = yaml.safe_dump(
             local_config,
             allow_unicode=True,
             default_flow_style=False,
             sort_keys=True,
         )
-        tmp_path = local_path.with_name(
-            f".{local_path.name}.tmp-{os.getpid()}-{os.urandom(4).hex()}"
-        )
-        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
-        if hasattr(os, "O_NOFOLLOW"):
-            flags |= os.O_NOFOLLOW
-        fd = os.open(tmp_path, flags, 0o644)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                handle.write(rendered)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(tmp_path, local_path)
-        except BaseException:
-            tmp_path.unlink(missing_ok=True)
-            raise
+        _atomic_write_worktree_file(local_path, rendered)
+
+    # 適用済み patch の内容を worktree 内の固定パスへ記録する。scenario の command_exit
+    # oracle は隔離実行され、worktree の外（meta-harness store 上の overlay/config-patch.json
+    # 本体）を参照できないため、「候補がどのキーを実際に patch したか」をここで worktree 内に
+    # 残しておかないと、oracle 側は materialize 済み `.local.yaml` の全リーフを見るしかなく、
+    # プロジェクト固有の無関係な既存 local override まで誤って候補由来として判定してしまう
+    # （PR #252 R2-4 レビュー指摘）。
+    applied_patch_path = worktree_dir / ".claude" / "meta-harness" / "applied-config-patch.json"
+    _atomic_write_worktree_file(
+        applied_patch_path,
+        json.dumps(config_patch, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+    )
+
+
+def _atomic_write_worktree_file(path: Path, content: str) -> None:
+    """`path` の親ディレクトリを作った上で、symlink 追従なしの atomic write を行う。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f".{path.name}.tmp-{os.getpid()}-{os.urandom(4).hex()}")
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(tmp_path, flags, 0o644)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def _config_patch_local_path(worktree_dir: Path, relative_file: str) -> Path:
@@ -2632,6 +2647,15 @@ def evaluate_candidate(
     """Evaluate own scenarios plus affected skill suites in atomic ledger batches."""
     if repeat_override is not None and repeat_override < 1:
         raise ValueError(f"--repeat must be >= 1, got: {repeat_override}")
+
+    manifest_cand_id = str(manifest.get("cand_id") or "")
+    if manifest_cand_id != cand_id:
+        raise EvaluatorStageError(
+            "overlay_apply",
+            "overlay_error",
+            "candidate manifest cand_id does not match evaluate cand_id: "
+            f"manifest={manifest_cand_id!r}, argument={cand_id!r}",
+        )
 
     events = mh.read_ledger_events(main_root, config)
     lineage = _candidate_lineage(main_root, config, manifest)

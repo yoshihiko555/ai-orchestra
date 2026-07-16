@@ -735,11 +735,15 @@
     packages/meta-harness/tests/test_promote_cli.py::test_routing_config_promotion_edits_ssot_and_mirror_only
     packages/meta-harness/tests/test_promote_cli.py::test_routing_config_structural_verification_aborts_before_writes
     packages/meta-harness/tests/test_promote_cli.py::test_routing_config_pr_body_uses_promotion_base_values
+    packages/meta-harness/tests/test_promote_cli.py::test_routing_config_promotion_refreshes_orchestra_json_mirror_hash
+    packages/meta-harness/tests/test_promote_cli.py::test_routing_config_promotion_without_orchestra_json_does_not_raise
   covered_by:
     - packages/meta-harness/tests/test_promote_cli.py::test_routing_config_promotion_edits_ssot_and_mirror_only
     - packages/meta-harness/tests/test_promote_cli.py::test_routing_config_structural_verification_aborts_before_writes
     - packages/meta-harness/tests/test_promote_cli.py::test_routing_config_pr_body_uses_promotion_base_values
-  notes: targeted scalar edits preserve comments and deep equality, keep SSOT/mirror byte-equal, avoid local/developer writes, and render base-derived PR data.
+    - packages/meta-harness/tests/test_promote_cli.py::test_routing_config_promotion_refreshes_orchestra_json_mirror_hash
+    - packages/meta-harness/tests/test_promote_cli.py::test_routing_config_promotion_without_orchestra_json_does_not_raise
+  notes: targeted scalar edits preserve comments and deep equality, keep SSOT/mirror byte-equal, avoid local/developer writes, render base-derived PR data, and refresh the orchestra.json mirror hash ledger so post-merge sync does not treat the promoted mirror as user-modified.
 
 - ev_id: EV-72
   phase: 3
@@ -819,3 +823,16 @@
     - packages/meta-harness/tests/test_evaluator_evaluate_candidate_validation.py::TestLedgerProvenanceValidation::test_evaluate_rejects_tampered_manifest_created_by
     - packages/meta-harness/tests/test_promote_cli.py::test_promote_preflight_rejects_tampered_manifest_provenance
   notes: lineage registration events are required and immutable created_by/target mismatches are rejected before evaluate writes or promotion.
+
+- ev_id: EV-77
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" OCHE_ROOT="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_promote_cli.py::test_routing_config_freshness_ignores_unrelated_impact_context_drift
+    packages/meta-harness/tests/test_promote_cli.py::test_routing_config_freshness_rejects_ssot_drift
+  covered_by:
+    - packages/meta-harness/tests/test_promote_cli.py::test_routing_config_freshness_ignores_unrelated_impact_context_drift
+    - packages/meta-harness/tests/test_promote_cli.py::test_routing_config_freshness_rejects_ssot_drift
+  notes: routing-config promote freshness completes at the SSOT content-hash comparison; unrelated skill-composition impact_input_hash drift does not block promotion while real SSOT drift still does.

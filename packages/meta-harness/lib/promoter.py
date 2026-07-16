@@ -663,6 +663,13 @@ def _check_freshness(
             raise PromotionValidationError(
                 "routing config SSOT changed since evaluation; re-run evaluate before promote"
             )
+        # routing-config 候補は overlay を持たず（facets/** overlay path が常に空）、
+        # skill impact も常に空集合であるため、以降の generic な impact-context 再検証
+        # (`resolve_skill_impacts` の input_hash は全 skill composition closure を吸収する)
+        # は適用対象外。SSOT hash が一致した時点で routing-config 固有の freshness 判定は
+        # 完了しており、無関係な facet/skill composition の変更だけで promotion を誤って
+        # 拒否してしまうことを防ぐ（PR #252 R2-7 レビュー指摘）。
+        return
     if holdout_evaluation is not None:
         try:
             current_impact = ev.candidate_impact_context(
@@ -909,6 +916,45 @@ def _apply_routing_config_patch(worktree_dir: Path, patch_items: list[dict[str, 
         raise PromotionValidationError(
             "routing config SSOT and tracked mirror differ after promotion edit"
         )
+    _refresh_routing_config_mirror_hash(worktree_dir)
+
+
+def _refresh_routing_config_mirror_hash(worktree_dir: Path) -> None:
+    """promote writer が tracked mirror を書き換えた直後、`.claude/orchestra.json` の
+    `file_hashes` 台帳をパッチ後の内容で更新し直す（PR #244 の `refresh_patched_agent_hashes`
+    と同じ原理）。放置すると `scripts/lib/sync_engine.py` の `is_user_modified()` がこの
+    ファイルを「ユーザー編集」と誤判定し、次回以降の upstream sync をスキップしてしまう
+    （PR #252 R2-6 レビュー指摘）。`file_hashes` に該当エントリが無い場合は何もしない。
+    """
+    orchestra_json_path = worktree_dir / ".claude" / "orchestra.json"
+    if not orchestra_json_path.is_file():
+        return
+    try:
+        orch = json.loads(orchestra_json_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    file_hashes = orch.get("file_hashes")
+    if not isinstance(file_hashes, dict) or not file_hashes:
+        return
+    mirror_path = worktree_dir / ROUTING_CONFIG_MIRROR_RELATIVE
+    if not mirror_path.is_file():
+        return
+    try:
+        file_key = mirror_path.relative_to(worktree_dir / ".claude").as_posix()
+    except ValueError:
+        return
+    new_hash = hashlib.sha256(mirror_path.read_bytes()).hexdigest()
+    changed = False
+    for pkg_hashes in file_hashes.values():
+        if isinstance(pkg_hashes, dict) and file_key in pkg_hashes:
+            pkg_hashes[file_key] = new_hash
+            changed = True
+    if not changed:
+        return
+    _write_atomic_text(
+        orchestra_json_path,
+        json.dumps(orch, ensure_ascii=False, indent=2) + "\n",
+    )
 
 
 def _replace_yaml_scalar(text: str, segments: tuple[str, ...], value: str) -> str:

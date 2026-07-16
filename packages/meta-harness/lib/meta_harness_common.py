@@ -346,18 +346,22 @@ def git_ref_file_hash(
             ["git", "show", f"{ref}:{relative_path.as_posix()}"],
             cwd=project_dir,
             capture_output=True,
-            text=True,
+            text=False,
             timeout=GIT_TIMEOUT_SECONDS,
             stdin=subprocess.DEVNULL,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise ValueError(f"could not read {relative_path} from git ref {ref}: {exc}") from None
     if completed.returncode != 0:
+        stderr_text = completed.stderr.decode("utf-8", errors="replace").strip()
         raise ValueError(
             f"could not read {relative_path} from git ref {ref}: "
-            f"{completed.stderr.strip() or completed.returncode}"
+            f"{stderr_text or completed.returncode}"
         )
-    return hashlib.sha256(completed.stdout.encode("utf-8")).hexdigest()
+    # `text=False` を使い、`git show` の stdout raw bytes を直接 hash する。text=True の
+    # universal-newlines 変換は CRLF blob を LF に化けさせ、実際の git blob 内容と異なる
+    # ハッシュを生んでしまう（CRLF↔LF drift が検出不能になる、PR #252 R2-2 レビュー指摘）。
+    return hashlib.sha256(completed.stdout).hexdigest()
 
 
 def build_candidate_manifest(
@@ -674,6 +678,11 @@ def register_candidate(
     既に同名の候補ディレクトリが存在する場合は `FileExistsError` を送出する
     （immutability 原則、Sec1-1「基本設計からの変更点」参照）。
     """
+    if str(manifest.get("cand_id") or "") != cand_id:
+        raise ValueError(
+            "candidate manifest cand_id does not match register cand_id: "
+            f"manifest={manifest.get('cand_id')!r}, argument={cand_id!r}"
+        )
     if str(manifest.get("target") or "") != target:
         raise ValueError(
             "candidate manifest target does not match register target: "

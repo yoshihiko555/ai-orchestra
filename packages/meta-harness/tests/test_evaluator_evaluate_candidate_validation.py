@@ -257,6 +257,29 @@ class TestLedgerProvenanceValidation:
             )
 
 
+class TestCandIdConsistencyValidation:
+    def test_evaluate_rejects_manifest_cand_id_argument_mismatch(self, tmp_path: Path) -> None:
+        """R2-1: `evaluate_candidate` は lineage を `manifest['cand_id']` から解決するが、
+        成果物/ledger イベントは `cand_id` 引数に紐づけられる。両者が食い違う呼び出しは
+        誤った候補へ結果を帰属させてしまうため、lineage 解決前に fail-closed で拒否する。"""
+        manifest = _manifest()
+        _append_registration(tmp_path, mh.DEFAULTS, manifest)
+
+        with pytest.raises(ev.EvaluatorStageError, match="cand_id"):
+            ev.evaluate_candidate(
+                main_root=tmp_path,
+                config=mh.DEFAULTS,
+                schema_dir=_SCHEMA_DIR,
+                package_dir=_PACKAGE_DIR,
+                project_dir=tmp_path,
+                cand_id="cand-20260707-120000-other-cand-zz99",
+                manifest=manifest,
+                scenario_ids=None,
+                repeat_override=None,
+                cli_capabilities={},
+            )
+
+
 class TestScenarioIdValidation:
     def test_unknown_scenario_id_alone_is_rejected(self, tmp_path: Path) -> None:
         try:
