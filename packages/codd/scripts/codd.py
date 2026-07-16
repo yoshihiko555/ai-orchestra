@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -96,10 +98,30 @@ def node_to_record(node: cc.CoddNode) -> dict[str, Any]:
 
 
 def write_graph_jsonl(result: ScanResult, output_path: Path) -> None:
-    """グラフを JSONL として書き出す（1 ノード 1 行）。"""
+    """グラフを JSONL として書き出す（1 ノード 1 行）。
+
+    EV-23: 一時ファイルへ書いてから rename する atomic write にし、書き込み失敗
+    （中断・ディスク容量不足等）が既存の `graph.jsonl` を壊れた/半端な内容で
+    上書きしないようにする（rename は同一ファイルシステム内で不可分）。
+
+    temp ファイル名は `tempfile.mkstemp` で出力先と同一ディレクトリに一意生成する
+    （固定名だと並行 `codd scan` 実行同士が同じ temp ファイルを共有し破壊し合うため）。
+    rename の atomicity を保つため、同一ファイルシステム＝同ディレクトリに置く。
+    """
     output_path.parent.mkdir(parents=True, exist_ok=True)
     lines = [json.dumps(node_to_record(node), ensure_ascii=False) for node in result.nodes]
-    output_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+    content = "\n".join(lines) + ("\n" if lines else "")
+    fd, tmp_name = tempfile.mkstemp(
+        dir=output_path.parent, prefix=f".{output_path.name}.", suffix=".tmp"
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as tmp_file:
+            tmp_file.write(content)
+        os.replace(tmp_path, output_path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -205,6 +227,17 @@ def _check_unknown(result: ScanResult, config: cc.CoddConfig) -> list[Finding]:
     for node in result.nodes:
         if not node.node_id:
             findings.append(Finding("unknown", cc.LEVEL_ERROR, f"{node.path}: node_id が空"))
+        elif cc.node_id_prefix(node.node_id) is None:
+            # EV-12: node_id は `<kind>:<file-slug>` 形式（コロンがちょうど 1 個）である必要がある。
+            # コロン無し／複数（余分なセパレータ）はどちらも不正。
+            findings.append(
+                Finding(
+                    "unknown",
+                    cc.LEVEL_ERROR,
+                    f"{node.path}: node_id '{node.node_id}' が"
+                    " '<kind>:<file-slug>' 形式でない（コロンが無いか複数ある）",
+                )
+            )
         if node.kind not in config.kinds:
             findings.append(
                 Finding("unknown", cc.LEVEL_ERROR, f"{node.path}: 未定義 kind '{node.kind}'")
@@ -218,6 +251,20 @@ def _check_unknown(result: ScanResult, config: cc.CoddConfig) -> list[Finding]:
                         "unknown",
                         cc.LEVEL_ERROR,
                         f"{node.path}: kind '{node.kind}' に不正な status '{node.status}'",
+                    )
+                )
+            # EV-12: node_id プレフィックスが declare された kind と対応しているか
+            # （設計 4.3 の表: requirement は "req" に略記、他は kind 名と同一）。
+            expected_prefix = cc.NODE_ID_PREFIX_BY_KIND.get(node.kind)
+            actual_prefix = cc.node_id_prefix(node.node_id)
+            if expected_prefix and actual_prefix and actual_prefix != expected_prefix:
+                findings.append(
+                    Finding(
+                        "unknown",
+                        cc.LEVEL_ERROR,
+                        f"{node.path}: node_id '{node.node_id}' のプレフィックス"
+                        f" '{actual_prefix}' が kind '{node.kind}' の想定プレフィックス"
+                        f" '{expected_prefix}:' と不一致",
                     )
                 )
         for dep in node.depends_on:

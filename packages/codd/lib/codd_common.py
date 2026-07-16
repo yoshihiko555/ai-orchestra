@@ -35,6 +35,33 @@ def valid_statuses(kind: str) -> list[str]:
     return STATUS_BY_KIND.get(kind, [])
 
 
+# node_id の `<kind>:<file-slug>` プレフィックス（設計 4.3 の表と一致）。
+# requirement のみ "req" に略記され、他の kind はそのままの名前を使う。
+NODE_ID_PREFIX_BY_KIND: dict[str, str] = {
+    "requirement": "req",
+    "design": "design",
+    "adr": "adr",
+    "plan": "plan",
+    "rule": "rule",
+    "instruction": "instruction",
+}
+
+
+def node_id_prefix(node_id: str) -> str | None:
+    """node_id の `:` より前のプレフィックスを返す（EV-12: `<kind>:<file-slug>` 形式検証）。
+
+    コロンが無い、コロンが複数個ある（余分なセパレータ）、または
+    プレフィックス/スラッグのどちらかが空の場合は None
+    （`<kind>:<file-slug>` 形式はコロンがちょうど 1 個であることを要求する）。
+    """
+    if node_id.count(":") != 1:
+        return None
+    prefix, _, slug = node_id.partition(":")
+    if not prefix or not slug:
+        return None
+    return prefix
+
+
 # ---------------------------------------------------------------------------
 # フロントマター parser（設計 4.2 / M-1）
 # ---------------------------------------------------------------------------

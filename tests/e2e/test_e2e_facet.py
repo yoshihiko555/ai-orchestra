@@ -29,6 +29,16 @@ class TestFacetBuild:
         assert (rules / "coding-principles.md").is_file()
         assert (rules / "config-loading.md").is_file()
 
+    def test_setup_essential_codd_assets_deployed(self, e2e_project: Path) -> None:
+        """EV-20: essential 導入で codd の config・skill・rule が自動展開される"""
+        _setup_essential(e2e_project)
+        config_path = e2e_project / ".claude" / "config" / "codd" / "codd.yaml"
+        skill_path = e2e_project / ".claude" / "skills" / "codd-scan" / "SKILL.md"
+        rule_path = e2e_project / ".claude" / "rules" / "codd-frontmatter-policy.md"
+        assert config_path.is_file()
+        assert skill_path.is_file()
+        assert rule_path.is_file()
+
     def test_session_start_mtime_skip(self, e2e_project: Path) -> None:
         """#46: SessionStart 自動ビルド → mtime スキップ"""
         _setup_essential(e2e_project)
