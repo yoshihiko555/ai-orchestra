@@ -132,11 +132,15 @@
     packages/docker-runtime/tests/test_docker_runtime.py::test_broker_environment_falls_back_to_legacy_names
     packages/docker-runtime/tests/test_docker_runtime.py::test_broker_environment_prefers_generic_names
     packages/docker-runtime/tests/test_docker_runtime.py::test_broker_environment_falls_back_per_missing_generic_key
+    packages/docker-runtime/tests/test_docker_runtime.py::test_env_value_raises_key_error_when_neither_variable_is_set
+    packages/docker-runtime/tests/test_docker_runtime.py::test_broker_settings_from_env_rejects_empty_run_token
   covered_by:
     - packages/docker-runtime/tests/test_docker_runtime.py::test_broker_environment_falls_back_to_legacy_names
     - packages/docker-runtime/tests/test_docker_runtime.py::test_broker_environment_prefers_generic_names
     - packages/docker-runtime/tests/test_docker_runtime.py::test_broker_environment_falls_back_per_missing_generic_key
-  notes: every broker and pricing setting prefers DR_* while preserving per-key MH_* fallback.
+    - packages/docker-runtime/tests/test_docker_runtime.py::test_env_value_raises_key_error_when_neither_variable_is_set
+    - packages/docker-runtime/tests/test_docker_runtime.py::test_broker_settings_from_env_rejects_empty_run_token
+  notes: every broker and pricing setting prefers DR_* while preserving per-key MH_* fallback; neither name set raises KeyError naming both variables; empty run token fails closed at startup.
 
 - ev_id: EV-22
   phase: 1

@@ -335,10 +335,58 @@ def test_broker_environment_falls_back_per_missing_generic_key(
     assert broker._env_value("DR_PRICE_INPUT", "MH_PRICE_INPUT") == "15.0"
 
 
+def test_env_value_raises_key_error_when_neither_variable_is_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """EV-21: fail-loud (KeyError naming both variables) when neither the generic
+    nor the legacy env var is set."""
+    _replace_broker_environment(monkeypatch, {})
+
+    with pytest.raises(KeyError, match="DR_BROKER_PORT.*MH_BROKER_PORT"):
+        broker._env_value("DR_BROKER_PORT", "MH_BROKER_PORT")
+
+
+def test_broker_settings_from_env_rejects_empty_run_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _replace_broker_environment(
+        monkeypatch,
+        {
+            "DR_BROKER_NAMESPACE": "loop-harness",
+            "DR_BROKER_RUN_TOKEN": "",
+            "DR_BROKER_PORT": "9001",
+            "DR_BROKER_BUDGET_USD": "4.5",
+            "DR_BROKER_IDLE_TIMEOUT_SEC": "301",
+            "DR_BROKER_MAX_LIFETIME_SEC": "661",
+            "DR_BROKER_STARTUP_TIMEOUT_SEC": "31",
+            "DR_BROKER_MAX_REQUESTS": "65",
+            "DR_BROKER_MAX_TOTAL_TOKENS": "500001",
+            "DR_BROKER_MAX_UPSTREAM_BYTES": "50000001",
+            "DR_PRICE_INPUT": "16.0",
+            "DR_PRICE_OUTPUT": "76.0",
+            "DR_PRICE_CACHE_CREATION": "19.0",
+            "DR_PRICE_CACHE_READ": "2.0",
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="run token must not be empty"):
+        broker._broker_settings_from_env()
+
+
 @pytest.mark.parametrize("namespace", ["", "Loop-Harness", "../loop", "x" * 64])
 def test_broker_identity_rejects_invalid_namespace(namespace: str) -> None:
     with pytest.raises(ValueError, match="broker namespace"):
         broker._broker_identity(namespace)
+
+
+def test_broker_identity_accepts_namespace_at_max_length() -> None:
+    """Pairs with the 64-char rejection case above: 63 is the boundary that must pass."""
+    namespace = "x" * 63
+
+    identity = broker._broker_identity(namespace)
+
+    assert identity.server_version == f"{namespace}-broker"
+    assert identity.user_agent == f"ai-orchestra-{namespace}-broker/0.1"
 
 
 def test_sweep_stale_resources_removes_only_stale_containers_and_networks() -> None:

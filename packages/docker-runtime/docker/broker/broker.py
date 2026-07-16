@@ -65,6 +65,8 @@ ALLOWED_RESPONSE_HEADERS = frozenset(
 )
 DEFAULT_SERVER_VERSION = "meta-harness-broker"
 DEFAULT_USER_AGENT = "ai-orchestra-meta-harness-broker/0.1"
+# 63 matches the DNS label length limit (RFC 1035 section 2.3.4), which broker
+# namespaces are derived from (container/network aliases, hostnames).
 MAX_BROKER_NAMESPACE_LENGTH = 63
 _BROKER_NAMESPACE_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
@@ -689,7 +691,9 @@ def _health(port: int) -> int:
 def _env_value(name: str, legacy_name: str) -> str:
     if name in os.environ:
         return os.environ[name]
-    return os.environ[legacy_name]
+    if legacy_name in os.environ:
+        return os.environ[legacy_name]
+    raise KeyError(f"neither '{name}' nor '{legacy_name}' is set in the environment")
 
 
 def _float_env(name: str, legacy_name: str) -> float:
@@ -701,12 +705,15 @@ def _int_env(name: str, legacy_name: str) -> int:
 
 
 def _broker_settings_from_env() -> BrokerSettings:
+    run_token = _env_value("DR_BROKER_RUN_TOKEN", "MH_BROKER_RUN_TOKEN")
+    if not run_token:
+        raise RuntimeError("broker run token must not be empty")
     return BrokerSettings(
         port=_int_env("DR_BROKER_PORT", "MH_BROKER_PORT"),
         startup_timeout_seconds=_int_env(
             "DR_BROKER_STARTUP_TIMEOUT_SEC", "MH_BROKER_STARTUP_TIMEOUT_SEC"
         ),
-        run_token=_env_value("DR_BROKER_RUN_TOKEN", "MH_BROKER_RUN_TOKEN"),
+        run_token=run_token,
         budget_usd=_float_env("DR_BROKER_BUDGET_USD", "MH_BROKER_BUDGET_USD"),
         pricing=Pricing(
             input=_float_env("DR_PRICE_INPUT", "MH_PRICE_INPUT"),
