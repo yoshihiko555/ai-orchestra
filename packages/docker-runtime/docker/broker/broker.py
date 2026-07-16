@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run-scoped Anthropic OAuth broker for isolated meta-harness containers."""
+"""Run-scoped Anthropic OAuth broker for isolated harness containers."""
 
 from __future__ import annotations
 
@@ -63,6 +63,12 @@ ALLOWED_RESPONSE_HEADERS = frozenset(
         "x-should-retry",
     }
 )
+DEFAULT_SERVER_VERSION = "meta-harness-broker"
+DEFAULT_USER_AGENT = "ai-orchestra-meta-harness-broker/0.1"
+# 63 matches the DNS label length limit (RFC 1035 section 2.3.4), which broker
+# namespaces are derived from (container/network aliases, hostnames).
+MAX_BROKER_NAMESPACE_LENGTH = 63
+_BROKER_NAMESPACE_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 
 @dataclass
@@ -115,6 +121,42 @@ class Pricing:
         return per_million / 1_000_000
 
 
+@dataclass(frozen=True)
+class BrokerIdentity:
+    server_version: str
+    user_agent: str
+
+
+@dataclass(frozen=True)
+class BrokerSettings:
+    port: int
+    startup_timeout_seconds: int
+    run_token: str
+    budget_usd: float
+    pricing: Pricing
+    max_requests: int
+    max_total_tokens: int
+    max_upstream_bytes: int
+    idle_timeout_seconds: int
+    max_lifetime_seconds: int
+    identity: BrokerIdentity
+
+
+def _broker_identity(namespace: str | None) -> BrokerIdentity:
+    if namespace is None:
+        return BrokerIdentity(DEFAULT_SERVER_VERSION, DEFAULT_USER_AGENT)
+    if (
+        not namespace
+        or len(namespace) > MAX_BROKER_NAMESPACE_LENGTH
+        or _BROKER_NAMESPACE_RE.fullmatch(namespace) is None
+    ):
+        raise ValueError("broker namespace must be a lowercase hyphen-separated identifier")
+    return BrokerIdentity(
+        server_version=f"{namespace}-broker",
+        user_agent=f"ai-orchestra-{namespace}-broker/0.1",
+    )
+
+
 @dataclass
 class BrokerMetrics:
     request_count: int = 0
@@ -145,6 +187,7 @@ class BrokerState:
         max_requests: int,
         max_total_tokens: int,
         max_upstream_bytes: int,
+        user_agent: str = DEFAULT_USER_AGENT,
     ) -> None:
         self.run_token = run_token
         self.oauth_token = oauth_token
@@ -153,6 +196,7 @@ class BrokerState:
         self.max_requests = max_requests
         self.max_total_tokens = max_total_tokens
         self.max_upstream_bytes = max_upstream_bytes
+        self.user_agent = user_agent
         self.metrics = BrokerMetrics()
         self.started_at = time.monotonic()
         self.last_activity = time.monotonic()
@@ -371,7 +415,7 @@ def _non_negative_int(value: Any) -> int:
 
 class BrokerHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
-    server_version = "meta-harness-broker"
+    server_version = DEFAULT_SERVER_VERSION
 
     @property
     def state(self) -> BrokerState:
@@ -412,7 +456,11 @@ class BrokerHandler(BaseHTTPRequestHandler):
             self._json_error(400, "transfer encoding is not allowed")
             return
         try:
-            _upstream_headers(self.headers, self.state.oauth_token)
+            _upstream_headers(
+                self.headers,
+                self.state.oauth_token,
+                user_agent=self.state.user_agent,
+            )
         except ValueError as exc:
             # _upstream_headers emits only fixed validation categories and never
             # includes credential or header values. Keep that category in metrics so
@@ -455,7 +503,11 @@ class BrokerHandler(BaseHTTPRequestHandler):
             self.state.abort_request(budget_error, rejected=True)
             self._json_error(429, budget_error)
             return
-        headers = _upstream_headers(self.headers, self.state.oauth_token)
+        headers = _upstream_headers(
+            self.headers,
+            self.state.oauth_token,
+            user_agent=self.state.user_agent,
+        )
         forwarded_bytes = len(body) + sum(
             len(name) + len(value) + 4 for name, value in headers.items()
         )
@@ -508,7 +560,12 @@ class BrokerHandler(BaseHTTPRequestHandler):
         return
 
 
-def _upstream_headers(headers: Any, oauth_token: str) -> dict[str, str]:
+def _upstream_headers(
+    headers: Any,
+    oauth_token: str,
+    *,
+    user_agent: str = DEFAULT_USER_AGENT,
+) -> dict[str, str]:
     result: dict[str, str] = {}
     client_betas: list[str] = []
     beta_header_seen = False
@@ -529,7 +586,7 @@ def _upstream_headers(headers: Any, oauth_token: str) -> dict[str, str]:
         result[lower] = value
     result["accept"] = "application/json"
     result["content-type"] = "application/json"
-    result["user-agent"] = "ai-orchestra-meta-harness-broker/0.1"
+    result["user-agent"] = user_agent
     result["authorization"] = f"Bearer {oauth_token}"
     result["anthropic-beta"] = ",".join([OAUTH_BETA, *client_betas])
     result["host"] = API_HOST
@@ -555,8 +612,19 @@ def _validated_client_betas(value: str) -> list[str]:
 class BrokerServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address: tuple[str, int], state: BrokerState) -> None:
-        super().__init__(address, BrokerHandler)
+    def __init__(
+        self,
+        address: tuple[str, int],
+        state: BrokerState,
+        *,
+        server_version: str = DEFAULT_SERVER_VERSION,
+    ) -> None:
+        handler_class = type(
+            "ConfiguredBrokerHandler",
+            (BrokerHandler,),
+            {"server_version": server_version},
+        )
+        super().__init__(address, handler_class)
         self.state = state
 
 
@@ -620,12 +688,46 @@ def _health(port: int) -> int:
         return 1
 
 
-def _float_env(name: str) -> float:
-    return float(os.environ[name])
+def _env_value(name: str, legacy_name: str) -> str:
+    if name in os.environ:
+        return os.environ[name]
+    if legacy_name in os.environ:
+        return os.environ[legacy_name]
+    raise KeyError(f"neither '{name}' nor '{legacy_name}' is set in the environment")
 
 
-def _int_env(name: str) -> int:
-    return int(os.environ[name])
+def _float_env(name: str, legacy_name: str) -> float:
+    return float(_env_value(name, legacy_name))
+
+
+def _int_env(name: str, legacy_name: str) -> int:
+    return int(_env_value(name, legacy_name))
+
+
+def _broker_settings_from_env() -> BrokerSettings:
+    run_token = _env_value("DR_BROKER_RUN_TOKEN", "MH_BROKER_RUN_TOKEN")
+    if not run_token:
+        raise RuntimeError("broker run token must not be empty")
+    return BrokerSettings(
+        port=_int_env("DR_BROKER_PORT", "MH_BROKER_PORT"),
+        startup_timeout_seconds=_int_env(
+            "DR_BROKER_STARTUP_TIMEOUT_SEC", "MH_BROKER_STARTUP_TIMEOUT_SEC"
+        ),
+        run_token=run_token,
+        budget_usd=_float_env("DR_BROKER_BUDGET_USD", "MH_BROKER_BUDGET_USD"),
+        pricing=Pricing(
+            input=_float_env("DR_PRICE_INPUT", "MH_PRICE_INPUT"),
+            output=_float_env("DR_PRICE_OUTPUT", "MH_PRICE_OUTPUT"),
+            cache_creation=_float_env("DR_PRICE_CACHE_CREATION", "MH_PRICE_CACHE_CREATION"),
+            cache_read=_float_env("DR_PRICE_CACHE_READ", "MH_PRICE_CACHE_READ"),
+        ),
+        max_requests=_int_env("DR_BROKER_MAX_REQUESTS", "MH_BROKER_MAX_REQUESTS"),
+        max_total_tokens=_int_env("DR_BROKER_MAX_TOTAL_TOKENS", "MH_BROKER_MAX_TOTAL_TOKENS"),
+        max_upstream_bytes=_int_env("DR_BROKER_MAX_UPSTREAM_BYTES", "MH_BROKER_MAX_UPSTREAM_BYTES"),
+        idle_timeout_seconds=_int_env("DR_BROKER_IDLE_TIMEOUT_SEC", "MH_BROKER_IDLE_TIMEOUT_SEC"),
+        max_lifetime_seconds=_int_env("DR_BROKER_MAX_LIFETIME_SEC", "MH_BROKER_MAX_LIFETIME_SEC"),
+        identity=_broker_identity(os.environ.get("DR_BROKER_NAMESPACE")),
+    )
 
 
 def _idle_watchdog(
@@ -649,30 +751,30 @@ def _idle_watchdog(
 
 
 def _serve() -> int:
-    port = _int_env("MH_BROKER_PORT")
-    oauth_token = _read_and_unlink_token(_int_env("MH_BROKER_STARTUP_TIMEOUT_SEC"))
+    settings = _broker_settings_from_env()
+    oauth_token = _read_and_unlink_token(settings.startup_timeout_seconds)
     state = BrokerState(
-        run_token=os.environ["MH_BROKER_RUN_TOKEN"],
+        run_token=settings.run_token,
         oauth_token=oauth_token,
-        budget_usd=_float_env("MH_BROKER_BUDGET_USD"),
-        pricing=Pricing(
-            input=_float_env("MH_PRICE_INPUT"),
-            output=_float_env("MH_PRICE_OUTPUT"),
-            cache_creation=_float_env("MH_PRICE_CACHE_CREATION"),
-            cache_read=_float_env("MH_PRICE_CACHE_READ"),
-        ),
-        max_requests=_int_env("MH_BROKER_MAX_REQUESTS"),
-        max_total_tokens=_int_env("MH_BROKER_MAX_TOTAL_TOKENS"),
-        max_upstream_bytes=_int_env("MH_BROKER_MAX_UPSTREAM_BYTES"),
+        budget_usd=settings.budget_usd,
+        pricing=settings.pricing,
+        max_requests=settings.max_requests,
+        max_total_tokens=settings.max_total_tokens,
+        max_upstream_bytes=settings.max_upstream_bytes,
+        user_agent=settings.identity.user_agent,
     )
     watchdog = threading.Thread(
         target=_idle_watchdog,
-        args=(state, _int_env("MH_BROKER_IDLE_TIMEOUT_SEC")),
-        kwargs={"max_lifetime_seconds": _int_env("MH_BROKER_MAX_LIFETIME_SEC")},
+        args=(state, settings.idle_timeout_seconds),
+        kwargs={"max_lifetime_seconds": settings.max_lifetime_seconds},
         daemon=True,
     )
     watchdog.start()
-    server = BrokerServer(("0.0.0.0", port), state)
+    server = BrokerServer(
+        ("0.0.0.0", settings.port),
+        state,
+        server_version=settings.identity.server_version,
+    )
     server.serve_forever(poll_interval=0.5)
     return 0
 
@@ -682,7 +784,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--write-token", action="store_true")
     parser.add_argument("--print-metrics", action="store_true")
     parser.add_argument("--health", action="store_true")
-    parser.add_argument("--port", type=int, default=int(os.environ.get("MH_BROKER_PORT", "8787")))
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.environ.get("DR_BROKER_PORT", os.environ.get("MH_BROKER_PORT", "8787"))),
+    )
     args = parser.parse_args(argv)
     if args.write_token:
         return _write_token_from_stdin()

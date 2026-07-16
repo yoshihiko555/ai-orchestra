@@ -126,7 +126,7 @@ class TestValidateOverlayRejects:
 
 
 class TestValidateConfigPatch:
-    # EV-61 / EV-63 (lib レベル)
+    # EV-62 / EV-64 (lib レベル)
     def test_allowlisted_human_routing_patch_is_accepted(self) -> None:
         config = _DEFAULT_OVERLAY_CONFIG
         patch = [{"file": "agent-routing/cli-tools.yaml", "key_path": "codex.model", "value": "x"}]

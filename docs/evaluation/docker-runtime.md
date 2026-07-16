@@ -4,7 +4,7 @@
 **類型**: CLI ツール型（内部ライブラリ）
 **作成日**: 2026-07-15
 **最終レビュー日**: 未レビュー
-**情報源**: `docs/design/loop-harness-isolation.md` §5.2・§6・§8、`docs/adr/ADR-20260712-034.md`
+**情報源**: `docs/design/loop-harness-isolation.md` §5.2・§6・§8、`docs/adr/ADR-20260712-034.md`、`docs/adr/ADR-20260715-037.md`
 
 ## 1. 責務定義
 
@@ -17,8 +17,6 @@ namespace・image・config を引数として受け取り、meta-harness と loo
 
 - harness 固有の worktree、git metadata、成果物、設定スキーマは扱わない。
 - meta-harness の既存 process-local image ensure を新しい永続ライフサイクルへ移行しない。
-- `docker/broker/broker.py` の env var 契約（`MH_BROKER_*` / `MH_PRICE_*` prefix）と
-  `server_version`/user-agent の汎化は別 PR で扱う。
 
 ## 2. 期待する入出力・副作用
 
@@ -28,6 +26,7 @@ namespace・image・config を引数として受け取り、meta-harness と loo
 | `docker_runtime_image.py` | image recipe、manifest/lock path、GC policy、runner | recipe 固有の immutable image ID と tag | manifest 更新、buildx build、image/BuildKit prune |
 | `docker_runtime_profile.py` | mount/resource/env 値 | hardened Docker CLI 引数 | なし |
 | `docker_runtime_lifecycle.py` | namespace、broker spec、runner/callback | broker session または明示的エラー | container/network の作成・破棄 |
+| `docker/broker/broker.py` | `DR_BROKER_*` / `DR_PRICE_*`、任意の broker namespace | namespace 固有の HTTP identity と upstream user-agent。新変数未設定時は `MH_*` fallback | OAuth proxy、run budget/metrics |
 
 ## 3. 評価観点
 
@@ -47,6 +46,8 @@ namespace・image・config を引数として受け取り、meta-harness と loo
 - [ ] EV-18（正常 / must）: build は呼び出し元専用の buildx builder のみを使用し、成功後に同 builder へ age-based prune を実行する。使用量が上限を超える場合は同 builder に限って `until=0` prune へフォールバックする。同名の builder/context が `docker-container` 以外の driver で既存の場合は無条件に再利用せず拒否する。`docker buildx create` が他プロジェクトとのレースで失敗した場合は `docker buildx inspect` を再試行し、既存ビルダーが driver 検証を通れば採用する（driver 不一致ならこのケースでも拒否する） — 根拠: `docs/design/loop-harness-isolation.md` §5.2
 - [ ] EV-19（境界 / must）: manifest の個別 entry が不正でも、その record だけを cache miss として除外し、同じ manifest 内の検証済み entry は引き続き再利用する。`built_at`/`last_used_at` が timezone-aware ISO 形式で parse できない場合も不正 record として扱う（`last_used_at` をテキストソートする prune が壊れた値を「最新」と誤認するのを防ぐため）— 根拠: `packages/docker-runtime/lib/docker_runtime_image.py`（`_load_valid_manifest`）
 - [ ] EV-20（境界 / must）: `exclusive_file_lock` は lock 取得時の `OSError` だけを lock error に変換し、critical section または unlock で発生した `OSError` は元の例外のまま伝播する — 根拠: `packages/docker-runtime/lib/docker_runtime_image.py`（`exclusive_file_lock`）
+- [ ] EV-21（正常 / must）: broker は全設定について `DR_BROKER_*` / `DR_PRICE_*` を優先して読み、未設定の項目だけ同名 suffix の `MH_BROKER_*` / `MH_PRICE_*` へ fallback する。これにより新しい呼び出し元は harness 非依存の契約を使い、digest pin 済み旧 broker image を使う meta-harness は従来契約を継続できる。新旧どちらの env 名も未設定の場合は両変数名を含む `KeyError` で起動失敗する（fail-loud）— 根拠: `docs/design/loop-harness-isolation.md` §6、ADR-20260715-037
+- [ ] EV-22（境界 / must）: `DR_BROKER_NAMESPACE` が明示された場合だけ `server_version=<namespace>-broker` と user-agent `ai-orchestra-<namespace>-broker/0.1` を導出し、未指定時は既存の `meta-harness-broker` / `ai-orchestra-meta-harness-broker/0.1` を維持する。不正な namespace は fail-closed で拒否する — 根拠: `docs/design/loop-harness-isolation.md` §6、ADR-20260715-037
 
 ## 4. 類型別観点
 
