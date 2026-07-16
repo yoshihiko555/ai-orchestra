@@ -28,6 +28,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`loop-harness`: LP-2 Docker 隔離用のイメージライフサイクル設定を追加**: recipe hash による再利用、保持世代数、専用 buildx builder の BuildKit cache GC を設定できる。隔離実行の既定値は引き続き `none`。
+
 - **`meta-harness`: skill target の共有 facet 改善をクロススキル回帰評価で保護**: `regression.enabled: true` を既定化して composition closure 内の共有 facet を候補 overlay に許可し、影響 skill の train/holdout critical を evaluation batch 単位で hard gate する。suite 不在の影響先は PR 警告へ記録し、回帰コスト・suite 数・impact freshness も昇格前に検証する。
 
 - **`loop-harness`: 利用者ガイド（図解つき）を追加**: `docs/guides/loop-harness.md` に `/loop-issue` の使い方・ループの仕組み（全体フロー・状態機械・PR レビュー反復・停止判定の Mermaid 図解）をまとめた。`packages/loop-harness/README.md` から導線を追加し、cron セットアップの記述を `is-alive`（pidfile/flock）方式に更新した。

@@ -1,0 +1,70 @@
+# Machine-readable oracle seed for docs/evaluation/docker-runtime.md.
+# The Markdown evaluation set remains the SSOT; this sidecar records Phase 1
+# image-lifecycle coverage that can be promoted into runnable checks.
+
+- ev_id: EV-13
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/docker-runtime/tests/test_docker_runtime_image.py::test_recipe_hash_covers_normalized_args_platform_and_target
+  covered_by:
+    - packages/docker-runtime/tests/test_docker_runtime_image.py::test_recipe_hash_covers_normalized_args_platform_and_target
+  notes: build-arg ordering is normalized while arg values, platform, and target change the hash.
+
+- ev_id: EV-14
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/docker-runtime/tests/test_docker_runtime_image.py::test_manifest_reuses_image_across_calls_while_build_lock_is_held
+  covered_by:
+    - packages/docker-runtime/tests/test_docker_runtime_image.py::test_manifest_reuses_image_across_calls_while_build_lock_is_held
+  notes: a fresh stateless call reuses the disk manifest and updates last_used_at.
+
+- ev_id: EV-15
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/docker-runtime/tests/test_docker_runtime_image.py::test_manifest_docker_drift_is_rebuilt
+  covered_by:
+    - packages/docker-runtime/tests/test_docker_runtime_image.py::test_manifest_docker_drift_is_rebuilt[missing]
+    - packages/docker-runtime/tests/test_docker_runtime_image.py::test_manifest_docker_drift_is_rebuilt[repointed]
+  notes: both a missing image and a tag repointed to another image ID force a rebuild.
+
+- ev_id: EV-16
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/docker-runtime/tests/test_docker_runtime_image.py::test_prune_keeps_recent_family_generations_and_label_scope
+  covered_by:
+    - packages/docker-runtime/tests/test_docker_runtime_image.py::test_prune_keeps_recent_family_generations_and_label_scope
+  notes: old and orphaned hash tags are pruned without touching latest or another family.
+
+- ev_id: EV-17
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/docker-runtime/tests/test_docker_runtime_image.py::test_manifest_reuses_image_across_calls_while_build_lock_is_held
+  covered_by:
+    - packages/docker-runtime/tests/test_docker_runtime_image.py::test_manifest_reuses_image_across_calls_while_build_lock_is_held
+  notes: a non-blocking second flock attempt fails while build runs and only one build occurs.
+
+- ev_id: EV-18
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/docker-runtime/tests/test_docker_runtime_image.py::test_build_uses_dedicated_builder_and_scoped_cache_gc
+  covered_by:
+    - packages/docker-runtime/tests/test_docker_runtime_image.py::test_build_uses_dedicated_builder_and_scoped_cache_gc
+  notes: build, age prune, size inspection, and until=0 fallback all name the dedicated builder.

@@ -8,21 +8,24 @@
 
 ## 1. 責務定義
 
-`docker-runtime` は複数の harness が共有する Docker CLI、セキュリティプロファイル、dual-homed broker、
-所有 resource の cleanup を提供する。呼び出し元固有の namespace・image・config を引数として受け取り、
-meta-harness と loop-harness の resource が交差しない状態で fail-closed な実行境界を構築する。
+`docker-runtime` は複数の harness が共有する Docker CLI、イメージライフサイクル、セキュリティ
+プロファイル、dual-homed broker、所有 resource の cleanup を提供する。呼び出し元固有の
+namespace・image・config を引数として受け取り、meta-harness と loop-harness の resource が
+交差しない状態で fail-closed な実行境界を構築する。
 
 ### Non-Goals
 
 - harness 固有の worktree、git metadata、成果物、設定スキーマは扱わない。
-- Phase 0 では image prune、BuildKit GC、並行 build lock の挙動を追加しない。
-- `docker/broker/broker.py` の env var 契約（`MH_BROKER_*` / `MH_PRICE_*` prefix）と `server_version`/user-agent の汎化は Phase 1 で行う。`lib/` 配下（lifecycle/profile/cli builder）は namespace 注入型で共有化済みだが、`docker/broker/broker.py` 本体は meta-harness 固有のままである（既知のギャップ）。
+- meta-harness の既存 process-local image ensure を新しい永続ライフサイクルへ移行しない。
+- `docker/broker/broker.py` の env var 契約（`MH_BROKER_*` / `MH_PRICE_*` prefix）と
+  `server_version`/user-agent の汎化は別 PR で扱う。
 
 ## 2. 期待する入出力・副作用
 
 | 構成要素 | 入力 | 期待する出力 | 副作用 |
 | --- | --- | --- | --- |
 | `docker_runtime_cli.py` | image、build context、build args、runner | immutable image ID または明示的エラー | Docker image inspect/build/remove |
+| `docker_runtime_image.py` | image recipe、manifest/lock path、GC policy、runner | recipe 固有の immutable image ID と tag | manifest 更新、buildx build、image/BuildKit prune |
 | `docker_runtime_profile.py` | mount/resource/env 値 | hardened Docker CLI 引数 | なし |
 | `docker_runtime_lifecycle.py` | namespace、broker spec、runner/callback | broker session または明示的エラー | container/network の作成・破棄 |
 
@@ -36,6 +39,12 @@ meta-harness と loop-harness の resource が交差しない状態で fail-clos
 - [ ] EV-06（正常 / must）: broker は internal/external network の dual-homed sidecar として起動し、scenario 側の direct egress や Docker socket mount を追加しない — 根拠: `docs/design/loop-harness-isolation.md` §2・§3
 - [ ] EV-07（異常 / must）: broker 起動の途中失敗では作成済み container/network を逆順に cleanup し、非隔離実行へ降格しない — 根拠: `docs/design/loop-harness-isolation.md` §2.1・§7
 - [ ] EV-08（境界 / must）: harness ごとの `DOCKER_LABEL` から owner/parent/created labels を導出し、meta-harness と loop-harness の cleanup namespace を分離する — 根拠: `docs/design/loop-harness-isolation.md` §6
+- [ ] EV-13（正常 / must）: `recipe_hash` は context hash、key 順に正規化した build args、platform、build target の全てから決まり、いずれかが異なれば別 hash/tag になる — 根拠: `docs/design/loop-harness-isolation.md` §5.2
+- [ ] EV-14（正常 / must）: 同一 recipe の manifest entry と Docker image ID が一致する場合、別プロセス相当の新しい runtime instance でも build を省略し、`last_used_at` と `latest` alias を更新して再利用する — 根拠: `docs/design/loop-harness-isolation.md` §5.2
+- [ ] EV-15（異常 / must）: manifest entry が存在しても image が削除済み、または inspect した image ID が記録値と異なる場合は cache hit とせず、安全に再 build する — 根拠: `docs/design/loop-harness-isolation.md` §5.2
+- [ ] EV-16（境界 / must）: image prune は family ごとの `last_used_at` 上位 N 世代を保持し、呼び出し元の `DOCKER_LABEL` が一致する古い hash tag だけを削除する。label 不一致・別 family・`latest` alias は削除しない — 根拠: `docs/design/loop-harness-isolation.md` §5.2
+- [ ] EV-17（境界 / must）: manifest の再確認から build・更新までを flock で直列化し、先行プロセスが build 済みにした同一 recipe を後続プロセスが重複 build しない — 根拠: `docs/design/loop-harness-isolation.md` §5.2
+- [ ] EV-18（正常 / must）: build は呼び出し元専用の buildx builder のみを使用し、成功後に同 builder へ age-based prune を実行する。使用量が上限を超える場合は同 builder に限って `until=0` prune へフォールバックする — 根拠: `docs/design/loop-harness-isolation.md` §5.2
 
 ## 4. 類型別観点
 
