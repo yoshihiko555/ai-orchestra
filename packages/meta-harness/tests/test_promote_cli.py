@@ -1163,3 +1163,207 @@ def test_routing_config_sidecar_is_included_in_promote_secret_scan(tmp_path: Pat
             manifest,
             promotion_outputs={},
         )
+
+
+@pytest.mark.parametrize("mutation", ["tamper", "delete"])
+def test_changed_routing_config_sidecar_is_rejected_at_promote(
+    tmp_path: Path, mutation: str
+) -> None:
+    config = mh.DEFAULTS
+    overlay_dir = mh.candidates_dir(tmp_path, config) / _CAND_ID / "overlay"
+    overlay_dir.mkdir(parents=True)
+    patch = [
+        {
+            "file": cli.prm.ROUTING_CONFIG_PATCH_FILE,
+            "key_path": "codex.model",
+            "value": "gpt-5.3-codex",
+        }
+    ]
+    patch_path = overlay_dir / mh.CONFIG_PATCH_FILENAME
+    patch_path.write_text(json.dumps(patch), encoding="utf-8")
+    manifest = {
+        "cand_id": _CAND_ID,
+        "parent_id": None,
+        "target": "routing-config",
+        "source_commit": "a" * 40,
+        "overlay_files": [],
+        "config_hash": mh.compute_config_hash(overlay_dir, config),
+        "config_patch_hash": mh.compute_config_patch_hash(patch),
+    }
+    if mutation == "tamper":
+        patch[0]["value"] = "tampered-model"
+        patch_path.write_text(json.dumps(patch), encoding="utf-8")
+    else:
+        patch_path.unlink()
+
+    with pytest.raises(
+        cli.prm.PromotionValidationError,
+        match="hash mismatch|sidecar is missing",
+    ):
+        cli.prm._check_overlay_integrity(tmp_path, config, manifest)
+
+
+def test_promote_preflight_rejects_mixed_routing_config_candidate(tmp_path: Path) -> None:
+    config = mh.DEFAULTS
+    overlay_dir = mh.candidates_dir(tmp_path, config) / _CAND_ID / "overlay"
+    (overlay_dir / "facets/example").mkdir(parents=True)
+    (overlay_dir / "facets/example/SKILL.md").write_text("mixed", encoding="utf-8")
+    (overlay_dir / mh.CONFIG_PATCH_FILENAME).write_text(
+        json.dumps(
+            [
+                {
+                    "file": cli.prm.ROUTING_CONFIG_PATCH_FILE,
+                    "key_path": "codex.model",
+                    "value": "gpt-5.3-codex",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    manifest = {
+        "cand_id": _CAND_ID,
+        "parent_id": None,
+        "target": "routing-config",
+        "created_by": "human",
+        "source_commit": "a" * 40,
+    }
+
+    with pytest.raises(cli.prm.PromotionValidationError, match="file overlays"):
+        cli.prm._validated_candidate_config_patch_items(
+            tmp_path, config, manifest, cli.prm._SCHEMA_DIR
+        )
+
+
+@pytest.mark.parametrize(
+    ("target", "with_patch", "expected"),
+    [
+        ("routing-config", False, "require a non-empty config patch"),
+        ("claude-harness", True, "require target='routing-config'"),
+    ],
+)
+def test_promote_preflight_rechecks_target_patch_biconditional(
+    tmp_path: Path,
+    target: str,
+    with_patch: bool,
+    expected: str,
+) -> None:
+    config = mh.DEFAULTS
+    overlay_dir = mh.candidates_dir(tmp_path, config) / _CAND_ID / "overlay"
+    overlay_dir.mkdir(parents=True)
+    if with_patch:
+        (overlay_dir / mh.CONFIG_PATCH_FILENAME).write_text(
+            json.dumps(
+                [
+                    {
+                        "file": cli.prm.ROUTING_CONFIG_PATCH_FILE,
+                        "key_path": "codex.model",
+                        "value": "gpt-5.3-codex",
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+    manifest = {
+        "cand_id": _CAND_ID,
+        "parent_id": None,
+        "target": target,
+        "created_by": "human",
+        "source_commit": "a" * 40,
+    }
+
+    with pytest.raises(cli.prm.PromotionValidationError, match=expected):
+        cli.prm._validated_candidate_config_patch_items(
+            tmp_path, config, manifest, cli.prm._SCHEMA_DIR
+        )
+
+
+def test_routing_config_structural_verification_aborts_before_writes(tmp_path: Path) -> None:
+    worktree, original = _prepare_routing_config_worktree(tmp_path)
+    duplicate = original.decode("utf-8").replace(
+        "  model: gpt-5.6-sol\n",
+        "  model: gpt-5.6-sol\n  model: duplicate\n",
+        1,
+    )
+    for relative_path in (
+        cli.prm.ROUTING_CONFIG_SSOT_RELATIVE,
+        cli.prm.ROUTING_CONFIG_MIRROR_RELATIVE,
+    ):
+        (worktree / relative_path).write_text(duplicate, encoding="utf-8")
+    before = (worktree / cli.prm.ROUTING_CONFIG_SSOT_RELATIVE).read_bytes()
+
+    with pytest.raises(cli.prm.PromotionValidationError, match="exist exactly once"):
+        cli.prm._apply_routing_config_patch(
+            worktree,
+            [
+                {
+                    "file": cli.prm.ROUTING_CONFIG_PATCH_FILE,
+                    "key_path": "codex.model",
+                    "value": "gpt-5.3-codex",
+                }
+            ],
+        )
+
+    assert (worktree / cli.prm.ROUTING_CONFIG_SSOT_RELATIVE).read_bytes() == before
+    assert (worktree / cli.prm.ROUTING_CONFIG_MIRROR_RELATIVE).read_bytes() == before
+
+
+def test_secret_in_generated_routing_diff_blocks_commit_push_and_pr(
+    tmp_path: Path, monkeypatch
+) -> None:
+    preflight = cli.prm.PromotionPreflight(
+        cand_id=_CAND_ID,
+        manifest={"target": "routing-config"},
+        frontier_doc={"points": []},
+        branch=_PROMOTE_BRANCH,
+        worktree_dir=tmp_path / "promotion-worktree",
+        title="promote routing config",
+        body="clean body",
+        events=[],
+        holdout_evaluation={},
+    )
+    reached: list[str] = []
+    monkeypatch.setattr(cli.prm, "_reserve_promotion", lambda *_args: preflight)
+    monkeypatch.setattr(cli.prm, "_find_open_pr_for_branch", lambda *_args: None)
+    monkeypatch.setattr(cli.prm, "_create_promotion_worktree", lambda *_args: None)
+    monkeypatch.setattr(
+        cli.prm,
+        "_validated_candidate_config_patch_items",
+        lambda *_args: [
+            {
+                "file": cli.prm.ROUTING_CONFIG_PATCH_FILE,
+                "key_path": "codex.model",
+                "value": "clean-model",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        cli.prm,
+        "_routing_config_changes_from_base",
+        lambda *_args: [{"key_path": "codex.model", "old": "old", "new": "clean-model"}],
+    )
+    monkeypatch.setattr(cli.prm, "_check_output_secret_scan", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli.prm, "_apply_candidate_overlay", lambda *_args: None)
+    monkeypatch.setattr(
+        cli.prm,
+        "_run",
+        lambda args, **_kwargs: _completed(args, stdout=f"+model: {_sample_sk_key()}\n"),
+    )
+    monkeypatch.setattr(
+        cli.prm,
+        "_commit_promotion",
+        lambda *_args: reached.append("commit"),
+    )
+    monkeypatch.setattr(cli.prm, "_push_branch", lambda *_args: reached.append("push"))
+    monkeypatch.setattr(cli.prm, "_create_pr", lambda *_args: reached.append("pr"))
+    monkeypatch.setattr(cli.prm, "_cleanup_worktree_safely", lambda *_args: None)
+    monkeypatch.setattr(cli.prm, "_release_promotion_safely", lambda *_args: None)
+
+    with pytest.raises(cli.prm.PromotionValidationError, match="promotion diff"):
+        cli.prm.promote_candidate(
+            main_root=tmp_path,
+            config=mh.DEFAULTS,
+            project_dir=tmp_path,
+            cand_id=_CAND_ID,
+        )
+
+    assert reached == []

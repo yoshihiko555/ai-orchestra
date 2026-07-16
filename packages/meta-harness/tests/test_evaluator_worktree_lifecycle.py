@@ -10,6 +10,7 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 import yaml
 
 from tests.module_loader import load_module
@@ -17,6 +18,10 @@ from tests.module_loader import load_module
 ev = load_module(
     "meta_harness_evaluator_worktree_lifecycle",
     "packages/meta-harness/lib/evaluator.py",
+)
+hook_common = load_module(
+    "hook_common_routing_config_materialization",
+    "packages/core/hooks/hook_common.py",
 )
 _SCHEMA_DIR = Path("packages/meta-harness/schemas").resolve()
 
@@ -318,6 +323,12 @@ class TestRoutingConfigPatchMaterialization:
             "codex": {"enabled": False, "model": "gpt-5.3-codex"},
         }
         assert local_path.read_text(encoding="utf-8").startswith("agents:\n")
+        merged = hook_common.load_cli_tools_config(str(worktree_dir))
+        assert merged["codex"]["enabled"] is False
+        assert merged["codex"]["model"] == "gpt-5.3-codex"
+        assert "sandbox" in merged["codex"]
+        assert merged["agents"]["debugger"]["tool"] == "auto"
+        assert not (overlay_dir / ".claude/config/agent-routing/cli-tools.local.yaml").exists()
 
     def test_mixed_overlay_is_rejected_before_worktree_changes(self, tmp_path: Path) -> None:
         overlay_dir = tmp_path / "overlay-mixed"
@@ -353,4 +364,94 @@ class TestRoutingConfigPatchMaterialization:
             raise AssertionError("mixed config patch and file overlay must be rejected")
 
         assert not (worktree_dir / "facets/example/SKILL.md").exists()
+        assert not (worktree_dir / ".claude/config/agent-routing/cli-tools.local.yaml").exists()
+
+    @pytest.mark.parametrize(
+        ("target", "with_patch", "expected"),
+        [
+            ("routing-config", False, "require a non-empty config patch"),
+            ("claude-harness", True, "require target='routing-config'"),
+        ],
+    )
+    def test_target_patch_biconditional_is_rechecked_before_writes(
+        self,
+        tmp_path: Path,
+        target: str,
+        with_patch: bool,
+        expected: str,
+    ) -> None:
+        overlay_dir = tmp_path / f"overlay-{target}"
+        overlay_dir.mkdir()
+        if with_patch:
+            (overlay_dir / ev.mh.CONFIG_PATCH_FILENAME).write_text(
+                json.dumps(
+                    [
+                        {
+                            "file": "agent-routing/cli-tools.yaml",
+                            "key_path": "codex.model",
+                            "value": "gpt-5.3-codex",
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+        worktree_dir = tmp_path / f"worktree-{target}"
+        worktree_dir.mkdir()
+
+        with pytest.raises(ev.EvaluatorStageError, match=expected):
+            ev.apply_overlay(
+                overlay_dir,
+                {},
+                worktree_dir,
+                _SCHEMA_DIR,
+                target=target,
+                created_by="human",
+            )
+
+        assert list(worktree_dir.iterdir()) == []
+
+    @pytest.mark.parametrize("mutation", ["tamper", "delete"])
+    def test_changed_registered_sidecar_is_rejected_before_worktree_changes(
+        self, tmp_path: Path, mutation: str
+    ) -> None:
+        main_root = tmp_path / "main"
+        cand_id = "cand-20260716-120000-routing-abcd"
+        overlay_dir = ev.mh.candidates_dir(main_root, {}) / cand_id / "overlay"
+        overlay_dir.mkdir(parents=True)
+        patch = [
+            {
+                "file": "agent-routing/cli-tools.yaml",
+                "key_path": "codex.model",
+                "value": "gpt-5.3-codex",
+            }
+        ]
+        patch_path = overlay_dir / ev.mh.CONFIG_PATCH_FILENAME
+        patch_path.write_text(json.dumps(patch), encoding="utf-8")
+        manifest = {
+            "cand_id": cand_id,
+            "parent_id": None,
+            "target": "routing-config",
+            "created_by": "human",
+            "source_commit": "a" * 40,
+            "overlay_files": [],
+            "config_hash": ev.mh.compute_config_hash(overlay_dir, {}),
+            "config_patch_hash": ev.mh.compute_config_patch_hash(patch),
+        }
+        if mutation == "tamper":
+            patch[0]["value"] = "tampered-model"
+            patch_path.write_text(json.dumps(patch), encoding="utf-8")
+        else:
+            patch_path.unlink()
+        worktree_dir = tmp_path / "worktree-tampered"
+        worktree_dir.mkdir()
+
+        with pytest.raises(ev.EvaluatorStageError, match="hash mismatch|sidecar is missing"):
+            ev.apply_registered_candidate_overlay(
+                main_root=main_root,
+                config={},
+                manifest=manifest,
+                worktree_dir=worktree_dir,
+                schema_dir=_SCHEMA_DIR,
+            )
+
         assert not (worktree_dir / ".claude/config/agent-routing/cli-tools.local.yaml").exists()

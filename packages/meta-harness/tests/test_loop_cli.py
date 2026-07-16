@@ -24,6 +24,27 @@ loop_cli = helpers.loop_cli
 mh = helpers.mh
 
 
+def test_routing_config_target_is_rejected_before_proposer(
+    git_project: Path, monkeypatch, capsys
+) -> None:
+    config = _config()
+    mh.init_store(git_project, config)
+    monkeypatch.setattr(loop_cli, "_resolve_context", lambda _project: (git_project, config))
+    monkeypatch.setattr(
+        loop_cli,
+        "_drive_loop",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("proposer loop must not start")
+        ),
+    )
+
+    exit_code = loop_cli.cmd_loop(str(git_project), "routing-config", None, False)
+
+    assert exit_code == loop_cli.EXIT_VALIDATION_ERROR
+    assert "requires human registration" in capsys.readouterr().err
+    assert not any(event.get("event") == "loop_started" for event in _events(git_project, config))
+
+
 @pytest.mark.parametrize(
     ("reason", "config", "qualities", "expected_iterations"),
     [

@@ -28,6 +28,29 @@ _RUN_ID = "run-20260708-020000-parent-scn-a1-abcd"
 _HOLDOUT_RUN_ID = "run-20260708-020000-parent-scn-h1-abcd"
 
 
+def test_routing_config_target_is_rejected_before_context_or_backend(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        propose_cli,
+        "_resolve_context",
+        lambda _project: (_ for _ in ()).throw(AssertionError("context must not be loaded")),
+    )
+
+    exit_code = propose_cli.cmd_propose("/missing", "routing-config", None, None, False)
+
+    assert exit_code == propose_cli.EXIT_VALIDATION_ERROR
+    assert "does not support target 'routing-config'" in capsys.readouterr().err
+
+
+def test_proposal_schema_remains_facets_only() -> None:
+    schema = mh.load_schema(propose_cli._SCHEMA_DIR, "proposal.schema.json")
+    serialized = json.dumps(schema, sort_keys=True)
+
+    assert schema["properties"]["changes"]["items"]["properties"]["path"]["pattern"] == (
+        "^facets/.+$"
+    )
+    assert "config_patch" not in serialized
+
+
 def _sample_sk_key(key_kind: str | None = None) -> str:
     """外部 scanner に触れるキーリテラルを置かず、検査用 sk- key を返す。"""
     parts = ["sk"]

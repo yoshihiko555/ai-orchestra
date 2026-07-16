@@ -235,6 +235,42 @@ class TestRegisterImmutability:
 
 class TestRegisterConfigPatchValidation:
     # EV-65
+    def test_human_routing_config_patch_registers_with_integrity_hashes(
+        self, git_project: Path, tmp_path: Path, run_meta
+    ) -> None:
+        run_meta("init", project=git_project, check=True)
+        overlay_dir = tmp_path / "routing-overlay"
+        overlay_dir.mkdir()
+        patch = [
+            {
+                "file": "agent-routing/cli-tools.yaml",
+                "key_path": "codex.model",
+                "value": "gpt-5.3-codex",
+            }
+        ]
+        (overlay_dir / mh.CONFIG_PATCH_FILENAME).write_text(json.dumps(patch), encoding="utf-8")
+
+        result = run_meta(
+            "register",
+            "--overlay",
+            str(overlay_dir),
+            "--target",
+            "routing-config",
+            "--json",
+            project=git_project,
+            check=True,
+        )
+
+        cand_id = json.loads(result.stdout)["cand_id"]
+        candidate_dir = _candidates_dir(git_project) / cand_id
+        manifest = json.loads((candidate_dir / "manifest.json").read_text(encoding="utf-8"))
+        stored_overlay = candidate_dir / "overlay"
+        assert manifest["target"] == "routing-config"
+        assert manifest["created_by"] == "human"
+        assert manifest["overlay_files"] == []
+        assert manifest["config_patch_hash"] == mh.compute_config_patch_hash(patch)
+        assert manifest["config_hash"] == mh.compute_config_hash(stored_overlay, {})
+
     def test_config_patch_is_rejected_for_non_routing_target(
         self, git_project: Path, tmp_path: Path, run_meta, default_overlay
     ) -> None:
@@ -259,6 +295,67 @@ class TestRegisterConfigPatchValidation:
 
         assert result.returncode == 2
         assert "non-empty config patches require target='routing-config'" in result.stderr
+        assert (
+            not any(_candidates_dir(git_project).iterdir())
+            if _candidates_dir(git_project).is_dir()
+            else True
+        )
+
+    def test_routing_target_without_config_patch_is_rejected(
+        self, git_project: Path, tmp_path: Path, run_meta
+    ) -> None:
+        run_meta("init", project=git_project, check=True)
+        overlay_dir = tmp_path / "empty-routing-overlay"
+        overlay_dir.mkdir()
+
+        result = run_meta(
+            "register",
+            "--overlay",
+            str(overlay_dir),
+            "--target",
+            "routing-config",
+            project=git_project,
+            check=False,
+        )
+
+        assert result.returncode == 2
+        assert "require a non-empty config patch" in result.stderr
+        assert (
+            not any(_candidates_dir(git_project).iterdir())
+            if _candidates_dir(git_project).is_dir()
+            else True
+        )
+
+    def test_mixed_file_overlay_and_config_patch_is_rejected(
+        self, git_project: Path, tmp_path: Path, run_meta, default_overlay
+    ) -> None:
+        run_meta("init", project=git_project, check=True)
+        overlay_dir = default_overlay(tmp_path)
+        (overlay_dir / mh.CONFIG_PATCH_FILENAME).write_text(
+            json.dumps(
+                [
+                    {
+                        "file": "agent-routing/cli-tools.yaml",
+                        "key_path": "codex.model",
+                        "value": "gpt-5.3-codex",
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        result = run_meta(
+            "register",
+            "--overlay",
+            str(overlay_dir),
+            "--target",
+            "routing-config",
+            project=git_project,
+            check=False,
+        )
+
+        assert result.returncode == 2
+        assert "must not contain file overlays" in result.stderr
         assert (
             not any(_candidates_dir(git_project).iterdir())
             if _candidates_dir(git_project).is_dir()
@@ -319,6 +416,47 @@ class TestRegisterConfigPatchValidation:
 
         assert result.returncode == 2
         assert "non-empty config patches require target='routing-config'" in result.stderr
+
+    def test_local_allowlist_cannot_widen_frozen_ceiling(
+        self, git_project: Path, tmp_path: Path, run_meta
+    ) -> None:
+        run_meta("init", project=git_project, check=True)
+        local_config_dir = git_project / ".claude" / "config" / "meta-harness"
+        local_config_dir.mkdir(parents=True, exist_ok=True)
+        (local_config_dir / "meta-harness.local.yaml").write_text(
+            "config_patch:\n"
+            "  allowlist:\n"
+            "    - agent-routing/cli-tools.yaml#codex.model\n"
+            "    - agent-routing/cli-tools.yaml#codex.flags\n",
+            encoding="utf-8",
+        )
+        overlay_dir = tmp_path / "routing-overlay-local-widen"
+        overlay_dir.mkdir()
+        (overlay_dir / mh.CONFIG_PATCH_FILENAME).write_text(
+            json.dumps(
+                [
+                    {
+                        "file": "agent-routing/cli-tools.yaml",
+                        "key_path": "codex.model",
+                        "value": "gpt-5.3-codex",
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        result = run_meta(
+            "register",
+            "--overlay",
+            str(overlay_dir),
+            "--target",
+            "routing-config",
+            project=git_project,
+            check=False,
+        )
+
+        assert result.returncode == 2
+        assert "CONFIG_PATCH_ALLOWLIST_CEILING" in result.stderr
 
     # PR #162 レビュー指摘 (FIX D): overlay/config-patch.json が外部ファイルへの symlink の
     # 場合、予約サイドカー名の早期 continue で迂回されず symlink として拒否されること

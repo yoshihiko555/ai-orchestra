@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from tests.module_loader import load_module
 
 mh = load_module(
@@ -203,3 +205,215 @@ class TestValidateConfigPatch:
             "agent-routing/cli-tools.yaml#codex.model",
             "agent-routing/cli-tools.yaml#antigravity.model",
         )
+
+    @pytest.mark.parametrize(
+        ("patch", "expected"),
+        [
+            (
+                [{"file": "other/cli-tools.yaml", "key_path": "codex.model", "value": "x"}],
+                "not allowlisted",
+            ),
+            (
+                [
+                    {
+                        "file": "agent-routing/cli-tools.yaml",
+                        "key_path": "codex.flags",
+                        "value": "x",
+                    }
+                ],
+                "not allowlisted",
+            ),
+            (
+                [
+                    {
+                        "file": "agent-routing/cli-tools.yaml",
+                        "key_path": "agents.a.b.tool",
+                        "value": "auto",
+                    }
+                ],
+                "not allowlisted",
+            ),
+            (
+                [
+                    {
+                        "file": "agent-routing/cli-tools.yaml",
+                        "key_path": "agents.__proto__.tool",
+                        "value": "auto",
+                    }
+                ],
+                "dangerous key segment",
+            ),
+            (
+                [
+                    {
+                        "file": "agent-routing/cli-tools.yaml",
+                        "key_path": "agents..tool",
+                        "value": "auto",
+                    }
+                ],
+                "empty segment",
+            ),
+        ],
+    )
+    def test_non_allowlisted_and_dangerous_patch_targets_are_rejected(
+        self, patch: list[dict], expected: str
+    ) -> None:
+        errors = mh.validate_config_patch(
+            patch,
+            _DEFAULT_OVERLAY_CONFIG,
+            SCHEMA_DIR,
+            target="routing-config",
+            created_by="human",
+        )
+
+        assert any(expected in error for error in errors)
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            "agent-routing/cli-tools.yaml#agents.**.tool",
+            "agent-routing/cli-tools.yaml#agents.foo*.tool",
+            "agent-routing/cli-tools.yaml#codex.model#extra",
+            "agent-routing/cli-tools.yaml#agents..tool",
+            "agent-*/cli-tools.yaml#codex.model",
+        ],
+    )
+    def test_malformed_allowlist_entries_fail_closed(self, entry: str) -> None:
+        errors = mh.validate_config_patch(
+            [
+                {
+                    "file": "agent-routing/cli-tools.yaml",
+                    "key_path": "codex.model",
+                    "value": "x",
+                }
+            ],
+            {"config_patch": {"allowlist": [entry]}},
+            SCHEMA_DIR,
+            target="routing-config",
+            created_by="human",
+        )
+
+        assert errors
+
+    def test_agents_wildcard_matches_exactly_one_segment(self) -> None:
+        patch = [
+            {
+                "file": "agent-routing/cli-tools.yaml",
+                "key_path": "agents.debugger.tool",
+                "value": "auto",
+            }
+        ]
+
+        assert (
+            mh.validate_config_patch(
+                patch,
+                _DEFAULT_OVERLAY_CONFIG,
+                SCHEMA_DIR,
+                target="routing-config",
+                created_by="human",
+            )
+            == []
+        )
+
+    def test_duplicate_patch_targets_are_rejected(self) -> None:
+        item = {
+            "file": "agent-routing/cli-tools.yaml",
+            "key_path": "codex.model",
+            "value": "x",
+        }
+
+        errors = mh.validate_config_patch(
+            [item, dict(item)],
+            _DEFAULT_OVERLAY_CONFIG,
+            SCHEMA_DIR,
+            target="routing-config",
+            created_by="human",
+        )
+
+        assert any("duplicate config patch target" in error for error in errors)
+
+    @pytest.mark.parametrize("tool", ["codex", "antigravity", "claude-direct", "auto"])
+    def test_all_released_agent_tool_values_are_accepted(self, tool: str) -> None:
+        patch = [
+            {
+                "file": "agent-routing/cli-tools.yaml",
+                "key_path": "agents.debugger.tool",
+                "value": tool,
+            }
+        ]
+
+        assert (
+            mh.validate_config_patch(
+                patch,
+                _DEFAULT_OVERLAY_CONFIG,
+                SCHEMA_DIR,
+                target="routing-config",
+                created_by="human",
+            )
+            == []
+        )
+
+    @pytest.mark.parametrize(
+        ("key_path", "value", "expected"),
+        [
+            ("agents.debugger.tool", "bogus", "must be one of"),
+            ("agents.debugger.tool", True, "must be one of"),
+            ("codex.model", 123, "injection-safe slug"),
+            ("codex.model", False, "injection-safe slug"),
+            ("codex.model", "", "injection-safe slug"),
+            ("codex.model", "bad:model", "injection-safe slug"),
+            ("antigravity.model", "not-in-the-model-allowlist", "not in model_allowlist"),
+        ],
+    )
+    def test_invalid_patch_values_are_rejected(
+        self, key_path: str, value: object, expected: str
+    ) -> None:
+        errors = mh.validate_config_patch(
+            [
+                {
+                    "file": "agent-routing/cli-tools.yaml",
+                    "key_path": key_path,
+                    "value": value,
+                }
+            ],
+            _DEFAULT_OVERLAY_CONFIG,
+            SCHEMA_DIR,
+            target="routing-config",
+            created_by="human",
+        )
+
+        assert any(expected in error for error in errors)
+
+    def test_allowlisted_antigravity_model_is_accepted(self) -> None:
+        errors = mh.validate_config_patch(
+            [
+                {
+                    "file": "agent-routing/cli-tools.yaml",
+                    "key_path": "antigravity.model",
+                    "value": "gemini-3.1-pro",
+                }
+            ],
+            _DEFAULT_OVERLAY_CONFIG,
+            SCHEMA_DIR,
+            target="routing-config",
+            created_by="human",
+        )
+
+        assert errors == []
+
+    def test_unknown_creator_is_rejected(self) -> None:
+        errors = mh.validate_config_patch(
+            [
+                {
+                    "file": "agent-routing/cli-tools.yaml",
+                    "key_path": "codex.model",
+                    "value": "x",
+                }
+            ],
+            _DEFAULT_OVERLAY_CONFIG,
+            SCHEMA_DIR,
+            target="routing-config",
+            created_by="automation",
+        )
+
+        assert any("created_by='human'" in error for error in errors)

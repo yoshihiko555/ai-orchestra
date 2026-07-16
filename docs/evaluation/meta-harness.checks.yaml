@@ -560,3 +560,207 @@
     - packages/meta-harness/tests/test_evaluator_scoring_and_verdict.py::TestEvaluatorHash
     - packages/docker-runtime/tests/test_docker_runtime.py
   notes: existing meta-harness Docker tests remain unchanged while the shared runtime owns common behavior.
+
+- ev_id: EV-60
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" OCHE_ROOT="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_allowlisted_human_routing_patch_is_accepted
+    packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_non_allowlisted_and_dangerous_patch_targets_are_rejected
+    packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_malformed_allowlist_entries_fail_closed
+    packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_agents_wildcard_matches_exactly_one_segment
+    packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_duplicate_patch_targets_are_rejected
+  covered_by:
+    - packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_allowlisted_human_routing_patch_is_accepted
+    - packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_non_allowlisted_and_dangerous_patch_targets_are_rejected
+    - packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_malformed_allowlist_entries_fail_closed
+    - packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_agents_wildcard_matches_exactly_one_segment
+    - packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_duplicate_patch_targets_are_rejected
+  notes: exact file/key matching, one-segment wildcard semantics, malformed entries, dangerous segments, and duplicate targets fail closed.
+
+- ev_id: EV-61
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" OCHE_ROOT="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_allowlist_cannot_exceed_frozen_ceiling
+    packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_allowlist_ceiling_is_exactly_the_initial_release
+    packages/meta-harness/tests/test_register.py::TestRegisterConfigPatchValidation::test_local_allowlist_cannot_widen_frozen_ceiling
+  covered_by:
+    - packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_allowlist_cannot_exceed_frozen_ceiling
+    - packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_allowlist_ceiling_is_exactly_the_initial_release
+    - packages/meta-harness/tests/test_register.py::TestRegisterConfigPatchValidation::test_local_allowlist_cannot_widen_frozen_ceiling
+  notes: both direct runtime config and a real meta-harness.local.yaml override remain subsets of the frozen three-entry ceiling.
+
+- ev_id: EV-62
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" OCHE_ROOT="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_proposer_created_patch_is_rejected
+    packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_unknown_creator_is_rejected
+    packages/meta-harness/tests/test_register.py::TestRegisterConfigPatchValidation::test_human_routing_config_patch_registers_with_integrity_hashes
+  covered_by:
+    - packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_proposer_created_patch_is_rejected
+    - packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_unknown_creator_is_rejected
+    - packages/meta-harness/tests/test_register.py::TestRegisterConfigPatchValidation::test_human_routing_config_patch_registers_with_integrity_hashes
+  notes: human registration is the only accepted creator path; proposer and unknown creators are rejected by the common validator.
+
+- ev_id: EV-63
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" OCHE_ROOT="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_propose_cli.py::test_routing_config_target_is_rejected_before_context_or_backend
+    packages/meta-harness/tests/test_propose_cli.py::test_proposal_schema_remains_facets_only
+    packages/meta-harness/tests/test_loop_cli.py::test_routing_config_target_is_rejected_before_proposer
+  covered_by:
+    - packages/meta-harness/tests/test_propose_cli.py::test_routing_config_target_is_rejected_before_context_or_backend
+    - packages/meta-harness/tests/test_propose_cli.py::test_proposal_schema_remains_facets_only
+    - packages/meta-harness/tests/test_loop_cli.py::test_routing_config_target_is_rejected_before_proposer
+  notes: propose and loop return validation errors before backend execution, and the proposal schema remains facets-only.
+
+- ev_id: EV-64
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" OCHE_ROOT="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_all_released_agent_tool_values_are_accepted
+    packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_invalid_patch_values_are_rejected
+    packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_allowlisted_antigravity_model_is_accepted
+  covered_by:
+    - packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_all_released_agent_tool_values_are_accepted
+    - packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_invalid_patch_values_are_rejected
+    - packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_allowlisted_antigravity_model_is_accepted
+  notes: tool enum, scalar typing, model slug charset, and antigravity model membership are covered independently.
+
+- ev_id: EV-65
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" OCHE_ROOT="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_register.py::TestRegisterConfigPatchValidation::test_config_patch_is_rejected_for_non_routing_target
+    packages/meta-harness/tests/test_register.py::TestRegisterConfigPatchValidation::test_routing_target_without_config_patch_is_rejected
+    packages/meta-harness/tests/test_register.py::TestRegisterConfigPatchValidation::test_mixed_file_overlay_and_config_patch_is_rejected
+    packages/meta-harness/tests/test_evaluator_worktree_lifecycle.py::TestRoutingConfigPatchMaterialization::test_mixed_overlay_is_rejected_before_worktree_changes
+    packages/meta-harness/tests/test_evaluator_worktree_lifecycle.py::TestRoutingConfigPatchMaterialization::test_target_patch_biconditional_is_rechecked_before_writes
+    packages/meta-harness/tests/test_promote_cli.py::test_promote_preflight_rejects_mixed_routing_config_candidate
+    packages/meta-harness/tests/test_promote_cli.py::test_promote_preflight_rechecks_target_patch_biconditional
+  covered_by:
+    - packages/meta-harness/tests/test_register.py::TestRegisterConfigPatchValidation::test_config_patch_is_rejected_for_non_routing_target
+    - packages/meta-harness/tests/test_register.py::TestRegisterConfigPatchValidation::test_routing_target_without_config_patch_is_rejected
+    - packages/meta-harness/tests/test_register.py::TestRegisterConfigPatchValidation::test_mixed_file_overlay_and_config_patch_is_rejected
+    - packages/meta-harness/tests/test_evaluator_worktree_lifecycle.py::TestRoutingConfigPatchMaterialization::test_mixed_overlay_is_rejected_before_worktree_changes
+    - packages/meta-harness/tests/test_evaluator_worktree_lifecycle.py::TestRoutingConfigPatchMaterialization::test_target_patch_biconditional_is_rechecked_before_writes
+    - packages/meta-harness/tests/test_promote_cli.py::test_promote_preflight_rejects_mixed_routing_config_candidate
+    - packages/meta-harness/tests/test_promote_cli.py::test_promote_preflight_rechecks_target_patch_biconditional
+  notes: biconditional target/patch exclusivity and empty file overlays are enforced at register, evaluate before writes, and promote preflight.
+
+- ev_id: EV-66
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" OCHE_ROOT="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_register.py::TestRegisterConfigPatchValidation::test_human_routing_config_patch_registers_with_integrity_hashes
+    packages/meta-harness/tests/test_evaluator_worktree_lifecycle.py::TestRoutingConfigPatchMaterialization::test_changed_registered_sidecar_is_rejected_before_worktree_changes
+    packages/meta-harness/tests/test_promote_cli.py::test_changed_routing_config_sidecar_is_rejected_at_promote
+  covered_by:
+    - packages/meta-harness/tests/test_register.py::TestRegisterConfigPatchValidation::test_human_routing_config_patch_registers_with_integrity_hashes
+    - packages/meta-harness/tests/test_evaluator_worktree_lifecycle.py::TestRoutingConfigPatchMaterialization::test_changed_registered_sidecar_is_rejected_before_worktree_changes
+    - packages/meta-harness/tests/test_promote_cli.py::test_changed_routing_config_sidecar_is_rejected_at_promote
+  notes: canonical sidecar and candidate-wide hashes are recorded; tampering and deletion fail before evaluate worktree writes or promotion.
+
+- ev_id: EV-67
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" OCHE_ROOT="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_evaluator_worktree_lifecycle.py::TestRoutingConfigPatchMaterialization::test_writes_and_deep_merges_worktree_local_yaml
+  covered_by:
+    - packages/meta-harness/tests/test_evaluator_worktree_lifecycle.py::TestRoutingConfigPatchMaterialization::test_writes_and_deep_merges_worktree_local_yaml
+  notes: deterministic deep merge and load_cli_tools_config fallthrough are verified without writes to the overlay source or developer checkout.
+
+- ev_id: EV-68
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" OCHE_ROOT="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_skill_scenarios.py::test_routing_config_suite_dispatch_and_split_minimum
+  covered_by:
+    - packages/meta-harness/tests/test_skill_scenarios.py::test_routing_config_suite_dispatch_and_split_minimum
+  notes: routing-config dispatches to its own directory and requires at least one train plus one holdout scenario.
+
+- ev_id: EV-69
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" OCHE_ROOT="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_target_isolation.py::TestTargetFrontierCache::test_routing_config_uses_its_own_frontier_file
+  covered_by:
+    - packages/meta-harness/tests/test_target_isolation.py::TestTargetFrontierCache::test_routing_config_uses_its_own_frontier_file
+  notes: routing-config reads and writes only frontier-routing-config.json while the default frontier remains unchanged.
+
+- ev_id: EV-70
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" OCHE_ROOT="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_promote_cli.py::test_routing_config_promotion_edits_ssot_and_mirror_only
+    packages/meta-harness/tests/test_promote_cli.py::test_routing_config_structural_verification_aborts_before_writes
+    packages/meta-harness/tests/test_promote_cli.py::test_routing_config_pr_body_uses_promotion_base_values
+  covered_by:
+    - packages/meta-harness/tests/test_promote_cli.py::test_routing_config_promotion_edits_ssot_and_mirror_only
+    - packages/meta-harness/tests/test_promote_cli.py::test_routing_config_structural_verification_aborts_before_writes
+    - packages/meta-harness/tests/test_promote_cli.py::test_routing_config_pr_body_uses_promotion_base_values
+  notes: targeted scalar edits preserve comments and deep equality, keep SSOT/mirror byte-equal, avoid local/developer writes, and render base-derived PR data.
+
+- ev_id: EV-71
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" OCHE_ROOT="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_evaluator_artifacts.py::test_routing_config_base_hash_tracks_promotion_ssot_bytes
+    packages/meta-harness/tests/test_promote_cli.py::test_routing_config_freshness_rejects_ssot_drift
+  covered_by:
+    - packages/meta-harness/tests/test_evaluator_artifacts.py::test_routing_config_base_hash_tracks_promotion_ssot_bytes
+    - packages/meta-harness/tests/test_promote_cli.py::test_routing_config_freshness_rejects_ssot_drift
+  notes: evaluate records the SSOT content hash and promote rejects a different current promotion-base hash.
+
+- ev_id: EV-72
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" OCHE_ROOT="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_promote_cli.py::test_routing_config_sidecar_is_included_in_promote_secret_scan
+    packages/meta-harness/tests/test_promote_cli.py::test_secret_in_generated_routing_diff_blocks_commit_push_and_pr
+  covered_by:
+    - packages/meta-harness/tests/test_promote_cli.py::test_routing_config_sidecar_is_included_in_promote_secret_scan
+    - packages/meta-harness/tests/test_promote_cli.py::test_secret_in_generated_routing_diff_blocks_commit_push_and_pr
+  notes: both the canonical sidecar and generated YAML git diff are scanned, and a hit prevents commit, push, and PR creation.
+
+- ev_id: EV-73
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" OCHE_ROOT="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_skill_targets.py::TestSkillImpactResolution::test_config_patch_only_candidate_intentionally_has_zero_skill_impacts
+    packages/meta-harness/tests/test_skill_scenarios.py::test_routing_config_suite_uses_deterministic_critical_oracles
+  covered_by:
+    - packages/meta-harness/tests/test_skill_targets.py::TestSkillImpactResolution::test_config_patch_only_candidate_intentionally_has_zero_skill_impacts
+    - packages/meta-harness/tests/test_skill_scenarios.py::test_routing_config_suite_uses_deterministic_critical_oracles
+  notes: zero skill impacts are intentional; materialization, effective layering, and agent-routing pytest remain critical machine oracles.
