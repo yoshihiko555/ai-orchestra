@@ -1,0 +1,74 @@
+---
+codd:
+  node_id: "adr:ADR-20260716-039"
+  kind: adr
+  status: proposed
+  depends_on:
+    - id: "design:meta-harness-detailed"
+      relation: refines
+    - id: "adr:ADR-20260706-031"
+      relation: references
+  owner: ai-orchestra
+---
+
+# ADR-20260716-039: routing config patch を human 登録候補に限定して解放する
+
+- **ステータス**: proposed
+- **日付**: 2026-07-16
+- **決定者**: yoshihiko（2026-07-16 承認）
+
+## コンテキスト
+
+meta-harness の config patch は schema と設定項目だけが存在し、実装上は全面拒否 stub のままだった。
+`agent-routing/cli-tools.yaml` の routing 値を候補として評価・昇格できれば、人間が明示的に作成した
+構成変更を既存の scenario / frontier / promotion pipeline で検証できる。
+
+一方、proposer に model や agent tool の変更を許すと、評価対象自身がコスト・実行能力・routing を
+操作して score を有利にする reward hacking が成立し得る。また `.claude/config/**` は package config の
+tracked mirror であり、mirror だけを promote すると SessionStart sync で上書きされ、package SSOT だけを
+promote すると byte-equality invariant が壊れる。
+
+## 検討した選択肢
+
+### 選択肢 A: config patch を引き続き全面拒否する
+
+- メリット: 新しい入力面と promotion writer を導入せず、reward hacking 面を閉じたままにできる。
+- デメリット: 人間が登録した routing config 候補も meta-harness の評価・frontier・promote を利用できない。
+
+### 選択肢 B: human と proposer の両方へ初期 allowlist を解放する
+
+- メリット: routing config を自動探索の対象にできる。
+- デメリット: proposer が model/tool routing を操作する reward hacking 対策が未設計で、安全な探索空間を
+  定義できない。
+
+### 選択肢 C: ceiling 付き allowlist を human 登録候補だけへ解放する
+
+- メリット: 手動候補を既存 pipeline で検証しつつ、proposer の探索空間とローカル設定による解放範囲の拡大を
+  fail-closed に保てる。promotion で package SSOT と tracked mirror の整合も維持できる。
+- デメリット: `routing-config` は proposer / loop の自動探索対象にならず、評価用 `.local.yaml` と promotion 用
+  targeted line edit の別 writer が必要になる。
+
+## 決定
+
+**選択肢 C を採用する。** target `routing-config` を追加し、`created_by == "human"` の register 候補だけに
+次の canonical allowlist を解放する。
+
+- `agent-routing/cli-tools.yaml#agents.*.tool`
+- `agent-routing/cli-tools.yaml#codex.model`
+- `agent-routing/cli-tools.yaml#antigravity.model`
+
+実効 allowlist はコード定数 ceiling の部分集合に限定する。`routing-config` と non-empty config patch は
+双方向に排他的な契約とし、file overlay との混在を register / evaluate / promote で拒否する。proposer と
+proposer を常に駆動する loop は `routing-config` を明示的に拒否する。
+
+evaluate は worktree-local `.claude/config/agent-routing/cli-tools.local.yaml` へ実体化する。promote は別 writer で
+`packages/agent-routing/config/cli-tools.yaml` と tracked mirror
+`.claude/config/agent-routing/cli-tools.yaml` の intended scalar だけを同時編集し、byte equality を検証する。
+
+## 影響
+
+- human は routing config 候補を target 別 scenario / frontier / promotion pipeline で扱える。
+- proposer 解放は reward hacking countermeasure の設計完了を着手条件とする将来タスクとして残る。
+- routing-config loop は本決定の対象外で、CLI は fail-closed に拒否する。
+- promotion は `.local.yaml` をコミットせず、package SSOT と tracked mirror を常に同じ PR で更新する。
+- config patch sidecar は integrity chain と promote-time secret scan / canary re-scan の対象になる。

@@ -960,18 +960,39 @@ run 単位でも保持し、run 成果物単体からも再評価要否を判定
 
 - `file` は `.claude/config/` 配下の相対パス（例: `agent-routing/cli-tools.yaml`）。
 - `key_path` はドット区切りのキーパス（例: `agents.backend-python-dev.tool`）。
-- **Phase 1 では config patch は常に拒否する**。enforcement（schema 検証 + allowlist 照合）は
-  実装するが、allowlist は空集合とする。すなわち `config-patch.json` が 1 件でも存在する overlay は
-  `register` 時に無条件で拒否される。これは Phase 1 のスコープを「facet オーバーレイによる候補評価」
-  に限定する意図的な判断であり、config patch の reward hacking 面（例: `codex.model` を弱いモデルに
-  差し替えて評価コストを偽装する等）を Phase 1 では検討対象外にする。
-- **Phase 2 で初期 allowlist を解放する**: `agent-routing/cli-tools.yaml` の `agents.*.tool` /
-  `codex.model` / `antigravity.model` の 3 種のキーパスから開始する（§10 変更点サマリー参照）。
-  **この解放は human 登録候補（`register` CLI 経由）にのみ適用する**。proposer が生成する候補
-  （`created_by: proposer`）は Phase 2 でも変更対象を `facets/**` に限定し続ける（§11-4 の
-  `[制約]` 参照）。proposer の探索空間に config patch を含めるかどうかは Phase 3 の対象拡大
-  検討時に扱う（reward hacking 面の検討が Phase 1 と同様に必要になるため、拡大は Phase 2 では
-  行わない）。
+- allowlist の正規表現は `"<file>#<key_path>"` とし、初期値は次の 3 エントリだけとする。
+
+  ```yaml
+  config_patch:
+    allowlist:
+      - "agent-routing/cli-tools.yaml#agents.*.tool"
+      - "agent-routing/cli-tools.yaml#codex.model"
+      - "agent-routing/cli-tools.yaml#antigravity.model"
+  ```
+
+- allowlist entry は `#` を厳密に 1 個だけ含まなければならない。`file` 部分では wildcard を禁止する。
+  `key_path` は空でない dot 区切りセグメント列とし、`*` はセグメント全体としてのみ許可して厳密に
+  1 セグメントへ一致する。`**`、`foo*`、空セグメント、0 または複数セグメントを消費する一致は拒否する。
+  patch 実体側を含め、`__proto__` / `constructor` / 空文字の危険セグメントは wildcard 一致前に拒否する。
+- runtime config（`.local.yaml` 上書きを含む）の allowlist は、コード定数
+  `CONFIG_PATCH_ALLOWLIST_CEILING` が保持する上記 3 エントリの部分集合でなければならない。未知 entry、
+  曖昧な entry、重複 entry を 1 件でも含めば候補内容に関係なく fail-closed とし、ローカル設定による
+  解放範囲の拡大を許さない。
+- patch item は allowlist entry に 1 件ずつ照合し、同一 `file#key_path` の重複を拒否する。値型は
+  `agents.*.tool` が文字列 enum `codex | antigravity | claude-direct | auto`、`codex.model` と
+  `antigravity.model` が `^[A-Za-z0-9][A-Za-z0-9._-]*$` に一致する空でない文字列に限定する。数値・bool は
+  3 種すべてで拒否する。`antigravity.model_allowlist` が空でない場合、`antigravity.model` はその要素にも
+  含まれなければならない。この文字集合は promote 時の YAML scalar line edit に対する injection 防御も担う。
+- 解放対象は `created_by == "human"` の `register` 候補だけとする。それ以外の作成者は非空 patch を拒否し、
+  proposer は `--target routing-config` 自体を引数検証で拒否する。proposer 解放は reward hacking 対策の設計を
+  着手条件とする別タスクである。
+- **双方向の排他条件**を満たさなければならない。(a) `target == "routing-config"` なら non-empty
+  `config_patch`、空の file overlay、`created_by == "human"`、(b) non-empty `config_patch` なら
+  `target == "routing-config"`。共通 validator を `register`、`evaluate` の worktree 変更前、`promote` preflight
+  の 3 箇所で再実行する。file overlay の空判定は overlay 集合を知る各 caller が同じ排他条件の一部として行う。
+- `config-patch.json` は canonical JSON の `config_patch_hash` を manifest に保存し、候補全体の
+  `config_hash` integrity chain にも含める。evaluate / promote は sidecar の現在 hash を再計算し、登録後の
+  改ざんまたは欠落を拒否する。
 
 ### 1-9. `proposal.schema.json`
 
@@ -1084,11 +1105,13 @@ filtered view しか見ていないため通常発生しないが、CLI 側で�
 3. config patch 適用: **`overlay/config-patch.json`（`config_patch.schema.json`、§1-8）の内容は
    worktree 内の `.claude/config/**/*.local.yaml` として実体化する**。既存の config-loading
    レイヤリング（`config-loading.md`）に乗せることで、ベース config ファイル自体を変異させずに
-   候補固有の上書きを適用できる。allowlist 検証は register 時（§6 `register`）と evaluate 時の
-   両方で実施し、worktree 実体化の直前にも allowlist 外キーが混入していないか再検査する
-   （register 後に allowlist が変更された場合の防御）。**Phase 1 では allowlist が空集合のため、
-   config patch を含む候補は register の時点で拒否され、この手順に到達する候補は存在しない**
-   （§1-8）。本手順は Phase 2 で allowlist が解放された後に有効化される。
+   候補固有の上書きを適用できる。実体化前に §1-8 の双方向排他条件、作成者 gate、allowlist ceiling、
+   item/value validation、sidecar integrity を再検証し、違反時は overlay 適用を含む worktree 変更を
+   一切始めない。複数 item は deterministic な key 順で deep merge する。
+
+   この writer は評価 worktree の `.local.yaml` 専用である。promote の writer（§12）は package SSOT と
+   tracked mirror の安全な scalar line edit 専用とし、両者で writer や書き込み先を共有しない。
+   evaluate が SSOT を編集すること、promote が `.local.yaml` を生成することはいずれも禁止する。
 4. `AI_ORCHESTRA_DIR=<worktree> python scripts/orchestra-manager.py facet build` を実行し、続けて
    `context build` を実行する（生成物整合。root 版 `hook_common` 解決による ImportError を避けるため
    `AI_ORCHESTRA_DIR` を worktree 自身に上書きする必要がある — worktree テスト環境の既知事情）。
@@ -1669,6 +1692,22 @@ Max subscription の利用制限応答ではない。運用上は broker metrics
 と報告してはならない。M0 の最初の upstream 応答成功により、少なくとも当該実行時点の OAuth 認証成立は
 確認済みである。
 
+### 4-3. routing-config target
+
+- target 名は parameter を持たない単数形 `routing-config` とする。suite は
+  `packages/meta-harness/scenarios/routing-config/` に置き、skill target と同じく train 1 本以上 + holdout
+  1 本以上を register/evaluate 時の必須条件とする。
+- candidate / run / ledger / status / frontier は既存の per-target 機構を再利用し、cache は
+  `frontier-routing-config.json` とする。他 target の frontier、parent 既定選定、status、promote 前提へ
+  routing-config の候補を混入させない。
+- routing-config は human `register` 専用である。`propose --target routing-config` と
+  `loop --target routing-config` は引数検証で明示的に exit 2 とする。`loop` は常に proposer を駆動するため、
+  proposer を解放しない本フェーズに意味のある routing-config loop は存在しない。
+- config-patch-only candidate は `facets/**` overlay path を持たないため、skill impact 集合が空になることを
+  **意図した仕様**とする。`skill_targets` の impact detection は拡張しない。回帰保護は suite の critical oracle
+  へ移し、materialized `.local.yaml` の存在、`load_cli_tools_config()` が patch 値を解決すること、
+  `python3 -m pytest -q packages/agent-routing/tests` が評価 worktree 内で成功することを機械判定する。
+
 ---
 
 ## 5. パッケージ詳細構成
@@ -1777,9 +1816,11 @@ overlay:
     - "docs/evaluation/"
     - ".github/"
 config_patch:
-  allowlist: [] # Phase 1: 常に空（config patch は全面拒否）。Phase 2 で
-    # agent-routing/cli-tools.yaml の agents.*.tool / codex.model /
-    # antigravity.model を追加予定
+  # 実効値は CONFIG_PATCH_ALLOWLIST_CEILING の部分集合でなければならない
+  allowlist:
+    - "agent-routing/cli-tools.yaml#agents.*.tool"
+    - "agent-routing/cli-tools.yaml#codex.model"
+    - "agent-routing/cli-tools.yaml#antigravity.model"
 proposer:
   tool: codex # codex | claude-bare（§11-3-5）。利用不能時は fail-closed（暗黙フォールバック禁止）
   max_iterations: 10
@@ -1984,13 +2025,14 @@ Phase 1 全体を、実装順序とリスクに応じて 1a/1b の 2 段階に�
 - baseline シナリオスイート（`scenarios/claude-harness/`）
 - E2E（register → evaluate → ledger → frontier の一連、§7）
 
-**Phase 2 に持ち越す事項**:
+**Phase 2 以降の対象**:
 
 - `propose` / `promote` の実装（`proposal.schema.json`（§1-9）は Phase 2 での実装対象。
   Phase 1a の schemas 全 8 種には含まない）
-- config patch allowlist の解放（`agent-routing/cli-tools.yaml` の `agents.*.tool` /
-  `codex.model` / `antigravity.model`。**human 登録候補（`register` CLI）のみが対象**。
-  proposer 生成候補は Phase 2 でも変更対象を `facets/**` に限定する、§11-4/§1-8 参照）
+- config patch allowlist は `routing-config` の **human 登録候補（`register` CLI）のみ**に解放する。
+  対象は `agent-routing/cli-tools.yaml` の `agents.*.tool` / `codex.model` / `antigravity.model` に固定する。
+  proposer 生成候補は引き続き `facets/**` に限定し、reward hacking 対策の設計完了まで解放しない
+  （§1-8、§4-3、§11-4 参照）。
 
 この分割により、Phase 1a はネットワーク・実 CLI 依存のない純粋なデータ層として先に固め、
 Phase 1b で初めて実 `claude -p` 呼び出しを含む evaluator を実装する順序になる。
@@ -2015,6 +2057,7 @@ Phase 1b で初めて実 `claude -p` 呼び出しを含む evaluator を実装�
 | 12  | ストアと評価用 worktree の配置をメインルート解決に確定                                                                      | feature worktree 削除による store 消失と worktree 入れ子を防止するため                            |
 | 13  | Phase 2/3 の実装詳細（proposer 構造化出力方式・promote 前提条件と `--confirm` 遷移・loop の ledger 駆動状態管理）を先行確定 | 実測依存の数値（budget・repeat 等）は §14 に分離し、Phase 1b の実測結果で補正できるようにするため |
 | 14  | Phase 2/3 レビュー反映 — proposer cwd 隔離・loop の resume 安全な記録順序・promotion 予約と PR merge 検証・停止条件式の確定 | Codex レビューで特定された二重 promote・resume 孤児・cwd 経由の到達可能性等の未定義動作を塞ぐため |
+| 15  | `CONFIG_PATCH_ENABLED` の全面拒否 stub を廃止し、ceiling 付き allowlist を human `routing-config` 候補へ解放 | ローカル設定で解放範囲を拡大させず、proposer の reward hacking 面を未解放のまま手動候補を評価・昇格するため |
 
 ---
 
@@ -2519,15 +2562,22 @@ fail-closed とし、以下すべてを満たさなければ exit 2 とする。
    run の `suite_hash` / `evaluator_hash` も現行と一致しなければならない。
 4. 候補の non-holdout run と最新 holdout run の双方で `suite_hash` / `evaluator_hash` が現行と
    一致する（不一致 = 評価または過学習ガードが陳腐化しており、再評価を要求する）。
-5. 候補 store 上の overlay 内容から再計算した `config_hash` が manifest の `config_hash` と一致する
-   （不一致 = 登録後改ざんまたは store 破損として拒否する）。
+5. 候補 store 上の overlay と canonical `config-patch.json` sidecar から再計算した `config_hash` が
+   manifest の `config_hash` と一致し、sidecar 単体の `config_patch_hash` も一致する
+   （不一致 = 登録後改ざんまたは store 破損として拒否する）。routing-config 候補では §1-8 の共通
+   validator と file-overlay 空条件も再実行する。
 6. **鮮度チェック**: `<source_commit>` が `origin/main` の ancestor であり、その上で
    `git diff <source_commit>..origin/main -- <overlay 対象パス>` が空であること。skill target では
    overlay path に加え、baseline の `facets/compositions/skills/<slug>.yaml` と、その時点の closure
-   解決入力全体が不変であることも検証する。
+   解決入力全体が不変であることも検証する。routing-config target では evaluate 時に記録した
+   `packages/agent-routing/config/cli-tools.yaml` の content hash と現在の promotion base の hash を比較し、
+   overlay path が空でも不一致を stale evaluation として拒否する。
    差分があれば「facet ソースが候補作成後に変更されている」ため中止し、新 `source_commit` での
    再登録・再評価を案内する（`promote.allow_stale: false` が既定。`true` で path 差分だけを
    警告に緩和できるが、ancestor 条件は緩和しない）。
+7. 全候補 lineage の manifest/overlay に加え、`config-patch.json` sidecar と patch 適用後の YAML diff を
+   L3 secret scan / canary re-scan の対象にする。PR body の data fence は長さ制限や表示用途があるため、
+   scan の代替にしてはならない。
 
 ### 12-2. PR 生成手順
 
@@ -2550,7 +2600,13 @@ promote は「予約（reservation）」→「worktree 作業」→「PR 作成�
    `<メインルート>/.worktrees/meta-promote-<cand_slug>`、ブランチ名 `meta/promote-<cand_slug>`。
    同名の古い promotion worktree / ローカル branch が残っている場合は、同一命名スキームに限り
    best-effort で除去してから作成する。
-4. overlay を worktree に適用する（§1-7 と同一検証コードパス）。
+4. file-overlay 候補は overlay を worktree に適用する（§1-7 と同一検証コードパス）。routing-config 候補は
+   この writer を使わず、promotion worktree 作成後にだけ専用 writer を実行する。各
+   `agent-routing/cli-tools.yaml#<key_path>` を `packages/agent-routing/config/cli-tools.yaml` の対応 scalar へ
+   構造的に位置決めして 1 行だけ置換する。値 charset は §1-8 で事前検証済みとし、編集後に YAML を再 parse して
+   (a) intended key が intended value、(b) それ以外が deep-equal であることを検証する。同じ編集を tracked mirror
+   `.claude/config/agent-routing/cli-tools.yaml` に適用し、2 ファイルの byte equality を確認する。
+   `.claude/config/` だけの編集と `*.local.yaml` への promotion 書き込みは禁止する。
 5. `AI_ORCHESTRA_DIR=<worktree>` で `facet build` → `context build` を実行し、生成物の整合を
    取る（生成物もコミット対象）。
 6. `promote.verify_command`（既定 null、例: `pytest -q`）が設定されていれば実行し、失敗時は
@@ -2560,7 +2616,9 @@ promote は「予約（reservation）」→「worktree 作業」→「PR 作成�
    なお所属していること、および `suite_hash` / `evaluator_hash` が現行と一致することを再確認する
    （手順 1〜7 の実行中に走った他プロセスの evaluate / frontier rebuild による陳腐化を検出する
    ため）。不一致なら中止し、`promotion_released(failed)` を記録する。
-9. push して `gh pr create` する。**auto-merge は付けない**（このリポジトリの手動マージ運用に
+9. push して `gh pr create` する。routing-config の PR body には promotion base から読んだ旧値を使い、
+   `key_path: old → new` を既存の data fence 内へ列挙する。body は fetch/worktree 作成後に生成し、developer
+   checkout の値を旧値として使わない。**auto-merge は付けない**（このリポジトリの手動マージ運用に
    従う）。PR body テンプレート: 仮説 / 根拠（frontier 前後の品質・コスト差、`based_on_runs` の
    run_id 一覧）/ リスクと rollback（revert PR）/ **チェックリスト（CHANGELOG の Unreleased
    更新 — 配布されるスキル・ルールの挙動が変わるため利用者向け変更に該当。人間が記入）**。

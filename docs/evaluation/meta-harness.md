@@ -4,7 +4,7 @@
 **類型**: 主: CLI ツール型、副: hook 型（config-loading レイヤリングへの依存）
 **作成日**: 2026-07-06
 **最終レビュー日**: 未レビュー（draft、パッケージ実装前に作成）
-**情報源**: docs/design/meta-harness.md（基本設計）, docs/design/meta-harness-detailed.md（詳細設計 §1〜§14）, docs/requirements/meta-harness.md, docs/adr/ADR-20260706-031.md
+**情報源**: docs/design/meta-harness.md（基本設計）, docs/design/meta-harness-detailed.md（詳細設計 §1〜§14）, docs/requirements/meta-harness.md, docs/adr/ADR-20260706-031.md, docs/adr/ADR-20260716-039-routing-config-allowlist.md
 
 ## 1. 責務定義
 
@@ -99,6 +99,20 @@
 - [ ] EV-57（異常 / must）: `regression.max_affected_suites` / `regression.max_budget_usd` 超過は evaluation error になり、train/holdout は同じ残予算を共有する。broker 経由 judge を含む保守的費用を回帰上限と loop `budget_usd` に算入し、`regression.*` の変更は evaluator hash を変えて旧評価を stale にする — 根拠: 詳細設計 §4-1、§13
 - [ ] EV-58（正常 / must）: `regression_run_completed` と `evaluation_completed` は append 前に schema 検証され、回帰 attempt ごとに own run と独立した worktree を作成・破棄する。同名 scenario は `(suite_id, scenario_id)` で区別する — 根拠: 詳細設計 §1-2、§2-1、§4-1
 - [ ] EV-59（正常 / must）: Docker CLI・security profile・broker/resource lifecycle を `docker-runtime` へ抽出した後も、meta-harness の既存 command、例外、cleanup、capability gate の振る舞いを変更しない。共有 runtime source は evaluator hash の入力へ含める — 根拠: `docs/design/loop-harness-isolation.md` §8 Phase 0
+- [ ] EV-60（境界 / must）: config patch allowlist は `"<file>#<key_path>"` を厳密に parse し、exact match と 1-segment `*` だけを許可する。allowlist 外 file/key、`**`、部分 wildcard、複数 `#`、空/危険セグメント、1 segment を超える wildcard 一致、同一実体 key の重複は拒否する — 根拠: 詳細設計 §1-8
+- [ ] EV-61（異常 / must）: `.local.yaml` を含む実効 `config_patch.allowlist` はコード定数 ceiling の部分集合だけを許可し、3 種以外を追加した設定では候補内容に関係なく fail-closed する — 根拠: 詳細設計 §1-8、§5
+- [ ] EV-62（異常 / must）: non-empty config patch は `created_by == "human"` の登録候補だけが通過し、`proposer` または未知の作成者は共通 validator で拒否される — 根拠: 詳細設計 §1-8、ADR-20260716-039
+- [ ] EV-63（異常 / must）: `propose --target routing-config` と `loop --target routing-config` は proposer 起動前の引数検証で明示的に exit 2 となり、proposal prompt/schema に routing-config を公開しない — 根拠: 詳細設計 §4-3、ADR-20260716-039
+- [ ] EV-64（境界 / must）: allowlisted value は `agents.*.tool` の 4 enum または charset 検証済みの非空 model slug だけを許可し、数値/bool/未知 tool/空文字/charset 違反を拒否する。非空 `antigravity.model_allowlist` がある場合は membership も必須とする — 根拠: 詳細設計 §1-8
+- [ ] EV-65（異常 / must）: `routing-config` ⇔ non-empty config patch の双方向排他、empty file overlay、human 作成者を register・evaluate の worktree 変更前・promote preflight の全 3 entry point で同じ validator 契約として強制し、mixed overlay+patch や target 不一致を拒否する — 根拠: 詳細設計 §1-8、§2-1、§12-1
+- [ ] EV-66（異常 / must）: canonical `config-patch.json` の integrity hash は候補全体の `config_hash` chain に含まれ、register 後に sidecar を改ざん・欠落させると evaluate と promote の双方が worktree/PR 変更前に拒否する — 根拠: 詳細設計 §1-8、§12-1
+- [ ] EV-67（正常 / must）: evaluate は検証済み patch を評価 worktree 内の `.claude/config/agent-routing/cli-tools.local.yaml` だけへ deterministic に deep merge し、`load_cli_tools_config()` が patch 値と未指定 base 値を解決する。developer checkout や worktree 外は変更しない — 根拠: 詳細設計 §2-1
+- [ ] EV-68（境界 / must）: `routing-config` suite は `scenarios/routing-config/` に train 1 本以上 + holdout 1 本以上を必須とし、どちらかを欠く suite を拒否する — 根拠: 詳細設計 §4-3
+- [ ] EV-69（正常 / must）: `routing-config` 候補は専用 `frontier-routing-config.json` を使い、他 target の frontier/cache/parent/status を汚染しない — 根拠: 詳細設計 §4-3
+- [ ] EV-70（正常 / must）: promote は promotion worktree 作成後に `packages/agent-routing/config/cli-tools.yaml` と tracked mirror `.claude/config/agent-routing/cli-tools.yaml` の intended scalar だけを編集し、再 parse/deep-equality と最終 byte-equality を満たす。developer checkout と `*.local.yaml` は変更しない — 根拠: 詳細設計 §12-2、ADR-20260716-039
+- [ ] EV-71（異常 / must）: evaluate 時に記録した agent-routing SSOT content hash と promotion base の現在 hash が異なる routing-config 候補は stale evaluation として PR 作成前に拒否する — 根拠: 詳細設計 §12-1
+- [ ] EV-72（異常 / must）: promote-time L3 secret scan / canary re-scan は全 lineage の manifest/overlay に加えて `config-patch.json` sidecar と適用後 YAML diff を走査し、secret/canary hit では commit/push/PR を行わない — 根拠: 詳細設計 §12-1、§11-3-6
+- [ ] EV-73（正常 / must）: config-patch-only candidate の impacted skill 集合は意図どおり空であり、routing-config suite の critical oracle が materialization、実効 config 解決、`packages/agent-routing/tests` 成功を回帰 gate として機械判定する — 根拠: 詳細設計 §4-1、§4-3
 - N/A: hook 型の類型別観点（PreToolUse/PostToolUse ブロック挙動等）は本パッケージが hook を持たないため非該当。config-loading への依存のみが hook 型的性質であり、EV-22 でカバーする
 
 ### 運用メモ
