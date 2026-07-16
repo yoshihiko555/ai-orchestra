@@ -28,6 +28,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **meta-harness routing-config target**: human-registered candidates can now patch `agent-routing/cli-tools.yaml` keys (`agents.*.tool`, `codex.model`, `antigravity.model`) through the evaluation/promotion pipeline. Proposer candidates remain facets-only.
 - **`loop-harness`: LP-2 Docker 隔離用のイメージライフサイクル設定を追加**: recipe hash による再利用、保持世代数、専用 buildx builder の BuildKit cache GC を設定できる。隔離実行の既定値は引き続き `none`。
 
 - **`meta-harness`: skill target の共有 facet 改善をクロススキル回帰評価で保護**: `regression.enabled: true` を既定化して composition closure 内の共有 facet を候補 overlay に許可し、影響 skill の train/holdout critical を evaluation batch 単位で hard gate する。suite 不在の影響先は PR 警告へ記録し、回帰コスト・suite 数・impact freshness も昇格前に検証する。

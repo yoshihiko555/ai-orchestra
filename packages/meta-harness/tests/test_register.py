@@ -6,6 +6,8 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from tests.module_loader import load_module
 
 mh = load_module(
@@ -52,6 +54,108 @@ def _manifest(cand_id: str, description: str = "candidate") -> dict:
         "overlay_files": ["facets/example-facet/SKILL.md"],
         "description": description,
     }
+
+
+class TestLedgerProvenance:
+    def test_matching_lineage_and_registration_events_are_accepted(self) -> None:
+        lineage = [
+            {
+                "cand_id": "cand-parent",
+                "created_by": "human",
+                "target": "routing-config",
+            },
+            {
+                "cand_id": "cand-child",
+                "created_by": "human",
+                "target": "routing-config",
+            },
+        ]
+        events = [{"event": "candidate_registered", **item} for item in lineage]
+
+        mh.assert_lineage_matches_registered_events(events, lineage)
+
+    def test_missing_registration_event_is_rejected(self) -> None:
+        lineage = [{"cand_id": "cand-missing", "created_by": "human", "target": "routing-config"}]
+
+        with pytest.raises(ValueError, match="ledger event is missing"):
+            mh.assert_lineage_matches_registered_events([], lineage)
+
+    @pytest.mark.parametrize(
+        ("field", "tampered", "expected"),
+        [
+            ("created_by", "proposer", "created_by"),
+            ("target", "claude-harness", "target"),
+        ],
+    )
+    def test_registration_provenance_mismatch_is_rejected(
+        self, field: str, tampered: str, expected: str
+    ) -> None:
+        registered = {
+            "event": "candidate_registered",
+            "cand_id": "cand-tampered",
+            "created_by": "human",
+            "target": "routing-config",
+        }
+        lineage = [{**registered, field: tampered}]
+
+        with pytest.raises(ValueError, match=expected):
+            mh.assert_lineage_matches_registered_events([registered], lineage)
+
+
+class TestRegisterArgumentConsistency:
+    def test_manifest_cand_id_must_match_register_cand_id(self, tmp_path: Path) -> None:
+        manifest = {
+            **_manifest("cand-id-mismatch"),
+            "cand_id": "cand-a-completely-different-id",
+        }
+
+        with pytest.raises(ValueError, match="manifest cand_id does not match register cand_id"):
+            mh.register_candidate(
+                tmp_path,
+                mh.DEFAULTS,
+                cand_id="cand-id-mismatch",
+                manifest=manifest,
+                overlay_dir=tmp_path / "unused-overlay",
+                overlay_files=[],
+                target="claude-harness",
+            )
+
+    def test_manifest_target_must_match_register_target(self, tmp_path: Path) -> None:
+        manifest = {
+            **_manifest("cand-target-mismatch"),
+            "target": "skill:something-else",
+        }
+
+        with pytest.raises(ValueError, match="manifest target does not match register target"):
+            mh.register_candidate(
+                tmp_path,
+                mh.DEFAULTS,
+                cand_id=manifest["cand_id"],
+                manifest=manifest,
+                overlay_dir=tmp_path / "unused-overlay",
+                overlay_files=[],
+                target="claude-harness",
+            )
+
+    def test_manifest_created_by_must_match_supplied_creator(self, tmp_path: Path) -> None:
+        manifest = {
+            **_manifest("cand-creator-mismatch"),
+            "created_by": "proposer",
+        }
+
+        with pytest.raises(
+            ValueError,
+            match="manifest created_by does not match register created_by",
+        ):
+            mh.register_candidate(
+                tmp_path,
+                mh.DEFAULTS,
+                cand_id=manifest["cand_id"],
+                manifest=manifest,
+                overlay_dir=tmp_path / "unused-overlay",
+                overlay_files=[],
+                created_by="human",
+            )
 
 
 class TestRegisterSuccess:
@@ -143,7 +247,10 @@ class TestGenerateCandIdNonceAvoidsCollision:
         assert cand_ids[0] != cand_ids[1]  # 同一秒・同一 slug でも nonce により異なる
 
         for cand_id in cand_ids:
-            manifest = _manifest(cand_id)
+            manifest = {
+                **_manifest(cand_id),
+                "config_hash": mh.compute_config_hash(overlay_dir, config),
+            }
             mh.register_candidate(
                 git_project,
                 config,
@@ -179,6 +286,7 @@ class TestRegisterImmutability:
         overlay_dir = git_project / "overlay-src"
         (overlay_dir / "facets" / "example-facet").mkdir(parents=True)
         (overlay_dir / "facets" / "example-facet" / "SKILL.md").write_text("v1", encoding="utf-8")
+        manifest["config_hash"] = mh.compute_config_hash(overlay_dir, config)
 
         mh.register_candidate(
             git_project,
@@ -205,7 +313,11 @@ class TestRegisterImmutability:
                 git_project,
                 config,
                 cand_id=manifest["cand_id"],
-                manifest={**manifest, "description": "second attempt"},
+                manifest={
+                    **manifest,
+                    "description": "second attempt",
+                    "config_hash": mh.compute_config_hash(overlay_dir, config),
+                },
                 overlay_dir=overlay_dir,
                 overlay_files=["facets/example-facet/SKILL.md"],
             )
@@ -225,9 +337,45 @@ class TestRegisterImmutability:
         assert after_content == original_content == "v1"
 
 
-class TestRegisterConfigPatchRejection:
-    # EV-05
-    def test_config_patch_is_rejected_in_phase_1a(
+class TestRegisterConfigPatchValidation:
+    # EV-67
+    def test_human_routing_config_patch_registers_with_integrity_hashes(
+        self, git_project: Path, tmp_path: Path, run_meta
+    ) -> None:
+        run_meta("init", project=git_project, check=True)
+        overlay_dir = tmp_path / "routing-overlay"
+        overlay_dir.mkdir()
+        patch = [
+            {
+                "file": "agent-routing/cli-tools.yaml",
+                "key_path": "codex.model",
+                "value": "gpt-5.3-codex",
+            }
+        ]
+        (overlay_dir / mh.CONFIG_PATCH_FILENAME).write_text(json.dumps(patch), encoding="utf-8")
+
+        result = run_meta(
+            "register",
+            "--overlay",
+            str(overlay_dir),
+            "--target",
+            "routing-config",
+            "--json",
+            project=git_project,
+            check=True,
+        )
+
+        cand_id = json.loads(result.stdout)["cand_id"]
+        candidate_dir = _candidates_dir(git_project) / cand_id
+        manifest = json.loads((candidate_dir / "manifest.json").read_text(encoding="utf-8"))
+        stored_overlay = candidate_dir / "overlay"
+        assert manifest["target"] == "routing-config"
+        assert manifest["created_by"] == "human"
+        assert manifest["overlay_files"] == []
+        assert manifest["config_patch_hash"] == mh.compute_config_patch_hash(patch)
+        assert manifest["config_hash"] == mh.compute_config_hash(stored_overlay, {})
+
+    def test_config_patch_is_rejected_for_non_routing_target(
         self, git_project: Path, tmp_path: Path, run_meta, default_overlay
     ) -> None:
         run_meta("init", project=git_project, check=True)
@@ -250,14 +398,75 @@ class TestRegisterConfigPatchRejection:
         )
 
         assert result.returncode == 2
-        assert "config_patch is rejected in Phase 1a" in result.stderr
+        assert "non-empty config patches require target='routing-config'" in result.stderr
         assert (
             not any(_candidates_dir(git_project).iterdir())
             if _candidates_dir(git_project).is_dir()
             else True
         )
 
-    def test_malformed_config_patch_shape_reports_schema_errors_not_phase1a_message(
+    def test_routing_target_without_config_patch_is_rejected(
+        self, git_project: Path, tmp_path: Path, run_meta
+    ) -> None:
+        run_meta("init", project=git_project, check=True)
+        overlay_dir = tmp_path / "empty-routing-overlay"
+        overlay_dir.mkdir()
+
+        result = run_meta(
+            "register",
+            "--overlay",
+            str(overlay_dir),
+            "--target",
+            "routing-config",
+            project=git_project,
+            check=False,
+        )
+
+        assert result.returncode == 2
+        assert "require a non-empty config patch" in result.stderr
+        assert (
+            not any(_candidates_dir(git_project).iterdir())
+            if _candidates_dir(git_project).is_dir()
+            else True
+        )
+
+    def test_mixed_file_overlay_and_config_patch_is_rejected(
+        self, git_project: Path, tmp_path: Path, run_meta, default_overlay
+    ) -> None:
+        run_meta("init", project=git_project, check=True)
+        overlay_dir = default_overlay(tmp_path)
+        (overlay_dir / mh.CONFIG_PATCH_FILENAME).write_text(
+            json.dumps(
+                [
+                    {
+                        "file": "agent-routing/cli-tools.yaml",
+                        "key_path": "codex.model",
+                        "value": "gpt-5.3-codex",
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        result = run_meta(
+            "register",
+            "--overlay",
+            str(overlay_dir),
+            "--target",
+            "routing-config",
+            project=git_project,
+            check=False,
+        )
+
+        assert result.returncode == 2
+        assert "must not contain file overlays" in result.stderr
+        assert (
+            not any(_candidates_dir(git_project).iterdir())
+            if _candidates_dir(git_project).is_dir()
+            else True
+        )
+
+    def test_malformed_config_patch_shape_reports_schema_errors(
         self, git_project: Path, tmp_path: Path, run_meta, default_overlay
     ) -> None:
         run_meta("init", project=git_project, check=True)
@@ -278,12 +487,10 @@ class TestRegisterConfigPatchRejection:
         )
 
         assert result.returncode == 2
-        assert "config_patch is rejected in Phase 1a" not in result.stderr
         assert "missing required key 'value'" in result.stderr
 
-    # PR #162 レビュー指摘 (FIX C): `.local.yaml` で config_patch.allowlist を非空にしても、
-    # Phase 1a では CONFIG_PATCH_ENABLED=False によりコードレベルで全面拒否されること
-    def test_config_patch_still_rejected_when_local_yaml_populates_allowlist(
+    # EV-67: allowlist に含まれていても target gate は迂回できない。
+    def test_local_allowlist_does_not_bypass_target_gate(
         self, git_project: Path, tmp_path: Path, run_meta, default_overlay
     ) -> None:
         run_meta("init", project=git_project, check=True)
@@ -312,7 +519,48 @@ class TestRegisterConfigPatchRejection:
         )
 
         assert result.returncode == 2
-        assert "rejected in Phase 1a" in result.stderr
+        assert "non-empty config patches require target='routing-config'" in result.stderr
+
+    def test_local_allowlist_cannot_widen_frozen_ceiling(
+        self, git_project: Path, tmp_path: Path, run_meta
+    ) -> None:
+        run_meta("init", project=git_project, check=True)
+        local_config_dir = git_project / ".claude" / "config" / "meta-harness"
+        local_config_dir.mkdir(parents=True, exist_ok=True)
+        (local_config_dir / "meta-harness.local.yaml").write_text(
+            "config_patch:\n"
+            "  allowlist:\n"
+            "    - agent-routing/cli-tools.yaml#codex.model\n"
+            "    - agent-routing/cli-tools.yaml#codex.flags\n",
+            encoding="utf-8",
+        )
+        overlay_dir = tmp_path / "routing-overlay-local-widen"
+        overlay_dir.mkdir()
+        (overlay_dir / mh.CONFIG_PATCH_FILENAME).write_text(
+            json.dumps(
+                [
+                    {
+                        "file": "agent-routing/cli-tools.yaml",
+                        "key_path": "codex.model",
+                        "value": "gpt-5.3-codex",
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        result = run_meta(
+            "register",
+            "--overlay",
+            str(overlay_dir),
+            "--target",
+            "routing-config",
+            project=git_project,
+            check=False,
+        )
+
+        assert result.returncode == 2
+        assert "CONFIG_PATCH_ALLOWLIST_CEILING" in result.stderr
 
     # PR #162 レビュー指摘 (FIX D): overlay/config-patch.json が外部ファイルへの symlink の
     # 場合、予約サイドカー名の早期 continue で迂回されず symlink として拒否されること
@@ -606,7 +854,10 @@ class TestRegisterAtomicStaging:
             git_project,
             config,
             cand_id=cand_id,
-            manifest=_manifest(cand_id),
+            manifest={
+                **_manifest(cand_id),
+                "config_hash": mh.compute_config_hash(overlay_dir, config),
+            },
             overlay_dir=overlay_dir,
             overlay_files=["facets/example-facet/SKILL.md"],
         )
@@ -625,7 +876,10 @@ class TestRegisterAtomicStaging:
             git_project,
             config,
             cand_id=cand_id,
-            manifest=_manifest(cand_id, "first"),
+            manifest={
+                **_manifest(cand_id, "first"),
+                "config_hash": mh.compute_config_hash(overlay_dir, config),
+            },
             overlay_dir=overlay_dir,
             overlay_files=["facets/example-facet/SKILL.md"],
         )
@@ -635,7 +889,10 @@ class TestRegisterAtomicStaging:
                 git_project,
                 config,
                 cand_id=cand_id,
-                manifest=_manifest(cand_id, "second"),
+                manifest={
+                    **_manifest(cand_id, "second"),
+                    "config_hash": mh.compute_config_hash(overlay_dir, config),
+                },
                 overlay_dir=overlay_dir,
                 overlay_files=["facets/example-facet/SKILL.md"],
             )

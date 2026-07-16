@@ -12,7 +12,7 @@
         "type": "string",
         "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
       },
-      "key_path": { "type": "string" },
+      "key_path": { "type": "string", "minLength": 1 },
       "value": {}
     }
   }

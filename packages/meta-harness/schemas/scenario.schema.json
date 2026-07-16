@@ -17,7 +17,7 @@
     "id": { "type": "string", "pattern": "^[a-z0-9-]+$" },
     "target": {
       "type": "string",
-      "pattern": "^(claude-harness|skill:[a-z0-9-]+)$"
+      "pattern": "^(claude-harness|skill:[a-z0-9-]+|routing-config)$"
     },
     "description": { "type": "string" },
     "prompt": { "type": "string" },

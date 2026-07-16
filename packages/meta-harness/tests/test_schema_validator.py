@@ -25,6 +25,37 @@ def _load(name: str) -> dict:
     return mh.load_schema(SCHEMA_DIR, name)
 
 
+def _target_patterns(value: object) -> list[str]:
+    if isinstance(value, dict):
+        patterns = [
+            pattern
+            for key, pattern in value.items()
+            if key == "pattern"
+            and isinstance(pattern, str)
+            and pattern.startswith("^(claude-harness|skill:")
+        ]
+        return patterns + [item for child in value.values() for item in _target_patterns(child)]
+    if isinstance(value, list):
+        return [item for child in value for item in _target_patterns(child)]
+    return []
+
+
+def test_target_patterns_stay_in_sync_with_runtime_validator() -> None:
+    schema_names = (
+        "candidate.manifest.schema.json",
+        "frontier.schema.json",
+        "ledger.event.schema.json",
+        "run.metadata.schema.json",
+        "scenario.schema.json",
+    )
+    patterns = [pattern for name in schema_names for pattern in _target_patterns(_load(name))]
+    non_routing_pattern = "^(claude-harness|skill:[a-z0-9-]+)$"
+
+    assert len(patterns) == 10
+    assert set(patterns) == {mh.TARGET_PATTERN.pattern, non_routing_pattern}
+    assert patterns.count(non_routing_pattern) == 2
+
+
 class TestCandidateManifestSchema:
     _VALID = {
         "schema_version": "1.0",
@@ -71,6 +102,28 @@ class TestCandidateManifestSchema:
 
 
 class TestLedgerEventSchemaOneOf:
+    _VALID_EVALUATION_COMPLETED = {
+        "event": "evaluation_completed",
+        "ts": "2026-07-16T00:00:00+09:00",
+        "schema_version": "1.0",
+        "evaluation_id": "eval-20260716-000000-abcdef12",
+        "cand_id": "cand-routing-config",
+        "target": "routing-config",
+        "holdout": False,
+        "own_run_ids": [],
+        "own_suite_hash": "a" * 64,
+        "evaluator_hash": "b" * 64,
+        "own_critical_pass": True,
+        "regression_results": [],
+        "verdict": "pass",
+        "unverified_impacts": [],
+        "evaluation_base_commit": "c" * 40,
+        "routing_config_base_hash": "d" * 64,
+        "impacted_targets": [],
+        "impact_input_hash": "e" * 64,
+        "regression_cost_usd": 0.0,
+    }
+
     def test_candidate_registered_matches_exactly_one_branch(self) -> None:
         schema = _load("ledger.event.schema.json")
         instance = {
@@ -103,6 +156,35 @@ class TestLedgerEventSchemaOneOf:
                 "tokens_used": 123,
             },
         }
+        assert mh.validate_against_schema(instance, schema, SCHEMA_DIR) == []
+
+    def test_routing_config_evaluation_requires_base_hash(self) -> None:
+        schema = _load("ledger.event.schema.json")
+        evaluation_schema = schema["$defs"]["evaluation_completed"]
+        instance = {
+            key: value
+            for key, value in self._VALID_EVALUATION_COMPLETED.items()
+            if key != "routing_config_base_hash"
+        }
+
+        assert mh.validate_against_schema(instance, evaluation_schema, SCHEMA_DIR)
+
+    def test_routing_config_evaluation_with_base_hash_is_valid(self) -> None:
+        schema = _load("ledger.event.schema.json")["$defs"]["evaluation_completed"]
+
+        assert (
+            mh.validate_against_schema(self._VALID_EVALUATION_COMPLETED, schema, SCHEMA_DIR) == []
+        )
+
+    def test_non_routing_evaluation_allows_missing_base_hash(self) -> None:
+        schema = _load("ledger.event.schema.json")["$defs"]["evaluation_completed"]
+        instance = {
+            key: value
+            for key, value in self._VALID_EVALUATION_COMPLETED.items()
+            if key != "routing_config_base_hash"
+        }
+        instance["target"] = "claude-harness"
+
         assert mh.validate_against_schema(instance, schema, SCHEMA_DIR) == []
 
     def test_ambiguous_or_no_match_event_is_reported(self) -> None:
@@ -364,6 +446,32 @@ class TestRunMetadataSchema:
 
     def test_valid_instance_has_zero_errors(self) -> None:
         schema = _load("run.metadata.schema.json")
+        assert mh.validate_against_schema(self._VALID, schema, SCHEMA_DIR) == []
+
+    def test_routing_config_requires_base_hash(self) -> None:
+        schema = _load("run.metadata.schema.json")
+        instance = {
+            **self._VALID,
+            "target": "routing-config",
+            "suite_id": "routing-config",
+        }
+
+        assert mh.validate_against_schema(instance, schema, SCHEMA_DIR)
+
+    def test_routing_config_with_base_hash_is_valid(self) -> None:
+        schema = _load("run.metadata.schema.json")
+        instance = {
+            **self._VALID,
+            "target": "routing-config",
+            "suite_id": "routing-config",
+            "routing_config_base_hash": "d" * 64,
+        }
+
+        assert mh.validate_against_schema(instance, schema, SCHEMA_DIR) == []
+
+    def test_non_routing_target_allows_missing_base_hash(self) -> None:
+        schema = _load("run.metadata.schema.json")
+
         assert mh.validate_against_schema(self._VALID, schema, SCHEMA_DIR) == []
 
     def test_missing_required_key_is_reported(self) -> None:

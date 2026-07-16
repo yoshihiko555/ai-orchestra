@@ -33,11 +33,12 @@
     "created_by": { "type": "string", "enum": ["human", "proposer"] },
     "target": {
       "type": "string",
-      "pattern": "^(claude-harness|skill:[a-z0-9-]+)$"
+      "pattern": "^(claude-harness|skill:[a-z0-9-]+|routing-config)$"
     },
     "target_closure_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "source_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
     "config_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "config_patch_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "model_versions": {
       "type": "object",
       "propertyNames": { "type": "string" },

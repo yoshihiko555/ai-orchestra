@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from tests.module_loader import load_module
 
 mh = load_module(
@@ -124,44 +126,410 @@ class TestValidateOverlayRejects:
 
 
 class TestValidateConfigPatch:
-    # EV-05 (lib レベル)
-    def test_valid_shaped_patch_still_rejected_in_phase1a(self) -> None:
+    # EV-62 / EV-64 (lib レベル)
+    def test_allowlisted_human_routing_patch_is_accepted(self) -> None:
         config = _DEFAULT_OVERLAY_CONFIG
         patch = [{"file": "agent-routing/cli-tools.yaml", "key_path": "codex.model", "value": "x"}]
 
-        errors = mh.validate_config_patch(patch, config, SCHEMA_DIR)
+        errors = mh.validate_config_patch(
+            patch,
+            config,
+            SCHEMA_DIR,
+            target="routing-config",
+            created_by="human",
+        )
 
-        assert len(errors) == 1
-        assert "rejected in Phase 1a" in errors[0]
+        assert errors == []
 
     def test_empty_patch_array_is_not_rejected(self) -> None:
         config = _DEFAULT_OVERLAY_CONFIG
-        errors = mh.validate_config_patch([], config, SCHEMA_DIR)
+        errors = mh.validate_config_patch(
+            [], config, SCHEMA_DIR, target="claude-harness", created_by="human"
+        )
         assert errors == []
+
+    def test_routing_target_requires_non_empty_patch(self) -> None:
+        errors = mh.validate_config_patch(
+            [],
+            _DEFAULT_OVERLAY_CONFIG,
+            SCHEMA_DIR,
+            target="routing-config",
+            created_by="human",
+        )
+        assert any("require a non-empty" in error for error in errors)
 
     def test_malformed_patch_shape_returns_schema_errors(self) -> None:
         config = _DEFAULT_OVERLAY_CONFIG
         patch = [{"file": "x.yaml", "key_path": "a.b"}]  # missing "value"
 
-        errors = mh.validate_config_patch(patch, config, SCHEMA_DIR)
+        errors = mh.validate_config_patch(
+            patch,
+            config,
+            SCHEMA_DIR,
+            target="routing-config",
+            created_by="human",
+        )
 
         assert any("value" in e for e in errors)
-        assert not any("rejected in Phase 1a" in e for e in errors)
 
-    def test_allowlist_populated_is_still_rejected_in_phase1a(self) -> None:
-        # PR #162 レビュー指摘: config_patch.allowlist を `.local.yaml` 等で非空にしても
-        # Phase 1a では CONFIG_PATCH_ENABLED=False によりコードレベルで常に全面拒否される
-        # （config 値に関わらない）。allowlist 自体の検証ロジックは Phase 2 でのみ有効になる。
-        config = {"config_patch": {"allowlist": ["agent-routing/cli-tools.yaml#codex.model"]}}
+    def test_allowlist_cannot_exceed_frozen_ceiling(self) -> None:
+        config = {"config_patch": {"allowlist": ["agent-routing/cli-tools.yaml#codex.flags"]}}
         patch = [{"file": "agent-routing/cli-tools.yaml", "key_path": "codex.model", "value": "x"}]
 
-        errors = mh.validate_config_patch(patch, config, SCHEMA_DIR)
+        errors = mh.validate_config_patch(
+            patch,
+            config,
+            SCHEMA_DIR,
+            target="routing-config",
+            created_by="human",
+        )
 
-        assert len(errors) == 1
-        assert "rejected in Phase 1a" in errors[0]
-        assert "CONFIG_PATCH_ENABLED" in errors[0]
+        assert any("CONFIG_PATCH_ALLOWLIST_CEILING" in error for error in errors)
 
-    def test_config_patch_enabled_flag_is_false_in_phase1a(self) -> None:
-        # モジュール定数そのものが Phase 1a では False であることを明示的に固定する
-        # （Phase 2 移行時にこの定数を切り替える前提のドキュメント兼リグレッションガード）。
-        assert mh.CONFIG_PATCH_ENABLED is False
+    def test_proposer_created_patch_is_rejected(self) -> None:
+        patch = [{"file": "agent-routing/cli-tools.yaml", "key_path": "codex.model", "value": "x"}]
+
+        errors = mh.validate_config_patch(
+            patch,
+            _DEFAULT_OVERLAY_CONFIG,
+            SCHEMA_DIR,
+            target="routing-config",
+            created_by="proposer",
+        )
+
+        assert any("created_by='human'" in error for error in errors)
+
+    def test_allowlist_ceiling_is_exactly_the_initial_release(self) -> None:
+        assert mh.CONFIG_PATCH_ALLOWLIST_CEILING == (
+            "agent-routing/cli-tools.yaml#agents.*.tool",
+            "agent-routing/cli-tools.yaml#codex.model",
+            "agent-routing/cli-tools.yaml#antigravity.model",
+        )
+
+    @pytest.mark.parametrize(
+        ("patch", "expected"),
+        [
+            (
+                [{"file": "other/cli-tools.yaml", "key_path": "codex.model", "value": "x"}],
+                "not allowlisted",
+            ),
+            (
+                [
+                    {
+                        "file": "agent-routing/cli-tools.yaml",
+                        "key_path": "codex.flags",
+                        "value": "x",
+                    }
+                ],
+                "not allowlisted",
+            ),
+            (
+                [
+                    {
+                        "file": "agent-routing/cli-tools.yaml",
+                        "key_path": "agents.a.b.tool",
+                        "value": "auto",
+                    }
+                ],
+                "not allowlisted",
+            ),
+            (
+                [
+                    {
+                        "file": "agent-routing/cli-tools.yaml",
+                        "key_path": "agents.__proto__.tool",
+                        "value": "auto",
+                    }
+                ],
+                "dangerous key segment",
+            ),
+            (
+                [
+                    {
+                        "file": "agent-routing/cli-tools.yaml",
+                        "key_path": "agents..tool",
+                        "value": "auto",
+                    }
+                ],
+                "empty segment",
+            ),
+        ],
+    )
+    def test_non_allowlisted_and_dangerous_patch_targets_are_rejected(
+        self, patch: list[dict], expected: str
+    ) -> None:
+        errors = mh.validate_config_patch(
+            patch,
+            _DEFAULT_OVERLAY_CONFIG,
+            SCHEMA_DIR,
+            target="routing-config",
+            created_by="human",
+        )
+
+        assert any(expected in error for error in errors)
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            "agent-routing/cli-tools.yaml#agents.**.tool",
+            "agent-routing/cli-tools.yaml#agents.foo*.tool",
+            "agent-routing/cli-tools.yaml#codex.model#extra",
+            "agent-routing/cli-tools.yaml#agents..tool",
+            "agent-*/cli-tools.yaml#codex.model",
+        ],
+    )
+    def test_malformed_allowlist_entries_fail_closed(self, entry: str) -> None:
+        errors = mh.validate_config_patch(
+            [
+                {
+                    "file": "agent-routing/cli-tools.yaml",
+                    "key_path": "codex.model",
+                    "value": "x",
+                }
+            ],
+            {"config_patch": {"allowlist": [entry]}},
+            SCHEMA_DIR,
+            target="routing-config",
+            created_by="human",
+        )
+
+        assert errors
+
+    def test_agents_wildcard_matches_exactly_one_segment(self) -> None:
+        patch = [
+            {
+                "file": "agent-routing/cli-tools.yaml",
+                "key_path": "agents.debugger.tool",
+                "value": "auto",
+            }
+        ]
+
+        assert (
+            mh.validate_config_patch(
+                patch,
+                _DEFAULT_OVERLAY_CONFIG,
+                SCHEMA_DIR,
+                target="routing-config",
+                created_by="human",
+            )
+            == []
+        )
+
+    def test_known_agent_name_is_accepted(self) -> None:
+        patch = [
+            {
+                "file": "agent-routing/cli-tools.yaml",
+                "key_path": "agents.backend-python-dev.tool",
+                "value": "codex",
+            }
+        ]
+
+        assert (
+            mh.validate_config_patch(
+                patch,
+                _DEFAULT_OVERLAY_CONFIG,
+                SCHEMA_DIR,
+                target="routing-config",
+                created_by="human",
+            )
+            == []
+        )
+
+    def test_unknown_agent_name_is_rejected(self) -> None:
+        patch = [
+            {
+                "file": "agent-routing/cli-tools.yaml",
+                "key_path": "agents.no-such-agent.tool",
+                "value": "codex",
+            }
+        ]
+
+        errors = mh.validate_config_patch(
+            patch,
+            _DEFAULT_OVERLAY_CONFIG,
+            SCHEMA_DIR,
+            target="routing-config",
+            created_by="human",
+        )
+
+        assert any("unknown agent name: no-such-agent" in error for error in errors)
+
+    def test_duplicate_patch_targets_are_rejected(self) -> None:
+        item = {
+            "file": "agent-routing/cli-tools.yaml",
+            "key_path": "codex.model",
+            "value": "x",
+        }
+
+        errors = mh.validate_config_patch(
+            [item, dict(item)],
+            _DEFAULT_OVERLAY_CONFIG,
+            SCHEMA_DIR,
+            target="routing-config",
+            created_by="human",
+        )
+
+        assert any("duplicate config patch target" in error for error in errors)
+
+    @pytest.mark.parametrize("tool", ["codex", "antigravity", "claude-direct", "auto"])
+    def test_all_released_agent_tool_values_are_accepted(self, tool: str) -> None:
+        patch = [
+            {
+                "file": "agent-routing/cli-tools.yaml",
+                "key_path": "agents.debugger.tool",
+                "value": tool,
+            }
+        ]
+
+        assert (
+            mh.validate_config_patch(
+                patch,
+                _DEFAULT_OVERLAY_CONFIG,
+                SCHEMA_DIR,
+                target="routing-config",
+                created_by="human",
+            )
+            == []
+        )
+
+    @pytest.mark.parametrize(
+        ("key_path", "value", "expected"),
+        [
+            ("agents.debugger.tool", "bogus", "must be one of"),
+            ("agents.debugger.tool", True, "must be one of"),
+            ("codex.model", 123, "injection-safe slug"),
+            ("codex.model", False, "injection-safe slug"),
+            ("codex.model", "", "injection-safe slug"),
+            ("codex.model", "bad:model", "injection-safe slug"),
+            ("antigravity.model", "not-in-the-model-allowlist", "not in model_allowlist"),
+        ],
+    )
+    def test_invalid_patch_values_are_rejected(
+        self, key_path: str, value: object, expected: str
+    ) -> None:
+        errors = mh.validate_config_patch(
+            [
+                {
+                    "file": "agent-routing/cli-tools.yaml",
+                    "key_path": key_path,
+                    "value": value,
+                }
+            ],
+            _DEFAULT_OVERLAY_CONFIG,
+            SCHEMA_DIR,
+            target="routing-config",
+            created_by="human",
+        )
+
+        assert any(expected in error for error in errors)
+
+    def test_allowlisted_antigravity_model_is_accepted(self) -> None:
+        errors = mh.validate_config_patch(
+            [
+                {
+                    "file": "agent-routing/cli-tools.yaml",
+                    "key_path": "antigravity.model",
+                    "value": "gemini-3.1-pro",
+                }
+            ],
+            _DEFAULT_OVERLAY_CONFIG,
+            SCHEMA_DIR,
+            target="routing-config",
+            created_by="human",
+        )
+
+        assert errors == []
+
+    def test_empty_antigravity_model_allowlist_rejects_any_model(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            mh,
+            "_load_antigravity_model_allowlist",
+            lambda _schema_dir: frozenset(),
+        )
+
+        errors = mh.validate_config_patch(
+            [
+                {
+                    "file": "agent-routing/cli-tools.yaml",
+                    "key_path": "antigravity.model",
+                    "value": "gemini-3.1-pro",
+                }
+            ],
+            _DEFAULT_OVERLAY_CONFIG,
+            SCHEMA_DIR,
+            target="routing-config",
+            created_by="human",
+        )
+
+        assert any("not in model_allowlist" in error for error in errors)
+
+    @pytest.mark.parametrize("value", ["off", "123", "1.5", "null", "no"])
+    def test_yaml_ambiguous_model_values_are_rejected(self, value: str) -> None:
+        errors = mh.validate_config_patch(
+            [
+                {
+                    "file": "agent-routing/cli-tools.yaml",
+                    "key_path": "codex.model",
+                    "value": value,
+                }
+            ],
+            _DEFAULT_OVERLAY_CONFIG,
+            SCHEMA_DIR,
+            target="routing-config",
+            created_by="human",
+        )
+
+        assert any("YAML-ambiguous" in error for error in errors)
+
+    def test_unambiguous_model_value_is_accepted(self) -> None:
+        errors = mh.validate_config_patch(
+            [
+                {
+                    "file": "agent-routing/cli-tools.yaml",
+                    "key_path": "codex.model",
+                    "value": "gpt-5.3-codex",
+                }
+            ],
+            _DEFAULT_OVERLAY_CONFIG,
+            SCHEMA_DIR,
+            target="routing-config",
+            created_by="human",
+        )
+
+        assert errors == []
+
+    def test_config_patch_file_with_backslashes_is_rejected(self) -> None:
+        errors = mh.validate_config_patch(
+            [
+                {
+                    "file": "agent-routing\\..\\..\\etc\\passwd",
+                    "key_path": "codex.model",
+                    "value": "gpt-5.3-codex",
+                }
+            ],
+            _DEFAULT_OVERLAY_CONFIG,
+            SCHEMA_DIR,
+            target="routing-config",
+            created_by="human",
+        )
+
+        assert any("must not contain backslashes" in error for error in errors)
+
+    def test_unknown_creator_is_rejected(self) -> None:
+        errors = mh.validate_config_patch(
+            [
+                {
+                    "file": "agent-routing/cli-tools.yaml",
+                    "key_path": "codex.model",
+                    "value": "x",
+                }
+            ],
+            _DEFAULT_OVERLAY_CONFIG,
+            SCHEMA_DIR,
+            target="routing-config",
+            created_by="automation",
+        )
+
+        assert any("created_by='human'" in error for error in errors)

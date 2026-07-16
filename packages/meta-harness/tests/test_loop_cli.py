@@ -24,6 +24,27 @@ loop_cli = helpers.loop_cli
 mh = helpers.mh
 
 
+def test_routing_config_target_is_rejected_before_proposer(
+    git_project: Path, monkeypatch, capsys
+) -> None:
+    config = _config()
+    mh.init_store(git_project, config)
+    monkeypatch.setattr(loop_cli, "_resolve_context", lambda _project: (git_project, config))
+    monkeypatch.setattr(
+        loop_cli,
+        "_drive_loop",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("proposer loop must not start")
+        ),
+    )
+
+    exit_code = loop_cli.cmd_loop(str(git_project), "routing-config", None, False)
+
+    assert exit_code == loop_cli.EXIT_VALIDATION_ERROR
+    assert "requires human registration" in capsys.readouterr().err
+    assert not any(event.get("event") == "loop_started" for event in _events(git_project, config))
+
+
 @pytest.mark.parametrize(
     ("reason", "config", "qualities", "expected_iterations"),
     [
@@ -427,6 +448,25 @@ def test_evaluate_candidate_hash_matches_loop_current_scope(git_project: Path, m
         loop_cli.ev.scenario_suite_dir(loop_cli._PACKAGE_DIR, "claude-harness")
     )[0]
     scenario_id = loop_cli.ev.load_scenario(scenario_path, loop_cli._SCHEMA_DIR)["id"]
+    cand_id = "candidate"
+    manifest = {
+        "cand_id": cand_id,
+        "parent_id": None,
+        "created_by": "human",
+        "target": "claude-harness",
+        "source_commit": "a" * 40,
+    }
+    mh.init_store(git_project, config)
+    mh.append_ledger_event(
+        git_project,
+        config,
+        {
+            "event": "candidate_registered",
+            "cand_id": cand_id,
+            "created_by": "human",
+            "target": "claude-harness",
+        },
+    )
 
     results = loop_cli.ev.evaluate_candidate(
         main_root=git_project,
@@ -434,8 +474,8 @@ def test_evaluate_candidate_hash_matches_loop_current_scope(git_project: Path, m
         schema_dir=loop_cli._SCHEMA_DIR,
         package_dir=loop_cli._PACKAGE_DIR,
         project_dir=git_project,
-        cand_id="candidate",
-        manifest={"target": "claude-harness", "source_commit": "a" * 40},
+        cand_id=cand_id,
+        manifest=manifest,
         scenario_ids=[scenario_id],
         repeat_override=1,
         cli_capabilities={},

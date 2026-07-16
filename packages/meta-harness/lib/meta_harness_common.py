@@ -40,8 +40,16 @@ import yaml
 PACKAGE_NAME = "meta-harness"
 CONFIG_FILENAME = "meta-harness.yaml"
 PACKAGE_DIR = Path(__file__).resolve().parent.parent
-TARGET_PATTERN = re.compile(r"^(?:claude-harness|skill:[a-z0-9-]+)$")
+TARGET_PATTERN = re.compile(r"^(claude-harness|skill:[a-z0-9-]+|routing-config)$")
 DEFAULT_TARGET = "claude-harness"
+CONFIG_PATCH_ALLOWLIST_CEILING = (
+    "agent-routing/cli-tools.yaml#agents.*.tool",
+    "agent-routing/cli-tools.yaml#codex.model",
+    "agent-routing/cli-tools.yaml#antigravity.model",
+)
+CONFIG_PATCH_TOOL_VALUES = frozenset({"codex", "antigravity", "claude-direct", "auto"})
+CONFIG_PATCH_MODEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+CONFIG_PATCH_DANGEROUS_SEGMENTS = frozenset({"__proto__", "constructor"})
 
 # config が読めない場合のフォールバック既定値（正本は config/meta-harness.yaml、Sec5）。
 DEFAULTS: dict[str, Any] = {
@@ -122,7 +130,7 @@ DEFAULTS: dict[str, Any] = {
             ".github/",
         ],
     },
-    "config_patch": {"allowlist": []},
+    "config_patch": {"allowlist": list(CONFIG_PATCH_ALLOWLIST_CEILING)},
     "proposer": {
         "tool": "codex",
         "max_iterations": 10,
@@ -178,7 +186,20 @@ def load_config(project_dir: str | Path) -> dict:
     meta-harness/meta-harness.yaml` > パッケージ既定 `config/meta-harness.yaml`、
     さらに `.local.yaml` 上書きを config-loading ルールどおり適用する）。
     使えない場合も、このパッケージ自身で base/local YAML を読み込む。
+
+    fail-closed(PR #252 R3-4 レビュー指摘): `hook_common._read_config_file` は
+    読み込み失敗を「ファイル不在」と区別せず常に `{}` へフォールバックするため、
+    `load_package_config` はこの状態を例外として伝播しない(silent fallback)。
+    これを放置すると、存在するが壊れている `meta-harness.local.yaml`(例えば
+    `config_patch.allowlist: []` でルーティング設定 patch を絞る意図のプロジェクト)
+    が unparseable になっただけで DEFAULTS の `config_patch.allowlist`(routing-config
+    向け3件のケーリング)が silently 復活し、意図しない config patch を許可してしまう。
+    本関数は「ファイル不在(defaults を使ってよい)」と「存在するが壊れている
+    (config patch は閉じておくべき)」を区別し、後者では最終結果の
+    `config_patch.allowlist` を空配列へ強制する。
     """
+    project_dir_str = str(project_dir)
+    config_load_failed = False
     try:
         orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
         core_hooks = os.path.join(orchestra_dir, "packages", "core", "hooks")
@@ -186,7 +207,8 @@ def load_config(project_dir: str | Path) -> dict:
             sys.path.insert(0, core_hooks)
         from hook_common import load_package_config
 
-        loaded = load_package_config(PACKAGE_NAME, CONFIG_FILENAME, str(project_dir))
+        loaded = load_package_config(PACKAGE_NAME, CONFIG_FILENAME, project_dir_str)
+        config_load_failed = _meta_harness_config_is_corrupt(project_dir_str)
     except ImportError:
         try:
             loaded = _load_config_without_hook_common(Path(project_dir))
@@ -196,13 +218,19 @@ def load_config(project_dir: str | Path) -> dict:
                 file=sys.stderr,
             )
             loaded = {}
+            config_load_failed = True
     except Exception as exc:
         print(
             f"warning: failed to load meta-harness config, falling back to defaults: {exc}",
             file=sys.stderr,
         )
         loaded = {}
-    return _deep_merge(DEFAULTS, loaded or {})
+        config_load_failed = True
+
+    merged = _deep_merge(DEFAULTS, loaded or {})
+    if config_load_failed:
+        merged = _deep_merge(merged, {"config_patch": {"allowlist": []}})
+    return merged
 
 
 def _load_config_without_hook_common(project_dir: Path) -> dict:
@@ -220,6 +248,55 @@ def _read_yaml_config(path: Path) -> dict:
         return {}
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
     return data if isinstance(data, dict) else {}
+
+
+def _resolve_meta_harness_config_paths(project_dir: str) -> tuple[str, str]:
+    """`hook_common.find_package_config` / `_find_local_config_path` と同じ解決順序を
+    複製する(config load failure 検出のための独立した corruption probe 用。
+    hook_common の private 関数や属性に依存せず、本モジュール単体でも検証できるように
+    し、`hook_common` を部分的にしか実装しないテスト用スタブでも安全に動作させる)。
+    """
+    name, ext = os.path.splitext(CONFIG_FILENAME)
+    local_filename = f"{name}.local{ext}"
+
+    project_base = os.path.join(project_dir, ".claude", "config", PACKAGE_NAME, CONFIG_FILENAME)
+    if os.path.isfile(project_base):
+        base_path = project_base
+    else:
+        orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
+        orchestra_base = (
+            os.path.join(orchestra_dir, "packages", PACKAGE_NAME, "config", CONFIG_FILENAME)
+            if orchestra_dir
+            else ""
+        )
+        base_path = orchestra_base if orchestra_base and os.path.isfile(orchestra_base) else ""
+
+    project_local = os.path.join(project_dir, ".claude", "config", PACKAGE_NAME, local_filename)
+    if os.path.isfile(project_local):
+        local_path = project_local
+    elif base_path:
+        local_path = os.path.join(os.path.dirname(base_path), local_filename)
+    else:
+        local_path = ""
+
+    return base_path, local_path
+
+
+def _yaml_file_is_corrupt(path: str) -> bool:
+    """`path` が存在するのに YAML mapping として読めない場合 True を返す(不在は False)。"""
+    if not path or not os.path.isfile(path):
+        return False
+    try:
+        data = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return True
+    return not (data is None or isinstance(data, dict))
+
+
+def _meta_harness_config_is_corrupt(project_dir: str) -> bool:
+    """base/local の meta-harness config が実在するのに読み込めない場合 True を返す。"""
+    base_path, local_path = _resolve_meta_harness_config_paths(project_dir)
+    return _yaml_file_is_corrupt(base_path) or _yaml_file_is_corrupt(local_path)
 
 
 # ---------------------------------------------------------------------------
@@ -321,6 +398,41 @@ def git_head(cwd: Path) -> str | None:
     return completed.stdout.strip() if completed.returncode == 0 else None
 
 
+def git_ref_file_hash(
+    project_dir: Path,
+    ref: str,
+    relative_path: Path,
+    *,
+    runner: Any = subprocess.run,
+) -> str:
+    """Return the SHA-256 digest of a file's text content at a Git ref.
+
+    Read with ``git show`` and fail closed if the ref or path is unavailable; callers must not
+    fall back to working-tree content.
+    """
+    try:
+        completed = runner(
+            ["git", "show", f"{ref}:{relative_path.as_posix()}"],
+            cwd=project_dir,
+            capture_output=True,
+            text=False,
+            timeout=GIT_TIMEOUT_SECONDS,
+            stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ValueError(f"could not read {relative_path} from git ref {ref}: {exc}") from None
+    if completed.returncode != 0:
+        stderr_text = completed.stderr.decode("utf-8", errors="replace").strip()
+        raise ValueError(
+            f"could not read {relative_path} from git ref {ref}: "
+            f"{stderr_text or completed.returncode}"
+        )
+    # `text=False` を使い、`git show` の stdout raw bytes を直接 hash する。text=True の
+    # universal-newlines 変換は CRLF blob を LF に化けさせ、実際の git blob 内容と異なる
+    # ハッシュを生んでしまう(CRLF↔LF drift が検出不能になる、PR #252 R2-2 レビュー指摘)。
+    return hashlib.sha256(completed.stdout).hexdigest()
+
+
 def build_candidate_manifest(
     *,
     cand_id: str,
@@ -333,6 +445,7 @@ def build_candidate_manifest(
     description: str,
     created_by: str = "human",
     target_closure_hash: str | None = None,
+    config_patch_hash: str | None = None,
 ) -> dict[str, Any]:
     """candidate manifest の共通組み立て処理。"""
     manifest = {
@@ -351,6 +464,8 @@ def build_candidate_manifest(
     }
     if target_closure_hash is not None:
         manifest["target_closure_hash"] = target_closure_hash
+    if config_patch_hash is not None:
+        manifest["config_patch_hash"] = config_patch_hash
     return manifest
 
 
@@ -548,25 +663,58 @@ def list_overlay_files(overlay_dir: Path) -> list[str]:
 def compute_config_hash(overlay_dir: Path, config: dict) -> str:
     """candidate.manifest の `config_hash` を計算する（Sec1-1）。
 
-    【判断】設計書はハッシュ対象の厳密なアルゴリズムまでは規定していないため、
-    以下を Phase 1a の確定アルゴリズムとする（監査可能性のためここに明記する）:
-
-    overlay_dir 配下の通常ファイル（symlink 除く）を相対 posix パスの昇順で走査し、
-    各エントリについて `<相対パス> + NUL + <生バイト内容> + NUL` を順に sha256 に
-    投入した値。config_patch の allowlist（`config_patch.allowlist`）は Phase 1a で
-    常に空集合であり（Sec1-8）、config patch を伴う候補は register 時点で拒否される
-    ため、"allowlist 対象の config ファイル群" は Phase 1a では常に空集合になる。
-    したがって実質的に overlay ファイル群のみがハッシュ対象になる。Phase 2 で
-    allowlist が解放された際は、この関数を拡張し `source_commit` 時点の allowlist
-    対象ファイルの内容もハッシュ対象に含める必要がある。
+    overlay files は生バイト、`config-patch.json` は JSON object key order や空白差で
+    integrity が変わらない canonical bytes を使う。各エントリについて
+    `<相対パス> + NUL + <内容> + NUL` を path 昇順で sha256 に投入する。
+    `config` は後方互換のため維持するが、hash 内容には影響しない。
     """
+    del config
     hasher = hashlib.sha256()
-    for rel in list_overlay_files(overlay_dir):
+    entries = [(rel, (overlay_dir / rel).read_bytes()) for rel in list_overlay_files(overlay_dir)]
+    config_patch_path = overlay_dir / CONFIG_PATCH_FILENAME
+    if config_patch_path.is_symlink():
+        raise ValueError("config-patch.json symlink is not allowed")
+    if config_patch_path.is_file():
+        entries.append(
+            (
+                CONFIG_PATCH_FILENAME,
+                canonical_config_patch_bytes(read_config_patch_file(config_patch_path)),
+            )
+        )
+    for rel, content in sorted(entries):
         hasher.update(rel.encode("utf-8"))
         hasher.update(b"\0")
-        hasher.update((overlay_dir / rel).read_bytes())
+        hasher.update(content)
         hasher.update(b"\0")
     return hasher.hexdigest()
+
+
+def canonical_config_patch_bytes(config_patch: Any) -> bytes:
+    """config patch の決定論的 JSON bytes を返す。"""
+    try:
+        serialized = json.dumps(
+            config_patch,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"config-patch.json cannot be canonicalized: {exc}") from exc
+    return serialized.encode("utf-8")
+
+
+def compute_config_patch_hash(config_patch: Any) -> str:
+    """canonical config patch 単体の sha256 を返す。"""
+    return hashlib.sha256(canonical_config_patch_bytes(config_patch)).hexdigest()
+
+
+def read_config_patch_file(config_patch_path: Path) -> Any:
+    """config-patch.json を読み、JSON parse error を ValueError に正規化する。"""
+    try:
+        return json.loads(config_patch_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"config-patch.json is not valid JSON: {exc}") from exc
 
 
 def next_generation(main_root: Path, config: dict, parent_id: str | None) -> int:
@@ -588,15 +736,32 @@ def register_candidate(
     overlay_dir: Path,
     overlay_files: list[str],
     target: str = DEFAULT_TARGET,
+    created_by: str | None = None,
     baseline_root: Path | None = None,
     inherited_overlay_dir: Path | None = None,
     skill_allowed_paths: frozenset[str] | None = None,
+    schema_dir: Path | None = None,
 ) -> Path:
     """candidates/<cand_id>/ を immutable に配置する。
 
     既に同名の候補ディレクトリが存在する場合は `FileExistsError` を送出する
     （immutability 原則、Sec1-1「基本設計からの変更点」参照）。
     """
+    if str(manifest.get("cand_id") or "") != cand_id:
+        raise ValueError(
+            "candidate manifest cand_id does not match register cand_id: "
+            f"manifest={manifest.get('cand_id')!r}, argument={cand_id!r}"
+        )
+    if str(manifest.get("target") or "") != target:
+        raise ValueError(
+            "candidate manifest target does not match register target: "
+            f"manifest={manifest.get('target')!r}, argument={target!r}"
+        )
+    if created_by is not None and str(manifest.get("created_by") or "") != created_by:
+        raise ValueError(
+            "candidate manifest created_by does not match register created_by: "
+            f"manifest={manifest.get('created_by')!r}, argument={created_by!r}"
+        )
     tmp_root = tmp_dir(main_root, config)
     tmp_root.mkdir(parents=True, exist_ok=True)
     staging_dir = tmp_root / f"register-{os.urandom(4).hex()}"
@@ -616,6 +781,30 @@ def register_candidate(
             raise ValueError(f"copied overlay validation failed: {'; '.join(copied_errors)}")
         if list_overlay_files(copied_overlay) != sorted(overlay_files):
             raise ValueError("copied overlay files differ from validated overlay manifest")
+        config_patch_path = copied_overlay / CONFIG_PATCH_FILENAME
+        config_patch = (
+            read_config_patch_file(config_patch_path) if config_patch_path.is_file() else []
+        )
+        patch_errors = validate_config_patch(
+            config_patch,
+            config,
+            schema_dir or PACKAGE_DIR / "schemas",
+            target=target,
+            created_by=str(manifest.get("created_by") or ""),
+        )
+        if config_patch and overlay_files:
+            patch_errors.append("config patch candidates must not contain file overlays")
+        if patch_errors:
+            raise ValueError(f"copied config patch validation failed: {'; '.join(patch_errors)}")
+        expected_patch_hash = manifest.get("config_patch_hash")
+        if config_patch_path.is_file():
+            actual_patch_hash = compute_config_patch_hash(config_patch)
+            if actual_patch_hash != expected_patch_hash:
+                raise ValueError("copied config patch hash differs from candidate manifest")
+        elif expected_patch_hash is not None:
+            raise ValueError("candidate manifest has config_patch_hash without a sidecar")
+        if compute_config_hash(copied_overlay, config) != manifest.get("config_hash"):
+            raise ValueError("copied candidate config hash differs from candidate manifest")
         _write_json(staging_dir / "manifest.json", manifest)
         _write_json(
             staging_dir / "overlay-manifest.json",
@@ -832,6 +1021,35 @@ def write_frontier_cache(
 # ---------------------------------------------------------------------------
 
 TERMINAL_STATUSES = frozenset({"promoted", "retired"})
+
+
+def find_candidate_registered_event(events: list[dict], cand_id: str) -> dict | None:
+    """Return the first candidate_registered ledger event for a candidate."""
+    for event in events:
+        if event.get("event") == "candidate_registered" and event.get("cand_id") == cand_id:
+            return event
+    return None
+
+
+def assert_lineage_matches_registered_events(events: list[dict], lineage: list[dict]) -> None:
+    """Fail closed unless every lineage manifest matches its registration provenance.
+
+    ``candidate_registered`` is the append-only provenance SSOT for ``created_by`` and
+    ``target``. A missing event or either mismatch raises ``ValueError``.
+    """
+    for item in lineage:
+        cand_id = str(item.get("cand_id") or "")
+        registered = find_candidate_registered_event(events, cand_id)
+        if registered is None:
+            raise ValueError(f"candidate_registered ledger event is missing: {cand_id}")
+        if registered.get("created_by") != item.get("created_by"):
+            raise ValueError(
+                f"candidate manifest created_by does not match ledger provenance: {cand_id}"
+            )
+        if registered.get("target") != item.get("target"):
+            raise ValueError(
+                f"candidate manifest target does not match ledger provenance: {cand_id}"
+            )
 
 
 def fold_candidate_states(events: list[dict]) -> dict[str, dict]:
@@ -1499,32 +1717,222 @@ def _validate_overlay_file(
     return errors
 
 
-# Phase 1a では config-patch.json を config.config_patch.allowlist の値に関わらず
-# 常に全面拒否する（Sec1-8）。Phase 2 でこの定数を True に切り替えると、下の allowlist
-# 検証ロジックが有効になる（allowlist が空なら拒否、非空なら許可）。
-CONFIG_PATCH_ENABLED = False
-
-
-def validate_config_patch(config_patch: list, config: dict, schema_dir: Path) -> list[str]:
-    """config-patch.json の形状検証 + Phase 1a 全面拒否（Sec1-8）。"""
+def validate_config_patch(
+    config_patch: Any,
+    config: dict,
+    schema_dir: Path,
+    *,
+    target: str,
+    created_by: str,
+) -> list[str]:
+    """config patch の schema・scope・allowlist・value 契約を fail-closed に検証する。"""
     schema = load_schema(schema_dir, "config_patch.schema.json")
     errors = validate_against_schema(config_patch, schema, schema_dir)
+    parsed_allowlist, allowlist_errors = _parse_config_patch_allowlist(config)
+    errors.extend(allowlist_errors)
+    if not isinstance(config_patch, list):
+        return errors
+
+    has_patch = bool(config_patch)
+    if target == "routing-config":
+        if not has_patch:
+            errors.append("routing-config candidates require a non-empty config patch")
+        if created_by != "human":
+            errors.append("routing-config candidates must have created_by='human'")
+    elif has_patch:
+        errors.append("non-empty config patches require target='routing-config'")
+    if has_patch and created_by != "human":
+        errors.append("non-empty config patches are restricted to created_by='human'")
+
     if errors:
         return errors
-    if not config_patch:
-        return []
-    if not CONFIG_PATCH_ENABLED:
-        return [
-            "config_patch is rejected in Phase 1a (CONFIG_PATCH_ENABLED=False);"
-            " overlays must not include a config-patch.json"
+
+    seen_targets: set[str] = set()
+    antigravity_models: frozenset[str] | None = None
+    known_agent_names: frozenset[str] | None = None
+    for index, item in enumerate(config_patch):
+        file_value = str(item["file"])
+        key_path = str(item["key_path"])
+        item_label = f"config_patch[{index}]"
+        file_errors = _validate_config_patch_file(file_value, item_label)
+        key_segments, key_errors = _parse_config_key_path(
+            key_path,
+            allow_wildcard=False,
+            label=f"{item_label}.key_path",
+        )
+        errors.extend(file_errors)
+        errors.extend(key_errors)
+        if file_errors or key_errors:
+            continue
+
+        target_key = f"{file_value}#{key_path}"
+        if target_key in seen_targets:
+            errors.append(f"{item_label}: duplicate config patch target: {target_key}")
+            continue
+        seen_targets.add(target_key)
+
+        matching_entries = [
+            entry
+            for entry in parsed_allowlist
+            if entry[0] == file_value and _config_key_path_matches(entry[1], key_segments)
         ]
-    allowlist = (config.get("config_patch") or {}).get("allowlist") or []
-    if not allowlist:
-        return [
-            "config_patch is rejected: config_patch.allowlist is empty;"
-            " overlays must not include a config-patch.json"
-        ]
-    return []
+        if len(matching_entries) != 1:
+            errors.append(f"{item_label}: target is not allowlisted exactly once: {target_key}")
+            continue
+
+        value = item["value"]
+        if key_segments[:1] == ("agents",) and key_segments[-1:] == ("tool",):
+            if known_agent_names is None:
+                try:
+                    known_agent_names = _load_known_agent_names(schema_dir)
+                except ValueError as exc:
+                    errors.append(f"{item_label}.value: {exc}")
+                    continue
+            if key_segments[1] not in known_agent_names:
+                errors.append(f"{item_label}.value: unknown agent name: {key_segments[1]}")
+                continue
+            if not isinstance(value, str) or value not in CONFIG_PATCH_TOOL_VALUES:
+                errors.append(
+                    f"{item_label}.value: agents.*.tool must be one of "
+                    + ", ".join(sorted(CONFIG_PATCH_TOOL_VALUES))
+                )
+            continue
+        if key_segments in (("codex", "model"), ("antigravity", "model")):
+            if not isinstance(value, str) or CONFIG_PATCH_MODEL_PATTERN.fullmatch(value) is None:
+                errors.append(f"{item_label}.value: model must be a non-empty injection-safe slug")
+                continue
+            try:
+                reparsed = yaml.safe_load(value)
+            except yaml.YAMLError:
+                reparsed = None
+            if not isinstance(reparsed, str) or reparsed != value:
+                errors.append(
+                    f"{item_label}.value: model value is YAML-ambiguous "
+                    f"(would not round-trip as an unquoted scalar): {value!r}"
+                )
+                continue
+            if key_segments == ("antigravity", "model"):
+                if antigravity_models is None:
+                    try:
+                        antigravity_models = _load_antigravity_model_allowlist(schema_dir)
+                    except ValueError as exc:
+                        errors.append(f"{item_label}.value: {exc}")
+                        continue
+                if not antigravity_models or value not in antigravity_models:
+                    errors.append(
+                        f"{item_label}.value: antigravity model is not in model_allowlist: {value}"
+                    )
+            continue
+        errors.append(f"{item_label}: unsupported config patch key: {target_key}")
+    return errors
+
+
+def _parse_config_patch_allowlist(
+    config: dict,
+) -> tuple[list[tuple[str, tuple[str, ...]]], list[str]]:
+    section = config.get("config_patch", DEFAULTS["config_patch"])
+    if not isinstance(section, dict):
+        return [], ["config_patch config must be an object"]
+    entries = section.get("allowlist", DEFAULTS["config_patch"]["allowlist"])
+    if not isinstance(entries, list):
+        return [], ["config_patch.allowlist must be an array"]
+
+    parsed: list[tuple[str, tuple[str, ...]]] = []
+    errors: list[str] = []
+    seen: set[str] = set()
+    for index, entry in enumerate(entries):
+        label = f"config_patch.allowlist[{index}]"
+        if not isinstance(entry, str) or entry.count("#") != 1:
+            errors.append(f"{label}: entry must be a string containing exactly one '#'")
+            continue
+        file_value, key_path = entry.split("#", 1)
+        file_errors = _validate_config_patch_file(file_value, label)
+        key_segments, key_errors = _parse_config_key_path(
+            key_path,
+            allow_wildcard=True,
+            label=label,
+        )
+        errors.extend(file_errors)
+        errors.extend(key_errors)
+        if entry in seen:
+            errors.append(f"{label}: duplicate allowlist entry: {entry}")
+        seen.add(entry)
+        if entry not in CONFIG_PATCH_ALLOWLIST_CEILING:
+            errors.append(f"{label}: entry exceeds CONFIG_PATCH_ALLOWLIST_CEILING: {entry}")
+        if not file_errors and not key_errors:
+            parsed.append((file_value, key_segments))
+    return parsed, errors
+
+
+def _validate_config_patch_file(file_value: str, label: str) -> list[str]:
+    errors: list[str] = []
+    if "\\" in file_value:
+        errors.append(f"{label}: config file must not contain backslashes")
+    if not file_value or file_value.startswith("/"):
+        errors.append(f"{label}: config file must be a non-empty relative path")
+    if ".." in file_value.split("/"):
+        errors.append(f"{label}: config file must not contain '..' segments")
+    if any(character in file_value for character in "*?[]"):
+        errors.append(f"{label}: wildcard characters are forbidden in the config file path")
+    return errors
+
+
+def _parse_config_key_path(
+    key_path: str,
+    *,
+    allow_wildcard: bool,
+    label: str,
+) -> tuple[tuple[str, ...], list[str]]:
+    if not key_path:
+        return (), [f"{label}: key path must not be empty"]
+    segments = tuple(key_path.split("."))
+    errors: list[str] = []
+    for segment in segments:
+        if not segment:
+            errors.append(f"{label}: key path contains an empty segment")
+        if segment in CONFIG_PATCH_DANGEROUS_SEGMENTS:
+            errors.append(f"{label}: dangerous key segment is forbidden: {segment}")
+        if "*" in segment and (not allow_wildcard or segment != "*"):
+            errors.append(f"{label}: '*' is allowed only as a complete allowlist segment")
+    return segments, errors
+
+
+def _config_key_path_matches(
+    pattern_segments: tuple[str, ...],
+    actual_segments: tuple[str, ...],
+) -> bool:
+    return len(pattern_segments) == len(actual_segments) and all(
+        expected == "*" or expected == actual
+        for expected, actual in zip(pattern_segments, actual_segments, strict=True)
+    )
+
+
+def _load_agent_routing_config(schema_dir: Path) -> dict:
+    config_path = schema_dir.parent.parent / "agent-routing" / "config" / "cli-tools.yaml"
+    try:
+        loaded = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError) as exc:
+        raise ValueError(f"could not load agent-routing config: {exc}") from exc
+    if not isinstance(loaded, dict):
+        raise ValueError("agent-routing config must be a YAML mapping")
+    return loaded
+
+
+def _load_antigravity_model_allowlist(schema_dir: Path) -> frozenset[str]:
+    loaded = _load_agent_routing_config(schema_dir)
+    antigravity = loaded.get("antigravity") or {}
+    values = antigravity.get("model_allowlist") or []
+    if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+        raise ValueError("antigravity.model_allowlist must be an array of strings")
+    return frozenset(values)
+
+
+def _load_known_agent_names(schema_dir: Path) -> frozenset[str]:
+    loaded = _load_agent_routing_config(schema_dir)
+    agents = loaded.get("agents") or {}
+    if not isinstance(agents, dict):
+        raise ValueError("agent-routing config agents section must be a mapping")
+    return frozenset(str(key) for key in agents)
 
 
 # ---------------------------------------------------------------------------

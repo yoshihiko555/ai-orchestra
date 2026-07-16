@@ -155,6 +155,24 @@ class TestTargetFrontierCache:
         assert mh.read_frontier_cache(tmp_path, mh.DEFAULTS)["target"] == "claude-harness"
         assert not mh.frontier_path(tmp_path, mh.DEFAULTS, "skill:handoff").exists()
 
+    def test_routing_config_uses_its_own_frontier_file(self, tmp_path: Path) -> None:
+        mh.init_store(tmp_path, mh.DEFAULTS)
+        mh.write_frontier_cache(
+            tmp_path,
+            mh.DEFAULTS,
+            _frontier("routing-config", "routing-candidate"),
+            "routing-config",
+        )
+
+        assert (
+            mh.frontier_path(tmp_path, mh.DEFAULTS, "routing-config").name
+            == "frontier-routing-config.json"
+        )
+        assert mh.read_frontier_cache(tmp_path, mh.DEFAULTS)["frontier"] == []
+        assert mh.read_frontier_cache(tmp_path, mh.DEFAULTS, "routing-config")["frontier"] == [
+            "routing-candidate"
+        ]
+
 
 class TestTargetAggregation:
     def test_cross_target_runs_are_excluded(self) -> None:

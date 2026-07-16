@@ -291,6 +291,7 @@ def test_regression_attempt_uses_remaining_evaluation_budget(
         cand_dir=tmp_path / "candidate",
         manifest={"source_commit": "a" * 40},
         target=TARGET,
+        routing_config_base_hash=None,
         suite_id=REGRESSION_TARGET,
         scenario_docs=scenario_docs,
         suite_hash=ev.compute_suite_hash(suite_paths),
@@ -316,6 +317,7 @@ def test_regression_attempt_uses_remaining_evaluation_budget(
             cand_dir=tmp_path / "candidate",
             manifest={"source_commit": "a" * 40},
             target=TARGET,
+            routing_config_base_hash=None,
             suite_id=REGRESSION_TARGET,
             scenario_docs=scenario_docs,
             suite_hash=ev.compute_suite_hash(suite_paths),
@@ -380,6 +382,14 @@ def test_train_and_holdout_batches_share_evaluation_id_and_regression_budget(
     monkeypatch.setattr(ev, "_evaluate_scenario_batch", fake_batch)
     config = copy.deepcopy(mh.DEFAULTS)
     config["regression"]["max_budget_usd"] = 2.0
+    mh.init_store(tmp_path, config)
+    mh.append_ledger_event(tmp_path, config, _registration())
+    manifest = {
+        "cand_id": CAND_ID,
+        "parent_id": None,
+        "created_by": "proposer",
+        "target": TARGET,
+    }
 
     ev.evaluate_candidate(
         main_root=tmp_path,
@@ -388,7 +398,7 @@ def test_train_and_holdout_batches_share_evaluation_id_and_regression_budget(
         package_dir=PACKAGE_DIR,
         project_dir=tmp_path,
         cand_id=CAND_ID,
-        manifest={"target": TARGET},
+        manifest=manifest,
         scenario_ids=None,
         repeat_override=None,
         cli_capabilities={},

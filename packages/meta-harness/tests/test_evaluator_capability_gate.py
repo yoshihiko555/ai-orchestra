@@ -344,3 +344,24 @@ class TestEvaluateCandidateExceptionNormalization:
         monkeypatch.setattr(cli.ev, "evaluate_candidate", raising_evaluate_candidate)
         exit_code = cli.cmd_evaluate(str(git_project), cand_id, None, None, False)
         assert exit_code == cli.EXIT_VALIDATION_ERROR
+
+    def test_evaluator_stage_error_from_evaluate_candidate_exits_2_not_traceback(
+        self, git_project, run_meta, default_overlay, tmp_path, monkeypatch
+    ) -> None:
+        """R2-5: `assert_lineage_matches_registered_events` 由来の改ざん provenance 検出は
+        `EvaluatorStageError` を送出する（`evaluator.py` の overlay_apply 段）。`cmd_register`
+        は既にこれを exit 2 に正規化しているが、`_run_evaluate_under_lock` は未対応だった
+        ため traceback が漏れていた（本テストは in-process 呼び出しのため、正規化されて
+        いなければ例外がテスト自体を落とす形で顕在化する）。"""
+        cli, cand_id = self._prepare_cli(
+            git_project, run_meta, default_overlay, tmp_path, monkeypatch
+        )
+
+        def raising_evaluate_candidate(**kwargs):
+            raise cli.ev.EvaluatorStageError(
+                "overlay_apply", "overlay_error", "forced tampered provenance for test"
+            )
+
+        monkeypatch.setattr(cli.ev, "evaluate_candidate", raising_evaluate_candidate)
+        exit_code = cli.cmd_evaluate(str(git_project), cand_id, None, None, False)
+        assert exit_code == cli.EXIT_VALIDATION_ERROR

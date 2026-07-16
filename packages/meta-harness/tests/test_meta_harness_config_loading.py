@@ -92,6 +92,40 @@ class TestConfigLocalOverride:
         assert config["retention"]["keep_generations"] == 5
         assert "warning" in stderr
         assert "meta-harness config" in stderr
+        # R3-4 (fail-closed): config load failure must not silently keep DEFAULTS'
+        # config_patch.allowlist (the routing-config ceiling) active.
+        assert config["config_patch"]["allowlist"] == []
+
+    def test_corrupt_local_yaml_fails_closed_on_config_patch_allowlist(
+        self, git_project: Path
+    ) -> None:
+        """R3-4: 実 hook_common(mock なし)経由でも、存在するが壊れている
+        `meta-harness.local.yaml` は config_patch.allowlist を DEFAULTS の3件のまま
+        有効化してはならない。`load_package_config` は読み込み失敗を「ファイル不在」
+        として silently 握り潰すため、例外は一切発生しないが、それでも fail-closed
+        されることを検証する。"""
+        config_dir = git_project / ".claude" / "config" / "meta-harness"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        (config_dir / "meta-harness.yaml").write_text(
+            (mh.PACKAGE_DIR / "config" / "meta-harness.yaml").read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        (config_dir / "meta-harness.local.yaml").write_text(
+            "config_patch:\n  allowlist: [2\n", encoding="utf-8"
+        )
+
+        config = mh.load_config(git_project)
+
+        assert config["config_patch"]["allowlist"] == []
+
+    def test_absent_local_config_keeps_default_config_patch_allowlist(
+        self, git_project: Path
+    ) -> None:
+        """R3-4 の対比観点: ファイル不在は corrupt ではないため、通常どおり DEFAULTS の
+        allowlist(routing-config 向け3件)が有効なままであること。"""
+        config = mh.load_config(git_project)
+
+        assert config["config_patch"]["allowlist"] == list(mh.CONFIG_PATCH_ALLOWLIST_CEILING)
 
     def test_import_error_fallback_stays_silent(
         self, git_project: Path, monkeypatch, capsys
@@ -134,3 +168,27 @@ class TestConfigLocalOverride:
 
         assert config["promote"]["reservation_ttl_hours"] == 3
         assert config["promote"]["allow_stale"] is False
+
+    def test_import_error_fallback_with_corrupt_local_yaml_fails_closed(
+        self, git_project: Path, monkeypatch
+    ) -> None:
+        """R3-4: hook_common 不在の fallback 経路でも、壊れた local yaml は
+        config_patch.allowlist を fail-closed(空配列)にすること。"""
+        local_config_dir = git_project / ".claude" / "config" / "meta-harness"
+        local_config_dir.mkdir(parents=True, exist_ok=True)
+        (local_config_dir / "meta-harness.local.yaml").write_text(
+            "retention:\n  keep_generations: [2\n", encoding="utf-8"
+        )
+        real_import = builtins.__import__
+
+        def import_without_hook_common(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "hook_common":
+                raise ImportError("hook_common unavailable")
+            return real_import(name, globals, locals, fromlist, level)
+
+        monkeypatch.delenv("AI_ORCHESTRA_DIR", raising=False)
+        monkeypatch.setattr(builtins, "__import__", import_without_hook_common)
+
+        config = mh.load_config(git_project)
+
+        assert config["config_patch"]["allowlist"] == []

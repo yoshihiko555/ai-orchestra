@@ -217,14 +217,25 @@ def cmd_register(
     except (OSError, ValueError, ev.EvaluatorStageError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_VALIDATION_ERROR
+    overlay_files = mh.list_overlay_files(overlay_dir)
     config_patch_path = overlay_dir / mh.CONFIG_PATCH_FILENAME
-    if config_patch_path.is_file():
+    config_patch: object = []
+    if config_patch_path.is_file() and not config_patch_path.is_symlink():
         try:
-            config_patch = json.loads(config_patch_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            violations.append(f"config-patch.json is not valid JSON: {exc}")
-        else:
-            violations.extend(mh.validate_config_patch(config_patch, config, _SCHEMA_DIR))
+            config_patch = mh.read_config_patch_file(config_patch_path)
+        except ValueError as exc:
+            violations.append(str(exc))
+    violations.extend(
+        mh.validate_config_patch(
+            config_patch,
+            config,
+            _SCHEMA_DIR,
+            target=target,
+            created_by="human",
+        )
+    )
+    if config_patch and overlay_files:
+        violations.append("config patch candidates must not contain file overlays")
     if violations:
         for v in violations:
             print(f"error: {v}", file=sys.stderr)
@@ -238,8 +249,10 @@ def cmd_register(
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_VALIDATION_ERROR
 
-    overlay_files = mh.list_overlay_files(overlay_dir)
     config_hash = mh.compute_config_hash(overlay_dir, config)
+    config_patch_hash = (
+        mh.compute_config_patch_hash(config_patch) if config_patch_path.is_file() else None
+    )
     manifest = mh.build_candidate_manifest(
         cand_id=cand_id,
         parent_id=parent,
@@ -250,6 +263,7 @@ def cmd_register(
         overlay_files=overlay_files,
         description=description,
         target_closure_hash=(target_resolution.closure_hash if target_resolution else None),
+        config_patch_hash=config_patch_hash,
     )
 
     manifest_schema = mh.load_schema(_SCHEMA_DIR, "candidate.manifest.schema.json")
@@ -292,6 +306,7 @@ def cmd_register(
                 overlay_dir=overlay_dir,
                 overlay_files=overlay_files,
                 target=target,
+                created_by="human",
                 baseline_root=project_dir,
                 inherited_overlay_dir=inherited_overlay,
                 skill_allowed_paths=(
@@ -299,6 +314,7 @@ def cmd_register(
                     if target_resolution
                     else None
                 ),
+                schema_dir=_SCHEMA_DIR,
             )
             mh.append_ledger_event(main_root, config, event)
     except mh.LockAcquisitionError as exc:
@@ -716,10 +732,12 @@ def _run_evaluate_under_lock(
     except ev.EvaluationBatchError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_RUNTIME_ERROR
-    except (ValueError, OSError, ev.yaml.YAMLError) as exc:
+    except (ValueError, OSError, ev.yaml.YAMLError, ev.EvaluatorStageError) as exc:
         # `load_scenario()` の `path.read_text()` / `yaml.safe_load()` 由来の OSError /
-        # yaml.YAMLError も ValueError と同様に入力検証エラーとして扱う（traceback を
-        # main() まで漏らさない、CodeRabbit 指摘）。
+        # yaml.YAMLError も ValueError と同様に入力検証エラーとして扱う(traceback を
+        # main() まで漏らさない、CodeRabbit 指摘)。`EvaluatorStageError`(改ざんされた
+        # ledger provenance 等)も同様に validation error として正規化する(`cmd_register`
+        # の既存 `except ev.EvaluatorStageError` と同じ扱い、PR #252 R2-5 レビュー指摘)。
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_VALIDATION_ERROR
 

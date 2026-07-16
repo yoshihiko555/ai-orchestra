@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import copy
 import gzip
+import hashlib
 import json
 from pathlib import Path
+
+import pytest
 
 from tests.module_loader import load_module
 
@@ -27,6 +31,109 @@ _CONFIG = {
         "penalty_missing_report": 6,
     }
 }
+
+
+def test_routing_config_base_hash_tracks_promotion_ssot_bytes(git_project: Path, git_run) -> None:
+    initial_commit = git_run("rev-parse", "HEAD", cwd=git_project).stdout.strip()
+    with pytest.raises(ValueError, match="could not be read from source_commit"):
+        ev.compute_routing_config_base_hash(git_project, initial_commit)
+
+    ssot = git_project / ev.ROUTING_CONFIG_SSOT_RELATIVE
+    ssot.parent.mkdir(parents=True)
+    known_content = b"codex:\n  model: before\n"
+    ssot.write_bytes(known_content)
+    git_run("add", ssot.relative_to(git_project).as_posix(), cwd=git_project)
+    git_run("commit", "-m", "add routing config", cwd=git_project)
+    source_commit = git_run("rev-parse", "HEAD", cwd=git_project).stdout.strip()
+
+    assert (
+        ev.compute_routing_config_base_hash(git_project, source_commit)
+        == hashlib.sha256(known_content).hexdigest()
+    )
+    with pytest.raises(ValueError, match="could not be read from source_commit"):
+        ev.compute_routing_config_base_hash(git_project, "0" * 40)
+
+
+def test_routing_config_batch_threads_one_base_hash_to_all_attempt_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = copy.deepcopy(mh.DEFAULTS)
+    scenario_paths = ev.validate_target_suite(
+        Path("packages/meta-harness").resolve(),
+        Path("packages/meta-harness/schemas").resolve(),
+        "routing-config",
+    )
+    scenario_path, scenario = next(
+        (path, ev.load_scenario(path, Path("packages/meta-harness/schemas").resolve()))
+        for path in scenario_paths
+        if not ev.load_scenario(path, Path("packages/meta-harness/schemas").resolve()).get(
+            "holdout"
+        )
+    )
+    sentinel_hash = "e" * 64
+    hash_calls: list[tuple[Path, str]] = []
+    emitted: list[dict] = []
+
+    def fake_base_hash(project_dir: Path, source_commit: str) -> str:
+        hash_calls.append((project_dir, source_commit))
+        return sentinel_hash
+
+    def fake_lifecycle(**kwargs):
+        isolation = {
+            "backend": "srt",
+            "srt_version": "1.0.0",
+            "settings_sha256": "f" * 64,
+            "platform_profile_input_sha256": "a" * 64,
+        }
+        staging = kwargs["staging_dir"]
+        staging.mkdir(parents=True, exist_ok=True)
+        (staging / "isolation.json").write_text(
+            json.dumps(isolation) + "\n",
+            encoding="utf-8",
+        )
+        checks = [{"id": "c1", "passed": True, "oracle": "command_exit", "detail": "exit=0"}]
+        return checks, [], False, []
+
+    monkeypatch.setattr(ev, "compute_routing_config_base_hash", fake_base_hash)
+    monkeypatch.setattr(ev, "_run_attempt_lifecycle", fake_lifecycle)
+    monkeypatch.setattr(
+        ev,
+        "candidate_impact_context",
+        lambda **_kwargs: ev.skill_targets.SkillImpactContext((), "b" * 64),
+    )
+    monkeypatch.setattr(
+        ev,
+        "_append_evaluation_events",
+        lambda _root, _config, _schema, events: emitted.extend(events),
+    )
+    source_commit = "c" * 40
+
+    results = ev._evaluate_scenario_batch(
+        main_root=tmp_path,
+        config=config,
+        schema_dir=Path("packages/meta-harness/schemas").resolve(),
+        package_dir=Path("packages/meta-harness").resolve(),
+        project_dir=tmp_path,
+        cand_id="cand-20260716-120000-routing-abcd",
+        cand_dir=tmp_path / "candidate",
+        manifest={"source_commit": source_commit, "config_hash": "d" * 64},
+        target="routing-config",
+        own_suite_paths=[scenario_path],
+        own_scenarios=[(scenario_path, scenario)],
+        holdout=False,
+        repeat_override=2,
+        cli_capabilities={"claude_version": "2.1.207", "ok": True},
+        runner=lambda *_args, **_kwargs: None,
+    )
+
+    summary = next(event for event in emitted if event["event"] == "evaluation_completed")
+    assert hash_calls == [(tmp_path, source_commit)]
+    assert summary["routing_config_base_hash"] == sentinel_hash
+    assert len(results) == 2
+    for result in results:
+        metadata_path = mh.runs_dir(tmp_path, config) / result["run_id"] / "metadata.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        assert metadata["routing_config_base_hash"] == summary["routing_config_base_hash"]
 
 
 def _minimal_result(run_id: str = "run-20260707-120000-slug-scn-a1-abcd1234") -> dict:
@@ -183,6 +290,7 @@ class TestHoldoutPhysicalSeparation:
             cand_dir=tmp_path / "cand",
             manifest=manifest,
             target="claude-harness",
+            routing_config_base_hash=None,
             scenario=scenario,
             scenario_path=Path(
                 "packages/meta-harness/scenarios/claude-harness/summarize-readme.yaml"
