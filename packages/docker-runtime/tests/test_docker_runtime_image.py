@@ -38,6 +38,7 @@ class FakeDocker:
         self.commands: list[list[str]] = []
         self.images: dict[str, str] = {}
         self.builder_exists = False
+        self.builder_driver = "docker-container"
         self.build_count = 0
         self.du_total = du_total
         self.lock_path: Path | None = None
@@ -51,7 +52,11 @@ class FakeDocker:
             image_id = self.images.get(image_ref)
             return _completed(stdout=f"{image_id}\n") if image_id else _completed(1)
         if command[:3] == ["docker", "buildx", "inspect"]:
-            return _completed() if self.builder_exists else _completed(1)
+            if not self.builder_exists:
+                return _completed(1)
+            return _completed(
+                stdout=f"Name:          loop-harness-builder\nDriver:        {self.builder_driver}\n"
+            )
         if command[:3] == ["docker", "buildx", "create"]:
             self.builder_exists = True
             return _completed(stdout="loop-harness-builder\n")
@@ -150,6 +155,9 @@ def test_recipe_hash_covers_normalized_args_platform_and_target(context: Path) -
     assert image.recipe_hash(first) != image.recipe_hash(
         _recipe(context, build_args={"A": "1", "B": "2"}, target="runtime")
     )
+    assert image.recipe_hash(first) != image.recipe_hash(
+        _recipe(context, build_args={"A": "1", "B": "2"}, docker_label="other.label")
+    )
 
 
 def test_manifest_reuses_image_across_calls_while_build_lock_is_held(
@@ -243,6 +251,58 @@ def test_manifest_partial_corruption_skips_invalid_entry_and_reuses_valid_entry(
     assert broken_digest not in manifest
 
 
+@pytest.mark.parametrize(
+    "malformed_last_used_at",
+    ["zzzz", "2026-07-16", "2026-07-16T00:00:00"],
+    ids=["non-timestamp", "date-only", "timezone-naive"],
+)
+def test_manifest_malformed_timestamp_skips_invalid_entry_and_reuses_valid_entry(
+    tmp_path: Path,
+    context: Path,
+    malformed_last_used_at: str,
+) -> None:
+    """EV-19: A malformed or timezone-naive last_used_at is dropped as invalid.
+
+    Pruning sorts last_used_at as text, so an unparsable value like "zzzz"
+    could otherwise outrank valid entries and cause a fresh image to be
+    pruned. The valid entry must remain a cache hit.
+    """
+    policy = _policy(tmp_path)
+    recipe = _recipe(context)
+    digest = image.recipe_hash(recipe)
+    broken_digest = "f" * 64
+    policy.manifest_path.parent.mkdir(parents=True)
+    policy.manifest_path.write_text(
+        json.dumps(
+            {
+                digest: {
+                    "image_id": IMAGE_ID,
+                    "built_at": "2026-07-16T00:00:00+00:00",
+                    "last_used_at": "2026-07-16T00:00:00+00:00",
+                },
+                broken_digest: {
+                    "image_id": IMAGE_ID,
+                    "built_at": "2026-07-16T00:00:00+00:00",
+                    "last_used_at": malformed_last_used_at,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    fake = FakeDocker()
+    fake.images[IMAGE_ID] = IMAGE_ID
+    fake.images[image.recipe_tag(recipe, digest)] = IMAGE_ID
+
+    ensured = image.ensure_recipe_image(recipe, policy, runner=fake)
+
+    assert ensured.built is False
+    assert ensured.recipe_hash == digest
+    assert fake.build_count == 0
+    manifest = json.loads(policy.manifest_path.read_text(encoding="utf-8"))
+    assert digest in manifest
+    assert broken_digest not in manifest
+
+
 def test_exclusive_file_lock_preserves_critical_section_oserror(tmp_path: Path) -> None:
     """EV-20: Caller OSError values are not mislabeled as lock failures."""
     lock_path = tmp_path / "docker-image-build.lock"
@@ -275,7 +335,10 @@ def test_prune_keeps_recent_family_generations_and_label_scope(
     tmp_path: Path,
     context: Path,
 ) -> None:
-    """EV-16: Only old hash tags from the selected labeled family are removed."""
+    """EV-16: Only hash tags recorded in this manifest and beyond the
+    retained generation count are removed. A tag matching the label/
+    repository but absent from this manifest (e.g. another project's build)
+    is preserved even though it looks "unused"."""
     digests = [str(index) * 64 for index in range(1, 4)]
     manifest = {
         digest: image.ManifestEntry(IMAGE_ID, f"2026-07-1{index}T00:00:00+00:00", used)
@@ -318,7 +381,6 @@ def test_prune_keeps_recent_family_generations_and_label_scope(
     removed = [command for command in fake.commands if command[:3] == ["docker", "image", "rm"]]
     assert removed == [
         ["docker", "image", "rm", f"{repository}:sha-{digests[0][:12]}"],
-        ["docker", "image", "rm", f"{repository}:sha-" + "f" * 12],
     ]
     assert set(updated) == set(digests[1:])
     image_ls = next(
@@ -348,6 +410,22 @@ def test_build_uses_dedicated_builder_and_scoped_cache_gc(
     assert all(
         command[command.index("--builder") + 1] == "loop-harness-builder" for command in prunes
     )
+
+
+def test_build_rejects_existing_builder_with_incompatible_driver(
+    tmp_path: Path,
+    context: Path,
+) -> None:
+    """EV-18: A pre-existing builder/context sharing the name but not using
+    the docker-container driver is rejected rather than silently reused."""
+    fake = FakeDocker()
+    fake.builder_exists = True
+    fake.builder_driver = "docker"
+
+    with pytest.raises(image.DockerImageError, match="docker-container"):
+        image.ensure_recipe_image(_recipe(context), _policy(tmp_path), runner=fake)
+
+    assert fake.build_count == 0
 
 
 def test_auto_build_disabled_requires_immutable_digest(tmp_path: Path, context: Path) -> None:

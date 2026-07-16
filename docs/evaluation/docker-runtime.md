@@ -39,13 +39,13 @@ namespace・image・config を引数として受け取り、meta-harness と loo
 - [ ] EV-06（正常 / must）: broker は internal/external network の dual-homed sidecar として起動し、scenario 側の direct egress や Docker socket mount を追加しない — 根拠: `docs/design/loop-harness-isolation.md` §2・§3
 - [ ] EV-07（異常 / must）: broker 起動の途中失敗では作成済み container/network を逆順に cleanup し、非隔離実行へ降格しない — 根拠: `docs/design/loop-harness-isolation.md` §2.1・§7
 - [ ] EV-08（境界 / must）: harness ごとの `DOCKER_LABEL` から owner/parent/created labels を導出し、meta-harness と loop-harness の cleanup namespace を分離する — 根拠: `docs/design/loop-harness-isolation.md` §6
-- [ ] EV-13（正常 / must）: `recipe_hash` は context hash、key 順に正規化した build args、platform、build target の全てから決まり、いずれかが異なれば別 hash/tag になる — 根拠: `docs/design/loop-harness-isolation.md` §5.2
+- [ ] EV-13（正常 / must）: `recipe_hash` は context hash、key 順に正規化した build args、`docker_label`、platform、build target の全てから決まり、いずれかが異なれば別 hash/tag になる — 根拠: `docs/design/loop-harness-isolation.md` §5.2
 - [ ] EV-14（正常 / must）: 同一 recipe の manifest entry と Docker image ID が一致する場合、別プロセス相当の新しい runtime instance でも build を省略し、`last_used_at` と `latest` alias を更新して再利用する — 根拠: `docs/design/loop-harness-isolation.md` §5.2
 - [ ] EV-15（異常 / must）: manifest entry が存在しても image が削除済み、または inspect した image ID が記録値と異なる場合は cache hit とせず、安全に再 build する — 根拠: `docs/design/loop-harness-isolation.md` §5.2
-- [ ] EV-16（境界 / must）: image prune は family ごとの `last_used_at` 上位 N 世代を保持し、呼び出し元の `DOCKER_LABEL` が一致する古い hash tag だけを削除する。label 不一致・別 family・`latest` alias は削除しない — 根拠: `docs/design/loop-harness-isolation.md` §5.2
+- [ ] EV-16（境界 / must）: image prune は family ごとの `last_used_at` 上位 N 世代を保持し、**このマニフェストに記録済みの** hash tag のうち古いものだけを削除する。label 不一致・別 family・`latest` alias・このマニフェストに記録されていない hash tag（例: 同じ repository/label を共有する別プロジェクトのビルド）は削除しない — 根拠: `docs/design/loop-harness-isolation.md` §5.2
 - [ ] EV-17（境界 / must）: manifest の再確認から build・更新までを flock で直列化し、先行プロセスが build 済みにした同一 recipe を後続プロセスが重複 build しない — 根拠: `docs/design/loop-harness-isolation.md` §5.2
-- [ ] EV-18（正常 / must）: build は呼び出し元専用の buildx builder のみを使用し、成功後に同 builder へ age-based prune を実行する。使用量が上限を超える場合は同 builder に限って `until=0` prune へフォールバックする — 根拠: `docs/design/loop-harness-isolation.md` §5.2
-- [ ] EV-19（境界 / must）: manifest の個別 entry が不正でも、その record だけを cache miss として除外し、同じ manifest 内の検証済み entry は引き続き再利用する — 根拠: `packages/docker-runtime/lib/docker_runtime_image.py`（`_load_valid_manifest`）
+- [ ] EV-18（正常 / must）: build は呼び出し元専用の buildx builder のみを使用し、成功後に同 builder へ age-based prune を実行する。使用量が上限を超える場合は同 builder に限って `until=0` prune へフォールバックする。同名の builder/context が `docker-container` 以外の driver で既存の場合は無条件に再利用せず拒否する — 根拠: `docs/design/loop-harness-isolation.md` §5.2
+- [ ] EV-19（境界 / must）: manifest の個別 entry が不正でも、その record だけを cache miss として除外し、同じ manifest 内の検証済み entry は引き続き再利用する。`built_at`/`last_used_at` が timezone-aware ISO 形式で parse できない場合も不正 record として扱う（`last_used_at` をテキストソートする prune が壊れた値を「最新」と誤認するのを防ぐため）— 根拠: `packages/docker-runtime/lib/docker_runtime_image.py`（`_load_valid_manifest`）
 - [ ] EV-20（境界 / must）: `exclusive_file_lock` は lock 取得時の `OSError` だけを lock error に変換し、critical section または unlock で発生した `OSError` は元の例外のまま伝播する — 根拠: `packages/docker-runtime/lib/docker_runtime_image.py`（`exclusive_file_lock`）
 
 ## 4. 類型別観点

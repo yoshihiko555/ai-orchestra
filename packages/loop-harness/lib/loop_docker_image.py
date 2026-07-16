@@ -85,13 +85,23 @@ def ensure_scenario_image(
     )
     if image_pin is not None:
         actual = runtime_cli.image_claude_version(ensured.image_id, runner=runner)
-        if actual != str(image_pin):
+        if _version_token(actual) != _version_token(str(image_pin)):
             raise DockerImageError(f"image_pin mismatch: expected {image_pin!r}, got {actual!r}")
     return ensured
 
 
 def _mapping(value: object) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
+
+
+def _version_token(value: str | None) -> str:
+    """Extract the leading version token so bare semver pins (e.g. "2.1.207")
+    compare equal to full `claude --version` output (e.g. "2.1.207 (Claude Code)").
+    """
+    if value is None:
+        return ""
+    stripped = value.strip()
+    return stripped.split(maxsplit=1)[0] if stripped else ""
 
 
 def _version_from_pin(image_pin: str) -> str:
@@ -105,7 +115,7 @@ def _version_from_pin(image_pin: str) -> str:
 
 def _image_repository(image: str) -> str:
     if "@" in image:
-        return image.split("@", 1)[0]
+        image = image.split("@", 1)[0]
     prefix, separator, suffix = image.rpartition(":")
     if separator and "/" not in suffix:
         return prefix
@@ -117,7 +127,10 @@ def _main_root_path(main_root: Path, value: object) -> Path:
     if relative.is_absolute():
         raise DockerImageError(f"image cache path must be relative to main root: {relative}")
     root = main_root.resolve()
-    resolved = (root / relative).resolve()
+    candidate = root / relative
+    if candidate.is_symlink():
+        raise DockerImageError(f"image cache path must not be a symlink: {relative}")
+    resolved = candidate.resolve()
     if not resolved.is_relative_to(root):
         raise DockerImageError(f"image cache path escapes main root: {relative}")
     return resolved

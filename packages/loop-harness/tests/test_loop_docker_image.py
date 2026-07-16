@@ -76,6 +76,26 @@ def test_wrapper_injects_loop_namespace_and_main_root_paths(
     assert policy.lock_path == tmp_path / ".claude/loop/docker-image-build.lock"
 
 
+@pytest.mark.parametrize(
+    ("image", "expected"),
+    [
+        ("registry.example/team/scenario", "registry.example/team/scenario"),
+        ("registry.example/team/scenario:latest", "registry.example/team/scenario"),
+        (
+            "registry.example/team/scenario@sha256:" + "a" * 64,
+            "registry.example/team/scenario",
+        ),
+        (
+            "registry.example/team/scenario:latest@sha256:" + "a" * 64,
+            "registry.example/team/scenario",
+        ),
+    ],
+    ids=["bare", "tag-only", "digest-only", "tag-and-digest"],
+)
+def test_image_repository_strips_tag_and_digest(image: str, expected: str) -> None:
+    assert docker_image._image_repository(image) == expected
+
+
 def test_wrapper_rejects_cache_path_outside_main_root(tmp_path: Path) -> None:
     config = {
         "lp2": {
@@ -87,6 +107,32 @@ def test_wrapper_rejects_cache_path_outside_main_root(tmp_path: Path) -> None:
 
     with pytest.raises(docker_image.DockerImageError, match="escapes main root"):
         docker_image.ensure_scenario_image(config, tmp_path)
+
+
+@pytest.mark.parametrize("cache_key", ["manifest_path", "lock_path"])
+def test_wrapper_rejects_symlinked_cache_file(tmp_path: Path, cache_key: str) -> None:
+    """A pre-existing symlink at the cache file path must be rejected, even
+    if its target stays under main_root (e.g. pointing at .git/config),
+    because _write_manifest would otherwise overwrite the symlink target."""
+    target = tmp_path / "victim.txt"
+    target.write_text("do-not-overwrite", encoding="utf-8")
+    cache_relative = ".claude/loop/cache-link.json"
+    cache_path = tmp_path / cache_relative
+    cache_path.parent.mkdir(parents=True)
+    cache_path.symlink_to(target)
+
+    config = {
+        "lp2": {
+            "isolation": {
+                "image_cache": {cache_key: cache_relative},
+            }
+        }
+    }
+
+    with pytest.raises(docker_image.DockerImageError, match="symlink"):
+        docker_image.ensure_scenario_image(config, tmp_path)
+
+    assert target.read_text(encoding="utf-8") == "do-not-overwrite"
 
 
 def test_wrapper_fails_closed_on_image_pin_mismatch(
@@ -167,6 +213,49 @@ def test_image_pin_rejects_invalid_versions_before_build(
         docker_image.ensure_scenario_image(config, tmp_path)
 
     assert build_calls == []
+
+
+def test_bare_semver_image_pin_matches_full_claude_version_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bare semver pin (e.g. "2.1.207") must pass verification against the
+    full `claude --version` output (e.g. "2.1.207 (Claude Code)"), since only
+    the bare version token is used as the CLAUDE_CODE_VERSION build arg."""
+
+    def ensure(_recipe, _policy, **_kwargs):
+        return docker_image.EnsuredImage("sha256:" + "a" * 64, "managed:tag", "b" * 64, True)
+
+    monkeypatch.setattr(docker_image.runtime_image, "ensure_recipe_image", ensure)
+    monkeypatch.setattr(
+        docker_image.runtime_cli,
+        "image_claude_version",
+        lambda *_args, **_kwargs: "2.1.207 (Claude Code)",
+    )
+    config = {"lp2": {"isolation": {"image_pin": "2.1.207"}}}
+
+    ensured = docker_image.ensure_scenario_image(config, tmp_path)
+
+    assert ensured.built is True
+
+
+def test_bare_semver_image_pin_still_rejects_genuine_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def ensure(_recipe, _policy, **_kwargs):
+        return docker_image.EnsuredImage("sha256:" + "a" * 64, "managed:tag", "b" * 64, True)
+
+    monkeypatch.setattr(docker_image.runtime_image, "ensure_recipe_image", ensure)
+    monkeypatch.setattr(
+        docker_image.runtime_cli,
+        "image_claude_version",
+        lambda *_args, **_kwargs: "9.9.9 (Claude Code)",
+    )
+    config = {"lp2": {"isolation": {"image_pin": "2.1.207"}}}
+
+    with pytest.raises(docker_image.DockerImageError, match="image_pin mismatch"):
+        docker_image.ensure_scenario_image(config, tmp_path)
 
 
 def test_loop_harness_manifest_depends_on_docker_runtime() -> None:

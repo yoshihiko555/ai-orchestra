@@ -29,10 +29,25 @@ _DIGEST_IMAGE_RE = re.compile(r"@sha256:[0-9a-f]{64}$")
 _HASH_TAG_RE = re.compile(r"^sha-([0-9a-f]{12})$")
 _SAFE_BUILDER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 _SIZE_RE = re.compile(r"^([0-9]+(?:\.[0-9]+)?)\s*([A-Za-z]+)$")
+_BUILDX_DRIVER_RE = re.compile(r"^Driver:\s*(\S+)", re.MULTILINE)
 
 
 class DockerImageError(RuntimeError):
     """A required managed-image operation failed."""
+
+
+def _is_timezone_aware_iso_timestamp(value: str) -> bool:
+    """Return True if value parses as a timezone-aware ISO-8601 timestamp.
+
+    Manifest pruning sorts last_used_at as text, so a malformed value (e.g.
+    "zzzz") could otherwise outrank valid entries and cause a fresh image to
+    be pruned. Requiring timezone-aware ISO timestamps keeps sort order safe.
+    """
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return False
+    return parsed.tzinfo is not None
 
 
 @dataclass(frozen=True)
@@ -69,6 +84,9 @@ class ManifestEntry:
         required = ("image_id", "built_at", "last_used_at")
         if any(not isinstance(value.get(key), str) or not value[key] for key in required):
             raise DockerImageError(f"invalid image cache manifest entry: {recipe}")
+        for key in ("built_at", "last_used_at"):
+            if not _is_timezone_aware_iso_timestamp(value[key]):
+                raise DockerImageError(f"invalid image cache manifest entry: {recipe}")
         return cls(
             image_id=value["image_id"],
             built_at=value["built_at"],
@@ -97,6 +115,7 @@ def recipe_hash(recipe: ImageRecipe) -> str:
     value = {
         "build_args": [[key, str(recipe.build_args[key])] for key in sorted(recipe.build_args)],
         "context_hash": cli.context_hash(recipe.context_dir),
+        "docker_label": recipe.docker_label,
         "platform": recipe.platform or "",
         "target": recipe.target or "",
     }
@@ -304,6 +323,14 @@ def _ensure_builder(builder: str, *, runner: SubprocessRunner) -> None:
         timeout=30,
     )
     if inspected.returncode == 0:
+        match = _BUILDX_DRIVER_RE.search(inspected.stdout)
+        driver = match.group(1) if match else None
+        if driver != "docker-container":
+            raise DockerImageError(
+                f"buildx builder {builder!r} already exists with driver "
+                f"{driver!r}, expected 'docker-container'; rename or remove "
+                "the existing builder before reusing this name"
+            )
         return
     created = cli.run(
         ["docker", "buildx", "create", "--name", builder, "--driver", "docker-container"],
@@ -376,13 +403,16 @@ def _prune_image_family(
     retained_refs = {item[0] for item in retained}
     updated = dict(manifest)
     for image_ref, digest, _last_used in candidates:
+        if digest is None:
+            # Not recorded in this manifest (e.g. another project's build
+            # sharing the same repository/label). Never delete tags we don't own.
+            continue
         if image_ref in retained_refs:
             continue
         removed = cli.run(["docker", "image", "rm", image_ref], runner=runner, timeout=60)
         if removed.returncode != 0:
             raise DockerImageError(f"could not prune managed Docker image: {image_ref}")
-        if digest is not None:
-            updated.pop(digest, None)
+        updated.pop(digest, None)
     return updated
 
 

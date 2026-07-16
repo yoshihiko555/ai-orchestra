@@ -364,6 +364,36 @@ def test_image_pin_mismatch_fails_capability_before_smoke(tmp_path: Path, monkey
     assert "mismatch" in (result.reason or "")
 
 
+def test_bare_semver_image_pin_passes_capability_check(tmp_path: Path, monkeypatch) -> None:
+    """A bare semver pin (e.g. "2.1.207") must not be rejected by the
+    capability check just because the actual `claude --version` output is
+    the full form (e.g. "2.1.207 (Claude Code)")."""
+    session = _broker(tmp_path)
+    session.cleaned = True
+    config = copy.deepcopy(mh.DEFAULTS)
+    config["evaluate"]["isolation"]["image_pin"] = "2.1.207"
+    monkeypatch.setattr(docker.dcli, "docker_daemon_available", lambda **_kwargs: True)
+    monkeypatch.setattr(docker, "sweep_stale_resources", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        docker, "docker_broker_session", lambda *_args, **_kwargs: docker._BrokerContext(session)
+    )
+    monkeypatch.setattr(
+        docker,
+        "_image_claude_version",
+        lambda *_args, **_kwargs: "2.1.207 (Claude Code)",
+    )
+    monkeypatch.setattr(
+        docker,
+        "_run_smoke_container",
+        lambda *_args, **_kwargs: _completed(stdout='{"type":"result"}'),
+    )
+
+    result = docker.check_docker_capabilities(config, main_root=tmp_path, runner=session.runner)
+
+    assert result.ok is True
+    assert result.version_pin_match is True
+
+
 def test_capability_smoke_uses_configured_evaluate_model(tmp_path: Path, monkeypatch) -> None:
     session = _broker(tmp_path)
     session.cleaned = True
