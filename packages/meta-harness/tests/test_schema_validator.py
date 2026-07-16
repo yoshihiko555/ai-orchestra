@@ -134,6 +134,32 @@ class TestLedgerEventSchemaOneOf:
         }
         assert mh.validate_against_schema(instance, schema, SCHEMA_DIR) == []
 
+    def test_routing_config_evaluation_hash_is_allowed(self) -> None:
+        schema = _load("ledger.event.schema.json")
+        instance = {
+            "event": "evaluation_completed",
+            "ts": "2026-07-16T00:00:00+09:00",
+            "schema_version": "1.0",
+            "evaluation_id": "eval-20260716-000000-abcdef12",
+            "cand_id": "cand-routing-config",
+            "target": "routing-config",
+            "holdout": False,
+            "own_run_ids": [],
+            "own_suite_hash": "a" * 64,
+            "evaluator_hash": "b" * 64,
+            "own_critical_pass": True,
+            "regression_results": [],
+            "verdict": "pass",
+            "unverified_impacts": [],
+            "evaluation_base_commit": "c" * 40,
+            "routing_config_base_hash": "d" * 64,
+            "impacted_targets": [],
+            "impact_input_hash": "e" * 64,
+            "regression_cost_usd": 0.0,
+        }
+
+        assert mh.validate_against_schema(instance, schema, SCHEMA_DIR) == []
+
     def test_ambiguous_or_no_match_event_is_reported(self) -> None:
         schema = _load("ledger.event.schema.json")
         instance = {"event": "not_a_real_event"}
@@ -394,6 +420,17 @@ class TestRunMetadataSchema:
     def test_valid_instance_has_zero_errors(self) -> None:
         schema = _load("run.metadata.schema.json")
         assert mh.validate_against_schema(self._VALID, schema, SCHEMA_DIR) == []
+
+    def test_routing_config_base_hash_is_allowed(self) -> None:
+        schema = _load("run.metadata.schema.json")
+        instance = {
+            **self._VALID,
+            "target": "routing-config",
+            "suite_id": "routing-config",
+            "routing_config_base_hash": "d" * 64,
+        }
+
+        assert mh.validate_against_schema(instance, schema, SCHEMA_DIR) == []
 
     def test_missing_required_key_is_reported(self) -> None:
         schema = _load("run.metadata.schema.json")

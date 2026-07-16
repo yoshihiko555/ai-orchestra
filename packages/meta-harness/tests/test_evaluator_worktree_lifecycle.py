@@ -5,9 +5,12 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
+
+import yaml
 
 from tests.module_loader import load_module
 
@@ -273,3 +276,81 @@ class TestApplyOverlayReRejectsUnsafeOverlaysAtEvaluateTime:
         assert (git_project / "facets" / "example-facet" / "SKILL.md").read_text(
             encoding="utf-8"
         ) == "# example\n"
+
+
+class TestRoutingConfigPatchMaterialization:
+    def test_writes_and_deep_merges_worktree_local_yaml(self, tmp_path: Path) -> None:
+        overlay_dir = tmp_path / "overlay"
+        overlay_dir.mkdir()
+        (overlay_dir / "config-patch.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "file": "agent-routing/cli-tools.yaml",
+                        "key_path": "codex.model",
+                        "value": "gpt-5.3-codex",
+                    },
+                    {
+                        "file": "agent-routing/cli-tools.yaml",
+                        "key_path": "agents.debugger.tool",
+                        "value": "auto",
+                    },
+                ]
+            ),
+            encoding="utf-8",
+        )
+        worktree_dir = tmp_path / "worktree"
+        local_path = worktree_dir / ".claude/config/agent-routing/cli-tools.local.yaml"
+        local_path.parent.mkdir(parents=True)
+        local_path.write_text("codex:\n  enabled: false\n", encoding="utf-8")
+
+        ev.apply_overlay(
+            overlay_dir,
+            {},
+            worktree_dir,
+            _SCHEMA_DIR,
+            target="routing-config",
+            created_by="human",
+        )
+
+        assert yaml.safe_load(local_path.read_text(encoding="utf-8")) == {
+            "agents": {"debugger": {"tool": "auto"}},
+            "codex": {"enabled": False, "model": "gpt-5.3-codex"},
+        }
+        assert local_path.read_text(encoding="utf-8").startswith("agents:\n")
+
+    def test_mixed_overlay_is_rejected_before_worktree_changes(self, tmp_path: Path) -> None:
+        overlay_dir = tmp_path / "overlay-mixed"
+        (overlay_dir / "facets/example").mkdir(parents=True)
+        (overlay_dir / "facets/example/SKILL.md").write_text("changed", encoding="utf-8")
+        (overlay_dir / "config-patch.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "file": "agent-routing/cli-tools.yaml",
+                        "key_path": "codex.model",
+                        "value": "gpt-5.3-codex",
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+        worktree_dir = tmp_path / "worktree-mixed"
+        worktree_dir.mkdir()
+
+        try:
+            ev.apply_overlay(
+                overlay_dir,
+                {},
+                worktree_dir,
+                _SCHEMA_DIR,
+                target="routing-config",
+                created_by="human",
+            )
+        except ev.EvaluatorStageError as exc:
+            assert "must not contain file overlays" in str(exc)
+        else:
+            raise AssertionError("mixed config patch and file overlay must be rejected")
+
+        assert not (worktree_dir / "facets/example/SKILL.md").exists()
+        assert not (worktree_dir / ".claude/config/agent-routing/cli-tools.local.yaml").exists()

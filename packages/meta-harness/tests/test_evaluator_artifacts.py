@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gzip
+import hashlib
 import json
 from pathlib import Path
 
@@ -27,6 +28,17 @@ _CONFIG = {
         "penalty_missing_report": 6,
     }
 }
+
+
+def test_routing_config_base_hash_tracks_promotion_ssot_bytes(tmp_path: Path) -> None:
+    ssot = tmp_path / ev.ROUTING_CONFIG_SSOT_RELATIVE
+    ssot.parent.mkdir(parents=True)
+    ssot.write_bytes(b"codex:\n  model: before\n")
+
+    assert (
+        ev.compute_routing_config_base_hash(tmp_path)
+        == hashlib.sha256(ssot.read_bytes()).hexdigest()
+    )
 
 
 def _minimal_result(run_id: str = "run-20260707-120000-slug-scn-a1-abcd1234") -> dict:

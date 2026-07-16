@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from tests.module_loader import load_module
@@ -48,3 +49,44 @@ def test_issue_create_fixture_is_packaged() -> None:
 
     assert fixture.is_file()
     assert "issue-create-call.json" in fixture.read_text(encoding="utf-8")
+
+
+def test_routing_config_suite_dispatch_and_split_minimum(tmp_path: Path) -> None:
+    package_dir = tmp_path / "meta-harness"
+    suite_dir = package_dir / "scenarios" / "routing-config"
+    suite_dir.mkdir(parents=True)
+
+    def scenario(scenario_id: str, holdout: bool) -> dict:
+        return {
+            "schema_version": "1.0",
+            "id": scenario_id,
+            "target": "routing-config",
+            "description": scenario_id,
+            "prompt": "verify routing config",
+            "critical": [
+                {
+                    "id": "probe",
+                    "text": "probe succeeds",
+                    "oracle": "command_exit",
+                    "command": "true",
+                }
+            ],
+            "holdout": holdout,
+        }
+
+    (suite_dir / "train.yaml").write_text(
+        json.dumps(scenario("routing-train", False)), encoding="utf-8"
+    )
+    assert ev.scenario_suite_dir(package_dir, "routing-config") == suite_dir
+    try:
+        ev.validate_target_suite(package_dir, SCHEMA_DIR, "routing-config")
+    except ValueError as exc:
+        assert "train >= 1 and holdout >= 1" in str(exc)
+    else:
+        raise AssertionError("routing-config suite without holdout must be rejected")
+
+    (suite_dir / "holdout.yaml").write_text(
+        json.dumps(scenario("routing-holdout", True)), encoding="utf-8"
+    )
+    paths = ev.validate_target_suite(package_dir, SCHEMA_DIR, "routing-config")
+    assert [path.name for path in paths] == ["holdout.yaml", "train.yaml"]

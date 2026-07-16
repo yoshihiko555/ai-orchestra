@@ -96,6 +96,7 @@ DEFAULT_COMMAND_TIMEOUT_MS = 60000
 MAX_ORACLE_ARTIFACT_BYTES = 5_000_000
 RUN_ID_NONCE_BYTES = 4
 EVALUATION_ID_NONCE_BYTES = 4
+ROUTING_CONFIG_SSOT_RELATIVE = Path("packages/agent-routing/config/cli-tools.yaml")
 
 ZERO_COST: dict[str, Any] = {
     "input_tokens": 0,
@@ -488,25 +489,44 @@ def apply_overlay(
         baseline_root=worktree_dir,
         inherited_overlay_dir=inherited_overlay_dir,
     )
+    overlay_files = mh.list_overlay_files(overlay_dir)
+    config_patch_path = overlay_dir / mh.CONFIG_PATCH_FILENAME
+    config_patch: Any = []
+    if config_patch_path.is_file() and not config_patch_path.is_symlink():
+        try:
+            config_patch = mh.read_config_patch_file(config_patch_path)
+        except ValueError as exc:
+            violations.append(str(exc))
+    violations.extend(
+        mh.validate_config_patch(
+            config_patch,
+            config,
+            schema_dir,
+            target=target,
+            created_by=created_by,
+        )
+    )
+    if config_patch and overlay_files:
+        violations.append("config patch candidates must not contain file overlays")
     if violations:
         raise EvaluatorStageError("overlay_apply", "overlay_error", "; ".join(violations))
-    for rel in mh.list_overlay_files(overlay_dir):
+
+    if config_patch_path.is_file():
+        _apply_config_patch(
+            config_patch_path,
+            config,
+            schema_dir,
+            worktree_dir=worktree_dir,
+            target=target,
+            created_by=created_by,
+        )
+    for rel in overlay_files:
         src = overlay_dir / rel
         dst = worktree_dir / rel
         if src.is_symlink() or dst.is_symlink():
             raise EvaluatorStageError("overlay_apply", "overlay_error", f"symlink rejected: {rel}")
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(src, dst)
-
-    config_patch_path = overlay_dir / mh.CONFIG_PATCH_FILENAME
-    if config_patch_path.is_file():
-        _apply_config_patch(
-            config_patch_path,
-            config,
-            schema_dir,
-            target=target,
-            created_by=created_by,
-        )
 
 
 def apply_registered_candidate_overlay(
@@ -699,17 +719,15 @@ def _apply_config_patch(
     config: dict,
     schema_dir: Path,
     *,
+    worktree_dir: Path,
     target: str,
     created_by: str,
 ) -> None:
-    """Sec1-8: Phase 1 は config patch を常に拒否する（register 後の allowlist 変更に対する
-    defense in depth の再検証）。"""
+    """検証済み patch を評価 worktree の `.local.yaml` だけへ実体化する。"""
     try:
-        config_patch = json.loads(config_patch_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise EvaluatorStageError(
-            "overlay_apply", "overlay_error", f"invalid config-patch.json: {exc}"
-        ) from None
+        config_patch = mh.read_config_patch_file(config_patch_path)
+    except ValueError as exc:
+        raise EvaluatorStageError("overlay_apply", "overlay_error", str(exc)) from exc
     violations = mh.validate_config_patch(
         config_patch,
         config,
@@ -719,6 +737,83 @@ def _apply_config_patch(
     )
     if violations:
         raise EvaluatorStageError("overlay_apply", "overlay_error", "; ".join(violations))
+    if not config_patch:
+        return
+
+    patches_by_file: dict[str, list[dict]] = {}
+    for item in config_patch:
+        patches_by_file.setdefault(str(item["file"]), []).append(item)
+    for relative_file, items in sorted(patches_by_file.items()):
+        local_path = _config_patch_local_path(worktree_dir, relative_file)
+        local_config = _load_local_config_for_patch(local_path)
+        for item in sorted(items, key=lambda value: str(value["key_path"])):
+            _set_config_patch_value(
+                local_config,
+                tuple(str(item["key_path"]).split(".")),
+                item["value"],
+            )
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        rendered = yaml.safe_dump(
+            local_config,
+            allow_unicode=True,
+            default_flow_style=False,
+            sort_keys=True,
+        )
+        tmp_path = local_path.with_name(f".{local_path.name}.tmp-{os.getpid()}")
+        tmp_path.write_text(rendered, encoding="utf-8")
+        os.replace(tmp_path, local_path)
+
+
+def _config_patch_local_path(worktree_dir: Path, relative_file: str) -> Path:
+    config_path = Path(relative_file)
+    local_name = f"{config_path.stem}.local{config_path.suffix}"
+    local_path = worktree_dir / ".claude" / "config" / config_path.with_name(local_name)
+    worktree_root = worktree_dir.resolve()
+    resolved = local_path.resolve(strict=False)
+    if resolved == worktree_root or worktree_root not in resolved.parents:
+        raise EvaluatorStageError(
+            "overlay_apply", "overlay_error", "config patch destination escapes worktree"
+        )
+    if local_path.is_symlink():
+        raise EvaluatorStageError(
+            "overlay_apply", "overlay_error", f"config patch destination is a symlink: {local_path}"
+        )
+    return local_path
+
+
+def _load_local_config_for_patch(local_path: Path) -> dict:
+    if not local_path.is_file():
+        return {}
+    try:
+        loaded = yaml.safe_load(local_path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        raise EvaluatorStageError(
+            "overlay_apply", "overlay_error", f"could not load config patch destination: {exc}"
+        ) from exc
+    if loaded is None:
+        return {}
+    if not isinstance(loaded, dict):
+        raise EvaluatorStageError(
+            "overlay_apply", "overlay_error", "config patch destination must contain an object"
+        )
+    return loaded
+
+
+def _set_config_patch_value(config: dict, segments: tuple[str, ...], value: Any) -> None:
+    current = config
+    for segment in segments[:-1]:
+        existing = current.get(segment)
+        if existing is None:
+            existing = {}
+            current[segment] = existing
+        if not isinstance(existing, dict):
+            raise EvaluatorStageError(
+                "overlay_apply",
+                "overlay_error",
+                f"config patch key collides with scalar: {'.'.join(segments)}",
+            )
+        current = existing
+    current[segments[-1]] = value
 
 
 def build_facet_and_context(
@@ -1812,6 +1907,14 @@ def compute_configured_evaluator_hash(config: dict) -> str:
     return compute_evaluator_hash(config.get("scoring") or {}, evaluator_execution_snapshot(config))
 
 
+def compute_routing_config_base_hash(project_dir: Path) -> str:
+    """evaluate 時点の promotion SSOT content hash を返す。"""
+    path = project_dir / ROUTING_CONFIG_SSOT_RELATIVE
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"routing config SSOT is missing or not a regular file: {path}")
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 # ---------------------------------------------------------------------------
 # シナリオ読み込み（scenario.schema.json）
 # ---------------------------------------------------------------------------
@@ -1821,6 +1924,8 @@ def scenario_suite_dir(package_dir: Path, target: str) -> Path:
     mh.validate_target(target)
     if target == "claude-harness":
         return package_dir / "scenarios" / "claude-harness"
+    if target == "routing-config":
+        return package_dir / "scenarios" / "routing-config"
     if target.startswith("skill:"):
         return package_dir / "scenarios" / "skill" / target.split(":", 1)[1]
     raise ValueError(f"unknown target: {target!r}")
@@ -1833,7 +1938,7 @@ def discover_scenario_paths(scenarios_dir: Path) -> list[Path]:
 
 
 def validate_target_suite(package_dir: Path, schema_dir: Path, target: str) -> list[Path]:
-    """Validate target ownership and the train/holdout minimum for skill suites."""
+    """Validate target ownership and train/holdout minimum for isolated target suites."""
     paths = discover_scenario_paths(scenario_suite_dir(package_dir, target))
     if not paths:
         raise ValueError(f"target is not allowlisted by a scenario suite: {target}")
@@ -1850,8 +1955,9 @@ def validate_target_suite(package_dir: Path, schema_dir: Path, target: str) -> l
             holdout_count += 1
         else:
             train_count += 1
-    if target.startswith("skill:") and (train_count < 1 or holdout_count < 1):
-        raise ValueError(f"skill target suite must contain train >= 1 and holdout >= 1: {target}")
+    requires_split_suite = target.startswith("skill:") or target == "routing-config"
+    if requires_split_suite and (train_count < 1 or holdout_count < 1):
+        raise ValueError(f"target suite must contain train >= 1 and holdout >= 1: {target}")
     return paths
 
 
@@ -1895,6 +2001,7 @@ def _build_metadata(
     ai_orchestra_dir: str,
     source_commit: str,
     config_hash: str,
+    routing_config_base_hash: str | None,
     model: str | None,
     claude_version: str | None,
     cli_capabilities: dict,
@@ -1908,7 +2015,7 @@ def _build_metadata(
     attempt: int,
     attempts_total: int,
 ) -> dict:
-    return {
+    metadata = {
         "schema_version": "1.0",
         "run_id": run_id,
         "cand_id": cand_id,
@@ -1937,6 +2044,9 @@ def _build_metadata(
         "attempt": attempt,
         "attempts_total": attempts_total,
     }
+    if routing_config_base_hash is not None:
+        metadata["routing_config_base_hash"] = routing_config_base_hash
+    return metadata
 
 
 def _write_metadata(run_dir: Path, metadata: dict) -> None:
@@ -2155,6 +2265,9 @@ def run_single_attempt(
         ai_orchestra_dir=os.environ.get("AI_ORCHESTRA_DIR", ""),
         source_commit=manifest["source_commit"],
         config_hash=manifest["config_hash"],
+        routing_config_base_hash=(
+            compute_routing_config_base_hash(project_dir) if target == "routing-config" else None
+        ),
         model=(config.get("evaluate") or {}).get("model"),
         claude_version=cli_capabilities.get("claude_version"),
         cli_capabilities=cli_capabilities,
@@ -2616,6 +2729,9 @@ def _evaluate_scenario_batch(
         )
     evaluator_hash = compute_configured_evaluator_hash(config)
     own_suite_hash = compute_suite_hash(own_suite_paths)
+    routing_config_base_hash = (
+        compute_routing_config_base_hash(project_dir) if target == "routing-config" else None
+    )
     impact = candidate_impact_context(
         main_root=main_root,
         config=config,
@@ -2650,6 +2766,7 @@ def _evaluate_scenario_batch(
             unverified_impacts=unverified,
             manifest=manifest,
             impact=impact,
+            routing_config_base_hash=routing_config_base_hash,
             regression_cost_usd=0.0,
             errors=[f"affected regression suites exceed max_affected_suites={max_suites}"],
         )
@@ -2759,6 +2876,7 @@ def _evaluate_scenario_batch(
         unverified_impacts=unverified,
         manifest=manifest,
         impact=impact,
+        routing_config_base_hash=routing_config_base_hash,
         regression_cost_usd=regression_cost,
         errors=batch_errors,
     )
@@ -2915,6 +3033,7 @@ def _build_evaluation_completed_event(
     unverified_impacts: list[str],
     manifest: dict,
     impact: skill_targets.SkillImpactContext,
+    routing_config_base_hash: str | None,
     regression_cost_usd: float,
     errors: list[str],
 ) -> dict:
@@ -2949,6 +3068,8 @@ def _build_evaluation_completed_event(
     }
     if errors:
         event["errors"] = errors
+    if routing_config_base_hash is not None:
+        event["routing_config_base_hash"] = routing_config_base_hash
     return event
 
 

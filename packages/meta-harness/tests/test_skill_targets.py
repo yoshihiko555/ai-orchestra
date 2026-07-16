@@ -198,6 +198,16 @@ class TestSkillImpactResolution:
 
         assert impact.impacted_targets == ()
 
+    def test_config_patch_only_candidate_intentionally_has_zero_skill_impacts(self) -> None:
+        impact = skill_targets.resolve_skill_impacts(
+            REPO_ROOT,
+            [],
+            candidate_target="routing-config",
+        )
+
+        assert impact.impacted_targets == ()
+        assert len(impact.input_hash) == 64
+
     def test_overlay_reference_addition_does_not_expand_same_candidate_impact(
         self, tmp_path: Path
     ) -> None:

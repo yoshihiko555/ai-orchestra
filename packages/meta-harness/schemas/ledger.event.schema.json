@@ -242,6 +242,7 @@
           "uniqueItems": true
         },
         "evaluation_base_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "routing_config_base_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
         "impacted_targets": {
           "type": "array",
           "items": { "type": "string", "pattern": "^skill:[a-z0-9-]+$" },
