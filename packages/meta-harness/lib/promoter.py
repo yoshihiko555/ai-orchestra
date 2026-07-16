@@ -10,10 +10,14 @@ import shlex
 import shutil
 import subprocess
 import sys
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+import yaml
+from yaml.nodes import MappingNode, Node, ScalarNode
 
 _LIB_DIR = Path(__file__).resolve().parent
 _PACKAGE_DIR = _LIB_DIR.parent
@@ -35,6 +39,10 @@ CAND_SLUG_HASH_LEN = 8
 PR_BODY_TEXT_LIMIT = 2000
 PROMOTION_OPENED_RECORD_ATTEMPTS = 2
 SOURCE_COMMIT_PATTERN = re.compile(r"^[0-9a-f]{7,40}$")
+ROUTING_CONFIG_TARGET = "routing-config"
+ROUTING_CONFIG_PATCH_FILE = "agent-routing/cli-tools.yaml"
+ROUTING_CONFIG_SSOT_RELATIVE = ev.ROUTING_CONFIG_SSOT_RELATIVE
+ROUTING_CONFIG_MIRROR_RELATIVE = Path(".claude/config/agent-routing/cli-tools.yaml")
 
 
 class PromotionValidationError(RuntimeError):
@@ -57,7 +65,9 @@ class PromotionPreflight:
     branch: str
     worktree_dir: Path
     title: str
-    body: str
+    body: str | None
+    events: list[dict[str, Any]]
+    holdout_evaluation: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -87,7 +97,7 @@ def promote_candidate(
 ) -> PromotionResult:
     """候補 overlay を main 起点の promotion worktree に適用し PR を作成する。"""
     _validate_cand_id(cand_id)
-    preflight = _reserve_promotion(main_root, config, project_dir, cand_id)
+    preflight = _reserve_promotion(main_root, config, project_dir, cand_id, schema_dir)
     reservation_open = True
     remote_branch_pushed = False
     pr_url: str | None = None
@@ -105,18 +115,43 @@ def promote_candidate(
                 pr_url=pr_url,
             )
         _create_promotion_worktree(project_dir, preflight.branch, preflight.worktree_dir)
+        routing_config_changes = None
+        if preflight.manifest.get("target") == ROUTING_CONFIG_TARGET:
+            patch_items = _validated_candidate_config_patch_items(
+                main_root, config, preflight.manifest, schema_dir
+            )
+            routing_config_changes = _routing_config_changes_from_base(
+                preflight.worktree_dir, patch_items
+            )
+        body = preflight.body or _build_pr_body(
+            preflight.cand_id,
+            preflight.manifest,
+            preflight.frontier_doc,
+            preflight.events,
+            holdout_evaluation=preflight.holdout_evaluation,
+            routing_config_changes=routing_config_changes,
+        )
+        _check_output_secret_scan(
+            main_root,
+            config,
+            preflight.manifest,
+            promotion_outputs={
+                "branch": preflight.branch,
+                "PR title": preflight.title,
+                "PR body": body,
+            },
+        )
         _apply_candidate_overlay(
             main_root, config, preflight.manifest, preflight.worktree_dir, schema_dir
         )
+        _check_promoted_diff_secret_scan(preflight.worktree_dir, preflight.manifest)
         ev.build_facet_and_context(preflight.worktree_dir, runner=_run_subprocess)
         _run_verify_command(preflight.worktree_dir, config)
         _commit_promotion(preflight.worktree_dir, preflight.cand_id, preflight.title)
-        _revalidate_before_pr(main_root, config, project_dir, cand_id)
+        _revalidate_before_pr(main_root, config, project_dir, cand_id, schema_dir)
         _push_branch(preflight.worktree_dir, preflight.branch)
         remote_branch_pushed = True
-        pr_url = _create_pr(
-            preflight.worktree_dir, preflight.branch, preflight.title, preflight.body
-        )
+        pr_url = _create_pr(preflight.worktree_dir, preflight.branch, preflight.title, body)
         _record_promotion_opened_with_retry(main_root, config, cand_id, pr_url, preflight.branch)
         reservation_open = False
         return PromotionResult(
@@ -218,7 +253,11 @@ def confirm_promotion(
 
 
 def _reserve_promotion(
-    main_root: Path, config: dict, project_dir: Path, cand_id: str
+    main_root: Path,
+    config: dict,
+    project_dir: Path,
+    cand_id: str,
+    schema_dir: Path,
 ) -> PromotionPreflight:
     try:
         with mh.store_lock(main_root, config):
@@ -227,7 +266,9 @@ def _reserve_promotion(
             active = _active_promotion(events, cand_id)
             if active is not None:
                 raise PromotionConflictError(f"candidate already has active promotion: {cand_id}")
-            preflight = _validate_preconditions(main_root, config, project_dir, cand_id, events)
+            preflight = _validate_preconditions(
+                main_root, config, project_dir, cand_id, events, schema_dir
+            )
             _append_validated_event(
                 main_root,
                 config,
@@ -244,10 +285,16 @@ def _reserve_promotion(
         raise
 
 
-def _revalidate_before_pr(main_root: Path, config: dict, project_dir: Path, cand_id: str) -> None:
+def _revalidate_before_pr(
+    main_root: Path,
+    config: dict,
+    project_dir: Path,
+    cand_id: str,
+    schema_dir: Path = _SCHEMA_DIR,
+) -> None:
     with mh.store_lock(main_root, config):
         events = mh.read_ledger_events(main_root, config)
-        _validate_preconditions(main_root, config, project_dir, cand_id, events)
+        _validate_preconditions(main_root, config, project_dir, cand_id, events, schema_dir)
 
 
 def _validate_preconditions(
@@ -256,6 +303,7 @@ def _validate_preconditions(
     project_dir: Path,
     cand_id: str,
     events: list[dict],
+    schema_dir: Path = _SCHEMA_DIR,
 ) -> PromotionPreflight:
     manifest = mh.read_candidate_manifest(main_root, config, cand_id)
     if manifest is None:
@@ -291,17 +339,23 @@ def _validate_preconditions(
             f"candidate run hashes are stale; re-run evaluate for candidate: {cand_id}"
         )
     _check_overlay_integrity(main_root, config, manifest)
+    _validated_candidate_config_patch_items(main_root, config, manifest, schema_dir)
     branch = f"meta/promote-{_cand_slug(cand_id)}"
     worktree_dir = main_root / ".worktrees" / f"meta-promote-{_cand_slug(cand_id)}"
     title = f"feat(meta-harness): promote {cand_id}"
-    body = _build_pr_body(
-        cand_id, manifest, frontier_doc, events, holdout_evaluation=holdout_evaluation
-    )
+    body = None
+    if target != ROUTING_CONFIG_TARGET:
+        body = _build_pr_body(
+            cand_id, manifest, frontier_doc, events, holdout_evaluation=holdout_evaluation
+        )
+    promotion_outputs = {"branch": branch, "PR title": title}
+    if body is not None:
+        promotion_outputs["PR body"] = body
     _check_output_secret_scan(
         main_root,
         config,
         manifest,
-        promotion_outputs={"branch": branch, "PR title": title, "PR body": body},
+        promotion_outputs=promotion_outputs,
     )
     _check_freshness(
         main_root,
@@ -319,6 +373,8 @@ def _validate_preconditions(
         worktree_dir=worktree_dir,
         title=title,
         body=body,
+        events=events,
+        holdout_evaluation=holdout_evaluation,
     )
 
 
@@ -591,6 +647,17 @@ def _check_freshness(
             raise PromotionValidationError(
                 "skill target composition or closure inputs changed since candidate registration"
             )
+    elif target == ROUTING_CONFIG_TARGET:
+        recorded_hash = (holdout_evaluation or {}).get("routing_config_base_hash")
+        if not isinstance(recorded_hash, str):
+            raise PromotionValidationError(
+                "routing-config evaluation is missing routing_config_base_hash; re-run evaluate"
+            )
+        current_hash = _git_ref_file_hash(project_dir, MAIN_REF, ROUTING_CONFIG_SSOT_RELATIVE)
+        if current_hash != recorded_hash:
+            raise PromotionValidationError(
+                "routing config SSOT changed since evaluation; re-run evaluate before promote"
+            )
     if holdout_evaluation is not None:
         try:
             current_impact = ev.candidate_impact_context(
@@ -635,6 +702,19 @@ def _check_freshness(
             return
         raise PromotionValidationError(message)
     raise PromotionValidationError(completed.stderr.strip() or "git diff freshness check failed")
+
+
+def _git_ref_file_hash(project_dir: Path, ref: str, relative_path: Path) -> str:
+    try:
+        completed = _run(
+            ["git", "show", f"{ref}:{relative_path.as_posix()}"],
+            cwd=project_dir,
+        )
+    except PromotionRuntimeError as exc:
+        raise PromotionValidationError(
+            f"could not read routing config SSOT from {ref}: {exc}"
+        ) from exc
+    return hashlib.sha256(completed.stdout.encode("utf-8")).hexdigest()
 
 
 def _release_stale_reservation_if_needed(
@@ -702,6 +782,10 @@ def _apply_candidate_overlay(
     schema_dir: Path,
 ) -> None:
     _check_overlay_integrity(main_root, config, manifest)
+    patch_items = _validated_candidate_config_patch_items(main_root, config, manifest, schema_dir)
+    if manifest.get("target") == ROUTING_CONFIG_TARGET:
+        _apply_routing_config_patch(worktree_dir, patch_items)
+        return
     try:
         ev.apply_registered_candidate_overlay(
             main_root=main_root,
@@ -712,6 +796,198 @@ def _apply_candidate_overlay(
         )
     except ev.EvaluatorStageError as exc:
         raise PromotionValidationError(str(exc)) from exc
+
+
+def _validated_candidate_config_patch_items(
+    main_root: Path,
+    config: dict,
+    manifest: dict[str, Any],
+    schema_dir: Path,
+) -> list[dict[str, Any]]:
+    """promotion lineage の patch を entry-point 契約ごと再検証して順番に返す。"""
+    items: list[dict[str, Any]] = []
+    for lineage_item in _promotion_lineage(main_root, config, manifest):
+        cand_id = str(lineage_item["cand_id"])
+        overlay_dir = mh.candidates_dir(main_root, config) / cand_id / "overlay"
+        patch_path = overlay_dir / mh.CONFIG_PATCH_FILENAME
+        if patch_path.is_symlink():
+            raise PromotionValidationError("config-patch.json symlink is not allowed")
+        try:
+            patch = mh.read_config_patch_file(patch_path) if patch_path.is_file() else []
+        except ValueError as exc:
+            raise PromotionValidationError(str(exc)) from exc
+        violations = mh.validate_config_patch(
+            patch,
+            config,
+            schema_dir,
+            target=str(lineage_item.get("target") or ""),
+            created_by=str(lineage_item.get("created_by") or ""),
+        )
+        if patch and mh.list_overlay_files(overlay_dir):
+            violations.append("config patch candidates must not contain file overlays")
+        if violations:
+            raise PromotionValidationError("; ".join(violations))
+        items.extend(dict(item) for item in patch)
+    return items
+
+
+def _routing_config_paths(worktree_dir: Path) -> tuple[Path, Path]:
+    root = worktree_dir.resolve()
+    paths = (
+        worktree_dir / ROUTING_CONFIG_SSOT_RELATIVE,
+        worktree_dir / ROUTING_CONFIG_MIRROR_RELATIVE,
+    )
+    for path in paths:
+        resolved = path.resolve(strict=False)
+        if root not in resolved.parents or path.is_symlink() or not path.is_file():
+            raise PromotionValidationError(
+                f"routing config promotion target must be a regular worktree file: {path}"
+            )
+    return paths
+
+
+def _routing_config_changes_from_base(
+    worktree_dir: Path, patch_items: list[dict[str, Any]]
+) -> list[dict[str, str]]:
+    ssot_path, mirror_path = _routing_config_paths(worktree_dir)
+    ssot_bytes = ssot_path.read_bytes()
+    if ssot_bytes != mirror_path.read_bytes():
+        raise PromotionValidationError(
+            "routing config SSOT and tracked mirror differ on the promotion base"
+        )
+    base = _load_yaml_mapping(ssot_bytes.decode("utf-8"), label=str(ssot_path))
+    effective: dict[str, str] = {}
+    for item in patch_items:
+        if item.get("file") != ROUTING_CONFIG_PATCH_FILE:
+            raise PromotionValidationError(
+                f"unsupported routing config promotion file: {item.get('file')}"
+            )
+        effective[str(item["key_path"])] = str(item["value"])
+    changes: list[dict[str, str]] = []
+    for key_path, new_value in sorted(effective.items()):
+        old_value = _get_existing_mapping_value(base, tuple(key_path.split(".")))
+        changes.append({"key_path": key_path, "old": str(old_value), "new": new_value})
+    return changes
+
+
+def _apply_routing_config_patch(worktree_dir: Path, patch_items: list[dict[str, Any]]) -> None:
+    """promotion worktree の package SSOT と tracked mirror のみを targeted edit する。"""
+    ssot_path, mirror_path = _routing_config_paths(worktree_dir)
+    original = ssot_path.read_bytes()
+    if original != mirror_path.read_bytes():
+        raise PromotionValidationError(
+            "routing config SSOT and tracked mirror differ on the promotion base"
+        )
+    try:
+        rendered = original.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise PromotionValidationError(f"routing config SSOT is not UTF-8: {exc}") from exc
+    for item in patch_items:
+        if item.get("file") != ROUTING_CONFIG_PATCH_FILE:
+            raise PromotionValidationError(
+                f"unsupported routing config promotion file: {item.get('file')}"
+            )
+        rendered = _replace_yaml_scalar(
+            rendered,
+            tuple(str(item["key_path"]).split(".")),
+            str(item["value"]),
+        )
+    _write_atomic_text(ssot_path, rendered)
+    _write_atomic_text(mirror_path, rendered)
+    if ssot_path.read_bytes() != mirror_path.read_bytes():
+        raise PromotionValidationError(
+            "routing config SSOT and tracked mirror differ after promotion edit"
+        )
+
+
+def _replace_yaml_scalar(text: str, segments: tuple[str, ...], value: str) -> str:
+    before = _load_yaml_mapping(text, label="routing config SSOT")
+    node = _yaml_value_node(text, segments)
+    if not isinstance(node, ScalarNode) or node.start_mark.line != node.end_mark.line:
+        raise PromotionValidationError(
+            f"routing config target must be a single-line scalar: {'.'.join(segments)}"
+        )
+    start = node.start_mark.index
+    end = node.end_mark.index
+    rendered = f"{text[:start]}{value}{text[end:]}"
+
+    expected = deepcopy(before)
+    _set_existing_mapping_value(expected, segments, value)
+    after = _load_yaml_mapping(rendered, label="edited routing config SSOT")
+    if after != expected:
+        raise PromotionValidationError(
+            f"routing config targeted edit changed unexpected content: {'.'.join(segments)}"
+        )
+    return rendered
+
+
+def _yaml_value_node(text: str, segments: tuple[str, ...]) -> Node:
+    try:
+        current = yaml.compose(text)
+    except yaml.YAMLError as exc:
+        raise PromotionValidationError(f"could not parse routing config SSOT: {exc}") from exc
+    if current is None:
+        raise PromotionValidationError("routing config SSOT is empty")
+    for segment in segments:
+        if not isinstance(current, MappingNode):
+            raise PromotionValidationError(
+                f"routing config key collides with a scalar: {'.'.join(segments)}"
+            )
+        matches = [
+            value_node
+            for key_node, value_node in current.value
+            if isinstance(key_node, ScalarNode) and key_node.value == segment
+        ]
+        if len(matches) != 1:
+            raise PromotionValidationError(
+                f"routing config key must exist exactly once: {'.'.join(segments)}"
+            )
+        current = matches[0]
+    return current
+
+
+def _load_yaml_mapping(text: str, *, label: str) -> dict[str, Any]:
+    try:
+        loaded = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise PromotionValidationError(f"could not parse {label}: {exc}") from exc
+    if not isinstance(loaded, dict):
+        raise PromotionValidationError(f"{label} must contain a YAML mapping")
+    return loaded
+
+
+def _get_existing_mapping_value(mapping: dict[str, Any], segments: tuple[str, ...]) -> Any:
+    current: Any = mapping
+    for segment in segments:
+        if not isinstance(current, dict) or segment not in current:
+            raise PromotionValidationError(
+                f"routing config key does not exist on promotion base: {'.'.join(segments)}"
+            )
+        current = current[segment]
+    return current
+
+
+def _set_existing_mapping_value(
+    mapping: dict[str, Any], segments: tuple[str, ...], value: str
+) -> None:
+    current: Any = mapping
+    for segment in segments[:-1]:
+        if not isinstance(current, dict) or segment not in current:
+            raise PromotionValidationError(
+                f"routing config key does not exist on promotion base: {'.'.join(segments)}"
+            )
+        current = current[segment]
+    if not isinstance(current, dict) or segments[-1] not in current:
+        raise PromotionValidationError(
+            f"routing config key does not exist on promotion base: {'.'.join(segments)}"
+        )
+    current[segments[-1]] = value
+
+
+def _write_atomic_text(path: Path, content: str) -> None:
+    tmp_path = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    tmp_path.write_text(content, encoding="utf-8")
+    os.replace(tmp_path, path)
 
 
 def _run_verify_command(worktree_dir: Path, config: dict) -> None:
@@ -995,6 +1271,7 @@ def _build_pr_body(
     events: list[dict],
     *,
     holdout_evaluation: dict[str, Any] | None = None,
+    routing_config_changes: list[dict[str, str]] | None = None,
 ) -> str:
     point = next(
         (item for item in frontier_doc.get("points", []) if item.get("cand_id") == cand_id),
@@ -1026,6 +1303,17 @@ def _build_pr_body(
                 "## Unverified cross-skill impacts",
                 "The following affected skills have no regression suite and require manual review:",
                 *[f"- `{target}`" for target in unverified],
+            ]
+        )
+    if routing_config_changes is not None:
+        change_lines = [
+            f"{item['key_path']}: {item['old']} → {item['new']}" for item in routing_config_changes
+        ]
+        lines.extend(
+            [
+                "",
+                "## Routing config changes",
+                _fenced_pr_text("\n".join(change_lines) or "(no changes)"),
             ]
         )
     return "\n".join(lines)
@@ -1137,11 +1425,35 @@ def _check_overlay_integrity(main_root: Path, config: dict, manifest: dict[str, 
         if not isinstance(expected_hash, str):
             raise PromotionValidationError(f"candidate manifest missing config_hash: {cand_id}")
         overlay_dir = mh.candidates_dir(main_root, config) / cand_id / "overlay"
-        actual_hash = mh.compute_config_hash(overlay_dir, config)
+        expected_files = sorted(str(path) for path in item.get("overlay_files") or [])
+        if mh.list_overlay_files(overlay_dir) != expected_files:
+            raise PromotionValidationError(
+                f"candidate overlay manifest mismatch; re-register candidate: {cand_id}"
+            )
+        try:
+            actual_hash = mh.compute_config_hash(overlay_dir, config)
+        except ValueError as exc:
+            raise PromotionValidationError(str(exc)) from exc
         if actual_hash != expected_hash:
             raise PromotionValidationError(
                 f"candidate overlay hash mismatch; re-register and re-evaluate candidate: {cand_id}"
             )
+        patch_path = overlay_dir / mh.CONFIG_PATCH_FILENAME
+        expected_patch_hash = item.get("config_patch_hash")
+        if patch_path.is_file():
+            try:
+                actual_patch_hash = mh.compute_config_patch_hash(
+                    mh.read_config_patch_file(patch_path)
+                )
+            except ValueError as exc:
+                raise PromotionValidationError(str(exc)) from exc
+            if actual_patch_hash != expected_patch_hash:
+                raise PromotionValidationError(
+                    "candidate config patch hash mismatch; re-register and re-evaluate "
+                    f"candidate: {cand_id}"
+                )
+        elif expected_patch_hash is not None:
+            raise PromotionValidationError(f"candidate config patch sidecar is missing: {cand_id}")
 
 
 def _check_output_secret_scan(
@@ -1173,7 +1485,11 @@ def _check_output_secret_scan(
             )
 
         overlay_dir = mh.candidates_dir(main_root, config) / cand_id / "overlay"
-        for index, rel in enumerate(mh.list_overlay_files(overlay_dir)):
+        scanned_paths = mh.list_overlay_files(overlay_dir)
+        patch_path = overlay_dir / mh.CONFIG_PATCH_FILENAME
+        if patch_path.is_file() or patch_path.is_symlink():
+            scanned_paths.append(mh.CONFIG_PATCH_FILENAME)
+        for index, rel in enumerate(scanned_paths):
             path_hits = psec.scan_text_for_secrets(rel)
             if path_hits:
                 raise PromotionValidationError(
@@ -1200,6 +1516,28 @@ def _check_output_secret_scan(
                 f"candidate promotion output contains secret-like content in {name} "
                 f"(patterns: {', '.join(hits)}); register a clean candidate"
             )
+
+
+def _check_promoted_diff_secret_scan(worktree_dir: Path, manifest: dict[str, Any]) -> None:
+    """promotion writer が生成した routing-config の git diff を L3 再走査する。"""
+    if manifest.get("target") != ROUTING_CONFIG_TARGET:
+        return
+    completed = _run(
+        [
+            "git",
+            "diff",
+            "--",
+            ROUTING_CONFIG_SSOT_RELATIVE.as_posix(),
+            ROUTING_CONFIG_MIRROR_RELATIVE.as_posix(),
+        ],
+        cwd=worktree_dir,
+    )
+    hits = psec.scan_text_for_secrets(completed.stdout)
+    if hits:
+        raise PromotionValidationError(
+            "routing config promotion diff contains secret-like content "
+            f"(patterns: {', '.join(hits)}); register a clean candidate"
+        )
 
 
 def _fenced_pr_text(value: str) -> str:

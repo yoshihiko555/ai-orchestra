@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+import yaml
 
 from tests.module_loader import load_module
 
@@ -1023,3 +1024,142 @@ def test_promoter_run_closes_stdin(monkeypatch) -> None:
     cli.prm._run(["git", "status"], cwd=Path("/tmp"))
 
     assert observed["stdin"] is subprocess.DEVNULL
+
+
+def _prepare_routing_config_worktree(tmp_path: Path) -> tuple[Path, bytes]:
+    repository = Path(__file__).resolve().parents[3]
+    source = repository / cli.prm.ROUTING_CONFIG_SSOT_RELATIVE
+    original = source.read_bytes()
+    worktree = tmp_path / "routing-promotion-worktree"
+    for relative_path in (
+        cli.prm.ROUTING_CONFIG_SSOT_RELATIVE,
+        cli.prm.ROUTING_CONFIG_MIRROR_RELATIVE,
+    ):
+        destination = worktree / relative_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(original)
+    return worktree, original
+
+
+def test_routing_config_promotion_edits_ssot_and_mirror_only(tmp_path: Path) -> None:
+    repository = Path(__file__).resolve().parents[3]
+    developer_ssot = repository / cli.prm.ROUTING_CONFIG_SSOT_RELATIVE
+    developer_mirror = repository / cli.prm.ROUTING_CONFIG_MIRROR_RELATIVE
+    developer_before = (developer_ssot.read_bytes(), developer_mirror.read_bytes())
+    worktree, original = _prepare_routing_config_worktree(tmp_path)
+    patch_items = [
+        {
+            "file": cli.prm.ROUTING_CONFIG_PATCH_FILE,
+            "key_path": "codex.model",
+            "value": "gpt-5.3-codex",
+        },
+        {
+            "file": cli.prm.ROUTING_CONFIG_PATCH_FILE,
+            "key_path": "agents.debugger.tool",
+            "value": "auto",
+        },
+    ]
+
+    cli.prm._apply_routing_config_patch(worktree, patch_items)
+
+    ssot = worktree / cli.prm.ROUTING_CONFIG_SSOT_RELATIVE
+    mirror = worktree / cli.prm.ROUTING_CONFIG_MIRROR_RELATIVE
+    assert ssot.read_bytes() == mirror.read_bytes()
+    assert ssot.read_bytes() != original
+    loaded = yaml.safe_load(ssot.read_text(encoding="utf-8"))
+    assert loaded["codex"]["model"] == "gpt-5.3-codex"
+    assert loaded["agents"]["debugger"]["tool"] == "auto"
+    assert "# CLI ツール一元設定" in ssot.read_text(encoding="utf-8")
+    assert not (worktree / ".claude/config/agent-routing/cli-tools.local.yaml").exists()
+    assert (developer_ssot.read_bytes(), developer_mirror.read_bytes()) == developer_before
+
+
+def test_routing_config_pr_body_uses_promotion_base_values(tmp_path: Path) -> None:
+    worktree, _original = _prepare_routing_config_worktree(tmp_path)
+    patch_items = [
+        {
+            "file": cli.prm.ROUTING_CONFIG_PATCH_FILE,
+            "key_path": "codex.model",
+            "value": "gpt-5.3-codex",
+        }
+    ]
+
+    changes = cli.prm._routing_config_changes_from_base(worktree, patch_items)
+    body = cli.prm._build_pr_body(
+        _CAND_ID,
+        {"description": "routing config candidate"},
+        {"points": []},
+        [],
+        routing_config_changes=changes,
+    )
+
+    assert changes == [
+        {
+            "key_path": "codex.model",
+            "old": "gpt-5.6-sol",
+            "new": "gpt-5.3-codex",
+        }
+    ]
+    assert "## Routing config changes" in body
+    assert "```text\ncodex.model: gpt-5.6-sol → gpt-5.3-codex\n```" in body
+
+
+def test_routing_config_freshness_rejects_ssot_drift(git_project: Path, monkeypatch) -> None:
+    manifest = {
+        "source_commit": "a" * 40,
+        "target": "routing-config",
+        "overlay_files": [],
+    }
+    evaluation = {
+        "routing_config_base_hash": "b" * 64,
+        "impacted_targets": [],
+        "impact_input_hash": "c" * 64,
+    }
+    monkeypatch.setattr(cli.prm, "_ref_exists", lambda *_args: True)
+    monkeypatch.setattr(cli.prm, "_is_ancestor", lambda *_args: True)
+    monkeypatch.setattr(cli.prm, "_git_ref_file_hash", lambda *_args: "d" * 64)
+
+    with pytest.raises(cli.prm.PromotionValidationError, match="SSOT changed"):
+        cli.prm._check_freshness(
+            git_project,
+            git_project,
+            manifest,
+            mh.DEFAULTS,
+            holdout_evaluation=evaluation,
+        )
+
+
+def test_routing_config_sidecar_is_included_in_promote_secret_scan(tmp_path: Path) -> None:
+    config = mh.DEFAULTS
+    overlay_dir = mh.candidates_dir(tmp_path, config) / _CAND_ID / "overlay"
+    overlay_dir.mkdir(parents=True)
+    (overlay_dir / mh.CONFIG_PATCH_FILENAME).write_text(
+        json.dumps(
+            [
+                {
+                    "file": cli.prm.ROUTING_CONFIG_PATCH_FILE,
+                    "key_path": "codex.model",
+                    "value": _sample_sk_key(),
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    manifest = {
+        "cand_id": _CAND_ID,
+        "parent_id": None,
+        "target": "routing-config",
+        "source_commit": "a" * 40,
+        "description": "clean",
+    }
+
+    with pytest.raises(
+        cli.prm.PromotionValidationError,
+        match="config-patch.json",
+    ):
+        cli.prm._check_output_secret_scan(
+            tmp_path,
+            config,
+            manifest,
+            promotion_outputs={},
+        )
