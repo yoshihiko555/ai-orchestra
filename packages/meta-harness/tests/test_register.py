@@ -321,7 +321,7 @@ class TestRegisterImmutability:
 
 
 class TestRegisterConfigPatchValidation:
-    # EV-65
+    # EV-66
     def test_human_routing_config_patch_registers_with_integrity_hashes(
         self, git_project: Path, tmp_path: Path, run_meta
     ) -> None:
@@ -472,7 +472,7 @@ class TestRegisterConfigPatchValidation:
         assert result.returncode == 2
         assert "missing required key 'value'" in result.stderr
 
-    # EV-65: allowlist に含まれていても target gate は迂回できない。
+    # EV-66: allowlist に含まれていても target gate は迂回できない。
     def test_local_allowlist_does_not_bypass_target_gate(
         self, git_project: Path, tmp_path: Path, run_meta, default_overlay
     ) -> None:

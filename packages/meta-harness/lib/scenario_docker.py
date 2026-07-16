@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import secrets
 import shutil
 import subprocess
@@ -56,6 +57,7 @@ STALE_MAX_AGE_SECONDS = 24 * 60 * 60
 WORKSPACE_EXPORT_TIMEOUT_SECONDS = 60
 _LOGGER = logging.getLogger(__name__)
 _RUNTIME_LABELS = lifecycle.RuntimeLabels(DOCKER_LABEL, STALE_MAX_AGE_SECONDS)
+_SEMVER_PIN_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$")
 
 
 class DockerScenarioError(RuntimeError):
@@ -201,7 +203,9 @@ def check_docker_capabilities(
             checks["scenario_image"] = True
             checks["broker_image"] = True
             version = _image_claude_version(broker.image_id, runner=runner)
-            version_match = None if version_pin is None else version == version_pin
+            version_match = (
+                None if version_pin is None else _version_matches(version, str(version_pin))
+            )
             if version_match is False:
                 return DockerCapabilityResult(
                     version,
@@ -413,7 +417,7 @@ def run_preparation_command(
     image_id = _image_id(scenario_image, runner=runner)
     expected = _isolation_config(config).get("image_pin", DEFAULT_CLAUDE_VERSION_PIN)
     actual = _image_claude_version(image_id, runner=runner)
-    if expected is not None and actual != expected:
+    if expected is not None and not _version_matches(actual, str(expected)):
         raise DockerScenarioError(f"image_pin mismatch: expected {expected!r}, got {actual!r}")
     container_name = f"{NAME_PREFIX}prepare-{secrets.token_hex(4)}"
     worktree = _regular_directory(worktree_dir, "scenario worktree")
@@ -714,7 +718,7 @@ def _start_broker(
     )
     version_pin = isolation.get("image_pin", DEFAULT_CLAUDE_VERSION_PIN)
     actual_version = _image_claude_version(scenario_image_id, runner=runner)
-    if version_pin is not None and actual_version != version_pin:
+    if version_pin is not None and not _version_matches(actual_version, str(version_pin)):
         raise DockerScenarioError(
             f"image_pin mismatch: expected {version_pin!r}, got {actual_version!r}"
         )
@@ -925,6 +929,39 @@ def _broker_keepalive_loop(
 
 def _isolation_config(config: dict) -> dict:
     return (config.get("evaluate") or {}).get("isolation") or {}
+
+
+def _version_token(value: str | None) -> str:
+    """Extract the leading version token so bare semver pins (e.g. "2.1.207")
+    compare equal to full `claude --version` output (e.g. "2.1.207 (Claude Code)").
+    """
+    if value is None:
+        return ""
+    stripped = value.strip()
+    return stripped.split(maxsplit=1)[0] if stripped else ""
+
+
+def _is_bare_semver_pin(pin: str) -> bool:
+    return _SEMVER_PIN_RE.fullmatch(pin.strip()) is not None
+
+
+def _version_matches(actual: str | None, pin: str) -> bool:
+    """Compare a reported `claude --version` string against a configured
+    image_pin.
+
+    A bare semver pin (e.g. "2.1.207") matches via leading-token comparison
+    so it accepts the fuller `claude --version` output (e.g.
+    "2.1.207 (Claude Code)"). Any other pin format -- including the default
+    full form "2.1.207 (Claude Code)" -- must match the reported version
+    exactly, preserving the strict Docker capability contract: a prebuilt
+    image reporting an unexpected wrapper (e.g. "2.1.207 (unexpected
+    wrapper)") must fail closed rather than pass on a token match.
+    """
+    if actual is None:
+        return False
+    if _is_bare_semver_pin(pin):
+        return _version_token(actual) == _version_token(pin)
+    return actual == pin
 
 
 def _image_claude_version(image: str, *, runner: SubprocessRunner) -> str | None:

@@ -409,10 +409,11 @@ meta-harness・loop-harness の双方が利用する形を設計目標とする�
 
 - **content-hash 再利用（build recipe 全体をハッシュ化）**: 既存 `_context_hash()`（ビルド
   コンテキストのファイル内容のみ）は**単独では不十分**であり、**recipe_hash = sha256(context_hash
-  + 正規化した `--build-arg` の key=value 一覧をソートしたもの + target platform + build target)**
-  を計算し、これを**タグ自体に埋め込む**（例: `ai-orchestra/loop-harness-scenario:sha-<recipe_hash12>`）。
-  `CLAUDE_CODE_VERSION` 等の build arg や platform/target が変われば別タグになり、誤った
-  バージョンの再利用を防ぐ。同一 recipe_hash のタグが既に存在し `docker image inspect` で実体確認
+  + 正規化した `--build-arg` の key=value 一覧をソートしたもの + docker_label + target platform
+  + build target)** を計算し、これを**タグ自体に埋め込む**（例:
+  `ai-orchestra/loop-harness-scenario:sha-<recipe_hash12>`）。
+  `CLAUDE_CODE_VERSION` 等の build arg や `docker_label`、platform/target が変われば別タグになり、
+  誤ったバージョンの再利用や label 違いの image の cache hit を防ぐ。同一 recipe_hash のタグが既に存在し `docker image inspect` で実体確認
   できれば **ビルドをスキップして再利用**する。プロセスをまたいだ再利用が成立するよう、判定は
   プロセス内グローバル変数ではなく**ディスク上のマニフェスト**（`.claude/loop/docker-image-cache.json`。
   スキーマ: `{"<recipe_hash>": {"image_id": "sha256:...", "built_at": "...", "last_used_at": "..."}}`）
@@ -422,11 +423,17 @@ meta-harness・loop-harness の双方が利用する形を設計目標とする�
   `ai-orchestra/loop-harness-scenario:latest` は**そのハッシュタグへの `docker tag` エイリアス**
   として都度更新する（解決には使わない。あくまで `docker images` で目視しやすくするための補助）。
 - **イメージタグの prune ポリシー**: マニフェストの `last_used_at` で世代管理し、**image family
-  （scenario/broker）ごとに直近使用された N 世代（既定 3）だけを保持**、それより古いハッシュタグ
-  付きイメージは `docker image rm` する。prune は `DOCKER_LABEL` でラベル付けされたイメージのみを
-  対象にし（既存の `f"{DOCKER_LABEL}=..."` ラベル方式を継続）、開発者が別途手動 build したイメージ
-  には影響しないようスコープする。prune のトリガーは「新規ビルド成功直後」（ビルドの都度、都度
-  軽量に掃除する）とし、専用の定期ジョブは新設しない。
+  （scenario/broker）ごとに直近使用された N 世代（既定 3）だけを保持**、それより古く、かつ
+  **このマニフェストに記録済みの** ハッシュタグ付きイメージだけを `docker image rm` する。prune は
+  `DOCKER_LABEL` でラベル付けされたイメージのみを対象にし（既存の `f"{DOCKER_LABEL}=..."` ラベル
+  方式を継続）、開発者が別途手動 build したイメージには影響しないようスコープする。同じ
+  repository/label を共有していてもこのマニフェストに記録がないハッシュタグ（例: 別プロジェクトが
+  別の `.claude/loop/docker-image-cache.json` で管理しているビルド）は「不明なタグ」として扱い、
+  古く見えても削除しない。prune のトリガーは「新規ビルド成功直後」（ビルドの都度、都度
+  軽量に掃除する）とし、専用の定期ジョブは新設しない。**prune は best-effort とし**、対象イメージが
+  実行中コンテナに使用中などの理由で `docker image rm` が失敗しても warning に留め、直前に成功した
+  ビルド全体（`ensure_recipe_image` の戻り値）を失敗にしない。削除できなかった世代はマニフェストに
+  残り、次回 prune 実行時に再試行される。
 - **BuildKit build cache の GC（イメージタグ GC とは別に必須）**: loop-harness 専用の
   `docker buildx` ビルダーインスタンス（`docker buildx create --name loop-harness-builder`）を
   新設し、**ビルドは常にこの専用ビルダー経由**で行う（開発者のデフォルトビルダーの cache を
@@ -434,7 +441,11 @@ meta-harness・loop-harness の双方が利用する形を設計目標とする�
   loop-harness-builder --filter until=<image_cache.buildkit_cache_max_age>`（既定 168h = 7日）を
   実行し、経過時間ベースで build cache を GC する。加えて `image_cache.buildkit_cache_max_size`
   （既定 10g）を安全弁として設定し、`docker buildx du --builder loop-harness-builder` で使用量が
-  上限を超えていれば `until=0`（無条件 prune）にフォールバックする。
+  上限を超えていれば `until=0`（無条件 prune）にフォールバックする。**専用ビルダーの初回作成は
+  プロジェクト間でレースしうる**（異なる `.claude/loop/docker-image-build.lock` を持つ複数プロジェクトが
+  同じグローバルビルダー名を同時に初期化しようとするケース）ため、`docker buildx create` が失敗しても
+  即座に致命エラーとせず、`docker buildx inspect` を再試行して driver 検証（`docker-container`）を
+  通れば既存ビルダーとして採用する。
 - **並行ビルドのロック**: 「マニフェスト確認 → 必要ならビルド → マニフェスト更新」の区間全体を
   `.claude/loop/docker-image-build.lock`（`flock`。`loop_common.held_coord_lock` と同じ
   ファイルロックパターンを踏襲）で保護し、`lp2.concurrency_limit`（既定 2）で複数 driver が
@@ -493,7 +504,7 @@ lp2:
     execution_backend: none # docker 有効化は封じ込め検証テストの整備後（ADR-20260712-034 と同じ fail-closed 原則）
     image: ai-orchestra/loop-harness-scenario:<pin> # sha-<recipe_hash12> タグへの解決は 5.2 節参照
     image_pin: null # null = Claude CLI バージョン一致検証をスキップ
-    auto_build_images: true
+    auto_build_images: true # false の場合 image は @sha256:<digest> 形式必須（タグ形式は DockerImageError）
     image_cache:
       manifest_path: .claude/loop/docker-image-cache.json # メインルート相対
       keep_generations: 3 # image family ごとの保持世代数（5.2 節）

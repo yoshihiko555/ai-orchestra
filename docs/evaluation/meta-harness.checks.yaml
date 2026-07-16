@@ -566,6 +566,19 @@
   priority: must
   oracle: command_exit
   command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_scenario_docker.py::test_image_pin_semver_versions_produce_validated_build_args
+    packages/meta-harness/tests/test_scenario_docker.py::test_image_pin_rejects_invalid_versions_before_build
+  covered_by:
+    - packages/meta-harness/tests/test_scenario_docker.py::test_image_pin_semver_versions_produce_validated_build_args
+    - packages/meta-harness/tests/test_scenario_docker.py::test_image_pin_rejects_invalid_versions_before_build
+  notes: only the validated semver token reaches the scenario image build argument.
+
+- ev_id: EV-61
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
     AI_ORCHESTRA_DIR="$PWD" OCHE_ROOT="$PWD" python3 -m pytest -q
     packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_allowlisted_human_routing_patch_is_accepted
     packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_non_allowlisted_and_dangerous_patch_targets_are_rejected
@@ -580,7 +593,7 @@
     - packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_duplicate_patch_targets_are_rejected
   notes: exact file/key matching, one-segment wildcard semantics, malformed entries, dangerous segments, and duplicate targets fail closed.
 
-- ev_id: EV-61
+- ev_id: EV-62
   phase: 3
   priority: must
   oracle: command_exit
@@ -595,7 +608,7 @@
     - packages/meta-harness/tests/test_register.py::TestRegisterConfigPatchValidation::test_local_allowlist_cannot_widen_frozen_ceiling
   notes: both direct runtime config and a real meta-harness.local.yaml override remain subsets of the frozen three-entry ceiling.
 
-- ev_id: EV-62
+- ev_id: EV-63
   phase: 3
   priority: must
   oracle: command_exit
@@ -610,7 +623,7 @@
     - packages/meta-harness/tests/test_register.py::TestRegisterConfigPatchValidation::test_human_routing_config_patch_registers_with_integrity_hashes
   notes: human registration is the only accepted creator path; proposer and unknown creators are rejected by the common validator.
 
-- ev_id: EV-63
+- ev_id: EV-64
   phase: 3
   priority: must
   oracle: command_exit
@@ -625,7 +638,7 @@
     - packages/meta-harness/tests/test_loop_cli.py::test_routing_config_target_is_rejected_before_proposer
   notes: propose and loop return validation errors before backend execution, and the proposal schema remains facets-only.
 
-- ev_id: EV-64
+- ev_id: EV-65
   phase: 3
   priority: must
   oracle: command_exit
@@ -642,7 +655,7 @@
     - packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_empty_antigravity_model_allowlist_rejects_any_model
   notes: tool enum, scalar typing, model slug charset, antigravity model membership, and empty-allowlist fail-closed behavior are covered independently.
 
-- ev_id: EV-65
+- ev_id: EV-66
   phase: 3
   priority: must
   oracle: command_exit
@@ -665,7 +678,7 @@
     - packages/meta-harness/tests/test_promote_cli.py::test_promote_preflight_rechecks_target_patch_biconditional
   notes: biconditional target/patch exclusivity and empty file overlays are enforced at register, evaluate before writes, and promote preflight.
 
-- ev_id: EV-66
+- ev_id: EV-67
   phase: 3
   priority: must
   oracle: command_exit
@@ -680,7 +693,7 @@
     - packages/meta-harness/tests/test_promote_cli.py::test_changed_routing_config_sidecar_is_rejected_at_promote
   notes: canonical sidecar and candidate-wide hashes are recorded; tampering and deletion fail before evaluate worktree writes or promotion.
 
-- ev_id: EV-67
+- ev_id: EV-68
   phase: 3
   priority: must
   oracle: command_exit
@@ -691,7 +704,7 @@
     - packages/meta-harness/tests/test_evaluator_worktree_lifecycle.py::TestRoutingConfigPatchMaterialization::test_writes_and_deep_merges_worktree_local_yaml
   notes: deterministic deep merge and load_cli_tools_config fallthrough are verified without writes to the overlay source or developer checkout.
 
-- ev_id: EV-68
+- ev_id: EV-69
   phase: 3
   priority: must
   oracle: command_exit
@@ -702,7 +715,7 @@
     - packages/meta-harness/tests/test_skill_scenarios.py::test_routing_config_suite_dispatch_and_split_minimum
   notes: routing-config dispatches to its own directory and requires at least one train plus one holdout scenario.
 
-- ev_id: EV-69
+- ev_id: EV-70
   phase: 3
   priority: must
   oracle: command_exit
@@ -713,7 +726,7 @@
     - packages/meta-harness/tests/test_target_isolation.py::TestTargetFrontierCache::test_routing_config_uses_its_own_frontier_file
   notes: routing-config reads and writes only frontier-routing-config.json while the default frontier remains unchanged.
 
-- ev_id: EV-70
+- ev_id: EV-71
   phase: 3
   priority: must
   oracle: command_exit
@@ -728,7 +741,7 @@
     - packages/meta-harness/tests/test_promote_cli.py::test_routing_config_pr_body_uses_promotion_base_values
   notes: targeted scalar edits preserve comments and deep equality, keep SSOT/mirror byte-equal, avoid local/developer writes, and render base-derived PR data.
 
-- ev_id: EV-71
+- ev_id: EV-72
   phase: 3
   priority: must
   oracle: command_exit
@@ -741,7 +754,7 @@
     - packages/meta-harness/tests/test_promote_cli.py::test_routing_config_freshness_rejects_ssot_drift
   notes: evaluate records the SSOT content hash and promote rejects a different current promotion-base hash.
 
-- ev_id: EV-72
+- ev_id: EV-73
   phase: 3
   priority: must
   oracle: command_exit
@@ -754,7 +767,7 @@
     - packages/meta-harness/tests/test_promote_cli.py::test_secret_in_generated_routing_diff_blocks_commit_push_and_pr
   notes: both the canonical sidecar and generated YAML git diff are scanned, and a hit prevents commit, push, and PR creation.
 
-- ev_id: EV-73
+- ev_id: EV-74
   phase: 3
   priority: must
   oracle: command_exit
@@ -767,7 +780,7 @@
     - packages/meta-harness/tests/test_skill_scenarios.py::test_routing_config_suite_uses_deterministic_critical_oracles
   notes: zero skill impacts are intentional; materialization, effective layering, and agent-routing pytest remain critical machine oracles.
 
-- ev_id: EV-74
+- ev_id: EV-75
   phase: 3
   priority: must
   oracle: command_exit
@@ -788,7 +801,7 @@
     - packages/meta-harness/tests/test_schema_validator.py::TestRunMetadataSchema::test_non_routing_target_allows_missing_base_hash
   notes: oneOf conditionals reject a missing routing-config base hash while accepting the present hash and preserving optionality for other targets in both schemas.
 
-- ev_id: EV-75
+- ev_id: EV-76
   phase: 3
   priority: must
   oracle: command_exit

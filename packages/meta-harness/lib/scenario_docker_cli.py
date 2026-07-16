@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -24,6 +25,7 @@ DEFAULT_BROKER_IMAGE = "ai-orchestra/meta-harness-broker:0.1.0"
 DEFAULT_CLAUDE_VERSION_PIN = "2.1.207 (Claude Code)"
 CHECKED_COMMAND_TIMEOUT_SECONDS = runtime.CHECKED_COMMAND_TIMEOUT_SECONDS
 DockerCliError = runtime.DockerCliError
+_SEMVER_PIN_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$")
 
 _IMAGE_CACHE = runtime.ImageCache()
 _TRUSTED_IMAGE_IDS = _IMAGE_CACHE.trusted_image_ids
@@ -40,12 +42,18 @@ def ensure_images(
     scenario_image = str(isolation.get("image", DEFAULT_SCENARIO_IMAGE))
     broker_image = str(broker_cfg.get("image", DEFAULT_BROKER_IMAGE))
     auto_build = bool(isolation.get("auto_build_images", True))
-    version_pin = str(isolation.get("image_pin") or DEFAULT_CLAUDE_VERSION_PIN)
+    configured_version_pin = isolation.get("image_pin")
+    version_pin = str(
+        configured_version_pin if configured_version_pin is not None else DEFAULT_CLAUDE_VERSION_PIN
+    )
     _ensure_image(
         scenario_image,
         _context_dir("scenario"),
         auto_build=auto_build,
-        build_args=["--build-arg", f"CLAUDE_CODE_VERSION={version_pin.split()[0]}"],
+        build_args=[
+            "--build-arg",
+            f"CLAUDE_CODE_VERSION={_claude_version_from_pin(version_pin)}",
+        ],
         runner=runner,
     )
     _ensure_image(
@@ -56,6 +64,15 @@ def ensure_images(
         runner=runner,
     )
     return scenario_image, broker_image
+
+
+def _claude_version_from_pin(version_pin: str) -> str:
+    version = version_pin.strip().split(maxsplit=1)[0] if version_pin.strip() else ""
+    if not version:
+        raise DockerCliError("image_pin must contain a Claude CLI version")
+    if _SEMVER_PIN_RE.fullmatch(version) is None:
+        raise DockerCliError(f"image_pin version must match semver (X.Y.Z[-suffix]): {version!r}")
+    return version
 
 
 def docker_daemon_available(*, runner: SubprocessRunner) -> bool:
