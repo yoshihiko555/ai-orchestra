@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`orchex install` でユーザー変更済み config ファイルが上書きされ得る不具合を修正**: 配布時ハッシュとの比較で保護されたはずの config ファイルが、同一 `install` 実行内の後続同期処理で再上書きされないようにした。
 - **ユーザー編集済み agent ファイルが再同期（SessionStart / 再インストール）で上書きされ得る不具合を修正**: config ファイルと同じ配布時ハッシュ比較ガードを agents ファイルにも適用した。
 - **`orchex proxy stop`/`proxy status` の cocoindex 未導入判定を修正**: 判定基準をプロジェクトの `installed_packages` に基づくものに変更し、未導入時に確実にエラーとなるようにした。
+- **`codex-suggestions` が `cli-tools.yaml` に `codex` セクション未定義でも発火していた不具合を修正**: `check-codex-before-write` / `check-codex-after-plan` は設定未定義時 `codex.enabled` を `false` 扱いにし、明示的に有効化しない限り提案しないようにした。さらに `agent-routing` を導入していないプロジェクト（project-local な `cli-tools.yaml` が存在しない）では、パッケージ同梱のフォールバック設定を「明示的な有効化」とみなさず提案しないようにした。
 
 ### Changed
 

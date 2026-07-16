@@ -197,6 +197,53 @@ class TestLoadPackageConfig:
 
 
 # =========================================================================
+# has_project_config
+#
+# project 自身が package config を明示導入しているか（base または .local）を
+# 判定するヘルパー。パッケージ同梱フォールバックを opt-in と誤認しないための
+# ガードとして codex-suggestions が利用する（Issue #129 PR #247 レビュー指摘）。
+# =========================================================================
+
+
+class TestHasProjectConfig:
+    def test_true_when_base_config_exists(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "project" / ".claude" / "config" / "mypkg"
+        _write_json(config_dir / "settings.json", {"key": "base"})
+
+        assert hook_common.has_project_config("mypkg", "settings.json", str(tmp_path / "project"))
+
+    def test_true_when_only_local_override_exists(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "project" / ".claude" / "config" / "mypkg"
+        _write_json(config_dir / "settings.local.json", {"key": "local"})
+
+        assert hook_common.has_project_config("mypkg", "settings.json", str(tmp_path / "project"))
+
+    def test_false_when_only_bundled_fallback_exists(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """project-local な config が無く $AI_ORCHESTRA_DIR 同梱の config のみ
+        存在する場合は False（package fallback は project の opt-in ではない）。"""
+        orchestra_dir = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        _write_json(
+            orchestra_dir / "packages" / "mypkg" / "config" / "settings.json", {"key": "base"}
+        )
+        (project_dir / ".claude").mkdir(parents=True)
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(orchestra_dir))
+
+        assert not hook_common.has_project_config("mypkg", "settings.json", str(project_dir))
+
+    def test_false_when_neither_exists(self, tmp_path: Path) -> None:
+        assert not hook_common.has_project_config(
+            "mypkg", "settings.json", str(tmp_path / "project")
+        )
+
+    def test_false_when_project_dir_empty(self) -> None:
+        """project_dir が空文字の場合はカレントディレクトリを誤検出せず無条件で False。"""
+        assert not hook_common.has_project_config("mypkg", "settings.json", "")
+
+
+# =========================================================================
 # is_cli_enabled
 #
 # 元々 agent-routing パッケージ所有だったが、codex-suggestions /
@@ -223,6 +270,37 @@ class TestIsCliEnabled:
     def test_section_without_enabled_key_defaults_to_true(self) -> None:
         """enabled キー自体が無いセクションは True（デフォルト有効）。"""
         assert hook_common.is_cli_enabled("codex", {"codex": {"model": "gpt-5.5"}}) is True
+
+    # --- default 引数（Issue #129, EV-15: codex-suggestions 向けの呼び出し元限定デフォルト）---
+
+    def test_missing_section_honors_explicit_default_false(self) -> None:
+        """セクション未定義時、呼び出し元が default=False を渡せば False になる。
+
+        codex-suggestions は 2026-07-03 人間レビュー裁定によりこの呼び出し方を採用する。
+        他の呼び出し元（agent-routing 等）は default を渡さず True のまま。
+        """
+        assert hook_common.is_cli_enabled("codex", {}, default=False) is False
+
+    def test_non_dict_section_honors_explicit_default_false(self) -> None:
+        """セクションが dict でない壊れた config でも default=False を尊重する。"""
+        assert hook_common.is_cli_enabled("codex", {"codex": "not-a-dict"}, default=False) is False
+
+    def test_explicit_enabled_true_overrides_default_false(self) -> None:
+        """enabled: true が明示されていれば default=False でも True になる。"""
+        assert (
+            hook_common.is_cli_enabled("codex", {"codex": {"enabled": True}}, default=False) is True
+        )
+
+    def test_explicit_enabled_false_overrides_default_true(self) -> None:
+        """enabled: false が明示されていれば default（省略時 True）に関わらず False になる。"""
+        assert hook_common.is_cli_enabled("codex", {"codex": {"enabled": False}}) is False
+
+    def test_section_without_enabled_key_honors_explicit_default_false(self) -> None:
+        """セクションはあるが enabled キーが無い場合も default=False を尊重する。"""
+        assert (
+            hook_common.is_cli_enabled("codex", {"codex": {"model": "gpt-5.5"}}, default=False)
+            is False
+        )
 
 
 # =========================================================================

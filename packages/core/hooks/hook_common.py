@@ -114,6 +114,44 @@ def load_package_config(package_name: str, filename: str, project_dir: str) -> d
     return base
 
 
+def has_project_config(package_name: str, filename: str, project_dir: str) -> bool:
+    """project 自身が package config を明示導入しているかを返す。
+
+    project の ``.claude/config/{package_name}/{filename}`` またはその
+    ``.local.{ext}`` が実在するかどうかで判定する（``.local.*`` のみが単独で
+    存在する場合も True。中身の妥当性は問わない）。両方とも無い場合、
+    ``load_package_config`` は ``$AI_ORCHESTRA_DIR`` 配下のパッケージ同梱
+    フォールバックを返すが、それは「project がこのパッケージ（例:
+    agent-routing）を明示的に導入した」ことを意味しない。
+
+    codex-suggestions を agent-routing 無しで導入した project（manifest の
+    depends は core のみ）には project-local な cli-tools.yaml が存在しない。
+    その場合に ``load_package_config`` のパッケージ同梱フォールバックへ
+    フォールスルーし、フォールバック内の ``codex.enabled: true`` を
+    「project が明示有効化した」と誤認しないよう、opt-in が必須な呼び出し元
+    （EV-15, Issue #129 PR #247 レビュー指摘）はこの関数で事前ガードする。
+
+    Args:
+        package_name: パッケージ名（例: ``agent-routing``）。
+        filename: base 設定ファイル名（例: ``cli-tools.yaml``）。
+        project_dir: プロジェクトディレクトリ。空文字の場合は無条件で False
+            （カレントディレクトリの ``.claude/config/...`` を誤検出しないため）。
+
+    Returns:
+        project の base または local 設定ファイルが実在すれば True。
+    """
+    if not project_dir:
+        return False
+
+    project_path = os.path.join(project_dir, ".claude", "config", package_name, filename)
+    if os.path.isfile(project_path):
+        return True
+
+    name, ext = os.path.splitext(filename)
+    local_path = os.path.join(project_dir, ".claude", "config", package_name, f"{name}.local{ext}")
+    return os.path.isfile(local_path)
+
+
 def normalize_cli_tools_config(config: dict) -> dict:
     """cli-tools.yaml の旧 gemini 系設定を antigravity に正規化する。
 
@@ -211,18 +249,28 @@ def load_cli_tools_config(project_dir: str) -> dict:
     return deep_merge(base, normalize_cli_tools_config(local))
 
 
-def is_cli_enabled(cli_name: str, config: dict) -> bool:
-    """CLI が有効かどうかを返す。未定義やセクション欠落時は True（後方互換）。
+def is_cli_enabled(cli_name: str, config: dict, default: bool = True) -> bool:
+    """CLI が有効かどうかを返す。
+
+    セクション自体が未定義（またはセクションが dict でない壊れた config）の
+    場合、および ``enabled`` キーが省略されている場合は ``default`` を返す。
+    呼び出し側が ``default`` を指定しなければ True（既存呼び出し元との後方互換）。
 
     元々 agent-routing パッケージが所有していたが、codex-suggestions /
     antigravity-suggestions など agent-routing に依存しないパッケージからも
     利用するため core に引き上げた。route_config.is_cli_enabled はここからの
     re-export として後方互換を維持する。
+
+    codex-suggestions は 2026-07-03 人間レビュー裁定（Issue #129, EV-15）により
+    ``codex`` セクション未定義時はデフォルト無効（``default=False``）として
+    呼び出す。他パッケージ（agent-routing / antigravity-suggestions /
+    image-generation 等）の呼び出しには影響しない（それらは default 省略で
+    従来どおり True）。
     """
     section = config.get(cli_name, {})
     if not isinstance(section, dict):
-        return True
-    return bool(section.get("enabled", True))
+        return default
+    return bool(section.get("enabled", default))
 
 
 def read_hook_input() -> dict:
