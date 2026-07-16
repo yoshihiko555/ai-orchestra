@@ -46,13 +46,18 @@
   command: >-
     AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
     packages/docker-runtime/tests/test_docker_runtime_image.py::test_prune_keeps_recent_family_generations_and_label_scope
+    packages/docker-runtime/tests/test_docker_runtime_image.py::test_prune_conflict_is_best_effort_and_does_not_abort_ensure_recipe_image
   covered_by:
     - packages/docker-runtime/tests/test_docker_runtime_image.py::test_prune_keeps_recent_family_generations_and_label_scope
+    - packages/docker-runtime/tests/test_docker_runtime_image.py::test_prune_conflict_is_best_effort_and_does_not_abort_ensure_recipe_image
   notes: >-
     old hash tags recorded in this manifest beyond the retained generation
     count are pruned; latest, another family, and hash tags absent from this
     manifest (e.g. another project's build sharing the repository/label) are
-    preserved, not pruned.
+    preserved, not pruned. A `docker image rm` conflict (e.g. the old
+    generation still in use) is best-effort: it warns and leaves the entry
+    in the manifest for a later retry instead of failing the build that just
+    succeeded.
 
 - ev_id: EV-17
   phase: 1
@@ -73,13 +78,20 @@
     AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
     packages/docker-runtime/tests/test_docker_runtime_image.py::test_build_uses_dedicated_builder_and_scoped_cache_gc
     packages/docker-runtime/tests/test_docker_runtime_image.py::test_build_rejects_existing_builder_with_incompatible_driver
+    packages/docker-runtime/tests/test_docker_runtime_image.py::test_ensure_builder_retries_inspect_after_raced_create_failure
+    packages/docker-runtime/tests/test_docker_runtime_image.py::test_ensure_builder_raises_when_raced_builder_has_incompatible_driver
   covered_by:
     - packages/docker-runtime/tests/test_docker_runtime_image.py::test_build_uses_dedicated_builder_and_scoped_cache_gc
     - packages/docker-runtime/tests/test_docker_runtime_image.py::test_build_rejects_existing_builder_with_incompatible_driver
+    - packages/docker-runtime/tests/test_docker_runtime_image.py::test_ensure_builder_retries_inspect_after_raced_create_failure
+    - packages/docker-runtime/tests/test_docker_runtime_image.py::test_ensure_builder_raises_when_raced_builder_has_incompatible_driver
   notes: >-
     build, age prune, size inspection, and until=0 fallback all name the
     dedicated builder; a pre-existing builder/context sharing the name but
     reporting a non-docker-container driver is rejected instead of reused.
+    A raced `buildx create` failure retries the inspect/driver check instead
+    of failing immediately, but still rejects an incompatible-driver builder
+    the racing process created.
 
 - ev_id: EV-19
   phase: 1

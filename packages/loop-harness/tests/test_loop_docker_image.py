@@ -135,6 +135,26 @@ def test_wrapper_rejects_symlinked_cache_file(tmp_path: Path, cache_key: str) ->
     assert target.read_text(encoding="utf-8") == "do-not-overwrite"
 
 
+def test_wrapper_rejects_symlinked_cache_path_ancestor(tmp_path: Path) -> None:
+    """A symlinked ancestor directory (e.g. `.claude/loop` itself, not just
+    the leaf cache file) must be rejected before `resolve()` ever follows
+    it. Otherwise `.claude/loop/config` could resolve outside main_root
+    (e.g. into `.git`) while still passing `is_relative_to(root)`, since
+    `resolve()` already followed the symlink -- and later be overwritten by
+    the manifest/lock writer."""
+    victim_dir = tmp_path / "victim"
+    victim_dir.mkdir()
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude" / "loop").symlink_to(victim_dir)
+
+    config = {"lp2": {"isolation": {"image_cache": {}}}}
+
+    with pytest.raises(docker_image.DockerImageError, match="symlink"):
+        docker_image.ensure_scenario_image(config, tmp_path)
+
+    assert list(victim_dir.iterdir()) == []
+
+
 def test_wrapper_fails_closed_on_image_pin_mismatch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -237,6 +257,30 @@ def test_bare_semver_image_pin_matches_full_claude_version_output(
     ensured = docker_image.ensure_scenario_image(config, tmp_path)
 
     assert ensured.built is True
+
+
+def test_full_image_pin_rejects_matching_version_with_unexpected_suffix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A full-format pin (e.g. "2.1.207 (Claude Code)") must keep the exact
+    Docker capability contract: an image reporting the same bare version but
+    a different wrapper/suffix must still fail closed, not pass via
+    bare-token comparison."""
+
+    def ensure(_recipe, _policy, **_kwargs):
+        return docker_image.EnsuredImage("sha256:" + "a" * 64, "managed:tag", "b" * 64, True)
+
+    monkeypatch.setattr(docker_image.runtime_image, "ensure_recipe_image", ensure)
+    monkeypatch.setattr(
+        docker_image.runtime_cli,
+        "image_claude_version",
+        lambda *_args, **_kwargs: "2.1.207 (unexpected wrapper)",
+    )
+    config = {"lp2": {"isolation": {"image_pin": "2.1.207 (Claude Code)"}}}
+
+    with pytest.raises(docker_image.DockerImageError, match="image_pin mismatch"):
+        docker_image.ensure_scenario_image(config, tmp_path)
 
 
 def test_bare_semver_image_pin_still_rejects_genuine_mismatch(

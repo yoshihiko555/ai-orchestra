@@ -430,7 +430,10 @@ meta-harness・loop-harness の双方が利用する形を設計目標とする�
   repository/label を共有していてもこのマニフェストに記録がないハッシュタグ（例: 別プロジェクトが
   別の `.claude/loop/docker-image-cache.json` で管理しているビルド）は「不明なタグ」として扱い、
   古く見えても削除しない。prune のトリガーは「新規ビルド成功直後」（ビルドの都度、都度
-  軽量に掃除する）とし、専用の定期ジョブは新設しない。
+  軽量に掃除する）とし、専用の定期ジョブは新設しない。**prune は best-effort とし**、対象イメージが
+  実行中コンテナに使用中などの理由で `docker image rm` が失敗しても warning に留め、直前に成功した
+  ビルド全体（`ensure_recipe_image` の戻り値）を失敗にしない。削除できなかった世代はマニフェストに
+  残り、次回 prune 実行時に再試行される。
 - **BuildKit build cache の GC（イメージタグ GC とは別に必須）**: loop-harness 専用の
   `docker buildx` ビルダーインスタンス（`docker buildx create --name loop-harness-builder`）を
   新設し、**ビルドは常にこの専用ビルダー経由**で行う（開発者のデフォルトビルダーの cache を
@@ -438,7 +441,11 @@ meta-harness・loop-harness の双方が利用する形を設計目標とする�
   loop-harness-builder --filter until=<image_cache.buildkit_cache_max_age>`（既定 168h = 7日）を
   実行し、経過時間ベースで build cache を GC する。加えて `image_cache.buildkit_cache_max_size`
   （既定 10g）を安全弁として設定し、`docker buildx du --builder loop-harness-builder` で使用量が
-  上限を超えていれば `until=0`（無条件 prune）にフォールバックする。
+  上限を超えていれば `until=0`（無条件 prune）にフォールバックする。**専用ビルダーの初回作成は
+  プロジェクト間でレースしうる**（異なる `.claude/loop/docker-image-build.lock` を持つ複数プロジェクトが
+  同じグローバルビルダー名を同時に初期化しようとするケース）ため、`docker buildx create` が失敗しても
+  即座に致命エラーとせず、`docker buildx inspect` を再試行して driver 検証（`docker-container`）を
+  通れば既存ビルダーとして採用する。
 - **並行ビルドのロック**: 「マニフェスト確認 → 必要ならビルド → マニフェスト更新」の区間全体を
   `.claude/loop/docker-image-build.lock`（`flock`。`loop_common.held_coord_lock` と同じ
   ファイルロックパターンを踏襲）で保護し、`lp2.concurrency_limit`（既定 2）で複数 driver が

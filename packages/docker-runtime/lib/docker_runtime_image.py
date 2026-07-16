@@ -6,6 +6,7 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import json
+import logging
 import os
 import re
 import subprocess
@@ -20,6 +21,8 @@ from typing import Any
 import docker_runtime_cli as cli
 
 SubprocessRunner = cli.SubprocessRunner
+
+_LOGGER = logging.getLogger(__name__)
 
 FILE_MODE = 0o600
 DIR_MODE = 0o700
@@ -317,28 +320,45 @@ def _tag_latest(tag: str, repository: str, *, runner: SubprocessRunner) -> None:
 
 
 def _ensure_builder(builder: str, *, runner: SubprocessRunner) -> None:
-    inspected = cli.run(
-        ["docker", "buildx", "inspect", builder],
-        runner=runner,
-        timeout=30,
-    )
-    if inspected.returncode == 0:
-        match = _BUILDX_DRIVER_RE.search(inspected.stdout)
-        driver = match.group(1) if match else None
-        if driver != "docker-container":
-            raise DockerImageError(
-                f"buildx builder {builder!r} already exists with driver "
-                f"{driver!r}, expected 'docker-container'; rename or remove "
-                "the existing builder before reusing this name"
-            )
+    if _inspect_builder(builder, runner=runner):
         return
     created = cli.run(
         ["docker", "buildx", "create", "--name", builder, "--driver", "docker-container"],
         runner=runner,
         timeout=60,
     )
-    if created.returncode != 0:
-        raise DockerImageError(f"could not create dedicated buildx builder: {builder}")
+    if created.returncode == 0:
+        return
+    # Two projects (different lock files) can race to create the same
+    # global builder name on first use. The loser's `create` fails, but the
+    # winner's builder is now usable; re-inspect before treating this as
+    # fatal.
+    if _inspect_builder(builder, runner=runner):
+        return
+    raise DockerImageError(f"could not create dedicated buildx builder: {builder}")
+
+
+def _inspect_builder(builder: str, *, runner: SubprocessRunner) -> bool:
+    """Return True if `builder` exists with the expected driver.
+
+    Raises DockerImageError if it exists with an incompatible driver.
+    """
+    inspected = cli.run(
+        ["docker", "buildx", "inspect", builder],
+        runner=runner,
+        timeout=30,
+    )
+    if inspected.returncode != 0:
+        return False
+    match = _BUILDX_DRIVER_RE.search(inspected.stdout)
+    driver = match.group(1) if match else None
+    if driver != "docker-container":
+        raise DockerImageError(
+            f"buildx builder {builder!r} already exists with driver "
+            f"{driver!r}, expected 'docker-container'; rename or remove "
+            "the existing builder before reusing this name"
+        )
+    return True
 
 
 def _build_image(
@@ -411,7 +431,16 @@ def _prune_image_family(
             continue
         removed = cli.run(["docker", "image", "rm", image_ref], runner=runner, timeout=60)
         if removed.returncode != 0:
-            raise DockerImageError(f"could not prune managed Docker image: {image_ref}")
+            # Best-effort: an old generation may still be in use (e.g. by a
+            # running scenario container). The requested image was already
+            # built and recorded, so a stale cleanup conflict must not fail
+            # the whole `ensure_recipe_image` call; retry on the next call.
+            _LOGGER.warning(
+                "could not prune managed Docker image %s (left for a later attempt): %s",
+                image_ref,
+                (removed.stderr or removed.stdout or "").strip(),
+            )
+            continue
         updated.pop(digest, None)
     return updated
 

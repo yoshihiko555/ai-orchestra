@@ -44,6 +44,8 @@ class FakeDocker:
         self.lock_path: Path | None = None
         self.lock_was_held = False
         self.image_ls_output: str | None = None
+        self.create_should_fail_once = False
+        self.rm_should_fail: set[str] = set()
 
     def __call__(self, command: list[str], **_kwargs) -> subprocess.CompletedProcess:
         self.commands.append(command)
@@ -58,6 +60,12 @@ class FakeDocker:
                 stdout=f"Name:          loop-harness-builder\nDriver:        {self.builder_driver}\n"
             )
         if command[:3] == ["docker", "buildx", "create"]:
+            if self.create_should_fail_once:
+                self.create_should_fail_once = False
+                # Simulate a racing process winning the create: the builder
+                # now exists even though this process's create failed.
+                self.builder_exists = True
+                return _completed(1, stderr="buildx: instance already exists")
             self.builder_exists = True
             return _completed(stdout="loop-harness-builder\n")
         if command[:3] == ["docker", "buildx", "build"]:
@@ -73,7 +81,12 @@ class FakeDocker:
         if command[:3] == ["docker", "image", "ls"]:
             return _completed(stdout=self.image_ls_output or self._image_list())
         if command[:3] == ["docker", "image", "rm"]:
-            self.images.pop(command[-1], None)
+            image_ref = command[-1]
+            if image_ref in self.rm_should_fail:
+                return _completed(
+                    1, stderr=f"image is being used by a running container: {image_ref}"
+                )
+            self.images.pop(image_ref, None)
             return _completed()
         if command[:3] == ["docker", "buildx", "prune"]:
             return _completed()
@@ -389,6 +402,43 @@ def test_prune_keeps_recent_family_generations_and_label_scope(
     assert f"label={DOCKER_LABEL}=image" in image_ls
 
 
+def test_prune_conflict_is_best_effort_and_does_not_abort_ensure_recipe_image(
+    tmp_path: Path,
+    context: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A `docker image rm` conflict (e.g. an old generation still in use by a
+    running container) must not fail a build that already succeeded and was
+    recorded in the manifest; it is downgraded to a best-effort warning."""
+    policy = _policy(tmp_path, keep_generations=1)
+    fake = FakeDocker()
+    times = iter(
+        [
+            datetime(2026, 7, 16, 0, 0, tzinfo=UTC),
+            datetime(2026, 7, 16, 1, 0, tzinfo=UTC),
+        ]
+    )
+    stale = image.ensure_recipe_image(
+        _recipe(context, target="stale"), policy, runner=fake, clock=lambda: next(times)
+    )
+    fresh_recipe = _recipe(context, target="fresh")
+    fake.rm_should_fail.add(stale.tag)
+
+    with caplog.at_level("WARNING"):
+        ensured = image.ensure_recipe_image(
+            fresh_recipe, policy, runner=fake, clock=lambda: next(times)
+        )
+
+    assert ensured.built is True
+    assert fake.build_count == 2
+    assert any(
+        "could not prune managed Docker image" in record.message for record in caplog.records
+    )
+    manifest = json.loads(policy.manifest_path.read_text(encoding="utf-8"))
+    assert stale.recipe_hash in manifest
+    assert ensured.recipe_hash in manifest
+
+
 def test_build_uses_dedicated_builder_and_scoped_cache_gc(
     tmp_path: Path,
     context: Path,
@@ -420,6 +470,46 @@ def test_build_rejects_existing_builder_with_incompatible_driver(
     the docker-container driver is rejected rather than silently reused."""
     fake = FakeDocker()
     fake.builder_exists = True
+    fake.builder_driver = "docker"
+
+    with pytest.raises(image.DockerImageError, match="docker-container"):
+        image.ensure_recipe_image(_recipe(context), _policy(tmp_path), runner=fake)
+
+    assert fake.build_count == 0
+
+
+def test_ensure_builder_retries_inspect_after_raced_create_failure(
+    tmp_path: Path,
+    context: Path,
+) -> None:
+    """EV-18: When two projects (different lock files) race to bootstrap the
+    same global builder name, a `buildx create` conflict must not abort the
+    loser if the builder the winner created passes the driver check."""
+    fake = FakeDocker()
+    fake.create_should_fail_once = True
+
+    ensured = image.ensure_recipe_image(_recipe(context), _policy(tmp_path), runner=fake)
+
+    assert ensured.built is True
+    assert fake.build_count == 1
+    creates = [
+        command for command in fake.commands if command[:3] == ["docker", "buildx", "create"]
+    ]
+    assert len(creates) == 1
+    inspects = [
+        command for command in fake.commands if command[:3] == ["docker", "buildx", "inspect"]
+    ]
+    assert len(inspects) == 2
+
+
+def test_ensure_builder_raises_when_raced_builder_has_incompatible_driver(
+    tmp_path: Path,
+    context: Path,
+) -> None:
+    """A raced create failure only rescues the caller when the builder that
+    now exists actually satisfies the docker-container driver contract."""
+    fake = FakeDocker()
+    fake.create_should_fail_once = True
     fake.builder_driver = "docker"
 
     with pytest.raises(image.DockerImageError, match="docker-container"):

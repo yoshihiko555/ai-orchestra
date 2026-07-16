@@ -394,6 +394,69 @@ def test_bare_semver_image_pin_passes_capability_check(tmp_path: Path, monkeypat
     assert result.version_pin_match is True
 
 
+def test_full_image_pin_rejects_matching_version_with_unexpected_suffix(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A full-format pin (the default "2.1.207 (Claude Code)") must keep the
+    exact Docker capability contract: an image reporting the same bare
+    version but an unexpected wrapper/suffix must still fail capability
+    checks, not pass via bare-token comparison."""
+    session = _broker(tmp_path)
+    session.cleaned = True
+    monkeypatch.setattr(docker.dcli, "docker_daemon_available", lambda **_kwargs: True)
+    monkeypatch.setattr(docker, "sweep_stale_resources", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        docker, "docker_broker_session", lambda *_args, **_kwargs: docker._BrokerContext(session)
+    )
+    monkeypatch.setattr(
+        docker,
+        "_image_claude_version",
+        lambda *_args, **_kwargs: "2.1.207 (unexpected wrapper)",
+    )
+    monkeypatch.setattr(
+        docker,
+        "_run_smoke_container",
+        lambda *_args, **_kwargs: pytest.fail("smoke must not run after pin mismatch"),
+    )
+
+    result = docker.check_docker_capabilities(
+        copy.deepcopy(mh.DEFAULTS), main_root=tmp_path, runner=session.runner
+    )
+
+    assert result.ok is False
+    assert result.version_pin_match is False
+    assert "mismatch" in (result.reason or "")
+
+
+@pytest.mark.parametrize(
+    ("actual", "pin", "expected"),
+    [
+        ("2.1.207 (Claude Code)", "2.1.207", True),
+        ("2.1.207-beta.1 (Claude Code)", "2.1.207-beta.1", True),
+        ("9.9.9 (Claude Code)", "2.1.207", False),
+        ("2.1.207 (Claude Code)", "2.1.207 (Claude Code)", True),
+        ("2.1.207 (unexpected wrapper)", "2.1.207 (Claude Code)", False),
+        (None, "2.1.207", False),
+        (None, "2.1.207 (Claude Code)", False),
+    ],
+    ids=[
+        "bare-pin-matches-full-output",
+        "bare-pin-with-suffix-matches-full-output",
+        "bare-pin-rejects-mismatch",
+        "full-pin-exact-match",
+        "full-pin-rejects-unexpected-suffix",
+        "missing-actual-rejects-bare-pin",
+        "missing-actual-rejects-full-pin",
+    ],
+)
+def test_version_matches_uses_token_compare_only_for_bare_pins(
+    actual: str | None, pin: str, expected: bool
+) -> None:
+    """EV-60/EV-114: Bare semver pins compare via leading-token match; any
+    other pin format (including the default full form) must match exactly."""
+    assert docker._version_matches(actual, pin) is expected
+
+
 def test_capability_smoke_uses_configured_evaluate_model(tmp_path: Path, monkeypatch) -> None:
     session = _broker(tmp_path)
     session.cleaned = True

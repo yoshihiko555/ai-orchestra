@@ -85,7 +85,7 @@ def ensure_scenario_image(
     )
     if image_pin is not None:
         actual = runtime_cli.image_claude_version(ensured.image_id, runner=runner)
-        if _version_token(actual) != _version_token(str(image_pin)):
+        if not _version_matches(actual, str(image_pin)):
             raise DockerImageError(f"image_pin mismatch: expected {image_pin!r}, got {actual!r}")
     return ensured
 
@@ -102,6 +102,29 @@ def _version_token(value: str | None) -> str:
         return ""
     stripped = value.strip()
     return stripped.split(maxsplit=1)[0] if stripped else ""
+
+
+def _is_bare_semver_pin(pin: str) -> bool:
+    return _SEMVER_PIN_RE.fullmatch(pin.strip()) is not None
+
+
+def _version_matches(actual: str | None, pin: str) -> bool:
+    """Compare a reported `claude --version` string against a configured
+    image_pin.
+
+    A bare semver pin (e.g. "2.1.207") matches via leading-token comparison
+    so it accepts the fuller `claude --version` output (e.g.
+    "2.1.207 (Claude Code)"). Any other pin format must match the reported
+    version exactly, preserving the strict Docker capability contract: a
+    prebuilt image reporting an unexpected wrapper (e.g. "2.1.207
+    (unexpected wrapper)") must fail closed rather than pass on a token
+    match.
+    """
+    if actual is None:
+        return False
+    if _is_bare_semver_pin(pin):
+        return _version_token(actual) == _version_token(pin)
+    return actual == pin
 
 
 def _version_from_pin(image_pin: str) -> str:
@@ -128,12 +151,31 @@ def _main_root_path(main_root: Path, value: object) -> Path:
         raise DockerImageError(f"image cache path must be relative to main root: {relative}")
     root = main_root.resolve()
     candidate = root / relative
-    if candidate.is_symlink():
-        raise DockerImageError(f"image cache path must not be a symlink: {relative}")
+    _reject_symlinked_ancestors(root, relative, label=relative)
     resolved = candidate.resolve()
     if not resolved.is_relative_to(root):
         raise DockerImageError(f"image cache path escapes main root: {relative}")
     return resolved
+
+
+def _reject_symlinked_ancestors(root: Path, relative: Path, *, label: Path) -> None:
+    """Reject the leaf path and every intermediate directory component
+    between `root` and the leaf if any of them is a symlink.
+
+    Each component is checked without following symlinks (via
+    `Path.is_symlink()`, which uses `lstat`) before `resolve()` is ever
+    called on the full path. Otherwise a symlinked ancestor -- e.g. an
+    `.claude/loop` directory replaced with a symlink -- would be silently
+    followed by `resolve()`, letting a path like `.claude/loop/config`
+    escape to an arbitrary location (still passing `is_relative_to(root)`
+    because `resolve()` already followed the symlink) and later be
+    overwritten by the manifest/lock writer.
+    """
+    current = root
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            raise DockerImageError(f"image cache path must not be a symlink: {label}")
 
 
 def _positive_int(value: object, default: int) -> int:
