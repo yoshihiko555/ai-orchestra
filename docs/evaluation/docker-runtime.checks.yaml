@@ -68,3 +68,27 @@
   covered_by:
     - packages/docker-runtime/tests/test_docker_runtime_image.py::test_build_uses_dedicated_builder_and_scoped_cache_gc
   notes: build, age prune, size inspection, and until=0 fallback all name the dedicated builder.
+
+- ev_id: EV-19
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/docker-runtime/tests/test_docker_runtime_image.py::test_manifest_partial_corruption_skips_invalid_entry_and_reuses_valid_entry
+  covered_by:
+    - packages/docker-runtime/tests/test_docker_runtime_image.py::test_manifest_partial_corruption_skips_invalid_entry_and_reuses_valid_entry
+  notes: one invalid record is dropped while the valid recipe entry remains a cache hit.
+
+- ev_id: EV-20
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/docker-runtime/tests/test_docker_runtime_image.py::test_exclusive_file_lock_preserves_critical_section_oserror
+    packages/docker-runtime/tests/test_docker_runtime_image.py::test_exclusive_file_lock_wraps_acquisition_oserror
+  covered_by:
+    - packages/docker-runtime/tests/test_docker_runtime_image.py::test_exclusive_file_lock_preserves_critical_section_oserror
+    - packages/docker-runtime/tests/test_docker_runtime_image.py::test_exclusive_file_lock_wraps_acquisition_oserror
+  notes: critical-section errors propagate unchanged while acquisition errors keep the lock-specific wrapper.

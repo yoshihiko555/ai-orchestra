@@ -206,6 +206,71 @@ def test_manifest_docker_drift_is_rebuilt(
     assert fake.build_count == 2
 
 
+def test_manifest_partial_corruption_skips_invalid_entry_and_reuses_valid_entry(
+    tmp_path: Path,
+    context: Path,
+) -> None:
+    """EV-19: One invalid record does not invalidate a reusable manifest entry."""
+    policy = _policy(tmp_path)
+    recipe = _recipe(context)
+    digest = image.recipe_hash(recipe)
+    broken_digest = "f" * 64
+    policy.manifest_path.parent.mkdir(parents=True)
+    policy.manifest_path.write_text(
+        json.dumps(
+            {
+                digest: {
+                    "image_id": IMAGE_ID,
+                    "built_at": "2026-07-16T00:00:00+00:00",
+                    "last_used_at": "2026-07-16T00:00:00+00:00",
+                },
+                broken_digest: {"image_id": IMAGE_ID},
+            }
+        ),
+        encoding="utf-8",
+    )
+    fake = FakeDocker()
+    fake.images[IMAGE_ID] = IMAGE_ID
+    fake.images[image.recipe_tag(recipe, digest)] = IMAGE_ID
+
+    ensured = image.ensure_recipe_image(recipe, policy, runner=fake)
+
+    assert ensured.built is False
+    assert ensured.recipe_hash == digest
+    assert fake.build_count == 0
+    manifest = json.loads(policy.manifest_path.read_text(encoding="utf-8"))
+    assert digest in manifest
+    assert broken_digest not in manifest
+
+
+def test_exclusive_file_lock_preserves_critical_section_oserror(tmp_path: Path) -> None:
+    """EV-20: Caller OSError values are not mislabeled as lock failures."""
+    lock_path = tmp_path / "docker-image-build.lock"
+
+    with pytest.raises(OSError, match="boom - not a lock failure") as exc_info:
+        with image.exclusive_file_lock(lock_path):
+            raise OSError("boom - not a lock failure")
+
+    assert type(exc_info.value) is OSError
+
+
+def test_exclusive_file_lock_wraps_acquisition_oserror(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """EV-20: Actual lock acquisition failures retain the lock error contract."""
+    lock_path = tmp_path / "docker-image-build.lock"
+
+    def fail_open(*_args, **_kwargs):
+        raise OSError("acquisition failed")
+
+    monkeypatch.setattr(image.os, "open", fail_open)
+
+    with pytest.raises(image.DockerImageError, match="could not lock Docker image build"):
+        with image.exclusive_file_lock(lock_path):
+            pass
+
+
 def test_prune_keeps_recent_family_generations_and_label_scope(
     tmp_path: Path,
     context: Path,

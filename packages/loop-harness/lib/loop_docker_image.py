@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -29,6 +30,7 @@ DEFAULT_BUILDER_NAME = "loop-harness-builder"
 DEFAULT_BUILDKIT_CACHE_MAX_AGE = "168h"
 DEFAULT_BUILDKIT_CACHE_MAX_SIZE = "10g"
 DEFAULT_KEEP_GENERATIONS = 3
+_SEMVER_PIN_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$")
 
 
 def ensure_scenario_image(
@@ -96,6 +98,8 @@ def _version_from_pin(image_pin: str) -> str:
     version = image_pin.strip().split(maxsplit=1)[0] if image_pin.strip() else ""
     if not version:
         raise DockerImageError("image_pin must contain a Claude CLI version")
+    if _SEMVER_PIN_RE.fullmatch(version) is None:
+        raise DockerImageError(f"image_pin version must match semver (X.Y.Z[-suffix]): {version!r}")
     return version
 
 

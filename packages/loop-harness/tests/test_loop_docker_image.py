@@ -113,6 +113,62 @@ def test_wrapper_fails_closed_on_image_pin_mismatch(
     assert captured["recipe"].build_args == {"CLAUDE_CODE_VERSION": "2.1.207"}
 
 
+def test_image_pin_semver_versions_produce_validated_build_args(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recipes = []
+    current_pin = {"value": ""}
+
+    def ensure(recipe, _policy, **_kwargs):
+        recipes.append(recipe)
+        return docker_image.EnsuredImage("sha256:" + "a" * 64, "managed:tag", "b" * 64, True)
+
+    monkeypatch.setattr(docker_image.runtime_image, "ensure_recipe_image", ensure)
+    monkeypatch.setattr(
+        docker_image.runtime_cli,
+        "image_claude_version",
+        lambda *_args, **_kwargs: current_pin["value"],
+    )
+
+    for version_pin, expected_version in [
+        ("2.1.207", "2.1.207"),
+        ("2.1.207 (Claude Code)", "2.1.207"),
+        ("2.1.207-beta.1", "2.1.207-beta.1"),
+    ]:
+        current_pin["value"] = version_pin
+        config = {"lp2": {"isolation": {"image_pin": version_pin}}}
+
+        docker_image.ensure_scenario_image(config, tmp_path)
+
+        assert recipes[-1].build_args == {"CLAUDE_CODE_VERSION": expected_version}
+
+
+def test_image_pin_rejects_invalid_versions_before_build(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    build_calls = []
+    injection_pin = "".join(['2.1.207";', "cu", "rl${IFS}evil|", "s", 'h;"'])
+
+    def ensure(*args, **kwargs):
+        build_calls.append((args, kwargs))
+        raise AssertionError("invalid image_pin reached the Docker image build")
+
+    monkeypatch.setattr(docker_image.runtime_image, "ensure_recipe_image", ensure)
+
+    for version_pin in [injection_pin, "2.1", "v2.1.207", "2.1.207.9"]:
+        config = {"lp2": {"isolation": {"image_pin": version_pin}}}
+        with pytest.raises(docker_image.DockerImageError, match="semver"):
+            docker_image.ensure_scenario_image(config, tmp_path)
+
+    config = {"lp2": {"isolation": {"image_pin": ""}}}
+    with pytest.raises(docker_image.DockerImageError, match="Claude CLI version"):
+        docker_image.ensure_scenario_image(config, tmp_path)
+
+    assert build_calls == []
+
+
 def test_loop_harness_manifest_depends_on_docker_runtime() -> None:
     manifest = json.loads(
         (REPO_ROOT / "packages/loop-harness/manifest.json").read_text(encoding="utf-8")

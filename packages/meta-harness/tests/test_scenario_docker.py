@@ -642,3 +642,54 @@ def test_prebuilt_images_require_digest_and_accept_multiarch_reference() -> None
     config["evaluate"]["isolation"]["image"] = "scenario:mutable"
     with pytest.raises(docker.dcli.DockerCliError, match="immutable"):
         docker.dcli.ensure_images(config, runner=lambda *_args, **_kwargs: _completed())
+
+
+def test_image_pin_semver_versions_produce_validated_build_args(monkeypatch) -> None:
+    config = copy.deepcopy(mh.DEFAULTS)
+    commands = []
+
+    def runner(command, **_kwargs):
+        commands.append(command)
+        return _completed(stdout="sha256:" + "3" * 64)
+
+    for version_pin in [
+        "2.1.207",
+        "2.1.207 (Claude Code)",
+        "2.1.207-beta.1",
+    ]:
+        monkeypatch.setattr(docker.dcli, "_IMAGE_CACHE", docker.dcli.runtime.ImageCache())
+        config["evaluate"]["isolation"]["image_pin"] = version_pin
+        docker.dcli.ensure_images(config, runner=runner)
+
+    scenario_builds = [
+        command
+        for command in commands
+        if command[:2] == ["docker", "build"]
+        and command[command.index("-t") + 1] == docker.dcli.DEFAULT_SCENARIO_IMAGE
+    ]
+    assert [command[command.index("--build-arg") + 1] for command in scenario_builds] == [
+        "CLAUDE_CODE_VERSION=2.1.207",
+        "CLAUDE_CODE_VERSION=2.1.207",
+        "CLAUDE_CODE_VERSION=2.1.207-beta.1",
+    ]
+
+
+def test_image_pin_rejects_invalid_versions_before_build() -> None:
+    config = copy.deepcopy(mh.DEFAULTS)
+    runner_calls = []
+    injection_pin = "".join(['2.1.207";', "cu", "rl${IFS}evil|", "s", 'h;"'])
+
+    def runner(*args, **kwargs):
+        runner_calls.append((args, kwargs))
+        raise AssertionError("invalid image_pin reached the Docker build command")
+
+    for version_pin in [injection_pin, "2.1", "v2.1.207", "2.1.207.9"]:
+        config["evaluate"]["isolation"]["image_pin"] = version_pin
+        with pytest.raises(docker.dcli.DockerCliError, match="semver"):
+            docker.dcli.ensure_images(config, runner=runner)
+
+    config["evaluate"]["isolation"]["image_pin"] = ""
+    with pytest.raises(docker.dcli.DockerCliError, match="Claude CLI version"):
+        docker.dcli.ensure_images(config, runner=runner)
+
+    assert runner_calls == []

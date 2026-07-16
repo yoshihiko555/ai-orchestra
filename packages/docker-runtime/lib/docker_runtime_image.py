@@ -156,15 +156,26 @@ def exclusive_file_lock(path: Path) -> Iterator[None]:
     _ensure_private_directory(path.parent)
     try:
         fd = os.open(path, os.O_CREAT | os.O_RDWR, FILE_MODE)
-        os.chmod(path, FILE_MODE)
-        with os.fdopen(fd, "a+", encoding="utf-8") as stream:
+        try:
+            os.chmod(path, FILE_MODE)
+            stream = os.fdopen(fd, "a+", encoding="utf-8")
+        except OSError:
+            os.close(fd)
+            raise
+        try:
             fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            stream.close()
+            raise
     except OSError as exc:
         raise DockerImageError(f"could not lock Docker image build: {path}") from exc
+    try:
+        yield
+    finally:
+        try:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+        finally:
+            stream.close()
 
 
 def parse_size(value: str) -> int:
@@ -231,8 +242,11 @@ def _load_valid_manifest(
     manifest: dict[str, ManifestEntry] = {}
     for digest, entry_value in value.items():
         if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
-            raise DockerImageError(f"invalid recipe hash in Docker image cache manifest: {digest}")
-        entry = ManifestEntry.from_value(digest, entry_value)
+            continue
+        try:
+            entry = ManifestEntry.from_value(digest, entry_value)
+        except DockerImageError:
+            continue
         if _inspect_image_id(entry.image_id, runner=runner) == entry.image_id:
             manifest[digest] = entry
     return manifest

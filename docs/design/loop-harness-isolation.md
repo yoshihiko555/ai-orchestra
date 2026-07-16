@@ -493,7 +493,7 @@ lp2:
     execution_backend: none # docker 有効化は封じ込め検証テストの整備後（ADR-20260712-034 と同じ fail-closed 原則）
     image: ai-orchestra/loop-harness-scenario:<pin> # sha-<recipe_hash12> タグへの解決は 5.2 節参照
     image_pin: null # null = Claude CLI バージョン一致検証をスキップ
-    auto_build_images: true
+    auto_build_images: true # false の場合 image は @sha256:<digest> 形式必須（タグ形式は DockerImageError）
     image_cache:
       manifest_path: .claude/loop/docker-image-cache.json # メインルート相対
       keep_generations: 3 # image family ごとの保持世代数（5.2 節）

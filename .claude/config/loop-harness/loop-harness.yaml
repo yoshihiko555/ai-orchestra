@@ -25,7 +25,7 @@ lp2:
     execution_backend: none
     image: ai-orchestra/loop-harness-scenario:2.1.207
     image_pin: null
-    auto_build_images: true
+    auto_build_images: true # false の場合 image は @sha256:<digest> 形式必須（タグ形式は DockerImageError）
     image_cache:
       manifest_path: .claude/loop/docker-image-cache.json
       keep_generations: 3
