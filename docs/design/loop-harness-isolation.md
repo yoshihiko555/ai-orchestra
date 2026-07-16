@@ -464,9 +464,9 @@ meta-harness・loop-harness の双方が利用する形を設計目標とする�
 
 ## 6. broker 流用範囲と loop-harness 固有の差分
 
-meta-harness の `packages/meta-harness/lib/scenario_docker.py` / `scenario_docker_profile.py` /
-`packages/meta-harness/docker/broker/broker.py`（ADR-20260712-034 で確立した dual-homed sidecar
-broker）を**そのまま流用**する。
+meta-harness の `packages/meta-harness/lib/scenario_docker.py` / `scenario_docker_profile.py` と、
+`packages/docker-runtime/docker/broker/broker.py`（ADR-20260712-034 で確立した dual-homed sidecar
+broker。meta-harness の旧パスは互換 shim）を共有して流用する。
 
 | 項目                             | meta-harness                                        | loop-harness（差分）                                                    |
 | -------------------------------- | ----------------------------------------------------- | --------------------------------------------------------------------- |
@@ -483,9 +483,10 @@ broker）を**そのまま流用**する。
 `packages/` 配下に共有ライブラリ（案: `packages/docker-runtime`）を新設し、meta-harness・
 loop-harness の双方が薄いラッパーとして利用する構成を目標とする。共通化の詳細な API 設計・
 パッケージ分割は実装フェーズで確定する（本書は「どの部分が共通化可能か」の分析までを示す）。
-Phase 0 実装では `lib/` 配下（lifecycle/profile/cli builder）を namespace 注入型で共有化した一方、
-`docker/broker/broker.py` の env var 契約（`MH_BROKER_*`/`MH_PRICE_*` prefix）と `server_version`/
-user-agent は meta-harness 固有のまま残しており、汎化は Phase 1 で行う（既知のギャップ）。
+Phase 0 実装で `lib/` 配下（lifecycle/profile/cli builder）を namespace 注入型で共有化し、Phase 1-a
+で broker 本体も `DR_BROKER_*` / `DR_PRICE_*` 優先・旧 `MH_*` fallback の共通契約へ移行した。
+`DR_BROKER_NAMESPACE` を明示した場合だけ `<namespace>-broker` と
+`ai-orchestra-<namespace>-broker/0.1` を導出し、未指定時は meta-harness の既存 identity を維持する。
 
 ---
 

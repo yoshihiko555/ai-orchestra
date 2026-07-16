@@ -100,6 +100,7 @@
 - [ ] EV-58（正常 / must）: `regression_run_completed` と `evaluation_completed` は append 前に schema 検証され、回帰 attempt ごとに own run と独立した worktree を作成・破棄する。同名 scenario は `(suite_id, scenario_id)` で区別する — 根拠: 詳細設計 §1-2、§2-1、§4-1
 - [ ] EV-59（正常 / must）: Docker CLI・security profile・broker/resource lifecycle を `docker-runtime` へ抽出した後も、meta-harness の既存 command、例外、cleanup、capability gate の振る舞いを変更しない。共有 runtime source は evaluator hash の入力へ含める — 根拠: `docs/design/loop-harness-isolation.md` §8 Phase 0
 - [ ] EV-60（境界 / must）: `image_pin` の version token は Docker build-arg に渡す前に semver-only allowlist で検証し、injection payload と malformed version を拒否する — 根拠: `packages/meta-harness/lib/scenario_docker_cli.py`（`ensure_images`／`_claude_version_from_pin`）
+- [ ] EV-61（正常 / must）: meta-harness の `broker_env()` は移行期間中、同値の `DR_BROKER_*` / `DR_PRICE_*` と `MH_BROKER_*` / `MH_PRICE_*` を同時に送り、`DR_BROKER_NAMESPACE=meta-harness` を明示する。新しい共有 broker は `DR_*` を使用し、digest pin 済み旧 broker image は従来の `MH_*` を使用できる — 根拠: `docs/design/loop-harness-isolation.md` §6、ADR-20260715-037
 - N/A: hook 型の類型別観点（PreToolUse/PostToolUse ブロック挙動等）は本パッケージが hook を持たないため非該当。config-loading への依存のみが hook 型的性質であり、EV-22 でカバーする
 
 ### 運用メモ
