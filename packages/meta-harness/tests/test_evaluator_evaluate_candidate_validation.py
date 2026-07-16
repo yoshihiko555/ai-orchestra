@@ -15,7 +15,10 @@ runner を使う機会自体が無い）。
 from __future__ import annotations
 
 import copy
+import json
 from pathlib import Path
+
+import pytest
 
 from tests.module_loader import load_module
 
@@ -30,19 +33,45 @@ mh = load_module(
 
 _SCHEMA_DIR = Path("packages/meta-harness/schemas").resolve()
 _PACKAGE_DIR = Path("packages/meta-harness").resolve()
+_CAND_ID = "cand-20260707-120000-slug-ab12"
+
+
+def _manifest(*, cand_id: str = _CAND_ID, target: str = "claude-harness") -> dict:
+    return {
+        "cand_id": cand_id,
+        "parent_id": None,
+        "created_by": "human",
+        "target": target,
+        "source_commit": "0" * 40,
+        "config_hash": "b" * 64,
+    }
+
+
+def _append_registration(main_root: Path, config: dict, manifest: dict) -> None:
+    mh.append_ledger_event(
+        main_root,
+        config,
+        {
+            "event": "candidate_registered",
+            "cand_id": manifest["cand_id"],
+            "created_by": manifest["created_by"],
+            "target": manifest["target"],
+        },
+    )
 
 
 def _call_evaluate_candidate(
     tmp_path: Path, *, scenario_ids: list[str] | None = None, repeat_override: int | None = None
 ) -> list[dict]:
-    manifest = {"target": "claude-harness", "source_commit": "0" * 40, "config_hash": "b" * 64}
+    manifest = _manifest()
+    _append_registration(tmp_path, mh.DEFAULTS, manifest)
     return ev.evaluate_candidate(
         main_root=tmp_path,
         config=mh.DEFAULTS,
         schema_dir=_SCHEMA_DIR,
         package_dir=_PACKAGE_DIR,
         project_dir=tmp_path,
-        cand_id="cand-20260707-120000-slug-ab12",
+        cand_id=_CAND_ID,
         manifest=manifest,
         scenario_ids=scenario_ids,
         repeat_override=repeat_override,
@@ -152,6 +181,9 @@ class TestRepeatValidation:
             "_append_evaluation_events",
             lambda _root, _config, _schema, events: emitted.extend(events),
         )
+        cand_id = "cand-20260715-120000-repeat-ab12"
+        manifest = _manifest(cand_id=cand_id, target="skill:handoff")
+        _append_registration(tmp_path, config, manifest)
 
         ev.evaluate_candidate(
             main_root=tmp_path,
@@ -159,8 +191,8 @@ class TestRepeatValidation:
             schema_dir=_SCHEMA_DIR,
             package_dir=_PACKAGE_DIR,
             project_dir=tmp_path,
-            cand_id="cand-20260715-120000-repeat-ab12",
-            manifest={"target": "skill:handoff", "source_commit": "0" * 40},
+            cand_id=cand_id,
+            manifest=manifest,
             scenario_ids=None,
             repeat_override=None,
             cli_capabilities={"claude_version": "2.1.207", "ok": True},
@@ -177,6 +209,52 @@ class TestRepeatValidation:
         assert {event["attempts_total"] for event in holdout_events} == {
             config["evaluate"]["repeat_frontier"]
         }
+
+
+class TestLedgerProvenanceValidation:
+    def test_evaluate_rejects_tampered_manifest_created_by(self, tmp_path: Path) -> None:
+        overlay_dir = tmp_path / "overlay"
+        overlay_file = overlay_dir / "facets/example/SKILL.md"
+        overlay_file.parent.mkdir(parents=True)
+        overlay_file.write_text("# example\n", encoding="utf-8")
+        manifest = {
+            **_manifest(),
+            "config_hash": mh.compute_config_hash(overlay_dir, mh.DEFAULTS),
+            "overlay_files": ["facets/example/SKILL.md"],
+        }
+        mh.register_candidate(
+            tmp_path,
+            mh.DEFAULTS,
+            cand_id=_CAND_ID,
+            manifest=manifest,
+            overlay_dir=overlay_dir,
+            overlay_files=manifest["overlay_files"],
+            target="claude-harness",
+            created_by="human",
+            schema_dir=_SCHEMA_DIR,
+        )
+        _append_registration(tmp_path, mh.DEFAULTS, manifest)
+        manifest_path = mh.candidates_dir(tmp_path, mh.DEFAULTS) / _CAND_ID / "manifest.json"
+        manifest_path.write_text(
+            json.dumps({**manifest, "created_by": "proposer"}) + "\n",
+            encoding="utf-8",
+        )
+        tampered = mh.read_candidate_manifest(tmp_path, mh.DEFAULTS, _CAND_ID)
+        assert tampered is not None
+
+        with pytest.raises(ev.EvaluatorStageError, match=r"created_by.*ledger provenance"):
+            ev.evaluate_candidate(
+                main_root=tmp_path,
+                config=mh.DEFAULTS,
+                schema_dir=_SCHEMA_DIR,
+                package_dir=_PACKAGE_DIR,
+                project_dir=tmp_path,
+                cand_id=_CAND_ID,
+                manifest=tampered,
+                scenario_ids=None,
+                repeat_override=None,
+                cli_capabilities={},
+            )
 
 
 class TestScenarioIdValidation:

@@ -103,7 +103,7 @@
 - [ ] EV-61（異常 / must）: `.local.yaml` を含む実効 `config_patch.allowlist` はコード定数 ceiling の部分集合だけを許可し、3 種以外を追加した設定では候補内容に関係なく fail-closed する — 根拠: 詳細設計 §1-8、§5
 - [ ] EV-62（異常 / must）: non-empty config patch は `created_by == "human"` の登録候補だけが通過し、`proposer` または未知の作成者は共通 validator で拒否される — 根拠: 詳細設計 §1-8、ADR-20260716-039
 - [ ] EV-63（異常 / must）: `propose --target routing-config` と `loop --target routing-config` は proposer 起動前の引数検証で明示的に exit 2 となり、proposal prompt/schema に routing-config を公開しない — 根拠: 詳細設計 §4-3、ADR-20260716-039
-- [ ] EV-64（境界 / must）: allowlisted value は `agents.*.tool` の 4 enum または charset 検証済みの非空 model slug だけを許可し、数値/bool/未知 tool/空文字/charset 違反を拒否する。非空 `antigravity.model_allowlist` がある場合は membership も必須とする — 根拠: 詳細設計 §1-8
+- [ ] EV-64（境界 / must）: allowlisted value は `agents.*.tool` の 4 enum または charset 検証済みの非空 model slug だけを許可し、数値/bool/未知 tool/空文字/charset 違反を拒否する。`antigravity.model_allowlist` が未定義または空の場合も含め、常に membership を必須とする（fail-closed） — 根拠: 詳細設計 §1-8
 - [ ] EV-65（異常 / must）: `routing-config` ⇔ non-empty config patch の双方向排他、empty file overlay、human 作成者を register・evaluate の worktree 変更前・promote preflight の全 3 entry point で同じ validator 契約として強制し、mixed overlay+patch や target 不一致を拒否する — 根拠: 詳細設計 §1-8、§2-1、§12-1
 - [ ] EV-66（異常 / must）: canonical `config-patch.json` の integrity hash は候補全体の `config_hash` chain に含まれ、register 後に sidecar を改ざん・欠落させると evaluate と promote の双方が worktree/PR 変更前に拒否する — 根拠: 詳細設計 §1-8、§12-1
 - [ ] EV-67（正常 / must）: evaluate は検証済み patch を評価 worktree 内の `.claude/config/agent-routing/cli-tools.local.yaml` だけへ deterministic に deep merge し、`load_cli_tools_config()` が patch 値と未指定 base 値を解決する。developer checkout や worktree 外は変更しない — 根拠: 詳細設計 §2-1
@@ -113,6 +113,8 @@
 - [ ] EV-71（異常 / must）: evaluate 時に記録した agent-routing SSOT content hash と promotion base の現在 hash が異なる routing-config 候補は stale evaluation として PR 作成前に拒否する — 根拠: 詳細設計 §12-1
 - [ ] EV-72（異常 / must）: promote-time L3 secret scan / canary re-scan は全 lineage の manifest/overlay に加えて `config-patch.json` sidecar と適用後 YAML diff を走査し、secret/canary hit では commit/push/PR を行わない — 根拠: 詳細設計 §12-1、§11-3-6
 - [ ] EV-73（正常 / must）: config-patch-only candidate の impacted skill 集合は意図どおり空であり、routing-config suite の critical oracle が materialization、実効 config 解決、`packages/agent-routing/tests` 成功を回帰 gate として機械判定する — 根拠: 詳細設計 §4-1、§4-3
+- [ ] EV-74（境界 / must）: `evaluation_completed` の ledger event schema と run metadata schema は `target == "routing-config"` のときだけ `routing_config_base_hash` を必須とし、他 target では任意のままとする — 根拠: 詳細設計 §1-4、§4-3、ADR-20260716-039
+- [ ] EV-75（異常 / must）: evaluate（overlay / patch 適用前）と promote preflight は lineage 内の各候補の `manifest.json` の `created_by` / `target` を、その候補の immutable `candidate_registered` ledger event と突合し、不一致または event 不在を拒否する — 根拠: 詳細設計 §1-2、§2-1、§12-1
 - N/A: hook 型の類型別観点（PreToolUse/PostToolUse ブロック挙動等）は本パッケージが hook を持たないため非該当。config-loading への依存のみが hook 型的性質であり、EV-22 でカバーする
 
 ### 運用メモ

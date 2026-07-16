@@ -329,6 +329,37 @@ def git_head(cwd: Path) -> str | None:
     return completed.stdout.strip() if completed.returncode == 0 else None
 
 
+def git_ref_file_hash(
+    project_dir: Path,
+    ref: str,
+    relative_path: Path,
+    *,
+    runner: Any = subprocess.run,
+) -> str:
+    """Return the SHA-256 digest of a file's text content at a Git ref.
+
+    Read with ``git show`` and fail closed if the ref or path is unavailable; callers must not
+    fall back to working-tree content.
+    """
+    try:
+        completed = runner(
+            ["git", "show", f"{ref}:{relative_path.as_posix()}"],
+            cwd=project_dir,
+            capture_output=True,
+            text=True,
+            timeout=GIT_TIMEOUT_SECONDS,
+            stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ValueError(f"could not read {relative_path} from git ref {ref}: {exc}") from None
+    if completed.returncode != 0:
+        raise ValueError(
+            f"could not read {relative_path} from git ref {ref}: "
+            f"{completed.stderr.strip() or completed.returncode}"
+        )
+    return hashlib.sha256(completed.stdout.encode("utf-8")).hexdigest()
+
+
 def build_candidate_manifest(
     *,
     cand_id: str,
@@ -632,6 +663,7 @@ def register_candidate(
     overlay_dir: Path,
     overlay_files: list[str],
     target: str = DEFAULT_TARGET,
+    created_by: str | None = None,
     baseline_root: Path | None = None,
     inherited_overlay_dir: Path | None = None,
     skill_allowed_paths: frozenset[str] | None = None,
@@ -642,6 +674,16 @@ def register_candidate(
     既に同名の候補ディレクトリが存在する場合は `FileExistsError` を送出する
     （immutability 原則、Sec1-1「基本設計からの変更点」参照）。
     """
+    if str(manifest.get("target") or "") != target:
+        raise ValueError(
+            "candidate manifest target does not match register target: "
+            f"manifest={manifest.get('target')!r}, argument={target!r}"
+        )
+    if created_by is not None and str(manifest.get("created_by") or "") != created_by:
+        raise ValueError(
+            "candidate manifest created_by does not match register created_by: "
+            f"manifest={manifest.get('created_by')!r}, argument={created_by!r}"
+        )
     tmp_root = tmp_dir(main_root, config)
     tmp_root.mkdir(parents=True, exist_ok=True)
     staging_dir = tmp_root / f"register-{os.urandom(4).hex()}"
@@ -901,6 +943,35 @@ def write_frontier_cache(
 # ---------------------------------------------------------------------------
 
 TERMINAL_STATUSES = frozenset({"promoted", "retired"})
+
+
+def find_candidate_registered_event(events: list[dict], cand_id: str) -> dict | None:
+    """Return the first candidate_registered ledger event for a candidate."""
+    for event in events:
+        if event.get("event") == "candidate_registered" and event.get("cand_id") == cand_id:
+            return event
+    return None
+
+
+def assert_lineage_matches_registered_events(events: list[dict], lineage: list[dict]) -> None:
+    """Fail closed unless every lineage manifest matches its registration provenance.
+
+    ``candidate_registered`` is the append-only provenance SSOT for ``created_by`` and
+    ``target``. A missing event or either mismatch raises ``ValueError``.
+    """
+    for item in lineage:
+        cand_id = str(item.get("cand_id") or "")
+        registered = find_candidate_registered_event(events, cand_id)
+        if registered is None:
+            raise ValueError(f"candidate_registered ledger event is missing: {cand_id}")
+        if registered.get("created_by") != item.get("created_by"):
+            raise ValueError(
+                f"candidate manifest created_by does not match ledger provenance: {cand_id}"
+            )
+        if registered.get("target") != item.get("target"):
+            raise ValueError(
+                f"candidate manifest target does not match ledger provenance: {cand_id}"
+            )
 
 
 def fold_candidate_states(events: list[dict]) -> dict[str, dict]:
@@ -1600,6 +1671,7 @@ def validate_config_patch(
 
     seen_targets: set[str] = set()
     antigravity_models: frozenset[str] | None = None
+    known_agent_names: frozenset[str] | None = None
     for index, item in enumerate(config_patch):
         file_value = str(item["file"])
         key_path = str(item["key_path"])
@@ -1632,6 +1704,15 @@ def validate_config_patch(
 
         value = item["value"]
         if key_segments[:1] == ("agents",) and key_segments[-1:] == ("tool",):
+            if known_agent_names is None:
+                try:
+                    known_agent_names = _load_known_agent_names(schema_dir)
+                except ValueError as exc:
+                    errors.append(f"{item_label}.value: {exc}")
+                    continue
+            if key_segments[1] not in known_agent_names:
+                errors.append(f"{item_label}.value: unknown agent name: {key_segments[1]}")
+                continue
             if not isinstance(value, str) or value not in CONFIG_PATCH_TOOL_VALUES:
                 errors.append(
                     f"{item_label}.value: agents.*.tool must be one of "
@@ -1642,6 +1723,16 @@ def validate_config_patch(
             if not isinstance(value, str) or CONFIG_PATCH_MODEL_PATTERN.fullmatch(value) is None:
                 errors.append(f"{item_label}.value: model must be a non-empty injection-safe slug")
                 continue
+            try:
+                reparsed = yaml.safe_load(value)
+            except yaml.YAMLError:
+                reparsed = None
+            if not isinstance(reparsed, str) or reparsed != value:
+                errors.append(
+                    f"{item_label}.value: model value is YAML-ambiguous "
+                    f"(would not round-trip as an unquoted scalar): {value!r}"
+                )
+                continue
             if key_segments == ("antigravity", "model"):
                 if antigravity_models is None:
                     try:
@@ -1649,7 +1740,7 @@ def validate_config_patch(
                     except ValueError as exc:
                         errors.append(f"{item_label}.value: {exc}")
                         continue
-                if antigravity_models and value not in antigravity_models:
+                if not antigravity_models or value not in antigravity_models:
                     errors.append(
                         f"{item_label}.value: antigravity model is not in model_allowlist: {value}"
                     )
@@ -1697,6 +1788,8 @@ def _parse_config_patch_allowlist(
 
 def _validate_config_patch_file(file_value: str, label: str) -> list[str]:
     errors: list[str] = []
+    if "\\" in file_value:
+        errors.append(f"{label}: config file must not contain backslashes")
     if not file_value or file_value.startswith("/"):
         errors.append(f"{label}: config file must be a non-empty relative path")
     if ".." in file_value.split("/"):
@@ -1736,17 +1829,32 @@ def _config_key_path_matches(
     )
 
 
-def _load_antigravity_model_allowlist(schema_dir: Path) -> frozenset[str]:
+def _load_agent_routing_config(schema_dir: Path) -> dict:
     config_path = schema_dir.parent.parent / "agent-routing" / "config" / "cli-tools.yaml"
     try:
         loaded = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
     except (OSError, yaml.YAMLError) as exc:
-        raise ValueError(f"could not load agent-routing model allowlist: {exc}") from exc
+        raise ValueError(f"could not load agent-routing config: {exc}") from exc
+    if not isinstance(loaded, dict):
+        raise ValueError("agent-routing config must be a YAML mapping")
+    return loaded
+
+
+def _load_antigravity_model_allowlist(schema_dir: Path) -> frozenset[str]:
+    loaded = _load_agent_routing_config(schema_dir)
     antigravity = loaded.get("antigravity") or {}
     values = antigravity.get("model_allowlist") or []
     if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
         raise ValueError("antigravity.model_allowlist must be an array of strings")
     return frozenset(values)
+
+
+def _load_known_agent_names(schema_dir: Path) -> frozenset[str]:
+    loaded = _load_agent_routing_config(schema_dir)
+    agents = loaded.get("agents") or {}
+    if not isinstance(agents, dict):
+        raise ValueError("agent-routing config agents section must be a mapping")
+    return frozenset(str(key) for key in agents)
 
 
 # ---------------------------------------------------------------------------

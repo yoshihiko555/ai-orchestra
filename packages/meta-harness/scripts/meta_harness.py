@@ -306,6 +306,7 @@ def cmd_register(
                 overlay_dir=overlay_dir,
                 overlay_files=overlay_files,
                 target=target,
+                created_by="human",
                 baseline_root=project_dir,
                 inherited_overlay_dir=inherited_overlay,
                 skill_allowed_paths=(

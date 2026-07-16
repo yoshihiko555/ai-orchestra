@@ -335,6 +335,31 @@ def test_invalid_manifest_target_raises_promotion_validation_error(
         )
 
 
+def test_promote_preflight_rejects_tampered_manifest_provenance(
+    git_project: Path, git_run, tmp_path: Path
+) -> None:
+    cand_id = _prepare_promotable_candidate(git_project, git_run, tmp_path)
+    config = mh.load_config(git_project)
+    manifest_path = mh.candidates_dir(git_project, config) / cand_id / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest_path.write_text(
+        json.dumps({**manifest, "created_by": "human"}) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        cli.prm.PromotionValidationError,
+        match=r"created_by.*ledger provenance",
+    ):
+        cli.prm._validate_preconditions(
+            git_project,
+            config,
+            git_project,
+            cand_id,
+            _events(git_project),
+        )
+
+
 def test_promote_rejects_candidate_with_secret_in_overlay(
     git_project: Path, git_run, tmp_path: Path, capsys
 ) -> None:
@@ -1104,20 +1129,103 @@ def test_routing_config_pr_body_uses_promotion_base_values(tmp_path: Path) -> No
     assert "```text\ncodex.model: gpt-5.6-sol → gpt-5.3-codex\n```" in body
 
 
-def test_routing_config_freshness_rejects_ssot_drift(git_project: Path, monkeypatch) -> None:
+def test_routing_config_changes_reject_all_no_op_patch_items(tmp_path: Path) -> None:
+    worktree, _original = _prepare_routing_config_worktree(tmp_path)
+    patch_items = [
+        {
+            "file": cli.prm.ROUTING_CONFIG_PATCH_FILE,
+            "key_path": "codex.model",
+            "value": "gpt-5.6-sol",
+        }
+    ]
+
+    with pytest.raises(cli.prm.PromotionValidationError, match="no-op"):
+        cli.prm._routing_config_changes_from_base(worktree, patch_items)
+
+
+def test_routing_config_changes_keep_no_op_item_when_another_item_changes(
+    tmp_path: Path,
+) -> None:
+    worktree, _original = _prepare_routing_config_worktree(tmp_path)
+    patch_items = [
+        {
+            "file": cli.prm.ROUTING_CONFIG_PATCH_FILE,
+            "key_path": "codex.model",
+            "value": "gpt-5.6-sol",
+        },
+        {
+            "file": cli.prm.ROUTING_CONFIG_PATCH_FILE,
+            "key_path": "agents.debugger.tool",
+            "value": "auto",
+        },
+    ]
+
+    changes = cli.prm._routing_config_changes_from_base(worktree, patch_items)
+
+    assert changes == [
+        {
+            "key_path": "agents.debugger.tool",
+            "old": "codex",
+            "new": "auto",
+        },
+        {
+            "key_path": "codex.model",
+            "old": "gpt-5.6-sol",
+            "new": "gpt-5.6-sol",
+        },
+    ]
+
+
+def _commit_routing_config(git_project: Path, git_run, content: str, message: str) -> str:
+    ssot = git_project / cli.prm.ROUTING_CONFIG_SSOT_RELATIVE
+    ssot.parent.mkdir(parents=True, exist_ok=True)
+    ssot.write_text(content, encoding="utf-8")
+    git_run("add", ssot.relative_to(git_project).as_posix(), cwd=git_project)
+    git_run("commit", "-m", message, cwd=git_project)
+    return git_run("rev-parse", "HEAD", cwd=git_project).stdout.strip()
+
+
+def test_routing_config_freshness_rejects_ssot_drift(
+    git_project: Path, git_run, monkeypatch
+) -> None:
+    source_commit = _commit_routing_config(
+        git_project,
+        git_run,
+        "codex:\n  model: source-model\n",
+        "add source routing config",
+    )
+    _commit_routing_config(
+        git_project,
+        git_run,
+        "codex:\n  model: current-model\n",
+        "change routing config",
+    )
+    git_run("branch", "origin/main", "HEAD", cwd=git_project)
+    evaluator_hash = cli.prm.ev.compute_routing_config_base_hash(git_project, source_commit)
+    promoter_hash = cli.prm._git_ref_file_hash(
+        git_project,
+        cli.prm.MAIN_REF,
+        cli.prm.ROUTING_CONFIG_SSOT_RELATIVE,
+    )
     manifest = {
-        "source_commit": "a" * 40,
+        "cand_id": _CAND_ID,
+        "parent_id": None,
+        "source_commit": source_commit,
         "target": "routing-config",
         "overlay_files": [],
     }
     evaluation = {
-        "routing_config_base_hash": "b" * 64,
+        "routing_config_base_hash": evaluator_hash,
         "impacted_targets": [],
         "impact_input_hash": "c" * 64,
     }
-    monkeypatch.setattr(cli.prm, "_ref_exists", lambda *_args: True)
-    monkeypatch.setattr(cli.prm, "_is_ancestor", lambda *_args: True)
-    monkeypatch.setattr(cli.prm, "_git_ref_file_hash", lambda *_args: "d" * 64)
+    monkeypatch.setattr(
+        cli.prm.ev,
+        "candidate_impact_context",
+        lambda **_kwargs: cli.prm.ev.skill_targets.SkillImpactContext((), "c" * 64),
+    )
+
+    assert evaluator_hash != promoter_hash
 
     with pytest.raises(cli.prm.PromotionValidationError, match="SSOT changed"):
         cli.prm._check_freshness(
@@ -1127,6 +1235,53 @@ def test_routing_config_freshness_rejects_ssot_drift(git_project: Path, monkeypa
             mh.DEFAULTS,
             holdout_evaluation=evaluation,
         )
+
+
+def test_routing_config_freshness_accepts_unchanged_ssot(
+    git_project: Path, git_run, monkeypatch
+) -> None:
+    source_commit = _commit_routing_config(
+        git_project,
+        git_run,
+        "codex:\n  model: stable-model\n",
+        "add stable routing config",
+    )
+    (git_project / "unrelated.txt").write_text("later change\n", encoding="utf-8")
+    git_run("add", "unrelated.txt", cwd=git_project)
+    git_run("commit", "-m", "add unrelated file", cwd=git_project)
+    git_run("branch", "origin/main", "HEAD", cwd=git_project)
+    evaluator_hash = cli.prm.ev.compute_routing_config_base_hash(git_project, source_commit)
+    promoter_hash = cli.prm._git_ref_file_hash(
+        git_project,
+        cli.prm.MAIN_REF,
+        cli.prm.ROUTING_CONFIG_SSOT_RELATIVE,
+    )
+    manifest = {
+        "cand_id": _CAND_ID,
+        "parent_id": None,
+        "source_commit": source_commit,
+        "target": "routing-config",
+        "overlay_files": [],
+    }
+    evaluation = {
+        "routing_config_base_hash": evaluator_hash,
+        "impacted_targets": [],
+        "impact_input_hash": "c" * 64,
+    }
+    monkeypatch.setattr(
+        cli.prm.ev,
+        "candidate_impact_context",
+        lambda **_kwargs: cli.prm.ev.skill_targets.SkillImpactContext((), "c" * 64),
+    )
+
+    assert evaluator_hash == promoter_hash
+    cli.prm._check_freshness(
+        git_project,
+        git_project,
+        manifest,
+        mh.DEFAULTS,
+        holdout_evaluation=evaluation,
+    )
 
 
 def test_routing_config_sidecar_is_included_in_promote_secret_scan(tmp_path: Path) -> None:
@@ -1198,7 +1353,7 @@ def test_changed_routing_config_sidecar_is_rejected_at_promote(
 
     with pytest.raises(
         cli.prm.PromotionValidationError,
-        match="hash mismatch|sidecar is missing",
+        match=r"hash mismatch|sidecar is missing",
     ):
         cli.prm._check_overlay_integrity(tmp_path, config, manifest)
 

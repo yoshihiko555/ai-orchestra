@@ -478,7 +478,7 @@ def apply_overlay(
     schema_dir: Path,
     *,
     target: str,
-    created_by: str = "human",
+    created_by: str = "",
     inherited_overlay_dir: Path | None = None,
 ) -> None:
     """overlay を worktree に適用する（Sec2-1 手順2-3）。register 時と同じ検証を再実行する。"""
@@ -552,7 +552,7 @@ def apply_registered_candidate_overlay(
             worktree_dir,
             schema_dir,
             target=target,
-            created_by=str(manifest.get("created_by") or "human"),
+            created_by=str(manifest.get("created_by") or ""),
         )
         return
 
@@ -759,9 +759,22 @@ def _apply_config_patch(
             default_flow_style=False,
             sort_keys=True,
         )
-        tmp_path = local_path.with_name(f".{local_path.name}.tmp-{os.getpid()}")
-        tmp_path.write_text(rendered, encoding="utf-8")
-        os.replace(tmp_path, local_path)
+        tmp_path = local_path.with_name(
+            f".{local_path.name}.tmp-{os.getpid()}-{os.urandom(4).hex()}"
+        )
+        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(tmp_path, flags, 0o644)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(rendered)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp_path, local_path)
+        except BaseException:
+            tmp_path.unlink(missing_ok=True)
+            raise
 
 
 def _config_patch_local_path(worktree_dir: Path, relative_file: str) -> Path:
@@ -802,10 +815,9 @@ def _load_local_config_for_patch(local_path: Path) -> dict:
 def _set_config_patch_value(config: dict, segments: tuple[str, ...], value: Any) -> None:
     current = config
     for segment in segments[:-1]:
-        existing = current.get(segment)
-        if existing is None:
-            existing = {}
-            current[segment] = existing
+        if segment not in current:
+            current[segment] = {}
+        existing = current[segment]
         if not isinstance(existing, dict):
             raise EvaluatorStageError(
                 "overlay_apply",
@@ -1907,12 +1919,14 @@ def compute_configured_evaluator_hash(config: dict) -> str:
     return compute_evaluator_hash(config.get("scoring") or {}, evaluator_execution_snapshot(config))
 
 
-def compute_routing_config_base_hash(project_dir: Path) -> str:
-    """evaluate 時点の promotion SSOT content hash を返す。"""
-    path = project_dir / ROUTING_CONFIG_SSOT_RELATIVE
-    if path.is_symlink() or not path.is_file():
-        raise ValueError(f"routing config SSOT is missing or not a regular file: {path}")
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+def compute_routing_config_base_hash(project_dir: Path, source_commit: str) -> str:
+    """Return the promotion SSOT hash from source_commit, never the working tree."""
+    try:
+        return mh.git_ref_file_hash(project_dir, source_commit, ROUTING_CONFIG_SSOT_RELATIVE)
+    except ValueError as exc:
+        raise ValueError(
+            f"routing config SSOT could not be read from source_commit: {exc}"
+        ) from None
 
 
 # ---------------------------------------------------------------------------
@@ -2226,6 +2240,7 @@ def run_single_attempt(
     cand_dir: Path,
     manifest: dict,
     target: str,
+    routing_config_base_hash: str | None,
     suite_id: str | None = None,
     evaluation_id: str | None = None,
     append_event: bool = True,
@@ -2265,9 +2280,7 @@ def run_single_attempt(
         ai_orchestra_dir=os.environ.get("AI_ORCHESTRA_DIR", ""),
         source_commit=manifest["source_commit"],
         config_hash=manifest["config_hash"],
-        routing_config_base_hash=(
-            compute_routing_config_base_hash(project_dir) if target == "routing-config" else None
-        ),
+        routing_config_base_hash=routing_config_base_hash,
         model=(config.get("evaluate") or {}).get("model"),
         claude_version=cli_capabilities.get("claude_version"),
         cli_capabilities=cli_capabilities,
@@ -2620,6 +2633,13 @@ def evaluate_candidate(
     if repeat_override is not None and repeat_override < 1:
         raise ValueError(f"--repeat must be >= 1, got: {repeat_override}")
 
+    events = mh.read_ledger_events(main_root, config)
+    lineage = _candidate_lineage(main_root, config, manifest)
+    try:
+        mh.assert_lineage_matches_registered_events(events, lineage)
+    except ValueError as exc:
+        raise EvaluatorStageError("overlay_apply", "overlay_error", str(exc)) from exc
+
     target = manifest["target"]
     cand_dir = mh.candidates_dir(main_root, config) / cand_id
     all_scenario_paths = validate_target_suite(package_dir, schema_dir, target)
@@ -2730,7 +2750,9 @@ def _evaluate_scenario_batch(
     evaluator_hash = compute_configured_evaluator_hash(config)
     own_suite_hash = compute_suite_hash(own_suite_paths)
     routing_config_base_hash = (
-        compute_routing_config_base_hash(project_dir) if target == "routing-config" else None
+        compute_routing_config_base_hash(project_dir, str(manifest["source_commit"]))
+        if target == "routing-config"
+        else None
     )
     impact = candidate_impact_context(
         main_root=main_root,
@@ -2785,6 +2807,7 @@ def _evaluate_scenario_batch(
         cand_dir=cand_dir,
         manifest=manifest,
         target=target,
+        routing_config_base_hash=routing_config_base_hash,
         suite_id=target,
         scenario_docs=own_scenarios,
         suite_hash=own_suite_hash,
@@ -2824,6 +2847,7 @@ def _evaluate_scenario_batch(
                 cand_dir=cand_dir,
                 manifest=manifest,
                 target=target,
+                routing_config_base_hash=routing_config_base_hash,
                 suite_id=suite_id,
                 scenario_docs=scenario_docs,
                 suite_hash=suite_hash,
@@ -2922,6 +2946,7 @@ def _run_scenario_set(
     cand_dir: Path,
     manifest: dict,
     target: str,
+    routing_config_base_hash: str | None,
     suite_id: str,
     scenario_docs: list[tuple[Path, dict]],
     suite_hash: str,
@@ -2965,6 +2990,7 @@ def _run_scenario_set(
                 cand_dir=cand_dir,
                 manifest=manifest,
                 target=target,
+                routing_config_base_hash=routing_config_base_hash,
                 suite_id=suite_id,
                 evaluation_id=evaluation_id,
                 append_event=False,

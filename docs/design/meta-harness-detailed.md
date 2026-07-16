@@ -981,8 +981,14 @@ run 単位でも保持し、run 成果物単体からも再評価要否を判定
 - patch item は allowlist entry に 1 件ずつ照合し、同一 `file#key_path` の重複を拒否する。値型は
   `agents.*.tool` が文字列 enum `codex | antigravity | claude-direct | auto`、`codex.model` と
   `antigravity.model` が `^[A-Za-z0-9][A-Za-z0-9._-]*$` に一致する空でない文字列に限定する。数値・bool は
-  3 種すべてで拒否する。`antigravity.model_allowlist` が空でない場合、`antigravity.model` はその要素にも
-  含まれなければならない。この文字集合は promote 時の YAML scalar line edit に対する injection 防御も担う。
+  3 種すべてで拒否する。`antigravity.model` は参照 `agent-routing/cli-tools.yaml` の
+  `antigravity.model_allowlist` の要素でなければならない。allowlist が未定義または空の場合も fail-closed
+  とし、`antigravity.model` patch を拒否する（この項目 SSOT の設定ミスで任意の slug が通過することを防ぐ）。
+  この文字集合は promote 時の YAML scalar line edit に対する injection 防御も担う。
+  さらに、`yaml.safe_load` で unquoted scalar として round-trip した結果が元の文字列と完全に一致しない値
+  （YAML 1.1 の予約語 `off` / `no` / `on` / `yes` / `true` / `false` / `null` や、数値と解釈される
+  `123` / `1.5` 等）は YAML-ambiguous として register / evaluate 時点で拒否し、promote 時の unquoted
+  scalar 置換で意味が変わることを防ぐ。
 - 解放対象は `created_by == "human"` の `register` 候補だけとする。それ以外の作成者は非空 patch を拒否し、
   proposer は `--target routing-config` 自体を引数検証で拒否する。proposer 解放は reward hacking 対策の設計を
   着手条件とする別タスクである。
@@ -2565,13 +2571,16 @@ fail-closed とし、以下すべてを満たさなければ exit 2 とする。
 5. 候補 store 上の overlay と canonical `config-patch.json` sidecar から再計算した `config_hash` が
    manifest の `config_hash` と一致し、sidecar 単体の `config_patch_hash` も一致する
    （不一致 = 登録後改ざんまたは store 破損として拒否する）。routing-config 候補では §1-8 の共通
-   validator と file-overlay 空条件も再実行する。
+   validator と file-overlay 空条件も再実行する。さらに lineage 内の各候補について、manifest の
+   `created_by` / `target` を immutable な `candidate_registered` ledger event と突合し、不一致または
+   event 不在を改ざん・陳腐化した provenance として拒否する。evaluate も overlay / patch 適用前に同じ突合を行う。
 6. **鮮度チェック**: `<source_commit>` が `origin/main` の ancestor であり、その上で
    `git diff <source_commit>..origin/main -- <overlay 対象パス>` が空であること。skill target では
    overlay path に加え、baseline の `facets/compositions/skills/<slug>.yaml` と、その時点の closure
-   解決入力全体が不変であることも検証する。routing-config target では evaluate 時に記録した
-   `packages/agent-routing/config/cli-tools.yaml` の content hash と現在の promotion base の hash を比較し、
-   overlay path が空でも不一致を stale evaluation として拒否する。
+   解決入力全体が不変であることも検証する。routing-config target では evaluate 時に候補の
+   `source_commit` の git ref から読んだ `packages/agent-routing/config/cli-tools.yaml` の content hash を
+   記録し、promote は `origin/main` の現在 hash と比較する（working tree の未コミット状態は評価に影響しない）。
+   overlay path が空でも hash 不一致を stale evaluation として拒否する。
    差分があれば「facet ソースが候補作成後に変更されている」ため中止し、新 `source_commit` での
    再登録・再評価を案内する（`promote.allow_stale: false` が既定。`true` で path 差分だけを
    警告に緩和できるが、ancestor 条件は緩和しない）。
@@ -2606,6 +2615,8 @@ promote は「予約（reservation）」→「worktree 作業」→「PR 作成�
    構造的に位置決めして 1 行だけ置換する。値 charset は §1-8 で事前検証済みとし、編集後に YAML を再 parse して
    (a) intended key が intended value、(b) それ以外が deep-equal であることを検証する。同じ編集を tracked mirror
    `.claude/config/agent-routing/cli-tools.yaml` に適用し、2 ファイルの byte equality を確認する。
+   全 patch item が promotion base に対して no-op（`old == new`）である場合は PR を作らず拒否する。一部の item
+   だけが no-op で他に実質変更がある場合は、そのまま許容し、per-item のスキップは行わない。
    `.claude/config/` だけの編集と `*.local.yaml` への promotion 書き込みは禁止する。
 5. `AI_ORCHESTRA_DIR=<worktree>` で `facet build` → `context build` を実行し、生成物の整合を
    取る（生成物もコミット対象）。

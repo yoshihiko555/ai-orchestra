@@ -315,6 +315,45 @@ class TestValidateConfigPatch:
             == []
         )
 
+    def test_known_agent_name_is_accepted(self) -> None:
+        patch = [
+            {
+                "file": "agent-routing/cli-tools.yaml",
+                "key_path": "agents.backend-python-dev.tool",
+                "value": "codex",
+            }
+        ]
+
+        assert (
+            mh.validate_config_patch(
+                patch,
+                _DEFAULT_OVERLAY_CONFIG,
+                SCHEMA_DIR,
+                target="routing-config",
+                created_by="human",
+            )
+            == []
+        )
+
+    def test_unknown_agent_name_is_rejected(self) -> None:
+        patch = [
+            {
+                "file": "agent-routing/cli-tools.yaml",
+                "key_path": "agents.no-such-agent.tool",
+                "value": "codex",
+            }
+        ]
+
+        errors = mh.validate_config_patch(
+            patch,
+            _DEFAULT_OVERLAY_CONFIG,
+            SCHEMA_DIR,
+            target="routing-config",
+            created_by="human",
+        )
+
+        assert any("unknown agent name: no-such-agent" in error for error in errors)
+
     def test_duplicate_patch_targets_are_rejected(self) -> None:
         item = {
             "file": "agent-routing/cli-tools.yaml",
@@ -400,6 +439,83 @@ class TestValidateConfigPatch:
         )
 
         assert errors == []
+
+    def test_empty_antigravity_model_allowlist_rejects_any_model(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            mh,
+            "_load_antigravity_model_allowlist",
+            lambda _schema_dir: frozenset(),
+        )
+
+        errors = mh.validate_config_patch(
+            [
+                {
+                    "file": "agent-routing/cli-tools.yaml",
+                    "key_path": "antigravity.model",
+                    "value": "gemini-3.1-pro",
+                }
+            ],
+            _DEFAULT_OVERLAY_CONFIG,
+            SCHEMA_DIR,
+            target="routing-config",
+            created_by="human",
+        )
+
+        assert any("not in model_allowlist" in error for error in errors)
+
+    @pytest.mark.parametrize("value", ["off", "123", "1.5", "null", "no"])
+    def test_yaml_ambiguous_model_values_are_rejected(self, value: str) -> None:
+        errors = mh.validate_config_patch(
+            [
+                {
+                    "file": "agent-routing/cli-tools.yaml",
+                    "key_path": "codex.model",
+                    "value": value,
+                }
+            ],
+            _DEFAULT_OVERLAY_CONFIG,
+            SCHEMA_DIR,
+            target="routing-config",
+            created_by="human",
+        )
+
+        assert any("YAML-ambiguous" in error for error in errors)
+
+    def test_unambiguous_model_value_is_accepted(self) -> None:
+        errors = mh.validate_config_patch(
+            [
+                {
+                    "file": "agent-routing/cli-tools.yaml",
+                    "key_path": "codex.model",
+                    "value": "gpt-5.3-codex",
+                }
+            ],
+            _DEFAULT_OVERLAY_CONFIG,
+            SCHEMA_DIR,
+            target="routing-config",
+            created_by="human",
+        )
+
+        assert errors == []
+
+    def test_config_patch_file_with_backslashes_is_rejected(self) -> None:
+        errors = mh.validate_config_patch(
+            [
+                {
+                    "file": "agent-routing\\..\\..\\etc\\passwd",
+                    "key_path": "codex.model",
+                    "value": "gpt-5.3-codex",
+                }
+            ],
+            _DEFAULT_OVERLAY_CONFIG,
+            SCHEMA_DIR,
+            target="routing-config",
+            created_by="human",
+        )
+
+        assert any("must not contain backslashes" in error for error in errors)
 
     def test_unknown_creator_is_rejected(self) -> None:
         errors = mh.validate_config_patch(

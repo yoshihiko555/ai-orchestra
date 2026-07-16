@@ -6,6 +6,8 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from tests.module_loader import load_module
 
 mh = load_module(
@@ -52,6 +54,91 @@ def _manifest(cand_id: str, description: str = "candidate") -> dict:
         "overlay_files": ["facets/example-facet/SKILL.md"],
         "description": description,
     }
+
+
+class TestLedgerProvenance:
+    def test_matching_lineage_and_registration_events_are_accepted(self) -> None:
+        lineage = [
+            {
+                "cand_id": "cand-parent",
+                "created_by": "human",
+                "target": "routing-config",
+            },
+            {
+                "cand_id": "cand-child",
+                "created_by": "human",
+                "target": "routing-config",
+            },
+        ]
+        events = [{"event": "candidate_registered", **item} for item in lineage]
+
+        mh.assert_lineage_matches_registered_events(events, lineage)
+
+    def test_missing_registration_event_is_rejected(self) -> None:
+        lineage = [{"cand_id": "cand-missing", "created_by": "human", "target": "routing-config"}]
+
+        with pytest.raises(ValueError, match="ledger event is missing"):
+            mh.assert_lineage_matches_registered_events([], lineage)
+
+    @pytest.mark.parametrize(
+        ("field", "tampered", "expected"),
+        [
+            ("created_by", "proposer", "created_by"),
+            ("target", "claude-harness", "target"),
+        ],
+    )
+    def test_registration_provenance_mismatch_is_rejected(
+        self, field: str, tampered: str, expected: str
+    ) -> None:
+        registered = {
+            "event": "candidate_registered",
+            "cand_id": "cand-tampered",
+            "created_by": "human",
+            "target": "routing-config",
+        }
+        lineage = [{**registered, field: tampered}]
+
+        with pytest.raises(ValueError, match=expected):
+            mh.assert_lineage_matches_registered_events([registered], lineage)
+
+
+class TestRegisterArgumentConsistency:
+    def test_manifest_target_must_match_register_target(self, tmp_path: Path) -> None:
+        manifest = {
+            **_manifest("cand-target-mismatch"),
+            "target": "skill:something-else",
+        }
+
+        with pytest.raises(ValueError, match="manifest target does not match register target"):
+            mh.register_candidate(
+                tmp_path,
+                mh.DEFAULTS,
+                cand_id=manifest["cand_id"],
+                manifest=manifest,
+                overlay_dir=tmp_path / "unused-overlay",
+                overlay_files=[],
+                target="claude-harness",
+            )
+
+    def test_manifest_created_by_must_match_supplied_creator(self, tmp_path: Path) -> None:
+        manifest = {
+            **_manifest("cand-creator-mismatch"),
+            "created_by": "proposer",
+        }
+
+        with pytest.raises(
+            ValueError,
+            match="manifest created_by does not match register created_by",
+        ):
+            mh.register_candidate(
+                tmp_path,
+                mh.DEFAULTS,
+                cand_id=manifest["cand_id"],
+                manifest=manifest,
+                overlay_dir=tmp_path / "unused-overlay",
+                overlay_files=[],
+                created_by="human",
+            )
 
 
 class TestRegisterSuccess:

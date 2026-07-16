@@ -558,6 +558,7 @@ def _register_proposed_candidate(
                 overlay_dir=overlay_dir,
                 overlay_files=overlay_files,
                 target=target,
+                created_by="proposer",
                 baseline_root=main_root,
                 inherited_overlay_dir=inherited_overlay,
                 skill_allowed_paths=(

@@ -251,7 +251,18 @@
         "impact_input_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
         "regression_cost_usd": { "type": "number", "minimum": 0 },
         "errors": { "type": "array", "items": { "type": "string" } }
-      }
+      },
+      "oneOf": [
+        {
+          "properties": { "target": { "const": "routing-config" } },
+          "required": ["routing_config_base_hash"]
+        },
+        {
+          "properties": {
+            "target": { "pattern": "^(claude-harness|skill:[a-z0-9-]+)$" }
+          }
+        }
+      ]
     },
     "status_changed": {
       "type": "object",

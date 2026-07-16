@@ -634,11 +634,13 @@
     packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_all_released_agent_tool_values_are_accepted
     packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_invalid_patch_values_are_rejected
     packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_allowlisted_antigravity_model_is_accepted
+    packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_empty_antigravity_model_allowlist_rejects_any_model
   covered_by:
     - packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_all_released_agent_tool_values_are_accepted
     - packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_invalid_patch_values_are_rejected
     - packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_allowlisted_antigravity_model_is_accepted
-  notes: tool enum, scalar typing, model slug charset, and antigravity model membership are covered independently.
+    - packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_empty_antigravity_model_allowlist_rejects_any_model
+  notes: tool enum, scalar typing, model slug charset, antigravity model membership, and empty-allowlist fail-closed behavior are covered independently.
 
 - ev_id: EV-65
   phase: 3
@@ -764,3 +766,43 @@
     - packages/meta-harness/tests/test_skill_targets.py::TestSkillImpactResolution::test_config_patch_only_candidate_intentionally_has_zero_skill_impacts
     - packages/meta-harness/tests/test_skill_scenarios.py::test_routing_config_suite_uses_deterministic_critical_oracles
   notes: zero skill impacts are intentional; materialization, effective layering, and agent-routing pytest remain critical machine oracles.
+
+- ev_id: EV-74
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" OCHE_ROOT="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_schema_validator.py::TestLedgerEventSchemaOneOf::test_routing_config_evaluation_requires_base_hash
+    packages/meta-harness/tests/test_schema_validator.py::TestLedgerEventSchemaOneOf::test_routing_config_evaluation_with_base_hash_is_valid
+    packages/meta-harness/tests/test_schema_validator.py::TestLedgerEventSchemaOneOf::test_non_routing_evaluation_allows_missing_base_hash
+    packages/meta-harness/tests/test_schema_validator.py::TestRunMetadataSchema::test_routing_config_requires_base_hash
+    packages/meta-harness/tests/test_schema_validator.py::TestRunMetadataSchema::test_routing_config_with_base_hash_is_valid
+    packages/meta-harness/tests/test_schema_validator.py::TestRunMetadataSchema::test_non_routing_target_allows_missing_base_hash
+  covered_by:
+    - packages/meta-harness/tests/test_schema_validator.py::TestLedgerEventSchemaOneOf::test_routing_config_evaluation_requires_base_hash
+    - packages/meta-harness/tests/test_schema_validator.py::TestLedgerEventSchemaOneOf::test_routing_config_evaluation_with_base_hash_is_valid
+    - packages/meta-harness/tests/test_schema_validator.py::TestLedgerEventSchemaOneOf::test_non_routing_evaluation_allows_missing_base_hash
+    - packages/meta-harness/tests/test_schema_validator.py::TestRunMetadataSchema::test_routing_config_requires_base_hash
+    - packages/meta-harness/tests/test_schema_validator.py::TestRunMetadataSchema::test_routing_config_with_base_hash_is_valid
+    - packages/meta-harness/tests/test_schema_validator.py::TestRunMetadataSchema::test_non_routing_target_allows_missing_base_hash
+  notes: oneOf conditionals reject a missing routing-config base hash while accepting the present hash and preserving optionality for other targets in both schemas.
+
+- ev_id: EV-75
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" OCHE_ROOT="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_register.py::TestLedgerProvenance::test_matching_lineage_and_registration_events_are_accepted
+    packages/meta-harness/tests/test_register.py::TestLedgerProvenance::test_missing_registration_event_is_rejected
+    packages/meta-harness/tests/test_register.py::TestLedgerProvenance::test_registration_provenance_mismatch_is_rejected
+    packages/meta-harness/tests/test_evaluator_evaluate_candidate_validation.py::TestLedgerProvenanceValidation::test_evaluate_rejects_tampered_manifest_created_by
+    packages/meta-harness/tests/test_promote_cli.py::test_promote_preflight_rejects_tampered_manifest_provenance
+  covered_by:
+    - packages/meta-harness/tests/test_register.py::TestLedgerProvenance::test_matching_lineage_and_registration_events_are_accepted
+    - packages/meta-harness/tests/test_register.py::TestLedgerProvenance::test_missing_registration_event_is_rejected
+    - packages/meta-harness/tests/test_register.py::TestLedgerProvenance::test_registration_provenance_mismatch_is_rejected
+    - packages/meta-harness/tests/test_evaluator_evaluate_candidate_validation.py::TestLedgerProvenanceValidation::test_evaluate_rejects_tampered_manifest_created_by
+    - packages/meta-harness/tests/test_promote_cli.py::test_promote_preflight_rejects_tampered_manifest_provenance
+  notes: lineage registration events are required and immutable created_by/target mismatches are rejected before evaluate writes or promotion.

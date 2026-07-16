@@ -208,5 +208,16 @@
     "finished_at": { "type": ["string", "null"], "format": "date-time" },
     "attempt": { "type": "integer", "minimum": 1 },
     "attempts_total": { "type": "integer", "minimum": 1 }
-  }
+  },
+  "oneOf": [
+    {
+      "properties": { "target": { "const": "routing-config" } },
+      "required": ["routing_config_base_hash"]
+    },
+    {
+      "properties": {
+        "target": { "pattern": "^(claude-harness|skill:[a-z0-9-]+)$" }
+      }
+    }
+  ]
 }

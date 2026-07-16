@@ -339,6 +339,11 @@ def _validate_preconditions(
             f"candidate run hashes are stale; re-run evaluate for candidate: {cand_id}"
         )
     _check_overlay_integrity(main_root, config, manifest)
+    lineage = _promotion_lineage(main_root, config, manifest)
+    try:
+        mh.assert_lineage_matches_registered_events(events, lineage)
+    except ValueError as exc:
+        raise PromotionValidationError(str(exc)) from exc
     _validated_candidate_config_patch_items(main_root, config, manifest, schema_dir)
     branch = f"meta/promote-{_cand_slug(cand_id)}"
     worktree_dir = main_root / ".worktrees" / f"meta-promote-{_cand_slug(cand_id)}"
@@ -706,15 +711,16 @@ def _check_freshness(
 
 def _git_ref_file_hash(project_dir: Path, ref: str, relative_path: Path) -> str:
     try:
-        completed = _run(
-            ["git", "show", f"{ref}:{relative_path.as_posix()}"],
-            cwd=project_dir,
+        return mh.git_ref_file_hash(
+            project_dir,
+            ref,
+            relative_path,
+            runner=_run_subprocess,
         )
-    except PromotionRuntimeError as exc:
+    except ValueError as exc:
         raise PromotionValidationError(
             f"could not read routing config SSOT from {ref}: {exc}"
-        ) from exc
-    return hashlib.sha256(completed.stdout.encode("utf-8")).hexdigest()
+        ) from None
 
 
 def _release_stale_reservation_if_needed(
@@ -867,6 +873,11 @@ def _routing_config_changes_from_base(
     for key_path, new_value in sorted(effective.items()):
         old_value = _get_existing_mapping_value(base, tuple(key_path.split(".")))
         changes.append({"key_path": key_path, "old": str(old_value), "new": new_value})
+    if changes and all(change["old"] == change["new"] for change in changes):
+        raise PromotionValidationError(
+            "routing config patch is a no-op against the promotion base "
+            "(all patched values already match origin/main)"
+        )
     return changes
 
 
