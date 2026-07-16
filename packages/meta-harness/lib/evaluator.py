@@ -758,23 +758,45 @@ def _apply_config_patch(
             default_flow_style=False,
             sort_keys=True,
         )
-        _atomic_write_worktree_file(local_path, rendered)
+        _atomic_write_worktree_file(local_path, rendered, worktree_root=worktree_dir)
 
     # 適用済み patch の内容を worktree 内の固定パスへ記録する。scenario の command_exit
-    # oracle は隔離実行され、worktree の外（meta-harness store 上の overlay/config-patch.json
-    # 本体）を参照できないため、「候補がどのキーを実際に patch したか」をここで worktree 内に
+    # oracle は隔離実行され、worktree の外(meta-harness store 上の overlay/config-patch.json
+    # 本体)を参照できないため、「候補がどのキーを実際に patch したか」をここで worktree 内に
     # 残しておかないと、oracle 側は materialize 済み `.local.yaml` の全リーフを見るしかなく、
     # プロジェクト固有の無関係な既存 local override まで誤って候補由来として判定してしまう
-    # （PR #252 R2-4 レビュー指摘）。
+    # (PR #252 R2-4 レビュー指摘)。
     applied_patch_path = worktree_dir / ".claude" / "meta-harness" / "applied-config-patch.json"
     _atomic_write_worktree_file(
         applied_patch_path,
         json.dumps(config_patch, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        worktree_root=worktree_dir,
     )
 
 
-def _atomic_write_worktree_file(path: Path, content: str) -> None:
-    """`path` の親ディレクトリを作った上で、symlink 追従なしの atomic write を行う。"""
+def _atomic_write_worktree_file(path: Path, content: str, *, worktree_root: Path) -> None:
+    """`path` の親ディレクトリを作った上で、symlink 追従なしの atomic write を行う。
+
+    `O_NOFOLLOW` は最終コンポーネント(一時ファイル自身)しか保護しない。
+    `path.parent.mkdir(parents=True)` や `os.open` は既存の親ディレクトリが symlink だと
+    それを追従してしまうため、worktree 内の `.claude/meta-harness` 等が外部を指す symlink
+    に差し替えられていると、書き込みが worktree 外へ到達しうる。`_config_patch_local_path`
+    と同じ手法(`resolve(strict=False)` で既存 symlink を辿った実体パスを求め、
+    `worktree_root` 配下に収まっているかを検証)で、書き込み先が worktree の外へ
+    逸脱していないことを確認してから書き込む(PR #252 R3-2 レビュー指摘)。
+    """
+    resolved_root = worktree_root.resolve()
+    resolved_path = path.resolve(strict=False)
+    if resolved_path == resolved_root or resolved_root not in resolved_path.parents:
+        raise EvaluatorStageError(
+            "overlay_apply",
+            "overlay_error",
+            f"worktree write destination escapes worktree: {path}",
+        )
+    if path.is_symlink():
+        raise EvaluatorStageError(
+            "overlay_apply", "overlay_error", f"worktree write destination is a symlink: {path}"
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_name(f".{path.name}.tmp-{os.getpid()}-{os.urandom(4).hex()}")
     flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
@@ -1502,9 +1524,15 @@ def _oracle_command_exit(
     worktree_dir: Path,
     *,
     isolation_launch: siso.ScenarioIsolationLaunch | None = None,
+    default_timeout_ms: int = DEFAULT_COMMAND_TIMEOUT_MS,
 ) -> dict:
     command = check["command"]
-    timeout_ms = check.get("command_timeout_ms", DEFAULT_COMMAND_TIMEOUT_MS)
+    # `check` 自体は check_item スキーマ(additionalProperties: false)により
+    # `command_timeout_ms` を持てない。scenario 単位の `command_timeout_ms`
+    # (`run_oracle` の `scenario_command_timeout_ms` 経由で渡される既定値)を使う
+    # ことで、シナリオが設定した timeout を command_exit oracle にも反映する
+    # (PR #252 R3-3 レビュー指摘: 以前は常に DEFAULT_COMMAND_TIMEOUT_MS に固定されていた)。
+    timeout_ms = check.get("command_timeout_ms", default_timeout_ms)
     if isolation_launch is None:
         raise EvaluatorStageError(
             "oracle", "oracle_error", "command_exit requires an isolated oracle launch"
@@ -1594,11 +1622,17 @@ def run_oracle(
     *,
     isolation_launch: siso.ScenarioIsolationLaunch | None = None,
     runner: SubprocessRunner = subprocess.run,
+    scenario_command_timeout_ms: int = DEFAULT_COMMAND_TIMEOUT_MS,
 ) -> dict:
     """4 種の oracle を dispatch する（Sec1-3 セマンティクス）。"""
     oracle = check["oracle"]
     if oracle == "command_exit":
-        return _oracle_command_exit(check, worktree_dir, isolation_launch=isolation_launch)
+        return _oracle_command_exit(
+            check,
+            worktree_dir,
+            isolation_launch=isolation_launch,
+            default_timeout_ms=scenario_command_timeout_ms,
+        )
     if oracle == "artifact_exists":
         return _oracle_artifact_exists(check, worktree_dir)
     if oracle == "json_schema":
@@ -2542,6 +2576,7 @@ def _run_attempt_lifecycle(
         )
         if isinstance(scenario_result.isolation_launch, siso.ScenarioIsolationLaunch):
             _persist_refreshed_isolation_metadata(scenario_result.isolation_launch, staging_dir)
+        scenario_command_timeout_ms = scenario.get("command_timeout_ms", DEFAULT_COMMAND_TIMEOUT_MS)
         checks = [
             run_oracle(
                 c,
@@ -2550,6 +2585,7 @@ def _run_attempt_lifecycle(
                 schema_dir,
                 isolation_launch=scenario_result.isolation_launch,
                 runner=runner,
+                scenario_command_timeout_ms=scenario_command_timeout_ms,
             )
             for c in scenario.get("critical", [])
         ]
@@ -2561,6 +2597,7 @@ def _run_attempt_lifecycle(
                 schema_dir,
                 isolation_launch=scenario_result.isolation_launch,
                 runner=runner,
+                scenario_command_timeout_ms=scenario_command_timeout_ms,
             )
             for c in scenario.get("checks", [])
         ]

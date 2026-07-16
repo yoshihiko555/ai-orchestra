@@ -734,10 +734,10 @@ def _run_evaluate_under_lock(
         return EXIT_RUNTIME_ERROR
     except (ValueError, OSError, ev.yaml.YAMLError, ev.EvaluatorStageError) as exc:
         # `load_scenario()` の `path.read_text()` / `yaml.safe_load()` 由来の OSError /
-        # yaml.YAMLError も ValueError と同様に入力検証エラーとして扱う（traceback を
-        # main() まで漏らさない、CodeRabbit 指摘）。`EvaluatorStageError`（改ざんされた
-        # ledger provenance 等）も同様に validation error として正規化する（`cmd_register`
-        # の既存 `except ev.EvaluatorStageError` と同じ扱い、PR #252 R2-5 レビュー指摘）。
+        # yaml.YAMLError も ValueError と同様に入力検証エラーとして扱う(traceback を
+        # main() まで漏らさない、CodeRabbit 指摘)。`EvaluatorStageError`(改ざんされた
+        # ledger provenance 等)も同様に validation error として正規化する(`cmd_register`
+        # の既存 `except ev.EvaluatorStageError` と同じ扱い、PR #252 R2-5 レビュー指摘)。
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_VALIDATION_ERROR
 

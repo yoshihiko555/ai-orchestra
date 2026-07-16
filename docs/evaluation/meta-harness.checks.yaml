@@ -836,3 +836,20 @@
     - packages/meta-harness/tests/test_promote_cli.py::test_routing_config_freshness_ignores_unrelated_impact_context_drift
     - packages/meta-harness/tests/test_promote_cli.py::test_routing_config_freshness_rejects_ssot_drift
   notes: routing-config promote freshness completes at the SSOT content-hash comparison; unrelated skill-composition impact_input_hash drift does not block promotion while real SSOT drift still does.
+
+- ev_id: EV-78
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" OCHE_ROOT="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_meta_harness_config_loading.py::TestConfigLocalOverride::test_malformed_local_yaml_warns_and_falls_back_to_defaults
+    packages/meta-harness/tests/test_meta_harness_config_loading.py::TestConfigLocalOverride::test_corrupt_local_yaml_fails_closed_on_config_patch_allowlist
+    packages/meta-harness/tests/test_meta_harness_config_loading.py::TestConfigLocalOverride::test_absent_local_config_keeps_default_config_patch_allowlist
+    packages/meta-harness/tests/test_meta_harness_config_loading.py::TestConfigLocalOverride::test_import_error_fallback_with_corrupt_local_yaml_fails_closed
+  covered_by:
+    - packages/meta-harness/tests/test_meta_harness_config_loading.py::TestConfigLocalOverride::test_malformed_local_yaml_warns_and_falls_back_to_defaults
+    - packages/meta-harness/tests/test_meta_harness_config_loading.py::TestConfigLocalOverride::test_corrupt_local_yaml_fails_closed_on_config_patch_allowlist
+    - packages/meta-harness/tests/test_meta_harness_config_loading.py::TestConfigLocalOverride::test_absent_local_config_keeps_default_config_patch_allowlist
+    - packages/meta-harness/tests/test_meta_harness_config_loading.py::TestConfigLocalOverride::test_import_error_fallback_with_corrupt_local_yaml_fails_closed
+  notes: config load failure (mocked hook_common raise, real corrupt local yaml via hook_common, and the hook_common-unavailable fallback) forces config_patch.allowlist to an empty list, while an absent config file keeps the DEFAULTS ceiling.

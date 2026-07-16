@@ -317,6 +317,20 @@ class TestRoutingConfigPatchMaterialization:
         local_path = worktree_dir / ".claude/config/agent-routing/cli-tools.local.yaml"
         local_path.parent.mkdir(parents=True)
         local_path.write_text("codex:\n  enabled: false\n", encoding="utf-8")
+        # R3-5: `hook_common.load_cli_tools_config` は `.claude/config/agent-routing/
+        # cli-tools.yaml`(base)が無いと `{}` を返す(`find_package_config` の
+        # project-local レイヤーで見つからなければ、後段の AI_ORCHESTRA_DIR フォール
+        # バック経由で「たまたま」実リポジトリの base config を拾うだけになり、
+        # `AI_ORCHESTRA_DIR` 未設定・別プロジェクト実行では `KeyError` になる)。worktree
+        # 内に base config 自体も明示的に seed し、リポジトリ状態や env var に依存しない
+        # hermetic なテストにする。
+        base_config_path = worktree_dir / ".claude/config/agent-routing/cli-tools.yaml"
+        base_config_path.write_text(
+            Path("packages/agent-routing/config/cli-tools.yaml")
+            .resolve()
+            .read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
 
         ev.apply_overlay(
             overlay_dir,
@@ -398,6 +412,38 @@ class TestRoutingConfigPatchMaterialization:
         assert yaml.safe_load(local_path.read_text(encoding="utf-8"))["codex"]["model"] == (
             "gpt-5.3-codex"
         )
+
+    def test_symlinked_applied_patch_parent_directory_is_rejected(self, tmp_path: Path) -> None:
+        """R3-2: `O_NOFOLLOW` は一時ファイル自身(最終コンポーネント)しか保護しない。
+        `applied-config-patch.json` の親ディレクトリ `.claude/meta-harness` が worktree
+        外を指す symlink に差し替えられていても、その外へ書き込んではならない。"""
+        overlay_dir = self._write_patch_overlay(
+            tmp_path / "overlay-meta-harness-symlink-guard",
+            [
+                {
+                    "file": "agent-routing/cli-tools.yaml",
+                    "key_path": "codex.model",
+                    "value": "gpt-5.3-codex",
+                }
+            ],
+        )
+        worktree_dir = tmp_path / "worktree-meta-harness-symlink-guard"
+        (worktree_dir / ".claude").mkdir(parents=True)
+        outside_dir = tmp_path / "outside-meta-harness-target"
+        outside_dir.mkdir()
+        (worktree_dir / ".claude" / "meta-harness").symlink_to(outside_dir)
+
+        with pytest.raises(ev.EvaluatorStageError, match="escapes worktree"):
+            ev.apply_overlay(
+                overlay_dir,
+                {},
+                worktree_dir,
+                _SCHEMA_DIR,
+                target="routing-config",
+                created_by="human",
+            )
+
+        assert list(outside_dir.iterdir()) == []
 
     def test_tmp_file_is_removed_when_atomic_replace_fails(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

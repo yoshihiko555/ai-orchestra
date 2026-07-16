@@ -95,6 +95,28 @@ class TestOracleCommandExit:
             ev.run_oracle(check, tmp_path, {}, _SCHEMA_DIR, isolation_launch=self.launch)
         assert exc_info.value.error_type == "oracle_error"
 
+    def test_scenario_command_timeout_ms_is_honored_when_check_omits_it(
+        self, tmp_path: Path
+    ) -> None:
+        """R3-3: `command_exit` の per-check schema(check_item, additionalProperties:
+        false)は `command_timeout_ms` を持てないため、実際のシナリオではこの値は常に
+        scenario 単位でしか設定できない。`run_oracle` の `scenario_command_timeout_ms`
+        (既定 `DEFAULT_COMMAND_TIMEOUT_MS`)が `_oracle_command_exit` へ実際に渡り、check
+        に無い場合のフォールバックとして使われることを確認する(以前は常に
+        `DEFAULT_COMMAND_TIMEOUT_MS` に固定され、シナリオの `command_timeout_ms` が
+        無視されていた)。"""
+        check = {"id": "c5", "oracle": "command_exit", "command": "sleep 5"}
+        with pytest.raises(ev.EvaluatorStageError) as exc_info:
+            ev.run_oracle(
+                check,
+                tmp_path,
+                {},
+                _SCHEMA_DIR,
+                isolation_launch=self.launch,
+                scenario_command_timeout_ms=50,
+            )
+        assert exc_info.value.error_type == "oracle_error"
+
     def test_isolated_oracle_uses_no_network_read_only_profile(
         self, tmp_path: Path, monkeypatch
     ) -> None:

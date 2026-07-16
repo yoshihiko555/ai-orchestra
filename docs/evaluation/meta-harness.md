@@ -117,6 +117,7 @@
 - [ ] EV-75（境界 / must）: `evaluation_completed` の ledger event schema と run metadata schema は `target == "routing-config"` のときだけ `routing_config_base_hash` を必須とし、他 target では任意のままとする — 根拠: 詳細設計 §1-4、§4-3、ADR-20260716-039
 - [ ] EV-76（異常 / must）: evaluate（overlay / patch 適用前）と promote preflight は lineage 内の各候補の `manifest.json` の `created_by` / `target` を、その候補の immutable `candidate_registered` ledger event と突合し、不一致または event 不在を拒否する — 根拠: 詳細設計 §1-2、§2-1、§12-1
 - [ ] EV-77（正常 / must）: routing-config 候補の promote 鮮度チェックは、SSOT content hash の突合が成功した時点で完了とし、無関係な facet/skill composition の変更（`candidate_impact_context` の `impact_input_hash` drift）で promotion を拒否しない。一方、SSOT content hash 自体が乖離した場合は引き続き stale evaluation として拒否する — 根拠: 詳細設計 §12-1
+- [ ] EV-78（異常 / must）: `meta-harness.yaml` / `meta-harness.local.yaml` が実在するのに読み込めない（YAML 破損等）場合、`config_patch.allowlist` はコード内蔵 DEFAULTS の 3 エントリへフォールバックせず空配列として扱う（config patch は fail-closed）。ファイル不在（設定なし）の場合は通常どおり DEFAULTS の 3 エントリが有効なままである — 根拠: 詳細設計 §1-8、§5
 - N/A: hook 型の類型別観点（PreToolUse/PostToolUse ブロック挙動等）は本パッケージが hook を持たないため非該当。config-loading への依存のみが hook 型的性質であり、EV-22 でカバーする
 
 ### 運用メモ

@@ -186,7 +186,20 @@ def load_config(project_dir: str | Path) -> dict:
     meta-harness/meta-harness.yaml` > パッケージ既定 `config/meta-harness.yaml`、
     さらに `.local.yaml` 上書きを config-loading ルールどおり適用する）。
     使えない場合も、このパッケージ自身で base/local YAML を読み込む。
+
+    fail-closed(PR #252 R3-4 レビュー指摘): `hook_common._read_config_file` は
+    読み込み失敗を「ファイル不在」と区別せず常に `{}` へフォールバックするため、
+    `load_package_config` はこの状態を例外として伝播しない(silent fallback)。
+    これを放置すると、存在するが壊れている `meta-harness.local.yaml`(例えば
+    `config_patch.allowlist: []` でルーティング設定 patch を絞る意図のプロジェクト)
+    が unparseable になっただけで DEFAULTS の `config_patch.allowlist`(routing-config
+    向け3件のケーリング)が silently 復活し、意図しない config patch を許可してしまう。
+    本関数は「ファイル不在(defaults を使ってよい)」と「存在するが壊れている
+    (config patch は閉じておくべき)」を区別し、後者では最終結果の
+    `config_patch.allowlist` を空配列へ強制する。
     """
+    project_dir_str = str(project_dir)
+    config_load_failed = False
     try:
         orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
         core_hooks = os.path.join(orchestra_dir, "packages", "core", "hooks")
@@ -194,7 +207,8 @@ def load_config(project_dir: str | Path) -> dict:
             sys.path.insert(0, core_hooks)
         from hook_common import load_package_config
 
-        loaded = load_package_config(PACKAGE_NAME, CONFIG_FILENAME, str(project_dir))
+        loaded = load_package_config(PACKAGE_NAME, CONFIG_FILENAME, project_dir_str)
+        config_load_failed = _meta_harness_config_is_corrupt(project_dir_str)
     except ImportError:
         try:
             loaded = _load_config_without_hook_common(Path(project_dir))
@@ -204,13 +218,19 @@ def load_config(project_dir: str | Path) -> dict:
                 file=sys.stderr,
             )
             loaded = {}
+            config_load_failed = True
     except Exception as exc:
         print(
             f"warning: failed to load meta-harness config, falling back to defaults: {exc}",
             file=sys.stderr,
         )
         loaded = {}
-    return _deep_merge(DEFAULTS, loaded or {})
+        config_load_failed = True
+
+    merged = _deep_merge(DEFAULTS, loaded or {})
+    if config_load_failed:
+        merged = _deep_merge(merged, {"config_patch": {"allowlist": []}})
+    return merged
 
 
 def _load_config_without_hook_common(project_dir: Path) -> dict:
@@ -228,6 +248,55 @@ def _read_yaml_config(path: Path) -> dict:
         return {}
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
     return data if isinstance(data, dict) else {}
+
+
+def _resolve_meta_harness_config_paths(project_dir: str) -> tuple[str, str]:
+    """`hook_common.find_package_config` / `_find_local_config_path` と同じ解決順序を
+    複製する(config load failure 検出のための独立した corruption probe 用。
+    hook_common の private 関数や属性に依存せず、本モジュール単体でも検証できるように
+    し、`hook_common` を部分的にしか実装しないテスト用スタブでも安全に動作させる)。
+    """
+    name, ext = os.path.splitext(CONFIG_FILENAME)
+    local_filename = f"{name}.local{ext}"
+
+    project_base = os.path.join(project_dir, ".claude", "config", PACKAGE_NAME, CONFIG_FILENAME)
+    if os.path.isfile(project_base):
+        base_path = project_base
+    else:
+        orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
+        orchestra_base = (
+            os.path.join(orchestra_dir, "packages", PACKAGE_NAME, "config", CONFIG_FILENAME)
+            if orchestra_dir
+            else ""
+        )
+        base_path = orchestra_base if orchestra_base and os.path.isfile(orchestra_base) else ""
+
+    project_local = os.path.join(project_dir, ".claude", "config", PACKAGE_NAME, local_filename)
+    if os.path.isfile(project_local):
+        local_path = project_local
+    elif base_path:
+        local_path = os.path.join(os.path.dirname(base_path), local_filename)
+    else:
+        local_path = ""
+
+    return base_path, local_path
+
+
+def _yaml_file_is_corrupt(path: str) -> bool:
+    """`path` が存在するのに YAML mapping として読めない場合 True を返す(不在は False)。"""
+    if not path or not os.path.isfile(path):
+        return False
+    try:
+        data = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return True
+    return not (data is None or isinstance(data, dict))
+
+
+def _meta_harness_config_is_corrupt(project_dir: str) -> bool:
+    """base/local の meta-harness config が実在するのに読み込めない場合 True を返す。"""
+    base_path, local_path = _resolve_meta_harness_config_paths(project_dir)
+    return _yaml_file_is_corrupt(base_path) or _yaml_file_is_corrupt(local_path)
 
 
 # ---------------------------------------------------------------------------
@@ -360,7 +429,7 @@ def git_ref_file_hash(
         )
     # `text=False` を使い、`git show` の stdout raw bytes を直接 hash する。text=True の
     # universal-newlines 変換は CRLF blob を LF に化けさせ、実際の git blob 内容と異なる
-    # ハッシュを生んでしまう（CRLF↔LF drift が検出不能になる、PR #252 R2-2 レビュー指摘）。
+    # ハッシュを生んでしまう(CRLF↔LF drift が検出不能になる、PR #252 R2-2 レビュー指摘)。
     return hashlib.sha256(completed.stdout).hexdigest()
 
 
