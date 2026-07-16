@@ -34,6 +34,7 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 | [codex-harness](#codex-harness)           | Codex CLI 向け repo-local ハーネス（hooks + 非対話 run/review） | ハーネス     |
 | [fail-logs](#fail-logs)                   | AI の失敗イベント記録基盤（学習ループの入力）     | 学習         |
 | [image-generation](#image-generation)     | Codex 組み込み image_gen による画像生成           | 生成         |
+| [docker-runtime](#docker-runtime)         | ハーネス共通の Docker/broker ライフサイクル基盤   | 基盤         |
 | [meta-harness](#meta-harness)             | 候補ハーネスの評価・進化基盤（Pareto 判定・propose） | ハーネス     |
 | [reverse](#reverse)                       | 既存コードベースの 5 フェーズ対話型リバースエンジニアリング | 解析         |
 | [skill-evolution](#skill-evolution)       | スキル自己改善ループ（二軸テレメトリ＋オフライン反復改善） | 学習         |
@@ -393,12 +394,22 @@ Codex CLI の組み込み `image_gen` スキル（OpenAI gpt-image、ChatGPT 認
 
 ---
 
+## docker-runtime
+
+meta-harness と loop-harness が共有する Docker CLI、hardened security profile、dual-homed broker、
+所有 container/network の cleanup を提供する内部基盤。worktree・git・成果物・設定スキーマは各 harness に残す。
+
+- **バージョン**: 0.1.0
+- **依存**: core
+
+---
+
 ## meta-harness
 
 候補ハーネスの評価・進化基盤。store I/O・ledger 畳み込み・Pareto 判定・schema 検証（Phase 1a）、evaluate 実行機構（Phase 1b）、population ベースの propose（Phase 2）を提供する。
 
 - **バージョン**: 0.1.0
-- **依存**: core
+- **依存**: core, docker-runtime
 
 ### コンポーネント
 

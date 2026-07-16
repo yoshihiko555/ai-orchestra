@@ -41,6 +41,7 @@ Claude Code (Orchestrator)
     │   ├── antigravity-suggestions/  # Antigravity リサーチ提案
     │   ├── quality-gates/      # 品質ゲート
     │   ├── codd/              # ドキュメント整合性レイヤー（scan/validate）
+    │   ├── docker-runtime/    # ハーネス共通 Docker/broker ライフサイクル
     │   ├── skill-evolution/   # スキル自己改善ループ（二軸テレメトリ + オフライン反復）
     │   ├── git-workflow/     # Git/GitHub ワークフロー
     │   ├── cocoindex/          # MCP サーバー自動プロビジョニング
@@ -359,6 +360,7 @@ ai-orchestra/
 │   ├── codex-harness/     # Codex CLI 向け repo-local ハーネス（hooks/rules/schemas + 非対話 run/review スクリプト）
 │   ├── antigravity-suggestions/ # Antigravity リサーチ提案 hooks
 │   ├── quality-gates/     # 品質ゲート hooks
+│   ├── docker-runtime/    # ハーネス共通 Docker/broker ライフサイクル
 │   ├── skill-evolution/  # スキル自己改善ループ（テレメトリ hooks + オフライン CLI）
 │   ├── git-workflow/    # Git/GitHub ワークフロー（Issue・PR・開発フロー）
 │   ├── cocoindex/         # cocoindex MCP サーバーの自動プロビジョニング

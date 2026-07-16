@@ -545,3 +545,18 @@
     Ledger event schemas are enforced before append, suite identity disambiguates
     scenario ids, and every attempt retains the existing isolated worktree lifecycle.
     The final covered_by entry is an opt-in real Docker + Max OAuth E2E.
+
+- ev_id: EV-59
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_scenario_docker.py
+    packages/meta-harness/tests/test_evaluator_scoring_and_verdict.py
+    packages/docker-runtime/tests/test_docker_runtime.py
+  covered_by:
+    - packages/meta-harness/tests/test_scenario_docker.py
+    - packages/meta-harness/tests/test_evaluator_scoring_and_verdict.py::TestEvaluatorHash
+    - packages/docker-runtime/tests/test_docker_runtime.py
+  notes: existing meta-harness Docker tests remain unchanged while the shared runtime owns common behavior.

@@ -23,10 +23,14 @@ from typing import Any
 _LIB_DIR = Path(__file__).resolve().parent
 _PACKAGE_DIR = _LIB_DIR.parent
 _DOCKER_DIR = _PACKAGE_DIR / "docker"
+_DOCKER_RUNTIME_LIB = _PACKAGE_DIR.parent / "docker-runtime" / "lib"
 if str(_LIB_DIR) not in sys.path:
     sys.path.insert(0, str(_LIB_DIR))
+if str(_DOCKER_RUNTIME_LIB) not in sys.path:
+    sys.path.insert(0, str(_DOCKER_RUNTIME_LIB))
 
 import claude_credentials as credentials
+import docker_runtime_lifecycle as lifecycle
 import scenario_docker_cli as dcli
 import scenario_docker_profile as profile
 import scenario_process as sproc
@@ -51,6 +55,7 @@ CAPABILITY_TIMEOUT_SECONDS = 90
 STALE_MAX_AGE_SECONDS = 24 * 60 * 60
 WORKSPACE_EXPORT_TIMEOUT_SECONDS = 60
 _LOGGER = logging.getLogger(__name__)
+_RUNTIME_LABELS = lifecycle.RuntimeLabels(DOCKER_LABEL, STALE_MAX_AGE_SECONDS)
 
 
 class DockerScenarioError(RuntimeError):
@@ -149,22 +154,12 @@ class DockerBrokerSession:
             self._keepalive_thread = None
 
     def cleanup(self) -> None:
-        if self.cleaned:
-            return
-        self.stop_keepalive()
-        errors: list[str] = []
-        try:
-            self.refresh_metrics()
-        except DockerScenarioError as exc:
-            errors.append(str(exc))
-        if not _remove_container(self.container_name, runner=self.runner):
-            errors.append("could not remove credential broker container")
-        for network in (self.internal_network, self.external_network):
-            if not _remove_network(network, runner=self.runner):
-                errors.append(f"could not remove Docker network: {network}")
-        self.cleaned = not any("could not remove" in error for error in errors)
-        if errors:
-            raise DockerScenarioError("; ".join(errors))
+        lifecycle.cleanup_broker_session(
+            self,
+            error_type=DockerScenarioError,
+            remove_container=_remove_container,
+            remove_network=_remove_network,
+        )
 
 
 @dataclass
@@ -735,80 +730,19 @@ def _start_broker(
         }
     )
     owner_labels = _resource_labels(owner_id)
-    label_args = _label_args(owner_labels)
-    created: list[str] = []
-    try:
-        _checked(
-            [
-                "docker",
-                "network",
-                "create",
-                "--internal",
-                "--label",
-                f"{DOCKER_LABEL}=run",
-                *label_args,
-                internal_network,
-            ],
-            runner=runner,
-            message="could not create internal Docker network",
-        )
-        created.append(internal_network)
-        _checked(
-            [
-                "docker",
-                "network",
-                "create",
-                "--label",
-                f"{DOCKER_LABEL}=run",
-                *label_args,
-                external_network,
-            ],
-            runner=runner,
-            message="could not create broker egress network",
-        )
-        created.append(external_network)
-        env = profile.broker_env(config, run_token, port)
-        broker_run = [
-            "docker",
-            "run",
-            "-d",
-            "--rm",
-            "--name",
-            container_name,
-            "--network",
-            internal_network,
-            "--network-alias",
-            BROKER_ALIAS,
-            "--label",
-            f"{DOCKER_LABEL}=run",
-            *label_args,
-            "--read-only",
-            "--cap-drop=ALL",
-            "--security-opt=no-new-privileges",
-            "--pids-limit",
-            "64",
-            "--memory",
-            "128m",
-            "--cpus",
-            "0.5",
-            "--tmpfs",
-            "/run/secrets:rw,noexec,nosuid,nodev,size=64k,uid=65532,gid=65532,mode=0700",
-            "--tmpfs",
-            "/run/state:rw,noexec,nosuid,nodev,size=1m,uid=65532,gid=65532,mode=0700",
-            "--tmpfs",
-            "/tmp:rw,noexec,nosuid,nodev,size=16m,uid=65532,gid=65532,mode=0700",
-            *profile.container_env_args(env),
-            broker_image_id,
-        ]
-        _checked(broker_run, runner=runner, message="could not start credential broker")
-        _checked(
-            ["docker", "network", "connect", external_network, container_name],
-            runner=runner,
-            message="could not connect broker to egress network",
-        )
-        _inject_token(container_name, credential.access_token, runner=runner)
-        _wait_for_broker(container_name, port, broker_cfg, runner=runner)
-        session = DockerBrokerSession(
+    spec = lifecycle.BrokerContainerSpec(
+        docker_label=DOCKER_LABEL,
+        broker_alias=BROKER_ALIAS,
+        container_name=container_name,
+        internal_network=internal_network,
+        external_network=external_network,
+        broker_image_id=broker_image_id,
+        broker_env=profile.broker_env(config, run_token, port),
+        owner_labels=owner_labels,
+    )
+
+    def session_factory() -> DockerBrokerSession:
+        return DockerBrokerSession(
             container_name=container_name,
             internal_network=internal_network,
             external_network=external_network,
@@ -827,20 +761,27 @@ def _start_broker(
             runner=runner,
             idle_timeout_seconds=int(broker_cfg.get("idle_timeout_sec", 300)),
         )
-        session.start_keepalive()
-        return session
-    except Exception as exc:
-        cleanup_errors: list[str] = []
-        if not _remove_container(container_name, runner=runner):
-            cleanup_errors.append("could not remove failed credential broker container")
-        for network in reversed(created):
-            if not _remove_network(network, runner=runner):
-                cleanup_errors.append(f"could not remove failed Docker network: {network}")
-        if cleanup_errors:
-            raise DockerScenarioError(
-                f"credential broker startup failed: {exc}; " + "; ".join(cleanup_errors)
-            ) from exc
-        raise
+
+    return lifecycle.start_broker_container(
+        spec,
+        runner=runner,
+        checked=_checked,
+        remove_container=_remove_container,
+        remove_network=_remove_network,
+        inject_token=lambda: _inject_token(
+            container_name,
+            credential.access_token,
+            runner=runner,
+        ),
+        wait_ready=lambda: _wait_for_broker(
+            container_name,
+            port,
+            broker_cfg,
+            runner=runner,
+        ),
+        session_factory=session_factory,
+        error_type=DockerScenarioError,
+    )
 
 
 def ensure_images(
@@ -855,43 +796,15 @@ def ensure_images(
 
 
 def sweep_stale_resources(owner_id: str, *, runner: SubprocessRunner = subprocess.run) -> None:
-    containers = _run(
-        [
-            "docker",
-            "ps",
-            "-aq",
-            "--filter",
-            f"label={DOCKER_LABEL}=run",
-            "--filter",
-            f"label={OWNER_LABEL}={owner_id}",
-        ],
+    lifecycle.sweep_stale_resources(
+        _RUNTIME_LABELS,
+        owner_id,
         runner=runner,
-        timeout=20,
+        run_command=_run,
+        best_effort=_best_effort,
+        container_stale=_container_is_stale,
+        network_stale=_network_is_stale,
     )
-    if containers.returncode == 0:
-        for container in containers.stdout.split():
-            inspected = _inspect_resource(container, runner=runner)
-            if inspected is not None and _container_is_stale(inspected, owner_id):
-                _best_effort(["docker", "rm", "-f", container], runner=runner)
-    networks = _run(
-        [
-            "docker",
-            "network",
-            "ls",
-            "-q",
-            "--filter",
-            f"label={DOCKER_LABEL}=run",
-            "--filter",
-            f"label={OWNER_LABEL}={owner_id}",
-        ],
-        runner=runner,
-        timeout=20,
-    )
-    if networks.returncode == 0:
-        for network in networks.stdout.split():
-            inspected = _inspect_resource(network, network=True, runner=runner)
-            if inspected is not None and _network_is_stale(inspected, owner_id):
-                _best_effort(["docker", "network", "rm", network], runner=runner)
 
 
 def _run_smoke_container(
@@ -1001,19 +914,13 @@ def _broker_keepalive_loop(
     *,
     interval_seconds: int,
 ) -> None:
-    command = [
-        "docker",
-        "exec",
-        session.container_name,
-        "/usr/bin/python3",
-        CONTAINER_BROKER_SCRIPT,
-        "--health",
-        "--port",
-        str(session.port),
-    ]
-    while not stop.wait(interval_seconds):
-        if _run(command, runner=session.runner, timeout=10).returncode != 0:
-            return
+    lifecycle.broker_keepalive_loop(
+        session,
+        stop,
+        interval_seconds=interval_seconds,
+        broker_script=CONTAINER_BROKER_SCRIPT,
+        run_command=_run,
+    )
 
 
 def _isolation_config(config: dict) -> dict:
@@ -1086,77 +993,43 @@ def _remove_network(name: str, *, runner: SubprocessRunner) -> bool:
 
 
 def _owner_id(main_root: Path) -> str:
-    return hashlib.sha256(str(main_root.resolve()).encode()).hexdigest()[:16]
+    return lifecycle.owner_id(main_root)
 
 
 def _resource_labels(owner_id: str) -> dict[str, str]:
-    return {
-        OWNER_LABEL: owner_id,
-        PARENT_PID_LABEL: str(os.getpid()),
-        CREATED_AT_LABEL: str(int(time.time())),
-    }
+    return lifecycle.resource_labels(_RUNTIME_LABELS, owner_id)
 
 
 def _label_args(labels: dict[str, str]) -> list[str]:
-    args: list[str] = []
-    for key, value in sorted(labels.items()):
-        args.extend(["--label", f"{key}={value}"])
-    return args
+    return lifecycle.label_args(labels)
 
 
 def _inspect_resource(
     resource: str, *, network: bool = False, runner: SubprocessRunner
 ) -> dict[str, Any] | None:
-    command = ["docker"]
-    if network:
-        command.append("network")
-    command.extend(["inspect", resource])
-    completed = _run(command, runner=runner, timeout=10)
-    if completed.returncode != 0:
-        return None
-    try:
-        value = json.loads(completed.stdout)
-    except (ValueError, json.JSONDecodeError):
-        return None
-    return value[0] if isinstance(value, list) and value and isinstance(value[0], dict) else None
+    return lifecycle.inspect_resource(
+        resource,
+        network=network,
+        runner=runner,
+        run_command=_run,
+    )
 
 
 def _container_is_stale(inspected: dict[str, Any], owner_id: str) -> bool:
-    labels = (inspected.get("Config") or {}).get("Labels") or {}
-    if labels.get(OWNER_LABEL) != owner_id:
-        return False
-    try:
-        created_at = int(labels[CREATED_AT_LABEL])
-    except (KeyError, TypeError, ValueError):
-        return True
-    if time.time() - created_at >= STALE_MAX_AGE_SECONDS:
-        return True
-    if not bool((inspected.get("State") or {}).get("Running")):
-        return True
-    try:
-        parent_pid = int(labels[PARENT_PID_LABEL])
-    except (KeyError, TypeError, ValueError):
-        return True
-    # PID reuse can delay reclamation until STALE_MAX_AGE_SECONDS, but every run container
-    # also has an independent absolute lifetime and cannot remain active indefinitely.
-    return not _pid_alive(parent_pid)
+    return lifecycle.container_is_stale(
+        inspected,
+        owner_id,
+        labels=_RUNTIME_LABELS,
+        pid_checker=_pid_alive,
+    )
 
 
 def _network_is_stale(inspected: dict[str, Any], owner_id: str) -> bool:
-    labels = inspected.get("Labels") or {}
-    return labels.get(OWNER_LABEL) == owner_id and not (inspected.get("Containers") or {})
+    return lifecycle.network_is_stale(inspected, owner_id, labels=_RUNTIME_LABELS)
 
 
 def _pid_alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+    return lifecycle.pid_alive(pid)
 
 
 def _has_result_json(stdout: str) -> bool:

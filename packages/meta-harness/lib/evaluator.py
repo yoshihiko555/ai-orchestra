@@ -53,6 +53,7 @@ SubprocessRunner = Callable[..., subprocess.CompletedProcess]
 _THIS_FILE = Path(__file__).resolve()
 _COMMON_FILE = _LIB_DIR / "meta_harness_common.py"
 _PACKAGE_DIR = _LIB_DIR.parent
+_DOCKER_RUNTIME_DIR = _PACKAGE_DIR.parent / "docker-runtime"
 _EVALUATOR_SOURCE_FILES: tuple[tuple[str, Path], ...] = (
     ("lib/evaluator.py", _THIS_FILE),
     ("lib/meta_harness_common.py", _COMMON_FILE),
@@ -60,10 +61,28 @@ _EVALUATOR_SOURCE_FILES: tuple[tuple[str, Path], ...] = (
     ("lib/scenario_docker.py", _LIB_DIR / "scenario_docker.py"),
     ("lib/scenario_docker_cli.py", _LIB_DIR / "scenario_docker_cli.py"),
     ("lib/scenario_docker_profile.py", _LIB_DIR / "scenario_docker_profile.py"),
+    (
+        "docker-runtime/lib/docker_runtime_cli.py",
+        _DOCKER_RUNTIME_DIR / "lib" / "docker_runtime_cli.py",
+    ),
+    (
+        "docker-runtime/lib/docker_runtime_lifecycle.py",
+        _DOCKER_RUNTIME_DIR / "lib" / "docker_runtime_lifecycle.py",
+    ),
+    (
+        "docker-runtime/lib/docker_runtime_profile.py",
+        _DOCKER_RUNTIME_DIR / "lib" / "docker_runtime_profile.py",
+    ),
     ("lib/scenario_isolation.py", _LIB_DIR / "scenario_isolation.py"),
     ("lib/scenario_process.py", _LIB_DIR / "scenario_process.py"),
-    ("docker/broker/broker.py", _PACKAGE_DIR / "docker" / "broker" / "broker.py"),
-    ("docker/broker/Dockerfile", _PACKAGE_DIR / "docker" / "broker" / "Dockerfile"),
+    (
+        "docker/broker/broker.py",
+        _DOCKER_RUNTIME_DIR / "docker" / "broker" / "broker.py",
+    ),
+    (
+        "docker/broker/Dockerfile",
+        _DOCKER_RUNTIME_DIR / "docker" / "broker" / "Dockerfile",
+    ),
     ("docker/scenario/Dockerfile", _PACKAGE_DIR / "docker" / "scenario" / "Dockerfile"),
 )
 _LOGGER = logging.getLogger(__name__)

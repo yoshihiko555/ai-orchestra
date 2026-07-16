@@ -10,6 +10,7 @@ AI Orchestra のパッケージ一覧と詳細。`packages/*/agents` と `packag
 | [agent-routing](#agent-routing)                     | cli-tools.yaml 駆動のエージェントルーティング提案                              | 基盤         |
 | [quality-gates](#quality-gates)                     | 実装後レビュー・テスト分析・自動 lint の品質ゲート                             | 品質         |
 | [loop-harness](#loop-harness)                       | Issue 起点の Maker / Checker 反復と PR レビュー対応を安全に駆動                | ハーネス     |
+| [docker-runtime](#docker-runtime)                   | ハーネス共通の Docker / broker ライフサイクル基盤                              | 基盤         |
 | [codd](#codd)                                       | ドキュメント依存グラフの scan / validate（整合性レイヤー）                     | 整合性       |
 | [audit](#audit)                                     | 統一イベントログによるオーケストレーション監査基盤                             | 監査         |
 | [codex-suggestions](#codex-suggestions)             | ファイル編集・プラン完了時の Codex 相談提案                                    | 提案         |
@@ -89,6 +90,16 @@ Issue 起点の反復ループを、永続 state / journal、lease fencing、two
 - scripts: `loop_step.py`（LP-1 の JSON CLI。start / attach / resume、propose / complete、reconcile / heartbeat、Checker 実行）
 - skills (facet build): `loop-issue`（Issue 消化ループの LP-1 オーケストレーター）
 - config: `loop-harness.yaml`, `loops/issue-loop.yaml`
+
+---
+
+### docker-runtime
+
+meta-harness と loop-harness が共有する Docker CLI、hardened security profile、dual-homed broker、
+所有 container/network の cleanup を提供する。worktree・git・成果物・設定スキーマは各 harness に残す。
+
+- **バージョン**: 0.1.0
+- **依存**: core
 
 ---
 

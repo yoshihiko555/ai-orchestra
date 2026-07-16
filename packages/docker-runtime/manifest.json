@@ -1,0 +1,13 @@
+{
+  "name": "docker-runtime",
+  "version": "0.1.0",
+  "description": "ハーネス共通の Docker コンテナ・broker ライフサイクル基盤",
+  "depends": ["core"],
+  "hooks": {},
+  "files": [],
+  "skills": [],
+  "agents": [],
+  "rules": [],
+  "scripts": [],
+  "config": []
+}

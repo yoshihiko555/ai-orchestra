@@ -98,6 +98,7 @@
 - [ ] EV-56（境界 / must）: impact context は pre-overlay baseline の影響 skill 集合・逆写像入力 hash・base commit を記録し、promote が最新 `origin/main` で再計算した値と不一致なら再評価を要求する。suite 不在 skill は `unverified_impacts` として継続し PR 本文に警告するが、評価後に suite が追加された場合は stale として拒否する — 根拠: 詳細設計 §4-1、§12-2
 - [ ] EV-57（異常 / must）: `regression.max_affected_suites` / `regression.max_budget_usd` 超過は evaluation error になり、train/holdout は同じ残予算を共有する。broker 経由 judge を含む保守的費用を回帰上限と loop `budget_usd` に算入し、`regression.*` の変更は evaluator hash を変えて旧評価を stale にする — 根拠: 詳細設計 §4-1、§13
 - [ ] EV-58（正常 / must）: `regression_run_completed` と `evaluation_completed` は append 前に schema 検証され、回帰 attempt ごとに own run と独立した worktree を作成・破棄する。同名 scenario は `(suite_id, scenario_id)` で区別する — 根拠: 詳細設計 §1-2、§2-1、§4-1
+- [ ] EV-59（正常 / must）: Docker CLI・security profile・broker/resource lifecycle を `docker-runtime` へ抽出した後も、meta-harness の既存 command、例外、cleanup、capability gate の振る舞いを変更しない。共有 runtime source は evaluator hash の入力へ含める — 根拠: `docs/design/loop-harness-isolation.md` §8 Phase 0
 - N/A: hook 型の類型別観点（PreToolUse/PostToolUse ブロック挙動等）は本パッケージが hook を持たないため非該当。config-loading への依存のみが hook 型的性質であり、EV-22 でカバーする
 
 ### 運用メモ
