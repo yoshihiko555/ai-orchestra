@@ -46,7 +46,7 @@
     "evaluator_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "target": {
       "type": "string",
-      "pattern": "^(claude-harness|skill:[a-z0-9-]+)$"
+      "pattern": "^(claude-harness|skill:[a-z0-9-]+|routing-config)$"
     },
     "holdout": { "type": "boolean" },
     "project_root": { "type": "string" },

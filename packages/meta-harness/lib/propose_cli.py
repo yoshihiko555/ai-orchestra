@@ -42,6 +42,12 @@ def cmd_propose(
     as_json: bool,
 ) -> int:
     """filtered view を構築し proposer を 1 回起動して候補登録する（Sec11）。"""
+    if target == "routing-config":
+        print(
+            "error: proposer does not support target 'routing-config'; register a human candidate",
+            file=sys.stderr,
+        )
+        return EXIT_VALIDATION_ERROR
     ctx = _resolve_context(project)
     if ctx is None:
         return EXIT_VALIDATION_ERROR
@@ -127,6 +133,10 @@ def _run_propose_pipeline(
     loop_id: str | None = None,
     iteration: int | None = None,
 ) -> str:
+    if target == "routing-config":
+        raise prop.ProposerError(
+            "proposer does not support target 'routing-config'; register a human candidate"
+        )
     proposer_cfg = config.get("proposer") or {}
     tool = proposer_cfg.get("tool", "codex")
     parent_id = _select_proposal_parent(

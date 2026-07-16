@@ -477,6 +477,7 @@ def apply_overlay(
     schema_dir: Path,
     *,
     target: str,
+    created_by: str = "human",
     inherited_overlay_dir: Path | None = None,
 ) -> None:
     """overlay を worktree に適用する（Sec2-1 手順2-3）。register 時と同じ検証を再実行する。"""
@@ -499,7 +500,13 @@ def apply_overlay(
 
     config_patch_path = overlay_dir / mh.CONFIG_PATCH_FILENAME
     if config_patch_path.is_file():
-        _apply_config_patch(config_patch_path, config, schema_dir)
+        _apply_config_patch(
+            config_patch_path,
+            config,
+            schema_dir,
+            target=target,
+            created_by=created_by,
+        )
 
 
 def apply_registered_candidate_overlay(
@@ -525,6 +532,7 @@ def apply_registered_candidate_overlay(
             worktree_dir,
             schema_dir,
             target=target,
+            created_by=str(manifest.get("created_by") or "human"),
         )
         return
 
@@ -568,6 +576,7 @@ def apply_registered_candidate_overlay(
             worktree_dir,
             schema_dir,
             target=target,
+            created_by=str(item.get("created_by") or ""),
             inherited_overlay_dir=inherited_overlay if target.startswith("skill:") else None,
         )
         inherited_overlay = item_overlay
@@ -658,13 +667,41 @@ def _verify_registered_overlay_integrity(manifest: dict, overlay_dir: Path) -> N
         raise EvaluatorStageError(
             "overlay_apply", "overlay_error", "candidate overlay manifest mismatch"
         )
-    if mh.compute_config_hash(overlay_dir, {}) != manifest.get("config_hash"):
+    try:
+        actual_config_hash = mh.compute_config_hash(overlay_dir, {})
+    except ValueError as exc:
+        raise EvaluatorStageError("overlay_apply", "overlay_error", str(exc)) from exc
+    if actual_config_hash != manifest.get("config_hash"):
         raise EvaluatorStageError(
             "overlay_apply", "overlay_error", "candidate overlay hash mismatch"
         )
+    config_patch_path = overlay_dir / mh.CONFIG_PATCH_FILENAME
+    expected_patch_hash = manifest.get("config_patch_hash")
+    if config_patch_path.is_file():
+        try:
+            actual_patch_hash = mh.compute_config_patch_hash(
+                mh.read_config_patch_file(config_patch_path)
+            )
+        except ValueError as exc:
+            raise EvaluatorStageError("overlay_apply", "overlay_error", str(exc)) from exc
+        if actual_patch_hash != expected_patch_hash:
+            raise EvaluatorStageError(
+                "overlay_apply", "overlay_error", "candidate config patch hash mismatch"
+            )
+    elif expected_patch_hash is not None:
+        raise EvaluatorStageError(
+            "overlay_apply", "overlay_error", "candidate config patch sidecar is missing"
+        )
 
 
-def _apply_config_patch(config_patch_path: Path, config: dict, schema_dir: Path) -> None:
+def _apply_config_patch(
+    config_patch_path: Path,
+    config: dict,
+    schema_dir: Path,
+    *,
+    target: str,
+    created_by: str,
+) -> None:
     """Sec1-8: Phase 1 は config patch を常に拒否する（register 後の allowlist 変更に対する
     defense in depth の再検証）。"""
     try:
@@ -673,7 +710,13 @@ def _apply_config_patch(config_patch_path: Path, config: dict, schema_dir: Path)
         raise EvaluatorStageError(
             "overlay_apply", "overlay_error", f"invalid config-patch.json: {exc}"
         ) from None
-    violations = mh.validate_config_patch(config_patch, config, schema_dir)
+    violations = mh.validate_config_patch(
+        config_patch,
+        config,
+        schema_dir,
+        target=target,
+        created_by=created_by,
+    )
     if violations:
         raise EvaluatorStageError("overlay_apply", "overlay_error", "; ".join(violations))
 

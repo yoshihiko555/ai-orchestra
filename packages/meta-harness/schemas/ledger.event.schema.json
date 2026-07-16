@@ -112,7 +112,7 @@
         "scenario_id": { "type": "string" },
         "target": {
           "type": "string",
-          "pattern": "^(claude-harness|skill:[a-z0-9-]+)$"
+          "pattern": "^(claude-harness|skill:[a-z0-9-]+|routing-config)$"
         },
         "suite_id": { "type": "string" },
         "suite_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
@@ -161,7 +161,7 @@
         "cand_id": { "type": "string" },
         "target": {
           "type": "string",
-          "pattern": "^(claude-harness|skill:[a-z0-9-]+)$"
+          "pattern": "^(claude-harness|skill:[a-z0-9-]+|routing-config)$"
         },
         "suite_id": { "type": "string", "pattern": "^skill:[a-z0-9-]+$" },
         "suite_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
@@ -209,7 +209,7 @@
         "cand_id": { "type": "string" },
         "target": {
           "type": "string",
-          "pattern": "^(claude-harness|skill:[a-z0-9-]+)$"
+          "pattern": "^(claude-harness|skill:[a-z0-9-]+|routing-config)$"
         },
         "holdout": { "type": "boolean" },
         "own_run_ids": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
@@ -316,7 +316,7 @@
         "schema_version": { "type": "string", "const": "1.0" },
         "target": {
           "type": "string",
-          "pattern": "^(claude-harness|skill:[a-z0-9-]+)$"
+          "pattern": "^(claude-harness|skill:[a-z0-9-]+|routing-config)$"
         },
         "frontier": { "type": "array", "items": { "type": "string" } },
         "dominated": { "type": "array", "items": { "type": "string" } }

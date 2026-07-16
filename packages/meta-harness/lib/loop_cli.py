@@ -274,6 +274,10 @@ def _normal_stop_event(events: list[dict], loop_id: str) -> dict | None:
 
 
 def _validate_target(target: str) -> None:
+    if target == "routing-config":
+        raise LoopValidationError(
+            "loop does not support target 'routing-config' because it requires human registration"
+        )
     if not TARGET_PATTERN.fullmatch(target):
         raise LoopValidationError(f"invalid target: {target!r}")
     try:

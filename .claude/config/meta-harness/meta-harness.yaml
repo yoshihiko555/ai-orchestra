@@ -74,9 +74,11 @@ overlay:
     - "docs/evaluation/"
     - ".github/"
 config_patch:
-  allowlist: [] # Phase 1: 常に空（config patch は全面拒否）。Phase 2 で
-    # agent-routing/cli-tools.yaml の agents.*.tool / codex.model /
-    # antigravity.model を追加予定
+  # 実効 allowlist はコード定数 CONFIG_PATCH_ALLOWLIST_CEILING の部分集合に限定
+  allowlist:
+    - "agent-routing/cli-tools.yaml#agents.*.tool"
+    - "agent-routing/cli-tools.yaml#codex.model"
+    - "agent-routing/cli-tools.yaml#antigravity.model"
 proposer:
   tool: codex # codex | claude-bare（Sec11-3-5）。利用不能時は fail-closed（暗黙フォールバック禁止）
   max_iterations: 10

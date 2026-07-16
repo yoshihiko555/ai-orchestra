@@ -25,6 +25,35 @@ def _load(name: str) -> dict:
     return mh.load_schema(SCHEMA_DIR, name)
 
 
+def _target_patterns(value: object) -> list[str]:
+    if isinstance(value, dict):
+        patterns = [
+            pattern
+            for key, pattern in value.items()
+            if key == "pattern"
+            and isinstance(pattern, str)
+            and pattern.startswith("^(claude-harness|skill:")
+        ]
+        return patterns + [item for child in value.values() for item in _target_patterns(child)]
+    if isinstance(value, list):
+        return [item for child in value for item in _target_patterns(child)]
+    return []
+
+
+def test_target_patterns_stay_in_sync_with_runtime_validator() -> None:
+    schema_names = (
+        "candidate.manifest.schema.json",
+        "frontier.schema.json",
+        "ledger.event.schema.json",
+        "run.metadata.schema.json",
+        "scenario.schema.json",
+    )
+    patterns = [pattern for name in schema_names for pattern in _target_patterns(_load(name))]
+
+    assert len(patterns) == 8
+    assert set(patterns) == {mh.TARGET_PATTERN.pattern}
+
+
 class TestCandidateManifestSchema:
     _VALID = {
         "schema_version": "1.0",

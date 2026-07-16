@@ -40,7 +40,10 @@ def _register_candidate(
         main_root,
         config,
         cand_id=cand_id,
-        manifest=_manifest(cand_id, generation=generation),
+        manifest={
+            **_manifest(cand_id, generation=generation),
+            "config_hash": mh.compute_config_hash(overlay_dir, config),
+        },
         overlay_dir=overlay_dir,
         overlay_files=["facets/foo/SKILL.md"],
     )

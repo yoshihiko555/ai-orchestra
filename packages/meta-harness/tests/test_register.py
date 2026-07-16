@@ -143,7 +143,10 @@ class TestGenerateCandIdNonceAvoidsCollision:
         assert cand_ids[0] != cand_ids[1]  # 同一秒・同一 slug でも nonce により異なる
 
         for cand_id in cand_ids:
-            manifest = _manifest(cand_id)
+            manifest = {
+                **_manifest(cand_id),
+                "config_hash": mh.compute_config_hash(overlay_dir, config),
+            }
             mh.register_candidate(
                 git_project,
                 config,
@@ -179,6 +182,7 @@ class TestRegisterImmutability:
         overlay_dir = git_project / "overlay-src"
         (overlay_dir / "facets" / "example-facet").mkdir(parents=True)
         (overlay_dir / "facets" / "example-facet" / "SKILL.md").write_text("v1", encoding="utf-8")
+        manifest["config_hash"] = mh.compute_config_hash(overlay_dir, config)
 
         mh.register_candidate(
             git_project,
@@ -205,7 +209,11 @@ class TestRegisterImmutability:
                 git_project,
                 config,
                 cand_id=manifest["cand_id"],
-                manifest={**manifest, "description": "second attempt"},
+                manifest={
+                    **manifest,
+                    "description": "second attempt",
+                    "config_hash": mh.compute_config_hash(overlay_dir, config),
+                },
                 overlay_dir=overlay_dir,
                 overlay_files=["facets/example-facet/SKILL.md"],
             )
@@ -225,9 +233,9 @@ class TestRegisterImmutability:
         assert after_content == original_content == "v1"
 
 
-class TestRegisterConfigPatchRejection:
-    # EV-05
-    def test_config_patch_is_rejected_in_phase_1a(
+class TestRegisterConfigPatchValidation:
+    # EV-65
+    def test_config_patch_is_rejected_for_non_routing_target(
         self, git_project: Path, tmp_path: Path, run_meta, default_overlay
     ) -> None:
         run_meta("init", project=git_project, check=True)
@@ -250,14 +258,14 @@ class TestRegisterConfigPatchRejection:
         )
 
         assert result.returncode == 2
-        assert "config_patch is rejected in Phase 1a" in result.stderr
+        assert "non-empty config patches require target='routing-config'" in result.stderr
         assert (
             not any(_candidates_dir(git_project).iterdir())
             if _candidates_dir(git_project).is_dir()
             else True
         )
 
-    def test_malformed_config_patch_shape_reports_schema_errors_not_phase1a_message(
+    def test_malformed_config_patch_shape_reports_schema_errors(
         self, git_project: Path, tmp_path: Path, run_meta, default_overlay
     ) -> None:
         run_meta("init", project=git_project, check=True)
@@ -278,12 +286,10 @@ class TestRegisterConfigPatchRejection:
         )
 
         assert result.returncode == 2
-        assert "config_patch is rejected in Phase 1a" not in result.stderr
         assert "missing required key 'value'" in result.stderr
 
-    # PR #162 レビュー指摘 (FIX C): `.local.yaml` で config_patch.allowlist を非空にしても、
-    # Phase 1a では CONFIG_PATCH_ENABLED=False によりコードレベルで全面拒否されること
-    def test_config_patch_still_rejected_when_local_yaml_populates_allowlist(
+    # EV-65: allowlist に含まれていても target gate は迂回できない。
+    def test_local_allowlist_does_not_bypass_target_gate(
         self, git_project: Path, tmp_path: Path, run_meta, default_overlay
     ) -> None:
         run_meta("init", project=git_project, check=True)
@@ -312,7 +318,7 @@ class TestRegisterConfigPatchRejection:
         )
 
         assert result.returncode == 2
-        assert "rejected in Phase 1a" in result.stderr
+        assert "non-empty config patches require target='routing-config'" in result.stderr
 
     # PR #162 レビュー指摘 (FIX D): overlay/config-patch.json が外部ファイルへの symlink の
     # 場合、予約サイドカー名の早期 continue で迂回されず symlink として拒否されること
@@ -606,7 +612,10 @@ class TestRegisterAtomicStaging:
             git_project,
             config,
             cand_id=cand_id,
-            manifest=_manifest(cand_id),
+            manifest={
+                **_manifest(cand_id),
+                "config_hash": mh.compute_config_hash(overlay_dir, config),
+            },
             overlay_dir=overlay_dir,
             overlay_files=["facets/example-facet/SKILL.md"],
         )
@@ -625,7 +634,10 @@ class TestRegisterAtomicStaging:
             git_project,
             config,
             cand_id=cand_id,
-            manifest=_manifest(cand_id, "first"),
+            manifest={
+                **_manifest(cand_id, "first"),
+                "config_hash": mh.compute_config_hash(overlay_dir, config),
+            },
             overlay_dir=overlay_dir,
             overlay_files=["facets/example-facet/SKILL.md"],
         )
@@ -635,7 +647,10 @@ class TestRegisterAtomicStaging:
                 git_project,
                 config,
                 cand_id=cand_id,
-                manifest=_manifest(cand_id, "second"),
+                manifest={
+                    **_manifest(cand_id, "second"),
+                    "config_hash": mh.compute_config_hash(overlay_dir, config),
+                },
                 overlay_dir=overlay_dir,
                 overlay_files=["facets/example-facet/SKILL.md"],
             )
