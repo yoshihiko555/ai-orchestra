@@ -19,6 +19,31 @@ lp2:
   # created_at-ascending FIFO unless a project opts in (docs/design/loop-harness-cli.md
   # §3.1 mentions the concept but does not enumerate a config key for it in §5.1).
   priority_labels: []
+  isolation:
+    # Docker execution remains disabled until Phase 4 containment tests pass.
+    backend: none
+    execution_backend: none
+    image: ai-orchestra/loop-harness-scenario:2.1.207
+    image_pin: null
+    auto_build_images: true # false の場合 image は @sha256:<digest> 形式必須（タグ形式は DockerImageError）
+    image_cache:
+      manifest_path: .claude/loop/docker-image-cache.json
+      keep_generations: 3
+      lock_path: .claude/loop/docker-image-build.lock
+      builder_name: loop-harness-builder
+      buildkit_cache_max_age: 168h
+      buildkit_cache_max_size: 10g
+    resources:
+      pids_limit: 64
+      memory: 1g
+      cpus: 1.0
+    checker:
+      read_only_worktree: true
+    broker:
+      image: ai-orchestra/loop-harness-broker:0.1.0
+      port_range: [8790, 8990]
+      idle_timeout_sec: 300
+      startup_timeout_sec: 30
 
 pr_review:
   poll_interval_seconds: 120

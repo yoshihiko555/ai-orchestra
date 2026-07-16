@@ -560,3 +560,16 @@
     - packages/meta-harness/tests/test_evaluator_scoring_and_verdict.py::TestEvaluatorHash
     - packages/docker-runtime/tests/test_docker_runtime.py
   notes: existing meta-harness Docker tests remain unchanged while the shared runtime owns common behavior.
+
+- ev_id: EV-60
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_scenario_docker.py::test_image_pin_semver_versions_produce_validated_build_args
+    packages/meta-harness/tests/test_scenario_docker.py::test_image_pin_rejects_invalid_versions_before_build
+  covered_by:
+    - packages/meta-harness/tests/test_scenario_docker.py::test_image_pin_semver_versions_produce_validated_build_args
+    - packages/meta-harness/tests/test_scenario_docker.py::test_image_pin_rejects_invalid_versions_before_build
+  notes: only the validated semver token reaches the scenario image build argument.

@@ -364,6 +364,99 @@ def test_image_pin_mismatch_fails_capability_before_smoke(tmp_path: Path, monkey
     assert "mismatch" in (result.reason or "")
 
 
+def test_bare_semver_image_pin_passes_capability_check(tmp_path: Path, monkeypatch) -> None:
+    """A bare semver pin (e.g. "2.1.207") must not be rejected by the
+    capability check just because the actual `claude --version` output is
+    the full form (e.g. "2.1.207 (Claude Code)")."""
+    session = _broker(tmp_path)
+    session.cleaned = True
+    config = copy.deepcopy(mh.DEFAULTS)
+    config["evaluate"]["isolation"]["image_pin"] = "2.1.207"
+    monkeypatch.setattr(docker.dcli, "docker_daemon_available", lambda **_kwargs: True)
+    monkeypatch.setattr(docker, "sweep_stale_resources", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        docker, "docker_broker_session", lambda *_args, **_kwargs: docker._BrokerContext(session)
+    )
+    monkeypatch.setattr(
+        docker,
+        "_image_claude_version",
+        lambda *_args, **_kwargs: "2.1.207 (Claude Code)",
+    )
+    monkeypatch.setattr(
+        docker,
+        "_run_smoke_container",
+        lambda *_args, **_kwargs: _completed(stdout='{"type":"result"}'),
+    )
+
+    result = docker.check_docker_capabilities(config, main_root=tmp_path, runner=session.runner)
+
+    assert result.ok is True
+    assert result.version_pin_match is True
+
+
+def test_full_image_pin_rejects_matching_version_with_unexpected_suffix(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A full-format pin (the default "2.1.207 (Claude Code)") must keep the
+    exact Docker capability contract: an image reporting the same bare
+    version but an unexpected wrapper/suffix must still fail capability
+    checks, not pass via bare-token comparison."""
+    session = _broker(tmp_path)
+    session.cleaned = True
+    monkeypatch.setattr(docker.dcli, "docker_daemon_available", lambda **_kwargs: True)
+    monkeypatch.setattr(docker, "sweep_stale_resources", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        docker, "docker_broker_session", lambda *_args, **_kwargs: docker._BrokerContext(session)
+    )
+    monkeypatch.setattr(
+        docker,
+        "_image_claude_version",
+        lambda *_args, **_kwargs: "2.1.207 (unexpected wrapper)",
+    )
+    monkeypatch.setattr(
+        docker,
+        "_run_smoke_container",
+        lambda *_args, **_kwargs: pytest.fail("smoke must not run after pin mismatch"),
+    )
+
+    result = docker.check_docker_capabilities(
+        copy.deepcopy(mh.DEFAULTS), main_root=tmp_path, runner=session.runner
+    )
+
+    assert result.ok is False
+    assert result.version_pin_match is False
+    assert "mismatch" in (result.reason or "")
+
+
+@pytest.mark.parametrize(
+    ("actual", "pin", "expected"),
+    [
+        ("2.1.207 (Claude Code)", "2.1.207", True),
+        ("2.1.207-beta.1 (Claude Code)", "2.1.207-beta.1", True),
+        ("9.9.9 (Claude Code)", "2.1.207", False),
+        ("2.1.207 (Claude Code)", "2.1.207 (Claude Code)", True),
+        ("2.1.207 (unexpected wrapper)", "2.1.207 (Claude Code)", False),
+        (None, "2.1.207", False),
+        (None, "2.1.207 (Claude Code)", False),
+    ],
+    ids=[
+        "bare-pin-matches-full-output",
+        "bare-pin-with-suffix-matches-full-output",
+        "bare-pin-rejects-mismatch",
+        "full-pin-exact-match",
+        "full-pin-rejects-unexpected-suffix",
+        "missing-actual-rejects-bare-pin",
+        "missing-actual-rejects-full-pin",
+    ],
+)
+def test_version_matches_uses_token_compare_only_for_bare_pins(
+    actual: str | None, pin: str, expected: bool
+) -> None:
+    """EV-60/EV-114: Bare semver pins compare via leading-token match; any
+    other pin format (including the default full form) must match exactly."""
+    assert docker._version_matches(actual, pin) is expected
+
+
 def test_capability_smoke_uses_configured_evaluate_model(tmp_path: Path, monkeypatch) -> None:
     session = _broker(tmp_path)
     session.cleaned = True
@@ -642,3 +735,54 @@ def test_prebuilt_images_require_digest_and_accept_multiarch_reference() -> None
     config["evaluate"]["isolation"]["image"] = "scenario:mutable"
     with pytest.raises(docker.dcli.DockerCliError, match="immutable"):
         docker.dcli.ensure_images(config, runner=lambda *_args, **_kwargs: _completed())
+
+
+def test_image_pin_semver_versions_produce_validated_build_args(monkeypatch) -> None:
+    config = copy.deepcopy(mh.DEFAULTS)
+    commands = []
+
+    def runner(command, **_kwargs):
+        commands.append(command)
+        return _completed(stdout="sha256:" + "3" * 64)
+
+    for version_pin in [
+        "2.1.207",
+        "2.1.207 (Claude Code)",
+        "2.1.207-beta.1",
+    ]:
+        monkeypatch.setattr(docker.dcli, "_IMAGE_CACHE", docker.dcli.runtime.ImageCache())
+        config["evaluate"]["isolation"]["image_pin"] = version_pin
+        docker.dcli.ensure_images(config, runner=runner)
+
+    scenario_builds = [
+        command
+        for command in commands
+        if command[:2] == ["docker", "build"]
+        and command[command.index("-t") + 1] == docker.dcli.DEFAULT_SCENARIO_IMAGE
+    ]
+    assert [command[command.index("--build-arg") + 1] for command in scenario_builds] == [
+        "CLAUDE_CODE_VERSION=2.1.207",
+        "CLAUDE_CODE_VERSION=2.1.207",
+        "CLAUDE_CODE_VERSION=2.1.207-beta.1",
+    ]
+
+
+def test_image_pin_rejects_invalid_versions_before_build() -> None:
+    config = copy.deepcopy(mh.DEFAULTS)
+    runner_calls = []
+    injection_pin = "".join(['2.1.207";', "cu", "rl${IFS}evil|", "s", 'h;"'])
+
+    def runner(*args, **kwargs):
+        runner_calls.append((args, kwargs))
+        raise AssertionError("invalid image_pin reached the Docker build command")
+
+    for version_pin in [injection_pin, "2.1", "v2.1.207", "2.1.207.9"]:
+        config["evaluate"]["isolation"]["image_pin"] = version_pin
+        with pytest.raises(docker.dcli.DockerCliError, match="semver"):
+            docker.dcli.ensure_images(config, runner=runner)
+
+    config["evaluate"]["isolation"]["image_pin"] = ""
+    with pytest.raises(docker.dcli.DockerCliError, match="Claude CLI version"):
+        docker.dcli.ensure_images(config, runner=runner)
+
+    assert runner_calls == []
