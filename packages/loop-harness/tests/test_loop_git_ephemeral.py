@@ -625,6 +625,78 @@ def test_finalize_ignores_host_global_filter_config(
     git_ephemeral.cleanup_ephemeral_git(session)
 
 
+def test_finalize_neutralizes_alternates_confused_deputy_object_smuggling(
+    linked_worktree: GitFixture,
+    tmp_path: Path,
+) -> None:
+    """Reproduces the PR #211 Phase 2 review Critical PoC (src/dst/other repos).
+
+    Maker rewrites `objects/info/alternates` to add a third, unrelated object store ("other")
+    alongside the trusted `common_dir/objects` line, then fabricates a baseline-descendant commit
+    (parent = baseline_sha, so `merge-base --is-ancestor` alone would not catch it) whose tree
+    swaps `tracked.txt`'s blob for one that only resolves through the injected alternates line.
+    Without restoring `alternates` before any host git process touches `<ephemeral_dir>`, the
+    finalize fetch would resolve and permanently copy that foreign object into the shared
+    `common_dir/objects`. This test asserts the fixed behavior: the foreign object never lands in
+    the shared object store, and the import safe-stops instead.
+    """
+    session = _prepare(linked_worktree)
+
+    other_repo = tmp_path / "other-repo"
+    other_repo.mkdir()
+    _git("init", "--initial-branch=main", cwd=other_repo)
+    _git("config", "user.name", "Other Repo", cwd=other_repo)
+    _git("config", "user.email", "other@example.invalid", cwd=other_repo)
+    secret_content = b"forbidden object from an unrelated repository\n"
+    (other_repo / "secret.txt").write_bytes(secret_content)
+    _git("add", "secret.txt", cwd=other_repo)
+    _git("commit", "-m", "other repo secret", cwd=other_repo)
+    foreign_blob_sha = _git("rev-parse", "HEAD:secret.txt", cwd=other_repo).stdout.strip()
+    other_git_dir = _git(
+        "rev-parse", "--path-format=absolute", "--git-dir", cwd=other_repo
+    ).stdout.strip()
+    other_objects_dir = Path(other_git_dir) / "objects"
+
+    # Maker rewrites alternates to add the unrelated object store alongside the trusted one.
+    alternates = Path(session.ephemeral_dir, "objects", "info", "alternates")
+    alternates.write_text(f"{session.common_dir}/objects\n{other_objects_dir}\n", encoding="utf-8")
+
+    # Maker fabricates a baseline-descendant commit that swaps `tracked.txt`'s blob for the
+    # foreign one, and mirrors the same bytes into the working tree so the later
+    # `git status --porcelain` finalize check (a pure content-hash comparison, not an
+    # object-store-locality one) stays clean.
+    env = _ephemeral_env(session)
+    Path(session.worktree_path, "tracked.txt").write_bytes(secret_content)
+    _git(
+        "update-index",
+        "--cacheinfo",
+        f"100644,{foreign_blob_sha},tracked.txt",
+        env=env,
+    )
+    tree_sha = _git("write-tree", env=env).stdout.strip()
+    crafted_sha = _git(
+        "commit-tree", tree_sha, "-p", session.baseline_sha, "-m", "malicious", env=env
+    ).stdout.strip()
+    _git("update-ref", session.branch_ref, crafted_sha, env=env)
+
+    with pytest.raises(git_ephemeral.EphemeralGitSafetyStop) as caught:
+        git_ephemeral.finalize_ephemeral_git(session)
+
+    assert caught.value.stop_reason == "git_ref_import_failed"
+    assert _shared_ref(session) == session.baseline_sha
+    _assert_import_ref_missing(session)
+    assert alternates.read_text(encoding="utf-8") == f"{session.common_dir}/objects\n"
+    foreign_blob_in_common = _git(
+        "--git-dir", session.common_dir, "cat-file", "-e", foreign_blob_sha, check=False
+    )
+    assert foreign_blob_in_common.returncode != 0
+    crafted_commit_in_common = _git(
+        "--git-dir", session.common_dir, "cat-file", "-e", crafted_sha, check=False
+    )
+    assert crafted_commit_in_common.returncode != 0
+    git_ephemeral.cleanup_ephemeral_git(session)
+
+
 def test_finalize_rejects_checkout_branch_change_before_cas(
     linked_worktree: GitFixture,
 ) -> None:

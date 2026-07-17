@@ -296,7 +296,16 @@ def _prepare_ephemeral_git(
 
 
 def build_maker_git_mount_spec(session: EphemeralGitSession) -> MakerGitMountSpec:
-    """Return ordered 1:1 mounts; the .git file overlay must follow the worktree mount."""
+    """Return ordered 1:1 mounts; the .git file overlay must follow the worktree mount.
+
+    `mounts` is an ordered tuple, not a set: the `pinned_git_pointer` -> `<worktree>/.git` ro
+    mount must be applied *after* the rw worktree mount, so the more specific `.git` mount wins
+    and only that single file ends up read-only (see the design doc §4.3.2 note this mirrors).
+    The Docker backend that wires this spec into an actual `docker run`/mount invocation (Phase 4,
+    currently unimplemented -- `execution_backend` stays `none` through Phase 2) MUST preserve
+    this ordering when translating `mounts` into `-v`/bind-mount flags; reordering (e.g. sorting
+    mounts by path) would silently drop the `.git` write protection.
+    """
     return MakerGitMountSpec(
         mounts=(
             BindMountSpec(session.worktree_path, session.worktree_path, False),
@@ -375,6 +384,7 @@ def _finalize_ephemeral_git(
     runner: GitRunner,
 ) -> EphemeralGitFinalizeResult:
     _restore_ephemeral_git_config(session)
+    _restore_ephemeral_git_alternates(session)
     new_sha_result = _run_git(
         ["--git-dir", session.ephemeral_dir, "rev-parse", "--verify", session.branch_ref],
         runner=runner,
@@ -638,8 +648,98 @@ def _restore_ephemeral_git_config(session: EphemeralGitSession) -> None:
         ) from exc
 
 
+def _restore_ephemeral_git_alternates(session: EphemeralGitSession) -> None:
+    """Atomically force objects/info/alternates back to the one trusted common-objects line.
+
+    Confused-deputy fix (Issue #211 Phase 2 review, Critical): `<ephemeral_dir>` is a Maker-owned
+    rw directory, so `objects/info/alternates` is just as attacker-controlled as `config` (which
+    `_restore_ephemeral_git_config` already neutralizes). Unlike `config`, the trusted content
+    here does not need a pinned snapshot -- it is always exactly one line derived from
+    `session.common_dir`, which is itself part of the trusted session. If Maker rewrites
+    `alternates` to point at an arbitrary object store reachable by the *host* driver process
+    (not necessarily reachable from inside the container) and fabricates a baseline-descendant
+    commit whose tree references objects that only resolve through that rewritten alternates
+    file, the fast-forward ancestry check alone would not catch it (ancestry only walks the
+    commit-parent graph). The subsequent host-side `fetch` from `<ephemeral_dir>` would then
+    permanently copy those foreign objects into the shared `common_dir/objects`. Restoring this
+    file at the very start of finalize -- the same point `_restore_ephemeral_git_config` runs at,
+    before any host git process (including the `rev-parse` a few lines below) touches
+    `<ephemeral_dir>` -- closes that path entirely: by the time anything reads through
+    `alternates`, it can only ever resolve into the already-shared, already-trusted object store.
+
+    `objects/info/http-alternates` (a legacy alternate-object-source mechanism `git fetch`/
+    `upload-pack` also honors) is removed outright for the same reason; loop-harness never writes
+    one, so any presence of this file is itself evidence of tampering.
+
+    Not handled here (accepted, see Medium follow-up in docs/design/loop-harness-isolation.md
+    §4.3.3 / §9.2, tracked in Issue #255): loose objects or pack files Maker writes directly under
+    `<ephemeral_dir>/objects/` (outside of `info/`). Those are part of the ephemeral repo's own
+    object store, not reached via alternates redirection, and are indistinguishable from the
+    blob/tree objects any legitimate `git add`/`git commit` inside the container already creates
+    from Maker-authored file content -- restricting *that* is a size/count quota concern (DoS),
+    not a confused-deputy one, and is tracked separately.
+    """
+    objects_dir = session.ephemeral_dir / "objects"
+    info_dir = objects_dir / "info"
+    for path in (objects_dir, info_dir):
+        if path.is_symlink():
+            raise EphemeralGitInfrastructureError(
+                "ephemeral git objects directory has been replaced with a symlink",
+                details={"path": str(path)},
+            )
+        if path.exists() and not path.is_dir():
+            raise EphemeralGitInfrastructureError(
+                "ephemeral git objects directory is not a directory",
+                details={"path": str(path)},
+            )
+    try:
+        info_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise EphemeralGitInfrastructureError(
+            "failed to recreate the ephemeral git objects/info directory",
+            details={"info_dir": str(info_dir)},
+        ) from exc
+
+    http_alternates = info_dir / "http-alternates"
+    if http_alternates.is_symlink() or http_alternates.exists():
+        try:
+            http_alternates.unlink()
+        except OSError as exc:
+            raise EphemeralGitInfrastructureError(
+                "failed to remove the untrusted ephemeral git http-alternates file",
+                details={"http_alternates": str(http_alternates)},
+            ) from exc
+
+    trusted_alternates = f"{session.common_dir / 'objects'}\n".encode()
+    alternates = info_dir / "alternates"
+    temporary = info_dir / f".alternates.loop-harness-{secrets.token_hex(8)}"
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(temporary, flags, 0o600)
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(trusted_alternates)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, alternates)
+    except OSError as exc:
+        if temporary.exists():
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise EphemeralGitInfrastructureError(
+            "failed to restore the trusted ephemeral git alternates file",
+            details={"ephemeral_dir": str(session.ephemeral_dir)},
+        ) from exc
+
+
 def _verify_git_pointer(session: EphemeralGitSession) -> None:
     git_pointer = session.worktree_path / ".git"
+    if git_pointer.is_symlink():
+        raise EphemeralGitInfrastructureError(
+            "worktree .git pointer differs from its trusted pinned snapshot",
+            details={"git_pointer": str(git_pointer)},
+        )
     try:
         current = git_pointer.read_bytes()
         pinned = session.pinned_git_pointer.read_bytes()
@@ -648,7 +748,7 @@ def _verify_git_pointer(session: EphemeralGitSession) -> None:
             "could not verify the worktree .git pointer",
             details={"git_pointer": str(git_pointer)},
         ) from exc
-    if git_pointer.is_symlink() or not git_pointer.is_file() or current != pinned:
+    if not git_pointer.is_file() or current != pinned:
         raise EphemeralGitInfrastructureError(
             "worktree .git pointer differs from its trusted pinned snapshot",
             details={"git_pointer": str(git_pointer)},

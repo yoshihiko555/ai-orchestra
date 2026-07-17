@@ -293,8 +293,34 @@ fast-forward-only の `fetch` + 期待値照合つき `update-ref`（CAS）を�
 > を排除するため、4.3.1 手順5の trusted snapshot を host Git 起動前に原子的に復元する。host の
 > global/system config に同名 filter が定義されている場合も Maker 管理 `.gitattributes` から起動
 > できないよう、これらの host Git 環境は `GIT_CONFIG_GLOBAL=/dev/null` /
-> `GIT_CONFIG_NOSYSTEM=1` に固定する。
+> `GIT_CONFIG_NOSYSTEM=1` に固定する。**Fix-5 のこの `-c` 上書き集合（`hardened_git_config_args()`
+> への集約）は `<ephemeral_dir>` に触れる呼び出しに限定せず、driver が所有する全ての git 呼び出し
+> （common dir 側の呼び出しも含む）に一律で適用される実装とした。個々の呼び出しごとに
+> 「この呼び出しは ephemeral_dir に触れるか」を判定する分岐を持たせるより、単純さ・レビュー容易性
+> を優先した結果であり、ephemeral_dir に無関係な呼び出しへの適用は過剰防御（実害はない）である。**
 
+> **[Fix-7. 2026-07-17 レビュー指摘反映。Critical]** `<ephemeral_dir>/objects/info/alternates`
+> は Fix-5 の `config` と同じ脅威モデルに属する: Maker が rw で書き換え放題であり、host がこの
+> ディレクトリを対象に git コマンドを実行する前提が崩れる。Maker が `alternates` を host から
+> 到達可能な任意の object store（Maker のコンテナからは見えなくても、host のフルファイルシステム
+> 権限では読める場所）に書き換え、その store にしか存在しないオブジェクトを参照する baseline の
+> 子孫 commit（`merge-base --is-ancestor` の祖先チェックは commit の親リンクのみを辿るため、
+> tree/blob の中身がどこから来たかまでは検証しない）を fabricate すると、手順4の `fetch` はその
+> 外部オブジェクトを解決・pack し、**共有 `common_dir/objects` へ永続的にコピーしてしまう**
+> （confused deputy: host が Maker の代わりに信頼境界外のオブジェクトを共有領域へ持ち込む）。
+> 対策として、`config` の trusted snapshot 復元（Fix-5）と**同じ finalize 冒頭のタイミング**で、
+> `alternates` を `<common_dir>/objects` の 1 行だけへ原子的に強制上書きする（内容は
+> `common_dir` から常に導出できる決定論的な値のため、`config` と異なり別途 snapshot を持つ必要は
+> ない）。同じ理由で `objects/info/http-alternates`（loop-harness 自身は書き込まないため、存在
+> 自体が改ざんの証跡）も削除する。`<ephemeral_dir>/objects/` 配下に Maker が直接書き込んだ loose
+> object・pack file（`info/` の外側）は対象外とする（alternates 経由の外部オブジェクト参照では
+> なく、Maker が worktree 上で正当に編集したファイル内容から `git add`/`git commit` が新規生成
+> するオブジェクトと区別がつかないため）。件数・サイズの上限が無いこと自体は別の DoS 観点として
+> Issue #255（フォローアップ、9.2 節の受容リスクにも追記）で追跡する。
+
+0. **[Fix-7]** 手順1（最初に host git が `<ephemeral_dir>` に触れる箇所）より前に、`config`
+   の trusted snapshot 復元（4.3.1 手順5・Fix-5）と合わせて `alternates` を
+   `<common_dir>/objects` 1 行のみへ原子的に強制上書きし、`http-alternates` を削除する。
 1. `new_sha = git --git-dir=<ephemeral_dir> <hardened args + Fix-5 追加分> rev-parse refs/heads/<branch>`
 2. `new_sha == baseline_sha` なら「Maker がコミットしなかった」として扱う（既存 `_verify_maker_commit`
    のロジックを、比較対象を「worktree の `git status --porcelain`」から「ephemeral repo の ref 移動」
@@ -311,7 +337,9 @@ fast-forward-only の `fetch` + 期待値照合つき `update-ref`（CAS）を�
    - `git -C <common_dir> <hardened args + Fix-5 追加分> fetch <ephemeral_dir> <branch>:<import_ref>`
      （`<import_ref>` はどの worktree にも checkout されていないため拒否されない。
      Fix-5 追加分は fetch の転送元である `<ephemeral_dir>` 側の `uploadpack.packObjectsHook`
-     を無効化するために必須）
+     を無効化するために必須。手順0（Fix-7）で `alternates` が既に強制済みのため、この fetch が
+     解決できるオブジェクトは `<ephemeral_dir>` 自身のローカルストアと `<common_dir>/objects`
+     のみに限定されている）
    - `imported_sha = git -C <common_dir> rev-parse <import_ref>`
      （事前に ephemeral branch から固定した `new_sha` と完全一致することを確認し、不一致は
      `git_ref_import_failed` として CAS へ進まない）
@@ -323,7 +351,6 @@ fast-forward-only の `fetch` + 期待値照合つき `update-ref`（CAS）を�
      （**`update-ref <ref> <new> <old>` は git 組み込みの原子的 compare-and-swap**。
      `<old>` に渡した `baseline_sha` が現在の ref 値と一致しない場合、git 自身が更新を拒否する
      ため、初版で別コマンドとして行っていた「事前の SHA 比較」は不要になる）
-   - `git -C <common_dir> update-ref -d <import_ref>`（一時 ref を削除）
    - `git -C <worktree_path> reset --mixed HEAD`（CAS 前に checkout branch が対象 branch と一致する
      ことを確認済みであり、CAS 後の `HEAD` は新 tip を指す。明示した別 branch ref へ reset すると
      checkout branch の切替レース時に別 branch を動かし得るため、`HEAD` に限定する。worktree 固有の index だけを
@@ -332,6 +359,14 @@ fast-forward-only の `fetch` + 期待値照合つき `update-ref`（CAS）を�
      `.git` は 4.3.1/4.3.2 節で ro 保護済みの正規ポインタを指したままなので、この操作は
      汚染された gitdir を踏まない。この `reset` 自体は `<common_dir>` を `--git-dir` として
      解決するため `<ephemeral_dir>` の汚染config は影響しない）
+   - `import_ref = refs/loop-import/<action_id>` の削除（`git -C <common_dir> update-ref -d
+     <import_ref>`）は、CAS と reset の間の一手順としては行わない。**実装は fetch/CAS/reset を
+     含む finalize 本体全体を包み、成功・失敗いずれの経路でも（`finally` 相当のクリーンアップと
+     して）finalize の最初と最後の両方で `import_ref` を削除する**（`finalize_ephemeral_git()` の
+     wrapper が本体呼び出しの前後で行う）。これにより、fetch 失敗・非 fast-forward・CAS 競合・
+     reset 失敗のいずれで finalize が異常終了しても import ref は必ず片付く（9 節の「全経路で
+     削除される」保証は、特定ステップ間への配置ではなくこの前後クリーンアップ構造によって
+     成立している）。
 5. `shutil.rmtree(ephemeral_dir)`。`pinned_git_pointer` の ro bind mount も併せて解除する。
 
 この手順により、共有 common dir への書き込みは**手順 4 の一時 ref 経由 fetch + CAS update-ref +
@@ -597,6 +632,10 @@ config で切替可能な追加バックエンドとして導入する（確定�
 - 4.3.2 節 Fix-3 の `.git` ro overlay は「host 側の事後処理が汚染された gitdir を踏まない」ことを
   保証するものであり、Maker 自身が `.git` 経由でコンテナ内から `common_dir/worktrees/<name>` へ
   到達すること自体は、当該パスをそもそもマウントしていないことで防いでいる（二重の防御）。
+- ephemeral fetch（4.3.3 手順4）が転送するオブジェクトのサイズ・件数には上限がない。Maker が
+  worktree 上で正当に生成した巨大ファイルをそのまま commit した場合、host 権限で共有
+  `common_dir/objects` へ書き込まれディスク枯渇 DoS を招き得る（Fix-7 が閉じた alternates 経由の
+  confused deputy とは別の量的リスク）。Phase 2 では対応せず、Issue #255 でフォローアップする。
 
 ---
 
@@ -606,9 +645,13 @@ config で切替可能な追加バックエンドとして導入する（確定�
 - meta-harness 側 `scenario_docker_cli.py` へのイメージライフサイクル修正（5.3 節）のフォローアップ Issue 起票
 - loop-harness 専用 Dockerfile の具体的なベースイメージ選定（Claude CLI バージョン pin の運用は
   meta-harness の `image_pin` 方式を踏襲する想定）
-- ephemeral GIT_DIR の一時 ref fetch・`merge-base --is-ancestor` 失敗・CAS `update-ref` 失敗時
-  （4.3.3 手順4）の安全停止シーケンスの詳細（`design:loop-harness-cli` の `stop` action・
-  `stop_reason` 語彙への追加が必要。新規 `stop_reason: git_ref_not_fast_forward` を想定）
+- ~~ephemeral GIT_DIR の一時 ref fetch・`merge-base --is-ancestor` 失敗・CAS `update-ref` 失敗時
+  （4.3.3 手順4）の安全停止シーケンスの詳細~~ → Phase 2（Issue #211）で確定済み:
+  `git_ref_import_failed`（fetch/import ref 不一致） /
+  `git_ref_not_fast_forward`（`merge-base --is-ancestor` exit 1） /
+  `git_ref_cas_rejected`（CAS 競合）の 3 `stop_reason` として実装され、`EphemeralGitSafetyStop`
+  経由で `loop_git_ephemeral.py` の各経路に対応するテストがある（`docs/evaluation/loop-harness.md`
+  EV-118）。
 - 封じ込め検証テスト（cgroup 回収・network 遮断）の具体的な自動テスト形式（meta-harness の
   スパイク手順を自動テスト化する方式を想定。`docs/design/meta-harness-scenario-backend-spikes.md`
   を参考にする）
