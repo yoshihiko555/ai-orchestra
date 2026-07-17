@@ -240,7 +240,12 @@ def test_routing_config_empty_claude_harness_holdout_is_vacuously_verified(
         config,
         _registration(target=ROUTING_CONFIG_TARGET),
     )
-    own_paths, own_docs = _suite(ROUTING_CONFIG_TARGET, holdout=True)
+    own_paths = ev.validate_target_suite(PACKAGE_DIR, SCHEMA_DIR, ROUTING_CONFIG_TARGET)
+    own_docs = [
+        (path, scenario)
+        for path in own_paths
+        if (scenario := ev.load_scenario(path, SCHEMA_DIR))["holdout"]
+    ]
     monkeypatch.setattr(
         ev,
         "candidate_impact_context",
@@ -251,15 +256,15 @@ def test_routing_config_empty_claude_harness_holdout_is_vacuously_verified(
     def fake_run_scenario_set(**kwargs):
         if not kwargs["scenario_docs"]:
             return []
-        scenario_id = str(kwargs["scenario_docs"][0][1]["id"])
         return [
             _result(
                 suite_id=kwargs["suite_id"],
-                scenario_id=scenario_id,
+                scenario_id=str(scenario["id"]),
                 verdict="pass",
                 cost_usd=0.1,
                 tokens=10,
             )
+            for _, scenario in kwargs["scenario_docs"]
         ]
 
     monkeypatch.setattr(ev, "_run_scenario_set", fake_run_scenario_set)

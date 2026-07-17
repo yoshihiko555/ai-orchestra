@@ -79,6 +79,8 @@ config_patch:
     - "agent-routing/cli-tools.yaml#agents.*.tool"
     - "agent-routing/cli-tools.yaml#codex.model"
     - "agent-routing/cli-tools.yaml#antigravity.model"
+  # proposer routing-config 候補の reject / overfit retire 後に待つ loop round 数
+  proposer_cooldown_rounds: 3
 proposer:
   tool: codex # codex | claude-bare（Sec11-3-5）。利用不能時は fail-closed（暗黙フォールバック禁止）
   max_iterations: 10

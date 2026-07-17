@@ -135,7 +135,10 @@ DEFAULTS: dict[str, Any] = {
             ".github/",
         ],
     },
-    "config_patch": {"allowlist": list(CONFIG_PATCH_ALLOWLIST_CEILING)},
+    "config_patch": {
+        "allowlist": list(CONFIG_PATCH_ALLOWLIST_CEILING),
+        "proposer_cooldown_rounds": 3,
+    },
     "proposer": {
         "tool": "codex",
         "max_iterations": 10,
@@ -1762,6 +1765,7 @@ def validate_config_patch(
     codex_models: frozenset[str] | None = None
     antigravity_models: frozenset[str] | None = None
     known_agent_names: frozenset[str] | None = None
+    proposer_key_kinds: set[str] = set()
     for index, item in enumerate(config_patch):
         file_value = str(item["file"])
         key_path = str(item["key_path"])
@@ -1793,6 +1797,8 @@ def validate_config_patch(
             continue
         matched_file, matched_segments = matching_entries[0]
         ceiling_entry = f"{matched_file}#{'.'.join(matched_segments)}"
+        if created_by == "proposer":
+            proposer_key_kinds.add(ceiling_entry)
         allowed_created_by = CONFIG_PATCH_ALLOWED_CREATED_BY.get(ceiling_entry)
         if allowed_created_by is None:
             errors.append(f"{item_label}: no created_by policy for ceiling entry: {ceiling_entry}")
@@ -1860,6 +1866,11 @@ def validate_config_patch(
                     )
             continue
         errors.append(f"{item_label}: unsupported config patch key: {target_key}")
+    if len(proposer_key_kinds) > 1:
+        errors.append(
+            "created_by='proposer' config patch must use exactly one key kind; mixed kinds: "
+            + ", ".join(sorted(proposer_key_kinds))
+        )
     return errors
 
 

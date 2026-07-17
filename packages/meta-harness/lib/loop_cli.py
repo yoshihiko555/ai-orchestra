@@ -303,6 +303,7 @@ def _drive_loop(main_root: Path, config: dict, project_dir: Path, spec: LoopSpec
                 _stop_loop(main_root, config, spec, guard_reason)
                 return guard_reason
             iteration = max(iterations, default=0) + 1
+            _enforce_routing_config_rate_limits(events, config, spec, iteration)
             cand_id = _propose_candidate(main_root, config, project_dir, spec, iteration)
         else:
             iteration, cand_id = orphan
@@ -362,6 +363,68 @@ def _pre_iteration_guard(spec: LoopSpec, iterations: dict[int, dict]) -> str | N
     if max(iterations, default=0) >= spec.max_iterations:
         return "max_iterations"
     return None
+
+
+def _enforce_routing_config_rate_limits(
+    events: list[dict], config: dict, spec: LoopSpec, iteration: int
+) -> None:
+    if spec.target != "routing-config":
+        return
+    registrations = state._loop_registrations(events, spec.loop_id)
+    if iteration in registrations:
+        raise LoopValidationError(
+            f"routing-config iteration {iteration} already has a registered candidate"
+        )
+
+    trigger = _routing_config_cooldown_trigger(events, spec, registrations)
+    if trigger is None:
+        return
+    trigger_iteration, trigger_reason = trigger
+    cooldown_rounds = _positive_int(
+        (config.get("config_patch") or {}).get("proposer_cooldown_rounds", 3),
+        "config_patch.proposer_cooldown_rounds",
+    )
+    next_allowed = trigger_iteration + cooldown_rounds + 1
+    if iteration < next_allowed:
+        raise LoopValidationError(
+            "routing-config proposer cooldown is active after "
+            f"{trigger_reason} at iteration {trigger_iteration}; "
+            f"next allowed iteration is {next_allowed}"
+        )
+
+
+def _routing_config_cooldown_trigger(
+    events: list[dict],
+    spec: LoopSpec,
+    registrations: dict[int, tuple[str, int]],
+) -> tuple[int, str] | None:
+    by_candidate = {
+        cand_id: (iteration, event_index)
+        for iteration, (cand_id, event_index) in registrations.items()
+    }
+    triggers: list[tuple[int, str]] = []
+    for event_index, event in enumerate(events):
+        cand_id = str(event.get("cand_id") or "")
+        registration = by_candidate.get(cand_id)
+        if registration is None:
+            continue
+        iteration, registered_index = registration
+        kind = event.get("event")
+        if kind == "evaluation_completed":
+            state.validate_event(event, "evaluation_completed")
+            if event.get("target") != spec.target:
+                raise LoopValidationError(f"evaluation target mismatch for {cand_id}")
+            if event_index <= registered_index:
+                raise LoopValidationError(f"evaluation precedes registration for {cand_id}")
+            if event.get("verdict") in {"fail", "error"}:
+                triggers.append((iteration, f"evaluation {event['verdict']}"))
+        elif kind == "status_changed" and event.get("reason") == "overfit":
+            state.validate_event(event, "status_changed")
+            if event_index <= registered_index:
+                raise LoopValidationError(f"status change precedes registration for {cand_id}")
+            if event.get("to") == "retired":
+                triggers.append((iteration, "overfit retirement"))
+    return max(triggers, default=None)
 
 
 def _propose_candidate(

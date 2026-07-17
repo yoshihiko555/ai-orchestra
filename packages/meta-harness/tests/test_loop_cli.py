@@ -24,6 +24,50 @@ loop_cli = helpers.loop_cli
 mh = helpers.mh
 
 
+def _routing_loop_spec(project: Path, config: dict) -> loop_cli.LoopSpec:
+    loop_id = "loop-20260717-120000-routing"
+    event = {
+        "event": "loop_started",
+        "ts": mh.now_iso(),
+        "schema_version": "1.0",
+        "loop_id": loop_id,
+        "target": "routing-config",
+        "budget_usd": None,
+        "max_iterations": 10,
+        "baseline_best_quality": 0.0,
+    }
+    mh.append_ledger_event(project, config, event)
+    return loop_cli.LoopSpec(loop_id, "routing-config", None, 10, 0.0, 0)
+
+
+def _append_routing_evaluation(project: Path, config: dict, cand_id: str, verdict: str) -> None:
+    mh.append_ledger_event(
+        project,
+        config,
+        {
+            "event": "evaluation_completed",
+            "ts": mh.now_iso(),
+            "schema_version": "1.0",
+            "evaluation_id": "eval-20260717-120000-deadbeef",
+            "cand_id": cand_id,
+            "target": "routing-config",
+            "holdout": False,
+            "own_run_ids": [],
+            "own_suite_hash": _HASH,
+            "evaluator_hash": _HASH,
+            "own_critical_pass": verdict == "pass",
+            "regression_results": [],
+            "verdict": verdict,
+            "unverified_impacts": [],
+            "evaluation_base_commit": "a" * 40,
+            "routing_config_base_hash": _HASH,
+            "impacted_targets": [],
+            "impact_input_hash": _HASH,
+            "regression_cost_usd": 0.0,
+        },
+    )
+
+
 def test_routing_config_target_is_rejected_before_proposer(
     git_project: Path, monkeypatch, capsys
 ) -> None:
@@ -43,6 +87,70 @@ def test_routing_config_target_is_rejected_before_proposer(
     assert exit_code == loop_cli.EXIT_VALIDATION_ERROR
     assert "requires human registration" in capsys.readouterr().err
     assert not any(event.get("event") == "loop_started" for event in _events(git_project, config))
+
+
+# EV-88
+def test_routing_config_rate_limit_allows_only_one_candidate_per_iteration(
+    git_project: Path,
+) -> None:
+    config = _config()
+    mh.init_store(git_project, config)
+    spec = _routing_loop_spec(git_project, config)
+    _register_loop_candidate(git_project, config, spec, 1)
+
+    with pytest.raises(loop_cli.LoopValidationError, match="already has a registered candidate"):
+        loop_cli._enforce_routing_config_rate_limits(_events(git_project, config), config, spec, 1)
+
+
+# EV-88
+@pytest.mark.parametrize("verdict", ["fail", "error"])
+def test_routing_config_rejected_candidate_starts_ledger_backed_cooldown(
+    git_project: Path, verdict: str
+) -> None:
+    config = _config()
+    mh.init_store(git_project, config)
+    spec = _routing_loop_spec(git_project, config)
+    cand_id = _register_loop_candidate(git_project, config, spec, 1)
+    _append_routing_evaluation(git_project, config, cand_id, verdict)
+    events = _events(git_project, config)
+
+    with pytest.raises(loop_cli.LoopValidationError, match="next allowed iteration is 5"):
+        loop_cli._enforce_routing_config_rate_limits(events, config, spec, 4)
+
+    loop_cli._enforce_routing_config_rate_limits(events, config, spec, 5)
+
+
+# EV-88
+def test_routing_config_overfit_retirement_starts_configured_cooldown(
+    git_project: Path,
+) -> None:
+    config = _config(config_patch={"proposer_cooldown_rounds": 1})
+    mh.init_store(git_project, config)
+    spec = _routing_loop_spec(git_project, config)
+    cand_id = _register_loop_candidate(git_project, config, spec, 1)
+    mh.append_ledger_event(
+        git_project,
+        config,
+        {
+            "event": "status_changed",
+            "ts": mh.now_iso(),
+            "schema_version": "1.0",
+            "cand_id": cand_id,
+            "from": "evaluated",
+            "to": "retired",
+            "reason": "overfit",
+        },
+    )
+    events = _events(git_project, config)
+
+    with pytest.raises(loop_cli.LoopValidationError, match="next allowed iteration is 3"):
+        loop_cli._enforce_routing_config_rate_limits(events, config, spec, 2)
+
+    loop_cli._enforce_routing_config_rate_limits(events, config, spec, 3)
+
+
+def test_routing_config_cooldown_default_is_three_rounds() -> None:
+    assert mh.DEFAULTS["config_patch"]["proposer_cooldown_rounds"] == 3
 
 
 @pytest.mark.parametrize(

@@ -219,6 +219,81 @@ class TestValidateConfigPatch:
 
         assert errors == []
 
+    # EV-87
+    def test_proposer_allows_multiple_items_of_the_same_key_kind(self) -> None:
+        patch = [
+            {
+                "file": "agent-routing/cli-tools.yaml",
+                "key_path": "agents.debugger.tool",
+                "value": "codex",
+            },
+            {
+                "file": "agent-routing/cli-tools.yaml",
+                "key_path": "agents.tester.tool",
+                "value": "claude-direct",
+            },
+        ]
+
+        errors = mh.validate_config_patch(
+            patch,
+            _DEFAULT_OVERLAY_CONFIG,
+            SCHEMA_DIR,
+            target="routing-config",
+            created_by="proposer",
+        )
+
+        assert errors == []
+
+    # EV-87
+    def test_proposer_mixed_key_kinds_are_rejected(self) -> None:
+        patch = [
+            {
+                "file": "agent-routing/cli-tools.yaml",
+                "key_path": "agents.debugger.tool",
+                "value": "codex",
+            },
+            {
+                "file": "agent-routing/cli-tools.yaml",
+                "key_path": "antigravity.model",
+                "value": "gemini-3.1-pro",
+            },
+        ]
+
+        errors = mh.validate_config_patch(
+            patch,
+            _DEFAULT_OVERLAY_CONFIG,
+            SCHEMA_DIR,
+            target="routing-config",
+            created_by="proposer",
+        )
+
+        assert any("mixed kinds" in error for error in errors)
+
+    # EV-87
+    def test_human_may_mix_key_kinds(self) -> None:
+        patch = [
+            {
+                "file": "agent-routing/cli-tools.yaml",
+                "key_path": "agents.debugger.tool",
+                "value": "codex",
+            },
+            {
+                "file": "agent-routing/cli-tools.yaml",
+                "key_path": "antigravity.model",
+                "value": "gemini-3.1-pro",
+            },
+        ]
+
+        errors = mh.validate_config_patch(
+            patch,
+            _DEFAULT_OVERLAY_CONFIG,
+            SCHEMA_DIR,
+            target="routing-config",
+            created_by="human",
+        )
+
+        assert errors == []
+
     # EV-80
     def test_proposer_codex_model_patch_is_rejected(self) -> None:
         patch = [
