@@ -286,6 +286,55 @@ def test_prepare_normalizes_filesystem_cleanup_failure_to_typed_error(
         _prepare(linked_worktree)
 
 
+def test_prepare_rejects_uncommitted_worktree_change_left_over_from_prior_action(
+    linked_worktree: GitFixture,
+) -> None:
+    # Simulates worktree_manager.create_worktree() reusing a worktree left dirty by a previous,
+    # interrupted action (Fix-10, PR #256 review, High). Without this check the leftover content
+    # would silently seed the new ephemeral index and could ride along into a candidate commit.
+    Path(linked_worktree.worktree_path, "tracked.txt").write_text(
+        "leftover from a previous interrupted action, never committed\n", encoding="utf-8"
+    )
+    runtime_dir = (
+        linked_worktree.project_dir / ".claude" / "loop" / LOOP_ID / "docker-runtime" / ACTION_ID
+    )
+
+    with pytest.raises(git_ephemeral.EphemeralGitInfrastructureError, match="dirty|status"):
+        _prepare(linked_worktree)
+
+    assert not runtime_dir.exists()
+
+
+def test_prepare_rejects_skip_worktree_hidden_drift_left_over_from_prior_action(
+    linked_worktree: GitFixture,
+) -> None:
+    # The leftover drift is hidden behind a skip-worktree bit set on the worktree's own,
+    # Maker-reachable index -- exactly the class of concealment Fix-9 already defeats at
+    # finalize. prepare's fresh, host-only trusted index (seeded via read-tree, which never
+    # carries index extension bits) must not be fooled by it either.
+    _git("update-index", "--skip-worktree", "tracked.txt", cwd=linked_worktree.worktree_path)
+    Path(linked_worktree.worktree_path, "tracked.txt").write_text(
+        "hidden by skip-worktree\n", encoding="utf-8"
+    )
+    assert _git("status", "--porcelain", cwd=linked_worktree.worktree_path).stdout == ""
+
+    with pytest.raises(git_ephemeral.EphemeralGitInfrastructureError, match="dirty|status"):
+        _prepare(linked_worktree)
+
+
+def test_prepare_rejects_assume_unchanged_hidden_drift_left_over_from_prior_action(
+    linked_worktree: GitFixture,
+) -> None:
+    _git("update-index", "--assume-unchanged", "tracked.txt", cwd=linked_worktree.worktree_path)
+    Path(linked_worktree.worktree_path, "tracked.txt").write_text(
+        "hidden by assume-unchanged\n", encoding="utf-8"
+    )
+    assert _git("status", "--porcelain", cwd=linked_worktree.worktree_path).stdout == ""
+
+    with pytest.raises(git_ephemeral.EphemeralGitInfrastructureError, match="dirty|status"):
+        _prepare(linked_worktree)
+
+
 def test_build_maker_git_mount_spec_preserves_overlay_order_and_one_to_one_paths(
     linked_worktree: GitFixture,
 ) -> None:

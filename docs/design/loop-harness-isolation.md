@@ -248,6 +248,17 @@ fast-forward-only の `fetch` + 期待値照合つき `update-ref`（CAS）を�
     trusted な内容として一度だけスナップショット）。4.3.2 節でこのファイルを
     `<worktree_path>/.git` に **ro で上書き bind mount** することで、worktree 自体は rw でも
     `.git` ポインタだけはコンテナから書き換え不能にする。
+11. **[Fix-10. 2026-07-17 PR #256 レビュー指摘反映。High]** `ephemeral_dir` の作成（手順4）より前に、
+    Maker がまだ到達できない `common_dir` を `GIT_DIR` とし、`baseline_sha` の tree から
+    `read-tree` で新規構築した host 専用の一時 index に対して `git status --porcelain` を実行し、
+    worktree が baseline に対して dirty でないことを検証する。`worktree_manager.create_worktree()`
+    は前回アクションの worktree を再利用し得るため、これを省略すると前回中断アクションの
+    未コミット変更（あるいは `--skip-worktree`/`--assume-unchanged` で隠された変更）が
+    `ephemeral_dir` の index seed に紛れ込み、事後処理（4.3.3 節手順3・Fix-9）の trusted-tree
+    検証をすり抜けたまま共有 branch へ書き戻され得る。検証には 4.3.3 節手順3（Fix-9）と同じ
+    trusted-index 比較ロジックを、比較先を `ephemeral_dir`/`new_sha` ではなく `common_dir`/
+    `baseline_sha` に差し替えて再利用する。dirty と判定された場合は `ephemeral_dir` を作成せず
+    `EphemeralGitInfrastructureError` で fail-closed する。
 
 #### 4.3.2 コンテナ実行
 
