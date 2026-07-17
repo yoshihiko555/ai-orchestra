@@ -36,6 +36,22 @@ _VALID_PROPOSAL = {
     "risk_notes": "May overfit to artifact-oriented scenarios.",
 }
 
+_VALID_CONFIG_PATCH_PROPOSAL = {
+    "schema_version": "1.0",
+    "hypothesis": "Route debugger work directly through Claude.",
+    "theme": "route debugger directly",
+    "config_patch": [
+        {
+            "file": "agent-routing/cli-tools.yaml",
+            "key_path": "agents.debugger.tool",
+            "value": "claude-direct",
+        }
+    ],
+    "based_on_runs": ["run-20260101-000000-cand-scn-a1-abcd"],
+    "expected_effect": "The routing-sensitive scenario should improve.",
+    "risk_notes": "May reduce deep debugging quality.",
+}
+
 
 class TestProposalSchema:
     def test_valid_proposal_round_trips_through_json_and_schema(self) -> None:
@@ -43,6 +59,17 @@ class TestProposalSchema:
         decoded = json.loads(encoded)
 
         assert proposer.validate_proposal(decoded, SCHEMA_DIR) == []
+
+    def test_valid_config_patch_proposal_passes_the_simple_schema(self) -> None:
+        assert proposer.validate_proposal(_VALID_CONFIG_PATCH_PROPOSAL, SCHEMA_DIR) == []
+
+    def test_schema_leaves_payload_exclusivity_to_registration(self) -> None:
+        schema = json.loads((SCHEMA_DIR / "proposal.schema.json").read_text(encoding="utf-8"))
+        serialized = json.dumps(schema, sort_keys=True)
+
+        assert "oneOf" not in serialized
+        assert "changes" not in schema["required"]
+        assert "config_patch" not in schema["required"]
 
     def test_rejects_path_outside_facets(self) -> None:
         proposal = json.loads(json.dumps(_VALID_PROPOSAL))
@@ -196,3 +223,23 @@ class TestProposerPrompt:
         assert "facets/policies/shared-policy.md" not in disabled_prompt
         assert "facets/instructions/alpha.md" in enabled_prompt
         assert "facets/instructions/alpha.md" in disabled_prompt
+
+    def test_routing_config_prompt_lists_only_phase_a_menu(self, tmp_path: Path) -> None:
+        prompt = proposer.render_proposer_prompt(
+            view_dir=tmp_path / "view",
+            frontier_doc=None,
+            config={},
+            package_dir=PACKAGE_DIR,
+            target="routing-config",
+            valid_based_on_run_ids=("run-routing-baseline",),
+        )
+
+        assert "agents.*.tool" in prompt
+        assert "agents.debugger.tool = codex" in prompt
+        assert "allowed values: antigravity | auto | claude-direct | codex" in prompt
+        assert "antigravity.model" in prompt
+        assert "allowed values from model_allowlist: gemini-3.1-pro" in prompt
+        assert "current value: gemini-3.1-pro-high" in prompt
+        assert "codex.model" not in prompt
+        assert "config_patch のみ" in prompt
+        assert "proposal schema（schema_version, hypothesis, theme, config_patch" in prompt

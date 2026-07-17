@@ -51,7 +51,7 @@ def test_target_patterns_stay_in_sync_with_runtime_validator() -> None:
     patterns = [pattern for name in schema_names for pattern in _target_patterns(_load(name))]
     non_routing_pattern = "^(claude-harness|skill:[a-z0-9-]+)$"
 
-    assert len(patterns) == 13
+    assert len(patterns) == 14
     assert set(patterns) == {mh.TARGET_PATTERN.pattern, non_routing_pattern}
     assert patterns.count(non_routing_pattern) == 5
 

@@ -309,13 +309,32 @@ def render_proposer_prompt(
     max_overlay_bytes = proposer_cfg.get("max_overlay_bytes", DEFAULT_MAX_OVERLAY_BYTES)
     rendered_focus_runs = _format_focus_runs(focus_run_id, focus_run_ids)
     rendered_valid_runs = _join_or_none([str(run_id) for run_id in valid_based_on_run_ids or ()])
-    if target.startswith("skill:"):
+    if target == "routing-config":
+        baseline_input_hint = (
+            "- routing config の現在値: 下記の変更メニュー（読み取り専用 context）"
+        )
+        change_menu = _routing_config_prompt_menu(package_dir)
+        proposal_payload_constraint = (
+            "config_patch のみ。changes file overlay は含めない。1 候補で 1 key kind のみ選ぶ"
+        )
+        proposal_payload_name = "config_patch"
+        analysis_final_step = "5. 変更メニューの現在値と許可値を照合する"
+    elif target.startswith("skill:"):
         resolution = skill_targets.allowed_overlay_paths(view_dir / "baseline", target, config)
         allowed_paths = "\n".join(
             f"  - {path}" for path in sorted(skill_targets.overlay_allowlist(resolution, config))
         )
+        baseline_input_hint = "- baseline/facets/          : 現行 facet ソース（読み取り専用）"
+        change_menu = "- changes の許可パス:\n" + allowed_paths
+        proposal_payload_constraint = "changes のみ。config_patch は含めない"
+        proposal_payload_name = "changes"
+        analysis_final_step = "5. baseline/ の該当 facet ソースを読む"
     else:
-        allowed_paths = "  - facets/**"
+        baseline_input_hint = "- baseline/facets/          : 現行 facet ソース（読み取り専用）"
+        change_menu = "- changes の許可パス:\n  - facets/**"
+        proposal_payload_constraint = "changes のみ。config_patch は含めない"
+        proposal_payload_name = "changes"
+        analysis_final_step = "5. baseline/ の該当 facet ソースを読む"
     return Template(template).safe_substitute(
         view_dir=str(view_dir.resolve()),
         target=target,
@@ -324,7 +343,57 @@ def render_proposer_prompt(
         focus_candidate_id=focus_candidate_id or _MISSING_FOCUS,
         max_overlay_bytes=max_overlay_bytes,
         frontier_summary=summarize_frontier(frontier_doc),
-        allowed_paths=allowed_paths,
+        baseline_input_hint=baseline_input_hint,
+        change_menu=change_menu,
+        proposal_payload_constraint=proposal_payload_constraint,
+        proposal_payload_name=proposal_payload_name,
+        analysis_final_step=analysis_final_step,
+    )
+
+
+def _routing_config_prompt_menu(package_dir: Path) -> str:
+    """Phase A で proposer に公開する routing-config 値だけを列挙する。"""
+    routing_config = mh._load_agent_routing_config(package_dir / "schemas")
+    agents = routing_config.get("agents") or {}
+    antigravity = routing_config.get("antigravity") or {}
+    if not isinstance(agents, dict):
+        raise ValueError("agent-routing config agents section must be a mapping")
+    if not isinstance(antigravity, dict):
+        raise ValueError("agent-routing config antigravity section must be a mapping")
+
+    agent_values: list[str] = []
+    for name, agent_config in sorted(agents.items()):
+        if not isinstance(agent_config, dict):
+            raise ValueError(f"agent-routing config agents.{name} must be a mapping")
+        current_tool = agent_config.get("tool")
+        if not isinstance(current_tool, str):
+            raise ValueError(f"agent-routing config agents.{name}.tool must be a string")
+        agent_values.append(f"    - agents.{name}.tool = {current_tool}")
+
+    model_allowlist = antigravity.get("model_allowlist") or []
+    if not isinstance(model_allowlist, list) or not all(
+        isinstance(value, str) for value in model_allowlist
+    ):
+        raise ValueError("antigravity.model_allowlist must be an array of strings")
+    current_model = antigravity.get("model")
+    if not isinstance(current_model, str):
+        raise ValueError("antigravity.model must be a string")
+    allowed_models = " | ".join(model_allowlist) if model_allowlist else "(none)"
+    allowed_tools = " | ".join(sorted(mh.CONFIG_PATCH_TOOL_VALUES))
+    return "\n".join(
+        [
+            "- agents.*.tool",
+            "  - file: agent-routing/cli-tools.yaml",
+            "  - key_path: agents.<agent-name>.tool",
+            f"  - allowed values: {allowed_tools}",
+            "  - current values:",
+            *agent_values,
+            "- antigravity.model",
+            "  - file: agent-routing/cli-tools.yaml",
+            "  - key_path: antigravity.model",
+            f"  - allowed values from model_allowlist: {allowed_models}",
+            f"  - current value: {current_model}",
+        ]
     )
 
 

@@ -15,6 +15,7 @@
     { "$ref": "#/$defs/loop_started" },
     { "$ref": "#/$defs/loop_iteration" },
     { "$ref": "#/$defs/loop_stopped" },
+    { "$ref": "#/$defs/proposal_rejected" },
     { "$ref": "#/$defs/proposer_security_violation" }
   ],
   "$defs": {
@@ -484,6 +485,34 @@
         },
         "iterations": { "type": "integer", "minimum": 0 },
         "total_cost_usd": { "type": "number", "minimum": 0 }
+      }
+    },
+    "proposal_rejected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "event",
+        "ts",
+        "schema_version",
+        "target",
+        "loop_id",
+        "iteration",
+        "verdict"
+      ],
+      "properties": {
+        "event": { "const": "proposal_rejected" },
+        "ts": { "type": "string", "format": "date-time" },
+        "schema_version": { "type": "string", "const": "1.0" },
+        "target": {
+          "type": "string",
+          "pattern": "^(claude-harness|skill:[a-z0-9-]+|routing-config)$"
+        },
+        "loop_id": {
+          "type": "string",
+          "pattern": "^loop-[0-9]{8}-[0-9]{6}-[a-z0-9-]+$"
+        },
+        "iteration": { "type": "integer", "minimum": 1 },
+        "verdict": { "const": "error" }
       }
     },
     "proposer_security_violation": {

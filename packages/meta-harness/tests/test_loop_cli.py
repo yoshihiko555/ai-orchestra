@@ -68,25 +68,24 @@ def _append_routing_evaluation(project: Path, config: dict, cand_id: str, verdic
     )
 
 
-def test_routing_config_target_is_rejected_before_proposer(
+def test_routing_config_target_reaches_bootstrap_guard_before_proposer(
     git_project: Path, monkeypatch, capsys
 ) -> None:
     config = _config()
     mh.init_store(git_project, config)
-    monkeypatch.setattr(loop_cli, "_resolve_context", lambda _project: (git_project, config))
-    monkeypatch.setattr(
-        loop_cli,
-        "_drive_loop",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("proposer loop must not start")
-        ),
+    mh.write_frontier_cache(
+        git_project,
+        config,
+        mh._empty_frontier_doc(config, "routing-config"),
+        "routing-config",
     )
+    monkeypatch.setattr(loop_cli, "_resolve_context", lambda _project: (git_project, config))
 
     exit_code = loop_cli.cmd_loop(str(git_project), "routing-config", None, False)
 
     assert exit_code == loop_cli.EXIT_VALIDATION_ERROR
-    assert "requires human registration" in capsys.readouterr().err
-    assert not any(event.get("event") == "loop_started" for event in _events(git_project, config))
+    assert "no citable non-holdout runs for target: routing-config" in capsys.readouterr().err
+    assert any(event.get("event") == "loop_started" for event in _events(git_project, config))
 
 
 # EV-88
@@ -115,6 +114,28 @@ def test_routing_config_rejected_candidate_starts_ledger_backed_cooldown(
     events = _events(git_project, config)
 
     with pytest.raises(loop_cli.LoopValidationError, match="next allowed iteration is 5"):
+        loop_cli._enforce_routing_config_rate_limits(events, config, spec, 4)
+
+    loop_cli._enforce_routing_config_rate_limits(events, config, spec, 5)
+
+
+# EV-88, EV-89
+def test_routing_config_proposal_rejection_maps_to_error_cooldown(
+    git_project: Path,
+) -> None:
+    config = _config()
+    mh.init_store(git_project, config)
+    spec = _routing_loop_spec(git_project, config)
+    event = loop_cli.propose_cli._proposal_rejected_event(
+        target="routing-config",
+        loop_id=spec.loop_id,
+        iteration=1,
+    )
+    loop_cli.state.validate_event(event, "proposal_rejected")
+    mh.append_ledger_event(git_project, config, event)
+    events = _events(git_project, config)
+
+    with pytest.raises(loop_cli.LoopValidationError, match="after proposal error"):
         loop_cli._enforce_routing_config_rate_limits(events, config, spec, 4)
 
     loop_cli._enforce_routing_config_rate_limits(events, config, spec, 5)

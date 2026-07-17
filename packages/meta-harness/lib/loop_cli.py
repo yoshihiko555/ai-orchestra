@@ -274,10 +274,6 @@ def _normal_stop_event(events: list[dict], loop_id: str) -> dict | None:
 
 
 def _validate_target(target: str) -> None:
-    if target == "routing-config":
-        raise LoopValidationError(
-            "loop does not support target 'routing-config' because it requires human registration"
-        )
     if not TARGET_PATTERN.fullmatch(target):
         raise LoopValidationError(f"invalid target: {target!r}")
     try:
@@ -404,6 +400,15 @@ def _routing_config_cooldown_trigger(
     }
     triggers: list[tuple[int, str]] = []
     for event_index, event in enumerate(events):
+        if event.get("event") == "proposal_rejected":
+            state.validate_event(event, "proposal_rejected")
+            if event.get("loop_id") != spec.loop_id:
+                continue
+            if event.get("target") != spec.target:
+                raise LoopValidationError("proposal rejection target mismatch")
+            if event.get("verdict") in {"fail", "error"}:
+                triggers.append((int(event["iteration"]), "proposal error"))
+            continue
         cand_id = str(event.get("cand_id") or "")
         registration = by_candidate.get(cand_id)
         if registration is None:

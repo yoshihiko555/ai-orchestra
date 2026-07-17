@@ -141,6 +141,12 @@ A8 排他チェック（patch XOR overlay）の第 5 入口（proposer 経路）
 - **entry criteria**: 前提全件が `docs/evaluation/meta-harness.md` + `.checks.yaml` で突合済み。
   敵対的ドライラン（「全 agent を最安 tool へ切替」する手作り patch）が C-2 により frontier に
   載らないことを実測確認。
+- **bootstrap**: `propose` は同一 target の引用可能な non-holdout run が無ければ exit 2 で停止する。
+  最初に human が現在値を再指定する no-op の `routing-config` baseline 候補を register し、train evaluate
+  を完了して `frontier --rebuild --target routing-config` を実行する。この baseline の実
+  `run_completed(holdout=false)` が proposer の `based_on_runs` 候補と parent frontier を同時に供給する。
+  ゼロシナリオ phase は evaluator 上 vacuous pass になり得るが `run_completed` を生成しないため、bootstrap
+  の代替にはならない。routing-config の train suite を実行して citable run を作ることを必須とする。
 - **exit criteria（→ Phase B）**: proposer 駆動の探索 20 loop rounds 以上で (a) コスト単独優越の
   インシデント 0 件 (b) blast-radius ゲート失敗 0 件 (c) human レビューで「合法性でなく実改善」と
   判断された昇格が 1 件以上。

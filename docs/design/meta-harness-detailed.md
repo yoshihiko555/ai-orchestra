@@ -2636,6 +2636,9 @@ per-key `created_by` 違反、value menu 違反、integrity hash 不一致を第
 検証失敗（allowlist 外パス・サイズ超過・`based_on_runs` が上記いずれかに違反 等）の場合:
 候補登録を行わず exit 2 とし、proposal JSON を
 `.claude/meta-harness/rejected/<ts>-proposal.json` に保存する（診断用、redaction 適用）。
+loop 内の routing-config proposal がこの段階で拒否された場合は、proposal 内容や拒否理由を ledger に
+複製せず、`proposal_rejected(verdict=error, loop_id, iteration)` のみを追記する。これを §13 の
+evaluation error reject と同じ cooldown trigger として扱い、登録前拒否からの retry 迂回を防ぐ。
 
 ### 11-6. ledger への記録
 
