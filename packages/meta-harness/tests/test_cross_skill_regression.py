@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import copy
+import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -561,6 +563,133 @@ def test_default_budget_covers_all_registered_routing_config_regression_suites()
     assert required_budget == pytest.approx(30.0)
     assert mh.DEFAULTS["regression"]["max_affected_suites"] >= max(suite_counts)
     assert mh.DEFAULTS["regression"]["max_budget_usd"] >= required_budget
+
+
+def test_current_routing_suite_coverage_allows_promotion_preconditions(
+    git_project: Path,
+    git_run,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """EV-86: suite-less skills warn, while every current promotion gate remains reachable."""
+    shutil.copytree(REPO_ROOT / "facets", git_project / "facets")
+    routing_config_path = git_project / ev.ROUTING_CONFIG_SSOT_RELATIVE
+    routing_config_path.parent.mkdir(parents=True)
+    routing_config_path.write_bytes((REPO_ROOT / ev.ROUTING_CONFIG_SSOT_RELATIVE).read_bytes())
+    git_run("add", "facets", str(ev.ROUTING_CONFIG_SSOT_RELATIVE), cwd=git_project)
+    git_run("commit", "-m", "add routing promotion baseline", cwd=git_project)
+    source_commit = git_run("rev-parse", "HEAD", cwd=git_project).stdout.strip()
+    git_run("update-ref", "refs/remotes/origin/main", source_commit, cwd=git_project)
+
+    config = copy.deepcopy(mh.DEFAULTS)
+    mh.init_store(git_project, config)
+    overlay_dir = tmp_path / "routing-promotion-overlay"
+    overlay_dir.mkdir()
+    patch = [
+        {
+            "file": "agent-routing/cli-tools.yaml",
+            "key_path": "agents.debugger.tool",
+            "value": "claude-direct",
+        }
+    ]
+    (overlay_dir / mh.CONFIG_PATCH_FILENAME).write_text(json.dumps(patch), encoding="utf-8")
+    manifest = mh.build_candidate_manifest(
+        cand_id=CAND_ID,
+        parent_id=None,
+        generation=0,
+        target=ROUTING_CONFIG_TARGET,
+        source_commit=source_commit,
+        config_hash=mh.compute_config_hash(overlay_dir, config),
+        overlay_files=[],
+        description="realistic routing-config promotion candidate",
+        created_by="proposer",
+        config_patch_hash=mh.compute_config_patch_hash(patch),
+    )
+    mh.register_candidate(
+        git_project,
+        config,
+        cand_id=CAND_ID,
+        manifest=manifest,
+        overlay_dir=overlay_dir,
+        overlay_files=[],
+        target=ROUTING_CONFIG_TARGET,
+        created_by="proposer",
+        schema_dir=SCHEMA_DIR,
+    )
+    mh.append_ledger_event(
+        git_project,
+        config,
+        _registration(target=ROUTING_CONFIG_TARGET),
+    )
+
+    own_paths = ev.validate_target_suite(PACKAGE_DIR, SCHEMA_DIR, ROUTING_CONFIG_TARGET)
+    own_docs = [(path, ev.load_scenario(path, SCHEMA_DIR)) for path in own_paths]
+
+    def fake_run_scenario_set(**kwargs):
+        repeat = int(kwargs["repeat_override"])
+        results = []
+        for _, scenario in kwargs["scenario_docs"]:
+            for attempt in range(1, repeat + 1):
+                suite_slug = str(kwargs["suite_id"]).replace(":", "-")
+                results.append(
+                    {
+                        "run_id": (
+                            f"run-{suite_slug}-{scenario['id']}-{attempt}-"
+                            f"{'holdout' if scenario['holdout'] else 'train'}"
+                        ),
+                        "cand_id": CAND_ID,
+                        "scenario_id": str(scenario["id"]),
+                        "verdict": "pass",
+                        "quality_score": 100.0,
+                        "critical_pass_rate": 1.0,
+                        "cost": _cost(0.01, tokens=2),
+                        "attempt": attempt,
+                        "attempts_total": repeat,
+                    }
+                )
+        return results
+
+    monkeypatch.setattr(ev, "_run_scenario_set", fake_run_scenario_set)
+    regression_budget = {"remaining_usd": config["regression"]["max_budget_usd"]}
+    for holdout in (False, True):
+        ev._evaluate_scenario_batch(
+            main_root=git_project,
+            config=config,
+            schema_dir=SCHEMA_DIR,
+            package_dir=PACKAGE_DIR,
+            project_dir=git_project,
+            cand_id=CAND_ID,
+            cand_dir=mh.candidates_dir(git_project, config) / CAND_ID,
+            manifest=manifest,
+            target=ROUTING_CONFIG_TARGET,
+            own_suite_paths=own_paths,
+            own_scenarios=[item for item in own_docs if bool(item[1]["holdout"]) == holdout],
+            holdout=holdout,
+            repeat_override=None,
+            cli_capabilities={},
+            runner=lambda *_args, **_kwargs: None,
+            evaluation_id=EVALUATION_ID,
+            regression_budget=regression_budget,
+        )
+
+    events = mh.read_ledger_events_strict(git_project, config)
+    preflight = prm._validate_preconditions(
+        git_project,
+        config,
+        git_project,
+        CAND_ID,
+        events,
+        SCHEMA_DIR,
+    )
+
+    holdout = preflight.holdout_evaluation
+    assert preflight.cand_id == CAND_ID
+    assert CAND_ID in preflight.frontier_doc["frontier"]
+    assert holdout["verdict"] == "pass"
+    assert set(holdout["unverified_impacts"])
+    assert set(holdout["impacted_targets"]) == {
+        str(item["suite_id"]) for item in holdout["regression_results"]
+    } | set(holdout["unverified_impacts"])
 
 
 def test_suite_bearing_resolution_failure_is_not_downgraded_to_unverified(

@@ -54,7 +54,7 @@
 - [ ] EV-15（境界 / must）: `.claude/meta-harness/locks/evaluate.lock` が既に取得されている状態で `evaluate` を実行すると exit 3 で終了する — 根拠: 詳細設計 §2-3、§6 exit code 表
 - [ ] EV-16（正常 / must）: routing-config 以外の Pareto 判定は `quality_mean(A) ≥ quality_mean(B) かつ cost_mean(A) ≤ cost_mean(B) かつ少なくとも一方が厳密` の場合に A が B を支配すると正しく判定する。`cost_mean` は `frontier.cost_axis` で選んだ run field から算出する — 根拠: 詳細設計 §3-5
 - [ ] EV-17（境界 / must）: quality_mean・tokens_mean が完全に同率の候補同士は `quality_min` が高い方を優先するタイブレークが機能する — 根拠: 詳細設計 §3-5
-- [ ] EV-18（正常 / must）: non-holdout シナリオのいずれかで `verdict=fail` または `error` の候補は frontier から除外される — 根拠: 詳細設計 §3-5
+- [ ] EV-18（正常 / must）: non-holdout シナリオのいずれかで `verdict=fail` または `error` の候補は frontier から除外される。result event 欠落時に `extract_cost()` が `ZERO_COST` を返しても、headless outcome guard が `verdict=error` を強制し、`verdict=pass` / frontier eligible にはならない — 根拠: 詳細設計 §2-5、§3-5
 - [ ] EV-19（境界 / must）: holdout シナリオの run 成果物は `.claude/meta-harness/holdout/runs/<run_id>/` に物理分離されて保存され、通常の `runs/` には現れない — 根拠: 詳細設計 §3-6
 - [ ] EV-20（正常 / should）: `frontier --target <t>` は指定 target の ledger event から再計算し、`--rebuild` 指定時のみ `frontier-<target-slug>.json`（再生成可能キャッシュ）へ永続化する。`--rebuild` なしではキャッシュを書き換えない — 根拠: 詳細設計 §6
 - [ ] EV-21（境界 / must）: `purge` は frontier 上の候補・`promoted` 済み候補を削除対象から除外する — 根拠: 基本設計 §3「retention/purge」、詳細設計 §6
