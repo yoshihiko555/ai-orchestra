@@ -33,6 +33,7 @@ CAND_ID = "cand-20260715-120000-cross-skill-abcd"
 EVALUATION_ID = "eval-20260715-120000-00000001"
 TARGET = "skill:handoff"
 REGRESSION_TARGET = "skill:issue-create"
+ROUTING_CONFIG_TARGET = "routing-config"
 
 
 def _cost(usd: float, *, tokens: int) -> dict:
@@ -68,7 +69,7 @@ def _result(
     }
 
 
-def _registration(*, proposer_cost: float = 0.0) -> dict:
+def _registration(*, proposer_cost: float = 0.0, target: str = TARGET) -> dict:
     return {
         "event": "candidate_registered",
         "ts": mh.now_iso(),
@@ -76,7 +77,7 @@ def _registration(*, proposer_cost: float = 0.0) -> dict:
         "cand_id": CAND_ID,
         "parent_id": None,
         "generation": 0,
-        "target": TARGET,
+        "target": target,
         "created_by": "proposer",
         "proposal": {
             "theme": "cross-skill regression",
@@ -101,14 +102,15 @@ def _run_batch(
     *,
     regression_verdict: str = "pass",
     regression_cost: float = 0.4,
-    max_budget: float = 12.0,
+    max_budget: float = 30.0,
     unverified: tuple[str, ...] = (),
+    target: str = TARGET,
 ) -> tuple[dict, list[dict], list[dict]]:
     config = copy.deepcopy(mh.DEFAULTS)
     config["regression"]["max_budget_usd"] = max_budget
     mh.init_store(tmp_path, config)
-    mh.append_ledger_event(tmp_path, config, _registration())
-    own_paths, own_docs = _suite(TARGET)
+    mh.append_ledger_event(tmp_path, config, _registration(target=target))
+    own_paths, own_docs = _suite(target)
     regression_paths, regression_docs = _suite(REGRESSION_TARGET)
     impacted = (REGRESSION_TARGET,)
     monkeypatch.setattr(
@@ -124,13 +126,15 @@ def _run_batch(
             list(unverified),
         ),
     )
+    if target == ROUTING_CONFIG_TARGET:
+        monkeypatch.setattr(ev, "compute_routing_config_base_hash", lambda *_args: "b" * 64)
 
     def fake_run_scenario_set(**kwargs):
         scenario_id = str(kwargs["scenario_docs"][0][1]["id"])
-        if kwargs["suite_id"] == TARGET:
+        if kwargs["suite_id"] == target:
             return [
                 _result(
-                    suite_id=TARGET,
+                    suite_id=target,
                     scenario_id=scenario_id,
                     verdict="pass",
                     cost_usd=0.1,
@@ -151,7 +155,7 @@ def _run_batch(
     manifest = {
         "cand_id": CAND_ID,
         "parent_id": None,
-        "target": TARGET,
+        "target": target,
         "source_commit": "a" * 40,
         "overlay_files": ["facets/policies/cli-language.md"],
     }
@@ -164,7 +168,7 @@ def _run_batch(
         cand_id=CAND_ID,
         cand_dir=tmp_path / "candidate",
         manifest=manifest,
-        target=TARGET,
+        target=target,
         own_suite_paths=own_paths,
         own_scenarios=own_docs,
         holdout=False,
@@ -198,6 +202,110 @@ def test_regression_failure_is_hard_gate_and_does_not_pollute_frontier_axes(
     assert points[0]["cost_mean"] == 0.1
     assert points[0]["runs"] == 1
     assert loop_state.non_holdout_summary(events, config, CAND_ID, TARGET) is None
+
+
+def test_routing_config_regression_failure_blocks_frontier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config, _, events = _run_batch(
+        tmp_path,
+        monkeypatch,
+        regression_verdict="fail",
+        target=ROUTING_CONFIG_TARGET,
+    )
+
+    summary = next(event for event in events if event["event"] == "evaluation_completed")
+    assert summary["target"] == ROUTING_CONFIG_TARGET
+    assert summary["own_critical_pass"] is True
+    assert summary["regression_results"][0]["critical_pass"] is False
+    assert summary["verdict"] == "fail"
+
+    points = mh.aggregate_run_points(events, config, ROUTING_CONFIG_TARGET)
+    assert len(points) == 1
+    assert points[0]["eligible"] is False
+    frontier, _ = mh.compute_pareto_frontier(
+        [point for point in points if point["eligible"]], ROUTING_CONFIG_TARGET
+    )
+    assert CAND_ID not in frontier
+
+
+def test_routing_config_empty_claude_harness_holdout_is_vacuously_verified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = copy.deepcopy(mh.DEFAULTS)
+    config["evaluate"]["repeat_frontier"] = 1
+    mh.init_store(tmp_path, config)
+    mh.append_ledger_event(
+        tmp_path,
+        config,
+        _registration(target=ROUTING_CONFIG_TARGET),
+    )
+    own_paths, own_docs = _suite(ROUTING_CONFIG_TARGET, holdout=True)
+    monkeypatch.setattr(
+        ev,
+        "candidate_impact_context",
+        lambda **_kwargs: ev.skill_targets.SkillImpactContext(("claude-harness",), "c" * 64),
+    )
+    monkeypatch.setattr(ev, "compute_routing_config_base_hash", lambda *_args: "b" * 64)
+
+    def fake_run_scenario_set(**kwargs):
+        if not kwargs["scenario_docs"]:
+            return []
+        scenario_id = str(kwargs["scenario_docs"][0][1]["id"])
+        return [
+            _result(
+                suite_id=kwargs["suite_id"],
+                scenario_id=scenario_id,
+                verdict="pass",
+                cost_usd=0.1,
+                tokens=10,
+            )
+        ]
+
+    monkeypatch.setattr(ev, "_run_scenario_set", fake_run_scenario_set)
+    manifest = {
+        "cand_id": CAND_ID,
+        "parent_id": None,
+        "target": ROUTING_CONFIG_TARGET,
+        "source_commit": "a" * 40,
+        "overlay_files": [],
+    }
+
+    ev._evaluate_scenario_batch(
+        main_root=tmp_path,
+        config=config,
+        schema_dir=SCHEMA_DIR,
+        package_dir=PACKAGE_DIR,
+        project_dir=tmp_path,
+        cand_id=CAND_ID,
+        cand_dir=tmp_path / "candidate",
+        manifest=manifest,
+        target=ROUTING_CONFIG_TARGET,
+        own_suite_paths=own_paths,
+        own_scenarios=own_docs,
+        holdout=True,
+        repeat_override=1,
+        cli_capabilities={},
+        runner=lambda *_args, **_kwargs: None,
+        evaluation_id=EVALUATION_ID,
+    )
+
+    events = mh.read_ledger_events_strict(tmp_path, config)
+    summary = next(event for event in events if event["event"] == "evaluation_completed")
+    assert summary["verdict"] == "pass"
+    assert summary["regression_results"] == [
+        {
+            "suite_id": "claude-harness",
+            "suite_hash": ev.compute_suite_hash(
+                ev.validate_target_suite(PACKAGE_DIR, SCHEMA_DIR, "claude-harness")
+            ),
+            "run_ids": [],
+            "verdict": "pass",
+            "critical_pass": True,
+        }
+    ]
+    assert prm._evaluation_runs_are_consistent(events, summary, CAND_ID, ROUTING_CONFIG_TARGET)
+    assert prm._evaluation_covers_current_holdouts(events, summary, ROUTING_CONFIG_TARGET, config)
 
 
 def test_non_holdout_summary_uses_legacy_runs_without_evaluation_summary() -> None:
@@ -406,6 +514,71 @@ def test_train_and_holdout_batches_share_evaluation_id_and_regression_budget(
 
     assert calls[0][0] == calls[1][0]
     assert [remaining for _, remaining in calls] == [2.0, 1.0]
+
+
+def test_default_budget_covers_all_registered_routing_config_regression_suites() -> None:
+    impacted_targets = tuple(
+        sorted(
+            [
+                "claude-harness",
+                *[
+                    f"skill:{path.stem}"
+                    for path in (REPO_ROOT / "facets" / "compositions" / "skills").glob("*.yaml")
+                ],
+            ]
+        )
+    )
+    required_budget = 0.0
+    suite_counts: list[int] = []
+    unverified_by_phase: list[set[str]] = []
+    for holdout, repeat_key in ((False, "repeat_default"), (True, "repeat_frontier")):
+        suites, unverified = ev._resolve_regression_suites(
+            PACKAGE_DIR,
+            SCHEMA_DIR,
+            impacted_targets,
+            holdout=holdout,
+        )
+        suite_counts.append(len(suites))
+        unverified_by_phase.append(set(unverified))
+        repeat = int(mh.DEFAULTS["evaluate"][repeat_key])
+        for _, _, scenario_docs in suites:
+            for _, scenario in scenario_docs:
+                required_budget += repeat * float(
+                    scenario["budget"].get(
+                        "max_budget_usd",
+                        mh.DEFAULTS["scenario_run"]["max_budget_usd_default"],
+                    )
+                )
+
+    assert suite_counts == [3, 3]
+    assert unverified_by_phase[0] == unverified_by_phase[1]
+    assert unverified_by_phase[0]
+    assert required_budget == pytest.approx(30.0)
+    assert mh.DEFAULTS["regression"]["max_affected_suites"] >= max(suite_counts)
+    assert mh.DEFAULTS["regression"]["max_budget_usd"] >= required_budget
+
+
+def test_suite_bearing_resolution_failure_is_not_downgraded_to_unverified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    suite_dir = tmp_path / "suite"
+    suite_dir.mkdir()
+    scenario_path = suite_dir / "scenario.yaml"
+    scenario_path.write_text("placeholder\n", encoding="utf-8")
+    monkeypatch.setattr(ev, "scenario_suite_dir", lambda *_args: suite_dir)
+    monkeypatch.setattr(
+        ev,
+        "validate_target_suite",
+        lambda *_args: (_ for _ in ()).throw(ValueError("invalid suite")),
+    )
+
+    with pytest.raises(ValueError, match="invalid suite"):
+        ev._resolve_regression_suites(
+            PACKAGE_DIR,
+            SCHEMA_DIR,
+            (REGRESSION_TARGET,),
+            holdout=False,
+        )
 
 
 def test_too_many_regression_suites_fails_before_own_runs(
@@ -1088,3 +1261,40 @@ def test_promote_pr_body_warns_about_unverified_impacts() -> None:
 
     assert "Unverified cross-skill impacts" in body
     assert f"`{REGRESSION_TARGET}`" in body
+
+
+def test_routing_config_promote_pr_body_lists_every_unverified_skill() -> None:
+    impacted_targets = tuple(
+        sorted(
+            [
+                "claude-harness",
+                *[
+                    f"skill:{path.stem}"
+                    for path in (REPO_ROOT / "facets" / "compositions" / "skills").glob("*.yaml")
+                ],
+            ]
+        )
+    )
+    _, unverified = ev._resolve_regression_suites(
+        PACKAGE_DIR,
+        SCHEMA_DIR,
+        impacted_targets,
+        holdout=True,
+    )
+
+    body = prm._build_pr_body(
+        CAND_ID,
+        {"target": ROUTING_CONFIG_TARGET, "description": "routing update"},
+        {"points": []},
+        [],
+        holdout_evaluation={"unverified_impacts": unverified},
+        routing_config_changes=[],
+    )
+    listed = {
+        line[3:-1]
+        for line in body.splitlines()
+        if line.startswith("- `skill:") and line.endswith("`")
+    }
+
+    assert unverified
+    assert listed == set(unverified)

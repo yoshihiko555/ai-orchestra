@@ -1300,13 +1300,15 @@ def test_routing_config_freshness_rejects_ssot_drift(
     }
     evaluation = {
         "routing_config_base_hash": evaluator_hash,
-        "impacted_targets": [],
+        "impacted_targets": ["claude-harness", "skill:handoff"],
         "impact_input_hash": "c" * 64,
     }
     monkeypatch.setattr(
         cli.prm.ev,
         "candidate_impact_context",
-        lambda **_kwargs: cli.prm.ev.skill_targets.SkillImpactContext((), "c" * 64),
+        lambda **_kwargs: cli.prm.ev.skill_targets.SkillImpactContext(
+            ("claude-harness", "skill:handoff"), "c" * 64
+        ),
     )
 
     assert evaluator_hash != promoter_hash
@@ -1349,13 +1351,15 @@ def test_routing_config_freshness_accepts_unchanged_ssot(
     }
     evaluation = {
         "routing_config_base_hash": evaluator_hash,
-        "impacted_targets": [],
+        "impacted_targets": ["claude-harness", "skill:handoff"],
         "impact_input_hash": "c" * 64,
     }
     monkeypatch.setattr(
         cli.prm.ev,
         "candidate_impact_context",
-        lambda **_kwargs: cli.prm.ev.skill_targets.SkillImpactContext((), "c" * 64),
+        lambda **_kwargs: cli.prm.ev.skill_targets.SkillImpactContext(
+            ("claude-harness", "skill:handoff"), "c" * 64
+        ),
     )
 
     assert evaluator_hash == promoter_hash
@@ -1368,13 +1372,10 @@ def test_routing_config_freshness_accepts_unchanged_ssot(
     )
 
 
-def test_routing_config_freshness_ignores_unrelated_impact_context_drift(
+def test_routing_config_freshness_rejects_global_impact_context_drift(
     git_project: Path, git_run, monkeypatch
 ) -> None:
-    """R2-7: routing-config 候補は overlay を持たないため、SSOT hash が一致していれば
-    無関係な skill/facet composition の変更（impact_input_hash の drift）で promotion を
-    拒否してはならない（`resolve_skill_impacts` の input_hash は全 skill composition
-    closure を吸収するため、routing-config には無関係な drift も検出してしまっていた）。"""
+    """Global routing impact must be refreshed when registered skill inputs drift."""
     source_commit = _commit_routing_config(
         git_project,
         git_run,
@@ -1397,27 +1398,27 @@ def test_routing_config_freshness_ignores_unrelated_impact_context_drift(
     }
     evaluation = {
         "routing_config_base_hash": evaluator_hash,
-        "impacted_targets": [],
-        # recorded at evaluate-time
+        "impacted_targets": ["claude-harness", "skill:handoff"],
         "impact_input_hash": "c" * 64,
     }
-    # simulate an unrelated skill composition change between evaluate and promote:
-    # candidate_impact_context now recomputes to a DIFFERENT input_hash.
     monkeypatch.setattr(
         cli.prm.ev,
         "candidate_impact_context",
-        lambda **_kwargs: cli.prm.ev.skill_targets.SkillImpactContext((), "d" * 64),
+        lambda **_kwargs: cli.prm.ev.skill_targets.SkillImpactContext(
+            ("claude-harness", "skill:handoff"), "d" * 64
+        ),
     )
 
     assert evaluator_hash == promoter_hash
 
-    cli.prm._check_freshness(
-        git_project,
-        git_project,
-        manifest,
-        mh.DEFAULTS,
-        holdout_evaluation=evaluation,
-    )
+    with pytest.raises(cli.prm.PromotionValidationError, match="re-run holdout evaluate"):
+        cli.prm._check_freshness(
+            git_project,
+            git_project,
+            manifest,
+            mh.DEFAULTS,
+            holdout_evaluation=evaluation,
+        )
 
 
 def test_routing_config_sidecar_is_included_in_promote_secret_scan(tmp_path: Path) -> None:

@@ -582,8 +582,9 @@ def _evaluation_runs_are_consistent(
             return False
         verified_targets.add(str(suite_id))
         suite_ids = {str(run_id) for run_id in result.get("run_ids") or []}
-        if not suite_ids:
-            return False
+        # An empty run set is valid only for a suite with no scenarios in this phase.
+        # _evaluation_covers_current_holdouts independently rejects it whenever current
+        # holdout scenarios exist, so a fabricated empty result cannot bypass coverage.
         regression_ids.update(suite_ids)
         matching = {
             str(event.get("run_id")): event
@@ -674,13 +675,6 @@ def _check_freshness(
             raise PromotionValidationError(
                 "routing config SSOT changed since evaluation; re-run evaluate before promote"
             )
-        # routing-config 候補は overlay を持たず(facets/** overlay path が常に空)、
-        # skill impact も常に空集合であるため、以降の generic な impact-context 再検証
-        # (`resolve_skill_impacts` の input_hash は全 skill composition closure を吸収する)
-        # は適用対象外。SSOT hash が一致した時点で routing-config 固有の freshness 判定は
-        # 完了しており、無関係な facet/skill composition の変更だけで promotion を誤って
-        # 拒否してしまうことを防ぐ(PR #252 R2-7 レビュー指摘)。
-        return
     if holdout_evaluation is not None:
         try:
             current_impact = ev.candidate_impact_context(

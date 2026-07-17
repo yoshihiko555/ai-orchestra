@@ -2719,7 +2719,9 @@ def evaluate_candidate(
         evaluation_id = generate_evaluation_id()
     regression_budget = {
         "remaining_usd": _non_negative_float_config(
-            (config.get("regression") or {}).get("max_budget_usd", 12.0),
+            (config.get("regression") or {}).get(
+                "max_budget_usd", mh.DEFAULTS["regression"]["max_budget_usd"]
+            ),
             "regression.max_budget_usd",
         )
     }
@@ -2772,10 +2774,27 @@ def candidate_impact_context(
         manifest=manifest,
         source_ref=source_ref,
     ) as baseline:
-        return skill_targets.resolve_skill_impacts(
+        target = str(manifest.get("target") or mh.DEFAULT_TARGET)
+        impact = skill_targets.resolve_skill_impacts(
             baseline,
             [str(path) for path in manifest.get("overlay_files") or []],
-            candidate_target=str(manifest.get("target") or mh.DEFAULT_TARGET),
+            candidate_target=target,
+        )
+        if target != "routing-config":
+            return impact
+
+        # resolve_skill_impacts above validates every registered composition and keeps
+        # the facets-only helper semantics unchanged. Routing changes can affect every
+        # registered skill regardless of overlay paths, so elevate that same validated
+        # composition set to the effective global impact here.
+        composition_dir = baseline / "facets" / "compositions" / "skills"
+        registered_skills = [
+            f"skill:{path.stem}"
+            for path in sorted(composition_dir.glob("*.yaml"), key=lambda item: item.name)
+        ]
+        return skill_targets.SkillImpactContext(
+            impacted_targets=tuple(sorted([mh.DEFAULT_TARGET, *registered_skills])),
+            input_hash=impact.input_hash,
         )
 
 
@@ -2829,7 +2848,8 @@ def _evaluate_scenario_batch(
         regression_cfg.get("max_affected_suites", 4), "regression.max_affected_suites"
     )
     configured_max_budget = _non_negative_float_config(
-        regression_cfg.get("max_budget_usd", 12.0), "regression.max_budget_usd"
+        regression_cfg.get("max_budget_usd", mh.DEFAULTS["regression"]["max_budget_usd"]),
+        "regression.max_budget_usd",
     )
     max_budget = (
         min(configured_max_budget, float(regression_budget["remaining_usd"]))
@@ -2935,7 +2955,10 @@ def _evaluate_scenario_batch(
             )
         )
         regression_cost += sum(float(result["cost"]["total_cost_usd"]) for result in suite_results)
-        suite_verdict = _combined_result_verdict(suite_results)
+        # A suite can legitimately have no scenarios in one phase (claude-harness has
+        # train-only scenarios today). Resolution still succeeded, and promotion checks
+        # the current phase coverage separately, so the empty phase is vacuously passing.
+        suite_verdict = "pass" if not scenario_docs else _combined_result_verdict(suite_results)
         regression_summaries.append(
             {
                 "suite_id": suite_id,

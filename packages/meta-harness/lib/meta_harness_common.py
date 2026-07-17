@@ -124,7 +124,7 @@ DEFAULTS: dict[str, Any] = {
     "regression": {
         "enabled": True,
         "max_affected_suites": 4,
-        "max_budget_usd": 12.0,
+        "max_budget_usd": 30.0,
     },
     "overlay": {
         "allowed_prefixes": ["facets/"],
