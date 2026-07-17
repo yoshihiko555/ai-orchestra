@@ -179,7 +179,16 @@ def _prepare_ephemeral_git(
             },
         )
 
-    project = common_dir.parent.resolve()
+    # Codex review, PR #256, High: `common_dir.parent` is only the caller's project_dir for the
+    # common "$GIT_DIR is a direct child of the worktree root" layout. Under
+    # `git init --separate-git-dir=<elsewhere>` (or an equivalent relocated common Git dir), the
+    # common dir's parent can be an arbitrary directory outside the caller's project entirely --
+    # putting the runtime dir (and the pinned snapshots inside it) there instead of inside the
+    # project the caller actually asked for. `requested_project` was already verified above to
+    # share the same git-common-dir as `worktree`, so it is the trusted basis for the runtime
+    # location; `_validate_runtime_location` still enforces that the runtime stays outside the
+    # worktree itself.
+    project = requested_project
     runtime_dir = project / ".claude" / "loop" / loop_id / "docker-runtime" / action_id
     ephemeral_dir = runtime_dir / "git-ephemeral"
     pinned_git_pointer = runtime_dir / "pinned-dotgit"
@@ -243,8 +252,23 @@ def _prepare_ephemeral_git(
             runner=runner,
         )
         _delete_import_ref(session, runner=runner)
+        # Codex review, PR #256, High: `git init --bare` with no --object-format defaults to
+        # sha1 regardless of the source repository's actual object format. For a SHA-256 source
+        # repo this creates a sha1 ephemeral repo whose 40-hex-digit object model rejects the
+        # 64-hex-digit baseline SHA the very next `update-ref` below tries to seed, breaking
+        # every SHA-256 repository outright. Detecting and propagating the source format keeps
+        # the ephemeral repo's object model identical to the repository it mirrors.
+        object_format_result = _run_git_unchecked(
+            ["-C", worktree, "rev-parse", "--show-object-format"],
+            runner=runner,
+            operation="detect source object format",
+        )
+        init_args: list[object] = ["init", "--bare"]
+        if object_format_result.returncode == 0 and object_format_result.stdout.strip():
+            init_args.append(f"--object-format={object_format_result.stdout.strip()}")
+        init_args.append(ephemeral_dir)
         _run_git(
-            ["init", "--bare", ephemeral_dir],
+            init_args,
             runner=runner,
             operation="initialize ephemeral git directory",
         )

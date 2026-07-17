@@ -210,14 +210,28 @@ fast-forward-only の `fetch` + 期待値照合つき `update-ref`（CAS）を�
 1. `common_dir = git rev-parse --path-format=absolute --git-common-dir`（`state.worktree_path` を cwd に。
    既存の `_resolve_root_worktree` と同じ解決方式を流用）。runtime の起点は呼び出し引数をそのまま
    信頼せず、この `common_dir` から導出した root worktree とし、runtime の既存の親要素が symlink
-   の場合は fail-closed にする。
+   の場合は fail-closed にする。**[Fix-12. 2026-07-18 PR #256 レビュー指摘反映（3巡目）。High]**
+   runtime dir 自体の起点は `common_dir.parent` ではなく、呼び出し引数 `project_dir` を
+   `git -C <project_dir> rev-parse --git-common-dir` で解決し直し `common_dir` と一致することを
+   検証済みの `requested_project` とする。`git init --separate-git-dir=<elsewhere>` 等で共有
+   Git dir が worktree の外の任意の場所へ再配置されている構成では `common_dir.parent` は
+   呼び出し元 `project_dir` と一致しないため、そのまま使うと runtime dir（pinned snapshot を含む）
+   が呼び出し元の意図しないディレクトリ配下に作られてしまう。「runtime は worktree の外」という
+   既存の `_validate_runtime_location` 検証はそのまま維持する。
 2. `baseline_sha = git -C <worktree_path> rev-parse <branch>`（`_persist_pre_maker_head` が既に
    記録している値と同一のもので構わない）。同時に `symbolic-ref HEAD` が対象 branch ref と一致する
    ことを確認し、別 branch / detached HEAD の worktree は受理しない。
 3. `ephemeral_dir = .claude/loop/<loop_id>/docker-runtime/<action_id>/git-ephemeral/`
    （アクション単位。既存の journal/state ディレクトリとは独立し、driver がアクション完了後に
    `shutil.rmtree` する使い捨てディレクトリ）。
-4. `git init --bare <ephemeral_dir>`
+4. `git init --bare <ephemeral_dir>`。**[Fix-13. 2026-07-18 PR #256 レビュー指摘反映（3巡目）。
+   High]** `--object-format` を指定しない `git init --bare` は常に既定の sha1 リポジトリを
+   作る。SHA-256 object format で運用されているソースリポジトリに対してこれを行うと、
+   手順7の `update-ref` が渡す 64 桁 hex の baseline SHA を 40 桁 hex 前提の sha1 リポジトリが
+   拒否し、ephemeral repo の初期化そのものが失敗する。`git -C <worktree_path> rev-parse
+   --show-object-format` でソース側の object format を検出し、検出に成功した場合のみ
+   `--object-format=<検出値>` を `init --bare` に渡す（検出に失敗する場合は旧来どおり既定の
+   sha1 のまま初期化し、動作を変えない）。
 5. **[Fix-6] commit identity の seed**:
    `git --git-dir=<ephemeral_dir> config user.name "loop-harness-maker"` /
    `git --git-dir=<ephemeral_dir> config user.email "loop-harness-maker@invalid"`
@@ -241,7 +255,17 @@ fast-forward-only の `fetch` + 期待値照合つき `update-ref`（CAS）を�
    （ephemeral repo の index を baseline のツリー内容で初期化する。これを省略すると
    ephemeral repo の index は空のままになり、Maker が変更ファイルだけ `git add` しても
    「baseline の全ファイルが削除された」commit が生成されてしまう。alternates 経由で
-   baseline のオブジェクトは既に読めるため、追加の fetch なしでこの操作は完結する）
+   baseline のオブジェクトは既に読めるため、追加の fetch なしでこの操作は完結する）。
+   **[Fix-11. 2026-07-18 PR #256 レビュー指摘反映（3巡目）。Critical]** この `read-tree`
+   を含め、driver（host）が起動する全ての git 呼び出しの環境は、呼び出し元 Python プロセス自身の
+   *ambient* な `GIT_INDEX_FILE`/`GIT_DIR`/`GIT_WORK_TREE` 等の Git repository-location 系
+   環境変数を明示的に除去したものから構築する（loop-harness 自身が別の git hook/wrapper の内側で
+   実行される等で、driver プロセスの環境にたまたま `GIT_INDEX_FILE` が設定されていた場合、
+   素朴に `os.environ` を継承すると本手順の書き込み先が意図した `<ephemeral_dir>/index` ではなく
+   その ambient なパスへ静かにすり替わり、ephemeral repo の実 index が空のまま残ってしまう
+   ため）。`GIT_DIR`/`GIT_WORK_TREE`/`GIT_INDEX_FILE` を明示的に指定する呼び出し（本手順、
+   4.3.1 手順11・Fix-10、4.3.3 手順3・Fix-9）はこの除去後に明示値を上書きするため、意図した
+   値は変わらず優先される。
 10. **[Fix-3] `.git` ポインタの改ざん防止準備**: `<worktree_path>/.git` は本来
     `gitdir: <common_dir>/worktrees/<name>` を指すテキストファイルである。この内容を
     `pinned_git_pointer = <runtime dir>/pinned-dotgit` にコピーしておく（コンテナ起動前、
@@ -339,6 +363,14 @@ fast-forward-only の `fetch` + 期待値照合つき `update-ref`（CAS）を�
 3. **[Fix-1 検証 / Fix-5 適用]** コミットがある場合、`GIT_DIR=<ephemeral_dir>
    GIT_WORK_TREE=<worktree_path> git <hardened args + Fix-5 追加分> status --porcelain` が
    **空であること**を必須検証する（Maker の最終 commit 後に working directory と ephemeral repo
+   の内容が一致するか）。**[Fix-14. 2026-07-18 PR #256 レビュー指摘反映（3巡目）。Major]**
+   この検証（および 4.3.1 手順11・Fix-10 の prepare 側検証）の dirty 判定では、`??`（untracked）
+   かつ `.claude/config/**/*.local.yaml` または `*.local.json` に一致する行のみを dirty から
+   除外する。これらは `config-loading` ルールが定義する意図的なプロジェクトローカル上書きであり
+   （`.claude/rules/config-loading.md`）、他アクションから再利用された worktree に未追跡のまま
+   残っていても正常な状態である。除外は untracked かつこのパスパターンに一致する行のみに限定し、
+   tracked ファイルの変更や他の untracked ファイルは従来どおり dirty として扱う（残骸検出という
+   本検証の主目的は維持する）。
    の index/HEAD が完全一致していることの確認。空でなければ「未コミットの変更が残っている」
    infrastructure failure として扱い、共有 common dir への書き戻しは行わない）。
 4. コミットがある場合、共有 common dir への書き戻しを次の手順で行う（`ephemeral_dir` 自体は
@@ -669,3 +701,16 @@ config で切替可能な追加バックエンドとして導入する（確定�
 - Docker Desktop/OrbStack のバインドマウントで、ファイル単位の ro overlay マウント（4.3.1 節
   Fix-3 の `.git` ポインタ保護）が意図どおり機能することの実機検証（ディレクトリ単位のマウントは
   meta-harness で実証済みだが、単一ファイルへの overlay は本設計で新規に導入するため個別に確認する）
+- **[未修正。2026-07-18 発見（PR #256 レビュー3巡目の回帰テスト作成中に判明。Critical 疑い。
+  本 PR の対応スコープ外のため別途 Issue 化する）]** 4.3.1 手順11・Fix-10（および 4.3.3 手順3・
+  Fix-9）の `_verify_worktree_matches_trusted_tree` は `git status --porcelain` の staged 列
+  （index vs `HEAD`）を利用するが、prepare 側呼び出しは `GIT_DIR=<common_dir>` を明示指定して
+  いるため、この `HEAD` は `common_dir` の primary worktree（通常は `main`）が指す commit に
+  解決される。primary worktree の branch（`main` 等）が Maker 用 linked worktree の branch から
+  独立して進んでいる状態（= 通常運用で常に起こり得る。他 PR が `main` にマージされる、等）では、
+  index（`baseline_sha` から `read-tree` した実 tree）と `HEAD`（`main` の tree）の差分が
+  staged 変更として現れ、worktree 自体に実際の drift が一切なくても `prepare_ephemeral_git` が
+  常に「worktree status is dirty」で fail-closed する（`git worktree add` 直後の実運用シナリオで
+  再現確認済み）。回避には、比較を `HEAD` 相対ではなく `target_sha` 相対（例:
+  `git diff --no-index`／`diff-tree` を index-vs-target_sha 形式で使うか、一時 index を
+  `GIT_DIR=<ephemeral 相当>` の孤立したコンテキストで扱う）に置き換える設計変更が必要。

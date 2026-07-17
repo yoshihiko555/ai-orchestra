@@ -299,7 +299,7 @@ def test_prepare_rejects_uncommitted_worktree_change_left_over_from_prior_action
         linked_worktree.project_dir / ".claude" / "loop" / LOOP_ID / "docker-runtime" / ACTION_ID
     )
 
-    with pytest.raises(git_ephemeral.EphemeralGitInfrastructureError, match="dirty|status"):
+    with pytest.raises(git_ephemeral.EphemeralGitInfrastructureError, match=r"dirty|status"):
         _prepare(linked_worktree)
 
     assert not runtime_dir.exists()
@@ -318,7 +318,7 @@ def test_prepare_rejects_skip_worktree_hidden_drift_left_over_from_prior_action(
     )
     assert _git("status", "--porcelain", cwd=linked_worktree.worktree_path).stdout == ""
 
-    with pytest.raises(git_ephemeral.EphemeralGitInfrastructureError, match="dirty|status"):
+    with pytest.raises(git_ephemeral.EphemeralGitInfrastructureError, match=r"dirty|status"):
         _prepare(linked_worktree)
 
 
@@ -331,7 +331,7 @@ def test_prepare_rejects_assume_unchanged_hidden_drift_left_over_from_prior_acti
     )
     assert _git("status", "--porcelain", cwd=linked_worktree.worktree_path).stdout == ""
 
-    with pytest.raises(git_ephemeral.EphemeralGitInfrastructureError, match="dirty|status"):
+    with pytest.raises(git_ephemeral.EphemeralGitInfrastructureError, match=r"dirty|status"):
         _prepare(linked_worktree)
 
 
@@ -418,7 +418,7 @@ def test_finalize_rejects_uncommitted_worktree_change_on_no_commit_path(
     )
     _create_stale_import_ref(session)
 
-    with pytest.raises(git_ephemeral.EphemeralGitInfrastructureError, match="dirty|status"):
+    with pytest.raises(git_ephemeral.EphemeralGitInfrastructureError, match=r"dirty|status"):
         git_ephemeral.finalize_ephemeral_git(session)
 
     assert _shared_ref(session) == session.baseline_sha
@@ -439,7 +439,7 @@ def test_finalize_rejects_skip_worktree_hidden_drift_on_no_commit_path(
     # (git status --porcelain against that index) would have reported it as clean.
     assert _git("status", "--porcelain", env=env).stdout == ""
 
-    with pytest.raises(git_ephemeral.EphemeralGitInfrastructureError, match="dirty|status"):
+    with pytest.raises(git_ephemeral.EphemeralGitInfrastructureError, match=r"dirty|status"):
         git_ephemeral.finalize_ephemeral_git(session)
 
     assert _shared_ref(session) == session.baseline_sha
@@ -458,7 +458,7 @@ def test_finalize_rejects_assume_unchanged_hidden_drift_on_no_commit_path(
     )
     assert _git("status", "--porcelain", env=env).stdout == ""
 
-    with pytest.raises(git_ephemeral.EphemeralGitInfrastructureError, match="dirty|status"):
+    with pytest.raises(git_ephemeral.EphemeralGitInfrastructureError, match=r"dirty|status"):
         git_ephemeral.finalize_ephemeral_git(session)
 
     assert _shared_ref(session) == session.baseline_sha
@@ -474,7 +474,7 @@ def test_finalize_rejects_dirty_status_without_shared_ref_writeback(
     Path(session.worktree_path, "tracked.txt").write_text("uncommitted\n", encoding="utf-8")
     _create_stale_import_ref(session)
 
-    with pytest.raises(git_ephemeral.EphemeralGitInfrastructureError, match="status|dirty"):
+    with pytest.raises(git_ephemeral.EphemeralGitInfrastructureError, match=r"status|dirty"):
         git_ephemeral.finalize_ephemeral_git(session)
 
     assert _shared_ref(session) == session.baseline_sha
@@ -960,3 +960,239 @@ def test_post_cas_reset_failure_is_infrastructure_failure_without_rollback(
     assert _shared_ref(session) == candidate_sha
     _assert_import_ref_missing(session)
     git_ephemeral.cleanup_ephemeral_git(session)
+
+
+def test_prepare_and_finalize_ignore_ambient_git_index_file_env_var(
+    linked_worktree: GitFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    # Codex review, PR #256, Critical: if the *host driver process* itself happens to run with
+    # GIT_INDEX_FILE set (e.g. loop-harness invoked from within another git hook/wrapper), a
+    # naive env for host-invoked git calls would silently redirect the ephemeral index's
+    # `read-tree` seed write to that ambient path instead of `<ephemeral_dir>/index` -- leaving
+    # the real ephemeral index empty and letting Maker start from an empty index (a
+    # baseline-file-deleting commit) instead of one seeded from the baseline tree.
+    rogue_index = tmp_path / "rogue-ambient-index"
+    monkeypatch.setenv("GIT_INDEX_FILE", str(rogue_index))
+
+    session = _prepare(linked_worktree)
+
+    # The bug this guards against writes straight through to the ambient path; its absence is
+    # itself evidence the ephemeral index was seeded through the correct, unambiguous location.
+    assert not rogue_index.exists()
+    ephemeral_files = sorted(
+        _git(
+            "ls-tree", "-r", "--name-only", "HEAD", env=_ephemeral_env(session)
+        ).stdout.splitlines()
+    )
+    assert ephemeral_files == ["tracked.txt", "unchanged.txt"]
+
+    # Simulate the Maker container's own environment (GIT_DIR/GIT_WORK_TREE only -- containers do
+    # not inherit the host driver process's ambient env) committing against the real index.
+    maker_env = _ephemeral_env(session)
+    maker_env.pop("GIT_INDEX_FILE", None)
+    Path(session.worktree_path, "tracked.txt").write_text("maker commit\n", encoding="utf-8")
+    _git("add", "tracked.txt", env=maker_env)
+    _git("commit", "-m", "maker commit", env=maker_env)
+    candidate_sha = _git("rev-parse", session.branch_ref, env=maker_env).stdout.strip()
+
+    result = git_ephemeral.finalize_ephemeral_git(session)
+
+    assert result.status == "updated"
+    assert result.new_sha == candidate_sha
+    assert (
+        _git("show", f"{candidate_sha}:unchanged.txt", cwd=Path(session.worktree_path)).stdout
+        == "must survive\n"
+    )
+    git_ephemeral.cleanup_ephemeral_git(session)
+
+
+def test_prepare_pins_runtime_under_project_dir_when_common_git_dir_is_relocated(
+    tmp_path: Path,
+) -> None:
+    # Codex review, PR #256, High: under `git init --separate-git-dir=<elsewhere>` the common Git
+    # dir's parent is not the caller's project_dir. Reproduced directly by relocating the
+    # project's own .git at init time (git worktree does not expose a way to force a linked
+    # worktree's common dir outside its own tree independent of this).
+    project_dir = tmp_path / "project"
+    external_common_dir = tmp_path / "external-git-dir"
+    worktree_path = tmp_path / "worktree"
+    project_dir.mkdir()
+    _git(
+        "init",
+        f"--separate-git-dir={external_common_dir}",
+        "--initial-branch=main",
+        cwd=project_dir,
+    )
+    _git("config", "user.name", "Phase Two Test", cwd=project_dir)
+    _git("config", "user.email", "phase-two@example.invalid", cwd=project_dir)
+    (project_dir / "tracked.txt").write_text("baseline\n", encoding="utf-8")
+    (project_dir / "unchanged.txt").write_text("must survive\n", encoding="utf-8")
+    _git("add", "tracked.txt", "unchanged.txt", cwd=project_dir)
+    _git("commit", "-m", "baseline", cwd=project_dir)
+    _git("worktree", "add", "-b", BRANCH, worktree_path, "HEAD", cwd=project_dir)
+    assert not (tmp_path / ".claude").exists()
+
+    session = git_ephemeral.prepare_ephemeral_git(
+        project_dir=project_dir,
+        loop_id=LOOP_ID,
+        action_id=ACTION_ID,
+        worktree_path=worktree_path,
+        branch=BRANCH,
+    )
+
+    assert session.project_dir == project_dir.resolve()
+    assert session.runtime_dir == (
+        project_dir.resolve() / ".claude" / "loop" / LOOP_ID / "docker-runtime" / ACTION_ID
+    )
+    # Without the fix, runtime_dir lands under external_common_dir.parent == tmp_path instead.
+    assert not (tmp_path / ".claude").exists()
+    git_ephemeral.cleanup_ephemeral_git(session)
+
+
+def test_prepare_and_finalize_round_trip_a_sha256_object_format_repository(
+    tmp_path: Path,
+) -> None:
+    # Codex review, PR #256, High: `git init --bare` with no --object-format always creates a
+    # sha1 repository. For a SHA-256 source repo this breaks the very next `update-ref` call,
+    # which tries to seed a 64-hex-digit baseline SHA into a 40-hex-digit object model. Skipped
+    # when the local git binary predates SHA-256 support.
+    project_dir = tmp_path / "project"
+    worktree_path = tmp_path / "worktree"
+    project_dir.mkdir()
+    init_result = _git(
+        "init", "--object-format=sha256", "--initial-branch=main", cwd=project_dir, check=False
+    )
+    if init_result.returncode != 0:
+        pytest.skip(f"local git lacks --object-format=sha256 support: {init_result.stderr.strip()}")
+    _git("config", "user.name", "Phase Two Test", cwd=project_dir)
+    _git("config", "user.email", "phase-two@example.invalid", cwd=project_dir)
+    (project_dir / "tracked.txt").write_text("baseline\n", encoding="utf-8")
+    (project_dir / "unchanged.txt").write_text("must survive\n", encoding="utf-8")
+    _git("add", "tracked.txt", "unchanged.txt", cwd=project_dir)
+    _git("commit", "-m", "baseline", cwd=project_dir)
+    _git("worktree", "add", "-b", BRANCH, worktree_path, "HEAD", cwd=project_dir)
+    baseline_sha = _rev_parse(worktree_path, "HEAD")
+    assert len(baseline_sha) == 64
+
+    session = git_ephemeral.prepare_ephemeral_git(
+        project_dir=project_dir,
+        loop_id=LOOP_ID,
+        action_id=ACTION_ID,
+        worktree_path=worktree_path,
+        branch=BRANCH,
+    )
+
+    assert (
+        _git("--git-dir", session.ephemeral_dir, "rev-parse", "--show-object-format").stdout.strip()
+        == "sha256"
+    )
+
+    Path(session.worktree_path, "tracked.txt").write_text("maker commit\n", encoding="utf-8")
+    env = _ephemeral_env(session)
+    _git("add", "tracked.txt", env=env)
+    _git("commit", "-m", "maker commit", env=env)
+    candidate_sha = _git("rev-parse", session.branch_ref, env=env).stdout.strip()
+    assert len(candidate_sha) == 64
+
+    result = git_ephemeral.finalize_ephemeral_git(session)
+
+    assert result.status == "updated"
+    assert result.new_sha == candidate_sha
+    assert (
+        _git("show", f"{candidate_sha}:unchanged.txt", cwd=Path(session.worktree_path)).stdout
+        == "must survive\n"
+    )
+    git_ephemeral.cleanup_ephemeral_git(session)
+
+
+def _linked_worktree_with_tracked_config(tmp_path: Path) -> GitFixture:
+    """Same layout as ``linked_worktree``, plus a *tracked* ``.claude/config/`` marker file.
+
+    The marker is committed into the shared baseline (before the linked worktree is created,
+    exactly like ``linked_worktree`` does for ``tracked.txt``/``unchanged.txt``) so both the
+    project's primary worktree and the linked worktree start from an identical tree -- mirroring
+    every other fixture-based test in this module. Without a pre-existing tracked file,
+    ``.claude/config/`` would be a wholly new, wholly untracked directory tree; `git status
+    --porcelain` collapses such directories into a single `?? .claude/` line (default
+    `--untracked-files=normal`) instead of listing files inside it individually, which would make
+    the untracked-local-override-file matching under test unreachable.
+    """
+    project_dir = tmp_path / "project"
+    worktree_path = tmp_path / "worktree"
+    project_dir.mkdir()
+    _git("init", "--initial-branch=main", cwd=project_dir)
+    _git("config", "user.name", "Phase Two Test", cwd=project_dir)
+    _git("config", "user.email", "phase-two@example.invalid", cwd=project_dir)
+    (project_dir / "tracked.txt").write_text("baseline\n", encoding="utf-8")
+    (project_dir / "unchanged.txt").write_text("must survive\n", encoding="utf-8")
+    config_dir = project_dir / ".claude" / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "base-marker.yaml").write_text("codex:\n  model: gpt-5.6-sol\n", encoding="utf-8")
+    _git(
+        "add",
+        "tracked.txt",
+        "unchanged.txt",
+        ".claude/config/base-marker.yaml",
+        cwd=project_dir,
+    )
+    _git("commit", "-m", "baseline", cwd=project_dir)
+    _git("worktree", "add", "-b", BRANCH, worktree_path, "HEAD", cwd=project_dir)
+    return GitFixture(project_dir, worktree_path, _rev_parse(worktree_path, "HEAD"))
+
+
+def test_prepare_and_finalize_ignore_untracked_config_local_override_files(
+    tmp_path: Path,
+) -> None:
+    # CodeRabbit (PR #256 review, Major): .claude/config/**/*.local.{yaml,json} are intentional,
+    # project-local overrides (`.claude/rules/config-loading.md`) that must not be clobbered or
+    # blocked on. A worktree reused across actions can legitimately carry one as an untracked
+    # file; the dirty-worktree safety check must not stall prepare/finalize on its presence.
+    fixture = _linked_worktree_with_tracked_config(tmp_path)
+    override_file = fixture.worktree_path / ".claude" / "config" / "cli-tools.local.yaml"
+    override_file.write_text("codex:\n  model: o3-pro\n", encoding="utf-8")
+
+    session = _prepare(fixture)
+    candidate_sha = _maker_commit(session)
+    assert override_file.read_text(encoding="utf-8") == "codex:\n  model: o3-pro\n"
+
+    result = git_ephemeral.finalize_ephemeral_git(session)
+
+    assert result.status == "updated"
+    assert result.new_sha == candidate_sha
+    assert override_file.read_text(encoding="utf-8") == "codex:\n  model: o3-pro\n"
+    assert (
+        _git("status", "--porcelain", cwd=Path(session.worktree_path)).stdout
+        == "?? .claude/config/cli-tools.local.yaml\n"
+    )
+    git_ephemeral.cleanup_ephemeral_git(session)
+
+
+def test_prepare_still_rejects_tracked_dirt_alongside_untracked_config_local_override(
+    tmp_path: Path,
+) -> None:
+    fixture = _linked_worktree_with_tracked_config(tmp_path)
+    (fixture.worktree_path / ".claude" / "config" / "cli-tools.local.yaml").write_text(
+        "codex:\n  model: o3-pro\n", encoding="utf-8"
+    )
+    Path(fixture.worktree_path, "tracked.txt").write_text(
+        "leftover from a previous interrupted action, never committed\n", encoding="utf-8"
+    )
+
+    with pytest.raises(git_ephemeral.EphemeralGitInfrastructureError, match=r"dirty|status"):
+        _prepare(fixture)
+
+
+def test_prepare_rejects_untracked_non_local_file_under_claude_config(
+    tmp_path: Path,
+) -> None:
+    # The exclusion is narrowly scoped to *.local.{yaml,json}; any other untracked file under
+    # .claude/config/ must still be treated as dirty worktree residue.
+    fixture = _linked_worktree_with_tracked_config(tmp_path)
+    (fixture.worktree_path / ".claude" / "config" / "other.yaml").write_text(
+        "codex:\n  model: gpt\n", encoding="utf-8"
+    )
+
+    with pytest.raises(git_ephemeral.EphemeralGitInfrastructureError, match=r"dirty|status"):
+        _prepare(fixture)

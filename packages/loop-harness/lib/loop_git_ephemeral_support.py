@@ -38,7 +38,41 @@ if TYPE_CHECKING:
 _GIT_TIMEOUT_SECONDS = 30.0
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
+# Git repository-location variables that must never leak from the *ambient* environment of the
+# host driver process into a host-invoked git subprocess (Codex review, PR #256, Critical). If
+# the calling Python process itself happens to run with e.g. GIT_INDEX_FILE set (for example
+# when loop-harness runs inside another git hook/wrapper), naively inheriting os.environ would
+# silently redirect `read-tree`/`status` writes away from the ephemeral or trusted-status index
+# this module explicitly manages, letting a stale or attacker-influenced ambient index seed the
+# Maker-writable index -- or the trusted-tree comparison -- instead of the one derived from
+# `-C <path>` / `--git-dir <path>`. Every git process this module spawns on the host must have
+# these vars scrubbed from any inherited environment; call sites that need one set explicitly do
+# so via an override applied after scrubbing.
+_GIT_LOCATION_ENV_VARS = (
+    "GIT_INDEX_FILE",
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_NAMESPACE",
+    "GIT_CEILING_DIRECTORIES",
+)
+
 GitRunner = Callable[..., subprocess.CompletedProcess[str]]
+
+
+def _stripped_host_env(overrides: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Base env for host-invoked git processes, purged of ambient repository-location vars.
+
+    See ``_GIT_LOCATION_ENV_VARS`` for the rationale. ``overrides`` is applied last and always
+    wins, so callers that intentionally need e.g. ``GIT_DIR``/``GIT_WORK_TREE``/``GIT_INDEX_FILE``
+    pointed at a specific, trusted path pass it here rather than relying on ambient inheritance.
+    """
+    env = {key: value for key, value in os.environ.items() if key not in _GIT_LOCATION_ENV_VARS}
+    if overrides:
+        env.update(overrides)
+    return env
 
 
 class EphemeralGitSafetyStop(RuntimeError):
@@ -144,11 +178,12 @@ def _verify_checked_out_branch(
 
 
 def _ephemeral_env(session: EphemeralGitSession) -> dict[str, str]:
-    return {
-        **os.environ,
-        "GIT_DIR": str(session.ephemeral_dir),
-        "GIT_WORK_TREE": str(session.worktree_path),
-    }
+    return _stripped_host_env(
+        {
+            "GIT_DIR": str(session.ephemeral_dir),
+            "GIT_WORK_TREE": str(session.worktree_path),
+        }
+    )
 
 
 def _verify_worktree_matches_trusted_tree(
@@ -184,12 +219,13 @@ def _verify_worktree_matches_trusted_tree(
     the write-back path.
     """
     temporary_index = temp_index_dir / f".status-index.loop-harness-{secrets.token_hex(8)}"
-    env = {
-        **os.environ,
-        "GIT_DIR": str(git_dir),
-        "GIT_WORK_TREE": str(worktree_path),
-        "GIT_INDEX_FILE": str(temporary_index),
-    }
+    env = _stripped_host_env(
+        {
+            "GIT_DIR": str(git_dir),
+            "GIT_WORK_TREE": str(worktree_path),
+            "GIT_INDEX_FILE": str(temporary_index),
+        }
+    )
     try:
         _run_git(
             ["read-tree", target_sha],
@@ -208,11 +244,39 @@ def _verify_worktree_matches_trusted_tree(
             temporary_index.unlink(missing_ok=True)
         except OSError:
             pass
-    if status_result.stdout:
+    dirty_lines = [
+        line for line in status_result.stdout.splitlines() if not _is_untracked_local_override(line)
+    ]
+    if dirty_lines:
         raise EphemeralGitInfrastructureError(
             "worktree status is dirty relative to the trusted target tree",
-            details={"status": status_result.stdout, "target_sha": target_sha},
+            details={"status": "\n".join(dirty_lines), "target_sha": target_sha},
         )
+
+
+_LOCAL_OVERRIDE_ROOT = ".claude/config/"
+
+
+def _is_untracked_local_override(status_line: str) -> bool:
+    """True for an untracked ``.claude/config/**/*.local.{yaml,json}`` porcelain line.
+
+    CodeRabbit (PR #256 review, Major): ``.claude/rules/config-loading.md`` treats
+    ``*.local.yaml``/``*.local.json`` as intentional, git-ignored project overrides that must
+    never be clobbered or blocked on. ``git status --porcelain`` still reports them as untracked
+    (``??``) when a worktree is reused without those overrides being gitignored in that
+    repository, which would otherwise make ``_verify_worktree_matches_trusted_tree`` reject an
+    otherwise-clean worktree. Only untracked local-override files are excluded here; any tracked
+    change (staged or unstaged) still fails the dirty check unchanged, preserving the leftover-
+    Maker-residue detection this function exists for.
+    """
+    if not status_line.startswith("?? "):
+        return False
+    path = status_line[3:]
+    if path.startswith('"') and path.endswith('"') and len(path) >= 2:
+        path = path[1:-1]
+    if not path.startswith(_LOCAL_OVERRIDE_ROOT):
+        return False
+    return path.endswith(".local.yaml") or path.endswith(".local.json")
 
 
 def _restore_ephemeral_git_config(session: EphemeralGitSession) -> None:
@@ -456,7 +520,13 @@ def _run_git_unchecked(
     env: Mapping[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     command = ["git", *lds.hardened_git_config_args(), *args]
-    git_env = dict(os.environ) if env is None else dict(env)
+    # Codex review, PR #256, Critical: when the caller does not pass an explicit env (the common
+    # case -- e.g. `-C <path>` / `--git-dir <path>` commands), fall back to a *scrubbed* copy of
+    # the ambient environment rather than inheriting it verbatim. See `_GIT_LOCATION_ENV_VARS`.
+    # Callers that build an explicit env themselves (`_ephemeral_env`,
+    # `_verify_worktree_matches_trusted_tree`) already route through `_stripped_host_env`, so
+    # their intentional GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE overrides are preserved unchanged.
+    git_env = _stripped_host_env() if env is None else dict(env)
     git_env["GIT_CONFIG_GLOBAL"] = os.devnull
     git_env["GIT_CONFIG_NOSYSTEM"] = "1"
     try:
