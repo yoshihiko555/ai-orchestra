@@ -208,9 +208,12 @@ fast-forward-only の `fetch` + 期待値照合つき `update-ref`（CAS）を�
 #### 4.3.1 事前準備（driver、host。Maker 用）
 
 1. `common_dir = git rev-parse --path-format=absolute --git-common-dir`（`state.worktree_path` を cwd に。
-   既存の `_resolve_root_worktree` と同じ解決方式を流用）。
+   既存の `_resolve_root_worktree` と同じ解決方式を流用）。runtime の起点は呼び出し引数をそのまま
+   信頼せず、この `common_dir` から導出した root worktree とし、runtime の既存の親要素が symlink
+   の場合は fail-closed にする。
 2. `baseline_sha = git -C <worktree_path> rev-parse <branch>`（`_persist_pre_maker_head` が既に
-   記録している値と同一のもので構わない）。
+   記録している値と同一のもので構わない）。同時に `symbolic-ref HEAD` が対象 branch ref と一致する
+   ことを確認し、別 branch / detached HEAD の worktree は受理しない。
 3. `ephemeral_dir = .claude/loop/<loop_id>/docker-runtime/<action_id>/git-ephemeral/`
    （アクション単位。既存の journal/state ディレクトリとは独立し、driver がアクション完了後に
    `shutil.rmtree` する使い捨てディレクトリ）。
@@ -223,6 +226,10 @@ fast-forward-only の `fetch` + 期待値照合つき `update-ref`（CAS）を�
    Maker の `git commit` が `Author identity unknown` で失敗する。meta-harness の
    `_prepare_isolated_git()` が使い捨てスナップショットに `-c user.name=meta-harness` を与える
    のと同じ考え方で、repo ローカルの ephemeral repo にのみ設定する合成 identity とする）
+   identity 設定後の trusted な `config` は runtime の mount 対象外ファイルにも snapshot し、
+   事後処理では Maker 所有 config をこの内容へ原子的に戻してから最初の host Git を起動する。
+   これにより任意名の `filter.*.clean/process` 等、Fix-5 の既知キー以外の executable config も
+   host 権限で実行されない。
 6. `echo <common_dir>/objects > <ephemeral_dir>/objects/info/alternates`
    （**host パスをそのまま書く**。4.4 節の「1:1 パスマウント」により、コンテナ内でも同じパスで
    解決できるため、パス変換は不要）
@@ -282,6 +289,11 @@ fast-forward-only の `fetch` + 期待値照合つき `update-ref`（CAS）を�
 > （`<ephemeral_dir>` は共有 common dir とは異なり Maker が config ファイルそのものを完全に
 > 所有しているため、既存ヘルパーがカバーする脅威モデルより広い上書きが必要。実装時は
 > `hardened_git_config_args()` を拡張するか、ephemeral dir 専用の派生ヘルパーを新設する）。
+> さらに、任意名を持てる `filter.*` のように固定キーの上書きでは列挙しきれない executable config
+> を排除するため、4.3.1 手順5の trusted snapshot を host Git 起動前に原子的に復元する。host の
+> global/system config に同名 filter が定義されている場合も Maker 管理 `.gitattributes` から起動
+> できないよう、これらの host Git 環境は `GIT_CONFIG_GLOBAL=/dev/null` /
+> `GIT_CONFIG_NOSYSTEM=1` に固定する。
 
 1. `new_sha = git --git-dir=<ephemeral_dir> <hardened args + Fix-5 追加分> rev-parse refs/heads/<branch>`
 2. `new_sha == baseline_sha` なら「Maker がコミットしなかった」として扱う（既存 `_verify_maker_commit`
@@ -301,15 +313,20 @@ fast-forward-only の `fetch` + 期待値照合つき `update-ref`（CAS）を�
      Fix-5 追加分は fetch の転送元である `<ephemeral_dir>` 側の `uploadpack.packObjectsHook`
      を無効化するために必須）
    - `imported_sha = git -C <common_dir> rev-parse <import_ref>`
+     （事前に ephemeral branch から固定した `new_sha` と完全一致することを確認し、不一致は
+     `git_ref_import_failed` として CAS へ進まない）
    - `git -C <common_dir> merge-base --is-ancestor <baseline_sha> <imported_sha>`
      （fast-forward であることを明示的に検証。非 ff なら安全停止。`git_ref_not_fast_forward`
      等の新規 stop_reason。9 節）
-   - `git -C <common_dir> update-ref refs/heads/<branch> <imported_sha> <baseline_sha>`
+   - CAS 直前に worktree の `.git` pointer と checkout branch を再検証してから、
+     `git -C <common_dir> update-ref refs/heads/<branch> <imported_sha> <baseline_sha>`
      （**`update-ref <ref> <new> <old>` は git 組み込みの原子的 compare-and-swap**。
      `<old>` に渡した `baseline_sha` が現在の ref 値と一致しない場合、git 自身が更新を拒否する
      ため、初版で別コマンドとして行っていた「事前の SHA 比較」は不要になる）
    - `git -C <common_dir> update-ref -d <import_ref>`（一時 ref を削除）
-   - `git -C <worktree_path> reset <branch>`（`--mixed` 既定。worktree 固有の index だけを
+   - `git -C <worktree_path> reset --mixed HEAD`（CAS 前に checkout branch が対象 branch と一致する
+     ことを確認済みであり、CAS 後の `HEAD` は新 tip を指す。明示した別 branch ref へ reset すると
+     checkout branch の切替レース時に別 branch を動かし得るため、`HEAD` に限定する。worktree 固有の index だけを
      新しい commit tree に合わせる。**working directory のファイルには触れない** —
      Maker が実 worktree 上で直接編集済みのため、reset 前後でファイル内容は変化しない。
      `.git` は 4.3.1/4.3.2 節で ro 保護済みの正規ポインタを指したままなので、この操作は
@@ -320,8 +337,8 @@ fast-forward-only の `fetch` + 期待値照合つき `update-ref`（CAS）を�
 この手順により、共有 common dir への書き込みは**手順 4 の一時 ref 経由 fetch + CAS update-ref +
 reset のみ**に限定され、いずれも driver（host、信頼境界内のトラステッドコード）が実行する。
 コンテナ内プロセスが共有 ref・config・hooks に触れる経路は存在しない。`<ephemeral_dir>` に触れる
-呼び出しは全て Fix-5 の追加 config 上書きを適用するため、Maker が同ディレクトリの `config` を
-どう書き換えても host 側でのコード実行には至らない。
+呼び出しは全て trusted config の復元後に Fix-5 の追加 config 上書きを適用するため、Maker が同
+ディレクトリの `config` をどう書き換えても host 側でのコード実行には至らない。
 
 #### 4.3.4 Checker 向けの sanitized ephemeral GIT_DIR（ro）
 

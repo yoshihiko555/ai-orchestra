@@ -877,6 +877,40 @@ repo-identity 照合のいずれかに失敗した場合、`loop_driver.py` は�
    場合は投稿してよいが、repo-identity 不一致が絡むケース（3.4 節）は投稿しない。
 6. worktree・state/journal は保持する（人間の調査・再開判断のため。FT-23 と同様の方針）。
 
+**ephemeral GIT_DIR からの CAS 書き戻し失敗による安全停止（Issue #211 Phase 2）**:
+Maker の commit を共有 common dir へ取り込む際は、完全修飾 ref のみを使い、
+`git fetch --no-tags --no-write-fetch-head <ephemeral_dir>
+refs/heads/<branch>:refs/loop-import/<action_id>` で action 固有の一時 import ref へ取り込んだ後、
+fast-forward 検証と `git update-ref <branch_ref> <candidate_sha> <baseline_sha>` の原子的 CAS を行う。
+次の 3 失敗は、後続の branch 書き戻し・push・PR 作成を中断する安全停止として区別する。
+
+| 失敗点 | `stop_reason` | 必須の扱い |
+| ------ | ------------- | ---------- |
+| 一時 import ref への fetch 失敗、または import 後 SHA が事前に固定した ephemeral tip と不一致 | `git_ref_import_failed` | branch ref の更新へ進まず、action 固有の一時 import ref を削除する |
+| `merge-base --is-ancestor <baseline_sha> <candidate_sha>` が exit 1 | `git_ref_not_fast_forward` | 非 fast-forward として CAS を実行せず、一時 import ref を削除する |
+| `update-ref <branch_ref> <candidate_sha> <baseline_sha>` の期待値不一致 | `git_ref_cas_rejected` | この action による branch ref 更新を行わず、一時 import ref を削除する |
+
+`merge-base --is-ancestor` の exit 1 以外の非 0 は、非 fast-forward ではなく Git コマンドの
+実行障害であるため `git_ref_not_fast_forward` として記録せず、infrastructure failure として扱う。
+また CAS 成功後の worktree `reset --mixed` 失敗は、branch ref がすでに更新済みであるため上記 3 種類の
+安全停止とは区別した post-CAS infrastructure failure とし、自動 rollback は行わない。
+
+一時 import ref の削除は成功・失敗の両経路で `finally` 相当により行い、ephemeral runtime の削除も
+冪等にする。`prepare_ephemeral_git` は同じ `action_id` の古い runtime を事前に削除し、クラッシュ後の
+同一 action 再試行でも残骸を再利用しない。削除対象は検証済み `action_id` から導出した
+`refs/loop-import/<action_id>` のみに限定し、別 action の ref を wildcard で削除しない。
+cleanup 自体が失敗した場合は元の safety stop を保持したまま cleanup failure を追加報告し、次の
+「一時 import ref は削除済み」という定型コメントは使用しない。
+
+安全停止コメントは次の事実に限定する。
+
+> この action による対象 branch ref の更新、push、PR 作成は行われていません。一時 import ref は
+> 削除済みです。fetch 済み object は到達不能のまま共有 object DB に残る可能性があります。
+
+fetch により共有 object DB への object 書き込みが起こり得るため、「リポジトリへの書き込みは
+行われていない」とは表現しない。action を横断した一時 import ref の sweep は Phase 2 のスコープ外の
+follow-up とし、将来導入する場合は lease/state を確認して進行中 action の ref を削除しない設計とする。
+
 **push 後整合性検証（層4。2.2 節の多層防御）による安全停止**: 2.2 節の層2（env 認証隔離）を
 主軸としつつ、その安全網として `loop_driver.py` は `on_success.exec` の `push` 実行の前後で
 「期待する local HEAD」と「remote HEAD」を記録・照合する。具体的には、直前の反復完了時点の
@@ -1483,7 +1517,9 @@ emit_event, ...` する）を踏襲する。
   "phase": "pr_review_response",
   "final_status": "exit_success", // exit_success | exit_failure | stopped（安全停止。1.4節）
   "stop_reason": null, // exit_failure時: guard_max_iterations | guard_no_progress | wall_clock_timeout 等
-                        // stopped時: push_guard_violation | repo_identity_mismatch | foreign_live_lease（1.4節・2.6節・3.4節）
+                        // stopped時: push_guard_violation | repo_identity_mismatch | foreign_live_lease |
+                        // git_ref_import_failed | git_ref_not_fast_forward | git_ref_cas_rejected
+                        // （1.4節・2.6節・3.4節）
   "iterations_total": 4,
   "pr_number": 123
 }

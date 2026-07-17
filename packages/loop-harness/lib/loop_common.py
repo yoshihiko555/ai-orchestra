@@ -46,6 +46,9 @@ _PUBLIC_STOP_REASONS = frozenset(
         "repo_identity_mismatch",
         "foreign_live_lease",
         "external_reviewer_unavailable",
+        "git_ref_import_failed",
+        "git_ref_not_fast_forward",
+        "git_ref_cas_rejected",
     }
 )
 
