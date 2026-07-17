@@ -217,6 +217,54 @@ def _verify_worktree_matches_trusted_tree(
     tree that is internally consistent). Running the identical trusted-index comparison at both
     prepare and finalize closes the same class of gap at the worktree's two points of entry into
     the write-back path.
+
+    Fix-15 (docs/design/loop-harness-isolation.md §10, 2026-07-18, Critical -- discovered while
+    writing the ``prepare``-side regression test for Fix-10): this helper originally ran
+    ``git status --porcelain`` against the freshly seeded temporary index. Porcelain status has two
+    columns -- staged (index vs ``HEAD``) and unstaged (worktree vs index) -- and prepare's call
+    passes ``git_dir=<common_dir>``, so ``HEAD`` there resolves to whatever the *primary* worktree
+    (typically ``main``) currently points at, not to ``target_sha``/``baseline_sha``. Any time the
+    primary worktree's branch has advanced independently of the Maker linked worktree's branch (a
+    normal, constant occurrence in real usage -- e.g. another PR merging into ``main`` while an
+    action is in flight), the staged column reports every path that differs between the seeded
+    index and that unrelated ``HEAD`` as dirty, even though the Maker worktree itself has zero
+    actual drift, making prepare fail-closed unconditionally. The check's intent has always been
+    "does the worktree's file content match ``target_sha``'s tree", which is entirely independent
+    of wherever the primary worktree's ``HEAD`` happens to point. This is fixed by comparing the
+    worktree only against the seeded index -- never against ``HEAD`` -- via three HEAD-independent
+    commands instead of porcelain status: ``update-index --refresh`` followed by
+    ``diff-files --name-status`` (working tree vs the index only) for tracked-file drift, and
+    ``ls-files --others --exclude-standard`` (worktree entries absent from the index) for untracked
+    residue. None of the three consults ``HEAD`` at all.
+
+    Two single-command alternatives were tried first and rejected, for reasons load-bearing enough
+    to record here:
+
+    - Plain ``diff-files --name-status`` alone (no prior refresh): it reports every tracked path as
+      modified whenever the index's cached stat info doesn't match the working tree file's raw stat
+      (always true right after ``read-tree``, which seeds zeroed stat fields), because in its "raw"
+      output mode it never falls back to an actual content comparison to disprove a stat mismatch --
+      a second, independent source of false-positive "dirty" reports on an untouched worktree.
+    - No-revision ``git diff --name-status`` (the porcelain form of the same comparison): unlike
+      raw ``diff-files``, it *does* fall back to a real comparison on stat mismatch, but to build
+      that comparison it must read the *index-recorded* blob's actual object content, which fails
+      outright (non-zero exit, not a "dirty" verdict) if that object is not locally resolvable --
+      exactly the state Fix-7's alternates restoration (which always runs immediately before this
+      check at finalize) can legitimately leave a *maliciously* fabricated commit's tree in. That
+      case must fall through to finalize's later fetch step so it fails there as
+      ``git_ref_import_failed`` (the existing, tested confused-deputy safe-stop), not abort early
+      here with an unrelated infrastructure error.
+
+    ``update-index --refresh`` sidesteps both problems: for each stat-mismatched entry it computes
+    a fresh hash of the *working tree* file only and string-compares it against the OID already
+    recorded in the index entry -- it never needs to read the recorded blob's actual bytes, so an
+    unresolvable-but-content-matching foreign OID (as in the scenario above) still refreshes clean.
+    Paths it cannot refresh clean keep their stale/mismatched cache entry, so the follow-up
+    ``diff-files --name-status`` (also never touching blob content in raw/name-status mode) reports
+    exactly the genuinely-changed and genuinely-deleted paths, and nothing else. ``refresh``'s exit
+    code is intentionally not checked -- a non-zero "needs update" result is the expected, normal
+    outcome whenever real drift exists; ``diff-files`` afterwards is the sole source of truth for
+    the tracked-file dirty verdict.
     """
     temporary_index = temp_index_dir / f".status-index.loop-harness-{secrets.token_hex(8)}"
     env = _stripped_host_env(
@@ -233,20 +281,45 @@ def _verify_worktree_matches_trusted_tree(
             env=env,
             operation="seed the trusted status index from the target tree",
         )
-        status_result = _run_git(
-            ["status", "--porcelain"],
+        # Reconcile the index's zeroed-out post-`read-tree` stat cache against the real working
+        # tree without ever reading the *recorded* blob content (Fix-15) -- see docstring above.
+        # A non-zero/`needs update` result here is expected whenever real drift exists; it is not
+        # an error, so this intentionally uses the unchecked runner rather than `_run_git`.
+        _run_git_unchecked(
+            ["update-index", "--refresh", "-q"],
             runner=runner,
             env=env,
-            operation="check worktree status against the trusted tree",
+            operation="refresh the trusted status index stat cache",
+        )
+        # HEAD-independent: the raw (non-porcelain) `diff-files` compares the working tree against
+        # the index only and, in `--name-status` mode, never reads blob content -- it only string-
+        # compares recorded vs. (already refreshed above) cached-file OIDs (Fix-15).
+        tracked_diff_result = _run_git(
+            ["diff-files", "--name-status", "--no-renames"],
+            runner=runner,
+            env=env,
+            operation="check tracked worktree files against the trusted tree",
+        )
+        untracked_result = _run_git(
+            ["ls-files", "--others", "--exclude-standard"],
+            runner=runner,
+            env=env,
+            operation="check the worktree for untracked files against the trusted tree",
         )
     finally:
         try:
             temporary_index.unlink(missing_ok=True)
         except OSError:
             pass
-    dirty_lines = [
-        line for line in status_result.stdout.splitlines() if not _is_untracked_local_override(line)
+    tracked_dirty_lines = [line for line in tracked_diff_result.stdout.splitlines() if line.strip()]
+    untracked_dirty_lines = [
+        status_line
+        for path in untracked_result.stdout.splitlines()
+        if path.strip()
+        for status_line in (f"?? {path}",)
+        if not _is_untracked_local_override(status_line)
     ]
+    dirty_lines = tracked_dirty_lines + untracked_dirty_lines
     if dirty_lines:
         raise EphemeralGitInfrastructureError(
             "worktree status is dirty relative to the trusted target tree",

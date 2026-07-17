@@ -335,6 +335,52 @@ def test_prepare_rejects_assume_unchanged_hidden_drift_left_over_from_prior_acti
         _prepare(linked_worktree)
 
 
+def test_prepare_accepts_clean_worktree_when_primary_worktree_head_has_diverged(
+    linked_worktree: GitFixture,
+) -> None:
+    # Regression test for the HEAD-dependent trusted-tree bug (docs/design/loop-harness-isolation.md
+    # §10, discovered while writing this test): the old implementation ran `git status --porcelain`
+    # (whose *staged* column compares index vs `HEAD`) against `GIT_DIR=<common_dir>`. `HEAD` there
+    # resolves to whatever the *primary* worktree (`project_dir`, checked out on `main`) currently
+    # points at -- not the Maker linked worktree's branch. `main` advancing independently of the
+    # Maker branch (any other PR merging into `main` while an action is in flight) is normal,
+    # constant operation, not drift in the Maker worktree itself, so it must never fail-closed here.
+    Path(linked_worktree.project_dir, "tracked.txt").write_text(
+        "main has moved on independently of the Maker branch\n", encoding="utf-8"
+    )
+    _git(
+        "commit",
+        "-am",
+        "advance main independently of the Maker branch",
+        cwd=linked_worktree.project_dir,
+    )
+
+    session = _prepare(linked_worktree)
+
+    assert session.baseline_sha == linked_worktree.baseline_sha
+    git_ephemeral.cleanup_ephemeral_git(session)
+
+
+def test_prepare_commit_finalize_succeeds_when_primary_worktree_head_diverges_mid_action(
+    linked_worktree: GitFixture,
+) -> None:
+    # Same bug as above, exercised across a full prepare -> commit -> finalize round trip: `main`
+    # moving further while the action is in flight must not affect either trusted-tree check.
+    session = _prepare(linked_worktree)
+    Path(linked_worktree.project_dir, "tracked.txt").write_text(
+        "main moved on mid-action\n", encoding="utf-8"
+    )
+    _git("commit", "-am", "advance main mid-action", cwd=linked_worktree.project_dir)
+    candidate_sha = _maker_commit(session)
+
+    result = git_ephemeral.finalize_ephemeral_git(session)
+
+    assert result.status == "updated"
+    assert result.new_sha == candidate_sha
+    assert _shared_ref(session) == candidate_sha
+    git_ephemeral.cleanup_ephemeral_git(session)
+
+
 def test_build_maker_git_mount_spec_preserves_overlay_order_and_one_to_one_paths(
     linked_worktree: GitFixture,
 ) -> None:

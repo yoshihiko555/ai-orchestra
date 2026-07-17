@@ -274,8 +274,9 @@ fast-forward-only の `fetch` + 期待値照合つき `update-ref`（CAS）を�
     `.git` ポインタだけはコンテナから書き換え不能にする。
 11. **[Fix-10. 2026-07-17 PR #256 レビュー指摘反映。High]** `ephemeral_dir` の作成（手順4）より前に、
     Maker がまだ到達できない `common_dir` を `GIT_DIR` とし、`baseline_sha` の tree から
-    `read-tree` で新規構築した host 専用の一時 index に対して `git status --porcelain` を実行し、
-    worktree が baseline に対して dirty でないことを検証する。`worktree_manager.create_worktree()`
+    `read-tree` で新規構築した host 専用の一時 index に対して、**`target_sha`（＝`baseline_sha`）
+    相対の比較のみ**で worktree が dirty でないことを検証する（`HEAD` は一切参照しない。
+    **[Fix-15. 2026-07-18. Critical]** 詳細下記）。`worktree_manager.create_worktree()`
     は前回アクションの worktree を再利用し得るため、これを省略すると前回中断アクションの
     未コミット変更（あるいは `--skip-worktree`/`--assume-unchanged` で隠された変更）が
     `ephemeral_dir` の index seed に紛れ込み、事後処理（4.3.3 節手順3・Fix-9）の trusted-tree
@@ -283,6 +284,15 @@ fast-forward-only の `fetch` + 期待値照合つき `update-ref`（CAS）を�
     trusted-index 比較ロジックを、比較先を `ephemeral_dir`/`new_sha` ではなく `common_dir`/
     `baseline_sha` に差し替えて再利用する。dirty と判定された場合は `ephemeral_dir` を作成せず
     `EphemeralGitInfrastructureError` で fail-closed する。
+    **[Fix-15. 2026-07-18 発見・同日修正。Critical]** 当初の実装は `git status --porcelain` を
+    そのまま使っており、その staged 列（index vs `HEAD`）が本手順の `GIT_DIR=<common_dir>` 経由で
+    primary worktree（通常 `main`）の `HEAD` に解決されてしまい、`main` が Maker branch と独立に
+    進んだだけ（＝通常運用で常時発生）で worktree に実 drift が無くても常に dirty 判定される不具合が
+    あった。`_verify_worktree_matches_trusted_tree`（`packages/loop-harness/lib/loop_git_ephemeral_support.py`）
+    は現在 `update-index --refresh` + `diff-files --name-status`（追跡ファイル、index vs worktree
+    のみ）と `ls-files --others --exclude-standard`（未追跡ファイル）の組み合わせで判定しており、
+    `HEAD` を一切参照しない。回帰テストは `test_prepare_accepts_clean_worktree_when_primary_worktree_head_has_diverged`
+    （`packages/loop-harness/tests/test_loop_git_ephemeral.py`）。
 
 #### 4.3.2 コンテナ実行
 
@@ -361,18 +371,26 @@ fast-forward-only の `fetch` + 期待値照合つき `update-ref`（CAS）を�
    のロジックを、比較対象を「worktree の `git status --porcelain`」から「ephemeral repo の ref 移動」
    へ差し替える形で継続利用する）。
 3. **[Fix-1 検証 / Fix-5 適用]** コミットがある場合、`GIT_DIR=<ephemeral_dir>
-   GIT_WORK_TREE=<worktree_path> git <hardened args + Fix-5 追加分> status --porcelain` が
-   **空であること**を必須検証する（Maker の最終 commit 後に working directory と ephemeral repo
-   の内容が一致するか）。**[Fix-14. 2026-07-18 PR #256 レビュー指摘反映（3巡目）。Major]**
+   GIT_WORK_TREE=<worktree_path>` の下で `target_sha`（＝`new_sha`）相対の trusted-index 比較
+   （**[Fix-15]** 下記。`HEAD` は一切参照しない）が **dirty 無しであること**を必須検証する
+   （Maker の最終 commit 後に working directory と ephemeral repo の内容が一致するか）。
+   **[Fix-14. 2026-07-18 PR #256 レビュー指摘反映（3巡目）。Major]**
    この検証（および 4.3.1 手順11・Fix-10 の prepare 側検証）の dirty 判定では、`??`（untracked）
    かつ `.claude/config/**/*.local.yaml` または `*.local.json` に一致する行のみを dirty から
    除外する。これらは `config-loading` ルールが定義する意図的なプロジェクトローカル上書きであり
    （`.claude/rules/config-loading.md`）、他アクションから再利用された worktree に未追跡のまま
    残っていても正常な状態である。除外は untracked かつこのパスパターンに一致する行のみに限定し、
    tracked ファイルの変更や他の untracked ファイルは従来どおり dirty として扱う（残骸検出という
-   本検証の主目的は維持する）。
-   の index/HEAD が完全一致していることの確認。空でなければ「未コミットの変更が残っている」
-   infrastructure failure として扱い、共有 common dir への書き戻しは行わない）。
+   本検証の主目的は維持する）。dirty が検出された場合は「未コミットの変更が残っている」
+   infrastructure failure として扱い、共有 common dir への書き戻しは行わない。
+   **[Fix-15. 2026-07-18 発見・同日修正。Critical]** 当初の実装（Fix-1/Fix-9 導入時点）は
+   ここも `git status --porcelain` をそのまま使っており、その staged 列（index vs `HEAD`）が
+   comparison 対象を誤って `HEAD` に依存させていた。`_verify_worktree_matches_trusted_tree`
+   （4.3.1 手順11・Fix-10 と共通のヘルパー。`packages/loop-harness/lib/loop_git_ephemeral_support.py`）
+   は現在 `update-index --refresh` + `diff-files --name-status`（追跡ファイル、index vs worktree
+   のみ）と `ls-files --others --exclude-standard`（未追跡ファイル）の組み合わせで判定しており、
+   本手順・4.3.1 手順11 のいずれの呼び出しも `HEAD` を一切参照しない。詳細な設計上の理由（単純な
+   `git diff --name-status` を採用しなかった理由を含む）は同ヘルパーの docstring を参照。
 4. コミットがある場合、共有 common dir への書き戻しを次の手順で行う（`ephemeral_dir` 自体は
    checkout されていないため fetch 可能。宛先を一時 ref にすることで「checkout 済みブランチへの
    fetch 拒否」を回避する）:
@@ -701,16 +719,20 @@ config で切替可能な追加バックエンドとして導入する（確定�
 - Docker Desktop/OrbStack のバインドマウントで、ファイル単位の ro overlay マウント（4.3.1 節
   Fix-3 の `.git` ポインタ保護）が意図どおり機能することの実機検証（ディレクトリ単位のマウントは
   meta-harness で実証済みだが、単一ファイルへの overlay は本設計で新規に導入するため個別に確認する）
-- **[未修正。2026-07-18 発見（PR #256 レビュー3巡目の回帰テスト作成中に判明。Critical 疑い。
-  本 PR の対応スコープ外のため別途 Issue 化する）]** 4.3.1 手順11・Fix-10（および 4.3.3 手順3・
-  Fix-9）の `_verify_worktree_matches_trusted_tree` は `git status --porcelain` の staged 列
-  （index vs `HEAD`）を利用するが、prepare 側呼び出しは `GIT_DIR=<common_dir>` を明示指定して
-  いるため、この `HEAD` は `common_dir` の primary worktree（通常は `main`）が指す commit に
-  解決される。primary worktree の branch（`main` 等）が Maker 用 linked worktree の branch から
-  独立して進んでいる状態（= 通常運用で常に起こり得る。他 PR が `main` にマージされる、等）では、
-  index（`baseline_sha` から `read-tree` した実 tree）と `HEAD`（`main` の tree）の差分が
-  staged 変更として現れ、worktree 自体に実際の drift が一切なくても `prepare_ephemeral_git` が
-  常に「worktree status is dirty」で fail-closed する（`git worktree add` 直後の実運用シナリオで
-  再現確認済み）。回避には、比較を `HEAD` 相対ではなく `target_sha` 相対（例:
-  `git diff --no-index`／`diff-tree` を index-vs-target_sha 形式で使うか、一時 index を
-  `GIT_DIR=<ephemeral 相当>` の孤立したコンテキストで扱う）に置き換える設計変更が必要。
+- ~~[未修正。2026-07-18 発見（PR #256 レビュー3巡目の回帰テスト作成中に判明。Critical 疑い）]
+  `_verify_worktree_matches_trusted_tree` の `git status --porcelain` staged 列（index vs
+  `HEAD`）が primary worktree の `HEAD` に誤って反応し、`main` が独立して進むだけで
+  `prepare_ephemeral_git` が常に fail-closed する不具合~~ → **Fix-15（2026-07-18）で解消済み**:
+  `git status --porcelain` を `update-index --refresh` + `diff-files --name-status`（追跡ファイル、
+  index vs worktree のみで `HEAD` を一切参照しない）と `ls-files --others --exclude-standard`
+  （未追跡ファイル）の組み合わせへ置き換えた。単純な `git diff --name-status`（no-revision）も
+  検討したが、index が記録する OID の実オブジェクトを読みに行くため、Fix-7 の alternates 復元後に
+  意図的に解決不能な blob を参照させる改ざんシナリオ（`test_finalize_neutralizes_alternates_confused_deputy_object_smuggling`）で
+  誤って早期に infrastructure error を投げてしまい、本来期待される finalize の fetch 段階での
+  `git_ref_import_failed` 安全停止に到達できなくなるため不採用とした。`update-index --refresh` は
+  worktree ファイルの実バイト列からハッシュを再計算し index 記載の OID と文字列比較するだけで、
+  index 側 OID の実オブジェクトを読みに行かないため、この経路を壊さずに `HEAD` 依存だけを除去できる。
+  回帰テストは `test_prepare_accepts_clean_worktree_when_primary_worktree_head_has_diverged` /
+  `test_prepare_commit_finalize_succeeds_when_primary_worktree_head_diverges_mid_action`
+  （`packages/loop-harness/tests/test_loop_git_ephemeral.py`）。詳細は `_verify_worktree_matches_trusted_tree`
+  の docstring（`packages/loop-harness/lib/loop_git_ephemeral_support.py`）を参照。
