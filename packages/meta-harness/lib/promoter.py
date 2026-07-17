@@ -43,6 +43,7 @@ ROUTING_CONFIG_TARGET = "routing-config"
 ROUTING_CONFIG_PATCH_FILE = "agent-routing/cli-tools.yaml"
 ROUTING_CONFIG_SSOT_RELATIVE = ev.ROUTING_CONFIG_SSOT_RELATIVE
 ROUTING_CONFIG_MIRROR_RELATIVE = Path(".claude/config/agent-routing/cli-tools.yaml")
+META_HARNESS_SCHEMA_RELATIVE = Path("packages/meta-harness/schemas")
 
 
 class PromotionValidationError(RuntimeError):
@@ -118,7 +119,10 @@ def promote_candidate(
         routing_config_changes = None
         if preflight.manifest.get("target") == ROUTING_CONFIG_TARGET:
             patch_items = _validated_candidate_config_patch_items(
-                main_root, config, preflight.manifest, schema_dir
+                main_root,
+                config,
+                preflight.manifest,
+                preflight.worktree_dir / META_HARNESS_SCHEMA_RELATIVE,
             )
             routing_config_changes = _routing_config_changes_from_base(
                 preflight.worktree_dir, patch_items
@@ -344,7 +348,12 @@ def _validate_preconditions(
         mh.assert_lineage_matches_registered_events(events, lineage)
     except ValueError as exc:
         raise PromotionValidationError(str(exc)) from exc
-    _validated_candidate_config_patch_items(main_root, config, manifest, schema_dir)
+    if target == ROUTING_CONFIG_TARGET:
+        _validated_promotion_base_config_patch_items(
+            main_root, config, project_dir, manifest, schema_dir
+        )
+    else:
+        _validated_candidate_config_patch_items(main_root, config, manifest, schema_dir)
     branch = f"meta/promote-{_cand_slug(cand_id)}"
     worktree_dir = main_root / ".worktrees" / f"meta-promote-{_cand_slug(cand_id)}"
     title = f"feat(meta-harness): promote {cand_id}"
@@ -730,6 +739,32 @@ def _git_ref_file_hash(project_dir: Path, ref: str, relative_path: Path) -> str:
         ) from None
 
 
+def _load_promotion_base_agent_routing_config(
+    project_dir: Path, ref: str = MAIN_REF
+) -> dict[str, Any]:
+    completed = _run(
+        ["git", "show", f"{ref}:{ROUTING_CONFIG_SSOT_RELATIVE.as_posix()}"],
+        cwd=project_dir,
+        check=False,
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip() or completed.returncode
+        raise PromotionValidationError(
+            f"could not read routing config SSOT from promotion base {ref}: {detail}"
+        )
+    try:
+        loaded = yaml.safe_load(completed.stdout) or {}
+    except yaml.YAMLError as exc:
+        raise PromotionValidationError(
+            f"could not parse routing config SSOT from promotion base {ref}: {exc}"
+        ) from None
+    if not isinstance(loaded, dict):
+        raise PromotionValidationError(
+            f"routing config SSOT from promotion base {ref} must be a YAML mapping"
+        )
+    return loaded
+
+
 def _release_stale_reservation_if_needed(
     main_root: Path, config: dict, events: list[dict], cand_id: str
 ) -> list[dict]:
@@ -795,7 +830,12 @@ def _apply_candidate_overlay(
     schema_dir: Path,
 ) -> None:
     _check_overlay_integrity(main_root, config, manifest)
-    patch_items = _validated_candidate_config_patch_items(main_root, config, manifest, schema_dir)
+    validation_schema_dir = schema_dir
+    if manifest.get("target") == ROUTING_CONFIG_TARGET:
+        validation_schema_dir = worktree_dir / META_HARNESS_SCHEMA_RELATIVE
+    patch_items = _validated_candidate_config_patch_items(
+        main_root, config, manifest, validation_schema_dir
+    )
     if manifest.get("target") == ROUTING_CONFIG_TARGET:
         _apply_routing_config_patch(worktree_dir, patch_items)
         return
@@ -816,6 +856,7 @@ def _validated_candidate_config_patch_items(
     config: dict,
     manifest: dict[str, Any],
     schema_dir: Path,
+    agent_routing_config: dict | None = None,
 ) -> list[dict[str, Any]]:
     """promotion lineage の patch を entry-point 契約ごと再検証して順番に返す。"""
     items: list[dict[str, Any]] = []
@@ -835,6 +876,7 @@ def _validated_candidate_config_patch_items(
             schema_dir,
             target=str(lineage_item.get("target") or ""),
             created_by=str(lineage_item.get("created_by") or ""),
+            agent_routing_config=agent_routing_config,
         )
         if patch and mh.list_overlay_files(overlay_dir):
             violations.append("config patch candidates must not contain file overlays")
@@ -842,6 +884,23 @@ def _validated_candidate_config_patch_items(
             raise PromotionValidationError("; ".join(violations))
         items.extend(dict(item) for item in patch)
     return items
+
+
+def _validated_promotion_base_config_patch_items(
+    main_root: Path,
+    config: dict,
+    project_dir: Path,
+    manifest: dict[str, Any],
+    schema_dir: Path,
+) -> list[dict[str, Any]]:
+    agent_routing_config = _load_promotion_base_agent_routing_config(project_dir)
+    return _validated_candidate_config_patch_items(
+        main_root,
+        config,
+        manifest,
+        schema_dir,
+        agent_routing_config,
+    )
 
 
 def _routing_config_paths(worktree_dir: Path) -> tuple[Path, Path]:

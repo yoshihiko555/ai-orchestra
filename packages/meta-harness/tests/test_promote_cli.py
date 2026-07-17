@@ -1568,6 +1568,59 @@ def test_promote_preflight_rechecks_target_patch_biconditional(
         )
 
 
+# Spike B / EV-80: promote は developer checkout の _SCHEMA_DIR ではなく、実際に
+# branch を作る promotion base の agent 名集合で config patch を再検証する。
+def test_promote_revalidates_agent_names_from_promotion_base(git_project: Path, git_run) -> None:
+    routing_config_path = git_project / cli.prm.ROUTING_CONFIG_SSOT_RELATIVE
+    routing_config_path.parent.mkdir(parents=True)
+    routing_config_path.write_text(
+        "agents:\n  promotion-base-only:\n    tool: codex\n",
+        encoding="utf-8",
+    )
+    git_run("add", cli.prm.ROUTING_CONFIG_SSOT_RELATIVE.as_posix(), cwd=git_project)
+    git_run("commit", "-q", "-m", "add promotion base routing config", cwd=git_project)
+    git_run("update-ref", "refs/remotes/origin/main", "HEAD", cwd=git_project)
+    routing_config_path.write_text(
+        "agents:\n  developer-checkout-only:\n    tool: codex\n",
+        encoding="utf-8",
+    )
+
+    config = mh.DEFAULTS
+    overlay_dir = mh.candidates_dir(git_project, config) / _CAND_ID / "overlay"
+    overlay_dir.mkdir(parents=True)
+    patch = [
+        {
+            "file": cli.prm.ROUTING_CONFIG_PATCH_FILE,
+            "key_path": "agents.promotion-base-only.tool",
+            "value": "auto",
+        }
+    ]
+    (overlay_dir / mh.CONFIG_PATCH_FILENAME).write_text(json.dumps(patch), encoding="utf-8")
+    manifest = {
+        "cand_id": _CAND_ID,
+        "parent_id": None,
+        "target": "routing-config",
+        "created_by": "human",
+        "source_commit": git_run("rev-parse", "HEAD", cwd=git_project).stdout.strip(),
+    }
+
+    with pytest.raises(cli.prm.PromotionValidationError, match="unknown agent name"):
+        cli.prm._validated_candidate_config_patch_items(
+            git_project, config, manifest, cli.prm._SCHEMA_DIR
+        )
+
+    assert (
+        cli.prm._validated_promotion_base_config_patch_items(
+            git_project,
+            config,
+            git_project,
+            manifest,
+            cli.prm._SCHEMA_DIR,
+        )
+        == patch
+    )
+
+
 def test_routing_config_structural_verification_aborts_before_writes(tmp_path: Path) -> None:
     worktree, original = _prepare_routing_config_worktree(tmp_path)
     duplicate = original.decode("utf-8").replace(

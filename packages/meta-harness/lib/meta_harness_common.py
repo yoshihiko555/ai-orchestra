@@ -47,6 +47,11 @@ CONFIG_PATCH_ALLOWLIST_CEILING = (
     "agent-routing/cli-tools.yaml#codex.model",
     "agent-routing/cli-tools.yaml#antigravity.model",
 )
+CONFIG_PATCH_ALLOWED_CREATED_BY: dict[str, frozenset[str]] = {
+    "agent-routing/cli-tools.yaml#agents.*.tool": frozenset({"human", "proposer"}),
+    "agent-routing/cli-tools.yaml#codex.model": frozenset({"human"}),
+    "agent-routing/cli-tools.yaml#antigravity.model": frozenset({"human", "proposer"}),
+}
 CONFIG_PATCH_TOOL_VALUES = frozenset({"codex", "antigravity", "claude-direct", "auto"})
 CONFIG_PATCH_MODEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 CONFIG_PATCH_DANGEROUS_SEGMENTS = frozenset({"__proto__", "constructor"})
@@ -1724,6 +1729,7 @@ def validate_config_patch(
     *,
     target: str,
     created_by: str,
+    agent_routing_config: dict | None = None,
 ) -> list[str]:
     """config patch の schema・scope・allowlist・value 契約を fail-closed に検証する。"""
     schema = load_schema(schema_dir, "config_patch.schema.json")
@@ -1737,17 +1743,14 @@ def validate_config_patch(
     if target == "routing-config":
         if not has_patch:
             errors.append("routing-config candidates require a non-empty config patch")
-        if created_by != "human":
-            errors.append("routing-config candidates must have created_by='human'")
     elif has_patch:
         errors.append("non-empty config patches require target='routing-config'")
-    if has_patch and created_by != "human":
-        errors.append("non-empty config patches are restricted to created_by='human'")
 
     if errors:
         return errors
 
     seen_targets: set[str] = set()
+    codex_models: frozenset[str] | None = None
     antigravity_models: frozenset[str] | None = None
     known_agent_names: frozenset[str] | None = None
     for index, item in enumerate(config_patch):
@@ -1779,12 +1782,23 @@ def validate_config_patch(
         if len(matching_entries) != 1:
             errors.append(f"{item_label}: target is not allowlisted exactly once: {target_key}")
             continue
+        matched_file, matched_segments = matching_entries[0]
+        ceiling_entry = f"{matched_file}#{'.'.join(matched_segments)}"
+        allowed_created_by = CONFIG_PATCH_ALLOWED_CREATED_BY.get(ceiling_entry)
+        if allowed_created_by is None:
+            errors.append(f"{item_label}: no created_by policy for ceiling entry: {ceiling_entry}")
+            continue
+        if created_by not in allowed_created_by:
+            errors.append(
+                f"{item_label}: created_by={created_by!r} is not allowed for {ceiling_entry}"
+            )
+            continue
 
         value = item["value"]
         if key_segments[:1] == ("agents",) and key_segments[-1:] == ("tool",):
             if known_agent_names is None:
                 try:
-                    known_agent_names = _load_known_agent_names(schema_dir)
+                    known_agent_names = _load_known_agent_names(schema_dir, agent_routing_config)
                 except ValueError as exc:
                     errors.append(f"{item_label}.value: {exc}")
                     continue
@@ -1814,13 +1828,26 @@ def validate_config_patch(
             if key_segments == ("antigravity", "model"):
                 if antigravity_models is None:
                     try:
-                        antigravity_models = _load_antigravity_model_allowlist(schema_dir)
+                        antigravity_models = _load_antigravity_model_allowlist(
+                            schema_dir, agent_routing_config
+                        )
                     except ValueError as exc:
                         errors.append(f"{item_label}.value: {exc}")
                         continue
                 if not antigravity_models or value not in antigravity_models:
                     errors.append(
                         f"{item_label}.value: antigravity model is not in model_allowlist: {value}"
+                    )
+            elif key_segments == ("codex", "model"):
+                if codex_models is None:
+                    try:
+                        codex_models = _load_codex_model_allowlist(schema_dir, agent_routing_config)
+                    except ValueError as exc:
+                        errors.append(f"{item_label}.value: {exc}")
+                        continue
+                if not codex_models or value not in codex_models:
+                    errors.append(
+                        f"{item_label}.value: codex model is not in model_allowlist: {value}"
                     )
             continue
         errors.append(f"{item_label}: unsupported config patch key: {target_key}")
@@ -1918,8 +1945,29 @@ def _load_agent_routing_config(schema_dir: Path) -> dict:
     return loaded
 
 
-def _load_antigravity_model_allowlist(schema_dir: Path) -> frozenset[str]:
-    loaded = _load_agent_routing_config(schema_dir)
+def _resolve_agent_routing_config(schema_dir: Path, agent_routing_config: dict | None) -> dict:
+    if agent_routing_config is None:
+        return _load_agent_routing_config(schema_dir)
+    if not isinstance(agent_routing_config, dict):
+        raise ValueError("agent-routing config must be a YAML mapping")
+    return agent_routing_config
+
+
+def _load_codex_model_allowlist(
+    schema_dir: Path, agent_routing_config: dict | None = None
+) -> frozenset[str]:
+    loaded = _resolve_agent_routing_config(schema_dir, agent_routing_config)
+    codex = loaded.get("codex") or {}
+    values = codex.get("model_allowlist") or []
+    if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+        raise ValueError("codex.model_allowlist must be an array of strings")
+    return frozenset(values)
+
+
+def _load_antigravity_model_allowlist(
+    schema_dir: Path, agent_routing_config: dict | None = None
+) -> frozenset[str]:
+    loaded = _resolve_agent_routing_config(schema_dir, agent_routing_config)
     antigravity = loaded.get("antigravity") or {}
     values = antigravity.get("model_allowlist") or []
     if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
@@ -1927,8 +1975,10 @@ def _load_antigravity_model_allowlist(schema_dir: Path) -> frozenset[str]:
     return frozenset(values)
 
 
-def _load_known_agent_names(schema_dir: Path) -> frozenset[str]:
-    loaded = _load_agent_routing_config(schema_dir)
+def _load_known_agent_names(
+    schema_dir: Path, agent_routing_config: dict | None = None
+) -> frozenset[str]:
+    loaded = _resolve_agent_routing_config(schema_dir, agent_routing_config)
     agents = loaded.get("agents") or {}
     if not isinstance(agents, dict):
         raise ValueError("agent-routing config agents section must be a mapping")

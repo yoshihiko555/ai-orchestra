@@ -59,15 +59,16 @@
     "config/loop-harness/loop-harness.yaml",
     "config/loop-harness/loops/issue-loop.yaml",
     "config/meta-harness/meta-harness.yaml",
+    "config/quality-gates/evaluation-set-mapping.yaml",
     "config/skill-evolution/skill-evolution.yaml"
   ],
-  "last_sync": "2026-07-14T16:42:48.505615+00:00",
+  "last_sync": "2026-07-16T12:45:33.416939+00:00",
   "file_hashes": {
     "core": {
       "config/core/task-memory.yaml": "081c101ad10526344e4fe7831babbe6ef661d0a4ae7e49fad4eb3967c030b7d8"
     },
     "agent-routing": {
-      "config/agent-routing/cli-tools.yaml": "0a44bb01af7999f875c0aa59098f02b183db1b761d02a2212479006379a1c76d",
+      "config/agent-routing/cli-tools.yaml": "c65a3facb4d9ad28ca5321012723ce36217865222cde4c066b856585675b0c06",
       "agents/ai-architect.md": "86bc9833e5a3b760286517d03133c28e705e2a38b4866473a9dfc44959741792",
       "agents/ai-dev.md": "b6c5c1a072dbd345a68e418f84656d6f4a8216c68f24ad2974632efdb8e362bd",
       "agents/api-designer.md": "87a0c1dec114a730a030acfd1a895b4fb7ed1299babd3a2e43c4ee1e928d023a",
