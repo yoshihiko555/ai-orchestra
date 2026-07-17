@@ -195,7 +195,7 @@ def test_regression_failure_is_hard_gate_and_does_not_pollute_frontier_axes(
     assert len(points) == 1
     assert points[0]["eligible"] is False
     assert points[0]["quality_mean"] == 90.0
-    assert points[0]["cost_mean"] == 10
+    assert points[0]["cost_mean"] == 0.1
     assert points[0]["runs"] == 1
     assert loop_state.non_holdout_summary(events, config, CAND_ID, TARGET) is None
 

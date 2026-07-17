@@ -399,7 +399,7 @@ def _compute_current_frontier(
     points = mh.aggregate_run_points(events, config, target)
     eligible = [p for p in points if p["eligible"]]
     ineligible_ids = [p["cand_id"] for p in points if not p["eligible"]]
-    frontier_ids, dominated_ids = mh.compute_pareto_frontier(eligible)
+    frontier_ids, dominated_ids = mh.compute_pareto_frontier(eligible, target)
     latest = mh.latest_non_holdout_run_completed(events, target)
     zero_hash = "0" * 64
     return {
@@ -409,7 +409,9 @@ def _compute_current_frontier(
         "ledger_line_count": len(events),
         "suite_hash": (latest or {}).get("suite_hash", zero_hash),
         "evaluator_hash": (latest or {}).get("evaluator_hash", zero_hash),
-        "cost_axis": (config.get("frontier") or {}).get("cost_axis", "total_tokens"),
+        "cost_axis": (config.get("frontier") or {}).get(
+            "cost_axis", mh.DEFAULTS["frontier"]["cost_axis"]
+        ),
         "points": [{k: v for k, v in p.items() if k != "eligible"} for p in points],
         "frontier": sorted(frontier_ids),
         "dominated": sorted(set(dominated_ids) | set(ineligible_ids)),

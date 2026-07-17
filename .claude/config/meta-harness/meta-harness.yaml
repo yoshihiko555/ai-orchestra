@@ -64,7 +64,7 @@ scoring:
   penalty_per_item: 5
   penalty_missing_report: 6
 frontier:
-  cost_axis: total_tokens
+  cost_axis: total_cost_usd
 overlay:
   allowed_prefixes:
     - "facets/"

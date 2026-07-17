@@ -120,7 +120,7 @@ DEFAULTS: dict[str, Any] = {
         "penalty_per_item": 5,
         "penalty_missing_report": 6,
     },
-    "frontier": {"cost_axis": "total_tokens"},
+    "frontier": {"cost_axis": "total_cost_usd"},
     "regression": {
         "enabled": True,
         "max_affected_suites": 4,
@@ -625,7 +625,9 @@ def _empty_frontier_doc(config: dict, target: str = DEFAULT_TARGET) -> dict:
         "ledger_line_count": 0,
         "suite_hash": zero_hash,
         "evaluator_hash": zero_hash,
-        "cost_axis": (config.get("frontier") or {}).get("cost_axis", "total_tokens"),
+        "cost_axis": (config.get("frontier") or {}).get(
+            "cost_axis", DEFAULTS["frontier"]["cost_axis"]
+        ),
         "points": [],
         "frontier": [],
         "dominated": [],
@@ -1392,33 +1394,40 @@ def _run_cost(run: dict, cost_axis: str) -> float:
     return cost_obj[cost_axis]
 
 
-def compute_pareto_frontier(points: list[dict]) -> tuple[list[str], list[str]]:
+def compute_pareto_frontier(
+    points: list[dict], target: str = DEFAULT_TARGET
+) -> tuple[list[str], list[str]]:
     """Sec3-5: quality_mean 最大化 x cost_mean 最小化の非支配集合を返す。
 
     呼び出し側は `eligible`（全 non-holdout シナリオで verdict=pass）な point
     のみを渡すこと（このフィルタリングは本関数の責務外、呼び出し側の前提条件）。
-    同率タイブレークは quality_min の高い方を優先する。戻り値は
+    routing-config 以外の同率タイブレークは quality_min の高い方を優先する。
+    routing-config は quality_mean の厳密改善を支配の必須条件とする。戻り値は
     `(frontier_cand_ids, dominated_cand_ids)`。
     """
+    target = validate_target(target)
     frontier: list[str] = []
     dominated: list[str] = []
     for candidate in points:
-        if _is_dominated(candidate, points):
+        if _is_dominated(candidate, points, target):
             dominated.append(candidate["cand_id"])
         else:
             frontier.append(candidate["cand_id"])
     return frontier, dominated
 
 
-def _is_dominated(candidate: dict, points: list[dict]) -> bool:
+def _is_dominated(candidate: dict, points: list[dict], target: str) -> bool:
     return any(
-        other["cand_id"] != candidate["cand_id"] and _dominates(other, candidate)
+        other["cand_id"] != candidate["cand_id"] and _dominates(other, candidate, target)
         for other in points
     )
 
 
-def _dominates(a: dict, b: dict) -> bool:
-    """a が b を支配するか（Sec3-5、quality_min タイブレーク込み）。"""
+def _dominates(a: dict, b: dict, target: str) -> bool:
+    """a が b を支配するか（Sec3-5、target 別 dominance semantics）。"""
+    if target == "routing-config":
+        return a["quality_mean"] > b["quality_mean"] and a["cost_mean"] <= b["cost_mean"]
+
     quality_ge = a["quality_mean"] >= b["quality_mean"]
     cost_le = a["cost_mean"] <= b["cost_mean"]
     if not (quality_ge and cost_le):

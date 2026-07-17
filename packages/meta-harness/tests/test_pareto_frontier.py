@@ -1,4 +1,4 @@
-"""Pareto 判定・frontier CLI のテスト（EV-16, EV-17, EV-18, EV-20, quality_score, Sec3-5）。"""
+"""Pareto 判定・frontier CLI のテスト（EV-16〜18, EV-20, EV-82〜83, Sec3-5）。"""
 
 from __future__ import annotations
 
@@ -70,6 +70,42 @@ class TestComputeParetoFrontier:
 
         assert set(frontier) == {"a", "b"}
         assert dominated == []
+
+    # EV-82
+    def test_routing_config_equal_quality_lower_cost_does_not_dominate(self) -> None:
+        cheaper = _point("cheaper", quality_mean=80, cost_mean=50)
+        baseline = _point("baseline", quality_mean=80, cost_mean=100)
+
+        frontier, dominated = mh.compute_pareto_frontier(
+            [cheaper, baseline], target="routing-config"
+        )
+
+        assert set(frontier) == {"cheaper", "baseline"}
+        assert dominated == []
+
+    # EV-82
+    def test_routing_config_higher_quality_non_increasing_cost_dominates(self) -> None:
+        improved = _point("improved", quality_mean=81, cost_mean=100)
+        baseline = _point("baseline", quality_mean=80, cost_mean=100)
+
+        frontier, dominated = mh.compute_pareto_frontier(
+            [improved, baseline], target="routing-config"
+        )
+
+        assert frontier == ["improved"]
+        assert dominated == ["baseline"]
+
+    # EV-16, EV-82 regression
+    def test_non_routing_target_keeps_cost_only_dominance(self) -> None:
+        cheaper = _point("cheaper", quality_mean=80, cost_mean=50)
+        baseline = _point("baseline", quality_mean=80, cost_mean=100)
+
+        frontier, dominated = mh.compute_pareto_frontier(
+            [cheaper, baseline], target="skill:handoff"
+        )
+
+        assert frontier == ["cheaper"]
+        assert dominated == ["baseline"]
 
 
 class TestQualityScoreNotGamedByMissingReport:
@@ -239,7 +275,7 @@ class TestAggregateRunPoints:
         ]
         points = mh.aggregate_run_points(_evaluated(events), mh.DEFAULTS)
         assert points[0]["quality_mean"] == 80
-        assert points[0]["cost_mean"] == 100
+        assert points[0]["cost_mean"] == 0.01
         assert points[0]["runs"] == 1
 
     def test_all_holdout_runs_yields_empty_points_not_a_zero_runs_point(self) -> None:
@@ -723,14 +759,19 @@ class TestCostAxisValidation:
         else:
             raise AssertionError("unknown cost_axis should raise MetaHarnessRootError")
 
-    def test_missing_cost_key_in_run_raises_with_run_id(self) -> None:
-        config = {**mh.DEFAULTS, "frontier": {"cost_axis": "total_cost_usd"}}
+    # EV-83
+    def test_default_cost_axis_is_total_cost_usd(self) -> None:
+        assert mh.DEFAULTS["frontier"]["cost_axis"] == "total_cost_usd"
+
+    # EV-83
+    def test_missing_default_cost_key_in_run_raises_with_run_id(self) -> None:
         event = _run_completed("c1", quality_score=90)
         del event["cost"]["total_cost_usd"]
         try:
-            mh.aggregate_run_points(_evaluated([event]), config)
+            mh.aggregate_run_points(_evaluated([event]), mh.DEFAULTS)
         except mh.MetaHarnessRootError as exc:
             assert event["run_id"] in str(exc)
+            assert "total_cost_usd" in str(exc)
         else:
             raise AssertionError("missing cost field should raise MetaHarnessRootError")
 

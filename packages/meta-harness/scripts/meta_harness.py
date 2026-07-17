@@ -349,7 +349,7 @@ def _compute_frontier(main_root: Path, config: dict, target: str = mh.DEFAULT_TA
     events = mh.read_ledger_events(main_root, config)
     points = mh.aggregate_run_points(events, config, target)
     eligible, ineligible_ids = _eligible_and_ineligible(points)
-    frontier_ids, dominated_ids = mh.compute_pareto_frontier(eligible)
+    frontier_ids, dominated_ids = mh.compute_pareto_frontier(eligible, target)
     dominated_ids = sorted(set(dominated_ids) | set(ineligible_ids))
     # 【判断】ledger 末尾のイベントが run_completed とは限らない（run 後に register 等が
     # 入ることは正常な運用）し、末尾の run_completed が holdout の場合もある。points の
@@ -366,7 +366,9 @@ def _compute_frontier(main_root: Path, config: dict, target: str = mh.DEFAULT_TA
         "ledger_line_count": len(events),
         "suite_hash": (latest or {}).get("suite_hash", zero_hash),
         "evaluator_hash": (latest or {}).get("evaluator_hash", zero_hash),
-        "cost_axis": (config.get("frontier") or {}).get("cost_axis", "total_tokens"),
+        "cost_axis": (config.get("frontier") or {}).get(
+            "cost_axis", mh.DEFAULTS["frontier"]["cost_axis"]
+        ),
         # 【判断】points の各要素は内部計算用に `eligible` フラグを持つ（_eligible_and_ineligible
         # の判定用）が、frontier.schema.json（Sec1-5）の points item は
         # additionalProperties: false かつ `eligible` を含まない。永続化する target 別 cache が
