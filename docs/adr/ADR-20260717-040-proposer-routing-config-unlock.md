@@ -1,0 +1,87 @@
+---
+codd:
+  node_id: "adr:ADR-20260717-040"
+  kind: adr
+  status: proposed
+  depends_on:
+    - id: "design:meta-harness-proposer-routing-unlock"
+      relation: refines
+    - id: "adr:ADR-20260716-039"
+      relation: references
+  owner: ai-orchestra
+---
+
+# ADR-20260717-040: proposer へ routing config patch を段階解放する
+
+- **ステータス**: proposed
+- **日付**: 2026-07-17
+- **決定者**: yoshihiko（凍結判断を 2026-07-16 承認、unverified の扱いを 2026-07-17 修正承認）
+
+## コンテキスト
+
+ADR-20260716-039 は routing config patch を human 登録候補だけに解放し、proposer への解放を
+reward hacking 対策の設計完了まで延期した。現行 routing-config suite の critical は機械的な
+materialization 検査だけで、合法 patch の品質差をほぼ測れない。その状態で proposer を解放すると、
+品質を維持したまま最安 backend へ寄せる候補が cost 軸だけで frontier を支配する。
+
+さらに、config-patch-only 候補は facets overlay path を持たないため cross-skill regression の impact が
+空になり、Claude orchestration へ広く影響する routing change を own suite だけで昇格できる。Codex/Antigravity
+の独自 OAuth 支出は Anthropic broker の `estimated_cost_usd` に含まれず、`codex.model` には
+`antigravity.model` と対称な model allowlist も無い。
+
+## 検討した選択肢
+
+### 選択肢 A: proposer を引き続き全面拒否する
+
+- メリット: reward hacking 面を閉じたままにできる。
+- デメリット: human-curated menu 内の routing 改善を自動探索できない。
+
+### 選択肢 B: ceiling 3 key を同時に解放する
+
+- メリット: `agents.*.tool` と両 model を同じ探索で最適化できる。
+- デメリット: `codex.model` の防御と paired evaluation が不足し、品質に対応しない cost 差へ報酬を与える。
+
+### 選択肢 C: countermeasure を先行実装し、2 key kind だけ Phase A で解放する
+
+- メリット: 探索空間と provenance を frozen constant で制限し、quality-strict frontier、behavioral suite、
+  global regression、human merge gate を重ねて cost-only optimization を防げる。
+- デメリット: 全 skill regression の評価コストが増え、suite 不在 skill は人間が PR warning を確認する必要がある。
+
+## 決定
+
+**選択肢 C を採用する。** 次の 5 点を Phase A の凍結判断とする。
+
+1. **段階解放**: proposer に許可するのは `agents.*.tool` と `antigravity.model` だけとする。
+   `codex.model` は allowlist を本 Phase で導入しても human-only のまま維持し、paired evaluation を導入する
+   Phase B まで解放しない。許可 originator は runtime config でなく per-key frozen code constant に置く。
+2. **品質信号を先行**: materialized routing で結果が変わる behavioral train / holdout scenario を
+   rejection 解除の前提とする。judge は候補 routing から不変とし、routing-config suite に
+   `rubric_judge` を置かない。
+3. **frontier 会計**: routing-config は quality が厳密に増加しなければ他候補を支配できず、equal quality の
+   cost-only win を認めない。`frontier.cost_axis` は全 target で `total_cost_usd` へ切り替え、cost field 欠落は
+   0 補完せず hard error とする。
+4. **global blast radius**: human / proposer を問わず、routing-config 候補は全登録 `skill:*` target と
+   `claude-harness` に影響するとみなす。suite-bearing target の解決・実行失敗は hard gate とする。
+   suite 不在 skill は `unverified` として promote PR 本文へ全件警告し、現在の coverage
+   （22 composition / 2 suite）で promotion を恒久的に deadlock させない。
+5. **探索量と入口を制限**: proposer 候補は 1 candidate = 1 key kind、loop は 1 iteration 1 candidate、
+   reject / overfit retire 後は既定 3 round cooldown とする。proposer の第 5 entry point は
+   `register_candidate` と共通 validator を必ず再利用し、patch XOR overlay、ceiling、value menu、
+   provenance、integrity hash を迂回させない。propose / loop の拒否解除は全 guard の最後に行う。
+
+promotion PR の human merge gate は恒久的に維持する。
+
+## 却下した対策
+
+- **shadow mode / quarantine**: promotion 自体が human merge 必須の PR であり、同じ手動判断を重ねても
+  C-2 / C-5 が塞がない reward channel は減らない。追加状態と artifact の複雑さに見合わない。
+- **ledger hash chain**: 防ぐ対象は store へ直接書ける攻撃者による履歴改ざんであり、LLM proposer の
+  reward hacking とは脅威モデルが異なる。実行環境の信頼境界を変更する Issue #211 で再評価する。
+
+## 影響
+
+- proposer / loop は guard 成立後、human-curated value menu 内の 2 key kind を探索できる。
+- routing-config の cost-only 候補は frontier を支配せず、全 skill scope の回帰結果が promotion evidence になる。
+- 既存 target も `total_cost_usd` で再順位付けされ、古い ledger に field 欠落があれば purge または再評価が必要になる。
+- Phase B は `codex.model` 解放と paired / counterfactual evaluation の実装を entry criterion とする。
+- Phase A でも promotion PR の auto-merge は導入せず、人間が unverified warning と変更内容を確認して merge する。
