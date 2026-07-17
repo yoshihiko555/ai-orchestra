@@ -391,12 +391,6 @@ def _finalize_ephemeral_git(
         operation="resolve ephemeral branch",
     )
     new_sha = new_sha_result.stdout.strip()
-    if new_sha == session.baseline_sha:
-        return EphemeralGitFinalizeResult(
-            status="no_commit",
-            baseline_sha=session.baseline_sha,
-            new_sha=new_sha,
-        )
 
     _verify_git_pointer(session)
     _verify_checked_out_branch(
@@ -405,16 +399,13 @@ def _finalize_ephemeral_git(
         runner=runner,
         operation="verify checked-out branch before ephemeral status",
     )
-    status_result = _run_git(
-        ["status", "--porcelain"],
-        runner=runner,
-        env=_ephemeral_env(session),
-        operation="check ephemeral worktree status",
-    )
-    if status_result.stdout:
-        raise EphemeralGitInfrastructureError(
-            "ephemeral git status is dirty after Maker commit",
-            details={"status": status_result.stdout},
+    _verify_worktree_matches_trusted_tree(session, new_sha, runner=runner)
+
+    if new_sha == session.baseline_sha:
+        return EphemeralGitFinalizeResult(
+            status="no_commit",
+            baseline_sha=session.baseline_sha,
+            new_sha=new_sha,
         )
 
     fetch_result = _run_git_unchecked(
@@ -617,6 +608,61 @@ def _ephemeral_env(session: EphemeralGitSession) -> dict[str, str]:
     }
 
 
+def _verify_worktree_matches_trusted_tree(
+    session: EphemeralGitSession,
+    target_sha: str,
+    *,
+    runner: GitRunner,
+) -> None:
+    """Reject worktree drift from ``target_sha`` using a fresh, host-owned index.
+
+    Fix-9 (PR #256 review, High): the ephemeral index at `<ephemeral_dir>/index` lives inside a
+    Maker-writable, container-mounted directory, so `git status --porcelain` against *that* index
+    is something Maker fully controls -- most simply by marking a changed path
+    `--skip-worktree`/`--assume-unchanged` inside the container, which makes `status` silently
+    stop reporting drift on that path even though its worktree content no longer matches what
+    Maker committed (or, for the no-commit case, no longer matches baseline). This function
+    instead points `GIT_INDEX_FILE` at a brand-new file only host code ever writes to, seeds it
+    purely from `target_sha`'s tree via `read-tree` (which never carries forward skip-worktree /
+    assume-unchanged bits -- those live in index extensions, not in the tree object, so a
+    freshly-read index never has them set), and diffs the worktree against that. Running this
+    once, unconditionally, before the no-commit/commit branch is decided closes the same class of
+    gap for *both* paths: `target_sha == baseline_sha` on the no-commit path catches Maker changes
+    left uncommitted in the worktree, and `target_sha == new_sha` on the commit path replaces the
+    dirty-after-commit check this function supersedes.
+    """
+    temporary_index = session.runtime_dir / f".status-index.loop-harness-{secrets.token_hex(8)}"
+    env = {
+        **os.environ,
+        "GIT_DIR": str(session.ephemeral_dir),
+        "GIT_WORK_TREE": str(session.worktree_path),
+        "GIT_INDEX_FILE": str(temporary_index),
+    }
+    try:
+        _run_git(
+            ["read-tree", target_sha],
+            runner=runner,
+            env=env,
+            operation="seed the trusted status index from the target tree",
+        )
+        status_result = _run_git(
+            ["status", "--porcelain"],
+            runner=runner,
+            env=env,
+            operation="check worktree status against the trusted tree",
+        )
+    finally:
+        try:
+            temporary_index.unlink(missing_ok=True)
+        except OSError:
+            pass
+    if status_result.stdout:
+        raise EphemeralGitInfrastructureError(
+            "worktree status is dirty relative to the trusted target tree",
+            details={"status": status_result.stdout, "target_sha": target_sha},
+        )
+
+
 def _restore_ephemeral_git_config(session: EphemeralGitSession) -> None:
     """Atomically replace Maker-owned config before any host Git process can read it."""
     try:
@@ -671,13 +717,17 @@ def _restore_ephemeral_git_alternates(session: EphemeralGitSession) -> None:
     `upload-pack` also honors) is removed outright for the same reason; loop-harness never writes
     one, so any presence of this file is itself evidence of tampering.
 
-    Not handled here (accepted, see Medium follow-up in docs/design/loop-harness-isolation.md
-    §4.3.3 / §9.2, tracked in Issue #255): loose objects or pack files Maker writes directly under
-    `<ephemeral_dir>/objects/` (outside of `info/`). Those are part of the ephemeral repo's own
-    object store, not reached via alternates redirection, and are indistinguishable from the
-    blob/tree objects any legitimate `git add`/`git commit` inside the container already creates
-    from Maker-authored file content -- restricting *that* is a size/count quota concern (DoS),
-    not a confused-deputy one, and is tracked separately.
+    Loose objects or pack files Maker writes directly under `<ephemeral_dir>/objects/` (outside of
+    `info/`) through legitimate `git add`/`git commit` are not restricted here -- their *content*
+    is indistinguishable from any other object the container legitimately creates, and bounding
+    their size/count is a DoS quota concern tracked separately (Issue #255). What *is* rejected
+    here is any `objects/` entry, at any depth, that is a symlink rather than a real file or
+    directory (Fix-8, PR #256 review, Critical): a Maker-owned symlink under e.g. `objects/ab/`
+    (a loose-object fanout directory) or `objects/pack` pointed at an external repository's object
+    store lets host Git resolve foreign objects it finds there when it walks `<ephemeral_dir>`
+    directly (`rev-parse`, `read-tree`, the later `fetch`), even though `objects/info/alternates`
+    itself is restored to the one trusted line above -- this is a second, independent path into the
+    same confused-deputy class of bug that Fix-7 closed for `alternates`.
     """
     objects_dir = session.ephemeral_dir / "objects"
     info_dir = objects_dir / "info"
@@ -692,6 +742,7 @@ def _restore_ephemeral_git_alternates(session: EphemeralGitSession) -> None:
                 "ephemeral git objects directory is not a directory",
                 details={"path": str(path)},
             )
+    _reject_symlinks_under_objects(objects_dir)
     try:
         info_dir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
@@ -731,6 +782,39 @@ def _restore_ephemeral_git_alternates(session: EphemeralGitSession) -> None:
             "failed to restore the trusted ephemeral git alternates file",
             details={"ephemeral_dir": str(session.ephemeral_dir)},
         ) from exc
+
+
+def _reject_symlinks_under_objects(objects_dir: Path) -> None:
+    """Recursively reject any symlink anywhere under ``objects_dir`` without following it.
+
+    Fix-8 (PR #256 review, Critical): a naive `Path.rglob`/`os.walk(followlinks=True)` scan would
+    itself descend into an attacker-planted symlinked directory before this function gets a chance
+    to reject it. Walking with an explicit stack and `os.scandir` -- which reports
+    `DirEntry.is_symlink()` from the raw `lstat` the kernel already did for us, without a second
+    syscall -- and only ever pushing entries that are directories with `follow_symlinks=False`
+    guarantees the traversal never crosses a symlink boundary, so a symlinked fanout directory
+    (e.g. `objects/ab`) or `objects/pack` is caught at the moment it is first observed.
+    """
+    if not objects_dir.is_dir() or objects_dir.is_symlink():
+        return
+    pending = [objects_dir]
+    while pending:
+        current = pending.pop()
+        try:
+            entries = list(os.scandir(current))
+        except OSError as exc:
+            raise EphemeralGitInfrastructureError(
+                "failed to scan the ephemeral git objects directory for symlinks",
+                details={"path": str(current)},
+            ) from exc
+        for entry in entries:
+            if entry.is_symlink():
+                raise EphemeralGitInfrastructureError(
+                    "ephemeral git objects directory contains a symlink",
+                    details={"path": entry.path},
+                )
+            if entry.is_dir(follow_symlinks=False):
+                pending.append(Path(entry.path))
 
 
 def _verify_git_pointer(session: EphemeralGitSession) -> None:

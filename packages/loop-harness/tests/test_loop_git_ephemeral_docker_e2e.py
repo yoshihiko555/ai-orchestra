@@ -64,6 +64,26 @@ def _make_world_accessible(path: Path) -> None:
         child.chmod(child.stat().st_mode | (0o077 if child.is_dir() else 0o066))
 
 
+def _maker_identity() -> tuple[int, int]:
+    """Resolve the container UID/GID the same way docker_runtime_profile.non_root_identity() does.
+
+    On Linux, bind-mounted files keep their host UID/GID inside the container. This test
+    previously always ran the Maker container as the image's baked-in `65532:65532`
+    (`packages/loop-harness/docker/scenario/Dockerfile`'s `USER`), which only matches the host
+    user when that host user happens to be UID/GID 65532 -- on a real (non-root) Linux CI runner
+    it does not, so files the container writes into the bind-mounted worktree/ephemeral dirs come
+    back owned by a UID the host process cannot write to, and `finalize_ephemeral_git`'s
+    subsequent host-side Git calls fail with permission errors despite the `_make_world_accessible`
+    pre-loosening above. Matching the host UID/GID (falling back to 65532:65532 only when host is
+    root, mirroring `docker_runtime_profile.non_root_identity()`) avoids that mismatch at the
+    source instead of relying solely on permission bits.
+    """
+    uid, gid = os.getuid(), os.getgid()
+    if uid == 0:
+        return 65532, 65532
+    return uid, gid
+
+
 def test_container_commit_round_trips_through_driver_cas(tmp_path: Path) -> None:
     image = os.environ.get("LOOP_HARNESS_DOCKER_GIT_E2E_IMAGE", DEFAULT_IMAGE)
     _require_real_docker(image)
@@ -90,7 +110,16 @@ def test_container_commit_round_trips_through_driver_cas(tmp_path: Path) -> None
         (worktree / "tracked.txt").write_text("committed in Docker\n", encoding="utf-8")
         _make_world_accessible(tmp_path)
         _make_world_accessible(Path(session.ephemeral_dir))
-        docker_args = ["docker", "run", "--rm", "--user", "65532:65532"]
+        uid, gid = _maker_identity()
+        docker_args = [
+            "docker",
+            "run",
+            "--rm",
+            "--user",
+            f"{uid}:{gid}",
+            "--workdir",
+            str(worktree),
+        ]
         for mount in spec.mounts:
             mount_arg = f"type=bind,source={mount.source},target={mount.target}"
             if mount.read_only:

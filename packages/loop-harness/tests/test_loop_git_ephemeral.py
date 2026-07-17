@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -359,6 +360,63 @@ def test_finalize_without_commit_skips_writeback_and_removes_stale_import_ref(
     assert not Path(session.pinned_git_pointer).exists()
 
 
+def test_finalize_rejects_uncommitted_worktree_change_on_no_commit_path(
+    linked_worktree: GitFixture,
+) -> None:
+    session = _prepare(linked_worktree)
+    Path(session.worktree_path, "tracked.txt").write_text(
+        "uncommitted, never committed\n", encoding="utf-8"
+    )
+    _create_stale_import_ref(session)
+
+    with pytest.raises(git_ephemeral.EphemeralGitInfrastructureError, match="dirty|status"):
+        git_ephemeral.finalize_ephemeral_git(session)
+
+    assert _shared_ref(session) == session.baseline_sha
+    _assert_import_ref_missing(session)
+    git_ephemeral.cleanup_ephemeral_git(session)
+
+
+def test_finalize_rejects_skip_worktree_hidden_drift_on_no_commit_path(
+    linked_worktree: GitFixture,
+) -> None:
+    session = _prepare(linked_worktree)
+    env = _ephemeral_env(session)
+    _git("update-index", "--skip-worktree", "tracked.txt", env=env)
+    Path(session.worktree_path, "tracked.txt").write_text(
+        "hidden by skip-worktree\n", encoding="utf-8"
+    )
+    # The Maker-owned ephemeral index is blind to this change -- the old, superseded check
+    # (git status --porcelain against that index) would have reported it as clean.
+    assert _git("status", "--porcelain", env=env).stdout == ""
+
+    with pytest.raises(git_ephemeral.EphemeralGitInfrastructureError, match="dirty|status"):
+        git_ephemeral.finalize_ephemeral_git(session)
+
+    assert _shared_ref(session) == session.baseline_sha
+    _assert_import_ref_missing(session)
+    git_ephemeral.cleanup_ephemeral_git(session)
+
+
+def test_finalize_rejects_assume_unchanged_hidden_drift_on_no_commit_path(
+    linked_worktree: GitFixture,
+) -> None:
+    session = _prepare(linked_worktree)
+    env = _ephemeral_env(session)
+    _git("update-index", "--assume-unchanged", "tracked.txt", env=env)
+    Path(session.worktree_path, "tracked.txt").write_text(
+        "hidden by assume-unchanged\n", encoding="utf-8"
+    )
+    assert _git("status", "--porcelain", env=env).stdout == ""
+
+    with pytest.raises(git_ephemeral.EphemeralGitInfrastructureError, match="dirty|status"):
+        git_ephemeral.finalize_ephemeral_git(session)
+
+    assert _shared_ref(session) == session.baseline_sha
+    _assert_import_ref_missing(session)
+    git_ephemeral.cleanup_ephemeral_git(session)
+
+
 def test_finalize_rejects_dirty_status_without_shared_ref_writeback(
     linked_worktree: GitFixture,
 ) -> None:
@@ -694,6 +752,88 @@ def test_finalize_neutralizes_alternates_confused_deputy_object_smuggling(
         "--git-dir", session.common_dir, "cat-file", "-e", crafted_sha, check=False
     )
     assert crafted_commit_in_common.returncode != 0
+    git_ephemeral.cleanup_ephemeral_git(session)
+
+
+def test_finalize_rejects_symlinked_objects_fanout_directory(
+    linked_worktree: GitFixture,
+    tmp_path: Path,
+) -> None:
+    """Fix-8 PoC: a symlinked objects/<fanout> directory must not expose foreign objects.
+
+    Mirrors the alternates confused-deputy PoC above but attacks a second, independent path: a
+    Maker-owned symlink placed directly under `objects/` (rather than a rewritten
+    `objects/info/alternates` line) pointed at the foreign repository's own loose-object fanout
+    directory.
+    """
+    session = _prepare(linked_worktree)
+
+    other_repo = tmp_path / "other-repo-fanout"
+    other_repo.mkdir()
+    _git("init", "--initial-branch=main", cwd=other_repo)
+    _git("config", "user.name", "Other Repo", cwd=other_repo)
+    _git("config", "user.email", "other@example.invalid", cwd=other_repo)
+    secret_content = b"forbidden object reached via a symlinked fanout directory\n"
+    (other_repo / "secret.txt").write_bytes(secret_content)
+    _git("add", "secret.txt", cwd=other_repo)
+    _git("commit", "-m", "other repo secret", cwd=other_repo)
+    foreign_blob_sha = _git("rev-parse", "HEAD:secret.txt", cwd=other_repo).stdout.strip()
+    other_git_dir = _git(
+        "rev-parse", "--path-format=absolute", "--git-dir", cwd=other_repo
+    ).stdout.strip()
+    fanout = foreign_blob_sha[:2]
+    other_fanout_dir = Path(other_git_dir) / "objects" / fanout
+
+    # Maker replaces the ephemeral repo's own loose-object fanout directory with a symlink into
+    # the foreign repository's object store.
+    ephemeral_fanout = Path(session.ephemeral_dir, "objects", fanout)
+    ephemeral_fanout.parent.mkdir(parents=True, exist_ok=True)
+    ephemeral_fanout.symlink_to(other_fanout_dir)
+
+    env = _ephemeral_env(session)
+    Path(session.worktree_path, "tracked.txt").write_bytes(secret_content)
+    _git("update-index", "--cacheinfo", f"100644,{foreign_blob_sha},tracked.txt", env=env)
+    tree_sha = _git("write-tree", env=env).stdout.strip()
+    crafted_sha = _git(
+        "commit-tree", tree_sha, "-p", session.baseline_sha, "-m", "malicious fanout", env=env
+    ).stdout.strip()
+    _git("update-ref", session.branch_ref, crafted_sha, env=env)
+
+    with pytest.raises(git_ephemeral.EphemeralGitInfrastructureError, match="symlink"):
+        git_ephemeral.finalize_ephemeral_git(session)
+
+    assert _shared_ref(session) == session.baseline_sha
+    _assert_import_ref_missing(session)
+    foreign_blob_in_common = _git(
+        "--git-dir", session.common_dir, "cat-file", "-e", foreign_blob_sha, check=False
+    )
+    assert foreign_blob_in_common.returncode != 0
+    crafted_commit_in_common = _git(
+        "--git-dir", session.common_dir, "cat-file", "-e", crafted_sha, check=False
+    )
+    assert crafted_commit_in_common.returncode != 0
+    git_ephemeral.cleanup_ephemeral_git(session)
+
+
+def test_finalize_rejects_symlinked_objects_pack_directory(
+    linked_worktree: GitFixture,
+    tmp_path: Path,
+) -> None:
+    """Fix-8 PoC: a symlinked objects/pack directory is rejected the same way as a fanout dir."""
+    session = _prepare(linked_worktree)
+    _maker_commit(session)
+
+    other_repo = tmp_path / "other-repo-pack"
+    other_repo.mkdir()
+    _git("init", "--bare", "--initial-branch=main", cwd=other_repo)
+    ephemeral_pack = Path(session.ephemeral_dir, "objects", "pack")
+    shutil.rmtree(ephemeral_pack, ignore_errors=True)
+    ephemeral_pack.symlink_to(other_repo / "objects" / "pack")
+
+    with pytest.raises(git_ephemeral.EphemeralGitInfrastructureError, match="symlink"):
+        git_ephemeral.finalize_ephemeral_git(session)
+
+    assert _shared_ref(session) == session.baseline_sha
     git_ephemeral.cleanup_ephemeral_git(session)
 
 
