@@ -1,0 +1,40 @@
+schema_version: "1.0"
+id: route-model-behavior-holdout
+target: routing-config
+description: Exercise Claude behavior selected from the effective Antigravity model family.
+prompt: |
+  `antigravity.model` の実効値に応じた計画を作ってください。外部 CLI は起動しません。
+
+  1. `.claude/config/agent-routing/cli-tools.yaml` と、存在する場合は
+     `.claude/config/agent-routing/cli-tools.local.yaml` を読み、local を優先して
+     `antigravity.model` を解決する。
+  2. モデル名から次の方針と 3 step を選ぶ。
+     - `gemini-*flash*`: `prioritize-latency`; `scan`, `summarize`, `verify`
+     - `gemini-*pro*`: `prioritize-depth`; `inspect`, `cross-check`, `synthesize`
+     - `claude-*`: `prioritize-deliberation`; `frame`, `reason`, `review`
+     - `gpt-oss-*`: `prioritize-openness`; `inspect`, `test`, `document`
+  3. リポジトリ直下の `routing-behavior-holdout.json` に次の JSON だけを書く。
+     `resolved_key` は `antigravity.model`、`resolved_value` は解決した完全なモデル名、
+     `action` と `result.steps` は上の方針に一致させる。既存ファイルは変更しない。
+allowed_tools:
+  - Read
+  - Write
+setup: []
+command_timeout_ms: 60000
+critical:
+  - id: routing-behavior-holdout-exists
+    text: "model family に応じた Claude 作業成果物が存在する"
+    oracle: artifact_exists
+    path: "routing-behavior-holdout.json"
+  - id: routing-behavior-holdout-matches
+    text: "成果物の計画が materialize 済み Antigravity model と一致する"
+    oracle: command_exit
+    command: "python3 packages/meta-harness/scenarios/fixtures/assert-routing-behavior.py --scenario holdout --artifact routing-behavior-holdout.json"
+checks: []
+holdout: true
+timeout_ms: 180000
+budget:
+  max_turns: 6
+  max_budget_usd: 0.75
+  max_output_tokens: 512
+repeat: 1

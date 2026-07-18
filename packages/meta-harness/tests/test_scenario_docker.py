@@ -254,11 +254,13 @@ def test_judge_has_broker_but_no_candidate_worktree_mount(tmp_path: Path) -> Non
         launch,
         ["claude", "-p", "grade", "--bare"],
         container_name="mh-run-judge",
+        max_output_tokens=4096,
     )
     rendered = "\n".join(command)
 
     assert "--network\nmh-run-test-internal" in rendered
     assert "ANTHROPIC_BASE_URL=http://mh-broker:8787" in command
+    assert "CLAUDE_CODE_MAX_OUTPUT_TOKENS=4096" in command
     assert str(launch.worktree_dir.resolve()) not in rendered
     assert str(launch.runtime_state_dir.resolve()) not in rendered
     assert command[-8:] == [
@@ -271,6 +273,31 @@ def test_judge_has_broker_but_no_candidate_worktree_mount(tmp_path: Path) -> Non
         "grade",
         "--bare",
     ]
+
+
+def test_judge_command_applies_configured_output_token_cap(tmp_path: Path) -> None:
+    launch = _launch(tmp_path)
+
+    command = docker.profile.build_judge_command(
+        launch,
+        ["claude", "-p", "grade", "--bare"],
+        container_name="mh-run-judge",
+        max_output_tokens=8192,
+    )
+
+    assert "CLAUDE_CODE_MAX_OUTPUT_TOKENS=8192" in command
+
+
+def test_resolve_max_output_tokens_default_treats_null_as_default() -> None:
+    config = copy.deepcopy(mh.DEFAULTS)
+    config["scenario_run"]["max_output_tokens_default"] = None
+    assert docker.profile.resolve_max_output_tokens_default(config) == 4096
+
+    config["scenario_run"]["max_output_tokens_default"] = 8192
+    assert docker.profile.resolve_max_output_tokens_default(config) == 8192
+
+    config["scenario_run"] = None
+    assert docker.profile.resolve_max_output_tokens_default(config) == 4096
 
 
 def test_broker_token_is_injected_via_stdin_not_argv_or_env(tmp_path: Path, monkeypatch) -> None:
@@ -487,6 +514,66 @@ def test_capability_smoke_uses_configured_evaluate_model(tmp_path: Path, monkeyp
     for command in commands[:2]:
         model_index = command.index("--model")
         assert command[model_index + 1] == "claude-custom-model"
+
+
+@pytest.mark.parametrize(
+    ("configured_max_output_tokens", "expected_max_output_tokens"),
+    [
+        (None, mh.DEFAULTS["scenario_run"]["max_output_tokens_default"]),
+        (8192, 8192),
+    ],
+    ids=["default", "configured"],
+)
+def test_capability_smoke_uses_configured_max_output_tokens(
+    tmp_path: Path,
+    monkeypatch,
+    configured_max_output_tokens: int | None,
+    expected_max_output_tokens: int,
+) -> None:
+    session = _broker(tmp_path)
+    session.cleaned = True
+    docker_run_commands: list[list[str]] = []
+    config = copy.deepcopy(mh.DEFAULTS)
+    if configured_max_output_tokens is not None:
+        config["scenario_run"]["max_output_tokens_default"] = configured_max_output_tokens
+    original_run_smoke_container = docker._run_smoke_container
+    monkeypatch.setattr(docker.dcli, "docker_daemon_available", lambda **_kwargs: True)
+    monkeypatch.setattr(docker, "sweep_stale_resources", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        docker, "docker_broker_session", lambda *_args, **_kwargs: docker._BrokerContext(session)
+    )
+    monkeypatch.setattr(
+        docker,
+        "_image_claude_version",
+        lambda *_args, **_kwargs: "2.1.207 (Claude Code)",
+    )
+
+    def run_smoke(_broker_session, command, *, max_output_tokens, **_kwargs):
+        def capture_runner(argv, **_runner_kwargs):
+            if argv[:2] == ["docker", "run"]:
+                docker_run_commands.append(argv)
+                return _completed(stdout='{"type":"result"}')
+            return _completed()
+
+        return original_run_smoke_container(
+            _broker_session,
+            command,
+            max_output_tokens=max_output_tokens,
+            runner=capture_runner,
+        )
+
+    monkeypatch.setattr(docker, "_run_smoke_container", run_smoke)
+
+    result = docker.check_docker_capabilities(config, main_root=tmp_path, runner=session.runner)
+
+    assert result.ok is True
+    assert len(docker_run_commands) == 3
+    expected_env = f"CLAUDE_CODE_MAX_OUTPUT_TOKENS={expected_max_output_tokens}"
+    for command in docker_run_commands:
+        env_values = [
+            command[index + 1] for index, arg in enumerate(command[:-1]) if arg == "--env"
+        ]
+        assert expected_env in env_values
 
 
 def test_broker_startup_cleanup_failure_is_reported(tmp_path: Path, monkeypatch) -> None:

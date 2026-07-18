@@ -48,9 +48,14 @@ def write_report(
         "| ---: | --- | ---: | ---: | ---: |",
     ]
     for event in iterations:
-        cand_id = _validated_ids([event["cand_id"]])[0]
+        outcome = event.get("outcome", "candidate")
+        candidate = (
+            f"`{_validated_ids([event['cand_id']])[0]}`"
+            if outcome == "candidate"
+            else f"({str(outcome).replace('_', ' ')})"
+        )
         lines.append(
-            f"| {event['iteration']} | `{cand_id}` | {event['quality_best_before']:.2f} | "
+            f"| {event['iteration']} | {candidate} | {event['quality_best_before']:.2f} | "
             f"{event['quality_best_after']:.2f} | {event['iteration_cost_usd']:.6f} |"
         )
     if not iterations:

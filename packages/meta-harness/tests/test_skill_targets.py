@@ -198,7 +198,8 @@ class TestSkillImpactResolution:
 
         assert impact.impacted_targets == ()
 
-    def test_config_patch_only_candidate_intentionally_has_zero_skill_impacts(self) -> None:
+    def test_low_level_helper_keeps_empty_facet_overlay_at_zero_impact(self) -> None:
+        """Effective routing impact is added by candidate_impact_context, not this helper."""
         impact = skill_targets.resolve_skill_impacts(
             REPO_ROOT,
             [],
@@ -438,6 +439,30 @@ class TestBaselineAuthority:
         )
 
         assert impact.impacted_targets == ()
+
+    def test_routing_config_candidate_impact_context_is_global(
+        self, git_project: Path, git_run
+    ) -> None:
+        _write_alpha_facets(git_project)
+        git_run("add", "facets", cwd=git_project)
+        git_run("commit", "-m", "add alpha facets", cwd=git_project)
+        head = git_run("rev-parse", "HEAD", cwd=git_project).stdout.strip()
+        manifest = {
+            "target": "routing-config",
+            "source_commit": head,
+            "parent_id": None,
+            "overlay_files": [],
+        }
+
+        impact = ev.candidate_impact_context(
+            main_root=git_project,
+            config=mh.DEFAULTS,
+            schema_dir=REPO_ROOT / "packages" / "meta-harness" / "schemas",
+            manifest=manifest,
+        )
+
+        assert impact.impacted_targets == ("claude-harness", "skill:alpha")
+        assert len(impact.input_hash) == 64
 
     def test_composition_change_cannot_expand_same_candidate_authority(
         self, tmp_path: Path

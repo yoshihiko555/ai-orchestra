@@ -54,7 +54,7 @@ class TestConfigLocalOverride:
         config = mh.load_config(git_project)
 
         # local で触れていないキーはパッケージ既定の config/meta-harness.yaml の値のまま
-        assert config["frontier"]["cost_axis"] == "total_tokens"
+        assert config["frontier"]["cost_axis"] == "total_cost_usd"
         assert config["scoring"]["critical_weight"] == 70
 
     def test_without_local_override_uses_package_default(self, git_project: Path) -> None:

@@ -302,7 +302,7 @@ class TestRoutingConfigPatchMaterialization:
                     {
                         "file": "agent-routing/cli-tools.yaml",
                         "key_path": "codex.model",
-                        "value": "gpt-5.3-codex",
+                        "value": "gpt-5.6-sol",
                     },
                     {
                         "file": "agent-routing/cli-tools.yaml",
@@ -343,12 +343,12 @@ class TestRoutingConfigPatchMaterialization:
 
         assert yaml.safe_load(local_path.read_text(encoding="utf-8")) == {
             "agents": {"debugger": {"tool": "auto"}},
-            "codex": {"enabled": False, "model": "gpt-5.3-codex"},
+            "codex": {"enabled": False, "model": "gpt-5.6-sol"},
         }
         assert local_path.read_text(encoding="utf-8").startswith("agents:\n")
         merged = hook_common.load_cli_tools_config(str(worktree_dir))
         assert merged["codex"]["enabled"] is False
-        assert merged["codex"]["model"] == "gpt-5.3-codex"
+        assert merged["codex"]["model"] == "gpt-5.6-sol"
         assert "sandbox" in merged["codex"]
         assert merged["agents"]["debugger"]["tool"] == "auto"
         assert not (overlay_dir / ".claude/config/agent-routing/cli-tools.local.yaml").exists()
@@ -367,7 +367,7 @@ class TestRoutingConfigPatchMaterialization:
         worktree_dir = tmp_path / "worktree-missing-creator"
         worktree_dir.mkdir()
 
-        with pytest.raises(ev.EvaluatorStageError, match="created_by='human'"):
+        with pytest.raises(ev.EvaluatorStageError, match="created_by='' is not allowed"):
             ev.apply_registered_candidate_overlay(
                 main_root=tmp_path,
                 config={},
@@ -386,7 +386,7 @@ class TestRoutingConfigPatchMaterialization:
                 {
                     "file": "agent-routing/cli-tools.yaml",
                     "key_path": "codex.model",
-                    "value": "gpt-5.3-codex",
+                    "value": "gpt-5.6-sol",
                 }
             ],
         )
@@ -410,7 +410,7 @@ class TestRoutingConfigPatchMaterialization:
         assert sentinel.read_text(encoding="utf-8") == "unchanged\n"
         assert old_tmp_path.is_symlink()
         assert yaml.safe_load(local_path.read_text(encoding="utf-8"))["codex"]["model"] == (
-            "gpt-5.3-codex"
+            "gpt-5.6-sol"
         )
 
     def test_symlinked_applied_patch_parent_directory_is_rejected(self, tmp_path: Path) -> None:
@@ -423,7 +423,7 @@ class TestRoutingConfigPatchMaterialization:
                 {
                     "file": "agent-routing/cli-tools.yaml",
                     "key_path": "codex.model",
-                    "value": "gpt-5.3-codex",
+                    "value": "gpt-5.6-sol",
                 }
             ],
         )
@@ -454,7 +454,7 @@ class TestRoutingConfigPatchMaterialization:
                 {
                     "file": "agent-routing/cli-tools.yaml",
                     "key_path": "codex.model",
-                    "value": "gpt-5.3-codex",
+                    "value": "gpt-5.6-sol",
                 }
             ],
         )
@@ -485,7 +485,7 @@ class TestRoutingConfigPatchMaterialization:
                 {
                     "file": "agent-routing/cli-tools.yaml",
                     "key_path": "codex.model",
-                    "value": "gpt-5.3-codex",
+                    "value": "gpt-5.6-sol",
                 }
             ],
         )

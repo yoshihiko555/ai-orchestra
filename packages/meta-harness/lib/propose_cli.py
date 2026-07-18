@@ -42,12 +42,6 @@ def cmd_propose(
     as_json: bool,
 ) -> int:
     """filtered view を構築し proposer を 1 回起動して候補登録する（Sec11）。"""
-    if target == "routing-config":
-        print(
-            "error: proposer does not support target 'routing-config'; register a human candidate",
-            file=sys.stderr,
-        )
-        return EXIT_VALIDATION_ERROR
     ctx = _resolve_context(project)
     if ctx is None:
         return EXIT_VALIDATION_ERROR
@@ -133,10 +127,6 @@ def _run_propose_pipeline(
     loop_id: str | None = None,
     iteration: int | None = None,
 ) -> str:
-    if target == "routing-config":
-        raise prop.ProposerError(
-            "proposer does not support target 'routing-config'; register a human candidate"
-        )
     proposer_cfg = config.get("proposer") or {}
     tool = proposer_cfg.get("tool", "codex")
     parent_id = _select_proposal_parent(
@@ -249,6 +239,8 @@ def _launch_and_register_proposal(
             focus_run_ids=focus_run_ids,
             valid_based_on_run_ids=valid_based_on_run_ids,
             focus_candidate_id=parent_id,
+            main_root=main_root,
+            source_commit=source_commit,
         )
         launch = iso.resolve_isolation_backend(
             view_dir=view.path,
@@ -298,6 +290,14 @@ def _launch_and_register_proposal(
             raw_output=raw_output,
             auth_canary=auth_canary,
         )
+        if target == "routing-config" and loop_id is not None and iteration is not None:
+            _append_loop_proposal_rejected_event(
+                main_root,
+                config,
+                target=target,
+                loop_id=loop_id,
+                iteration=iteration,
+            )
         raise pb.ProposalValidationError(f"{exc}; rejected saved to {rejected_path}") from exc
 
 
@@ -450,6 +450,55 @@ def _proposal_source_commit(
     return source_commit
 
 
+def _proposal_payload_kind(proposal: dict) -> str:
+    """proposal が changes XOR config_patch の一方だけを持つことを検証する。"""
+    has_changes = "changes" in proposal
+    has_config_patch = "config_patch" in proposal
+    if has_changes == has_config_patch:
+        raise prop.ProposalValidationError(
+            "proposal must contain exactly one of changes or config_patch"
+        )
+    kind = "changes" if has_changes else "config_patch"
+    payload = proposal[kind]
+    if not isinstance(payload, list) or not payload:
+        raise prop.ProposalValidationError(f"proposal {kind} must be a non-empty array")
+    return kind
+
+
+def _write_proposal_config_patch(
+    proposal: dict,
+    overlay_dir: Path,
+    *,
+    max_overlay_bytes: int,
+) -> list[dict]:
+    """proposal.config_patch を canonical sidecar として実体化する。"""
+    config_patch = proposal["config_patch"]
+    try:
+        encoded = mh.canonical_config_patch_bytes(config_patch)
+    except ValueError as exc:
+        raise prop.ProposalValidationError(str(exc)) from exc
+    inherited_bytes = sum(
+        entry.stat().st_size
+        for entry in overlay_dir.rglob("*")
+        if entry.is_file()
+        and not entry.is_symlink()
+        and entry.relative_to(overlay_dir).as_posix() != mh.CONFIG_PATCH_FILENAME
+    )
+    if inherited_bytes + len(encoded) > max_overlay_bytes:
+        raise prop.ProposalValidationError(
+            f"proposal overlay exceeds max_overlay_bytes={max_overlay_bytes}"
+        )
+    overlay_dir.mkdir(parents=True, exist_ok=True)
+    config_patch_path = overlay_dir / mh.CONFIG_PATCH_FILENAME
+    if config_patch_path.is_dir() and not config_patch_path.is_symlink():
+        raise prop.ProposalValidationError(
+            f"proposal config patch path is not a file: {mh.CONFIG_PATCH_FILENAME}"
+        )
+    config_patch_path.unlink(missing_ok=True)
+    config_patch_path.write_bytes(encoded)
+    return config_patch
+
+
 def _register_proposed_candidate(
     *,
     main_root: Path,
@@ -467,14 +516,24 @@ def _register_proposed_candidate(
     max_overlay_bytes = (config.get("proposer") or {}).get("max_overlay_bytes", 200000)
     with tempfile.TemporaryDirectory(prefix="meta-harness-proposal-overlay-") as raw_overlay:
         overlay_dir = Path(raw_overlay)
+        payload_kind = _proposal_payload_kind(proposal)
         if parent_id is not None:
             _inherit_parent_overlay(main_root, config, parent_id, overlay_dir)
-        overlay_files = prop.materialize_overlay_from_proposal(
-            proposal, overlay_dir, max_overlay_bytes=max_overlay_bytes
-        )
+        config_patch: list[dict] = []
+        if payload_kind == "config_patch":
+            config_patch = _write_proposal_config_patch(
+                proposal,
+                overlay_dir,
+                max_overlay_bytes=max_overlay_bytes,
+            )
+            overlay_files = mh.list_overlay_files(overlay_dir)
+        else:
+            overlay_files = prop.materialize_overlay_from_proposal(
+                proposal, overlay_dir, max_overlay_bytes=max_overlay_bytes
+            )
         target_resolution: skill_targets.SkillTargetResolution | None = None
         inherited_overlay: Path | None = None
-        if target.startswith("skill:"):
+        if payload_kind == "changes" and target.startswith("skill:"):
             provisional_manifest = {"source_commit": source_commit, "parent_id": parent_id}
             try:
                 baseline_context = ev.materialized_candidate_baseline(
@@ -507,6 +566,23 @@ def _register_proposed_candidate(
             violations = mh.validate_overlay(
                 overlay_dir, config, target=target, baseline_root=main_root
             )
+        agent_routing_config = (
+            prop._load_source_agent_routing_config(main_root, source_commit)
+            if payload_kind == "config_patch"
+            else None
+        )
+        violations.extend(
+            mh.validate_config_patch(
+                config_patch,
+                config,
+                _SCHEMA_DIR,
+                target=target,
+                created_by="proposer",
+                agent_routing_config=agent_routing_config,
+            )
+        )
+        if config_patch and overlay_files:
+            violations.append("config patch candidates must not contain file overlays")
         if violations:
             raise prop.ProposerError("; ".join(violations[:5]))
         _enforce_output_security(
@@ -530,6 +606,11 @@ def _register_proposed_candidate(
                 raise prop.ProposerError("; ".join(run_errors[:5]))
             cand_id = mh.generate_cand_id(str(proposal["theme"]))
             generation = mh.next_generation(main_root, config, parent_id)
+            config_patch_hash = (
+                mh.compute_config_patch_hash(config_patch)
+                if payload_kind == "config_patch"
+                else None
+            )
             manifest = mh.build_candidate_manifest(
                 cand_id=cand_id,
                 parent_id=parent_id,
@@ -541,6 +622,7 @@ def _register_proposed_candidate(
                 description=str(proposal["hypothesis"]),
                 created_by="proposer",
                 target_closure_hash=(target_resolution.closure_hash if target_resolution else None),
+                config_patch_hash=config_patch_hash,
             )
             _validate_proposer_registration(
                 manifest,
@@ -550,23 +632,26 @@ def _register_proposed_candidate(
                 loop_id=loop_id,
                 iteration=iteration,
             )
-            candidate_dir = mh.register_candidate(
-                main_root,
-                config,
-                cand_id=cand_id,
-                manifest=manifest,
-                overlay_dir=overlay_dir,
-                overlay_files=overlay_files,
-                target=target,
-                created_by="proposer",
-                baseline_root=main_root,
-                inherited_overlay_dir=inherited_overlay,
-                skill_allowed_paths=(
-                    skill_targets.overlay_allowlist(target_resolution, config)
-                    if target_resolution
-                    else None
-                ),
-            )
+            try:
+                candidate_dir = mh.register_candidate(
+                    main_root,
+                    config,
+                    cand_id=cand_id,
+                    manifest=manifest,
+                    overlay_dir=overlay_dir,
+                    overlay_files=overlay_files,
+                    target=target,
+                    created_by="proposer",
+                    baseline_root=main_root,
+                    inherited_overlay_dir=inherited_overlay,
+                    skill_allowed_paths=(
+                        skill_targets.overlay_allowlist(target_resolution, config)
+                        if target_resolution
+                        else None
+                    ),
+                )
+            except mh.CandidateRegistrationValidationError as exc:
+                raise prop.ProposerError(str(exc)) from exc
             try:
                 mh.append_ledger_event(
                     main_root,
@@ -703,6 +788,42 @@ def _proposer_registered_event(
         "created_by": "proposer",
         "proposal": proposal_event,
     }
+
+
+def _proposal_rejected_event(*, target: str, loop_id: str, iteration: int) -> dict:
+    """loop 内の proposal validation reject を cooldown 用 error として表す。"""
+    return {
+        "event": "proposal_rejected",
+        "ts": mh.now_iso(),
+        "schema_version": "1.0",
+        "target": target,
+        "loop_id": loop_id,
+        "iteration": iteration,
+        "verdict": "error",
+    }
+
+
+def _append_loop_proposal_rejected_event(
+    main_root: Path,
+    config: dict,
+    *,
+    target: str,
+    loop_id: str,
+    iteration: int,
+) -> None:
+    event = _proposal_rejected_event(
+        target=target,
+        loop_id=loop_id,
+        iteration=iteration,
+    )
+    ledger_schema = mh.load_schema(_SCHEMA_DIR, "ledger.event.schema.json")
+    errors = mh.validate_against_schema(
+        event, ledger_schema["$defs"]["proposal_rejected"], _SCHEMA_DIR
+    )
+    if errors:
+        raise prop.ProposerError("; ".join(errors[:5]))
+    with mh.store_lock(main_root, config):
+        mh.append_ledger_event(main_root, config, event)
 
 
 def _enforce_output_security(
