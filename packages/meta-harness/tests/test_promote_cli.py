@@ -1663,6 +1663,20 @@ def test_routing_impact_recomputation_applies_parent_against_promotion_base(
         config_patch_hash=mh.compute_config_patch_hash(patch),
     )
     (parent_dir / "manifest.json").write_text(json.dumps(parent_manifest), encoding="utf-8")
+    mh.append_ledger_event(
+        git_project,
+        config,
+        {
+            "event": "candidate_registered",
+            "ts": mh.now_iso(),
+            "schema_version": "1.0",
+            "cand_id": parent_id,
+            "parent_id": None,
+            "generation": 0,
+            "target": "routing-config",
+            "created_by": "human",
+        },
+    )
     child_manifest = {
         "cand_id": _CAND_ID,
         "parent_id": parent_id,
