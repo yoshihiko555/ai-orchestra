@@ -1,0 +1,53 @@
+schema_version: "1.0"
+id: resolve-antigravity-allowlist-warning-holdout
+target: skill:antigravity-system
+description: Holdout - antigravity.model outside model_allowlist must be flagged with a warning.
+prompt: |
+  ユーザーからの依頼: 「最新の FastAPI の非同期テストベストプラクティスについて調べてほしい（research）」。
+
+  これは antigravity-system skill の "research" トリガーに該当するタスクです。
+  外部ネットワークは遮断されているため `agy` は絶対に実行しないでください。
+
+  1. `.claude/config/agent-routing/cli-tools.yaml` と `.claude/config/agent-routing/cli-tools.local.yaml`
+     を読み、local を優先してマージする。
+  2. `antigravity.enabled` と `agents.researcher.tool` の実効値を確認する。
+  3. `antigravity.model` が `antigravity.model_allowlist` に含まれるか確認する
+     （今回は含まれない値に上書きされている可能性があるので必ず確認すること）。
+     含まれない場合は antigravity-delegation.md の規則に従い `[WARN] model '<value>' not in allowlist`
+     に相当する状態を記録すること。
+  4. リポジトリ直下の `antigravity-route-decision.json` に、解決結果に応じて次の JSON だけを書く。
+     - 解決値が `antigravity` の場合:
+       `{"engine":"antigravity","antigravity_enabled":true,"resolved_tool":"antigravity","model":"<antigravity.model の値>","allowlist_warning":<model が allowlist に含まれなければ true、含まれれば false>}`
+     - 解決値が `claude-direct`（フォールバック含む）の場合:
+       `{"engine":"claude-direct","antigravity_enabled":<antigravity.enabled の実効値>,"resolved_tool":"claude-direct"}`
+setup:
+  - >-
+    mkdir -p .claude/config/agent-routing &&
+    printf 'antigravity:\n  model: gemini-9.9-unlisted\n' > .claude/config/agent-routing/cli-tools.local.yaml &&
+    rm -f antigravity-route-decision.json
+allowed_tools:
+  - "Read"
+  - "Write"
+command_timeout_ms: 60000
+critical:
+  - id: antigravity-route-decision-exists
+    text: "antigravity-route-decision.json が生成される"
+    oracle: artifact_exists
+    path: "antigravity-route-decision.json"
+  - id: antigravity-route-decision-matches-allowlist-warning
+    text: "allowlist 外モデルの警告状態が正しく反映される"
+    oracle: command_exit
+    command: >-
+      python3 packages/meta-harness/scenarios/fixtures/assert-cli-skill-route.py --tool antigravity --artifact antigravity-route-decision.json
+checks:
+  - id: antigravity-route-decision-warning-reported
+    text: "allowlist 外モデルである旨がユーザーに明確に説明される"
+    oracle: rubric_judge
+    rubric: "The user-facing report explicitly warns that the configured antigravity.model is not in antigravity.model_allowlist."
+holdout: true
+timeout_ms: 300000
+budget:
+  max_turns: 8
+  max_budget_usd: 3.0
+  max_output_tokens: 1024
+repeat: 1

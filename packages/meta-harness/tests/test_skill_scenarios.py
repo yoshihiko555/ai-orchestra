@@ -25,7 +25,12 @@ SCHEMA_DIR = PACKAGE_DIR / "schemas"
 
 
 def test_skill_suites_have_one_train_and_one_holdout() -> None:
-    for target in ("skill:handoff", "skill:issue-create"):
+    for target in (
+        "skill:handoff",
+        "skill:issue-create",
+        "skill:codex-system",
+        "skill:antigravity-system",
+    ):
         paths = ev.validate_target_suite(PACKAGE_DIR, SCHEMA_DIR, target)
         scenarios = [ev.load_scenario(path, SCHEMA_DIR) for path in paths]
 
@@ -36,7 +41,12 @@ def test_skill_suites_have_one_train_and_one_holdout() -> None:
 
 
 def test_skill_scenarios_pin_minimal_output_envelope() -> None:
-    for target in ("skill:handoff", "skill:issue-create"):
+    for target in (
+        "skill:handoff",
+        "skill:issue-create",
+        "skill:codex-system",
+        "skill:antigravity-system",
+    ):
         for path in ev.validate_target_suite(PACKAGE_DIR, SCHEMA_DIR, target):
             scenario = ev.load_scenario(path, SCHEMA_DIR)
             execution = ev._effective_scenario_execution(scenario, {})
@@ -409,3 +419,127 @@ def test_routing_behavior_oracle_uses_disabled_cli_fallback(
     )
     with pytest.raises(AssertionError, match="materialized routing config"):
         fixture.assert_behavior(tmp_path, "train", Path(artifact_name))
+
+
+def _cli_skill_route_oracle_fixture():
+    return load_module(
+        "assert_cli_skill_route_fixture",
+        "packages/meta-harness/scenarios/fixtures/assert-cli-skill-route.py",
+    )
+
+
+def test_cli_skill_route_oracle_matches_codex_analysis_resolution(tmp_path: Path) -> None:
+    _stub_hook_common()
+    fixture = _cli_skill_route_oracle_fixture()
+    _write_routing_config_files(
+        tmp_path,
+        base={
+            "codex": {"enabled": True, "model": "codex-model-x", "flags": "--full-auto"},
+            "agents": {"debugger": {"tool": "codex"}},
+        },
+        local_overrides={},
+    )
+    artifact = {
+        "engine": "codex",
+        "codex_enabled": True,
+        "resolved_tool": "codex",
+        "model": "codex-model-x",
+        "sandbox": "analysis",
+        "flags": "--full-auto",
+    }
+    artifact_path = tmp_path / "codex-route-decision.json"
+    artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
+
+    fixture.assert_route(tmp_path, "codex", Path("codex-route-decision.json"))
+
+    artifact_path.write_text(json.dumps({**artifact, "model": "wrong-model"}), encoding="utf-8")
+    with pytest.raises(AssertionError, match="materialized cli-tools config"):
+        fixture.assert_route(tmp_path, "codex", Path("codex-route-decision.json"))
+
+
+def test_cli_skill_route_oracle_matches_codex_disabled_fallback(tmp_path: Path) -> None:
+    _stub_hook_common()
+    fixture = _cli_skill_route_oracle_fixture()
+    _write_routing_config_files(
+        tmp_path,
+        base={
+            "codex": {"enabled": True},
+            "agents": {"debugger": {"tool": "codex"}},
+        },
+        local_overrides={"codex": {"enabled": False}},
+    )
+    artifact = {
+        "engine": "claude-direct",
+        "codex_enabled": False,
+        "resolved_tool": "claude-direct",
+    }
+    artifact_path = tmp_path / "codex-route-decision.json"
+    artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
+
+    fixture.assert_route(tmp_path, "codex", Path("codex-route-decision.json"))
+
+    artifact_path.write_text(
+        json.dumps({**artifact, "engine": "codex", "resolved_tool": "codex"}), encoding="utf-8"
+    )
+    with pytest.raises(AssertionError, match="materialized cli-tools config"):
+        fixture.assert_route(tmp_path, "codex", Path("codex-route-decision.json"))
+
+
+def test_cli_skill_route_oracle_matches_antigravity_allowlist_warning(tmp_path: Path) -> None:
+    _stub_hook_common()
+    fixture = _cli_skill_route_oracle_fixture()
+    _write_routing_config_files(
+        tmp_path,
+        base={
+            "antigravity": {
+                "enabled": True,
+                "model": "gemini-3.1-pro-high",
+                "model_allowlist": ["gemini-3.1-pro-high"],
+            },
+            "agents": {"researcher": {"tool": "antigravity"}},
+        },
+        local_overrides={"antigravity": {"model": "gemini-9.9-unlisted"}},
+    )
+    artifact = {
+        "engine": "antigravity",
+        "antigravity_enabled": True,
+        "resolved_tool": "antigravity",
+        "model": "gemini-9.9-unlisted",
+        "allowlist_warning": True,
+    }
+    artifact_path = tmp_path / "antigravity-route-decision.json"
+    artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
+
+    fixture.assert_route(tmp_path, "antigravity", Path("antigravity-route-decision.json"))
+
+    artifact_path.write_text(json.dumps({**artifact, "allowlist_warning": False}), encoding="utf-8")
+    with pytest.raises(AssertionError, match="materialized cli-tools config"):
+        fixture.assert_route(tmp_path, "antigravity", Path("antigravity-route-decision.json"))
+
+
+def test_cli_skill_route_oracle_matches_antigravity_within_allowlist(tmp_path: Path) -> None:
+    _stub_hook_common()
+    fixture = _cli_skill_route_oracle_fixture()
+    _write_routing_config_files(
+        tmp_path,
+        base={
+            "antigravity": {
+                "enabled": True,
+                "model": "gemini-3.1-pro-high",
+                "model_allowlist": ["gemini-3.1-pro-high"],
+            },
+            "agents": {"researcher": {"tool": "antigravity"}},
+        },
+        local_overrides={},
+    )
+    artifact = {
+        "engine": "antigravity",
+        "antigravity_enabled": True,
+        "resolved_tool": "antigravity",
+        "model": "gemini-3.1-pro-high",
+        "allowlist_warning": False,
+    }
+    artifact_path = tmp_path / "antigravity-route-decision.json"
+    artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
+
+    fixture.assert_route(tmp_path, "antigravity", Path("antigravity-route-decision.json"))
