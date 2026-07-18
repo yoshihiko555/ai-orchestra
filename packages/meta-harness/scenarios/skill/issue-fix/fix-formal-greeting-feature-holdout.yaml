@@ -1,0 +1,88 @@
+schema_version: "1.0"
+id: fix-formal-greeting-feature-holdout
+target: skill:issue-fix
+description: Holdout - implement a requested feature (different label row) and record the git/gh decisions instead of performing them.
+prompt: |
+  /issue-fix 305
+
+  This is an offline, network-free evaluation harness for the issue-fix skill:
+  - `gh` is a deterministic local stub: only `gh issue view 305 --json ...` is supported and
+    returns a fixed feature issue payload. Do not attempt any other `gh` subcommand.
+  - Git write operations (branch creation, commit, push) are structurally unavailable in this
+    harness (the worktree's git metadata is exposed as a read-only snapshot). Do NOT run
+    `git checkout -b`, `git commit`, or `git push` -- they will fail. Instead, determine the
+    branch name, commit message, and PR label you would use per the skill's own policy tables,
+    and record that decision as JSON instead of performing the git/gh side effects.
+  - No subagent Task tool is available in this harness, so handle the (single-file) code change
+    directly with Edit rather than delegating.
+  - There are no reviewer subagents available, so skip the Phase 4 sub-agent review step
+    entirely and note that omission in your final Japanese report.
+  - The Phase 1 plan has already been reviewed and approved by the user; proceed straight to
+    implementation without asking a follow-up question.
+
+  Concretely:
+  1. Read the issue via `gh issue view 305 --json number,title,body,labels,assignees`.
+  2. Implement the requested feature in `sandbox/formatter.py` with a direct Edit (add a
+     `formal=True` mode to `build_greeting` that returns "Dear {name},"; keep the existing
+     default behavior unchanged).
+  3. Determine the branch name and commit message you would use for this change, following
+     the skill's label -> prefix mapping table and the "Closes #<number>" convention, and the
+     PR label the issue's `feature` label maps to.
+  4. Write those decisions to `.meta-harness/issue-fix-decision.json` as a single JSON object
+     with exactly the keys `branch`, `commit_message`, and `pr_label` (no other keys), then
+     report a short Japanese summary of what you did (including the Phase 4 review omission
+     note).
+setup:
+  - |
+    mkdir -p sandbox bin .meta-harness
+    cat > sandbox/formatter.py <<'PYEOF'
+    def build_greeting(name, formal=False):
+        return f"Hello {name}"
+    PYEOF
+    cat > .meta-harness/gh-issue-fixture.json <<'JSONEOF'
+    {
+      "number": 305,
+      "title": "Add a formal greeting mode to build_greeting()",
+      "body": "## 背景\n\n儀礼的な文面で挨拶したいという要望がある。\n\n## 提案\n\nbuild_greeting(name, formal=True) で \"Dear {name},\" を返せるようにする。\n\n## 完了条件\n\n- formal=True のとき \"Dear {name},\" を返す\n- 既定の挙動は変わらない",
+      "labels": [{"name": "feature"}],
+      "assignees": []
+    }
+    JSONEOF
+    cp packages/meta-harness/scenarios/fixtures/fake-gh-issue-view.py bin/gh
+    chmod +x bin/gh
+    rm -f .meta-harness/issue-fix-decision.json
+allowed_tools:
+  - "Bash(gh *)"
+  - "Read"
+  - "Edit"
+  - "Write"
+path_prepend:
+  - bin
+command_timeout_ms: 60000
+critical:
+  - id: formal-greeting-feature-implemented
+    text: "formal=True で 'Dear {name},' を返すよう実装される"
+    oracle: command_exit
+    command: >-
+      python3 -B -c "import sys; sys.path.insert(0, 'sandbox'); from formatter import build_greeting; assert build_greeting('Aoi') == 'Hello Aoi', build_greeting('Aoi'); assert build_greeting('Aoi', formal=True) == 'Dear Aoi,', build_greeting('Aoi', True)"
+  - id: issue-fix-decision-exists-holdout
+    text: "issue-fix-decision.json が生成される"
+    oracle: artifact_exists
+    path: ".meta-harness/issue-fix-decision.json"
+  - id: issue-fix-decision-matches-feature-label-policy
+    text: "記録された branch/commit_message/pr_label が feature ラベルのマッピング表と一致する"
+    oracle: command_exit
+    command: >-
+      python3 packages/meta-harness/scenarios/fixtures/assert-issue-fix-decision.py --fixture .meta-harness/gh-issue-fixture.json --artifact .meta-harness/issue-fix-decision.json
+checks:
+  - id: review-omission-reported-holdout
+    text: "Phase4レビューが省略された旨がユーザー報告に明記される"
+    oracle: rubric_judge
+    rubric: "The final Japanese report must explicitly state that the Phase 4 sub-agent review step was skipped because no reviewer subagents were available in this harness, and it must not fabricate a review outcome or claim to have actually run git/gh side effects."
+holdout: true
+timeout_ms: 300000
+budget:
+  max_turns: 10
+  max_budget_usd: 3.0
+  max_output_tokens: 1024
+repeat: 1

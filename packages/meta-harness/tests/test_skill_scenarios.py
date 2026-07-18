@@ -30,6 +30,8 @@ def test_skill_suites_have_one_train_and_one_holdout() -> None:
         "skill:issue-create",
         "skill:codex-system",
         "skill:antigravity-system",
+        "skill:issue-fix",
+        "skill:task-state",
     ):
         paths = ev.validate_target_suite(PACKAGE_DIR, SCHEMA_DIR, target)
         scenarios = [ev.load_scenario(path, SCHEMA_DIR) for path in paths]
@@ -46,6 +48,8 @@ def test_skill_scenarios_pin_minimal_output_envelope() -> None:
         "skill:issue-create",
         "skill:codex-system",
         "skill:antigravity-system",
+        "skill:issue-fix",
+        "skill:task-state",
     ):
         for path in ev.validate_target_suite(PACKAGE_DIR, SCHEMA_DIR, target):
             scenario = ev.load_scenario(path, SCHEMA_DIR)
@@ -764,3 +768,130 @@ def test_cli_skill_route_oracle_matches_antigravity_within_allowlist(tmp_path: P
     artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
 
     fixture.assert_route(tmp_path, "antigravity", Path("antigravity-route-decision.json"))
+
+
+def _issue_fix_decision_oracle_fixture():
+    return load_module(
+        "assert_issue_fix_decision_fixture",
+        "packages/meta-harness/scenarios/fixtures/assert-issue-fix-decision.py",
+    )
+
+
+def test_issue_fix_gh_fixture_is_packaged() -> None:
+    fixture = PACKAGE_DIR / "scenarios" / "fixtures" / "fake-gh-issue-view.py"
+
+    assert fixture.is_file()
+    assert "issue view" in fixture.read_text(encoding="utf-8")
+
+
+def test_issue_fix_decision_oracle_matches_bug_label_policy(tmp_path: Path) -> None:
+    fixture = _issue_fix_decision_oracle_fixture()
+    (tmp_path / "gh-issue-fixture.json").write_text(
+        json.dumps({"number": 301, "title": "bug", "labels": [{"name": "bug"}]}),
+        encoding="utf-8",
+    )
+    (tmp_path / "issue-fix-decision.json").write_text(
+        json.dumps(
+            {
+                "branch": "fix/issue-301-greet-none-guard",
+                "commit_message": "fix: greet() が None を安全に処理するよう修正\n\nCloses #301",
+                "pr_label": "bug",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    fixture.assert_decision(
+        tmp_path, Path("gh-issue-fixture.json"), Path("issue-fix-decision.json")
+    )
+
+
+def test_issue_fix_decision_oracle_matches_feature_label_policy(tmp_path: Path) -> None:
+    fixture = _issue_fix_decision_oracle_fixture()
+    (tmp_path / "gh-issue-fixture.json").write_text(
+        json.dumps({"number": 305, "title": "feature", "labels": [{"name": "feature"}]}),
+        encoding="utf-8",
+    )
+    (tmp_path / "issue-fix-decision.json").write_text(
+        json.dumps(
+            {
+                "branch": "feat/issue-305-formal-greeting",
+                "commit_message": "feat: build_greeting() に formal モードを追加\n\nCloses #305",
+                "pr_label": "enhancement",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    fixture.assert_decision(
+        tmp_path, Path("gh-issue-fixture.json"), Path("issue-fix-decision.json")
+    )
+
+
+def test_issue_fix_decision_oracle_rejects_wrong_branch_prefix(tmp_path: Path) -> None:
+    fixture = _issue_fix_decision_oracle_fixture()
+    (tmp_path / "gh-issue-fixture.json").write_text(
+        json.dumps({"number": 301, "title": "bug", "labels": [{"name": "bug"}]}),
+        encoding="utf-8",
+    )
+    (tmp_path / "issue-fix-decision.json").write_text(
+        json.dumps(
+            {
+                "branch": "feat/issue-301-greet-none-guard",
+                "commit_message": "fix: greet() が None を安全に処理するよう修正\n\nCloses #301",
+                "pr_label": "bug",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AssertionError, match="does not follow"):
+        fixture.assert_decision(
+            tmp_path, Path("gh-issue-fixture.json"), Path("issue-fix-decision.json")
+        )
+
+
+def test_issue_fix_decision_oracle_rejects_missing_closes_reference(tmp_path: Path) -> None:
+    fixture = _issue_fix_decision_oracle_fixture()
+    (tmp_path / "gh-issue-fixture.json").write_text(
+        json.dumps({"number": 301, "title": "bug", "labels": [{"name": "bug"}]}),
+        encoding="utf-8",
+    )
+    (tmp_path / "issue-fix-decision.json").write_text(
+        json.dumps(
+            {
+                "branch": "fix/issue-301-greet-none-guard",
+                "commit_message": "fix: greet() が None を安全に処理するよう修正",
+                "pr_label": "bug",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AssertionError, match="Closes #301"):
+        fixture.assert_decision(
+            tmp_path, Path("gh-issue-fixture.json"), Path("issue-fix-decision.json")
+        )
+
+
+def test_issue_fix_decision_oracle_rejects_wrong_pr_label(tmp_path: Path) -> None:
+    fixture = _issue_fix_decision_oracle_fixture()
+    (tmp_path / "gh-issue-fixture.json").write_text(
+        json.dumps({"number": 301, "title": "bug", "labels": [{"name": "bug"}]}),
+        encoding="utf-8",
+    )
+    (tmp_path / "issue-fix-decision.json").write_text(
+        json.dumps(
+            {
+                "branch": "fix/issue-301-greet-none-guard",
+                "commit_message": "fix: greet() が None を安全に処理するよう修正\n\nCloses #301",
+                "pr_label": "enhancement",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AssertionError, match="pr_label"):
+        fixture.assert_decision(
+            tmp_path, Path("gh-issue-fixture.json"), Path("issue-fix-decision.json")
+        )

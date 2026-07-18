@@ -123,11 +123,12 @@ DEFAULTS: dict[str, Any] = {
     "frontier": {"cost_axis": "total_cost_usd"},
     "regression": {
         "enabled": True,
-        # claude-harness + skill:{handoff,issue-create,codex-system,antigravity-system}
-        # (Issue #254 batch 1). Bump alongside max_budget_usd whenever a new skill
-        # scenario suite is registered under packages/meta-harness/scenarios/skill/.
-        "max_affected_suites": 5,
-        "max_budget_usd": 54.0,
+        # claude-harness + skill:{handoff,issue-create,codex-system,antigravity-system,
+        # issue-fix,task-state} (Issue #254 batch 1 + batch 2). Bump alongside
+        # max_budget_usd whenever a new skill scenario suite is registered under
+        # packages/meta-harness/scenarios/skill/.
+        "max_affected_suites": 7,
+        "max_budget_usd": 78.0,
     },
     "overlay": {
         "allowed_prefixes": ["facets/"],
