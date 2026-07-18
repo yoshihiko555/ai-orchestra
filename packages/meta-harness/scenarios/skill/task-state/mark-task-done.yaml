@@ -50,21 +50,11 @@ allowed_tools:
   - "Write"
 command_timeout_ms: 60000
 critical:
-  - id: target-task-marked-done
-    text: "対象タスクの状態が cc:done に更新される"
+  - id: task-status-updated-without-collateral-damage
+    text: "対象タスクのみ cc:done に更新され、他タスク・Decisions・Notes は一切変更されない"
     oracle: command_exit
     command: >-
-      python3 -B -c "text = open('.claude/Plans.md', encoding='utf-8').read(); assert '`cc:done` 商品一覧API' in text, text; assert '`cc:WIP` 商品一覧API' not in text, text"
-  - id: other-tasks-untouched
-    text: "他タスクの状態は変更されない"
-    oracle: command_exit
-    command: >-
-      python3 -B -c "text = open('.claude/Plans.md', encoding='utf-8').read(); assert '`cc:done` ユーザー認証API' in text, text; assert '`cc:TODO` 注文API' in text, text"
-  - id: codd-frontmatter-preserved
-    text: "CODD フロントマターが維持される"
-    oracle: command_exit
-    command: >-
-      python3 -B -c 'text = open(".claude/Plans.md", encoding="utf-8").read(); lines = text.splitlines(); assert lines[0] == "---", lines[0]; assert lines[1] == "codd:", lines[1]; assert "node_id: \"plan:meta-harness-eval-fixture\"" in text, text'
+      python3 packages/meta-harness/scenarios/fixtures/assert-task-state-outcome.py mark-task-done --plans .claude/Plans.md --target-task "商品一覧API" --target-status done --target-previous-status WIP --other-task "done::ユーザー認証API" --other-task "TODO::注文API" --expected-decision "2026-01-01: 初期設計方針を確定" --expected-note "評価用フィクスチャ"
 checks:
   - id: update-summary-quality
     text: "更新内容がユーザー報告で正確に説明される"

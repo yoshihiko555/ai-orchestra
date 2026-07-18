@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import datetime
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -894,4 +897,316 @@ def test_issue_fix_decision_oracle_rejects_wrong_pr_label(tmp_path: Path) -> Non
     with pytest.raises(AssertionError, match="pr_label"):
         fixture.assert_decision(
             tmp_path, Path("gh-issue-fixture.json"), Path("issue-fix-decision.json")
+        )
+
+
+def test_issue_fix_gh_fixture_rejects_mismatched_issue_number(tmp_path: Path) -> None:
+    fixture_script = PACKAGE_DIR / "scenarios" / "fixtures" / "fake-gh-issue-view.py"
+    meta_dir = tmp_path / ".meta-harness"
+    meta_dir.mkdir()
+    (meta_dir / "gh-issue-fixture.json").write_text(
+        json.dumps({"number": 301, "title": "bug", "labels": [{"name": "bug"}]}),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(fixture_script),
+            "issue",
+            "view",
+            "999",
+            "--json",
+            "number,title,body,labels,assignees",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "does not match" in result.stderr
+
+
+def test_issue_fix_gh_fixture_rejects_missing_json_flag(tmp_path: Path) -> None:
+    fixture_script = PACKAGE_DIR / "scenarios" / "fixtures" / "fake-gh-issue-view.py"
+    meta_dir = tmp_path / ".meta-harness"
+    meta_dir.mkdir()
+    (meta_dir / "gh-issue-fixture.json").write_text(
+        json.dumps({"number": 301, "title": "bug", "labels": [{"name": "bug"}]}),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(fixture_script), "issue", "view", "301"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "--json" in result.stderr
+
+
+def test_issue_fix_gh_fixture_rejects_partial_json_fields(tmp_path: Path) -> None:
+    fixture_script = PACKAGE_DIR / "scenarios" / "fixtures" / "fake-gh-issue-view.py"
+    meta_dir = tmp_path / ".meta-harness"
+    meta_dir.mkdir()
+    (meta_dir / "gh-issue-fixture.json").write_text(
+        json.dumps({"number": 301, "title": "bug", "labels": [{"name": "bug"}]}),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(fixture_script), "issue", "view", "301", "--json", "number,title"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "--json field set" in result.stderr
+
+
+def test_issue_fix_gh_fixture_accepts_matching_request(tmp_path: Path) -> None:
+    fixture_script = PACKAGE_DIR / "scenarios" / "fixtures" / "fake-gh-issue-view.py"
+    meta_dir = tmp_path / ".meta-harness"
+    meta_dir.mkdir()
+    payload = {
+        "number": 301,
+        "title": "bug",
+        "body": "body",
+        "labels": [{"name": "bug"}],
+        "assignees": [],
+    }
+    (meta_dir / "gh-issue-fixture.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(fixture_script),
+            "issue",
+            "view",
+            "301",
+            "--json",
+            "number,title,body,labels,assignees",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert json.loads(result.stdout) == payload
+
+
+def _task_state_outcome_fixture():
+    return load_module(
+        "assert_task_state_outcome_fixture",
+        "packages/meta-harness/scenarios/fixtures/assert-task-state-outcome.py",
+    )
+
+
+def _plans_text(
+    *,
+    product_status: str = "WIP",
+    decisions: list[str] | None = None,
+    notes: list[str] | None = None,
+    include_notes_section: bool = True,
+) -> str:
+    decisions = decisions if decisions is not None else ["2026-01-01: 初期設計方針を確定"]
+    notes = notes if notes is not None else ["評価用フィクスチャ"]
+    lines = [
+        "---",
+        "codd:",
+        '  node_id: "plan:meta-harness-eval-fixture"',
+        "  kind: plan",
+        "  status: active",
+        "---",
+        "",
+        "# Plans",
+        "",
+        "## Project: meta-harness-eval-fixture",
+        "",
+        "### Phase 2: 実装 `cc:WIP`",
+        "",
+        "#### API",
+        "",
+        "- `cc:done` ユーザー認証API",
+        f"- `cc:{product_status}` 商品一覧API",
+        "- `cc:TODO` 注文API",
+        "",
+        "---",
+        "",
+        "## Decisions",
+        "",
+        *[f"- {entry}" for entry in decisions],
+        "",
+    ]
+    if include_notes_section:
+        lines += ["## Notes", "", *[f"- {entry}" for entry in notes], ""]
+    return "\n".join(lines)
+
+
+def test_task_state_mark_done_oracle_passes_on_correct_edit(tmp_path: Path) -> None:
+    fixture = _task_state_outcome_fixture()
+    plans_path = tmp_path / "Plans.md"
+    plans_path.write_text(_plans_text(product_status="done"), encoding="utf-8")
+
+    fixture.assert_mark_task_done(
+        plans_path,
+        target_task="商品一覧API",
+        target_status="done",
+        target_previous_status="WIP",
+        other_tasks=[("done", "ユーザー認証API"), ("TODO", "注文API")],
+        expected_decisions=["2026-01-01: 初期設計方針を確定"],
+        expected_notes=["評価用フィクスチャ"],
+    )
+
+
+def test_task_state_mark_done_oracle_rejects_deleted_notes_section(tmp_path: Path) -> None:
+    fixture = _task_state_outcome_fixture()
+    plans_path = tmp_path / "Plans.md"
+    plans_path.write_text(
+        _plans_text(product_status="done", include_notes_section=False), encoding="utf-8"
+    )
+
+    with pytest.raises(AssertionError, match="Notes"):
+        fixture.assert_mark_task_done(
+            plans_path,
+            target_task="商品一覧API",
+            target_status="done",
+            target_previous_status="WIP",
+            other_tasks=[("done", "ユーザー認証API"), ("TODO", "注文API")],
+            expected_decisions=["2026-01-01: 初期設計方針を確定"],
+            expected_notes=["評価用フィクスチャ"],
+        )
+
+
+def test_task_state_mark_done_oracle_rejects_deleted_decisions_entry(tmp_path: Path) -> None:
+    fixture = _task_state_outcome_fixture()
+    plans_path = tmp_path / "Plans.md"
+    plans_path.write_text(_plans_text(product_status="done", decisions=[]), encoding="utf-8")
+
+    with pytest.raises(AssertionError, match="Decisions section lost"):
+        fixture.assert_mark_task_done(
+            plans_path,
+            target_task="商品一覧API",
+            target_status="done",
+            target_previous_status="WIP",
+            other_tasks=[("done", "ユーザー認証API"), ("TODO", "注文API")],
+            expected_decisions=["2026-01-01: 初期設計方針を確定"],
+            expected_notes=["評価用フィクスチャ"],
+        )
+
+
+def test_task_state_record_decision_oracle_accepts_today_and_tomorrow(tmp_path: Path) -> None:
+    fixture = _task_state_outcome_fixture()
+    for offset in (0, 1):
+        date_str = (datetime.date.today() + datetime.timedelta(days=offset)).isoformat()
+        plans_path = tmp_path / f"Plans-{offset}.md"
+        plans_path.write_text(
+            _plans_text(
+                decisions=[
+                    "2026-01-01: 初期設計方針を確定",
+                    f"{date_str}: GraphQL を採用（理由: フロントエンドの柔軟性）",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        fixture.assert_decision_recorded(
+            plans_path,
+            decision_substrings=["GraphQL", "フロントエンドの柔軟性"],
+            existing_decision="2026-01-01: 初期設計方針を確定",
+            other_tasks=[
+                ("done", "ユーザー認証API"),
+                ("WIP", "商品一覧API"),
+                ("TODO", "注文API"),
+            ],
+            expected_notes=["評価用フィクスチャ"],
+        )
+
+
+def test_task_state_record_decision_oracle_rejects_stale_date(tmp_path: Path) -> None:
+    fixture = _task_state_outcome_fixture()
+    plans_path = tmp_path / "Plans.md"
+    plans_path.write_text(
+        _plans_text(
+            decisions=[
+                "2026-01-01: 初期設計方針を確定",
+                "2020-01-01: GraphQL を採用（理由: フロントエンドの柔軟性）",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AssertionError, match="no Decisions line dated"):
+        fixture.assert_decision_recorded(
+            plans_path,
+            decision_substrings=["GraphQL", "フロントエンドの柔軟性"],
+            existing_decision="2026-01-01: 初期設計方針を確定",
+            other_tasks=[
+                ("done", "ユーザー認証API"),
+                ("WIP", "商品一覧API"),
+                ("TODO", "注文API"),
+            ],
+            expected_notes=["評価用フィクスチャ"],
+        )
+
+
+def test_task_state_record_decision_oracle_rejects_entry_written_in_notes_section(
+    tmp_path: Path,
+) -> None:
+    fixture = _task_state_outcome_fixture()
+    today = datetime.date.today().isoformat()
+    plans_path = tmp_path / "Plans.md"
+    plans_path.write_text(
+        _plans_text(
+            decisions=["2026-01-01: 初期設計方針を確定"],
+            notes=[
+                "評価用フィクスチャ",
+                f"{today}: GraphQL を採用（理由: フロントエンドの柔軟性）",
+            ],
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AssertionError, match="no Decisions line dated"):
+        fixture.assert_decision_recorded(
+            plans_path,
+            decision_substrings=["GraphQL", "フロントエンドの柔軟性"],
+            existing_decision="2026-01-01: 初期設計方針を確定",
+            other_tasks=[
+                ("done", "ユーザー認証API"),
+                ("WIP", "商品一覧API"),
+                ("TODO", "注文API"),
+            ],
+            expected_notes=["評価用フィクスチャ"],
+        )
+
+
+def test_task_state_record_decision_oracle_rejects_deleted_task(tmp_path: Path) -> None:
+    fixture = _task_state_outcome_fixture()
+    today = datetime.date.today().isoformat()
+    text = _plans_text(
+        decisions=[
+            "2026-01-01: 初期設計方針を確定",
+            f"{today}: GraphQL を採用（理由: フロントエンドの柔軟性）",
+        ]
+    ).replace("- `cc:TODO` 注文API\n", "")
+    plans_path = tmp_path / "Plans.md"
+    plans_path.write_text(text, encoding="utf-8")
+
+    with pytest.raises(AssertionError, match="decision-mode edit touched the task list"):
+        fixture.assert_decision_recorded(
+            plans_path,
+            decision_substrings=["GraphQL", "フロントエンドの柔軟性"],
+            existing_decision="2026-01-01: 初期設計方針を確定",
+            other_tasks=[
+                ("done", "ユーザー認証API"),
+                ("WIP", "商品一覧API"),
+                ("TODO", "注文API"),
+            ],
+            expected_notes=["評価用フィクスチャ"],
         )

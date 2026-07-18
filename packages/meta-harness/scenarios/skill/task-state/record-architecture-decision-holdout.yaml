@@ -50,21 +50,11 @@ allowed_tools:
   - "Write"
 command_timeout_ms: 60000
 critical:
-  - id: decision-appended-with-date
-    text: "新しい設計判断が日付付きで Decisions に追記される"
+  - id: decision-recorded-without-collateral-damage
+    text: "今日または翌日の日付で Decisions セクション内にのみ判断が追記され、既存 Decisions・全タスク・Notes は変更されない"
     oracle: command_exit
     command: >-
-      python3 -B -c "import re; text = open('.claude/Plans.md', encoding='utf-8').read(); assert re.search(r'(?m)^- \d{4}-\d{2}-\d{2}: .*GraphQL.*フロントエンドの柔軟性.*$', text), text"
-  - id: existing-decision-untouched
-    text: "既存の Decisions エントリは維持される"
-    oracle: command_exit
-    command: >-
-      python3 -B -c "text = open('.claude/Plans.md', encoding='utf-8').read(); assert '2026-01-01: 初期設計方針を確定' in text, text"
-  - id: task-list-untouched-by-decision-mode
-    text: "decision モードではタスク一覧が変更されない"
-    oracle: command_exit
-    command: >-
-      python3 -B -c "text = open('.claude/Plans.md', encoding='utf-8').read(); assert '`cc:WIP` 商品一覧API' in text, text; assert '`cc:done` ユーザー認証API' in text, text"
+      python3 packages/meta-harness/scenarios/fixtures/assert-task-state-outcome.py record-decision --plans .claude/Plans.md --decision-substring "GraphQL" --decision-substring "フロントエンドの柔軟性" --existing-decision "2026-01-01: 初期設計方針を確定" --other-task "done::ユーザー認証API" --other-task "WIP::商品一覧API" --other-task "TODO::注文API" --expected-note "評価用フィクスチャ"
 checks:
   - id: decision-rationale-preserved
     text: "判断理由が正確に記録される"
