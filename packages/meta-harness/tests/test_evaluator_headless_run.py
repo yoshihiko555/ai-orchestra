@@ -283,12 +283,13 @@ class TestScenarioExecutionEnvelope:
         config = {
             "judge": {"model": "claude-sonnet-5", "effort": "high"},
             "evaluate": {
+                "model": "claude-sonnet-5",
                 "isolation": {
                     "broker": {
                         "pricing_upper_bound_usd_per_million": {"input": 3.0, "output": 15.0},
                         "model_allowlist": ["claude-sonnet-5"],
                     }
-                }
+                },
             },
             "scenario_run": {"max_budget_usd_default": 3.0},
         }
@@ -326,12 +327,13 @@ class TestScenarioExecutionEnvelope:
         base_config: dict = {
             "judge": {"model": "claude-sonnet-5", "effort": "high"},
             "evaluate": {
+                "model": "claude-sonnet-5",
                 "isolation": {
                     "broker": {
                         "pricing_upper_bound_usd_per_million": {"input": 3.0},
                         "model_allowlist": ["claude-sonnet-5"],
                     }
-                }
+                },
             },
             "scenario_run": {"max_budget_usd_default": 3.0},
         }

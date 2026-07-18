@@ -31,6 +31,15 @@ def _completed(returncode: int = 0, stdout: str = "", stderr: str = ""):
     return subprocess.CompletedProcess([], returncode, stdout=stdout, stderr=stderr)
 
 
+def _run_smoke_stub(_broker_session, command, **_kwargs):
+    """Generic `_run_smoke_container` fake: reports 400 for the negative broker
+    model allowlist probe (Issue #261 PR2 review) and a passing claude result for
+    every other capability smoke check."""
+    if command[:2] == ["/usr/bin/python3", "-c"]:
+        return _completed(stdout="400")
+    return _completed(stdout='{"type":"result"}')
+
+
 def _prepare_git_snapshot(**kwargs):
     return siso._prepare_isolated_git(**kwargs)
 
@@ -409,11 +418,7 @@ def test_bare_semver_image_pin_passes_capability_check(tmp_path: Path, monkeypat
         "_image_claude_version",
         lambda *_args, **_kwargs: "2.1.207 (Claude Code)",
     )
-    monkeypatch.setattr(
-        docker,
-        "_run_smoke_container",
-        lambda *_args, **_kwargs: _completed(stdout='{"type":"result"}'),
-    )
+    monkeypatch.setattr(docker, "_run_smoke_container", _run_smoke_stub)
 
     result = docker.check_docker_capabilities(config, main_root=tmp_path, runner=session.runner)
 
@@ -503,14 +508,14 @@ def test_capability_smoke_uses_configured_evaluate_model(tmp_path: Path, monkeyp
 
     def run_smoke(_broker_session, command, **_kwargs):
         commands.append(command)
-        return _completed(stdout='{"type":"result"}')
+        return _run_smoke_stub(_broker_session, command, **_kwargs)
 
     monkeypatch.setattr(docker, "_run_smoke_container", run_smoke)
 
     result = docker.check_docker_capabilities(config, main_root=tmp_path, runner=session.runner)
 
     assert result.ok is True
-    assert len(commands) == 3
+    assert len(commands) == 4
     for command in commands[:2]:
         model_index = command.index("--model")
         assert command[model_index + 1] == "claude-custom-model"
@@ -538,19 +543,100 @@ def test_bare_judge_smoke_uses_configured_judge_model(tmp_path: Path, monkeypatc
 
     def run_smoke(_broker_session, command, **_kwargs):
         commands.append(command)
-        return _completed(stdout='{"type":"result"}')
+        return _run_smoke_stub(_broker_session, command, **_kwargs)
 
     monkeypatch.setattr(docker, "_run_smoke_container", run_smoke)
 
     result = docker.check_docker_capabilities(config, main_root=tmp_path, runner=session.runner)
 
     assert result.ok is True
-    assert len(commands) == 3
+    assert len(commands) == 4
     bare_command = commands[2]
     model_index = bare_command.index("--model")
     assert bare_command[model_index + 1] == "claude-custom-judge-model"
     # evaluate.model must not leak into the bare judge command's --model flag.
     assert bare_command.count("--model") == 1
+
+
+def _run_capability_gate_with_allowlist_probe_response(
+    tmp_path: Path, monkeypatch, *, probe_stdout: str, config: dict | None = None
+) -> tuple[docker.DockerCapabilityResult, list[list[str]]]:
+    session = _broker(tmp_path)
+    session.cleaned = True
+    commands: list[list[str]] = []
+    effective_config = config if config is not None else copy.deepcopy(mh.DEFAULTS)
+    monkeypatch.setattr(docker.dcli, "docker_daemon_available", lambda **_kwargs: True)
+    monkeypatch.setattr(docker, "sweep_stale_resources", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        docker, "docker_broker_session", lambda *_args, **_kwargs: docker._BrokerContext(session)
+    )
+    monkeypatch.setattr(
+        docker,
+        "_image_claude_version",
+        lambda *_args, **_kwargs: "2.1.207 (Claude Code)",
+    )
+
+    def run_smoke(_broker_session, command, **_kwargs):
+        commands.append(command)
+        if command[:2] == ["/usr/bin/python3", "-c"]:
+            return _completed(stdout=probe_stdout)
+        return _completed(stdout='{"type":"result"}')
+
+    monkeypatch.setattr(docker, "_run_smoke_container", run_smoke)
+
+    result = docker.check_docker_capabilities(
+        effective_config, main_root=tmp_path, runner=session.runner
+    )
+    return result, commands
+
+
+def test_capability_gate_passes_when_broker_rejects_disallowed_model(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Issue #261 PR2 review: negative allowlist smoke proves the broker actually
+    enforces model_allowlist (a broker image that ignores it would silently pass
+    the capability gate otherwise, since normal smoke checks only send allowed
+    models)."""
+    result, commands = _run_capability_gate_with_allowlist_probe_response(
+        tmp_path, monkeypatch, probe_stdout="400"
+    )
+
+    assert result.ok is True
+    assert result.checks["broker_model_allowlist"] is True
+    probe_command = commands[-1]
+    assert probe_command[:2] == ["/usr/bin/python3", "-c"]
+    assert probe_command[-1] == docker._ALLOWLIST_SMOKE_DISALLOWED_MODEL
+
+
+def test_capability_gate_fails_when_broker_accepts_disallowed_model(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A broker that answers 200 (or anything but 400) to the disallowed-model probe
+    is not actually enforcing the allowlist, so the gate must fail closed."""
+    result, _commands = _run_capability_gate_with_allowlist_probe_response(
+        tmp_path, monkeypatch, probe_stdout="200"
+    )
+
+    assert result.ok is False
+    assert result.checks["broker_model_allowlist"] is False
+
+
+def test_capability_gate_skips_allowlist_probe_when_allowlist_inactive(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """When evaluate.model / judge.model are not both pinned, the broker allowlist
+    is intentionally inactive (see effective_broker_model_allowlist); the gate must
+    skip the negative probe rather than fail on a check that cannot apply."""
+    config = copy.deepcopy(mh.DEFAULTS)
+    config["judge"]["model"] = None
+
+    result, commands = _run_capability_gate_with_allowlist_probe_response(
+        tmp_path, monkeypatch, probe_stdout="400", config=config
+    )
+
+    assert result.ok is True
+    assert "broker_model_allowlist" not in result.checks
+    assert all(command[:2] != ["/usr/bin/python3", "-c"] for command in commands)
 
 
 @pytest.mark.parametrize(
@@ -586,10 +672,13 @@ def test_capability_smoke_uses_configured_max_output_tokens(
     )
 
     def run_smoke(_broker_session, command, *, max_output_tokens, **_kwargs):
+        is_allowlist_probe = command[:2] == ["/usr/bin/python3", "-c"]
+
         def capture_runner(argv, **_runner_kwargs):
             if argv[:2] == ["docker", "run"]:
                 docker_run_commands.append(argv)
-                return _completed(stdout='{"type":"result"}')
+                stdout = "400" if is_allowlist_probe else '{"type":"result"}'
+                return _completed(stdout=stdout)
             return _completed()
 
         return original_run_smoke_container(
@@ -604,7 +693,7 @@ def test_capability_smoke_uses_configured_max_output_tokens(
     result = docker.check_docker_capabilities(config, main_root=tmp_path, runner=session.runner)
 
     assert result.ok is True
-    assert len(docker_run_commands) == 3
+    assert len(docker_run_commands) == 4
     expected_env = f"CLAUDE_CODE_MAX_OUTPUT_TOKENS={expected_max_output_tokens}"
     for command in docker_run_commands:
         env_values = [
@@ -876,14 +965,51 @@ def test_broker_env_sends_configured_model_allowlist() -> None:
 
 
 def test_broker_env_omits_model_allowlist_keys_when_unset() -> None:
-    """Absent/empty model_allowlist must not set the env vars (no-restriction fallback)."""
+    """Absent/empty model_allowlist must not set the env vars, so long as neither
+    evaluate.model nor judge.model is pinned (fully unpinned = no restriction)."""
     config = copy.deepcopy(mh.DEFAULTS)
     config["evaluate"]["isolation"]["broker"]["model_allowlist"] = []
+    config["evaluate"]["model"] = None
+    config["judge"]["model"] = None
 
     broker_env = docker.profile.broker_env(config, "run-token", 8787)
 
     assert "DR_BROKER_MODEL_ALLOWLIST" not in broker_env
     assert "MH_BROKER_MODEL_ALLOWLIST" not in broker_env
+
+
+@pytest.mark.parametrize(
+    "unset_key",
+    ["evaluate", "judge"],
+    ids=["evaluate_model_unpinned", "judge_model_unpinned"],
+)
+def test_broker_env_omits_model_allowlist_when_either_model_is_unpinned(unset_key: str) -> None:
+    """Issue #261 PR2 review: if only one of evaluate.model / judge.model is pinned
+    (e.g. a project on the old `model: null` default that upgraded config but has
+    not pinned both models yet), the allowlist must be omitted entirely rather than
+    reject the unpinned side's session-default model with a 400."""
+    config = copy.deepcopy(mh.DEFAULTS)
+    config[unset_key]["model"] = None
+
+    broker_env = docker.profile.broker_env(config, "run-token", 8787)
+
+    assert "DR_BROKER_MODEL_ALLOWLIST" not in broker_env
+    assert "MH_BROKER_MODEL_ALLOWLIST" not in broker_env
+
+
+def test_broker_env_allowlist_includes_effective_models_beyond_configured_list() -> None:
+    """Issue #261 PR2 review: a local override that repins evaluate.model without
+    also updating `model_allowlist` must still be admitted by the broker -- the
+    effective allowlist is the union of the configured list and the pinned models,
+    not the configured list alone."""
+    config = copy.deepcopy(mh.DEFAULTS)
+    config["evaluate"]["model"] = "claude-project-override-model"
+
+    broker_env = docker.profile.broker_env(config, "run-token", 8787)
+
+    allowed = set(broker_env["DR_BROKER_MODEL_ALLOWLIST"].split(","))
+    assert allowed == {"claude-sonnet-5", "claude-project-override-model"}
+    assert broker_env["DR_BROKER_MODEL_ALLOWLIST"] == broker_env["MH_BROKER_MODEL_ALLOWLIST"]
 
 
 def test_prebuilt_images_require_digest_and_accept_multiarch_reference() -> None:

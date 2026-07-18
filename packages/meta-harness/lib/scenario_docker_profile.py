@@ -352,15 +352,43 @@ def resources_config(config: dict) -> dict[str, Any]:
     }
 
 
+def effective_broker_model_allowlist(config: dict) -> list[str]:
+    """Derive the effective broker model allowlist (Issue #261 PR2 review follow-up).
+
+    Returns `[]` (meaning: no restriction) whenever either `evaluate.model` or
+    `judge.model` is unset. Restricting the broker to the configured
+    `model_allowlist` in that case would reject the CLI's session-default
+    model and break existing projects that have not pinned a model yet
+    (backward compatibility takes priority over the stricter allowlist).
+
+    When both are pinned, the effective allowlist is the union of the
+    configured `evaluate.isolation.broker.model_allowlist` and the two pinned
+    model values, so repinning `evaluate.model` / `judge.model` without also
+    updating `model_allowlist` does not lock the candidate out with a 400.
+    """
+    evaluate_cfg = config.get("evaluate") or {}
+    judge_cfg = config.get("judge") or {}
+    evaluate_model = evaluate_cfg.get("model")
+    judge_model = judge_cfg.get("model")
+    if not evaluate_model or not judge_model:
+        return []
+    broker = (evaluate_cfg.get("isolation") or {}).get("broker") or {}
+    configured = broker.get("model_allowlist") or []
+    effective = {str(item) for item in configured}
+    effective.add(str(evaluate_model))
+    effective.add(str(judge_model))
+    return sorted(effective)
+
+
 def broker_env(config: dict, run_token: str, port: int) -> dict[str, str]:
     broker = ((config.get("evaluate") or {}).get("isolation") or {}).get("broker") or {}
     pricing = broker.get("pricing_upper_bound_usd_per_million") or {}
     scenario_run = config.get("scenario_run") or {}
     idle_timeout = int(broker.get("idle_timeout_sec", 300))
-    model_allowlist = broker.get("model_allowlist") or []
+    model_allowlist = effective_broker_model_allowlist(config)
     model_allowlist_env: dict[str, str] = {}
     if model_allowlist:
-        joined = ",".join(str(item) for item in model_allowlist)
+        joined = ",".join(model_allowlist)
         model_allowlist_env = {
             "DR_BROKER_MODEL_ALLOWLIST": joined,
             "MH_BROKER_MODEL_ALLOWLIST": joined,

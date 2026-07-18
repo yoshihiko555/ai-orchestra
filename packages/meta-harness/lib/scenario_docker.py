@@ -58,6 +58,28 @@ WORKSPACE_EXPORT_TIMEOUT_SECONDS = 60
 _LOGGER = logging.getLogger(__name__)
 _RUNTIME_LABELS = lifecycle.RuntimeLabels(DOCKER_LABEL, STALE_MAX_AGE_SECONDS)
 _SEMVER_PIN_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$")
+# A model slug that must never appear in a real allowlist; used to prove the
+# broker actually rejects out-of-allowlist requests (Issue #261 PR2 review).
+_ALLOWLIST_SMOKE_DISALLOWED_MODEL = "mh-capability-negative-allowlist-check"
+# Sends a minimal /v1/messages POST with a deliberately disallowed model and prints
+# the resulting HTTP status code (or "ERROR:<message>" on a transport failure).
+# Uses only the stdlib so it runs unmodified inside the read-only scenario image.
+_ALLOWLIST_SMOKE_SCRIPT = (
+    "import json,os,sys,urllib.error,urllib.request\n"
+    "url = os.environ['ANTHROPIC_BASE_URL'].rstrip('/') + '/v1/messages'\n"
+    "body = json.dumps({'model': sys.argv[1], 'max_tokens': 1, 'messages': []}).encode()\n"
+    "req = urllib.request.Request(url, data=body, method='POST', headers={\n"
+    "    'x-api-key': os.environ['ANTHROPIC_API_KEY'],\n"
+    "    'content-type': 'application/json',\n"
+    "})\n"
+    "try:\n"
+    "    urllib.request.urlopen(req, timeout=10)\n"
+    "    print(200)\n"
+    "except urllib.error.HTTPError as exc:\n"
+    "    print(exc.code)\n"
+    "except Exception as exc:\n"
+    "    print('ERROR:' + str(exc))\n"
+)
 
 
 class DockerScenarioError(RuntimeError):
@@ -294,6 +316,24 @@ def check_docker_capabilities(
             else:
                 # False records an unsupported configured backend in the capability report.
                 checks["known_judge_backend"] = False
+            # Placed after the legitimate smoke checks above (not before): a 400 rejection
+            # never reaches upstream and does not latch the run budget (PR #263), so this
+            # ordering is purely defensive and does not affect the checks that follow.
+            if profile.effective_broker_model_allowlist(config):
+                allowlist_probe = _run_smoke_container(
+                    broker,
+                    [
+                        "/usr/bin/python3",
+                        "-c",
+                        _ALLOWLIST_SMOKE_SCRIPT,
+                        _ALLOWLIST_SMOKE_DISALLOWED_MODEL,
+                    ],
+                    max_output_tokens=max_output_tokens,
+                    runner=runner,
+                )
+                checks["broker_model_allowlist"] = (
+                    allowlist_probe.returncode == 0 and allowlist_probe.stdout.strip() == "400"
+                )
         reason = _failed_checks_reason(checks)
         return DockerCapabilityResult(version, version_pin, version_match, checks, reason)
     except (
