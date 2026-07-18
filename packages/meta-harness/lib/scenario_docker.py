@@ -191,6 +191,8 @@ def check_docker_capabilities(
     """Validate the exact Docker image and broker-backed CLI path before worktree creation."""
     checks: dict[str, bool] = {}
     version_pin = _isolation_config(config).get("image_pin", DEFAULT_CLAUDE_VERSION_PIN)
+    # The capability gate must use the same output-token budget as real scenario and judge runs.
+    max_output_tokens = profile.resolve_max_output_tokens_default(config)
     try:
         checks["docker_daemon"] = dcli.docker_daemon_available(runner=runner)
         if not checks["docker_daemon"]:
@@ -231,6 +233,7 @@ def check_docker_capabilities(
                     "--verbose",
                     *model_args,
                 ],
+                max_output_tokens=max_output_tokens,
                 runner=runner,
             )
             checks["stream_json"] = stream.returncode == 0 and '"type":"result"' in stream.stdout
@@ -249,6 +252,7 @@ def check_docker_capabilities(
                     "0.02",
                     *model_args,
                 ],
+                max_output_tokens=max_output_tokens,
                 runner=runner,
             )
             checks["max_budget_usd"] = _has_result_json(budget.stdout)
@@ -275,6 +279,7 @@ def check_docker_capabilities(
                         "--max-turns",
                         "1",
                     ],
+                    max_output_tokens=max_output_tokens,
                     runner=runner,
                 )
                 checks["bare"] = bare.returncode == 0
@@ -395,9 +400,15 @@ def build_judge_command(
     claude_command: list[str],
     *,
     container_name: str,
+    max_output_tokens: int,
 ) -> list[str]:
     try:
-        return profile.build_judge_command(launch, claude_command, container_name=container_name)
+        return profile.build_judge_command(
+            launch,
+            claude_command,
+            container_name=container_name,
+            max_output_tokens=max_output_tokens,
+        )
     except profile.DockerProfileError as exc:
         raise DockerScenarioError(str(exc)) from exc
 
@@ -821,6 +832,7 @@ def _run_smoke_container(
     broker: DockerBrokerSession,
     claude_args: list[str],
     *,
+    max_output_tokens: int,
     runner: SubprocessRunner,
 ) -> subprocess.CompletedProcess:
     uid, gid = profile.non_root_identity()
@@ -855,6 +867,7 @@ def _run_smoke_container(
             {
                 "HOME": CONTAINER_HOME,
                 "CLAUDE_CONFIG_DIR": f"{CONTAINER_HOME}/.claude",
+                "CLAUDE_CODE_MAX_OUTPUT_TOKENS": str(max_output_tokens),
                 "ANTHROPIC_BASE_URL": broker.base_url,
                 "ANTHROPIC_API_KEY": broker.run_token,
                 "NO_PROXY": BROKER_ALIAS,

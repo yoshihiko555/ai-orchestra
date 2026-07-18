@@ -1335,7 +1335,6 @@ def _build_headless_command(
 def _effective_scenario_execution(scenario: dict, config: dict) -> dict[str, Any]:
     """Resolve permission/model tool exposure and output limit with presence semantics."""
     evaluate_cfg = config.get("evaluate") or {}
-    scenario_run_cfg = config.get("scenario_run") or {}
     budget = scenario.get("budget") or {}
     if "allowed_tools" in scenario:
         allowed_tools = list(scenario["allowed_tools"])
@@ -1356,7 +1355,7 @@ def _effective_scenario_execution(scenario: dict, config: dict) -> dict[str, Any
         max_output_tokens = int(budget["max_output_tokens"])
         max_output_tokens_source = "scenario"
     else:
-        max_output_tokens = int(scenario_run_cfg.get("max_output_tokens_default", 4096))
+        max_output_tokens = siso.resolve_max_output_tokens_default(config)
         max_output_tokens_source = "global"
     if max_output_tokens < 1:
         raise ValueError("max_output_tokens must be >= 1")
@@ -1753,9 +1752,11 @@ def run_rubric_judge(
             error=True,
         )
     if tool == "claude-bare":
+        max_output_tokens = siso.resolve_max_output_tokens_default(config)
         return _judge_via_claude_bare(
             prompt,
             judge_cfg,
+            max_output_tokens=max_output_tokens,
             isolation_launch=isolation_launch,
             runner=runner,
         )
@@ -1766,6 +1767,7 @@ def _judge_via_claude_bare(
     prompt: str,
     judge_cfg: dict,
     *,
+    max_output_tokens: int,
     isolation_launch: siso.ScenarioIsolationLaunch | None,
     runner: SubprocessRunner,
 ) -> JudgeVerdict:
@@ -1810,7 +1812,9 @@ def _judge_via_claude_bare(
         cmd += ["--effort", effort]
     try:
         if broker_available and isolation_launch is not None:
-            isolated_command, cleanup_command = siso.build_judge_command(isolation_launch, cmd)
+            isolated_command, cleanup_command = siso.build_judge_command(
+                isolation_launch, cmd, max_output_tokens=max_output_tokens
+            )
             completed = sproc.run_bounded_capture(
                 isolated_command,
                 cwd=Path(tempfile.gettempdir()),
@@ -1965,12 +1969,11 @@ def compute_evaluator_hash(
 def evaluator_execution_snapshot(config: dict) -> dict[str, Any]:
     """Return the global execution settings that define evaluator hash scope."""
     evaluate_cfg = config.get("evaluate") or {}
-    scenario_run_cfg = config.get("scenario_run") or {}
     return {
         "allowed_tools": evaluate_cfg.get("allowed_tools") or [],
         "permission_mode": evaluate_cfg.get("permission_mode", "acceptEdits"),
         "model": evaluate_cfg.get("model"),
-        "max_output_tokens_default": scenario_run_cfg.get("max_output_tokens_default", 4096),
+        "max_output_tokens_default": siso.resolve_max_output_tokens_default(config),
         "regression": config.get("regression") or {},
     }
 

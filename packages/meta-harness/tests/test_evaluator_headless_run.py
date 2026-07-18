@@ -239,6 +239,23 @@ class TestScenarioExecutionEnvelope:
                 {},
             )
 
+    def test_explicit_null_output_tokens_default_falls_back_to_4096(self) -> None:
+        """`scenario_run.max_output_tokens_default: null` must not raise TypeError."""
+        execution = ev._effective_scenario_execution(
+            {"target": "skill:handoff"},
+            {"scenario_run": {"max_output_tokens_default": None}},
+        )
+
+        assert execution["max_output_tokens"] == 4096
+        assert execution["max_output_tokens_source"] == "global"
+
+    def test_execution_snapshot_treats_null_output_tokens_default_as_4096(self) -> None:
+        snapshot = ev.evaluator_execution_snapshot(
+            {"scenario_run": {"max_output_tokens_default": None}}
+        )
+
+        assert snapshot["max_output_tokens_default"] == 4096
+
     def test_evaluator_hash_changes_when_execution_fallback_changes(self) -> None:
         first = ev.compute_evaluator_hash(
             {}, {"allowed_tools": ["Read"], "max_output_tokens_default": 4096}

@@ -403,7 +403,7 @@ class TestRubricJudgeClaudeBareBackend:
         monkeypatch.setattr(
             ev.siso,
             "build_judge_command",
-            lambda _launch, cmd: (
+            lambda _launch, cmd, **_kwargs: (
                 ["docker", "run", "judge", *cmd],
                 ["docker", "rm", "-f", "judge"],
             ),
