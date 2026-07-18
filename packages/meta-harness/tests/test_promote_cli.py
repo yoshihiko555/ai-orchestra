@@ -1622,6 +1622,76 @@ def test_promote_revalidates_agent_names_from_promotion_base(git_project: Path, 
     )
 
 
+def test_routing_impact_recomputation_applies_parent_against_promotion_base(
+    git_project: Path, git_run
+) -> None:
+    routing_config_path = git_project / cli.prm.ROUTING_CONFIG_SSOT_RELATIVE
+    routing_config_path.parent.mkdir(parents=True)
+    routing_config_path.write_text(
+        "agents:\n  promotion-base-only:\n    tool: codex\n",
+        encoding="utf-8",
+    )
+    git_run("add", cli.prm.ROUTING_CONFIG_SSOT_RELATIVE.as_posix(), cwd=git_project)
+    git_run("commit", "-q", "-m", "add promotion base routing agent", cwd=git_project)
+    source_commit = git_run("rev-parse", "HEAD", cwd=git_project).stdout.strip()
+    git_run("update-ref", "refs/remotes/origin/main", source_commit, cwd=git_project)
+
+    config = mh.DEFAULTS
+    mh.init_store(git_project, config)
+    parent_id = "cand-20260718-130000-promotion-base-parent-abcd"
+    parent_dir = mh.candidates_dir(git_project, config) / parent_id
+    parent_overlay = parent_dir / "overlay"
+    parent_overlay.mkdir(parents=True)
+    patch = [
+        {
+            "file": cli.prm.ROUTING_CONFIG_PATCH_FILE,
+            "key_path": "agents.promotion-base-only.tool",
+            "value": "auto",
+        }
+    ]
+    (parent_overlay / mh.CONFIG_PATCH_FILENAME).write_text(json.dumps(patch), encoding="utf-8")
+    parent_manifest = mh.build_candidate_manifest(
+        cand_id=parent_id,
+        parent_id=None,
+        generation=0,
+        target="routing-config",
+        source_commit=source_commit,
+        config_hash=mh.compute_config_hash(parent_overlay, config),
+        overlay_files=[],
+        description="promotion-base-only routing parent",
+        created_by="human",
+        config_patch_hash=mh.compute_config_patch_hash(patch),
+    )
+    (parent_dir / "manifest.json").write_text(json.dumps(parent_manifest), encoding="utf-8")
+    child_manifest = {
+        "cand_id": _CAND_ID,
+        "parent_id": parent_id,
+        "source_commit": source_commit,
+        "target": "routing-config",
+        "created_by": "human",
+        "overlay_files": [],
+    }
+    developer_agents = cli.prm.mh._load_agent_routing_config(cli.prm._SCHEMA_DIR).get("agents", {})
+    assert "promotion-base-only" not in developer_agents
+    evaluation = {
+        "routing_config_base_hash": cli.prm._git_ref_file_hash(
+            git_project,
+            cli.prm.MAIN_REF,
+            cli.prm.ROUTING_CONFIG_SSOT_RELATIVE,
+        ),
+        "impacted_targets": ["claude-harness"],
+        "impact_input_hash": hashlib.sha256(b"").hexdigest(),
+    }
+
+    cli.prm._check_freshness(
+        git_project,
+        git_project,
+        child_manifest,
+        config,
+        holdout_evaluation=evaluation,
+    )
+
+
 def test_routing_config_structural_verification_aborts_before_writes(tmp_path: Path) -> None:
     worktree, original = _prepare_routing_config_worktree(tmp_path)
     duplicate = original.decode("utf-8").replace(

@@ -21,16 +21,37 @@ def _get(config: dict[str, Any], key_path: str) -> Any:
     return current
 
 
-def _train_behavior(value: str) -> dict[str, Any]:
+def _train_behavior(value: str, *, auto_aliases: tuple[str, ...] = ()) -> dict[str, Any]:
     behaviors: dict[str, tuple[str, dict[str, Any]]] = {
         "codex": ("delegate-debug-analysis", {"first_duplicate": 1}),
         "antigravity": ("research-sequence-pattern", {"unique_count": 4}),
         "claude-direct": ("solve-sequence-directly", {"sorted": [1, 1, 3, 4, 5]}),
-        "auto": ("select-debug-route", {"selected_tool": "codex"}),
     }
+    if value == "auto":
+        selected_tool = "claude-direct"
+        for alias, tool in (("bash:codex", "codex"), ("bash:agy", "antigravity")):
+            if alias in auto_aliases:
+                selected_tool = tool
+                break
+        return {"action": "select-debug-route", "result": {"selected_tool": selected_tool}}
     assert value in behaviors, f"unsupported agents.debugger.tool value: {value!r}"
     action, result = behaviors[value]
     return {"action": action, "result": result}
+
+
+def _resolve_train_behavior(
+    project_root: Path, config: dict[str, Any]
+) -> tuple[str, dict[str, Any]]:
+    sys.path.insert(0, str(project_root / "packages/agent-routing/hooks"))
+    from route_config import build_aliases, get_agent_tool
+
+    resolved_tool = get_agent_tool("debugger", config)
+    assert isinstance(resolved_tool, str), "resolved debugger tool must be a string"
+    aliases = build_aliases(config)
+    return resolved_tool, _train_behavior(
+        resolved_tool,
+        auto_aliases=tuple(str(alias) for alias in aliases.get("auto", [])),
+    )
 
 
 def _holdout_behavior(value: str) -> dict[str, Any]:
@@ -71,6 +92,10 @@ def assert_behavior(project_root: Path, scenario_id: str, artifact: Path) -> Non
     merged = load_cli_tools_config(str(project_root))
     value = _get(merged, key_path)
     assert isinstance(value, str), f"effective {key_path} must be a string"
+    if scenario_id == "train":
+        value, expected_behavior = _resolve_train_behavior(project_root, merged)
+    else:
+        expected_behavior = behavior_for(value)
 
     artifact_path = project_root / artifact
     assert artifact_path.is_file() and not artifact_path.is_symlink(), (
@@ -80,7 +105,7 @@ def assert_behavior(project_root: Path, scenario_id: str, artifact: Path) -> Non
     expected = {
         "resolved_key": key_path,
         "resolved_value": value,
-        **behavior_for(value),
+        **expected_behavior,
     }
     assert actual == expected, (
         "behavior artifact does not match the materialized routing config: "

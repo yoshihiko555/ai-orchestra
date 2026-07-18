@@ -632,23 +632,26 @@ def _register_proposed_candidate(
                 loop_id=loop_id,
                 iteration=iteration,
             )
-            candidate_dir = mh.register_candidate(
-                main_root,
-                config,
-                cand_id=cand_id,
-                manifest=manifest,
-                overlay_dir=overlay_dir,
-                overlay_files=overlay_files,
-                target=target,
-                created_by="proposer",
-                baseline_root=main_root,
-                inherited_overlay_dir=inherited_overlay,
-                skill_allowed_paths=(
-                    skill_targets.overlay_allowlist(target_resolution, config)
-                    if target_resolution
-                    else None
-                ),
-            )
+            try:
+                candidate_dir = mh.register_candidate(
+                    main_root,
+                    config,
+                    cand_id=cand_id,
+                    manifest=manifest,
+                    overlay_dir=overlay_dir,
+                    overlay_files=overlay_files,
+                    target=target,
+                    created_by="proposer",
+                    baseline_root=main_root,
+                    inherited_overlay_dir=inherited_overlay,
+                    skill_allowed_paths=(
+                        skill_targets.overlay_allowlist(target_resolution, config)
+                        if target_resolution
+                        else None
+                    ),
+                )
+            except mh.CandidateRegistrationValidationError as exc:
+                raise prop.ProposerError(str(exc)) from exc
             try:
                 mh.append_ledger_event(
                     main_root,

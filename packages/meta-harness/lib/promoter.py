@@ -676,6 +676,11 @@ def _check_freshness(
                 "routing config SSOT changed since evaluation; re-run evaluate before promote"
             )
     if holdout_evaluation is not None:
+        impact_agent_routing_config = (
+            _load_promotion_base_agent_routing_config(project_dir)
+            if target == ROUTING_CONFIG_TARGET
+            else None
+        )
         try:
             current_impact = ev.candidate_impact_context(
                 main_root=main_root,
@@ -683,6 +688,7 @@ def _check_freshness(
                 schema_dir=_SCHEMA_DIR,
                 manifest=manifest,
                 source_ref=MAIN_REF,
+                agent_routing_config=impact_agent_routing_config,
             )
         except (OSError, ValueError, ev.EvaluatorStageError) as exc:
             raise PromotionValidationError(f"could not recompute impact context: {exc}") from exc

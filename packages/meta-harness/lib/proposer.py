@@ -452,6 +452,11 @@ def _apply_parent_routing_config_lineage(
         lineage = ev._candidate_lineage(main_root, config, parent_manifest)
     except ev.EvaluatorStageError as exc:
         raise ValueError(f"parent routing config lineage is invalid: {exc}") from exc
+    try:
+        events = mh.read_ledger_events_strict(main_root, config)
+        mh.assert_lineage_matches_registered_events(events, lineage)
+    except ValueError as exc:
+        raise ValueError(f"parent routing config lineage is invalid: {exc}") from exc
 
     for manifest in lineage:
         cand_id = str(manifest.get("cand_id") or "")

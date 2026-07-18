@@ -318,6 +318,10 @@ class MetaHarnessRootError(RuntimeError):
     """main root（store の配置先）が解決できない場合に送出する（CLI は exit 2）。"""
 
 
+class CandidateRegistrationValidationError(ValueError):
+    """Staged candidate content failed register-time validation."""
+
+
 def resolve_main_root(project_dir: Path, config: dict) -> Path:
     """store / 評価用 worktree の配置基準となる main root を解決する（Sec2-0）。
 
@@ -805,7 +809,9 @@ def register_candidate(
         if config_patch and overlay_files:
             patch_errors.append("config patch candidates must not contain file overlays")
         if patch_errors:
-            raise ValueError(f"copied config patch validation failed: {'; '.join(patch_errors)}")
+            raise CandidateRegistrationValidationError(
+                f"copied config patch validation failed: {'; '.join(patch_errors)}"
+            )
         expected_patch_hash = manifest.get("config_patch_hash")
         if config_patch_path.is_file():
             actual_patch_hash = compute_config_patch_hash(config_patch)

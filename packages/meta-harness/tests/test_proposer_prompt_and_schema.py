@@ -56,6 +56,30 @@ _VALID_CONFIG_PATCH_PROPOSAL = {
 }
 
 
+def _append_candidate_registered(
+    project: Path,
+    config: dict,
+    manifest: dict,
+    *,
+    created_by: str | None = None,
+    target: str | None = None,
+) -> None:
+    proposer.mh.append_ledger_event(
+        project,
+        config,
+        {
+            "event": "candidate_registered",
+            "ts": proposer.mh.now_iso(),
+            "schema_version": "1.0",
+            "cand_id": manifest["cand_id"],
+            "parent_id": manifest["parent_id"],
+            "generation": manifest["generation"],
+            "target": target or manifest["target"],
+            "created_by": created_by or manifest["created_by"],
+        },
+    )
+
+
 class TestProposalSchema:
     def test_valid_proposal_round_trips_through_json_and_schema(self) -> None:
         encoded = json.dumps(_VALID_PROPOSAL, ensure_ascii=False)
@@ -418,6 +442,7 @@ class TestProposerPrompt:
             baseline_root=git_project,
             schema_dir=SCHEMA_DIR,
         )
+        _append_candidate_registered(git_project, config, manifest)
 
         prompt = proposer.render_proposer_prompt(
             view_dir=tmp_path / "view",
@@ -432,6 +457,63 @@ class TestProposerPrompt:
 
         assert "agents.debugger.tool = antigravity" in prompt
         assert "agents.debugger.tool = codex" not in prompt
+
+    def test_routing_config_prompt_rejects_manifest_provenance_drift(
+        self,
+        git_project: Path,
+        git_run: Callable,
+    ) -> None:
+        config_path = git_project / "packages/agent-routing/config/cli-tools.yaml"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(
+            "agents:\n  debugger:\n    tool: codex\n",
+            encoding="utf-8",
+        )
+        git_run("add", config_path.relative_to(git_project).as_posix(), cwd=git_project)
+        git_run("commit", "-m", "source routing config", cwd=git_project)
+        source_commit = git_run("rev-parse", "HEAD", cwd=git_project).stdout.strip()
+        config = proposer.mh.DEFAULTS
+        proposer.mh.init_store(git_project, config)
+        patch = [
+            {
+                "file": "agent-routing/cli-tools.yaml",
+                "key_path": "agents.debugger.tool",
+                "value": "antigravity",
+            }
+        ]
+        parent_id = "cand-20260718-120001-routing-provenance-abcd"
+        cand_dir = proposer.mh.candidates_dir(git_project, config) / parent_id
+        overlay_dir = cand_dir / "overlay"
+        overlay_dir.mkdir(parents=True)
+        (overlay_dir / proposer.mh.CONFIG_PATCH_FILENAME).write_text(
+            json.dumps(patch), encoding="utf-8"
+        )
+        manifest = proposer.mh.build_candidate_manifest(
+            cand_id=parent_id,
+            parent_id=None,
+            generation=0,
+            target="routing-config",
+            source_commit=source_commit,
+            config_hash=proposer.mh.compute_config_hash(overlay_dir, config),
+            overlay_files=[],
+            description="routing parent with mutable provenance",
+            created_by="human",
+            config_patch_hash=proposer.mh.compute_config_patch_hash(patch),
+        )
+        (cand_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        _append_candidate_registered(git_project, config, manifest, created_by="proposer")
+
+        with pytest.raises(ValueError, match="created_by does not match ledger provenance"):
+            proposer.render_proposer_prompt(
+                view_dir=git_project / "view",
+                frontier_doc=None,
+                config=config,
+                package_dir=PACKAGE_DIR,
+                target="routing-config",
+                focus_candidate_id=parent_id,
+                main_root=git_project,
+                source_commit=source_commit,
+            )
 
     def test_routing_config_prompt_rejects_parent_patch_for_unknown_source_key(
         self,
@@ -484,6 +566,7 @@ class TestProposerPrompt:
             config_patch_hash=proposer.mh.compute_config_patch_hash(patch),
         )
         (cand_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        _append_candidate_registered(git_project, config, manifest)
 
         with pytest.raises(ValueError, match="unknown agent name|unknown key"):
             proposer.render_proposer_prompt(

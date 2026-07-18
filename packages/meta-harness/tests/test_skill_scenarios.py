@@ -156,6 +156,7 @@ def _stub_hook_common() -> None:
     # へ事前登録しておく（import 解決はキャッシュ優先のため、fake project_root 配下に
     # packages/core/hooks が実在しなくても解決できる）。
     load_module("hook_common", "packages/core/hooks/hook_common.py")
+    load_module("route_config", "packages/agent-routing/hooks/route_config.py")
 
 
 def _write_routing_config_files(
@@ -303,3 +304,108 @@ def test_routing_behavior_oracle_outcome_varies_with_materialized_value(
 
     with pytest.raises(AssertionError, match="materialized routing config"):
         fixture.assert_behavior(tmp_path, scenario_id, Path(artifact_name))
+
+
+@pytest.mark.parametrize(
+    ("configured_tool", "expected"),
+    [
+        (
+            "codex",
+            {
+                "resolved_value": "codex",
+                "action": "delegate-debug-analysis",
+                "result": {"first_duplicate": 1},
+            },
+        ),
+        (
+            "antigravity",
+            {
+                "resolved_value": "antigravity",
+                "action": "research-sequence-pattern",
+                "result": {"unique_count": 4},
+            },
+        ),
+        (
+            "claude-direct",
+            {
+                "resolved_value": "claude-direct",
+                "action": "solve-sequence-directly",
+                "result": {"sorted": [1, 1, 3, 4, 5]},
+            },
+        ),
+        (
+            "auto",
+            {
+                "resolved_value": "auto",
+                "action": "select-debug-route",
+                "result": {"selected_tool": "codex"},
+            },
+        ),
+    ],
+)
+def test_routing_behavior_oracle_covers_agent_router_tool_values(
+    tmp_path: Path, configured_tool: str, expected: dict
+) -> None:
+    _stub_hook_common()
+    fixture = _routing_behavior_oracle_fixture()
+    _write_routing_config_files(
+        tmp_path,
+        base={
+            "codex": {"enabled": True},
+            "antigravity": {"enabled": True},
+            "agents": {"debugger": {"tool": configured_tool}},
+        },
+        local_overrides={},
+    )
+    artifact_name = "routing-behavior-train.json"
+    artifact = {
+        "resolved_key": "agents.debugger.tool",
+        **expected,
+    }
+    (tmp_path / artifact_name).write_text(json.dumps(artifact), encoding="utf-8")
+
+    fixture.assert_behavior(tmp_path, "train", Path(artifact_name))
+
+
+def test_routing_behavior_oracle_uses_disabled_cli_fallback(
+    tmp_path: Path,
+) -> None:
+    _stub_hook_common()
+    fixture = _routing_behavior_oracle_fixture()
+    _write_routing_config_files(
+        tmp_path,
+        base={
+            "codex": {"enabled": True},
+            "agents": {"debugger": {"tool": "codex"}},
+        },
+        local_overrides={"codex": {"enabled": False}},
+    )
+    artifact_name = "routing-behavior-train.json"
+    artifact_path = tmp_path / artifact_name
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "resolved_key": "agents.debugger.tool",
+                "resolved_value": "claude-direct",
+                "action": "solve-sequence-directly",
+                "result": {"sorted": [1, 1, 3, 4, 5]},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    fixture.assert_behavior(tmp_path, "train", Path(artifact_name))
+
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "resolved_key": "agents.debugger.tool",
+                "resolved_value": "codex",
+                "action": "delegate-debug-analysis",
+                "result": {"first_duplicate": 1},
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(AssertionError, match="materialized routing config"):
+        fixture.assert_behavior(tmp_path, "train", Path(artifact_name))

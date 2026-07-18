@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import gzip
 import json
 import os
@@ -21,6 +22,10 @@ mh = load_module(
 propose_cli = load_module(
     "meta_harness_propose_cli_test",
     "packages/meta-harness/lib/propose_cli.py",
+)
+loop_cli = load_module(
+    "meta_harness_loop_cli_propose_test",
+    "packages/meta-harness/lib/loop_cli.py",
 )
 
 _PARENT_ID = "cand-20260708-020000-parent-abcd"
@@ -474,20 +479,33 @@ def _routing_model_proposal(model: str) -> dict:
 def _prepare_stale_routing_config(git_project: Path, git_run, monkeypatch) -> str:
     routing_config = git_project / _ROUTING_CONFIG_RELATIVE
     routing_config.write_text(
-        "antigravity:\n  model: source-model\n  model_allowlist:\n    - source-model\n",
+        "agents:\n"
+        "  debugger:\n"
+        "    tool: codex\n"
+        "antigravity:\n"
+        "  model: source-model\n"
+        "  model_allowlist:\n"
+        "    - source-model\n",
         encoding="utf-8",
     )
     git_run("add", _ROUTING_CONFIG_RELATIVE.as_posix(), cwd=git_project)
     git_run("commit", "-m", "source routing allowlist", cwd=git_project)
     source_commit = git_run("rev-parse", "HEAD", cwd=git_project).stdout.strip()
     current_routing_config = {
+        "agents": {"debugger": {"tool": "codex"}},
         "antigravity": {
             "model": "current-model",
             "model_allowlist": ["current-model"],
-        }
+        },
     }
     routing_config.write_text(
-        "antigravity:\n  model: current-model\n  model_allowlist:\n    - current-model\n",
+        "agents:\n"
+        "  debugger:\n"
+        "    tool: codex\n"
+        "antigravity:\n"
+        "  model: current-model\n"
+        "  model_allowlist:\n"
+        "    - current-model\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(
@@ -651,7 +669,7 @@ def test_source_model_passes_propose_path_then_current_checkout_gate_rejects(
     )
 
     with pytest.raises(
-        ValueError,
+        propose_cli.prop.ProposerError,
         match="copied config patch validation failed: .*source-model",
     ):
         propose_cli._register_proposed_candidate(
@@ -664,6 +682,90 @@ def test_source_model_passes_propose_path_then_current_checkout_gate_rejects(
             included_run_ids=frozenset({_ROUTING_RUN_ID}),
             tokens_used=10,
         )
+
+
+def test_unrelated_register_value_error_is_not_converted_to_proposal_rejection(
+    git_project: Path, git_run, monkeypatch
+) -> None:
+    _prepare_routing_store(git_project, git_run)
+
+    def fail_unrelated(*_args, **_kwargs):
+        raise ValueError("unrelated register failure")
+
+    monkeypatch.setattr(propose_cli.mh, "register_candidate", fail_unrelated)
+
+    with pytest.raises(ValueError, match="unrelated register failure"):
+        propose_cli._register_proposed_candidate(
+            main_root=git_project,
+            config=mh.DEFAULTS,
+            target="routing-config",
+            parent_id=None,
+            source_commit=git_run("rev-parse", "HEAD", cwd=git_project).stdout.strip(),
+            proposal=_valid_routing_proposal(),
+            included_run_ids=frozenset({_ROUTING_RUN_ID}),
+            tokens_used=10,
+        )
+
+
+def test_loop_continues_when_current_checkout_rejects_source_valid_proposal(
+    git_project: Path,
+    git_run,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _prepare_routing_store(git_project, git_run)
+    source_commit = _prepare_stale_routing_config(git_project, git_run, monkeypatch)
+    current_routing_config = {
+        "agents": {"debugger": {"tool": "codex"}},
+        "antigravity": {
+            "model": "current-model",
+            "model_allowlist": ["current-model"],
+        },
+    }
+    monkeypatch.setattr(
+        loop_cli.propose_cli.mh,
+        "_load_agent_routing_config",
+        lambda _schema_dir: current_routing_config,
+    )
+    parent_manifest_path = (
+        mh.candidates_dir(git_project, mh.DEFAULTS) / _ROUTING_PARENT_ID / "manifest.json"
+    )
+    parent_manifest = json.loads(parent_manifest_path.read_text(encoding="utf-8"))
+    parent_manifest["source_commit"] = source_commit
+    parent_manifest_path.write_text(json.dumps(parent_manifest), encoding="utf-8")
+    _set_env(monkeypatch, _prepare_stubbed_codex(tmp_path, _routing_model_proposal("source-model")))
+
+    config = copy.deepcopy(loop_cli.mh.DEFAULTS)
+    config["proposer"]["divergence_rounds"] = 10
+    loop_id = "loop-20260718-120000-source-current-drift"
+    loop_cli.mh.append_ledger_event(
+        git_project,
+        config,
+        {
+            "event": "loop_started",
+            "ts": loop_cli.mh.now_iso(),
+            "schema_version": "1.0",
+            "loop_id": loop_id,
+            "target": "routing-config",
+            "budget_usd": None,
+            "max_iterations": 3,
+            "baseline_best_quality": 0.0,
+        },
+    )
+    spec = loop_cli.LoopSpec(loop_id, "routing-config", None, 3, 0.0, 0)
+
+    reason = loop_cli._drive_loop(git_project, config, git_project, spec)
+
+    events = loop_cli.mh.read_ledger_events_strict(git_project, config)
+    iterations = loop_cli._iteration_events(events, loop_id)
+    rejected = [event for event in events if event.get("event") == "proposal_rejected"]
+    assert reason == "max_iterations"
+    assert rejected[-1]["iteration"] == 1
+    assert iterations[1]["outcome"] == "proposal_rejected"
+    assert [iterations[index]["outcome"] for index in (2, 3)] == [
+        "cooldown_wait",
+        "cooldown_wait",
+    ]
 
 
 def test_propose_rejects_routing_config_codex_model_patch(
