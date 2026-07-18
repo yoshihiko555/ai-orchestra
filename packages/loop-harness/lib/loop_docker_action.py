@@ -65,6 +65,23 @@ def _local_override_leaf_paths(worktree_path: Path) -> frozenset[Path]:
     return frozenset(leaves)
 
 
+def _align_mount_ownership_or_raise(path: Path, *, exclude: frozenset[Path] | None = None) -> None:
+    """Run `align_mount_ownership()`, normalizing any raw OS failure to `DockerActionError`.
+
+    Codex review, PR #262, High (round 6): `align_mount_ownership()`'s top-level `os.chown()`
+    is unguarded, so a filesystem that rejects `chown` for the caller's identity (root-squash
+    NFS, a bind source that disappeared between mount and prep) raises a raw `PermissionError`/
+    `OSError`. `_ensure_started()`'s except clause only normalizes a curated list of
+    Docker/config/git exception types -- neither is in it -- so letting this escape unwrapped
+    would crash the whole driver process instead of producing the fail-closed Docker
+    infrastructure result every other mount/container setup failure already gets.
+    """
+    try:
+        profile.runtime.align_mount_ownership(path, exclude=exclude)
+    except OSError as exc:
+        raise DockerActionError(f"could not align mount ownership for {path}") from exc
+
+
 ActionKind = Literal["maker", "checker", "classifier"]
 IdleProcessSnapshot = tuple[tuple[int, str, str], ...]
 SubprocessRunner = Callable[..., subprocess.CompletedProcess]
@@ -85,7 +102,18 @@ _RUNTIME_LABELS = runtime_lifecycle.RuntimeLabels(DOCKER_LABEL)
 # `scratch_home`) that does not exist inside the container's filesystem namespace, and the host's
 # own `PATH` almost never resolves to this hardened image's toolchain -- while still forwarding
 # every other override (e.g. `RUFF_CACHE_DIR`) mechanical commands legitimately need.
-_MECHANICAL_ENV_RESERVED_KEYS = frozenset({"HOME", "TMPDIR", "PATH", "GIT_DIR", "GIT_WORK_TREE"})
+#
+# Codex review, PR #262, High (round 6): `XDG_CONFIG_HOME` joins this reserved set for the same
+# reason as `HOME`. `loop_driver_support.maker_env()` always derives it from the same host
+# `scratch_home` as `HOME` (`checker_scratch_home()/.config`), but the scenario only mounts the
+# action worktree/Git plus `/home/loop` and `/tmp` -- that host `.config` path is never mounted
+# into the container. Forwarding it would point any tool that honors `XDG_CONFIG_HOME` at a
+# missing (or, if the path happened to collide, unintended) location inside the container's own
+# filesystem namespace, failing only under Docker. Treating it as container-owned means tools
+# fall back to the container's own `$HOME/.config` under the writable `/home/loop` tmpfs instead.
+_MECHANICAL_ENV_RESERVED_KEYS = frozenset(
+    {"HOME", "TMPDIR", "PATH", "GIT_DIR", "GIT_WORK_TREE", "XDG_CONFIG_HOME"}
+)
 # Codex review, PR #262, High (round 4): fallback default only, layered *underneath* the
 # forwarded checker env in `_mechanical_exec_env()` so an explicit `RUFF_CACHE_DIR` override
 # still wins; see that function's docstring for why this is needed at all.
@@ -401,7 +429,7 @@ class DockerActionRuntime:
             # container identity as its new owner -- newly granting the untrusted Maker read
             # access the original permissions never allowed. Ancestor directories stay re-owned so
             # the Maker can still traverse them and create unrelated sibling entries.
-            profile.runtime.align_mount_ownership(
+            _align_mount_ownership_or_raise(
                 self.request.worktree_path,
                 exclude=_local_override_leaf_paths(self.request.worktree_path),
             )
@@ -427,7 +455,7 @@ class DockerActionRuntime:
             # mount must be re-owned to that same identity or the container's rw mount becomes
             # unwritable to the non-root Maker process. No-op when the driver is not root, since
             # ownership already matches.
-            profile.runtime.align_mount_ownership(self.git_session.ephemeral_dir)
+            _align_mount_ownership_or_raise(self.git_session.ephemeral_dir)
         else:
             # validate_isolation_config() already enforces this for config-built requests.
             # Keep the runtime assertion as defense-in-depth for directly constructed requests.

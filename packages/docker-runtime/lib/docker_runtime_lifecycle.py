@@ -339,11 +339,33 @@ def network_is_stale(
     owner: str,
     *,
     labels: RuntimeLabels,
+    pid_checker: Callable[[int], bool] | None = None,
 ) -> bool:
+    """A same-owner network with no attached containers is stale, unless its creating
+    process is still alive.
+
+    Codex review, PR #262, High (round 6): concurrent same-project workers share one
+    `owner_id` (`owner_id()` hashes only the project's main root), so a worker that just
+    created its own broker/internal network -- but has not yet attached its broker or
+    scenario container to it -- looks identical to a leaked, truly-orphaned network: same
+    owner label, zero `Containers`. Without a liveness check, another worker's concurrent
+    `sweep_stale_resources()` call can delete that live startup network out from under it,
+    turning a healthy concurrent action into a spurious Docker infrastructure failure.
+    Mirroring `container_is_stale()`'s own parent-pid grace, a missing/invalid
+    `parent_pid_label` (e.g. a network created before this label existed) still reaps
+    immediately -- only a network whose creating process is provably still running is
+    spared, matching every other "orphaned by a dead driver" reclaim path.
+    """
     resource_labels_value = inspected.get("Labels") or {}
-    return resource_labels_value.get(labels.owner_label) == owner and not (
-        inspected.get("Containers") or {}
-    )
+    if resource_labels_value.get(labels.owner_label) != owner:
+        return False
+    if inspected.get("Containers"):
+        return False
+    try:
+        parent_pid = int(resource_labels_value[labels.parent_pid_label])
+    except (KeyError, TypeError, ValueError):
+        return True
+    return not (pid_checker or pid_alive)(parent_pid)
 
 
 def pid_alive(pid: int) -> bool:

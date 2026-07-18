@@ -757,12 +757,15 @@ def test_mechanical_only_checker_skips_broker_and_uses_isolated_network(
 
 
 def test_mechanical_exec_env_forwards_overrides_but_not_container_reserved_keys() -> None:
-    """Codex review, PR #262, High: preserve checker env for Docker mechanical commands.
+    """Codex review, PR #262, High (round 6 adds `XDG_CONFIG_HOME`): preserve checker env for
+    Docker mechanical commands.
 
     `RUFF_CACHE_DIR`-style tool overrides must reach the container so mechanical commands can
     redirect writes off the read-only checker worktree, but `HOME`/`TMPDIR`/`PATH`/`GIT_DIR`/
-    `GIT_WORK_TREE` are container-owned (tmpfs mounts, the image's own toolchain, the ephemeral
-    Git wiring) and must never be clobbered by the host-derived checker env.
+    `GIT_WORK_TREE`/`XDG_CONFIG_HOME` are container-owned (tmpfs mounts, the image's own
+    toolchain, the ephemeral Git wiring, and -- like `HOME` -- a host scratch-home path that is
+    never mounted into the container) and must never be clobbered by the host-derived checker
+    env.
     """
     checker_env = {
         "RUFF_CACHE_DIR": "/host/ruff-cache",
@@ -771,11 +774,35 @@ def test_mechanical_exec_env_forwards_overrides_but_not_container_reserved_keys(
         "PATH": "/host/bin:/usr/bin",
         "GIT_DIR": "/host/git-dir",
         "GIT_WORK_TREE": "/host/worktree",
+        "XDG_CONFIG_HOME": "/host/scratch-home/.config",
     }
 
     merged = docker_action._mechanical_exec_env(checker_env)
 
     assert merged == {"RUFF_CACHE_DIR": "/host/ruff-cache"}
+
+
+def test_align_mount_ownership_or_raise_normalizes_os_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review, PR #262, High (round 6): fail-closed, not a raw worker crash.
+
+    `align_mount_ownership()`'s `os.chown()` can raise `PermissionError`/`OSError` on a
+    filesystem that rejects `chown` for the driver's identity (root-squash NFS, a disappearing
+    bind source). `_ensure_started()` only normalizes a curated exception list that does not
+    include raw `OSError`, so this must be normalized to `DockerActionError` at the call site
+    instead of escaping unwrapped and crashing the whole driver process.
+    """
+
+    def _raise_permission_error(_path: Path, *, exclude: Any = None) -> None:
+        raise PermissionError("chown not permitted")
+
+    monkeypatch.setattr(
+        docker_action.profile.runtime, "align_mount_ownership", _raise_permission_error
+    )
+
+    with pytest.raises(docker_action.DockerActionError):
+        docker_action._align_mount_ownership_or_raise(tmp_path)
 
 
 def test_mechanical_exec_env_defaults_ruff_cache_dir_to_a_writable_tmpfs_path() -> None:

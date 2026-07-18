@@ -532,3 +532,57 @@ def test_network_is_stale_returns_false_for_owner_mismatch() -> None:
     inspected = {"Labels": {labels.owner_label: "other-owner"}}
 
     assert lifecycle.network_is_stale(inspected, "owner-test", labels=labels) is False
+
+
+def test_network_is_stale_returns_false_for_a_live_startup_network() -> None:
+    """Codex review, PR #262, High (round 6): don't sweep a concurrent worker's live network.
+
+    Concurrent same-project workers share one owner id, so a network another worker just
+    created -- but has not yet attached a broker/scenario container to -- looks identical to a
+    truly orphaned network: same owner label, no containers. As long as its creating process
+    (`parent_pid_label`) is still alive, it must not be reclaimed out from under that worker.
+    """
+    labels = lifecycle.RuntimeLabels("ai.orchestra.test")
+    inspected = {"Labels": {labels.owner_label: "owner-test", labels.parent_pid_label: "4242"}}
+
+    is_stale = lifecycle.network_is_stale(
+        inspected, "owner-test", labels=labels, pid_checker=lambda _pid: True
+    )
+
+    assert is_stale is False
+
+
+def test_network_is_stale_returns_true_when_creating_process_is_dead() -> None:
+    """A same-owner, container-less network whose creating process died is a genuine leak."""
+    labels = lifecycle.RuntimeLabels("ai.orchestra.test")
+    inspected = {"Labels": {labels.owner_label: "owner-test", labels.parent_pid_label: "4242"}}
+
+    is_stale = lifecycle.network_is_stale(
+        inspected, "owner-test", labels=labels, pid_checker=lambda _pid: False
+    )
+
+    assert is_stale is True
+
+
+def test_network_is_stale_returns_true_for_missing_parent_pid_label() -> None:
+    """A network predating the parent-pid label (or with a corrupt one) still reaps immediately,
+    matching `container_is_stale()`'s own fallback for the same case."""
+    labels = lifecycle.RuntimeLabels("ai.orchestra.test")
+    inspected = {"Labels": {labels.owner_label: "owner-test"}}
+
+    assert lifecycle.network_is_stale(inspected, "owner-test", labels=labels) is True
+
+
+def test_network_is_stale_returns_false_when_containers_are_attached() -> None:
+    """A same-owner network with attached containers is never stale regardless of pid liveness."""
+    labels = lifecycle.RuntimeLabels("ai.orchestra.test")
+    inspected = {
+        "Labels": {labels.owner_label: "owner-test", labels.parent_pid_label: "4242"},
+        "Containers": {"abc123": {}},
+    }
+
+    is_stale = lifecycle.network_is_stale(
+        inspected, "owner-test", labels=labels, pid_checker=lambda _pid: False
+    )
+
+    assert is_stale is False
