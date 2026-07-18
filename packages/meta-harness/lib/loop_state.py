@@ -501,6 +501,12 @@ def _loop_registrations(
     return result
 
 
+def loop_registrations(
+    events: list[dict], loop_id: str, *, fail_closed: bool = True
+) -> dict[int, tuple[str, int]]:
+    return _loop_registrations(events, loop_id, fail_closed=fail_closed)
+
+
 def _loop_target(events: list[dict], loop_id: str) -> str:
     return _loop_started_context(events, loop_id)[1]
 

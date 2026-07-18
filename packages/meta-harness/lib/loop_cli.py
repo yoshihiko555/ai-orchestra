@@ -366,7 +366,7 @@ def _enforce_routing_config_rate_limits(
 ) -> None:
     if spec.target != "routing-config":
         return
-    registrations = state._loop_registrations(events, spec.loop_id)
+    registrations = state.loop_registrations(events, spec.loop_id)
     if iteration in registrations:
         raise LoopValidationError(
             f"routing-config iteration {iteration} already has a registered candidate"
