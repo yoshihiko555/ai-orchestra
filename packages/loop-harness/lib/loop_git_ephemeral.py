@@ -419,15 +419,27 @@ def build_checker_git_mount_spec(
     - ``_verify_checker_baseline_matches_branch_tip`` asserts ``session.baseline_sha`` is still
       the live tip of ``session.branch_ref`` in the trusted ``common_dir``, i.e. this really is a
       session freshly prepared for *this* Checker run (design doc §4.3.4 step 1) rather than a
-      Maker session still in flight or one left over from an earlier action.
+      Maker session still in flight or one left over from an earlier action. Codex review (PR
+      #258, High): a Maker session that committed into its own ``ephemeral_dir`` but has not yet
+      finalized leaves the shared ``common_dir`` branch untouched at ``baseline_sha``, so that tip
+      comparison alone does not catch it. ``_verify_checker_baseline_matches_branch_tip`` now also
+      rejects such a session directly, by checking that its own ephemeral branch ref has not
+      advanced past ``baseline_sha`` and that its worktree still matches the ``baseline_sha`` tree
+      (an uncommitted Maker edit) -- see that function's docstring for the full rationale.
     - ``_verify_git_pointer`` re-checks the worktree's ``.git`` pointer file against its pinned
       snapshot. Docker bind mounts follow a symlink source to its resolved target, so a
       Maker-writable worktree whose ``.git`` had been swapped for a symlink before this spec is
       built would otherwise silently bind-mount whatever that symlink resolves to instead of the
       pinned, read-only ``.git`` overlay.
+
+    ``_validate_common_objects_mount_source`` runs first, ahead of
+    ``_verify_checker_baseline_matches_branch_tip``: the latter's worktree-drift check (PR #258)
+    reads ``baseline_sha``'s tree through ``common_dir``, so ``common_dir/objects`` must already be
+    confirmed to be a real, untampered directory or that read fails with a confusing, unrelated
+    error instead of the intended "shared git objects mount source is not a trusted directory".
     """
-    _verify_checker_baseline_matches_branch_tip(session, runner=runner)
     common_objects = _validate_common_objects_mount_source(session)
+    _verify_checker_baseline_matches_branch_tip(session, runner=runner)
     _harden_ephemeral_git_metadata(session)
     _verify_git_pointer(session)
     return CheckerGitMountSpec(

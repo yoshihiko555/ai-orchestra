@@ -582,6 +582,17 @@ def _verify_checker_baseline_matches_branch_tip(
     ``session.branch_ref`` against the shared, trusted ``common_dir`` (the same host-only,
     ambient-env-scrubbed lookup every other trust-boundary check in this module uses) and fails
     closed the moment the pinned ``baseline_sha`` no longer matches the branch's live tip.
+
+    Codex review (PR #258, High): the ``common_dir`` tip comparison above only catches a Maker
+    session that already *finalized* -- i.e. ``finalize_ephemeral_git`` already ran its CAS
+    write-back into the shared branch. A Maker session that is still in flight (or crashed) after
+    committing into its own Maker-writable ``session.ephemeral_dir``, but *before* that CAS
+    write-back happened, leaves the shared branch tip untouched at ``baseline_sha`` -- the check
+    above passes even though ``session.ephemeral_dir`` now holds a candidate commit (or dirty
+    worktree edits) that were never written back to the shared branch and must never be handed to
+    a Checker as "the fresh baseline". The two calls below close that gap by validating the two
+    concrete places such in-flight Maker output would show up, in addition to the shared branch
+    tip: the session's own ephemeral ref, and the shared worktree's file content.
     """
     tip_result = _run_git(
         ["--git-dir", session.common_dir, "rev-parse", "--verify", session.branch_ref],
@@ -596,6 +607,62 @@ def _verify_checker_baseline_matches_branch_tip(
                 "branch_ref": session.branch_ref,
                 "baseline_sha": session.baseline_sha,
                 "current_tip": current_tip,
+            },
+        )
+    _verify_checker_ephemeral_ref_not_advanced(session, runner=runner)
+    _verify_worktree_matches_trusted_tree(
+        git_dir=session.common_dir,
+        worktree_path=session.worktree_path,
+        target_sha=session.baseline_sha,
+        temp_index_dir=session.runtime_dir,
+        runner=runner,
+    )
+
+
+def _verify_checker_ephemeral_ref_not_advanced(
+    session: EphemeralGitSession,
+    *,
+    runner: GitRunner,
+) -> None:
+    """Reject a session whose own ephemeral GIT_DIR branch ref has moved past baseline.
+
+    Codex review (PR #258, High): ``prepare_ephemeral_git`` always seeds
+    ``session.ephemeral_dir``'s ``session.branch_ref`` to exactly ``session.baseline_sha`` (see
+    ``_prepare_ephemeral_git``'s "seed ephemeral branch" step). A Maker container committing into
+    that Maker-writable ephemeral repository necessarily moves this ref -- that is the only way a
+    Maker action can ever record a candidate change -- regardless of whether
+    ``finalize_ephemeral_git`` has since run to fast-forward the shared ``common_dir`` branch (the
+    ``_verify_checker_baseline_matches_branch_tip`` check above only observes *that* write-back,
+    not this one). Comparing the ephemeral ref directly is therefore an independent, narrower
+    signal of "has this session's Maker container committed" that does not depend on finalize
+    having run at all. ``rev-parse --verify --quiet`` is used rather than ``show-ref --verify``:
+    both read the ref value straight out of ``session.ephemeral_dir``, but ``show-ref --verify``
+    additionally requires the referenced commit object itself to be resolvable (it fails with
+    ``bad ref`` otherwise), which routes through ``objects/info/alternates`` -- a file this check
+    must stay valid regardless of, since ``build_checker_git_mount_spec`` calls this *before*
+    ``_harden_ephemeral_git_metadata`` restores it. ``rev-parse --verify --quiet`` resolves the
+    same ref to the same SHA without that object-resolvability requirement.
+    """
+    ref_result = _run_git(
+        [
+            "--git-dir",
+            session.ephemeral_dir,
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            session.branch_ref,
+        ],
+        runner=runner,
+        operation="resolve the ephemeral branch ref before building the Checker mount spec",
+    )
+    ephemeral_tip = ref_result.stdout.strip()
+    if ephemeral_tip != session.baseline_sha:
+        raise EphemeralGitInfrastructureError(
+            "checker session ephemeral branch ref has advanced past its pinned baseline",
+            details={
+                "branch_ref": session.branch_ref,
+                "baseline_sha": session.baseline_sha,
+                "ephemeral_tip": ephemeral_tip or None,
             },
         )
 

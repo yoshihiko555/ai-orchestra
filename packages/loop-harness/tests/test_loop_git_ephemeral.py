@@ -616,6 +616,50 @@ def test_build_checker_git_mount_spec_accepts_fresh_session_matching_branch_tip(
     git_ephemeral.cleanup_ephemeral_git(session)
 
 
+def test_build_checker_git_mount_spec_rejects_maker_commit_before_finalize(
+    linked_worktree: GitFixture,
+) -> None:
+    """PR #258 review (Codex, High): a Maker session that committed into its own
+    ``ephemeral_dir`` but has not yet run ``finalize_ephemeral_git`` leaves the shared
+    ``common_dir`` branch untouched at ``baseline_sha`` -- the pre-fix tip-only comparison in
+    ``_verify_checker_baseline_matches_branch_tip`` passed in exactly this case, letting a
+    Checker read-only mount a Maker session's un-finalized candidate commit. This is the primary
+    regression test for that gap: it must fail before the fix (``build_checker_git_mount_spec``
+    would return a spec instead of raising) and pass after it.
+    """
+    session = _prepare(linked_worktree)
+    _maker_commit(session)
+    # The Maker commit landed only in `session.ephemeral_dir`; the shared branch in `common_dir`
+    # is still exactly at baseline, so the pre-fix tip-only check alone would not catch this.
+    assert _shared_ref(session) == session.baseline_sha
+
+    with pytest.raises(git_ephemeral.EphemeralGitInfrastructureError, match="advanced"):
+        git_ephemeral.build_checker_git_mount_spec(session)
+
+    git_ephemeral.cleanup_ephemeral_git(session)
+
+
+def test_build_checker_git_mount_spec_rejects_uncommitted_worktree_drift_from_baseline(
+    linked_worktree: GitFixture,
+) -> None:
+    """PR #258 review (Codex, High): a Maker session that edited but did not commit -- so neither
+    the shared branch tip nor the ephemeral ref moved -- must still be rejected, since the
+    worktree content itself no longer matches the pinned baseline tree.
+    """
+    session = _prepare(linked_worktree)
+    tracked_file = Path(session.worktree_path, "tracked.txt")
+    original = tracked_file.read_text(encoding="utf-8")
+    tracked_file.write_text("uncommitted maker edit\n", encoding="utf-8")
+
+    try:
+        with pytest.raises(git_ephemeral.EphemeralGitInfrastructureError, match="dirty"):
+            git_ephemeral.build_checker_git_mount_spec(session)
+    finally:
+        tracked_file.write_text(original, encoding="utf-8")
+
+    git_ephemeral.cleanup_ephemeral_git(session)
+
+
 def test_build_checker_git_mount_spec_rejects_symlinked_git_pointer(
     linked_worktree: GitFixture,
 ) -> None:
