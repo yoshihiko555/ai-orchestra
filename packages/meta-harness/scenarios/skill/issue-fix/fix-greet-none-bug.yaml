@@ -49,7 +49,7 @@ setup:
     JSONEOF
     cp packages/meta-harness/scenarios/fixtures/fake-gh-issue-view.py bin/gh
     chmod +x bin/gh
-    rm -f .meta-harness/issue-fix-decision.json
+    rm -f .meta-harness/issue-fix-decision.json .meta-harness/gh-call-log.jsonl
 allowed_tools:
   - "Bash(gh *)"
   - "Bash(git branch *)"
@@ -64,10 +64,10 @@ path_prepend:
 command_timeout_ms: 60000
 critical:
   - id: greeter-none-guard-fixed
-    text: "greet(None) が例外を出さず 'Hello, Guest' を返すよう修正される"
+    text: "greet(None) が例外を出さず 'Hello, Guest' を返すよう修正され、複数の非 None 入力でも既存挙動が維持される（単一値ハードコードでは通らない）"
     oracle: command_exit
     command: >-
-      python3 -B -c "import sys; sys.path.insert(0, 'sandbox'); from greeter import greet; assert greet(None) == 'Hello, Guest', greet(None); assert greet('Aoi') == 'Hello Aoi', greet('Aoi')"
+      python3 -B -c "import sys; sys.path.insert(0, 'sandbox'); from greeter import greet; assert greet(None) == 'Hello, Guest', greet(None); assert greet('Aoi') == 'Hello Aoi', greet('Aoi'); assert greet('Yuki') == 'Hello Yuki', greet('Yuki'); assert greet('Rin') == 'Hello Rin', greet('Rin')"
   - id: issue-fix-decision-exists
     text: "issue-fix-decision.json が生成される"
     oracle: artifact_exists
@@ -77,6 +77,11 @@ critical:
     oracle: command_exit
     command: >-
       python3 packages/meta-harness/scenarios/fixtures/assert-issue-fix-decision.py --fixture .meta-harness/gh-issue-fixture.json --artifact .meta-harness/issue-fix-decision.json
+  - id: gh-call-logged-correctly
+    text: "gh issue view が正しい issue番号・--jsonフィールドで呼ばれ、serve された fixture の sha256 が記録される"
+    oracle: command_exit
+    command: >-
+      python3 packages/meta-harness/scenarios/fixtures/assert-issue-fix-decision.py --fixture .meta-harness/gh-issue-fixture.json --call-log .meta-harness/gh-call-log.jsonl
 checks:
   - id: review-omission-reported
     text: "Phase4レビューが省略された旨がユーザー報告に明記される"

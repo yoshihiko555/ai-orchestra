@@ -53,6 +53,12 @@ _KNOWN_ISSUE_FIXTURES: dict[str, tuple[int, str]] = {
 
 _EXPECTED_DECISION_KEYS = frozenset({"branch", "commit_message", "pr_label"})
 
+# Must match `_REQUIRED_JSON_FIELDS` in fake-gh-issue-view.py (kept in sync by
+# `test_gh_fixture_known_hashes_match_oracle_known_hashes` in test_skill_scenarios.py).
+_EXPECTED_GH_JSON_FIELDS: tuple[str, ...] = tuple(
+    sorted({"number", "title", "body", "labels", "assignees"})
+)
+
 
 def _assert_branch_slug(branch: str, branch_prefix: str, number: int) -> None:
     """Validate the full `{prefix}issue-{number}-{slug}` shape, not just a substring match.
@@ -121,13 +127,56 @@ def assert_decision(project_root: Path, fixture_path: Path, artifact_path: Path)
     assert recorded_label == pr_label, f"pr_label {recorded_label!r} != expected {pr_label!r}"
 
 
+def assert_gh_call_logged(project_root: Path, fixture_path: Path, call_log_path: Path) -> None:
+    """Verify the fake `gh` stub recorded (at least one) correctly-argued invocation.
+
+    Note (Issue #267): the call log itself lives in the same writable workspace a candidate has
+    unrestricted Edit/Write access to, so a sufficiently adversarial candidate could still forge
+    or delete log entries after the fact -- this check raises the bar (a legitimate run must
+    leave a consistent, correctly-hashed log entry behind) but does not by itself close that gap;
+    see Issue #267 for the harness-level fix (isolating the oracle/stub trust boundary from
+    candidate-writable storage).
+    """
+    fixture_full = project_root / fixture_path
+    number, _label = _trusted_issue(fixture_full)
+    expected_sha256 = hashlib.sha256(fixture_full.read_bytes()).hexdigest()
+
+    log_full = project_root / call_log_path
+    assert log_full.is_file() and not log_full.is_symlink(), (
+        f"missing regular gh call log: {call_log_path}"
+    )
+    entries = [
+        json.loads(line)
+        for line in log_full.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    matching = [
+        entry
+        for entry in entries
+        if str(entry.get("requested_number")) == str(number)
+        and entry.get("requested_json_fields") == list(_EXPECTED_GH_JSON_FIELDS)
+        and entry.get("served_sha256") == expected_sha256
+    ]
+    assert matching, (
+        f"no gh call log entry for issue #{number} with --json fields "
+        f"{list(_EXPECTED_GH_JSON_FIELDS)} and served sha256={expected_sha256}; "
+        f"entries={entries!r}"
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--fixture", type=Path, required=True)
-    parser.add_argument("--artifact", type=Path, required=True)
+    parser.add_argument("--artifact", type=Path)
+    parser.add_argument("--call-log", type=Path)
     args = parser.parse_args(argv)
+    if args.artifact is None and args.call_log is None:
+        parser.error("either --artifact or --call-log (or both) must be provided")
     project_root = Path(os.environ.get("AI_ORCHESTRA_DIR") or Path.cwd()).resolve()
-    assert_decision(project_root, args.fixture, args.artifact)
+    if args.artifact is not None:
+        assert_decision(project_root, args.fixture, args.artifact)
+    if args.call_log is not None:
+        assert_gh_call_logged(project_root, args.fixture, args.call_log)
 
 
 if __name__ == "__main__":

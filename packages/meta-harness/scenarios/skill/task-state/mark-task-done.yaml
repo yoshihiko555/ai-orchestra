@@ -51,10 +51,10 @@ allowed_tools:
 command_timeout_ms: 60000
 critical:
   - id: task-status-updated-without-collateral-damage
-    text: "対象タスクのみ cc:done に更新され、タスク一覧（重複・追加を含む）・Decisions・Notes・frontmatter は一切変更されない"
+    text: "Plans.md 全体を canonical fixture と突合し、対象タスクの marker 変更以外の差分が一切ないことを検証する（タスク一覧・Decisions・Notes・frontmatter・見出し・区切り線を包含）"
     oracle: command_exit
     command: >-
-      python3 packages/meta-harness/scenarios/fixtures/assert-task-state-outcome.py mark-task-done --plans .claude/Plans.md --expected-task "done::ユーザー認証API" --expected-task "done::商品一覧API" --expected-task "TODO::注文API"
+      python3 packages/meta-harness/scenarios/fixtures/assert-task-state-outcome.py mark-task-done --plans .claude/Plans.md --target-task "商品一覧API" --target-status done
 checks:
   - id: update-summary-quality
     text: "更新内容がユーザー報告で正確に説明される"

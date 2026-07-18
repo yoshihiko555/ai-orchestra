@@ -50,7 +50,7 @@ setup:
     JSONEOF
     cp packages/meta-harness/scenarios/fixtures/fake-gh-issue-view.py bin/gh
     chmod +x bin/gh
-    rm -f .meta-harness/issue-fix-decision.json
+    rm -f .meta-harness/issue-fix-decision.json .meta-harness/gh-call-log.jsonl
 allowed_tools:
   - "Bash(gh *)"
   - "Bash(git branch *)"
@@ -65,10 +65,10 @@ path_prepend:
 command_timeout_ms: 60000
 critical:
   - id: formal-greeting-feature-implemented
-    text: "formal=True で 'Dear {name},' を返すよう実装される"
+    text: "formal=True で 'Dear {name},' を返すよう実装され、複数の名前でも既存挙動が維持される（単一値ハードコードでは通らない）"
     oracle: command_exit
     command: >-
-      python3 -B -c "import sys; sys.path.insert(0, 'sandbox'); from formatter import build_greeting; assert build_greeting('Aoi') == 'Hello Aoi', build_greeting('Aoi'); assert build_greeting('Aoi', formal=True) == 'Dear Aoi,', build_greeting('Aoi', True)"
+      python3 -B -c "import sys; sys.path.insert(0, 'sandbox'); from formatter import build_greeting; assert build_greeting('Aoi') == 'Hello Aoi', build_greeting('Aoi'); assert build_greeting('Aoi', formal=True) == 'Dear Aoi,', build_greeting('Aoi', True); assert build_greeting('Yuki') == 'Hello Yuki', build_greeting('Yuki'); assert build_greeting('Yuki', formal=True) == 'Dear Yuki,', build_greeting('Yuki', True); assert build_greeting('Rin') == 'Hello Rin', build_greeting('Rin')"
   - id: issue-fix-decision-exists-holdout
     text: "issue-fix-decision.json が生成される"
     oracle: artifact_exists
@@ -78,6 +78,11 @@ critical:
     oracle: command_exit
     command: >-
       python3 packages/meta-harness/scenarios/fixtures/assert-issue-fix-decision.py --fixture .meta-harness/gh-issue-fixture.json --artifact .meta-harness/issue-fix-decision.json
+  - id: gh-call-logged-correctly-holdout
+    text: "gh issue view が正しい issue番号・--jsonフィールドで呼ばれ、serve された fixture の sha256 が記録される"
+    oracle: command_exit
+    command: >-
+      python3 packages/meta-harness/scenarios/fixtures/assert-issue-fix-decision.py --fixture .meta-harness/gh-issue-fixture.json --call-log .meta-harness/gh-call-log.jsonl
 checks:
   - id: review-omission-reported-holdout
     text: "Phase4レビューが省略された旨がユーザー報告に明記される"
