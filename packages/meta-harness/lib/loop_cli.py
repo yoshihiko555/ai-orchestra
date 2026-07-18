@@ -50,6 +50,10 @@ class RoutingConfigCooldownActive(LoopValidationError):
         )
 
 
+class RecordedEvaluationError(RuntimeError):
+    """An evaluation returned error results after recording its ledger summary."""
+
+
 @dataclass(frozen=True)
 class LoopSpec:
     loop_id: str
@@ -322,7 +326,17 @@ def _drive_loop(main_root: Path, config: dict, project_dir: Path, spec: LoopSpec
                 )
                 _record_cooldown_iteration(main_root, config, spec, iteration, outcome)
                 continue
-            cand_id = _propose_candidate(main_root, config, project_dir, spec, iteration)
+            proposal_event_index = len(events)
+            try:
+                cand_id = _propose_candidate(main_root, config, project_dir, spec, iteration)
+            except propose_cli.pb.ProposalValidationError:
+                recorded_events = mh.read_ledger_events_strict(main_root, config)
+                if not _routing_config_proposal_rejection_recorded(
+                    recorded_events[proposal_event_index:], spec, iteration
+                ):
+                    raise
+                _record_cooldown_iteration(main_root, config, spec, iteration, "proposal_rejected")
+                continue
         else:
             iteration, cand_id = orphan
 
@@ -331,7 +345,16 @@ def _drive_loop(main_root: Path, config: dict, project_dir: Path, spec: LoopSpec
             events, config, spec.target, cand_id, holdout=False
         )
         if not train_complete:
-            _evaluate_candidate(main_root, config, project_dir, cand_id, holdout=False)
+            if not _evaluate_candidate_for_iteration(
+                main_root,
+                config,
+                project_dir,
+                spec,
+                cand_id,
+                holdout=False,
+            ):
+                _record_iteration(main_root, config, spec, iteration, cand_id)
+                continue
             events = mh.read_ledger_events_strict(main_root, config)
             if not _evaluation_complete(events, config, spec.target, cand_id, holdout=False):
                 raise LoopValidationError(f"non-holdout evaluation is incomplete: {cand_id}")
@@ -350,14 +373,18 @@ def _drive_loop(main_root: Path, config: dict, project_dir: Path, spec: LoopSpec
                     if train_evaluation_id is not None
                     else {}
                 )
-                _evaluate_candidate(
+                evaluation_completed = _evaluate_candidate_for_iteration(
                     main_root,
                     config,
                     project_dir,
+                    spec,
                     cand_id,
                     holdout=True,
                     **evaluation_kwargs,
                 )
+                if not evaluation_completed:
+                    _record_iteration(main_root, config, spec, iteration, cand_id)
+                    continue
                 events = mh.read_ledger_events_strict(main_root, config)
                 if not _evaluation_complete(events, config, spec.target, cand_id, holdout=True):
                     raise LoopValidationError(f"holdout evaluation is incomplete: {cand_id}")
@@ -460,6 +487,25 @@ def _routing_config_cooldown_trigger(
     return max(triggers, default=None)
 
 
+def _routing_config_proposal_rejection_recorded(
+    events: list[dict], spec: LoopSpec, iteration: int
+) -> bool:
+    if spec.target != "routing-config":
+        return False
+    for event in events:
+        if event.get("event") != "proposal_rejected":
+            continue
+        state.validate_event(event, "proposal_rejected")
+        if (
+            event.get("loop_id") == spec.loop_id
+            and event.get("target") == spec.target
+            and int(event.get("iteration") or 0) == iteration
+            and event.get("verdict") in {"fail", "error"}
+        ):
+            return True
+    return False
+
+
 def _propose_candidate(
     main_root: Path,
     config: dict,
@@ -516,8 +562,62 @@ def _evaluate_candidate(
         evaluation_id=evaluation_id,
     )
     if any(result.get("verdict") == "error" for result in results):
-        raise RuntimeError(f"candidate evaluation failed: {cand_id}")
+        raise RecordedEvaluationError(f"candidate evaluation failed: {cand_id}")
     return results
+
+
+def _evaluate_candidate_for_iteration(
+    main_root: Path,
+    config: dict,
+    project_dir: Path,
+    spec: LoopSpec,
+    cand_id: str,
+    *,
+    holdout: bool,
+    evaluation_id: str | None = None,
+) -> bool:
+    event_index = len(mh.read_ledger_events_strict(main_root, config))
+    evaluation_kwargs = {"evaluation_id": evaluation_id} if evaluation_id is not None else {}
+    try:
+        _evaluate_candidate(
+            main_root,
+            config,
+            project_dir,
+            cand_id,
+            holdout=holdout,
+            **evaluation_kwargs,
+        )
+    except (RecordedEvaluationError, ev.EvaluationBatchError):
+        events = mh.read_ledger_events_strict(main_root, config)
+        if not _routing_config_failed_evaluation_recorded(
+            events[event_index:], spec, cand_id, holdout=holdout
+        ):
+            raise
+        return False
+    return True
+
+
+def _routing_config_failed_evaluation_recorded(
+    events: list[dict],
+    spec: LoopSpec,
+    cand_id: str,
+    *,
+    holdout: bool,
+) -> bool:
+    if spec.target != "routing-config":
+        return False
+    for event in events:
+        if event.get("event") != "evaluation_completed":
+            continue
+        state.validate_event(event, "evaluation_completed")
+        if (
+            event.get("cand_id") == cand_id
+            and event.get("target") == spec.target
+            and bool(event.get("holdout")) == holdout
+            and event.get("verdict") in {"fail", "error"}
+        ):
+            return True
+    return False
 
 
 def _validate_loop_candidate(

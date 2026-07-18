@@ -42,32 +42,37 @@ def _routing_loop_spec(
     return loop_cli.LoopSpec(loop_id, "routing-config", None, max_iterations, 0.0, 0)
 
 
-def _append_routing_evaluation(project: Path, config: dict, cand_id: str, verdict: str) -> None:
-    mh.append_ledger_event(
-        project,
-        config,
-        {
-            "event": "evaluation_completed",
-            "ts": mh.now_iso(),
-            "schema_version": "1.0",
-            "evaluation_id": "eval-20260717-120000-deadbeef",
-            "cand_id": cand_id,
-            "target": "routing-config",
-            "holdout": False,
-            "own_run_ids": [],
-            "own_suite_hash": _HASH,
-            "evaluator_hash": _HASH,
-            "own_critical_pass": verdict == "pass",
-            "regression_results": [],
-            "verdict": verdict,
-            "unverified_impacts": [],
-            "evaluation_base_commit": "a" * 40,
-            "routing_config_base_hash": _HASH,
-            "impacted_targets": [],
-            "impact_input_hash": _HASH,
-            "regression_cost_usd": 0.0,
-        },
-    )
+def _append_evaluation(
+    project: Path,
+    config: dict,
+    cand_id: str,
+    verdict: str,
+    *,
+    target: str = "routing-config",
+) -> None:
+    event = {
+        "event": "evaluation_completed",
+        "ts": mh.now_iso(),
+        "schema_version": "1.0",
+        "evaluation_id": "eval-20260717-120000-deadbeef",
+        "cand_id": cand_id,
+        "target": target,
+        "holdout": False,
+        "own_run_ids": [],
+        "own_suite_hash": _HASH,
+        "evaluator_hash": _HASH,
+        "own_critical_pass": verdict == "pass",
+        "regression_results": [],
+        "verdict": verdict,
+        "unverified_impacts": [],
+        "evaluation_base_commit": "a" * 40,
+        "impacted_targets": [],
+        "impact_input_hash": _HASH,
+        "regression_cost_usd": 0.0,
+    }
+    if target == "routing-config":
+        event["routing_config_base_hash"] = _HASH
+    mh.append_ledger_event(project, config, event)
 
 
 def test_routing_config_target_reaches_bootstrap_guard_before_proposer(
@@ -112,7 +117,7 @@ def test_routing_config_rejected_candidate_starts_ledger_backed_cooldown(
     mh.init_store(git_project, config)
     spec = _routing_loop_spec(git_project, config)
     cand_id = _register_loop_candidate(git_project, config, spec, 1)
-    _append_routing_evaluation(git_project, config, cand_id, verdict)
+    _append_evaluation(git_project, config, cand_id, verdict)
     events = _events(git_project, config)
 
     with pytest.raises(loop_cli.LoopValidationError, match="next allowed iteration is 5"):
@@ -225,6 +230,123 @@ def test_routing_config_proposal_rejection_advances_through_cooldown(
     ]
 
 
+def test_routing_config_rejected_proposal_continues_unattended_through_cooldown(
+    git_project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(proposer={"divergence_rounds": 10})
+    mh.init_store(git_project, config)
+    spec = _routing_loop_spec(git_project, config, max_iterations=5)
+    proposed_iterations: list[int] = []
+
+    def propose(_main_root, _config, _project_dir, active_spec, iteration):
+        proposed_iterations.append(iteration)
+        if iteration == 1:
+            mh.append_ledger_event(
+                git_project,
+                config,
+                loop_cli.propose_cli._proposal_rejected_event(
+                    target=active_spec.target,
+                    loop_id=active_spec.loop_id,
+                    iteration=iteration,
+                ),
+            )
+            raise loop_cli.propose_cli.pb.ProposalValidationError("invalid routing proposal")
+        return _register_loop_candidate(git_project, config, active_spec, iteration)
+
+    monkeypatch.setattr(loop_cli, "_propose_candidate", propose)
+    monkeypatch.setattr(loop_cli, "_validate_loop_candidate", lambda *_args: None)
+    monkeypatch.setattr(loop_cli, "_evaluate_candidate", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(loop_cli, "_evaluation_complete", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(loop_cli, "_candidate_on_frontier", lambda *_args: False)
+    monkeypatch.setattr(loop_cli, "_rebuild_frontier", lambda *_args: None)
+
+    reason = loop_cli._drive_loop(git_project, config, git_project, spec)
+
+    iterations = loop_cli._iteration_events(_events(git_project, config), spec.loop_id)
+    assert reason == "max_iterations"
+    assert proposed_iterations == [1, 5]
+    assert iterations[1]["outcome"] == "proposal_rejected"
+    assert [iterations[index]["outcome"] for index in (2, 3, 4)] == [
+        "cooldown_wait",
+        "cooldown_wait",
+        "cooldown_wait",
+    ]
+    assert iterations[5]["outcome"] == "candidate"
+
+
+def test_routing_config_evaluation_error_continues_unattended_through_cooldown(
+    git_project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(proposer={"divergence_rounds": 10})
+    mh.init_store(git_project, config)
+    spec = _routing_loop_spec(git_project, config, max_iterations=5)
+    proposed_iterations: list[int] = []
+    evaluated_iterations: list[int] = []
+
+    def propose(_main_root, _config, _project_dir, active_spec, iteration):
+        proposed_iterations.append(iteration)
+        return _register_loop_candidate(git_project, config, active_spec, iteration)
+
+    def evaluate(_main_root, _config, _project_dir, cand_id, *, holdout, **_kwargs):
+        assert not holdout
+        iteration = int(cand_id.split("-loop-")[1].split("-")[0])
+        evaluated_iterations.append(iteration)
+        if iteration == 1:
+            _append_evaluation(git_project, config, cand_id, "error")
+            raise loop_cli.ev.EvaluationBatchError("regression budget exceeded")
+        return []
+
+    monkeypatch.setattr(loop_cli, "_propose_candidate", propose)
+    monkeypatch.setattr(loop_cli, "_validate_loop_candidate", lambda *_args: None)
+    monkeypatch.setattr(loop_cli, "_evaluate_candidate", evaluate)
+    monkeypatch.setattr(loop_cli, "_evaluation_complete", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(loop_cli, "_candidate_on_frontier", lambda *_args: False)
+    monkeypatch.setattr(loop_cli, "_rebuild_frontier", lambda *_args: None)
+
+    reason = loop_cli._drive_loop(git_project, config, git_project, spec)
+
+    iterations = loop_cli._iteration_events(_events(git_project, config), spec.loop_id)
+    assert reason == "max_iterations"
+    assert proposed_iterations == [1, 5]
+    assert evaluated_iterations == [1, 5]
+    assert iterations[1]["outcome"] == "candidate"
+    assert [iterations[index]["outcome"] for index in (2, 3, 4)] == [
+        "cooldown_wait",
+        "cooldown_wait",
+        "cooldown_wait",
+    ]
+    assert iterations[5]["outcome"] == "candidate"
+
+
+def test_routing_config_evaluation_crash_without_summary_still_fail_stops(
+    git_project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(proposer={"max_iterations": 1})
+    mh.init_store(git_project, config)
+    spec = _routing_loop_spec(git_project, config, max_iterations=1)
+    monkeypatch.setattr(
+        loop_cli,
+        "_propose_candidate",
+        lambda _main_root, _config, _project_dir, active_spec, iteration: _register_loop_candidate(
+            git_project, config, active_spec, iteration
+        ),
+    )
+    monkeypatch.setattr(loop_cli, "_validate_loop_candidate", lambda *_args: None)
+    monkeypatch.setattr(
+        loop_cli,
+        "_evaluate_candidate",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            loop_cli.ev.EvaluationBatchError("evaluation machinery crashed")
+        ),
+    )
+
+    with pytest.raises(loop_cli.ev.EvaluationBatchError, match="machinery crashed"):
+        loop_cli._drive_loop(git_project, config, git_project, spec)
+
+    iterations = loop_cli._iteration_events(_events(git_project, config), spec.loop_id)
+    assert iterations == {}
+
+
 @pytest.mark.parametrize("verdict", ["fail", "error"])
 def test_routing_config_resume_advances_until_evaluation_cooldown_elapses(
     git_project: Path,
@@ -235,7 +357,7 @@ def test_routing_config_resume_advances_until_evaluation_cooldown_elapses(
     mh.init_store(git_project, config)
     spec = _routing_loop_spec(git_project, config, max_iterations=5)
     cand_id = _register_loop_candidate(git_project, config, spec, 1)
-    _append_routing_evaluation(git_project, config, cand_id, verdict)
+    _append_evaluation(git_project, config, cand_id, verdict)
     loop_cli._record_iteration(git_project, config, spec, 1, cand_id)
     loop_cli._stop_loop(git_project, config, spec, "error")
     proposed_iterations: list[int] = []
@@ -260,6 +382,69 @@ def test_routing_config_resume_advances_until_evaluation_cooldown_elapses(
         "cooldown_wait",
         "cooldown_wait",
     ]
+
+
+@pytest.mark.parametrize(
+    ("failure_stage", "expected_exit"),
+    [
+        ("proposal", loop_cli.EXIT_VALIDATION_ERROR),
+        ("evaluation", loop_cli.EXIT_RUNTIME_ERROR),
+    ],
+)
+def test_non_routing_config_failures_still_fail_stop(
+    git_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_stage: str,
+    expected_exit: int,
+) -> None:
+    config = _config(proposer={"max_iterations": 1})
+    mh.init_store(git_project, config)
+    spec = loop_cli._start_loop(git_project, config, "claude-harness")
+    monkeypatch.setattr(loop_cli, "_validate_target", lambda _target: None)
+    monkeypatch.setattr(loop_cli, "_validate_loop_candidate", lambda *_args: None)
+
+    if failure_stage == "proposal":
+        monkeypatch.setattr(
+            loop_cli,
+            "_propose_candidate",
+            lambda *_args: (_ for _ in ()).throw(
+                loop_cli.propose_cli.pb.ProposalValidationError("invalid proposal")
+            ),
+        )
+    else:
+        monkeypatch.setattr(
+            loop_cli,
+            "_propose_candidate",
+            lambda _main_root, _config, _project_dir, active_spec, iteration: (
+                _register_loop_candidate(git_project, config, active_spec, iteration)
+            ),
+        )
+
+        def evaluation_error(_main_root, _config, _project_dir, cand_id, **_kwargs):
+            _append_evaluation(
+                git_project,
+                config,
+                cand_id,
+                "error",
+                target="claude-harness",
+            )
+            raise loop_cli.ev.EvaluationBatchError("scenario failed")
+
+        monkeypatch.setattr(loop_cli, "_evaluate_candidate", evaluation_error)
+
+    exit_code, resumed_spec, reason = loop_cli._execute_locked(
+        git_project,
+        config,
+        git_project,
+        target=None,
+        resume=spec.loop_id,
+    )
+
+    stopped = [event for event in _events(git_project, config) if event["event"] == "loop_stopped"]
+    assert exit_code == expected_exit
+    assert resumed_spec == spec
+    assert reason is None
+    assert stopped[-1]["reason"] == "error"
 
 
 @pytest.mark.parametrize(

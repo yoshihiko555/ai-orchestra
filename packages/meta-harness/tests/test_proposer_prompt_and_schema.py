@@ -357,3 +357,142 @@ class TestProposerPrompt:
         assert "agents.*.tool" not in prompt
         assert "agents.debugger.tool" not in prompt
         assert "codex.model" not in prompt
+
+    def test_routing_config_prompt_applies_parent_config_patch_lineage(
+        self,
+        git_project: Path,
+        git_run: Callable,
+        tmp_path: Path,
+    ) -> None:
+        config_path = git_project / "packages/agent-routing/config/cli-tools.yaml"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(
+            "agents:\n"
+            "  debugger:\n"
+            "    tool: codex\n"
+            "antigravity:\n"
+            "  model: source-model\n"
+            "  model_allowlist:\n"
+            "    - source-model\n",
+            encoding="utf-8",
+        )
+        git_run("add", config_path.relative_to(git_project).as_posix(), cwd=git_project)
+        git_run("commit", "-m", "source routing config", cwd=git_project)
+        source_commit = git_run("rev-parse", "HEAD", cwd=git_project).stdout.strip()
+        config = proposer.mh.DEFAULTS
+        proposer.mh.init_store(git_project, config)
+        patch = [
+            {
+                "file": "agent-routing/cli-tools.yaml",
+                "key_path": "agents.debugger.tool",
+                "value": "antigravity",
+            }
+        ]
+        overlay_dir = tmp_path / "parent-overlay"
+        overlay_dir.mkdir()
+        (overlay_dir / proposer.mh.CONFIG_PATCH_FILENAME).write_text(
+            json.dumps(patch), encoding="utf-8"
+        )
+        parent_id = "cand-20260718-120000-routing-parent-abcd"
+        manifest = proposer.mh.build_candidate_manifest(
+            cand_id=parent_id,
+            parent_id=None,
+            generation=0,
+            target="routing-config",
+            source_commit=source_commit,
+            config_hash=proposer.mh.compute_config_hash(overlay_dir, config),
+            overlay_files=[],
+            description="routing parent",
+            created_by="proposer",
+            config_patch_hash=proposer.mh.compute_config_patch_hash(patch),
+        )
+        proposer.mh.register_candidate(
+            git_project,
+            config,
+            cand_id=parent_id,
+            manifest=manifest,
+            overlay_dir=overlay_dir,
+            overlay_files=[],
+            target="routing-config",
+            created_by="proposer",
+            baseline_root=git_project,
+            schema_dir=SCHEMA_DIR,
+        )
+
+        prompt = proposer.render_proposer_prompt(
+            view_dir=tmp_path / "view",
+            frontier_doc=None,
+            config=config,
+            package_dir=PACKAGE_DIR,
+            target="routing-config",
+            focus_candidate_id=parent_id,
+            main_root=git_project,
+            source_commit=source_commit,
+        )
+
+        assert "agents.debugger.tool = antigravity" in prompt
+        assert "agents.debugger.tool = codex" not in prompt
+
+    def test_routing_config_prompt_rejects_parent_patch_for_unknown_source_key(
+        self,
+        git_project: Path,
+        git_run: Callable,
+        tmp_path: Path,
+    ) -> None:
+        config_path = git_project / "packages/agent-routing/config/cli-tools.yaml"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(
+            "agents:\n"
+            "  source-agent:\n"
+            "    tool: codex\n"
+            "antigravity:\n"
+            "  model: source-model\n"
+            "  model_allowlist:\n"
+            "    - source-model\n",
+            encoding="utf-8",
+        )
+        git_run("add", config_path.relative_to(git_project).as_posix(), cwd=git_project)
+        git_run("commit", "-m", "source routing config", cwd=git_project)
+        source_commit = git_run("rev-parse", "HEAD", cwd=git_project).stdout.strip()
+        config = proposer.mh.DEFAULTS
+        proposer.mh.init_store(git_project, config)
+        patch = [
+            {
+                "file": "agent-routing/cli-tools.yaml",
+                "key_path": "agents.debugger.tool",
+                "value": "antigravity",
+            }
+        ]
+        parent_id = "cand-20260718-120001-routing-parent-abcd"
+        cand_dir = proposer.mh.candidates_dir(git_project, config) / parent_id
+        cand_dir.mkdir(parents=True)
+        stored_overlay = cand_dir / "overlay"
+        stored_overlay.mkdir()
+        (stored_overlay / proposer.mh.CONFIG_PATCH_FILENAME).write_text(
+            json.dumps(patch), encoding="utf-8"
+        )
+        manifest = proposer.mh.build_candidate_manifest(
+            cand_id=parent_id,
+            parent_id=None,
+            generation=0,
+            target="routing-config",
+            source_commit=source_commit,
+            config_hash=proposer.mh.compute_config_hash(stored_overlay, config),
+            overlay_files=[],
+            description="invalid routing parent",
+            created_by="proposer",
+            config_patch_hash=proposer.mh.compute_config_patch_hash(patch),
+        )
+        (cand_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+        with pytest.raises(ValueError, match="unknown agent name|unknown key"):
+            proposer.render_proposer_prompt(
+                view_dir=tmp_path / "view",
+                frontier_doc=None,
+                config=config,
+                package_dir=PACKAGE_DIR,
+                target="routing-config",
+                focus_candidate_id=parent_id,
+                main_root=git_project,
+                source_commit=source_commit,
+            )

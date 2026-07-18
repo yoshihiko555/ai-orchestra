@@ -26,9 +26,11 @@ from typing import Any
 import yaml
 
 _LIB_DIR = Path(__file__).resolve().parent
+_SCHEMA_DIR = _LIB_DIR.parent / "schemas"
 if str(_LIB_DIR) not in sys.path:
     sys.path.insert(0, str(_LIB_DIR))
 
+import evaluator as ev  # noqa: E402
 import meta_harness_common as mh  # noqa: E402
 import proposer_security as psec  # noqa: E402
 import redaction  # noqa: E402
@@ -320,7 +322,12 @@ def render_proposer_prompt(
         baseline_input_hint = (
             "- routing config の現在値: 下記の変更メニュー（読み取り専用 context）"
         )
-        change_menu = _routing_config_prompt_menu(main_root, source_commit, config)
+        change_menu = _routing_config_prompt_menu(
+            main_root,
+            source_commit,
+            config,
+            parent_id=focus_candidate_id,
+        )
         proposal_payload_constraint = (
             "config_patch のみ。changes file overlay は含めない。1 候補で 1 key kind のみ選ぶ"
         )
@@ -358,9 +365,22 @@ def render_proposer_prompt(
     )
 
 
-def _routing_config_prompt_menu(main_root: Path, source_commit: str, config: dict) -> str:
+def _routing_config_prompt_menu(
+    main_root: Path,
+    source_commit: str,
+    config: dict,
+    *,
+    parent_id: str | None = None,
+) -> str:
     """Phase A で proposer に公開する routing-config 値だけを列挙する。"""
     routing_config = _load_source_agent_routing_config(main_root, source_commit)
+    _apply_parent_routing_config_lineage(
+        routing_config,
+        main_root=main_root,
+        config=config,
+        source_commit=source_commit,
+        parent_id=parent_id,
+    )
     enabled_kinds = set(_effective_proposer_config_patch_kinds(config))
     lines: list[str] = []
 
@@ -413,6 +433,75 @@ def _routing_config_prompt_menu(main_root: Path, source_commit: str, config: dic
             ]
         )
     return "\n".join(lines) if lines else "- routing-config changes: (none allowed)"
+
+
+def _apply_parent_routing_config_lineage(
+    routing_config: dict,
+    *,
+    main_root: Path,
+    config: dict,
+    source_commit: str,
+    parent_id: str | None,
+) -> None:
+    if parent_id is None:
+        return
+    parent_manifest = mh.read_candidate_manifest(main_root, config, parent_id)
+    if parent_manifest is None:
+        raise ValueError(f"candidate lineage parent is missing: {parent_id}")
+    try:
+        lineage = ev._candidate_lineage(main_root, config, parent_manifest)
+    except ev.EvaluatorStageError as exc:
+        raise ValueError(f"parent routing config lineage is invalid: {exc}") from exc
+
+    for manifest in lineage:
+        cand_id = str(manifest.get("cand_id") or "")
+        if manifest.get("target") != "routing-config":
+            raise ValueError(f"candidate lineage target mismatch: {cand_id}")
+        if manifest.get("source_commit") != source_commit:
+            raise ValueError(f"candidate lineage source_commit mismatch: {cand_id}")
+        overlay_dir = mh.candidates_dir(main_root, config) / cand_id / "overlay"
+        try:
+            ev._verify_registered_overlay_integrity(manifest, overlay_dir)
+        except ev.EvaluatorStageError as exc:
+            raise ValueError(f"parent routing config lineage is invalid: {exc}") from exc
+        if mh.list_overlay_files(overlay_dir):
+            raise ValueError(f"routing-config parent contains file overlays: {cand_id}")
+        patch_path = overlay_dir / mh.CONFIG_PATCH_FILENAME
+        if patch_path.is_symlink():
+            raise ValueError(f"routing-config parent patch is a symlink: {cand_id}")
+        patch = mh.read_config_patch_file(patch_path) if patch_path.is_file() else []
+        violations = mh.validate_config_patch(
+            patch,
+            config,
+            _SCHEMA_DIR,
+            target="routing-config",
+            created_by=str(manifest.get("created_by") or ""),
+            agent_routing_config=routing_config,
+        )
+        if violations:
+            raise ValueError(
+                f"parent routing config patch is invalid for {cand_id}: " + "; ".join(violations)
+            )
+        for item in sorted(patch, key=lambda value: str(value["key_path"])):
+            _set_existing_routing_config_value(
+                routing_config,
+                tuple(str(item["key_path"]).split(".")),
+                item["value"],
+            )
+
+
+def _set_existing_routing_config_value(
+    routing_config: dict, segments: tuple[str, ...], value: Any
+) -> None:
+    current = routing_config
+    for segment in segments[:-1]:
+        existing = current.get(segment)
+        if not isinstance(existing, dict):
+            raise ValueError(f"parent config patch references unknown key: {'.'.join(segments)}")
+        current = existing
+    if not segments or segments[-1] not in current:
+        raise ValueError(f"parent config patch references unknown key: {'.'.join(segments)}")
+    current[segments[-1]] = value
 
 
 def _effective_proposer_config_patch_kinds(config: dict) -> tuple[str, ...]:
