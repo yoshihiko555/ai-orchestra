@@ -35,9 +35,13 @@ _LIB_DIR = _SCRIPT_DIR.parent / "lib"
 if str(_LIB_DIR) not in sys.path:
     sys.path.insert(0, str(_LIB_DIR))
 
+import loop_action_executor as lae  # noqa: E402
 import loop_common as lc  # noqa: E402
 import loop_definition as ld  # noqa: E402
+import loop_docker_action as lda  # noqa: E402
+import loop_docker_config as ldc  # noqa: E402
 import loop_driver_support as lds  # noqa: E402
+import loop_git_ephemeral as lge  # noqa: E402
 import pr_review_wait as prw  # noqa: E402
 import worktree_manager as wm  # noqa: E402
 
@@ -427,6 +431,9 @@ class LoopDriver:
         self._pre_maker_head: str | None = None
         self._start_monotonic: float = time.monotonic()
         self._wall_clock_timeout_seconds: int = wall_clock_timeout_seconds(project_dir)
+        self._action_executor: lae.HostActionExecutor | lae.DockerActionExecutor = (
+            lae.HostActionExecutor(self._run_host_child)
+        )
 
     # -- lifecycle -----------------------------------------------------------------------
 
@@ -917,6 +924,51 @@ class LoopDriver:
         params = proposal.context.get("params", {})
         if not isinstance(params, dict):
             params = {}
+        try:
+            executor = lae.build_action_executor(
+                ld.load_config(self.project_dir),
+                project_dir=self.project_dir,
+                loop_id=self.loop_id,
+                action_id=proposal.action_id,
+                action=proposal.action,
+                worktree_path=state.worktree_path,
+                branch=state.branch,
+                remaining_wall_clock_seconds=self._remaining_wall_clock_seconds,
+                host_child_runner=self._run_host_child,
+            )
+        except ldc.DockerConfigError as exc:
+            return self._docker_infrastructure_result(proposal, state, params, str(exc))
+        previous_executor = self._action_executor
+        self._action_executor = executor
+        try:
+            result = self._dispatch_action(proposal, state, params)
+            executor.finish(result)
+            return result
+        except (lda.DockerActionSafetyStop, lge.EphemeralGitSafetyStop) as exc:
+            try:
+                executor.abort()
+            except (lda.DockerActionError, lge.EphemeralGitInfrastructureError) as cleanup_exc:
+                exc.add_note(f"action cleanup also failed: {cleanup_exc}")
+            self._stop_for_action_safety(proposal, state, exc)
+            raise AssertionError("unreachable")
+        except (lda.DockerActionError, lge.EphemeralGitInfrastructureError) as exc:
+            try:
+                executor.abort()
+            except (lda.DockerActionSafetyStop, lge.EphemeralGitSafetyStop) as safety_exc:
+                self._stop_for_action_safety(proposal, state, safety_exc)
+            except (lda.DockerActionError, lge.EphemeralGitInfrastructureError) as cleanup_exc:
+                exc.add_note(f"action cleanup also failed: {cleanup_exc}")
+            return self._docker_infrastructure_result(proposal, state, params, str(exc))
+        finally:
+            self._action_executor = previous_executor
+
+    def _dispatch_action(
+        self,
+        proposal: lc.ProposeResult,
+        state: lc.LoopState,
+        params: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Dispatch after the host/Docker executor boundary has been selected once."""
         action = proposal.action
         if action == lc.Action.RUN_MAKER.value:
             return self._run_maker(proposal, state, params)
@@ -933,6 +985,100 @@ class LoopDriver:
         if action == lc.Action.EXIT_FAILURE.value:
             return self._run_exit_failure(proposal, state, params)
         raise lc.ProtocolViolationError(f"unknown action: {action}")
+
+    def _docker_infrastructure_result(
+        self,
+        proposal: lc.ProposeResult,
+        state: lc.LoopState,
+        params: dict[str, Any],
+        reason: str,
+    ) -> dict[str, Any]:
+        """Normalize Docker/config failures without ever retrying on the host."""
+        print(f"loop_driver: isolated action infrastructure failure: {reason}", file=sys.stderr)
+        if proposal.action == lc.Action.RUN_MAKER.value:
+            maker_agent = self._resolve_maker_agent(state, params)
+            return {"maker": {"agent": maker_agent}, "infrastructure_failure": True}
+        if proposal.action in {
+            lc.Action.RUN_CHECKER.value,
+            lc.Action.WAIT_EXTERNAL_REVIEW.value,
+        }:
+            if proposal.action == lc.Action.WAIT_EXTERNAL_REVIEW.value:
+                return lc.phase_check_to_dict(
+                    lc.PhaseCheckResult(
+                        False,
+                        [],
+                        "docker_infrastructure_failure",
+                        True,
+                        metadata={"execution_backend": "docker"},
+                    )
+                )
+            reviewers = ["code-reviewer"]
+            mechanical = lc.CheckResult(
+                passed=False,
+                layer="mechanical",
+                signature="docker_infrastructure_failure",
+                findings=[],
+                raw_artifact_path="",
+                infrastructure_failure=True,
+            )
+            llm_review = lc.CheckResult(
+                passed=False,
+                layer="llm_review",
+                signature=lc.compute_llm_review_signature([]),
+                findings=[],
+                raw_artifact_path="",
+                infrastructure_failure=True,
+            )
+            combined = lc.combine_check_results(
+                [mechanical, llm_review],
+                lc.checker_pass_criteria(state, self.project_dir),
+                frozenset({"mechanical", "llm_review"}),
+            )
+            payload = lc.phase_check_to_dict(
+                lc.PhaseCheckResult(
+                    combined.passed,
+                    combined.results,
+                    combined.signature,
+                    combined.infrastructure_failure,
+                    metadata={"reviewers": reviewers},
+                )
+            )
+            if proposal.action == lc.Action.RUN_CHECKER.value:
+                lc.save_artifact(
+                    self.loop_id,
+                    self.project_dir,
+                    proposal.action_id,
+                    "check_result.json",
+                    json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                )
+            return payload
+        raise lc.InvalidStateError(f"invalid Docker isolation config: {reason}")
+
+    def _stop_for_action_safety(
+        self,
+        proposal: lc.ProposeResult,
+        state: lc.LoopState,
+        error: Any,
+    ) -> None:
+        """Persist Docker/ephemeral-Git safe stops using the existing journal-first path."""
+        stop_reason = str(error.stop_reason)
+        details = dict(getattr(error, "details", {}) or {})
+        lds.persist_safe_stop(
+            self.loop_id,
+            self.project_dir,
+            self.lease_token,
+            proposal.action_id,
+            stop_reason,
+            details,
+        )
+        self._notify(state, stop_reason)
+        stopped_state = lc.load_state(self.loop_id, self.project_dir)
+        self._maybe_comment(
+            stopped_state,
+            f"loop-harness: {self.loop_id} stopped safely ({stop_reason}).",
+        )
+        self._emit_loop_stop_audit(stopped_state, "stop", stop_reason)
+        raise DriverTerminated(stop_reason)
 
     # -- run_maker (push multi-layer defense lives here) --------------------------------------
 
@@ -1124,6 +1270,12 @@ class LoopDriver:
     def _run_child(
         self, cmd: list[str], cwd: str, timeout_seconds: float, env: dict[str, str]
     ) -> subprocess.CompletedProcess[str]:
+        """Run a Claude command through the executor selected once by `_dispatch`."""
+        return self._action_executor.execute_claude(cmd, cwd, timeout_seconds, env)
+
+    def _run_host_child(
+        self, cmd: list[str], cwd: str, timeout_seconds: float, env: dict[str, str]
+    ) -> subprocess.CompletedProcess[str]:
         """Run a claude -p child, tracking its pid for heartbeat-triggered kill-tree.
 
         `Popen()` and the pid registration are done under `self._child_lock` (code H3): this
@@ -1230,6 +1382,7 @@ class LoopDriver:
                 # that same fixed cap and collectively overshooting the wall-clock deadline by
                 # up to N times over.
                 remaining_budget=self._remaining_wall_clock_seconds,
+                command_runner=self._action_executor.mechanical_runner,
             )
         except _MechanicalLeaseLostError:
             # code G5: lease already lost; `self._lease_lost` is set, so `run()`'s dispatch
@@ -1733,7 +1886,7 @@ class LoopDriver:
         cmd = lds.build_claude_p_command(
             prompt,
             allowed_tools="",
-            add_dirs=[state.worktree_path],
+            add_dirs=[],
             claude_bin=self.claude_bin,
         )
         env = lds.maker_env(
@@ -1745,14 +1898,26 @@ class LoopDriver:
             self._remaining_wall_clock_seconds(), CHECKER_LLM_TIMEOUT_SECONDS
         )
         if timeout_seconds <= 0:
+            if isinstance(self._action_executor, lae.DockerActionExecutor):
+                raise lda.DockerActionError("isolated finding classifier budget is exhausted")
             return ""
         try:
             completed = self._run_child(cmd, state.worktree_path, timeout_seconds, env)
             if completed.returncode != 0:
                 raise ClaudeChildFailedError(f"claude -p exited {completed.returncode}")
             data = lds.parse_claude_p_json(completed.stdout)
-            return str(data.get("result", ""))
-        except (lds.ClaudePTimeoutError, ClaudeChildFailedError, ValueError, json.JSONDecodeError):
+            result = data.get("result")
+            if not isinstance(result, str) or not result.strip():
+                raise ValueError("claude -p classifier result is empty")
+            return result
+        except (
+            lds.ClaudePTimeoutError,
+            ClaudeChildFailedError,
+            ValueError,
+            json.JSONDecodeError,
+        ) as exc:
+            if isinstance(self._action_executor, lae.DockerActionExecutor):
+                raise lda.DockerActionError("isolated finding classifier failed") from exc
             return ""
 
     def _push_verified_branch(self, worktree_path: str, branch: str) -> None:

@@ -15,6 +15,7 @@ RUN apt-get update \
         jsonschema \
         pytest \
         pyyaml \
+        ruff==0.15.1 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /root/.cache
 

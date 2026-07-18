@@ -713,12 +713,15 @@ config で切替可能な追加バックエンドとして導入する（確定�
   `git_ref_cas_rejected`（CAS 競合）の 3 `stop_reason` として実装され、`EphemeralGitSafetyStop`
   経由で `loop_git_ephemeral.py` の各経路に対応するテストがある（`docs/evaluation/loop-harness.md`
   EV-118）。
-- 封じ込め検証テスト（cgroup 回収・network 遮断）の具体的な自動テスト形式（meta-harness の
-  スパイク手順を自動テスト化する方式を想定。`docs/design/meta-harness-scenario-backend-spikes.md`
-  を参考にする）
-- Docker Desktop/OrbStack のバインドマウントで、ファイル単位の ro overlay マウント（4.3.1 節
-  Fix-3 の `.git` ポインタ保護）が意図どおり機能することの実機検証（ディレクトリ単位のマウントは
-  meta-harness で実証済みだが、単一ファイルへの overlay は本設計で新規に導入するため個別に確認する）
+- ~~封じ込め検証テスト（cgroup 回収・network 遮断）の具体的な自動テスト形式~~ → **Phase 4
+  （Issue #211）で確定済み**: `packages/loop-harness/tests/test_loop_driver_docker_containment_e2e.py`
+  を `pytest.mark.docker` + `LOOP_HARNESS_RUN_DOCKER_GIT_E2E=1` の opt-in 実 Docker E2E とする。
+  opt-in 時に Docker が不在なら skip ではなく fail とし、cgroup 回収・network 隔離に加え、
+  loop-harness の production builder/cleanup が共有 primitive を正しく使うことと loop 固有の mount/
+  lifecycle 境界を検証する。meta-harness の S3 で実証済みの Docker 機構そのものは重複検証しない。
+- ~~Docker Desktop/OrbStack でのファイル単位 `.git` ro overlay の実機検証~~ → **Phase 4 の上記
+  containment E2E に統合して解消済み**: worktree mount 後に同一宛先へ重ねた pinned `.git`
+  単一ファイルが実コンテナ内で読み取り専用となることを、mount 順序を含めて検証する。
 - ~~[未修正。2026-07-18 発見（PR #256 レビュー3巡目の回帰テスト作成中に判明。Critical 疑い）]
   `_verify_worktree_matches_trusted_tree` の `git status --porcelain` staged 列（index vs
   `HEAD`）が primary worktree の `HEAD` に誤って反応し、`main` が独立して進むだけで
@@ -736,11 +739,10 @@ config で切替可能な追加バックエンドとして導入する（確定�
   `test_prepare_commit_finalize_succeeds_when_primary_worktree_head_diverges_mid_action`
   （`packages/loop-harness/tests/test_loop_git_ephemeral.py`）。詳細は `_verify_worktree_matches_trusted_tree`
   の docstring（`packages/loop-harness/lib/loop_git_ephemeral_support.py`）を参照。
-- [Phase 3 コードレビュー指摘、Low、Phase 4 で対応予定] `prepare_ephemeral_git` は Maker/Checker
-  いずれの ephemeral GIT_DIR にも commit identity を一律 `user.name=loop-harness-maker` /
-  `user.email=loop-harness-maker@invalid` で seed しており、Checker 側にも同じ Maker 由来の識別子
-  が残る非対称がある（Checker は commit しないため実害はないが命名として紛らわしい）。また
-  `_validate_common_objects_mount_source` の symlink/非ディレクトリ拒否は Checker の mount spec 構築
-  （`build_checker_git_mount_spec`）でのみ呼ばれ、Maker 側（`build_maker_git_mount_spec`）には対称な
-  再検証が無い。Phase 4 で Docker backend を実装する際、Maker 側にも同じ mount-source 再検証を追加し、
-  Checker 専用の commit identity 命名を分離するかどうかを合わせて確定する。
+- ~~[Phase 3 コードレビュー指摘、Low] Maker 側の shared objects mount-source 再検証~~ → **Phase 4
+  で解消済み**: `build_maker_git_mount_spec` は冒頭で
+  `_validate_common_objects_mount_source()` を呼び、symlink/非ディレクトリを拒否した検証済み
+  `common_objects` を mount source に使う。Maker/Checker とも spec はキャッシュせず mount 直前に
+  再構築する。
+- **commit identity の Maker/Checker role 分離は Phase 4 で明示的に不採用**: Checker は commit
+  しないため現状の合成 identity に実害がなく、role 引数追加による API・テスト範囲の拡大に見合わない。

@@ -41,6 +41,7 @@ def test_scenario_dockerfile_is_dedicated_digest_pinned_and_non_root() -> None:
 
     assert dockerfile.splitlines()[0].startswith("FROM node:22.17.0-bookworm-slim@sha256:")
     assert "ARG CLAUDE_CODE_VERSION=2.1.207" in dockerfile
+    assert "ruff==0.15.1" in dockerfile
     assert "USER 65532:65532" in dockerfile
 
 
@@ -74,6 +75,38 @@ def test_wrapper_injects_loop_namespace_and_main_root_paths(
     assert recipe.docker_label == "ai.orchestra.loop-harness"
     assert policy.manifest_path == tmp_path / ".claude/loop/docker-image-cache.json"
     assert policy.lock_path == tmp_path / ".claude/loop/docker-image-build.lock"
+
+
+def test_broker_wrapper_uses_shared_runtime_context_and_cache_namespace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def ensure(recipe, policy, **kwargs):
+        captured.update(recipe=recipe, policy=policy, kwargs=kwargs)
+        return docker_image.EnsuredImage("sha256:" + "a" * 64, "managed:tag", "b" * 64, True)
+
+    monkeypatch.setattr(docker_image.runtime_image, "ensure_recipe_image", ensure)
+    config = {
+        "lp2": {
+            "isolation": {
+                "broker": {"image": "registry.example/team/broker:configured"},
+                "image_cache": {},
+            }
+        }
+    }
+
+    docker_image.ensure_broker_image(config, tmp_path)
+
+    recipe = captured["recipe"]
+    policy = captured["policy"]
+    assert recipe.family == "broker"
+    assert recipe.repository == "registry.example/team/broker"
+    assert recipe.context_dir == REPO_ROOT / "packages/docker-runtime/docker/broker"
+    assert recipe.docker_label == "ai.orchestra.loop-harness"
+    assert policy.manifest_path == tmp_path / ".claude/loop/docker-image-cache.json"
+    assert captured["kwargs"]["immutable_image"] == "registry.example/team/broker:configured"
 
 
 @pytest.mark.parametrize(

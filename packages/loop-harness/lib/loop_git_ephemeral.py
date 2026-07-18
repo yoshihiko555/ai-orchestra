@@ -51,6 +51,12 @@ from loop_git_ephemeral_support import (  # noqa: E402
     _verify_git_pointer,
     _verify_worktree_matches_trusted_tree,
 )
+from loop_local_override_guard import (  # noqa: E402
+    LocalOverrideSnapshot,
+    LocalOverrideSnapshotError,
+    changed_local_override_paths,
+    snapshot_local_overrides,
+)
 
 __all__ = [
     "BindMountSpec",
@@ -63,6 +69,7 @@ __all__ = [
     "prepare_ephemeral_git",
     "build_checker_git_mount_spec",
     "build_maker_git_mount_spec",
+    "verify_failed_maker_worktree",
     "finalize_ephemeral_git",
     "cleanup_ephemeral_git",
 ]
@@ -114,6 +121,7 @@ class EphemeralGitSession:
     branch_ref: str
     import_ref: str
     baseline_sha: str
+    local_override_snapshot: tuple[LocalOverrideSnapshot, ...]
 
 
 @dataclass(frozen=True)
@@ -238,6 +246,7 @@ def _prepare_ephemeral_git(
             details={"runtime_dir": str(runtime_dir)},
         ) from exc
     _validate_runtime_location(project, worktree, runtime_dir)
+    local_override_snapshot = _snapshot_local_overrides_or_raise(worktree)
 
     session = EphemeralGitSession(
         project_dir=project,
@@ -250,6 +259,7 @@ def _prepare_ephemeral_git(
         branch_ref=branch_ref,
         import_ref=import_ref,
         baseline_sha=baseline_sha,
+        local_override_snapshot=local_override_snapshot,
     )
 
     try:
@@ -306,6 +316,17 @@ def _prepare_ephemeral_git(
             runner=runner,
             operation="seed ephemeral git user email",
         )
+        _run_git(
+            [
+                "--git-dir",
+                ephemeral_dir,
+                "config",
+                "safe.directory",
+                str(worktree),
+            ],
+            runner=runner,
+            operation="seed the trusted container worktree path",
+        )
 
         git_config = ephemeral_dir / "config"
         if git_config.is_symlink() or not git_config.is_file():
@@ -345,6 +366,7 @@ def _prepare_ephemeral_git(
             )
         pinned_git_pointer.write_bytes(git_pointer.read_bytes())
         pinned_git_pointer.chmod(0o444)
+        _verify_local_override_snapshot(session, safety_stop=False)
         return session
     except (EphemeralGitInfrastructureError, EphemeralGitSafetyStop):
         _delete_import_ref_best_effort(session, runner=runner)
@@ -370,6 +392,7 @@ def build_maker_git_mount_spec(session: EphemeralGitSession) -> MakerGitMountSpe
     this ordering when translating `mounts` into `-v`/bind-mount flags; reordering (e.g. sorting
     mounts by path) would silently drop the `.git` write protection.
     """
+    common_objects = _validate_common_objects_mount_source(session)
     return MakerGitMountSpec(
         mounts=(
             BindMountSpec(session.worktree_path, session.worktree_path, False),
@@ -380,8 +403,8 @@ def build_maker_git_mount_spec(session: EphemeralGitSession) -> MakerGitMountSpe
             ),
             BindMountSpec(session.ephemeral_dir, session.ephemeral_dir, False),
             BindMountSpec(
-                session.common_dir / "objects",
-                session.common_dir / "objects",
+                common_objects,
+                common_objects,
                 True,
             ),
         ),
@@ -464,6 +487,31 @@ def build_checker_git_mount_spec(
     )
 
 
+def verify_failed_maker_worktree(
+    session: EphemeralGitSession,
+    *,
+    runner: GitRunner = subprocess.run,
+) -> None:
+    """Safe-stop when a failed Maker left worktree changes; never reset or clean them."""
+    _verify_local_override_snapshot(session, safety_stop=True)
+    try:
+        _verify_worktree_matches_trusted_tree(
+            git_dir=session.common_dir,
+            worktree_path=session.worktree_path,
+            target_sha=session.baseline_sha,
+            temp_index_dir=session.runtime_dir,
+            runner=runner,
+        )
+    except EphemeralGitInfrastructureError as exc:
+        if str(exc) != "worktree status is dirty relative to the trusted target tree":
+            raise
+        raise EphemeralGitSafetyStop(
+            "maker_partial_worktree",
+            "failed Maker left uncommitted worktree changes",
+            details=exc.details,
+        ) from exc
+
+
 def finalize_ephemeral_git(
     session: EphemeralGitSession,
     *,
@@ -519,6 +567,7 @@ def _finalize_ephemeral_git(
     *,
     runner: GitRunner,
 ) -> EphemeralGitFinalizeResult:
+    _verify_local_override_snapshot(session, safety_stop=True)
     _harden_ephemeral_git_metadata(session)
     new_sha_result = _run_git(
         ["--git-dir", session.ephemeral_dir, "rev-parse", "--verify", session.branch_ref],
@@ -664,6 +713,37 @@ def _finalize_ephemeral_git(
         status="updated",
         baseline_sha=session.baseline_sha,
         new_sha=imported_sha,
+    )
+
+
+def _snapshot_local_overrides_or_raise(
+    worktree_path: Path,
+) -> tuple[LocalOverrideSnapshot, ...]:
+    try:
+        return snapshot_local_overrides(worktree_path)
+    except LocalOverrideSnapshotError as exc:
+        raise EphemeralGitInfrastructureError(str(exc)) from exc
+
+
+def _verify_local_override_snapshot(
+    session: EphemeralGitSession,
+    *,
+    safety_stop: bool,
+) -> None:
+    actual = _snapshot_local_overrides_or_raise(session.worktree_path)
+    if actual == session.local_override_snapshot:
+        return
+    changed_paths = changed_local_override_paths(session.local_override_snapshot, actual)
+    details = {"changed_local_overrides": changed_paths}
+    if safety_stop:
+        raise EphemeralGitSafetyStop(
+            "maker_partial_worktree",
+            "Maker changed project-local configuration overrides",
+            details=details,
+        )
+    raise EphemeralGitInfrastructureError(
+        "project-local configuration overrides changed while preparing ephemeral git",
+        details=details,
     )
 
 

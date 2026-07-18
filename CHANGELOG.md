@@ -28,6 +28,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`loop-harness`: LP-2 の Docker 隔離実行を追加**: `isolation.execution_backend: docker` を明示した場合のみ Maker / Checker / 外部レビュー分類を hardened container と OAuth broker で実行する。既定値は引き続き `none` とし、Docker・broker・mount・container の障害時は host 実行へ降格せず fail-closed する。
+
 - **meta-harness routing-config target**: human-registered candidates can now patch `agent-routing/cli-tools.yaml` keys (`agents.*.tool`, `codex.model`, `antigravity.model`) through the evaluation/promotion pipeline. Proposer candidates remain facets-only.
 
 - **`loop-harness`: Maker commit 書き戻しの安全停止理由を追加**: 一時 ref への import 失敗、非 fast-forward、CAS 競合を `git_ref_import_failed` / `git_ref_not_fast_forward` / `git_ref_cas_rejected` として区別できるようにした。

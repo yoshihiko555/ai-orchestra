@@ -236,6 +236,9 @@ def test_prepare_ephemeral_git_initializes_trusted_maker_repository(
         _git("config", "user.email", env=_ephemeral_env(session)).stdout.strip()
         == "loop-harness-maker@invalid"
     )
+    assert _git("config", "safe.directory", env=_ephemeral_env(session)).stdout.strip() == str(
+        linked_worktree.worktree_path
+    )
     assert (
         Path(session.ephemeral_dir, "objects/info/alternates").read_text(encoding="utf-8")
         == f"{session.common_dir}/objects\n"
@@ -417,6 +420,92 @@ def test_build_maker_git_mount_spec_preserves_overlay_order_and_one_to_one_paths
     ]
     assert spec.env["GIT_DIR"] == str(session.ephemeral_dir)
     assert spec.env["GIT_WORK_TREE"] == str(session.worktree_path)
+    git_ephemeral.cleanup_ephemeral_git(session)
+
+
+def test_maker_mount_uses_validated_shared_objects_source(
+    linked_worktree: GitFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _prepare(linked_worktree)
+    validated_objects = linked_worktree.project_dir / "validated-common-objects"
+    monkeypatch.setattr(
+        git_ephemeral,
+        "_validate_common_objects_mount_source",
+        lambda candidate: validated_objects,
+    )
+
+    spec = git_ephemeral.build_maker_git_mount_spec(session)
+
+    assert Path(spec.mounts[-1].source) == validated_objects
+    assert Path(spec.mounts[-1].target) == validated_objects
+    git_ephemeral.cleanup_ephemeral_git(session)
+
+
+def test_maker_mount_rejects_symlinked_shared_objects_source(
+    linked_worktree: GitFixture,
+) -> None:
+    session = _prepare(linked_worktree)
+    common_objects = Path(session.common_dir, "objects")
+    trusted_objects = Path(session.common_dir, "objects-before-maker-test")
+    common_objects.rename(trusted_objects)
+    common_objects.symlink_to(session.common_dir, target_is_directory=True)
+
+    try:
+        with pytest.raises(
+            git_ephemeral.EphemeralGitInfrastructureError, match="trusted directory"
+        ):
+            git_ephemeral.build_maker_git_mount_spec(session)
+    finally:
+        common_objects.unlink()
+        trusted_objects.rename(common_objects)
+
+    git_ephemeral.cleanup_ephemeral_git(session)
+
+
+def test_maker_mount_rejects_non_directory_shared_objects_source(
+    linked_worktree: GitFixture,
+) -> None:
+    session = _prepare(linked_worktree)
+    common_objects = Path(session.common_dir, "objects")
+    trusted_objects = Path(session.common_dir, "objects-before-maker-test")
+    common_objects.rename(trusted_objects)
+    common_objects.write_text("not a directory\n", encoding="utf-8")
+
+    try:
+        with pytest.raises(
+            git_ephemeral.EphemeralGitInfrastructureError, match="trusted directory"
+        ):
+            git_ephemeral.build_maker_git_mount_spec(session)
+    finally:
+        common_objects.unlink()
+        trusted_objects.rename(common_objects)
+
+    git_ephemeral.cleanup_ephemeral_git(session)
+
+
+def test_verify_failed_maker_worktree_safe_stops_without_resetting_partial_changes(
+    linked_worktree: GitFixture,
+) -> None:
+    session = _prepare(linked_worktree)
+    changed = linked_worktree.worktree_path / "tracked.txt"
+    changed.write_text("partial Maker output\n", encoding="utf-8")
+
+    with pytest.raises(git_ephemeral.EphemeralGitSafetyStop) as caught:
+        git_ephemeral.verify_failed_maker_worktree(session)
+
+    assert caught.value.stop_reason == "maker_partial_worktree"
+    assert changed.read_text(encoding="utf-8") == "partial Maker output\n"
+    git_ephemeral.cleanup_ephemeral_git(session)
+
+
+def test_verify_failed_maker_worktree_accepts_clean_baseline(
+    linked_worktree: GitFixture,
+) -> None:
+    session = _prepare(linked_worktree)
+
+    git_ephemeral.verify_failed_maker_worktree(session)
+
     git_ephemeral.cleanup_ephemeral_git(session)
 
 
@@ -1507,6 +1596,101 @@ def test_prepare_and_finalize_ignore_untracked_config_local_override_files(
         _git("status", "--porcelain", cwd=Path(session.worktree_path)).stdout
         == "?? .claude/config/cli-tools.local.yaml\n"
     )
+    git_ephemeral.cleanup_ephemeral_git(session)
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        "modify",
+        "delete",
+        "add",
+        "mode",
+        "config_mode",
+        "claude_mode",
+        "worktree_mode",
+        "hardlink",
+    ],
+)
+def test_failed_maker_local_override_drift_safe_stops_without_reverting(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    fixture = _linked_worktree_with_tracked_config(tmp_path)
+    config_dir = fixture.worktree_path / ".claude" / "config"
+    existing = config_dir / "cli-tools.local.yaml"
+    existing.write_text("codex:\n  model: trusted\n", encoding="utf-8")
+    existing.chmod(0o600)
+    claude_dir = config_dir.parent
+    claude_dir.chmod(0o700)
+    fixture.worktree_path.chmod(0o700)
+    session = _prepare(fixture)
+
+    if operation == "modify":
+        existing.write_text("codex:\n  model: changed\n", encoding="utf-8")
+    elif operation == "delete":
+        existing.unlink()
+    else:
+        if operation == "add":
+            (config_dir / "added.local.json").write_text('{"changed":true}\n', encoding="utf-8")
+        elif operation == "mode":
+            existing.chmod(0o777)
+        elif operation == "config_mode":
+            config_dir.chmod(0o777)
+        elif operation == "claude_mode":
+            claude_dir.chmod(0o755)
+        elif operation == "worktree_mode":
+            fixture.worktree_path.chmod(0o755)
+        else:
+            replacement = tmp_path / "same-content-hardlink-source"
+            replacement.write_bytes(existing.read_bytes())
+            existing.unlink()
+            os.link(replacement, existing)
+
+    with pytest.raises(
+        git_ephemeral.EphemeralGitSafetyStop,
+        match="project-local configuration overrides",
+    ) as caught:
+        git_ephemeral.verify_failed_maker_worktree(session)
+
+    assert caught.value.stop_reason == "maker_partial_worktree"
+    assert _shared_ref(session) == session.baseline_sha
+    if operation == "modify":
+        assert existing.read_text(encoding="utf-8") == "codex:\n  model: changed\n"
+    elif operation == "delete":
+        assert not existing.exists()
+    elif operation == "add":
+        assert (config_dir / "added.local.json").is_file()
+    elif operation == "mode":
+        assert existing.stat().st_mode & 0o777 == 0o777
+    elif operation == "config_mode":
+        assert config_dir.stat().st_mode & 0o777 == 0o777
+    elif operation == "claude_mode":
+        assert claude_dir.stat().st_mode & 0o777 == 0o755
+    elif operation == "worktree_mode":
+        assert fixture.worktree_path.stat().st_mode & 0o777 == 0o755
+    else:
+        assert existing.stat().st_nlink == 2
+    git_ephemeral.cleanup_ephemeral_git(session)
+
+
+def test_finalize_rejects_local_override_change_before_shared_ref_update(tmp_path: Path) -> None:
+    fixture = _linked_worktree_with_tracked_config(tmp_path)
+    override = fixture.worktree_path / ".claude" / "config" / "cli-tools.local.yaml"
+    override.write_text("codex:\n  model: trusted\n", encoding="utf-8")
+    session = _prepare(fixture)
+    _maker_commit(session)
+    override.write_text("codex:\n  model: changed\n", encoding="utf-8")
+
+    with pytest.raises(
+        git_ephemeral.EphemeralGitSafetyStop,
+        match="project-local configuration overrides",
+    ) as caught:
+        git_ephemeral.finalize_ephemeral_git(session)
+
+    assert caught.value.stop_reason == "maker_partial_worktree"
+    assert _shared_ref(session) == session.baseline_sha
+    assert override.read_text(encoding="utf-8") == "codex:\n  model: changed\n"
     git_ephemeral.cleanup_ephemeral_git(session)
 
 

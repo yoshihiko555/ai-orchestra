@@ -1,27 +1,19 @@
-"""Claude OAuth credential preflight tests (EV-47)."""
+"""Shared Docker runtime OAuth credential loader tests."""
 
 from __future__ import annotations
 
 import json
 import subprocess
-import sys
 import time
 
 import pytest
 
 from tests.module_loader import load_module
 
-creds = load_module(
-    "meta_harness_claude_credentials_tests",
-    "packages/meta-harness/lib/claude_credentials.py",
+credentials = load_module(
+    "docker_runtime_credentials_tests",
+    "packages/docker-runtime/lib/docker_runtime_credentials.py",
 )
-
-
-def test_compatibility_wrapper_reexports_shared_runtime_types() -> None:
-    runtime_credentials = sys.modules["docker_runtime_credentials"]
-
-    assert creds.ClaudeCredentialError is runtime_credentials.ClaudeCredentialError
-    assert creds.ClaudeOAuthCredential is runtime_credentials.ClaudeOAuthCredential
 
 
 def _completed(stdout: str, returncode: int = 0) -> subprocess.CompletedProcess:
@@ -34,8 +26,8 @@ def _payload(*, expires_at: float, token: str = "oauth-token") -> str:
     )
 
 
-def test_keychain_token_passes_only_through_completed_stdout(monkeypatch) -> None:
-    monkeypatch.setattr(creds.platform, "system", lambda: "Darwin")
+def test_keychain_token_is_loaded_without_argv_or_environment_exposure(monkeypatch) -> None:
+    monkeypatch.setattr(credentials.platform, "system", lambda: "Darwin")
     captured: dict = {}
 
     def runner(command, **kwargs):
@@ -43,7 +35,10 @@ def test_keychain_token_passes_only_through_completed_stdout(monkeypatch) -> Non
         captured["kwargs"] = kwargs
         return _completed(_payload(expires_at=time.time() + 3600, token="real-oauth-token"))
 
-    credential = creds.load_claude_oauth_credential(minimum_ttl_seconds=600, runner=runner)
+    credential = credentials.load_claude_oauth_credential(
+        minimum_ttl_seconds=600,
+        runner=runner,
+    )
 
     assert credential.access_token == "real-oauth-token"
     assert "real-oauth-token" not in " ".join(captured["command"])
@@ -52,11 +47,11 @@ def test_keychain_token_passes_only_through_completed_stdout(monkeypatch) -> Non
 
 
 def test_expiring_token_fails_closed_without_echoing_token(monkeypatch) -> None:
-    monkeypatch.setattr(creds.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(credentials.platform, "system", lambda: "Darwin")
     token = "must-never-appear-in-error"
 
-    with pytest.raises(creds.ClaudeCredentialError, match="expires too soon") as exc_info:
-        creds.load_claude_oauth_credential(
+    with pytest.raises(credentials.ClaudeCredentialError, match="expires too soon") as exc_info:
+        credentials.load_claude_oauth_credential(
             minimum_ttl_seconds=600,
             runner=lambda *_args, **_kwargs: _completed(
                 _payload(expires_at=time.time() + 30, token=token)
@@ -67,10 +62,10 @@ def test_expiring_token_fails_closed_without_echoing_token(monkeypatch) -> None:
 
 
 def test_non_macos_fails_closed_before_invoking_runner(monkeypatch) -> None:
-    monkeypatch.setattr(creds.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(credentials.platform, "system", lambda: "Linux")
 
-    with pytest.raises(creds.ClaudeCredentialError, match="macOS Keychain"):
-        creds.load_claude_oauth_credential(
+    with pytest.raises(credentials.ClaudeCredentialError, match="macOS Keychain"):
+        credentials.load_claude_oauth_credential(
             minimum_ttl_seconds=1,
             runner=lambda *_args, **_kwargs: pytest.fail("runner must not be called"),
         )
@@ -78,10 +73,12 @@ def test_non_macos_fails_closed_before_invoking_runner(monkeypatch) -> None:
 
 @pytest.mark.parametrize("payload", ["not-json", "{}", '{"claudeAiOauth": {}}'])
 def test_malformed_keychain_payload_fails_closed(payload: str) -> None:
-    with pytest.raises(creds.ClaudeCredentialError):
-        creds._parse_keychain_payload(payload)
+    with pytest.raises(credentials.ClaudeCredentialError):
+        credentials._parse_keychain_payload(payload)
 
 
 def test_invalid_timeout_config_fails_ttl_preflight_closed() -> None:
-    with pytest.raises(creds.ClaudeCredentialError, match="must be integers"):
-        creds.minimum_broker_token_ttl_seconds({"evaluate": {"timeout_ms_default": "invalid"}})
+    with pytest.raises(credentials.ClaudeCredentialError, match="must be integers"):
+        credentials.minimum_broker_token_ttl_seconds(
+            {"evaluate": {"timeout_ms_default": "invalid"}}
+        )
