@@ -37,12 +37,32 @@ def _local_override_leaf_paths(worktree_path: Path) -> frozenset[Path]:
 
     Used by `align_mount_ownership()`'s `exclude` to keep these leaf entries at their original
     owner even under a root-run driver; see the round 4 comment at that call site.
+
+    Codex review, PR #262, Critical (round 5): a `.local.yaml`/`.local.json` entry that is itself
+    a symlink only contributes its own link path here by default. `align_mount_ownership()`
+    reaches a symlink's resolved target through the target's own real path while walking the
+    worktree (not through the symlink), so a root-owned, stricter-than-usual-permission target
+    file that merely happens to live elsewhere inside the same worktree would still get
+    re-chowned to the non-root container identity even though the symlink path is excluded --
+    handing the untrusted Maker container read access the original permissions intentionally
+    withheld. Also excluding the symlink's resolved target -- but only when that target resolves
+    to somewhere inside this worktree, since anything outside it is never reached by
+    `align_mount_ownership()`'s own `rglob()` over `worktree_path` in the first place -- closes
+    that gap without excluding unrelated files.
     """
-    return frozenset(
-        worktree_path / entry.path
-        for entry in local_override_guard.snapshot_local_overrides(worktree_path)
-        if entry.kind != "directory"
-    )
+    worktree_root = worktree_path.resolve()
+    leaves: set[Path] = set()
+    for entry in local_override_guard.snapshot_local_overrides(worktree_path):
+        if entry.kind == "directory":
+            continue
+        leaf = worktree_path / entry.path
+        leaves.add(leaf)
+        if entry.kind != "symlink":
+            continue
+        resolved = leaf.resolve(strict=False)
+        if resolved != leaf and resolved.is_relative_to(worktree_root):
+            leaves.add(resolved)
+    return frozenset(leaves)
 
 
 ActionKind = Literal["maker", "checker", "classifier"]
@@ -141,6 +161,14 @@ class DockerActionRuntime:
         self._finished = False
         self._cancel_requested = threading.Event()
         self._lifecycle_lock = threading.RLock()
+        # Codex review, PR #262, High (round 5): set once a mechanical command times out (see
+        # `execute_mechanical()`). `_execute()` has already destroyed the scenario container by
+        # then (fail-closed), but the default checker runs several mechanical commands in
+        # sequence (e.g. `pytest -q` then `ruff check .`); without this latch, the next command
+        # would still call `_ensure_started()`/`_execute()` against the now-removed container,
+        # turning an ordinary, already-preserved `(output, 124)` timeout result into an opaque
+        # Docker infrastructure failure that discards it.
+        self._mechanical_unusable = False
 
     @property
     def started(self) -> bool:
@@ -175,6 +203,16 @@ class DockerActionRuntime:
         env: Mapping[str, str] | None = None,
     ) -> tuple[str, int]:
         self._ensure_started()
+        if self._mechanical_unusable:
+            # Codex review, PR #262, High (round 5): an earlier mechanical command in this same
+            # action already timed out and destroyed the scenario container (see below). The
+            # default checker runs several mechanical commands in sequence, so without this
+            # short-circuit the next command would still attempt a `docker exec` against the
+            # already-removed container and turn into an opaque Docker infrastructure failure
+            # instead of the ordinary skip-shaped timeout result `run_mechanical_checks()`'s own
+            # `remaining_budget` exhaustion path already produces for the same "nothing left to
+            # run safely" situation.
+            return "\ncommand skipped: isolated runtime unusable after an earlier timeout", 124
         try:
             completed = self._execute(
                 ["/bin/bash", "-lc", command],
@@ -194,6 +232,7 @@ class DockerActionRuntime:
             # same as the host executor's `_run_mechanical_command`, not an opaque Docker
             # infrastructure failure that discards this command's output and the sealed result
             # entirely.
+            self._mechanical_unusable = True
             output = f"{timeout_error.stdout}{timeout_error.stderr}\ncommand timed out"
             return output, 124
         output = completed.stdout
@@ -265,6 +304,15 @@ class DockerActionRuntime:
         self._raise_if_cancelled()
         if not runtime_cli.docker_daemon_available(runner=self.runner):
             raise DockerActionError("Docker daemon unavailable")
+        # Codex review, PR #262, High (round 5): fail fast, before any Docker setup work runs,
+        # when the wall-clock budget is already exhausted -- rather than only discovering that
+        # after `ensure_scenario_image()` below has already run. This narrows, but does not
+        # fully close, the round-5 gap: capping `ensure_scenario_image()`/`ensure_broker_image()`
+        # 's own build/pull work to the *remaining* budget when it is small-but-nonzero would
+        # need a new timeout knob threaded through `docker_runtime_image.ensure_recipe_image()`
+        # (a shared docker-runtime primitive with none today); left as a documented residual
+        # risk rather than a same-diff architectural change.
+        _max_lifetime_seconds(self.request.remaining_wall_clock_seconds())
         broker_runtime.sweep_stale_resources(self.owner_id, runner=self.runner)
         scenario_image = docker_image.ensure_scenario_image(
             self.request.config, self.request.project_dir, runner=self.runner

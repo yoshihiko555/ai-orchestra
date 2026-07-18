@@ -1891,7 +1891,23 @@ class LoopDriver:
             # union, regardless of classification status) — otherwise a finding still needing
             # classification would never be revisited.
             state = lc.load_state(self.loop_id, self.project_dir)
-            drained = self._classify_pending_findings(state, action_id, drained, config)
+            try:
+                drained = self._classify_pending_findings(state, action_id, drained, config)
+            except lda.DockerActionError:
+                # Codex review, PR #262, High (round 5): confirm_review_findings_reported()
+                # above already durably marked this batch's explicit-severity comments as
+                # processed, exactly like `_run_wait_external_review`'s matching classifier
+                # call. Without this fallback, a classifier Docker failure here would propagate
+                # past this method (this caller, unlike that one, had no try/except of its own)
+                # into `_dispatch`'s DockerActionError handler, which returns
+                # `_docker_infrastructure_result()`'s *empty* PhaseCheckResult for
+                # wait_external_review -- discarding these already-confirmed drained findings
+                # outright, exactly the bug that call's own comment describes. Falling back to
+                # the pre-classification `drained` is safe for the same reason: every
+                # `needs_classification` finding already carries `classify_severity()`'s
+                # fail-safe "high" (blocking) placeholder until actually classified, so this
+                # never under-reports.
+                pass
         # code H4 / issue #213+#228 review: only a *blocking* (critical/high) finding drained
         # against the old baseline must be surfaced immediately, not silently swallowed by
         # rebaselining/pushing past it. A non-blocking (medium/low) drain result must not

@@ -368,6 +368,69 @@ def test_maker_worktree_chown_excludes_local_override_leaf_files(
     assert worktree_chown[1] == frozenset({override_file})
 
 
+def test_maker_worktree_chown_excludes_symlinked_local_override_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex review, PR #262, Critical (round 5): a symlinked local override's resolved,
+    in-worktree target must also be excluded from the recursive chown, not just the symlink's
+    own path -- ``align_mount_ownership()`` reaches that target through its own real path while
+    walking the worktree, not through the symlink, so excluding only the link path would still
+    let a root-owned, stricter-than-usual-permission target gain the non-root container identity.
+    """
+    worktree = tmp_path / "worktree"
+    override_dir = worktree / ".claude" / "config" / "agent-routing"
+    override_dir.mkdir(parents=True)
+    real_target_dir = worktree / "secrets"
+    real_target_dir.mkdir()
+    real_target = real_target_dir / "cli-tools-real.local.yaml"
+    real_target.write_text("secret: value\n", encoding="utf-8")
+    override_link = override_dir / "cli-tools.local.yaml"
+    (override_link).symlink_to(real_target)
+
+    session = SimpleNamespace(
+        runtime_dir=tmp_path / "runtime", ephemeral_dir=tmp_path / "runtime" / "git-ephemeral"
+    )
+    mount_spec = SimpleNamespace(mounts=(), env={"GIT_DIR": "/git", "GIT_WORK_TREE": "/work"})
+    chown_calls: list[tuple[Path, frozenset[Path] | None]] = []
+
+    def chown(path: Path, *, exclude: frozenset[Path] | None = None) -> None:
+        chown_calls.append((path, exclude))
+
+    monkeypatch.setattr(docker_action.profile.runtime, "align_mount_ownership", chown)
+    monkeypatch.setattr(
+        docker_action.git_ephemeral, "prepare_ephemeral_git", lambda **_kwargs: session
+    )
+    monkeypatch.setattr(
+        docker_action.docker_settings,
+        "create_settings_bundle",
+        lambda *_args: docker_settings.DockerSettingsBundle(tmp_path / "trusted"),
+    )
+    monkeypatch.setattr(
+        docker_action.git_ephemeral, "build_maker_git_mount_spec", lambda *_args: mount_spec
+    )
+
+    request = docker_action.DockerActionRequest(
+        config=_config(),
+        isolation=docker_config.validate_isolation_config(_config()),
+        project_dir=tmp_path,
+        loop_id="loop-211",
+        action_id="action-001",
+        worktree_path=worktree,
+        branch="issue-211",
+        kind="maker",
+        remaining_wall_clock_seconds=lambda: 600,
+    )
+    runtime = docker_action.DockerActionRuntime(
+        request,
+        host_child_runner=lambda *_args: subprocess.CompletedProcess([], 0, "", ""),
+    )
+    runtime._prepare_mounts()
+
+    worktree_chown = next(call for call in chown_calls if call[0] == worktree)
+    assert worktree_chown[1] == frozenset({override_link, real_target})
+
+
 def test_maker_lifecycle_uses_production_primitives_in_required_order(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -517,6 +580,56 @@ def test_maker_lifecycle_uses_production_primitives_in_required_order(
         "settings_cleanup",
         "git_cleanup",
     ]
+
+
+def test_start_fails_before_any_docker_setup_when_budget_already_exhausted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex review, PR #262, High (round 5): fail fast on an already-exhausted wall-clock
+    budget before any Docker setup work (daemon sweep, scenario image ensure) runs, instead of
+    only discovering the exhausted budget after `ensure_scenario_image()` has already run.
+    """
+    events: list[str] = []
+    monkeypatch.setattr(
+        docker_action.runtime_cli,
+        "docker_daemon_available",
+        lambda **_kwargs: events.append("daemon") or True,
+    )
+    monkeypatch.setattr(
+        docker_action.broker_runtime,
+        "sweep_stale_resources",
+        lambda *_args, **_kwargs: events.append("stale_sweep"),
+    )
+    monkeypatch.setattr(
+        docker_action.docker_image,
+        "ensure_scenario_image",
+        lambda *_args, **_kwargs: events.append("scenario_image") or SimpleNamespace(),
+    )
+
+    config = _config()
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    request = docker_action.DockerActionRequest(
+        config=config,
+        isolation=docker_config.validate_isolation_config(config),
+        project_dir=tmp_path,
+        loop_id="loop-211",
+        action_id="action-001",
+        worktree_path=worktree,
+        branch="issue-211",
+        kind="maker",
+        remaining_wall_clock_seconds=lambda: 0,
+    )
+    runtime = docker_action.DockerActionRuntime(
+        request,
+        host_child_runner=lambda *_args: subprocess.CompletedProcess([], 0, "", ""),
+    )
+
+    with pytest.raises(docker_action.DockerActionError, match="wall-clock budget is exhausted"):
+        runtime._ensure_started()
+
+    assert events == ["daemon"]
 
 
 def test_mechanical_only_checker_skips_broker_and_uses_isolated_network(
@@ -754,6 +867,45 @@ def test_execute_mechanical_normalizes_claude_p_timeout_to_exit_124(
     assert output == "partial outputpartial error\ncommand timed out"
     assert removed == ["lh-action"]
     assert runtime._scenario_removed is True
+
+
+def test_mechanical_timeout_skips_subsequent_commands_instead_of_docker_exec(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex review, PR #262, High (round 5): a mechanical timeout must make the runtime refuse
+    further `docker exec` attempts, not just this one command.
+
+    The default checker runs several mechanical commands in sequence (e.g. `pytest -q` then
+    `ruff check .`). Once the first command times out, `_execute()` has already destroyed the
+    scenario container; a second call must not try `docker exec` against that removed container
+    (which would surface as an opaque Docker infrastructure failure and discard the preserved
+    timeout result), it must short-circuit to another `(output, 124)`-shaped result instead.
+    """
+    calls = {"host_child": 0}
+
+    def timed_out(*_args: Any) -> subprocess.CompletedProcess[str]:
+        calls["host_child"] += 1
+        raise docker_action.driver_support.ClaudePTimeoutError(
+            "claude -p timed out after 30s", stdout="partial output", stderr=""
+        )
+
+    monkeypatch.setattr(docker_action.runtime_cli, "remove_container", lambda *_a, **_k: True)
+    runtime = docker_action.DockerActionRuntime(
+        _request(tmp_path, kind="checker", needs_broker=False),
+        host_child_runner=timed_out,
+    )
+    runtime.container_name = "lh-action"
+    runtime._started = True
+
+    first_output, first_exit_code = runtime.execute_mechanical("pytest -q", "/tmp", 30)
+    second_output, second_exit_code = runtime.execute_mechanical("ruff check .", "/tmp", 30)
+
+    assert first_exit_code == 124
+    assert second_exit_code == 124
+    assert "isolated runtime unusable" in second_output
+    # Only the first command actually reached `docker exec`; the second was short-circuited.
+    assert calls["host_child"] == 1
 
 
 def test_non_idle_process_forces_container_removal(

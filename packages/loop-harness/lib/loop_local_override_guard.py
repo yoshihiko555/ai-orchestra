@@ -34,7 +34,20 @@ class LocalOverrideSnapshot:
 def snapshot_local_overrides(worktree_path: Path) -> tuple[LocalOverrideSnapshot, ...]:
     """Snapshot every ``.claude/config/**/*.local.{yaml,json}`` entry."""
     root = worktree_path / ".claude" / "config"
-    if root.is_symlink() or not root.is_dir():
+    if root.is_symlink():
+        # Codex review, PR #262, High (round 5): a symlinked config root is not a supported
+        # project layout (no sync/scaffolding tool in this codebase creates one), but if a
+        # worktree ever has one, `load_config()` still follows it and treats the pointed-to
+        # `*.local.yaml`/`*.local.json` files as effective configuration. Silently returning an
+        # empty snapshot here (the old behavior) made `_verify_local_override_snapshot()` compare
+        # `()` to `()` forever, so the tamper guard could never safe-stop even if a Maker edited
+        # those files through the worktree. Fail closed instead: this is an infrastructure error
+        # (`LocalOverrideSnapshotError`), not a `maker_partial_worktree` safety-stop, since a
+        # symlinked root can be present before any Maker activity at all.
+        raise LocalOverrideSnapshotError(
+            "project-local configuration root (.claude/config) is a symlink; refusing to snapshot"
+        )
+    if not root.is_dir():
         return ()
 
     def raise_walk_error(error: OSError) -> None:

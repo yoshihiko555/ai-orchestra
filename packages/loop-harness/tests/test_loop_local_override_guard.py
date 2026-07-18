@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
+
 from tests.module_loader import load_module
 
 guard = load_module(
@@ -67,3 +69,23 @@ def test_symlinked_override_target_content_change_is_detected(tmp_path: Path) ->
 
     changed = guard.changed_local_override_paths(before, after)
     assert ".claude/config/cli-tools.local.yaml" in changed
+
+
+def test_symlinked_config_root_fails_closed(tmp_path: Path) -> None:
+    """Codex review, PR #262, High (round 5): a symlinked `.claude/config` root must never
+    silently produce an empty snapshot -- `load_config()` still follows it and treats the
+    pointed-to `*.local.yaml`/`*.local.json` files as effective configuration, so this guard
+    must fail closed rather than let `_verify_local_override_snapshot()` compare `()` to `()`
+    forever.
+    """
+    claude_dir = tmp_path / ".claude"
+    claude_dir.mkdir()
+    real_config_dir = tmp_path / "real-config"
+    real_config_dir.mkdir()
+    (real_config_dir / "cli-tools.local.yaml").write_text(
+        "codex:\n  model: trusted\n", encoding="utf-8"
+    )
+    os.symlink(real_config_dir, claude_dir / "config")
+
+    with pytest.raises(guard.LocalOverrideSnapshotError):
+        guard.snapshot_local_overrides(tmp_path)

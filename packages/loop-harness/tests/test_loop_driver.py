@@ -4112,6 +4112,83 @@ def test_wait_external_review_preserves_explicit_findings_when_docker_classifier
     assert {"fix this now", "maybe an issue?"} == summaries
 
 
+def test_drain_before_push_preserves_drained_findings_when_docker_classifier_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review, PR #262, Critical (round 5): preserve drained findings when the classifier
+    Docker action fails from within `_drain_before_push`'s `push_required` path.
+
+    Unlike `_run_wait_external_review`'s own classifier call (round 3), this caller had no
+    try/except of its own: `confirm_review_findings_reported` already durably marked this
+    batch's explicit-severity comments processed by the time the classifier runs, but a
+    `DockerActionError` propagating unhandled out of `_drain_before_push` would reach
+    `_dispatch`'s DockerActionError handler, which returns `_docker_infrastructure_result()`'s
+    *empty* PhaseCheckResult for wait_external_review -- discarding the already-confirmed
+    blocking finding entirely, and a retried `collect_review_findings()` would filter the same
+    comment out via `processed_comment_ids`, so it could never resurface and a blocking
+    pre-push review finding could disappear instead of being surfaced.
+    """
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.pr_number = 42
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(driver, "_repo_name_with_owner", lambda _wt: "owner/repo")
+    monkeypatch.setattr(prw, "fetch_review_items", lambda *_a, **_k: [object()])
+
+    # One already-explicit blocking finding, plus one needing classification (fail-safe "high"
+    # placeholder per classify_severity()) that will trigger _classify_pending_findings.
+    explicit_finding = prw.ImportedFinding(
+        signature="sig-explicit",
+        severity="critical",
+        source_comment_id="c1",
+        body_excerpt="fix this now",
+        path="foo.py",
+        line=10,
+        needs_classification=False,
+    )
+    pending_finding = prw.ImportedFinding(
+        signature="sig-pending",
+        severity="high",
+        source_comment_id="c2",
+        body_excerpt="maybe an issue?",
+        path="bar.py",
+        line=5,
+        needs_classification=True,
+    )
+    blocking = lc.IterationFindings(frozenset({"sig-explicit", "sig-pending"}), 2)
+    empty = lc.IterationFindings(frozenset(), 0)
+    drained = prw.ReviewFindingsResult(
+        (explicit_finding, pending_finding), blocking, empty, (), (), 0, 1
+    )
+    monkeypatch.setattr(prw, "collect_review_findings", lambda *a, **k: drained)
+    monkeypatch.setattr(prw, "save_review_findings_snapshot", lambda *a, **k: "artifacts/x.json")
+    monkeypatch.setattr(prw, "confirm_review_findings_reported", lambda *a, **k: None)
+
+    record_baseline_calls: list[Any] = []
+    monkeypatch.setattr(
+        prw, "record_baseline", lambda *a, **k: record_baseline_calls.append((a, k))
+    )
+
+    def classify_pending_findings_raises(*_a: Any, **_k: Any) -> prw.ReviewFindingsResult:
+        raise driver.lda.DockerActionError("isolated finding classifier failed")
+
+    monkeypatch.setattr(d, "_classify_pending_findings", classify_pending_findings_raises)
+
+    config = prw.PrReviewConfig(reviewer_allowlist=())
+    result = d._drain_before_push(state, "act-drain-classifier-fail-001", 42, config)
+
+    assert result == lc.phase_check_to_dict(prw.phase_check_from_review_findings(drained))
+    assert result["passed"] is False
+    summaries = {item["summary"] for item in result["results"][0]["findings"]}
+    assert {"fix this now", "maybe an issue?"} == summaries
+    # The classifier failure must short-circuit *before* rebaselining/pushing this iteration.
+    assert record_baseline_calls == []
+
+
 def test_wait_external_review_push_stops_safely_on_push_integrity_violation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
