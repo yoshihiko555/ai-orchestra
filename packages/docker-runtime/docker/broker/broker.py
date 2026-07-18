@@ -320,11 +320,13 @@ class BrokerState:
         reason: str = "upstream usage unknown after interrupted response",
         *,
         rejected: bool = False,
+        latch_budget: bool = True,
     ) -> None:
         with self.lock:
             if rejected:
                 self.metrics.rejected_count += 1
-            self.metrics.budget_exceeded = True
+            if latch_budget:
+                self.metrics.budget_exceeded = True
             self._mark_anomaly_locked(reason)
             self.last_activity = time.monotonic()
             self.active_requests -= 1
@@ -508,7 +510,10 @@ class BrokerHandler(BaseHTTPRequestHandler):
         pre_admission_error = self.state.request_budget_error(path, body)
         if pre_admission_error is not None:
             status, message = pre_admission_error
-            self.state.abort_request(message, rejected=True)
+            # A model allowlist rejection (400) never reached upstream and incurred no
+            # cost, so unlike the budget/envelope 429s below it must not latch the run
+            # budget shut for subsequent, otherwise-valid requests.
+            self.state.abort_request(message, rejected=True, latch_budget=status != 400)
             self._json_error(status, message)
             return
         headers = _upstream_headers(
