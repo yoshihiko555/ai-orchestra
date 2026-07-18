@@ -551,7 +551,9 @@ def test_capability_smoke_uses_configured_evaluate_model(tmp_path: Path, monkeyp
     result = docker.check_docker_capabilities(config, main_root=tmp_path, runner=session.runner)
 
     assert result.ok is True
-    assert len(commands) == 4
+    # stream_json, max_budget_usd, bare judge, allowlist probe (/v1/messages),
+    # allowlist probe (/v1/messages/count_tokens).
+    assert len(commands) == 5
     for command in commands[:2]:
         model_index = command.index("--model")
         assert command[model_index + 1] == "claude-custom-model"
@@ -592,7 +594,9 @@ def test_bare_judge_smoke_uses_configured_judge_model(tmp_path: Path, monkeypatc
     result = docker.check_docker_capabilities(config, main_root=tmp_path, runner=session.runner)
 
     assert result.ok is True
-    assert len(commands) == 4
+    # stream_json, max_budget_usd, bare judge, allowlist probe (/v1/messages),
+    # allowlist probe (/v1/messages/count_tokens).
+    assert len(commands) == 5
     bare_command = commands[2]
     model_index = bare_command.index("--model")
     assert bare_command[model_index + 1] == "claude-custom-judge-model"
@@ -645,9 +649,15 @@ def test_capability_gate_passes_when_broker_rejects_disallowed_model(
 
     assert result.ok is True
     assert result.checks["broker_model_allowlist"] is True
-    probe_command = commands[-1]
-    assert probe_command[:2] == ["/usr/bin/python3", "-c"]
-    assert probe_command[-1] == docker._ALLOWLIST_SMOKE_DISALLOWED_MODEL
+    # Issue #261 PR2 review round 3: count_tokens must be probed too, since it also
+    # spends input-token accounting and was previously left unchecked.
+    assert result.checks["broker_model_allowlist_count_tokens"] is True
+    messages_probe, count_tokens_probe = commands[-2], commands[-1]
+    assert messages_probe[:2] == ["/usr/bin/python3", "-c"]
+    assert messages_probe[3] == docker._ALLOWLIST_SMOKE_DISALLOWED_MODEL
+    assert messages_probe[4] == docker._ALLOWLIST_SMOKE_PATH_MESSAGES
+    assert count_tokens_probe[3] == docker._ALLOWLIST_SMOKE_DISALLOWED_MODEL
+    assert count_tokens_probe[4] == docker._ALLOWLIST_SMOKE_PATH_COUNT_TOKENS
 
 
 def test_capability_gate_fails_when_broker_accepts_disallowed_model(
@@ -661,6 +671,7 @@ def test_capability_gate_fails_when_broker_accepts_disallowed_model(
 
     assert result.ok is False
     assert result.checks["broker_model_allowlist"] is False
+    assert result.checks["broker_model_allowlist_count_tokens"] is False
 
 
 @pytest.mark.parametrize(
@@ -696,22 +707,23 @@ def test_capability_gate_fails_when_400_lacks_broker_rejection_signal(
     assert result.checks["broker_model_allowlist"] is False
 
 
-def test_capability_gate_skips_allowlist_probe_when_allowlist_inactive(
-    tmp_path: Path, monkeypatch
-) -> None:
-    """When evaluate.model / judge.model are not both pinned, the broker allowlist
-    is intentionally inactive (see effective_broker_model_allowlist); the gate must
-    skip the negative probe rather than fail on a check that cannot apply."""
+def test_capability_gate_fails_closed_before_docker_when_judge_model_unpinned() -> None:
+    """Issue #261 PR2 review round 3: leaving judge.model (or evaluate.model) at
+    `null` is no longer treated as "no restriction" -- with pricing DEFAULTS now
+    calibrated for the pinned Sonnet tier, an unpinned model would run at the
+    CLI/session-default price, silently under-counting real cost. The gate must
+    fail closed before touching Docker at all, not skip the negative probe."""
     config = copy.deepcopy(mh.DEFAULTS)
     config["judge"]["model"] = None
 
-    result, commands = _run_capability_gate_with_allowlist_probe_response(
-        tmp_path, monkeypatch, probe_stdout=_VALID_ALLOWLIST_REJECTION_STDOUT, config=config
-    )
+    def _runner_must_not_run(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("Docker must not be touched when config validation fails closed")
 
-    assert result.ok is True
-    assert "broker_model_allowlist" not in result.checks
-    assert all(command[:2] != ["/usr/bin/python3", "-c"] for command in commands)
+    result = docker.check_docker_capabilities(config, runner=_runner_must_not_run)
+
+    assert result.ok is False
+    assert "judge.model" in (result.reason or "")
+    assert "not pinned" in (result.reason or "")
 
 
 @pytest.mark.parametrize(
@@ -770,7 +782,9 @@ def test_capability_smoke_uses_configured_max_output_tokens(
     result = docker.check_docker_capabilities(config, main_root=tmp_path, runner=session.runner)
 
     assert result.ok is True
-    assert len(docker_run_commands) == 4
+    # stream_json, max_budget_usd, bare judge, allowlist probe (/v1/messages),
+    # allowlist probe (/v1/messages/count_tokens).
+    assert len(docker_run_commands) == 5
     expected_env = f"CLAUDE_CODE_MAX_OUTPUT_TOKENS={expected_max_output_tokens}"
     for command in docker_run_commands:
         env_values = [
@@ -1041,18 +1055,24 @@ def test_broker_env_sends_configured_model_allowlist() -> None:
     assert broker_env["MH_BROKER_MODEL_ALLOWLIST"] == "claude-sonnet-5"
 
 
-def test_broker_env_omits_model_allowlist_keys_when_unset() -> None:
-    """Absent/empty model_allowlist must not set the env vars, so long as neither
-    evaluate.model nor judge.model is pinned (fully unpinned = no restriction)."""
+def test_broker_env_raises_fail_closed_when_both_models_unpinned() -> None:
+    """Issue #261 PR2 review round 3: leaving both evaluate.model and judge.model at
+    `null` no longer omits the allowlist restriction (retired backward-compat path).
+    With pricing DEFAULTS now calibrated for a pinned Sonnet tier, an unpinned model
+    would run at the CLI/session-default price -- silently under-counting cost -- so
+    this must fail closed instead."""
     config = copy.deepcopy(mh.DEFAULTS)
     config["evaluate"]["isolation"]["broker"]["model_allowlist"] = []
     config["evaluate"]["model"] = None
     config["judge"]["model"] = None
 
-    broker_env = docker.profile.broker_env(config, "run-token", 8787)
+    with pytest.raises(docker.profile.DockerProfileError) as excinfo:
+        docker.profile.broker_env(config, "run-token", 8787)
 
-    assert "DR_BROKER_MODEL_ALLOWLIST" not in broker_env
-    assert "MH_BROKER_MODEL_ALLOWLIST" not in broker_env
+    message = str(excinfo.value)
+    assert "evaluate.model" in message
+    assert "judge.model" in message
+    assert "not pinned" in message
 
 
 @pytest.mark.parametrize(
@@ -1060,18 +1080,21 @@ def test_broker_env_omits_model_allowlist_keys_when_unset() -> None:
     ["evaluate", "judge"],
     ids=["evaluate_model_unpinned", "judge_model_unpinned"],
 )
-def test_broker_env_omits_model_allowlist_when_either_model_is_unpinned(unset_key: str) -> None:
-    """Issue #261 PR2 review: if only one of evaluate.model / judge.model is pinned
-    (e.g. a project on the old `model: null` default that upgraded config but has
-    not pinned both models yet), the allowlist must be omitted entirely rather than
-    reject the unpinned side's session-default model with a 400."""
+def test_broker_env_raises_fail_closed_when_either_model_is_unpinned(unset_key: str) -> None:
+    """Issue #261 PR2 review round 3: if only one of evaluate.model / judge.model is
+    pinned (e.g. a project on the old `model: null` default that upgraded config but
+    has not pinned both models yet), this must fail closed with an actionable
+    message rather than silently omit the allowlist restriction."""
     config = copy.deepcopy(mh.DEFAULTS)
     config[unset_key]["model"] = None
+    field = f"{unset_key}.model"
 
-    broker_env = docker.profile.broker_env(config, "run-token", 8787)
+    with pytest.raises(docker.profile.DockerProfileError) as excinfo:
+        docker.profile.broker_env(config, "run-token", 8787)
 
-    assert "DR_BROKER_MODEL_ALLOWLIST" not in broker_env
-    assert "MH_BROKER_MODEL_ALLOWLIST" not in broker_env
+    message = str(excinfo.value)
+    assert field in message
+    assert "not pinned" in message
 
 
 def test_broker_env_raises_fail_closed_when_repinned_model_mismatches_allowlist() -> None:

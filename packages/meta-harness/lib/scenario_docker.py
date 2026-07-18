@@ -69,14 +69,21 @@ _ALLOWLIST_SMOKE_DISALLOWED_MODEL = "mh-capability-negative-allowlist-check"
 _ALLOWLIST_SMOKE_REJECTION_MESSAGE = "request model is not in the broker model allowlist"
 # Field separator for the probe's single stdout line: "<status>\x1f<server-header>\x1f<message>".
 _ALLOWLIST_SMOKE_FIELD_SEP = "\x1f"
-# Sends a minimal /v1/messages POST with a deliberately disallowed model and prints
-# "<status><SEP><server-header><SEP><error-message>" on one line (or "ERROR<SEP><SEP><detail>"
-# on a transport failure). Uses only the stdlib so it runs unmodified inside the
-# read-only scenario image.
+# Billable paths that must both reject an out-of-allowlist model (Issue #261 PR2
+# review round 3): /v1/messages/count_tokens spends input-token accounting too and
+# was previously left unchecked on the broker side.
+_ALLOWLIST_SMOKE_PATH_MESSAGES = "/v1/messages"
+_ALLOWLIST_SMOKE_PATH_COUNT_TOKENS = "/v1/messages/count_tokens"
+# Sends a minimal POST (to sys.argv[2], defaulting to /v1/messages) with a
+# deliberately disallowed model and prints "<status><SEP><server-header><SEP>
+# <error-message>" on one line (or "ERROR<SEP><SEP><detail>" on a transport
+# failure). Uses only the stdlib so it runs unmodified inside the read-only
+# scenario image.
 _ALLOWLIST_SMOKE_SCRIPT = (
     "import json,os,sys,urllib.error,urllib.request\n"
     "SEP = chr(0x1f)\n"
-    "url = os.environ['ANTHROPIC_BASE_URL'].rstrip('/') + '/v1/messages'\n"
+    "path = sys.argv[2] if len(sys.argv) > 2 else '/v1/messages'\n"
+    "url = os.environ['ANTHROPIC_BASE_URL'].rstrip('/') + path\n"
     "body = json.dumps({'model': sys.argv[1], 'max_tokens': 1, 'messages': []}).encode()\n"
     "req = urllib.request.Request(url, data=body, method='POST', headers={\n"
     "    'x-api-key': os.environ['ANTHROPIC_API_KEY'],\n"
@@ -341,21 +348,43 @@ def check_docker_capabilities(
             # Placed after the legitimate smoke checks above (not before): a 400 rejection
             # never reaches upstream and does not latch the run budget (PR #263), so this
             # ordering is purely defensive and does not affect the checks that follow.
-            if profile.effective_broker_model_allowlist(config):
-                allowlist_probe = _run_smoke_container(
-                    broker,
-                    [
-                        "/usr/bin/python3",
-                        "-c",
-                        _ALLOWLIST_SMOKE_SCRIPT,
-                        _ALLOWLIST_SMOKE_DISALLOWED_MODEL,
-                    ],
-                    max_output_tokens=max_output_tokens,
-                    runner=runner,
-                )
-                checks["broker_model_allowlist"] = _allowlist_probe_confirms_broker_rejection(
-                    allowlist_probe
-                )
+            # Unconditional (Issue #261 PR2 review round 3): effective_broker_model_allowlist
+            # is fail-closed now, so reaching this point already proved both models are
+            # pinned and validated -- the probe always applies, there is no "inactive"
+            # allowlist case left to skip.
+            allowlist_probe = _run_smoke_container(
+                broker,
+                [
+                    "/usr/bin/python3",
+                    "-c",
+                    _ALLOWLIST_SMOKE_SCRIPT,
+                    _ALLOWLIST_SMOKE_DISALLOWED_MODEL,
+                    _ALLOWLIST_SMOKE_PATH_MESSAGES,
+                ],
+                max_output_tokens=max_output_tokens,
+                runner=runner,
+            )
+            checks["broker_model_allowlist"] = _allowlist_probe_confirms_broker_rejection(
+                allowlist_probe
+            )
+            # count_tokens spends input-token accounting too and was previously left
+            # unchecked on the broker side (Issue #261 PR2 review round 3); prove it is
+            # rejected the same way /v1/messages is.
+            count_tokens_allowlist_probe = _run_smoke_container(
+                broker,
+                [
+                    "/usr/bin/python3",
+                    "-c",
+                    _ALLOWLIST_SMOKE_SCRIPT,
+                    _ALLOWLIST_SMOKE_DISALLOWED_MODEL,
+                    _ALLOWLIST_SMOKE_PATH_COUNT_TOKENS,
+                ],
+                max_output_tokens=max_output_tokens,
+                runner=runner,
+            )
+            checks["broker_model_allowlist_count_tokens"] = (
+                _allowlist_probe_confirms_broker_rejection(count_tokens_allowlist_probe)
+            )
         reason = _failed_checks_reason(checks)
         return DockerCapabilityResult(version, version_pin, version_match, checks, reason)
     except (

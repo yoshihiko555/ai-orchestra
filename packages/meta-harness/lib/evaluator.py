@@ -1993,9 +1993,10 @@ def evaluator_execution_snapshot(config: dict) -> dict[str, Any]:
             "pricing_upper_bound_usd_per_million"
         )
         or {},
-        # Validated allowlist (see scenario_docker_profile.effective_broker_model_allowlist):
-        # raises fail-closed if evaluate.model/judge.model are pinned but missing from the
-        # configured model_allowlist, so a broken/under-priced config never silently
+        # Validated, pinned-pair-only allowlist (see
+        # scenario_docker_profile.effective_broker_model_allowlist): raises fail-closed
+        # if evaluate.model/judge.model are unpinned or missing from the configured
+        # model_allowlist "menu", so a broken/under-priced config never silently
         # produces a comparable-looking hash.
         "broker_model_allowlist": siso.docker.profile.effective_broker_model_allowlist(config),
         "scenario_run_max_budget_usd_default": (config.get("scenario_run") or {}).get(

@@ -260,8 +260,18 @@ class TestScenarioExecutionEnvelope:
         assert execution["max_output_tokens_source"] == "global"
 
     def test_execution_snapshot_treats_null_output_tokens_default_as_4096(self) -> None:
+        # Issue #261 PR2 review round 3: both models must be pinned (and present in
+        # model_allowlist) or evaluator_execution_snapshot() now fails closed before
+        # this null-output-tokens-fallback concern can even be exercised.
         snapshot = ev.evaluator_execution_snapshot(
-            {"scenario_run": {"max_output_tokens_default": None}}
+            {
+                "scenario_run": {"max_output_tokens_default": None},
+                "evaluate": {
+                    "model": "claude-sonnet-5",
+                    "isolation": {"broker": {"model_allowlist": ["claude-sonnet-5"]}},
+                },
+                "judge": {"model": "claude-sonnet-5"},
+            }
         )
 
         assert snapshot["max_output_tokens_default"] == 4096
@@ -362,20 +372,12 @@ class TestScenarioExecutionEnvelope:
                     }
                 }
             },
-            {
-                "evaluate": {
-                    "isolation": {
-                        "broker": {"model_allowlist": ["claude-sonnet-5", "claude-opus-4-8"]}
-                    }
-                }
-            },
             {"scenario_run": {"max_budget_usd_default": 54.0}},
         ],
         ids=[
             "judge_tool",
             "judge_model",
             "broker_pricing",
-            "broker_model_allowlist",
             "scenario_run_budget",
         ],
     )
@@ -403,6 +405,37 @@ class TestScenarioExecutionEnvelope:
         after = ev.compute_configured_evaluator_hash(changed_config)
 
         assert before != after
+
+    def test_evaluator_hash_unaffected_by_unpinned_menu_surplus_entries(self) -> None:
+        """Issue #261 PR2 review round 3: effective_broker_model_allowlist wires only
+        the pinned evaluate.model/judge.model pair to the broker, never the full
+        configured model_allowlist "menu" (surplus entries lack a pricing
+        calibration and must not be admitted). Adding an unrelated, unpinned entry
+        to the menu is therefore a config-comparability no-op and must NOT stale
+        prior evaluator_hash-scoped runs."""
+        base_config: dict = {
+            "judge": {"model": "claude-sonnet-5", "effort": "high"},
+            "evaluate": {
+                "model": "claude-sonnet-5",
+                "isolation": {
+                    "broker": {
+                        "pricing_upper_bound_usd_per_million": {"input": 3.0},
+                        "model_allowlist": ["claude-sonnet-5"],
+                    }
+                },
+            },
+            "scenario_run": {"max_budget_usd_default": 3.0},
+        }
+        menu_expanded_config = json.loads(json.dumps(base_config))
+        menu_expanded_config["evaluate"]["isolation"]["broker"]["model_allowlist"] = [
+            "claude-sonnet-5",
+            "claude-opus-4-8-experimental",
+        ]
+
+        before = ev.compute_configured_evaluator_hash(base_config)
+        after = ev.compute_configured_evaluator_hash(menu_expanded_config)
+
+        assert before == after
 
 
 class TestSkillActivationEvidence:

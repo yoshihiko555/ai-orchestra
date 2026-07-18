@@ -252,11 +252,17 @@ class BrokerState:
         if not isinstance(payload, dict):
             return 429, "request body must be a JSON object"
         output_tokens = 0
-        if path == "/v1/messages":
+        # The model allowlist gates both billable paths, not just /v1/messages: a
+        # /v1/messages/count_tokens call also spends input-token accounting (Issue #261
+        # PR2 review round 3) and, unchecked, would let a candidate confirm an
+        # out-of-allowlist model is reachable without ever tripping the /v1/messages
+        # rejection.
+        if path in ("/v1/messages", "/v1/messages/count_tokens"):
             if self.model_allowlist is not None:
                 model = payload.get("model")
                 if not isinstance(model, str) or model not in self.model_allowlist:
                     return 400, "request model is not in the broker model allowlist"
+        if path == "/v1/messages":
             max_tokens = payload.get("max_tokens")
             if not isinstance(max_tokens, int) or isinstance(max_tokens, bool) or max_tokens <= 0:
                 return 429, "messages request must declare a positive max_tokens"

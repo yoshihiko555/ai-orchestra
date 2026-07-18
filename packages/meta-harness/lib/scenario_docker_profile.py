@@ -373,23 +373,31 @@ def _validate_model_slug(value: Any, *, field: str) -> str:
 
 
 def effective_broker_model_allowlist(config: dict) -> list[str]:
-    """Return the validated broker model allowlist (Issue #261 PR2 review round 2).
+    """Validate config and return the broker model allowlist to wire into the env
+    (Issue #261 PR2 review round 3).
 
-    Returns `[]` (meaning: no restriction) whenever either `evaluate.model` or
-    `judge.model` is unset. Restricting the broker to the configured
-    `model_allowlist` in that case would reject the CLI's session-default
-    model and break existing projects that have not pinned a model yet
-    (backward compatibility takes priority over the stricter allowlist).
+    The broker's fixed `pricing_upper_bound_usd_per_million` is calibrated for
+    exactly one price point: the pinned `evaluate.model` / `judge.model`. Every
+    prior "escape hatch" in this function's history (omit the restriction when a
+    model is unpinned; auto-union a repinned model into the allowlist; wire the
+    full human-curated `model_allowlist` menu instead of just the pinned pair)
+    turned out to let *some* other model run under that fixed price ceiling and
+    under-count real cost. The contract is now a single fail-closed rule:
 
-    When both are pinned, this validates -- it does NOT auto-union -- that both
-    pinned models are already present in the configured
-    `evaluate.isolation.broker.model_allowlist`. A previous revision unioned the
-    pinned models into the allowlist automatically, which silently defeated the
-    fail-closed guard: repinning to a pricier model would be auto-admitted by
-    the broker without the operator also updating
-    `pricing_upper_bound_usd_per_million`, under-counting real cost. Any pinned
-    model missing from the configured allowlist now raises
-    :class:`DockerProfileError` with an actionable message instead.
+    1. Both `evaluate.model` and `judge.model` MUST be pinned (non-null). An
+       unpinned model runs at the CLI/session default, which the fixed pricing
+       ceiling was never calibrated for -- this now raises
+       :class:`DockerProfileError` instead of silently omitting the broker's
+       allowlist restriction (the previous "unpinned = no restriction"
+       backward-compat path is retired).
+    2. Both pinned models MUST already be listed in the configured
+       `evaluate.isolation.broker.model_allowlist` "menu" (human-curated,
+       intentionally NOT auto-unioned): this is a deliberate acknowledgement
+       step, not an allowlist by itself.
+    3. The value actually wired to the broker is the pinned pair only (deduped),
+       never the full configured menu: any additional "menu" entries lack a
+       corresponding pricing calibration and must not be admitted just because
+       they were listed for step 2's validation.
 
     `model_allowlist` must be a `list`, not a bare string (CodeRabbit High, PR #265):
     iterating a scalar string produces one entry per character, which would silently
@@ -400,8 +408,21 @@ def effective_broker_model_allowlist(config: dict) -> list[str]:
     judge_cfg = config.get("judge") or {}
     evaluate_model = evaluate_cfg.get("model")
     judge_model = judge_cfg.get("model")
-    if not evaluate_model or not judge_model:
-        return []
+    unpinned = [
+        field
+        for field, value in (("evaluate.model", evaluate_model), ("judge.model", judge_model))
+        if not value
+    ]
+    if unpinned:
+        raise DockerProfileError(
+            "broker model allowlist fail-closed: "
+            f"{', '.join(unpinned)} is not pinned (null). An unpinned model would run "
+            "at the CLI's session-default price, which the broker's fixed "
+            "evaluate.isolation.broker.pricing_upper_bound_usd_per_million ceiling is "
+            "not calibrated for. Pin both evaluate.model and judge.model to a specific "
+            "model slug and calibrate pricing_upper_bound_usd_per_million and "
+            "evaluate.isolation.broker.model_allowlist to that model before re-running."
+        )
     _validate_model_slug(evaluate_model, field="evaluate.model")
     _validate_model_slug(judge_model, field="judge.model")
     broker = (evaluate_cfg.get("isolation") or {}).get("broker") or {}
@@ -427,7 +448,9 @@ def effective_broker_model_allowlist(config: dict) -> list[str]:
             "evaluate.isolation.broker.pricing_upper_bound_usd_per_million to match the "
             "repinned model(s) before re-running."
         )
-    return sorted(configured_set)
+    # Wire only the pinned pair -- any additional model_allowlist "menu" entries
+    # (step 3 above) lack pricing calibration and must not be admitted.
+    return sorted(pinned)
 
 
 def broker_env(config: dict, run_token: str, port: int) -> dict[str, str]:

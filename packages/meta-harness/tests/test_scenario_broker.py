@@ -634,6 +634,56 @@ def test_model_allowlist_rejection_does_not_latch_run_budget_for_next_request(
     assert state.metrics.request_count == 2
 
 
+def test_model_allowlist_applies_to_count_tokens_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #261 PR2 review round 3: /v1/messages/count_tokens also spends
+    input-token accounting and must be gated by model_allowlist the same way
+    /v1/messages is -- it was previously left unchecked, which let a candidate
+    confirm an out-of-allowlist model is reachable via this endpoint."""
+    state = _state(
+        tmp_path,
+        monkeypatch,
+        max_requests=4,
+        max_total_tokens=500_000,
+        model_allowlist=frozenset({"claude-cheap-model"}),
+    )
+    allowed_body = json.dumps({"model": "claude-cheap-model", "messages": []}).encode()
+    disallowed_body = json.dumps({"model": "claude-expensive-model", "messages": []}).encode()
+
+    assert state.request_budget_error("/v1/messages/count_tokens", allowed_body) is None
+    assert state.request_budget_error("/v1/messages/count_tokens", disallowed_body) == (
+        400,
+        "request model is not in the broker model allowlist",
+    )
+
+
+def test_model_allowlist_rejects_disallowed_model_via_count_tokens_http(
+    http_broker: tuple[Any, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """HTTP-level equivalent of `test_model_allowlist_applies_to_count_tokens_path`:
+    a POST to /v1/messages/count_tokens with a disallowed model must be rejected
+    with 400 before ever reaching upstream, and must not latch the run budget
+    (matching the existing /v1/messages contract, PR #263)."""
+    server, state = http_broker
+    state.model_allowlist = frozenset({"claude-cheap-model"})
+
+    class UnexpectedConnection:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            raise AssertionError("model allowlist rejection must not reach upstream")
+
+    monkeypatch.setattr(broker.http.client, "HTTPSConnection", UnexpectedConnection)
+    body = json.dumps({"model": "claude-expensive-model", "messages": []}).encode()
+
+    status, _headers, payload = _post(server, path="/v1/messages/count_tokens", body=body)
+
+    assert status == 400
+    assert b"model allowlist" in payload
+    assert state.metrics.rejected_count == 1
+    assert state.metrics.upstream_request_bytes == 0
+    assert state.metrics.budget_exceeded is False
+
+
 def test_two_1024_token_requests_fit_three_dollar_run_budget(tmp_path: Path, monkeypatch) -> None:
     state = _state(
         tmp_path,
