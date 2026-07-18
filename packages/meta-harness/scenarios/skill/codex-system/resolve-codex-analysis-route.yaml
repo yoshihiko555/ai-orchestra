@@ -1,0 +1,59 @@
+schema_version: "1.0"
+id: resolve-codex-analysis-route
+target: skill:codex-system
+description: Resolve the codex-system routing decision for an analysis task without invoking codex exec.
+prompt: |
+  /codex-system Codex に相談してください: `tests/test_cache.py` がなぜ失敗するのか原因を分析してほしい（think deeper / analyze）。
+
+  本評価環境は外部ネットワークを遮断しているため、`codex exec` は絶対に実行しないでください。
+  代わりに以下の手順で codex-system の routing 判断だけを行い、結果を JSON で記録してください。
+
+  1. `.claude/config/agent-routing/cli-tools.yaml` と、存在する場合は
+     `.claude/config/agent-routing/cli-tools.local.yaml` を読み、local を優先してマージする
+     （config-loading.md と同じレイヤー規則）。
+  2. `codex.enabled` と `antigravity.enabled` の実効値を確認する。
+  3. `agents.debugger.tool` の実効値を次の規則で解決する。
+     - `codex` かつ `codex.enabled: false` の場合は `claude-direct` にフォールバックする。
+     - `antigravity` かつ `antigravity.enabled: false` の場合は `claude-direct` にフォールバックする。
+     - `auto` の場合、これは debug/analyze の深い推論タスクなので有効な CLI alias から
+       `codex` → `antigravity` の順で選び（codex-system の「深い推論 → Codex、調査 →
+       Antigravity、単純作業 → Claude」の優先順位。antigravity-system 側のリサーチタスクでは
+       逆順 `antigravity` → `codex` になる点に注意）、どちらも無効なら `claude-direct` を選ぶ。
+     - それ以外（`claude-direct` など）はそのまま `claude-direct` とする。
+  4. リポジトリ直下の `codex-route-decision.json` に、解決結果に応じて次の JSON だけを書く
+     （キーの過不足なく、値はマージ後の設定ファイルから実際に読み取った値を使う）。
+     - 解決値が `codex` の場合（今回は design/debug 相談で実装作業ではないため sandbox は
+       `codex.sandbox.analysis` の実効値をそのまま使う。文字列 `"analysis"` を固定で書かないこと）:
+       `{"engine":"codex","resolved_tool":"codex","codex_enabled":true,"antigravity_enabled":<antigravity.enabled の実効値>,"model":"<codex.model の値>","sandbox":"<codex.sandbox.analysis の実効値>","flags":"<codex.flags の値>"}`
+     - 解決値が `antigravity` の場合:
+       `{"engine":"antigravity","resolved_tool":"antigravity","codex_enabled":<codex.enabled の実効値>,"antigravity_enabled":true,"model":"<antigravity.model の値>","allowlist_warning":<model が antigravity.model_allowlist に含まれなければ true、含まれれば false>}`
+     - 解決値が `claude-direct`（フォールバック含む）の場合:
+       `{"engine":"claude-direct","resolved_tool":"claude-direct","codex_enabled":<codex.enabled の実効値>,"antigravity_enabled":<antigravity.enabled の実効値>}`
+setup:
+  - "mkdir -p .claude/config/agent-routing && rm -f codex-route-decision.json"
+allowed_tools:
+  - "Read"
+  - "Write"
+command_timeout_ms: 60000
+critical:
+  - id: codex-route-decision-exists
+    text: "codex-route-decision.json が生成される"
+    oracle: artifact_exists
+    path: "codex-route-decision.json"
+  - id: codex-route-decision-matches-config
+    text: "生成された成果物が cli-tools.yaml の実効解決結果と一致する"
+    oracle: command_exit
+    command: >-
+      python3 packages/meta-harness/scenarios/fixtures/assert-cli-skill-route.py --tool codex --artifact codex-route-decision.json
+checks:
+  - id: codex-route-decision-no-exec
+    text: "codex exec は実行されず、判断結果のみが記録される"
+    oracle: rubric_judge
+    rubric: "Claude must not attempt to actually invoke `codex exec`; it should only resolve the routing config and report the decision to the user in Japanese."
+holdout: false
+timeout_ms: 300000
+budget:
+  max_turns: 8
+  max_budget_usd: 3.0
+  max_output_tokens: 1024
+repeat: 1

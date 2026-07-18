@@ -1735,10 +1735,11 @@ proposer は同一 workspace 内で起動される限り、`Glob` / `Read` 等�
   `unverified_impacts` の鮮度不一致として昇格を拒否し、holdout 再評価を要求する。親を含む候補 lineage の
   overlay path 全集合を `origin/main` との差分対象にし、全 manifest/overlay の integrity と L3 secret scan を
   PR 作成直前に再検証する。
-- 回帰コストは `regression.max_affected_suites`（既定 4）と evaluation 単位の
-  `regression.max_budget_usd`（既定 30.0）の二層で制限する。30.0 は現行の global impact suite を
-  train/holdout 通算の設定上限（`claude-harness` train 2 attempt + suite 保有 skill 2 件の train 各 1 attempt・
+- 回帰コストは `regression.max_affected_suites`（既定 5）と evaluation 単位の
+  `regression.max_budget_usd`（既定 54.0）の二層で制限する。54.0 は現行の global impact suite を
+  train/holdout 通算の設定上限（`claude-harness` train 2 attempt + suite 保有 skill 4 件の train 各 1 attempt・
   holdout 各 3 attempt、各最大 3.0 USD）で収容する値である。超過は黙って skip せず evaluation error とする。
+  スイート保有 skill が増えるたび（Issue #254）この二値を再計算して同時に引き上げること。
   1 CLI 呼び出しが train / holdout の両バッチを含む場合も `evaluation_id` と残予算を共有する。run cost は
   scenario CLI の申告値だけでなく、同じ broker を使う rubric judge を含む
   `broker.metrics.estimated_cost_usd` との大きい方を正とし、metrics 欠落・異常時は attempt 割当額を消費済みと
@@ -1880,8 +1881,8 @@ scenario_run:
   max_output_tokens_default: 4096 # broker pre-admission 用。scenario の budget で上書き可能
 regression:
   enabled: true # false は skill target の専有 facet allowlist へ縮退
-  max_affected_suites: 4
-  max_budget_usd: 30.0 # 現行 global impact suite の train/holdout 設定上限を収容
+  max_affected_suites: 5
+  max_budget_usd: 54.0 # 現行 global impact suite の train/holdout 設定上限を収容
 judge:
   tool: claude-bare # tool-less judge。codexはread deny不能のため無効（ADR-20260711-033）
   model: null # null = 各バックエンドの既定モデル

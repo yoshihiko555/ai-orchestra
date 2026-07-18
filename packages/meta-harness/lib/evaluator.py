@@ -2862,7 +2862,8 @@ def _evaluate_scenario_batch(
     )
     regression_cfg = config.get("regression") or {}
     max_suites = _positive_int_config(
-        regression_cfg.get("max_affected_suites", 4), "regression.max_affected_suites"
+        regression_cfg.get("max_affected_suites", mh.DEFAULTS["regression"]["max_affected_suites"]),
+        "regression.max_affected_suites",
     )
     configured_max_budget = _non_negative_float_config(
         regression_cfg.get("max_budget_usd", mh.DEFAULTS["regression"]["max_budget_usd"]),
