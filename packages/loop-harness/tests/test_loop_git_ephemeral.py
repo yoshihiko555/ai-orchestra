@@ -302,6 +302,31 @@ def test_prepare_normalizes_filesystem_cleanup_failure_to_typed_error(
         _prepare(linked_worktree)
 
 
+def test_prepare_never_creates_runtime_dir_when_local_override_snapshot_fails(
+    linked_worktree: GitFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # CodeRabbit review, PR #262, Medium: the local-override snapshot must run before the
+    # runtime directory is created, so a snapshot failure never leaves a freshly created
+    # runtime_dir behind for a caller to clean up (there was previously nothing wrapping
+    # this call in the cleanup `try`/`except` that removes the runtime dir on failure).
+    runtime_dir = (
+        linked_worktree.project_dir / ".claude" / "loop" / LOOP_ID / "docker-runtime" / ACTION_ID
+    )
+
+    def fail_snapshot(_worktree_path: Path) -> tuple[Any, ...]:
+        raise git_ephemeral.EphemeralGitInfrastructureError("injected snapshot failure")
+
+    monkeypatch.setattr(git_ephemeral, "_snapshot_local_overrides_or_raise", fail_snapshot)
+
+    with pytest.raises(
+        git_ephemeral.EphemeralGitInfrastructureError, match="injected snapshot failure"
+    ):
+        _prepare(linked_worktree)
+
+    assert not runtime_dir.exists()
+
+
 def test_prepare_rejects_uncommitted_worktree_change_left_over_from_prior_action(
     linked_worktree: GitFixture,
 ) -> None:

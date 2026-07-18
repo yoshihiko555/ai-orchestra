@@ -77,6 +77,18 @@ def test_malformed_keychain_payload_fails_closed(payload: str) -> None:
         credentials._parse_keychain_payload(payload)
 
 
+@pytest.mark.parametrize("expires_at", [float("nan"), float("inf"), float("-inf")])
+def test_non_finite_expires_at_fails_closed(expires_at: float) -> None:
+    # CodeRabbit review, PR #262, High: json.loads() accepts NaN/Infinity by default, and NaN
+    # compares false against every bound (both the > 10_000_000_000 unit-conversion check and the
+    # <= 0 positivity check), so a NaN expiresAt previously slipped through as a "valid" epoch and
+    # then bypassed the TTL preflight too (NaN - now() < minimum_seconds is also always false).
+    payload = json.dumps({"claudeAiOauth": {"accessToken": "token", "expiresAt": expires_at}})
+
+    with pytest.raises(credentials.ClaudeCredentialError, match="invalid expiresAt"):
+        credentials._parse_keychain_payload(payload)
+
+
 def test_invalid_timeout_config_fails_ttl_preflight_closed() -> None:
     with pytest.raises(credentials.ClaudeCredentialError, match="must be integers"):
         credentials.minimum_broker_token_ttl_seconds(

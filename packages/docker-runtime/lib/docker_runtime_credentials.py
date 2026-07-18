@@ -10,6 +10,7 @@ separately designed credential source, while CI replaces the loader with a mock.
 from __future__ import annotations
 
 import json
+import math
 import platform
 import subprocess
 import time
@@ -88,6 +89,8 @@ def _expiry_epoch(value: Any) -> float:
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         raise ClaudeCredentialError("Claude Keychain credential has no numeric expiresAt")
     epoch = float(value)
+    if not math.isfinite(epoch):
+        raise ClaudeCredentialError("Claude Keychain credential has an invalid expiresAt")
     if epoch > 10_000_000_000:
         epoch /= 1000
     if epoch <= 0:

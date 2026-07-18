@@ -237,6 +237,11 @@ def _prepare_ephemeral_git(
     )
 
     _validate_runtime_location(project, worktree, runtime_dir)
+    # CodeRabbit review, PR #262, Medium: snapshot local overrides before the runtime
+    # directory is created (rather than after) so a read failure here never leaves a
+    # freshly created runtime_dir behind. This snapshot call is outside the cleanup
+    # `try` below by design -- moving it earlier means there is nothing to clean up yet.
+    local_override_snapshot = _snapshot_local_overrides_or_raise(worktree)
     _remove_runtime(runtime_dir)
     try:
         runtime_dir.mkdir(parents=True, mode=0o700)
@@ -246,7 +251,6 @@ def _prepare_ephemeral_git(
             details={"runtime_dir": str(runtime_dir)},
         ) from exc
     _validate_runtime_location(project, worktree, runtime_dir)
-    local_override_snapshot = _snapshot_local_overrides_or_raise(worktree)
 
     session = EphemeralGitSession(
         project_dir=project,
