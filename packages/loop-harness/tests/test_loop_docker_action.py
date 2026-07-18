@@ -274,7 +274,8 @@ def test_maker_worktree_chown_runs_before_local_override_snapshot(
     )
     mount_spec = SimpleNamespace(mounts=(), env={"GIT_DIR": "/git", "GIT_WORK_TREE": "/work"})
 
-    def chown(path: Path) -> None:
+    def chown(path: Path, *, exclude: frozenset[Path] | None = None) -> None:
+        del exclude
         label = "chown_worktree" if path == tmp_path / "worktree" else "chown_ephemeral"
         order.append(label)
 
@@ -304,6 +305,67 @@ def test_maker_worktree_chown_runs_before_local_override_snapshot(
     runtime._prepare_mounts()
 
     assert order == ["chown_worktree", "git_prepare", "settings", "mount_spec", "chown_ephemeral"]
+
+
+def test_maker_worktree_chown_excludes_local_override_leaf_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex review, PR #262, High (round 4): don't re-own project-local override files.
+
+    Under a root-run driver, the recursive worktree chown must not itself grant the fixed
+    non-root container identity new read/write access to a `.claude/config/**/*.local.{yaml,json}`
+    file that was deliberately more restrictively owned/permissioned than the rest of the
+    worktree.
+    """
+    worktree = tmp_path / "worktree"
+    override_dir = worktree / ".claude" / "config" / "agent-routing"
+    override_dir.mkdir(parents=True)
+    override_file = override_dir / "cli-tools.local.yaml"
+    override_file.write_text("secret: value\n", encoding="utf-8")
+    (override_dir / "cli-tools.yaml").write_text("tracked: value\n", encoding="utf-8")
+
+    session = SimpleNamespace(
+        runtime_dir=tmp_path / "runtime", ephemeral_dir=tmp_path / "runtime" / "git-ephemeral"
+    )
+    mount_spec = SimpleNamespace(mounts=(), env={"GIT_DIR": "/git", "GIT_WORK_TREE": "/work"})
+    chown_calls: list[tuple[Path, frozenset[Path] | None]] = []
+
+    def chown(path: Path, *, exclude: frozenset[Path] | None = None) -> None:
+        chown_calls.append((path, exclude))
+
+    monkeypatch.setattr(docker_action.profile.runtime, "align_mount_ownership", chown)
+    monkeypatch.setattr(
+        docker_action.git_ephemeral, "prepare_ephemeral_git", lambda **_kwargs: session
+    )
+    monkeypatch.setattr(
+        docker_action.docker_settings,
+        "create_settings_bundle",
+        lambda *_args: docker_settings.DockerSettingsBundle(tmp_path / "trusted"),
+    )
+    monkeypatch.setattr(
+        docker_action.git_ephemeral, "build_maker_git_mount_spec", lambda *_args: mount_spec
+    )
+
+    request = docker_action.DockerActionRequest(
+        config=_config(),
+        isolation=docker_config.validate_isolation_config(_config()),
+        project_dir=tmp_path,
+        loop_id="loop-211",
+        action_id="action-001",
+        worktree_path=worktree,
+        branch="issue-211",
+        kind="maker",
+        remaining_wall_clock_seconds=lambda: 600,
+    )
+    runtime = docker_action.DockerActionRuntime(
+        request,
+        host_child_runner=lambda *_args: subprocess.CompletedProcess([], 0, "", ""),
+    )
+    runtime._prepare_mounts()
+
+    worktree_chown = next(call for call in chown_calls if call[0] == worktree)
+    assert worktree_chown[1] == frozenset({override_file})
 
 
 def test_maker_lifecycle_uses_production_primitives_in_required_order(
@@ -590,7 +652,7 @@ def test_mechanical_exec_env_forwards_overrides_but_not_container_reserved_keys(
     Git wiring) and must never be clobbered by the host-derived checker env.
     """
     checker_env = {
-        "RUFF_CACHE_DIR": "/tmp/ruff-cache",
+        "RUFF_CACHE_DIR": "/host/ruff-cache",
         "HOME": "/host/scratch-home",
         "TMPDIR": "/host/tmp",
         "PATH": "/host/bin:/usr/bin",
@@ -600,9 +662,21 @@ def test_mechanical_exec_env_forwards_overrides_but_not_container_reserved_keys(
 
     merged = docker_action._mechanical_exec_env(checker_env)
 
-    assert merged == {"RUFF_CACHE_DIR": "/tmp/ruff-cache"}
-    assert docker_action._mechanical_exec_env(None) == {}
-    assert docker_action._mechanical_exec_env({}) == {}
+    assert merged == {"RUFF_CACHE_DIR": "/host/ruff-cache"}
+
+
+def test_mechanical_exec_env_defaults_ruff_cache_dir_to_a_writable_tmpfs_path() -> None:
+    """Codex review, PR #262, High (round 4): default `RUFF_CACHE_DIR` for Docker mechanical runs.
+
+    The bundled issue-loop's default mechanical commands include `ruff check .`; ruff defaults
+    its cache directory to `.ruff_cache` under the project root unless `RUFF_CACHE_DIR` is set,
+    but the checker worktree (the mechanical command's `cwd`) is mounted read-only under Docker.
+    Without an explicit default, this fails before linting even runs unless the operator happens
+    to export an override. `/tmp` is the container's own tmpfs mount, always writable regardless
+    of `cwd`.
+    """
+    assert docker_action._mechanical_exec_env(None) == {"RUFF_CACHE_DIR": "/tmp/ruff-cache"}
+    assert docker_action._mechanical_exec_env({}) == {"RUFF_CACHE_DIR": "/tmp/ruff-cache"}
 
 
 def test_execute_mechanical_forwards_env_to_docker_exec(
@@ -638,6 +712,48 @@ def test_execute_mechanical_forwards_env_to_docker_exec(
 
     assert exit_code == 0
     assert output == "ok"
+
+
+def test_execute_mechanical_normalizes_claude_p_timeout_to_exit_124(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex review, PR #262, High (round 4): preserve mechanical timeout results in Docker.
+
+    A per-command mechanical timeout must still destroy the scenario container (fail-closed --
+    a killed `docker exec` client does not guarantee the exec'd process inside the container
+    actually stopped, see `enforce_scenario_container_idle`), but the checker's sealed artifact
+    contract expects an ordinary `(output, 124)` result here, the same as the host executor's
+    `_run_mechanical_command`, not an opaque Docker infrastructure failure that discards this
+    command's output and the sealed result entirely.
+    """
+    removed: list[str] = []
+    monkeypatch.setattr(
+        docker_action.runtime_cli,
+        "remove_container",
+        lambda name, **_kwargs: removed.append(name) or True,
+    )
+
+    def timed_out(*_args: Any) -> subprocess.CompletedProcess[str]:
+        raise docker_action.driver_support.ClaudePTimeoutError(
+            "claude -p timed out after 30s",
+            stdout="partial output",
+            stderr="partial error",
+        )
+
+    runtime = docker_action.DockerActionRuntime(
+        _request(tmp_path, kind="checker", needs_broker=False),
+        host_child_runner=timed_out,
+    )
+    runtime.container_name = "lh-action"
+    runtime._started = True
+
+    output, exit_code = runtime.execute_mechanical("pytest -q", "/tmp", 30)
+
+    assert exit_code == 124
+    assert output == "partial outputpartial error\ncommand timed out"
+    assert removed == ["lh-action"]
+    assert runtime._scenario_removed is True
 
 
 def test_non_idle_process_forces_container_removal(

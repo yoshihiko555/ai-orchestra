@@ -58,7 +58,7 @@ def non_root_identity() -> tuple[int, int]:
     return uid, gid
 
 
-def align_mount_ownership(path: Path) -> None:
+def align_mount_ownership(path: Path, *, exclude: frozenset[Path] | None = None) -> None:
     """Re-own a read-write mount source so the forced non-root container identity can write it.
 
     ``non_root_identity()`` maps a root host process to the fixed ``65532:65532`` container
@@ -71,14 +71,28 @@ def align_mount_ownership(path: Path) -> None:
     access; no permission bits are widened. No-op when the host process is not root, because in
     that case ``non_root_identity()`` already returns the host's own uid/gid and ownership already
     matches.
+
+    ``exclude`` (Codex review, PR #262, High, round 4) skips specific leaf entries that must keep
+    their original owner even under a root-run host: without it, this re-own could newly grant the
+    fixed non-root container identity read access to a file whose stricter-than-usual permission
+    bits (e.g. mode 600, owned by root) previously restricted it to the root-trusted host process
+    only -- "no permission bits are widened" above only holds when the *owning identity* doesn't
+    itself change from a more-trusted one to the less-trusted container identity. Callers pass
+    project-local override files (`.claude/config/**/*.local.{yaml,json}`) here; their ancestor
+    directories are intentionally still re-owned so the container can traverse them and create
+    unrelated sibling entries.
     """
     if os.getuid() != 0:
         return
+    excluded = exclude or frozenset()
     uid, gid = non_root_identity()
-    os.chown(path, uid, gid)
+    if path not in excluded:
+        os.chown(path, uid, gid)
     if not path.is_dir():
         return
     for child in path.rglob("*"):
+        if child in excluded:
+            continue
         try:
             os.chown(child, uid, gid, follow_symlinks=False)
         except FileNotFoundError:

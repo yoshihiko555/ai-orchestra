@@ -169,6 +169,40 @@ def test_align_mount_ownership_reowns_tree_to_forced_non_root_identity_when_host
     assert all(call[3] is False for call in descendant_calls)
 
 
+def test_align_mount_ownership_skips_excluded_leaf_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review, PR #262, High (round 4): don't re-own excluded leaf entries.
+
+    A root-run driver must not use this re-own to newly grant the fixed non-root container
+    identity access to a caller-excluded file (e.g. a project-local override the caller wants to
+    keep at its original, possibly stricter, owner). Ancestor directories stay re-owned so the
+    container can still traverse them.
+    """
+    monkeypatch.setattr(profile.os, "getuid", lambda: 0)
+    monkeypatch.setattr(profile.os, "getgid", lambda: 0)
+    calls: list[Path] = []
+    monkeypatch.setattr(
+        profile.os,
+        "chown",
+        lambda path, uid, gid, follow_symlinks=True: calls.append(Path(path)),
+    )
+    target = tmp_path / "worktree"
+    nested = target / "nested"
+    nested.mkdir(parents=True)
+    excluded_file = nested / "secret.local.yaml"
+    excluded_file.write_text("content", encoding="utf-8")
+    kept_file = nested / "file.txt"
+    kept_file.write_text("content", encoding="utf-8")
+
+    profile.align_mount_ownership(target, exclude=frozenset({excluded_file}))
+
+    assert excluded_file not in calls
+    assert kept_file in calls
+    assert nested in calls
+    assert target in calls
+
+
 def test_broker_command_is_dual_homed_hardened_and_uses_image_id() -> None:
     spec = lifecycle.BrokerContainerSpec(
         docker_label="ai.orchestra.test",

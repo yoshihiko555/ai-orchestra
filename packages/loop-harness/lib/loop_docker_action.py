@@ -27,7 +27,23 @@ import loop_docker_config as docker_config  # noqa: E402
 import loop_docker_image as docker_image  # noqa: E402
 import loop_docker_profile as profile  # noqa: E402
 import loop_docker_settings as docker_settings  # noqa: E402
+import loop_driver_support as driver_support  # noqa: E402
 import loop_git_ephemeral as git_ephemeral  # noqa: E402
+import loop_local_override_guard as local_override_guard  # noqa: E402
+
+
+def _local_override_leaf_paths(worktree_path: Path) -> frozenset[Path]:
+    """Return absolute paths of every project-local override *file* (not ancestor directory).
+
+    Used by `align_mount_ownership()`'s `exclude` to keep these leaf entries at their original
+    owner even under a root-run driver; see the round 4 comment at that call site.
+    """
+    return frozenset(
+        worktree_path / entry.path
+        for entry in local_override_guard.snapshot_local_overrides(worktree_path)
+        if entry.kind != "directory"
+    )
+
 
 ActionKind = Literal["maker", "checker", "classifier"]
 IdleProcessSnapshot = tuple[tuple[int, str, str], ...]
@@ -50,6 +66,12 @@ _RUNTIME_LABELS = runtime_lifecycle.RuntimeLabels(DOCKER_LABEL)
 # own `PATH` almost never resolves to this hardened image's toolchain -- while still forwarding
 # every other override (e.g. `RUFF_CACHE_DIR`) mechanical commands legitimately need.
 _MECHANICAL_ENV_RESERVED_KEYS = frozenset({"HOME", "TMPDIR", "PATH", "GIT_DIR", "GIT_WORK_TREE"})
+# Codex review, PR #262, High (round 4): fallback default only, layered *underneath* the
+# forwarded checker env in `_mechanical_exec_env()` so an explicit `RUFF_CACHE_DIR` override
+# still wins; see that function's docstring for why this is needed at all.
+_MECHANICAL_ENV_DEFAULTS: Mapping[str, str] = {
+    "RUFF_CACHE_DIR": f"{profile.CONTAINER_TMP}/ruff-cache"
+}
 
 
 class DockerActionError(RuntimeError):
@@ -153,12 +175,27 @@ class DockerActionRuntime:
         env: Mapping[str, str] | None = None,
     ) -> tuple[str, int]:
         self._ensure_started()
-        completed = self._execute(
-            ["/bin/bash", "-lc", command],
-            cwd=cwd,
-            timeout_seconds=timeout_seconds,
-            env=_mechanical_exec_env(env),
-        )
+        try:
+            completed = self._execute(
+                ["/bin/bash", "-lc", command],
+                cwd=cwd,
+                timeout_seconds=timeout_seconds,
+                env=_mechanical_exec_env(env),
+            )
+        except DockerActionError as exc:
+            timeout_error = exc.__cause__
+            if not isinstance(timeout_error, driver_support.ClaudePTimeoutError):
+                raise
+            # Codex review, PR #262, High (round 4): `_execute()` already destroyed this
+            # scenario container (fail-closed -- a killed `docker exec` client does not
+            # guarantee the exec'd process inside the container actually stopped, so the
+            # container can never be trusted as idle again), but the checker's sealed artifact
+            # contract expects an ordinary `(output, 124)` mechanical timeout result here, the
+            # same as the host executor's `_run_mechanical_command`, not an opaque Docker
+            # infrastructure failure that discards this command's output and the sealed result
+            # entirely.
+            output = f"{timeout_error.stdout}{timeout_error.stderr}\ncommand timed out"
+            return output, 124
         output = completed.stdout
         if completed.stderr:
             output += ("\n" if output else "") + completed.stderr
@@ -220,6 +257,7 @@ class DockerActionRuntime:
             docker_settings.DockerSettingsError,
             git_ephemeral.EphemeralGitInfrastructureError,
             git_ephemeral.EphemeralGitSafetyStop,
+            local_override_guard.LocalOverrideSnapshotError,
         ) as exc:
             self._raise_normalized(exc)
 
@@ -307,7 +345,18 @@ class DockerActionRuntime:
             # Maker tampering and safe-stops as `maker_partial_worktree` even though the Maker
             # never touched those files. Running the chown first means the snapshot already
             # reflects the container-ready ownership, so no spurious drift is ever recorded.
-            profile.runtime.align_mount_ownership(self.request.worktree_path)
+            #
+            # Codex review, PR #262, High (round 4): exclude the override *files* themselves
+            # (not their ancestor directories) from this chown. Under a root-run driver, a
+            # project-local override that was deliberately root-owned with stricter-than-usual
+            # permission bits (e.g. mode 600) would otherwise gain the fixed non-root 65532:65532
+            # container identity as its new owner -- newly granting the untrusted Maker read
+            # access the original permissions never allowed. Ancestor directories stay re-owned so
+            # the Maker can still traverse them and create unrelated sibling entries.
+            profile.runtime.align_mount_ownership(
+                self.request.worktree_path,
+                exclude=_local_override_leaf_paths(self.request.worktree_path),
+            )
         self.git_session = git_ephemeral.prepare_ephemeral_git(
             project_dir=self.request.project_dir,
             loop_id=self.request.loop_id,
@@ -567,10 +616,24 @@ def remove_scenario_container(
 
 
 def _mechanical_exec_env(env: Mapping[str, str] | None) -> dict[str, str]:
-    """Forward the caller's sanitized checker env, minus container-owned reserved keys."""
-    if not env:
-        return {}
-    return {key: value for key, value in env.items() if key not in _MECHANICAL_ENV_RESERVED_KEYS}
+    """Forward the caller's sanitized checker env, minus container-owned reserved keys, with a
+    container-writable cache default layered underneath.
+
+    Codex review, PR #262, High (round 4): the checker worktree (this exec's `cwd`) is mounted
+    read-only, but ruff defaults its cache directory to `.ruff_cache` under the project root
+    unless `RUFF_CACHE_DIR` is set (https://docs.astral.sh/ruff/settings/#cache-dir), and the
+    bundled issue-loop's default mechanical commands include `ruff check .`. `/tmp` is the
+    container's own tmpfs mount (`loop_docker_profile.CONTAINER_TMP`), always writable by the
+    non-root exec identity regardless of `cwd`, and this value never leaks any host path. It is
+    only a fallback: a `RUFF_CACHE_DIR` already present in the forwarded checker env (e.g. an
+    explicit operator override) still wins.
+    """
+    forwarded = (
+        {}
+        if not env
+        else {key: value for key, value in env.items() if key not in _MECHANICAL_ENV_RESERVED_KEYS}
+    )
+    return {**_MECHANICAL_ENV_DEFAULTS, **forwarded}
 
 
 def _without_settings(command: list[str]) -> list[str]:

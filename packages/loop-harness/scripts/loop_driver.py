@@ -1380,8 +1380,16 @@ class LoopDriver:
             return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
         except subprocess.TimeoutExpired:
             lds.kill_process_tree(proc.pid)
-            proc.communicate()
-            raise lds.ClaudePTimeoutError(f"claude -p timed out after {timeout_seconds}s") from None
+            # Codex review, PR #262, High (round 4): capture rather than discard this partial
+            # output. `execute_claude()` callers still only catch `ClaudePTimeoutError` and never
+            # inspect it, but `execute_mechanical()` (Docker) needs it to report an ordinary
+            # `(output, 124)` mechanical timeout result instead of losing the command's output.
+            timeout_stdout, timeout_stderr = proc.communicate()
+            raise lds.ClaudePTimeoutError(
+                f"claude -p timed out after {timeout_seconds}s",
+                stdout=timeout_stdout,
+                stderr=timeout_stderr,
+            ) from None
         finally:
             with self._child_lock:
                 self._child_pid = None

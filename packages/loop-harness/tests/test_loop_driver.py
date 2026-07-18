@@ -1634,6 +1634,34 @@ def test_run_child_kill_request_arriving_during_popen_still_kills_new_child(
     assert result.returncode != 0  # killed by SIGTERM, not a clean sleep-30 completion
 
 
+def test_run_host_child_captures_partial_output_on_timeout(
+    tmp_path: Path,
+) -> None:
+    """Codex review, PR #262, High (round 4): capture, not discard, partial output on timeout.
+
+    `loop_docker_action.DockerActionRuntime.execute_mechanical()` needs this to report an
+    ordinary `(output, 124)` mechanical timeout result instead of losing the command's output
+    entirely (the same shared `_run_host_child` also backs Docker's `execute_claude()`, which
+    only ever catches `ClaudePTimeoutError` and never inspects these attributes).
+    """
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    script = tmp_path / "prints_then_hangs.sh"
+    script.write_text(
+        "#!/bin/sh\necho partial-stdout\necho partial-stderr >&2\n"
+        "trap '' TERM\nsleep 30 &\nwait $!\n",
+        encoding="utf-8",
+    )
+    script.chmod(script.stat().st_mode | stat.S_IEXEC)
+
+    with pytest.raises(lds.ClaudePTimeoutError) as caught:
+        d._run_child([str(script)], str(tmp_path), 1, dict(os.environ))
+
+    assert "partial-stdout" in caught.value.stdout
+    assert "partial-stderr" in caught.value.stderr
+
+
 def test_set_current_child_kills_immediately_when_lease_already_lost(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
