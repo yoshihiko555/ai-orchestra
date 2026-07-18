@@ -15,9 +15,10 @@ prompt: |
   3. `agents.debugger.tool` の実効値を次の規則で解決する。
      - `codex` かつ `codex.enabled: false` の場合は `claude-direct` にフォールバックする。
      - `antigravity` かつ `antigravity.enabled: false` の場合は `claude-direct` にフォールバックする。
-     - `auto` の場合、有効な CLI alias から `codex` → `antigravity` の順で選び、
-       どちらも無効なら `claude-direct` を選ぶ（codex-system の「深い推論 → Codex、調査 →
-       Antigravity、単純作業 → Claude」の優先順位と同じ）。
+     - `auto` の場合、これは debug/analyze の深い推論タスクなので有効な CLI alias から
+       `codex` → `antigravity` の順で選び（codex-system の「深い推論 → Codex、調査 →
+       Antigravity、単純作業 → Claude」の優先順位。antigravity-system 側のリサーチタスクでは
+       逆順 `antigravity` → `codex` になる点に注意）、どちらも無効なら `claude-direct` を選ぶ。
      - それ以外（`claude-direct` など）はそのまま `claude-direct` とする。
   4. リポジトリ直下の `codex-route-decision.json` に、解決結果に応じて次の JSON だけを書く
      （キーの過不足なく、値はマージ後の設定ファイルから実際に読み取った値を使う）。

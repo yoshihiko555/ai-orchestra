@@ -596,6 +596,86 @@ def test_cli_skill_route_oracle_resolves_auto_to_antigravity_when_codex_disabled
     fixture.assert_route(tmp_path, "codex", Path("codex-route-decision.json"))
 
 
+def test_cli_skill_route_oracle_resolves_auto_to_antigravity_when_both_enabled_for_researcher(
+    tmp_path: Path,
+) -> None:
+    """`agents.researcher.tool: auto` is a research task, so it must prefer Antigravity
+    first even though Codex is also enabled -- the opposite priority from the debugger
+    probe (PR #264 review round 2, task-dependent auto priority)."""
+    _stub_hook_common()
+    fixture = _cli_skill_route_oracle_fixture()
+    _write_routing_config_files(
+        tmp_path,
+        base={
+            "codex": {
+                "enabled": True,
+                "model": "codex-model-x",
+                "flags": "--full-auto",
+                "sandbox": {"analysis": "read-only"},
+            },
+            "antigravity": {
+                "enabled": True,
+                "model": "gemini-3.1-pro-high",
+                "model_allowlist": ["gemini-3.1-pro-high"],
+            },
+            "agents": {"researcher": {"tool": "auto"}},
+        },
+        local_overrides={},
+    )
+    artifact = {
+        "engine": "antigravity",
+        "resolved_tool": "antigravity",
+        "codex_enabled": True,
+        "antigravity_enabled": True,
+        "model": "gemini-3.1-pro-high",
+        "allowlist_warning": False,
+    }
+    artifact_path = tmp_path / "antigravity-route-decision.json"
+    artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
+
+    fixture.assert_route(tmp_path, "antigravity", Path("antigravity-route-decision.json"))
+
+    artifact_path.write_text(json.dumps({**artifact, "engine": "codex"}), encoding="utf-8")
+    with pytest.raises(AssertionError, match="materialized cli-tools config"):
+        fixture.assert_route(tmp_path, "antigravity", Path("antigravity-route-decision.json"))
+
+
+def test_cli_skill_route_oracle_resolves_auto_to_codex_when_antigravity_disabled_for_researcher(
+    tmp_path: Path,
+) -> None:
+    """`agents.researcher.tool: auto` with antigravity disabled must fall through to the
+    next enabled alias (codex) instead of collapsing straight to claude-direct."""
+    _stub_hook_common()
+    fixture = _cli_skill_route_oracle_fixture()
+    _write_routing_config_files(
+        tmp_path,
+        base={
+            "codex": {
+                "enabled": True,
+                "model": "codex-model-x",
+                "flags": "--full-auto",
+                "sandbox": {"analysis": "read-only"},
+            },
+            "antigravity": {"enabled": False},
+            "agents": {"researcher": {"tool": "auto"}},
+        },
+        local_overrides={},
+    )
+    artifact = {
+        "engine": "codex",
+        "resolved_tool": "codex",
+        "codex_enabled": True,
+        "antigravity_enabled": False,
+        "model": "codex-model-x",
+        "sandbox": "read-only",
+        "flags": "--full-auto",
+    }
+    artifact_path = tmp_path / "antigravity-route-decision.json"
+    artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
+
+    fixture.assert_route(tmp_path, "antigravity", Path("antigravity-route-decision.json"))
+
+
 def test_cli_skill_route_oracle_resolves_auto_to_claude_direct_when_no_cli_enabled(
     tmp_path: Path,
 ) -> None:

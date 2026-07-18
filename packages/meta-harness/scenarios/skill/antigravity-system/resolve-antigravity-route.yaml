@@ -14,8 +14,10 @@ prompt: |
   3. `agents.researcher.tool` の実効値を次の規則で解決する。
      - `antigravity` かつ `antigravity.enabled: false` の場合は `claude-direct` にフォールバックする。
      - `codex` かつ `codex.enabled: false` の場合は `claude-direct` にフォールバックする。
-     - `auto` の場合、有効な CLI alias から `codex` → `antigravity` の順で選び、
-       どちらも無効なら `claude-direct` を選ぶ（cli-tools.yaml の routing 規則と同じ優先順位）。
+     - `auto` の場合、これはリサーチタスクなので有効な CLI alias から
+       `antigravity` → `codex` の順で選び（orchestra-usage.md /
+       antigravity-system.md の「調査は Antigravity 候補」規範）、
+       どちらも無効なら `claude-direct` を選ぶ。
      - それ以外（`claude-direct` など）はそのまま `claude-direct` とする。
   4. `antigravity.model` が `antigravity.model_allowlist` に含まれるか確認する
      （antigravity-delegation.md の「model allowlist チェック」）。

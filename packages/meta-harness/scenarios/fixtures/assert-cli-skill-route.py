@@ -11,12 +11,18 @@ same shared resolution helpers the routing-config behavioral scenarios use
 scenario prompt asked Claude to write.
 
 ``agents.<name>.tool`` can resolve to ``auto`` (e.g. via a routing-config
-candidate patch). Following the same alias-priority resolution used by
-``assert-routing-behavior.py`` (PR #257), ``auto`` picks the first enabled CLI
-in ``codex`` -> ``antigravity`` -> ``claude-direct`` order, so this fixture
-must be able to expect a ``codex`` engine for the antigravity-system probe (or
-an ``antigravity`` engine for the codex-system probe) and not just collapse
-every non-primary resolution to ``claude-direct``.
+candidate patch). ``auto`` picks the first enabled CLI from ``build_aliases``'
+alias list, but the priority order is task-dependent (see
+``.claude/rules/orchestra-usage.md`` / ``facets/instructions/antigravity-system.md``):
+deep-reasoning/debugging tasks prefer Codex first, research tasks prefer
+Antigravity first. So the ``debugger`` probe (codex-system) resolves ``auto``
+as ``codex`` -> ``antigravity`` -> ``claude-direct`` (matching
+``assert-routing-behavior.py``'s ``_train_behavior``, PR #257), while the
+``researcher`` probe (antigravity-system) resolves it as
+``antigravity`` -> ``codex`` -> ``claude-direct``. This fixture must be able to
+expect a ``codex`` engine for the antigravity-system probe (or an
+``antigravity`` engine for the codex-system probe) and not just collapse every
+non-primary resolution to ``claude-direct``.
 """
 
 from __future__ import annotations
@@ -34,14 +40,22 @@ from typing import Any
 _CODEX_PROBE_AGENT = "debugger"
 _ANTIGRAVITY_PROBE_AGENT = "researcher"
 
+# `auto` priority order is task-dependent, not a single global order (PR #264
+# review round 2): deep-reasoning/debugging tasks (debugger probe) prefer
+# Codex first; research tasks (researcher probe) prefer Antigravity first.
+_AUTO_PRIORITY_BY_PROBE: dict[str, tuple[tuple[str, str], ...]] = {
+    _CODEX_PROBE_AGENT: (("bash:codex", "codex"), ("bash:agy", "antigravity")),
+    _ANTIGRAVITY_PROBE_AGENT: (("bash:agy", "antigravity"), ("bash:codex", "codex")),
+}
+
 
 def _resolve_final_tool(probe_agent: str, merged: dict[str, Any], project_root: Path) -> str:
     """Resolve ``agents.<probe_agent>.tool`` to a concrete engine.
 
-    Mirrors ``assert-routing-behavior.py``'s ``_resolve_train_behavior``: an
-    ``auto`` value is resolved via ``build_aliases``' enabled-CLI alias list,
-    preferring ``codex`` then ``antigravity``, falling back to
-    ``claude-direct`` when neither is enabled.
+    Mirrors ``assert-routing-behavior.py``'s ``_train_behavior``: an ``auto``
+    value is resolved via ``build_aliases``' enabled-CLI alias list, using the
+    task-appropriate priority order for ``probe_agent``, falling back to
+    ``claude-direct`` when no preferred CLI is enabled.
     """
     sys.path.insert(0, str(project_root / "packages/agent-routing/hooks"))
     from route_config import build_aliases, get_agent_tool
@@ -51,7 +65,8 @@ def _resolve_final_tool(probe_agent: str, merged: dict[str, Any], project_root: 
         return resolved
     aliases = build_aliases(merged)
     auto_aliases = tuple(str(alias) for alias in aliases.get("auto", []))
-    for alias, tool in (("bash:codex", "codex"), ("bash:agy", "antigravity")):
+    priority = _AUTO_PRIORITY_BY_PROBE[probe_agent]
+    for alias, tool in priority:
         if alias in auto_aliases:
             return tool
     return "claude-direct"
