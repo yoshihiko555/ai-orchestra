@@ -1333,6 +1333,70 @@ def test_docker_external_review_infrastructure_result_does_not_use_checker_contr
     }
 
 
+def test_post_result_cleanup_safety_stop_preserves_checker_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    proposal = lc.ProposeResult(
+        action=lc.Action.RUN_CHECKER.value,
+        action_id="act-cleanup-failed",
+        state_version=state.state_version,
+        expected_phase=state.phase,
+        phase=state.phase,
+        iteration=state.iteration,
+        context={},
+    )
+    sealed_payload = {"passed": True, "signature": "sealed-checker-result"}
+    artifact = lc.loop_dir(loop_id, project_dir) / Path(
+        lc.save_artifact(
+            loop_id,
+            project_dir,
+            proposal.action_id,
+            "check_result.json",
+            json.dumps(sealed_payload),
+        )
+    )
+    sealed_bytes = artifact.read_bytes()
+
+    class CleanupFailedExecutor:
+        def finish(self, _result: dict[str, Any]) -> None:
+            raise driver.lda.DockerActionSafetyStop(
+                "action_cleanup_failed",
+                "isolated action cleanup failed",
+            )
+
+        def abort(self) -> None:
+            return
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(
+        driver.lae,
+        "build_action_executor",
+        lambda *_args, **_kwargs: CleanupFailedExecutor(),
+    )
+    monkeypatch.setattr(d, "_dispatch_action", lambda *_args, **_kwargs: sealed_payload)
+
+    def fail_if_replaced(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise AssertionError("cleanup failure must not synthesize an infrastructure result")
+
+    monkeypatch.setattr(d, "_docker_infrastructure_result", fail_if_replaced)
+    monkeypatch.setattr(
+        d,
+        "_stop_for_action_safety",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            driver.DriverTerminated("action_cleanup_failed")
+        ),
+    )
+
+    with pytest.raises(driver.DriverTerminated, match="action_cleanup_failed"):
+        d._dispatch(proposal, state)
+
+    assert artifact.read_bytes() == sealed_bytes
+
+
 def test_persist_safe_stop_writes_journal_before_state(tmp_path: Path) -> None:
     loop_id = "abcd1234-issue-1"
     project_dir, token = _seed_running_loop(tmp_path, loop_id)
@@ -1399,7 +1463,13 @@ def test_heartbeat_loss_kills_child_and_never_writes_state(
     # process had already reacquired the lease (attach after a crash).
     d.lease_token = "stale-token-not-matching-lock"
     killed_pids: list[int] = []
+    cancelled: list[bool] = []
     monkeypatch.setattr(lds, "kill_process_tree", lambda pid, **_: killed_pids.append(pid))
+    d._action_executor = type(
+        "CancelableExecutor",
+        (),
+        {"cancel": lambda _self: cancelled.append(True)},
+    )()
     d._set_current_child(4242)
     monkeypatch.setattr(d, "_stop_event", __import__("threading").Event())
 
@@ -1409,6 +1479,7 @@ def test_heartbeat_loss_kills_child_and_never_writes_state(
     d._kill_current_child()
 
     assert killed_pids == [4242]
+    assert cancelled == [True]
     assert d._lease_lost.is_set()
     after = lc.state_path(loop_id, project_dir).read_text(encoding="utf-8")
     assert before == after  # no state write happened as a result of lease loss

@@ -255,6 +255,29 @@ def test_load_config_resolves_local_override_from_root_worktree(tmp_path: Path) 
     assert config["guards"]["max_iterations"] == 3
 
 
+def test_load_config_never_uses_base_config_from_action_worktree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_package = tmp_path / "runtime-package"
+    _write(
+        runtime_package / "config" / "loop-harness.yaml",
+        "lp2:\n  isolation:\n    backend: docker\n    execution_backend: docker\n",
+    )
+    root = tmp_path / "root"
+    _init_repo(root)
+    linked = tmp_path / "linked"
+    _git(["worktree", "add", str(linked), "-b", "loop/issue-1"], root)
+    disabled = "lp2:\n  isolation:\n    backend: docker\n    execution_backend: none\n"
+    _write(linked / ".claude/config/loop-harness/loop-harness.yaml", disabled)
+    _write(linked / "packages/loop-harness/config/loop-harness.yaml", disabled)
+    monkeypatch.setattr(ld, "package_root", lambda: runtime_package)
+
+    config = ld.load_config(str(linked))
+
+    assert config["lp2"]["isolation"]["execution_backend"] == "docker"
+
+
 def test_load_config_applies_local_override_in_ordinary_repo(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _init_repo(repo)

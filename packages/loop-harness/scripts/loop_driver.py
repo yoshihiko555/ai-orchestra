@@ -826,6 +826,7 @@ class LoopDriver:
             pid = self._child_pid
         if pid is not None:
             lds.kill_process_tree(pid)
+        self._action_executor.cancel()
 
     # -- audit (FT-11 / NF-03: loop_iteration + loop_stop, in addition to loop_start) --------
 

@@ -9,13 +9,16 @@ import sys
 from pathlib import Path
 from typing import Any
 
-_PACKAGE_DIR = Path(__file__).resolve().parent.parent
+_LIB_DIR = Path(__file__).resolve().parent
+_PACKAGE_DIR = _LIB_DIR.parent
 _DOCKER_RUNTIME_LIB = _PACKAGE_DIR.parent / "docker-runtime" / "lib"
-if str(_DOCKER_RUNTIME_LIB) not in sys.path:
-    sys.path.insert(0, str(_DOCKER_RUNTIME_LIB))
+for _path in (_LIB_DIR, _DOCKER_RUNTIME_LIB):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
 
 import docker_runtime_cli as runtime_cli
 import docker_runtime_image as runtime_image
+import loop_docker_config as docker_config
 
 SubprocessRunner = runtime_cli.SubprocessRunner
 EnsuredImage = runtime_image.EnsuredImage
@@ -23,8 +26,8 @@ DockerImageError = runtime_image.DockerImageError
 
 DOCKER_LABEL = "ai.orchestra.loop-harness"
 NAME_PREFIX = "lh-"
-DEFAULT_SCENARIO_IMAGE = "ai-orchestra/loop-harness-scenario:2.1.207"
-DEFAULT_BROKER_IMAGE = "ai-orchestra/loop-harness-broker:0.1.0"
+DEFAULT_SCENARIO_IMAGE = docker_config.DEFAULT_SCENARIO_IMAGE
+DEFAULT_BROKER_IMAGE = docker_config.DEFAULT_BROKER_IMAGE
 DEFAULT_MANIFEST_PATH = ".claude/loop/docker-image-cache.json"
 DEFAULT_LOCK_PATH = ".claude/loop/docker-image-build.lock"
 DEFAULT_BUILDER_NAME = "loop-harness-builder"

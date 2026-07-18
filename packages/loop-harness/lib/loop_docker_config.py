@@ -11,6 +11,8 @@ from typing import Any
 
 _DIGEST_IMAGE_RE = re.compile(r"^\S+@sha256:[0-9a-f]{64}$")
 _MEMORY_RE = re.compile(r"^[1-9][0-9]*(?:[bkmg]|[kmgt]i?b)?$", re.IGNORECASE)
+DEFAULT_SCENARIO_IMAGE = "ai-orchestra/loop-harness-scenario:2.1.207"
+DEFAULT_BROKER_IMAGE = "ai-orchestra/loop-harness-broker:0.1.0"
 
 
 class DockerConfigError(ValueError):
@@ -77,7 +79,7 @@ def validate_isolation_config(config: Mapping[str, Any]) -> DockerIsolationConfi
     backend, execution_backend = _validated_backends(isolation)
 
     image = _nonempty_string(
-        isolation.get("image", "ai-orchestra/loop-harness-scenario:2.1.207"),
+        isolation.get("image", DEFAULT_SCENARIO_IMAGE),
         "image",
     )
     image_pin = _optional_string(isolation.get("image_pin"), "image_pin")
@@ -154,7 +156,7 @@ def _validate_broker(value: Any) -> BrokerConfig:
     )
     return BrokerConfig(
         image=_nonempty_string(
-            broker.get("image", "ai-orchestra/loop-harness-broker:0.1.0"),
+            broker.get("image", DEFAULT_BROKER_IMAGE),
             "broker.image",
         ),
         port_range=_port_range(broker.get("port_range", [8790, 8990])),

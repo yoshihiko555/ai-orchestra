@@ -7,6 +7,7 @@ import math
 import secrets
 import subprocess
 import sys
+import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,6 +38,7 @@ HostChildRunner = Callable[
 
 DOCKER_LABEL = "ai.orchestra.loop-harness"
 CONTAINER_LIFETIME_MARGIN_SECONDS = 60
+DOCKER_EXEC_CLIENT_FAILURE_EXIT_CODE = 125
 _ALLOWED_IDLE_COMMANDS = frozenset({"docker-init", "tini", "timeout", "sleep"})
 _RUNTIME_LABELS = runtime_lifecycle.RuntimeLabels(DOCKER_LABEL)
 
@@ -101,6 +103,8 @@ class DockerActionRuntime:
         self._scenario_removed = False
         self._idle_process_baseline: IdleProcessSnapshot | None = None
         self._finished = False
+        self._cancel_requested = threading.Event()
+        self._lifecycle_lock = threading.RLock()
 
     @property
     def started(self) -> bool:
@@ -146,16 +150,42 @@ class DockerActionRuntime:
         return output, completed.returncode
 
     def finish(self, *, action_succeeded: bool) -> None:
-        if self._finished:
-            return
-        self._finished = True
-        errors = self._cleanup_containers()
-        try:
-            self._finish_git(action_succeeded=action_succeeded, cleanup_errors=errors)
-        finally:
-            self._cleanup_local_runtime(errors)
-        if errors:
-            raise DockerActionError("; ".join(errors))
+        with self._lifecycle_lock:
+            if self._finished:
+                return
+            self._finished = True
+            scenario_error, cleanup_errors = self._cleanup_containers()
+            primary_error: BaseException | None = scenario_error
+            try:
+                if primary_error is None:
+                    self._finish_git(action_succeeded=action_succeeded)
+            except BaseException as exc:
+                primary_error = exc
+            finally:
+                self._cleanup_local_runtime(cleanup_errors)
+            if primary_error is not None:
+                for cleanup_error in cleanup_errors:
+                    primary_error.add_note(f"action cleanup also failed: {cleanup_error}")
+                raise primary_error
+            if cleanup_errors:
+                raise DockerActionSafetyStop(
+                    "action_cleanup_failed",
+                    "isolated action cleanup failed",
+                    details={"cleanup_errors": cleanup_errors},
+                )
+
+    def cancel(self) -> None:
+        """Latch cancellation and destroy a started scenario without leaking thread errors."""
+        self._cancel_requested.set()
+        with self._lifecycle_lock:
+            if not self._scenario_start_attempted or self._scenario_removed:
+                return
+            try:
+                self._destroy_scenario_locked()
+            except DockerActionSafetyStop:
+                # The dispatch thread retries cleanup and turns persistent failure into a
+                # typed safety-stop. Heartbeat threads must never mutate loop state directly.
+                return
 
     def _ensure_started(self) -> None:
         if self._started:
@@ -176,6 +206,7 @@ class DockerActionRuntime:
             self._raise_normalized(exc)
 
     def _start(self) -> None:
+        self._raise_if_cancelled()
         if not runtime_cli.docker_daemon_available(runner=self.runner):
             raise DockerActionError("Docker daemon unavailable")
         broker_runtime.sweep_stale_resources(self.owner_id, runner=self.runner)
@@ -185,6 +216,7 @@ class DockerActionRuntime:
         broker_image = docker_image.ensure_broker_image(
             self.request.config, self.request.project_dir, runner=self.runner
         )
+        self._raise_if_cancelled()
         mounts, container_env, workdir = self._prepare_mounts()
         max_lifetime = _max_lifetime_seconds(self.request.remaining_wall_clock_seconds())
         self.broker = broker_runtime.start_broker(
@@ -196,6 +228,7 @@ class DockerActionRuntime:
             max_lifetime_seconds=max_lifetime,
             runner=self.runner,
         )
+        self._raise_if_cancelled()
         self.container_name = (
             f"lh-{profile.runtime.safe_name(self.request.loop_id)}-"
             f"{profile.runtime.safe_name(self.request.action_id)}-{secrets.token_hex(3)}"
@@ -211,13 +244,16 @@ class DockerActionRuntime:
             max_lifetime_sec=max_lifetime,
             owner_labels=self.owner_labels,
         )
-        self._scenario_start_attempted = True
-        start_scenario_container(spec, runner=self.runner)
-        self._idle_process_baseline = capture_scenario_idle_baseline(
-            self.container_name,
-            runner=self.runner,
-        )
-        self._started = True
+        with self._lifecycle_lock:
+            self._raise_if_cancelled_locked()
+            self._scenario_start_attempted = True
+            start_scenario_container(spec, runner=self.runner)
+            self._idle_process_baseline = capture_scenario_idle_baseline(
+                self.container_name,
+                runner=self.runner,
+            )
+            self._started = True
+            self._raise_if_cancelled_locked()
 
     def _prepare_mounts(self) -> tuple[tuple[Any, ...], dict[str, str], Path]:
         if self.request.kind == "classifier":
@@ -237,6 +273,8 @@ class DockerActionRuntime:
         if self.request.kind == "maker":
             git_mounts = git_ephemeral.build_maker_git_mount_spec(self.git_session)
         else:
+            if not self.request.isolation.checker_read_only_worktree:
+                raise DockerActionError("Checker worktree must be read-only")
             git_mounts = git_ephemeral.build_checker_git_mount_spec(self.git_session)
         trusted_mount = git_ephemeral.BindMountSpec(
             self.settings_bundle.source_dir,
@@ -257,6 +295,7 @@ class DockerActionRuntime:
         timeout_seconds: float,
         env: dict[str, str],
     ) -> subprocess.CompletedProcess[str]:
+        self._raise_if_cancelled()
         docker_command = profile.build_exec_command(
             self.container_name,
             command,
@@ -276,7 +315,8 @@ class DockerActionRuntime:
         except BaseException:
             self._destroy_scenario_or_raise()
             raise
-        if completed.returncode == 125:
+        self._raise_if_cancelled()
+        if completed.returncode == DOCKER_EXEC_CLIENT_FAILURE_EXIT_CODE:
             self._destroy_scenario_or_raise()
             raise DockerActionError("docker exec failed before the action command ran")
         self._assert_idle_or_destroy()
@@ -304,6 +344,10 @@ class DockerActionRuntime:
             raise
 
     def _destroy_scenario_or_raise(self) -> None:
+        with self._lifecycle_lock:
+            self._destroy_scenario_locked()
+
+    def _destroy_scenario_locked(self) -> None:
         if self._scenario_removed:
             return
         if not self.container_name:
@@ -318,27 +362,40 @@ class DockerActionRuntime:
             )
         self._scenario_removed = True
 
-    def _cleanup_containers(self) -> list[str]:
+    def _raise_if_cancelled(self) -> None:
+        if not self._cancel_requested.is_set():
+            return
+        with self._lifecycle_lock:
+            self._raise_if_cancelled_locked()
+
+    def _raise_if_cancelled_locked(self) -> None:
+        if not self._cancel_requested.is_set():
+            return
+        if self._scenario_start_attempted and not self._scenario_removed:
+            self._destroy_scenario_locked()
+        raise DockerActionError("Docker action was cancelled")
+
+    def _cleanup_containers(self) -> tuple[DockerActionSafetyStop | None, list[str]]:
+        scenario_error: DockerActionSafetyStop | None = None
         errors: list[str] = []
         try:
             self._destroy_scenario_or_raise()
         except DockerActionSafetyStop as exc:
-            errors.append(str(exc))
+            scenario_error = exc
         if self.broker is not None:
             try:
                 self.broker.cleanup()
             except broker_runtime.LoopDockerBrokerError as exc:
                 errors.append(str(exc))
-        return errors
+        return scenario_error, errors
 
-    def _finish_git(self, *, action_succeeded: bool, cleanup_errors: list[str]) -> None:
+    def _finish_git(self, *, action_succeeded: bool) -> None:
         if self.git_session is None or self.request.kind != "maker":
             return
         if self._scenario_start_attempted and not self._scenario_removed:
             raise DockerActionSafetyStop(
                 "maker_container_cleanup_unconfirmed",
                 "Maker finalize forbidden because container cleanup was not confirmed",
-                details={"cleanup_errors": cleanup_errors},
             )
         if action_succeeded:
             git_ephemeral.finalize_ephemeral_git(self.git_session)

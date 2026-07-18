@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -136,6 +137,21 @@ def test_empty_action_result_is_not_treated_as_maker_success() -> None:
     action_executor.DockerActionExecutor(runtime).finish({})
 
     assert runtime.success is False
+
+
+def test_action_executor_cancel_delegates_only_for_docker() -> None:
+    class Runtime:
+        def __init__(self) -> None:
+            self.cancelled = False
+
+        def cancel(self) -> None:
+            self.cancelled = True
+
+    runtime = Runtime()
+    action_executor.HostActionExecutor(lambda *_args: None).cancel()
+    action_executor.DockerActionExecutor(runtime).cancel()
+
+    assert runtime.cancelled is True
 
 
 def test_maker_lifecycle_uses_production_primitives_in_required_order(
@@ -380,6 +396,141 @@ def test_docker_exec_timeout_is_normalized_and_removes_scenario(
     assert runtime._scenario_removed is True
 
 
+def test_cancel_before_start_prevents_any_docker_work(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = docker_action.DockerActionRuntime(
+        _request(tmp_path, kind="classifier"),
+        host_child_runner=lambda *_args: subprocess.CompletedProcess([], 0, "", ""),
+    )
+    daemon_checks: list[bool] = []
+    monkeypatch.setattr(
+        docker_action.runtime_cli,
+        "docker_daemon_available",
+        lambda **_kwargs: daemon_checks.append(True) or True,
+    )
+
+    runtime.cancel()
+
+    with pytest.raises(docker_action.DockerActionError, match="cancelled"):
+        runtime.execute_mechanical("true", "/tmp", 30)
+
+    assert daemon_checks == []
+
+
+def test_cancel_removes_a_running_scenario_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = docker_action.DockerActionRuntime(
+        _request(tmp_path, kind="classifier"),
+        host_child_runner=lambda *_args: subprocess.CompletedProcess([], 0, "", ""),
+    )
+    runtime.container_name = "lh-action"
+    runtime._scenario_start_attempted = True
+    runtime._started = True
+    removed: list[str] = []
+    monkeypatch.setattr(
+        docker_action.runtime_cli,
+        "remove_container",
+        lambda name, **_kwargs: removed.append(name) or True,
+    )
+
+    runtime.cancel()
+    runtime.cancel()
+
+    assert removed == ["lh-action"]
+    assert runtime._scenario_removed is True
+
+
+def test_cancel_racing_scenario_start_removes_container_before_exec(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = docker_action.DockerActionRuntime(
+        _request(tmp_path, kind="classifier"),
+        host_child_runner=lambda *_args: (_ for _ in ()).throw(
+            AssertionError("cancelled scenario must never reach docker exec")
+        ),
+    )
+    entered_start = threading.Event()
+    release_start = threading.Event()
+    removed: list[str] = []
+
+    class Broker:
+        internal_network = "lh-internal"
+
+        def cleanup(self) -> None:
+            return
+
+    monkeypatch.setattr(
+        docker_action.runtime_cli,
+        "docker_daemon_available",
+        lambda **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        docker_action.broker_runtime,
+        "sweep_stale_resources",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        docker_action.docker_image,
+        "ensure_scenario_image",
+        lambda *_args, **_kwargs: SimpleNamespace(image_id=IMAGE_ID),
+    )
+    monkeypatch.setattr(
+        docker_action.docker_image,
+        "ensure_broker_image",
+        lambda *_args, **_kwargs: SimpleNamespace(image_id=IMAGE_ID),
+    )
+    monkeypatch.setattr(
+        docker_action.broker_runtime,
+        "start_broker",
+        lambda *_args, **_kwargs: Broker(),
+    )
+
+    def blocking_start(*_args: Any, **_kwargs: Any) -> None:
+        entered_start.set()
+        assert release_start.wait(timeout=5)
+
+    monkeypatch.setattr(docker_action, "start_scenario_container", blocking_start)
+    monkeypatch.setattr(
+        docker_action,
+        "capture_scenario_idle_baseline",
+        lambda *_args, **_kwargs: (),
+    )
+    monkeypatch.setattr(
+        docker_action.runtime_cli,
+        "remove_container",
+        lambda name, **_kwargs: removed.append(name) or True,
+    )
+    failures: list[BaseException] = []
+
+    def execute() -> None:
+        try:
+            runtime.execute_mechanical("true", "/tmp", 30)
+        except BaseException as exc:
+            failures.append(exc)
+
+    execute_thread = threading.Thread(target=execute)
+    execute_thread.start()
+    assert entered_start.wait(timeout=5)
+    cancel_thread = threading.Thread(target=runtime.cancel)
+    cancel_thread.start()
+    assert runtime._cancel_requested.wait(timeout=5)
+    release_start.set()
+    execute_thread.join(timeout=5)
+    cancel_thread.join(timeout=5)
+
+    assert not execute_thread.is_alive()
+    assert not cancel_thread.is_alive()
+    assert len(failures) == 1
+    assert isinstance(failures[0], docker_action.DockerActionError)
+    assert "cancelled" in str(failures[0])
+    assert removed == [runtime.container_name]
+
+
 def test_trusted_settings_bundle_is_readable_by_non_root_container_and_cleanupable(
     tmp_path: Path,
 ) -> None:
@@ -463,8 +614,45 @@ def test_maker_finalizes_after_scenario_removal_when_broker_cleanup_fails(
         lambda *_args: None,
     )
 
-    with pytest.raises(docker_action.DockerActionError, match="broker cleanup failed") as caught:
+    with pytest.raises(
+        docker_action.DockerActionSafetyStop,
+        match="isolated action cleanup failed",
+    ) as caught:
         runtime.finish(action_succeeded=True)
 
-    assert not isinstance(caught.value, docker_action.DockerActionSafetyStop)
+    assert caught.value.stop_reason == "action_cleanup_failed"
+    assert caught.value.details == {"cleanup_errors": ["broker cleanup failed"]}
     assert finalized == [True]
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected_reason"),
+    [
+        ("maker", "maker_container_cleanup_unconfirmed"),
+        ("checker", "container_cleanup_unconfirmed"),
+        ("classifier", "container_cleanup_unconfirmed"),
+    ],
+)
+def test_unconfirmed_container_removal_safe_stops_every_action_kind(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+    expected_reason: str,
+) -> None:
+    runtime = docker_action.DockerActionRuntime(
+        _request(tmp_path, kind=kind),
+        host_child_runner=lambda *_args: subprocess.CompletedProcess([], 0, "", ""),
+    )
+    runtime.container_name = "lh-action"
+    runtime._scenario_start_attempted = True
+    runtime._started = True
+    monkeypatch.setattr(
+        docker_action.runtime_cli,
+        "remove_container",
+        lambda *_args, **_kwargs: False,
+    )
+
+    with pytest.raises(docker_action.DockerActionSafetyStop) as caught:
+        runtime.finish(action_succeeded=False)
+
+    assert caught.value.stop_reason == expected_reason

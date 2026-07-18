@@ -6,6 +6,7 @@ import os
 import secrets
 import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -361,6 +362,139 @@ def test_checker_is_read_only_has_no_sensitive_mounts_and_no_egress(
     finally:
         _remove_or_fail(name)
         git_ephemeral.cleanup_ephemeral_git(session)
+
+
+def test_driver_cancel_reclaims_long_running_docker_exec_cgroup(
+    tmp_path: Path,
+    docker_image_id: str,
+    internal_network: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project, worktree, _baseline = _git_fixture(tmp_path)
+    config = _docker_config()
+    container_names: list[str] = []
+
+    class Broker:
+        base_url = "http://lh-broker:8790"
+        run_token = "containment-e2e-token"
+
+        def __init__(self) -> None:
+            self.internal_network = internal_network
+            self.cleaned = False
+
+        def cleanup(self) -> None:
+            self.cleaned = True
+
+    broker = Broker()
+    monkeypatch.setattr(driver.ld, "load_config", lambda *_args: config)
+    monkeypatch.setattr(
+        driver.lda.broker_runtime,
+        "sweep_stale_resources",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        driver.lda.docker_image,
+        "ensure_scenario_image",
+        lambda *_args, **_kwargs: SimpleNamespace(image_id=docker_image_id),
+    )
+    monkeypatch.setattr(
+        driver.lda.docker_image,
+        "ensure_broker_image",
+        lambda *_args, **_kwargs: SimpleNamespace(image_id=docker_image_id),
+    )
+    monkeypatch.setattr(
+        driver.lda.broker_runtime,
+        "start_broker",
+        lambda *_args, **_kwargs: broker,
+    )
+    production_start = driver.lda.start_scenario_container
+
+    def start_and_capture(spec: object, **kwargs: Any) -> None:
+        container_names.append(spec.container_name)
+        production_start(spec, **kwargs)
+
+    monkeypatch.setattr(driver.lda, "start_scenario_container", start_and_capture)
+    loop_driver = driver.LoopDriver("loop-211-cancel-e2e", str(project), "e2e-lease")
+    executor = driver.lae.build_action_executor(
+        config,
+        project_dir=str(project),
+        loop_id=loop_driver.loop_id,
+        action_id="classifier-action",
+        action=driver.lc.Action.WAIT_EXTERNAL_REVIEW.value,
+        worktree_path=str(worktree),
+        branch="issue-211-containment",
+        remaining_wall_clock_seconds=lambda: 120,
+        host_child_runner=loop_driver._run_host_child,
+    )
+    assert isinstance(executor, driver.lae.DockerActionExecutor)
+    loop_driver._action_executor = executor
+    failures: list[BaseException] = []
+
+    def execute_long_running_command() -> None:
+        try:
+            executor.mechanical_runner("sleep 300", "/tmp", 120)
+        except BaseException as exc:
+            failures.append(exc)
+
+    action_thread = threading.Thread(target=execute_long_running_command)
+    action_thread.start()
+    deadline = time.monotonic() + 20
+    top = ""
+    while time.monotonic() < deadline:
+        if container_names:
+            inspected_top = _run(
+                "docker",
+                "top",
+                container_names[0],
+                "-eo",
+                "pid,comm,args",
+                check=False,
+                timeout=10,
+            )
+            top = inspected_top.stdout
+            if inspected_top.returncode == 0 and "sleep 300" in top:
+                break
+        time.sleep(0.05)
+    assert container_names and "sleep 300" in top, top
+    host_pids = [
+        int(line.split(maxsplit=1)[0])
+        for line in top.splitlines()[1:]
+        if line.strip() and "sleep 300" in line
+    ]
+
+    try:
+        loop_driver._lease_lost.set()
+        loop_driver._kill_current_child()
+        action_thread.join(timeout=20)
+
+        assert not action_thread.is_alive()
+        assert len(failures) == 1
+        assert isinstance(failures[0], driver.lda.DockerActionError)
+        assert _run("docker", "inspect", container_names[0], check=False).returncode != 0
+        stats = _run(
+            "docker",
+            "stats",
+            "--no-stream",
+            "--format",
+            "{{.Name}}",
+            container_names[0],
+            check=False,
+            timeout=20,
+        )
+        assert container_names[0] not in stats.stdout.splitlines()
+        for pid in host_pids:
+            proc = Path(f"/proc/{pid}")
+            if proc.parent.is_dir():
+                pid_deadline = time.monotonic() + 5
+                while proc.exists() and time.monotonic() < pid_deadline:
+                    time.sleep(0.05)
+                assert not proc.exists()
+    finally:
+        executor.abort()
+        for container_name in container_names:
+            _remove_or_fail(container_name)
+
+    assert broker.cleaned is True
 
 
 def test_non_idle_exec_reclaims_container_cgroup(

@@ -722,6 +722,26 @@ config で切替可能な追加バックエンドとして導入する（確定�
 - ~~Docker Desktop/OrbStack でのファイル単位 `.git` ro overlay の実機検証~~ → **Phase 4 の上記
   containment E2E に統合して解消済み**: worktree mount 後に同一宛先へ重ねた pinned `.git`
   単一ファイルが実コンテナ内で読み取り専用となることを、mount 順序を含めて検証する。
+- ~~[Phase 4 レビュー指摘、Critical/High] action 結果生成後の cleanup failure が偽の
+  infrastructure result を生成する問題、および lease 喪失時に `docker exec` client しか停止しない問題~~
+  → **ADR-20260718-040 で解消済み**: cleanup failure は sealed artifact / Maker CAS を上書きせず
+  `action_cleanup_failed` で安全停止し、scenario 削除未確認は action 種別を問わず安全停止する。
+  heartbeat / wall-clock の取消は executor へ伝播し、起動中・実行中の scenario container を
+  race-safe かつ冪等に `docker rm -f` する。opt-in containment E2E は長時間 `docker exec` の回収まで
+  production driver 配線で検証する。
+- **[Phase 4 レビュー指摘、High、非採用] action worktree の base config を protected-path 化しない**:
+  実効 base config は driver 自身の `package_root()`、local override は root worktree から読み、Maker
+  rw mount 内の action worktree にある同名 base config は次 dispatch の設定源ではない。tracked config
+  更新を一律禁止すると loop-harness 自身の更新を妨げるため、パス分離を回帰テストで固定する。
+- **[Phase 4 セキュリティレビュー指摘、Medium、受容] broker の外向き通信はアプリ層 allowlist を主境界とする**:
+  scenario は internal network のみで外部へ直接到達できず、唯一 dual-home の trusted broker が固定
+  upstream host / HTTPS / request envelope / budget を検証する。Docker network 単体では DNS 名単位の
+  portable な egress allowlist を構成できないため、host firewall 追加は将来の defense-in-depth とし、
+  Phase 4 の移植可能な必須条件にはしない。
+- **[Phase 4 セキュリティレビュー指摘、Medium、受容] exec 後 idle 検証は `docker top` の snapshot とする**:
+  各 exec 直後に trusted startup snapshot との完全一致を検証し、永続する残存 process は cgroup ごと
+  破棄する。snapshot の瞬間だけ存在しない極短命 process を完全に証明する kernel event 監視までは
+  導入せず、broker の request/budget 制限と action 終了時の container 強制削除を補完境界とする。
 - ~~[未修正。2026-07-18 発見（PR #256 レビュー3巡目の回帰テスト作成中に判明。Critical 疑い）]
   `_verify_worktree_matches_trusted_tree` の `git status --porcelain` staged 列（index vs
   `HEAD`）が primary worktree の `HEAD` に誤って反応し、`main` が独立して進むだけで

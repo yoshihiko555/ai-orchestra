@@ -40,6 +40,9 @@ class HostActionExecutor:
     def abort(self) -> None:
         return
 
+    def cancel(self) -> None:
+        return
+
 
 class DockerActionExecutor:
     """Execute every untrusted action process inside one hardened container."""
@@ -78,6 +81,9 @@ class DockerActionExecutor:
 
     def abort(self) -> None:
         self.runtime.finish(action_succeeded=False)
+
+    def cancel(self) -> None:
+        self.runtime.cancel()
 
 
 def build_action_executor(
