@@ -208,8 +208,21 @@ def hardened_git_config_args() -> list[str]:
     does not, and cannot, prevent a same-UID Maker process from writing to this worktree's
     `.git/` at the filesystem level in the first place (that requires the separate-user/
     container isolation #211 tracks).
+
+    `core.fsmonitor=` and `uploadpack.packObjectsHook=` (Issue #211 Fix-5): suppress repository-
+    configured subprocess hooks that could otherwise execute with the driver's privileges during
+    status/index refreshes or when importing objects from an untrusted ephemeral repository.
     """
-    return ["-c", "credential.helper=", "-c", "core.hooksPath=/dev/null"]
+    return [
+        "-c",
+        "credential.helper=",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
+        "core.fsmonitor=",
+        "-c",
+        "uploadpack.packObjectsHook=",
+    ]
 
 
 def resolve_origin_url(cwd: str, timeout_seconds: float = 10.0) -> str | None:

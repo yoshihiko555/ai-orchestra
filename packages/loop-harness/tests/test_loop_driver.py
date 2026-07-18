@@ -807,7 +807,16 @@ def test_get_remote_head_returns_none_when_query_itself_fails(tmp_path: Path) ->
 
 def test_hardened_git_config_args_clears_credential_helper() -> None:
     args = lds.hardened_git_config_args()
-    assert args == ["-c", "credential.helper=", "-c", "core.hooksPath=/dev/null"]
+    assert args == [
+        "-c",
+        "credential.helper=",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
+        "core.fsmonitor=",
+        "-c",
+        "uploadpack.packObjectsHook=",
+    ]
 
 
 def test_hardened_git_config_args_disables_hooks_path() -> None:
@@ -819,7 +828,7 @@ def test_hardened_git_config_args_disables_hooks_path() -> None:
     `git config --get`/`--list` reads) also refuses to run a Maker-planted hook, not just the
     push itself."""
     args = lds.hardened_git_config_args()
-    assert args.count("-c") == 2
+    assert args.count("-c") == 4
     assert "core.hooksPath=/dev/null" in args
 
 
