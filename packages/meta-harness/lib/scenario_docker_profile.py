@@ -353,7 +353,7 @@ def resources_config(config: dict) -> dict[str, Any]:
 
 
 def effective_broker_model_allowlist(config: dict) -> list[str]:
-    """Derive the effective broker model allowlist (Issue #261 PR2 review follow-up).
+    """Return the validated broker model allowlist (Issue #261 PR2 review round 2).
 
     Returns `[]` (meaning: no restriction) whenever either `evaluate.model` or
     `judge.model` is unset. Restricting the broker to the configured
@@ -361,10 +361,15 @@ def effective_broker_model_allowlist(config: dict) -> list[str]:
     model and break existing projects that have not pinned a model yet
     (backward compatibility takes priority over the stricter allowlist).
 
-    When both are pinned, the effective allowlist is the union of the
-    configured `evaluate.isolation.broker.model_allowlist` and the two pinned
-    model values, so repinning `evaluate.model` / `judge.model` without also
-    updating `model_allowlist` does not lock the candidate out with a 400.
+    When both are pinned, this validates -- it does NOT auto-union -- that both
+    pinned models are already present in the configured
+    `evaluate.isolation.broker.model_allowlist`. A previous revision unioned the
+    pinned models into the allowlist automatically, which silently defeated the
+    fail-closed guard: repinning to a pricier model would be auto-admitted by
+    the broker without the operator also updating
+    `pricing_upper_bound_usd_per_million`, under-counting real cost. Any pinned
+    model missing from the configured allowlist now raises
+    :class:`DockerProfileError` with an actionable message instead.
     """
     evaluate_cfg = config.get("evaluate") or {}
     judge_cfg = config.get("judge") or {}
@@ -374,10 +379,19 @@ def effective_broker_model_allowlist(config: dict) -> list[str]:
         return []
     broker = (evaluate_cfg.get("isolation") or {}).get("broker") or {}
     configured = broker.get("model_allowlist") or []
-    effective = {str(item) for item in configured}
-    effective.add(str(evaluate_model))
-    effective.add(str(judge_model))
-    return sorted(effective)
+    configured_set = {str(item) for item in configured}
+    pinned = {str(evaluate_model), str(judge_model)}
+    missing = sorted(pinned - configured_set)
+    if missing:
+        raise DockerProfileError(
+            "broker model allowlist fail-closed: pinned model(s) "
+            f"{', '.join(missing)} are not in "
+            f"evaluate.isolation.broker.model_allowlist ({', '.join(sorted(configured_set)) or '(empty)'}). "
+            "Update both evaluate.isolation.broker.model_allowlist and "
+            "evaluate.isolation.broker.pricing_upper_bound_usd_per_million to match the "
+            "repinned model(s) before re-running."
+        )
+    return sorted(configured_set)
 
 
 def broker_env(config: dict, run_token: str, port: int) -> dict[str, str]:

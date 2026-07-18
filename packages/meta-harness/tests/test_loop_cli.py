@@ -811,6 +811,13 @@ def test_evaluate_candidate_hash_matches_loop_current_scope(git_project: Path, m
             "model": "scope-test-model",
         }
     )
+    # Issue #261 PR2 review round 2: a repinned evaluate.model must be explicitly
+    # admitted by the configured broker model_allowlist (no auto-union), or
+    # evaluator_execution_snapshot() fails closed before a hash can be computed.
+    config["evaluate"]["isolation"]["broker"]["model_allowlist"] = [
+        "scope-test-model",
+        config["judge"]["model"],
+    ]
     config["scenario_run"]["max_output_tokens_default"] = 1234
     captured_hashes: list[str] = []
 

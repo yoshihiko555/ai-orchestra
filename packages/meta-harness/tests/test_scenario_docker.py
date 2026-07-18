@@ -31,12 +31,24 @@ def _completed(returncode: int = 0, stdout: str = "", stderr: str = ""):
     return subprocess.CompletedProcess([], returncode, stdout=stdout, stderr=stderr)
 
 
+def _allowlist_probe_stdout(
+    status: str, *, server: str = "meta-harness-broker Python/3.99.0", message: str = ""
+) -> str:
+    """Build a probe stdout line matching `_ALLOWLIST_SMOKE_SCRIPT`'s output contract."""
+    return docker._ALLOWLIST_SMOKE_FIELD_SEP.join([status, server, message])
+
+
+_VALID_ALLOWLIST_REJECTION_STDOUT = _allowlist_probe_stdout(
+    "400", message=docker._ALLOWLIST_SMOKE_REJECTION_MESSAGE
+)
+
+
 def _run_smoke_stub(_broker_session, command, **_kwargs):
-    """Generic `_run_smoke_container` fake: reports 400 for the negative broker
-    model allowlist probe (Issue #261 PR2 review) and a passing claude result for
-    every other capability smoke check."""
+    """Generic `_run_smoke_container` fake: reports a genuine broker rejection for the
+    negative broker model allowlist probe (Issue #261 PR2 review) and a passing claude
+    result for every other capability smoke check."""
     if command[:2] == ["/usr/bin/python3", "-c"]:
-        return _completed(stdout="400")
+        return _completed(stdout=_VALID_ALLOWLIST_REJECTION_STDOUT)
     return _completed(stdout='{"type":"result"}')
 
 
@@ -375,6 +387,24 @@ def test_daemon_absence_fails_capability_without_fallback() -> None:
     assert "daemon" in (result.reason or "").lower()
 
 
+def test_capability_gate_fails_closed_before_docker_when_repin_mismatches_allowlist() -> None:
+    """Issue #261 PR2 review round 2: a repinned model missing from model_allowlist
+    must fail closed before any Docker/broker work starts (pure config validation),
+    not just at the negative-probe smoke check deep inside the gate."""
+    config = copy.deepcopy(mh.DEFAULTS)
+    config["evaluate"]["model"] = "claude-repinned-expensive-model"
+
+    def _runner_must_not_run(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("Docker must not be touched when config validation fails closed")
+
+    result = docker.check_docker_capabilities(config, runner=_runner_must_not_run)
+
+    assert result.ok is False
+    assert "claude-repinned-expensive-model" in (result.reason or "")
+    assert "evaluate.isolation.broker.model_allowlist" in (result.reason or "")
+    assert "pricing_upper_bound_usd_per_million" in (result.reason or "")
+
+
 def test_image_pin_mismatch_fails_capability_before_smoke(tmp_path: Path, monkeypatch) -> None:
     session = _broker(tmp_path)
     session.cleaned = True
@@ -495,6 +525,12 @@ def test_capability_smoke_uses_configured_evaluate_model(tmp_path: Path, monkeyp
     commands: list[list[str]] = []
     config = copy.deepcopy(mh.DEFAULTS)
     config["evaluate"]["model"] = "claude-custom-model"
+    # Issue #261 PR2 review round 2: repinning evaluate.model must be admitted
+    # explicitly by the configured allowlist (no more auto-union).
+    config["evaluate"]["isolation"]["broker"]["model_allowlist"] = [
+        "claude-custom-model",
+        "claude-sonnet-5",
+    ]
     monkeypatch.setattr(docker.dcli, "docker_daemon_available", lambda **_kwargs: True)
     monkeypatch.setattr(docker, "sweep_stale_resources", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
@@ -530,6 +566,12 @@ def test_bare_judge_smoke_uses_configured_judge_model(tmp_path: Path, monkeypatc
     config = copy.deepcopy(mh.DEFAULTS)
     config["evaluate"]["model"] = "claude-custom-model"
     config["judge"]["model"] = "claude-custom-judge-model"
+    # Issue #261 PR2 review round 2: both repinned models must be explicitly
+    # admitted by the configured allowlist (no more auto-union).
+    config["evaluate"]["isolation"]["broker"]["model_allowlist"] = [
+        "claude-custom-model",
+        "claude-custom-judge-model",
+    ]
     monkeypatch.setattr(docker.dcli, "docker_daemon_available", lambda **_kwargs: True)
     monkeypatch.setattr(docker, "sweep_stale_resources", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
@@ -598,7 +640,7 @@ def test_capability_gate_passes_when_broker_rejects_disallowed_model(
     the capability gate otherwise, since normal smoke checks only send allowed
     models)."""
     result, commands = _run_capability_gate_with_allowlist_probe_response(
-        tmp_path, monkeypatch, probe_stdout="400"
+        tmp_path, monkeypatch, probe_stdout=_VALID_ALLOWLIST_REJECTION_STDOUT
     )
 
     assert result.ok is True
@@ -614,7 +656,40 @@ def test_capability_gate_fails_when_broker_accepts_disallowed_model(
     """A broker that answers 200 (or anything but 400) to the disallowed-model probe
     is not actually enforcing the allowlist, so the gate must fail closed."""
     result, _commands = _run_capability_gate_with_allowlist_probe_response(
-        tmp_path, monkeypatch, probe_stdout="200"
+        tmp_path, monkeypatch, probe_stdout=_allowlist_probe_stdout("200")
+    )
+
+    assert result.ok is False
+    assert result.checks["broker_model_allowlist"] is False
+
+
+@pytest.mark.parametrize(
+    "probe_stdout",
+    [
+        # Round-2 P1 fix: a bare 400 alone (e.g. from an allowlist-blind broker that
+        # rejected for an unrelated reason, or a transparent upstream proxy) must NOT
+        # be mistaken for allowlist enforcement.
+        pytest.param(
+            _allowlist_probe_stdout("400", message="some unrelated upstream 400"),
+            id="right_status_wrong_message",
+        ),
+        pytest.param(
+            _allowlist_probe_stdout(
+                "400",
+                server="not-the-broker",
+                message=docker._ALLOWLIST_SMOKE_REJECTION_MESSAGE,
+            ),
+            id="right_status_wrong_server_header",
+        ),
+    ],
+)
+def test_capability_gate_fails_when_400_lacks_broker_rejection_signal(
+    tmp_path: Path, monkeypatch, probe_stdout: str
+) -> None:
+    """A generic/foreign 400 must not satisfy the check: only the broker's own
+    allowlist-rejection message plus its Server header identity count as proof."""
+    result, _commands = _run_capability_gate_with_allowlist_probe_response(
+        tmp_path, monkeypatch, probe_stdout=probe_stdout
     )
 
     assert result.ok is False
@@ -631,7 +706,7 @@ def test_capability_gate_skips_allowlist_probe_when_allowlist_inactive(
     config["judge"]["model"] = None
 
     result, commands = _run_capability_gate_with_allowlist_probe_response(
-        tmp_path, monkeypatch, probe_stdout="400", config=config
+        tmp_path, monkeypatch, probe_stdout=_VALID_ALLOWLIST_REJECTION_STDOUT, config=config
     )
 
     assert result.ok is True
@@ -677,7 +752,9 @@ def test_capability_smoke_uses_configured_max_output_tokens(
         def capture_runner(argv, **_runner_kwargs):
             if argv[:2] == ["docker", "run"]:
                 docker_run_commands.append(argv)
-                stdout = "400" if is_allowlist_probe else '{"type":"result"}'
+                stdout = (
+                    _VALID_ALLOWLIST_REJECTION_STDOUT if is_allowlist_probe else '{"type":"result"}'
+                )
                 return _completed(stdout=stdout)
             return _completed()
 
@@ -997,13 +1074,36 @@ def test_broker_env_omits_model_allowlist_when_either_model_is_unpinned(unset_ke
     assert "MH_BROKER_MODEL_ALLOWLIST" not in broker_env
 
 
-def test_broker_env_allowlist_includes_effective_models_beyond_configured_list() -> None:
-    """Issue #261 PR2 review: a local override that repins evaluate.model without
-    also updating `model_allowlist` must still be admitted by the broker -- the
-    effective allowlist is the union of the configured list and the pinned models,
-    not the configured list alone."""
+def test_broker_env_raises_fail_closed_when_repinned_model_mismatches_allowlist() -> None:
+    """Issue #261 PR2 review round 2: repinning evaluate.model (or judge.model) without
+    also updating `model_allowlist` must fail closed with an actionable error, not
+    silently auto-admit the pricier model (a prior revision auto-unioned the pinned
+    model into the allowlist, which defeated the whole point of the guard: repinning
+    to a pricier model would be admitted without the operator also updating
+    pricing_upper_bound_usd_per_million, under-counting real cost)."""
     config = copy.deepcopy(mh.DEFAULTS)
     config["evaluate"]["model"] = "claude-project-override-model"
+    # model_allowlist intentionally left at its default (["claude-sonnet-5"]): the
+    # repinned evaluate.model is not covered.
+
+    with pytest.raises(docker.profile.DockerProfileError) as excinfo:
+        docker.profile.broker_env(config, "run-token", 8787)
+
+    message = str(excinfo.value)
+    assert "claude-project-override-model" in message
+    assert "evaluate.isolation.broker.model_allowlist" in message
+    assert "pricing_upper_bound_usd_per_million" in message
+
+
+def test_broker_env_passes_when_repinned_model_matches_allowlist() -> None:
+    """A repin that the operator also reflects in `model_allowlist` (and, implicitly,
+    is expected to reflect in pricing) is admitted as configured -- no auto-union."""
+    config = copy.deepcopy(mh.DEFAULTS)
+    config["evaluate"]["model"] = "claude-project-override-model"
+    config["evaluate"]["isolation"]["broker"]["model_allowlist"] = [
+        "claude-project-override-model",
+        "claude-sonnet-5",
+    ]
 
     broker_env = docker.profile.broker_env(config, "run-token", 8787)
 

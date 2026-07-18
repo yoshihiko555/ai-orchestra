@@ -61,11 +61,21 @@ _SEMVER_PIN_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$")
 # A model slug that must never appear in a real allowlist; used to prove the
 # broker actually rejects out-of-allowlist requests (Issue #261 PR2 review).
 _ALLOWLIST_SMOKE_DISALLOWED_MODEL = "mh-capability-negative-allowlist-check"
+# The exact rejection message the broker emits for a model-allowlist rejection
+# (packages/docker-runtime/docker/broker/broker.py::BrokerState.request_budget_error).
+# A generic 400 is not sufficient proof of enforcement: any misconfigured or
+# upstream-proxying broker could also answer 400 to a malformed/rejected request.
+# The probe must observe this exact broker-authored signal to count as a pass.
+_ALLOWLIST_SMOKE_REJECTION_MESSAGE = "request model is not in the broker model allowlist"
+# Field separator for the probe's single stdout line: "<status>\x1f<server-header>\x1f<message>".
+_ALLOWLIST_SMOKE_FIELD_SEP = "\x1f"
 # Sends a minimal /v1/messages POST with a deliberately disallowed model and prints
-# the resulting HTTP status code (or "ERROR:<message>" on a transport failure).
-# Uses only the stdlib so it runs unmodified inside the read-only scenario image.
+# "<status><SEP><server-header><SEP><error-message>" on one line (or "ERROR<SEP><SEP><detail>"
+# on a transport failure). Uses only the stdlib so it runs unmodified inside the
+# read-only scenario image.
 _ALLOWLIST_SMOKE_SCRIPT = (
     "import json,os,sys,urllib.error,urllib.request\n"
+    "SEP = chr(0x1f)\n"
     "url = os.environ['ANTHROPIC_BASE_URL'].rstrip('/') + '/v1/messages'\n"
     "body = json.dumps({'model': sys.argv[1], 'max_tokens': 1, 'messages': []}).encode()\n"
     "req = urllib.request.Request(url, data=body, method='POST', headers={\n"
@@ -74,11 +84,18 @@ _ALLOWLIST_SMOKE_SCRIPT = (
     "})\n"
     "try:\n"
     "    urllib.request.urlopen(req, timeout=10)\n"
-    "    print(200)\n"
+    "    print(SEP.join(['200', '', '']))\n"
     "except urllib.error.HTTPError as exc:\n"
-    "    print(exc.code)\n"
+    "    server = exc.headers.get('Server', '') if exc.headers is not None else ''\n"
+    "    try:\n"
+    "        payload = json.loads(exc.read().decode('utf-8', 'replace'))\n"
+    "        message = payload.get('error', {}).get('message', '') "
+    "if isinstance(payload, dict) else ''\n"
+    "    except Exception:\n"
+    "        message = ''\n"
+    "    print(SEP.join([str(exc.code), server, message]))\n"
     "except Exception as exc:\n"
-    "    print('ERROR:' + str(exc))\n"
+    "    print(SEP.join(['ERROR', '', str(exc)]))\n"
 )
 
 
@@ -216,6 +233,11 @@ def check_docker_capabilities(
     # The capability gate must use the same output-token budget as real scenario and judge runs.
     max_output_tokens = profile.resolve_max_output_tokens_default(config)
     try:
+        # Fail fast on a repinned-model/allowlist mismatch before touching Docker at all
+        # (Issue #261 PR2 review round 2): this is the same pure config validation that
+        # broker_env() applies to every real broker session, run here first so a bad
+        # config never gets to spend time booting a container just to fail later.
+        profile.effective_broker_model_allowlist(config)
         checks["docker_daemon"] = dcli.docker_daemon_available(runner=runner)
         if not checks["docker_daemon"]:
             return _capability_failure(None, version_pin, checks, "Docker daemon unavailable")
@@ -331,8 +353,8 @@ def check_docker_capabilities(
                     max_output_tokens=max_output_tokens,
                     runner=runner,
                 )
-                checks["broker_model_allowlist"] = (
-                    allowlist_probe.returncode == 0 and allowlist_probe.stdout.strip() == "400"
+                checks["broker_model_allowlist"] = _allowlist_probe_confirms_broker_rejection(
+                    allowlist_probe
                 )
         reason = _failed_checks_reason(checks)
         return DockerCapabilityResult(version, version_pin, version_match, checks, reason)
@@ -340,6 +362,7 @@ def check_docker_capabilities(
         DockerScenarioError,
         dcli.DockerCliError,
         credentials.ClaudeCredentialError,
+        profile.DockerProfileError,
     ) as exc:
         checks.setdefault("docker_backend", False)
         return _capability_failure(None, version_pin, checks, str(exc))
@@ -1137,6 +1160,23 @@ def _has_result_json(stdout: str) -> bool:
     except (ValueError, json.JSONDecodeError):
         return False
     return isinstance(value, dict) and value.get("type") == "result"
+
+
+def _allowlist_probe_confirms_broker_rejection(probe: subprocess.CompletedProcess) -> bool:
+    """A bare 400 is not proof the broker enforced the allowlist: any misconfigured
+    or transparently-proxying broker could also answer 400 for other reasons (e.g. an
+    unrelated upstream validation error). Require the exact broker-authored rejection
+    message and a `Server` header naming this broker, so an upstream/proxy 400 that
+    slipped through an allowlist-blind broker cannot be mistaken for enforcement."""
+    if probe.returncode != 0:
+        return False
+    fields = probe.stdout.strip("\n").split(_ALLOWLIST_SMOKE_FIELD_SEP)
+    status, server_header, message = (fields + ["", "", ""])[:3]
+    return (
+        status == "400"
+        and _ALLOWLIST_SMOKE_REJECTION_MESSAGE in message
+        and server_header.startswith(f"{profile.BROKER_NAMESPACE}-broker")
+    )
 
 
 def _failed_checks_reason(checks: dict[str, bool]) -> str | None:

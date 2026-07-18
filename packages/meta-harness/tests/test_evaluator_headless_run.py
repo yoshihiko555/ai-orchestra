@@ -305,10 +305,51 @@ class TestScenarioExecutionEnvelope:
         assert snapshot["broker_model_allowlist"] == ["claude-sonnet-5"]
         assert snapshot["scenario_run_max_budget_usd_default"] == 3.0
 
+    def test_execution_snapshot_fails_closed_when_repinned_model_mismatches_allowlist(
+        self,
+    ) -> None:
+        """Issue #261 PR2 review round 2: computing the evaluator hash for a config
+        whose pinned judge.model/evaluate.model is missing from the configured
+        broker model_allowlist must fail closed with an actionable error rather than
+        silently produce a hash for a broker configuration that would itself refuse
+        to start (or, worse, previously auto-admitted the pricier model)."""
+        config = {
+            "judge": {"model": "claude-sonnet-5", "effort": "high"},
+            "evaluate": {
+                "model": "claude-sonnet-5",
+                "isolation": {
+                    "broker": {
+                        "pricing_upper_bound_usd_per_million": {"input": 3.0},
+                        "model_allowlist": ["claude-opus-4-8"],
+                    }
+                },
+            },
+            "scenario_run": {"max_budget_usd_default": 3.0},
+        }
+
+        with pytest.raises(ev.siso.docker.profile.DockerProfileError) as excinfo:
+            ev.evaluator_execution_snapshot(config)
+
+        message = str(excinfo.value)
+        assert "claude-sonnet-5" in message
+        assert "evaluate.isolation.broker.model_allowlist" in message
+        assert "pricing_upper_bound_usd_per_million" in message
+
     @pytest.mark.parametrize(
         "override",
         [
-            {"judge": {"model": "claude-opus-4-8"}},
+            # judge.model repin must also extend model_allowlist, or the fail-closed
+            # guard (Issue #261 PR2 review round 2) would reject the config outright
+            # before a hash could even be computed -- see the dedicated fail-closed
+            # test below for that behavior.
+            {
+                "judge": {"model": "claude-opus-4-8"},
+                "evaluate": {
+                    "isolation": {
+                        "broker": {"model_allowlist": ["claude-sonnet-5", "claude-opus-4-8"]}
+                    }
+                },
+            },
             {
                 "evaluate": {
                     "isolation": {
@@ -316,7 +357,13 @@ class TestScenarioExecutionEnvelope:
                     }
                 }
             },
-            {"evaluate": {"isolation": {"broker": {"model_allowlist": ["claude-opus-4-8"]}}}},
+            {
+                "evaluate": {
+                    "isolation": {
+                        "broker": {"model_allowlist": ["claude-sonnet-5", "claude-opus-4-8"]}
+                    }
+                }
+            },
             {"scenario_run": {"max_budget_usd_default": 54.0}},
         ],
         ids=["judge_model", "broker_pricing", "broker_model_allowlist", "scenario_run_budget"],
