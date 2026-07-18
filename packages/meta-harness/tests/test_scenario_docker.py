@@ -489,6 +489,66 @@ def test_capability_smoke_uses_configured_evaluate_model(tmp_path: Path, monkeyp
         assert command[model_index + 1] == "claude-custom-model"
 
 
+@pytest.mark.parametrize(
+    ("configured_max_output_tokens", "expected_max_output_tokens"),
+    [
+        (None, mh.DEFAULTS["scenario_run"]["max_output_tokens_default"]),
+        (8192, 8192),
+    ],
+    ids=["default", "configured"],
+)
+def test_capability_smoke_uses_configured_max_output_tokens(
+    tmp_path: Path,
+    monkeypatch,
+    configured_max_output_tokens: int | None,
+    expected_max_output_tokens: int,
+) -> None:
+    session = _broker(tmp_path)
+    session.cleaned = True
+    docker_run_commands: list[list[str]] = []
+    config = copy.deepcopy(mh.DEFAULTS)
+    if configured_max_output_tokens is not None:
+        config["scenario_run"]["max_output_tokens_default"] = configured_max_output_tokens
+    original_run_smoke_container = docker._run_smoke_container
+    monkeypatch.setattr(docker.dcli, "docker_daemon_available", lambda **_kwargs: True)
+    monkeypatch.setattr(docker, "sweep_stale_resources", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        docker, "docker_broker_session", lambda *_args, **_kwargs: docker._BrokerContext(session)
+    )
+    monkeypatch.setattr(
+        docker,
+        "_image_claude_version",
+        lambda *_args, **_kwargs: "2.1.207 (Claude Code)",
+    )
+
+    def run_smoke(_broker_session, command, *, max_output_tokens, **_kwargs):
+        def capture_runner(argv, **_runner_kwargs):
+            if argv[:2] == ["docker", "run"]:
+                docker_run_commands.append(argv)
+                return _completed(stdout='{"type":"result"}')
+            return _completed()
+
+        return original_run_smoke_container(
+            _broker_session,
+            command,
+            max_output_tokens=max_output_tokens,
+            runner=capture_runner,
+        )
+
+    monkeypatch.setattr(docker, "_run_smoke_container", run_smoke)
+
+    result = docker.check_docker_capabilities(config, main_root=tmp_path, runner=session.runner)
+
+    assert result.ok is True
+    assert len(docker_run_commands) == 3
+    expected_env = f"CLAUDE_CODE_MAX_OUTPUT_TOKENS={expected_max_output_tokens}"
+    for command in docker_run_commands:
+        env_values = [
+            command[index + 1] for index, arg in enumerate(command[:-1]) if arg == "--env"
+        ]
+        assert expected_env in env_values
+
+
 def test_broker_startup_cleanup_failure_is_reported(tmp_path: Path, monkeypatch) -> None:
     del tmp_path
     monkeypatch.setattr(
