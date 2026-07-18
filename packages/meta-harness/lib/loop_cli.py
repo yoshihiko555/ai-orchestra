@@ -38,6 +38,18 @@ class LoopValidationError(ValueError):
     pass
 
 
+class RoutingConfigCooldownActive(LoopValidationError):
+    def __init__(self, trigger_iteration: int, trigger_reason: str, next_allowed: int) -> None:
+        self.trigger_iteration = trigger_iteration
+        self.trigger_reason = trigger_reason
+        self.next_allowed = next_allowed
+        super().__init__(
+            "routing-config proposer cooldown is active after "
+            f"{trigger_reason} at iteration {trigger_iteration}; "
+            f"next allowed iteration is {next_allowed}"
+        )
+
+
 @dataclass(frozen=True)
 class LoopSpec:
     loop_id: str
@@ -299,7 +311,17 @@ def _drive_loop(main_root: Path, config: dict, project_dir: Path, spec: LoopSpec
                 _stop_loop(main_root, config, spec, guard_reason)
                 return guard_reason
             iteration = max(iterations, default=0) + 1
-            _enforce_routing_config_rate_limits(events, config, spec, iteration)
+            try:
+                _enforce_routing_config_rate_limits(events, config, spec, iteration)
+            except RoutingConfigCooldownActive as cooldown:
+                outcome = (
+                    "proposal_rejected"
+                    if iteration == cooldown.trigger_iteration
+                    and cooldown.trigger_reason == "proposal error"
+                    else "cooldown_wait"
+                )
+                _record_cooldown_iteration(main_root, config, spec, iteration, outcome)
+                continue
             cand_id = _propose_candidate(main_root, config, project_dir, spec, iteration)
         else:
             iteration, cand_id = orphan
@@ -351,10 +373,16 @@ def _drive_loop(main_root: Path, config: dict, project_dir: Path, spec: LoopSpec
 def _pre_iteration_guard(spec: LoopSpec, iterations: dict[int, dict]) -> str | None:
     ordered = [iterations[key] for key in sorted(iterations)]
     cumulative = sum(float(event["iteration_cost_usd"]) for event in ordered)
+    candidate_iterations = [
+        event for event in ordered if event.get("outcome", "candidate") == "candidate"
+    ]
     if spec.budget_usd is not None:
-        if not ordered and cumulative >= spec.budget_usd:
+        if not candidate_iterations and cumulative >= spec.budget_usd:
             return "budget_exhausted"
-        if ordered and cumulative + float(ordered[-1]["iteration_cost_usd"]) > spec.budget_usd:
+        if (
+            candidate_iterations
+            and cumulative + float(candidate_iterations[-1]["iteration_cost_usd"]) > spec.budget_usd
+        ):
             return "budget_exhausted"
     if max(iterations, default=0) >= spec.max_iterations:
         return "max_iterations"
@@ -382,10 +410,10 @@ def _enforce_routing_config_rate_limits(
     )
     next_allowed = trigger_iteration + cooldown_rounds + 1
     if iteration < next_allowed:
-        raise LoopValidationError(
-            "routing-config proposer cooldown is active after "
-            f"{trigger_reason} at iteration {trigger_iteration}; "
-            f"next allowed iteration is {next_allowed}"
+        raise RoutingConfigCooldownActive(
+            trigger_iteration,
+            trigger_reason,
+            next_allowed,
         )
 
 
@@ -668,6 +696,7 @@ def _record_iteration(
             "loop_id": spec.loop_id,
             "iteration": iteration,
             "cand_id": cand_id,
+            "outcome": "candidate",
             "quality_best_before": before,
             "quality_best_after": max(spec.baseline_best_quality, after),
             "iteration_cost_usd": cost,
@@ -676,8 +705,46 @@ def _record_iteration(
     )
 
 
+def _record_cooldown_iteration(
+    main_root: Path,
+    config: dict,
+    spec: LoopSpec,
+    iteration: int,
+    outcome: str,
+) -> None:
+    events = mh.read_ledger_events_strict(main_root, config)
+    existing = _iteration_events(events, spec.loop_id)
+    if iteration in existing:
+        return
+    quality = (
+        float(existing[max(existing)]["quality_best_after"])
+        if existing
+        else spec.baseline_best_quality
+    )
+    _append_validated_event(
+        main_root,
+        config,
+        {
+            "event": "loop_iteration",
+            "ts": mh.now_iso(),
+            "schema_version": "1.0",
+            "loop_id": spec.loop_id,
+            "iteration": iteration,
+            "outcome": outcome,
+            "quality_best_before": quality,
+            "quality_best_after": quality,
+            "iteration_cost_usd": 0.0,
+        },
+        "loop_iteration",
+    )
+
+
 def _post_iteration_stop(events: list[dict], config: dict, spec: LoopSpec) -> str | None:
-    iterations = [event for _, event in sorted(_iteration_events(events, spec.loop_id).items())]
+    iterations = [
+        event
+        for _, event in sorted(_iteration_events(events, spec.loop_id).items())
+        if event.get("outcome", "candidate") == "candidate"
+    ]
     proposer_cfg = config.get("proposer") or {}
     divergence_rounds = _positive_int(proposer_cfg.get("divergence_rounds", 3), "divergence_rounds")
     epsilon = _finite_float(

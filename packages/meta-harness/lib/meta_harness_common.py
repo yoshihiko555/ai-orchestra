@@ -1977,7 +1977,11 @@ def _load_codex_model_allowlist(
     schema_dir: Path, agent_routing_config: dict | None = None
 ) -> frozenset[str]:
     loaded = _resolve_agent_routing_config(schema_dir, agent_routing_config)
-    codex = loaded.get("codex") or {}
+    codex = loaded.get("codex")
+    if codex is None:
+        codex = {}
+    if not isinstance(codex, dict):
+        raise ValueError("agent-routing config codex section must be a mapping")
     values = codex.get("model_allowlist") or []
     if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
         raise ValueError("codex.model_allowlist must be an array of strings")
@@ -1988,7 +1992,11 @@ def _load_antigravity_model_allowlist(
     schema_dir: Path, agent_routing_config: dict | None = None
 ) -> frozenset[str]:
     loaded = _resolve_agent_routing_config(schema_dir, agent_routing_config)
-    antigravity = loaded.get("antigravity") or {}
+    antigravity = loaded.get("antigravity")
+    if antigravity is None:
+        antigravity = {}
+    if not isinstance(antigravity, dict):
+        raise ValueError("agent-routing config antigravity section must be a mapping")
     values = antigravity.get("model_allowlist") or []
     if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
         raise ValueError("antigravity.model_allowlist must be an array of strings")

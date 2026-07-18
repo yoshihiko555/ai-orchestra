@@ -23,6 +23,8 @@ from pathlib import Path
 from string import Template
 from typing import Any
 
+import yaml
+
 _LIB_DIR = Path(__file__).resolve().parent
 if str(_LIB_DIR) not in sys.path:
     sys.path.insert(0, str(_LIB_DIR))
@@ -44,6 +46,7 @@ _MISSING_FOCUS = "(none)"
 _VIEW_PREFIX = "meta-harness-view-"
 _INSTRUCTION_FILE_NAMES = {"AGENTS.md", "CLAUDE.md", "GEMINI.md"}
 _EXECUTABLE_BITS = stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+_ROUTING_CONFIG_SSOT_RELATIVE = Path("packages/agent-routing/config/cli-tools.yaml")
 
 SubprocessRunner = Callable[..., subprocess.CompletedProcess]
 
@@ -302,6 +305,8 @@ def render_proposer_prompt(
     focus_run_ids: list[str] | tuple[str, ...] | None = None,
     valid_based_on_run_ids: list[str] | tuple[str, ...] | None = None,
     focus_candidate_id: str | None = None,
+    main_root: Path | None = None,
+    source_commit: str | None = None,
 ) -> str:
     """package resource の prompt template に実行時コンテキストを埋め込む。"""
     template = _load_prompt_template(package_dir)
@@ -310,10 +315,12 @@ def render_proposer_prompt(
     rendered_focus_runs = _format_focus_runs(focus_run_id, focus_run_ids)
     rendered_valid_runs = _join_or_none([str(run_id) for run_id in valid_based_on_run_ids or ()])
     if target == "routing-config":
+        if main_root is None or source_commit is None:
+            raise ValueError("routing-config prompt requires main_root and source_commit")
         baseline_input_hint = (
             "- routing config の現在値: 下記の変更メニュー（読み取り専用 context）"
         )
-        change_menu = _routing_config_prompt_menu(package_dir)
+        change_menu = _routing_config_prompt_menu(main_root, source_commit, config)
         proposal_payload_constraint = (
             "config_patch のみ。changes file overlay は含めない。1 候補で 1 key kind のみ選ぶ"
         )
@@ -351,50 +358,104 @@ def render_proposer_prompt(
     )
 
 
-def _routing_config_prompt_menu(package_dir: Path) -> str:
+def _routing_config_prompt_menu(main_root: Path, source_commit: str, config: dict) -> str:
     """Phase A で proposer に公開する routing-config 値だけを列挙する。"""
-    routing_config = mh._load_agent_routing_config(package_dir / "schemas")
-    agents = routing_config.get("agents") or {}
-    antigravity = routing_config.get("antigravity") or {}
-    if not isinstance(agents, dict):
-        raise ValueError("agent-routing config agents section must be a mapping")
-    if not isinstance(antigravity, dict):
-        raise ValueError("agent-routing config antigravity section must be a mapping")
+    routing_config = _load_source_agent_routing_config(main_root, source_commit)
+    enabled_kinds = set(_effective_proposer_config_patch_kinds(config))
+    lines: list[str] = []
 
-    agent_values: list[str] = []
-    for name, agent_config in sorted(agents.items()):
-        if not isinstance(agent_config, dict):
-            raise ValueError(f"agent-routing config agents.{name} must be a mapping")
-        current_tool = agent_config.get("tool")
-        if not isinstance(current_tool, str):
-            raise ValueError(f"agent-routing config agents.{name}.tool must be a string")
-        agent_values.append(f"    - agents.{name}.tool = {current_tool}")
+    agents_kind = "agent-routing/cli-tools.yaml#agents.*.tool"
+    if agents_kind in enabled_kinds:
+        agents = routing_config.get("agents") or {}
+        if not isinstance(agents, dict):
+            raise ValueError("agent-routing config agents section must be a mapping")
+        agent_values: list[str] = []
+        for name, agent_config in sorted(agents.items()):
+            if not isinstance(agent_config, dict):
+                raise ValueError(f"agent-routing config agents.{name} must be a mapping")
+            current_tool = agent_config.get("tool")
+            if not isinstance(current_tool, str):
+                raise ValueError(f"agent-routing config agents.{name}.tool must be a string")
+            agent_values.append(f"    - agents.{name}.tool = {current_tool}")
+        allowed_tools = " | ".join(sorted(mh.CONFIG_PATCH_TOOL_VALUES))
+        lines.extend(
+            [
+                "- agents.*.tool",
+                "  - file: agent-routing/cli-tools.yaml",
+                "  - key_path: agents.<agent-name>.tool",
+                f"  - allowed values: {allowed_tools}",
+                "  - current values:",
+                *agent_values,
+            ]
+        )
 
-    model_allowlist = antigravity.get("model_allowlist") or []
-    if not isinstance(model_allowlist, list) or not all(
-        isinstance(value, str) for value in model_allowlist
-    ):
-        raise ValueError("antigravity.model_allowlist must be an array of strings")
-    current_model = antigravity.get("model")
-    if not isinstance(current_model, str):
-        raise ValueError("antigravity.model must be a string")
-    allowed_models = " | ".join(model_allowlist) if model_allowlist else "(none)"
-    allowed_tools = " | ".join(sorted(mh.CONFIG_PATCH_TOOL_VALUES))
-    return "\n".join(
-        [
-            "- agents.*.tool",
-            "  - file: agent-routing/cli-tools.yaml",
-            "  - key_path: agents.<agent-name>.tool",
-            f"  - allowed values: {allowed_tools}",
-            "  - current values:",
-            *agent_values,
-            "- antigravity.model",
-            "  - file: agent-routing/cli-tools.yaml",
-            "  - key_path: antigravity.model",
-            f"  - allowed values from model_allowlist: {allowed_models}",
-            f"  - current value: {current_model}",
-        ]
+    antigravity_kind = "agent-routing/cli-tools.yaml#antigravity.model"
+    if antigravity_kind in enabled_kinds:
+        antigravity = routing_config.get("antigravity") or {}
+        if not isinstance(antigravity, dict):
+            raise ValueError("agent-routing config antigravity section must be a mapping")
+        model_allowlist = antigravity.get("model_allowlist") or []
+        if not isinstance(model_allowlist, list) or not all(
+            isinstance(value, str) for value in model_allowlist
+        ):
+            raise ValueError("antigravity.model_allowlist must be an array of strings")
+        current_model = antigravity.get("model")
+        if not isinstance(current_model, str):
+            raise ValueError("antigravity.model must be a string")
+        allowed_models = " | ".join(model_allowlist) if model_allowlist else "(none)"
+        lines.extend(
+            [
+                "- antigravity.model",
+                "  - file: agent-routing/cli-tools.yaml",
+                "  - key_path: antigravity.model",
+                f"  - allowed values from model_allowlist: {allowed_models}",
+                f"  - current value: {current_model}",
+            ]
+        )
+    return "\n".join(lines) if lines else "- routing-config changes: (none allowed)"
+
+
+def _effective_proposer_config_patch_kinds(config: dict) -> tuple[str, ...]:
+    parsed, errors = mh._parse_config_patch_allowlist(config)
+    if errors:
+        raise ValueError("; ".join(errors))
+    effective = {f"{file_value}#{'.'.join(segments)}" for file_value, segments in parsed}
+    return tuple(
+        entry
+        for entry in mh.CONFIG_PATCH_ALLOWLIST_CEILING
+        if entry in effective and "proposer" in mh.CONFIG_PATCH_ALLOWED_CREATED_BY.get(entry, ())
     )
+
+
+def _load_source_agent_routing_config(main_root: Path, source_commit: str) -> dict:
+    try:
+        completed = subprocess.run(
+            ["git", "show", f"{source_commit}:{_ROUTING_CONFIG_SSOT_RELATIVE.as_posix()}"],
+            cwd=main_root,
+            capture_output=True,
+            text=True,
+            timeout=mh.GIT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ValueError(
+            f"could not read agent-routing config from source_commit {source_commit}: {exc}"
+        ) from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip() or completed.returncode
+        raise ValueError(
+            f"could not read agent-routing config from source_commit {source_commit}: {detail}"
+        )
+    try:
+        loaded = yaml.safe_load(completed.stdout) or {}
+    except yaml.YAMLError as exc:
+        raise ValueError(
+            f"could not parse agent-routing config from source_commit {source_commit}: {exc}"
+        ) from exc
+    if not isinstance(loaded, dict):
+        raise ValueError(
+            f"agent-routing config from source_commit {source_commit} must be a YAML mapping"
+        )
+    return loaded
 
 
 def summarize_frontier(frontier_doc: dict[str, Any] | None, *, max_points: int = 5) -> str:

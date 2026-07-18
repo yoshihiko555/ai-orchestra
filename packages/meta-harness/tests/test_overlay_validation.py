@@ -683,6 +683,12 @@ class TestValidateConfigPatch:
 
         assert any("codex model is not in model_allowlist" in error for error in errors)
 
+    def test_non_mapping_codex_config_fails_closed(self) -> None:
+        with pytest.raises(
+            ValueError, match="agent-routing config codex section must be a mapping"
+        ):
+            mh._load_codex_model_allowlist(SCHEMA_DIR, {"codex": "invalid"})
+
     def test_empty_antigravity_model_allowlist_rejects_any_model(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -707,6 +713,12 @@ class TestValidateConfigPatch:
         )
 
         assert any("not in model_allowlist" in error for error in errors)
+
+    def test_non_mapping_antigravity_config_fails_closed(self) -> None:
+        with pytest.raises(
+            ValueError, match="agent-routing config antigravity section must be a mapping"
+        ):
+            mh._load_antigravity_model_allowlist(SCHEMA_DIR, {"antigravity": []})
 
     @pytest.mark.parametrize("value", ["off", "123", "1.5", "null", "no"])
     def test_yaml_ambiguous_model_values_are_rejected(self, value: str) -> None:

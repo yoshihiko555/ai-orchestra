@@ -29,6 +29,8 @@ _HOLDOUT_RUN_ID = "run-20260708-020000-parent-scn-h1-abcd"
 _ROUTING_PARENT_ID = "cand-20260717-080000-routing-baseline-abcd"
 _ROUTING_RUN_ID = "run-20260717-080000-routing-baseline-train-a1-abcd"
 _HASH = "a" * 64
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_ROUTING_CONFIG_RELATIVE = Path("packages/agent-routing/config/cli-tools.yaml")
 
 
 def test_routing_config_without_citable_runs_rejects_before_backend(
@@ -239,7 +241,13 @@ def _prepare_store(
 def _prepare_routing_store(git_project: Path, git_run) -> None:
     """no-op baseline の register→evaluate→frontier 後に相当する store を作る。"""
     config = mh.DEFAULTS
-    source_commit = _commit_facets(git_project, git_run)
+    _commit_facets(git_project, git_run)
+    routing_config = git_project / _ROUTING_CONFIG_RELATIVE
+    routing_config.parent.mkdir(parents=True)
+    routing_config.write_bytes((_REPO_ROOT / _ROUTING_CONFIG_RELATIVE).read_bytes())
+    git_run("add", _ROUTING_CONFIG_RELATIVE.as_posix(), cwd=git_project)
+    git_run("commit", "-m", "add routing config", cwd=git_project)
+    source_commit = git_run("rev-parse", "HEAD", cwd=git_project).stdout.strip()
     mh.init_store(git_project, config)
     overlay_dir = mh.tmp_dir(git_project, config) / "routing-baseline-overlay"
     overlay_dir.mkdir(parents=True)

@@ -239,6 +239,8 @@ def _launch_and_register_proposal(
             focus_run_ids=focus_run_ids,
             valid_based_on_run_ids=valid_based_on_run_ids,
             focus_candidate_id=parent_id,
+            main_root=main_root,
+            source_commit=source_commit,
         )
         launch = iso.resolve_isolation_backend(
             view_dir=view.path,

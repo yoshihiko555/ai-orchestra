@@ -430,7 +430,6 @@
         "schema_version",
         "loop_id",
         "iteration",
-        "cand_id",
         "quality_best_before",
         "quality_best_after",
         "iteration_cost_usd"
@@ -442,6 +441,10 @@
         "loop_id": { "type": "string" },
         "iteration": { "type": "integer", "minimum": 1 },
         "cand_id": { "type": "string" },
+        "outcome": {
+          "type": "string",
+          "enum": ["candidate", "proposal_rejected", "cooldown_wait"]
+        },
         "quality_best_before": {
           "type": "number",
           "minimum": 0,
@@ -453,7 +456,20 @@
           "maximum": 100
         },
         "iteration_cost_usd": { "type": "number", "minimum": 0 }
-      }
+      },
+      "oneOf": [
+        {
+          "required": ["cand_id"],
+          "properties": { "outcome": { "const": "candidate" } }
+        },
+        {
+          "required": ["outcome"],
+          "properties": {
+            "outcome": { "enum": ["proposal_rejected", "cooldown_wait"] }
+          },
+          "not": { "required": ["cand_id"] }
+        }
+      ]
     },
     "loop_stopped": {
       "type": "object",

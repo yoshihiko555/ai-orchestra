@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
+
+import pytest
 
 from tests.module_loader import load_module
 
@@ -225,6 +228,8 @@ class TestProposerPrompt:
         assert "facets/instructions/alpha.md" in disabled_prompt
 
     def test_routing_config_prompt_lists_only_phase_a_menu(self, tmp_path: Path) -> None:
+        source_commit = proposer.mh.git_head(REPO_ROOT)
+        assert source_commit is not None
         prompt = proposer.render_proposer_prompt(
             view_dir=tmp_path / "view",
             frontier_doc=None,
@@ -232,6 +237,8 @@ class TestProposerPrompt:
             package_dir=PACKAGE_DIR,
             target="routing-config",
             valid_based_on_run_ids=("run-routing-baseline",),
+            main_root=REPO_ROOT,
+            source_commit=source_commit,
         )
 
         assert "agents.*.tool" in prompt
@@ -243,3 +250,110 @@ class TestProposerPrompt:
         assert "codex.model" not in prompt
         assert "config_patch のみ" in prompt
         assert "proposal schema（schema_version, hypothesis, theme, config_patch" in prompt
+
+    def test_routing_config_prompt_uses_source_commit_not_working_tree(
+        self,
+        git_project: Path,
+        git_run: Callable,
+        tmp_path: Path,
+    ) -> None:
+        config_path = git_project / "packages/agent-routing/config/cli-tools.yaml"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(
+            "agents:\n"
+            "  source-agent:\n"
+            "    tool: codex\n"
+            "antigravity:\n"
+            "  model: source-model\n"
+            "  model_allowlist:\n"
+            "    - source-model\n",
+            encoding="utf-8",
+        )
+        git_run("add", config_path.relative_to(git_project).as_posix(), cwd=git_project)
+        git_run("commit", "-m", "source routing config", cwd=git_project)
+        source_commit = git_run("rev-parse", "HEAD", cwd=git_project).stdout.strip()
+        config_path.write_text(
+            "agents:\n"
+            "  working-agent:\n"
+            "    tool: claude-direct\n"
+            "antigravity:\n"
+            "  model: working-model\n"
+            "  model_allowlist:\n"
+            "    - working-model\n",
+            encoding="utf-8",
+        )
+
+        prompt = proposer.render_proposer_prompt(
+            view_dir=tmp_path / "view",
+            frontier_doc=None,
+            config={},
+            package_dir=PACKAGE_DIR,
+            target="routing-config",
+            main_root=git_project,
+            source_commit=source_commit,
+        )
+
+        assert "agents.source-agent.tool = codex" in prompt
+        assert "source-model" in prompt
+        assert "working-agent" not in prompt
+        assert "working-model" not in prompt
+
+    def test_routing_config_prompt_fails_closed_when_source_config_is_unreadable(
+        self, git_project: Path, tmp_path: Path
+    ) -> None:
+        source_commit = proposer.mh.git_head(git_project)
+        assert source_commit is not None
+
+        with pytest.raises(
+            ValueError, match="could not read agent-routing config from source_commit"
+        ):
+            proposer.render_proposer_prompt(
+                view_dir=tmp_path / "view",
+                frontier_doc=None,
+                config={},
+                package_dir=PACKAGE_DIR,
+                target="routing-config",
+                main_root=git_project,
+                source_commit=source_commit,
+            )
+
+    def test_routing_config_prompt_intersects_effective_allowlist(
+        self,
+        git_project: Path,
+        git_run: Callable,
+        tmp_path: Path,
+    ) -> None:
+        config_path = git_project / "packages/agent-routing/config/cli-tools.yaml"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(
+            "agents:\n"
+            "  debugger:\n"
+            "    tool: codex\n"
+            "antigravity:\n"
+            "  model: source-model\n"
+            "  model_allowlist:\n"
+            "    - source-model\n",
+            encoding="utf-8",
+        )
+        git_run("add", config_path.relative_to(git_project).as_posix(), cwd=git_project)
+        git_run("commit", "-m", "source routing config", cwd=git_project)
+        source_commit = git_run("rev-parse", "HEAD", cwd=git_project).stdout.strip()
+        effective_config = {
+            "config_patch": {"allowlist": ["agent-routing/cli-tools.yaml#antigravity.model"]}
+        }
+
+        prompt = proposer.render_proposer_prompt(
+            view_dir=tmp_path / "view",
+            frontier_doc=None,
+            config=effective_config,
+            package_dir=PACKAGE_DIR,
+            target="routing-config",
+            main_root=git_project,
+            source_commit=source_commit,
+        )
+
+        assert "antigravity.model" in prompt
+        assert "source-model" in prompt
+        assert "agents.*.tool" not in prompt
+        assert "agents.debugger.tool" not in prompt
+        assert "codex.model" not in prompt

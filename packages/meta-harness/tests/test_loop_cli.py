@@ -24,7 +24,9 @@ loop_cli = helpers.loop_cli
 mh = helpers.mh
 
 
-def _routing_loop_spec(project: Path, config: dict) -> loop_cli.LoopSpec:
+def _routing_loop_spec(
+    project: Path, config: dict, *, max_iterations: int = 10
+) -> loop_cli.LoopSpec:
     loop_id = "loop-20260717-120000-routing"
     event = {
         "event": "loop_started",
@@ -33,11 +35,11 @@ def _routing_loop_spec(project: Path, config: dict) -> loop_cli.LoopSpec:
         "loop_id": loop_id,
         "target": "routing-config",
         "budget_usd": None,
-        "max_iterations": 10,
+        "max_iterations": max_iterations,
         "baseline_best_quality": 0.0,
     }
     mh.append_ledger_event(project, config, event)
-    return loop_cli.LoopSpec(loop_id, "routing-config", None, 10, 0.0, 0)
+    return loop_cli.LoopSpec(loop_id, "routing-config", None, max_iterations, 0.0, 0)
 
 
 def _append_routing_evaluation(project: Path, config: dict, cand_id: str, verdict: str) -> None:
@@ -172,6 +174,92 @@ def test_routing_config_overfit_retirement_starts_configured_cooldown(
 
 def test_routing_config_cooldown_default_is_three_rounds() -> None:
     assert mh.DEFAULTS["config_patch"]["proposer_cooldown_rounds"] == 3
+
+
+def _install_routing_cooldown_pipeline(
+    monkeypatch: pytest.MonkeyPatch,
+    project: Path,
+    config: dict,
+    proposed_iterations: list[int],
+) -> None:
+    def propose(_main_root, _config, _project_dir, spec, iteration):
+        proposed_iterations.append(iteration)
+        return _register_loop_candidate(project, config, spec, iteration)
+
+    monkeypatch.setattr(loop_cli, "_propose_candidate", propose)
+    monkeypatch.setattr(loop_cli, "_validate_loop_candidate", lambda *_args: None)
+    monkeypatch.setattr(loop_cli, "_evaluate_candidate", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(loop_cli, "_evaluation_complete", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(loop_cli, "_candidate_on_frontier", lambda *_args: False)
+    monkeypatch.setattr(loop_cli, "_rebuild_frontier", lambda *_args: None)
+
+
+def test_routing_config_proposal_rejection_advances_through_cooldown(
+    git_project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(proposer={"divergence_rounds": 10})
+    mh.init_store(git_project, config)
+    spec = _routing_loop_spec(git_project, config, max_iterations=5)
+    mh.append_ledger_event(
+        git_project,
+        config,
+        loop_cli.propose_cli._proposal_rejected_event(
+            target="routing-config",
+            loop_id=spec.loop_id,
+            iteration=1,
+        ),
+    )
+    proposed_iterations: list[int] = []
+    _install_routing_cooldown_pipeline(monkeypatch, git_project, config, proposed_iterations)
+
+    reason = loop_cli._drive_loop(git_project, config, git_project, spec)
+
+    iterations = loop_cli._iteration_events(_events(git_project, config), spec.loop_id)
+    assert reason == "max_iterations"
+    assert proposed_iterations == [5]
+    assert iterations[1]["outcome"] == "proposal_rejected"
+    assert [iterations[index]["outcome"] for index in (2, 3, 4)] == [
+        "cooldown_wait",
+        "cooldown_wait",
+        "cooldown_wait",
+    ]
+
+
+@pytest.mark.parametrize("verdict", ["fail", "error"])
+def test_routing_config_resume_advances_until_evaluation_cooldown_elapses(
+    git_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    verdict: str,
+) -> None:
+    config = _config(proposer={"divergence_rounds": 10})
+    mh.init_store(git_project, config)
+    spec = _routing_loop_spec(git_project, config, max_iterations=5)
+    cand_id = _register_loop_candidate(git_project, config, spec, 1)
+    _append_routing_evaluation(git_project, config, cand_id, verdict)
+    loop_cli._record_iteration(git_project, config, spec, 1, cand_id)
+    loop_cli._stop_loop(git_project, config, spec, "error")
+    proposed_iterations: list[int] = []
+    _install_routing_cooldown_pipeline(monkeypatch, git_project, config, proposed_iterations)
+    monkeypatch.setattr(loop_cli, "_validate_target", lambda _target: None)
+
+    exit_code, resumed_spec, reason = loop_cli._execute_locked(
+        git_project,
+        config,
+        git_project,
+        target=None,
+        resume=spec.loop_id,
+    )
+
+    iterations = loop_cli._iteration_events(_events(git_project, config), spec.loop_id)
+    assert exit_code == loop_cli.EXIT_OK
+    assert resumed_spec == spec
+    assert reason == "max_iterations"
+    assert proposed_iterations == [5]
+    assert [iterations[index]["outcome"] for index in (2, 3, 4)] == [
+        "cooldown_wait",
+        "cooldown_wait",
+        "cooldown_wait",
+    ]
 
 
 @pytest.mark.parametrize(

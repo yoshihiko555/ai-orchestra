@@ -40,7 +40,7 @@ def test_config_patch_ceiling_cannot_target_judge_configuration() -> None:
             "routing-config ceiling changes require explicit judge-invariance design sign-off: "
             f"{entry}"
         )
-        assert not key_path.startswith("judge."), (
+        assert key_path != "judge" and not key_path.startswith("judge."), (
             "judge.* must remain outside CONFIG_PATCH_ALLOWLIST_CEILING; "
             f"explicit design sign-off is required for {entry}"
         )
