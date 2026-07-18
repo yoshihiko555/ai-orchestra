@@ -3,27 +3,37 @@ id: resolve-codex-fallback-route-holdout
 target: skill:codex-system
 description: Holdout - codex.enabled=false must fall back to claude-direct instead of invoking codex exec.
 prompt: |
-  ユーザーからの依頼: 「`tests/test_cache.py` がなぜ失敗するのか、Codex に相談して原因を分析してほしい（think deeper）」。
+  /codex-system Codex に相談してください: `tests/test_cache.py` がなぜ失敗するのか原因を分析してほしい（think deeper / analyze）。
 
-  これは codex-system skill の "think deeper" / "analyze" トリガーに該当するタスクです。
   外部ネットワークは遮断されているため `codex exec` は絶対に実行しないでください。
+  代わりに以下の手順で codex-system の routing 判断だけを行い、結果を JSON で記録してください。
 
   1. `.claude/config/agent-routing/cli-tools.yaml` と `.claude/config/agent-routing/cli-tools.local.yaml`
      を読み、local を優先してマージする。
-  2. `codex.enabled` の実効値を確認する（今回は無効化されている可能性があるので必ず確認すること）。
-  3. `agents.debugger.tool` の実効値を codex-system の Routing Rules で解決する
-     （`codex.enabled: false` なら結果は必ず `claude-direct` にフォールバックする）。
-  4. リポジトリ直下の `codex-route-decision.json` に解決結果に応じて次の JSON だけを書く。
-     - 解決値が `codex` の場合:
-       `{"engine":"codex","codex_enabled":true,"resolved_tool":"codex","model":"<codex.model の値>","sandbox":"analysis","flags":"<codex.flags の値>"}`
+  2. `codex.enabled` と `antigravity.enabled` の実効値を確認する（今回は codex が無効化されている
+     可能性があるので必ず確認すること）。
+  3. `agents.debugger.tool` の実効値を次の規則で解決する。
+     - `codex` かつ `codex.enabled: false` の場合は `claude-direct` にフォールバックする。
+     - `antigravity` かつ `antigravity.enabled: false` の場合は `claude-direct` にフォールバックする。
+     - `auto` の場合、有効な CLI alias から `codex` → `antigravity` の順で選び、
+       どちらも無効なら `claude-direct` を選ぶ（codex-system の「深い推論 → Codex、調査 →
+       Antigravity、単純作業 → Claude」の優先順位と同じ）。
+     - それ以外（`claude-direct` など）はそのまま `claude-direct` とする。
+  4. リポジトリ直下の `codex-route-decision.json` に、解決結果に応じて次の JSON だけを書く
+     （キーの過不足なく、値はマージ後の設定ファイルから実際に読み取った値を使う）。
+     - 解決値が `codex` の場合（sandbox は `codex.sandbox.analysis` の実効値をそのまま使う。
+       文字列 `"analysis"` を固定で書かないこと）:
+       `{"engine":"codex","resolved_tool":"codex","codex_enabled":true,"antigravity_enabled":<antigravity.enabled の実効値>,"model":"<codex.model の値>","sandbox":"<codex.sandbox.analysis の実効値>","flags":"<codex.flags の値>"}`
+     - 解決値が `antigravity` の場合:
+       `{"engine":"antigravity","resolved_tool":"antigravity","codex_enabled":<codex.enabled の実効値>,"antigravity_enabled":true,"model":"<antigravity.model の値>","allowlist_warning":<model が antigravity.model_allowlist に含まれなければ true、含まれれば false>}`
      - 解決値が `claude-direct`（フォールバック含む）の場合:
-       `{"engine":"claude-direct","codex_enabled":false,"resolved_tool":"claude-direct"}`
+       `{"engine":"claude-direct","resolved_tool":"claude-direct","codex_enabled":<codex.enabled の実効値>,"antigravity_enabled":<antigravity.enabled の実効値>}`
   5. フォールバックが発生した場合は Codex に委譲せず、Claude 自身が続行する体で報告する
      （本評価では回答内容そのものは採点対象外）。
 setup:
   - >-
     mkdir -p .claude/config/agent-routing &&
-    printf 'codex:\n  enabled: false\n' > .claude/config/agent-routing/cli-tools.local.yaml &&
+    python3 packages/meta-harness/scenarios/fixtures/merge-local-cli-tools-override.py --key codex.enabled --value false &&
     rm -f codex-route-decision.json
 allowed_tools:
   - "Read"

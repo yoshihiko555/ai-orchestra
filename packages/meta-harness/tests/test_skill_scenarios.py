@@ -434,17 +434,24 @@ def test_cli_skill_route_oracle_matches_codex_analysis_resolution(tmp_path: Path
     _write_routing_config_files(
         tmp_path,
         base={
-            "codex": {"enabled": True, "model": "codex-model-x", "flags": "--full-auto"},
+            "codex": {
+                "enabled": True,
+                "model": "codex-model-x",
+                "flags": "--full-auto",
+                "sandbox": {"analysis": "read-only"},
+            },
+            "antigravity": {"enabled": True},
             "agents": {"debugger": {"tool": "codex"}},
         },
         local_overrides={},
     )
     artifact = {
         "engine": "codex",
-        "codex_enabled": True,
         "resolved_tool": "codex",
+        "codex_enabled": True,
+        "antigravity_enabled": True,
         "model": "codex-model-x",
-        "sandbox": "analysis",
+        "sandbox": "read-only",
         "flags": "--full-auto",
     }
     artifact_path = tmp_path / "codex-route-decision.json"
@@ -457,6 +464,39 @@ def test_cli_skill_route_oracle_matches_codex_analysis_resolution(tmp_path: Path
         fixture.assert_route(tmp_path, "codex", Path("codex-route-decision.json"))
 
 
+def test_cli_skill_route_oracle_uses_sandbox_analysis_fallback_default(tmp_path: Path) -> None:
+    """No `codex.sandbox.analysis` key configured -> effective default, never the literal
+    "analysis" (PR #264 review point 3)."""
+    _stub_hook_common()
+    fixture = _cli_skill_route_oracle_fixture()
+    _write_routing_config_files(
+        tmp_path,
+        base={
+            "codex": {"enabled": True, "model": "codex-model-x", "flags": "--full-auto"},
+            "antigravity": {"enabled": True},
+            "agents": {"debugger": {"tool": "codex"}},
+        },
+        local_overrides={},
+    )
+    artifact = {
+        "engine": "codex",
+        "resolved_tool": "codex",
+        "codex_enabled": True,
+        "antigravity_enabled": True,
+        "model": "codex-model-x",
+        "sandbox": "read-only",
+        "flags": "--full-auto",
+    }
+    artifact_path = tmp_path / "codex-route-decision.json"
+    artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
+
+    fixture.assert_route(tmp_path, "codex", Path("codex-route-decision.json"))
+
+    artifact_path.write_text(json.dumps({**artifact, "sandbox": "analysis"}), encoding="utf-8")
+    with pytest.raises(AssertionError, match="materialized cli-tools config"):
+        fixture.assert_route(tmp_path, "codex", Path("codex-route-decision.json"))
+
+
 def test_cli_skill_route_oracle_matches_codex_disabled_fallback(tmp_path: Path) -> None:
     _stub_hook_common()
     fixture = _cli_skill_route_oracle_fixture()
@@ -464,14 +504,16 @@ def test_cli_skill_route_oracle_matches_codex_disabled_fallback(tmp_path: Path) 
         tmp_path,
         base={
             "codex": {"enabled": True},
+            "antigravity": {"enabled": False},
             "agents": {"debugger": {"tool": "codex"}},
         },
         local_overrides={"codex": {"enabled": False}},
     )
     artifact = {
         "engine": "claude-direct",
-        "codex_enabled": False,
         "resolved_tool": "claude-direct",
+        "codex_enabled": False,
+        "antigravity_enabled": False,
     }
     artifact_path = tmp_path / "codex-route-decision.json"
     artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
@@ -485,12 +527,108 @@ def test_cli_skill_route_oracle_matches_codex_disabled_fallback(tmp_path: Path) 
         fixture.assert_route(tmp_path, "codex", Path("codex-route-decision.json"))
 
 
+def test_cli_skill_route_oracle_resolves_auto_to_codex_when_codex_enabled(tmp_path: Path) -> None:
+    """`agents.debugger.tool: auto` must resolve via build_aliases codex-first priority,
+    not collapse straight to claude-direct (PR #264 review point 4)."""
+    _stub_hook_common()
+    fixture = _cli_skill_route_oracle_fixture()
+    _write_routing_config_files(
+        tmp_path,
+        base={
+            "codex": {
+                "enabled": True,
+                "model": "codex-model-x",
+                "flags": "--full-auto",
+                "sandbox": {"analysis": "read-only"},
+            },
+            "antigravity": {"enabled": True},
+            "agents": {"debugger": {"tool": "auto"}},
+        },
+        local_overrides={},
+    )
+    artifact = {
+        "engine": "codex",
+        "resolved_tool": "codex",
+        "codex_enabled": True,
+        "antigravity_enabled": True,
+        "model": "codex-model-x",
+        "sandbox": "read-only",
+        "flags": "--full-auto",
+    }
+    artifact_path = tmp_path / "codex-route-decision.json"
+    artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
+
+    fixture.assert_route(tmp_path, "codex", Path("codex-route-decision.json"))
+
+
+def test_cli_skill_route_oracle_resolves_auto_to_antigravity_when_codex_disabled(
+    tmp_path: Path,
+) -> None:
+    """`agents.debugger.tool: auto` with codex disabled must fall through to the next
+    enabled alias (antigravity), matching build_aliases' codex -> antigravity ->
+    claude-direct order, instead of collapsing to claude-direct."""
+    _stub_hook_common()
+    fixture = _cli_skill_route_oracle_fixture()
+    _write_routing_config_files(
+        tmp_path,
+        base={
+            "codex": {"enabled": False},
+            "antigravity": {
+                "enabled": True,
+                "model": "gemini-3.1-pro-high",
+                "model_allowlist": ["gemini-3.1-pro-high"],
+            },
+            "agents": {"debugger": {"tool": "auto"}},
+        },
+        local_overrides={},
+    )
+    artifact = {
+        "engine": "antigravity",
+        "resolved_tool": "antigravity",
+        "codex_enabled": False,
+        "antigravity_enabled": True,
+        "model": "gemini-3.1-pro-high",
+        "allowlist_warning": False,
+    }
+    artifact_path = tmp_path / "codex-route-decision.json"
+    artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
+
+    fixture.assert_route(tmp_path, "codex", Path("codex-route-decision.json"))
+
+
+def test_cli_skill_route_oracle_resolves_auto_to_claude_direct_when_no_cli_enabled(
+    tmp_path: Path,
+) -> None:
+    _stub_hook_common()
+    fixture = _cli_skill_route_oracle_fixture()
+    _write_routing_config_files(
+        tmp_path,
+        base={
+            "codex": {"enabled": False},
+            "antigravity": {"enabled": False},
+            "agents": {"researcher": {"tool": "auto"}},
+        },
+        local_overrides={},
+    )
+    artifact = {
+        "engine": "claude-direct",
+        "resolved_tool": "claude-direct",
+        "codex_enabled": False,
+        "antigravity_enabled": False,
+    }
+    artifact_path = tmp_path / "antigravity-route-decision.json"
+    artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
+
+    fixture.assert_route(tmp_path, "antigravity", Path("antigravity-route-decision.json"))
+
+
 def test_cli_skill_route_oracle_matches_antigravity_allowlist_warning(tmp_path: Path) -> None:
     _stub_hook_common()
     fixture = _cli_skill_route_oracle_fixture()
     _write_routing_config_files(
         tmp_path,
         base={
+            "codex": {"enabled": True},
             "antigravity": {
                 "enabled": True,
                 "model": "gemini-3.1-pro-high",
@@ -502,8 +640,9 @@ def test_cli_skill_route_oracle_matches_antigravity_allowlist_warning(tmp_path: 
     )
     artifact = {
         "engine": "antigravity",
-        "antigravity_enabled": True,
         "resolved_tool": "antigravity",
+        "codex_enabled": True,
+        "antigravity_enabled": True,
         "model": "gemini-9.9-unlisted",
         "allowlist_warning": True,
     }
@@ -523,6 +662,7 @@ def test_cli_skill_route_oracle_matches_antigravity_within_allowlist(tmp_path: P
     _write_routing_config_files(
         tmp_path,
         base={
+            "codex": {"enabled": True},
             "antigravity": {
                 "enabled": True,
                 "model": "gemini-3.1-pro-high",
@@ -534,8 +674,9 @@ def test_cli_skill_route_oracle_matches_antigravity_within_allowlist(tmp_path: P
     )
     artifact = {
         "engine": "antigravity",
-        "antigravity_enabled": True,
         "resolved_tool": "antigravity",
+        "codex_enabled": True,
+        "antigravity_enabled": True,
         "model": "gemini-3.1-pro-high",
         "allowlist_warning": False,
     }

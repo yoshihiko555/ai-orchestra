@@ -6,8 +6,17 @@ Both skills must resolve their external-CLI route purely from the layered
 instead of ever actually invoking ``codex exec`` / ``agy`` (this harness runs
 with egress blocked). This fixture recomputes the expected decision from the
 same shared resolution helpers the routing-config behavioral scenarios use
-(``route_config.get_agent_tool`` / ``hook_common.is_cli_enabled``) and diffs
-it against the JSON artifact the scenario prompt asked Claude to write.
+(``route_config.get_agent_tool`` / ``route_config.build_aliases`` /
+``hook_common.is_cli_enabled``) and diffs it against the JSON artifact the
+scenario prompt asked Claude to write.
+
+``agents.<name>.tool`` can resolve to ``auto`` (e.g. via a routing-config
+candidate patch). Following the same alias-priority resolution used by
+``assert-routing-behavior.py`` (PR #257), ``auto`` picks the first enabled CLI
+in ``codex`` -> ``antigravity`` -> ``claude-direct`` order, so this fixture
+must be able to expect a ``codex`` engine for the antigravity-system probe (or
+an ``antigravity`` engine for the codex-system probe) and not just collapse
+every non-primary resolution to ``claude-direct``.
 """
 
 from __future__ import annotations
@@ -26,56 +35,82 @@ _CODEX_PROBE_AGENT = "debugger"
 _ANTIGRAVITY_PROBE_AGENT = "researcher"
 
 
-def _expected_codex(merged: dict[str, Any], project_root: Path) -> dict[str, Any]:
+def _resolve_final_tool(probe_agent: str, merged: dict[str, Any], project_root: Path) -> str:
+    """Resolve ``agents.<probe_agent>.tool`` to a concrete engine.
+
+    Mirrors ``assert-routing-behavior.py``'s ``_resolve_train_behavior``: an
+    ``auto`` value is resolved via ``build_aliases``' enabled-CLI alias list,
+    preferring ``codex`` then ``antigravity``, falling back to
+    ``claude-direct`` when neither is enabled.
+    """
     sys.path.insert(0, str(project_root / "packages/agent-routing/hooks"))
-    from route_config import get_agent_tool
+    from route_config import build_aliases, get_agent_tool
 
+    resolved = get_agent_tool(probe_agent, merged)
+    if resolved != "auto":
+        return resolved
+    aliases = build_aliases(merged)
+    auto_aliases = tuple(str(alias) for alias in aliases.get("auto", []))
+    for alias, tool in (("bash:codex", "codex"), ("bash:agy", "antigravity")):
+        if alias in auto_aliases:
+            return tool
+    return "claude-direct"
+
+
+def _codex_engine_fields(merged: dict[str, Any], project_root: Path) -> dict[str, Any]:
     sys.path.insert(0, str(project_root / "packages/core/hooks"))
-    from hook_common import is_cli_enabled
+    from hook_common import DEFAULT_CODEX_SANDBOX_ANALYSIS
 
-    codex_enabled = is_cli_enabled("codex", merged)
-    resolved_tool = get_agent_tool(_CODEX_PROBE_AGENT, merged)
-    if resolved_tool == "codex":
-        codex_cfg = merged.get("codex", {}) or {}
-        return {
-            "engine": "codex",
-            "codex_enabled": codex_enabled,
-            "resolved_tool": "codex",
-            "model": codex_cfg.get("model"),
-            "sandbox": "analysis",
-            "flags": codex_cfg.get("flags"),
-        }
+    codex_cfg = merged.get("codex", {}) or {}
+    sandbox_cfg = codex_cfg.get("sandbox", {}) or {}
     return {
-        "engine": "claude-direct",
-        "codex_enabled": codex_enabled,
-        "resolved_tool": "claude-direct",
+        "model": codex_cfg.get("model"),
+        # Effective `codex.sandbox.analysis` value (including its fallback
+        # default), never a hardcoded literal like "analysis".
+        "sandbox": sandbox_cfg.get("analysis", DEFAULT_CODEX_SANDBOX_ANALYSIS),
+        "flags": codex_cfg.get("flags"),
     }
 
 
-def _expected_antigravity(merged: dict[str, Any], project_root: Path) -> dict[str, Any]:
-    sys.path.insert(0, str(project_root / "packages/agent-routing/hooks"))
-    from route_config import get_agent_tool
-
-    sys.path.insert(0, str(project_root / "packages/core/hooks"))
-    from hook_common import is_cli_enabled
-
-    antigravity_enabled = is_cli_enabled("antigravity", merged)
-    resolved_tool = get_agent_tool(_ANTIGRAVITY_PROBE_AGENT, merged)
-    if resolved_tool != "antigravity":
-        return {
-            "engine": "claude-direct",
-            "antigravity_enabled": antigravity_enabled,
-            "resolved_tool": "claude-direct",
-        }
+def _antigravity_engine_fields(merged: dict[str, Any]) -> dict[str, Any]:
     antigravity_cfg = merged.get("antigravity", {}) or {}
     model = antigravity_cfg.get("model", "")
     allowlist = antigravity_cfg.get("model_allowlist", []) or []
     return {
-        "engine": "antigravity",
-        "antigravity_enabled": antigravity_enabled,
-        "resolved_tool": "antigravity",
         "model": model,
         "allowlist_warning": bool(model) and model not in allowlist,
+    }
+
+
+def _expected_for_probe(
+    probe_agent: str, merged: dict[str, Any], project_root: Path
+) -> dict[str, Any]:
+    sys.path.insert(0, str(project_root / "packages/core/hooks"))
+    from hook_common import is_cli_enabled
+
+    context = {
+        "codex_enabled": is_cli_enabled("codex", merged),
+        "antigravity_enabled": is_cli_enabled("antigravity", merged),
+    }
+    final_tool = _resolve_final_tool(probe_agent, merged, project_root)
+    if final_tool == "codex":
+        return {
+            "engine": "codex",
+            "resolved_tool": "codex",
+            **context,
+            **_codex_engine_fields(merged, project_root),
+        }
+    if final_tool == "antigravity":
+        return {
+            "engine": "antigravity",
+            "resolved_tool": "antigravity",
+            **context,
+            **_antigravity_engine_fields(merged),
+        }
+    return {
+        "engine": "claude-direct",
+        "resolved_tool": "claude-direct",
+        **context,
     }
 
 
@@ -86,9 +121,9 @@ def assert_route(project_root: Path, tool: str, artifact: Path) -> None:
     merged = load_cli_tools_config(str(project_root))
 
     if tool == "codex":
-        expected = _expected_codex(merged, project_root)
+        expected = _expected_for_probe(_CODEX_PROBE_AGENT, merged, project_root)
     elif tool == "antigravity":
-        expected = _expected_antigravity(merged, project_root)
+        expected = _expected_for_probe(_ANTIGRAVITY_PROBE_AGENT, merged, project_root)
     else:
         raise AssertionError(f"unknown tool: {tool!r}")
 
