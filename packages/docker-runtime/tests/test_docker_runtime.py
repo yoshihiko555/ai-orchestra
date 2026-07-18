@@ -203,6 +203,8 @@ def _replace_broker_environment(monkeypatch: pytest.MonkeyPatch, values: dict[st
         "DR_PRICE_OUTPUT",
         "DR_PRICE_CACHE_CREATION",
         "DR_PRICE_CACHE_READ",
+        "DR_BROKER_MODEL_ALLOWLIST",
+        "MH_BROKER_MODEL_ALLOWLIST",
         "MH_BROKER_RUN_TOKEN",
         "MH_BROKER_PORT",
         "MH_BROKER_BUDGET_USD",
@@ -371,6 +373,108 @@ def test_broker_settings_from_env_rejects_empty_run_token(
 
     with pytest.raises(RuntimeError, match="run token must not be empty"):
         broker._broker_settings_from_env()
+
+
+def test_model_allowlist_env_is_none_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    _replace_broker_environment(monkeypatch, {})
+
+    assert (
+        broker._model_allowlist_env("DR_BROKER_MODEL_ALLOWLIST", "MH_BROKER_MODEL_ALLOWLIST")
+        is None
+    )
+
+
+def test_model_allowlist_env_is_none_when_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    _replace_broker_environment(monkeypatch, {"DR_BROKER_MODEL_ALLOWLIST": "  , ,"})
+
+    assert (
+        broker._model_allowlist_env("DR_BROKER_MODEL_ALLOWLIST", "MH_BROKER_MODEL_ALLOWLIST")
+        is None
+    )
+
+
+def test_model_allowlist_env_prefers_generic_over_legacy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _replace_broker_environment(
+        monkeypatch,
+        {
+            "DR_BROKER_MODEL_ALLOWLIST": "claude-cheap-model",
+            "MH_BROKER_MODEL_ALLOWLIST": "claude-legacy-model",
+        },
+    )
+
+    result = broker._model_allowlist_env("DR_BROKER_MODEL_ALLOWLIST", "MH_BROKER_MODEL_ALLOWLIST")
+
+    assert result == frozenset({"claude-cheap-model"})
+
+
+def test_model_allowlist_env_falls_back_to_legacy_and_strips_entries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _replace_broker_environment(
+        monkeypatch,
+        {"MH_BROKER_MODEL_ALLOWLIST": " claude-cheap-model , claude-cheaper-model ,,"},
+    )
+
+    result = broker._model_allowlist_env("DR_BROKER_MODEL_ALLOWLIST", "MH_BROKER_MODEL_ALLOWLIST")
+
+    assert result == frozenset({"claude-cheap-model", "claude-cheaper-model"})
+
+
+def test_broker_settings_from_env_defaults_model_allowlist_to_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _replace_broker_environment(
+        monkeypatch,
+        {
+            "MH_BROKER_RUN_TOKEN": "legacy-token",
+            "MH_BROKER_PORT": "8787",
+            "MH_BROKER_BUDGET_USD": "3.0",
+            "MH_BROKER_IDLE_TIMEOUT_SEC": "300",
+            "MH_BROKER_MAX_LIFETIME_SEC": "660",
+            "MH_BROKER_STARTUP_TIMEOUT_SEC": "30",
+            "MH_BROKER_MAX_REQUESTS": "64",
+            "MH_BROKER_MAX_TOTAL_TOKENS": "500000",
+            "MH_BROKER_MAX_UPSTREAM_BYTES": "50000000",
+            "MH_PRICE_INPUT": "15.0",
+            "MH_PRICE_OUTPUT": "75.0",
+            "MH_PRICE_CACHE_CREATION": "18.75",
+            "MH_PRICE_CACHE_READ": "1.5",
+        },
+    )
+
+    settings = broker._broker_settings_from_env()
+
+    assert settings.model_allowlist is None
+
+
+def test_broker_settings_from_env_reads_model_allowlist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _replace_broker_environment(
+        monkeypatch,
+        {
+            "MH_BROKER_RUN_TOKEN": "legacy-token",
+            "MH_BROKER_PORT": "8787",
+            "MH_BROKER_BUDGET_USD": "3.0",
+            "MH_BROKER_IDLE_TIMEOUT_SEC": "300",
+            "MH_BROKER_MAX_LIFETIME_SEC": "660",
+            "MH_BROKER_STARTUP_TIMEOUT_SEC": "30",
+            "MH_BROKER_MAX_REQUESTS": "64",
+            "MH_BROKER_MAX_TOTAL_TOKENS": "500000",
+            "MH_BROKER_MAX_UPSTREAM_BYTES": "50000000",
+            "MH_PRICE_INPUT": "15.0",
+            "MH_PRICE_OUTPUT": "75.0",
+            "MH_PRICE_CACHE_CREATION": "18.75",
+            "MH_PRICE_CACHE_READ": "1.5",
+            "DR_BROKER_MODEL_ALLOWLIST": "claude-cheap-model,claude-cheaper-model",
+        },
+    )
+
+    settings = broker._broker_settings_from_env()
+
+    assert settings.model_allowlist == frozenset({"claude-cheap-model", "claude-cheaper-model"})
 
 
 @pytest.mark.parametrize("namespace", ["", "Loop-Harness", "../loop", "x" * 64])

@@ -523,6 +523,82 @@ def test_usage_budget_hard_cap_rejects_following_request(tmp_path: Path, monkeyp
     assert metrics["budget_exceeded"] is True
 
 
+def test_model_allowlist_unset_skips_validation(
+    http_broker: tuple[Any, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server, state = http_broker
+    assert state.model_allowlist is None
+    monkeypatch.setattr(broker.BrokerHandler, "_proxy", _complete_proxy)
+
+    status, _headers, _payload = _post(
+        server,
+        body=b'{"model":"claude-arbitrary-expensive","max_tokens":1,"messages":[]}',
+    )
+
+    assert status == 200
+    assert state.metrics.rejected_count == 0
+
+
+def test_model_allowlist_accepts_matching_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = _state(
+        tmp_path,
+        monkeypatch,
+        max_requests=4,
+        max_total_tokens=500_000,
+        model_allowlist=frozenset({"claude-cheap-model"}),
+    )
+    body = json.dumps({"model": "claude-cheap-model", "max_tokens": 1, "messages": []}).encode()
+
+    assert state.begin_request()[0] is True
+    assert state.request_budget_error("/v1/messages", body) is None
+
+
+def test_model_allowlist_rejects_mismatched_model_with_non_retryable_400(
+    http_broker: tuple[Any, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server, state = http_broker
+    state.model_allowlist = frozenset({"claude-cheap-model"})
+
+    class UnexpectedConnection:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            raise AssertionError("model allowlist rejection must not reach upstream")
+
+    monkeypatch.setattr(broker.http.client, "HTTPSConnection", UnexpectedConnection)
+    body = json.dumps({"model": "claude-expensive-model", "max_tokens": 1, "messages": []}).encode()
+
+    status, _headers, payload = _post(server, body=body)
+
+    assert status == 400
+    assert b"model allowlist" in payload
+    assert state.metrics.request_count == 1
+    assert state.metrics.rejected_count == 1
+    assert state.metrics.upstream_request_bytes == 0
+    assert state.metrics.anomaly is True
+
+
+def test_model_allowlist_rejects_missing_model_field(
+    http_broker: tuple[Any, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server, state = http_broker
+    state.model_allowlist = frozenset({"claude-cheap-model"})
+
+    class UnexpectedConnection:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            raise AssertionError("model allowlist rejection must not reach upstream")
+
+    monkeypatch.setattr(broker.http.client, "HTTPSConnection", UnexpectedConnection)
+    body = json.dumps({"max_tokens": 1, "messages": []}).encode()
+
+    status, _headers, payload = _post(server, body=body)
+
+    assert status == 400
+    assert b"model allowlist" in payload
+    assert state.metrics.rejected_count == 1
+    assert state.metrics.upstream_request_bytes == 0
+
+
 def test_two_1024_token_requests_fit_three_dollar_run_budget(tmp_path: Path, monkeypatch) -> None:
     state = _state(
         tmp_path,
