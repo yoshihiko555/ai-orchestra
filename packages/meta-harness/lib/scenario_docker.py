@@ -191,9 +191,8 @@ def check_docker_capabilities(
     """Validate the exact Docker image and broker-backed CLI path before worktree creation."""
     checks: dict[str, bool] = {}
     version_pin = _isolation_config(config).get("image_pin", DEFAULT_CLAUDE_VERSION_PIN)
-    scenario_run_cfg = config.get("scenario_run") or {}
-    # The capability gate must use the same output-token budget as real scenario runs.
-    max_output_tokens = int(scenario_run_cfg.get("max_output_tokens_default", 4096))
+    # The capability gate must use the same output-token budget as real scenario and judge runs.
+    max_output_tokens = profile.resolve_max_output_tokens_default(config)
     try:
         checks["docker_daemon"] = dcli.docker_daemon_available(runner=runner)
         if not checks["docker_daemon"]:
@@ -401,9 +400,15 @@ def build_judge_command(
     claude_command: list[str],
     *,
     container_name: str,
+    max_output_tokens: int,
 ) -> list[str]:
     try:
-        return profile.build_judge_command(launch, claude_command, container_name=container_name)
+        return profile.build_judge_command(
+            launch,
+            claude_command,
+            container_name=container_name,
+            max_output_tokens=max_output_tokens,
+        )
     except profile.DockerProfileError as exc:
         raise DockerScenarioError(str(exc)) from exc
 

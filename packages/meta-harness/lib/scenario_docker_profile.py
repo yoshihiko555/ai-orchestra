@@ -28,6 +28,18 @@ CONTAINER_TMP = "/tmp"
 CONTAINER_LIFETIME_MARGIN_SECONDS = 60
 CONTAINER_TIMEOUT_KILL_AFTER_SECONDS = 5
 DockerProfileError = runtime.DockerProfileError
+DEFAULT_MAX_OUTPUT_TOKENS = 4096
+
+
+def resolve_max_output_tokens_default(config: dict) -> int:
+    """Resolve scenario_run.max_output_tokens_default with null-safe fallback.
+
+    An explicit YAML ``max_output_tokens_default: null`` must fall back to the same default
+    as an absent key, not propagate ``None`` into ``str()``/``int()`` conversions downstream.
+    """
+    scenario_run_cfg = config.get("scenario_run") or {}
+    value = scenario_run_cfg.get("max_output_tokens_default")
+    return int(value) if value is not None else DEFAULT_MAX_OUTPUT_TOKENS
 
 
 def build_scenario_container_command(launch: Any) -> list[str]:
@@ -133,12 +145,17 @@ def build_oracle_command(launch: Any, command: str, *, container_name: str) -> l
 
 
 def build_judge_command(
-    launch: Any, claude_command: list[str], *, container_name: str
+    launch: Any,
+    claude_command: list[str],
+    *,
+    container_name: str,
+    max_output_tokens: int,
 ) -> list[str]:
     uid, gid = _non_root_identity()
     env = {
         "HOME": CONTAINER_HOME,
         "CLAUDE_CONFIG_DIR": f"{CONTAINER_HOME}/.claude",
+        "CLAUDE_CODE_MAX_OUTPUT_TOKENS": str(max_output_tokens),
         "ANTHROPIC_BASE_URL": launch.broker.base_url,
         "ANTHROPIC_API_KEY": launch.broker.run_token,
         "NO_PROXY": BROKER_ALIAS,

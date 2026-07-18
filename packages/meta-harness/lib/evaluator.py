@@ -1753,9 +1753,11 @@ def run_rubric_judge(
             error=True,
         )
     if tool == "claude-bare":
+        max_output_tokens = siso.resolve_max_output_tokens_default(config)
         return _judge_via_claude_bare(
             prompt,
             judge_cfg,
+            max_output_tokens=max_output_tokens,
             isolation_launch=isolation_launch,
             runner=runner,
         )
@@ -1766,6 +1768,7 @@ def _judge_via_claude_bare(
     prompt: str,
     judge_cfg: dict,
     *,
+    max_output_tokens: int,
     isolation_launch: siso.ScenarioIsolationLaunch | None,
     runner: SubprocessRunner,
 ) -> JudgeVerdict:
@@ -1810,7 +1813,9 @@ def _judge_via_claude_bare(
         cmd += ["--effort", effort]
     try:
         if broker_available and isolation_launch is not None:
-            isolated_command, cleanup_command = siso.build_judge_command(isolation_launch, cmd)
+            isolated_command, cleanup_command = siso.build_judge_command(
+                isolation_launch, cmd, max_output_tokens=max_output_tokens
+            )
             completed = sproc.run_bounded_capture(
                 isolated_command,
                 cwd=Path(tempfile.gettempdir()),

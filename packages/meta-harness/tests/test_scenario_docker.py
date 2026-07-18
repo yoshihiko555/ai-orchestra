@@ -254,11 +254,13 @@ def test_judge_has_broker_but_no_candidate_worktree_mount(tmp_path: Path) -> Non
         launch,
         ["claude", "-p", "grade", "--bare"],
         container_name="mh-run-judge",
+        max_output_tokens=4096,
     )
     rendered = "\n".join(command)
 
     assert "--network\nmh-run-test-internal" in rendered
     assert "ANTHROPIC_BASE_URL=http://mh-broker:8787" in command
+    assert "CLAUDE_CODE_MAX_OUTPUT_TOKENS=4096" in command
     assert str(launch.worktree_dir.resolve()) not in rendered
     assert str(launch.runtime_state_dir.resolve()) not in rendered
     assert command[-8:] == [
@@ -271,6 +273,31 @@ def test_judge_has_broker_but_no_candidate_worktree_mount(tmp_path: Path) -> Non
         "grade",
         "--bare",
     ]
+
+
+def test_judge_command_applies_configured_output_token_cap(tmp_path: Path) -> None:
+    launch = _launch(tmp_path)
+
+    command = docker.profile.build_judge_command(
+        launch,
+        ["claude", "-p", "grade", "--bare"],
+        container_name="mh-run-judge",
+        max_output_tokens=8192,
+    )
+
+    assert "CLAUDE_CODE_MAX_OUTPUT_TOKENS=8192" in command
+
+
+def test_resolve_max_output_tokens_default_treats_null_as_default() -> None:
+    config = copy.deepcopy(mh.DEFAULTS)
+    config["scenario_run"]["max_output_tokens_default"] = None
+    assert docker.profile.resolve_max_output_tokens_default(config) == 4096
+
+    config["scenario_run"]["max_output_tokens_default"] = 8192
+    assert docker.profile.resolve_max_output_tokens_default(config) == 8192
+
+    config["scenario_run"] = None
+    assert docker.profile.resolve_max_output_tokens_default(config) == 4096
 
 
 def test_broker_token_is_injected_via_stdin_not_argv_or_env(tmp_path: Path, monkeypatch) -> None:
