@@ -23,6 +23,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **`meta-harness`: 評価/judge の既定モデルを Sonnet に pin し、broker 予算上限価格を再較正**: `evaluate.model` / `judge.model` が未指定（セッション既定モデルに依存、Opus tier になり得た）から `claude-sonnet-5` 明示 pin に変わり、broker の `pricing_upper_bound_usd_per_million` 既定値も Sonnet 単価へ引き下げた。broker の model allowlist（`evaluate.isolation.broker.model_allowlist`）で candidate が pin より高価なモデルを指定して過小コスト計上する迂回を fail-closed で防ぐ。この再較正はコスト比較可能性に影響するため、旧価格下で評価済みの routing-config / facet 候補は evaluator hash が stale 判定となり再評価が必要になる。
 - **`meta-harness`: frontier の既定コスト軸を USD コストへ変更**: 全 target の `frontier.cost_axis` 既定値を `total_tokens` から `total_cost_usd` に変更したため、既存候補の frontier 順序が変わる場合がある。選択したコスト field を欠く run は従来どおり fail-closed し、purge 後の再評価が必要。
 
 - **`image-generation`: `codex.enabled: false` 時は画像生成を実行しないように変更**: `/image-gen` スキル・`image-generator` エージェントが `cli-tools.yaml`（+ `.local.yaml`）の `codex.enabled: false` を尊重し、無効時は画像生成を行わず「利用不可」を報告するようになった。

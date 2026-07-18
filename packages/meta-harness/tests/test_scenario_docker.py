@@ -516,6 +516,43 @@ def test_capability_smoke_uses_configured_evaluate_model(tmp_path: Path, monkeyp
         assert command[model_index + 1] == "claude-custom-model"
 
 
+def test_bare_judge_smoke_uses_configured_judge_model(tmp_path: Path, monkeypatch) -> None:
+    """Issue #261 PR2: judge.model must be pinned on the claude-bare capability smoke too,
+    independently of evaluate.model (avoids under-counting the judge's real cost)."""
+    session = _broker(tmp_path)
+    session.cleaned = True
+    commands: list[list[str]] = []
+    config = copy.deepcopy(mh.DEFAULTS)
+    config["evaluate"]["model"] = "claude-custom-model"
+    config["judge"]["model"] = "claude-custom-judge-model"
+    monkeypatch.setattr(docker.dcli, "docker_daemon_available", lambda **_kwargs: True)
+    monkeypatch.setattr(docker, "sweep_stale_resources", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        docker, "docker_broker_session", lambda *_args, **_kwargs: docker._BrokerContext(session)
+    )
+    monkeypatch.setattr(
+        docker,
+        "_image_claude_version",
+        lambda *_args, **_kwargs: "2.1.207 (Claude Code)",
+    )
+
+    def run_smoke(_broker_session, command, **_kwargs):
+        commands.append(command)
+        return _completed(stdout='{"type":"result"}')
+
+    monkeypatch.setattr(docker, "_run_smoke_container", run_smoke)
+
+    result = docker.check_docker_capabilities(config, main_root=tmp_path, runner=session.runner)
+
+    assert result.ok is True
+    assert len(commands) == 3
+    bare_command = commands[2]
+    model_index = bare_command.index("--model")
+    assert bare_command[model_index + 1] == "claude-custom-judge-model"
+    # evaluate.model must not leak into the bare judge command's --model flag.
+    assert bare_command.count("--model") == 1
+
+
 @pytest.mark.parametrize(
     ("configured_max_output_tokens", "expected_max_output_tokens"),
     [
@@ -825,8 +862,28 @@ def test_broker_env_sends_generic_and_legacy_contracts() -> None:
         ("DR_PRICE_OUTPUT", "MH_PRICE_OUTPUT"),
         ("DR_PRICE_CACHE_CREATION", "MH_PRICE_CACHE_CREATION"),
         ("DR_PRICE_CACHE_READ", "MH_PRICE_CACHE_READ"),
+        ("DR_BROKER_MODEL_ALLOWLIST", "MH_BROKER_MODEL_ALLOWLIST"),
     ):
         assert broker_env[generic_name] == broker_env[legacy_name]
+
+
+def test_broker_env_sends_configured_model_allowlist() -> None:
+    """Issue #261 PR2: config-driven model allowlist is joined and forwarded to the broker."""
+    broker_env = docker.profile.broker_env(copy.deepcopy(mh.DEFAULTS), "run-token", 8787)
+
+    assert broker_env["DR_BROKER_MODEL_ALLOWLIST"] == "claude-sonnet-5"
+    assert broker_env["MH_BROKER_MODEL_ALLOWLIST"] == "claude-sonnet-5"
+
+
+def test_broker_env_omits_model_allowlist_keys_when_unset() -> None:
+    """Absent/empty model_allowlist must not set the env vars (no-restriction fallback)."""
+    config = copy.deepcopy(mh.DEFAULTS)
+    config["evaluate"]["isolation"]["broker"]["model_allowlist"] = []
+
+    broker_env = docker.profile.broker_env(config, "run-token", 8787)
+
+    assert "DR_BROKER_MODEL_ALLOWLIST" not in broker_env
+    assert "MH_BROKER_MODEL_ALLOWLIST" not in broker_env
 
 
 def test_prebuilt_images_require_digest_and_accept_multiarch_reference() -> None:

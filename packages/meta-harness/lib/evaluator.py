@@ -1967,14 +1967,33 @@ def compute_evaluator_hash(
 
 
 def evaluator_execution_snapshot(config: dict) -> dict[str, Any]:
-    """Return the global execution settings that define evaluator hash scope."""
+    """Return the global execution settings that define evaluator hash scope.
+
+    Includes settings that affect cross-run cost/quality comparability even
+    when no scenario/suite file changes (Issue #261 PR2): judge model/effort,
+    broker pricing upper bounds, the broker model allowlist, and the global
+    per-scenario budget default. A config-only change to any of these must
+    stale out prior evaluator_hash-scoped runs.
+    """
     evaluate_cfg = config.get("evaluate") or {}
+    judge_cfg = config.get("judge") or {}
+    broker_cfg = (evaluate_cfg.get("isolation") or {}).get("broker") or {}
     return {
         "allowed_tools": evaluate_cfg.get("allowed_tools") or [],
         "permission_mode": evaluate_cfg.get("permission_mode", "acceptEdits"),
         "model": evaluate_cfg.get("model"),
         "max_output_tokens_default": siso.resolve_max_output_tokens_default(config),
         "regression": config.get("regression") or {},
+        "judge_model": judge_cfg.get("model"),
+        "judge_effort": judge_cfg.get("effort"),
+        "broker_pricing_upper_bound_usd_per_million": broker_cfg.get(
+            "pricing_upper_bound_usd_per_million"
+        )
+        or {},
+        "broker_model_allowlist": broker_cfg.get("model_allowlist") or [],
+        "scenario_run_max_budget_usd_default": (config.get("scenario_run") or {}).get(
+            "max_budget_usd_default"
+        ),
     }
 
 

@@ -357,6 +357,14 @@ def broker_env(config: dict, run_token: str, port: int) -> dict[str, str]:
     pricing = broker.get("pricing_upper_bound_usd_per_million") or {}
     scenario_run = config.get("scenario_run") or {}
     idle_timeout = int(broker.get("idle_timeout_sec", 300))
+    model_allowlist = broker.get("model_allowlist") or []
+    model_allowlist_env: dict[str, str] = {}
+    if model_allowlist:
+        joined = ",".join(str(item) for item in model_allowlist)
+        model_allowlist_env = {
+            "DR_BROKER_MODEL_ALLOWLIST": joined,
+            "MH_BROKER_MODEL_ALLOWLIST": joined,
+        }
     return {
         "DR_BROKER_NAMESPACE": BROKER_NAMESPACE,
         "DR_BROKER_RUN_TOKEN": run_token,
@@ -385,6 +393,7 @@ def broker_env(config: dict, run_token: str, port: int) -> dict[str, str]:
         "MH_PRICE_OUTPUT": str(pricing.get("output", 75.0)),
         "MH_PRICE_CACHE_CREATION": str(pricing.get("cache_creation", 18.75)),
         "MH_PRICE_CACHE_READ": str(pricing.get("cache_read", 1.5)),
+        **model_allowlist_env,
     }
 
 

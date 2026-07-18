@@ -258,6 +258,8 @@ def check_docker_capabilities(
             checks["max_budget_usd"] = _has_result_json(budget.stdout)
             judge_tool = (config.get("judge") or {}).get("tool", "claude-bare")
             if judge_tool == "claude-bare":
+                judge_model = (config.get("judge") or {}).get("model")
+                judge_model_args = ["--model", judge_model] if judge_model else []
                 bare = _run_smoke_container(
                     broker,
                     [
@@ -278,6 +280,7 @@ def check_docker_capabilities(
                         ),
                         "--max-turns",
                         "1",
+                        *judge_model_args,
                     ],
                     max_output_tokens=max_output_tokens,
                     runner=runner,

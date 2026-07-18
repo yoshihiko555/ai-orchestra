@@ -34,6 +34,16 @@ def _write_result_event(events_path: Path, event: dict) -> None:
     events_path.write_text(json.dumps(event) + "\n", encoding="utf-8")
 
 
+def _deep_merge(base: dict, override: dict) -> dict:
+    result = dict(base)
+    for key, value in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
 def _write_events(events_path: Path, events: list[dict]) -> None:
     events_path.write_text(
         "".join(json.dumps(event) + "\n" for event in events),
@@ -265,6 +275,74 @@ class TestScenarioExecutionEnvelope:
         )
 
         assert first != second
+
+    def test_execution_snapshot_includes_cost_comparability_scope(self) -> None:
+        """Issue #261 PR2: judge model/effort, broker pricing, broker model allowlist and the
+        global scenario budget default must be part of the evaluator hash scope, since a
+        config-only change to any of these breaks cost/quality comparability across runs."""
+        config = {
+            "judge": {"model": "claude-sonnet-5", "effort": "high"},
+            "evaluate": {
+                "isolation": {
+                    "broker": {
+                        "pricing_upper_bound_usd_per_million": {"input": 3.0, "output": 15.0},
+                        "model_allowlist": ["claude-sonnet-5"],
+                    }
+                }
+            },
+            "scenario_run": {"max_budget_usd_default": 3.0},
+        }
+
+        snapshot = ev.evaluator_execution_snapshot(config)
+
+        assert snapshot["judge_model"] == "claude-sonnet-5"
+        assert snapshot["judge_effort"] == "high"
+        assert snapshot["broker_pricing_upper_bound_usd_per_million"] == {
+            "input": 3.0,
+            "output": 15.0,
+        }
+        assert snapshot["broker_model_allowlist"] == ["claude-sonnet-5"]
+        assert snapshot["scenario_run_max_budget_usd_default"] == 3.0
+
+    @pytest.mark.parametrize(
+        "override",
+        [
+            {"judge": {"model": "claude-opus-4-8"}},
+            {
+                "evaluate": {
+                    "isolation": {
+                        "broker": {"pricing_upper_bound_usd_per_million": {"input": 15.0}}
+                    }
+                }
+            },
+            {"evaluate": {"isolation": {"broker": {"model_allowlist": ["claude-opus-4-8"]}}}},
+            {"scenario_run": {"max_budget_usd_default": 54.0}},
+        ],
+        ids=["judge_model", "broker_pricing", "broker_model_allowlist", "scenario_run_budget"],
+    )
+    def test_evaluator_hash_changes_when_cost_comparability_scope_changes(
+        self, override: dict
+    ) -> None:
+        base_config: dict = {
+            "judge": {"model": "claude-sonnet-5", "effort": "high"},
+            "evaluate": {
+                "isolation": {
+                    "broker": {
+                        "pricing_upper_bound_usd_per_million": {"input": 3.0},
+                        "model_allowlist": ["claude-sonnet-5"],
+                    }
+                }
+            },
+            "scenario_run": {"max_budget_usd_default": 3.0},
+        }
+        changed_config = json.loads(json.dumps(base_config))
+        for key, value in override.items():
+            changed_config[key] = _deep_merge(changed_config.get(key, {}), value)
+
+        before = ev.compute_configured_evaluator_hash(base_config)
+        after = ev.compute_configured_evaluator_hash(changed_config)
+
+        assert before != after
 
 
 class TestSkillActivationEvidence:
