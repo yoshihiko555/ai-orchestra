@@ -353,16 +353,18 @@ class TestScenarioExecutionEnvelope:
             # config change, so it alone must stale prior evaluator_hash-scoped runs
             # (CodeRabbit High, PR #265).
             {"judge": {"tool": "codex"}},
-            # judge.model repin must also extend model_allowlist, or the fail-closed
-            # guard (Issue #261 PR2 review round 2) would reject the config outright
-            # before a hash could even be computed -- see the dedicated fail-closed
-            # test below for that behavior.
+            # A model repin must also extend model_allowlist, or the fail-closed guard
+            # (Issue #261 PR2 review round 2) would reject the config outright before a
+            # hash could even be computed. Round 4 additionally requires
+            # evaluate.model == judge.model, so both must move together -- see the
+            # dedicated fail-closed tests below for the unpinned/mismatched cases.
             {
                 "judge": {"model": "claude-opus-4-8"},
                 "evaluate": {
+                    "model": "claude-opus-4-8",
                     "isolation": {
                         "broker": {"model_allowlist": ["claude-sonnet-5", "claude-opus-4-8"]}
-                    }
+                    },
                 },
             },
             {
@@ -376,7 +378,7 @@ class TestScenarioExecutionEnvelope:
         ],
         ids=[
             "judge_tool",
-            "judge_model",
+            "model_repin",
             "broker_pricing",
             "scenario_run_budget",
         ],

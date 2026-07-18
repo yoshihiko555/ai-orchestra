@@ -1846,7 +1846,7 @@ evaluate:
     - "Bash(python *)"
     - "Bash(python3 *)"
     - "Bash(pytest *)"
-  model: null # null = セッション既定モデル
+  model: claude-sonnet-5 # 必須 pin（Issue #261 PR2）。judge.model と同一でなければならない（§1-2 broker allowlist fail-closed）
   cli_version_pin: null # null = バージョン一致検証をスキップ（capability smoke test は常に実施）
   isolation:
     # scenario runner は非隔離実行へ降格しない（ADR-20260712-034。SRT 方式から Docker へ移行）
@@ -1870,10 +1870,16 @@ evaluate:
       max_total_tokens: 500000
       max_upstream_bytes: 50000000 # body + 正規化済みheaderのrun累積hard cap
       pricing_upper_bound_usd_per_million:
-        input: 15.0
-        output: 75.0
-        cache_creation: 18.75
-        cache_read: 1.5
+        # Sonnet 単価上限（1h cache write 上限込み。Issue #261 PR2）。evaluate.model/judge.model の
+        # pin 先モデルと必ず一致させること（不一致は fail-closed、§1-2）
+        input: 3.0
+        output: 15.0
+        cache_creation: 6.0
+        cache_read: 0.30
+      # request body の model を検証する human-curated allowlist（fail-closed、Issue #261 PR1/PR2）。
+      # evaluate.model と judge.model は同一値に pin する必須制約があるため 1 値のみで足りる
+      model_allowlist:
+        - claude-sonnet-5
       # broker は run スコープで起動・破棄。実 OAuth は broker のみ保持し候補コンテナへ渡さない
 scenario_run:
   max_turns_default: 30
@@ -1885,7 +1891,7 @@ regression:
   max_budget_usd: 54.0 # 現行 global impact suite の train/holdout 設定上限を収容
 judge:
   tool: claude-bare # tool-less judge。codexはread deny不能のため無効（ADR-20260711-033）
-  model: null # null = 各バックエンドの既定モデル
+  model: claude-sonnet-5 # 必須 pin（Issue #261 PR2）。evaluate.model と同一でなければならない（broker pricing table は run あたり1つ）
   effort: high # claude-bare のみ使用
   max_turns: 4 # claude-bare のみ使用
 scoring:

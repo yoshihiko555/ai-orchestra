@@ -393,6 +393,10 @@ def test_capability_gate_fails_closed_before_docker_when_repin_mismatches_allowl
     not just at the negative-probe smoke check deep inside the gate."""
     config = copy.deepcopy(mh.DEFAULTS)
     config["evaluate"]["model"] = "claude-repinned-expensive-model"
+    # Round 4: evaluate.model/judge.model must match, or the equal-model check fires
+    # first -- keep judge.model in lockstep so this test exercises the menu-mismatch
+    # branch specifically.
+    config["judge"]["model"] = "claude-repinned-expensive-model"
 
     def _runner_must_not_run(*_args: object, **_kwargs: object) -> None:
         pytest.fail("Docker must not be touched when config validation fails closed")
@@ -525,6 +529,8 @@ def test_capability_smoke_uses_configured_evaluate_model(tmp_path: Path, monkeyp
     commands: list[list[str]] = []
     config = copy.deepcopy(mh.DEFAULTS)
     config["evaluate"]["model"] = "claude-custom-model"
+    # Round 4: evaluate.model/judge.model must match.
+    config["judge"]["model"] = "claude-custom-model"
     # Issue #261 PR2 review round 2: repinning evaluate.model must be admitted
     # explicitly by the configured allowlist (no more auto-union).
     config["evaluate"]["isolation"]["broker"]["model_allowlist"] = [
@@ -559,21 +565,21 @@ def test_capability_smoke_uses_configured_evaluate_model(tmp_path: Path, monkeyp
         assert command[model_index + 1] == "claude-custom-model"
 
 
-def test_bare_judge_smoke_uses_configured_judge_model(tmp_path: Path, monkeypatch) -> None:
-    """Issue #261 PR2: judge.model must be pinned on the claude-bare capability smoke too,
-    independently of evaluate.model (avoids under-counting the judge's real cost)."""
+def test_bare_judge_smoke_uses_pinned_model(tmp_path: Path, monkeypatch) -> None:
+    """Issue #261 PR2: judge.model must be pinned on the claude-bare capability smoke
+    too. Since round 4 requires evaluate.model == judge.model, this necessarily uses
+    the same value as evaluate.model, but the wiring (judge_model_args, separate from
+    the evaluate-derived model_args) is still exercised and must not double up
+    --model flags."""
     session = _broker(tmp_path)
     session.cleaned = True
     commands: list[list[str]] = []
     config = copy.deepcopy(mh.DEFAULTS)
     config["evaluate"]["model"] = "claude-custom-model"
-    config["judge"]["model"] = "claude-custom-judge-model"
-    # Issue #261 PR2 review round 2: both repinned models must be explicitly
-    # admitted by the configured allowlist (no more auto-union).
-    config["evaluate"]["isolation"]["broker"]["model_allowlist"] = [
-        "claude-custom-model",
-        "claude-custom-judge-model",
-    ]
+    config["judge"]["model"] = "claude-custom-model"
+    # Issue #261 PR2 review round 2: repinned model must be explicitly admitted by
+    # the configured allowlist (no more auto-union).
+    config["evaluate"]["isolation"]["broker"]["model_allowlist"] = ["claude-custom-model"]
     monkeypatch.setattr(docker.dcli, "docker_daemon_available", lambda **_kwargs: True)
     monkeypatch.setattr(docker, "sweep_stale_resources", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
@@ -599,7 +605,7 @@ def test_bare_judge_smoke_uses_configured_judge_model(tmp_path: Path, monkeypatc
     assert len(commands) == 5
     bare_command = commands[2]
     model_index = bare_command.index("--model")
-    assert bare_command[model_index + 1] == "claude-custom-judge-model"
+    assert bare_command[model_index + 1] == "claude-custom-model"
     # evaluate.model must not leak into the bare judge command's --model flag.
     assert bare_command.count("--model") == 1
 
@@ -705,6 +711,42 @@ def test_capability_gate_fails_when_400_lacks_broker_rejection_signal(
 
     assert result.ok is False
     assert result.checks["broker_model_allowlist"] is False
+
+
+def test_capability_gate_opens_a_dedicated_broker_session_for_the_allowlist_probe(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Local adversarial review High (round 5): the existing tests replace
+    `docker_broker_session` with a single scope-agnostic mock, so a regression that
+    reuses the main session for the negative probe (undoing the round 4 budget
+    isolation fix) would go undetected. Capture the scope argument on every call and
+    assert the gate opens exactly two sessions: the main "capability" session for
+    the legitimate smoke checks, and a dedicated "capability-allowlist-probe"
+    session for the negative probes."""
+    session = _broker(tmp_path)
+    session.cleaned = True
+    scopes: list[str] = []
+
+    def fake_docker_broker_session(config: dict, scope: str, **_kwargs: object):
+        scopes.append(scope)
+        return docker._BrokerContext(session)
+
+    monkeypatch.setattr(docker, "docker_broker_session", fake_docker_broker_session)
+    monkeypatch.setattr(docker.dcli, "docker_daemon_available", lambda **_kwargs: True)
+    monkeypatch.setattr(docker, "sweep_stale_resources", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        docker,
+        "_image_claude_version",
+        lambda *_args, **_kwargs: "2.1.207 (Claude Code)",
+    )
+    monkeypatch.setattr(docker, "_run_smoke_container", _run_smoke_stub)
+
+    result = docker.check_docker_capabilities(
+        copy.deepcopy(mh.DEFAULTS), main_root=tmp_path, runner=session.runner
+    )
+
+    assert result.ok is True
+    assert scopes == ["capability", "capability-allowlist-probe"]
 
 
 def test_capability_gate_fails_closed_before_docker_when_judge_model_unpinned() -> None:
@@ -1047,6 +1089,41 @@ def test_broker_env_sends_generic_and_legacy_contracts() -> None:
         assert broker_env[generic_name] == broker_env[legacy_name]
 
 
+@pytest.mark.parametrize(
+    ("null_key", "generic_env_key", "legacy_env_key"),
+    [
+        ("input", "DR_PRICE_INPUT", "MH_PRICE_INPUT"),
+        ("output", "DR_PRICE_OUTPUT", "MH_PRICE_OUTPUT"),
+        ("cache_creation", "DR_PRICE_CACHE_CREATION", "MH_PRICE_CACHE_CREATION"),
+        ("cache_read", "DR_PRICE_CACHE_READ", "MH_PRICE_CACHE_READ"),
+    ],
+)
+def test_broker_env_falls_back_to_defaults_when_pricing_key_is_present_but_null(
+    null_key: str, generic_env_key: str, legacy_env_key: str
+) -> None:
+    """Local adversarial review High (round 5): a `.local.yaml` override that nulls
+    out a single pricing key (e.g. `pricing_upper_bound_usd_per_million.input: null`)
+    leaves the key *present* with value `None` after config merge. `dict.get(key,
+    default)` only falls back when the key is *absent*, so this used to put the
+    literal string "None" into the broker env, crashing the broker's `_float_env`
+    (`float("None")`) uncaught. The fallback must be an explicit None-check."""
+    config = copy.deepcopy(mh.DEFAULTS)
+    config["evaluate"]["isolation"]["broker"]["pricing_upper_bound_usd_per_million"][null_key] = (
+        None
+    )
+
+    broker_env = docker.profile.broker_env(config, "run-token", 8787)
+
+    default_pricing = mh.DEFAULTS["evaluate"]["isolation"]["broker"][
+        "pricing_upper_bound_usd_per_million"
+    ]
+    expected = str(default_pricing[null_key])
+    assert broker_env[generic_env_key] == expected
+    assert broker_env[legacy_env_key] == expected
+    # Must never leak the Python None-as-string sentinel to the broker's float parser.
+    assert broker_env[generic_env_key] != "None"
+
+
 def test_broker_env_sends_configured_model_allowlist() -> None:
     """Issue #261 PR2: config-driven model allowlist is joined and forwarded to the broker."""
     broker_env = docker.profile.broker_env(copy.deepcopy(mh.DEFAULTS), "run-token", 8787)
@@ -1106,8 +1183,11 @@ def test_broker_env_raises_fail_closed_when_repinned_model_mismatches_allowlist(
     pricing_upper_bound_usd_per_million, under-counting real cost)."""
     config = copy.deepcopy(mh.DEFAULTS)
     config["evaluate"]["model"] = "claude-project-override-model"
+    # Round 4: evaluate.model/judge.model must match to reach the menu-mismatch
+    # branch this test targets (otherwise the equal-model check fires first).
+    config["judge"]["model"] = "claude-project-override-model"
     # model_allowlist intentionally left at its default (["claude-sonnet-5"]): the
-    # repinned evaluate.model is not covered.
+    # repinned model is not covered.
 
     with pytest.raises(docker.profile.DockerProfileError) as excinfo:
         docker.profile.broker_env(config, "run-token", 8787)
@@ -1120,9 +1200,11 @@ def test_broker_env_raises_fail_closed_when_repinned_model_mismatches_allowlist(
 
 def test_broker_env_passes_when_repinned_model_matches_allowlist() -> None:
     """A repin that the operator also reflects in `model_allowlist` (and, implicitly,
-    is expected to reflect in pricing) is admitted as configured -- no auto-union."""
+    is expected to reflect in pricing) is admitted as configured -- no auto-union.
+    Only the pinned model is wired, never the full configured menu (round 4)."""
     config = copy.deepcopy(mh.DEFAULTS)
     config["evaluate"]["model"] = "claude-project-override-model"
+    config["judge"]["model"] = "claude-project-override-model"
     config["evaluate"]["isolation"]["broker"]["model_allowlist"] = [
         "claude-project-override-model",
         "claude-sonnet-5",
@@ -1131,7 +1213,7 @@ def test_broker_env_passes_when_repinned_model_matches_allowlist() -> None:
     broker_env = docker.profile.broker_env(config, "run-token", 8787)
 
     allowed = set(broker_env["DR_BROKER_MODEL_ALLOWLIST"].split(","))
-    assert allowed == {"claude-sonnet-5", "claude-project-override-model"}
+    assert allowed == {"claude-project-override-model"}
     assert broker_env["DR_BROKER_MODEL_ALLOWLIST"] == broker_env["MH_BROKER_MODEL_ALLOWLIST"]
 
 
@@ -1170,19 +1252,60 @@ def test_broker_env_raises_when_allowlist_element_is_invalid(bad_allowlist: list
 
 def test_broker_env_accepts_a_clean_model_allowlist() -> None:
     """A normal list of clean model slugs must pass through unchanged (no false
-    positives from the new type/element validation)."""
+    positives from the new type/element validation). The menu may list more than
+    the pinned model, but only the pinned model is wired (round 4)."""
     config = copy.deepcopy(mh.DEFAULTS)
     config["evaluate"]["isolation"]["broker"]["model_allowlist"] = [
         "claude-sonnet-5",
         "claude-opus-4-8",
     ]
     config["evaluate"]["model"] = "claude-sonnet-5"
-    config["judge"]["model"] = "claude-opus-4-8"
+    config["judge"]["model"] = "claude-sonnet-5"
 
     broker_env = docker.profile.broker_env(config, "run-token", 8787)
 
     allowed = set(broker_env["DR_BROKER_MODEL_ALLOWLIST"].split(","))
-    assert allowed == {"claude-sonnet-5", "claude-opus-4-8"}
+    assert allowed == {"claude-sonnet-5"}
+
+
+def test_broker_env_raises_when_evaluate_and_judge_models_differ() -> None:
+    """Issue #261 PR2 review round 4: the broker pricing table has exactly one
+    price point per run. Pinning evaluate.model and judge.model to different
+    models (even if both are listed in model_allowlist) must fail closed --
+    otherwise the cheaper of the two would silently run under the other's price
+    ceiling, under-counting whichever model is actually more expensive."""
+    config = copy.deepcopy(mh.DEFAULTS)
+    config["evaluate"]["model"] = "claude-cheap-model"
+    config["judge"]["model"] = "claude-expensive-model"
+    config["evaluate"]["isolation"]["broker"]["model_allowlist"] = [
+        "claude-cheap-model",
+        "claude-expensive-model",
+    ]
+
+    with pytest.raises(docker.profile.DockerProfileError) as excinfo:
+        docker.profile.broker_env(config, "run-token", 8787)
+
+    message = str(excinfo.value)
+    assert "claude-cheap-model" in message
+    assert "claude-expensive-model" in message
+    assert "pricing_upper_bound_usd_per_million" in message
+
+
+def test_broker_env_allows_evaluate_and_judge_when_pinned_to_the_same_model() -> None:
+    """The equal-model requirement (round 4) does not reject valid single-model
+    configs, even when model_allowlist carries additional unrelated menu entries."""
+    config = copy.deepcopy(mh.DEFAULTS)
+    config["evaluate"]["model"] = "claude-sonnet-5"
+    config["judge"]["model"] = "claude-sonnet-5"
+    config["evaluate"]["isolation"]["broker"]["model_allowlist"] = [
+        "claude-sonnet-5",
+        "claude-opus-4-8-experimental",
+    ]
+
+    broker_env = docker.profile.broker_env(config, "run-token", 8787)
+
+    allowed = set(broker_env["DR_BROKER_MODEL_ALLOWLIST"].split(","))
+    assert allowed == {"claude-sonnet-5"}
 
 
 def test_prebuilt_images_require_digest_and_accept_multiarch_reference() -> None:

@@ -11,12 +11,25 @@ from typing import Any
 
 _CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]")
 
-_PACKAGE_DIR = Path(__file__).resolve().parent.parent
+_LIB_DIR = Path(__file__).resolve().parent
+_PACKAGE_DIR = _LIB_DIR.parent
 _DOCKER_RUNTIME_LIB = _PACKAGE_DIR.parent / "docker-runtime" / "lib"
+if str(_LIB_DIR) not in sys.path:
+    sys.path.insert(0, str(_LIB_DIR))
 if str(_DOCKER_RUNTIME_LIB) not in sys.path:
     sys.path.insert(0, str(_DOCKER_RUNTIME_LIB))
 
-import docker_runtime_profile as runtime
+import docker_runtime_profile as runtime  # noqa: E402
+import meta_harness_common as mh  # noqa: E402
+
+# Single source of truth for the broker env fallback prices (Issue #261 PR2 review
+# round 4): broker_env() must never hardcode its own price literals, or a
+# partial/`.local.yaml`-overridden config that nulls out one pricing key would
+# silently fall back to a value that has drifted from mh.DEFAULTS (e.g. the retired
+# Opus-tier ceiling) instead of the currently pinned Sonnet-tier default.
+_DEFAULT_PRICING_UPPER_BOUND_USD_PER_MILLION = mh.DEFAULTS["evaluate"]["isolation"]["broker"][
+    "pricing_upper_bound_usd_per_million"
+]
 
 NAME_PREFIX = "mh-run-"
 BROKER_ALIAS = "mh-broker"
@@ -390,19 +403,26 @@ def effective_broker_model_allowlist(config: dict) -> list[str]:
        :class:`DockerProfileError` instead of silently omitting the broker's
        allowlist restriction (the previous "unpinned = no restriction"
        backward-compat path is retired).
-    2. Both pinned models MUST already be listed in the configured
+    2. `evaluate.model` and `judge.model` MUST be the same model slug (Issue #261
+       PR2 review round 4). The broker pricing table has exactly one price point
+       per run; a dual-model setup (e.g. a cheap evaluate model with a pricier
+       judge model added to the allowlist) would under-count whichever model's
+       real price exceeds that single ceiling. Running evaluate and judge under
+       different models is a deliberate design change (per-role pricing) this
+       function does not support -- it fails closed instead.
+    3. The (single) pinned model MUST already be listed in the configured
        `evaluate.isolation.broker.model_allowlist` "menu" (human-curated,
        intentionally NOT auto-unioned): this is a deliberate acknowledgement
        step, not an allowlist by itself.
-    3. The value actually wired to the broker is the pinned pair only (deduped),
-       never the full configured menu: any additional "menu" entries lack a
-       corresponding pricing calibration and must not be admitted just because
-       they were listed for step 2's validation.
+    4. The value actually wired to the broker is the pinned model only, never the
+       full configured menu: any additional "menu" entries lack a corresponding
+       pricing calibration and must not be admitted just because they were
+       listed for step 3's validation.
 
     `model_allowlist` must be a `list`, not a bare string (CodeRabbit High, PR #265):
     iterating a scalar string produces one entry per character, which would silently
-    admit almost any single-character model id. Every element (and both pinned
-    models) is further validated by :func:`_validate_model_slug`.
+    admit almost any single-character model id. Every element (and the pinned
+    model) is further validated by :func:`_validate_model_slug`.
     """
     evaluate_cfg = config.get("evaluate") or {}
     judge_cfg = config.get("judge") or {}
@@ -423,8 +443,18 @@ def effective_broker_model_allowlist(config: dict) -> list[str]:
             "model slug and calibrate pricing_upper_bound_usd_per_million and "
             "evaluate.isolation.broker.model_allowlist to that model before re-running."
         )
+    if evaluate_model != judge_model:
+        raise DockerProfileError(
+            "broker model allowlist fail-closed: evaluate.model "
+            f"({evaluate_model!r}) and judge.model ({judge_model!r}) differ. The broker "
+            "pricing table (evaluate.isolation.broker.pricing_upper_bound_usd_per_million) "
+            "has exactly one price point per run; running evaluate and judge under "
+            "different models would under-count whichever model's real price exceeds that "
+            "single ceiling. Pin both evaluate.model and judge.model to the same model "
+            "slug -- a genuine dual-model setup requires a pricing redesign (e.g. "
+            "per-role pricing), not just adding the second model to model_allowlist."
+        )
     _validate_model_slug(evaluate_model, field="evaluate.model")
-    _validate_model_slug(judge_model, field="judge.model")
     broker = (evaluate_cfg.get("isolation") or {}).get("broker") or {}
     raw_configured = broker.get("model_allowlist")
     if raw_configured is not None and not isinstance(raw_configured, list):
@@ -437,20 +467,35 @@ def effective_broker_model_allowlist(config: dict) -> list[str]:
     for index, item in enumerate(configured):
         _validate_model_slug(item, field=f"evaluate.isolation.broker.model_allowlist[{index}]")
     configured_set = {str(item) for item in configured}
-    pinned = {str(evaluate_model), str(judge_model)}
-    missing = sorted(pinned - configured_set)
-    if missing:
+    pinned_model = str(evaluate_model)
+    if pinned_model not in configured_set:
         raise DockerProfileError(
-            "broker model allowlist fail-closed: pinned model(s) "
-            f"{', '.join(missing)} are not in "
-            f"evaluate.isolation.broker.model_allowlist ({', '.join(sorted(configured_set)) or '(empty)'}). "
+            "broker model allowlist fail-closed: pinned model "
+            f"{pinned_model!r} is not in evaluate.isolation.broker.model_allowlist "
+            f"({', '.join(sorted(configured_set)) or '(empty)'}). "
             "Update both evaluate.isolation.broker.model_allowlist and "
             "evaluate.isolation.broker.pricing_upper_bound_usd_per_million to match the "
-            "repinned model(s) before re-running."
+            "repinned model before re-running."
         )
-    # Wire only the pinned pair -- any additional model_allowlist "menu" entries
-    # (step 3 above) lack pricing calibration and must not be admitted.
-    return sorted(pinned)
+    # Wire only the pinned model -- any additional model_allowlist "menu" entries
+    # (step 4 above) lack pricing calibration and must not be admitted.
+    return [pinned_model]
+
+
+def _pricing_value(pricing: dict, key: str) -> float:
+    """Resolve one pricing_upper_bound_usd_per_million field with a null-safe
+    fallback to mh.DEFAULTS (local review round 5, High).
+
+    `dict.get(key, default)` only falls back when the key is absent -- a
+    `.local.yaml` override that nulls out a single pricing key (e.g.
+    `pricing_upper_bound_usd_per_million: {input: null}`) leaves the key
+    *present* with value `None` after `_deep_merge`, so `.get` would return
+    `None` verbatim. That `None` used to reach `str(None)` -> `"None"` in the
+    broker env, which crashes the broker's `_float_env` (`float("None")`)
+    uncaught. This must be an explicit None-check, not `.get(key, default)`.
+    """
+    value = pricing.get(key)
+    return value if value is not None else _DEFAULT_PRICING_UPPER_BOUND_USD_PER_MILLION[key]
 
 
 def broker_env(config: dict, run_token: str, port: int) -> dict[str, str]:
@@ -477,10 +522,10 @@ def broker_env(config: dict, run_token: str, port: int) -> dict[str, str]:
         "DR_BROKER_MAX_REQUESTS": str(broker.get("max_requests", 64)),
         "DR_BROKER_MAX_TOTAL_TOKENS": str(broker.get("max_total_tokens", 500000)),
         "DR_BROKER_MAX_UPSTREAM_BYTES": str(broker.get("max_upstream_bytes", 50000000)),
-        "DR_PRICE_INPUT": str(pricing.get("input", 15.0)),
-        "DR_PRICE_OUTPUT": str(pricing.get("output", 75.0)),
-        "DR_PRICE_CACHE_CREATION": str(pricing.get("cache_creation", 18.75)),
-        "DR_PRICE_CACHE_READ": str(pricing.get("cache_read", 1.5)),
+        "DR_PRICE_INPUT": str(_pricing_value(pricing, "input")),
+        "DR_PRICE_OUTPUT": str(_pricing_value(pricing, "output")),
+        "DR_PRICE_CACHE_CREATION": str(_pricing_value(pricing, "cache_creation")),
+        "DR_PRICE_CACHE_READ": str(_pricing_value(pricing, "cache_read")),
         "MH_BROKER_RUN_TOKEN": run_token,
         "MH_BROKER_PORT": str(port),
         "MH_BROKER_BUDGET_USD": str(scenario_run.get("max_budget_usd_default", 3.0)),
@@ -490,10 +535,10 @@ def broker_env(config: dict, run_token: str, port: int) -> dict[str, str]:
         "MH_BROKER_MAX_REQUESTS": str(broker.get("max_requests", 64)),
         "MH_BROKER_MAX_TOTAL_TOKENS": str(broker.get("max_total_tokens", 500000)),
         "MH_BROKER_MAX_UPSTREAM_BYTES": str(broker.get("max_upstream_bytes", 50000000)),
-        "MH_PRICE_INPUT": str(pricing.get("input", 15.0)),
-        "MH_PRICE_OUTPUT": str(pricing.get("output", 75.0)),
-        "MH_PRICE_CACHE_CREATION": str(pricing.get("cache_creation", 18.75)),
-        "MH_PRICE_CACHE_READ": str(pricing.get("cache_read", 1.5)),
+        "MH_PRICE_INPUT": str(_pricing_value(pricing, "input")),
+        "MH_PRICE_OUTPUT": str(_pricing_value(pricing, "output")),
+        "MH_PRICE_CACHE_CREATION": str(_pricing_value(pricing, "cache_creation")),
+        "MH_PRICE_CACHE_READ": str(_pricing_value(pricing, "cache_read")),
         **model_allowlist_env,
     }
 
