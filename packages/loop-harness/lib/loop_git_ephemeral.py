@@ -9,7 +9,7 @@ Internal git-execution, trusted-runtime-validation, and cleanup helpers live in
 ``loop_git_ephemeral_support.py`` (Codex review, PR #256, Critical -- this module previously
 exceeded the 800-line file limit in ``.claude/rules/coding-principles.md``). This is a pure
 module split: the public API (``prepare_ephemeral_git`` / ``build_maker_git_mount_spec`` /
-``finalize_ephemeral_git`` / ``cleanup_ephemeral_git``) and the typed exceptions
+``build_checker_git_mount_spec`` / ``finalize_ephemeral_git`` / ``cleanup_ephemeral_git``) and the typed exceptions
 (``EphemeralGitSession`` / ``EphemeralGitSafetyStop`` / ``EphemeralGitInfrastructureError``)
 remain importable from this module unchanged; no security boundary or behavior changed as part
 of the split.
@@ -39,11 +39,11 @@ from loop_git_ephemeral_support import (  # noqa: E402
     _delete_import_ref_best_effort,
     _delete_import_ref_error,
     _ephemeral_env,
+    _harden_ephemeral_git_metadata,
     _normalize_branch_ref,
-    _restore_ephemeral_git_alternates,
-    _restore_ephemeral_git_config,
     _run_git,
     _run_git_unchecked,
+    _validate_common_objects_mount_source,
     _validate_runtime_location,
     _validate_safe_id,
     _verify_checked_out_branch,
@@ -53,12 +53,14 @@ from loop_git_ephemeral_support import (  # noqa: E402
 
 __all__ = [
     "BindMountSpec",
+    "CheckerGitMountSpec",
     "MakerGitMountSpec",
     "EphemeralGitSession",
     "EphemeralGitFinalizeResult",
     "EphemeralGitSafetyStop",
     "EphemeralGitInfrastructureError",
     "prepare_ephemeral_git",
+    "build_checker_git_mount_spec",
     "build_maker_git_mount_spec",
     "finalize_ephemeral_git",
     "cleanup_ephemeral_git",
@@ -77,6 +79,14 @@ class BindMountSpec:
 @dataclass(frozen=True)
 class MakerGitMountSpec:
     """Ordered mounts and environment needed to expose an ephemeral Git repository."""
+
+    mounts: tuple[BindMountSpec, ...]
+    env: Mapping[str, str]
+
+
+@dataclass(frozen=True)
+class CheckerGitMountSpec:
+    """Ordered read-only mounts and environment for one Checker container."""
 
     mounts: tuple[BindMountSpec, ...]
     env: Mapping[str, str]
@@ -374,6 +384,45 @@ def build_maker_git_mount_spec(session: EphemeralGitSession) -> MakerGitMountSpe
     )
 
 
+def build_checker_git_mount_spec(session: EphemeralGitSession) -> CheckerGitMountSpec:
+    """Return the sanitized, ordered read-only mounts for one Checker container.
+
+    The worktree mount must be applied before the more specific pinned ``.git`` overlay. Phase 4's
+    Docker backend MUST preserve this tuple order when translating it into bind-mount flags; path
+    sorting would silently discard the overlay guarantee. It must also rebuild or revalidate this
+    spec immediately before mounting so a changed bind source fails closed. Only
+    ``common_dir/objects`` is exposed from shared Git metadata -- refs, config, hooks, and reflogs
+    are never mounted.
+
+    Checker mounts the ephemeral directory read-only, but the trusted config and alternates are
+    still restored immediately before the spec crosses the container boundary. This deliberately
+    reuses Phase 2's recursive objects-symlink rejection and alternates overwrite rather than
+    creating a weaker Checker-only preparation path.
+    """
+    common_objects = _validate_common_objects_mount_source(session)
+    _harden_ephemeral_git_metadata(session)
+    return CheckerGitMountSpec(
+        mounts=(
+            BindMountSpec(session.worktree_path, session.worktree_path, True),
+            BindMountSpec(
+                session.pinned_git_pointer,
+                session.worktree_path / ".git",
+                True,
+            ),
+            BindMountSpec(session.ephemeral_dir, session.ephemeral_dir, True),
+            BindMountSpec(
+                common_objects,
+                common_objects,
+                True,
+            ),
+        ),
+        env={
+            "GIT_DIR": str(session.ephemeral_dir),
+            "GIT_WORK_TREE": str(session.worktree_path),
+        },
+    )
+
+
 def finalize_ephemeral_git(
     session: EphemeralGitSession,
     *,
@@ -429,8 +478,7 @@ def _finalize_ephemeral_git(
     *,
     runner: GitRunner,
 ) -> EphemeralGitFinalizeResult:
-    _restore_ephemeral_git_config(session)
-    _restore_ephemeral_git_alternates(session)
+    _harden_ephemeral_git_metadata(session)
     new_sha_result = _run_git(
         ["--git-dir", session.ephemeral_dir, "rev-parse", "--verify", session.branch_ref],
         runner=runner,

@@ -1,4 +1,4 @@
-"""Real-Git tests for Maker ephemeral GIT_DIR preparation and CAS write-back."""
+"""Real-Git tests for Maker/Checker ephemeral GIT_DIR lifecycle and write-back."""
 
 from __future__ import annotations
 
@@ -162,6 +162,19 @@ def _assert_import_ref_missing(session: Any) -> None:
         check=False,
     )
     assert completed.returncode == 1
+
+
+def _snapshot_tree(root: Path) -> dict[str, tuple[str, bytes | str]]:
+    snapshot: dict[str, tuple[str, bytes | str]] = {}
+    for path in sorted(root.rglob("*")):
+        relative = str(path.relative_to(root))
+        if path.is_symlink():
+            snapshot[relative] = ("symlink", os.readlink(path))
+        elif path.is_dir():
+            snapshot[relative] = ("directory", b"")
+        else:
+            snapshot[relative] = ("file", path.read_bytes())
+    return snapshot
 
 
 def _create_stale_import_ref(session: Any, sha: str | None = None) -> None:
@@ -405,6 +418,160 @@ def test_build_maker_git_mount_spec_preserves_overlay_order_and_one_to_one_paths
     assert spec.env["GIT_DIR"] == str(session.ephemeral_dir)
     assert spec.env["GIT_WORK_TREE"] == str(session.worktree_path)
     git_ephemeral.cleanup_ephemeral_git(session)
+
+
+def test_prepare_checker_repository_resolves_baseline_through_trusted_alternates(
+    linked_worktree: GitFixture,
+) -> None:
+    session = _prepare(linked_worktree)
+
+    alternates = Path(session.ephemeral_dir, "objects", "info", "alternates")
+    assert alternates.read_text(encoding="utf-8") == f"{session.common_dir}/objects\n"
+    _git(
+        "--git-dir",
+        session.ephemeral_dir,
+        "cat-file",
+        "-e",
+        f"{session.baseline_sha}^{{commit}}",
+    )
+
+    git_ephemeral.cleanup_ephemeral_git(session)
+
+
+def test_build_checker_git_mount_spec_is_read_only_and_preserves_overlay_order(
+    linked_worktree: GitFixture,
+) -> None:
+    session = _prepare(linked_worktree)
+
+    spec = git_ephemeral.build_checker_git_mount_spec(session)
+
+    assert isinstance(spec, git_ephemeral.CheckerGitMountSpec)
+    assert [(Path(mount.source), Path(mount.target), mount.read_only) for mount in spec.mounts] == [
+        (Path(session.worktree_path), Path(session.worktree_path), True),
+        (
+            Path(session.pinned_git_pointer),
+            Path(session.worktree_path, ".git"),
+            True,
+        ),
+        (Path(session.ephemeral_dir), Path(session.ephemeral_dir), True),
+        (
+            Path(session.common_dir, "objects"),
+            Path(session.common_dir, "objects"),
+            True,
+        ),
+    ]
+    assert dict(spec.env) == {
+        "GIT_DIR": str(session.ephemeral_dir),
+        "GIT_WORK_TREE": str(session.worktree_path),
+    }
+    excluded_common_paths = {Path(session.common_dir, name) for name in ("refs", "config", "hooks")}
+    assert all(Path(mount.source) not in excluded_common_paths for mount in spec.mounts)
+    git_ephemeral.cleanup_ephemeral_git(session)
+
+
+def test_checker_mount_rejects_symlinked_shared_objects_source(
+    linked_worktree: GitFixture,
+) -> None:
+    session = _prepare(linked_worktree)
+    common_objects = Path(session.common_dir, "objects")
+    trusted_objects = Path(session.common_dir, "objects-before-checker-test")
+    common_objects.rename(trusted_objects)
+    common_objects.symlink_to(session.common_dir, target_is_directory=True)
+
+    try:
+        with pytest.raises(
+            git_ephemeral.EphemeralGitInfrastructureError, match="trusted directory"
+        ):
+            git_ephemeral.build_checker_git_mount_spec(session)
+    finally:
+        common_objects.unlink()
+        trusted_objects.rename(common_objects)
+
+    git_ephemeral.cleanup_ephemeral_git(session)
+
+
+def test_checker_mount_hardening_restores_config_and_alternates(
+    linked_worktree: GitFixture,
+) -> None:
+    session = _prepare(linked_worktree)
+    config = Path(session.ephemeral_dir, "config")
+    alternates = Path(session.ephemeral_dir, "objects", "info", "alternates")
+    http_alternates = alternates.with_name("http-alternates")
+    untrusted_command = linked_worktree.project_dir / "untrusted-checker-command"
+    _git("config", "--file", config, "core.fsmonitor", untrusted_command)
+    alternates.write_text(
+        f"{session.common_dir}/objects\n{linked_worktree.project_dir / '.git' / 'objects'}\n",
+        encoding="utf-8",
+    )
+    http_alternates.write_text("https://example.invalid/objects\n", encoding="utf-8")
+
+    git_ephemeral.build_checker_git_mount_spec(session)
+
+    assert _git("config", "--file", config, "--get", "core.fsmonitor", check=False).returncode == 1
+    assert alternates.read_text(encoding="utf-8") == f"{session.common_dir}/objects\n"
+    assert not http_alternates.exists()
+    git_ephemeral.cleanup_ephemeral_git(session)
+
+
+def test_checker_mount_hardening_rejects_recursive_objects_symlink(
+    linked_worktree: GitFixture,
+    tmp_path: Path,
+) -> None:
+    session = _prepare(linked_worktree)
+    foreign_objects = tmp_path / "foreign-objects"
+    foreign_objects.mkdir()
+    nested_objects = Path(session.ephemeral_dir, "objects", "aa")
+    nested_objects.symlink_to(foreign_objects, target_is_directory=True)
+
+    with pytest.raises(git_ephemeral.EphemeralGitInfrastructureError, match="symlink"):
+        git_ephemeral.build_checker_git_mount_spec(session)
+
+    git_ephemeral.cleanup_ephemeral_git(session)
+
+
+def test_checker_prepare_and_cleanup_keep_hardened_scrubbed_host_git(
+    linked_worktree: GitFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    poisoned = {
+        "GIT_INDEX_FILE": str(tmp_path / "ambient-index"),
+        "GIT_DIR": str(tmp_path / "ambient-git-dir"),
+        "GIT_WORK_TREE": str(tmp_path / "ambient-worktree"),
+        "GIT_OBJECT_DIRECTORY": str(tmp_path / "ambient-objects"),
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(tmp_path / "ambient-alternates"),
+        "GIT_COMMON_DIR": str(tmp_path / "ambient-common-dir"),
+        "GIT_NAMESPACE": "ambient-namespace",
+        "GIT_CEILING_DIRECTORIES": str(tmp_path),
+    }
+    for key, value in poisoned.items():
+        monkeypatch.setenv(key, value)
+    runner = RecordingRunner()
+
+    session = _prepare(linked_worktree, runner=runner)
+    git_ephemeral.build_checker_git_mount_spec(session)
+    git_ephemeral.cleanup_ephemeral_git(session, runner=runner)
+
+    assert runner.calls
+    for call in runner.calls:
+        _assert_hardened(call.args)
+        assert call.env["GIT_CONFIG_GLOBAL"] == os.devnull
+        assert call.env["GIT_CONFIG_NOSYSTEM"] == "1"
+        for key, value in poisoned.items():
+            assert call.env.get(key) != value
+
+
+def test_checker_cleanup_removes_runtime_without_changing_shared_common_dir(
+    linked_worktree: GitFixture,
+) -> None:
+    session = _prepare(linked_worktree)
+    git_ephemeral.build_checker_git_mount_spec(session)
+    before = _snapshot_tree(Path(session.common_dir))
+
+    git_ephemeral.cleanup_ephemeral_git(session)
+
+    assert not Path(session.runtime_dir).exists()
+    assert _snapshot_tree(Path(session.common_dir)) == before
 
 
 def test_prepare_commit_finalize_fast_forwards_branch_and_preserves_working_tree(

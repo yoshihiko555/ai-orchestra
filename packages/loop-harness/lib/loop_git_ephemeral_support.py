@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 import re
 import secrets
+import stat
 import subprocess
 import sys
 from collections.abc import Callable, Mapping, Sequence
@@ -471,6 +472,41 @@ def _restore_ephemeral_git_alternates(session: EphemeralGitSession) -> None:
             "failed to restore the trusted ephemeral git alternates file",
             details={"ephemeral_dir": str(session.ephemeral_dir)},
         ) from exc
+
+
+def _harden_ephemeral_git_metadata(session: EphemeralGitSession) -> None:
+    """Restore trusted metadata and reject object-store symlinks before host use or mounting.
+
+    Maker finalize and Checker read-only mount preparation share this boundary. Keeping the
+    operations together prevents the Checker path from losing either the trusted-config restore,
+    the forced single-line alternates restore, or the recursive objects symlink rejection when the
+    Phase 2 defenses evolve.
+    """
+    _restore_ephemeral_git_config(session)
+    _restore_ephemeral_git_alternates(session)
+
+
+def _validate_common_objects_mount_source(session: EphemeralGitSession) -> Path:
+    """Return the shared objects directory only when it is a real directory, never a symlink.
+
+    A read-only bind mount still follows its source symlink. Without this check, a repository whose
+    ``common_dir/objects`` points back to ``common_dir`` could expose shared refs, config, hooks, and
+    reflogs to an untrusted Checker despite the mount spec naming only ``objects``.
+    """
+    common_objects = session.common_dir / "objects"
+    try:
+        metadata = common_objects.stat(follow_symlinks=False)
+    except OSError as exc:
+        raise EphemeralGitInfrastructureError(
+            "shared git objects mount source is not accessible",
+            details={"common_objects": str(common_objects)},
+        ) from exc
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise EphemeralGitInfrastructureError(
+            "shared git objects mount source is not a trusted directory",
+            details={"common_objects": str(common_objects)},
+        )
+    return common_objects
 
 
 def _reject_symlinks_under_objects(objects_dir: Path) -> None:
