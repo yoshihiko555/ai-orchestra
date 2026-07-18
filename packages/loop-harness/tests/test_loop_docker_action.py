@@ -110,6 +110,32 @@ def test_host_executor_ignores_unused_docker_profile_fields(tmp_path: Path) -> N
     assert isinstance(executor, action_executor.HostActionExecutor)
 
 
+def test_host_only_action_skips_docker_validation_when_isolation_config_is_invalid(
+    tmp_path: Path,
+) -> None:
+    """Codex review, PR #262, High: advance_phase/stop/exit_* never dispatch into a container,
+    so an unrelated Docker isolation config typo must not stop them from running on the host.
+    """
+    config = _config(execution_backend="docker")
+    config["lp2"]["isolation"]["resources"]["memory"] = "not-a-size"
+    with pytest.raises(docker_config.DockerConfigError):
+        docker_config.validate_isolation_config(config)
+
+    executor = action_executor.build_action_executor(
+        config,
+        project_dir=str(tmp_path),
+        loop_id="loop-211",
+        action_id="action-001",
+        action="advance_phase",
+        worktree_path=str(tmp_path),
+        branch="issue-211",
+        remaining_wall_clock_seconds=lambda: 600,
+        host_child_runner=lambda *args: subprocess.CompletedProcess(args[0], 0, "", ""),
+    )
+
+    assert isinstance(executor, action_executor.HostActionExecutor)
+
+
 def test_docker_executor_never_falls_back_to_host_after_runtime_failure() -> None:
     class FailedRuntime:
         def execute_claude(self, *_args: Any, **_kwargs: Any) -> Any:
@@ -159,7 +185,9 @@ def test_maker_lifecycle_uses_production_primitives_in_required_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[str] = []
-    session = SimpleNamespace(runtime_dir=tmp_path / "runtime")
+    session = SimpleNamespace(
+        runtime_dir=tmp_path / "runtime", ephemeral_dir=tmp_path / "runtime" / "git-ephemeral"
+    )
     bundle = docker_settings.DockerSettingsBundle(tmp_path / "trusted")
     mount_spec = SimpleNamespace(mounts=(), env={"GIT_DIR": "/git", "GIT_WORK_TREE": "/work"})
 

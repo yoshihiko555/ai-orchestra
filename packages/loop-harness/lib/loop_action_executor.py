@@ -101,7 +101,6 @@ def build_action_executor(
     """Select once per dispatch; only execution_backend=docker enables Docker."""
     if not docker_config.docker_execution_enabled(config):
         return HostActionExecutor(host_child_runner)
-    isolation = docker_config.validate_isolation_config(config)
     kind_by_action = {
         "run_maker": "maker",
         "run_checker": "checker",
@@ -109,7 +108,15 @@ def build_action_executor(
     }
     kind = kind_by_action.get(action)
     if kind is None:
+        # Codex review, PR #262, High: host-only actions (advance_phase/stop/exit_*) never
+        # dispatch into a container regardless of isolation config validity, so validating the
+        # full Docker isolation config before this lookup made an unrelated Docker config typo
+        # (e.g. a bad `.local.yaml` override) fail even actions that stay entirely on the host.
+        # `_dispatch()` only translates `docker_config.DockerConfigError` into an infrastructure
+        # result for run_maker/run_checker/wait_external_review; any other action reaching that
+        # path raises `InvalidStateError` instead of just running on the host as it always has.
         return HostActionExecutor(host_child_runner)
+    isolation = docker_config.validate_isolation_config(config)
     request = docker_action.DockerActionRequest(
         config=config,
         isolation=isolation,

@@ -117,6 +117,58 @@ def test_profile_builders_keep_hardening_and_validate_mounts(tmp_path: Path) -> 
         profile.bind_mount(tmp_path / "invalid,path", "/workspace", read_only=True)
 
 
+def test_align_mount_ownership_is_noop_for_non_root_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(profile.os, "getuid", lambda: 1000)
+    calls: list[tuple[Path, int, int]] = []
+    monkeypatch.setattr(
+        profile.os,
+        "chown",
+        lambda path, uid, gid, **_kwargs: calls.append((Path(path), uid, gid)),
+    )
+    target = tmp_path / "worktree"
+    target.mkdir()
+    (target / "file.txt").write_text("content", encoding="utf-8")
+
+    profile.align_mount_ownership(target)
+
+    assert calls == []
+
+
+def test_align_mount_ownership_reowns_tree_to_forced_non_root_identity_when_host_is_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(profile.os, "getuid", lambda: 0)
+    monkeypatch.setattr(profile.os, "getgid", lambda: 0)
+    calls: list[tuple[Path, int, int, bool]] = []
+    monkeypatch.setattr(
+        profile.os,
+        "chown",
+        lambda path, uid, gid, follow_symlinks=True: calls.append(
+            (Path(path), uid, gid, follow_symlinks)
+        ),
+    )
+    target = tmp_path / "worktree"
+    nested = target / "nested"
+    nested.mkdir(parents=True)
+    (nested / "file.txt").write_text("content", encoding="utf-8")
+
+    profile.align_mount_ownership(target)
+
+    reowned = {(path, uid, gid) for path, uid, gid, _follow in calls}
+    assert reowned == {
+        (target, 65532, 65532),
+        (nested, 65532, 65532),
+        (nested / "file.txt", 65532, 65532),
+    }
+    # The top-level path uses follow_symlinks=True (the default `os.chown` signature); every
+    # descendant is chowned with follow_symlinks=False so a malicious symlink planted inside the
+    # tree cannot redirect ownership changes to an arbitrary host path outside it.
+    descendant_calls = [call for call in calls if call[0] != target]
+    assert all(call[3] is False for call in descendant_calls)
+
+
 def test_broker_command_is_dual_homed_hardened_and_uses_image_id() -> None:
     spec = lifecycle.BrokerContainerSpec(
         docker_label="ai.orchestra.test",

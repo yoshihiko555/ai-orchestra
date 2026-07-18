@@ -58,6 +58,33 @@ def non_root_identity() -> tuple[int, int]:
     return uid, gid
 
 
+def align_mount_ownership(path: Path) -> None:
+    """Re-own a read-write mount source so the forced non-root container identity can write it.
+
+    ``non_root_identity()`` maps a root host process to the fixed ``65532:65532`` container
+    identity (the container must never run as root -- that constraint is not negotiable).
+    When the host process that prepared a bind-mount source is itself root, every file/directory
+    it created keeps the host's default ownership (``root:root``), which the non-root container
+    identity cannot write to even though the mount itself is read-write. This recursively
+    re-owns ``path`` to ``non_root_identity()`` so the mount stays writable without weakening the
+    container's non-root guarantee -- only the exact identity the container already runs as gains
+    access; no permission bits are widened. No-op when the host process is not root, because in
+    that case ``non_root_identity()`` already returns the host's own uid/gid and ownership already
+    matches.
+    """
+    if os.getuid() != 0:
+        return
+    uid, gid = non_root_identity()
+    os.chown(path, uid, gid)
+    if not path.is_dir():
+        return
+    for child in path.rglob("*"):
+        try:
+            os.chown(child, uid, gid, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+
+
 def resource_args(resources: dict[str, Any]) -> list[str]:
     return [
         "--pids-limit",

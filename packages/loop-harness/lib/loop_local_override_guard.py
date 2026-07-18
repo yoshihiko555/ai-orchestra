@@ -89,7 +89,22 @@ def _snapshot_entry(worktree_path: Path, path: Path) -> LocalOverrideSnapshot:
     metadata = path.lstat()
     if stat.S_ISLNK(metadata.st_mode):
         kind = "symlink"
-        material = os.readlink(path).encode()
+        # Codex review, PR #262, High: hashing only the link text let a Maker change the
+        # *contents* of a symlinked `.local.yaml`/`.local.json` override's target -- the
+        # effective, currently-loaded override -- without changing the symlink path itself, so
+        # `_verify_local_override_snapshot()` saw no delta. `path.read_bytes()` (unlike
+        # `os.readlink`) follows the symlink and reads the resolved target's current bytes, the
+        # same way the "file" branch below hashes a regular override's content; combining both
+        # into the digest catches either the link being repointed or the target being edited in
+        # place. A target that cannot be read (missing, a directory, permission denied) still
+        # falls back to detecting only link-path changes rather than raising, since a dangling
+        # or unreadable symlink is not itself a content-tampering signal this guard needs to stop.
+        link_target = os.readlink(path).encode()
+        try:
+            resolved_material = path.read_bytes()
+        except OSError:
+            resolved_material = b""
+        material = link_target + b"\0" + resolved_material
     elif stat.S_ISREG(metadata.st_mode):
         kind = "file"
         material = path.read_bytes()
@@ -100,6 +115,19 @@ def _snapshot_entry(worktree_path: Path, path: Path) -> LocalOverrideSnapshot:
         kind = "other"
         material = str(stat.S_IFMT(metadata.st_mode)).encode()
     digest = hashlib.sha256(kind.encode() + b"\0" + material).hexdigest()
+    # Codex review, PR #262, High: a directory's `link_count` increases/decreases whenever *any*
+    # direct child subdirectory is created/removed (each child adds a `..` hardlink back to its
+    # parent), including ancestor directories walked up to `worktree_path` itself (the repo
+    # root). A normal Maker change that creates an unrelated new top-level directory therefore
+    # changed the worktree root's snapshot and made `_verify_local_override_snapshot()` safe-stop
+    # as `maker_partial_worktree` even though no local override changed. `link_count` is only a
+    # meaningful tamper signal for the override *files* themselves (see the "hardlink"
+    # regression test, which swaps a `.local.yaml` for a hardlinked alias with identical bytes --
+    # `link_count` is what catches that); it is not meaningful for directories, where it reflects
+    # unrelated sibling activity rather than tampering with the override tree itself. Pin it to a
+    # constant for directory-kind entries so mode/uid/gid/device/inode tampering on the ancestor
+    # directories (still exercised by the "*_mode" regression tests) remains caught.
+    link_count = 0 if kind == "directory" else metadata.st_nlink
     return LocalOverrideSnapshot(
         path=relative,
         kind=kind,
@@ -108,6 +136,6 @@ def _snapshot_entry(worktree_path: Path, path: Path) -> LocalOverrideSnapshot:
         gid=metadata.st_gid,
         device=metadata.st_dev,
         inode=metadata.st_ino,
-        link_count=metadata.st_nlink,
+        link_count=link_count,
         digest=digest,
     )

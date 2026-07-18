@@ -61,6 +61,48 @@ def _init_repo_with_remote(path: Path, remote_path: Path) -> None:
     _git(["push", "origin", "main"], path)
 
 
+def test_runtime_source_guard_rejects_other_loop_worktree_before_new_loop_state_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review, PR #262, High: a runtime loaded from a *different*, already
+    Maker-writable loop-harness worktree must be rejected even for a brand-new loop_id whose
+    own state does not exist yet -- the old per-run check silently passed in this window because
+    it only compared against the (not-yet-created) worktree for the *current* run.
+    """
+    _init_repo(tmp_path)
+    other_loop_worktree = wm.create_worktree(str(tmp_path), 999)
+    tampered_entrypoint = (
+        Path(other_loop_worktree.path) / "packages" / "loop-harness" / "scripts" / "loop_driver.py"
+    )
+    monkeypatch.setattr(driver, "__file__", str(tampered_entrypoint))
+
+    with pytest.raises(driver.lc.InvalidStateError, match="driver entrypoint"):
+        driver._assert_runtime_sources_outside_action_worktree(
+            "brand-new-loop-id-never-seen-before", str(tmp_path)
+        )
+
+
+def test_runtime_source_guard_does_not_reject_unrelated_developer_worktrees(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hand-created feature-branch worktree (e.g. `.worktrees/feat-x`) shares the same parent
+    directory (`<root>/.worktrees/`) as loop-harness's own `loop-issue-<N>` worktrees, but is not
+    one -- the guard must scope to the `loop-issue-*` naming convention, not the whole directory,
+    or ordinary self-hosted development runs would be rejected outright.
+    """
+    _init_repo(tmp_path)
+    dev_worktree = tmp_path / ".worktrees" / "feat-example"
+    _git(["worktree", "add", "-b", "feat-example", str(dev_worktree)], tmp_path)
+    entrypoint_in_dev_worktree = (
+        dev_worktree / "packages" / "loop-harness" / "scripts" / "loop_driver.py"
+    )
+    monkeypatch.setattr(driver, "__file__", str(entrypoint_in_dev_worktree))
+
+    driver._assert_runtime_sources_outside_action_worktree(
+        "brand-new-loop-id-never-seen-before", str(tmp_path)
+    )
+
+
 # --------------------------------------------------------------------------------------------
 # loop_driver_support: push multi-layer defense (layers 1-3: command construction)
 # --------------------------------------------------------------------------------------------
@@ -1288,7 +1330,7 @@ def test_docker_checker_infrastructure_result_satisfies_sealed_contract(tmp_path
     payload = driver.LoopDriver(loop_id, project_dir, token)._docker_infrastructure_result(
         proposal,
         state,
-        {},
+        {"llm_review": {}},
         "daemon unavailable",
     )
 
@@ -1299,6 +1341,41 @@ def test_docker_checker_infrastructure_result_satisfies_sealed_contract(tmp_path
         "llm_review",
     }
     assert payload["metadata"] == {"reviewers": ["code-reviewer"]}
+
+
+def test_docker_checker_infrastructure_result_preserves_mechanical_only_phase(
+    tmp_path: Path,
+) -> None:
+    """Codex review, PR #262, High: a custom phase's checker may have a mechanical layer but no
+    `llm_review` block (the definition validator allows this). Unconditionally requiring an
+    `llm_review` layer here previously crashed with `DefinitionValidationError` from
+    `lc.checker_pass_criteria()` instead of returning a mechanical-only infrastructure result for
+    the guard/retry logic to handle -- mirror `_run_checker()`'s own `has_llm_review` gating.
+    """
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    proposal = lc.ProposeResult(
+        action=lc.Action.RUN_CHECKER.value,
+        action_id="act-docker-infra-mechanical-only",
+        state_version=state.state_version,
+        expected_phase=state.phase,
+        phase=state.phase,
+        iteration=state.iteration,
+        context={},
+    )
+
+    payload = driver.LoopDriver(loop_id, project_dir, token)._docker_infrastructure_result(
+        proposal,
+        state,
+        {"mechanical": {"commands": ["pytest -q"]}},
+        "daemon unavailable",
+    )
+
+    assert payload["infrastructure_failure"] is True
+    assert {item["layer"] for item in payload["results"]} == {"mechanical"}
+    # `phase_check_to_dict` omits an empty `metadata` mapping entirely (see its docstring).
+    assert "metadata" not in payload
 
 
 def test_docker_external_review_infrastructure_result_does_not_use_checker_contract(

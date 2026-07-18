@@ -163,26 +163,61 @@ class _ExternalReviewLeaseLostError(_LeaseLostError):
 
 
 def _assert_runtime_sources_outside_action_worktree(loop_id: str, project_dir: str) -> None:
-    """Reject a driver/config runtime loaded from its Maker-writable action worktree.
+    """Reject a driver/config runtime loaded from any Maker-writable loop worktree.
 
-    Existing runs are checked before attach (and therefore before effective config loading).
-    New runs are checked again by ``LoopDriver.__init__`` immediately after their state and
-    worktree are created. Resolving every source closes symlink aliases without forbidding
-    self-hosting from the root worktree when the action uses a separate linked worktree.
+    Existing runs are checked before attach (and therefore before effective config loading),
+    against *this* run's own persisted ``worktree_path`` (which need not follow any particular
+    naming convention -- it is whatever was recorded when the run started). New runs are
+    checked again by ``LoopDriver.__init__`` immediately after their state and worktree are
+    created, adding this run's own freshly created worktree to the same check.
+
+    Codex review, PR #262, High: relying solely on *this* run's own worktree left a gap for a
+    brand-new loop: before its state exists, the pre-attach call had no worktree to compare
+    against and returned immediately, and by the time ``LoopDriver.__init__`` re-checks, it only
+    knows about the worktree it just created for *this* run -- never any *other* loop's worktree.
+    A driver process accidentally launched from a different, already Maker-writable loop
+    worktree (e.g. a scheduler misconfiguration re-using an old worktree's copy of
+    ``loop_driver.py``) was therefore never checked against that other worktree at all, so
+    runtime code or config tampered with by a previous/concurrent loop's Maker could become
+    trusted for a brand-new, unrelated run. Every loop worktree lives at
+    ``<root>/.worktrees/loop-issue-<N>`` by construction (``worktree_manager.worktree_path_for()``);
+    this additionally glob-enumerates every *currently existing* one (worktrees are only ever
+    removed explicitly, never automatically -- see ``worktree_manager.remove_worktree()``'s own
+    docstring -- so a past loop's worktree stays enumerable here for as long as it could still
+    hold tampered runtime files) and rejects a runtime source found under any of them, not just
+    this run's own -- and, unlike the per-run check alone, can do so unconditionally before this
+    loop's own state/worktree exist. Scoping this additional check to the ``loop-issue-*`` naming
+    convention (rather than all of ``<root>/.worktrees/``) matters because that shared parent
+    directory is also where unrelated, non-loop-harness developer worktrees live (e.g.
+    feature-branch worktrees created by hand); blocking the whole directory would reject
+    completely legitimate self-hosted development runs. Resolving every source closes symlink
+    aliases without forbidding self-hosting from the root worktree when the action uses a
+    separate linked worktree.
     """
-    if not lc.state_path(loop_id, project_dir).is_file():
+    forbidden_worktrees: list[Path] = []
+    if lc.state_path(loop_id, project_dir).is_file():
+        forbidden_worktrees.append(
+            Path(lc.load_state(loop_id, project_dir).worktree_path).resolve()
+        )
+    root = lc.resolve_root_worktree(project_dir)
+    forbidden_worktrees.extend(
+        candidate.resolve()
+        for candidate in (root / ".worktrees").glob("loop-issue-*")
+        if candidate.is_dir()
+    )
+    if not forbidden_worktrees:
         return
-    action_worktree = Path(lc.load_state(loop_id, project_dir).worktree_path).resolve()
     runtime_sources = {
         "driver entrypoint": Path(__file__).resolve(),
         "definition module": Path(ld.__file__).resolve(),
         "base config": (ld.package_root() / "config" / ld.CONFIG_FILENAME).resolve(),
     }
     for label, source in runtime_sources.items():
-        if source == action_worktree or action_worktree in source.parents:
-            raise lc.InvalidStateError(
-                f"unsafe loop driver runtime location: {label} is inside the action worktree"
-            )
+        for worktree in forbidden_worktrees:
+            if source == worktree or worktree in source.parents:
+                raise lc.InvalidStateError(
+                    f"unsafe loop driver runtime location: {label} is inside a loop worktree"
+                )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1040,7 +1075,13 @@ class LoopDriver:
                         metadata={"execution_backend": "docker"},
                     )
                 )
-            reviewers = ["code-reviewer"]
+            # Codex review, PR #262, High: a custom loop phase may define a mechanical checker
+            # with no `checker.llm_review` block (the definition validator allows this). Mirror
+            # `_run_checker()`'s own `has_llm_review` gating here: unconditionally requiring an
+            # `llm_review` layer and calling `lc.checker_pass_criteria()` made a Docker/config
+            # failure during such a phase crash with `DefinitionValidationError` instead of
+            # producing this infrastructure-failure result for the guard/retry logic to handle.
+            has_llm_review = isinstance(params.get("llm_review"), dict)
             mechanical = lc.CheckResult(
                 passed=False,
                 layer="mechanical",
@@ -1049,26 +1090,31 @@ class LoopDriver:
                 raw_artifact_path="",
                 infrastructure_failure=True,
             )
-            llm_review = lc.CheckResult(
-                passed=False,
-                layer="llm_review",
-                signature=lc.compute_llm_review_signature([]),
-                findings=[],
-                raw_artifact_path="",
-                infrastructure_failure=True,
-            )
-            combined = lc.combine_check_results(
-                [mechanical, llm_review],
-                lc.checker_pass_criteria(state, self.project_dir),
-                frozenset({"mechanical", "llm_review"}),
-            )
+            results: list[lc.CheckResult] = [mechanical]
+            required_layers = frozenset({"mechanical"})
+            metadata: dict[str, Any] = {}
+            pass_criteria: dict[str, int] = {}
+            if has_llm_review:
+                pass_criteria = lc.checker_pass_criteria(state, self.project_dir)
+                llm_review = lc.CheckResult(
+                    passed=False,
+                    layer="llm_review",
+                    signature=lc.compute_llm_review_signature([]),
+                    findings=[],
+                    raw_artifact_path="",
+                    infrastructure_failure=True,
+                )
+                results.append(llm_review)
+                required_layers = frozenset({"mechanical", "llm_review"})
+                metadata["reviewers"] = ["code-reviewer"]
+            combined = lc.combine_check_results(results, pass_criteria, required_layers)
             payload = lc.phase_check_to_dict(
                 lc.PhaseCheckResult(
                     combined.passed,
                     combined.results,
                     combined.signature,
                     combined.infrastructure_failure,
-                    metadata={"reviewers": reviewers},
+                    metadata={**combined.metadata, **metadata},
                 )
             )
             if proposal.action == lc.Action.RUN_CHECKER.value:

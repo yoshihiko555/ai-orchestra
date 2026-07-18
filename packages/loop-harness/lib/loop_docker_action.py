@@ -278,6 +278,15 @@ class DockerActionRuntime:
         )
         if self.request.kind == "maker":
             git_mounts = git_ephemeral.build_maker_git_mount_spec(self.git_session)
+            # Codex review, PR #262, Critical: when the driver process itself runs as root
+            # (root-run CI/dev-container environments), non_root_identity() still forces the
+            # scenario container to the fixed non-root 65532:65532 identity, but the worktree and
+            # ephemeral GIT_DIR this same root process just prepared stay root-owned. The two
+            # read-write Maker mounts (worktree_path, ephemeral_dir) must be re-owned to that same
+            # identity or the container's rw mounts become unwritable to the non-root Maker
+            # process. No-op when the driver is not root, since ownership already matches.
+            profile.runtime.align_mount_ownership(self.request.worktree_path)
+            profile.runtime.align_mount_ownership(self.git_session.ephemeral_dir)
         else:
             # validate_isolation_config() already enforces this for config-built requests.
             # Keep the runtime assertion as defense-in-depth for directly constructed requests.
