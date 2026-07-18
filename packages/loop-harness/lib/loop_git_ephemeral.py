@@ -47,6 +47,7 @@ from loop_git_ephemeral_support import (  # noqa: E402
     _validate_runtime_location,
     _validate_safe_id,
     _verify_checked_out_branch,
+    _verify_checker_baseline_matches_branch_tip,
     _verify_git_pointer,
     _verify_worktree_matches_trusted_tree,
 )
@@ -94,7 +95,14 @@ class CheckerGitMountSpec:
 
 @dataclass(frozen=True)
 class EphemeralGitSession:
-    """Trusted paths and refs pinned while preparing one Maker action."""
+    """Trusted paths and refs pinned while preparing one Maker action.
+
+    Also used, unmodified, to build the Checker's own sanitized read-only mount spec
+    (``build_checker_git_mount_spec``, design doc §4.3.4): a Checker run gets its own session,
+    prepared fresh with ``baseline_sha`` pinned to the branch tip at Checker execution time --
+    it never reuses a Maker session still in flight. ``build_checker_git_mount_spec`` enforces
+    that freshness at runtime via ``_verify_checker_baseline_matches_branch_tip``.
+    """
 
     project_dir: Path
     worktree_path: Path
@@ -384,7 +392,11 @@ def build_maker_git_mount_spec(session: EphemeralGitSession) -> MakerGitMountSpe
     )
 
 
-def build_checker_git_mount_spec(session: EphemeralGitSession) -> CheckerGitMountSpec:
+def build_checker_git_mount_spec(
+    session: EphemeralGitSession,
+    *,
+    runner: GitRunner = subprocess.run,
+) -> CheckerGitMountSpec:
     """Return the sanitized, ordered read-only mounts for one Checker container.
 
     The worktree mount must be applied before the more specific pinned ``.git`` overlay. Phase 4's
@@ -398,9 +410,26 @@ def build_checker_git_mount_spec(session: EphemeralGitSession) -> CheckerGitMoun
     still restored immediately before the spec crosses the container boundary. This deliberately
     reuses Phase 2's recursive objects-symlink rejection and alternates overwrite rather than
     creating a weaker Checker-only preparation path.
+
+    Phase 3 review (Medium x2): this used to only re-validate the shared *objects* mount source
+    (``_validate_common_objects_mount_source`` / ``_harden_ephemeral_git_metadata``'s alternates
+    and symlink rejection), leaving two gaps ``finalize_ephemeral_git`` already closes for Maker.
+    Both are now enforced here too, in the same place Maker's finalize re-checks them:
+
+    - ``_verify_checker_baseline_matches_branch_tip`` asserts ``session.baseline_sha`` is still
+      the live tip of ``session.branch_ref`` in the trusted ``common_dir``, i.e. this really is a
+      session freshly prepared for *this* Checker run (design doc §4.3.4 step 1) rather than a
+      Maker session still in flight or one left over from an earlier action.
+    - ``_verify_git_pointer`` re-checks the worktree's ``.git`` pointer file against its pinned
+      snapshot. Docker bind mounts follow a symlink source to its resolved target, so a
+      Maker-writable worktree whose ``.git`` had been swapped for a symlink before this spec is
+      built would otherwise silently bind-mount whatever that symlink resolves to instead of the
+      pinned, read-only ``.git`` overlay.
     """
+    _verify_checker_baseline_matches_branch_tip(session, runner=runner)
     common_objects = _validate_common_objects_mount_source(session)
     _harden_ephemeral_git_metadata(session)
+    _verify_git_pointer(session)
     return CheckerGitMountSpec(
         mounts=(
             BindMountSpec(session.worktree_path, session.worktree_path, True),

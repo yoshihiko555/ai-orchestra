@@ -564,6 +564,42 @@ def _verify_git_pointer(session: EphemeralGitSession) -> None:
         )
 
 
+def _verify_checker_baseline_matches_branch_tip(
+    session: EphemeralGitSession,
+    *,
+    runner: GitRunner,
+) -> None:
+    """Reject a session whose pinned baseline is not the branch's current tip.
+
+    Design doc §4.3.4 step 1 requires the Checker mount spec to be built from a session whose
+    baseline is "the branch tip at Checker execution time" -- i.e. a session prepared fresh for
+    this Checker run, not a Maker session still in flight (whose pinned baseline is necessarily
+    the *older* tip captured before that Maker action started) or a session left over from an
+    earlier, unrelated action. ``build_checker_git_mount_spec`` only receives an
+    ``EphemeralGitSession``, so nothing at the type level distinguishes a fresh Checker session
+    from a stale or wrong one. This check turns the "new, tip-baselined session" requirement into
+    a runtime invariant instead of a documentation-only convention: it re-resolves
+    ``session.branch_ref`` against the shared, trusted ``common_dir`` (the same host-only,
+    ambient-env-scrubbed lookup every other trust-boundary check in this module uses) and fails
+    closed the moment the pinned ``baseline_sha`` no longer matches the branch's live tip.
+    """
+    tip_result = _run_git(
+        ["--git-dir", session.common_dir, "rev-parse", "--verify", session.branch_ref],
+        runner=runner,
+        operation="resolve current branch tip before building the Checker mount spec",
+    )
+    current_tip = tip_result.stdout.strip()
+    if current_tip != session.baseline_sha:
+        raise EphemeralGitInfrastructureError(
+            "checker session baseline does not match the branch's current tip",
+            details={
+                "branch_ref": session.branch_ref,
+                "baseline_sha": session.baseline_sha,
+                "current_tip": current_tip,
+            },
+        )
+
+
 def _delete_import_ref(session: EphemeralGitSession, *, runner: GitRunner) -> None:
     result = _run_git_unchecked(
         ["--git-dir", session.common_dir, "update-ref", "-d", session.import_ref],

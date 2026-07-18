@@ -736,3 +736,11 @@ config で切替可能な追加バックエンドとして導入する（確定�
   `test_prepare_commit_finalize_succeeds_when_primary_worktree_head_diverges_mid_action`
   （`packages/loop-harness/tests/test_loop_git_ephemeral.py`）。詳細は `_verify_worktree_matches_trusted_tree`
   の docstring（`packages/loop-harness/lib/loop_git_ephemeral_support.py`）を参照。
+- [Phase 3 コードレビュー指摘、Low、Phase 4 で対応予定] `prepare_ephemeral_git` は Maker/Checker
+  いずれの ephemeral GIT_DIR にも commit identity を一律 `user.name=loop-harness-maker` /
+  `user.email=loop-harness-maker@invalid` で seed しており、Checker 側にも同じ Maker 由来の識別子
+  が残る非対称がある（Checker は commit しないため実害はないが命名として紛らわしい）。また
+  `_validate_common_objects_mount_source` の symlink/非ディレクトリ拒否は Checker の mount spec 構築
+  （`build_checker_git_mount_spec`）でのみ呼ばれ、Maker 側（`build_maker_git_mount_spec`）には対称な
+  再検証が無い。Phase 4 で Docker backend を実装する際、Maker 側にも同じ mount-source 再検証を追加し、
+  Checker 専用の commit identity 命名を分離するかどうかを合わせて確定する。

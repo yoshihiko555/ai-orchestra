@@ -574,6 +574,90 @@ def test_checker_cleanup_removes_runtime_without_changing_shared_common_dir(
     assert _snapshot_tree(Path(session.common_dir)) == before
 
 
+def test_build_checker_git_mount_spec_rejects_stale_baseline_after_concurrent_finalize(
+    linked_worktree: GitFixture,
+) -> None:
+    session = _prepare(linked_worktree)
+    # Simulate a concurrent Maker finalize that fast-forwarded the shared branch after this
+    # Checker session was prepared, so `session.baseline_sha` is no longer the branch tip.
+    tree = _git("rev-parse", "HEAD^{tree}", cwd=session.worktree_path).stdout.strip()
+    concurrent_sha = _git(
+        "--git-dir",
+        session.common_dir,
+        "commit-tree",
+        tree,
+        "-p",
+        session.baseline_sha,
+        "-m",
+        "concurrent maker commit",
+    ).stdout.strip()
+    _git(
+        "--git-dir",
+        session.common_dir,
+        "update-ref",
+        session.branch_ref,
+        concurrent_sha,
+    )
+
+    with pytest.raises(git_ephemeral.EphemeralGitInfrastructureError, match="baseline"):
+        git_ephemeral.build_checker_git_mount_spec(session)
+
+    git_ephemeral.cleanup_ephemeral_git(session)
+
+
+def test_build_checker_git_mount_spec_accepts_fresh_session_matching_branch_tip(
+    linked_worktree: GitFixture,
+) -> None:
+    session = _prepare(linked_worktree)
+
+    spec = git_ephemeral.build_checker_git_mount_spec(session)
+
+    assert isinstance(spec, git_ephemeral.CheckerGitMountSpec)
+    git_ephemeral.cleanup_ephemeral_git(session)
+
+
+def test_build_checker_git_mount_spec_rejects_symlinked_git_pointer(
+    linked_worktree: GitFixture,
+) -> None:
+    session = _prepare(linked_worktree)
+    git_pointer = Path(session.worktree_path, ".git")
+    original = git_pointer.read_bytes()
+    elsewhere = linked_worktree.project_dir / "untrusted-checker-gitdir"
+    elsewhere.write_bytes(original)
+    git_pointer.unlink()
+    git_pointer.symlink_to(elsewhere)
+
+    try:
+        with pytest.raises(
+            git_ephemeral.EphemeralGitInfrastructureError, match=r"git.*pointer|\.git"
+        ):
+            git_ephemeral.build_checker_git_mount_spec(session)
+    finally:
+        git_pointer.unlink()
+        git_pointer.write_bytes(original)
+
+    git_ephemeral.cleanup_ephemeral_git(session)
+
+
+def test_build_checker_git_mount_spec_rejects_tampered_git_pointer_content(
+    linked_worktree: GitFixture,
+) -> None:
+    session = _prepare(linked_worktree)
+    git_pointer = Path(session.worktree_path, ".git")
+    original = git_pointer.read_bytes()
+    git_pointer.write_text("gitdir: /untrusted/location\n", encoding="utf-8")
+
+    try:
+        with pytest.raises(
+            git_ephemeral.EphemeralGitInfrastructureError, match=r"git.*pointer|\.git"
+        ):
+            git_ephemeral.build_checker_git_mount_spec(session)
+    finally:
+        git_pointer.write_bytes(original)
+
+    git_ephemeral.cleanup_ephemeral_git(session)
+
+
 def test_prepare_commit_finalize_fast_forwards_branch_and_preserves_working_tree(
     linked_worktree: GitFixture,
 ) -> None:
