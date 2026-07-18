@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 import re
 import secrets
+import stat
 import subprocess
 import sys
 from collections.abc import Callable, Mapping, Sequence
@@ -473,6 +474,41 @@ def _restore_ephemeral_git_alternates(session: EphemeralGitSession) -> None:
         ) from exc
 
 
+def _harden_ephemeral_git_metadata(session: EphemeralGitSession) -> None:
+    """Restore trusted metadata and reject object-store symlinks before host use or mounting.
+
+    Maker finalize and Checker read-only mount preparation share this boundary. Keeping the
+    operations together prevents the Checker path from losing either the trusted-config restore,
+    the forced single-line alternates restore, or the recursive objects symlink rejection when the
+    Phase 2 defenses evolve.
+    """
+    _restore_ephemeral_git_config(session)
+    _restore_ephemeral_git_alternates(session)
+
+
+def _validate_common_objects_mount_source(session: EphemeralGitSession) -> Path:
+    """Return the shared objects directory only when it is a real directory, never a symlink.
+
+    A read-only bind mount still follows its source symlink. Without this check, a repository whose
+    ``common_dir/objects`` points back to ``common_dir`` could expose shared refs, config, hooks, and
+    reflogs to an untrusted Checker despite the mount spec naming only ``objects``.
+    """
+    common_objects = session.common_dir / "objects"
+    try:
+        metadata = common_objects.stat(follow_symlinks=False)
+    except OSError as exc:
+        raise EphemeralGitInfrastructureError(
+            "shared git objects mount source is not accessible",
+            details={"common_objects": str(common_objects)},
+        ) from exc
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise EphemeralGitInfrastructureError(
+            "shared git objects mount source is not a trusted directory",
+            details={"common_objects": str(common_objects)},
+        )
+    return common_objects
+
+
 def _reject_symlinks_under_objects(objects_dir: Path) -> None:
     """Recursively reject any symlink anywhere under ``objects_dir`` without following it.
 
@@ -525,6 +561,109 @@ def _verify_git_pointer(session: EphemeralGitSession) -> None:
         raise EphemeralGitInfrastructureError(
             "worktree .git pointer differs from its trusted pinned snapshot",
             details={"git_pointer": str(git_pointer)},
+        )
+
+
+def _verify_checker_baseline_matches_branch_tip(
+    session: EphemeralGitSession,
+    *,
+    runner: GitRunner,
+) -> None:
+    """Reject a session whose pinned baseline is not the branch's current tip.
+
+    Design doc §4.3.4 step 1 requires the Checker mount spec to be built from a session whose
+    baseline is "the branch tip at Checker execution time" -- i.e. a session prepared fresh for
+    this Checker run, not a Maker session still in flight (whose pinned baseline is necessarily
+    the *older* tip captured before that Maker action started) or a session left over from an
+    earlier, unrelated action. ``build_checker_git_mount_spec`` only receives an
+    ``EphemeralGitSession``, so nothing at the type level distinguishes a fresh Checker session
+    from a stale or wrong one. This check turns the "new, tip-baselined session" requirement into
+    a runtime invariant instead of a documentation-only convention: it re-resolves
+    ``session.branch_ref`` against the shared, trusted ``common_dir`` (the same host-only,
+    ambient-env-scrubbed lookup every other trust-boundary check in this module uses) and fails
+    closed the moment the pinned ``baseline_sha`` no longer matches the branch's live tip.
+
+    Codex review (PR #258, High): the ``common_dir`` tip comparison above only catches a Maker
+    session that already *finalized* -- i.e. ``finalize_ephemeral_git`` already ran its CAS
+    write-back into the shared branch. A Maker session that is still in flight (or crashed) after
+    committing into its own Maker-writable ``session.ephemeral_dir``, but *before* that CAS
+    write-back happened, leaves the shared branch tip untouched at ``baseline_sha`` -- the check
+    above passes even though ``session.ephemeral_dir`` now holds a candidate commit (or dirty
+    worktree edits) that were never written back to the shared branch and must never be handed to
+    a Checker as "the fresh baseline". The two calls below close that gap by validating the two
+    concrete places such in-flight Maker output would show up, in addition to the shared branch
+    tip: the session's own ephemeral ref, and the shared worktree's file content.
+    """
+    tip_result = _run_git(
+        ["--git-dir", session.common_dir, "rev-parse", "--verify", session.branch_ref],
+        runner=runner,
+        operation="resolve current branch tip before building the Checker mount spec",
+    )
+    current_tip = tip_result.stdout.strip()
+    if current_tip != session.baseline_sha:
+        raise EphemeralGitInfrastructureError(
+            "checker session baseline does not match the branch's current tip",
+            details={
+                "branch_ref": session.branch_ref,
+                "baseline_sha": session.baseline_sha,
+                "current_tip": current_tip,
+            },
+        )
+    _verify_checker_ephemeral_ref_not_advanced(session, runner=runner)
+    _verify_worktree_matches_trusted_tree(
+        git_dir=session.common_dir,
+        worktree_path=session.worktree_path,
+        target_sha=session.baseline_sha,
+        temp_index_dir=session.runtime_dir,
+        runner=runner,
+    )
+
+
+def _verify_checker_ephemeral_ref_not_advanced(
+    session: EphemeralGitSession,
+    *,
+    runner: GitRunner,
+) -> None:
+    """Reject a session whose own ephemeral GIT_DIR branch ref has moved past baseline.
+
+    Codex review (PR #258, High): ``prepare_ephemeral_git`` always seeds
+    ``session.ephemeral_dir``'s ``session.branch_ref`` to exactly ``session.baseline_sha`` (see
+    ``_prepare_ephemeral_git``'s "seed ephemeral branch" step). A Maker container committing into
+    that Maker-writable ephemeral repository necessarily moves this ref -- that is the only way a
+    Maker action can ever record a candidate change -- regardless of whether
+    ``finalize_ephemeral_git`` has since run to fast-forward the shared ``common_dir`` branch (the
+    ``_verify_checker_baseline_matches_branch_tip`` check above only observes *that* write-back,
+    not this one). Comparing the ephemeral ref directly is therefore an independent, narrower
+    signal of "has this session's Maker container committed" that does not depend on finalize
+    having run at all. ``rev-parse --verify --quiet`` is used rather than ``show-ref --verify``:
+    both read the ref value straight out of ``session.ephemeral_dir``, but ``show-ref --verify``
+    additionally requires the referenced commit object itself to be resolvable (it fails with
+    ``bad ref`` otherwise), which routes through ``objects/info/alternates`` -- a file this check
+    must stay valid regardless of, since ``build_checker_git_mount_spec`` calls this *before*
+    ``_harden_ephemeral_git_metadata`` restores it. ``rev-parse --verify --quiet`` resolves the
+    same ref to the same SHA without that object-resolvability requirement.
+    """
+    ref_result = _run_git(
+        [
+            "--git-dir",
+            session.ephemeral_dir,
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            session.branch_ref,
+        ],
+        runner=runner,
+        operation="resolve the ephemeral branch ref before building the Checker mount spec",
+    )
+    ephemeral_tip = ref_result.stdout.strip()
+    if ephemeral_tip != session.baseline_sha:
+        raise EphemeralGitInfrastructureError(
+            "checker session ephemeral branch ref has advanced past its pinned baseline",
+            details={
+                "branch_ref": session.branch_ref,
+                "baseline_sha": session.baseline_sha,
+                "ephemeral_tip": ephemeral_tip or None,
+            },
         )
 
 

@@ -9,7 +9,7 @@ Internal git-execution, trusted-runtime-validation, and cleanup helpers live in
 ``loop_git_ephemeral_support.py`` (Codex review, PR #256, Critical -- this module previously
 exceeded the 800-line file limit in ``.claude/rules/coding-principles.md``). This is a pure
 module split: the public API (``prepare_ephemeral_git`` / ``build_maker_git_mount_spec`` /
-``finalize_ephemeral_git`` / ``cleanup_ephemeral_git``) and the typed exceptions
+``build_checker_git_mount_spec`` / ``finalize_ephemeral_git`` / ``cleanup_ephemeral_git``) and the typed exceptions
 (``EphemeralGitSession`` / ``EphemeralGitSafetyStop`` / ``EphemeralGitInfrastructureError``)
 remain importable from this module unchanged; no security boundary or behavior changed as part
 of the split.
@@ -39,26 +39,29 @@ from loop_git_ephemeral_support import (  # noqa: E402
     _delete_import_ref_best_effort,
     _delete_import_ref_error,
     _ephemeral_env,
+    _harden_ephemeral_git_metadata,
     _normalize_branch_ref,
-    _restore_ephemeral_git_alternates,
-    _restore_ephemeral_git_config,
     _run_git,
     _run_git_unchecked,
+    _validate_common_objects_mount_source,
     _validate_runtime_location,
     _validate_safe_id,
     _verify_checked_out_branch,
+    _verify_checker_baseline_matches_branch_tip,
     _verify_git_pointer,
     _verify_worktree_matches_trusted_tree,
 )
 
 __all__ = [
     "BindMountSpec",
+    "CheckerGitMountSpec",
     "MakerGitMountSpec",
     "EphemeralGitSession",
     "EphemeralGitFinalizeResult",
     "EphemeralGitSafetyStop",
     "EphemeralGitInfrastructureError",
     "prepare_ephemeral_git",
+    "build_checker_git_mount_spec",
     "build_maker_git_mount_spec",
     "finalize_ephemeral_git",
     "cleanup_ephemeral_git",
@@ -83,8 +86,23 @@ class MakerGitMountSpec:
 
 
 @dataclass(frozen=True)
+class CheckerGitMountSpec:
+    """Ordered read-only mounts and environment for one Checker container."""
+
+    mounts: tuple[BindMountSpec, ...]
+    env: Mapping[str, str]
+
+
+@dataclass(frozen=True)
 class EphemeralGitSession:
-    """Trusted paths and refs pinned while preparing one Maker action."""
+    """Trusted paths and refs pinned while preparing one Maker action.
+
+    Also used, unmodified, to build the Checker's own sanitized read-only mount spec
+    (``build_checker_git_mount_spec``, design doc §4.3.4): a Checker run gets its own session,
+    prepared fresh with ``baseline_sha`` pinned to the branch tip at Checker execution time --
+    it never reuses a Maker session still in flight. ``build_checker_git_mount_spec`` enforces
+    that freshness at runtime via ``_verify_checker_baseline_matches_branch_tip``.
+    """
 
     project_dir: Path
     worktree_path: Path
@@ -374,6 +392,78 @@ def build_maker_git_mount_spec(session: EphemeralGitSession) -> MakerGitMountSpe
     )
 
 
+def build_checker_git_mount_spec(
+    session: EphemeralGitSession,
+    *,
+    runner: GitRunner = subprocess.run,
+) -> CheckerGitMountSpec:
+    """Return the sanitized, ordered read-only mounts for one Checker container.
+
+    The worktree mount must be applied before the more specific pinned ``.git`` overlay. Phase 4's
+    Docker backend MUST preserve this tuple order when translating it into bind-mount flags; path
+    sorting would silently discard the overlay guarantee. It must also rebuild or revalidate this
+    spec immediately before mounting so a changed bind source fails closed. Only
+    ``common_dir/objects`` is exposed from shared Git metadata -- refs, config, hooks, and reflogs
+    are never mounted.
+
+    Checker mounts the ephemeral directory read-only, but the trusted config and alternates are
+    still restored immediately before the spec crosses the container boundary. This deliberately
+    reuses Phase 2's recursive objects-symlink rejection and alternates overwrite rather than
+    creating a weaker Checker-only preparation path.
+
+    Phase 3 review (Medium x2): this used to only re-validate the shared *objects* mount source
+    (``_validate_common_objects_mount_source`` / ``_harden_ephemeral_git_metadata``'s alternates
+    and symlink rejection), leaving two gaps ``finalize_ephemeral_git`` already closes for Maker.
+    Both are now enforced here too, in the same place Maker's finalize re-checks them:
+
+    - ``_verify_checker_baseline_matches_branch_tip`` asserts ``session.baseline_sha`` is still
+      the live tip of ``session.branch_ref`` in the trusted ``common_dir``, i.e. this really is a
+      session freshly prepared for *this* Checker run (design doc §4.3.4 step 1) rather than a
+      Maker session still in flight or one left over from an earlier action. Codex review (PR
+      #258, High): a Maker session that committed into its own ``ephemeral_dir`` but has not yet
+      finalized leaves the shared ``common_dir`` branch untouched at ``baseline_sha``, so that tip
+      comparison alone does not catch it. ``_verify_checker_baseline_matches_branch_tip`` now also
+      rejects such a session directly, by checking that its own ephemeral branch ref has not
+      advanced past ``baseline_sha`` and that its worktree still matches the ``baseline_sha`` tree
+      (an uncommitted Maker edit) -- see that function's docstring for the full rationale.
+    - ``_verify_git_pointer`` re-checks the worktree's ``.git`` pointer file against its pinned
+      snapshot. Docker bind mounts follow a symlink source to its resolved target, so a
+      Maker-writable worktree whose ``.git`` had been swapped for a symlink before this spec is
+      built would otherwise silently bind-mount whatever that symlink resolves to instead of the
+      pinned, read-only ``.git`` overlay.
+
+    ``_validate_common_objects_mount_source`` runs first, ahead of
+    ``_verify_checker_baseline_matches_branch_tip``: the latter's worktree-drift check (PR #258)
+    reads ``baseline_sha``'s tree through ``common_dir``, so ``common_dir/objects`` must already be
+    confirmed to be a real, untampered directory or that read fails with a confusing, unrelated
+    error instead of the intended "shared git objects mount source is not a trusted directory".
+    """
+    common_objects = _validate_common_objects_mount_source(session)
+    _verify_checker_baseline_matches_branch_tip(session, runner=runner)
+    _harden_ephemeral_git_metadata(session)
+    _verify_git_pointer(session)
+    return CheckerGitMountSpec(
+        mounts=(
+            BindMountSpec(session.worktree_path, session.worktree_path, True),
+            BindMountSpec(
+                session.pinned_git_pointer,
+                session.worktree_path / ".git",
+                True,
+            ),
+            BindMountSpec(session.ephemeral_dir, session.ephemeral_dir, True),
+            BindMountSpec(
+                common_objects,
+                common_objects,
+                True,
+            ),
+        ),
+        env={
+            "GIT_DIR": str(session.ephemeral_dir),
+            "GIT_WORK_TREE": str(session.worktree_path),
+        },
+    )
+
+
 def finalize_ephemeral_git(
     session: EphemeralGitSession,
     *,
@@ -429,8 +519,7 @@ def _finalize_ephemeral_git(
     *,
     runner: GitRunner,
 ) -> EphemeralGitFinalizeResult:
-    _restore_ephemeral_git_config(session)
-    _restore_ephemeral_git_alternates(session)
+    _harden_ephemeral_git_metadata(session)
     new_sha_result = _run_git(
         ["--git-dir", session.ephemeral_dir, "rev-parse", "--verify", session.branch_ref],
         runner=runner,
