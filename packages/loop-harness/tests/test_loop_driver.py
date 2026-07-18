@@ -4552,6 +4552,71 @@ def test_main_exits_with_foreign_lease_code_and_writes_nothing(
     assert lc.load_state(loop_id, project_dir).state_version == before_version
 
 
+@pytest.mark.parametrize("source", ["driver", "package"])
+def test_main_rejects_runtime_source_inside_existing_action_worktree_before_attach(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source: str,
+) -> None:
+    loop_id = "abcd1234-issue-1"
+    project_dir, _token = _seed_running_loop(tmp_path, loop_id)
+    action_worktree = tmp_path / "action-worktree"
+    action_worktree.mkdir()
+    state = lc.load_state(loop_id, project_dir)
+    state.worktree_path = str(action_worktree)
+    lc._write_state(state, project_dir)
+    if source == "driver":
+        monkeypatch.setattr(
+            driver,
+            "__file__",
+            str(action_worktree / "packages/loop-harness/scripts/loop_driver.py"),
+        )
+    else:
+        monkeypatch.setattr(
+            driver.ld,
+            "package_root",
+            lambda: action_worktree / "packages/loop-harness",
+        )
+
+    def attach_must_not_run(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("runtime isolation must be checked before attach/config loading")
+
+    monkeypatch.setattr(driver, "_acquire_initial_proposal", attach_must_not_run)
+
+    assert driver.main(["--loop-id", loop_id, "--project", project_dir]) == (
+        driver.EXIT_GENERAL_ERROR
+    )
+
+
+def test_loop_driver_allows_self_hosted_root_source_outside_action_worktree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    action_worktree = tmp_path / "action-worktree"
+    action_worktree.mkdir()
+    state = lc.load_state(loop_id, project_dir)
+    state.worktree_path = str(action_worktree)
+    lc._write_state(state, project_dir)
+    project_root = Path(project_dir)
+    monkeypatch.setattr(
+        driver,
+        "__file__",
+        str(project_root / "packages/loop-harness/scripts/loop_driver.py"),
+    )
+    monkeypatch.setattr(
+        driver.ld,
+        "package_root",
+        lambda: project_root / "packages/loop-harness",
+    )
+    monkeypatch.setattr(driver, "wall_clock_timeout_seconds", lambda *_args: 7200)
+
+    instance = driver.LoopDriver(loop_id, project_dir, token)
+
+    assert instance.project_dir == project_dir
+
+
 def test_issue_number_from_loop_id_parses_canonical_id() -> None:
     assert lds.issue_number_from_loop_id("abcd1234-issue-42") == 42
     assert lds.issue_number_from_loop_id("not-a-loop-id") is None

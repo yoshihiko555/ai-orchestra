@@ -729,10 +729,14 @@ config で切替可能な追加バックエンドとして導入する（確定�
   heartbeat / wall-clock の取消は executor へ伝播し、起動中・実行中の scenario container を
   race-safe かつ冪等に `docker rm -f` する。opt-in containment E2E は長時間 `docker exec` の回収まで
   production driver 配線で検証する。
-- **[Phase 4 レビュー指摘、High、非採用] action worktree の base config を protected-path 化しない**:
+- **[Phase 4 レビュー指摘、High/Medium、部分採用] action worktree の base config を protected-path 化しない**:
   実効 base config は driver 自身の `package_root()`、local override は root worktree から読み、Maker
   rw mount 内の action worktree にある同名 base config は次 dispatch の設定源ではない。tracked config
-  更新を一律禁止すると loop-harness 自身の更新を妨げるため、パス分離を回帰テストで固定する。
+  更新を一律禁止すると loop-harness 自身の更新を妨げるため protected-path 化はしない。一方、この
+  パス分離を運用規約だけに依存させず、既存 run は attach/config 読込前、新規 run は state/worktree
+  作成直後に runtime-source guard を実行する。driver entrypoint・definition module・実効 base config の
+  resolve 済み実パスが action worktree 配下なら起動拒否する。root worktree source と別 linked action
+  worktree を使う通常の self-hosting は許可する。
 - **[Phase 4 セキュリティレビュー指摘、Medium、受容] broker の外向き通信はアプリ層 allowlist を主境界とする**:
   scenario は internal network のみで外部へ直接到達できず、唯一 dual-home の trusted broker が固定
   upstream host / HTTPS / request envelope / budget を検証する。Docker network 単体では DNS 名単位の

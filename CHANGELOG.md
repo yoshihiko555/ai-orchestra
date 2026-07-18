@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- **`loop-harness`: Docker action 完了後の cleanup 失敗と lease 喪失時の隔離停止を修正**: cleanup 失敗が成功済み Checker artifact / Maker CAS を偽の infrastructure failure で上書きしないよう安全停止へ変更し、lease 喪失時は host 側 `docker exec` client だけでなく scenario container の cgroup 全体を即時回収するようにした。
+- **`loop-harness`: Docker action 完了後の cleanup 失敗と lease 喪失時の隔離停止を修正**: cleanup 失敗が成功済み Checker artifact / Maker CAS を偽の infrastructure failure で上書きしないよう安全停止へ変更し、lease 喪失時は host 側 `docker exec` client だけでなく scenario container の cgroup 全体を回収するようにした。driver/config runtime が Maker の action worktree 内に配置された unsafe な起動経路も config 読込・action 実行前に拒否する。
 - **`evaluation-set-checker` が `packages/` 配下に実体を持たない SSOT（orchex CLI 等）のテストを識別できない不具合を修正**: 評価セット ID とテストパスの明示マッピング（`.claude/config/quality-gates/evaluation-set-mapping.yaml`）を追加し、`test_orchestra_manager_core.py` が無関係な `core` パッケージへ誤誘導される問題も解消した。
 - **`orchex uninstall --dry-run` が最後のパッケージ削除時に `settings.local.json` を書き換えていた不具合を修正**: dry-run では実ファイルを一切変更せず、プレビュー表示のみ行うようにした。
 - **`orchex enable` が未インストールのパッケージにもフックを登録していた不具合を修正**: 対象パッケージが `install` 済みでない場合はエラーを表示し、フック登録を行わないようにした。

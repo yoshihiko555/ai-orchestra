@@ -177,6 +177,9 @@ class DockerActionRuntime:
     def cancel(self) -> None:
         """Latch cancellation and destroy a started scenario without leaking thread errors."""
         self._cancel_requested.set()
+        # Cancellation owns the untrusted scenario cgroup only. The dispatch thread remains
+        # the sole owner of broker/network/settings/Git cleanup through finish()/abort(); doing
+        # that work from the heartbeat thread would race result finalization and state fencing.
         with self._lifecycle_lock:
             if not self._scenario_start_attempted or self._scenario_removed:
                 return
@@ -244,6 +247,9 @@ class DockerActionRuntime:
             max_lifetime_sec=max_lifetime,
             owner_labels=self.owner_labels,
         )
+        # docker run plus the trusted idle-baseline capture is one atomic start section.
+        # cancel() latches its Event immediately but may wait for this bounded section's Docker
+        # calls; the post-start check removes the container before any docker exec can begin.
         with self._lifecycle_lock:
             self._raise_if_cancelled_locked()
             self._scenario_start_attempted = True
@@ -273,6 +279,8 @@ class DockerActionRuntime:
         if self.request.kind == "maker":
             git_mounts = git_ephemeral.build_maker_git_mount_spec(self.git_session)
         else:
+            # validate_isolation_config() already enforces this for config-built requests.
+            # Keep the runtime assertion as defense-in-depth for directly constructed requests.
             if not self.request.isolation.checker_read_only_worktree:
                 raise DockerActionError("Checker worktree must be read-only")
             git_mounts = git_ephemeral.build_checker_git_mount_spec(self.git_session)

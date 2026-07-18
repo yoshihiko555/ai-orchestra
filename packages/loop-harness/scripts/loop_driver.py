@@ -162,19 +162,43 @@ class _ExternalReviewLeaseLostError(_LeaseLostError):
     """
 
 
+def _assert_runtime_sources_outside_action_worktree(loop_id: str, project_dir: str) -> None:
+    """Reject a driver/config runtime loaded from its Maker-writable action worktree.
+
+    Existing runs are checked before attach (and therefore before effective config loading).
+    New runs are checked again by ``LoopDriver.__init__`` immediately after their state and
+    worktree are created. Resolving every source closes symlink aliases without forbidding
+    self-hosting from the root worktree when the action uses a separate linked worktree.
+    """
+    if not lc.state_path(loop_id, project_dir).is_file():
+        return
+    action_worktree = Path(lc.load_state(loop_id, project_dir).worktree_path).resolve()
+    runtime_sources = {
+        "driver entrypoint": Path(__file__).resolve(),
+        "definition module": Path(ld.__file__).resolve(),
+        "base config": (ld.package_root() / "config" / ld.CONFIG_FILENAME).resolve(),
+    }
+    for label, source in runtime_sources.items():
+        if source == action_worktree or action_worktree in source.parents:
+            raise lc.InvalidStateError(
+                f"unsafe loop driver runtime location: {label} is inside the action worktree"
+            )
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point: `loop_driver.py --loop-id <id> --project <path>`."""
     args = _parse_args(argv)
     project = _project_dir(args.project)
     try:
+        _assert_runtime_sources_outside_action_worktree(args.loop_id, project)
         lease_token, proposal = _acquire_initial_proposal(args.loop_id, project, args.definition)
+        driver = LoopDriver(args.loop_id, project, lease_token, claude_bin=args.claude_bin)
     except lc.ForeignLeaseError as exc:
         print(f"loop_driver: foreign live lease for {args.loop_id}: {exc}", file=sys.stderr)
         return EXIT_FOREIGN_LEASE
     except lc.LoopHarnessError as exc:
         print(f"loop_driver: {exc}", file=sys.stderr)
         return EXIT_GENERAL_ERROR
-    driver = LoopDriver(args.loop_id, project, lease_token, claude_bin=args.claude_bin)
     return driver.run(proposal)
 
 
@@ -403,6 +427,9 @@ class LoopDriver:
         *,
         claude_bin: str = "claude",
     ) -> None:
+        # Defense-in-depth for direct constructors and newly-created runs: this must precede
+        # wall_clock_timeout_seconds(), whose config lookup relies on the same source boundary.
+        _assert_runtime_sources_outside_action_worktree(loop_id, project_dir)
         self.loop_id = loop_id
         self.project_dir = project_dir
         self.lease_token = lease_token

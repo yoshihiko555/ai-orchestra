@@ -431,6 +431,13 @@ def test_cancel_removes_a_running_scenario_once(
     runtime._scenario_start_attempted = True
     runtime._started = True
     removed: list[str] = []
+    broker_cleanups: list[bool] = []
+
+    class Broker:
+        def cleanup(self) -> None:
+            broker_cleanups.append(True)
+
+    runtime.broker = Broker()
     monkeypatch.setattr(
         docker_action.runtime_cli,
         "remove_container",
@@ -442,6 +449,11 @@ def test_cancel_removes_a_running_scenario_once(
 
     assert removed == ["lh-action"]
     assert runtime._scenario_removed is True
+    assert broker_cleanups == []
+
+    runtime.finish(action_succeeded=False)
+
+    assert broker_cleanups == [True]
 
 
 def test_cancel_racing_scenario_start_removes_container_before_exec(
@@ -519,6 +531,7 @@ def test_cancel_racing_scenario_start_removes_container_before_exec(
     cancel_thread = threading.Thread(target=runtime.cancel)
     cancel_thread.start()
     assert runtime._cancel_requested.wait(timeout=5)
+    assert cancel_thread.is_alive()
     release_start.set()
     execute_thread.join(timeout=5)
     cancel_thread.join(timeout=5)
