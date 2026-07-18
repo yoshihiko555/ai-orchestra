@@ -900,6 +900,76 @@ def test_issue_fix_decision_oracle_rejects_wrong_pr_label(tmp_path: Path) -> Non
         )
 
 
+def test_issue_fix_decision_oracle_rejects_empty_branch_slug(tmp_path: Path) -> None:
+    fixture = _issue_fix_decision_oracle_fixture()
+    (tmp_path / "gh-issue-fixture.json").write_text(
+        json.dumps({"number": 301, "title": "bug", "labels": [{"name": "bug"}]}),
+        encoding="utf-8",
+    )
+    (tmp_path / "issue-fix-decision.json").write_text(
+        json.dumps(
+            {
+                "branch": "fix/issue-301-",
+                "commit_message": "fix: greet() が None を安全に処理するよう修正\n\nCloses #301",
+                "pr_label": "bug",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AssertionError, match="empty slug"):
+        fixture.assert_decision(
+            tmp_path, Path("gh-issue-fixture.json"), Path("issue-fix-decision.json")
+        )
+
+
+def test_issue_fix_decision_oracle_rejects_non_kebab_case_branch_slug(tmp_path: Path) -> None:
+    fixture = _issue_fix_decision_oracle_fixture()
+    (tmp_path / "gh-issue-fixture.json").write_text(
+        json.dumps({"number": 301, "title": "bug", "labels": [{"name": "bug"}]}),
+        encoding="utf-8",
+    )
+    (tmp_path / "issue-fix-decision.json").write_text(
+        json.dumps(
+            {
+                "branch": "fix/issue-301-Greet_None_Guard",
+                "commit_message": "fix: greet() が None を安全に処理するよう修正\n\nCloses #301",
+                "pr_label": "bug",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AssertionError, match="not kebab-case"):
+        fixture.assert_decision(
+            tmp_path, Path("gh-issue-fixture.json"), Path("issue-fix-decision.json")
+        )
+
+
+def test_issue_fix_decision_oracle_rejects_overlong_branch_slug(tmp_path: Path) -> None:
+    fixture = _issue_fix_decision_oracle_fixture()
+    (tmp_path / "gh-issue-fixture.json").write_text(
+        json.dumps({"number": 301, "title": "bug", "labels": [{"name": "bug"}]}),
+        encoding="utf-8",
+    )
+    overlong_slug = "-".join(["greet-none-guard"] * 3)  # well over 30 chars
+    (tmp_path / "issue-fix-decision.json").write_text(
+        json.dumps(
+            {
+                "branch": f"fix/issue-301-{overlong_slug}",
+                "commit_message": "fix: greet() が None を安全に処理するよう修正\n\nCloses #301",
+                "pr_label": "bug",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AssertionError, match="exceeds the 30-char convention"):
+        fixture.assert_decision(
+            tmp_path, Path("gh-issue-fixture.json"), Path("issue-fix-decision.json")
+        )
+
+
 def test_issue_fix_gh_fixture_rejects_mismatched_issue_number(tmp_path: Path) -> None:
     fixture_script = PACKAGE_DIR / "scenarios" / "fixtures" / "fake-gh-issue-view.py"
     meta_dir = tmp_path / ".meta-harness"
@@ -1013,6 +1083,7 @@ def _plans_text(
     decisions: list[str] | None = None,
     notes: list[str] | None = None,
     include_notes_section: bool = True,
+    codd_status: str = "active",
 ) -> str:
     decisions = decisions if decisions is not None else ["2026-01-01: 初期設計方針を確定"]
     notes = notes if notes is not None else ["評価用フィクスチャ"]
@@ -1021,7 +1092,7 @@ def _plans_text(
         "codd:",
         '  node_id: "plan:meta-harness-eval-fixture"',
         "  kind: plan",
-        "  status: active",
+        f"  status: {codd_status}",
         "---",
         "",
         "# Plans",
@@ -1048,13 +1119,32 @@ def _plans_text(
     return "\n".join(lines)
 
 
+def _write_plans_and_baseline(
+    tmp_path: Path, name: str, text: str, *, baseline_text: str | None = None
+) -> tuple[Path, Path]:
+    """Write a (possibly edited) Plans.md plus an unmodified baseline copy for it.
+
+    Mirrors the scenario `setup:` step (`cp .claude/Plans.md .meta-harness/plans-baseline.md`),
+    which the oracle diffs the CODD frontmatter against (PR #266 review round 2, point 1).
+    """
+    plans_path = tmp_path / f"{name}.md"
+    plans_path.write_text(text, encoding="utf-8")
+    baseline_path = tmp_path / f"{name}-baseline.md"
+    baseline_path.write_text(
+        baseline_text if baseline_text is not None else _plans_text(), encoding="utf-8"
+    )
+    return plans_path, baseline_path
+
+
 def test_task_state_mark_done_oracle_passes_on_correct_edit(tmp_path: Path) -> None:
     fixture = _task_state_outcome_fixture()
-    plans_path = tmp_path / "Plans.md"
-    plans_path.write_text(_plans_text(product_status="done"), encoding="utf-8")
+    plans_path, baseline_path = _write_plans_and_baseline(
+        tmp_path, "plans", _plans_text(product_status="done")
+    )
 
     fixture.assert_mark_task_done(
         plans_path,
+        baseline_path=baseline_path,
         target_task="商品一覧API",
         target_status="done",
         target_previous_status="WIP",
@@ -1066,14 +1156,14 @@ def test_task_state_mark_done_oracle_passes_on_correct_edit(tmp_path: Path) -> N
 
 def test_task_state_mark_done_oracle_rejects_deleted_notes_section(tmp_path: Path) -> None:
     fixture = _task_state_outcome_fixture()
-    plans_path = tmp_path / "Plans.md"
-    plans_path.write_text(
-        _plans_text(product_status="done", include_notes_section=False), encoding="utf-8"
+    plans_path, baseline_path = _write_plans_and_baseline(
+        tmp_path, "plans", _plans_text(product_status="done", include_notes_section=False)
     )
 
     with pytest.raises(AssertionError, match="Notes"):
         fixture.assert_mark_task_done(
             plans_path,
+            baseline_path=baseline_path,
             target_task="商品一覧API",
             target_status="done",
             target_previous_status="WIP",
@@ -1085,12 +1175,14 @@ def test_task_state_mark_done_oracle_rejects_deleted_notes_section(tmp_path: Pat
 
 def test_task_state_mark_done_oracle_rejects_deleted_decisions_entry(tmp_path: Path) -> None:
     fixture = _task_state_outcome_fixture()
-    plans_path = tmp_path / "Plans.md"
-    plans_path.write_text(_plans_text(product_status="done", decisions=[]), encoding="utf-8")
+    plans_path, baseline_path = _write_plans_and_baseline(
+        tmp_path, "plans", _plans_text(product_status="done", decisions=[])
+    )
 
     with pytest.raises(AssertionError, match="Decisions section lost"):
         fixture.assert_mark_task_done(
             plans_path,
+            baseline_path=baseline_path,
             target_task="商品一覧API",
             target_status="done",
             target_previous_status="WIP",
@@ -1100,23 +1192,66 @@ def test_task_state_mark_done_oracle_rejects_deleted_decisions_entry(tmp_path: P
         )
 
 
-def test_task_state_record_decision_oracle_accepts_today_and_tomorrow(tmp_path: Path) -> None:
+def test_task_state_mark_done_oracle_rejects_modified_frontmatter(tmp_path: Path) -> None:
     fixture = _task_state_outcome_fixture()
-    for offset in (0, 1):
+    plans_path, baseline_path = _write_plans_and_baseline(
+        tmp_path, "plans", _plans_text(product_status="done", codd_status="draft")
+    )
+
+    with pytest.raises(AssertionError, match="CODD frontmatter block was modified"):
+        fixture.assert_mark_task_done(
+            plans_path,
+            baseline_path=baseline_path,
+            target_task="商品一覧API",
+            target_status="done",
+            target_previous_status="WIP",
+            other_tasks=[("done", "ユーザー認証API"), ("TODO", "注文API")],
+            expected_decisions=["2026-01-01: 初期設計方針を確定"],
+            expected_notes=["評価用フィクスチャ"],
+        )
+
+
+def test_task_state_mark_done_oracle_rejects_duplicated_task_line(tmp_path: Path) -> None:
+    fixture = _task_state_outcome_fixture()
+    text = _plans_text(product_status="done")
+    text = text.replace(
+        "- `cc:done` 商品一覧API\n", "- `cc:done` 商品一覧API\n- `cc:done` 商品一覧API\n"
+    )
+    plans_path, baseline_path = _write_plans_and_baseline(tmp_path, "plans", text)
+
+    with pytest.raises(AssertionError, match="task lines do not exactly match"):
+        fixture.assert_mark_task_done(
+            plans_path,
+            baseline_path=baseline_path,
+            target_task="商品一覧API",
+            target_status="done",
+            target_previous_status="WIP",
+            other_tasks=[("done", "ユーザー認証API"), ("TODO", "注文API")],
+            expected_decisions=["2026-01-01: 初期設計方針を確定"],
+            expected_notes=["評価用フィクスチャ"],
+        )
+
+
+def test_task_state_record_decision_oracle_accepts_yesterday_today_and_tomorrow(
+    tmp_path: Path,
+) -> None:
+    fixture = _task_state_outcome_fixture()
+    for offset in (-1, 0, 1):
         date_str = (datetime.date.today() + datetime.timedelta(days=offset)).isoformat()
-        plans_path = tmp_path / f"Plans-{offset}.md"
-        plans_path.write_text(
+        plans_path, baseline_path = _write_plans_and_baseline(
+            tmp_path,
+            f"plans-{offset}",
             _plans_text(
                 decisions=[
                     "2026-01-01: 初期設計方針を確定",
                     f"{date_str}: GraphQL を採用（理由: フロントエンドの柔軟性）",
                 ]
             ),
-            encoding="utf-8",
         )
 
         fixture.assert_decision_recorded(
             plans_path,
+            baseline_path=baseline_path,
             decision_substrings=["GraphQL", "フロントエンドの柔軟性"],
             existing_decision="2026-01-01: 初期設計方針を確定",
             other_tasks=[
@@ -1130,20 +1265,21 @@ def test_task_state_record_decision_oracle_accepts_today_and_tomorrow(tmp_path: 
 
 def test_task_state_record_decision_oracle_rejects_stale_date(tmp_path: Path) -> None:
     fixture = _task_state_outcome_fixture()
-    plans_path = tmp_path / "Plans.md"
-    plans_path.write_text(
+    plans_path, baseline_path = _write_plans_and_baseline(
+        tmp_path,
+        "plans",
         _plans_text(
             decisions=[
                 "2026-01-01: 初期設計方針を確定",
                 "2020-01-01: GraphQL を採用（理由: フロントエンドの柔軟性）",
             ]
         ),
-        encoding="utf-8",
     )
 
     with pytest.raises(AssertionError, match="no Decisions line dated"):
         fixture.assert_decision_recorded(
             plans_path,
+            baseline_path=baseline_path,
             decision_substrings=["GraphQL", "フロントエンドの柔軟性"],
             existing_decision="2026-01-01: 初期設計方針を確定",
             other_tasks=[
@@ -1160,8 +1296,9 @@ def test_task_state_record_decision_oracle_rejects_entry_written_in_notes_sectio
 ) -> None:
     fixture = _task_state_outcome_fixture()
     today = datetime.date.today().isoformat()
-    plans_path = tmp_path / "Plans.md"
-    plans_path.write_text(
+    plans_path, baseline_path = _write_plans_and_baseline(
+        tmp_path,
+        "plans",
         _plans_text(
             decisions=["2026-01-01: 初期設計方針を確定"],
             notes=[
@@ -1169,12 +1306,12 @@ def test_task_state_record_decision_oracle_rejects_entry_written_in_notes_sectio
                 f"{today}: GraphQL を採用（理由: フロントエンドの柔軟性）",
             ],
         ),
-        encoding="utf-8",
     )
 
     with pytest.raises(AssertionError, match="no Decisions line dated"):
         fixture.assert_decision_recorded(
             plans_path,
+            baseline_path=baseline_path,
             decision_substrings=["GraphQL", "フロントエンドの柔軟性"],
             existing_decision="2026-01-01: 初期設計方針を確定",
             other_tasks=[
@@ -1195,12 +1332,65 @@ def test_task_state_record_decision_oracle_rejects_deleted_task(tmp_path: Path) 
             f"{today}: GraphQL を採用（理由: フロントエンドの柔軟性）",
         ]
     ).replace("- `cc:TODO` 注文API\n", "")
-    plans_path = tmp_path / "Plans.md"
-    plans_path.write_text(text, encoding="utf-8")
+    plans_path, baseline_path = _write_plans_and_baseline(tmp_path, "plans", text)
 
     with pytest.raises(AssertionError, match="decision-mode edit touched the task list"):
         fixture.assert_decision_recorded(
             plans_path,
+            baseline_path=baseline_path,
+            decision_substrings=["GraphQL", "フロントエンドの柔軟性"],
+            existing_decision="2026-01-01: 初期設計方針を確定",
+            other_tasks=[
+                ("done", "ユーザー認証API"),
+                ("WIP", "商品一覧API"),
+                ("TODO", "注文API"),
+            ],
+            expected_notes=["評価用フィクスチャ"],
+        )
+
+
+def test_task_state_record_decision_oracle_rejects_duplicated_task_line(tmp_path: Path) -> None:
+    fixture = _task_state_outcome_fixture()
+    today = datetime.date.today().isoformat()
+    text = _plans_text(
+        decisions=[
+            "2026-01-01: 初期設計方針を確定",
+            f"{today}: GraphQL を採用（理由: フロントエンドの柔軟性）",
+        ]
+    ).replace("- `cc:WIP` 商品一覧API\n", "- `cc:WIP` 商品一覧API\n- `cc:WIP` 商品一覧API\n")
+    plans_path, baseline_path = _write_plans_and_baseline(tmp_path, "plans", text)
+
+    with pytest.raises(AssertionError, match="task lines do not exactly match"):
+        fixture.assert_decision_recorded(
+            plans_path,
+            baseline_path=baseline_path,
+            decision_substrings=["GraphQL", "フロントエンドの柔軟性"],
+            existing_decision="2026-01-01: 初期設計方針を確定",
+            other_tasks=[
+                ("done", "ユーザー認証API"),
+                ("WIP", "商品一覧API"),
+                ("TODO", "注文API"),
+            ],
+            expected_notes=["評価用フィクスチャ"],
+        )
+
+
+def test_task_state_record_decision_oracle_rejects_modified_frontmatter(tmp_path: Path) -> None:
+    fixture = _task_state_outcome_fixture()
+    today = datetime.date.today().isoformat()
+    text = _plans_text(
+        decisions=[
+            "2026-01-01: 初期設計方針を確定",
+            f"{today}: GraphQL を採用（理由: フロントエンドの柔軟性）",
+        ],
+        codd_status="draft",
+    )
+    plans_path, baseline_path = _write_plans_and_baseline(tmp_path, "plans", text)
+
+    with pytest.raises(AssertionError, match="CODD frontmatter block was modified"):
+        fixture.assert_decision_recorded(
+            plans_path,
+            baseline_path=baseline_path,
             decision_substrings=["GraphQL", "フロントエンドの柔軟性"],
             existing_decision="2026-01-01: 初期設計方針を確定",
             other_tasks=[

@@ -10,7 +10,7 @@ prompt: |
   not modify the task list, frontmatter, or Notes sections.
 setup:
   - |
-    mkdir -p .claude
+    mkdir -p .claude .meta-harness
     cat > .claude/Plans.md <<'PLANSEOF'
     ---
     codd:
@@ -44,6 +44,7 @@ setup:
 
     - 評価用フィクスチャ
     PLANSEOF
+    cp .claude/Plans.md .meta-harness/plans-baseline.md
 allowed_tools:
   - "Read"
   - "Edit"
@@ -51,10 +52,10 @@ allowed_tools:
 command_timeout_ms: 60000
 critical:
   - id: decision-recorded-without-collateral-damage
-    text: "今日または翌日の日付で Decisions セクション内にのみ判断が追記され、既存 Decisions・全タスク・Notes は変更されない"
+    text: "前日/当日/翌日いずれかの日付で Decisions セクション内にのみ判断が追記され、既存 Decisions・全タスク・Notes・frontmatter は変更されない"
     oracle: command_exit
     command: >-
-      python3 packages/meta-harness/scenarios/fixtures/assert-task-state-outcome.py record-decision --plans .claude/Plans.md --decision-substring "GraphQL" --decision-substring "フロントエンドの柔軟性" --existing-decision "2026-01-01: 初期設計方針を確定" --other-task "done::ユーザー認証API" --other-task "WIP::商品一覧API" --other-task "TODO::注文API" --expected-note "評価用フィクスチャ"
+      python3 packages/meta-harness/scenarios/fixtures/assert-task-state-outcome.py record-decision --plans .claude/Plans.md --baseline .meta-harness/plans-baseline.md --decision-substring "GraphQL" --decision-substring "フロントエンドの柔軟性" --existing-decision "2026-01-01: 初期設計方針を確定" --other-task "done::ユーザー認証API" --other-task "WIP::商品一覧API" --other-task "TODO::注文API" --expected-note "評価用フィクスチャ"
 checks:
   - id: decision-rationale-preserved
     text: "判断理由が正確に記録される"

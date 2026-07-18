@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 
 # label -> (branch prefix, commit prefix, pr label), per issue-fix SKILL.md's branch-prefix
@@ -28,6 +29,10 @@ _LABEL_TABLE: dict[str, tuple[str, str, str]] = {
 }
 _DEFAULT_ROW: tuple[str, str, str] = ("fix/", "fix:", "bug")
 
+# issue-fix SKILL.md: "`{slug}` は Issue タイトルから英語 kebab-case で生成（最大 30 文字）".
+_SLUG_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+_MAX_SLUG_LENGTH = 30
+
 
 def _issue_label(issue: dict) -> str:
     labels = issue.get("labels") or []
@@ -36,6 +41,29 @@ def _issue_label(issue: dict) -> str:
         if name in names:
             return name
     return ""
+
+
+def _assert_branch_slug(branch: str, branch_prefix: str, number: int) -> None:
+    """Validate the full `{prefix}issue-{number}-{slug}` shape, not just a substring match.
+
+    PR #266 review round 2, point 4: the original check only required `f"issue-{number}-"` to
+    appear *somewhere* in the branch name, which would also accept e.g. a stray trailing dash
+    with an empty slug, an uppercase/underscore slug, or an absurdly long slug. This recomputes
+    the exact expected head and validates the remaining slug is non-empty, kebab-case, and within
+    the skill's documented length convention.
+    """
+    expected_head = f"{branch_prefix}issue-{number}-"
+    assert branch.startswith(expected_head), (
+        f"branch {branch!r} does not follow the {expected_head!r} convention"
+    )
+    slug = branch[len(expected_head) :]
+    assert slug, f"branch {branch!r} has an empty slug after {expected_head!r}"
+    assert _SLUG_PATTERN.match(slug), (
+        f"branch slug {slug!r} is not kebab-case (expected {_SLUG_PATTERN.pattern})"
+    )
+    assert len(slug) <= _MAX_SLUG_LENGTH, (
+        f"branch slug {slug!r} exceeds the {_MAX_SLUG_LENGTH}-char convention ({len(slug)} chars)"
+    )
 
 
 def assert_decision(project_root: Path, fixture_path: Path, artifact_path: Path) -> None:
@@ -55,9 +83,7 @@ def assert_decision(project_root: Path, fixture_path: Path, artifact_path: Path)
     commit_message = str(decision.get("commit_message", ""))
     recorded_label = str(decision.get("pr_label", ""))
 
-    assert branch.startswith(branch_prefix) and f"issue-{number}-" in branch, (
-        f"branch {branch!r} does not follow {branch_prefix!r} prefix for label {label!r}"
-    )
+    _assert_branch_slug(branch, branch_prefix, number)
     assert commit_message.startswith(commit_prefix), (
         f"commit_message {commit_message!r} does not start with {commit_prefix!r}"
     )

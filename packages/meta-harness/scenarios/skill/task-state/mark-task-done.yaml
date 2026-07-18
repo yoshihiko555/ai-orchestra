@@ -10,7 +10,7 @@ prompt: |
   touch any other task, the CODD frontmatter, or the Decisions/Notes sections.
 setup:
   - |
-    mkdir -p .claude
+    mkdir -p .claude .meta-harness
     cat > .claude/Plans.md <<'PLANSEOF'
     ---
     codd:
@@ -44,6 +44,7 @@ setup:
 
     - 評価用フィクスチャ
     PLANSEOF
+    cp .claude/Plans.md .meta-harness/plans-baseline.md
 allowed_tools:
   - "Read"
   - "Edit"
@@ -51,10 +52,10 @@ allowed_tools:
 command_timeout_ms: 60000
 critical:
   - id: task-status-updated-without-collateral-damage
-    text: "対象タスクのみ cc:done に更新され、他タスク・Decisions・Notes は一切変更されない"
+    text: "対象タスクのみ cc:done に更新され、タスク一覧（重複・追加を含む）・Decisions・Notes・frontmatter は一切変更されない"
     oracle: command_exit
     command: >-
-      python3 packages/meta-harness/scenarios/fixtures/assert-task-state-outcome.py mark-task-done --plans .claude/Plans.md --target-task "商品一覧API" --target-status done --target-previous-status WIP --other-task "done::ユーザー認証API" --other-task "TODO::注文API" --expected-decision "2026-01-01: 初期設計方針を確定" --expected-note "評価用フィクスチャ"
+      python3 packages/meta-harness/scenarios/fixtures/assert-task-state-outcome.py mark-task-done --plans .claude/Plans.md --baseline .meta-harness/plans-baseline.md --target-task "商品一覧API" --target-status done --target-previous-status WIP --other-task "done::ユーザー認証API" --other-task "TODO::注文API" --expected-decision "2026-01-01: 初期設計方針を確定" --expected-note "評価用フィクスチャ"
 checks:
   - id: update-summary-quality
     text: "更新内容がユーザー報告で正確に説明される"

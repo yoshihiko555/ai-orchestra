@@ -53,6 +53,9 @@ setup:
     rm -f .meta-harness/issue-fix-decision.json
 allowed_tools:
   - "Bash(gh *)"
+  - "Bash(git branch *)"
+  - "Bash(git status *)"
+  - "Bash(git log *)"
   - "Read"
   - "Edit"
   - "Write"
