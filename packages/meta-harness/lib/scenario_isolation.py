@@ -332,6 +332,8 @@ def build_oracle_command(
 def build_judge_command(
     launch: ScenarioIsolationLaunch,
     claude_command: list[str],
+    *,
+    max_output_tokens: int,
 ) -> tuple[list[str], list[str] | None]:
     if launch.backend != "docker" or launch.docker_launch is None:
         return claude_command, None
@@ -341,9 +343,14 @@ def build_judge_command(
             launch.docker_launch,
             claude_command,
             container_name=container_name,
+            max_output_tokens=max_output_tokens,
         ),
         ["docker", "rm", "-f", container_name],
     )
+
+
+def resolve_max_output_tokens_default(config: dict) -> int:
+    return docker.profile.resolve_max_output_tokens_default(config)
 
 
 def refresh_isolation_metadata(launch: ScenarioIsolationLaunch) -> dict:

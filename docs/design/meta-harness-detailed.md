@@ -987,21 +987,39 @@ run 単位でも保持し、run 成果物単体からも再評価要否を判定
 - patch item は allowlist entry に 1 件ずつ照合し、同一 `file#key_path` の重複を拒否する。値型は
   `agents.*.tool` が文字列 enum `codex | antigravity | claude-direct | auto`、`codex.model` と
   `antigravity.model` が `^[A-Za-z0-9][A-Za-z0-9._-]*$` に一致する空でない文字列に限定する。数値・bool は
-  3 種すべてで拒否する。`antigravity.model` は参照 `agent-routing/cli-tools.yaml` の
-  `antigravity.model_allowlist` の要素でなければならない。allowlist が未定義または空の場合も fail-closed
-  とし、`antigravity.model` patch を拒否する（この項目 SSOT の設定ミスで任意の slug が通過することを防ぐ）。
+  3 種すべてで拒否する。`codex.model` / `antigravity.model` は参照
+  `agent-routing/cli-tools.yaml` の同名 section にある `model_allowlist` の要素でなければならない。
+  allowlist が未定義または空の場合も fail-closed とし、対応する model patch を全て拒否する
+  （この項目 SSOT の設定ミスで任意の slug が通過することを防ぐ）。`codex.model_allowlist` の初期値は
+  導入時点の `codex.model` だけとし、メニューの拡張は human-controlled config change として扱う。
   この文字集合は promote 時の YAML scalar line edit に対する injection 防御も担う。
   さらに、`yaml.safe_load` で unquoted scalar として round-trip した結果が元の文字列と完全に一致しない値
   （YAML 1.1 の予約語 `off` / `no` / `on` / `yes` / `true` / `false` / `null` や、数値と解釈される
   `123` / `1.5` 等）は YAML-ambiguous として register / evaluate 時点で拒否し、promote 時の unquoted
   scalar 置換で意味が変わることを防ぐ。
-- 解放対象は `created_by == "human"` の `register` 候補だけとする。それ以外の作成者は非空 patch を拒否し、
-  proposer は `--target routing-config` 自体を引数検証で拒否する。proposer 解放は reward hacking 対策の設計を
-  着手条件とする別タスクである。
+- 作成者の許可は runtime config ではなく frozen code constant
+  `CONFIG_PATCH_ALLOWED_CREATED_BY: dict[str, frozenset[str]]` で key kind ごとに固定する。
+
+  | ceiling entry（key kind） | 許可する `created_by` |
+  | --- | --- |
+  | `agent-routing/cli-tools.yaml#agents.*.tool` | `human`, `proposer` |
+  | `agent-routing/cli-tools.yaml#antigravity.model` | `human`, `proposer` |
+  | `agent-routing/cli-tools.yaml#codex.model` | `human` |
+
+  各 patch item を一致した ceiling entry の集合で検証し、未知の `created_by`、map に無い ceiling entry、
+  不一致 key kind は fail-closed に拒否する。Phase A で proposer に解放するのは
+  `agents.*.tool` と `antigravity.model` だけであり、`codex.model` は allowlist 導入後も Phase B まで
+  human-only とする。
+- `created_by == "proposer"` の 1 候補は 1 key kind に限定する。key kind は上表の ceiling entry とし、
+  同じ kind の複数 item（複数 agent の `tool` 変更など）は許可するが、異なる kind の混在は hard reject
+  とする。human 候補にはこの制限を適用しない。loop は 1 iteration につき routing-config 候補を最大 1 件とし、
+  rejected または overfit で retired になった後は `config_patch.proposer_cooldown_rounds`（既定 3 round）が
+  経過するまで次の routing-config 提案を拒否する（§13）。
 - **双方向の排他条件**を満たさなければならない。(a) `target == "routing-config"` なら non-empty
-  `config_patch`、空の file overlay、`created_by == "human"`、(b) non-empty `config_patch` なら
-  `target == "routing-config"`。共通 validator を `register`、`evaluate` の worktree 変更前、`promote` preflight
-  の 3 箇所で再実行する。file overlay の空判定は overlay 集合を知る各 caller が同じ排他条件の一部として行う。
+  `config_patch` と空の file overlay、(b) non-empty `config_patch` なら `target == "routing-config"`。
+  `created_by` は上記 per-key map で独立に検証する。共通 validator を human `register`、`evaluate` の
+  worktree 変更前、`promote` preflight、proposer 登録の第 5 entry point で再利用する。file overlay の空判定は
+  overlay 集合を知る各 caller が同じ排他条件の一部として行い、patch と overlay の混在を拒否する。
 - `config-patch.json` は canonical JSON の `config_patch_hash` を manifest に保存し、候補全体の
   `config_hash` integrity chain にも含める。evaluate / promote は sidecar の現在 hash を再計算し、登録後の
   改ざんまたは欠落を拒否する。
@@ -1022,7 +1040,6 @@ run 単位でも保持し、run 成果物単体からも再評価要否を判定
     "schema_version",
     "hypothesis",
     "theme",
-    "changes",
     "based_on_runs",
     "expected_effect",
     "risk_notes"
@@ -1047,6 +1064,20 @@ run 単位でも保持し、run 成果物単体からも再評価要否を判定
         }
       }
     },
+    "config_patch": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["file", "key_path", "value"],
+        "properties": {
+          "file": { "type": "string" },
+          "key_path": { "type": "string" },
+          "value": {}
+        }
+      }
+    },
     "based_on_runs": {
       "type": "array",
       "minItems": 1,
@@ -1061,6 +1092,9 @@ run 単位でも保持し、run 成果物単体からも再評価要否を判定
 }
 ```
 
+proposal は non-empty `changes[]` または non-empty `config_patch` の**どちらか一方だけ**を持つ。
+structured-output schema は生成安定性のため複雑な `oneOf` を使わず、この XOR と config patch の
+file/key/value、created_by、ceiling、value menu、integrity hash は共通 registration validator で強制する。
 `changes[].path` の `pattern` は OpenAI structured output の JSON schema subset に合わせ、
 lookaround を使わず `facets/` prefix の一次誘導に留める。絶対パス・`..`・symlink・禁止 prefix の
 完全な検証は、proposal 実体化時の `_unsafe_overlay_path` と `register` 相当処理での二次検証
@@ -1478,6 +1512,11 @@ promptへstageする。worktree絶対パスは渡さず、judgeへfilesystem/too
 
 #### 共通規則（バックエンド非依存）
 
+- **routing-config judge 不変性**: `CONFIG_PATCH_ALLOWLIST_CEILING` の全 entry は
+  `agent-routing/cli-tools.yaml` だけを対象とし、`meta-harness.yaml` の `judge.*` と交差してはならない。
+  routing-config suite は `rubric_judge` oracle を 1 件も宣言してはならず、追加する場合は reward-hacking
+  threat model の明示的な設計承認を先行させる。CI は ceiling と judge config source の非交差、および
+  suite 全 YAML の oracle 種別を検査してこの契約の drift を拒否する。
 - **fail-closed・暗黙フォールバック禁止**: 設定されたバックエンドが利用不能な場合、**別バックエンドへ
   静かに降格せず** `verdict=error` とし、`checks[].detail` に "judge unavailable: <理由>" を記録する。
   「利用不能」の判定は `execution_backend` に応じた認証経路で行う（§2-7 と整合）: **docker backend では
@@ -1520,6 +1559,12 @@ promptへstageする。worktree絶対パスは渡さず、judgeへfilesystem/too
 frontier 候補や promotion 検討中の候補は、単発評価の偶然の高スコアを frontier 判定根拠にしない
 ため、config `evaluate.repeat_frontier`（既定 3）で再評価する。
 
+`cost_mean` は全 target で config `frontier.cost_axis` の値を使い、Phase A から既定を
+`total_tokens` ではなく `total_cost_usd` へグローバルに切り替える。per-target override は設けないため、
+既存 target の frontier 序列が変わりうる。指定 cost field を欠く run は 0 や推定値へ補完せず
+`MetaHarnessRootError` を raise して frontier 計算全体を fail-closed に止める。legacy ledger に
+`total_cost_usd` の無い run がある場合の remediation は、その store の purge または再評価である。
+
 ### 3-5. Pareto 判定の定義
 
 候補 A が候補 B を**支配する**とは、以下がすべて成り立つことをいう。
@@ -1529,6 +1574,18 @@ quality_mean(A) ≥ quality_mean(B)
 cost_mean(A)    ≤ cost_mean(B)
 かつ、少なくとも一方が厳密な不等号
 ```
+
+ただし `target == "routing-config"` では quality-strict dominance とし、次を全て満たす場合だけ
+A が B を支配する。
+
+```
+quality_mean(A) > quality_mean(B)
+cost_mean(A)    ≤ cost_mean(B)
+```
+
+したがって routing-config では「同品質だが安い」候補は相手を支配せず、両方が frontier に残りうる。
+この target 分岐は routing-config にだけ適用し、その他の target は従来の弱優越 + 片軸厳密ルールを維持する。
+C-9 の paired evaluation が導入される Phase B までは緩和しない。
 
 **frontier** は、支配されない `evaluated` 候補の集合と定義する。ただし対象は
 **全 non-holdout シナリオで `verdict=pass` の候補のみ**とする（1 つでも `fail`/`error` の
@@ -1651,6 +1708,11 @@ proposer は同一 workspace 内で起動される限り、`Glob` / `Read` 等�
   候補自身が `skill:<slug>` の場合だけ同 target を除く。この判定は候補 target 種別に依存せず、
   `claude-harness` 候補が共有 facet を変更した場合も適用する。候補 overlay による参照追加・削除は同一候補の
   逆写像を変更せず、次世代候補からだけ反映する。
+- routing-config 候補は overlay-path 逆写像を使わず、`candidate_impact_context` で構造的に
+  **全登録 `skill:*` target + `claude-harness`**を影響対象とする。この special case は human / proposer の
+  両候補へ同じく適用する。`resolve_skill_impacts` 自体は facets overlay 用 helper のまま拡張せず、
+  composition 列挙と input hash の正本だけを再利用する。これにより suite coverage が増えるたび、
+  routing-config の回帰保護も追加設定なしで自動的に広がる。
 - evaluate 1 回に `evaluation_id` を割り当てる。own suite は既存 `run_completed`、影響 suite は
   `regression_run_completed` で記録し、最後に `evaluation_completed` を追記する。サマリには own critical、
   suite 別 regression critical、合成 verdict、`unverified_impacts`、own/regression run id、
@@ -1667,12 +1729,16 @@ proposer は同一 workspace 内で起動される限り、`Glob` / `Read` 等�
   suite hash は own frontier hash を流用せず suite ごとに現在値と照合する。
   さらに最新 `origin/main` baseline で影響 skill 集合と逆写像入力 hash を再計算し、記録済み impact context と
   一致しなければ再評価を要求して拒否する。suite が無い影響 skill は `unverified_impacts` に記録して評価を
-  継続し、promote PR 本文の警告セクションに表示する。評価後に suite が追加されて検証可能になった場合も
+  継続し、promote PR 本文の警告セクションに全件表示する（warning-only であり promotion blocker ではない）。
+  suite-bearing target の suite 解決失敗、実行 fail/error、run 不足、hash 不一致は hard gate として
+  promotion を拒否する。評価後に suite が追加されて検証可能になった場合も
   `unverified_impacts` の鮮度不一致として昇格を拒否し、holdout 再評価を要求する。親を含む候補 lineage の
   overlay path 全集合を `origin/main` との差分対象にし、全 manifest/overlay の integrity と L3 secret scan を
   PR 作成直前に再検証する。
 - 回帰コストは `regression.max_affected_suites`（既定 4）と evaluation 単位の
-  `regression.max_budget_usd`（既定 12.0）の二層で制限する。超過は黙って skip せず evaluation error とする。
+  `regression.max_budget_usd`（既定 30.0）の二層で制限する。30.0 は現行の global impact suite を
+  train/holdout 通算の設定上限（`claude-harness` train 2 attempt + suite 保有 skill 2 件の train 各 1 attempt・
+  holdout 各 3 attempt、各最大 3.0 USD）で収容する値である。超過は黙って skip せず evaluation error とする。
   1 CLI 呼び出しが train / holdout の両バッチを含む場合も `evaluation_id` と残予算を共有する。run cost は
   scenario CLI の申告値だけでなく、同じ broker を使う rubric judge を含む
   `broker.metrics.estimated_cost_usd` との大きい方を正とし、metrics 欠落・異常時は attempt 割当額を消費済みと
@@ -1712,13 +1778,22 @@ Max subscription の利用制限応答ではない。運用上は broker metrics
 - candidate / run / ledger / status / frontier は既存の per-target 機構を再利用し、cache は
   `frontier-routing-config.json` とする。他 target の frontier、parent 既定選定、status、promote 前提へ
   routing-config の候補を混入させない。
-- routing-config は human `register` 専用である。`propose --target routing-config` と
-  `loop --target routing-config` は引数検証で明示的に exit 2 とする。`loop` は常に proposer を駆動するため、
-  proposer を解放しない本フェーズに意味のある routing-config loop は存在しない。
-- config-patch-only candidate は `facets/**` overlay path を持たないため、skill impact 集合が空になることを
-  **意図した仕様**とする。`skill_targets` の impact detection は拡張しない。回帰保護は suite の critical oracle
-  へ移し、materialized `.local.yaml` の存在、`load_cli_tools_config()` が patch 値を解決すること、
-  `python3 -m pytest -q packages/agent-routing/tests` が評価 worktree 内で成功することを機械判定する。
+- Phase A では human `register` に加え、proposer が `agents.*.tool` / `antigravity.model` の config patch を
+  提案できる。`codex.model` と ceiling 外 key は引き続き fail-closed に拒否する。propose / loop の rejection は、
+  §1-8・§3-5・§4-1・§11・§13 の guard と behavioral suite が実装・テスト済みになった最後に解除する。
+- routing-config 候補の effective impact は、config-patch-only で `facets/**` overlay path を持たない場合も
+  全登録 `skill:*` target + `claude-harness` とする（§4-1）。suite 不在 target は unverified warning、
+  suite-bearing target の解決・実行失敗は hard gate とする。
+- 既存の mechanical scenario（materialized `.local.yaml` の存在、`load_cli_tools_config()` の patch 値解決、
+  `python3 -m pytest -q packages/agent-routing/tests` 成功）は維持する。これに加え train 1 本以上 + holdout
+  1 本以上の behavioral scenario を置き、materialized routing 値の違いで oracle outcome が実際に反転する
+  task / artifact / deterministic oracle を定義する。critical は `command_exit` / `artifact_exists` 等で判定し、
+  `rubric_judge` は禁止する（§3-3）。
+- scenario container は internal-network-only で、broker 経由の Anthropic API 以外へ egress できない。
+  codex/agy CLI は独自 OAuth endpoint を使うため container 内で起動してはならない。behavioral とは
+  external CLI の実行ではなく、Claude-driven task が materialized routing config を読み、その解決結果に応じて
+  異なる決定論的成果物を作ることを指す。意味のある品質信号に実 codex/agy 実行が不可欠と判明した場合は、
+  network/backend 設計変更が必要なため実装を停止する。
 
 ---
 
@@ -1806,7 +1881,7 @@ scenario_run:
 regression:
   enabled: true # false は skill target の専有 facet allowlist へ縮退
   max_affected_suites: 4
-  max_budget_usd: 12.0 # evaluation 単位の regression run 合計上限
+  max_budget_usd: 30.0 # 現行 global impact suite の train/holdout 設定上限を収容
 judge:
   tool: claude-bare # tool-less judge。codexはread deny不能のため無効（ADR-20260711-033）
   model: null # null = 各バックエンドの既定モデル
@@ -1818,7 +1893,7 @@ scoring:
   penalty_per_item: 5
   penalty_missing_report: 6
 frontier:
-  cost_axis: total_tokens
+  cost_axis: total_cost_usd # 全 target 共通。欠落 run は 0 補完せず frontier 計算を fail-closed
 overlay:
   allowed_prefixes:
     - "facets/"
@@ -1833,6 +1908,7 @@ config_patch:
     - "agent-routing/cli-tools.yaml#agents.*.tool"
     - "agent-routing/cli-tools.yaml#codex.model"
     - "agent-routing/cli-tools.yaml#antigravity.model"
+  proposer_cooldown_rounds: 3 # reject / overfit retire 後の routing-config 再提案待機 round
 proposer:
   tool: codex # codex | claude-bare（§11-3-5）。利用不能時は fail-closed（暗黙フォールバック禁止）
   max_iterations: 10
@@ -2088,8 +2164,11 @@ Phase 1b で初めて実 `claude -p` 呼び出しを含む evaluator を実装�
    同一 target の引用可能な non-holdout run が 1 件も無ければ proposer を起動せず exit 2 とする。
 3. filtered view を構築する（§11-2）。
 4. proposer をヘッドレス起動する（§11-3）。
-5. 構造化出力（proposal JSON、§1-9）を受領し、overlay 検証（§1-7 の安全制約と同一コードパス）を
-   通す。合格した場合のみ `register` 相当処理で候補登録する（`created_by: proposer`）。
+5. 構造化出力（proposal JSON、§1-9）を受領する。facet proposal は overlay 検証（§1-7）、
+   routing-config proposal は canonical `config-patch.json` sidecar 化（§1-8）へ分岐するが、どちらも最後は
+   **同じ `register_candidate` と共通 validator** へ `created_by: proposer` として渡す。第 5 entry point で
+   patch XOR overlay、ceiling、per-key created_by、value typing/menu、integrity hash を再実装・省略してはならない。
+   合格した場合だけ候補登録する。
    - `parent_id` の既定は **同一 target の focus 候補のうち quality_mean が最高の frontier 候補**とする
      （`--focus-candidate <cand_id>` 指定時はその候補で上書き）。
    - `source_commit` は **parent 候補の `source_commit` を継承**する（baseline/ の展開もこの
@@ -2121,6 +2200,8 @@ Phase 1b で初めて実 `claude -p` 呼び出しを含む evaluator を実装�
   - `baseline/` — `git archive <source_commit> facets/ | tar -x` で展開した facet ソースの
     読み取り専用参照（overlay の差分先を proposer が読むため）。archive 展開のため `.git` を
     含まず、`objects/info/alternates` 経由の外部参照は原理的に存在しない。
+    routing-config target では同じ `source_commit` の `agent-routing/cli-tools.yaml` から、許可 key kind の
+    現在値・既知 agent 名・human-curated value menu だけを抽出した読み取り専用 view を追加する。
 - `holdout/runs/` は物理的に view に含まれない（§3-6 の filtered view 方式の実装形）。
 - **構築時の自己検証（必須）**: view 構築関数は完了直前に以下を機械検査し、1 つでも失敗したら
   view を削除して exit 2 で中断する（射影・コピーロジックに将来バグが入っても検出できるように）:
@@ -2518,7 +2599,11 @@ view 内には以下のパスがあります:
 5. baseline/ の該当 facet ソースを読む
 
 [制約]
-- 変更対象は facets/** のみ（Phase 2 allowlist）
+- facet target は `facets/**` の `changes[]`、routing-config target は `config_patch` のどちらか一方だけを出力する
+- routing-config で提案可能なのは `agents.*.tool` と `antigravity.model` のみ。`codex.model` は提案しない
+- `agents.*.tool` の値は `codex | antigravity | claude-direct | auto`、`antigravity.model` は prompt に
+  列挙された `model_allowlist` から選ぶ。現在値は比較用 context として提示する
+- routing-config は 1 候補 1 key kind。同じ kind の複数 item は許可するが kind を混在させない
 - 1 仮説・最小差分に限定する
 - based_on_runs には valid based_on_runs candidates に表示された run_id のみを列挙する
 - cand_id は based_on_runs に入れない
@@ -2527,7 +2612,7 @@ view 内には以下のパスがあります:
 - 変更合計は <proposer.max_overlay_bytes 既定 200000> バイト以内
 
 [出力]
-proposal schema（schema_version, hypothesis, theme, changes, based_on_runs,
+proposal schema（schema_version, hypothesis, theme, `changes` または `config_patch`, based_on_runs,
 expected_effect, risk_notes）に従う JSON のみを出力してください。
 ```
 
@@ -2544,9 +2629,16 @@ expected_effect, risk_notes）に従う JSON のみを出力してください�
 4. 各 `run_id` が filtered view に含まれる run であること（view 構築時点のスナップショットに
    対する整合。view 外の run_id を挙げた場合は矛盾として拒否）
 
+proposal は `changes` XOR `config_patch` を必須とし、routing-config proposal の sidecar 作成後も
+`register_candidate` の共通 validator を通す。これにより patch + overlay 混在、allowlist/ceiling 外 key、
+per-key `created_by` 違反、value menu 違反、integrity hash 不一致を第 5 entry point でも fail-closed に拒否する。
+
 検証失敗（allowlist 外パス・サイズ超過・`based_on_runs` が上記いずれかに違反 等）の場合:
 候補登録を行わず exit 2 とし、proposal JSON を
 `.claude/meta-harness/rejected/<ts>-proposal.json` に保存する（診断用、redaction 適用）。
+loop 内の routing-config proposal がこの段階で拒否された場合は、proposal 内容や拒否理由を ledger に
+複製せず、`proposal_rejected(verdict=error, loop_id, iteration)` のみを追記する。これを §13 の
+evaluation error reject と同じ cooldown trigger として扱い、登録前拒否からの retry 迂回を防ぐ。
 
 ### 11-6. ledger への記録
 
@@ -2589,12 +2681,11 @@ fail-closed とし、以下すべてを満たさなければ exit 2 とする。
    overlay path が空でも hash 不一致を stale evaluation として拒否する。
    差分があれば「facet ソースが候補作成後に変更されている」ため中止し、新 `source_commit` での
    再登録・再評価を案内する（`promote.allow_stale: false` が既定。`true` で path 差分だけを
-   警告に緩和できるが、ancestor 条件は緩和しない）。routing-config target は SSOT content hash の
-   突合が成功した時点でこの手順6を完了とし、以降の generic な impact-context 再検証（`skill:*`
-   target 向けの、evaluate 時に記録した `impact_input_hash` / `impacted_targets` と現在の
-   `candidate_impact_context` の再突合）は適用しない。routing-config 候補は overlay を持たず
-   skill impact が常に空集合であるため、この再検証はそもそも意味を持たず、無関係な facet/skill
-   composition の変更だけで promotion を誤って拒否してしまう（false freshness mismatch）ことを防ぐ。
+   警告に緩和できるが、ancestor 条件は緩和しない）。routing-config target は SSOT content hash に加え、
+   最新 `origin/main` 上で全登録 `skill:*` target + `claude-harness` の global impact context を再計算し、
+   evaluate 時の `impact_input_hash` / `impacted_targets` / `unverified_impacts` と突合する。suite coverage の
+   追加・削除を含む差異があれば holdout 再評価を要求する。suite 不在 target 自体は warning-only だが、
+   suite-bearing target の解決・実行・完全性検証失敗は promotion を拒否する。
 7. 全候補 lineage の manifest/overlay に加え、`config-patch.json` sidecar と patch 適用後の YAML diff を
    L3 secret scan / canary re-scan の対象にする。PR body の data fence は長さ制限や表示用途があるため、
    scan の代替にしてはならない。
@@ -2728,6 +2819,11 @@ PR マージ/クローズ後の `--confirm` 時に worktree を削除する。`p
   - `run_completed` が既にあれば、`loop_iteration` の記録（および続く停止判定）から再開する
     （evaluate をやり直さない）。
   - 孤児が解消してから次の新規反復に進む。
+- **routing-config rate state**: 1 iteration で proposer 起動・候補登録を試みられるのは 1 回だけとし、
+  自動 retry で 2 候補目を生成しない。直近の routing-config 候補が evaluation で reject（fail/error）
+  または `retired(reason: overfit)` になった iteration を ledger の candidate/evaluation/status event から導出し、
+  `config_patch.proposer_cooldown_rounds`（既定 3）を経過するまで次の routing-config propose を拒否する。
+  cooldown 判定も resume 時に ledger から再構築し、プロセス内だけの状態にしない。
 
 ### 13-2. 1 イテレーションのアルゴリズム
 
@@ -2743,8 +2839,12 @@ PR マージ/クローズ後の `--confirm` 時に worktree を削除する。`p
       であるかのみを判定する。budget_usd が null の場合は本ガードを丸ごとスキップする）
    b. 完了済み反復数（§13-1 の復元規則） >= max_iterations
       → stop(max_iterations)
+   c. target が routing-config で、直近 reject / overfit retire から
+      config_patch.proposer_cooldown_rounds が未経過
+      → proposer を起動せず fail-closed（次回提案可能 iteration を表示）
 2. propose（§11）→ `candidate_registered`（proposal.loop_id=<loop_id>,
-   proposal.iteration=<iteration>）で候補登録
+   proposal.iteration=<iteration>）で候補登録。routing-config はこの iteration で最大 1 候補とし、
+   proposal validation failure 後の再提案は行わない
 3. evaluate: 新候補を non-holdout（train）シナリオで評価する（repeat は config）
 4. frontier 更新判定:
    - frontier 入りした場合のみ holdout シナリオでも評価する（コスト節約）

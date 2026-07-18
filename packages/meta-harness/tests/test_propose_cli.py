@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import gzip
 import json
 import os
@@ -22,33 +23,57 @@ propose_cli = load_module(
     "meta_harness_propose_cli_test",
     "packages/meta-harness/lib/propose_cli.py",
 )
+loop_cli = load_module(
+    "meta_harness_loop_cli_propose_test",
+    "packages/meta-harness/lib/loop_cli.py",
+)
 
 _PARENT_ID = "cand-20260708-020000-parent-abcd"
 _RUN_ID = "run-20260708-020000-parent-scn-a1-abcd"
 _HOLDOUT_RUN_ID = "run-20260708-020000-parent-scn-h1-abcd"
+_ROUTING_PARENT_ID = "cand-20260717-080000-routing-baseline-abcd"
+_ROUTING_RUN_ID = "run-20260717-080000-routing-baseline-train-a1-abcd"
+_HASH = "a" * 64
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_ROUTING_CONFIG_RELATIVE = Path("packages/agent-routing/config/cli-tools.yaml")
 
 
-def test_routing_config_target_is_rejected_before_context_or_backend(monkeypatch, capsys) -> None:
-    monkeypatch.setattr(
-        propose_cli,
-        "_resolve_context",
-        lambda _project: (_ for _ in ()).throw(AssertionError("context must not be loaded")),
+def test_routing_config_without_citable_runs_rejects_before_backend(
+    git_project: Path, git_run, monkeypatch, capsys
+) -> None:
+    _commit_facets(git_project, git_run)
+    mh.init_store(git_project, mh.DEFAULTS)
+    mh.write_frontier_cache(
+        git_project,
+        mh.DEFAULTS,
+        mh._empty_frontier_doc(mh.DEFAULTS, "routing-config"),
+        "routing-config",
     )
 
-    exit_code = propose_cli.cmd_propose("/missing", "routing-config", None, None, False)
+    def fail_if_launched(**_kwargs):
+        raise AssertionError("backend must not launch without a citable baseline run")
+
+    monkeypatch.setattr(propose_cli.pb, "launch_proposer_backend", fail_if_launched)
+
+    exit_code = propose_cli.cmd_propose(str(git_project), "routing-config", None, None, False)
 
     assert exit_code == propose_cli.EXIT_VALIDATION_ERROR
-    assert "does not support target 'routing-config'" in capsys.readouterr().err
+    assert "no citable non-holdout runs for target: routing-config" in capsys.readouterr().err
 
 
-def test_proposal_schema_remains_facets_only() -> None:
+def test_proposal_schema_exposes_both_simple_payload_shapes_without_one_of() -> None:
     schema = mh.load_schema(propose_cli._SCHEMA_DIR, "proposal.schema.json")
     serialized = json.dumps(schema, sort_keys=True)
 
     assert schema["properties"]["changes"]["items"]["properties"]["path"]["pattern"] == (
         "^facets/.+$"
     )
-    assert "config_patch" not in serialized
+    assert set(schema["properties"]["config_patch"]["items"]["required"]) == {
+        "file",
+        "key_path",
+        "value",
+    }
+    assert "oneOf" not in serialized
 
 
 def _sample_sk_key(key_kind: str | None = None) -> str:
@@ -218,6 +243,115 @@ def _prepare_store(
     )
 
 
+def _prepare_routing_store(git_project: Path, git_run) -> None:
+    """no-op baseline の register→evaluate→frontier 後に相当する store を作る。"""
+    config = mh.DEFAULTS
+    _commit_facets(git_project, git_run)
+    routing_config = git_project / _ROUTING_CONFIG_RELATIVE
+    routing_config.parent.mkdir(parents=True)
+    routing_config.write_bytes((_REPO_ROOT / _ROUTING_CONFIG_RELATIVE).read_bytes())
+    git_run("add", _ROUTING_CONFIG_RELATIVE.as_posix(), cwd=git_project)
+    git_run("commit", "-m", "add routing config", cwd=git_project)
+    source_commit = git_run("rev-parse", "HEAD", cwd=git_project).stdout.strip()
+    mh.init_store(git_project, config)
+    overlay_dir = mh.tmp_dir(git_project, config) / "routing-baseline-overlay"
+    overlay_dir.mkdir(parents=True)
+    config_patch = [
+        {
+            "file": "agent-routing/cli-tools.yaml",
+            "key_path": "agents.debugger.tool",
+            "value": "codex",
+        }
+    ]
+    (overlay_dir / mh.CONFIG_PATCH_FILENAME).write_bytes(
+        mh.canonical_config_patch_bytes(config_patch)
+    )
+    manifest = mh.build_candidate_manifest(
+        cand_id=_ROUTING_PARENT_ID,
+        parent_id=None,
+        generation=0,
+        target="routing-config",
+        source_commit=source_commit,
+        config_hash=mh.compute_config_hash(overlay_dir, config),
+        overlay_files=[],
+        description="routing baseline using the current debugger tool",
+        config_patch_hash=mh.compute_config_patch_hash(config_patch),
+    )
+    mh.register_candidate(
+        git_project,
+        config,
+        cand_id=_ROUTING_PARENT_ID,
+        manifest=manifest,
+        overlay_dir=overlay_dir,
+        overlay_files=[],
+        target="routing-config",
+        created_by="human",
+        baseline_root=git_project,
+    )
+    mh.append_ledger_event(
+        git_project,
+        config,
+        {
+            "event": "candidate_registered",
+            "ts": mh.now_iso(),
+            "schema_version": "1.0",
+            "cand_id": _ROUTING_PARENT_ID,
+            "parent_id": None,
+            "generation": 0,
+            "target": "routing-config",
+            "created_by": "human",
+        },
+    )
+    run_dir = mh.runs_dir(git_project, config) / _ROUTING_RUN_ID
+    run_dir.mkdir(parents=True)
+    (run_dir / "metadata.json").write_text(
+        json.dumps({"run_id": _ROUTING_RUN_ID, "holdout": False}) + "\n",
+        encoding="utf-8",
+    )
+    (run_dir / "result.json").write_text('{"verdict":"pass"}\n', encoding="utf-8")
+    with gzip.open(run_dir / "events.jsonl.gz", "wt", encoding="utf-8") as handle:
+        handle.write('{"type":"result"}\n')
+    mh.append_ledger_event(
+        git_project,
+        config,
+        {
+            "event": "run_completed",
+            "ts": mh.now_iso(),
+            "schema_version": "1.0",
+            "run_id": _ROUTING_RUN_ID,
+            "cand_id": _ROUTING_PARENT_ID,
+            "target": "routing-config",
+            "holdout": False,
+        },
+    )
+    mh.write_frontier_cache(
+        git_project,
+        config,
+        {
+            "schema_version": "1.0",
+            "target": "routing-config",
+            "generated_at": mh.now_iso(),
+            "ledger_line_count": 2,
+            "suite_hash": _HASH,
+            "evaluator_hash": _HASH,
+            "cost_axis": "total_cost_usd",
+            "points": [
+                {
+                    "cand_id": _ROUTING_PARENT_ID,
+                    "quality_mean": 100.0,
+                    "quality_var": 0.0,
+                    "quality_min": 100.0,
+                    "cost_mean": 0.01,
+                    "runs": 1,
+                }
+            ],
+            "frontier": [_ROUTING_PARENT_ID],
+            "dominated": [],
+        },
+        "routing-config",
+    )
+
+
 def _events(project: Path) -> list[dict]:
     return mh.read_ledger_events(project, mh.DEFAULTS)
 
@@ -312,6 +446,76 @@ def _valid_proposal(*, content: str = "# Example\n\nImproved by proposer.\n") ->
     }
 
 
+def _valid_routing_proposal() -> dict:
+    return {
+        "schema_version": "1.0",
+        "hypothesis": "Direct routing improves the debugger behavior scenario.",
+        "theme": "route debugger directly",
+        "config_patch": [
+            {
+                "file": "agent-routing/cli-tools.yaml",
+                "key_path": "agents.debugger.tool",
+                "value": "claude-direct",
+            }
+        ],
+        "based_on_runs": [_ROUTING_RUN_ID],
+        "expected_effect": "The routing-sensitive train scenario should pass.",
+        "risk_notes": "Deep debugging may lose Codex-specific behavior.",
+    }
+
+
+def _routing_model_proposal(model: str) -> dict:
+    proposal = _valid_routing_proposal()
+    proposal["config_patch"] = [
+        {
+            "file": "agent-routing/cli-tools.yaml",
+            "key_path": "antigravity.model",
+            "value": model,
+        }
+    ]
+    return proposal
+
+
+def _prepare_stale_routing_config(git_project: Path, git_run, monkeypatch) -> str:
+    routing_config = git_project / _ROUTING_CONFIG_RELATIVE
+    routing_config.write_text(
+        "agents:\n"
+        "  debugger:\n"
+        "    tool: codex\n"
+        "antigravity:\n"
+        "  model: source-model\n"
+        "  model_allowlist:\n"
+        "    - source-model\n",
+        encoding="utf-8",
+    )
+    git_run("add", _ROUTING_CONFIG_RELATIVE.as_posix(), cwd=git_project)
+    git_run("commit", "-m", "source routing allowlist", cwd=git_project)
+    source_commit = git_run("rev-parse", "HEAD", cwd=git_project).stdout.strip()
+    current_routing_config = {
+        "agents": {"debugger": {"tool": "codex"}},
+        "antigravity": {
+            "model": "current-model",
+            "model_allowlist": ["current-model"],
+        },
+    }
+    routing_config.write_text(
+        "agents:\n"
+        "  debugger:\n"
+        "    tool: codex\n"
+        "antigravity:\n"
+        "  model: current-model\n"
+        "  model_allowlist:\n"
+        "    - current-model\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        propose_cli.mh,
+        "_load_agent_routing_config",
+        lambda _schema_dir: current_routing_config,
+    )
+    return source_commit
+
+
 def test_propose_registers_candidate_from_stubbed_codex_backend(
     git_project: Path, git_run, tmp_path: Path, run_meta
 ) -> None:
@@ -350,6 +554,334 @@ def test_propose_registers_candidate_from_stubbed_codex_backend(
     assert registered[-1]["proposal"]["based_on_runs"] == [_RUN_ID]
     assert registered[-1]["proposal"]["tokens_used"] == 10
     _assert_no_srt_settings_dirs(tmp_path)
+
+
+def test_routing_config_baseline_bootstrap_provides_citable_frontier_run(
+    git_project: Path, git_run
+) -> None:
+    _prepare_routing_store(git_project, git_run)
+
+    snapshot = propose_cli._snapshot_propose_store(git_project, mh.DEFAULTS, "routing-config")
+
+    assert propose_cli._citable_run_ids(snapshot, "routing-config") == (_ROUTING_RUN_ID,)
+    assert snapshot.frontier_doc["frontier"] == [_ROUTING_PARENT_ID]
+    assert (
+        propose_cli._select_proposal_parent(
+            git_project,
+            mh.DEFAULTS,
+            snapshot.frontier_doc,
+            target="routing-config",
+            focus_candidate=None,
+        )
+        == _ROUTING_PARENT_ID
+    )
+
+
+def test_propose_registers_allowed_routing_config_patch_from_stubbed_backend(
+    git_project: Path, git_run, tmp_path: Path, run_meta
+) -> None:
+    _prepare_routing_store(git_project, git_run)
+    proposal = _valid_routing_proposal()
+
+    result = run_meta(
+        "propose",
+        "--target",
+        "routing-config",
+        "--json",
+        project=git_project,
+        env_extra=_prepare_stubbed_codex(tmp_path, proposal),
+        check=True,
+    )
+
+    cand_id = json.loads(result.stdout)["cand_id"]
+    cand_dir = mh.candidates_dir(git_project, mh.DEFAULTS) / cand_id
+    manifest = json.loads((cand_dir / "manifest.json").read_text(encoding="utf-8"))
+    config_patch = json.loads(
+        (cand_dir / "overlay" / mh.CONFIG_PATCH_FILENAME).read_text(encoding="utf-8")
+    )
+    registered = [event for event in _events(git_project) if event.get("cand_id") == cand_id]
+
+    assert manifest["created_by"] == "proposer"
+    assert manifest["target"] == "routing-config"
+    assert manifest["parent_id"] == _ROUTING_PARENT_ID
+    assert manifest["overlay_files"] == []
+    assert manifest["config_patch_hash"] == mh.compute_config_patch_hash(config_patch)
+    assert config_patch == proposal["config_patch"]
+    assert registered[-1]["created_by"] == "proposer"
+    assert registered[-1]["proposal"]["based_on_runs"] == [_ROUTING_RUN_ID]
+    _assert_no_srt_settings_dirs(tmp_path)
+
+
+def test_propose_path_rejects_model_valid_only_in_current_checkout(
+    git_project: Path, git_run, monkeypatch
+) -> None:
+    _prepare_routing_store(git_project, git_run)
+    source_commit = _prepare_stale_routing_config(git_project, git_run, monkeypatch)
+    proposal = _routing_model_proposal("current-model")
+
+    assert (
+        propose_cli.mh.validate_config_patch(
+            proposal["config_patch"],
+            mh.DEFAULTS,
+            propose_cli._SCHEMA_DIR,
+            target="routing-config",
+            created_by="proposer",
+        )
+        == []
+    )
+
+    with pytest.raises(
+        propose_cli.prop.ProposerError,
+        match="antigravity model is not in model_allowlist: current-model",
+    ):
+        propose_cli._register_proposed_candidate(
+            main_root=git_project,
+            config=mh.DEFAULTS,
+            target="routing-config",
+            parent_id=None,
+            source_commit=source_commit,
+            proposal=proposal,
+            included_run_ids=frozenset({_ROUTING_RUN_ID}),
+            tokens_used=10,
+        )
+
+
+def test_source_model_passes_propose_path_then_current_checkout_gate_rejects(
+    git_project: Path, git_run, monkeypatch
+) -> None:
+    _prepare_routing_store(git_project, git_run)
+    source_commit = _prepare_stale_routing_config(git_project, git_run, monkeypatch)
+    proposal = _routing_model_proposal("source-model")
+    source_routing_config = propose_cli.prop._load_source_agent_routing_config(
+        git_project, source_commit
+    )
+
+    assert (
+        mh.validate_config_patch(
+            proposal["config_patch"],
+            mh.DEFAULTS,
+            propose_cli._SCHEMA_DIR,
+            target="routing-config",
+            created_by="proposer",
+            agent_routing_config=source_routing_config,
+        )
+        == []
+    )
+
+    with pytest.raises(
+        propose_cli.prop.ProposerError,
+        match="copied config patch validation failed: .*source-model",
+    ):
+        propose_cli._register_proposed_candidate(
+            main_root=git_project,
+            config=mh.DEFAULTS,
+            target="routing-config",
+            parent_id=None,
+            source_commit=source_commit,
+            proposal=proposal,
+            included_run_ids=frozenset({_ROUTING_RUN_ID}),
+            tokens_used=10,
+        )
+
+
+def test_unrelated_register_value_error_is_not_converted_to_proposal_rejection(
+    git_project: Path, git_run, monkeypatch
+) -> None:
+    _prepare_routing_store(git_project, git_run)
+
+    def fail_unrelated(*_args, **_kwargs):
+        raise ValueError("unrelated register failure")
+
+    monkeypatch.setattr(propose_cli.mh, "register_candidate", fail_unrelated)
+
+    with pytest.raises(ValueError, match="unrelated register failure"):
+        propose_cli._register_proposed_candidate(
+            main_root=git_project,
+            config=mh.DEFAULTS,
+            target="routing-config",
+            parent_id=None,
+            source_commit=git_run("rev-parse", "HEAD", cwd=git_project).stdout.strip(),
+            proposal=_valid_routing_proposal(),
+            included_run_ids=frozenset({_ROUTING_RUN_ID}),
+            tokens_used=10,
+        )
+
+
+def test_loop_continues_when_current_checkout_rejects_source_valid_proposal(
+    git_project: Path,
+    git_run,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _prepare_routing_store(git_project, git_run)
+    source_commit = _prepare_stale_routing_config(git_project, git_run, monkeypatch)
+    current_routing_config = {
+        "agents": {"debugger": {"tool": "codex"}},
+        "antigravity": {
+            "model": "current-model",
+            "model_allowlist": ["current-model"],
+        },
+    }
+    monkeypatch.setattr(
+        loop_cli.propose_cli.mh,
+        "_load_agent_routing_config",
+        lambda _schema_dir: current_routing_config,
+    )
+    parent_manifest_path = (
+        mh.candidates_dir(git_project, mh.DEFAULTS) / _ROUTING_PARENT_ID / "manifest.json"
+    )
+    parent_manifest = json.loads(parent_manifest_path.read_text(encoding="utf-8"))
+    parent_manifest["source_commit"] = source_commit
+    parent_manifest_path.write_text(json.dumps(parent_manifest), encoding="utf-8")
+    _set_env(monkeypatch, _prepare_stubbed_codex(tmp_path, _routing_model_proposal("source-model")))
+
+    config = copy.deepcopy(loop_cli.mh.DEFAULTS)
+    config["proposer"]["divergence_rounds"] = 10
+    loop_id = "loop-20260718-120000-source-current-drift"
+    loop_cli.mh.append_ledger_event(
+        git_project,
+        config,
+        {
+            "event": "loop_started",
+            "ts": loop_cli.mh.now_iso(),
+            "schema_version": "1.0",
+            "loop_id": loop_id,
+            "target": "routing-config",
+            "budget_usd": None,
+            "max_iterations": 3,
+            "baseline_best_quality": 0.0,
+        },
+    )
+    spec = loop_cli.LoopSpec(loop_id, "routing-config", None, 3, 0.0, 0)
+
+    reason = loop_cli._drive_loop(git_project, config, git_project, spec)
+
+    events = loop_cli.mh.read_ledger_events_strict(git_project, config)
+    iterations = loop_cli._iteration_events(events, loop_id)
+    rejected = [event for event in events if event.get("event") == "proposal_rejected"]
+    assert reason == "max_iterations"
+    assert rejected[-1]["iteration"] == 1
+    assert iterations[1]["outcome"] == "proposal_rejected"
+    assert [iterations[index]["outcome"] for index in (2, 3)] == [
+        "cooldown_wait",
+        "cooldown_wait",
+    ]
+
+
+def test_propose_rejects_routing_config_codex_model_patch(
+    git_project: Path, git_run, tmp_path: Path, run_meta
+) -> None:
+    _prepare_routing_store(git_project, git_run)
+    before = set(mh.list_candidate_ids(git_project, mh.DEFAULTS))
+    proposal = _valid_routing_proposal()
+    proposal["config_patch"] = [
+        {
+            "file": "agent-routing/cli-tools.yaml",
+            "key_path": "codex.model",
+            "value": "gpt-5.6-sol",
+        }
+    ]
+
+    result = run_meta(
+        "propose",
+        "--target",
+        "routing-config",
+        project=git_project,
+        env_extra=_prepare_stubbed_codex(tmp_path, proposal),
+    )
+
+    assert result.returncode == 2
+    assert "created_by='proposer' is not allowed" in result.stderr
+    assert set(mh.list_candidate_ids(git_project, mh.DEFAULTS)) == before
+
+
+def test_loop_routing_proposal_rejection_records_error_cooldown_event(
+    git_project: Path, git_run, tmp_path: Path, monkeypatch
+) -> None:
+    _prepare_routing_store(git_project, git_run)
+    proposal = _valid_routing_proposal()
+    proposal["config_patch"] = [
+        {
+            "file": "agent-routing/cli-tools.yaml",
+            "key_path": "codex.model",
+            "value": "gpt-5.6-sol",
+        }
+    ]
+    _set_env(monkeypatch, _prepare_stubbed_codex(tmp_path, proposal))
+    snapshot = propose_cli._snapshot_propose_store(git_project, mh.DEFAULTS, "routing-config")
+    loop_id = "loop-20260717-120000-routing"
+
+    with pytest.raises(propose_cli.prop.ProposerError, match="created_by='proposer'"):
+        propose_cli._run_propose_pipeline(
+            main_root=git_project,
+            config=mh.DEFAULTS,
+            project_dir=git_project,
+            target="routing-config",
+            focus_run=None,
+            focus_candidate=None,
+            snapshot=snapshot,
+            loop_id=loop_id,
+            iteration=1,
+        )
+
+    rejected = [event for event in _events(git_project) if event["event"] == "proposal_rejected"]
+    assert rejected[-1] == {
+        "event": "proposal_rejected",
+        "ts": rejected[-1]["ts"],
+        "schema_version": "1.0",
+        "target": "routing-config",
+        "loop_id": loop_id,
+        "iteration": 1,
+        "verdict": "error",
+    }
+
+
+def test_propose_rejects_routing_config_mixed_key_kinds(
+    git_project: Path, git_run, tmp_path: Path, run_meta
+) -> None:
+    _prepare_routing_store(git_project, git_run)
+    before = set(mh.list_candidate_ids(git_project, mh.DEFAULTS))
+    proposal = _valid_routing_proposal()
+    proposal["config_patch"].append(
+        {
+            "file": "agent-routing/cli-tools.yaml",
+            "key_path": "antigravity.model",
+            "value": "gemini-3.1-pro-high",
+        }
+    )
+
+    result = run_meta(
+        "propose",
+        "--target",
+        "routing-config",
+        project=git_project,
+        env_extra=_prepare_stubbed_codex(tmp_path, proposal),
+    )
+
+    assert result.returncode == 2
+    assert "must use exactly one key kind" in result.stderr
+    assert set(mh.list_candidate_ids(git_project, mh.DEFAULTS)) == before
+
+
+def test_propose_rejects_combined_config_patch_and_overlay_payload(
+    git_project: Path, git_run, tmp_path: Path, run_meta
+) -> None:
+    _prepare_routing_store(git_project, git_run)
+    before = set(mh.list_candidate_ids(git_project, mh.DEFAULTS))
+    proposal = _valid_routing_proposal()
+    proposal["changes"] = [{"path": "facets/example/SKILL.md", "new_content": "# mixed payload\n"}]
+
+    result = run_meta(
+        "propose",
+        "--target",
+        "routing-config",
+        project=git_project,
+        env_extra=_prepare_stubbed_codex(tmp_path, proposal),
+    )
+
+    assert result.returncode == 2
+    assert "exactly one of changes or config_patch" in result.stderr
+    assert set(mh.list_candidate_ids(git_project, mh.DEFAULTS)) == before
 
 
 def test_propose_rejects_invalid_proposal_and_saves_rejected_file(

@@ -49,6 +49,9 @@ def iteration_events(events: list[dict], loop_id: str) -> dict[int, dict]:
         iteration = int(event["iteration"])
         if iteration in result:
             raise ValueError(f"duplicate loop_iteration {iteration} for {loop_id}")
+        if event.get("outcome", "candidate") != "candidate":
+            result[iteration] = event
+            continue
         if not mh.CAND_ID_PATTERN.fullmatch(str(event["cand_id"])):
             raise ValueError("loop_iteration contains an invalid candidate id")
         registration = registrations.get(iteration)
@@ -69,6 +72,9 @@ def safe_iteration_events(events: list[dict], loop_id: str) -> list[dict]:
         try:
             validate_event(event, "loop_iteration")
             iteration = int(event["iteration"])
+            if event.get("outcome", "candidate") != "candidate":
+                result.setdefault(iteration, event)
+                continue
             if not mh.CAND_ID_PATTERN.fullmatch(str(event["cand_id"])):
                 continue
             registration = registrations.get(iteration)
@@ -499,6 +505,12 @@ def _loop_registrations(
         result[iteration] = (cand_id, event_index)
         candidate_iterations[cand_id] = iteration
     return result
+
+
+def loop_registrations(
+    events: list[dict], loop_id: str, *, fail_closed: bool = True
+) -> dict[int, tuple[str, int]]:
+    return _loop_registrations(events, loop_id, fail_closed=fail_closed)
 
 
 def _loop_target(events: list[dict], loop_id: str) -> str:

@@ -6,9 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`meta-harness`: proposer が routing config patch を提案可能に（Phase A）**: proposer 生成候補が `agent-routing/cli-tools.yaml` の `agents.*.tool` / `antigravity.model` を patch できるようになった（`codex.model` は human 限定のまま）。reward hacking 対策として quality 厳密優越・クロススキル回帰ゲート・レート制限等を同梱（ADR-20260717-040）。
+
 ### Fixed
 
 - **`loop-harness`: Docker action 完了後の cleanup 失敗と lease 喪失時の隔離停止を修正**: cleanup 失敗が成功済み Checker artifact / Maker CAS を偽の infrastructure failure で上書きしないよう安全停止へ変更し、lease 喪失時は host 側 `docker exec` client だけでなく scenario container の cgroup 全体を回収するようにした。driver/config runtime が Maker の action worktree 内に配置された unsafe な起動経路も config 読込・action 実行前に拒否する。
+- **`meta-harness`: Docker capability gate と実 judge コンテナが出力トークン上限を適用しておらず broker 予算超過を招いていた不具合を修正**: capability smoke コンテナと judge（`judge.tool: claude-bare`）コンテナの双方に `scenario_run.max_output_tokens_default`（既定 4096、`null` 明示時もフォールバック）を適用し、broker の worst-case 予算チェックによる評価不能を解消した。
 - **`evaluation-set-checker` が `packages/` 配下に実体を持たない SSOT（orchex CLI 等）のテストを識別できない不具合を修正**: 評価セット ID とテストパスの明示マッピング（`.claude/config/quality-gates/evaluation-set-mapping.yaml`）を追加し、`test_orchestra_manager_core.py` が無関係な `core` パッケージへ誤誘導される問題も解消した。
 - **`orchex uninstall --dry-run` が最後のパッケージ削除時に `settings.local.json` を書き換えていた不具合を修正**: dry-run では実ファイルを一切変更せず、プレビュー表示のみ行うようにした。
 - **`orchex enable` が未インストールのパッケージにもフックを登録していた不具合を修正**: 対象パッケージが `install` 済みでない場合はエラーを表示し、フック登録を行わないようにした。
@@ -18,6 +23,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`codex-suggestions` が `cli-tools.yaml` に `codex` セクション未定義でも発火していた不具合を修正**: `check-codex-before-write` / `check-codex-after-plan` は設定未定義時 `codex.enabled` を `false` 扱いにし、明示的に有効化しない限り提案しないようにした。さらに `agent-routing` を導入していないプロジェクト（project-local な `cli-tools.yaml` が存在しない）では、パッケージ同梱のフォールバック設定を「明示的な有効化」とみなさず提案しないようにした。
 
 ### Changed
+
+- **`meta-harness`: frontier の既定コスト軸を USD コストへ変更**: 全 target の `frontier.cost_axis` 既定値を `total_tokens` から `total_cost_usd` に変更したため、既存候補の frontier 順序が変わる場合がある。選択したコスト field を欠く run は従来どおり fail-closed し、purge 後の再評価が必要。
 
 - **`image-generation`: `codex.enabled: false` 時は画像生成を実行しないように変更**: `/image-gen` スキル・`image-generator` エージェントが `cli-tools.yaml`（+ `.local.yaml`）の `codex.enabled: false` を尊重し、無効時は画像生成を行わず「利用不可」を報告するようになった。
 

@@ -349,7 +349,7 @@ class TestRegisterConfigPatchValidation:
             {
                 "file": "agent-routing/cli-tools.yaml",
                 "key_path": "codex.model",
-                "value": "gpt-5.3-codex",
+                "value": "gpt-5.6-sol",
             }
         ]
         (overlay_dir / mh.CONFIG_PATCH_FILENAME).write_text(json.dumps(patch), encoding="utf-8")

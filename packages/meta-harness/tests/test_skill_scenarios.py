@@ -99,10 +99,14 @@ def test_routing_config_suite_uses_deterministic_critical_oracles() -> None:
     paths = ev.validate_target_suite(PACKAGE_DIR, SCHEMA_DIR, "routing-config")
     scenarios = [ev.load_scenario(path, SCHEMA_DIR) for path in paths]
 
-    assert len(scenarios) == 2
-    assert sum(not scenario["holdout"] for scenario in scenarios) == 1
-    assert sum(scenario["holdout"] for scenario in scenarios) == 1
-    for scenario in scenarios:
+    assert len(scenarios) == 4
+    assert sum(not scenario["holdout"] for scenario in scenarios) == 2
+    assert sum(scenario["holdout"] for scenario in scenarios) == 2
+    mechanical = [
+        scenario for scenario in scenarios if scenario["id"].startswith("verify-routing-config")
+    ]
+    assert len(mechanical) == 2
+    for scenario in mechanical:
         critical = {item["id"]: item for item in scenario["critical"]}
         assert critical["routing-local-config-exists"]["oracle"] == "artifact_exists"
         assert critical["routing-local-config-is-effective"]["oracle"] == "command_exit"
@@ -111,16 +115,36 @@ def test_routing_config_suite_uses_deterministic_critical_oracles() -> None:
             "packages/agent-routing/tests"
             in critical["agent-routing-regression-suite-passes"]["command"]
         )
+    behavioral = [scenario for scenario in scenarios if scenario["id"].startswith("route-")]
+    assert {scenario["id"] for scenario in behavioral} == {
+        "route-debugger-behavior",
+        "route-model-behavior-holdout",
+    }
+    for scenario in scenarios:
         assert all(item["oracle"] != "rubric_judge" for item in scenario["critical"])
         assert scenario["budget"]["max_budget_usd"] <= 3.0
+    for scenario in behavioral:
+        assert scenario["allowed_tools"] == ["Read", "Write"]
+        assert {item["oracle"] for item in scenario["critical"]} == {
+            "artifact_exists",
+            "command_exit",
+        }
 
     assert (PACKAGE_DIR / "scenarios/fixtures/assert-routing-config-layer.py").is_file()
+    assert (PACKAGE_DIR / "scenarios/fixtures/assert-routing-behavior.py").is_file()
 
 
 def _routing_config_oracle_fixture():
     return load_module(
         "assert_routing_config_layer_fixture",
         "packages/meta-harness/scenarios/fixtures/assert-routing-config-layer.py",
+    )
+
+
+def _routing_behavior_oracle_fixture():
+    return load_module(
+        "assert_routing_behavior_fixture",
+        "packages/meta-harness/scenarios/fixtures/assert-routing-behavior.py",
     )
 
 
@@ -132,6 +156,7 @@ def _stub_hook_common() -> None:
     # へ事前登録しておく（import 解決はキャッシュ優先のため、fake project_root 配下に
     # packages/core/hooks が実在しなくても解決できる）。
     load_module("hook_common", "packages/core/hooks/hook_common.py")
+    load_module("route_config", "packages/agent-routing/hooks/route_config.py")
 
 
 def _write_routing_config_files(
@@ -223,3 +248,164 @@ class TestRoutingConfigOracleFixtureScopedAllowlist:
 
         with pytest.raises(AssertionError, match="non-allowlisted"):
             fixture.main()
+
+
+@pytest.mark.parametrize(
+    ("scenario_id", "base", "patched_value", "artifact_name", "artifact"),
+    [
+        (
+            "train",
+            {"agents": {"debugger": {"tool": "codex"}}},
+            "claude-direct",
+            "routing-behavior-train.json",
+            {
+                "resolved_key": "agents.debugger.tool",
+                "resolved_value": "codex",
+                "action": "delegate-debug-analysis",
+                "result": {"first_duplicate": 1},
+            },
+        ),
+        (
+            "holdout",
+            {"antigravity": {"model": "gemini-3.1-pro-high"}},
+            "gemini-3.5-flash-high",
+            "routing-behavior-holdout.json",
+            {
+                "resolved_key": "antigravity.model",
+                "resolved_value": "gemini-3.1-pro-high",
+                "action": "prioritize-depth",
+                "result": {"steps": ["inspect", "cross-check", "synthesize"]},
+            },
+        ),
+    ],
+)
+def test_routing_behavior_oracle_outcome_varies_with_materialized_value(
+    tmp_path: Path,
+    scenario_id: str,
+    base: dict,
+    patched_value: str,
+    artifact_name: str,
+    artifact: dict,
+) -> None:
+    _stub_hook_common()
+    fixture = _routing_behavior_oracle_fixture()
+    _write_routing_config_files(tmp_path, local_overrides={}, base=base)
+    artifact_path = tmp_path / artifact_name
+    artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
+
+    fixture.assert_behavior(tmp_path, scenario_id, Path(artifact_name))
+
+    key_path = str(artifact["resolved_key"])
+    first, second, *rest = key_path.split(".")
+    local: dict = {first: {second: patched_value}}
+    if rest:
+        local = {first: {second: {rest[0]: patched_value}}}
+    _write_routing_config_files(tmp_path, local_overrides=local, base=base)
+
+    with pytest.raises(AssertionError, match="materialized routing config"):
+        fixture.assert_behavior(tmp_path, scenario_id, Path(artifact_name))
+
+
+@pytest.mark.parametrize(
+    ("configured_tool", "expected"),
+    [
+        (
+            "codex",
+            {
+                "resolved_value": "codex",
+                "action": "delegate-debug-analysis",
+                "result": {"first_duplicate": 1},
+            },
+        ),
+        (
+            "antigravity",
+            {
+                "resolved_value": "antigravity",
+                "action": "research-sequence-pattern",
+                "result": {"unique_count": 4},
+            },
+        ),
+        (
+            "claude-direct",
+            {
+                "resolved_value": "claude-direct",
+                "action": "solve-sequence-directly",
+                "result": {"sorted": [1, 1, 3, 4, 5]},
+            },
+        ),
+        (
+            "auto",
+            {
+                "resolved_value": "auto",
+                "action": "select-debug-route",
+                "result": {"selected_tool": "codex"},
+            },
+        ),
+    ],
+)
+def test_routing_behavior_oracle_covers_agent_router_tool_values(
+    tmp_path: Path, configured_tool: str, expected: dict
+) -> None:
+    _stub_hook_common()
+    fixture = _routing_behavior_oracle_fixture()
+    _write_routing_config_files(
+        tmp_path,
+        base={
+            "codex": {"enabled": True},
+            "antigravity": {"enabled": True},
+            "agents": {"debugger": {"tool": configured_tool}},
+        },
+        local_overrides={},
+    )
+    artifact_name = "routing-behavior-train.json"
+    artifact = {
+        "resolved_key": "agents.debugger.tool",
+        **expected,
+    }
+    (tmp_path / artifact_name).write_text(json.dumps(artifact), encoding="utf-8")
+
+    fixture.assert_behavior(tmp_path, "train", Path(artifact_name))
+
+
+def test_routing_behavior_oracle_uses_disabled_cli_fallback(
+    tmp_path: Path,
+) -> None:
+    _stub_hook_common()
+    fixture = _routing_behavior_oracle_fixture()
+    _write_routing_config_files(
+        tmp_path,
+        base={
+            "codex": {"enabled": True},
+            "agents": {"debugger": {"tool": "codex"}},
+        },
+        local_overrides={"codex": {"enabled": False}},
+    )
+    artifact_name = "routing-behavior-train.json"
+    artifact_path = tmp_path / artifact_name
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "resolved_key": "agents.debugger.tool",
+                "resolved_value": "claude-direct",
+                "action": "solve-sequence-directly",
+                "result": {"sorted": [1, 1, 3, 4, 5]},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    fixture.assert_behavior(tmp_path, "train", Path(artifact_name))
+
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "resolved_key": "agents.debugger.tool",
+                "resolved_value": "codex",
+                "action": "delegate-debug-analysis",
+                "result": {"first_duplicate": 1},
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(AssertionError, match="materialized routing config"):
+        fixture.assert_behavior(tmp_path, "train", Path(artifact_name))

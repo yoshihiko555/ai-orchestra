@@ -47,6 +47,11 @@ CONFIG_PATCH_ALLOWLIST_CEILING = (
     "agent-routing/cli-tools.yaml#codex.model",
     "agent-routing/cli-tools.yaml#antigravity.model",
 )
+CONFIG_PATCH_ALLOWED_CREATED_BY: dict[str, frozenset[str]] = {
+    "agent-routing/cli-tools.yaml#agents.*.tool": frozenset({"human", "proposer"}),
+    "agent-routing/cli-tools.yaml#codex.model": frozenset({"human"}),
+    "agent-routing/cli-tools.yaml#antigravity.model": frozenset({"human", "proposer"}),
+}
 CONFIG_PATCH_TOOL_VALUES = frozenset({"codex", "antigravity", "claude-direct", "auto"})
 CONFIG_PATCH_MODEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 CONFIG_PATCH_DANGEROUS_SEGMENTS = frozenset({"__proto__", "constructor"})
@@ -115,11 +120,11 @@ DEFAULTS: dict[str, Any] = {
         "penalty_per_item": 5,
         "penalty_missing_report": 6,
     },
-    "frontier": {"cost_axis": "total_tokens"},
+    "frontier": {"cost_axis": "total_cost_usd"},
     "regression": {
         "enabled": True,
         "max_affected_suites": 4,
-        "max_budget_usd": 12.0,
+        "max_budget_usd": 30.0,
     },
     "overlay": {
         "allowed_prefixes": ["facets/"],
@@ -130,7 +135,10 @@ DEFAULTS: dict[str, Any] = {
             ".github/",
         ],
     },
-    "config_patch": {"allowlist": list(CONFIG_PATCH_ALLOWLIST_CEILING)},
+    "config_patch": {
+        "allowlist": list(CONFIG_PATCH_ALLOWLIST_CEILING),
+        "proposer_cooldown_rounds": 3,
+    },
     "proposer": {
         "tool": "codex",
         "max_iterations": 10,
@@ -308,6 +316,10 @@ GIT_TIMEOUT_SECONDS = 10
 
 class MetaHarnessRootError(RuntimeError):
     """main root（store の配置先）が解決できない場合に送出する（CLI は exit 2）。"""
+
+
+class CandidateRegistrationValidationError(ValueError):
+    """Staged candidate content failed register-time validation."""
 
 
 def resolve_main_root(project_dir: Path, config: dict) -> Path:
@@ -620,7 +632,9 @@ def _empty_frontier_doc(config: dict, target: str = DEFAULT_TARGET) -> dict:
         "ledger_line_count": 0,
         "suite_hash": zero_hash,
         "evaluator_hash": zero_hash,
-        "cost_axis": (config.get("frontier") or {}).get("cost_axis", "total_tokens"),
+        "cost_axis": (config.get("frontier") or {}).get(
+            "cost_axis", DEFAULTS["frontier"]["cost_axis"]
+        ),
         "points": [],
         "frontier": [],
         "dominated": [],
@@ -795,7 +809,9 @@ def register_candidate(
         if config_patch and overlay_files:
             patch_errors.append("config patch candidates must not contain file overlays")
         if patch_errors:
-            raise ValueError(f"copied config patch validation failed: {'; '.join(patch_errors)}")
+            raise CandidateRegistrationValidationError(
+                f"copied config patch validation failed: {'; '.join(patch_errors)}"
+            )
         expected_patch_hash = manifest.get("config_patch_hash")
         if config_patch_path.is_file():
             actual_patch_hash = compute_config_patch_hash(config_patch)
@@ -1387,33 +1403,40 @@ def _run_cost(run: dict, cost_axis: str) -> float:
     return cost_obj[cost_axis]
 
 
-def compute_pareto_frontier(points: list[dict]) -> tuple[list[str], list[str]]:
+def compute_pareto_frontier(
+    points: list[dict], target: str = DEFAULT_TARGET
+) -> tuple[list[str], list[str]]:
     """Sec3-5: quality_mean 最大化 x cost_mean 最小化の非支配集合を返す。
 
     呼び出し側は `eligible`（全 non-holdout シナリオで verdict=pass）な point
     のみを渡すこと（このフィルタリングは本関数の責務外、呼び出し側の前提条件）。
-    同率タイブレークは quality_min の高い方を優先する。戻り値は
+    routing-config 以外の同率タイブレークは quality_min の高い方を優先する。
+    routing-config は quality_mean の厳密改善を支配の必須条件とする。戻り値は
     `(frontier_cand_ids, dominated_cand_ids)`。
     """
+    target = validate_target(target)
     frontier: list[str] = []
     dominated: list[str] = []
     for candidate in points:
-        if _is_dominated(candidate, points):
+        if _is_dominated(candidate, points, target):
             dominated.append(candidate["cand_id"])
         else:
             frontier.append(candidate["cand_id"])
     return frontier, dominated
 
 
-def _is_dominated(candidate: dict, points: list[dict]) -> bool:
+def _is_dominated(candidate: dict, points: list[dict], target: str) -> bool:
     return any(
-        other["cand_id"] != candidate["cand_id"] and _dominates(other, candidate)
+        other["cand_id"] != candidate["cand_id"] and _dominates(other, candidate, target)
         for other in points
     )
 
 
-def _dominates(a: dict, b: dict) -> bool:
-    """a が b を支配するか（Sec3-5、quality_min タイブレーク込み）。"""
+def _dominates(a: dict, b: dict, target: str) -> bool:
+    """a が b を支配するか（Sec3-5、target 別 dominance semantics）。"""
+    if target == "routing-config":
+        return a["quality_mean"] > b["quality_mean"] and a["cost_mean"] <= b["cost_mean"]
+
     quality_ge = a["quality_mean"] >= b["quality_mean"]
     cost_le = a["cost_mean"] <= b["cost_mean"]
     if not (quality_ge and cost_le):
@@ -1724,6 +1747,7 @@ def validate_config_patch(
     *,
     target: str,
     created_by: str,
+    agent_routing_config: dict | None = None,
 ) -> list[str]:
     """config patch の schema・scope・allowlist・value 契約を fail-closed に検証する。"""
     schema = load_schema(schema_dir, "config_patch.schema.json")
@@ -1737,19 +1761,17 @@ def validate_config_patch(
     if target == "routing-config":
         if not has_patch:
             errors.append("routing-config candidates require a non-empty config patch")
-        if created_by != "human":
-            errors.append("routing-config candidates must have created_by='human'")
     elif has_patch:
         errors.append("non-empty config patches require target='routing-config'")
-    if has_patch and created_by != "human":
-        errors.append("non-empty config patches are restricted to created_by='human'")
 
     if errors:
         return errors
 
     seen_targets: set[str] = set()
+    codex_models: frozenset[str] | None = None
     antigravity_models: frozenset[str] | None = None
     known_agent_names: frozenset[str] | None = None
+    proposer_key_kinds: set[str] = set()
     for index, item in enumerate(config_patch):
         file_value = str(item["file"])
         key_path = str(item["key_path"])
@@ -1779,12 +1801,25 @@ def validate_config_patch(
         if len(matching_entries) != 1:
             errors.append(f"{item_label}: target is not allowlisted exactly once: {target_key}")
             continue
+        matched_file, matched_segments = matching_entries[0]
+        ceiling_entry = f"{matched_file}#{'.'.join(matched_segments)}"
+        if created_by == "proposer":
+            proposer_key_kinds.add(ceiling_entry)
+        allowed_created_by = CONFIG_PATCH_ALLOWED_CREATED_BY.get(ceiling_entry)
+        if allowed_created_by is None:
+            errors.append(f"{item_label}: no created_by policy for ceiling entry: {ceiling_entry}")
+            continue
+        if created_by not in allowed_created_by:
+            errors.append(
+                f"{item_label}: created_by={created_by!r} is not allowed for {ceiling_entry}"
+            )
+            continue
 
         value = item["value"]
         if key_segments[:1] == ("agents",) and key_segments[-1:] == ("tool",):
             if known_agent_names is None:
                 try:
-                    known_agent_names = _load_known_agent_names(schema_dir)
+                    known_agent_names = _load_known_agent_names(schema_dir, agent_routing_config)
                 except ValueError as exc:
                     errors.append(f"{item_label}.value: {exc}")
                     continue
@@ -1814,7 +1849,9 @@ def validate_config_patch(
             if key_segments == ("antigravity", "model"):
                 if antigravity_models is None:
                     try:
-                        antigravity_models = _load_antigravity_model_allowlist(schema_dir)
+                        antigravity_models = _load_antigravity_model_allowlist(
+                            schema_dir, agent_routing_config
+                        )
                     except ValueError as exc:
                         errors.append(f"{item_label}.value: {exc}")
                         continue
@@ -1822,8 +1859,24 @@ def validate_config_patch(
                     errors.append(
                         f"{item_label}.value: antigravity model is not in model_allowlist: {value}"
                     )
+            elif key_segments == ("codex", "model"):
+                if codex_models is None:
+                    try:
+                        codex_models = _load_codex_model_allowlist(schema_dir, agent_routing_config)
+                    except ValueError as exc:
+                        errors.append(f"{item_label}.value: {exc}")
+                        continue
+                if not codex_models or value not in codex_models:
+                    errors.append(
+                        f"{item_label}.value: codex model is not in model_allowlist: {value}"
+                    )
             continue
         errors.append(f"{item_label}: unsupported config patch key: {target_key}")
+    if len(proposer_key_kinds) > 1:
+        errors.append(
+            "created_by='proposer' config patch must use exactly one key kind; mixed kinds: "
+            + ", ".join(sorted(proposer_key_kinds))
+        )
     return errors
 
 
@@ -1918,17 +1971,48 @@ def _load_agent_routing_config(schema_dir: Path) -> dict:
     return loaded
 
 
-def _load_antigravity_model_allowlist(schema_dir: Path) -> frozenset[str]:
-    loaded = _load_agent_routing_config(schema_dir)
-    antigravity = loaded.get("antigravity") or {}
+def _resolve_agent_routing_config(schema_dir: Path, agent_routing_config: dict | None) -> dict:
+    if agent_routing_config is None:
+        return _load_agent_routing_config(schema_dir)
+    if not isinstance(agent_routing_config, dict):
+        raise ValueError("agent-routing config must be a YAML mapping")
+    return agent_routing_config
+
+
+def _load_codex_model_allowlist(
+    schema_dir: Path, agent_routing_config: dict | None = None
+) -> frozenset[str]:
+    loaded = _resolve_agent_routing_config(schema_dir, agent_routing_config)
+    codex = loaded.get("codex")
+    if codex is None:
+        codex = {}
+    if not isinstance(codex, dict):
+        raise ValueError("agent-routing config codex section must be a mapping")
+    values = codex.get("model_allowlist") or []
+    if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+        raise ValueError("codex.model_allowlist must be an array of strings")
+    return frozenset(values)
+
+
+def _load_antigravity_model_allowlist(
+    schema_dir: Path, agent_routing_config: dict | None = None
+) -> frozenset[str]:
+    loaded = _resolve_agent_routing_config(schema_dir, agent_routing_config)
+    antigravity = loaded.get("antigravity")
+    if antigravity is None:
+        antigravity = {}
+    if not isinstance(antigravity, dict):
+        raise ValueError("agent-routing config antigravity section must be a mapping")
     values = antigravity.get("model_allowlist") or []
     if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
         raise ValueError("antigravity.model_allowlist must be an array of strings")
     return frozenset(values)
 
 
-def _load_known_agent_names(schema_dir: Path) -> frozenset[str]:
-    loaded = _load_agent_routing_config(schema_dir)
+def _load_known_agent_names(
+    schema_dir: Path, agent_routing_config: dict | None = None
+) -> frozenset[str]:
+    loaded = _resolve_agent_routing_config(schema_dir, agent_routing_config)
     agents = loaded.get("agents") or {}
     if not isinstance(agents, dict):
         raise ValueError("agent-routing config agents section must be a mapping")

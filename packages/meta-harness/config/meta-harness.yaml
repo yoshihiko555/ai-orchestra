@@ -52,7 +52,7 @@ scenario_run:
 regression:
   enabled: true # false = skill target を専有 facet allowlist へ縮退
   max_affected_suites: 4
-  max_budget_usd: 12.0 # evaluation 単位の回帰 run 合計上限
+  max_budget_usd: 30.0 # 全登録 skill + claude-harness の現行 suite を train/holdout 通算で収容
 judge:
   tool: claude-bare # tool-less judge。codexはread deny不能のため無効（ADR-20260711-033）
   model: null
@@ -64,7 +64,7 @@ scoring:
   penalty_per_item: 5
   penalty_missing_report: 6
 frontier:
-  cost_axis: total_tokens
+  cost_axis: total_cost_usd
 overlay:
   allowed_prefixes:
     - "facets/"
@@ -79,6 +79,8 @@ config_patch:
     - "agent-routing/cli-tools.yaml#agents.*.tool"
     - "agent-routing/cli-tools.yaml#codex.model"
     - "agent-routing/cli-tools.yaml#antigravity.model"
+  # proposer routing-config 候補の reject / overfit retire 後に待つ loop round 数
+  proposer_cooldown_rounds: 3
 proposer:
   tool: codex # codex | claude-bare（Sec11-3-5）。利用不能時は fail-closed（暗黙フォールバック禁止）
   max_iterations: 10
