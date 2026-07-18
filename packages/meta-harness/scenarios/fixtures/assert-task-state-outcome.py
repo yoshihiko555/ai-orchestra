@@ -5,9 +5,17 @@ Both task-state scenarios seed a fixed ``.claude/Plans.md`` fixture (see
 ``scenarios/skill/task-state/*.yaml``) and ask Claude to apply exactly one edit (a task status
 change, or a new Decisions entry). Plain substring checks over the whole file cannot catch Claude
 silently deleting unrelated sections such as ``## Notes``, writing a decision entry into the wrong
-section, using an arbitrary/stale date, dropping an unrelated task line, duplicating a task line,
-or corrupting the CODD frontmatter -- this fixture independently re-parses the file structure and
-enforces those invariants exactly (PR #266 review round 1 points 2/3/4/5, round 2 points 1/3/6).
+section, using an arbitrary/stale date, dropping/duplicating/reordering a task line, or corrupting
+the CODD frontmatter -- this fixture independently re-parses the file structure and enforces those
+invariants exactly (PR #266 review round 1 points 2/3/4/5, round 2 points 1/3/6, round 3 points
+3/5/6).
+
+Everything the candidate could have rewritten during the run -- including a prior design's
+``.meta-harness/plans-baseline.md`` "baseline copy" -- lives inside the same writable workspace
+the candidate has unrestricted ``Edit``/``Write`` access to, so none of it can serve as ground
+truth for this oracle (PR #266 review round 3, point 6). The expected fixture content is instead
+embedded as a literal constant below, matching exactly what every task-state scenario's `setup:`
+step writes.
 """
 
 from __future__ import annotations
@@ -19,6 +27,43 @@ import re
 from pathlib import Path
 
 _TASK_LINE_PATTERN = re.compile(r"^- `cc:[A-Za-z]+` .+$", re.MULTILINE)
+
+# The exact `.claude/Plans.md` content every task-state scenario's `setup:` step writes (see
+# `scenarios/skill/task-state/*.yaml`). This is the only trusted "before" state: it is a literal
+# constant in this script, not read from the writable workspace.
+_CANONICAL_PLANS_FIXTURE = (
+    "---\n"
+    "codd:\n"
+    '  node_id: "plan:meta-harness-eval-fixture"\n'
+    "  kind: plan\n"
+    "  status: active\n"
+    "  depends_on:\n"
+    '    - id: "design:meta-harness"\n'
+    "      relation: implements\n"
+    "---\n"
+    "\n"
+    "# Plans\n"
+    "\n"
+    "## Project: meta-harness-eval-fixture\n"
+    "\n"
+    "### Phase 2: 実装 `cc:WIP`\n"
+    "\n"
+    "#### API\n"
+    "\n"
+    "- `cc:done` ユーザー認証API\n"
+    "- `cc:WIP` 商品一覧API\n"
+    "- `cc:TODO` 注文API\n"
+    "\n"
+    "---\n"
+    "\n"
+    "## Decisions\n"
+    "\n"
+    "- 2026-01-01: 初期設計方針を確定\n"
+    "\n"
+    "## Notes\n"
+    "\n"
+    "- 評価用フィクスチャ\n"
+)
 
 
 def _section(text: str, heading: str) -> str:
@@ -40,18 +85,21 @@ def _frontmatter_block(text: str) -> str:
     return match.group(0)
 
 
-def _assert_frontmatter_preserved(plans_text: str, baseline_text: str) -> None:
-    """Diff the frontmatter block against an untouched baseline copy of the same fixture.
+def _bullet_lines(section_text: str) -> list[str]:
+    return [line for line in section_text.splitlines() if line.startswith("- ")]
 
-    PR #266 review round 2, point 1: the previous checks never inspected the leading CODD
-    frontmatter block at all, so deleting it entirely (or editing `node_id`/`kind`/`status`)
-    still passed. Comparing against a `setup:`-written baseline copy (rather than a hardcoded
-    literal) keeps this in sync with whatever the scenario's fixture actually contains.
-    """
-    actual = _frontmatter_block(plans_text)
-    expected = _frontmatter_block(baseline_text)
-    assert actual == expected, (
-        f"CODD frontmatter block was modified:\nexpected={expected!r}\nactual={actual!r}"
+
+_CANONICAL_FRONTMATTER = _frontmatter_block(_CANONICAL_PLANS_FIXTURE)
+_CANONICAL_DECISIONS_BULLETS = _bullet_lines(_section(_CANONICAL_PLANS_FIXTURE, "Decisions"))
+_CANONICAL_NOTES_BULLETS = _bullet_lines(_section(_CANONICAL_PLANS_FIXTURE, "Notes"))
+
+
+def _assert_frontmatter_preserved(text: str) -> None:
+    """Diff the frontmatter block against the hardcoded canonical fixture (never the workspace)."""
+    actual = _frontmatter_block(text)
+    assert actual == _CANONICAL_FRONTMATTER, (
+        f"CODD frontmatter block was modified:\nexpected={_CANONICAL_FRONTMATTER!r}\n"
+        f"actual={actual!r}"
     )
 
 
@@ -59,71 +107,56 @@ def _task_lines(text: str) -> list[str]:
     return _TASK_LINE_PATTERN.findall(text)
 
 
-def _assert_task_lines_exact(text: str, expected_lines: list[str]) -> None:
-    """Assert the task-marker lines in the whole document exactly match `expected_lines`.
+def _assert_task_lines_exact_ordered(text: str, expected_tasks: list[tuple[str, str]]) -> None:
+    """Assert the task-marker lines exactly match `expected_tasks`, in the same order.
 
-    PR #266 review round 2, point 6: the previous checks only verified specific lines were
-    *present*, so duplicating a task line or appending an extraneous stray task line still
-    passed. Comparing sorted multisets catches both duplication and additions/removals.
+    PR #266 review round 2, point 6 (duplication/extraneous lines) and round 3, point 3
+    (reordering must also fail): an order-sensitive list comparison catches all three at once.
     """
-    actual_sorted = sorted(_task_lines(text))
-    expected_sorted = sorted(expected_lines)
-    assert actual_sorted == expected_sorted, (
-        "task lines do not exactly match the expected set (duplicated or extraneous lines "
-        f"fail):\nexpected={expected_sorted!r}\nactual={actual_sorted!r}"
+    expected_lines = [f"- `cc:{status}` {name}" for status, name in expected_tasks]
+    actual_lines = _task_lines(text)
+    assert actual_lines == expected_lines, (
+        "task lines do not exactly match the expected ordered sequence (reordering, "
+        f"duplication, or extraneous lines fail):\nexpected={expected_lines!r}\n"
+        f"actual={actual_lines!r}"
     )
 
 
 def assert_mark_task_done(
     plans_path: Path,
     *,
-    baseline_path: Path,
-    target_task: str,
-    target_status: str,
-    target_previous_status: str,
-    other_tasks: list[tuple[str, str]],
-    expected_decisions: list[str],
-    expected_notes: list[str],
+    expected_tasks: list[tuple[str, str]],
 ) -> None:
     text = plans_path.read_text(encoding="utf-8")
 
-    done_line = f"`cc:{target_status}` {target_task}"
-    stale_line = f"`cc:{target_previous_status}` {target_task}"
-    assert done_line in text, f"expected {done_line!r} not found:\n{text}"
-    assert stale_line not in text, f"stale status {stale_line!r} still present:\n{text}"
+    _assert_task_lines_exact_ordered(text, expected_tasks)
 
-    for status, name in other_tasks:
-        line = f"`cc:{status}` {name}"
-        assert line in text, f"unrelated task line missing (collateral edit): {line!r}\n{text}"
+    # PR #266 review round 3, point 5: Decisions/Notes must be byte-identical to the seeded
+    # fixture in this mode (no entry may be added, removed, or reordered).
+    decisions_bullets = _bullet_lines(_section(text, "Decisions"))
+    assert decisions_bullets == _CANONICAL_DECISIONS_BULLETS, (
+        f"Decisions section changed (must stay identical to the seeded fixture):\n"
+        f"expected={_CANONICAL_DECISIONS_BULLETS!r}\nactual={decisions_bullets!r}"
+    )
 
-    expected_task_lines = [f"- {done_line}"] + [
-        f"- `cc:{status}` {name}" for status, name in other_tasks
-    ]
-    _assert_task_lines_exact(text, expected_task_lines)
+    notes_bullets = _bullet_lines(_section(text, "Notes"))
+    assert notes_bullets == _CANONICAL_NOTES_BULLETS, (
+        f"Notes section changed (must stay identical to the seeded fixture):\n"
+        f"expected={_CANONICAL_NOTES_BULLETS!r}\nactual={notes_bullets!r}"
+    )
 
-    decisions = _section(text, "Decisions")
-    for entry in expected_decisions:
-        assert entry in decisions, f"Decisions section lost an entry: {entry!r}\n{decisions}"
-
-    notes = _section(text, "Notes")
-    for entry in expected_notes:
-        assert entry in notes, f"Notes section lost an entry: {entry!r}\n{notes}"
-
-    baseline_text = baseline_path.read_text(encoding="utf-8")
-    _assert_frontmatter_preserved(text, baseline_text)
+    _assert_frontmatter_preserved(text)
 
 
 def assert_decision_recorded(
     plans_path: Path,
     *,
-    baseline_path: Path,
     decision_substrings: list[str],
-    existing_decision: str,
-    other_tasks: list[tuple[str, str]],
-    expected_notes: list[str],
+    expected_tasks: list[tuple[str, str]],
 ) -> None:
     text = plans_path.read_text(encoding="utf-8")
-    decisions = _section(text, "Decisions")
+
+    _assert_task_lines_exact_ordered(text, expected_tasks)
 
     today = datetime.date.today()
     yesterday = today - datetime.timedelta(days=1)
@@ -134,39 +167,40 @@ def assert_decision_recorded(
     # (PR #266 review round 2, point 3).
     allowed_dates = {yesterday.isoformat(), today.isoformat(), tomorrow.isoformat()}
     date_line_pattern = re.compile(r"^- (\d{4}-\d{2}-\d{2}): ")
-    dated_lines = []
-    for line in decisions.splitlines():
-        date_match = date_line_pattern.match(line)
-        if date_match and date_match.group(1) in allowed_dates:
-            dated_lines.append(line)
-    assert dated_lines, (
-        f"no Decisions line dated within {sorted(allowed_dates)} found:\n{decisions}"
+
+    # PR #266 review round 3, point 5: the Decisions section must contain exactly the seeded
+    # entries, unmodified and in their original order, immediately followed by exactly one new
+    # entry -- not merely "the old entry is still present somewhere".
+    decisions_bullets = _bullet_lines(_section(text, "Decisions"))
+    assert len(decisions_bullets) == len(_CANONICAL_DECISIONS_BULLETS) + 1, (
+        "Decisions section must contain exactly the seeded entries plus exactly one new "
+        f"entry:\nexpected {len(_CANONICAL_DECISIONS_BULLETS)} seeded + 1 new, "
+        f"got {len(decisions_bullets)}: {decisions_bullets!r}"
     )
-    matched = [
-        line for line in dated_lines if all(substring in line for substring in decision_substrings)
-    ]
-    assert matched, f"no dated Decisions line contains all of {decision_substrings!r}:\n{decisions}"
-
-    assert existing_decision in decisions, (
-        f"existing Decisions entry was lost: {existing_decision!r}\n{decisions}"
+    seeded_prefix = decisions_bullets[: len(_CANONICAL_DECISIONS_BULLETS)]
+    assert seeded_prefix == _CANONICAL_DECISIONS_BULLETS, (
+        f"existing Decisions entries were modified or reordered:\nexpected="
+        f"{_CANONICAL_DECISIONS_BULLETS!r}\nactual={seeded_prefix!r}"
+    )
+    new_line = decisions_bullets[-1]
+    date_match = date_line_pattern.match(new_line)
+    assert date_match and date_match.group(1) in allowed_dates, (
+        f"new Decisions entry is not dated within {sorted(allowed_dates)}: {new_line!r}"
+    )
+    assert all(substring in new_line for substring in decision_substrings), (
+        f"new Decisions entry does not contain all of {decision_substrings!r}: {new_line!r}"
     )
 
-    for status, name in other_tasks:
-        line = f"`cc:{status}` {name}"
-        assert line in text, f"decision-mode edit touched the task list: {line!r}\n{text}"
+    notes_bullets = _bullet_lines(_section(text, "Notes"))
+    assert notes_bullets == _CANONICAL_NOTES_BULLETS, (
+        f"Notes section changed (must stay identical to the seeded fixture):\n"
+        f"expected={_CANONICAL_NOTES_BULLETS!r}\nactual={notes_bullets!r}"
+    )
 
-    expected_task_lines = [f"- `cc:{status}` {name}" for status, name in other_tasks]
-    _assert_task_lines_exact(text, expected_task_lines)
-
-    notes = _section(text, "Notes")
-    for entry in expected_notes:
-        assert entry in notes, f"Notes section lost an entry: {entry!r}\n{notes}"
-
-    baseline_text = baseline_path.read_text(encoding="utf-8")
-    _assert_frontmatter_preserved(text, baseline_text)
+    _assert_frontmatter_preserved(text)
 
 
-def _parse_other_task(value: str) -> tuple[str, str]:
+def _parse_task(value: str) -> tuple[str, str]:
     status, separator, name = value.partition("::")
     if not separator or not status or not name:
         raise argparse.ArgumentTypeError(f"expected STATUS::NAME, got {value!r}")
@@ -179,48 +213,28 @@ def main(argv: list[str] | None = None) -> None:
 
     mark_done = subparsers.add_parser("mark-task-done")
     mark_done.add_argument("--plans", type=Path, required=True)
-    mark_done.add_argument("--baseline", type=Path, required=True)
-    mark_done.add_argument("--target-task", required=True)
-    mark_done.add_argument("--target-status", required=True)
-    mark_done.add_argument("--target-previous-status", required=True)
-    mark_done.add_argument("--other-task", type=_parse_other_task, action="append", default=[])
-    mark_done.add_argument("--expected-decision", action="append", default=[])
-    mark_done.add_argument("--expected-note", action="append", default=[])
+    mark_done.add_argument(
+        "--expected-task", type=_parse_task, action="append", default=[], required=True
+    )
 
     record_decision = subparsers.add_parser("record-decision")
     record_decision.add_argument("--plans", type=Path, required=True)
-    record_decision.add_argument("--baseline", type=Path, required=True)
     record_decision.add_argument("--decision-substring", action="append", default=[], required=True)
-    record_decision.add_argument("--existing-decision", required=True)
     record_decision.add_argument(
-        "--other-task", type=_parse_other_task, action="append", default=[]
+        "--expected-task", type=_parse_task, action="append", default=[], required=True
     )
-    record_decision.add_argument("--expected-note", action="append", default=[])
 
     args = parser.parse_args(argv)
     project_root = Path(os.environ.get("AI_ORCHESTRA_DIR") or Path.cwd()).resolve()
     plans_path = project_root / args.plans
-    baseline_path = project_root / args.baseline
 
     if args.mode == "mark-task-done":
-        assert_mark_task_done(
-            plans_path,
-            baseline_path=baseline_path,
-            target_task=args.target_task,
-            target_status=args.target_status,
-            target_previous_status=args.target_previous_status,
-            other_tasks=args.other_task,
-            expected_decisions=args.expected_decision,
-            expected_notes=args.expected_note,
-        )
+        assert_mark_task_done(plans_path, expected_tasks=args.expected_task)
     else:
         assert_decision_recorded(
             plans_path,
-            baseline_path=baseline_path,
             decision_substrings=args.decision_substring,
-            existing_decision=args.existing_decision,
-            other_tasks=args.other_task,
-            expected_notes=args.expected_note,
+            expected_tasks=args.expected_task,
         )
 
 

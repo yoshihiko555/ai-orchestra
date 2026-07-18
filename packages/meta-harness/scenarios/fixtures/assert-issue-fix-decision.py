@@ -4,21 +4,28 @@
 ``issue-fix``'s SKILL.md derives the branch prefix, commit prefix, and PR label purely from the
 GitHub issue's label (see "フォールバック: ブランチ作成" and the commit-prefix table in
 ``.agents/skills/issue-fix/SKILL.md``). This fixture recomputes the expected decision from the
-same fixed mapping the skill documents, using the issue label recorded in the scenario's offline
-``gh issue view`` fixture -- instead of hardcoding the expected branch/commit strings inside each
-scenario YAML -- and diffs it against the JSON decision artifact Claude was asked to write. This
-harness runs with git write operations unavailable (read-only git snapshot, ADR-20260712-034), so
-scenarios ask Claude to *record* what it would do instead of actually running
-``git checkout -b`` / ``git commit`` / ``git push``.
+same fixed mapping the skill documents, and diffs it against the JSON decision artifact Claude
+was asked to write. This harness runs with git write operations unavailable (read-only git
+snapshot, ADR-20260712-034), so scenarios ask Claude to *record* what it would do instead of
+actually running ``git checkout -b`` / ``git commit`` / ``git push``.
+
+The scenario's ``.meta-harness/gh-issue-fixture.json`` lives inside the same writable workspace
+the candidate has unrestricted ``Edit``/``Write`` access to for the rest of the run, so this
+fixture must not trust its *content* at face value (a candidate could rewrite it to fake a more
+convenient label/number and then trivially satisfy a looser oracle). Instead, the expected issue
+number/label is looked up from a hardcoded, sha256-keyed table of known-good fixture payloads;
+any byte-level deviation from a known-good fixture fails closed (PR #266 review round 3, point 4).
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 from pathlib import Path
+from typing import Any
 
 # label -> (branch prefix, commit prefix, pr label), per issue-fix SKILL.md's branch-prefix
 # table and the PR Standards Policy's branch-prefix -> label mapping.
@@ -33,14 +40,18 @@ _DEFAULT_ROW: tuple[str, str, str] = ("fix/", "fix:", "bug")
 _SLUG_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _MAX_SLUG_LENGTH = 30
 
+# sha256(exact bytes of the `.meta-harness/gh-issue-fixture.json` a scenario's `setup:` writes)
+# -> the trusted (number, label) it represents. Keeping this keyed by content hash (rather than
+# re-parsing the workspace copy's JSON) means the expected decision never depends on anything a
+# candidate could have rewritten during the run.
+_KNOWN_ISSUE_FIXTURES: dict[str, tuple[int, str]] = {
+    # fix-greet-none-bug.yaml: issue #301, label "bug"
+    "c29c8bc780ad05f05490816e43c8ef4ef582c2f2266b72bb12cd8ed2d0b7096d": (301, "bug"),
+    # fix-formal-greeting-feature-holdout.yaml: issue #305, label "feature"
+    "f3ae1d7882e84c9652622c1e01779bfc749aac6d6ff129d2aa04b14e47e3d285": (305, "feature"),
+}
 
-def _issue_label(issue: dict) -> str:
-    labels = issue.get("labels") or []
-    names = {str(item.get("name")) for item in labels if isinstance(item, dict)}
-    for name in ("bug", "feature", "task"):
-        if name in names:
-            return name
-    return ""
+_EXPECTED_DECISION_KEYS = frozenset({"branch", "commit_message", "pr_label"})
 
 
 def _assert_branch_slug(branch: str, branch_prefix: str, number: int) -> None:
@@ -66,18 +77,35 @@ def _assert_branch_slug(branch: str, branch_prefix: str, number: int) -> None:
     )
 
 
+def _trusted_issue(fixture_full: Path) -> tuple[int, str]:
+    digest = hashlib.sha256(fixture_full.read_bytes()).hexdigest()
+    known = _KNOWN_ISSUE_FIXTURES.get(digest)
+    assert known is not None, (
+        f"gh-issue-fixture.json content (sha256={digest}) does not match any known-good "
+        "fixture; the writable workspace copy may have been tampered with"
+    )
+    return known
+
+
 def assert_decision(project_root: Path, fixture_path: Path, artifact_path: Path) -> None:
     fixture_full = project_root / fixture_path
-    issue = json.loads(fixture_full.read_text(encoding="utf-8"))
-    label = _issue_label(issue)
+    assert fixture_full.is_file() and not fixture_full.is_symlink(), (
+        f"missing regular gh issue fixture: {fixture_path}"
+    )
+    number, label = _trusted_issue(fixture_full)
     branch_prefix, commit_prefix, pr_label = _LABEL_TABLE.get(label, _DEFAULT_ROW)
-    number = issue["number"]
 
     artifact_full = project_root / artifact_path
     assert artifact_full.is_file() and not artifact_full.is_symlink(), (
         f"missing regular decision artifact: {artifact_path}"
     )
-    decision = json.loads(artifact_full.read_text(encoding="utf-8"))
+    decision: dict[str, Any] = json.loads(artifact_full.read_text(encoding="utf-8"))
+
+    actual_keys = frozenset(decision.keys())
+    assert actual_keys == _EXPECTED_DECISION_KEYS, (
+        f"decision artifact keys {sorted(actual_keys)} != expected "
+        f"{sorted(_EXPECTED_DECISION_KEYS)} (no extra/missing keys allowed)"
+    )
 
     branch = str(decision.get("branch", ""))
     commit_message = str(decision.get("commit_message", ""))

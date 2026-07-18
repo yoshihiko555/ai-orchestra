@@ -55,6 +55,7 @@ allowed_tools:
   - "Bash(git branch *)"
   - "Bash(git status *)"
   - "Bash(git log *)"
+  - "Bash(git rev-parse *)"
   - "Read"
   - "Edit"
   - "Write"
