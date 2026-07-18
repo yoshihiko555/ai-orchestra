@@ -95,6 +95,10 @@ A8 排他チェック（patch XOR overlay）の第 5 入口（proposer 経路）
 
 - proposer の routing-config 入口は必ず `register_candidate` と同一の検証パス（排他チェック含む）を
   経由すること。第 5 入口での排他チェック再実装・省略は禁止（A8）。
+- proposer の変更メニューと登録前 `validate_config_patch` は候補の `source_commit` にある
+  agent-routing config を共通参照する。その後 `register_candidate` が現 checkout の config で
+  独立再検証するため、stale parent では source / 現 checkout の両方を通過した patch だけを登録する
+  fail-closed な二重ゲートとなる。
 - `propose_cli.py:45,136` / `loop_cli.py:277-279` の拒否解除は、C-1〜C-8 全マージ後の
   最後のコミットで行う（fail-closed の解除は最後）。
 

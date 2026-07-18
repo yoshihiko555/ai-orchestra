@@ -566,6 +566,11 @@ def _register_proposed_candidate(
             violations = mh.validate_overlay(
                 overlay_dir, config, target=target, baseline_root=main_root
             )
+        agent_routing_config = (
+            prop._load_source_agent_routing_config(main_root, source_commit)
+            if payload_kind == "config_patch"
+            else None
+        )
         violations.extend(
             mh.validate_config_patch(
                 config_patch,
@@ -573,6 +578,7 @@ def _register_proposed_candidate(
                 _SCHEMA_DIR,
                 target=target,
                 created_by="proposer",
+                agent_routing_config=agent_routing_config,
             )
         )
         if config_patch and overlay_files:

@@ -187,6 +187,41 @@ class TestLedgerEventSchemaOneOf:
 
         assert mh.validate_against_schema(instance, schema, SCHEMA_DIR) == []
 
+    def test_rejected_and_cooldown_loop_iterations_forbid_cand_id(self) -> None:
+        schema = _load("ledger.event.schema.json")["$defs"]["loop_iteration"]
+        for outcome in ("proposal_rejected", "cooldown_wait"):
+            instance = {
+                "event": "loop_iteration",
+                "ts": "2026-07-18T00:00:00+09:00",
+                "schema_version": "1.0",
+                "loop_id": "loop-20260718-routing",
+                "iteration": 1,
+                "outcome": outcome,
+                "quality_best_before": 80.0,
+                "quality_best_after": 80.0,
+                "iteration_cost_usd": 0.0,
+            }
+
+            assert mh.validate_against_schema(instance, schema, SCHEMA_DIR) == []
+            assert mh.validate_against_schema({**instance, "cand_id": "cand-x"}, schema, SCHEMA_DIR)
+
+    def test_candidate_loop_iteration_with_cand_id_is_valid(self) -> None:
+        schema = _load("ledger.event.schema.json")["$defs"]["loop_iteration"]
+        instance = {
+            "event": "loop_iteration",
+            "ts": "2026-07-18T00:00:00+09:00",
+            "schema_version": "1.0",
+            "loop_id": "loop-20260718-routing",
+            "iteration": 1,
+            "cand_id": "cand-x",
+            "outcome": "candidate",
+            "quality_best_before": 80.0,
+            "quality_best_after": 81.0,
+            "iteration_cost_usd": 0.1,
+        }
+
+        assert mh.validate_against_schema(instance, schema, SCHEMA_DIR) == []
+
     def test_ambiguous_or_no_match_event_is_reported(self) -> None:
         schema = _load("ledger.event.schema.json")
         instance = {"event": "not_a_real_event"}

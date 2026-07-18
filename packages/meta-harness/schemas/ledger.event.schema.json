@@ -465,9 +465,9 @@
         {
           "required": ["outcome"],
           "properties": {
-            "outcome": { "enum": ["proposal_rejected", "cooldown_wait"] }
-          },
-          "not": { "required": ["cand_id"] }
+            "outcome": { "enum": ["proposal_rejected", "cooldown_wait"] },
+            "cand_id": { "enum": [] }
+          }
         }
       ]
     },

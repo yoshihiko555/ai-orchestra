@@ -459,6 +459,45 @@ def _valid_routing_proposal() -> dict:
     }
 
 
+def _routing_model_proposal(model: str) -> dict:
+    proposal = _valid_routing_proposal()
+    proposal["config_patch"] = [
+        {
+            "file": "agent-routing/cli-tools.yaml",
+            "key_path": "antigravity.model",
+            "value": model,
+        }
+    ]
+    return proposal
+
+
+def _prepare_stale_routing_config(git_project: Path, git_run, monkeypatch) -> str:
+    routing_config = git_project / _ROUTING_CONFIG_RELATIVE
+    routing_config.write_text(
+        "antigravity:\n  model: source-model\n  model_allowlist:\n    - source-model\n",
+        encoding="utf-8",
+    )
+    git_run("add", _ROUTING_CONFIG_RELATIVE.as_posix(), cwd=git_project)
+    git_run("commit", "-m", "source routing allowlist", cwd=git_project)
+    source_commit = git_run("rev-parse", "HEAD", cwd=git_project).stdout.strip()
+    current_routing_config = {
+        "antigravity": {
+            "model": "current-model",
+            "model_allowlist": ["current-model"],
+        }
+    }
+    routing_config.write_text(
+        "antigravity:\n  model: current-model\n  model_allowlist:\n    - current-model\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        propose_cli.mh,
+        "_load_agent_routing_config",
+        lambda _schema_dir: current_routing_config,
+    )
+    return source_commit
+
+
 def test_propose_registers_candidate_from_stubbed_codex_backend(
     git_project: Path, git_run, tmp_path: Path, run_meta
 ) -> None:
@@ -553,6 +592,78 @@ def test_propose_registers_allowed_routing_config_patch_from_stubbed_backend(
     assert registered[-1]["created_by"] == "proposer"
     assert registered[-1]["proposal"]["based_on_runs"] == [_ROUTING_RUN_ID]
     _assert_no_srt_settings_dirs(tmp_path)
+
+
+def test_propose_path_rejects_model_valid_only_in_current_checkout(
+    git_project: Path, git_run, monkeypatch
+) -> None:
+    _prepare_routing_store(git_project, git_run)
+    source_commit = _prepare_stale_routing_config(git_project, git_run, monkeypatch)
+    proposal = _routing_model_proposal("current-model")
+
+    assert (
+        propose_cli.mh.validate_config_patch(
+            proposal["config_patch"],
+            mh.DEFAULTS,
+            propose_cli._SCHEMA_DIR,
+            target="routing-config",
+            created_by="proposer",
+        )
+        == []
+    )
+
+    with pytest.raises(
+        propose_cli.prop.ProposerError,
+        match="antigravity model is not in model_allowlist: current-model",
+    ):
+        propose_cli._register_proposed_candidate(
+            main_root=git_project,
+            config=mh.DEFAULTS,
+            target="routing-config",
+            parent_id=None,
+            source_commit=source_commit,
+            proposal=proposal,
+            included_run_ids=frozenset({_ROUTING_RUN_ID}),
+            tokens_used=10,
+        )
+
+
+def test_source_model_passes_propose_path_then_current_checkout_gate_rejects(
+    git_project: Path, git_run, monkeypatch
+) -> None:
+    _prepare_routing_store(git_project, git_run)
+    source_commit = _prepare_stale_routing_config(git_project, git_run, monkeypatch)
+    proposal = _routing_model_proposal("source-model")
+    source_routing_config = propose_cli.prop._load_source_agent_routing_config(
+        git_project, source_commit
+    )
+
+    assert (
+        mh.validate_config_patch(
+            proposal["config_patch"],
+            mh.DEFAULTS,
+            propose_cli._SCHEMA_DIR,
+            target="routing-config",
+            created_by="proposer",
+            agent_routing_config=source_routing_config,
+        )
+        == []
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="copied config patch validation failed: .*source-model",
+    ):
+        propose_cli._register_proposed_candidate(
+            main_root=git_project,
+            config=mh.DEFAULTS,
+            target="routing-config",
+            parent_id=None,
+            source_commit=source_commit,
+            proposal=proposal,
+            included_run_ids=frozenset({_ROUTING_RUN_ID}),
+            tokens_used=10,
+        )
 
 
 def test_propose_rejects_routing_config_codex_model_patch(
