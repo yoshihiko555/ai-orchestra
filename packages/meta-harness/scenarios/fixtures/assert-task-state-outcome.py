@@ -16,6 +16,11 @@ the candidate has unrestricted ``Edit``/``Write`` access to, so none of it can s
 truth for this oracle (PR #266 review round 3, point 6). The expected fixture content is instead
 embedded as a literal constant below, matching exactly what every task-state scenario's `setup:`
 step writes.
+
+The new Decisions line in ``record-decision`` mode is matched *exactly* (date prefix aside), not
+by substring containment: a substring check would also accept a negated or otherwise materially
+different decision text as long as it happened to contain the same keywords (PR #266 review
+round 5, point 1).
 """
 
 from __future__ import annotations
@@ -117,7 +122,7 @@ def assert_mark_task_done(plans_path: Path, *, target_task: str, target_status: 
     )
 
 
-def assert_decision_recorded(plans_path: Path, *, decision_substrings: list[str]) -> None:
+def assert_decision_recorded(plans_path: Path, *, expected_decision: str) -> None:
     """Assert the whole document is identical to the canonical fixture except for exactly one
     new line inserted right after the last seeded Decisions bullet -- no other line may differ."""
     text = plans_path.read_text(encoding="utf-8")
@@ -158,8 +163,13 @@ def assert_decision_recorded(plans_path: Path, *, decision_substrings: list[str]
     assert date_match and date_match.group(1) in allowed_dates, (
         f"new Decisions entry is not dated within {sorted(allowed_dates)}: {new_line!r}"
     )
-    assert all(substring in new_line for substring in decision_substrings), (
-        f"new Decisions entry does not contain all of {decision_substrings!r}: {new_line!r}"
+    # Exact match (not substring containment): a substring check would also accept a negated or
+    # otherwise materially different decision text (e.g. "GraphQL は採用しない（理由: ...）")
+    # as long as it happened to contain the same keywords (PR #266 review round 5, point 1).
+    expected_line = f"- {date_match.group(1)}: {expected_decision}"
+    assert new_line == expected_line, (
+        "new Decisions entry does not exactly match the expected decision text:\n"
+        f"expected={expected_line!r}\nactual={new_line!r}"
     )
 
 
@@ -174,7 +184,7 @@ def main(argv: list[str] | None = None) -> None:
 
     record_decision = subparsers.add_parser("record-decision")
     record_decision.add_argument("--plans", type=Path, required=True)
-    record_decision.add_argument("--decision-substring", action="append", default=[], required=True)
+    record_decision.add_argument("--expected-decision", required=True)
 
     args = parser.parse_args(argv)
     project_root = Path(os.environ.get("AI_ORCHESTRA_DIR") or Path.cwd()).resolve()
@@ -185,7 +195,7 @@ def main(argv: list[str] | None = None) -> None:
             plans_path, target_task=args.target_task, target_status=args.target_status
         )
     else:
-        assert_decision_recorded(plans_path, decision_substrings=args.decision_substring)
+        assert_decision_recorded(plans_path, expected_decision=args.expected_decision)
 
 
 if __name__ == "__main__":

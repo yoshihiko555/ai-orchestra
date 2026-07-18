@@ -8,6 +8,11 @@ missing/partial ``--json`` field list fails closed (non-zero exit + stderr messa
 silently returning the fixture payload regardless of what was actually requested (PR #266 review
 round 1, point 1) or hanging on a real network call.
 
+The argv is matched *exactly* against the 5-element ``issue view <number> --json <fields>``
+template -- any extra, missing, duplicate, or reordered argument (e.g. an appended ``--repo
+other/repo``, or a second ``--json``) fails closed instead of being silently ignored (PR #266
+review round 5, point 2).
+
 Before serving, the fixture's exact bytes are hashed and checked against a hardcoded known-good
 set (kept in sync with ``assert-issue-fix-decision.py``'s ``_KNOWN_ISSUE_FIXTURES`` keys, both
 derived from the real scenario `setup:` output and cross-checked by a dedicated regression test):
@@ -46,11 +51,20 @@ _KNOWN_FIXTURE_HASHES = frozenset(
 )
 
 
-def _option(args: list[str], name: str) -> str | None:
-    try:
-        return args[args.index(name) + 1]
-    except (ValueError, IndexError):
+_EXPECTED_ARGV_LENGTH = 5  # "issue" "view" "<number>" "--json" "<fields>"
+
+
+def _parse_argv(args: list[str]) -> tuple[str, str] | None:
+    """Return ``(issue_number, json_fields_raw)`` iff `args` exactly matches the 5-element
+    ``issue view <number> --json <fields>`` template; ``None`` for anything else, including
+    extra/missing/duplicate/reordered arguments."""
+    if len(args) != _EXPECTED_ARGV_LENGTH:
         return None
+    if args[0] != "issue" or args[1] != "view" or args[3] != "--json":
+        return None
+    if args[2].startswith("--"):
+        return None
+    return args[2], args[4]
 
 
 def _append_call_log(
@@ -72,15 +86,17 @@ def main() -> int:
     if args[:2] != ["issue", "view"]:
         print(f"unsupported fake gh invocation: {args}", file=sys.stderr)
         return 2
-    if len(args) < 3 or args[2].startswith("--"):
-        print(f"missing issue number: {args}", file=sys.stderr)
-        return 2
-    requested_number = args[2]
 
-    json_fields_raw = _option(args, "--json")
-    if json_fields_raw is None:
-        print(f"missing required --json flag: {args}", file=sys.stderr)
+    parsed = _parse_argv(args)
+    if parsed is None:
+        print(
+            "argv does not exactly match 'issue view <number> --json <fields>' (extra, "
+            f"missing, duplicate, or reordered arguments are not allowed): {args}",
+            file=sys.stderr,
+        )
         return 2
+    requested_number, json_fields_raw = parsed
+
     requested_fields = frozenset(
         field.strip() for field in json_fields_raw.split(",") if field.strip()
     )

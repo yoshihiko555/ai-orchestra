@@ -54,7 +54,7 @@ critical:
     text: "Plans.md 全体を canonical fixture と突合し、Decisions 末尾への前日/当日/翌日日付の1行挿入以外の差分が一切ないことを検証する（タスク一覧・既存 Decisions・Notes・frontmatter・見出しを包含）"
     oracle: command_exit
     command: >-
-      python3 packages/meta-harness/scenarios/fixtures/assert-task-state-outcome.py record-decision --plans .claude/Plans.md --decision-substring "GraphQL" --decision-substring "フロントエンドの柔軟性"
+      python3 packages/meta-harness/scenarios/fixtures/assert-task-state-outcome.py record-decision --plans .claude/Plans.md --expected-decision "REST API ではなく GraphQL を採用（理由: フロントエンドの柔軟性）"
 checks:
   - id: decision-rationale-preserved
     text: "判断理由が正確に記録される"

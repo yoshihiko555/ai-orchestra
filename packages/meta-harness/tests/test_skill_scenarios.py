@@ -1177,6 +1177,68 @@ def test_issue_fix_gh_fixture_rejects_tampered_fixture_bytes(tmp_path: Path) -> 
     assert not (meta_dir / "gh-call-log.jsonl").exists()
 
 
+def test_issue_fix_gh_fixture_rejects_extra_argv_flag(tmp_path: Path) -> None:
+    """PR #266 review round 5, point 2: an appended `--repo other/repo` (or any other extra
+    argument) must fail closed instead of being silently ignored."""
+    fixture_script = PACKAGE_DIR / "scenarios" / "fixtures" / "fake-gh-issue-view.py"
+    meta_dir = tmp_path / ".meta-harness"
+    meta_dir.mkdir()
+    (meta_dir / "gh-issue-fixture.json").write_bytes(
+        _real_issue_fixture_bytes("fix-greet-none-bug.yaml")
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(fixture_script),
+            "issue",
+            "view",
+            "301",
+            "--json",
+            "number,title,body,labels,assignees",
+            "--repo",
+            "other/repo",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "does not exactly match" in result.stderr
+    assert not (meta_dir / "gh-call-log.jsonl").exists()
+
+
+def test_issue_fix_gh_fixture_rejects_duplicate_json_flag(tmp_path: Path) -> None:
+    fixture_script = PACKAGE_DIR / "scenarios" / "fixtures" / "fake-gh-issue-view.py"
+    meta_dir = tmp_path / ".meta-harness"
+    meta_dir.mkdir()
+    (meta_dir / "gh-issue-fixture.json").write_bytes(
+        _real_issue_fixture_bytes("fix-greet-none-bug.yaml")
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(fixture_script),
+            "issue",
+            "view",
+            "301",
+            "--json",
+            "number,title,body,labels,assignees",
+            "--json",
+            "number",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "does not exactly match" in result.stderr
+    assert not (meta_dir / "gh-call-log.jsonl").exists()
+
+
 def test_issue_fix_gh_fixture_appends_call_log_entry_on_success(tmp_path: Path) -> None:
     fixture_script = PACKAGE_DIR / "scenarios" / "fixtures" / "fake-gh-issue-view.py"
     meta_dir = tmp_path / ".meta-harness"
@@ -1499,7 +1561,7 @@ def test_task_state_record_decision_oracle_accepts_yesterday_today_and_tomorrow(
         plans_path.write_text(text, encoding="utf-8")
 
         fixture.assert_decision_recorded(
-            plans_path, decision_substrings=["GraphQL", "フロントエンドの柔軟性"]
+            plans_path, expected_decision="GraphQL を採用（理由: フロントエンドの柔軟性）"
         )
 
 
@@ -1515,7 +1577,48 @@ def test_task_state_record_decision_oracle_rejects_stale_date(tmp_path: Path) ->
 
     with pytest.raises(AssertionError, match="not dated within"):
         fixture.assert_decision_recorded(
-            plans_path, decision_substrings=["GraphQL", "フロントエンドの柔軟性"]
+            plans_path, expected_decision="GraphQL を採用（理由: フロントエンドの柔軟性）"
+        )
+
+
+def test_task_state_record_decision_oracle_rejects_negated_decision_text(tmp_path: Path) -> None:
+    """PR #266 review round 5, point 1: a substring-containment check would let a negated
+    decision ("GraphQL は採用しない（理由: ...）") slip through as long as it happened to
+    contain the same keywords. The oracle must require an exact match instead."""
+    fixture = _task_state_outcome_fixture()
+    today = datetime.date.today().isoformat()
+    text = _CANONICAL_PLANS_TEXT.replace(
+        "- 2026-01-01: 初期設計方針を確定\n\n## Notes",
+        f"- 2026-01-01: 初期設計方針を確定\n"
+        f"- {today}: GraphQL は採用しない（理由: フロントエンドの柔軟性はあるが学習コストが高い）\n\n## Notes",
+    )
+    plans_path = tmp_path / "Plans.md"
+    plans_path.write_text(text, encoding="utf-8")
+
+    with pytest.raises(AssertionError, match="does not exactly match the expected decision"):
+        fixture.assert_decision_recorded(
+            plans_path, expected_decision="GraphQL を採用（理由: フロントエンドの柔軟性）"
+        )
+
+
+def test_task_state_record_decision_oracle_rejects_partially_matching_decision_text(
+    tmp_path: Path,
+) -> None:
+    """A decision line containing all the expected keywords but with extra/different trailing
+    text must also fail -- not just a full negation."""
+    fixture = _task_state_outcome_fixture()
+    today = datetime.date.today().isoformat()
+    text = _CANONICAL_PLANS_TEXT.replace(
+        "- 2026-01-01: 初期設計方針を確定\n\n## Notes",
+        f"- 2026-01-01: 初期設計方針を確定\n"
+        f"- {today}: GraphQL を採用（理由: フロントエンドの柔軟性、ただし移行コストは要検討）\n\n## Notes",
+    )
+    plans_path = tmp_path / "Plans.md"
+    plans_path.write_text(text, encoding="utf-8")
+
+    with pytest.raises(AssertionError, match="does not exactly match the expected decision"):
+        fixture.assert_decision_recorded(
+            plans_path, expected_decision="GraphQL を採用（理由: フロントエンドの柔軟性）"
         )
 
 
@@ -1533,7 +1636,7 @@ def test_task_state_record_decision_oracle_rejects_entry_written_in_notes_sectio
 
     with pytest.raises(AssertionError, match="content after the new Decisions entry"):
         fixture.assert_decision_recorded(
-            plans_path, decision_substrings=["GraphQL", "フロントエンドの柔軟性"]
+            plans_path, expected_decision="GraphQL を採用（理由: フロントエンドの柔軟性）"
         )
 
 
@@ -1553,7 +1656,7 @@ def test_task_state_record_decision_oracle_rejects_extraneous_decisions_entry(
 
     with pytest.raises(AssertionError, match="differ from the seeded fixture by exactly one"):
         fixture.assert_decision_recorded(
-            plans_path, decision_substrings=["GraphQL", "フロントエンドの柔軟性"]
+            plans_path, expected_decision="GraphQL を採用（理由: フロントエンドの柔軟性）"
         )
 
 
@@ -1570,7 +1673,7 @@ def test_task_state_record_decision_oracle_rejects_deleted_task(tmp_path: Path) 
 
     with pytest.raises(AssertionError, match="differ from the seeded fixture by exactly one"):
         fixture.assert_decision_recorded(
-            plans_path, decision_substrings=["GraphQL", "フロントエンドの柔軟性"]
+            plans_path, expected_decision="GraphQL を採用（理由: フロントエンドの柔軟性）"
         )
 
 
@@ -1590,7 +1693,7 @@ def test_task_state_record_decision_oracle_rejects_reordered_task_lines(tmp_path
 
     with pytest.raises(AssertionError, match="content before the new Decisions entry"):
         fixture.assert_decision_recorded(
-            plans_path, decision_substrings=["GraphQL", "フロントエンドの柔軟性"]
+            plans_path, expected_decision="GraphQL を採用（理由: フロントエンドの柔軟性）"
         )
 
 
@@ -1607,5 +1710,5 @@ def test_task_state_record_decision_oracle_rejects_modified_frontmatter(tmp_path
 
     with pytest.raises(AssertionError, match="content before the new Decisions entry"):
         fixture.assert_decision_recorded(
-            plans_path, decision_substrings=["GraphQL", "フロントエンドの柔軟性"]
+            plans_path, expected_decision="GraphQL を採用（理由: フロントエンドの柔軟性）"
         )
