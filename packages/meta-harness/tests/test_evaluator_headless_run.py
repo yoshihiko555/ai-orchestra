@@ -112,6 +112,47 @@ class TestCheckHeadlessRunOutcome:
         else:
             raise AssertionError("missing result event should raise EvaluatorStageError")
 
+    # EV-18: extract_cost() retains a best-effort ZERO_COST fallback, but the independent
+    # headless outcome guard must prevent that fallback from becoming a passing frontier run.
+    def test_missing_result_zero_cost_fallback_cannot_be_frontier_eligible(
+        self, tmp_path: Path
+    ) -> None:
+        events_path = tmp_path / "events.jsonl"
+        events_path.write_text("", encoding="utf-8")
+
+        cost = ev.extract_cost(events_path)
+        assert cost == ev.ZERO_COST
+        with pytest.raises(ev.EvaluatorStageError, match="no result event"):
+            ev._check_headless_run_outcome(_completed(0), events_path)
+
+        critical = [{"id": "behavior", "passed": True, "oracle": "artifact_exists"}]
+        verdict = ev._determine_verdict(hard_failure=True, critical_checks=critical)
+        assert verdict == "error"
+        point = ev.mh._summarize_candidate_runs(
+            "cand-zero-cost",
+            [
+                {
+                    "run_id": "run-zero-cost",
+                    "scenario_id": "behavioral",
+                    "holdout": False,
+                    "verdict": verdict,
+                    "quality_score": 100.0,
+                    "cost": cost,
+                }
+            ],
+            "total_cost_usd",
+            frozenset({"behavioral"}),
+        )
+
+        assert point["cost_mean"] == 0.0
+        assert point["eligible"] is False
+        frontier, dominated = ev.mh.compute_pareto_frontier(
+            [candidate for candidate in [point] if candidate["eligible"]],
+            target="routing-config",
+        )
+        assert frontier == []
+        assert dominated == []
+
     def test_nonzero_exit_with_success_subtype_still_forces_error(self, tmp_path: Path) -> None:
         """result イベントは success を報告していても、プロセス自体が非ゼロ終了なら error。"""
         events_path = tmp_path / "events.jsonl"

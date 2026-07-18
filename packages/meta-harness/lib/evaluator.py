@@ -480,6 +480,7 @@ def apply_overlay(
     target: str,
     created_by: str = "",
     inherited_overlay_dir: Path | None = None,
+    agent_routing_config: dict | None = None,
 ) -> None:
     """overlay を worktree に適用する（Sec2-1 手順2-3）。register 時と同じ検証を再実行する。"""
     violations = mh.validate_overlay(
@@ -504,6 +505,7 @@ def apply_overlay(
             schema_dir,
             target=target,
             created_by=created_by,
+            agent_routing_config=agent_routing_config,
         )
     )
     if config_patch and overlay_files:
@@ -519,6 +521,7 @@ def apply_overlay(
             worktree_dir=worktree_dir,
             target=target,
             created_by=created_by,
+            agent_routing_config=agent_routing_config,
         )
     for rel in overlay_files:
         src = overlay_dir / rel
@@ -537,6 +540,7 @@ def apply_registered_candidate_overlay(
     worktree_dir: Path,
     schema_dir: Path,
     overlay_dir: Path | None = None,
+    agent_routing_config: dict | None = None,
 ) -> None:
     """Revalidate and apply a candidate lineage against each pre-overlay baseline."""
     target = str(manifest.get("target") or mh.DEFAULT_TARGET)
@@ -553,6 +557,7 @@ def apply_registered_candidate_overlay(
             schema_dir,
             target=target,
             created_by=str(manifest.get("created_by") or ""),
+            agent_routing_config=agent_routing_config,
         )
         return
 
@@ -598,6 +603,7 @@ def apply_registered_candidate_overlay(
             target=target,
             created_by=str(item.get("created_by") or ""),
             inherited_overlay_dir=inherited_overlay if target.startswith("skill:") else None,
+            agent_routing_config=agent_routing_config,
         )
         inherited_overlay = item_overlay
 
@@ -609,6 +615,7 @@ def apply_parent_lineage_to_baseline(
     schema_dir: Path,
     baseline_root: Path,
     parent_id: str | None,
+    agent_routing_config: dict | None = None,
 ) -> None:
     """Apply only the immutable parent lineage to a pre-candidate baseline."""
     if parent_id is None:
@@ -624,6 +631,7 @@ def apply_parent_lineage_to_baseline(
         manifest=parent_manifest,
         worktree_dir=baseline_root,
         schema_dir=schema_dir,
+        agent_routing_config=agent_routing_config,
     )
 
 
@@ -635,6 +643,7 @@ def materialized_candidate_baseline(
     schema_dir: Path,
     manifest: dict,
     source_ref: str | None = None,
+    agent_routing_config: dict | None = None,
 ) -> Iterator[Path]:
     """Materialize source facets plus parent lineage, before the candidate overlay."""
     ref = source_ref or str(manifest.get("source_commit") or "")
@@ -648,6 +657,7 @@ def materialized_candidate_baseline(
             schema_dir=schema_dir,
             baseline_root=baseline,
             parent_id=str(parent_id) if parent_id is not None else None,
+            agent_routing_config=agent_routing_config,
         )
         yield baseline
 
@@ -722,6 +732,7 @@ def _apply_config_patch(
     worktree_dir: Path,
     target: str,
     created_by: str,
+    agent_routing_config: dict | None = None,
 ) -> None:
     """検証済み patch を評価 worktree の `.local.yaml` だけへ実体化する。"""
     try:
@@ -734,6 +745,7 @@ def _apply_config_patch(
         schema_dir,
         target=target,
         created_by=created_by,
+        agent_routing_config=agent_routing_config,
     )
     if violations:
         raise EvaluatorStageError("overlay_apply", "overlay_error", "; ".join(violations))
@@ -2719,7 +2731,9 @@ def evaluate_candidate(
         evaluation_id = generate_evaluation_id()
     regression_budget = {
         "remaining_usd": _non_negative_float_config(
-            (config.get("regression") or {}).get("max_budget_usd", 12.0),
+            (config.get("regression") or {}).get(
+                "max_budget_usd", mh.DEFAULTS["regression"]["max_budget_usd"]
+            ),
             "regression.max_budget_usd",
         )
     }
@@ -2758,6 +2772,7 @@ def candidate_impact_context(
     schema_dir: Path,
     manifest: dict,
     source_ref: str | None = None,
+    agent_routing_config: dict | None = None,
 ) -> skill_targets.SkillImpactContext:
     """Resolve impact authority from the shared pre-candidate baseline helper."""
     if not bool((config.get("regression") or {}).get("enabled", True)):
@@ -2771,11 +2786,29 @@ def candidate_impact_context(
         schema_dir=schema_dir,
         manifest=manifest,
         source_ref=source_ref,
+        agent_routing_config=agent_routing_config,
     ) as baseline:
-        return skill_targets.resolve_skill_impacts(
+        target = str(manifest.get("target") or mh.DEFAULT_TARGET)
+        impact = skill_targets.resolve_skill_impacts(
             baseline,
             [str(path) for path in manifest.get("overlay_files") or []],
-            candidate_target=str(manifest.get("target") or mh.DEFAULT_TARGET),
+            candidate_target=target,
+        )
+        if target != "routing-config":
+            return impact
+
+        # resolve_skill_impacts above validates every registered composition and keeps
+        # the facets-only helper semantics unchanged. Routing changes can affect every
+        # registered skill regardless of overlay paths, so elevate that same validated
+        # composition set to the effective global impact here.
+        composition_dir = baseline / "facets" / "compositions" / "skills"
+        registered_skills = [
+            f"skill:{path.stem}"
+            for path in sorted(composition_dir.glob("*.yaml"), key=lambda item: item.name)
+        ]
+        return skill_targets.SkillImpactContext(
+            impacted_targets=tuple(sorted([mh.DEFAULT_TARGET, *registered_skills])),
+            input_hash=impact.input_hash,
         )
 
 
@@ -2829,7 +2862,8 @@ def _evaluate_scenario_batch(
         regression_cfg.get("max_affected_suites", 4), "regression.max_affected_suites"
     )
     configured_max_budget = _non_negative_float_config(
-        regression_cfg.get("max_budget_usd", 12.0), "regression.max_budget_usd"
+        regression_cfg.get("max_budget_usd", mh.DEFAULTS["regression"]["max_budget_usd"]),
+        "regression.max_budget_usd",
     )
     max_budget = (
         min(configured_max_budget, float(regression_budget["remaining_usd"]))
@@ -2935,7 +2969,10 @@ def _evaluate_scenario_batch(
             )
         )
         regression_cost += sum(float(result["cost"]["total_cost_usd"]) for result in suite_results)
-        suite_verdict = _combined_result_verdict(suite_results)
+        # A suite can legitimately have no scenarios in one phase (claude-harness has
+        # train-only scenarios today). Resolution still succeeded, and promotion checks
+        # the current phase coverage separately, so the empty phase is vacuously passing.
+        suite_verdict = "pass" if not scenario_docs else _combined_result_verdict(suite_results)
         regression_summaries.append(
             {
                 "suite_id": suite_id,

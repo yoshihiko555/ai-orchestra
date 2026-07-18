@@ -1300,13 +1300,15 @@ def test_routing_config_freshness_rejects_ssot_drift(
     }
     evaluation = {
         "routing_config_base_hash": evaluator_hash,
-        "impacted_targets": [],
+        "impacted_targets": ["claude-harness", "skill:handoff"],
         "impact_input_hash": "c" * 64,
     }
     monkeypatch.setattr(
         cli.prm.ev,
         "candidate_impact_context",
-        lambda **_kwargs: cli.prm.ev.skill_targets.SkillImpactContext((), "c" * 64),
+        lambda **_kwargs: cli.prm.ev.skill_targets.SkillImpactContext(
+            ("claude-harness", "skill:handoff"), "c" * 64
+        ),
     )
 
     assert evaluator_hash != promoter_hash
@@ -1349,13 +1351,15 @@ def test_routing_config_freshness_accepts_unchanged_ssot(
     }
     evaluation = {
         "routing_config_base_hash": evaluator_hash,
-        "impacted_targets": [],
+        "impacted_targets": ["claude-harness", "skill:handoff"],
         "impact_input_hash": "c" * 64,
     }
     monkeypatch.setattr(
         cli.prm.ev,
         "candidate_impact_context",
-        lambda **_kwargs: cli.prm.ev.skill_targets.SkillImpactContext((), "c" * 64),
+        lambda **_kwargs: cli.prm.ev.skill_targets.SkillImpactContext(
+            ("claude-harness", "skill:handoff"), "c" * 64
+        ),
     )
 
     assert evaluator_hash == promoter_hash
@@ -1368,13 +1372,10 @@ def test_routing_config_freshness_accepts_unchanged_ssot(
     )
 
 
-def test_routing_config_freshness_ignores_unrelated_impact_context_drift(
+def test_routing_config_freshness_rejects_global_impact_context_drift(
     git_project: Path, git_run, monkeypatch
 ) -> None:
-    """R2-7: routing-config 候補は overlay を持たないため、SSOT hash が一致していれば
-    無関係な skill/facet composition の変更（impact_input_hash の drift）で promotion を
-    拒否してはならない（`resolve_skill_impacts` の input_hash は全 skill composition
-    closure を吸収するため、routing-config には無関係な drift も検出してしまっていた）。"""
+    """Global routing impact must be refreshed when registered skill inputs drift."""
     source_commit = _commit_routing_config(
         git_project,
         git_run,
@@ -1397,27 +1398,27 @@ def test_routing_config_freshness_ignores_unrelated_impact_context_drift(
     }
     evaluation = {
         "routing_config_base_hash": evaluator_hash,
-        "impacted_targets": [],
-        # recorded at evaluate-time
+        "impacted_targets": ["claude-harness", "skill:handoff"],
         "impact_input_hash": "c" * 64,
     }
-    # simulate an unrelated skill composition change between evaluate and promote:
-    # candidate_impact_context now recomputes to a DIFFERENT input_hash.
     monkeypatch.setattr(
         cli.prm.ev,
         "candidate_impact_context",
-        lambda **_kwargs: cli.prm.ev.skill_targets.SkillImpactContext((), "d" * 64),
+        lambda **_kwargs: cli.prm.ev.skill_targets.SkillImpactContext(
+            ("claude-harness", "skill:handoff"), "d" * 64
+        ),
     )
 
     assert evaluator_hash == promoter_hash
 
-    cli.prm._check_freshness(
-        git_project,
-        git_project,
-        manifest,
-        mh.DEFAULTS,
-        holdout_evaluation=evaluation,
-    )
+    with pytest.raises(cli.prm.PromotionValidationError, match="re-run holdout evaluate"):
+        cli.prm._check_freshness(
+            git_project,
+            git_project,
+            manifest,
+            mh.DEFAULTS,
+            holdout_evaluation=evaluation,
+        )
 
 
 def test_routing_config_sidecar_is_included_in_promote_secret_scan(tmp_path: Path) -> None:
@@ -1566,6 +1567,129 @@ def test_promote_preflight_rechecks_target_patch_biconditional(
         cli.prm._validated_candidate_config_patch_items(
             tmp_path, config, manifest, cli.prm._SCHEMA_DIR
         )
+
+
+# Spike B / EV-80: promote は developer checkout の _SCHEMA_DIR ではなく、実際に
+# branch を作る promotion base の agent 名集合で config patch を再検証する。
+def test_promote_revalidates_agent_names_from_promotion_base(git_project: Path, git_run) -> None:
+    routing_config_path = git_project / cli.prm.ROUTING_CONFIG_SSOT_RELATIVE
+    routing_config_path.parent.mkdir(parents=True)
+    routing_config_path.write_text(
+        "agents:\n  promotion-base-only:\n    tool: codex\n",
+        encoding="utf-8",
+    )
+    git_run("add", cli.prm.ROUTING_CONFIG_SSOT_RELATIVE.as_posix(), cwd=git_project)
+    git_run("commit", "-q", "-m", "add promotion base routing config", cwd=git_project)
+    git_run("update-ref", "refs/remotes/origin/main", "HEAD", cwd=git_project)
+    routing_config_path.write_text(
+        "agents:\n  developer-checkout-only:\n    tool: codex\n",
+        encoding="utf-8",
+    )
+
+    config = mh.DEFAULTS
+    overlay_dir = mh.candidates_dir(git_project, config) / _CAND_ID / "overlay"
+    overlay_dir.mkdir(parents=True)
+    patch = [
+        {
+            "file": cli.prm.ROUTING_CONFIG_PATCH_FILE,
+            "key_path": "agents.promotion-base-only.tool",
+            "value": "auto",
+        }
+    ]
+    (overlay_dir / mh.CONFIG_PATCH_FILENAME).write_text(json.dumps(patch), encoding="utf-8")
+    manifest = {
+        "cand_id": _CAND_ID,
+        "parent_id": None,
+        "target": "routing-config",
+        "created_by": "human",
+        "source_commit": git_run("rev-parse", "HEAD", cwd=git_project).stdout.strip(),
+    }
+
+    with pytest.raises(cli.prm.PromotionValidationError, match="unknown agent name"):
+        cli.prm._validated_candidate_config_patch_items(
+            git_project, config, manifest, cli.prm._SCHEMA_DIR
+        )
+
+    assert (
+        cli.prm._validated_promotion_base_config_patch_items(
+            git_project,
+            config,
+            git_project,
+            manifest,
+            cli.prm._SCHEMA_DIR,
+        )
+        == patch
+    )
+
+
+def test_routing_impact_recomputation_applies_parent_against_promotion_base(
+    git_project: Path, git_run
+) -> None:
+    routing_config_path = git_project / cli.prm.ROUTING_CONFIG_SSOT_RELATIVE
+    routing_config_path.parent.mkdir(parents=True)
+    routing_config_path.write_text(
+        "agents:\n  promotion-base-only:\n    tool: codex\n",
+        encoding="utf-8",
+    )
+    git_run("add", cli.prm.ROUTING_CONFIG_SSOT_RELATIVE.as_posix(), cwd=git_project)
+    git_run("commit", "-q", "-m", "add promotion base routing agent", cwd=git_project)
+    source_commit = git_run("rev-parse", "HEAD", cwd=git_project).stdout.strip()
+    git_run("update-ref", "refs/remotes/origin/main", source_commit, cwd=git_project)
+
+    config = mh.DEFAULTS
+    mh.init_store(git_project, config)
+    parent_id = "cand-20260718-130000-promotion-base-parent-abcd"
+    parent_dir = mh.candidates_dir(git_project, config) / parent_id
+    parent_overlay = parent_dir / "overlay"
+    parent_overlay.mkdir(parents=True)
+    patch = [
+        {
+            "file": cli.prm.ROUTING_CONFIG_PATCH_FILE,
+            "key_path": "agents.promotion-base-only.tool",
+            "value": "auto",
+        }
+    ]
+    (parent_overlay / mh.CONFIG_PATCH_FILENAME).write_text(json.dumps(patch), encoding="utf-8")
+    parent_manifest = mh.build_candidate_manifest(
+        cand_id=parent_id,
+        parent_id=None,
+        generation=0,
+        target="routing-config",
+        source_commit=source_commit,
+        config_hash=mh.compute_config_hash(parent_overlay, config),
+        overlay_files=[],
+        description="promotion-base-only routing parent",
+        created_by="human",
+        config_patch_hash=mh.compute_config_patch_hash(patch),
+    )
+    (parent_dir / "manifest.json").write_text(json.dumps(parent_manifest), encoding="utf-8")
+    child_manifest = {
+        "cand_id": _CAND_ID,
+        "parent_id": parent_id,
+        "source_commit": source_commit,
+        "target": "routing-config",
+        "created_by": "human",
+        "overlay_files": [],
+    }
+    developer_agents = cli.prm.mh._load_agent_routing_config(cli.prm._SCHEMA_DIR).get("agents", {})
+    assert "promotion-base-only" not in developer_agents
+    evaluation = {
+        "routing_config_base_hash": cli.prm._git_ref_file_hash(
+            git_project,
+            cli.prm.MAIN_REF,
+            cli.prm.ROUTING_CONFIG_SSOT_RELATIVE,
+        ),
+        "impacted_targets": ["claude-harness"],
+        "impact_input_hash": hashlib.sha256(b"").hexdigest(),
+    }
+
+    cli.prm._check_freshness(
+        git_project,
+        git_project,
+        child_manifest,
+        config,
+        holdout_evaluation=evaluation,
+    )
 
 
 def test_routing_config_structural_verification_aborts_before_writes(tmp_path: Path) -> None:

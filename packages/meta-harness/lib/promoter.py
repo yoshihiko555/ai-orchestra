@@ -43,6 +43,7 @@ ROUTING_CONFIG_TARGET = "routing-config"
 ROUTING_CONFIG_PATCH_FILE = "agent-routing/cli-tools.yaml"
 ROUTING_CONFIG_SSOT_RELATIVE = ev.ROUTING_CONFIG_SSOT_RELATIVE
 ROUTING_CONFIG_MIRROR_RELATIVE = Path(".claude/config/agent-routing/cli-tools.yaml")
+META_HARNESS_SCHEMA_RELATIVE = Path("packages/meta-harness/schemas")
 
 
 class PromotionValidationError(RuntimeError):
@@ -118,7 +119,10 @@ def promote_candidate(
         routing_config_changes = None
         if preflight.manifest.get("target") == ROUTING_CONFIG_TARGET:
             patch_items = _validated_candidate_config_patch_items(
-                main_root, config, preflight.manifest, schema_dir
+                main_root,
+                config,
+                preflight.manifest,
+                preflight.worktree_dir / META_HARNESS_SCHEMA_RELATIVE,
             )
             routing_config_changes = _routing_config_changes_from_base(
                 preflight.worktree_dir, patch_items
@@ -344,7 +348,12 @@ def _validate_preconditions(
         mh.assert_lineage_matches_registered_events(events, lineage)
     except ValueError as exc:
         raise PromotionValidationError(str(exc)) from exc
-    _validated_candidate_config_patch_items(main_root, config, manifest, schema_dir)
+    if target == ROUTING_CONFIG_TARGET:
+        _validated_promotion_base_config_patch_items(
+            main_root, config, project_dir, manifest, schema_dir
+        )
+    else:
+        _validated_candidate_config_patch_items(main_root, config, manifest, schema_dir)
     branch = f"meta/promote-{_cand_slug(cand_id)}"
     worktree_dir = main_root / ".worktrees" / f"meta-promote-{_cand_slug(cand_id)}"
     title = f"feat(meta-harness): promote {cand_id}"
@@ -390,7 +399,7 @@ def _compute_current_frontier(
     points = mh.aggregate_run_points(events, config, target)
     eligible = [p for p in points if p["eligible"]]
     ineligible_ids = [p["cand_id"] for p in points if not p["eligible"]]
-    frontier_ids, dominated_ids = mh.compute_pareto_frontier(eligible)
+    frontier_ids, dominated_ids = mh.compute_pareto_frontier(eligible, target)
     latest = mh.latest_non_holdout_run_completed(events, target)
     zero_hash = "0" * 64
     return {
@@ -400,7 +409,9 @@ def _compute_current_frontier(
         "ledger_line_count": len(events),
         "suite_hash": (latest or {}).get("suite_hash", zero_hash),
         "evaluator_hash": (latest or {}).get("evaluator_hash", zero_hash),
-        "cost_axis": (config.get("frontier") or {}).get("cost_axis", "total_tokens"),
+        "cost_axis": (config.get("frontier") or {}).get(
+            "cost_axis", mh.DEFAULTS["frontier"]["cost_axis"]
+        ),
         "points": [{k: v for k, v in p.items() if k != "eligible"} for p in points],
         "frontier": sorted(frontier_ids),
         "dominated": sorted(set(dominated_ids) | set(ineligible_ids)),
@@ -571,8 +582,9 @@ def _evaluation_runs_are_consistent(
             return False
         verified_targets.add(str(suite_id))
         suite_ids = {str(run_id) for run_id in result.get("run_ids") or []}
-        if not suite_ids:
-            return False
+        # An empty run set is valid only for a suite with no scenarios in this phase.
+        # _evaluation_covers_current_holdouts independently rejects it whenever current
+        # holdout scenarios exist, so a fabricated empty result cannot bypass coverage.
         regression_ids.update(suite_ids)
         matching = {
             str(event.get("run_id")): event
@@ -663,14 +675,12 @@ def _check_freshness(
             raise PromotionValidationError(
                 "routing config SSOT changed since evaluation; re-run evaluate before promote"
             )
-        # routing-config 候補は overlay を持たず(facets/** overlay path が常に空)、
-        # skill impact も常に空集合であるため、以降の generic な impact-context 再検証
-        # (`resolve_skill_impacts` の input_hash は全 skill composition closure を吸収する)
-        # は適用対象外。SSOT hash が一致した時点で routing-config 固有の freshness 判定は
-        # 完了しており、無関係な facet/skill composition の変更だけで promotion を誤って
-        # 拒否してしまうことを防ぐ(PR #252 R2-7 レビュー指摘)。
-        return
     if holdout_evaluation is not None:
+        impact_agent_routing_config = (
+            _load_promotion_base_agent_routing_config(project_dir)
+            if target == ROUTING_CONFIG_TARGET
+            else None
+        )
         try:
             current_impact = ev.candidate_impact_context(
                 main_root=main_root,
@@ -678,6 +688,7 @@ def _check_freshness(
                 schema_dir=_SCHEMA_DIR,
                 manifest=manifest,
                 source_ref=MAIN_REF,
+                agent_routing_config=impact_agent_routing_config,
             )
         except (OSError, ValueError, ev.EvaluatorStageError) as exc:
             raise PromotionValidationError(f"could not recompute impact context: {exc}") from exc
@@ -728,6 +739,32 @@ def _git_ref_file_hash(project_dir: Path, ref: str, relative_path: Path) -> str:
         raise PromotionValidationError(
             f"could not read routing config SSOT from {ref}: {exc}"
         ) from None
+
+
+def _load_promotion_base_agent_routing_config(
+    project_dir: Path, ref: str = MAIN_REF
+) -> dict[str, Any]:
+    completed = _run(
+        ["git", "show", f"{ref}:{ROUTING_CONFIG_SSOT_RELATIVE.as_posix()}"],
+        cwd=project_dir,
+        check=False,
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip() or completed.returncode
+        raise PromotionValidationError(
+            f"could not read routing config SSOT from promotion base {ref}: {detail}"
+        )
+    try:
+        loaded = yaml.safe_load(completed.stdout) or {}
+    except yaml.YAMLError as exc:
+        raise PromotionValidationError(
+            f"could not parse routing config SSOT from promotion base {ref}: {exc}"
+        ) from None
+    if not isinstance(loaded, dict):
+        raise PromotionValidationError(
+            f"routing config SSOT from promotion base {ref} must be a YAML mapping"
+        )
+    return loaded
 
 
 def _release_stale_reservation_if_needed(
@@ -795,7 +832,12 @@ def _apply_candidate_overlay(
     schema_dir: Path,
 ) -> None:
     _check_overlay_integrity(main_root, config, manifest)
-    patch_items = _validated_candidate_config_patch_items(main_root, config, manifest, schema_dir)
+    validation_schema_dir = schema_dir
+    if manifest.get("target") == ROUTING_CONFIG_TARGET:
+        validation_schema_dir = worktree_dir / META_HARNESS_SCHEMA_RELATIVE
+    patch_items = _validated_candidate_config_patch_items(
+        main_root, config, manifest, validation_schema_dir
+    )
     if manifest.get("target") == ROUTING_CONFIG_TARGET:
         _apply_routing_config_patch(worktree_dir, patch_items)
         return
@@ -816,6 +858,7 @@ def _validated_candidate_config_patch_items(
     config: dict,
     manifest: dict[str, Any],
     schema_dir: Path,
+    agent_routing_config: dict | None = None,
 ) -> list[dict[str, Any]]:
     """promotion lineage の patch を entry-point 契約ごと再検証して順番に返す。"""
     items: list[dict[str, Any]] = []
@@ -835,6 +878,7 @@ def _validated_candidate_config_patch_items(
             schema_dir,
             target=str(lineage_item.get("target") or ""),
             created_by=str(lineage_item.get("created_by") or ""),
+            agent_routing_config=agent_routing_config,
         )
         if patch and mh.list_overlay_files(overlay_dir):
             violations.append("config patch candidates must not contain file overlays")
@@ -842,6 +886,23 @@ def _validated_candidate_config_patch_items(
             raise PromotionValidationError("; ".join(violations))
         items.extend(dict(item) for item in patch)
     return items
+
+
+def _validated_promotion_base_config_patch_items(
+    main_root: Path,
+    config: dict,
+    project_dir: Path,
+    manifest: dict[str, Any],
+    schema_dir: Path,
+) -> list[dict[str, Any]]:
+    agent_routing_config = _load_promotion_base_agent_routing_config(project_dir)
+    return _validated_candidate_config_patch_items(
+        main_root,
+        config,
+        manifest,
+        schema_dir,
+        agent_routing_config,
+    )
 
 
 def _routing_config_paths(worktree_dir: Path) -> tuple[Path, Path]:

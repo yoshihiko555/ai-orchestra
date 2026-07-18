@@ -129,7 +129,13 @@ class TestValidateConfigPatch:
     # EV-62 / EV-64 (lib レベル)
     def test_allowlisted_human_routing_patch_is_accepted(self) -> None:
         config = _DEFAULT_OVERLAY_CONFIG
-        patch = [{"file": "agent-routing/cli-tools.yaml", "key_path": "codex.model", "value": "x"}]
+        patch = [
+            {
+                "file": "agent-routing/cli-tools.yaml",
+                "key_path": "codex.model",
+                "value": "gpt-5.6-sol",
+            }
+        ]
 
         errors = mh.validate_config_patch(
             patch,
@@ -186,8 +192,22 @@ class TestValidateConfigPatch:
 
         assert any("CONFIG_PATCH_ALLOWLIST_CEILING" in error for error in errors)
 
-    def test_proposer_created_patch_is_rejected(self) -> None:
-        patch = [{"file": "agent-routing/cli-tools.yaml", "key_path": "codex.model", "value": "x"}]
+    # EV-80
+    @pytest.mark.parametrize(
+        ("key_path", "value"),
+        [
+            ("agents.debugger.tool", "auto"),
+            ("antigravity.model", "gemini-3.1-pro"),
+        ],
+    )
+    def test_proposer_allowed_key_kinds_are_accepted(self, key_path: str, value: str) -> None:
+        patch = [
+            {
+                "file": "agent-routing/cli-tools.yaml",
+                "key_path": key_path,
+                "value": value,
+            }
+        ]
 
         errors = mh.validate_config_patch(
             patch,
@@ -197,7 +217,102 @@ class TestValidateConfigPatch:
             created_by="proposer",
         )
 
-        assert any("created_by='human'" in error for error in errors)
+        assert errors == []
+
+    # EV-87
+    def test_proposer_allows_multiple_items_of_the_same_key_kind(self) -> None:
+        patch = [
+            {
+                "file": "agent-routing/cli-tools.yaml",
+                "key_path": "agents.debugger.tool",
+                "value": "codex",
+            },
+            {
+                "file": "agent-routing/cli-tools.yaml",
+                "key_path": "agents.tester.tool",
+                "value": "claude-direct",
+            },
+        ]
+
+        errors = mh.validate_config_patch(
+            patch,
+            _DEFAULT_OVERLAY_CONFIG,
+            SCHEMA_DIR,
+            target="routing-config",
+            created_by="proposer",
+        )
+
+        assert errors == []
+
+    # EV-87
+    def test_proposer_mixed_key_kinds_are_rejected(self) -> None:
+        patch = [
+            {
+                "file": "agent-routing/cli-tools.yaml",
+                "key_path": "agents.debugger.tool",
+                "value": "codex",
+            },
+            {
+                "file": "agent-routing/cli-tools.yaml",
+                "key_path": "antigravity.model",
+                "value": "gemini-3.1-pro",
+            },
+        ]
+
+        errors = mh.validate_config_patch(
+            patch,
+            _DEFAULT_OVERLAY_CONFIG,
+            SCHEMA_DIR,
+            target="routing-config",
+            created_by="proposer",
+        )
+
+        assert any("mixed kinds" in error for error in errors)
+
+    # EV-87
+    def test_human_may_mix_key_kinds(self) -> None:
+        patch = [
+            {
+                "file": "agent-routing/cli-tools.yaml",
+                "key_path": "agents.debugger.tool",
+                "value": "codex",
+            },
+            {
+                "file": "agent-routing/cli-tools.yaml",
+                "key_path": "antigravity.model",
+                "value": "gemini-3.1-pro",
+            },
+        ]
+
+        errors = mh.validate_config_patch(
+            patch,
+            _DEFAULT_OVERLAY_CONFIG,
+            SCHEMA_DIR,
+            target="routing-config",
+            created_by="human",
+        )
+
+        assert errors == []
+
+    # EV-80
+    def test_proposer_codex_model_patch_is_rejected(self) -> None:
+        patch = [
+            {
+                "file": "agent-routing/cli-tools.yaml",
+                "key_path": "codex.model",
+                "value": "gpt-5.6-sol",
+            }
+        ]
+
+        errors = mh.validate_config_patch(
+            patch,
+            _DEFAULT_OVERLAY_CONFIG,
+            SCHEMA_DIR,
+            target="routing-config",
+            created_by="proposer",
+        )
+
+        assert any("created_by='proposer' is not allowed" in error for error in errors)
 
     def test_allowlist_ceiling_is_exactly_the_initial_release(self) -> None:
         assert mh.CONFIG_PATCH_ALLOWLIST_CEILING == (
@@ -205,6 +320,69 @@ class TestValidateConfigPatch:
             "agent-routing/cli-tools.yaml#codex.model",
             "agent-routing/cli-tools.yaml#antigravity.model",
         )
+
+    # EV-80
+    def test_created_by_policy_is_exactly_the_frozen_phase_a_map(self) -> None:
+        assert mh.CONFIG_PATCH_ALLOWED_CREATED_BY == {
+            "agent-routing/cli-tools.yaml#agents.*.tool": frozenset({"human", "proposer"}),
+            "agent-routing/cli-tools.yaml#codex.model": frozenset({"human"}),
+            "agent-routing/cli-tools.yaml#antigravity.model": frozenset({"human", "proposer"}),
+        }
+
+    # EV-80
+    def test_runtime_config_cannot_expand_created_by_policy(self) -> None:
+        config = {
+            "config_patch": {
+                "allowlist": list(mh.CONFIG_PATCH_ALLOWLIST_CEILING),
+                "allowed_created_by": {
+                    "agent-routing/cli-tools.yaml#codex.model": ["human", "proposer"]
+                },
+            }
+        }
+        errors = mh.validate_config_patch(
+            [
+                {
+                    "file": "agent-routing/cli-tools.yaml",
+                    "key_path": "codex.model",
+                    "value": "gpt-5.6-sol",
+                }
+            ],
+            config,
+            SCHEMA_DIR,
+            target="routing-config",
+            created_by="proposer",
+        )
+
+        assert any("created_by='proposer' is not allowed" in error for error in errors)
+
+    # EV-80
+    def test_ceiling_entry_missing_from_created_by_map_fails_closed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            mh,
+            "CONFIG_PATCH_ALLOWED_CREATED_BY",
+            {
+                key: value
+                for key, value in mh.CONFIG_PATCH_ALLOWED_CREATED_BY.items()
+                if not key.endswith("#antigravity.model")
+            },
+        )
+        errors = mh.validate_config_patch(
+            [
+                {
+                    "file": "agent-routing/cli-tools.yaml",
+                    "key_path": "antigravity.model",
+                    "value": "gemini-3.1-pro",
+                }
+            ],
+            _DEFAULT_OVERLAY_CONFIG,
+            SCHEMA_DIR,
+            target="routing-config",
+            created_by="human",
+        )
+
+        assert any("no created_by policy for ceiling entry" in error for error in errors)
 
     @pytest.mark.parametrize(
         ("patch", "expected"),
@@ -440,13 +618,84 @@ class TestValidateConfigPatch:
 
         assert errors == []
 
+    # EV-81
+    def test_configured_codex_model_is_the_only_initial_allowlisted_value(self) -> None:
+        loaded = mh._load_agent_routing_config(SCHEMA_DIR)
+
+        assert loaded["codex"]["model_allowlist"] == [loaded["codex"]["model"]]
+        assert loaded["codex"]["model_allowlist"] == ["gpt-5.6-sol"]
+
+    # EV-81
+    def test_allowlisted_codex_model_is_accepted(self) -> None:
+        errors = mh.validate_config_patch(
+            [
+                {
+                    "file": "agent-routing/cli-tools.yaml",
+                    "key_path": "codex.model",
+                    "value": "gpt-5.6-sol",
+                }
+            ],
+            _DEFAULT_OVERLAY_CONFIG,
+            SCHEMA_DIR,
+            target="routing-config",
+            created_by="human",
+        )
+
+        assert errors == []
+
+    # EV-81
+    def test_non_allowlisted_codex_model_is_rejected(self) -> None:
+        errors = mh.validate_config_patch(
+            [
+                {
+                    "file": "agent-routing/cli-tools.yaml",
+                    "key_path": "codex.model",
+                    "value": "not-in-the-model-allowlist",
+                }
+            ],
+            _DEFAULT_OVERLAY_CONFIG,
+            SCHEMA_DIR,
+            target="routing-config",
+            created_by="human",
+        )
+
+        assert any("codex model is not in model_allowlist" in error for error in errors)
+
+    # EV-81
+    @pytest.mark.parametrize("codex_config", [{}, {"model_allowlist": []}])
+    def test_missing_or_empty_codex_model_allowlist_rejects_any_model(
+        self, codex_config: dict
+    ) -> None:
+        errors = mh.validate_config_patch(
+            [
+                {
+                    "file": "agent-routing/cli-tools.yaml",
+                    "key_path": "codex.model",
+                    "value": "gpt-5.6-sol",
+                }
+            ],
+            _DEFAULT_OVERLAY_CONFIG,
+            SCHEMA_DIR,
+            target="routing-config",
+            created_by="human",
+            agent_routing_config={"codex": codex_config},
+        )
+
+        assert any("codex model is not in model_allowlist" in error for error in errors)
+
+    def test_non_mapping_codex_config_fails_closed(self) -> None:
+        with pytest.raises(
+            ValueError, match="agent-routing config codex section must be a mapping"
+        ):
+            mh._load_codex_model_allowlist(SCHEMA_DIR, {"codex": "invalid"})
+
     def test_empty_antigravity_model_allowlist_rejects_any_model(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(
             mh,
             "_load_antigravity_model_allowlist",
-            lambda _schema_dir: frozenset(),
+            lambda _schema_dir, _agent_routing_config: frozenset(),
         )
 
         errors = mh.validate_config_patch(
@@ -464,6 +713,12 @@ class TestValidateConfigPatch:
         )
 
         assert any("not in model_allowlist" in error for error in errors)
+
+    def test_non_mapping_antigravity_config_fails_closed(self) -> None:
+        with pytest.raises(
+            ValueError, match="agent-routing config antigravity section must be a mapping"
+        ):
+            mh._load_antigravity_model_allowlist(SCHEMA_DIR, {"antigravity": []})
 
     @pytest.mark.parametrize("value", ["off", "123", "1.5", "null", "no"])
     def test_yaml_ambiguous_model_values_are_rejected(self, value: str) -> None:
@@ -483,13 +738,13 @@ class TestValidateConfigPatch:
 
         assert any("YAML-ambiguous" in error for error in errors)
 
-    def test_unambiguous_model_value_is_accepted(self) -> None:
+    def test_unambiguous_allowlisted_model_value_is_accepted(self) -> None:
         errors = mh.validate_config_patch(
             [
                 {
                     "file": "agent-routing/cli-tools.yaml",
                     "key_path": "codex.model",
-                    "value": "gpt-5.3-codex",
+                    "value": "gpt-5.6-sol",
                 }
             ],
             _DEFAULT_OVERLAY_CONFIG,
@@ -523,7 +778,7 @@ class TestValidateConfigPatch:
                 {
                     "file": "agent-routing/cli-tools.yaml",
                     "key_path": "codex.model",
-                    "value": "x",
+                    "value": "gpt-5.6-sol",
                 }
             ],
             _DEFAULT_OVERLAY_CONFIG,
@@ -532,4 +787,4 @@ class TestValidateConfigPatch:
             created_by="automation",
         )
 
-        assert any("created_by='human'" in error for error in errors)
+        assert any("created_by='automation' is not allowed" in error for error in errors)
