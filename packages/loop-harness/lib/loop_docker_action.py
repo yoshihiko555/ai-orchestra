@@ -41,6 +41,15 @@ CONTAINER_LIFETIME_MARGIN_SECONDS = 60
 DOCKER_EXEC_CLIENT_FAILURE_EXIT_CODE = 125
 _ALLOWED_IDLE_COMMANDS = frozenset({"docker-init", "tini", "timeout", "sleep"})
 _RUNTIME_LABELS = runtime_lifecycle.RuntimeLabels(DOCKER_LABEL)
+# Codex review, PR #262, High: these are set by the container's own `docker run` invocation
+# (build_scenario_container_command's HOME/TMPDIR tmpfs mounts and the container image's own
+# PATH) or by the Git mount spec (GIT_DIR/GIT_WORK_TREE, see loop_git_ephemeral). The host-derived
+# `checker_env` passed into execute_mechanical() must never override any of these -- e.g.
+# `checker_env["HOME"]` is a *host* scratch-home path (see loop_driver_support.maker_env's
+# `scratch_home`) that does not exist inside the container's filesystem namespace, and the host's
+# own `PATH` almost never resolves to this hardened image's toolchain -- while still forwarding
+# every other override (e.g. `RUFF_CACHE_DIR`) mechanical commands legitimately need.
+_MECHANICAL_ENV_RESERVED_KEYS = frozenset({"HOME", "TMPDIR", "PATH", "GIT_DIR", "GIT_WORK_TREE"})
 
 
 class DockerActionError(RuntimeError):
@@ -77,6 +86,10 @@ class DockerActionRequest:
     branch: str
     kind: ActionKind
     remaining_wall_clock_seconds: Callable[[], float]
+    # Codex review, PR #262, High: defaults to True so every existing caller that does not pass
+    # this explicitly keeps today's behavior unchanged. Only `build_action_executor()` sets this
+    # to False, and only for a "checker" action whose resolved params have no `llm_review` block.
+    needs_broker: bool = True
 
 
 class DockerActionRuntime:
@@ -96,6 +109,7 @@ class DockerActionRuntime:
         self.owner_labels = runtime_lifecycle.resource_labels(_RUNTIME_LABELS, self.owner_id)
         self.container_name = ""
         self.broker: broker_runtime.LoopBrokerSession | None = None
+        self._isolated_network: str | None = None
         self.git_session: git_ephemeral.EphemeralGitSession | None = None
         self.settings_bundle: docker_settings.DockerSettingsBundle | None = None
         self._started = False
@@ -136,13 +150,14 @@ class DockerActionRuntime:
         command: str,
         cwd: str,
         timeout_seconds: float,
+        env: Mapping[str, str] | None = None,
     ) -> tuple[str, int]:
         self._ensure_started()
         completed = self._execute(
             ["/bin/bash", "-lc", command],
             cwd=cwd,
             timeout_seconds=timeout_seconds,
-            env={},
+            env=_mechanical_exec_env(env),
         )
         output = completed.stdout
         if completed.stderr:
@@ -216,21 +231,36 @@ class DockerActionRuntime:
         scenario_image = docker_image.ensure_scenario_image(
             self.request.config, self.request.project_dir, runner=self.runner
         )
-        broker_image = docker_image.ensure_broker_image(
-            self.request.config, self.request.project_dir, runner=self.runner
-        )
         self._raise_if_cancelled()
         mounts, container_env, workdir = self._prepare_mounts()
         max_lifetime = _max_lifetime_seconds(self.request.remaining_wall_clock_seconds())
-        self.broker = broker_runtime.start_broker(
-            self.request.config,
-            scope=f"{self.request.loop_id}-{self.request.action_id}",
-            owner_id=self.owner_id,
-            scenario_image_id=scenario_image.image_id,
-            broker_image_id=broker_image.image_id,
-            max_lifetime_seconds=max_lifetime,
-            runner=self.runner,
-        )
+        scope = f"{self.request.loop_id}-{self.request.action_id}"
+        if self.request.needs_broker:
+            broker_image = docker_image.ensure_broker_image(
+                self.request.config, self.request.project_dir, runner=self.runner
+            )
+            self.broker = broker_runtime.start_broker(
+                self.request.config,
+                scope=scope,
+                owner_id=self.owner_id,
+                scenario_image_id=scenario_image.image_id,
+                broker_image_id=broker_image.image_id,
+                max_lifetime_seconds=max_lifetime,
+                runner=self.runner,
+            )
+            internal_network = self.broker.internal_network
+        else:
+            # Codex review, PR #262, High: this action's checker phase has no `llm_review` layer
+            # and will never call execute_claude(), so the full credential broker (and the Claude
+            # OAuth credential its startup requires) is pure overhead here -- and a hard failure
+            # on hosts without one. Only the dedicated internal network the scenario container
+            # still needs is created; see start_isolated_network()'s docstring.
+            internal_network = broker_runtime.start_isolated_network(
+                scope=scope,
+                owner_id=self.owner_id,
+                runner=self.runner,
+            )
+            self._isolated_network = internal_network
         self._raise_if_cancelled()
         self.container_name = (
             f"lh-{profile.runtime.safe_name(self.request.loop_id)}-"
@@ -239,7 +269,7 @@ class DockerActionRuntime:
         spec = profile.ScenarioContainerSpec(
             container_name=self.container_name,
             image_id=scenario_image.image_id,
-            internal_network=self.broker.internal_network,
+            internal_network=internal_network,
             workdir=workdir,
             mounts=mounts,
             env=container_env,
@@ -264,6 +294,20 @@ class DockerActionRuntime:
     def _prepare_mounts(self) -> tuple[tuple[Any, ...], dict[str, str], Path]:
         if self.request.kind == "classifier":
             return (), {}, Path("/tmp")
+        if self.request.kind == "maker":
+            # Codex review, PR #262, High (round 3): this chown must run *before*
+            # prepare_ephemeral_git() below, not after build_maker_git_mount_spec(). The
+            # local-override guard's baseline snapshot (loop_git_ephemeral._prepare_ephemeral_git)
+            # is captured from the worktree's on-disk state as of that call, including each
+            # override file's uid/gid (loop_local_override_guard.LocalOverrideSnapshot). Under a
+            # root-run driver, chowning the worktree to the fixed non-root 65532:65532 identity
+            # *after* that snapshot was already taken changes every tracked override's uid/gid,
+            # so the later `_verify_local_override_snapshot()` call (verify_failed_maker_worktree /
+            # finalize_ephemeral_git) sees that intentional, driver-initiated ownership change as
+            # Maker tampering and safe-stops as `maker_partial_worktree` even though the Maker
+            # never touched those files. Running the chown first means the snapshot already
+            # reflects the container-ready ownership, so no spurious drift is ever recorded.
+            profile.runtime.align_mount_ownership(self.request.worktree_path)
         self.git_session = git_ephemeral.prepare_ephemeral_git(
             project_dir=self.request.project_dir,
             loop_id=self.request.loop_id,
@@ -280,12 +324,12 @@ class DockerActionRuntime:
             git_mounts = git_ephemeral.build_maker_git_mount_spec(self.git_session)
             # Codex review, PR #262, Critical: when the driver process itself runs as root
             # (root-run CI/dev-container environments), non_root_identity() still forces the
-            # scenario container to the fixed non-root 65532:65532 identity, but the worktree and
-            # ephemeral GIT_DIR this same root process just prepared stay root-owned. The two
-            # read-write Maker mounts (worktree_path, ephemeral_dir) must be re-owned to that same
-            # identity or the container's rw mounts become unwritable to the non-root Maker
-            # process. No-op when the driver is not root, since ownership already matches.
-            profile.runtime.align_mount_ownership(self.request.worktree_path)
+            # scenario container to the fixed non-root 65532:65532 identity, but the ephemeral
+            # GIT_DIR this same root process just created (inside prepare_ephemeral_git above,
+            # after the worktree was already re-owned) stays root-owned. This read-write Maker
+            # mount must be re-owned to that same identity or the container's rw mount becomes
+            # unwritable to the non-root Maker process. No-op when the driver is not root, since
+            # ownership already matches.
             profile.runtime.align_mount_ownership(self.git_session.ephemeral_dir)
         else:
             # validate_isolation_config() already enforces this for config-built requests.
@@ -404,6 +448,9 @@ class DockerActionRuntime:
                 self.broker.cleanup()
             except broker_runtime.LoopDockerBrokerError as exc:
                 errors.append(str(exc))
+        elif self._isolated_network is not None:
+            if not broker_runtime.stop_isolated_network(self._isolated_network, runner=self.runner):
+                errors.append(f"could not remove Docker network: {self._isolated_network}")
         return scenario_error, errors
 
     def _finish_git(self, *, action_succeeded: bool) -> None:
@@ -517,6 +564,13 @@ def remove_scenario_container(
 ) -> bool:
     """Remove and confirm absence using the shared production cleanup primitive."""
     return runtime_cli.remove_container(container_name, runner=runner)
+
+
+def _mechanical_exec_env(env: Mapping[str, str] | None) -> dict[str, str]:
+    """Forward the caller's sanitized checker env, minus container-owned reserved keys."""
+    if not env:
+        return {}
+    return {key: value for key, value in env.items() if key not in _MECHANICAL_ENV_RESERVED_KEYS}
 
 
 def _without_settings(command: list[str]) -> list[str]:

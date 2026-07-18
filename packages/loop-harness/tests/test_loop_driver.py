@@ -3996,6 +3996,94 @@ def test_wait_external_review_confirms_findings_reported_after_snapshot(
     assert confirmed_with["result"] is collected
 
 
+def test_wait_external_review_preserves_explicit_findings_when_docker_classifier_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review, PR #262, High (round 3): preserve explicit findings when Docker
+    classification fails.
+
+    `confirm_review_findings_reported` already durably marked this batch's explicit-severity
+    comment processed by the time the classifier runs. If a Docker classifier failure instead
+    propagated out of `_run_wait_external_review` into `_dispatch`'s DockerActionError handler,
+    `_docker_infrastructure_result()` would return an *empty* PhaseCheckResult for
+    wait_external_review -- discarding the already-confirmed blocking finding entirely, and a
+    retried `collect_review_findings()` would filter the same comment out via
+    `processed_comment_ids`, so it could never resurface and the phase could pass silently.
+    """
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.pr_number = 42
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    d._action_executor = driver.lae.DockerActionExecutor(object())
+    monkeypatch.setattr(driver, "_repo_name_with_owner", lambda _wt: "owner/repo")
+    monkeypatch.setattr(
+        prw, "load_pr_review_config", lambda _project: prw.PrReviewConfig(reviewer_allowlist=())
+    )
+    monkeypatch.setattr(prw, "record_ignored_untrusted_reviews", lambda *a, **k: None)
+    monkeypatch.setattr(
+        prw,
+        "wait_for_completion",
+        lambda *a, **k: prw.CompletionOutcome(
+            "review_submitted", completed=True, timed_out=False, infrastructure_failure=False
+        ),
+    )
+
+    # One already-explicit blocking finding, plus one needing classification (fail-safe "high"
+    # placeholder per classify_severity()) that will trigger _classify_pending_findings.
+    explicit_finding = prw.ImportedFinding(
+        signature="sig-explicit",
+        severity="critical",
+        source_comment_id="c1",
+        body_excerpt="fix this now",
+        path="foo.py",
+        line=10,
+        needs_classification=False,
+    )
+    pending_finding = prw.ImportedFinding(
+        signature="sig-pending",
+        severity="high",
+        source_comment_id="c2",
+        body_excerpt="maybe an issue?",
+        path="bar.py",
+        line=5,
+        needs_classification=True,
+    )
+    blocking = lc.IterationFindings(frozenset({"sig-explicit", "sig-pending"}), 2)
+    empty = lc.IterationFindings(frozenset(), 0)
+    collected = prw.ReviewFindingsResult(
+        (explicit_finding, pending_finding), blocking, empty, (), (), 0, 1
+    )
+    monkeypatch.setattr(prw, "collect_review_findings", lambda *a, **k: collected)
+    monkeypatch.setattr(prw, "save_review_findings_snapshot", lambda *a, **k: "artifacts/x.json")
+    monkeypatch.setattr(prw, "confirm_review_findings_reported", lambda *a, **k: None)
+
+    def classify_pending_findings_raises(*_a: Any, **_k: Any) -> prw.ReviewFindingsResult:
+        raise driver.lda.DockerActionError("isolated finding classifier failed")
+
+    monkeypatch.setattr(d, "_classify_pending_findings", classify_pending_findings_raises)
+
+    proposal = lc.ProposeResult(
+        action="wait_external_review",
+        action_id="act-classifier-fail-001",
+        state_version=state.state_version,
+        expected_phase="implementation",
+        phase="implementation",
+        iteration=1,
+        context={},
+    )
+    result = d._run_wait_external_review(proposal, state, {})
+
+    assert result == lc.phase_check_to_dict(prw.phase_check_from_review_findings(collected))
+    assert result["passed"] is False
+    assert result["infrastructure_failure"] is False
+    summaries = {item["summary"] for item in result["results"][0]["findings"]}
+    assert {"fix this now", "maybe an issue?"} == summaries
+
+
 def test_wait_external_review_push_stops_safely_on_push_integrity_violation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

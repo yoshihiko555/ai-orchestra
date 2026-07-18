@@ -83,6 +83,10 @@ def test_scenario_command_applies_complete_security_profile_and_mount_order(
     assert mount_values[1].endswith("readonly")
     assert "/var/run/docker.sock" not in rendered
     assert "/run/docker.sock" not in rendered
+    # Codex review, PR #262, High: sweep_stale_resources() filters on
+    # `label={docker_label}=run`; without this label a crashed driver's scenario container is
+    # invisible to the next run's stale-resource sweep.
+    assert "--label ai.orchestra.loop-harness=run" in rendered
 
 
 def test_classifier_profile_supports_no_mounts_and_tmp_workdir(tmp_path: Path) -> None:

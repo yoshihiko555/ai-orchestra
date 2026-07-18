@@ -197,6 +197,57 @@ def start_broker(
         raise LoopDockerBrokerError(str(exc)) from exc
 
 
+def start_isolated_network(
+    *,
+    scope: str,
+    owner_id: str,
+    runner: SubprocessRunner = subprocess.run,
+) -> str:
+    """Create just the scenario container's dedicated internal network -- no broker container.
+
+    Codex review, PR #262, High: a checker action whose resolved params have only
+    `mechanical.commands` and no `llm_review` block never calls `execute_claude()`
+    (`build_action_executor()` computes `needs_broker=False` for exactly that case), so starting
+    the full credential broker here -- and, more importantly, `start_broker()`'s unconditional
+    `credentials.load_claude_oauth_credential()` -- would turn an otherwise-valid Docker
+    mechanical check into a hard infrastructure failure on any host without a live Claude OAuth
+    credential (Linux/CI, no-token environments). The scenario container still needs *a*
+    dedicated internal network at `docker run` time (`loop_docker_profile._validate_spec` forbids
+    bridge/default/host/none), so only that network is created here; it carries the same
+    owner/run labels a broker-created network would, so `sweep_stale_resources()` below reclaims
+    it identically if the driver crashes before cleanup. `DockerActionRuntime._broker_exec_env()`
+    still fails closed with `DockerActionError` if `execute_claude()` is ever called against a
+    runtime started this way (`self.broker` stays `None`).
+    """
+    nonce = secrets.token_hex(3)
+    internal_network = f"lh-{runtime_profile.safe_name(scope)}-{nonce}-internal"
+    owner_labels = lifecycle.resource_labels(_RUNTIME_LABELS, owner_id)
+    _checked(
+        [
+            "docker",
+            "network",
+            "create",
+            "--internal",
+            "--label",
+            f"{DOCKER_LABEL}=run",
+            *lifecycle.label_args(owner_labels),
+            internal_network,
+        ],
+        runner=runner,
+        message="could not create internal Docker network",
+    )
+    return internal_network
+
+
+def stop_isolated_network(
+    internal_network: str,
+    *,
+    runner: SubprocessRunner = subprocess.run,
+) -> bool:
+    """Remove the network `start_isolated_network()` created."""
+    return runtime_cli.remove_network(internal_network, runner=runner)
+
+
 def sweep_stale_resources(
     owner_id: str,
     *,

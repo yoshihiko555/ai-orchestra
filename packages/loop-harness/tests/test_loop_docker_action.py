@@ -54,7 +54,7 @@ def _config(*, execution_backend: str = "docker") -> dict[str, Any]:
     return config
 
 
-def _request(tmp_path: Path, *, kind: str = "maker") -> object:
+def _request(tmp_path: Path, *, kind: str = "maker", needs_broker: bool = True) -> object:
     config = _config()
     worktree = tmp_path / "worktree"
     worktree.mkdir()
@@ -68,6 +68,7 @@ def _request(tmp_path: Path, *, kind: str = "maker") -> object:
         branch="issue-211",
         kind=kind,
         remaining_wall_clock_seconds=lambda: 600,
+        needs_broker=needs_broker,
     )
 
 
@@ -136,6 +137,81 @@ def test_host_only_action_skips_docker_validation_when_isolation_config_is_inval
     assert isinstance(executor, action_executor.HostActionExecutor)
 
 
+def test_run_checker_without_llm_review_disables_broker(tmp_path: Path) -> None:
+    """Codex review, PR #262, High: a checker action with no `llm_review` block never calls
+    execute_claude(), so build_action_executor() must resolve `needs_broker=False` for it.
+    """
+    executor = action_executor.build_action_executor(
+        _config(),
+        project_dir=str(tmp_path),
+        loop_id="loop-211",
+        action_id="action-001",
+        action="run_checker",
+        params={"mechanical": {"commands": ["true"]}},
+        worktree_path=str(tmp_path),
+        branch="issue-211",
+        remaining_wall_clock_seconds=lambda: 600,
+        host_child_runner=lambda *args: subprocess.CompletedProcess(args[0], 0, "", ""),
+    )
+
+    assert isinstance(executor, action_executor.DockerActionExecutor)
+    assert executor.runtime.request.needs_broker is False
+
+
+def test_run_checker_with_llm_review_keeps_broker(tmp_path: Path) -> None:
+    executor = action_executor.build_action_executor(
+        _config(),
+        project_dir=str(tmp_path),
+        loop_id="loop-211",
+        action_id="action-001",
+        action="run_checker",
+        params={"llm_review": {"selection": "skill-review-policy"}},
+        worktree_path=str(tmp_path),
+        branch="issue-211",
+        remaining_wall_clock_seconds=lambda: 600,
+        host_child_runner=lambda *args: subprocess.CompletedProcess(args[0], 0, "", ""),
+    )
+
+    assert isinstance(executor, action_executor.DockerActionExecutor)
+    assert executor.runtime.request.needs_broker is True
+
+
+def test_run_checker_without_explicit_params_defaults_broker_enabled(tmp_path: Path) -> None:
+    """Test call sites that omit `params` entirely must keep today's always-True behavior."""
+    executor = action_executor.build_action_executor(
+        _config(),
+        project_dir=str(tmp_path),
+        loop_id="loop-211",
+        action_id="action-001",
+        action="run_checker",
+        worktree_path=str(tmp_path),
+        branch="issue-211",
+        remaining_wall_clock_seconds=lambda: 600,
+        host_child_runner=lambda *args: subprocess.CompletedProcess(args[0], 0, "", ""),
+    )
+
+    assert isinstance(executor, action_executor.DockerActionExecutor)
+    assert executor.runtime.request.needs_broker is True
+
+
+def test_run_maker_always_keeps_broker_regardless_of_params(tmp_path: Path) -> None:
+    executor = action_executor.build_action_executor(
+        _config(),
+        project_dir=str(tmp_path),
+        loop_id="loop-211",
+        action_id="action-001",
+        action="run_maker",
+        params={},
+        worktree_path=str(tmp_path),
+        branch="issue-211",
+        remaining_wall_clock_seconds=lambda: 600,
+        host_child_runner=lambda *args: subprocess.CompletedProcess(args[0], 0, "", ""),
+    )
+
+    assert isinstance(executor, action_executor.DockerActionExecutor)
+    assert executor.runtime.request.needs_broker is True
+
+
 def test_docker_executor_never_falls_back_to_host_after_runtime_failure() -> None:
     class FailedRuntime:
         def execute_claude(self, *_args: Any, **_kwargs: Any) -> Any:
@@ -178,6 +254,56 @@ def test_action_executor_cancel_delegates_only_for_docker() -> None:
     action_executor.DockerActionExecutor(runtime).cancel()
 
     assert runtime.cancelled is True
+
+
+def test_maker_worktree_chown_runs_before_local_override_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex review, PR #262, High (round 3): move override snapshot after Docker chown.
+
+    Under a root-run driver, `align_mount_ownership(worktree_path)` must run *before*
+    `prepare_ephemeral_git()` -- which internally snapshots the worktree's project-local override
+    files' uid/gid as the local-override guard's trusted baseline -- so that baseline already
+    reflects the container-ready ownership. Reordering the other way would make the guard see the
+    driver's own chown as Maker tampering and safe-stop as `maker_partial_worktree`.
+    """
+    order: list[str] = []
+    session = SimpleNamespace(
+        runtime_dir=tmp_path / "runtime", ephemeral_dir=tmp_path / "runtime" / "git-ephemeral"
+    )
+    mount_spec = SimpleNamespace(mounts=(), env={"GIT_DIR": "/git", "GIT_WORK_TREE": "/work"})
+
+    def chown(path: Path) -> None:
+        label = "chown_worktree" if path == tmp_path / "worktree" else "chown_ephemeral"
+        order.append(label)
+
+    monkeypatch.setattr(docker_action.profile.runtime, "align_mount_ownership", chown)
+    monkeypatch.setattr(
+        docker_action.git_ephemeral,
+        "prepare_ephemeral_git",
+        lambda **_kwargs: order.append("git_prepare") or session,
+    )
+    monkeypatch.setattr(
+        docker_action.docker_settings,
+        "create_settings_bundle",
+        lambda *_args: (
+            order.append("settings") or docker_settings.DockerSettingsBundle(tmp_path / "trusted")
+        ),
+    )
+    monkeypatch.setattr(
+        docker_action.git_ephemeral,
+        "build_maker_git_mount_spec",
+        lambda *_args: order.append("mount_spec") or mount_spec,
+    )
+
+    runtime = docker_action.DockerActionRuntime(
+        _request(tmp_path, kind="maker"),
+        host_child_runner=lambda *_args: subprocess.CompletedProcess([], 0, "", ""),
+    )
+    runtime._prepare_mounts()
+
+    assert order == ["chown_worktree", "git_prepare", "settings", "mount_spec", "chown_ephemeral"]
 
 
 def test_maker_lifecycle_uses_production_primitives_in_required_order(
@@ -304,14 +430,19 @@ def test_maker_lifecycle_uses_production_primitives_in_required_order(
     )
     runtime.finish(action_succeeded=True)
 
+    # Codex review, PR #262, High (round 3): `ensure_broker_image`/`start_broker` now run after
+    # `_prepare_mounts()` (git_prepare/settings/mount_spec), not before -- `needs_broker` is only
+    # known once the request is built, and skipping both entirely for a mechanical-only checker
+    # request (see `test_mechanical_only_checker_skips_broker_and_uses_isolated_network` below) is
+    # the whole point of this reordering.
     assert events == [
         "daemon",
         "stale_sweep",
         "scenario_image",
-        "broker_image",
         "git_prepare",
         "settings",
         "mount_spec",
+        "broker_image",
         "broker",
         "profile",
         "scenario",
@@ -324,6 +455,189 @@ def test_maker_lifecycle_uses_production_primitives_in_required_order(
         "settings_cleanup",
         "git_cleanup",
     ]
+
+
+def test_mechanical_only_checker_skips_broker_and_uses_isolated_network(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex review, PR #262, High: a checker action with no `llm_review` never needs a broker.
+
+    `needs_broker=False` (the request `build_action_executor()` builds for exactly this case)
+    must skip `ensure_broker_image`/`start_broker` (and therefore the Claude OAuth credential
+    load inside it) entirely, using only a dedicated internal network for the scenario container.
+    """
+    session = SimpleNamespace(
+        runtime_dir=tmp_path / "runtime", ephemeral_dir=tmp_path / "runtime" / "git-ephemeral"
+    )
+    bundle = docker_settings.DockerSettingsBundle(tmp_path / "trusted")
+    mount_spec = SimpleNamespace(mounts=(), env={"GIT_DIR": "/git", "GIT_WORK_TREE": "/work"})
+    captured_networks: list[str] = []
+
+    def fail_if_called(name: str) -> Any:
+        def _raise(*_args: Any, **_kwargs: Any) -> Any:
+            raise AssertionError(f"{name} must not be called for a mechanical-only checker")
+
+        return _raise
+
+    monkeypatch.setattr(
+        docker_action.runtime_cli, "docker_daemon_available", lambda **_kwargs: True
+    )
+    monkeypatch.setattr(
+        docker_action.broker_runtime, "sweep_stale_resources", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(
+        docker_action.docker_image,
+        "ensure_scenario_image",
+        lambda *_args, **_kwargs: SimpleNamespace(image_id=IMAGE_ID),
+    )
+    monkeypatch.setattr(
+        docker_action.docker_image, "ensure_broker_image", fail_if_called("ensure_broker_image")
+    )
+    monkeypatch.setattr(
+        docker_action.broker_runtime, "start_broker", fail_if_called("start_broker")
+    )
+    monkeypatch.setattr(
+        docker_action.git_ephemeral,
+        "prepare_ephemeral_git",
+        lambda **_kwargs: session,
+    )
+    monkeypatch.setattr(
+        docker_action.docker_settings, "create_settings_bundle", lambda *_args: bundle
+    )
+    monkeypatch.setattr(
+        docker_action.git_ephemeral, "build_checker_git_mount_spec", lambda *_a, **_k: mount_spec
+    )
+
+    def start_isolated_network(*, scope: str, owner_id: str, runner: Any) -> str:
+        del scope, owner_id, runner
+        network = "lh-isolated-internal"
+        captured_networks.append(network)
+        return network
+
+    stopped_networks: list[str] = []
+    monkeypatch.setattr(
+        docker_action.broker_runtime, "start_isolated_network", start_isolated_network
+    )
+    monkeypatch.setattr(
+        docker_action.broker_runtime,
+        "stop_isolated_network",
+        lambda name, *, runner: stopped_networks.append(name) or True,
+    )
+
+    seen_specs: list[Any] = []
+
+    def build_command(spec: Any) -> list[str]:
+        seen_specs.append(spec)
+        return ["docker", "run"]
+
+    monkeypatch.setattr(docker_action.profile, "build_scenario_container_command", build_command)
+
+    def docker_run(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if command[:2] == ["docker", "run"]:
+            return subprocess.CompletedProcess(command, 0, "container-id\n", "")
+        if command[:2] == ["docker", "top"]:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                "PID COMMAND COMMAND\n"
+                "101 docker-init /usr/bin/docker-init -- /usr/bin/timeout 660s "
+                "/usr/bin/sleep infinity\n"
+                "102 timeout /usr/bin/timeout 660s /usr/bin/sleep infinity\n"
+                "103 sleep /usr/bin/sleep infinity\n",
+                "",
+            )
+        raise AssertionError(command)
+
+    monkeypatch.setattr(docker_action.runtime_cli, "run", docker_run)
+    monkeypatch.setattr(
+        docker_action.runtime_cli, "remove_container", lambda *_args, **_kwargs: True
+    )
+    monkeypatch.setattr(
+        docker_action.git_ephemeral,
+        "verify_failed_maker_worktree",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("checker must not finalize git")),
+    )
+    monkeypatch.setattr(docker_action.docker_settings, "cleanup_settings_bundle", lambda *_a: None)
+    monkeypatch.setattr(docker_action.git_ephemeral, "cleanup_ephemeral_git", lambda *_a: None)
+
+    def host_child(
+        command: list[str], _cwd: str, _timeout: float, _env: dict[str, str]
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(command, 0, "ok", "")
+
+    runtime = docker_action.DockerActionRuntime(
+        _request(tmp_path, kind="checker", needs_broker=False),
+        host_child_runner=host_child,
+    )
+    output, exit_code = runtime.execute_mechanical("true", "/tmp", 30)
+    runtime.finish(action_succeeded=True)
+
+    assert exit_code == 0
+    assert output == "ok"
+    assert runtime.broker is None
+    assert captured_networks == ["lh-isolated-internal"]
+    assert seen_specs[0].internal_network == "lh-isolated-internal"
+    assert stopped_networks == ["lh-isolated-internal"]
+
+
+def test_mechanical_exec_env_forwards_overrides_but_not_container_reserved_keys() -> None:
+    """Codex review, PR #262, High: preserve checker env for Docker mechanical commands.
+
+    `RUFF_CACHE_DIR`-style tool overrides must reach the container so mechanical commands can
+    redirect writes off the read-only checker worktree, but `HOME`/`TMPDIR`/`PATH`/`GIT_DIR`/
+    `GIT_WORK_TREE` are container-owned (tmpfs mounts, the image's own toolchain, the ephemeral
+    Git wiring) and must never be clobbered by the host-derived checker env.
+    """
+    checker_env = {
+        "RUFF_CACHE_DIR": "/tmp/ruff-cache",
+        "HOME": "/host/scratch-home",
+        "TMPDIR": "/host/tmp",
+        "PATH": "/host/bin:/usr/bin",
+        "GIT_DIR": "/host/git-dir",
+        "GIT_WORK_TREE": "/host/worktree",
+    }
+
+    merged = docker_action._mechanical_exec_env(checker_env)
+
+    assert merged == {"RUFF_CACHE_DIR": "/tmp/ruff-cache"}
+    assert docker_action._mechanical_exec_env(None) == {}
+    assert docker_action._mechanical_exec_env({}) == {}
+
+
+def test_execute_mechanical_forwards_env_to_docker_exec(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = docker_action.DockerActionRuntime(
+        _request(tmp_path, kind="checker", needs_broker=False),
+        host_child_runner=lambda *_args: subprocess.CompletedProcess([], 0, "", ""),
+    )
+    runtime.container_name = "lh-action"
+    runtime._started = True
+    monkeypatch.setattr(docker_action, "enforce_scenario_container_idle", lambda *_a, **_k: None)
+    seen_env: list[dict[str, str]] = []
+
+    def host_child(
+        command: list[str], _cwd: str, _timeout: float, _env: dict[str, str]
+    ) -> subprocess.CompletedProcess[str]:
+        seen_env.append(dict(_env))
+        # `--env KEY=VALUE` flags are what actually reach `docker exec`; assert on those too.
+        rendered = " ".join(command)
+        assert "--env RUFF_CACHE_DIR=/tmp/ruff-cache" in rendered
+        assert "--env HOME=" not in rendered
+        return subprocess.CompletedProcess(command, 0, "ok", "")
+
+    runtime.host_child_runner = host_child
+    output, exit_code = runtime.execute_mechanical(
+        "true",
+        "/tmp",
+        30,
+        env={"RUFF_CACHE_DIR": "/tmp/ruff-cache", "HOME": "/host/scratch-home"},
+    )
+
+    assert exit_code == 0
+    assert output == "ok"
 
 
 def test_non_idle_process_forces_container_removal(

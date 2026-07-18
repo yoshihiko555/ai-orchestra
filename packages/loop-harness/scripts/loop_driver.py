@@ -998,6 +998,7 @@ class LoopDriver:
                 branch=state.branch,
                 remaining_wall_clock_seconds=self._remaining_wall_clock_seconds,
                 host_child_runner=self._run_host_child,
+                params=params,
             )
         except ldc.DockerConfigError as exc:
             return self._docker_infrastructure_result(proposal, state, params, str(exc))
@@ -1779,7 +1780,22 @@ class LoopDriver:
             self.loop_id, self.project_dir, result, self.lease_token, action_id=action_id
         )
         if result.needs_classification_count:
-            result = self._classify_pending_findings(state, action_id, result, config)
+            try:
+                result = self._classify_pending_findings(state, action_id, result, config)
+            except lda.DockerActionError:
+                # Codex review, PR #262, High (round 3): confirm_review_findings_reported()
+                # above already durably marked this batch's explicit-severity comments as
+                # processed. Letting a classifier failure propagate from here into `_dispatch`'s
+                # DockerActionError handler would return `_docker_infrastructure_result()`'s
+                # *empty* PhaseCheckResult for wait_external_review, discarding those
+                # already-confirmed findings outright; a retried `collect_review_findings()`
+                # would then filter the same comments out via `processed_comment_ids`, so a
+                # genuine blocking finding could never resurface and the phase could pass
+                # silently. Falling back to the pre-classification `result` instead is still
+                # safe to report as-is: `classify_severity()` already assigned every
+                # `needs_classification` finding the fail-safe "high" (blocking) severity
+                # placeholder until it is actually classified, so this never under-reports.
+                pass
         return lc.phase_check_to_dict(prw.phase_check_from_review_findings(result))
 
     def _already_pushed_this_iteration(

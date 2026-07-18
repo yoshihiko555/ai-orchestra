@@ -27,6 +27,13 @@ _DOCKER_SOCKET_PATHS = frozenset({"/run/docker.sock", "/var/run/docker.sock"})
 
 DockerProfileError = runtime.DockerProfileError
 
+# Codex review, PR #262, High: must match the base run label docker_runtime_lifecycle's
+# `sweep_stale_resources()` filters on (`label={docker_label}=run`, see loop_docker_action.py's
+# and loop_docker_broker.py's own `DOCKER_LABEL`). Without it here, a scenario container started
+# by this module carries only the owner/parent/created-at labels and is invisible to the
+# `docker ps --filter label=...=run` sweep a crashed driver's next run relies on to reclaim it.
+DOCKER_LABEL = "ai.orchestra.loop-harness"
+
 
 class BindMount(Protocol):
     """Structural type shared by Maker/Checker ordered mount specs."""
@@ -63,6 +70,8 @@ def build_scenario_container_command(spec: ScenarioContainerSpec) -> list[str]:
         "--rm",
         "--name",
         spec.container_name,
+        "--label",
+        f"{DOCKER_LABEL}=run",
         *_label_args(spec.owner_labels),
         "--network",
         spec.internal_network,
