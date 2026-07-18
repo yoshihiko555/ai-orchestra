@@ -1970,7 +1970,7 @@ def evaluator_execution_snapshot(config: dict) -> dict[str, Any]:
     """Return the global execution settings that define evaluator hash scope.
 
     Includes settings that affect cross-run cost/quality comparability even
-    when no scenario/suite file changes (Issue #261 PR2): judge model/effort,
+    when no scenario/suite file changes (Issue #261 PR2): judge tool/model/effort,
     broker pricing upper bounds, the broker model allowlist, and the global
     per-scenario budget default. A config-only change to any of these must
     stale out prior evaluator_hash-scoped runs.
@@ -1984,6 +1984,9 @@ def evaluator_execution_snapshot(config: dict) -> dict[str, Any]:
         "model": evaluate_cfg.get("model"),
         "max_output_tokens_default": siso.resolve_max_output_tokens_default(config),
         "regression": config.get("regression") or {},
+        # judge.tool changes the scoring path entirely (claude-bare vs codex), so it
+        # must be part of the hash scope too (CodeRabbit High, PR #265).
+        "judge_tool": judge_cfg.get("tool", "claude-bare"),
         "judge_model": judge_cfg.get("model"),
         "judge_effort": judge_cfg.get("effort"),
         "broker_pricing_upper_bound_usd_per_million": broker_cfg.get(

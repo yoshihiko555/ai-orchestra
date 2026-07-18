@@ -281,7 +281,7 @@ class TestScenarioExecutionEnvelope:
         global scenario budget default must be part of the evaluator hash scope, since a
         config-only change to any of these breaks cost/quality comparability across runs."""
         config = {
-            "judge": {"model": "claude-sonnet-5", "effort": "high"},
+            "judge": {"tool": "codex", "model": "claude-sonnet-5", "effort": "high"},
             "evaluate": {
                 "model": "claude-sonnet-5",
                 "isolation": {
@@ -296,6 +296,7 @@ class TestScenarioExecutionEnvelope:
 
         snapshot = ev.evaluator_execution_snapshot(config)
 
+        assert snapshot["judge_tool"] == "codex"
         assert snapshot["judge_model"] == "claude-sonnet-5"
         assert snapshot["judge_effort"] == "high"
         assert snapshot["broker_pricing_upper_bound_usd_per_million"] == {
@@ -338,6 +339,10 @@ class TestScenarioExecutionEnvelope:
     @pytest.mark.parametrize(
         "override",
         [
+            # judge.tool changes the scoring path (claude-bare vs codex) with no other
+            # config change, so it alone must stale prior evaluator_hash-scoped runs
+            # (CodeRabbit High, PR #265).
+            {"judge": {"tool": "codex"}},
             # judge.model repin must also extend model_allowlist, or the fail-closed
             # guard (Issue #261 PR2 review round 2) would reject the config outright
             # before a hash could even be computed -- see the dedicated fail-closed
@@ -366,7 +371,13 @@ class TestScenarioExecutionEnvelope:
             },
             {"scenario_run": {"max_budget_usd_default": 54.0}},
         ],
-        ids=["judge_model", "broker_pricing", "broker_model_allowlist", "scenario_run_budget"],
+        ids=[
+            "judge_tool",
+            "judge_model",
+            "broker_pricing",
+            "broker_model_allowlist",
+            "scenario_run_budget",
+        ],
     )
     def test_evaluator_hash_changes_when_cost_comparability_scope_changes(
         self, override: dict

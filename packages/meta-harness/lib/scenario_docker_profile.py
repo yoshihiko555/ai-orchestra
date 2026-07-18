@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 import math
+import re
 import sys
 from pathlib import Path
 from typing import Any
+
+_CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 _PACKAGE_DIR = Path(__file__).resolve().parent.parent
 _DOCKER_RUNTIME_LIB = _PACKAGE_DIR.parent / "docker-runtime" / "lib"
@@ -352,6 +355,23 @@ def resources_config(config: dict) -> dict[str, Any]:
     }
 
 
+def _validate_model_slug(value: Any, *, field: str) -> str:
+    """Validate a single model slug used for the broker allowlist/CSV env (CodeRabbit
+    High, PR #265): must be a non-empty string, free of commas (the allowlist env is
+    CSV-joined -- a comma inside one element would silently expand into multiple
+    entries) and free of control characters."""
+    if not isinstance(value, str) or not value.strip():
+        raise DockerProfileError(f"{field} must be a non-empty model slug string, got {value!r}.")
+    if "," in value:
+        raise DockerProfileError(
+            f"{field} must not contain a comma (the broker allowlist env is CSV-joined "
+            f"and a comma would silently expand into multiple entries): {value!r}."
+        )
+    if _CONTROL_CHAR_RE.search(value):
+        raise DockerProfileError(f"{field} must not contain control characters: {value!r}.")
+    return value
+
+
 def effective_broker_model_allowlist(config: dict) -> list[str]:
     """Return the validated broker model allowlist (Issue #261 PR2 review round 2).
 
@@ -370,6 +390,11 @@ def effective_broker_model_allowlist(config: dict) -> list[str]:
     `pricing_upper_bound_usd_per_million`, under-counting real cost. Any pinned
     model missing from the configured allowlist now raises
     :class:`DockerProfileError` with an actionable message instead.
+
+    `model_allowlist` must be a `list`, not a bare string (CodeRabbit High, PR #265):
+    iterating a scalar string produces one entry per character, which would silently
+    admit almost any single-character model id. Every element (and both pinned
+    models) is further validated by :func:`_validate_model_slug`.
     """
     evaluate_cfg = config.get("evaluate") or {}
     judge_cfg = config.get("judge") or {}
@@ -377,8 +402,19 @@ def effective_broker_model_allowlist(config: dict) -> list[str]:
     judge_model = judge_cfg.get("model")
     if not evaluate_model or not judge_model:
         return []
+    _validate_model_slug(evaluate_model, field="evaluate.model")
+    _validate_model_slug(judge_model, field="judge.model")
     broker = (evaluate_cfg.get("isolation") or {}).get("broker") or {}
-    configured = broker.get("model_allowlist") or []
+    raw_configured = broker.get("model_allowlist")
+    if raw_configured is not None and not isinstance(raw_configured, list):
+        raise DockerProfileError(
+            "evaluate.isolation.broker.model_allowlist must be a list of model slug "
+            f"strings, got {type(raw_configured).__name__} ({raw_configured!r}); a bare "
+            "string would be silently iterated character-by-character."
+        )
+    configured = raw_configured or []
+    for index, item in enumerate(configured):
+        _validate_model_slug(item, field=f"evaluate.isolation.broker.model_allowlist[{index}]")
     configured_set = {str(item) for item in configured}
     pinned = {str(evaluate_model), str(judge_model)}
     missing = sorted(pinned - configured_set)

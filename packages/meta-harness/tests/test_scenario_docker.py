@@ -1112,6 +1112,56 @@ def test_broker_env_passes_when_repinned_model_matches_allowlist() -> None:
     assert broker_env["DR_BROKER_MODEL_ALLOWLIST"] == broker_env["MH_BROKER_MODEL_ALLOWLIST"]
 
 
+def test_broker_env_raises_when_model_allowlist_is_a_bare_string() -> None:
+    """CodeRabbit High (PR #265): a bare string `model_allowlist` (a common YAML typo
+    for a single-item list) must not be silently iterated character-by-character into
+    a set of single-character "allowed" models."""
+    config = copy.deepcopy(mh.DEFAULTS)
+    config["evaluate"]["isolation"]["broker"]["model_allowlist"] = "claude-sonnet-5"
+
+    with pytest.raises(docker.profile.DockerProfileError) as excinfo:
+        docker.profile.broker_env(config, "run-token", 8787)
+
+    assert "model_allowlist must be a list" in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "bad_allowlist",
+    [
+        pytest.param(["claude-sonnet-5", "claude-sonnet-5,claude-opus-4-8"], id="comma"),
+        pytest.param(["claude-sonnet-5", "claude-\x00-injected"], id="control_char"),
+        pytest.param(["claude-sonnet-5", "   "], id="blank"),
+        pytest.param(["claude-sonnet-5", 5], id="non_string_element"),
+    ],
+)
+def test_broker_env_raises_when_allowlist_element_is_invalid(bad_allowlist: list) -> None:
+    """CodeRabbit High (PR #265): a comma inside one allowlist element would silently
+    expand into multiple entries once the allowlist is CSV-joined for the broker env,
+    so it (and other malformed elements) must be rejected outright."""
+    config = copy.deepcopy(mh.DEFAULTS)
+    config["evaluate"]["isolation"]["broker"]["model_allowlist"] = bad_allowlist
+
+    with pytest.raises(docker.profile.DockerProfileError):
+        docker.profile.broker_env(config, "run-token", 8787)
+
+
+def test_broker_env_accepts_a_clean_model_allowlist() -> None:
+    """A normal list of clean model slugs must pass through unchanged (no false
+    positives from the new type/element validation)."""
+    config = copy.deepcopy(mh.DEFAULTS)
+    config["evaluate"]["isolation"]["broker"]["model_allowlist"] = [
+        "claude-sonnet-5",
+        "claude-opus-4-8",
+    ]
+    config["evaluate"]["model"] = "claude-sonnet-5"
+    config["judge"]["model"] = "claude-opus-4-8"
+
+    broker_env = docker.profile.broker_env(config, "run-token", 8787)
+
+    allowed = set(broker_env["DR_BROKER_MODEL_ALLOWLIST"].split(","))
+    assert allowed == {"claude-sonnet-5", "claude-opus-4-8"}
+
+
 def test_prebuilt_images_require_digest_and_accept_multiarch_reference() -> None:
     config = copy.deepcopy(mh.DEFAULTS)
     config["evaluate"]["isolation"]["auto_build_images"] = False
