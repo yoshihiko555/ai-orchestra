@@ -517,6 +517,18 @@ function reconcile(loop_id, project_dir):
 > するのみ（LP-1 は human-in-the-loop 前提であり、LP-2 の無人 fail-closed 停止〔EV-80/EV-82〕とは
 > 運用文脈が異なるため）。ツールレベル強制そのもの（Issue #196 が挙げたもう一つの選択肢）は
 > 引き続き未実装。
+>
+> **opt-in ゲーティング（2026-07-20 追記、レビュー追随）**: この機構は `precedent_push_check`
+> フラグ（`start()`/`propose()`/`complete()` 共通、既定 `False`）で一貫してゲートされる。
+> `loop_step.py`（LP-1）のみこのフラグを明示的に `True` で渡す。`loop_driver.py`（LP-2）は
+> 独自かつより厳密な push-integrity 機構（`loop_driver_support` の `get_remote_head()`/
+> `classify_push_integrity()`）を既に持つため、`start()` が内部で呼ぶ `_initial_state()` の
+> loop 作成時シード（`git ls-remote` 照会）を含め、一切の追加ネットワーク往復・
+> `remote_head_baseline` 書き込みを受け取らない。また `complete()` 側のベースライン更新も、
+> ネットワーク往復を伴う `git ls-remote` 照会自体は `guarded_lease_section` の排他 flock を
+> 取得する**前**に実行し、flock 保持中は事前に取得済みの値を代入するだけに留める
+> （lease 更新・heartbeat・`loop_status.py` の purge・並行 `resume()` など、同じ flock を
+> 必要とする他操作を最大 `REMOTE_LS_TIMEOUT_SECONDS`（10 秒）ブロックしないため）。
 
 ### 3.3 評価順序（擬似コード）
 

@@ -487,7 +487,15 @@ def start(
     else:
         lock = preacquired_lock
         _ensure_valid_lease(loop_id, project_dir, lock.lease_token)
-    state = _initial_state(loop_id, definition_id, repo_identity_hash, worktree_path, branch, phase)
+    state = _initial_state(
+        loop_id,
+        definition_id,
+        repo_identity_hash,
+        worktree_path,
+        branch,
+        phase,
+        precedent_push_check=precedent_push_check,
+    )
     append_journal_event(loop_id, project_dir, "loop_created", "step", None, asdict(state))
     _write_state(state, project_dir)
     result = propose(
@@ -657,6 +665,16 @@ def complete(
         validate_implementation_checker_result(state, result, project_dir)
     new_version = state.state_version + 1
     payload = _completed_payload(action, result)
+    # Issue #196 follow-up (PR review high-severity fix): `apply_action_effect()`'s
+    # `remote_head_baseline` refresh is network I/O (`_remote_head()`'s `git ls-remote`, up to
+    # `REMOTE_LS_TIMEOUT_SECONDS`). Query it here, *before* acquiring the exclusive lease flock
+    # below, so a slow/hanging remote cannot hold up every other flock-holding operation (lease
+    # renewal, heartbeat, `loop_status.py` purge, a concurrent `resume()`) for as long as that
+    # query takes on every `advance_phase`/qualifying `wait_external_review` completion. Mirrors
+    # `propose()`'s own `_detect_precedent_push()` call, which likewise runs outside its lock.
+    remote_head_refresh = _precompute_remote_head_refresh(
+        state, action, loop_id, project_dir, precedent_push_check=precedent_push_check
+    )
     # DH1: see `propose()` for why validation and the write must share one held flock.
     with guarded_lease_section(loop_id, project_dir, lease_token):
         _ensure_unchanged_since(loop_id, project_dir, state.state_version)
@@ -672,6 +690,7 @@ def complete(
             action_id,
             selected_maker_agent=selected_maker_agent,
             precedent_push_check=precedent_push_check,
+            remote_head_refresh=remote_head_refresh,
         )
         state.last_completed_action = LastCompletedAction(
             action_id=action_id,
@@ -781,6 +800,22 @@ def attach(loop_id: str, project_dir: str, owner_id: str, ttl_seconds: int) -> P
     return _with_context(result, {"lease_token": lock.lease_token})
 
 
+class _NotPrecomputed:
+    """Sentinel marking `remote_head_refresh` as not supplied by the caller (Issue #196 follow-up,
+    PR review high-severity fix).
+
+    Distinguishes "the caller wants `_remote_head()` queried now" (this sentinel, the default for
+    direct/backward-compatible callers of `apply_action_effect()`/`_apply_advance_phase()`) from
+    "the caller already queried it and is passing the resolved value" (`None`, meaning no refresh
+    applies or the query was unverifiable, or a real sha/`LP1_REMOTE_HEAD_ABSENT` string) -- plain
+    `None` on its own would be ambiguous between "not computed yet" and "computed, nothing to
+    apply".
+    """
+
+
+_REMOTE_HEAD_NOT_PRECOMPUTED = _NotPrecomputed()
+
+
 def apply_action_effect(
     state: LoopState,
     action: str,
@@ -792,6 +827,7 @@ def apply_action_effect(
     allow_legacy_maker_result: bool = False,
     *,
     precedent_push_check: bool = False,
+    remote_head_refresh: str | None | _NotPrecomputed = _REMOTE_HEAD_NOT_PRECOMPUTED,
 ) -> None:
     """Apply a completed action to state.
 
@@ -799,6 +835,14 @@ def apply_action_effect(
     why this defaults off (LP-2 shares this function via `complete()` and already has its own
     push-integrity mechanism) -- gates whether `ADVANCE_PHASE`/`WAIT_EXTERNAL_REVIEW` refresh
     `state.remote_head_baseline` at all.
+
+    `remote_head_refresh` (Issue #196 follow-up, PR review high-severity fix): the already-
+    observed remote HEAD to seed as the new baseline, or `None` when no refresh should happen.
+    Defaults to the `_REMOTE_HEAD_NOT_PRECOMPUTED` sentinel for direct/backward-compatible
+    callers (e.g. unit tests invoking this function standalone), which falls back to querying
+    `_remote_head()` right here. `complete()` never hits that fallback: it precomputes the query
+    result *before* acquiring its `guarded_lease_section` flock and always passes the resolved
+    value through, so this function performs no network I/O while that lock is held.
     """
     if _apply_safety_stop_if_needed(state, action, result):
         return
@@ -833,17 +877,24 @@ def apply_action_effect(
         # the baseline here too (not only in `_apply_advance_phase`), or that legitimate push
         # would itself look like drift at the *next* `propose()` call's `_detect_precedent_push`
         # check (a false positive warning).
-        if precedent_push_check and _wait_external_review_had_required_push(
-            state, loop_id, project_dir
-        ):
-            _refresh_remote_head_baseline(state)
+        _apply_remote_head_refresh(
+            state,
+            should_refresh=precedent_push_check
+            and _wait_external_review_had_required_push(state, loop_id, project_dir),
+            remote_head_refresh=remote_head_refresh,
+        )
         if _extract_check_result_payload(result) is not None:
             _apply_checker_result(state, result, project_dir, loop_id, action_id)
             return
         state.status = "waiting_external" if not result.get("completed") else "running"
         return
     if action == Action.ADVANCE_PHASE.value:
-        _apply_advance_phase(state, result, precedent_push_check=precedent_push_check)
+        _apply_advance_phase(
+            state,
+            result,
+            precedent_push_check=precedent_push_check,
+            remote_head_refresh=remote_head_refresh,
+        )
         return
     if action == Action.STOP.value:
         state.status = "stopped"
@@ -1510,8 +1561,20 @@ def _initial_state(
     worktree_path: str,
     branch: str,
     phase: str,
+    *,
+    precedent_push_check: bool = False,
 ) -> LoopState:
-    """Create an initial pending state."""
+    """Create an initial pending state.
+
+    `precedent_push_check` (Issue #196 follow-up, default `False`): gates the seed-on-creation
+    `_remote_head()` query below behind the same opt-in flag `propose()`/`complete()` use (see
+    `start()`'s own docstring). `start()` -- and therefore this function -- is called by both
+    LP-1 (`loop_step.py`, which passes `True`) and LP-2 (`loop_driver.py`, which never opts in),
+    so defaulting the query itself to off is required for LP-2 (and any other non-opted-in
+    caller of `start()`) to stay byte-for-byte unaffected: no extra network-bound
+    `git ls-remote` round trip on every loop creation, and no `remote_head_baseline` written to
+    state/the `loop_created` journal payload.
+    """
     now = now_iso()
     return LoopState(
         schema_version=SCHEMA_VERSION,
@@ -1534,12 +1597,15 @@ def _initial_state(
         created_at=now,
         updated_at=now,
         state_version=0,
-        # Issue #196 (LP-1 push-integrity warning): seed the baseline from a live query at loop
-        # creation, not `None`, so `_detect_precedent_push()` can already flag drift during the
-        # loop's very first phase (a new-Issue branch's `LP1_REMOTE_HEAD_ABSENT` sentinel is a
-        # perfectly valid starting baseline -- a subsequent non-absent head at the next propose()
-        # would then correctly read as drift, i.e. something pushed it before this driver did).
-        remote_head_baseline=_remote_head(worktree_path, branch),
+        # Issue #196 (LP-1 push-integrity warning): when opted in, seed the baseline from a live
+        # query at loop creation, not `None`, so `_detect_precedent_push()` can already flag
+        # drift during the loop's very first phase (a new-Issue branch's
+        # `LP1_REMOTE_HEAD_ABSENT` sentinel is a perfectly valid starting baseline -- a
+        # subsequent non-absent head at the next propose() would then correctly read as drift,
+        # i.e. something pushed it before this driver did).
+        remote_head_baseline=(
+            _remote_head(worktree_path, branch) if precedent_push_check else None
+        ),
     )
 
 
@@ -2110,24 +2176,79 @@ def _coerce_pr_number(value: Any) -> int:
     return number
 
 
-def _refresh_remote_head_baseline(state: LoopState) -> None:
-    """Re-observe and store the current remote HEAD as the new baseline (Issue #196).
+def _apply_remote_head_refresh(
+    state: LoopState,
+    *,
+    should_refresh: bool,
+    remote_head_refresh: str | None | _NotPrecomputed,
+) -> None:
+    """Assign `state.remote_head_baseline` from an already-observed remote HEAD (Issue #196).
 
-    Only overwrites `state.remote_head_baseline` when the query actually succeeds (a real sha
-    or the confirmed-absent sentinel): a transient `git ls-remote` failure (`_remote_head()`
-    returning `None`) must not clobber a previously known-good baseline with `None`, or a
-    single flaky network blip would silently and permanently disable
-    `_detect_precedent_push()` for the rest of the loop (every future comparison short-circuits
-    on `baseline is None`) until the next successful refresh happens to land. Keeping the last
-    known value lets the *next* refresh attempt retry instead.
+    Only overwrites `state.remote_head_baseline` when the observed value is not `None` (a real
+    sha or the confirmed-absent sentinel): a transient `git ls-remote` failure (`_remote_head()`
+    returning `None`) must not clobber a previously known-good baseline with `None`, or a single
+    flaky network blip would silently and permanently disable `_detect_precedent_push()` for the
+    rest of the loop (every future comparison short-circuits on `baseline is None`) until the
+    next successful refresh happens to land. Keeping the last known value lets the *next* refresh
+    attempt retry instead.
+
+    `remote_head_refresh` (PR review high-severity fix): when this is the
+    `_REMOTE_HEAD_NOT_PRECOMPUTED` sentinel (the default for direct/backward-compatible callers,
+    e.g. unit tests calling `apply_action_effect()`/`_apply_advance_phase()` standalone rather
+    than through `complete()`), falls back to querying `_remote_head()` right here, gated by
+    `should_refresh` -- the original, pre-follow-up behavior. `complete()` itself never hits that
+    fallback: it precomputes the query result *before* acquiring its `guarded_lease_section` flock
+    (see `complete()`) and always passes the resolved value through, so this function never
+    performs network I/O while that lock is held.
     """
-    observed = _remote_head(state.worktree_path, state.branch)
-    if observed is not None:
-        state.remote_head_baseline = observed
+    if isinstance(remote_head_refresh, _NotPrecomputed):
+        if not should_refresh:
+            return
+        remote_head_refresh = _remote_head(state.worktree_path, state.branch)
+    if remote_head_refresh is not None:
+        state.remote_head_baseline = remote_head_refresh
+
+
+def _precompute_remote_head_refresh(
+    state: LoopState,
+    action: str,
+    loop_id: str | None,
+    project_dir: str | None,
+    *,
+    precedent_push_check: bool,
+) -> str | None:
+    """Query the remote HEAD for `complete()`'s upcoming baseline refresh, before its lock.
+
+    Mirrors `propose()`'s own `_detect_precedent_push()` call, which likewise runs its
+    network-bound `_remote_head()` query before entering `guarded_lease_section` rather than
+    inside it (Issue #196 follow-up, PR review high-severity fix): `apply_action_effect()`'s
+    `WAIT_EXTERNAL_REVIEW`/`ADVANCE_PHASE` branches used to call `_remote_head()` -- an up-to-
+    `REMOTE_LS_TIMEOUT_SECONDS` (10s) `git ls-remote` subprocess -- from inside `complete()`'s
+    held flock, blocking every other flock-holding operation for as long as that query took.
+
+    Returns `None` when no refresh applies for this `action`/`precedent_push_check` combination,
+    matching the conditions `apply_action_effect()`'s branches used to gate the query on
+    internally. A plain remote-head string, `LP1_REMOTE_HEAD_ABSENT`, or `None` (query
+    unverifiable) all flow straight through to `apply_action_effect(..., remote_head_refresh=...)`
+    unchanged -- `complete()` never needs to re-derive whether a refresh was warranted.
+    """
+    if not precedent_push_check:
+        return None
+    if action == Action.ADVANCE_PHASE.value:
+        return _remote_head(state.worktree_path, state.branch)
+    if action == Action.WAIT_EXTERNAL_REVIEW.value and _wait_external_review_had_required_push(
+        state, loop_id, project_dir
+    ):
+        return _remote_head(state.worktree_path, state.branch)
+    return None
 
 
 def _apply_advance_phase(
-    state: LoopState, result: dict[str, Any], *, precedent_push_check: bool = False
+    state: LoopState,
+    result: dict[str, Any],
+    *,
+    precedent_push_check: bool = False,
+    remote_head_refresh: str | None | _NotPrecomputed = _REMOTE_HEAD_NOT_PRECOMPUTED,
 ) -> None:
     """Apply a previously proposed phase advance.
 
@@ -2140,9 +2261,12 @@ def _apply_advance_phase(
     whether this advance had a `next_phase` (the early-return branch below) or not. Left `False`
     by default because LP-2 (`loop_driver.py`) shares this function via `complete()` and already
     has its own, separate push-integrity mechanism -- see `propose()`'s own docstring.
+
+    `remote_head_refresh`: see `_apply_remote_head_refresh()`'s own docstring.
     """
-    if precedent_push_check:
-        _refresh_remote_head_baseline(state)
+    _apply_remote_head_refresh(
+        state, should_refresh=precedent_push_check, remote_head_refresh=remote_head_refresh
+    )
     if result.get("pr_number") is not None:
         state.pr_number = _coerce_pr_number(result["pr_number"])
     next_phase = _pending_next_phase(state) or result.get("next_phase")

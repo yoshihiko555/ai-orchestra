@@ -6,6 +6,7 @@ import fcntl
 import json
 import os
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -1486,6 +1487,10 @@ def _setup_real_git_loop(
         project_dir,
         branch,
         "implementation",
+        # This whole section tests Issue #196's LP-1 push-integrity warning, which requires an
+        # actual seeded baseline -- opt in explicitly (the default is `False`, see
+        # `_initial_state()`'s own docstring for why LP-2 must not get this for free).
+        precedent_push_check=True,
     )
     state.status = status
     lc._write_state(state, project_dir)
@@ -1586,10 +1591,44 @@ def test_initial_state_seeds_remote_head_baseline_from_live_query(tmp_path: Path
     expected = _git(["rev-parse", "HEAD"], repo)
 
     state = lc._initial_state(
-        "loop", "issue-loop", "hash", str(repo), "loop/issue-1", "implementation"
+        "loop",
+        "issue-loop",
+        "hash",
+        str(repo),
+        "loop/issue-1",
+        "implementation",
+        precedent_push_check=True,
     )
 
     assert state.remote_head_baseline == expected
+
+
+def test_initial_state_default_does_not_query_remote_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`precedent_push_check` defaults to `False` (Issue #196 follow-up, PR review critical fix):
+    LP-2's `loop_driver.py` (and any other non-opted-in caller of `start()`) must never pay the
+    seed-on-creation `git ls-remote` network round trip, nor get a `remote_head_baseline` written
+    to state -- even though the remote in this test has real commits that a query would find."""
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_repo_with_remote(repo, remote, "loop/issue-1")
+    _git(["push", "origin", "loop/issue-1"], repo)
+    called = False
+
+    def _fail_if_called(*_args: object, **_kwargs: object) -> None:
+        nonlocal called
+        called = True
+        raise AssertionError("_remote_head must not be queried when precedent_push_check=False")
+
+    monkeypatch.setattr(lc, "_remote_head", _fail_if_called)
+
+    state = lc._initial_state(
+        "loop", "issue-loop", "hash", str(repo), "loop/issue-1", "implementation"
+    )
+
+    assert state.remote_head_baseline is None
+    assert called is False
 
 
 def test_initial_state_seeds_absent_sentinel_for_brand_new_branch(tmp_path: Path) -> None:
@@ -1598,7 +1637,13 @@ def test_initial_state_seeds_absent_sentinel_for_brand_new_branch(tmp_path: Path
     _init_repo_with_remote(repo, remote, "loop/issue-9")  # never pushed
 
     state = lc._initial_state(
-        "loop", "issue-loop", "hash", str(repo), "loop/issue-9", "implementation"
+        "loop",
+        "issue-loop",
+        "hash",
+        str(repo),
+        "loop/issue-9",
+        "implementation",
+        precedent_push_check=True,
     )
 
     assert state.remote_head_baseline == lc.LP1_REMOTE_HEAD_ABSENT
@@ -1609,7 +1654,13 @@ def test_apply_advance_phase_refreshes_remote_head_baseline(tmp_path: Path) -> N
     remote = tmp_path / "remote.git"
     _init_repo_with_remote(repo, remote, "loop/issue-1")
     state = lc._initial_state(
-        "loop", "issue-loop", "hash", str(repo), "loop/issue-1", "implementation"
+        "loop",
+        "issue-loop",
+        "hash",
+        str(repo),
+        "loop/issue-1",
+        "implementation",
+        precedent_push_check=True,
     )
     assert state.remote_head_baseline == lc.LP1_REMOTE_HEAD_ABSENT
     # Orchestrator performs the legitimate advance_phase push before calling complete().
@@ -1639,6 +1690,73 @@ def test_apply_advance_phase_keeps_baseline_when_precedent_push_check_disabled(
     lc.apply_action_effect(state, lc.Action.ADVANCE_PHASE.value, {})
 
     assert state.remote_head_baseline == baseline_before
+
+
+def test_precompute_remote_head_refresh_disabled_returns_none(tmp_path: Path) -> None:
+    """`_precompute_remote_head_refresh()` (Issue #196 follow-up, PR review high-severity fix)
+    must not query the remote at all when `precedent_push_check` is `False`, regardless of
+    `action`."""
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_repo_with_remote(repo, remote, "loop/issue-1")
+    _git(["push", "origin", "loop/issue-1"], repo)
+    state = lc._initial_state(
+        "loop", "issue-loop", "hash", str(repo), "loop/issue-1", "implementation"
+    )
+
+    result = lc._precompute_remote_head_refresh(
+        state, lc.Action.ADVANCE_PHASE.value, None, None, precedent_push_check=False
+    )
+
+    assert result is None
+
+
+def test_precompute_remote_head_refresh_advance_phase_returns_observed_head(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_repo_with_remote(repo, remote, "loop/issue-1")
+    _git(["push", "origin", "loop/issue-1"], repo)
+    expected = _git(["rev-parse", "HEAD"], repo)
+    state = lc._initial_state(
+        "loop", "issue-loop", "hash", str(repo), "loop/issue-1", "implementation"
+    )
+
+    result = lc._precompute_remote_head_refresh(
+        state, lc.Action.ADVANCE_PHASE.value, None, None, precedent_push_check=True
+    )
+
+    assert result == expected
+
+
+def test_precompute_remote_head_refresh_wait_external_review_without_push_returns_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `wait_external_review` completion that is not itself a push (last completed action was
+    not `run_maker`) must not trigger the network query at all."""
+    project_dir, lock = _setup_real_git_loop(tmp_path, monkeypatch, status="waiting_external")
+    del lock
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    called = False
+
+    def _fail_if_called(*_args: object, **_kwargs: object) -> None:
+        nonlocal called
+        called = True
+        raise AssertionError("_remote_head must not be queried without a required push")
+
+    monkeypatch.setattr(lc, "_remote_head", _fail_if_called)
+
+    result = lc._precompute_remote_head_refresh(
+        state,
+        lc.Action.WAIT_EXTERNAL_REVIEW.value,
+        "abcd1234-issue-1",
+        project_dir,
+        precedent_push_check=True,
+    )
+
+    assert result is None
+    assert called is False
 
 
 def test_wait_external_review_required_push_refreshes_baseline(
@@ -1809,3 +1927,54 @@ def test_propose_does_not_warn_when_remote_head_matches_baseline(
         "abcd1234-issue-1", project_dir, advance.action_id, "push_integrity_warning"
     )
     assert warning is None
+
+
+def test_complete_advance_phase_queries_remote_head_before_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR review high-severity fix (Issue #196 follow-up): `complete()`'s remote-head refresh
+    query must run *before* its `guarded_lease_section` flock is acquired, not while the flock is
+    held -- a slow/hanging `git ls-remote` must never block other flock-holding operations (lease
+    renewal, heartbeat, `loop_status.py` purge, a concurrent `resume()`) for as long as that query
+    takes."""
+    project_dir, lock = _setup_real_git_loop(tmp_path, monkeypatch, status="running")
+    repo = Path(project_dir)
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.pending_action = lc.PendingAction(
+        "act-advance", lc.Action.ADVANCE_PHASE.value, "implementation", 1, lc.now_iso()
+    )
+    state.state_version = 1
+    lc._write_state(state, project_dir)
+    _git(["push", "origin", "loop/issue-1"], repo)
+    new_head = _git(["rev-parse", "HEAD"], repo)
+
+    events: list[str] = []
+    real_remote_head = lc._remote_head
+    real_guarded_lease_section = lc.guarded_lease_section
+
+    def _tracking_remote_head(worktree_path: str, branch: str) -> str | None:
+        events.append("remote_head")
+        return real_remote_head(worktree_path, branch)
+
+    @contextmanager
+    def _tracking_guarded_lease_section(*args: str):
+        events.append("lock_acquire")
+        with real_guarded_lease_section(*args):
+            yield
+        events.append("lock_release")
+
+    monkeypatch.setattr(lc, "_remote_head", _tracking_remote_head)
+    monkeypatch.setattr(lc, "guarded_lease_section", _tracking_guarded_lease_section)
+
+    lc.complete(
+        "abcd1234-issue-1",
+        project_dir,
+        "act-advance",
+        1,
+        {},
+        lock.lease_token,
+        precedent_push_check=True,
+    )
+
+    assert events == ["remote_head", "lock_acquire", "lock_release"]
+    assert lc.load_state("abcd1234-issue-1", project_dir).remote_head_baseline == new_head
