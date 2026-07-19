@@ -45,6 +45,9 @@ budget:
   # allowed_tools の "Bash(gh *)" パターンに一致せず approval 待ちで turn を浪費した
   # （センシティブファイル拒否ではない）。8 -> 16 に引き上げる。
   max_turns: 16
+  # Issue #261 PR7 追補: この train は $3.0 で pass 実績あり（据え置き）。holdout の
+  # create-bug-issue-holdout は bug テンプレートの再現手順・環境記述分だけ turn が伸び、11+ turns
+  # の実測が出たため 6.0 に引き上げた（create-bug-issue-holdout.yaml のコメント参照）。
   max_budget_usd: 3.0
   max_output_tokens: 1024
 repeat: 1

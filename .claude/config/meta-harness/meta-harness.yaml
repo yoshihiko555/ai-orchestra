@@ -63,9 +63,12 @@ regression:
   # target 自身の own budget（別会計）でありこのプール計算には寄与しない。
   # Issue #261 PR7: bootstrap 最終検証で fix-greet-none-bug が 9 turns 目に $6.00 latch した
   # 実測を受け、issue-fix suite の予算を 6.0 -> 9.0 に再較正（fix-greet-none-bug +3.0 /
-  # fix-formal-greeting-feature-holdout repeat=3 で +9.0）。90.0 -> 102.0 に引き上げ。再計算根拠は
+  # fix-formal-greeting-feature-holdout repeat=3 で +9.0）。90.0 -> 102.0 に引き上げ。
+  # Issue #261 PR7 追補: 旧 baseline holdout 評価で create-bug-issue-holdout が 11 turns 目に
+  # $3.00 latch した実測を受け、3.0 -> 6.0 に再較正（holdout repeat=3 で +9.0）。102.0 -> 111.0
+  # に引き上げ。再計算根拠は
   # test_default_budget_covers_all_registered_routing_config_regression_suites を参照
-  max_budget_usd: 102.0 # 全登録 skill (6件) + claude-harness の現行 suite を train/holdout 通算で収容
+  max_budget_usd: 111.0 # 全登録 skill (6件) + claude-harness の現行 suite を train/holdout 通算で収容
 judge:
   tool: claude-bare # tool-less judge。codexはread deny不能のため無効（ADR-20260711-033）
   model: claude-sonnet-5 # Issue #261 PR2: bare judge smoke/実行も Opus 既定にしない（evaluate.model と同値に pin）
