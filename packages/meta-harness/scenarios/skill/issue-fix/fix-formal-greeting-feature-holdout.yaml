@@ -95,6 +95,7 @@ budget:
   max_turns: 10
   # Issue #261 PR6: fix-greet-none-bug と同型シナリオ（issue-fix、repo コンテキスト大）。
   # 同じ前課金特性のため同額の 6.0 に引き上げる。
-  max_budget_usd: 6.0
+  # Issue #261 PR7: train（fix-greet-none-bug）と同型構成のため同水準（9.0）へ再較正。
+  max_budget_usd: 9.0
   max_output_tokens: 1024
 repeat: 1

@@ -130,8 +130,10 @@ DEFAULTS: dict[str, Any] = {
         # packages/meta-harness/scenarios/skill/.
         # Issue #261 PR6: bumped 78.0 -> 90.0 after real-backend suite budget recalibration
         # (routing-config verify + issue-fix fix-greet/-formal scenarios).
+        # Issue #261 PR7: bumped 90.0 -> 102.0 after bootstrap final verification showed
+        # fix-greet-none-bug latching at $6.00 on turn 9 (issue-fix budget 6.0 -> 9.0).
         "max_affected_suites": 7,
-        "max_budget_usd": 90.0,
+        "max_budget_usd": 102.0,
     },
     "overlay": {
         "allowed_prefixes": ["facets/"],
