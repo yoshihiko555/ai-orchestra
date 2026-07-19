@@ -1294,7 +1294,10 @@ def _build_headless_command(
     max_budget_usd = budget.get(
         "max_budget_usd", scenario_run_cfg.get("max_budget_usd_default", 3.0)
     )
-    env_assignments = [f"CLAUDE_CODE_MAX_OUTPUT_TOKENS={execution['max_output_tokens']}"]
+    env_assignments = [
+        f"CLAUDE_CODE_MAX_OUTPUT_TOKENS={execution['max_output_tokens']}",
+        "CLAUDE_CODE_DISABLE_1M_CONTEXT=1",
+    ]
     if execution["path_prepend"]:
         prepended = [str(workspace_root / relative) for relative in execution["path_prepend"]]
         base_path = f"{siso.docker.CONTAINER_RUNTIME}/bin:/usr/local/bin:/usr/bin:/bin"

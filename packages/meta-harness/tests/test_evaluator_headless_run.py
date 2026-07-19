@@ -215,9 +215,10 @@ class TestScenarioExecutionEnvelope:
             tmp_path / "instruction.md",
         )
 
-        assert command[:3] == [
+        assert command[:4] == [
             "/usr/bin/env",
             "CLAUDE_CODE_MAX_OUTPUT_TOKENS=1024",
+            "CLAUDE_CODE_DISABLE_1M_CONTEXT=1",
             "claude",
         ]
         assert command[command.index("--allowedTools") + 1] == "Bash(python3 *) Write"
@@ -235,9 +236,10 @@ class TestScenarioExecutionEnvelope:
             tmp_path / "instruction.md",
         )
 
-        assert command[:4] == [
+        assert command[:5] == [
             "/usr/bin/env",
             "CLAUDE_CODE_MAX_OUTPUT_TOKENS=4096",
+            "CLAUDE_CODE_DISABLE_1M_CONTEXT=1",
             "PATH=/workspace/bin:/runtime/bin:/usr/local/bin:/usr/bin:/bin",
             "claude",
         ]

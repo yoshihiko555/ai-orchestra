@@ -1209,6 +1209,11 @@ cd <worktree> && CLAUDE_CODE_MAX_OUTPUT_TOKENS=<budget.max_output_tokens> \
   `scenario_run.max_output_tokens_default` を設定する。固定 CLI の既定 64,000 token のままでは broker の
   保守的な事前見積もりが通常の $3 run 予算を超えるためであり、出力上限を明示して API envelope を
   run 予算内へ収める。
+- `CLAUDE_CODE_DISABLE_1M_CONTEXT=1` は scenario 実行（本節の headless command）・judge 実行
+  （`build_judge_command`）・capability smoke 実行（`_run_smoke_container`）の 3 経路すべての claude CLI
+  起動に設定する。1M context beta は premium 課金 tier かつ毎ターン大量の cache 生成を伴うため、有効な
+  ままでは broker の pricing 前提（Issue #261 PR2 で Sonnet 単価に再較正済み）と実際の課金体系が乖離し、
+  run 予算の見積もりを歪める。無効化することで課金 tier を pricing 較正と一致させる。
 - **Phase 2/3のscenario runはDockerコンテナによるOSレベル隔離を必須とする**（ADR-20260712-034。
   ADR-20260711-032のSRT方式を置換。SRTで設計したfilesystem/network境界は本節でコンテナのmount/network
   設計として引き継ぐ）。`claude -p`をLinuxコンテナ内で実行し、`docker run --rm`に加え
