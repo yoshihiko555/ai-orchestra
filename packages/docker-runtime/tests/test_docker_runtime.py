@@ -327,6 +327,8 @@ def _replace_broker_environment(monkeypatch: pytest.MonkeyPatch, values: dict[st
         "DR_PRICE_OUTPUT",
         "DR_PRICE_CACHE_CREATION",
         "DR_PRICE_CACHE_READ",
+        "DR_BROKER_MODEL_ALLOWLIST",
+        "MH_BROKER_MODEL_ALLOWLIST",
         "MH_BROKER_RUN_TOKEN",
         "MH_BROKER_PORT",
         "MH_BROKER_BUDGET_USD",
@@ -495,6 +497,108 @@ def test_broker_settings_from_env_rejects_empty_run_token(
 
     with pytest.raises(RuntimeError, match="run token must not be empty"):
         broker._broker_settings_from_env()
+
+
+def test_model_allowlist_env_is_none_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    _replace_broker_environment(monkeypatch, {})
+
+    assert (
+        broker._model_allowlist_env("DR_BROKER_MODEL_ALLOWLIST", "MH_BROKER_MODEL_ALLOWLIST")
+        is None
+    )
+
+
+def test_model_allowlist_env_is_none_when_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    _replace_broker_environment(monkeypatch, {"DR_BROKER_MODEL_ALLOWLIST": "  , ,"})
+
+    assert (
+        broker._model_allowlist_env("DR_BROKER_MODEL_ALLOWLIST", "MH_BROKER_MODEL_ALLOWLIST")
+        is None
+    )
+
+
+def test_model_allowlist_env_prefers_generic_over_legacy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _replace_broker_environment(
+        monkeypatch,
+        {
+            "DR_BROKER_MODEL_ALLOWLIST": "claude-cheap-model",
+            "MH_BROKER_MODEL_ALLOWLIST": "claude-legacy-model",
+        },
+    )
+
+    result = broker._model_allowlist_env("DR_BROKER_MODEL_ALLOWLIST", "MH_BROKER_MODEL_ALLOWLIST")
+
+    assert result == frozenset({"claude-cheap-model"})
+
+
+def test_model_allowlist_env_falls_back_to_legacy_and_strips_entries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _replace_broker_environment(
+        monkeypatch,
+        {"MH_BROKER_MODEL_ALLOWLIST": " claude-cheap-model , claude-cheaper-model ,,"},
+    )
+
+    result = broker._model_allowlist_env("DR_BROKER_MODEL_ALLOWLIST", "MH_BROKER_MODEL_ALLOWLIST")
+
+    assert result == frozenset({"claude-cheap-model", "claude-cheaper-model"})
+
+
+def test_broker_settings_from_env_defaults_model_allowlist_to_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _replace_broker_environment(
+        monkeypatch,
+        {
+            "MH_BROKER_RUN_TOKEN": "legacy-token",
+            "MH_BROKER_PORT": "8787",
+            "MH_BROKER_BUDGET_USD": "3.0",
+            "MH_BROKER_IDLE_TIMEOUT_SEC": "300",
+            "MH_BROKER_MAX_LIFETIME_SEC": "660",
+            "MH_BROKER_STARTUP_TIMEOUT_SEC": "30",
+            "MH_BROKER_MAX_REQUESTS": "64",
+            "MH_BROKER_MAX_TOTAL_TOKENS": "500000",
+            "MH_BROKER_MAX_UPSTREAM_BYTES": "50000000",
+            "MH_PRICE_INPUT": "15.0",
+            "MH_PRICE_OUTPUT": "75.0",
+            "MH_PRICE_CACHE_CREATION": "18.75",
+            "MH_PRICE_CACHE_READ": "1.5",
+        },
+    )
+
+    settings = broker._broker_settings_from_env()
+
+    assert settings.model_allowlist is None
+
+
+def test_broker_settings_from_env_reads_model_allowlist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _replace_broker_environment(
+        monkeypatch,
+        {
+            "MH_BROKER_RUN_TOKEN": "legacy-token",
+            "MH_BROKER_PORT": "8787",
+            "MH_BROKER_BUDGET_USD": "3.0",
+            "MH_BROKER_IDLE_TIMEOUT_SEC": "300",
+            "MH_BROKER_MAX_LIFETIME_SEC": "660",
+            "MH_BROKER_STARTUP_TIMEOUT_SEC": "30",
+            "MH_BROKER_MAX_REQUESTS": "64",
+            "MH_BROKER_MAX_TOTAL_TOKENS": "500000",
+            "MH_BROKER_MAX_UPSTREAM_BYTES": "50000000",
+            "MH_PRICE_INPUT": "15.0",
+            "MH_PRICE_OUTPUT": "75.0",
+            "MH_PRICE_CACHE_CREATION": "18.75",
+            "MH_PRICE_CACHE_READ": "1.5",
+            "DR_BROKER_MODEL_ALLOWLIST": "claude-cheap-model,claude-cheaper-model",
+        },
+    )
+
+    settings = broker._broker_settings_from_env()
+
+    assert settings.model_allowlist == frozenset({"claude-cheap-model", "claude-cheaper-model"})
 
 
 @pytest.mark.parametrize("namespace", ["", "Loop-Harness", "../loop", "x" * 64])
@@ -666,3 +770,59 @@ def test_network_is_stale_returns_false_when_containers_are_attached() -> None:
     )
 
     assert is_stale is False
+
+
+def _price_modifier_test_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> object:
+    monkeypatch.setattr(broker, "METRICS_PATH", tmp_path / "metrics.json")
+    return broker.BrokerState(
+        run_token="run-token",
+        oauth_token="real-oauth-token",
+        budget_usd=3.0,
+        pricing=broker.Pricing(3.0, 15.0, 6.0, 0.30),
+        max_requests=4,
+        max_total_tokens=100_000,
+        max_upstream_bytes=100_000,
+    )
+
+
+def test_request_budget_error_allows_body_without_price_modifier_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #261 PR2 review round 6 (High): a normal request body must pass through
+    unaffected by the new pricing-modifier rejection."""
+    state = _price_modifier_test_state(tmp_path, monkeypatch)
+    body = b'{"model": "claude-sonnet-5", "max_tokens": 1, "messages": []}'
+
+    assert state.request_budget_error("/v1/messages", body) is None
+
+
+@pytest.mark.parametrize(
+    ("field", "path"),
+    [
+        ("inference_geo", "/v1/messages"),
+        ("service_tier", "/v1/messages"),
+        ("speed", "/v1/messages"),
+        ("inference_geo", "/v1/messages/count_tokens"),
+        ("service_tier", "/v1/messages/count_tokens"),
+        ("speed", "/v1/messages/count_tokens"),
+    ],
+)
+def test_request_budget_error_rejects_price_modifier_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str, path: str
+) -> None:
+    """Issue #261 PR2 review round 6/7 (High): a body carrying a known pricing-modifier
+    field (e.g. a non-default inference region, a priority service tier, or a
+    premium-priced fast `speed`) can attach a price multiplier the broker's fixed
+    pricing_upper_bound_usd_per_million ceiling is not calibrated for, so it is
+    rejected fail-closed on both billable paths."""
+    state = _price_modifier_test_state(tmp_path, monkeypatch)
+    body = (
+        '{"model": "claude-sonnet-5", "max_tokens": 1, "messages": [], "' + field + '": "us"}'
+    ).encode()
+
+    result = state.request_budget_error(path, body)
+
+    assert result is not None
+    status, message = result
+    assert status == 400
+    assert field in message

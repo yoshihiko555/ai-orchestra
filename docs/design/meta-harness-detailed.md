@@ -475,7 +475,7 @@ PR 作成時点で記録されるが、この時点では状態は `evaluated` �
 | `suite_id`       | `<target>` に対応するシナリオスイート識別子（例: `claude-harness`, `skill:<name>`）                                                         |
 | `scenario_hash`  | シナリオ YAML ファイル本体の sha256                                                                                                         |
 | `suite_hash`     | suite 内の全シナリオファイルの `scenario_hash` をファイル名順にソートし連結した文字列の sha256                                              |
-| `evaluator_hash` | evaluator本体・Docker実行境界（broker / profile / isolation / process runner / Dockerfile）の正本 + scoring関連config値（`scoring.*`）+ scenario 不在時に fallback する実行設定（`evaluate.allowed_tools` / `permission_mode` / `model`、`scenario_run.max_output_tokens_default`）を、安定した相対パス順で連結したsha256 |
+| `evaluator_hash` | evaluator本体・Docker実行境界（broker / profile / isolation / process runner / Dockerfile）の正本 + scoring関連config値（`scoring.*`）+ scenario 不在時に fallback する実行設定（`evaluate.allowed_tools` / `permission_mode` / `model`、`scenario_run.max_output_tokens_default`）+ コスト比較可能性に影響する config（`judge.tool` / `judge.model` / `judge.effort`、`evaluate.isolation.broker.pricing_upper_bound_usd_per_million`、`evaluate.isolation.broker.model_allowlist`、`scenario_run.max_budget_usd_default`、Issue #261 PR2）を、安定した相対パス順で連結したsha256 |
 
 ### 1-3. `scenario.schema.json`
 
@@ -1735,10 +1735,11 @@ proposer は同一 workspace 内で起動される限り、`Glob` / `Read` 等�
   `unverified_impacts` の鮮度不一致として昇格を拒否し、holdout 再評価を要求する。親を含む候補 lineage の
   overlay path 全集合を `origin/main` との差分対象にし、全 manifest/overlay の integrity と L3 secret scan を
   PR 作成直前に再検証する。
-- 回帰コストは `regression.max_affected_suites`（既定 4）と evaluation 単位の
-  `regression.max_budget_usd`（既定 30.0）の二層で制限する。30.0 は現行の global impact suite を
-  train/holdout 通算の設定上限（`claude-harness` train 2 attempt + suite 保有 skill 2 件の train 各 1 attempt・
+- 回帰コストは `regression.max_affected_suites`（既定 7）と evaluation 単位の
+  `regression.max_budget_usd`（既定 78.0）の二層で制限する。78.0 は現行の global impact suite を
+  train/holdout 通算の設定上限（`claude-harness` train 2 attempt + suite 保有 skill 6 件の train 各 1 attempt・
   holdout 各 3 attempt、各最大 3.0 USD）で収容する値である。超過は黙って skip せず evaluation error とする。
+  スイート保有 skill が増えるたび（Issue #254）この二値を再計算して同時に引き上げること。
   1 CLI 呼び出しが train / holdout の両バッチを含む場合も `evaluation_id` と残予算を共有する。run cost は
   scenario CLI の申告値だけでなく、同じ broker を使う rubric judge を含む
   `broker.metrics.estimated_cost_usd` との大きい方を正とし、metrics 欠落・異常時は attempt 割当額を消費済みと
@@ -1845,7 +1846,7 @@ evaluate:
     - "Bash(python *)"
     - "Bash(python3 *)"
     - "Bash(pytest *)"
-  model: null # null = セッション既定モデル
+  model: claude-sonnet-5 # 必須 pin（Issue #261 PR2）。judge.model と同一でなければならない（§1-2 broker allowlist fail-closed）
   cli_version_pin: null # null = バージョン一致検証をスキップ（capability smoke test は常に実施）
   isolation:
     # scenario runner は非隔離実行へ降格しない（ADR-20260712-034。SRT 方式から Docker へ移行）
@@ -1869,10 +1870,16 @@ evaluate:
       max_total_tokens: 500000
       max_upstream_bytes: 50000000 # body + 正規化済みheaderのrun累積hard cap
       pricing_upper_bound_usd_per_million:
-        input: 15.0
-        output: 75.0
-        cache_creation: 18.75
-        cache_read: 1.5
+        # Sonnet 単価上限（1h cache write 上限込み。Issue #261 PR2）。evaluate.model/judge.model の
+        # pin 先モデルと必ず一致させること（不一致は fail-closed、§1-2）
+        input: 3.0
+        output: 15.0
+        cache_creation: 6.0
+        cache_read: 0.30
+      # request body の model を検証する human-curated allowlist（fail-closed、Issue #261 PR1/PR2）。
+      # evaluate.model と judge.model は同一値に pin する必須制約があるため 1 値のみで足りる
+      model_allowlist:
+        - claude-sonnet-5
       # broker は run スコープで起動・破棄。実 OAuth は broker のみ保持し候補コンテナへ渡さない
 scenario_run:
   max_turns_default: 30
@@ -1880,11 +1887,11 @@ scenario_run:
   max_output_tokens_default: 4096 # broker pre-admission 用。scenario の budget で上書き可能
 regression:
   enabled: true # false は skill target の専有 facet allowlist へ縮退
-  max_affected_suites: 4
-  max_budget_usd: 30.0 # 現行 global impact suite の train/holdout 設定上限を収容
+  max_affected_suites: 7
+  max_budget_usd: 78.0 # 現行 global impact suite の train/holdout 設定上限を収容
 judge:
   tool: claude-bare # tool-less judge。codexはread deny不能のため無効（ADR-20260711-033）
-  model: null # null = 各バックエンドの既定モデル
+  model: claude-sonnet-5 # 必須 pin（Issue #261 PR2）。evaluate.model と同一でなければならない（broker pricing table は run あたり1つ）
   effort: high # claude-bare のみ使用
   max_turns: 4 # claude-bare のみ使用
 scoring:

@@ -44,6 +44,13 @@ MAX_USAGE_PARSE_BUFFER_BYTES = 1_000_000
 MAX_BETA_HEADER_BYTES = 1024
 UPSTREAM_SLOT_WAIT_SECONDS = 120
 ALLOWED_PATHS = frozenset({"/v1/messages", "/v1/messages/count_tokens"})
+# Request body fields that can attach a price multiplier to an otherwise-allowlisted
+# model (Issue #261 PR2 review round 6, High). The broker's fixed
+# pricing_upper_bound_usd_per_million ceiling is calibrated for the plain per-model
+# rate only, so these are rejected outright (fail-closed) rather than validated
+# against a menu -- there is no legitimate reason for the evaluation harness CLI to
+# ever send them.
+REJECTED_PRICE_MODIFIER_FIELDS = frozenset({"inference_geo", "service_tier", "speed"})
 ALLOWED_QUERIES = frozenset({"beta=true"})
 ALLOWED_REQUEST_HEADERS = frozenset(
     {
@@ -140,6 +147,7 @@ class BrokerSettings:
     idle_timeout_seconds: int
     max_lifetime_seconds: int
     identity: BrokerIdentity
+    model_allowlist: frozenset[str] | None = None
 
 
 def _broker_identity(namespace: str | None) -> BrokerIdentity:
@@ -188,6 +196,7 @@ class BrokerState:
         max_total_tokens: int,
         max_upstream_bytes: int,
         user_agent: str = DEFAULT_USER_AGENT,
+        model_allowlist: frozenset[str] | None = None,
     ) -> None:
         self.run_token = run_token
         self.oauth_token = oauth_token
@@ -197,6 +206,7 @@ class BrokerState:
         self.max_total_tokens = max_total_tokens
         self.max_upstream_bytes = max_upstream_bytes
         self.user_agent = user_agent
+        self.model_allowlist = model_allowlist
         self.metrics = BrokerMetrics()
         self.started_at = time.monotonic()
         self.last_activity = time.monotonic()
@@ -241,25 +251,49 @@ class BrokerState:
             self.persist_metrics_locked()
         return True, ""
 
-    def request_budget_error(self, path: str, body: bytes) -> str | None:
+    def request_budget_error(self, path: str, body: bytes) -> tuple[int, str] | None:
         try:
             payload = json.loads(body)
         except (ValueError, json.JSONDecodeError):
-            return "request body must be a JSON object"
+            return 429, "request body must be a JSON object"
         if not isinstance(payload, dict):
-            return "request body must be a JSON object"
+            return 429, "request body must be a JSON object"
         output_tokens = 0
+        # The model allowlist gates both billable paths, not just /v1/messages: a
+        # /v1/messages/count_tokens call also spends input-token accounting (Issue #261
+        # PR2 review round 3) and, unchecked, would let a candidate confirm an
+        # out-of-allowlist model is reachable without ever tripping the /v1/messages
+        # rejection.
+        if path in ("/v1/messages", "/v1/messages/count_tokens"):
+            if self.model_allowlist is not None:
+                model = payload.get("model")
+                if not isinstance(model, str) or model not in self.model_allowlist:
+                    return 400, "request model is not in the broker model allowlist"
+            # Pricing upper-bound soundness (Issue #261 PR2 review round 6, High): known
+            # fields that can attach a price multiplier to an otherwise-allowlisted model
+            # (e.g. a non-default inference region or a priority service tier) are
+            # rejected outright rather than allowlisted, since the broker's fixed
+            # pricing_upper_bound_usd_per_million ceiling is calibrated for the plain
+            # per-model rate only. The evaluation harness CLI never sends these fields, so
+            # this cannot cause a false rejection of a legitimate run.
+            present_price_modifiers = sorted(REJECTED_PRICE_MODIFIER_FIELDS & payload.keys())
+            if present_price_modifiers:
+                return (
+                    400,
+                    "request must not set a pricing modifier field: "
+                    + ", ".join(present_price_modifiers),
+                )
         if path == "/v1/messages":
             max_tokens = payload.get("max_tokens")
             if not isinstance(max_tokens, int) or isinstance(max_tokens, bool) or max_tokens <= 0:
-                return "messages request must declare a positive max_tokens"
+                return 429, "messages request must declare a positive max_tokens"
             output_tokens = max_tokens
         input_tokens_upper_bound = len(body)
         with self.lock:
             remaining_tokens = self.max_total_tokens - self.metrics.usage.total_tokens
             requested_tokens = input_tokens_upper_bound + output_tokens
             if requested_tokens > remaining_tokens:
-                return "request token upper bound exceeds the remaining run budget"
+                return 429, "request token upper bound exceeds the remaining run budget"
             input_price = max(
                 self.pricing.input,
                 self.pricing.cache_creation,
@@ -270,7 +304,7 @@ class BrokerState:
             ) / 1_000_000
             remaining_cost = self.budget_usd - self.metrics.estimated_cost_usd
             if request_cost_upper_bound > remaining_cost:
-                return "request cost upper bound exceeds the remaining run budget"
+                return 429, "request cost upper bound exceeds the remaining run budget"
         return None
 
     def finish_request(self, usage: Usage, *, usage_observed: bool = True) -> None:
@@ -313,11 +347,13 @@ class BrokerState:
         reason: str = "upstream usage unknown after interrupted response",
         *,
         rejected: bool = False,
+        latch_budget: bool = True,
     ) -> None:
         with self.lock:
             if rejected:
                 self.metrics.rejected_count += 1
-            self.metrics.budget_exceeded = True
+            if latch_budget:
+                self.metrics.budget_exceeded = True
             self._mark_anomaly_locked(reason)
             self.last_activity = time.monotonic()
             self.active_requests -= 1
@@ -498,10 +534,14 @@ class BrokerHandler(BaseHTTPRequestHandler):
 
     def _proxy(self, body: bytes) -> None:
         path = self.path.partition("?")[0]
-        budget_error = self.state.request_budget_error(path, body)
-        if budget_error is not None:
-            self.state.abort_request(budget_error, rejected=True)
-            self._json_error(429, budget_error)
+        pre_admission_error = self.state.request_budget_error(path, body)
+        if pre_admission_error is not None:
+            status, message = pre_admission_error
+            # A model allowlist rejection (400) never reached upstream and incurred no
+            # cost, so unlike the budget/envelope 429s below it must not latch the run
+            # budget shut for subsequent, otherwise-valid requests.
+            self.state.abort_request(message, rejected=True, latch_budget=status != 400)
+            self._json_error(status, message)
             return
         headers = _upstream_headers(
             self.headers,
@@ -704,6 +744,17 @@ def _int_env(name: str, legacy_name: str) -> int:
     return int(_env_value(name, legacy_name))
 
 
+def _model_allowlist_env(name: str, legacy_name: str) -> frozenset[str] | None:
+    if name in os.environ:
+        raw = os.environ[name]
+    elif legacy_name in os.environ:
+        raw = os.environ[legacy_name]
+    else:
+        return None
+    values = frozenset(item.strip() for item in raw.split(",") if item.strip())
+    return values or None
+
+
 def _broker_settings_from_env() -> BrokerSettings:
     run_token = _env_value("DR_BROKER_RUN_TOKEN", "MH_BROKER_RUN_TOKEN")
     if not run_token:
@@ -727,6 +778,9 @@ def _broker_settings_from_env() -> BrokerSettings:
         idle_timeout_seconds=_int_env("DR_BROKER_IDLE_TIMEOUT_SEC", "MH_BROKER_IDLE_TIMEOUT_SEC"),
         max_lifetime_seconds=_int_env("DR_BROKER_MAX_LIFETIME_SEC", "MH_BROKER_MAX_LIFETIME_SEC"),
         identity=_broker_identity(os.environ.get("DR_BROKER_NAMESPACE")),
+        model_allowlist=_model_allowlist_env(
+            "DR_BROKER_MODEL_ALLOWLIST", "MH_BROKER_MODEL_ALLOWLIST"
+        ),
     )
 
 
@@ -762,6 +816,7 @@ def _serve() -> int:
         max_total_tokens=settings.max_total_tokens,
         max_upstream_bytes=settings.max_upstream_bytes,
         user_agent=settings.identity.user_agent,
+        model_allowlist=settings.model_allowlist,
     )
     watchdog = threading.Thread(
         target=_idle_watchdog,

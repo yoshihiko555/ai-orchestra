@@ -58,6 +58,52 @@ WORKSPACE_EXPORT_TIMEOUT_SECONDS = 60
 _LOGGER = logging.getLogger(__name__)
 _RUNTIME_LABELS = lifecycle.RuntimeLabels(DOCKER_LABEL, STALE_MAX_AGE_SECONDS)
 _SEMVER_PIN_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$")
+# A model slug that must never appear in a real allowlist; used to prove the
+# broker actually rejects out-of-allowlist requests (Issue #261 PR2 review).
+_ALLOWLIST_SMOKE_DISALLOWED_MODEL = "mh-capability-negative-allowlist-check"
+# The exact rejection message the broker emits for a model-allowlist rejection
+# (packages/docker-runtime/docker/broker/broker.py::BrokerState.request_budget_error).
+# A generic 400 is not sufficient proof of enforcement: any misconfigured or
+# upstream-proxying broker could also answer 400 to a malformed/rejected request.
+# The probe must observe this exact broker-authored signal to count as a pass.
+_ALLOWLIST_SMOKE_REJECTION_MESSAGE = "request model is not in the broker model allowlist"
+# Field separator for the probe's single stdout line: "<status>\x1f<server-header>\x1f<message>".
+_ALLOWLIST_SMOKE_FIELD_SEP = "\x1f"
+# Billable paths that must both reject an out-of-allowlist model (Issue #261 PR2
+# review round 3): /v1/messages/count_tokens spends input-token accounting too and
+# was previously left unchecked on the broker side.
+_ALLOWLIST_SMOKE_PATH_MESSAGES = "/v1/messages"
+_ALLOWLIST_SMOKE_PATH_COUNT_TOKENS = "/v1/messages/count_tokens"
+# Sends a minimal POST (to sys.argv[2], defaulting to /v1/messages) with a
+# deliberately disallowed model and prints "<status><SEP><server-header><SEP>
+# <error-message>" on one line (or "ERROR<SEP><SEP><detail>" on a transport
+# failure). Uses only the stdlib so it runs unmodified inside the read-only
+# scenario image.
+_ALLOWLIST_SMOKE_SCRIPT = (
+    "import json,os,sys,urllib.error,urllib.request\n"
+    "SEP = chr(0x1f)\n"
+    "path = sys.argv[2] if len(sys.argv) > 2 else '/v1/messages'\n"
+    "url = os.environ['ANTHROPIC_BASE_URL'].rstrip('/') + path\n"
+    "body = json.dumps({'model': sys.argv[1], 'max_tokens': 1, 'messages': []}).encode()\n"
+    "req = urllib.request.Request(url, data=body, method='POST', headers={\n"
+    "    'x-api-key': os.environ['ANTHROPIC_API_KEY'],\n"
+    "    'content-type': 'application/json',\n"
+    "})\n"
+    "try:\n"
+    "    urllib.request.urlopen(req, timeout=10)\n"
+    "    print(SEP.join(['200', '', '']))\n"
+    "except urllib.error.HTTPError as exc:\n"
+    "    server = exc.headers.get('Server', '') if exc.headers is not None else ''\n"
+    "    try:\n"
+    "        payload = json.loads(exc.read().decode('utf-8', 'replace'))\n"
+    "        message = payload.get('error', {}).get('message', '') "
+    "if isinstance(payload, dict) else ''\n"
+    "    except Exception:\n"
+    "        message = ''\n"
+    "    print(SEP.join([str(exc.code), server, message]))\n"
+    "except Exception as exc:\n"
+    "    print(SEP.join(['ERROR', '', str(exc)]))\n"
+)
 
 
 class DockerScenarioError(RuntimeError):
@@ -194,6 +240,11 @@ def check_docker_capabilities(
     # The capability gate must use the same output-token budget as real scenario and judge runs.
     max_output_tokens = profile.resolve_max_output_tokens_default(config)
     try:
+        # Fail fast on a repinned-model/allowlist mismatch before touching Docker at all
+        # (Issue #261 PR2 review round 2): this is the same pure config validation that
+        # broker_env() applies to every real broker session, run here first so a bad
+        # config never gets to spend time booting a container just to fail later.
+        profile.effective_broker_model_allowlist(config)
         checks["docker_daemon"] = dcli.docker_daemon_available(runner=runner)
         if not checks["docker_daemon"]:
             return _capability_failure(None, version_pin, checks, "Docker daemon unavailable")
@@ -258,6 +309,8 @@ def check_docker_capabilities(
             checks["max_budget_usd"] = _has_result_json(budget.stdout)
             judge_tool = (config.get("judge") or {}).get("tool", "claude-bare")
             if judge_tool == "claude-bare":
+                judge_model = (config.get("judge") or {}).get("model")
+                judge_model_args = ["--model", judge_model] if judge_model else []
                 bare = _run_smoke_container(
                     broker,
                     [
@@ -278,6 +331,7 @@ def check_docker_capabilities(
                         ),
                         "--max-turns",
                         "1",
+                        *judge_model_args,
                     ],
                     max_output_tokens=max_output_tokens,
                     runner=runner,
@@ -291,12 +345,69 @@ def check_docker_capabilities(
             else:
                 # False records an unsupported configured backend in the capability report.
                 checks["known_judge_backend"] = False
+            # Unconditional (Issue #261 PR2 review round 3): effective_broker_model_allowlist
+            # is fail-closed now, so reaching this point already proved both models are
+            # pinned and validated -- the probe always applies, there is no "inactive"
+            # allowlist case left to skip.
+            # Dedicated broker session (Issue #261 PR2 review round 4): the negative probes
+            # must not share the main session's request/budget accounting. A tight
+            # max_requests or a budget already spent by the smoke checks above would make
+            # begin_request() reject the probe before it ever reaches the allowlist check,
+            # which would report a false "enforced" pass without actually proving
+            # enforcement. A fresh session guarantees a fresh, unspent request/budget
+            # envelope for the probes alone -- ordering relative to the smoke checks above
+            # no longer matters, since the two sessions' accounting cannot interact.
+            # The probe session's own request/budget envelope is further pinned to fixed,
+            # safe values (round 6): a tight user max_requests (e.g. 1) would otherwise let
+            # the first probe consume the only slot in the fresh session too, rejecting the
+            # second (count_tokens) probe. The probe session never spends the user's real
+            # run budget, so overriding it is safe.
+            with docker_broker_session(
+                profile.allowlist_probe_config_overrides(config),
+                "capability-allowlist-probe",
+                owner_id=owner_id,
+                runner=runner,
+            ) as probe_broker:
+                allowlist_probe = _run_smoke_container(
+                    probe_broker,
+                    [
+                        "/usr/bin/python3",
+                        "-c",
+                        _ALLOWLIST_SMOKE_SCRIPT,
+                        _ALLOWLIST_SMOKE_DISALLOWED_MODEL,
+                        _ALLOWLIST_SMOKE_PATH_MESSAGES,
+                    ],
+                    max_output_tokens=max_output_tokens,
+                    runner=runner,
+                )
+                checks["broker_model_allowlist"] = _allowlist_probe_confirms_broker_rejection(
+                    allowlist_probe
+                )
+                # count_tokens spends input-token accounting too and was previously left
+                # unchecked on the broker side (Issue #261 PR2 review round 3); prove it is
+                # rejected the same way /v1/messages is.
+                count_tokens_allowlist_probe = _run_smoke_container(
+                    probe_broker,
+                    [
+                        "/usr/bin/python3",
+                        "-c",
+                        _ALLOWLIST_SMOKE_SCRIPT,
+                        _ALLOWLIST_SMOKE_DISALLOWED_MODEL,
+                        _ALLOWLIST_SMOKE_PATH_COUNT_TOKENS,
+                    ],
+                    max_output_tokens=max_output_tokens,
+                    runner=runner,
+                )
+                checks["broker_model_allowlist_count_tokens"] = (
+                    _allowlist_probe_confirms_broker_rejection(count_tokens_allowlist_probe)
+                )
         reason = _failed_checks_reason(checks)
         return DockerCapabilityResult(version, version_pin, version_match, checks, reason)
     except (
         DockerScenarioError,
         dcli.DockerCliError,
         credentials.ClaudeCredentialError,
+        profile.DockerProfileError,
     ) as exc:
         checks.setdefault("docker_backend", False)
         return _capability_failure(None, version_pin, checks, str(exc))
@@ -1094,6 +1205,23 @@ def _has_result_json(stdout: str) -> bool:
     except (ValueError, json.JSONDecodeError):
         return False
     return isinstance(value, dict) and value.get("type") == "result"
+
+
+def _allowlist_probe_confirms_broker_rejection(probe: subprocess.CompletedProcess) -> bool:
+    """A bare 400 is not proof the broker enforced the allowlist: any misconfigured
+    or transparently-proxying broker could also answer 400 for other reasons (e.g. an
+    unrelated upstream validation error). Require the exact broker-authored rejection
+    message and a `Server` header naming this broker, so an upstream/proxy 400 that
+    slipped through an allowlist-blind broker cannot be mistaken for enforcement."""
+    if probe.returncode != 0:
+        return False
+    fields = probe.stdout.strip("\n").split(_ALLOWLIST_SMOKE_FIELD_SEP)
+    status, server_header, message = (fields + ["", "", ""])[:3]
+    return (
+        status == "400"
+        and _ALLOWLIST_SMOKE_REJECTION_MESSAGE in message
+        and server_header.startswith(f"{profile.BROKER_NAMESPACE}-broker")
+    )
 
 
 def _failed_checks_reason(checks: dict[str, bool]) -> str | None:

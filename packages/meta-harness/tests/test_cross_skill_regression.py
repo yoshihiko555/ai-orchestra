@@ -557,10 +557,10 @@ def test_default_budget_covers_all_registered_routing_config_regression_suites()
                     )
                 )
 
-    assert suite_counts == [3, 3]
+    assert suite_counts == [7, 7]
     assert unverified_by_phase[0] == unverified_by_phase[1]
     assert unverified_by_phase[0]
-    assert required_budget == pytest.approx(30.0)
+    assert required_budget == pytest.approx(78.0)
     assert mh.DEFAULTS["regression"]["max_affected_suites"] >= max(suite_counts)
     assert mh.DEFAULTS["regression"]["max_budget_usd"] >= required_budget
 

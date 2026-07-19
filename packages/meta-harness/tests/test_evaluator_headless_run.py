@@ -34,6 +34,16 @@ def _write_result_event(events_path: Path, event: dict) -> None:
     events_path.write_text(json.dumps(event) + "\n", encoding="utf-8")
 
 
+def _deep_merge(base: dict, override: dict) -> dict:
+    result = dict(base)
+    for key, value in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
 def _write_events(events_path: Path, events: list[dict]) -> None:
     events_path.write_text(
         "".join(json.dumps(event) + "\n" for event in events),
@@ -250,8 +260,18 @@ class TestScenarioExecutionEnvelope:
         assert execution["max_output_tokens_source"] == "global"
 
     def test_execution_snapshot_treats_null_output_tokens_default_as_4096(self) -> None:
+        # Issue #261 PR2 review round 3: both models must be pinned (and present in
+        # model_allowlist) or evaluator_execution_snapshot() now fails closed before
+        # this null-output-tokens-fallback concern can even be exercised.
         snapshot = ev.evaluator_execution_snapshot(
-            {"scenario_run": {"max_output_tokens_default": None}}
+            {
+                "scenario_run": {"max_output_tokens_default": None},
+                "evaluate": {
+                    "model": "claude-sonnet-5",
+                    "isolation": {"broker": {"model_allowlist": ["claude-sonnet-5"]}},
+                },
+                "judge": {"model": "claude-sonnet-5"},
+            }
         )
 
         assert snapshot["max_output_tokens_default"] == 4096
@@ -265,6 +285,159 @@ class TestScenarioExecutionEnvelope:
         )
 
         assert first != second
+
+    def test_execution_snapshot_includes_cost_comparability_scope(self) -> None:
+        """Issue #261 PR2: judge model/effort, broker pricing, broker model allowlist and the
+        global scenario budget default must be part of the evaluator hash scope, since a
+        config-only change to any of these breaks cost/quality comparability across runs."""
+        config = {
+            "judge": {"tool": "codex", "model": "claude-sonnet-5", "effort": "high"},
+            "evaluate": {
+                "model": "claude-sonnet-5",
+                "isolation": {
+                    "broker": {
+                        "pricing_upper_bound_usd_per_million": {"input": 3.0, "output": 15.0},
+                        "model_allowlist": ["claude-sonnet-5"],
+                    }
+                },
+            },
+            "scenario_run": {"max_budget_usd_default": 3.0},
+        }
+
+        snapshot = ev.evaluator_execution_snapshot(config)
+
+        assert snapshot["judge_tool"] == "codex"
+        assert snapshot["judge_model"] == "claude-sonnet-5"
+        assert snapshot["judge_effort"] == "high"
+        assert snapshot["broker_pricing_upper_bound_usd_per_million"] == {
+            "input": 3.0,
+            "output": 15.0,
+        }
+        assert snapshot["broker_model_allowlist"] == ["claude-sonnet-5"]
+        assert snapshot["scenario_run_max_budget_usd_default"] == 3.0
+
+    def test_execution_snapshot_fails_closed_when_repinned_model_mismatches_allowlist(
+        self,
+    ) -> None:
+        """Issue #261 PR2 review round 2: computing the evaluator hash for a config
+        whose pinned judge.model/evaluate.model is missing from the configured
+        broker model_allowlist must fail closed with an actionable error rather than
+        silently produce a hash for a broker configuration that would itself refuse
+        to start (or, worse, previously auto-admitted the pricier model)."""
+        config = {
+            "judge": {"model": "claude-sonnet-5", "effort": "high"},
+            "evaluate": {
+                "model": "claude-sonnet-5",
+                "isolation": {
+                    "broker": {
+                        "pricing_upper_bound_usd_per_million": {"input": 3.0},
+                        "model_allowlist": ["claude-opus-4-8"],
+                    }
+                },
+            },
+            "scenario_run": {"max_budget_usd_default": 3.0},
+        }
+
+        with pytest.raises(ev.siso.docker.profile.DockerProfileError) as excinfo:
+            ev.evaluator_execution_snapshot(config)
+
+        message = str(excinfo.value)
+        assert "claude-sonnet-5" in message
+        assert "evaluate.isolation.broker.model_allowlist" in message
+        assert "pricing_upper_bound_usd_per_million" in message
+
+    @pytest.mark.parametrize(
+        "override",
+        [
+            # judge.tool changes the scoring path (claude-bare vs codex) with no other
+            # config change, so it alone must stale prior evaluator_hash-scoped runs
+            # (CodeRabbit High, PR #265).
+            {"judge": {"tool": "codex"}},
+            # A model repin must also extend model_allowlist, or the fail-closed guard
+            # (Issue #261 PR2 review round 2) would reject the config outright before a
+            # hash could even be computed. Round 4 additionally requires
+            # evaluate.model == judge.model, so both must move together -- see the
+            # dedicated fail-closed tests below for the unpinned/mismatched cases.
+            {
+                "judge": {"model": "claude-opus-4-8"},
+                "evaluate": {
+                    "model": "claude-opus-4-8",
+                    "isolation": {
+                        "broker": {"model_allowlist": ["claude-sonnet-5", "claude-opus-4-8"]}
+                    },
+                },
+            },
+            {
+                "evaluate": {
+                    "isolation": {
+                        "broker": {"pricing_upper_bound_usd_per_million": {"input": 15.0}}
+                    }
+                }
+            },
+            {"scenario_run": {"max_budget_usd_default": 54.0}},
+        ],
+        ids=[
+            "judge_tool",
+            "model_repin",
+            "broker_pricing",
+            "scenario_run_budget",
+        ],
+    )
+    def test_evaluator_hash_changes_when_cost_comparability_scope_changes(
+        self, override: dict
+    ) -> None:
+        base_config: dict = {
+            "judge": {"model": "claude-sonnet-5", "effort": "high"},
+            "evaluate": {
+                "model": "claude-sonnet-5",
+                "isolation": {
+                    "broker": {
+                        "pricing_upper_bound_usd_per_million": {"input": 3.0},
+                        "model_allowlist": ["claude-sonnet-5"],
+                    }
+                },
+            },
+            "scenario_run": {"max_budget_usd_default": 3.0},
+        }
+        changed_config = json.loads(json.dumps(base_config))
+        for key, value in override.items():
+            changed_config[key] = _deep_merge(changed_config.get(key, {}), value)
+
+        before = ev.compute_configured_evaluator_hash(base_config)
+        after = ev.compute_configured_evaluator_hash(changed_config)
+
+        assert before != after
+
+    def test_evaluator_hash_unaffected_by_unpinned_menu_surplus_entries(self) -> None:
+        """Issue #261 PR2 review round 3: effective_broker_model_allowlist wires only
+        the pinned evaluate.model/judge.model pair to the broker, never the full
+        configured model_allowlist "menu" (surplus entries lack a pricing
+        calibration and must not be admitted). Adding an unrelated, unpinned entry
+        to the menu is therefore a config-comparability no-op and must NOT stale
+        prior evaluator_hash-scoped runs."""
+        base_config: dict = {
+            "judge": {"model": "claude-sonnet-5", "effort": "high"},
+            "evaluate": {
+                "model": "claude-sonnet-5",
+                "isolation": {
+                    "broker": {
+                        "pricing_upper_bound_usd_per_million": {"input": 3.0},
+                        "model_allowlist": ["claude-sonnet-5"],
+                    }
+                },
+            },
+            "scenario_run": {"max_budget_usd_default": 3.0},
+        }
+        menu_expanded_config = json.loads(json.dumps(base_config))
+        menu_expanded_config["evaluate"]["isolation"]["broker"]["model_allowlist"] = [
+            "claude-sonnet-5",
+            "claude-opus-4-8-experimental",
+        ]
+
+        before = ev.compute_configured_evaluator_hash(base_config)
+        after = ev.compute_configured_evaluator_hash(menu_expanded_config)
+
+        assert before == after
 
 
 class TestSkillActivationEvidence:
