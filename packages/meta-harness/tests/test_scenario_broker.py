@@ -700,19 +700,22 @@ def test_request_budget_error_allows_body_without_price_modifier_fields(
     [
         ("inference_geo", "/v1/messages"),
         ("service_tier", "/v1/messages"),
+        ("speed", "/v1/messages"),
         ("inference_geo", "/v1/messages/count_tokens"),
         ("service_tier", "/v1/messages/count_tokens"),
+        ("speed", "/v1/messages/count_tokens"),
     ],
 )
 def test_request_budget_error_rejects_price_modifier_fields(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str, path: str
 ) -> None:
-    """Issue #261 PR2 review round 6 (High): a body carrying a known pricing-modifier
-    field (e.g. a non-default inference region or a priority service tier) can attach
-    a price multiplier the broker's fixed pricing_upper_bound_usd_per_million ceiling
-    is not calibrated for, so it is rejected fail-closed on both billable paths --
-    existence of the field alone is rejected (fail-closed), not allowlisted, since
-    the evaluation harness CLI never sends it."""
+    """Issue #261 PR2 review round 6/7 (High): a body carrying a known pricing-modifier
+    field (e.g. a non-default inference region, a priority service tier, or a
+    premium-priced fast `speed`) can attach a price multiplier the broker's fixed
+    pricing_upper_bound_usd_per_million ceiling is not calibrated for, so it is
+    rejected fail-closed on both billable paths -- existence of the field alone is
+    rejected (fail-closed), not allowlisted, since the evaluation harness CLI never
+    sends it."""
     state = _state(tmp_path, monkeypatch, max_requests=4, max_total_tokens=500_000)
     body = json.dumps(
         {"model": "claude-sonnet-5", "max_tokens": 1, "messages": [], field: "us"}

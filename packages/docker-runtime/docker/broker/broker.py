@@ -50,7 +50,7 @@ ALLOWED_PATHS = frozenset({"/v1/messages", "/v1/messages/count_tokens"})
 # rate only, so these are rejected outright (fail-closed) rather than validated
 # against a menu -- there is no legitimate reason for the evaluation harness CLI to
 # ever send them.
-REJECTED_PRICE_MODIFIER_FIELDS = frozenset({"inference_geo", "service_tier"})
+REJECTED_PRICE_MODIFIER_FIELDS = frozenset({"inference_geo", "service_tier", "speed"})
 ALLOWED_QUERIES = frozenset({"beta=true"})
 ALLOWED_REQUEST_HEADERS = frozenset(
     {
