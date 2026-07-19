@@ -684,6 +684,73 @@ def test_model_allowlist_rejects_disallowed_model_via_count_tokens_http(
     assert state.metrics.budget_exceeded is False
 
 
+def test_request_budget_error_allows_body_without_price_modifier_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #261 PR2 review round 6 (High): a normal request body must pass through
+    unaffected by the new pricing-modifier rejection."""
+    state = _state(tmp_path, monkeypatch, max_requests=4, max_total_tokens=500_000)
+    body = json.dumps({"model": "claude-sonnet-5", "max_tokens": 1, "messages": []}).encode()
+
+    assert state.request_budget_error("/v1/messages", body) is None
+
+
+@pytest.mark.parametrize(
+    ("field", "path"),
+    [
+        ("inference_geo", "/v1/messages"),
+        ("service_tier", "/v1/messages"),
+        ("inference_geo", "/v1/messages/count_tokens"),
+        ("service_tier", "/v1/messages/count_tokens"),
+    ],
+)
+def test_request_budget_error_rejects_price_modifier_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str, path: str
+) -> None:
+    """Issue #261 PR2 review round 6 (High): a body carrying a known pricing-modifier
+    field (e.g. a non-default inference region or a priority service tier) can attach
+    a price multiplier the broker's fixed pricing_upper_bound_usd_per_million ceiling
+    is not calibrated for, so it is rejected fail-closed on both billable paths --
+    existence of the field alone is rejected (fail-closed), not allowlisted, since
+    the evaluation harness CLI never sends it."""
+    state = _state(tmp_path, monkeypatch, max_requests=4, max_total_tokens=500_000)
+    body = json.dumps(
+        {"model": "claude-sonnet-5", "max_tokens": 1, "messages": [], field: "us"}
+    ).encode()
+
+    result = state.request_budget_error(path, body)
+
+    assert result is not None
+    status, message = result
+    assert status == 400
+    assert field in message
+
+
+def test_broker_rejects_price_modifier_field_via_http(
+    http_broker: tuple[Any, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """HTTP-level equivalent: a POST with a pricing-modifier field must be rejected
+    with 400 before ever reaching upstream, and must not latch the run budget."""
+    server, state = http_broker
+
+    class UnexpectedConnection:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            raise AssertionError("price modifier rejection must not reach upstream")
+
+    monkeypatch.setattr(broker.http.client, "HTTPSConnection", UnexpectedConnection)
+    body = json.dumps(
+        {"model": "claude-sonnet-5", "max_tokens": 1, "messages": [], "service_tier": "priority"}
+    ).encode()
+
+    status, _headers, payload = _post(server, body=body)
+
+    assert status == 400
+    assert b"pricing modifier" in payload
+    assert state.metrics.rejected_count == 1
+    assert state.metrics.upstream_request_bytes == 0
+    assert state.metrics.budget_exceeded is False
+
+
 def test_two_1024_token_requests_fit_three_dollar_run_budget(tmp_path: Path, monkeypatch) -> None:
     state = _state(
         tmp_path,

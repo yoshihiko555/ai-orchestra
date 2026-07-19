@@ -357,8 +357,16 @@ def check_docker_capabilities(
             # enforcement. A fresh session guarantees a fresh, unspent request/budget
             # envelope for the probes alone -- ordering relative to the smoke checks above
             # no longer matters, since the two sessions' accounting cannot interact.
+            # The probe session's own request/budget envelope is further pinned to fixed,
+            # safe values (round 6): a tight user max_requests (e.g. 1) would otherwise let
+            # the first probe consume the only slot in the fresh session too, rejecting the
+            # second (count_tokens) probe. The probe session never spends the user's real
+            # run budget, so overriding it is safe.
             with docker_broker_session(
-                config, "capability-allowlist-probe", owner_id=owner_id, runner=runner
+                profile.allowlist_probe_config_overrides(config),
+                "capability-allowlist-probe",
+                owner_id=owner_id,
+                runner=runner,
             ) as probe_broker:
                 allowlist_probe = _run_smoke_container(
                     probe_broker,

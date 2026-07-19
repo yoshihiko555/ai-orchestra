@@ -31,6 +31,16 @@ _DEFAULT_PRICING_UPPER_BOUND_USD_PER_MILLION = mh.DEFAULTS["evaluate"]["isolatio
     "pricing_upper_bound_usd_per_million"
 ]
 
+# Fixed, safe request/budget envelope for the dedicated negative-probe broker session
+# (Issue #261 PR2 review round 6, High). That session exists purely to prove the
+# broker enforces model_allowlist and never spends the user's real run budget, so it
+# must not inherit the user's configured max_requests/budget: a tight
+# `max_requests: 1` (or an exhausted budget) would let the first probe consume the
+# only slot and reject the second (count_tokens) probe via the request envelope
+# before it ever reaches the allowlist check, reporting a false "enforced" pass.
+ALLOWLIST_PROBE_MAX_REQUESTS = 8
+ALLOWLIST_PROBE_BUDGET_USD = mh.DEFAULTS["scenario_run"]["max_budget_usd_default"]
+
 NAME_PREFIX = "mh-run-"
 BROKER_ALIAS = "mh-broker"
 BROKER_NAMESPACE = "meta-harness"
@@ -496,6 +506,38 @@ def _pricing_value(pricing: dict, key: str) -> float:
     """
     value = pricing.get(key)
     return value if value is not None else _DEFAULT_PRICING_UPPER_BOUND_USD_PER_MILLION[key]
+
+
+def allowlist_probe_config_overrides(config: dict) -> dict:
+    """Return `config` with the negative-probe broker session's max_requests/budget
+    pinned to fixed, safe values (Issue #261 PR2 review round 6, High).
+
+    Everything else (image, pinned model, pricing, model_allowlist, port_range,
+    resources, ...) is left exactly as configured, since the probe must still
+    exercise the real pricing/model setup to prove enforcement. Only the request
+    envelope and budget are overridden, because a tight user `max_requests` (e.g.
+    `1`) or an already-spent budget would reject the second (count_tokens) probe via
+    `begin_request()` before it ever reaches the allowlist check -- a false
+    "enforced" pass that proves nothing.
+    """
+    evaluate_cfg = config.get("evaluate") or {}
+    isolation_cfg = evaluate_cfg.get("isolation") or {}
+    broker_cfg = isolation_cfg.get("broker") or {}
+    scenario_run_cfg = config.get("scenario_run") or {}
+    return {
+        **config,
+        "evaluate": {
+            **evaluate_cfg,
+            "isolation": {
+                **isolation_cfg,
+                "broker": {**broker_cfg, "max_requests": ALLOWLIST_PROBE_MAX_REQUESTS},
+            },
+        },
+        "scenario_run": {
+            **scenario_run_cfg,
+            "max_budget_usd_default": ALLOWLIST_PROBE_BUDGET_USD,
+        },
+    }
 
 
 def broker_env(config: dict, run_token: str, port: int) -> dict[str, str]:

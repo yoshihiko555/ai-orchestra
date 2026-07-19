@@ -44,6 +44,13 @@ MAX_USAGE_PARSE_BUFFER_BYTES = 1_000_000
 MAX_BETA_HEADER_BYTES = 1024
 UPSTREAM_SLOT_WAIT_SECONDS = 120
 ALLOWED_PATHS = frozenset({"/v1/messages", "/v1/messages/count_tokens"})
+# Request body fields that can attach a price multiplier to an otherwise-allowlisted
+# model (Issue #261 PR2 review round 6, High). The broker's fixed
+# pricing_upper_bound_usd_per_million ceiling is calibrated for the plain per-model
+# rate only, so these are rejected outright (fail-closed) rather than validated
+# against a menu -- there is no legitimate reason for the evaluation harness CLI to
+# ever send them.
+REJECTED_PRICE_MODIFIER_FIELDS = frozenset({"inference_geo", "service_tier"})
 ALLOWED_QUERIES = frozenset({"beta=true"})
 ALLOWED_REQUEST_HEADERS = frozenset(
     {
@@ -262,6 +269,20 @@ class BrokerState:
                 model = payload.get("model")
                 if not isinstance(model, str) or model not in self.model_allowlist:
                     return 400, "request model is not in the broker model allowlist"
+            # Pricing upper-bound soundness (Issue #261 PR2 review round 6, High): known
+            # fields that can attach a price multiplier to an otherwise-allowlisted model
+            # (e.g. a non-default inference region or a priority service tier) are
+            # rejected outright rather than allowlisted, since the broker's fixed
+            # pricing_upper_bound_usd_per_million ceiling is calibrated for the plain
+            # per-model rate only. The evaluation harness CLI never sends these fields, so
+            # this cannot cause a false rejection of a legitimate run.
+            present_price_modifiers = sorted(REJECTED_PRICE_MODIFIER_FIELDS & payload.keys())
+            if present_price_modifiers:
+                return (
+                    400,
+                    "request must not set a pricing modifier field: "
+                    + ", ".join(present_price_modifiers),
+                )
         if path == "/v1/messages":
             max_tokens = payload.get("max_tokens")
             if not isinstance(max_tokens, int) or isinstance(max_tokens, bool) or max_tokens <= 0:

@@ -726,9 +726,11 @@ def test_capability_gate_opens_a_dedicated_broker_session_for_the_allowlist_prob
     session = _broker(tmp_path)
     session.cleaned = True
     scopes: list[str] = []
+    configs: list[dict] = []
 
     def fake_docker_broker_session(config: dict, scope: str, **_kwargs: object):
         scopes.append(scope)
+        configs.append(config)
         return docker._BrokerContext(session)
 
     monkeypatch.setattr(docker, "docker_broker_session", fake_docker_broker_session)
@@ -747,6 +749,67 @@ def test_capability_gate_opens_a_dedicated_broker_session_for_the_allowlist_prob
 
     assert result.ok is True
     assert scopes == ["capability", "capability-allowlist-probe"]
+    main_config, probe_config = configs
+    assert (
+        main_config["evaluate"]["isolation"]["broker"]["max_requests"]
+        == mh.DEFAULTS["evaluate"]["isolation"]["broker"]["max_requests"]
+    )
+    assert (
+        main_config["scenario_run"]["max_budget_usd_default"]
+        == (mh.DEFAULTS["scenario_run"]["max_budget_usd_default"])
+    )
+
+
+def test_capability_gate_pins_a_fixed_safe_budget_for_the_allowlist_probe_session(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Issue #261 PR2 review round 6 (High): the negative-probe session must not
+    inherit the user's configured max_requests/budget -- a tight `max_requests: 1`
+    would let the first probe consume the only slot, rejecting the second
+    (count_tokens) probe via the request envelope before it ever reaches the
+    allowlist check. The probe session's env must carry fixed, safe values
+    independently of the user's (here, deliberately tight) configuration."""
+    session = _broker(tmp_path)
+    session.cleaned = True
+    configs: list[dict] = []
+
+    def fake_docker_broker_session(config: dict, scope: str, **_kwargs: object):
+        configs.append(config)
+        return docker._BrokerContext(session)
+
+    config = copy.deepcopy(mh.DEFAULTS)
+    config["evaluate"]["isolation"]["broker"]["max_requests"] = 1
+    config["scenario_run"]["max_budget_usd_default"] = 0.01
+
+    monkeypatch.setattr(docker, "docker_broker_session", fake_docker_broker_session)
+    monkeypatch.setattr(docker.dcli, "docker_daemon_available", lambda **_kwargs: True)
+    monkeypatch.setattr(docker, "sweep_stale_resources", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        docker,
+        "_image_claude_version",
+        lambda *_args, **_kwargs: "2.1.207 (Claude Code)",
+    )
+    monkeypatch.setattr(docker, "_run_smoke_container", _run_smoke_stub)
+
+    result = docker.check_docker_capabilities(config, main_root=tmp_path, runner=session.runner)
+
+    assert result.ok is True
+    main_config, probe_config = configs
+    # The main session keeps the user's (tight) configured values.
+    assert main_config["evaluate"]["isolation"]["broker"]["max_requests"] == 1
+    assert main_config["scenario_run"]["max_budget_usd_default"] == 0.01
+    # The probe session's env is pinned to fixed, safe values instead.
+    probe_env = docker.profile.broker_env(probe_config, "probe-run-token", 8787)
+    assert probe_env["DR_BROKER_MAX_REQUESTS"] == str(docker.profile.ALLOWLIST_PROBE_MAX_REQUESTS)
+    assert probe_env["DR_BROKER_BUDGET_USD"] == str(docker.profile.ALLOWLIST_PROBE_BUDGET_USD)
+    assert probe_config["evaluate"]["isolation"]["broker"]["max_requests"] == (
+        docker.profile.ALLOWLIST_PROBE_MAX_REQUESTS
+    )
+    assert probe_config["scenario_run"]["max_budget_usd_default"] == (
+        docker.profile.ALLOWLIST_PROBE_BUDGET_USD
+    )
+    # Everything else in the probe config must be untouched (e.g. the pinned model).
+    assert probe_config["evaluate"]["model"] == config["evaluate"]["model"]
 
 
 def test_capability_gate_fails_closed_before_docker_when_judge_model_unpinned() -> None:
