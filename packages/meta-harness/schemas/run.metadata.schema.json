@@ -28,6 +28,8 @@
     "max_output_tokens",
     "max_output_tokens_source",
     "path_prepend",
+    "permission_mode",
+    "permission_mode_source",
     "started_at",
     "attempt",
     "attempts_total"
@@ -67,6 +69,8 @@
       "items": { "type": "string" },
       "uniqueItems": true
     },
+    "permission_mode": { "type": "string", "enum": ["acceptEdits", "bypassPermissions"] },
+    "permission_mode_source": { "type": "string", "enum": ["scenario", "global"] },
     "isolation": {
       "type": "object",
       "required": ["backend", "platform_profile_input_sha256"],

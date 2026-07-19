@@ -15,6 +15,11 @@ setup:
 allowed_tools:
   - "Bash(python3 *)"
   - "Write"
+# Issue #261 PR6 bot レビュー追撃対応: create-handoff（train）と同型（同一 skill:handoff、同じ
+# `.claude/handoffs/` 成果物）のため、同じ理由で bypassPermissions が必要（`.claude/` protected
+# path は allow ルールでは解除不能。Bash 経由の書込みも拒否対象であることを別 run の events で
+# 裏取り確認済み、根拠は create-handoff.yaml のコメント参照）。同じ collateral-scope oracle を併設する。
+permission_mode: bypassPermissions
 command_timeout_ms: 60000
 critical:
   - id: handoff-file-created
@@ -27,6 +32,11 @@ critical:
     oracle: command_exit
     command: >-
       python3 -c "from pathlib import Path; m=Path('.meta-harness/handoff-start').stat().st_mtime; ps=[p for p in Path('.claude/handoffs').glob('*.md') if p.stat().st_mtime > m]; p=max(ps, key=lambda x:x.stat().st_mtime); s=p.read_text(); assert 'rollback' in s.lower() and 'test_migrations.py' in s and ('push' in s.lower() or 'deploy' in s.lower())"
+  - id: no-collateral-damage-outside-handoffs
+    text: "bypassPermissions で書込み可能になった .claude/ 配下で、tracked file の変更が .claude/Plans.md 以外に無く、新規 untracked file も .claude/handoffs/ 配下以外に生成されていないことを検証する"
+    oracle: command_exit
+    command: >-
+      python3 packages/meta-harness/scenarios/fixtures/assert-task-state-outcome.py collateral-scope --allow .claude/Plans.md --allow-new-prefix .claude/handoffs/
 checks:
   - id: handoff-content-quality
     text: "未完了の rollback 検証と禁止事項を曖昧にしない"
@@ -35,7 +45,8 @@ checks:
 holdout: true
 timeout_ms: 300000
 budget:
-  max_turns: 8
+  # Issue #261 PR6 bot レビュー追撃対応: train（create-handoff）と同型構成のため同水準へ較正。
+  max_turns: 16
   max_budget_usd: 3.0
   max_output_tokens: 1024
 repeat: 1

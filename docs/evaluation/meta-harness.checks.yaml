@@ -434,7 +434,10 @@
   notes: >-
     Explicit empty permissions, model tool exposure, output cap, evaluator hash, run
     metadata, and scenario-level permission_mode override (falls back to acceptEdits;
-    invalid values rejected) are covered.
+    invalid values rejected) are covered. PR #273 bot review follow-up: permission_mode
+    and permission_mode_source are also persisted to run metadata for audit (same pattern
+    as allowed_tools_source), covered by
+    test_run_metadata_records_permission_mode_and_source in the same test class.
 
 - ev_id: EV-52
   phase: 3

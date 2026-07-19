@@ -1712,3 +1712,103 @@ def test_task_state_record_decision_oracle_rejects_modified_frontmatter(tmp_path
         fixture.assert_decision_recorded(
             plans_path, expected_decision="GraphQL を採用（理由: フロントエンドの柔軟性）"
         )
+
+
+def _init_git_repo_with_tracked_file(repo_dir: Path, relative_path: str, content: str) -> None:
+    tracked_path = repo_dir / relative_path
+    tracked_path.parent.mkdir(parents=True, exist_ok=True)
+    tracked_path.write_text(content, encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "config", "user.name", "test"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "add", "."], cwd=repo_dir, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "baseline"], cwd=repo_dir, check=True)
+
+
+class TestCollateralScopeOracle:
+    """Issue #261 PR6 bot review follow-up: `bypassPermissions` unlocks the entire `.claude/`
+    tree for task-state scenarios, so this oracle guards against collateral damage outside the
+    single expected target file."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_git_config(self, monkeypatch: pytest.MonkeyPatch, tmp_path_factory) -> None:
+        # Match the production oracle container's git isolation (`scenario_docker_profile.
+        # build_oracle_command`, which also sets `HOME` to a fresh tmpfs dir): without also
+        # overriding `HOME`, a developer machine's own default `~/.config/git/ignore` excludes
+        # file (e.g. a global `**/.claude/settings.local.json` rule) resolves via `$HOME` and
+        # can silently hide files this test writes from `git status`, causing false negatives.
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+        monkeypatch.setenv("HOME", str(tmp_path_factory.mktemp("collateral-scope-home")))
+
+    def test_passes_when_only_allowed_file_changed(self, tmp_path: Path) -> None:
+        fixture = _task_state_outcome_fixture()
+        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "before\n")
+        (tmp_path / ".claude" / "Plans.md").write_text("after\n", encoding="utf-8")
+
+        fixture.assert_tracked_changes_limited_to({".claude/Plans.md"}, cwd=tmp_path)
+
+    def test_passes_with_no_changes_at_all(self, tmp_path: Path) -> None:
+        fixture = _task_state_outcome_fixture()
+        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+
+        fixture.assert_tracked_changes_limited_to({".claude/Plans.md"}, cwd=tmp_path)
+
+    def test_rejects_change_to_unrelated_tracked_file(self, tmp_path: Path) -> None:
+        """A tracked file elsewhere under `.claude/` (e.g. `settings.json`) unlocked by
+        `bypassPermissions` must fail the run even though `Plans.md` itself is untouched."""
+        fixture = _task_state_outcome_fixture()
+        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        settings_path = tmp_path / ".claude" / "settings.json"
+        settings_path.write_text('{"hooks": {}}\n', encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+
+        with pytest.raises(AssertionError, match="tracked files changed outside the allowed scope"):
+            fixture.assert_tracked_changes_limited_to({".claude/Plans.md"}, cwd=tmp_path)
+
+    def test_ignores_new_untracked_files(self, tmp_path: Path) -> None:
+        """Hook-generated session state (e.g. `.claude/context/...`) is untracked and must not
+        trip the collateral guard (PR #273 bot review: false-positive risk)."""
+        fixture = _task_state_outcome_fixture()
+        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        context_dir = tmp_path / ".claude" / "context" / "session"
+        context_dir.mkdir(parents=True)
+        (context_dir / "entry.json").write_text("{}\n", encoding="utf-8")
+
+        fixture.assert_tracked_changes_limited_to({".claude/Plans.md"}, cwd=tmp_path)
+
+    def test_rejects_deleted_tracked_file(self, tmp_path: Path) -> None:
+        fixture = _task_state_outcome_fixture()
+        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        (tmp_path / ".claude" / "extra.md").write_text("tracked\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "add extra"], cwd=tmp_path, check=True)
+        (tmp_path / ".claude" / "extra.md").unlink()
+
+        with pytest.raises(AssertionError, match="tracked files changed outside the allowed scope"):
+            fixture.assert_tracked_changes_limited_to({".claude/Plans.md"}, cwd=tmp_path)
+
+    def test_allowed_new_prefix_permits_new_file_under_it(self, tmp_path: Path) -> None:
+        """`create-handoff` case: a brand-new `.claude/handoffs/{timestamp}.md` must be
+        permitted when its prefix is explicitly allow-listed."""
+        fixture = _task_state_outcome_fixture()
+        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        handoffs_dir = tmp_path / ".claude" / "handoffs"
+        handoffs_dir.mkdir()
+        (handoffs_dir / "20260719-000000.md").write_text("# Task Handoff\n", encoding="utf-8")
+
+        fixture.assert_tracked_changes_limited_to(
+            {".claude/Plans.md"}, allowed_new_prefixes=(".claude/handoffs/",), cwd=tmp_path
+        )
+
+    def test_allowed_new_prefix_rejects_new_file_elsewhere(self, tmp_path: Path) -> None:
+        fixture = _task_state_outcome_fixture()
+        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        (tmp_path / ".claude" / "settings.local.json").write_text("{}\n", encoding="utf-8")
+
+        with pytest.raises(
+            AssertionError, match="new untracked files outside the allowed prefixes"
+        ):
+            fixture.assert_tracked_changes_limited_to(
+                {".claude/Plans.md"}, allowed_new_prefixes=(".claude/handoffs/",), cwd=tmp_path
+            )

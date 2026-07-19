@@ -493,6 +493,8 @@ class TestRunMetadataSchema:
         "max_output_tokens": 4096,
         "max_output_tokens_source": "global",
         "path_prepend": [],
+        "permission_mode": "acceptEdits",
+        "permission_mode_source": "global",
         "started_at": "2026-01-01T00:00:00+09:00",
         "attempt": 1,
         "attempts_total": 1,

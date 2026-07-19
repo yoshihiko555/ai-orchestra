@@ -29,6 +29,7 @@ import argparse
 import datetime
 import os
 import re
+import subprocess
 from pathlib import Path
 
 # The exact `.claude/Plans.md` content every task-state scenario's `setup:` step writes (see
@@ -173,6 +174,77 @@ def assert_decision_recorded(plans_path: Path, *, expected_decision: str) -> Non
     )
 
 
+def assert_tracked_changes_limited_to(
+    allowed_paths: set[str],
+    *,
+    allowed_new_prefixes: tuple[str, ...] = (),
+    cwd: Path | None = None,
+) -> None:
+    """Assert no tracked file outside `allowed_paths` differs from the pre-run baseline commit,
+    and (when `allowed_new_prefixes` is given) that every brand-new *untracked* file lives under
+    one of those prefixes.
+
+    Issue #261 PR6 bot review follow-up: this is a generic collateral-damage guard for any
+    scenario that must run under `permission_mode: bypassPermissions` (required because
+    `.claude/` is a Claude Code protected path that allow-rule permissions cannot unlock; see
+    task-state's `mark-task-done.yaml` / `record-architecture-decision-holdout.yaml`, and
+    handoff's `create-handoff.yaml` / `create-handoff-holdout.yaml`, whose comments explain why
+    each needs bypass). Despite the filename, this function/subcommand is not task-state
+    specific -- it is deliberately reused by the handoff suite rather than duplicated.
+
+    Tracked-file check: `git diff --name-only HEAD` reports staged and unstaged changes
+    (including new files once `git add`-ed) against the isolated git snapshot mounted for
+    oracle containers (see `scenario_docker_profile.build_oracle_command`). Any tracked path
+    outside `allowed_paths` fails the run.
+
+    Untracked-file check (opt-in via `allowed_new_prefixes`): `git status --porcelain
+    --untracked-files=all` lists brand-new files that were never tracked at all (e.g. a new
+    `.claude/handoffs/{timestamp}.md`). When `allowed_new_prefixes` is empty (the task-state
+    scenarios' case), untracked files are ignored entirely -- hook-generated session state
+    (`.claude/context/...`), `__pycache__`, etc. already exist as a normal side effect of
+    running Claude Code in this harness, so treating any of them as collateral damage would
+    make the check flake regardless of what the candidate did. When `allowed_new_prefixes` is
+    non-empty (the handoff suite's case, `(".claude/handoffs/",)`), every untracked path must
+    start with one of the given prefixes, or the run fails.
+
+    `cwd` defaults to the process's own working directory (the production oracle container
+    sets `--workdir /workspace` and relies on the process cwd); tests pass an explicit
+    temporary git repo instead.
+    """
+    diff_result = subprocess.run(
+        ["git", "diff", "--name-only", "HEAD"],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    changed = {line.strip() for line in diff_result.stdout.splitlines() if line.strip()}
+    unexpected = changed - allowed_paths
+    assert not unexpected, (
+        f"tracked files changed outside the allowed scope {sorted(allowed_paths)}: "
+        f"{sorted(unexpected)}"
+    )
+
+    if not allowed_new_prefixes:
+        return
+
+    status_result = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    untracked = [
+        line[3:].strip() for line in status_result.stdout.splitlines() if line.startswith("?? ")
+    ]
+    disallowed_new = [path for path in untracked if not path.startswith(allowed_new_prefixes)]
+    assert not disallowed_new, (
+        f"new untracked files outside the allowed prefixes {sorted(allowed_new_prefixes)}: "
+        f"{sorted(disallowed_new)}"
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="mode", required=True)
@@ -186,7 +258,31 @@ def main(argv: list[str] | None = None) -> None:
     record_decision.add_argument("--plans", type=Path, required=True)
     record_decision.add_argument("--expected-decision", required=True)
 
+    collateral_scope = subparsers.add_parser("collateral-scope")
+    collateral_scope.add_argument(
+        "--allow",
+        action="append",
+        required=True,
+        help="tracked path allowed to differ from baseline (repeatable)",
+    )
+    collateral_scope.add_argument(
+        "--allow-new-prefix",
+        action="append",
+        default=[],
+        help=(
+            "prefix new untracked files are allowed to appear under (repeatable); "
+            "if omitted, untracked files are ignored entirely"
+        ),
+    )
+
     args = parser.parse_args(argv)
+
+    if args.mode == "collateral-scope":
+        assert_tracked_changes_limited_to(
+            set(args.allow), allowed_new_prefixes=tuple(args.allow_new_prefix)
+        )
+        return
+
     project_root = Path(os.environ.get("AI_ORCHESTRA_DIR") or Path.cwd()).resolve()
     plans_path = project_root / args.plans
 

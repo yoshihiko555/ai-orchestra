@@ -12,6 +12,10 @@ setup:
   - "mkdir -p bin .meta-harness && cp packages/meta-harness/scenarios/fixtures/fake-gh.py bin/gh && chmod +x bin/gh && rm -f .meta-harness/issue-create-call.json"
 allowed_tools:
   - "Bash(gh *)"
+  # Issue #261 PR6 bot レビュー追撃対応: create-task-issue（train）と同型の fake-gh -> bin/gh
+  # 構成のため、同じ narrow ルールを追加する（根拠は create-task-issue.yaml のコメント参照）。
+  - "Bash(python3 /workspace/bin/gh *)"
+  - "Bash(python3 bin/gh *)"
   - "Write"
 path_prepend:
   - bin
@@ -35,7 +39,8 @@ checks:
 holdout: true
 timeout_ms: 300000
 budget:
-  max_turns: 8
+  # Issue #261 PR6 bot レビュー追撃対応: train（create-task-issue）と同型構成のため同水準へ較正。
+  max_turns: 16
   max_budget_usd: 3.0
   max_output_tokens: 1024
 repeat: 1
