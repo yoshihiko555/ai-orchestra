@@ -1,0 +1,69 @@
+schema_version: "1.0"
+id: record-architecture-decision-holdout
+target: skill:task-state
+description: Holdout - append a design decision entry to Plans.md's Decisions section without touching the task list.
+prompt: |
+  /task-state decision "REST API ではなく GraphQL を採用（理由: フロントエンドの柔軟性）"
+
+  This is an offline evaluation harness with no interactive follow-up. Append this decision to
+  the `## Decisions` section of the existing `.claude/Plans.md` now, using today's date, and do
+  not modify the task list, frontmatter, or Notes sections.
+setup:
+  - |
+    mkdir -p .claude
+    cat > .claude/Plans.md <<'PLANSEOF'
+    ---
+    codd:
+      node_id: "plan:meta-harness-eval-fixture"
+      kind: plan
+      status: active
+      depends_on:
+        - id: "design:meta-harness"
+          relation: implements
+    ---
+
+    # Plans
+
+    ## Project: meta-harness-eval-fixture
+
+    ### Phase 2: 実装 `cc:WIP`
+
+    #### API
+
+    - `cc:done` ユーザー認証API
+    - `cc:WIP` 商品一覧API
+    - `cc:TODO` 注文API
+
+    ---
+
+    ## Decisions
+
+    - 2026-01-01: 初期設計方針を確定
+
+    ## Notes
+
+    - 評価用フィクスチャ
+    PLANSEOF
+allowed_tools:
+  - "Read"
+  - "Edit"
+  - "Write"
+command_timeout_ms: 60000
+critical:
+  - id: decision-recorded-without-collateral-damage
+    text: "Plans.md 全体を canonical fixture と突合し、Decisions 末尾への前日/当日/翌日日付の1行挿入以外の差分が一切ないことを検証する（タスク一覧・既存 Decisions・Notes・frontmatter・見出しを包含）"
+    oracle: command_exit
+    command: >-
+      python3 packages/meta-harness/scenarios/fixtures/assert-task-state-outcome.py record-decision --plans .claude/Plans.md --expected-decision "REST API ではなく GraphQL を採用（理由: フロントエンドの柔軟性）"
+checks:
+  - id: decision-rationale-preserved
+    text: "判断理由が正確に記録される"
+    oracle: rubric_judge
+    rubric: "The appended decision entry must faithfully preserve the GraphQL choice and its stated rationale (frontend flexibility) without paraphrasing away the reason, and the Japanese report must not claim to have modified any task status."
+holdout: true
+timeout_ms: 300000
+budget:
+  max_turns: 8
+  max_budget_usd: 3.0
+  max_output_tokens: 1024
+repeat: 1
