@@ -766,10 +766,29 @@ def _finalize_ephemeral_git(
 
 def _snapshot_local_overrides_or_raise(
     worktree_path: Path,
+    *,
+    safety_stop: bool = False,
 ) -> tuple[LocalOverrideSnapshot, ...]:
+    """Snapshot local overrides, normalizing a read failure to a typed Git error.
+
+    Codex review, PR #262, P2 (round 8): `safety_stop` (default `False`, matching every
+    pre-existing call site) must mirror the caller's own classification intent. Before this,
+    a `LocalOverrideSnapshotError` here -- e.g. `loop_local_override_guard`'s own fail-closed
+    detection of a symlinked project-local override directory the Maker swapped in -- always
+    became a plain `EphemeralGitInfrastructureError`, even when called from
+    `_verify_local_override_snapshot(session, safety_stop=True)` below. That silently
+    downgraded a Maker-tampering safety stop into an ordinary "infrastructure hiccup" that
+    `loop_docker_action._dispatch()` retries/reports as opaque Docker infra failure instead of
+    the durable safe-stop the caller's `safety_stop=True` explicitly asked for.
+    """
     try:
         return snapshot_local_overrides(worktree_path)
     except LocalOverrideSnapshotError as exc:
+        if safety_stop:
+            raise EphemeralGitSafetyStop(
+                "maker_partial_worktree",
+                f"could not verify project-local configuration overrides: {exc}",
+            ) from exc
         raise EphemeralGitInfrastructureError(str(exc)) from exc
 
 
@@ -778,7 +797,7 @@ def _verify_local_override_snapshot(
     *,
     safety_stop: bool,
 ) -> None:
-    actual = _snapshot_local_overrides_or_raise(session.worktree_path)
+    actual = _snapshot_local_overrides_or_raise(session.worktree_path, safety_stop=safety_stop)
     if actual == session.local_override_snapshot:
         return
     changed_paths = changed_local_override_paths(session.local_override_snapshot, actual)

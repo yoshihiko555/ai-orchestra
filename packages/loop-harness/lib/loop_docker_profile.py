@@ -212,18 +212,36 @@ def _reject_socket_descendants(root: Path) -> None:
     symlink to a socket is not itself flagged (`lstat` reports it as a symlink), matching what a
     bind mount actually exposes -- the real socket inode, not a same-tree symlink pointing away
     from it.
+
+    Codex review, PR #262, Critical (round 8): `os.walk()` defaults to `onerror=None`, which
+    silently swallows `OSError` (e.g. `PermissionError` on a subdirectory with mode
+    ``-wx------``) and skips the unreadable subtree instead of failing. A socket hidden below an
+    unlistable directory would ride along into the bind mount undetected, defeating the whole
+    point of this fail-closed scan. `_raise_walk_error()` re-raises so any enumeration failure
+    aborts the mount instead of being treated as "no socket found here".
     """
-    for dirpath, _dirnames, filenames in os.walk(root, followlinks=False):
+    for dirpath, _dirnames, filenames in os.walk(
+        root, followlinks=False, onerror=_raise_walk_error
+    ):
         for name in filenames:
             entry_path = Path(dirpath) / name
             try:
                 entry_mode = entry_path.lstat().st_mode
-            except OSError:
-                continue
+            except OSError as exc:
+                raise DockerProfileError(
+                    f"cannot verify bind mount source is socket-free: {entry_path}"
+                ) from exc
             if stat.S_ISSOCK(entry_mode):
                 raise DockerProfileError(
                     f"socket bind mounts are forbidden: found a socket at {entry_path}"
                 )
+
+
+def _raise_walk_error(error: OSError) -> None:
+    """`os.walk` `onerror` callback: fail closed instead of skipping unreadable subtrees."""
+    raise DockerProfileError(
+        f"cannot verify bind mount source is socket-free: {error.filename}"
+    ) from error
 
 
 def _label_args(labels: Mapping[str, str]) -> list[str]:

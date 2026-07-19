@@ -1006,11 +1006,39 @@ class LoopDriver:
         self._action_executor = executor
         try:
             result = self._dispatch_action(proposal, state, params)
+            if self._lease_lost.is_set():
+                # Codex review, PR #262, P2 (round 8): a Maker's `claude -p` child can finish
+                # cleanly in the exact race window right before the next heartbeat tick
+                # detects lease loss and cancel()s the scenario container (see
+                # `_kill_current_child()`). `_dispatch_action()` above already returned a
+                # normal, "successful" result in that window, with nothing to catch below --
+                # calling `executor.finish(result)` on it would still run
+                # `_finish_git(action_succeeded=True)` and publish (CAS fast-forward) this
+                # Maker's commit chain onto the shared branch, even though this method's own
+                # caller (`run()`, right after this call returns) is about to return
+                # `EXIT_FOREIGN_LEASE` without ever calling `lc.complete()` for this action.
+                # That would break the "lease lost -> zero writes" invariant every other
+                # lease-loss path in this class (code G5, H13) already enforces, just reached
+                # through a different race window. `executor.abort()` runs the identical
+                # cleanup as `finish()` but with `action_succeeded=False`, which never reaches
+                # the CAS-publishing branch of `_finish_git()` -- a failed/aborted Maker only
+                # gets a read-only worktree verification (see its own docstring).
+                executor.abort()
+                return result
             executor.finish(result)
             return result
         except (lda.DockerActionSafetyStop, lge.EphemeralGitSafetyStop) as exc:
             try:
                 executor.abort()
+            except (lda.DockerActionSafetyStop, lge.EphemeralGitSafetyStop) as abort_safety_exc:
+                # Codex review, PR #262, P2 (round 8): symmetric with the other `_dispatch()`
+                # except block below (`DockerActionError`/`EphemeralGitInfrastructureError`),
+                # which already catches a second SafetyStop raised from its own `abort()` call.
+                # Without this, a second SafetyStop here (e.g. cleanup after an
+                # already-safety-stopping action also finds the container cleanup
+                # unconfirmed) would escape this except block uncaught and crash the process
+                # in `main()` instead of persisting the *original* safety stop below.
+                exc.add_note(f"abort() raised a second safety stop: {abort_safety_exc}")
             except (lda.DockerActionError, lge.EphemeralGitInfrastructureError) as cleanup_exc:
                 exc.add_note(f"action cleanup also failed: {cleanup_exc}")
             self._stop_for_action_safety(proposal, state, exc)

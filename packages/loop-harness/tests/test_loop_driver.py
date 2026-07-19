@@ -1474,6 +1474,122 @@ def test_post_result_cleanup_safety_stop_preserves_checker_artifact(
     assert artifact.read_bytes() == sealed_bytes
 
 
+def test_dispatch_never_publishes_when_lease_already_lost(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review, PR #262, P2 (round 8, D1): a Maker's `claude -p` child can finish cleanly
+    in the exact race window right before the next heartbeat tick detects lease loss (see
+    `_kill_current_child()`). `_dispatch_action()` then returns a normal, "successful" result
+    with nothing for `_dispatch()`'s except blocks to catch below -- `finish()` must not run in
+    that case (it would publish/CAS the Maker's commit chain via
+    `_finish_git(action_succeeded=True)`), since this method's own caller (`run()`, right after
+    this call returns) is about to return `EXIT_FOREIGN_LEASE` without ever calling
+    `lc.complete()` for this action. `executor.abort()` runs the identical cleanup but with
+    `action_succeeded=False`, which never reaches the CAS-publishing branch, matching the "lease
+    lost -> zero writes" invariant every other lease-loss path in this class already enforces.
+    """
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    proposal = lc.ProposeResult(
+        action=lc.Action.RUN_MAKER.value,
+        action_id="act-lease-lost",
+        state_version=state.state_version,
+        expected_phase=state.phase,
+        phase=state.phase,
+        iteration=state.iteration,
+        context={},
+    )
+    calls: list[str] = []
+
+    class RecordingExecutor:
+        def finish(self, _result: dict[str, Any]) -> None:
+            calls.append("finish")
+
+        def abort(self) -> None:
+            calls.append("abort")
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(
+        driver.lae, "build_action_executor", lambda *_args, **_kwargs: RecordingExecutor()
+    )
+    monkeypatch.setattr(
+        d,
+        "_dispatch_action",
+        lambda *_args, **_kwargs: {"maker": {"agent": "backend-python-dev"}},
+    )
+    d._lease_lost.set()
+
+    result = d._dispatch(proposal, state)
+
+    assert result == {"maker": {"agent": "backend-python-dev"}}
+    assert calls == ["abort"]
+
+
+def test_dispatch_persists_original_safety_stop_when_abort_raises_a_second_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review, PR #262, P2 (round 8, D3): when `_dispatch_action()` raises a SafetyStop and
+    the ensuing `executor.abort()` cleanup itself raises a *second* SafetyStop (e.g. cleanup
+    after an already-safety-stopping action also finds container cleanup unconfirmed), this
+    except block must catch it too -- symmetric with `_dispatch()`'s other except block
+    (`DockerActionError`/`EphemeralGitInfrastructureError`), which already has this catch -- and
+    persist the *original* safety stop via `_stop_for_action_safety()` instead of letting the
+    second SafetyStop escape uncaught and crash the driver process, silently losing the original
+    safe stop.
+    """
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    proposal = lc.ProposeResult(
+        action=lc.Action.RUN_MAKER.value,
+        action_id="act-double-safety-stop",
+        state_version=state.state_version,
+        expected_phase=state.phase,
+        phase=state.phase,
+        iteration=state.iteration,
+        context={},
+    )
+
+    class DoubleSafetyStopExecutor:
+        def finish(self, _result: dict[str, Any]) -> None:
+            raise AssertionError("finish() must not run when _dispatch_action() already raised")
+
+        def abort(self) -> None:
+            raise driver.lda.DockerActionSafetyStop(
+                "maker_container_cleanup_unconfirmed",
+                "could not confirm action container removal on cleanup after safety stop",
+            )
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(
+        driver.lae,
+        "build_action_executor",
+        lambda *_args, **_kwargs: DoubleSafetyStopExecutor(),
+    )
+
+    def raise_original(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise driver.lda.DockerActionSafetyStop(
+            "git_ref_not_fast_forward",
+            "ephemeral branch is not a fast-forward of the baseline",
+        )
+
+    monkeypatch.setattr(d, "_dispatch_action", raise_original)
+    persisted: list[Any] = []
+
+    def fake_stop_for_action_safety(_proposal: Any, _state: Any, error: Any) -> None:
+        persisted.append(error)
+        raise driver.DriverTerminated(str(error.stop_reason))
+
+    monkeypatch.setattr(d, "_stop_for_action_safety", fake_stop_for_action_safety)
+
+    with pytest.raises(driver.DriverTerminated, match="git_ref_not_fast_forward"):
+        d._dispatch(proposal, state)
+
+    assert len(persisted) == 1
+    assert persisted[0].stop_reason == "git_ref_not_fast_forward"
+
+
 def test_persist_safe_stop_writes_journal_before_state(tmp_path: Path) -> None:
     loop_id = "abcd1234-issue-1"
     project_dir, token = _seed_running_loop(tmp_path, loop_id)

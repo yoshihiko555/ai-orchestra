@@ -186,6 +186,56 @@ def test_profile_rejects_socket_nested_inside_mounted_worktree_directory(tmp_pat
         profile.build_scenario_container_command(_spec(tmp_path, (mount,)))
 
 
+def test_profile_rejects_socket_scan_when_a_subdirectory_is_unlistable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review, PR #262, Critical (round 8): fail closed when a directory bind mount
+    source contains a subtree `os.walk()` cannot enumerate (e.g. a subdirectory with mode
+    ``-wx------``), rather than silently skipping it -- `os.walk()` defaults to `onerror=None`,
+    which swallows the resulting `OSError` and treats an unlistable subtree exactly like an
+    empty one, letting a socket hidden below it evade this scan entirely. Forces the `onerror`
+    callback deterministically (rather than relying on real permission bits, which a root test
+    runner would ignore) so this test is portable across CI/sandbox users.
+    """
+    worktree = tmp_path / "worktree"
+    nested = worktree / "nested"
+    nested.mkdir(parents=True)
+    real_walk = os.walk
+
+    def fake_walk(top: Path, **kwargs: object):
+        onerror = kwargs.get("onerror")
+        if onerror is not None:
+            onerror(PermissionError(13, "Permission denied", str(nested)))
+        yield from real_walk(top, **kwargs)
+
+    monkeypatch.setattr(profile.os, "walk", fake_walk)
+    mount = Mount(worktree, worktree, False)
+
+    with pytest.raises(profile.DockerProfileError, match="cannot verify bind mount source"):
+        profile.build_scenario_container_command(_spec(tmp_path, (mount,)))
+
+
+@pytest.mark.skipif(os.getuid() == 0, reason="root bypasses directory permission bits")
+def test_profile_rejects_socket_scan_when_a_subdirectory_is_really_unreadable(
+    tmp_path: Path,
+) -> None:
+    """Same as above, but with a real unreadable directory instead of a forced `onerror` call,
+    as an end-to-end sanity check of the same fail-closed behavior."""
+    worktree = tmp_path / "worktree"
+    nested = worktree / "nested"
+    nested.mkdir(parents=True)
+    locked = nested / "locked"
+    locked.mkdir()
+    locked.chmod(0o300)  # -wx------: cannot be listed, only entered/written blindly
+    try:
+        mount = Mount(worktree, worktree, False)
+
+        with pytest.raises(profile.DockerProfileError, match="cannot verify bind mount source"):
+            profile.build_scenario_container_command(_spec(tmp_path, (mount,)))
+    finally:
+        locked.chmod(0o700)
+
+
 def test_profile_accepts_worktree_mount_with_no_sockets_anywhere_below_it(
     tmp_path: Path,
 ) -> None:

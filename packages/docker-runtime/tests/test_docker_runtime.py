@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -200,6 +201,42 @@ def test_align_mount_ownership_skips_excluded_leaf_paths(
 
     assert excluded_file not in calls
     assert kept_file in calls
+    assert nested in calls
+    assert target in calls
+
+
+def test_align_mount_ownership_skips_hardlink_alias_of_an_excluded_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review, PR #262, P2 (round 8): an `exclude` entry must also cover a hardlink alias
+    of that same file, not just its own path.
+
+    `exclude` previously only matched by `Path` equality. A hardlink to the same excluded
+    `.local.yaml` inode planted at a different path inside the same worktree is a distinct
+    directory entry `rglob()` walks into with its own path but the *same* underlying inode --
+    `child in excluded` alone misses it, re-owning the excluded file's inode (through the alias
+    path) to the non-root container identity and exposing its contents via that alias.
+    """
+    monkeypatch.setattr(profile.os, "getuid", lambda: 0)
+    monkeypatch.setattr(profile.os, "getgid", lambda: 0)
+    calls: list[Path] = []
+    monkeypatch.setattr(
+        profile.os,
+        "chown",
+        lambda path, uid, gid, follow_symlinks=True: calls.append(Path(path)),
+    )
+    target = tmp_path / "worktree"
+    nested = target / "nested"
+    nested.mkdir(parents=True)
+    excluded_file = nested / "secret.local.yaml"
+    excluded_file.write_text("content", encoding="utf-8")
+    hardlink_alias = nested / "alias-of-secret"
+    os.link(excluded_file, hardlink_alias)
+
+    profile.align_mount_ownership(target, exclude=frozenset({excluded_file}))
+
+    assert excluded_file not in calls
+    assert hardlink_alias not in calls
     assert nested in calls
     assert target in calls
 

@@ -61,6 +61,22 @@ def snapshot_local_overrides(worktree_path: Path) -> tuple[LocalOverrideSnapshot
             followlinks=False,
             onerror=raise_walk_error,
         ):
+            for dirname in dirnames:
+                # Codex review, PR #262, P2 (round 8): `followlinks=False` above keeps this
+                # walk from descending into a symlinked subdirectory, but that just means any
+                # `.local.yaml`/`.local.json` override sitting inside one is silently invisible
+                # to this snapshot instead -- neither this run's nor any later run's tamper
+                # check ever sees it, so a Maker that swaps an intermediate directory under
+                # `.claude/config` for a symlink to elsewhere can add, remove, or edit overrides
+                # inside it with zero detection signal. Mirrors the round 5 fail-closed
+                # treatment of a symlinked config *root* above, one level deeper: any symlinked
+                # directory anywhere under the root aborts the snapshot instead of silently
+                # skipping it.
+                if (Path(directory) / dirname).is_symlink():
+                    raise LocalOverrideSnapshotError(
+                        "project-local configuration directory is a symlink; refusing to "
+                        f"snapshot: {(Path(directory) / dirname).relative_to(worktree_path)}"
+                    )
             for name in (*dirnames, *filenames):
                 if not name.endswith(_LOCAL_OVERRIDE_SUFFIXES):
                     continue

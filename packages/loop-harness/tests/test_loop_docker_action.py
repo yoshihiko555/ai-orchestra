@@ -757,18 +757,20 @@ def test_mechanical_only_checker_skips_broker_and_uses_isolated_network(
 
 
 def test_mechanical_exec_env_forwards_overrides_but_not_container_reserved_keys() -> None:
-    """Codex review, PR #262, High (round 6 adds `XDG_CONFIG_HOME`): preserve checker env for
-    Docker mechanical commands.
+    """Codex review, PR #262, High (round 6 adds `XDG_CONFIG_HOME`); precedence updated round 8.
 
-    `RUFF_CACHE_DIR`-style tool overrides must reach the container so mechanical commands can
+    `*_CACHE_DIR`-style tool overrides must reach the container so mechanical commands can
     redirect writes off the read-only checker worktree, but `HOME`/`TMPDIR`/`PATH`/`GIT_DIR`/
     `GIT_WORK_TREE`/`XDG_CONFIG_HOME` are container-owned (tmpfs mounts, the image's own
     toolchain, the ephemeral Git wiring, and -- like `HOME` -- a host scratch-home path that is
     never mounted into the container) and must never be clobbered by the host-derived checker
-    env.
+    env. `RUFF_CACHE_DIR` specifically is always pinned to the container-safe default (see the
+    dedicated precedence test below); a different `*_CACHE_DIR` key with no built-in default
+    still forwards through unmodified.
     """
     checker_env = {
         "RUFF_CACHE_DIR": "/host/ruff-cache",
+        "MYPY_CACHE_DIR": "/host/mypy-cache",
         "HOME": "/host/scratch-home",
         "TMPDIR": "/host/tmp",
         "PATH": "/host/bin:/usr/bin",
@@ -779,7 +781,10 @@ def test_mechanical_exec_env_forwards_overrides_but_not_container_reserved_keys(
 
     merged = docker_action._mechanical_exec_env(checker_env)
 
-    assert merged == {"RUFF_CACHE_DIR": "/host/ruff-cache"}
+    assert merged == {
+        "RUFF_CACHE_DIR": "/tmp/ruff-cache",
+        "MYPY_CACHE_DIR": "/host/mypy-cache",
+    }
 
 
 def test_mechanical_exec_env_drops_host_secrets_outside_the_cache_dir_allowlist() -> None:
@@ -794,6 +799,7 @@ def test_mechanical_exec_env_drops_host_secrets_outside_the_cache_dir_allowlist(
     """
     checker_env = {
         "RUFF_CACHE_DIR": "/host/ruff-cache",
+        "MYPY_CACHE_DIR": "/host/mypy-cache",
         "AWS_SECRET_ACCESS_KEY": "super-secret",
         "OPENAI_API_KEY": "sk-should-not-leak",
         "ANTHROPIC_API_KEY": "sk-ant-should-not-leak",
@@ -802,7 +808,29 @@ def test_mechanical_exec_env_drops_host_secrets_outside_the_cache_dir_allowlist(
 
     merged = docker_action._mechanical_exec_env(checker_env)
 
-    assert merged == {"RUFF_CACHE_DIR": "/host/ruff-cache"}
+    assert merged == {
+        "RUFF_CACHE_DIR": "/tmp/ruff-cache",
+        "MYPY_CACHE_DIR": "/host/mypy-cache",
+    }
+
+
+def test_mechanical_exec_env_ruff_cache_dir_default_wins_over_ambient_host_value() -> None:
+    """Codex review, PR #262, P2 (round 8): the container-safe `RUFF_CACHE_DIR` default must
+    always win, even when the caller's forwarded env carries an ambient value for the same key.
+
+    `checker_env` is derived from the *host* driver process's own `os.environ`. An operator
+    whose shell merely happens to export an ambient `RUFF_CACHE_DIR` pointing at a host path
+    (e.g. `~/.cache/ruff`) -- with no intent to override anything Docker-specific -- must not
+    have that host-only path silently forwarded into the container in place of the working
+    `/tmp` default: that path does not exist inside the container's filesystem namespace and
+    breaks the checker with no way for the allowlist to tell an ambient value apart from a
+    deliberate override.
+    """
+    checker_env = {"RUFF_CACHE_DIR": "/Users/example/.cache/ruff"}
+
+    merged = docker_action._mechanical_exec_env(checker_env)
+
+    assert merged == {"RUFF_CACHE_DIR": "/tmp/ruff-cache"}
 
 
 def test_align_mount_ownership_or_raise_normalizes_os_errors(
@@ -955,6 +983,48 @@ def test_mechanical_timeout_skips_subsequent_commands_instead_of_docker_exec(
     assert second_exit_code == 124
     assert "isolated runtime unusable" in second_output
     # Only the first command actually reached `docker exec`; the second was short-circuited.
+    assert calls["host_child"] == 1
+
+
+def test_mechanical_timeout_latch_also_short_circuits_execute_claude(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex review, PR #262, High (round 8): the mechanical-timeout latch (round 5, above) must
+    also stop `execute_claude()`, not just later `execute_mechanical()` calls.
+
+    A checker with both `mechanical` and `llm_review` layers calls `execute_claude()` right
+    after `execute_mechanical()`. Once the mechanical command times out, `_execute()` has
+    already destroyed the scenario container; without this guard, `execute_claude()` would still
+    attempt a `docker exec` against the removed container and surface an opaque
+    `DockerActionError` (instead of the typed `ClaudePTimeoutError` `_run_one_llm_reviewer()`
+    already degrades into an ordinary infrastructure-failure `CheckResult`), discarding the
+    perfectly sealed mechanical timeout result.
+    """
+    calls = {"host_child": 0}
+
+    def timed_out(*_args: Any) -> subprocess.CompletedProcess[str]:
+        calls["host_child"] += 1
+        raise docker_action.driver_support.ClaudePTimeoutError(
+            "claude -p timed out after 30s", stdout="partial output", stderr=""
+        )
+
+    monkeypatch.setattr(docker_action.runtime_cli, "remove_container", lambda *_a, **_k: True)
+    runtime = docker_action.DockerActionRuntime(
+        _request(tmp_path, kind="classifier", needs_broker=False),
+        host_child_runner=timed_out,
+    )
+    runtime.container_name = "lh-action"
+    runtime._started = True
+
+    _output, exit_code = runtime.execute_mechanical("pytest -q", "/tmp", 30)
+    assert exit_code == 124
+
+    with pytest.raises(docker_action.driver_support.ClaudePTimeoutError):
+        runtime.execute_claude(["claude", "-p", "prompt"], "/tmp", 30, {})
+
+    # Only the mechanical command reached a real host child; execute_claude's short-circuit
+    # never attempted a docker exec against the already-removed container.
     assert calls["host_child"] == 1
 
 

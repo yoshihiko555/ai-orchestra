@@ -81,22 +81,52 @@ def align_mount_ownership(path: Path, *, exclude: frozenset[Path] | None = None)
     project-local override files (`.claude/config/**/*.local.{yaml,json}`) here; their ancestor
     directories are intentionally still re-owned so the container can traverse them and create
     unrelated sibling entries.
+
+    Codex review, PR #262, P2 (round 8, low severity): a plain ``Path`` membership check only
+    excludes the exact paths the caller enumerated. A hardlink to the same excluded file, planted
+    at a different path elsewhere under this same recursive `rglob()` walk, is a distinct
+    directory entry with its own path but the *same inode* -- `child in excluded` would miss it
+    and this function would happily re-own the excluded file's underlying inode through its
+    hardlink alias, exposing its contents to the container identity via the alias path. Excluded
+    entries are therefore also matched by ``(st_dev, st_ino)`` identity, not just by path, so a
+    hardlink alias is skipped the same as the original path would be. (Creating such a hardlink
+    requires the source `.local.*` file's inode to already be linkable from within the worktree
+    tree, which most modern kernels restrict by default via `fs.protected_hardlinks`; this is
+    defense in depth for hosts that have that hardening disabled.)
     """
     if os.getuid() != 0:
         return
     excluded = exclude or frozenset()
+    excluded_identities = {
+        identity
+        for identity in (_stat_identity(entry) for entry in excluded)
+        if identity is not None
+    }
     uid, gid = non_root_identity()
-    if path not in excluded:
+    if path not in excluded and _stat_identity(path) not in excluded_identities:
         os.chown(path, uid, gid)
     if not path.is_dir():
         return
     for child in path.rglob("*"):
         if child in excluded:
             continue
+        if _stat_identity(child) in excluded_identities:
+            continue
         try:
             os.chown(child, uid, gid, follow_symlinks=False)
         except FileNotFoundError:
             continue
+
+
+def _stat_identity(path: Path) -> tuple[int, int] | None:
+    """Return ``(st_dev, st_ino)`` for ``path`` (without following a trailing symlink), or
+    ``None`` if it does not exist. Used by `align_mount_ownership()`'s `exclude` set to also catch
+    hardlink aliases of an excluded path (see that function's round 8 docstring note)."""
+    try:
+        stat_result = os.lstat(path)
+    except OSError:
+        return None
+    return (stat_result.st_dev, stat_result.st_ino)
 
 
 def resource_args(resources: dict[str, Any]) -> list[str]:

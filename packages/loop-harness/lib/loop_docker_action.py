@@ -127,9 +127,10 @@ _MECHANICAL_ENV_RESERVED_KEYS = frozenset(
 # read-only checker worktree -- never a credential -- so this suffix, not an ever-growing
 # per-tool name list, is the allowlist itself.
 _MECHANICAL_ENV_ALLOWED_SUFFIXES: tuple[str, ...] = ("_CACHE_DIR",)
-# Codex review, PR #262, High (round 4): fallback default only, layered *underneath* the
-# forwarded checker env in `_mechanical_exec_env()` so an explicit `RUFF_CACHE_DIR` override
-# still wins; see that function's docstring for why this is needed at all.
+# Codex review, PR #262, High (round 4); precedence flipped in round 8: this container-safe
+# default is layered *over* the forwarded checker env in `_mechanical_exec_env()`, so it always
+# wins for this key regardless of what an ambient host env forwards; see that function's
+# docstring for why this is needed at all.
 _MECHANICAL_ENV_DEFAULTS: Mapping[str, str] = {
     "RUFF_CACHE_DIR": f"{profile.CONTAINER_TMP}/ruff-cache"
 }
@@ -223,6 +224,22 @@ class DockerActionRuntime:
         _env: dict[str, str],
     ) -> subprocess.CompletedProcess[str]:
         self._ensure_started()
+        if self._mechanical_unusable:
+            # Codex review, PR #262, High (round 8): mirrors `execute_mechanical()`'s own
+            # short-circuit above. A checker with both `mechanical` and `llm_review` layers
+            # calls `execute_mechanical()` first; once an earlier mechanical command times out,
+            # `_execute()` has already destroyed the scenario container (fail-closed). Without
+            # this check, the subsequent `llm_review` layer's `execute_claude()` call would still
+            # attempt a `docker exec` against the removed container and raise an opaque
+            # `DockerActionError` (returncode 125) that `_dispatch()` treats as an infra failure,
+            # discarding the perfectly ordinary, already-sealed mechanical timeout result.
+            # Raising `ClaudePTimeoutError` here instead reuses the exact typed error
+            # `_run_one_llm_reviewer()`'s except clause already degrades into an
+            # `infrastructure_failure=True` `CheckResult`, keeping the checker's sealed-result
+            # contract intact instead of surfacing a crash-shaped Docker error.
+            raise driver_support.ClaudePTimeoutError(
+                "isolated runtime unusable after an earlier mechanical timeout"
+            )
         if self.request.kind == "classifier":
             command = _without_settings(command)
         else:
@@ -724,9 +741,20 @@ def _mechanical_exec_env(env: Mapping[str, str] | None) -> dict[str, str]:
     unless `RUFF_CACHE_DIR` is set (https://docs.astral.sh/ruff/settings/#cache-dir), and the
     bundled issue-loop's default mechanical commands include `ruff check .`. `/tmp` is the
     container's own tmpfs mount (`loop_docker_profile.CONTAINER_TMP`), always writable by the
-    non-root exec identity regardless of `cwd`, and this value never leaks any host path. It is
-    only a fallback: a `RUFF_CACHE_DIR` already present in the forwarded (allowlisted) checker env
-    (e.g. an explicit operator override) still wins.
+    non-root exec identity regardless of `cwd`, and this value never leaks any host path.
+
+    Codex review, PR #262, P2 (round 8): this container-safe default now always wins over a
+    forwarded value for the same key, rather than the other way around. `env` here is derived
+    from the *host* driver process's `os.environ` (`loop_driver_support.maker_env`), so an
+    operator whose shell merely happens to export an ambient `RUFF_CACHE_DIR` pointing at a host
+    path (e.g. `~/.cache/ruff`) -- with no intent to override anything Docker-specific -- used to
+    have that host-only path silently forwarded into the container in place of the working
+    `/tmp` default, breaking the checker (the path does not exist inside the container's
+    filesystem namespace) with no way for the allowlist to tell an ambient host value apart from
+    a deliberate override. There is currently no supported way to override this default from the
+    host env; a future explicit escape hatch (e.g. a distinct `LOOP_CONTAINER_*` key namespace)
+    can be added if a real need for one arises. Allowlisted `*_CACHE_DIR` keys with no built-in
+    default (i.e. not `RUFF_CACHE_DIR`) are unaffected and still forward through as before.
     """
     forwarded = (
         {}
@@ -738,7 +766,7 @@ def _mechanical_exec_env(env: Mapping[str, str] | None) -> dict[str, str]:
             and any(key.endswith(suffix) for suffix in _MECHANICAL_ENV_ALLOWED_SUFFIXES)
         }
     )
-    return {**_MECHANICAL_ENV_DEFAULTS, **forwarded}
+    return {**forwarded, **_MECHANICAL_ENV_DEFAULTS}
 
 
 def _without_settings(command: list[str]) -> list[str]:

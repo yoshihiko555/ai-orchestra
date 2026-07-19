@@ -89,3 +89,27 @@ def test_symlinked_config_root_fails_closed(tmp_path: Path) -> None:
 
     with pytest.raises(guard.LocalOverrideSnapshotError):
         guard.snapshot_local_overrides(tmp_path)
+
+
+def test_symlinked_intermediate_directory_fails_closed(tmp_path: Path) -> None:
+    """Codex review, PR #262, P2 (round 8, D4): a symlinked directory anywhere *under* the
+    `.claude/config` root -- not just the root itself (round 5, above) -- must also fail closed.
+
+    `os.walk(followlinks=False)` keeps this walk from descending into a symlinked subdirectory,
+    but that alone just makes any `.local.yaml`/`.local.json` override sitting inside one
+    silently invisible to this snapshot instead of merely unreachable: a Maker that swaps an
+    intermediate directory under `.claude/config` for a symlink to elsewhere could add, remove,
+    or edit overrides inside it with zero tamper-detection signal, since neither this run's nor
+    any later run's snapshot ever surfaces them.
+    """
+    config_dir = tmp_path / ".claude" / "config"
+    config_dir.mkdir(parents=True)
+    real_nested = tmp_path / "real-nested"
+    real_nested.mkdir()
+    (real_nested / "cli-tools.local.yaml").write_text(
+        "codex:\n  model: trusted\n", encoding="utf-8"
+    )
+    os.symlink(real_nested, config_dir / "nested")
+
+    with pytest.raises(guard.LocalOverrideSnapshotError):
+        guard.snapshot_local_overrides(tmp_path)

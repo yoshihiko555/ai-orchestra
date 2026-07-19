@@ -1737,6 +1737,38 @@ def test_finalize_rejects_local_override_change_before_shared_ref_update(tmp_pat
     git_ephemeral.cleanup_ephemeral_git(session)
 
 
+def test_finalize_converts_symlinked_config_root_tampering_to_safety_stop(
+    tmp_path: Path,
+) -> None:
+    """Codex review, PR #262, P2 (round 8, D2): a Maker that swaps `.claude/config` for a
+    symlink *after* the pre-Maker snapshot was captured must be classified as a safety-stop
+    (`maker_partial_worktree`), not a plain `EphemeralGitInfrastructureError`.
+
+    `_snapshot_local_overrides_or_raise()` previously converted any `LocalOverrideSnapshotError`
+    -- including `snapshot_local_overrides()`'s own fail-closed rejection of a symlinked config
+    root -- to `EphemeralGitInfrastructureError` unconditionally, even when called from
+    `_verify_local_override_snapshot(session, safety_stop=True)` here. That silently downgraded
+    this exact Maker-tampering signal into an ordinary infrastructure hiccup instead of the
+    durable safe stop `safety_stop=True` explicitly asks for.
+    """
+    fixture = _linked_worktree_with_tracked_config(tmp_path)
+    session = _prepare(fixture)
+    _maker_commit(session)
+    config_dir = fixture.worktree_path / ".claude" / "config"
+    elsewhere = tmp_path / "elsewhere-config"
+    shutil.move(str(config_dir), str(elsewhere))
+    config_dir.symlink_to(elsewhere)
+
+    with pytest.raises(
+        git_ephemeral.EphemeralGitSafetyStop,
+        match="project-local configuration overrides",
+    ) as caught:
+        git_ephemeral.finalize_ephemeral_git(session)
+
+    assert caught.value.stop_reason == "maker_partial_worktree"
+    assert _shared_ref(session) == session.baseline_sha
+
+
 def test_prepare_still_rejects_tracked_dirt_alongside_untracked_config_local_override(
     tmp_path: Path,
 ) -> None:
