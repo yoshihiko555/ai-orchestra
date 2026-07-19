@@ -48,10 +48,16 @@ allowed_tools:
   - "Read"
   - "Edit"
   - "Write"
-  # Issue #261 PR6: 実 backend 再検証で bare "Edit" だけでは .claude/Plans.md への Edit が
-  # 「sensitive file」として拒否された（Read は成功）。パス指定の permission ルールで明示許可する。
-  - "Edit(.claude/Plans.md)"
-  - "Write(.claude/Plans.md)"
+# Issue #261 PR6 bot レビュー対応: `.claude/` は Claude Code の protected path であり、
+# allow ルール（`Edit(.claude/Plans.md)` / `Write(.claude/Plans.md)` いずれの記法でも）では
+# protected path への書込みを事前承認できない（protected-path チェックが allow ルール評価より
+# 先に実行される。公式 docs: code.claude.com/docs/en/permission-modes.md "Protected paths"）。
+# 実 backend 再検証では bare "Edit" のみでは .claude/Plans.md への Edit が拒否された（Read は成功）。
+# 非対話で解除する唯一の手段が --permission-mode bypassPermissions のため、このシナリオに限定して
+# 明示 opt-in する。防衛線: コンテナ隔離（ADR-20260712-034）+ --tools による tool 集合最小化
+# （Read/Edit/Write のみ、Bash 等は非公開）+ oracle の Plans.md 全文一致 assert
+# （collateral damage を含む differ を fail 化）+ Phase A の human merge review。
+permission_mode: bypassPermissions
 command_timeout_ms: 60000
 critical:
   - id: task-status-updated-without-collateral-damage

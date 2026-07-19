@@ -11,6 +11,12 @@ setup:
   - "mkdir -p bin .meta-harness && cp packages/meta-harness/scenarios/fixtures/fake-gh.py bin/gh && chmod +x bin/gh && rm -f .meta-harness/issue-create-call.json"
 allowed_tools:
   - "Bash(gh *)"
+  # Issue #261 PR6 bot レビュー対応: 実測（run-20260719-154357 events）で `bin/gh` の直接実行が
+  # exit 126 Permission denied となり、モデルは `python3 /workspace/bin/gh ...` へフォールバック
+  # したが "Bash(gh *)" に不一致で 2 回連続 approval 待ちとなった。実測コマンド文字列に一致する
+  # narrow ルールを追加する（`Bash(gh *)` は変更なしで維持）。
+  - "Bash(python3 /workspace/bin/gh *)"
+  - "Bash(python3 bin/gh *)"
   - "Write"
 path_prepend:
   - bin

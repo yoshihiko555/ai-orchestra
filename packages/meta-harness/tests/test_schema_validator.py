@@ -448,6 +448,25 @@ class TestScenarioSchema:
         errors = mh.validate_against_schema(instance, schema, SCHEMA_DIR)
         assert any("does not match pattern" in error for error in errors)
 
+    def test_permission_mode_accept_edits_is_accepted(self) -> None:
+        schema = _load("scenario.schema.json")
+        instance = {**self._VALID, "permission_mode": "acceptEdits"}
+        assert mh.validate_against_schema(instance, schema, SCHEMA_DIR) == []
+
+    def test_permission_mode_bypass_permissions_is_accepted(self) -> None:
+        # Issue #261 PR6 bot レビュー対応: `.claude/` protected path への非対話書込みを
+        # 個別シナリオだけに限定して opt-in させるための override（詳細は evaluator.py
+        # `_effective_scenario_execution` のコメント参照）。
+        schema = _load("scenario.schema.json")
+        instance = {**self._VALID, "permission_mode": "bypassPermissions"}
+        assert mh.validate_against_schema(instance, schema, SCHEMA_DIR) == []
+
+    def test_permission_mode_invalid_value_is_rejected(self) -> None:
+        schema = _load("scenario.schema.json")
+        instance = {**self._VALID, "permission_mode": "plan"}
+        errors = mh.validate_against_schema(instance, schema, SCHEMA_DIR)
+        assert any("permission_mode" in error for error in errors)
+
 
 class TestRunMetadataSchema:
     _VALID = {

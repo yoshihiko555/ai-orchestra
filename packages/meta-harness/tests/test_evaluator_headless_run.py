@@ -199,6 +199,8 @@ class TestScenarioExecutionEnvelope:
             "max_output_tokens": 1024,
             "max_output_tokens_source": "scenario",
             "path_prepend": [],
+            "permission_mode": "acceptEdits",
+            "permission_mode_source": "global",
         }
 
     def test_headless_command_contains_minimal_model_tools_and_output_limit(
@@ -248,6 +250,45 @@ class TestScenarioExecutionEnvelope:
         with pytest.raises(ValueError, match="safe relative paths"):
             ev._effective_scenario_execution(
                 {"target": "skill:issue-create", "path_prepend": ["../bin"]},
+                {},
+            )
+
+    def test_scenario_permission_mode_override_reaches_headless_command(
+        self, tmp_path: Path
+    ) -> None:
+        # Issue #261 PR6 bot レビュー対応: `.claude/` は protected path のため allow ルール
+        # (`Edit(path)` / `Write(path)`) では解除できない。scenario 側の明示 override だけが
+        # `--permission-mode bypassPermissions` をコマンドへ反映する経路であることを固定する。
+        command = ev._build_headless_command(
+            {
+                "target": "skill:task-state",
+                "prompt": "/task-state update test",
+                "allowed_tools": ["Read", "Edit", "Write"],
+                "permission_mode": "bypassPermissions",
+            },
+            {},
+            tmp_path / "instruction.md",
+        )
+
+        assert command[command.index("--permission-mode") + 1] == "bypassPermissions"
+
+    def test_no_scenario_override_keeps_default_accept_edits(self, tmp_path: Path) -> None:
+        command = ev._build_headless_command(
+            {
+                "target": "skill:task-state",
+                "prompt": "/task-state update test",
+                "allowed_tools": ["Read", "Edit", "Write"],
+            },
+            {},
+            tmp_path / "instruction.md",
+        )
+
+        assert command[command.index("--permission-mode") + 1] == "acceptEdits"
+
+    def test_invalid_scenario_permission_mode_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="acceptEdits, bypassPermissions"):
+            ev._effective_scenario_execution(
+                {"target": "skill:task-state", "permission_mode": "plan"},
                 {},
             )
 

@@ -431,7 +431,10 @@
   covered_by:
     - packages/meta-harness/tests/test_evaluator_headless_run.py::TestScenarioExecutionEnvelope
     - packages/meta-harness/tests/test_evaluator_artifacts.py::TestHoldoutPhysicalSeparation::test_metadata_records_finished_at_after_completion
-  notes: explicit empty permissions, model tool exposure, output cap, evaluator hash, and run metadata are covered.
+  notes: >-
+    Explicit empty permissions, model tool exposure, output cap, evaluator hash, run
+    metadata, and scenario-level permission_mode override (falls back to acceptEdits;
+    invalid values rejected) are covered.
 
 - ev_id: EV-52
   phase: 3

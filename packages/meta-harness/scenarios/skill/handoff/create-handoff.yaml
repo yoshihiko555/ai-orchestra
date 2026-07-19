@@ -14,6 +14,13 @@ setup:
   - "touch -t 200001010000 .meta-harness/handoff-start"
 allowed_tools:
   - "Bash(python3 *)"
+  # Issue #261 PR6 bot レビュー対応: `.agents/skills/handoff/SKILL.md`（Codex/agy 用ソース）は
+  # bare `python .claude/skills/handoff/scripts/handoff.py` を指示しており、`Bash(python3 *)`
+  # では一致しない（`python` は wrapper stripping 対象外）。実測 run では `.claude/skills/`
+  # 側の python3 版が呼ばれ成功していたが（Write 到達前に max_turns 到達が本因）、SKILL.md の
+  # ソース差異に備えて両綴りの exact-script narrow ルールを追加する。
+  - "Bash(python3 .claude/skills/handoff/scripts/handoff.py*)"
+  - "Bash(python .claude/skills/handoff/scripts/handoff.py*)"
   - "Write"
 command_timeout_ms: 60000
 critical:

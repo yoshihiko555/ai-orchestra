@@ -1319,7 +1319,7 @@ def _build_headless_command(
         "--max-budget-usd",
         str(max_budget_usd),
         "--permission-mode",
-        evaluate_cfg.get("permission_mode", "acceptEdits"),
+        execution["permission_mode"],
         "--setting-sources",
         "project,local",
         "--no-chrome",
@@ -1354,6 +1354,23 @@ def _effective_scenario_execution(scenario: dict, config: dict) -> dict[str, Any
     if str(scenario.get("target") or "").startswith("skill:") and "Skill" not in model_tools:
         model_tools.append("Skill")
 
+    # Issue #261 PR6 (bot review follow-up): scenario-level override. `.claude/` is a
+    # Claude Code protected path; allow-rule permissions (`Edit(path)` / `Write(path)`)
+    # cannot unlock writes to it (protected-path check runs before allow-rule
+    # evaluation). The only non-interactive way to permit a specific scenario to write
+    # there is `--permission-mode bypassPermissions`, which we only allow scenarios to
+    # opt into explicitly and narrowly (schema-enforced enum; default stays acceptEdits).
+    if "permission_mode" in scenario:
+        permission_mode = str(scenario["permission_mode"])
+        if permission_mode not in ("acceptEdits", "bypassPermissions"):
+            raise ValueError(
+                "scenario.permission_mode must be one of: acceptEdits, bypassPermissions"
+            )
+        permission_mode_source = "scenario"
+    else:
+        permission_mode = evaluate_cfg.get("permission_mode", "acceptEdits")
+        permission_mode_source = "global"
+
     if "max_output_tokens" in budget:
         max_output_tokens = int(budget["max_output_tokens"])
         max_output_tokens_source = "scenario"
@@ -1379,6 +1396,8 @@ def _effective_scenario_execution(scenario: dict, config: dict) -> dict[str, Any
         "max_output_tokens": max_output_tokens,
         "max_output_tokens_source": max_output_tokens_source,
         "path_prepend": path_prepend,
+        "permission_mode": permission_mode,
+        "permission_mode_source": permission_mode_source,
     }
 
 
