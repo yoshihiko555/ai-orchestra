@@ -54,7 +54,13 @@ def _config(*, execution_backend: str = "docker") -> dict[str, Any]:
     return config
 
 
-def _request(tmp_path: Path, *, kind: str = "maker", needs_broker: bool = True) -> object:
+def _request(
+    tmp_path: Path,
+    *,
+    kind: str = "maker",
+    needs_broker: bool = True,
+    lease_lost: Any = None,
+) -> object:
     config = _config()
     worktree = tmp_path / "worktree"
     worktree.mkdir()
@@ -69,6 +75,7 @@ def _request(tmp_path: Path, *, kind: str = "maker", needs_broker: bool = True) 
         kind=kind,
         remaining_wall_clock_seconds=lambda: 600,
         needs_broker=needs_broker,
+        lease_lost=lease_lost,
     )
 
 
@@ -1434,6 +1441,97 @@ def test_discard_after_lease_loss_skips_git_finalize_and_verify_but_still_cleans
     runtime.discard_after_lease_loss()
 
     assert events == ["broker_cleanup", "git_cleanup", "settings_cleanup"]
+
+
+def test_finish_skips_git_finalize_when_lease_lost_before_finish(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex review, PR #262, P1 (round 8, fence #2): `_cleanup_containers()` inside `finish()`
+    can itself spend real wall-clock time destroying the scenario/broker/network, during which
+    the driver's heartbeat thread can flip the `request.lease_lost` signal after
+    `loop_driver._dispatch()` already decided to call `executor.finish(result)`. This proves
+    `finish(action_succeeded=True)` re-checks `request.lease_lost()` right before
+    `_finish_git()` and, if it is already true, never reaches `finalize_ephemeral_git()` (no CAS
+    publish onto the shared branch) -- only the same ordinary `cleanup_ephemeral_git()` every
+    other lease-lost exit path already runs, and `finish()` returns without raising.
+    """
+    events: list[str] = []
+    runtime = docker_action.DockerActionRuntime(
+        _request(tmp_path, lease_lost=lambda: True),
+        host_child_runner=lambda *_args: subprocess.CompletedProcess([], 0, "", ""),
+    )
+    runtime.git_session = SimpleNamespace(runtime_dir=tmp_path / "runtime")
+    runtime._scenario_start_attempted = True
+    runtime._scenario_removed = True
+    monkeypatch.setattr(
+        docker_action.git_ephemeral,
+        "finalize_ephemeral_git",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("finish() must never CAS-publish once the lease is already lost")
+        ),
+    )
+    monkeypatch.setattr(
+        docker_action.git_ephemeral,
+        "verify_failed_maker_worktree",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("finish() must never verify against baseline_sha once lease is lost")
+        ),
+    )
+    monkeypatch.setattr(
+        docker_action.git_ephemeral,
+        "cleanup_ephemeral_git",
+        lambda *_args: events.append("git_cleanup"),
+    )
+
+    runtime.finish(action_succeeded=True)
+
+    assert events == ["git_cleanup"]
+    assert runtime._finished is True
+
+
+def test_abort_skips_baseline_verify_when_lease_lost_before_finish(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same fence as `test_finish_skips_git_finalize_when_lease_lost_before_finish`, exercised via
+    `abort()` (`finish(action_succeeded=False)`): once the lease is already lost, `abort()` must
+    not diff the Maker's worktree against the stale `baseline_sha` via `verify_failed_maker_
+    worktree()`, which would misclassify a Maker that committed cleanly before losing the lease
+    as `maker_partial_worktree` drift.
+    """
+    events: list[str] = []
+    runtime = docker_action.DockerActionRuntime(
+        _request(tmp_path, lease_lost=lambda: True),
+        host_child_runner=lambda *_args: subprocess.CompletedProcess([], 0, "", ""),
+    )
+    runtime.git_session = SimpleNamespace(runtime_dir=tmp_path / "runtime")
+    runtime._scenario_start_attempted = True
+    runtime._scenario_removed = True
+    monkeypatch.setattr(
+        docker_action.git_ephemeral,
+        "verify_failed_maker_worktree",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("abort() must never verify against baseline_sha once lease is lost")
+        ),
+    )
+    monkeypatch.setattr(
+        docker_action.git_ephemeral,
+        "finalize_ephemeral_git",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("abort() must never CAS-publish once the lease is already lost")
+        ),
+    )
+    monkeypatch.setattr(
+        docker_action.git_ephemeral,
+        "cleanup_ephemeral_git",
+        lambda *_args: events.append("git_cleanup"),
+    )
+
+    runtime.finish(action_succeeded=False)
+
+    assert events == ["git_cleanup"]
+    assert runtime._finished is True
 
 
 def test_discard_after_lease_loss_never_raises_even_when_cleanup_steps_fail(

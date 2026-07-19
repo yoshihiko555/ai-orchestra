@@ -84,6 +84,16 @@ Maker（`claude -p` が生成・実行するコード）は Issue 本文・PR �
   ファイルシステム境界によって大幅に縮小される。
 - **継続**: broker 自身（サイドカー）が乗っ取られた場合のリスクは ADR-20260712-034 のスコープと同じ
   受容基準（`api.anthropic.com` への egress 限定、tmpfs token、read-only rootfs）を踏襲する。
+- **継続（PR #262 round-8 レビュー対応後の残余）**: `loop_driver.LoopDriver._lease_lost` は
+  プロセス内のイベントであり、真の分散ロックではない。Docker action 開始直前・
+  `DockerActionRuntime.finish()`（`_cleanup_containers()` 完了後・`_finish_git()` 直前）・
+  `_dispatch()` の全 except パス（abort/discard 分岐）の 3 ゲートで再チェックし、観測可能な
+  lease 喪失シグナルを尊重するよう配線したが、各チェックと実際の書き込み（container 起動 /
+  `finalize_ephemeral_git()` の git subprocess 呼び出し）の間には理論上ミリ秒〜サブ秒オーダーの
+  TOCTOU window が残る。最終防衛線は `finalize_ephemeral_git()` 自身の CAS（共有ブランチの
+  fast-forward 検証）であり、他ワーカーが既に何かを push していればそこで拒否される。この残余
+  window 自体を消すには真の分散ロック（例: 共有ブランチ更新と lease 更新を単一トランザクションに
+  する）が必要だが、コスト対効果に見合わないため受容する。
 
 ---
 

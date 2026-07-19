@@ -999,12 +999,37 @@ class LoopDriver:
                 remaining_wall_clock_seconds=self._remaining_wall_clock_seconds,
                 host_child_runner=self._run_host_child,
                 params=params,
+                # Codex review, PR #262, P1 (round 8, fence #2): threaded through to
+                # `DockerActionRequest.lease_lost` so `DockerActionRuntime.finish()` (which
+                # `abort()` also routes through) can re-check lease loss itself, immediately
+                # before Maker git finalize, instead of relying solely on the two point-in-time
+                # checks in this method. See that method's own docstring for the full race it
+                # closes.
+                lease_lost=self._lease_lost.is_set,
             )
         except ldc.DockerConfigError as exc:
             return self._docker_infrastructure_result(proposal, state, params, str(exc))
         previous_executor = self._action_executor
         self._action_executor = executor
         try:
+            if self._lease_lost.is_set():
+                # Codex review, PR #262, P1 (round 8, fence #1): the heartbeat thread can flip
+                # `_lease_lost` and call `_kill_current_child()` -> `previous_executor.cancel()`
+                # in the exact window between `run()`'s own pre-dispatch check (in its caller,
+                # just before this method is invoked) and the new Docker executor being
+                # installed above -- `_kill_current_child()`'s sticky-kill only reaches whichever
+                # executor was `self._action_executor` *at the time it ran*, so a heartbeat tick
+                # that fires before the assignment above only cancels the previous (often
+                # host/no-op) executor and never latches a cancellation this brand-new executor
+                # would see. Without this check, `_dispatch_action()` below could still start a
+                # Maker/Checker container after the lease is already gone, leaving worktree edits
+                # behind for the next lease owner (Maker) or simply wasting the run (Checker).
+                # Discard immediately and never call `_dispatch_action()` at all: there is
+                # nothing yet for the quiet lease-lost teardown to unwind beyond this executor's
+                # own (not-yet-started) local state, matching the already-started case's
+                # `discard()` call further down for the same underlying race.
+                executor.discard()
+                return {}
             result = self._dispatch_action(proposal, state, params)
             if self._lease_lost.is_set():
                 # Codex review, PR #262, P2 (round 8): a Maker's `claude -p` child can finish
@@ -1042,6 +1067,11 @@ class LoopDriver:
             executor.finish(result)
             return result
         except (lda.DockerActionSafetyStop, lge.EphemeralGitSafetyStop) as exc:
+            lease_lost_result = self._discard_after_lease_loss_or_none(
+                executor, proposal, state, params, exc
+            )
+            if lease_lost_result is not None:
+                return lease_lost_result
             try:
                 executor.abort()
             except (lda.DockerActionSafetyStop, lge.EphemeralGitSafetyStop) as abort_safety_exc:
@@ -1058,6 +1088,11 @@ class LoopDriver:
             self._stop_for_action_safety(proposal, state, exc)
             raise AssertionError("unreachable")
         except (lda.DockerActionError, lge.EphemeralGitInfrastructureError) as exc:
+            lease_lost_result = self._discard_after_lease_loss_or_none(
+                executor, proposal, state, params, exc
+            )
+            if lease_lost_result is not None:
+                return lease_lost_result
             try:
                 executor.abort()
             except (lda.DockerActionSafetyStop, lge.EphemeralGitSafetyStop) as safety_exc:
@@ -1067,6 +1102,39 @@ class LoopDriver:
             return self._docker_infrastructure_result(proposal, state, params, str(exc))
         finally:
             self._action_executor = previous_executor
+
+    def _discard_after_lease_loss_or_none(
+        self,
+        executor: lae.HostActionExecutor | lae.DockerActionExecutor,
+        proposal: lc.ProposeResult,
+        state: lc.LoopState,
+        params: dict[str, Any],
+        exc: BaseException,
+    ) -> dict[str, Any] | None:
+        """Discard (never abort) once the lease is already gone; else `None` (do the normal abort).
+
+        Codex review, PR #262, P1 (round 8, fence #3): both `_dispatch()` except blocks used to
+        call `executor.abort()` unconditionally on the way to persisting a safe-stop or an
+        infrastructure result. For a Maker, `abort()` -> `runtime.finish(action_succeeded=False)`
+        -> `_finish_git(False)` -> `verify_failed_maker_worktree()` diffs the worktree against
+        `baseline_sha`, the state *before* this action ran -- a Maker that committed cleanly
+        before losing the lease always reads as drift there, raising a fresh
+        `maker_partial_worktree` safety stop; `_cleanup_containers()` inside that same call can
+        also raise its own `DockerActionSafetyStop` (e.g. an unconfirmed container removal) that
+        `abort()` never suppresses either way. Once `_lease_lost` is already set here, `run()` is
+        about to return `EXIT_FOREIGN_LEASE` without ever calling `lc.complete()` for this
+        action, so there is no safe-stop channel left for either kind of exception `abort()` can
+        raise to persist into -- `_stop_for_action_safety()` would call
+        `lds.persist_safe_stop()` with this driver's now-stale `lease_token`, and
+        `guarded_lease_section()` rejects that write, crashing the process instead of returning
+        `EXIT_FOREIGN_LEASE` cleanly. `executor.discard()` is the same dedicated quiet teardown
+        the successful-result lease-lost race elsewhere in this method already uses: zero git
+        reads or writes, local container/broker/runtime cleanup only, and it never raises.
+        """
+        if not self._lease_lost.is_set():
+            return None
+        executor.discard()
+        return self._docker_infrastructure_result(proposal, state, params, str(exc))
 
     def _dispatch_action(
         self,

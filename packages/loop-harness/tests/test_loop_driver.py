@@ -1522,20 +1522,81 @@ def test_dispatch_never_publishes_when_lease_already_lost(
         def discard(self) -> None:
             calls.append("discard")
 
+    def dispatch_action_then_lose_lease(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        # Codex review, PR #262, P1 (round 8, fence #1): flip `_lease_lost` *inside*
+        # `_dispatch_action()`, not before calling `_dispatch()`, so this test still exercises
+        # the documented "lease lost during the action" race instead of the newer "lease
+        # already lost before the action started" gate (covered by its own dedicated test
+        # below) that would otherwise short-circuit before `_dispatch_action()` ever runs.
+        d._lease_lost.set()
+        return {"maker": {"agent": "backend-python-dev"}}
+
     d = driver.LoopDriver(loop_id, project_dir, token)
     monkeypatch.setattr(
         driver.lae, "build_action_executor", lambda *_args, **_kwargs: RecordingExecutor()
     )
-    monkeypatch.setattr(
-        d,
-        "_dispatch_action",
-        lambda *_args, **_kwargs: {"maker": {"agent": "backend-python-dev"}},
-    )
-    d._lease_lost.set()
+    monkeypatch.setattr(d, "_dispatch_action", dispatch_action_then_lose_lease)
 
     result = d._dispatch(proposal, state)
 
     assert result == {"maker": {"agent": "backend-python-dev"}}
+    assert calls == ["discard"]
+
+
+def test_dispatch_never_starts_docker_action_when_lease_already_lost_before_dispatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review, PR #262, P1 (round 8, fence #1): the heartbeat can flip `_lease_lost` and
+    call `_kill_current_child()` -> `previous_executor.cancel()` in the window between `run()`'s
+    own pre-dispatch check (in its caller) and this method installing the new Docker executor --
+    that sticky-kill only reaches whichever executor was `self._action_executor` *at the time it
+    ran*, so it never reaches an executor installed afterward. Without the immediate re-check
+    right after installing the new executor, `_dispatch_action()` would still start a fresh
+    Maker/Checker container after the lease is already gone. This test sets `_lease_lost` before
+    calling `_dispatch()` (simulating that exact race) and proves `_dispatch_action()` itself is
+    never called, `discard()` runs instead of `finish()`/`abort()`, and the action never reaches
+    the shared branch's git or worktree.
+    """
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    proposal = lc.ProposeResult(
+        action=lc.Action.RUN_MAKER.value,
+        action_id="act-lease-lost-before-start",
+        state_version=state.state_version,
+        expected_phase=state.phase,
+        phase=state.phase,
+        iteration=state.iteration,
+        context={},
+    )
+    calls: list[str] = []
+
+    class RecordingExecutor:
+        def finish(self, _result: dict[str, Any]) -> None:
+            calls.append("finish")
+
+        def abort(self) -> None:
+            calls.append("abort")
+
+        def discard(self) -> None:
+            calls.append("discard")
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(
+        driver.lae, "build_action_executor", lambda *_args, **_kwargs: RecordingExecutor()
+    )
+
+    def fail_if_dispatched(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise AssertionError(
+            "_dispatch_action() must never run once the lease is already lost before dispatch"
+        )
+
+    monkeypatch.setattr(d, "_dispatch_action", fail_if_dispatched)
+    d._lease_lost.set()
+
+    result = d._dispatch(proposal, state)
+
+    assert result == {}
     assert calls == ["discard"]
 
 
@@ -1616,16 +1677,22 @@ def test_dispatch_lease_lost_after_successful_maker_never_touches_shared_branch_
     )
 
     d = driver.LoopDriver(loop_id, project_dir, token)
+
+    def dispatch_action_then_lose_lease(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        # Codex review, PR #262, P1 (round 8, fence #1): flip `_lease_lost` *inside*
+        # `_dispatch_action()`, not before calling `_dispatch()`, so this test still exercises
+        # the documented "lease lost after a successful Maker" race instead of the newer
+        # "lease already lost before the action started" gate that would otherwise
+        # short-circuit before `_dispatch_action()` ever runs.
+        d._lease_lost.set()
+        return {"maker": {"agent": "backend-python-dev"}}
+
     monkeypatch.setattr(
         driver.lae,
         "build_action_executor",
         lambda *_args, **_kwargs: driver.lae.DockerActionExecutor(FakeRuntime()),
     )
-    monkeypatch.setattr(
-        d,
-        "_dispatch_action",
-        lambda *_args, **_kwargs: {"maker": {"agent": "backend-python-dev"}},
-    )
+    monkeypatch.setattr(d, "_dispatch_action", dispatch_action_then_lose_lease)
     monkeypatch.setattr(
         d,
         "_stop_for_action_safety",
@@ -1633,7 +1700,6 @@ def test_dispatch_lease_lost_after_successful_maker_never_touches_shared_branch_
             AssertionError("lease-lost teardown must never reach the safe-stop persistence path")
         ),
     )
-    d._lease_lost.set()
 
     result = d._dispatch(proposal, state)
 
@@ -1703,6 +1769,77 @@ def test_dispatch_persists_original_safety_stop_when_abort_raises_a_second_one(
 
     assert len(persisted) == 1
     assert persisted[0].stop_reason == "git_ref_not_fast_forward"
+
+
+def test_dispatch_discards_instead_of_aborting_when_exception_path_hits_lost_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review, PR #262, P1 (round 8, fence #3): when a Docker action is cancelled because
+    the heartbeat already set `_lease_lost`, `DockerActionRuntime._execute()` raises
+    `DockerActionError`, landing in this except block. Calling `executor.abort()` there would run
+    `finish(action_succeeded=False)` -> `verify_failed_maker_worktree()`, which can raise a fresh
+    `maker_partial_worktree` safety stop; the ensuing `_stop_for_action_safety()` would then try to
+    persist that stop with this driver's now-stale `lease_token`, and `guarded_lease_section()`
+    would reject the write -- crashing the process instead of returning `EXIT_FOREIGN_LEASE`. This
+    proves that once `_lease_lost` is already set, this except block calls `discard()` instead of
+    `abort()`, and never reaches `_stop_for_action_safety()` at all.
+    """
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    proposal = lc.ProposeResult(
+        action=lc.Action.RUN_MAKER.value,
+        action_id="act-exception-path-lease-lost",
+        state_version=state.state_version,
+        expected_phase=state.phase,
+        phase=state.phase,
+        iteration=state.iteration,
+        context={},
+    )
+    calls: list[str] = []
+
+    class LeaseLostDuringExecuteExecutor:
+        def finish(self, _result: dict[str, Any]) -> None:
+            calls.append("finish")
+
+        def abort(self) -> None:
+            calls.append("abort")
+            raise AssertionError(
+                "abort() must never run once the lease is already known lost -- it can raise a "
+                "fresh maker_partial_worktree safety stop that _stop_for_action_safety() cannot "
+                "persist with a stale lease token"
+            )
+
+        def discard(self) -> None:
+            calls.append("discard")
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(
+        driver.lae,
+        "build_action_executor",
+        lambda *_args, **_kwargs: LeaseLostDuringExecuteExecutor(),
+    )
+
+    def raise_docker_action_error_after_lease_loss(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        # Mirrors the real race: the heartbeat sets `_lease_lost` and cancels the scenario
+        # container, so the in-flight `docker exec` (`_execute()`) raises `DockerActionError`.
+        d._lease_lost.set()
+        raise driver.lda.DockerActionError("docker exec did not complete")
+
+    monkeypatch.setattr(d, "_dispatch_action", raise_docker_action_error_after_lease_loss)
+    monkeypatch.setattr(
+        d,
+        "_stop_for_action_safety",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("lease-lost teardown must never reach the safe-stop persistence path")
+        ),
+    )
+
+    result = d._dispatch(proposal, state)
+
+    assert calls == ["discard"]
+    assert "agent" in result["maker"]
+    assert result["infrastructure_failure"] is True
 
 
 def test_persist_safe_stop_writes_journal_before_state(tmp_path: Path) -> None:

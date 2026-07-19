@@ -174,6 +174,14 @@ class DockerActionRequest:
     # this explicitly keeps today's behavior unchanged. Only `build_action_executor()` sets this
     # to False, and only for a "checker" action whose resolved params have no `llm_review` block.
     needs_broker: bool = True
+    # Codex review, PR #262, P1 (round 8): defaults to `None` (never lost) so every existing
+    # caller that does not pass this explicitly keeps today's behavior unchanged. Only
+    # `loop_driver._dispatch()` wires this to `self._lease_lost.is_set`, letting `finish()` (see
+    # below) re-check the driver's own lease loss signal immediately before Maker git finalize --
+    # not just once before `finish()` is called (the driver's own pre-call check), but again after
+    # `_cleanup_containers()` has already spent real wall-clock time, closing the window
+    # `finish()`'s own docstring documents.
+    lease_lost: Callable[[], bool] | None = None
 
 
 class DockerActionRuntime:
@@ -299,14 +307,32 @@ class DockerActionRuntime:
         return output, completed.returncode
 
     def finish(self, *, action_succeeded: bool) -> None:
+        """Finish a Maker/Checker action, fencing Maker git finalize against a lost lease.
+
+        Codex review, PR #262, P1 (round 8): `abort()` also routes through this method (as
+        `finish(action_succeeded=False)`), so this same gate protects both the success path
+        (`finish()`) and the failure path (`abort()`) with one check. `_cleanup_containers()`
+        above can itself spend real wall-clock time (destroying the scenario/broker/network),
+        during which the driver's heartbeat thread can flip `request.lease_lost()` after
+        `loop_driver._dispatch()` already decided to call this method. Re-checking here, right
+        before `_finish_git()` would otherwise CAS-publish a Maker's commit chain
+        (`action_succeeded=True`) or diff its worktree against a now-meaningless stale
+        `baseline_sha` (`action_succeeded=False`, which always misclassifies a Maker that
+        committed cleanly before losing the lease as `maker_partial_worktree` drift), closes
+        that window without needing the caller to hold any lock across the call. `_finish_git()`
+        itself still runs its own git subprocess calls without a further re-check -- that
+        narrower, sub-second residual TOCTOU window is accepted and documented in
+        `docs/design/loop-harness-isolation.md`'s residual-risk section.
+        """
         with self._lifecycle_lock:
             if self._finished:
                 return
             self._finished = True
             scenario_error, cleanup_errors = self._cleanup_containers()
             primary_error: BaseException | None = scenario_error
+            lease_already_lost = self.request.lease_lost is not None and self.request.lease_lost()
             try:
-                if primary_error is None:
+                if primary_error is None and not lease_already_lost:
                     self._finish_git(action_succeeded=action_succeeded)
             except BaseException as exc:
                 primary_error = exc
