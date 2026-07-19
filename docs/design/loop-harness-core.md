@@ -529,6 +529,27 @@ function reconcile(loop_id, project_dir):
 > 取得する**前**に実行し、flock 保持中は事前に取得済みの値を代入するだけに留める
 > （lease 更新・heartbeat・`loop_status.py` の purge・並行 `resume()` など、同じ flock を
 > 必要とする他操作を最大 `REMOTE_LS_TIMEOUT_SECONDS`（10 秒）ブロックしないため）。
+>
+> **PR レビュー第2ラウンド追随（2026-07-20 追記）**: 4 点を追加で修正。
+> (1) `loop_step.py propose`/`attach`/`resume` の CLI JSON レスポンスに
+> `push_integrity_warning` を明示的に含める（従来は `ProposeResult.context` にしか無く、
+> `_proposal_response()` が固定キーのみで `response` を組み立てるため journal にしか残らな
+> かった）。
+> (2) `exit_failure` 完了時、その phase の `on_failure.exec` が Draft PR push
+> （`pr_create_draft`/`pr_to_draft`/`pr_mark_draft`）を含む場合も `remote_head_baseline` を
+> 更新する（`advance_phase`/`wait_external_review` と同様）。`resume()` は `failed` な loop を
+> `running` へ戻せるため、これを怠ると `exit_failure` 自身の push が次の `propose()` で
+> Maker の precedent push と誤認される。
+> (3) `complete()` が `completed` journal event の payload に、事前計算済みの
+> `remote_head_refresh` をそのまま含める。`_reconcile_from_payload()` はこの値をそのまま
+> 再生することで、`completed` イベント書き込み後・`_write_state()` 前のクラッシュでも
+> baseline を復元できる（従来はクラッシュリプレイ経路で baseline 更新が失われていた）。
+> (4) `_remote_head()` は bare `git ls-remote origin ...` ではなく、LP-2 の
+> `loop_driver_support`（`find_dangerous_local_git_config()`/`resolve_origin_url()`/
+> `hardened_git_config_args()` を適用した `get_remote_head()`）へ委譲する。Maker が
+> `insteadOf`/`pushurl` 等を local git config に書き込んで `"origin"` 名前解決を乗っ取った
+> 場合、危険な config を検知した時点でこの probe 自体を `None`（unverifiable、fail silent）
+> として拒否する。
 
 ### 3.3 評価順序（擬似コード）
 

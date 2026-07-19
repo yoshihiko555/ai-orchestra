@@ -463,6 +463,67 @@ def test_proposal_response_adds_common_state_context_to_every_action(
     assert response["params"]["repo_identity_verified"] is True
 
 
+def test_proposal_response_surfaces_push_integrity_warning(tmp_path: Path) -> None:
+    """ "Surface the warning in loop_step responses" (Issue #196 PR review round 2):
+    `_proposal_response()` builds `response` fresh from named keys popped out of
+    `ProposeResult.context`, so `push_integrity_warning` (added only to `context` by
+    `propose()`) must be explicitly copied into the serialized CLI response -- otherwise the
+    operator's primary stdout signal, promised by the CHANGELOG, silently never carries it."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    loop_id = f"{loop_step.wm.resolve_repo_identity_hash(str(repo))}-issue-42"
+    state = lc._initial_state(
+        loop_id,
+        "issue-loop",
+        loop_step.wm.resolve_repo_identity_hash(str(repo)),
+        str(repo),
+        "main",
+        "implementation",
+    )
+    lc._write_state(state, str(repo))
+    proposal = loop_step.lc.ProposeResult(
+        lc.Action.ADVANCE_PHASE.value,
+        "act-warn",
+        1,
+        "implementation",
+        "implementation",
+        1,
+        {
+            "params": {},
+            "push_integrity_warning": {"expected_head": "abc", "observed_head": "def"},
+        },
+    )
+
+    response = loop_step._proposal_response(loop_id, proposal, "test context", project=str(repo))
+
+    assert response["push_integrity_warning"] == {"expected_head": "abc", "observed_head": "def"}
+    assert "push_integrity_warning" not in response["params"]
+
+
+def test_proposal_response_omits_push_integrity_warning_key_when_absent(tmp_path: Path) -> None:
+    """No false positives: an ordinary proposal (no drift detected) must not gain a
+    `push_integrity_warning` key at all, not even `None`."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    loop_id = f"{loop_step.wm.resolve_repo_identity_hash(str(repo))}-issue-42"
+    state = lc._initial_state(
+        loop_id,
+        "issue-loop",
+        loop_step.wm.resolve_repo_identity_hash(str(repo)),
+        str(repo),
+        "main",
+        "implementation",
+    )
+    lc._write_state(state, str(repo))
+    proposal = loop_step.lc.ProposeResult(
+        lc.Action.ADVANCE_PHASE.value, "act-clean", 1, "implementation", "implementation", 1, {}
+    )
+
+    response = loop_step._proposal_response(loop_id, proposal, "test context", project=str(repo))
+
+    assert "push_integrity_warning" not in response
+
+
 def test_common_proposal_params_uses_public_repo_identity_api(
     tmp_path: Path, monkeypatch: Any
 ) -> None:

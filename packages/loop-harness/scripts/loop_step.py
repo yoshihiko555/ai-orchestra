@@ -897,6 +897,13 @@ def _proposal_response(
     params = context.pop("params", {})
     if not isinstance(params, dict):
         params = {}
+    # Issue #196 PR review round 2 ("Surface the warning in loop_step responses"): `propose()`
+    # adds this only to `ProposeResult.context`, and everything below builds `response` fresh
+    # from named keys -- any other context key (this one included) would otherwise be silently
+    # discarded here, leaving the operator's primary stdout signal (this CLI's own JSON response,
+    # per the CHANGELOG-promised contract) missing it entirely, with only the journal file (which
+    # nothing here tails live) carrying the warning.
+    push_integrity_warning = context.pop("push_integrity_warning", None)
     if project is not None:
         state = lc.load_state(loop_id, project)
         params = {**params, **_common_proposal_params(loop_id, state)}
@@ -917,6 +924,8 @@ def _proposal_response(
     }
     if lease_token is not None:
         response["lease_token"] = lease_token
+    if push_integrity_warning is not None:
+        response["push_integrity_warning"] = push_integrity_warning
     if project is not None and action in TERMINAL_ACTIONS:
         _emit_loop_stop(project, loop_id, action, params)
     return response

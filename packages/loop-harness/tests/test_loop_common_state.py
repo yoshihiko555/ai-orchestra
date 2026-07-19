@@ -1978,3 +1978,202 @@ def test_complete_advance_phase_queries_remote_head_before_lock(
 
     assert events == ["remote_head", "lock_acquire", "lock_release"]
     assert lc.load_state("abcd1234-issue-1", project_dir).remote_head_baseline == new_head
+
+
+# --- Issue #196 PR review round 2 --------------------------------------------------------
+
+
+def test_remote_head_returns_none_when_dangerous_git_config_present(tmp_path: Path) -> None:
+    """ "Harden the remote-head probe against config rewrites": a noncompliant Maker that writes
+    an `insteadOf`/`pushurl`-style entry into the shared worktree's local git config before the
+    next `propose()`/`complete()` call must not be able to silently redirect this probe to an
+    attacker-chosen remote while `remote.origin.url` itself still looks unchanged. `_remote_head()`
+    must fail closed to `None` (its own existing "query unverifiable" outcome) the instant any
+    dangerous local config key is present, even though the real branch really was pushed to the
+    real `origin` underneath."""
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_repo_with_remote(repo, remote, "loop/issue-1")
+    _git(["push", "origin", "loop/issue-1"], repo)
+    _git(
+        ["config", "url.https://evil.example/repo.git.insteadOf", str(remote)],
+        repo,
+    )
+
+    assert lc._remote_head(str(repo), "loop/issue-1") is None
+
+
+def test_precompute_remote_head_refresh_exit_failure_with_draft_pr_push_returns_observed_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ "Refresh after failure-exit draft pushes": an `exit_failure` completion whose phase's
+    `on_failure.exec` includes a Draft-PR push step must refresh the baseline exactly like
+    `advance_phase`/`wait_external_review` already do."""
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_repo_with_remote(repo, remote, "loop/issue-1")
+    monkeypatch.setattr(
+        lc,
+        "_load_phase_definition",
+        lambda _state, _project: {"on_failure": {"exec": ["pr_create_draft", "notify"]}},
+    )
+    _git(["push", "origin", "loop/issue-1"], repo)
+    expected = _git(["rev-parse", "HEAD"], repo)
+    state = lc._initial_state(
+        "loop", "issue-loop", "hash", str(repo), "loop/issue-1", "implementation"
+    )
+
+    result = lc._precompute_remote_head_refresh(
+        state, lc.Action.EXIT_FAILURE.value, None, str(repo), precedent_push_check=True
+    )
+
+    assert result == expected
+
+
+def test_precompute_remote_head_refresh_exit_failure_without_push_step_returns_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An `exit_failure` completion whose `on_failure.exec` never pushes (e.g. `["notify"]` only)
+    must not trigger the network query at all."""
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_repo_with_remote(repo, remote, "loop/issue-1")
+    monkeypatch.setattr(
+        lc, "_load_phase_definition", lambda _state, _project: {"on_failure": {"exec": ["notify"]}}
+    )
+    state = lc._initial_state(
+        "loop", "issue-loop", "hash", str(repo), "loop/issue-1", "implementation"
+    )
+
+    def _fail_if_called(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("_remote_head must not be queried without a push-capable exec step")
+
+    monkeypatch.setattr(lc, "_remote_head", _fail_if_called)
+
+    result = lc._precompute_remote_head_refresh(
+        state, lc.Action.EXIT_FAILURE.value, None, str(repo), precedent_push_check=True
+    )
+
+    assert result is None
+
+
+def test_complete_exit_failure_refreshes_baseline_so_resume_does_not_false_warn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End-to-end regression for the reviewer's exact scenario: an `exit_failure` completion
+    that pushed a Draft PR branch must refresh `remote_head_baseline`, or `resume()`'d loop's
+    very next `propose()` would misattribute that same push to the Maker as precedent-push drift
+    (a false positive `push_integrity_warning` blaming the loop's own prior failure-exit push)."""
+    project_dir, lock = _setup_real_git_loop(tmp_path, monkeypatch, status="failed")
+    repo = Path(project_dir)
+    monkeypatch.setattr(
+        lc,
+        "_load_phase_definition",
+        lambda _state, _project: {"on_failure": {"exec": ["pr_create_draft", "notify"]}},
+    )
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.stop_reason = "guard_failed"
+    state.pending_action = lc.PendingAction(
+        "act-exit-failure", lc.Action.EXIT_FAILURE.value, "implementation", 1, lc.now_iso()
+    )
+    state.state_version = 1
+    lc._write_state(state, project_dir)
+    assert state.remote_head_baseline == lc.LP1_REMOTE_HEAD_ABSENT
+    # Driver-owned failure-exit Draft PR push, landed before the CLI reports completion.
+    _git(["push", "origin", "loop/issue-1"], repo)
+    new_head = _git(["rev-parse", "HEAD"], repo)
+
+    lc.complete(
+        "abcd1234-issue-1",
+        project_dir,
+        "act-exit-failure",
+        1,
+        {},
+        lock.lease_token,
+        precedent_push_check=True,
+    )
+
+    assert lc.load_state("abcd1234-issue-1", project_dir).remote_head_baseline == new_head
+    resumed = lc.resume("abcd1234-issue-1", project_dir, True, "owner", 3600, host="local")
+
+    advance = lc.propose(
+        "abcd1234-issue-1", project_dir, resumed.lease_token, precedent_push_check=True
+    )
+
+    warning = lc.find_journal_event(
+        "abcd1234-issue-1", project_dir, advance.action_id, "push_integrity_warning"
+    )
+    assert warning is None
+
+
+def test_completed_payload_persists_remote_head_refresh_for_crash_replay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ "Persist remote head for crash replay": `complete()`'s `completed` journal event must
+    include the precomputed remote head so `_reconcile_from_payload()` can restore
+    `remote_head_baseline` after a crash between that journal write and `_write_state()`, instead
+    of leaving the next proposal to compare against a stale/missing baseline."""
+    project_dir, lock = _setup_real_git_loop(tmp_path, monkeypatch, status="running")
+    repo = Path(project_dir)
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.pending_action = lc.PendingAction(
+        "act-advance", lc.Action.ADVANCE_PHASE.value, "implementation", 1, lc.now_iso()
+    )
+    state.state_version = 1
+    lc._write_state(state, project_dir)
+    _git(["push", "origin", "loop/issue-1"], repo)
+    new_head = _git(["rev-parse", "HEAD"], repo)
+
+    lc.complete(
+        "abcd1234-issue-1",
+        project_dir,
+        "act-advance",
+        1,
+        {},
+        lock.lease_token,
+        precedent_push_check=True,
+    )
+
+    event = lc.find_journal_event("abcd1234-issue-1", project_dir, "act-advance", "completed")
+    assert event is not None
+    assert event["payload"]["remote_head_refresh"] == new_head
+
+
+def test_reconcile_replays_persisted_remote_head_refresh_without_a_live_query(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Simulates a crash between the `completed` journal write and `_write_state()`: the next
+    `reconcile()` (e.g. via a fresh `attach()`) must restore `remote_head_baseline` from the
+    journal payload alone -- not by re-querying `_remote_head()` live, which could observe a
+    different value than the original completion did."""
+    project_dir, lock = _setup_loop(tmp_path, monkeypatch, status="running")
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.pending_action = lc.PendingAction(
+        "act-advance", lc.Action.ADVANCE_PHASE.value, "implementation", 1, lc.now_iso()
+    )
+    state.last_check_result = {"next_phase": "review"}
+    state.state_version = 1
+    lc._write_state(state, project_dir)
+    persisted_head = "deadbeefcafef00d1234567890abcdef12345678"
+    lc.append_journal_event(
+        "abcd1234-issue-1",
+        project_dir,
+        "completed",
+        "step",
+        "act-advance",
+        {
+            "action": lc.Action.ADVANCE_PHASE.value,
+            "result": {},
+            "remote_head_refresh": persisted_head,
+        },
+    )
+
+    def _fail_if_called(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("reconcile must replay from the journal payload, not query live")
+
+    monkeypatch.setattr(lc, "_remote_head", _fail_if_called)
+
+    outcome = lc.reconcile("abcd1234-issue-1", project_dir, lock.lease_token)
+
+    assert outcome.action_taken == "resolved_from_journal"
+    assert lc.load_state("abcd1234-issue-1", project_dir).remote_head_baseline == persisted_head
