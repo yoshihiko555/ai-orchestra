@@ -10,6 +10,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **`meta-harness`: proposer が routing config patch を提案可能に（Phase A）**: proposer 生成候補が `agent-routing/cli-tools.yaml` の `agents.*.tool` / `antigravity.model` を patch できるようになった（`codex.model` は human 限定のまま）。reward hacking 対策として quality 厳密優越・クロススキル回帰ゲート・レート制限等を同梱（ADR-20260717-040）。
 
+### Fixed
+
+- **`meta-harness`: Docker capability gate と実 judge コンテナが出力トークン上限を適用しておらず broker 予算超過を招いていた不具合を修正**: capability smoke コンテナと judge（`judge.tool: claude-bare`）コンテナの双方に `scenario_run.max_output_tokens_default`（既定 4096、`null` 明示時もフォールバック）を適用し、broker の worst-case 予算チェックによる評価不能を解消した。
+- **`evaluation-set-checker` が `packages/` 配下に実体を持たない SSOT（orchex CLI 等）のテストを識別できない不具合を修正**: 評価セット ID とテストパスの明示マッピング（`.claude/config/quality-gates/evaluation-set-mapping.yaml`）を追加し、`test_orchestra_manager_core.py` が無関係な `core` パッケージへ誤誘導される問題も解消した。
+- **`orchex uninstall --dry-run` が最後のパッケージ削除時に `settings.local.json` を書き換えていた不具合を修正**: dry-run では実ファイルを一切変更せず、プレビュー表示のみ行うようにした。
+- **`orchex enable` が未インストールのパッケージにもフックを登録していた不具合を修正**: 対象パッケージが `install` 済みでない場合はエラーを表示し、フック登録を行わないようにした。
+- **`orchex install` でユーザー変更済み config ファイルが上書きされ得る不具合を修正**: 配布時ハッシュとの比較で保護されたはずの config ファイルが、同一 `install` 実行内の後続同期処理で再上書きされないようにした。
+- **ユーザー編集済み agent ファイルが再同期（SessionStart / 再インストール）で上書きされ得る不具合を修正**: config ファイルと同じ配布時ハッシュ比較ガードを agents ファイルにも適用した。
+- **`orchex proxy stop`/`proxy status` の cocoindex 未導入判定を修正**: 判定基準をプロジェクトの `installed_packages` に基づくものに変更し、未導入時に確実にエラーとなるようにした。
+- **`codex-suggestions` が `cli-tools.yaml` に `codex` セクション未定義でも発火していた不具合を修正**: `check-codex-before-write` / `check-codex-after-plan` は設定未定義時 `codex.enabled` を `false` 扱いにし、明示的に有効化しない限り提案しないようにした。さらに `agent-routing` を導入していないプロジェクト（project-local な `cli-tools.yaml` が存在しない）では、パッケージ同梱のフォールバック設定を「明示的な有効化」とみなさず提案しないようにした。
+
+### Changed
+
+- **`meta-harness`: 評価/judge の既定モデルを Sonnet に pin し、broker 予算上限価格を再較正**: `evaluate.model` / `judge.model` が未指定（セッション既定モデルに依存、Opus tier になり得た）から `claude-sonnet-5` 明示 pin に変わり、broker の `pricing_upper_bound_usd_per_million` 既定値も Sonnet 単価へ引き下げた。broker の model allowlist（`evaluate.isolation.broker.model_allowlist`）で candidate が pin より高価なモデルを指定して過小コスト計上する迂回を fail-closed で防ぐ。この再較正はコスト比較可能性に影響するため、旧価格下で評価済みの routing-config / facet 候補は evaluator hash が stale 判定となり再評価が必要になる。
+- **`meta-harness`: scenario/judge/capability smoke コンテナで Claude Code の 1M context beta を無効化**: 3 経路すべての claude CLI 起動に `CLAUDE_CODE_DISABLE_1M_CONTEXT=1` を設定し、premium 価格や毎ターン大量 cache 生成による予算前課金の乖離を抑制した。
+- **`meta-harness`: skill 回帰シナリオスイート追加に伴い回帰予算上限を引き上げ**: `regression.max_affected_suites`（5→7）/ `regression.max_budget_usd`（54.0→78.0）の既定値を、新規 skill suite（`issue-fix` / `task-state`）の追加分に合わせて再計算した。
+- **`meta-harness`: frontier の既定コスト軸を USD コストへ変更**: 全 target の `frontier.cost_axis` 既定値を `total_tokens` から `total_cost_usd` に変更したため、既存候補の frontier 順序が変わる場合がある。選択したコスト field を欠く run は従来どおり fail-closed し、purge 後の再評価が必要。
+
+- **`image-generation`: `codex.enabled: false` 時は画像生成を実行しないように変更**: `/image-gen` スキル・`image-generator` エージェントが `cli-tools.yaml`（+ `.local.yaml`）の `codex.enabled: false` を尊重し、無効時は画像生成を行わず「利用不可」を報告するようになった。
+
+- **`orchex setup all` から tmux-monitor を除外（opt-in 化）**: presets.json の `exclude` キーで除外した。必要な場合は `orchex install tmux-monitor` で明示的に導入する。
+
+### Removed
+
+- **`.claudeignore` の配布・生成を廃止**: `orchex setup` と SessionStart 同期で `.claudeignore` を作成しないようにした。除外設定は `.gitignore` で管理する。
+
+### Added
+
 - **meta-harness routing-config target**: human-registered candidates can now patch `agent-routing/cli-tools.yaml` keys (`agents.*.tool`, `codex.model`, `antigravity.model`) through the evaluation/promotion pipeline. Proposer candidates remain facets-only.
 
 - **`loop-harness`: Maker commit 書き戻しの安全停止理由を追加**: 一時 ref への import 失敗、非 fast-forward、CAS 競合を `git_ref_import_failed` / `git_ref_not_fast_forward` / `git_ref_cas_rejected` として区別できるようにした。
