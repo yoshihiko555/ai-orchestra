@@ -69,8 +69,8 @@
     },
     "permission_mode": {
       "type": "string",
-      "enum": ["acceptEdits", "bypassPermissions"],
-      "description": "Optional (not in `required`) for schema_version 1.0 backward compatibility: run metadata written before 2026-07-19 (PR #273 bot review round 4) predates this field and must still validate. The evaluator writer always populates it for runs from that date onward; absence only means the run predates its introduction, not that permission_mode was unset for that run."
+      "enum": ["default", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions"],
+      "description": "Optional (not in `required`) for schema_version 1.0 backward compatibility: run metadata written before 2026-07-19 (PR #273 bot review round 4) predates this field and must still validate. The evaluator writer always populates it for runs from that date onward; absence only means the run predates its introduction, not that permission_mode was unset for that run. PR #273 bot review round 6: this enum lists every documented Claude Code `--permission-mode` value, not just the two meta-harness currently opts scenarios into, because `_effective_scenario_execution` passes the global `evaluate.permission_mode` config value through to metadata verbatim when no scenario-level override is present -- metadata is a factual record of what was actually run, so it must not reject a legitimately configured global mode outside meta-harness's own current scenario-level allowlist. Contrast with `scenario.schema.json`'s `permission_mode`, which is intentionally restricted to `acceptEdits`/`bypassPermissions` only: that is meta-harness's own policy choice restricting which modes an individual *scenario* may opt into (see ADR-20260714-036's bypassPermissions exception -- only scenarios needing to unlock a Claude Code protected path may opt in, and only into exactly one of those two values), not a description of every mode Claude Code itself supports."
     },
     "permission_mode_source": {
       "type": "string",

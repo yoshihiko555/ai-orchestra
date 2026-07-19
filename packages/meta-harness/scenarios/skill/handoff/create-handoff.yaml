@@ -43,20 +43,28 @@ permission_mode: bypassPermissions
 command_timeout_ms: 60000
 critical:
   - id: handoff-file-created
-    text: ".claude/handoffs/ 配下に新しい（symlink ではない）handoff ファイルが生成される"
+    text: ".claude/handoffs/ 配下に新しい（symlink でも pre-existing tracked file の touch でもない）handoff ファイルが生成される"
     # PR #273 最終レビュー（security High）で symlink 経由の oracle 迂回が指摘されたが、POSIX
     # find の `-type f` は既定で lstat ベース（symlink 自体は追跡せず type `l` として扱われる）
     # のため、この find 単体は元々 symlink を `f` と誤認しない（macOS/GNU 双方の find で実機確認
     # 済み）。実際の迂回経路は下の handoff-is-restartable（Path.glob + stat/read_text が symlink
     # を追跡する）側だったため、そちらを修正した。
+    # PR #273 6巡目 bot レビュー: `.claude/handoffs/` には repo に実在する tracked file（例:
+    # 20260707-051549-loop-harness-phase1.md）があり、candidate が `touch` するだけで mtime だけ
+    # 更新して「新規ファイル」を偽装できた（実機で再現・修正確認済み）。`git ls-tree -r --name-only
+    # HEAD -- .claude/handoffs/` は setup 完了後に固定される baseline commit（read-only mount）を
+    # 参照するため candidate は改変できない。これで求めた baseline tracked 集合を `grep -vxFf` で
+    # 差し引き、真に新規のファイルだけを候補にする。oracle は `/bin/sh`（多くの Docker base image
+    # では dash）で実行されるため、bash 専用の process substitution `<(...)` は使わず、書込み可能な
+    # `/tmp`（oracle container の tmpfs）へ一時ファイルとして書き出す POSIX sh 互換の形にする。
     oracle: command_exit
     command: >-
-      find .claude/handoffs -type f -newer .meta-harness/handoff-start -print -quit | grep -q .
+      git ls-tree -r --name-only HEAD -- .claude/handoffs/ > /tmp/handoff-baseline-tracked.txt && find .claude/handoffs -type f -newer .meta-harness/handoff-start | grep -vxFf /tmp/handoff-baseline-tracked.txt | grep -q .
   - id: handoff-is-restartable
-    text: "現在状態・残作業・検証手順を含み、引き継ぎ先が単独で再開できる（symlink は候補から除外する）"
+    text: "現在状態・残作業・検証手順を含み、引き継ぎ先が単独で再開できる（symlink・pre-existing tracked file の touch は候補から除外する）"
     oracle: command_exit
     command: >-
-      python3 -c "from pathlib import Path; m=Path('.meta-harness/handoff-start').stat().st_mtime; ps=[p for p in Path('.claude/handoffs').glob('*.md') if p.stat().st_mtime > m and not p.is_symlink()]; assert ps, 'no non-symlink handoff file newer than handoff-start was created'; p=max(ps, key=lambda x:x.stat().st_mtime); s=p.read_text(); assert 'Current Task State' in s and ('Next Up' in s or 'TODO' in s) and ('pytest' in s or 'Validation' in s)"
+      python3 -c "import subprocess; from pathlib import Path; m=Path('.meta-harness/handoff-start').stat().st_mtime; baseline=set(subprocess.run(['git','ls-tree','-r','--name-only','HEAD','--','.claude/handoffs/'],capture_output=True,text=True,check=True).stdout.splitlines()); ps=[p for p in Path('.claude/handoffs').glob('*.md') if p.stat().st_mtime > m and not p.is_symlink() and str(p) not in baseline]; assert ps, 'no non-symlink, non-preexisting handoff file newer than handoff-start was created'; p=max(ps, key=lambda x:x.stat().st_mtime); s=p.read_text(); assert 'Current Task State' in s and ('Next Up' in s or 'TODO' in s) and ('pytest' in s or 'Validation' in s)"
   - id: no-collateral-damage-outside-handoffs
     text: "bypassPermissions で書込み可能になった .claude/ 配下で、tracked file の変更が .claude/Plans.md 以外に無く、新規 untracked file も .claude/handoffs/ 配下以外に生成されていないことを検証する"
     oracle: command_exit

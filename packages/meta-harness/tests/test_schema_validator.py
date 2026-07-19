@@ -521,6 +521,19 @@ class TestRunMetadataSchema:
 
         assert mh.validate_against_schema(legacy_instance, schema, SCHEMA_DIR) == []
 
+    def test_permission_mode_accepts_non_scenario_documented_modes(self) -> None:
+        """PR #273 bot review round 6: `_effective_scenario_execution` passes the global
+        `evaluate.permission_mode` config value through to metadata verbatim whenever no
+        scenario-level override is present, so this schema (a factual record of what was
+        actually run) must accept every documented Claude Code `--permission-mode` value, not
+        just the two meta-harness currently lets an individual *scenario* opt into
+        (`scenario.schema.json`'s `permission_mode` stays restricted to `acceptEdits`/
+        `bypassPermissions` -- that is a separate, intentionally narrower policy choice)."""
+        schema = _load("run.metadata.schema.json")
+        instance = {**self._VALID, "permission_mode": "dontAsk"}
+
+        assert mh.validate_against_schema(instance, schema, SCHEMA_DIR) == []
+
     def test_routing_config_requires_base_hash(self) -> None:
         schema = _load("run.metadata.schema.json")
         instance = {
