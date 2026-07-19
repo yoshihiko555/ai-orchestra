@@ -332,6 +332,43 @@ def test_remove_runtime_widens_read_only_trusted_settings_before_wipe(tmp_path: 
     assert not runtime_dir.exists()
 
 
+@pytest.mark.skipif(os.getuid() == 0, reason="root bypasses permission bits")
+def test_widen_tree_permissions_never_chmods_through_a_symlink(tmp_path: Path) -> None:
+    """Codex review, PR #262, P1 (round 13): `os.walk(followlinks=False)` still yields a
+    symlinked directory's own name in `dirnames` for the directory that contains it -- it only
+    stops `os.walk()` from *descending into* that symlink, not from listing it. `os.chmod()`
+    follows symlinks by default, so a Maker/Checker with a writable `ephemeral_dir` could plant
+    `evil -> /etc` (or a symlinked file) inside the tree and have a root-privileged retry driver's
+    `_widen_tree_permissions()` widen the permissions of whatever the symlink points at, not the
+    symlink itself. This proves the walk skips both a directory symlink and a file symlink,
+    leaving their targets' modes untouched, while still widening an ordinary 0o555 real directory
+    inside the same tree (so `shutil.rmtree()` can still remove it afterwards).
+    """
+    outside_dir = tmp_path / "outside_dir"
+    outside_dir.mkdir()
+    outside_dir.chmod(0o500)
+    outside_file = tmp_path / "outside_file"
+    outside_file.write_text("secret\n", encoding="utf-8")
+    outside_file.chmod(0o400)
+
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    real_dir = runtime_dir / "trusted-settings"
+    real_dir.mkdir()
+    real_dir.chmod(0o555)
+    (runtime_dir / "evil_dir_link").symlink_to(outside_dir, target_is_directory=True)
+    (runtime_dir / "evil_file_link").symlink_to(outside_file)
+
+    try:
+        git_ephemeral._widen_tree_permissions(runtime_dir)
+
+        assert (outside_dir.stat().st_mode & 0o777) == 0o500
+        assert (outside_file.stat().st_mode & 0o777) == 0o400
+        assert (real_dir.stat().st_mode & 0o777) == 0o700
+    finally:
+        outside_dir.chmod(0o700)
+
+
 def test_prepare_never_creates_runtime_dir_when_local_override_snapshot_fails(
     linked_worktree: GitFixture,
     monkeypatch: pytest.MonkeyPatch,

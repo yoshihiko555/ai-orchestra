@@ -832,11 +832,19 @@ def _widen_tree_permissions(root: Path) -> None:
     are widened here, never file modes: unlinking a file only needs write+execute on its
     containing directory, not any permission bit on the file's own mode, so a 0o600/0o444
     secret or settings file keeps its own restrictive mode completely untouched right up until
-    `shutil.rmtree()` removes it. `os.walk(followlinks=False)` (the default) additionally
-    guarantees this never crosses a symlink boundary and widens permissions somewhere outside
-    `root`. Every `os.chmod()` failure is swallowed on purpose: this is a best-effort
-    pre-widening step for the immediately-following `shutil.rmtree()`, which still raises (and
-    gets wrapped into `EphemeralGitInfrastructureError`) on any real removal failure.
+    `shutil.rmtree()` removes it. `os.walk(followlinks=False)` only stops `os.walk()` itself from
+    *descending into* a symlinked directory -- it still yields the symlink's own name in
+    `dirnames` for the directory that contains it. `os.chmod()` follows symlinks by default
+    (`follow_symlinks=True`), so without an explicit `os.path.islink()` guard here, a
+    world-writable `root` containing e.g. `evil -> /etc` would have this walk `chmod(0o700)`
+    the real `/etc` the symlink points at, not the symlink itself -- especially dangerous for a
+    root-privileged retry driver. Every entry in `dirnames` is therefore checked with
+    `os.path.islink()` and skipped if it is a symlink, before ever calling `os.chmod()` on it (a
+    per-platform `follow_symlinks=False` chmod is not used instead because it is unsupported on
+    some platforms, e.g. raising `NotImplementedError` on Linux). Every `os.chmod()` failure is
+    swallowed on purpose: this is a best-effort pre-widening step for the immediately-following
+    `shutil.rmtree()`, which still raises (and gets wrapped into
+    `EphemeralGitInfrastructureError`) on any real removal failure.
     """
     try:
         os.chmod(root, 0o700)
@@ -844,8 +852,11 @@ def _widen_tree_permissions(root: Path) -> None:
         pass
     for current, dirnames, _filenames in os.walk(root, followlinks=False):
         for name in dirnames:
+            entry_path = os.path.join(current, name)
+            if os.path.islink(entry_path):
+                continue
             try:
-                os.chmod(os.path.join(current, name), 0o700)
+                os.chmod(entry_path, 0o700)
             except OSError:
                 pass
 

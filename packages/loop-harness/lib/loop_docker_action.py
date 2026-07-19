@@ -361,6 +361,20 @@ class DockerActionRuntime:
         itself still runs its own git subprocess calls without a further re-check -- that
         narrower, sub-second residual TOCTOU window is accepted and documented in
         `docs/design/loop-harness-isolation.md`'s residual-risk section.
+
+        Codex review, PR #262, P1 (round 13): the same `lease_already_lost` re-check also gates
+        the `finally` block's `_cleanup_local_runtime()` call, not just `_finish_git()`.
+        `_cleanup_local_runtime()` calls `cleanup_ephemeral_git()`/`cleanup_settings_bundle()`
+        against `self.git_session.runtime_dir`, which is deterministic per `(loop_id, action_id)`
+        -- exactly the path `discard_after_lease_loss()`'s own docstring explains a replacement
+        worker may already have re-created via `prepare_ephemeral_git()` once this worker's lease
+        is confirmed lost. Without this guard, a stale worker whose lease died during
+        `_cleanup_containers()` above (that real wall-clock window is exactly what this method's
+        own re-check exists for) would still reach `finally` and delete that shared runtime
+        dir/settings bundle out from under the replacement worker's live run. Skipping it here
+        leaves at most the same harmless leftover local directory `discard_after_lease_loss()`
+        already accepts: `prepare_ephemeral_git()` unconditionally wipes-and-recreates that path
+        the next time this action_id is actually retried.
         """
         with self._lifecycle_lock:
             if self._finished:
@@ -375,7 +389,8 @@ class DockerActionRuntime:
             except BaseException as exc:
                 primary_error = exc
             finally:
-                self._cleanup_local_runtime(cleanup_errors)
+                if not lease_already_lost:
+                    self._cleanup_local_runtime(cleanup_errors)
             if primary_error is not None:
                 for cleanup_error in cleanup_errors:
                     primary_error.add_note(f"action cleanup also failed: {cleanup_error}")
@@ -435,9 +450,11 @@ class DockerActionRuntime:
         replacement worker that has since re-run `prepare_ephemeral_git()` against that same
         path. Deleting it here, after that replacement has already recreated it, would destroy
         its live ephemeral GIT_DIR/settings bundle mid-run instead of this stale worker's own.
-        `finish()`/`abort()` do not have this problem: both re-check `request.lease_lost()`
-        immediately before running, so (short of the narrower, documented residual TOCTOU window
-        in `finish()`'s own docstring) no replacement is racing them yet. Skipping this cleanup
+        `finish()`/`abort()` no longer have this problem either (round 13 fix): both re-check
+        `request.lease_lost()` right before running, and `finish()`'s `finally` block now gates
+        its own `_cleanup_local_runtime()` call on that same re-checked value, so a lease that
+        dies mid-`_cleanup_containers()` skips local runtime cleanup there too -- the same
+        replacement-worker race this method exists to avoid. Skipping this cleanup
         here leaves at most a harmless leftover local directory: `prepare_ephemeral_git()`
         unconditionally wipes-and-recreates that same path the next time this action_id is
         actually retried, and if it never is, the debris is a bounded, non-shared-state cost --

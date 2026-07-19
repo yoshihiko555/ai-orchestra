@@ -1639,8 +1639,14 @@ def test_finish_skips_git_finalize_when_lease_lost_before_finish(
     `loop_driver._dispatch()` already decided to call `executor.finish(result)`. This proves
     `finish(action_succeeded=True)` re-checks `request.lease_lost()` right before
     `_finish_git()` and, if it is already true, never reaches `finalize_ephemeral_git()` (no CAS
-    publish onto the shared branch) -- only the same ordinary `cleanup_ephemeral_git()` every
-    other lease-lost exit path already runs, and `finish()` returns without raising.
+    publish onto the shared branch).
+
+    Codex review, PR #262, P1 (round 13): the same re-check now also gates `finish()`'s `finally`
+    block, so `cleanup_ephemeral_git()`/`cleanup_settings_bundle()` (`_cleanup_local_runtime()`)
+    must not run either once the lease is already lost -- a replacement worker may already have
+    re-created the same deterministic `(loop_id, action_id)` runtime dir/settings bundle (see
+    `discard_after_lease_loss()`'s docstring), so deleting it here would destroy a live run
+    instead of this stale worker's own leftover.
     """
     events: list[str] = []
     runtime = docker_action.DockerActionRuntime(
@@ -1667,12 +1673,122 @@ def test_finish_skips_git_finalize_when_lease_lost_before_finish(
     monkeypatch.setattr(
         docker_action.git_ephemeral,
         "cleanup_ephemeral_git",
-        lambda *_args: events.append("git_cleanup"),
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError(
+                "finish() must never delete the shared (loop_id, action_id) runtime dir once "
+                "the lease is already lost -- a replacement worker may already own it"
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        docker_action.docker_settings,
+        "cleanup_settings_bundle",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError(
+                "finish() must never delete the shared (loop_id, action_id) settings bundle "
+                "once the lease is already lost -- a replacement worker may already own it"
+            )
+        ),
     )
 
     runtime.finish(action_succeeded=True)
 
-    assert events == ["git_cleanup"]
+    assert events == []
+    assert runtime._finished is True
+
+
+def test_finish_skips_local_runtime_cleanup_when_lease_lost_during_container_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex review, PR #262, P1 (round 13): `_cleanup_containers()` can itself spend real
+    wall-clock time (destroying the scenario/broker/network), during which the driver's
+    heartbeat thread can flip `request.lease_lost()` from `False` to `True` -- exactly the
+    scenario `finish()`'s own docstring calls out. This proves the post-cleanup
+    `lease_already_lost` re-check gates `finish()`'s `finally`-block `_cleanup_local_runtime()`
+    call too (not just `_finish_git()`): when the lease dies during `_cleanup_containers()`,
+    neither `cleanup_ephemeral_git()` nor `cleanup_settings_bundle()` must run, because a
+    replacement worker may already have re-created the same deterministic `(loop_id, action_id)`
+    runtime dir/settings bundle once this worker's lease was confirmed lost.
+    """
+    lease_state = {"lost": False}
+    events: list[str] = []
+    runtime = docker_action.DockerActionRuntime(
+        _request(tmp_path, lease_lost=lambda: lease_state["lost"]),
+        host_child_runner=lambda *_args: subprocess.CompletedProcess([], 0, "", ""),
+    )
+    runtime.git_session = SimpleNamespace(runtime_dir=tmp_path / "runtime")
+    runtime._scenario_start_attempted = True
+    runtime._scenario_removed = True
+
+    original_cleanup_containers = runtime._cleanup_containers
+
+    def cleanup_containers_flips_lease() -> tuple[Any, list[str]]:
+        result = original_cleanup_containers()
+        lease_state["lost"] = True
+        return result
+
+    monkeypatch.setattr(runtime, "_cleanup_containers", cleanup_containers_flips_lease)
+    monkeypatch.setattr(
+        docker_action.git_ephemeral,
+        "finalize_ephemeral_git",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("finish() must never CAS-publish once the lease is already lost")
+        ),
+    )
+    monkeypatch.setattr(
+        docker_action.git_ephemeral,
+        "cleanup_ephemeral_git",
+        lambda *_args: events.append("git_cleanup"),
+    )
+    monkeypatch.setattr(
+        docker_action.docker_settings,
+        "cleanup_settings_bundle",
+        lambda *_args: events.append("settings_cleanup"),
+    )
+
+    runtime.finish(action_succeeded=True)
+
+    assert events == []
+    assert runtime._finished is True
+
+
+def test_finish_runs_local_runtime_cleanup_when_lease_is_held(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex review, PR #262, P1 (round 13): the new `lease_already_lost` guard on `finish()`'s
+    `finally` block must not regress the ordinary case where the lease is never lost -- local
+    runtime cleanup (`cleanup_ephemeral_git()`/`cleanup_settings_bundle()`) still has to run so a
+    successfully finished action does not leak its ephemeral GIT_DIR/settings bundle on disk.
+    """
+    events: list[str] = []
+    runtime = docker_action.DockerActionRuntime(
+        _request(tmp_path, lease_lost=lambda: False),
+        host_child_runner=lambda *_args: subprocess.CompletedProcess([], 0, "", ""),
+    )
+    runtime.git_session = SimpleNamespace(runtime_dir=tmp_path / "runtime")
+    runtime._scenario_start_attempted = True
+    runtime._scenario_removed = True
+    monkeypatch.setattr(
+        docker_action.git_ephemeral,
+        "finalize_ephemeral_git",
+        lambda *_args: events.append("git_finalize"),
+    )
+    monkeypatch.setattr(
+        docker_action.git_ephemeral,
+        "cleanup_ephemeral_git",
+        lambda *_args: events.append("git_cleanup"),
+    )
+    monkeypatch.setattr(
+        docker_action.docker_settings,
+        "cleanup_settings_bundle",
+        lambda *_args: events.append("settings_cleanup"),
+    )
+
+    runtime.finish(action_succeeded=True)
+
+    assert events == ["git_finalize", "settings_cleanup", "git_cleanup"]
     assert runtime._finished is True
 
 
@@ -1685,6 +1801,11 @@ def test_abort_skips_baseline_verify_when_lease_lost_before_finish(
     not diff the Maker's worktree against the stale `baseline_sha` via `verify_failed_maker_
     worktree()`, which would misclassify a Maker that committed cleanly before losing the lease
     as `maker_partial_worktree` drift.
+
+    Codex review, PR #262, P1 (round 13): the same re-check now also gates `finish()`'s `finally`
+    block, so `cleanup_ephemeral_git()`/`cleanup_settings_bundle()` (`_cleanup_local_runtime()`)
+    must not run either once the lease is already lost -- see
+    `test_finish_skips_git_finalize_when_lease_lost_before_finish` for the full rationale.
     """
     events: list[str] = []
     runtime = docker_action.DockerActionRuntime(
@@ -1711,12 +1832,27 @@ def test_abort_skips_baseline_verify_when_lease_lost_before_finish(
     monkeypatch.setattr(
         docker_action.git_ephemeral,
         "cleanup_ephemeral_git",
-        lambda *_args: events.append("git_cleanup"),
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError(
+                "abort() must never delete the shared (loop_id, action_id) runtime dir once "
+                "the lease is already lost -- a replacement worker may already own it"
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        docker_action.docker_settings,
+        "cleanup_settings_bundle",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError(
+                "abort() must never delete the shared (loop_id, action_id) settings bundle "
+                "once the lease is already lost -- a replacement worker may already own it"
+            )
+        ),
     )
 
     runtime.finish(action_succeeded=False)
 
-    assert events == ["git_cleanup"]
+    assert events == []
     assert runtime._finished is True
 
 
