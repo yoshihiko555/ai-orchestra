@@ -1,0 +1,69 @@
+schema_version: "1.0"
+id: mark-task-done
+target: skill:task-state
+description: Update a single task's status marker in an existing Plans.md without touching anything else.
+prompt: |
+  /task-state update "商品一覧API" --status done
+
+  This is an offline evaluation harness with no interactive follow-up; there is exactly one
+  task named "商品一覧API" in `.claude/Plans.md`. Apply the status change directly and do not
+  touch any other task, the CODD frontmatter, or the Decisions/Notes sections.
+setup:
+  - |
+    mkdir -p .claude
+    cat > .claude/Plans.md <<'PLANSEOF'
+    ---
+    codd:
+      node_id: "plan:meta-harness-eval-fixture"
+      kind: plan
+      status: active
+      depends_on:
+        - id: "design:meta-harness"
+          relation: implements
+    ---
+
+    # Plans
+
+    ## Project: meta-harness-eval-fixture
+
+    ### Phase 2: 実装 `cc:WIP`
+
+    #### API
+
+    - `cc:done` ユーザー認証API
+    - `cc:WIP` 商品一覧API
+    - `cc:TODO` 注文API
+
+    ---
+
+    ## Decisions
+
+    - 2026-01-01: 初期設計方針を確定
+
+    ## Notes
+
+    - 評価用フィクスチャ
+    PLANSEOF
+allowed_tools:
+  - "Read"
+  - "Edit"
+  - "Write"
+command_timeout_ms: 60000
+critical:
+  - id: task-status-updated-without-collateral-damage
+    text: "Plans.md 全体を canonical fixture と突合し、対象タスクの marker 変更以外の差分が一切ないことを検証する（タスク一覧・Decisions・Notes・frontmatter・見出し・区切り線を包含）"
+    oracle: command_exit
+    command: >-
+      python3 packages/meta-harness/scenarios/fixtures/assert-task-state-outcome.py mark-task-done --plans .claude/Plans.md --target-task "商品一覧API" --target-status done
+checks:
+  - id: update-summary-quality
+    text: "更新内容がユーザー報告で正確に説明される"
+    oracle: rubric_judge
+    rubric: "The final Japanese report must state which single task changed status and to what value, and it must not claim to have modified any other task, the CODD frontmatter, or the Decisions/Notes sections."
+holdout: false
+timeout_ms: 300000
+budget:
+  max_turns: 8
+  max_budget_usd: 3.0
+  max_output_tokens: 1024
+repeat: 1
