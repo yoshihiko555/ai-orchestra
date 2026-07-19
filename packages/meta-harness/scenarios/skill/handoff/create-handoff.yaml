@@ -35,7 +35,10 @@ checks:
 holdout: false
 timeout_ms: 300000
 budget:
-  max_turns: 8
+  # Issue #261 PR6: 実 backend 再検証で error_max_turns（turns=9, 実費 $0.45）が発生。
+  # git-dir 不整合の探索や approval 待ちの Bash 呼び出しで turn を消費しており、
+  # センシティブファイル拒否は未発生（Write 到達前に max_turns 到達）。8 -> 16 に引き上げる。
+  max_turns: 16
   max_budget_usd: 3.0
   max_output_tokens: 1024
 repeat: 1

@@ -48,6 +48,10 @@ allowed_tools:
   - "Read"
   - "Edit"
   - "Write"
+  # Issue #261 PR6: 実 backend 再検証で bare "Edit" だけでは .claude/Plans.md への Edit が
+  # 「sensitive file」として拒否された（Read は成功）。パス指定の permission ルールで明示許可する。
+  - "Edit(.claude/Plans.md)"
+  - "Write(.claude/Plans.md)"
 command_timeout_ms: 60000
 critical:
   - id: task-status-updated-without-collateral-damage

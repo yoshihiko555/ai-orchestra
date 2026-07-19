@@ -34,7 +34,11 @@ checks:
 holdout: false
 timeout_ms: 300000
 budget:
-  max_turns: 8
+  # Issue #261 PR6: 実 backend 再検証で error_max_turns（turns=9, 実費 $0.34）が発生。
+  # gh フィクスチャの直接実行が exit 126 で失敗し、python3 経由の呼び出しが
+  # allowed_tools の "Bash(gh *)" パターンに一致せず approval 待ちで turn を浪費した
+  # （センシティブファイル拒否ではない）。8 -> 16 に引き上げる。
+  max_turns: 16
   max_budget_usd: 3.0
   max_output_tokens: 1024
 repeat: 1

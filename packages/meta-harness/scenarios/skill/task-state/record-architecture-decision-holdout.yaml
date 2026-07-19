@@ -48,6 +48,10 @@ allowed_tools:
   - "Read"
   - "Edit"
   - "Write"
+  # Issue #261 PR6: mark-task-done と同型（同一 .claude/Plans.md 対象）。
+  # bare "Edit" のみではセンシティブファイル拒否が起きうるため明示許可を追加する。
+  - "Edit(.claude/Plans.md)"
+  - "Write(.claude/Plans.md)"
 command_timeout_ms: 60000
 critical:
   - id: decision-recorded-without-collateral-damage
