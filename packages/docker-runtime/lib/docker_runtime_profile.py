@@ -93,6 +93,21 @@ def align_mount_ownership(path: Path, *, exclude: frozenset[Path] | None = None)
     requires the source `.local.*` file's inode to already be linkable from within the worktree
     tree, which most modern kernels restrict by default via `fs.protected_hardlinks`; this is
     defense in depth for hosts that have that hardening disabled.)
+
+    Codex review, PR #262, P1 (round 10): the caller-supplied ``exclude`` set above only covers
+    the specific `.local.*` override leaves the caller already knows about. A root-run host's
+    mount source can also contain root-owned secrets the caller never enumerated -- `.env`,
+    `.npmrc`, `.netrc`, credential files, etc. -- deliberately left at a restrictive mode (no
+    group/other permission bits at all, e.g. `0600`) so only the root-trusted host process can
+    read them. The unconditional recursive chown below used to re-own those too, handing the
+    untrusted Maker container read/write access to a secret it never had, purely as a side effect
+    of making the mount writable. An entry with no group/other permission bits was already
+    restricted to its current owner only; changing that owner to the container identity would
+    still grant that identity access it did not have before -- so such entries now keep their
+    original owner and are skipped via `_is_owner_only_permission()`, the same way excluded leaf
+    entries are skipped. Ordinary worktree content Maker legitimately needs to write (source
+    files, `.git/` working data, etc.) is created at the usual `0644`/`0755` modes and is
+    unaffected by this check.
     """
     if os.getuid() != 0:
         return
@@ -103,7 +118,11 @@ def align_mount_ownership(path: Path, *, exclude: frozenset[Path] | None = None)
         if identity is not None
     }
     uid, gid = non_root_identity()
-    if path not in excluded and _stat_identity(path) not in excluded_identities:
+    if (
+        path not in excluded
+        and _stat_identity(path) not in excluded_identities
+        and not _is_owner_only_permission(path)
+    ):
         os.chown(path, uid, gid)
     if not path.is_dir():
         return
@@ -111,6 +130,8 @@ def align_mount_ownership(path: Path, *, exclude: frozenset[Path] | None = None)
         if child in excluded:
             continue
         if _stat_identity(child) in excluded_identities:
+            continue
+        if _is_owner_only_permission(child):
             continue
         try:
             os.chown(child, uid, gid, follow_symlinks=False)
@@ -127,6 +148,26 @@ def _stat_identity(path: Path) -> tuple[int, int] | None:
     except OSError:
         return None
     return (stat_result.st_dev, stat_result.st_ino)
+
+
+_OWNER_ONLY_MODE_MASK = 0o077
+
+
+def _is_owner_only_permission(path: Path) -> bool:
+    """Return True when `path`'s current mode bits grant no access to group or other at all.
+
+    Used by `align_mount_ownership()` to skip re-owning entries that were deliberately left
+    restricted to their current owner (e.g. a root-owned `0600` secret file) -- see that
+    function's round 10 docstring note. Uses `lstat()` so a symlink's own mode gates the
+    decision rather than its target's, matching the `follow_symlinks=False` chown below it
+    guards. Returns False (not owner-only, i.e. eligible for re-owning) if `path` no longer
+    exists by the time this runs, consistent with `_stat_identity()`'s own not-found handling.
+    """
+    try:
+        stat_result = os.lstat(path)
+    except OSError:
+        return False
+    return stat_result.st_mode & _OWNER_ONLY_MODE_MASK == 0
 
 
 def resource_args(resources: dict[str, Any]) -> list[str]:

@@ -241,6 +241,73 @@ def test_align_mount_ownership_skips_hardlink_alias_of_an_excluded_file(
     assert target in calls
 
 
+def test_align_mount_ownership_skips_owner_only_permission_secrets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review, PR #262, P1 (round 10): don't re-own root-owned `0600` secrets.
+
+    A root-run driver must not use this re-own to newly grant the fixed non-root container
+    identity access to a secret file (e.g. `.env`, `.netrc`) that was deliberately left at a
+    restrictive mode with no group/other permission bits at all -- even when the caller never
+    enumerated it in `exclude`. Ordinary worktree files at the usual mode stay re-owned so Maker
+    can still write them.
+    """
+    monkeypatch.setattr(profile.os, "getuid", lambda: 0)
+    monkeypatch.setattr(profile.os, "getgid", lambda: 0)
+    calls: list[Path] = []
+    monkeypatch.setattr(
+        profile.os,
+        "chown",
+        lambda path, uid, gid, follow_symlinks=True: calls.append(Path(path)),
+    )
+    target = tmp_path / "worktree"
+    nested = target / "nested"
+    nested.mkdir(parents=True)
+    secret_file = nested / ".env"
+    secret_file.write_text("SECRET=1", encoding="utf-8")
+    secret_file.chmod(0o600)
+    ordinary_file = nested / "file.txt"
+    ordinary_file.write_text("content", encoding="utf-8")
+    ordinary_file.chmod(0o644)
+
+    profile.align_mount_ownership(target)
+
+    assert secret_file not in calls
+    assert ordinary_file in calls
+    assert nested in calls
+    assert target in calls
+
+
+def test_align_mount_ownership_reowns_owner_only_permission_directory_ancestor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A restrictive-mode *directory* is itself skipped, but `rglob()` still walks into it so
+    any child that later becomes reachable (e.g. after a permission change) is evaluated too --
+    the directory skip alone already keeps the container from traversing in via its own mode.
+    """
+    monkeypatch.setattr(profile.os, "getuid", lambda: 0)
+    monkeypatch.setattr(profile.os, "getgid", lambda: 0)
+    calls: list[Path] = []
+    monkeypatch.setattr(
+        profile.os,
+        "chown",
+        lambda path, uid, gid, follow_symlinks=True: calls.append(Path(path)),
+    )
+    target = tmp_path / "worktree"
+    restricted_dir = target / ".ssh"
+    restricted_dir.mkdir(parents=True)
+    restricted_dir.chmod(0o700)
+    key_file = restricted_dir / "id_rsa"
+    key_file.write_text("private-key", encoding="utf-8")
+    key_file.chmod(0o600)
+
+    profile.align_mount_ownership(target)
+
+    assert restricted_dir not in calls
+    assert key_file not in calls
+    assert target in calls
+
+
 def test_broker_command_is_dual_homed_hardened_and_uses_image_id() -> None:
     spec = lifecycle.BrokerContainerSpec(
         docker_label="ai.orchestra.test",
