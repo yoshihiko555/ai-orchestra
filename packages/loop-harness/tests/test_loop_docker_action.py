@@ -79,6 +79,45 @@ def _request(
     )
 
 
+def test_start_broker_applies_validated_defaults_for_a_minimal_broker_section(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex review, PR #262, P2 (round 11): a config that omits `lp2.isolation.broker` entirely
+    (relying on `validate_isolation_config()`'s own defaults for every field) is valid, but the
+    old call site passed the raw, un-defaulted config mapping straight into `start_broker()`,
+    which re-derived broker settings from it with none of those defaults applied -- crashing with
+    a bare `KeyError` (e.g. reading `broker["budget_usd"]`) the moment Docker execution actually
+    tried to start the broker. `DockerActionRuntime._start()` now passes the already-validated
+    `DockerIsolationConfig.broker` instead, so `start_broker()` never re-parses a raw mapping.
+    """
+    config = _config()
+    del config["lp2"]["isolation"]["broker"]
+    validated_broker = docker_config.validate_isolation_config(config).broker
+
+    monkeypatch.setattr(
+        broker_runtime.credentials,
+        "load_claude_oauth_credential",
+        lambda **_kwargs: SimpleNamespace(access_token="fake-token"),
+    )
+    monkeypatch.setattr(
+        broker_runtime.lifecycle,
+        "start_broker_container",
+        lambda _spec, *, session_factory, **_kwargs: session_factory(),
+    )
+
+    session = broker_runtime.start_broker(
+        validated_broker,
+        scope="loop-broker-defaults",
+        owner_id="owner",
+        scenario_image_id=IMAGE_ID,
+        broker_image_id=IMAGE_ID,
+        max_lifetime_seconds=60,
+        runner=lambda *_a, **_k: subprocess.CompletedProcess([], 0, "", ""),
+    )
+
+    assert session.idle_timeout_seconds == 300
+
+
 def test_backend_docker_without_execution_backend_uses_host_executor(tmp_path: Path) -> None:
     def host_runner(*args: Any) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(args[0], 0, "", "")
@@ -281,8 +320,13 @@ def test_maker_worktree_chown_runs_before_local_override_snapshot(
     )
     mount_spec = SimpleNamespace(mounts=(), env={"GIT_DIR": "/git", "GIT_WORK_TREE": "/work"})
 
-    def chown(path: Path, *, exclude: frozenset[Path] | None = None) -> None:
-        del exclude
+    def chown(
+        path: Path,
+        *,
+        exclude: frozenset[Path] | None = None,
+        protect_owner_only: bool = True,
+    ) -> None:
+        del exclude, protect_owner_only
         label = "chown_worktree" if path == tmp_path / "worktree" else "chown_ephemeral"
         order.append(label)
 
@@ -338,7 +382,13 @@ def test_maker_worktree_chown_excludes_local_override_leaf_files(
     mount_spec = SimpleNamespace(mounts=(), env={"GIT_DIR": "/git", "GIT_WORK_TREE": "/work"})
     chown_calls: list[tuple[Path, frozenset[Path] | None]] = []
 
-    def chown(path: Path, *, exclude: frozenset[Path] | None = None) -> None:
+    def chown(
+        path: Path,
+        *,
+        exclude: frozenset[Path] | None = None,
+        protect_owner_only: bool = True,
+    ) -> None:
+        del protect_owner_only
         chown_calls.append((path, exclude))
 
     monkeypatch.setattr(docker_action.profile.runtime, "align_mount_ownership", chown)
@@ -401,7 +451,13 @@ def test_maker_worktree_chown_excludes_symlinked_local_override_target(
     mount_spec = SimpleNamespace(mounts=(), env={"GIT_DIR": "/git", "GIT_WORK_TREE": "/work"})
     chown_calls: list[tuple[Path, frozenset[Path] | None]] = []
 
-    def chown(path: Path, *, exclude: frozenset[Path] | None = None) -> None:
+    def chown(
+        path: Path,
+        *,
+        exclude: frozenset[Path] | None = None,
+        protect_owner_only: bool = True,
+    ) -> None:
+        del protect_owner_only
         chown_calls.append((path, exclude))
 
     monkeypatch.setattr(docker_action.profile.runtime, "align_mount_ownership", chown)
@@ -436,6 +492,54 @@ def test_maker_worktree_chown_excludes_symlinked_local_override_target(
 
     worktree_chown = next(call for call in chown_calls if call[0] == worktree)
     assert worktree_chown[1] == frozenset({override_link, real_target})
+
+
+def test_checker_ephemeral_git_dir_is_reowned_before_read_only_mount(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex review, PR #262, P1 (round 11): unlike the Maker branch, the checker path never
+    re-owned `self.git_session.ephemeral_dir` before mounting it read-only. Under a root-run
+    driver, `prepare_ephemeral_git()` creates that ephemeral GIT_DIR as root, but the checker
+    scenario container always runs as the fixed non-root 65532:65532 identity -- without this
+    re-own, it could never read its own `GIT_DIR`, breaking every `git` invocation inside the
+    checker (mechanical checks, the LLM reviewer's own `git diff`/`git log`).
+    """
+    session = SimpleNamespace(
+        runtime_dir=tmp_path / "runtime", ephemeral_dir=tmp_path / "runtime" / "git-ephemeral"
+    )
+    mount_spec = SimpleNamespace(mounts=(), env={"GIT_DIR": "/git", "GIT_WORK_TREE": "/work"})
+    chown_calls: list[tuple[Path, bool]] = []
+
+    def chown(
+        path: Path,
+        *,
+        exclude: frozenset[Path] | None = None,
+        protect_owner_only: bool = True,
+    ) -> None:
+        del exclude
+        chown_calls.append((path, protect_owner_only))
+
+    monkeypatch.setattr(docker_action.profile.runtime, "align_mount_ownership", chown)
+    monkeypatch.setattr(
+        docker_action.git_ephemeral, "prepare_ephemeral_git", lambda **_kwargs: session
+    )
+    monkeypatch.setattr(
+        docker_action.docker_settings,
+        "create_settings_bundle",
+        lambda *_args: docker_settings.DockerSettingsBundle(tmp_path / "trusted"),
+    )
+    monkeypatch.setattr(
+        docker_action.git_ephemeral, "build_checker_git_mount_spec", lambda *_args: mount_spec
+    )
+
+    runtime = docker_action.DockerActionRuntime(
+        _request(tmp_path, kind="checker"),
+        host_child_runner=lambda *_args: subprocess.CompletedProcess([], 0, "", ""),
+    )
+    runtime._prepare_mounts()
+
+    assert (session.ephemeral_dir, False) in chown_calls
 
 
 def test_maker_lifecycle_uses_production_primitives_in_required_order(
@@ -852,7 +956,10 @@ def test_align_mount_ownership_or_raise_normalizes_os_errors(
     instead of escaping unwrapped and crashing the whole driver process.
     """
 
-    def _raise_permission_error(_path: Path, *, exclude: Any = None) -> None:
+    def _raise_permission_error(
+        _path: Path, *, exclude: Any = None, protect_owner_only: bool = True
+    ) -> None:
+        del exclude, protect_owner_only
         raise PermissionError("chown not permitted")
 
     monkeypatch.setattr(
@@ -1388,9 +1495,16 @@ def test_discard_after_lease_loss_skips_git_finalize_and_verify_but_still_cleans
     (see that method's own docstring). Unlike `finish()`/`abort()`, it must never reach
     `finalize_ephemeral_git()` (no CAS publish onto the shared branch) or `verify_failed_maker_
     worktree()` (no baseline-diff check, which always misclassifies a successful Maker's clean
-    commit as `maker_partial_worktree` drift against the pre-Maker `baseline_sha`) -- only the
-    ordinary `cleanup_ephemeral_git()` every other exit path already runs for this action's own
-    local session artifacts, plus container/broker/settings-bundle teardown.
+    commit as `maker_partial_worktree` drift against the pre-Maker `baseline_sha`).
+
+    Codex review, PR #262, P1 (round 11): unlike other exit paths, this method must also *not*
+    call `cleanup_ephemeral_git()`/`cleanup_settings_bundle()` -- both operate on
+    `self.git_session.runtime_dir`, which is deterministic per `(loop_id, action_id)`, not per
+    attempt. By the time this quiet teardown runs, `attach(..., recover_orphans=True)` may
+    already have handed this same pending action to a replacement worker that has re-run
+    `prepare_ephemeral_git()` against that same path; deleting it here would destroy the
+    replacement's live runtime instead of this stale worker's own. Only the scenario
+    container/broker cleanup (randomly nonced, never reused across workers) is safe to run.
     """
     runtime = docker_action.DockerActionRuntime(
         _request(tmp_path),
@@ -1424,23 +1538,33 @@ def test_discard_after_lease_loss_skips_git_finalize_and_verify_but_still_cleans
     monkeypatch.setattr(
         docker_action.git_ephemeral,
         "cleanup_ephemeral_git",
-        lambda *_args: events.append("git_cleanup"),
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError(
+                "discard_after_lease_loss must never delete the shared "
+                "(loop_id, action_id) runtime dir -- a replacement worker may already own it"
+            )
+        ),
     )
     monkeypatch.setattr(
         docker_action.docker_settings,
         "cleanup_settings_bundle",
-        lambda *_args: events.append("settings_cleanup"),
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError(
+                "discard_after_lease_loss must never delete the shared "
+                "(loop_id, action_id) settings bundle -- a replacement worker may already own it"
+            )
+        ),
     )
 
     runtime.discard_after_lease_loss()
 
-    assert events == ["broker_cleanup", "git_cleanup", "settings_cleanup"]
+    assert events == ["broker_cleanup"]
     assert runtime._finished is True
 
     # Idempotent, like finish()/cancel(): a second call must not repeat any cleanup step.
     runtime.discard_after_lease_loss()
 
-    assert events == ["broker_cleanup", "git_cleanup", "settings_cleanup"]
+    assert events == ["broker_cleanup"]
 
 
 def test_finish_skips_git_finalize_when_lease_lost_before_finish(
@@ -1539,9 +1663,13 @@ def test_discard_after_lease_loss_never_raises_even_when_cleanup_steps_fail(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """`discard_after_lease_loss()` has no safe-stop channel left to persist a failure into once
-    the lease is already gone (see its own docstring), so every cleanup step must be best-effort:
-    an error from any one of container/broker/git/settings cleanup must not stop the others from
-    running, and none of them may escape as a raised exception.
+    the lease is already gone (see its own docstring), so a container/broker cleanup failure must
+    not escape as a raised exception, and must not stop `_finished` from being latched.
+
+    Codex review, PR #262, P1 (round 11): `git_ephemeral.cleanup_ephemeral_git()` and
+    `docker_settings.cleanup_settings_bundle()` must not be called at all here (see this method's
+    own docstring) -- both are asserted unreachable rather than exercised, since this same test
+    used to double as coverage for their best-effort error handling before that call was removed.
     """
     runtime = docker_action.DockerActionRuntime(
         _request(tmp_path),
@@ -1561,19 +1689,19 @@ def test_discard_after_lease_loss_never_raises_even_when_cleanup_steps_fail(
         docker_action.git_ephemeral,
         "cleanup_ephemeral_git",
         lambda *_args: (_ for _ in ()).throw(
-            docker_action.git_ephemeral.EphemeralGitInfrastructureError("git cleanup failed")
+            AssertionError("discard_after_lease_loss must never call cleanup_ephemeral_git()")
         ),
     )
-    settings_cleaned: list[bool] = []
     monkeypatch.setattr(
         docker_action.docker_settings,
         "cleanup_settings_bundle",
-        lambda *_args: settings_cleaned.append(True),
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("discard_after_lease_loss must never call cleanup_settings_bundle()")
+        ),
     )
 
     runtime.discard_after_lease_loss()
 
-    assert settings_cleaned == [True]
     assert runtime._finished is True
 
 

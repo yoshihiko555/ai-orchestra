@@ -278,6 +278,53 @@ def test_align_mount_ownership_skips_owner_only_permission_secrets(
     assert target in calls
 
 
+def test_align_mount_ownership_rejects_owner_only_secret_for_non_root_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review, PR #262, P1 (round 11): the round-10 owner-only skip only protects a secret
+    from *this* re-own -- it does nothing when the host process is already non-root, because
+    `non_root_identity()` then maps the scenario container to that same host uid/gid, so the
+    secret is readable by the untrusted Maker/Checker regardless of chown. There is no ownership
+    change that can fix this; the only fail-closed option is to refuse to start.
+    """
+    monkeypatch.setattr(profile.os, "getuid", lambda: 1000)
+    calls: list[Path] = []
+    monkeypatch.setattr(
+        profile.os,
+        "chown",
+        lambda path, uid, gid, **_kwargs: calls.append(Path(path)),
+    )
+    target = tmp_path / "worktree"
+    nested = target / "nested"
+    nested.mkdir(parents=True)
+    secret_file = nested / ".env"
+    secret_file.write_text("SECRET=1", encoding="utf-8")
+    secret_file.chmod(0o600)
+
+    with pytest.raises(profile.DockerProfileError, match="non-root container"):
+        profile.align_mount_ownership(target)
+
+    assert calls == []
+
+
+def test_align_mount_ownership_protect_owner_only_false_bypasses_reject_for_non_root_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``protect_owner_only=False`` opts a driver-generated path (e.g. the ephemeral Git runtime
+    directory) out of the round-11 reject above -- nothing there is a human-placed secret, so a
+    restrictive mode from the process umask must not block starting a non-root container.
+    """
+    monkeypatch.setattr(profile.os, "getuid", lambda: 1000)
+    target = tmp_path / "runtime"
+    nested = target / "nested"
+    nested.mkdir(parents=True)
+    restrictive_file = nested / "config"
+    restrictive_file.write_text("data", encoding="utf-8")
+    restrictive_file.chmod(0o600)
+
+    profile.align_mount_ownership(target, protect_owner_only=False)
+
+
 def test_align_mount_ownership_reowns_owner_only_permission_directory_ancestor(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

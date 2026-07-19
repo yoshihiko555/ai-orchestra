@@ -65,7 +65,12 @@ def _local_override_leaf_paths(worktree_path: Path) -> frozenset[Path]:
     return frozenset(leaves)
 
 
-def _align_mount_ownership_or_raise(path: Path, *, exclude: frozenset[Path] | None = None) -> None:
+def _align_mount_ownership_or_raise(
+    path: Path,
+    *,
+    exclude: frozenset[Path] | None = None,
+    protect_owner_only: bool = True,
+) -> None:
     """Run `align_mount_ownership()`, normalizing any raw OS failure to `DockerActionError`.
 
     Codex review, PR #262, High (round 6): `align_mount_ownership()`'s top-level `os.chown()`
@@ -75,9 +80,16 @@ def _align_mount_ownership_or_raise(path: Path, *, exclude: frozenset[Path] | No
     Docker/config/git exception types -- neither is in it -- so letting this escape unwrapped
     would crash the whole driver process instead of producing the fail-closed Docker
     infrastructure result every other mount/container setup failure already gets.
+
+    ``protect_owner_only`` is forwarded to `align_mount_ownership()`; callers pass ``False`` for
+    paths this driver fully generates itself (the ephemeral Git runtime directory), where a
+    restrictive mode is an artifact of the process umask rather than a human-placed secret -- see
+    that function's round 11 docstring note.
     """
     try:
-        profile.runtime.align_mount_ownership(path, exclude=exclude)
+        profile.runtime.align_mount_ownership(
+            path, exclude=exclude, protect_owner_only=protect_owner_only
+        )
     except OSError as exc:
         raise DockerActionError(f"could not align mount ownership for {path}") from exc
 
@@ -382,12 +394,30 @@ class DockerActionRuntime:
 
         This method never calls `finalize_ephemeral_git()` or `verify_failed_maker_worktree()`
         -- neither reads nor writes the shared branch or worktree tree at all. It only removes
-        this action's own local session artifacts (scenario container, broker/network, ephemeral
-        git runtime dir, trusted settings bundle), reusing `cleanup_ephemeral_git()` -- the same
-        idempotent cleanup every other exit path also runs, which only drops this action's own
-        temporary import ref and local runtime dir, never touching the shared branch. It must
-        never raise: once the lease is gone there is no safe-stop channel left to persist a
-        failure into, so every cleanup step is best-effort and any errors are only logged.
+        this action's own scenario container, broker, and isolated network -- all named with a
+        random per-instance nonce (see `container_name`/`internal_network`/`external_network`
+        construction), so tearing them down here can never collide with any other worker's own,
+        differently-named resources.
+
+        Codex review, PR #262, P1 (round 11): this method deliberately does *not* also call
+        `cleanup_ephemeral_git()`/`cleanup_settings_bundle()` the way `_cleanup_local_runtime()`
+        (used by `finish()`/`abort()`) does. Both operate on `self.git_session.runtime_dir` (and
+        the `trusted-settings` subdirectory `docker_settings.create_settings_bundle()` creates
+        under it), which is deterministic per `(loop_id, action_id)` -- not per attempt. This
+        method only runs once the lease is *already* known lost, which is exactly the case where
+        `attach(..., recover_orphans=True)` may have already handed the same pending action to a
+        replacement worker that has since re-run `prepare_ephemeral_git()` against that same
+        path. Deleting it here, after that replacement has already recreated it, would destroy
+        its live ephemeral GIT_DIR/settings bundle mid-run instead of this stale worker's own.
+        `finish()`/`abort()` do not have this problem: both re-check `request.lease_lost()`
+        immediately before running, so (short of the narrower, documented residual TOCTOU window
+        in `finish()`'s own docstring) no replacement is racing them yet. Skipping this cleanup
+        here leaves at most a harmless leftover local directory: `prepare_ephemeral_git()`
+        unconditionally wipes-and-recreates that same path the next time this action_id is
+        actually retried, and if it never is, the debris is a bounded, non-shared-state cost --
+        far cheaper than corrupting a live replacement's runtime. It must never raise: once the
+        lease is gone there is no safe-stop channel left to persist a failure into, so every
+        cleanup step is best-effort and any errors are only logged.
         """
         with self._lifecycle_lock:
             if self._finished:
@@ -403,19 +433,10 @@ class DockerActionRuntime:
                     # Maker/Checker container that failed `docker rm -f` after the lease was lost
                     # both running and unlogged, breaking the quiet-teardown contract that
                     # cleanup failures are always recorded for operators. Fold it into `errors` so
-                    # it reaches the stderr log below alongside broker/settings/git failures;
+                    # it reaches the stderr log below alongside the broker/network failures;
                     # untrusted-container sweep still owns actual removal once this is surfaced.
                     errors.append(str(scenario_error))
                 errors.extend(cleanup_errors)
-            except Exception as exc:  # noqa: BLE001 - quiet teardown must never raise
-                errors.append(str(exc))
-            if self.git_session is not None:
-                try:
-                    git_ephemeral.cleanup_ephemeral_git(self.git_session)
-                except Exception as exc:  # noqa: BLE001 - quiet teardown must never raise
-                    errors.append(str(exc))
-            try:
-                docker_settings.cleanup_settings_bundle(self.settings_bundle)
             except Exception as exc:  # noqa: BLE001 - quiet teardown must never raise
                 errors.append(str(exc))
             if errors:
@@ -470,7 +491,7 @@ class DockerActionRuntime:
                 self.request.config, self.request.project_dir, runner=self.runner
             )
             self.broker = broker_runtime.start_broker(
-                self.request.config,
+                self.request.isolation.broker,
                 scope=scope,
                 owner_id=self.owner_id,
                 scenario_image_id=scenario_image.image_id,
@@ -582,12 +603,31 @@ class DockerActionRuntime:
             # mount must be re-owned to that same identity or the container's rw mount becomes
             # unwritable to the non-root Maker process. No-op when the driver is not root, since
             # ownership already matches.
-            _align_mount_ownership_or_raise(self.git_session.ephemeral_dir)
+            #
+            # Codex review, PR #262, P1 (round 11): `protect_owner_only=False` -- this directory
+            # is entirely driver-generated Git plumbing (config, refs, alternates), never
+            # human-placed secret content, so a restrictive mode picked up from the process
+            # umask (e.g. root running under `umask 077`) must not be treated as an
+            # `align_mount_ownership()`-protected secret. See that function's own docstring.
+            _align_mount_ownership_or_raise(
+                self.git_session.ephemeral_dir, protect_owner_only=False
+            )
         else:
             # validate_isolation_config() already enforces this for config-built requests.
             # Keep the runtime assertion as defense-in-depth for directly constructed requests.
             if not self.request.isolation.checker_read_only_worktree:
                 raise DockerActionError("Checker worktree must be read-only")
+            # Codex review, PR #262, P1 (round 11): unlike the Maker branch above, this checker
+            # path never re-owned `self.git_session.ephemeral_dir` before mounting it read-only.
+            # Under a root-run driver the ephemeral GIT_DIR `prepare_ephemeral_git()` just
+            # created stays root-owned; the checker container always runs as the fixed non-root
+            # 65532:65532 identity (even when the driver itself is root), so it could never read
+            # its own `GIT_DIR` and every `git` invocation inside the checker (mechanical checks,
+            # the LLM reviewer's own `git diff`/`git log`) would fail. `protect_owner_only=False`
+            # for the same reason as the Maker branch: this directory holds no human secrets.
+            _align_mount_ownership_or_raise(
+                self.git_session.ephemeral_dir, protect_owner_only=False
+            )
             git_mounts = git_ephemeral.build_checker_git_mount_spec(self.git_session)
         trusted_mount = git_ephemeral.BindMountSpec(
             self.settings_bundle.source_dir,

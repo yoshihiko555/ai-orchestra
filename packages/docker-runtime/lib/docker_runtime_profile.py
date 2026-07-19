@@ -58,7 +58,12 @@ def non_root_identity() -> tuple[int, int]:
     return uid, gid
 
 
-def align_mount_ownership(path: Path, *, exclude: frozenset[Path] | None = None) -> None:
+def align_mount_ownership(
+    path: Path,
+    *,
+    exclude: frozenset[Path] | None = None,
+    protect_owner_only: bool = True,
+) -> None:
     """Re-own a read-write mount source so the forced non-root container identity can write it.
 
     ``non_root_identity()`` maps a root host process to the fixed ``65532:65532`` container
@@ -108,10 +113,28 @@ def align_mount_ownership(path: Path, *, exclude: frozenset[Path] | None = None)
     entries are skipped. Ordinary worktree content Maker legitimately needs to write (source
     files, `.git/` working data, etc.) is created at the usual `0644`/`0755` modes and is
     unaffected by this check.
+
+    Codex review, PR #262, P1 (round 11): the owner-only skip above only protects a secret from
+    *this* re-own -- it does nothing when the host process is already non-root, because
+    `non_root_identity()` then maps the container to that same host uid/gid and the two branches
+    below are skipped entirely (ownership already "matches"). On that common non-root path the
+    scenario container runs as the exact identity that already owns any `0600` secret in the
+    bind-mounted tree (`.env`, `.netrc`, a project-local override, etc.), so it is readable by the
+    untrusted Maker/Checker regardless of chown. There is no ownership change that can fix this --
+    the only fail-closed option is to refuse to start rather than silently mount the secret into
+    the container, via `_reject_owner_only_secrets()`.
+
+    ``protect_owner_only=False`` (round 11) opts a caller out of both the round-10 skip above and
+    the round-11 reject below. It is used for paths this driver fully generates itself moments
+    before mounting (e.g. the ephemeral Git runtime directory) rather than pre-existing worktree
+    content: nothing there is a human-placed secret, so a restrictive mode picked up from the
+    process umask must not block re-owning (root path) or starting the container (non-root path).
     """
-    if os.getuid() != 0:
-        return
     excluded = exclude or frozenset()
+    if os.getuid() != 0:
+        if protect_owner_only:
+            _reject_owner_only_secrets(path)
+        return
     excluded_identities = {
         identity
         for identity in (_stat_identity(entry) for entry in excluded)
@@ -121,7 +144,7 @@ def align_mount_ownership(path: Path, *, exclude: frozenset[Path] | None = None)
     if (
         path not in excluded
         and _stat_identity(path) not in excluded_identities
-        and not _is_owner_only_permission(path)
+        and not (protect_owner_only and _is_owner_only_permission(path))
     ):
         os.chown(path, uid, gid)
     if not path.is_dir():
@@ -131,12 +154,34 @@ def align_mount_ownership(path: Path, *, exclude: frozenset[Path] | None = None)
             continue
         if _stat_identity(child) in excluded_identities:
             continue
-        if _is_owner_only_permission(child):
+        if protect_owner_only and _is_owner_only_permission(child):
             continue
         try:
             os.chown(child, uid, gid, follow_symlinks=False)
         except FileNotFoundError:
             continue
+
+
+def _reject_owner_only_secrets(path: Path) -> None:
+    """Fail closed instead of mounting an owner-only-permission secret into a non-root container.
+
+    Codex review, PR #262, P1 (round 11): see `align_mount_ownership()`'s own docstring. When the
+    driver runs as a normal user there is no chown that can protect a `0600` secret already owned
+    by that same user -- the forced non-root container identity *is* that user. Refusing to start
+    is the only fail-closed option available.
+    """
+    if _is_owner_only_permission(path):
+        raise DockerProfileError(
+            f"refusing to mount an owner-only-permission path into a non-root container: {path}"
+        )
+    if not path.is_dir():
+        return
+    for child in path.rglob("*"):
+        if _is_owner_only_permission(child):
+            raise DockerProfileError(
+                "refusing to mount an owner-only-permission path into a non-root "
+                f"container: {child}"
+            )
 
 
 def _stat_identity(path: Path) -> tuple[int, int] | None:

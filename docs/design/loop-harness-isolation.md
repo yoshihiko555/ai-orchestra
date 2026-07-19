@@ -715,6 +715,14 @@ config で切替可能な追加バックエンドとして導入する（確定�
   （host 実行時は動いていたものが Docker 化で無言に壊れ得る）。必要な場合は loop 定義側の
   `mechanical.commands` コマンド文字列内で明示的に設定すること（例:
   `PYTHONPATH=/path python -m pytest ...`）。この制約は受容し、allowlist 自体は変更しない。
+- root 実行かつ厳格 umask（例 `077`）の環境で、Checker の worktree 本体（ro マウント）の
+  所有権是正は行わない（Codex レビュー round 11 の自己検証で識別）。ephemeral GIT_DIR は
+  `protect_owner_only=False` で re-own する（driver 生成の git プラミングのみで秘密を含まない
+  ため）が、worktree 本体は実際の秘密ファイルを含み得るため同じバイパスを適用できず、
+  owner-only guard 込みの chown では root umask 下で大半のファイルがスキップされ実効性がない。
+  root + 厳格 umask で checkout されたファイルを Checker が読めないケースは「可用性の縮退
+  （checker が mechanical/LLM 層で失敗し infrastructure failure になる）」であり fail-open では
+  ないため受容する。通常の非 root 運用・既定 umask（022）では発生しない。
 
 ---
 

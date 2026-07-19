@@ -23,6 +23,7 @@ import docker_runtime_cli as runtime_cli  # noqa: E402
 import docker_runtime_credentials as credentials  # noqa: E402
 import docker_runtime_lifecycle as lifecycle  # noqa: E402
 import docker_runtime_profile as runtime_profile  # noqa: E402
+import loop_docker_config as docker_config  # noqa: E402
 
 SubprocessRunner = Callable[..., subprocess.CompletedProcess]
 
@@ -119,7 +120,7 @@ class LoopBrokerSession:
 
 
 def start_broker(
-    config: dict[str, Any],
+    broker_config: docker_config.BrokerConfig,
     *,
     scope: str,
     owner_id: str,
@@ -128,8 +129,20 @@ def start_broker(
     max_lifetime_seconds: int,
     runner: SubprocessRunner = subprocess.run,
 ) -> LoopBrokerSession:
-    """Start one dual-homed broker, cleaning every partial resource on failure."""
-    broker = _broker_config(config)
+    """Start one dual-homed broker, cleaning every partial resource on failure.
+
+    Codex review, PR #262, P2 (round 11): the caller must pass the already-validated
+    ``DockerIsolationConfig.broker`` (from ``loop_docker_config.validate_isolation_config()``),
+    not a raw config mapping. This function used to re-derive a broker settings dict straight
+    from the caller's raw config via a private ``lp2.isolation.broker`` lookup that applied none
+    of ``validate_isolation_config()``'s defaults -- a minimal config that only sets
+    ``backend``/``execution_backend`` (leaving every ``broker.*`` key to its validated default)
+    passed validation just fine, but then raised a bare ``KeyError`` here the moment Docker
+    execution actually tried to start the broker, because the raw config had no ``broker`` key
+    at all to read defaults from. Accepting the validated dataclass instead means every field is
+    already a normalized, type-checked value with no re-parsing (and no re-defaulting) needed.
+    """
+    broker = _broker_settings(broker_config)
     start_port, end_port = broker.get("port_range", [8790, 8990])
     port = start_port + secrets.randbelow(end_port - start_port + 1)
     nonce = secrets.token_hex(3)
@@ -268,11 +281,26 @@ def sweep_stale_resources(
     )
 
 
-def _broker_config(config: dict[str, Any]) -> dict[str, Any]:
-    lp2 = config.get("lp2") if isinstance(config.get("lp2"), dict) else {}
-    isolation = lp2.get("isolation") if isinstance(lp2.get("isolation"), dict) else {}
-    broker = isolation.get("broker") if isinstance(isolation.get("broker"), dict) else {}
-    return dict(broker)
+def _broker_settings(broker: docker_config.BrokerConfig) -> dict[str, Any]:
+    """Flatten a validated `BrokerConfig` into the dict shape `_broker_env()`/`_wait_ready()`
+    expect, so every field these use is already normalized and defaulted -- see `start_broker()`'s
+    round 11 docstring note."""
+    return {
+        "image": broker.image,
+        "port_range": list(broker.port_range),
+        "idle_timeout_sec": broker.idle_timeout_sec,
+        "startup_timeout_sec": broker.startup_timeout_sec,
+        "budget_usd": broker.budget_usd,
+        "max_requests": broker.max_requests,
+        "max_total_tokens": broker.max_total_tokens,
+        "max_upstream_bytes": broker.max_upstream_bytes,
+        "pricing_upper_bound_usd_per_million": {
+            "input": broker.pricing.input,
+            "output": broker.pricing.output,
+            "cache_creation": broker.pricing.cache_creation,
+            "cache_read": broker.pricing.cache_read,
+        },
+    }
 
 
 def _broker_env(
