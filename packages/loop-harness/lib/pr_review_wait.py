@@ -2186,7 +2186,17 @@ def _upsert_finding(
             pending_ids.add(finding.source_comment_id)
         else:
             confirmed_severity = _highest_optional_severity(confirmed_severity, finding.severity)
-        findings_map[finding.signature] = {
+        # A signature previously marked "addressed" (mark_addressed_findings, #235) that shows
+        # up again here has, by definition, reraised: build_pr_iteration_findings() already
+        # treats it as blocking again via last_seen_iteration regardless of the stored `status`,
+        # but leaving `status` at "addressed" left the exit-comment matrix
+        # (_format_pr_review_findings_matrix) misreporting a currently-blocking finding as
+        # resolved, and left mark_addressed_findings()'s `status == "open"` guard permanently
+        # skipping the record on a later genuine fix (its addressed_at_commit/iteration would
+        # then still point at the stale, insufficient commit). Reopening here -- and clearing
+        # the stale addressed_at_* markers -- keeps both in sync with the reraise.
+        reopened = existing.get("status") == "addressed"
+        merged = {
             **existing,
             "last_seen_iteration": (
                 existing.get("last_seen_iteration") if finding.needs_classification else iteration
@@ -2201,6 +2211,11 @@ def _upsert_finding(
             "line": finding.line,
             "body_excerpt": finding.body_excerpt,
         }
+        if reopened:
+            merged["status"] = "open"
+            merged["addressed_at_commit"] = None
+            merged["addressed_at_iteration"] = None
+        findings_map[finding.signature] = merged
         return
     source_ids = [finding.source_comment_id]
     pending_ids = [finding.source_comment_id] if finding.needs_classification else []

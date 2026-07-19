@@ -2738,6 +2738,44 @@ def test_repeated_finding_preserves_highest_severity() -> None:
     ]
 
 
+def test_upsert_finding_reopens_addressed_record_on_reraise() -> None:
+    """Issue #235 reraise-after-addressed: a signature `mark_addressed_findings()` already
+    marked "addressed" must go back to `status == "open"` -- and drop its now-stale
+    `addressed_at_*` markers -- the moment the same signature is imported again, so the
+    exit-comment matrix (`_finding_status_label`) stops reporting a currently-blocking finding
+    as resolved and a later genuine fix can update `mark_addressed_findings()`'s
+    `status == "open"`-gated record instead of being silently skipped."""
+    findings_map = {
+        "sig-a": {
+            "first_seen_iteration": 1,
+            "last_seen_iteration": 1,
+            "status": "addressed",
+            "severity": "high",
+            "confirmed_severity": "high",
+            "dismiss_reason": None,
+            "pending_classification_source_comment_ids": [],
+            "source_comment_ids": ["review_comment:1"],
+            "addressed_at_commit": "cafebabecafebabe",
+            "addressed_at_iteration": 2,
+            "path": "app.py",
+            "line": 10,
+        }
+    }
+
+    prw._upsert_finding(
+        findings_map,
+        prw.ImportedFinding("sig-a", "high", "review_comment:2", "[P1]", "app.py", 10, False),
+        3,
+    )
+
+    record = findings_map["sig-a"]
+    assert record["status"] == "open"
+    assert record["addressed_at_commit"] is None
+    assert record["addressed_at_iteration"] is None
+    assert record["last_seen_iteration"] == 3
+    assert record["source_comment_ids"] == ["review_comment:1", "review_comment:2"]
+
+
 def test_ev38_only_medium_low_findings_can_be_dismissed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3137,6 +3175,65 @@ def test_mark_addressed_findings_no_candidates_is_noop(
         prw.mark_addressed_findings("abcd1234-issue-1", project_dir, [], "sha", 1, lease_token)
         == ()
     )
+
+
+def test_reraise_after_addressed_reopens_and_allows_later_re_addressing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Full issue #235 reraise cycle: `mark_addressed_findings()` marks a signature "addressed"
+    at commit A, the same signature reraises (re-imported via `_upsert_finding()`, e.g. the
+    Maker's commit A did not actually fix it), and only *then* is it truly fixed at commit B.
+    The reraise must (1) flip `status` back to "open" so the exit matrix stops calling it
+    resolved, and (2) clear the stale commit-A `addressed_at_*` markers so
+    `mark_addressed_findings()`'s `status == "open"` guard accepts the commit-B re-addressing
+    instead of silently skipping it (the bug: without the reopen, the record stays pinned at
+    commit A forever)."""
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={
+            "processed_comment_ids": [],
+            "findings": {"sig-a": _open_finding_record(["review_comment:1"])},
+        },
+    )
+    lease_token = _lease(project_dir)
+    prw.mark_addressed_findings(
+        "abcd1234-issue-1", project_dir, ["sig-a"], "commitaaaaaaaaaa", 2, lease_token
+    )
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    assert state.pr_review["findings"]["sig-a"]["status"] == "addressed"
+
+    # The signature reraises at iteration 3: re-imported via _upsert_finding, then persisted the
+    # same way collect_review_findings() would.
+    findings_map = state.pr_review["findings"]
+    prw._upsert_finding(
+        findings_map,
+        prw.ImportedFinding("sig-a", "high", "review_comment:2", "[P1]", "app.py", 10, False),
+        3,
+    )
+    state.pr_review["findings"] = findings_map
+    lc._write_state(state, project_dir)
+
+    reopened = lc.load_state("abcd1234-issue-1", project_dir)
+    reopened_record = reopened.pr_review["findings"]["sig-a"]
+    assert reopened_record["status"] == "open"
+    assert reopened_record["addressed_at_commit"] is None
+    assert reopened_record["addressed_at_iteration"] is None
+
+    # Commit B genuinely fixes it: mark_addressed_findings() must accept the re-addressing
+    # instead of the status == "open" guard skipping an already-"addressed" record. Reuses the
+    # still-active lease (acquire_lock is single-holder; this loop_id's lease was never
+    # released, so a second acquire_lock() call here would deadlock/fail).
+    addressed_again = prw.mark_addressed_findings(
+        "abcd1234-issue-1", project_dir, ["sig-a"], "commitbbbbbbbbbb", 4, lease_token
+    )
+
+    assert addressed_again == ("sig-a",)
+    final_state = lc.load_state("abcd1234-issue-1", project_dir)
+    final_record = final_state.pr_review["findings"]["sig-a"]
+    assert final_record["status"] == "addressed"
+    assert final_record["addressed_at_commit"] == "commitbbbbbbbbbb"
+    assert final_record["addressed_at_iteration"] == 4
 
 
 class _FakeGitWorkflowModule:
