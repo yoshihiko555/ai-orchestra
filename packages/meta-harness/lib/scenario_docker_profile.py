@@ -182,6 +182,7 @@ def build_judge_command(
         "HOME": CONTAINER_HOME,
         "CLAUDE_CONFIG_DIR": f"{CONTAINER_HOME}/.claude",
         "CLAUDE_CODE_MAX_OUTPUT_TOKENS": str(max_output_tokens),
+        "CLAUDE_CODE_DISABLE_1M_CONTEXT": "1",
         "ANTHROPIC_BASE_URL": launch.broker.base_url,
         "ANTHROPIC_API_KEY": launch.broker.run_token,
         "NO_PROXY": BROKER_ALIAS,
