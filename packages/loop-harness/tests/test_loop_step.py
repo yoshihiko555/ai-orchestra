@@ -1662,6 +1662,8 @@ def test_attach_propose_failure_returns_reclaimed_lease_token(
         _project: str,
         _lease_token: str,
         recover_orphans: bool = False,
+        *,
+        precedent_push_check: bool = False,
     ) -> Any:
         raise loop_step.ld.DefinitionValidationError("definition drift")
 
@@ -1690,6 +1692,8 @@ def test_attach_propose_validation_failure_preserves_exit_2(
         _project: str,
         _lease_token: str,
         recover_orphans: bool = False,
+        *,
+        precedent_push_check: bool = False,
     ) -> Any:
         raise loop_step.lc.ProtocolViolationError("pending action must be completed")
 
@@ -1815,7 +1819,9 @@ def test_resume_propose_failure_returns_new_lease_token(
     state.status = "failed"
     lc._write_state(state, str(repo))
 
-    def fail_propose(_loop_id: str, _project: str, _lease_token: str) -> Any:
+    def fail_propose(
+        _loop_id: str, _project: str, _lease_token: str, *, precedent_push_check: bool = False
+    ) -> Any:
         raise loop_step.ld.DefinitionValidationError("definition drift")
 
     monkeypatch.setattr(loop_step.lc, "propose", fail_propose)
@@ -1841,7 +1847,9 @@ def test_resume_propose_validation_failure_preserves_exit_2(
     state.status = "failed"
     lc._write_state(state, str(repo))
 
-    def fail_propose(_loop_id: str, _project: str, _lease_token: str) -> Any:
+    def fail_propose(
+        _loop_id: str, _project: str, _lease_token: str, *, precedent_push_check: bool = False
+    ) -> Any:
         raise loop_step.lc.ProtocolViolationError("pending action must be completed")
 
     monkeypatch.setattr(loop_step.lc, "propose", fail_propose)

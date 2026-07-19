@@ -505,6 +505,19 @@ function reconcile(loop_id, project_dir):
 `status="failed"`）に遷移する。** Maker/Checker 実行環境側の一時的障害の累積と、repo の同一性・
 安全性自体が疑わしい状況（安全停止 3 条件）は性質が異なるため、区別を維持する。
 
+> **LP-1 push-integrity 警告（2026-07-20 追加、Issue #196）**: 安全停止 3 条件はここまでの
+> とおり変更しない。LP-1 の Maker はプロセス境界のない in-session `Task` subagent として実行され
+> （LP-2 の `claude -p` 子プロセスと異なり `--settings`/env 経由のツールレベル強制を注入する対象が
+> ない）、Issue #196 は Maker がプロンプト指示に反して直接 push した実例を報告した。これに対する
+> LP-1 側の最小限の対策として、`state.remote_head_baseline`（この driver 自身が最後に観測した
+> `origin` の remote HEAD）を loop 作成時・`advance_phase` 完了後・`push_required` な
+> `wait_external_review` 完了後に更新し、`propose()` が次の `advance_phase`/`wait_external_review`
+> を提案する直前にこの baseline と現在の remote HEAD を比較する（`_detect_precedent_push()`)。
+> ずれを検知しても **`stopped` へは遷移させず**、`push_integrity_warning` journal event を記録
+> するのみ（LP-1 は human-in-the-loop 前提であり、LP-2 の無人 fail-closed 停止〔EV-80/EV-82〕とは
+> 運用文脈が異なるため）。ツールレベル強制そのもの（Issue #196 が挙げたもう一つの選択肢）は
+> 引き続き未実装。
+
 ### 3.3 評価順序（擬似コード）
 
 `infrastructure_failure` は 6.3 節の通り独立トラックであり、合格/無進捗/反復上限の 3 段評価より

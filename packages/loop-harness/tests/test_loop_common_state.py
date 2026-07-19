@@ -5,6 +5,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -1436,3 +1437,375 @@ def test_guarded_lease_section_holds_lock_file_exclusively(
         finally:
             os.close(probe_fd)
     assert oct(os.stat(path).st_mode & 0o777) == "0o600"
+
+
+# --- Issue #196: LP-1 push-integrity warning ---------------------------------------------
+#
+# Uses a *real* git repo + a real bare `origin` remote (unlike the rest of this file's
+# `_setup_loop`, which runs against a bare tmp dir and never actually calls `git ls-remote`)
+# so `_remote_head()` exercises the real network-shaped path.
+
+
+def _git(args: list[str], cwd: Path) -> str:
+    result = subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+    return result.stdout.strip()
+
+
+def _init_repo_with_remote(path: Path, remote_path: Path, branch: str) -> None:
+    """Init a real repo + a real bare remote, without pushing (tests push explicitly)."""
+    remote_path.mkdir(parents=True, exist_ok=True)
+    _git(["init", "--bare", "-b", "main"], remote_path)
+    path.mkdir(parents=True, exist_ok=True)
+    _git(["init", "-b", branch], path)
+    _git(["config", "user.email", "loop-harness@example.com"], path)
+    _git(["config", "user.name", "Loop Harness Test"], path)
+    (path / "README.md").write_text("root\n", encoding="utf-8")
+    _git(["add", "README.md"], path)
+    _git(["commit", "-m", "init"], path)
+    _git(["remote", "add", "origin", str(remote_path)], path)
+
+
+def _setup_real_git_loop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    branch: str = "loop/issue-1",
+    status: str = "running",
+) -> tuple[str, lc.LockInfo]:
+    """`_setup_loop`'s real-git counterpart: `project_dir` is a real repo with a real remote."""
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_repo_with_remote(repo, remote, branch)
+    monkeypatch.setattr(lc, "resolve_root_worktree", lambda _project_dir: tmp_path)
+    monkeypatch.setattr(lc.socket, "gethostname", lambda: "local")
+    project_dir = str(repo)
+    loop_id = "abcd1234-issue-1"
+    state = lc._initial_state(
+        loop_id,
+        "issue-loop",
+        lc._repo_identity_hash(project_dir),
+        project_dir,
+        branch,
+        "implementation",
+    )
+    state.status = status
+    lc._write_state(state, project_dir)
+    lock = lc.acquire_lock(loop_id, project_dir, "owner", 3600, host="local")
+    assert lock is not None
+    return project_dir, lock
+
+
+def test_remote_head_reads_real_remote(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_repo_with_remote(repo, remote, "loop/issue-1")
+    _git(["push", "origin", "loop/issue-1"], repo)
+    expected = _git(["rev-parse", "HEAD"], repo)
+
+    assert lc._remote_head(str(repo), "loop/issue-1") == expected
+
+
+def test_remote_head_returns_absent_sentinel_for_unpushed_branch(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_repo_with_remote(repo, remote, "loop/issue-1")
+
+    assert lc._remote_head(str(repo), "loop/issue-1") == lc.LP1_REMOTE_HEAD_ABSENT
+
+
+def test_remote_head_returns_none_when_query_fails(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_repo_with_remote(repo, remote, "loop/issue-1")
+    _git(["remote", "remove", "origin"], repo)
+
+    assert lc._remote_head(str(repo), "loop/issue-1") is None
+
+
+def test_detect_precedent_push_returns_none_without_baseline(tmp_path: Path) -> None:
+    state = lc._initial_state("loop", "issue-loop", "hash", str(tmp_path), "main", "implementation")
+    state.remote_head_baseline = None
+
+    assert lc._detect_precedent_push(state) is None
+
+
+def test_detect_precedent_push_returns_none_when_unchanged(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_repo_with_remote(repo, remote, "loop/issue-1")
+    _git(["push", "origin", "loop/issue-1"], repo)
+    head = _git(["rev-parse", "HEAD"], repo)
+    state = lc._initial_state(
+        "loop", "issue-loop", "hash", str(repo), "loop/issue-1", "implementation"
+    )
+    state.remote_head_baseline = head
+
+    assert lc._detect_precedent_push(state) is None
+
+
+def test_detect_precedent_push_returns_observed_head_on_drift(tmp_path: Path) -> None:
+    """Simulates Issue #196: something (e.g. a Maker) pushed directly to `origin` -- the
+    driver's own baseline (recorded before that push) is now stale."""
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_repo_with_remote(repo, remote, "loop/issue-1")
+    _git(["push", "origin", "loop/issue-1"], repo)
+    stale_baseline = _git(["rev-parse", "HEAD"], repo)
+    (repo / "extra.txt").write_text("out-of-band change\n", encoding="utf-8")
+    _git(["add", "extra.txt"], repo)
+    _git(["commit", "-m", "out-of-band push"], repo)
+    _git(["push", "origin", "loop/issue-1"], repo)
+    drifted_head = _git(["rev-parse", "HEAD"], repo)
+    state = lc._initial_state(
+        "loop", "issue-loop", "hash", str(repo), "loop/issue-1", "implementation"
+    )
+    state.remote_head_baseline = stale_baseline
+
+    assert lc._detect_precedent_push(state) == drifted_head
+
+
+def test_detect_precedent_push_returns_none_when_query_unverifiable(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_repo_with_remote(repo, remote, "loop/issue-1")
+    _git(["push", "origin", "loop/issue-1"], repo)
+    head = _git(["rev-parse", "HEAD"], repo)
+    _git(["remote", "remove", "origin"], repo)
+    state = lc._initial_state(
+        "loop", "issue-loop", "hash", str(repo), "loop/issue-1", "implementation"
+    )
+    state.remote_head_baseline = head
+
+    assert lc._detect_precedent_push(state) is None
+
+
+def test_initial_state_seeds_remote_head_baseline_from_live_query(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_repo_with_remote(repo, remote, "loop/issue-1")
+    _git(["push", "origin", "loop/issue-1"], repo)
+    expected = _git(["rev-parse", "HEAD"], repo)
+
+    state = lc._initial_state(
+        "loop", "issue-loop", "hash", str(repo), "loop/issue-1", "implementation"
+    )
+
+    assert state.remote_head_baseline == expected
+
+
+def test_initial_state_seeds_absent_sentinel_for_brand_new_branch(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_repo_with_remote(repo, remote, "loop/issue-9")  # never pushed
+
+    state = lc._initial_state(
+        "loop", "issue-loop", "hash", str(repo), "loop/issue-9", "implementation"
+    )
+
+    assert state.remote_head_baseline == lc.LP1_REMOTE_HEAD_ABSENT
+
+
+def test_apply_advance_phase_refreshes_remote_head_baseline(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_repo_with_remote(repo, remote, "loop/issue-1")
+    state = lc._initial_state(
+        "loop", "issue-loop", "hash", str(repo), "loop/issue-1", "implementation"
+    )
+    assert state.remote_head_baseline == lc.LP1_REMOTE_HEAD_ABSENT
+    # Orchestrator performs the legitimate advance_phase push before calling complete().
+    _git(["push", "origin", "loop/issue-1"], repo)
+    new_head = _git(["rev-parse", "HEAD"], repo)
+
+    lc.apply_action_effect(state, lc.Action.ADVANCE_PHASE.value, {}, precedent_push_check=True)
+
+    assert state.remote_head_baseline == new_head
+
+
+def test_apply_advance_phase_keeps_baseline_when_precedent_push_check_disabled(
+    tmp_path: Path,
+) -> None:
+    """`precedent_push_check` defaults to `False` (Issue #196): LP-2's `loop_driver.py` shares
+    `apply_action_effect()` via `complete()` and already has its own push-integrity mechanism,
+    so it must never pick up this refresh unless it explicitly opts in."""
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_repo_with_remote(repo, remote, "loop/issue-1")
+    state = lc._initial_state(
+        "loop", "issue-loop", "hash", str(repo), "loop/issue-1", "implementation"
+    )
+    baseline_before = state.remote_head_baseline
+    _git(["push", "origin", "loop/issue-1"], repo)
+
+    lc.apply_action_effect(state, lc.Action.ADVANCE_PHASE.value, {})
+
+    assert state.remote_head_baseline == baseline_before
+
+
+def test_wait_external_review_required_push_refreshes_baseline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #196: `wait_external_review` can itself carry a legitimate push (`push_required`,
+    addressing PR review comments right after `run_maker`) -- the baseline must be refreshed
+    here too, or that legitimate push would look like drift at the next `propose()` call."""
+    project_dir, lock = _setup_real_git_loop(tmp_path, monkeypatch, status="waiting_external")
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.phase = "pr_review_response"
+    state.pr_number = 123
+    assert state.remote_head_baseline == lc.LP1_REMOTE_HEAD_ABSENT
+    lc.append_journal_event(
+        "abcd1234-issue-1",
+        project_dir,
+        "completed",
+        "maker",
+        "act-maker-1",
+        {"action": lc.Action.RUN_MAKER.value},
+    )
+    state.last_completed_action = lc.LastCompletedAction(
+        action_id="act-maker-1",
+        state_version_before=0,
+        state_version_after=1,
+        result_digest="x",
+        completed_at=lc.now_iso(),
+    )
+    state.pending_action = lc.PendingAction(
+        "act-wait", lc.Action.WAIT_EXTERNAL_REVIEW.value, "pr_review_response", 1, lc.now_iso()
+    )
+    state.state_version = 1
+    lc._write_state(state, project_dir)
+    # Orchestrator addresses PR review comments and pushes before completing this action.
+    _git(["push", "origin", "loop/issue-1"], Path(project_dir))
+    new_head = _git(["rev-parse", "HEAD"], Path(project_dir))
+
+    lc.complete(
+        "abcd1234-issue-1",
+        project_dir,
+        "act-wait",
+        1,
+        {"completed": False},
+        lock.lease_token,
+        precedent_push_check=True,
+    )
+
+    assert lc.load_state("abcd1234-issue-1", project_dir).remote_head_baseline == new_head
+
+
+def test_wait_external_review_without_required_push_keeps_baseline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The polling-only re-proposals of `wait_external_review` (last completed action is itself
+    `wait_external_review`, not `run_maker`) never carry a new push, so the baseline must not be
+    refreshed -- a real out-of-band push in between would otherwise be silently absorbed as if
+    it were legitimate."""
+    project_dir, lock = _setup_real_git_loop(tmp_path, monkeypatch, status="waiting_external")
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.phase = "pr_review_response"
+    state.pr_number = 123
+    baseline_before = state.remote_head_baseline
+    lc.append_journal_event(
+        "abcd1234-issue-1",
+        project_dir,
+        "completed",
+        "waiter",
+        "act-wait-0",
+        {"action": lc.Action.WAIT_EXTERNAL_REVIEW.value},
+    )
+    state.last_completed_action = lc.LastCompletedAction(
+        action_id="act-wait-0",
+        state_version_before=0,
+        state_version_after=1,
+        result_digest="x",
+        completed_at=lc.now_iso(),
+    )
+    state.pending_action = lc.PendingAction(
+        "act-wait-1", lc.Action.WAIT_EXTERNAL_REVIEW.value, "pr_review_response", 1, lc.now_iso()
+    )
+    state.state_version = 1
+    lc._write_state(state, project_dir)
+    # No push happens on a pure polling re-proposal.
+
+    lc.complete(
+        "abcd1234-issue-1", project_dir, "act-wait-1", 1, {"completed": False}, lock.lease_token
+    )
+
+    assert lc.load_state("abcd1234-issue-1", project_dir).remote_head_baseline == baseline_before
+
+
+def test_propose_warns_on_precedent_push_without_stopping_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Simulates Issue #196: a Maker pushes directly to `origin` (bypassing the loop's own
+    `advance_phase` push). The next `propose()` for `advance_phase` must record a
+    `push_integrity_warning` journal event but must NOT stop the loop (LP-1 is warning-only;
+    only a human-attended CLI, unlike LP-2's unattended fail-closed stop)."""
+    project_dir, lock = _setup_real_git_loop(tmp_path, monkeypatch, status="running")
+    repo = Path(project_dir)
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.last_check_result = {"next_phase": "review"}
+    state.state_version = 1
+    lc._write_state(state, project_dir)
+    assert state.remote_head_baseline == lc.LP1_REMOTE_HEAD_ABSENT
+    # Out-of-band push: e.g. a Maker Task pushed directly, never going through advance_phase.
+    _git(["push", "origin", "loop/issue-1"], repo)
+    rogue_head = _git(["rev-parse", "HEAD"], repo)
+
+    advance = lc.propose(
+        "abcd1234-issue-1", project_dir, lock.lease_token, precedent_push_check=True
+    )
+
+    assert advance.action == lc.Action.ADVANCE_PHASE.value
+    warning = lc.find_journal_event(
+        "abcd1234-issue-1", project_dir, advance.action_id, "push_integrity_warning"
+    )
+    assert warning is not None
+    assert warning["payload"]["observed_head"] == rogue_head
+    assert warning["payload"]["expected_head"] == lc.LP1_REMOTE_HEAD_ABSENT
+    assert advance.context["push_integrity_warning"] == {
+        "expected_head": lc.LP1_REMOTE_HEAD_ABSENT,
+        "observed_head": rogue_head,
+    }
+    assert lc.load_state("abcd1234-issue-1", project_dir).status != "stopped"
+
+
+def test_propose_ignores_precedent_push_when_check_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`precedent_push_check` defaults to `False` (Issue #196): LP-2's `loop_driver.py` shares
+    `propose()` and already has its own, separate push-integrity mechanism, so an LP-2-style
+    caller that never passes this kwarg must see no warning and no extra `git ls-remote` call,
+    even when a precedent push has in fact happened."""
+    project_dir, lock = _setup_real_git_loop(tmp_path, monkeypatch, status="running")
+    repo = Path(project_dir)
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.last_check_result = {"next_phase": "review"}
+    state.state_version = 1
+    lc._write_state(state, project_dir)
+    _git(["push", "origin", "loop/issue-1"], repo)
+
+    advance = lc.propose("abcd1234-issue-1", project_dir, lock.lease_token)
+
+    assert advance.action == lc.Action.ADVANCE_PHASE.value
+    assert "push_integrity_warning" not in advance.context
+    warning = lc.find_journal_event(
+        "abcd1234-issue-1", project_dir, advance.action_id, "push_integrity_warning"
+    )
+    assert warning is None
+
+
+def test_propose_does_not_warn_when_remote_head_matches_baseline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir, lock = _setup_real_git_loop(tmp_path, monkeypatch, status="running")
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.last_check_result = {"next_phase": "review"}
+    state.state_version = 1
+    lc._write_state(state, project_dir)
+
+    advance = lc.propose(
+        "abcd1234-issue-1", project_dir, lock.lease_token, precedent_push_check=True
+    )
+
+    assert advance.action == lc.Action.ADVANCE_PHASE.value
+    warning = lc.find_journal_event(
+        "abcd1234-issue-1", project_dir, advance.action_id, "push_integrity_warning"
+    )
+    assert warning is None
