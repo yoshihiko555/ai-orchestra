@@ -1134,7 +1134,20 @@ class LoopDriver:
         if not self._lease_lost.is_set():
             return None
         executor.discard()
-        return self._docker_infrastructure_result(proposal, state, params, str(exc))
+        # EV-50 (PR #262 push-front adversarial review, P1): once the lease is already
+        # gone, this in-memory result only feeds `run()`'s `EXIT_FOREIGN_LEASE` return --
+        # it must never reach disk. `_docker_infrastructure_result()` unconditionally
+        # persists a `check_result.json` artifact for `RUN_CHECKER`; without
+        # `persist_artifacts=False` here, a fenced-out worker's fabricated
+        # `infrastructure_failure` result would still land on disk with no lease check of
+        # its own. The next lease owner's `reconcile()` ->
+        # `_reconcile_from_artifact()` (loop_common.py) treats *any* artifact at that path
+        # as the authoritative result once the journal has no completed event yet for
+        # this action, so it would confirm this stale failure as real instead of letting
+        # the new owner actually run the checker.
+        return self._docker_infrastructure_result(
+            proposal, state, params, str(exc), persist_artifacts=False
+        )
 
     def _dispatch_action(
         self,
@@ -1166,8 +1179,17 @@ class LoopDriver:
         state: lc.LoopState,
         params: dict[str, Any],
         reason: str,
+        *,
+        persist_artifacts: bool = True,
     ) -> dict[str, Any]:
-        """Normalize Docker/config failures without ever retrying on the host."""
+        """Normalize Docker/config failures without ever retrying on the host.
+
+        `persist_artifacts=False` (used only by `_discard_after_lease_loss_or_none()`, EV-50,
+        PR #262 push-front adversarial review P1) skips the `check_result.json` write below:
+        once the lease is already gone, this result is in-memory only and must not land on
+        disk, or the next lease owner's `reconcile()` would confirm this fenced-out worker's
+        fabricated failure as the real result instead of re-running the checker.
+        """
         print(f"loop_driver: isolated action infrastructure failure: {reason}", file=sys.stderr)
         if proposal.action == lc.Action.RUN_MAKER.value:
             maker_agent = self._resolve_maker_agent(state, params)
@@ -1228,7 +1250,7 @@ class LoopDriver:
                     metadata={**combined.metadata, **metadata},
                 )
             )
-            if proposal.action == lc.Action.RUN_CHECKER.value:
+            if proposal.action == lc.Action.RUN_CHECKER.value and persist_artifacts:
                 lc.save_artifact(
                     self.loop_id,
                     self.project_dir,

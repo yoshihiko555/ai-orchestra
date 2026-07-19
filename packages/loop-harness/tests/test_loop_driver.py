@@ -1707,6 +1707,121 @@ def test_dispatch_lease_lost_after_successful_maker_never_touches_shared_branch_
     assert calls == ["cleanup_containers", "cleanup_ephemeral_git"]
 
 
+# --------------------------------------------------------------------------------------------
+# Adversarial verification (round-9 post-hoc): every `_dispatch()` test above stubs
+# `driver.lae.build_action_executor` with a `lambda *_args, **_kwargs: ...`, which accepts any
+# call shape and therefore cannot detect a signature mismatch between `_dispatch()`'s real call
+# site and `loop_action_executor.build_action_executor()`'s real signature -- exactly how the
+# round-8 `lease_lost=` keyword shipped in `_dispatch()` without the parameter existing on the
+# real function, raising `TypeError` on every single dispatch, undetected by this entire stubbed
+# suite until a bot review caught it. These two tests deliberately leave `driver.lae` (and
+# `driver.lae.build_action_executor` in particular) un-stubbed, so `_dispatch()` calls the real
+# production function with its real production kwargs.
+# --------------------------------------------------------------------------------------------
+
+
+def test_dispatch_real_build_action_executor_host_only_action_no_typeerror(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real `lae.build_action_executor()` -> real `HostActionExecutor`, host-only action.
+
+    `stop` has no Docker `kind` mapping, so `build_action_executor()` returns a real
+    `HostActionExecutor` without reading Docker config at all -- exercising `_dispatch()`'s
+    `build_action_executor(...)` call site (including the `lease_lost=self._lease_lost.is_set`
+    keyword) against the real function signature, and the real `HostActionExecutor.finish()`/
+    `discard()` no-ops `_dispatch()` calls afterward, with zero stubbing of `driver.lae`.
+    """
+    loop_id = "abcd1234-issue-real-host"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    proposal = lc.ProposeResult(
+        action=lc.Action.STOP.value,
+        action_id="act-real-host-executor",
+        state_version=state.state_version,
+        expected_phase=state.phase,
+        phase=state.phase,
+        iteration=state.iteration,
+        context={},
+    )
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    built_executors: list[Any] = []
+    real_build_action_executor = driver.lae.build_action_executor
+
+    def recording_build_action_executor(*args: Any, **kwargs: Any) -> Any:
+        executor = real_build_action_executor(*args, **kwargs)
+        built_executors.append(executor)
+        return executor
+
+    monkeypatch.setattr(driver.lae, "build_action_executor", recording_build_action_executor)
+    monkeypatch.setattr(d, "_dispatch_action", lambda *_a, **_k: {"stop_reason": "manual_stop"})
+
+    result = d._dispatch(proposal, state)
+
+    assert result == {"stop_reason": "manual_stop"}
+    assert len(built_executors) == 1
+    assert isinstance(built_executors[0], driver.lae.HostActionExecutor)
+
+
+def test_dispatch_real_build_action_executor_maker_action_builds_real_docker_executor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real `lae.build_action_executor()` -> real `DockerActionExecutor`, `run_maker` action.
+
+    With `lp2.isolation.execution_backend: docker` configured, `run_maker` maps to Docker
+    `kind="maker"`, exercising the same `build_action_executor(...)` call site's
+    Docker-config-reading branch (`docker_config.docker_execution_enabled`,
+    `validate_isolation_config`, `DockerActionRequest(..., lease_lost=...)`) against the real
+    function -- a `TypeError` here (e.g. a future parameter rename) would not be caught by any
+    stubbed `_dispatch()` test. The built `DockerActionRuntime` is never started (no `docker`
+    daemon call), so this needs no Docker daemon: `finish()` on a never-started runtime only
+    finds an empty `container_name`/`broker`/`git_session` and returns immediately.
+    """
+    loop_id = "abcd1234-issue-real-docker"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    override_dir = Path(project_dir) / ".claude" / "config" / "loop-harness"
+    override_dir.mkdir(parents=True, exist_ok=True)
+    (override_dir / "loop-harness.local.yaml").write_text(
+        "lp2:\n  isolation:\n    backend: docker\n    execution_backend: docker\n",
+        encoding="utf-8",
+    )
+    state = lc.load_state(loop_id, project_dir)
+    proposal = lc.ProposeResult(
+        action=lc.Action.RUN_MAKER.value,
+        action_id="act-real-docker-executor",
+        state_version=state.state_version,
+        expected_phase=state.phase,
+        phase=state.phase,
+        iteration=state.iteration,
+        context={},
+    )
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    built_executors: list[Any] = []
+    real_build_action_executor = driver.lae.build_action_executor
+
+    def recording_build_action_executor(*args: Any, **kwargs: Any) -> Any:
+        executor = real_build_action_executor(*args, **kwargs)
+        built_executors.append(executor)
+        return executor
+
+    monkeypatch.setattr(driver.lae, "build_action_executor", recording_build_action_executor)
+    monkeypatch.setattr(
+        d, "_dispatch_action", lambda *_a, **_k: {"maker": {"agent": "backend-python-dev"}}
+    )
+
+    result = d._dispatch(proposal, state)
+
+    assert result == {"maker": {"agent": "backend-python-dev"}}
+    assert len(built_executors) == 1
+    executor = built_executors[0]
+    assert isinstance(executor, driver.lae.DockerActionExecutor)
+    # `self._lease_lost.is_set` is a fresh bound-method object on every attribute access, so
+    # `is`-identity always fails here even when both refer to the same underlying bound method;
+    # `==` compares `__self__`/`__func__` instead, which is what actually matters (both wrap the
+    # same `Event.is_set` bound to this driver's own `self._lease_lost`).
+    assert executor.runtime.request.lease_lost == d._lease_lost.is_set
+    assert executor.runtime.request.needs_broker is True
+
+
 def test_dispatch_persists_original_safety_stop_when_abort_raises_a_second_one(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1840,6 +1955,78 @@ def test_dispatch_discards_instead_of_aborting_when_exception_path_hits_lost_lea
     assert calls == ["discard"]
     assert "agent" in result["maker"]
     assert result["infrastructure_failure"] is True
+
+
+def test_dispatch_writes_no_check_result_artifact_when_exception_path_hits_lost_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR #262 push-front adversarial review, P1: EV-50 requires that a driver which has
+    already lost the lease persist nothing for the in-flight action. `_discard_after_lease_
+    loss_or_none()`'s own docstring says the returned result is "in-memory only" and `run()`
+    discards it on `EXIT_FOREIGN_LEASE` -- but before this fix, its call to `_docker_
+    infrastructure_result()` for a RUN_CHECKER action still unconditionally sealed a
+    `check_result.json` to disk (mirroring `_run_checker()`'s normal, still-holding-the-lease
+    save path). A restarted worker's `reconcile()` treats any artifact at that path as the
+    authoritative result once the journal has no completed event yet for this action, so this
+    fenced-out worker's fabricated `infrastructure_failure` result would be wrongly confirmed
+    as real instead of the new lease owner actually re-running the checker.
+    """
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    proposal = lc.ProposeResult(
+        action=lc.Action.RUN_CHECKER.value,
+        action_id="act-ev50-checker-lease-lost",
+        state_version=state.state_version,
+        expected_phase=state.phase,
+        phase=state.phase,
+        iteration=state.iteration,
+        context={},
+    )
+
+    class LeaseLostDuringExecuteExecutor:
+        def finish(self, _result: dict[str, Any]) -> None:
+            raise AssertionError("finish() must never run once the lease is already lost")
+
+        def abort(self) -> None:
+            raise AssertionError(
+                "abort() must never run once the lease is already known lost -- see "
+                "test_dispatch_discards_instead_of_aborting_when_exception_path_hits_lost_lease"
+            )
+
+        def discard(self) -> None:
+            pass
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(
+        driver.lae,
+        "build_action_executor",
+        lambda *_args, **_kwargs: LeaseLostDuringExecuteExecutor(),
+    )
+
+    def raise_docker_action_error_after_lease_loss(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        # Mirrors the real race: the heartbeat sets `_lease_lost` and cancels the scenario
+        # container, so the in-flight checker's `docker exec` (`_execute()`) raises
+        # `DockerActionError`.
+        d._lease_lost.set()
+        raise driver.lda.DockerActionError("docker exec did not complete")
+
+    monkeypatch.setattr(d, "_dispatch_action", raise_docker_action_error_after_lease_loss)
+    monkeypatch.setattr(
+        d,
+        "_stop_for_action_safety",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("lease-lost teardown must never reach the safe-stop persistence path")
+        ),
+    )
+
+    result = d._dispatch(proposal, state)
+
+    assert result["infrastructure_failure"] is True
+    assert (
+        lc.load_artifact(loop_id, project_dir, "act-ev50-checker-lease-lost", "check_result.json")
+        is None
+    )
 
 
 def test_persist_safe_stop_writes_journal_before_state(tmp_path: Path) -> None:

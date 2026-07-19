@@ -10,11 +10,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 _LOCAL_OVERRIDE_SUFFIXES = (".local.yaml", ".local.json")
-# Codex review, PR #262, P2 (round 9): bounds `_resolved_symlink_target_material()`'s read of a
-# symlinked override's target so a huge (but otherwise ordinary) target file cannot balloon
-# memory use during a snapshot; ordinary `.local.yaml`/`.local.json` overrides are always far
-# smaller than this.
-_MAX_SYMLINK_TARGET_READ_BYTES = 10 * 1024 * 1024
+# PR #262 push-front adversarial review, P2 (round 10): chunk size used to stream-hash a
+# symlinked override's target so an ordinary but huge target file cannot balloon memory use
+# during a snapshot. Unlike the previous fixed 10 MiB *read cap* this bounds only the
+# per-iteration read; the whole file is still folded into the digest (see
+# `_resolved_symlink_target_digest()` below), so there is no size past which tampering goes
+# undetected. Tests may monkeypatch this to a small value to exercise multi-chunk hashing
+# cheaply, without needing to materialize a multi-megabyte fixture.
+_SYMLINK_TARGET_HASH_CHUNK_BYTES = 1024 * 1024
 
 
 class LocalOverrideSnapshotError(RuntimeError):
@@ -118,8 +121,8 @@ def changed_local_override_paths(
     )
 
 
-def _resolved_symlink_target_material(path: Path) -> bytes:
-    """Hash a symlinked override's target only when it is a bounded-size regular file.
+def _resolved_symlink_target_digest(path: Path) -> bytes:
+    """Hash a symlinked override's target only when it is a regular file.
 
     Codex review, PR #262, P2 (round 9): the previous unconditional `path.read_bytes()` follows
     the symlink and opens whatever it points at -- if a Maker repoints a `.local.yaml`/
@@ -127,11 +130,22 @@ def _resolved_symlink_target_material(path: Path) -> bytes:
     snapshot, that call blocks the loop driver indefinitely instead of producing the intended
     fail-closed `maker_partial_worktree` safe-stop. `Path.stat()` follows the symlink via the
     `stat(2)` syscall without opening the target, so its type can be checked first; only a
-    regular file is actually opened and read, and only up to a fixed cap so an ordinary but huge
-    target cannot balloon snapshot memory use either. Any other case (missing target, directory,
-    device/FIFO/socket, permission denied) reports no resolved-content bytes, matching the
-    existing "unreadable target" fallback: this guard treats those only as a link-path-change
-    tampering signal, not as unresolvable content of their own.
+    regular file is actually opened and read.
+
+    PR #262 push-front adversarial review, P2 (round 10): the round-9 fix then capped that read
+    at a fixed 10 MiB (`handle.read(_MAX_SYMLINK_TARGET_READ_BYTES)`), so tampering located past
+    that cutoff in a larger target never reached the digest at all -- a Maker (or anything else
+    writing to the worktree between snapshots) could edit only the tail of a >10 MiB target and
+    have it go completely undetected, and the snapshot itself carries no size field to catch the
+    truncation independently. This streams the whole file through SHA-256 in fixed-size chunks
+    instead (`_SYMLINK_TARGET_HASH_CHUNK_BYTES` bounds memory per iteration, not total bytes
+    read), so there is no longer any size past which a tampered target is invisible to this
+    guard; only the final digest (32 bytes) is retained, never the file's raw content. Any other
+    case (missing target, directory, device/FIFO/socket, permission denied) reports no
+    resolved-content digest (`b""`), matching the existing "unreadable target" fallback: this
+    guard treats those only as a link-path-change tampering signal, not as unresolvable content
+    of their own. `b""` never collides with a real digest (even a zero-byte regular file hashes
+    to a non-empty 32-byte SHA-256 digest), so the fallback stays unambiguous.
     """
     try:
         target_metadata = path.stat()
@@ -139,11 +153,17 @@ def _resolved_symlink_target_material(path: Path) -> bytes:
         return b""
     if not stat.S_ISREG(target_metadata.st_mode):
         return b""
+    digest = hashlib.sha256()
     try:
         with path.open("rb") as handle:
-            return handle.read(_MAX_SYMLINK_TARGET_READ_BYTES)
+            while True:
+                chunk = handle.read(_SYMLINK_TARGET_HASH_CHUNK_BYTES)
+                if not chunk:
+                    break
+                digest.update(chunk)
     except OSError:
         return b""
+    return digest.digest()
 
 
 def _snapshot_entry(worktree_path: Path, path: Path) -> LocalOverrideSnapshot:
@@ -155,14 +175,14 @@ def _snapshot_entry(worktree_path: Path, path: Path) -> LocalOverrideSnapshot:
         # the *contents* of a symlinked `.local.yaml`/`.local.json` override's target -- the
         # effective, currently-loaded override -- without changing the symlink path itself, so
         # `_verify_local_override_snapshot()` saw no delta. Combining the link text with the
-        # resolved target's bytes (`_resolved_symlink_target_material()` below) catches either
+        # resolved target's digest (`_resolved_symlink_target_digest()` below) catches either
         # the link being repointed or the target being edited in place. A target that cannot be
         # read, is not a regular file, or is missing/a directory still falls back to detecting
         # only link-path changes rather than raising or blocking, since none of those on their
         # own is a content-tampering signal this guard needs to stop.
         link_target = os.readlink(path).encode()
-        resolved_material = _resolved_symlink_target_material(path)
-        material = link_target + b"\0" + resolved_material
+        resolved_digest = _resolved_symlink_target_digest(path)
+        material = link_target + b"\0" + resolved_digest
     elif stat.S_ISREG(metadata.st_mode):
         kind = "file"
         material = path.read_bytes()

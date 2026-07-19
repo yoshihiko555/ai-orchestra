@@ -71,6 +71,40 @@ def test_symlinked_override_target_content_change_is_detected(tmp_path: Path) ->
     assert ".claude/config/cli-tools.local.yaml" in changed
 
 
+def test_symlinked_override_target_tail_tamper_past_first_chunk_is_detected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR #262 push-front adversarial review, P2: `_resolved_symlink_target_digest()` used to
+    cap its read at a fixed 10 MiB (`handle.read(_MAX_SYMLINK_TARGET_READ_BYTES)`), so tampering
+    located past that cutoff in a larger target never reached the digest at all, and the
+    snapshot carries no size field to catch the truncation independently. The fix streams the
+    whole file through SHA-256 in fixed-size chunks instead, with no byte count past which
+    tampering goes undetected. Building a real >10 MiB fixture here would make this test slow,
+    so the chunk size is monkeypatched down to a few bytes instead: this proves the digest
+    actually folds in bytes read *after* the first chunk (i.e. there is no early return once a
+    "big enough" prefix has been read), which is exactly the property a >10 MiB fixture would
+    also exercise, just at a size this test can afford.
+    """
+    monkeypatch.setattr(guard, "_SYMLINK_TARGET_HASH_CHUNK_BYTES", 8)
+    config_dir = tmp_path / ".claude" / "config"
+    config_dir.mkdir(parents=True)
+    real_target = tmp_path / "real-override.yaml"
+    # Several multiples of the patched chunk size, so the tampered byte below sits well past
+    # the first chunk boundary.
+    real_target.write_bytes(b"a" * 31 + b"\n")
+    override_link = config_dir / "cli-tools.local.yaml"
+    os.symlink(real_target, override_link)
+
+    before = guard.snapshot_local_overrides(tmp_path)
+    tampered = bytearray(real_target.read_bytes())
+    tampered[-1] = ord("Z")  # last byte only, several chunks in
+    real_target.write_bytes(bytes(tampered))
+    after = guard.snapshot_local_overrides(tmp_path)
+
+    changed = guard.changed_local_override_paths(before, after)
+    assert ".claude/config/cli-tools.local.yaml" in changed
+
+
 def test_symlinked_config_root_fails_closed(tmp_path: Path) -> None:
     """Codex review, PR #262, High (round 5): a symlinked `.claude/config` root must never
     silently produce an empty snapshot -- `load_config()` still follows it and treats the
