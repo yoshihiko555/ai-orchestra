@@ -610,7 +610,20 @@ def build_claude_p_command(
 
 
 class ClaudePTimeoutError(RuntimeError):
-    """Raised when a `claude -p` child process is killed after exceeding its timeout."""
+    """Raised when a `claude -p` child process is killed after exceeding its timeout.
+
+    `stdout`/`stderr` (Codex review, PR #262, High, round 4) optionally carry whatever partial
+    output the killed child produced before its timeout, so a caller that runs mechanical
+    (non-Claude) commands through the same child-process contract -- e.g. Docker's
+    `execute_mechanical()` -- can still recover a normal `(output, 124)` timeout result instead of
+    losing the command's output entirely. Both default to `""` so existing callers that only
+    catch this error (never inspect these attributes) are unaffected.
+    """
+
+    def __init__(self, message: str, *, stdout: str = "", stderr: str = "") -> None:
+        super().__init__(message)
+        self.stdout = stdout
+        self.stderr = stderr
 
 
 def kill_process_tree(pid: int, term_wait_seconds: float = 10.0) -> None:

@@ -14,6 +14,7 @@ import shlex
 import stat
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -59,6 +60,48 @@ def _init_repo_with_remote(path: Path, remote_path: Path) -> None:
     _init_repo(path)
     _git(["remote", "add", "origin", str(remote_path)], path)
     _git(["push", "origin", "main"], path)
+
+
+def test_runtime_source_guard_rejects_other_loop_worktree_before_new_loop_state_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review, PR #262, High: a runtime loaded from a *different*, already
+    Maker-writable loop-harness worktree must be rejected even for a brand-new loop_id whose
+    own state does not exist yet -- the old per-run check silently passed in this window because
+    it only compared against the (not-yet-created) worktree for the *current* run.
+    """
+    _init_repo(tmp_path)
+    other_loop_worktree = wm.create_worktree(str(tmp_path), 999)
+    tampered_entrypoint = (
+        Path(other_loop_worktree.path) / "packages" / "loop-harness" / "scripts" / "loop_driver.py"
+    )
+    monkeypatch.setattr(driver, "__file__", str(tampered_entrypoint))
+
+    with pytest.raises(driver.lc.InvalidStateError, match="driver entrypoint"):
+        driver._assert_runtime_sources_outside_action_worktree(
+            "brand-new-loop-id-never-seen-before", str(tmp_path)
+        )
+
+
+def test_runtime_source_guard_does_not_reject_unrelated_developer_worktrees(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hand-created feature-branch worktree (e.g. `.worktrees/feat-x`) shares the same parent
+    directory (`<root>/.worktrees/`) as loop-harness's own `loop-issue-<N>` worktrees, but is not
+    one -- the guard must scope to the `loop-issue-*` naming convention, not the whole directory,
+    or ordinary self-hosted development runs would be rejected outright.
+    """
+    _init_repo(tmp_path)
+    dev_worktree = tmp_path / ".worktrees" / "feat-example"
+    _git(["worktree", "add", "-b", "feat-example", str(dev_worktree)], tmp_path)
+    entrypoint_in_dev_worktree = (
+        dev_worktree / "packages" / "loop-harness" / "scripts" / "loop_driver.py"
+    )
+    monkeypatch.setattr(driver, "__file__", str(entrypoint_in_dev_worktree))
+
+    driver._assert_runtime_sources_outside_action_worktree(
+        "brand-new-loop-id-never-seen-before", str(tmp_path)
+    )
 
 
 # --------------------------------------------------------------------------------------------
@@ -1271,6 +1314,778 @@ def _run_maker_proposal(state: lc.LoopState, action_id: str = "act-run-maker") -
     )
 
 
+def test_docker_checker_infrastructure_result_satisfies_sealed_contract(tmp_path: Path) -> None:
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    proposal = lc.ProposeResult(
+        action=lc.Action.RUN_CHECKER.value,
+        action_id="act-docker-infra",
+        state_version=state.state_version,
+        expected_phase=state.phase,
+        phase=state.phase,
+        iteration=state.iteration,
+        context={},
+    )
+
+    payload = driver.LoopDriver(loop_id, project_dir, token)._docker_infrastructure_result(
+        proposal,
+        state,
+        {"llm_review": {}},
+        "daemon unavailable",
+    )
+
+    lc.validate_implementation_checker_result(state, payload, project_dir)
+    assert payload["infrastructure_failure"] is True
+    assert {item["layer"] for item in payload["results"]} == {
+        "mechanical",
+        "llm_review",
+    }
+    assert payload["metadata"] == {"reviewers": ["code-reviewer"]}
+
+
+def test_docker_checker_infrastructure_result_preserves_mechanical_only_phase(
+    tmp_path: Path,
+) -> None:
+    """Codex review, PR #262, High: a custom phase's checker may have a mechanical layer but no
+    `llm_review` block (the definition validator allows this). Unconditionally requiring an
+    `llm_review` layer here previously crashed with `DefinitionValidationError` from
+    `lc.checker_pass_criteria()` instead of returning a mechanical-only infrastructure result for
+    the guard/retry logic to handle -- mirror `_run_checker()`'s own `has_llm_review` gating.
+    """
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    proposal = lc.ProposeResult(
+        action=lc.Action.RUN_CHECKER.value,
+        action_id="act-docker-infra-mechanical-only",
+        state_version=state.state_version,
+        expected_phase=state.phase,
+        phase=state.phase,
+        iteration=state.iteration,
+        context={},
+    )
+
+    payload = driver.LoopDriver(loop_id, project_dir, token)._docker_infrastructure_result(
+        proposal,
+        state,
+        {"mechanical": {"commands": ["pytest -q"]}},
+        "daemon unavailable",
+    )
+
+    assert payload["infrastructure_failure"] is True
+    assert {item["layer"] for item in payload["results"]} == {"mechanical"}
+    # `phase_check_to_dict` omits an empty `metadata` mapping entirely (see its docstring).
+    assert "metadata" not in payload
+
+
+def test_docker_external_review_infrastructure_result_does_not_use_checker_contract(
+    tmp_path: Path,
+) -> None:
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    proposal = lc.ProposeResult(
+        action=lc.Action.WAIT_EXTERNAL_REVIEW.value,
+        action_id="act-docker-review-infra",
+        state_version=state.state_version,
+        expected_phase=state.phase,
+        phase=state.phase,
+        iteration=state.iteration,
+        context={},
+    )
+
+    payload = driver.LoopDriver(loop_id, project_dir, token)._docker_infrastructure_result(
+        proposal,
+        state,
+        {},
+        "classifier unavailable",
+    )
+
+    assert payload == {
+        "passed": False,
+        "signature": "docker_infrastructure_failure",
+        "infrastructure_failure": True,
+        "results": [],
+        "metadata": {"execution_backend": "docker"},
+    }
+
+
+def test_post_result_cleanup_safety_stop_preserves_checker_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    proposal = lc.ProposeResult(
+        action=lc.Action.RUN_CHECKER.value,
+        action_id="act-cleanup-failed",
+        state_version=state.state_version,
+        expected_phase=state.phase,
+        phase=state.phase,
+        iteration=state.iteration,
+        context={},
+    )
+    sealed_payload = {"passed": True, "signature": "sealed-checker-result"}
+    artifact = lc.loop_dir(loop_id, project_dir) / Path(
+        lc.save_artifact(
+            loop_id,
+            project_dir,
+            proposal.action_id,
+            "check_result.json",
+            json.dumps(sealed_payload),
+        )
+    )
+    sealed_bytes = artifact.read_bytes()
+
+    class CleanupFailedExecutor:
+        def finish(self, _result: dict[str, Any]) -> None:
+            raise driver.lda.DockerActionSafetyStop(
+                "action_cleanup_failed",
+                "isolated action cleanup failed",
+            )
+
+        def abort(self) -> None:
+            return
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(
+        driver.lae,
+        "build_action_executor",
+        lambda *_args, **_kwargs: CleanupFailedExecutor(),
+    )
+    monkeypatch.setattr(d, "_dispatch_action", lambda *_args, **_kwargs: sealed_payload)
+
+    def fail_if_replaced(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise AssertionError("cleanup failure must not synthesize an infrastructure result")
+
+    monkeypatch.setattr(d, "_docker_infrastructure_result", fail_if_replaced)
+    monkeypatch.setattr(
+        d,
+        "_stop_for_action_safety",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            driver.DriverTerminated("action_cleanup_failed")
+        ),
+    )
+
+    with pytest.raises(driver.DriverTerminated, match="action_cleanup_failed"):
+        d._dispatch(proposal, state)
+
+    assert artifact.read_bytes() == sealed_bytes
+
+
+def test_dispatch_never_publishes_when_lease_already_lost(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review, PR #262, P2 (round 8, D1): a Maker's `claude -p` child can finish cleanly
+    in the exact race window right before the next heartbeat tick detects lease loss (see
+    `_kill_current_child()`). `_dispatch_action()` then returns a normal, "successful" result
+    with nothing for `_dispatch()`'s except blocks to catch below -- neither `finish()` (which
+    would publish/CAS the Maker's commit chain via `_finish_git(action_succeeded=True)`) nor a
+    plain `abort()` (which, for the real Docker executor, still runs `_finish_git(action_
+    succeeded=False)` -> `verify_failed_maker_worktree()`; see the dedicated integration test
+    below for why that specific path is wrong here) may run in that case, since this method's
+    own caller (`run()`, right after this call returns) is about to return `EXIT_FOREIGN_LEASE`
+    without ever calling `lc.complete()` for this action. `executor.discard()` is the dedicated
+    lease-lost teardown that reaches neither of `_finish_git()`'s two branches, matching the
+    "lease lost -> zero writes" invariant every other lease-loss path in this class already
+    enforces.
+
+    This stub-executor test only proves `_dispatch()` calls `discard()` (not `finish()`/`abort()`)
+    and returns the action's result unchanged; it intentionally cannot see what `discard()` itself
+    does internally for a real Docker executor, since `RecordingExecutor` never reaches
+    `DockerActionRuntime`/`verify_failed_maker_worktree()` at all -- that misclassification is
+    covered by `test_dispatch_lease_lost_after_successful_maker_never_touches_shared_branch_git`.
+    """
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    proposal = lc.ProposeResult(
+        action=lc.Action.RUN_MAKER.value,
+        action_id="act-lease-lost",
+        state_version=state.state_version,
+        expected_phase=state.phase,
+        phase=state.phase,
+        iteration=state.iteration,
+        context={},
+    )
+    calls: list[str] = []
+
+    class RecordingExecutor:
+        def finish(self, _result: dict[str, Any]) -> None:
+            calls.append("finish")
+
+        def abort(self) -> None:
+            calls.append("abort")
+
+        def discard(self) -> None:
+            calls.append("discard")
+
+    def dispatch_action_then_lose_lease(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        # Codex review, PR #262, P1 (round 8, fence #1): flip `_lease_lost` *inside*
+        # `_dispatch_action()`, not before calling `_dispatch()`, so this test still exercises
+        # the documented "lease lost during the action" race instead of the newer "lease
+        # already lost before the action started" gate (covered by its own dedicated test
+        # below) that would otherwise short-circuit before `_dispatch_action()` ever runs.
+        d._lease_lost.set()
+        return {"maker": {"agent": "backend-python-dev"}}
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(
+        driver.lae, "build_action_executor", lambda *_args, **_kwargs: RecordingExecutor()
+    )
+    monkeypatch.setattr(d, "_dispatch_action", dispatch_action_then_lose_lease)
+
+    result = d._dispatch(proposal, state)
+
+    assert result == {"maker": {"agent": "backend-python-dev"}}
+    assert calls == ["discard"]
+
+
+def test_dispatch_never_starts_docker_action_when_lease_already_lost_before_dispatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review, PR #262, P1 (round 8, fence #1): the heartbeat can flip `_lease_lost` and
+    call `_kill_current_child()` -> `previous_executor.cancel()` in the window between `run()`'s
+    own pre-dispatch check (in its caller) and this method installing the new Docker executor --
+    that sticky-kill only reaches whichever executor was `self._action_executor` *at the time it
+    ran*, so it never reaches an executor installed afterward. Without the immediate re-check
+    right after installing the new executor, `_dispatch_action()` would still start a fresh
+    Maker/Checker container after the lease is already gone. This test sets `_lease_lost` before
+    calling `_dispatch()` (simulating that exact race) and proves `_dispatch_action()` itself is
+    never called, `discard()` runs instead of `finish()`/`abort()`, and the action never reaches
+    the shared branch's git or worktree.
+    """
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    proposal = lc.ProposeResult(
+        action=lc.Action.RUN_MAKER.value,
+        action_id="act-lease-lost-before-start",
+        state_version=state.state_version,
+        expected_phase=state.phase,
+        phase=state.phase,
+        iteration=state.iteration,
+        context={},
+    )
+    calls: list[str] = []
+
+    class RecordingExecutor:
+        def finish(self, _result: dict[str, Any]) -> None:
+            calls.append("finish")
+
+        def abort(self) -> None:
+            calls.append("abort")
+
+        def discard(self) -> None:
+            calls.append("discard")
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(
+        driver.lae, "build_action_executor", lambda *_args, **_kwargs: RecordingExecutor()
+    )
+
+    def fail_if_dispatched(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise AssertionError(
+            "_dispatch_action() must never run once the lease is already lost before dispatch"
+        )
+
+    monkeypatch.setattr(d, "_dispatch_action", fail_if_dispatched)
+    d._lease_lost.set()
+
+    result = d._dispatch(proposal, state)
+
+    assert result == {}
+    assert calls == ["discard"]
+
+
+def test_dispatch_lease_lost_after_successful_maker_never_touches_shared_branch_git(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Local pre-push review (round 9, P1): a `RecordingExecutor` stub (as in the test above)
+    cannot detect a misclassified lease-lost teardown, because it never reaches the real
+    `DockerActionRuntime._finish_git()` -> `verify_failed_maker_worktree()` path at all. This test
+    exercises the real `DockerActionExecutor` wired to a `DockerActionRuntime` with a real
+    `EphemeralGitSession`-shaped git_session (only `finalize_ephemeral_git`/`verify_failed_maker_
+    worktree`/`cleanup_ephemeral_git` are monkeypatched, at the `loop_git_ephemeral` call sites
+    `discard_after_lease_loss()` itself uses), proving that a successful Maker whose commit lands
+    right before the driver's own lease is detected lost:
+
+    1. never reaches `finalize_ephemeral_git()` (no CAS publish onto the shared branch)
+    2. never reaches `verify_failed_maker_worktree()` (no baseline-diff check that would
+       misclassify the Maker's own clean commit as `maker_partial_worktree` drift)
+    3. only reaches `cleanup_ephemeral_git()` (this action's own local session artifacts)
+    4. `_dispatch()` returns the action's result normally instead of raising/crashing the driver
+       process -- there being no safe-stop channel left once the lease is already gone.
+    """
+    loop_id = "abcd1234-issue-2"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    proposal = lc.ProposeResult(
+        action=lc.Action.RUN_MAKER.value,
+        action_id="act-lease-lost-real",
+        state_version=state.state_version,
+        expected_phase=state.phase,
+        phase=state.phase,
+        iteration=state.iteration,
+        context={},
+    )
+
+    calls: list[str] = []
+    git_session = object()
+
+    class FakeRuntime:
+        def __init__(self) -> None:
+            self.git_session = git_session
+            self._finished = False
+            self._lifecycle_lock = threading.RLock()
+
+        def _cleanup_containers(self) -> tuple[None, list[str]]:
+            calls.append("cleanup_containers")
+            return None, []
+
+        def discard_after_lease_loss(self) -> None:
+            with self._lifecycle_lock:
+                if self._finished:
+                    return
+                self._finished = True
+                self._cleanup_containers()
+                driver.lge.cleanup_ephemeral_git(self.git_session)
+
+    monkeypatch.setattr(
+        driver.lge,
+        "finalize_ephemeral_git",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("lease-lost teardown must never CAS-publish the shared branch")
+        ),
+    )
+    monkeypatch.setattr(
+        driver.lge,
+        "verify_failed_maker_worktree",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError(
+                "lease-lost teardown must never diff a successful Maker's worktree against "
+                "the stale baseline_sha -- that always misclassifies as maker_partial_worktree"
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        driver.lge,
+        "cleanup_ephemeral_git",
+        lambda *_args, **_kwargs: calls.append("cleanup_ephemeral_git"),
+    )
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+
+    def dispatch_action_then_lose_lease(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        # Codex review, PR #262, P1 (round 8, fence #1): flip `_lease_lost` *inside*
+        # `_dispatch_action()`, not before calling `_dispatch()`, so this test still exercises
+        # the documented "lease lost after a successful Maker" race instead of the newer
+        # "lease already lost before the action started" gate that would otherwise
+        # short-circuit before `_dispatch_action()` ever runs.
+        d._lease_lost.set()
+        return {"maker": {"agent": "backend-python-dev"}}
+
+    monkeypatch.setattr(
+        driver.lae,
+        "build_action_executor",
+        lambda *_args, **_kwargs: driver.lae.DockerActionExecutor(FakeRuntime()),
+    )
+    monkeypatch.setattr(d, "_dispatch_action", dispatch_action_then_lose_lease)
+    monkeypatch.setattr(
+        d,
+        "_stop_for_action_safety",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("lease-lost teardown must never reach the safe-stop persistence path")
+        ),
+    )
+
+    result = d._dispatch(proposal, state)
+
+    assert result == {"maker": {"agent": "backend-python-dev"}}
+    assert calls == ["cleanup_containers", "cleanup_ephemeral_git"]
+
+
+# --------------------------------------------------------------------------------------------
+# Adversarial verification (round-9 post-hoc): every `_dispatch()` test above stubs
+# `driver.lae.build_action_executor` with a `lambda *_args, **_kwargs: ...`, which accepts any
+# call shape and therefore cannot detect a signature mismatch between `_dispatch()`'s real call
+# site and `loop_action_executor.build_action_executor()`'s real signature -- exactly how the
+# round-8 `lease_lost=` keyword shipped in `_dispatch()` without the parameter existing on the
+# real function, raising `TypeError` on every single dispatch, undetected by this entire stubbed
+# suite until a bot review caught it. These two tests deliberately leave `driver.lae` (and
+# `driver.lae.build_action_executor` in particular) un-stubbed, so `_dispatch()` calls the real
+# production function with its real production kwargs.
+# --------------------------------------------------------------------------------------------
+
+
+def test_dispatch_real_build_action_executor_host_only_action_no_typeerror(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real `lae.build_action_executor()` -> real `HostActionExecutor`, host-only action.
+
+    `stop` has no Docker `kind` mapping, so `build_action_executor()` returns a real
+    `HostActionExecutor` without reading Docker config at all -- exercising `_dispatch()`'s
+    `build_action_executor(...)` call site (including the `lease_lost=self._lease_lost.is_set`
+    keyword) against the real function signature, and the real `HostActionExecutor.finish()`/
+    `discard()` no-ops `_dispatch()` calls afterward, with zero stubbing of `driver.lae`.
+    """
+    loop_id = "abcd1234-issue-real-host"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    proposal = lc.ProposeResult(
+        action=lc.Action.STOP.value,
+        action_id="act-real-host-executor",
+        state_version=state.state_version,
+        expected_phase=state.phase,
+        phase=state.phase,
+        iteration=state.iteration,
+        context={},
+    )
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    built_executors: list[Any] = []
+    real_build_action_executor = driver.lae.build_action_executor
+
+    def recording_build_action_executor(*args: Any, **kwargs: Any) -> Any:
+        executor = real_build_action_executor(*args, **kwargs)
+        built_executors.append(executor)
+        return executor
+
+    monkeypatch.setattr(driver.lae, "build_action_executor", recording_build_action_executor)
+    monkeypatch.setattr(d, "_dispatch_action", lambda *_a, **_k: {"stop_reason": "manual_stop"})
+
+    result = d._dispatch(proposal, state)
+
+    assert result == {"stop_reason": "manual_stop"}
+    assert len(built_executors) == 1
+    assert isinstance(built_executors[0], driver.lae.HostActionExecutor)
+
+
+def test_dispatch_real_build_action_executor_maker_action_builds_real_docker_executor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real `lae.build_action_executor()` -> real `DockerActionExecutor`, `run_maker` action.
+
+    With `lp2.isolation.execution_backend: docker` configured, `run_maker` maps to Docker
+    `kind="maker"`, exercising the same `build_action_executor(...)` call site's
+    Docker-config-reading branch (`docker_config.docker_execution_enabled`,
+    `validate_isolation_config`, `DockerActionRequest(..., lease_lost=...)`) against the real
+    function -- a `TypeError` here (e.g. a future parameter rename) would not be caught by any
+    stubbed `_dispatch()` test. The built `DockerActionRuntime` is never started (no `docker`
+    daemon call), so this needs no Docker daemon: `finish()` on a never-started runtime only
+    finds an empty `container_name`/`broker`/`git_session` and returns immediately.
+    """
+    loop_id = "abcd1234-issue-real-docker"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    override_dir = Path(project_dir) / ".claude" / "config" / "loop-harness"
+    override_dir.mkdir(parents=True, exist_ok=True)
+    (override_dir / "loop-harness.local.yaml").write_text(
+        "lp2:\n  isolation:\n    backend: docker\n    execution_backend: docker\n",
+        encoding="utf-8",
+    )
+    state = lc.load_state(loop_id, project_dir)
+    proposal = lc.ProposeResult(
+        action=lc.Action.RUN_MAKER.value,
+        action_id="act-real-docker-executor",
+        state_version=state.state_version,
+        expected_phase=state.phase,
+        phase=state.phase,
+        iteration=state.iteration,
+        context={},
+    )
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    built_executors: list[Any] = []
+    real_build_action_executor = driver.lae.build_action_executor
+
+    def recording_build_action_executor(*args: Any, **kwargs: Any) -> Any:
+        executor = real_build_action_executor(*args, **kwargs)
+        built_executors.append(executor)
+        return executor
+
+    monkeypatch.setattr(driver.lae, "build_action_executor", recording_build_action_executor)
+    monkeypatch.setattr(
+        d, "_dispatch_action", lambda *_a, **_k: {"maker": {"agent": "backend-python-dev"}}
+    )
+
+    result = d._dispatch(proposal, state)
+
+    assert result == {"maker": {"agent": "backend-python-dev"}}
+    assert len(built_executors) == 1
+    executor = built_executors[0]
+    assert isinstance(executor, driver.lae.DockerActionExecutor)
+    # `self._lease_lost.is_set` is a fresh bound-method object on every attribute access, so
+    # `is`-identity always fails here even when both refer to the same underlying bound method;
+    # `==` compares `__self__`/`__func__` instead, which is what actually matters (both wrap the
+    # same `Event.is_set` bound to this driver's own `self._lease_lost`).
+    assert executor.runtime.request.lease_lost == d._lease_lost.is_set
+    assert executor.runtime.request.needs_broker is True
+
+
+def test_dispatch_persists_original_safety_stop_when_abort_raises_a_second_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review, PR #262, P2 (round 8, D3): when `_dispatch_action()` raises a SafetyStop and
+    the ensuing `executor.abort()` cleanup itself raises a *second* SafetyStop (e.g. cleanup
+    after an already-safety-stopping action also finds container cleanup unconfirmed), this
+    except block must catch it too -- symmetric with `_dispatch()`'s other except block
+    (`DockerActionError`/`EphemeralGitInfrastructureError`), which already has this catch -- and
+    persist the *original* safety stop via `_stop_for_action_safety()` instead of letting the
+    second SafetyStop escape uncaught and crash the driver process, silently losing the original
+    safe stop.
+    """
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    proposal = lc.ProposeResult(
+        action=lc.Action.RUN_MAKER.value,
+        action_id="act-double-safety-stop",
+        state_version=state.state_version,
+        expected_phase=state.phase,
+        phase=state.phase,
+        iteration=state.iteration,
+        context={},
+    )
+
+    class DoubleSafetyStopExecutor:
+        def finish(self, _result: dict[str, Any]) -> None:
+            raise AssertionError("finish() must not run when _dispatch_action() already raised")
+
+        def abort(self) -> None:
+            raise driver.lda.DockerActionSafetyStop(
+                "maker_container_cleanup_unconfirmed",
+                "could not confirm action container removal on cleanup after safety stop",
+            )
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(
+        driver.lae,
+        "build_action_executor",
+        lambda *_args, **_kwargs: DoubleSafetyStopExecutor(),
+    )
+
+    def raise_original(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise driver.lda.DockerActionSafetyStop(
+            "git_ref_not_fast_forward",
+            "ephemeral branch is not a fast-forward of the baseline",
+        )
+
+    monkeypatch.setattr(d, "_dispatch_action", raise_original)
+    persisted: list[Any] = []
+
+    def fake_stop_for_action_safety(_proposal: Any, _state: Any, error: Any) -> None:
+        persisted.append(error)
+        raise driver.DriverTerminated(str(error.stop_reason))
+
+    monkeypatch.setattr(d, "_stop_for_action_safety", fake_stop_for_action_safety)
+
+    with pytest.raises(driver.DriverTerminated, match="git_ref_not_fast_forward"):
+        d._dispatch(proposal, state)
+
+    assert len(persisted) == 1
+    assert persisted[0].stop_reason == "git_ref_not_fast_forward"
+
+
+def test_dispatch_discards_instead_of_aborting_when_exception_path_hits_lost_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review, PR #262, P1 (round 8, fence #3): when a Docker action is cancelled because
+    the heartbeat already set `_lease_lost`, `DockerActionRuntime._execute()` raises
+    `DockerActionError`, landing in this except block. Calling `executor.abort()` there would run
+    `finish(action_succeeded=False)` -> `verify_failed_maker_worktree()`, which can raise a fresh
+    `maker_partial_worktree` safety stop; the ensuing `_stop_for_action_safety()` would then try to
+    persist that stop with this driver's now-stale `lease_token`, and `guarded_lease_section()`
+    would reject the write -- crashing the process instead of returning `EXIT_FOREIGN_LEASE`. This
+    proves that once `_lease_lost` is already set, this except block calls `discard()` instead of
+    `abort()`, and never reaches `_stop_for_action_safety()` at all.
+    """
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    proposal = lc.ProposeResult(
+        action=lc.Action.RUN_MAKER.value,
+        action_id="act-exception-path-lease-lost",
+        state_version=state.state_version,
+        expected_phase=state.phase,
+        phase=state.phase,
+        iteration=state.iteration,
+        context={},
+    )
+    calls: list[str] = []
+
+    class LeaseLostDuringExecuteExecutor:
+        def finish(self, _result: dict[str, Any]) -> None:
+            calls.append("finish")
+
+        def abort(self) -> None:
+            calls.append("abort")
+            raise AssertionError(
+                "abort() must never run once the lease is already known lost -- it can raise a "
+                "fresh maker_partial_worktree safety stop that _stop_for_action_safety() cannot "
+                "persist with a stale lease token"
+            )
+
+        def discard(self) -> None:
+            calls.append("discard")
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(
+        driver.lae,
+        "build_action_executor",
+        lambda *_args, **_kwargs: LeaseLostDuringExecuteExecutor(),
+    )
+
+    def raise_docker_action_error_after_lease_loss(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        # Mirrors the real race: the heartbeat sets `_lease_lost` and cancels the scenario
+        # container, so the in-flight `docker exec` (`_execute()`) raises `DockerActionError`.
+        d._lease_lost.set()
+        raise driver.lda.DockerActionError("docker exec did not complete")
+
+    monkeypatch.setattr(d, "_dispatch_action", raise_docker_action_error_after_lease_loss)
+    monkeypatch.setattr(
+        d,
+        "_stop_for_action_safety",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("lease-lost teardown must never reach the safe-stop persistence path")
+        ),
+    )
+
+    result = d._dispatch(proposal, state)
+
+    assert calls == ["discard"]
+    assert "agent" in result["maker"]
+    assert result["infrastructure_failure"] is True
+
+
+def test_dispatch_lease_lost_discard_logs_safety_stop_details_to_stderr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Codex review, PR #262, P2 (pre-push dry-check, round 11): when `finish()` raises
+    `DockerActionSafetyStop("action_cleanup_failed", ...)` after the lease is already lost, the
+    subsequent `discard()` is a `_finished`-latched no-op and `_docker_infrastructure_result()`
+    only prints `str(exc)` -- so the `details` payload carrying the actual broker/network
+    `cleanup_errors` would vanish entirely. This proves the lease-lost discard path now logs
+    those details to stderr before they are dropped.
+    """
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    proposal = lc.ProposeResult(
+        action=lc.Action.RUN_MAKER.value,
+        action_id="act-lease-lost-details-logged",
+        state_version=state.state_version,
+        expected_phase=state.phase,
+        phase=state.phase,
+        iteration=state.iteration,
+        context={},
+    )
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+
+    class LeaseLostDuringFinishExecutor:
+        def finish(self, _result: dict[str, Any]) -> None:
+            # Mirrors the real race: the lease expires while `finish()` is inside
+            # `_cleanup_containers()`, whose broker/network failures then surface as this
+            # safety stop carrying the only copy of the diagnostic details.
+            d._lease_lost.set()
+            raise driver.lda.DockerActionSafetyStop(
+                "action_cleanup_failed",
+                "isolated action cleanup failed",
+                details={"cleanup_errors": ["broker cleanup failed: network rm timed out"]},
+            )
+
+        def abort(self) -> None:
+            raise AssertionError("abort() must never run once the lease is already known lost")
+
+        def discard(self) -> None:
+            return
+
+    monkeypatch.setattr(
+        driver.lae,
+        "build_action_executor",
+        lambda *_args, **_kwargs: LeaseLostDuringFinishExecutor(),
+    )
+    monkeypatch.setattr(d, "_dispatch_action", lambda *_args, **_kwargs: {"passed": True})
+
+    result = d._dispatch(proposal, state)
+
+    assert result["infrastructure_failure"] is True
+    stderr = capsys.readouterr().err
+    assert "broker cleanup failed: network rm timed out" in stderr
+
+
+def test_dispatch_writes_no_check_result_artifact_when_exception_path_hits_lost_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR #262 push-front adversarial review, P1: EV-50 requires that a driver which has
+    already lost the lease persist nothing for the in-flight action. `_discard_after_lease_
+    loss_or_none()`'s own docstring says the returned result is "in-memory only" and `run()`
+    discards it on `EXIT_FOREIGN_LEASE` -- but before this fix, its call to `_docker_
+    infrastructure_result()` for a RUN_CHECKER action still unconditionally sealed a
+    `check_result.json` to disk (mirroring `_run_checker()`'s normal, still-holding-the-lease
+    save path). A restarted worker's `reconcile()` treats any artifact at that path as the
+    authoritative result once the journal has no completed event yet for this action, so this
+    fenced-out worker's fabricated `infrastructure_failure` result would be wrongly confirmed
+    as real instead of the new lease owner actually re-running the checker.
+    """
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    proposal = lc.ProposeResult(
+        action=lc.Action.RUN_CHECKER.value,
+        action_id="act-ev50-checker-lease-lost",
+        state_version=state.state_version,
+        expected_phase=state.phase,
+        phase=state.phase,
+        iteration=state.iteration,
+        context={},
+    )
+
+    class LeaseLostDuringExecuteExecutor:
+        def finish(self, _result: dict[str, Any]) -> None:
+            raise AssertionError("finish() must never run once the lease is already lost")
+
+        def abort(self) -> None:
+            raise AssertionError(
+                "abort() must never run once the lease is already known lost -- see "
+                "test_dispatch_discards_instead_of_aborting_when_exception_path_hits_lost_lease"
+            )
+
+        def discard(self) -> None:
+            pass
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(
+        driver.lae,
+        "build_action_executor",
+        lambda *_args, **_kwargs: LeaseLostDuringExecuteExecutor(),
+    )
+
+    def raise_docker_action_error_after_lease_loss(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        # Mirrors the real race: the heartbeat sets `_lease_lost` and cancels the scenario
+        # container, so the in-flight checker's `docker exec` (`_execute()`) raises
+        # `DockerActionError`.
+        d._lease_lost.set()
+        raise driver.lda.DockerActionError("docker exec did not complete")
+
+    monkeypatch.setattr(d, "_dispatch_action", raise_docker_action_error_after_lease_loss)
+    monkeypatch.setattr(
+        d,
+        "_stop_for_action_safety",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("lease-lost teardown must never reach the safe-stop persistence path")
+        ),
+    )
+
+    result = d._dispatch(proposal, state)
+
+    assert result["infrastructure_failure"] is True
+    assert (
+        lc.load_artifact(loop_id, project_dir, "act-ev50-checker-lease-lost", "check_result.json")
+        is None
+    )
+
+
 def test_persist_safe_stop_writes_journal_before_state(tmp_path: Path) -> None:
     loop_id = "abcd1234-issue-1"
     project_dir, token = _seed_running_loop(tmp_path, loop_id)
@@ -1337,7 +2152,13 @@ def test_heartbeat_loss_kills_child_and_never_writes_state(
     # process had already reacquired the lease (attach after a crash).
     d.lease_token = "stale-token-not-matching-lock"
     killed_pids: list[int] = []
+    cancelled: list[bool] = []
     monkeypatch.setattr(lds, "kill_process_tree", lambda pid, **_: killed_pids.append(pid))
+    d._action_executor = type(
+        "CancelableExecutor",
+        (),
+        {"cancel": lambda _self: cancelled.append(True)},
+    )()
     d._set_current_child(4242)
     monkeypatch.setattr(d, "_stop_event", __import__("threading").Event())
 
@@ -1347,6 +2168,7 @@ def test_heartbeat_loss_kills_child_and_never_writes_state(
     d._kill_current_child()
 
     assert killed_pids == [4242]
+    assert cancelled == [True]
     assert d._lease_lost.is_set()
     after = lc.state_path(loop_id, project_dir).read_text(encoding="utf-8")
     assert before == after  # no state write happened as a result of lease loss
@@ -1422,6 +2244,34 @@ def test_run_child_kill_request_arriving_during_popen_still_kills_new_child(
     assert not killer.is_alive()
     assert len(kill_calls) == 1
     assert result.returncode != 0  # killed by SIGTERM, not a clean sleep-30 completion
+
+
+def test_run_host_child_captures_partial_output_on_timeout(
+    tmp_path: Path,
+) -> None:
+    """Codex review, PR #262, High (round 4): capture, not discard, partial output on timeout.
+
+    `loop_docker_action.DockerActionRuntime.execute_mechanical()` needs this to report an
+    ordinary `(output, 124)` mechanical timeout result instead of losing the command's output
+    entirely (the same shared `_run_host_child` also backs Docker's `execute_claude()`, which
+    only ever catches `ClaudePTimeoutError` and never inspects these attributes).
+    """
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    script = tmp_path / "prints_then_hangs.sh"
+    script.write_text(
+        "#!/bin/sh\necho partial-stdout\necho partial-stderr >&2\n"
+        "trap '' TERM\nsleep 30 &\nwait $!\n",
+        encoding="utf-8",
+    )
+    script.chmod(script.stat().st_mode | stat.S_IEXEC)
+
+    with pytest.raises(lds.ClaudePTimeoutError) as caught:
+        d._run_child([str(script)], str(tmp_path), 1, dict(os.environ))
+
+    assert "partial-stdout" in caught.value.stdout
+    assert "partial-stderr" in caught.value.stderr
 
 
 def test_set_current_child_kills_immediately_when_lease_already_lost(
@@ -3786,6 +4636,171 @@ def test_wait_external_review_confirms_findings_reported_after_snapshot(
     assert confirmed_with["result"] is collected
 
 
+def test_wait_external_review_preserves_explicit_findings_when_docker_classifier_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review, PR #262, High (round 3): preserve explicit findings when Docker
+    classification fails.
+
+    `confirm_review_findings_reported` already durably marked this batch's explicit-severity
+    comment processed by the time the classifier runs. If a Docker classifier failure instead
+    propagated out of `_run_wait_external_review` into `_dispatch`'s DockerActionError handler,
+    `_docker_infrastructure_result()` would return an *empty* PhaseCheckResult for
+    wait_external_review -- discarding the already-confirmed blocking finding entirely, and a
+    retried `collect_review_findings()` would filter the same comment out via
+    `processed_comment_ids`, so it could never resurface and the phase could pass silently.
+    """
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.pr_number = 42
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    d._action_executor = driver.lae.DockerActionExecutor(object())
+    monkeypatch.setattr(driver, "_repo_name_with_owner", lambda _wt: "owner/repo")
+    monkeypatch.setattr(
+        prw, "load_pr_review_config", lambda _project: prw.PrReviewConfig(reviewer_allowlist=())
+    )
+    monkeypatch.setattr(prw, "record_ignored_untrusted_reviews", lambda *a, **k: None)
+    monkeypatch.setattr(
+        prw,
+        "wait_for_completion",
+        lambda *a, **k: prw.CompletionOutcome(
+            "review_submitted", completed=True, timed_out=False, infrastructure_failure=False
+        ),
+    )
+
+    # One already-explicit blocking finding, plus one needing classification (fail-safe "high"
+    # placeholder per classify_severity()) that will trigger _classify_pending_findings.
+    explicit_finding = prw.ImportedFinding(
+        signature="sig-explicit",
+        severity="critical",
+        source_comment_id="c1",
+        body_excerpt="fix this now",
+        path="foo.py",
+        line=10,
+        needs_classification=False,
+    )
+    pending_finding = prw.ImportedFinding(
+        signature="sig-pending",
+        severity="high",
+        source_comment_id="c2",
+        body_excerpt="maybe an issue?",
+        path="bar.py",
+        line=5,
+        needs_classification=True,
+    )
+    blocking = lc.IterationFindings(frozenset({"sig-explicit", "sig-pending"}), 2)
+    empty = lc.IterationFindings(frozenset(), 0)
+    collected = prw.ReviewFindingsResult(
+        (explicit_finding, pending_finding), blocking, empty, (), (), 0, 1
+    )
+    monkeypatch.setattr(prw, "collect_review_findings", lambda *a, **k: collected)
+    monkeypatch.setattr(prw, "save_review_findings_snapshot", lambda *a, **k: "artifacts/x.json")
+    monkeypatch.setattr(prw, "confirm_review_findings_reported", lambda *a, **k: None)
+
+    def classify_pending_findings_raises(*_a: Any, **_k: Any) -> prw.ReviewFindingsResult:
+        raise driver.lda.DockerActionError("isolated finding classifier failed")
+
+    monkeypatch.setattr(d, "_classify_pending_findings", classify_pending_findings_raises)
+
+    proposal = lc.ProposeResult(
+        action="wait_external_review",
+        action_id="act-classifier-fail-001",
+        state_version=state.state_version,
+        expected_phase="implementation",
+        phase="implementation",
+        iteration=1,
+        context={},
+    )
+    result = d._run_wait_external_review(proposal, state, {})
+
+    assert result == lc.phase_check_to_dict(prw.phase_check_from_review_findings(collected))
+    assert result["passed"] is False
+    assert result["infrastructure_failure"] is False
+    summaries = {item["summary"] for item in result["results"][0]["findings"]}
+    assert {"fix this now", "maybe an issue?"} == summaries
+
+
+def test_drain_before_push_preserves_drained_findings_when_docker_classifier_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review, PR #262, Critical (round 5): preserve drained findings when the classifier
+    Docker action fails from within `_drain_before_push`'s `push_required` path.
+
+    Unlike `_run_wait_external_review`'s own classifier call (round 3), this caller had no
+    try/except of its own: `confirm_review_findings_reported` already durably marked this
+    batch's explicit-severity comments processed by the time the classifier runs, but a
+    `DockerActionError` propagating unhandled out of `_drain_before_push` would reach
+    `_dispatch`'s DockerActionError handler, which returns `_docker_infrastructure_result()`'s
+    *empty* PhaseCheckResult for wait_external_review -- discarding the already-confirmed
+    blocking finding entirely, and a retried `collect_review_findings()` would filter the same
+    comment out via `processed_comment_ids`, so it could never resurface and a blocking
+    pre-push review finding could disappear instead of being surfaced.
+    """
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.pr_number = 42
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(driver, "_repo_name_with_owner", lambda _wt: "owner/repo")
+    monkeypatch.setattr(prw, "fetch_review_items", lambda *_a, **_k: [object()])
+
+    # One already-explicit blocking finding, plus one needing classification (fail-safe "high"
+    # placeholder per classify_severity()) that will trigger _classify_pending_findings.
+    explicit_finding = prw.ImportedFinding(
+        signature="sig-explicit",
+        severity="critical",
+        source_comment_id="c1",
+        body_excerpt="fix this now",
+        path="foo.py",
+        line=10,
+        needs_classification=False,
+    )
+    pending_finding = prw.ImportedFinding(
+        signature="sig-pending",
+        severity="high",
+        source_comment_id="c2",
+        body_excerpt="maybe an issue?",
+        path="bar.py",
+        line=5,
+        needs_classification=True,
+    )
+    blocking = lc.IterationFindings(frozenset({"sig-explicit", "sig-pending"}), 2)
+    empty = lc.IterationFindings(frozenset(), 0)
+    drained = prw.ReviewFindingsResult(
+        (explicit_finding, pending_finding), blocking, empty, (), (), 0, 1
+    )
+    monkeypatch.setattr(prw, "collect_review_findings", lambda *a, **k: drained)
+    monkeypatch.setattr(prw, "save_review_findings_snapshot", lambda *a, **k: "artifacts/x.json")
+    monkeypatch.setattr(prw, "confirm_review_findings_reported", lambda *a, **k: None)
+
+    record_baseline_calls: list[Any] = []
+    monkeypatch.setattr(
+        prw, "record_baseline", lambda *a, **k: record_baseline_calls.append((a, k))
+    )
+
+    def classify_pending_findings_raises(*_a: Any, **_k: Any) -> prw.ReviewFindingsResult:
+        raise driver.lda.DockerActionError("isolated finding classifier failed")
+
+    monkeypatch.setattr(d, "_classify_pending_findings", classify_pending_findings_raises)
+
+    config = prw.PrReviewConfig(reviewer_allowlist=())
+    result = d._drain_before_push(state, "act-drain-classifier-fail-001", 42, config)
+
+    assert result == lc.phase_check_to_dict(prw.phase_check_from_review_findings(drained))
+    assert result["passed"] is False
+    summaries = {item["summary"] for item in result["results"][0]["findings"]}
+    assert {"fix this now", "maybe an issue?"} == summaries
+    # The classifier failure must short-circuit *before* rebaselining/pushing this iteration.
+    assert record_baseline_calls == []
+
+
 def test_wait_external_review_push_stops_safely_on_push_integrity_violation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -4417,6 +5432,71 @@ def test_main_exits_with_foreign_lease_code_and_writes_nothing(
     after = lc.state_path(loop_id, project_dir).read_text(encoding="utf-8")
     assert before == after
     assert lc.load_state(loop_id, project_dir).state_version == before_version
+
+
+@pytest.mark.parametrize("source", ["driver", "package"])
+def test_main_rejects_runtime_source_inside_existing_action_worktree_before_attach(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source: str,
+) -> None:
+    loop_id = "abcd1234-issue-1"
+    project_dir, _token = _seed_running_loop(tmp_path, loop_id)
+    action_worktree = tmp_path / "action-worktree"
+    action_worktree.mkdir()
+    state = lc.load_state(loop_id, project_dir)
+    state.worktree_path = str(action_worktree)
+    lc._write_state(state, project_dir)
+    if source == "driver":
+        monkeypatch.setattr(
+            driver,
+            "__file__",
+            str(action_worktree / "packages/loop-harness/scripts/loop_driver.py"),
+        )
+    else:
+        monkeypatch.setattr(
+            driver.ld,
+            "package_root",
+            lambda: action_worktree / "packages/loop-harness",
+        )
+
+    def attach_must_not_run(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("runtime isolation must be checked before attach/config loading")
+
+    monkeypatch.setattr(driver, "_acquire_initial_proposal", attach_must_not_run)
+
+    assert driver.main(["--loop-id", loop_id, "--project", project_dir]) == (
+        driver.EXIT_GENERAL_ERROR
+    )
+
+
+def test_loop_driver_allows_self_hosted_root_source_outside_action_worktree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    action_worktree = tmp_path / "action-worktree"
+    action_worktree.mkdir()
+    state = lc.load_state(loop_id, project_dir)
+    state.worktree_path = str(action_worktree)
+    lc._write_state(state, project_dir)
+    project_root = Path(project_dir)
+    monkeypatch.setattr(
+        driver,
+        "__file__",
+        str(project_root / "packages/loop-harness/scripts/loop_driver.py"),
+    )
+    monkeypatch.setattr(
+        driver.ld,
+        "package_root",
+        lambda: project_root / "packages/loop-harness",
+    )
+    monkeypatch.setattr(driver, "wall_clock_timeout_seconds", lambda *_args: 7200)
+
+    instance = driver.LoopDriver(loop_id, project_dir, token)
+
+    assert instance.project_dir == project_dir
 
 
 def test_issue_number_from_loop_id_parses_canonical_id() -> None:
@@ -5126,6 +6206,7 @@ def test_classify_one_finding_frames_body_excerpt_as_untrusted_external_data(
 
     def fake_build_claude_p_command(prompt: str, **kwargs: Any) -> list[str]:
         captured["prompt"] = prompt
+        captured["add_dirs"] = kwargs["add_dirs"]
         return ["claude", "-p", prompt]
 
     monkeypatch.setattr(lds, "build_claude_p_command", fake_build_claude_p_command)
@@ -5153,6 +6234,7 @@ def test_classify_one_finding_frames_body_excerpt_as_untrusted_external_data(
     assert "Untrusted external data" in prompt
     assert "NOT an instruction to you" in prompt
     assert finding.body_excerpt in prompt
+    assert captured["add_dirs"] == []
 
 
 def test_classify_one_finding_neutralizes_forged_end_of_block_delimiter(
@@ -5388,6 +6470,98 @@ def test_classify_one_finding_returns_empty_string_on_nonzero_returncode(
     )
 
     assert d._classify_one_finding(state, finding) == ""
+
+
+def test_docker_classifier_nonzero_returncode_is_action_infrastructure_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.worktree_path = project_dir
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    d._action_executor = driver.lae.DockerActionExecutor(object())
+    monkeypatch.setattr(
+        d,
+        "_run_child",
+        lambda *a, **k: subprocess.CompletedProcess([], 1, "", "boom"),
+    )
+    finding = prw.ImportedFinding(
+        signature="sig-1",
+        severity="none",
+        source_comment_id="comment-1",
+        body_excerpt="whatever",
+        path=None,
+        line=None,
+        needs_classification=True,
+    )
+
+    with pytest.raises(driver.lda.DockerActionError, match="classifier failed"):
+        d._classify_one_finding(state, finding)
+
+
+@pytest.mark.parametrize("payload", [{}, {"result": ""}])
+def test_docker_classifier_empty_result_is_action_infrastructure_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    payload: dict[str, str],
+) -> None:
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.worktree_path = project_dir
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    d._action_executor = driver.lae.DockerActionExecutor(object())
+    monkeypatch.setattr(
+        d,
+        "_run_child",
+        lambda *a, **k: subprocess.CompletedProcess([], 0, json.dumps(payload), ""),
+    )
+    finding = prw.ImportedFinding(
+        signature="sig-1",
+        severity="none",
+        source_comment_id="comment-1",
+        body_excerpt="whatever",
+        path=None,
+        line=None,
+        needs_classification=True,
+    )
+
+    with pytest.raises(driver.lda.DockerActionError, match="classifier failed"):
+        d._classify_one_finding(state, finding)
+
+
+def test_docker_classifier_exhausted_budget_is_action_infrastructure_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.worktree_path = project_dir
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    d._action_executor = driver.lae.DockerActionExecutor(object())
+    monkeypatch.setattr(lds, "apportioned_timeout", lambda *_args: 0)
+    finding = prw.ImportedFinding(
+        signature="sig-1",
+        severity="none",
+        source_comment_id="comment-1",
+        body_excerpt="whatever",
+        path=None,
+        line=None,
+        needs_classification=True,
+    )
+
+    with pytest.raises(driver.lda.DockerActionError, match="budget is exhausted"):
+        d._classify_one_finding(state, finding)
 
 
 # --------------------------------------------------------------------------------------------

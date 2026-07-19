@@ -66,6 +66,10 @@ _EVALUATOR_SOURCE_FILES: tuple[tuple[str, Path], ...] = (
         _DOCKER_RUNTIME_DIR / "lib" / "docker_runtime_cli.py",
     ),
     (
+        "docker-runtime/lib/docker_runtime_credentials.py",
+        _DOCKER_RUNTIME_DIR / "lib" / "docker_runtime_credentials.py",
+    ),
+    (
         "docker-runtime/lib/docker_runtime_lifecycle.py",
         _DOCKER_RUNTIME_DIR / "lib" / "docker_runtime_lifecycle.py",
     ),

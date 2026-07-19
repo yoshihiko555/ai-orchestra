@@ -44,6 +44,15 @@ lp2:
       port_range: [8790, 8990]
       idle_timeout_sec: 300
       startup_timeout_sec: 30
+      budget_usd: 3.0
+      max_requests: 64
+      max_total_tokens: 500000
+      max_upstream_bytes: 50000000
+      pricing_upper_bound_usd_per_million:
+        input: 15.0
+        output: 75.0
+        cache_creation: 18.75
+        cache_read: 1.5
 
 pr_review:
   poll_interval_seconds: 120

@@ -339,11 +339,50 @@ def network_is_stale(
     owner: str,
     *,
     labels: RuntimeLabels,
+    pid_checker: Callable[[int], bool] | None = None,
 ) -> bool:
+    """A same-owner network with no attached containers is stale, unless its creating
+    process is still alive and the network is not yet past its own absolute age cap.
+
+    Codex review, PR #262, High (round 6): concurrent same-project workers share one
+    `owner_id` (`owner_id()` hashes only the project's main root), so a worker that just
+    created its own broker/internal network -- but has not yet attached its broker or
+    scenario container to it -- looks identical to a leaked, truly-orphaned network: same
+    owner label, zero `Containers`. Without a liveness check, another worker's concurrent
+    `sweep_stale_resources()` call can delete that live startup network out from under it,
+    turning a healthy concurrent action into a spurious Docker infrastructure failure.
+    Mirroring `container_is_stale()`'s own parent-pid grace, a missing/invalid
+    `parent_pid_label` (e.g. a network created before this label existed) still reaps
+    immediately -- only a network whose creating process is provably still running is
+    spared, matching every other "orphaned by a dead driver" reclaim path.
+
+    Codex review, PR #262, High (round 7): the parent-pid grace above has no time bound of its
+    own, unlike `container_is_stale()`'s absolute age cap. If a driver crashes right after
+    creating this network (before attaching any container) and the OS later reuses that same PID
+    for an unrelated, long-lived process, `pid_alive()` stays true forever and this network would
+    never be reclaimed, accumulating leaked Docker networks for the project indefinitely. A
+    present, valid `created_at_label` past `stale_max_age_seconds` is reclaimed immediately,
+    before the PID check ever runs -- mirroring `container_is_stale()`'s own age-then-liveness
+    order-of-checks -- so PID reuse can only delay reclamation, never suspend it forever. A
+    missing/invalid `created_at_label` (pre-dating this label) has no age signal to act on and
+    falls through to the parent-pid check unchanged.
+    """
     resource_labels_value = inspected.get("Labels") or {}
-    return resource_labels_value.get(labels.owner_label) == owner and not (
-        inspected.get("Containers") or {}
-    )
+    if resource_labels_value.get(labels.owner_label) != owner:
+        return False
+    if inspected.get("Containers"):
+        return False
+    try:
+        created_at = int(resource_labels_value[labels.created_at_label])
+    except (KeyError, TypeError, ValueError):
+        created_at = None
+    if created_at is not None and time.time() - created_at >= labels.stale_max_age_seconds:
+        return True
+    try:
+        parent_pid = int(resource_labels_value[labels.parent_pid_label])
+    except (KeyError, TypeError, ValueError):
+        return True
+    return not (pid_checker or pid_alive)(parent_pid)
 
 
 def pid_alive(pid: int) -> bool:

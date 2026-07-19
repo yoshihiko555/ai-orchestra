@@ -86,6 +86,11 @@ LP-2 の Maker は `claude -p` で起動されますが、push や PR 作成は 
 
 主要キーは `packages/loop-harness/config/loop-harness.yaml`（プロジェクト固有の上書きは `.claude/config/loop-harness/loop-harness.local.yaml`。`config-loading` ルール準拠）。
 
+LP-2 の driver entrypoint・definition module・実効 base config は Maker の action worktree 外から
+読み込む必要があります。`loop_driver.py` は起動時にこの境界を検証し、action worktree 内へ runtime を
+コピーして起動する wrapper/self-hosting 構成を fail-closed で拒否します。root worktree の runtime と
+別 linked action worktree を使う通常構成は許可されます。
+
 | キー                              | デフォルト | 説明                                                    |
 | --------------------------------- | ---------- | ------------------------------------------------------- |
 | `lp2.concurrency_limit`           | `2`        | scheduler が同時に起動する worker の最大数              |

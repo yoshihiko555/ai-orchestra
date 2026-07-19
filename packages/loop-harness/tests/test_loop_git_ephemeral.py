@@ -236,6 +236,9 @@ def test_prepare_ephemeral_git_initializes_trusted_maker_repository(
         _git("config", "user.email", env=_ephemeral_env(session)).stdout.strip()
         == "loop-harness-maker@invalid"
     )
+    assert _git("config", "safe.directory", env=_ephemeral_env(session)).stdout.strip() == str(
+        linked_worktree.worktree_path
+    )
     assert (
         Path(session.ephemeral_dir, "objects/info/alternates").read_text(encoding="utf-8")
         == f"{session.common_dir}/objects\n"
@@ -297,6 +300,98 @@ def test_prepare_normalizes_filesystem_cleanup_failure_to_typed_error(
 
     with pytest.raises(git_ephemeral.EphemeralGitInfrastructureError, match="runtime"):
         _prepare(linked_worktree)
+
+
+@pytest.mark.skipif(os.getuid() == 0, reason="root bypasses permission bits")
+def test_remove_runtime_widens_read_only_trusted_settings_before_wipe(tmp_path: Path) -> None:
+    """Codex review, PR #262, P1 (round 12): `loop_docker_settings.create_settings_bundle()`
+    chmods its `trusted-settings` directory (and the files inside it) down to 0o555/0o444 once
+    populated. `discard_after_lease_loss()` (round 11) intentionally skips the matching
+    `cleanup_settings_bundle()` chmod(0o700) restore -- see that method's own docstring -- so the
+    next retry of the same action_id reaches `_remove_runtime()` via `prepare_ephemeral_git()`'s
+    unconditional wipe-and-recreate of `runtime_dir`, which still contains that 0o555
+    `trusted-settings` subdirectory. Without widening directory permissions first, a non-root
+    driver's `shutil.rmtree()` raises `PermissionError` trying to unlink files inside a 0o555
+    directory (removing an entry needs write permission on its containing directory, not on the
+    entry itself) and the retry becomes permanently stuck. Root does not reproduce this at all
+    (bypasses permission checks), hence the skip above.
+    """
+    runtime_dir = tmp_path / "runtime"
+    trusted_settings = runtime_dir / "trusted-settings"
+    trusted_settings.mkdir(parents=True)
+    guard = trusted_settings / "maker_bash_guard.py"
+    guard.write_text("# trusted guard\n", encoding="utf-8")
+    guard.chmod(0o555)
+    settings_file = trusted_settings / "settings.json"
+    settings_file.write_text("{}", encoding="utf-8")
+    settings_file.chmod(0o444)
+    trusted_settings.chmod(0o555)
+
+    git_ephemeral._remove_runtime(runtime_dir)
+
+    assert not runtime_dir.exists()
+
+
+@pytest.mark.skipif(os.getuid() == 0, reason="root bypasses permission bits")
+def test_widen_tree_permissions_never_chmods_through_a_symlink(tmp_path: Path) -> None:
+    """Codex review, PR #262, P1 (round 13): `os.walk(followlinks=False)` still yields a
+    symlinked directory's own name in `dirnames` for the directory that contains it -- it only
+    stops `os.walk()` from *descending into* that symlink, not from listing it. `os.chmod()`
+    follows symlinks by default, so a Maker/Checker with a writable `ephemeral_dir` could plant
+    `evil -> /etc` (or a symlinked file) inside the tree and have a root-privileged retry driver's
+    `_widen_tree_permissions()` widen the permissions of whatever the symlink points at, not the
+    symlink itself. This proves the walk skips both a directory symlink and a file symlink,
+    leaving their targets' modes untouched, while still widening an ordinary 0o555 real directory
+    inside the same tree (so `shutil.rmtree()` can still remove it afterwards).
+    """
+    outside_dir = tmp_path / "outside_dir"
+    outside_dir.mkdir()
+    outside_dir.chmod(0o500)
+    outside_file = tmp_path / "outside_file"
+    outside_file.write_text("secret\n", encoding="utf-8")
+    outside_file.chmod(0o400)
+
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    real_dir = runtime_dir / "trusted-settings"
+    real_dir.mkdir()
+    real_dir.chmod(0o555)
+    (runtime_dir / "evil_dir_link").symlink_to(outside_dir, target_is_directory=True)
+    (runtime_dir / "evil_file_link").symlink_to(outside_file)
+
+    try:
+        git_ephemeral._widen_tree_permissions(runtime_dir)
+
+        assert (outside_dir.stat().st_mode & 0o777) == 0o500
+        assert (outside_file.stat().st_mode & 0o777) == 0o400
+        assert (real_dir.stat().st_mode & 0o777) == 0o700
+    finally:
+        outside_dir.chmod(0o700)
+
+
+def test_prepare_never_creates_runtime_dir_when_local_override_snapshot_fails(
+    linked_worktree: GitFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # CodeRabbit review, PR #262, Medium: the local-override snapshot must run before the
+    # runtime directory is created, so a snapshot failure never leaves a freshly created
+    # runtime_dir behind for a caller to clean up (there was previously nothing wrapping
+    # this call in the cleanup `try`/`except` that removes the runtime dir on failure).
+    runtime_dir = (
+        linked_worktree.project_dir / ".claude" / "loop" / LOOP_ID / "docker-runtime" / ACTION_ID
+    )
+
+    def fail_snapshot(_worktree_path: Path) -> tuple[Any, ...]:
+        raise git_ephemeral.EphemeralGitInfrastructureError("injected snapshot failure")
+
+    monkeypatch.setattr(git_ephemeral, "_snapshot_local_overrides_or_raise", fail_snapshot)
+
+    with pytest.raises(
+        git_ephemeral.EphemeralGitInfrastructureError, match="injected snapshot failure"
+    ):
+        _prepare(linked_worktree)
+
+    assert not runtime_dir.exists()
 
 
 def test_prepare_rejects_uncommitted_worktree_change_left_over_from_prior_action(
@@ -417,6 +512,92 @@ def test_build_maker_git_mount_spec_preserves_overlay_order_and_one_to_one_paths
     ]
     assert spec.env["GIT_DIR"] == str(session.ephemeral_dir)
     assert spec.env["GIT_WORK_TREE"] == str(session.worktree_path)
+    git_ephemeral.cleanup_ephemeral_git(session)
+
+
+def test_maker_mount_uses_validated_shared_objects_source(
+    linked_worktree: GitFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _prepare(linked_worktree)
+    validated_objects = linked_worktree.project_dir / "validated-common-objects"
+    monkeypatch.setattr(
+        git_ephemeral,
+        "_validate_common_objects_mount_source",
+        lambda candidate: validated_objects,
+    )
+
+    spec = git_ephemeral.build_maker_git_mount_spec(session)
+
+    assert Path(spec.mounts[-1].source) == validated_objects
+    assert Path(spec.mounts[-1].target) == validated_objects
+    git_ephemeral.cleanup_ephemeral_git(session)
+
+
+def test_maker_mount_rejects_symlinked_shared_objects_source(
+    linked_worktree: GitFixture,
+) -> None:
+    session = _prepare(linked_worktree)
+    common_objects = Path(session.common_dir, "objects")
+    trusted_objects = Path(session.common_dir, "objects-before-maker-test")
+    common_objects.rename(trusted_objects)
+    common_objects.symlink_to(session.common_dir, target_is_directory=True)
+
+    try:
+        with pytest.raises(
+            git_ephemeral.EphemeralGitInfrastructureError, match="trusted directory"
+        ):
+            git_ephemeral.build_maker_git_mount_spec(session)
+    finally:
+        common_objects.unlink()
+        trusted_objects.rename(common_objects)
+
+    git_ephemeral.cleanup_ephemeral_git(session)
+
+
+def test_maker_mount_rejects_non_directory_shared_objects_source(
+    linked_worktree: GitFixture,
+) -> None:
+    session = _prepare(linked_worktree)
+    common_objects = Path(session.common_dir, "objects")
+    trusted_objects = Path(session.common_dir, "objects-before-maker-test")
+    common_objects.rename(trusted_objects)
+    common_objects.write_text("not a directory\n", encoding="utf-8")
+
+    try:
+        with pytest.raises(
+            git_ephemeral.EphemeralGitInfrastructureError, match="trusted directory"
+        ):
+            git_ephemeral.build_maker_git_mount_spec(session)
+    finally:
+        common_objects.unlink()
+        trusted_objects.rename(common_objects)
+
+    git_ephemeral.cleanup_ephemeral_git(session)
+
+
+def test_verify_failed_maker_worktree_safe_stops_without_resetting_partial_changes(
+    linked_worktree: GitFixture,
+) -> None:
+    session = _prepare(linked_worktree)
+    changed = linked_worktree.worktree_path / "tracked.txt"
+    changed.write_text("partial Maker output\n", encoding="utf-8")
+
+    with pytest.raises(git_ephemeral.EphemeralGitSafetyStop) as caught:
+        git_ephemeral.verify_failed_maker_worktree(session)
+
+    assert caught.value.stop_reason == "maker_partial_worktree"
+    assert changed.read_text(encoding="utf-8") == "partial Maker output\n"
+    git_ephemeral.cleanup_ephemeral_git(session)
+
+
+def test_verify_failed_maker_worktree_accepts_clean_baseline(
+    linked_worktree: GitFixture,
+) -> None:
+    session = _prepare(linked_worktree)
+
+    git_ephemeral.verify_failed_maker_worktree(session)
+
     git_ephemeral.cleanup_ephemeral_git(session)
 
 
@@ -543,6 +724,7 @@ def test_checker_prepare_and_cleanup_keep_hardened_scrubbed_host_git(
         "GIT_COMMON_DIR": str(tmp_path / "ambient-common-dir"),
         "GIT_NAMESPACE": "ambient-namespace",
         "GIT_CEILING_DIRECTORIES": str(tmp_path),
+        "GIT_TEMPLATE_DIR": str(tmp_path / "ambient-template"),
     }
     for key, value in poisoned.items():
         monkeypatch.setenv(key, value)
@@ -753,14 +935,23 @@ def test_finalize_without_commit_skips_writeback_and_removes_stale_import_ref(
 def test_finalize_rejects_uncommitted_worktree_change_on_no_commit_path(
     linked_worktree: GitFixture,
 ) -> None:
+    """Codex review, PR #262, High (round 7): a Maker that exits 0 but leaves worktree drift
+    behind must get the documented `maker_partial_worktree` safe-stop -- the same non-destructive
+    outcome `verify_failed_maker_worktree()` already reports for a *failed* Maker -- not an opaque
+    `EphemeralGitInfrastructureError` that `loop_docker_action._dispatch()` cannot distinguish from
+    a genuine Docker infrastructure failure.
+    """
     session = _prepare(linked_worktree)
     Path(session.worktree_path, "tracked.txt").write_text(
         "uncommitted, never committed\n", encoding="utf-8"
     )
     _create_stale_import_ref(session)
 
-    with pytest.raises(git_ephemeral.EphemeralGitInfrastructureError, match=r"dirty|status"):
+    with pytest.raises(
+        git_ephemeral.EphemeralGitSafetyStop, match=r"uncommitted worktree changes"
+    ) as caught:
         git_ephemeral.finalize_ephemeral_git(session)
+    assert caught.value.stop_reason == "maker_partial_worktree"
 
     assert _shared_ref(session) == session.baseline_sha
     _assert_import_ref_missing(session)
@@ -780,8 +971,11 @@ def test_finalize_rejects_skip_worktree_hidden_drift_on_no_commit_path(
     # (git status --porcelain against that index) would have reported it as clean.
     assert _git("status", "--porcelain", env=env).stdout == ""
 
-    with pytest.raises(git_ephemeral.EphemeralGitInfrastructureError, match=r"dirty|status"):
+    with pytest.raises(
+        git_ephemeral.EphemeralGitSafetyStop, match=r"uncommitted worktree changes"
+    ) as caught:
         git_ephemeral.finalize_ephemeral_git(session)
+    assert caught.value.stop_reason == "maker_partial_worktree"
 
     assert _shared_ref(session) == session.baseline_sha
     _assert_import_ref_missing(session)
@@ -799,8 +993,11 @@ def test_finalize_rejects_assume_unchanged_hidden_drift_on_no_commit_path(
     )
     assert _git("status", "--porcelain", env=env).stdout == ""
 
-    with pytest.raises(git_ephemeral.EphemeralGitInfrastructureError, match=r"dirty|status"):
+    with pytest.raises(
+        git_ephemeral.EphemeralGitSafetyStop, match=r"uncommitted worktree changes"
+    ) as caught:
         git_ephemeral.finalize_ephemeral_git(session)
+    assert caught.value.stop_reason == "maker_partial_worktree"
 
     assert _shared_ref(session) == session.baseline_sha
     _assert_import_ref_missing(session)
@@ -815,8 +1012,11 @@ def test_finalize_rejects_dirty_status_without_shared_ref_writeback(
     Path(session.worktree_path, "tracked.txt").write_text("uncommitted\n", encoding="utf-8")
     _create_stale_import_ref(session)
 
-    with pytest.raises(git_ephemeral.EphemeralGitInfrastructureError, match=r"status|dirty"):
+    with pytest.raises(
+        git_ephemeral.EphemeralGitSafetyStop, match=r"uncommitted worktree changes"
+    ) as caught:
         git_ephemeral.finalize_ephemeral_git(session)
+    assert caught.value.stop_reason == "maker_partial_worktree"
 
     assert _shared_ref(session) == session.baseline_sha
     _assert_import_ref_missing(session)
@@ -1508,6 +1708,133 @@ def test_prepare_and_finalize_ignore_untracked_config_local_override_files(
         == "?? .claude/config/cli-tools.local.yaml\n"
     )
     git_ephemeral.cleanup_ephemeral_git(session)
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        "modify",
+        "delete",
+        "add",
+        "mode",
+        "config_mode",
+        "claude_mode",
+        "worktree_mode",
+        "hardlink",
+    ],
+)
+def test_failed_maker_local_override_drift_safe_stops_without_reverting(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    fixture = _linked_worktree_with_tracked_config(tmp_path)
+    config_dir = fixture.worktree_path / ".claude" / "config"
+    existing = config_dir / "cli-tools.local.yaml"
+    existing.write_text("codex:\n  model: trusted\n", encoding="utf-8")
+    existing.chmod(0o600)
+    claude_dir = config_dir.parent
+    claude_dir.chmod(0o700)
+    fixture.worktree_path.chmod(0o700)
+    session = _prepare(fixture)
+
+    if operation == "modify":
+        existing.write_text("codex:\n  model: changed\n", encoding="utf-8")
+    elif operation == "delete":
+        existing.unlink()
+    else:
+        if operation == "add":
+            (config_dir / "added.local.json").write_text('{"changed":true}\n', encoding="utf-8")
+        elif operation == "mode":
+            existing.chmod(0o777)
+        elif operation == "config_mode":
+            config_dir.chmod(0o777)
+        elif operation == "claude_mode":
+            claude_dir.chmod(0o755)
+        elif operation == "worktree_mode":
+            fixture.worktree_path.chmod(0o755)
+        else:
+            replacement = tmp_path / "same-content-hardlink-source"
+            replacement.write_bytes(existing.read_bytes())
+            existing.unlink()
+            os.link(replacement, existing)
+
+    with pytest.raises(
+        git_ephemeral.EphemeralGitSafetyStop,
+        match="project-local configuration overrides",
+    ) as caught:
+        git_ephemeral.verify_failed_maker_worktree(session)
+
+    assert caught.value.stop_reason == "maker_partial_worktree"
+    assert _shared_ref(session) == session.baseline_sha
+    if operation == "modify":
+        assert existing.read_text(encoding="utf-8") == "codex:\n  model: changed\n"
+    elif operation == "delete":
+        assert not existing.exists()
+    elif operation == "add":
+        assert (config_dir / "added.local.json").is_file()
+    elif operation == "mode":
+        assert existing.stat().st_mode & 0o777 == 0o777
+    elif operation == "config_mode":
+        assert config_dir.stat().st_mode & 0o777 == 0o777
+    elif operation == "claude_mode":
+        assert claude_dir.stat().st_mode & 0o777 == 0o755
+    elif operation == "worktree_mode":
+        assert fixture.worktree_path.stat().st_mode & 0o777 == 0o755
+    else:
+        assert existing.stat().st_nlink == 2
+    git_ephemeral.cleanup_ephemeral_git(session)
+
+
+def test_finalize_rejects_local_override_change_before_shared_ref_update(tmp_path: Path) -> None:
+    fixture = _linked_worktree_with_tracked_config(tmp_path)
+    override = fixture.worktree_path / ".claude" / "config" / "cli-tools.local.yaml"
+    override.write_text("codex:\n  model: trusted\n", encoding="utf-8")
+    session = _prepare(fixture)
+    _maker_commit(session)
+    override.write_text("codex:\n  model: changed\n", encoding="utf-8")
+
+    with pytest.raises(
+        git_ephemeral.EphemeralGitSafetyStop,
+        match="project-local configuration overrides",
+    ) as caught:
+        git_ephemeral.finalize_ephemeral_git(session)
+
+    assert caught.value.stop_reason == "maker_partial_worktree"
+    assert _shared_ref(session) == session.baseline_sha
+    assert override.read_text(encoding="utf-8") == "codex:\n  model: changed\n"
+    git_ephemeral.cleanup_ephemeral_git(session)
+
+
+def test_finalize_converts_symlinked_config_root_tampering_to_safety_stop(
+    tmp_path: Path,
+) -> None:
+    """Codex review, PR #262, P2 (round 8, D2): a Maker that swaps `.claude/config` for a
+    symlink *after* the pre-Maker snapshot was captured must be classified as a safety-stop
+    (`maker_partial_worktree`), not a plain `EphemeralGitInfrastructureError`.
+
+    `_snapshot_local_overrides_or_raise()` previously converted any `LocalOverrideSnapshotError`
+    -- including `snapshot_local_overrides()`'s own fail-closed rejection of a symlinked config
+    root -- to `EphemeralGitInfrastructureError` unconditionally, even when called from
+    `_verify_local_override_snapshot(session, safety_stop=True)` here. That silently downgraded
+    this exact Maker-tampering signal into an ordinary infrastructure hiccup instead of the
+    durable safe stop `safety_stop=True` explicitly asks for.
+    """
+    fixture = _linked_worktree_with_tracked_config(tmp_path)
+    session = _prepare(fixture)
+    _maker_commit(session)
+    config_dir = fixture.worktree_path / ".claude" / "config"
+    elsewhere = tmp_path / "elsewhere-config"
+    shutil.move(str(config_dir), str(elsewhere))
+    config_dir.symlink_to(elsewhere)
+
+    with pytest.raises(
+        git_ephemeral.EphemeralGitSafetyStop,
+        match="project-local configuration overrides",
+    ) as caught:
+        git_ephemeral.finalize_ephemeral_git(session)
+
+    assert caught.value.stop_reason == "maker_partial_worktree"
+    assert _shared_ref(session) == session.baseline_sha
 
 
 def test_prepare_still_rejects_tracked_dirt_alongside_untracked_config_local_override(

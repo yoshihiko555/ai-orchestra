@@ -17,6 +17,7 @@ of the split.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -51,6 +52,12 @@ from loop_git_ephemeral_support import (  # noqa: E402
     _verify_git_pointer,
     _verify_worktree_matches_trusted_tree,
 )
+from loop_local_override_guard import (  # noqa: E402
+    LocalOverrideSnapshot,
+    LocalOverrideSnapshotError,
+    changed_local_override_paths,
+    snapshot_local_overrides,
+)
 
 __all__ = [
     "BindMountSpec",
@@ -63,6 +70,7 @@ __all__ = [
     "prepare_ephemeral_git",
     "build_checker_git_mount_spec",
     "build_maker_git_mount_spec",
+    "verify_failed_maker_worktree",
     "finalize_ephemeral_git",
     "cleanup_ephemeral_git",
 ]
@@ -114,6 +122,7 @@ class EphemeralGitSession:
     branch_ref: str
     import_ref: str
     baseline_sha: str
+    local_override_snapshot: tuple[LocalOverrideSnapshot, ...]
 
 
 @dataclass(frozen=True)
@@ -123,6 +132,37 @@ class EphemeralGitFinalizeResult:
     status: Literal["updated", "no_commit"]
     baseline_sha: str
     new_sha: str
+
+
+# Codex review, PR #262, High (round 7): the exact message `_verify_worktree_matches_trusted_tree`
+# raises for leftover worktree drift (as opposed to any of its other, genuinely-infrastructure
+# failure modes). Shared by `verify_failed_maker_worktree()` (failed-Maker path) and
+# `_finalize_ephemeral_git()`'s pre-CAS check (successful-Maker path, see
+# `_as_partial_worktree_stop()`) so both convert only this specific drift signal into the
+# documented `maker_partial_worktree` safe-stop, not every unrelated infrastructure error.
+_DIRTY_WORKTREE_MESSAGE = "worktree status is dirty relative to the trusted target tree"
+
+
+def _as_partial_worktree_stop(
+    exc: EphemeralGitInfrastructureError,
+) -> EphemeralGitInfrastructureError:
+    """Re-raise a dirty-worktree drift signal as `maker_partial_worktree`, or pass through.
+
+    Codex review, PR #262, High (round 7): `_finalize_ephemeral_git()`'s pre-CAS trusted-tree
+    check runs before any shared-branch mutation, so a dirty verdict there is exactly the same
+    safe, no-side-effect situation `verify_failed_maker_worktree()` already reports as
+    `maker_partial_worktree` for a failed Maker -- a successful (exit 0) Maker that still left
+    uncommitted worktree changes deserves the identical non-destructive safe-stop, not an opaque
+    Docker infrastructure failure that discards the sealed result and blocks the later `abort()`
+    path (see `loop_docker_action.DockerActionRuntime._finish_git()`).
+    """
+    if str(exc) != _DIRTY_WORKTREE_MESSAGE:
+        return exc
+    return EphemeralGitSafetyStop(
+        "maker_partial_worktree",
+        "Maker left uncommitted worktree changes",
+        details=exc.details,
+    )
 
 
 def prepare_ephemeral_git(
@@ -229,6 +269,11 @@ def _prepare_ephemeral_git(
     )
 
     _validate_runtime_location(project, worktree, runtime_dir)
+    # CodeRabbit review, PR #262, Medium: snapshot local overrides before the runtime
+    # directory is created (rather than after) so a read failure here never leaves a
+    # freshly created runtime_dir behind. This snapshot call is outside the cleanup
+    # `try` below by design -- moving it earlier means there is nothing to clean up yet.
+    local_override_snapshot = _snapshot_local_overrides_or_raise(worktree)
     _remove_runtime(runtime_dir)
     try:
         runtime_dir.mkdir(parents=True, mode=0o700)
@@ -250,6 +295,7 @@ def _prepare_ephemeral_git(
         branch_ref=branch_ref,
         import_ref=import_ref,
         baseline_sha=baseline_sha,
+        local_override_snapshot=local_override_snapshot,
     )
 
     try:
@@ -306,6 +352,17 @@ def _prepare_ephemeral_git(
             runner=runner,
             operation="seed ephemeral git user email",
         )
+        _run_git(
+            [
+                "--git-dir",
+                ephemeral_dir,
+                "config",
+                "safe.directory",
+                str(worktree),
+            ],
+            runner=runner,
+            operation="seed the trusted container worktree path",
+        )
 
         git_config = ephemeral_dir / "config"
         if git_config.is_symlink() or not git_config.is_file():
@@ -345,6 +402,7 @@ def _prepare_ephemeral_git(
             )
         pinned_git_pointer.write_bytes(git_pointer.read_bytes())
         pinned_git_pointer.chmod(0o444)
+        _verify_local_override_snapshot(session, safety_stop=False)
         return session
     except (EphemeralGitInfrastructureError, EphemeralGitSafetyStop):
         _delete_import_ref_best_effort(session, runner=runner)
@@ -370,6 +428,7 @@ def build_maker_git_mount_spec(session: EphemeralGitSession) -> MakerGitMountSpe
     this ordering when translating `mounts` into `-v`/bind-mount flags; reordering (e.g. sorting
     mounts by path) would silently drop the `.git` write protection.
     """
+    common_objects = _validate_common_objects_mount_source(session)
     return MakerGitMountSpec(
         mounts=(
             BindMountSpec(session.worktree_path, session.worktree_path, False),
@@ -380,8 +439,8 @@ def build_maker_git_mount_spec(session: EphemeralGitSession) -> MakerGitMountSpe
             ),
             BindMountSpec(session.ephemeral_dir, session.ephemeral_dir, False),
             BindMountSpec(
-                session.common_dir / "objects",
-                session.common_dir / "objects",
+                common_objects,
+                common_objects,
                 True,
             ),
         ),
@@ -464,6 +523,28 @@ def build_checker_git_mount_spec(
     )
 
 
+def verify_failed_maker_worktree(
+    session: EphemeralGitSession,
+    *,
+    runner: GitRunner = subprocess.run,
+) -> None:
+    """Safe-stop when a failed Maker left worktree changes; never reset or clean them."""
+    _verify_local_override_snapshot(session, safety_stop=True)
+    try:
+        _verify_worktree_matches_trusted_tree(
+            git_dir=session.common_dir,
+            worktree_path=session.worktree_path,
+            target_sha=session.baseline_sha,
+            temp_index_dir=session.runtime_dir,
+            runner=runner,
+        )
+    except EphemeralGitInfrastructureError as exc:
+        converted = _as_partial_worktree_stop(exc)
+        if converted is exc:
+            raise
+        raise converted from exc
+
+
 def finalize_ephemeral_git(
     session: EphemeralGitSession,
     *,
@@ -519,6 +600,7 @@ def _finalize_ephemeral_git(
     *,
     runner: GitRunner,
 ) -> EphemeralGitFinalizeResult:
+    _verify_local_override_snapshot(session, safety_stop=True)
     _harden_ephemeral_git_metadata(session)
     new_sha_result = _run_git(
         ["--git-dir", session.ephemeral_dir, "rev-parse", "--verify", session.branch_ref],
@@ -534,13 +616,29 @@ def _finalize_ephemeral_git(
         runner=runner,
         operation="verify checked-out branch before ephemeral status",
     )
-    _verify_worktree_matches_trusted_tree(
-        git_dir=session.ephemeral_dir,
-        worktree_path=session.worktree_path,
-        target_sha=new_sha,
-        temp_index_dir=session.runtime_dir,
-        runner=runner,
-    )
+    try:
+        _verify_worktree_matches_trusted_tree(
+            git_dir=session.ephemeral_dir,
+            worktree_path=session.worktree_path,
+            target_sha=new_sha,
+            temp_index_dir=session.runtime_dir,
+            runner=runner,
+        )
+    except EphemeralGitInfrastructureError as exc:
+        # Codex review, PR #262, High (round 7): this check runs before any shared-branch
+        # mutation below (fetch/CAS/reset), so a dirty verdict here is exactly the same safe,
+        # no-side-effect "Maker left worktree drift behind" situation
+        # `verify_failed_maker_worktree()` already reports as `maker_partial_worktree` for a
+        # failed Maker -- only this successful (exit 0) Maker never reached that failure path.
+        # Without this conversion, `finalize_ephemeral_git()` propagates a plain
+        # `EphemeralGitInfrastructureError` that `loop_docker_action._dispatch()` treats as an
+        # opaque Docker infrastructure failure, and by the time its `abort()` fallback would run
+        # `verify_failed_maker_worktree()` itself, the runtime is already latched `_finished` and
+        # silently no-ops (see `DockerActionRuntime.finish()`/`abort()`).
+        converted = _as_partial_worktree_stop(exc)
+        if converted is exc:
+            raise
+        raise converted from exc
 
     if new_sha == session.baseline_sha:
         return EphemeralGitFinalizeResult(
@@ -667,11 +765,108 @@ def _finalize_ephemeral_git(
     )
 
 
+def _snapshot_local_overrides_or_raise(
+    worktree_path: Path,
+    *,
+    safety_stop: bool = False,
+) -> tuple[LocalOverrideSnapshot, ...]:
+    """Snapshot local overrides, normalizing a read failure to a typed Git error.
+
+    Codex review, PR #262, P2 (round 8): `safety_stop` (default `False`, matching every
+    pre-existing call site) must mirror the caller's own classification intent. Before this,
+    a `LocalOverrideSnapshotError` here -- e.g. `loop_local_override_guard`'s own fail-closed
+    detection of a symlinked project-local override directory the Maker swapped in -- always
+    became a plain `EphemeralGitInfrastructureError`, even when called from
+    `_verify_local_override_snapshot(session, safety_stop=True)` below. That silently
+    downgraded a Maker-tampering safety stop into an ordinary "infrastructure hiccup" that
+    `loop_docker_action._dispatch()` retries/reports as opaque Docker infra failure instead of
+    the durable safe-stop the caller's `safety_stop=True` explicitly asked for.
+    """
+    try:
+        return snapshot_local_overrides(worktree_path)
+    except LocalOverrideSnapshotError as exc:
+        if safety_stop:
+            raise EphemeralGitSafetyStop(
+                "maker_partial_worktree",
+                f"could not verify project-local configuration overrides: {exc}",
+            ) from exc
+        raise EphemeralGitInfrastructureError(str(exc)) from exc
+
+
+def _verify_local_override_snapshot(
+    session: EphemeralGitSession,
+    *,
+    safety_stop: bool,
+) -> None:
+    actual = _snapshot_local_overrides_or_raise(session.worktree_path, safety_stop=safety_stop)
+    if actual == session.local_override_snapshot:
+        return
+    changed_paths = changed_local_override_paths(session.local_override_snapshot, actual)
+    details = {"changed_local_overrides": changed_paths}
+    if safety_stop:
+        raise EphemeralGitSafetyStop(
+            "maker_partial_worktree",
+            "Maker changed project-local configuration overrides",
+            details=details,
+        )
+    raise EphemeralGitInfrastructureError(
+        "project-local configuration overrides changed while preparing ephemeral git",
+        details=details,
+    )
+
+
+def _widen_tree_permissions(root: Path) -> None:
+    """Grant the owner rwx on `root` and every directory beneath it, recursively.
+
+    Codex review, PR #262, P1 (round 12): `loop_docker_settings.create_settings_bundle()`
+    deliberately chmods its `trusted-settings` directory (and the files inside it) down to
+    0o555/0o444 once populated, so a Maker/Checker container mounted read-only there cannot
+    tamper with its own guard/settings. `discard_after_lease_loss()` (round 11) intentionally
+    skips the matching `cleanup_settings_bundle()` chmod(0o700) restore -- see that method's
+    own docstring -- so the next retry of the same action_id reaches `_remove_runtime()` below
+    via `prepare_ephemeral_git()`'s unconditional wipe-and-recreate of `runtime_dir`, which
+    still contains that 0o555 `trusted-settings` subdirectory. Removing entries *inside* a
+    0o555 directory needs write permission on that directory itself, not on the entries -- a
+    non-root driver process never has that once chmod(0o555) ran (unlike a root driver, which
+    bypasses permission checks entirely and never observes this failure). Only directory modes
+    are widened here, never file modes: unlinking a file only needs write+execute on its
+    containing directory, not any permission bit on the file's own mode, so a 0o600/0o444
+    secret or settings file keeps its own restrictive mode completely untouched right up until
+    `shutil.rmtree()` removes it. `os.walk(followlinks=False)` only stops `os.walk()` itself from
+    *descending into* a symlinked directory -- it still yields the symlink's own name in
+    `dirnames` for the directory that contains it. `os.chmod()` follows symlinks by default
+    (`follow_symlinks=True`), so without an explicit `os.path.islink()` guard here, a
+    world-writable `root` containing e.g. `evil -> /etc` would have this walk `chmod(0o700)`
+    the real `/etc` the symlink points at, not the symlink itself -- especially dangerous for a
+    root-privileged retry driver. Every entry in `dirnames` is therefore checked with
+    `os.path.islink()` and skipped if it is a symlink, before ever calling `os.chmod()` on it (a
+    per-platform `follow_symlinks=False` chmod is not used instead because it is unsupported on
+    some platforms, e.g. raising `NotImplementedError` on Linux). Every `os.chmod()` failure is
+    swallowed on purpose: this is a best-effort pre-widening step for the immediately-following
+    `shutil.rmtree()`, which still raises (and gets wrapped into
+    `EphemeralGitInfrastructureError`) on any real removal failure.
+    """
+    try:
+        os.chmod(root, 0o700)
+    except OSError:
+        pass
+    for current, dirnames, _filenames in os.walk(root, followlinks=False):
+        for name in dirnames:
+            entry_path = os.path.join(current, name)
+            if os.path.islink(entry_path):
+                continue
+            try:
+                os.chmod(entry_path, 0o700)
+            except OSError:
+                pass
+
+
 def _remove_runtime(runtime_dir: Path) -> None:
     try:
         if runtime_dir.is_symlink() or runtime_dir.is_file():
             runtime_dir.unlink(missing_ok=True)
         elif runtime_dir.exists():
+            _widen_tree_permissions(runtime_dir)
             shutil.rmtree(runtime_dir)
     except OSError as exc:
         raise EphemeralGitInfrastructureError(

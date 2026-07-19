@@ -84,6 +84,16 @@ Maker（`claude -p` が生成・実行するコード）は Issue 本文・PR �
   ファイルシステム境界によって大幅に縮小される。
 - **継続**: broker 自身（サイドカー）が乗っ取られた場合のリスクは ADR-20260712-034 のスコープと同じ
   受容基準（`api.anthropic.com` への egress 限定、tmpfs token、read-only rootfs）を踏襲する。
+- **継続（PR #262 round-8 レビュー対応後の残余）**: `loop_driver.LoopDriver._lease_lost` は
+  プロセス内のイベントであり、真の分散ロックではない。Docker action 開始直前・
+  `DockerActionRuntime.finish()`（`_cleanup_containers()` 完了後・`_finish_git()` 直前）・
+  `_dispatch()` の全 except パス（abort/discard 分岐）の 3 ゲートで再チェックし、観測可能な
+  lease 喪失シグナルを尊重するよう配線したが、各チェックと実際の書き込み（container 起動 /
+  `finalize_ephemeral_git()` の git subprocess 呼び出し）の間には理論上ミリ秒〜サブ秒オーダーの
+  TOCTOU window が残る。最終防衛線は `finalize_ephemeral_git()` 自身の CAS（共有ブランチの
+  fast-forward 検証）であり、他ワーカーが既に何かを push していればそこで拒否される。この残余
+  window 自体を消すには真の分散ロック（例: 共有ブランチ更新と lease 更新を単一トランザクションに
+  する）が必要だが、コスト対効果に見合わないため受容する。
 
 ---
 
@@ -697,6 +707,22 @@ config で切替可能な追加バックエンドとして導入する（確定�
   worktree 上で正当に生成した巨大ファイルをそのまま commit した場合、host 権限で共有
   `common_dir/objects` へ書き込まれディスク枯渇 DoS を招き得る（Fix-7 が閉じた alternates 経由の
   confused deputy とは別の量的リスク）。Phase 2 では対応せず、Issue #255 でフォローアップする。
+- mechanical exec（`loop_docker_action._mechanical_exec_env()`）へ転送される host 環境変数は
+  `_MECHANICAL_ENV_ALLOWED_SUFFIXES`（`_CACHE_DIR` サフィックス）に一致するキーのみに limit
+  される allowlist 方式である（Codex レビュー指摘、round 7、Critical: host secret の Docker 隔離
+  下での漏洩防止を deny-list 方式より優先した意図的なトレードオフ。3 節参照）。したがって
+  `PYTHONPATH` 等、host 環境変数へ依存する mechanical check は Docker backend では動作しない
+  （host 実行時は動いていたものが Docker 化で無言に壊れ得る）。必要な場合は loop 定義側の
+  `mechanical.commands` コマンド文字列内で明示的に設定すること（例:
+  `PYTHONPATH=/path python -m pytest ...`）。この制約は受容し、allowlist 自体は変更しない。
+- root 実行かつ厳格 umask（例 `077`）の環境で、Checker の worktree 本体（ro マウント）の
+  所有権是正は行わない（Codex レビュー round 11 の自己検証で識別）。ephemeral GIT_DIR は
+  `protect_owner_only=False` で re-own する（driver 生成の git プラミングのみで秘密を含まない
+  ため）が、worktree 本体は実際の秘密ファイルを含み得るため同じバイパスを適用できず、
+  owner-only guard 込みの chown では root umask 下で大半のファイルがスキップされ実効性がない。
+  root + 厳格 umask で checkout されたファイルを Checker が読めないケースは「可用性の縮退
+  （checker が mechanical/LLM 層で失敗し infrastructure failure になる）」であり fail-open では
+  ないため受容する。通常の非 root 運用・既定 umask（022）では発生しない。
 
 ---
 
@@ -713,12 +739,39 @@ config で切替可能な追加バックエンドとして導入する（確定�
   `git_ref_cas_rejected`（CAS 競合）の 3 `stop_reason` として実装され、`EphemeralGitSafetyStop`
   経由で `loop_git_ephemeral.py` の各経路に対応するテストがある（`docs/evaluation/loop-harness.md`
   EV-118）。
-- 封じ込め検証テスト（cgroup 回収・network 遮断）の具体的な自動テスト形式（meta-harness の
-  スパイク手順を自動テスト化する方式を想定。`docs/design/meta-harness-scenario-backend-spikes.md`
-  を参考にする）
-- Docker Desktop/OrbStack のバインドマウントで、ファイル単位の ro overlay マウント（4.3.1 節
-  Fix-3 の `.git` ポインタ保護）が意図どおり機能することの実機検証（ディレクトリ単位のマウントは
-  meta-harness で実証済みだが、単一ファイルへの overlay は本設計で新規に導入するため個別に確認する）
+- ~~封じ込め検証テスト（cgroup 回収・network 遮断）の具体的な自動テスト形式~~ → **Phase 4
+  （Issue #211）で確定済み**: `packages/loop-harness/tests/test_loop_driver_docker_containment_e2e.py`
+  を `pytest.mark.docker` + `LOOP_HARNESS_RUN_DOCKER_GIT_E2E=1` の opt-in 実 Docker E2E とする。
+  opt-in 時に Docker が不在なら skip ではなく fail とし、cgroup 回収・network 隔離に加え、
+  loop-harness の production builder/cleanup が共有 primitive を正しく使うことと loop 固有の mount/
+  lifecycle 境界を検証する。meta-harness の S3 で実証済みの Docker 機構そのものは重複検証しない。
+- ~~Docker Desktop/OrbStack でのファイル単位 `.git` ro overlay の実機検証~~ → **Phase 4 の上記
+  containment E2E に統合して解消済み**: worktree mount 後に同一宛先へ重ねた pinned `.git`
+  単一ファイルが実コンテナ内で読み取り専用となることを、mount 順序を含めて検証する。
+- ~~[Phase 4 レビュー指摘、Critical/High] action 結果生成後の cleanup failure が偽の
+  infrastructure result を生成する問題、および lease 喪失時に `docker exec` client しか停止しない問題~~
+  → **ADR-20260718-040 で解消済み**: cleanup failure は sealed artifact / Maker CAS を上書きせず
+  `action_cleanup_failed` で安全停止し、scenario 削除未確認は action 種別を問わず安全停止する。
+  heartbeat / wall-clock の取消は executor へ伝播し、起動中・実行中の scenario container を
+  race-safe かつ冪等に `docker rm -f` する。opt-in containment E2E は長時間 `docker exec` の回収まで
+  production driver 配線で検証する。
+- **[Phase 4 レビュー指摘、High/Medium、部分採用] action worktree の base config を protected-path 化しない**:
+  実効 base config は driver 自身の `package_root()`、local override は root worktree から読み、Maker
+  rw mount 内の action worktree にある同名 base config は次 dispatch の設定源ではない。tracked config
+  更新を一律禁止すると loop-harness 自身の更新を妨げるため protected-path 化はしない。一方、この
+  パス分離を運用規約だけに依存させず、既存 run は attach/config 読込前、新規 run は state/worktree
+  作成直後に runtime-source guard を実行する。driver entrypoint・definition module・実効 base config の
+  resolve 済み実パスが action worktree 配下なら起動拒否する。root worktree source と別 linked action
+  worktree を使う通常の self-hosting は許可する。
+- **[Phase 4 セキュリティレビュー指摘、Medium、受容] broker の外向き通信はアプリ層 allowlist を主境界とする**:
+  scenario は internal network のみで外部へ直接到達できず、唯一 dual-home の trusted broker が固定
+  upstream host / HTTPS / request envelope / budget を検証する。Docker network 単体では DNS 名単位の
+  portable な egress allowlist を構成できないため、host firewall 追加は将来の defense-in-depth とし、
+  Phase 4 の移植可能な必須条件にはしない。
+- **[Phase 4 セキュリティレビュー指摘、Medium、受容] exec 後 idle 検証は `docker top` の snapshot とする**:
+  各 exec 直後に trusted startup snapshot との完全一致を検証し、永続する残存 process は cgroup ごと
+  破棄する。snapshot の瞬間だけ存在しない極短命 process を完全に証明する kernel event 監視までは
+  導入せず、broker の request/budget 制限と action 終了時の container 強制削除を補完境界とする。
 - ~~[未修正。2026-07-18 発見（PR #256 レビュー3巡目の回帰テスト作成中に判明。Critical 疑い）]
   `_verify_worktree_matches_trusted_tree` の `git status --porcelain` staged 列（index vs
   `HEAD`）が primary worktree の `HEAD` に誤って反応し、`main` が独立して進むだけで
@@ -736,11 +789,10 @@ config で切替可能な追加バックエンドとして導入する（確定�
   `test_prepare_commit_finalize_succeeds_when_primary_worktree_head_diverges_mid_action`
   （`packages/loop-harness/tests/test_loop_git_ephemeral.py`）。詳細は `_verify_worktree_matches_trusted_tree`
   の docstring（`packages/loop-harness/lib/loop_git_ephemeral_support.py`）を参照。
-- [Phase 3 コードレビュー指摘、Low、Phase 4 で対応予定] `prepare_ephemeral_git` は Maker/Checker
-  いずれの ephemeral GIT_DIR にも commit identity を一律 `user.name=loop-harness-maker` /
-  `user.email=loop-harness-maker@invalid` で seed しており、Checker 側にも同じ Maker 由来の識別子
-  が残る非対称がある（Checker は commit しないため実害はないが命名として紛らわしい）。また
-  `_validate_common_objects_mount_source` の symlink/非ディレクトリ拒否は Checker の mount spec 構築
-  （`build_checker_git_mount_spec`）でのみ呼ばれ、Maker 側（`build_maker_git_mount_spec`）には対称な
-  再検証が無い。Phase 4 で Docker backend を実装する際、Maker 側にも同じ mount-source 再検証を追加し、
-  Checker 専用の commit identity 命名を分離するかどうかを合わせて確定する。
+- ~~[Phase 3 コードレビュー指摘、Low] Maker 側の shared objects mount-source 再検証~~ → **Phase 4
+  で解消済み**: `build_maker_git_mount_spec` は冒頭で
+  `_validate_common_objects_mount_source()` を呼び、symlink/非ディレクトリを拒否した検証済み
+  `common_objects` を mount source に使う。Maker/Checker とも spec はキャッシュせず mount 直前に
+  再構築する。
+- **commit identity の Maker/Checker role 分離は Phase 4 で明示的に不採用**: Checker は commit
+  しないため現状の合成 identity に実害がなく、role 引数追加による API・テスト範囲の拡大に見合わない。

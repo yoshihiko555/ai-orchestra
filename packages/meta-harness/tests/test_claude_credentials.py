@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import time
 
 import pytest
@@ -14,6 +15,13 @@ creds = load_module(
     "meta_harness_claude_credentials_tests",
     "packages/meta-harness/lib/claude_credentials.py",
 )
+
+
+def test_compatibility_wrapper_reexports_shared_runtime_types() -> None:
+    runtime_credentials = sys.modules["docker_runtime_credentials"]
+
+    assert creds.ClaudeCredentialError is runtime_credentials.ClaudeCredentialError
+    assert creds.ClaudeOAuthCredential is runtime_credentials.ClaudeOAuthCredential
 
 
 def _completed(stdout: str, returncode: int = 0) -> subprocess.CompletedProcess:

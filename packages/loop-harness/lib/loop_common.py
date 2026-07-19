@@ -1058,6 +1058,7 @@ def run_mechanical_checks(
     env: Mapping[str, str] | None = None,
     on_start: Callable[[int | None], None] | None = None,
     remaining_budget: Callable[[], float] | None = None,
+    command_runner: Callable[..., tuple[str, int]] | None = None,
 ) -> list[MechanicalFailure]:
     """Run mechanical checker commands and classify failures via failure_detector.
 
@@ -1092,7 +1093,8 @@ def run_mechanical_checks(
                 output = "\ncommand skipped: wall-clock budget exhausted"
                 exit_code = 124
             else:
-                output, exit_code = _run_mechanical_command(
+                runner = command_runner or _run_mechanical_command
+                output, exit_code = runner(
                     command, cwd, command_timeout, env=env, on_start=on_start
                 )
             response = {"exit_code": exit_code, "stdout": output}

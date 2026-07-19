@@ -29,8 +29,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`meta-harness`: `orchex meta propose`（Phase 2 M4）を追加**: filtered view を srt 隔離 backend 内の proposer（既定 codex）へ渡し、構造化 proposal を検証して候補登録する。無効 proposal は候補登録せず `rejected/` に診断保存する。`proposer.timeout_seconds` で codex backend の wall-clock timeout を制御し、timeout 時はプロセスグループごと強制終了する。proposal 登録イベントには codex stdout 由来の `tokens_used` も記録する
 - **`meta-harness`: `orchex meta promote`（Phase 2 M5）を追加**: frontier 上の候補を予約して promotion worktree に適用し、facet/context build と任意の `promote.verify_command` を通した上で PR を作成する。`--confirm` は PR merge と main 到達を検証した場合のみ `promoted` 遷移を記録する
 - **`meta-harness`: proposer 出力経路の資格情報検知（Phase 2 L2/L3）を追加**: 候補登録時に proposal・overlay を走査し、staged auth の canary（L2）や `sk-`/JWT 等の汎用 secret（L3）を検出したら登録を拒否して台帳へ `proposer_security_violation` を記録する。L3 スキャンは `promote` 前提条件でも再実行する（検知層であり主対策は認証情報の最小化）
+- **`loop-harness`: LP-2 の Docker 隔離実行を追加**: `isolation.execution_backend: docker` を明示した場合のみ Maker / Checker / 外部レビュー分類を hardened container と OAuth broker で実行する。既定値は引き続き `none` とし、Docker・broker・mount・container の障害時は host 実行へ降格せず fail-closed する。
 
 ### Fixed
+
+- **`loop-harness`: Docker action 完了後の cleanup 失敗と lease 喪失時の隔離停止を修正**: cleanup 失敗が成功済み Checker artifact / Maker CAS を偽の infrastructure failure で上書きしないよう安全停止へ変更し、lease 喪失時は host 側 `docker exec` client だけでなく scenario container の cgroup 全体を回収するようにした。driver/config runtime が Maker の action worktree 内に配置された unsafe な起動経路も config 読込・action 実行前に拒否する。
 
 - **`meta-harness`: Docker capability gate と実 judge コンテナが出力トークン上限を適用しておらず broker 予算超過を招いていた不具合を修正**: capability smoke コンテナと judge（`judge.tool: claude-bare`）コンテナの双方に `scenario_run.max_output_tokens_default`（既定 4096、`null` 明示時もフォールバック）を適用し、broker の worst-case 予算チェックによる評価不能を解消した。
 - **`evaluation-set-checker` が `packages/` 配下に実体を持たない SSOT（orchex CLI 等）のテストを識別できない不具合を修正**: 評価セット ID とテストパスの明示マッピング（`.claude/config/quality-gates/evaluation-set-mapping.yaml`）を追加し、`test_orchestra_manager_core.py` が無関係な `core` パッケージへ誤誘導される問題も解消した。

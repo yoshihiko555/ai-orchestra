@@ -9,13 +9,16 @@ import sys
 from pathlib import Path
 from typing import Any
 
-_PACKAGE_DIR = Path(__file__).resolve().parent.parent
+_LIB_DIR = Path(__file__).resolve().parent
+_PACKAGE_DIR = _LIB_DIR.parent
 _DOCKER_RUNTIME_LIB = _PACKAGE_DIR.parent / "docker-runtime" / "lib"
-if str(_DOCKER_RUNTIME_LIB) not in sys.path:
-    sys.path.insert(0, str(_DOCKER_RUNTIME_LIB))
+for _path in (_LIB_DIR, _DOCKER_RUNTIME_LIB):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
 
 import docker_runtime_cli as runtime_cli
 import docker_runtime_image as runtime_image
+import loop_docker_config as docker_config
 
 SubprocessRunner = runtime_cli.SubprocessRunner
 EnsuredImage = runtime_image.EnsuredImage
@@ -23,7 +26,8 @@ DockerImageError = runtime_image.DockerImageError
 
 DOCKER_LABEL = "ai.orchestra.loop-harness"
 NAME_PREFIX = "lh-"
-DEFAULT_SCENARIO_IMAGE = "ai-orchestra/loop-harness-scenario:2.1.207"
+DEFAULT_SCENARIO_IMAGE = docker_config.DEFAULT_SCENARIO_IMAGE
+DEFAULT_BROKER_IMAGE = docker_config.DEFAULT_BROKER_IMAGE
 DEFAULT_MANIFEST_PATH = ".claude/loop/docker-image-cache.json"
 DEFAULT_LOCK_PATH = ".claude/loop/docker-image-build.lock"
 DEFAULT_BUILDER_NAME = "loop-harness-builder"
@@ -88,6 +92,55 @@ def ensure_scenario_image(
         if not _version_matches(actual, str(image_pin)):
             raise DockerImageError(f"image_pin mismatch: expected {image_pin!r}, got {actual!r}")
     return ensured
+
+
+def ensure_broker_image(
+    config: dict[str, Any],
+    main_root: Path,
+    *,
+    runner: SubprocessRunner = subprocess.run,
+    platform: str | None = None,
+    target: str | None = None,
+) -> EnsuredImage:
+    """Ensure the shared broker image in the loop-harness image-cache namespace."""
+    isolation = _mapping(_mapping(config.get("lp2")).get("isolation"))
+    broker = _mapping(isolation.get("broker"))
+    cache = _mapping(isolation.get("image_cache"))
+    configured_image = str(broker.get("image") or DEFAULT_BROKER_IMAGE)
+    recipe = runtime_image.ImageRecipe(
+        family="broker",
+        repository=_image_repository(configured_image),
+        context_dir=_PACKAGE_DIR.parent / "docker-runtime" / "docker" / "broker",
+        docker_label=DOCKER_LABEL,
+        build_args={},
+        platform=platform,
+        target=target,
+    )
+    policy = runtime_image.ImageCachePolicy(
+        manifest_path=_main_root_path(
+            main_root,
+            cache.get("manifest_path", DEFAULT_MANIFEST_PATH),
+        ),
+        lock_path=_main_root_path(main_root, cache.get("lock_path", DEFAULT_LOCK_PATH)),
+        keep_generations=_positive_int(
+            cache.get("keep_generations"),
+            DEFAULT_KEEP_GENERATIONS,
+        ),
+        builder_name=str(cache.get("builder_name") or DEFAULT_BUILDER_NAME),
+        buildkit_cache_max_age=str(
+            cache.get("buildkit_cache_max_age") or DEFAULT_BUILDKIT_CACHE_MAX_AGE
+        ),
+        buildkit_cache_max_size=str(
+            cache.get("buildkit_cache_max_size") or DEFAULT_BUILDKIT_CACHE_MAX_SIZE
+        ),
+    )
+    return runtime_image.ensure_recipe_image(
+        recipe,
+        policy,
+        auto_build=bool(isolation.get("auto_build_images", True)),
+        immutable_image=configured_image,
+        runner=runner,
+    )
 
 
 def _mapping(value: object) -> dict[str, Any]:

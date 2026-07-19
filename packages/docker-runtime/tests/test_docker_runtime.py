@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -115,6 +117,332 @@ def test_profile_builders_keep_hardening_and_validate_mounts(tmp_path: Path) -> 
     ]
     with pytest.raises(profile.DockerProfileError, match="comma"):
         profile.bind_mount(tmp_path / "invalid,path", "/workspace", read_only=True)
+
+
+def test_align_mount_ownership_is_noop_for_non_root_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(profile.os, "getuid", lambda: 1000)
+    calls: list[tuple[Path, int, int]] = []
+    monkeypatch.setattr(
+        profile.os,
+        "chown",
+        lambda path, uid, gid, **_kwargs: calls.append((Path(path), uid, gid)),
+    )
+    target = tmp_path / "worktree"
+    target.mkdir()
+    (target / "file.txt").write_text("content", encoding="utf-8")
+
+    profile.align_mount_ownership(target)
+
+    assert calls == []
+
+
+def test_align_mount_ownership_reowns_tree_to_forced_non_root_identity_when_host_is_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(profile.os, "getuid", lambda: 0)
+    monkeypatch.setattr(profile.os, "getgid", lambda: 0)
+    calls: list[tuple[Path, int, int, bool]] = []
+    monkeypatch.setattr(
+        profile.os,
+        "chown",
+        lambda path, uid, gid, follow_symlinks=True: calls.append(
+            (Path(path), uid, gid, follow_symlinks)
+        ),
+    )
+    target = tmp_path / "worktree"
+    nested = target / "nested"
+    nested.mkdir(parents=True)
+    (nested / "file.txt").write_text("content", encoding="utf-8")
+
+    profile.align_mount_ownership(target)
+
+    reowned = {(path, uid, gid) for path, uid, gid, _follow in calls}
+    assert reowned == {
+        (target, 65532, 65532),
+        (nested, 65532, 65532),
+        (nested / "file.txt", 65532, 65532),
+    }
+    # The top-level path uses follow_symlinks=True (the default `os.chown` signature); every
+    # descendant is chowned with follow_symlinks=False so a malicious symlink planted inside the
+    # tree cannot redirect ownership changes to an arbitrary host path outside it.
+    descendant_calls = [call for call in calls if call[0] != target]
+    assert all(call[3] is False for call in descendant_calls)
+
+
+def test_align_mount_ownership_skips_excluded_leaf_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review, PR #262, High (round 4): don't re-own excluded leaf entries.
+
+    A root-run driver must not use this re-own to newly grant the fixed non-root container
+    identity access to a caller-excluded file (e.g. a project-local override the caller wants to
+    keep at its original, possibly stricter, owner). Ancestor directories stay re-owned so the
+    container can still traverse them.
+    """
+    monkeypatch.setattr(profile.os, "getuid", lambda: 0)
+    monkeypatch.setattr(profile.os, "getgid", lambda: 0)
+    calls: list[Path] = []
+    monkeypatch.setattr(
+        profile.os,
+        "chown",
+        lambda path, uid, gid, follow_symlinks=True: calls.append(Path(path)),
+    )
+    target = tmp_path / "worktree"
+    nested = target / "nested"
+    nested.mkdir(parents=True)
+    excluded_file = nested / "secret.local.yaml"
+    excluded_file.write_text("content", encoding="utf-8")
+    kept_file = nested / "file.txt"
+    kept_file.write_text("content", encoding="utf-8")
+
+    profile.align_mount_ownership(target, exclude=frozenset({excluded_file}))
+
+    assert excluded_file not in calls
+    assert kept_file in calls
+    assert nested in calls
+    assert target in calls
+
+
+def test_align_mount_ownership_skips_hardlink_alias_of_an_excluded_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review, PR #262, P2 (round 8): an `exclude` entry must also cover a hardlink alias
+    of that same file, not just its own path.
+
+    `exclude` previously only matched by `Path` equality. A hardlink to the same excluded
+    `.local.yaml` inode planted at a different path inside the same worktree is a distinct
+    directory entry `rglob()` walks into with its own path but the *same* underlying inode --
+    `child in excluded` alone misses it, re-owning the excluded file's inode (through the alias
+    path) to the non-root container identity and exposing its contents via that alias.
+    """
+    monkeypatch.setattr(profile.os, "getuid", lambda: 0)
+    monkeypatch.setattr(profile.os, "getgid", lambda: 0)
+    calls: list[Path] = []
+    monkeypatch.setattr(
+        profile.os,
+        "chown",
+        lambda path, uid, gid, follow_symlinks=True: calls.append(Path(path)),
+    )
+    target = tmp_path / "worktree"
+    nested = target / "nested"
+    nested.mkdir(parents=True)
+    excluded_file = nested / "secret.local.yaml"
+    excluded_file.write_text("content", encoding="utf-8")
+    hardlink_alias = nested / "alias-of-secret"
+    os.link(excluded_file, hardlink_alias)
+
+    profile.align_mount_ownership(target, exclude=frozenset({excluded_file}))
+
+    assert excluded_file not in calls
+    assert hardlink_alias not in calls
+    assert nested in calls
+    assert target in calls
+
+
+def test_align_mount_ownership_skips_owner_only_permission_secrets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review, PR #262, P1 (round 10): don't re-own root-owned `0600` secrets.
+
+    A root-run driver must not use this re-own to newly grant the fixed non-root container
+    identity access to a secret file (e.g. `.env`, `.netrc`) that was deliberately left at a
+    restrictive mode with no group/other permission bits at all -- even when the caller never
+    enumerated it in `exclude`. Ordinary worktree files at the usual mode stay re-owned so Maker
+    can still write them.
+    """
+    monkeypatch.setattr(profile.os, "getuid", lambda: 0)
+    monkeypatch.setattr(profile.os, "getgid", lambda: 0)
+    calls: list[Path] = []
+    monkeypatch.setattr(
+        profile.os,
+        "chown",
+        lambda path, uid, gid, follow_symlinks=True: calls.append(Path(path)),
+    )
+    target = tmp_path / "worktree"
+    nested = target / "nested"
+    nested.mkdir(parents=True)
+    secret_file = nested / ".env"
+    secret_file.write_text("SECRET=1", encoding="utf-8")
+    secret_file.chmod(0o600)
+    ordinary_file = nested / "file.txt"
+    ordinary_file.write_text("content", encoding="utf-8")
+    ordinary_file.chmod(0o644)
+
+    profile.align_mount_ownership(target)
+
+    assert secret_file not in calls
+    assert ordinary_file in calls
+    assert nested in calls
+    assert target in calls
+
+
+def test_align_mount_ownership_rejects_owner_only_secret_for_non_root_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review, PR #262, P1 (round 11): the round-10 owner-only skip only protects a secret
+    from *this* re-own -- it does nothing when the host process is already non-root, because
+    `non_root_identity()` then maps the scenario container to that same host uid/gid, so the
+    secret is readable by the untrusted Maker/Checker regardless of chown. There is no ownership
+    change that can fix this; the only fail-closed option is to refuse to start.
+    """
+    monkeypatch.setattr(profile.os, "getuid", lambda: 1000)
+    calls: list[Path] = []
+    monkeypatch.setattr(
+        profile.os,
+        "chown",
+        lambda path, uid, gid, **_kwargs: calls.append(Path(path)),
+    )
+    target = tmp_path / "worktree"
+    nested = target / "nested"
+    nested.mkdir(parents=True)
+    secret_file = nested / ".env"
+    secret_file.write_text("SECRET=1", encoding="utf-8")
+    secret_file.chmod(0o600)
+
+    with pytest.raises(profile.DockerProfileError, match="non-root container"):
+        profile.align_mount_ownership(target)
+
+    assert calls == []
+
+
+def test_align_mount_ownership_reject_honors_exclude_for_non_root_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review, PR #262, P2 (round 12): the round-11 non-root reject check ignored the
+    caller's `exclude` set entirely, an asymmetry with the root branch's chown-skip `exclude`
+    handling. A `.local.*` override deliberately left at a restrictive mode (the same file the
+    root path's `exclude` already tolerates) must not refuse to start a non-root driver either.
+    """
+    monkeypatch.setattr(profile.os, "getuid", lambda: 1000)
+    target = tmp_path / "worktree"
+    nested = target / "nested"
+    nested.mkdir(parents=True)
+    excluded_file = nested / "secret.local.yaml"
+    excluded_file.write_text("content", encoding="utf-8")
+    excluded_file.chmod(0o600)
+
+    profile.align_mount_ownership(target, exclude=frozenset({excluded_file}))
+
+
+def test_align_mount_ownership_reject_still_rejects_non_excluded_secret_for_non_root_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression guard for the round-12 exclude fix above: excluding one file must not
+    accidentally suppress the reject check for every other owner-only-permission entry.
+    """
+    monkeypatch.setattr(profile.os, "getuid", lambda: 1000)
+    target = tmp_path / "worktree"
+    nested = target / "nested"
+    nested.mkdir(parents=True)
+    excluded_file = nested / "secret.local.yaml"
+    excluded_file.write_text("content", encoding="utf-8")
+    secret_file = nested / ".env"
+    secret_file.write_text("SECRET=1", encoding="utf-8")
+    secret_file.chmod(0o600)
+
+    with pytest.raises(profile.DockerProfileError, match="non-root container"):
+        profile.align_mount_ownership(target, exclude=frozenset({excluded_file}))
+
+
+def test_reject_owner_only_secrets_rejects_for_non_root_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review, PR #262, P1 (round 12): `reject_owner_only_secrets()` is the standalone
+    entry point a caller uses to run only the round-11 reject check without also chowning (e.g.
+    a read-only Checker worktree mount, which never needs re-owning). It must reject the same
+    owner-only secret `align_mount_ownership()` would.
+    """
+    monkeypatch.setattr(profile.os, "getuid", lambda: 1000)
+    target = tmp_path / "worktree"
+    target.mkdir()
+    secret_file = target / ".env"
+    secret_file.write_text("SECRET=1", encoding="utf-8")
+    secret_file.chmod(0o600)
+
+    with pytest.raises(profile.DockerProfileError, match="non-root container"):
+        profile.reject_owner_only_secrets(target)
+
+
+def test_reject_owner_only_secrets_honors_exclude_for_non_root_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same round-12 exclude semantics as `align_mount_ownership()`'s reject branch."""
+    monkeypatch.setattr(profile.os, "getuid", lambda: 1000)
+    target = tmp_path / "worktree"
+    target.mkdir()
+    excluded_file = target / "secret.local.yaml"
+    excluded_file.write_text("content", encoding="utf-8")
+    excluded_file.chmod(0o600)
+
+    profile.reject_owner_only_secrets(target, exclude=frozenset({excluded_file}))
+
+
+def test_reject_owner_only_secrets_is_noop_for_root_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review, PR #262, P1 (round 12): on a root-run driver, `reject_owner_only_secrets()`
+    is intentionally a no-op -- `docs/design/loop-harness-isolation.md` section 9.2 already
+    documents a root-run driver's Checker worktree as an accepted availability trade-off, not
+    something this reject check also needs to enforce.
+    """
+    monkeypatch.setattr(profile.os, "getuid", lambda: 0)
+    target = tmp_path / "worktree"
+    target.mkdir()
+    secret_file = target / ".env"
+    secret_file.write_text("SECRET=1", encoding="utf-8")
+    secret_file.chmod(0o600)
+
+    profile.reject_owner_only_secrets(target)
+
+
+def test_align_mount_ownership_protect_owner_only_false_bypasses_reject_for_non_root_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``protect_owner_only=False`` opts a driver-generated path (e.g. the ephemeral Git runtime
+    directory) out of the round-11 reject above -- nothing there is a human-placed secret, so a
+    restrictive mode from the process umask must not block starting a non-root container.
+    """
+    monkeypatch.setattr(profile.os, "getuid", lambda: 1000)
+    target = tmp_path / "runtime"
+    nested = target / "nested"
+    nested.mkdir(parents=True)
+    restrictive_file = nested / "config"
+    restrictive_file.write_text("data", encoding="utf-8")
+    restrictive_file.chmod(0o600)
+
+    profile.align_mount_ownership(target, protect_owner_only=False)
+
+
+def test_align_mount_ownership_reowns_owner_only_permission_directory_ancestor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A restrictive-mode *directory* is itself skipped, but `rglob()` still walks into it so
+    any child that later becomes reachable (e.g. after a permission change) is evaluated too --
+    the directory skip alone already keeps the container from traversing in via its own mode.
+    """
+    monkeypatch.setattr(profile.os, "getuid", lambda: 0)
+    monkeypatch.setattr(profile.os, "getgid", lambda: 0)
+    calls: list[Path] = []
+    monkeypatch.setattr(
+        profile.os,
+        "chown",
+        lambda path, uid, gid, follow_symlinks=True: calls.append(Path(path)),
+    )
+    target = tmp_path / "worktree"
+    restricted_dir = target / ".ssh"
+    restricted_dir.mkdir(parents=True)
+    restricted_dir.chmod(0o700)
+    key_file = restricted_dir / "id_rsa"
+    key_file.write_text("private-key", encoding="utf-8")
+    key_file.chmod(0o600)
+
+    profile.align_mount_ownership(target)
+
+    assert restricted_dir not in calls
+    assert key_file not in calls
+    assert target in calls
 
 
 def test_broker_command_is_dual_homed_hardened_and_uses_image_id() -> None:
@@ -550,6 +878,102 @@ def test_network_is_stale_returns_false_for_owner_mismatch() -> None:
     inspected = {"Labels": {labels.owner_label: "other-owner"}}
 
     assert lifecycle.network_is_stale(inspected, "owner-test", labels=labels) is False
+
+
+def test_network_is_stale_returns_false_for_a_live_startup_network() -> None:
+    """Codex review, PR #262, High (round 6): don't sweep a concurrent worker's live network.
+
+    Concurrent same-project workers share one owner id, so a network another worker just
+    created -- but has not yet attached a broker/scenario container to -- looks identical to a
+    truly orphaned network: same owner label, no containers. As long as its creating process
+    (`parent_pid_label`) is still alive, it must not be reclaimed out from under that worker.
+    """
+    labels = lifecycle.RuntimeLabels("ai.orchestra.test")
+    inspected = {"Labels": {labels.owner_label: "owner-test", labels.parent_pid_label: "4242"}}
+
+    is_stale = lifecycle.network_is_stale(
+        inspected, "owner-test", labels=labels, pid_checker=lambda _pid: True
+    )
+
+    assert is_stale is False
+
+
+def test_network_is_stale_returns_true_when_creating_process_is_dead() -> None:
+    """A same-owner, container-less network whose creating process died is a genuine leak."""
+    labels = lifecycle.RuntimeLabels("ai.orchestra.test")
+    inspected = {"Labels": {labels.owner_label: "owner-test", labels.parent_pid_label: "4242"}}
+
+    is_stale = lifecycle.network_is_stale(
+        inspected, "owner-test", labels=labels, pid_checker=lambda _pid: False
+    )
+
+    assert is_stale is True
+
+
+def test_network_is_stale_returns_true_for_missing_parent_pid_label() -> None:
+    """A network predating the parent-pid label (or with a corrupt one) still reaps immediately,
+    matching `container_is_stale()`'s own fallback for the same case."""
+    labels = lifecycle.RuntimeLabels("ai.orchestra.test")
+    inspected = {"Labels": {labels.owner_label: "owner-test"}}
+
+    assert lifecycle.network_is_stale(inspected, "owner-test", labels=labels) is True
+
+
+def test_network_is_stale_returns_true_past_age_cap_despite_pid_reuse() -> None:
+    """Codex review, PR #262, High (round 7): PID reuse must not leak networks forever.
+
+    A same-owner, container-less network whose `created_at_label` is already past
+    `stale_max_age_seconds` is reclaimed even when `pid_checker` reports the (possibly reused)
+    `parent_pid_label` as alive -- mirroring `container_is_stale()`'s own absolute age cap so a
+    driver crash followed by OS PID reuse cannot suspend reclamation indefinitely.
+    """
+    labels = lifecycle.RuntimeLabels("ai.orchestra.test", stale_max_age_seconds=60)
+    inspected = {
+        "Labels": {
+            labels.owner_label: "owner-test",
+            labels.parent_pid_label: "4242",
+            labels.created_at_label: str(int(time.time()) - 120),
+        }
+    }
+
+    is_stale = lifecycle.network_is_stale(
+        inspected, "owner-test", labels=labels, pid_checker=lambda _pid: True
+    )
+
+    assert is_stale is True
+
+
+def test_network_is_stale_returns_false_within_age_cap_and_live_pid() -> None:
+    """A network within its age cap and whose creating process is alive is never stale."""
+    labels = lifecycle.RuntimeLabels("ai.orchestra.test", stale_max_age_seconds=3600)
+    inspected = {
+        "Labels": {
+            labels.owner_label: "owner-test",
+            labels.parent_pid_label: "4242",
+            labels.created_at_label: str(int(time.time())),
+        }
+    }
+
+    is_stale = lifecycle.network_is_stale(
+        inspected, "owner-test", labels=labels, pid_checker=lambda _pid: True
+    )
+
+    assert is_stale is False
+
+
+def test_network_is_stale_returns_false_when_containers_are_attached() -> None:
+    """A same-owner network with attached containers is never stale regardless of pid liveness."""
+    labels = lifecycle.RuntimeLabels("ai.orchestra.test")
+    inspected = {
+        "Labels": {labels.owner_label: "owner-test", labels.parent_pid_label: "4242"},
+        "Containers": {"abc123": {}},
+    }
+
+    is_stale = lifecycle.network_is_stale(
+        inspected, "owner-test", labels=labels, pid_checker=lambda _pid: False
+    )
+
+    assert is_stale is False
 
 
 def _price_modifier_test_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> object:

@@ -35,9 +35,13 @@ _LIB_DIR = _SCRIPT_DIR.parent / "lib"
 if str(_LIB_DIR) not in sys.path:
     sys.path.insert(0, str(_LIB_DIR))
 
+import loop_action_executor as lae  # noqa: E402
 import loop_common as lc  # noqa: E402
 import loop_definition as ld  # noqa: E402
+import loop_docker_action as lda  # noqa: E402
+import loop_docker_config as ldc  # noqa: E402
 import loop_driver_support as lds  # noqa: E402
+import loop_git_ephemeral as lge  # noqa: E402
 import pr_review_wait as prw  # noqa: E402
 import worktree_manager as wm  # noqa: E402
 
@@ -158,19 +162,78 @@ class _ExternalReviewLeaseLostError(_LeaseLostError):
     """
 
 
+def _assert_runtime_sources_outside_action_worktree(loop_id: str, project_dir: str) -> None:
+    """Reject a driver/config runtime loaded from any Maker-writable loop worktree.
+
+    Existing runs are checked before attach (and therefore before effective config loading),
+    against *this* run's own persisted ``worktree_path`` (which need not follow any particular
+    naming convention -- it is whatever was recorded when the run started). New runs are
+    checked again by ``LoopDriver.__init__`` immediately after their state and worktree are
+    created, adding this run's own freshly created worktree to the same check.
+
+    Codex review, PR #262, High: relying solely on *this* run's own worktree left a gap for a
+    brand-new loop: before its state exists, the pre-attach call had no worktree to compare
+    against and returned immediately, and by the time ``LoopDriver.__init__`` re-checks, it only
+    knows about the worktree it just created for *this* run -- never any *other* loop's worktree.
+    A driver process accidentally launched from a different, already Maker-writable loop
+    worktree (e.g. a scheduler misconfiguration re-using an old worktree's copy of
+    ``loop_driver.py``) was therefore never checked against that other worktree at all, so
+    runtime code or config tampered with by a previous/concurrent loop's Maker could become
+    trusted for a brand-new, unrelated run. Every loop worktree lives at
+    ``<root>/.worktrees/loop-issue-<N>`` by construction (``worktree_manager.worktree_path_for()``);
+    this additionally glob-enumerates every *currently existing* one (worktrees are only ever
+    removed explicitly, never automatically -- see ``worktree_manager.remove_worktree()``'s own
+    docstring -- so a past loop's worktree stays enumerable here for as long as it could still
+    hold tampered runtime files) and rejects a runtime source found under any of them, not just
+    this run's own -- and, unlike the per-run check alone, can do so unconditionally before this
+    loop's own state/worktree exist. Scoping this additional check to the ``loop-issue-*`` naming
+    convention (rather than all of ``<root>/.worktrees/``) matters because that shared parent
+    directory is also where unrelated, non-loop-harness developer worktrees live (e.g.
+    feature-branch worktrees created by hand); blocking the whole directory would reject
+    completely legitimate self-hosted development runs. Resolving every source closes symlink
+    aliases without forbidding self-hosting from the root worktree when the action uses a
+    separate linked worktree.
+    """
+    forbidden_worktrees: list[Path] = []
+    if lc.state_path(loop_id, project_dir).is_file():
+        forbidden_worktrees.append(
+            Path(lc.load_state(loop_id, project_dir).worktree_path).resolve()
+        )
+    root = lc.resolve_root_worktree(project_dir)
+    forbidden_worktrees.extend(
+        candidate.resolve()
+        for candidate in (root / ".worktrees").glob("loop-issue-*")
+        if candidate.is_dir()
+    )
+    if not forbidden_worktrees:
+        return
+    runtime_sources = {
+        "driver entrypoint": Path(__file__).resolve(),
+        "definition module": Path(ld.__file__).resolve(),
+        "base config": (ld.package_root() / "config" / ld.CONFIG_FILENAME).resolve(),
+    }
+    for label, source in runtime_sources.items():
+        for worktree in forbidden_worktrees:
+            if source == worktree or worktree in source.parents:
+                raise lc.InvalidStateError(
+                    f"unsafe loop driver runtime location: {label} is inside a loop worktree"
+                )
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point: `loop_driver.py --loop-id <id> --project <path>`."""
     args = _parse_args(argv)
     project = _project_dir(args.project)
     try:
+        _assert_runtime_sources_outside_action_worktree(args.loop_id, project)
         lease_token, proposal = _acquire_initial_proposal(args.loop_id, project, args.definition)
+        driver = LoopDriver(args.loop_id, project, lease_token, claude_bin=args.claude_bin)
     except lc.ForeignLeaseError as exc:
         print(f"loop_driver: foreign live lease for {args.loop_id}: {exc}", file=sys.stderr)
         return EXIT_FOREIGN_LEASE
     except lc.LoopHarnessError as exc:
         print(f"loop_driver: {exc}", file=sys.stderr)
         return EXIT_GENERAL_ERROR
-    driver = LoopDriver(args.loop_id, project, lease_token, claude_bin=args.claude_bin)
     return driver.run(proposal)
 
 
@@ -399,6 +462,9 @@ class LoopDriver:
         *,
         claude_bin: str = "claude",
     ) -> None:
+        # Defense-in-depth for direct constructors and newly-created runs: this must precede
+        # wall_clock_timeout_seconds(), whose config lookup relies on the same source boundary.
+        _assert_runtime_sources_outside_action_worktree(loop_id, project_dir)
         self.loop_id = loop_id
         self.project_dir = project_dir
         self.lease_token = lease_token
@@ -427,6 +493,9 @@ class LoopDriver:
         self._pre_maker_head: str | None = None
         self._start_monotonic: float = time.monotonic()
         self._wall_clock_timeout_seconds: int = wall_clock_timeout_seconds(project_dir)
+        self._action_executor: lae.HostActionExecutor | lae.DockerActionExecutor = (
+            lae.HostActionExecutor(self._run_host_child)
+        )
 
     # -- lifecycle -----------------------------------------------------------------------
 
@@ -819,6 +888,7 @@ class LoopDriver:
             pid = self._child_pid
         if pid is not None:
             lds.kill_process_tree(pid)
+        self._action_executor.cancel()
 
     # -- audit (FT-11 / NF-03: loop_iteration + loop_stop, in addition to loop_start) --------
 
@@ -917,6 +987,186 @@ class LoopDriver:
         params = proposal.context.get("params", {})
         if not isinstance(params, dict):
             params = {}
+        try:
+            executor = lae.build_action_executor(
+                ld.load_config(self.project_dir),
+                project_dir=self.project_dir,
+                loop_id=self.loop_id,
+                action_id=proposal.action_id,
+                action=proposal.action,
+                worktree_path=state.worktree_path,
+                branch=state.branch,
+                remaining_wall_clock_seconds=self._remaining_wall_clock_seconds,
+                host_child_runner=self._run_host_child,
+                params=params,
+                # Codex review, PR #262, P1 (round 8, fence #2): threaded through to
+                # `DockerActionRequest.lease_lost` so `DockerActionRuntime.finish()` (which
+                # `abort()` also routes through) can re-check lease loss itself, immediately
+                # before Maker git finalize, instead of relying solely on the two point-in-time
+                # checks in this method. See that method's own docstring for the full race it
+                # closes.
+                lease_lost=self._lease_lost.is_set,
+            )
+        except ldc.DockerConfigError as exc:
+            return self._docker_infrastructure_result(proposal, state, params, str(exc))
+        previous_executor = self._action_executor
+        self._action_executor = executor
+        try:
+            if self._lease_lost.is_set():
+                # Codex review, PR #262, P1 (round 8, fence #1): the heartbeat thread can flip
+                # `_lease_lost` and call `_kill_current_child()` -> `previous_executor.cancel()`
+                # in the exact window between `run()`'s own pre-dispatch check (in its caller,
+                # just before this method is invoked) and the new Docker executor being
+                # installed above -- `_kill_current_child()`'s sticky-kill only reaches whichever
+                # executor was `self._action_executor` *at the time it ran*, so a heartbeat tick
+                # that fires before the assignment above only cancels the previous (often
+                # host/no-op) executor and never latches a cancellation this brand-new executor
+                # would see. Without this check, `_dispatch_action()` below could still start a
+                # Maker/Checker container after the lease is already gone, leaving worktree edits
+                # behind for the next lease owner (Maker) or simply wasting the run (Checker).
+                # Discard immediately and never call `_dispatch_action()` at all: there is
+                # nothing yet for the quiet lease-lost teardown to unwind beyond this executor's
+                # own (not-yet-started) local state, matching the already-started case's
+                # `discard()` call further down for the same underlying race.
+                executor.discard()
+                return {}
+            result = self._dispatch_action(proposal, state, params)
+            if self._lease_lost.is_set():
+                # Codex review, PR #262, P2 (round 8): a Maker's `claude -p` child can finish
+                # cleanly in the exact race window right before the next heartbeat tick
+                # detects lease loss and cancel()s the scenario container (see
+                # `_kill_current_child()`). `_dispatch_action()` above already returned a
+                # normal, "successful" result in that window, with nothing to catch below --
+                # calling `executor.finish(result)` on it would still run
+                # `_finish_git(action_succeeded=True)` and publish (CAS fast-forward) this
+                # Maker's commit chain onto the shared branch, even though this method's own
+                # caller (`run()`, right after this call returns) is about to return
+                # `EXIT_FOREIGN_LEASE` without ever calling `lc.complete()` for this action.
+                # That would break the "lease lost -> zero writes" invariant every other
+                # lease-loss path in this class (code G5, H13) already enforces, just reached
+                # through a different race window.
+                #
+                # Local pre-push review (round 9): the round-8 fix called `executor.abort()`
+                # here, but for the Docker executor that runs `_finish_git(action_succeeded=
+                # False)` -> `verify_failed_maker_worktree()`, which diffs the worktree against
+                # `baseline_sha` -- the state *before* this Maker ran. A Maker that committed
+                # cleanly before losing the lease always reads as drift there, raising
+                # `EphemeralGitSafetyStop("maker_partial_worktree")`. The except block below
+                # then calls `_stop_for_action_safety()` -> `lds.persist_safe_stop(...,
+                # self.lease_token, ...)`, but another worker already holds the lease, so
+                # `guarded_lease_section` raises `WriteRejectedError` -- uncaught here, since
+                # `run()` only catches `DriverTerminated` -- crashing the whole driver process
+                # instead of returning `EXIT_FOREIGN_LEASE`. `executor.discard()` is a
+                # dedicated quiet teardown instead: zero git reads or writes (no CAS publish,
+                # no baseline-diff verification), only local container/broker/runtime cleanup,
+                # and it never raises -- there is no safe-stop channel left to persist a
+                # failure into once the lease is already gone. See
+                # `DockerActionRuntime.discard_after_lease_loss()`'s own docstring.
+                executor.discard()
+                return result
+            executor.finish(result)
+            return result
+        except (lda.DockerActionSafetyStop, lge.EphemeralGitSafetyStop) as exc:
+            lease_lost_result = self._discard_after_lease_loss_or_none(
+                executor, proposal, state, params, exc
+            )
+            if lease_lost_result is not None:
+                return lease_lost_result
+            try:
+                executor.abort()
+            except (lda.DockerActionSafetyStop, lge.EphemeralGitSafetyStop) as abort_safety_exc:
+                # Codex review, PR #262, P2 (round 8): symmetric with the other `_dispatch()`
+                # except block below (`DockerActionError`/`EphemeralGitInfrastructureError`),
+                # which already catches a second SafetyStop raised from its own `abort()` call.
+                # Without this, a second SafetyStop here (e.g. cleanup after an
+                # already-safety-stopping action also finds the container cleanup
+                # unconfirmed) would escape this except block uncaught and crash the process
+                # in `main()` instead of persisting the *original* safety stop below.
+                exc.add_note(f"abort() raised a second safety stop: {abort_safety_exc}")
+            except (lda.DockerActionError, lge.EphemeralGitInfrastructureError) as cleanup_exc:
+                exc.add_note(f"action cleanup also failed: {cleanup_exc}")
+            self._stop_for_action_safety(proposal, state, exc)
+            raise AssertionError("unreachable")
+        except (lda.DockerActionError, lge.EphemeralGitInfrastructureError) as exc:
+            lease_lost_result = self._discard_after_lease_loss_or_none(
+                executor, proposal, state, params, exc
+            )
+            if lease_lost_result is not None:
+                return lease_lost_result
+            try:
+                executor.abort()
+            except (lda.DockerActionSafetyStop, lge.EphemeralGitSafetyStop) as safety_exc:
+                self._stop_for_action_safety(proposal, state, safety_exc)
+            except (lda.DockerActionError, lge.EphemeralGitInfrastructureError) as cleanup_exc:
+                exc.add_note(f"action cleanup also failed: {cleanup_exc}")
+            return self._docker_infrastructure_result(proposal, state, params, str(exc))
+        finally:
+            self._action_executor = previous_executor
+
+    def _discard_after_lease_loss_or_none(
+        self,
+        executor: lae.HostActionExecutor | lae.DockerActionExecutor,
+        proposal: lc.ProposeResult,
+        state: lc.LoopState,
+        params: dict[str, Any],
+        exc: BaseException,
+    ) -> dict[str, Any] | None:
+        """Discard (never abort) once the lease is already gone; else `None` (do the normal abort).
+
+        Codex review, PR #262, P1 (round 8, fence #3): both `_dispatch()` except blocks used to
+        call `executor.abort()` unconditionally on the way to persisting a safe-stop or an
+        infrastructure result. For a Maker, `abort()` -> `runtime.finish(action_succeeded=False)`
+        -> `_finish_git(False)` -> `verify_failed_maker_worktree()` diffs the worktree against
+        `baseline_sha`, the state *before* this action ran -- a Maker that committed cleanly
+        before losing the lease always reads as drift there, raising a fresh
+        `maker_partial_worktree` safety stop; `_cleanup_containers()` inside that same call can
+        also raise its own `DockerActionSafetyStop` (e.g. an unconfirmed container removal) that
+        `abort()` never suppresses either way. Once `_lease_lost` is already set here, `run()` is
+        about to return `EXIT_FOREIGN_LEASE` without ever calling `lc.complete()` for this
+        action, so there is no safe-stop channel left for either kind of exception `abort()` can
+        raise to persist into -- `_stop_for_action_safety()` would call
+        `lds.persist_safe_stop()` with this driver's now-stale `lease_token`, and
+        `guarded_lease_section()` rejects that write, crashing the process instead of returning
+        `EXIT_FOREIGN_LEASE` cleanly. `executor.discard()` is the same dedicated quiet teardown
+        the successful-result lease-lost race elsewhere in this method already uses: zero git
+        reads or writes, local container/broker/runtime cleanup only, and it never raises.
+        """
+        if not self._lease_lost.is_set():
+            return None
+        # Codex review, PR #262, P2 (pre-push dry-check, round 11): once `finish()` has already
+        # latched `_finished`, the `executor.discard()` below is a no-op and
+        # `_docker_infrastructure_result()` only prints `str(exc)` -- a
+        # `DockerActionSafetyStop.details` payload (e.g. the broker/network `cleanup_errors`
+        # that triggered it) would otherwise vanish without ever reaching the operator.
+        details = getattr(exc, "details", None)
+        if details:
+            print(
+                f"loop_driver: lease already lost; discarding after error with details: {details}",
+                file=sys.stderr,
+            )
+        executor.discard()
+        # EV-50 (PR #262 push-front adversarial review, P1): once the lease is already
+        # gone, this in-memory result only feeds `run()`'s `EXIT_FOREIGN_LEASE` return --
+        # it must never reach disk. `_docker_infrastructure_result()` unconditionally
+        # persists a `check_result.json` artifact for `RUN_CHECKER`; without
+        # `persist_artifacts=False` here, a fenced-out worker's fabricated
+        # `infrastructure_failure` result would still land on disk with no lease check of
+        # its own. The next lease owner's `reconcile()` ->
+        # `_reconcile_from_artifact()` (loop_common.py) treats *any* artifact at that path
+        # as the authoritative result once the journal has no completed event yet for
+        # this action, so it would confirm this stale failure as real instead of letting
+        # the new owner actually run the checker.
+        return self._docker_infrastructure_result(
+            proposal, state, params, str(exc), persist_artifacts=False
+        )
+
+    def _dispatch_action(
+        self,
+        proposal: lc.ProposeResult,
+        state: lc.LoopState,
+        params: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Dispatch after the host/Docker executor boundary has been selected once."""
         action = proposal.action
         if action == lc.Action.RUN_MAKER.value:
             return self._run_maker(proposal, state, params)
@@ -933,6 +1183,120 @@ class LoopDriver:
         if action == lc.Action.EXIT_FAILURE.value:
             return self._run_exit_failure(proposal, state, params)
         raise lc.ProtocolViolationError(f"unknown action: {action}")
+
+    def _docker_infrastructure_result(
+        self,
+        proposal: lc.ProposeResult,
+        state: lc.LoopState,
+        params: dict[str, Any],
+        reason: str,
+        *,
+        persist_artifacts: bool = True,
+    ) -> dict[str, Any]:
+        """Normalize Docker/config failures without ever retrying on the host.
+
+        `persist_artifacts=False` (used only by `_discard_after_lease_loss_or_none()`, EV-50,
+        PR #262 push-front adversarial review P1) skips the `check_result.json` write below:
+        once the lease is already gone, this result is in-memory only and must not land on
+        disk, or the next lease owner's `reconcile()` would confirm this fenced-out worker's
+        fabricated failure as the real result instead of re-running the checker.
+        """
+        print(f"loop_driver: isolated action infrastructure failure: {reason}", file=sys.stderr)
+        if proposal.action == lc.Action.RUN_MAKER.value:
+            maker_agent = self._resolve_maker_agent(state, params)
+            return {"maker": {"agent": maker_agent}, "infrastructure_failure": True}
+        if proposal.action in {
+            lc.Action.RUN_CHECKER.value,
+            lc.Action.WAIT_EXTERNAL_REVIEW.value,
+        }:
+            if proposal.action == lc.Action.WAIT_EXTERNAL_REVIEW.value:
+                return lc.phase_check_to_dict(
+                    lc.PhaseCheckResult(
+                        False,
+                        [],
+                        "docker_infrastructure_failure",
+                        True,
+                        metadata={"execution_backend": "docker"},
+                    )
+                )
+            # Codex review, PR #262, High: a custom loop phase may define a mechanical checker
+            # with no `checker.llm_review` block (the definition validator allows this). Mirror
+            # `_run_checker()`'s own `has_llm_review` gating here: unconditionally requiring an
+            # `llm_review` layer and calling `lc.checker_pass_criteria()` made a Docker/config
+            # failure during such a phase crash with `DefinitionValidationError` instead of
+            # producing this infrastructure-failure result for the guard/retry logic to handle.
+            has_llm_review = isinstance(params.get("llm_review"), dict)
+            mechanical = lc.CheckResult(
+                passed=False,
+                layer="mechanical",
+                signature="docker_infrastructure_failure",
+                findings=[],
+                raw_artifact_path="",
+                infrastructure_failure=True,
+            )
+            results: list[lc.CheckResult] = [mechanical]
+            required_layers = frozenset({"mechanical"})
+            metadata: dict[str, Any] = {}
+            pass_criteria: dict[str, int] = {}
+            if has_llm_review:
+                pass_criteria = lc.checker_pass_criteria(state, self.project_dir)
+                llm_review = lc.CheckResult(
+                    passed=False,
+                    layer="llm_review",
+                    signature=lc.compute_llm_review_signature([]),
+                    findings=[],
+                    raw_artifact_path="",
+                    infrastructure_failure=True,
+                )
+                results.append(llm_review)
+                required_layers = frozenset({"mechanical", "llm_review"})
+                metadata["reviewers"] = ["code-reviewer"]
+            combined = lc.combine_check_results(results, pass_criteria, required_layers)
+            payload = lc.phase_check_to_dict(
+                lc.PhaseCheckResult(
+                    combined.passed,
+                    combined.results,
+                    combined.signature,
+                    combined.infrastructure_failure,
+                    metadata={**combined.metadata, **metadata},
+                )
+            )
+            if proposal.action == lc.Action.RUN_CHECKER.value and persist_artifacts:
+                lc.save_artifact(
+                    self.loop_id,
+                    self.project_dir,
+                    proposal.action_id,
+                    "check_result.json",
+                    json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                )
+            return payload
+        raise lc.InvalidStateError(f"invalid Docker isolation config: {reason}")
+
+    def _stop_for_action_safety(
+        self,
+        proposal: lc.ProposeResult,
+        state: lc.LoopState,
+        error: Any,
+    ) -> None:
+        """Persist Docker/ephemeral-Git safe stops using the existing journal-first path."""
+        stop_reason = str(error.stop_reason)
+        details = dict(getattr(error, "details", {}) or {})
+        lds.persist_safe_stop(
+            self.loop_id,
+            self.project_dir,
+            self.lease_token,
+            proposal.action_id,
+            stop_reason,
+            details,
+        )
+        self._notify(state, stop_reason)
+        stopped_state = lc.load_state(self.loop_id, self.project_dir)
+        self._maybe_comment(
+            stopped_state,
+            f"loop-harness: {self.loop_id} stopped safely ({stop_reason}).",
+        )
+        self._emit_loop_stop_audit(stopped_state, "stop", stop_reason)
+        raise DriverTerminated(stop_reason)
 
     # -- run_maker (push multi-layer defense lives here) --------------------------------------
 
@@ -1124,6 +1488,12 @@ class LoopDriver:
     def _run_child(
         self, cmd: list[str], cwd: str, timeout_seconds: float, env: dict[str, str]
     ) -> subprocess.CompletedProcess[str]:
+        """Run a Claude command through the executor selected once by `_dispatch`."""
+        return self._action_executor.execute_claude(cmd, cwd, timeout_seconds, env)
+
+    def _run_host_child(
+        self, cmd: list[str], cwd: str, timeout_seconds: float, env: dict[str, str]
+    ) -> subprocess.CompletedProcess[str]:
         """Run a claude -p child, tracking its pid for heartbeat-triggered kill-tree.
 
         `Popen()` and the pid registration are done under `self._child_lock` (code H3): this
@@ -1153,8 +1523,16 @@ class LoopDriver:
             return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
         except subprocess.TimeoutExpired:
             lds.kill_process_tree(proc.pid)
-            proc.communicate()
-            raise lds.ClaudePTimeoutError(f"claude -p timed out after {timeout_seconds}s") from None
+            # Codex review, PR #262, High (round 4): capture rather than discard this partial
+            # output. `execute_claude()` callers still only catch `ClaudePTimeoutError` and never
+            # inspect it, but `execute_mechanical()` (Docker) needs it to report an ordinary
+            # `(output, 124)` mechanical timeout result instead of losing the command's output.
+            timeout_stdout, timeout_stderr = proc.communicate()
+            raise lds.ClaudePTimeoutError(
+                f"claude -p timed out after {timeout_seconds}s",
+                stdout=timeout_stdout,
+                stderr=timeout_stderr,
+            ) from None
         finally:
             with self._child_lock:
                 self._child_pid = None
@@ -1230,6 +1608,7 @@ class LoopDriver:
                 # that same fixed cap and collectively overshooting the wall-clock deadline by
                 # up to N times over.
                 remaining_budget=self._remaining_wall_clock_seconds,
+                command_runner=self._action_executor.mechanical_runner,
             )
         except _MechanicalLeaseLostError:
             # code G5: lease already lost; `self._lease_lost` is set, so `run()`'s dispatch
@@ -1552,7 +1931,22 @@ class LoopDriver:
             self.loop_id, self.project_dir, result, self.lease_token, action_id=action_id
         )
         if result.needs_classification_count:
-            result = self._classify_pending_findings(state, action_id, result, config)
+            try:
+                result = self._classify_pending_findings(state, action_id, result, config)
+            except lda.DockerActionError:
+                # Codex review, PR #262, High (round 3): confirm_review_findings_reported()
+                # above already durably marked this batch's explicit-severity comments as
+                # processed. Letting a classifier failure propagate from here into `_dispatch`'s
+                # DockerActionError handler would return `_docker_infrastructure_result()`'s
+                # *empty* PhaseCheckResult for wait_external_review, discarding those
+                # already-confirmed findings outright; a retried `collect_review_findings()`
+                # would then filter the same comments out via `processed_comment_ids`, so a
+                # genuine blocking finding could never resurface and the phase could pass
+                # silently. Falling back to the pre-classification `result` instead is still
+                # safe to report as-is: `classify_severity()` already assigned every
+                # `needs_classification` finding the fail-safe "high" (blocking) severity
+                # placeholder until it is actually classified, so this never under-reports.
+                pass
         return lc.phase_check_to_dict(prw.phase_check_from_review_findings(result))
 
     def _already_pushed_this_iteration(
@@ -1640,7 +2034,23 @@ class LoopDriver:
             # union, regardless of classification status) — otherwise a finding still needing
             # classification would never be revisited.
             state = lc.load_state(self.loop_id, self.project_dir)
-            drained = self._classify_pending_findings(state, action_id, drained, config)
+            try:
+                drained = self._classify_pending_findings(state, action_id, drained, config)
+            except lda.DockerActionError:
+                # Codex review, PR #262, High (round 5): confirm_review_findings_reported()
+                # above already durably marked this batch's explicit-severity comments as
+                # processed, exactly like `_run_wait_external_review`'s matching classifier
+                # call. Without this fallback, a classifier Docker failure here would propagate
+                # past this method (this caller, unlike that one, had no try/except of its own)
+                # into `_dispatch`'s DockerActionError handler, which returns
+                # `_docker_infrastructure_result()`'s *empty* PhaseCheckResult for
+                # wait_external_review -- discarding these already-confirmed drained findings
+                # outright, exactly the bug that call's own comment describes. Falling back to
+                # the pre-classification `drained` is safe for the same reason: every
+                # `needs_classification` finding already carries `classify_severity()`'s
+                # fail-safe "high" (blocking) placeholder until actually classified, so this
+                # never under-reports.
+                pass
         # code H4 / issue #213+#228 review: only a *blocking* (critical/high) finding drained
         # against the old baseline must be surfaced immediately, not silently swallowed by
         # rebaselining/pushing past it. A non-blocking (medium/low) drain result must not
@@ -1733,7 +2143,7 @@ class LoopDriver:
         cmd = lds.build_claude_p_command(
             prompt,
             allowed_tools="",
-            add_dirs=[state.worktree_path],
+            add_dirs=[],
             claude_bin=self.claude_bin,
         )
         env = lds.maker_env(
@@ -1745,14 +2155,26 @@ class LoopDriver:
             self._remaining_wall_clock_seconds(), CHECKER_LLM_TIMEOUT_SECONDS
         )
         if timeout_seconds <= 0:
+            if isinstance(self._action_executor, lae.DockerActionExecutor):
+                raise lda.DockerActionError("isolated finding classifier budget is exhausted")
             return ""
         try:
             completed = self._run_child(cmd, state.worktree_path, timeout_seconds, env)
             if completed.returncode != 0:
                 raise ClaudeChildFailedError(f"claude -p exited {completed.returncode}")
             data = lds.parse_claude_p_json(completed.stdout)
-            return str(data.get("result", ""))
-        except (lds.ClaudePTimeoutError, ClaudeChildFailedError, ValueError, json.JSONDecodeError):
+            result = data.get("result")
+            if not isinstance(result, str) or not result.strip():
+                raise ValueError("claude -p classifier result is empty")
+            return result
+        except (
+            lds.ClaudePTimeoutError,
+            ClaudeChildFailedError,
+            ValueError,
+            json.JSONDecodeError,
+        ) as exc:
+            if isinstance(self._action_executor, lae.DockerActionExecutor):
+                raise lda.DockerActionError("isolated finding classifier failed") from exc
             return ""
 
     def _push_verified_branch(self, worktree_path: str, branch: str) -> None:
