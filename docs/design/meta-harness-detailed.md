@@ -1178,7 +1178,8 @@ cd <worktree> && CLAUDE_CODE_MAX_OUTPUT_TOKENS=<budget.max_output_tokens> \
   --append-system-prompt-file packages/meta-harness/config/self-report-instruction.md \
   --output-format stream-json --verbose --include-hook-events \
   --max-turns <budget.max_turns> --max-budget-usd <budget.max_budget_usd> \
-  --permission-mode acceptEdits --allowedTools <scenario または config の allowlist> \
+  --permission-mode <scenario.permission_mode または既定 acceptEdits> \
+  --allowedTools <scenario または config の allowlist> \
   --tools <allowlist から導出した built-in tool 名> \
   --no-session-persistence --model <config: evaluate.model> \
   > events.jsonl 2> progress.log
@@ -1205,6 +1206,15 @@ cd <worktree> && CLAUDE_CODE_MAX_OUTPUT_TOKENS=<budget.max_output_tokens> \
   公開する built-in tool schema 自体も最小化する。`skill:<name>` target では slash command 展開に必要な
   Skill 定義を読み込ませるため `Skill` を `--tools` に追加するが、slash command 起動自体には `Skill` を
   `--allowedTools` へ加える必要はない（M0 実測）。
+- `--permission-mode` も `allowed_tools` と同じ presence semantics に従う（PR #273、Issue #261
+  PR6 bot レビュー対応）。scenario に `permission_mode` キーが**存在する場合はその値を使用し**、
+  存在しない場合は config `evaluate.permission_mode`（既定 `acceptEdits`）へ fallback する。値は
+  schema で `acceptEdits` / `bypassPermissions` の enum に限定する。`bypassPermissions` は、
+  `.claude/` 等の Claude Code protected path への書込みが必要で、かつ allow ルール（`--allowedTools`
+  への path 指定）では解除できないシナリオ（task-state 2 本・handoff 2 本のみ、ADR-20260714-036
+  の「再検討記録（bypassPermissions 例外）」参照）が明示 opt-in する場合のみ使用する。実効値と
+  決定根拠（`scenario`/`global`）は `allowed_tools_source` と同様に run metadata
+  （`permission_mode` / `permission_mode_source`）へ監査痕跡として永続化する（§4）。
 - `CLAUDE_CODE_MAX_OUTPUT_TOKENS` は scenario の `budget.max_output_tokens` があればその値、なければ
   `scenario_run.max_output_tokens_default` を設定する。固定 CLI の既定 64,000 token のままでは broker の
   保守的な事前見積もりが通常の $3 run 予算を超えるためであり、出力上限を明示して API envelope を
@@ -1696,8 +1706,12 @@ proposer は同一 workspace 内で起動される限り、`Glob` / `Read` 等�
   `evaluate` → `frontier --target <target> --rebuild` の順で作る。その後に check-trigger が示す
   `propose` を実行する。bootstrap 前の propose は exit 2 とこの手順を返す。
 - skill target の run metadata は、実効 `allowed_tools`、由来（scenario/global）、モデル公開 tool、
-  `max_output_tokens` と由来、`path_prepend` を保存する。global fallback 値は evaluator hash、scenario固有値は
+  `max_output_tokens` と由来、`path_prepend`、`permission_mode` と由来（scenario/global。PR #273、
+  Issue #261 PR6 bot レビュー対応）を保存する。global fallback 値は evaluator hash、scenario固有値は
   suite/scenario hash に入るため、異なる実行 envelope の run を同じ frontier scope で比較しない。
+  `permission_mode` / `permission_mode_source` は run.metadata.schema.json の `required` には
+  含めない（schema_version 1.0 の後方互換のため。2026-07-19 以降の run では evaluator が常に
+  両方を書き込む）。
 - skill 候補の promote freshness は、現在の `origin/main` へ親 lineage までを適用した pre-overlay baseline の
   closure hash と manifest の `target_closure_hash` を比較する。composition または参照 facet が変わっていれば
   overlay path 自体が未変更でも拒否する。
@@ -1741,10 +1755,18 @@ proposer は同一 workspace 内で起動される限り、`Glob` / `Read` 等�
   overlay path 全集合を `origin/main` との差分対象にし、全 manifest/overlay の integrity と L3 secret scan を
   PR 作成直前に再検証する。
 - 回帰コストは `regression.max_affected_suites`（既定 7）と evaluation 単位の
-  `regression.max_budget_usd`（既定 78.0）の二層で制限する。78.0 は現行の global impact suite を
-  train/holdout 通算の設定上限（`claude-harness` train 2 attempt + suite 保有 skill 6 件の train 各 1 attempt・
-  holdout 各 3 attempt、各最大 3.0 USD）で収容する値である。超過は黙って skip せず evaluation error とする。
-  スイート保有 skill が増えるたび（Issue #254）この二値を再計算して同時に引き上げること。
+  `regression.max_budget_usd`（既定 90.0、Issue #261 PR6 で 78.0 から再較正。PR #273 で
+  設計書のみ追従）の二層で制限する。90.0 は現行の global impact suite を train/holdout 通算で
+  収容する値であり、一律 $3.0 前提の単純な attempt 数計算ではなく、**登録済み全 suite・全
+  scenario の「実効 `max_budget_usd`（scenario 未指定時は `scenario_run.max_budget_usd_default`）
+  × `repeat` 数」の総和を train フェーズ・holdout フェーズそれぞれについて計算し合算した値**で
+  算出する（scenario ごとに個別較正された予算が一律でなくなったため。Issue #261 PR6 で
+  `verify-routing-config`（$0.9→$1.5）・`fix-greet-none-bug`/`fix-formal-greeting-feature-holdout`
+  （$3.0→$6.0）等が個別再較正された）。この実測値は
+  `test_default_budget_covers_all_registered_routing_config_regression_suites`
+  （`packages/meta-harness/tests/test_cross_skill_regression.py`）が算出・検証する。超過は
+  黙って skip せず evaluation error とする。スイート保有 skill が増えるたび（Issue #254）、または
+  個々の scenario 予算が再較正されるたび（Issue #261）にこの二値を再計算して同時に引き上げること。
   1 CLI 呼び出しが train / holdout の両バッチを含む場合も `evaluation_id` と残予算を共有する。run cost は
   scenario CLI の申告値だけでなく、同じ broker を使う rubric judge を含む
   `broker.metrics.estimated_cost_usd` との大きい方を正とし、metrics 欠落・異常時は attempt 割当額を消費済みと
@@ -1893,7 +1915,7 @@ scenario_run:
 regression:
   enabled: true # false は skill target の専有 facet allowlist へ縮退
   max_affected_suites: 7
-  max_budget_usd: 78.0 # 現行 global impact suite の train/holdout 設定上限を収容
+  max_budget_usd: 90.0 # 全 scenario の実効 max_budget_usd x repeat の総和（train+holdout）。§4 参照
 judge:
   tool: claude-bare # tool-less judge。codexはread deny不能のため無効（ADR-20260711-033）
   model: claude-sonnet-5 # 必須 pin（Issue #261 PR2）。evaluate.model と同一でなければならない（broker pricing table は run あたり1つ）

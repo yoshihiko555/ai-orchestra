@@ -1104,3 +1104,22 @@
     - packages/meta-harness/tests/test_adversarial_routing_config.py::test_cheap_everywhere_cannot_win_on_cost_and_behavioral_failure_excludes_it
     - packages/meta-harness/tests/test_adversarial_routing_config.py::test_register_rejects_mixed_kind_and_codex_model_proposer_patches
   notes: the handcrafted all-agents claude-direct patch cannot dominate on equal quality and is excluded on behavioral failure; mixed-kind and codex.model proposer patches fail during register_candidate.
+
+- ev_id: EV-93
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_skill_scenarios.py::test_every_bypass_permissions_scenario_has_a_collateral_scope_critical_check
+    packages/meta-harness/tests/test_skill_scenarios.py::TestCollateralScopeOracle
+  covered_by:
+    - packages/meta-harness/tests/test_skill_scenarios.py::test_every_bypass_permissions_scenario_has_a_collateral_scope_critical_check
+    - packages/meta-harness/tests/test_skill_scenarios.py::TestCollateralScopeOracle
+  notes: >-
+    Mechanical scan asserts every bypassPermissions scenario yaml carries a collateral-scope
+    critical check (PR #273 final review, security+spec Medium). TestCollateralScopeOracle
+    (15 cases) covers the oracle's own correctness: tracked diff scoping including staged
+    additions (status A) vs modifications/deletions/renames, unconditional untracked scanning
+    (no allowed_new_prefixes-empty skip), space/quote-safe -z parsing, and symlink rejection
+    regardless of path allowlist match (security High, PR #273 final review).

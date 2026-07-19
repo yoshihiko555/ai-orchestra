@@ -1725,6 +1725,38 @@ def _init_git_repo_with_tracked_file(repo_dir: Path, relative_path: str, content
     subprocess.run(["git", "commit", "-q", "-m", "baseline"], cwd=repo_dir, check=True)
 
 
+def test_every_bypass_permissions_scenario_has_a_collateral_scope_critical_check() -> None:
+    """PR #273 final review (Medium, security+spec reviewers independently flagged this):
+    `permission_mode: bypassPermissions` unlocks the entire `.claude/` tree for a scenario, so
+    every scenario that opts into it must carry a `collateral-scope` critical check as a
+    compensating control (ADR-20260714-036 "bypassPermissions 例外" addendum). This scans all
+    registered scenario yaml files rather than hardcoding the current 4 bypass scenarios, so a
+    future scenario adding bypass without the paired oracle fails this test immediately."""
+    scenario_paths = sorted((PACKAGE_DIR / "scenarios").rglob("*.yaml"))
+    assert scenario_paths, "expected to find at least one scenario yaml file"
+
+    bypass_scenarios_without_collateral_scope = []
+    bypass_scenario_count = 0
+    for path in scenario_paths:
+        scenario = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if scenario.get("permission_mode") != "bypassPermissions":
+            continue
+        bypass_scenario_count += 1
+        critical_commands = [item.get("command", "") for item in scenario.get("critical", [])]
+        if not any("collateral-scope" in command for command in critical_commands):
+            bypass_scenarios_without_collateral_scope.append(path.relative_to(PACKAGE_DIR))
+
+    # Sanity check: this test must actually exercise at least one bypass scenario, or the
+    # assertion below would vacuously pass even if the enforcement logic were broken.
+    assert bypass_scenario_count >= 1, (
+        "expected at least one bypassPermissions scenario to exist (task-state/handoff suites)"
+    )
+    assert not bypass_scenarios_without_collateral_scope, (
+        "bypassPermissions scenarios missing a collateral-scope critical check: "
+        f"{bypass_scenarios_without_collateral_scope}"
+    )
+
+
 class TestCollateralScopeOracle:
     """Issue #261 PR6 bot review follow-up: `bypassPermissions` unlocks the entire `.claude/`
     tree for task-state scenarios, so this oracle guards against collateral damage outside the
@@ -1918,6 +1950,40 @@ class TestCollateralScopeOracle:
             fixture.assert_tracked_changes_limited_to(
                 {".claude/Plans.md"}, allowed_new_prefixes=(".claude/handoffs/",), cwd=tmp_path
             )
+
+    def test_symlink_under_allowed_prefix_is_rejected(self, tmp_path: Path) -> None:
+        """PR #273 final review (security High): `ln -s <existing file>
+        .claude/handoffs/x.md` puts a path-legitimate symlink under an allowed prefix. A
+        path-only check would pass it, but a downstream content oracle following the link
+        could read whatever pre-existing file it points at. The symlink must be rejected
+        regardless of its path."""
+        fixture = _task_state_outcome_fixture()
+        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        target = tmp_path / "sandbox" / "existing-with-keyword.md"
+        target.parent.mkdir(parents=True)
+        target.write_text("Current Task State\nNext Up\npytest\n", encoding="utf-8")
+        handoffs_dir = tmp_path / ".claude" / "handoffs"
+        handoffs_dir.mkdir()
+        (handoffs_dir / "20260719-000000.md").symlink_to(target)
+
+        with pytest.raises(AssertionError, match="new untracked files outside the allowed scope"):
+            fixture.assert_tracked_changes_limited_to(
+                {".claude/Plans.md"}, allowed_new_prefixes=(".claude/handoffs/",), cwd=tmp_path
+            )
+
+    def test_regular_file_under_allowed_prefix_still_passes(self, tmp_path: Path) -> None:
+        """Sanity check alongside the symlink rejection test: a normal (non-symlink) new file
+        under an allowed prefix must keep passing -- the symlink check must not become an
+        overly broad false positive."""
+        fixture = _task_state_outcome_fixture()
+        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        handoffs_dir = tmp_path / ".claude" / "handoffs"
+        handoffs_dir.mkdir()
+        (handoffs_dir / "20260719-000000.md").write_text("# Task Handoff\n", encoding="utf-8")
+
+        fixture.assert_tracked_changes_limited_to(
+            {".claude/Plans.md"}, allowed_new_prefixes=(".claude/handoffs/",), cwd=tmp_path
+        )
 
     def test_rename_of_existing_tracked_file_is_rejected_by_both_paths(
         self, tmp_path: Path

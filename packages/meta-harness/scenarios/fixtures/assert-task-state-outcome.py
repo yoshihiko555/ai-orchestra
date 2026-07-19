@@ -255,6 +255,23 @@ def _parse_untracked_paths(porcelain_z_tokens: list[str]) -> list[str]:
     return untracked
 
 
+def _is_symlink(cwd: Path | None, relative_path: str) -> bool:
+    """Return whether `relative_path` (resolved against `cwd`, defaulting to process cwd) is a
+    symlink, *without* following it.
+
+    PR #273 final review (security High): with `permission_mode: bypassPermissions` and `Bash`
+    exposed, a candidate can run `ln -s <existing file> .claude/handoffs/x.md`. The link's own
+    path falls under an allowed prefix, so a path-only allowlist check (this module's prior
+    behavior) would pass it through; downstream content oracles that call `.read_text()` then
+    transparently follow the link and read whatever it points at, including a file that
+    happens to already contain the expected marker text. `Path.is_symlink()` inspects the link
+    itself (`lstat`-equivalent; it does not resolve/follow), so it correctly flags the symlink
+    even when its target is legitimate content elsewhere in the workspace.
+    """
+    root = cwd if cwd is not None else Path.cwd()
+    return (root / relative_path).is_symlink()
+
+
 def assert_tracked_changes_limited_to(
     allowed_paths: set[str],
     *,
@@ -295,6 +312,13 @@ def assert_tracked_changes_limited_to(
     as untracked at all (verified against `.gitignore` for the task-state and handoff suites;
     see the calling scenario yaml's comment), so this default-deny does not flake on them.
 
+    Symlink check (PR #273 final review, security High): regardless of the above, *any* path
+    that is itself a symlink is always unexpected, even if its path matches `allowed_paths` or
+    `allowed_new_prefixes`. This closes an oracle-bypass path: `ln -s <existing file>
+    .claude/handoffs/x.md` puts a path-legitimate but content-illegitimate link under an
+    allowed prefix, and a downstream oracle that does `.read_text()` on it would transparently
+    follow the link and read whatever pre-existing file it points at. See `_is_symlink`.
+
     `cwd` defaults to the process's own working directory (the production oracle container
     sets `--workdir /workspace` and relies on the process cwd); tests pass an explicit
     temporary git repo instead.
@@ -306,12 +330,18 @@ def assert_tracked_changes_limited_to(
             path
             for status, path in diff_entries
             if path
-            and path not in allowed_paths
-            and not (status == "A" and path.startswith(allowed_new_prefixes))
+            and (
+                _is_symlink(cwd, path)
+                or (
+                    path not in allowed_paths
+                    and not (status == "A" and path.startswith(allowed_new_prefixes))
+                )
+            )
         }
     )
     assert not unexpected, (
-        f"tracked files changed outside the allowed scope {sorted(allowed_paths)}: {unexpected}"
+        f"tracked files changed outside the allowed scope {sorted(allowed_paths)} (or are "
+        f"symlinks, which are never allowed): {unexpected}"
     )
 
     status_tokens = _run_git_z(
@@ -321,11 +351,13 @@ def assert_tracked_changes_limited_to(
     disallowed_new = [
         path
         for path in untracked
-        if path not in allowed_paths and not path.startswith(allowed_new_prefixes)
+        if _is_symlink(cwd, path)
+        or (path not in allowed_paths and not path.startswith(allowed_new_prefixes))
     ]
     assert not disallowed_new, (
         f"new untracked files outside the allowed scope ({sorted(allowed_paths)}) and allowed "
-        f"prefixes {sorted(allowed_new_prefixes)}: {sorted(disallowed_new)}"
+        f"prefixes {sorted(allowed_new_prefixes)} (or are symlinks, which are never allowed): "
+        f"{sorted(disallowed_new)}"
     )
 
 
@@ -354,8 +386,10 @@ def main(argv: list[str] | None = None) -> None:
         action="append",
         default=[],
         help=(
-            "prefix new untracked files are allowed to appear under (repeatable); "
-            "if omitted, untracked files are ignored entirely"
+            "prefix new untracked files (and staged new tracked files, status A) are allowed "
+            "to appear under (repeatable). The untracked scan always runs regardless of this "
+            "flag (PR #273 bot review round 3); omitting it means no new untracked file is "
+            "permitted at all, except paths that exactly match --allow"
         ),
     )
 

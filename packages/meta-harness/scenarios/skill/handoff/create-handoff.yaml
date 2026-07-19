@@ -11,7 +11,13 @@ setup:
   - >-
     printf '# Plans\n\n- `cc:WIP` Continue parser implementation\n- `cc:TODO` Run parser validation\n'
     > .claude/Plans.md
-  - "touch -t 200001010000 .meta-harness/handoff-start"
+  # PR #273 最終レビュー: `touch -t 200001010000`（2000年固定）だと `.claude/handoffs/` に
+  # 実在する pre-existing tracked file（例: 20260707-051549-loop-harness-phase1.md、checkout
+  # 時の mtime は当然 2000 年より新しい）が「候補は何もしていないのに newer と誤判定」される
+  # 死角があった。setup 最終ステップとして素の `touch`（実行時刻）に変更し、setup 完了と
+  # candidate 実行の境界を正確な基準にする（baseline git commit は content ベースの diff で
+  # mtime に依存しないため、この変更は collateral-scope とは独立で影響しない）。
+  - "touch .meta-harness/handoff-start"
 allowed_tools:
   - "Bash(python3 *)"
   # Issue #261 PR6 bot レビュー対応: `.agents/skills/handoff/SKILL.md`（Codex/agy 用ソース）は
@@ -37,15 +43,20 @@ permission_mode: bypassPermissions
 command_timeout_ms: 60000
 critical:
   - id: handoff-file-created
-    text: ".claude/handoffs/ 配下に新しい handoff ファイルが生成される"
+    text: ".claude/handoffs/ 配下に新しい（symlink ではない）handoff ファイルが生成される"
+    # PR #273 最終レビュー（security High）で symlink 経由の oracle 迂回が指摘されたが、POSIX
+    # find の `-type f` は既定で lstat ベース（symlink 自体は追跡せず type `l` として扱われる）
+    # のため、この find 単体は元々 symlink を `f` と誤認しない（macOS/GNU 双方の find で実機確認
+    # 済み）。実際の迂回経路は下の handoff-is-restartable（Path.glob + stat/read_text が symlink
+    # を追跡する）側だったため、そちらを修正した。
     oracle: command_exit
     command: >-
       find .claude/handoffs -type f -newer .meta-harness/handoff-start -print -quit | grep -q .
   - id: handoff-is-restartable
-    text: "現在状態・残作業・検証手順を含み、引き継ぎ先が単独で再開できる"
+    text: "現在状態・残作業・検証手順を含み、引き継ぎ先が単独で再開できる（symlink は候補から除外する）"
     oracle: command_exit
     command: >-
-      python3 -c "from pathlib import Path; m=Path('.meta-harness/handoff-start').stat().st_mtime; ps=[p for p in Path('.claude/handoffs').glob('*.md') if p.stat().st_mtime > m]; p=max(ps, key=lambda x:x.stat().st_mtime); s=p.read_text(); assert 'Current Task State' in s and ('Next Up' in s or 'TODO' in s) and ('pytest' in s or 'Validation' in s)"
+      python3 -c "from pathlib import Path; m=Path('.meta-harness/handoff-start').stat().st_mtime; ps=[p for p in Path('.claude/handoffs').glob('*.md') if p.stat().st_mtime > m and not p.is_symlink()]; assert ps, 'no non-symlink handoff file newer than handoff-start was created'; p=max(ps, key=lambda x:x.stat().st_mtime); s=p.read_text(); assert 'Current Task State' in s and ('Next Up' in s or 'TODO' in s) and ('pytest' in s or 'Validation' in s)"
   - id: no-collateral-damage-outside-handoffs
     text: "bypassPermissions で書込み可能になった .claude/ 配下で、tracked file の変更が .claude/Plans.md 以外に無く、新規 untracked file も .claude/handoffs/ 配下以外に生成されていないことを検証する"
     oracle: command_exit
