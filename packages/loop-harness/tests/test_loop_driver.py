@@ -1957,6 +1957,63 @@ def test_dispatch_discards_instead_of_aborting_when_exception_path_hits_lost_lea
     assert result["infrastructure_failure"] is True
 
 
+def test_dispatch_lease_lost_discard_logs_safety_stop_details_to_stderr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Codex review, PR #262, P2 (pre-push dry-check, round 11): when `finish()` raises
+    `DockerActionSafetyStop("action_cleanup_failed", ...)` after the lease is already lost, the
+    subsequent `discard()` is a `_finished`-latched no-op and `_docker_infrastructure_result()`
+    only prints `str(exc)` -- so the `details` payload carrying the actual broker/network
+    `cleanup_errors` would vanish entirely. This proves the lease-lost discard path now logs
+    those details to stderr before they are dropped.
+    """
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    proposal = lc.ProposeResult(
+        action=lc.Action.RUN_MAKER.value,
+        action_id="act-lease-lost-details-logged",
+        state_version=state.state_version,
+        expected_phase=state.phase,
+        phase=state.phase,
+        iteration=state.iteration,
+        context={},
+    )
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+
+    class LeaseLostDuringFinishExecutor:
+        def finish(self, _result: dict[str, Any]) -> None:
+            # Mirrors the real race: the lease expires while `finish()` is inside
+            # `_cleanup_containers()`, whose broker/network failures then surface as this
+            # safety stop carrying the only copy of the diagnostic details.
+            d._lease_lost.set()
+            raise driver.lda.DockerActionSafetyStop(
+                "action_cleanup_failed",
+                "isolated action cleanup failed",
+                details={"cleanup_errors": ["broker cleanup failed: network rm timed out"]},
+            )
+
+        def abort(self) -> None:
+            raise AssertionError("abort() must never run once the lease is already known lost")
+
+        def discard(self) -> None:
+            return
+
+    monkeypatch.setattr(
+        driver.lae,
+        "build_action_executor",
+        lambda *_args, **_kwargs: LeaseLostDuringFinishExecutor(),
+    )
+    monkeypatch.setattr(d, "_dispatch_action", lambda *_args, **_kwargs: {"passed": True})
+
+    result = d._dispatch(proposal, state)
+
+    assert result["infrastructure_failure"] is True
+    stderr = capsys.readouterr().err
+    assert "broker cleanup failed: network rm timed out" in stderr
+
+
 def test_dispatch_writes_no_check_result_artifact_when_exception_path_hits_lost_lease(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

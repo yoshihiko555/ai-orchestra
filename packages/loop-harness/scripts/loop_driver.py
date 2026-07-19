@@ -1133,6 +1133,17 @@ class LoopDriver:
         """
         if not self._lease_lost.is_set():
             return None
+        # Codex review, PR #262, P2 (pre-push dry-check, round 11): once `finish()` has already
+        # latched `_finished`, the `executor.discard()` below is a no-op and
+        # `_docker_infrastructure_result()` only prints `str(exc)` -- a
+        # `DockerActionSafetyStop.details` payload (e.g. the broker/network `cleanup_errors`
+        # that triggered it) would otherwise vanish without ever reaching the operator.
+        details = getattr(exc, "details", None)
+        if details:
+            print(
+                f"loop_driver: lease already lost; discarding after error with details: {details}",
+                file=sys.stderr,
+            )
         executor.discard()
         # EV-50 (PR #262 push-front adversarial review, P1): once the lease is already
         # gone, this in-memory result only feeds `run()`'s `EXIT_FOREIGN_LEASE` return --
