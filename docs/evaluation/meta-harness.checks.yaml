@@ -533,6 +533,7 @@
     packages/meta-harness/tests/test_cross_skill_regression.py::test_train_and_holdout_batches_share_evaluation_id_and_regression_budget
     packages/meta-harness/tests/test_cross_skill_regression.py::test_regression_cost_is_included_in_loop_iteration_budget
     packages/meta-harness/tests/test_cross_skill_regression.py::test_regression_config_toggle_changes_evaluator_hash
+    packages/meta-harness/tests/test_evaluator_headless_run.py::TestScenarioExecutionEnvelope::test_evaluator_hash_changes_when_cost_comparability_scope_changes
   covered_by:
     - packages/meta-harness/tests/test_cross_skill_regression.py::test_too_many_regression_suites_fails_before_own_runs
     - packages/meta-harness/tests/test_cross_skill_regression.py::test_regression_budget_excess_records_error_summary_and_raises
@@ -541,7 +542,8 @@
     - packages/meta-harness/tests/test_cross_skill_regression.py::test_train_and_holdout_batches_share_evaluation_id_and_regression_budget
     - packages/meta-harness/tests/test_cross_skill_regression.py::test_regression_cost_is_included_in_loop_iteration_budget
     - packages/meta-harness/tests/test_cross_skill_regression.py::test_regression_config_toggle_changes_evaluator_hash
-  notes: suite and shared evaluation budget limits fail closed, broker-wide spend reaches the loop budget, and configuration changes stale old runs.
+    - packages/meta-harness/tests/test_evaluator_headless_run.py::TestScenarioExecutionEnvelope::test_evaluator_hash_changes_when_cost_comparability_scope_changes
+  notes: suite and shared evaluation budget limits fail closed, broker-wide spend reaches the loop budget, and configuration changes (regression.* plus Issue #261 PR2 cost comparability scope: judge.model/effort, broker pricing upper bounds, broker model allowlist, scenario_run.max_budget_usd_default) stale old runs.
 
 - ev_id: EV-58
   phase: 3

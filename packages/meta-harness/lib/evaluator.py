@@ -1967,14 +1967,41 @@ def compute_evaluator_hash(
 
 
 def evaluator_execution_snapshot(config: dict) -> dict[str, Any]:
-    """Return the global execution settings that define evaluator hash scope."""
+    """Return the global execution settings that define evaluator hash scope.
+
+    Includes settings that affect cross-run cost/quality comparability even
+    when no scenario/suite file changes (Issue #261 PR2): judge tool/model/effort,
+    broker pricing upper bounds, the broker model allowlist, and the global
+    per-scenario budget default. A config-only change to any of these must
+    stale out prior evaluator_hash-scoped runs.
+    """
     evaluate_cfg = config.get("evaluate") or {}
+    judge_cfg = config.get("judge") or {}
+    broker_cfg = (evaluate_cfg.get("isolation") or {}).get("broker") or {}
     return {
         "allowed_tools": evaluate_cfg.get("allowed_tools") or [],
         "permission_mode": evaluate_cfg.get("permission_mode", "acceptEdits"),
         "model": evaluate_cfg.get("model"),
         "max_output_tokens_default": siso.resolve_max_output_tokens_default(config),
         "regression": config.get("regression") or {},
+        # judge.tool changes the scoring path entirely (claude-bare vs codex), so it
+        # must be part of the hash scope too (CodeRabbit High, PR #265).
+        "judge_tool": judge_cfg.get("tool", "claude-bare"),
+        "judge_model": judge_cfg.get("model"),
+        "judge_effort": judge_cfg.get("effort"),
+        "broker_pricing_upper_bound_usd_per_million": broker_cfg.get(
+            "pricing_upper_bound_usd_per_million"
+        )
+        or {},
+        # Validated, pinned-pair-only allowlist (see
+        # scenario_docker_profile.effective_broker_model_allowlist): raises fail-closed
+        # if evaluate.model/judge.model are unpinned or missing from the configured
+        # model_allowlist "menu", so a broken/under-priced config never silently
+        # produces a comparable-looking hash.
+        "broker_model_allowlist": siso.docker.profile.effective_broker_model_allowlist(config),
+        "scenario_run_max_budget_usd_default": (config.get("scenario_run") or {}).get(
+            "max_budget_usd_default"
+        ),
     }
 
 
