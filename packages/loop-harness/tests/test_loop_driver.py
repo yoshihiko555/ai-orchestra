@@ -6128,6 +6128,243 @@ def test_exit_success_comment_renders_multiline_body_excerpt_as_one_bullet_line(
     assert bullet_lines == ["- [low] app.py:5: line one line two line three"]
 
 
+def _pr_review_with_findings() -> dict[str, Any]:
+    """`state.pr_review` fixture with one open, one addressed, one dismissed finding."""
+    return {
+        "processed_comment_ids": [],
+        "findings": {
+            "sig-open": {
+                "first_seen_iteration": 1,
+                "last_seen_iteration": 2,
+                "status": "open",
+                "severity": "high",
+                "dismiss_reason": None,
+                "source_comment_ids": ["review_comment:10"],
+                "path": "b.py",
+                "line": 20,
+            },
+            "sig-addressed": {
+                "first_seen_iteration": 1,
+                "last_seen_iteration": 1,
+                "status": "addressed",
+                "severity": "critical",
+                "dismiss_reason": None,
+                "source_comment_ids": ["review_comment:1", "review_comment:2"],
+                "addressed_at_commit": "cafebabecafebabe",
+                "addressed_at_iteration": 2,
+                "path": "a.py",
+                "line": 5,
+            },
+            "sig-dismissed": {
+                "first_seen_iteration": 1,
+                "last_seen_iteration": 1,
+                "status": "dismissed",
+                "severity": "low",
+                "dismiss_reason": "not actionable",
+                "source_comment_ids": ["review_comment:3"],
+                "path": "c.py",
+                "line": None,
+            },
+        },
+    }
+
+
+def test_format_pr_review_findings_matrix_renders_status_rows(tmp_path: Path) -> None:
+    """Issue #235: the exit-comment finding matrix must render every recorded finding's
+    severity/location/disposition/source comment, not just the currently open ones."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, _token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.pr_review = _pr_review_with_findings()
+
+    matrix = driver._format_pr_review_findings_matrix(state)
+
+    assert "| critical | a.py:5 | addressed@cafebab | review_comment:2 |" in matrix
+    assert "| high | b.py:20 | open | review_comment:10 |" in matrix
+    assert "| low | c.py | dismissed | review_comment:3 |" in matrix
+
+
+def test_format_pr_review_findings_matrix_empty_without_findings(tmp_path: Path) -> None:
+    loop_id = "abcd1234-issue-1"
+    project_dir, _token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+
+    assert driver._format_pr_review_findings_matrix(state) == ""
+    state.pr_review = {"processed_comment_ids": [], "findings": {}}
+    assert driver._format_pr_review_findings_matrix(state) == ""
+
+
+def test_exit_success_comment_includes_finding_disposition_matrix(tmp_path: Path) -> None:
+    loop_id = "abcd1234-issue-1"
+    project_dir, _token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.pr_number = 55
+    state.pr_review = _pr_review_with_findings()
+
+    comment = driver._exit_success_comment(state, {})
+
+    assert "PR review finding disposition:" in comment
+    assert "addressed@cafebab" in comment
+
+
+def test_exit_failure_comment_includes_finding_disposition_matrix(tmp_path: Path) -> None:
+    loop_id = "abcd1234-issue-1"
+    project_dir, _token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.stop_reason = "max_iterations"
+    state.pr_review = _pr_review_with_findings()
+
+    comment = driver._exit_failure_comment(state)
+
+    assert comment.startswith(f"loop-harness: {loop_id} stopped (max_iterations).")
+    assert "PR review finding disposition:" in comment
+    assert "| high | b.py:20 | open | review_comment:10 |" in comment
+
+
+def test_exit_failure_comment_falls_back_to_plain_message_when_no_findings(
+    tmp_path: Path,
+) -> None:
+    loop_id = "abcd1234-issue-1"
+    project_dir, _token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.stop_reason = "no_progress"
+
+    assert driver._exit_failure_comment(state) == f"loop-harness: {loop_id} stopped (no_progress)."
+
+
+def test_wait_external_review_marks_and_resolves_addressed_findings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #235: a blocking finding open at `iteration - 1` but not reraised at `iteration`
+    is marked addressed in state, and `resolve_addressed_findings` is invoked with exactly
+    that resolved signature set, the PR number/repo, and the reviewed commit sha."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.pr_number = 42
+    state.pr_review = {"iteration_head_sha": "cafebabecafebabe"}
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(driver, "_repo_name_with_owner", lambda _wt: "owner/repo")
+    monkeypatch.setattr(
+        prw, "load_pr_review_config", lambda _project: prw.PrReviewConfig(reviewer_allowlist=())
+    )
+    monkeypatch.setattr(prw, "record_ignored_untrusted_reviews", lambda *a, **k: None)
+    monkeypatch.setattr(
+        prw,
+        "wait_for_completion",
+        lambda *a, **k: prw.CompletionOutcome(
+            "review_submitted", completed=True, timed_out=False, infrastructure_failure=False
+        ),
+    )
+    monkeypatch.setattr(prw, "save_review_findings_snapshot", lambda *a, **k: "artifacts/x.json")
+    monkeypatch.setattr(prw, "confirm_review_findings_reported", lambda *a, **k: None)
+
+    previous = lc.IterationFindings(frozenset({"sig-fixed", "sig-still-open"}), 2)
+    current = lc.IterationFindings(frozenset({"sig-still-open"}), 0)
+    collected = prw.ReviewFindingsResult((), current, previous, (), (), 0, 0)
+    monkeypatch.setattr(prw, "collect_review_findings", lambda *a, **k: collected)
+
+    mark_calls: list[tuple[Any, ...]] = []
+    resolve_calls: list[tuple[Any, ...]] = []
+    monkeypatch.setattr(
+        prw,
+        "mark_addressed_findings",
+        lambda *a, **k: (mark_calls.append((a, k)), ())[1],
+    )
+    monkeypatch.setattr(
+        prw,
+        "resolve_addressed_findings",
+        lambda *a, **k: (
+            resolve_calls.append((a, k)),
+            prw.AddressedFindingsResult((), (), git_workflow_unavailable=False),
+        )[1],
+    )
+
+    proposal = lc.ProposeResult(
+        action="wait_external_review",
+        action_id="act-235-001",
+        state_version=state.state_version,
+        expected_phase="implementation",
+        phase="implementation",
+        iteration=1,
+        context={},
+    )
+    d._run_wait_external_review(proposal, state, {})
+
+    assert len(mark_calls) == 1
+    mark_args, mark_kwargs = mark_calls[0]
+    assert mark_args[0] == loop_id
+    assert mark_args[1] == project_dir
+    assert set(mark_args[2]) == {"sig-fixed"}
+    assert mark_args[3] == "cafebabecafebabe"
+    assert mark_kwargs["action_id"] == "act-235-001"
+
+    assert len(resolve_calls) == 1
+    resolve_args, _resolve_kwargs = resolve_calls[0]
+    assert resolve_args[2] == 42
+    assert resolve_args[3] == "owner/repo"
+    assert set(resolve_args[4]) == {"sig-fixed"}
+    assert resolve_args[5] == "cafebabecafebabe"
+
+
+def test_wait_external_review_skips_addressed_resolution_when_nothing_resolved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No blocking finding dropped out of the reraised set this round -> neither addressed-
+    findings helper is called at all (no needless state write / GitHub calls)."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.pr_number = 42
+    state.pr_review = {"iteration_head_sha": "cafebabecafebabe"}
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(driver, "_repo_name_with_owner", lambda _wt: "owner/repo")
+    monkeypatch.setattr(
+        prw, "load_pr_review_config", lambda _project: prw.PrReviewConfig(reviewer_allowlist=())
+    )
+    monkeypatch.setattr(prw, "record_ignored_untrusted_reviews", lambda *a, **k: None)
+    monkeypatch.setattr(
+        prw,
+        "wait_for_completion",
+        lambda *a, **k: prw.CompletionOutcome(
+            "review_submitted", completed=True, timed_out=False, infrastructure_failure=False
+        ),
+    )
+    monkeypatch.setattr(prw, "save_review_findings_snapshot", lambda *a, **k: "artifacts/x.json")
+    monkeypatch.setattr(prw, "confirm_review_findings_reported", lambda *a, **k: None)
+
+    same = lc.IterationFindings(frozenset({"sig-still-open"}), 0)
+    collected = prw.ReviewFindingsResult((), same, same, (), (), 0, 0)
+    monkeypatch.setattr(prw, "collect_review_findings", lambda *a, **k: collected)
+
+    mark_calls: list[Any] = []
+    resolve_calls: list[Any] = []
+    monkeypatch.setattr(prw, "mark_addressed_findings", lambda *a, **k: mark_calls.append((a, k)))
+    monkeypatch.setattr(
+        prw, "resolve_addressed_findings", lambda *a, **k: resolve_calls.append((a, k))
+    )
+
+    proposal = lc.ProposeResult(
+        action="wait_external_review",
+        action_id="act-235-002",
+        state_version=state.state_version,
+        expected_phase="implementation",
+        phase="implementation",
+        iteration=1,
+        context={},
+    )
+    d._run_wait_external_review(proposal, state, {})
+
+    assert mark_calls == []
+    assert resolve_calls == []
+
+
 def test_run_stop_posts_issue_comment_when_repo_identity_verified(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

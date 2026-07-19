@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`loop-harness`: 対応済みレビュー指摘のスレッド自動 resolve と exit コメントの対応マトリクスを追加**: `/loop-issue` の再レビューで前ラウンドの critical/high 指摘が再発しなかった場合、該当する信頼済み GitHub review thread に自動で reply・resolve する。`exit_success`/`exit_failure` の Issue コメントには全指摘の severity/場所/状態（addressed / open / dismissed）を一覧できるテーブルを追加した。
 - **`meta-harness`: proposer が routing config patch を提案可能に（Phase A）**: proposer 生成候補が `agent-routing/cli-tools.yaml` の `agents.*.tool` / `antigravity.model` を patch できるようになった（`codex.model` は human 限定のまま）。reward hacking 対策として quality 厳密優越・クロススキル回帰ゲート・レート制限等を同梱（ADR-20260717-040）。
 - **meta-harness routing-config target**: human-registered candidates can now patch `agent-routing/cli-tools.yaml` keys (`agents.*.tool`, `codex.model`, `antigravity.model`) through the evaluation/promotion pipeline. Proposer candidates remain facets-only.
 - **`loop-harness`: Maker commit 書き戻しの安全停止理由を追加**: 一時 ref への import 失敗、非 fast-forward、CAS 競合を `git_ref_import_failed` / `git_ref_not_fast_forward` / `git_ref_cas_rejected` として区別できるようにした。
