@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import socket
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -22,6 +24,26 @@ class Mount:
     source: Path
     target: Path
     read_only: bool
+
+
+def _make_unix_socket(directory: Path, name: str) -> Path:
+    """Bind a real AF_UNIX socket file at ``directory/name`` and return its path.
+
+    Binds using a relative filename after `chdir`-ing into ``directory`` rather than an absolute
+    path, since `AF_UNIX` socket paths are capped at ~104-108 bytes and pytest's `tmp_path`
+    fixture routinely produces absolute paths longer than that.
+    """
+    previous_cwd = Path.cwd()
+    os.chdir(directory)
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            sock.bind(name)
+        finally:
+            sock.close()
+    finally:
+        os.chdir(previous_cwd)
+    return directory / name
 
 
 def _spec(tmp_path: Path, mounts: tuple[Mount, ...]) -> object:
@@ -133,6 +155,50 @@ def test_profile_rejects_renamed_docker_socket_source(tmp_path: Path) -> None:
 
     with pytest.raises(profile.DockerProfileError, match="Docker socket mounts are forbidden"):
         profile.build_scenario_container_command(_spec(tmp_path, (mount,)))
+
+
+def test_profile_rejects_direct_unrenamed_socket_bind_mount_source(tmp_path: Path) -> None:
+    """A bind mount source that is itself a real Unix socket file is rejected regardless of
+    its name (not just the hardcoded `docker.sock` name/path checks above)."""
+    socket_dir = tmp_path / "socket-dir"
+    socket_dir.mkdir()
+    socket_path = _make_unix_socket(socket_dir, "app.sock")
+    mount = Mount(socket_path, tmp_path / "mounted-socket", True)
+
+    with pytest.raises(profile.DockerProfileError, match="socket bind mounts are forbidden"):
+        profile.build_scenario_container_command(_spec(tmp_path, (mount,)))
+
+
+def test_profile_rejects_socket_nested_inside_mounted_worktree_directory(tmp_path: Path) -> None:
+    """Codex review, PR #262, Critical (round 7): a directory bind mount (e.g. the Maker/Checker
+    worktree) that contains a Unix socket anywhere below it must be rejected, not just when the
+    mount source itself is a socket -- otherwise the whole bind mount carries that socket (most
+    dangerously a `docker.sock`) whole into the scenario container even though the direct-socket
+    checks above never see it.
+    """
+    worktree = tmp_path / "worktree"
+    nested = worktree / "nested" / "deeper"
+    nested.mkdir(parents=True)
+    _make_unix_socket(nested, "docker.sock")
+    mount = Mount(worktree, worktree, False)
+
+    with pytest.raises(profile.DockerProfileError, match="socket bind mounts are forbidden"):
+        profile.build_scenario_container_command(_spec(tmp_path, (mount,)))
+
+
+def test_profile_accepts_worktree_mount_with_no_sockets_anywhere_below_it(
+    tmp_path: Path,
+) -> None:
+    """A directory bind mount containing only ordinary files/directories is accepted."""
+    worktree = tmp_path / "worktree"
+    nested = worktree / "nested"
+    nested.mkdir(parents=True)
+    (nested / "file.txt").write_text("ordinary file", encoding="utf-8")
+    mount = Mount(worktree, worktree, False)
+
+    command = profile.build_scenario_container_command(_spec(tmp_path, (mount,)))
+
+    assert "--mount" in command
 
 
 def test_exec_command_is_non_root_and_keeps_workdir(tmp_path: Path) -> None:

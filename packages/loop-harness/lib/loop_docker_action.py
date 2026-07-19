@@ -100,8 +100,7 @@ _RUNTIME_LABELS = runtime_lifecycle.RuntimeLabels(DOCKER_LABEL)
 # `checker_env` passed into execute_mechanical() must never override any of these -- e.g.
 # `checker_env["HOME"]` is a *host* scratch-home path (see loop_driver_support.maker_env's
 # `scratch_home`) that does not exist inside the container's filesystem namespace, and the host's
-# own `PATH` almost never resolves to this hardened image's toolchain -- while still forwarding
-# every other override (e.g. `RUFF_CACHE_DIR`) mechanical commands legitimately need.
+# own `PATH` almost never resolves to this hardened image's toolchain.
 #
 # Codex review, PR #262, High (round 6): `XDG_CONFIG_HOME` joins this reserved set for the same
 # reason as `HOME`. `loop_driver_support.maker_env()` always derives it from the same host
@@ -114,6 +113,20 @@ _RUNTIME_LABELS = runtime_lifecycle.RuntimeLabels(DOCKER_LABEL)
 _MECHANICAL_ENV_RESERVED_KEYS = frozenset(
     {"HOME", "TMPDIR", "PATH", "GIT_DIR", "GIT_WORK_TREE", "XDG_CONFIG_HOME"}
 )
+# Codex review, PR #262, Critical (round 7): `_mechanical_exec_env()` used to forward the entire
+# host-derived `checker_env` (minus only the container-reserved keys above) into every mechanical
+# `docker exec`. `checker_env` is `loop_driver_support.maker_env(os.environ, ...)`, which only
+# strips a handful of push-authentication keys, so any other host secret still riding along in
+# `os.environ` -- `AWS_SECRET_ACCESS_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, etc. -- was
+# injected verbatim into Maker-authored mechanical commands, which can trivially print it into
+# `mechanical_*.log`, defeating the whole point of Docker isolation for every non-GitHub
+# credential. Mirroring `_broker_exec_env()`'s own minimal, explicit container env, forwarding is
+# now name-pattern allowlisted instead of deny-listed: only keys matching one of these suffixes
+# pass through at all. Every currently known legitimate override (`RUFF_CACHE_DIR`, see
+# `_MECHANICAL_ENV_DEFAULTS` below) is a filesystem path a tool redirects its cache to off the
+# read-only checker worktree -- never a credential -- so this suffix, not an ever-growing
+# per-tool name list, is the allowlist itself.
+_MECHANICAL_ENV_ALLOWED_SUFFIXES: tuple[str, ...] = ("_CACHE_DIR",)
 # Codex review, PR #262, High (round 4): fallback default only, layered *underneath* the
 # forwarded checker env in `_mechanical_exec_env()` so an explicit `RUFF_CACHE_DIR` override
 # still wins; see that function's docstring for why this is needed at all.
@@ -692,8 +705,19 @@ def remove_scenario_container(
 
 
 def _mechanical_exec_env(env: Mapping[str, str] | None) -> dict[str, str]:
-    """Forward the caller's sanitized checker env, minus container-owned reserved keys, with a
-    container-writable cache default layered underneath.
+    """Forward only an allowlisted subset of the caller's checker env, with a container-writable
+    cache default layered underneath.
+
+    Codex review, PR #262, Critical (round 7): this previously forwarded the caller's *entire*
+    sanitized checker env -- effectively the host process's own `os.environ`, minus a handful of
+    container-reserved keys and the few push-authentication keys `maker_env()` strips -- into
+    every mechanical `docker exec`. Any other host secret (`AWS_SECRET_ACCESS_KEY`,
+    `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, etc.) rode along unchanged, and Maker-authored
+    mechanical commands running inside that same container can trivially print it into
+    `mechanical_*.log`, defeating Docker isolation for every non-GitHub credential. Only keys
+    matching `_MECHANICAL_ENV_ALLOWED_SUFFIXES` (currently `*_CACHE_DIR`, see that constant's own
+    docstring for why a name-pattern allowlist rather than a deny-list) are forwarded at all;
+    everything else in the caller's env is silently dropped, not forwarded.
 
     Codex review, PR #262, High (round 4): the checker worktree (this exec's `cwd`) is mounted
     read-only, but ruff defaults its cache directory to `.ruff_cache` under the project root
@@ -701,13 +725,18 @@ def _mechanical_exec_env(env: Mapping[str, str] | None) -> dict[str, str]:
     bundled issue-loop's default mechanical commands include `ruff check .`. `/tmp` is the
     container's own tmpfs mount (`loop_docker_profile.CONTAINER_TMP`), always writable by the
     non-root exec identity regardless of `cwd`, and this value never leaks any host path. It is
-    only a fallback: a `RUFF_CACHE_DIR` already present in the forwarded checker env (e.g. an
-    explicit operator override) still wins.
+    only a fallback: a `RUFF_CACHE_DIR` already present in the forwarded (allowlisted) checker env
+    (e.g. an explicit operator override) still wins.
     """
     forwarded = (
         {}
         if not env
-        else {key: value for key, value in env.items() if key not in _MECHANICAL_ENV_RESERVED_KEYS}
+        else {
+            key: value
+            for key, value in env.items()
+            if key not in _MECHANICAL_ENV_RESERVED_KEYS
+            and any(key.endswith(suffix) for suffix in _MECHANICAL_ENV_ALLOWED_SUFFIXES)
+        }
     )
     return {**_MECHANICAL_ENV_DEFAULTS, **forwarded}
 

@@ -867,14 +867,23 @@ def test_finalize_without_commit_skips_writeback_and_removes_stale_import_ref(
 def test_finalize_rejects_uncommitted_worktree_change_on_no_commit_path(
     linked_worktree: GitFixture,
 ) -> None:
+    """Codex review, PR #262, High (round 7): a Maker that exits 0 but leaves worktree drift
+    behind must get the documented `maker_partial_worktree` safe-stop -- the same non-destructive
+    outcome `verify_failed_maker_worktree()` already reports for a *failed* Maker -- not an opaque
+    `EphemeralGitInfrastructureError` that `loop_docker_action._dispatch()` cannot distinguish from
+    a genuine Docker infrastructure failure.
+    """
     session = _prepare(linked_worktree)
     Path(session.worktree_path, "tracked.txt").write_text(
         "uncommitted, never committed\n", encoding="utf-8"
     )
     _create_stale_import_ref(session)
 
-    with pytest.raises(git_ephemeral.EphemeralGitInfrastructureError, match=r"dirty|status"):
+    with pytest.raises(
+        git_ephemeral.EphemeralGitSafetyStop, match=r"uncommitted worktree changes"
+    ) as caught:
         git_ephemeral.finalize_ephemeral_git(session)
+    assert caught.value.stop_reason == "maker_partial_worktree"
 
     assert _shared_ref(session) == session.baseline_sha
     _assert_import_ref_missing(session)
@@ -894,8 +903,11 @@ def test_finalize_rejects_skip_worktree_hidden_drift_on_no_commit_path(
     # (git status --porcelain against that index) would have reported it as clean.
     assert _git("status", "--porcelain", env=env).stdout == ""
 
-    with pytest.raises(git_ephemeral.EphemeralGitInfrastructureError, match=r"dirty|status"):
+    with pytest.raises(
+        git_ephemeral.EphemeralGitSafetyStop, match=r"uncommitted worktree changes"
+    ) as caught:
         git_ephemeral.finalize_ephemeral_git(session)
+    assert caught.value.stop_reason == "maker_partial_worktree"
 
     assert _shared_ref(session) == session.baseline_sha
     _assert_import_ref_missing(session)
@@ -913,8 +925,11 @@ def test_finalize_rejects_assume_unchanged_hidden_drift_on_no_commit_path(
     )
     assert _git("status", "--porcelain", env=env).stdout == ""
 
-    with pytest.raises(git_ephemeral.EphemeralGitInfrastructureError, match=r"dirty|status"):
+    with pytest.raises(
+        git_ephemeral.EphemeralGitSafetyStop, match=r"uncommitted worktree changes"
+    ) as caught:
         git_ephemeral.finalize_ephemeral_git(session)
+    assert caught.value.stop_reason == "maker_partial_worktree"
 
     assert _shared_ref(session) == session.baseline_sha
     _assert_import_ref_missing(session)
@@ -929,8 +944,11 @@ def test_finalize_rejects_dirty_status_without_shared_ref_writeback(
     Path(session.worktree_path, "tracked.txt").write_text("uncommitted\n", encoding="utf-8")
     _create_stale_import_ref(session)
 
-    with pytest.raises(git_ephemeral.EphemeralGitInfrastructureError, match=r"status|dirty"):
+    with pytest.raises(
+        git_ephemeral.EphemeralGitSafetyStop, match=r"uncommitted worktree changes"
+    ) as caught:
         git_ephemeral.finalize_ephemeral_git(session)
+    assert caught.value.stop_reason == "maker_partial_worktree"
 
     assert _shared_ref(session) == session.baseline_sha
     _assert_import_ref_missing(session)

@@ -782,6 +782,29 @@ def test_mechanical_exec_env_forwards_overrides_but_not_container_reserved_keys(
     assert merged == {"RUFF_CACHE_DIR": "/host/ruff-cache"}
 
 
+def test_mechanical_exec_env_drops_host_secrets_outside_the_cache_dir_allowlist() -> None:
+    """Codex review, PR #262, Critical (round 7): stop forwarding host secrets into checker
+    containers.
+
+    `checker_env` is `loop_driver_support.maker_env(os.environ, ...)`, which only strips a
+    handful of push-authentication keys -- any other host secret still riding along in the
+    driver process's own `os.environ` must never reach a Maker-authored mechanical command
+    running inside the isolated container. Only `*_CACHE_DIR`-suffixed keys are forwarded;
+    everything else, including real-world credential env var names, is dropped.
+    """
+    checker_env = {
+        "RUFF_CACHE_DIR": "/host/ruff-cache",
+        "AWS_SECRET_ACCESS_KEY": "super-secret",
+        "OPENAI_API_KEY": "sk-should-not-leak",
+        "ANTHROPIC_API_KEY": "sk-ant-should-not-leak",
+        "SOME_OTHER_TOKEN": "also-should-not-leak",
+    }
+
+    merged = docker_action._mechanical_exec_env(checker_env)
+
+    assert merged == {"RUFF_CACHE_DIR": "/host/ruff-cache"}
+
+
 def test_align_mount_ownership_or_raise_normalizes_os_errors(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1232,6 +1255,49 @@ def test_failed_maker_partial_worktree_safe_stop_preserves_cleanup(
 
     assert caught.value.stop_reason == "maker_partial_worktree"
     assert finalized == []
+    assert cleaned == [True]
+
+
+def test_successful_maker_dirty_finalize_safe_stops_as_partial_worktree_not_infra_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex review, PR #262, High (round 7): a Docker Maker that exits 0 but leaves the
+    worktree dirty must reach the same documented `maker_partial_worktree` safe-stop as a failed
+    Maker, not an opaque, unclassified infrastructure error -- and `finish()` must propagate the
+    real `finalize_ephemeral_git()` conversion (see `loop_git_ephemeral._as_partial_worktree_stop`)
+    as-is rather than swallowing or re-wrapping it, since `_finished` is already latched by the
+    time this runs and a later `abort()` fallback would silently no-op.
+    """
+    runtime = docker_action.DockerActionRuntime(
+        _request(tmp_path),
+        host_child_runner=lambda *_args: subprocess.CompletedProcess([], 0, "", ""),
+    )
+    runtime.git_session = SimpleNamespace(runtime_dir=tmp_path / "runtime")
+    runtime._scenario_start_attempted = True
+    runtime._scenario_removed = True
+    cleaned: list[bool] = []
+    monkeypatch.setattr(
+        docker_action.git_ephemeral,
+        "finalize_ephemeral_git",
+        lambda *_args: (_ for _ in ()).throw(
+            git_ephemeral.EphemeralGitSafetyStop(
+                "maker_partial_worktree", "Maker left uncommitted worktree changes"
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        docker_action.git_ephemeral,
+        "cleanup_ephemeral_git",
+        lambda *_args: cleaned.append(True),
+    )
+
+    with pytest.raises(
+        git_ephemeral.EphemeralGitSafetyStop, match="uncommitted worktree changes"
+    ) as caught:
+        runtime.finish(action_succeeded=True)
+
+    assert caught.value.stop_reason == "maker_partial_worktree"
     assert cleaned == [True]
 
 

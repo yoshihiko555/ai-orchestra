@@ -133,6 +133,37 @@ class EphemeralGitFinalizeResult:
     new_sha: str
 
 
+# Codex review, PR #262, High (round 7): the exact message `_verify_worktree_matches_trusted_tree`
+# raises for leftover worktree drift (as opposed to any of its other, genuinely-infrastructure
+# failure modes). Shared by `verify_failed_maker_worktree()` (failed-Maker path) and
+# `_finalize_ephemeral_git()`'s pre-CAS check (successful-Maker path, see
+# `_as_partial_worktree_stop()`) so both convert only this specific drift signal into the
+# documented `maker_partial_worktree` safe-stop, not every unrelated infrastructure error.
+_DIRTY_WORKTREE_MESSAGE = "worktree status is dirty relative to the trusted target tree"
+
+
+def _as_partial_worktree_stop(
+    exc: EphemeralGitInfrastructureError,
+) -> EphemeralGitInfrastructureError:
+    """Re-raise a dirty-worktree drift signal as `maker_partial_worktree`, or pass through.
+
+    Codex review, PR #262, High (round 7): `_finalize_ephemeral_git()`'s pre-CAS trusted-tree
+    check runs before any shared-branch mutation, so a dirty verdict there is exactly the same
+    safe, no-side-effect situation `verify_failed_maker_worktree()` already reports as
+    `maker_partial_worktree` for a failed Maker -- a successful (exit 0) Maker that still left
+    uncommitted worktree changes deserves the identical non-destructive safe-stop, not an opaque
+    Docker infrastructure failure that discards the sealed result and blocks the later `abort()`
+    path (see `loop_docker_action.DockerActionRuntime._finish_git()`).
+    """
+    if str(exc) != _DIRTY_WORKTREE_MESSAGE:
+        return exc
+    return EphemeralGitSafetyStop(
+        "maker_partial_worktree",
+        "Maker left uncommitted worktree changes",
+        details=exc.details,
+    )
+
+
 def prepare_ephemeral_git(
     *,
     project_dir: str | Path,
@@ -507,13 +538,10 @@ def verify_failed_maker_worktree(
             runner=runner,
         )
     except EphemeralGitInfrastructureError as exc:
-        if str(exc) != "worktree status is dirty relative to the trusted target tree":
+        converted = _as_partial_worktree_stop(exc)
+        if converted is exc:
             raise
-        raise EphemeralGitSafetyStop(
-            "maker_partial_worktree",
-            "failed Maker left uncommitted worktree changes",
-            details=exc.details,
-        ) from exc
+        raise converted from exc
 
 
 def finalize_ephemeral_git(
@@ -587,13 +615,29 @@ def _finalize_ephemeral_git(
         runner=runner,
         operation="verify checked-out branch before ephemeral status",
     )
-    _verify_worktree_matches_trusted_tree(
-        git_dir=session.ephemeral_dir,
-        worktree_path=session.worktree_path,
-        target_sha=new_sha,
-        temp_index_dir=session.runtime_dir,
-        runner=runner,
-    )
+    try:
+        _verify_worktree_matches_trusted_tree(
+            git_dir=session.ephemeral_dir,
+            worktree_path=session.worktree_path,
+            target_sha=new_sha,
+            temp_index_dir=session.runtime_dir,
+            runner=runner,
+        )
+    except EphemeralGitInfrastructureError as exc:
+        # Codex review, PR #262, High (round 7): this check runs before any shared-branch
+        # mutation below (fetch/CAS/reset), so a dirty verdict here is exactly the same safe,
+        # no-side-effect "Maker left worktree drift behind" situation
+        # `verify_failed_maker_worktree()` already reports as `maker_partial_worktree` for a
+        # failed Maker -- only this successful (exit 0) Maker never reached that failure path.
+        # Without this conversion, `finalize_ephemeral_git()` propagates a plain
+        # `EphemeralGitInfrastructureError` that `loop_docker_action._dispatch()` treats as an
+        # opaque Docker infrastructure failure, and by the time its `abort()` fallback would run
+        # `verify_failed_maker_worktree()` itself, the runtime is already latched `_finished` and
+        # silently no-ops (see `DockerActionRuntime.finish()`/`abort()`).
+        converted = _as_partial_worktree_stop(exc)
+        if converted is exc:
+            raise
+        raise converted from exc
 
     if new_sha == session.baseline_sha:
         return EphemeralGitFinalizeResult(

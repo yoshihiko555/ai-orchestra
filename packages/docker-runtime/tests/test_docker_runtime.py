@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -571,6 +572,48 @@ def test_network_is_stale_returns_true_for_missing_parent_pid_label() -> None:
     inspected = {"Labels": {labels.owner_label: "owner-test"}}
 
     assert lifecycle.network_is_stale(inspected, "owner-test", labels=labels) is True
+
+
+def test_network_is_stale_returns_true_past_age_cap_despite_pid_reuse() -> None:
+    """Codex review, PR #262, High (round 7): PID reuse must not leak networks forever.
+
+    A same-owner, container-less network whose `created_at_label` is already past
+    `stale_max_age_seconds` is reclaimed even when `pid_checker` reports the (possibly reused)
+    `parent_pid_label` as alive -- mirroring `container_is_stale()`'s own absolute age cap so a
+    driver crash followed by OS PID reuse cannot suspend reclamation indefinitely.
+    """
+    labels = lifecycle.RuntimeLabels("ai.orchestra.test", stale_max_age_seconds=60)
+    inspected = {
+        "Labels": {
+            labels.owner_label: "owner-test",
+            labels.parent_pid_label: "4242",
+            labels.created_at_label: str(int(time.time()) - 120),
+        }
+    }
+
+    is_stale = lifecycle.network_is_stale(
+        inspected, "owner-test", labels=labels, pid_checker=lambda _pid: True
+    )
+
+    assert is_stale is True
+
+
+def test_network_is_stale_returns_false_within_age_cap_and_live_pid() -> None:
+    """A network within its age cap and whose creating process is alive is never stale."""
+    labels = lifecycle.RuntimeLabels("ai.orchestra.test", stale_max_age_seconds=3600)
+    inspected = {
+        "Labels": {
+            labels.owner_label: "owner-test",
+            labels.parent_pid_label: "4242",
+            labels.created_at_label: str(int(time.time())),
+        }
+    }
+
+    is_stale = lifecycle.network_is_stale(
+        inspected, "owner-test", labels=labels, pid_checker=lambda _pid: True
+    )
+
+    assert is_stale is False
 
 
 def test_network_is_stale_returns_false_when_containers_are_attached() -> None:

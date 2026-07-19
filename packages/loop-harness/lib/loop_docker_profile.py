@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import stat
 import sys
@@ -193,6 +194,36 @@ def _validate_mount(mount: BindMount) -> None:
         return
     if stat.S_ISSOCK(mode):
         raise DockerProfileError("socket bind mounts are forbidden")
+    if stat.S_ISDIR(mode):
+        _reject_socket_descendants(source)
+
+
+def _reject_socket_descendants(root: Path) -> None:
+    """Fail closed if a directory bind mount source contains a Unix socket anywhere below it.
+
+    Codex review, PR #262, Critical (round 7): `_validate_mount()`'s socket checks above only
+    stat the mount source itself. When the source is a directory -- e.g. the Maker/Checker
+    worktree -- a Unix socket sitting anywhere underneath it (most dangerously a `docker.sock`
+    someone bind-mounted into a dev worktree, but any listening socket works the same way) rides
+    along whole into the scenario container's bind mount even though the direct socket checks
+    above never see it, letting Maker-authored code inside the container reach it and, for a
+    Docker socket, fully escape the container/host isolation boundary. `followlinks=False` keeps
+    this walk from crossing a symlinked directory into an unrelated part of the filesystem; a
+    symlink to a socket is not itself flagged (`lstat` reports it as a symlink), matching what a
+    bind mount actually exposes -- the real socket inode, not a same-tree symlink pointing away
+    from it.
+    """
+    for dirpath, _dirnames, filenames in os.walk(root, followlinks=False):
+        for name in filenames:
+            entry_path = Path(dirpath) / name
+            try:
+                entry_mode = entry_path.lstat().st_mode
+            except OSError:
+                continue
+            if stat.S_ISSOCK(entry_mode):
+                raise DockerProfileError(
+                    f"socket bind mounts are forbidden: found a socket at {entry_path}"
+                )
 
 
 def _label_args(labels: Mapping[str, str]) -> list[str]:
