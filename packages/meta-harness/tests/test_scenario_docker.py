@@ -282,6 +282,7 @@ def test_judge_has_broker_but_no_candidate_worktree_mount(tmp_path: Path) -> Non
     assert "--network\nmh-run-test-internal" in rendered
     assert "ANTHROPIC_BASE_URL=http://mh-broker:8787" in command
     assert "CLAUDE_CODE_MAX_OUTPUT_TOKENS=4096" in command
+    assert "CLAUDE_CODE_DISABLE_1M_CONTEXT=1" in command
     assert str(launch.worktree_dir.resolve()) not in rendered
     assert str(launch.runtime_state_dir.resolve()) not in rendered
     assert command[-8:] == [
@@ -896,6 +897,7 @@ def test_capability_smoke_uses_configured_max_output_tokens(
             command[index + 1] for index, arg in enumerate(command[:-1]) if arg == "--env"
         ]
         assert expected_env in env_values
+        assert "CLAUDE_CODE_DISABLE_1M_CONTEXT=1" in env_values
 
 
 def test_broker_startup_cleanup_failure_is_reported(tmp_path: Path, monkeypatch) -> None:
