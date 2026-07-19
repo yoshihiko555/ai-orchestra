@@ -697,6 +697,14 @@ config で切替可能な追加バックエンドとして導入する（確定�
   worktree 上で正当に生成した巨大ファイルをそのまま commit した場合、host 権限で共有
   `common_dir/objects` へ書き込まれディスク枯渇 DoS を招き得る（Fix-7 が閉じた alternates 経由の
   confused deputy とは別の量的リスク）。Phase 2 では対応せず、Issue #255 でフォローアップする。
+- mechanical exec（`loop_docker_action._mechanical_exec_env()`）へ転送される host 環境変数は
+  `_MECHANICAL_ENV_ALLOWED_SUFFIXES`（`_CACHE_DIR` サフィックス）に一致するキーのみに limit
+  される allowlist 方式である（Codex レビュー指摘、round 7、Critical: host secret の Docker 隔離
+  下での漏洩防止を deny-list 方式より優先した意図的なトレードオフ。3 節参照）。したがって
+  `PYTHONPATH` 等、host 環境変数へ依存する mechanical check は Docker backend では動作しない
+  （host 実行時は動いていたものが Docker 化で無言に壊れ得る）。必要な場合は loop 定義側の
+  `mechanical.commands` コマンド文字列内で明示的に設定すること（例:
+  `PYTHONPATH=/path python -m pytest ...`）。この制約は受容し、allowlist 自体は変更しない。
 
 ---
 

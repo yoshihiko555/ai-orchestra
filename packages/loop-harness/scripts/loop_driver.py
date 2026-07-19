@@ -1019,11 +1019,25 @@ class LoopDriver:
                 # `EXIT_FOREIGN_LEASE` without ever calling `lc.complete()` for this action.
                 # That would break the "lease lost -> zero writes" invariant every other
                 # lease-loss path in this class (code G5, H13) already enforces, just reached
-                # through a different race window. `executor.abort()` runs the identical
-                # cleanup as `finish()` but with `action_succeeded=False`, which never reaches
-                # the CAS-publishing branch of `_finish_git()` -- a failed/aborted Maker only
-                # gets a read-only worktree verification (see its own docstring).
-                executor.abort()
+                # through a different race window.
+                #
+                # Local pre-push review (round 9): the round-8 fix called `executor.abort()`
+                # here, but for the Docker executor that runs `_finish_git(action_succeeded=
+                # False)` -> `verify_failed_maker_worktree()`, which diffs the worktree against
+                # `baseline_sha` -- the state *before* this Maker ran. A Maker that committed
+                # cleanly before losing the lease always reads as drift there, raising
+                # `EphemeralGitSafetyStop("maker_partial_worktree")`. The except block below
+                # then calls `_stop_for_action_safety()` -> `lds.persist_safe_stop(...,
+                # self.lease_token, ...)`, but another worker already holds the lease, so
+                # `guarded_lease_section` raises `WriteRejectedError` -- uncaught here, since
+                # `run()` only catches `DriverTerminated` -- crashing the whole driver process
+                # instead of returning `EXIT_FOREIGN_LEASE`. `executor.discard()` is a
+                # dedicated quiet teardown instead: zero git reads or writes (no CAS publish,
+                # no baseline-diff verification), only local container/broker/runtime cleanup,
+                # and it never raises -- there is no safe-stop channel left to persist a
+                # failure into once the lease is already gone. See
+                # `DockerActionRuntime.discard_after_lease_loss()`'s own docstring.
+                executor.discard()
                 return result
             executor.finish(result)
             return result

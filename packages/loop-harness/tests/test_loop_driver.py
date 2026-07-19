@@ -14,6 +14,7 @@ import shlex
 import stat
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -1480,13 +1481,22 @@ def test_dispatch_never_publishes_when_lease_already_lost(
     """Codex review, PR #262, P2 (round 8, D1): a Maker's `claude -p` child can finish cleanly
     in the exact race window right before the next heartbeat tick detects lease loss (see
     `_kill_current_child()`). `_dispatch_action()` then returns a normal, "successful" result
-    with nothing for `_dispatch()`'s except blocks to catch below -- `finish()` must not run in
-    that case (it would publish/CAS the Maker's commit chain via
-    `_finish_git(action_succeeded=True)`), since this method's own caller (`run()`, right after
-    this call returns) is about to return `EXIT_FOREIGN_LEASE` without ever calling
-    `lc.complete()` for this action. `executor.abort()` runs the identical cleanup but with
-    `action_succeeded=False`, which never reaches the CAS-publishing branch, matching the "lease
-    lost -> zero writes" invariant every other lease-loss path in this class already enforces.
+    with nothing for `_dispatch()`'s except blocks to catch below -- neither `finish()` (which
+    would publish/CAS the Maker's commit chain via `_finish_git(action_succeeded=True)`) nor a
+    plain `abort()` (which, for the real Docker executor, still runs `_finish_git(action_
+    succeeded=False)` -> `verify_failed_maker_worktree()`; see the dedicated integration test
+    below for why that specific path is wrong here) may run in that case, since this method's
+    own caller (`run()`, right after this call returns) is about to return `EXIT_FOREIGN_LEASE`
+    without ever calling `lc.complete()` for this action. `executor.discard()` is the dedicated
+    lease-lost teardown that reaches neither of `_finish_git()`'s two branches, matching the
+    "lease lost -> zero writes" invariant every other lease-loss path in this class already
+    enforces.
+
+    This stub-executor test only proves `_dispatch()` calls `discard()` (not `finish()`/`abort()`)
+    and returns the action's result unchanged; it intentionally cannot see what `discard()` itself
+    does internally for a real Docker executor, since `RecordingExecutor` never reaches
+    `DockerActionRuntime`/`verify_failed_maker_worktree()` at all -- that misclassification is
+    covered by `test_dispatch_lease_lost_after_successful_maker_never_touches_shared_branch_git`.
     """
     loop_id = "abcd1234-issue-1"
     project_dir, token = _seed_running_loop(tmp_path, loop_id)
@@ -1509,6 +1519,9 @@ def test_dispatch_never_publishes_when_lease_already_lost(
         def abort(self) -> None:
             calls.append("abort")
 
+        def discard(self) -> None:
+            calls.append("discard")
+
     d = driver.LoopDriver(loop_id, project_dir, token)
     monkeypatch.setattr(
         driver.lae, "build_action_executor", lambda *_args, **_kwargs: RecordingExecutor()
@@ -1523,7 +1536,109 @@ def test_dispatch_never_publishes_when_lease_already_lost(
     result = d._dispatch(proposal, state)
 
     assert result == {"maker": {"agent": "backend-python-dev"}}
-    assert calls == ["abort"]
+    assert calls == ["discard"]
+
+
+def test_dispatch_lease_lost_after_successful_maker_never_touches_shared_branch_git(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Local pre-push review (round 9, P1): a `RecordingExecutor` stub (as in the test above)
+    cannot detect a misclassified lease-lost teardown, because it never reaches the real
+    `DockerActionRuntime._finish_git()` -> `verify_failed_maker_worktree()` path at all. This test
+    exercises the real `DockerActionExecutor` wired to a `DockerActionRuntime` with a real
+    `EphemeralGitSession`-shaped git_session (only `finalize_ephemeral_git`/`verify_failed_maker_
+    worktree`/`cleanup_ephemeral_git` are monkeypatched, at the `loop_git_ephemeral` call sites
+    `discard_after_lease_loss()` itself uses), proving that a successful Maker whose commit lands
+    right before the driver's own lease is detected lost:
+
+    1. never reaches `finalize_ephemeral_git()` (no CAS publish onto the shared branch)
+    2. never reaches `verify_failed_maker_worktree()` (no baseline-diff check that would
+       misclassify the Maker's own clean commit as `maker_partial_worktree` drift)
+    3. only reaches `cleanup_ephemeral_git()` (this action's own local session artifacts)
+    4. `_dispatch()` returns the action's result normally instead of raising/crashing the driver
+       process -- there being no safe-stop channel left once the lease is already gone.
+    """
+    loop_id = "abcd1234-issue-2"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    proposal = lc.ProposeResult(
+        action=lc.Action.RUN_MAKER.value,
+        action_id="act-lease-lost-real",
+        state_version=state.state_version,
+        expected_phase=state.phase,
+        phase=state.phase,
+        iteration=state.iteration,
+        context={},
+    )
+
+    calls: list[str] = []
+    git_session = object()
+
+    class FakeRuntime:
+        def __init__(self) -> None:
+            self.git_session = git_session
+            self._finished = False
+            self._lifecycle_lock = threading.RLock()
+
+        def _cleanup_containers(self) -> tuple[None, list[str]]:
+            calls.append("cleanup_containers")
+            return None, []
+
+        def discard_after_lease_loss(self) -> None:
+            with self._lifecycle_lock:
+                if self._finished:
+                    return
+                self._finished = True
+                self._cleanup_containers()
+                driver.lge.cleanup_ephemeral_git(self.git_session)
+
+    monkeypatch.setattr(
+        driver.lge,
+        "finalize_ephemeral_git",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("lease-lost teardown must never CAS-publish the shared branch")
+        ),
+    )
+    monkeypatch.setattr(
+        driver.lge,
+        "verify_failed_maker_worktree",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError(
+                "lease-lost teardown must never diff a successful Maker's worktree against "
+                "the stale baseline_sha -- that always misclassifies as maker_partial_worktree"
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        driver.lge,
+        "cleanup_ephemeral_git",
+        lambda *_args, **_kwargs: calls.append("cleanup_ephemeral_git"),
+    )
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(
+        driver.lae,
+        "build_action_executor",
+        lambda *_args, **_kwargs: driver.lae.DockerActionExecutor(FakeRuntime()),
+    )
+    monkeypatch.setattr(
+        d,
+        "_dispatch_action",
+        lambda *_args, **_kwargs: {"maker": {"agent": "backend-python-dev"}},
+    )
+    monkeypatch.setattr(
+        d,
+        "_stop_for_action_safety",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("lease-lost teardown must never reach the safe-stop persistence path")
+        ),
+    )
+    d._lease_lost.set()
+
+    result = d._dispatch(proposal, state)
+
+    assert result == {"maker": {"agent": "backend-python-dev"}}
+    assert calls == ["cleanup_containers", "cleanup_ephemeral_git"]
 
 
 def test_dispatch_persists_original_safety_stop_when_abort_raises_a_second_one(

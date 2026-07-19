@@ -1371,6 +1371,114 @@ def test_successful_maker_dirty_finalize_safe_stops_as_partial_worktree_not_infr
     assert cleaned == [True]
 
 
+def test_discard_after_lease_loss_skips_git_finalize_and_verify_but_still_cleans_up(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Local pre-push review (round 9, P1): `discard_after_lease_loss()` is the dedicated quiet
+    teardown `loop_driver._dispatch()` calls instead of `finish()`/`abort()` in the exact race
+    window where a Maker finished cleanly right before the driver's own lease was detected lost
+    (see that method's own docstring). Unlike `finish()`/`abort()`, it must never reach
+    `finalize_ephemeral_git()` (no CAS publish onto the shared branch) or `verify_failed_maker_
+    worktree()` (no baseline-diff check, which always misclassifies a successful Maker's clean
+    commit as `maker_partial_worktree` drift against the pre-Maker `baseline_sha`) -- only the
+    ordinary `cleanup_ephemeral_git()` every other exit path already runs for this action's own
+    local session artifacts, plus container/broker/settings-bundle teardown.
+    """
+    runtime = docker_action.DockerActionRuntime(
+        _request(tmp_path),
+        host_child_runner=lambda *_args: subprocess.CompletedProcess([], 0, "", ""),
+    )
+    runtime.git_session = SimpleNamespace(runtime_dir=tmp_path / "runtime")
+    runtime.container_name = "lh-action"
+    runtime._scenario_start_attempted = True
+    runtime._scenario_removed = True
+    events: list[str] = []
+
+    class Broker:
+        def cleanup(self) -> None:
+            events.append("broker_cleanup")
+
+    runtime.broker = Broker()
+    monkeypatch.setattr(
+        docker_action.git_ephemeral,
+        "finalize_ephemeral_git",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("discard_after_lease_loss must never CAS-publish")
+        ),
+    )
+    monkeypatch.setattr(
+        docker_action.git_ephemeral,
+        "verify_failed_maker_worktree",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("discard_after_lease_loss must never verify against baseline_sha")
+        ),
+    )
+    monkeypatch.setattr(
+        docker_action.git_ephemeral,
+        "cleanup_ephemeral_git",
+        lambda *_args: events.append("git_cleanup"),
+    )
+    monkeypatch.setattr(
+        docker_action.docker_settings,
+        "cleanup_settings_bundle",
+        lambda *_args: events.append("settings_cleanup"),
+    )
+
+    runtime.discard_after_lease_loss()
+
+    assert events == ["broker_cleanup", "git_cleanup", "settings_cleanup"]
+    assert runtime._finished is True
+
+    # Idempotent, like finish()/cancel(): a second call must not repeat any cleanup step.
+    runtime.discard_after_lease_loss()
+
+    assert events == ["broker_cleanup", "git_cleanup", "settings_cleanup"]
+
+
+def test_discard_after_lease_loss_never_raises_even_when_cleanup_steps_fail(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`discard_after_lease_loss()` has no safe-stop channel left to persist a failure into once
+    the lease is already gone (see its own docstring), so every cleanup step must be best-effort:
+    an error from any one of container/broker/git/settings cleanup must not stop the others from
+    running, and none of them may escape as a raised exception.
+    """
+    runtime = docker_action.DockerActionRuntime(
+        _request(tmp_path),
+        host_child_runner=lambda *_args: subprocess.CompletedProcess([], 0, "", ""),
+    )
+    runtime.git_session = SimpleNamespace(runtime_dir=tmp_path / "runtime")
+    runtime.container_name = "lh-action"
+    runtime._scenario_start_attempted = True
+    runtime._scenario_removed = True
+
+    class BrokenBroker:
+        def cleanup(self) -> None:
+            raise docker_action.broker_runtime.LoopDockerBrokerError("broker cleanup failed")
+
+    runtime.broker = BrokenBroker()
+    monkeypatch.setattr(
+        docker_action.git_ephemeral,
+        "cleanup_ephemeral_git",
+        lambda *_args: (_ for _ in ()).throw(
+            docker_action.git_ephemeral.EphemeralGitInfrastructureError("git cleanup failed")
+        ),
+    )
+    settings_cleaned: list[bool] = []
+    monkeypatch.setattr(
+        docker_action.docker_settings,
+        "cleanup_settings_bundle",
+        lambda *_args: settings_cleaned.append(True),
+    )
+
+    runtime.discard_after_lease_loss()
+
+    assert settings_cleaned == [True]
+    assert runtime._finished is True
+
+
 def test_maker_finalizes_after_scenario_removal_when_broker_cleanup_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

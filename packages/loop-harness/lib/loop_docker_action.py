@@ -339,6 +339,56 @@ class DockerActionRuntime:
                 # typed safety-stop. Heartbeat threads must never mutate loop state directly.
                 return
 
+    def discard_after_lease_loss(self) -> None:
+        """Tear down containers/broker/local runtime with zero git reads or writes.
+
+        Local pre-push review (round 9): `loop_driver._dispatch()` calls this -- instead of
+        `finish()`/`abort()` -- only in the exact race window where a Maker finished cleanly
+        right before this driver's own lease was detected lost. Both `finish()` and `abort()`
+        end in `_finish_git()`, which either CAS-publishes the Maker's commits
+        (`action_succeeded=True`) or diffs the worktree against `baseline_sha` via
+        `verify_failed_maker_worktree()` (`action_succeeded=False`) -- and a Maker that
+        committed cleanly before losing the lease always reads as drift against that stale
+        baseline, safety-stopping as `maker_partial_worktree`. That safety stop then tries to
+        persist through `lds.persist_safe_stop()`, but another worker already holds the lease,
+        so the CAS write is rejected -- with no caller left to catch it, crashing the driver
+        process instead of returning `EXIT_FOREIGN_LEASE`.
+
+        This method never calls `finalize_ephemeral_git()` or `verify_failed_maker_worktree()`
+        -- neither reads nor writes the shared branch or worktree tree at all. It only removes
+        this action's own local session artifacts (scenario container, broker/network, ephemeral
+        git runtime dir, trusted settings bundle), reusing `cleanup_ephemeral_git()` -- the same
+        idempotent cleanup every other exit path also runs, which only drops this action's own
+        temporary import ref and local runtime dir, never touching the shared branch. It must
+        never raise: once the lease is gone there is no safe-stop channel left to persist a
+        failure into, so every cleanup step is best-effort and any errors are only logged.
+        """
+        with self._lifecycle_lock:
+            if self._finished:
+                return
+            self._finished = True
+            errors: list[str] = []
+            try:
+                _, cleanup_errors = self._cleanup_containers()
+                errors.extend(cleanup_errors)
+            except Exception as exc:  # noqa: BLE001 - quiet teardown must never raise
+                errors.append(str(exc))
+            if self.git_session is not None:
+                try:
+                    git_ephemeral.cleanup_ephemeral_git(self.git_session)
+                except Exception as exc:  # noqa: BLE001 - quiet teardown must never raise
+                    errors.append(str(exc))
+            try:
+                docker_settings.cleanup_settings_bundle(self.settings_bundle)
+            except Exception as exc:  # noqa: BLE001 - quiet teardown must never raise
+                errors.append(str(exc))
+            if errors:
+                print(
+                    "loop_docker_action: lease-lost quiet teardown had cleanup errors "
+                    f"(ignored, no safe-stop channel left once the lease is gone): {errors}",
+                    file=sys.stderr,
+                )
+
     def _ensure_started(self) -> None:
         if self._started:
             return
@@ -421,13 +471,24 @@ class DockerActionRuntime:
             max_lifetime_sec=max_lifetime,
             owner_labels=self.owner_labels,
         )
+        # Local pre-push review (round 9, P2): build (and thereby validate) the scenario
+        # container command *before* acquiring `_lifecycle_lock` below. `build_scenario_
+        # container_command()` -> `_validate_mount()` walks every directory mount source with
+        # `os.walk()` to reject any Unix socket hidden underneath it (see loop_docker_profile.py's
+        # `_reject_socket_descendants()`), which for a large Maker/Checker worktree can be a
+        # non-trivial filesystem scan. `cancel()` also needs this same lock to destroy an
+        # already-started container (see its own docstring); running that scan while holding the
+        # lock would let it delay `cancel()` far longer than the "atomic start section" below is
+        # meant to -- that section is scoped to the actual `docker run`/idle-baseline Docker calls
+        # only, not to mount validation.
+        scenario_command = profile.build_scenario_container_command(spec)
         # docker run plus the trusted idle-baseline capture is one atomic start section.
         # cancel() latches its Event immediately but may wait for this bounded section's Docker
         # calls; the post-start check removes the container before any docker exec can begin.
         with self._lifecycle_lock:
             self._raise_if_cancelled_locked()
             self._scenario_start_attempted = True
-            start_scenario_container(spec, runner=self.runner)
+            start_scenario_container(spec, runner=self.runner, command=scenario_command)
             self._idle_process_baseline = capture_scenario_idle_baseline(
                 self.container_name,
                 runner=self.runner,
@@ -653,10 +714,18 @@ def start_scenario_container(
     spec: profile.ScenarioContainerSpec,
     *,
     runner: SubprocessRunner = subprocess.run,
+    command: list[str] | None = None,
 ) -> None:
-    """Start one scenario using the production hardened profile builder."""
+    """Start one scenario using the production hardened profile builder.
+
+    `command`, when given, must be `profile.build_scenario_container_command(spec)`'s own output
+    for this same `spec` -- `_start()` passes it precomputed so this function does not rebuild
+    (and thereby re-run `_validate_mount()`'s socket-descendant `os.walk()` a second time) while
+    holding `_lifecycle_lock` (local pre-push review, round 9, P2). Defaults to `None` so direct
+    callers (e.g. the containment e2e tests) keep building it here exactly as before.
+    """
     completed = runtime_cli.run(
-        profile.build_scenario_container_command(spec),
+        command if command is not None else profile.build_scenario_container_command(spec),
         runner=runner,
         timeout=30,
     )

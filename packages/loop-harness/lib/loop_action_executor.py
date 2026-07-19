@@ -40,6 +40,15 @@ class HostActionExecutor:
     def abort(self) -> None:
         return
 
+    def discard(self) -> None:
+        # Local pre-push review (round 9): the host executor's finish()/abort() were already
+        # no-ops -- there is no ephemeral git session or container lifecycle on the host path
+        # for a lease-lost Maker to misclassify against `baseline_sha` -- so the quiet-teardown
+        # contract `DockerActionExecutor.discard()` provides is trivially satisfied here too.
+        # Kept as its own method (not an alias for `abort`) so both executors expose the same
+        # lease-lost teardown surface `loop_driver._dispatch()` calls unconditionally.
+        return
+
     def cancel(self) -> None:
         return
 
@@ -87,6 +96,9 @@ class DockerActionExecutor:
 
     def abort(self) -> None:
         self.runtime.finish(action_succeeded=False)
+
+    def discard(self) -> None:
+        self.runtime.discard_after_lease_loss()
 
     def cancel(self) -> None:
         self.runtime.cancel()
