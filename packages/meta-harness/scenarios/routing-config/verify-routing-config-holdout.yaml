@@ -30,6 +30,10 @@ budget:
   # Issue #261 PR4: Sonnet pin(#265) + 1M context 無効化(#269) 前提の再較正。
   # broker worst-case 前課金 ≈ body 50KB × $6.0/MTok + 512 tok × $15/MTok ≈ $0.31/req が
   # 3-turn の逐次コンテキスト成長込みで収まる水準（旧 $0.50 は旧 Opus 価格で初回 429）。
-  max_budget_usd: 0.9
+  # Issue #261 PR6: 実 backend 再検証で $0.90 は 271 tok 消費（2〜3 リクエスト目）の時点で
+  # worst-case 前課金に届かず broker 429 → CLI リトライ 10 回で cost latch に到達した。
+  # 6-turn シナリオ（例: route-debugger-behavior、実費 $0.258）と同額の $1.50 に統一する。
+  # （3-turn ながら同額とするのは broker リトライ latch を避ける意図的な安全マージン）
+  max_budget_usd: 1.5
   max_output_tokens: 512
 repeat: 1

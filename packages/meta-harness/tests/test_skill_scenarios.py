@@ -1712,3 +1712,304 @@ def test_task_state_record_decision_oracle_rejects_modified_frontmatter(tmp_path
         fixture.assert_decision_recorded(
             plans_path, expected_decision="GraphQL を採用（理由: フロントエンドの柔軟性）"
         )
+
+
+def _init_git_repo_with_tracked_file(repo_dir: Path, relative_path: str, content: str) -> None:
+    tracked_path = repo_dir / relative_path
+    tracked_path.parent.mkdir(parents=True, exist_ok=True)
+    tracked_path.write_text(content, encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "config", "user.name", "test"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "add", "."], cwd=repo_dir, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "baseline"], cwd=repo_dir, check=True)
+
+
+def test_every_bypass_permissions_scenario_has_a_collateral_scope_critical_check() -> None:
+    """PR #273 final review (Medium, security+spec reviewers independently flagged this):
+    `permission_mode: bypassPermissions` unlocks the entire `.claude/` tree for a scenario, so
+    every scenario that opts into it must carry a `collateral-scope` critical check as a
+    compensating control (ADR-20260714-036 "bypassPermissions 例外" addendum). This scans all
+    registered scenario yaml files rather than hardcoding the current 4 bypass scenarios, so a
+    future scenario adding bypass without the paired oracle fails this test immediately."""
+    scenario_paths = sorted((PACKAGE_DIR / "scenarios").rglob("*.yaml"))
+    assert scenario_paths, "expected to find at least one scenario yaml file"
+
+    bypass_scenarios_without_collateral_scope = []
+    bypass_scenario_count = 0
+    for path in scenario_paths:
+        scenario = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if scenario.get("permission_mode") != "bypassPermissions":
+            continue
+        bypass_scenario_count += 1
+        critical_commands = [item.get("command", "") for item in scenario.get("critical", [])]
+        if not any("collateral-scope" in command for command in critical_commands):
+            bypass_scenarios_without_collateral_scope.append(path.relative_to(PACKAGE_DIR))
+
+    # Sanity check: this test must actually exercise at least one bypass scenario, or the
+    # assertion below would vacuously pass even if the enforcement logic were broken.
+    assert bypass_scenario_count >= 1, (
+        "expected at least one bypassPermissions scenario to exist (task-state/handoff suites)"
+    )
+    assert not bypass_scenarios_without_collateral_scope, (
+        "bypassPermissions scenarios missing a collateral-scope critical check: "
+        f"{bypass_scenarios_without_collateral_scope}"
+    )
+
+
+class TestCollateralScopeOracle:
+    """Issue #261 PR6 bot review follow-up: `bypassPermissions` unlocks the entire `.claude/`
+    tree for task-state scenarios, so this oracle guards against collateral damage outside the
+    single expected target file."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_git_config(self, monkeypatch: pytest.MonkeyPatch, tmp_path_factory) -> None:
+        # Match the production oracle container's git isolation (`scenario_docker_profile.
+        # build_oracle_command`, which also sets `HOME` to a fresh tmpfs dir): without also
+        # overriding `HOME`, a developer machine's own default `~/.config/git/ignore` excludes
+        # file (e.g. a global `**/.claude/settings.local.json` rule) resolves via `$HOME` and
+        # can silently hide files this test writes from `git status`, causing false negatives.
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+        monkeypatch.setenv("HOME", str(tmp_path_factory.mktemp("collateral-scope-home")))
+
+    def test_passes_when_only_allowed_file_changed(self, tmp_path: Path) -> None:
+        fixture = _task_state_outcome_fixture()
+        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "before\n")
+        (tmp_path / ".claude" / "Plans.md").write_text("after\n", encoding="utf-8")
+
+        fixture.assert_tracked_changes_limited_to({".claude/Plans.md"}, cwd=tmp_path)
+
+    def test_passes_with_no_changes_at_all(self, tmp_path: Path) -> None:
+        fixture = _task_state_outcome_fixture()
+        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+
+        fixture.assert_tracked_changes_limited_to({".claude/Plans.md"}, cwd=tmp_path)
+
+    def test_rejects_change_to_unrelated_tracked_file(self, tmp_path: Path) -> None:
+        """A tracked file elsewhere under `.claude/` (e.g. `settings.json`) unlocked by
+        `bypassPermissions` must fail the run even though `Plans.md` itself is untouched."""
+        fixture = _task_state_outcome_fixture()
+        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        settings_path = tmp_path / ".claude" / "settings.json"
+        settings_path.write_text('{"hooks": {}}\n', encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+
+        with pytest.raises(AssertionError, match="tracked files changed outside the allowed scope"):
+            fixture.assert_tracked_changes_limited_to({".claude/Plans.md"}, cwd=tmp_path)
+
+    def test_gitignored_hook_side_effects_do_not_trip_the_check(self, tmp_path: Path) -> None:
+        """PR #273 bot review round 3: the untracked scan is now unconditional (no more
+        `allowed_new_prefixes`-empty early return), so this must be proven via an actual
+        `.gitignore` mirroring the real repo -- `git status` never reports ignored paths as
+        `??` regardless of `--untracked-files=all`, so hook-generated session state
+        (`.claude/context/...`) and `__pycache__` stay invisible to this check exactly as in
+        production (verified against the repo's real `.gitignore`, see the calling scenario
+        yaml's comment for the citation)."""
+        fixture = _task_state_outcome_fixture()
+        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        (tmp_path / ".gitignore").write_text(".claude/context/\n__pycache__/\n", encoding="utf-8")
+        subprocess.run(["git", "add", ".gitignore"], cwd=tmp_path, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "add gitignore"], cwd=tmp_path, check=True)
+
+        context_dir = tmp_path / ".claude" / "context" / "session"
+        context_dir.mkdir(parents=True)
+        (context_dir / "entry.json").write_text("{}\n", encoding="utf-8")
+        pycache_dir = tmp_path / "packages" / "meta-harness" / "__pycache__"
+        pycache_dir.mkdir(parents=True)
+        (pycache_dir / "module.cpython-314.pyc").write_bytes(b"\x00")
+
+        fixture.assert_tracked_changes_limited_to({".claude/Plans.md"}, cwd=tmp_path)
+
+    def test_default_rejects_new_untracked_file_without_allow_list(self, tmp_path: Path) -> None:
+        """PR #273 bot review round 3 (Codex P2): a bypass-mode candidate creating an
+        un-gitignored file (e.g. `.claude/settings.local.json`, a real permission-escalation
+        vector) must be caught even when the caller passes no `allowed_new_prefixes` at all --
+        the previous early-return skip made this a silent pass."""
+        fixture = _task_state_outcome_fixture()
+        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        (tmp_path / ".claude" / "settings.local.json").write_text("{}\n", encoding="utf-8")
+
+        with pytest.raises(AssertionError, match="new untracked files outside the allowed scope"):
+            fixture.assert_tracked_changes_limited_to({".claude/Plans.md"}, cwd=tmp_path)
+
+    def test_rejects_deleted_tracked_file(self, tmp_path: Path) -> None:
+        fixture = _task_state_outcome_fixture()
+        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        (tmp_path / ".claude" / "extra.md").write_text("tracked\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "add extra"], cwd=tmp_path, check=True)
+        (tmp_path / ".claude" / "extra.md").unlink()
+
+        with pytest.raises(AssertionError, match="tracked files changed outside the allowed scope"):
+            fixture.assert_tracked_changes_limited_to({".claude/Plans.md"}, cwd=tmp_path)
+
+    def test_allowed_new_prefix_permits_new_file_under_it(self, tmp_path: Path) -> None:
+        """`create-handoff` case: a brand-new `.claude/handoffs/{timestamp}.md` must be
+        permitted when its prefix is explicitly allow-listed."""
+        fixture = _task_state_outcome_fixture()
+        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        handoffs_dir = tmp_path / ".claude" / "handoffs"
+        handoffs_dir.mkdir()
+        (handoffs_dir / "20260719-000000.md").write_text("# Task Handoff\n", encoding="utf-8")
+
+        fixture.assert_tracked_changes_limited_to(
+            {".claude/Plans.md"}, allowed_new_prefixes=(".claude/handoffs/",), cwd=tmp_path
+        )
+
+    def test_allowed_new_prefix_rejects_new_file_elsewhere(self, tmp_path: Path) -> None:
+        fixture = _task_state_outcome_fixture()
+        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        (tmp_path / ".claude" / "settings.local.json").write_text("{}\n", encoding="utf-8")
+
+        with pytest.raises(AssertionError, match="new untracked files outside the allowed scope"):
+            fixture.assert_tracked_changes_limited_to(
+                {".claude/Plans.md"}, allowed_new_prefixes=(".claude/handoffs/",), cwd=tmp_path
+            )
+
+    def test_space_containing_path_is_parsed_correctly(self, tmp_path: Path) -> None:
+        """PR #273 bot review round 3 (CodeRabbit): plain `git status --porcelain` /
+        `git diff --name-only` quote paths with unusual characters (including spaces), which
+        broke the previous newline+slice parsing. `-z` must correctly detect both a legitimate
+        allowed new file with a space in its name, and an unrelated disallowed one."""
+        fixture = _task_state_outcome_fixture()
+        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        handoffs_dir = tmp_path / ".claude" / "handoffs"
+        handoffs_dir.mkdir()
+        (handoffs_dir / "2026 07 19 000000.md").write_text("# Task Handoff\n", encoding="utf-8")
+
+        # Allowed: the space-containing new file lives under the allowed prefix.
+        fixture.assert_tracked_changes_limited_to(
+            {".claude/Plans.md"}, allowed_new_prefixes=(".claude/handoffs/",), cwd=tmp_path
+        )
+
+        # Disallowed: a second space-containing file outside any allowed scope must still be
+        # caught (proves the parser did not desync after the first entry).
+        (tmp_path / ".claude" / "extra notes.md").write_text("x\n", encoding="utf-8")
+        with pytest.raises(AssertionError, match=r"extra notes\.md"):
+            fixture.assert_tracked_changes_limited_to(
+                {".claude/Plans.md"}, allowed_new_prefixes=(".claude/handoffs/",), cwd=tmp_path
+            )
+
+    def test_staged_new_file_under_allowed_prefix_is_permitted(self, tmp_path: Path) -> None:
+        """PR #273 bot review round 4 (Codex P2): `git diff --name-status` reports a
+        candidate-staged brand-new file (`git add`-ed but not committed) as status `A`. Such a
+        file must be permitted when it falls under `allowed_new_prefixes`, the same as an
+        unstaged/untracked one -- staging it should not turn a legitimate new handoff file into
+        a failure."""
+        fixture = _task_state_outcome_fixture()
+        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        handoffs_dir = tmp_path / ".claude" / "handoffs"
+        handoffs_dir.mkdir()
+        (handoffs_dir / "20260719-000000.md").write_text("# Task Handoff\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "add", ".claude/handoffs/20260719-000000.md"], cwd=tmp_path, check=True
+        )
+
+        fixture.assert_tracked_changes_limited_to(
+            {".claude/Plans.md"}, allowed_new_prefixes=(".claude/handoffs/",), cwd=tmp_path
+        )
+
+    def test_staged_new_file_outside_allowed_prefix_is_rejected(self, tmp_path: Path) -> None:
+        """The staged-addition allowance must still respect `allowed_new_prefixes` scoping --
+        staging a file elsewhere (e.g. `.claude/settings.local.json`) must not be laundered
+        into a pass just by running `git add` on it."""
+        fixture = _task_state_outcome_fixture()
+        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        settings_path = tmp_path / ".claude" / "settings.local.json"
+        settings_path.write_text("{}\n", encoding="utf-8")
+        subprocess.run(["git", "add", ".claude/settings.local.json"], cwd=tmp_path, check=True)
+
+        with pytest.raises(AssertionError, match="tracked files changed outside the allowed scope"):
+            fixture.assert_tracked_changes_limited_to(
+                {".claude/Plans.md"}, allowed_new_prefixes=(".claude/handoffs/",), cwd=tmp_path
+            )
+
+    def test_staged_modification_of_existing_tracked_file_is_still_rejected(
+        self, tmp_path: Path
+    ) -> None:
+        """A staged *modification* to an already-tracked file (status `M`, not `A`) must never
+        be excused by `allowed_new_prefixes`, even if its path happens to start with an allowed
+        prefix -- only a brand-new addition qualifies."""
+        fixture = _task_state_outcome_fixture()
+        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        handoffs_dir = tmp_path / ".claude" / "handoffs"
+        handoffs_dir.mkdir()
+        existing = handoffs_dir / "already-tracked.md"
+        existing.write_text("original\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "add", ".claude/handoffs/already-tracked.md"], cwd=tmp_path, check=True
+        )
+        subprocess.run(["git", "commit", "-q", "-m", "seed handoff file"], cwd=tmp_path, check=True)
+        existing.write_text("tampered\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "add", ".claude/handoffs/already-tracked.md"], cwd=tmp_path, check=True
+        )
+
+        with pytest.raises(AssertionError, match="tracked files changed outside the allowed scope"):
+            fixture.assert_tracked_changes_limited_to(
+                {".claude/Plans.md"}, allowed_new_prefixes=(".claude/handoffs/",), cwd=tmp_path
+            )
+
+    def test_symlink_under_allowed_prefix_is_rejected(self, tmp_path: Path) -> None:
+        """PR #273 final review (security High): `ln -s <existing file>
+        .claude/handoffs/x.md` puts a path-legitimate symlink under an allowed prefix. A
+        path-only check would pass it, but a downstream content oracle following the link
+        could read whatever pre-existing file it points at. The symlink must be rejected
+        regardless of its path."""
+        fixture = _task_state_outcome_fixture()
+        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        target = tmp_path / "sandbox" / "existing-with-keyword.md"
+        target.parent.mkdir(parents=True)
+        target.write_text("Current Task State\nNext Up\npytest\n", encoding="utf-8")
+        handoffs_dir = tmp_path / ".claude" / "handoffs"
+        handoffs_dir.mkdir()
+        (handoffs_dir / "20260719-000000.md").symlink_to(target)
+
+        with pytest.raises(AssertionError, match="new untracked files outside the allowed scope"):
+            fixture.assert_tracked_changes_limited_to(
+                {".claude/Plans.md"}, allowed_new_prefixes=(".claude/handoffs/",), cwd=tmp_path
+            )
+
+    def test_regular_file_under_allowed_prefix_still_passes(self, tmp_path: Path) -> None:
+        """Sanity check alongside the symlink rejection test: a normal (non-symlink) new file
+        under an allowed prefix must keep passing -- the symlink check must not become an
+        overly broad false positive."""
+        fixture = _task_state_outcome_fixture()
+        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        handoffs_dir = tmp_path / ".claude" / "handoffs"
+        handoffs_dir.mkdir()
+        (handoffs_dir / "20260719-000000.md").write_text("# Task Handoff\n", encoding="utf-8")
+
+        fixture.assert_tracked_changes_limited_to(
+            {".claude/Plans.md"}, allowed_new_prefixes=(".claude/handoffs/",), cwd=tmp_path
+        )
+
+    def test_rename_of_existing_tracked_file_is_rejected_by_both_paths(
+        self, tmp_path: Path
+    ) -> None:
+        """PR #273 bot review round 4: a detected rename (`git diff --name-status` status
+        `R###`) reports two paths in one -z record (old, then new). Both must be checked
+        against `allowed_paths` -- a rename is never treated as a fresh `A` addition, so
+        `allowed_new_prefixes` must not excuse the new path even if it happens to fall under
+        one, and the vacated old path must also be flagged."""
+        fixture = _task_state_outcome_fixture()
+        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        source = tmp_path / "sandbox" / "oldname.md"
+        source.parent.mkdir(parents=True)
+        source.write_text("line1\nline2\nline3\nline4\nline5\n", encoding="utf-8")
+        subprocess.run(["git", "add", "sandbox/oldname.md"], cwd=tmp_path, check=True)
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "seed renameable file"], cwd=tmp_path, check=True
+        )
+        (tmp_path / ".claude" / "handoffs").mkdir()
+        subprocess.run(
+            ["git", "mv", "sandbox/oldname.md", ".claude/handoffs/renamed.md"],
+            cwd=tmp_path,
+            check=True,
+        )
+
+        with pytest.raises(AssertionError, match="tracked files changed outside the allowed scope"):
+            fixture.assert_tracked_changes_limited_to(
+                {".claude/Plans.md"}, allowed_new_prefixes=(".claude/handoffs/",), cwd=tmp_path
+            )

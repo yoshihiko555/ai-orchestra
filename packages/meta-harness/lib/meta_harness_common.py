@@ -128,8 +128,10 @@ DEFAULTS: dict[str, Any] = {
         # issue-fix,task-state} (Issue #254 batch 1 + batch 2). Bump alongside
         # max_budget_usd whenever a new skill scenario suite is registered under
         # packages/meta-harness/scenarios/skill/.
+        # Issue #261 PR6: bumped 78.0 -> 90.0 after real-backend suite budget recalibration
+        # (routing-config verify + issue-fix fix-greet/-formal scenarios).
         "max_affected_suites": 7,
-        "max_budget_usd": 78.0,
+        "max_budget_usd": 90.0,
     },
     "overlay": {
         "allowed_prefixes": ["facets/"],

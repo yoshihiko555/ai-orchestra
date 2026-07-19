@@ -11,22 +11,70 @@ setup:
   - >-
     printf '# Plans\n\n- `cc:WIP` Continue parser implementation\n- `cc:TODO` Run parser validation\n'
     > .claude/Plans.md
-  - "touch -t 200001010000 .meta-harness/handoff-start"
+  # PR #273 最終レビュー: `touch -t 200001010000`（2000年固定）だと `.claude/handoffs/` に
+  # 実在する pre-existing tracked file（例: 20260707-051549-loop-harness-phase1.md、checkout
+  # 時の mtime は当然 2000 年より新しい）が「候補は何もしていないのに newer と誤判定」される
+  # 死角があった。setup 最終ステップとして素の `touch`（実行時刻）に変更し、setup 完了と
+  # candidate 実行の境界を正確な基準にする（baseline git commit は content ベースの diff で
+  # mtime に依存しないため、この変更は collateral-scope とは独立で影響しない）。
+  - "touch .meta-harness/handoff-start"
 allowed_tools:
   - "Bash(python3 *)"
+  # Issue #261 PR6 bot レビュー対応: `.agents/skills/handoff/SKILL.md`（Codex/agy 用ソース）は
+  # bare `python .claude/skills/handoff/scripts/handoff.py` を指示しており、`Bash(python3 *)`
+  # では一致しない（`python` は wrapper stripping 対象外）。実測 run では `.claude/skills/`
+  # 側の python3 版が呼ばれ成功していたが（Write 到達前に max_turns 到達が本因）、SKILL.md の
+  # ソース差異に備えて両綴りの exact-script narrow ルールを追加する。
+  - "Bash(python3 .claude/skills/handoff/scripts/handoff.py*)"
+  - "Bash(python .claude/skills/handoff/scripts/handoff.py*)"
   - "Write"
+# Issue #261 PR6 bot レビュー追撃対応（裏取り確定）: 別 run（run-20260719-152341）の events で、
+# `mkdir -p .claude/handoffs` という Bash コマンドが
+# "Claude requested permissions to edit /workspace/.claude/handoffs which is a sensitive file"
+# で拒否されているのを確認した。つまり `.claude/` protected path のチェックは Write/Edit tool
+# 経由に限らず、Bash 経由の書込み（mkdir/リダイレクト等）にも及ぶ。Step 3 の handoff ファイル
+# 生成（`.claude/handoffs/{timestamp}.md` への書込み）は Write tool・Bash のどちらで行われても
+# 拒否されうるため、task-state と同じ理由で bypassPermissions が必要（allow ルールでは protected
+# path を解除できない）。この scenario は Bash も公開しているため bypass で Bash の承認確認まで
+# 無効化される点がリスク増分であり、防衛線として collateral-scope oracle（tracked file の変更が
+# .claude/Plans.md 以外に無いこと + 新規 untracked file が .claude/handoffs/ 配下に限られること）
+# を必ず併設する。
+permission_mode: bypassPermissions
 command_timeout_ms: 60000
 critical:
   - id: handoff-file-created
-    text: ".claude/handoffs/ 配下に新しい handoff ファイルが生成される"
+    text: ".claude/handoffs/ 配下に新しい（symlink でも pre-existing tracked file の touch でもない）handoff ファイルが生成される"
+    # PR #273 最終レビュー（security High）で symlink 経由の oracle 迂回が指摘されたが、POSIX
+    # find の `-type f` は既定で lstat ベース（symlink 自体は追跡せず type `l` として扱われる）
+    # のため、この find 単体は元々 symlink を `f` と誤認しない（macOS/GNU 双方の find で実機確認
+    # 済み）。実際の迂回経路は下の handoff-is-restartable（Path.glob + stat/read_text が symlink
+    # を追跡する）側だったため、そちらを修正した。
+    # PR #273 6巡目 bot レビュー: `.claude/handoffs/` には repo に実在する tracked file（例:
+    # 20260707-051549-loop-harness-phase1.md）があり、candidate が `touch` するだけで mtime だけ
+    # 更新して「新規ファイル」を偽装できた（実機で再現・修正確認済み）。`git ls-tree -r --name-only
+    # HEAD -- .claude/handoffs/` は setup 完了後に固定される baseline commit（read-only mount）を
+    # 参照するため candidate は改変できない。これで求めた baseline tracked 集合を `grep -vxFf` で
+    # 差し引き、真に新規のファイルだけを候補にする。oracle は `/bin/sh`（多くの Docker base image
+    # では dash）で実行されるため、bash 専用の process substitution `<(...)` は使わず、書込み可能な
+    # `/tmp`（oracle container の tmpfs）へ一時ファイルとして書き出す POSIX sh 互換の形にする。
     oracle: command_exit
     command: >-
-      find .claude/handoffs -type f -newer .meta-harness/handoff-start -print -quit | grep -q .
+      git ls-tree -r --name-only HEAD -- .claude/handoffs/ > /tmp/handoff-baseline-tracked.txt && find .claude/handoffs -type f -newer .meta-harness/handoff-start | grep -vxFf /tmp/handoff-baseline-tracked.txt | grep -q .
   - id: handoff-is-restartable
-    text: "現在状態・残作業・検証手順を含み、引き継ぎ先が単独で再開できる"
+    text: "現在状態・残作業・検証手順を含み、引き継ぎ先が単独で再開できる（symlink・pre-existing tracked file の touch は候補から除外する）"
     oracle: command_exit
     command: >-
-      python3 -c "from pathlib import Path; m=Path('.meta-harness/handoff-start').stat().st_mtime; ps=[p for p in Path('.claude/handoffs').glob('*.md') if p.stat().st_mtime > m]; p=max(ps, key=lambda x:x.stat().st_mtime); s=p.read_text(); assert 'Current Task State' in s and ('Next Up' in s or 'TODO' in s) and ('pytest' in s or 'Validation' in s)"
+      python3 -c "import subprocess; from pathlib import Path; m=Path('.meta-harness/handoff-start').stat().st_mtime; baseline=set(subprocess.run(['git','ls-tree','-r','--name-only','HEAD','--','.claude/handoffs/'],capture_output=True,text=True,check=True).stdout.splitlines()); ps=[p for p in Path('.claude/handoffs').glob('*.md') if p.stat().st_mtime > m and not p.is_symlink() and str(p) not in baseline]; assert ps, 'no non-symlink, non-preexisting handoff file newer than handoff-start was created'; p=max(ps, key=lambda x:x.stat().st_mtime); s=p.read_text(); assert 'Current Task State' in s and ('Next Up' in s or 'TODO' in s) and ('pytest' in s or 'Validation' in s)"
+  - id: no-collateral-damage-outside-handoffs
+    text: "bypassPermissions で書込み可能になった .claude/ 配下で、tracked file の変更が .claude/Plans.md 以外に無く、新規 untracked file も .claude/handoffs/ 配下以外に生成されていないことを検証する"
+    oracle: command_exit
+    command: >-
+      python3 packages/meta-harness/scenarios/fixtures/assert-task-state-outcome.py collateral-scope --allow .claude/Plans.md --allow-new-prefix .claude/handoffs/
+  - id: plans-md-input-unchanged
+    text: "handoff.py の入力である .claude/Plans.md が seed 内容から改変されていないことを検証する（.claude/Plans.md は repo .gitignore 対象のため collateral-scope の diff/untracked 検査の死角になる。PR #273 bot レビュー4巡目対応）"
+    oracle: command_exit
+    command: >-
+      python3 -c 'expected = "# Plans\n\n- `cc:WIP` Continue parser implementation\n- `cc:TODO` Run parser validation\n"; actual = open(".claude/Plans.md", encoding="utf-8").read(); assert actual == expected, f"Plans.md changed from seed: {actual!r}"'
 checks:
   - id: handoff-content-quality
     text: "引き継ぎ文書が簡潔で、次の担当者が追加の会話なしに行動できる"
@@ -35,7 +83,11 @@ checks:
 holdout: false
 timeout_ms: 300000
 budget:
-  max_turns: 8
+  # Issue #261 PR6: 実 backend 再検証で error_max_turns（turns=9, 実費 $0.45）が発生。
+  # git-dir 不整合の探索や approval 待ちの Bash 呼び出しで turn を消費した run と、
+  # `.claude/handoffs` への書込みがセンシティブファイル拒否になった run の両方を実測で確認
+  # （bot レビュー追撃対応で裏取り、上記 permission_mode コメント参照）。8 -> 16 に引き上げる。
+  max_turns: 16
   max_budget_usd: 3.0
   max_output_tokens: 1024
 repeat: 1

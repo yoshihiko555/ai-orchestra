@@ -48,6 +48,18 @@ allowed_tools:
   - "Read"
   - "Edit"
   - "Write"
+# Issue #261 PR6 bot レビュー対応: `.claude/` は Claude Code の protected path であり、
+# allow ルール（`Edit(.claude/Plans.md)` / `Write(.claude/Plans.md)` いずれの記法でも）では
+# protected path への書込みを事前承認できない（protected-path チェックが allow ルール評価より
+# 先に実行される。公式 docs: code.claude.com/docs/en/permission-modes.md "Protected paths"）。
+# 実 backend 再検証では bare "Edit" のみでは .claude/Plans.md への Edit が拒否された（Read は成功）。
+# 非対話で解除する唯一の手段が --permission-mode bypassPermissions のため、このシナリオに限定して
+# 明示 opt-in する。防衛線: コンテナ隔離（ADR-20260712-034）+ --tools による tool 集合最小化
+# （Read/Edit/Write のみ、Bash 等は非公開）+ oracle の Plans.md 全文一致 assert
+# （collateral damage を含む differ を fail 化）+ collateral-scope oracle（bypass で書込み可能に
+# なった .claude/ 配下の Plans.md 以外の tracked file が一切変更されていないことを git diff で
+# 検証。PR #273 bot レビュー追撃対応）+ Phase A の human merge review。
+permission_mode: bypassPermissions
 command_timeout_ms: 60000
 critical:
   - id: task-status-updated-without-collateral-damage
@@ -55,6 +67,15 @@ critical:
     oracle: command_exit
     command: >-
       python3 packages/meta-harness/scenarios/fixtures/assert-task-state-outcome.py mark-task-done --plans .claude/Plans.md --target-task "商品一覧API" --target-status done
+  - id: no-collateral-damage-outside-plans-md
+    text: "bypassPermissions で書込み可能になった .claude/ 配下で、tracked file の変更・新規 untracked file の生成がいずれも .claude/Plans.md 以外に一切ないこと、および symlink が一切生成されていないことを検証する（PR #273 最終レビュー時点で untracked 検査は常時実行される。untracked ファイルを対象外にする設計ではない）"
+    oracle: command_exit
+    # 注: `--allow .claude/Plans.md` は .claude/Plans.md 自体が repo .gitignore 対象のため、
+    # tracked diff 検査に対しては実質 no-op（gitignore 済みパスは git status/diff に一切現れない）。
+    # Plans.md の内容保証は上の task-status-updated-without-collateral-damage（全文一致 oracle）が
+    # 担う。ここでの --allow は「万一将来 gitignore が外れた場合の安全弁」として残す。
+    command: >-
+      python3 packages/meta-harness/scenarios/fixtures/assert-task-state-outcome.py collateral-scope --allow .claude/Plans.md
 checks:
   - id: update-summary-quality
     text: "更新内容がユーザー報告で正確に説明される"

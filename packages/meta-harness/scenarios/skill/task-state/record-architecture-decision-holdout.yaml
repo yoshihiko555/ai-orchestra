@@ -48,6 +48,16 @@ allowed_tools:
   - "Read"
   - "Edit"
   - "Write"
+# Issue #261 PR6 bot レビュー対応: mark-task-done と同型（同一 .claude/Plans.md 対象）。
+# `.claude/` は protected path のため allow ルール（`Edit(path)` / `Write(path)`）では書込みを
+# 事前承認できない（公式 docs: code.claude.com/docs/en/permission-modes.md "Protected paths"）。
+# 非対話で解除する唯一の手段が --permission-mode bypassPermissions のため、このシナリオに限定して
+# 明示 opt-in する。防衛線: コンテナ隔離（ADR-20260712-034）+ --tools による tool 集合最小化
+# （Read/Edit/Write のみ、Bash 等は非公開）+ oracle の Plans.md 全文一致 assert
+# （collateral damage を含む differ を fail 化）+ collateral-scope oracle（bypass で書込み可能に
+# なった .claude/ 配下の Plans.md 以外の tracked file が一切変更されていないことを git diff で
+# 検証。PR #273 bot レビュー追撃対応）+ Phase A の human merge review。
+permission_mode: bypassPermissions
 command_timeout_ms: 60000
 critical:
   - id: decision-recorded-without-collateral-damage
@@ -55,6 +65,15 @@ critical:
     oracle: command_exit
     command: >-
       python3 packages/meta-harness/scenarios/fixtures/assert-task-state-outcome.py record-decision --plans .claude/Plans.md --expected-decision "REST API ではなく GraphQL を採用（理由: フロントエンドの柔軟性）"
+  - id: no-collateral-damage-outside-plans-md
+    text: "bypassPermissions で書込み可能になった .claude/ 配下で、tracked file の変更・新規 untracked file の生成がいずれも .claude/Plans.md 以外に一切ないこと、および symlink が一切生成されていないことを検証する（PR #273 最終レビュー時点で untracked 検査は常時実行される。untracked ファイルを対象外にする設計ではない）"
+    oracle: command_exit
+    # 注: `--allow .claude/Plans.md` は .claude/Plans.md 自体が repo .gitignore 対象のため、
+    # tracked diff 検査に対しては実質 no-op（gitignore 済みパスは git status/diff に一切現れない）。
+    # Plans.md の内容保証は上の decision-recorded-without-collateral-damage（全文一致 oracle）が
+    # 担う。ここでの --allow は「万一将来 gitignore が外れた場合の安全弁」として残す。
+    command: >-
+      python3 packages/meta-harness/scenarios/fixtures/assert-task-state-outcome.py collateral-scope --allow .claude/Plans.md
 checks:
   - id: decision-rationale-preserved
     text: "判断理由が正確に記録される"

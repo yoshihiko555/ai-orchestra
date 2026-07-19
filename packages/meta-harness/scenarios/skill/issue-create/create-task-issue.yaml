@@ -11,6 +11,12 @@ setup:
   - "mkdir -p bin .meta-harness && cp packages/meta-harness/scenarios/fixtures/fake-gh.py bin/gh && chmod +x bin/gh && rm -f .meta-harness/issue-create-call.json"
 allowed_tools:
   - "Bash(gh *)"
+  # Issue #261 PR6 bot レビュー対応: 実測（run-20260719-154357 events）で `bin/gh` の直接実行が
+  # exit 126 Permission denied となり、モデルは `python3 /workspace/bin/gh ...` へフォールバック
+  # したが "Bash(gh *)" に不一致で 2 回連続 approval 待ちとなった。実測コマンド文字列に一致する
+  # narrow ルールを追加する（`Bash(gh *)` は変更なしで維持）。
+  - "Bash(python3 /workspace/bin/gh *)"
+  - "Bash(python3 bin/gh *)"
   - "Write"
 path_prepend:
   - bin
@@ -34,7 +40,11 @@ checks:
 holdout: false
 timeout_ms: 300000
 budget:
-  max_turns: 8
+  # Issue #261 PR6: 実 backend 再検証で error_max_turns（turns=9, 実費 $0.34）が発生。
+  # gh フィクスチャの直接実行が exit 126 で失敗し、python3 経由の呼び出しが
+  # allowed_tools の "Bash(gh *)" パターンに一致せず approval 待ちで turn を浪費した
+  # （センシティブファイル拒否ではない）。8 -> 16 に引き上げる。
+  max_turns: 16
   max_budget_usd: 3.0
   max_output_tokens: 1024
 repeat: 1

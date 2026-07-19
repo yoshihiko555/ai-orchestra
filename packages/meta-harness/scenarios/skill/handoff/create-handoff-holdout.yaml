@@ -11,22 +11,54 @@ setup:
   - >-
     printf '# Plans\n\n- `cc:WIP` Migration safety work\n- `cc:TODO` Validate rollback behavior\n'
     > .claude/Plans.md
-  - "touch -t 200001010000 .meta-harness/handoff-start"
+  # PR #273 最終レビュー: create-handoff（train）と同じ理由で素の `touch`（実行時刻）に変更する
+  # （2000年固定だと pre-existing tracked file を「候補が作った」と誤判定する死角があった。
+  # 根拠は create-handoff.yaml のコメント参照）。
+  - "touch .meta-harness/handoff-start"
 allowed_tools:
   - "Bash(python3 *)"
+  # PR #273 bot レビュー3巡目対応（CodeRabbit Major）: train（create-handoff.yaml）と
+  # allowed_tools を完全ミラーする。bypassPermissions 下では --allowedTools は実質 advisory
+  # だが（tool 権限チェック自体が bypass される）、将来この scenario だけ bypass を外す変更が
+  # 入った場合に drift したまま気付かれないことを防ぐため、値としては常に train と同期させる。
+  - "Bash(python3 .claude/skills/handoff/scripts/handoff.py*)"
+  - "Bash(python .claude/skills/handoff/scripts/handoff.py*)"
   - "Write"
+# Issue #261 PR6 bot レビュー追撃対応: create-handoff（train）と同型（同一 skill:handoff、同じ
+# `.claude/handoffs/` 成果物）のため、同じ理由で bypassPermissions が必要（`.claude/` protected
+# path は allow ルールでは解除不能。Bash 経由の書込みも拒否対象であることを別 run の events で
+# 裏取り確認済み、根拠は create-handoff.yaml のコメント参照）。同じ collateral-scope oracle を併設する。
+permission_mode: bypassPermissions
 command_timeout_ms: 60000
 critical:
   - id: handoff-file-created
-    text: ".claude/handoffs/ 配下に新しい handoff ファイルが生成される"
+    text: ".claude/handoffs/ 配下に新しい（symlink でも pre-existing tracked file の touch でもない）handoff ファイルが生成される"
+    # PR #273 最終レビュー（security High）で symlink 経由の oracle 迂回が指摘されたが、POSIX
+    # find の `-type f` は既定で lstat ベース（symlink 自体は追跡せず type `l` として扱われる）
+    # のため、この find 単体は元々 symlink を `f` と誤認しない（macOS/GNU 双方の find で実機確認
+    # 済み）。実際の迂回経路は下の handoff-is-restartable（Path.glob + stat/read_text が symlink
+    # を追跡する）側だったため、そちらを修正した。
+    # PR #273 6巡目 bot レビュー: create-handoff（train）と同じ理由で `git ls-tree` baseline 差引き
+    # を追加する（`.claude/handoffs/` の pre-existing tracked file を touch だけで偽装できた実害を
+    # 実機確認・修正済み。根拠・POSIX sh 互換にする理由は create-handoff.yaml のコメント参照）。
     oracle: command_exit
     command: >-
-      find .claude/handoffs -type f -newer .meta-harness/handoff-start -print -quit | grep -q .
+      git ls-tree -r --name-only HEAD -- .claude/handoffs/ > /tmp/handoff-baseline-tracked.txt && find .claude/handoffs -type f -newer .meta-harness/handoff-start | grep -vxFf /tmp/handoff-baseline-tracked.txt | grep -q .
   - id: handoff-is-restartable
-    text: "現在状態・残作業・検証手順を含み、引き継ぎ先が単独で再開できる"
+    text: "現在状態・残作業・検証手順を含み、引き継ぎ先が単独で再開できる（symlink・pre-existing tracked file の touch は候補から除外する）"
     oracle: command_exit
     command: >-
-      python3 -c "from pathlib import Path; m=Path('.meta-harness/handoff-start').stat().st_mtime; ps=[p for p in Path('.claude/handoffs').glob('*.md') if p.stat().st_mtime > m]; p=max(ps, key=lambda x:x.stat().st_mtime); s=p.read_text(); assert 'rollback' in s.lower() and 'test_migrations.py' in s and ('push' in s.lower() or 'deploy' in s.lower())"
+      python3 -c "import subprocess; from pathlib import Path; m=Path('.meta-harness/handoff-start').stat().st_mtime; baseline=set(subprocess.run(['git','ls-tree','-r','--name-only','HEAD','--','.claude/handoffs/'],capture_output=True,text=True,check=True).stdout.splitlines()); ps=[p for p in Path('.claude/handoffs').glob('*.md') if p.stat().st_mtime > m and not p.is_symlink() and str(p) not in baseline]; assert ps, 'no non-symlink, non-preexisting handoff file newer than handoff-start was created'; p=max(ps, key=lambda x:x.stat().st_mtime); s=p.read_text(); assert 'rollback' in s.lower() and 'test_migrations.py' in s and ('push' in s.lower() or 'deploy' in s.lower())"
+  - id: no-collateral-damage-outside-handoffs
+    text: "bypassPermissions で書込み可能になった .claude/ 配下で、tracked file の変更が .claude/Plans.md 以外に無く、新規 untracked file も .claude/handoffs/ 配下以外に生成されていないことを検証する"
+    oracle: command_exit
+    command: >-
+      python3 packages/meta-harness/scenarios/fixtures/assert-task-state-outcome.py collateral-scope --allow .claude/Plans.md --allow-new-prefix .claude/handoffs/
+  - id: plans-md-input-unchanged
+    text: "handoff.py の入力である .claude/Plans.md が seed 内容から改変されていないことを検証する（.claude/Plans.md は repo .gitignore 対象のため collateral-scope の diff/untracked 検査の死角になる。PR #273 bot レビュー4巡目対応）"
+    oracle: command_exit
+    command: >-
+      python3 -c 'expected = "# Plans\n\n- `cc:WIP` Migration safety work\n- `cc:TODO` Validate rollback behavior\n"; actual = open(".claude/Plans.md", encoding="utf-8").read(); assert actual == expected, f"Plans.md changed from seed: {actual!r}"'
 checks:
   - id: handoff-content-quality
     text: "未完了の rollback 検証と禁止事項を曖昧にしない"
@@ -35,7 +67,8 @@ checks:
 holdout: true
 timeout_ms: 300000
 budget:
-  max_turns: 8
+  # Issue #261 PR6 bot レビュー追撃対応: train（create-handoff）と同型構成のため同水準へ較正。
+  max_turns: 16
   max_budget_usd: 3.0
   max_output_tokens: 1024
 repeat: 1

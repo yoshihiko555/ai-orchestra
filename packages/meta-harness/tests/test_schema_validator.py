@@ -448,6 +448,25 @@ class TestScenarioSchema:
         errors = mh.validate_against_schema(instance, schema, SCHEMA_DIR)
         assert any("does not match pattern" in error for error in errors)
 
+    def test_permission_mode_accept_edits_is_accepted(self) -> None:
+        schema = _load("scenario.schema.json")
+        instance = {**self._VALID, "permission_mode": "acceptEdits"}
+        assert mh.validate_against_schema(instance, schema, SCHEMA_DIR) == []
+
+    def test_permission_mode_bypass_permissions_is_accepted(self) -> None:
+        # Issue #261 PR6 bot レビュー対応: `.claude/` protected path への非対話書込みを
+        # 個別シナリオだけに限定して opt-in させるための override（詳細は evaluator.py
+        # `_effective_scenario_execution` のコメント参照）。
+        schema = _load("scenario.schema.json")
+        instance = {**self._VALID, "permission_mode": "bypassPermissions"}
+        assert mh.validate_against_schema(instance, schema, SCHEMA_DIR) == []
+
+    def test_permission_mode_invalid_value_is_rejected(self) -> None:
+        schema = _load("scenario.schema.json")
+        instance = {**self._VALID, "permission_mode": "plan"}
+        errors = mh.validate_against_schema(instance, schema, SCHEMA_DIR)
+        assert any("permission_mode" in error for error in errors)
+
 
 class TestRunMetadataSchema:
     _VALID = {
@@ -474,6 +493,8 @@ class TestRunMetadataSchema:
         "max_output_tokens": 4096,
         "max_output_tokens_source": "global",
         "path_prepend": [],
+        "permission_mode": "acceptEdits",
+        "permission_mode_source": "global",
         "started_at": "2026-01-01T00:00:00+09:00",
         "attempt": 1,
         "attempts_total": 1,
@@ -482,6 +503,36 @@ class TestRunMetadataSchema:
     def test_valid_instance_has_zero_errors(self) -> None:
         schema = _load("run.metadata.schema.json")
         assert mh.validate_against_schema(self._VALID, schema, SCHEMA_DIR) == []
+
+    def test_legacy_instance_without_permission_mode_is_still_valid(self) -> None:
+        """PR #273 bot review round 4: `permission_mode` / `permission_mode_source` were added
+        to `required` without a `schema_version` bump, which would have rejected pre-existing
+        run metadata (written before these fields existed) on re-validation. They must stay
+        optional so schema_version 1.0 legacy runs keep validating; the evaluator write side
+        (not this schema) is responsible for always populating them going forward (see
+        `test_run_metadata_records_permission_mode_and_source` in
+        test_evaluator_headless_run.py)."""
+        schema = _load("run.metadata.schema.json")
+        legacy_instance = {
+            key: value
+            for key, value in self._VALID.items()
+            if key not in ("permission_mode", "permission_mode_source")
+        }
+
+        assert mh.validate_against_schema(legacy_instance, schema, SCHEMA_DIR) == []
+
+    def test_permission_mode_accepts_non_scenario_documented_modes(self) -> None:
+        """PR #273 bot review round 6: `_effective_scenario_execution` passes the global
+        `evaluate.permission_mode` config value through to metadata verbatim whenever no
+        scenario-level override is present, so this schema (a factual record of what was
+        actually run) must accept every documented Claude Code `--permission-mode` value, not
+        just the two meta-harness currently lets an individual *scenario* opt into
+        (`scenario.schema.json`'s `permission_mode` stays restricted to `acceptEdits`/
+        `bypassPermissions` -- that is a separate, intentionally narrower policy choice)."""
+        schema = _load("run.metadata.schema.json")
+        instance = {**self._VALID, "permission_mode": "dontAsk"}
+
+        assert mh.validate_against_schema(instance, schema, SCHEMA_DIR) == []
 
     def test_routing_config_requires_base_hash(self) -> None:
         schema = _load("run.metadata.schema.json")

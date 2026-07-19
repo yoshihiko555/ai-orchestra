@@ -29,6 +29,7 @@ import argparse
 import datetime
 import os
 import re
+import subprocess
 from pathlib import Path
 
 # The exact `.claude/Plans.md` content every task-state scenario's `setup:` step writes (see
@@ -173,6 +174,193 @@ def assert_decision_recorded(plans_path: Path, *, expected_decision: str) -> Non
     )
 
 
+def _run_git_z(args: list[str], *, cwd: Path | None) -> list[str]:
+    """Run a NUL-terminated (`-z`) git subcommand and split its output on NUL bytes.
+
+    PR #273 bot review round 3: the previous newline-based parsing (`splitlines()` +
+    `line[3:]`) breaks on paths containing spaces or other characters git would otherwise
+    quote. `-z` disables path quoting/escaping entirely and terminates each record with NUL
+    instead, which is unambiguous for arbitrary filenames (it is not valid inside a POSIX
+    path). The trailing empty string after the final NUL separator is dropped.
+    """
+    result = subprocess.run(args, cwd=cwd, check=True, capture_output=True, text=True)
+    tokens = result.stdout.split("\0")
+    if tokens and tokens[-1] == "":
+        tokens = tokens[:-1]
+    return tokens
+
+
+def _parse_diff_name_status(name_status_z_tokens: list[str]) -> list[tuple[str, str]]:
+    """Parse `git diff --name-status -z` tokens into `(status, path)` pairs.
+
+    PR #273 bot review round 4 (Codex P2): a status-blind `--name-only` diff could not tell a
+    brand-new *staged* file (`git add`-ed by the candidate, status `A`) apart from a change to
+    an already-tracked file (`M`/`D`/...), so `allowed_new_prefixes` never applied to staged
+    additions and they always required exact membership in `allowed_paths` -- a false positive
+    for e.g. a candidate that `git add`s a new file under an allowed prefix without committing.
+
+    Non-rename entries are 2-token records: `STATUS`, `PATH`. Rename/copy entries (status
+    `R###`/`C###`) are 3-token records: `STATUS`, `OLD_PATH`, `NEW_PATH` (verified empirically:
+    `git diff --name-status -z` orders the vacated path before the resulting path, matching the
+    non-`-z` `STATUS\told\tnew` convention). Both the old and new paths of a rename/copy are
+    yielded under the *rename's* status (never treated as a fresh `A` addition), since a
+    rename/copy of a tracked file is not a new file appearing -- it is an existing tracked
+    file moving, which `allowed_new_prefixes` must not excuse.
+    """
+    entries: list[tuple[str, str]] = []
+    index = 0
+    while index < len(name_status_z_tokens):
+        status = name_status_z_tokens[index]
+        if not status:
+            index += 1
+            continue
+        if status[0] in "RC":
+            if index + 2 >= len(name_status_z_tokens):
+                break
+            old_path, new_path = (
+                name_status_z_tokens[index + 1],
+                name_status_z_tokens[index + 2],
+            )
+            entries.append((status, old_path))
+            entries.append((status, new_path))
+            index += 3
+        else:
+            if index + 1 >= len(name_status_z_tokens):
+                break
+            entries.append((status, name_status_z_tokens[index + 1]))
+            index += 2
+    return entries
+
+
+def _parse_untracked_paths(porcelain_z_tokens: list[str]) -> list[str]:
+    """Extract `??` (untracked) paths from `git status --porcelain -z` tokens.
+
+    Rename/copy entries (`status[0]` or `status[1]` in `RC`) consume *two* consecutive NUL
+    tokens -- the new path, then the old path -- with no `XY ` prefix on the second one. We
+    must skip that second token rather than misinterpret it as its own entry (its first two
+    characters are arbitrary path bytes, not a status code), even though untracked entries
+    themselves (`??`) can never be renames/copies.
+    """
+    untracked: list[str] = []
+    index = 0
+    while index < len(porcelain_z_tokens):
+        entry = porcelain_z_tokens[index]
+        status, path = entry[:2], entry[3:]
+        if status == "??":
+            untracked.append(path)
+        if status[0] in "RC" or status[1] in "RC":
+            index += 2
+        else:
+            index += 1
+    return untracked
+
+
+def _is_symlink(cwd: Path | None, relative_path: str) -> bool:
+    """Return whether `relative_path` (resolved against `cwd`, defaulting to process cwd) is a
+    symlink, *without* following it.
+
+    PR #273 final review (security High): with `permission_mode: bypassPermissions` and `Bash`
+    exposed, a candidate can run `ln -s <existing file> .claude/handoffs/x.md`. The link's own
+    path falls under an allowed prefix, so a path-only allowlist check (this module's prior
+    behavior) would pass it through; downstream content oracles that call `.read_text()` then
+    transparently follow the link and read whatever it points at, including a file that
+    happens to already contain the expected marker text. `Path.is_symlink()` inspects the link
+    itself (`lstat`-equivalent; it does not resolve/follow), so it correctly flags the symlink
+    even when its target is legitimate content elsewhere in the workspace.
+    """
+    root = cwd if cwd is not None else Path.cwd()
+    return (root / relative_path).is_symlink()
+
+
+def assert_tracked_changes_limited_to(
+    allowed_paths: set[str],
+    *,
+    allowed_new_prefixes: tuple[str, ...] = (),
+    cwd: Path | None = None,
+) -> None:
+    """Assert no tracked file outside `allowed_paths` differs from the pre-run baseline commit,
+    and that every brand-new *untracked* file lives under `allowed_paths` or one of
+    `allowed_new_prefixes`.
+
+    Issue #261 PR6 bot review follow-up: this is a generic collateral-damage guard for any
+    scenario that must run under `permission_mode: bypassPermissions` (required because
+    `.claude/` is a Claude Code protected path that allow-rule permissions cannot unlock; see
+    task-state's `mark-task-done.yaml` / `record-architecture-decision-holdout.yaml`, and
+    handoff's `create-handoff.yaml` / `create-handoff-holdout.yaml`, whose comments explain why
+    each needs bypass). Despite the filename, this function/subcommand is not task-state
+    specific -- it is deliberately reused by the handoff suite rather than duplicated.
+
+    Tracked-file check: `git diff --name-status -z HEAD` reports staged and unstaged changes
+    against the isolated git snapshot mounted for oracle containers (see
+    `scenario_docker_profile.build_oracle_command`). A path is allowed if it is in
+    `allowed_paths`, *or* (PR #273 bot review round 4) it is a brand-new staged addition
+    (status `A`, i.e. the candidate ran `git add` on a file that did not exist in the
+    baseline) whose path starts with `allowed_new_prefixes`. Modifications, deletions, and
+    renames/copies of already-tracked files (`M`/`D`/`R###`/`C###`/...) are never excused by
+    `allowed_new_prefixes` -- only `allowed_paths` membership permits those, since they touch
+    files that already existed at baseline rather than introducing a new one.
+
+    Untracked-file check (PR #273 bot review round 3: now unconditional, not opt-in --
+    previously an early return skipped this entirely when `allowed_new_prefixes` was empty,
+    which let a bypass-mode candidate create e.g. `.claude/settings.local.json` undetected).
+    `git status --porcelain -z --untracked-files=all` lists brand-new files that were never
+    tracked at all. Every such path must start with `allowed_new_prefixes` -- or, when a
+    scenario's expected target itself may appear as untracked for reasons specific to that
+    scenario's repo `.gitignore` state, be exactly one of `allowed_paths` -- or the run fails.
+    Genuinely expected harness/hook side effects (`.claude/context/...` session state,
+    `__pycache__`, etc.) are excluded from the repo's `.gitignore` and therefore never show up
+    as untracked at all (verified against `.gitignore` for the task-state and handoff suites;
+    see the calling scenario yaml's comment), so this default-deny does not flake on them.
+
+    Symlink check (PR #273 final review, security High): regardless of the above, *any* path
+    that is itself a symlink is always unexpected, even if its path matches `allowed_paths` or
+    `allowed_new_prefixes`. This closes an oracle-bypass path: `ln -s <existing file>
+    .claude/handoffs/x.md` puts a path-legitimate but content-illegitimate link under an
+    allowed prefix, and a downstream oracle that does `.read_text()` on it would transparently
+    follow the link and read whatever pre-existing file it points at. See `_is_symlink`.
+
+    `cwd` defaults to the process's own working directory (the production oracle container
+    sets `--workdir /workspace` and relies on the process cwd); tests pass an explicit
+    temporary git repo instead.
+    """
+    diff_tokens = _run_git_z(["git", "diff", "--name-status", "-z", "HEAD"], cwd=cwd)
+    diff_entries = _parse_diff_name_status(diff_tokens)
+    unexpected = sorted(
+        {
+            path
+            for status, path in diff_entries
+            if path
+            and (
+                _is_symlink(cwd, path)
+                or (
+                    path not in allowed_paths
+                    and not (status == "A" and path.startswith(allowed_new_prefixes))
+                )
+            )
+        }
+    )
+    assert not unexpected, (
+        f"tracked files changed outside the allowed scope {sorted(allowed_paths)} (or are "
+        f"symlinks, which are never allowed): {unexpected}"
+    )
+
+    status_tokens = _run_git_z(
+        ["git", "status", "--porcelain", "-z", "--untracked-files=all"], cwd=cwd
+    )
+    untracked = _parse_untracked_paths(status_tokens)
+    disallowed_new = [
+        path
+        for path in untracked
+        if _is_symlink(cwd, path)
+        or (path not in allowed_paths and not path.startswith(allowed_new_prefixes))
+    ]
+    assert not disallowed_new, (
+        f"new untracked files outside the allowed scope ({sorted(allowed_paths)}) and allowed "
+        f"prefixes {sorted(allowed_new_prefixes)} (or are symlinks, which are never allowed): "
+        f"{sorted(disallowed_new)}"
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="mode", required=True)
@@ -186,7 +374,33 @@ def main(argv: list[str] | None = None) -> None:
     record_decision.add_argument("--plans", type=Path, required=True)
     record_decision.add_argument("--expected-decision", required=True)
 
+    collateral_scope = subparsers.add_parser("collateral-scope")
+    collateral_scope.add_argument(
+        "--allow",
+        action="append",
+        required=True,
+        help="tracked path allowed to differ from baseline (repeatable)",
+    )
+    collateral_scope.add_argument(
+        "--allow-new-prefix",
+        action="append",
+        default=[],
+        help=(
+            "prefix new untracked files (and staged new tracked files, status A) are allowed "
+            "to appear under (repeatable). The untracked scan always runs regardless of this "
+            "flag (PR #273 bot review round 3); omitting it means no new untracked file is "
+            "permitted at all, except paths that exactly match --allow"
+        ),
+    )
+
     args = parser.parse_args(argv)
+
+    if args.mode == "collateral-scope":
+        assert_tracked_changes_limited_to(
+            set(args.allow), allowed_new_prefixes=tuple(args.allow_new_prefix)
+        )
+        return
+
     project_root = Path(os.environ.get("AI_ORCHESTRA_DIR") or Path.cwd()).resolve()
     plans_path = project_root / args.plans
 

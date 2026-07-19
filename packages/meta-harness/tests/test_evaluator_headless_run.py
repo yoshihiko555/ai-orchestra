@@ -199,6 +199,8 @@ class TestScenarioExecutionEnvelope:
             "max_output_tokens": 1024,
             "max_output_tokens_source": "scenario",
             "path_prepend": [],
+            "permission_mode": "acceptEdits",
+            "permission_mode_source": "global",
         }
 
     def test_headless_command_contains_minimal_model_tools_and_output_limit(
@@ -250,6 +252,90 @@ class TestScenarioExecutionEnvelope:
                 {"target": "skill:issue-create", "path_prepend": ["../bin"]},
                 {},
             )
+
+    def test_scenario_permission_mode_override_reaches_headless_command(
+        self, tmp_path: Path
+    ) -> None:
+        # Issue #261 PR6 bot レビュー対応: `.claude/` は protected path のため allow ルール
+        # (`Edit(path)` / `Write(path)`) では解除できない。scenario 側の明示 override だけが
+        # `--permission-mode bypassPermissions` をコマンドへ反映する経路であることを固定する。
+        command = ev._build_headless_command(
+            {
+                "target": "skill:task-state",
+                "prompt": "/task-state update test",
+                "allowed_tools": ["Read", "Edit", "Write"],
+                "permission_mode": "bypassPermissions",
+            },
+            {},
+            tmp_path / "instruction.md",
+        )
+
+        assert command[command.index("--permission-mode") + 1] == "bypassPermissions"
+
+    def test_no_scenario_override_keeps_default_accept_edits(self, tmp_path: Path) -> None:
+        command = ev._build_headless_command(
+            {
+                "target": "skill:task-state",
+                "prompt": "/task-state update test",
+                "allowed_tools": ["Read", "Edit", "Write"],
+            },
+            {},
+            tmp_path / "instruction.md",
+        )
+
+        assert command[command.index("--permission-mode") + 1] == "acceptEdits"
+
+    def test_invalid_scenario_permission_mode_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="acceptEdits, bypassPermissions"):
+            ev._effective_scenario_execution(
+                {"target": "skill:task-state", "permission_mode": "plan"},
+                {},
+            )
+
+    def test_run_metadata_records_permission_mode_and_source(self, tmp_path: Path) -> None:
+        """Issue #261 PR6 bot review follow-up: `permission_mode` is a safety-relevant setting
+        (bypass unlocks protected paths), so it must be persisted to run metadata for audit,
+        the same way `allowed_tools_source` already is."""
+        base_kwargs = dict(
+            run_id="run-20260101-000000-slug-scn-a1-abcd1234",
+            cand_id="cand-x",
+            scenario_id="scenario-1",
+            suite_id="claude-harness",
+            suite_hash="a" * 64,
+            scenario_hash="b" * 64,
+            evaluator_hash="c" * 64,
+            target="claude-harness",
+            holdout=False,
+            project_dir=tmp_path,
+            ai_orchestra_dir=str(tmp_path),
+            source_commit="a" * 40,
+            config_hash="b" * 64,
+            routing_config_base_hash=None,
+            model=None,
+            claude_version="2.1.207",
+            cli_capabilities={},
+            allowed_tools=["Read", "Edit", "Write"],
+            allowed_tools_source="scenario",
+            model_tools=["Read", "Edit", "Write"],
+            max_output_tokens=1024,
+            max_output_tokens_source="scenario",
+            path_prepend=[],
+            started_at="2026-01-01T00:00:00+09:00",
+            attempt=1,
+            attempts_total=1,
+        )
+
+        bypass_metadata = ev._build_metadata(
+            **base_kwargs, permission_mode="bypassPermissions", permission_mode_source="scenario"
+        )
+        default_metadata = ev._build_metadata(
+            **base_kwargs, permission_mode="acceptEdits", permission_mode_source="global"
+        )
+
+        assert bypass_metadata["permission_mode"] == "bypassPermissions"
+        assert bypass_metadata["permission_mode_source"] == "scenario"
+        assert default_metadata["permission_mode"] == "acceptEdits"
+        assert default_metadata["permission_mode_source"] == "global"
 
     def test_explicit_null_output_tokens_default_falls_back_to_4096(self) -> None:
         """`scenario_run.max_output_tokens_default: null` must not raise TypeError."""
