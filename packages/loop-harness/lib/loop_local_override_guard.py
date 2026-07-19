@@ -10,6 +10,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 _LOCAL_OVERRIDE_SUFFIXES = (".local.yaml", ".local.json")
+# Codex review, PR #262, P2 (round 9): bounds `_resolved_symlink_target_material()`'s read of a
+# symlinked override's target so a huge (but otherwise ordinary) target file cannot balloon
+# memory use during a snapshot; ordinary `.local.yaml`/`.local.json` overrides are always far
+# smaller than this.
+_MAX_SYMLINK_TARGET_READ_BYTES = 10 * 1024 * 1024
 
 
 class LocalOverrideSnapshotError(RuntimeError):
@@ -113,26 +118,50 @@ def changed_local_override_paths(
     )
 
 
+def _resolved_symlink_target_material(path: Path) -> bytes:
+    """Hash a symlinked override's target only when it is a bounded-size regular file.
+
+    Codex review, PR #262, P2 (round 9): the previous unconditional `path.read_bytes()` follows
+    the symlink and opens whatever it points at -- if a Maker repoints a `.local.yaml`/
+    `.local.json` override at a FIFO (or other blocking special file) before the post-action
+    snapshot, that call blocks the loop driver indefinitely instead of producing the intended
+    fail-closed `maker_partial_worktree` safe-stop. `Path.stat()` follows the symlink via the
+    `stat(2)` syscall without opening the target, so its type can be checked first; only a
+    regular file is actually opened and read, and only up to a fixed cap so an ordinary but huge
+    target cannot balloon snapshot memory use either. Any other case (missing target, directory,
+    device/FIFO/socket, permission denied) reports no resolved-content bytes, matching the
+    existing "unreadable target" fallback: this guard treats those only as a link-path-change
+    tampering signal, not as unresolvable content of their own.
+    """
+    try:
+        target_metadata = path.stat()
+    except OSError:
+        return b""
+    if not stat.S_ISREG(target_metadata.st_mode):
+        return b""
+    try:
+        with path.open("rb") as handle:
+            return handle.read(_MAX_SYMLINK_TARGET_READ_BYTES)
+    except OSError:
+        return b""
+
+
 def _snapshot_entry(worktree_path: Path, path: Path) -> LocalOverrideSnapshot:
     relative = path.relative_to(worktree_path).as_posix()
     metadata = path.lstat()
     if stat.S_ISLNK(metadata.st_mode):
         kind = "symlink"
-        # Codex review, PR #262, High: hashing only the link text let a Maker change the
-        # *contents* of a symlinked `.local.yaml`/`.local.json` override's target -- the
+        # Codex review, PR #262, High (round 2): hashing only the link text let a Maker change
+        # the *contents* of a symlinked `.local.yaml`/`.local.json` override's target -- the
         # effective, currently-loaded override -- without changing the symlink path itself, so
-        # `_verify_local_override_snapshot()` saw no delta. `path.read_bytes()` (unlike
-        # `os.readlink`) follows the symlink and reads the resolved target's current bytes, the
-        # same way the "file" branch below hashes a regular override's content; combining both
-        # into the digest catches either the link being repointed or the target being edited in
-        # place. A target that cannot be read (missing, a directory, permission denied) still
-        # falls back to detecting only link-path changes rather than raising, since a dangling
-        # or unreadable symlink is not itself a content-tampering signal this guard needs to stop.
+        # `_verify_local_override_snapshot()` saw no delta. Combining the link text with the
+        # resolved target's bytes (`_resolved_symlink_target_material()` below) catches either
+        # the link being repointed or the target being edited in place. A target that cannot be
+        # read, is not a regular file, or is missing/a directory still falls back to detecting
+        # only link-path changes rather than raising or blocking, since none of those on their
+        # own is a content-tampering signal this guard needs to stop.
         link_target = os.readlink(path).encode()
-        try:
-            resolved_material = path.read_bytes()
-        except OSError:
-            resolved_material = b""
+        resolved_material = _resolved_symlink_target_material(path)
         material = link_target + b"\0" + resolved_material
     elif stat.S_ISREG(metadata.st_mode):
         kind = "file"

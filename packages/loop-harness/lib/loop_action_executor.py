@@ -116,10 +116,9 @@ def build_action_executor(
     remaining_wall_clock_seconds: Callable[[], float],
     host_child_runner: HostChildRunner,
     params: Mapping[str, Any] | None = None,
+    lease_lost: Callable[[], bool] | None = None,
 ) -> HostActionExecutor | DockerActionExecutor:
     """Select once per dispatch; only execution_backend=docker enables Docker."""
-    if not docker_config.docker_execution_enabled(config):
-        return HostActionExecutor(host_child_runner)
     kind_by_action = {
         "run_maker": "maker",
         "run_checker": "checker",
@@ -127,13 +126,17 @@ def build_action_executor(
     }
     kind = kind_by_action.get(action)
     if kind is None:
-        # Codex review, PR #262, High: host-only actions (advance_phase/stop/exit_*) never
-        # dispatch into a container regardless of isolation config validity, so validating the
-        # full Docker isolation config before this lookup made an unrelated Docker config typo
-        # (e.g. a bad `.local.yaml` override) fail even actions that stay entirely on the host.
-        # `_dispatch()` only translates `docker_config.DockerConfigError` into an infrastructure
-        # result for run_maker/run_checker/wait_external_review; any other action reaching that
-        # path raises `InvalidStateError` instead of just running on the host as it always has.
+        # Codex review, PR #262, High (round 3) / P2 (round 9): host-only actions
+        # (advance_phase/stop/exit_*) never dispatch into a container regardless of isolation
+        # config validity, so this lookup must run before *any* Docker config read -- including
+        # `docker_config.docker_execution_enabled()`'s own minimal switch validation just below,
+        # which can itself raise `DockerConfigError` for a bad `lp2.isolation.execution_backend`/
+        # `backend` combination. `_dispatch()` only translates `docker_config.DockerConfigError`
+        # into an infrastructure result for run_maker/run_checker/wait_external_review; any other
+        # action reaching that path raises `InvalidStateError` instead of just running on the
+        # host as it always has.
+        return HostActionExecutor(host_child_runner)
+    if not docker_config.docker_execution_enabled(config):
         return HostActionExecutor(host_child_runner)
     isolation = docker_config.validate_isolation_config(config)
     needs_broker = True
@@ -156,6 +159,12 @@ def build_action_executor(
         kind=kind,  # type: ignore[arg-type]
         remaining_wall_clock_seconds=remaining_wall_clock_seconds,
         needs_broker=needs_broker,
+        # Codex review, PR #262, P1 (round 9): `loop_driver._dispatch()` now calls this
+        # builder with `lease_lost=self._lease_lost.is_set` (round 8, fence #2), but this
+        # parameter did not exist here, raising `TypeError` on every dispatch. Thread it
+        # straight through to `DockerActionRequest.lease_lost` so `DockerActionRuntime.finish()`
+        # (and `abort()`, which routes through it) can still re-check lease loss itself.
+        lease_lost=lease_lost,
     )
     return DockerActionExecutor(
         docker_action.DockerActionRuntime(request, host_child_runner=host_child_runner)

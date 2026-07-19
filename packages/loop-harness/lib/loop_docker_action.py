@@ -395,7 +395,17 @@ class DockerActionRuntime:
             self._finished = True
             errors: list[str] = []
             try:
-                _, cleanup_errors = self._cleanup_containers()
+                scenario_error, cleanup_errors = self._cleanup_containers()
+                if scenario_error is not None:
+                    # Codex review, PR #262, P2 (round 9): `_cleanup_containers()` returns an
+                    # unconfirmed scenario-removal failure (e.g. `maker_container_cleanup_
+                    # unconfirmed`) separately from `cleanup_errors` -- dropping it here left a
+                    # Maker/Checker container that failed `docker rm -f` after the lease was lost
+                    # both running and unlogged, breaking the quiet-teardown contract that
+                    # cleanup failures are always recorded for operators. Fold it into `errors` so
+                    # it reaches the stderr log below alongside broker/settings/git failures;
+                    # untrusted-container sweep still owns actual removal once this is surfaced.
+                    errors.append(str(scenario_error))
                 errors.extend(cleanup_errors)
             except Exception as exc:  # noqa: BLE001 - quiet teardown must never raise
                 errors.append(str(exc))
