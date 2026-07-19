@@ -49,6 +49,11 @@ _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 # `-C <path>` / `--git-dir <path>`. Every git process this module spawns on the host must have
 # these vars scrubbed from any inherited environment; call sites that need one set explicitly do
 # so via an override applied after scrubbing.
+#
+# Codex review, PR #262, P2 (round 12): `GIT_TEMPLATE_DIR` is scrubbed for the same reason but
+# specifically protects the `git init --bare` call in `loop_git_ephemeral.py` from copying
+# owner-only-permission hook files (or anything else) out of an ambient/attacker-controlled
+# template directory into the freshly created `ephemeral_dir`.
 _GIT_LOCATION_ENV_VARS = (
     "GIT_INDEX_FILE",
     "GIT_DIR",
@@ -58,6 +63,7 @@ _GIT_LOCATION_ENV_VARS = (
     "GIT_COMMON_DIR",
     "GIT_NAMESPACE",
     "GIT_CEILING_DIRECTORIES",
+    "GIT_TEMPLATE_DIR",
 )
 
 GitRunner = Callable[..., subprocess.CompletedProcess[str]]

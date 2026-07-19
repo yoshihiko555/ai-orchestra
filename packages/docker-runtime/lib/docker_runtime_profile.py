@@ -133,7 +133,7 @@ def align_mount_ownership(
     excluded = exclude or frozenset()
     if os.getuid() != 0:
         if protect_owner_only:
-            _reject_owner_only_secrets(path)
+            _reject_owner_only_secrets(path, exclude=excluded)
         return
     excluded_identities = {
         identity
@@ -162,26 +162,72 @@ def align_mount_ownership(
             continue
 
 
-def _reject_owner_only_secrets(path: Path) -> None:
+def _reject_owner_only_secrets(
+    path: Path,
+    *,
+    exclude: frozenset[Path] | None = None,
+) -> None:
     """Fail closed instead of mounting an owner-only-permission secret into a non-root container.
 
     Codex review, PR #262, P1 (round 11): see `align_mount_ownership()`'s own docstring. When the
     driver runs as a normal user there is no chown that can protect a `0600` secret already owned
     by that same user -- the forced non-root container identity *is* that user. Refusing to start
     is the only fail-closed option available.
+
+    Codex review, PR #262, P2 (round 12): `exclude` (plus `(st_dev, st_ino)` hardlink-alias
+    matching, mirroring `align_mount_ownership()`'s own root-branch handling) lets a caller keep
+    the same `.local.*` project-override exclusion semantics on the non-root reject path that the
+    root path's chown skip already has. Without this, a non-root driver with a deliberately
+    restrictive-mode `.local.yaml`/`.local.json` override (the exact same file the root path's
+    `exclude` set already tolerates) would refuse to start entirely, an asymmetry between the two
+    `os.getuid()` branches this closes.
     """
-    if _is_owner_only_permission(path):
+    excluded = exclude or frozenset()
+    excluded_identities = {
+        identity
+        for identity in (_stat_identity(entry) for entry in excluded)
+        if identity is not None
+    }
+    if (
+        path not in excluded
+        and _stat_identity(path) not in excluded_identities
+        and _is_owner_only_permission(path)
+    ):
         raise DockerProfileError(
             f"refusing to mount an owner-only-permission path into a non-root container: {path}"
         )
     if not path.is_dir():
         return
     for child in path.rglob("*"):
+        if child in excluded:
+            continue
+        if _stat_identity(child) in excluded_identities:
+            continue
         if _is_owner_only_permission(child):
             raise DockerProfileError(
                 "refusing to mount an owner-only-permission path into a non-root "
                 f"container: {child}"
             )
+
+
+def reject_owner_only_secrets(
+    path: Path,
+    *,
+    exclude: frozenset[Path] | None = None,
+) -> None:
+    """Fail closed if `path` holds an owner-only-permission secret, only on a non-root driver.
+
+    Codex review, PR #262, P1 (round 12): a standalone entry point for callers that need only
+    the round-11 reject check `align_mount_ownership()` already runs as a side effect of
+    chowning a read-write mount, without also performing that chown -- e.g. a read-only Checker
+    worktree mount, which never needs re-owning in the first place (there is nothing to gain
+    from chowning a mount the container can only read). No-op when the driver runs as root:
+    `docs/design/loop-harness-isolation.md` section 9.2 documents a root-run driver's Checker
+    worktree as an accepted availability trade-off (mechanical/LLM-layer infrastructure failure,
+    never fail-open) rather than something this reject check also needs to enforce.
+    """
+    if os.getuid() != 0:
+        _reject_owner_only_secrets(path, exclude=exclude)
 
 
 def _stat_identity(path: Path) -> tuple[int, int] | None:

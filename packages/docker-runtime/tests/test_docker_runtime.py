@@ -307,6 +307,96 @@ def test_align_mount_ownership_rejects_owner_only_secret_for_non_root_host(
     assert calls == []
 
 
+def test_align_mount_ownership_reject_honors_exclude_for_non_root_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review, PR #262, P2 (round 12): the round-11 non-root reject check ignored the
+    caller's `exclude` set entirely, an asymmetry with the root branch's chown-skip `exclude`
+    handling. A `.local.*` override deliberately left at a restrictive mode (the same file the
+    root path's `exclude` already tolerates) must not refuse to start a non-root driver either.
+    """
+    monkeypatch.setattr(profile.os, "getuid", lambda: 1000)
+    target = tmp_path / "worktree"
+    nested = target / "nested"
+    nested.mkdir(parents=True)
+    excluded_file = nested / "secret.local.yaml"
+    excluded_file.write_text("content", encoding="utf-8")
+    excluded_file.chmod(0o600)
+
+    profile.align_mount_ownership(target, exclude=frozenset({excluded_file}))
+
+
+def test_align_mount_ownership_reject_still_rejects_non_excluded_secret_for_non_root_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression guard for the round-12 exclude fix above: excluding one file must not
+    accidentally suppress the reject check for every other owner-only-permission entry.
+    """
+    monkeypatch.setattr(profile.os, "getuid", lambda: 1000)
+    target = tmp_path / "worktree"
+    nested = target / "nested"
+    nested.mkdir(parents=True)
+    excluded_file = nested / "secret.local.yaml"
+    excluded_file.write_text("content", encoding="utf-8")
+    secret_file = nested / ".env"
+    secret_file.write_text("SECRET=1", encoding="utf-8")
+    secret_file.chmod(0o600)
+
+    with pytest.raises(profile.DockerProfileError, match="non-root container"):
+        profile.align_mount_ownership(target, exclude=frozenset({excluded_file}))
+
+
+def test_reject_owner_only_secrets_rejects_for_non_root_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review, PR #262, P1 (round 12): `reject_owner_only_secrets()` is the standalone
+    entry point a caller uses to run only the round-11 reject check without also chowning (e.g.
+    a read-only Checker worktree mount, which never needs re-owning). It must reject the same
+    owner-only secret `align_mount_ownership()` would.
+    """
+    monkeypatch.setattr(profile.os, "getuid", lambda: 1000)
+    target = tmp_path / "worktree"
+    target.mkdir()
+    secret_file = target / ".env"
+    secret_file.write_text("SECRET=1", encoding="utf-8")
+    secret_file.chmod(0o600)
+
+    with pytest.raises(profile.DockerProfileError, match="non-root container"):
+        profile.reject_owner_only_secrets(target)
+
+
+def test_reject_owner_only_secrets_honors_exclude_for_non_root_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same round-12 exclude semantics as `align_mount_ownership()`'s reject branch."""
+    monkeypatch.setattr(profile.os, "getuid", lambda: 1000)
+    target = tmp_path / "worktree"
+    target.mkdir()
+    excluded_file = target / "secret.local.yaml"
+    excluded_file.write_text("content", encoding="utf-8")
+    excluded_file.chmod(0o600)
+
+    profile.reject_owner_only_secrets(target, exclude=frozenset({excluded_file}))
+
+
+def test_reject_owner_only_secrets_is_noop_for_root_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review, PR #262, P1 (round 12): on a root-run driver, `reject_owner_only_secrets()`
+    is intentionally a no-op -- `docs/design/loop-harness-isolation.md` section 9.2 already
+    documents a root-run driver's Checker worktree as an accepted availability trade-off, not
+    something this reject check also needs to enforce.
+    """
+    monkeypatch.setattr(profile.os, "getuid", lambda: 0)
+    target = tmp_path / "worktree"
+    target.mkdir()
+    secret_file = target / ".env"
+    secret_file.write_text("SECRET=1", encoding="utf-8")
+    secret_file.chmod(0o600)
+
+    profile.reject_owner_only_secrets(target)
+
+
 def test_align_mount_ownership_protect_owner_only_false_bypasses_reject_for_non_root_host(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

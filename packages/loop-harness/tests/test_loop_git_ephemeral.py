@@ -302,6 +302,36 @@ def test_prepare_normalizes_filesystem_cleanup_failure_to_typed_error(
         _prepare(linked_worktree)
 
 
+@pytest.mark.skipif(os.getuid() == 0, reason="root bypasses permission bits")
+def test_remove_runtime_widens_read_only_trusted_settings_before_wipe(tmp_path: Path) -> None:
+    """Codex review, PR #262, P1 (round 12): `loop_docker_settings.create_settings_bundle()`
+    chmods its `trusted-settings` directory (and the files inside it) down to 0o555/0o444 once
+    populated. `discard_after_lease_loss()` (round 11) intentionally skips the matching
+    `cleanup_settings_bundle()` chmod(0o700) restore -- see that method's own docstring -- so the
+    next retry of the same action_id reaches `_remove_runtime()` via `prepare_ephemeral_git()`'s
+    unconditional wipe-and-recreate of `runtime_dir`, which still contains that 0o555
+    `trusted-settings` subdirectory. Without widening directory permissions first, a non-root
+    driver's `shutil.rmtree()` raises `PermissionError` trying to unlink files inside a 0o555
+    directory (removing an entry needs write permission on its containing directory, not on the
+    entry itself) and the retry becomes permanently stuck. Root does not reproduce this at all
+    (bypasses permission checks), hence the skip above.
+    """
+    runtime_dir = tmp_path / "runtime"
+    trusted_settings = runtime_dir / "trusted-settings"
+    trusted_settings.mkdir(parents=True)
+    guard = trusted_settings / "maker_bash_guard.py"
+    guard.write_text("# trusted guard\n", encoding="utf-8")
+    guard.chmod(0o555)
+    settings_file = trusted_settings / "settings.json"
+    settings_file.write_text("{}", encoding="utf-8")
+    settings_file.chmod(0o444)
+    trusted_settings.chmod(0o555)
+
+    git_ephemeral._remove_runtime(runtime_dir)
+
+    assert not runtime_dir.exists()
+
+
 def test_prepare_never_creates_runtime_dir_when_local_override_snapshot_fails(
     linked_worktree: GitFixture,
     monkeypatch: pytest.MonkeyPatch,
@@ -657,6 +687,7 @@ def test_checker_prepare_and_cleanup_keep_hardened_scrubbed_host_git(
         "GIT_COMMON_DIR": str(tmp_path / "ambient-common-dir"),
         "GIT_NAMESPACE": "ambient-namespace",
         "GIT_CEILING_DIRECTORIES": str(tmp_path),
+        "GIT_TEMPLATE_DIR": str(tmp_path / "ambient-template"),
     }
     for key, value in poisoned.items():
         monkeypatch.setenv(key, value)

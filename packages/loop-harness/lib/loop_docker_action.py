@@ -94,6 +94,32 @@ def _align_mount_ownership_or_raise(
         raise DockerActionError(f"could not align mount ownership for {path}") from exc
 
 
+def _reject_owner_only_secrets_or_raise(
+    path: Path,
+    *,
+    exclude: frozenset[Path] | None = None,
+) -> None:
+    """Fail closed if a non-root driver's Checker worktree mount holds an owner-only secret.
+
+    Codex review, PR #262, P1 (round 12): the Maker branch's chown (`_align_mount_ownership_
+    or_raise()` on `self.request.worktree_path`) already runs `align_mount_ownership()`'s
+    round-11 `_reject_owner_only_secrets()` check as a side effect on a non-root driver (the
+    chown itself is a no-op there, but the reject check inside still runs). The Checker branch
+    never chowns its read-only worktree mount at all -- there is nothing to gain from chowning
+    a mount the container can only read -- so it never got that same reject check, even though
+    an owner-only (e.g. 0600) secret left in the worktree (`.env`, `.netrc`, a project-local
+    override) is exactly as readable from inside a non-root-driver Checker as from inside a
+    Maker. This calls the same reject-only check directly, without a chown, using the same
+    `exclude` semantics `_local_override_leaf_paths()` already provides for the Maker branch.
+    No-op on a root-run driver -- see `docker_runtime_profile.reject_owner_only_secrets()`'s own
+    docstring.
+    """
+    try:
+        profile.runtime.reject_owner_only_secrets(path, exclude=exclude)
+    except OSError as exc:
+        raise DockerActionError(f"could not verify mount ownership for {path}") from exc
+
+
 ActionKind = Literal["maker", "checker", "classifier"]
 IdleProcessSnapshot = tuple[tuple[int, str, str], ...]
 SubprocessRunner = Callable[..., subprocess.CompletedProcess]
@@ -617,18 +643,31 @@ class DockerActionRuntime:
             # Keep the runtime assertion as defense-in-depth for directly constructed requests.
             if not self.request.isolation.checker_read_only_worktree:
                 raise DockerActionError("Checker worktree must be read-only")
-            # Codex review, PR #262, P1 (round 11): unlike the Maker branch above, this checker
-            # path never re-owned `self.git_session.ephemeral_dir` before mounting it read-only.
-            # Under a root-run driver the ephemeral GIT_DIR `prepare_ephemeral_git()` just
-            # created stays root-owned; the checker container always runs as the fixed non-root
-            # 65532:65532 identity (even when the driver itself is root), so it could never read
-            # its own `GIT_DIR` and every `git` invocation inside the checker (mechanical checks,
-            # the LLM reviewer's own `git diff`/`git log`) would fail. `protect_owner_only=False`
-            # for the same reason as the Maker branch: this directory holds no human secrets.
+            # Codex review, PR #262, P1 (round 12): unlike the Maker branch above, this Checker
+            # branch never chowns `self.request.worktree_path` at all (there is nothing to gain
+            # from chowning a read-only mount), so it never got the round-11 owner-only-secret
+            # reject check that chown runs as a side effect for Maker. Run the same reject-only
+            # check directly here, using the same `.local.*` exclude set the Maker branch uses.
+            _reject_owner_only_secrets_or_raise(
+                self.request.worktree_path,
+                exclude=_local_override_leaf_paths(self.request.worktree_path),
+            )
+            git_mounts = git_ephemeral.build_checker_git_mount_spec(self.git_session)
+            # Codex review, PR #262, P1 (round 12): this re-own MUST run *after*
+            # build_checker_git_mount_spec(), not before (round 11's order, which this replaces).
+            # That function's _harden_ephemeral_git_metadata() step atomically rewrites
+            # config/objects/info/alternates inside self.git_session.ephemeral_dir unconditionally,
+            # every time it runs, under the calling (host driver) process's own uid. Re-owning
+            # before that call gets silently undone by it: under a root-run driver the freshly
+            # recreated files come back root:root 0600 and the checker container (always the
+            # fixed non-root 65532:65532 identity) can once again never read its own `GIT_DIR` --
+            # the exact bug round 11 was supposed to fix. Running the re-own after this call
+            # re-owns the directory as it will actually be mounted, including any files that call
+            # just rewrote. `protect_owner_only=False` for the same reason as the Maker branch:
+            # this directory holds no human secrets, only driver-generated git plumbing.
             _align_mount_ownership_or_raise(
                 self.git_session.ephemeral_dir, protect_owner_only=False
             )
-            git_mounts = git_ephemeral.build_checker_git_mount_spec(self.git_session)
         trusted_mount = git_ephemeral.BindMountSpec(
             self.settings_bundle.source_dir,
             Path(self.settings_bundle.container_dir),

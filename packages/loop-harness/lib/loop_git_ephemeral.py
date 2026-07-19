@@ -17,6 +17,7 @@ of the split.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -814,11 +815,47 @@ def _verify_local_override_snapshot(
     )
 
 
+def _widen_tree_permissions(root: Path) -> None:
+    """Grant the owner rwx on `root` and every directory beneath it, recursively.
+
+    Codex review, PR #262, P1 (round 12): `loop_docker_settings.create_settings_bundle()`
+    deliberately chmods its `trusted-settings` directory (and the files inside it) down to
+    0o555/0o444 once populated, so a Maker/Checker container mounted read-only there cannot
+    tamper with its own guard/settings. `discard_after_lease_loss()` (round 11) intentionally
+    skips the matching `cleanup_settings_bundle()` chmod(0o700) restore -- see that method's
+    own docstring -- so the next retry of the same action_id reaches `_remove_runtime()` below
+    via `prepare_ephemeral_git()`'s unconditional wipe-and-recreate of `runtime_dir`, which
+    still contains that 0o555 `trusted-settings` subdirectory. Removing entries *inside* a
+    0o555 directory needs write permission on that directory itself, not on the entries -- a
+    non-root driver process never has that once chmod(0o555) ran (unlike a root driver, which
+    bypasses permission checks entirely and never observes this failure). Only directory modes
+    are widened here, never file modes: unlinking a file only needs write+execute on its
+    containing directory, not any permission bit on the file's own mode, so a 0o600/0o444
+    secret or settings file keeps its own restrictive mode completely untouched right up until
+    `shutil.rmtree()` removes it. `os.walk(followlinks=False)` (the default) additionally
+    guarantees this never crosses a symlink boundary and widens permissions somewhere outside
+    `root`. Every `os.chmod()` failure is swallowed on purpose: this is a best-effort
+    pre-widening step for the immediately-following `shutil.rmtree()`, which still raises (and
+    gets wrapped into `EphemeralGitInfrastructureError`) on any real removal failure.
+    """
+    try:
+        os.chmod(root, 0o700)
+    except OSError:
+        pass
+    for current, dirnames, _filenames in os.walk(root, followlinks=False):
+        for name in dirnames:
+            try:
+                os.chmod(os.path.join(current, name), 0o700)
+            except OSError:
+                pass
+
+
 def _remove_runtime(runtime_dir: Path) -> None:
     try:
         if runtime_dir.is_symlink() or runtime_dir.is_file():
             runtime_dir.unlink(missing_ok=True)
         elif runtime_dir.exists():
+            _widen_tree_permissions(runtime_dir)
             shutil.rmtree(runtime_dir)
     except OSError as exc:
         raise EphemeralGitInfrastructureError(

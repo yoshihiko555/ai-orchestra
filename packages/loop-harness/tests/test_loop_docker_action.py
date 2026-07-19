@@ -504,11 +504,20 @@ def test_checker_ephemeral_git_dir_is_reowned_before_read_only_mount(
     scenario container always runs as the fixed non-root 65532:65532 identity -- without this
     re-own, it could never read its own `GIT_DIR`, breaking every `git` invocation inside the
     checker (mechanical checks, the LLM reviewer's own `git diff`/`git log`).
+
+    Codex review, PR #262, P1 (round 12): round 11 placed this re-own *before*
+    `build_checker_git_mount_spec()`, but that function's `_harden_ephemeral_git_metadata()` step
+    unconditionally recreates `config`/`objects/info/alternates` under the calling process's own
+    uid every time it runs -- silently undoing a re-own that ran before it. The original version
+    of this test mocked `build_checker_git_mount_spec` as a bare lambda that recorded nothing, so
+    it could not catch that ordering bug. This now records both calls into one ordered list and
+    asserts `build_checker_git_mount_spec` runs strictly before the re-own.
     """
     session = SimpleNamespace(
         runtime_dir=tmp_path / "runtime", ephemeral_dir=tmp_path / "runtime" / "git-ephemeral"
     )
     mount_spec = SimpleNamespace(mounts=(), env={"GIT_DIR": "/git", "GIT_WORK_TREE": "/work"})
+    events: list[str] = []
     chown_calls: list[tuple[Path, bool]] = []
 
     def chown(
@@ -518,6 +527,7 @@ def test_checker_ephemeral_git_dir_is_reowned_before_read_only_mount(
         protect_owner_only: bool = True,
     ) -> None:
         del exclude
+        events.append("chown")
         chown_calls.append((path, protect_owner_only))
 
     monkeypatch.setattr(docker_action.profile.runtime, "align_mount_ownership", chown)
@@ -530,7 +540,9 @@ def test_checker_ephemeral_git_dir_is_reowned_before_read_only_mount(
         lambda *_args: docker_settings.DockerSettingsBundle(tmp_path / "trusted"),
     )
     monkeypatch.setattr(
-        docker_action.git_ephemeral, "build_checker_git_mount_spec", lambda *_args: mount_spec
+        docker_action.git_ephemeral,
+        "build_checker_git_mount_spec",
+        lambda *_args: events.append("mount_spec") or mount_spec,
     )
 
     runtime = docker_action.DockerActionRuntime(
@@ -540,6 +552,56 @@ def test_checker_ephemeral_git_dir_is_reowned_before_read_only_mount(
     runtime._prepare_mounts()
 
     assert (session.ephemeral_dir, False) in chown_calls
+    assert events == ["mount_spec", "chown"]
+
+
+def test_checker_worktree_owner_only_secret_check_is_wired(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex review, PR #262, P1 (round 12): unlike the Maker branch (which chowns
+    `self.request.worktree_path` and, as a side effect, runs `align_mount_ownership()`'s round-11
+    owner-only-secret reject check on a non-root driver), the Checker branch never touched
+    `self.request.worktree_path` at all -- an owner-only (e.g. 0600) secret left in the worktree
+    was silently readable from inside a non-root-driver Checker. This only verifies the wiring
+    (the reject-only check runs, with the right path and exclude args); the real filesystem
+    permission behavior of `reject_owner_only_secrets()` itself is covered by
+    `packages/docker-runtime/tests/test_docker_runtime.py`.
+    """
+    session = SimpleNamespace(
+        runtime_dir=tmp_path / "runtime", ephemeral_dir=tmp_path / "runtime" / "git-ephemeral"
+    )
+    mount_spec = SimpleNamespace(mounts=(), env={"GIT_DIR": "/git", "GIT_WORK_TREE": "/work"})
+    reject_calls: list[tuple[Path, frozenset[Path] | None]] = []
+
+    def reject(path: Path, *, exclude: frozenset[Path] | None = None) -> None:
+        reject_calls.append((path, exclude))
+
+    monkeypatch.setattr(docker_action.profile.runtime, "reject_owner_only_secrets", reject)
+    monkeypatch.setattr(
+        docker_action.profile.runtime, "align_mount_ownership", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(
+        docker_action.git_ephemeral, "prepare_ephemeral_git", lambda **_kwargs: session
+    )
+    monkeypatch.setattr(
+        docker_action.docker_settings,
+        "create_settings_bundle",
+        lambda *_args: docker_settings.DockerSettingsBundle(tmp_path / "trusted"),
+    )
+    monkeypatch.setattr(
+        docker_action.git_ephemeral, "build_checker_git_mount_spec", lambda *_args: mount_spec
+    )
+
+    request = _request(tmp_path, kind="checker")
+    runtime = docker_action.DockerActionRuntime(
+        request,
+        host_child_runner=lambda *_args: subprocess.CompletedProcess([], 0, "", ""),
+    )
+    runtime._prepare_mounts()
+
+    expected_exclude = docker_action._local_override_leaf_paths(request.worktree_path)
+    assert reject_calls == [(request.worktree_path, expected_exclude)]
 
 
 def test_maker_lifecycle_uses_production_primitives_in_required_order(
