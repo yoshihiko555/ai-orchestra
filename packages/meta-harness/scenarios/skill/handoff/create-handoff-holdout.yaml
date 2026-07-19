@@ -14,6 +14,12 @@ setup:
   - "touch -t 200001010000 .meta-harness/handoff-start"
 allowed_tools:
   - "Bash(python3 *)"
+  # PR #273 bot レビュー3巡目対応（CodeRabbit Major）: train（create-handoff.yaml）と
+  # allowed_tools を完全ミラーする。bypassPermissions 下では --allowedTools は実質 advisory
+  # だが（tool 権限チェック自体が bypass される）、将来この scenario だけ bypass を外す変更が
+  # 入った場合に drift したまま気付かれないことを防ぐため、値としては常に train と同期させる。
+  - "Bash(python3 .claude/skills/handoff/scripts/handoff.py*)"
+  - "Bash(python .claude/skills/handoff/scripts/handoff.py*)"
   - "Write"
 # Issue #261 PR6 bot レビュー追撃対応: create-handoff（train）と同型（同一 skill:handoff、同じ
 # `.claude/handoffs/` 成果物）のため、同じ理由で bypassPermissions が必要（`.claude/` protected

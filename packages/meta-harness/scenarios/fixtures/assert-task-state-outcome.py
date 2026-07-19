@@ -174,6 +174,45 @@ def assert_decision_recorded(plans_path: Path, *, expected_decision: str) -> Non
     )
 
 
+def _run_git_z(args: list[str], *, cwd: Path | None) -> list[str]:
+    """Run a NUL-terminated (`-z`) git subcommand and split its output on NUL bytes.
+
+    PR #273 bot review round 3: the previous newline-based parsing (`splitlines()` +
+    `line[3:]`) breaks on paths containing spaces or other characters git would otherwise
+    quote. `-z` disables path quoting/escaping entirely and terminates each record with NUL
+    instead, which is unambiguous for arbitrary filenames (it is not valid inside a POSIX
+    path). The trailing empty string after the final NUL separator is dropped.
+    """
+    result = subprocess.run(args, cwd=cwd, check=True, capture_output=True, text=True)
+    tokens = result.stdout.split("\0")
+    if tokens and tokens[-1] == "":
+        tokens = tokens[:-1]
+    return tokens
+
+
+def _parse_untracked_paths(porcelain_z_tokens: list[str]) -> list[str]:
+    """Extract `??` (untracked) paths from `git status --porcelain -z` tokens.
+
+    Rename/copy entries (`status[0]` or `status[1]` in `RC`) consume *two* consecutive NUL
+    tokens -- the new path, then the old path -- with no `XY ` prefix on the second one. We
+    must skip that second token rather than misinterpret it as its own entry (its first two
+    characters are arbitrary path bytes, not a status code), even though untracked entries
+    themselves (`??`) can never be renames/copies.
+    """
+    untracked: list[str] = []
+    index = 0
+    while index < len(porcelain_z_tokens):
+        entry = porcelain_z_tokens[index]
+        status, path = entry[:2], entry[3:]
+        if status == "??":
+            untracked.append(path)
+        if status[0] in "RC" or status[1] in "RC":
+            index += 2
+        else:
+            index += 1
+    return untracked
+
+
 def assert_tracked_changes_limited_to(
     allowed_paths: set[str],
     *,
@@ -181,8 +220,8 @@ def assert_tracked_changes_limited_to(
     cwd: Path | None = None,
 ) -> None:
     """Assert no tracked file outside `allowed_paths` differs from the pre-run baseline commit,
-    and (when `allowed_new_prefixes` is given) that every brand-new *untracked* file lives under
-    one of those prefixes.
+    and that every brand-new *untracked* file lives under `allowed_paths` or one of
+    `allowed_new_prefixes`.
 
     Issue #261 PR6 bot review follow-up: this is a generic collateral-damage guard for any
     scenario that must run under `permission_mode: bypassPermissions` (required because
@@ -192,56 +231,48 @@ def assert_tracked_changes_limited_to(
     each needs bypass). Despite the filename, this function/subcommand is not task-state
     specific -- it is deliberately reused by the handoff suite rather than duplicated.
 
-    Tracked-file check: `git diff --name-only HEAD` reports staged and unstaged changes
+    Tracked-file check: `git diff --name-only -z HEAD` reports staged and unstaged changes
     (including new files once `git add`-ed) against the isolated git snapshot mounted for
     oracle containers (see `scenario_docker_profile.build_oracle_command`). Any tracked path
     outside `allowed_paths` fails the run.
 
-    Untracked-file check (opt-in via `allowed_new_prefixes`): `git status --porcelain
-    --untracked-files=all` lists brand-new files that were never tracked at all (e.g. a new
-    `.claude/handoffs/{timestamp}.md`). When `allowed_new_prefixes` is empty (the task-state
-    scenarios' case), untracked files are ignored entirely -- hook-generated session state
-    (`.claude/context/...`), `__pycache__`, etc. already exist as a normal side effect of
-    running Claude Code in this harness, so treating any of them as collateral damage would
-    make the check flake regardless of what the candidate did. When `allowed_new_prefixes` is
-    non-empty (the handoff suite's case, `(".claude/handoffs/",)`), every untracked path must
-    start with one of the given prefixes, or the run fails.
+    Untracked-file check (PR #273 bot review round 3: now unconditional, not opt-in --
+    previously an early return skipped this entirely when `allowed_new_prefixes` was empty,
+    which let a bypass-mode candidate create e.g. `.claude/settings.local.json` undetected).
+    `git status --porcelain -z --untracked-files=all` lists brand-new files that were never
+    tracked at all. Every such path must start with `allowed_new_prefixes` -- or, when a
+    scenario's expected target itself may appear as untracked for reasons specific to that
+    scenario's repo `.gitignore` state, be exactly one of `allowed_paths` -- or the run fails.
+    Genuinely expected harness/hook side effects (`.claude/context/...` session state,
+    `__pycache__`, etc.) are excluded from the repo's `.gitignore` and therefore never show up
+    as untracked at all (verified against `.gitignore` for the task-state and handoff suites;
+    see the calling scenario yaml's comment), so this default-deny does not flake on them.
 
     `cwd` defaults to the process's own working directory (the production oracle container
     sets `--workdir /workspace` and relies on the process cwd); tests pass an explicit
     temporary git repo instead.
     """
-    diff_result = subprocess.run(
-        ["git", "diff", "--name-only", "HEAD"],
-        cwd=cwd,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    changed = {line.strip() for line in diff_result.stdout.splitlines() if line.strip()}
+    changed = {
+        path for path in _run_git_z(["git", "diff", "--name-only", "-z", "HEAD"], cwd=cwd) if path
+    }
     unexpected = changed - allowed_paths
     assert not unexpected, (
         f"tracked files changed outside the allowed scope {sorted(allowed_paths)}: "
         f"{sorted(unexpected)}"
     )
 
-    if not allowed_new_prefixes:
-        return
-
-    status_result = subprocess.run(
-        ["git", "status", "--porcelain", "--untracked-files=all"],
-        cwd=cwd,
-        check=True,
-        capture_output=True,
-        text=True,
+    status_tokens = _run_git_z(
+        ["git", "status", "--porcelain", "-z", "--untracked-files=all"], cwd=cwd
     )
-    untracked = [
-        line[3:].strip() for line in status_result.stdout.splitlines() if line.startswith("?? ")
+    untracked = _parse_untracked_paths(status_tokens)
+    disallowed_new = [
+        path
+        for path in untracked
+        if path not in allowed_paths and not path.startswith(allowed_new_prefixes)
     ]
-    disallowed_new = [path for path in untracked if not path.startswith(allowed_new_prefixes)]
     assert not disallowed_new, (
-        f"new untracked files outside the allowed prefixes {sorted(allowed_new_prefixes)}: "
-        f"{sorted(disallowed_new)}"
+        f"new untracked files outside the allowed scope ({sorted(allowed_paths)}) and allowed "
+        f"prefixes {sorted(allowed_new_prefixes)}: {sorted(disallowed_new)}"
     )
 
 

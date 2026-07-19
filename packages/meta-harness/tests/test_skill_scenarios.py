@@ -1766,16 +1766,40 @@ class TestCollateralScopeOracle:
         with pytest.raises(AssertionError, match="tracked files changed outside the allowed scope"):
             fixture.assert_tracked_changes_limited_to({".claude/Plans.md"}, cwd=tmp_path)
 
-    def test_ignores_new_untracked_files(self, tmp_path: Path) -> None:
-        """Hook-generated session state (e.g. `.claude/context/...`) is untracked and must not
-        trip the collateral guard (PR #273 bot review: false-positive risk)."""
+    def test_gitignored_hook_side_effects_do_not_trip_the_check(self, tmp_path: Path) -> None:
+        """PR #273 bot review round 3: the untracked scan is now unconditional (no more
+        `allowed_new_prefixes`-empty early return), so this must be proven via an actual
+        `.gitignore` mirroring the real repo -- `git status` never reports ignored paths as
+        `??` regardless of `--untracked-files=all`, so hook-generated session state
+        (`.claude/context/...`) and `__pycache__` stay invisible to this check exactly as in
+        production (verified against the repo's real `.gitignore`, see the calling scenario
+        yaml's comment for the citation)."""
         fixture = _task_state_outcome_fixture()
         _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        (tmp_path / ".gitignore").write_text(".claude/context/\n__pycache__/\n", encoding="utf-8")
+        subprocess.run(["git", "add", ".gitignore"], cwd=tmp_path, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "add gitignore"], cwd=tmp_path, check=True)
+
         context_dir = tmp_path / ".claude" / "context" / "session"
         context_dir.mkdir(parents=True)
         (context_dir / "entry.json").write_text("{}\n", encoding="utf-8")
+        pycache_dir = tmp_path / "packages" / "meta-harness" / "__pycache__"
+        pycache_dir.mkdir(parents=True)
+        (pycache_dir / "module.cpython-314.pyc").write_bytes(b"\x00")
 
         fixture.assert_tracked_changes_limited_to({".claude/Plans.md"}, cwd=tmp_path)
+
+    def test_default_rejects_new_untracked_file_without_allow_list(self, tmp_path: Path) -> None:
+        """PR #273 bot review round 3 (Codex P2): a bypass-mode candidate creating an
+        un-gitignored file (e.g. `.claude/settings.local.json`, a real permission-escalation
+        vector) must be caught even when the caller passes no `allowed_new_prefixes` at all --
+        the previous early-return skip made this a silent pass."""
+        fixture = _task_state_outcome_fixture()
+        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        (tmp_path / ".claude" / "settings.local.json").write_text("{}\n", encoding="utf-8")
+
+        with pytest.raises(AssertionError, match="new untracked files outside the allowed scope"):
+            fixture.assert_tracked_changes_limited_to({".claude/Plans.md"}, cwd=tmp_path)
 
     def test_rejects_deleted_tracked_file(self, tmp_path: Path) -> None:
         fixture = _task_state_outcome_fixture()
@@ -1806,9 +1830,31 @@ class TestCollateralScopeOracle:
         _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
         (tmp_path / ".claude" / "settings.local.json").write_text("{}\n", encoding="utf-8")
 
-        with pytest.raises(
-            AssertionError, match="new untracked files outside the allowed prefixes"
-        ):
+        with pytest.raises(AssertionError, match="new untracked files outside the allowed scope"):
+            fixture.assert_tracked_changes_limited_to(
+                {".claude/Plans.md"}, allowed_new_prefixes=(".claude/handoffs/",), cwd=tmp_path
+            )
+
+    def test_space_containing_path_is_parsed_correctly(self, tmp_path: Path) -> None:
+        """PR #273 bot review round 3 (CodeRabbit): plain `git status --porcelain` /
+        `git diff --name-only` quote paths with unusual characters (including spaces), which
+        broke the previous newline+slice parsing. `-z` must correctly detect both a legitimate
+        allowed new file with a space in its name, and an unrelated disallowed one."""
+        fixture = _task_state_outcome_fixture()
+        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        handoffs_dir = tmp_path / ".claude" / "handoffs"
+        handoffs_dir.mkdir()
+        (handoffs_dir / "2026 07 19 000000.md").write_text("# Task Handoff\n", encoding="utf-8")
+
+        # Allowed: the space-containing new file lives under the allowed prefix.
+        fixture.assert_tracked_changes_limited_to(
+            {".claude/Plans.md"}, allowed_new_prefixes=(".claude/handoffs/",), cwd=tmp_path
+        )
+
+        # Disallowed: a second space-containing file outside any allowed scope must still be
+        # caught (proves the parser did not desync after the first entry).
+        (tmp_path / ".claude" / "extra notes.md").write_text("x\n", encoding="utf-8")
+        with pytest.raises(AssertionError, match=r"extra notes\.md"):
             fixture.assert_tracked_changes_limited_to(
                 {".claude/Plans.md"}, allowed_new_prefixes=(".claude/handoffs/",), cwd=tmp_path
             )
