@@ -504,6 +504,23 @@ class TestRunMetadataSchema:
         schema = _load("run.metadata.schema.json")
         assert mh.validate_against_schema(self._VALID, schema, SCHEMA_DIR) == []
 
+    def test_legacy_instance_without_permission_mode_is_still_valid(self) -> None:
+        """PR #273 bot review round 4: `permission_mode` / `permission_mode_source` were added
+        to `required` without a `schema_version` bump, which would have rejected pre-existing
+        run metadata (written before these fields existed) on re-validation. They must stay
+        optional so schema_version 1.0 legacy runs keep validating; the evaluator write side
+        (not this schema) is responsible for always populating them going forward (see
+        `test_run_metadata_records_permission_mode_and_source` in
+        test_evaluator_headless_run.py)."""
+        schema = _load("run.metadata.schema.json")
+        legacy_instance = {
+            key: value
+            for key, value in self._VALID.items()
+            if key not in ("permission_mode", "permission_mode_source")
+        }
+
+        assert mh.validate_against_schema(legacy_instance, schema, SCHEMA_DIR) == []
+
     def test_routing_config_requires_base_hash(self) -> None:
         schema = _load("run.metadata.schema.json")
         instance = {

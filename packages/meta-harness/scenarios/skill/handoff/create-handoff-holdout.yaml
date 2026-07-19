@@ -43,6 +43,11 @@ critical:
     oracle: command_exit
     command: >-
       python3 packages/meta-harness/scenarios/fixtures/assert-task-state-outcome.py collateral-scope --allow .claude/Plans.md --allow-new-prefix .claude/handoffs/
+  - id: plans-md-input-unchanged
+    text: "handoff.py の入力である .claude/Plans.md が seed 内容から改変されていないことを検証する（.claude/Plans.md は repo .gitignore 対象のため collateral-scope の diff/untracked 検査の死角になる。PR #273 bot レビュー4巡目対応）"
+    oracle: command_exit
+    command: >-
+      python3 -c 'expected = "# Plans\n\n- `cc:WIP` Migration safety work\n- `cc:TODO` Validate rollback behavior\n"; actual = open(".claude/Plans.md", encoding="utf-8").read(); assert actual == expected, f"Plans.md changed from seed: {actual!r}"'
 checks:
   - id: handoff-content-quality
     text: "未完了の rollback 検証と禁止事項を曖昧にしない"

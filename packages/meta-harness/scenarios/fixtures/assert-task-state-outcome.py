@@ -190,6 +190,48 @@ def _run_git_z(args: list[str], *, cwd: Path | None) -> list[str]:
     return tokens
 
 
+def _parse_diff_name_status(name_status_z_tokens: list[str]) -> list[tuple[str, str]]:
+    """Parse `git diff --name-status -z` tokens into `(status, path)` pairs.
+
+    PR #273 bot review round 4 (Codex P2): a status-blind `--name-only` diff could not tell a
+    brand-new *staged* file (`git add`-ed by the candidate, status `A`) apart from a change to
+    an already-tracked file (`M`/`D`/...), so `allowed_new_prefixes` never applied to staged
+    additions and they always required exact membership in `allowed_paths` -- a false positive
+    for e.g. a candidate that `git add`s a new file under an allowed prefix without committing.
+
+    Non-rename entries are 2-token records: `STATUS`, `PATH`. Rename/copy entries (status
+    `R###`/`C###`) are 3-token records: `STATUS`, `OLD_PATH`, `NEW_PATH` (verified empirically:
+    `git diff --name-status -z` orders the vacated path before the resulting path, matching the
+    non-`-z` `STATUS\told\tnew` convention). Both the old and new paths of a rename/copy are
+    yielded under the *rename's* status (never treated as a fresh `A` addition), since a
+    rename/copy of a tracked file is not a new file appearing -- it is an existing tracked
+    file moving, which `allowed_new_prefixes` must not excuse.
+    """
+    entries: list[tuple[str, str]] = []
+    index = 0
+    while index < len(name_status_z_tokens):
+        status = name_status_z_tokens[index]
+        if not status:
+            index += 1
+            continue
+        if status[0] in "RC":
+            if index + 2 >= len(name_status_z_tokens):
+                break
+            old_path, new_path = (
+                name_status_z_tokens[index + 1],
+                name_status_z_tokens[index + 2],
+            )
+            entries.append((status, old_path))
+            entries.append((status, new_path))
+            index += 3
+        else:
+            if index + 1 >= len(name_status_z_tokens):
+                break
+            entries.append((status, name_status_z_tokens[index + 1]))
+            index += 2
+    return entries
+
+
 def _parse_untracked_paths(porcelain_z_tokens: list[str]) -> list[str]:
     """Extract `??` (untracked) paths from `git status --porcelain -z` tokens.
 
@@ -231,10 +273,15 @@ def assert_tracked_changes_limited_to(
     each needs bypass). Despite the filename, this function/subcommand is not task-state
     specific -- it is deliberately reused by the handoff suite rather than duplicated.
 
-    Tracked-file check: `git diff --name-only -z HEAD` reports staged and unstaged changes
-    (including new files once `git add`-ed) against the isolated git snapshot mounted for
-    oracle containers (see `scenario_docker_profile.build_oracle_command`). Any tracked path
-    outside `allowed_paths` fails the run.
+    Tracked-file check: `git diff --name-status -z HEAD` reports staged and unstaged changes
+    against the isolated git snapshot mounted for oracle containers (see
+    `scenario_docker_profile.build_oracle_command`). A path is allowed if it is in
+    `allowed_paths`, *or* (PR #273 bot review round 4) it is a brand-new staged addition
+    (status `A`, i.e. the candidate ran `git add` on a file that did not exist in the
+    baseline) whose path starts with `allowed_new_prefixes`. Modifications, deletions, and
+    renames/copies of already-tracked files (`M`/`D`/`R###`/`C###`/...) are never excused by
+    `allowed_new_prefixes` -- only `allowed_paths` membership permits those, since they touch
+    files that already existed at baseline rather than introducing a new one.
 
     Untracked-file check (PR #273 bot review round 3: now unconditional, not opt-in --
     previously an early return skipped this entirely when `allowed_new_prefixes` was empty,
@@ -252,13 +299,19 @@ def assert_tracked_changes_limited_to(
     sets `--workdir /workspace` and relies on the process cwd); tests pass an explicit
     temporary git repo instead.
     """
-    changed = {
-        path for path in _run_git_z(["git", "diff", "--name-only", "-z", "HEAD"], cwd=cwd) if path
-    }
-    unexpected = changed - allowed_paths
+    diff_tokens = _run_git_z(["git", "diff", "--name-status", "-z", "HEAD"], cwd=cwd)
+    diff_entries = _parse_diff_name_status(diff_tokens)
+    unexpected = sorted(
+        {
+            path
+            for status, path in diff_entries
+            if path
+            and path not in allowed_paths
+            and not (status == "A" and path.startswith(allowed_new_prefixes))
+        }
+    )
     assert not unexpected, (
-        f"tracked files changed outside the allowed scope {sorted(allowed_paths)}: "
-        f"{sorted(unexpected)}"
+        f"tracked files changed outside the allowed scope {sorted(allowed_paths)}: {unexpected}"
     )
 
     status_tokens = _run_git_z(

@@ -1858,3 +1858,92 @@ class TestCollateralScopeOracle:
             fixture.assert_tracked_changes_limited_to(
                 {".claude/Plans.md"}, allowed_new_prefixes=(".claude/handoffs/",), cwd=tmp_path
             )
+
+    def test_staged_new_file_under_allowed_prefix_is_permitted(self, tmp_path: Path) -> None:
+        """PR #273 bot review round 4 (Codex P2): `git diff --name-status` reports a
+        candidate-staged brand-new file (`git add`-ed but not committed) as status `A`. Such a
+        file must be permitted when it falls under `allowed_new_prefixes`, the same as an
+        unstaged/untracked one -- staging it should not turn a legitimate new handoff file into
+        a failure."""
+        fixture = _task_state_outcome_fixture()
+        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        handoffs_dir = tmp_path / ".claude" / "handoffs"
+        handoffs_dir.mkdir()
+        (handoffs_dir / "20260719-000000.md").write_text("# Task Handoff\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "add", ".claude/handoffs/20260719-000000.md"], cwd=tmp_path, check=True
+        )
+
+        fixture.assert_tracked_changes_limited_to(
+            {".claude/Plans.md"}, allowed_new_prefixes=(".claude/handoffs/",), cwd=tmp_path
+        )
+
+    def test_staged_new_file_outside_allowed_prefix_is_rejected(self, tmp_path: Path) -> None:
+        """The staged-addition allowance must still respect `allowed_new_prefixes` scoping --
+        staging a file elsewhere (e.g. `.claude/settings.local.json`) must not be laundered
+        into a pass just by running `git add` on it."""
+        fixture = _task_state_outcome_fixture()
+        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        settings_path = tmp_path / ".claude" / "settings.local.json"
+        settings_path.write_text("{}\n", encoding="utf-8")
+        subprocess.run(["git", "add", ".claude/settings.local.json"], cwd=tmp_path, check=True)
+
+        with pytest.raises(AssertionError, match="tracked files changed outside the allowed scope"):
+            fixture.assert_tracked_changes_limited_to(
+                {".claude/Plans.md"}, allowed_new_prefixes=(".claude/handoffs/",), cwd=tmp_path
+            )
+
+    def test_staged_modification_of_existing_tracked_file_is_still_rejected(
+        self, tmp_path: Path
+    ) -> None:
+        """A staged *modification* to an already-tracked file (status `M`, not `A`) must never
+        be excused by `allowed_new_prefixes`, even if its path happens to start with an allowed
+        prefix -- only a brand-new addition qualifies."""
+        fixture = _task_state_outcome_fixture()
+        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        handoffs_dir = tmp_path / ".claude" / "handoffs"
+        handoffs_dir.mkdir()
+        existing = handoffs_dir / "already-tracked.md"
+        existing.write_text("original\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "add", ".claude/handoffs/already-tracked.md"], cwd=tmp_path, check=True
+        )
+        subprocess.run(["git", "commit", "-q", "-m", "seed handoff file"], cwd=tmp_path, check=True)
+        existing.write_text("tampered\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "add", ".claude/handoffs/already-tracked.md"], cwd=tmp_path, check=True
+        )
+
+        with pytest.raises(AssertionError, match="tracked files changed outside the allowed scope"):
+            fixture.assert_tracked_changes_limited_to(
+                {".claude/Plans.md"}, allowed_new_prefixes=(".claude/handoffs/",), cwd=tmp_path
+            )
+
+    def test_rename_of_existing_tracked_file_is_rejected_by_both_paths(
+        self, tmp_path: Path
+    ) -> None:
+        """PR #273 bot review round 4: a detected rename (`git diff --name-status` status
+        `R###`) reports two paths in one -z record (old, then new). Both must be checked
+        against `allowed_paths` -- a rename is never treated as a fresh `A` addition, so
+        `allowed_new_prefixes` must not excuse the new path even if it happens to fall under
+        one, and the vacated old path must also be flagged."""
+        fixture = _task_state_outcome_fixture()
+        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        source = tmp_path / "sandbox" / "oldname.md"
+        source.parent.mkdir(parents=True)
+        source.write_text("line1\nline2\nline3\nline4\nline5\n", encoding="utf-8")
+        subprocess.run(["git", "add", "sandbox/oldname.md"], cwd=tmp_path, check=True)
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "seed renameable file"], cwd=tmp_path, check=True
+        )
+        (tmp_path / ".claude" / "handoffs").mkdir()
+        subprocess.run(
+            ["git", "mv", "sandbox/oldname.md", ".claude/handoffs/renamed.md"],
+            cwd=tmp_path,
+            check=True,
+        )
+
+        with pytest.raises(AssertionError, match="tracked files changed outside the allowed scope"):
+            fixture.assert_tracked_changes_limited_to(
+                {".claude/Plans.md"}, allowed_new_prefixes=(".claude/handoffs/",), cwd=tmp_path
+            )
