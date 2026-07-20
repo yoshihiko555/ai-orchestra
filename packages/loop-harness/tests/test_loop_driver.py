@@ -6524,6 +6524,101 @@ def test_wait_external_review_excludes_demoted_signature_from_addressed_resoluti
     assert set(resolve_args[4]) == {"sig-fixed"}
 
 
+def test_wait_external_review_excludes_pending_classification_signature_from_addressed_resolution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR #276 review (round 3, P2): a signature that reraised this round without an explicit
+    severity marker, whose classification then fails (`DockerActionError`, caught by
+    `_run_wait_external_review`), keeps `needs_classification=True` in `result.findings` --
+    still a fail-safe "high" (blocking) finding -- but its persisted record's
+    `last_seen_iteration` is never bumped (`_upsert_finding` only bumps it once classification
+    actually completes), so it drops out of `iteration_findings` exactly like a genuine fix
+    would. It must never be treated as "addressed" / auto-resolved on GitHub while still
+    pending classification."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.pr_number = 42
+    state.pr_review = {"iteration_head_sha": "cafebabecafebabe"}
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    d._action_executor = driver.lae.DockerActionExecutor(object())
+    monkeypatch.setattr(driver, "_repo_name_with_owner", lambda _wt: "owner/repo")
+    monkeypatch.setattr(
+        prw, "load_pr_review_config", lambda _project: prw.PrReviewConfig(reviewer_allowlist=())
+    )
+    monkeypatch.setattr(prw, "record_ignored_untrusted_reviews", lambda *a, **k: None)
+    monkeypatch.setattr(
+        prw,
+        "wait_for_completion",
+        lambda *a, **k: prw.CompletionOutcome(
+            "review_submitted", completed=True, timed_out=False, infrastructure_failure=False
+        ),
+    )
+    monkeypatch.setattr(prw, "save_review_findings_snapshot", lambda *a, **k: "artifacts/x.json")
+    monkeypatch.setattr(prw, "confirm_review_findings_reported", lambda *a, **k: None)
+
+    # sig-fixed: genuinely gone this round (never re-imported, not in result.findings).
+    # sig-pending: reraised without a severity marker (needs_classification=True); its
+    # classification will fail below, so it never gets a chance to update
+    # `iteration_findings` despite still being an open, blocking finding.
+    pending_finding = prw.ImportedFinding(
+        signature="sig-pending",
+        severity="high",
+        source_comment_id="c2",
+        body_excerpt="maybe still an issue?",
+        path="bar.py",
+        line=5,
+        needs_classification=True,
+    )
+    previous = lc.IterationFindings(frozenset({"sig-fixed", "sig-pending"}), 2)
+    current = lc.IterationFindings(frozenset(), 0)
+    collected = prw.ReviewFindingsResult((pending_finding,), current, previous, (), (), 0, 1)
+    monkeypatch.setattr(prw, "collect_review_findings", lambda *a, **k: collected)
+
+    def classify_pending_findings_raises(*_a: Any, **_k: Any) -> prw.ReviewFindingsResult:
+        raise driver.lda.DockerActionError("isolated finding classifier failed")
+
+    monkeypatch.setattr(d, "_classify_pending_findings", classify_pending_findings_raises)
+
+    mark_calls: list[tuple[Any, ...]] = []
+    resolve_calls: list[tuple[Any, ...]] = []
+    monkeypatch.setattr(
+        prw,
+        "mark_addressed_findings",
+        lambda *a, **k: (mark_calls.append((a, k)), ())[1],
+    )
+    monkeypatch.setattr(
+        prw,
+        "resolve_addressed_findings",
+        lambda *a, **k: (
+            resolve_calls.append((a, k)),
+            prw.AddressedFindingsResult((), (), git_workflow_unavailable=False),
+        )[1],
+    )
+
+    proposal = lc.ProposeResult(
+        action="wait_external_review",
+        action_id="act-235-004",
+        state_version=state.state_version,
+        expected_phase="implementation",
+        phase="implementation",
+        iteration=1,
+        context={},
+    )
+    d._run_wait_external_review(proposal, state, {})
+
+    assert len(mark_calls) == 1
+    mark_args, _mark_kwargs = mark_calls[0]
+    assert set(mark_args[2]) == {"sig-fixed"}
+
+    assert len(resolve_calls) == 1
+    resolve_args, _resolve_kwargs = resolve_calls[0]
+    assert set(resolve_args[4]) == {"sig-fixed"}
+
+
 def test_run_stop_posts_issue_comment_when_repo_identity_verified(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

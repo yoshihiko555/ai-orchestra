@@ -1964,9 +1964,25 @@ class LoopDriver:
         # signature), so any resolved-candidate signature appearing there is provably still
         # open and must never be auto-marked "addressed" / auto-resolved on GitHub.
         demoted_still_open = {item.signature for item in result.open_non_blocking}
+        # PR #276 review (round 3, P2): a signature can also drop out of `iteration_findings`
+        # when it reraises this round without an explicit severity marker (`needs_classification
+        # =True`) and severity classification never completes -- e.g. `_classify_pending_findings`
+        # raises `DockerActionError`, caught above, leaving `result` as the pre-classification
+        # snapshot. `_upsert_finding` (pr_review_wait.py) already records that reraise as a
+        # fail-safe "high" (blocking) finding in `result.findings`, but only bumps the persisted
+        # record's `last_seen_iteration` -- which `iteration_findings` is keyed on -- once
+        # `_apply_classification_to_state` actually runs. Any signature still
+        # `needs_classification` in this round's `result.findings` is therefore still an open,
+        # blocking finding that never got a chance to update `iteration_findings`, and must never
+        # be auto-marked "addressed" / auto-resolved on GitHub.
+        still_pending_classification = {
+            item.signature for item in result.findings if item.needs_classification
+        }
         resolved_signatures = (
-            result.previous_iteration_findings.signatures - result.iteration_findings.signatures
-        ) - demoted_still_open
+            (result.previous_iteration_findings.signatures - result.iteration_findings.signatures)
+            - demoted_still_open
+            - still_pending_classification
+        )
         if resolved_signatures:
             commit_sha = baseline.get("iteration_head_sha")
             prw.mark_addressed_findings(

@@ -3254,11 +3254,16 @@ class _FakeGitWorkflowModule:
         *,
         fail_reply_for: tuple[int, ...] = (),
         fail_resolve_for: tuple[str, ...] = (),
+        unresolved_for: tuple[str, ...] = (),
         fetch_error: Exception | None = None,
     ) -> None:
         self._fetch_result = fetch_result
         self._fail_reply_for = set(fail_reply_for)
         self._fail_resolve_for = set(fail_resolve_for)
+        # PR #276 review (round 3, P2): distinct from `fail_resolve_for` -- this simulates the
+        # GraphQL mutation succeeding (no exception) but the API reporting `isResolved: false`,
+        # which `resolve_thread()`'s own CLI (`cmd_resolve`) already treats as a failure.
+        self._unresolved_for = set(unresolved_for)
         self._fetch_error = fetch_error
         self.reply_calls: list[tuple[Any, ...]] = []
         self.resolve_calls: list[str] = []
@@ -3293,6 +3298,8 @@ class _FakeGitWorkflowModule:
         self.resolve_calls.append(thread_id)
         if thread_id in self._fail_resolve_for:
             raise self.GhCommandError("resolve failed")
+        if thread_id in self._unresolved_for:
+            return {"thread_id": thread_id, "is_resolved": False}
         return {"thread_id": thread_id, "is_resolved": True}
 
 
@@ -3535,6 +3542,55 @@ def test_resolve_addressed_findings_reports_reply_and_resolve_failures(
     findings = state.pr_review["findings"]
     assert "resolved_thread_ids" not in findings["sig-reply-fails"]
     assert "resolved_thread_ids" not in findings["sig-resolve-fails"]
+
+
+def test_resolve_addressed_findings_treats_is_resolved_false_as_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR #276 review (round 3, P2): `resolveReviewThread` can return HTTP 200 (no exception)
+    while still reporting `isResolved: false` -- e.g. a human reopened the thread in the same
+    instant, or a GitHub-side inconsistency. This must not be recorded as `"resolved"` (which
+    would persist the thread id in `resolved_thread_ids` and make every later attempt skip it
+    forever as `"already_resolved"`, permanently abandoning a thread GitHub still shows open)."""
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={
+            "processed_comment_ids": [],
+            "findings": {
+                "sig-addressed": _open_finding_record(["review_comment:1"], status="addressed"),
+            },
+        },
+    )
+    lease_token = _lease(project_dir)
+    fake = _FakeGitWorkflowModule(
+        {"unresolved_threads": [_trusted_thread("THREAD-1", 1)]},
+        unresolved_for=("THREAD-1",),
+    )
+    monkeypatch.setattr(prw, "_load_git_workflow_module", lambda: fake)
+
+    result = prw.resolve_addressed_findings(
+        "abcd1234-issue-1",
+        project_dir,
+        12,
+        "owner/repo",
+        ["sig-addressed"],
+        "sha",
+        lease_token,
+    )
+
+    assert result.resolved_signatures == ()
+    assert len(result.thread_outcomes) == 1
+    outcome = result.thread_outcomes[0]
+    assert outcome.status == "resolve_failed"
+    assert outcome.thread_id == "THREAD-1"
+    # The mutation was actually attempted (unlike a skip); only its *outcome* is treated as a
+    # failure.
+    assert fake.resolve_calls == ["THREAD-1"]
+
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    findings = state.pr_review["findings"]
+    assert "resolved_thread_ids" not in findings["sig-addressed"]
 
 
 def test_resolve_addressed_findings_reports_lease_expired_without_github_calls(

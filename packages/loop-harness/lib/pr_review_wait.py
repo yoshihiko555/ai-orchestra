@@ -1401,9 +1401,24 @@ def _resolve_one_trusted_thread(
         if tmp_path is not None:
             tmp_path.unlink(missing_ok=True)
     try:
-        git_workflow.resolve_thread(thread_id, timeout_seconds)
+        resolve_result = git_workflow.resolve_thread(thread_id, timeout_seconds)
     except Exception as exc:  # noqa: BLE001 - best-effort GitHub write, never raise
         return AddressedThreadOutcome(signature, thread_id, comment_id, "resolve_failed", str(exc))
+    # PR #276 review (round 3, P2): `resolveReviewThread` can succeed as a GraphQL mutation
+    # while still returning `isResolved: false` (e.g. a race with a human re-opening the
+    # thread); `git_workflow.resolve_thread()`'s own CLI entrypoint (`cmd_resolve`) already
+    # treats that as a failure. Treating it as `"resolved"` here would record the thread id in
+    # `resolved_thread_ids` (only outcomes with status `"resolved"` are persisted there, see
+    # `resolve_addressed_findings`), making a later genuine resolve attempt skip it forever as
+    # `"already_resolved"` even though GitHub still shows it open.
+    if not isinstance(resolve_result, dict) or not resolve_result.get("is_resolved"):
+        return AddressedThreadOutcome(
+            signature,
+            thread_id,
+            comment_id,
+            "resolve_failed",
+            "mutation reported is_resolved=false",
+        )
     return AddressedThreadOutcome(signature, thread_id, comment_id, "resolved")
 
 
