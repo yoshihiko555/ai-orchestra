@@ -42,7 +42,10 @@
         "properties": {
           "file": { "type": "string" },
           "key_path": { "type": "string" },
-          "value": {}
+          "value": {
+            "type": "string",
+            "description": "Issue #261 PR8: codex structured output (response_format 'codex_output_schema') requires every schema node to declare a 'type', which an empty {} schema omits. Phase A's only proposer-writable config_patch ceiling entries (agents.*.tool, antigravity.model; see CONFIG_PATCH_ALLOWED_CREATED_BY in meta_harness_common.py) are always strings -- validate_config_patch() already enforces isinstance(value, str) for both -- so this does not narrow what a valid proposal can express."
+          }
         }
       }
     },

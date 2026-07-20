@@ -135,8 +135,13 @@ DEFAULTS: dict[str, Any] = {
         # Issue #261 PR7 follow-up: bumped 102.0 -> 111.0 after old-baseline holdout
         # verification showed create-bug-issue-holdout latching at $3.00 on turn 11
         # (issue-create holdout budget 3.0 -> 6.0, repeat=3 => +9.0).
+        # Issue #261 PR8 (final calibration): bumped 111.0 -> 174.0 after final evaluate
+        # showed all 4 issue-create/issue-fix scenarios still latching (create-task-issue
+        # train +12, create-bug-issue-holdout +27, fix-greet-none-bug train +6,
+        # fix-formal-greeting-feature-holdout +18; total +63). Cut off the $3 -> $6 -> $9
+        # incremental chase and set all 4 scenarios to $15.00 as a definitive value.
         "max_affected_suites": 7,
-        "max_budget_usd": 111.0,
+        "max_budget_usd": 174.0,
     },
     "overlay": {
         "allowed_prefixes": ["facets/"],

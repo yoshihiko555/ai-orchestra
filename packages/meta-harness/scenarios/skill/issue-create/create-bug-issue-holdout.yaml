@@ -46,6 +46,9 @@ budget:
   # （create-task-issue、$3.0 で pass 実績あり）と異なり、この holdout は再現手順・環境記述を含む
   # bug テンプレートの分だけ turn 数が伸びやすく実測で 11+ turns に達した。16 turns 上限までの
   # worst-case 前課金を見込み 6.0 に引き上げる。
-  max_budget_usd: 6.0
+  # Issue #261 PR8（最終較正）: 最終 evaluate でも 11 turns 目に $6.00 latch ×3 の実測。$3→$6→$9
+  # の逐次追随を打ち切り $15.00 に最終設定する（根拠・reward hacking 抑止上限である旨は
+  # create-task-issue.yaml のコメント参照）。
+  max_budget_usd: 15.0
   max_output_tokens: 1024
 repeat: 1

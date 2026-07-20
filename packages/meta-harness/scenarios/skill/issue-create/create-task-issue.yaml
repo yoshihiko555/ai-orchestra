@@ -48,6 +48,12 @@ budget:
   # Issue #261 PR7 追補: この train は $3.0 で pass 実績あり（据え置き）。holdout の
   # create-bug-issue-holdout は bug テンプレートの再現手順・環境記述分だけ turn が伸び、11+ turns
   # の実測が出たため 6.0 に引き上げた（create-bug-issue-holdout.yaml のコメント参照）。
-  max_budget_usd: 3.0
+  # Issue #261 PR8（最終較正）: この train も最終 evaluate で 9 turns 目に $3.00 latch した実測
+  # （前回 pass はターン数の揺らぎ）。$3→$6→$9 と逐次追随するのを打ち切り、issue-create/issue-fix
+  # 全4シナリオ共通で $15.00 に最終設定する。根拠: 会話成長で turn 後半の worst-case 前課金が
+  # $1〜1.5/req に達する実測から、issue-create の 16 turns 上限では見込み上限 $10-11 にマージンを
+  # 載せた額が必要。この上限は reward hacking 抑止のための broker 安全上限（内部会計）であり、
+  # 実費は全 run $0.6 未満（実支出ではない）。
+  max_budget_usd: 15.0
   max_output_tokens: 1024
 repeat: 1
