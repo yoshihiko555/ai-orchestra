@@ -20,6 +20,10 @@ broker = load_module(
     "meta_harness_scenario_broker_tests",
     "packages/meta-harness/docker/broker/broker.py",
 )
+ev = load_module(
+    "meta_harness_evaluator_broker_contract_tests",
+    "packages/meta-harness/lib/evaluator.py",
+)
 
 
 def _state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **overrides: Any) -> Any:
@@ -396,6 +400,17 @@ def test_http_handler_records_budget_upper_bound_rejection(
     assert b"upper bound exceeds the remaining run budget" in payload
     assert state.metrics.rejected_count == 1
     assert state.metrics.budget_rejected_count == 1
+    assert state.metrics.budget_exceeded is True
+    assert state.metrics.anomaly_reasons == [
+        "request token upper bound exceeds the remaining run budget"
+    ]
+
+
+def test_budget_latch_reasons_match_broker_rejections() -> None:
+    assert {
+        broker.BUDGET_TOKEN_REJECT_REASON,
+        broker.BUDGET_COST_REJECT_REASON,
+    } == ev._BUDGET_LATCH_ANOMALY_REASONS
 
 
 def test_header_allowlist_strips_candidate_auth_and_forwarding_headers() -> None:

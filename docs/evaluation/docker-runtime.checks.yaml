@@ -172,6 +172,7 @@
     packages/meta-harness/tests/test_scenario_broker.py::test_allowed_query_uses_path_for_request_budget_validation
     packages/meta-harness/tests/test_scenario_broker.py::test_model_allowlist_rejects_mismatched_model_with_non_retryable_400
     packages/meta-harness/tests/test_scenario_broker.py::test_http_handler_records_budget_upper_bound_rejection
+    packages/meta-harness/tests/test_scenario_broker.py::test_budget_latch_reasons_match_broker_rejections
   covered_by:
     - packages/meta-harness/tests/test_scenario_broker.py::test_http_handler_happy_path_closes_connection
     - packages/meta-harness/tests/test_scenario_broker.py::test_http_handler_rejects_invalid_run_token
@@ -180,4 +181,8 @@
     - packages/meta-harness/tests/test_scenario_broker.py::test_allowed_query_uses_path_for_request_budget_validation
     - packages/meta-harness/tests/test_scenario_broker.py::test_model_allowlist_rejects_mismatched_model_with_non_retryable_400
     - packages/meta-harness/tests/test_scenario_broker.py::test_http_handler_records_budget_upper_bound_rejection
-  notes: only token/cost upper-bound admission rejections increment the counter; success, authentication, and request-validation paths keep it at zero.
+    - packages/meta-harness/tests/test_scenario_broker.py::test_budget_latch_reasons_match_broker_rejections
+  notes: >-
+    only token/cost upper-bound admission rejections increment the counter;
+    success, authentication, and request-validation paths keep it at zero,
+    and their reasons stay aligned with the evaluator budget-latch contract.

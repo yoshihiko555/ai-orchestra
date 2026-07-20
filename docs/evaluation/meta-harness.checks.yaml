@@ -490,6 +490,7 @@
     packages/meta-harness/tests/test_evaluator_artifacts.py::test_budget_latch_rejects_independent_hard_failure
     packages/meta-harness/tests/test_evaluator_headless_run.py::TestRunHeadlessScenarioEnvironment::test_failed_run_persists_classifiable_broker_budget_latch
     packages/meta-harness/tests/test_scenario_broker.py::test_http_handler_records_budget_upper_bound_rejection
+    packages/meta-harness/tests/test_scenario_broker.py::test_budget_latch_reasons_match_broker_rejections
   covered_by:
     - packages/meta-harness/tests/test_cross_skill_regression.py::test_regression_failure_is_hard_gate_and_does_not_pollute_frontier_axes
     - packages/meta-harness/tests/test_cross_skill_regression.py::test_routing_config_budget_latch_is_frontier_neutral
@@ -500,6 +501,7 @@
     - packages/meta-harness/tests/test_evaluator_artifacts.py::test_budget_latch_rejects_independent_hard_failure
     - packages/meta-harness/tests/test_evaluator_headless_run.py::TestRunHeadlessScenarioEnvironment::test_failed_run_persists_classifiable_broker_budget_latch
     - packages/meta-harness/tests/test_scenario_broker.py::test_http_handler_records_budget_upper_bound_rejection
+    - packages/meta-harness/tests/test_scenario_broker.py::test_budget_latch_reasons_match_broker_rejections
   notes: broker reason codes reach run results only without an independent hard failure; latch-only regression is visible but frontier-neutral, while mixed errors, regression failure, and missing summaries remain blocked and own quality/cost stay isolated.
 
 - ev_id: EV-55
