@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`loop-harness`: 対応済みレビュー指摘のスレッド自動 resolve と exit コメントの対応マトリクスを追加**: `/loop-issue` の再レビューで前ラウンドの critical/high 指摘が再発しなかった場合、該当する信頼済み GitHub review thread に自動で reply・resolve する。`exit_success`/`exit_failure` の Issue コメントには全指摘の severity/場所/状態（addressed / open / dismissed）を一覧できるテーブルを追加した。
 - **`loop-harness`: LP-1 の push-integrity 警告（best-effort）を追加**: `loop_step.py propose` が `advance_phase` / `wait_external_review` / `exit_failure` を提案する直前に、記録済みの remote HEAD baseline と実際の remote HEAD を比較し、ずれ（Maker の先行 push 等の疑い）を検知した場合に `push_integrity_warning` を proposal の JSON レスポンスと journal の両方に記録する。ループは停止させず、警告のみ（LP-2 の無人 fail-closed 停止とは異なる運用）。
 
 - **`meta-harness`: proposer が routing config patch を提案可能に（Phase A）**: proposer 生成候補が `agent-routing/cli-tools.yaml` の `agents.*.tool` / `antigravity.model` を patch できるようになった（`codex.model` は human 限定のまま）。reward hacking 対策として quality 厳密優越・クロススキル回帰ゲート・レート制限等を同梱（ADR-20260717-040）。

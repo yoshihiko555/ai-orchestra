@@ -52,6 +52,7 @@ query($owner: String!, $name: String!, $number: Int!, $cursor: String = null) {{
           path
           line
           comments(first: {THREAD_COMMENTS_PAGE_SIZE}) {{
+            pageInfo {{ hasNextPage endCursor }}
             nodes {{
               databaseId
               author {{ login __typename }}
@@ -62,6 +63,33 @@ query($owner: String!, $name: String!, $number: Int!, $cursor: String = null) {{
               replyTo {{ databaseId }}
             }}
           }}
+        }}
+      }}
+    }}
+  }}
+}}
+"""
+
+# Issue #235 (PR #276 review, medium): `REVIEW_THREADS_QUERY`'s inner `comments` connection is
+# capped at `THREAD_COMMENTS_PAGE_SIZE` with no cursor; a thread with more comments than that
+# silently drops the tail, which can hide a human reply past the page boundary and cause
+# `has_non_bot_comments` to wrongly stay False (`_normalize_thread` never sees the dropped
+# comment). This follow-up query fetches later comment pages for one thread node by id so
+# `fetch_all_review_threads` can fill in every comment before origin verification runs.
+THREAD_COMMENTS_QUERY = f"""
+query($threadId: ID!, $cursor: String = null) {{
+  node(id: $threadId) {{
+    ... on PullRequestReviewThread {{
+      comments(first: {THREAD_COMMENTS_PAGE_SIZE}, after: $cursor) {{
+        pageInfo {{ hasNextPage endCursor }}
+        nodes {{
+          databaseId
+          author {{ login __typename }}
+          authorAssociation
+          body
+          url
+          createdAt
+          replyTo {{ databaseId }}
         }}
       }}
     }}
@@ -90,9 +118,13 @@ class GhCommandError(RuntimeError):
 # --- subprocess helpers -----------------------------------------------------
 
 
-def _run(cmd: list[str], *, timeout: int) -> subprocess.CompletedProcess[str]:
+def _run(
+    cmd: list[str], *, timeout: int, cwd: str | None = None
+) -> subprocess.CompletedProcess[str]:
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+        return subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout, check=False, cwd=cwd
+        )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return subprocess.CompletedProcess(cmd, 1, "", str(exc))
 
@@ -120,8 +152,8 @@ def _parse_paginated_json(output: str) -> Any:
     return values
 
 
-def _run_gh_json(cmd: list[str], timeout: int) -> Any:
-    result = _run(cmd, timeout=timeout)
+def _run_gh_json(cmd: list[str], timeout: int, *, cwd: str | None = None) -> Any:
+    result = _run(cmd, timeout=timeout, cwd=cwd)
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "gh command failed").strip()
         raise GhCommandError("gh_command_failed", detail)
@@ -208,8 +240,17 @@ def _raw_for_origin_check(
 # --- repo / PR resolution ----------------------------------------------------
 
 
-def resolve_repo(timeout: int) -> tuple[str, str]:
-    payload = _run_gh_json(["gh", "repo", "view", "--json", "nameWithOwner"], timeout)
+def resolve_repo(timeout: int, *, cwd: str | None = None) -> tuple[str, str]:
+    """Resolve the target repo's `owner, name` via `gh repo view` (no explicit `-R`).
+
+    PR #276 review (high): `gh repo view` infers its target repo from the process's
+    *actual* working directory, not from any `project_dir` a caller passes elsewhere in
+    the call chain. Callers resolving the repo for a specific `project_dir` (e.g.
+    `fetch_review_threads`, invoked in-process by loop-harness with `--project` possibly
+    pointing outside this process's cwd) must pass `cwd=project_dir` here so this never
+    silently targets whatever repo the *caller's* process happened to start in.
+    """
+    payload = _run_gh_json(["gh", "repo", "view", "--json", "nameWithOwner"], timeout, cwd=cwd)
     if not isinstance(payload, dict) or "nameWithOwner" not in payload:
         raise GhCommandError("invalid_gh_json", "gh repo view: missing nameWithOwner")
     owner, name = str(payload["nameWithOwner"]).split("/", 1)
@@ -270,6 +311,53 @@ def _fetch_review_threads_page(
     return _raise_on_graphql_errors(_run_gh_json(cmd, timeout))
 
 
+def _fetch_thread_comments_page(thread_id: str, cursor: str | None, timeout: int) -> dict[str, Any]:
+    cmd = [
+        "gh",
+        "api",
+        "graphql",
+        "-f",
+        f"query={THREAD_COMMENTS_QUERY}",
+        "-F",
+        f"threadId={thread_id}",
+    ]
+    if cursor:
+        cmd += ["-F", f"cursor={cursor}"]
+    return _raise_on_graphql_errors(_run_gh_json(cmd, timeout))
+
+
+def _fill_thread_comments(thread: dict[str, Any], timeout: int) -> None:
+    """Fetch and append every remaining comment page for one thread, mutating it in place.
+
+    Issue #235 (PR #276 review, medium): a no-op for the overwhelming majority of threads,
+    which never exceed `THREAD_COMMENTS_PAGE_SIZE` comments and so never have
+    `comments.pageInfo.hasNextPage` set -- this only issues extra `gh api graphql` calls for
+    the rare thread whose comment count exceeds the first page.
+
+    Issue #235 (PR #276 review, coderabbit minor): if the thread is deleted or made
+    private between the initial page fetch and a later page fetch, GraphQL returns
+    `data.node: null` without an `errors` entry, which `_raise_on_graphql_errors` does
+    not treat as an error. Stop paging and keep whatever comments were already
+    collected rather than raising `TypeError` on `None["comments"]`.
+    """
+    comments = thread.get("comments")
+    if not isinstance(comments, dict):
+        return
+    page_info = comments.get("pageInfo") or {}
+    cursor = page_info.get("endCursor")
+    nodes = list(comments.get("nodes") or [])
+    while page_info.get("hasNextPage") and cursor:
+        payload = _fetch_thread_comments_page(str(thread.get("id")), cursor, timeout)
+        node = (payload.get("data") or {}).get("node")
+        if node is None:
+            break
+        connection = node["comments"]
+        nodes.extend(connection["nodes"])
+        page_info = connection["pageInfo"]
+        cursor = page_info.get("endCursor")
+    thread["comments"] = {**comments, "nodes": nodes, "pageInfo": page_info}
+
+
 def fetch_all_review_threads(
     owner: str, name: str, number: int, timeout: int
 ) -> list[dict[str, Any]]:
@@ -278,7 +366,9 @@ def fetch_all_review_threads(
     while True:
         payload = _fetch_review_threads_page(owner, name, number, cursor, timeout)
         connection = payload["data"]["repository"]["pullRequest"]["reviewThreads"]
-        threads.extend(connection["nodes"])
+        for thread in connection["nodes"]:
+            _fill_thread_comments(thread, timeout)
+            threads.append(thread)
         page_info = connection["pageInfo"]
         if not page_info.get("hasNextPage"):
             return threads
@@ -434,7 +524,7 @@ def _build_fetch_result(
 
 
 def fetch_review_threads(pr_number: int, project_dir: str, timeout: int) -> dict[str, Any]:
-    owner, name = resolve_repo(timeout)
+    owner, name = resolve_repo(timeout, cwd=project_dir)
     threads = fetch_all_review_threads(owner, name, pr_number, timeout)
     issue_comments = fetch_issue_comments(owner, name, pr_number, timeout)
     prw_module = _import_pr_review_wait()

@@ -20,9 +20,11 @@ class FakeRun:
     def __init__(self, responses: list[tuple[Any, subprocess.CompletedProcess[str]]]) -> None:
         self._responses = list(responses)
         self.calls: list[list[str]] = []
+        self.call_kwargs: list[dict[str, Any]] = []
 
-    def __call__(self, cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+    def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         self.calls.append(cmd)
+        self.call_kwargs.append(kwargs)
         if not self._responses:
             raise AssertionError(f"unexpected extra gh/git call: {cmd}")
         predicate, response = self._responses.pop(0)
@@ -76,6 +78,7 @@ def _thread(
     *,
     is_resolved: bool = False,
     comments: list[dict[str, Any]] | None = None,
+    comments_page_info: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "id": thread_id,
@@ -83,7 +86,10 @@ def _thread(
         "isOutdated": False,
         "path": "src/app.py",
         "line": 10,
-        "comments": {"nodes": comments or []},
+        "comments": {
+            "nodes": comments or [],
+            **({"pageInfo": comments_page_info} if comments_page_info is not None else {}),
+        },
     }
 
 
@@ -304,6 +310,27 @@ def test_fetch_filters_unresolved_threads_only(
     result = prt.fetch_review_threads(1, str(loop_harness_project), 30)
     assert [t["thread_id"] for t in result["unresolved_threads"]] == ["T_open"]
     assert result["origin_verified"] is True
+
+
+def test_fetch_review_threads_resolves_repo_with_project_dir_cwd(
+    monkeypatch: pytest.MonkeyPatch, loop_harness_project: Path
+) -> None:
+    """PR #276 review (high): `gh repo view` (no explicit `-R`) infers its target repo from
+    the subprocess's actual cwd. `fetch_review_threads(pr_number, project_dir, timeout)` must
+    pin that cwd to `project_dir` so a caller invoked with `--project` pointing outside this
+    process's own cwd never silently resolves against the wrong repo."""
+    fake = FakeRun(
+        [
+            (_is_repo_view, _ok({"nameWithOwner": "o/r"})),
+            (_is_graphql, _ok(_threads_page([]))),
+            (_is_issue_comments, _ok([])),
+            (_is_review_comments, _ok([])),
+        ]
+    )
+    monkeypatch.setattr(prt.subprocess, "run", fake)
+    prt.fetch_review_threads(1, str(loop_harness_project), 30)
+    repo_view_index = next(i for i, cmd in enumerate(fake.calls) if _is_repo_view(cmd))
+    assert fake.call_kwargs[repo_view_index]["cwd"] == str(loop_harness_project)
 
 
 def test_pagination_fetches_all_pages(
@@ -596,6 +623,92 @@ def test_fetch_flags_thread_with_dropped_non_bot_comments(
     monkeypatch.setattr(prt.subprocess, "run", fake)
     result = prt.fetch_review_threads(1, str(loop_harness_project), 30)
     assert result["unresolved_threads"][0]["has_non_bot_comments"] is True
+
+
+def _node_thread_comments_page(
+    nodes: list[dict[str, Any]], *, has_next: bool = False, end_cursor: str | None = None
+) -> dict[str, Any]:
+    return {
+        "data": {
+            "node": {
+                "comments": {
+                    "pageInfo": {"hasNextPage": has_next, "endCursor": end_cursor},
+                    "nodes": nodes,
+                }
+            }
+        }
+    }
+
+
+def _is_node_graphql(cmd: list[str]) -> bool:
+    """Match the `THREAD_COMMENTS_QUERY` follow-up call: `gh api graphql ... threadId=...`."""
+    return _is_graphql(cmd) and any(arg.startswith("threadId=") for arg in cmd)
+
+
+def test_fetch_paginates_thread_comments_past_first_page(
+    monkeypatch: pytest.MonkeyPatch, loop_harness_project: Path
+) -> None:
+    """PR #276 review (medium): the inner `comments(first: N)` connection on a review thread
+    has no cursor of its own in `REVIEW_THREADS_QUERY`, so a thread with more than
+    `THREAD_COMMENTS_PAGE_SIZE` comments used to silently drop the tail -- including a human
+    reply past the boundary, which could wrongly leave `has_non_bot_comments` False. This
+    verifies the thread's remaining comment pages are fetched and folded in before origin
+    verification runs."""
+    thread = _thread(
+        "T1",
+        comments=[_comment(1, "coderabbitai[bot]", "bot says hi")],
+        comments_page_info={"hasNextPage": True, "endCursor": "thread-cursor-1"},
+    )
+    human_reply_page = _node_thread_comments_page(
+        [_comment(2, "human-reviewer", "human says hi", typename="User")]
+    )
+    fake = FakeRun(
+        [
+            (_is_repo_view, _ok({"nameWithOwner": "o/r"})),
+            (_is_graphql, _ok(_threads_page([thread]))),
+            (_is_node_graphql, _ok(human_reply_page)),
+            (_is_issue_comments, _ok([])),
+            (_is_review_comments, _ok([])),
+        ]
+    )
+    monkeypatch.setattr(prt.subprocess, "run", fake)
+    result = prt.fetch_review_threads(1, str(loop_harness_project), 30)
+    # The late-page human comment must be visible to origin verification, flagging the thread
+    # as mixed bot/human -- exactly like a human comment discovered on the first page would.
+    assert result["unresolved_threads"][0]["has_non_bot_comments"] is True
+    node_calls = [c for c in fake.calls if _is_node_graphql(c)]
+    assert any("threadId=T1" in " ".join(c) for c in node_calls)
+    assert any("cursor=thread-cursor-1" in " ".join(c) for c in node_calls)
+
+
+def test_fetch_thread_comments_pagination_stops_on_null_node(
+    monkeypatch: pytest.MonkeyPatch, loop_harness_project: Path
+) -> None:
+    """PR #276 review (coderabbit, minor): a thread deleted/made private between the initial
+    page fetch and a later comment-page fetch makes GraphQL return `data.node: null` without
+    an `errors` entry, which `_raise_on_graphql_errors` does not catch. `_fill_thread_comments`
+    must stop paging on `node is None` instead of raising `TypeError` on `None["comments"]`,
+    and must keep the comments collected from the pages fetched before the null response."""
+    thread = _thread(
+        "T1",
+        comments=[_comment(1, "coderabbitai[bot]", "bot says hi")],
+        comments_page_info={"hasNextPage": True, "endCursor": "thread-cursor-1"},
+    )
+    deleted_node_page: dict[str, Any] = {"data": {"node": None}}
+    fake = FakeRun(
+        [
+            (_is_repo_view, _ok({"nameWithOwner": "o/r"})),
+            (_is_graphql, _ok(_threads_page([thread]))),
+            (_is_node_graphql, _ok(deleted_node_page)),
+            (_is_issue_comments, _ok([])),
+            (_is_review_comments, _ok([])),
+        ]
+    )
+    monkeypatch.setattr(prt.subprocess, "run", fake)
+    result = prt.fetch_review_threads(1, str(loop_harness_project), 30)
+    comments = result["unresolved_threads"][0]["comments"]
+    assert len(comments) == 1
+    assert comments[0]["comment_id"] == 1
 
 
 def test_fetch_bot_only_thread_has_non_bot_comments_false(

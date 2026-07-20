@@ -1947,7 +1947,107 @@ class LoopDriver:
                 # `needs_classification` finding the fail-safe "high" (blocking) severity
                 # placeholder until it is actually classified, so this never under-reports.
                 pass
+        # Issue #235: a blocking signature open at `iteration - 1` that did not reappear at
+        # `iteration` is this round's deterministic "addressed" evidence -- the same
+        # comparison `phase_check_from_review_findings` already uses to decide whether the
+        # phase passes. `mark_addressed_findings` records that decision in state (feeds the
+        # exit-comment finding matrix); `resolve_addressed_findings` best-effort replies to and
+        # resolves the corresponding trusted GitHub thread(s), never raising for GitHub-side
+        # failures (see its own docstring) so a rate limit or API outage cannot fail this
+        # otherwise-passing phase check.
+        #
+        # PR #276 review (high): a signature can drop out of `iteration_findings` (blocking-
+        # only) not just because it was genuinely fixed, but because it reraised this round at
+        # a demoted medium/low severity -- still an open finding, not a fix.
+        # `result.open_non_blocking` is the cumulative set of every currently-open, non-
+        # dismissed medium/low finding (`_open_non_blocking_findings`, keyed by the same
+        # signature), so any resolved-candidate signature appearing there is provably still
+        # open and must never be auto-marked "addressed" / auto-resolved on GitHub.
+        demoted_still_open = {item.signature for item in result.open_non_blocking}
+        # PR #276 review (round 3, P2): a signature can also drop out of `iteration_findings`
+        # when it reraises this round without an explicit severity marker (`needs_classification
+        # =True`) and severity classification never completes -- e.g. `_classify_pending_findings`
+        # raises `DockerActionError`, caught above, leaving `result` as the pre-classification
+        # snapshot. `_upsert_finding` (pr_review_wait.py) already records that reraise as a
+        # fail-safe "high" (blocking) finding in `result.findings`, but only bumps the persisted
+        # record's `last_seen_iteration` -- which `iteration_findings` is keyed on -- once
+        # `_apply_classification_to_state` actually runs. Any signature still
+        # `needs_classification` in this round's `result.findings` is therefore still an open,
+        # blocking finding that never got a chance to update `iteration_findings`, and must never
+        # be auto-marked "addressed" / auto-resolved on GitHub.
+        still_pending_classification = {
+            item.signature for item in result.findings if item.needs_classification
+        }
+        resolved_signatures = (
+            (result.previous_iteration_findings.signatures - result.iteration_findings.signatures)
+            - demoted_still_open
+            - still_pending_classification
+        )
+        if resolved_signatures:
+            commit_sha = baseline.get("iteration_head_sha")
+            prw.mark_addressed_findings(
+                self.loop_id,
+                self.project_dir,
+                resolved_signatures,
+                commit_sha,
+                state.iteration,
+                self.lease_token,
+                action_id=action_id,
+            )
+            addressed_result = prw.resolve_addressed_findings(
+                self.loop_id,
+                self.project_dir,
+                pr_number,
+                repo,
+                resolved_signatures,
+                commit_sha,
+                self.lease_token,
+                action_id=action_id,
+            )
+            self._journal_addressed_findings_outcome(addressed_result, action_id)
         return lc.phase_check_to_dict(prw.phase_check_from_review_findings(result))
+
+    def _journal_addressed_findings_outcome(
+        self, addressed_result: prw.AddressedFindingsResult, action_id: str
+    ) -> None:
+        """Record `resolve_addressed_findings()`'s best-effort GitHub outcome to the journal.
+
+        PR #276 review (P2): the caller above never inspected `AddressedFindingsResult` at all,
+        so a GitHub-side reply/resolve failure (`reply_failed`/`resolve_failed`/`no_trusted_thread`
+        /`lease_expired`) never surfaced anywhere -- not in the journal, not in the exit-comment
+        finding matrix. This is purely observational: it never raises and never affects
+        `_run_wait_external_review`'s own (already-decided, still-passing) phase check result,
+        matching `resolve_addressed_findings`'s own best-effort contract.
+        """
+        failed_statuses = {"reply_failed", "resolve_failed", "no_trusted_thread", "lease_expired"}
+        failures = [
+            {
+                "signature": outcome.signature,
+                "thread_id": outcome.thread_id,
+                "status": outcome.status,
+                "error": outcome.error,
+            }
+            for outcome in addressed_result.thread_outcomes
+            if outcome.status in failed_statuses
+        ]
+        succeeded_count = sum(
+            1 for outcome in addressed_result.thread_outcomes if outcome.status == "resolved"
+        )
+        lc.append_journal_event(
+            self.loop_id,
+            self.project_dir,
+            "pr_review_addressed_findings_outcome",
+            "waiter",
+            action_id,
+            {
+                "resolved_signature_count": len(addressed_result.resolved_signatures),
+                "thread_outcome_count": len(addressed_result.thread_outcomes),
+                "succeeded_count": succeeded_count,
+                "failed_count": len(failures),
+                "failures": failures,
+                "git_workflow_unavailable": addressed_result.git_workflow_unavailable,
+            },
+        )
 
     def _already_pushed_this_iteration(
         self, state: lc.LoopState, proposal: lc.ProposeResult
@@ -2914,9 +3014,7 @@ class LoopDriver:
             elif step == "notify":
                 self._notify(state, state.stop_reason or "failed")
             elif step == "post_summary_comment":
-                self._maybe_comment(
-                    state, f"loop-harness: {state.loop_id} stopped ({state.stop_reason})."
-                )
+                self._maybe_comment(state, _exit_failure_comment(state))
 
     def _draft_pr(self, proposal: lc.ProposeResult, state: lc.LoopState) -> None:
         """Create a Draft PR if none exists yet, else convert the existing PR to Draft.
@@ -3423,32 +3521,128 @@ def _pr_review_findings_from_last_check(state: lc.LoopState) -> list[dict[str, A
 
 
 def _exit_success_comment(state: lc.LoopState, params: dict[str, Any]) -> str:
-    """Build the `exit_success` Issue comment, listing any still-open non-blocking findings.
+    """Build the `exit_success` Issue comment: still-open non-blocking findings + disposition matrix.
 
     `params["non_blocking_open"]` is `loop_common._non_blocking_open_from_last_check()`'s
     output (empty unless this loop just exited `pr_review_response` with blocking-free,
-    open medium/low findings nobody dismissed -- issue #213/B). Falls back to the previous
-    plain success message when there is nothing non-blocking to report, matching prior
-    behavior exactly for every other exit path (e.g. `implementation`-phase success).
+    open medium/low findings nobody dismissed -- issue #213/B). `_format_pr_review_findings_matrix`
+    (issue #235) is likewise empty for any exit path that never recorded `pr_review` findings.
+    Falls back to the plain success message when there is neither to report, matching prior
+    behavior exactly for every non-`pr_review_response` exit path (e.g. `implementation`-phase
+    success).
     """
     base = f"loop-harness: implementation succeeded (PR #{state.pr_number})."
+    lines = [base]
     open_items = params.get("non_blocking_open")
-    if not isinstance(open_items, list) or not open_items:
+    if isinstance(open_items, list) and open_items:
+        lines.extend(["", f"Non-blocking findings still open ({len(open_items)}), not dismissed:"])
+        for item in open_items:
+            if not isinstance(item, dict):
+                continue
+            severity = item.get("severity") or "unknown"
+            path = item.get("path") or "(no path)"
+            line = item.get("line")
+            location = f"{path}:{line}" if line is not None else str(path)
+            # PR#228 review: a multi-line body_excerpt would otherwise break the `- [...]: ...`
+            # bullet across lines, corrupting the Markdown list. `_open_non_blocking_findings()`
+            # already normalizes this at the source; this is a second, independent
+            # normalization so the comment is correct even if `params["non_blocking_open"]`
+            # came from elsewhere.
+            excerpt = " ".join(str(item.get("body_excerpt") or "").split())
+            lines.append(f"- [{severity}] {location}: {excerpt}")
+    matrix = _format_pr_review_findings_matrix(state)
+    if matrix:
+        lines.extend(["", matrix])
+    if len(lines) == 1:
         return base
-    lines = [base, "", f"Non-blocking findings still open ({len(open_items)}), not dismissed:"]
-    for item in open_items:
-        if not isinstance(item, dict):
+    return "\n".join(lines)
+
+
+def _exit_failure_comment(state: lc.LoopState) -> str:
+    """Build the `exit_failure` Issue comment: stop reason + finding disposition matrix.
+
+    Issue #235: an `exit_failure` from `pr_review_response` (e.g. `max_iterations`) previously
+    only listed the reraised findings that caused the stop, giving the PR author no view of
+    which earlier findings *were* actually fixed along the way. `_format_pr_review_findings_matrix`
+    is empty (and this falls back to the plain message unchanged) for every exit path that never
+    ran `pr_review_response` (e.g. an `implementation`-phase failure).
+    """
+    base = f"loop-harness: {state.loop_id} stopped ({state.stop_reason})."
+    matrix = _format_pr_review_findings_matrix(state)
+    if not matrix:
+        return base
+    return "\n".join([base, "", matrix])
+
+
+def _finding_status_label(record: dict[str, Any]) -> str:
+    """Render one `pr_review.findings` record's disposition for the exit-comment matrix."""
+    status = record.get("status")
+    if status == "dismissed":
+        return "dismissed"
+    if status == "addressed":
+        commit = record.get("addressed_at_commit")
+        short_sha = str(commit)[:7] if commit else "unknown"
+        return f"addressed@{short_sha}"
+    return "open"
+
+
+def _matrix_source_comment_id_sort_key(source_comment_id: str) -> tuple[int, str]:
+    """Sort `source_comment_ids` numerically by their trailing GitHub comment id.
+
+    PR #276 review (low): plain string sort breaks once ids have different digit
+    counts (e.g. `"review_comment:99999999"` lexically outranks
+    `"review_comment:100000000"`). GitHub comment ids are a monotonically increasing
+    global counter, so the numeric suffix after the last `:` is the correct recency
+    ordering; non-numeric/missing suffixes sort first (via `-1`) rather than crashing.
+    """
+    _, _, value = source_comment_id.rpartition(":")
+    try:
+        numeric_id = int(value)
+    except ValueError:
+        numeric_id = -1
+    return (numeric_id, source_comment_id)
+
+
+def _matrix_source_comment_id(record: dict[str, Any]) -> str:
+    """Return the most recent `source_comment_id` recorded for one finding, or a placeholder."""
+    ids = record.get("source_comment_ids")
+    if isinstance(ids, list) and ids:
+        return str(sorted((str(item) for item in ids), key=_matrix_source_comment_id_sort_key)[-1])
+    return "(unknown)"
+
+
+def _format_pr_review_findings_matrix(state: lc.LoopState) -> str:
+    """Format every `state.pr_review.findings` record as a severity/location/status table.
+
+    Issue #235: gives the PR author the full addressed/open/dismissed picture at exit time,
+    not just the still-open findings `_exit_success_comment`'s non-blocking list already shows.
+    Empty (falls back to the plain exit message) for any loop whose `pr_review` state never
+    recorded findings, e.g. an `implementation`-phase exit that never reached
+    `pr_review_response`.
+    """
+    pr_review = state.pr_review if isinstance(state.pr_review, dict) else {}
+    findings = pr_review.get("findings")
+    if not isinstance(findings, dict) or not findings:
+        return ""
+    lines = [
+        "PR review finding disposition:",
+        "",
+        "| severity | path:line | status | source_comment_id |",
+        "| --- | --- | --- | --- |",
+    ]
+    for signature in sorted(findings):
+        record = findings[signature]
+        if not isinstance(record, dict):
             continue
-        severity = item.get("severity") or "unknown"
-        path = item.get("path") or "(no path)"
-        line = item.get("line")
+        severity = record.get("severity") or "unknown"
+        path = record.get("path") or "(no path)"
+        line = record.get("line")
         location = f"{path}:{line}" if line is not None else str(path)
-        # PR#228 review: a multi-line body_excerpt would otherwise break the `- [...]: ...`
-        # bullet across lines, corrupting the Markdown list. `_open_non_blocking_findings()`
-        # already normalizes this at the source; this is a second, independent normalization
-        # so the comment is correct even if `params["non_blocking_open"]` came from elsewhere.
-        excerpt = " ".join(str(item.get("body_excerpt") or "").split())
-        lines.append(f"- [{severity}] {location}: {excerpt}")
+        status = _finding_status_label(record)
+        source_comment_id = _matrix_source_comment_id(record)
+        lines.append(f"| {severity} | {location} | {status} | {source_comment_id} |")
+    if len(lines) <= 4:
+        return ""
     return "\n".join(lines)
 
 

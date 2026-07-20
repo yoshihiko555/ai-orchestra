@@ -10,8 +10,9 @@ import re
 import stat
 import subprocess
 import sys
+import tempfile
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -280,6 +281,47 @@ class ReviewFindingsResult:
     processed_comment_ids: tuple[str, ...]
     ignored_untrusted_comment_count: int
     needs_classification_count: int
+
+
+@dataclass(frozen=True)
+class AddressedThreadOutcome:
+    """One trusted GitHub review thread's reply/resolve outcome for an addressed finding.
+
+    Issue #235: `resolve_addressed_findings` reports one or more of these per candidate
+    signature (PR #276 review: one per distinct trusted thread its accumulated
+    `review_comment:` ids map to, not just the latest) so a best-effort GitHub side-effect
+    failure (rate limit, transient API error, thread already resolved by a human, ...) is
+    fully observable without ever raising out of that function.
+
+    PR #276 review (P2, round 2): `"lease_expired"` covers a signature/thread this call never
+    even attempted to reply to/resolve on GitHub because the caller-held lease was found
+    invalid (expired or reacquired by another worker) immediately before that GitHub write --
+    see `resolve_addressed_findings`'s own docstring for why this guard exists in addition to
+    `_fenced_pr_review_write`'s state-write-only fencing.
+    """
+
+    signature: str
+    thread_id: str | None
+    comment_id: int | None
+    status: Literal[
+        "resolved",
+        "no_review_comment_source",
+        "no_trusted_thread",
+        "already_resolved",
+        "reply_failed",
+        "resolve_failed",
+        "lease_expired",
+    ]
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class AddressedFindingsResult:
+    """Result of best-effort resolving GitHub review threads for addressed findings."""
+
+    resolved_signatures: tuple[str, ...]
+    thread_outcomes: tuple[AddressedThreadOutcome, ...]
+    git_workflow_unavailable: bool
 
 
 @dataclass(frozen=True)
@@ -980,6 +1022,413 @@ def dismiss_finding(
             {"signature": signature, "reason": reason, "decided_by": decided_by},
         )
         lc._write_state(state, project_dir)
+
+
+def mark_addressed_findings(
+    loop_id: str,
+    project_dir: str,
+    signatures: Iterable[str],
+    commit_sha: str | None,
+    iteration: int,
+    lease_token: str,
+    *,
+    action_id: str | None = None,
+) -> tuple[str, ...]:
+    """Mark blocking findings not reraised this round as addressed (issue #235).
+
+    Callers pass the signatures that were open (critical/high) at `iteration - 1` but did not
+    reappear at `iteration` -- i.e. `previous_iteration_findings.signatures -
+    iteration_findings.signatures` from the same `collect_review_findings` result that just
+    confirmed no reraise. Only touches records currently `status == "open"`: an already-
+    `dismissed` record is never resurrected, and re-marking an already-`addressed` record is a
+    harmless idempotent overwrite. This is a pure state update -- it never talks to GitHub;
+    the best-effort GitHub thread reply/resolve is `resolve_addressed_findings`'s job.
+    """
+    candidates = sorted(set(signatures))
+    if not candidates:
+        return ()
+    state = lc.load_state(loop_id, project_dir)
+    pr_review = _ensure_pr_review_state(state.pr_review)
+    findings_map = _findings_map(pr_review)
+    addressed: list[str] = []
+    for signature in candidates:
+        record = findings_map.get(signature)
+        if not isinstance(record, dict) or record.get("status") != "open":
+            continue
+        findings_map[signature] = {
+            **record,
+            "status": "addressed",
+            "addressed_at_commit": commit_sha,
+            "addressed_at_iteration": iteration,
+        }
+        addressed.append(signature)
+    if not addressed:
+        return ()
+    pr_review["findings"] = findings_map
+    state.pr_review = pr_review
+    state.updated_at = lc.now_iso()
+    with _fenced_pr_review_write(
+        state, loop_id, project_dir, lease_token, action_id, COLLECT_ACTIONS
+    ):
+        lc.append_journal_event(
+            loop_id,
+            project_dir,
+            "pr_review_findings_addressed",
+            "waiter",
+            action_id,
+            {"signatures": addressed, "commit_sha": commit_sha, "iteration": iteration},
+        )
+        lc._write_state(state, project_dir)
+    return tuple(addressed)
+
+
+def resolve_addressed_findings(
+    loop_id: str,
+    project_dir: str,
+    pr_number: int,
+    repo: str,
+    signatures: Iterable[str],
+    commit_sha: str | None,
+    lease_token: str,
+    *,
+    action_id: str | None = None,
+    timeout_seconds: int = DEFAULT_GH_API_TIMEOUT_SECONDS,
+) -> AddressedFindingsResult:
+    """Best-effort reply + resolve trusted GitHub review threads for addressed findings.
+
+    Reuses `git-workflow`'s `pr_review_threads` module (issue #235) instead of duplicating its
+    GraphQL/REST/origin-verification logic. Purely additive/observational: any GitHub API
+    failure for one thread is caught and reported in the returned `thread_outcomes`, never
+    raised, so a transient GitHub outage can never fail `wait_external_review` itself. Only
+    threads whose *every* comment verifies as trusted-bot origin are touched (`fetch_review_threads`
+    already drops `has_non_bot_comments` threads' comments; this additionally skips a thread
+    outright when any of its comments were dropped, so a mixed bot/human thread is never
+    resolved out from under a human reviewer's own commentary).
+
+    PR #276 review (P2, round 2): `_fenced_pr_review_write` only fences the *state* write this
+    function makes at the end (recording `resolved_thread_ids`) -- it never guards the GitHub
+    `reply_to_comment`/`resolve_thread` calls themselves, which used to run unconditionally even
+    after the caller-held `lease_token` had expired or been reacquired by another worker. This
+    reuses `lc.validate_lease` (the same non-raising check `guarded_lease_section` builds on) to
+    check the lease immediately before the reply/resolve loop starts, and again before each
+    individual thread's GitHub writes, so a lease that goes stale mid-call stops issuing further
+    GitHub side effects instead of racing a new lease holder. Every signature/thread this call
+    never got to because of an expired lease is reported as `"lease_expired"` in
+    `thread_outcomes`, never silently dropped.
+    """
+    candidates = sorted(set(signatures))
+    if not candidates:
+        return AddressedFindingsResult((), (), git_workflow_unavailable=False)
+    git_workflow = _load_git_workflow_module()
+    if git_workflow is None:
+        return AddressedFindingsResult((), (), git_workflow_unavailable=True)
+    owner, _, name = repo.partition("/")
+    try:
+        fetch_result = git_workflow.fetch_review_threads(pr_number, project_dir, timeout_seconds)
+    except Exception:  # noqa: BLE001 - best-effort GitHub read, never fail the caller
+        return AddressedFindingsResult((), (), git_workflow_unavailable=False)
+    # PR #276 review (medium): `fetch_review_threads()` degrades to an *unfiltered* result
+    # (every comment treated as trusted, `has_non_bot_comments` always False) and reports
+    # this via `origin_verified: False` whenever it cannot load the reviewer allowlist config
+    # or import `pr_review_wait` itself. Skip resolving anything in that case -- fail-closed,
+    # matching `fetch_review_threads`'s own bot-origin verification contract -- rather than
+    # reply-and-resolve threads whose bot origin was never actually verified.
+    if not isinstance(fetch_result, dict) or not fetch_result.get("origin_verified"):
+        return AddressedFindingsResult((), (), git_workflow_unavailable=False)
+    comment_to_thread = _index_trusted_threads_by_comment(fetch_result)
+
+    state = lc.load_state(loop_id, project_dir)
+    pr_review = _ensure_pr_review_state(state.pr_review)
+    findings_map = _findings_map(pr_review)
+
+    def lease_still_valid() -> bool:
+        return lc.validate_lease(loop_id, project_dir, lease_token)
+
+    outcomes: list[AddressedThreadOutcome] = []
+    newly_resolved_thread_ids: set[str] = set()
+    updated_signatures: list[str] = []
+    # PR #276 review (P2, round 2): re-check right before this GitHub write loop starts (not
+    # only once at function entry) so a lease that was already stale by the time the earlier
+    # fetch/state-load above finished is caught before the first reply/resolve call, not after.
+    lease_expired = not lease_still_valid()
+    for signature in candidates:
+        if lease_expired:
+            outcomes.append(AddressedThreadOutcome(signature, None, None, "lease_expired"))
+            continue
+        record = findings_map.get(signature)
+        if not isinstance(record, dict):
+            continue
+        signature_outcomes = _resolve_addressed_signature_threads(
+            git_workflow,
+            owner,
+            name,
+            pr_number,
+            signature,
+            record,
+            comment_to_thread,
+            newly_resolved_thread_ids,
+            commit_sha,
+            timeout_seconds,
+            lease_still_valid,
+        )
+        outcomes.extend(signature_outcomes)
+        if any(outcome.status == "lease_expired" for outcome in signature_outcomes):
+            # The lease went stale partway through this signature's threads (checked again
+            # inside `_resolve_addressed_signature_threads`, right before each GitHub write) --
+            # stop attempting any further signature's reply/resolve for the rest of this call.
+            lease_expired = True
+        newly_resolved_for_signature = {
+            outcome.thread_id
+            for outcome in signature_outcomes
+            if outcome.status == "resolved" and outcome.thread_id is not None
+        }
+        if newly_resolved_for_signature:
+            newly_resolved_thread_ids |= newly_resolved_for_signature
+            already_resolved = set(record.get("resolved_thread_ids") or [])
+            findings_map[signature] = {
+                **record,
+                "resolved_thread_ids": sorted(already_resolved | newly_resolved_for_signature),
+            }
+            updated_signatures.append(signature)
+
+    if updated_signatures:
+        pr_review["findings"] = findings_map
+        state.pr_review = pr_review
+        state.updated_at = lc.now_iso()
+        with _fenced_pr_review_write(
+            state, loop_id, project_dir, lease_token, action_id, COLLECT_ACTIONS
+        ):
+            lc.append_journal_event(
+                loop_id,
+                project_dir,
+                "pr_review_threads_resolved",
+                "waiter",
+                action_id,
+                {
+                    "signatures": updated_signatures,
+                    "thread_ids": sorted(newly_resolved_thread_ids),
+                },
+            )
+            lc._write_state(state, project_dir)
+    return AddressedFindingsResult(
+        tuple(updated_signatures), tuple(outcomes), git_workflow_unavailable=False
+    )
+
+
+_GIT_WORKFLOW_SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "git-workflow" / "scripts"
+
+
+def _load_git_workflow_module() -> Any | None:
+    """Import git-workflow's `pr_review_threads` module if the package is present (issue #235).
+
+    Mirrors `pr_review_threads._import_pr_review_wait`'s optional-import-with-sys.path-insert
+    pattern in the opposite direction. Absence (e.g. `git-workflow` not installed in this
+    project) degrades `resolve_addressed_findings` to a no-op, never to a hard failure.
+    """
+    scripts_dir = str(_GIT_WORKFLOW_SCRIPTS_DIR)
+    if _GIT_WORKFLOW_SCRIPTS_DIR.is_dir() and scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+    try:
+        import pr_review_threads  # type: ignore[import-not-found]
+    except ImportError:
+        return None
+    return pr_review_threads
+
+
+def _index_trusted_threads_by_comment(fetch_result: Any) -> dict[int, dict[str, Any]]:
+    """Index `fetch_review_threads()`'s unresolved, fully-bot-origin threads by comment id."""
+    if not isinstance(fetch_result, dict) or "error" in fetch_result:
+        return {}
+    unresolved_threads = fetch_result.get("unresolved_threads")
+    if not isinstance(unresolved_threads, list):
+        return {}
+    comment_to_thread: dict[int, dict[str, Any]] = {}
+    for thread in unresolved_threads:
+        if not isinstance(thread, dict) or thread.get("has_non_bot_comments"):
+            continue
+        for comment in thread.get("comments") or []:
+            if not isinstance(comment, dict):
+                continue
+            comment_id = comment.get("comment_id")
+            if isinstance(comment_id, int):
+                comment_to_thread[comment_id] = thread
+    return comment_to_thread
+
+
+def _review_comment_ids(record: dict[str, Any]) -> list[int]:
+    """Return every `review_comment:<id>` numeric id recorded for one finding, ascending.
+
+    PR #276 review (high): a reraised finding accumulates one `review_comment:<id>` entry
+    per GitHub comment it appeared in (`_upsert_finding` unions `source_comment_ids` across
+    reraises), and different reraises can land in genuinely different GitHub threads.
+    Resolving only the single highest id -- as this used to -- left every earlier thread
+    permanently unresolved; callers must resolve every id this returns.
+    """
+    ids = record.get("source_comment_ids")
+    if not isinstance(ids, list):
+        return []
+    review_comment_ids: list[int] = []
+    for raw in ids:
+        kind, _, value = str(raw).partition(":")
+        if kind != "review_comment":
+            continue
+        try:
+            review_comment_ids.append(int(value))
+        except ValueError:
+            continue
+    return sorted(review_comment_ids)
+
+
+def _reply_target_for_comment(thread: dict[str, Any], comment_id: int) -> int | None:
+    """Return the root comment id a reply to `comment_id` in `thread` must target."""
+    for comment in thread.get("comments") or []:
+        if isinstance(comment, dict) and comment.get("comment_id") == comment_id:
+            target = comment.get("reply_target_id")
+            return target if isinstance(target, int) else None
+    return None
+
+
+def _resolve_addressed_signature_threads(
+    git_workflow: Any,
+    owner: str,
+    name: str,
+    pr_number: int,
+    signature: str,
+    record: dict[str, Any],
+    comment_to_thread: dict[int, dict[str, Any]],
+    already_resolved_this_call: set[str],
+    commit_sha: str | None,
+    timeout_seconds: int,
+    lease_still_valid: Callable[[], bool],
+) -> list[AddressedThreadOutcome]:
+    """Reply to and resolve every trusted GitHub thread accumulated for one addressed finding.
+
+    Returns one `AddressedThreadOutcome` per distinct thread id the record's `review_comment:`
+    ids map to (deduplicated -- multiple ids can land in the same thread), or a single
+    `no_review_comment_source` outcome when the record carries no `review_comment:` id at all.
+
+    PR #276 review (P2, round 2): `lease_still_valid()` is re-checked immediately before every
+    individual thread's `reply_to_comment`/`resolve_thread` GitHub writes (not just once per
+    signature by the caller) -- once it returns `False`, no further GitHub write is attempted
+    for this signature's remaining threads either; each is reported `"lease_expired"` instead.
+    """
+    comment_ids = _review_comment_ids(record)
+    if not comment_ids:
+        return [AddressedThreadOutcome(signature, None, None, "no_review_comment_source")]
+    already_resolved = set(record.get("resolved_thread_ids") or [])
+    seen_thread_ids: set[str] = set()
+    outcomes: list[AddressedThreadOutcome] = []
+    lease_expired = False
+    for comment_id in comment_ids:
+        thread = comment_to_thread.get(comment_id)
+        if thread is None:
+            outcomes.append(
+                AddressedThreadOutcome(signature, None, comment_id, "no_trusted_thread")
+            )
+            continue
+        thread_id = thread.get("thread_id")
+        if thread_id in seen_thread_ids:
+            # Another id already resolved (or attempted) this same thread earlier in this
+            # loop -- multiple review comments can belong to one discussion/thread.
+            continue
+        seen_thread_ids.add(thread_id)
+        if thread_id in already_resolved or thread_id in already_resolved_this_call:
+            outcomes.append(
+                AddressedThreadOutcome(signature, thread_id, comment_id, "already_resolved")
+            )
+            continue
+        if lease_expired:
+            outcomes.append(
+                AddressedThreadOutcome(signature, thread_id, comment_id, "lease_expired")
+            )
+            continue
+        if not lease_still_valid():
+            lease_expired = True
+            outcomes.append(
+                AddressedThreadOutcome(signature, thread_id, comment_id, "lease_expired")
+            )
+            continue
+        outcomes.append(
+            _resolve_one_trusted_thread(
+                git_workflow,
+                owner,
+                name,
+                pr_number,
+                signature,
+                thread,
+                comment_id,
+                commit_sha,
+                timeout_seconds,
+            )
+        )
+    return outcomes
+
+
+def _resolve_one_trusted_thread(
+    git_workflow: Any,
+    owner: str,
+    name: str,
+    pr_number: int,
+    signature: str,
+    thread: dict[str, Any],
+    comment_id: int,
+    commit_sha: str | None,
+    timeout_seconds: int,
+) -> AddressedThreadOutcome:
+    """Reply to and resolve one already-identified trusted GitHub thread, best-effort."""
+    thread_id = thread.get("thread_id")
+    reply_target = _reply_target_for_comment(thread, comment_id) or comment_id
+    body = _addressed_reply_body(commit_sha)
+    tmp_path: Path | None = None
+    try:
+        fd, tmp_name = tempfile.mkstemp(prefix="loop-harness-pr-review-reply-", suffix=".md")
+        os.close(fd)
+        tmp_path = Path(tmp_name)
+        tmp_path.chmod(0o600)
+        tmp_path.write_text(body, encoding="utf-8")
+        git_workflow.reply_to_comment(
+            owner,
+            name,
+            pr_number,
+            reply_target,
+            tmp_path,
+            issue_comment=False,
+            timeout=timeout_seconds,
+        )
+    except Exception as exc:  # noqa: BLE001 - best-effort GitHub write, never raise
+        return AddressedThreadOutcome(signature, thread_id, comment_id, "reply_failed", str(exc))
+    finally:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
+    try:
+        resolve_result = git_workflow.resolve_thread(thread_id, timeout_seconds)
+    except Exception as exc:  # noqa: BLE001 - best-effort GitHub write, never raise
+        return AddressedThreadOutcome(signature, thread_id, comment_id, "resolve_failed", str(exc))
+    # PR #276 review (round 3, P2): `resolveReviewThread` can succeed as a GraphQL mutation
+    # while still returning `isResolved: false` (e.g. a race with a human re-opening the
+    # thread); `git_workflow.resolve_thread()`'s own CLI entrypoint (`cmd_resolve`) already
+    # treats that as a failure. Treating it as `"resolved"` here would record the thread id in
+    # `resolved_thread_ids` (only outcomes with status `"resolved"` are persisted there, see
+    # `resolve_addressed_findings`), making a later genuine resolve attempt skip it forever as
+    # `"already_resolved"` even though GitHub still shows it open.
+    if not isinstance(resolve_result, dict) or not resolve_result.get("is_resolved"):
+        return AddressedThreadOutcome(
+            signature,
+            thread_id,
+            comment_id,
+            "resolve_failed",
+            "mutation reported is_resolved=false",
+        )
+    return AddressedThreadOutcome(signature, thread_id, comment_id, "resolved")
+
+
+def _addressed_reply_body(commit_sha: str | None) -> str:
+    """Build the reply body posted to a trusted thread whose finding was not reraised."""
+    short_sha = commit_sha[:7] if commit_sha else "unknown"
+    return (
+        f"Addressed in commit `{short_sha}`. This finding was not reraised in the latest "
+        "automated review round; resolving this thread."
+    )
 
 
 def phase_check_from_review_findings(result: ReviewFindingsResult) -> lc.PhaseCheckResult:
@@ -1874,7 +2323,17 @@ def _upsert_finding(
             pending_ids.add(finding.source_comment_id)
         else:
             confirmed_severity = _highest_optional_severity(confirmed_severity, finding.severity)
-        findings_map[finding.signature] = {
+        # A signature previously marked "addressed" (mark_addressed_findings, #235) that shows
+        # up again here has, by definition, reraised: build_pr_iteration_findings() already
+        # treats it as blocking again via last_seen_iteration regardless of the stored `status`,
+        # but leaving `status` at "addressed" left the exit-comment matrix
+        # (_format_pr_review_findings_matrix) misreporting a currently-blocking finding as
+        # resolved, and left mark_addressed_findings()'s `status == "open"` guard permanently
+        # skipping the record on a later genuine fix (its addressed_at_commit/iteration would
+        # then still point at the stale, insufficient commit). Reopening here -- and clearing
+        # the stale addressed_at_* markers -- keeps both in sync with the reraise.
+        reopened = existing.get("status") == "addressed"
+        merged = {
             **existing,
             "last_seen_iteration": (
                 existing.get("last_seen_iteration") if finding.needs_classification else iteration
@@ -1889,6 +2348,18 @@ def _upsert_finding(
             "line": finding.line,
             "body_excerpt": finding.body_excerpt,
         }
+        if reopened:
+            merged["status"] = "open"
+            merged["addressed_at_commit"] = None
+            merged["addressed_at_iteration"] = None
+            # PR #276 review (high): `resolved_thread_ids` recorded which GitHub threads
+            # `resolve_addressed_findings` already resolved for the *stale* addressed_at_*
+            # this reraise just cleared. Leaving them stale would make a later genuine
+            # re-fix's `_resolve_addressed_signature_threads` treat those thread ids as
+            # "already_resolved" and skip reply/resolve even for a thread GitHub has since
+            # reopened, so this reraise must clear them in lockstep with addressed_at_*.
+            merged["resolved_thread_ids"] = []
+        findings_map[finding.signature] = merged
         return
     source_ids = [finding.source_comment_id]
     pending_ids = [finding.source_comment_id] if finding.needs_classification else []
