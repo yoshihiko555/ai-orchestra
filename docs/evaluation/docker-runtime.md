@@ -4,7 +4,7 @@
 **類型**: CLI ツール型（内部ライブラリ）
 **作成日**: 2026-07-15
 **最終レビュー日**: 未レビュー
-**情報源**: `docs/design/loop-harness-isolation.md` §5.2・§6・§8、`docs/adr/ADR-20260712-034.md`、`docs/adr/ADR-20260715-037.md`
+**情報源**: `docs/design/loop-harness-isolation.md` §5.2・§6・§8、`docs/adr/ADR-20260712-034.md`、`docs/adr/ADR-20260715-037.md`、`docs/adr/ADR-20260720-041.md`
 
 ## 1. 責務定義
 
@@ -48,6 +48,7 @@ namespace・image・config を引数として受け取り、meta-harness と loo
 - [ ] EV-20（境界 / must）: `exclusive_file_lock` は lock 取得時の `OSError` だけを lock error に変換し、critical section または unlock で発生した `OSError` は元の例外のまま伝播する — 根拠: `packages/docker-runtime/lib/docker_runtime_image.py`（`exclusive_file_lock`）
 - [ ] EV-21（正常 / must）: broker は全設定について `DR_BROKER_*` / `DR_PRICE_*` を優先して読み、未設定の項目だけ同名 suffix の `MH_BROKER_*` / `MH_PRICE_*` へ fallback する。これにより新しい呼び出し元は harness 非依存の契約を使い、digest pin 済み旧 broker image を使う meta-harness は従来契約を継続できる。新旧どちらの env 名も未設定の場合は両変数名を含む `KeyError` で起動失敗する（fail-loud）— 根拠: `docs/design/loop-harness-isolation.md` §6、ADR-20260715-037
 - [ ] EV-22（境界 / must）: `DR_BROKER_NAMESPACE` が明示された場合だけ `server_version=<namespace>-broker` と user-agent `ai-orchestra-<namespace>-broker/0.1` を導出し、未指定時は既存の `meta-harness-broker` / `ai-orchestra-meta-harness-broker/0.1` を維持する。不正な namespace は fail-closed で拒否する — 根拠: `docs/design/loop-harness-isolation.md` §6、ADR-20260715-037
+- [ ] EV-23（境界 / must）: broker の `budget_rejected_count` は token/cost upper bound による 429 の前課金拒否だけで増加し、成功、token 不一致、query/model/header/body 入力不正では増加しない — 根拠: ADR-20260720-041
 
 ## 4. 類型別観点
 

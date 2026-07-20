@@ -52,6 +52,8 @@ ALLOWED_PATHS = frozenset({"/v1/messages", "/v1/messages/count_tokens"})
 # ever send them.
 REJECTED_PRICE_MODIFIER_FIELDS = frozenset({"inference_geo", "service_tier", "speed"})
 ALLOWED_QUERIES = frozenset({"beta=true"})
+BUDGET_TOKEN_REJECT_REASON = "request token upper bound exceeds the remaining run budget"
+BUDGET_COST_REJECT_REASON = "request cost upper bound exceeds the remaining run budget"
 ALLOWED_REQUEST_HEADERS = frozenset(
     {
         "accept",
@@ -169,6 +171,7 @@ def _broker_identity(namespace: str | None) -> BrokerIdentity:
 class BrokerMetrics:
     request_count: int = 0
     rejected_count: int = 0
+    budget_rejected_count: int = 0
     upstream_request_bytes: int = 0
     usage: Usage = field(default_factory=Usage)
     estimated_cost_usd: float = 0.0
@@ -293,7 +296,9 @@ class BrokerState:
             remaining_tokens = self.max_total_tokens - self.metrics.usage.total_tokens
             requested_tokens = input_tokens_upper_bound + output_tokens
             if requested_tokens > remaining_tokens:
-                return 429, "request token upper bound exceeds the remaining run budget"
+                self.metrics.budget_rejected_count += 1
+                self.persist_metrics_locked()
+                return 429, BUDGET_TOKEN_REJECT_REASON
             input_price = max(
                 self.pricing.input,
                 self.pricing.cache_creation,
@@ -304,7 +309,9 @@ class BrokerState:
             ) / 1_000_000
             remaining_cost = self.budget_usd - self.metrics.estimated_cost_usd
             if request_cost_upper_bound > remaining_cost:
-                return 429, "request cost upper bound exceeds the remaining run budget"
+                self.metrics.budget_rejected_count += 1
+                self.persist_metrics_locked()
+                return 429, BUDGET_COST_REJECT_REASON
         return None
 
     def finish_request(self, usage: Usage, *, usage_observed: bool = True) -> None:

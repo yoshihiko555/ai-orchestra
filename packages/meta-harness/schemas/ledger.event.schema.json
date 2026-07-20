@@ -242,6 +242,14 @@
             }
           }
         },
+        "budget_latched_suites": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(claude-harness|skill:[a-z0-9-]+)$"
+          },
+          "uniqueItems": true
+        },
         "verdict": { "type": "string", "enum": ["pass", "fail", "error"] },
         "unverified_impacts": {
           "type": "array",

@@ -430,6 +430,21 @@ def _latest_holdout_evaluation(
     return mh.latest_evaluation_completed(events, cand_id, target, holdout=True)
 
 
+def _reject_if_budget_latched(evaluation: dict[str, Any] | None, cand_id: str, phase: str) -> None:
+    # A budget-latched own run cannot produce an aggregate pass: evaluator adds the flag only
+    # to an already-error run, and an error own verdict forces the evaluation verdict to error.
+    # Regression latch-only suites are aggregate-neutral, so reject their field explicitly.
+    latched = evaluation.get("budget_latched_suites") if evaluation is not None else None
+    if not isinstance(latched, list) or not latched:
+        return
+    suites = ", ".join(sorted(str(suite_id) for suite_id in latched))
+    raise PromotionValidationError(
+        f"candidate {phase} evaluation has budget-latched regression suites "
+        "(latch-only suites are frontier-neutral but cannot be promoted); "
+        f"re-run evaluate for candidate: {cand_id}: {suites}"
+    )
+
+
 def _has_current_hash_pair(
     events: list[dict],
     cand_id: str,
@@ -455,6 +470,7 @@ def _has_current_hash_pair(
         return False
     if (evaluation.get("own_suite_hash"), evaluation.get("evaluator_hash")) != expected:
         return False
+    _reject_if_budget_latched(evaluation, cand_id, "holdout")
     if not _evaluation_runs_are_consistent(events, evaluation, cand_id, target):
         return False
     if not _evaluation_covers_current_holdouts(events, evaluation, target, config):
@@ -480,7 +496,10 @@ def _has_current_hash_pair(
         evaluator_hash=str(expected[1]),
         evaluation_id=evaluation.get("evaluation_id"),
     )
-    return non_holdout is not None and non_holdout.get("verdict") == "pass"
+    if non_holdout is None:
+        return False
+    _reject_if_budget_latched(non_holdout, cand_id, "train")
+    return non_holdout.get("verdict") == "pass"
 
 
 def _evaluation_covers_current_holdouts(

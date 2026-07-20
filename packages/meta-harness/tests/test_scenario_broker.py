@@ -20,6 +20,10 @@ broker = load_module(
     "meta_harness_scenario_broker_tests",
     "packages/meta-harness/docker/broker/broker.py",
 )
+ev = load_module(
+    "meta_harness_evaluator_broker_contract_tests",
+    "packages/meta-harness/lib/evaluator.py",
+)
 
 
 def _state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **overrides: Any) -> Any:
@@ -105,6 +109,7 @@ def test_http_handler_happy_path_closes_connection(
     assert headers["connection"] == "close"
     assert payload == b'{"ok":true}\n'
     assert state.metrics.request_count == 1
+    assert state.metrics.budget_rejected_count == 0
 
 
 def test_health_probe_refreshes_broker_activity(http_broker: tuple[Any, Any]) -> None:
@@ -132,6 +137,7 @@ def test_http_handler_rejects_invalid_run_token(
 
     assert status == 401
     assert state.metrics.request_count == 0
+    assert state.metrics.budget_rejected_count == 0
     assert state.metrics.budget_exceeded is False
     assert state.metrics.anomaly is True
 
@@ -148,6 +154,7 @@ def test_http_handler_rejects_oversized_forwarded_header(
 
     assert status == 431
     assert state.metrics.request_count == 0
+    assert state.metrics.budget_rejected_count == 0
     assert state.metrics.budget_exceeded is False
     assert state.metrics.anomaly is True
 
@@ -343,6 +350,7 @@ def test_http_handler_rejects_unknown_query_string_without_latching_budget(
     assert status == 400
     assert state.metrics.request_count == 0
     assert state.metrics.rejected_count == 1
+    assert state.metrics.budget_rejected_count == 0
     assert state.metrics.budget_exceeded is False
     assert state.metrics.anomaly is True
 
@@ -368,7 +376,41 @@ def test_allowed_query_uses_path_for_request_budget_validation(
     assert b"positive max_tokens" in payload
     assert state.metrics.request_count == 1
     assert state.metrics.rejected_count == 1
+    assert state.metrics.budget_rejected_count == 0
     assert state.metrics.budget_exceeded is True
+
+
+def test_http_handler_records_budget_upper_bound_rejection(
+    http_broker: tuple[Any, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server, state = http_broker
+
+    class UnexpectedConnection:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            raise AssertionError("budget-rejected request must not reach upstream")
+
+    monkeypatch.setattr(broker.http.client, "HTTPSConnection", UnexpectedConnection)
+
+    status, _headers, payload = _post(
+        server,
+        body=b'{"model":"claude-test","max_tokens":100,"messages":[]}',
+    )
+
+    assert status == 429
+    assert b"upper bound exceeds the remaining run budget" in payload
+    assert state.metrics.rejected_count == 1
+    assert state.metrics.budget_rejected_count == 1
+    assert state.metrics.budget_exceeded is True
+    assert state.metrics.anomaly_reasons == [
+        "request token upper bound exceeds the remaining run budget"
+    ]
+
+
+def test_budget_latch_reasons_match_broker_rejections() -> None:
+    assert {
+        broker.BUDGET_TOKEN_REJECT_REASON,
+        broker.BUDGET_COST_REJECT_REASON,
+    } == ev._BUDGET_LATCH_ANOMALY_REASONS
 
 
 def test_header_allowlist_strips_candidate_auth_and_forwarding_headers() -> None:
@@ -574,6 +616,7 @@ def test_model_allowlist_rejects_mismatched_model_with_non_retryable_400(
     assert b"model allowlist" in payload
     assert state.metrics.request_count == 1
     assert state.metrics.rejected_count == 1
+    assert state.metrics.budget_rejected_count == 0
     assert state.metrics.upstream_request_bytes == 0
     assert state.metrics.anomaly is True
     assert state.metrics.budget_exceeded is False

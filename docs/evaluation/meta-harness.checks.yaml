@@ -482,11 +482,27 @@
   command: >-
     AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
     packages/meta-harness/tests/test_cross_skill_regression.py::test_regression_failure_is_hard_gate_and_does_not_pollute_frontier_axes
+    packages/meta-harness/tests/test_cross_skill_regression.py::test_routing_config_budget_latch_is_frontier_neutral
+    packages/meta-harness/tests/test_cross_skill_regression.py::test_budget_latch_mixed_with_non_latched_error_remains_error
     packages/meta-harness/tests/test_cross_skill_regression.py::test_incomplete_batch_with_only_own_pass_is_not_frontier_eligible
+    packages/meta-harness/tests/test_evaluator_artifacts.py::test_error_result_records_budget_latch_from_broker_metrics
+    packages/meta-harness/tests/test_evaluator_artifacts.py::test_schema_error_prevents_budget_latch
+    packages/meta-harness/tests/test_evaluator_artifacts.py::test_budget_latch_rejects_independent_hard_failure
+    packages/meta-harness/tests/test_evaluator_headless_run.py::TestRunHeadlessScenarioEnvironment::test_failed_run_persists_classifiable_broker_budget_latch
+    packages/meta-harness/tests/test_scenario_broker.py::test_http_handler_records_budget_upper_bound_rejection
+    packages/meta-harness/tests/test_scenario_broker.py::test_budget_latch_reasons_match_broker_rejections
   covered_by:
     - packages/meta-harness/tests/test_cross_skill_regression.py::test_regression_failure_is_hard_gate_and_does_not_pollute_frontier_axes
+    - packages/meta-harness/tests/test_cross_skill_regression.py::test_routing_config_budget_latch_is_frontier_neutral
+    - packages/meta-harness/tests/test_cross_skill_regression.py::test_budget_latch_mixed_with_non_latched_error_remains_error
     - packages/meta-harness/tests/test_cross_skill_regression.py::test_incomplete_batch_with_only_own_pass_is_not_frontier_eligible
-  notes: regression failure and a missing evaluation summary both block frontier eligibility while own quality/cost remain isolated.
+    - packages/meta-harness/tests/test_evaluator_artifacts.py::test_error_result_records_budget_latch_from_broker_metrics
+    - packages/meta-harness/tests/test_evaluator_artifacts.py::test_schema_error_prevents_budget_latch
+    - packages/meta-harness/tests/test_evaluator_artifacts.py::test_budget_latch_rejects_independent_hard_failure
+    - packages/meta-harness/tests/test_evaluator_headless_run.py::TestRunHeadlessScenarioEnvironment::test_failed_run_persists_classifiable_broker_budget_latch
+    - packages/meta-harness/tests/test_scenario_broker.py::test_http_handler_records_budget_upper_bound_rejection
+    - packages/meta-harness/tests/test_scenario_broker.py::test_budget_latch_reasons_match_broker_rejections
+  notes: broker reason codes reach run results only without an independent hard failure; latch-only regression is visible but frontier-neutral, while mixed errors, regression failure, and missing summaries remain blocked and own quality/cost stay isolated.
 
 - ev_id: EV-55
   phase: 3
@@ -495,15 +511,23 @@
   command: >-
     AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
     packages/meta-harness/tests/test_cross_skill_regression.py::test_promote_batch_rejects_earlier_regression_fail_even_when_later_suite_passes
+    packages/meta-harness/tests/test_cross_skill_regression.py::test_promote_rejects_budget_latched_regression_suite
+    packages/meta-harness/tests/test_cross_skill_regression.py::test_promote_rejects_train_budget_latched_zero_holdout_suite
+    packages/meta-harness/tests/test_cross_skill_regression.py::test_promote_rejects_holdout_budget_latch_directly
+    packages/meta-harness/tests/test_cross_skill_regression.py::test_promote_accepts_events_without_budget_latched_suites
     packages/meta-harness/tests/test_cross_skill_regression.py::test_promote_checks_each_regression_suite_hash
     packages/meta-harness/tests/test_cross_skill_regression.py::test_promote_requires_every_holdout_scenario_at_frontier_repeat
     packages/meta-harness/tests/test_cross_skill_regression.py::test_promote_requires_complete_affected_holdouts_for_claude_harness
   covered_by:
     - packages/meta-harness/tests/test_cross_skill_regression.py::test_promote_batch_rejects_earlier_regression_fail_even_when_later_suite_passes
+    - packages/meta-harness/tests/test_cross_skill_regression.py::test_promote_rejects_budget_latched_regression_suite
+    - packages/meta-harness/tests/test_cross_skill_regression.py::test_promote_rejects_train_budget_latched_zero_holdout_suite
+    - packages/meta-harness/tests/test_cross_skill_regression.py::test_promote_rejects_holdout_budget_latch_directly
+    - packages/meta-harness/tests/test_cross_skill_regression.py::test_promote_accepts_events_without_budget_latched_suites
     - packages/meta-harness/tests/test_cross_skill_regression.py::test_promote_checks_each_regression_suite_hash
     - packages/meta-harness/tests/test_cross_skill_regression.py::test_promote_requires_every_holdout_scenario_at_frontier_repeat
     - packages/meta-harness/tests/test_cross_skill_regression.py::test_promote_requires_complete_affected_holdouts_for_claude_harness
-  notes: promotion validates the whole holdout batch, requires the complete repeated holdout set, and refreshes the own suite, each affected suite, and evaluator hashes independently.
+  notes: promotion rejects budget-latched error suites, validates the whole holdout batch, requires the complete repeated holdout set, and refreshes the own suite, each affected suite, and evaluator hashes independently.
 
 - ev_id: EV-56
   phase: 3

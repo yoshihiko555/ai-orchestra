@@ -179,6 +179,7 @@
                   "properties": {
                     "request_count": { "type": "integer", "minimum": 0 },
                     "rejected_count": { "type": "integer", "minimum": 0 },
+                    "budget_rejected_count": { "type": "integer", "minimum": 0 },
                     "upstream_request_bytes": { "type": "integer", "minimum": 0 },
                     "usage": {
                       "type": "object",

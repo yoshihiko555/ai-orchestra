@@ -1181,6 +1181,13 @@ def run_headless_scenario(
             try:
                 siso.cleanup_scenario_isolation(launch)
             except Exception as exc:  # noqa: BLE001 - preserve the original failed-run error
+                try:
+                    _mark_isolation_anomaly(staging_dir, "scenario isolation cleanup failed")
+                except Exception:  # noqa: BLE001 - preserve the original failed-run error
+                    _LOGGER.error(
+                        "could not persist failed-run cleanup failure",
+                        exc_info=True,
+                    )
                 if not in_flight_error:
                     raise
                 _LOGGER.error(
@@ -1203,6 +1210,11 @@ def _persist_refreshed_isolation_metadata(
 
 def _mark_isolation_metrics_stale(staging_dir: Path) -> None:
     """Persist a schema-compatible fail-closed marker after metrics refresh failure."""
+    _mark_isolation_anomaly(staging_dir, "broker metrics refresh failed")
+
+
+def _mark_isolation_anomaly(staging_dir: Path, marker: str) -> None:
+    """Persist an isolation-side failure so latch classification stays fail-closed."""
     metadata = _load_isolation_metadata(staging_dir)
     broker = metadata.get("broker") if isinstance(metadata, dict) else None
     metrics = broker.get("metrics") if isinstance(broker, dict) else None
@@ -1213,7 +1225,6 @@ def _mark_isolation_metrics_stale(staging_dir: Path) -> None:
     ):
         return
     reasons = [str(reason) for reason in metrics.get("anomaly_reasons") or []]
-    marker = "broker metrics refresh failed"
     if marker not in reasons:
         reasons.append(marker)
     metadata["broker"] = {
@@ -2480,6 +2491,13 @@ def run_single_attempt(
         "errors": errors,
     }
     result = _enforce_result_schema(result, schema_dir)
+    if _is_budget_latched_run(
+        isolation_metadata,
+        str(result["verdict"]),
+        result["critical"],
+        result["errors"],
+    ):
+        result["budget_latched"] = True
 
     _finalize_artifacts(run_dir, staging_dir, result)
     if effective_suite_id == target:
@@ -2556,6 +2574,57 @@ def _broker_metrics_failure(metadata: dict) -> dict[str, str] | None:
         "type": "run_error",
         "message": f"credential broker recorded an anomalous exchange{detail}",
     }
+
+
+_BUDGET_LATCH_ANOMALY_REASONS = frozenset(
+    {
+        "request token upper bound exceeds the remaining run budget",
+        "request cost upper bound exceeds the remaining run budget",
+    }
+)
+
+
+def _is_budget_latch_compatible_error(error: dict) -> bool:
+    stage = error.get("stage")
+    error_type = error.get("type")
+    if stage == "broker" and error_type == "budget_exceeded":
+        return True
+    if stage != "run":
+        return False
+    if error_type == "budget_exceeded":
+        return True
+    message = str(error.get("message") or "")
+    return (
+        error_type == "run_error"
+        and message == "claude -p reported is_error=True (subtype=success)"
+    )
+
+
+def _is_budget_latched_run(
+    isolation_metadata: dict | None,
+    verdict: str,
+    critical_checks: list[dict],
+    errors: list[dict],
+) -> bool:
+    if verdict != "error" or not isinstance(isolation_metadata, dict):
+        return False
+    broker = isolation_metadata.get("broker")
+    metrics = broker.get("metrics") if isinstance(broker, dict) else None
+    if not isinstance(metrics, dict):
+        return False
+    count = metrics.get("budget_rejected_count")
+    if not (isinstance(count, int) and not isinstance(count, bool) and count > 0):
+        return False
+    if metrics.get("budget_exceeded") is not True:
+        return False
+    reasons = metrics.get("anomaly_reasons")
+    if not isinstance(reasons, list) or not reasons:
+        return False
+    if any(reason not in _BUDGET_LATCH_ANOMALY_REASONS for reason in reasons):
+        return False
+    if any(check.get("passed") is False for check in critical_checks):
+        return False
+    return bool(errors) and all(_is_budget_latch_compatible_error(error) for error in errors)
 
 
 def _account_cost_with_broker_metrics(
@@ -2943,6 +3012,7 @@ def _evaluate_scenario_batch(
             own_suite_hash=own_suite_hash,
             evaluator_hash=evaluator_hash,
             regression_results=[],
+            budget_latched_suites=[],
             unverified_impacts=unverified,
             manifest=manifest,
             impact=impact,
@@ -2989,6 +3059,7 @@ def _evaluate_scenario_batch(
     )
 
     regression_summaries: list[dict] = []
+    budget_latched_suites: list[str] = []
     regression_cost = 0.0
     batch_errors: list[str] = []
     for suite_id, suite_paths, scenario_docs in regression_suites:
@@ -3036,6 +3107,8 @@ def _evaluate_scenario_batch(
         # train-only scenarios today). Resolution still succeeded, and promotion checks
         # the current phase coverage separately, so the empty phase is vacuously passing.
         suite_verdict = "pass" if not scenario_docs else _combined_result_verdict(suite_results)
+        if _regression_suite_is_budget_latched(suite_results):
+            budget_latched_suites.append(suite_id)
         regression_summaries.append(
             {
                 "suite_id": suite_id,
@@ -3058,6 +3131,7 @@ def _evaluate_scenario_batch(
         own_suite_hash=own_suite_hash,
         evaluator_hash=evaluator_hash,
         regression_results=regression_summaries,
+        budget_latched_suites=budget_latched_suites,
         unverified_impacts=unverified,
         manifest=manifest,
         impact=impact,
@@ -3217,6 +3291,7 @@ def _build_evaluation_completed_event(
     own_suite_hash: str,
     evaluator_hash: str,
     regression_results: list[dict],
+    budget_latched_suites: list[str],
     unverified_impacts: list[str],
     manifest: dict,
     impact: skill_targets.SkillImpactContext,
@@ -3225,8 +3300,21 @@ def _build_evaluation_completed_event(
     errors: list[str],
 ) -> dict:
     own_verdict = _combined_result_verdict(own_results)
-    regression_error = any(item["verdict"] == "error" for item in regression_results)
-    regression_pass = all(item["critical_pass"] for item in regression_results)
+    requested_latched_suites = set(budget_latched_suites)
+    latched_suites = {
+        str(item["suite_id"])
+        for item in regression_results
+        if item["verdict"] == "error" and str(item["suite_id"]) in requested_latched_suites
+    }
+    regression_error = any(
+        item["verdict"] == "error" and str(item["suite_id"]) not in latched_suites
+        for item in regression_results
+    )
+    regression_pass = all(
+        item["critical_pass"]
+        for item in regression_results
+        if str(item["suite_id"]) not in latched_suites
+    )
     if errors or own_verdict == "error" or regression_error:
         verdict = "error"
     elif own_verdict == "pass" and regression_pass:
@@ -3246,6 +3334,7 @@ def _build_evaluation_completed_event(
         "evaluator_hash": evaluator_hash,
         "own_critical_pass": own_verdict == "pass",
         "regression_results": regression_results,
+        "budget_latched_suites": sorted(latched_suites),
         "verdict": verdict,
         "unverified_impacts": sorted(unverified_impacts),
         "evaluation_base_commit": str(manifest["source_commit"]),
@@ -3258,6 +3347,15 @@ def _build_evaluation_completed_event(
     if routing_config_base_hash is not None:
         event["routing_config_base_hash"] = routing_config_base_hash
     return event
+
+
+def _regression_suite_is_budget_latched(results: list[dict]) -> bool:
+    if any(result.get("verdict") == "fail" for result in results):
+        return False
+    error_results = [result for result in results if result.get("verdict") == "error"]
+    return bool(error_results) and all(
+        result.get("budget_latched") is True for result in error_results
+    )
 
 
 def _append_evaluation_events(

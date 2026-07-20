@@ -51,9 +51,9 @@ def test_target_patterns_stay_in_sync_with_runtime_validator() -> None:
     patterns = [pattern for name in schema_names for pattern in _target_patterns(_load(name))]
     non_routing_pattern = "^(claude-harness|skill:[a-z0-9-]+)$"
 
-    assert len(patterns) == 14
+    assert len(patterns) == 15
     assert set(patterns) == {mh.TARGET_PATTERN.pattern, non_routing_pattern}
-    assert patterns.count(non_routing_pattern) == 5
+    assert patterns.count(non_routing_pattern) == 6
 
 
 class TestCandidateManifestSchema:
@@ -184,6 +184,15 @@ class TestLedgerEventSchemaOneOf:
             if key != "routing_config_base_hash"
         }
         instance["target"] = "claude-harness"
+
+        assert mh.validate_against_schema(instance, schema, SCHEMA_DIR) == []
+
+    def test_evaluation_allows_optional_budget_latched_suites(self) -> None:
+        schema = _load("ledger.event.schema.json")["$defs"]["evaluation_completed"]
+        instance = {
+            **self._VALID_EVALUATION_COMPLETED,
+            "budget_latched_suites": ["claude-harness", "skill:issue-create"],
+        }
 
         assert mh.validate_against_schema(instance, schema, SCHEMA_DIR) == []
 
@@ -357,6 +366,12 @@ class TestResultSchema:
         instance = {**self._VALID, "verdict": "maybe"}
         errors = mh.validate_against_schema(instance, schema, SCHEMA_DIR)
         assert any("not in enum" in e for e in errors)
+
+    def test_optional_budget_latched_true_is_valid(self) -> None:
+        schema = _load("result.schema.json")
+        instance = {**self._VALID, "verdict": "error", "budget_latched": True}
+
+        assert mh.validate_against_schema(instance, schema, SCHEMA_DIR) == []
 
     # EV-24: claude_version は result.schema.json の required に含まれる
     def test_claude_version_is_a_required_field(self) -> None:
@@ -619,6 +634,16 @@ class TestRunMetadataSchema:
 
         assert (
             mh.validate_against_schema({**self._VALID, "isolation": isolation}, schema, SCHEMA_DIR)
+            == []
+        )
+        isolation_with_budget_rejection = {
+            **isolation,
+            "broker": {"metrics": {**metrics, "budget_rejected_count": 1}},
+        }
+        assert (
+            mh.validate_against_schema(
+                {**self._VALID, "isolation": isolation_with_budget_rejection}, schema, SCHEMA_DIR
+            )
             == []
         )
         invalid_memory = {

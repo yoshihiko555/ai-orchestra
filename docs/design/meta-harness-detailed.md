@@ -1734,14 +1734,21 @@ proposer は同一 workspace 内で起動される限り、`Glob` / `Read` 等�
   routing-config の回帰保護も追加設定なしで自動的に広がる。
 - evaluate 1 回に `evaluation_id` を割り当てる。own suite は既存 `run_completed`、影響 suite は
   `regression_run_completed` で記録し、最後に `evaluation_completed` を追記する。サマリには own critical、
-  suite 別 regression critical、合成 verdict、`unverified_impacts`、own/regression run id、
+  suite 別 regression critical、合成 verdict、`budget_latched_suites`、`unverified_impacts`、
+  own/regression run id、
   `evaluation_base_commit`、影響 skill 集合、逆写像入力 hash を保存する。各新イベントは append 前に
   `ledger.event.schema.json` で検証する。own run と regression run は別の per-attempt worktree を使い、
   regression run の識別キーは `(suite_id, scenario_id)` とする。
-- 通常 evaluate / loop は影響 suite の train だけを追加実行する。合成 verdict は
-  `own_critical_pass AND regression_critical_pass` の hard gate とし、最新の完了した non-holdout
-  `evaluation_completed` が pass の候補だけを frontier eligible にする。own run 後に回帰が中断し、サマリが
-  無い評価バッチは未完了であり frontier に載せない。quality/cost 軸は own `run_completed` だけから算出する。
+- 通常 evaluate / loop は影響 suite の train だけを追加実行する。broker の token/cost upper bound による
+  前課金拒否は metrics の `budget_rejected_count` と budget latch に整合する reason で識別し、run が error、
+  失敗した critical check と cleanup/metadata/oracle/schema 等の独立した hard error がない場合だけ result に
+  `budget_latched: true` を記録する。regression suite に fail run がなく、全 error run が
+  `budget_latched: true` の場合、その suite だけを評価不能として合成 verdict の error/critical 集計から
+  中立化し、`budget_latched_suites` に記録する。suite 別 `regression_results[].verdict=error` と
+  `critical_pass=false` は事実として保持する。非 latch error、latch/non-latch error 混在、fail は従来どおり
+  hard gate とする。最新の完了した non-holdout `evaluation_completed` が pass の候補だけを frontier eligible
+  にする。own run 後に回帰が中断し、サマリが無い評価バッチは未完了であり frontier に載せない。
+  quality/cost 軸は own `run_completed` だけから算出する。
 - promote は、同一 `evaluation_id` の holdout `evaluation_completed` で own と全影響 suite の holdout が
   pass した場合だけ許可する。skill suite は現在の全 holdout scenario を `evaluate.repeat_frontier` 回ずつ
   完走した run id 集合との完全一致も要求し、`--scenario` / `--repeat 1` による部分評価を昇格根拠にしない。
@@ -1750,7 +1757,9 @@ proposer は同一 workspace 内で起動される限り、`Glob` / `Read` 等�
   一致しなければ再評価を要求して拒否する。suite が無い影響 skill は `unverified_impacts` に記録して評価を
   継続し、promote PR 本文の警告セクションに全件表示する（warning-only であり promotion blocker ではない）。
   suite-bearing target の suite 解決失敗、実行 fail/error、run 不足、hash 不一致は hard gate として
-  promotion を拒否する。評価後に suite が追加されて検証可能になった場合も
+  promotion を拒否する。`budget_latched_suites` に記録された suite も
+  `regression_results[].verdict=error` のままなので、この promotion gate は中立化せず拒否を維持する。
+  評価後に suite が追加されて検証可能になった場合も
   `unverified_impacts` の鮮度不一致として昇格を拒否し、holdout 再評価を要求する。親を含む候補 lineage の
   overlay path 全集合を `origin/main` との差分対象にし、全 manifest/overlay の integrity と L3 secret scan を
   PR 作成直前に再検証する。
