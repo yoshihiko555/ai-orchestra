@@ -292,6 +292,12 @@ class AddressedThreadOutcome:
     `review_comment:` ids map to, not just the latest) so a best-effort GitHub side-effect
     failure (rate limit, transient API error, thread already resolved by a human, ...) is
     fully observable without ever raising out of that function.
+
+    PR #276 review (P2, round 2): `"lease_expired"` covers a signature/thread this call never
+    even attempted to reply to/resolve on GitHub because the caller-held lease was found
+    invalid (expired or reacquired by another worker) immediately before that GitHub write --
+    see `resolve_addressed_findings`'s own docstring for why this guard exists in addition to
+    `_fenced_pr_review_write`'s state-write-only fencing.
     """
 
     signature: str
@@ -304,6 +310,7 @@ class AddressedThreadOutcome:
         "already_resolved",
         "reply_failed",
         "resolve_failed",
+        "lease_expired",
     ]
     error: str | None = None
 
@@ -1097,6 +1104,17 @@ def resolve_addressed_findings(
     already drops `has_non_bot_comments` threads' comments; this additionally skips a thread
     outright when any of its comments were dropped, so a mixed bot/human thread is never
     resolved out from under a human reviewer's own commentary).
+
+    PR #276 review (P2, round 2): `_fenced_pr_review_write` only fences the *state* write this
+    function makes at the end (recording `resolved_thread_ids`) -- it never guards the GitHub
+    `reply_to_comment`/`resolve_thread` calls themselves, which used to run unconditionally even
+    after the caller-held `lease_token` had expired or been reacquired by another worker. This
+    reuses `lc.validate_lease` (the same non-raising check `guarded_lease_section` builds on) to
+    check the lease immediately before the reply/resolve loop starts, and again before each
+    individual thread's GitHub writes, so a lease that goes stale mid-call stops issuing further
+    GitHub side effects instead of racing a new lease holder. Every signature/thread this call
+    never got to because of an expired lease is reported as `"lease_expired"` in
+    `thread_outcomes`, never silently dropped.
     """
     candidates = sorted(set(signatures))
     if not candidates:
@@ -1123,10 +1141,20 @@ def resolve_addressed_findings(
     pr_review = _ensure_pr_review_state(state.pr_review)
     findings_map = _findings_map(pr_review)
 
+    def lease_still_valid() -> bool:
+        return lc.validate_lease(loop_id, project_dir, lease_token)
+
     outcomes: list[AddressedThreadOutcome] = []
     newly_resolved_thread_ids: set[str] = set()
     updated_signatures: list[str] = []
+    # PR #276 review (P2, round 2): re-check right before this GitHub write loop starts (not
+    # only once at function entry) so a lease that was already stale by the time the earlier
+    # fetch/state-load above finished is caught before the first reply/resolve call, not after.
+    lease_expired = not lease_still_valid()
     for signature in candidates:
+        if lease_expired:
+            outcomes.append(AddressedThreadOutcome(signature, None, None, "lease_expired"))
+            continue
         record = findings_map.get(signature)
         if not isinstance(record, dict):
             continue
@@ -1141,8 +1169,14 @@ def resolve_addressed_findings(
             newly_resolved_thread_ids,
             commit_sha,
             timeout_seconds,
+            lease_still_valid,
         )
         outcomes.extend(signature_outcomes)
+        if any(outcome.status == "lease_expired" for outcome in signature_outcomes):
+            # The lease went stale partway through this signature's threads (checked again
+            # inside `_resolve_addressed_signature_threads`, right before each GitHub write) --
+            # stop attempting any further signature's reply/resolve for the rest of this call.
+            lease_expired = True
         newly_resolved_for_signature = {
             outcome.thread_id
             for outcome in signature_outcomes
@@ -1265,12 +1299,18 @@ def _resolve_addressed_signature_threads(
     already_resolved_this_call: set[str],
     commit_sha: str | None,
     timeout_seconds: int,
+    lease_still_valid: Callable[[], bool],
 ) -> list[AddressedThreadOutcome]:
     """Reply to and resolve every trusted GitHub thread accumulated for one addressed finding.
 
     Returns one `AddressedThreadOutcome` per distinct thread id the record's `review_comment:`
     ids map to (deduplicated -- multiple ids can land in the same thread), or a single
     `no_review_comment_source` outcome when the record carries no `review_comment:` id at all.
+
+    PR #276 review (P2, round 2): `lease_still_valid()` is re-checked immediately before every
+    individual thread's `reply_to_comment`/`resolve_thread` GitHub writes (not just once per
+    signature by the caller) -- once it returns `False`, no further GitHub write is attempted
+    for this signature's remaining threads either; each is reported `"lease_expired"` instead.
     """
     comment_ids = _review_comment_ids(record)
     if not comment_ids:
@@ -1278,6 +1318,7 @@ def _resolve_addressed_signature_threads(
     already_resolved = set(record.get("resolved_thread_ids") or [])
     seen_thread_ids: set[str] = set()
     outcomes: list[AddressedThreadOutcome] = []
+    lease_expired = False
     for comment_id in comment_ids:
         thread = comment_to_thread.get(comment_id)
         if thread is None:
@@ -1294,6 +1335,17 @@ def _resolve_addressed_signature_threads(
         if thread_id in already_resolved or thread_id in already_resolved_this_call:
             outcomes.append(
                 AddressedThreadOutcome(signature, thread_id, comment_id, "already_resolved")
+            )
+            continue
+        if lease_expired:
+            outcomes.append(
+                AddressedThreadOutcome(signature, thread_id, comment_id, "lease_expired")
+            )
+            continue
+        if not lease_still_valid():
+            lease_expired = True
+            outcomes.append(
+                AddressedThreadOutcome(signature, thread_id, comment_id, "lease_expired")
             )
             continue
         outcomes.append(

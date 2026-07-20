@@ -3537,6 +3537,111 @@ def test_resolve_addressed_findings_reports_reply_and_resolve_failures(
     assert "resolved_thread_ids" not in findings["sig-resolve-fails"]
 
 
+def test_resolve_addressed_findings_reports_lease_expired_without_github_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR #276 review (P2, round 2): an already-invalid `lease_token` at call time must abort
+    before any GitHub reply/resolve write is attempted -- every candidate is reported
+    `"lease_expired"` and neither `reply_to_comment` nor `resolve_thread` is ever called."""
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={
+            "processed_comment_ids": [],
+            "findings": {
+                "sig-addressed": _open_finding_record(["review_comment:1"], status="addressed"),
+            },
+        },
+    )
+    _lease(project_dir)  # a live lease exists, but the caller below presents a stale token
+    fake = _FakeGitWorkflowModule({"unresolved_threads": [_trusted_thread("THREAD-1", 1)]})
+    monkeypatch.setattr(prw, "_load_git_workflow_module", lambda: fake)
+
+    result = prw.resolve_addressed_findings(
+        "abcd1234-issue-1",
+        project_dir,
+        12,
+        "owner/repo",
+        ["sig-addressed"],
+        "sha",
+        "stale-token-not-the-live-lease",
+    )
+
+    assert result.resolved_signatures == ()
+    assert len(result.thread_outcomes) == 1
+    outcome = result.thread_outcomes[0]
+    assert outcome.status == "lease_expired"
+    assert outcome.signature == "sig-addressed"
+    assert fake.reply_calls == []
+    assert fake.resolve_calls == []
+
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    assert "resolved_thread_ids" not in state.pr_review["findings"]["sig-addressed"]
+
+
+def test_resolve_addressed_findings_stops_remaining_signatures_once_lease_expires_mid_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR #276 review (P2, round 2): the lease is re-checked before each signature's (and each
+    thread's) GitHub writes, not only once at entry -- a lease that goes stale partway through
+    must stop issuing further reply/resolve calls for every signature not yet attempted."""
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={
+            "processed_comment_ids": [],
+            "findings": {
+                "sig-first": _open_finding_record(["review_comment:1"], status="addressed"),
+                "sig-second": _open_finding_record(["review_comment:2"], status="addressed"),
+            },
+        },
+    )
+    lease_token = _lease(project_dir)
+    fake = _FakeGitWorkflowModule(
+        {
+            "unresolved_threads": [
+                _trusted_thread("THREAD-1", 1),
+                _trusted_thread("THREAD-2", 2),
+            ]
+        }
+    )
+    monkeypatch.setattr(prw, "_load_git_workflow_module", lambda: fake)
+
+    # `validate_lease` is called: once before the reply/resolve loop starts, then again before
+    # `sig-first`'s single thread write (both `True`, so it proceeds and resolves), then again
+    # before `sig-second`'s thread write -- return `False` there to simulate the lease going
+    # stale between the two signatures.
+    validate_calls = 0
+
+    def _fake_validate_lease(_loop_id: str, _project_dir: str, _token: str) -> bool:
+        nonlocal validate_calls
+        validate_calls += 1
+        return validate_calls <= 2
+
+    monkeypatch.setattr(prw.lc, "validate_lease", _fake_validate_lease)
+
+    result = prw.resolve_addressed_findings(
+        "abcd1234-issue-1",
+        project_dir,
+        12,
+        "owner/repo",
+        ["sig-first", "sig-second"],
+        "sha",
+        lease_token,
+    )
+
+    outcomes = {outcome.signature: outcome for outcome in result.thread_outcomes}
+    assert outcomes["sig-first"].status == "resolved"
+    assert outcomes["sig-second"].status == "lease_expired"
+    assert result.resolved_signatures == ("sig-first",)
+    assert fake.resolve_calls == ["THREAD-1"]
+
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    findings = state.pr_review["findings"]
+    assert findings["sig-first"]["resolved_thread_ids"] == ["THREAD-1"]
+    assert "resolved_thread_ids" not in findings["sig-second"]
+
+
 def test_resolve_addressed_findings_returns_unavailable_when_git_workflow_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

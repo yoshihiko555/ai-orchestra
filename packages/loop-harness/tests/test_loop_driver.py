@@ -6319,6 +6319,81 @@ def test_wait_external_review_marks_and_resolves_addressed_findings(
     assert resolve_args[5] == "cafebabecafebabe"
 
 
+def test_wait_external_review_journals_addressed_findings_outcome(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR #276 review (P2): `resolve_addressed_findings()`'s `AddressedFindingsResult` -- which
+    the caller used to discard entirely -- must be journaled so a GitHub-side reply/resolve
+    failure (`reply_failed`/`resolve_failed`/`no_trusted_thread`/`lease_expired`) stays
+    observable, without affecting the (already-decided) phase check result itself."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.pr_number = 42
+    state.pr_review = {"iteration_head_sha": "cafebabecafebabe"}
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(driver, "_repo_name_with_owner", lambda _wt: "owner/repo")
+    monkeypatch.setattr(
+        prw, "load_pr_review_config", lambda _project: prw.PrReviewConfig(reviewer_allowlist=())
+    )
+    monkeypatch.setattr(prw, "record_ignored_untrusted_reviews", lambda *a, **k: None)
+    monkeypatch.setattr(
+        prw,
+        "wait_for_completion",
+        lambda *a, **k: prw.CompletionOutcome(
+            "review_submitted", completed=True, timed_out=False, infrastructure_failure=False
+        ),
+    )
+    monkeypatch.setattr(prw, "save_review_findings_snapshot", lambda *a, **k: "artifacts/x.json")
+    monkeypatch.setattr(prw, "confirm_review_findings_reported", lambda *a, **k: None)
+
+    previous = lc.IterationFindings(frozenset({"sig-fixed"}), 2)
+    current = lc.IterationFindings(frozenset(), 0)
+    collected = prw.ReviewFindingsResult((), current, previous, (), (), 0, 0)
+    monkeypatch.setattr(prw, "collect_review_findings", lambda *a, **k: collected)
+    monkeypatch.setattr(prw, "mark_addressed_findings", lambda *a, **k: ("sig-fixed",))
+
+    addressed_result = prw.AddressedFindingsResult(
+        (),
+        (prw.AddressedThreadOutcome("sig-fixed", "THREAD-1", 10, "reply_failed", "rate limited"),),
+        git_workflow_unavailable=False,
+    )
+    monkeypatch.setattr(prw, "resolve_addressed_findings", lambda *a, **k: addressed_result)
+
+    proposal = lc.ProposeResult(
+        action="wait_external_review",
+        action_id="act-235-outcome",
+        state_version=state.state_version,
+        expected_phase="implementation",
+        phase="implementation",
+        iteration=1,
+        context={},
+    )
+    d._run_wait_external_review(proposal, state, {})
+
+    journal = lc.journal_path(loop_id, project_dir).read_text(encoding="utf-8").splitlines()
+    events = [json.loads(line) for line in journal]
+    outcome_events = [
+        event for event in events if event["event"] == "pr_review_addressed_findings_outcome"
+    ]
+    assert len(outcome_events) == 1
+    payload = outcome_events[0]["payload"]
+    assert payload["succeeded_count"] == 0
+    assert payload["failed_count"] == 1
+    assert payload["failures"] == [
+        {
+            "signature": "sig-fixed",
+            "thread_id": "THREAD-1",
+            "status": "reply_failed",
+            "error": "rate limited",
+        }
+    ]
+    assert payload["git_workflow_unavailable"] is False
+
+
 def test_wait_external_review_skips_addressed_resolution_when_nothing_resolved(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
