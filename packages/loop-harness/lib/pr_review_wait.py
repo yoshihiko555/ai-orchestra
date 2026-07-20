@@ -287,9 +287,11 @@ class ReviewFindingsResult:
 class AddressedThreadOutcome:
     """One trusted GitHub review thread's reply/resolve outcome for an addressed finding.
 
-    Issue #235: `resolve_addressed_findings` reports one of these per candidate signature so a
-    best-effort GitHub side-effect failure (rate limit, transient API error, thread already
-    resolved by a human, ...) is fully observable without ever raising out of that function.
+    Issue #235: `resolve_addressed_findings` reports one or more of these per candidate
+    signature (PR #276 review: one per distinct trusted thread its accumulated
+    `review_comment:` ids map to, not just the latest) so a best-effort GitHub side-effect
+    failure (rate limit, transient API error, thread already resolved by a human, ...) is
+    fully observable without ever raising out of that function.
     """
 
     signature: str
@@ -1107,6 +1109,14 @@ def resolve_addressed_findings(
         fetch_result = git_workflow.fetch_review_threads(pr_number, project_dir, timeout_seconds)
     except Exception:  # noqa: BLE001 - best-effort GitHub read, never fail the caller
         return AddressedFindingsResult((), (), git_workflow_unavailable=False)
+    # PR #276 review (medium): `fetch_review_threads()` degrades to an *unfiltered* result
+    # (every comment treated as trusted, `has_non_bot_comments` always False) and reports
+    # this via `origin_verified: False` whenever it cannot load the reviewer allowlist config
+    # or import `pr_review_wait` itself. Skip resolving anything in that case -- fail-closed,
+    # matching `fetch_review_threads`'s own bot-origin verification contract -- rather than
+    # reply-and-resolve threads whose bot origin was never actually verified.
+    if not isinstance(fetch_result, dict) or not fetch_result.get("origin_verified"):
+        return AddressedFindingsResult((), (), git_workflow_unavailable=False)
     comment_to_thread = _index_trusted_threads_by_comment(fetch_result)
 
     state = lc.load_state(loop_id, project_dir)
@@ -1120,7 +1130,7 @@ def resolve_addressed_findings(
         record = findings_map.get(signature)
         if not isinstance(record, dict):
             continue
-        outcome = _resolve_one_addressed_thread(
+        signature_outcomes = _resolve_addressed_signature_threads(
             git_workflow,
             owner,
             name,
@@ -1132,13 +1142,18 @@ def resolve_addressed_findings(
             commit_sha,
             timeout_seconds,
         )
-        outcomes.append(outcome)
-        if outcome.status == "resolved" and outcome.thread_id is not None:
-            newly_resolved_thread_ids.add(outcome.thread_id)
+        outcomes.extend(signature_outcomes)
+        newly_resolved_for_signature = {
+            outcome.thread_id
+            for outcome in signature_outcomes
+            if outcome.status == "resolved" and outcome.thread_id is not None
+        }
+        if newly_resolved_for_signature:
+            newly_resolved_thread_ids |= newly_resolved_for_signature
             already_resolved = set(record.get("resolved_thread_ids") or [])
             findings_map[signature] = {
                 **record,
-                "resolved_thread_ids": sorted(already_resolved | {outcome.thread_id}),
+                "resolved_thread_ids": sorted(already_resolved | newly_resolved_for_signature),
             }
             updated_signatures.append(signature)
 
@@ -1206,11 +1221,18 @@ def _index_trusted_threads_by_comment(fetch_result: Any) -> dict[int, dict[str, 
     return comment_to_thread
 
 
-def _latest_review_comment_id(record: dict[str, Any]) -> int | None:
-    """Return the highest `review_comment:<id>` numeric id recorded for one finding."""
+def _review_comment_ids(record: dict[str, Any]) -> list[int]:
+    """Return every `review_comment:<id>` numeric id recorded for one finding, ascending.
+
+    PR #276 review (high): a reraised finding accumulates one `review_comment:<id>` entry
+    per GitHub comment it appeared in (`_upsert_finding` unions `source_comment_ids` across
+    reraises), and different reraises can land in genuinely different GitHub threads.
+    Resolving only the single highest id -- as this used to -- left every earlier thread
+    permanently unresolved; callers must resolve every id this returns.
+    """
     ids = record.get("source_comment_ids")
     if not isinstance(ids, list):
-        return None
+        return []
     review_comment_ids: list[int] = []
     for raw in ids:
         kind, _, value = str(raw).partition(":")
@@ -1220,7 +1242,7 @@ def _latest_review_comment_id(record: dict[str, Any]) -> int | None:
             review_comment_ids.append(int(value))
         except ValueError:
             continue
-    return max(review_comment_ids) if review_comment_ids else None
+    return sorted(review_comment_ids)
 
 
 def _reply_target_for_comment(thread: dict[str, Any], comment_id: int) -> int | None:
@@ -1232,7 +1254,7 @@ def _reply_target_for_comment(thread: dict[str, Any], comment_id: int) -> int | 
     return None
 
 
-def _resolve_one_addressed_thread(
+def _resolve_addressed_signature_threads(
     git_workflow: Any,
     owner: str,
     name: str,
@@ -1243,18 +1265,66 @@ def _resolve_one_addressed_thread(
     already_resolved_this_call: set[str],
     commit_sha: str | None,
     timeout_seconds: int,
-) -> AddressedThreadOutcome:
-    """Reply to and resolve one addressed finding's trusted GitHub thread, best-effort."""
-    comment_id = _latest_review_comment_id(record)
-    if comment_id is None:
-        return AddressedThreadOutcome(signature, None, None, "no_review_comment_source")
-    thread = comment_to_thread.get(comment_id)
-    if thread is None:
-        return AddressedThreadOutcome(signature, None, comment_id, "no_trusted_thread")
-    thread_id = thread.get("thread_id")
+) -> list[AddressedThreadOutcome]:
+    """Reply to and resolve every trusted GitHub thread accumulated for one addressed finding.
+
+    Returns one `AddressedThreadOutcome` per distinct thread id the record's `review_comment:`
+    ids map to (deduplicated -- multiple ids can land in the same thread), or a single
+    `no_review_comment_source` outcome when the record carries no `review_comment:` id at all.
+    """
+    comment_ids = _review_comment_ids(record)
+    if not comment_ids:
+        return [AddressedThreadOutcome(signature, None, None, "no_review_comment_source")]
     already_resolved = set(record.get("resolved_thread_ids") or [])
-    if thread_id in already_resolved or thread_id in already_resolved_this_call:
-        return AddressedThreadOutcome(signature, thread_id, comment_id, "already_resolved")
+    seen_thread_ids: set[str] = set()
+    outcomes: list[AddressedThreadOutcome] = []
+    for comment_id in comment_ids:
+        thread = comment_to_thread.get(comment_id)
+        if thread is None:
+            outcomes.append(
+                AddressedThreadOutcome(signature, None, comment_id, "no_trusted_thread")
+            )
+            continue
+        thread_id = thread.get("thread_id")
+        if thread_id in seen_thread_ids:
+            # Another id already resolved (or attempted) this same thread earlier in this
+            # loop -- multiple review comments can belong to one discussion/thread.
+            continue
+        seen_thread_ids.add(thread_id)
+        if thread_id in already_resolved or thread_id in already_resolved_this_call:
+            outcomes.append(
+                AddressedThreadOutcome(signature, thread_id, comment_id, "already_resolved")
+            )
+            continue
+        outcomes.append(
+            _resolve_one_trusted_thread(
+                git_workflow,
+                owner,
+                name,
+                pr_number,
+                signature,
+                thread,
+                comment_id,
+                commit_sha,
+                timeout_seconds,
+            )
+        )
+    return outcomes
+
+
+def _resolve_one_trusted_thread(
+    git_workflow: Any,
+    owner: str,
+    name: str,
+    pr_number: int,
+    signature: str,
+    thread: dict[str, Any],
+    comment_id: int,
+    commit_sha: str | None,
+    timeout_seconds: int,
+) -> AddressedThreadOutcome:
+    """Reply to and resolve one already-identified trusted GitHub thread, best-effort."""
+    thread_id = thread.get("thread_id")
     reply_target = _reply_target_for_comment(thread, comment_id) or comment_id
     body = _addressed_reply_body(commit_sha)
     tmp_path: Path | None = None
@@ -2215,6 +2285,13 @@ def _upsert_finding(
             merged["status"] = "open"
             merged["addressed_at_commit"] = None
             merged["addressed_at_iteration"] = None
+            # PR #276 review (high): `resolved_thread_ids` recorded which GitHub threads
+            # `resolve_addressed_findings` already resolved for the *stale* addressed_at_*
+            # this reraise just cleared. Leaving them stale would make a later genuine
+            # re-fix's `_resolve_addressed_signature_threads` treat those thread ids as
+            # "already_resolved" and skip reply/resolve even for a thread GitHub has since
+            # reopened, so this reraise must clear them in lockstep with addressed_at_*.
+            merged["resolved_thread_ids"] = []
         findings_map[finding.signature] = merged
         return
     source_ids = [finding.source_comment_id]

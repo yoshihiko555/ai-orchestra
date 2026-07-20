@@ -6184,6 +6184,15 @@ def test_format_pr_review_findings_matrix_renders_status_rows(tmp_path: Path) ->
     assert "| low | c.py | dismissed | review_comment:3 |" in matrix
 
 
+def test_matrix_source_comment_id_sorts_numerically_not_lexically() -> None:
+    """PR #276 review (low): plain string sort of `source_comment_ids` breaks once ids have
+    different digit counts -- `"review_comment:99999999"` lexically outranks
+    `"review_comment:100000000"` even though the latter is the more recent (higher) id."""
+    record = {"source_comment_ids": ["review_comment:99999999", "review_comment:100000000"]}
+
+    assert driver._matrix_source_comment_id(record) == "review_comment:100000000"
+
+
 def test_format_pr_review_findings_matrix_empty_without_findings(tmp_path: Path) -> None:
     loop_id = "abcd1234-issue-1"
     project_dir, _token = _seed_running_loop(tmp_path, loop_id)
@@ -6363,6 +6372,81 @@ def test_wait_external_review_skips_addressed_resolution_when_nothing_resolved(
 
     assert mark_calls == []
     assert resolve_calls == []
+
+
+def test_wait_external_review_excludes_demoted_signature_from_addressed_resolution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR #276 review (high): a signature that reraised this round at a demoted medium/low
+    severity drops out of `iteration_findings` (blocking-only), but `result.open_non_blocking`
+    still reports it as currently open -- it must never be treated as "addressed", unlike a
+    signature that is genuinely gone this round."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.pr_number = 42
+    state.pr_review = {"iteration_head_sha": "cafebabecafebabe"}
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(driver, "_repo_name_with_owner", lambda _wt: "owner/repo")
+    monkeypatch.setattr(
+        prw, "load_pr_review_config", lambda _project: prw.PrReviewConfig(reviewer_allowlist=())
+    )
+    monkeypatch.setattr(prw, "record_ignored_untrusted_reviews", lambda *a, **k: None)
+    monkeypatch.setattr(
+        prw,
+        "wait_for_completion",
+        lambda *a, **k: prw.CompletionOutcome(
+            "review_submitted", completed=True, timed_out=False, infrastructure_failure=False
+        ),
+    )
+    monkeypatch.setattr(prw, "save_review_findings_snapshot", lambda *a, **k: "artifacts/x.json")
+    monkeypatch.setattr(prw, "confirm_review_findings_reported", lambda *a, **k: None)
+
+    previous = lc.IterationFindings(frozenset({"sig-fixed", "sig-demoted"}), 2)
+    current = lc.IterationFindings(frozenset(), 0)
+    demoted = prw.NonBlockingFinding(
+        signature="sig-demoted", severity="medium", path="app.py", line=3, body_excerpt="still here"
+    )
+    collected = prw.ReviewFindingsResult((), current, previous, (demoted,), (), 0, 0)
+    monkeypatch.setattr(prw, "collect_review_findings", lambda *a, **k: collected)
+
+    mark_calls: list[tuple[Any, ...]] = []
+    resolve_calls: list[tuple[Any, ...]] = []
+    monkeypatch.setattr(
+        prw,
+        "mark_addressed_findings",
+        lambda *a, **k: (mark_calls.append((a, k)), ())[1],
+    )
+    monkeypatch.setattr(
+        prw,
+        "resolve_addressed_findings",
+        lambda *a, **k: (
+            resolve_calls.append((a, k)),
+            prw.AddressedFindingsResult((), (), git_workflow_unavailable=False),
+        )[1],
+    )
+
+    proposal = lc.ProposeResult(
+        action="wait_external_review",
+        action_id="act-235-003",
+        state_version=state.state_version,
+        expected_phase="implementation",
+        phase="implementation",
+        iteration=1,
+        context={},
+    )
+    d._run_wait_external_review(proposal, state, {})
+
+    assert len(mark_calls) == 1
+    mark_args, _mark_kwargs = mark_calls[0]
+    assert set(mark_args[2]) == {"sig-fixed"}
+
+    assert len(resolve_calls) == 1
+    resolve_args, _resolve_kwargs = resolve_calls[0]
+    assert set(resolve_args[4]) == {"sig-fixed"}
 
 
 def test_run_stop_posts_issue_comment_when_repo_identity_verified(

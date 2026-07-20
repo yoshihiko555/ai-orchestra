@@ -2744,7 +2744,11 @@ def test_upsert_finding_reopens_addressed_record_on_reraise() -> None:
     `addressed_at_*` markers -- the moment the same signature is imported again, so the
     exit-comment matrix (`_finding_status_label`) stops reporting a currently-blocking finding
     as resolved and a later genuine fix can update `mark_addressed_findings()`'s
-    `status == "open"`-gated record instead of being silently skipped."""
+    `status == "open"`-gated record instead of being silently skipped.
+
+    PR #276 review (high): `resolved_thread_ids` must clear in lockstep with `addressed_at_*`
+    -- otherwise a later genuine re-fix's `resolve_addressed_findings` would see the stale
+    thread id in `resolved_thread_ids` and skip reply/resolve as "already_resolved"."""
     findings_map = {
         "sig-a": {
             "first_seen_iteration": 1,
@@ -2757,6 +2761,7 @@ def test_upsert_finding_reopens_addressed_record_on_reraise() -> None:
             "source_comment_ids": ["review_comment:1"],
             "addressed_at_commit": "cafebabecafebabe",
             "addressed_at_iteration": 2,
+            "resolved_thread_ids": ["THREAD-1"],
             "path": "app.py",
             "line": 10,
         }
@@ -2774,6 +2779,7 @@ def test_upsert_finding_reopens_addressed_record_on_reraise() -> None:
     assert record["addressed_at_iteration"] is None
     assert record["last_seen_iteration"] == 3
     assert record["source_comment_ids"] == ["review_comment:1", "review_comment:2"]
+    assert record["resolved_thread_ids"] == []
 
 
 def test_ev38_only_medium_low_findings_can_be_dismissed(
@@ -3262,7 +3268,10 @@ class _FakeGitWorkflowModule:
     ) -> dict[str, Any]:
         if self._fetch_error is not None:
             raise self._fetch_error
-        return self._fetch_result
+        # `origin_verified: True` unless a test overrides it in `fetch_result`, so existing
+        # call sites (written before PR #276's fail-closed `origin_verified` check) keep
+        # exercising the resolve path without every one needing the key spelled out.
+        return {"origin_verified": True, **self._fetch_result}
 
     def reply_to_comment(
         self,
@@ -3344,6 +3353,54 @@ def test_resolve_addressed_findings_replies_and_resolves_trusted_thread(
 
     state = lc.load_state("abcd1234-issue-1", project_dir)
     assert state.pr_review["findings"]["sig-addressed"]["resolved_thread_ids"] == ["THREAD-1"]
+
+
+def test_resolve_addressed_findings_resolves_every_accumulated_thread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR #276 review (high): a reraised finding accumulates one `review_comment:<id>` per
+    GitHub thread it appeared in (`_upsert_finding` unions `source_comment_ids` across
+    reraises). Resolving only the highest id used to leave every earlier thread permanently
+    unresolved; this must reply-and-resolve every distinct trusted thread the record's ids
+    map to."""
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={
+            "processed_comment_ids": [],
+            "findings": {
+                "sig-addressed": _open_finding_record(
+                    ["review_comment:1", "review_comment:2"],
+                    status="addressed",
+                ),
+            },
+        },
+    )
+    lease_token = _lease(project_dir)
+    fake = _FakeGitWorkflowModule(
+        {
+            "unresolved_threads": [
+                _trusted_thread("THREAD-1", 1),
+                _trusted_thread("THREAD-2", 2),
+            ]
+        }
+    )
+    monkeypatch.setattr(prw, "_load_git_workflow_module", lambda: fake)
+
+    result = prw.resolve_addressed_findings(
+        "abcd1234-issue-1", project_dir, 12, "owner/repo", ["sig-addressed"], "sha", lease_token
+    )
+
+    assert result.resolved_signatures == ("sig-addressed",)
+    assert {o.status for o in result.thread_outcomes} == {"resolved"}
+    assert {o.thread_id for o in result.thread_outcomes} == {"THREAD-1", "THREAD-2"}
+    assert set(fake.resolve_calls) == {"THREAD-1", "THREAD-2"}
+
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    assert state.pr_review["findings"]["sig-addressed"]["resolved_thread_ids"] == [
+        "THREAD-1",
+        "THREAD-2",
+    ]
 
 
 def test_resolve_addressed_findings_skips_already_resolved_thread(
@@ -3546,3 +3603,41 @@ def test_resolve_addressed_findings_survives_fetch_failure(
     assert result.git_workflow_unavailable is False
     assert result.resolved_signatures == ()
     assert result.thread_outcomes == ()
+
+
+def test_resolve_addressed_findings_skips_when_origin_not_verified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR #276 review (medium): `fetch_review_threads()` degrades to an *unfiltered* result
+    (every comment treated as trusted, `has_non_bot_comments` always False) whenever it
+    cannot verify the reviewer allowlist, and reports this via `origin_verified: False`.
+    `resolve_addressed_findings` must fail-closed and skip reply/resolve entirely in that
+    case, never touching any thread whose bot origin was never actually verified."""
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={
+            "processed_comment_ids": [],
+            "findings": {
+                "sig-addressed": _open_finding_record(["review_comment:1"], status="addressed"),
+            },
+        },
+    )
+    lease_token = _lease(project_dir)
+    fake = _FakeGitWorkflowModule(
+        {"unresolved_threads": [_trusted_thread("THREAD-1", 1)], "origin_verified": False}
+    )
+    monkeypatch.setattr(prw, "_load_git_workflow_module", lambda: fake)
+
+    result = prw.resolve_addressed_findings(
+        "abcd1234-issue-1", project_dir, 12, "owner/repo", ["sig-addressed"], "sha", lease_token
+    )
+
+    assert result.git_workflow_unavailable is False
+    assert result.resolved_signatures == ()
+    assert result.thread_outcomes == ()
+    assert fake.reply_calls == []
+    assert fake.resolve_calls == []
+
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    assert "resolved_thread_ids" not in state.pr_review["findings"]["sig-addressed"]

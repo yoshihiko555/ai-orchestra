@@ -1955,9 +1955,18 @@ class LoopDriver:
         # resolves the corresponding trusted GitHub thread(s), never raising for GitHub-side
         # failures (see its own docstring) so a rate limit or API outage cannot fail this
         # otherwise-passing phase check.
+        #
+        # PR #276 review (high): a signature can drop out of `iteration_findings` (blocking-
+        # only) not just because it was genuinely fixed, but because it reraised this round at
+        # a demoted medium/low severity -- still an open finding, not a fix.
+        # `result.open_non_blocking` is the cumulative set of every currently-open, non-
+        # dismissed medium/low finding (`_open_non_blocking_findings`, keyed by the same
+        # signature), so any resolved-candidate signature appearing there is provably still
+        # open and must never be auto-marked "addressed" / auto-resolved on GitHub.
+        demoted_still_open = {item.signature for item in result.open_non_blocking}
         resolved_signatures = (
             result.previous_iteration_findings.signatures - result.iteration_findings.signatures
-        )
+        ) - demoted_still_open
         if resolved_signatures:
             commit_sha = baseline.get("iteration_head_sha")
             prw.mark_addressed_findings(
@@ -3518,11 +3527,28 @@ def _finding_status_label(record: dict[str, Any]) -> str:
     return "open"
 
 
+def _matrix_source_comment_id_sort_key(source_comment_id: str) -> tuple[int, str]:
+    """Sort `source_comment_ids` numerically by their trailing GitHub comment id.
+
+    PR #276 review (low): plain string sort breaks once ids have different digit
+    counts (e.g. `"review_comment:99999999"` lexically outranks
+    `"review_comment:100000000"`). GitHub comment ids are a monotonically increasing
+    global counter, so the numeric suffix after the last `:` is the correct recency
+    ordering; non-numeric/missing suffixes sort first (via `-1`) rather than crashing.
+    """
+    _, _, value = source_comment_id.rpartition(":")
+    try:
+        numeric_id = int(value)
+    except ValueError:
+        numeric_id = -1
+    return (numeric_id, source_comment_id)
+
+
 def _matrix_source_comment_id(record: dict[str, Any]) -> str:
     """Return the most recent `source_comment_id` recorded for one finding, or a placeholder."""
     ids = record.get("source_comment_ids")
     if isinstance(ids, list) and ids:
-        return str(sorted(str(item) for item in ids)[-1])
+        return str(sorted((str(item) for item in ids), key=_matrix_source_comment_id_sort_key)[-1])
     return "(unknown)"
 
 

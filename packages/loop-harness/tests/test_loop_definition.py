@@ -18,6 +18,11 @@ def _implementation_on_success_exec(definition: ld.LoopDefinition) -> list[str]:
     return list(phase.on_success["exec"])
 
 
+def _pr_review_response_on_failure_exec(definition: ld.LoopDefinition) -> list[str]:
+    phase = next(p for p in definition.phases if p.name == "pr_review_response")
+    return list(phase.on_failure["exec"])
+
+
 def _write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
@@ -336,3 +341,28 @@ def test_project_override_issue_loop_is_not_shadowing_stale_exec_order() -> None
     exec_order = _implementation_on_success_exec(effective)
     assert exec_order.index("push") < exec_order.index("record_baseline")
     assert exec_order.index("pr_create") < exec_order.index("record_baseline")
+
+
+def test_bundled_issue_loop_posts_summary_comment_on_pr_review_response_failure() -> None:
+    """Issue #235 (PR #276 review, high): `_exit_failure_comment`'s finding disposition matrix
+    (EV-144) is only ever posted when `on_failure.exec` includes `post_summary_comment` --
+    without it in the packaged `pr_review_response` phase, a `pr_review_response` failure exit
+    (e.g. `max_iterations`) never actually surfaces the matrix anywhere, contradicting EV-144's
+    documented contract."""
+    source_path = REPO_ROOT / "packages" / "loop-harness" / "config" / "loops" / "issue-loop.yaml"
+    definition = ld.load_and_validate(source_path)
+    assert "post_summary_comment" in _pr_review_response_on_failure_exec(definition)
+
+
+def test_project_override_issue_loop_also_posts_summary_comment_on_failure() -> None:
+    """code J2-style shadow guard for the `post_summary_comment` fix: this repo's own checked-in
+    `.claude/config/loop-harness/loops/issue-loop.yaml` project override must not silently
+    shadow the packaged source's `post_summary_comment` fix (see
+    `test_project_override_issue_loop_is_not_shadowing_stale_exec_order` for the analogous J2
+    guard)."""
+    override_path = REPO_ROOT / ".claude" / "config" / "loop-harness" / "loops" / "issue-loop.yaml"
+    if not override_path.exists():
+        pytest.skip("no project-local issue-loop override present in this checkout")
+    effective = ld.load_all_definitions(str(REPO_ROOT))["issue-loop"]
+    assert effective.source_path == str(override_path)
+    assert "post_summary_comment" in _pr_review_response_on_failure_exec(effective)

@@ -69,3 +69,4 @@ phases:
       exec:
         - pr_mark_draft
         - notify
+        - post_summary_comment
