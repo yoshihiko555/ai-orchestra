@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`loop-harness`: LP-1 の push-integrity 警告（best-effort）を追加**: `loop_step.py propose` が `advance_phase` / `wait_external_review` / `exit_failure` を提案する直前に、記録済みの remote HEAD baseline と実際の remote HEAD を比較し、ずれ（Maker の先行 push 等の疑い）を検知した場合に `push_integrity_warning` を proposal の JSON レスポンスと journal の両方に記録する。ループは停止させず、警告のみ（LP-2 の無人 fail-closed 停止とは異なる運用）。
+
 - **`meta-harness`: proposer が routing config patch を提案可能に（Phase A）**: proposer 生成候補が `agent-routing/cli-tools.yaml` の `agents.*.tool` / `antigravity.model` を patch できるようになった（`codex.model` は human 限定のまま）。reward hacking 対策として quality 厳密優越・クロススキル回帰ゲート・レート制限等を同梱（ADR-20260717-040）。
 - **meta-harness routing-config target**: human-registered candidates can now patch `agent-routing/cli-tools.yaml` keys (`agents.*.tool`, `codex.model`, `antigravity.model`) through the evaluation/promotion pipeline. Proposer candidates remain facets-only.
 - **`loop-harness`: Maker commit 書き戻しの安全停止理由を追加**: 一時 ref への import 失敗、非 fast-forward、CAS 競合を `git_ref_import_failed` / `git_ref_not_fast_forward` / `git_ref_cas_rejected` として区別できるようにした。

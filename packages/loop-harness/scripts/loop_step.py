@@ -157,6 +157,9 @@ def cmd_start(args: argparse.Namespace) -> dict[str, Any]:
             ttl_seconds=_lp1_ttl(project),
             phase=definition.phases[0].name,
             preacquired_lock=lock,
+            # Issue #196: LP-1-only opt-in for the best-effort push-integrity warning (LP-2's
+            # loop_driver.py never passes this and keeps its own, separate mechanism).
+            precedent_push_check=True,
         )
     except lc.InvalidStateError as exc:
         if "state already exists" not in str(exc):
@@ -189,7 +192,7 @@ def cmd_propose(args: argparse.Namespace) -> dict[str, Any]:
     project = _project_dir(args.project)
     lease_token = _required_lease_token(args)
     _refresh_lease_or_raise(args.loop_id, project, lease_token)
-    result = lc.propose(args.loop_id, project, lease_token)
+    result = lc.propose(args.loop_id, project, lease_token, precedent_push_check=True)
     return _proposal_response(args.loop_id, result, "next action proposed", project=project)
 
 
@@ -213,6 +216,7 @@ def cmd_complete(args: argparse.Namespace) -> dict[str, Any]:
         args.state_version,
         loaded_result,
         lease_token,
+        precedent_push_check=True,
     )
     if not result.idempotent_replay:
         _emit_loop_iteration(project, pending_state, loaded_result)
@@ -273,7 +277,7 @@ def cmd_resume(args: argparse.Namespace) -> dict[str, Any]:
     project = _project_dir(args.project)
     resumed = lc.resume(args.loop_id, project, True, _owner_id(), _lp1_ttl(project))
     try:
-        result = lc.propose(args.loop_id, project, resumed.lease_token)
+        result = lc.propose(args.loop_id, project, resumed.lease_token, precedent_push_check=True)
     except Exception as exc:
         raise _failure_with_lease(
             exc, "failed to propose after resume", resumed.lease_token
@@ -840,7 +844,9 @@ def _attach_with_token(loop_id: str, project: str) -> lc.ProposeResult:
         raise lc.InvalidStateError(f"cannot attach status={state.status}")
     lock = lc.reacquire_lease(loop_id, project, _owner_id(), _lp1_ttl(project))
     try:
-        result = lc.propose(loop_id, project, lock.lease_token, recover_orphans=True)
+        result = lc.propose(
+            loop_id, project, lock.lease_token, recover_orphans=True, precedent_push_check=True
+        )
     except Exception as exc:
         raise _failure_with_lease(exc, "failed to propose after attach", lock.lease_token) from exc
     return lc.ProposeResult(
@@ -891,6 +897,13 @@ def _proposal_response(
     params = context.pop("params", {})
     if not isinstance(params, dict):
         params = {}
+    # Issue #196 PR review round 2 ("Surface the warning in loop_step responses"): `propose()`
+    # adds this only to `ProposeResult.context`, and everything below builds `response` fresh
+    # from named keys -- any other context key (this one included) would otherwise be silently
+    # discarded here, leaving the operator's primary stdout signal (this CLI's own JSON response,
+    # per the CHANGELOG-promised contract) missing it entirely, with only the journal file (which
+    # nothing here tails live) carrying the warning.
+    push_integrity_warning = context.pop("push_integrity_warning", None)
     if project is not None:
         state = lc.load_state(loop_id, project)
         params = {**params, **_common_proposal_params(loop_id, state)}
@@ -911,6 +924,8 @@ def _proposal_response(
     }
     if lease_token is not None:
         response["lease_token"] = lease_token
+    if push_integrity_warning is not None:
+        response["push_integrity_warning"] = push_integrity_warning
     if project is not None and action in TERMINAL_ACTIONS:
         _emit_loop_stop(project, loop_id, action, params)
     return response
