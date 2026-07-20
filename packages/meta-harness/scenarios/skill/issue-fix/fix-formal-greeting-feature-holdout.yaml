@@ -97,6 +97,8 @@ budget:
   # 同じ前課金特性のため同額へ引き上げる。
   # Issue #261 PR7: train（fix-greet-none-bug）が 9 turns 目に $6.00 latch した実測を受け、
   # 同型構成のため同水準（9.0）へ再較正。
-  max_budget_usd: 9.0
+  # Issue #261 PR8（最終較正）: 最終 evaluate で ×3 とも latch した実測。train（fix-greet-none-bug）
+  # と同型構成のため同水準（$15.00）へ最終設定する（根拠は create-task-issue.yaml のコメント参照）。
+  max_budget_usd: 15.0
   max_output_tokens: 1024
 repeat: 1

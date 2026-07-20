@@ -97,6 +97,10 @@ budget:
   # Issue #261 PR7: bootstrap 最終検証で 9 turns 時点で $6.00 に再度 latch（実トークン 4210）。
   # 9-10 turn の issue-fix は worst-case 前課金 ≈ $0.67/req（body ~110KB）× 9-10 turn 分の
   # 逐次コンテキスト成長を見込むとまだ不足していたため 9.0 に引き上げる。
-  max_budget_usd: 9.0
+  # Issue #261 PR8（最終較正）: 最終 evaluate でも 9 turns 目に $9.00 latch した実測。$3→$6→$9
+  # の逐次追随を打ち切り、issue-fix の 10 turns 上限での見込み上限（≈$12）にマージンを載せた
+  # $15.00 に最終設定する（根拠・reward hacking 抑止上限である旨は create-task-issue.yaml の
+  # コメント参照）。
+  max_budget_usd: 15.0
   max_output_tokens: 1024
 repeat: 1

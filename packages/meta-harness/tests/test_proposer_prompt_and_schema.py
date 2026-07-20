@@ -90,6 +90,42 @@ class TestProposalSchema:
     def test_valid_config_patch_proposal_passes_the_simple_schema(self) -> None:
         assert proposer.validate_proposal(_VALID_CONFIG_PATCH_PROPOSAL, SCHEMA_DIR) == []
 
+    def test_config_patch_value_declares_a_type_for_codex_structured_output(self) -> None:
+        """Issue #261 PR8: `proposal.schema.json` is staged verbatim as the codex CLI's
+        `response_format: codex_output_schema` for the proposer (see
+        `_stage_codex_output_schema` in proposer_backend.py). Codex's structured-output
+        validator rejects any schema node without an explicit `type` key -- an empty `{}`
+        schema (as `config_patch[].value` previously was) fails codex proposer smoke with
+        "schema must have a 'type' key" before a single proposal round-trips."""
+        schema = json.loads((SCHEMA_DIR / "proposal.schema.json").read_text(encoding="utf-8"))
+        value_schema = schema["properties"]["config_patch"]["items"]["properties"]["value"]
+
+        assert value_schema.get("type") == "string"
+
+    def test_config_patch_value_accepts_string(self) -> None:
+        assert proposer.validate_proposal(_VALID_CONFIG_PATCH_PROPOSAL, SCHEMA_DIR) == []
+
+    def test_config_patch_value_rejects_non_string(self) -> None:
+        """Phase A's only proposer-writable ceiling entries (agents.*.tool,
+        antigravity.model) are always strings (`validate_config_patch` in
+        meta_harness_common.py enforces `isinstance(value, str)` for both), so the schema-level
+        `type: string` restriction does not narrow what a valid proposal can legitimately
+        express."""
+        non_string_proposal = {
+            **_VALID_CONFIG_PATCH_PROPOSAL,
+            "config_patch": [
+                {
+                    "file": "agent-routing/cli-tools.yaml",
+                    "key_path": "agents.debugger.tool",
+                    "value": {"nested": "object"},
+                }
+            ],
+        }
+
+        errors = proposer.validate_proposal(non_string_proposal, SCHEMA_DIR)
+
+        assert errors != []
+
     def test_schema_leaves_payload_exclusivity_to_registration(self) -> None:
         schema = json.loads((SCHEMA_DIR / "proposal.schema.json").read_text(encoding="utf-8"))
         serialized = json.dumps(schema, sort_keys=True)
