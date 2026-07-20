@@ -333,6 +333,12 @@ def _fill_thread_comments(thread: dict[str, Any], timeout: int) -> None:
     which never exceed `THREAD_COMMENTS_PAGE_SIZE` comments and so never have
     `comments.pageInfo.hasNextPage` set -- this only issues extra `gh api graphql` calls for
     the rare thread whose comment count exceeds the first page.
+
+    Issue #235 (PR #276 review, coderabbit minor): if the thread is deleted or made
+    private between the initial page fetch and a later page fetch, GraphQL returns
+    `data.node: null` without an `errors` entry, which `_raise_on_graphql_errors` does
+    not treat as an error. Stop paging and keep whatever comments were already
+    collected rather than raising `TypeError` on `None["comments"]`.
     """
     comments = thread.get("comments")
     if not isinstance(comments, dict):
@@ -342,7 +348,10 @@ def _fill_thread_comments(thread: dict[str, Any], timeout: int) -> None:
     nodes = list(comments.get("nodes") or [])
     while page_info.get("hasNextPage") and cursor:
         payload = _fetch_thread_comments_page(str(thread.get("id")), cursor, timeout)
-        connection = payload["data"]["node"]["comments"]
+        node = (payload.get("data") or {}).get("node")
+        if node is None:
+            break
+        connection = node["comments"]
         nodes.extend(connection["nodes"])
         page_info = connection["pageInfo"]
         cursor = page_info.get("endCursor")

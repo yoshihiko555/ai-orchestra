@@ -681,6 +681,36 @@ def test_fetch_paginates_thread_comments_past_first_page(
     assert any("cursor=thread-cursor-1" in " ".join(c) for c in node_calls)
 
 
+def test_fetch_thread_comments_pagination_stops_on_null_node(
+    monkeypatch: pytest.MonkeyPatch, loop_harness_project: Path
+) -> None:
+    """PR #276 review (coderabbit, minor): a thread deleted/made private between the initial
+    page fetch and a later comment-page fetch makes GraphQL return `data.node: null` without
+    an `errors` entry, which `_raise_on_graphql_errors` does not catch. `_fill_thread_comments`
+    must stop paging on `node is None` instead of raising `TypeError` on `None["comments"]`,
+    and must keep the comments collected from the pages fetched before the null response."""
+    thread = _thread(
+        "T1",
+        comments=[_comment(1, "coderabbitai[bot]", "bot says hi")],
+        comments_page_info={"hasNextPage": True, "endCursor": "thread-cursor-1"},
+    )
+    deleted_node_page: dict[str, Any] = {"data": {"node": None}}
+    fake = FakeRun(
+        [
+            (_is_repo_view, _ok({"nameWithOwner": "o/r"})),
+            (_is_graphql, _ok(_threads_page([thread]))),
+            (_is_node_graphql, _ok(deleted_node_page)),
+            (_is_issue_comments, _ok([])),
+            (_is_review_comments, _ok([])),
+        ]
+    )
+    monkeypatch.setattr(prt.subprocess, "run", fake)
+    result = prt.fetch_review_threads(1, str(loop_harness_project), 30)
+    comments = result["unresolved_threads"][0]["comments"]
+    assert len(comments) == 1
+    assert comments[0]["comment_id"] == 1
+
+
 def test_fetch_bot_only_thread_has_non_bot_comments_false(
     monkeypatch: pytest.MonkeyPatch, loop_harness_project: Path
 ) -> None:
