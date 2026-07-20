@@ -1126,13 +1126,206 @@ def test_promote_rejects_budget_latched_regression_suite(
     monkeypatch.setattr(prm, "_evaluation_covers_current_holdouts", lambda *_args: True)
     monkeypatch.setattr(prm, "_current_unverified_impacts", lambda _evaluation: set())
 
-    assert not prm._has_current_hash_pair(
+    with pytest.raises(
+        prm.PromotionValidationError,
+        match=rf"budget-latched.*{CAND_ID}.*{REGRESSION_TARGET}",
+    ):
+        prm._has_current_hash_pair(
+            events,
+            CAND_ID,
+            TARGET,
+            frontier,
+            mh.DEFAULTS,
+            holdout_evaluation=summary,
+        )
+
+
+def test_promote_rejects_train_budget_latched_zero_holdout_suite(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    suite_hash = "a" * 64
+    evaluator_hash = "d" * 64
+    own = _holdout_own_event(
+        run_id="run-own-holdout",
+        suite_hash=suite_hash,
+        evaluator_hash=evaluator_hash,
+    )
+    holdout_summary = {
+        "event": "evaluation_completed",
+        "evaluation_id": EVALUATION_ID,
+        "cand_id": CAND_ID,
+        "target": TARGET,
+        "holdout": True,
+        "own_run_ids": [own["run_id"]],
+        "own_suite_hash": suite_hash,
+        "evaluator_hash": evaluator_hash,
+        "own_critical_pass": True,
+        "regression_results": [],
+        "verdict": "pass",
+        "unverified_impacts": [],
+        "impacted_targets": [],
+    }
+    # `claude-harness` has no holdout scenarios, so its latch is visible only in train.
+    train_summary = {
+        "event": "evaluation_completed",
+        "evaluation_id": EVALUATION_ID,
+        "cand_id": CAND_ID,
+        "target": TARGET,
+        "holdout": False,
+        "own_suite_hash": suite_hash,
+        "evaluator_hash": evaluator_hash,
+        "regression_results": [
+            {
+                "suite_id": "claude-harness",
+                "suite_hash": "e" * 64,
+                "run_ids": ["run-claude-harness-train"],
+                "verdict": "error",
+                "critical_pass": False,
+            }
+        ],
+        "budget_latched_suites": ["claude-harness"],
+        "verdict": "pass",
+    }
+    events = [own, train_summary, holdout_summary]
+    frontier = {"suite_hash": suite_hash, "evaluator_hash": evaluator_hash}
+    monkeypatch.setattr(
+        prm.ev,
+        "validate_target_suite",
+        lambda _package, _schema, suite_id: [Path(f"{suite_id}.yaml")],
+    )
+    monkeypatch.setattr(prm.ev, "compute_suite_hash", lambda _paths: suite_hash)
+    monkeypatch.setattr(prm.ev, "compute_configured_evaluator_hash", lambda _config: evaluator_hash)
+    monkeypatch.setattr(prm, "_evaluation_covers_current_holdouts", lambda *_args: True)
+    monkeypatch.setattr(prm, "_current_unverified_impacts", lambda _evaluation: set())
+
+    with pytest.raises(
+        prm.PromotionValidationError,
+        match=rf"budget-latched.*{CAND_ID}.*claude-harness",
+    ):
+        prm._has_current_hash_pair(
+            events,
+            CAND_ID,
+            TARGET,
+            frontier,
+            mh.DEFAULTS,
+            holdout_evaluation=holdout_summary,
+        )
+
+
+def test_promote_rejects_holdout_budget_latch_directly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    suite_hash = "a" * 64
+    evaluator_hash = "d" * 64
+    holdout_summary = {
+        "event": "evaluation_completed",
+        "evaluation_id": EVALUATION_ID,
+        "cand_id": CAND_ID,
+        "target": TARGET,
+        "holdout": True,
+        "own_suite_hash": suite_hash,
+        "evaluator_hash": evaluator_hash,
+        "budget_latched_suites": [REGRESSION_TARGET],
+        "verdict": "pass",
+    }
+    frontier = {"suite_hash": suite_hash, "evaluator_hash": evaluator_hash}
+    monkeypatch.setattr(
+        prm.ev,
+        "validate_target_suite",
+        lambda _package, _schema, suite_id: [Path(f"{suite_id}.yaml")],
+    )
+    monkeypatch.setattr(prm.ev, "compute_suite_hash", lambda _paths: suite_hash)
+    monkeypatch.setattr(prm.ev, "compute_configured_evaluator_hash", lambda _config: evaluator_hash)
+    monkeypatch.setattr(prm, "_evaluation_runs_are_consistent", lambda *_args: True)
+
+    with pytest.raises(
+        prm.PromotionValidationError,
+        match=rf"budget-latched.*{CAND_ID}.*{REGRESSION_TARGET}",
+    ):
+        prm._has_current_hash_pair(
+            [holdout_summary],
+            CAND_ID,
+            TARGET,
+            frontier,
+            mh.DEFAULTS,
+            holdout_evaluation=holdout_summary,
+        )
+
+
+def test_promote_accepts_events_without_budget_latched_suites(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    suite_hash = "a" * 64
+    evaluator_hash = "d" * 64
+    own = _holdout_own_event(
+        run_id="run-own-holdout",
+        suite_hash=suite_hash,
+        evaluator_hash=evaluator_hash,
+    )
+    regression = _holdout_regression_event(
+        run_id="run-issue-holdout",
+        suite_id=REGRESSION_TARGET,
+        verdict="pass",
+        suite_hash="e" * 64,
+        evaluator_hash=evaluator_hash,
+    )
+    holdout_summary = {
+        "event": "evaluation_completed",
+        "evaluation_id": EVALUATION_ID,
+        "cand_id": CAND_ID,
+        "target": TARGET,
+        "holdout": True,
+        "own_run_ids": [own["run_id"]],
+        "own_suite_hash": suite_hash,
+        "evaluator_hash": evaluator_hash,
+        "own_critical_pass": True,
+        "regression_results": [
+            {
+                "suite_id": REGRESSION_TARGET,
+                "suite_hash": "e" * 64,
+                "run_ids": [regression["run_id"]],
+                "verdict": "pass",
+                "critical_pass": True,
+            }
+        ],
+        "verdict": "pass",
+        "unverified_impacts": [],
+        "impacted_targets": [REGRESSION_TARGET],
+    }
+    train_summary = {
+        "event": "evaluation_completed",
+        "evaluation_id": EVALUATION_ID,
+        "cand_id": CAND_ID,
+        "target": TARGET,
+        "holdout": False,
+        "own_suite_hash": suite_hash,
+        "evaluator_hash": evaluator_hash,
+        "budget_latched_suites": [],
+        "verdict": "pass",
+    }
+    events = [own, regression, train_summary, holdout_summary]
+    frontier = {"suite_hash": suite_hash, "evaluator_hash": evaluator_hash}
+    monkeypatch.setattr(
+        prm.ev,
+        "validate_target_suite",
+        lambda _package, _schema, suite_id: [Path(f"{suite_id}.yaml")],
+    )
+    monkeypatch.setattr(
+        prm.ev,
+        "compute_suite_hash",
+        lambda paths: ("a" if "handoff" in str(paths[0]) else "e") * 64,
+    )
+    monkeypatch.setattr(prm.ev, "compute_configured_evaluator_hash", lambda _config: evaluator_hash)
+    monkeypatch.setattr(prm, "_evaluation_covers_current_holdouts", lambda *_args: True)
+    monkeypatch.setattr(prm, "_current_unverified_impacts", lambda _evaluation: set())
+
+    assert prm._has_current_hash_pair(
         events,
         CAND_ID,
         TARGET,
         frontier,
         mh.DEFAULTS,
-        holdout_evaluation=summary,
+        holdout_evaluation=holdout_summary,
     )
 
 
