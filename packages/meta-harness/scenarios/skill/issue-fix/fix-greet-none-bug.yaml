@@ -94,6 +94,9 @@ budget:
   max_turns: 10
   # Issue #261 PR6: 実 backend 再検証で 8 turns 時点で cost latch $3.00（=予算）に到達。
   # issue-fix は repo コンテキストが大きく per-request 前課金が高いため 6.0 に引き上げる。
-  max_budget_usd: 6.0
+  # Issue #261 PR7: bootstrap 最終検証で 9 turns 時点で $6.00 に再度 latch（実トークン 4210）。
+  # 9-10 turn の issue-fix は worst-case 前課金 ≈ $0.67/req（body ~110KB）× 9-10 turn 分の
+  # 逐次コンテキスト成長を見込むとまだ不足していたため 9.0 に引き上げる。
+  max_budget_usd: 9.0
   max_output_tokens: 1024
 repeat: 1

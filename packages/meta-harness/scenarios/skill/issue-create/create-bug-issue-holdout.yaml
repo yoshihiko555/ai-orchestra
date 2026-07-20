@@ -41,6 +41,11 @@ timeout_ms: 300000
 budget:
   # Issue #261 PR6 bot レビュー追撃対応: train（create-task-issue）と同型構成のため同水準へ較正。
   max_turns: 16
-  max_budget_usd: 3.0
+  # Issue #261 PR7 追補: 旧 baseline holdout 評価で 11 turns 時点で $3.00 に cost latch した実測
+  # （run-20260720-010041-...create-bug-issue-holdout-a1-10babcee 等、error x3）。train
+  # （create-task-issue、$3.0 で pass 実績あり）と異なり、この holdout は再現手順・環境記述を含む
+  # bug テンプレートの分だけ turn 数が伸びやすく実測で 11+ turns に達した。16 turns 上限までの
+  # worst-case 前課金を見込み 6.0 に引き上げる。
+  max_budget_usd: 6.0
   max_output_tokens: 1024
 repeat: 1
