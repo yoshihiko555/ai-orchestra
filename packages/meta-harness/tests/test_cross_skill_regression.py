@@ -107,6 +107,8 @@ def _run_batch(
     max_budget: float = 30.0,
     unverified: tuple[str, ...] = (),
     target: str = TARGET,
+    regression_verdicts: tuple[str, ...] | None = None,
+    regression_budget_latched: tuple[bool, ...] | None = None,
 ) -> tuple[dict, list[dict], list[dict]]:
     config = copy.deepcopy(mh.DEFAULTS)
     config["regression"]["max_budget_usd"] = max_budget
@@ -143,15 +145,23 @@ def _run_batch(
                     tokens=10,
                 )
             ]
-        return [
-            _result(
+        verdicts = regression_verdicts or (regression_verdict,)
+        latched = regression_budget_latched or tuple(False for _ in verdicts)
+        assert len(verdicts) == len(latched)
+        results = []
+        for index, (verdict, budget_latched) in enumerate(zip(verdicts, latched, strict=True), 1):
+            result = _result(
                 suite_id=REGRESSION_TARGET,
                 scenario_id=scenario_id,
-                verdict=regression_verdict,
+                verdict=verdict,
                 cost_usd=regression_cost,
                 tokens=999,
             )
-        ]
+            result["run_id"] = f"{result['run_id']}-{index}"
+            if budget_latched:
+                result["budget_latched"] = True
+            results.append(result)
+        return results
 
     monkeypatch.setattr(ev, "_run_scenario_set", fake_run_scenario_set)
     manifest = {
@@ -229,6 +239,45 @@ def test_routing_config_regression_failure_blocks_frontier(
         [point for point in points if point["eligible"]], ROUTING_CONFIG_TARGET
     )
     assert CAND_ID not in frontier
+
+
+def test_routing_config_budget_latch_is_frontier_neutral(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config, _, events = _run_batch(
+        tmp_path,
+        monkeypatch,
+        target=ROUTING_CONFIG_TARGET,
+        regression_verdicts=("error",),
+        regression_budget_latched=(True,),
+    )
+
+    summary = next(event for event in events if event["event"] == "evaluation_completed")
+    assert summary["regression_results"][0]["verdict"] == "error"
+    assert summary["regression_results"][0]["critical_pass"] is False
+    assert summary["budget_latched_suites"] == [REGRESSION_TARGET]
+    assert summary["verdict"] == "pass"
+
+    points = mh.aggregate_run_points(events, config, ROUTING_CONFIG_TARGET)
+    assert len(points) == 1
+    assert points[0]["eligible"] is True
+    frontier, _ = mh.compute_pareto_frontier(points, ROUTING_CONFIG_TARGET)
+    assert CAND_ID in frontier
+
+
+def test_budget_latch_mixed_with_non_latched_error_remains_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, _, events = _run_batch(
+        tmp_path,
+        monkeypatch,
+        regression_verdicts=("error", "error"),
+        regression_budget_latched=(True, False),
+    )
+
+    summary = next(event for event in events if event["event"] == "evaluation_completed")
+    assert summary["budget_latched_suites"] == []
+    assert summary["verdict"] == "error"
 
 
 def test_routing_config_empty_claude_harness_holdout_is_vacuously_verified(
@@ -1007,6 +1056,83 @@ def test_promote_batch_rejects_earlier_regression_fail_even_when_later_suite_pas
 
     assert not prm._evaluation_runs_are_consistent(
         [own, failed, passed], tampered_summary, CAND_ID, TARGET
+    )
+
+
+def test_promote_rejects_budget_latched_regression_suite(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    suite_hash = "a" * 64
+    evaluator_hash = "d" * 64
+    own = _holdout_own_event(
+        run_id="run-own-holdout",
+        suite_hash=suite_hash,
+        evaluator_hash=evaluator_hash,
+    )
+    latched = _holdout_regression_event(
+        run_id="run-issue-latched",
+        suite_id=REGRESSION_TARGET,
+        verdict="error",
+        suite_hash="e" * 64,
+        evaluator_hash=evaluator_hash,
+    )
+    summary = {
+        "event": "evaluation_completed",
+        "evaluation_id": EVALUATION_ID,
+        "cand_id": CAND_ID,
+        "target": TARGET,
+        "holdout": True,
+        "own_run_ids": [own["run_id"]],
+        "own_suite_hash": suite_hash,
+        "evaluator_hash": evaluator_hash,
+        "own_critical_pass": True,
+        "regression_results": [
+            {
+                "suite_id": REGRESSION_TARGET,
+                "suite_hash": "e" * 64,
+                "run_ids": [latched["run_id"]],
+                "verdict": "error",
+                "critical_pass": False,
+            }
+        ],
+        "budget_latched_suites": [REGRESSION_TARGET],
+        "verdict": "pass",
+        "unverified_impacts": [],
+        "impacted_targets": [REGRESSION_TARGET],
+    }
+    train_summary = {
+        "event": "evaluation_completed",
+        "evaluation_id": EVALUATION_ID,
+        "cand_id": CAND_ID,
+        "target": TARGET,
+        "holdout": False,
+        "own_suite_hash": suite_hash,
+        "evaluator_hash": evaluator_hash,
+        "verdict": "pass",
+    }
+    events = [own, latched, train_summary, summary]
+    frontier = {"suite_hash": suite_hash, "evaluator_hash": evaluator_hash}
+    monkeypatch.setattr(
+        prm.ev,
+        "validate_target_suite",
+        lambda _package, _schema, suite_id: [Path(f"{suite_id}.yaml")],
+    )
+    monkeypatch.setattr(
+        prm.ev,
+        "compute_suite_hash",
+        lambda paths: ("a" if "handoff" in str(paths[0]) else "e") * 64,
+    )
+    monkeypatch.setattr(prm.ev, "compute_configured_evaluator_hash", lambda _config: evaluator_hash)
+    monkeypatch.setattr(prm, "_evaluation_covers_current_holdouts", lambda *_args: True)
+    monkeypatch.setattr(prm, "_current_unverified_impacts", lambda _evaluation: set())
+
+    assert not prm._has_current_hash_pair(
+        events,
+        CAND_ID,
+        TARGET,
+        frontier,
+        mh.DEFAULTS,
+        holdout_evaluation=summary,
     )
 
 

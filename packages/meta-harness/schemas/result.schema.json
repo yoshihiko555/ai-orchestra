@@ -31,6 +31,7 @@
     "cand_id": { "type": "string" },
     "scenario_id": { "type": "string" },
     "verdict": { "type": "string", "enum": ["pass", "fail", "error"] },
+    "budget_latched": { "type": "boolean", "const": true },
     "critical": {
       "type": "array",
       "items": { "$ref": "#/$defs/check_result" }

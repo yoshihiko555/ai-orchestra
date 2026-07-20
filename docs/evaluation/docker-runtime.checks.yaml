@@ -158,3 +158,26 @@
     - packages/meta-harness/tests/test_scenario_broker.py::test_header_allowlist_strips_candidate_auth_and_forwarding_headers
     - packages/meta-harness/tests/test_scenario_broker.py::test_injected_namespace_derives_server_and_user_agent
   notes: the legacy default identity stays exact; explicit valid namespaces derive both identifiers and invalid values fail closed.
+
+- ev_id: EV-23
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_scenario_broker.py::test_http_handler_happy_path_closes_connection
+    packages/meta-harness/tests/test_scenario_broker.py::test_http_handler_rejects_invalid_run_token
+    packages/meta-harness/tests/test_scenario_broker.py::test_http_handler_rejects_oversized_forwarded_header
+    packages/meta-harness/tests/test_scenario_broker.py::test_http_handler_rejects_unknown_query_string_without_latching_budget
+    packages/meta-harness/tests/test_scenario_broker.py::test_allowed_query_uses_path_for_request_budget_validation
+    packages/meta-harness/tests/test_scenario_broker.py::test_model_allowlist_rejects_mismatched_model_with_non_retryable_400
+    packages/meta-harness/tests/test_scenario_broker.py::test_http_handler_records_budget_upper_bound_rejection
+  covered_by:
+    - packages/meta-harness/tests/test_scenario_broker.py::test_http_handler_happy_path_closes_connection
+    - packages/meta-harness/tests/test_scenario_broker.py::test_http_handler_rejects_invalid_run_token
+    - packages/meta-harness/tests/test_scenario_broker.py::test_http_handler_rejects_oversized_forwarded_header
+    - packages/meta-harness/tests/test_scenario_broker.py::test_http_handler_rejects_unknown_query_string_without_latching_budget
+    - packages/meta-harness/tests/test_scenario_broker.py::test_allowed_query_uses_path_for_request_budget_validation
+    - packages/meta-harness/tests/test_scenario_broker.py::test_model_allowlist_rejects_mismatched_model_with_non_retryable_400
+    - packages/meta-harness/tests/test_scenario_broker.py::test_http_handler_records_budget_upper_bound_rejection
+  notes: only token/cost upper-bound admission rejections increment the counter; success, authentication, and request-validation paths keep it at zero.

@@ -669,6 +669,7 @@ def _empty_broker_metrics() -> dict[str, Any]:
     return {
         "request_count": 0,
         "rejected_count": 0,
+        "budget_rejected_count": 0,
         "upstream_request_bytes": 0,
         "usage": {
             "input_tokens": 0,

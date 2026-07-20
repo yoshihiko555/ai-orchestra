@@ -760,6 +760,86 @@ class TestRunHeadlessScenarioEnvironment:
             )
         assert lifecycle_events == ["refresh", "cleanup"]
 
+    @pytest.mark.parametrize(
+        ("subtype", "cleanup_fails", "expected_latch"),
+        [
+            ("success", False, True),
+            ("success", True, False),
+            ("error_during_execution", False, False),
+        ],
+    )
+    def test_failed_run_persists_classifiable_broker_budget_latch(
+        self,
+        tmp_path: Path,
+        monkeypatch,
+        subtype: str,
+        cleanup_fails: bool,
+        expected_latch: bool,
+    ) -> None:
+        _install_isolation_launch(monkeypatch, tmp_path)
+        worktree_dir = tmp_path / "worktree"
+        worktree_dir.mkdir()
+        staging_dir = tmp_path / "staging"
+        staging_dir.mkdir()
+        instruction_path = tmp_path / "self-report-instruction.md"
+        instruction_path.write_text("irrelevant", encoding="utf-8")
+
+        monkeypatch.setattr(
+            ev.siso,
+            "refresh_isolation_metadata",
+            lambda refreshed_launch: {
+                **refreshed_launch.metadata,
+                "broker": {
+                    "metrics": {
+                        "budget_rejected_count": 1,
+                        "budget_exceeded": True,
+                        "anomaly": True,
+                        "anomaly_reasons": [
+                            "request cost upper bound exceeds the remaining run budget"
+                        ],
+                    }
+                },
+            },
+        )
+
+        def fake_runner(_cmd, **kwargs):
+            event = {"type": "result", "subtype": subtype, "is_error": True}
+            kwargs["stdout"].write((json.dumps(event) + "\n").encode())
+            return _completed(1)
+
+        monkeypatch.setattr(ev.sproc, "run_bounded_process_tree", fake_runner)
+        if cleanup_fails:
+            monkeypatch.setattr(
+                ev.siso,
+                "cleanup_scenario_isolation",
+                lambda _launch: (_ for _ in ()).throw(RuntimeError("forced cleanup failure")),
+            )
+
+        with pytest.raises(ev.EvaluatorStageError) as exc_info:
+            ev.run_headless_scenario(
+                {"id": "s1", "prompt": "irrelevant"},
+                {},
+                worktree_dir,
+                staging_dir,
+                instruction_path,
+                main_root=tmp_path,
+                source_commit="a" * 40,
+                runner=fake_runner,
+            )
+
+        error = {
+            "stage": exc_info.value.stage,
+            "type": exc_info.value.error_type,
+            "message": exc_info.value.message,
+        }
+        isolation = json.loads((staging_dir / "isolation.json").read_text(encoding="utf-8"))
+        assert ev._is_budget_latched_run(isolation, "error", [], [error]) is expected_latch
+        if cleanup_fails:
+            assert (
+                "scenario isolation cleanup failed"
+                in isolation["broker"]["metrics"]["anomaly_reasons"]
+            )
+
     def test_isolation_failure_is_fail_closed(self, tmp_path: Path, monkeypatch) -> None:
         worktree_dir = tmp_path / "worktree"
         worktree_dir.mkdir()

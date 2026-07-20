@@ -169,6 +169,7 @@ def _broker_identity(namespace: str | None) -> BrokerIdentity:
 class BrokerMetrics:
     request_count: int = 0
     rejected_count: int = 0
+    budget_rejected_count: int = 0
     upstream_request_bytes: int = 0
     usage: Usage = field(default_factory=Usage)
     estimated_cost_usd: float = 0.0
@@ -293,6 +294,8 @@ class BrokerState:
             remaining_tokens = self.max_total_tokens - self.metrics.usage.total_tokens
             requested_tokens = input_tokens_upper_bound + output_tokens
             if requested_tokens > remaining_tokens:
+                self.metrics.budget_rejected_count += 1
+                self.persist_metrics_locked()
                 return 429, "request token upper bound exceeds the remaining run budget"
             input_price = max(
                 self.pricing.input,
@@ -304,6 +307,8 @@ class BrokerState:
             ) / 1_000_000
             remaining_cost = self.budget_usd - self.metrics.estimated_cost_usd
             if request_cost_upper_bound > remaining_cost:
+                self.metrics.budget_rejected_count += 1
+                self.persist_metrics_locked()
                 return 429, "request cost upper bound exceeds the remaining run budget"
         return None
 

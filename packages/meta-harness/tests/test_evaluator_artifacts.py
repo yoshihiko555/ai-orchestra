@@ -349,6 +349,143 @@ class TestHoldoutPhysicalSeparation:
         assert on_disk["claude_version"] == "2.1.202"
 
 
+def _run_budget_latch_attempt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    checks_non_critical: list[dict] | None = None,
+) -> tuple[dict, dict]:
+    def fake_lifecycle(**kwargs):
+        isolation = {
+            "broker": {
+                "metrics": {
+                    "budget_rejected_count": 1,
+                    "budget_exceeded": True,
+                    "anomaly_reasons": [
+                        "request cost upper bound exceeds the remaining run budget"
+                    ],
+                }
+            }
+        }
+        staging = kwargs["staging_dir"]
+        (staging / "isolation.json").write_text(json.dumps(isolation) + "\n", encoding="utf-8")
+        errors = [
+            {
+                "stage": "run",
+                "type": "run_error",
+                "message": "claude -p reported is_error=True (subtype=success)",
+            },
+        ]
+        return [], checks_non_critical or [], True, errors
+
+    monkeypatch.setattr(ev, "_run_attempt_lifecycle", fake_lifecycle)
+    result = ev.run_single_attempt(
+        main_root=tmp_path,
+        config=mh.DEFAULTS,
+        schema_dir=Path("packages/meta-harness/schemas").resolve(),
+        package_dir=Path("packages/meta-harness").resolve(),
+        project_dir=tmp_path,
+        cand_id="cand-20260720-120000-latch-ab12",
+        cand_dir=tmp_path / "cand",
+        manifest={"source_commit": "a" * 40, "config_hash": "b" * 64},
+        target="claude-harness",
+        routing_config_base_hash=None,
+        scenario={
+            "id": "scn",
+            "prompt": "irrelevant prompt",
+            "critical": [],
+            "holdout": False,
+        },
+        scenario_path=Path(
+            "packages/meta-harness/scenarios/claude-harness/summarize-readme.yaml"
+        ).resolve(),
+        suite_hash="c" * 64,
+        evaluator_hash="d" * 64,
+        attempt=1,
+        attempts_total=1,
+        cli_capabilities={"claude_version": "2.1.207", "ok": True},
+    )
+
+    run_dir = mh.runs_dir(tmp_path, mh.DEFAULTS) / result["run_id"]
+    on_disk = json.loads((run_dir / "result.json").read_text(encoding="utf-8"))
+    return result, on_disk
+
+
+def test_error_result_records_budget_latch_from_broker_metrics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result, on_disk = _run_budget_latch_attempt(tmp_path, monkeypatch)
+
+    assert result["verdict"] == "error"
+    assert result["budget_latched"] is True
+    assert on_disk["budget_latched"] is True
+
+
+def test_schema_error_prevents_budget_latch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    invalid_check = {
+        "id": "invalid-check",
+        "passed": "not-a-boolean",
+        "oracle": "command_exit",
+        "detail": "invalid check result",
+    }
+
+    result, on_disk = _run_budget_latch_attempt(
+        tmp_path,
+        monkeypatch,
+        checks_non_critical=[invalid_check],
+    )
+
+    assert result["verdict"] == "error"
+    assert "budget_latched" not in result
+    assert "budget_latched" not in on_disk
+    assert any(error["type"] == "schema_error" for error in result["errors"])
+
+
+@pytest.mark.parametrize(("verdict", "count"), [("pass", 1), ("error", 0)])
+def test_budget_latch_requires_error_and_positive_rejection_count(verdict: str, count: int) -> None:
+    isolation = {
+        "broker": {
+            "metrics": {
+                "budget_rejected_count": count,
+                "budget_exceeded": True,
+                "anomaly_reasons": ["request cost upper bound exceeds the remaining run budget"],
+            }
+        }
+    }
+    errors = [{"stage": "run", "type": "budget_exceeded", "message": "budget rejected"}]
+
+    assert ev._is_budget_latched_run(isolation, verdict, [], errors) is False
+
+
+@pytest.mark.parametrize(
+    ("critical", "extra_error"),
+    [
+        ([{"passed": False}], None),
+        ([], {"stage": "isolation_cleanup", "type": "cleanup_error", "message": "failed"}),
+        ([], {"stage": "run", "type": "run_error", "message": "scenario metadata missing"}),
+    ],
+)
+def test_budget_latch_rejects_independent_hard_failure(
+    critical: list[dict], extra_error: dict | None
+) -> None:
+    isolation = {
+        "broker": {
+            "metrics": {
+                "budget_rejected_count": 1,
+                "budget_exceeded": True,
+                "anomaly_reasons": ["request token upper bound exceeds the remaining run budget"],
+            }
+        }
+    }
+    errors = [{"stage": "run", "type": "budget_exceeded", "message": "budget rejected"}]
+    if extra_error is not None:
+        errors.append(extra_error)
+
+    assert ev._is_budget_latched_run(isolation, "error", critical, errors) is False
+
+
 class TestEnforceResultSchema:
     """EV-12: result.json が schema を満たさない場合、書き込み前に verdict=error へ強制する。"""
 

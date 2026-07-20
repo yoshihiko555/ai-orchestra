@@ -56,3 +56,4 @@ AI Orchestra プロジェクトの意思決定記録。
 | ADR-20260712-032 | PR レビュー指摘を action-scoped snapshot でプロセス境界を越えて受け渡す                | accepted   | 2026-07-12 |
 | ADR-20260715-037 | loop-harness LP-2（Maker/Checker）の実行基盤を Docker 完全隔離へ移行する               | proposed   | 2026-07-15 |
 | ADR-20260718-040 | Docker action の cleanup 失敗と実行取消を安全停止として扱う                          | accepted   | 2026-07-18 |
+| ADR-20260720-041 | 予算 latch を frontier 回帰判定で評価不能として中立化する                            | accepted   | 2026-07-20 |
