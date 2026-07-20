@@ -73,6 +73,7 @@ def launch_proposer_backend(
     schema_dir: Path,
     config: dict,
     isolation_launch: iso.IsolationLaunch,
+    target: str = mh.DEFAULT_TARGET,
     ephemeral_home: Path | None = None,
     auth_canary: str | None = None,
     allowed_based_on_runs: list[str] | tuple[str, ...] | None = None,
@@ -92,6 +93,7 @@ def launch_proposer_backend(
             output_path=output_path,
             proposer_cfg=proposer_cfg,
             isolation_launch=isolation_launch,
+            target=target,
             ephemeral_home=ephemeral_home,
             auth_canary=auth_canary,
             allowed_based_on_runs=allowed_based_on_runs,
@@ -221,6 +223,7 @@ def _launch_codex_backend(
     output_path: Path,
     proposer_cfg: dict,
     isolation_launch: iso.IsolationLaunch,
+    target: str,
     ephemeral_home: Path | None,
     auth_canary: str | None,
     allowed_based_on_runs: list[str] | tuple[str, ...] | None,
@@ -231,6 +234,7 @@ def _launch_codex_backend(
     output_schema_path = _stage_codex_output_schema(
         schema_dir=schema_dir,
         ephemeral_home=_resolve_codex_home(ephemeral_home, isolation_launch),
+        target=target,
         allowed_based_on_runs=allowed_based_on_runs,
     )
     command = [
@@ -508,10 +512,27 @@ def _resolve_codex_home(ephemeral_home: Path | None, isolation_launch: iso.Isola
     raise ProposerRuntimeError("codex proposer requires an ephemeral CODEX_HOME")
 
 
+# Issue #282: OpenAI structured outputs（strict mode）は `required` が
+# `properties` の全キーを含む配列であることを要求する。proposal.schema.json は
+# `changes` XOR `config_patch` 設計のため両方を top-level required から除外して
+# おり（検証用 SSOT はそのまま）、codex に渡す staged schema 側だけを
+# payload kind に応じて strict 化する。routing-config だけが config_patch を
+# 産む対象（meta_harness_common.validate_config_patch と同じ判定軸）。
+_CODEX_STRICT_CONFIG_PATCH_TARGET = "routing-config"
+
+
+def _codex_schema_excluded_property(target: str) -> str:
+    """payload kind に応じて staged schema から除くプロパティ名を返す。"""
+    if target == _CODEX_STRICT_CONFIG_PATCH_TARGET:
+        return "changes"
+    return "config_patch"
+
+
 def _stage_codex_output_schema(
     *,
     schema_dir: Path,
     ephemeral_home: Path,
+    target: str = mh.DEFAULT_TARGET,
     allowed_based_on_runs: list[str] | tuple[str, ...] | None = None,
 ) -> Path:
     schema_path = schema_dir / PROPOSAL_SCHEMA_NAME
@@ -519,16 +540,17 @@ def _stage_codex_output_schema(
         raise ProposerRuntimeError(f"proposal schema file not found: {schema_path}")
     ephemeral_home.mkdir(parents=True, exist_ok=True, mode=0o700)
     staged_path = ephemeral_home / PROPOSAL_SCHEMA_NAME
-    if allowed_based_on_runs is None:
-        shutil.copyfile(schema_path, staged_path)
-    else:
-        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    excluded_property = _codex_schema_excluded_property(target)
+    schema["properties"].pop(excluded_property, None)
+    schema["required"] = list(schema["properties"].keys())
+    if allowed_based_on_runs is not None:
         schema["properties"]["based_on_runs"]["items"]["enum"] = sorted(
             {str(run_id) for run_id in allowed_based_on_runs}
         )
-        staged_path.write_text(
-            json.dumps(schema, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-        )
+    staged_path.write_text(
+        json.dumps(schema, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
     staged_path.chmod(0o644)
     return staged_path
 

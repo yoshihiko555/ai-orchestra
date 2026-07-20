@@ -256,6 +256,7 @@ def _launch_and_register_proposal(
                 schema_dir=_SCHEMA_DIR,
                 config=config,
                 isolation_launch=launch,
+                target=target,
                 ephemeral_home=home,
                 auth_canary=auth_canary,
                 allowed_based_on_runs=valid_based_on_run_ids,
