@@ -496,7 +496,11 @@ def start(
         phase,
         precedent_push_check=precedent_push_check,
     )
-    append_journal_event(loop_id, project_dir, "loop_created", "step", None, asdict(state))
+    # `_drop_none_remote_head_baseline()`: keep the journal payload byte-for-byte identical to
+    # the pre-Issue #196 shape for non-opted-in callers (bot review, PR #277, Codex P2) -- see
+    # its docstring for the full contract.
+    journal_payload = _drop_none_remote_head_baseline(asdict(state))
+    append_journal_event(loop_id, project_dir, "loop_created", "step", None, journal_payload)
     _write_state(state, project_dir)
     result = propose(
         loop_id, project_dir, lock.lease_token, precedent_push_check=precedent_push_check
@@ -2980,6 +2984,22 @@ def _state_to_dict(state: LoopState) -> dict[str, Any]:
     data = asdict(state)
     data["iteration"] = current_iteration
     data["guards"] = {name: asdict(counter) for name, counter in state.guards.items()}
+    return _drop_none_remote_head_baseline(data)
+
+
+def _drop_none_remote_head_baseline(data: dict[str, Any]) -> dict[str, Any]:
+    """Remove `remote_head_baseline` from a serialized state dict when it is `None`.
+
+    Bot review finding (PR #277, Codex P2): non-opted-in callers of `start()` (default
+    `precedent_push_check=False`, e.g. LP-2's `loop_driver.py`) must get state.json / the
+    `loop_created` journal payload byte-for-byte identical to the shape before Issue #196
+    introduced this field -- i.e. no `remote_head_baseline` key at all, not a `null` value.
+    `_state_from_dict()`'s `data.get("remote_head_baseline")` already treats a missing key the
+    same as an explicit `None`, so dropping the key here changes nothing for opted-in callers
+    and restores the pre-existing shape for everyone else.
+    """
+    if data.get("remote_head_baseline") is None:
+        data.pop("remote_head_baseline", None)
     return data
 
 

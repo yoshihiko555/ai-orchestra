@@ -1631,6 +1631,75 @@ def test_initial_state_default_does_not_query_remote_head(
     assert called is False
 
 
+def _prepare_repo_for_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, branch: str = "loop/issue-1"
+) -> str:
+    """Real git repo + remote, plus the monkeypatches `lc.start()` needs.
+
+    Unlike `_setup_real_git_loop()`, does not pre-create loop state -- `start()` creates it
+    itself (and raises `InvalidStateError` if state already exists).
+    """
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_repo_with_remote(repo, remote, branch)
+    monkeypatch.setattr(lc, "resolve_root_worktree", lambda _project_dir: tmp_path)
+    monkeypatch.setattr(lc.socket, "gethostname", lambda: "local")
+    return str(repo)
+
+
+def test_start_opt_out_omits_remote_head_baseline_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Bot review finding (PR #277, Codex P2): non-opted-in `start()` callers (default
+    `precedent_push_check=False`, e.g. LP-2's `loop_driver.py`) must get a persisted state.json
+    and a `loop_created` journal payload with no `remote_head_baseline` key at all -- not a
+    `null` value -- to stay byte-for-byte identical to the pre-Issue #196 shape."""
+    branch = "loop/issue-1"
+    project_dir = _prepare_repo_for_start(tmp_path, monkeypatch, branch)
+    loop_id = "abcd1234-issue-1"
+
+    lc.start(loop_id, project_dir, "issue-loop", "abcd1234", project_dir, branch, "owner", 3600)
+
+    persisted = json.loads(lc.state_path(loop_id, project_dir).read_text(encoding="utf-8"))
+    assert "remote_head_baseline" not in persisted
+
+    journal_event = lc.find_journal_event(loop_id, project_dir, None, "loop_created")
+    assert journal_event is not None
+    assert "remote_head_baseline" not in journal_event["payload"]
+
+
+def test_start_opt_in_includes_remote_head_baseline_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Counterpart to the opt-out test above: opted-in callers (`loop_step.py`'s LP-1) must keep
+    getting the seeded baseline in both state.json and the `loop_created` journal payload."""
+    branch = "loop/issue-1"
+    project_dir = _prepare_repo_for_start(tmp_path, monkeypatch, branch)
+    repo = Path(project_dir)
+    _git(["push", "origin", branch], repo)
+    expected_head = _git(["rev-parse", "HEAD"], repo)
+    loop_id = "abcd1234-issue-1"
+
+    lc.start(
+        loop_id,
+        project_dir,
+        "issue-loop",
+        "abcd1234",
+        project_dir,
+        branch,
+        "owner",
+        3600,
+        precedent_push_check=True,
+    )
+
+    persisted = json.loads(lc.state_path(loop_id, project_dir).read_text(encoding="utf-8"))
+    assert persisted["remote_head_baseline"] == expected_head
+
+    journal_event = lc.find_journal_event(loop_id, project_dir, None, "loop_created")
+    assert journal_event is not None
+    assert journal_event["payload"]["remote_head_baseline"] == expected_head
+
+
 def test_initial_state_seeds_absent_sentinel_for_brand_new_branch(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     remote = tmp_path / "remote.git"
