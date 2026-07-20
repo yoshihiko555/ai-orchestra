@@ -345,9 +345,9 @@ def test_project_override_issue_loop_is_not_shadowing_stale_exec_order() -> None
 
 def test_bundled_issue_loop_posts_summary_comment_on_pr_review_response_failure() -> None:
     """Issue #235 (PR #276 review, high): `_exit_failure_comment`'s finding disposition matrix
-    (EV-144) is only ever posted when `on_failure.exec` includes `post_summary_comment` --
+    (EV-146) is only ever posted when `on_failure.exec` includes `post_summary_comment` --
     without it in the packaged `pr_review_response` phase, a `pr_review_response` failure exit
-    (e.g. `max_iterations`) never actually surfaces the matrix anywhere, contradicting EV-144's
+    (e.g. `max_iterations`) never actually surfaces the matrix anywhere, contradicting EV-146's
     documented contract."""
     source_path = REPO_ROOT / "packages" / "loop-harness" / "config" / "loops" / "issue-loop.yaml"
     definition = ld.load_and_validate(source_path)
