@@ -150,9 +150,10 @@ class TestProposerBackendLaunch:
         )
 
         assert Path(captured_args[0]).name == "srt"
-        assert captured_args[1:4] == [
+        assert captured_args[1:5] == [
             "--settings",
             str(isolation_launch.settings_path),
+            "--",
             "bash",
         ]
         bash_idx = captured_args.index("bash")
@@ -163,6 +164,41 @@ class TestProposerBackendLaunch:
         assert f"> {shlex.quote(str(events_path))} 2>&1" in script
         assert captured_args[bash_idx + 3] == "codex"
         assert captured_args[bash_idx + 4] == "exec"
+
+    def test_codex_backend_terminates_srt_options_before_bash(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Issue #284: srt に子コマンドの -c を解釈させない。"""
+        _install_required_tools(tmp_path / "bin", "srt", "codex", "bash")
+        monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+        isolation_launch = _isolation_launch(tmp_path)
+        captured_args: list[str] = []
+
+        def runner(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess:
+            captured_args.extend(args)
+            Path(args[args.index("-o") + 1]).write_text(
+                json.dumps(_valid_proposal()),
+                encoding="utf-8",
+            )
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        backend.launch_proposer_backend(
+            view_dir=tmp_path,
+            prompt="prompt",
+            schema_dir=SCHEMA_DIR,
+            config={"proposer": {"tool": "codex"}},
+            isolation_launch=isolation_launch,
+            ephemeral_home=tmp_path / "codex-home",
+            runner=runner,
+        )
+
+        assert captured_args[:5] == [
+            str(tmp_path / "bin" / "srt"),
+            "--settings",
+            str(isolation_launch.settings_path),
+            "--",
+            "bash",
+        ]
 
     def test_codex_backend_redacts_credentials_from_nonzero_exit(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
