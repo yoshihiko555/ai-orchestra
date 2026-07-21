@@ -62,7 +62,7 @@
     "config/quality-gates/evaluation-set-mapping.yaml",
     "config/skill-evolution/skill-evolution.yaml"
   ],
-  "last_sync": "2026-07-16T12:45:33.416939+00:00",
+  "last_sync": "2026-07-21T09:37:57.791816+00:00",
   "file_hashes": {
     "core": {
       "config/core/task-memory.yaml": "081c101ad10526344e4fe7831babbe6ef661d0a4ae7e49fad4eb3967c030b7d8"
@@ -127,6 +127,9 @@
     },
     "meta-harness": {
       "config/meta-harness/meta-harness.yaml": "41c6921a9bf409377c39b1b0238671b0da6fd079349893ac9856cd62cecd0423"
+    },
+    "quality-gates": {
+      "config/quality-gates/evaluation-set-mapping.yaml": "831e3804fa10c7823465e0ae081cdec88ab0a9d2a929d048e50b4690d48baa95"
     }
   },
   "codex_file_hashes": {
