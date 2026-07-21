@@ -238,12 +238,19 @@ class TestProposerBackendLaunch:
     def test_codex_backend_reports_missing_events_file_on_nonzero_exit(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Issue #284: 診断ファイル欠落時も元の runtime error を維持する。"""
+        """Issue #284: 診断ファイル欠落時は捕捉済み stdio も報告・秘匿する。"""
         _install_required_tools(tmp_path / "bin", "srt", "codex", "bash")
         monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+        canary = backend.generate_auth_canary()
+        jwt = _fake_jwt(int(time.time()) + 86400)
 
         def runner(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess:
-            return subprocess.CompletedProcess(args, 9, "", "")
+            return subprocess.CompletedProcess(
+                args,
+                9,
+                f"real-shell-error-marker stdout {canary}\n",
+                f"startup stderr {jwt}\n",
+            )
 
         with pytest.raises(backend.ProposerRuntimeError) as exc_info:
             backend.launch_proposer_backend(
@@ -253,12 +260,18 @@ class TestProposerBackendLaunch:
                 config={"proposer": {"tool": "codex"}},
                 isolation_launch=_isolation_launch(tmp_path),
                 ephemeral_home=tmp_path / "codex-home",
+                auth_canary=canary,
                 runner=runner,
             )
 
         message = str(exc_info.value)
         assert "exited 9" in message
         assert "no events file" in message
+        assert "real-shell-error-marker" in message
+        assert canary not in message
+        assert jwt not in message
+        assert "[REDACTED:auth canary" in message
+        assert "[REDACTED:JWT (3-segment)]" in message
 
     def test_codex_backend_reports_nonregular_events_file_on_nonzero_exit(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -359,6 +372,47 @@ class TestProposerBackendLaunch:
         assert result.proposal["theme"] == "tighten example"
         assert result.stdout == ""
         assert result.tokens_used == 1234
+
+    def test_codex_backend_returns_tokens_used_from_event_longer_than_excerpt(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """usage 用 tail は 500 bytes 超の完全な JSONL event を保持する。"""
+        _install_required_tools(tmp_path / "bin", "srt", "codex")
+        monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+        codex_home = tmp_path / "codex-home"
+        usage_event = json.dumps(
+            {
+                "type": "turn.completed",
+                "response_id": f"resp_{'a' * 2_000}",
+                "usage": {"input_tokens": 3210, "output_tokens": 456},
+            }
+        )
+        assert backend._EXCERPT_MAX_BYTES < len(usage_event.encode("utf-8"))
+        assert len(usage_event.encode("utf-8")) < backend._USAGE_TAIL_MAX_BYTES
+
+        def runner(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess:
+            Path(args[args.index("-o") + 1]).write_text(
+                json.dumps(_valid_proposal()),
+                encoding="utf-8",
+            )
+            partial_prefix = "old-event-fragment-" + "x" * backend._USAGE_TAIL_MAX_BYTES
+            (codex_home / "codex-events.log").write_text(
+                f"{partial_prefix}\n{usage_event}\n",
+                encoding="utf-8",
+            )
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        result = backend.launch_proposer_backend(
+            view_dir=tmp_path,
+            prompt="prompt",
+            schema_dir=SCHEMA_DIR,
+            config={"proposer": {"tool": "codex"}},
+            isolation_launch=_isolation_launch(tmp_path),
+            ephemeral_home=codex_home,
+            runner=runner,
+        )
+
+        assert result.tokens_used == 3666
 
     def test_codex_backend_stages_output_schema_under_ephemeral_home(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

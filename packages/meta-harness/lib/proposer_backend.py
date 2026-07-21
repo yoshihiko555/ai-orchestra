@@ -39,6 +39,8 @@ AUTH_TOKEN_TTL_MARGIN_SECONDS = 120
 _CODEX_HOME_PREFIX = "meta-harness-codex-home-"
 _CODEX_ORPHAN_MAX_AGE = timedelta(hours=24)
 _CODEX_MODEL_CATALOG_FILES = ("models_cache.json", "version.json")
+_EXCERPT_MAX_BYTES = 500
+_USAGE_TAIL_MAX_BYTES = 65_536
 
 SubprocessRunner = Callable[..., subprocess.CompletedProcess]
 
@@ -118,7 +120,7 @@ def launch_proposer_backend(
     tokens_used = parse_tokens_used(stdout)
     if tool == "codex":
         codex_home = _resolve_codex_home(ephemeral_home, isolation_launch)
-        events = _read_events_tail(codex_home / "codex-events.log")
+        events = _read_usage_events_tail(codex_home / "codex-events.log")
         events_tokens_used = parse_tokens_used(events or "")
         if events_tokens_used is not None:
             tokens_used = events_tokens_used
@@ -425,29 +427,59 @@ def _error_excerpt(
     if events_path is not None:
         events = _read_events_tail(events_path)
         if events is None:
-            return "events=(no events file)"
+            return f"events=(no events file); {_stdio_excerpt(completed, auth_canary)}"
         events = psec.redact_for_storage(events.strip(), auth_canary=auth_canary)
-        return f"events={events[:500]}"
+        return f"events={events[:_EXCERPT_MAX_BYTES]}"
+    return _stdio_excerpt(completed, auth_canary)
+
+
+def _stdio_excerpt(
+    completed: subprocess.CompletedProcess,
+    auth_canary: str | None,
+) -> str:
     stderr = psec.redact_for_storage((completed.stderr or "").strip(), auth_canary=auth_canary)
     stdout = psec.redact_for_storage((completed.stdout or "").strip(), auth_canary=auth_canary)
     parts = []
     if stderr:
-        parts.append(f"stderr={stderr[:500]}")
+        parts.append(f"stderr={stderr[:_EXCERPT_MAX_BYTES]}")
     if stdout:
-        parts.append(f"stdout={stdout[:500]}")
+        parts.append(f"stdout={stdout[:_EXCERPT_MAX_BYTES]}")
     return "; ".join(parts) if parts else "(no output)"
 
 
 def _read_events_tail(events_path: Path) -> str | None:
-    """イベント診断・usage 用に末尾 500 bytes を通常ファイルからだけ読み取る。"""
+    """イベント診断用に末尾の短い excerpt を通常ファイルからだけ読み取る。"""
+    tail = _read_regular_file_tail(events_path, _EXCERPT_MAX_BYTES)
+    if tail is None:
+        return None
+    data, _truncated = tail
+    return data.decode("utf-8", errors="replace")
+
+
+def _read_usage_events_tail(events_path: Path) -> str | None:
+    """usage 抽出用に十分な末尾を読み、先頭の不完全な JSONL 行を除く。"""
+    tail = _read_regular_file_tail(events_path, _USAGE_TAIL_MAX_BYTES)
+    if tail is None:
+        return None
+    data, truncated = tail
+    if truncated:
+        _partial_line, separator, data = data.partition(b"\n")
+        if not separator:
+            return ""
+    return data.decode("utf-8", errors="replace")
+
+
+def _read_regular_file_tail(path: Path, max_bytes: int) -> tuple[bytes, bool] | None:
+    """symlink を追わず、通常ファイルの末尾を最大 ``max_bytes`` 読む。"""
     try:
-        fd = os.open(events_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(fd, "rb") as handle:
             info = os.fstat(handle.fileno())
             if not stat.S_ISREG(info.st_mode):
                 return None
-            handle.seek(max(0, info.st_size - 500))
-            return handle.read(500).decode("utf-8", errors="replace")
+            offset = max(0, info.st_size - max_bytes)
+            handle.seek(offset)
+            return handle.read(max_bytes), offset > 0
     except OSError:
         return None
 
