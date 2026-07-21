@@ -235,6 +235,45 @@ class TestProposerBackendLaunch:
         assert "[REDACTED:JWT (3-segment)]" in message
         assert "events=" in message
 
+    def test_codex_backend_redacts_canary_before_trimming_events_excerpt(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """末尾 500 bytes の境界を跨ぐ canary も、64 KiB 読取後に秘匿する。"""
+        _install_required_tools(tmp_path / "bin", "srt", "codex", "bash")
+        monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+        canary = backend.generate_auth_canary()
+        events_path = tmp_path / "codex-home" / "codex-events.log"
+        prefix = f"historical={'h' * 1_000}\nevent="
+        split_offset = 8
+        suffix = "x" * (backend._EXCERPT_MAX_BYTES - len(canary) + split_offset)
+        events = f"{prefix}{canary}{suffix}"
+        cutoff = len(events.encode("utf-8")) - backend._EXCERPT_MAX_BYTES
+        canary_start = len(prefix.encode("utf-8"))
+        assert canary_start < cutoff < canary_start + len(canary.encode("utf-8"))
+        leaked_fragment = canary[split_offset:]
+        assert events.encode("utf-8")[cutoff:].decode("utf-8").startswith(leaked_fragment)
+
+        def leaking_runner(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess:
+            events_path.write_text(events, encoding="utf-8")
+            return subprocess.CompletedProcess(args, 7, "", "")
+
+        with pytest.raises(backend.ProposerRuntimeError) as exc_info:
+            backend.launch_proposer_backend(
+                view_dir=tmp_path,
+                prompt="prompt",
+                schema_dir=SCHEMA_DIR,
+                config={"proposer": {"tool": "codex"}},
+                isolation_launch=_isolation_launch(tmp_path),
+                ephemeral_home=events_path.parent,
+                auth_canary=canary,
+                runner=leaking_runner,
+            )
+
+        message = str(exc_info.value)
+        assert canary not in message
+        assert leaked_fragment not in message
+        assert "[REDACTED:auth canary (plaintext)]" in message
+
     def test_codex_backend_reports_missing_events_file_on_nonzero_exit(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -243,8 +282,11 @@ class TestProposerBackendLaunch:
         monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
         canary = backend.generate_auth_canary()
         jwt = _fake_jwt(int(time.time()) + 86400)
+        events_path = tmp_path / "codex-home" / "codex-events.log"
 
         def runner(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess:
+            # Host pre-creation is removed to model a post-run path that is genuinely absent.
+            events_path.unlink()
             return subprocess.CompletedProcess(
                 args,
                 9,
@@ -273,10 +315,10 @@ class TestProposerBackendLaunch:
         assert "[REDACTED:auth canary" in message
         assert "[REDACTED:JWT (3-segment)]" in message
 
-    def test_codex_backend_reports_nonregular_events_file_on_nonzero_exit(
+    def test_codex_backend_rejects_preexisting_nonregular_events_file(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Issue #284: 診断先が FIFO でも block せず元の runtime error を維持する。"""
+        """Host pre-creation は既存の不審な events path を排他的作成で拒否する。"""
         _install_required_tools(tmp_path / "bin", "srt", "codex", "bash")
         monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
         events_path = tmp_path / "codex-home" / "codex-events.log"
@@ -286,7 +328,9 @@ class TestProposerBackendLaunch:
         def runner(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess:
             return subprocess.CompletedProcess(args, 9, "", "")
 
-        with pytest.raises(backend.ProposerRuntimeError) as exc_info:
+        with pytest.raises(
+            backend.ProposerRuntimeError, match="could not pre-create codex events file"
+        ):
             backend.launch_proposer_backend(
                 view_dir=tmp_path,
                 prompt="prompt",
@@ -296,10 +340,6 @@ class TestProposerBackendLaunch:
                 ephemeral_home=tmp_path / "codex-home",
                 runner=runner,
             )
-
-        message = str(exc_info.value)
-        assert "exited 9" in message
-        assert "no events file" in message
 
     def test_codex_backend_rejects_missing_output_file(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -341,13 +381,18 @@ class TestProposerBackendLaunch:
         _install_required_tools(tmp_path / "bin", "srt", "codex")
         monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
         codex_home = tmp_path / "codex-home"
+        events_path = codex_home / "codex-events.log"
+        identities: list[tuple[int, int]] = []
 
         def runner(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess:
             Path(args[args.index("-o") + 1]).write_text(
                 json.dumps(_valid_proposal()),
                 encoding="utf-8",
             )
-            (codex_home / "codex-events.log").write_text(
+            precreated = events_path.stat()
+            identities.append((precreated.st_dev, precreated.st_ino))
+            assert precreated.st_mode & 0o777 == 0o600
+            events_path.write_text(
                 json.dumps(
                     {
                         "type": "turn.completed",
@@ -357,6 +402,8 @@ class TestProposerBackendLaunch:
                 + "\n",
                 encoding="utf-8",
             )
+            written = events_path.stat()
+            identities.append((written.st_dev, written.st_ino))
             return subprocess.CompletedProcess(args, 0, "", "")
 
         result = backend.launch_proposer_backend(
@@ -372,6 +419,74 @@ class TestProposerBackendLaunch:
         assert result.proposal["theme"] == "tighten example"
         assert result.stdout == ""
         assert result.tokens_used == 1234
+        assert identities[0] == identities[1]
+
+    def test_codex_backend_rejects_recreated_events_file_on_success(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _install_required_tools(tmp_path / "bin", "srt", "codex", "bash")
+        monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+        codex_home = tmp_path / "codex-home"
+        events_path = codex_home / "codex-events.log"
+
+        def tampering_runner(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess:
+            Path(args[args.index("-o") + 1]).write_text(
+                json.dumps(_valid_proposal()),
+                encoding="utf-8",
+            )
+            events_path.unlink()
+            events_path.write_text(
+                json.dumps(
+                    {
+                        "type": "turn.completed",
+                        "usage": {"input_tokens": 1, "output_tokens": 1},
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        with pytest.raises(
+            backend.ProposerRuntimeError, match="events file identity changed; tampering suspected"
+        ):
+            backend.launch_proposer_backend(
+                view_dir=tmp_path,
+                prompt="prompt",
+                schema_dir=SCHEMA_DIR,
+                config={"proposer": {"tool": "codex"}},
+                isolation_launch=_isolation_launch(tmp_path),
+                ephemeral_home=codex_home,
+                runner=tampering_runner,
+            )
+
+    def test_codex_backend_rejects_recreated_events_file_on_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _install_required_tools(tmp_path / "bin", "srt", "codex", "bash")
+        monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+        codex_home = tmp_path / "codex-home"
+        events_path = codex_home / "codex-events.log"
+
+        def tampering_runner(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess:
+            events_path.unlink()
+            events_path.write_text("forged diagnostic\n", encoding="utf-8")
+            return subprocess.CompletedProcess(args, 7, "", "")
+
+        with pytest.raises(
+            backend.ProposerRuntimeError, match="events file identity changed; tampering suspected"
+        ) as exc_info:
+            backend.launch_proposer_backend(
+                view_dir=tmp_path,
+                prompt="prompt",
+                schema_dir=SCHEMA_DIR,
+                config={"proposer": {"tool": "codex"}},
+                isolation_launch=_isolation_launch(tmp_path),
+                ephemeral_home=codex_home,
+                runner=tampering_runner,
+            )
+
+        assert "forged diagnostic" not in str(exc_info.value)
 
     def test_codex_backend_returns_tokens_used_from_event_longer_than_excerpt(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
