@@ -1,0 +1,9 @@
+# プロジェクト固有の loop-harness 上書き設定（同期対象外）
+pr_review:
+  reviewer_allowlist:
+    - login: "chatgpt-codex-connector[bot]"
+      app_slug: "chatgpt-codex-connector"
+      type: "Bot"
+    - login: "coderabbitai[bot]"
+      app_slug: "coderabbitai"
+      type: "Bot"
