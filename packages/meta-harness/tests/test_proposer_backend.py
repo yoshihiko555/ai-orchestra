@@ -54,6 +54,35 @@ def _isolation_launch(tmp_path: Path):
     return backend.iso.IsolationLaunch("srt", settings, {}, {}, {})
 
 
+def _assert_schema_node_strict(node: object) -> None:
+    """schema ノードを再帰的に走査し OpenAI structured output の strict 制約を検証する。
+
+    - dict ノードは必ず `type` を宣言する
+    - `type: object` ノードは `required == properties の全キー` かつ
+      `additionalProperties: false` を満たす
+    - `properties` / `items` の子ノードも同様に再帰検証する
+    """
+    if isinstance(node, list):
+        for item in node:
+            _assert_schema_node_strict(item)
+        return
+    if not isinstance(node, dict):
+        return
+    if "properties" in node or node.get("type") == "object":
+        assert node.get("type") == "object", f"object-like node missing type: {node}"
+        properties = node.get("properties", {})
+        assert node.get("additionalProperties") is False, (
+            f"object node must set additionalProperties: false: {node}"
+        )
+        assert sorted(node.get("required", [])) == sorted(properties), (
+            f"object node required must equal all properties: {node}"
+        )
+    for value in node.get("properties", {}).values():
+        _assert_schema_node_strict(value)
+    if "items" in node:
+        _assert_schema_node_strict(node["items"])
+
+
 def _runner_writes(output: str | None, *, returncode: int = 0):
     def _runner(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess:
         if output is not None and "-o" in args:
@@ -204,6 +233,7 @@ class TestProposerBackendLaunch:
             schema_dir=SCHEMA_DIR,
             config={"proposer": {"tool": "codex"}},
             isolation_launch=_isolation_launch(tmp_path),
+            target="claude-harness",
             ephemeral_home=codex_home,
             runner=runner,
         )
@@ -211,10 +241,11 @@ class TestProposerBackendLaunch:
         output_schema = Path(captured_args[captured_args.index("--output-schema") + 1]).resolve()
         assert output_schema == (codex_home / backend.PROPOSAL_SCHEMA_NAME).resolve()
         assert SCHEMA_DIR.resolve() not in output_schema.parents
-        assert output_schema.read_text(encoding="utf-8") == (
-            SCHEMA_DIR / backend.PROPOSAL_SCHEMA_NAME
-        ).read_text(encoding="utf-8")
         assert output_schema.stat().st_mode & 0o777 == 0o644
+
+        staged_schema = json.loads(output_schema.read_text(encoding="utf-8"))
+        assert "config_patch" not in staged_schema["properties"]
+        assert sorted(staged_schema["required"]) == sorted(staged_schema["properties"])
 
     def test_codex_backend_stages_output_schema_with_allowed_based_on_runs(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -253,6 +284,125 @@ class TestProposerBackendLaunch:
             "run-20260708-010000-base-scn-a2-beef",
         ]
         assert captured_schema["properties"]["based_on_runs"]["items"]["pattern"] == "^run-"
+        # enum 注入と strict 化（Issue #282）は両立する必要がある。
+        assert "config_patch" not in captured_schema["properties"]
+        assert sorted(captured_schema["required"]) == sorted(captured_schema["properties"])
+
+    def test_codex_backend_stages_strict_schema_for_routing_config_target(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Issue #282: routing-config は config_patch 側のみを required にする。"""
+        _install_required_tools(tmp_path / "bin", "srt", "codex")
+        monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+        view_dir = tmp_path / "view"
+        view_dir.mkdir()
+        captured_schema: dict = {}
+
+        def runner(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess:
+            output_schema = Path(args[args.index("--output-schema") + 1])
+            captured_schema.update(json.loads(output_schema.read_text(encoding="utf-8")))
+            config_patch_proposal = {
+                key: value for key, value in _valid_proposal().items() if key != "changes"
+            }
+            config_patch_proposal["config_patch"] = [
+                {"file": "cli-tools.yaml", "key_path": "codex.model", "value": "x"}
+            ]
+            Path(args[args.index("-o") + 1]).write_text(
+                json.dumps(config_patch_proposal),
+                encoding="utf-8",
+            )
+            return subprocess.CompletedProcess(args, 0, "tokens used: 1\n", "")
+
+        backend.launch_proposer_backend(
+            view_dir=view_dir,
+            prompt="prompt",
+            schema_dir=SCHEMA_DIR,
+            config={"proposer": {"tool": "codex"}},
+            isolation_launch=_isolation_launch(tmp_path),
+            target="routing-config",
+            ephemeral_home=tmp_path / "codex-home",
+            runner=runner,
+        )
+
+        assert "changes" not in captured_schema["properties"]
+        assert "config_patch" in captured_schema["properties"]
+        assert set(captured_schema["required"]) == set(captured_schema["properties"])
+        assert set(captured_schema["properties"]) == {
+            "schema_version",
+            "hypothesis",
+            "theme",
+            "config_patch",
+            "based_on_runs",
+            "expected_effect",
+            "risk_notes",
+        }
+
+    @pytest.mark.parametrize("target", ["claude-harness", "skill:handoff"])
+    def test_codex_backend_stages_strict_schema_for_changes_targets(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str
+    ) -> None:
+        """Issue #282: claude-harness / skill:* は changes 側のみを required にする。"""
+        _install_required_tools(tmp_path / "bin", "srt", "codex")
+        monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+        view_dir = tmp_path / "view"
+        view_dir.mkdir()
+        captured_schema: dict = {}
+
+        def runner(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess:
+            output_schema = Path(args[args.index("--output-schema") + 1])
+            captured_schema.update(json.loads(output_schema.read_text(encoding="utf-8")))
+            Path(args[args.index("-o") + 1]).write_text(
+                json.dumps(_valid_proposal()),
+                encoding="utf-8",
+            )
+            return subprocess.CompletedProcess(args, 0, "tokens used: 1\n", "")
+
+        backend.launch_proposer_backend(
+            view_dir=view_dir,
+            prompt="prompt",
+            schema_dir=SCHEMA_DIR,
+            config={"proposer": {"tool": "codex"}},
+            isolation_launch=_isolation_launch(tmp_path),
+            target=target,
+            ephemeral_home=tmp_path / "codex-home",
+            runner=runner,
+        )
+
+        assert "config_patch" not in captured_schema["properties"]
+        assert "changes" in captured_schema["properties"]
+        assert set(captured_schema["required"]) == set(captured_schema["properties"])
+        assert set(captured_schema["properties"]) == {
+            "schema_version",
+            "hypothesis",
+            "theme",
+            "changes",
+            "based_on_runs",
+            "expected_effect",
+            "risk_notes",
+        }
+
+    @pytest.mark.parametrize("target", ["claude-harness", "routing-config", "skill:handoff"])
+    def test_staged_schema_nodes_are_fully_strict(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str
+    ) -> None:
+        """OpenAI strict mode 全体の回帰検知（PR8: type 欠落 / Issue #282: required 欠落）。
+
+        staged schema 内の全オブジェクトノードについて
+        `required == properties の全キー` / `additionalProperties: false` /
+        全ノードに `type` があることを再帰的に検証する。
+        """
+        _install_required_tools(tmp_path / "bin", "srt", "codex")
+        monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+        codex_home = tmp_path / "codex-home"
+
+        output_schema_path = backend._stage_codex_output_schema(
+            schema_dir=SCHEMA_DIR,
+            ephemeral_home=codex_home,
+            target=target,
+        )
+        staged_schema = json.loads(output_schema_path.read_text(encoding="utf-8"))
+
+        _assert_schema_node_strict(staged_schema)
 
     def test_claude_bare_backend_normalizes_nested_result(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
