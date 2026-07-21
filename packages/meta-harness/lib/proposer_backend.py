@@ -8,6 +8,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import shutil
 import signal
 import stat
@@ -114,13 +115,20 @@ def launch_proposer_backend(
         raise ProposalValidationError(f"unsupported proposer.tool: {tool!r}")
     proposal = load_and_validate_proposal_output(output_path, schema_dir)
     stdout = completed.stdout or ""
+    tokens_used = parse_tokens_used(stdout)
+    if tool == "codex":
+        codex_home = _resolve_codex_home(ephemeral_home, isolation_launch)
+        events = _read_events_tail(codex_home / "codex-events.log")
+        events_tokens_used = parse_tokens_used(events or "")
+        if events_tokens_used is not None:
+            tokens_used = events_tokens_used
     return ProposerBackendResult(
         proposal=proposal,
         backend=tool,
         output_path=output_path,
         stdout=stdout,
         stderr=completed.stderr or "",
-        tokens_used=parse_tokens_used(stdout),
+        tokens_used=tokens_used,
     )
 
 
@@ -231,13 +239,19 @@ def _launch_codex_backend(
 ) -> subprocess.CompletedProcess:
     srt_path = _require_tool("srt")
     _require_tool("codex")
+    _require_tool("bash")
+    codex_home = _resolve_codex_home(ephemeral_home, isolation_launch)
+    events_path = codex_home / "codex-events.log"
     output_schema_path = _stage_codex_output_schema(
         schema_dir=schema_dir,
-        ephemeral_home=_resolve_codex_home(ephemeral_home, isolation_launch),
+        ephemeral_home=codex_home,
         target=target,
         allowed_based_on_runs=allowed_based_on_runs,
     )
     command = [
+        "bash",
+        "-c",
+        f'exec "$0" "$@" < /dev/null > {shlex.quote(str(events_path))} 2>&1',
         "codex",
         "exec",
         "--skip-git-repo-check",
@@ -263,6 +277,7 @@ def _launch_codex_backend(
         label="codex proposer",
         auth_canary=auth_canary,
         runner=runner,
+        events_path=events_path,
     )
 
 
@@ -330,6 +345,7 @@ def _run_isolated_backend(
     label: str,
     auth_canary: str | None,
     runner: SubprocessRunner | None,
+    events_path: Path | None = None,
 ) -> subprocess.CompletedProcess:
     command_runner = runner or _run_process_tree
     try:
@@ -349,7 +365,7 @@ def _run_isolated_backend(
     if completed.returncode != 0:
         raise ProposerRuntimeError(
             f"{label} exited {completed.returncode}: "
-            f"{_error_excerpt(completed, auth_canary=auth_canary)}"
+            f"{_error_excerpt(completed, auth_canary=auth_canary, events_path=events_path)}"
         )
     return completed
 
@@ -401,8 +417,17 @@ def _drain_after_kill(process: subprocess.Popen) -> tuple[str | None, str | None
 
 
 def _error_excerpt(
-    completed: subprocess.CompletedProcess, *, auth_canary: str | None = None
+    completed: subprocess.CompletedProcess,
+    *,
+    auth_canary: str | None = None,
+    events_path: Path | None = None,
 ) -> str:
+    if events_path is not None:
+        events = _read_events_tail(events_path)
+        if events is None:
+            return "events=(no events file)"
+        events = psec.redact_for_storage(events.strip(), auth_canary=auth_canary)
+        return f"events={events[:500]}"
     stderr = psec.redact_for_storage((completed.stderr or "").strip(), auth_canary=auth_canary)
     stdout = psec.redact_for_storage((completed.stdout or "").strip(), auth_canary=auth_canary)
     parts = []
@@ -411,6 +436,20 @@ def _error_excerpt(
     if stdout:
         parts.append(f"stdout={stdout[:500]}")
     return "; ".join(parts) if parts else "(no output)"
+
+
+def _read_events_tail(events_path: Path) -> str | None:
+    """イベント診断・usage 用に末尾 500 bytes を通常ファイルからだけ読み取る。"""
+    try:
+        fd = os.open(events_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as handle:
+            info = os.fstat(handle.fileno())
+            if not stat.S_ISREG(info.st_mode):
+                return None
+            handle.seek(max(0, info.st_size - 500))
+            return handle.read(500).decode("utf-8", errors="replace")
+    except OSError:
+        return None
 
 
 def _kill_process_group(pid: int) -> None:

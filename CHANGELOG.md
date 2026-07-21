@@ -37,6 +37,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - **`meta-harness`: codex proposer が structured output schema 拒否で常に失敗する問題を修正**: `orchex meta propose` / `loop` の codex backend が渡す output schema を候補種別（facet 変更 / config patch）に応じて必須項目を確定させ、OpenAI structured outputs の strict mode 要件を満たすようにした。
+- **`meta-harness`: srt 隔離下の Codex proposer が stdout EAGAIN で panic する問題を修正**: `orchex meta propose` / `loop` の Codex proposer が安定して完走するようにした。
 - **`loop-harness`: Docker action 完了後の cleanup 失敗と lease 喪失時の隔離停止を修正**: cleanup 失敗が成功済み Checker artifact / Maker CAS を偽の infrastructure failure で上書きしないよう安全停止へ変更し、lease 喪失時は host 側 `docker exec` client だけでなく scenario container の cgroup 全体を回収するようにした。driver/config runtime が Maker の action worktree 内に配置された unsafe な起動経路も config 読込・action 実行前に拒否する。
 
 - **`meta-harness`: Docker capability gate と実 judge コンテナが出力トークン上限を適用しておらず broker 予算超過を招いていた不具合を修正**: capability smoke コンテナと judge（`judge.tool: claude-bare`）コンテナの双方に `scenario_run.max_output_tokens_default`（既定 4096、`null` 明示時もフォールバック）を適用し、broker の worst-case 予算チェックによる評価不能を解消した。

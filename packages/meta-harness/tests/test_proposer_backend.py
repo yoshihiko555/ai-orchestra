@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import shlex
 import shutil
 import signal
 import subprocess
@@ -120,21 +121,64 @@ class TestProposerBackendLaunch:
                 runner=_runner_writes(None, returncode=7),
             )
 
+    def test_codex_backend_redirects_stdio_to_ephemeral_events_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Issue #284: Codex の stdio を srt mux ではなく一時ファイルへ向ける。"""
+        _install_required_tools(tmp_path / "bin", "srt", "codex", "bash")
+        monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+        codex_home = tmp_path / "codex home"
+        isolation_launch = _isolation_launch(tmp_path)
+        captured_args: list[str] = []
+
+        def runner(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess:
+            captured_args.extend(args)
+            Path(args[args.index("-o") + 1]).write_text(
+                json.dumps(_valid_proposal()),
+                encoding="utf-8",
+            )
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        backend.launch_proposer_backend(
+            view_dir=tmp_path,
+            prompt="prompt",
+            schema_dir=SCHEMA_DIR,
+            config={"proposer": {"tool": "codex"}},
+            isolation_launch=isolation_launch,
+            ephemeral_home=codex_home,
+            runner=runner,
+        )
+
+        assert Path(captured_args[0]).name == "srt"
+        assert captured_args[1:4] == [
+            "--settings",
+            str(isolation_launch.settings_path),
+            "bash",
+        ]
+        bash_idx = captured_args.index("bash")
+        assert captured_args[bash_idx + 1] == "-c"
+        script = captured_args[bash_idx + 2]
+        events_path = codex_home / "codex-events.log"
+        assert "< /dev/null" in script
+        assert f"> {shlex.quote(str(events_path))} 2>&1" in script
+        assert captured_args[bash_idx + 3] == "codex"
+        assert captured_args[bash_idx + 4] == "exec"
+
     def test_codex_backend_redacts_credentials_from_nonzero_exit(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _install_required_tools(tmp_path / "bin", "srt", "codex")
+        _install_required_tools(tmp_path / "bin", "srt", "codex", "bash")
         monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
         canary = backend.generate_auth_canary()
         jwt = _fake_jwt(int(time.time()) + 86400)
+        events_path = tmp_path / "codex-home" / "codex-events.log"
 
         def leaking_runner(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess:
-            return subprocess.CompletedProcess(
-                args,
-                7,
-                f"stdout leaked {canary}\n",
-                f"stderr leaked {jwt}\n",
+            events_path.write_text(
+                f"stdout leaked {canary}\nstderr leaked {jwt}\n",
+                encoding="utf-8",
             )
+            return subprocess.CompletedProcess(args, 7, "", "")
 
         with pytest.raises(backend.ProposerRuntimeError) as exc_info:
             backend.launch_proposer_backend(
@@ -153,6 +197,60 @@ class TestProposerBackendLaunch:
         assert jwt not in message
         assert "[REDACTED:auth canary" in message
         assert "[REDACTED:JWT (3-segment)]" in message
+        assert "events=" in message
+
+    def test_codex_backend_reports_missing_events_file_on_nonzero_exit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Issue #284: 診断ファイル欠落時も元の runtime error を維持する。"""
+        _install_required_tools(tmp_path / "bin", "srt", "codex", "bash")
+        monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+
+        def runner(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess:
+            return subprocess.CompletedProcess(args, 9, "", "")
+
+        with pytest.raises(backend.ProposerRuntimeError) as exc_info:
+            backend.launch_proposer_backend(
+                view_dir=tmp_path,
+                prompt="prompt",
+                schema_dir=SCHEMA_DIR,
+                config={"proposer": {"tool": "codex"}},
+                isolation_launch=_isolation_launch(tmp_path),
+                ephemeral_home=tmp_path / "codex-home",
+                runner=runner,
+            )
+
+        message = str(exc_info.value)
+        assert "exited 9" in message
+        assert "no events file" in message
+
+    def test_codex_backend_reports_nonregular_events_file_on_nonzero_exit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Issue #284: 診断先が FIFO でも block せず元の runtime error を維持する。"""
+        _install_required_tools(tmp_path / "bin", "srt", "codex", "bash")
+        monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+        events_path = tmp_path / "codex-home" / "codex-events.log"
+        events_path.parent.mkdir()
+        os.mkfifo(events_path)
+
+        def runner(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess:
+            return subprocess.CompletedProcess(args, 9, "", "")
+
+        with pytest.raises(backend.ProposerRuntimeError) as exc_info:
+            backend.launch_proposer_backend(
+                view_dir=tmp_path,
+                prompt="prompt",
+                schema_dir=SCHEMA_DIR,
+                config={"proposer": {"tool": "codex"}},
+                isolation_launch=_isolation_launch(tmp_path),
+                ephemeral_home=tmp_path / "codex-home",
+                runner=runner,
+            )
+
+        message = str(exc_info.value)
+        assert "exited 9" in message
+        assert "no events file" in message
 
     def test_codex_backend_rejects_missing_output_file(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -193,6 +291,24 @@ class TestProposerBackendLaunch:
     ) -> None:
         _install_required_tools(tmp_path / "bin", "srt", "codex")
         monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+        codex_home = tmp_path / "codex-home"
+
+        def runner(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess:
+            Path(args[args.index("-o") + 1]).write_text(
+                json.dumps(_valid_proposal()),
+                encoding="utf-8",
+            )
+            (codex_home / "codex-events.log").write_text(
+                json.dumps(
+                    {
+                        "type": "turn.completed",
+                        "usage": {"input_tokens": 1000, "output_tokens": 234},
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            return subprocess.CompletedProcess(args, 0, "", "")
 
         result = backend.launch_proposer_backend(
             view_dir=tmp_path,
@@ -200,11 +316,12 @@ class TestProposerBackendLaunch:
             schema_dir=SCHEMA_DIR,
             config={"proposer": {"tool": "codex"}},
             isolation_launch=_isolation_launch(tmp_path),
-            ephemeral_home=tmp_path / "codex-home",
-            runner=_runner_writes(json.dumps(_valid_proposal())),
+            ephemeral_home=codex_home,
+            runner=runner,
         )
 
         assert result.proposal["theme"] == "tighten example"
+        assert result.stdout == ""
         assert result.tokens_used == 1234
 
     def test_codex_backend_stages_output_schema_under_ephemeral_home(
