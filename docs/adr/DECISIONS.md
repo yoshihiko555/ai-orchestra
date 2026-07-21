@@ -5,7 +5,7 @@ AI Orchestra プロジェクトの意思決定記録。
 ## 運用方針
 
 - 重要な設計・技術判断を ADR として記録する
-- ファイル名: `ADR-NNNN-<slug>.md`（例: `ADR-0001-package-based-architecture.md`）
+- ファイル名: `ADR-YYYYMMDD-NNN.md`（例: `ADR-20260216-001.md`。日付順に連番を振る）
 - テンプレート: [`_template.md`](./_template.md) を使用
 - ステータス: `proposed` → `accepted` / `rejected` / `superseded`
 
@@ -40,20 +40,20 @@ AI Orchestra プロジェクトの意思決定記録。
 | ADR-20260612-025 | 失敗ログ記録基盤 fail-logs の新設と失敗検知ロジックの共通化                             | accepted   | 2026-06-12 |
 | ADR-20260624-026 | CODD 整合性レイヤーの新設（思想借用・独立パッケージ・essential 化）                     | accepted   | 2026-06-24 |
 | ADR-20260630-027 | fail-logs 活用フェーズ — SessionStart で再発失敗シグネチャを注入する                    | accepted   | 2026-06-30 |
-| ADR-20260703-028 | 評価セット（docs/evaluation/）の導入 — あるべき状態の自然言語定義でテストを判定する     | accepted   | 2026-07-03 |
-| ADR-20260705-029 | Codex Review Gate による PR required status check の導入                                | accepted   | 2026-07-05 |
-| ADR-20260706-030 | ループエンジニアリング基盤（loop-harness）の導入とコア共有型制御モデルの採用            | accepted   | 2026-07-06 |
-| ADR-20260706-031 | メタハーネス機構の導入（population ベースのハーネス最適化基盤）                        | proposed   | 2026-07-06 |
-| ADR-20260711-032 | meta-harness scenario runnerをSRTでOS隔離する                                          | accepted   | 2026-07-11 |
-| ADR-20260711-033 | scenario資格情報を候補プロセスから分離できるまでfail-closedにする                     | superseded | 2026-07-11 |
-| ADR-20260712-034 | scenario 実行基盤を Docker コンテナ + ephemeral credential broker へ移行する           | accepted   | 2026-07-12 |
-| ADR-20260712-035 | Maker 選定を実装可能ロールへ限定し初回結果を state に固定する                          | accepted   | 2026-07-12 |
-| ADR-20260714-036 | 固定 CLI の beta allowlist と最小 request envelope を broker で強制する                 | accepted   | 2026-07-14 |
-| ADR-20260715-038 | 共有 facet の変更を cross-skill 回帰バッチで hard gate する                           | accepted   | 2026-07-15 |
-| ADR-20260716-039 | routing config patch を human 登録候補に限定して解放する                              | proposed   | 2026-07-16 |
-| ADR-20260717-040 | proposer へ routing config patch を段階解放する                                       | proposed   | 2026-07-17 |
-| ADR-20260701-032 | スキル自己改善ループの設計判断（二層構成・二軸評価・反映先の塩梅）                       | accepted   | 2026-07-01 |
-| ADR-20260712-032 | PR レビュー指摘を action-scoped snapshot でプロセス境界を越えて受け渡す                | accepted   | 2026-07-12 |
-| ADR-20260715-037 | loop-harness LP-2（Maker/Checker）の実行基盤を Docker 完全隔離へ移行する               | proposed   | 2026-07-15 |
-| ADR-20260718-040 | Docker action の cleanup 失敗と実行取消を安全停止として扱う                          | accepted   | 2026-07-18 |
-| ADR-20260720-041 | 予算 latch を frontier 回帰判定で評価不能として中立化する                            | accepted   | 2026-07-20 |
+| ADR-20260701-028 | スキル自己改善ループの設計判断（二層構成・二軸評価・反映先の塩梅）                       | accepted   | 2026-07-01 |
+| ADR-20260703-029 | 評価セット（docs/evaluation/）の導入 — あるべき状態の自然言語定義でテストを判定する     | accepted   | 2026-07-03 |
+| ADR-20260705-030 | Codex Review Gate による PR required status check の導入                                | accepted   | 2026-07-05 |
+| ADR-20260706-031 | ループエンジニアリング基盤（loop-harness）の導入とコア共有型制御モデルの採用            | accepted   | 2026-07-06 |
+| ADR-20260706-032 | メタハーネス機構の導入（population ベースのハーネス最適化基盤）                        | accepted   | 2026-07-06 |
+| ADR-20260711-033 | meta-harness scenario runnerをSRTでOS隔離する                                          | accepted   | 2026-07-11 |
+| ADR-20260711-034 | scenario資格情報を候補プロセスから分離できるまでfail-closedにする                     | superseded | 2026-07-11 |
+| ADR-20260712-035 | scenario 実行基盤を Docker コンテナ + ephemeral credential broker へ移行する           | accepted   | 2026-07-12 |
+| ADR-20260712-036 | Maker 選定を実装可能ロールへ限定し初回結果を state に固定する                          | accepted   | 2026-07-12 |
+| ADR-20260712-037 | PR レビュー指摘を action-scoped snapshot でプロセス境界を越えて受け渡す                | accepted   | 2026-07-12 |
+| ADR-20260714-038 | 固定 CLI の beta allowlist と最小 request envelope を broker で強制する                 | accepted   | 2026-07-14 |
+| ADR-20260715-039 | loop-harness LP-2（Maker/Checker）の実行基盤を Docker 完全隔離へ移行する               | accepted   | 2026-07-15 |
+| ADR-20260715-040 | 共有 facet の変更を cross-skill 回帰バッチで hard gate する                           | accepted   | 2026-07-15 |
+| ADR-20260716-041 | routing config patch を human 登録候補に限定して解放する                              | accepted   | 2026-07-16 |
+| ADR-20260717-042 | proposer へ routing config patch を段階解放する                                       | accepted   | 2026-07-17 |
+| ADR-20260718-043 | Docker action の cleanup 失敗と実行取消を安全停止として扱う                          | accepted   | 2026-07-18 |
+| ADR-20260720-044 | 予算 latch を frontier 回帰判定で評価不能として中立化する                            | accepted   | 2026-07-20 |

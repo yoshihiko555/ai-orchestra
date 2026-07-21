@@ -25,7 +25,7 @@ On any contradiction, the higher item wins:
 4. `docs/design/loop-harness-cli.md` §7 — `manifest.json` contract (needed this phase); §2.2 exit-code vocabulary (context only; CLI itself is Phase 2)
 5. `docs/design/loop-harness.md` — base design (architecture context)
 6. `docs/requirements/loop-harness.md` — FT/NF requirement IDs
-7. `docs/adr/ADR-20260706-030.md` — decision rationale
+7. `docs/adr/ADR-20260706-031.md` — decision rationale
 
 ## Scope — Phase 1 Deliverables (expected-change file list)
 

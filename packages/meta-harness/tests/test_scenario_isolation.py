@@ -1,4 +1,4 @@
-"""Scenario runner OS-isolation tests (ADR-20260711-032)."""
+"""Scenario runner OS-isolation tests (ADR-20260711-033)."""
 
 from __future__ import annotations
 

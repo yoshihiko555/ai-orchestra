@@ -52,7 +52,7 @@ allowed_tools:
 # `.claude/` は protected path のため allow ルール（`Edit(path)` / `Write(path)`）では書込みを
 # 事前承認できない（公式 docs: code.claude.com/docs/en/permission-modes.md "Protected paths"）。
 # 非対話で解除する唯一の手段が --permission-mode bypassPermissions のため、このシナリオに限定して
-# 明示 opt-in する。防衛線: コンテナ隔離（ADR-20260712-034）+ --tools による tool 集合最小化
+# 明示 opt-in する。防衛線: コンテナ隔離（ADR-20260712-035）+ --tools による tool 集合最小化
 # （Read/Edit/Write のみ、Bash 等は非公開）+ oracle の Plans.md 全文一致 assert
 # （collateral damage を含む differ を fail 化）+ collateral-scope oracle（bypass で書込み可能に
 # なった .claude/ 配下の Plans.md 以外の tracked file が一切変更されていないことを git diff で

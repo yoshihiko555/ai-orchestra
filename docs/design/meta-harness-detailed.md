@@ -1211,7 +1211,7 @@ cd <worktree> && CLAUDE_CODE_MAX_OUTPUT_TOKENS=<budget.max_output_tokens> \
   存在しない場合は config `evaluate.permission_mode`（既定 `acceptEdits`）へ fallback する。値は
   schema で `acceptEdits` / `bypassPermissions` の enum に限定する。`bypassPermissions` は、
   `.claude/` 等の Claude Code protected path への書込みが必要で、かつ allow ルール（`--allowedTools`
-  への path 指定）では解除できないシナリオ（task-state 2 本・handoff 2 本のみ、ADR-20260714-036
+  への path 指定）では解除できないシナリオ（task-state 2 本・handoff 2 本のみ、ADR-20260714-038
   の「再検討記録（bypassPermissions 例外）」参照）が明示 opt-in する場合のみ使用する。実効値と
   決定根拠（`scenario`/`global`）は `allowed_tools_source` と同様に run metadata
   （`permission_mode` / `permission_mode_source`）へ監査痕跡として永続化する（§4）。
@@ -1224,8 +1224,8 @@ cd <worktree> && CLAUDE_CODE_MAX_OUTPUT_TOKENS=<budget.max_output_tokens> \
   起動に設定する。1M context beta は premium 課金 tier かつ毎ターン大量の cache 生成を伴うため、有効な
   ままでは broker の pricing 前提（Issue #261 PR2 で Sonnet 単価に再較正済み）と実際の課金体系が乖離し、
   run 予算の見積もりを歪める。無効化することで課金 tier を pricing 較正と一致させる。
-- **Phase 2/3のscenario runはDockerコンテナによるOSレベル隔離を必須とする**（ADR-20260712-034。
-  ADR-20260711-032のSRT方式を置換。SRTで設計したfilesystem/network境界は本節でコンテナのmount/network
+- **Phase 2/3のscenario runはDockerコンテナによるOSレベル隔離を必須とする**（ADR-20260712-035。
+  ADR-20260711-033のSRT方式を置換。SRTで設計したfilesystem/network境界は本節でコンテナのmount/network
   設計として引き継ぐ）。`claude -p`をLinuxコンテナ内で実行し、`docker run --rm`に加え
   `--pids-limit`/`--memory`/`--cpus`と多層防御（`--cap-drop=ALL`/`--security-opt=no-new-privileges`/
   read-only rootfs〔書き込みは対象mountとtmpfsのみ〕/non-root user）を必須とする。Docker socketは
@@ -1233,7 +1233,7 @@ cd <worktree> && CLAUDE_CODE_MAX_OUTPUT_TOKENS=<budget.max_output_tokens> \
 - **ネットワーク**: 候補コンテナはDocker internal networkに接続し外部egressを持たない（スパイクS3実測:
   `--internal`はDNSフォワードとhost.docker.internalも遮断する）。api.anthropic.comへの到達は後述の
   broker sidecar経由のみとする。
-- **資格情報境界（ADR-20260712-034。ADR-20260711-033を置換）**: 資格情報は候補process treeへ置かない。
+- **資格情報境界（ADR-20260712-035。ADR-20260711-034を置換）**: 資格情報は候補process treeへ置かない。
   run スコープの**ephemeral credential broker**（reverse proxy）が実OAuth tokenを保持し、コンテナ内の
   Claude CLIは`ANTHROPIC_BASE_URL`でbrokerへ向ける。brokerは受信リクエストの`x-api-key`/`authorization`を
   剥離し`Authorization: Bearer <token>`を注入する。`anthropic-beta` は broker 固定の
@@ -1415,7 +1415,7 @@ Phase 1 では **複製**とし、`packages/codex-harness` の redaction パタ�
 
 `evaluate` 開始前（worktree 作成より前）に、fail-closed の事前検査を必須で行う。
 
-**検査対象の CLI は `execution_backend` に依存する**（ADR-20260712-034）。`execution_backend: docker`
+**検査対象の CLI は `execution_backend` に依存する**（ADR-20260712-035）。`execution_backend: docker`
 では scenario run は選択された Docker イメージ内の Claude CLI で実行されるため、**ホストの
 `claude --version` ではなくイメージ内の CLI を検査する**（ホストとイメージの CLI が食い違うと、
 イメージが必須フラグを欠くのに gate を通す／イメージは正しいのに gate で落ちる、という取り違えが
@@ -1438,7 +1438,7 @@ json --max-turns 1 --no-session-persistence` 相当）により、evaluate が�
    - 常時: `--output-format stream-json` / `--max-budget-usd`（scenario run が依存）
    - `judge.tool: claude-bare` の場合のみ: `--json-schema` / `--bare`。**認証の存在確認は
      `ANTHROPIC_API_KEY` の実在ではなく `execution_backend` に応じた認証経路の可用性で行う**
-     （ADR-20260712-034）: docker backend では **broker が起動でき token TTL preflight を通ること**を
+     （ADR-20260712-035）: docker backend では **broker が起動でき token TTL preflight を通ること**を
      確認する（実 API キーは不要。ダミーキー + broker で足りる）。非 Docker backend では従来どおり
      `ANTHROPIC_API_KEY`/`apiKeyHelper` の存在を確認する。いずれの経路も不可なら judge unavailable として
      fail-closed する。
@@ -1490,7 +1490,7 @@ judge の要件は (1) 候補ハーネスの hooks/skills から隔離されて�
 
 **背景（スパイクで判明した制約）**: 当初設計は `claude -p --bare` 固定だったが、`--bare` は
 `ANTHROPIC_API_KEY` または `apiKeyHelper` が必須で OAuth/keychain 認証を一切使わない（2.1.202 で
-確認、§8 項目9）。**ただし ADR-20260712-034 の ephemeral broker により、OAuth のみの環境でも
+確認、§8 項目9）。**ただし ADR-20260712-035 の ephemeral broker により、OAuth のみの環境でも
 `ANTHROPIC_BASE_URL` を broker へ向け `ANTHROPIC_API_KEY` にダミー値を渡すことで `--bare` judge を
 動作させられる**（scenario run と同じ broker を共用。スパイク S1 で claude -p 完走を実証）。したがって
 judge の fail-closed 条件は「API キー不在」ではなく「broker が利用不能」に置き換わる。
@@ -1536,7 +1536,7 @@ promptへstageする。worktree絶対パスは渡さず、judgeへfilesystem/too
   静かに降格せず** `verdict=error` とし、`checks[].detail` に "judge unavailable: <理由>" を記録する。
   「利用不能」の判定は `execution_backend` に応じた認証経路で行う（§2-7 と整合）: **docker backend では
   broker が起動できず／token TTL preflight に失敗した場合が unavailable**（実 API キーの有無は問わない。
-  ダミーキー + broker で認証が成立する。ADR-20260712-034）。非 Docker backend では `--bare` の
+  ダミーキー + broker で認証が成立する。ADR-20260712-035）。非 Docker backend では `--bare` の
   `ANTHROPIC_API_KEY`/`apiKeyHelper` 不在が unavailable。codex 未認証・サンドボックス起動失敗も
   unavailable。隔離保証の異なるバックエンドへの暗黙切替は、判定条件の同一性（§3-5 の hash スコープの
   前提）を壊すため禁止する。`result.json` には使用バックエンドとバージョンを記録する。
@@ -1858,7 +1858,7 @@ packages/meta-harness/
 `config/meta-harness.yaml` の完全な既定値は以下の通り。`.claude/config/meta-harness/
 meta-harness.local.yaml` で上書き可能（`config-loading` ルール準拠）。
 
-> **実装状態**: 下記の `isolation.backend: docker` + `broker` キーは ADR-20260712-034 と EV-46/47 の
+> **実装状態**: 下記の `isolation.backend: docker` + `broker` キーは ADR-20260712-035 と EV-46/47 の
 > 封じ込め検証を実装した既定値である。Docker daemon・pin 済み image・Keychain OAuth・broker の
 > いずれかが利用不能な場合は capability gate で fail-closed し、SRT やホスト直接実行へ降格しない。
 
@@ -1885,7 +1885,7 @@ evaluate:
   model: claude-sonnet-5 # 必須 pin（Issue #261 PR2）。judge.model と同一でなければならない（§1-2 broker allowlist fail-closed）
   cli_version_pin: null # null = バージョン一致検証をスキップ（capability smoke test は常に実施）
   isolation:
-    # scenario runner は非隔離実行へ降格しない（ADR-20260712-034。SRT 方式から Docker へ移行）
+    # scenario runner は非隔離実行へ降格しない（ADR-20260712-035。SRT 方式から Docker へ移行）
     backend: docker # docker = コンテナ隔離 + dual-homed ephemeral broker sidecar
     execution_backend: docker # 実装・封じ込め検証完了後の既定。非隔離 backend へは降格しない
     image: ai-orchestra/meta-harness-scenario:2.1.207
@@ -1926,7 +1926,7 @@ regression:
   max_affected_suites: 7
   max_budget_usd: 90.0 # 全 scenario の実効 max_budget_usd x repeat の総和（train+holdout）。§4 参照
 judge:
-  tool: claude-bare # tool-less judge。codexはread deny不能のため無効（ADR-20260711-033）
+  tool: claude-bare # tool-less judge。codexはread deny不能のため無効（ADR-20260711-034）
   model: claude-sonnet-5 # 必須 pin（Issue #261 PR2）。evaluate.model と同一でなければならない（broker pricing table は run あたり1つ）
   effort: high # claude-bare のみ使用
   max_turns: 4 # claude-bare のみ使用
@@ -2114,9 +2114,9 @@ meta-harness-detailed.md` §5 の既定値に反映する（本スパイク後�
 Phase 1b（judge を含む）の実装は、§3-3 に反映したパス scoped `Read` 対策と fail-closed 挙動を
 実装した上で、この DEVIATION によってブロックされない（Codex gpt-5.5 レビュー 2026-07-07 で確認）。
 
-### 8-2. scenario 実行 backend スパイク結果（2026-07-12、ADR-20260712-034）
+### 8-2. scenario 実行 backend スパイク結果（2026-07-12、ADR-20260712-035）
 
-Phase 2/3 の scenario 実行隔離を SRT から Docker + ephemeral broker へ移行する判断（ADR-034）の
+Phase 2/3 の scenario 実行隔離を SRT から Docker + ephemeral broker へ移行する判断（ADR-035）の
 前提検証。**判定根拠の追跡可能な記録は `docs/design/meta-harness-scenario-backend-spikes.md`**
 （実行手順・作業メモは `.claude/handoffs/20260712T-meta-harness-scenario-backend-spikes.md`、作業用）。
 環境は Docker daemon = OrbStack 29.4.0。
@@ -2948,12 +2948,12 @@ propose/evaluate 成果物は通常どおり store に残る（部分的な作�
    の場合に `modelUsage.*` へフォールバックする実装が必須（`run.metadata.schema.json` の `cost` def
    実装時の注意点）。
 3. **`--bare` は `ANTHROPIC_API_KEY` または `apiKeyHelper` が必須で、OAuth/keychain 認証を使わない**
-   （`claude --help` に明記）。judge（§3-3）はtool-less `claude-bare`を既定とする。**ADR-20260712-034 の
+   （`claude --help` に明記）。judge（§3-3）はtool-less `claude-bare`を既定とする。**ADR-20260712-035 の
    ephemeral broker により、`ANTHROPIC_BASE_URL` を broker へ向けダミーキーを渡すことで OAuth 環境でも
    `--bare` judge が動作する**（S1 実証）ため、fail-closed 条件は「API key 不在」から「broker 利用不能」に
    置き換わる。Codexのread-only sandboxはread範囲を制限しないためjudge backendとして無効化する。
    proposerのCodex利用はfiltered viewをSRTで囲む別の信頼境界であり、この判断の対象外とする。
-4. **broker/コンテナのオーバーヘッド（ADR-20260712-034、実測待ち）**: scenario 実行を Docker コンテナ +
+4. **broker/コンテナのオーバーヘッド（ADR-20260712-035、実測待ち）**: scenario 実行を Docker コンテナ +
    ephemeral broker sidecar 経由にすることで、run あたり (a) コンテナ起動/破棄時間、(b) broker 中継の
    レイテンシ、(c) sidecar/イメージのビルド・pull コストが加わる。S1 のコンテナ内 `claude -p` は
    `duration_ms≈5s`（ホスト直の ~1.5s に対しコンテナ初回起動分が上乗せ）だった。API 課金額自体は broker

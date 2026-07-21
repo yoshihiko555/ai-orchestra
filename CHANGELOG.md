@@ -19,7 +19,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`loop-harness`: LP-1 向け `loop_step.py` CLI を追加**: `start` / `attach` / `propose` / `complete` / `reconcile` / `heartbeat` / `resume` を JSON 出力と exit code 0/1/2/3 で利用できるようにした。あわせて `loop_start` / `loop_iteration` / `loop_stop` の audit event と checker artifact 保存に対応した。
 - **`loop-harness`: 反復ループ基盤の core パッケージを追加**: Phase 1 として loop 定義 loader、state/journal/lock の決定論的コア、worktree 命名ユーティリティ、既定 config を追加。CLI・スキル配線・LP-2 常駐実行は後続フェーズで追加予定。
 - **`loop-harness`: LP-2 の Docker 隔離実行を追加**: `isolation.execution_backend: docker` を明示した場合のみ Maker / Checker / 外部レビュー分類を hardened container と OAuth broker で実行する。既定値は引き続き `none` とし、Docker・broker・mount・container の障害時は host 実行へ降格せず fail-closed する。
-- **`meta-harness`: proposer が routing config patch を提案可能に（Phase A）**: proposer 生成候補が `agent-routing/cli-tools.yaml` の `agents.*.tool` / `antigravity.model` を patch できるようになった（`codex.model` は human 限定のまま）。reward hacking 対策として quality 厳密優越・クロススキル回帰ゲート・レート制限等を同梱（ADR-20260717-040）。
+- **`meta-harness`: proposer が routing config patch を提案可能に（Phase A）**: proposer 生成候補が `agent-routing/cli-tools.yaml` の `agents.*.tool` / `antigravity.model` を patch できるようになった（`codex.model` は human 限定のまま）。reward hacking 対策として quality 厳密優越・クロススキル回帰ゲート・レート制限等を同梱（ADR-20260717-042）。
 - **`meta-harness`: skill target の共有 facet 改善をクロススキル回帰評価で保護**: `regression.enabled: true` を既定化して composition closure 内の共有 facet を候補 overlay に許可し、影響 skill の train/holdout critical を evaluation batch 単位で hard gate する。suite 不在の影響先は PR 警告へ記録し、回帰コスト・suite 数・impact freshness も昇格前に検証する。
 - **`meta-harness`: `target=skill:<slug>` の探索・評価に対応**: skill ごとの scenario suite、target 別 frontier、composition closure に限定した安全な overlay、`handoff` / `issue-create` の train・holdout 評価を追加。skill-evolution の trigger 出力から `orchex meta propose` へ疎結合で誘導する。
 - **`meta-harness`: `orchex meta loop`（Phase 3）を追加**: `propose` と `evaluate` を ledger 駆動で自動反復し、予算・反復上限・発散・収束で停止する。`--resume` は中断時の孤児候補を含む状態を ledger から復元する。
@@ -76,7 +76,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`/design`: 各フェーズ末に二段品質ゲート（セルフチェック → 自動レビュー）を導入**: Phase 1-3 の受け入れ確認前に、reference 末尾のセルフチェックリストとフェーズ対応レビュアー（要件 = `requirements`、基本設計 = `architecture-reviewer` + 条件付き `security-reviewer`、詳細設計 = `spec-reviewer`）による設計書レビューを必須化。設計ドキュメント専用の重要度定義・ゲート通過条件（Critical=0、High 処理済み）・フェーズ間ドリフトプロトコルを `references/design-review.md` に定義
 - **`/preflight`: 設計要否判定（3 段階）と設計成果物の読み込みを追加**: 要件確定時に「設計不要 / 軽量設計メモ / フル設計（`/design` へ誘導）」を判定。Phase 2 で `docs/` 配下の既存設計書と impact-analysis をタスク分解の入力として読み込む
 
-- **評価セット（docs/evaluation/）の導入（ADR-20260703-028）**: 全 14 パッケージについて「正しい状態とは何か」を自然言語で定義した評価セットを新設。AI 生成テストが実装の都合ではなく「あるべき仕様」に沿っているかをレビューするための判断基準として使う
+- **評価セット（docs/evaluation/）の導入（ADR-20260703-029）**: 全 14 パッケージについて「正しい状態とは何か」を自然言語で定義した評価セットを新設。AI 生成テストが実装の都合ではなく「あるべき仕様」に沿っているかをレビューするための判断基準として使う
   - **構成**: `docs/evaluation/README.md`（共通フォーマット・hook 型 / CLI ツール型 / スキル型の類型別観点チェックリスト・共通テストレビュー判断基準 6 項目）+ `_template.md`（雛形）+ `<pkg>.md` × 14（責務定義 / 入出力・副作用 / 評価観点 `EV-NN`（正常・異常・境界 × must/should、仕様根拠付き）/ 類型別観点 / パッケージ固有レビュー基準）
   - **運用ルール**: `.claude/rules/evaluation-set-policy.md`（facet: `evaluation-set-policy`）を新設。テスト改修時は該当評価セットと突合し、must 観点のギャップゼロを完了条件とする。突合マトリクスは一時成果物とし、ギャップはパッケージ単位の GitHub Issue で追跡（評価セットには恒久記録しない）。テスト変更時の hook 自動化は Issue #123 で追跡
   - **初回突合**: 既存テスト（`packages/<pkg>/tests/` + `tests/unit` + `tests/e2e` の二層）との突合を実施し、ギャップをパッケージ別 Issue として登録
@@ -112,7 +112,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- **`packages/skill-evolution`: スキル自己改善ループ（Issue #5）**: スキル実行の品質を二軸（自己申告＋機械計測）で計測し、学び（lessons）を次回実行へ還元しつつ、停止条件付きのオフライン反復でスキル自体を改善する新パッケージ。設計は `req/design:skill-evolution` ＋ `ADR-20260701-032` に記録
+- **`packages/skill-evolution`: スキル自己改善ループ（Issue #5）**: スキル実行の品質を二軸（自己申告＋機械計測）で計測し、学び（lessons）を次回実行へ還元しつつ、停止条件付きのオフライン反復でスキル自体を改善する新パッケージ。設計は `req/design:skill-evolution` ＋ `ADR-20260701-028` に記録
   - **二層アーキ**: オンライン層＝スキル発火ごとに軽量収集（`inject-lessons.py` が発火前に lessons 注入＋`run_id` 発行、`capture-skill-telemetry.py`／`capture-subagent-skill.py` が完了時に二軸テレメトリを `metrics/<skill>.jsonl` へ記録）。オフライン層＝`skill_evolution.py` CLI が停止条件・3ガード・スコアリング・ロックの決定論部分を提供（シナリオ実行と改善案生成は人間承認ゲート下の実行時作業）
   - **発火検出**: `PreToolUse`/`PostToolUse` の `tool_name == "Skill"`（`tool_input.skill`）で捕捉（`packages/audit` の実績方式）。`context: fork` スキルは `SubagentStop` で補完
   - **成功判定**: スキルごとの `[critical]` チェックリスト全達成で初めて成功。反映先は provenance で塩梅（facet 製→facet 昇格＋`facet build`、非 facet 製→lessons/SKILL.md diff、判別不能→lessons のみ）。数値ガード（コスト・反復・holdout・注入行数）は `skill-evolution.yaml` で調整可能
