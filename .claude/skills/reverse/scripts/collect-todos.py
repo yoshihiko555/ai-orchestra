@@ -180,7 +180,6 @@ def _collect_from_file(path: Path, target: Path, size: int) -> list[dict]:
 
 def _walk(target: Path) -> list[dict]:
     all_items: list[dict] = []
-    target_resolved = target.resolve()
 
     def _recurse(path: Path) -> None:
         try:
@@ -189,17 +188,14 @@ def _walk(target: Path) -> list[dict]:
             print(f"Warning: cannot read dir {path}: {exc}", file=sys.stderr)
             return
         for entry in sorted(entries):
-            if entry.is_dir(follow_symlinks=False):
+            if entry.is_symlink():
+                continue
+            if entry.is_dir():
                 if entry.name not in EXCLUDED_DIRS:
                     _recurse(entry)
                 continue
-            if not entry.is_file(follow_symlinks=False):
+            if not entry.is_file():
                 continue
-            if entry.is_symlink():
-                try:
-                    entry.resolve().relative_to(target_resolved)
-                except ValueError:
-                    continue
             try:
                 size = entry.stat().st_size
             except OSError:

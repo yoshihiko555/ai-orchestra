@@ -6,7 +6,7 @@ codd:
   depends_on:
     - id: "design:meta-harness-detailed"
       relation: refines
-    - id: "adr:ADR-20260716-039"
+    - id: "adr:ADR-20260716-041"
       relation: references
   owner: ai-orchestra
 ---
@@ -15,9 +15,9 @@ codd:
 
 - **日付**: 2026-07-16
 - **ステータス**: active（凍結決定 5 点はユーザー承認済み 2026-07-16、決定 3 は 2026-07-17 修正承認。Phase A 実装済み 2026-07-18）
-- **前提 ADR**: ADR-20260716-039（routing config patch を human 登録候補限定で解放。proposer 解放は本設計の完了を着手条件として deferral）
+- **前提 ADR**: ADR-20260716-041（routing config patch を human 登録候補限定で解放。proposer 解放は本設計の完了を着手条件として deferral）
 - **成果物の位置づけ**: 本書は proposer unlock（Phase 3 残タスク）の設計 SSOT。実装時に
-  `docs/design/meta-harness-detailed.md` §1-8 等へ反映し、ADR-20260717-040（proposed）を起票する。
+  `docs/design/meta-harness-detailed.md` §1-8 等へ反映し、ADR-20260717-042（proposed）を起票する。
 
 ---
 
@@ -111,7 +111,7 @@ A8 排他チェック（patch XOR overlay）の第 5 入口（proposer 経路）
 ### 不採用（理由付き）
 
 - **shadow mode / 検疫期間**: promotion は既に human merge の PR であり、手動ゲートの上に手動ゲートを
-  重ねるだけ。ADR-039 は `.local.yaml` の promotion コミットを明示的に禁止しており、新アーティファクト種別が
+  重ねるだけ。ADR-041 は `.local.yaml` の promotion コミットを明示的に禁止しており、新アーティファクト種別が
   必要になる割に C-2 + C-5 + human merge が塞がない隙間を塞がない。Phase C（human merge 撤廃）を
   検討する時点で再評価。
 - **ledger の暗号学的ハッシュチェーン**: `created_by` は既に 3 層（register 引数 vs manifest、

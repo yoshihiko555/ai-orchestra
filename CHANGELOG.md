@@ -10,37 +10,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **`loop-harness`: 対応済みレビュー指摘のスレッド自動 resolve と exit コメントの対応マトリクスを追加**: `/loop-issue` の再レビューで前ラウンドの critical/high 指摘が再発しなかった場合、該当する信頼済み GitHub review thread に自動で reply・resolve する。`exit_success`/`exit_failure` の Issue コメントには全指摘の severity/場所/状態（addressed / open / dismissed）を一覧できるテーブルを追加した。
 - **`loop-harness`: LP-1 の push-integrity 警告（best-effort）を追加**: `loop_step.py propose` が `advance_phase` / `wait_external_review` / `exit_failure` を提案する直前に、記録済みの remote HEAD baseline と実際の remote HEAD を比較し、ずれ（Maker の先行 push 等の疑い）を検知した場合に `push_integrity_warning` を proposal の JSON レスポンスと journal の両方に記録する。ループは停止させず、警告のみ（LP-2 の無人 fail-closed 停止とは異なる運用）。
-
-- **`meta-harness`: proposer が routing config patch を提案可能に（Phase A）**: proposer 生成候補が `agent-routing/cli-tools.yaml` の `agents.*.tool` / `antigravity.model` を patch できるようになった（`codex.model` は human 限定のまま）。reward hacking 対策として quality 厳密優越・クロススキル回帰ゲート・レート制限等を同梱（ADR-20260717-040）。
-- **meta-harness routing-config target**: human-registered candidates can now patch `agent-routing/cli-tools.yaml` keys (`agents.*.tool`, `codex.model`, `antigravity.model`) through the evaluation/promotion pipeline. Proposer candidates remain facets-only.
 - **`loop-harness`: Maker commit 書き戻しの安全停止理由を追加**: 一時 ref への import 失敗、非 fast-forward、CAS 競合を `git_ref_import_failed` / `git_ref_not_fast_forward` / `git_ref_cas_rejected` として区別できるようにした。
 - **`loop-harness`: LP-2 Docker 隔離用のイメージライフサイクル設定を追加**: recipe hash による再利用、保持世代数、専用 buildx builder の BuildKit cache GC を設定できる。隔離実行の既定値は引き続き `none`。
-- **`meta-harness`: skill target の共有 facet 改善をクロススキル回帰評価で保護**: `regression.enabled: true` を既定化して composition closure 内の共有 facet を候補 overlay に許可し、影響 skill の train/holdout critical を evaluation batch 単位で hard gate する。suite 不在の影響先は PR 警告へ記録し、回帰コスト・suite 数・impact freshness も昇格前に検証する。
 - **`loop-harness`: 利用者ガイド（図解つき）を追加**: `docs/guides/loop-harness.md` に `/loop-issue` の使い方・ループの仕組み（全体フロー・状態機械・PR レビュー反復・停止判定の Mermaid 図解）をまとめた。`packages/loop-harness/README.md` から導線を追加し、cron セットアップの記述を `is-alive`（pidfile/flock）方式に更新した。
-- **`meta-harness`: `target=skill:<slug>` の探索・評価に対応**: skill ごとの scenario suite、target 別 frontier、composition closure に限定した安全な overlay、`handoff` / `issue-create` の train・holdout 評価を追加。skill-evolution の trigger 出力から `orchex meta propose` へ疎結合で誘導する。
-- **`git-workflow`: `/review-respond` スキルを追加**: カレントブランチの PR に付いた bot レビュー指摘（CodeRabbit/Codex 等）を `pr_review_threads.py` で取得し、分類・修正・push・返信・スレッド解決までを単発実行で自動対応する。
-- **`meta-harness`: `orchex meta loop`（Phase 3）を追加**: `propose` と `evaluate` を ledger 駆動で自動反復し、予算・反復上限・発散・収束で停止する。`--resume` は中断時の孤児候補を含む状態を ledger から復元する。
-- **`meta-harness`: Docker 隔離 scenario 実行を解禁**: `orchex meta evaluate` / `loop` の既定実行 backend を Docker に変更し、internal network の候補コンテナと run-scoped OAuth broker を使って実資格情報を候補へ渡さず scenario・oracle・tool-less judge を実行する。Docker daemon・pin 済みイメージ・broker が利用できない場合は worktree 作成前に明示エラーで停止し、非隔離 backend へは降格しない。
 - **`loop-harness`: LP-2 常駐トリガー（無人ループ実行）を追加**: ラベル付き Issue を検出し、無人（`claude -p`）でループを最後まで自律駆動する常駐運用（`cron`/`launchd` 登録）を追加した。実行状況の確認・不要データの掃除は `loop_status.py`（`list`/`show`/`purge`）で行い、Maker は push/PR 作成ができない構造になっている。
 - **`loop-harness`: `/loop-issue` LP-1 スキルを追加**: Issue の実装・決定論的 Checker・PR レビュー対応を two-phase 契約で反復し、成功／失敗／安全停止の出口まで自律駆動する facet スキルを配布する。
 - **`loop-harness`: PR レビュー待機・指摘取り込みの決定論モジュールを追加**: `pr_review_wait.py` で reviewer allowlist 必須検証、完了シグナル待機、severity 判定・分類結果の state 反映、肯定コメント除外、dedup を扱えるようにした。`checkrun_allowlist` / `severity_markers` / `dedup.*` 設定も追加。
 - **`loop-harness`: LP-1 向け `loop_step.py` CLI を追加**: `start` / `attach` / `propose` / `complete` / `reconcile` / `heartbeat` / `resume` を JSON 出力と exit code 0/1/2/3 で利用できるようにした。あわせて `loop_start` / `loop_iteration` / `loop_stop` の audit event と checker artifact 保存に対応した。
 - **`loop-harness`: 反復ループ基盤の core パッケージを追加**: Phase 1 として loop 定義 loader、state/journal/lock の決定論的コア、worktree 命名ユーティリティ、既定 config を追加。CLI・スキル配線・LP-2 常駐実行は後続フェーズで追加予定。
+- **`loop-harness`: LP-2 の Docker 隔離実行を追加**: `isolation.execution_backend: docker` を明示した場合のみ Maker / Checker / 外部レビュー分類を hardened container と OAuth broker で実行する。既定値は引き続き `none` とし、Docker・broker・mount・container の障害時は host 実行へ降格せず fail-closed する。
+- **`meta-harness`: proposer が routing config patch を提案可能に（Phase A）**: proposer 生成候補が `agent-routing/cli-tools.yaml` の `agents.*.tool` / `antigravity.model` を patch できるようになった（`codex.model` は human 限定のまま）。reward hacking 対策として quality 厳密優越・クロススキル回帰ゲート・レート制限等を同梱（ADR-20260717-042）。
+- **`meta-harness`: skill target の共有 facet 改善をクロススキル回帰評価で保護**: `regression.enabled: true` を既定化して composition closure 内の共有 facet を候補 overlay に許可し、影響 skill の train/holdout critical を evaluation batch 単位で hard gate する。suite 不在の影響先は PR 警告へ記録し、回帰コスト・suite 数・impact freshness も昇格前に検証する。
+- **`meta-harness`: `target=skill:<slug>` の探索・評価に対応**: skill ごとの scenario suite、target 別 frontier、composition closure に限定した安全な overlay、`handoff` / `issue-create` の train・holdout 評価を追加。skill-evolution の trigger 出力から `orchex meta propose` へ疎結合で誘導する。
+- **`meta-harness`: `orchex meta loop`（Phase 3）を追加**: `propose` と `evaluate` を ledger 駆動で自動反復し、予算・反復上限・発散・収束で停止する。`--resume` は中断時の孤児候補を含む状態を ledger から復元する。
+- **`meta-harness`: Docker 隔離 scenario 実行を解禁**: `orchex meta evaluate` / `loop` の既定実行 backend を Docker に変更し、internal network の候補コンテナと run-scoped OAuth broker を使って実資格情報を候補へ渡さず scenario・oracle・tool-less judge を実行する。Docker daemon・pin 済みイメージ・broker が利用できない場合は worktree 作成前に明示エラーで停止し、非隔離 backend へは降格しない。
 - **`meta-harness`: population ベースのハーネス最適化基盤（Phase 1a: 計測基盤）を新設**: 候補ハーネス（facet ソースへの宣言的オーバーレイ）の登録・append-only 台帳・品質×コストの Pareto frontier 算出を行う `orchex meta` サブコマンド群（`init` / `register` / `frontier` / `status` / `purge`）を追加。ストアは worktree の寿命に依存しないメインルート配下 `.claude/meta-harness/` に永続化する。評価実行（evaluate）以降は Phase 1b 以降で追加予定。設計は `docs/design/meta-harness.md`（基本）/ `docs/design/meta-harness-detailed.md`（詳細）を参照
 - **`meta-harness`: `orchex meta evaluate`（Phase 1b: evaluator）を追加**: 候補ハーネスを使い捨て worktree に実体化し、`claude -p` ヘッドレス実行 → oracle 判定（`command_exit` / `artifact_exists` / `rubric_judge`）→ 台帳記録までを自動実行する。CLI capability gate（バージョン pin + フラグ smoke test、fail-closed）、evaluate.lock（PID + heartbeat）、self-report 注入とペナルティ、baseline シナリオ 2 本を同梱。LLM judgeはtool-lessな`claude --bare`を既定とし、read範囲を制限できないCodex backendはfail-closedする
 - **`meta-harness`: proposer 隔離設定（Phase 2 M1）を追加**: `proposer.tool` と `proposer.isolation.*`（srt backend / version pin / allowRead 追加）を導入
 - **`meta-harness`: `orchex meta propose`（Phase 2 M4）を追加**: filtered view を srt 隔離 backend 内の proposer（既定 codex）へ渡し、構造化 proposal を検証して候補登録する。無効 proposal は候補登録せず `rejected/` に診断保存する。`proposer.timeout_seconds` で codex backend の wall-clock timeout を制御し、timeout 時はプロセスグループごと強制終了する。proposal 登録イベントには codex stdout 由来の `tokens_used` も記録する
 - **`meta-harness`: `orchex meta promote`（Phase 2 M5）を追加**: frontier 上の候補を予約して promotion worktree に適用し、facet/context build と任意の `promote.verify_command` を通した上で PR を作成する。`--confirm` は PR merge と main 到達を検証した場合のみ `promoted` 遷移を記録する
 - **`meta-harness`: proposer 出力経路の資格情報検知（Phase 2 L2/L3）を追加**: 候補登録時に proposal・overlay を走査し、staged auth の canary（L2）や `sk-`/JWT 等の汎用 secret（L3）を検出したら登録を拒否して台帳へ `proposer_security_violation` を記録する。L3 スキャンは `promote` 前提条件でも再実行する（検知層であり主対策は認証情報の最小化）
-- **`loop-harness`: LP-2 の Docker 隔離実行を追加**: `isolation.execution_backend: docker` を明示した場合のみ Maker / Checker / 外部レビュー分類を hardened container と OAuth broker で実行する。既定値は引き続き `none` とし、Docker・broker・mount・container の障害時は host 実行へ降格せず fail-closed する。
+- **`git-workflow`: `/review-respond` スキルを追加**: カレントブランチの PR に付いた bot レビュー指摘（CodeRabbit/Codex 等）を `pr_review_threads.py` で取得し、分類・修正・push・返信・スレッド解決までを単発実行で自動対応する。
 
 ### Fixed
 
-- **`meta-harness`: codex proposer が structured output schema 拒否で常に失敗する問題を修正**: `orchex meta propose` / `loop` の codex backend が渡す output schema を候補種別（facet 変更 / config patch）に応じて必須項目を確定させ、OpenAI structured outputs の strict mode 要件を満たすようにした。
-- **`meta-harness`: srt 隔離下の Codex proposer が stdout EAGAIN で panic する問題を修正**: `orchex meta propose` / `loop` の Codex proposer が安定して完走するようにした。
-- **`loop-harness`: Docker action 完了後の cleanup 失敗と lease 喪失時の隔離停止を修正**: cleanup 失敗が成功済み Checker artifact / Maker CAS を偽の infrastructure failure で上書きしないよう安全停止へ変更し、lease 喪失時は host 側 `docker exec` client だけでなく scenario container の cgroup 全体を回収するようにした。driver/config runtime が Maker の action worktree 内に配置された unsafe な起動経路も config 読込・action 実行前に拒否する。
-
-- **`meta-harness`: Docker capability gate と実 judge コンテナが出力トークン上限を適用しておらず broker 予算超過を招いていた不具合を修正**: capability smoke コンテナと judge（`judge.tool: claude-bare`）コンテナの双方に `scenario_run.max_output_tokens_default`（既定 4096、`null` 明示時もフォールバック）を適用し、broker の worst-case 予算チェックによる評価不能を解消した。
 - **`evaluation-set-checker` が `packages/` 配下に実体を持たない SSOT（orchex CLI 等）のテストを識別できない不具合を修正**: 評価セット ID とテストパスの明示マッピング（`.claude/config/quality-gates/evaluation-set-mapping.yaml`）を追加し、`test_orchestra_manager_core.py` が無関係な `core` パッケージへ誤誘導される問題も解消した。
 - **`orchex uninstall --dry-run` が最後のパッケージ削除時に `settings.local.json` を書き換えていた不具合を修正**: dry-run では実ファイルを一切変更せず、プレビュー表示のみ行うようにした。
 - **`orchex enable` が未インストールのパッケージにもフックを登録していた不具合を修正**: 対象パッケージが `install` 済みでない場合はエラーを表示し、フック登録を行わないようにした。
@@ -48,42 +41,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **ユーザー編集済み agent ファイルが再同期（SessionStart / 再インストール）で上書きされ得る不具合を修正**: config ファイルと同じ配布時ハッシュ比較ガードを agents ファイルにも適用した。
 - **`orchex proxy stop`/`proxy status` の cocoindex 未導入判定を修正**: 判定基準をプロジェクトの `installed_packages` に基づくものに変更し、未導入時に確実にエラーとなるようにした。
 - **`codex-suggestions` が `cli-tools.yaml` に `codex` セクション未定義でも発火していた不具合を修正**: `check-codex-before-write` / `check-codex-after-plan` は設定未定義時 `codex.enabled` を `false` 扱いにし、明示的に有効化しない限り提案しないようにした。さらに `agent-routing` を導入していないプロジェクト（project-local な `cli-tools.yaml` が存在しない）では、パッケージ同梱のフォールバック設定を「明示的な有効化」とみなさず提案しないようにした。
-- **`loop-harness`: 死んだ scheduler が cron から復旧しない問題を修正**: 常駐 scheduler の cron 生存確認を、cron ラッパー自身のコマンド文字列に誤って一致しうる `pgrep -f` の正規表現マッチから、pidfile への `flock` に基づく `is-alive` チェックへ変更した。scheduler は起動時に自身で pidfile をロックするため、二重起動は cron/launchd/手動起動のいずれからでも確実に防止される。
-- **`loop-harness`: 外部レビューが Low/Nitpick のみでも PR レビュー対応ループが無進捗失敗する問題を修正**: 実質的な指摘（Critical/High）が無いにもかかわらず Draft 化されていた不具合を修正した。Low/Medium の指摘は合格をブロックしない非ブロッキング扱いとし、残存分は成功時の Issue コメントに一覧で記録する。
-- **`loop-harness`: 遅れて届いた新規の Critical/High 指摘が「無進捗」と誤判定される問題を修正**: 修正が正しく進んでいても、前回反復から新規の重大指摘が 1 件見つかっただけで反復せず失敗していた不具合を修正した。
-- **`meta-harness` / `skill-evolution`: 無効な候補・target 入力で CLI が例外終了する問題を修正**: validation error として終了コード 2 を返し、skill 改善提案には対象プロジェクトを明示するようにした。
+- **`skill-evolution`: 無効な target 入力で CLI が例外終了する問題を修正**: validation error として終了コード 2 を返し、skill 改善提案には対象プロジェクトを明示するようにした。
 - **`reverse`: Python 3.12 でスキャンスクリプトが失敗する問題を修正**: Python 3.13 で追加された `pathlib` API への依存を除き、シンボリックリンクを辿らない既存挙動を維持したままサポート対象の Python 3.12 で実行できるようにした。
-- **`meta-harness`: Docker broker が Claude CLI の既知トラフィックを拒否する問題を修正**: `?beta=true` と pin 済み CLI の client beta を allowlist で中継し、`/messages` と `/messages/count_tokens` の重なりを同時 upstream 1件のまま直列化して、Docker backend の scenario 実行が正常に完走するようにした。
 - **`cli-tools.yaml` の旧 `gemini.enabled: false` が明示設定済みの `antigravity.enabled` を無条件に上書きしていた問題を修正**: 両キーが競合する場合は `antigravity.enabled` を優先するようにした。旧 `gemini.enabled: false` は `antigravity.enabled` が未設定の場合のみ後方互換フォールバックとして働く。base 設定が `antigravity.enabled` を既定で明示している通常の移行済みプロジェクトでも、`.local.yaml` の旧 `gemini.enabled: false` だけによる無効化が正しく機能するようにした。
-- **`loop-harness`: `/loop-issue` の Maker に編集不能ロールが選ばれて反復が進まない問題を修正**: `debugger` を含む `issue-loop` の auto Maker 候補を実装可能ロールの allowlist に限定し、初回に選定した Maker を state に保存して実装反復・PR レビュー対応で一貫して再利用するようにした。custom loop のフェーズ固有 Maker と変更前の completed journal の reconcile は後方互換を維持する。
-- **`loop-harness`: CodeRabbit のレート制限を無進捗失敗として扱う問題を修正**: 信頼済みのレート制限応答を検知し、CodeRabbit だけの構成では即時、Codex 等の代替レビュー経路がある構成では既存 timeout まで待ってから、人間の確認・マージ判断へ安全に引き継ぐようにした。
-- **`loop-harness`: severity 分類を挟む PR レビュー取り込みで指摘が欠落する問題を修正**: 明示 severity の指摘と分類が必要な指摘が同時に届いた場合でも、action と lease に安全に束縛した snapshot で結果を引き継ぎ、分類後に一部の指摘が消えて誤って合格扱いにならないようにした。
 - **`quality-gates`: hook 状態ファイルの保存規約を統一し、worktree 分離と排他制御を追加**: `test-gate-checker.py` / `post-test-analysis.py` / `post-implementation-review.py` / `test-tampering-detector.py` の状態ファイルを、全プロジェクト共有だった `/tmp/claude-*.json` から `.claude/state/`（`evaluation-set-checker.py` と同じ規約、worktree = project_dir 配下に閉じ込め）へ移行した。あわせて `test-tampering-detector.py` の状態更新に flock 排他ロックを追加し、他 3 hook と同じ保護レベルに揃えた。
-- **`loop-harness`: bot の自動生成サマリコメントが phantom high 指摘として取り込まれる問題を修正**: CodeRabbit 等が投稿する非 actionable ステータスコメント（本文中に `High` 等の語を偶然含む）が explicit high severity の指摘として誤って取り込まれ、対応実体が無いまま `exit_success` に到達できなくなる不具合を修正した。`pr_review.auto_generated_markers`（config）で指定したマーカーを含むコメントは severity 判定前に除外される。
-- **`loop-harness`: PR レビュー再ベースライン時に未取り込みの信頼済み指摘が失われる問題を修正**: 追加 commit を push する直前の re-baseline が、直前反復の作業中に届いた別レビュアーの指摘を「処理済み」として取り込む前に握りつぶしてしまう不具合を修正した。re-baseline の前に必ず一度取り込み（drain）を行い、指摘が残っている場合は push・再ベースラインを行わず修正反復へ差し戻すようにした。
-- **`loop-harness`: Codex 等の issue コメント形式のレビュー応答が完了として検知されない問題を修正**: `@codex review` のようなコマンド応答が正式な GitHub review ではなく issue コメントとして投稿された場合、レビューが完了しているにもかかわらず毎回タイムアウトまで待機していた不具合を修正した。発信元検証済み・baseline 以降・非自動生成・終局判定文言に一致する issue コメントを完了シグナルとして扱うようにした。あわせて CodeRabbit のコマンド応答マーカーを自動生成コメント除外の既定リストに追加した。
-- **`loop-harness`: linked worktree からループ実行時にプロジェクト固有設定が反映されない問題を修正**: loop worktree（`git worktree add` で作成した作業ディレクトリ）から実行した場合、`.claude/config/loop-harness/loop-harness.local.yaml` が root worktree 側にしか存在せず、上書き設定が無視されていた不具合を修正した。
 - **worktree からの install/init がグローバル参照先を上書きする問題を修正**: 同じ Git リポジトリの linked worktree から実行した場合、`~/.claude/settings.json` の既存 `AI_ORCHESTRA_DIR`（main worktree）を保持するようにした。
-- **`meta-harness`: ストア用 `.gitignore` エントリが SessionStart 同期で消える問題を修正**: `.claude/meta-harness/` を gitignore 管理ブロックの生成元（`gitignore_sync.py`）に追加し、同期のたびに手動追記が失われる Phase 1a の実装漏れを解消
-- **`meta-harness`: `orchex meta propose` の Codex 起動失敗を修正**: srt 隔離下で repo 内 `proposal.schema.json` が `denyRead` に遮断されないよう schema を ephemeral `CODEX_HOME` へ staging し、非 secret の `models_cache.json` / `version.json` だけを staging するようにした。構造化出力時の streaming 通信は Codex backend に限り srt の TLS 終端から除外し、proposal schema は OpenAI structured output 互換に調整した
-- **`loop-harness`: `start` 直後にセッションが断絶したループを復旧できない問題を修正**: 初回 `run_maker` の pending 化直後（`status=pending`）にセッションがクラッシュすると、`attach` が `pending` を拒否し `resume` も対象外のため復旧経路が無く、state ディレクトリを手動削除して journal を失いながら `start` をやり直すしかなかった。`attach` が `pending` も受理し、同一 `loop_id`・journal を維持したまま復旧できるようにした。
 - **`codex-harness`: 対話 Codex が git worktree 内で `git add` / `git commit` に失敗する問題を解消（Issue #161）**: worktree の実体 Git dir が作業ディレクトリ外にあり sandbox 書き込みが拒否されていたが、承認ベース緩和により通常の Git ワークフローが実行できるようになった。あわせて `gh` / `git fetch` 等のネットワーク遮断も承認で通せるようになった
 
 ### Changed
 
-- **`meta-harness`: 評価/judge の既定モデルを Sonnet に pin し、broker 予算上限価格を再較正**: `evaluate.model` / `judge.model` が未指定（セッション既定モデルに依存、Opus tier になり得た）から `claude-sonnet-5` 明示 pin に変わり、broker の `pricing_upper_bound_usd_per_million` 既定値も Sonnet 単価へ引き下げた。broker の model allowlist（`evaluate.isolation.broker.model_allowlist`）で candidate が pin より高価なモデルを指定して過小コスト計上する迂回を fail-closed で防ぐ。この再較正はコスト比較可能性に影響するため、旧価格下で評価済みの routing-config / facet 候補は evaluator hash が stale 判定となり再評価が必要になる。
-- **`meta-harness`: scenario/judge/capability smoke コンテナで Claude Code の 1M context beta を無効化**: 3 経路すべての claude CLI 起動に `CLAUDE_CODE_DISABLE_1M_CONTEXT=1` を設定し、premium 価格や毎ターン大量 cache 生成による予算前課金の乖離を抑制した。
-- **`meta-harness`: skill 回帰シナリオスイート追加に伴い回帰予算上限を引き上げ**: `regression.max_affected_suites`（5→7）/ `regression.max_budget_usd`（54.0→78.0）の既定値を、新規 skill suite（`issue-fix` / `task-state`）の追加分に合わせて再計算した。
-- **`meta-harness`: 実 backend 較正（最終 evaluate まで）に伴い回帰予算上限を再引き上げ**: `regression.max_budget_usd`（78.0→174.0）の既定値を、issue-create/issue-fix 全4シナリオ（`create-task-issue` / `create-bug-issue-holdout` / `fix-greet-none-bug` / `fix-formal-greeting-feature-holdout`）が最終 evaluate でも予算 latch した実測を受け、$3→$6→$9 の逐次引き上げを打ち切って全4シナリオを $15.00 に最終設定したことに合わせて再計算した（verify-routing-config の予算は回帰プールとは別会計のため寄与しない）。
-- **`meta-harness`: regression の予算 latch を frontier 判定で評価不能として区別**: broker の前課金拒否だけで error になった suite は警告を残したまま frontier 探索では中立化する。非予算の回帰失敗と promotion の全 suite pass 条件は従来どおり維持する。
-- **`meta-harness`: frontier の既定コスト軸を USD コストへ変更**: 全 target の `frontier.cost_axis` 既定値を `total_tokens` から `total_cost_usd` に変更したため、既存候補の frontier 順序が変わる場合がある。選択したコスト field を欠く run は従来どおり fail-closed し、purge 後の再評価が必要。
 - **`image-generation`: `codex.enabled: false` 時は画像生成を実行しないように変更**: `/image-gen` スキル・`image-generator` エージェントが `cli-tools.yaml`（+ `.local.yaml`）の `codex.enabled: false` を尊重し、無効時は画像生成を行わず「利用不可」を報告するようになった。
 - **`orchex setup all` から tmux-monitor を除外（opt-in 化）**: presets.json の `exclude` キーで除外した。必要な場合は `orchex install tmux-monitor` で明示的に導入する。
 - **Codex の既定モデルを `gpt-5.6-sol` に更新**: エージェントルーティング、設定読込失敗時のフォールバック、新規導入用 `.codex/config.toml` テンプレートを同じモデルに揃えた。
 - **`codex-harness`: 旧 `project-edit` profile のアップグレード移行を追加**: 過去に同期済みの harness 所有 profile だけを限定検出して `.codex/config.toml` から削除し、Issue #161 の制限が既存導入先に残り続けないようにした
 - **`codex-harness`: force-push と approval bypass 形を禁止**: branch push / PR 作成の plain 形は引き続き人間承認に委譲しつつ、force-push と option 挿入で native prefix rule を迂回する形は hook で block する
 - **`codex-harness`: 非対話 runner の validation trust を pre-run snapshot 化**: workspace-write 実行中に validation 設定と台帳を同時改変しても、実行前 hash snapshot と不一致なら validation を実行しない
-- **`loop-harness`: `pr_review_response` で Maker が変更を作らなかった場合の無進捗検知を高速化**: Maker が新規 commit を作らなかった反復では、外部レビュー待機（最大 60 分のポーリング）をスキップし、決定論的な commit sha 比較で即座に無進捗判定するようにした。行き詰まり検知までの時間が約 2 時間 → 数分に短縮される。
 - **`codex-harness`: 対話 Codex を「承認ベース」に緩和（Issue #161）**: 対話 `codex` 向けの既定 `approval_policy` を `on-request` → `on-failure` に変更。sandbox が拒否した操作（git worktree の実体 Git dir への書き込み＝ `git add`/`git commit`、`gh`/`git fetch` 等のネットワーク）を人間承認で実行できるようになった。非対話 runner（`codex_run` / `codex_review`）は `approval_policy=never` を明示指定し、従来どおり承認なしの厳格 sandbox を維持する
 - **`codex-harness`: `git push` / `gh pr create` を rules で `prompt`（人間承認付き許可）に緩和**: 従来のハードブロック（`forbidden`）から、対話時に人間が承認すれば実行できる `prompt` へ変更。`gh pr merge` / `gh release create` / `npm`・`pnpm publish` / `docker push` / `kubectl apply` / `terraform apply` / `rm -rf` 系は引き続き `forbidden`（承認不可）を維持
 
@@ -104,7 +76,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`/design`: 各フェーズ末に二段品質ゲート（セルフチェック → 自動レビュー）を導入**: Phase 1-3 の受け入れ確認前に、reference 末尾のセルフチェックリストとフェーズ対応レビュアー（要件 = `requirements`、基本設計 = `architecture-reviewer` + 条件付き `security-reviewer`、詳細設計 = `spec-reviewer`）による設計書レビューを必須化。設計ドキュメント専用の重要度定義・ゲート通過条件（Critical=0、High 処理済み）・フェーズ間ドリフトプロトコルを `references/design-review.md` に定義
 - **`/preflight`: 設計要否判定（3 段階）と設計成果物の読み込みを追加**: 要件確定時に「設計不要 / 軽量設計メモ / フル設計（`/design` へ誘導）」を判定。Phase 2 で `docs/` 配下の既存設計書と impact-analysis をタスク分解の入力として読み込む
 
-- **評価セット（docs/evaluation/）の導入（ADR-20260703-028）**: 全 14 パッケージについて「正しい状態とは何か」を自然言語で定義した評価セットを新設。AI 生成テストが実装の都合ではなく「あるべき仕様」に沿っているかをレビューするための判断基準として使う
+- **評価セット（docs/evaluation/）の導入（ADR-20260703-029）**: 全 14 パッケージについて「正しい状態とは何か」を自然言語で定義した評価セットを新設。AI 生成テストが実装の都合ではなく「あるべき仕様」に沿っているかをレビューするための判断基準として使う
   - **構成**: `docs/evaluation/README.md`（共通フォーマット・hook 型 / CLI ツール型 / スキル型の類型別観点チェックリスト・共通テストレビュー判断基準 6 項目）+ `_template.md`（雛形）+ `<pkg>.md` × 14（責務定義 / 入出力・副作用 / 評価観点 `EV-NN`（正常・異常・境界 × must/should、仕様根拠付き）/ 類型別観点 / パッケージ固有レビュー基準）
   - **運用ルール**: `.claude/rules/evaluation-set-policy.md`（facet: `evaluation-set-policy`）を新設。テスト改修時は該当評価セットと突合し、must 観点のギャップゼロを完了条件とする。突合マトリクスは一時成果物とし、ギャップはパッケージ単位の GitHub Issue で追跡（評価セットには恒久記録しない）。テスト変更時の hook 自動化は Issue #123 で追跡
   - **初回突合**: 既存テスト（`packages/<pkg>/tests/` + `tests/unit` + `tests/e2e` の二層）との突合を実施し、ギャップをパッケージ別 Issue として登録
@@ -140,7 +112,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- **`packages/skill-evolution`: スキル自己改善ループ（Issue #5）**: スキル実行の品質を二軸（自己申告＋機械計測）で計測し、学び（lessons）を次回実行へ還元しつつ、停止条件付きのオフライン反復でスキル自体を改善する新パッケージ。設計は `req/design:skill-evolution` ＋ `ADR-20260701-032` に記録
+- **`packages/skill-evolution`: スキル自己改善ループ（Issue #5）**: スキル実行の品質を二軸（自己申告＋機械計測）で計測し、学び（lessons）を次回実行へ還元しつつ、停止条件付きのオフライン反復でスキル自体を改善する新パッケージ。設計は `req/design:skill-evolution` ＋ `ADR-20260701-028` に記録
   - **二層アーキ**: オンライン層＝スキル発火ごとに軽量収集（`inject-lessons.py` が発火前に lessons 注入＋`run_id` 発行、`capture-skill-telemetry.py`／`capture-subagent-skill.py` が完了時に二軸テレメトリを `metrics/<skill>.jsonl` へ記録）。オフライン層＝`skill_evolution.py` CLI が停止条件・3ガード・スコアリング・ロックの決定論部分を提供（シナリオ実行と改善案生成は人間承認ゲート下の実行時作業）
   - **発火検出**: `PreToolUse`/`PostToolUse` の `tool_name == "Skill"`（`tool_input.skill`）で捕捉（`packages/audit` の実績方式）。`context: fork` スキルは `SubagentStop` で補完
   - **成功判定**: スキルごとの `[critical]` チェックリスト全達成で初めて成功。反映先は provenance で塩梅（facet 製→facet 昇格＋`facet build`、非 facet 製→lessons/SKILL.md diff、判別不能→lessons のみ）。数値ガード（コスト・反復・holdout・注入行数）は `skill-evolution.yaml` で調整可能

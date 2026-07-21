@@ -4,7 +4,7 @@
 **類型**: CLI ツール型（内部ライブラリ）
 **作成日**: 2026-07-15
 **最終レビュー日**: 未レビュー
-**情報源**: `docs/design/loop-harness-isolation.md` §5.2・§6・§8、`docs/adr/ADR-20260712-034.md`、`docs/adr/ADR-20260715-037.md`、`docs/adr/ADR-20260720-041.md`
+**情報源**: `docs/design/loop-harness-isolation.md` §5.2・§6・§8、`docs/adr/ADR-20260712-035.md`、`docs/adr/ADR-20260715-039.md`、`docs/adr/ADR-20260720-044.md`
 
 ## 1. 責務定義
 
@@ -31,8 +31,8 @@ namespace・image・config を引数として受け取り、meta-harness と loo
 ## 3. 評価観点
 
 - [ ] EV-01（正常 / must）: 同一 image・context hash・build args の process-local build は 1 回だけ実行し、2 回目は再利用する — 根拠: Phase 0 の既存 meta-harness 挙動
-- [ ] EV-02（異常 / must）: auto-build 無効時は `@sha256:<digest>` 形式でない mutable image を拒否する — 根拠: ADR-20260712-034
-- [ ] EV-03（異常 / must）: container/network の削除失敗は明示的な missing-object 応答だけを「既に削除済み」として成功扱いし、permission error 等を成功扱いしない — 根拠: ADR-20260712-034 受容基準
+- [ ] EV-02（異常 / must）: auto-build 無効時は `@sha256:<digest>` 形式でない mutable image を拒否する — 根拠: ADR-20260712-035
+- [ ] EV-03（異常 / must）: container/network の削除失敗は明示的な missing-object 応答だけを「既に削除済み」として成功扱いし、permission error 等を成功扱いしない — 根拠: ADR-20260712-035 受容基準
 - [ ] EV-04（正常 / must）: profile builder は read-only rootfs、cap drop、no-new-privileges、non-root、resource limit、noexec tmpfs を構成できる — 根拠: `docs/design/loop-harness-isolation.md` §3
 - [ ] EV-05（異常 / must）: comma を含む bind source 等、安全に Docker CLI へ表現できない mount は拒否する — 根拠: meta-harness 既存実装挙動
 - [ ] EV-06（正常 / must）: broker は internal/external network の dual-homed sidecar として起動し、scenario 側の direct egress や Docker socket mount を追加しない — 根拠: `docs/design/loop-harness-isolation.md` §2・§3
@@ -46,9 +46,9 @@ namespace・image・config を引数として受け取り、meta-harness と loo
 - [ ] EV-18（正常 / must）: build は呼び出し元専用の buildx builder のみを使用し、成功後に同 builder へ age-based prune を実行する。使用量が上限を超える場合は同 builder に限って `until=0` prune へフォールバックする。同名の builder/context が `docker-container` 以外の driver で既存の場合は無条件に再利用せず拒否する。`docker buildx create` が他プロジェクトとのレースで失敗した場合は `docker buildx inspect` を再試行し、既存ビルダーが driver 検証を通れば採用する（driver 不一致ならこのケースでも拒否する） — 根拠: `docs/design/loop-harness-isolation.md` §5.2
 - [ ] EV-19（境界 / must）: manifest の個別 entry が不正でも、その record だけを cache miss として除外し、同じ manifest 内の検証済み entry は引き続き再利用する。`built_at`/`last_used_at` が timezone-aware ISO 形式で parse できない場合も不正 record として扱う（`last_used_at` をテキストソートする prune が壊れた値を「最新」と誤認するのを防ぐため）— 根拠: `packages/docker-runtime/lib/docker_runtime_image.py`（`_load_valid_manifest`）
 - [ ] EV-20（境界 / must）: `exclusive_file_lock` は lock 取得時の `OSError` だけを lock error に変換し、critical section または unlock で発生した `OSError` は元の例外のまま伝播する — 根拠: `packages/docker-runtime/lib/docker_runtime_image.py`（`exclusive_file_lock`）
-- [ ] EV-21（正常 / must）: broker は全設定について `DR_BROKER_*` / `DR_PRICE_*` を優先して読み、未設定の項目だけ同名 suffix の `MH_BROKER_*` / `MH_PRICE_*` へ fallback する。これにより新しい呼び出し元は harness 非依存の契約を使い、digest pin 済み旧 broker image を使う meta-harness は従来契約を継続できる。新旧どちらの env 名も未設定の場合は両変数名を含む `KeyError` で起動失敗する（fail-loud）— 根拠: `docs/design/loop-harness-isolation.md` §6、ADR-20260715-037
-- [ ] EV-22（境界 / must）: `DR_BROKER_NAMESPACE` が明示された場合だけ `server_version=<namespace>-broker` と user-agent `ai-orchestra-<namespace>-broker/0.1` を導出し、未指定時は既存の `meta-harness-broker` / `ai-orchestra-meta-harness-broker/0.1` を維持する。不正な namespace は fail-closed で拒否する — 根拠: `docs/design/loop-harness-isolation.md` §6、ADR-20260715-037
-- [ ] EV-23（境界 / must）: broker の `budget_rejected_count` は token/cost upper bound による 429 の前課金拒否だけで増加し、成功、token 不一致、query/model/header/body 入力不正では増加しない — 根拠: ADR-20260720-041
+- [ ] EV-21（正常 / must）: broker は全設定について `DR_BROKER_*` / `DR_PRICE_*` を優先して読み、未設定の項目だけ同名 suffix の `MH_BROKER_*` / `MH_PRICE_*` へ fallback する。これにより新しい呼び出し元は harness 非依存の契約を使い、digest pin 済み旧 broker image を使う meta-harness は従来契約を継続できる。新旧どちらの env 名も未設定の場合は両変数名を含む `KeyError` で起動失敗する（fail-loud）— 根拠: `docs/design/loop-harness-isolation.md` §6、ADR-20260715-039
+- [ ] EV-22（境界 / must）: `DR_BROKER_NAMESPACE` が明示された場合だけ `server_version=<namespace>-broker` と user-agent `ai-orchestra-<namespace>-broker/0.1` を導出し、未指定時は既存の `meta-harness-broker` / `ai-orchestra-meta-harness-broker/0.1` を維持する。不正な namespace は fail-closed で拒否する — 根拠: `docs/design/loop-harness-isolation.md` §6、ADR-20260715-039
+- [ ] EV-23（境界 / must）: broker の `budget_rejected_count` は token/cost upper bound による 429 の前課金拒否だけで増加し、成功、token 不一致、query/model/header/body 入力不正では増加しない — 根拠: ADR-20260720-044
 
 ## 4. 類型別観点
 

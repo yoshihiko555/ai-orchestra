@@ -1,11 +1,11 @@
 # meta-harness scenario 実行 backend スパイク実証記録
 
 **日付**: 2026-07-12
-**関連**: ADR-20260712-034（scenario 実行基盤の Docker + ephemeral broker 移行）、
+**関連**: ADR-20260712-035（scenario 実行基盤の Docker + ephemeral broker 移行）、
 `docs/design/meta-harness-detailed.md` §2-2 / §8-2
 **環境**: Docker daemon = OrbStack 29.4.0（`unix:///Users/yoshihiko/.orbstack/run/docker.sock`）
 
-本ファイルは ADR-20260712-034 の承認根拠（Docker containment と ephemeral broker の実証）を、
+本ファイルは ADR-20260712-035 の承認根拠（Docker containment と ephemeral broker の実証）を、
 クローン先からも追跡できる形で恒久記録するもの。スパイクの実行手順・進行中の作業メモは
 `.claude/handoffs/20260712T-meta-harness-scenario-backend-spikes.md`（作業用・非追跡）にあるが、
 **判定根拠の SSOT は本ファイルとする**。
@@ -14,7 +14,7 @@
 
 ## S3: Docker containment 実証 — PASS
 
-Docker が ADR-033 の封じ込め要件（setsid 離脱回収・資源上限・egress 遮断）を満たすことの実測。
+Docker が ADR-034 の封じ込め要件（setsid 離脱回収・資源上限・egress 遮断）を満たすことの実測。
 手順書は Docker Desktop 前提だったが、実測環境は OrbStack。差異も併記する。
 
 | 項目 | 結果 | 実測 |
@@ -58,7 +58,7 @@ HTTPS 転送。SSE はチャンク単位で素通し。
 
 ## S2: L1 最小化 OAuth フォールバック — SKIP
 
-S1 PASS のため不要（選択肢C 不採用。ADR-20260712-034）。token-in-container 方式は実装対象外。
+S1 PASS のため不要（選択肢C 不採用。ADR-20260712-035）。token-in-container 方式は実装対象外。
 
 ---
 
@@ -66,5 +66,5 @@ S1 PASS のため不要（選択肢C 不採用。ADR-20260712-034）。token-in-
 
 案B（Docker + ephemeral broker）成立。broker はコンテナ内に実 token を置かず `ANTHROPIC_BASE_URL`
 差し替え + Bearer 注入で OAuth 認証を代行できる。有効化条件は「S1/S3 PASS + S2 SKIP 承認 + 封じ込め
-検証テストの整備」（ADR-20260712-034）。実装は `.claude/handoffs/20260712T-meta-harness-docker-broker-impl.md`
+検証テストの整備」（ADR-20260712-035）。実装は `.claude/handoffs/20260712T-meta-harness-docker-broker-impl.md`
 の指示に従う。

@@ -306,7 +306,7 @@ def find_config_files(target: Path) -> list[tuple[Path, str]]:
     results = _scan_directory(target, target)
 
     for child in sorted(target.iterdir()):
-        if not child.is_dir(follow_symlinks=False):
+        if child.is_symlink() or not child.is_dir():
             continue
         if child.name in EXCLUDED_DIRS:
             continue

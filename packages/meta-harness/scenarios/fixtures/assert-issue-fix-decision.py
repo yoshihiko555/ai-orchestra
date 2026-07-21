@@ -6,7 +6,7 @@ GitHub issue's label (see "フォールバック: ブランチ作成" and the co
 ``.agents/skills/issue-fix/SKILL.md``). This fixture recomputes the expected decision from the
 same fixed mapping the skill documents, and diffs it against the JSON decision artifact Claude
 was asked to write. This harness runs with git write operations unavailable (read-only git
-snapshot, ADR-20260712-034), so scenarios ask Claude to *record* what it would do instead of
+snapshot, ADR-20260712-035), so scenarios ask Claude to *record* what it would do instead of
 actually running ``git checkout -b`` / ``git commit`` / ``git push``.
 
 The scenario's ``.meta-harness/gh-issue-fixture.json`` lives inside the same writable workspace

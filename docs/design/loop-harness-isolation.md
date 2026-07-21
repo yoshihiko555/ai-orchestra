@@ -8,7 +8,7 @@ codd:
       relation: derives_from
     - id: "design:loop-harness-cli"
       relation: refines
-    - id: "adr:ADR-20260712-034"
+    - id: "adr:ADR-20260712-035"
       relation: references
   owner: ai-orchestra
 ---
@@ -19,7 +19,7 @@ codd:
 **ステータス**: draft（Issue #211 の設計フェーズ成果物。実装は本書確定後に別 PR で行う）
 **対象**: LP-2（`loop_driver.py` の headless `claude -p` 実行）のみ。LP-1（セッション内伴走型、`loop_step.py`）は対象外
 **関連**: `design:loop-harness`（基本設計）、`design:loop-harness-cli`（CLI 詳細設計。§2.2 に現行の多層防御と本 Issue への申し送りがある）、
-`adr:ADR-20260712-034`（meta-harness の Docker + ephemeral broker 移行。本設計の流用元）、`adr:ADR-20260715-037`（本設計の決定を記録する ADR）
+`adr:ADR-20260712-035`（meta-harness の Docker + ephemeral broker 移行。本設計の流用元）、`adr:ADR-20260715-039`（本設計の決定を記録する ADR）
 
 > 本書は `docs/design/loop-harness-cli.md` §2.2 末尾の「残余リスク（同一 UID 前提）」および
 > Issue #231（イメージキャッシュ肥大化）の教訓を踏まえ、Maker/Checker の実行境界を
@@ -82,7 +82,7 @@ Maker（`claude -p` が生成・実行するコード）は Issue 本文・PR �
   で受容済みの残バイパス）は、コンテナ隔離後も「信頼された作者の YAML に対する best-effort チェック」
   という位置づけ自体は変わらない。ただし敵対的コード実行の被害範囲はコンテナの egress 制限・
   ファイルシステム境界によって大幅に縮小される。
-- **継続**: broker 自身（サイドカー）が乗っ取られた場合のリスクは ADR-20260712-034 のスコープと同じ
+- **継続**: broker 自身（サイドカー）が乗っ取られた場合のリスクは ADR-20260712-035 のスコープと同じ
   受容基準（`api.anthropic.com` への egress 限定、tmpfs token、read-only rootfs）を踏襲する。
 - **継続（PR #262 round-8 レビュー対応後の残余）**: `loop_driver.LoopDriver._lease_lost` は
   プロセス内のイベントであり、真の分散ロックではない。Docker action 開始直前・
@@ -123,7 +123,7 @@ driver (host)                          broker (sidecar)          scenario (Maker
   worker 常駐とは独立で、常駐するのは driver プロセスのみ。
 - 正常終了・timeout・例外の**全経路**で `docker rm -f`（scenario）→ broker `cleanup()` の順に
   try/finally で実行する（meta-harness の `cleanup_docker_launch()` と同じ規律。SIGKILL 等の
-  異常経路はアイドルタイムアウト + 起動時 stale cleanup で有限時間内に回収する。ADR-20260712-034 と同基準）。
+  異常経路はアイドルタイムアウト + 起動時 stale cleanup で有限時間内に回収する。ADR-20260712-035 と同基準）。
 
 ### 2.2 Maker と Checker の差分
 
@@ -146,7 +146,7 @@ meta-harness（`packages/meta-harness/lib/scenario_docker_profile.py`）の scen
 - `--pids-limit` / `--memory` / `--cpus` の資源上限（config で調整可。7 節）
 - Docker socket は**決してマウントしない**
 - ネットワークは `--internal` の Docker network のみに接続し、broker 以外に到達不可
-- Docker socket 非搭載・`--internal` の DNS/egress 遮断は ADR-20260712-034 のスパイク S3/S3b で
+- Docker socket 非搭載・`--internal` の DNS/egress 遮断は ADR-20260712-035 のスパイク S3/S3b で
   実証済みの性質をそのまま継承する（再検証は不要。同じ Docker daemon 機構に依存するため）
 
 ---
@@ -588,7 +588,7 @@ meta-harness・loop-harness の双方が利用する形を設計目標とする�
 ## 6. broker 流用範囲と loop-harness 固有の差分
 
 meta-harness の `packages/meta-harness/lib/scenario_docker.py` / `scenario_docker_profile.py` と、
-`packages/docker-runtime/docker/broker/broker.py`（ADR-20260712-034 で確立した dual-homed sidecar
+`packages/docker-runtime/docker/broker/broker.py`（ADR-20260712-035 で確立した dual-homed sidecar
 broker。meta-harness の旧パスは互換 shim）を共有して流用する。
 
 | 項目                             | meta-harness                                        | loop-harness（差分）                                                    |
@@ -625,7 +625,7 @@ lp2:
   priority_labels: []
   isolation:
     backend: none # none | docker（#211）。none = 既存の層1〜4深層防御のみで実行（現行動作を維持）
-    execution_backend: none # docker 有効化は封じ込め検証テストの整備後（ADR-20260712-034 と同じ fail-closed 原則）
+    execution_backend: none # docker 有効化は封じ込め検証テストの整備後（ADR-20260712-035 と同じ fail-closed 原則）
     image: ai-orchestra/loop-harness-scenario:<pin> # sha-<recipe_hash12> タグへの解決は 5.2 節参照
     image_pin: null # null = Claude CLI バージョン一致検証をスキップ
     auto_build_images: true # false の場合 image は @sha256:<digest> 形式必須（タグ形式は DockerImageError）
@@ -649,11 +649,11 @@ lp2:
       startup_timeout_sec: 30
 ```
 
-- `isolation.backend`/`execution_backend` を分ける理由は ADR-20260712-034 と同じ
+- `isolation.backend`/`execution_backend` を分ける理由は ADR-20260712-035 と同じ
   （「名前を設定しただけでは利用可能扱いにしない」。封じ込め検証テストが揃うまで
   `execution_backend` は `none` に固定する）。
 - `Docker daemon 不在・イメージ pin 不一致・broker 起動失敗は非隔離実行へ降格せず run error とする`
-  という ADR-20260712-034 の fail-closed 原則を、`backend: docker` 有効時にも同様に適用する
+  という ADR-20260712-035 の fail-closed 原則を、`backend: docker` 有効時にも同様に適用する
   （静かなフォールバックによる隔離境界の無効化を防ぐ）。
 - `.claude/config/loop-harness/loop-harness.local.yaml` によるプロジェクト固有上書きは
   `config-loading.md` の既存レイヤードルールにそのまま従う。
@@ -695,11 +695,11 @@ config で切替可能な追加バックエンドとして導入する（確定�
 - `mechanical.commands` denylist の残バイパス（`design:loop-harness-cli` §2.2 SN3-accept）は
   受容方針を変更しない。コンテナ化により被害範囲（ファイルシステム境界・egress）は縮小するが、
   denylist 自体の性質（信頼された作者向け best-effort チェック）は変わらない。
-- broker サイドカーが乗っ取られた場合のリスクは ADR-20260712-034 と同一の受容基準を継続する。
+- broker サイドカーが乗っ取られた場合のリスクは ADR-20260712-035 と同一の受容基準を継続する。
 - Maker/Checker がコンテナ内で自ブランチ以外の ref を参照できない制約（4.5 節）はトレードオフ
   として受容する。
 - Docker daemon 自体の脆弱性・ホスト側 Docker Desktop/OrbStack の実装依存のリスクは
-  ADR-20260712-034 のスコープと同じく対象外とする。
+  ADR-20260712-035 のスコープと同じく対象外とする。
 - 4.3.2 節 Fix-3 の `.git` ro overlay は「host 側の事後処理が汚染された gitdir を踏まない」ことを
   保証するものであり、Maker 自身が `.git` 経由でコンテナ内から `common_dir/worktrees/<name>` へ
   到達すること自体は、当該パスをそもそもマウントしていないことで防いでいる（二重の防御）。
@@ -750,7 +750,7 @@ config で切替可能な追加バックエンドとして導入する（確定�
   単一ファイルが実コンテナ内で読み取り専用となることを、mount 順序を含めて検証する。
 - ~~[Phase 4 レビュー指摘、Critical/High] action 結果生成後の cleanup failure が偽の
   infrastructure result を生成する問題、および lease 喪失時に `docker exec` client しか停止しない問題~~
-  → **ADR-20260718-040 で解消済み**: cleanup failure は sealed artifact / Maker CAS を上書きせず
+  → **ADR-20260718-043 で解消済み**: cleanup failure は sealed artifact / Maker CAS を上書きせず
   `action_cleanup_failed` で安全停止し、scenario 削除未確認は action 種別を問わず安全停止する。
   heartbeat / wall-clock の取消は executor へ伝播し、起動中・実行中の scenario container を
   race-safe かつ冪等に `docker rm -f` する。opt-in containment E2E は長時間 `docker exec` の回収まで

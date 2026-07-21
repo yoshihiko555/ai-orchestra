@@ -1729,7 +1729,7 @@ def test_every_bypass_permissions_scenario_has_a_collateral_scope_critical_check
     """PR #273 final review (Medium, security+spec reviewers independently flagged this):
     `permission_mode: bypassPermissions` unlocks the entire `.claude/` tree for a scenario, so
     every scenario that opts into it must carry a `collateral-scope` critical check as a
-    compensating control (ADR-20260714-036 "bypassPermissions 例外" addendum). This scans all
+    compensating control (ADR-20260714-038 "bypassPermissions 例外" addendum). This scans all
     registered scenario yaml files rather than hardcoding the current 4 bypass scenarios, so a
     future scenario adding bypass without the paired oracle fails this test immediately."""
     scenario_paths = sorted((PACKAGE_DIR / "scenarios").rglob("*.yaml"))
