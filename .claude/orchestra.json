@@ -103,7 +103,7 @@
       "config/audit/audit-flags.json": "8c0059f9a982219e070ce8d5f61c2ea01d907a3be9c030721fd658924f97e519"
     },
     "codd": {
-      "config/codd/codd.yaml": "34b39501ced4cf12868fe6c0eea0071350cc68dd7a0ae413d686ed8d39491bd2"
+      "config/codd/codd.yaml": "3f349aef50c4cdf9e046725062e731ac8f4d2255c7698b5fef291c4c679ed38b"
     },
     "git-workflow": {
       "config/git-workflow/sandbox-requirements.json": "4b2f9366201ed8f90d3f2f5e418502f75d977b4ca659f8dfc91b8369e5971e5e"
@@ -126,7 +126,7 @@
       "agents/reverse-coordinator.md": "b4ba084e8d03e158ed5ab4d44b93655de2044a1506c22319df5a6bbf2ab6c574"
     },
     "meta-harness": {
-      "config/meta-harness/meta-harness.yaml": "41c6921a9bf409377c39b1b0238671b0da6fd079349893ac9856cd62cecd0423"
+      "config/meta-harness/meta-harness.yaml": "f07ce1c1e2a960516335a19f0c7e8633b01d5567b5606e66da5dea9a95cb2e80"
     },
     "quality-gates": {
       "config/quality-gates/evaluation-set-mapping.yaml": "831e3804fa10c7823465e0ae081cdec88ab0a9d2a929d048e50b4690d48baa95"
