@@ -345,7 +345,7 @@ def forbidden_read_paths(
 
 def wrap_srt_command(srt_path: str, settings_path: Path, command: list[str]) -> list[str]:
     """srt CLI 経由のコマンド配列を作る。"""
-    return [srt_path, "--settings", str(settings_path), *command]
+    return [srt_path, "--settings", str(settings_path), "--", *command]
 
 
 def _require_srt_binary() -> str:

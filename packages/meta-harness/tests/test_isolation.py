@@ -221,6 +221,18 @@ class TestEnvironmentAndInstructionGuards:
 
 
 class TestResolveIsolationBackend:
+    def test_wrap_srt_command_stops_option_parsing(self, tmp_path: Path) -> None:
+        settings_path = tmp_path / "srt-settings.json"
+        command = ["bash", "-c", 'exec "$0" "$@"', "codex", "exec"]
+
+        assert iso.wrap_srt_command("/usr/bin/srt", settings_path, command) == [
+            "/usr/bin/srt",
+            "--settings",
+            str(settings_path),
+            "--",
+            *command,
+        ]
+
     def test_platform_profile_input_hash_changes_with_settings(self) -> None:
         base_settings = {"network": {"allowedDomains": ["a.example"], "deniedDomains": []}}
         changed_settings = {"network": {"allowedDomains": ["b.example"], "deniedDomains": []}}

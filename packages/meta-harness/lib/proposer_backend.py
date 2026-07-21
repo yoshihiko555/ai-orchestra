@@ -8,6 +8,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import shutil
 import signal
 import stat
@@ -38,8 +39,11 @@ AUTH_TOKEN_TTL_MARGIN_SECONDS = 120
 _CODEX_HOME_PREFIX = "meta-harness-codex-home-"
 _CODEX_ORPHAN_MAX_AGE = timedelta(hours=24)
 _CODEX_MODEL_CATALOG_FILES = ("models_cache.json", "version.json")
+_EXCERPT_MAX_BYTES = 500
+_USAGE_TAIL_MAX_BYTES = 65_536
 
 SubprocessRunner = Callable[..., subprocess.CompletedProcess]
+EventsFileIdentity = tuple[int, int]
 
 
 class ProposerError(RuntimeError):
@@ -85,8 +89,9 @@ def launch_proposer_backend(
     output_path = view_dir / "proposal-output.json"
     if output_path.exists():
         output_path.unlink()
+    events_identity: EventsFileIdentity | None = None
     if tool == "codex":
-        completed = _launch_codex_backend(
+        completed, events_identity = _launch_codex_backend(
             view_dir=view_dir,
             prompt=prompt,
             schema_dir=schema_dir,
@@ -114,13 +119,24 @@ def launch_proposer_backend(
         raise ProposalValidationError(f"unsupported proposer.tool: {tool!r}")
     proposal = load_and_validate_proposal_output(output_path, schema_dir)
     stdout = completed.stdout or ""
+    tokens_used = parse_tokens_used(stdout)
+    if tool == "codex":
+        codex_home = _resolve_codex_home(ephemeral_home, isolation_launch)
+        assert events_identity is not None
+        events = _read_usage_events_tail(
+            codex_home / "codex-events.log",
+            expected_identity=events_identity,
+        )
+        events_tokens_used = parse_tokens_used(events or "")
+        if events_tokens_used is not None:
+            tokens_used = events_tokens_used
     return ProposerBackendResult(
         proposal=proposal,
         backend=tool,
         output_path=output_path,
         stdout=stdout,
         stderr=completed.stderr or "",
-        tokens_used=parse_tokens_used(stdout),
+        tokens_used=tokens_used,
     )
 
 
@@ -228,16 +244,23 @@ def _launch_codex_backend(
     auth_canary: str | None,
     allowed_based_on_runs: list[str] | tuple[str, ...] | None,
     runner: SubprocessRunner | None,
-) -> subprocess.CompletedProcess:
+) -> tuple[subprocess.CompletedProcess, EventsFileIdentity]:
     srt_path = _require_tool("srt")
     _require_tool("codex")
+    _require_tool("bash")
+    codex_home = _resolve_codex_home(ephemeral_home, isolation_launch)
+    events_path = codex_home / "codex-events.log"
     output_schema_path = _stage_codex_output_schema(
         schema_dir=schema_dir,
-        ephemeral_home=_resolve_codex_home(ephemeral_home, isolation_launch),
+        ephemeral_home=codex_home,
         target=target,
         allowed_based_on_runs=allowed_based_on_runs,
     )
+    events_identity = _precreate_events_file(events_path)
     command = [
+        "bash",
+        "-c",
+        f'exec "$0" "$@" < /dev/null > {shlex.quote(str(events_path))} 2>&1',
         "codex",
         "exec",
         "--skip-git-repo-check",
@@ -253,7 +276,7 @@ def _launch_codex_backend(
     if model:
         command += ["--model", str(model)]
     command.append(prompt)
-    return _run_isolated_backend(
+    completed = _run_isolated_backend(
         srt_path=srt_path,
         settings_path=isolation_launch.settings_path,
         command=command,
@@ -263,7 +286,10 @@ def _launch_codex_backend(
         label="codex proposer",
         auth_canary=auth_canary,
         runner=runner,
+        events_path=events_path,
+        expected_events_identity=events_identity,
     )
+    return completed, events_identity
 
 
 def _launch_claude_bare_backend(
@@ -330,6 +356,8 @@ def _run_isolated_backend(
     label: str,
     auth_canary: str | None,
     runner: SubprocessRunner | None,
+    events_path: Path | None = None,
+    expected_events_identity: EventsFileIdentity | None = None,
 ) -> subprocess.CompletedProcess:
     command_runner = runner or _run_process_tree
     try:
@@ -347,10 +375,13 @@ def _run_isolated_backend(
     except OSError as exc:
         raise ProposerRuntimeError(f"{label} failed to run: {exc}") from exc
     if completed.returncode != 0:
-        raise ProposerRuntimeError(
-            f"{label} exited {completed.returncode}: "
-            f"{_error_excerpt(completed, auth_canary=auth_canary)}"
+        excerpt = _error_excerpt(
+            completed,
+            auth_canary=auth_canary,
+            events_path=events_path,
+            expected_events_identity=expected_events_identity,
         )
+        raise ProposerRuntimeError(f"{label} exited {completed.returncode}: {excerpt}")
     return completed
 
 
@@ -401,16 +432,120 @@ def _drain_after_kill(process: subprocess.Popen) -> tuple[str | None, str | None
 
 
 def _error_excerpt(
-    completed: subprocess.CompletedProcess, *, auth_canary: str | None = None
+    completed: subprocess.CompletedProcess,
+    *,
+    auth_canary: str | None = None,
+    events_path: Path | None = None,
+    expected_events_identity: EventsFileIdentity | None = None,
+) -> str:
+    if events_path is not None:
+        assert expected_events_identity is not None
+        events = _read_redacted_events_excerpt(
+            events_path,
+            auth_canary=auth_canary,
+            expected_identity=expected_events_identity,
+        )
+        if not events:
+            return f"events=(no events file); {_stdio_excerpt(completed, auth_canary)}"
+        return f"events={events}"
+    return _stdio_excerpt(completed, auth_canary)
+
+
+def _stdio_excerpt(
+    completed: subprocess.CompletedProcess,
+    auth_canary: str | None,
 ) -> str:
     stderr = psec.redact_for_storage((completed.stderr or "").strip(), auth_canary=auth_canary)
     stdout = psec.redact_for_storage((completed.stdout or "").strip(), auth_canary=auth_canary)
     parts = []
     if stderr:
-        parts.append(f"stderr={stderr[:500]}")
+        parts.append(f"stderr={stderr[:_EXCERPT_MAX_BYTES]}")
     if stdout:
-        parts.append(f"stdout={stdout[:500]}")
+        parts.append(f"stdout={stdout[:_EXCERPT_MAX_BYTES]}")
     return "; ".join(parts) if parts else "(no output)"
+
+
+def _read_redacted_events_excerpt(
+    events_path: Path,
+    *,
+    auth_canary: str | None,
+    expected_identity: EventsFileIdentity,
+) -> str | None:
+    """十分な末尾を先に秘匿し、表示用の短い excerpt に切り詰める。"""
+    tail = _read_events_tail(events_path, expected_identity=expected_identity)
+    if tail is None:
+        return None
+    data, _truncated = tail
+    events = data.decode("utf-8", errors="replace").strip()
+    redacted = psec.redact_for_storage(events, auth_canary=auth_canary)
+    return redacted[-_EXCERPT_MAX_BYTES:]
+
+
+def _read_usage_events_tail(
+    events_path: Path,
+    *,
+    expected_identity: EventsFileIdentity,
+) -> str | None:
+    """usage 抽出用に十分な末尾を読み、先頭の不完全な JSONL 行を除く。"""
+    tail = _read_events_tail(events_path, expected_identity=expected_identity)
+    if tail is None:
+        return None
+    data, truncated = tail
+    if truncated:
+        _partial_line, separator, data = data.partition(b"\n")
+        if not separator:
+            return ""
+    return data.decode("utf-8", errors="replace")
+
+
+def _precreate_events_file(events_path: Path) -> EventsFileIdentity:
+    """events ファイルを排他的に作成し、後続検証用の identity を返す。"""
+    try:
+        fd = os.open(
+            events_path,
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW,
+            0o600,
+        )
+        try:
+            info = os.fstat(fd)
+        finally:
+            os.close(fd)
+    except OSError as exc:
+        raise ProposerRuntimeError(f"could not pre-create codex events file: {exc}") from exc
+    return info.st_dev, info.st_ino
+
+
+def _read_events_tail(
+    events_path: Path,
+    *,
+    expected_identity: EventsFileIdentity,
+) -> tuple[bytes, bool] | None:
+    """symlink を追わず、通常ファイルの末尾を usage 用上限まで読む。"""
+    try:
+        fd = os.open(events_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise ProposerRuntimeError(
+            f"codex events file could not be safely opened; tampering suspected: {exc}"
+        ) from exc
+    try:
+        with os.fdopen(fd, "rb") as handle:
+            info = os.fstat(handle.fileno())
+            # Same-inode forgery remains; tokens_used is best-effort cost metadata; evaluate uses broker cost.
+            if (info.st_dev, info.st_ino) != expected_identity:
+                raise ProposerRuntimeError(
+                    "codex events file identity changed; tampering suspected"
+                )
+            if not stat.S_ISREG(info.st_mode):
+                raise ProposerRuntimeError(
+                    "codex events file is not a regular file; tampering suspected"
+                )
+            offset = max(0, info.st_size - _USAGE_TAIL_MAX_BYTES)
+            handle.seek(offset)
+            return handle.read(_USAGE_TAIL_MAX_BYTES), offset > 0
+    except OSError as exc:
+        raise ProposerRuntimeError(f"could not read codex events file: {exc}") from exc
 
 
 def _kill_process_group(pid: int) -> None:

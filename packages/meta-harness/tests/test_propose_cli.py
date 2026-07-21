@@ -105,8 +105,10 @@ if args[:1] == ["--version"]:
     raise SystemExit(0)
 if args[:1] == ["--settings"]:
     args = args[2:]
+if args[:1] == ["--"]:
+    args = args[1:]
 base = os.path.basename(args[0]) if args else ""
-if base == "codex":
+if base in ("bash", "codex"):
     os.execvp(args[0], args)
 if base == "cat":
     print("cat: Operation not permitted", file=sys.stderr)
@@ -1269,8 +1271,10 @@ if args[:1] == ["--version"]:
     raise SystemExit(0)
 if args[:1] == ["--settings"]:
     args = args[2:]
+if args[:1] == ["--"]:
+    args = args[1:]
 base = os.path.basename(args[0]) if args else ""
-if base == "codex":
+if base in ("bash", "codex"):
     os.execvp(args[0], args)
 if base == "cat":
     print("cat: Operation not permitted", file=sys.stderr)
