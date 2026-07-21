@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-21
+
 ### Added
 
 - **`loop-harness`: 対応済みレビュー指摘のスレッド自動 resolve と exit コメントの対応マトリクスを追加**: `/loop-issue` の再レビューで前ラウンドの critical/high 指摘が再発しなかった場合、該当する信頼済み GitHub review thread に自動で reply・resolve する。`exit_success`/`exit_failure` の Issue コメントには全指摘の severity/場所/状態（addressed / open / dismissed）を一覧できるテーブルを追加した。
