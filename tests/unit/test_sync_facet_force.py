@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from pathlib import Path
@@ -131,3 +132,26 @@ class TestBuildFacetsMtime:
 
         result = build_facets(orchestra_dir, project_dir)
         assert result > 0
+
+    def test_packages_hash_written_to_cache_dir(self, tmp_path: Path) -> None:
+        """packages-hash が .cache 未作成状態から .claude/.cache/ 配下に生成される。"""
+        orchestra_dir = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        project_dir.mkdir(parents=True)
+        _setup_minimal_facets(orchestra_dir, project_dir)
+
+        # hash 書き込み経路の前提となる orchestra.json を用意する
+        claude_dir = project_dir / ".claude"
+        claude_dir.mkdir(parents=True, exist_ok=True)
+        (claude_dir / "orchestra.json").write_text(
+            json.dumps({"installed_packages": ["core"]}), encoding="utf-8"
+        )
+
+        # .cache は未作成の状態から開始する
+        assert not (claude_dir / ".cache").exists()
+
+        build_facets(orchestra_dir, project_dir)
+
+        hash_file = claude_dir / ".cache" / "packages-hash"
+        assert hash_file.is_file()
+        assert hash_file.read_text(encoding="utf-8").strip() != ""

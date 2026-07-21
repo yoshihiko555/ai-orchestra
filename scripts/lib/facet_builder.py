@@ -10,7 +10,8 @@ from typing import Any
 
 import yaml
 
-FACET_MANIFEST_NAME = ".facet-manifest.json"
+FACET_MANIFEST_NAME = "facet-manifest.json"
+FACET_CACHE_DIR = ".cache"
 
 
 @dataclass
@@ -415,9 +416,8 @@ class FacetBuilder:
 
     def _manifest_path(self, target: str, project_dir: Path) -> Path:
         """マニフェストファイルのパスを返す。"""
-        if target == "claude":
-            return project_dir / ".claude" / FACET_MANIFEST_NAME
-        return project_dir / ".codex" / FACET_MANIFEST_NAME
+        target_dir = ".claude" if target == "claude" else ".codex"
+        return project_dir / target_dir / FACET_CACHE_DIR / FACET_MANIFEST_NAME
 
     def _cleanup_orphans(
         self,
