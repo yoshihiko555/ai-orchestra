@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -1412,7 +1413,9 @@ def test_ensure_images_normalizes_main_root_resolution_error() -> None:
     def runner(*_args, **_kwargs):
         raise AssertionError("ensure_images must fail before touching Docker")
 
-    with pytest.raises(docker.dcli.DockerCliError, match="storage.root must be an absolute path"):
+    with pytest.raises(
+        docker.dcli.DockerCliError, match=re.escape("storage.root must be an absolute path")
+    ):
         docker.dcli.ensure_images(config, runner=runner)
 
 
