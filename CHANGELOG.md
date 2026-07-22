@@ -22,6 +22,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - **`image-generation`: 画像生成の鮮度ガードが sandbox 実行モードによって外れる不具合を修正**: 鮮度マーカーの保存先を `$TMPDIR`（sandbox モードごとに解決先が異なる）から、出力先ディレクトリ配下の固定パスに変更した。あわせて codex 0.144.6 で deprecated になった `--enable imagegenext` を `--enable image_generation` に更新した。
+- **`agent-routing`: `testing-reality-checker` エージェントを配布先スタック非依存に修正（Issue #117）**: これまで Laravel/PHP + Playwright を前提とした固定スクリプト実行を促す内容だったため、Markdown/Python 等の非対象スタックへ配布すると存在しないスクリプトを実行しようとする恐れがあった。プロジェクト自身から検証コマンドを発見する汎用的な内容に書き換え、`tools:` を明示（`Read, Glob, Grep, Bash`）して全ツール権限の暗黙継承をやめた。
 
 ## [0.3.0] - 2026-07-21
 

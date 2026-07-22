@@ -213,6 +213,6 @@ codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags
 ## 有効化方法
 
 ```bash
-python3 "$AI_ORCHESTRA_DIR/scripts/orchestra-manager.py" init --project /path/to/project
-python3 "$AI_ORCHESTRA_DIR/scripts/orchestra-manager.py" install <package> --project /path/to/project
+orchex init --project /path/to/project
+orchex install <package> --project /path/to/project
 ```
