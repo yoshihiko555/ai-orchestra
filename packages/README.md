@@ -11,6 +11,7 @@ AI Orchestra のパッケージ一覧と詳細。`packages/*/agents` と `packag
 | [quality-gates](#quality-gates)                     | 実装後レビュー・テスト分析・自動 lint の品質ゲート                             | 品質         |
 | [loop-harness](#loop-harness)                       | Issue 起点の Maker / Checker 反復と PR レビュー対応を安全に駆動                | ハーネス     |
 | [docker-runtime](#docker-runtime)                   | ハーネス共通の Docker / broker ライフサイクル基盤                              | 基盤         |
+| [meta-harness](#meta-harness)                       | 候補ハーネス・スキル・ルーティング設定の評価・進化基盤（Docker 隔離実行 + propose/promote/loop） | ハーネス     |
 | [codd](#codd)                                       | ドキュメント依存グラフの scan / validate（整合性レイヤー）                     | 整合性       |
 | [audit](#audit)                                     | 統一イベントログによるオーケストレーション監査基盤                             | 監査         |
 | [codex-suggestions](#codex-suggestions)             | ファイル編集・プラン完了時の Codex 相談提案                                    | 提案         |
@@ -100,6 +101,25 @@ meta-harness と loop-harness が共有する Docker CLI、hardened security pro
 
 - **バージョン**: 0.1.0
 - **依存**: core
+
+---
+
+### meta-harness
+
+候補ハーネス（`claude-harness` 自身 / `skill:<name>` / `routing-config`）の評価・進化基盤。store I/O・ledger 畳み込み・Pareto 判定・schema 検証（Phase 1a）、Docker コンテナ隔離下での evaluate 実行（Phase 1b）、population ベースの propose/promote（Phase 2）、自動探索 loop（Phase 3）を提供する。
+
+- **バージョン**: 0.1.0
+- **依存**: core, docker-runtime
+
+**提供するもの:**
+
+- scripts: `meta_harness.py` — CLI（全 9 サブコマンド）
+  - Phase 1a: `init` / `register` / `frontier` / `status` / `purge`
+  - Phase 1b: `evaluate`（Docker コンテナ隔離実行、docker-runtime 依存）
+  - Phase 2: `propose` / `promote`
+  - Phase 3: `loop`（自動探索）
+- config: `meta-harness.yaml`（store・シナリオ・`config_patch.allowlist` 等）
+- target 種別: `claude-harness`（既定、own）／ `skill:<name>`（skill-evolution 連携）／ `routing-config`（`cli-tools.yaml` の `agents.*.tool` / `codex.model` / `antigravity.model` へのパッチ候補、Phase A）
 
 ---
 

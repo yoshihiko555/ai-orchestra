@@ -35,7 +35,7 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 | [fail-logs](#fail-logs)                   | AI の失敗イベント記録基盤（学習ループの入力）     | 学習         |
 | [image-generation](#image-generation)     | Codex 組み込み image_gen による画像生成           | 生成         |
 | [docker-runtime](#docker-runtime)         | ハーネス共通の Docker/broker ライフサイクル基盤   | 基盤         |
-| [meta-harness](#meta-harness)             | 候補ハーネスの評価・進化基盤（Pareto 判定・propose） | ハーネス     |
+| [meta-harness](#meta-harness)             | 候補ハーネス・スキル・ルーティング設定の評価・進化基盤（Docker 隔離実行 + propose/promote/loop） | ハーネス     |
 | [reverse](#reverse)                       | 既存コードベースの 5 フェーズ対話型リバースエンジニアリング | 解析         |
 | [skill-evolution](#skill-evolution)       | スキル自己改善ループ（二軸テレメトリ＋オフライン反復改善） | 学習         |
 
@@ -406,17 +406,43 @@ meta-harness と loop-harness が共有する Docker CLI、hardened security pro
 
 ## meta-harness
 
-候補ハーネスの評価・進化基盤。store I/O・ledger 畳み込み・Pareto 判定・schema 検証（Phase 1a）、evaluate 実行機構（Phase 1b）、population ベースの propose（Phase 2）を提供する。
+候補ハーネス（`claude-harness` 自身 / `skill:<name>` / `routing-config`）の評価・進化基盤。store I/O・ledger 畳み込み・Pareto 判定・schema 検証（Phase 1a）、Docker コンテナ隔離下での evaluate 実行（Phase 1b）、population ベースの propose/promote（Phase 2）、自動探索 loop（Phase 3）を提供する。
 
 - **バージョン**: 0.1.0
 - **依存**: core, docker-runtime
 
 ### コンポーネント
 
-| 種別   | 名前                  | 説明                                                                                    |
-| ------ | --------------------- | ----------------------------------------------------------------------------------------- |
-| script | `meta_harness.py`     | CLI: init/register/frontier/status/purge（Phase 1a）・evaluate（Phase 1b）・propose（Phase 2） |
-| config | `meta-harness.yaml`   | ハーネス評価・進化の設定                                                                  |
+| 種別   | 名前                | 説明                                                                          |
+| ------ | ------------------- | ------------------------------------------------------------------------------ |
+| script | `meta_harness.py`   | CLI: 全 9 サブコマンド（下表）                                                |
+| config | `meta-harness.yaml` | store・シナリオ・`config_patch.allowlist` 等の評価・進化設定                  |
+
+### サブコマンド
+
+| フェーズ | サブコマンド | 説明                                                |
+| -------- | ------------ | --------------------------------------------------- |
+| 1a       | `init`       | store ディレクトリ一式を初期化                       |
+| 1a       | `register`   | 候補（overlay + メタデータ）を登録                   |
+| 1a       | `frontier`   | Pareto frontier を算出                               |
+| 1a       | `status`     | 候補群の状態表示                                     |
+| 1a       | `purge`      | 古い世代・retired 候補を削除                         |
+| 1b       | `evaluate`   | 候補をシナリオ評価する（Docker コンテナ隔離実行）    |
+| 2        | `propose`    | filtered view から候補 overlay を提案・登録する      |
+| 2        | `promote`    | frontier 候補を PR ベースで昇格する                  |
+| 3        | `loop`       | propose/evaluate の自動探索ループを実行・再開する    |
+
+### target 種別
+
+| target          | 意味                                                                                             |
+| --------------- | -------------------------------------------------------------------------------------------------- |
+| `claude-harness` | 既定値。meta-harness 自身（own）向けオーバーレイ候補                                               |
+| `skill:<name>`   | 個別スキル向け候補（skill-evolution 連携）                                                         |
+| `routing-config` | `cli-tools.yaml` の `agents.*.tool` / `codex.model` / `antigravity.model` へのパッチ候補（Phase A） |
+
+### 隔離実行
+
+Phase 1b 以降の `evaluate` は Docker コンテナで OS レベル隔離される（docker-runtime 依存）。候補コンテナは internal network のみに接続し外部 egress を持たない。`api.anthropic.com` への到達は run スコープの ephemeral credential broker（internal/external 両方に接続する dual-homed sidecar）経由に限られ、実 OAuth token はコンテナ内の候補プロセスには渡らない。
 
 ---
 
