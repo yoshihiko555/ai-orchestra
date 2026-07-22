@@ -110,7 +110,7 @@
     },
     "image-generation": {
       "config/image-generation/image-generation.yaml": "a643faa7e9555781989230449c4dd2293da9a7d069d302d20096319b6f71ab1f",
-      "agents/image-generator.md": "d382f28ddcba5a96833d327883b3395b26ed75ae34048f690a0a48372ac8408d"
+      "agents/image-generator.md": "83eda10b74a91f9de95cdfb8fa7c7e7315c125d15117ed8443a33520afd8d3bb"
     },
     "loop-harness": {
       "config/loop-harness/loop-harness.yaml": "614b7614accaa74c264c71fb39f24fd083a6835bd70223c8aab2b126bb504e28",
