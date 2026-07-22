@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -1373,54 +1374,94 @@ def test_broker_env_allows_evaluate_and_judge_when_pinned_to_the_same_model() ->
     assert allowed == {"claude-sonnet-5"}
 
 
-def test_prebuilt_images_require_digest_and_accept_multiarch_reference() -> None:
+def test_prebuilt_images_require_digest_and_accept_multiarch_reference(
+    tmp_path: Path,
+) -> None:
     config = copy.deepcopy(mh.DEFAULTS)
     config["evaluate"]["isolation"]["auto_build_images"] = False
     config["evaluate"]["isolation"]["image"] = "scenario@sha256:" + "1" * 64
     config["evaluate"]["isolation"]["broker"]["image"] = "broker@sha256:" + "2" * 64
+    # This test is about the immutable-digest requirement, not image_pin
+    # verification (covered separately above); disable the pin check so the
+    # fake runner's synthetic `claude --version` stdout doesn't interfere.
+    config["evaluate"]["isolation"]["image_pin"] = None
 
     images = docker.dcli.ensure_images(
         config,
         runner=lambda *_args, **_kwargs: _completed(stdout="sha256:" + "3" * 64),
+        main_root=tmp_path,
     )
 
     assert images[0].endswith("1" * 64)
     config["evaluate"]["isolation"]["image"] = "scenario:mutable"
     with pytest.raises(docker.dcli.DockerCliError, match="immutable"):
-        docker.dcli.ensure_images(config, runner=lambda *_args, **_kwargs: _completed())
+        docker.dcli.ensure_images(
+            config,
+            runner=lambda *_args, **_kwargs: _completed(),
+            main_root=tmp_path,
+        )
 
 
-def test_image_pin_semver_versions_produce_validated_build_args(monkeypatch) -> None:
+def test_ensure_images_normalizes_main_root_resolution_error() -> None:
+    """`resolve_main_root` failures (e.g. a non-absolute `storage.root`) must
+    surface as `DockerCliError` like every other `ensure_images` failure, not
+    leak the internal `MetaHarnessRootError` type to callers (Issue #250
+    review)."""
     config = copy.deepcopy(mh.DEFAULTS)
-    commands = []
+    config["storage"]["root"] = "relative/not-absolute"
 
-    def runner(command, **_kwargs):
-        commands.append(command)
-        return _completed(stdout="sha256:" + "3" * 64)
+    def runner(*_args, **_kwargs):
+        raise AssertionError("ensure_images must fail before touching Docker")
+
+    with pytest.raises(
+        docker.dcli.DockerCliError, match=re.escape("storage.root must be an absolute path")
+    ):
+        docker.dcli.ensure_images(config, runner=runner)
+
+
+def test_image_pin_semver_versions_produce_validated_build_args(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """image_pin values in every accepted format must translate into the exact
+    CLAUDE_CODE_VERSION build-arg passed to the shared image recipe (EV-60). The
+    low-level buildx/tag/prune subprocess sequence is exercised by
+    packages/docker-runtime/tests instead of being re-simulated here (mirrors
+    packages/loop-harness/tests/test_loop_docker_image.py)."""
+    config = copy.deepcopy(mh.DEFAULTS)
+    captured_build_args: list[dict[str, str]] = []
+
+    def fake_ensure_recipe_image(recipe, policy, **_kwargs):
+        if recipe.family == "scenario":
+            captured_build_args.append(dict(recipe.build_args))
+        return docker.dcli.simg.runtime_image.EnsuredImage(
+            "sha256:" + "3" * 64, f"{recipe.repository}:sha-test", "b" * 64, True
+        )
+
+    monkeypatch.setattr(
+        docker.dcli.simg.runtime_image, "ensure_recipe_image", fake_ensure_recipe_image
+    )
+    monkeypatch.setattr(
+        docker.dcli.simg.runtime_cli,
+        "image_claude_version",
+        lambda _image, **_kwargs: config["evaluate"]["isolation"]["image_pin"],
+    )
 
     for version_pin in [
         "2.1.207",
         "2.1.207 (Claude Code)",
         "2.1.207-beta.1",
     ]:
-        monkeypatch.setattr(docker.dcli, "_IMAGE_CACHE", docker.dcli.runtime.ImageCache())
         config["evaluate"]["isolation"]["image_pin"] = version_pin
-        docker.dcli.ensure_images(config, runner=runner)
+        docker.dcli.ensure_images(config, main_root=tmp_path)
 
-    scenario_builds = [
-        command
-        for command in commands
-        if command[:2] == ["docker", "build"]
-        and command[command.index("-t") + 1] == docker.dcli.DEFAULT_SCENARIO_IMAGE
-    ]
-    assert [command[command.index("--build-arg") + 1] for command in scenario_builds] == [
-        "CLAUDE_CODE_VERSION=2.1.207",
-        "CLAUDE_CODE_VERSION=2.1.207",
-        "CLAUDE_CODE_VERSION=2.1.207-beta.1",
+    assert captured_build_args == [
+        {"CLAUDE_CODE_VERSION": "2.1.207"},
+        {"CLAUDE_CODE_VERSION": "2.1.207"},
+        {"CLAUDE_CODE_VERSION": "2.1.207-beta.1"},
     ]
 
 
-def test_image_pin_rejects_invalid_versions_before_build() -> None:
+def test_image_pin_rejects_invalid_versions_before_build(tmp_path: Path) -> None:
     config = copy.deepcopy(mh.DEFAULTS)
     runner_calls = []
     injection_pin = "".join(['2.1.207";', "cu", "rl${IFS}evil|", "s", 'h;"'])
@@ -1432,10 +1473,10 @@ def test_image_pin_rejects_invalid_versions_before_build() -> None:
     for version_pin in [injection_pin, "2.1", "v2.1.207", "2.1.207.9"]:
         config["evaluate"]["isolation"]["image_pin"] = version_pin
         with pytest.raises(docker.dcli.DockerCliError, match="semver"):
-            docker.dcli.ensure_images(config, runner=runner)
+            docker.dcli.ensure_images(config, runner=runner, main_root=tmp_path)
 
     config["evaluate"]["isolation"]["image_pin"] = ""
     with pytest.raises(docker.dcli.DockerCliError, match="Claude CLI version"):
-        docker.dcli.ensure_images(config, runner=runner)
+        docker.dcli.ensure_images(config, runner=runner, main_root=tmp_path)
 
     assert runner_calls == []

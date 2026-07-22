@@ -7,7 +7,6 @@ import hashlib
 import json
 import logging
 import os
-import re
 import secrets
 import shutil
 import subprocess
@@ -31,6 +30,7 @@ if str(_DOCKER_RUNTIME_LIB) not in sys.path:
     sys.path.insert(0, str(_DOCKER_RUNTIME_LIB))
 
 import claude_credentials as credentials
+import docker_runtime_cli as runtime_cli
 import docker_runtime_lifecycle as lifecycle
 import scenario_docker_cli as dcli
 import scenario_docker_profile as profile
@@ -57,7 +57,6 @@ STALE_MAX_AGE_SECONDS = 24 * 60 * 60
 WORKSPACE_EXPORT_TIMEOUT_SECONDS = 60
 _LOGGER = logging.getLogger(__name__)
 _RUNTIME_LABELS = lifecycle.RuntimeLabels(DOCKER_LABEL, STALE_MAX_AGE_SECONDS)
-_SEMVER_PIN_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$")
 # A model slug that must never appear in a real allowlist; used to prove the
 # broker actually rejects out-of-allowlist requests (Issue #261 PR2 review).
 _ALLOWLIST_SMOKE_DISALLOWED_MODEL = "mh-capability-negative-allowlist-check"
@@ -251,7 +250,7 @@ def check_docker_capabilities(
         owner_id = _owner_id(main_root or Path.cwd())
         sweep_stale_resources(owner_id, runner=runner)
         with docker_broker_session(
-            config, "capability", owner_id=owner_id, runner=runner
+            config, "capability", owner_id=owner_id, runner=runner, main_root=main_root
         ) as broker:
             checks["scenario_image"] = True
             checks["broker_image"] = True
@@ -367,6 +366,7 @@ def check_docker_capabilities(
                 "capability-allowlist-probe",
                 owner_id=owner_id,
                 runner=runner,
+                main_root=main_root,
             ) as probe_broker:
                 allowlist_probe = _run_smoke_container(
                     probe_broker,
@@ -443,7 +443,13 @@ def resolve_docker_launch(
         git_link_mask.write_text("", encoding="utf-8")
         git_link_mask.chmod(0o444)
         run_name = profile.safe_name(source_commit[:8] + "-" + secrets.token_hex(3))
-        broker = _start_broker(config, run_name, owner_id=_owner_id(main_root), runner=runner)
+        broker = _start_broker(
+            config,
+            run_name,
+            owner_id=_owner_id(main_root),
+            runner=runner,
+            main_root=main_root,
+        )
         scenario_name = f"{NAME_PREFIX}{run_name}-scenario"
         env = _docker_host_env()
         metadata = profile.launch_metadata(
@@ -535,12 +541,18 @@ def run_preparation_command(
     timeout_seconds: float,
     runner: SubprocessRunner = subprocess.run,
 ) -> subprocess.CompletedProcess:
-    scenario_image, _broker_image = ensure_images(config, runner=runner)
+    # image_pin verification is fail-closed inside `ensure_images` (the
+    # meta-harness scenario image adapter raises before returning if the
+    # built/pulled image doesn't match `image_pin`), so re-checking it here
+    # against the already-ensured image would be unreachable dead code
+    # (Issue #250 review). This is the primary fail-closed line for
+    # `image_pin`; `check_docker_capabilities`'s own pin comparison is not a
+    # separate pre-Docker gate -- it runs *after* `docker_broker_session`
+    # has already called `ensure_images` (and thus after this same
+    # fail-closed check has already passed), as an additional diagnostic
+    # surfaced in `DockerCapabilityResult`.
+    scenario_image, _broker_image = ensure_images(config, runner=runner, main_root=main_root)
     image_id = _image_id(scenario_image, runner=runner)
-    expected = _isolation_config(config).get("image_pin", DEFAULT_CLAUDE_VERSION_PIN)
-    actual = _image_claude_version(image_id, runner=runner)
-    if expected is not None and not _version_matches(actual, str(expected)):
-        raise DockerScenarioError(f"image_pin mismatch: expected {expected!r}, got {actual!r}")
     container_name = f"{NAME_PREFIX}prepare-{secrets.token_hex(4)}"
     worktree = _regular_directory(worktree_dir, "scenario worktree")
     runtime = Path(tempfile.mkdtemp(prefix="mh-prepare-docker-"))
@@ -799,9 +811,16 @@ def docker_broker_session(
     *,
     owner_id: str,
     runner: SubprocessRunner = subprocess.run,
+    main_root: Path | None = None,
 ) -> _BrokerContext:
     return _BrokerContext(
-        _start_broker(config, profile.safe_name(scope), owner_id=owner_id, runner=runner)
+        _start_broker(
+            config,
+            profile.safe_name(scope),
+            owner_id=owner_id,
+            runner=runner,
+            main_root=main_root,
+        )
     )
 
 
@@ -811,8 +830,9 @@ def _start_broker(
     *,
     owner_id: str,
     runner: SubprocessRunner,
+    main_root: Path | None = None,
 ) -> DockerBrokerSession:
-    scenario_image, broker_image = ensure_images(config, runner=runner)
+    scenario_image, broker_image = ensure_images(config, runner=runner, main_root=main_root)
     scenario_image_id = _image_id(scenario_image, runner=runner)
     broker_image_id = _image_id(broker_image, runner=runner)
     isolation = _isolation_config(config)
@@ -838,12 +858,16 @@ def _start_broker(
         minimum_ttl_seconds=credentials.minimum_broker_token_ttl_seconds(config),
         runner=runner,
     )
-    version_pin = isolation.get("image_pin", DEFAULT_CLAUDE_VERSION_PIN)
-    actual_version = _image_claude_version(scenario_image_id, runner=runner)
-    if version_pin is not None and not _version_matches(actual_version, str(version_pin)):
-        raise DockerScenarioError(
-            f"image_pin mismatch: expected {version_pin!r}, got {actual_version!r}"
-        )
+    # image_pin verification is fail-closed inside `ensure_images` (the
+    # meta-harness scenario image adapter raises before returning if the
+    # built/pulled image doesn't match `image_pin`), so re-checking it here
+    # against the already-ensured `scenario_image_id` would be unreachable
+    # dead code (Issue #250 review). This is the primary fail-closed line
+    # for `image_pin`; `check_docker_capabilities`'s own pin comparison is
+    # not a separate pre-Docker gate -- it runs *after* `docker_broker_session`
+    # has already called `ensure_images` (and thus after this same
+    # fail-closed check has already passed), as an additional diagnostic
+    # surfaced in `DockerCapabilityResult`.
     effective_broker_env = profile.broker_env(config, "hash-placeholder", 1)
     settings_hash = _sha256_json(
         {
@@ -920,9 +944,10 @@ def ensure_images(
     config: dict,
     *,
     runner: SubprocessRunner = subprocess.run,
+    main_root: Path | None = None,
 ) -> tuple[str, str]:
     try:
-        return dcli.ensure_images(config, runner=runner)
+        return dcli.ensure_images(config, runner=runner, main_root=main_root)
     except dcli.DockerCliError as exc:
         raise DockerScenarioError(str(exc)) from exc
 
@@ -1062,37 +1087,11 @@ def _isolation_config(config: dict) -> dict:
     return (config.get("evaluate") or {}).get("isolation") or {}
 
 
-def _version_token(value: str | None) -> str:
-    """Extract the leading version token so bare semver pins (e.g. "2.1.207")
-    compare equal to full `claude --version` output (e.g. "2.1.207 (Claude Code)").
-    """
-    if value is None:
-        return ""
-    stripped = value.strip()
-    return stripped.split(maxsplit=1)[0] if stripped else ""
-
-
-def _is_bare_semver_pin(pin: str) -> bool:
-    return _SEMVER_PIN_RE.fullmatch(pin.strip()) is not None
-
-
-def _version_matches(actual: str | None, pin: str) -> bool:
-    """Compare a reported `claude --version` string against a configured
-    image_pin.
-
-    A bare semver pin (e.g. "2.1.207") matches via leading-token comparison
-    so it accepts the fuller `claude --version` output (e.g.
-    "2.1.207 (Claude Code)"). Any other pin format -- including the default
-    full form "2.1.207 (Claude Code)" -- must match the reported version
-    exactly, preserving the strict Docker capability contract: a prebuilt
-    image reporting an unexpected wrapper (e.g. "2.1.207 (unexpected
-    wrapper)") must fail closed rather than pass on a token match.
-    """
-    if actual is None:
-        return False
-    if _is_bare_semver_pin(pin):
-        return _version_token(actual) == _version_token(pin)
-    return actual == pin
+# Compatibility alias: image_pin semver matching now lives in the shared
+# docker_runtime_cli module (Issue #250 review; see also scenario_docker_image.py
+# and packages/loop-harness/lib/loop_docker_image.py, which delegate the same
+# way). Kept as a module-level name because tests exercise it directly.
+_version_matches = runtime_cli.version_matches
 
 
 def _image_claude_version(image: str, *, runner: SubprocessRunner) -> str | None:

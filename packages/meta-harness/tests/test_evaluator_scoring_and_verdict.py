@@ -74,9 +74,11 @@ class TestEvaluatorHash:
         labels = {label for label, _path in ev._EVALUATOR_SOURCE_FILES}
         assert {
             "lib/scenario_docker.py",
+            "lib/scenario_docker_image.py",
             "lib/scenario_docker_profile.py",
             "lib/scenario_isolation.py",
             "lib/scenario_process.py",
+            "docker-runtime/lib/docker_runtime_image.py",
             "docker/broker/broker.py",
             "docker/scenario/Dockerfile",
         } <= labels
