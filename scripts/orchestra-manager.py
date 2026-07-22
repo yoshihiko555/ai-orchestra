@@ -16,9 +16,40 @@ import subprocess
 import sys
 import tomllib
 from collections import deque
+from collections.abc import Callable
 from functools import cached_property  # noqa: F401 — used as decorator
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
+
+
+def _resolve_orchex_version() -> str:
+    """orchex のバージョン文字列を解決する。
+
+    パッケージインストール済み環境や `python3 -m` 実行では通常の import で
+    解決できる。`python3 scripts/orchestra-manager.py` の直接実行時は
+    scripts/ のみが sys.path に載るため import が失敗するので、
+    リポジトリルートを sys.path に追加してから再試行する。
+    """
+    try:
+        from ai_orchestra import __version__
+
+        return __version__
+    except ImportError:
+        pass
+
+    repo_root = str(Path(__file__).resolve().parent.parent)
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+
+    try:
+        from ai_orchestra import __version__
+
+        return __version__
+    except ImportError:
+        return "unknown"
+
+
+ORCHEX_VERSION = _resolve_orchex_version()
 
 # scripts/ ディレクトリをモジュール検索パスに追加（テストの load_module 互換）
 _SCRIPTS_DIR = str(Path(__file__).resolve().parent)
@@ -1185,8 +1216,299 @@ def _split_run_passthrough(argv: list[str]) -> tuple[list[str], list[str]]:
     return argv, []
 
 
-def main():
-    """メインエントリポイント"""
+class CommandEntry(TypedDict):
+    """トップレベルコマンドのレジストリエントリ。"""
+
+    name: str
+    group: str
+    summary: str
+    examples: tuple[str, ...]
+    build_parser: Callable[[Any], argparse.ArgumentParser]
+
+
+def _add_command_parser(
+    subparsers: Any, command_name: str, **kwargs: Any
+) -> argparse.ArgumentParser:
+    """レジストリの name/summary を使ってトップレベル parser を追加する。"""
+    entry = COMMAND_REGISTRY[command_name]
+    return subparsers.add_parser(
+        entry["name"],
+        help=entry["summary"],
+        **kwargs,
+    )
+
+
+def build_init_parser(subparsers: Any) -> argparse.ArgumentParser:
+    parser = _add_command_parser(subparsers, "init")
+    parser.add_argument("--project", help="プロジェクトパス")
+    parser.add_argument("--dry-run", action="store_true", help="実行内容を表示のみ")
+    return parser
+
+
+def build_setup_parser(subparsers: Any) -> argparse.ArgumentParser:
+    parser = _add_command_parser(subparsers, "setup")
+    parser.add_argument("preset", nargs="?", default=None, help="プリセット名（省略時は一覧表示）")
+    parser.add_argument("--project", help="プロジェクトパス")
+    parser.add_argument("--dry-run", action="store_true", help="実行内容を表示のみ")
+    return parser
+
+
+def build_list_parser(subparsers: Any) -> argparse.ArgumentParser:
+    return _add_command_parser(subparsers, "list")
+
+
+def build_install_parser(subparsers: Any) -> argparse.ArgumentParser:
+    parser = _add_command_parser(subparsers, "install")
+    parser.add_argument("package", nargs="+", help="パッケージ名（複数指定可）")
+    parser.add_argument("--project", help="プロジェクトパス")
+    parser.add_argument("--dry-run", action="store_true", help="実行内容を表示のみ")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="ユーザー編集済みの codex_files も配布版で上書きする（デフォルトはスキップ）",
+    )
+    return parser
+
+
+def build_uninstall_parser(subparsers: Any) -> argparse.ArgumentParser:
+    parser = _add_command_parser(subparsers, "uninstall")
+    parser.add_argument("package", help="パッケージ名")
+    parser.add_argument("--project", help="プロジェクトパス")
+    parser.add_argument("--dry-run", action="store_true", help="実行内容を表示のみ")
+    return parser
+
+
+def build_enable_parser(subparsers: Any) -> argparse.ArgumentParser:
+    parser = _add_command_parser(subparsers, "enable")
+    parser.add_argument("package", help="パッケージ名")
+    parser.add_argument("--project", help="プロジェクトパス")
+    parser.add_argument("--dry-run", action="store_true", help="実行内容を表示のみ")
+    return parser
+
+
+def build_disable_parser(subparsers: Any) -> argparse.ArgumentParser:
+    parser = _add_command_parser(subparsers, "disable")
+    parser.add_argument("package", help="パッケージ名")
+    parser.add_argument("--project", help="プロジェクトパス")
+    parser.add_argument("--dry-run", action="store_true", help="実行内容を表示のみ")
+    return parser
+
+
+def build_status_parser(subparsers: Any) -> argparse.ArgumentParser:
+    parser = _add_command_parser(subparsers, "status")
+    parser.add_argument("--project", help="プロジェクトパス")
+    return parser
+
+
+def build_context_parser(subparsers: Any) -> argparse.ArgumentParser:
+    parser = _add_command_parser(subparsers, "context")
+    context_sub = parser.add_subparsers(dest="context_command", help="context サブコマンド")
+
+    build_parser = context_sub.add_parser(
+        "build",
+        help="templates/context から配布テンプレートを再生成",
+    )
+    build_parser.add_argument("--dry-run", action="store_true", help="実行内容を表示のみ")
+
+    context_sub.add_parser(
+        "check",
+        help="templates/context 由来の生成結果と配布テンプレートの一致を検証",
+    )
+
+    sync_parser = context_sub.add_parser(
+        "sync",
+        help="生成ルールに基づいてプロジェクトのトップレベル文書へ同期",
+    )
+    sync_parser.add_argument("--project", help="プロジェクトパス")
+    sync_parser.add_argument("--dry-run", action="store_true", help="実行内容を表示のみ")
+    sync_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="既存ファイルも上書きする（デフォルトは既存ファイルをスキップ）",
+    )
+    return parser
+
+
+def build_facet_parser(subparsers: Any) -> argparse.ArgumentParser:
+    parser = _add_command_parser(subparsers, "facet")
+    facet_sub = parser.add_subparsers(dest="facet_command", help="facet サブコマンド")
+    build_parser = facet_sub.add_parser(
+        "build",
+        help="facet composition をビルドして SKILL.md を生成",
+    )
+    build_parser.add_argument("--name", help="composition 名（省略時は全件ビルド）")
+    build_parser.add_argument(
+        "--target",
+        choices=["claude", "codex"],
+        default="claude",
+        help="出力先（デフォルト: claude）",
+    )
+    build_parser.add_argument("--project", help="プロジェクトパス")
+    extract_parser = facet_sub.add_parser(
+        "extract",
+        help="生成済みファイルから instruction を抽出してソースに書き戻す",
+    )
+    extract_parser.add_argument("--name", help="composition 名（省略時は全件）")
+    extract_parser.add_argument(
+        "--target",
+        choices=["claude", "codex"],
+        default="claude",
+        help="抽出元（デフォルト: claude）",
+    )
+    extract_parser.add_argument("--project", help="プロジェクトパス")
+    return parser
+
+
+def build_run_parser(subparsers: Any) -> argparse.ArgumentParser:
+    parser = _add_command_parser(
+        subparsers,
+        "run",
+        description="パッケージに含まれるスクリプトを実行する。"
+        " -- 以降の引数はスクリプトにパススルーされる。",
+    )
+    parser.add_argument("package", help="パッケージ名")
+    parser.add_argument("script", help="スクリプト名（短縮名 or フルパス）")
+    parser.add_argument("--project", help="プロジェクトパス")
+    return parser
+
+
+def build_scripts_parser(subparsers: Any) -> argparse.ArgumentParser:
+    parser = _add_command_parser(subparsers, "scripts")
+    parser.add_argument("--package", help="特定パッケージのみ表示")
+    return parser
+
+
+def build_meta_parser(subparsers: Any) -> argparse.ArgumentParser:
+    parser = _add_command_parser(
+        subparsers,
+        "meta",
+        description="packages/meta-harness/scripts/meta_harness.py へ全引数をパススルーする。"
+        " 例: orchestra-manager.py meta register --overlay <dir> --target <t>",
+    )
+    parser.add_argument(
+        "meta_args", nargs=argparse.REMAINDER, help="meta_harness.py へパススルーする引数"
+    )
+    return parser
+
+
+def build_proxy_parser(subparsers: Any) -> argparse.ArgumentParser:
+    parser = _add_command_parser(subparsers, "proxy")
+    proxy_sub = parser.add_subparsers(dest="proxy_command", help="proxy サブコマンド")
+    stop_parser = proxy_sub.add_parser("stop", help="mcp-proxy を停止")
+    stop_parser.add_argument("--project", help="プロジェクトパス")
+    status_parser = proxy_sub.add_parser("status", help="mcp-proxy の状態を表示")
+    status_parser.add_argument("--project", help="プロジェクトパス")
+    return parser
+
+
+COMMAND_REGISTRY: dict[str, CommandEntry] = {
+    "init": {
+        "name": "init",
+        "group": "getting_started",
+        "summary": "プロジェクトを初期化",
+        "examples": (),
+        "build_parser": build_init_parser,
+    },
+    "setup": {
+        "name": "setup",
+        "group": "getting_started",
+        "summary": "プリセットで一括セットアップ",
+        "examples": (),
+        "build_parser": build_setup_parser,
+    },
+    "list": {
+        "name": "list",
+        "group": "getting_started",
+        "summary": "パッケージ一覧を表示",
+        "examples": (),
+        "build_parser": build_list_parser,
+    },
+    "install": {
+        "name": "install",
+        "group": "package_management",
+        "summary": "パッケージをインストール",
+        "examples": (),
+        "build_parser": build_install_parser,
+    },
+    "uninstall": {
+        "name": "uninstall",
+        "group": "package_management",
+        "summary": "パッケージをアンインストール",
+        "examples": (),
+        "build_parser": build_uninstall_parser,
+    },
+    "enable": {
+        "name": "enable",
+        "group": "package_management",
+        "summary": "パッケージを有効化",
+        "examples": (),
+        "build_parser": build_enable_parser,
+    },
+    "disable": {
+        "name": "disable",
+        "group": "package_management",
+        "summary": "パッケージを無効化",
+        "examples": (),
+        "build_parser": build_disable_parser,
+    },
+    "status": {
+        "name": "status",
+        "group": "package_management",
+        "summary": "パッケージ導入状況を表示",
+        "examples": (),
+        "build_parser": build_status_parser,
+    },
+    "context": {
+        "name": "context",
+        "group": "generate_sync",
+        "summary": "CLAUDE.md / AGENTS.md / GEMINI.md テンプレート管理",
+        "examples": (),
+        "build_parser": build_context_parser,
+    },
+    "facet": {
+        "name": "facet",
+        "group": "generate_sync",
+        "summary": "facet composition から SKILL.md を生成",
+        "examples": (),
+        "build_parser": build_facet_parser,
+    },
+    "run": {
+        "name": "run",
+        "group": "run_delegate",
+        "summary": "パッケージのスクリプトを実行",
+        "examples": (),
+        "build_parser": build_run_parser,
+    },
+    "scripts": {
+        "name": "scripts",
+        "group": "run_delegate",
+        "summary": "スクリプト一覧を表示",
+        "examples": (),
+        "build_parser": build_scripts_parser,
+    },
+    "meta": {
+        "name": "meta",
+        "group": "run_delegate",
+        "summary": "Meta-Harness（候補評価・進化基盤）CLI へ委譲",
+        "examples": (),
+        "build_parser": build_meta_parser,
+    },
+    "proxy": {
+        "name": "proxy",
+        "group": "run_delegate",
+        "summary": "mcp-proxy の管理",
+        "examples": (),
+        "build_parser": build_proxy_parser,
+    },
+}
+
+
+def create_parser() -> tuple[argparse.ArgumentParser, Any]:
+    """registry から CLI parser を構築する。
+
+    戻り値は (parser, subparsers) のタプル。subparsers は
+    add_subparsers() の戻り値そのもの（トップレベル subparsers action）。
+    """
     parser = argparse.ArgumentParser(
         description="AI-ORCHESTRA パッケージ管理 CLI",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1196,131 +1518,24 @@ def main():
         type=Path,
         help="ai-orchestra ディレクトリ（デフォルト: スクリプトの親の親）",
     )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"orchex {ORCHEX_VERSION}",
+    )
 
     subparsers = parser.add_subparsers(dest="command", help="サブコマンド")
+    for entry in COMMAND_REGISTRY.values():
+        entry["build_parser"](subparsers)
+    return parser, subparsers
 
-    subparsers.add_parser("list", help="パッケージ一覧を表示")
 
-    status_parser = subparsers.add_parser("status", help="パッケージ導入状況を表示")
-    status_parser.add_argument("--project", help="プロジェクトパス")
-
-    install_parser = subparsers.add_parser("install", help="パッケージをインストール")
-    install_parser.add_argument("package", nargs="+", help="パッケージ名（複数指定可）")
-    install_parser.add_argument("--project", help="プロジェクトパス")
-    install_parser.add_argument("--dry-run", action="store_true", help="実行内容を表示のみ")
-    install_parser.add_argument(
-        "--force",
-        action="store_true",
-        help="ユーザー編集済みの codex_files も配布版で上書きする（デフォルトはスキップ）",
-    )
-
-    uninstall_parser = subparsers.add_parser("uninstall", help="パッケージをアンインストール")
-    uninstall_parser.add_argument("package", help="パッケージ名")
-    uninstall_parser.add_argument("--project", help="プロジェクトパス")
-    uninstall_parser.add_argument("--dry-run", action="store_true", help="実行内容を表示のみ")
-
-    enable_parser = subparsers.add_parser("enable", help="パッケージを有効化")
-    enable_parser.add_argument("package", help="パッケージ名")
-    enable_parser.add_argument("--project", help="プロジェクトパス")
-    enable_parser.add_argument("--dry-run", action="store_true", help="実行内容を表示のみ")
-
-    disable_parser = subparsers.add_parser("disable", help="パッケージを無効化")
-    disable_parser.add_argument("package", help="パッケージ名")
-    disable_parser.add_argument("--project", help="プロジェクトパス")
-    disable_parser.add_argument("--dry-run", action="store_true", help="実行内容を表示のみ")
-
-    run_parser = subparsers.add_parser(
-        "run",
-        help="パッケージのスクリプトを実行",
-        description="パッケージに含まれるスクリプトを実行する。"
-        " -- 以降の引数はスクリプトにパススルーされる。",
-    )
-    run_parser.add_argument("package", help="パッケージ名")
-    run_parser.add_argument("script", help="スクリプト名（短縮名 or フルパス）")
-    run_parser.add_argument("--project", help="プロジェクトパス")
-
-    scripts_parser = subparsers.add_parser("scripts", help="スクリプト一覧を表示")
-    scripts_parser.add_argument("--package", help="特定パッケージのみ表示")
-
-    context_parser = subparsers.add_parser(
-        "context",
-        help="CLAUDE.md / AGENTS.md / GEMINI.md テンプレート管理",
-    )
-    context_sub = context_parser.add_subparsers(dest="context_command", help="context サブコマンド")
-
-    context_build_parser = context_sub.add_parser(
-        "build",
-        help="templates/context から配布テンプレートを再生成",
-    )
-    context_build_parser.add_argument("--dry-run", action="store_true", help="実行内容を表示のみ")
-
-    context_sub.add_parser(
-        "check",
-        help="templates/context 由来の生成結果と配布テンプレートの一致を検証",
-    )
-
-    context_sync_parser = context_sub.add_parser(
-        "sync",
-        help="生成ルールに基づいてプロジェクトのトップレベル文書へ同期",
-    )
-    context_sync_parser.add_argument("--project", help="プロジェクトパス")
-    context_sync_parser.add_argument("--dry-run", action="store_true", help="実行内容を表示のみ")
-    context_sync_parser.add_argument(
-        "--force",
-        action="store_true",
-        help="既存ファイルも上書きする（デフォルトは既存ファイルをスキップ）",
-    )
-
-    proxy_parser = subparsers.add_parser("proxy", help="mcp-proxy の管理")
-    proxy_sub = proxy_parser.add_subparsers(dest="proxy_command", help="proxy サブコマンド")
-    proxy_stop_parser = proxy_sub.add_parser("stop", help="mcp-proxy を停止")
-    proxy_stop_parser.add_argument("--project", help="プロジェクトパス")
-    proxy_status_parser = proxy_sub.add_parser("status", help="mcp-proxy の状態を表示")
-    proxy_status_parser.add_argument("--project", help="プロジェクトパス")
-
-    facet_parser = subparsers.add_parser("facet", help="facet composition から SKILL.md を生成")
-    facet_sub = facet_parser.add_subparsers(dest="facet_command", help="facet サブコマンド")
-    facet_build_parser = facet_sub.add_parser(
-        "build",
-        help="facet composition をビルドして SKILL.md を生成",
-    )
-    facet_build_parser.add_argument("--name", help="composition 名（省略時は全件ビルド）")
-    facet_build_parser.add_argument(
-        "--target",
-        choices=["claude", "codex"],
-        default="claude",
-        help="出力先（デフォルト: claude）",
-    )
-    facet_build_parser.add_argument("--project", help="プロジェクトパス")
-    facet_extract_parser = facet_sub.add_parser(
-        "extract",
-        help="生成済みファイルから instruction を抽出してソースに書き戻す",
-    )
-    facet_extract_parser.add_argument("--name", help="composition 名（省略時は全件）")
-    facet_extract_parser.add_argument(
-        "--target",
-        choices=["claude", "codex"],
-        default="claude",
-        help="抽出元（デフォルト: claude）",
-    )
-    facet_extract_parser.add_argument("--project", help="プロジェクトパス")
-
-    meta_parser = subparsers.add_parser(
-        "meta",
-        help="Meta-Harness（候補評価・進化基盤）CLI へ委譲",
-        description="packages/meta-harness/scripts/meta_harness.py へ全引数をパススルーする。"
-        " 例: orchestra-manager.py meta register --overlay <dir> --target <t>",
-    )
-    meta_parser.add_argument(
-        "meta_args", nargs=argparse.REMAINDER, help="meta_harness.py へパススルーする引数"
-    )
-
-    setup_parser = subparsers.add_parser("setup", help="プリセットで一括セットアップ")
-    setup_parser.add_argument(
-        "preset", nargs="?", default=None, help="プリセット名（省略時は一覧表示）"
-    )
-    setup_parser.add_argument("--project", help="プロジェクトパス")
-    setup_parser.add_argument("--dry-run", action="store_true", help="実行内容を表示のみ")
+def main() -> None:
+    """メインエントリポイント"""
+    parser, subparsers = create_parser()
+    context_parser = subparsers.choices["context"]
+    proxy_parser = subparsers.choices["proxy"]
+    facet_parser = subparsers.choices["facet"]
 
     argv, script_args = _split_run_passthrough(sys.argv[1:])
 
@@ -1333,7 +1548,9 @@ def main():
 
     manager = OrchestraManager(orchestra_dir)
 
-    if args.command == "list":
+    if args.command == "init":
+        manager.init(args.project, args.dry_run)
+    elif args.command == "list":
         manager.list_packages()
     elif args.command == "status":
         manager.status(args.project)
