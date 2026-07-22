@@ -1220,27 +1220,71 @@ class CommandEntry(TypedDict):
     build_parser: Callable[[Any], argparse.ArgumentParser]
 
 
+GROUP_ORDER: tuple[str, ...] = (
+    "getting_started",
+    "package_management",
+    "generate_sync",
+    "run_delegate",
+)
+
+GROUP_HEADINGS: dict[str, str] = {
+    "getting_started": "はじめに",
+    "package_management": "パッケージ管理",
+    "generate_sync": "生成・同期",
+    "run_delegate": "実行・委譲",
+}
+
+COMMAND_NAME_COLUMN_PADDING = 3
+
+
+def _format_examples_block(examples: tuple[str, ...]) -> str:
+    """examples タプルを help description に追記する「例:」ブロックへ整形する。"""
+    if not examples:
+        return ""
+    example_lines = "\n".join(f"  {example}" for example in examples)
+    return f"\n\n例:\n{example_lines}"
+
+
 def _add_command_parser(
-    subparsers: Any, command_name: str, **kwargs: Any
+    subparsers: Any, command_name: str, *, description: str | None = None, **kwargs: Any
 ) -> argparse.ArgumentParser:
-    """レジストリの name/summary を使ってトップレベル parser を追加する。"""
+    """レジストリの name/summary/examples を使ってトップレベル parser を追加する。
+
+    トップレベル `--help` ではデフォルトのフラット一覧を出さない（グループ化一覧を
+    `create_parser()` が別途描画するため）よう `help=argparse.SUPPRESS` を指定する。
+    各コマンド自身の `--help` には description（未指定時は summary）と、
+    registry の examples を「例:」ブロックとして自動追記する。
+    """
     entry = COMMAND_REGISTRY[command_name]
+    full_description = (description or entry["summary"]) + _format_examples_block(entry["examples"])
     return subparsers.add_parser(
         entry["name"],
-        help=entry["summary"],
+        help=argparse.SUPPRESS,
+        description=full_description,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
         **kwargs,
     )
 
 
 def build_init_parser(subparsers: Any) -> argparse.ArgumentParser:
-    parser = _add_command_parser(subparsers, "init")
+    parser = _add_command_parser(
+        subparsers,
+        "init",
+        description="プロジェクトを AI Orchestra 管理下として初期化する"
+        "（.claude/orchestra.json 等の雛形を作成する）。",
+    )
     parser.add_argument("--project", help="プロジェクトパス")
     parser.add_argument("--dry-run", action="store_true", help="実行内容を表示のみ")
     return parser
 
 
 def build_setup_parser(subparsers: Any) -> argparse.ArgumentParser:
-    parser = _add_command_parser(subparsers, "setup")
+    parser = _add_command_parser(
+        subparsers,
+        "setup",
+        description="プリセット（essential/all）に基づき依存順で一括インストールする。"
+        "プリセット省略時は一覧を表示する。",
+    )
     parser.add_argument("preset", nargs="?", default=None, help="プリセット名（省略時は一覧表示）")
     parser.add_argument("--project", help="プロジェクトパス")
     parser.add_argument("--dry-run", action="store_true", help="実行内容を表示のみ")
@@ -1248,11 +1292,18 @@ def build_setup_parser(subparsers: Any) -> argparse.ArgumentParser:
 
 
 def build_list_parser(subparsers: Any) -> argparse.ArgumentParser:
-    return _add_command_parser(subparsers, "list")
+    return _add_command_parser(
+        subparsers, "list", description="配布可能なパッケージ一覧を表示する。"
+    )
 
 
 def build_install_parser(subparsers: Any) -> argparse.ArgumentParser:
-    parser = _add_command_parser(subparsers, "install")
+    parser = _add_command_parser(
+        subparsers,
+        "install",
+        description="パッケージをプロジェクトにインストールする"
+        "（複数指定時は依存関係順に実行する）。",
+    )
     parser.add_argument("package", nargs="+", help="パッケージ名（複数指定可）")
     parser.add_argument("--project", help="プロジェクトパス")
     parser.add_argument("--dry-run", action="store_true", help="実行内容を表示のみ")
@@ -1265,7 +1316,12 @@ def build_install_parser(subparsers: Any) -> argparse.ArgumentParser:
 
 
 def build_uninstall_parser(subparsers: Any) -> argparse.ArgumentParser:
-    parser = _add_command_parser(subparsers, "uninstall")
+    parser = _add_command_parser(
+        subparsers,
+        "uninstall",
+        description="パッケージをアンインストールする"
+        "（ユーザー変更済みファイルは安全側で保持し削除しない）。",
+    )
     parser.add_argument("package", help="パッケージ名")
     parser.add_argument("--project", help="プロジェクトパス")
     parser.add_argument("--dry-run", action="store_true", help="実行内容を表示のみ")
@@ -1273,7 +1329,12 @@ def build_uninstall_parser(subparsers: Any) -> argparse.ArgumentParser:
 
 
 def build_enable_parser(subparsers: Any) -> argparse.ArgumentParser:
-    parser = _add_command_parser(subparsers, "enable")
+    parser = _add_command_parser(
+        subparsers,
+        "enable",
+        description="インストール済みパッケージの hooks を再登録する"
+        "（installed_packages は変更しない）。",
+    )
     parser.add_argument("package", help="パッケージ名")
     parser.add_argument("--project", help="プロジェクトパス")
     parser.add_argument("--dry-run", action="store_true", help="実行内容を表示のみ")
@@ -1281,7 +1342,12 @@ def build_enable_parser(subparsers: Any) -> argparse.ArgumentParser:
 
 
 def build_disable_parser(subparsers: Any) -> argparse.ArgumentParser:
-    parser = _add_command_parser(subparsers, "disable")
+    parser = _add_command_parser(
+        subparsers,
+        "disable",
+        description="インストール済みパッケージの hooks を一時的に解除する"
+        "（installed_packages は変更しない）。",
+    )
     parser.add_argument("package", help="パッケージ名")
     parser.add_argument("--project", help="プロジェクトパス")
     parser.add_argument("--dry-run", action="store_true", help="実行内容を表示のみ")
@@ -1289,13 +1355,23 @@ def build_disable_parser(subparsers: Any) -> argparse.ArgumentParser:
 
 
 def build_status_parser(subparsers: Any) -> argparse.ArgumentParser:
-    parser = _add_command_parser(subparsers, "status")
+    parser = _add_command_parser(
+        subparsers,
+        "status",
+        description="プロジェクトの各パッケージの導入状況"
+        "（installed/active/partial/not found）を表示する。",
+    )
     parser.add_argument("--project", help="プロジェクトパス")
     return parser
 
 
 def build_context_parser(subparsers: Any) -> argparse.ArgumentParser:
-    parser = _add_command_parser(subparsers, "context")
+    parser = _add_command_parser(
+        subparsers,
+        "context",
+        description="CLAUDE.md / AGENTS.md テンプレートを管理する"
+        "（build: 生成、check: 整合性検証、sync: プロジェクトへ反映）。",
+    )
     context_sub = parser.add_subparsers(dest="context_command", help="context サブコマンド")
 
     build_parser = context_sub.add_parser(
@@ -1324,7 +1400,11 @@ def build_context_parser(subparsers: Any) -> argparse.ArgumentParser:
 
 
 def build_facet_parser(subparsers: Any) -> argparse.ArgumentParser:
-    parser = _add_command_parser(subparsers, "facet")
+    parser = _add_command_parser(
+        subparsers,
+        "facet",
+        description="facet composition から SKILL.md / ルール .md を生成・書き戻しする。",
+    )
     facet_sub = parser.add_subparsers(dest="facet_command", help="facet サブコマンド")
     build_parser = facet_sub.add_parser(
         "build",
@@ -1358,7 +1438,8 @@ def build_run_parser(subparsers: Any) -> argparse.ArgumentParser:
         subparsers,
         "run",
         description="パッケージに含まれるスクリプトを実行する。"
-        " -- 以降の引数はスクリプトにパススルーされる。",
+        " -- 以降の引数はスクリプトにパススルーされる。"
+        " 利用可能なスクリプトの一覧は `orchex scripts` で確認できる。",
     )
     parser.add_argument("package", help="パッケージ名")
     parser.add_argument("script", help="スクリプト名（短縮名 or フルパス）")
@@ -1367,7 +1448,11 @@ def build_run_parser(subparsers: Any) -> argparse.ArgumentParser:
 
 
 def build_scripts_parser(subparsers: Any) -> argparse.ArgumentParser:
-    parser = _add_command_parser(subparsers, "scripts")
+    parser = _add_command_parser(
+        subparsers,
+        "scripts",
+        description="パッケージに含まれる実行可能スクリプトの一覧を表示する。",
+    )
     parser.add_argument("--package", help="特定パッケージのみ表示")
     return parser
 
@@ -1376,8 +1461,8 @@ def build_meta_parser(subparsers: Any) -> argparse.ArgumentParser:
     parser = _add_command_parser(
         subparsers,
         "meta",
-        description="packages/meta-harness/scripts/meta_harness.py へ全引数をパススルーする。"
-        " 例: orchestra-manager.py meta register --overlay <dir> --target <t>",
+        description="packages/meta-harness/scripts/meta_harness.py へ全引数をパススルーする"
+        "（Meta-Harness CLI）。",
     )
     parser.add_argument(
         "meta_args", nargs=argparse.REMAINDER, help="meta_harness.py へパススルーする引数"
@@ -1386,7 +1471,12 @@ def build_meta_parser(subparsers: Any) -> argparse.ArgumentParser:
 
 
 def build_proxy_parser(subparsers: Any) -> argparse.ArgumentParser:
-    parser = _add_command_parser(subparsers, "proxy")
+    parser = _add_command_parser(
+        subparsers,
+        "proxy",
+        description="cocoindex mcp-proxy の状態確認・停止を行う"
+        "（cocoindex 未導入時はエラーで非ゼロ終了する）。",
+    )
     proxy_sub = parser.add_subparsers(dest="proxy_command", help="proxy サブコマンド")
     stop_parser = proxy_sub.add_parser("stop", help="mcp-proxy を停止")
     stop_parser.add_argument("--project", help="プロジェクトパス")
@@ -1400,101 +1490,178 @@ COMMAND_REGISTRY: dict[str, CommandEntry] = {
         "name": "init",
         "group": "getting_started",
         "summary": "プロジェクトを初期化",
-        "examples": (),
+        "examples": (
+            "orchex init --project .",
+            "orchex init --project /path/to/project --dry-run",
+        ),
         "build_parser": build_init_parser,
     },
     "setup": {
         "name": "setup",
         "group": "getting_started",
         "summary": "プリセットで一括セットアップ",
-        "examples": (),
+        "examples": (
+            "orchex setup essential --project .",
+            "orchex setup all --project . --dry-run",
+        ),
         "build_parser": build_setup_parser,
     },
     "list": {
         "name": "list",
         "group": "getting_started",
         "summary": "パッケージ一覧を表示",
-        "examples": (),
+        "examples": ("orchex list",),
         "build_parser": build_list_parser,
     },
     "install": {
         "name": "install",
         "group": "package_management",
         "summary": "パッケージをインストール",
-        "examples": (),
+        "examples": (
+            "orchex install core --project .",
+            "orchex install core agent-routing --project . --dry-run",
+        ),
         "build_parser": build_install_parser,
     },
     "uninstall": {
         "name": "uninstall",
         "group": "package_management",
         "summary": "パッケージをアンインストール",
-        "examples": (),
+        "examples": ("orchex uninstall tmux-monitor --project .",),
         "build_parser": build_uninstall_parser,
     },
     "enable": {
         "name": "enable",
         "group": "package_management",
         "summary": "パッケージを有効化",
-        "examples": (),
+        "examples": ("orchex enable audit --project .",),
         "build_parser": build_enable_parser,
     },
     "disable": {
         "name": "disable",
         "group": "package_management",
         "summary": "パッケージを無効化",
-        "examples": (),
+        "examples": ("orchex disable audit --project .",),
         "build_parser": build_disable_parser,
     },
     "status": {
         "name": "status",
         "group": "package_management",
         "summary": "パッケージ導入状況を表示",
-        "examples": (),
+        "examples": ("orchex status --project .",),
         "build_parser": build_status_parser,
     },
     "context": {
         "name": "context",
         "group": "generate_sync",
         "summary": "CLAUDE.md / AGENTS.md / GEMINI.md テンプレート管理",
-        "examples": (),
+        "examples": (
+            "orchex context build",
+            "orchex context check",
+            "orchex context sync --project . --force",
+        ),
         "build_parser": build_context_parser,
     },
     "facet": {
         "name": "facet",
         "group": "generate_sync",
         "summary": "facet composition から SKILL.md を生成",
-        "examples": (),
+        "examples": (
+            "orchex facet build --project .",
+            "orchex facet extract --name review --project .",
+        ),
         "build_parser": build_facet_parser,
     },
     "run": {
         "name": "run",
         "group": "run_delegate",
         "summary": "パッケージのスクリプトを実行",
-        "examples": (),
+        "examples": (
+            "orchex run audit dashboard",
+            "orchex run audit log-viewer --project . -- --last 10",
+        ),
         "build_parser": build_run_parser,
     },
     "scripts": {
         "name": "scripts",
         "group": "run_delegate",
         "summary": "スクリプト一覧を表示",
-        "examples": (),
+        "examples": ("orchex scripts", "orchex scripts --package audit"),
         "build_parser": build_scripts_parser,
     },
     "meta": {
         "name": "meta",
         "group": "run_delegate",
         "summary": "Meta-Harness（候補評価・進化基盤）CLI へ委譲",
-        "examples": (),
+        "examples": (
+            "orchex meta status --target skill:issue-fix",
+            "orchex meta frontier --target skill:issue-fix",
+        ),
         "build_parser": build_meta_parser,
     },
     "proxy": {
         "name": "proxy",
         "group": "run_delegate",
         "summary": "mcp-proxy の管理",
-        "examples": (),
+        "examples": (
+            "orchex proxy status --project .",
+            "orchex proxy stop --project .",
+        ),
         "build_parser": build_proxy_parser,
     },
 }
+
+
+def _render_grouped_command_listing() -> str:
+    """COMMAND_REGISTRY からライフサイクル順のグループ化コマンド一覧を描画する。
+
+    トップレベル help の description に埋め込む。コマンド列挙のハードコードは
+    ドリフトの原因になるため、必ず registry から動的に導出する。
+    """
+    registry_groups = {entry["group"] for entry in COMMAND_REGISTRY.values()}
+    unknown_groups = registry_groups - set(GROUP_ORDER)
+    if unknown_groups:
+        raise ValueError(f"GROUP_ORDER に未定義のグループ: {sorted(unknown_groups)}")
+
+    column_width = (
+        max(len(entry["name"]) for entry in COMMAND_REGISTRY.values()) + COMMAND_NAME_COLUMN_PADDING
+    )
+    lines: list[str] = ["コマンド一覧（ライフサイクル順）:"]
+    for group in GROUP_ORDER:
+        lines.append(f"\n{GROUP_HEADINGS[group]}:")
+        for entry in COMMAND_REGISTRY.values():
+            if entry["group"] != group:
+                continue
+            name = entry["name"].ljust(column_width)
+            lines.append(f"  {name}{entry['summary']}")
+    lines.append("\n各コマンドの詳細は `orchex <コマンド> --help` を参照。")
+    return "\n".join(lines)
+
+
+TOP_LEVEL_EPILOG = """\
+よくある使い方:
+
+  初回導入:
+    orchex init --project .
+    orchex setup essential --project .
+    orchex status --project .
+
+  日常運用:
+    orchex install <package> --project .
+    orchex status --project .
+    orchex run audit dashboard
+
+  テンプレート更新:
+    orchex context build
+    orchex context check
+    orchex context sync --project .
+    orchex facet build --project .
+
+次に見る:
+  orchex list      パッケージ一覧
+  orchex scripts   スクリプト一覧
+  orchex setup     プリセット一覧（プリセット省略時）
+"""
 
 
 def create_parser() -> tuple[argparse.ArgumentParser, Any]:
@@ -1504,7 +1671,8 @@ def create_parser() -> tuple[argparse.ArgumentParser, Any]:
     add_subparsers() の戻り値そのもの（トップレベル subparsers action）。
     """
     parser = argparse.ArgumentParser(
-        description="AI-ORCHESTRA パッケージ管理 CLI",
+        description="AI-ORCHESTRA パッケージ管理 CLI\n\n" + _render_grouped_command_listing(),
+        epilog=TOP_LEVEL_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
@@ -1518,7 +1686,7 @@ def create_parser() -> tuple[argparse.ArgumentParser, Any]:
         version=f"orchex {ORCHEX_VERSION}",
     )
 
-    subparsers = parser.add_subparsers(dest="command", help="サブコマンド")
+    subparsers = parser.add_subparsers(dest="command", help=argparse.SUPPRESS)
     for entry in COMMAND_REGISTRY.values():
         entry["build_parser"](subparsers)
     return parser, subparsers

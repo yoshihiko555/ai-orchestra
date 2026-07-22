@@ -170,6 +170,9 @@ orchex --version
 ### 4. パッケージ管理コマンド
 
 ```bash
+# プロジェクト初期化（setup/install は未初期化なら自動実行するが、明示的な実行も可能）
+orchex init --project .
+
 # プリセットで一括セットアップ
 orchex setup essential --project .
 orchex setup all --project .
