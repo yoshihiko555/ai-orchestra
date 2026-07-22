@@ -126,13 +126,16 @@ SessionStart hook が `.claude/Plans.md` を読み込み、以下を実行する
 - Plans.md はプロジェクトの `.claude/Plans.md` に配置する
 - `/task-state` スキルで Plans.md の作成・更新ができる
 - 手動編集も可能（フォーマットに従うこと）
-- Plans.md は git にコミットしてチーム共有を推奨
+- Plans.md / Plans.archive.md はローカル管理とし、git にはコミットしない（`.gitignore` に追加する）
+- git worktree で作業する場合は、**作業中の worktree の `.claude/Plans.md` が正本（SSOT）**。root（main チェックアウト）側の Plans.md を worktree の作業から参照・更新しない
+- 計画は worktree ごとに起こし、タスク状態の更新もその worktree 内で完結させる
 
 ### アーカイブ
 
 - 完了済みプロジェクトは SessionStart 時に自動で `.claude/Plans.archive.md` に移動される
 - アーカイブファイルは参照用に保持される（`.gitignore` に追加推奨）
 - Decisions / Notes は全プロジェクト完了時のみアーカイブに移動する（一部残存時は Plans.md に残る）
+- Plans.archive.md も worktree ごとに独立して生成される
 
 ### 設計判断の記録
 
