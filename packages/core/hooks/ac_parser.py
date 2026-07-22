@@ -14,11 +14,28 @@ task-state スキル支援ツールなど、Plans.md の AC 判定を再利用�
       （coding-principles.md のシンプルさ優先）。将来 verify/judge を区別した
       機械検証（例: verify コマンドの自動実行）が必要になった時点で、本モジュールに
       追加のパーサ（例: `classify_ac_kind()`）を足す形が望ましい。
+
+hooks/ 配下以外（他パッケージのスクリプト等）から import する場合は、
+load-task-state.py と同じ sys.path 挿入パターンを使う:
+
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[N] / "packages/core/hooks"))
+    import ac_parser  # noqa: E402
 """
 
 from __future__ import annotations
 
 import re
+
+__all__ = [
+    "CHECKBOX_PATTERN",
+    "AC_SECTION_HEADING",
+    "classify_checkbox_line",
+    "ac_section_ranges",
+    "phase_has_unchecked_ac",
+]
 
 # Acceptance Criteria チェックボックス行の判定パターン（`- [ ]` / `- [x]` / `- [X]`）
 CHECKBOX_PATTERN = re.compile(r"^- \[([ xX])\]")
