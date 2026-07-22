@@ -342,6 +342,66 @@ def test_run_mechanical_command_env_none_inherits_os_environ(
     assert output == "inherited-value"
 
 
+def test_run_mechanical_command_pins_umask_regardless_of_caller_umask(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Also covers the `LOOP_MECHANICAL_UMASK` unset case (default stays 0o022)."""
+    monkeypatch.delenv(lc.MECHANICAL_UMASK_ENV, raising=False)
+    original_umask = os.umask(0o077)
+    try:
+        output, exit_code = lc._run_mechanical_command("umask", str(tmp_path), 5)
+        assert exit_code == 0
+        assert int(output.strip(), 8) == 0o022
+    finally:
+        os.umask(original_umask)
+
+
+def test_run_mechanical_command_env_override_opts_out_of_default_umask(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`LOOP_MECHANICAL_UMASK` lets operators restore a stricter umask (Issue #301 opt-out)."""
+    monkeypatch.setenv(lc.MECHANICAL_UMASK_ENV, "077")
+    output, exit_code = lc._run_mechanical_command("umask", str(tmp_path), 5)
+    assert exit_code == 0
+    assert int(output.strip(), 8) == 0o077
+
+
+def test_run_mechanical_command_env_invalid_value_falls_back_to_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unparsable `LOOP_MECHANICAL_UMASK` falls back to the default rather than raising."""
+    monkeypatch.setenv(lc.MECHANICAL_UMASK_ENV, "zzz")
+    output, exit_code = lc._run_mechanical_command("umask", str(tmp_path), 5)
+    assert exit_code == 0
+    assert int(output.strip(), 8) == 0o022
+
+
+def test_run_mechanical_command_explicit_env_scoped_umask_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An explicit `env` mapping's own `LOOP_MECHANICAL_UMASK` is honored (Issue #301 review)."""
+    monkeypatch.delenv(lc.MECHANICAL_UMASK_ENV, raising=False)
+    explicit_env = {
+        "PATH": os.environ["PATH"],
+        "HOME": os.environ["HOME"],
+        lc.MECHANICAL_UMASK_ENV: "077",
+    }
+    output, exit_code = lc._run_mechanical_command("umask", str(tmp_path), 5, env=explicit_env)
+    assert exit_code == 0
+    assert int(output.strip(), 8) == 0o077
+
+
+def test_run_mechanical_command_explicit_env_does_not_fall_back_to_ambient_umask(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An explicit `env` lacking the key must not resurrect it from ambient `os.environ`."""
+    monkeypatch.setenv(lc.MECHANICAL_UMASK_ENV, "077")
+    explicit_env = {"PATH": os.environ["PATH"], "HOME": os.environ["HOME"]}
+    output, exit_code = lc._run_mechanical_command("umask", str(tmp_path), 5, env=explicit_env)
+    assert exit_code == 0
+    assert int(output.strip(), 8) == 0o022
+
+
 def test_run_mechanical_command_on_start_receives_pid_then_none(tmp_path: Path) -> None:
     child_pids: list[int | None] = []
 

@@ -71,7 +71,7 @@
   notes: >-
     a non-blocking second flock attempt on the per-family build lock fails
     while build runs and only one build occurs (Issue #250 Fix B split the
-    build lock from the base manifest lock; see EV-24/EV-25).
+    build lock from the base manifest lock; see EV-28/EV-29).
 
 - ev_id: EV-18
   phase: 1
@@ -126,7 +126,7 @@
     - packages/docker-runtime/tests/test_docker_runtime_image.py::test_exclusive_file_lock_wraps_acquisition_oserror
   notes: critical-section errors propagate unchanged while acquisition errors keep the lock-specific wrapper.
 
-- ev_id: EV-24
+- ev_id: EV-28
   phase: 1
   priority: must
   oracle: command_exit
@@ -143,7 +143,7 @@
     this family (verified by externally flock-ing the other family's lock
     file for the duration of the call).
 
-- ev_id: EV-25
+- ev_id: EV-29
   phase: 1
   priority: must
   oracle: command_exit
@@ -158,7 +158,7 @@
     because the write re-reads from disk instead of reusing a stale
     in-memory snapshot taken before the build started.
 
-- ev_id: EV-26
+- ev_id: EV-30
   phase: 1
   priority: must
   oracle: command_exit
@@ -172,7 +172,7 @@
     an unrelated schema-valid manifest entry pointing at a nonexistent
     image is neither inspected nor dropped.
 
-- ev_id: EV-27
+- ev_id: EV-31
   phase: 1
   priority: must
   oracle: command_exit

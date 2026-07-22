@@ -64,6 +64,7 @@ def _request(
     config = _config()
     worktree = tmp_path / "worktree"
     worktree.mkdir()
+    worktree.chmod(0o755)  # Explicit mode: scaffolding dir, not an owner-only secret (Issue #301).
     return docker_action.DockerActionRequest(
         config=config,
         isolation=docker_config.validate_isolation_config(config),

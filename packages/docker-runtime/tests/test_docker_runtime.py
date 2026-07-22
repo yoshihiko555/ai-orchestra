@@ -131,7 +131,10 @@ def test_align_mount_ownership_is_noop_for_non_root_host(
     )
     target = tmp_path / "worktree"
     target.mkdir()
+    # Explicit mode: scaffolding dir/file, not owner-only secrets (Issue #301).
+    target.chmod(0o755)
     (target / "file.txt").write_text("content", encoding="utf-8")
+    (target / "file.txt").chmod(0o644)
 
     profile.align_mount_ownership(target)
 
@@ -154,7 +157,11 @@ def test_align_mount_ownership_reowns_tree_to_forced_non_root_identity_when_host
     target = tmp_path / "worktree"
     nested = target / "nested"
     nested.mkdir(parents=True)
+    # Explicit mode: scaffolding dirs/files, not owner-only secrets (Issue #301).
+    target.chmod(0o755)
+    nested.chmod(0o755)
     (nested / "file.txt").write_text("content", encoding="utf-8")
+    (nested / "file.txt").chmod(0o644)
 
     profile.align_mount_ownership(target)
 
@@ -192,10 +199,14 @@ def test_align_mount_ownership_skips_excluded_leaf_paths(
     target = tmp_path / "worktree"
     nested = target / "nested"
     nested.mkdir(parents=True)
+    # Explicit mode: scaffolding dirs/files, not owner-only secrets (Issue #301).
+    target.chmod(0o755)
+    nested.chmod(0o755)
     excluded_file = nested / "secret.local.yaml"
     excluded_file.write_text("content", encoding="utf-8")
     kept_file = nested / "file.txt"
     kept_file.write_text("content", encoding="utf-8")
+    kept_file.chmod(0o644)
 
     profile.align_mount_ownership(target, exclude=frozenset({excluded_file}))
 
@@ -228,6 +239,9 @@ def test_align_mount_ownership_skips_hardlink_alias_of_an_excluded_file(
     target = tmp_path / "worktree"
     nested = target / "nested"
     nested.mkdir(parents=True)
+    # Explicit mode: scaffolding dirs, not owner-only secrets (Issue #301).
+    target.chmod(0o755)
+    nested.chmod(0o755)
     excluded_file = nested / "secret.local.yaml"
     excluded_file.write_text("content", encoding="utf-8")
     hardlink_alias = nested / "alias-of-secret"
@@ -263,6 +277,9 @@ def test_align_mount_ownership_skips_owner_only_permission_secrets(
     target = tmp_path / "worktree"
     nested = target / "nested"
     nested.mkdir(parents=True)
+    # Explicit mode: scaffolding dirs, not owner-only secrets (Issue #301).
+    target.chmod(0o755)
+    nested.chmod(0o755)
     secret_file = nested / ".env"
     secret_file.write_text("SECRET=1", encoding="utf-8")
     secret_file.chmod(0o600)
@@ -319,6 +336,9 @@ def test_align_mount_ownership_reject_honors_exclude_for_non_root_host(
     target = tmp_path / "worktree"
     nested = target / "nested"
     nested.mkdir(parents=True)
+    # Explicit mode: scaffolding dirs, not owner-only secrets (Issue #301).
+    target.chmod(0o755)
+    nested.chmod(0o755)
     excluded_file = nested / "secret.local.yaml"
     excluded_file.write_text("content", encoding="utf-8")
     excluded_file.chmod(0o600)
@@ -372,6 +392,7 @@ def test_reject_owner_only_secrets_honors_exclude_for_non_root_host(
     monkeypatch.setattr(profile.os, "getuid", lambda: 1000)
     target = tmp_path / "worktree"
     target.mkdir()
+    target.chmod(0o755)  # Explicit mode: scaffolding dir, not an owner-only secret (Issue #301).
     excluded_file = target / "secret.local.yaml"
     excluded_file.write_text("content", encoding="utf-8")
     excluded_file.chmod(0o600)
@@ -433,6 +454,7 @@ def test_align_mount_ownership_reowns_owner_only_permission_directory_ancestor(
     target = tmp_path / "worktree"
     restricted_dir = target / ".ssh"
     restricted_dir.mkdir(parents=True)
+    target.chmod(0o755)  # Explicit mode: scaffolding dir, not an owner-only secret (Issue #301).
     restricted_dir.chmod(0o700)
     key_file = restricted_dir / "id_rsa"
     key_file.write_text("private-key", encoding="utf-8")

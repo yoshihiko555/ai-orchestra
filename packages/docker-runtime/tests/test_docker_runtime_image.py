@@ -536,7 +536,7 @@ def test_auto_build_disabled_requires_immutable_digest(tmp_path: Path, context: 
 
 
 def test_family_name_must_be_lock_file_safe(tmp_path: Path, context: Path) -> None:
-    """EV-24: `family` is interpolated into the per-family lock filename, so
+    """EV-28: `family` is interpolated into the per-family lock filename, so
     it must be validated before use."""
     with pytest.raises(image.DockerImageError, match="family"):
         image.ensure_recipe_image(
@@ -550,7 +550,7 @@ def test_family_build_lock_does_not_block_a_different_familys_build(
     tmp_path: Path,
     context: Path,
 ) -> None:
-    """EV-24: An in-flight build lock for one family must not serialize a
+    """EV-28: An in-flight build lock for one family must not serialize a
     concurrent ensure for a different family sharing the same policy
     (Issue #250 Fix B)."""
     policy = _policy(tmp_path)
@@ -577,7 +577,7 @@ def test_concurrent_manifest_writes_across_families_do_not_lose_entries(
     tmp_path: Path,
     context: Path,
 ) -> None:
-    """EV-25: A manifest write for one family must not clobber an entry
+    """EV-29: A manifest write for one family must not clobber an entry
     written by a concurrent process for a different family (Issue #250 Fix
     B: the post-build manifest write re-reads from disk instead of reusing
     an in-memory snapshot taken before the build started)."""
@@ -615,7 +615,7 @@ def test_cache_hit_does_not_inspect_unrelated_manifest_entries(
     tmp_path: Path,
     context: Path,
 ) -> None:
-    """EV-26: Only the requested recipe's digest triggers `docker image
+    """EV-30: Only the requested recipe's digest triggers `docker image
     inspect`; unrelated (but schema-valid) manifest entries are trusted
     as-is and are not dropped even if their image no longer exists (Issue
     #250 Fix C)."""
@@ -660,7 +660,7 @@ def test_cache_hit_does_not_inspect_unrelated_manifest_entries(
 
 
 def test_exclusive_file_lock_rejects_symlinked_lock_path(tmp_path: Path) -> None:
-    """EV-27: A symlinked lock path must fail closed (O_NOFOLLOW) instead of
+    """EV-31: A symlinked lock path must fail closed (O_NOFOLLOW) instead of
     following the symlink into locking/chmod-ing an attacker-controlled
     target (Issue #250 Fix D, TOCTOU)."""
     target = tmp_path / "victim.txt"
