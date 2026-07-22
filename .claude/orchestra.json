@@ -62,7 +62,7 @@
     "config/quality-gates/evaluation-set-mapping.yaml",
     "config/skill-evolution/skill-evolution.yaml"
   ],
-  "last_sync": "2026-07-21T09:37:57.791816+00:00",
+  "last_sync": "2026-07-22T13:57:30.739156+00:00",
   "file_hashes": {
     "core": {
       "config/core/task-memory.yaml": "081c101ad10526344e4fe7831babbe6ef661d0a4ae7e49fad4eb3967c030b7d8"
@@ -95,7 +95,7 @@
       "agents/support-executive-summary-generator.md": "298891fcf297de5d9b343e9ab9b63864317de63256b15c0c72e6cec172f8f0ff",
       "agents/spec-writer.md": "fe4e0e9be67728a3cca388bb6e52ea7a738d6841214d5e8eec7f613d0e964ab3",
       "agents/tester.md": "d02629fa78ffa10f0e63728d56d08d77b0ac812993f8b622db6b5073e2c13a65",
-      "agents/testing-reality-checker.md": "18cecd444f9871d317b85174a48a0312d941511550ecb41de01bbc61daff7a25",
+      "agents/testing-reality-checker.md": "259fef00ea8cb37dc3ed3097b4c3f6852b35198feb54a5984a21bd3bc36f26cd",
       "agents/ux-reviewer.md": "b5fe9d6d08e7496e81af590395fbd46e15f70dcb3154e3f573efae30a15167e8"
     },
     "audit": {
