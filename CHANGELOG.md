@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+- **`loop-harness`: repo-identity 再照合を worktree 改ざんに対して強化（Issue #208）**: `is_repo_identity_verified` による安全停止判定が、新規ループ作成時に記録した worktree `.git` gitlink の内容ハッシュ、shared worktree のローカル git config 危険キー（`insteadOf`/`pushurl`/`credential.helper` 等）の不在、識別マテリアルの完全長（256bit）ダイジェスト一致の 3 点を追加でチェックするようになった。既存の 8 文字ハッシュ（`loop_id` 命名）自体は変更しておらず、Issue #208 以前に作成済みのループは従来どおりの判定にフォールバックする（後方互換）。
+
 ### Changed
 
 - **BREAKING** **facet build のキャッシュファイルを `.cache/` 配下へ集約**: これまで `.claude/` / `.codex/` 直下に置いていた生成物キャッシュ（`.facet-manifest.json` / `.facet-packages-hash`）を `.claude/.cache/`・`.codex/.cache/` 配下（`facet-manifest.json` / `packages-hash`）へ移動した。ソースと生成物の分離が目的。後方互換なし。旧ファイルは自動削除されないため、残っている場合は手動で削除する（残置しても次回ビルドで新パスに再生成され、機能への影響はない）。`.gitignore` の無視対象も `.claude/.cache/`・`.codex/.cache/` に更新済み。

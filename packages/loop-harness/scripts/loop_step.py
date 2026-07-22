@@ -155,6 +155,10 @@ def cmd_start(args: argparse.Namespace) -> dict[str, Any]:
             branch=worktree.branch,
             owner_id=_owner_id(),
             ttl_seconds=_lp1_ttl(project),
+            # Issue #208 (SEC-H2): pin the stronger re-verification baseline so
+            # `lc.is_repo_identity_verified()` prefers it over the legacy truncated-hash check.
+            repo_identity_material_digest=worktree.repo_identity_material_digest,
+            worktree_gitlink_digest=worktree.gitlink_fingerprint,
             phase=definition.phases[0].name,
             preacquired_lock=lock,
             # Issue #196: LP-1-only opt-in for the best-effort push-integrity warning (LP-2's

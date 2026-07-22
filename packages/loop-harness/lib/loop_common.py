@@ -213,6 +213,15 @@ class LoopState:
     state_version: int
     maker_agent: str | None = None
     remote_head_baseline: str | None = None
+    # Issue #208 (SEC-H2) hardening: both captured once from the *root* project_dir / the
+    # freshly created worktree at loop-creation time (the earliest trustworthy moment, before
+    # any Maker child has ever run) and never re-derived afterward. `None` on state.json
+    # predating this field -- `is_repo_identity_verified()` falls back to the legacy
+    # 8-hex-truncated-hash re-derivation in that case, so existing loops keep working
+    # unchanged. See `worktree_manager.resolve_repo_identity_material_digest()` /
+    # `worktree_manager.gitlink_fingerprint()` for what each value pins.
+    repo_identity_material_digest: str | None = None
+    worktree_gitlink_digest: str | None = None
 
 
 #: Severities that block phase progress (pr_review_response no-progress guard, Maker prompt
@@ -468,6 +477,8 @@ def start(
     preacquired_lock: LockInfo | None = None,
     *,
     precedent_push_check: bool = False,
+    repo_identity_material_digest: str | None = None,
+    worktree_gitlink_digest: str | None = None,
 ) -> ProposeResult:
     """Create initial state, acquire a lease, and return the first proposal.
 
@@ -477,6 +488,14 @@ def start(
     own, separate, more rigorous push-integrity mechanism, `loop_driver_support`'s
     `get_remote_head()`/`classify_push_integrity()`) -- only `loop_step.py`'s own call site
     opts in.
+
+    `repo_identity_material_digest`/`worktree_gitlink_digest` (Issue #208, both keyword-only
+    and default `None` so existing positional call sites are unaffected): callers should pass
+    `worktree_manager.resolve_repo_identity_material_digest(project_dir)` /
+    `worktree.gitlink_fingerprint` (the `WorktreeInfo` `create_worktree()` just returned) to
+    pin the stronger re-verification baseline `is_repo_identity_verified()` prefers. Omitting
+    them (or a caller that predates this parameter) leaves the loop on the legacy
+    8-hex-truncated-hash re-derivation only.
     """
     if state_path(loop_id, project_dir).exists():
         raise InvalidStateError(f"state already exists: {loop_id}; use attach or resume")
@@ -495,6 +514,8 @@ def start(
         branch,
         phase,
         precedent_push_check=precedent_push_check,
+        repo_identity_material_digest=repo_identity_material_digest,
+        worktree_gitlink_digest=worktree_gitlink_digest,
     )
     # `_drop_none_remote_head_baseline()`: keep the journal payload byte-for-byte identical to
     # the pre-Issue #196 shape for non-opted-in callers (bot review, PR #277, Codex P2) -- see
@@ -1588,6 +1609,8 @@ def _initial_state(
     phase: str,
     *,
     precedent_push_check: bool = False,
+    repo_identity_material_digest: str | None = None,
+    worktree_gitlink_digest: str | None = None,
 ) -> LoopState:
     """Create an initial pending state.
 
@@ -1599,6 +1622,9 @@ def _initial_state(
     caller of `start()`) to stay byte-for-byte unaffected: no extra network-bound
     `git ls-remote` round trip on every loop creation, and no `remote_head_baseline` written to
     state/the `loop_created` journal payload.
+
+    `repo_identity_material_digest`/`worktree_gitlink_digest` (Issue #208): see `start()`'s own
+    docstring; simply threaded through onto the resulting `LoopState` unchanged.
     """
     now = now_iso()
     return LoopState(
@@ -1631,6 +1657,8 @@ def _initial_state(
         remote_head_baseline=(
             _remote_head(worktree_path, branch) if precedent_push_check else None
         ),
+        repo_identity_material_digest=repo_identity_material_digest,
+        worktree_gitlink_digest=worktree_gitlink_digest,
     )
 
 
@@ -1791,7 +1819,18 @@ def _pending_proposal_result(
 
 
 def _apply_preproposal_safety_stop_if_needed(state: LoopState, action: str) -> bool:
-    """Stop before proposing unsafe advance params."""
+    """Stop before proposing unsafe advance params.
+
+    Deliberately still uses the plain `_repo_identity_hash()` re-derivation, not the hardened
+    `is_repo_identity_verified()` (Issue #208/SEC-H2) used by `loop_driver.py`'s own
+    repo-identity checks: unlike that function, this one intentionally keeps a path-only
+    fallback for `project_dir`s that are not (yet, or ever, in some test fixtures) a real git
+    repository, and this runs on *every* `propose()` call for both LP-1 and LP-2 -- switching
+    it to the stricter helper would newly safety-stop any such non-git-repo scenario. Left as a
+    tracked follow-up (Issue #208 comment) rather than folded into this fix, to keep this
+    security hardening's blast radius scoped to the call sites the issue actually describes
+    (`loop_driver.py`'s `cwd=worktree_path` checks), which always operate on real worktrees.
+    """
     if _repo_identity_hash(state.worktree_path) != state.repo_identity_hash:
         state.status = "stopped"
         state.stop_reason = "repo_identity_mismatch"
@@ -2166,12 +2205,95 @@ def _repo_identity_hash(project_dir: str) -> str:
 
 
 def is_repo_identity_verified(state: LoopState) -> bool:
-    """Verify state repo identity without accepting a path-only fallback."""
+    """Verify state repo identity without accepting a path-only fallback.
+
+    Issue #208 (SEC-H2) hardening is gated as a whole behind `state.repo_identity_material_digest
+    is not None` -- i.e. it only applies to loops created *after* this fix shipped (both new
+    fields are always set together by `worktree_manager.create_worktree()` + `start()`; `None`
+    means state.json predates Issue #208). This is `loop_driver.py`'s (LP-2) single choke point
+    for repo-identity re-verification (push-guard checks, Issue-comment gating, exit checks --
+    all reading `cwd=state.worktree_path`, the exact vector the issue describes). Gating the
+    whole hardened path, not just the gitlink check, keeps every already-running/pre-existing
+    loop's behavior byte-for-byte unchanged instead of retroactively subjecting it to a new
+    check (`_worktree_git_config_tampered()`) it was never designed against, which could
+    otherwise surface as a surprise safety-stop on a legitimate, merely pre-existing local git
+    config (e.g. a repo-local `credential.helper`). `loop_step.py`'s (LP-1) own, separate
+    `_apply_preproposal_safety_stop_if_needed()` deliberately keeps using the plain
+    `_repo_identity_hash()` re-derivation rather than this function -- see that function's own
+    docstring for why (tracked as a scoped-out follow-up, not silently left unhardened).
+
+    For a hardened (Issue #208+) loop, checked in order (fail closed on the first failure -- a
+    Maker has unrestricted `Edit`/`Write` filesystem access to the shared worktree, so every one
+    of these closes a distinct way that access could otherwise defeat this check):
+
+    1. `_worktree_gitlink_tampered()`: the worktree's pinned `.git` gitlink pointer file must
+       be unchanged since loop creation. Without this, a Maker could rewrite it to redirect
+       every later git operation -- including this very check -- to an attacker-controlled
+       decoy repository whose `remote.origin.url` simply matches, no hash collision required.
+    2. `_worktree_git_config_tampered()`: the worktree's local git config must be free of the
+       same dangerous rewrite keys (`insteadOf`/`pushurl`/`credential.helper`/etc.)
+       `loop_driver.py` already screens for before every driver-owned push
+       (`loop_driver_support.find_dangerous_local_git_config()`), reused here so identity
+       re-verification gets the same, already-hardened defense.
+    3. The live identity material must match the full (untruncated, 256-bit)
+       `state.repo_identity_material_digest` pinned at loop creation -- the 32-bit truncated
+       `repo_identity_hash` alone is a realistic target for a crafted-material preimage search
+       once the expected value is public (it is embedded in the loop_id/state-directory name).
+    """
+    if state.repo_identity_material_digest is None:
+        material = _repo_identity_material(state.worktree_path)
+        if not material:
+            return False
+        actual = hashlib.sha256(material.encode("utf-8")).hexdigest()[:8]
+        return actual == state.repo_identity_hash
+    if _worktree_gitlink_tampered(state):
+        return False
+    if _worktree_git_config_tampered(state.worktree_path):
+        return False
     material = _repo_identity_material(state.worktree_path)
     if not material:
         return False
-    actual = hashlib.sha256(material.encode("utf-8")).hexdigest()[:8]
-    return actual == state.repo_identity_hash
+    return (
+        hashlib.sha256(material.encode("utf-8")).hexdigest() == state.repo_identity_material_digest
+    )
+
+
+def _worktree_gitlink_tampered(state: LoopState) -> bool:
+    """Return True when the worktree's pinned `.git` gitlink fingerprint no longer matches.
+
+    Always `False` (nothing to compare) when `state.worktree_gitlink_digest` is `None` --
+    either this loop's state.json predates Issue #208, or its worktree was never a linked
+    worktree to begin with (`worktree_manager.gitlink_fingerprint()` itself returns `None` in
+    that case too). Imported locally (function scope), not at module scope: `worktree_manager`
+    already imports this module at its own top level, so a module-scope import here would be
+    circular (mirrors this module's own `_remote_head()`/`loop_driver_support` pattern).
+    """
+    if state.worktree_gitlink_digest is None:
+        return False
+    lib_dir = Path(__file__).resolve().parent
+    if str(lib_dir) not in sys.path:
+        sys.path.insert(0, str(lib_dir))
+    import worktree_manager as wm
+
+    return wm.gitlink_fingerprint(state.worktree_path) != state.worktree_gitlink_digest
+
+
+def _worktree_git_config_tampered(worktree_path: str) -> bool:
+    """Return True when the worktree's local git config carries a known-dangerous rewrite key.
+
+    Delegates to LP-2's already-hardened `loop_driver_support.find_dangerous_local_git_config()`
+    (Issue #208) instead of duplicating its key list. Fails open (`False`) only when the scan
+    itself could not be completed at all (process error/timeout) -- unverifiable, not itself
+    grounds for a mismatch, mirroring that function's own "one of several layers, not the sole
+    guard" contract. Imported locally for the same circular-import reason as
+    `_worktree_gitlink_tampered()`.
+    """
+    lib_dir = Path(__file__).resolve().parent
+    if str(lib_dir) not in sys.path:
+        sys.path.insert(0, str(lib_dir))
+    import loop_driver_support as lds
+
+    return lds.find_dangerous_local_git_config(worktree_path, GIT_TIMEOUT_SECONDS) is not None
 
 
 def _repo_identity_material(project_dir: str) -> str:
@@ -3034,6 +3156,14 @@ def _state_from_dict(data: dict[str, Any]) -> LoopState:
         maker_agent=data.get("maker_agent") if isinstance(data.get("maker_agent"), str) else None,
         remote_head_baseline=data.get("remote_head_baseline")
         if isinstance(data.get("remote_head_baseline"), str)
+        else None,
+        # Issue #208: absent on state.json predating this field -- `None` here correctly
+        # signals `is_repo_identity_verified()` to fall back to the legacy re-derivation.
+        repo_identity_material_digest=data.get("repo_identity_material_digest")
+        if isinstance(data.get("repo_identity_material_digest"), str)
+        else None,
+        worktree_gitlink_digest=data.get("worktree_gitlink_digest")
+        if isinstance(data.get("worktree_gitlink_digest"), str)
         else None,
     )
 

@@ -115,6 +115,73 @@ def test_repo_identity_hash_is_stable_for_linked_worktree_without_remote(tmp_pat
     assert wm.resolve_repo_identity_hash(str(main)) == wm.resolve_repo_identity_hash(str(linked))
 
 
+def test_repo_identity_material_digest_is_full_sha256_matching_hash_prefix(
+    tmp_path: Path,
+) -> None:
+    """Issue #208 (SEC-H2): the full digest must be the untruncated form of the same hash."""
+    main = tmp_path / "repo"
+    _init_repo(main)
+
+    digest = wm.resolve_repo_identity_material_digest(str(main))
+
+    assert len(digest) == 64
+    assert digest[:8] == wm.resolve_repo_identity_hash(str(main))
+
+
+def test_gitlink_fingerprint_is_none_for_main_repository(tmp_path: Path) -> None:
+    """`.git` is a directory in the main repository, not a linked-worktree gitlink file."""
+    main = tmp_path / "repo"
+    _init_repo(main)
+
+    assert wm.gitlink_fingerprint(str(main)) is None
+
+
+def test_gitlink_fingerprint_is_none_when_worktree_path_is_missing(tmp_path: Path) -> None:
+    assert wm.gitlink_fingerprint(str(tmp_path / "does-not-exist")) is None
+
+
+def test_gitlink_fingerprint_detects_gitlink_content_change(tmp_path: Path) -> None:
+    """Issue #208 (SEC-H2): rewriting the `.git` gitlink pointer must change the fingerprint."""
+    main = tmp_path / "repo"
+    linked = tmp_path / "linked"
+    _init_repo(main)
+    _git(["worktree", "add", "-b", "loop/issue-2", str(linked), "HEAD"], main)
+
+    original = wm.gitlink_fingerprint(str(linked))
+    assert original is not None
+
+    (linked / ".git").write_text("gitdir: /tmp/attacker-controlled-decoy-repo\n", encoding="utf-8")
+
+    assert wm.gitlink_fingerprint(str(linked)) != original
+
+
+def test_create_worktree_pins_material_digest_and_gitlink_fingerprint(tmp_path: Path) -> None:
+    """Issue #208 (SEC-H2): a freshly created worktree gets both new fields populated."""
+    main = tmp_path / "repo"
+    _init_repo(main)
+
+    info = wm.create_worktree(str(main), 1)
+
+    assert info.repo_identity_material_digest is not None
+    assert len(info.repo_identity_material_digest) == 64
+    assert info.repo_identity_material_digest[:8] == info.repo_identity_hash
+    assert info.gitlink_fingerprint == wm.gitlink_fingerprint(info.path)
+    assert info.gitlink_fingerprint is not None
+
+
+def test_create_worktree_pins_gitlink_fingerprint_when_reusing_existing_worktree(
+    tmp_path: Path,
+) -> None:
+    main = tmp_path / "repo"
+    _init_repo(main)
+    first = wm.create_worktree(str(main), 1)
+
+    reused = wm.create_worktree(str(main), 1)
+
+    assert reused.path == first.path
+    assert reused.gitlink_fingerprint == first.gitlink_fingerprint
+
+
 def test_verify_repo_identity_recomputes_from_worktree_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
