@@ -23,6 +23,7 @@
     "hooks/hook_common.py",
     "hooks/log_common.py",
     "hooks/context_store.py",
+    "hooks/ac_parser.py",
     "hooks/set-plan-gate.py",
     "hooks/check-plan-gate.py",
     "hooks/clear-plan-gate.py",
