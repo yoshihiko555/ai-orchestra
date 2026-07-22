@@ -58,14 +58,17 @@ wording.
     `~/.ssh`, repo-external `.env`, other projects) regardless of what the
     (untrusted) prompt says. This is a deterministic, kernel-enforced boundary —
     do NOT weaken it.
-  - `network_access=true` is required because codex 0.140.0's `image_gen`
-    app-server reaches its backend over the network; with the default restricted
-    network it fails app-server init with `Operation not permitted`.
+  - `network_access=true` is required because the `image_gen` app-server reaches
+    its backend over the network; with the default restricted network it fails
+    app-server init with `Operation not permitted`.
   - The image itself is saved by Codex's own process (not a model-generated shell
     command) to `~/.codex/generated_images/<session>/`, so it is unaffected by
-    the workspace-write filesystem restriction — **provided `--enable imagegenext`
-    is set** (Step 3). Without that flag, codex 0.140.0's exec mode does not write
-    the file to disk at all.
+    the workspace-write filesystem restriction — **provided the image-generation
+    feature is enabled**. Step 3 resolves the correct `--enable` flag name at
+    runtime, because the name differs by codex version (`imagegenext` on
+    0.140.x, `image_generation` on 0.144.6+ — see the version note in Step 3).
+    Without that feature enabled, `codex exec` does not write the file to disk
+    at all.
   - **NEVER** use `--sandbox danger-full-access` or
     `--dangerously-bypass-approvals-and-sandbox` here. They remove the
     filesystem boundary (whole-disk read/write/delete) and were explicitly
@@ -179,8 +182,39 @@ one `RUN_ID` token (e.g. a timestamp plus a few random chars) and hard-code the
 generations never share a marker. Do NOT use `$$`/`$RANDOM` inline — they differ
 between the two separate Bash calls.
 
+**Do NOT base the marker path on `$TMPDIR`.** Step 3 runs with
+`dangerouslyDisableSandbox: true` and Step 3.5 runs under the normal sandbox, and
+Claude Code's Bash tool resolves `$TMPDIR` to a **different directory per sandbox
+mode** (e.g. `/var/folders/.../T/` when disabled vs. `/tmp/claude-501` under the
+normal sandbox). A marker written under one resolution and checked under the other
+is silently invisible, which defeats the freshness guard. Use a fixed path under
+`$RESOLVED`'s own directory instead: it is inside the repo (already created by Step
+1's `mkdir -p`) and equally writable under both sandbox modes, so Step 3 and Step
+3.5 always agree on where the marker lives.
+
 ```bash
-MARKER="${TMPDIR:-/tmp}/imggen.<RUN_ID>.marker"   # e.g. .../imggen.20260617-0930-a1b2.marker
+# Resolve the image-generation feature flag name for the installed codex
+# version at runtime — the name differs across versions (see version note
+# below), so it must NOT be hard-coded.
+IMG_FEATURE=""
+if FEATURES_OUT=$(codex features list 2>/dev/null) && [ -n "$FEATURES_OUT" ]; then
+  if printf '%s\n' "$FEATURES_OUT" | grep -q '^imagegenext[[:space:]]'; then
+    IMG_FEATURE=imagegenext
+  else
+    IMG_FEATURE=image_generation
+  fi
+fi
+if [ -z "$IMG_FEATURE" ]; then
+  # Fallback when `codex features list` is unavailable/empty: infer from the
+  # version string ("codex-cli 0.140.0" -> minor "140").
+  CODEX_MINOR=$(codex --version 2>/dev/null | awk '{print $2}' | cut -d. -f2)
+  case "$CODEX_MINOR" in
+    ''|*[!0-9]*) IMG_FEATURE=image_generation ;;  # unknown -> assume current default name
+    *) if [ "$CODEX_MINOR" -le 140 ]; then IMG_FEATURE=imagegenext; else IMG_FEATURE=image_generation; fi ;;
+  esac
+fi
+
+MARKER="$(dirname "$RESOLVED")/.imggen.<RUN_ID>.marker"   # e.g. .../generated-images/.imggen.20260617-0930-a1b2.marker
 touch "$MARKER"
 sleep 1  # ensure any new image has a strictly newer mtime than the marker
 
@@ -188,32 +222,50 @@ codex exec \
   --model "$IMAGE_MODEL" \
   --sandbox workspace-write \
   -c sandbox_workspace_write.network_access=true \
-  --enable imagegenext \
+  --enable "$IMG_FEATURE" \
   -c model_reasoning_effort=low \
   --skip-git-repo-check \
-  "$FULL_PROMPT" < /dev/null
+  "$FULL_PROMPT" < /dev/null || { rm -f "$MARKER"; exit 1; }
 ```
 
 Notes:
 
-- `--enable imagegenext` is **required** on codex 0.140.0. Without it, `codex exec`
-  generates the image but **does NOT persist it to disk** (the built-in `image_gen`
-  result is only returned inline in the event stream; `~/.codex/generated_images/`
-  stays empty and `saved_path` is never populated). This is a regression vs codex
-  0.137.0, where exec saved the file by default. With `imagegenext` enabled, codex
+- Enabling the image-generation feature is **required** for `codex exec` to
+  persist the generated image to disk. Without it, `codex exec` generates the
+  image but **does NOT persist it to disk** (the built-in `image_gen` result is
+  only returned inline in the event stream; `~/.codex/generated_images/` stays
+  empty and `saved_path` is never populated). This is a regression vs codex
+  0.137.0, where exec saved the file by default. With the feature enabled, codex
   writes the image to `~/.codex/generated_images/<session>/call_*.png` again.
+- **Version note (why the flag name is resolved at runtime, not hard-coded)**:
+  on codex 0.140.x this feature's flag name is `imagegenext`. As of codex
+  0.144.6, `--enable imagegenext` prints `deprecated: [features].imagegenext
+  is deprecated. Use [features].image_generation instead.`, and
+  `image_generation` is the current name — `stable` and enabled by default
+  (verified via `codex features list`). A fixed flag name breaks one side or
+  the other (unknown-flag error on the version that doesn't have it), so the
+  `IMG_FEATURE` resolution above picks the right name for whatever codex is
+  actually installed.
 - `-c sandbox_workspace_write.network_access=true` opens network while keeping the
-  filesystem confined to the repo (see Sandbox Policy). Required for codex
-  0.140.0's `image_gen` app-server.
+  filesystem confined to the repo (see Sandbox Policy). Required for the
+  `image_gen` app-server to reach its backend.
 - `-c model_reasoning_effort=low` keeps the agent from over-thinking and
   self-rejecting/regenerating the output (and cuts token cost). Do not raise it —
   at default effort the agent loops for many minutes and never finishes.
 - `--full-auto` is **removed** — it is deprecated in codex 0.140.0 (folded into
   `--sandbox`). Do not re-add it.
+- If `codex exec` exits non-zero (rate limit, app-server error, etc.), the
+  `|| { rm -f "$MARKER"; exit 1; }` above deletes the marker before failing, so
+  a failed run never leaves an untracked `.imggen.*.marker` file inside a
+  tracked output directory (e.g. `docs/assets/`). This is independent of Step
+  3.5's own `rm -f "$MARKER"`: Step 3.5 is a separate Bash call that only runs
+  when Step 3 succeeded, so the two cleanups never race — do NOT remove this
+  one thinking it is redundant with Step 3.5's.
 
 ### Step 3.5 — Locate the fresh output and copy it to `$RESOLVED` (freshness guard)
 
-With `imagegenext` enabled (Step 3), `image_gen` saves to
+With the image-generation feature enabled (Step 3, via the runtime-resolved
+`--enable "$IMG_FEATURE"`), `image_gen` saves to
 `~/.codex/generated_images/<session>/call_*.png` (older codex used `ig_*.png`), NOT
 to `$RESOLVED`. Find the newest generated PNG (`call_*.png` or `ig_*.png`) that is
 **strictly newer than the Step 3 marker** and copy it. The marker check is the
@@ -224,11 +276,11 @@ marker literal as Step 3 (a separate Bash call does not inherit Step 3's `$MARKE
 variable). Run under the normal sandbox:
 
 ```bash
-MARKER="${TMPDIR:-/tmp}/imggen.<RUN_ID>.marker"   # SAME literal as Step 3
+MARKER="$(dirname "$RESOLVED")/.imggen.<RUN_ID>.marker"   # SAME literal as Step 3 (NOT $TMPDIR)
 GEN_DIR="$HOME/.codex/generated_images"
 
 # Newest generated PNG strictly newer than the marker. Match BOTH naming schemes
-# (`call_*.png` on codex 0.140.0 + imagegenext, `ig_*.png` on older codex).
+# (`call_*.png` on codex 0.140.0+ with image_generation/imagegenext, `ig_*.png` on older codex).
 # NUL-delimited read + `-nt` so the result is empty when nothing new was produced,
 # and it is safe for any filename. Do NOT pipe to `xargs ls`: with no input, BSD
 # xargs runs `ls` against the CWD and yields a bogus match that defeats the

@@ -78,8 +78,11 @@ Task(subagent_type="image-generator", prompt="""
   `workspace-write` のまま（FS は repo 内に OS 強制で限定）、`image_gen` の backend 通信のため
   `network_access=true` だけを開放する。`danger-full-access` は使わない（詳細は image-generator
   エージェント定義の Sandbox Policy）。
-- **`--enable imagegenext` 必須**（codex 0.140.0）: これが無いと exec モードで生成画像が
-  ディスク保存されず（`saved_path` 未populate）、結果を取得できない。0.137.0 からの回帰。
-  詳細は image-generator エージェント定義の Step 3。
+- **image-generation feature の有効化が必須**: フラグ名は codex のバージョンで異なる
+  （0.140.x は `imagegenext`、0.144.6 以降は `image_generation` に改称）ため、Step 3 は
+  `codex features list`（無ければ `codex --version` の minor 番号）で実行時に名前を解決し、
+  `--enable "$IMG_FEATURE"` として渡す。固定名を使うと exec モードで生成画像がディスク保存
+  されず（`saved_path` 未populate）、結果を取得できない。詳細は image-generator エージェント
+  定義の Step 3。
 - **レートリミット**: 連打で発生する。1 リクエストにつき 1 回だけ生成を試みる。
 - **出力先**: デフォルト `generated-images/` は `.gitignore` 管理。成果物はユーザーが目視確認する前提。

@@ -215,6 +215,12 @@ python3 loop_step.py propose --loop-id a1b2c3d4-issue-42 --lease-token 6f1e... -
 > pr-review 編 6.4 節）を、state.json を直接読まずに応答 JSON のみで行えるようにするため。
 > `repo_identity_verified` は repo-identity-hash の再計算一致で導出する（3.4 節と同じ検証。
 > 導出ロジックは `loop_common.py` の公開 API を単一ソースとして共有する）。
+> **Issue #208（SEC-H2）強化**: `loop_common.is_repo_identity_verified()` は (1) 起動時に
+> 記録した worktree `.git` gitlink 指紋の一致、(2) `find_dangerous_local_git_config()` による
+> ローカル git config 改ざん（`insteadOf`/`pushurl`/`credential.helper` 等）の不在、(3) 起動時に
+> root 側で記録した識別マテリアルの完全長（256bit）ダイジェスト一致、の 3 条件をこの順で確認する
+> （いずれか失敗で `False`）。従来の 8 文字（32bit）切り詰めハッシュ再計算は、これらの新フィールド
+> が存在しない既存ループ（state.json 移行前）向けのフォールバックとしてのみ残る。
 
 | `action`               | `params` の主なフィールド                                                                                                                      |
 | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |

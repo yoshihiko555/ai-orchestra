@@ -332,27 +332,35 @@ catches a Maker `Edit`-write into `.git/config` directly -- something the Bash-o
 never see at all."""
 
 
-def find_dangerous_local_git_config(cwd: str, timeout_seconds: float = 10.0) -> str | None:
-    """Return the first dangerous local git-config key found, or None if it looks clean (SEC-CRIT).
+def local_git_config_scan_result(
+    cwd: str, timeout_seconds: float = 10.0
+) -> tuple[bool, str | None]:
+    """Return `(scanned, dangerous_key)` for the local git-config scan (SEC-CRIT / Issue #208).
 
-    Called by `LoopDriver._verify_no_git_config_tampering_or_stop()` immediately before every
-    driver-owned push/`ls-remote` against the shared worktree, and (RC3) by
-    `LoopDriver._reconstruct_push_integrity_baseline()` *before* it ever pins
-    `resolve_origin_url()`'s result as trusted. Reads via `git config --local --list --includes`
-    (this repo's own `.git/config`, not global/system) with `hardened_git_config_args()` applied,
-    so listing the config cannot itself invoke a rogue credential helper. `--includes` (RH2)
-    additionally expands any `include.path`/`includeif.*` directive so a dangerous key defined
-    only inside a separately Maker-writable included file is not missed just because it is absent
-    from `.git/config` itself. Matched line-by-line against `_DANGEROUS_LOCAL_CONFIG_KEY_RE`: not
-    a full git-config parser (a multi-line config value containing an embedded newline could in
-    principle confuse this simple per-line split), mirroring the same "text scan, not full parse"
-    tradeoff `maker_bash_guard.py` already documents for its own Bash-command scan -- a false
-    positive (an unrelated key merely containing one of these substrings) fails safe (refuses the
-    push), which is the accepted direction of error here.
+    Shared low-level implementation behind both `find_dangerous_local_git_config()` (below) and
+    `loop_common._worktree_git_config_tampered()`. Reads via `git config --local --list
+    --includes` (this repo's own `.git/config`, not global/system) with
+    `hardened_git_config_args()` applied, so listing the config cannot itself invoke a rogue
+    credential helper. `--includes` (RH2) additionally expands any `include.path`/`includeif.*`
+    directive so a dangerous key defined only inside a separately Maker-writable included file is
+    not missed just because it is absent from `.git/config` itself. Matched line-by-line against
+    `_DANGEROUS_LOCAL_CONFIG_KEY_RE`: not a full git-config parser (a multi-line config value
+    containing an embedded newline could in principle confuse this simple per-line split),
+    mirroring the same "text scan, not full parse" tradeoff `maker_bash_guard.py` already
+    documents for its own Bash-command scan -- a false positive (an unrelated key merely
+    containing one of these substrings) fails safe (refuses the push), which is the accepted
+    direction of error here.
 
-    Returns `None` (fail-open) only when the query itself cannot be completed at all (process
-    error/timeout) -- this is one of several layers (see the push call sites), not the sole
-    guard, so a transient failure here must not itself deadlock every push.
+    `scanned` is `False` only when the query itself could not be completed at all (process
+    error/timeout, or a non-zero exit) -- distinct from "scanned and found nothing dangerous"
+    (`scanned=True, dangerous_key=None`). Issue #208 (SEC-H2) review finding: callers that treat
+    an unscannable config as equivalent to a clean one let a Maker bypass the dangerous-key check
+    entirely by making the scan itself fail (e.g. making `.git/config` transiently unreadable).
+    Push-guard callers (`find_dangerous_local_git_config()`) intentionally keep failing *open* on
+    `scanned=False` -- this is one of several layers there, not the sole guard, so a transient
+    failure must not itself deadlock every push -- but identity re-verification
+    (`loop_common._worktree_git_config_tampered()`) must fail *closed* on it instead, which is why
+    both cases are returned distinctly rather than collapsed into a single `None`.
     """
     try:
         completed = subprocess.run(
@@ -372,14 +380,33 @@ def find_dangerous_local_git_config(cwd: str, timeout_seconds: float = 10.0) -> 
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return None
+        return False, None
     if completed.returncode != 0:
-        return None
+        return False, None
     for line in completed.stdout.splitlines():
         key = line.split("=", 1)[0]
         if _DANGEROUS_LOCAL_CONFIG_KEY_RE.search(key):
-            return key
-    return None
+            return True, key
+    return True, None
+
+
+def find_dangerous_local_git_config(cwd: str, timeout_seconds: float = 10.0) -> str | None:
+    """Return the first dangerous local git-config key found, or None if it looks clean (SEC-CRIT).
+
+    Called by `LoopDriver._verify_no_git_config_tampering_or_stop()` immediately before every
+    driver-owned push/`ls-remote` against the shared worktree, and (RC3) by
+    `LoopDriver._reconstruct_push_integrity_baseline()` *before* it ever pins
+    `resolve_origin_url()`'s result as trusted.
+
+    Thin wrapper around `local_git_config_scan_result()`: returns `None` (fail-open) both
+    when the scan completed and found nothing dangerous, and when the query itself could not be
+    completed at all (process error/timeout) -- this is one of several layers (see the push call
+    sites), not the sole guard, so a transient failure here must not itself deadlock every push.
+    Callers that must instead distinguish "clean" from "unscannable" (Issue #208/SEC-H2 identity
+    re-verification) use `local_git_config_scan_result()` directly.
+    """
+    _scanned, dangerous_key = local_git_config_scan_result(cwd, timeout_seconds)
+    return dangerous_key
 
 
 def maker_scratch_home(project_dir: str, loop_id: str) -> str:

@@ -422,6 +422,10 @@ def _start_new_loop(
             ttl_seconds=ttl_seconds,
             phase=definition.phases[0].name,
             preacquired_lock=lock,
+            # Issue #208 (SEC-H2): pin the stronger re-verification baseline so
+            # `lc.is_repo_identity_verified()` prefers it over the legacy truncated-hash check.
+            repo_identity_material_digest=worktree.repo_identity_material_digest,
+            worktree_gitlink_digest=worktree.gitlink_fingerprint,
         )
     except lc.ForeignLeaseError:
         # code M4: `ForeignLeaseError` is itself an `Exception` subclass, so it must clean up

@@ -32,6 +32,10 @@ env/
 # Generated images (/image-gen output)
 generated-images/
 
+# image-generator agent freshness marker (backstop; Step 3/3.5 remove it on
+# both success and failure, this only catches leftovers from abnormal exits)
+.imggen.*.marker
+
 .claude/.mcp-proxy.pid
 .worktrees/
 
