@@ -135,7 +135,20 @@ def ensure_recipe_image(
     runner: SubprocessRunner = subprocess.run,
     clock: Callable[[], datetime] | None = None,
 ) -> EnsuredImage:
-    """Return a verified image, building and pruning it when required."""
+    """Return a verified image, building and pruning it when required.
+
+    Locking is split in two scopes (Issue #250):
+
+    - The manifest is protected by a short-held lock on `policy.lock_path`,
+      taken only while reading/validating it or while writing it back. This
+      keeps concurrent reads/writes from different families consistent
+      without serializing on the build.
+    - The build itself (`docker buildx build`, up to `BUILD_TIMEOUT_SECONDS`)
+      is serialized only against other builds of the *same* `recipe.family`,
+      via a lock file derived from `policy.lock_path` and `recipe.family`.
+      Unrelated families (e.g. "scenario" and "broker") sharing the same
+      `policy` never block each other's build.
+    """
     _validate_recipe(recipe)
     _validate_policy(policy)
     if not auto_build:
@@ -144,15 +157,17 @@ def ensure_recipe_image(
     digest = recipe_hash(recipe)
     tag = recipe_tag(recipe, digest)
     now = (clock or _utc_now)().astimezone(UTC).isoformat()
-    with exclusive_file_lock(policy.lock_path):
-        manifest = _load_valid_manifest(policy.manifest_path, runner=runner)
-        cached = manifest.get(digest)
-        current_image_id = _inspect_image_id(tag, runner=runner)
-        if cached is not None and current_image_id == cached.image_id:
-            _tag_latest(tag, recipe.repository, runner=runner)
-            manifest[digest] = ManifestEntry(cached.image_id, cached.built_at, now)
-            _write_manifest(policy.manifest_path, manifest)
-            return EnsuredImage(cached.image_id, tag, digest, built=False)
+
+    image_id = _reuse_cached_image(recipe, policy, digest, tag, now, runner=runner)
+    if image_id is not None:
+        return EnsuredImage(image_id, tag, digest, built=False)
+
+    with exclusive_file_lock(_family_lock_path(policy.lock_path, recipe.family)):
+        # Another process building the same family may have already produced
+        # this recipe while this process waited for the family build lock.
+        image_id = _reuse_cached_image(recipe, policy, digest, tag, now, runner=runner)
+        if image_id is not None:
+            return EnsuredImage(image_id, tag, digest, built=False)
 
         _ensure_builder(policy.builder_name, runner=runner)
         _build_image(recipe, policy, digest, tag, runner=runner)
@@ -160,12 +175,154 @@ def ensure_recipe_image(
         if image_id is None:
             raise DockerImageError(f"could not resolve freshly built Docker image ID: {tag}")
         _tag_latest(tag, recipe.repository, runner=runner)
-        manifest[digest] = ManifestEntry(image_id, now, now)
-        _write_manifest(policy.manifest_path, manifest)
-        manifest = _prune_image_family(recipe, policy, manifest, runner=runner)
-        _write_manifest(policy.manifest_path, manifest)
+        with exclusive_file_lock(policy.lock_path):
+            # Re-read from disk (rather than reusing an earlier in-memory
+            # snapshot) so a concurrent write by a different family is
+            # merged into, not clobbered by, this write.
+            manifest = _load_valid_manifest(policy.manifest_path, runner=runner)
+            manifest[digest] = ManifestEntry(image_id, now, now)
+            manifest = _prune_image_family(recipe, policy, manifest, runner=runner)
+            _write_manifest(policy.manifest_path, manifest)
         _prune_buildkit_cache(policy, runner=runner)
         return EnsuredImage(image_id, tag, digest, built=True)
+
+
+def _reuse_cached_image(
+    recipe: ImageRecipe,
+    policy: ImageCachePolicy,
+    digest: str,
+    tag: str,
+    now: str,
+    *,
+    runner: SubprocessRunner,
+) -> str | None:
+    """Return the cached image ID if `digest` is still a valid cache hit,
+    refreshing `last_used_at` and the `:latest` alias; otherwise return None.
+
+    Holds only the short-lived manifest lock (`policy.lock_path`), never the
+    per-family build lock, so a cache-hit check never waits behind an
+    unrelated family's in-progress build.
+    """
+    with exclusive_file_lock(policy.lock_path):
+        manifest = _load_valid_manifest(policy.manifest_path, runner=runner, verify_digest=digest)
+        cached = manifest.get(digest)
+        if cached is None:
+            return None
+        current_image_id = _inspect_image_id(tag, runner=runner)
+        if current_image_id != cached.image_id:
+            return None
+        _tag_latest(tag, recipe.repository, runner=runner)
+        manifest[digest] = ManifestEntry(cached.image_id, cached.built_at, now)
+        _write_manifest(policy.manifest_path, manifest)
+        return cached.image_id
+
+
+def _family_lock_path(lock_path: Path, family: str) -> Path:
+    """Derive a per-family build-lock path from the shared manifest lock.
+
+    `family` is validated (`_SAFE_BUILDER_RE`, same charset as builder names)
+    before being interpolated into a filesystem path.
+    """
+    if _SAFE_BUILDER_RE.fullmatch(family) is None:
+        raise DockerImageError(f"invalid image family name: {family}")
+    return lock_path.with_name(f"{lock_path.name}.{family}")
+
+
+# --- Shared namespace-adapter config helpers (Issue #250 Fix A) ---
+#
+# `scenario_docker_image.py` (meta-harness) and `loop_docker_image.py`
+# (loop-harness) each translate a harness-specific config block into
+# `ImageRecipe` / `ImageCachePolicy`. The path-safety and cache-policy
+# construction logic below used to be duplicated verbatim in both adapters;
+# it now lives here once, with each adapter supplying only its own
+# namespace's defaults.
+
+
+def mapping(value: object) -> dict[str, Any]:
+    """Coerce a config value to a dict, defaulting to `{}` for anything else."""
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def image_repository(image: str) -> str:
+    """Strip an optional `:tag` and/or `@sha256:...` digest suffix, returning
+    the bare repository name recipes/tags are keyed on."""
+    if "@" in image:
+        image = image.split("@", 1)[0]
+    prefix, separator, suffix = image.rpartition(":")
+    if separator and "/" not in suffix:
+        return prefix
+    return image
+
+
+def resolve_cache_path(main_root: Path, relative: object) -> Path:
+    """Resolve an `image_cache` config path under `main_root`.
+
+    Rejects absolute paths, paths that resolve outside `main_root`, and any
+    symlinked path component between `main_root` and the leaf (checked via
+    `lstat`, i.e. without following symlinks, before `resolve()` is ever
+    called on the full path). Otherwise a symlinked ancestor -- e.g. an
+    `.claude/<namespace>` directory replaced with a symlink -- would be
+    silently followed by `resolve()`, letting the path escape to an
+    arbitrary location (still passing `is_relative_to(root)` because
+    `resolve()` already followed the symlink) and later be overwritten by
+    the manifest/lock writer.
+    """
+    rel_path = Path(str(relative))
+    if rel_path.is_absolute():
+        raise DockerImageError(f"image cache path must be relative to main root: {rel_path}")
+    root = main_root.resolve()
+    candidate = root / rel_path
+    _reject_symlinked_ancestors(root, rel_path)
+    resolved = candidate.resolve()
+    if not resolved.is_relative_to(root):
+        raise DockerImageError(f"image cache path escapes main root: {rel_path}")
+    return resolved
+
+
+def _reject_symlinked_ancestors(root: Path, relative: Path) -> None:
+    current = root
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            raise DockerImageError(f"image cache path must not be a symlink: {relative}")
+
+
+def build_cache_policy(
+    main_root: Path,
+    cache: Mapping[str, Any],
+    *,
+    defaults: Mapping[str, Any],
+) -> ImageCachePolicy:
+    """Construct an `ImageCachePolicy` from a namespace's `image_cache` config
+    block, applying that namespace's own fallback defaults.
+
+    `defaults` must provide: manifest_path, lock_path, keep_generations,
+    builder_name, buildkit_cache_max_age, buildkit_cache_max_size.
+    """
+    return ImageCachePolicy(
+        manifest_path=resolve_cache_path(
+            main_root, cache.get("manifest_path", defaults["manifest_path"])
+        ),
+        lock_path=resolve_cache_path(main_root, cache.get("lock_path", defaults["lock_path"])),
+        keep_generations=_positive_int(cache.get("keep_generations"), defaults["keep_generations"]),
+        builder_name=str(cache.get("builder_name") or defaults["builder_name"]),
+        buildkit_cache_max_age=str(
+            cache.get("buildkit_cache_max_age") or defaults["buildkit_cache_max_age"]
+        ),
+        buildkit_cache_max_size=str(
+            cache.get("buildkit_cache_max_size") or defaults["buildkit_cache_max_size"]
+        ),
+    )
+
+
+def _positive_int(value: object, default: int) -> int:
+    if isinstance(value, bool):
+        return default
+    try:
+        result = int(value) if value is not None else default
+    except (TypeError, ValueError):
+        return default
+    return result if result > 0 else default
 
 
 def recipe_tag(recipe: ImageRecipe, digest: str) -> str:
@@ -174,10 +331,16 @@ def recipe_tag(recipe: ImageRecipe, digest: str) -> str:
 
 @contextmanager
 def exclusive_file_lock(path: Path) -> Iterator[None]:
-    """Serialize manifest check/build/update across driver processes."""
+    """Serialize manifest check/build/update across driver processes.
+
+    `os.O_NOFOLLOW` makes the `open()` fail closed (`ELOOP`, wrapped below
+    into `DockerImageError`) if `path` has been replaced with a symlink
+    between calls (TOCTOU), instead of transparently following it into
+    locking and `chmod`-ing an attacker-controlled target.
+    """
     _ensure_private_directory(path.parent)
     try:
-        fd = os.open(path, os.O_CREAT | os.O_RDWR, FILE_MODE)
+        fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, FILE_MODE)
         try:
             os.chmod(path, FILE_MODE)
             stream = os.fdopen(fd, "a+", encoding="utf-8")
@@ -219,6 +382,10 @@ def parse_size(value: str) -> int:
 def _validate_recipe(recipe: ImageRecipe) -> None:
     if not recipe.family or not recipe.docker_label:
         raise DockerImageError("image family and Docker label must not be empty")
+    if _SAFE_BUILDER_RE.fullmatch(recipe.family) is None:
+        # `family` is interpolated into the per-family build-lock filename
+        # (see `_family_lock_path`), so it must be filesystem-safe.
+        raise DockerImageError(f"invalid image family name: {recipe.family}")
     if not recipe.repository or "@" in recipe.repository:
         raise DockerImageError(f"invalid managed image repository: {recipe.repository}")
     if not recipe.context_dir.is_dir() or not (recipe.context_dir / "Dockerfile").is_file():
@@ -252,7 +419,19 @@ def _load_valid_manifest(
     path: Path,
     *,
     runner: SubprocessRunner,
+    verify_digest: str | None = None,
 ) -> dict[str, ManifestEntry]:
+    """Load and schema-validate every manifest entry.
+
+    `docker image inspect` is only run for `verify_digest` (the recipe
+    currently being resolved), instead of every entry on every call, to
+    avoid an O(entries) Docker CLI fan-out on each `ensure_recipe_image`
+    (Issue #250). Other schema-valid entries are trusted without
+    re-verifying Docker image existence: pruning (`_prune_image_family`)
+    independently cross-checks manifest tags against `docker image ls`, and
+    drift on any individual recipe is still caught the next time that
+    recipe's digest is passed here as `verify_digest`.
+    """
     if not path.exists():
         return {}
     try:
@@ -268,6 +447,9 @@ def _load_valid_manifest(
         try:
             entry = ManifestEntry.from_value(digest, entry_value)
         except DockerImageError:
+            continue
+        if verify_digest is None or digest != verify_digest:
+            manifest[digest] = entry
             continue
         if _inspect_image_id(entry.image_id, runner=runner) == entry.image_id:
             manifest[digest] = entry

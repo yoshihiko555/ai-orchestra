@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Loop-harness namespace adapter for the shared Docker image lifecycle."""
+"""Meta-harness namespace adapter for the shared Docker image lifecycle."""
 
 from __future__ import annotations
 
@@ -17,22 +17,21 @@ for _path in (_LIB_DIR, _DOCKER_RUNTIME_LIB):
 
 import docker_runtime_cli as runtime_cli
 import docker_runtime_image as runtime_image
-import loop_docker_config as docker_config
 
 SubprocessRunner = runtime_cli.SubprocessRunner
 EnsuredImage = runtime_image.EnsuredImage
 DockerImageError = runtime_image.DockerImageError
 
-DOCKER_LABEL = "ai.orchestra.loop-harness"
-NAME_PREFIX = "lh-"
-DEFAULT_SCENARIO_IMAGE = docker_config.DEFAULT_SCENARIO_IMAGE
-DEFAULT_BROKER_IMAGE = docker_config.DEFAULT_BROKER_IMAGE
-DEFAULT_MANIFEST_PATH = ".claude/loop/docker-image-cache.json"
-DEFAULT_LOCK_PATH = ".claude/loop/docker-image-build.lock"
-DEFAULT_BUILDER_NAME = "loop-harness-builder"
+DOCKER_LABEL = "ai.orchestra.meta-harness"
+DEFAULT_SCENARIO_IMAGE = "ai-orchestra/meta-harness-scenario:2.1.207"
+DEFAULT_BROKER_IMAGE = "ai-orchestra/meta-harness-broker:0.1.0"
+DEFAULT_MANIFEST_PATH = ".claude/meta-harness/docker-image-cache.json"
+DEFAULT_LOCK_PATH = ".claude/meta-harness/docker-image-build.lock"
+DEFAULT_BUILDER_NAME = "meta-harness-builder"
 DEFAULT_BUILDKIT_CACHE_MAX_AGE = "168h"
 DEFAULT_BUILDKIT_CACHE_MAX_SIZE = "10g"
 DEFAULT_KEEP_GENERATIONS = 3
+DEFAULT_CLAUDE_VERSION_PIN = "2.1.207 (Claude Code)"
 
 
 def ensure_scenario_image(
@@ -43,11 +42,16 @@ def ensure_scenario_image(
     platform: str | None = None,
     target: str | None = None,
 ) -> EnsuredImage:
-    """Ensure the configured loop-harness scenario image without enabling execution."""
-    isolation = _mapping(_mapping(config.get("lp2")).get("isolation"))
+    """Ensure the configured meta-harness scenario image without enabling execution."""
+    isolation = _mapping(_mapping(config.get("evaluate")).get("isolation"))
     cache = _mapping(isolation.get("image_cache"))
     configured_image = str(isolation.get("image") or DEFAULT_SCENARIO_IMAGE)
-    image_pin = isolation.get("image_pin")
+    # `.get(..., DEFAULT_CLAUDE_VERSION_PIN)` only falls back when the key is
+    # absent entirely; an explicit `image_pin: null` still resolves to `None`
+    # (skip pin verification), matching the loop-harness adapter's semantics
+    # while preserving the pre-Docker-lifecycle-migration default (Issue #250
+    # review).
+    image_pin = isolation.get("image_pin", DEFAULT_CLAUDE_VERSION_PIN)
     build_args: dict[str, str] = {}
     if image_pin is not None:
         try:
@@ -86,8 +90,8 @@ def ensure_broker_image(
     platform: str | None = None,
     target: str | None = None,
 ) -> EnsuredImage:
-    """Ensure the shared broker image in the loop-harness image-cache namespace."""
-    isolation = _mapping(_mapping(config.get("lp2")).get("isolation"))
+    """Ensure the shared broker image in the meta-harness image-cache namespace."""
+    isolation = _mapping(_mapping(config.get("evaluate")).get("isolation"))
     broker = _mapping(isolation.get("broker"))
     cache = _mapping(isolation.get("image_cache"))
     configured_image = str(broker.get("image") or DEFAULT_BROKER_IMAGE)

@@ -23,9 +23,40 @@ evaluate:
   isolation:
     backend: docker # Docker + dual-homed ephemeral broker（ADR-20260712-035）
     execution_backend: docker # 非隔離 backend へは降格しない
+    # The tag after `:` is display-only; the actual built/reused image is
+    # selected by the content-addressed `sha-<hash12>` tag docker-runtime
+    # computes from the recipe (context + build args + image_pin etc.), not
+    # by this string. `image_pin` is the source of truth for the intended
+    # Claude Code version. Changing only this tag does not trigger a rebuild.
     image: ai-orchestra/meta-harness-scenario:2.1.207
     image_pin: "2.1.207 (Claude Code)"
     auto_build_images: true
+    # Persistent, content-addressed image cache (packages/docker-runtime's
+    # `ensure_recipe_image`). All paths below are resolved relative to the
+    # storage.root main root; see storage.root above.
+    image_cache:
+      # Path to the JSON manifest recording digest -> {image_id, built_at,
+      # last_used_at}. Default when unset: .claude/meta-harness/docker-image-cache.json
+      manifest_path: .claude/meta-harness/docker-image-cache.json
+      # Number of most-recently-used image generations to keep per family
+      # (scenario/broker) before pruning older ones. Default when unset: 3
+      keep_generations: 3
+      # Path to the flock file serializing manifest reads/writes and,
+      # per-family, concurrent builds. Default when unset:
+      # .claude/meta-harness/docker-image-build.lock
+      lock_path: .claude/meta-harness/docker-image-build.lock
+      # Dedicated `docker buildx` builder name used for all builds/GC in
+      # this namespace (never the developer's default builder). Default
+      # when unset: meta-harness-builder
+      builder_name: meta-harness-builder
+      # BuildKit cache prune threshold, as a Go duration string (e.g. "24h",
+      # "168h"). Caches older than this are pruned after every build.
+      # Default when unset: 168h
+      buildkit_cache_max_age: 168h
+      # BuildKit cache size threshold (Docker/Go byte size string, e.g.
+      # "10g", "512MiB"). If usage exceeds this after the age-based prune,
+      # an `until=0` prune runs as a fallback. Default when unset: 10g
+      buildkit_cache_max_size: 10g
     resources:
       pids_limit: 128
       memory: 2g

@@ -60,6 +60,7 @@ _EVALUATOR_SOURCE_FILES: tuple[tuple[str, Path], ...] = (
     ("lib/claude_credentials.py", _LIB_DIR / "claude_credentials.py"),
     ("lib/scenario_docker.py", _LIB_DIR / "scenario_docker.py"),
     ("lib/scenario_docker_cli.py", _LIB_DIR / "scenario_docker_cli.py"),
+    ("lib/scenario_docker_image.py", _LIB_DIR / "scenario_docker_image.py"),
     ("lib/scenario_docker_profile.py", _LIB_DIR / "scenario_docker_profile.py"),
     (
         "docker-runtime/lib/docker_runtime_cli.py",
@@ -68,6 +69,10 @@ _EVALUATOR_SOURCE_FILES: tuple[tuple[str, Path], ...] = (
     (
         "docker-runtime/lib/docker_runtime_credentials.py",
         _DOCKER_RUNTIME_DIR / "lib" / "docker_runtime_credentials.py",
+    ),
+    (
+        "docker-runtime/lib/docker_runtime_image.py",
+        _DOCKER_RUNTIME_DIR / "lib" / "docker_runtime_image.py",
     ),
     (
         "docker-runtime/lib/docker_runtime_lifecycle.py",

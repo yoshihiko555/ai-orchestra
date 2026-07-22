@@ -632,6 +632,79 @@
     - packages/meta-harness/tests/test_scenario_docker.py::test_broker_env_sends_generic_and_legacy_contracts
   notes: meta-harness sends equal DR_* and MH_* values plus its explicit namespace during migration.
 
+- ev_id: EV-94
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_scenario_docker_image.py::TestRecipeAndPolicyNamespace
+    packages/meta-harness/tests/test_scenario_docker_image.py::TestConfigOverridesAndBackwardCompatibleDefaults
+  covered_by:
+    - packages/meta-harness/tests/test_scenario_docker_image.py::TestRecipeAndPolicyNamespace::test_scenario_recipe_and_policy_use_meta_harness_defaults
+    - packages/meta-harness/tests/test_scenario_docker_image.py::TestRecipeAndPolicyNamespace::test_broker_recipe_and_policy_use_meta_harness_defaults_and_shared_context
+    - packages/meta-harness/tests/test_scenario_docker_image.py::TestConfigOverridesAndBackwardCompatibleDefaults::test_image_cache_overrides_are_reflected_in_policy
+    - packages/meta-harness/tests/test_scenario_docker_image.py::TestConfigOverridesAndBackwardCompatibleDefaults::test_missing_image_cache_config_falls_back_to_defaults
+    - packages/meta-harness/tests/test_scenario_docker_image.py::TestConfigOverridesAndBackwardCompatibleDefaults::test_non_positive_keep_generations_falls_back_to_default
+    - packages/docker-runtime/tests/test_docker_runtime_image.py
+  notes: >-
+    the meta-harness adapter builds the ImageRecipe/ImageCachePolicy handed to the shared
+    docker-runtime ensure_recipe_image (manifest-based cross-process reuse, recipe-hash-keyed
+    rebuild-vs-reuse decision, config overrides, and backward-compatible defaults are the shared
+    API's own contract, exercised end-to-end in packages/docker-runtime/tests).
+
+- ev_id: EV-95
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_scenario_docker_image.py::TestConfigDefaults
+    packages/meta-harness/tests/test_scenario_docker_image.py::TestRecipeAndPolicyNamespace::test_namespace_is_independent_from_loop_harness_defaults
+  covered_by:
+    - packages/meta-harness/tests/test_scenario_docker_image.py::TestConfigDefaults::test_shipped_config_defines_meta_harness_namespace
+    - packages/meta-harness/tests/test_scenario_docker_image.py::TestConfigDefaults::test_defaults_match_loop_harness_shape_but_different_values
+    - packages/meta-harness/tests/test_scenario_docker_image.py::TestRecipeAndPolicyNamespace::test_namespace_is_independent_from_loop_harness_defaults
+  notes: >-
+    meta-harness's ai.orchestra.meta-harness label, .claude/meta-harness/* cache paths, and
+    meta-harness-builder buildx builder never collide with loop-harness's own namespace;
+    docker-runtime's own prune-by-family behavior is covered in packages/docker-runtime/tests.
+
+- ev_id: EV-96
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_scenario_docker_image.py::TestAutoBuildImagesFalseFailsClosed
+  covered_by:
+    - packages/meta-harness/tests/test_scenario_docker_image.py::TestAutoBuildImagesFalseFailsClosed::test_scenario_rejects_tag_only_image_when_auto_build_disabled
+    - packages/meta-harness/tests/test_scenario_docker_image.py::TestAutoBuildImagesFalseFailsClosed::test_broker_rejects_tag_only_image_when_auto_build_disabled
+    - packages/meta-harness/tests/test_scenario_docker_image.py::TestAutoBuildImagesFalseFailsClosed::test_scenario_accepts_digest_pinned_image_when_auto_build_disabled
+    - packages/meta-harness/tests/test_scenario_docker.py::test_prebuilt_images_require_digest_and_accept_multiarch_reference
+  notes: >-
+    auto_build_images: false keeps failing closed on non-digest image references through the new
+    persistent lifecycle (both scenario and broker), and accepts a properly digest-pinned image
+    without attempting a build.
+
+- ev_id: EV-97
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_scenario_docker_image.py::TestImagePinReconciliation
+  covered_by:
+    - packages/meta-harness/tests/test_scenario_docker_image.py::TestImagePinReconciliation::test_scenario_image_pin_mismatch_fails_closed_after_ensure
+    - packages/meta-harness/tests/test_scenario_docker_image.py::TestImagePinReconciliation::test_scenario_image_pin_match_succeeds_after_ensure
+    - packages/meta-harness/tests/test_scenario_docker_image.py::TestImagePinReconciliation::test_scenario_no_image_pin_configured_skips_reconciliation
+    - packages/meta-harness/tests/test_scenario_docker_image.py::TestImagePinReconciliation::test_broker_ensure_does_not_perform_image_pin_reconciliation
+  notes: >-
+    ensure_scenario_image reconciles the actual Claude CLI version against image_pin after
+    ensure_recipe_image returns (covering both the manifest-reuse and fresh-build paths, since the
+    check runs on the returned EnsuredImage regardless of `built`), fails closed on mismatch, is a
+    no-op when image_pin is unset, and is scenario-image-only (never applied to the broker image).
+
 - ev_id: EV-62
   phase: 3
   priority: must
