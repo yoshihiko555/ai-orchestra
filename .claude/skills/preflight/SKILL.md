@@ -150,6 +150,9 @@ AskUserQuestion を活用してユーザーから以下を聞き出す:
 - 既存の場合は既存フェーズ・タスクを保持したまま追記する
 - フェーズ追加が必要なら `/task-state add-phase ...`
 - 主要タスクを `cc:TODO` で登録
+- Phase 3 で合意した Acceptance Criteria を、対応するフェーズの `#### Acceptance Criteria` セクションとして必ず書き込む（新規フェーズ登録時は必須）
+- 機械検証可能な条件は `— verify: \`コマンド\``、主観的条件は `— judge: 判定基準` を併記する
+- 登録時は全条件を未チェック `- [ ]` で記載する
 
 反映完了後、Plans.md の内容をユーザーに報告する。
 
@@ -158,6 +161,7 @@ AskUserQuestion を活用してユーザーから以下を聞き出す:
 - Open Questions が 0、または保留理由付きで明示
 - 実装ステップに抜けがない
 - `Plans.md` が次フェーズで実行可能な状態
+- 登録した各フェーズに Acceptance Criteria が記載されている
 
 ## 出力フォーマット（Phase 3 で使用）
 

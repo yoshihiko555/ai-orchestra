@@ -36,6 +36,11 @@ MARKER_STATE_MAP = {
 }
 BLOCKED_REASON_PATTERN = re.compile(r"—\s*理由:\s*(.+)$")
 
+# Acceptance Criteria チェックボックス行の判定パターン（`- [ ]` / `- [x]` / `- [X]`）
+CHECKBOX_PATTERN = re.compile(r"^- \[([ xX])\]")
+# Acceptance Criteria セクションの見出し（strip 後の完全一致で判定する）
+AC_SECTION_HEADING = "#### Acceptance Criteria"
+
 
 def resolve_markers(config: dict) -> dict[str, str]:
     """設定からマーカー定義を解決し、欠落時はデフォルトを使う。"""
@@ -249,6 +254,50 @@ def format_summary(tasks: dict[str, list[dict[str, str | None]]], max_display: i
     return "\n".join(parts)
 
 
+def _classify_checkbox_line(stripped: str) -> str | None:
+    """チェックボックス行（`- [ ]` / `- [x]` / `- [X]`）を分類する。
+
+    Markdown リンク箇条書き（例: `- [text](url)`）を誤って "checked" 扱いしないよう、
+    厳密な正規表現でチェックボックス行かどうかを判定する。
+
+    Returns:
+        "unchecked" | "checked" | None（チェックボックス行でない場合）
+    """
+    match = CHECKBOX_PATTERN.match(stripped)
+    if not match:
+        return None
+    return "unchecked" if match.group(1) == " " else "checked"
+
+
+def _find_ac_section_end(lines: list[str], start: int, phase_end: int) -> int:
+    """AC セクション本文の終端行インデックスを返す（次の `#### ` 見出し手前 or phase_end）。"""
+    for i in range(start, phase_end + 1):
+        if lines[i].startswith("#### "):
+            return i - 1
+    return phase_end
+
+
+def _ac_section_ranges(lines: list[str], phase_start: int, phase_end: int) -> list[tuple[int, int]]:
+    """フェーズ範囲内にある `#### Acceptance Criteria` セクション本文の行範囲一覧を返す。"""
+    ranges: list[tuple[int, int]] = []
+    i = phase_start + 1
+    while i <= phase_end:
+        if lines[i].strip() != AC_SECTION_HEADING:
+            i += 1
+            continue
+        section_start = i + 1
+        section_end = _find_ac_section_end(lines, section_start, phase_end)
+        ranges.append((section_start, section_end))
+        i = section_end + 1 if section_end >= section_start else i + 1
+    return ranges
+
+
+def _phase_has_unchecked_ac(lines: list[str], ac_ranges: list[tuple[int, int]]) -> bool:
+    """AC セクション内に未チェックの Acceptance Criteria 行があるか判定する。"""
+    ac_lines = [line for start, end in ac_ranges for line in lines[start : end + 1]]
+    return any(_classify_checkbox_line(line.strip()) == "unchecked" for line in ac_lines)
+
+
 def detect_completed_projects(
     content: str, marker_pattern: re.Pattern[str], marker_to_state: dict[str, str]
 ) -> list[dict]:
@@ -280,6 +329,12 @@ def detect_completed_projects(
         for idx, phase_start in enumerate(phase_starts):
             phase_end = phase_starts[idx + 1] - 1 if idx + 1 < len(phase_starts) else project_end
             phase_header = lines[phase_start]
+            ac_ranges = _ac_section_ranges(lines, phase_start, phase_end)
+
+            # 未チェックの AC がある場合は、見出しの cc:done マーカーより優先して未完了とする
+            if _phase_has_unchecked_ac(lines, ac_ranges):
+                project_done = False
+                break
 
             header_marker_match = marker_pattern.search(phase_header)
             if header_marker_match:
@@ -292,8 +347,13 @@ def detect_completed_projects(
             # フェーズ見出しにマーカーがない場合は、配下タスクが全て done かどうかで判定
             phase_done = True
             has_task = False
-            for line in lines[phase_start + 1 : phase_end + 1]:
-                stripped = line.strip()
+            ac_line_indices = {i for start, end in ac_ranges for i in range(start, end + 1)}
+            for line_idx in range(phase_start + 1, phase_end + 1):
+                stripped = lines[line_idx].strip()
+                if line_idx in ac_line_indices and _classify_checkbox_line(stripped) is not None:
+                    # AC セクション配下のチェックボックス行（チェック済み/未チェック共に）は
+                    # cc: マーカー判定に含めない
+                    continue
                 if not stripped.startswith("- "):
                     continue
 

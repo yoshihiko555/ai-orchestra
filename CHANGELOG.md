@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`core` / `preflight`: Plans.md にフェーズ単位の Acceptance Criteria セクションを追加**: 各 Phase に `- [ ] 条件 — verify: \`コマンド\``（機械検証）/ `— judge: 判定基準`（主観）形式の受け入れ条件を記載できるようになり、`/preflight` が合意済みの受け入れ条件を Plans.md へ必ず登録する。未チェック AC が残るフェーズは SessionStart の自動アーカイブで完了扱いにならない（AC セクションのない既存 Plans.md は従来通り）。
+
 ### Changed
 
 - **BREAKING** **facet build のキャッシュファイルを `.cache/` 配下へ集約**: これまで `.claude/` / `.codex/` 直下に置いていた生成物キャッシュ（`.facet-manifest.json` / `.facet-packages-hash`）を `.claude/.cache/`・`.codex/.cache/` 配下（`facet-manifest.json` / `packages-hash`）へ移動した。ソースと生成物の分離が目的。後方互換なし。旧ファイルは自動削除されないため、残っている場合は手動で削除する（残置しても次回ビルドで新パスに再生成され、機能への影響はない）。`.gitignore` の無視対象も `.claude/.cache/`・`.codex/.cache/` に更新済み。
