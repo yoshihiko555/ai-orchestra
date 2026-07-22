@@ -258,10 +258,27 @@ proposer → register → evaluate → ledger 更新 → frontier 更新 → 停
 
 候補の状態遷移は `candidate → evaluated → promoted/retired` の一方向とする。
 
+![meta-harness 候補ライフサイクル](../assets/meta-harness/meta-harness-candidate-lifecycle-ja.png)
+
 ```
 candidate --evaluate--> evaluated --promote(人間承認)--> promoted
                               \--(frontier 外/劣化)-----> retired
 ```
+
+```mermaid
+stateDiagram-v2
+    [*] --> candidate: register / propose
+    candidate --> evaluated: evaluate
+    evaluated --> evaluated: 再評価（新 run_id / N 回反復）
+    evaluated --> promoted: promote（人間承認 PR マージ）
+    evaluated --> retired: frontier 外 / 劣化 / 過学習却下
+    candidate --> retired: proposer ガード発火
+    retired --> [*]: purge
+    promoted --> [*]
+```
+
+状態は ledger のイベント畳み込みからのみ導出され、`candidates/` / `runs/` は immutable。候補の改訂は
+新しい `cand_id`（`parent_id` で系譜保持）として登録する。
 
 論文は 1 イテレーションあたり約 10M トークンを要するとしている。本 repo での実装は、これを
 そのまま採用するとコストが過大なため、budget は config（`packages/meta-harness/config/

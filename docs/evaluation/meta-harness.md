@@ -3,7 +3,7 @@
 **パッケージ**: `packages/meta-harness`
 **類型**: 主: CLI ツール型、副: hook 型（config-loading レイヤリングへの依存）
 **作成日**: 2026-07-06
-**最終レビュー日**: 未レビュー（draft、パッケージ実装前に作成）
+**最終レビュー日**: 未レビュー（作成時はパッケージ実装前だったが、現在は Phase 1〜3（計測・評価 / propose・promote / 自動探索 loop）実装済み。評価観点自体の人間レビューは未了）
 **情報源**: docs/design/meta-harness.md（基本設計）, docs/design/meta-harness-detailed.md（詳細設計 §1〜§14）, docs/design/meta-harness-proposer-routing-unlock.md, docs/requirements/meta-harness.md, docs/adr/ADR-20260706-032.md, docs/adr/ADR-20260716-041.md, docs/adr/ADR-20260717-042.md
 
 ## 1. 責務定義

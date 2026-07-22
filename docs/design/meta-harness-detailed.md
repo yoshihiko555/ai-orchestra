@@ -66,10 +66,12 @@ codd:
     "created_by": { "type": "string", "enum": ["human", "proposer"] },
     "target": {
       "type": "string",
-      "pattern": "^(claude-harness|skill:[a-z0-9-]+)$"
+      "pattern": "^(claude-harness|skill:[a-z0-9-]+|routing-config)$"
     },
+    "target_closure_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "source_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
     "config_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "config_patch_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "model_versions": {
       "type": "object",
       "propertyNames": { "type": "string" },
@@ -86,6 +88,9 @@ codd:
   }
 }
 ```
+
+`target_closure_hash` / `config_patch_hash` は `routing-config` target（config_patch 経由の候補）に
+関連する optional プロパティであり、`required` には含まれない。
 
 **基本設計からの変更点（重要）**: 基本設計（`design:meta-harness` §3）の manifest 例には
 `status(candidate/evaluated/promoted/retired)` フィールドが含まれていたが、詳細化にあたり
@@ -107,6 +112,8 @@ codd:
   "oneOf": [
     { "$ref": "#/$defs/candidate_registered" },
     { "$ref": "#/$defs/run_completed" },
+    { "$ref": "#/$defs/regression_run_completed" },
+    { "$ref": "#/$defs/evaluation_completed" },
     { "$ref": "#/$defs/status_changed" },
     { "$ref": "#/$defs/frontier_updated" },
     { "$ref": "#/$defs/promotion_reserved" },
@@ -114,7 +121,9 @@ codd:
     { "$ref": "#/$defs/promotion_opened" },
     { "$ref": "#/$defs/loop_started" },
     { "$ref": "#/$defs/loop_iteration" },
-    { "$ref": "#/$defs/loop_stopped" }
+    { "$ref": "#/$defs/loop_stopped" },
+    { "$ref": "#/$defs/proposal_rejected" },
+    { "$ref": "#/$defs/proposer_security_violation" }
   ],
   "$defs": {
     "cost": {
@@ -211,7 +220,7 @@ codd:
         "scenario_id": { "type": "string" },
         "target": {
           "type": "string",
-          "pattern": "^(claude-harness|skill:[a-z0-9-]+)$"
+          "pattern": "^(claude-harness|skill:[a-z0-9-]+|routing-config)$"
         },
         "suite_id": { "type": "string" },
         "suite_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
@@ -225,6 +234,160 @@ codd:
         "attempts_total": { "type": "integer", "minimum": 1 },
         "holdout": { "type": "boolean" }
       }
+    },
+    "regression_run_completed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "event",
+        "ts",
+        "schema_version",
+        "evaluation_id",
+        "run_id",
+        "cand_id",
+        "target",
+        "suite_id",
+        "suite_hash",
+        "scenario_id",
+        "scenario_hash",
+        "evaluator_hash",
+        "verdict",
+        "cost",
+        "attempt",
+        "attempts_total",
+        "holdout"
+      ],
+      "properties": {
+        "event": { "const": "regression_run_completed" },
+        "ts": { "type": "string", "format": "date-time" },
+        "schema_version": { "type": "string", "const": "1.0" },
+        "evaluation_id": {
+          "type": "string",
+          "pattern": "^eval-[0-9]{8}-[0-9]{6}-[0-9a-f]{8}$"
+        },
+        "run_id": { "type": "string" },
+        "cand_id": { "type": "string" },
+        "target": {
+          "type": "string",
+          "pattern": "^(claude-harness|skill:[a-z0-9-]+|routing-config)$"
+        },
+        "suite_id": {
+          "type": "string",
+          "pattern": "^(claude-harness|skill:[a-z0-9-]+)$"
+        },
+        "suite_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "scenario_id": { "type": "string" },
+        "scenario_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "evaluator_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "verdict": { "type": "string", "enum": ["pass", "fail", "error"] },
+        "cost": { "$ref": "#/$defs/cost" },
+        "attempt": { "type": "integer", "minimum": 1 },
+        "attempts_total": { "type": "integer", "minimum": 1 },
+        "holdout": { "type": "boolean" }
+      }
+    },
+    "evaluation_completed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "event",
+        "ts",
+        "schema_version",
+        "evaluation_id",
+        "cand_id",
+        "target",
+        "holdout",
+        "own_run_ids",
+        "own_suite_hash",
+        "evaluator_hash",
+        "own_critical_pass",
+        "regression_results",
+        "verdict",
+        "unverified_impacts",
+        "evaluation_base_commit",
+        "impacted_targets",
+        "impact_input_hash",
+        "regression_cost_usd"
+      ],
+      "properties": {
+        "event": { "const": "evaluation_completed" },
+        "ts": { "type": "string", "format": "date-time" },
+        "schema_version": { "type": "string", "const": "1.0" },
+        "evaluation_id": {
+          "type": "string",
+          "pattern": "^eval-[0-9]{8}-[0-9]{6}-[0-9a-f]{8}$"
+        },
+        "cand_id": { "type": "string" },
+        "target": {
+          "type": "string",
+          "pattern": "^(claude-harness|skill:[a-z0-9-]+|routing-config)$"
+        },
+        "holdout": { "type": "boolean" },
+        "own_run_ids": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "own_suite_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "evaluator_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "own_critical_pass": { "type": "boolean" },
+        "regression_results": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["suite_id", "suite_hash", "run_ids", "verdict", "critical_pass"],
+            "properties": {
+              "suite_id": {
+                "type": "string",
+                "pattern": "^(claude-harness|skill:[a-z0-9-]+)$"
+              },
+              "suite_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+              "run_ids": {
+                "type": "array",
+                "items": { "type": "string" },
+                "uniqueItems": true
+              },
+              "verdict": { "type": "string", "enum": ["pass", "fail", "error"] },
+              "critical_pass": { "type": "boolean" }
+            }
+          }
+        },
+        "budget_latched_suites": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(claude-harness|skill:[a-z0-9-]+)$"
+          },
+          "uniqueItems": true
+        },
+        "verdict": { "type": "string", "enum": ["pass", "fail", "error"] },
+        "unverified_impacts": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^skill:[a-z0-9-]+$" },
+          "uniqueItems": true
+        },
+        "evaluation_base_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "routing_config_base_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "impacted_targets": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(claude-harness|skill:[a-z0-9-]+)$"
+          },
+          "uniqueItems": true
+        },
+        "impact_input_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "regression_cost_usd": { "type": "number", "minimum": 0 },
+        "errors": { "type": "array", "items": { "type": "string" } }
+      },
+      "oneOf": [
+        {
+          "properties": { "target": { "const": "routing-config" } },
+          "required": ["routing_config_base_hash"]
+        },
+        {
+          "properties": {
+            "target": { "pattern": "^(claude-harness|skill:[a-z0-9-]+)$" }
+          }
+        }
+      ]
     },
     "status_changed": {
       "type": "object",
@@ -288,7 +451,10 @@ codd:
         "event": { "const": "frontier_updated" },
         "ts": { "type": "string", "format": "date-time" },
         "schema_version": { "type": "string", "const": "1.0" },
-        "target": { "type": "string", "pattern": "^(claude-harness|skill:[a-z0-9-]+)$" },
+        "target": {
+          "type": "string",
+          "pattern": "^(claude-harness|skill:[a-z0-9-]+|routing-config)$"
+        },
         "frontier": { "type": "array", "items": { "type": "string" } },
         "dominated": { "type": "array", "items": { "type": "string" } }
       }
@@ -379,7 +545,6 @@ codd:
         "schema_version",
         "loop_id",
         "iteration",
-        "cand_id",
         "quality_best_before",
         "quality_best_after",
         "iteration_cost_usd"
@@ -391,6 +556,10 @@ codd:
         "loop_id": { "type": "string" },
         "iteration": { "type": "integer", "minimum": 1 },
         "cand_id": { "type": "string" },
+        "outcome": {
+          "type": "string",
+          "enum": ["candidate", "proposal_rejected", "cooldown_wait"]
+        },
         "quality_best_before": {
           "type": "number",
           "minimum": 0,
@@ -402,7 +571,20 @@ codd:
           "maximum": 100
         },
         "iteration_cost_usd": { "type": "number", "minimum": 0 }
-      }
+      },
+      "oneOf": [
+        {
+          "required": ["cand_id"],
+          "properties": { "outcome": { "const": "candidate" } }
+        },
+        {
+          "required": ["outcome"],
+          "properties": {
+            "outcome": { "enum": ["proposal_rejected", "cooldown_wait"] },
+            "cand_id": { "enum": [] }
+          }
+        }
+      ]
     },
     "loop_stopped": {
       "type": "object",
@@ -434,6 +616,51 @@ codd:
         },
         "iterations": { "type": "integer", "minimum": 0 },
         "total_cost_usd": { "type": "number", "minimum": 0 }
+      }
+    },
+    "proposal_rejected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "event",
+        "ts",
+        "schema_version",
+        "target",
+        "loop_id",
+        "iteration",
+        "verdict"
+      ],
+      "properties": {
+        "event": { "const": "proposal_rejected" },
+        "ts": { "type": "string", "format": "date-time" },
+        "schema_version": { "type": "string", "const": "1.0" },
+        "target": {
+          "type": "string",
+          "pattern": "^(claude-harness|skill:[a-z0-9-]+|routing-config)$"
+        },
+        "loop_id": {
+          "type": "string",
+          "pattern": "^loop-[0-9]{8}-[0-9]{6}-[a-z0-9-]+$"
+        },
+        "iteration": { "type": "integer", "minimum": 1 },
+        "verdict": { "const": "error" }
+      }
+    },
+    "proposer_security_violation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event", "ts", "schema_version", "detector", "reason", "target"],
+      "properties": {
+        "event": { "const": "proposer_security_violation" },
+        "ts": { "type": "string", "format": "date-time" },
+        "schema_version": { "type": "string", "const": "1.0" },
+        "detector": {
+          "type": "string",
+          "enum": ["L2_canary", "L3_secret_scan"]
+        },
+        "reason": { "type": "string" },
+        "target": { "type": "string" },
+        "cand_id": { "type": ["string", "null"] }
       }
     }
   }
@@ -1074,7 +1301,10 @@ run 単位でも保持し、run 成果物単体からも再評価要否を判定
         "properties": {
           "file": { "type": "string" },
           "key_path": { "type": "string" },
-          "value": {}
+          "value": {
+            "type": "string",
+            "description": "Issue #261 PR8: codex structured output (response_format 'codex_output_schema') requires every schema node to declare a 'type', which an empty {} schema omits. Phase A's only proposer-writable config_patch ceiling entries (agents.*.tool, antigravity.model; see CONFIG_PATCH_ALLOWED_CREATED_BY in meta_harness_common.py) are always strings -- validate_config_patch() already enforces isinstance(value, str) for both -- so this does not narrow what a valid proposal can express."
+          }
         }
       }
     },
@@ -1171,6 +1401,37 @@ filtered view しか見ていないため通常発生しないが、CLI 側で�
    に関わらず finally で必ず実行する**（§2-5）。
 
 ### 2-2. シナリオ実行コマンド（確認済み仕様に基づく確定形）
+
+隔離実行の全体像（候補コンテナ・broker sidecar・API の関係）は次の通り（ADR-20260712-035）。
+候補コンテナ内には資格情報を置かず、broker だけが実 OAuth を保持して転送する。
+
+![meta-harness credential broker 隔離実行](../assets/meta-harness/meta-harness-broker-isolation-ja.png)
+
+<details>
+<summary>Mermaid ソース（シーケンス）</summary>
+
+```mermaid
+sequenceDiagram
+    participant CLI as evaluate (host)
+    participant BR as broker sidecar<br/>(dual-homed)
+    participant C as 候補コンテナ<br/>(internal network)
+    participant API as api.anthropic.com
+
+    CLI->>BR: run スコープで起動（OAuth を tmpfs 注入 → 読取後 unlink）
+    CLI->>C: docker run --rm（cap-drop / no-new-privileges / read-only rootfs / non-root）
+    Note over C: ANTHROPIC_BASE_URL=broker<br/>資格情報はコンテナ内に存在しない
+    C->>BR: claude -p / claude --bare リクエスト
+    BR->>API: 実 OAuth を注入し転送（broker egress は api.anthropic.com のみ）
+    API-->>BR: 応答
+    BR-->>C: 応答中継
+    C-->>CLI: events.jsonl / result（redaction 済み）
+    CLI->>C: docker rm -f（run 終了・timeout・中断すべてで cgroup ごと全子孫回収）
+    CLI->>BR: broker 破棄（run 終了で能力ごと消滅）
+```
+
+</details>
+
+候補コンテナ内で実行するシナリオコマンドの確定形は次の通り。
 
 ```bash
 cd <worktree> && CLAUDE_CODE_MAX_OUTPUT_TOKENS=<budget.max_output_tokens> \
@@ -1764,9 +2025,10 @@ proposer は同一 workspace 内で起動される限り、`Glob` / `Read` 等�
   overlay path 全集合を `origin/main` との差分対象にし、全 manifest/overlay の integrity と L3 secret scan を
   PR 作成直前に再検証する。
 - 回帰コストは `regression.max_affected_suites`（既定 7）と evaluation 単位の
-  `regression.max_budget_usd`（既定 90.0、Issue #261 PR6 で 78.0 から再較正。PR #273 で
-  設計書のみ追従）の二層で制限する。90.0 は現行の global impact suite を train/holdout 通算で
-  収容する値であり、一律 $3.0 前提の単純な attempt 数計算ではなく、**登録済み全 suite・全
+  `regression.max_budget_usd`（既定 174.0、Issue #261 PR6 で 78.0→90.0、PR7 で 90.0→111.0、
+  PR8（最終較正）で 111.0→174.0 と段階的に再較正）の二層で制限する。174.0 は現行の
+  global impact suite を train/holdout 通算で収容する値であり、一律 $3.0 前提の単純な
+  attempt 数計算ではなく、**登録済み全 suite・全
   scenario の「実効 `max_budget_usd`（scenario 未指定時は `scenario_run.max_budget_usd_default`）
   × `repeat` 数」の総和を train フェーズ・holdout フェーズそれぞれについて計算し合算した値**で
   算出する（scenario ごとに個別較正された予算が一律でなくなったため。Issue #261 PR6 で
@@ -1847,7 +2109,24 @@ packages/meta-harness/
   lib/evaluator.py               # worktree ライフサイクル・ヘッドレス起動・oracle 実行
   lib/isolation.py               # proposer 隔離 backend（srt）
   lib/proposer.py                # proposal 検証・prompt render
+  lib/proposer_backend.py        # proposer backend 起動ヘルパー（codex / claude-bare）
+  lib/proposer_security.py       # proposer 出力経路の secret 検知（L2/L3）
+  lib/propose_cli.py             # `orchex meta propose` コマンド実装
+  lib/promoter.py                # `orchex meta promote` コマンド実装
+  lib/loop_cli.py                # `orchex meta loop` コマンド実装
+  lib/loop_state.py              # loop 用 ledger 畳み込みヘルパー
+  lib/loop_report.py             # loop の人間可読レポート生成
+  lib/scenario_docker.py         # Docker + ephemeral OAuth broker backend 本体
+  lib/scenario_docker_profile.py # Docker コマンド/プロファイルの純粋関数ビルダー
+  lib/scenario_docker_cli.py     # 共有 Docker CLI ヘルパーへの meta-harness 互換ラッパー
+  lib/scenario_isolation.py      # シナリオ実行の OS レベル隔離プロファイル
+  lib/scenario_process.py        # Docker 隔離コマンドの host 側 bounded process runner
+  lib/skill_targets.py           # `skill:<slug>` target 用の安全な facet source closure 解決
+  lib/claude_credentials.py      # 共有 docker-runtime OAuth credential loader の互換 export
+  lib/artifact_reader.py         # 候補 artifact の race-resistant 読み取り
   lib/redaction.py               # redaction（codex-harness パターン複製）
+  docker/scenario/Dockerfile     # scenario 実行用イメージ定義
+  docker/broker/broker.py        # 共有 credential broker 実装への互換 entrypoint
   schemas/*.schema.json           # セクション 1 の全 9 スキーマ（Phase 1a 実装対象は 8。
                                    # proposal.schema.json は Phase 2）+ verdict schema
   scenarios/claude-harness/*.yaml
@@ -1924,7 +2203,8 @@ scenario_run:
 regression:
   enabled: true # false は skill target の専有 facet allowlist へ縮退
   max_affected_suites: 7
-  max_budget_usd: 90.0 # 全 scenario の実効 max_budget_usd x repeat の総和（train+holdout）。§4 参照
+  max_budget_usd: 174.0 # Issue #261 PR8 最終較正。全 scenario の実効 max_budget_usd x repeat の
+    # 総和（train+holdout）を issue-create/issue-fix suite の latch 実測に合わせ再較正した値。§4 参照
 judge:
   tool: claude-bare # tool-less judge。codexはread deny不能のため無効（ADR-20260711-034）
   model: claude-sonnet-5 # 必須 pin（Issue #261 PR2）。evaluate.model と同一でなければならない（broker pricing table は run あたり1つ）
@@ -2908,6 +3188,34 @@ PR マージ/クローズ後の `--confirm` 時に worktree を削除する。`p
    skill-evolution の停止条件「連続 2 回で精度±3pt」の写像。ステップ数±10%/時間±15% は
    コスト軸が ledger にあるため quality 基準のみ採用する簡約と明記する）
 10. 停止条件（手順 1, 8, 9）のいずれにも該当しなければ次イテレーションへ進む
+```
+
+上記アルゴリズムの視覚サマリー（正確な条件・順序は上の text 定義を正とする）:
+
+```mermaid
+flowchart TD
+    A[iteration 開始<br/>loop_started 凍結値を使用] --> G1{budget_usd 超過?<br/>a}
+    G1 -- Yes --> S1[stop: budget_exhausted]
+    G1 -- No --> G2{完了反復 >= max_iterations?<br/>b}
+    G2 -- Yes --> S2[stop: max_iterations]
+    G2 -- No --> G3{routing-config で<br/>cooldown 未経過?<br/>c}
+    G3 -- Yes --> FC[proposer 起動せず fail-closed]
+    G3 -- No --> P[propose → candidate_registered]
+    P --> E[evaluate: train シナリオ<br/>repeat は config]
+    E --> F{frontier 入り?}
+    F -- Yes --> H[holdout も評価]
+    F -- No --> LI
+    H --> OF{holdout が baseline から<br/>overfit_drop_pt=15 超下落?}
+    OF -- Yes --> R[retired reason=overfit<br/>「改善なし」扱い]
+    OF -- No --> LI
+    R --> LI[loop_iteration 追記<br/>停止判定より前に必ず記録]
+    LI --> IMP{best_quality 改善?<br/>epsilon=0.5}
+    IMP -- No --> DIV{改善なし 3 回連続?}
+    DIV -- Yes --> S3[stop: divergence + 人間通知]
+    DIV -- No --> CONV
+    IMP -- Yes --> CONV{直近 2 反復が<br/>quality_band±3 で収束?}
+    CONV -- Yes --> S4[stop: converged]
+    CONV -- No --> A
 ```
 
 停止時: `loop_stopped` を追記し、人間可読サマリー

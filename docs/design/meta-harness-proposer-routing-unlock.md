@@ -16,8 +16,8 @@ codd:
 - **日付**: 2026-07-16
 - **ステータス**: active（凍結決定 5 点はユーザー承認済み 2026-07-16、決定 3 は 2026-07-17 修正承認。Phase A 実装済み 2026-07-18）
 - **前提 ADR**: ADR-20260716-041（routing config patch を human 登録候補限定で解放。proposer 解放は本設計の完了を着手条件として deferral）
-- **成果物の位置づけ**: 本書は proposer unlock（Phase 3 残タスク）の設計 SSOT。実装時に
-  `docs/design/meta-harness-detailed.md` §1-8 等へ反映し、ADR-20260717-042（proposed）を起票する。
+- **成果物の位置づけ**: 本書は proposer unlock の設計 SSOT。凍結決定は
+  `docs/design/meta-harness-detailed.md` §1-8 等へ反映済みで、ADR-20260717-042（accepted）として起票済み。
 
 ---
 
