@@ -41,13 +41,13 @@ Codex の組み込み `image_gen` は ChatGPT 認証で動くため **`OPENAI_AP
 | 層1 | Claude Code の Bash sandbox | **無効化**（`dangerouslyDisableSandbox: true`）                            |
 | 層2 | Codex の `--sandbox`        | `workspace-write` + `network_access=true`（FS は repo 内に OS 強制で限定） |
 
-確定呼び出し（codex 0.140.0）:
+確定呼び出し（`$IMG_FEATURE` はフラグ名の実行時解決結果。次項参照）:
 
 ```bash
 codex exec --model gpt-5.5 \
   --sandbox workspace-write \
   -c sandbox_workspace_write.network_access=true \
-  --enable imagegenext \
+  --enable "$IMG_FEATURE" \
   -c model_reasoning_effort=low \
   --skip-git-repo-check \
   "Use your built-in image_gen tool to generate <subject>. Accept whatever it returns; \
@@ -55,18 +55,25 @@ codex exec --model gpt-5.5 \
    rate limit; report failure explicitly." < /dev/null
 ```
 
-- **`--enable imagegenext` が必須**: codex 0.140.0 の `exec` は、このフラグが無いと
-  `image_gen` の画像を**ディスクに保存しない**（`saved_path` が返らず base64 のみ）。
-  0.137.0 からの回帰で、`imagegenext` を有効化すると保存が復活する。
-- **`network_access=true` が必須**: codex 0.140.0 では `image_gen` の app-server が
-  backend 通信を行うため、network 遮断のままだと app-server が `Operation not permitted`
-  で起動しない。FS は `workspace-write` のまま repo 内に限定され、`danger-full-access`
-  は使わない（OS 強制の境界を維持）。
+- **image-generation feature の有効化が必須**: フラグ名は codex のバージョンで異なる
+  （0.140.x は `imagegenext`、0.144.6 以降は `imagegenext` が deprecated になり
+  `image_generation` に改称）。このフラグが無いと `exec` は `image_gen` の画像を
+  **ディスクに保存しない**（`saved_path` が返らず base64 のみ）。固定名を使うとどちらかの
+  バージョンで壊れるため、`image-generator` エージェント（Step 3）は `codex features list`
+  （利用不可時は `codex --version` の minor 番号、`<=140` なら `imagegenext`、それ以外は
+  `image_generation`）で `$IMG_FEATURE` を実行時に解決してから `--enable "$IMG_FEATURE"` を渡す。
+  手動検証する場合は、まず `codex features list` で自分の環境のフラグ名を確認してから
+  上記コマンド例の `$IMG_FEATURE` に代入すること。
+- **`network_access=true` が必須**: `image_gen` の app-server が backend 通信を行うため、
+  network 遮断のままだと app-server が `Operation not permitted` で起動しない。FS は
+  `workspace-write` のまま repo 内に限定され、`danger-full-access` は使わない（OS 強制の
+  境界を維持）。
 - **`--full-auto` は廃止**: codex 0.140.0 で deprecated（`--sandbox` に統合）。
-- **保存先**: `image_gen` は `~/.codex/generated_images/<session>/` に保存する（imagegenext 有効時の
-  ファイル名は `call_*.png`、旧 codex は `ig_*.png`）。エージェントは生成直前のマーカー時刻より
-  **新しい**ファイルだけを採用して出力先へコピーする（古い画像を誤って成功扱いしない鮮度ガード）。
-  対象なし時に手動でディレクトリを漁って最新ファイルを掴むのは**禁止**（虚偽成功の原因）。
+- **保存先**: `image_gen` は `~/.codex/generated_images/<session>/` に保存する
+  （`imagegenext`/`image_generation` いずれの場合もファイル名は `call_*.png`、旧 codex は
+  `ig_*.png`）。エージェントは生成直前のマーカー時刻より**新しい**ファイルだけを採用して
+  出力先へコピーする（古い画像を誤って成功扱いしない鮮度ガード）。対象なし時に手動で
+  ディレクトリを漁って最新ファイルを掴むのは**禁止**（虚偽成功の原因）。
 - モデルは既定 `gpt-5.5`（`gpt-5.3-codex` 等のコーディングモデルは image_gen 非対応）。
   `config/image-generation.yaml` の `image_model` で差し替え可能。
 - レートリミット/利用上限は連打由来。**1 タスク 1 回**で回避する。

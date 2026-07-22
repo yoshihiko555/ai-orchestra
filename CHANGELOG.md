@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **BREAKING** **facet build のキャッシュファイルを `.cache/` 配下へ集約**: これまで `.claude/` / `.codex/` 直下に置いていた生成物キャッシュ（`.facet-manifest.json` / `.facet-packages-hash`）を `.claude/.cache/`・`.codex/.cache/` 配下（`facet-manifest.json` / `packages-hash`）へ移動した。ソースと生成物の分離が目的。後方互換なし。旧ファイルは自動削除されないため、残っている場合は手動で削除する（残置しても次回ビルドで新パスに再生成され、機能への影響はない）。`.gitignore` の無視対象も `.claude/.cache/`・`.codex/.cache/` に更新済み。
 
+### Fixed
+
+- **`image-generation`: 画像生成の鮮度ガードが sandbox 実行モードによって外れる不具合を修正**: 鮮度マーカーの保存先を `$TMPDIR`（sandbox モードごとに解決先が異なる）から、出力先ディレクトリ配下の固定パスに変更した。あわせて codex 0.144.6 で deprecated になった `--enable imagegenext` を `--enable image_generation` に更新した。
+
 ## [0.3.0] - 2026-07-21
 
 ### Added
