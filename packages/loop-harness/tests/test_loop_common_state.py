@@ -2257,6 +2257,7 @@ def test_reconcile_replays_persisted_remote_head_refresh_without_a_live_query(
     outcome = lc.reconcile("abcd1234-issue-1", project_dir, lock.lease_token)
 
     assert outcome.action_taken == "resolved_from_journal"
+    assert lc.load_state("abcd1234-issue-1", project_dir).remote_head_baseline == persisted_head
 
 
 # --- Issue #208 (SEC-H2): repo-identity re-verification hardening -----------------------------
