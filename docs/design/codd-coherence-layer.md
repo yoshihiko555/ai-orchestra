@@ -76,6 +76,35 @@ skill / hook）で独自実装する。
 
 ## 4. アーキテクチャ
 
+### 4.0 全体パイプライン（図解）
+
+各ドキュメント先頭の `codd:` frontmatter を SSOT とし、`scan` で依存グラフ（`graph.jsonl`）を構築、
+`validate` / `impact` / `graph` で利用する。
+
+![CODD 整合性レイヤー](../assets/codd-coherence-ja.png)
+
+<details>
+<summary>Mermaid ソース（パイプライン）</summary>
+
+```mermaid
+flowchart LR
+    subgraph DOCS["各ドキュメント（先頭に codd: frontmatter）"]
+        RQ[requirement]
+        DS[design]
+        AD[adr]
+        PL[plan]
+        RL[rule]
+        IN[instruction]
+    end
+    DOCS -- "codd scan" --> G[".claude/codd/graph.jsonl<br/>ノード + depends_on エッジ"]
+    G -- "codd validate" --> V["リンク切れ / 循環 / 重複 / 未知語（error）<br/>孤立 / drift（warning）"]
+    G -- "codd impact --diff" --> IM["下流影響を Green / Amber / Gray<br/>の信頼度バンドで分類"]
+    G -- "codd graph" --> GR["依存グラフ可視化"]
+```
+
+依存は各 doc の `codd:` ブロック1箇所が SSOT（`derives_from` / `refines` / `implements` /
+`references` / `supersedes`）。
+
 ### 4.1 パッケージ構成
 
 ```
