@@ -457,6 +457,81 @@ def test_detect_completed_projects_archives_when_all_acceptance_criteria_checked
     assert completed[0]["name"] == "Demo"
 
 
+def test_detect_completed_projects_header_done_with_ac_blocks_on_residual_task() -> None:
+    content = "\n".join(
+        [
+            "## Project: Demo",
+            "### Phase 1: Setup `cc:done`",
+            "#### Tasks",
+            "- `cc:TODO` remaining task",
+            "#### Acceptance Criteria",
+            "- [x] condition1 — verify: `echo 1`",
+            "- [X] condition2 — verify: `echo 2`",
+        ]
+    )
+
+    completed = load_task_state.detect_completed_projects(
+        content, load_task_state.DEFAULT_MARKER_PATTERN, load_task_state.DEFAULT_MARKER_TO_STATE
+    )
+
+    assert completed == []
+
+
+def test_detect_completed_projects_header_done_with_ac_and_no_task_lines_archives() -> None:
+    content = "\n".join(
+        [
+            "## Project: Demo",
+            "### Phase 1: Setup `cc:done`",
+            "#### Acceptance Criteria",
+            "- [x] condition1 — verify: `echo 1`",
+            "- [X] condition2 — verify: `echo 2`",
+        ]
+    )
+
+    completed = load_task_state.detect_completed_projects(
+        content, load_task_state.DEFAULT_MARKER_PATTERN, load_task_state.DEFAULT_MARKER_TO_STATE
+    )
+
+    assert len(completed) == 1
+    assert completed[0]["name"] == "Demo"
+
+
+def test_detect_completed_projects_header_done_without_ac_section_legacy_archives() -> None:
+    content = "\n".join(
+        [
+            "## Project: Demo",
+            "### Phase 1: Setup `cc:done`",
+            "#### Tasks",
+            "- `cc:TODO` remaining task",
+        ]
+    )
+
+    completed = load_task_state.detect_completed_projects(
+        content, load_task_state.DEFAULT_MARKER_PATTERN, load_task_state.DEFAULT_MARKER_TO_STATE
+    )
+
+    # 後方互換: AC セクションがなければ従来通り見出し cc:done で短絡し、body は見ない
+    assert len(completed) == 1
+    assert completed[0]["name"] == "Demo"
+
+
+def test_parse_tasks_skips_ac_checkbox_line_even_with_marker_like_text_in_body() -> None:
+    content = "\n".join(
+        [
+            "### Phase 1: Setup",
+            "#### Tasks",
+            "- `cc:done` task A",
+            "#### Acceptance Criteria",
+            "- [ ] no remaining `cc:TODO` tasks — judge: manual check",
+        ]
+    )
+
+    tasks = load_task_state.parse_tasks(content)
+
+    assert tasks["done"] == [{"task": "task A", "reason": None}]
+    assert tasks["TODO"] == []
+
+
 def test_detect_completed_projects_does_not_misclassify_markdown_link_bullet_as_checked() -> None:
     content = "\n".join(
         [

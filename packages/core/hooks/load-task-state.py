@@ -163,9 +163,22 @@ def parse_tasks(
         "blocked": [],
     }
 
+    in_ac_section = False
     for line in content.splitlines():
         stripped = line.strip()
+
+        if stripped == AC_SECTION_HEADING:
+            in_ac_section = True
+            continue
+        if stripped.startswith(("#### ", "### ", "## ")):
+            in_ac_section = False
+            continue
+
         if not stripped.startswith("- "):
+            continue
+
+        if in_ac_section and _classify_checkbox_line(stripped) is not None:
+            # AC セクション内のチェックボックス行は cc: マーカーの有無にかかわらずタスクではない
             continue
 
         marker_match = marker_pattern.search(stripped)
@@ -337,14 +350,22 @@ def detect_completed_projects(
                 break
 
             header_marker_match = marker_pattern.search(phase_header)
-            if header_marker_match:
-                state = marker_to_state.get(header_marker_match.group(1))
-                if state == "done":
-                    continue
+            header_state = (
+                marker_to_state.get(header_marker_match.group(1)) if header_marker_match else None
+            )
+            header_done = header_state == "done"
+
+            if header_marker_match and not header_done:
                 project_done = False
                 break
 
-            # フェーズ見出しにマーカーがない場合は、配下タスクが全て done かどうかで判定
+            if header_done and not ac_ranges:
+                # 後方互換: AC セクションを持たないフェーズは見出し cc:done で従来通り短絡する
+                continue
+
+            # ここに到達するのは次のいずれか:
+            # - フェーズ見出しにマーカーがない（配下タスクが全て done かどうかで判定）
+            # - フェーズ見出しが cc:done かつ AC セクションを持つ（残存タスクの有無を確認する）
             phase_done = True
             has_task = False
             ac_line_indices = {i for start, end in ac_ranges for i in range(start, end + 1)}
@@ -368,8 +389,9 @@ def detect_completed_projects(
                     phase_done = False
                     break
 
-            # タスクが 1 件もないフェーズは未完了扱い
-            if not has_task:
+            # タスクが 1 件もない場合: 見出しが cc:done なら見出しのみ運用として完了扱いを維持する。
+            # 見出しにマーカーがない場合は従来通り未完了扱い。
+            if not has_task and not header_done:
                 phase_done = False
 
             if not phase_done:

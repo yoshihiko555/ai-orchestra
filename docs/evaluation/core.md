@@ -70,6 +70,7 @@ core は全パッケージが依存する共通基盤であり、(1) `Plans.md` 
 - [ ] EV-22（境界 / must）: AC セクションのないフェーズは従来通り `cc:` マーカーのみで完了判定される（後方互換） — 根拠: task-memory-usage.md
 - [ ] EV-23（正常 / should）: タスク全て `cc:done` かつ AC 全て `[x]` のプロジェクトはアーカイブされる — 根拠: task-memory-usage.md
 - [ ] EV-24（境界 / should）: AC チェックリスト行（`- [ ]` / `- [x]`）はタスクサマリー注入の対象にならない（`cc:` マーカー行のみ注入） — 根拠: task-memory-usage.md
+- [ ] EV-25（正常 / must）: `#### Acceptance Criteria` セクションを持つフェーズは、フェーズ見出しが `cc:done` でも配下に `cc:done` 以外のマーカーを持つタスク行が残っていればアーカイブされない（AC なしフェーズは従来通り見出しマーカーで判定＝後方互換） — 根拠: task-memory-usage.md
 - N/A: 秘匿情報（マスキング） — core が扱う注入対象（ファイルパス・タスクサマリー・エントリー summary）に対する秘密情報マスキング処理は情報源に記載がなく、該当する取り扱い自体が定義されていないため対象外
 - N/A: 性能 — 同期 hook（特に SessionStart の `load-task-state.py`）がセッション開始を遅延させないための定量的な性能要件が packages.md / architecture.md / task-memory-usage.md / context-sharing.md のいずれにも記載がないため、本評価セットでは具体化しない
 
