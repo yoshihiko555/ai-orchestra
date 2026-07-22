@@ -62,7 +62,7 @@
     "config/quality-gates/evaluation-set-mapping.yaml",
     "config/skill-evolution/skill-evolution.yaml"
   ],
-  "last_sync": "2026-07-21T09:37:57.791816+00:00",
+  "last_sync": "2026-07-22T10:54:15.704387+00:00",
   "file_hashes": {
     "core": {
       "config/core/task-memory.yaml": "081c101ad10526344e4fe7831babbe6ef661d0a4ae7e49fad4eb3967c030b7d8"
@@ -113,7 +113,7 @@
       "agents/image-generator.md": "83eda10b74a91f9de95cdfb8fa7c7e7315c125d15117ed8443a33520afd8d3bb"
     },
     "loop-harness": {
-      "config/loop-harness/loop-harness.yaml": "614b7614accaa74c264c71fb39f24fd083a6835bd70223c8aab2b126bb504e28",
+      "config/loop-harness/loop-harness.yaml": "92f4f15ee24e61aaba7ad8a8336582c4bc465ac73bb88434a793c4d0ff596acb",
       "config/loop-harness/loops/issue-loop.yaml": "bfc5db758e844f6d840ac7cea9a365126b814b0f635536bd132bc6640dedeb84"
     },
     "fail-logs": {
@@ -126,7 +126,7 @@
       "agents/reverse-coordinator.md": "b4ba084e8d03e158ed5ab4d44b93655de2044a1506c22319df5a6bbf2ab6c574"
     },
     "meta-harness": {
-      "config/meta-harness/meta-harness.yaml": "f07ce1c1e2a960516335a19f0c7e8633b01d5567b5606e66da5dea9a95cb2e80"
+      "config/meta-harness/meta-harness.yaml": "13974cd5e90470f492f6646663b829d403a0b31a82e83b6dce28a27bd5ff3743"
     },
     "quality-gates": {
       "config/quality-gates/evaluation-set-mapping.yaml": "831e3804fa10c7823465e0ae081cdec88ab0a9d2a929d048e50b4690d48baa95"
