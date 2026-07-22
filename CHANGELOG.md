@@ -15,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **`loop-harness`: 機械検証コマンドの子プロセス umask をホスト実行経路で決定的に固定**: `pytest`/`ruff` 等の機械検証コマンドが host 上で実行される際、呼び出し元シェルの umask 設定に関わらず `0o022` で子プロセスを起動するようになった。より厳格な umask（例 `077`）を運用したい場合は `LOOP_MECHANICAL_UMASK` 環境変数（8進数文字列）で上書きできる。Docker 隔離実行経路には影響しない。
 - **`core`: Plans.md の管理指針を worktree ローカル運用に明確化**: Plans.md / Plans.archive.md は git にコミットせず、worktree 作業時は作業中 worktree の `.claude/Plans.md` を正本とする（root 側を参照・更新しない）ことを task-memory-usage ルールに明文化した。従来の「git にコミットしてチーム共有を推奨」の記述は削除。
 - **BREAKING** **facet build のキャッシュファイルを `.cache/` 配下へ集約**: これまで `.claude/` / `.codex/` 直下に置いていた生成物キャッシュ（`.facet-manifest.json` / `.facet-packages-hash`）を `.claude/.cache/`・`.codex/.cache/` 配下（`facet-manifest.json` / `packages-hash`）へ移動した。ソースと生成物の分離が目的。後方互換なし。旧ファイルは自動削除されないため、残っている場合は手動で削除する（残置しても次回ビルドで新パスに再生成され、機能への影響はない）。`.gitignore` の無視対象も `.claude/.cache/`・`.codex/.cache/` に更新済み。
 

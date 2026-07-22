@@ -26,6 +26,12 @@ from typing import Any, Literal
 SCHEMA_VERSION = 1
 FILE_MODE = 0o600
 DIR_MODE = 0o700
+# Fix non-deterministic mechanical-check behavior across caller umasks (Issue #301).
+MECHANICAL_CHECK_UMASK = 0o022
+# Operator opt-out for MECHANICAL_CHECK_UMASK (octal string, e.g. "077"). Lets hosts that run
+# a stricter caller umask as defense-in-depth restore it for the mechanical-check child
+# process instead of always loosening to MECHANICAL_CHECK_UMASK (see _resolve_mechanical_umask).
+MECHANICAL_UMASK_ENV = "LOOP_MECHANICAL_UMASK"
 ACTION_ID_BYTES = 6
 HASH_LENGTH = 16
 GIT_TIMEOUT_SECONDS = 5
@@ -3213,6 +3219,34 @@ def _write_text(path: Path, content: str) -> None:
     os.chmod(path, FILE_MODE)
 
 
+def _resolve_mechanical_umask() -> int:
+    """Resolve the mechanical-check child-process umask, honoring `LOOP_MECHANICAL_UMASK`.
+
+    Reads the environment on every call (not cached at import time) so tests can monkeypatch
+    it. Accepts an octal string (`"077"`, `"0o077"`, `"022"`). An unset value uses the
+    deterministic default `MECHANICAL_CHECK_UMASK` (Issue #301); an unparsable or
+    out-of-range (must fit `0o000`-`0o777`) value also falls back to that default, with a
+    stderr warning, rather than failing the mechanical check outright -- this mirrors the
+    best-effort, fail-open style already used elsewhere in this module for non-critical
+    operational overrides (see the push-integrity-warning helpers above).
+    """
+    raw = os.environ.get(MECHANICAL_UMASK_ENV)
+    if raw is None:
+        return MECHANICAL_CHECK_UMASK
+    try:
+        value = int(raw, 8)
+    except ValueError:
+        value = -1
+    if not (0o000 <= value <= 0o777):
+        print(
+            f"[loop-harness] ignoring invalid {MECHANICAL_UMASK_ENV}={raw!r}; "
+            f"falling back to default {MECHANICAL_CHECK_UMASK:#o}",
+            file=sys.stderr,
+        )
+        return MECHANICAL_CHECK_UMASK
+    return value
+
+
 def _run_mechanical_command(
     command: str,
     cwd: str,
@@ -3224,6 +3258,21 @@ def _run_mechanical_command(
 
     `env=None` (the default) inherits the caller's `os.environ`, matching
     `subprocess.run`'s own default and preserving pre-SEC-C1 behavior for LP-1 callers.
+
+    The child umask is pinned so mechanical-check behavior stays deterministic across
+    caller umask settings (Issue #301), regardless of the host-environment umask the
+    mechanical-check command (e.g. `pytest`, `ruff`) would otherwise inherit and which would
+    otherwise make its false positives/negatives depend on which machine ran it.
+
+    Security trade-off: on this host-exec path, pinning to `MECHANICAL_CHECK_UMASK` (0o022)
+    loosens permissions relative to a caller that intentionally runs under a stricter umask
+    (e.g. `077`) as defense-in-depth -- working files, caches, coverage reports, and logs the
+    mechanical-check child process creates become group/other-readable even if the caller
+    would not otherwise allow that. This trade-off is scoped to the host-exec path only; the
+    Docker exec path (`docker exec`, see `loop_docker_action.py`) is a separate execution path
+    and is unaffected. Operators who need the stricter behavior back can opt out via the
+    `MECHANICAL_UMASK_ENV` (`LOOP_MECHANICAL_UMASK`) environment variable; see
+    `_resolve_mechanical_umask()`.
 
     Runs in its own process group (`start_new_session=True`) so a timeout kills every
     descendant the Maker-authored command spawned (e.g. a `pytest` run's own subprocesses),
@@ -3241,6 +3290,7 @@ def _run_mechanical_command(
         text=True,
         start_new_session=True,
         env=dict(env) if env is not None else None,
+        umask=_resolve_mechanical_umask(),
     )
     if on_start is not None:
         on_start(proc.pid)
