@@ -30,10 +30,10 @@ from __future__ import annotations
 import re
 
 __all__ = [
-    "CHECKBOX_PATTERN",
     "AC_SECTION_HEADING",
-    "classify_checkbox_line",
+    "CHECKBOX_PATTERN",
     "ac_section_ranges",
+    "classify_checkbox_line",
     "phase_has_unchecked_ac",
 ]
 
