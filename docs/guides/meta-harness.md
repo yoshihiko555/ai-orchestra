@@ -255,12 +255,14 @@ flowchart TD
     B -- コスト上限超過 --> Z3[停止]
     B -- 継続 --> C[propose: 1 候補 overlay 生成]
     C --> D[register]
-    D --> E[evaluate]
-    E --> F{holdout スコア<br/>15pt 以上下落?}
+    D --> E[evaluate: train シナリオ]
+    E --> H{frontier 入り?}
+    H -- No --> I[ledger にイテレーション記録]
+    H -- Yes --> HO[frontier 入り時のみ<br/>holdout も評価]
+    HO --> F{holdout が baseline から<br/>15pt 超下落?}
     F -- Yes --> G[過学習 → 候補却下 retired]
-    F -- No --> H[frontier 更新]
-    G --> I[ledger にイテレーション記録]
-    H --> I
+    F -- No --> I
+    G --> I
     I --> B
 ```
 
@@ -279,19 +281,19 @@ human 限定。ADR-041 → 042、`design:meta-harness-proposer-routing-unlock` �
 
 ```bash
 # Phase 1: 計測基盤
-orchex meta init                       # store 一式を初期化
-orchex meta register <overlay> ...     # 候補（overlay + メタデータ）を登録
-orchex meta evaluate <cand_id> ...     # 候補をシナリオ評価（Docker 隔離）
-orchex meta frontier                   # Pareto frontier レポート
-orchex meta status                     # population / frontier の状態表示
-orchex meta purge --keep-generations N # 古い世代・retired 候補を削除
+orchex meta init                                          # store 一式を初期化
+orchex meta register --overlay <dir> --target claude-harness  # 候補を登録（--overlay/--target 必須）
+orchex meta evaluate --candidate <cand_id>                # 候補をシナリオ評価（--candidate 必須, Docker 隔離）
+orchex meta frontier                                     # Pareto frontier レポート（--target 省略時は既定）
+orchex meta status                                       # population / frontier の状態表示
+orchex meta purge --keep-generations N                   # 古い世代・retired 候補を削除
 
 # Phase 2: 提案と昇格
-orchex meta propose                    # filtered view から候補 overlay を提案・登録
-orchex meta promote <cand_id>          # frontier 候補を PR ベースで昇格
+orchex meta propose --target claude-harness              # 候補 overlay を提案・登録（--target 必須）
+orchex meta promote <cand_id>                            # frontier 候補を PR ベースで昇格（cand_id は位置引数）
 
 # Phase 3: 自動探索
-orchex meta loop                       # propose/evaluate の自動反復（再開可能）
+orchex meta loop                                         # propose/evaluate の自動反復（--resume <loop_id> で再開）
 ```
 
 target の指定（own / skill / routing-config）や各サブコマンドの全フラグは

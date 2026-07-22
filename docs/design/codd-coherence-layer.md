@@ -102,6 +102,8 @@ flowchart LR
     G -- "codd graph" --> GR["依存グラフ可視化"]
 ```
 
+</details>
+
 依存は各 doc の `codd:` ブロック1箇所が SSOT（`derives_from` / `refines` / `implements` /
 `references` / `supersedes`）。
 
