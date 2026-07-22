@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -80,6 +81,25 @@ def test_top_level_help_lists_version_option() -> None:
 
 def test_version_prints_real_version_on_direct_execution() -> None:
     result = _run_manager("--version")
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == f"orchex {ai_orchestra.__version__}"
+
+
+def test_version_prefers_checkout_over_installed_package(tmp_path: Path) -> None:
+    """site-packages 相当の ai_orchestra が居てもチェックアウト版を優先する。"""
+    shadow_pkg = tmp_path / "ai_orchestra"
+    shadow_pkg.mkdir()
+    (shadow_pkg / "__init__.py").write_text('__version__ = "9.9.9-shadow"\n', encoding="utf-8")
+
+    result = subprocess.run(
+        [sys.executable, str(ORCHESTRA_MANAGER), "--version"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "PYTHONPATH": str(tmp_path)},
+    )
 
     assert result.returncode == 0
     assert result.stdout.strip() == f"orchex {ai_orchestra.__version__}"

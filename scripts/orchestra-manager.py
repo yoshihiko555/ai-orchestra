@@ -25,21 +25,15 @@ from typing import Any, TypedDict
 def _resolve_orchex_version() -> str:
     """orchex のバージョン文字列を解決する。
 
-    パッケージインストール済み環境や `python3 -m` 実行では通常の import で
-    解決できる。`python3 scripts/orchestra-manager.py` の直接実行時は
-    scripts/ のみが sys.path に載るため import が失敗するので、
-    リポジトリルートを sys.path に追加してから再試行する。
+    orchex エントリポイント経由の実行では ai_orchestra が import 済みのため
+    その値を使う。`python3 scripts/orchestra-manager.py` の直接実行時は、
+    site-packages にインストール済みの ai_orchestra にシャドウイングされない
+    よう、import 前にチェックアウトルートを sys.path の先頭へ挿入する。
     """
-    try:
-        from ai_orchestra import __version__
-
-        return __version__
-    except ImportError:
-        pass
-
-    repo_root = str(Path(__file__).resolve().parent.parent)
-    if repo_root not in sys.path:
-        sys.path.insert(0, repo_root)
+    if "ai_orchestra" not in sys.modules:
+        repo_root = Path(__file__).resolve().parent.parent
+        if (repo_root / "ai_orchestra").is_dir() and str(repo_root) not in sys.path:
+            sys.path.insert(0, str(repo_root))
 
     try:
         from ai_orchestra import __version__
