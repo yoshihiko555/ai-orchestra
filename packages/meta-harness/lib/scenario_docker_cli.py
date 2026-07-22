@@ -7,11 +7,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-_PACKAGE_DIR = Path(__file__).resolve().parent.parent
+_LIB_DIR = Path(__file__).resolve().parent
+_PACKAGE_DIR = _LIB_DIR.parent
 _DOCKER_DIR = _PACKAGE_DIR / "docker"
 _DOCKER_RUNTIME_LIB = _PACKAGE_DIR.parent / "docker-runtime" / "lib"
-if str(_DOCKER_RUNTIME_LIB) not in sys.path:
-    sys.path.insert(0, str(_DOCKER_RUNTIME_LIB))
+for _path in (_LIB_DIR, _DOCKER_RUNTIME_LIB):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
 
 import docker_runtime_cli as runtime
 import meta_harness_common as mh
