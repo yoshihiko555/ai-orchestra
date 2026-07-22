@@ -126,6 +126,13 @@ class LoopState:
     updated_at: str
     state_version: int
     maker_agent: str | None = None  # issue-loop の初回選定後に固定。旧 state の欠落は None。
+    remote_head_baseline: str | None = None  # push 前に記録する origin 側ブランチ HEAD（前置き push 検知用。9 章）。
+    # Issue #208（SEC-H2）: ループ作成時（`worktree_manager.create_worktree()` 直後、Maker が
+    # 一度も走る前）に一度だけ記録し、以後 Maker から再導出しない識別子。両フィールドは常に
+    # セットで populate される。旧 state（本フィールド追加前）は None のままで、
+    # `is_repo_identity_verified()` はレガシーな 8-hex truncated hash 再導出にフォールバックする。
+    repo_identity_material_digest: str | None = None  # 識別材料（origin URL 等）の完全 SHA-256 digest（256bit、非truncated）。
+    worktree_gitlink_digest: str | None = None  # worktree 作成時点で pin した `.git` gitlink ファイル内容の SHA-256。
 ```
 
 `state.json` の JSON 例（`implementation` フェーズ 2 反復目・pending_action あり）:
@@ -143,6 +150,9 @@ class LoopState:
   "branch": "loop/issue-42",
   "pr_number": null,
   "maker_agent": "backend-python-dev",
+  "remote_head_baseline": "3f9a2b1c4d5e6f708192a3b4c5d6e7f8a9b0c1d2",
+  "repo_identity_material_digest": "9f8e7d6c5b4a392817061524334251463f5e6d7c8b9a0f1e2d3c4b5a69788f9",
+  "worktree_gitlink_digest": "a1b2c3d4e5f60718293a4b5c6d7e8f90123456789abcdef0123456789abcdef",
   "guards": {
     "implementation": {
       "iteration": 2,
@@ -186,6 +196,12 @@ class LoopState:
   `_write_state()` 内で常に同期する。
 - `guards` はフェーズごとに保持し続ける（フェーズを離れてもエントリは消さない）。将来同一フェーズへ
   戻る設計（現時点では発生しない）や、デバッグ時の反復履歴確認のため。
+- `remote_head_baseline` / `repo_identity_material_digest` / `worktree_gitlink_digest` は
+  いずれもループ作成時に一度だけ記録し、以後 Maker から再導出しない baseline 値（Issue #208
+  SEC-H2）。旧 state（本フィールド追加前）はいずれも `null` のままで、
+  `is_repo_identity_verified()`（`loop_common.py`）はレガシーな 8-hex truncated hash 再導出に
+  フォールバックし、両フィールドが揃わないループは新たな hardening 対象から除外される
+  （既存ループの挙動を維持するための意図的な back-compat）。
 
 ### 1.2 `status` 遷移表
 

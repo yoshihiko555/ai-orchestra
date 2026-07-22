@@ -943,6 +943,51 @@ def test_find_dangerous_local_git_config_returns_none_for_clean_repo(tmp_path: P
     assert lds.find_dangerous_local_git_config(str(repo)) is None
 
 
+def test_local_git_config_scan_result_returns_scanned_true_and_none_for_clean_repo(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_repo_with_remote(repo, remote)
+    assert lds.local_git_config_scan_result(str(repo)) == (True, None)
+
+
+def test_local_git_config_scan_result_returns_scanned_false_when_scan_cannot_complete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #208 (SEC-H2) review finding (high): an unscannable config (process
+    error/timeout) must be distinguishable from a scanned-and-clean one, so fail-closed callers
+    (`loop_common._worktree_git_config_tampered()`) can tell the two apart instead of both
+    collapsing to the same `None`."""
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_repo_with_remote(repo, remote)
+
+    def fake_run(*_args: object, **_kwargs: object) -> None:
+        raise subprocess.TimeoutExpired(cmd="git", timeout=10.0)
+
+    monkeypatch.setattr(lds.subprocess, "run", fake_run)
+
+    assert lds.local_git_config_scan_result(str(repo)) == (False, None)
+
+
+def test_find_dangerous_local_git_config_still_fails_open_when_scan_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Push-guard callers intentionally keep the pre-existing fail-open contract: an unscannable
+    config must not itself deadlock every push (one of several layers, not the sole guard)."""
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_repo_with_remote(repo, remote)
+
+    def fake_run(*_args: object, **_kwargs: object) -> None:
+        raise subprocess.TimeoutExpired(cmd="git", timeout=10.0)
+
+    monkeypatch.setattr(lds.subprocess, "run", fake_run)
+
+    assert lds.find_dangerous_local_git_config(str(repo)) is None
+
+
 @pytest.mark.parametrize(
     ("config_args", "expected_key_substring"),
     [

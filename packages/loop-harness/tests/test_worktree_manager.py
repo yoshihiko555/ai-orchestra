@@ -41,18 +41,40 @@ def test_is_existing_loop_worktree_requires_independent_worktree_and_branch(
     worktree = tmp_path / "wt"
     worktree.mkdir()
 
-    def fake_git(args: list[str], _cwd: str) -> str:
-        if args == ["rev-parse", "--git-dir"]:
-            return ".git/worktrees/loop-issue-1"
-        if args == ["rev-parse", "--git-common-dir"]:
-            return "../../.git"
+    def fake_git(args: list[str], cwd: str) -> str:
+        if args == ["rev-parse", "--path-format=absolute", "--git-dir"]:
+            return "/repo/.git/worktrees/loop-issue-1"
+        if args == ["rev-parse", "--path-format=absolute", "--git-common-dir"]:
+            return "/repo/.git"
         if args == ["branch", "--show-current"]:
             return "loop/issue-1"
         return ""
 
     monkeypatch.setattr(wm, "_git", fake_git)
-    assert wm.is_existing_loop_worktree(str(worktree), "loop/issue-1") is True
-    assert wm.is_existing_loop_worktree(str(worktree), "loop/issue-2") is False
+    assert wm.is_existing_loop_worktree(str(worktree), "loop/issue-1", "/repo") is True
+    assert wm.is_existing_loop_worktree(str(worktree), "loop/issue-2", "/repo") is False
+
+
+def test_is_existing_loop_worktree_rejects_worktree_from_a_different_repository(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #208 (SEC-H2, critical): a decoy worktree on the right branch but backed by a
+    different repository's git-common-dir must not be treated as an existing loop worktree,
+    even though it looks like an independent linked worktree on the expected branch."""
+    worktree = tmp_path / "decoy-wt"
+    worktree.mkdir()
+
+    def fake_git(args: list[str], cwd: str) -> str:
+        if args == ["rev-parse", "--path-format=absolute", "--git-dir"]:
+            return "/attacker-controlled-decoy/.git/worktrees/loop-issue-1"
+        if args == ["rev-parse", "--path-format=absolute", "--git-common-dir"]:
+            return "/attacker-controlled-decoy/.git" if cwd == str(worktree) else "/repo/.git"
+        if args == ["branch", "--show-current"]:
+            return "loop/issue-1"
+        return ""
+
+    monkeypatch.setattr(wm, "_git", fake_git)
+    assert wm.is_existing_loop_worktree(str(worktree), "loop/issue-1", "/repo") is False
 
 
 def test_create_worktree_reuses_existing_worktree(
@@ -62,7 +84,7 @@ def test_create_worktree_reuses_existing_worktree(
     worktree.mkdir(parents=True)
     monkeypatch.setattr(wm, "worktree_path_for", lambda _project_dir, _issue_number: str(worktree))
     monkeypatch.setattr(wm, "resolve_repo_identity_hash", lambda _project_dir: "deadbeef")
-    monkeypatch.setattr(wm, "is_existing_loop_worktree", lambda _path, _branch: True)
+    monkeypatch.setattr(wm, "is_existing_loop_worktree", lambda _path, _branch, _project_dir: True)
 
     called = {"run": False}
 
@@ -77,13 +99,33 @@ def test_create_worktree_reuses_existing_worktree(
     assert called["run"] is False
 
 
+def test_create_worktree_refuses_to_reuse_existing_path_that_fails_identity_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #208 (SEC-H2, critical): an existing path that fails the same-repository check
+    must stop the driver, not be silently handed to `git worktree add` or reused as baseline."""
+    worktree = tmp_path / ".worktrees" / "loop-issue-1"
+    worktree.mkdir(parents=True)
+    monkeypatch.setattr(wm, "worktree_path_for", lambda _project_dir, _issue_number: str(worktree))
+    monkeypatch.setattr(wm, "resolve_repo_identity_hash", lambda _project_dir: "deadbeef")
+    monkeypatch.setattr(wm, "is_existing_loop_worktree", lambda _path, _branch, _project_dir: False)
+
+    def fail_if_called(_args: list[str], _cwd: str) -> None:
+        raise AssertionError("git must not be invoked when reuse is refused")
+
+    monkeypatch.setattr(wm, "_run_git", fail_if_called)
+
+    with pytest.raises(wm.WorktreeError):
+        wm.create_worktree(str(tmp_path), 1)
+
+
 def test_create_worktree_runs_git_when_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     worktree = tmp_path / ".worktrees" / "loop-issue-1"
     monkeypatch.setattr(wm, "worktree_path_for", lambda _project_dir, _issue_number: str(worktree))
     monkeypatch.setattr(wm, "resolve_repo_identity_hash", lambda _project_dir: "deadbeef")
-    monkeypatch.setattr(wm, "is_existing_loop_worktree", lambda _path, _branch: False)
+    monkeypatch.setattr(wm, "is_existing_loop_worktree", lambda _path, _branch, _project_dir: False)
     monkeypatch.setattr(wm, "_default_base_branch", lambda _project_dir: "origin/main")
     calls: list[list[str]] = []
 
@@ -113,6 +155,73 @@ def test_repo_identity_hash_is_stable_for_linked_worktree_without_remote(tmp_pat
     _git(["worktree", "add", "-b", "loop/issue-2", str(linked), "HEAD"], main)
 
     assert wm.resolve_repo_identity_hash(str(main)) == wm.resolve_repo_identity_hash(str(linked))
+
+
+def test_repo_identity_material_digest_is_full_sha256_matching_hash_prefix(
+    tmp_path: Path,
+) -> None:
+    """Issue #208 (SEC-H2): the full digest must be the untruncated form of the same hash."""
+    main = tmp_path / "repo"
+    _init_repo(main)
+
+    digest = wm.resolve_repo_identity_material_digest(str(main))
+
+    assert len(digest) == 64
+    assert digest[:8] == wm.resolve_repo_identity_hash(str(main))
+
+
+def test_gitlink_fingerprint_is_none_for_main_repository(tmp_path: Path) -> None:
+    """`.git` is a directory in the main repository, not a linked-worktree gitlink file."""
+    main = tmp_path / "repo"
+    _init_repo(main)
+
+    assert wm.gitlink_fingerprint(str(main)) is None
+
+
+def test_gitlink_fingerprint_is_none_when_worktree_path_is_missing(tmp_path: Path) -> None:
+    assert wm.gitlink_fingerprint(str(tmp_path / "does-not-exist")) is None
+
+
+def test_gitlink_fingerprint_detects_gitlink_content_change(tmp_path: Path) -> None:
+    """Issue #208 (SEC-H2): rewriting the `.git` gitlink pointer must change the fingerprint."""
+    main = tmp_path / "repo"
+    linked = tmp_path / "linked"
+    _init_repo(main)
+    _git(["worktree", "add", "-b", "loop/issue-2", str(linked), "HEAD"], main)
+
+    original = wm.gitlink_fingerprint(str(linked))
+    assert original is not None
+
+    (linked / ".git").write_text("gitdir: /tmp/attacker-controlled-decoy-repo\n", encoding="utf-8")
+
+    assert wm.gitlink_fingerprint(str(linked)) != original
+
+
+def test_create_worktree_pins_material_digest_and_gitlink_fingerprint(tmp_path: Path) -> None:
+    """Issue #208 (SEC-H2): a freshly created worktree gets both new fields populated."""
+    main = tmp_path / "repo"
+    _init_repo(main)
+
+    info = wm.create_worktree(str(main), 1)
+
+    assert info.repo_identity_material_digest is not None
+    assert len(info.repo_identity_material_digest) == 64
+    assert info.repo_identity_material_digest[:8] == info.repo_identity_hash
+    assert info.gitlink_fingerprint == wm.gitlink_fingerprint(info.path)
+    assert info.gitlink_fingerprint is not None
+
+
+def test_create_worktree_pins_gitlink_fingerprint_when_reusing_existing_worktree(
+    tmp_path: Path,
+) -> None:
+    main = tmp_path / "repo"
+    _init_repo(main)
+    first = wm.create_worktree(str(main), 1)
+
+    reused = wm.create_worktree(str(main), 1)
+
+    assert reused.path == first.path
+    assert reused.gitlink_fingerprint == first.gitlink_fingerprint
 
 
 def test_verify_repo_identity_recomputes_from_worktree_path(

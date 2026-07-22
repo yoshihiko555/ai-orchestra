@@ -33,16 +33,80 @@ class WorktreeInfo:
     path: str
     branch: str
     repo_identity_hash: str
+    # Issue #208 (SEC-H2) hardening, both optional/defaulted for back-compat with existing
+    # direct-construction call sites (e.g. test doubles) that predate this field:
+    repo_identity_material_digest: str | None = None
+    gitlink_fingerprint: str | None = None
 
 
-def resolve_repo_identity_hash(project_dir: str) -> str:
-    """Return the 8-character repository identity hash."""
+def resolve_repo_identity_material(project_dir: str) -> str:
+    """Return the raw repository identity material backing `resolve_repo_identity_hash()`.
+
+    Prefers `remote.origin.url`, falling back to the absolute git-common-dir path, and
+    finally the resolved `project_dir` itself when neither git query succeeds (e.g. not a
+    git repository at all). Split out from `resolve_repo_identity_hash()` (Issue #208) so a
+    caller that needs the *full-strength* material -- not the 8-hex-character (32-bit)
+    truncated hash, which is only safe for loop_id/state-directory naming, never for security
+    verification (see `resolve_repo_identity_material_digest()`) -- does not have to
+    re-implement this resolution order.
+    """
     material = _git(["config", "--get", "remote.origin.url"], project_dir)
     if not material:
         material = _git(["rev-parse", "--path-format=absolute", "--git-common-dir"], project_dir)
     if not material:
         material = str(Path(project_dir).resolve())
-    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:8]
+    return material
+
+
+def resolve_repo_identity_hash(project_dir: str) -> str:
+    """Return the 8-character repository identity hash."""
+    return hashlib.sha256(resolve_repo_identity_material(project_dir).encode("utf-8")).hexdigest()[
+        :8
+    ]
+
+
+def resolve_repo_identity_material_digest(project_dir: str) -> str:
+    """Return the full (untruncated, 64-hex-character) SHA-256 digest of the identity material.
+
+    Issue #208 (SEC-H2): `resolve_repo_identity_hash()`'s 8-hex-character (32-bit) truncation
+    is a realistic target for a crafted-material preimage search once the expected value is
+    public -- and it always is, since it is embedded in the loop_id/state-directory name
+    (`.claude/loop/<hash>-issue-<N>`). This full digest is meant for the security-sensitive
+    re-verification path (`loop_common.is_repo_identity_verified()`) instead, where a 32-bit
+    collision budget is not an acceptable safety margin. The 8-hex hash itself is left
+    unchanged (still used for loop_id naming) for backward compatibility with existing loop
+    state directories.
+    """
+    return hashlib.sha256(resolve_repo_identity_material(project_dir).encode("utf-8")).hexdigest()
+
+
+def gitlink_fingerprint(worktree_path: str) -> str | None:
+    """Return a SHA-256 digest of a linked worktree's `.git` gitlink pointer, or `None`.
+
+    Issue #208 (SEC-H2): a `git worktree add` checkout has a plain-text `.git` *file* (not a
+    directory) containing `gitdir: <path-to-.git/worktrees/<name>>`, which every later
+    `git -C worktree_path ...` invocation resolves through to find the shared repository's
+    real `.git` directory (config, refs, objects). The Maker has unrestricted `Edit`/`Write`
+    access to this file inside the shared worktree; rewriting its content can silently
+    redirect every later git operation -- including repo-identity re-verification -- to an
+    attacker-controlled decoy repository, with no hash collision required at all (the decoy's
+    `remote.origin.url` can simply be set to whatever value the attacker wants it to be, since
+    they control the whole decoy repo's config). Pinning this file's content at worktree
+    creation time (the earliest trustworthy moment, before any Maker has run) and comparing it
+    on every later verification closes that gap.
+
+    Returns `None` when `.git` is missing or is a directory (a non-worktree checkout, e.g. the
+    main repository itself) -- there is nothing gitlink-specific to fingerprint in that layout,
+    and callers must treat `None` as "not applicable", never as "verified".
+    """
+    git_path = Path(worktree_path) / ".git"
+    if not git_path.is_file():
+        return None
+    try:
+        content = git_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
 def compute_loop_id(project_dir: str, issue_number: int) -> str:
@@ -61,15 +125,37 @@ def worktree_path_for(project_dir: str, issue_number: int) -> str:
     return str(root / ".worktrees" / f"loop-issue-{issue_number}")
 
 
-def is_existing_loop_worktree(worktree_path: str, expected_branch: str) -> bool:
-    """Return True when path is an existing independent worktree on expected branch."""
+def is_existing_loop_worktree(worktree_path: str, expected_branch: str, project_dir: str) -> bool:
+    """Return True when path is an existing independent worktree of project_dir on expected_branch.
+
+    Issue #208 (SEC-H2) review finding (critical): previously this only checked that
+    `worktree_path` looked like *some* independent linked worktree already sitting on
+    `expected_branch`, without ever verifying it actually belongs to `project_dir`'s repository.
+    A stale or pre-staged linked worktree from a different, attacker-controlled repository that
+    happens to be checked out on a branch named `expected_branch` (trivial for an attacker who
+    controls the decoy repo) would pass this check unnoticed, and `create_worktree()` would then
+    reuse it as-is and pin *its* `.git` gitlink as the trusted baseline (`gitlink_fingerprint()`,
+    also Issue #208) -- pinning a lie the very first time, with no hash collision required at
+    all, since the decoy's `remote.origin.url` can simply be set to whatever the attacker wants.
+    Requiring `worktree_path` to resolve to the *same* absolute `--git-common-dir` as
+    `project_dir` closes this: only a worktree git itself already lists as belonging to
+    `project_dir`'s repository can be reused (same pattern as `loop_git_ephemeral.py`'s own
+    project/worktree common-dir cross-check).
+    """
     if not os.path.isdir(worktree_path):
         return False
-    git_dir = _git(["rev-parse", "--git-dir"], worktree_path)
-    common_dir = _git(["rev-parse", "--git-common-dir"], worktree_path)
+    git_dir = _git(["rev-parse", "--path-format=absolute", "--git-dir"], worktree_path)
+    common_dir = _git(["rev-parse", "--path-format=absolute", "--git-common-dir"], worktree_path)
     is_worktree = bool(git_dir) and bool(common_dir) and git_dir != common_dir
+    if not is_worktree:
+        return False
+    project_common_dir = _git(
+        ["rev-parse", "--path-format=absolute", "--git-common-dir"], project_dir
+    )
+    if not project_common_dir or common_dir != project_common_dir:
+        return False
     current_branch = _git(["branch", "--show-current"], worktree_path)
-    return is_worktree and current_branch == expected_branch
+    return current_branch == expected_branch
 
 
 def create_worktree(
@@ -79,15 +165,41 @@ def create_worktree(
     branch = branch_name_for(issue_number)
     path = worktree_path_for(project_dir, issue_number)
     repo_hash = resolve_repo_identity_hash(project_dir)
-    if is_existing_loop_worktree(path, branch):
-        return WorktreeInfo(path=path, branch=branch, repo_identity_hash=repo_hash)
+    material_digest = resolve_repo_identity_material_digest(project_dir)
+    if os.path.isdir(path):
+        # Issue #208 (SEC-H2): a path that already exists but fails the same-repository check
+        # is refused outright (fail closed), never silently handed to `git worktree add` below
+        # (whose behavior on a pre-existing, non-worktree directory is not a security control we
+        # want to depend on).
+        if not is_existing_loop_worktree(path, branch, project_dir):
+            raise WorktreeError(
+                f"refusing to reuse {path!r}: it exists but is not an independent worktree of "
+                f"{project_dir!r} on branch {branch!r} (Issue #208/SEC-H2)"
+            )
+        return _worktree_info(path, branch, repo_hash, material_digest)
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     if _branch_exists(project_dir, branch):
         _run_git(["worktree", "add", path, branch], project_dir)
-        return WorktreeInfo(path=path, branch=branch, repo_identity_hash=repo_hash)
+        return _worktree_info(path, branch, repo_hash, material_digest)
     base = base_branch or _default_base_branch(project_dir)
     _run_git(["worktree", "add", "-b", branch, path, base], project_dir)
-    return WorktreeInfo(path=path, branch=branch, repo_identity_hash=repo_hash)
+    return _worktree_info(path, branch, repo_hash, material_digest)
+
+
+def _worktree_info(path: str, branch: str, repo_hash: str, material_digest: str) -> WorktreeInfo:
+    """Build a `WorktreeInfo`, pinning the gitlink fingerprint at this trustworthy moment.
+
+    Issue #208 (SEC-H2): called only from `create_worktree()`'s own return sites, i.e. right
+    after the worktree is known to exist and before any Maker has ever had a chance to run --
+    the earliest trustworthy moment to read `path`'s `.git` gitlink pointer as a baseline.
+    """
+    return WorktreeInfo(
+        path=path,
+        branch=branch,
+        repo_identity_hash=repo_hash,
+        repo_identity_material_digest=material_digest,
+        gitlink_fingerprint=gitlink_fingerprint(path),
+    )
 
 
 def remove_worktree(project_dir: str, issue_number: int, force: bool = False) -> None:
@@ -100,7 +212,13 @@ def remove_worktree(project_dir: str, issue_number: int, force: bool = False) ->
 
 
 def verify_repo_identity(worktree_path: str, expected_hash: str) -> bool:
-    """Verify that worktree_path still belongs to the expected repository."""
+    """Verify that worktree_path still belongs to the expected repository.
+
+    Unused by the loop-harness driver/step CLIs (they use the hardened
+    `loop_common.is_repo_identity_verified()`, Issue #208/SEC-H2, instead); this legacy 8-hex
+    truncated-hash comparison is kept only as a standalone utility and is not suitable for
+    security-sensitive re-verification against an untrusted worktree.
+    """
     return resolve_repo_identity_hash(worktree_path) == expected_hash
 
 

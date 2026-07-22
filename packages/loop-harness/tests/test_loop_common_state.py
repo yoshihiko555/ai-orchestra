@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import subprocess
@@ -1452,6 +1453,17 @@ def _git(args: list[str], cwd: Path) -> str:
     return result.stdout.strip()
 
 
+def _init_repo(path: Path) -> None:
+    """Init a real, remote-less git repo (Issue #208 gitlink/config-tamper tests)."""
+    path.mkdir(parents=True, exist_ok=True)
+    _git(["init", "-b", "main"], path)
+    _git(["config", "user.email", "loop-harness@example.com"], path)
+    _git(["config", "user.name", "Loop Harness Test"], path)
+    (path / "README.md").write_text("root\n", encoding="utf-8")
+    _git(["add", "README.md"], path)
+    _git(["commit", "-m", "init"], path)
+
+
 def _init_repo_with_remote(path: Path, remote_path: Path, branch: str) -> None:
     """Init a real repo + a real bare remote, without pushing (tests push explicitly)."""
     remote_path.mkdir(parents=True, exist_ok=True)
@@ -2246,3 +2258,214 @@ def test_reconcile_replays_persisted_remote_head_refresh_without_a_live_query(
 
     assert outcome.action_taken == "resolved_from_journal"
     assert lc.load_state("abcd1234-issue-1", project_dir).remote_head_baseline == persisted_head
+
+
+# --- Issue #208 (SEC-H2): repo-identity re-verification hardening -----------------------------
+
+
+def _linked_worktree_state(
+    repo: Path,
+    linked: Path,
+    branch: str,
+    *,
+    repo_identity_hash: str | None = None,
+    repo_identity_material_digest: str | None = None,
+    worktree_gitlink_digest: str | None = None,
+) -> lc.LoopState:
+    """Build a `LoopState` pointing at `linked` (a real linked worktree of `repo`)."""
+    state = lc._initial_state(
+        "abcd1234-issue-1",
+        "issue-loop",
+        repo_identity_hash if repo_identity_hash is not None else lc._repo_identity_hash(str(repo)),
+        str(linked),
+        branch,
+        "implementation",
+    )
+    state.repo_identity_material_digest = repo_identity_material_digest
+    state.worktree_gitlink_digest = worktree_gitlink_digest
+    return state
+
+
+def test_is_repo_identity_verified_legacy_state_accepts_matching_truncated_hash(
+    tmp_path: Path,
+) -> None:
+    """Pre-Issue-#208 state.json (no pinned digest/gitlink) keeps working unchanged."""
+    repo = tmp_path / "repo"
+    linked = tmp_path / "linked"
+    _init_repo(repo)
+    _git(["worktree", "add", "-b", "loop/issue-1", str(linked), "HEAD"], repo)
+
+    state = _linked_worktree_state(repo, linked, "loop/issue-1")
+
+    assert lc.is_repo_identity_verified(state) is True
+
+
+def test_is_repo_identity_verified_legacy_state_rejects_hash_mismatch(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    linked = tmp_path / "linked"
+    _init_repo(repo)
+    _git(["worktree", "add", "-b", "loop/issue-1", str(linked), "HEAD"], repo)
+
+    state = _linked_worktree_state(repo, linked, "loop/issue-1", repo_identity_hash="wrong0000")
+
+    assert lc.is_repo_identity_verified(state) is False
+
+
+def test_is_repo_identity_verified_prefers_pinned_material_digest_over_truncated_hash(
+    tmp_path: Path,
+) -> None:
+    """A pinned `repo_identity_material_digest` is authoritative even if the (unused) legacy
+    truncated hash on the same state happens to be stale."""
+    repo = tmp_path / "repo"
+    linked = tmp_path / "linked"
+    _init_repo(repo)
+    _git(["worktree", "add", "-b", "loop/issue-1", str(linked), "HEAD"], repo)
+
+    expected_digest = hashlib.sha256(
+        lc._repo_identity_material(str(repo)).encode("utf-8")
+    ).hexdigest()
+    state = _linked_worktree_state(
+        repo,
+        linked,
+        "loop/issue-1",
+        repo_identity_hash="stale0000",
+        repo_identity_material_digest=expected_digest,
+    )
+
+    assert lc.is_repo_identity_verified(state) is True
+
+
+def test_is_repo_identity_verified_rejects_material_digest_mismatch(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    linked = tmp_path / "linked"
+    _init_repo(repo)
+    _git(["worktree", "add", "-b", "loop/issue-1", str(linked), "HEAD"], repo)
+
+    state = _linked_worktree_state(
+        repo,
+        linked,
+        "loop/issue-1",
+        repo_identity_material_digest="0" * 64,
+    )
+
+    assert lc.is_repo_identity_verified(state) is False
+
+
+def test_is_repo_identity_verified_rejects_gitlink_tamper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #208 (SEC-H2): rewriting the linked worktree's `.git` gitlink pointer -- even
+    while leaving it syntactically valid and still resolving to the same real gitdir -- must
+    flip verification to `False` once a baseline was pinned."""
+    from tests.module_loader import load_module
+
+    wm = load_module("worktree_manager", "packages/loop-harness/lib/worktree_manager.py")
+    monkeypatch.setattr(lc.socket, "gethostname", lambda: "local")
+
+    repo = tmp_path / "repo"
+    linked = tmp_path / "linked"
+    _init_repo(repo)
+    _git(["worktree", "add", "-b", "loop/issue-1", str(linked), "HEAD"], repo)
+    pinned_gitlink = wm.gitlink_fingerprint(str(linked))
+    assert pinned_gitlink is not None
+
+    state = _linked_worktree_state(
+        repo,
+        linked,
+        "loop/issue-1",
+        # Both digest fields must be set together, matching how `create_worktree()` + `start()`
+        # always populate them for a real (post-Issue-#208) loop -- `is_repo_identity_verified()`
+        # gates its whole hardened path behind `repo_identity_material_digest is not None`.
+        repo_identity_material_digest=wm.resolve_repo_identity_material_digest(str(repo)),
+        worktree_gitlink_digest=pinned_gitlink,
+    )
+    assert lc.is_repo_identity_verified(state) is True
+
+    # `/.` is a harmless self-referencing path suffix (still resolves to the identical
+    # directory on POSIX), so this changes the gitlink file's byte content -- and therefore its
+    # fingerprint -- without breaking the worktree's own git functionality (confirmed: `git -C
+    # <worktree> rev-parse --git-common-dir`/`config --get` both still resolve correctly).
+    gitlink_path = linked / ".git"
+    original = gitlink_path.read_text(encoding="utf-8")
+    gitlink_path.write_text(original.rstrip("\n") + "/.\n", encoding="utf-8")
+
+    assert lc.is_repo_identity_verified(state) is False
+
+
+def test_is_repo_identity_verified_ignores_gitlink_drift_when_digest_not_pinned(
+    tmp_path: Path,
+) -> None:
+    """Back-compat: a loop that predates Issue #208 (`worktree_gitlink_digest is None`) has no
+    baseline to compare against, so gitlink drift is not (and cannot be) newly flagged."""
+    repo = tmp_path / "repo"
+    linked = tmp_path / "linked"
+    _init_repo(repo)
+    _git(["worktree", "add", "-b", "loop/issue-1", str(linked), "HEAD"], repo)
+
+    state = _linked_worktree_state(repo, linked, "loop/issue-1")
+
+    # `/.` is a harmless self-referencing path suffix (still resolves to the identical
+    # directory on POSIX), so this changes the gitlink file's byte content -- and therefore its
+    # fingerprint -- without breaking the worktree's own git functionality (confirmed: `git -C
+    # <worktree> rev-parse --git-common-dir`/`config --get` both still resolve correctly).
+    gitlink_path = linked / ".git"
+    original = gitlink_path.read_text(encoding="utf-8")
+    gitlink_path.write_text(original.rstrip("\n") + "/.\n", encoding="utf-8")
+
+    assert lc.is_repo_identity_verified(state) is True
+
+
+def test_is_repo_identity_verified_rejects_dangerous_local_git_config(tmp_path: Path) -> None:
+    """Issue #208 (SEC-H2): a Maker `Edit`-write of an `insteadOf` rewrite into the (shared)
+    worktree's local git config must fail identity re-verification, matching the same
+    dangerous-key family `loop_driver_support.find_dangerous_local_git_config()` already
+    screens for before every driver-owned push."""
+    repo = tmp_path / "repo"
+    linked = tmp_path / "linked"
+    _init_repo(repo)
+    _git(["worktree", "add", "-b", "loop/issue-1", str(linked), "HEAD"], repo)
+    origin_url = str(repo.resolve())
+    _git(["remote", "add", "origin", origin_url], repo)
+    material_digest = hashlib.sha256(
+        lc._repo_identity_material(str(repo)).encode("utf-8")
+    ).hexdigest()
+
+    state = _linked_worktree_state(
+        repo, linked, "loop/issue-1", repo_identity_material_digest=material_digest
+    )
+    assert lc.is_repo_identity_verified(state) is True
+
+    _git(["config", "url.https://evil.example/.insteadOf", origin_url], linked)
+
+    assert lc.is_repo_identity_verified(state) is False
+
+
+def test_is_repo_identity_verified_rejects_when_git_config_scan_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #208 (SEC-H2) review finding (high): `find_dangerous_local_git_config()`'s
+    fail-open `None` return conflates "scanned and clean" with "scan itself could not be
+    completed" (process error/timeout). A Maker that makes the scan fail (e.g. by making
+    `.git/config` transiently unreadable right before a driver re-verification call) must not
+    be treated as clean by identity re-verification -- an unscannable config must fail closed
+    here, unlike the intentionally fail-open push-guard callers of the same underlying scan."""
+    lds = load_module("loop_driver_support", "packages/loop-harness/lib/loop_driver_support.py")
+
+    repo = tmp_path / "repo"
+    linked = tmp_path / "linked"
+    _init_repo(repo)
+    _git(["worktree", "add", "-b", "loop/issue-1", str(linked), "HEAD"], repo)
+    material_digest = hashlib.sha256(
+        lc._repo_identity_material(str(repo)).encode("utf-8")
+    ).hexdigest()
+
+    state = _linked_worktree_state(
+        repo, linked, "loop/issue-1", repo_identity_material_digest=material_digest
+    )
+    assert lc.is_repo_identity_verified(state) is True
+
+    monkeypatch.setattr(
+        lds, "local_git_config_scan_result", lambda _cwd, _timeout_seconds=10.0: (False, None)
+    )
+
+    assert lc.is_repo_identity_verified(state) is False
