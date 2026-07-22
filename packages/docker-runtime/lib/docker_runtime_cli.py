@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Shared Docker CLI, image inspection, and image build helpers."""
+"""Shared Docker CLI, image inspection, and image build helpers.
+
+Also hosts the shared implementation of image_pin semver validation and
+matching (`version_token`/`is_bare_semver_pin`/`version_matches`/
+`version_from_pin`) used by every Docker-backed harness namespace adapter
+(meta-harness, loop-harness) so the comparison semantics stay identical.
+"""
 
 from __future__ import annotations
 
@@ -15,6 +21,7 @@ SubprocessRunner = Callable[..., subprocess.CompletedProcess]
 
 CHECKED_COMMAND_TIMEOUT_SECONDS = 120
 _DIGEST_IMAGE_RE = re.compile(r"@sha256:([0-9a-f]{64})$")
+SEMVER_PIN_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$")
 
 
 class DockerCliError(RuntimeError):
@@ -217,6 +224,63 @@ def host_env() -> dict[str, str]:
         "TMPDIR",
     )
     return {key: os.environ[key] for key in allowed if os.environ.get(key)}
+
+
+def version_token(value: str | None) -> str:
+    """Extract the leading version token so bare semver image_pin values (e.g.
+    "2.1.207") compare equal to full `claude --version` output (e.g.
+    "2.1.207 (Claude Code)").
+
+    Shared image_pin semver validation/matching implementation: every
+    Docker-backed harness (meta-harness, loop-harness) delegates here so the
+    comparison semantics stay identical across namespaces.
+    """
+    if value is None:
+        return ""
+    stripped = value.strip()
+    return stripped.split(maxsplit=1)[0] if stripped else ""
+
+
+def is_bare_semver_pin(pin: str) -> bool:
+    """Shared image_pin semver validation: report whether `pin` is a bare
+    semver string (X.Y.Z[-suffix]) with no wrapper text."""
+    return SEMVER_PIN_RE.fullmatch(pin.strip()) is not None
+
+
+def version_matches(actual: str | None, pin: str) -> bool:
+    """Compare a reported `claude --version` string against a configured
+    image_pin.
+
+    Shared image_pin semver matching implementation. A bare semver pin (e.g.
+    "2.1.207") matches via leading-token comparison so it accepts the fuller
+    `claude --version` output (e.g. "2.1.207 (Claude Code)"). Any other pin
+    format must match the reported version exactly, preserving the strict
+    Docker capability contract: a prebuilt image reporting an unexpected
+    wrapper (e.g. "2.1.207 (unexpected wrapper)") must fail closed rather
+    than pass on a token match.
+    """
+    if actual is None:
+        return False
+    if is_bare_semver_pin(pin):
+        return version_token(actual) == version_token(pin)
+    return actual == pin
+
+
+def version_from_pin(image_pin: str) -> str:
+    """Extract and validate the Claude CLI version encoded in an image_pin,
+    for use as a Docker build arg.
+
+    Shared image_pin semver validation implementation. Raises `ValueError`
+    (not `DockerCliError`, to avoid a dependency on Docker-operation state)
+    if `image_pin` is empty or not a valid semver version; callers own
+    translating that into their own image-lifecycle error type.
+    """
+    version = image_pin.strip().split(maxsplit=1)[0] if image_pin.strip() else ""
+    if not version:
+        raise ValueError("image_pin must contain a Claude CLI version")
+    if SEMVER_PIN_RE.fullmatch(version) is None:
+        raise ValueError(f"image_pin version must match semver (X.Y.Z[-suffix]): {version!r}")
+    return version
 
 
 def _trust_immutable_image(

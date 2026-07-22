@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -15,17 +14,17 @@ if str(_DOCKER_RUNTIME_LIB) not in sys.path:
     sys.path.insert(0, str(_DOCKER_RUNTIME_LIB))
 
 import docker_runtime_cli as runtime
+import meta_harness_common as mh
+import scenario_docker_image as simg
 
 SubprocessRunner = runtime.SubprocessRunner
 
 DOCKER_LABEL = "ai.orchestra.meta-harness"
-DOCKER_CONTEXT_HASH_LABEL = f"{DOCKER_LABEL}.context-sha256"
 DEFAULT_SCENARIO_IMAGE = "ai-orchestra/meta-harness-scenario:2.1.207"
 DEFAULT_BROKER_IMAGE = "ai-orchestra/meta-harness-broker:0.1.0"
 DEFAULT_CLAUDE_VERSION_PIN = "2.1.207 (Claude Code)"
 CHECKED_COMMAND_TIMEOUT_SECONDS = runtime.CHECKED_COMMAND_TIMEOUT_SECONDS
 DockerCliError = runtime.DockerCliError
-_SEMVER_PIN_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$")
 
 _IMAGE_CACHE = runtime.ImageCache()
 _TRUSTED_IMAGE_IDS = _IMAGE_CACHE.trusted_image_ids
@@ -36,43 +35,15 @@ def ensure_images(
     config: dict,
     *,
     runner: SubprocessRunner = subprocess.run,
+    main_root: Path | None = None,
 ) -> tuple[str, str]:
-    isolation = (config.get("evaluate") or {}).get("isolation") or {}
-    broker_cfg = isolation.get("broker") or {}
-    scenario_image = str(isolation.get("image", DEFAULT_SCENARIO_IMAGE))
-    broker_image = str(broker_cfg.get("image", DEFAULT_BROKER_IMAGE))
-    auto_build = bool(isolation.get("auto_build_images", True))
-    configured_version_pin = isolation.get("image_pin")
-    version_pin = str(
-        configured_version_pin if configured_version_pin is not None else DEFAULT_CLAUDE_VERSION_PIN
-    )
-    _ensure_image(
-        scenario_image,
-        _context_dir("scenario"),
-        auto_build=auto_build,
-        build_args=[
-            "--build-arg",
-            f"CLAUDE_CODE_VERSION={_claude_version_from_pin(version_pin)}",
-        ],
-        runner=runner,
-    )
-    _ensure_image(
-        broker_image,
-        _context_dir("broker"),
-        auto_build=auto_build,
-        build_args=[],
-        runner=runner,
-    )
-    return scenario_image, broker_image
-
-
-def _claude_version_from_pin(version_pin: str) -> str:
-    version = version_pin.strip().split(maxsplit=1)[0] if version_pin.strip() else ""
-    if not version:
-        raise DockerCliError("image_pin must contain a Claude CLI version")
-    if _SEMVER_PIN_RE.fullmatch(version) is None:
-        raise DockerCliError(f"image_pin version must match semver (X.Y.Z[-suffix]): {version!r}")
-    return version
+    try:
+        root = main_root if main_root is not None else mh.resolve_main_root(Path.cwd(), config)
+        scenario = simg.ensure_scenario_image(config, root, runner=runner)
+        broker = simg.ensure_broker_image(config, root, runner=runner)
+    except (simg.DockerImageError, mh.MetaHarnessRootError) as exc:
+        raise DockerCliError(str(exc)) from exc
+    return scenario.tag, broker.tag
 
 
 def docker_daemon_available(*, runner: SubprocessRunner) -> bool:
@@ -131,25 +102,6 @@ def run(
 
 def host_env() -> dict[str, str]:
     return runtime.host_env()
-
-
-def _ensure_image(
-    image: str,
-    context_dir: Path,
-    *,
-    auto_build: bool,
-    build_args: list[str],
-    runner: SubprocessRunner,
-) -> None:
-    runtime.ensure_image(
-        image,
-        context_dir,
-        context_hash_label=DOCKER_CONTEXT_HASH_LABEL,
-        auto_build=auto_build,
-        build_args=build_args,
-        runner=runner,
-        cache=_IMAGE_CACHE,
-    )
 
 
 def _context_hash(context_dir: Path) -> str:

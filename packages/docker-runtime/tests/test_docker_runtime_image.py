@@ -177,10 +177,16 @@ def test_manifest_reuses_image_across_calls_while_build_lock_is_held(
     tmp_path: Path,
     context: Path,
 ) -> None:
-    """EV-14/EV-17: Persistent validation skips duplicate builds under flock."""
+    """EV-14/EV-17: Persistent validation skips duplicate builds under flock.
+
+    The build itself is serialized on the per-family build lock (Issue
+    #250 Fix B), not the base manifest lock, so the FakeDocker build-time
+    lock probe targets the family lock path.
+    """
     policy = _policy(tmp_path)
+    recipe = _recipe(context)
     fake = FakeDocker()
-    fake.lock_path = policy.lock_path
+    fake.lock_path = image._family_lock_path(policy.lock_path, recipe.family)
     times = iter(
         [
             datetime(2026, 7, 16, 0, 0, tzinfo=UTC),
@@ -527,3 +533,143 @@ def test_auto_build_disabled_requires_immutable_digest(tmp_path: Path, context: 
             immutable_image="ai-orchestra/loop-harness-scenario:latest",
             runner=FakeDocker(),
         )
+
+
+def test_family_name_must_be_lock_file_safe(tmp_path: Path, context: Path) -> None:
+    """EV-24: `family` is interpolated into the per-family lock filename, so
+    it must be validated before use."""
+    with pytest.raises(image.DockerImageError, match="family"):
+        image.ensure_recipe_image(
+            _recipe(context, family="../../etc"),
+            _policy(tmp_path),
+            runner=FakeDocker(),
+        )
+
+
+def test_family_build_lock_does_not_block_a_different_familys_build(
+    tmp_path: Path,
+    context: Path,
+) -> None:
+    """EV-24: An in-flight build lock for one family must not serialize a
+    concurrent ensure for a different family sharing the same policy
+    (Issue #250 Fix B)."""
+    policy = _policy(tmp_path)
+    scenario_lock = image._family_lock_path(policy.lock_path, "scenario")
+    scenario_lock.parent.mkdir(parents=True, exist_ok=True)
+    held_fd = os.open(scenario_lock, os.O_CREAT | os.O_RDWR, 0o600)
+    fcntl.flock(held_fd, fcntl.LOCK_EX)
+    try:
+        fake = FakeDocker()
+        ensured = image.ensure_recipe_image(
+            _recipe(context, family="broker", repository="ai-orchestra/loop-harness-broker"),
+            policy,
+            runner=fake,
+        )
+    finally:
+        fcntl.flock(held_fd, fcntl.LOCK_UN)
+        os.close(held_fd)
+
+    assert ensured.built is True
+    assert fake.build_count == 1
+
+
+def test_concurrent_manifest_writes_across_families_do_not_lose_entries(
+    tmp_path: Path,
+    context: Path,
+) -> None:
+    """EV-25: A manifest write for one family must not clobber an entry
+    written by a concurrent process for a different family (Issue #250 Fix
+    B: the post-build manifest write re-reads from disk instead of reusing
+    an in-memory snapshot taken before the build started)."""
+    policy = _policy(tmp_path)
+    other_digest = "9" * 64
+    other_entry = {
+        "image_id": OTHER_IMAGE_ID,
+        "built_at": "2026-07-16T00:00:00+00:00",
+        "last_used_at": "2026-07-16T00:00:00+00:00",
+    }
+
+    class RacingDocker(FakeDocker):
+        def __call__(self, command: list[str], **kwargs) -> subprocess.CompletedProcess:
+            if command[:3] == ["docker", "buildx", "build"]:
+                # Simulate a different family's process finishing its own
+                # build and writing its manifest entry while this family's
+                # build is still in flight.
+                policy.manifest_path.parent.mkdir(parents=True, exist_ok=True)
+                policy.manifest_path.write_text(
+                    json.dumps({other_digest: other_entry}), encoding="utf-8"
+                )
+            return super().__call__(command, **kwargs)
+
+    recipe = _recipe(context)
+    fake = RacingDocker()
+
+    ensured = image.ensure_recipe_image(recipe, policy, runner=fake)
+
+    manifest = json.loads(policy.manifest_path.read_text(encoding="utf-8"))
+    assert other_digest in manifest
+    assert ensured.recipe_hash in manifest
+
+
+def test_cache_hit_does_not_inspect_unrelated_manifest_entries(
+    tmp_path: Path,
+    context: Path,
+) -> None:
+    """EV-26: Only the requested recipe's digest triggers `docker image
+    inspect`; unrelated (but schema-valid) manifest entries are trusted
+    as-is and are not dropped even if their image no longer exists (Issue
+    #250 Fix C)."""
+    policy = _policy(tmp_path)
+    recipe = _recipe(context)
+    digest = image.recipe_hash(recipe)
+    stale_digest = "7" * 64
+    stale_entry = {
+        "image_id": OTHER_IMAGE_ID,  # never present in fake.images
+        "built_at": "2026-07-16T00:00:00+00:00",
+        "last_used_at": "2026-07-16T00:00:00+00:00",
+    }
+    policy.manifest_path.parent.mkdir(parents=True)
+    policy.manifest_path.write_text(
+        json.dumps(
+            {
+                digest: {
+                    "image_id": IMAGE_ID,
+                    "built_at": "2026-07-16T00:00:00+00:00",
+                    "last_used_at": "2026-07-16T00:00:00+00:00",
+                },
+                stale_digest: stale_entry,
+            }
+        ),
+        encoding="utf-8",
+    )
+    fake = FakeDocker()
+    fake.images[IMAGE_ID] = IMAGE_ID
+    fake.images[image.recipe_tag(recipe, digest)] = IMAGE_ID
+
+    ensured = image.ensure_recipe_image(recipe, policy, runner=fake)
+
+    assert ensured.built is False
+    inspected_refs = [
+        command[-1]
+        for command in fake.commands
+        if command[:4] == ["docker", "image", "inspect", "--format"]
+    ]
+    assert OTHER_IMAGE_ID not in inspected_refs
+    manifest = json.loads(policy.manifest_path.read_text(encoding="utf-8"))
+    assert stale_digest in manifest
+
+
+def test_exclusive_file_lock_rejects_symlinked_lock_path(tmp_path: Path) -> None:
+    """EV-27: A symlinked lock path must fail closed (O_NOFOLLOW) instead of
+    following the symlink into locking/chmod-ing an attacker-controlled
+    target (Issue #250 Fix D, TOCTOU)."""
+    target = tmp_path / "victim.txt"
+    target.write_text("do-not-touch", encoding="utf-8")
+    lock_path = tmp_path / "docker-image-build.lock"
+    lock_path.symlink_to(target)
+
+    with pytest.raises(image.DockerImageError, match="could not lock Docker image build"):
+        with image.exclusive_file_lock(lock_path):
+            pass
+
+    assert target.read_text(encoding="utf-8") == "do-not-touch"

@@ -84,6 +84,14 @@ DEFAULTS: dict[str, Any] = {
             "image": "ai-orchestra/meta-harness-scenario:2.1.207",
             "image_pin": "2.1.207 (Claude Code)",
             "auto_build_images": True,
+            "image_cache": {
+                "manifest_path": ".claude/meta-harness/docker-image-cache.json",
+                "lock_path": ".claude/meta-harness/docker-image-build.lock",
+                "keep_generations": 3,
+                "builder_name": "meta-harness-builder",
+                "buildkit_cache_max_age": "168h",
+                "buildkit_cache_max_size": "10g",
+            },
             "resources": {
                 "pids_limit": 128,
                 "memory": "2g",

@@ -15,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **`meta-harness`: Docker image 管理を永続イメージライフサイクルへ移行（Issue #250）**: scenario/broker image のビルドが毎回の `--no-cache` フルビルドから、recipe hash ベースの再利用（`sha-<hash12>` タグ + ディスク manifest）へ変わり、プロセスをまたいで image を再利用する。世代 prune と専用 buildx builder の BuildKit cache GC も有効になる。`evaluate.isolation.image_cache` 設定キー（manifest/lock パス・保持世代数・builder 名・cache GC 閾値）を追加（未設定時は既定値で後方互換）。`auto_build_images: false` の immutable digest 必須（fail-closed）は従来どおり。設定の `image:` に書くタグは表示用で、`image:` のタグだけを変更しても再ビルドはされない（実際にビルド・再利用される image は recipe hash と `image_pin` で決まる）。この移行後の初回実行時は、まだ manifest に記録がないためフルビルドが 1 回だけ走る。
 - **`core`: Plans.md の管理指針を worktree ローカル運用に明確化**: Plans.md / Plans.archive.md は git にコミットせず、worktree 作業時は作業中 worktree の `.claude/Plans.md` を正本とする（root 側を参照・更新しない）ことを task-memory-usage ルールに明文化した。従来の「git にコミットしてチーム共有を推奨」の記述は削除。
 - **BREAKING** **facet build のキャッシュファイルを `.cache/` 配下へ集約**: これまで `.claude/` / `.codex/` 直下に置いていた生成物キャッシュ（`.facet-manifest.json` / `.facet-packages-hash`）を `.claude/.cache/`・`.codex/.cache/` 配下（`facet-manifest.json` / `packages-hash`）へ移動した。ソースと生成物の分離が目的。後方互換なし。旧ファイルは自動削除されないため、残っている場合は手動で削除する（残置しても次回ビルドで新パスに再生成され、機能への影響はない）。`.gitignore` の無視対象も `.claude/.cache/`・`.codex/.cache/` に更新済み。
 

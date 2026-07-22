@@ -68,7 +68,10 @@
     packages/docker-runtime/tests/test_docker_runtime_image.py::test_manifest_reuses_image_across_calls_while_build_lock_is_held
   covered_by:
     - packages/docker-runtime/tests/test_docker_runtime_image.py::test_manifest_reuses_image_across_calls_while_build_lock_is_held
-  notes: a non-blocking second flock attempt fails while build runs and only one build occurs.
+  notes: >-
+    a non-blocking second flock attempt on the per-family build lock fails
+    while build runs and only one build occurs (Issue #250 Fix B split the
+    build lock from the base manifest lock; see EV-24/EV-25).
 
 - ev_id: EV-18
   phase: 1
@@ -122,6 +125,65 @@
     - packages/docker-runtime/tests/test_docker_runtime_image.py::test_exclusive_file_lock_preserves_critical_section_oserror
     - packages/docker-runtime/tests/test_docker_runtime_image.py::test_exclusive_file_lock_wraps_acquisition_oserror
   notes: critical-section errors propagate unchanged while acquisition errors keep the lock-specific wrapper.
+
+- ev_id: EV-24
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/docker-runtime/tests/test_docker_runtime_image.py::test_family_name_must_be_lock_file_safe
+    packages/docker-runtime/tests/test_docker_runtime_image.py::test_family_build_lock_does_not_block_a_different_familys_build
+  covered_by:
+    - packages/docker-runtime/tests/test_docker_runtime_image.py::test_family_name_must_be_lock_file_safe
+    - packages/docker-runtime/tests/test_docker_runtime_image.py::test_family_build_lock_does_not_block_a_different_familys_build
+  notes: >-
+    an unsafe family name is rejected before it reaches the lock filename,
+    and holding a different family's build lock does not block a build for
+    this family (verified by externally flock-ing the other family's lock
+    file for the duration of the call).
+
+- ev_id: EV-25
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/docker-runtime/tests/test_docker_runtime_image.py::test_concurrent_manifest_writes_across_families_do_not_lose_entries
+  covered_by:
+    - packages/docker-runtime/tests/test_docker_runtime_image.py::test_concurrent_manifest_writes_across_families_do_not_lose_entries
+  notes: >-
+    a manifest entry written mid-build by a simulated concurrent process
+    (a different family) survives this family's post-build manifest write,
+    because the write re-reads from disk instead of reusing a stale
+    in-memory snapshot taken before the build started.
+
+- ev_id: EV-26
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/docker-runtime/tests/test_docker_runtime_image.py::test_cache_hit_does_not_inspect_unrelated_manifest_entries
+  covered_by:
+    - packages/docker-runtime/tests/test_docker_runtime_image.py::test_cache_hit_does_not_inspect_unrelated_manifest_entries
+  notes: >-
+    only the requested recipe's digest is passed to `docker image inspect`;
+    an unrelated schema-valid manifest entry pointing at a nonexistent
+    image is neither inspected nor dropped.
+
+- ev_id: EV-27
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/docker-runtime/tests/test_docker_runtime_image.py::test_exclusive_file_lock_rejects_symlinked_lock_path
+  covered_by:
+    - packages/docker-runtime/tests/test_docker_runtime_image.py::test_exclusive_file_lock_rejects_symlinked_lock_path
+  notes: >-
+    a lock path replaced with a symlink fails closed via `O_NOFOLLOW`
+    instead of following it into locking/chmod-ing the symlink target.
 
 - ev_id: EV-21
   phase: 1
