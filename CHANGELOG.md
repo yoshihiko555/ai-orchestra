@@ -9,6 +9,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - **`core` / `preflight`: Plans.md にフェーズ単位の Acceptance Criteria セクションを追加**: 各 Phase に `- [ ] 条件 — verify: \`コマンド\``（機械検証）/ `— judge: 判定基準`（主観）形式の受け入れ条件を記載できるようになり、`/preflight` が合意済みの受け入れ条件を Plans.md へ必ず登録する。未チェック AC が残るフェーズは SessionStart の自動アーカイブで完了扱いにならない（AC セクションのない既存 Plans.md は従来通り）。
+- **`orchex`: `init` サブコマンドを追加**: プロジェクト初期化（`orchex init --project <path>`）を CLI から直接実行できるようになった。
+
 ### Security
 
 - **`loop-harness`: repo-identity 再照合を worktree 改ざんに対して強化（Issue #208）**: `is_repo_identity_verified` による安全停止判定が、新規ループ作成時に記録した worktree `.git` gitlink の内容ハッシュ、shared worktree のローカル git config 危険キー（`insteadOf`/`pushurl`/`credential.helper` 等）の不在、識別マテリアルの完全長（256bit）ダイジェスト一致の 3 点を追加でチェックするようになった。既存の 8 文字ハッシュ（`loop_id` 命名）自体は変更しておらず、Issue #208 以前に作成済みのループは従来どおりの判定にフォールバックする（後方互換）。既存 worktree の再利用は、その worktree が対象プロジェクトと同一リポジトリに属することを確認できた場合のみに限定し、ローカル git config の危険キースキャン自体が完了できなかった場合（プロセスエラー・タイムアウト）も改ざんとして扱う（いずれもフェイルクローズ）。
@@ -17,6 +19,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **`core`: Plans.md の管理指針を worktree ローカル運用に明確化**: Plans.md / Plans.archive.md は git にコミットせず、worktree 作業時は作業中 worktree の `.claude/Plans.md` を正本とする（root 側を参照・更新しない）ことを task-memory-usage ルールに明文化した。従来の「git にコミットしてチーム共有を推奨」の記述は削除。
 - **BREAKING** **facet build のキャッシュファイルを `.cache/` 配下へ集約**: これまで `.claude/` / `.codex/` 直下に置いていた生成物キャッシュ（`.facet-manifest.json` / `.facet-packages-hash`）を `.claude/.cache/`・`.codex/.cache/` 配下（`facet-manifest.json` / `packages-hash`）へ移動した。ソースと生成物の分離が目的。後方互換なし。旧ファイルは自動削除されないため、残っている場合は手動で削除する（残置しても次回ビルドで新パスに再生成され、機能への影響はない）。`.gitignore` の無視対象も `.claude/.cache/`・`.codex/.cache/` に更新済み。
+- **`orchex`: `--help` を拡充**: トップレベル `--help` がライフサイクル順のグループ化コマンド一覧（はじめに/パッケージ管理/生成・同期/実行・委譲）と、初回導入・日常運用・テンプレート更新の 3 シナリオを含む epilog を表示するようになった。全コマンドの `--help` に description と具体例が追加され、`--version` もオプション一覧に表示される。
 
 ### Fixed
 

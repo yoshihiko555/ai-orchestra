@@ -1,7 +1,7 @@
 # orchex CLI（orchestra-manager）評価セット
 
 **対象**: `scripts/orchestra-manager.py`（CLI 本体）+ `scripts/lib/*.py`（`orchestra_hooks` / `orchestra_context` / `sync_engine` / `facet_builder` / `orchestra_models` / `gitignore_sync` / `toml_merge` / `agent_model_patch` / `settings_io` / `scaffold`）+ `ai_orchestra/cli.py`（`pip install orchex` 経由のエントリポイント）
-**対象テストファイル（SSOT、参考）**: `tests/unit/test_orchestra_manager_core.py`, `test_orchestra_manager_context.py`, `test_orchestra_manager_force_flag.py`, `test_orchestra_manager_gitignore.py`, `test_orchestra_manager_run_passthrough.py`, `test_orchestra_manager_proxy.py`, `test_orchestra_manager_cocoindex_uninstall.py`, `test_orchestra_manager_gaps.py`, `test_ai_orchestra_cli.py`
+**対象テストファイル（SSOT、参考）**: `tests/unit/test_orchestra_manager_core.py`, `test_orchestra_manager_context.py`, `test_orchestra_manager_force_flag.py`, `test_orchestra_manager_gitignore.py`, `test_orchestra_manager_run_passthrough.py`, `test_orchestra_manager_proxy.py`, `test_orchestra_manager_cocoindex_uninstall.py`, `test_orchestra_manager_gaps.py`, `test_orchestra_manager_help.py`, `test_ai_orchestra_cli.py`
 **テスト所有権マッピング（解消済み、Issue #237）**: `packages/quality-gates/hooks/evaluation-set-checker.py` はかつて `packages/<pkg>/tests/` ディレクトリ名、またはトップレベル `tests/` 配下ファイル名のパッケージ名トークンマッチでのみ担当パッケージを判定していたため、`packages/` 配下にディレクトリを持たない本評価セットのテストファイル群は自動識別されず（`test_orchestra_manager_core.py` は `core` パッケージへの誤マッチも発生していた）、人手での突合が必要だった。`.claude/config/quality-gates/evaluation-set-mapping.yaml`（`orchex-cli` の `test_globs` に `tests/unit/test_orchestra_manager_*.py`/`tests/unit/test_ai_orchestra_cli.py` を明示登録）の追加により、上記テストファイル群は自動的に本評価セットへ誘導されるようになった
 **類型**: CLI ツール型
 **作成日**: 2026-07-15
@@ -80,6 +80,9 @@ orchex CLI（`scripts/orchestra-manager.py`、配布後は `orchex` / `ai-orches
 - [ ] EV-32（正常 / should）: コマンド契約 — `orchex -v`/`--version` は `orchestra-manager.py` への委譲を行わず `ai_orchestra.__version__` を出力する — 根拠: 実装挙動
 - [ ] EV-33（正常 / should）: facet コマンド契約 — `facet build`/`facet extract` は `--name` 省略時に全 composition を対象にする。composition マージの詳細仕様は Non-Goals の通り対象外 — 根拠: 実装挙動
 - N/A: 出力の安定性 — `list`/`status` は人間可読テキストのみを出力し、機械可読出力（JSON 等）の契約は現状定義されていない（将来 `--json` 等を追加する場合は本項を EV 化する）
+- [ ] EV-34（正常 / must）: `init` は CLI サブコマンドとして露出し `orchex init --help` が引ける — 根拠: 実装挙動、PR #302
+- [ ] EV-35（正常 / must）: COMMAND_REGISTRY の keys と subparsers.choices は常に一致し、トップレベル help のグループ化一覧は registry から導出される — 根拠: 実装挙動、ドリフト防止テスト
+- [ ] EV-36（正常 / must）: 全トップレベルコマンドは description と 1 件以上の examples を help に表示する — 根拠: 実装挙動
 
 ## 5. テストレビュー判断基準（パッケージ固有）
 
