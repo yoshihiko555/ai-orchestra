@@ -896,7 +896,7 @@ def build_facets(
         except (json.JSONDecodeError, OSError):
             pkgs_str = ""
         pkgs_hash = hashlib.md5(pkgs_str.encode()).hexdigest()
-        hash_file = project_dir / ".claude" / ".facet-packages-hash"
+        hash_file = project_dir / ".claude" / ".cache" / "packages-hash"
         prev_hash = ""
         if hash_file.is_file():
             try:
@@ -905,6 +905,7 @@ def build_facets(
                 pass
         if pkgs_hash != prev_hash:
             try:
+                hash_file.parent.mkdir(parents=True, exist_ok=True)
                 hash_file.write_text(pkgs_hash, encoding="utf-8")
             except OSError:
                 pass

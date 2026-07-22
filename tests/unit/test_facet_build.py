@@ -609,7 +609,7 @@ class TestOrphanCleanup:
         assert (project_dir / ".claude" / "skills" / "review" / "SKILL.md").is_file()
 
         # マニフェストが作成された
-        manifest_path = project_dir / ".claude" / ".facet-manifest.json"
+        manifest_path = project_dir / ".claude" / ".cache" / "facet-manifest.json"
         assert manifest_path.is_file()
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         assert "simplify" in manifest["skills"]
@@ -778,7 +778,8 @@ class TestLegacyCodexSkillMigration:
         legacy_skill = project_dir / ".codex" / "skills" / "simplify" / "SKILL.md"
         legacy_skill.parent.mkdir(parents=True, exist_ok=True)
         legacy_skill.write_text("# old simplify\n", encoding="utf-8")
-        manifest_path = project_dir / ".codex" / ".facet-manifest.json"
+        manifest_path = project_dir / ".codex" / ".cache" / "facet-manifest.json"
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
         manifest_path.write_text(
             json.dumps({"skills": ["simplify"], "rules": []}), encoding="utf-8"
         )
