@@ -400,6 +400,244 @@ def test_main_passes_custom_marker_mapping_to_parse_tasks(tmp_path, monkeypatch)
     }
 
 
+def test_detect_completed_projects_blocks_on_unchecked_acceptance_criteria() -> None:
+    content = "\n".join(
+        [
+            "## Project: Demo",
+            "### Phase 1: Setup",
+            "#### Tasks",
+            "- `cc:done` task A",
+            "#### Acceptance Criteria",
+            "- [ ] condition — verify: `echo ok`",
+        ]
+    )
+
+    completed = load_task_state.detect_completed_projects(
+        content, load_task_state.DEFAULT_MARKER_PATTERN, load_task_state.DEFAULT_MARKER_TO_STATE
+    )
+
+    assert completed == []
+
+
+def test_detect_completed_projects_blocks_even_when_phase_header_marked_done() -> None:
+    content = "\n".join(
+        [
+            "## Project: Demo",
+            "### Phase 1: Setup `cc:done`",
+            "#### Acceptance Criteria",
+            "- [ ] condition — verify: `echo ok`",
+        ]
+    )
+
+    completed = load_task_state.detect_completed_projects(
+        content, load_task_state.DEFAULT_MARKER_PATTERN, load_task_state.DEFAULT_MARKER_TO_STATE
+    )
+
+    assert completed == []
+
+
+def test_detect_completed_projects_archives_when_all_acceptance_criteria_checked() -> None:
+    content = "\n".join(
+        [
+            "## Project: Demo",
+            "### Phase 1: Setup",
+            "#### Tasks",
+            "- `cc:done` task A",
+            "#### Acceptance Criteria",
+            "- [x] condition1 — verify: `echo 1`",
+            "- [X] condition2 — verify: `echo 2`",
+        ]
+    )
+
+    completed = load_task_state.detect_completed_projects(
+        content, load_task_state.DEFAULT_MARKER_PATTERN, load_task_state.DEFAULT_MARKER_TO_STATE
+    )
+
+    assert len(completed) == 1
+    assert completed[0]["name"] == "Demo"
+
+
+def test_detect_completed_projects_header_done_with_ac_blocks_on_residual_task() -> None:
+    content = "\n".join(
+        [
+            "## Project: Demo",
+            "### Phase 1: Setup `cc:done`",
+            "#### Tasks",
+            "- `cc:TODO` remaining task",
+            "#### Acceptance Criteria",
+            "- [x] condition1 — verify: `echo 1`",
+            "- [X] condition2 — verify: `echo 2`",
+        ]
+    )
+
+    completed = load_task_state.detect_completed_projects(
+        content, load_task_state.DEFAULT_MARKER_PATTERN, load_task_state.DEFAULT_MARKER_TO_STATE
+    )
+
+    assert completed == []
+
+
+def test_detect_completed_projects_header_done_with_ac_and_no_task_lines_archives() -> None:
+    content = "\n".join(
+        [
+            "## Project: Demo",
+            "### Phase 1: Setup `cc:done`",
+            "#### Acceptance Criteria",
+            "- [x] condition1 — verify: `echo 1`",
+            "- [X] condition2 — verify: `echo 2`",
+        ]
+    )
+
+    completed = load_task_state.detect_completed_projects(
+        content, load_task_state.DEFAULT_MARKER_PATTERN, load_task_state.DEFAULT_MARKER_TO_STATE
+    )
+
+    assert len(completed) == 1
+    assert completed[0]["name"] == "Demo"
+
+
+def test_detect_completed_projects_header_done_without_ac_section_legacy_archives() -> None:
+    content = "\n".join(
+        [
+            "## Project: Demo",
+            "### Phase 1: Setup `cc:done`",
+            "#### Tasks",
+            "- `cc:TODO` remaining task",
+        ]
+    )
+
+    completed = load_task_state.detect_completed_projects(
+        content, load_task_state.DEFAULT_MARKER_PATTERN, load_task_state.DEFAULT_MARKER_TO_STATE
+    )
+
+    # 後方互換: AC セクションがなければ従来通り見出し cc:done で短絡し、body は見ない
+    assert len(completed) == 1
+    assert completed[0]["name"] == "Demo"
+
+
+def test_parse_tasks_skips_ac_checkbox_line_even_with_marker_like_text_in_body() -> None:
+    content = "\n".join(
+        [
+            "### Phase 1: Setup",
+            "#### Tasks",
+            "- `cc:done` task A",
+            "#### Acceptance Criteria",
+            "- [ ] no remaining `cc:TODO` tasks — judge: manual check",
+        ]
+    )
+
+    tasks = load_task_state.parse_tasks(content)
+
+    assert tasks["done"] == [{"task": "task A", "reason": None}]
+    assert tasks["TODO"] == []
+
+
+def test_detect_completed_projects_does_not_misclassify_markdown_link_bullet_as_checked() -> None:
+    content = "\n".join(
+        [
+            "## Project: Demo",
+            "### Phase 1: Setup",
+            "#### Tasks",
+            "- `cc:done` task A",
+            "- [See discussion](https://example.com/issue/1)",
+        ]
+    )
+
+    completed = load_task_state.detect_completed_projects(
+        content, load_task_state.DEFAULT_MARKER_PATTERN, load_task_state.DEFAULT_MARKER_TO_STATE
+    )
+
+    assert completed == []
+
+
+def test_detect_completed_projects_empty_acceptance_criteria_section_does_not_block() -> None:
+    content = "\n".join(
+        [
+            "## Project: Demo",
+            "### Phase 1: Setup",
+            "#### Tasks",
+            "- `cc:done` task A",
+            "#### Acceptance Criteria",
+        ]
+    )
+
+    completed = load_task_state.detect_completed_projects(
+        content, load_task_state.DEFAULT_MARKER_PATTERN, load_task_state.DEFAULT_MARKER_TO_STATE
+    )
+
+    assert len(completed) == 1
+    assert completed[0]["name"] == "Demo"
+
+
+def test_detect_completed_projects_checkbox_outside_ac_section_uses_legacy_marker_check() -> None:
+    content = "\n".join(
+        [
+            "## Project: Demo",
+            "### Phase 1: Setup",
+            "#### Tasks",
+            "- `cc:done` task A",
+            "- [ ] not an AC line since there is no Acceptance Criteria heading",
+        ]
+    )
+
+    completed = load_task_state.detect_completed_projects(
+        content, load_task_state.DEFAULT_MARKER_PATTERN, load_task_state.DEFAULT_MARKER_TO_STATE
+    )
+
+    # AC セクション外の `- [ ]` は特別扱いせず、cc: マーカーなし行として未完了扱いになる
+    assert completed == []
+
+
+def test_parse_tasks_never_includes_acceptance_criteria_lines() -> None:
+    content = "\n".join(
+        [
+            "- `cc:done` task A",
+            "- [ ] condition — verify: `echo ok`",
+            "- [x] condition2 — verify: `echo done`",
+            "- `cc:TODO` task B",
+        ]
+    )
+
+    tasks = load_task_state.parse_tasks(content)
+
+    assert tasks["done"] == [{"task": "task A", "reason": None}]
+    assert tasks["TODO"] == [{"task": "task B", "reason": None}]
+    all_task_texts = [item["task"] for items in tasks.values() for item in items]
+    assert not any("condition" in text for text in all_task_texts)
+
+
+def test_detect_completed_projects_legacy_format_without_acceptance_criteria() -> None:
+    completed_content = "\n".join(
+        [
+            "## Project: Legacy",
+            "### Phase 1: Setup",
+            "- `cc:done` task A",
+        ]
+    )
+    incomplete_content = "\n".join(
+        [
+            "## Project: Legacy",
+            "### Phase 1: Setup",
+            "- `cc:done` task A",
+            "- `cc:TODO` task B",
+        ]
+    )
+
+    completed = load_task_state.detect_completed_projects(
+        completed_content,
+        load_task_state.DEFAULT_MARKER_PATTERN,
+        load_task_state.DEFAULT_MARKER_TO_STATE,
+    )
+    incomplete = load_task_state.detect_completed_projects(
+        incomplete_content,
+        load_task_state.DEFAULT_MARKER_PATTERN,
+        load_task_state.DEFAULT_MARKER_TO_STATE,
+    )
+
+    assert len(completed) == 1
+    assert incomplete == []
+
+
 def test_main_falls_back_to_default_markers_when_duplicates_exist(tmp_path, monkeypatch) -> None:
     plans_path = tmp_path / ".claude" / "Plans.md"
     plans_path.parent.mkdir(parents=True)
