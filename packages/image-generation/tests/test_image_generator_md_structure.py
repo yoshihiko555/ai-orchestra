@@ -7,6 +7,7 @@
 
 対象（正本のみ。生成物 `.claude/skills/image-gen/SKILL.md` は対象外）:
 - packages/image-generation/agents/image-generator.md
+- packages/image-generation/config/image-generation.yaml
 - facets/instructions/image-gen.md
 
 各テストは docs/evaluation/image-generation.md の EV-NN に対応する（自動化可能な
@@ -21,9 +22,11 @@ import re
 from tests.module_loader import REPO_ROOT
 
 AGENT_MD_PATH = REPO_ROOT / "packages" / "image-generation" / "agents" / "image-generator.md"
+CONFIG_PATH = REPO_ROOT / "packages" / "image-generation" / "config" / "image-generation.yaml"
 SKILL_MD_PATH = REPO_ROOT / "facets" / "instructions" / "image-gen.md"
 
 AGENT_MD = AGENT_MD_PATH.read_text(encoding="utf-8")
+CONFIG_YAML = CONFIG_PATH.read_text(encoding="utf-8")
 SKILL_MD = SKILL_MD_PATH.read_text(encoding="utf-8")
 
 _HEADING_RE = re.compile(r"^(#{2,3}) (.+)$", re.MULTILINE)
@@ -61,6 +64,7 @@ SKILL_SECTIONS = _sections(SKILL_MD)
 CONFIGURATION = _section(AGENT_SECTIONS, "Configuration")
 STEP0 = _section(AGENT_SECTIONS, "Step 0")
 STEP1 = _section(AGENT_SECTIONS, "Step 1")
+STEP2 = _section(AGENT_SECTIONS, "Step 2")
 STEP3 = _section(AGENT_SECTIONS, "Step 3 ")
 STEP3_5 = _section(AGENT_SECTIONS, "Step 3.5")
 STEP4 = _section(AGENT_SECTIONS, "Step 4")
@@ -222,6 +226,41 @@ class TestImageModelNotCodingModel:
     def test_forbids_coding_model_example(self) -> None:
         assert "gpt-5.3-codex" in CONFIGURATION
         assert "Never use a coding model" in CONFIGURATION
+
+
+# ---------------------------------------------------------------------------
+# EV-17: 画像内テキストの出力言語
+# ---------------------------------------------------------------------------
+
+
+class TestOutputLanguage:
+    """EV-17: output_language の既定値・上書き・プロンプト反映を検証する。"""
+
+    def test_base_config_defaults_to_japanese(self) -> None:
+        assert re.search(r"^output_language:\s*ja\s*$", CONFIG_YAML, re.MULTILINE)
+
+    def test_configuration_resolves_local_override_and_fallback(self) -> None:
+        assert "image-generation.local.yaml" in CONFIGURATION
+        assert "output_language" in CONFIGURATION
+        assert "OUTPUT_LANGUAGE" in CONFIGURATION
+        assert "fall back to `ja`" in CONFIGURATION
+
+    def test_full_prompt_uses_resolved_output_language(self) -> None:
+        full_prompt_start = STEP2.find('FULL_PROMPT="')
+        assert full_prompt_start >= 0, "Step 2 に FULL_PROMPT の組み立てがありません"
+        assert "${OUTPUT_LANGUAGE}" in STEP2[full_prompt_start:]
+        assert "in-image text" in STEP2[full_prompt_start:]
+
+    def test_full_prompt_allows_english_technical_terms_and_proper_nouns(self) -> None:
+        full_prompt = STEP2[STEP2.find('FULL_PROMPT="') :].lower().replace("\\\n", "")
+        assert "technical terms" in full_prompt
+        assert "proper nouns" in full_prompt
+        assert "may remain in english" in full_prompt
+
+    def test_explicit_user_language_takes_precedence(self) -> None:
+        full_prompt = STEP2.lower()
+        assert "user's prompt explicitly" in full_prompt
+        assert "follow that request instead" in full_prompt
 
 
 # ---------------------------------------------------------------------------

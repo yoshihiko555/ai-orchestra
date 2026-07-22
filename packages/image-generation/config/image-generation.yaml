@@ -6,3 +6,9 @@
 #       image_gen 対応モデルを指定する。差し替えはこのキーで行う。
 # 上書きは .claude/config/image-generation/image-generation.local.yaml で可能。
 image_model: gpt-5.5
+
+# 画像内に描画する見出し・ラベル・注釈・キャプションの既定言語。
+# 技術用語・固有名詞は英語のままでもよい。ユーザープロンプトに画像内テキストの
+# 言語指定が明記されている場合は、その指定を優先する。
+# 恒久的な変更は image-generation.local.yaml でこのキーを上書きする。
+output_language: ja

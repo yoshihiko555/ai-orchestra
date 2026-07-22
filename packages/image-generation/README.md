@@ -25,7 +25,7 @@ description に基づく Claude Code のネイティブ subagent dispatch で起
 | ----------------------- | ----------------------------------------------------- | --------------------------------- |
 | `/image-gen` スキル     | `facets/instructions/image-gen.md`                    | プロンプト → 画像のワークフロー   |
 | `image-generator` agent | `packages/image-generation/agents/image-generator.md` | Codex `image_gen` 呼び出し + 検証 |
-| モデル設定              | `config/image-generation.yaml`                        | `image_model`（既定 `gpt-5.5`）   |
+| 画像生成設定            | `config/image-generation.yaml`                        | モデル・画像内テキスト言語        |
 
 > **Note**: `cli-tools.yaml` への登録や `route_config.py` の AGENT_TRIGGERS は
 > 持たない。エージェントは `codex exec` を直接呼ぶため通常の codex-delegation
@@ -76,6 +76,9 @@ codex exec --model gpt-5.5 \
   ディレクトリを漁って最新ファイルを掴むのは**禁止**（虚偽成功の原因）。
 - モデルは既定 `gpt-5.5`（`gpt-5.3-codex` 等のコーディングモデルは image_gen 非対応）。
   `config/image-generation.yaml` の `image_model` で差し替え可能。
+- 画像内の見出し・ラベル等は `output_language`（既定 `ja`）に従う。技術用語・固有名詞は
+  英語のままでもよく、ユーザープロンプトに画像内テキストの言語を明記した場合はその指定を優先する。
+  恒久的な変更は `.claude/config/image-generation/image-generation.local.yaml` で上書きできる。
 - レートリミット/利用上限は連打由来。**1 タスク 1 回**で回避する。
 - レートリミット時に Codex が Pillow で描く代替画像（非 AI）は**検知して失敗扱い**にする。
 

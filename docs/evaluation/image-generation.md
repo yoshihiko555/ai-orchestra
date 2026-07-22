@@ -3,7 +3,7 @@
 **パッケージ**: `packages/image-generation`
 **類型**: スキル型（`/image-gen` スキル + `image-generator` エージェント）
 **作成日**: 2026-07-03
-**最終レビュー日**: 2026-07-22（EV-11 を実行時解決されたフラグ名の検証に更新・Issue #291 bot レビュー2巡目）
+**最終レビュー日**: 2026-07-23（EV-17 に画像内テキストの出力言語設定を追加）
 **情報源**: packages/image-generation/README.md, docs/adr/ADR-20260605-023.md, facets/instructions/image-gen.md（`/image-gen` スキル指示書）, packages/image-generation/agents/image-generator.md（エージェント指示書）, packages/image-generation/config/image-generation.yaml, packages/image-generation/manifest.json（補助参照: 構成要素の列挙のみ）
 
 ## 1. 責務定義
@@ -23,7 +23,7 @@
 | ------------------------------------------ | ----------------------------------------------------------------- | ---------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
 | `/image-gen` スキル Phase 1（引数解析）    | `<プロンプト>` [`--out <path>`]                                   | 絶対パスに解決された出力先、または空プロンプト時の確認要求                   | プロンプト空時のみ AskUserQuestion 発火                                                        |
 | `/image-gen` スキル Phase 2（委譲）        | 解析済みプロンプト・出力先                                        | `Task(subagent_type="image-generator", ...)` への委譲                        | なし（委譲のみ、CLI ログはメインコンテキストに出さない）                                       |
-| `image-generator` Configuration            | `config/image-generation.yaml`（+ `.local.yaml`）の `image_model` | 解決済みモデル名（yaml 値優先。未設定時のみ `gpt-5.5` + フォールバック明示） | なし（読み取りのみ）                                                                           |
+| `image-generator` Configuration            | `config/image-generation.yaml`（+ `.local.yaml`）の `image_model` / `output_language` | 解決済みモデル名・画像内テキスト言語（yaml 値優先。未設定時のみ各既定値 + フォールバック明示） | なし（読み取りのみ）                                                                           |
 | `image-generator` Step 1（パス解決）       | caller 指定パス or 既定 `generated-images/<slug>.png`             | リポジトリ内の絶対パス、またはパストラバーサル時の拒否                       | 出力先ディレクトリの `mkdir -p`                                                                |
 | `image-generator` Step 3（Codex 呼び出し） | 検証済みプロンプト・モデル名                                      | `codex exec` の stdout（生成成否・保存パス相当のログ）                       | `~/.codex/generated_images/<session>/` への画像書き込み（Codex 側）、layer1 sandbox 一時無効化 |
 | `image-generator` Step 3.5-4（回収・検証） | Step 3 の出力、フレッシュネスマーカー時刻                         | `$RESOLVED` への画像コピー成功、または honest FAILURE 報告                   | リポジトリ内ファイルへの `cp`                                                                  |
@@ -41,6 +41,7 @@
 - [ ] EV-09（境界 / must）: `image_model` に `gpt-5.3-codex` 等のコーディングモデルを使用しない（ChatGPT アカウントで image_gen 非対応） — 根拠: packages/image-generation/agents/image-generator.md（Configuration）, packages/image-generation/config/image-generation.yaml（コメント）
 - [ ] EV-10（正常 / must）: 1 リクエストにつき Codex 呼び出しは 1 回のみで、レートリミット回避のためループ・リトライ・連打をしない — 根拠: packages/image-generation/agents/image-generator.md（Step 3）, docs/adr/ADR-20260605-023.md（決定4）
 - [ ] EV-11（境界 / should）: Codex 呼び出しコマンドが、実行時解決された image-generation feature を `--enable "$IMG_FEATURE"` で有効化していること（codex 0.140.0 時点の旧名は `imagegenext`。0.144.6 で `[features].image_generation` へ改称、既定 stable/true。固定名ではなく `codex features list`／`codex --version` の minor 番号で判定した名前を使う） / `-c sandbox_workspace_write.network_access=true` / `-c model_reasoning_effort=low` / `--skip-git-repo-check` が含まれる（欠落時は保存回帰・app-server起動失敗・自己検閲ハングが再発する） — 根拠: docs/adr/ADR-20260605-023.md（Update 2026-06-17, 2026-06-17 #2）, packages/image-generation/agents/image-generator.md（Step 3, Issue #291）
+- [ ] EV-17（config 駆動 / 正常 / must）: `output_language` は `config/image-generation.yaml`（+ `.local.yaml`）の値を正とし、既定値 `ja` では画像内の見出し・ラベル・注釈・キャプションを日本語で描画する。技術用語・固有名詞は英語のままでもよく、ユーザープロンプトに画像内テキストの言語が明示されている場合はその指定を優先する — 根拠: packages/image-generation/config/image-generation.yaml, packages/image-generation/agents/image-generator.md（Configuration, Step 2）
 
 ## 4. 類型別観点
 
@@ -65,6 +66,7 @@
 - EV-09: モデル名のブロックリスト判定（`gpt-5.3-codex` 等を弾くロジック）
 - EV-13: `codex exec` コマンドライン組み立て（`< /dev/null` / `timeout` / 必須フラグの有無）を文字列組み立てレベルで検証
 - EV-16: `codex.enabled: false` を設定した config を読み込ませ、`codex exec` を呼ばず「利用不可」を報告する分岐（実 CLI を呼ばずに検証可能）。`packages/image-generation/tests/test_check_image_gen_enabled.py` でユニットテスト済み
+- EV-17: base config の `output_language: ja`、`.local.yaml` 上書きの解決指示、Step 2 の `FULL_PROMPT` への反映、技術用語・固有名詞の例外、ユーザー明示指定の優先を構造契約テストで検証可能
 
 ### 手動 E2E でしか検証できない範囲（実 Codex CLI・ChatGPT 認証・実ネットワークが必要）
 
