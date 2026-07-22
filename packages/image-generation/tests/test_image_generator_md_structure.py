@@ -70,6 +70,13 @@ STEP3_5 = _section(AGENT_SECTIONS, "Step 3.5")
 STEP4 = _section(AGENT_SECTIONS, "Step 4")
 FALLBACK = _section(AGENT_SECTIONS, "Fallback")
 
+# "## Output Format" の本文はフェンスコードブロック内に "### 結果" 等の見出しっぽい
+# 行を含み、_sections() の見出し検出（レベル2/3 とも拾う）がそこで区切ってしまう
+# ため、_section() ではなくフェンスコードブロックそのものを正規表現で取り出す。
+_OUTPUT_FORMAT_BLOCK_RE = re.compile(r"## Output Format\n\n```markdown\n(.*?)```", re.DOTALL)
+_output_format_match = _OUTPUT_FORMAT_BLOCK_RE.search(AGENT_MD)
+OUTPUT_FORMAT = _output_format_match.group(1) if _output_format_match else ""
+
 SKILL_PHASE1 = _section(SKILL_SECTIONS, "Phase 1")
 SKILL_PHASE2 = _section(SKILL_SECTIONS, "Phase 2")
 SKILL_PHASE3 = _section(SKILL_SECTIONS, "Phase 3")
@@ -261,6 +268,15 @@ class TestOutputLanguage:
         full_prompt = STEP2.lower()
         assert "user's prompt explicitly" in full_prompt
         assert "follow that request instead" in full_prompt
+
+    def test_output_format_reports_output_language(self) -> None:
+        assert "{output_language}" in OUTPUT_FORMAT
+        assert "fallback" in OUTPUT_FORMAT.lower()
+
+    def test_configuration_validates_language_code_format(self) -> None:
+        assert r"^[a-z]{2}(-[A-Z]{2})?$" in CONFIGURATION
+        assert "invalid" in CONFIGURATION.lower()
+        assert "fall back to `ja`" in CONFIGURATION
 
 
 # ---------------------------------------------------------------------------

@@ -41,7 +41,7 @@
 - [ ] EV-09（境界 / must）: `image_model` に `gpt-5.3-codex` 等のコーディングモデルを使用しない（ChatGPT アカウントで image_gen 非対応） — 根拠: packages/image-generation/agents/image-generator.md（Configuration）, packages/image-generation/config/image-generation.yaml（コメント）
 - [ ] EV-10（正常 / must）: 1 リクエストにつき Codex 呼び出しは 1 回のみで、レートリミット回避のためループ・リトライ・連打をしない — 根拠: packages/image-generation/agents/image-generator.md（Step 3）, docs/adr/ADR-20260605-023.md（決定4）
 - [ ] EV-11（境界 / should）: Codex 呼び出しコマンドが、実行時解決された image-generation feature を `--enable "$IMG_FEATURE"` で有効化していること（codex 0.140.0 時点の旧名は `imagegenext`。0.144.6 で `[features].image_generation` へ改称、既定 stable/true。固定名ではなく `codex features list`／`codex --version` の minor 番号で判定した名前を使う） / `-c sandbox_workspace_write.network_access=true` / `-c model_reasoning_effort=low` / `--skip-git-repo-check` が含まれる（欠落時は保存回帰・app-server起動失敗・自己検閲ハングが再発する） — 根拠: docs/adr/ADR-20260605-023.md（Update 2026-06-17, 2026-06-17 #2）, packages/image-generation/agents/image-generator.md（Step 3, Issue #291）
-- [ ] EV-17（config 駆動 / 正常 / must）: `output_language` は `config/image-generation.yaml`（+ `.local.yaml`）の値を正とし、既定値 `ja` では画像内の見出し・ラベル・注釈・キャプションを日本語で描画する。技術用語・固有名詞は英語のままでもよく、ユーザープロンプトに画像内テキストの言語が明示されている場合はその指定を優先する — 根拠: packages/image-generation/config/image-generation.yaml, packages/image-generation/agents/image-generator.md（Configuration, Step 2）
+- [ ] EV-17（config 駆動 / 正常 / must）: `output_language` は `config/image-generation.yaml`（+ `.local.yaml`）の値を正とし、既定値 `ja` では画像内の見出し・ラベル・注釈・キャプションを日本語で描画する。技術用語・固有名詞は英語のままでもよく、ユーザープロンプトに画像内テキストの言語が明示されている場合はその指定を優先する。解決した値は言語コード形式 `^[a-z]{2}(-[A-Z]{2})?$`（例: `ja`, `en`, `en-US`）に一致しなければならず、一致しない値は invalid として `ja` にフォールバックし、その旨をレポートに記載する（config 由来の自由記述文字列をプロンプトへ混入させない defense-in-depth）。Output Format にも使用した画像内テキスト言語（fallback 時はその旨）を報告する — 根拠: packages/image-generation/config/image-generation.yaml, packages/image-generation/agents/image-generator.md（Configuration, Step 2, Output Format）
 
 ## 4. 類型別観点
 
@@ -66,7 +66,7 @@
 - EV-09: モデル名のブロックリスト判定（`gpt-5.3-codex` 等を弾くロジック）
 - EV-13: `codex exec` コマンドライン組み立て（`< /dev/null` / `timeout` / 必須フラグの有無）を文字列組み立てレベルで検証
 - EV-16: `codex.enabled: false` を設定した config を読み込ませ、`codex exec` を呼ばず「利用不可」を報告する分岐（実 CLI を呼ばずに検証可能）。`packages/image-generation/tests/test_check_image_gen_enabled.py` でユニットテスト済み
-- EV-17: base config の `output_language: ja`、`.local.yaml` 上書きの解決指示、Step 2 の `FULL_PROMPT` への反映、技術用語・固有名詞の例外、ユーザー明示指定の優先を構造契約テストで検証可能
+- EV-17: base config の `output_language: ja`、`.local.yaml` 上書きの解決指示、Step 2 の `FULL_PROMPT` への反映、技術用語・固有名詞の例外、ユーザー明示指定の優先、言語コード形式検証（invalid 時 `ja` フォールバック + 報告）、Output Format での言語報告を構造契約テストで検証可能
 
 ### 手動 E2E でしか検証できない範囲（実 Codex CLI・ChatGPT 認証・実ネットワークが必要）
 

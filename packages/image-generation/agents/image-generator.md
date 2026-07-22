@@ -25,13 +25,20 @@ Resolve these values:
   support image_gen on ChatGPT accounts.
 - `output_language` — the default language for text rendered inside the image.
   **The yaml value is the single source of truth.** Apply the local yaml override
-  when present and store the resolved value in `OUTPUT_LANGUAGE`. Only if the key
-  (or file) is entirely absent, fall back to `ja` AND state in your report that
-  you fell back because `output_language` was unconfigured. This setting applies
-  to in-image headings, labels, annotations, and captions; technical terms and
-  proper nouns may remain in English. If the user's prompt explicitly requests a
-  language for in-image text, that explicit request takes precedence over
-  `output_language`.
+  when present; use the validated value as `${OUTPUT_LANGUAGE}` when building
+  `FULL_PROMPT` in Step 2 — inject the literal at command-build time (same
+  convention as `$IMAGE_MODEL`); it is not a persistent shell variable. Only if
+  the key (or file) is entirely absent, fall back to `ja` AND state in your
+  report that you fell back because `output_language` was unconfigured. This
+  setting applies to in-image headings, labels, annotations, and captions;
+  technical terms and proper nouns may remain in English. If the user's prompt
+  explicitly requests a language for in-image text, that explicit request takes
+  precedence over `output_language`.
+  **Format validation (defense-in-depth):** the resolved value MUST match the
+  language-code pattern `^[a-z]{2}(-[A-Z]{2})?$` (e.g. `ja`, `en`, `en-US`).
+  If it does not match, treat the value as invalid: fall back to `ja` and state
+  in your report that you did so, instead of interpolating an arbitrary
+  free-form string from the config into the Codex prompt.
 
 This agent calls `codex exec` directly; it does NOT participate in per-agent
 routing (`agents.*.tool` in cli-tools.yaml) or the normal codex-delegation path.
@@ -378,6 +385,7 @@ wait, and include the placeholder file path so the user can delete it.
 - ステータス: 成功 / 失敗（フォールバック検知）/ 利用不可
 - 出力ファイル: `{path}`（解像度・形式・サイズが分かれば併記）
 - 使用モデル: {image_model}（fallback 時はその旨）
+- 画像内テキスト言語: {output_language}（fallback 時はその旨）
 
 ### 備考
 

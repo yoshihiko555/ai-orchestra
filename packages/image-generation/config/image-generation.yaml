@@ -11,4 +11,5 @@ image_model: gpt-5.5
 # 技術用語・固有名詞は英語のままでもよい。ユーザープロンプトに画像内テキストの
 # 言語指定が明記されている場合は、その指定を優先する。
 # 恒久的な変更は image-generation.local.yaml でこのキーを上書きする。
+# 形式は言語コード（例: ja, en, en-US）。形式外の値は ja として扱われる。
 output_language: ja
