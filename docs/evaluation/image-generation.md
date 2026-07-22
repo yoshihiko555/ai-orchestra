@@ -3,7 +3,7 @@
 **パッケージ**: `packages/image-generation`
 **類型**: スキル型（`/image-gen` スキル + `image-generator` エージェント）
 **作成日**: 2026-07-03
-**最終レビュー日**: 2026-07-04（codex.enabled: false 時の利用不可を EV-16 で確定。`image-generator` Step 0 の kill-switch チェックとして実装済み・Issue #133）
+**最終レビュー日**: 2026-07-22（EV-11 のフラグ名を `imagegenext` → `image_generation`（codex 0.144.6 で改称）に追従・Issue #291）
 **情報源**: packages/image-generation/README.md, docs/adr/ADR-20260605-023.md, facets/instructions/image-gen.md（`/image-gen` スキル指示書）, packages/image-generation/agents/image-generator.md（エージェント指示書）, packages/image-generation/config/image-generation.yaml, packages/image-generation/manifest.json（補助参照: 構成要素の列挙のみ）
 
 ## 1. 責務定義
@@ -40,7 +40,7 @@
 - [ ] EV-08（境界 / should）: `image_model` は `config/image-generation.yaml`（+ `.local.yaml`）の値を正とし、キー自体が存在しない場合のみ `gpt-5.5` にフォールバックし、その旨を報告する — 根拠: packages/image-generation/agents/image-generator.md（Configuration）
 - [ ] EV-09（境界 / must）: `image_model` に `gpt-5.3-codex` 等のコーディングモデルを使用しない（ChatGPT アカウントで image_gen 非対応） — 根拠: packages/image-generation/agents/image-generator.md（Configuration）, packages/image-generation/config/image-generation.yaml（コメント）
 - [ ] EV-10（正常 / must）: 1 リクエストにつき Codex 呼び出しは 1 回のみで、レートリミット回避のためループ・リトライ・連打をしない — 根拠: packages/image-generation/agents/image-generator.md（Step 3）, docs/adr/ADR-20260605-023.md（決定4）
-- [ ] EV-11（境界 / should）: Codex 呼び出しコマンドに `--enable imagegenext` / `-c sandbox_workspace_write.network_access=true` / `-c model_reasoning_effort=low` / `--skip-git-repo-check` が含まれる（欠落時は保存回帰・app-server起動失敗・自己検閲ハングが再発する） — 根拠: docs/adr/ADR-20260605-023.md（Update 2026-06-17, 2026-06-17 #2）, packages/image-generation/agents/image-generator.md（Step 3）
+- [ ] EV-11（境界 / should）: Codex 呼び出しコマンドに `--enable image_generation`（codex 0.140.0 時点の旧名は `imagegenext`。0.144.6 で `[features].image_generation` へ改称、既定 stable/true） / `-c sandbox_workspace_write.network_access=true` / `-c model_reasoning_effort=low` / `--skip-git-repo-check` が含まれる（欠落時は保存回帰・app-server起動失敗・自己検閲ハングが再発する） — 根拠: docs/adr/ADR-20260605-023.md（Update 2026-06-17, 2026-06-17 #2）, packages/image-generation/agents/image-generator.md（Step 3, Issue #291）
 
 ## 4. 類型別観点
 
@@ -71,7 +71,7 @@
 - EV-07: Codex CLI 未インストール/未認証時の実際のエラー文言・終了コード（実環境の認証状態に依存し再現困難）
 - EV-08: `image_model` 設定に基づく実際の image_gen 呼び出し成否（モデルの ChatGPT アカウント対応状況はテスト環境で制御不能）
 - EV-10: レートリミット発生の実挙動（連打による `TooManyRequests` は実サービス依存）
-- EV-11: `--enable imagegenext` 等のフラグが実際に `~/.codex/generated_images/` への保存を左右するかは、codex バイナリのバージョン挙動に依存し、モックでは検証できない（ADR-023 の複数回の「再改訂」自体が実機検証でしか判明しなかった事実）
+- EV-11: `--enable image_generation`（旧 `imagegenext`）等のフラグが実際に `~/.codex/generated_images/` への保存を左右するかは、codex バイナリのバージョン挙動に依存し、モックでは検証できない（ADR-023 の複数回の「再改訂」自体が実機検証でしか判明しなかった事実）
 - EV-14: Codex 実行エラー時に本当に代替描画へ倒れていないかの最終確認（生成される画像の実体を目視確認する必要がある）
 - EV-15: 実際のファイルシステムへの書き込み場所（サンドボックス層1/層2の実際の権限境界での動作）
 

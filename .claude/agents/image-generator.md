@@ -63,8 +63,9 @@ wording.
     network it fails app-server init with `Operation not permitted`.
   - The image itself is saved by Codex's own process (not a model-generated shell
     command) to `~/.codex/generated_images/<session>/`, so it is unaffected by
-    the workspace-write filesystem restriction — **provided `--enable imagegenext`
-    is set** (Step 3). Without that flag, codex 0.140.0's exec mode does not write
+    the workspace-write filesystem restriction — **provided `--enable image_generation`
+    is set** (Step 3; see the version note there — this feature was named `imagegenext`
+    on codex 0.140.0). Without that flag, codex 0.140.0's exec mode does not write
     the file to disk at all.
   - **NEVER** use `--sandbox danger-full-access` or
     `--dangerously-bypass-approvals-and-sandbox` here. They remove the
@@ -179,8 +180,18 @@ one `RUN_ID` token (e.g. a timestamp plus a few random chars) and hard-code the
 generations never share a marker. Do NOT use `$$`/`$RANDOM` inline — they differ
 between the two separate Bash calls.
 
+**Do NOT base the marker path on `$TMPDIR`.** Step 3 runs with
+`dangerouslyDisableSandbox: true` and Step 3.5 runs under the normal sandbox, and
+Claude Code's Bash tool resolves `$TMPDIR` to a **different directory per sandbox
+mode** (e.g. `/var/folders/.../T/` when disabled vs. `/tmp/claude-501` under the
+normal sandbox). A marker written under one resolution and checked under the other
+is silently invisible, which defeats the freshness guard. Use a fixed path under
+`$RESOLVED`'s own directory instead: it is inside the repo (already created by Step
+1's `mkdir -p`) and equally writable under both sandbox modes, so Step 3 and Step
+3.5 always agree on where the marker lives.
+
 ```bash
-MARKER="${TMPDIR:-/tmp}/imggen.<RUN_ID>.marker"   # e.g. .../imggen.20260617-0930-a1b2.marker
+MARKER="$(dirname "$RESOLVED")/.imggen.<RUN_ID>.marker"   # e.g. .../generated-images/.imggen.20260617-0930-a1b2.marker
 touch "$MARKER"
 sleep 1  # ensure any new image has a strictly newer mtime than the marker
 
@@ -188,7 +199,7 @@ codex exec \
   --model "$IMAGE_MODEL" \
   --sandbox workspace-write \
   -c sandbox_workspace_write.network_access=true \
-  --enable imagegenext \
+  --enable image_generation \
   -c model_reasoning_effort=low \
   --skip-git-repo-check \
   "$FULL_PROMPT" < /dev/null
@@ -196,12 +207,20 @@ codex exec \
 
 Notes:
 
-- `--enable imagegenext` is **required** on codex 0.140.0. Without it, `codex exec`
-  generates the image but **does NOT persist it to disk** (the built-in `image_gen`
-  result is only returned inline in the event stream; `~/.codex/generated_images/`
-  stays empty and `saved_path` is never populated). This is a regression vs codex
-  0.137.0, where exec saved the file by default. With `imagegenext` enabled, codex
-  writes the image to `~/.codex/generated_images/<session>/call_*.png` again.
+- `--enable image_generation` is **required** on codex 0.140.0. Without it, `codex
+  exec` generates the image but **does NOT persist it to disk** (the built-in
+  `image_gen` result is only returned inline in the event stream;
+  `~/.codex/generated_images/` stays empty and `saved_path` is never populated).
+  This is a regression vs codex 0.137.0, where exec saved the file by default. With
+  the flag enabled, codex writes the image to
+  `~/.codex/generated_images/<session>/call_*.png` again.
+- **Version note**: on codex 0.140.0 this feature's flag name was `imagegenext`.
+  As of codex 0.144.6, `--enable imagegenext` prints `deprecated: [features].imagegenext
+  is deprecated. Use [features].image_generation instead.`, and `image_generation` is
+  now `stable` and enabled by default (verified via `codex features list`). Keep
+  passing `--enable image_generation` explicitly anyway — it is a no-op on versions
+  where the feature already defaults to on, and required on versions (like 0.140.0)
+  where it does not.
 - `-c sandbox_workspace_write.network_access=true` opens network while keeping the
   filesystem confined to the repo (see Sandbox Policy). Required for codex
   0.140.0's `image_gen` app-server.
@@ -213,7 +232,7 @@ Notes:
 
 ### Step 3.5 — Locate the fresh output and copy it to `$RESOLVED` (freshness guard)
 
-With `imagegenext` enabled (Step 3), `image_gen` saves to
+With `image_generation` enabled (Step 3), `image_gen` saves to
 `~/.codex/generated_images/<session>/call_*.png` (older codex used `ig_*.png`), NOT
 to `$RESOLVED`. Find the newest generated PNG (`call_*.png` or `ig_*.png`) that is
 **strictly newer than the Step 3 marker** and copy it. The marker check is the
@@ -224,11 +243,11 @@ marker literal as Step 3 (a separate Bash call does not inherit Step 3's `$MARKE
 variable). Run under the normal sandbox:
 
 ```bash
-MARKER="${TMPDIR:-/tmp}/imggen.<RUN_ID>.marker"   # SAME literal as Step 3
+MARKER="$(dirname "$RESOLVED")/.imggen.<RUN_ID>.marker"   # SAME literal as Step 3 (NOT $TMPDIR)
 GEN_DIR="$HOME/.codex/generated_images"
 
 # Newest generated PNG strictly newer than the marker. Match BOTH naming schemes
-# (`call_*.png` on codex 0.140.0 + imagegenext, `ig_*.png` on older codex).
+# (`call_*.png` on codex 0.140.0+ with image_generation/imagegenext, `ig_*.png` on older codex).
 # NUL-delimited read + `-nt` so the result is empty when nothing new was produced,
 # and it is safe for any filename. Do NOT pipe to `xargs ls`: with no input, BSD
 # xargs runs `ls` against the CWD and yields a bogus match that defeats the
