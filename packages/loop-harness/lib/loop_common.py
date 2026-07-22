@@ -3219,18 +3219,33 @@ def _write_text(path: Path, content: str) -> None:
     os.chmod(path, FILE_MODE)
 
 
-def _resolve_mechanical_umask() -> int:
+def _resolve_mechanical_umask(env: Mapping[str, str] | None = None) -> int:
     """Resolve the mechanical-check child-process umask, honoring `LOOP_MECHANICAL_UMASK`.
 
-    Reads the environment on every call (not cached at import time) so tests can monkeypatch
-    it. Accepts an octal string (`"077"`, `"0o077"`, `"022"`). An unset value uses the
-    deterministic default `MECHANICAL_CHECK_UMASK` (Issue #301); an unparsable or
-    out-of-range (must fit `0o000`-`0o777`) value also falls back to that default, with a
-    stderr warning, rather than failing the mechanical check outright -- this mirrors the
-    best-effort, fail-open style already used elsewhere in this module for non-critical
-    operational overrides (see the push-integrity-warning helpers above).
+    Resolves from whatever environment is actually passed to the child process, not from
+    the driver's ambient environment. `env` should be the same mapping (or `None`) that
+    `_run_mechanical_command()` is about to hand to `subprocess.Popen`:
+
+    - `env=None`: the child inherits `os.environ` (see `_run_mechanical_command`'s own
+      `env=None` contract), so this reads `LOOP_MECHANICAL_UMASK` from `os.environ` too --
+      reading the environment on every call (not cached at import time) so tests can
+      monkeypatch it.
+    - `env` given explicitly: resolution reads only that mapping and never falls back to
+      ambient `os.environ` if the key is absent from it. Callers that pass an explicit,
+      sanitized child env (e.g. host-exec isolation wrappers) may have deliberately
+      dropped `LOOP_MECHANICAL_UMASK`; resurrecting it from the driver's own environment
+      would silently defeat that sanitization, so an explicit env is treated as the
+      complete source of truth for the child process.
+
+    Accepts an octal string (`"077"`, `"0o077"`, `"022"`). A key that is absent from the
+    resolved source uses the deterministic default `MECHANICAL_CHECK_UMASK` (Issue #301);
+    an unparsable or out-of-range (must fit `0o000`-`0o777`) value also falls back to that
+    default, with a stderr warning, rather than failing the mechanical check outright --
+    this mirrors the best-effort, fail-open style already used elsewhere in this module
+    for non-critical operational overrides (see the push-integrity-warning helpers above).
     """
-    raw = os.environ.get(MECHANICAL_UMASK_ENV)
+    source = os.environ if env is None else env
+    raw = source.get(MECHANICAL_UMASK_ENV)
     if raw is None:
         return MECHANICAL_CHECK_UMASK
     try:
@@ -3271,8 +3286,10 @@ def _run_mechanical_command(
     would not otherwise allow that. This trade-off is scoped to the host-exec path only; the
     Docker exec path (`docker exec`, see `loop_docker_action.py`) is a separate execution path
     and is unaffected. Operators who need the stricter behavior back can opt out via the
-    `MECHANICAL_UMASK_ENV` (`LOOP_MECHANICAL_UMASK`) environment variable; see
-    `_resolve_mechanical_umask()`.
+    `MECHANICAL_UMASK_ENV` (`LOOP_MECHANICAL_UMASK`) environment variable, set in whichever
+    environment this call actually passes as `env` (ambient `os.environ` when `env=None`,
+    or the explicit `env` mapping otherwise -- the latter does not fall back to ambient
+    `os.environ`); see `_resolve_mechanical_umask()`.
 
     Runs in its own process group (`start_new_session=True`) so a timeout kills every
     descendant the Maker-authored command spawned (e.g. a `pytest` run's own subprocesses),
@@ -3290,7 +3307,7 @@ def _run_mechanical_command(
         text=True,
         start_new_session=True,
         env=dict(env) if env is not None else None,
-        umask=_resolve_mechanical_umask(),
+        umask=_resolve_mechanical_umask(env),
     )
     if on_start is not None:
         on_start(proc.pid)
