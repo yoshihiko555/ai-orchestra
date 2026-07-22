@@ -2233,8 +2233,9 @@ def is_repo_identity_verified(state: LoopState) -> bool:
     2. `_worktree_git_config_tampered()`: the worktree's local git config must be free of the
        same dangerous rewrite keys (`insteadOf`/`pushurl`/`credential.helper`/etc.)
        `loop_driver.py` already screens for before every driver-owned push
-       (`loop_driver_support.find_dangerous_local_git_config()`), reused here so identity
-       re-verification gets the same, already-hardened defense.
+       (`loop_driver_support.local_git_config_scan_result()`), reused here so identity
+       re-verification gets the same, already-hardened defense -- and, unlike the push-guard
+       caller, treats a scan that could not be completed at all as tampered too (fail closed).
     3. The live identity material must match the full (untruncated, 256-bit)
        `state.repo_identity_material_digest` pinned at loop creation -- the 32-bit truncated
        `repo_identity_hash` alone is a realistic target for a crafted-material preimage search
@@ -2279,13 +2280,17 @@ def _worktree_gitlink_tampered(state: LoopState) -> bool:
 
 
 def _worktree_git_config_tampered(worktree_path: str) -> bool:
-    """Return True when the worktree's local git config carries a known-dangerous rewrite key.
+    """Return True when the worktree's local git config is dangerous or could not be scanned.
 
-    Delegates to LP-2's already-hardened `loop_driver_support.find_dangerous_local_git_config()`
-    (Issue #208) instead of duplicating its key list. Fails open (`False`) only when the scan
-    itself could not be completed at all (process error/timeout) -- unverifiable, not itself
-    grounds for a mismatch, mirroring that function's own "one of several layers, not the sole
-    guard" contract. Imported locally for the same circular-import reason as
+    Delegates to LP-2's already-hardened `loop_driver_support.local_git_config_scan_result()`
+    (Issue #208) instead of duplicating its key list. Issue #208 (SEC-H2) review finding (high):
+    this function backs `is_repo_identity_verified()`'s fail-*closed* identity re-verification
+    layer, so -- unlike `find_dangerous_local_git_config()`'s own push-guard callers, which
+    intentionally fail *open* on an unscannable config since that check is one of several layers
+    there, not the sole guard -- an unscannable config here must be treated as tampered, not as
+    clean. Otherwise a Maker could bypass the dangerous-key check entirely by making the scan
+    itself fail (e.g. making `.git/config` transiently unreadable or unparseable) right before a
+    driver re-verification call. Imported locally for the same circular-import reason as
     `_worktree_gitlink_tampered()`.
     """
     lib_dir = Path(__file__).resolve().parent
@@ -2293,7 +2298,8 @@ def _worktree_git_config_tampered(worktree_path: str) -> bool:
         sys.path.insert(0, str(lib_dir))
     import loop_driver_support as lds
 
-    return lds.find_dangerous_local_git_config(worktree_path, GIT_TIMEOUT_SECONDS) is not None
+    scanned, dangerous_key = lds.local_git_config_scan_result(worktree_path, GIT_TIMEOUT_SECONDS)
+    return dangerous_key is not None or not scanned
 
 
 def _repo_identity_material(project_dir: str) -> str:

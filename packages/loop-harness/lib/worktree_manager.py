@@ -125,15 +125,37 @@ def worktree_path_for(project_dir: str, issue_number: int) -> str:
     return str(root / ".worktrees" / f"loop-issue-{issue_number}")
 
 
-def is_existing_loop_worktree(worktree_path: str, expected_branch: str) -> bool:
-    """Return True when path is an existing independent worktree on expected branch."""
+def is_existing_loop_worktree(worktree_path: str, expected_branch: str, project_dir: str) -> bool:
+    """Return True when path is an existing independent worktree of project_dir on expected_branch.
+
+    Issue #208 (SEC-H2) review finding (critical): previously this only checked that
+    `worktree_path` looked like *some* independent linked worktree already sitting on
+    `expected_branch`, without ever verifying it actually belongs to `project_dir`'s repository.
+    A stale or pre-staged linked worktree from a different, attacker-controlled repository that
+    happens to be checked out on a branch named `expected_branch` (trivial for an attacker who
+    controls the decoy repo) would pass this check unnoticed, and `create_worktree()` would then
+    reuse it as-is and pin *its* `.git` gitlink as the trusted baseline (`gitlink_fingerprint()`,
+    also Issue #208) -- pinning a lie the very first time, with no hash collision required at
+    all, since the decoy's `remote.origin.url` can simply be set to whatever the attacker wants.
+    Requiring `worktree_path` to resolve to the *same* absolute `--git-common-dir` as
+    `project_dir` closes this: only a worktree git itself already lists as belonging to
+    `project_dir`'s repository can be reused (same pattern as `loop_git_ephemeral.py`'s own
+    project/worktree common-dir cross-check).
+    """
     if not os.path.isdir(worktree_path):
         return False
-    git_dir = _git(["rev-parse", "--git-dir"], worktree_path)
-    common_dir = _git(["rev-parse", "--git-common-dir"], worktree_path)
+    git_dir = _git(["rev-parse", "--path-format=absolute", "--git-dir"], worktree_path)
+    common_dir = _git(["rev-parse", "--path-format=absolute", "--git-common-dir"], worktree_path)
     is_worktree = bool(git_dir) and bool(common_dir) and git_dir != common_dir
+    if not is_worktree:
+        return False
+    project_common_dir = _git(
+        ["rev-parse", "--path-format=absolute", "--git-common-dir"], project_dir
+    )
+    if not project_common_dir or common_dir != project_common_dir:
+        return False
     current_branch = _git(["branch", "--show-current"], worktree_path)
-    return is_worktree and current_branch == expected_branch
+    return current_branch == expected_branch
 
 
 def create_worktree(
@@ -144,7 +166,16 @@ def create_worktree(
     path = worktree_path_for(project_dir, issue_number)
     repo_hash = resolve_repo_identity_hash(project_dir)
     material_digest = resolve_repo_identity_material_digest(project_dir)
-    if is_existing_loop_worktree(path, branch):
+    if os.path.isdir(path):
+        # Issue #208 (SEC-H2): a path that already exists but fails the same-repository check
+        # is refused outright (fail closed), never silently handed to `git worktree add` below
+        # (whose behavior on a pre-existing, non-worktree directory is not a security control we
+        # want to depend on).
+        if not is_existing_loop_worktree(path, branch, project_dir):
+            raise WorktreeError(
+                f"refusing to reuse {path!r}: it exists but is not an independent worktree of "
+                f"{project_dir!r} on branch {branch!r} (Issue #208/SEC-H2)"
+            )
         return _worktree_info(path, branch, repo_hash, material_digest)
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     if _branch_exists(project_dir, branch):

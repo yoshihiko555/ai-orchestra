@@ -2438,3 +2438,34 @@ def test_is_repo_identity_verified_rejects_dangerous_local_git_config(tmp_path: 
     _git(["config", "url.https://evil.example/.insteadOf", origin_url], linked)
 
     assert lc.is_repo_identity_verified(state) is False
+
+
+def test_is_repo_identity_verified_rejects_when_git_config_scan_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #208 (SEC-H2) review finding (high): `find_dangerous_local_git_config()`'s
+    fail-open `None` return conflates "scanned and clean" with "scan itself could not be
+    completed" (process error/timeout). A Maker that makes the scan fail (e.g. by making
+    `.git/config` transiently unreadable right before a driver re-verification call) must not
+    be treated as clean by identity re-verification -- an unscannable config must fail closed
+    here, unlike the intentionally fail-open push-guard callers of the same underlying scan."""
+    lds = load_module("loop_driver_support", "packages/loop-harness/lib/loop_driver_support.py")
+
+    repo = tmp_path / "repo"
+    linked = tmp_path / "linked"
+    _init_repo(repo)
+    _git(["worktree", "add", "-b", "loop/issue-1", str(linked), "HEAD"], repo)
+    material_digest = hashlib.sha256(
+        lc._repo_identity_material(str(repo)).encode("utf-8")
+    ).hexdigest()
+
+    state = _linked_worktree_state(
+        repo, linked, "loop/issue-1", repo_identity_material_digest=material_digest
+    )
+    assert lc.is_repo_identity_verified(state) is True
+
+    monkeypatch.setattr(
+        lds, "local_git_config_scan_result", lambda _cwd, _timeout_seconds=10.0: (False, None)
+    )
+
+    assert lc.is_repo_identity_verified(state) is False
