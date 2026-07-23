@@ -39,21 +39,44 @@ Resolve these values:
   If it does not match, treat the value as invalid: fall back to `ja` and state
   in your report that you did so, instead of interpolating an arbitrary
   free-form string from the config into the Codex prompt.
-- `style` — the validated style name passed by the caller. The caller resolves
-  `--style` and `default_style`; this agent MUST NOT resolve or override that
-  precedence again. If the caller passes no style or the reserved value `none`,
-  set the applied style to `none` and do not load a style file. For any other
-  value, first require the name to match `^[a-z0-9][a-z0-9-]*$`, then resolve the
-  exact file `.claude/config/image-generation/styles/<name>.md`. The resolved
-  file MUST remain inside that styles directory and MUST exist as a readable
-  file. A missing, unsafe, or unreadable style file at this stage is a caller
-  bug: report FAILURE and stop before Step 1 without calling `codex exec`.
-  Never silently generate without the requested style. Style definitions are
-  prompt blocks and may remain in Japanese by design; do NOT translate them.
-  This is not prose-only: Step 2's code re-runs the same regex check and file
-  existence check as an executable gate immediately before reading the style
-  file, so an invalid or missing style fails the actual command, not just this
-  description.
+- `style` — determines which style, if any, is layered onto the prompt. There
+  are three distinct cases. Distinguish them by whether the invocation
+  explicitly specifies a style argument at all — do NOT conflate "no argument
+  was given" with "the caller explicitly requested `none`":
+  1. **Caller explicitly passes a style name** — this is always true for the
+     `/image-gen` skill path, which resolves `--style` > `default_style` > none
+     itself before invoking this agent. Use that name as-is; this agent MUST
+     NOT resolve or override the caller's precedence decision again.
+  2. **Caller explicitly passes the reserved value `none`** — set the applied
+     style to `none` and do not load a style file. An explicit `none` always
+     wins, even if `default_style` is configured.
+  3. **No style argument was given at all** — this is the case when Claude's
+     native dispatch invokes this agent directly from a natural-language image
+     request (a documented, official entry point alongside the `/image-gen`
+     skill), so there is no upstream caller to resolve `default_style`. In
+     this case, and only this case, resolve `default_style` yourself, using
+     the same config-resolution pattern as `image_model` and
+     `output_language` above: read
+     `.claude/config/image-generation/image-generation.yaml` and apply
+     `image-generation.local.yaml` overrides if present. If the key (or both
+     files) is entirely absent, the applied style is `none`.
+
+  Once the applied style name is determined by whichever branch above
+  applies, the same validation and loading rules apply regardless of which
+  branch produced it: if the applied style is `none`, do not load a style
+  file. For any other value, first require the name to match
+  `^[a-z0-9][a-z0-9-]*$`, then resolve the exact file
+  `.claude/config/image-generation/styles/<name>.md`. The resolved file MUST
+  remain inside that styles directory and MUST exist as a readable file. A
+  missing, unsafe, or unreadable style file at this stage is a bug (a caller
+  bug for branch 1; a config bug for branch 3): report FAILURE and stop before
+  Step 1 without calling `codex exec`.
+  Never silently generate without the requested style.
+  Style definitions are prompt blocks and may remain in Japanese by design; do
+  NOT translate them. This is not prose-only: Step 2's code re-runs the same
+  regex check, file existence check, and readability check as an executable
+  gate immediately before reading the style file, so an invalid, missing, or
+  unreadable style fails the actual command, not just this description.
 
 This agent calls `codex exec` directly; it does NOT participate in per-agent
 routing (`agents.*.tool` in cli-tools.yaml) or the normal codex-delegation path.
@@ -195,10 +218,18 @@ else
   printf '%s' "$STYLE" | grep -Eq '^[a-z0-9][a-z0-9-]*$' || { echo "ERROR: invalid style name"; exit 1; }
   STYLE_FILE="$STYLES_DIR/$STYLE.md"
   [ -f "$STYLE_FILE" ] || { echo "ERROR: style file not found (caller bug)"; exit 1; }
+  [ -r "$STYLE_FILE" ] || { echo "ERROR: style file not readable"; exit 1; }
   # The STYLE_EOF delimiter must not occur as a line in the style file, or the
   # heredoc below would terminate early and silently truncate the style content.
-  # Detect it mechanically and fail loudly instead of picking another delimiter:
-  grep -qx 'STYLE_EOF' "$STYLE_FILE" && { echo "ERROR: style file contains the heredoc delimiter line 'STYLE_EOF'"; exit 1; }
+  # Detect it mechanically and fail loudly instead of picking another delimiter.
+  # Fail CLOSED: grep exit 1 (pattern not found) is the only status allowed to
+  # proceed. grep exit 0 (delimiter found) and exit >=2 (read/scan error) both
+  # abort — `grep ... && { ...; exit 1; }` would silently continue past a >=2
+  # status because `&&` only fires on exit 0, which is exactly the fail-open
+  # bug this rewrite closes.
+  grep_status=0
+  grep -qx 'STYLE_EOF' "$STYLE_FILE" || grep_status=$?
+  [ "$grep_status" -eq 1 ] || { echo "ERROR: style file contains the heredoc delimiter line 'STYLE_EOF', or could not be scanned"; exit 1; }
   # Assign the resolved style file's contents via a separate QUOTED heredoc.
   # Insert the Markdown literally and do not translate it:
   STYLE_TEXT=$(cat <<'STYLE_EOF'

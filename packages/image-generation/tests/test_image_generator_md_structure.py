@@ -476,6 +476,63 @@ class TestStylePromptEmbedding:
 
 
 # ---------------------------------------------------------------------------
+# PR #310 bot レビュー指摘 1: ネイティブディスパッチ時に default_style を尊重する
+# ---------------------------------------------------------------------------
+
+
+class TestStyleThreeWayBranching:
+    """PR #310 修正1: Configuration 節が明示名/明示 none/未指定→default_style 解決の
+
+    3 分岐を明確に記述し、未指定時はこのエージェント自身が config を解決する。
+    """
+
+    def test_configuration_describes_explicit_name_branch(self) -> None:
+        assert "Caller explicitly passes a style name" in CONFIGURATION
+
+    def test_configuration_describes_explicit_none_branch(self) -> None:
+        assert "Caller explicitly passes the reserved value `none`" in CONFIGURATION
+
+    def test_configuration_describes_native_dispatch_default_style_branch(self) -> None:
+        assert "No style argument was given at all" in CONFIGURATION
+        assert "native dispatch" in CONFIGURATION.lower()
+        assert "default_style" in CONFIGURATION
+
+    def test_configuration_reuses_config_resolution_pattern_for_default_style(self) -> None:
+        assert "image-generation.yaml" in CONFIGURATION
+        assert "image-generation.local.yaml" in CONFIGURATION
+
+    def test_configuration_states_same_gate_applies_regardless_of_branch(self) -> None:
+        assert "regardless of which" in CONFIGURATION.lower()
+
+
+# ---------------------------------------------------------------------------
+# PR #310 bot レビュー指摘 2: スタイルファイル読み取り不能時の fail-closed 化
+# ---------------------------------------------------------------------------
+
+
+class TestStyleFileReadabilityAndFailClosedDelimiter:
+    """PR #310 修正2: `[ -r ]` 可読性チェックと grep_status による fail-closed デリミタ検出。"""
+
+    def test_style_file_readability_check_exists(self) -> None:
+        assert '[ -r "$STYLE_FILE" ]' in STEP2
+
+    def test_readability_check_precedes_delimiter_scan(self) -> None:
+        readable_match = re.search(r'\[ -r "\$STYLE_FILE" \]', STEP2)
+        delimiter_match = re.search(r"grep -qx 'STYLE_EOF'", STEP2)
+        assert readable_match and delimiter_match
+        assert readable_match.start() < delimiter_match.start(), (
+            "可読性チェックはデリミタ検出より前に実行される必要があります"
+        )
+
+    def test_delimiter_check_uses_fail_closed_grep_status_pattern(self) -> None:
+        assert "grep_status" in STEP2
+        assert '[ "$grep_status" -eq 1 ]' in STEP2
+
+    def test_fail_closed_message_mentions_could_not_be_scanned(self) -> None:
+        assert "could not be scanned" in STEP2
+
+
+# ---------------------------------------------------------------------------
 # EV-13: 非対話完結性（stdin 封じ・成否判定）
 # ---------------------------------------------------------------------------
 

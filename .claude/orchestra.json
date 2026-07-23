@@ -111,7 +111,7 @@
     },
     "image-generation": {
       "config/image-generation/image-generation.yaml": "da79053a36901fa084e8fbad994cb69b4e5de70b8c374ba144250da5d24518b3",
-      "agents/image-generator.md": "cb733e3ba9ba7ce78bb81174fa42210136d64e997b7314a13420bace94387e8d",
+      "agents/image-generator.md": "6934eafba47e9af728ef138bad7bace4c5cf6f62a85540f653adf3c068cfa5b4",
       "config/image-generation/styles/isometric.md": "821224582cf75c6148d683b67407bd5de6d9d7b208742de27ba5df5650a10861"
     },
     "loop-harness": {
