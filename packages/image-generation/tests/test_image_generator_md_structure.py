@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 
 from tests.module_loader import REPO_ROOT
@@ -24,10 +25,22 @@ from tests.module_loader import REPO_ROOT
 AGENT_MD_PATH = REPO_ROOT / "packages" / "image-generation" / "agents" / "image-generator.md"
 CONFIG_PATH = REPO_ROOT / "packages" / "image-generation" / "config" / "image-generation.yaml"
 SKILL_MD_PATH = REPO_ROOT / "facets" / "instructions" / "image-gen.md"
+MANIFEST_PATH = REPO_ROOT / "packages" / "image-generation" / "manifest.json"
+LOCAL_CONFIG_PATH = (
+    REPO_ROOT / ".claude" / "config" / "image-generation" / "image-generation.local.yaml"
+)
+PACKAGE_STYLE_PATH = (
+    REPO_ROOT / "packages" / "image-generation" / "config" / "styles" / "isometric.md"
+)
+DISTRIBUTED_STYLE_PATH = (
+    REPO_ROOT / ".claude" / "config" / "image-generation" / "styles" / "isometric.md"
+)
+LEGACY_STYLE_PATH = REPO_ROOT / "docs" / "assets" / "diagram-style-prompt.md"
 
 AGENT_MD = AGENT_MD_PATH.read_text(encoding="utf-8")
 CONFIG_YAML = CONFIG_PATH.read_text(encoding="utf-8")
 SKILL_MD = SKILL_MD_PATH.read_text(encoding="utf-8")
+MANIFEST = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
 
 _HEADING_RE = re.compile(r"^(#{2,3}) (.+)$", re.MULTILINE)
 
@@ -295,6 +308,102 @@ class TestOutputLanguage:
         assert r"^[a-z]{2}(-[A-Z]{2})?$" in CONFIGURATION
         assert "invalid" in CONFIGURATION.lower()
         assert "fall back to `ja`" in CONFIGURATION
+
+
+# ---------------------------------------------------------------------------
+# EV-18 / EV-19: style 解決順・none 予約値・生成前検証
+# ---------------------------------------------------------------------------
+
+
+class TestStyleResolution:
+    """EV-18/19: style は caller が優先順位どおり解決し、委譲前に検証する。"""
+
+    def test_skill_documents_style_argument(self) -> None:
+        assert "--style <name>" in SKILL_MD
+        assert "--style none" in SKILL_MD
+
+    def test_resolution_order_is_explicit(self) -> None:
+        assert "`--style` > `default_style` > none" in SKILL_PHASE1
+        assert "image-generation.local.yaml" in SKILL_PHASE1
+
+    def test_none_is_reserved_and_overrides_default(self) -> None:
+        assert "予約値" in SKILL_PHASE1
+        assert "`default_style` より優先" in SKILL_PHASE1
+        assert "`none.md` は style 定義として認めない" in SKILL_PHASE1
+
+    def test_unknown_style_is_validated_before_delegation(self) -> None:
+        assert ".claude/config/image-generation/styles/*.md" in SKILL_PHASE1
+        assert "AskUserQuestion" in SKILL_PHASE1
+        assert "委譲・画像生成より前" in SKILL_PHASE1
+        assert "検証が完了するまで" in SKILL_PHASE1
+        assert "黙って無視" in SKILL_PHASE1
+
+    def test_phase2_passes_only_the_resolved_style_name(self) -> None:
+        assert "スタイル: {検証済みの effective style 名" in SKILL_PHASE2
+
+    def test_base_default_is_comment_only_and_local_override_is_set(self) -> None:
+        assert not re.search(r"^default_style\s*:", CONFIG_YAML, re.MULTILINE)
+        assert re.search(r"^# default_style:\s*isometric$", CONFIG_YAML, re.MULTILINE)
+        assert LOCAL_CONFIG_PATH.read_text(encoding="utf-8").splitlines()[-1] == (
+            "default_style: isometric"
+        )
+
+
+# ---------------------------------------------------------------------------
+# EV-20: style 定義の package SSOT と nested config 配布
+# ---------------------------------------------------------------------------
+
+
+class TestStyleDistribution:
+    """EV-20: isometric style が manifest 経由で所定の nested path へ配布される。"""
+
+    def test_manifest_lists_nested_style_config(self) -> None:
+        assert "config/styles/isometric.md" in MANIFEST["config"]
+
+    def test_style_was_moved_from_legacy_docs_path(self) -> None:
+        assert PACKAGE_STYLE_PATH.is_file()
+        assert not LEGACY_STYLE_PATH.exists()
+
+    def test_distributed_style_matches_package_source(self) -> None:
+        assert DISTRIBUTED_STYLE_PATH.is_file()
+        assert PACKAGE_STYLE_PATH.read_bytes() == DISTRIBUTED_STYLE_PATH.read_bytes()
+
+    def test_bundled_style_remains_japanese(self) -> None:
+        style = PACKAGE_STYLE_PATH.read_text(encoding="utf-8")
+        assert "図解画像 共通スタイルプロンプト" in style
+        assert "ビジュアルスタイル" in style
+
+
+# ---------------------------------------------------------------------------
+# EV-21: style ファイルの安全なプロンプト埋め込み
+# ---------------------------------------------------------------------------
+
+
+class TestStylePromptEmbedding:
+    """EV-21: agent は style 欠落を fail-fast し、literal block として埋め込む。"""
+
+    def test_configuration_resolves_exact_style_file(self) -> None:
+        assert ".claude/config/image-generation/styles/<name>.md" in CONFIGURATION
+        assert r"^[a-z0-9][a-z0-9-]*$" in CONFIGURATION
+
+    def test_missing_style_is_a_caller_bug_and_failure(self) -> None:
+        assert re.search(r"caller\s+bug", CONFIGURATION)
+        assert "report FAILURE" in CONFIGURATION
+        assert "Never silently generate without the requested style" in CONFIGURATION
+
+    def test_style_uses_a_quoted_heredoc(self) -> None:
+        assert "STYLE_TEXT=$(cat <<'STYLE_EOF'" in STEP2
+        assert "not translate it" in STEP2
+        assert "unquoted heredocs" in STEP2
+
+    def test_full_prompt_contains_bounded_style_block(self) -> None:
+        full_prompt = _extract_full_prompt_body(STEP2)
+        assert "${STYLE_BLOCK}" in full_prompt
+        assert "BEGIN STYLE DEFINITION" in STEP2
+        assert "END STYLE DEFINITION" in STEP2
+
+    def test_output_format_reports_applied_style(self) -> None:
+        assert "{style name / none}" in OUTPUT_FORMAT
 
 
 # ---------------------------------------------------------------------------

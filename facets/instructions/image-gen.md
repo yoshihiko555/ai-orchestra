@@ -7,14 +7,17 @@ Adobe Firefly などを使うまでもない簡単な画像を、Claude Code の
 ## トリガーと引数
 
 ```
-/image-gen <プロンプト>               # generated-images/ に保存
-/image-gen <プロンプト> --out <path>  # 出力先を指定
+/image-gen <プロンプト>                                      # generated-images/ に保存
+/image-gen <プロンプト> --out <path>                         # 出力先を指定
+/image-gen <プロンプト> --style <name> [--out <path>]        # style を適用
+/image-gen <プロンプト> --style none [--out <path>]          # この実行だけ style を無効化
 ```
 
-| 指定           | 解釈                                                 |
-| -------------- | ---------------------------------------------------- |
-| プロンプト     | 生成したい画像の説明（日本語/英語どちらでも可）      |
-| `--out <path>` | 出力先パス。未指定なら `generated-images/<slug>.png` |
+| 指定             | 解釈                                                                         |
+| ---------------- | ---------------------------------------------------------------------------- |
+| プロンプト       | 生成したい画像の説明（日本語/英語どちらでも可）                              |
+| `--out <path>`   | 出力先パス。未指定なら `generated-images/<slug>.png`                         |
+| `--style <name>` | 配布済みの named style を適用。予約値 `none` はこの実行だけ style を無効化する |
 
 `<slug>` はプロンプトを短い kebab-case に要約したもの。
 
@@ -22,12 +25,30 @@ Adobe Firefly などを使うまでもない簡単な画像を、Claude Code の
 
 ### Phase 1: 引数の解析
 
-1. プロンプト本文と `--out` を分離する。
+1. プロンプト本文と `--out` / `--style` を分離する。flag に値がない場合は
+   AskUserQuestion で値を確認し、欠落した値をプロンプト本文として扱わない。
 2. 出力先を決める:
    - `--out` 指定があればそれを使う。
    - なければ `generated-images/<slug>.png`（リポジトリルート基準）。
    - **絶対パス**に解決する（Codex の作業ディレクトリ差異を避けるため）。
 3. プロンプトが空なら AskUserQuestion で「何の画像を生成するか」を確認する。
+4. effective style を次の優先順位で解決する（`--style` > `default_style` > none）:
+   - `--style` が指定されていれば、その値を使う。
+   - 未指定なら `.claude/config/image-generation/image-generation.yaml` を読み、存在する
+     `.claude/config/image-generation/image-generation.local.yaml` を上書きマージして
+     `default_style` を使う。
+   - `default_style` も未設定なら style なし（`none`）とする。
+   - `none` は「この実行では style なし」を表す予約値であり、`default_style` より優先する。
+     `none.md` は style 定義として認めない。
+5. **委譲・画像生成より前に** effective style を検証する:
+   - `.claude/config/image-generation/styles/*.md` を列挙し、拡張子を除いたファイル名を
+     available styles とする（予約値 `none` は除外する）。
+   - effective style が `none` なら検証済みとして続行する。
+   - それ以外は available styles と完全一致することを確認する。未知の style なら、
+     available styles と `none` を AskUserQuestion で提示して選び直してもらい、選択結果を
+     同じ規則で再検証する。
+   - 未知名を黙って無視したり style なしへ fallback したりしない。検証が完了するまで
+     `image-generator` を起動せず、1 回限りの生成を消費しない。
 
 ### Phase 2: image-generator エージェントへ委譲
 
@@ -46,13 +67,14 @@ Task(subagent_type="image-generator", prompt="""
 
 プロンプト: {ユーザーのプロンプト}
 出力先（絶対パス）: {解決した出力パス}
+スタイル: {検証済みの effective style 名。style なしの場合は none}
 
 モデル・sandbox の扱い・出力パス検証・フォールバック検知は image-generator
 エージェント定義（Configuration / Sandbox Policy / Implementation Method）に従うこと
 （スキル側からは config 値や sandbox を指示しない）。
 1 回だけ生成を試みること（連打しない）。
 
-結果（成功/失敗・出力パス・モデル）を簡潔に返してください。
+結果（成功/失敗・出力パス・モデル・適用スタイル）を簡潔に返してください。
 """)
 ```
 
@@ -61,7 +83,7 @@ Task(subagent_type="image-generator", prompt="""
 ### Phase 3: 結果の確認と報告
 
 1. サブエージェントの結果を受け取る。
-2. **成功**: 出力パス・解像度・使用モデルを日本語で報告し、画像を確認するよう促す。
+2. **成功**: 出力パス・解像度・使用モデル・適用スタイル（または none）を日本語で報告し、画像を確認するよう促す。
 3. **フォールバック検知（失敗）**: AI 生成ではなく Pillow 等の代替描画が疑われる場合、
    その旨と推定原因（直近の連打によるレートリミット）を報告し、少し時間を置いての
    再実行を提案する。代替画像ファイルのパスも示し、削除可能であることを伝える。
@@ -73,6 +95,8 @@ Task(subagent_type="image-generator", prompt="""
 - **API キー不要**: 組み込み `image_gen` は Codex の ChatGPT 認証で動く。`OPENAI_API_KEY` は使わない。
 - **モデル**: 既定 `gpt-5.5`（`gpt-5.3-codex` 等のコーディングモデルは image_gen 非対応）。
   変更は `image-generation` パッケージ config（`config/image-generation.yaml` の `image_model`）で行う。
+- **スタイル**: `--style <name>` で `.claude/config/image-generation/styles/<name>.md` を適用する。
+  `--style none` はその実行だけ `default_style` を無効化する。style 定義の本文は翻訳しない。
 - **sandbox**: 画像生成コマンドのみ Claude Code 側 Bash を `dangerouslyDisableSandbox: true` で実行する
   （Codex の app-server 起動が層1 sandbox に阻害されるため）。Codex 側（層2）は
   `workspace-write` のまま（FS は repo 内に OS 強制で限定）、`image_gen` の backend 通信のため

@@ -3,7 +3,7 @@
 **パッケージ**: `packages/image-generation`
 **類型**: スキル型（`/image-gen` スキル + `image-generator` エージェント）
 **作成日**: 2026-07-03
-**最終レビュー日**: 2026-07-23（EV-17 に画像内テキストの出力言語設定を追加）
+**最終レビュー日**: 2026-07-23（EV-18〜21 にスタイル切替機構を追加）
 **情報源**: packages/image-generation/README.md, docs/adr/ADR-20260605-023.md, facets/instructions/image-gen.md（`/image-gen` スキル指示書）, packages/image-generation/agents/image-generator.md（エージェント指示書）, packages/image-generation/config/image-generation.yaml, packages/image-generation/manifest.json（補助参照: 構成要素の列挙のみ）
 
 ## 1. 責務定義
@@ -21,9 +21,9 @@
 
 | 構成要素                                   | 入力                                                              | 期待する出力                                                                 | 副作用                                                                                         |
 | ------------------------------------------ | ----------------------------------------------------------------- | ---------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| `/image-gen` スキル Phase 1（引数解析）    | `<プロンプト>` [`--out <path>`]                                   | 絶対パスに解決された出力先、または空プロンプト時の確認要求                   | プロンプト空時のみ AskUserQuestion 発火                                                        |
-| `/image-gen` スキル Phase 2（委譲）        | 解析済みプロンプト・出力先                                        | `Task(subagent_type="image-generator", ...)` への委譲                        | なし（委譲のみ、CLI ログはメインコンテキストに出さない）                                       |
-| `image-generator` Configuration            | `config/image-generation.yaml`（+ `.local.yaml`）の `image_model` / `output_language` | 解決済みモデル名・画像内テキスト言語（yaml 値優先。未設定時のみ各既定値 + フォールバック明示） | なし（読み取りのみ）                                                                           |
+| `/image-gen` スキル Phase 1（引数解析）    | `<プロンプト>` [`--out <path>`] [`--style <name>`]                 | 絶対パスに解決された出力先、解決・検証済み style 名（または none）、または確認要求 | 空プロンプト・未知 style 時のみ AskUserQuestion 発火                                            |
+| `/image-gen` スキル Phase 2（委譲）        | 解析済みプロンプト・出力先・style 名                               | `Task(subagent_type="image-generator", ...)` への委譲                        | なし（委譲のみ、CLI ログはメインコンテキストに出さない）                                       |
+| `image-generator` Configuration            | `config/image-generation.yaml`（+ `.local.yaml`）の `image_model` / `output_language`、caller 指定 style 名 | 解決済みモデル名・画像内テキスト言語・style 定義（yaml 値優先。未設定時のみ各既定値 + フォールバック明示） | style 適用時のみ配布済み Markdown を読み取り                                                    |
 | `image-generator` Step 1（パス解決）       | caller 指定パス or 既定 `generated-images/<slug>.png`             | リポジトリ内の絶対パス、またはパストラバーサル時の拒否                       | 出力先ディレクトリの `mkdir -p`                                                                |
 | `image-generator` Step 3（Codex 呼び出し） | 検証済みプロンプト・モデル名                                      | `codex exec` の stdout（生成成否・保存パス相当のログ）                       | `~/.codex/generated_images/<session>/` への画像書き込み（Codex 側）、layer1 sandbox 一時無効化 |
 | `image-generator` Step 3.5-4（回収・検証） | Step 3 の出力、フレッシュネスマーカー時刻                         | `$RESOLVED` への画像コピー成功、または honest FAILURE 報告                   | リポジトリ内ファイルへの `cp`                                                                  |
@@ -42,10 +42,14 @@
 - [ ] EV-10（正常 / must）: 1 リクエストにつき Codex 呼び出しは 1 回のみで、レートリミット回避のためループ・リトライ・連打をしない — 根拠: packages/image-generation/agents/image-generator.md（Step 3）, docs/adr/ADR-20260605-023.md（決定4）
 - [ ] EV-11（境界 / should）: Codex 呼び出しコマンドが、実行時解決された image-generation feature を `--enable "$IMG_FEATURE"` で有効化していること（codex 0.140.0 時点の旧名は `imagegenext`。0.144.6 で `[features].image_generation` へ改称、既定 stable/true。固定名ではなく `codex features list`／`codex --version` の minor 番号で判定した名前を使う） / `-c sandbox_workspace_write.network_access=true` / `-c model_reasoning_effort=low` / `--skip-git-repo-check` が含まれる（欠落時は保存回帰・app-server起動失敗・自己検閲ハングが再発する） — 根拠: docs/adr/ADR-20260605-023.md（Update 2026-06-17, 2026-06-17 #2）, packages/image-generation/agents/image-generator.md（Step 3, Issue #291）
 - [ ] EV-17（config 駆動 / 正常 / must）: `output_language` は `config/image-generation.yaml`（+ `.local.yaml`）の値を正とし、既定値 `ja` では画像内の見出し・ラベル・注釈・キャプションを日本語で描画する。技術用語・固有名詞は英語のままでもよく、ユーザープロンプトに画像内テキストの言語が明示されている場合はその指定を優先する。解決した値は言語コード形式 `^[a-z]{2}(-[A-Z]{2})?$`（例: `ja`, `en`, `en-US`）に一致しなければならず、一致しない値は invalid として `ja` にフォールバックし、その旨をレポートに記載する（config 由来の自由記述文字列をプロンプトへ混入させない defense-in-depth）。Output Format にも使用した画像内テキスト言語（fallback 時はその旨）を報告する — 根拠: packages/image-generation/config/image-generation.yaml, packages/image-generation/agents/image-generator.md（Configuration, Step 2, Output Format）
+- [ ] EV-18（config 駆動 / 正常 / must）: style の解決順は明示指定 `--style <name>` > `image-generation.local.yaml` を含む config の `default_style` > style なしである。予約値 `--style none` はその 1 回だけ `default_style` を無効化し、style 定義ファイル名として扱わない — 根拠: facets/instructions/image-gen.md（Phase 1）, packages/image-generation/config/image-generation.yaml
+- [ ] EV-19（対話規約 / 異常 / must）: 解決した style 名は画像生成への委譲前に `.claude/config/image-generation/styles/*.md` の列挙結果と照合する。未知の style は無視・無装飾 fallback・委譲をせず、利用可能な style と `none` を AskUserQuestion で提示して選び直させ、選択後に再検証する — 根拠: facets/instructions/image-gen.md（Phase 1-2）
+- [ ] EV-20（配布 / 正常 / must）: style 定義の SSOT は `packages/image-generation/config/styles/<name>.md` で、manifest の config 同期により `.claude/config/image-generation/styles/<name>.md` へサブディレクトリを保持して配布される。bundled style `isometric` の内容は日本語のまま維持する — 根拠: packages/image-generation/manifest.json, scripts/lib/sync_engine.py（config_target_relative_path）, packages/image-generation/config/styles/isometric.md
+- [ ] EV-21（プロンプト構築 / 異常 / must）: caller から style 名が渡された場合、`image-generator` は `.claude/config/image-generation/styles/<name>.md` を解決し、存在しなければ caller bug として生成前に FAILURE を返す。存在する場合は style 内容を quoted heredoc で literal に読み込み、`FULL_PROMPT` に style block として追加する。style 内容は翻訳せず、既存の shell injection guard と 1 回生成制約を維持し、Output Format に適用 style（または none）を報告する — 根拠: packages/image-generation/agents/image-generator.md（Configuration, Step 2, Output Format）
 
 ## 4. 類型別観点
 
-- [ ] EV-12（対話規約 / 正常 / should）: 対話（AskUserQuestion）はプロンプトが空の場合のみ発生し、それ以外のフェーズ（出力先解決・委譲・報告）は非対話で完結する — 根拠: facets/instructions/image-gen.md（Phase 1-3）。なお本パッケージ独自の「Dialog Rules Policy」参照は `.claude/rules/` 配下に存在せず、対話条件はスキル指示書の記述のみが根拠。
+- [ ] EV-12（対話規約 / 正常 / should）: 対話（AskUserQuestion）はプロンプトが空の場合、または EV-19 の未知 style を選び直す場合に限り発生し、それ以外のフェーズ（出力先解決・委譲・報告）は非対話で完結する — 根拠: facets/instructions/image-gen.md（Phase 1-3）。なお本パッケージ独自の「Dialog Rules Policy」参照は `.claude/rules/` 配下に存在せず、対話条件はスキル指示書の記述のみが根拠。
 - [ ] EV-13（非対話完結性 / 異常 / must）: `codex exec` 呼び出しは `< /dev/null` で stdin を封じ、Bash `timeout` を `180000` に設定し、exit code / stdout マーカーで成否を判定する（ハングしない） — 根拠: packages/image-generation/agents/image-generator.md（Step 3）
 - [ ] EV-14（フォールバック / 異常 / must）: Codex 利用不能時は claude-direct 相当の代替画像生成を行わず、「利用不可」を明示報告して停止する（本パッケージには AI 画像生成の claude-direct 代替経路が存在しないため、フォールバック先は「機能停止の明示報告」であり「別ツールでの続行」ではない） — 根拠: packages/image-generation/agents/image-generator.md（Fallback）
 - [ ] EV-16（config 駆動 / 異常 / must）: ルーティング尊重 — `cli-tools.yaml`（+ `.local.yaml`）の `codex.enabled: false` のとき、`/image-gen` スキル・`image-generator` エージェントは画像生成を実行せず「利用不可」を明示報告する。`image-generator` は `codex exec` を直接呼ぶ設計（`agents.<name>.tool` ルーティングには ADR-023 で不参加）だが、Codex CLI 依存機能であるためグローバル無効化スイッチ `codex.enabled` は尊重する — 根拠: 2026-07-04 人間レビュー裁定。`packages/image-generation/scripts/check_image_gen_enabled.py` による Step 0 kill-switch チェックとして実装済み（Issue #133）
@@ -67,6 +71,10 @@
 - EV-13: `codex exec` コマンドライン組み立て（`< /dev/null` / `timeout` / 必須フラグの有無）を文字列組み立てレベルで検証
 - EV-16: `codex.enabled: false` を設定した config を読み込ませ、`codex exec` を呼ばず「利用不可」を報告する分岐（実 CLI を呼ばずに検証可能）。`packages/image-generation/tests/test_check_image_gen_enabled.py` でユニットテスト済み
 - EV-17: base config の `output_language: ja`、`.local.yaml` 上書きの解決指示、Step 2 の `FULL_PROMPT` への反映、技術用語・固有名詞の例外、ユーザー明示指定の優先、言語コード形式検証（invalid 時 `ja` フォールバック + 報告）、Output Format での言語報告を構造契約テストで検証可能
+- EV-18: `--style` / `default_style` / style なしの解決順、予約値 `none` の override をスキル指示書の構造契約テストで検証可能
+- EV-19: style 定義列挙・委譲前検証・AskUserQuestion による再選択をスキル指示書の構造契約テストで検証可能
+- EV-20: manifest の nested config 宣言、package / `.claude` 双方の `isometric.md` 存在と内容一致を構造・配布契約テストで検証可能
+- EV-21: style ファイル欠落時の生成前 FAILURE、quoted heredoc による literal 読み込み、`FULL_PROMPT` への style block 反映、Output Format の style 報告をエージェント指示書の構造契約テストで検証可能
 
 ### 手動 E2E でしか検証できない範囲（実 Codex CLI・ChatGPT 認証・実ネットワークが必要）
 

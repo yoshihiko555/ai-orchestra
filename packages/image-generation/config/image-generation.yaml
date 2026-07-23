@@ -13,3 +13,7 @@ image_model: gpt-5.5
 # 恒久的な変更は image-generation.local.yaml でこのキーを上書きする。
 # 形式は言語コード（例: ja, en, en-US）。形式外の値は ja として扱われる。
 output_language: ja
+
+# --style 未指定時に適用する既定スタイル。config/styles/<name>.md の <name> を指定する。
+# 未設定ならスタイルを適用しない。プロジェクト固有の既定値は local yaml に設定する。
+# default_style: isometric
