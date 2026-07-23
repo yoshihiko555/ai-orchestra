@@ -15,7 +15,7 @@ Before running anything, you MUST read the package config file:
 `.claude/config/image-generation/image-generation.yaml`
 (apply `image-generation.local.yaml` overrides if present).
 
-Resolve this value:
+Resolve these values:
 
 - `image_model` — the Codex model used for image generation.
   **The yaml value is the single source of truth.** Use it as-is when present.
@@ -23,6 +23,22 @@ Resolve this value:
   in your report that you fell back to a default because `image_model` was
   unconfigured. Never use a coding model such as `gpt-5.3-codex` — those do not
   support image_gen on ChatGPT accounts.
+- `output_language` — the default language for text rendered inside the image.
+  **The yaml value is the single source of truth.** Apply the local yaml override
+  when present; use the validated value as `${OUTPUT_LANGUAGE}` when building
+  `FULL_PROMPT` in Step 2 — inject the literal at command-build time (same
+  convention as `$IMAGE_MODEL`); it is not a persistent shell variable. Only if
+  the key (or file) is entirely absent, fall back to `ja` AND state in your
+  report that you fell back because `output_language` was unconfigured. This
+  setting applies to in-image headings, labels, annotations, and captions;
+  technical terms and proper nouns may remain in English. If the user's prompt
+  explicitly requests a language for in-image text, that explicit request takes
+  precedence over `output_language`.
+  **Format validation (defense-in-depth):** the resolved value MUST match the
+  language-code pattern `^[a-z]{2}(-[A-Z]{2})?$` (e.g. `ja`, `en`, `en-US`).
+  If it does not match, treat the value as invalid: fall back to `ja` and state
+  in your report that you did so, instead of interpolating an arbitrary
+  free-form string from the config into the Codex prompt.
 
 This agent calls `codex exec` directly; it does NOT participate in per-agent
 routing (`agents.*.tool` in cli-tools.yaml) or the normal codex-delegation path.
@@ -148,6 +164,11 @@ PROMPT_EOF
 # Build the instruction with parameter expansion (no eval, no nested quoting):
 FULL_PROMPT="Use your built-in image_gen tool to generate the following image: \
 ${PROMPT_TEXT}. \
+Render all in-image text (headings, labels, annotations, and captions) in the \
+configured language (code: ${OUTPUT_LANGUAGE}; ja means Japanese). Technical \
+terms and proper nouns may remain in English. If the user's prompt explicitly \
+requests a language for in-image text, follow that request instead of \
+${OUTPUT_LANGUAGE}. \
 Accept whatever image_gen returns — do NOT judge, reject, or regenerate it for \
 quality, color, or composition reasons. Do NOT delete any generated file. \
 Do NOT read, write, or run anything unrelated to this single image generation. \
@@ -364,6 +385,7 @@ wait, and include the placeholder file path so the user can delete it.
 - ステータス: 成功 / 失敗（フォールバック検知）/ 利用不可
 - 出力ファイル: `{path}`（解像度・形式・サイズが分かれば併記）
 - 使用モデル: {image_model}（fallback 時はその旨）
+- 画像内テキスト言語: {output_language}（fallback 時はその旨）
 
 ### 備考
 

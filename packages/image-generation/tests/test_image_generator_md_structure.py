@@ -7,6 +7,7 @@
 
 対象（正本のみ。生成物 `.claude/skills/image-gen/SKILL.md` は対象外）:
 - packages/image-generation/agents/image-generator.md
+- packages/image-generation/config/image-generation.yaml
 - facets/instructions/image-gen.md
 
 各テストは docs/evaluation/image-generation.md の EV-NN に対応する（自動化可能な
@@ -21,9 +22,11 @@ import re
 from tests.module_loader import REPO_ROOT
 
 AGENT_MD_PATH = REPO_ROOT / "packages" / "image-generation" / "agents" / "image-generator.md"
+CONFIG_PATH = REPO_ROOT / "packages" / "image-generation" / "config" / "image-generation.yaml"
 SKILL_MD_PATH = REPO_ROOT / "facets" / "instructions" / "image-gen.md"
 
 AGENT_MD = AGENT_MD_PATH.read_text(encoding="utf-8")
+CONFIG_YAML = CONFIG_PATH.read_text(encoding="utf-8")
 SKILL_MD = SKILL_MD_PATH.read_text(encoding="utf-8")
 
 _HEADING_RE = re.compile(r"^(#{2,3}) (.+)$", re.MULTILINE)
@@ -53,6 +56,21 @@ def _has_heading(sections: dict[str, str], prefix: str) -> bool:
     return any(title.startswith(prefix) for title in sections)
 
 
+_FULL_PROMPT_ASSIGNMENT_RE = re.compile(r'FULL_PROMPT="((?:[^"\\]|\\.|\\\n)*)"')
+
+
+def _extract_full_prompt_body(section: str) -> str:
+    """`FULL_PROMPT="..."` bash 代入式の本文だけを抽出する。
+
+    セクション末尾までではなく、ダブルクォート文字列(行末バックスラッシュ継続を
+    含む)の終端で正しく閉じた範囲のみを返す。これにより `${OUTPUT_LANGUAGE}` 等が
+    代入式の外(Step 2 の他の説明文)に移動した場合にテストが誤って通るのを防ぐ。
+    """
+    match = _FULL_PROMPT_ASSIGNMENT_RE.search(section)
+    assert match, 'FULL_PROMPT="..." の代入式が見つかりません'
+    return match.group(1)
+
+
 AGENT_SECTIONS = _sections(AGENT_MD)
 SKILL_SECTIONS = _sections(SKILL_MD)
 
@@ -61,10 +79,18 @@ SKILL_SECTIONS = _sections(SKILL_MD)
 CONFIGURATION = _section(AGENT_SECTIONS, "Configuration")
 STEP0 = _section(AGENT_SECTIONS, "Step 0")
 STEP1 = _section(AGENT_SECTIONS, "Step 1")
+STEP2 = _section(AGENT_SECTIONS, "Step 2")
 STEP3 = _section(AGENT_SECTIONS, "Step 3 ")
 STEP3_5 = _section(AGENT_SECTIONS, "Step 3.5")
 STEP4 = _section(AGENT_SECTIONS, "Step 4")
 FALLBACK = _section(AGENT_SECTIONS, "Fallback")
+
+# "## Output Format" の本文はフェンスコードブロック内に "### 結果" 等の見出しっぽい
+# 行を含み、_sections() の見出し検出（レベル2/3 とも拾う）がそこで区切ってしまう
+# ため、_section() ではなくフェンスコードブロックそのものを正規表現で取り出す。
+_OUTPUT_FORMAT_BLOCK_RE = re.compile(r"## Output Format\n\n```markdown\n(.*?)```", re.DOTALL)
+_output_format_match = _OUTPUT_FORMAT_BLOCK_RE.search(AGENT_MD)
+OUTPUT_FORMAT = _output_format_match.group(1) if _output_format_match else ""
 
 SKILL_PHASE1 = _section(SKILL_SECTIONS, "Phase 1")
 SKILL_PHASE2 = _section(SKILL_SECTIONS, "Phase 2")
@@ -222,6 +248,53 @@ class TestImageModelNotCodingModel:
     def test_forbids_coding_model_example(self) -> None:
         assert "gpt-5.3-codex" in CONFIGURATION
         assert "Never use a coding model" in CONFIGURATION
+
+
+# ---------------------------------------------------------------------------
+# EV-17: 画像内テキストの出力言語
+# ---------------------------------------------------------------------------
+
+
+class TestOutputLanguage:
+    """EV-17: output_language の既定値・上書き・プロンプト反映を検証する。"""
+
+    def test_base_config_defaults_to_japanese(self) -> None:
+        assert re.search(r"^output_language:\s*ja\s*$", CONFIG_YAML, re.MULTILINE)
+
+    def test_configuration_resolves_local_override_and_fallback(self) -> None:
+        assert "image-generation.local.yaml" in CONFIGURATION
+        assert "output_language" in CONFIGURATION
+        assert "OUTPUT_LANGUAGE" in CONFIGURATION
+        assert "fall back to `ja`" in CONFIGURATION
+
+    def test_full_prompt_uses_resolved_output_language(self) -> None:
+        full_prompt_body = _extract_full_prompt_body(STEP2)
+        assert "${OUTPUT_LANGUAGE}" in full_prompt_body
+        assert "in-image text" in full_prompt_body
+
+    def test_full_prompt_allows_english_technical_terms_and_proper_nouns(self) -> None:
+        full_prompt = _extract_full_prompt_body(STEP2).lower().replace("\\\n", "")
+        assert "technical terms" in full_prompt
+        assert "proper nouns" in full_prompt
+        assert "may remain in english" in full_prompt
+
+    def test_explicit_user_language_takes_precedence(self) -> None:
+        full_prompt = _extract_full_prompt_body(STEP2).lower()
+        assert "user's prompt explicitly" in full_prompt
+        assert "follow that request instead" in full_prompt
+        # 逆検証: FULL_PROMPT 代入式の"後"にある Step 2 の説明文が
+        # 抽出結果に混入していないこと（抽出が貪欲すぎないことのガード）。
+        assert "do not tell codex" not in full_prompt
+        assert "the cli query to codex is in english" not in full_prompt
+
+    def test_output_format_reports_output_language(self) -> None:
+        assert "{output_language}" in OUTPUT_FORMAT
+        assert "fallback" in OUTPUT_FORMAT.lower()
+
+    def test_configuration_validates_language_code_format(self) -> None:
+        assert r"^[a-z]{2}(-[A-Z]{2})?$" in CONFIGURATION
+        assert "invalid" in CONFIGURATION.lower()
+        assert "fall back to `ja`" in CONFIGURATION
 
 
 # ---------------------------------------------------------------------------

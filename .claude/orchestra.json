@@ -109,8 +109,8 @@
       "config/git-workflow/sandbox-requirements.json": "4b2f9366201ed8f90d3f2f5e418502f75d977b4ca659f8dfc91b8369e5971e5e"
     },
     "image-generation": {
-      "config/image-generation/image-generation.yaml": "a643faa7e9555781989230449c4dd2293da9a7d069d302d20096319b6f71ab1f",
-      "agents/image-generator.md": "83eda10b74a91f9de95cdfb8fa7c7e7315c125d15117ed8443a33520afd8d3bb"
+      "config/image-generation/image-generation.yaml": "5b9be847cd4d6f2f4e185f47e9f846ee3e6430e2309811edc22a4269469e0b2d",
+      "agents/image-generator.md": "47a104d90b880b2af4e954aa91aa89810b349f7351dc01906383bb5cb1b5b9ca"
     },
     "loop-harness": {
       "config/loop-harness/loop-harness.yaml": "92f4f15ee24e61aaba7ad8a8336582c4bc465ac73bb88434a793c4d0ff596acb",

@@ -17,6 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **`image-generation`: 画像内テキストを既定で日本語化**: 見出し・ラベル・注釈・キャプションは `output_language`（既定 `ja`）に従い、プロンプトで別言語を明示した場合はその指定を優先する。恒久的な変更は `image-generation.local.yaml` で上書きできる。
 - **`meta-harness`: Docker image 管理を永続イメージライフサイクルへ移行（Issue #250）**: scenario/broker image のビルドが毎回の `--no-cache` フルビルドから、recipe hash ベースの再利用（`sha-<hash12>` タグ + ディスク manifest）へ変わり、プロセスをまたいで image を再利用する。世代 prune と専用 buildx builder の BuildKit cache GC も有効になる。`evaluate.isolation.image_cache` 設定キー（manifest/lock パス・保持世代数・builder 名・cache GC 閾値）を追加（未設定時は既定値で後方互換）。`auto_build_images: false` の immutable digest 必須（fail-closed）は従来どおり。設定の `image:` に書くタグは表示用で、`image:` のタグだけを変更しても再ビルドはされない（実際にビルド・再利用される image は recipe hash と `image_pin` で決まる）。この移行後の初回実行時は、まだ manifest に記録がないためフルビルドが 1 回だけ走る。
 - **`loop-harness`: 機械検証コマンドの子プロセス umask をホスト実行経路で決定的に固定**: `pytest`/`ruff` 等の機械検証コマンドが host 上で実行される際、呼び出し元シェルの umask 設定に関わらず `0o022` で子プロセスを起動するようになった。より厳格な umask（例 `077`）を運用したい場合は `LOOP_MECHANICAL_UMASK` 環境変数（8進数文字列）で上書きできる。この環境変数は機械検証コマンドに実際に渡される環境から解決され、明示的な子 env が渡された場合は ambient 環境にはフォールバックしない。Docker 隔離実行経路には影響しない。
 - **`core`: Plans.md の管理指針を worktree ローカル運用に明確化**: Plans.md / Plans.archive.md は git にコミットせず、worktree 作業時は作業中 worktree の `.claude/Plans.md` を正本とする（root 側を参照・更新しない）ことを task-memory-usage ルールに明文化した。従来の「git にコミットしてチーム共有を推奨」の記述は削除。
