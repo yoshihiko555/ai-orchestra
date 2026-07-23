@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`agent-routing` / `review`: 敵対的検証レビュアー `adversarial-reviewer` を追加**: 堅牢性（境界値・異常入力・エラー経路・競合/並行・リソース枯渇・API 誤用）に特化した敵対的検証エージェントを新設し、`/review` のベースラインに組み込んだ。デフォルト `/review` は「code + adversarial + 専門枠最大 2」の最大 4 名構成になり、`/review adversarial`（単体）が追加、`/review impl` は 4 名、`/review all` は全 7 レビュアーになる。Critical/High 指摘には具体的失敗シナリオの明記が必須（書けない指摘は Medium 以下）で、auto-fix の誤発動を抑止する。
+
 ## [0.3.1] - 2026-07-23
 
 ### Added

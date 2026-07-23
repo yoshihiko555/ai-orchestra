@@ -113,7 +113,7 @@ Task(subagent_type="architect", prompt="マイクロサービス構成を設計�
 
 ```bash
 /review              # スマート選定レビュー（変更内容に応じて 2-3 名を自動選定）
-/review all          # 全 6 レビュアー並列実行
+/review all          # 全 7 レビュアー並列実行
 /review code         # コードレビューのみ
 /tdd                 # テスト駆動開発ワークフロー
 /startproject        # マルチエージェント協調で新規開発を開始
@@ -126,7 +126,7 @@ Task(subagent_type="architect", prompt="マイクロサービス構成を設計�
 
 ```
 /review              # 変更内容に応じてレビュアーを自動選定
-/review impl         # 実装系（code + security + performance）
+/review impl         # 実装系（code + security + performance + adversarial）
 /review design       # 設計系（spec + architecture）
 /release-readiness   # マージ前の最終チェック
 ```

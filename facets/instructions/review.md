@@ -5,16 +5,17 @@
 ## Usage
 
 ```
-/review              # ベースライン(code) + スマート選定（デフォルト）
-/review all          # 全 6 レビュアー並列実行（旧デフォルト）
+/review              # ベースライン(code + adversarial) + スマート選定（デフォルト）
+/review all          # 全 7 レビュアー並列実行（旧デフォルト）
 /review code         # コードレビューのみ
 /review security     # セキュリティレビューのみ
 /review performance  # パフォーマンスレビューのみ
 /review spec         # 仕様整合性レビューのみ
 /review architecture # アーキテクチャレビューのみ
 /review ux           # UX/アクセシビリティレビューのみ
+/review adversarial  # 敵対的検証（堅牢性）レビューのみ
 /review design       # 設計系レビュー（spec + architecture）
-/review impl         # 実装系レビュー（code + security + performance）
+/review impl         # 実装系レビュー（code + security + performance + adversarial）
 ```
 
 ## Reviewers
@@ -27,6 +28,7 @@
 | `spec-reviewer` | 設計書との整合性 |
 | `architecture-reviewer` | アーキテクチャ妥当性 |
 | `ux-reviewer` | UX、アクセシビリティ |
+| `adversarial-reviewer` | 堅牢性の敵対的検証（境界値、異常入力、エラー経路、競合/並行、リソース枯渇、API 誤用） |
 
 ---
 
@@ -59,7 +61,8 @@ file_contexts = 各変更ファイルのソースコード（上記ルールで�
 
 #### Step 1: ベースライン
 
-- ソースコード変更がある限り `code-reviewer` を必ず含める
+- ソースコード変更がある限り `code-reviewer` と `adversarial-reviewer` を必ず含める（ベースライン 2 名）
+- `adversarial-reviewer` は堅牢性の敵対的検証（壊れる入力・状態の発見）を担当する常設枠。セキュリティ意図の攻撃観点は `security-reviewer` の管轄
 
 #### Step 2: パスパターンマッチ
 
@@ -92,14 +95,14 @@ Phase 0 で収集した diff の**追加行（`+` プレフィックス）のみ
 
 #### Step 4: 上限キャップ
 
-union の結果が多すぎる場合、以下のルールで **最大 3 レビュアー**（code-reviewer 含む）に絞る:
+union の結果が多すぎる場合、以下のルールで **最大 4 レビュアー**（ベースライン 2 名含む）に絞る:
 
-1. `code-reviewer` は常に確定（ベースライン）
-2. 残り枠（最大 2）を以下の優先順位で割り当て:
+1. `code-reviewer` と `adversarial-reviewer` は常に確定（ベースライン 2 名）
+2. 専門枠（最大 2）を以下の優先順位で割り当て:
    - `security-reviewer` > `spec-reviewer` > `performance-reviewer` > `architecture-reviewer` > `ux-reviewer`
 3. 同優先度の場合、パスパターン + コンテンツスキャン両方でマッチしたレビュアーを優先
 
-**重要**: パスパターンにもコンテンツスキャンにもマッチしないファイルは、`code-reviewer`（ベースライン）が必ずレビューする。
+**重要**: パスパターンにもコンテンツスキャンにもマッチしないファイルは、ベースライン（`code-reviewer` / `adversarial-reviewer`）が必ずレビューする。
 
 ### Phase 2: モデル選択
 
@@ -309,11 +312,11 @@ Phase 5-7 のループは以下の全モードに共通して適用される:
 
 ## Execution: Full Review (`/review all`)
 
-全 6 レビュアーを並列起動する（旧 `/review` のデフォルト動作）。
+全 7 レビュアーを並列起動する（旧 `/review` のデフォルト動作）。
 
 1. Phase 0 のコンテキスト事前収集を実行
 2. モデル選択を実行（Phase 2 と同じ）
-3. 全 6 レビュアーを起動（スマート選定をスキップ）
+3. 全 7 レビュアーを起動（スマート選定をスキップ）
 4. Phase 4 の Tiered Output で集約
 5. Phase 5-7（Pass/Fail 判定 → Auto-Fix → Re-Review）を実行
 
@@ -333,7 +336,7 @@ Phase 5-7 のループは以下の全モードに共通して適用される:
 
 | グループ | レビュアー |
 |---------|-----------|
-| `impl` | code-reviewer + security-reviewer + performance-reviewer |
+| `impl` | code-reviewer + security-reviewer + performance-reviewer + adversarial-reviewer |
 | `design` | spec-reviewer + architecture-reviewer |
 
 1. Phase 0 のコンテキスト事前収集を実行
@@ -346,7 +349,7 @@ Phase 5-7 のループは以下の全モードに共通して適用される:
 
 ## Tips
 
-- デフォルト `/review` はスマート選定で 2-3 レビュアーに絞り、効率的にレビュー
+- デフォルト `/review` はベースライン 2 名（code + adversarial）+ 専門枠最大 2 の最大 4 レビュアーに絞り、効率的にレビュー
 - 全レビュアーが必要な場合は `/review all` を使用
 - `/review impl` でクイック実装レビュー
 - `/review design` は大規模リファクタリング前に推奨
