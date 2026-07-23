@@ -458,7 +458,6 @@ agents:
 │   ├── state/                      # 永続状態
 │   ├── logs/audit/                 # 監査イベントログ（セッション単位）
 │   ├── docs/                       # ドキュメント
-│   ├── checkpoints/                # セッションチェックポイント
 │   └── facets/                     # プロジェクトローカル facet 上書き
 └── .gitignore                      # AI Orchestra ブロック追加済み
 ```

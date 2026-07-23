@@ -72,7 +72,6 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 | util   | `context_store.py`           | コンテキスト共有ストア                                           |
 | skill  | `preflight`                  | 実装計画の策定                                                   |
 | skill  | `startproject`               | マルチエージェント協調で新規開発を開始                           |
-| skill  | `checkpointing`              | セッションコンテキストの保存・復元                               |
 | skill  | `task-state`                 | Plans.md の作成・更新                                            |
 | skill  | `design`                     | 要件定義・設計ドキュメント作成                                   |
 | rule   | `config-loading`             | 設定ファイルのレイヤード構成ルール                               |

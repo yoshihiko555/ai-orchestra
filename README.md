@@ -321,7 +321,6 @@ Task(subagent_type="code-reviewer", prompt="このコードをレビューして
 | `/issue-fix`          | Issue ベースの計画→実装→テスト→レビューフロー                 |
 | `/codex-system`       | `cli-tools.yaml` に基づく Codex 利用ガイド（config-driven）   |
 | `/antigravity-system` | Antigravity CLI（agy）でのリサーチ・マルチモーダル処理        |
-| `/checkpointing`      | セッションコンテキストの保存・復元                            |
 | `/preflight`          | 実装計画の策定                                                |
 | `/design`             | 設計テンプレート                                              |
 | `/design-tracker`     | 設計記録                                                      |

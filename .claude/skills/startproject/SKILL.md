@@ -64,7 +64,6 @@ CLI ツールの利用可否と設定は `cli-tools.yaml` で一元管理する�
 - `/preflight` で事前計画済みの場合は、Phase 2 で差分確認を中心に進める
 - Phase 6 完了時点で **最小テストゲート**（changed tests + smoke）を通す
 - `/tdd` は軽量必須（最低 1 サイクル）。Phase 7 前後で実施する
-- セッションが重い場合は `/checkpointing --full` を実行してからレビューへ進む
 
 ## Workflow
 

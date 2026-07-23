@@ -4,20 +4,48 @@
   "description": "全パッケージ共通の基盤ライブラリ",
   "depends": [],
   "hooks": {
-    "SessionStart": ["load-task-state.py"],
-    "SessionEnd": ["cleanup-session-context.py"],
-    "UserPromptSubmit": [{ "file": "clear-plan-gate.py" }],
+    "SessionStart": [
+      "load-task-state.py"
+    ],
+    "SessionEnd": [
+      "cleanup-session-context.py"
+    ],
+    "UserPromptSubmit": [
+      {
+        "file": "clear-plan-gate.py"
+      }
+    ],
     "PreToolUse": [
-      { "file": "check-plan-gate.py", "matcher": "Agent|Task" },
-      { "file": "inject-shared-context.py", "matcher": "Agent|Task" }
+      {
+        "file": "check-plan-gate.py",
+        "matcher": "Agent|Task"
+      },
+      {
+        "file": "inject-shared-context.py",
+        "matcher": "Agent|Task"
+      }
     ],
     "PostToolUse": [
-      { "file": "set-plan-gate.py", "matcher": "Agent|Task" },
-      { "file": "capture-task-result.py", "matcher": "Agent|Task" },
-      { "file": "update-working-context.py", "matcher": "Edit" },
-      { "file": "update-working-context.py", "matcher": "Write" }
+      {
+        "file": "set-plan-gate.py",
+        "matcher": "Agent|Task"
+      },
+      {
+        "file": "capture-task-result.py",
+        "matcher": "Agent|Task"
+      },
+      {
+        "file": "update-working-context.py",
+        "matcher": "Edit"
+      },
+      {
+        "file": "update-working-context.py",
+        "matcher": "Write"
+      }
     ],
-    "PreCompact": ["precompact-dump.py"]
+    "PreCompact": [
+      "precompact-dump.py"
+    ]
   },
   "files": [
     "hooks/hook_common.py",
@@ -37,7 +65,6 @@
   "skills": [
     "preflight",
     "startproject",
-    "checkpointing",
     "task-state",
     "design",
     "handoff"
@@ -51,11 +78,17 @@
     "escalation-strategy"
   ],
   "scripts": [],
-  "config": ["config/task-memory.yaml"],
+  "config": [
+    "config/task-memory.yaml"
+  ],
   "context_files": {
     "source": "claude.md",
     "template": "templates/project/CLAUDE.md",
-    "init": ["CLAUDE.md"],
-    "sync": ["CLAUDE.md"]
+    "init": [
+      "CLAUDE.md"
+    ],
+    "sync": [
+      "CLAUDE.md"
+    ]
   }
 }
