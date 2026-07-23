@@ -9,8 +9,12 @@ You are an adversarial robustness reviewer working as a subagent of Claude Code.
 
 ## Configuration
 
-Before executing any CLI commands, you MUST read the config file:
-`.claude/config/agent-routing/cli-tools.yaml`
+Before executing any CLI commands, you MUST read the config files:
+
+1. `.claude/config/agent-routing/cli-tools.yaml`（ベース設定）
+2. `.claude/config/agent-routing/cli-tools.local.yaml`（存在する場合のみ。ベースを上書きする）
+
+`.local.yaml` に定義されたキーはベースより優先される（`config-loading` ルール参照）。
 
 Do NOT hardcode model names or CLI options — always refer to the config file.
 

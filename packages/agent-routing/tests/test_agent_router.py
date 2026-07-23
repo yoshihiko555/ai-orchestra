@@ -81,6 +81,18 @@ def test_detect_agent_detects_adversarial_reviewer() -> None:
     assert trigger == "敵対的検証"
 
 
+def test_detect_agent_adversarial_review_not_shadowed_by_code_reviewer() -> None:
+    agent, trigger = route_config.detect_agent("この実装の敵対的レビューをして")
+    assert agent == "adversarial-reviewer"
+    assert trigger == "敵対的レビュー"
+
+
+def test_detect_agent_robustness_review_not_shadowed_by_code_reviewer() -> None:
+    agent, trigger = route_config.detect_agent("堅牢性レビューをして")
+    assert agent == "adversarial-reviewer"
+    assert trigger == "堅牢性レビュー"
+
+
 # ---------------------------------------------------------------------------
 # detect_agent: 該当なし
 # ---------------------------------------------------------------------------
