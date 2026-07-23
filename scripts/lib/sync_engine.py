@@ -869,6 +869,10 @@ def build_facets(
     has_orchestra = compositions_dir.is_dir() and any(compositions_dir.rglob("*.yaml"))
     has_local = local_compositions_dir.is_dir() and any(local_compositions_dir.rglob("*.yaml"))
     if not has_orchestra and not has_local:
+        # composition が 1 件も見つからない状態は、意図的な全削除よりも orchestra_dir の
+        # 設定ミス・導入破損である可能性が高い。この状態で先へ進むと facet_builder 側の
+        # _cleanup_orphans が前回マニフェストの全スキルを削除しうるため、ここで打ち切る
+        # （facet_builder.build_all も同じ理由で 0 件時に fail-closed する）。
         return 0
 
     yamls: list[Path] = []
@@ -889,29 +893,31 @@ def build_facets(
             latest_src = max(latest_src, max(p.stat().st_mtime for p in local_facet_mds))
 
     orch_json = project_dir / ".claude" / "orchestra.json"
+    pkgs_str = ""
     if orch_json.is_file():
         try:
             orch_data = json.loads(orch_json.read_text(encoding="utf-8"))
             pkgs_str = ",".join(sorted(orch_data.get("installed_packages", [])))
         except (json.JSONDecodeError, OSError):
-            pkgs_str = ""
-        pkgs_hash = hashlib.md5(pkgs_str.encode()).hexdigest()
-        hash_file = project_dir / ".claude" / ".cache" / "packages-hash"
-        prev_hash = ""
-        if hash_file.is_file():
-            try:
-                prev_hash = hash_file.read_text(encoding="utf-8").strip()
-            except OSError:
-                pass
-        if pkgs_hash != prev_hash:
-            try:
-                hash_file.parent.mkdir(parents=True, exist_ok=True)
-                hash_file.write_text(pkgs_hash, encoding="utf-8")
-            except OSError:
-                pass
-            import time
+            pass
+    compositions_str = ",".join(sorted(path.name for path in yamls))
+    pkgs_hash = hashlib.md5(f"{pkgs_str}|{compositions_str}".encode()).hexdigest()
+    hash_file = project_dir / ".claude" / ".cache" / "packages-hash"
+    prev_hash = ""
+    if hash_file.is_file():
+        try:
+            prev_hash = hash_file.read_text(encoding="utf-8").strip()
+        except OSError:
+            pass
+    if pkgs_hash != prev_hash:
+        try:
+            hash_file.parent.mkdir(parents=True, exist_ok=True)
+            hash_file.write_text(pkgs_hash, encoding="utf-8")
+        except OSError:
+            pass
+        import time
 
-            latest_src = time.time()
+        latest_src = time.time()
 
     claude_skills = project_dir / ".claude" / "skills"
     claude_rules = project_dir / ".claude" / "rules"

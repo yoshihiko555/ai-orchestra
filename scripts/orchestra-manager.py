@@ -801,7 +801,6 @@ class OrchestraManager(ContextMixin, HooksMixin):
             project_dir / ".claude" / "logs",
             project_dir / ".claude" / "logs" / "orchestration",
             project_dir / ".claude" / "state",
-            project_dir / ".claude" / "checkpoints",
         ]
         for d in claude_dirs:
             if dry_run:
@@ -833,10 +832,6 @@ class OrchestraManager(ContextMixin, HooksMixin):
             templates_dir / "project" / "state" / ".gitkeep": project_dir
             / ".claude"
             / "state"
-            / ".gitkeep",
-            templates_dir / "project" / "checkpoints" / ".gitkeep": project_dir
-            / ".claude"
-            / "checkpoints"
             / ".gitkeep",
             templates_dir / "project" / "Plans.md": project_dir / ".claude" / "Plans.md",
         }

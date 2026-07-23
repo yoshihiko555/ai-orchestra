@@ -39,7 +39,7 @@ class TestMergeGitignoreContent:
         )
         merged = merge_content(existing)
         assert ".claude/old/" not in merged
-        assert ".claude/checkpoints/" in merged
+        assert ".claude/state/" in merged
         assert "node_modules/" in merged
         assert "coverage/" in merged
         assert merged.count(BLOCK_START) == 1

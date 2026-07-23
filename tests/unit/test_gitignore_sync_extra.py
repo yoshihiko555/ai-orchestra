@@ -47,6 +47,11 @@ class TestBuildBlock:
         assert ".claude/meta-harness/" in gitignore_mod.ENTRIES
         assert ".claude/meta-harness/" in gitignore_mod.build_block()
 
+    def test_contains_loop_harness_state_entry(self) -> None:
+        """loop-harness の実行状態（state.json/journal/認証情報コピー等）は無視対象。"""
+        assert ".claude/loop/" in gitignore_mod.ENTRIES
+        assert ".claude/loop/" in gitignore_mod.build_block()
+
 
 class TestSyncGitignore:
     """sync_gitignore のテスト。"""

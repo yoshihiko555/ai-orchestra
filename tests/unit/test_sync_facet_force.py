@@ -79,8 +79,10 @@ instruction: |
             shutil.copy2(src_script, dst_script)
 
 
-def _create_stale_generated(project_dir: Path) -> None:
+def _create_stale_generated(orchestra_dir: Path, project_dir: Path) -> None:
     """生成物をソースより新しいタイムスタンプで作成する。"""
+    # 過去にビルド済みの状態として packages-hash も生成する
+    build_facets(orchestra_dir, project_dir)
     skills_dir = project_dir / ".claude" / "skills" / "test-skill"
     skills_dir.mkdir(parents=True, exist_ok=True)
     skill_path = skills_dir / "SKILL.md"
@@ -97,7 +99,7 @@ class TestBuildFacetsMtime:
         project_dir = tmp_path / "project"
         project_dir.mkdir(parents=True)
         _setup_minimal_facets(orchestra_dir, project_dir)
-        _create_stale_generated(project_dir)
+        _create_stale_generated(orchestra_dir, project_dir)
 
         result = build_facets(orchestra_dir, project_dir)
         assert result == 0
@@ -108,7 +110,7 @@ class TestBuildFacetsMtime:
         project_dir = tmp_path / "project"
         project_dir.mkdir(parents=True)
         _setup_minimal_facets(orchestra_dir, project_dir)
-        _create_stale_generated(project_dir)
+        _create_stale_generated(orchestra_dir, project_dir)
 
         # ソースのタイムスタンプを生成物より新しくする
         skill_path = project_dir / ".claude" / "skills" / "test-skill" / "SKILL.md"
@@ -155,3 +157,81 @@ class TestBuildFacetsMtime:
         hash_file = claude_dir / ".cache" / "packages-hash"
         assert hash_file.is_file()
         assert hash_file.read_text(encoding="utf-8").strip() != ""
+
+    def test_cleanup_orphan_when_composition_deleted(self, tmp_path: Path) -> None:
+        """composition の削除だけでも再ビルドし、孤立した生成物を削除する。"""
+        orchestra_dir = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        project_dir.mkdir(parents=True)
+        _setup_minimal_facets(orchestra_dir, project_dir)
+
+        compositions_dir = orchestra_dir / "facets" / "compositions"
+        second_composition = compositions_dir / "test-skill-2.yaml"
+        second_composition.write_text(
+            """\
+name: test-skill-2
+description: test 2
+frontmatter:
+  name: test-skill-2
+  description: test 2
+policies:
+  - test-policy
+instruction: |
+  # Test 2
+  original-body-2
+""",
+            encoding="utf-8",
+        )
+
+        result = build_facets(orchestra_dir, project_dir)
+        assert result > 0
+
+        first_skill = project_dir / ".claude" / "skills" / "test-skill" / "SKILL.md"
+        second_skill = project_dir / ".claude" / "skills" / "test-skill-2" / "SKILL.md"
+        assert first_skill.is_file()
+        assert second_skill.is_file()
+
+        time.sleep(0.01)
+        os.utime(first_skill, None)
+        os.utime(second_skill, None)
+        second_composition.unlink()
+
+        build_facets(orchestra_dir, project_dir)
+
+        assert first_skill.is_file()
+        assert not second_skill.exists()
+
+    def test_generated_survives_when_all_compositions_disappear(self, tmp_path: Path) -> None:
+        """composition が 0 件になった場合は掃除せず生成物を温存する（fail-closed）。
+
+        0 件は「最後の 1 件を意図的に削除した」よりも orchestra_dir の設定ミス・導入破損
+        である可能性が高い。この状態で cleanup を走らせると前回マニフェストの全スキルが
+        削除されるため、孤立生成物が 1 件残ることを許容して全削除を防ぐ。
+        """
+        orchestra_dir = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        project_dir.mkdir(parents=True)
+        _setup_minimal_facets(orchestra_dir, project_dir)
+
+        assert build_facets(orchestra_dir, project_dir) > 0
+        skill_path = project_dir / ".claude" / "skills" / "test-skill" / "SKILL.md"
+        assert skill_path.is_file()
+
+        time.sleep(0.01)
+        os.utime(skill_path, None)
+        (orchestra_dir / "facets" / "compositions" / "test-skill.yaml").unlink()
+
+        assert build_facets(orchestra_dir, project_dir) == 0
+        assert skill_path.is_file()
+
+    def test_no_build_when_no_compositions_exist(self, tmp_path: Path) -> None:
+        """composition が存在しなければ何もせず 0 を返す。"""
+        orchestra_dir = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        project_dir.mkdir(parents=True)
+
+        result = build_facets(orchestra_dir, project_dir)
+
+        assert result == 0
+        skills_dir = project_dir / ".claude" / "skills"
+        assert not skills_dir.exists() or not any(skills_dir.iterdir())

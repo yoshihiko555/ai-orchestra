@@ -25,8 +25,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **BREAKING** **facet build のキャッシュファイルを `.cache/` 配下へ集約**: これまで `.claude/` / `.codex/` 直下に置いていた生成物キャッシュ（`.facet-manifest.json` / `.facet-packages-hash`）を `.claude/.cache/`・`.codex/.cache/` 配下（`facet-manifest.json` / `packages-hash`）へ移動した。ソースと生成物の分離が目的。後方互換なし。旧ファイルは自動削除されないため、残っている場合は手動で削除する（残置しても次回ビルドで新パスに再生成され、機能への影響はない）。`.gitignore` の無視対象も `.claude/.cache/`・`.codex/.cache/` に更新済み。
 - **`orchex`: `--help` を拡充**: トップレベル `--help` がライフサイクル順のグループ化コマンド一覧（はじめに/パッケージ管理/生成・同期/実行・委譲）と、初回導入・日常運用・テンプレート更新の 3 シナリオを含む epilog を表示するようになった。全コマンドの `--help` に description と具体例が追加され、`--version` もオプション一覧に表示される。
 
+### Removed
+
+- **`core`: `checkpointing` スキルを廃止**: データソースだった CLI 相談ログ（`cli-tools.jsonl`）の記録機構が既に廃止済みで主要モードが動作せず、役割もセッション間記憶（claude-mem）・タスク状態（Plans.md）・スキル抽出（skill-evolution）に移管済みのため削除した。あわせて `orchex init` による `.claude/checkpoints/` ディレクトリ生成と `.gitignore` 管理ブロックの `.claude/checkpoints/` エントリも廃止した。既導入プロジェクトに残る `.claude/checkpoints/` は次回同期以降 untracked として表示されるため、不要であれば手動で削除する。
+
 ### Fixed
 
+- **`core`: facet composition を削除しても生成済みスキルが残り続ける不具合を修正**: ビルド要否の判定が facet ソースの mtime と導入パッケージ名だけを見ていたため、composition ファイルの削除のみを含む更新では再ビルドがスキップされ、削除済みスキルの掃除（orphan cleanup）が走らず `.claude/skills/<name>/` に残り続けていた。判定に composition のファイル集合を含めるようにした。既存プロジェクトでは初回同期時に一度だけ再ビルドが走る。
+- **`core`: loop-harness の実行状態ディレクトリ `.claude/loop/` を `.gitignore` 管理ブロックに追加**: ループ実行のたびに issue 単位の状態ディレクトリが git の未追跡差分として表示され続けていた。同期される AI Orchestra 管理ブロックのエントリに `.claude/loop/` を追加し、導入先プロジェクトでも次回同期時から無視されるようにした。
 - **`image-generation`: 画像生成の鮮度ガードが sandbox 実行モードによって外れる不具合を修正**: 鮮度マーカーの保存先を `$TMPDIR`（sandbox モードごとに解決先が異なる）から、出力先ディレクトリ配下の固定パスに変更した。あわせて codex 0.144.6 で deprecated になった `--enable imagegenext` を `--enable image_generation` に更新した。
 - **`agent-routing`: `testing-reality-checker` エージェントを配布先スタック非依存に修正（Issue #117）**: これまで Laravel/PHP + Playwright を前提とした固定スクリプト実行を促す内容だったため、Markdown/Python 等の非対象スタックへ配布すると存在しないスクリプトを実行しようとする恐れがあった。プロジェクト自身から検証コマンドを発見する汎用的な内容に書き換え、`tools:` を明示（`Read, Glob, Grep, Bash`）して全ツール権限の暗黙継承をやめた。
 

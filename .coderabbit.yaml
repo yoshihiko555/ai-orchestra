@@ -34,7 +34,6 @@ reviews:
     - "!.claude/**"
     - "!**/__pycache__/**"
     - "!*.lock"
-    - "!checkpoints/**"
     - "!*.egg-info/**"
 
   # パス別レビュー指示
