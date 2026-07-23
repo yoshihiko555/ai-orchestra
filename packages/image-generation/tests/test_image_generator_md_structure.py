@@ -29,9 +29,8 @@ MANIFEST_PATH = REPO_ROOT / "packages" / "image-generation" / "manifest.json"
 LOCAL_CONFIG_PATH = (
     REPO_ROOT / ".claude" / "config" / "image-generation" / "image-generation.local.yaml"
 )
-PACKAGE_STYLE_PATH = (
-    REPO_ROOT / "packages" / "image-generation" / "config" / "styles" / "isometric.md"
-)
+PACKAGE_STYLES_DIR = REPO_ROOT / "packages" / "image-generation" / "config" / "styles"
+PACKAGE_STYLE_PATH = PACKAGE_STYLES_DIR / "isometric.md"
 DISTRIBUTED_STYLE_PATH = (
     REPO_ROOT / ".claude" / "config" / "image-generation" / "styles" / "isometric.md"
 )
@@ -90,6 +89,7 @@ SKILL_SECTIONS = _sections(SKILL_MD)
 # Step 3 と Step 3.5 を区別するため、末尾スペース込みの prefix を使う
 # ("Step 3.5 —" は "Step 3 " にはマッチしない: "3" の直後が "." であり " " ではない)
 CONFIGURATION = _section(AGENT_SECTIONS, "Configuration")
+SANDBOX_POLICY = _section(AGENT_SECTIONS, "Sandbox Policy")
 STEP0 = _section(AGENT_SECTIONS, "Step 0")
 STEP1 = _section(AGENT_SECTIONS, "Step 1")
 STEP2 = _section(AGENT_SECTIONS, "Step 2")
@@ -113,6 +113,24 @@ SKILL_PHASE3 = _section(SKILL_SECTIONS, "Phase 3")
 # ---------------------------------------------------------------------------
 # EV-16: Step 0 kill-switch（codex.enabled）
 # ---------------------------------------------------------------------------
+
+
+class TestSandboxPolicyResidualRisk:
+    """レビュー修正 2: Residual risk 節が style の supply-chain リスクに言及する。"""
+
+    def test_residual_risk_mentions_style_as_untrusted_input(self) -> None:
+        assert "Style definition files are untrusted input" in SANDBOX_POLICY
+
+    def test_residual_risk_mentions_default_style_automatic_inclusion(self) -> None:
+        assert "default_style" in SANDBOX_POLICY
+        assert "automatically" in SANDBOX_POLICY.lower()
+
+    def test_residual_risk_mentions_sync_propagation(self) -> None:
+        assert "sync" in SANDBOX_POLICY.lower()
+        assert "every project" in SANDBOX_POLICY.lower()
+
+    def test_residual_risk_applies_existing_defense_in_depth_to_style(self) -> None:
+        assert "defense-in-depth" in SANDBOX_POLICY.lower()
 
 
 class TestStep0KillSwitch:
@@ -374,6 +392,33 @@ class TestStyleDistribution:
         assert "ビジュアルスタイル" in style
 
 
+class TestStyleManifestDrift:
+    """EV-20 補完: package の styles/*.md と manifest["config"] のエントリが
+
+    双方向で一致することを検証する（スタイル追加時の配布漏れを CI で検出する）。
+    """
+
+    def test_every_style_file_is_listed_in_manifest(self) -> None:
+        style_files = sorted(p.name for p in PACKAGE_STYLES_DIR.glob("*.md"))
+        assert style_files, "packages/image-generation/config/styles/*.md が見つかりません"
+        for name in style_files:
+            expected_entry = f"config/styles/{name}"
+            assert expected_entry in MANIFEST["config"], (
+                f"{expected_entry} が manifest.json の config リストに列挙されていません"
+            )
+
+    def test_every_manifest_style_entry_exists_on_disk(self) -> None:
+        manifest_style_entries = [
+            entry for entry in MANIFEST["config"] if entry.startswith("config/styles/")
+        ]
+        assert manifest_style_entries, "manifest.json に config/styles/ エントリがありません"
+        for entry in manifest_style_entries:
+            style_path = REPO_ROOT / "packages" / "image-generation" / entry
+            assert style_path.is_file(), (
+                f"manifest.json に列挙された {entry} が実ファイルとして存在しません"
+            )
+
+
 # ---------------------------------------------------------------------------
 # EV-21: style ファイルの安全なプロンプト埋め込み
 # ---------------------------------------------------------------------------
@@ -400,6 +445,30 @@ class TestStylePromptEmbedding:
         full_prompt = _extract_full_prompt_body(STEP2)
         assert "${STYLE_BLOCK}" in full_prompt
         assert "BEGIN STYLE DEFINITION" in STEP2
+
+    def test_none_style_has_an_explicit_code_branch(self) -> None:
+        """レビュー修正 1: none 分岐がコード例に明示され、STYLE_BLOCK が空になる。"""
+        assert 'if [ "$STYLE" = "none" ]' in STEP2
+        assert 'STYLE_TEXT=""' in STEP2
+        assert 'STYLE_BLOCK=""' in STEP2
+
+    def test_style_name_is_mechanically_validated_before_reading_file(self) -> None:
+        """レビュー修正 3: STYLE_EOF heredoc の前に regex + 実在チェックのゲートがある。"""
+        assert r"grep -Eq '^[a-z0-9][a-z0-9-]*$'" in STEP2
+        assert 'STYLE_FILE="$STYLES_DIR/$STYLE.md"' in STEP2
+        assert '[ -f "$STYLE_FILE" ]' in STEP2
+
+        gate_match = re.search(r"grep -Eq '\^\[a-z0-9\]\[a-z0-9-\]\*\$'", STEP2)
+        heredoc_match = re.search(r"STYLE_TEXT=\$\(cat <<'STYLE_EOF'", STEP2)
+        assert gate_match and heredoc_match
+        assert gate_match.start() < heredoc_match.start(), (
+            "検証ゲートは STYLE_EOF heredoc より前に実行される必要があります"
+        )
+
+    def test_style_eof_delimiter_collision_is_detected_mechanically(self) -> None:
+        """レビュー修正 4: デリミタ衝突を grep で機械検出し FAILURE を報告する。"""
+        assert "grep -qx 'STYLE_EOF' \"$STYLE_FILE\"" in STEP2
+        assert "contains the heredoc delimiter line" in STEP2
         assert "END STYLE DEFINITION" in STEP2
 
     def test_output_format_reports_applied_style(self) -> None:
