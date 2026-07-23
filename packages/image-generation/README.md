@@ -9,8 +9,10 @@ Claude Code から呼び出して画像を生成する。Adobe Firefly を使う
 ## トリガー
 
 ```
-/image-gen <プロンプト>              # generated-images/ に保存
-/image-gen <プロンプト> --out <path> # 出力先を指定
+/image-gen <プロンプト>                       # generated-images/ に保存
+/image-gen <プロンプト> --out <path>          # 出力先を指定
+/image-gen <プロンプト> --style isometric     # named style を適用
+/image-gen <プロンプト> --style none          # この実行だけ style を無効化
 ```
 
 「画像生成して」「画像を作って」等の依頼は、`image-generator` エージェントの
@@ -25,7 +27,8 @@ description に基づく Claude Code のネイティブ subagent dispatch で起
 | ----------------------- | ----------------------------------------------------- | --------------------------------- |
 | `/image-gen` スキル     | `facets/instructions/image-gen.md`                    | プロンプト → 画像のワークフロー   |
 | `image-generator` agent | `packages/image-generation/agents/image-generator.md` | Codex `image_gen` 呼び出し + 検証 |
-| 画像生成設定            | `config/image-generation.yaml`                        | モデル・画像内テキスト言語        |
+| 画像生成設定            | `config/image-generation.yaml`                        | モデル・画像内テキスト言語・既定 style |
+| style 定義              | `config/styles/<name>.md`                             | 画像生成 prompt に追加する外観定義 |
 
 > **Note**: `cli-tools.yaml` への登録や `route_config.py` の AGENT_TRIGGERS は
 > 持たない。エージェントは `codex exec` を直接呼ぶため通常の codex-delegation
@@ -79,6 +82,9 @@ codex exec --model gpt-5.5 \
 - 画像内の見出し・ラベル等は `output_language`（既定 `ja`）に従う。技術用語・固有名詞は
   英語のままでもよく、ユーザープロンプトに画像内テキストの言語を明記した場合はその指定を優先する。
   恒久的な変更は `.claude/config/image-generation/image-generation.local.yaml` で上書きできる。
+- `--style <name>` は `.claude/config/image-generation/styles/<name>.md` を外観 prompt として適用する。
+  bundled style は `isometric`。未指定時は `default_style`、それも未設定なら style なしになる。
+  `--style none` はその実行だけ既定 style を無効化する。未知名は生成前に利用可能一覧から選び直す。
 - レートリミット/利用上限は連打由来。**1 タスク 1 回**で回避する。
 - レートリミット時に Codex が Pillow で描く代替画像（非 AI）は**検知して失敗扱い**にする。
 

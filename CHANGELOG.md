@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`image-generation`: named style 切替機構を追加**: `/image-gen <prompt> --style <name>` で package 配布の style prompt（bundled: `isometric`）を適用でき、`--style none` で無効化、`default_style` でプロジェクト既定を設定できる。`/image-gen` を介さない Claude のネイティブディスパッチ経由の起動でも `default_style` が適用される。未知の style は生成前に選び直しを促すため、1 回限りの生成試行を消費しない。
 - **`core` / `preflight`: Plans.md にフェーズ単位の Acceptance Criteria セクションを追加**: 各 Phase に `- [ ] 条件 — verify: \`コマンド\``（機械検証）/ `— judge: 判定基準`（主観）形式の受け入れ条件を記載できるようになり、`/preflight` が合意済みの受け入れ条件を Plans.md へ必ず登録する。未チェック AC が残るフェーズは SessionStart の自動アーカイブで完了扱いにならない（AC セクションのない既存 Plans.md は従来通り）。
 - **`orchex`: `init` サブコマンドを追加**: プロジェクト初期化（`orchex init --project <path>`）を CLI から直接実行できるようになった。
 

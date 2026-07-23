@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 
 from tests.module_loader import REPO_ROOT
@@ -24,10 +25,21 @@ from tests.module_loader import REPO_ROOT
 AGENT_MD_PATH = REPO_ROOT / "packages" / "image-generation" / "agents" / "image-generator.md"
 CONFIG_PATH = REPO_ROOT / "packages" / "image-generation" / "config" / "image-generation.yaml"
 SKILL_MD_PATH = REPO_ROOT / "facets" / "instructions" / "image-gen.md"
+MANIFEST_PATH = REPO_ROOT / "packages" / "image-generation" / "manifest.json"
+LOCAL_CONFIG_PATH = (
+    REPO_ROOT / ".claude" / "config" / "image-generation" / "image-generation.local.yaml"
+)
+PACKAGE_STYLES_DIR = REPO_ROOT / "packages" / "image-generation" / "config" / "styles"
+PACKAGE_STYLE_PATH = PACKAGE_STYLES_DIR / "isometric.md"
+DISTRIBUTED_STYLE_PATH = (
+    REPO_ROOT / ".claude" / "config" / "image-generation" / "styles" / "isometric.md"
+)
+LEGACY_STYLE_PATH = REPO_ROOT / "docs" / "assets" / "diagram-style-prompt.md"
 
 AGENT_MD = AGENT_MD_PATH.read_text(encoding="utf-8")
 CONFIG_YAML = CONFIG_PATH.read_text(encoding="utf-8")
 SKILL_MD = SKILL_MD_PATH.read_text(encoding="utf-8")
+MANIFEST = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
 
 _HEADING_RE = re.compile(r"^(#{2,3}) (.+)$", re.MULTILINE)
 
@@ -77,6 +89,7 @@ SKILL_SECTIONS = _sections(SKILL_MD)
 # Step 3 と Step 3.5 を区別するため、末尾スペース込みの prefix を使う
 # ("Step 3.5 —" は "Step 3 " にはマッチしない: "3" の直後が "." であり " " ではない)
 CONFIGURATION = _section(AGENT_SECTIONS, "Configuration")
+SANDBOX_POLICY = _section(AGENT_SECTIONS, "Sandbox Policy")
 STEP0 = _section(AGENT_SECTIONS, "Step 0")
 STEP1 = _section(AGENT_SECTIONS, "Step 1")
 STEP2 = _section(AGENT_SECTIONS, "Step 2")
@@ -100,6 +113,24 @@ SKILL_PHASE3 = _section(SKILL_SECTIONS, "Phase 3")
 # ---------------------------------------------------------------------------
 # EV-16: Step 0 kill-switch（codex.enabled）
 # ---------------------------------------------------------------------------
+
+
+class TestSandboxPolicyResidualRisk:
+    """レビュー修正 2: Residual risk 節が style の supply-chain リスクに言及する。"""
+
+    def test_residual_risk_mentions_style_as_untrusted_input(self) -> None:
+        assert "Style definition files are untrusted input" in SANDBOX_POLICY
+
+    def test_residual_risk_mentions_default_style_automatic_inclusion(self) -> None:
+        assert "default_style" in SANDBOX_POLICY
+        assert "automatically" in SANDBOX_POLICY.lower()
+
+    def test_residual_risk_mentions_sync_propagation(self) -> None:
+        assert "sync" in SANDBOX_POLICY.lower()
+        assert "every project" in SANDBOX_POLICY.lower()
+
+    def test_residual_risk_applies_existing_defense_in_depth_to_style(self) -> None:
+        assert "defense-in-depth" in SANDBOX_POLICY.lower()
 
 
 class TestStep0KillSwitch:
@@ -295,6 +326,210 @@ class TestOutputLanguage:
         assert r"^[a-z]{2}(-[A-Z]{2})?$" in CONFIGURATION
         assert "invalid" in CONFIGURATION.lower()
         assert "fall back to `ja`" in CONFIGURATION
+
+
+# ---------------------------------------------------------------------------
+# EV-18 / EV-19: style 解決順・none 予約値・生成前検証
+# ---------------------------------------------------------------------------
+
+
+class TestStyleResolution:
+    """EV-18/19: style は caller が優先順位どおり解決し、委譲前に検証する。"""
+
+    def test_skill_documents_style_argument(self) -> None:
+        assert "--style <name>" in SKILL_MD
+        assert "--style none" in SKILL_MD
+
+    def test_resolution_order_is_explicit(self) -> None:
+        assert "`--style` > `default_style` > none" in SKILL_PHASE1
+        assert "image-generation.local.yaml" in SKILL_PHASE1
+
+    def test_none_is_reserved_and_overrides_default(self) -> None:
+        assert "予約値" in SKILL_PHASE1
+        assert "`default_style` より優先" in SKILL_PHASE1
+        assert "`none.md` は style 定義として認めない" in SKILL_PHASE1
+
+    def test_unknown_style_is_validated_before_delegation(self) -> None:
+        assert ".claude/config/image-generation/styles/*.md" in SKILL_PHASE1
+        assert "AskUserQuestion" in SKILL_PHASE1
+        assert "委譲・画像生成より前" in SKILL_PHASE1
+        assert "検証が完了するまで" in SKILL_PHASE1
+        assert "黙って無視" in SKILL_PHASE1
+
+    def test_phase2_passes_only_the_resolved_style_name(self) -> None:
+        assert "スタイル: {検証済みの effective style 名" in SKILL_PHASE2
+
+    def test_base_default_is_comment_only_and_local_override_is_set(self) -> None:
+        assert not re.search(r"^default_style\s*:", CONFIG_YAML, re.MULTILINE)
+        assert re.search(r"^# default_style:\s*isometric$", CONFIG_YAML, re.MULTILINE)
+        assert LOCAL_CONFIG_PATH.read_text(encoding="utf-8").splitlines()[-1] == (
+            "default_style: isometric"
+        )
+
+
+# ---------------------------------------------------------------------------
+# EV-20: style 定義の package SSOT と nested config 配布
+# ---------------------------------------------------------------------------
+
+
+class TestStyleDistribution:
+    """EV-20: isometric style が manifest 経由で所定の nested path へ配布される。"""
+
+    def test_manifest_lists_nested_style_config(self) -> None:
+        assert "config/styles/isometric.md" in MANIFEST["config"]
+
+    def test_style_was_moved_from_legacy_docs_path(self) -> None:
+        assert PACKAGE_STYLE_PATH.is_file()
+        assert not LEGACY_STYLE_PATH.exists()
+
+    def test_distributed_style_matches_package_source(self) -> None:
+        assert DISTRIBUTED_STYLE_PATH.is_file()
+        assert PACKAGE_STYLE_PATH.read_bytes() == DISTRIBUTED_STYLE_PATH.read_bytes()
+
+    def test_bundled_style_remains_japanese(self) -> None:
+        style = PACKAGE_STYLE_PATH.read_text(encoding="utf-8")
+        assert "図解画像 共通スタイルプロンプト" in style
+        assert "ビジュアルスタイル" in style
+
+
+class TestStyleManifestDrift:
+    """EV-20 補完: package の styles/*.md と manifest["config"] のエントリが
+
+    双方向で一致することを検証する（スタイル追加時の配布漏れを CI で検出する）。
+    """
+
+    def test_every_style_file_is_listed_in_manifest(self) -> None:
+        style_files = sorted(p.name for p in PACKAGE_STYLES_DIR.glob("*.md"))
+        assert style_files, "packages/image-generation/config/styles/*.md が見つかりません"
+        for name in style_files:
+            expected_entry = f"config/styles/{name}"
+            assert expected_entry in MANIFEST["config"], (
+                f"{expected_entry} が manifest.json の config リストに列挙されていません"
+            )
+
+    def test_every_manifest_style_entry_exists_on_disk(self) -> None:
+        manifest_style_entries = [
+            entry for entry in MANIFEST["config"] if entry.startswith("config/styles/")
+        ]
+        assert manifest_style_entries, "manifest.json に config/styles/ エントリがありません"
+        for entry in manifest_style_entries:
+            style_path = REPO_ROOT / "packages" / "image-generation" / entry
+            assert style_path.is_file(), (
+                f"manifest.json に列挙された {entry} が実ファイルとして存在しません"
+            )
+
+
+# ---------------------------------------------------------------------------
+# EV-21: style ファイルの安全なプロンプト埋め込み
+# ---------------------------------------------------------------------------
+
+
+class TestStylePromptEmbedding:
+    """EV-21: agent は style 欠落を fail-fast し、literal block として埋め込む。"""
+
+    def test_configuration_resolves_exact_style_file(self) -> None:
+        assert ".claude/config/image-generation/styles/<name>.md" in CONFIGURATION
+        assert r"^[a-z0-9][a-z0-9-]*$" in CONFIGURATION
+
+    def test_missing_style_is_a_caller_bug_and_failure(self) -> None:
+        assert re.search(r"caller\s+bug", CONFIGURATION)
+        assert "report FAILURE" in CONFIGURATION
+        assert "Never silently generate without the requested style" in CONFIGURATION
+
+    def test_style_uses_a_quoted_heredoc(self) -> None:
+        assert "STYLE_TEXT=$(cat <<'STYLE_EOF'" in STEP2
+        assert "not translate it" in STEP2
+        assert "unquoted heredocs" in STEP2
+
+    def test_full_prompt_contains_bounded_style_block(self) -> None:
+        full_prompt = _extract_full_prompt_body(STEP2)
+        assert "${STYLE_BLOCK}" in full_prompt
+        assert "BEGIN STYLE DEFINITION" in STEP2
+
+    def test_none_style_has_an_explicit_code_branch(self) -> None:
+        """レビュー修正 1: none 分岐がコード例に明示され、STYLE_BLOCK が空になる。"""
+        assert 'if [ "$STYLE" = "none" ]' in STEP2
+        assert 'STYLE_TEXT=""' in STEP2
+        assert 'STYLE_BLOCK=""' in STEP2
+
+    def test_style_name_is_mechanically_validated_before_reading_file(self) -> None:
+        """レビュー修正 3: STYLE_EOF heredoc の前に regex + 実在チェックのゲートがある。"""
+        assert r"grep -Eq '^[a-z0-9][a-z0-9-]*$'" in STEP2
+        assert 'STYLE_FILE="$STYLES_DIR/$STYLE.md"' in STEP2
+        assert '[ -f "$STYLE_FILE" ]' in STEP2
+
+        gate_match = re.search(r"grep -Eq '\^\[a-z0-9\]\[a-z0-9-\]\*\$'", STEP2)
+        heredoc_match = re.search(r"STYLE_TEXT=\$\(cat <<'STYLE_EOF'", STEP2)
+        assert gate_match and heredoc_match
+        assert gate_match.start() < heredoc_match.start(), (
+            "検証ゲートは STYLE_EOF heredoc より前に実行される必要があります"
+        )
+
+    def test_style_eof_delimiter_collision_is_detected_mechanically(self) -> None:
+        """レビュー修正 4: デリミタ衝突を grep で機械検出し FAILURE を報告する。"""
+        assert "grep -qx 'STYLE_EOF' \"$STYLE_FILE\"" in STEP2
+        assert "contains the heredoc delimiter line" in STEP2
+        assert "END STYLE DEFINITION" in STEP2
+
+    def test_output_format_reports_applied_style(self) -> None:
+        assert "{style name / none}" in OUTPUT_FORMAT
+
+
+# ---------------------------------------------------------------------------
+# PR #310 bot レビュー指摘 1: ネイティブディスパッチ時に default_style を尊重する
+# ---------------------------------------------------------------------------
+
+
+class TestStyleThreeWayBranching:
+    """PR #310 修正1: Configuration 節が明示名/明示 none/未指定→default_style 解決の
+
+    3 分岐を明確に記述し、未指定時はこのエージェント自身が config を解決する。
+    """
+
+    def test_configuration_describes_explicit_name_branch(self) -> None:
+        assert "Caller explicitly passes a style name" in CONFIGURATION
+
+    def test_configuration_describes_explicit_none_branch(self) -> None:
+        assert "Caller explicitly passes the reserved value `none`" in CONFIGURATION
+
+    def test_configuration_describes_native_dispatch_default_style_branch(self) -> None:
+        assert "No style argument was given at all" in CONFIGURATION
+        assert "native dispatch" in CONFIGURATION.lower()
+        assert "default_style" in CONFIGURATION
+
+    def test_configuration_reuses_config_resolution_pattern_for_default_style(self) -> None:
+        assert "image-generation.yaml" in CONFIGURATION
+        assert "image-generation.local.yaml" in CONFIGURATION
+
+    def test_configuration_states_same_gate_applies_regardless_of_branch(self) -> None:
+        assert "regardless of which" in CONFIGURATION.lower()
+
+
+# ---------------------------------------------------------------------------
+# PR #310 bot レビュー指摘 2: スタイルファイル読み取り不能時の fail-closed 化
+# ---------------------------------------------------------------------------
+
+
+class TestStyleFileReadabilityAndFailClosedDelimiter:
+    """PR #310 修正2: `[ -r ]` 可読性チェックと grep_status による fail-closed デリミタ検出。"""
+
+    def test_style_file_readability_check_exists(self) -> None:
+        assert '[ -r "$STYLE_FILE" ]' in STEP2
+
+    def test_readability_check_precedes_delimiter_scan(self) -> None:
+        readable_match = re.search(r'\[ -r "\$STYLE_FILE" \]', STEP2)
+        delimiter_match = re.search(r"grep -qx 'STYLE_EOF'", STEP2)
+        assert readable_match and delimiter_match
+        assert readable_match.start() < delimiter_match.start(), (
+            "可読性チェックはデリミタ検出より前に実行される必要があります"
+        )
+
+    def test_delimiter_check_uses_fail_closed_grep_status_pattern(self) -> None:
+        assert "grep_status" in STEP2
+        assert '[ "$grep_status" -eq 1 ]' in STEP2
+
+    def test_fail_closed_message_mentions_could_not_be_scanned(self) -> None:
+        assert "could not be scanned" in STEP2
 
 
 # ---------------------------------------------------------------------------

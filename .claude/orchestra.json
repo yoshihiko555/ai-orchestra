@@ -56,13 +56,14 @@
     "config/fail-logs/fail-logs.yaml",
     "config/git-workflow/sandbox-requirements.json",
     "config/image-generation/image-generation.yaml",
+    "config/image-generation/styles/isometric.md",
     "config/loop-harness/loop-harness.yaml",
     "config/loop-harness/loops/issue-loop.yaml",
     "config/meta-harness/meta-harness.yaml",
     "config/quality-gates/evaluation-set-mapping.yaml",
     "config/skill-evolution/skill-evolution.yaml"
   ],
-  "last_sync": "2026-07-22T13:57:30.739156+00:00",
+  "last_sync": "2026-07-23T02:10:21.918940+00:00",
   "file_hashes": {
     "core": {
       "config/core/task-memory.yaml": "081c101ad10526344e4fe7831babbe6ef661d0a4ae7e49fad4eb3967c030b7d8"
@@ -109,8 +110,9 @@
       "config/git-workflow/sandbox-requirements.json": "4b2f9366201ed8f90d3f2f5e418502f75d977b4ca659f8dfc91b8369e5971e5e"
     },
     "image-generation": {
-      "config/image-generation/image-generation.yaml": "5b9be847cd4d6f2f4e185f47e9f846ee3e6430e2309811edc22a4269469e0b2d",
-      "agents/image-generator.md": "47a104d90b880b2af4e954aa91aa89810b349f7351dc01906383bb5cb1b5b9ca"
+      "config/image-generation/image-generation.yaml": "da79053a36901fa084e8fbad994cb69b4e5de70b8c374ba144250da5d24518b3",
+      "agents/image-generator.md": "6934eafba47e9af728ef138bad7bace4c5cf6f62a85540f653adf3c068cfa5b4",
+      "config/image-generation/styles/isometric.md": "821224582cf75c6148d683b67407bd5de6d9d7b208742de27ba5df5650a10861"
     },
     "loop-harness": {
       "config/loop-harness/loop-harness.yaml": "92f4f15ee24e61aaba7ad8a8336582c4bc465ac73bb88434a793c4d0ff596acb",
