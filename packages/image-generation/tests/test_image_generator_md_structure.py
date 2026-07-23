@@ -56,6 +56,21 @@ def _has_heading(sections: dict[str, str], prefix: str) -> bool:
     return any(title.startswith(prefix) for title in sections)
 
 
+_FULL_PROMPT_ASSIGNMENT_RE = re.compile(r'FULL_PROMPT="((?:[^"\\]|\\.|\\\n)*)"')
+
+
+def _extract_full_prompt_body(section: str) -> str:
+    """`FULL_PROMPT="..."` bash 代入式の本文だけを抽出する。
+
+    セクション末尾までではなく、ダブルクォート文字列(行末バックスラッシュ継続を
+    含む)の終端で正しく閉じた範囲のみを返す。これにより `${OUTPUT_LANGUAGE}` 等が
+    代入式の外(Step 2 の他の説明文)に移動した場合にテストが誤って通るのを防ぐ。
+    """
+    match = _FULL_PROMPT_ASSIGNMENT_RE.search(section)
+    assert match, 'FULL_PROMPT="..." の代入式が見つかりません'
+    return match.group(1)
+
+
 AGENT_SECTIONS = _sections(AGENT_MD)
 SKILL_SECTIONS = _sections(SKILL_MD)
 
@@ -253,21 +268,24 @@ class TestOutputLanguage:
         assert "fall back to `ja`" in CONFIGURATION
 
     def test_full_prompt_uses_resolved_output_language(self) -> None:
-        full_prompt_start = STEP2.find('FULL_PROMPT="')
-        assert full_prompt_start >= 0, "Step 2 に FULL_PROMPT の組み立てがありません"
-        assert "${OUTPUT_LANGUAGE}" in STEP2[full_prompt_start:]
-        assert "in-image text" in STEP2[full_prompt_start:]
+        full_prompt_body = _extract_full_prompt_body(STEP2)
+        assert "${OUTPUT_LANGUAGE}" in full_prompt_body
+        assert "in-image text" in full_prompt_body
 
     def test_full_prompt_allows_english_technical_terms_and_proper_nouns(self) -> None:
-        full_prompt = STEP2[STEP2.find('FULL_PROMPT="') :].lower().replace("\\\n", "")
+        full_prompt = _extract_full_prompt_body(STEP2).lower().replace("\\\n", "")
         assert "technical terms" in full_prompt
         assert "proper nouns" in full_prompt
         assert "may remain in english" in full_prompt
 
     def test_explicit_user_language_takes_precedence(self) -> None:
-        full_prompt = STEP2.lower()
+        full_prompt = _extract_full_prompt_body(STEP2).lower()
         assert "user's prompt explicitly" in full_prompt
         assert "follow that request instead" in full_prompt
+        # 逆検証: FULL_PROMPT 代入式の"後"にある Step 2 の説明文が
+        # 抽出結果に混入していないこと（抽出が貪欲すぎないことのガード）。
+        assert "do not tell codex" not in full_prompt
+        assert "the cli query to codex is in english" not in full_prompt
 
     def test_output_format_reports_output_language(self) -> None:
         assert "{output_language}" in OUTPUT_FORMAT
