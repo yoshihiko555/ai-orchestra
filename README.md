@@ -10,7 +10,7 @@ AI Orchestra は AI コーディングの実行基盤を 3 つの層で組み立
 | --------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
 | **Prompt**            | 何を指示するか           | facets（policies / instructions / output-contracts）から合成する Skill・Rule                                             |
 | **Context**           | 何を踏まえるか           | `CLAUDE.md` / `AGENTS.md` テンプレート、config の階層上書き、`.claude/context/` のセッション間共有                       |
-| **Harness**           | どう実行するか           | hooks、agent-routing（28 エージェント）、packages 配布、外部 CLI（Codex / Antigravity）協調                              |
+| **Harness**           | どう実行するか           | hooks、agent-routing（29 エージェント）、packages 配布、外部 CLI（Codex / Antigravity）協調                              |
 | **Coherence（CoDD）** | 変更が入っても整合を保つ | `packages/codd`：各ドキュメントの `codd:` フロントマターで依存を宣言し、`scan` で依存グラフ構築・`validate` で不整合検出 |
 
 最初の 3 層が「一度うまく動かす」ための基盤であるのに対し、**CoDD（Coherence-Driven Development / 整合性駆動開発）** は「要件や設計が変わったとき、波及先の成果物まで整合を保つ」ことを扱うレイヤー。AI Orchestra ではこれを独立パッケージ `packages/codd`（essential プリセット）として配布レールに載せ、導入先プロジェクトが生成するドキュメントまで整合性管理の対象にする。
@@ -47,7 +47,7 @@ Claude Code (Orchestrator)
     │   ├── cocoindex/          # MCP サーバー自動プロビジョニング
     │   └── tmux-monitor/       # tmux リアルタイム監視（opt-in）
     │
-    └── 28 Specialized Agents
+    └── 29 Specialized Agents
         ├── Planning: planner, researcher, requirements
         ├── Design: architect, api-designer, data-modeler, auth-designer, spec-writer
         ├── Implementation: frontend-dev, backend-*-dev, ai-*, debugger, tester
@@ -299,7 +299,7 @@ uv tool install -e .
 | 実装             | `frontend-dev` `backend-python-dev` `backend-go-dev`                                                        |
 | AI/ML            | `ai-architect` `ai-dev` `prompt-engineer` `rag-engineer`                                                    |
 | テスト・デバッグ | `debugger` `tester`                                                                                         |
-| レビュー（実装） | `code-reviewer` `security-reviewer` `performance-reviewer`                                                  |
+| レビュー（実装） | `code-reviewer` `security-reviewer` `performance-reviewer` `adversarial-reviewer`                           |
 | レビュー（設計） | `spec-reviewer` `architecture-reviewer` `ux-reviewer`                                                       |
 | ドキュメント     | `docs-writer`                                                                                               |
 | ユーティリティ   | `general-purpose` `specialized-mcp-builder` `support-executive-summary-generator` `testing-reality-checker` |
@@ -332,10 +332,10 @@ Task(subagent_type="code-reviewer", prompt="このコードをレビューして
 
 ```
 /review              # スマート選定（変更内容に応じて 2-3 名を自動選定）
-/review all          # 全 6 レビュアー並列実行
+/review all          # 全 7 レビュアー並列実行
 /review code         # コードレビューのみ
 /review security     # セキュリティレビューのみ
-/review impl         # 実装系（code + security + performance）
+/review impl         # 実装系（code + security + performance + adversarial）
 /review design       # 設計系（spec + architecture）
 ```
 
@@ -356,7 +356,7 @@ ai-orchestra/
 │       └── rules/         # ルール系 composition
 ├── packages/         # パッケージ（hooks・scripts・agents・config）— 詳細は packages/README.md
 │   ├── core/              # 共通基盤ライブラリ + hooks
-│   ├── agent-routing/     # 28 エージェント定義 + ルーティング hooks
+│   ├── agent-routing/     # 29 エージェント定義 + ルーティング hooks
 │   ├── audit/             # 監査ログ・KPI・ダッシュボード
 │   ├── codex-suggestions/ # Codex 相談提案 hooks
 │   ├── codex-harness/     # Codex CLI 向け repo-local ハーネス（hooks/rules/schemas + 非対話 run/review スクリプト）

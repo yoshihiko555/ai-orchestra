@@ -9,6 +9,7 @@
   "files": ["hooks/agent-router.py", "hooks/route_config.py"],
   "skills": [],
   "agents": [
+    "agents/adversarial-reviewer.md",
     "agents/ai-architect.md",
     "agents/ai-dev.md",
     "agents/api-designer.md",

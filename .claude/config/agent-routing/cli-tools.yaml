@@ -97,6 +97,8 @@ review:
 #   - auto: タスクに応じて codex / antigravity / claude-direct を使い分け
 agents:
   # --- レビュー・設計分析系（Claude Code 直接）---
+  adversarial-reviewer:
+    tool: claude-direct
   architect:
     tool: claude-direct
   api-designer:

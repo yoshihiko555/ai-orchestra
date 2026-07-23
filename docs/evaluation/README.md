@@ -62,8 +62,17 @@ must 観点を将来 CI で実行可能な check へ写像する任意の sideca
 | **スキルフロー評価セット** | `docs/evaluation/skills/` | フロー（複数スキルが成果物を介して連続する単位） | **振る舞い仕様書**。pytest 突合の対象外。検証は PR レビュー時の突合・`/config-analyze`・実行観察 |
 
 - スキル（facets 由来の Markdown 指示書）は pytest で強制できないため、パッケージと同じ棚に混ぜない
-- スキルフロー評価セットは「スキル単体」ではなく「フロー単位」で作る（スキル単位に細分化するとパッケージ粒度の SSOT と混同しやすいため）
+- スキルフロー評価セットは「スキル単体」ではなく「フロー単位」で作る（スキル単位に細分化するとパッケージ粒度の SSOT と混同しやすいため）。単一スキルでも、複数フェーズ・複数エージェントが成果物を介して連続する場合は 1 フローとして扱う（例: loop-issue / review-respond / review）
 - スキルフローの仕様を変更する PR では、該当する `skills/<flow>.md` と矛盾しないかを突合し、仕様変更の場合は評価セットを先に更新する
+
+### スキルフロー評価セット一覧
+
+| フロー | ファイル | 概要 |
+| ------ | -------- | ---- |
+| design-flow | `skills/design-flow.md` | 設計 → タスク分解 → 実装の一連のフロー（design / preflight / startproject） |
+| loop-issue | `skills/loop-issue.md` | GitHub Issue 起点で loop-harness の LP-1 を駆動するフロー |
+| review-respond | `skills/review-respond.md` | PR の bot レビュー指摘を検出 → 修正 → 返信/resolve するフロー |
+| review | `skills/review.md` | `/review` のスマート選定 → 並列レビュー → 集約 → auto-fix ループ（Phase 0-7） |
 
 ## 共通フォーマット
 

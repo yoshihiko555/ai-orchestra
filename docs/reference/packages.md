@@ -84,7 +84,7 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 
 ## agent-routing
 
-`cli-tools.yaml` に基づいてエージェントをルーティング提案する。28 エージェントの定義と使い方ルールを管理し、`.claude/agents/` に同期される配布元でもある。
+`cli-tools.yaml` に基づいてエージェントをルーティング提案する。29 エージェントの定義と使い方ルールを管理し、`.claude/agents/` に同期される配布元でもある。
 
 - **バージョン**: 0.1.0
 - **依存**: core
@@ -95,7 +95,7 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 | ------ | ------------------------- | -------------------------------------------------------- |
 | hook   | `agent-router.py`         | UserPromptSubmit: プロンプトからエージェントを検出し提案 |
 | util   | `route_config.py`         | ルーティング設定読み込み・エージェント検出ロジック       |
-| agents | 28 定義                   | planner, architect, code-reviewer, general-purpose 等    |
+| agents | 29 定義                   | planner, architect, code-reviewer, general-purpose 等    |
 | rule   | `orchestra-usage.md`      | AI Orchestra 使用ガイド                                  |
 | rule   | `agent-routing-policy.md` | エージェントルーティングポリシー                         |
 | config | `cli-tools.yaml`          | モデル名・サンドボックス・フラグの一元管理               |
@@ -109,7 +109,7 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 | Implementation | frontend-dev, backend-python-dev, backend-go-dev                                                          |
 | AI/ML          | ai-architect, ai-dev, prompt-engineer, rag-engineer                                                       |
 | Test/Debug     | debugger, tester                                                                                          |
-| Review         | code-reviewer, security-reviewer, performance-reviewer, spec-reviewer, architecture-reviewer, ux-reviewer |
+| Review         | code-reviewer, security-reviewer, performance-reviewer, spec-reviewer, architecture-reviewer, ux-reviewer, adversarial-reviewer |
 | Docs           | docs-writer                                                                                               |
 | Utility        | general-purpose, specialized-mcp-builder, support-executive-summary-generator, testing-reality-checker    |
 
