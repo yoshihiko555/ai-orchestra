@@ -1601,8 +1601,11 @@ cd <worktree> && CLAUDE_CODE_MAX_OUTPUT_TOKENS=<budget.max_output_tokens> \
   （`{repository}:sha-{digest[:12]}`）を確保する。recipe hash が manifest に記録済みかつ Docker 上の
   実体と一致すればビルドを省略して再利用し、そうでなければ専用 buildx builder でビルドしてから
   manifest へ記録する（もはや毎回 `--no-cache` build は行わない）。確保後は
-  `scenario_docker_cli.ensure_images()` が検証済み `image_id` を trusted cache へ登録し、直後に
-  解決したimage IDだけをrun/oracle/judgeへ渡す（タグの再 inspect による TOCTOU を避ける）。`false`の
+  `scenario_docker_cli.ensure_images_detailed()` が返す `EnsuredImage.image_id`（ensure 済みの検証済み
+  ID）を run/preparation/broker 経路が直接使用し、container 起動前にタグを再 inspect しない（共有タグへの
+  並行 retag による TOCTOU を避ける）。旧来の `ensure_images()`→`ImageCache.trusted_image_ids` 登録方式は
+  #317 のリファクタで `ensure_images_detailed()` の戻り値直接使用へ置き換えられ、当該 alias は削除済み
+  （PR #320 レビュー指摘）。`false`の
   場合はconfig image自体に`@sha256`を必須とする。build後のimage ID、base image reference、
   Dockerfile/build-context hash、イメージ内Claude CLI versionをmetadataへ固定し、tag差し替えを実行境界へ
   入れない。broker最終imageはshell/package managerを含まないdistroless runtimeとする。世代 prune（既定

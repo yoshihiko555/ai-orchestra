@@ -1291,6 +1291,22 @@ def _prune_image_family(
     the *only* hash tag pointing at an image a concurrent
     `ensure_recipe_image()` caller had just resolved and leased, between
     that caller resolving it and actually starting a container from it.
+
+    An unreadable pin ledger skips this *entire* generation-prune round
+    (warning logged) rather than propagating (PR #320 review, sixth round,
+    Critical): this is called from inside `ensure_recipe_image`'s manifest
+    lock, *before* the manifest write that actually persists the build this
+    call just completed. Letting a `DockerImageError` from the ledger read
+    escape here would mean an unrelated sidecar problem fails an otherwise-
+    successful build before its manifest entry is ever written -- leaving
+    the freshly built (and real, usable) image permanently unreachable via
+    the normal cache-hit path until the ledger is manually repaired. Lease
+    state being unknown only means this round cannot safely tell a leased
+    generation apart from an unleased one, so the safe response is to prune
+    nothing this round, not to fail the whole call. This does not change the
+    opportunistic-cleanup round's own pin-ledger read at the top of
+    `ensure_recipe_image` (`_cleanup_stale_owned_images`), which still
+    fails closed by aborting that round entirely.
     """
     completed = cli.run(
         [
@@ -1311,7 +1327,16 @@ def _prune_image_family(
     tracked = [candidate for candidate in candidates if candidate[1] is not None]
     retained = sorted(tracked, key=lambda item: item[2], reverse=True)[: policy.keep_generations]
     retained_refs = {item[0] for item in retained}
-    active_pin_ids = _purge_expired_pin_leases(_pin_ledger_path(policy.manifest_path), now)
+    try:
+        active_pin_ids = _purge_expired_pin_leases(_pin_ledger_path(policy.manifest_path), now)
+    except DockerImageError as exc:
+        _LOGGER.warning(
+            "could not read Docker image pin ledger for family %s; skipping generation "
+            "prune this round (manifest registration continues unaffected): %s",
+            recipe.family,
+            exc,
+        )
+        return manifest
     updated = dict(manifest)
     for image_ref, digest, _last_used in candidates:
         if digest is None:
@@ -1551,15 +1576,23 @@ def _cleanup_stale_owned_images(
         # manifest lock: a new lease for this exact `image_id` could have
         # been recorded by a concurrent `ensure_recipe_image()` call in the
         # window between that snapshot and this specific `docker image rm`.
-        # Narrowing the check to right before each removal (rather than
-        # once for the whole dangling batch) keeps that window as small as
-        # the single lock round-trip below.
+        # The manifest lock is held across *both* the final re-check and the
+        # `docker image rm` call itself (PR #320 review, sixth round,
+        # Critical): releasing it in between (as an earlier revision did)
+        # left a same-checkout TOCTOU window in which a concurrent
+        # `ensure_recipe_image()` call could record a fresh lease for this
+        # exact `image_id` right after the re-check passed but before the
+        # removal actually ran. `_remove_image_best_effort` never itself
+        # acquires `policy.lock_path` (or any family lock), so holding it
+        # across the removal cannot deadlock; it only extends how long this
+        # lock is held, which is acceptable since dangling images are
+        # typically few per cleanup round.
         with exclusive_file_lock(policy.lock_path):
             still_active = _purge_expired_pin_leases(pin_ledger_path, now)
-        if image_id in still_active:
-            continue
-        if _remove_image_best_effort(image_id, runner=runner):
-            removed_count += 1
+            if image_id in still_active:
+                continue
+            if _remove_image_best_effort(image_id, runner=runner):
+                removed_count += 1
 
     with exclusive_file_lock(policy.lock_path):
         journal = _load_pending_journal(journal_path)

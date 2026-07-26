@@ -2529,3 +2529,134 @@ def test_cleanup_drops_stale_journal_entry_for_confirmed_owner_label_mismatch_wi
     assert fake.images[orphan_tag] == OTHER_IMAGE_ID
     journal = image._load_pending_journal(_journal_path(policy))
     assert orphan_tag not in journal["entries"]
+
+
+def test_cleanup_holds_manifest_lock_through_final_lease_check_and_dangling_removal(
+    tmp_path: Path,
+    context: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PR #320 review (sixth round, Critical): releasing the manifest lock
+    between the final pin-ledger re-check and the actual `docker image rm`
+    for a dangling image left a same-checkout TOCTOU window in which a
+    concurrent `ensure_recipe_image()` call could record a fresh lease for
+    that exact image_id in between the two. The lock must stay held from
+    the final re-check through the removal itself."""
+    policy = _policy(tmp_path)
+    recipe = _recipe(context)
+    now = datetime(2026, 7, 16, 0, 0, tzinfo=UTC)
+    dangling_id = "sha256:" + "f" * 64
+    fake = FakeDocker()
+    fake.image_ls_output = json.dumps({"Repository": "<none>", "Tag": "<none>", "ID": dangling_id})
+
+    lock_was_held_during_removal: list[bool] = []
+    real_remove = image._remove_image_best_effort
+
+    def probing_remove(reference: str, *, runner) -> bool:
+        # From a *separate* file descriptor, verify the manifest lock is
+        # currently held -- proving it was not released between the final
+        # pin-ledger re-check and this removal.
+        policy.lock_path.parent.mkdir(parents=True, exist_ok=True)
+        probe_fd = os.open(policy.lock_path, os.O_CREAT | os.O_RDWR)
+        try:
+            fcntl.flock(probe_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            lock_was_held_during_removal.append(False)  # acquired -- NOT held, bad
+            fcntl.flock(probe_fd, fcntl.LOCK_UN)
+        except BlockingIOError:
+            lock_was_held_during_removal.append(True)  # still held -- good
+        finally:
+            os.close(probe_fd)
+        return real_remove(reference, runner=runner)
+
+    monkeypatch.setattr(image, "_remove_image_best_effort", probing_remove)
+
+    image.ensure_recipe_image(recipe, policy, runner=fake, clock=lambda: now)
+
+    assert lock_was_held_during_removal == [True]
+    removed = [command[-1] for command in fake.commands if command[:3] == ["docker", "image", "rm"]]
+    assert dangling_id in removed
+
+
+def test_prune_skips_when_pin_ledger_is_unreadable_but_ensure_still_succeeds(
+    tmp_path: Path,
+    context: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """PR #320 review (sixth round, Critical): an unreadable pin ledger
+    during generation pruning (called from inside the manifest lock,
+    *before* the manifest write that persists a build that already
+    succeeded) must not fail the whole `ensure_recipe_image()` call -- only
+    this round's generation prune is skipped."""
+    policy = _policy(tmp_path)
+    recipe = _recipe(context)
+    fake = FakeDocker()
+
+    def failing_purge(*_args, **_kwargs):
+        raise image.DockerImageError("could not read Docker image pin ledger: boom")
+
+    monkeypatch.setattr(image, "_purge_expired_pin_leases", failing_purge)
+
+    with caplog.at_level("WARNING"):
+        ensured = image.ensure_recipe_image(recipe, policy, runner=fake)
+
+    assert ensured.built is True
+    assert ensured.image_id == IMAGE_ID
+    manifest = image._load_valid_manifest(policy.manifest_path, runner=fake)
+    digest = image.recipe_hash(recipe)
+    assert digest in manifest
+    assert any(
+        "skipping generation prune this round" in record.message for record in caplog.records
+    )
+
+
+def test_prune_image_family_skips_pruning_when_pin_ledger_read_fails(
+    tmp_path: Path,
+    context: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Direct-call companion to the `ensure_recipe_image` test above:
+    `_prune_image_family` itself returns the manifest unchanged (no
+    generations pruned) rather than propagating when the pin ledger cannot
+    be read, since lease state being unknown means it cannot safely tell a
+    leased generation apart from an unleased one this round."""
+    digests = [str(index) * 64 for index in range(1, 4)]
+    manifest = {
+        digest: image.ManifestEntry(IMAGE_ID, f"2026-07-1{index}T00:00:00+00:00", used)
+        for index, (digest, used) in enumerate(
+            zip(
+                digests,
+                [
+                    "2026-07-13T00:00:00+00:00",
+                    "2026-07-14T00:00:00+00:00",
+                    "2026-07-15T00:00:00+00:00",
+                ],
+                strict=True,
+            ),
+            start=1,
+        )
+    }
+    repository = "ai-orchestra/loop-harness-scenario"
+    policy = _policy(tmp_path, keep_generations=2)
+    now = datetime(2026, 7, 16, 0, 0, tzinfo=UTC)
+    # An existing-but-unreadable pin ledger: a directory sitting where a
+    # file is expected makes `Path.read_text()` raise `IsADirectoryError`
+    # (not `FileNotFoundError`), which `_load_pin_ledger` turns into a
+    # `DockerImageError`.
+    pin_ledger_path = image._pin_ledger_path(policy.manifest_path)
+    pin_ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    pin_ledger_path.mkdir()
+    fake = FakeDocker()
+    fake.image_ls_output = "\n".join(
+        json.dumps({"Repository": repository, "Tag": f"sha-{digest[:12]}"}) for digest in digests
+    )
+
+    with caplog.at_level("WARNING"):
+        updated = image._prune_image_family(_recipe(context), policy, manifest, now, runner=fake)
+
+    removed = [command for command in fake.commands if command[:3] == ["docker", "image", "rm"]]
+    assert removed == []
+    assert updated == manifest
+    assert any(
+        "skipping generation prune this round" in record.message for record in caplog.records
+    )
