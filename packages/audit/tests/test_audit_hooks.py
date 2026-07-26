@@ -362,6 +362,33 @@ class TestExtractCodexPrompt:
         cmd = 'codex exec --model gpt-5.3-codex "$(cat "$PROMPT_FILE")" < /dev/null 2>/dev/null'
         assert audit_cli.extract_codex_prompt(cmd) is None
 
+    def test_prompt_file_doc_example_heredoc_before_real_call_is_not_misextracted(
+        self,
+    ) -> None:
+        """同一変数名の PROMPT_FILE 形式の例文を含む、実呼び出しより前の
+        ドキュメント生成用 heredoc があっても、その例文本文を実プロンプトとして
+        誤抽出しないことを確認する（is_codex / extract_model は heredoc マスク済み
+        文字列で実呼び出しを検出できるのに対し、prompt 抽出だけが非対称に生
+        command へ leftmost search していたことに起因する回帰）。
+        """
+        cmd = (
+            "cat > docs.md <<'DOC'\n"
+            "Example usage:\n"
+            "cat > \"$PROMPT_FILE\" <<'EOF'\n"
+            "Example placeholder prompt text.\n"
+            "EOF\n"
+            "codex exec --model gpt-5.3-codex --sandbox read-only "
+            '"$(cat "$PROMPT_FILE")" < /dev/null 2>/dev/null\n'
+            "DOC\n"
+            "PROMPT_FILE=$(mktemp)\n"
+            "cat > \"$PROMPT_FILE\" <<'REAL'\n"
+            "Investigate the actual real bug.\n"
+            "REAL\n"
+            "codex exec --model gpt-5.3-codex --sandbox read-only "
+            '"$(cat "$PROMPT_FILE")" < /dev/null 2>/dev/null'
+        )
+        assert audit_cli.extract_codex_prompt(cmd) == "Investigate the actual real bug."
+
 
 class TestCodexExecDetectionPromptFile:
     """PROMPT_FILE 形式（改行を挟んだ複数行コマンド）での `codex exec` 検出テスト。"""

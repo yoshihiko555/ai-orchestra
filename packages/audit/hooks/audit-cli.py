@@ -127,6 +127,16 @@ def _extract_heredoc_content(command: str, var_name: str) -> str | None:
     参照）。これにより、本文中に偶然インデント済みのデリミタ単独行があっても、
     plain heredoc では誤って途中で本文抽出が途切れない。
 
+    トップレベル heredoc ブロックのみを対象にする（`HEREDOC_BLOCK_RE.finditer` は
+    非重複マッチのため、あるブロックの本文内に別の heredoc らしき文字列が含まれて
+    いても、それは外側ブロックの本文としてまとめて消費され、独立したマッチには
+    ならない）。これにより、ドキュメント生成用 heredoc の本文中に同じ変数名の
+    PROMPT_FILE 形式の例文が含まれていても、その例文側を実呼び出しの heredoc と
+    誤認しない（`>\\s*"?\\$\\{?VAR\\}?"?\\s*` が heredoc マーカー直前に一致する
+    トップレベルブロックだけを対象にするため）。単純に `pattern.search(command)`
+    で raw command 全体へ leftmost search を行うと、例文側の heredoc がコマンド
+    文字列中でより手前に出現する場合に誤抽出する。
+
     Args:
         command: Bash コマンド文字列。
         var_name: PROMPT_FILE 相当の変数名（`$` や `{}` を除いた素の名前）。
@@ -134,21 +144,18 @@ def _extract_heredoc_content(command: str, var_name: str) -> str | None:
     Returns:
         heredoc 本文。検出できなければ None。
     """
-    pattern = re.compile(
-        r">\s*\"?\$\{?"
-        + re.escape(var_name)
-        + r"\}?\"?\s*<<(-)?\s*['\"]?(\w+)['\"]?\s*\n(.*?)\n(?(1)[\t]*|)\2[ \t]*$",
-        re.DOTALL | re.MULTILINE,
-    )
-    match = pattern.search(command)
-    if not match:
-        return None
-    strip_leading_tabs = bool(match.group(1))
-    body = match.group(3)
-    if strip_leading_tabs:
-        body = "\n".join(line.lstrip("\t") for line in body.split("\n"))
-    content = body.strip()
-    return content or None
+    assignment_re = re.compile(r">\s*\"?\$\{?" + re.escape(var_name) + r"\}?\"?\s*$")
+    for match in HEREDOC_BLOCK_RE.finditer(command):
+        preceding = command[: match.start()]
+        if not assignment_re.search(preceding):
+            continue
+        strip_leading_tabs = bool(match.group(1))
+        body = match.group(3)
+        if strip_leading_tabs:
+            body = "\n".join(line.lstrip("\t") for line in body.split("\n"))
+        content = body.strip()
+        return content or None
+    return None
 
 
 def _mask_heredoc_bodies(command: str) -> str:
@@ -185,6 +192,13 @@ def extract_codex_prompt(command: str) -> str | None:
     （`PROMPT_FILE=$(mktemp); cat > "$PROMPT_FILE" <<'X' ... X; codex exec ... "$(cat "$PROMPT_FILE")"`）
     の両方に対応する。
 
+    PROMPT_FILE 形式の変数名特定は、`is_codex` 判定や `extract_model` と同様に
+    heredoc 本文マスク済み文字列（`_mask_heredoc_bodies` の戻り値）に対して行う。
+    生の command に対して行うと、実呼び出しより前に無関係なドキュメント生成用
+    heredoc（同一変数名の PROMPT_FILE 形式の例文を含むもの）があった場合、その
+    例文側を実呼び出しと誤認する（例文の heredoc 本文はマスクされて検索対象から
+    除外されるため、マスク済み文字列であれば実呼び出しの変数名のみが残る）。
+
     Args:
         command: Bash コマンド文字列。
 
@@ -193,12 +207,16 @@ def extract_codex_prompt(command: str) -> str | None:
         呼び出し側で `_mask_secrets` 適用後に `_truncate_prompt` で切り詰めること
         （マスク前の切り詰めはシークレットパターンの境界またぎ検知漏れを起こすため）。
     """
-    prompt_file_match = CODEX_PROMPT_FILE_ARG_RE.search(command)
+    detection_command = _mask_heredoc_bodies(command)
+    prompt_file_match = CODEX_PROMPT_FILE_ARG_RE.search(detection_command)
     if prompt_file_match:
         # PROMPT_FILE 形式と判定した場合、legacy の引用符ベース抽出には委ねない。
         # `"$(cat "$VAR")"` は入れ子の引用符を含むため、legacy パターンに通すと
         # `$(cat` や `)` のような無意味な断片を誤抽出してしまう
         # （このメソッドが解決しようとしている元の不具合そのもの）。
+        # 本文抽出自体は heredoc 本文が対象のため、マスク前の生 command に対して
+        # 行う（`_extract_heredoc_content` はトップレベル heredoc ブロックのみを
+        # 対象にするため、ドキュメント例文側を誤って選ばない）。
         return _extract_heredoc_content(command, prompt_file_match.group(1))
 
     patterns = [
