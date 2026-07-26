@@ -90,14 +90,14 @@ finding ごとに以下の構造化出力を必須とする（複数 finding の
 
 | verdict     | 意味                                                                     |
 | ----------- | ------------------------------------------------------------------------ |
-| `confirmed` | claim が真であると確認できた（反証できなかった、または追加確証を得た）   |
+| `confirmed` | claim を支持する具体的確証（コード経路 / 入力 / 仕様引用のいずれか）を自ら確認できた場合のみ。反証できなかっただけでは `confirmed` にせず `uncertain` とする |
 | `refuted`   | 具体的根拠（コード経路 / 入力 / 仕様引用）により claim が偽と示せた       |
 | `uncertain` | 反証も確証もできない。**自動修正には回さないが、合格も阻止する（安全側）** |
 
 ## Principles
 
 - 反証は「証拠ベース」。推測だけでは `refuted` にしない
-- 目的は指摘の質を上げることであり、指摘を減らすことではない。反証できなければ躊躇なく `confirmed` または `uncertain` とする
+- 目的は指摘の質を上げることであり、指摘を減らすことではない。反証できなかっただけで `confirmed` にはせず、確証がなければ `uncertain` とする（確証を自ら確認できたときのみ `confirmed`）
 - 1 finding = 1 判定。複数 finding をまとめて 1 つの verdict にしない
 - Return concise output (main orchestrator has limited context)
 

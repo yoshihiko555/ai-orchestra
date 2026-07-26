@@ -60,7 +60,7 @@
 - [ ] EV-20（正常 / must）: refuted 判定の指摘は Tiered Output の集約（Critical/High/Medium/Low）から除外され、理由付きで「Refuted Findings」に表示される — 根拠: 同 Phase 3.5-4 / 検証: 実行観察
 - [ ] EV-21（正常 / should）: severity が過大と判定された confirmed 指摘は、除外せず severity を格下げしたうえで集約する — 根拠: 同 Phase 3.5 / 検証: 実行観察
 - [ ] EV-22（異常 / must）: auto-fix（Phase 6）は confirmed Critical のみを対象とし、uncertain Critical は Fail 扱いのまま自動修正せず人手確認に回す — 根拠: 同 Phase 5-6 / 検証: 実行観察
-- [ ] EV-23（異常 / must）: Phase 7 再レビューは新規/変更の Critical/High 指摘を再検証し、直前ループと逆の verdict（flip-flop）が生じた場合は自動修正を継続せず NEEDS_REVIEW で停止する — 根拠: 同 Phase 7 / 検証: 実行観察
+- [ ] EV-23（異常 / must）: Phase 7 再レビューは新規/変更の Critical/High 指摘を再検証し、同一 finding の verdict がループを跨いで confirmed → refuted → confirmed（またはその逆）のように往復した場合、自動修正を継続せず NEEDS_REVIEW で停止する（単発の verdict 変化のみでは停止しない） — 根拠: 同 Phase 7 / 検証: 実行観察
 
 ### 集約・品質ゲート（Phase 4-7）
 

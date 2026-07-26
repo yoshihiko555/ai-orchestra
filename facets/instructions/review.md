@@ -158,7 +158,7 @@ Phase 3 で集まった Critical/High 指摘を `finding-verifier` で反証し�
    - **Critical**: 1 finding = 1 起動
    - **High**: レビュアー出力単位でバッチ化し、1 起動あたり最大 6 件まで
    - Medium/Low は検証対象外（そのまま Phase 4 へ）
-4. 検証プロンプトには指摘内容（file/line/issue/説明）と該当ファイルの周辺コンテキスト（Phase 0 で収集済み）を渡すが、**どのレビュアーの指摘かは伏せる**（権威バイアス低減のため `reviewer` 名はプロンプトに含めない）
+4. 検証プロンプトには指摘内容（file/line/severity/issue/説明）と該当ファイルの周辺コンテキスト（Phase 0 で収集済み）を渡すが、**どのレビュアーの指摘かは伏せる**（権威バイアス低減のため `reviewer` 名はプロンプトに含めない）
 
 ```
 Task(subagent_type="finding-verifier", run_in_background=true, prompt="""
@@ -171,10 +171,10 @@ Task(subagent_type="finding-verifier", run_in_background=true, prompt="""
 {Phase 0 で収集したファイルコンテキストの該当範囲}
 
 ## 検証対象の指摘（Critical: 1件 / High: 最大6件）
-{finding のリスト（finding_id、file、line、issue、説明のみ。reviewer 名は含めない）}
+{finding のリスト（finding_id、file、line、元の severity、issue、説明のみ。reviewer 名は含めない）}
 
 各指摘について finding_id ごとに verdict（confirmed / refuted / uncertain）と根拠を報告してください。
-severity が過大と判断した場合は effective_severity（格下げ後の重要度）も報告してください。
+元の severity を基準に、過大と判断した場合のみ effective_severity（格下げ後の重要度）も報告してください。
 """)
 ```
 
