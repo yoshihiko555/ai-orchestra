@@ -57,7 +57,12 @@
     preserved, not pruned. A `docker image rm` conflict (e.g. the old
     generation still in use) is best-effort: it warns and leaves the entry
     in the manifest for a later retry instead of failing the build that just
-    succeeded.
+    succeeded. `keep_generations` is not a hard ceiling: a generation with
+    an active pin lease is excluded from pruning even past the retained
+    count (see EV-33's `test_prune_skips_generation_with_active_pin_lease`),
+    so the manifest can temporarily hold more than `keep_generations`
+    entries for up to `IMAGE_ID_LEASE_TTL_SECONDS` (default 6h) until the
+    lease expires and a later prune reclaims it.
 
 - ev_id: EV-17
   phase: 1
@@ -248,3 +253,106 @@
     only token/cost upper-bound admission rejections increment the counter;
     success, authentication, and request-validation paths keep it at zero,
     and their reasons stay aligned with the evaluator budget-latch contract.
+
+- ev_id: EV-32
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/docker-runtime/tests/test_docker_runtime_image.py::test_cleanup_reclaims_orphaned_tag_left_by_a_pending_build
+  covered_by:
+    - packages/docker-runtime/tests/test_docker_runtime_image.py::test_cleanup_reclaims_orphaned_tag_left_by_a_pending_build
+  notes: >-
+    a tag recorded in the pending journal but never registered in the
+    manifest (simulating a crash between a successful `--load` and the
+    manifest write, Issue #231 scenario 2) is reclaimed on a later
+    `ensure_recipe_image` call, including a cache-hit reuse call.
+
+- ev_id: EV-33
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/docker-runtime/tests/test_docker_runtime_image.py::test_cleanup_removes_dangling_owner_labelled_image
+    packages/docker-runtime/tests/test_docker_runtime_image.py::test_cleanup_protects_dangling_image_with_active_pin_lease
+    packages/docker-runtime/tests/test_docker_runtime_image.py::test_cleanup_removes_dangling_image_after_pin_lease_expires
+    packages/docker-runtime/tests/test_docker_runtime_image.py::test_cleanup_re_reads_pin_ledger_immediately_before_each_dangling_removal
+  covered_by:
+    - packages/docker-runtime/tests/test_docker_runtime_image.py::test_cleanup_removes_dangling_owner_labelled_image
+    - packages/docker-runtime/tests/test_docker_runtime_image.py::test_cleanup_protects_dangling_image_with_active_pin_lease
+    - packages/docker-runtime/tests/test_docker_runtime_image.py::test_cleanup_removes_dangling_image_after_pin_lease_expires
+    - packages/docker-runtime/tests/test_docker_runtime_image.py::test_cleanup_re_reads_pin_ledger_immediately_before_each_dangling_removal
+  notes: >-
+    an owner-labelled dangling (`<none>:<none>`) image left behind by a
+    same-tag rebuild (Issue #231 scenario 3) is removed independent of the
+    pending journal, but *not* unconditionally: an image with an active pin
+    lease (PR #320 review, fourth round) is skipped until the lease expires,
+    and the ledger is re-read fresh immediately before each individual
+    removal rather than trusted from a single snapshot at the top of the
+    cleanup round.
+
+- ev_id: EV-34
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/docker-runtime/tests/test_docker_runtime_image.py::test_cleanup_leaves_other_projects_tagged_image_alone
+  covered_by:
+    - packages/docker-runtime/tests/test_docker_runtime_image.py::test_cleanup_leaves_other_projects_tagged_image_alone
+  notes: >-
+    a tagged image sharing the owner label but absent from this manifest and
+    pending journal (another project's build) is never removed by the
+    opportunistic cleanup.
+
+- ev_id: EV-35
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/docker-runtime/tests/test_docker_runtime_image.py::test_build_failure_triggers_best_effort_pending_tag_cleanup
+  covered_by:
+    - packages/docker-runtime/tests/test_docker_runtime_image.py::test_build_failure_triggers_best_effort_pending_tag_cleanup
+  notes: >-
+    a build failure reclaims the pending-journal entry and tag best-effort
+    before re-raising the original build error unchanged. The try/except
+    this reclaim runs under covers only `_build_image` through `_tag_latest`
+    (before the manifest write); a failure after the manifest write is not
+    explicitly cleaned up here but self-heals via the next call's EV-32
+    opportunistic reclaim of the still-unresolved pending entry.
+
+- ev_id: EV-36
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/docker-runtime/tests/test_docker_runtime_image.py::test_cleanup_is_suppressed_within_ttl_when_nothing_pending
+    packages/docker-runtime/tests/test_docker_runtime_image.py::test_cleanup_issues_no_docker_commands_when_pending_entry_is_live_within_ttl
+  covered_by:
+    - packages/docker-runtime/tests/test_docker_runtime_image.py::test_cleanup_is_suppressed_within_ttl_when_nothing_pending
+    - packages/docker-runtime/tests/test_docker_runtime_image.py::test_cleanup_issues_no_docker_commands_when_pending_entry_is_live_within_ttl
+  notes: >-
+    cleanup's docker image ls/buildx du sweep is throttled to once per
+    CLEANUP_TTL_SECONDS whenever there are no genuine *stale* candidates
+    (past the family-lock and grace-period liveness checks) in the
+    label-scoped pending journal -- this holds whether the journal is empty
+    or only holds live (possibly in-flight) entries. A non-empty journal
+    with at least one stale candidate always runs regardless of TTL.
+
+- ev_id: EV-37
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/docker-runtime/tests/test_docker_runtime_image.py::test_cleanup_rm_failure_does_not_fail_ensure_recipe_image
+  covered_by:
+    - packages/docker-runtime/tests/test_docker_runtime_image.py::test_cleanup_rm_failure_does_not_fail_ensure_recipe_image
+  notes: >-
+    a failing `docker image rm` inside opportunistic cleanup is logged as a
+    warning and left for a later attempt; it never fails the
+    `ensure_recipe_image` call it is piggybacking on.

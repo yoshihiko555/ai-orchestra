@@ -238,6 +238,20 @@ class TestConfigOverridesAndBackwardCompatibleDefaults:
         assert captured["policy"].keep_generations == docker_image.DEFAULT_KEEP_GENERATIONS
 
 
+def _cleanup_only_runner(*_args: object, **_kwargs: object):
+    """Tolerates the benign Docker CLI probes opportunistic stale-image
+    cleanup now issues at the very top of every `ensure_recipe_image()`
+    call -- including the immutable-image (`auto_build_images: false`)
+    path (Issue #231 review, PR #320: cleanup must run unconditionally, so
+    residue from an earlier auto-build config still gets reclaimed after a
+    project switches to pinned digests). Returns an empty success for
+    everything, so cleanup finds nothing to do and the immutable-digest
+    validation below still fires exactly as before."""
+    import subprocess
+
+    return subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+
 class TestAutoBuildImagesFalseFailsClosed:
     """EV-96: auto_build_images: false keeps the immutable-digest fail-closed contract."""
 
@@ -247,7 +261,7 @@ class TestAutoBuildImagesFalseFailsClosed:
         config["evaluate"]["isolation"]["image"] = "ai-orchestra/meta-harness-scenario:latest"
 
         with pytest.raises(docker_image.DockerImageError, match="immutable"):
-            docker_image.ensure_scenario_image(config, tmp_path, runner=_fail_runner)
+            docker_image.ensure_scenario_image(config, tmp_path, runner=_cleanup_only_runner)
 
     def test_broker_rejects_tag_only_image_when_auto_build_disabled(self, tmp_path: Path) -> None:
         config = _base_config()
@@ -257,7 +271,7 @@ class TestAutoBuildImagesFalseFailsClosed:
         )
 
         with pytest.raises(docker_image.DockerImageError, match="immutable"):
-            docker_image.ensure_broker_image(config, tmp_path, runner=_fail_runner)
+            docker_image.ensure_broker_image(config, tmp_path, runner=_cleanup_only_runner)
 
     def test_scenario_accepts_digest_pinned_image_when_auto_build_disabled(
         self, tmp_path: Path

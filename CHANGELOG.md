@@ -18,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`meta-harness` / `loop-harness`: 中断・失敗した Docker build で残る image を自動回収するように修正（Issue #231）**: build が途中でクラッシュした場合の未登録タグや、再ビルドで生じた dangling image が、次回実行時に自動的に削除されるようになった。meta-harness と loop-harness は共通の Docker image 管理基盤を使うため、両方に適用される。反復実行時のディスク肥大化が起きなくなった。
 - **CI の ruff バージョンを 0.15 系列に pin** — 未 pin の最新版導入により ruff 0.16.0 の Markdown コードブロック整形検査で format ジョブが全 PR で失敗していた問題を修正 (#319)
 
 ## [0.3.1] - 2026-07-23

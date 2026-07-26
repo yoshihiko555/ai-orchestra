@@ -1596,11 +1596,22 @@ cd <worktree> && CLAUDE_CODE_MAX_OUTPUT_TOKENS=<budget.max_output_tokens> \
   イメージ自体の既定`USER`も65532とし、起動側の`--user`が欠落してもroot実行へ倒れない。
   candidate-controlled facet/scriptが親HOMEや親envを読む経路を作らない。
 - **イメージ供給**: scenario/broker イメージは `packages/meta-harness/docker/` の Dockerfile を正本とし、
-  base imageを`FROM ...@sha256`で固定する。`auto_build_images:true`ではcapability gate中にno-cache buildし、
-  直後に解決したimage IDだけをrun/oracle/judgeへ渡す。`false`の場合はconfig image自体に`@sha256`を必須と
-  する。build後のimage ID、base image reference、Dockerfile/build-context hash、イメージ内Claude CLI
-  versionをmetadataへ固定し、tag差し替えを実行境界へ入れない。broker最終imageはshell/package managerを
-  含まないdistroless runtimeとする。
+  base imageを`FROM ...@sha256`で固定する。`auto_build_images:true`では永続イメージライフサイクル
+  （`docker_runtime_image.ensure_recipe_image()`、ADR-20260726-045）経由で recipe-addressed タグ
+  （`{repository}:sha-{digest[:12]}`）を確保する。recipe hash が manifest に記録済みかつ Docker 上の
+  実体と一致すればビルドを省略して再利用し、そうでなければ専用 buildx builder でビルドしてから
+  manifest へ記録する（もはや毎回 `--no-cache` build は行わない）。確保後は
+  `scenario_docker_cli.ensure_images_detailed()` が返す `EnsuredImage.image_id`（ensure 済みの検証済み
+  ID）を run/preparation/broker 経路が直接使用し、container 起動前にタグを再 inspect しない（共有タグへの
+  並行 retag による TOCTOU を避ける）。旧来の `ensure_images()`→`ImageCache.trusted_image_ids` 登録方式は
+  #317 のリファクタで `ensure_images_detailed()` の戻り値直接使用へ置き換えられ、当該 alias は削除済み
+  （PR #320 レビュー指摘）。`false`の
+  場合はconfig image自体に`@sha256`を必須とする。build後のimage ID、base image reference、
+  Dockerfile/build-context hash、イメージ内Claude CLI versionをmetadataへ固定し、tag差し替えを実行境界へ
+  入れない。broker最終imageはshell/package managerを含まないdistroless runtimeとする。世代 prune（既定
+  keep 3）と BuildKit cache GC（既定 168h / 10g）に加え、中断・失敗時に残る stale image（manifest 未登録
+  の pending タグ・dangling image）は `ensure_recipe_image()` 呼び出しのたびに opportunistic に回収される
+  （Issue #231、ADR-20260726-045）。
 - scenario終了後の`command_exit` oracleはnetworkなし・worktree read-onlyの**別 Docker コンテナ**で
   実行する（SRT への環境依存 fallback は行わない）。oracleは候補と同じ独立Git snapshot / wrapperを
   read-onlyで参照し、linked worktreeの実`.git`は参照しない。artifact/json/rubric入力はsymlink非追従、
@@ -2169,7 +2180,7 @@ evaluate:
     execution_backend: docker # 実装・封じ込め検証完了後の既定。非隔離 backend へは降格しない
     image: ai-orchestra/meta-harness-scenario:2.1.207
     image_pin: "2.1.207 (Claude Code)" # イメージ内 `claude --version` と厳密一致
-    auto_build_images: true # 同梱 Dockerfile をno-cache buildし、解決したimage IDをrun内で固定
+    auto_build_images: true # 同梱 Dockerfile を永続イメージライフサイクルで ensure（recipe hash 一致時は再利用、不一致時のみビルド）し、解決したimage IDをrun内で固定
     resources:
       pids_limit: 128
       memory: 2g

@@ -32,7 +32,6 @@ CHECKED_COMMAND_TIMEOUT_SECONDS = runtime.CHECKED_COMMAND_TIMEOUT_SECONDS
 DockerCliError = runtime.DockerCliError
 
 _IMAGE_CACHE = runtime.ImageCache()
-_TRUSTED_IMAGE_IDS = _IMAGE_CACHE.trusted_image_ids
 
 
 def ensure_images(

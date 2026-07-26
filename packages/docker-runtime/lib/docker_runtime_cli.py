@@ -234,6 +234,8 @@ def reports_missing_resource(completed: subprocess.CompletedProcess, *, kind: st
         return "no such network:" in detail or bool(
             re.search(r"(?:error response from daemon:\s*)?network\s+\S+\s+not found", detail)
         )
+    if kind == "image":
+        return "no such image:" in detail
     raise ValueError(f"unknown Docker resource kind: {kind}")
 
 

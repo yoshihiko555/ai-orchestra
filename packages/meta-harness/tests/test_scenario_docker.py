@@ -1541,6 +1541,45 @@ def test_image_pin_semver_versions_produce_validated_build_args(
     ]
 
 
+def test_ensure_images_detailed_propagates_verified_image_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #231 / #307: `ensure_images_detailed()` must hand back the exact
+    `image_id` `ensure_recipe_image()` already verified for each tag as part
+    of the returned `EnsuredImage`, so callers (`run_preparation_command`,
+    `_start_broker`) can use `.image_id` directly without a second, racy
+    `docker image inspect` against a shared tag that another process could
+    have retagged in the meantime.
+
+    An earlier fix for this (Issue #231) added a `_TRUSTED_IMAGE_IDS` side
+    cache to `ensure_images()`'s tag-based `image_id()` lookup path. #307
+    removed that path entirely from every live caller -- both
+    `run_preparation_command` and `_start_broker` now call
+    `ensure_images_detailed()` and read `.image_id` straight off the
+    returned `EnsuredImage`, so there is no longer a second, racy re-inspect
+    to protect against, and the side cache was removed as dead weight.
+    """
+    config = copy.deepcopy(mh.DEFAULTS)
+    config["evaluate"]["isolation"]["image_pin"] = None
+    scenario_image_id = "sha256:" + "1" * 64
+    broker_image_id = "sha256:" + "2" * 64
+
+    def fake_ensure_recipe_image(recipe, policy, **_kwargs):
+        image_id = scenario_image_id if recipe.family == "scenario" else broker_image_id
+        return docker.dcli.simg.runtime_image.EnsuredImage(
+            image_id, f"{recipe.repository}:sha-pin-test", "c" * 64, True
+        )
+
+    monkeypatch.setattr(
+        docker.dcli.simg.runtime_image, "ensure_recipe_image", fake_ensure_recipe_image
+    )
+
+    scenario, broker = docker.dcli.ensure_images_detailed(config, main_root=tmp_path)
+
+    assert scenario.image_id == scenario_image_id
+    assert broker.image_id == broker_image_id
+
+
 def test_image_pin_rejects_invalid_versions_before_build(tmp_path: Path) -> None:
     config = copy.deepcopy(mh.DEFAULTS)
     runner_calls = []
