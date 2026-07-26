@@ -46,10 +46,11 @@
 >
 > 1. **実効値の確認**: base + `.local.yaml` マージ後の `codex.requires_sandbox_disable` が
 >    `true` であること（`.local.yaml` で `false` に上書きされた環境では sandbox 内で実行する）
-> 2. **内側 sandbox の検証（fail-closed）**: 実効の `codex.sandbox.*` が `read-only` /
->    `workspace-write` のいずれかであり、`codex.flags` に
->    `--dangerously-bypass-approvals-and-sandbox` 等の bypass 系フラグが含まれないこと
->    （内外両方のファイルシステム境界を同時に失わないため）
+> 2. **内側 sandbox の検証（fail-closed）**: `codex.sandbox.*` にエージェント別上書き
+>    （`agents.<name>.sandbox`）まで適用した**最終解決値**が `read-only` / `workspace-write`
+>    のいずれかであり、`codex.flags` に `--dangerously-bypass-approvals-and-sandbox` 等の
+>    bypass 系フラグが含まれないこと（グローバル値の検証だけでは不足。内外両方の
+>    ファイルシステム境界を同時に失わないため）
 > 3. **単体コマンド限定**: `codex exec ...` 単体のコマンドにのみ適用し、他のシェルコマンドと
 >    `&&` / `;` / `|` 等で連結しない（インジェクション発生時の被害拡大を防ぐため）
 > 4. **prompt の shell-safe 渡し**: Issue 本文・README・ログ等の信頼できない文字列を prompt に
@@ -66,8 +67,14 @@
 Task(subagent_type="general-purpose", prompt="""
 Resolve target agent/tool from cli-tools.yaml first.
 
-If route resolves to codex:
-codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "{question}" < /dev/null 2>/dev/null
+If route resolves to codex, write the question to a temp file first and pass it
+via command substitution (never interpolate untrusted text into the shell string):
+
+PROMPT_FILE=$(mktemp)
+cat > "$PROMPT_FILE" <<'PROMPT'
+{question}
+PROMPT
+codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "$(cat "$PROMPT_FILE")" < /dev/null 2>/dev/null
 
 Return concise summary (recommendation + rationale).
 """)
@@ -76,11 +83,17 @@ Return concise summary (recommendation + rationale).
 ### 直接呼び出し（短い質問）
 
 ```bash
+# prompt は一時ファイルへ書き出してから渡す（シェル文字列への直接埋め込み禁止）
+PROMPT_FILE=$(mktemp)
+cat > "$PROMPT_FILE" <<'PROMPT'
+{question または task}
+PROMPT
+
 # analysis
-codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "{question}" < /dev/null 2>/dev/null
+codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "$(cat "$PROMPT_FILE")" < /dev/null 2>/dev/null
 
 # implementation
-codex exec --model <codex.model> --sandbox <codex.sandbox.implementation> <codex.flags> "{task}" < /dev/null 2>/dev/null
+codex exec --model <codex.model> --sandbox <codex.sandbox.implementation> <codex.flags> "$(cat "$PROMPT_FILE")" < /dev/null 2>/dev/null
 ```
 
 ## Non-Interactive 実行（MUST）

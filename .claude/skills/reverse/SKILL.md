@@ -51,8 +51,10 @@ CLI ツールの利用可否と設定は `cli-tools.yaml` で一元管理する�
 ## サンドボックス実行
 
 Antigravity CLI（`agy`）は sandbox 内で直接実行する。
-Codex CLI は sandbox 内で動作しないため、呼び出し側で sandbox を無効化して実行する
-（`requires_sandbox_disable: true`。詳細は `codex-delegation.md` 参照）。
+Codex CLI は sandbox 内で動作しないため、base + `.local.yaml` マージ後の実効値で
+`codex.requires_sandbox_disable` が `true`（既定値）の場合に限り、呼び出し側で sandbox を
+無効化して実行する。`false` に上書きされた環境では sandbox 内で実行する
+（安全条件の詳細は `codex-delegation.md` 参照）。
 エラー時は `claude-direct` にフォールバックする。
 
 ---

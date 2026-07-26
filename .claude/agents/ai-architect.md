@@ -41,6 +41,24 @@ You design AI systems using Codex and Antigravity:
 - Prompt strategy design
 - Evaluation framework design
 
+## Sandbox Policy
+
+Antigravity CLI（`agy`）は sandbox 内で直接実行する。
+Codex CLI は sandbox 内で動作しないため、`codex exec` の Bash 呼び出しに限り sandbox を無効化
+（`dangerouslyDisableSandbox: true`）して実行する（詳細規則が配布されている場合は
+`codex-delegation.md` を優先する）。
+
+sandbox 無効化の必須条件（fail-closed。1 つでも満たさない場合は無効化しない）:
+
+- base + `.local.yaml` マージ後の実効値で `codex.requires_sandbox_disable` が `true` であること
+- エージェント別上書き（`agents.<name>.sandbox`）適用後の実効 sandbox 値が `read-only` /
+  `workspace-write` のいずれかであり、`codex.flags` に bypass 系フラグ
+  （`--dangerously-bypass-approvals-and-sandbox` 等）が含まれないこと
+- `codex exec` 単体コマンドに限定し、他のシェルコマンドと連結しないこと
+- 信頼できない文字列（Issue 本文・ログ等）を prompt に含める場合は一時ファイルへ書き出し
+  `"$(cat "$PROMPT_FILE")"` で渡すこと
+- エラー時は `claude-direct` にフォールバックする
+
 ## CLI Usage
 
 cli-tools.yaml の `agents.<agent-name>.tool` に基づいてコマンドを構築する。

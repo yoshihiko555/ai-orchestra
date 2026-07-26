@@ -36,11 +36,15 @@ Task tool parameters:
     Resolve target agent/tool from cli-tools.yaml first.
     If tool resolves to codex, run:
 
-    sandbox 内で codex を実行する。エラー時は claude-direct にフォールバック。
+    実効値（base + .local.yaml マージ後）で codex.requires_sandbox_disable が true の場合は
+    sandbox を無効化して codex を実行する（codex-delegation.md の Bash サンドボックス制約に従う）。
+    エラー時は claude-direct にフォールバック。
 
-    codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "
+    PROMPT_FILE=$(mktemp)
+    cat > "$PROMPT_FILE" <<'PROMPT'
     {question}
-    " < /dev/null 2>/dev/null
+    PROMPT
+    codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "$(cat "$PROMPT_FILE")" < /dev/null 2>/dev/null
 
     Return CONCISE summary (recommendation + rationale).
 ```
@@ -56,7 +60,12 @@ codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags
 ### Implementation Task (when route == codex)
 
 ```bash
-codex exec --model <codex.model> --sandbox <codex.sandbox.implementation> <codex.flags> "{implementation task}" < /dev/null 2>/dev/null
+# タスク本文は一時ファイル経由で渡す（シェル文字列への直接埋め込み禁止）
+PROMPT_FILE=$(mktemp)
+cat > "$PROMPT_FILE" <<'PROMPT'
+{implementation task}
+PROMPT
+codex exec --model <codex.model> --sandbox <codex.sandbox.implementation> <codex.flags> "$(cat "$PROMPT_FILE")" < /dev/null 2>/dev/null
 ```
 
 ### Sandbox Modes
