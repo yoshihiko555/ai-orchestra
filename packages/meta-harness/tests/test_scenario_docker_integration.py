@@ -45,7 +45,8 @@ def _require_docker() -> None:
 @pytest.fixture(scope="module")
 def images() -> tuple[str, str]:
     _require_docker()
-    return docker.ensure_images(copy.deepcopy(mh.DEFAULTS))
+    scenario, broker = docker.ensure_images_detailed(copy.deepcopy(mh.DEFAULTS))
+    return scenario.tag, broker.tag
 
 
 def test_internal_network_blocks_direct_egress_and_has_no_docker_socket(images) -> None:

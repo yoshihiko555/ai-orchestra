@@ -28,7 +28,7 @@ FILE_MODE = 0o600
 DIR_MODE = 0o700
 BUILD_TIMEOUT_SECONDS = 900
 RECIPE_TAG_LENGTH = 12
-_DIGEST_IMAGE_RE = re.compile(r"@sha256:[0-9a-f]{64}$")
+_DIGEST_IMAGE_RE = re.compile(r"@sha256:[0-9a-f]{64}\Z")
 _HASH_TAG_RE = re.compile(r"^sha-([0-9a-f]{12})$")
 _SAFE_BUILDER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 _SIZE_RE = re.compile(r"^([0-9]+(?:\.[0-9]+)?)\s*([A-Za-z]+)$")
@@ -110,6 +110,12 @@ class EnsuredImage:
     tag: str
     recipe_hash: str | None
     built: bool
+    # Populated only when the caller already resolved a verified `claude
+    # --version` output for this image (currently: the meta-harness scenario
+    # image adapter, when `image_pin` is configured). Lets callers reuse an
+    # already-known version instead of launching another container just to
+    # look it up again (Issue #307 review).
+    claude_version: str | None = None
 
 
 def recipe_hash(recipe: ImageRecipe) -> str:
@@ -211,7 +217,13 @@ def _reuse_cached_image(
         current_image_id = _inspect_image_id(tag, runner=runner)
         if current_image_id != cached.image_id:
             return None
-        _tag_latest(tag, recipe.repository, runner=runner)
+        # Skip the `docker tag` mutation entirely when `:latest` already
+        # resolves to this exact image (the common case on repeated cache
+        # hits) -- avoids a needless Docker CLI write on every cache hit
+        # (Issue #307 review).
+        latest_ref = f"{recipe.repository}:latest"
+        if _inspect_image_id(latest_ref, runner=runner) != current_image_id:
+            _tag_latest(tag, recipe.repository, runner=runner)
         manifest[digest] = ManifestEntry(cached.image_id, cached.built_at, now)
         _write_manifest(policy.manifest_path, manifest)
         return cached.image_id
@@ -408,10 +420,16 @@ def _ensure_immutable_image(
     runner: SubprocessRunner,
 ) -> EnsuredImage:
     if image is None or _DIGEST_IMAGE_RE.search(image) is None:
-        raise DockerImageError("auto-build disabled images must use an immutable @sha256 digest")
+        raise DockerImageError(
+            "auto-build disabled images must use an immutable @sha256 digest "
+            "(get one with: docker inspect --format '{{index .RepoDigests 0}}' <image>:<tag>)"
+        )
     image_id = _inspect_image_id(image, runner=runner)
     if image_id is None:
-        raise DockerImageError(f"required immutable Docker image is missing: {image}")
+        raise DockerImageError(
+            f"required immutable Docker image is missing: {image} "
+            f"(pull it first with: docker pull {image})"
+        )
     return EnsuredImage(image_id, image, None, built=False)
 
 

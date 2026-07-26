@@ -21,13 +21,35 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Iterator
 from pathlib import Path
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 META_HARNESS_SCRIPT = REPO_ROOT / "packages" / "meta-harness" / "scripts" / "meta_harness.py"
+
+_DOCKER_RUNTIME_CLI_MODULE_NAME = "docker_runtime_cli"
+
+
+def _clear_context_hash_cache() -> None:
+    """`context_hash()`（docker-runtime）はプロセス内メモ化される（Issue #307
+    review）。meta-harness の Docker lifecycle テスト（`test_scenario_docker.py`
+    等）が同じビルドコンテキストパスを跨って古いハッシュを観測しないよう、各
+    テストの前後で明示的にクリアする。`sys.modules` を都度検索するのは、
+    `docker_runtime_cli` がどのテストファイル経由で（どの順で）読み込まれても
+    現在有効なインスタンスに届かせるため。"""
+    module = sys.modules.get(_DOCKER_RUNTIME_CLI_MODULE_NAME)
+    if module is not None and hasattr(module, "clear_context_hash_cache"):
+        module.clear_context_hash_cache()
+
+
+@pytest.fixture(autouse=True)
+def _reset_context_hash_cache() -> Iterator[None]:
+    _clear_context_hash_cache()
+    yield
+    _clear_context_hash_cache()
+
 
 # Claude Code sandbox では tmp_path（プロジェクト配下扱いされるパス）への `git init` /
 # `git worktree add` が Operation not permitted になることがある。sandbox 許可パスを

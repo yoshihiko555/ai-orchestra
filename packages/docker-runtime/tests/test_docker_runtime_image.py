@@ -211,6 +211,56 @@ def test_manifest_reuses_image_across_calls_while_build_lock_is_held(
     assert set(manifest[first.recipe_hash]) == {"image_id", "built_at", "last_used_at"}
 
 
+def test_cache_hit_skips_redundant_latest_tag_when_already_current(
+    tmp_path: Path,
+    context: Path,
+) -> None:
+    """Issue #307 review: a cache hit must not re-issue `docker tag` for
+    `:latest` when it already resolves to the cached image (the common case
+    on repeated cache hits) -- only the manifest's `last_used_at` refreshes."""
+    policy = _policy(tmp_path)
+    recipe = _recipe(context)
+    fake = FakeDocker()
+    fake.lock_path = image._family_lock_path(policy.lock_path, recipe.family)
+
+    first = image.ensure_recipe_image(_recipe(context), policy, runner=fake)
+    tag_commands_after_build = [c for c in fake.commands if c[:2] == ["docker", "tag"]]
+    assert len(tag_commands_after_build) == 1
+
+    second = image.ensure_recipe_image(_recipe(context), policy, runner=fake)
+
+    assert first.built is True
+    assert second.built is False
+    assert second.image_id == IMAGE_ID
+    tag_commands_after_cache_hit = [c for c in fake.commands if c[:2] == ["docker", "tag"]]
+    assert tag_commands_after_cache_hit == tag_commands_after_build
+
+
+def test_cache_hit_retags_latest_when_it_points_elsewhere(
+    tmp_path: Path,
+    context: Path,
+) -> None:
+    """A cache hit must still retag `:latest` when it currently points at a
+    different (or missing) image, preserving the pre-Issue-#307 behavior."""
+    policy = _policy(tmp_path)
+    recipe = _recipe(context)
+    fake = FakeDocker()
+    fake.lock_path = image._family_lock_path(policy.lock_path, recipe.family)
+
+    first = image.ensure_recipe_image(_recipe(context), policy, runner=fake)
+    # Simulate `:latest` having drifted (e.g. another family's build clobbered
+    # the shared alias) between the build and the next cache-hit call.
+    fake.images[f"{recipe.repository}:latest"] = OTHER_IMAGE_ID
+
+    second = image.ensure_recipe_image(_recipe(context), policy, runner=fake)
+
+    assert first.built is True
+    assert second.built is False
+    tag_commands = [c for c in fake.commands if c[:2] == ["docker", "tag"]]
+    assert len(tag_commands) == 2
+    assert fake.images[f"{recipe.repository}:latest"] == IMAGE_ID
+
+
 @pytest.mark.parametrize("drift", ["missing", "repointed"])
 def test_manifest_docker_drift_is_rebuilt(
     tmp_path: Path,
@@ -531,6 +581,23 @@ def test_auto_build_disabled_requires_immutable_digest(tmp_path: Path, context: 
             _policy(tmp_path),
             auto_build=False,
             immutable_image="ai-orchestra/loop-harness-scenario:latest",
+            runner=FakeDocker(),
+        )
+
+
+def test_auto_build_disabled_rejects_digest_with_trailing_newline(
+    tmp_path: Path, context: Path
+) -> None:
+    """`$` matches just before a trailing newline, so a naive regex would
+    accept `...@sha256:<64hex>\\n` as a valid immutable digest. Anchoring to
+    `\\Z` closes that gap (Issue #307)."""
+    digest = "ai-orchestra/loop-harness-scenario@sha256:" + "a" * 64
+    with pytest.raises(image.DockerImageError, match="immutable"):
+        image.ensure_recipe_image(
+            _recipe(context),
+            _policy(tmp_path),
+            auto_build=False,
+            immutable_image=digest + "\n",
             runner=FakeDocker(),
         )
 
