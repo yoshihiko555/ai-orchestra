@@ -58,12 +58,20 @@ metadata:
 
 1. Plans.md に新しいフェーズセクションを追加
 2. タスクは `cc:TODO` で初期化
+3. Acceptance Criteria が決まっている場合は、タスクグループより前に `#### Acceptance Criteria` セクションを追記する
+   - 機械検証可能な条件は `— verify: \`コマンド\``、主観的条件は `— judge: 判定基準` を併記する（記法は `task-memory-usage.md` 参照）
+   - 登録時は全条件を未チェック `- [ ]` で記載する
+   - `/preflight` 経由で呼ばれた場合は Phase 3 で合意済みの AC をそのまま反映する。直接 `add-phase` を呼ぶ場合は AC の有無をユーザーに確認する
 
 ### decision モード
 
 1. `## Decisions` セクションに日付付きで設計判断を追記
 
 ## Plans.md フォーマット
+
+> フォーマットの正本（SSOT）は `task-memory-usage.md` ルール（配布先 `.claude/rules/task-memory-usage.md`）。
+> 状態マーカー、Acceptance Criteria（AC）の記法（verify/judge）、完了判定の詳細は同ルールを参照すること。
+> 以下は具体例（AC を含む）。
 
 ファイル先頭に CODD フロントマターを付与する（記法は `codd-frontmatter-policy` ルール参照）。
 Plans.md は**プロジェクト単位で 1 ノード**（kind: plan）とし、実装対象の `design:` ノードへ
@@ -94,6 +102,11 @@ codd:
 
 ### Phase 2: 実装 `cc:WIP`
 
+#### Acceptance Criteria
+
+- [ ] API が仕様通りレスポンスを返す — verify: `pytest tests/test_api.py`
+- [ ] エラーハンドリングが妥当 — judge: 想定される異常系が適切にハンドリングされている
+
 #### API
 
 - `cc:done` ユーザー認証 API
@@ -120,6 +133,12 @@ codd:
 | `cc:WIP`     | 作業中     |
 | `cc:done`    | 完了       |
 | `cc:blocked` | ブロック中 |
+
+## Acceptance Criteria（受け入れ条件）
+
+- フェーズ単位の完了条件（任意、後方互換）。詳細は `task-memory-usage.md` ルールを参照
+- フェーズ完了 = タスク全て `cc:done` **かつ** AC 全て `[x]`
+- `verify` 条件はコマンド実行で pass を確認した実行者のみがチェックできる。検証なしでのチェックは禁止
 
 ## 注意事項
 
