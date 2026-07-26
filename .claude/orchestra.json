@@ -31,6 +31,7 @@
     "agents/data-modeler.md",
     "agents/debugger.md",
     "agents/docs-writer.md",
+    "agents/finding-verifier.md",
     "agents/frontend-dev.md",
     "agents/general-purpose.md",
     "agents/image-generator.md",
@@ -71,7 +72,7 @@
       "config/core/task-memory.yaml": "081c101ad10526344e4fe7831babbe6ef661d0a4ae7e49fad4eb3967c030b7d8"
     },
     "agent-routing": {
-      "config/agent-routing/cli-tools.yaml": "9b15ce111b8fd0c352392a85ebb20fc758aab30788ff24c5bf4a454127f5de80",
+      "config/agent-routing/cli-tools.yaml": "c5e353680e8c51e4f0cad56802ac0141c19df8f074464cd239e5c5fe102da45e",
       "agents/ai-architect.md": "86bc9833e5a3b760286517d03133c28e705e2a38b4866473a9dfc44959741792",
       "agents/ai-dev.md": "b6c5c1a072dbd345a68e418f84656d6f4a8216c68f24ad2974632efdb8e362bd",
       "agents/api-designer.md": "87a0c1dec114a730a030acfd1a895b4fb7ed1299babd3a2e43c4ee1e928d023a",
@@ -100,7 +101,8 @@
       "agents/tester.md": "d02629fa78ffa10f0e63728d56d08d77b0ac812993f8b622db6b5073e2c13a65",
       "agents/testing-reality-checker.md": "259fef00ea8cb37dc3ed3097b4c3f6852b35198feb54a5984a21bd3bc36f26cd",
       "agents/ux-reviewer.md": "b5fe9d6d08e7496e81af590395fbd46e15f70dcb3154e3f573efae30a15167e8",
-      "agents/adversarial-reviewer.md": "325d46142944ae27c8949a81b1fae631b5234a6ea6a31ae686bf6c277b1c4fcf"
+      "agents/adversarial-reviewer.md": "325d46142944ae27c8949a81b1fae631b5234a6ea6a31ae686bf6c277b1c4fcf",
+      "agents/finding-verifier.md": "e04bd7a7469ea64532a8dc288c16b5418e53ce7e1cb0b6e29fac06cc4ab48032"
     },
     "audit": {
       "config/audit/delegation-policy.json": "b092b5385d3ec51252c5781cdbafa2d2e55d075d9cb74d25e89b71e95279d231",

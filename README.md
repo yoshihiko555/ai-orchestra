@@ -10,7 +10,7 @@ AI Orchestra は AI コーディングの実行基盤を 3 つの層で組み立
 | --------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
 | **Prompt**            | 何を指示するか           | facets（policies / instructions / output-contracts）から合成する Skill・Rule                                             |
 | **Context**           | 何を踏まえるか           | `CLAUDE.md` / `AGENTS.md` テンプレート、config の階層上書き、`.claude/context/` のセッション間共有                       |
-| **Harness**           | どう実行するか           | hooks、agent-routing（29 エージェント）、packages 配布、外部 CLI（Codex / Antigravity）協調                              |
+| **Harness**           | どう実行するか           | hooks、agent-routing（30 エージェント）、packages 配布、外部 CLI（Codex / Antigravity）協調                              |
 | **Coherence（CoDD）** | 変更が入っても整合を保つ | `packages/codd`：各ドキュメントの `codd:` フロントマターで依存を宣言し、`scan` で依存グラフ構築・`validate` で不整合検出 |
 
 最初の 3 層が「一度うまく動かす」ための基盤であるのに対し、**CoDD（Coherence-Driven Development / 整合性駆動開発）** は「要件や設計が変わったとき、波及先の成果物まで整合を保つ」ことを扱うレイヤー。AI Orchestra ではこれを独立パッケージ `packages/codd`（essential プリセット）として配布レールに載せ、導入先プロジェクトが生成するドキュメントまで整合性管理の対象にする。
@@ -47,7 +47,7 @@ Claude Code (Orchestrator)
     │   ├── cocoindex/          # MCP サーバー自動プロビジョニング
     │   └── tmux-monitor/       # tmux リアルタイム監視（opt-in）
     │
-    └── 29 Specialized Agents
+    └── 30 Specialized Agents
         ├── Planning: planner, researcher, requirements
         ├── Design: architect, api-designer, data-modeler, auth-designer, spec-writer
         ├── Implementation: frontend-dev, backend-*-dev, ai-*, debugger, tester
@@ -356,7 +356,7 @@ ai-orchestra/
 │       └── rules/         # ルール系 composition
 ├── packages/         # パッケージ（hooks・scripts・agents・config）— 詳細は packages/README.md
 │   ├── core/              # 共通基盤ライブラリ + hooks
-│   ├── agent-routing/     # 29 エージェント定義 + ルーティング hooks
+│   ├── agent-routing/     # 30 エージェント定義 + ルーティング hooks
 │   ├── audit/             # 監査ログ・KPI・ダッシュボード
 │   ├── codex-suggestions/ # Codex 相談提案 hooks
 │   ├── codex-harness/     # Codex CLI 向け repo-local ハーネス（hooks/rules/schemas + 非対話 run/review スクリプト）

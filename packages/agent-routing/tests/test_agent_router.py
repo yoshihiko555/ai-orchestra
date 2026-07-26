@@ -81,6 +81,30 @@ def test_detect_agent_detects_adversarial_reviewer() -> None:
     assert trigger == "敵対的検証"
 
 
+def test_detect_agent_detects_finding_verifier() -> None:
+    agent, trigger = route_config.detect_agent("この指摘の反証をして")
+    assert agent == "finding-verifier"
+    assert trigger == "指摘の反証"
+
+
+def test_detect_agent_finding_verifier_not_shadowed_by_code_reviewer() -> None:
+    agent, trigger = route_config.detect_agent("反証機能のコードレビューをして")
+    assert agent == "code-reviewer"
+    assert trigger == "コードレビュー"
+
+
+def test_detect_agent_finding_verifier_phrase_not_shadowed_by_code_reviewer() -> None:
+    agent, trigger = route_config.detect_agent("レビュー指摘の検証機能をコードレビューして")
+    assert agent == "code-reviewer"
+    assert trigger == "コードレビュー"
+
+
+def test_detect_agent_finding_verifier_phrase_not_shadowed_by_code_reviewer_en() -> None:
+    agent, trigger = route_config.detect_agent("finding verification code review")
+    assert agent == "code-reviewer"
+    assert trigger == "code review"
+
+
 def test_detect_agent_adversarial_review_not_shadowed_by_code_reviewer() -> None:
     agent, trigger = route_config.detect_agent("この実装の敵対的レビューをして")
     assert agent == "adversarial-reviewer"

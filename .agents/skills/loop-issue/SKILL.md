@@ -203,6 +203,20 @@ BASE=$(python3 "$AI_ORCHESTRA_DIR/packages/git-workflow/scripts/resolve_base_bra
 - [{reviewer}] `{file}:{line}` - {1行サマリ}
 ```
 
+## Refuted Findings セクション（指摘検証フェーズを実施した場合のみ）
+
+指摘検証フェーズ（例: `/review` の Phase 3.5）を実施したスキルでは、上記フォーマット末尾に以下を追加する:
+
+```markdown
+### Refuted Findings ({count})
+- [{reviewer}] `{file}:{line}` - **{Issue}**（元 severity: {Critical|High}）
+  {反証理由（finding-verifier の verdict 根拠）}
+```
+
+- `verdict: refuted` となった指摘を、反証理由を添えて掲載する（除外の透明性確保のため）
+- severity 格下げ（`effective_severity`）が適用された指摘は、格下げ後の severity セクションに掲載し「元 severity: {original} → 検証後: {effective}」を付記する
+- 指摘検証フェーズを持たないスキル、検証を無効化した場合（`verify_findings: false`）、または該当指摘がない場合はこのセクションを出力しない
+
 ## 重要度の定義
 
 | 重要度 | 基準 | 対応 |

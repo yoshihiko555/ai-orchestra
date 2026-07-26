@@ -87,6 +87,9 @@ review:
   # 自動修正: true = Critical 指摘をサブエージェントが自動修正
   # false にするとループせず従来どおり報告のみ
   auto_fix: true
+  # true = Phase 3.5 で finding-verifier による反証フェーズを実行する
+  # false にすると反証フェーズを無効化し従来動作（Phase 3 → Phase 4 直結）に戻る
+  verify_findings: true
 
 # エージェントルーティング
 # 各エージェントが使用するツールを定義する。
@@ -108,6 +111,8 @@ agents:
   auth-designer:
     tool: claude-direct
   code-reviewer:
+    tool: claude-direct
+  finding-verifier:
     tool: claude-direct
   data-modeler:
     tool: claude-direct
