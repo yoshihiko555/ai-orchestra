@@ -314,8 +314,13 @@ class TestExtractCodexPrompt:
         )
         assert audit_cli.extract_codex_prompt(cmd) == "Implement pagination."
 
-    def test_prompt_file_content_is_truncated_beyond_max_chars(self) -> None:
-        """heredoc 本文が上限文字数を超える場合、切り詰められることを確認する。"""
+    def test_prompt_file_content_is_not_truncated_by_extract_function(self) -> None:
+        """`extract_codex_prompt` 自体は切り詰めを行わないことを確認する。
+
+        切り詰めは呼び出し側（`main()`）が `_mask_secrets` 適用後に行う契約
+        （マスク前に切り詰めるとシークレットパターンが境界で分断されマスク漏れを
+        起こすため。詳細は `TestMainCliCallPromptFile` の回帰テスト参照）。
+        """
         long_body = "A" * (audit_cli.MAX_PROMPT_CHARS + 500)
         cmd = (
             "PROMPT_FILE=$(mktemp)\n"
@@ -326,9 +331,29 @@ class TestExtractCodexPrompt:
             '"$(cat "$PROMPT_FILE")" < /dev/null 2>/dev/null'
         )
         result = audit_cli.extract_codex_prompt(cmd)
-        assert result is not None
-        assert len(result) == audit_cli.MAX_PROMPT_CHARS + len("...[truncated]")
-        assert result.endswith("...[truncated]")
+        assert result == long_body
+
+    def test_prompt_file_heredoc_body_with_indented_pseudo_delimiter_line_is_not_terminator(
+        self,
+    ) -> None:
+        """plain heredoc（`<<'DELIM'`、dash なし）の本文中に、インデント済みの
+        デリミタ単独行が偶然含まれていても、そこで本文抽出が途切れず本物の
+        終端行まで抽出できることを確認する（bash は plain heredoc の終端行に
+        インデントを許さないため、インデント済み行は本文として扱われるべき）。
+        """
+        cmd = (
+            "PROMPT_FILE=$(mktemp)\n"
+            "cat > \"$PROMPT_FILE\" <<'PROMPT'\n"
+            "Design a REST API.\n"
+            "  PROMPT\n"
+            "Add pagination support.\n"
+            "PROMPT\n"
+            "codex exec --model gpt-5.3-codex --sandbox read-only "
+            '"$(cat "$PROMPT_FILE")" < /dev/null 2>/dev/null'
+        )
+        assert audit_cli.extract_codex_prompt(cmd) == (
+            "Design a REST API.\n  PROMPT\nAdd pagination support."
+        )
 
     def test_prompt_file_no_heredoc_falls_back_to_none(self) -> None:
         """PROMPT_FILE 参照はあるが heredoc 本文が見つからない場合 None を返すことを確認する
@@ -390,6 +415,66 @@ class TestMaskHeredocBodies:
         command = (
             "cat > codex-delegation.md <<'DOC'\n"
             "Example:\n"
+            "codex exec --model gpt-5.3-codex --sandbox read-only "
+            '"question" < /dev/null 2>/dev/null\n'
+            "DOC\n"
+            "git add codex-delegation.md"
+        )
+        data = {
+            "session_id": "s1",
+            "cwd": str(project_dir),
+            "tool_name": "Bash",
+            "tool_input": {"command": command},
+            "tool_response": {"stdout": "ok", "exit_code": 0, "duration_ms": 100},
+        }
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(data)))
+
+        captured: dict = {}
+
+        def fake_emit_event(event_type: str, payload: dict, **kwargs: object) -> dict:
+            captured["called"] = True
+            return payload
+
+        monkeypatch.setattr(audit_cli, "emit_event", fake_emit_event)
+
+        audit_cli.main()
+
+        assert "called" not in captured
+
+    def test_indented_pseudo_delimiter_line_does_not_end_plain_heredoc_early(
+        self,
+    ) -> None:
+        """plain heredoc（dash なし）の本文中にインデント済みのデリミタ単独行が
+        含まれていても、そこでマスクが早期終了せず、直後に続く実際の `codex exec`
+        呼び出し例（heredoc 本文の一部）が誤ってマスク範囲外に漏れないことを確認する
+        （早期終了すると、本来 heredoc 本文内にあるはずの `codex exec` 行がマスク
+        されない生文字列として残り、`CODEX_EXEC_RE` が誤検知してしまう）。
+        """
+        cmd = (
+            "cat > codex-delegation.md <<'DOC'\n"
+            "Example:\n"
+            "  DOC\n"
+            "codex exec --model gpt-5.3-codex --sandbox read-only "
+            '"question" < /dev/null 2>/dev/null\n'
+            "DOC\n"
+            "git add codex-delegation.md"
+        )
+        masked = audit_cli._mask_heredoc_bodies(cmd)
+        assert audit_cli.CODEX_EXEC_RE.search(masked) is None
+
+    def test_main_does_not_record_cli_call_when_doc_body_has_indented_pseudo_delimiter(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """上記シナリオを `main()` レベルでも確認する（誤って `cli_call` が記録
+        されないこと）。
+        """
+        project_dir = tmp_path
+        (project_dir / ".claude").mkdir()
+
+        command = (
+            "cat > codex-delegation.md <<'DOC'\n"
+            "Example:\n"
+            "  DOC\n"
             "codex exec --model gpt-5.3-codex --sandbox read-only "
             '"question" < /dev/null 2>/dev/null\n'
             "DOC\n"
@@ -657,3 +742,148 @@ class TestMainCliCallPromptFile:
         assert "$(cat" not in prompt
         assert captured["payload"]["tool"] == "codex"
         assert captured["payload"]["model"] == "gpt-5.3-codex"
+
+    def test_model_from_unrelated_doc_heredoc_body_is_not_recorded_as_real_model(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """同一コマンド内に、ドキュメント生成用 heredoc 本文（例文に `--model` を
+        含む）と実際の PROMPT_FILE 形式 `codex exec` 呼び出しが両方存在する場合、
+        `cli_call.model` に本文中の例文モデル名が誤記録されないことを確認する
+        （model 抽出は heredoc マスク済み文字列に対して行う契約の回帰テスト）。
+        """
+        project_dir = tmp_path
+        (project_dir / ".claude").mkdir()
+
+        command = (
+            "cat > codex-delegation.md <<'DOC'\n"
+            "Example:\n"
+            "codex exec --model example-doc-model --sandbox read-only "
+            '"question" < /dev/null 2>/dev/null\n'
+            "DOC\n"
+            "git add codex-delegation.md\n"
+            "PROMPT_FILE=$(mktemp)\n"
+            "cat > \"$PROMPT_FILE\" <<'PROMPT'\n"
+            "Real task prompt.\n"
+            "PROMPT\n"
+            "codex exec --model gpt-5.3-codex --sandbox read-only "
+            '"$(cat "$PROMPT_FILE")" < /dev/null 2>/dev/null'
+        )
+        data = {
+            "session_id": "s1",
+            "cwd": str(project_dir),
+            "tool_name": "Bash",
+            "tool_input": {"command": command},
+            "tool_response": {"stdout": "ok", "exit_code": 0, "duration_ms": 1200},
+        }
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(data)))
+
+        captured: dict = {}
+
+        def fake_emit_event(event_type: str, payload: dict, **kwargs: object) -> dict:
+            captured["type"] = event_type
+            captured["payload"] = payload
+            return payload
+
+        monkeypatch.setattr(audit_cli, "emit_event", fake_emit_event)
+
+        audit_cli.main()
+
+        assert captured["type"] == "cli_call"
+        assert captured["payload"]["prompt"] == "Real task prompt."
+        assert captured["payload"]["model"] == "gpt-5.3-codex"
+
+    def test_prompt_truncation_does_not_leak_secret_crossing_max_chars_boundary(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`MAX_PROMPT_CHARS` の境界をまたぐシークレットが、切り詰め後も
+        マスクされたまま残ることを確認する（マスク→切り詰めの順序を守っている
+        ことの回帰テスト。切り詰め→マスクの順序だと固定長パターンが境界で
+        分断され、マスク漏れした断片が残ってしまう）。
+        """
+        project_dir = tmp_path
+        (project_dir / ".claude").mkdir()
+
+        # ghp_ パターンは `\b`（単語境界）を要求するため、シークレットの前後に
+        # 非単語文字（スペース）を置く。prefix は MAX_PROMPT_CHARS の 30 文字手前
+        # で終わるようにし、シークレット（40 文字）が境界を 10 文字分またぐように
+        # する（切り詰め→マスクの順序だとここで分断され検知漏れする）。
+        secret = "ghp_" + "a" * 36
+        prefix = "A" * (audit_cli.MAX_PROMPT_CHARS - 31) + " "
+        suffix = " " + "C" * 200
+        body = f"{prefix}{secret}{suffix}"
+
+        command = (
+            "PROMPT_FILE=$(mktemp)\n"
+            "cat > \"$PROMPT_FILE\" <<'PROMPT'\n"
+            f"{body}\n"
+            "PROMPT\n"
+            "codex exec --model gpt-5.3-codex --sandbox read-only "
+            '"$(cat "$PROMPT_FILE")" < /dev/null 2>/dev/null'
+        )
+        data = {
+            "session_id": "s1",
+            "cwd": str(project_dir),
+            "tool_name": "Bash",
+            "tool_input": {"command": command},
+            "tool_response": {"stdout": "ok", "exit_code": 0, "duration_ms": 1200},
+        }
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(data)))
+
+        captured: dict = {}
+
+        def fake_emit_event(event_type: str, payload: dict, **kwargs: object) -> dict:
+            captured["type"] = event_type
+            captured["payload"] = payload
+            return payload
+
+        monkeypatch.setattr(audit_cli, "emit_event", fake_emit_event)
+
+        audit_cli.main()
+
+        prompt = captured["payload"]["prompt"]
+        assert secret not in prompt
+        assert "ghp_" not in prompt
+        assert "[REDACTED]" in prompt
+
+    def test_main_truncates_long_prompt_after_masking(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`main()` が長い prompt をマスク後に上限文字数へ切り詰めることを確認する
+        （切り詰め自体の責務が `extract_codex_prompt` から `main()` に移った
+        ことの回帰テスト）。
+        """
+        project_dir = tmp_path
+        (project_dir / ".claude").mkdir()
+
+        long_body = "A" * (audit_cli.MAX_PROMPT_CHARS + 500)
+        command = (
+            "PROMPT_FILE=$(mktemp)\n"
+            "cat > \"$PROMPT_FILE\" <<'PROMPT'\n"
+            f"{long_body}\n"
+            "PROMPT\n"
+            "codex exec --model gpt-5.3-codex --sandbox read-only "
+            '"$(cat "$PROMPT_FILE")" < /dev/null 2>/dev/null'
+        )
+        data = {
+            "session_id": "s1",
+            "cwd": str(project_dir),
+            "tool_name": "Bash",
+            "tool_input": {"command": command},
+            "tool_response": {"stdout": "ok", "exit_code": 0, "duration_ms": 1200},
+        }
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(data)))
+
+        captured: dict = {}
+
+        def fake_emit_event(event_type: str, payload: dict, **kwargs: object) -> dict:
+            captured["type"] = event_type
+            captured["payload"] = payload
+            return payload
+
+        monkeypatch.setattr(audit_cli, "emit_event", fake_emit_event)
+
+        audit_cli.main()
+
+        prompt = captured["payload"]["prompt"]
+        assert len(prompt) == audit_cli.MAX_PROMPT_CHARS + len("...[truncated]")
+        assert prompt.endswith("...[truncated]")

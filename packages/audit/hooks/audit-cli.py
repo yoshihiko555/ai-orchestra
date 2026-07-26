@@ -45,11 +45,15 @@ CODEX_EXEC_RE = re.compile(
 )
 
 # heredoc ブロック全体（`<<[-]DELIM` から終端行まで）を検出する汎用パターン。
-# 終端行は「行頭（任意のタブ/スペースの後）にデリミタのみ」であることを要求する
-# （`$` を re.MULTILINE と組み合わせ、本文中にデリミタで始まる行があっても
-# 途中で途切れないようにする）。
+# 終端行の行頭インデント許容は heredoc 演算子の dash フラグ（group 1）で分岐する:
+# - `<<-`（dash あり）: bash 仕様に合わせタブインデントを許容する
+# - `<<`（dash なし。plain heredoc）: 行頭にインデントがあってはならない
+#   （bash は終端行が行頭から完全一致するデリミタでない限り本文とみなす）。
+#   dash なしで任意の空白を許容すると、本文中に偶然インデント済みのデリミタ単独行が
+#   あった場合に本物の終端行より前で誤終端してしまう。
+# `(?(1)...)` は Python re の条件付きパターン（group 1 の有無で分岐）。
 HEREDOC_BLOCK_RE = re.compile(
-    r"<<(-)?\s*['\"]?(\w+)['\"]?\s*\n(.*?)\n[ \t]*\2[ \t]*$",
+    r"<<(-)?\s*['\"]?(\w+)['\"]?\s*\n(.*?)\n(?(1)[\t]*|)\2[ \t]*$",
     re.DOTALL | re.MULTILINE,
 )
 
@@ -89,8 +93,13 @@ ANTIGRAVITY_EXEC_RE = re.compile(
 def _truncate_prompt(prompt: str) -> str:
     """テレメトリ記録用に prompt を上限文字数へ切り詰める。
 
+    必ず `_mask_secrets` を適用した後の文字列に対して呼び出すこと。マスク前に
+    切り詰めると、ghp_/AKIA/AIza 等の固定長シークレットパターンが上限文字数の
+    境界をまたぐ場合に断片化してマスク漏れを起こす（切り詰め→マスクの順序は
+    危険。マスク→切り詰めの順序を守ること）。
+
     Args:
-        prompt: 抽出済みの prompt 文字列。
+        prompt: マスク済みの prompt 文字列。
 
     Returns:
         上限以内の prompt 文字列。上限超過時は末尾に truncation マーカーを付与する。
@@ -112,9 +121,11 @@ def _extract_heredoc_content(command: str, var_name: str) -> str | None:
     されていても対応する。bash の `<<-` 仕様に合わせ、本文各行の先頭タブのみを
     除去する（スペースは除去しない）。
 
-    終端行は「行頭（任意のタブ/スペースの後）にデリミタのみ」であることを要求する
-    （`$` を re.MULTILINE と組み合わせ、本文中にデリミタで始まる行があっても
-    そこで本文抽出が途切れないようにする）。
+    終端行のインデント許容は heredoc 演算子の dash フラグ（group 1）で分岐する:
+    plain heredoc（`<<`）は行頭に完全一致するデリミタのみを終端行とみなし、
+    `<<-` の場合のみタブインデントを許容する（詳細は `HEREDOC_BLOCK_RE` docstring
+    参照）。これにより、本文中に偶然インデント済みのデリミタ単独行があっても、
+    plain heredoc では誤って途中で本文抽出が途切れない。
 
     Args:
         command: Bash コマンド文字列。
@@ -126,7 +137,7 @@ def _extract_heredoc_content(command: str, var_name: str) -> str | None:
     pattern = re.compile(
         r">\s*\"?\$\{?"
         + re.escape(var_name)
-        + r"\}?\"?\s*<<(-)?\s*['\"]?(\w+)['\"]?\s*\n(.*?)\n[ \t]*\2[ \t]*$",
+        + r"\}?\"?\s*<<(-)?\s*['\"]?(\w+)['\"]?\s*\n(.*?)\n(?(1)[\t]*|)\2[ \t]*$",
         re.DOTALL | re.MULTILINE,
     )
     match = pattern.search(command)
@@ -178,7 +189,9 @@ def extract_codex_prompt(command: str) -> str | None:
         command: Bash コマンド文字列。
 
     Returns:
-        プロンプト文字列。検出できなければ None。
+        プロンプト文字列（未切り詰め）。検出できなければ None。
+        呼び出し側で `_mask_secrets` 適用後に `_truncate_prompt` で切り詰めること
+        （マスク前の切り詰めはシークレットパターンの境界またぎ検知漏れを起こすため）。
     """
     prompt_file_match = CODEX_PROMPT_FILE_ARG_RE.search(command)
     if prompt_file_match:
@@ -186,8 +199,7 @@ def extract_codex_prompt(command: str) -> str | None:
         # `"$(cat "$VAR")"` は入れ子の引用符を含むため、legacy パターンに通すと
         # `$(cat` や `)` のような無意味な断片を誤抽出してしまう
         # （このメソッドが解決しようとしている元の不具合そのもの）。
-        content = _extract_heredoc_content(command, prompt_file_match.group(1))
-        return _truncate_prompt(content) if content else None
+        return _extract_heredoc_content(command, prompt_file_match.group(1))
 
     patterns = [
         r'codex\s+exec\s+.*?--full-auto\s+"([^"]+)"',
@@ -198,7 +210,7 @@ def extract_codex_prompt(command: str) -> str | None:
     for pattern in patterns:
         match = re.search(pattern, command, re.DOTALL)
         if match:
-            return _truncate_prompt(match.group(1).strip())
+            return match.group(1).strip()
     return None
 
 
@@ -245,8 +257,14 @@ def extract_antigravity_prompt(command: str) -> str | None:
 def extract_model(command: str, tool: str = "codex") -> str | None:
     """コマンドからモデル名を抽出する。
 
+    呼び出し側は heredoc 本文をマスクした文字列（`_mask_heredoc_bodies` の戻り値）
+    を渡すこと。生の command を渡すと、無関係な heredoc 本文（ドキュメント生成の
+    例文等）に含まれる `--model` フラグを実際のモデルとして誤抽出する
+    （実際の codex exec 呼び出し自体は heredoc の外側にあるため、マスクしても
+    抽出結果に影響しない）。
+
     Args:
-        command: Bash コマンド文字列。
+        command: heredoc 本文マスク済みの Bash コマンド文字列。
         tool: ツール種別（"codex" / "antigravity" / "gemini"）。
 
     Returns:
@@ -320,21 +338,28 @@ def main() -> None:
     if not (is_codex or is_antigravity or is_gemini):
         return
 
+    # model 抽出も heredoc マスク済み文字列で行う（本文中に無関係な例文の
+    # --model フラグが含まれていても、実際の呼び出しの model と誤認しないため）。
     if is_codex:
         tool = "codex"
         prompt = extract_codex_prompt(command)
-        model = extract_model(command) or ""
+        model = extract_model(detection_command) or ""
     elif is_antigravity:
         tool = "antigravity"
         prompt = extract_antigravity_prompt(command)
-        model = extract_model(command, tool="antigravity") or ""
+        model = extract_model(detection_command, tool="antigravity") or ""
     else:
         tool = "gemini"
         prompt = extract_gemini_prompt(command)
-        model = extract_model(command, tool="gemini") or ""
+        model = extract_model(detection_command, tool="gemini") or ""
 
     if not prompt:
         return
+
+    # マスク（シークレット除去）→ 切り詰めの順序を必ず守る。切り詰め後にマスクすると
+    # 固定長シークレットパターンが上限文字数の境界をまたいだ場合に検知漏れする。
+    masked_prompt = _mask_secrets(prompt)
+    prompt = _truncate_prompt(masked_prompt)
 
     # exit_code は明示的に欠落判定する（デフォルト 0 だと失敗時の success 誤判定が起きる）
     exit_code = tool_response.get("exit_code")
@@ -355,7 +380,7 @@ def main() -> None:
         {
             "tool": tool,
             "model": model,
-            "prompt": _mask_secrets(prompt),
+            "prompt": prompt,
             "response": _mask_secrets(output),
             "success": success,
             "exit_code": exit_code,
