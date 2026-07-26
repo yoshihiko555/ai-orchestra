@@ -324,6 +324,10 @@ class TestImagePinReconciliation:
         ensured = docker_image.ensure_scenario_image(config, tmp_path)
 
         assert ensured.built is False
+        # Issue #307 review: the verified version must be surfaced on the
+        # returned EnsuredImage so callers can reuse it instead of launching
+        # another container to look it up again.
+        assert ensured.claude_version == "2.1.207 (Claude Code)"
 
     def test_scenario_no_image_pin_configured_skips_reconciliation(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -347,6 +351,10 @@ class TestImagePinReconciliation:
         ensured = docker_image.ensure_scenario_image(config, tmp_path)
 
         assert ensured.built is True
+        # Issue #307 review: with no pin configured, ensure never resolves a
+        # version, so `claude_version` must stay unset (None) rather than a
+        # stale/guessed value.
+        assert ensured.claude_version is None
 
     def test_scenario_missing_image_pin_key_applies_default_pin(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
