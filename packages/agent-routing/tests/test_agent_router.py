@@ -81,6 +81,12 @@ def test_detect_agent_detects_adversarial_reviewer() -> None:
     assert trigger == "敵対的検証"
 
 
+def test_detect_agent_detects_finding_verifier() -> None:
+    agent, trigger = route_config.detect_agent("この指摘の反証をして")
+    assert agent == "finding-verifier"
+    assert trigger == "反証"
+
+
 def test_detect_agent_adversarial_review_not_shadowed_by_code_reviewer() -> None:
     agent, trigger = route_config.detect_agent("この実装の敵対的レビューをして")
     assert agent == "adversarial-reviewer"

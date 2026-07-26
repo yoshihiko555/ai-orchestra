@@ -175,6 +175,7 @@ codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags
 | `architecture-reviewer` | アーキテクチャ妥当性     |
 | `ux-reviewer`           | UX・アクセシビリティ     |
 | `adversarial-reviewer`  | 堅牢性の敵対的検証       |
+| `finding-verifier`      | レビュー指摘の反証検証   |
 | `docs-writer`           | ドキュメント作成         |
 
 ### Utility

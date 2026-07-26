@@ -26,7 +26,7 @@ from hook_common import (  # noqa: E402, F401
     load_cli_tools_config,
 )
 
-# エージェントルーティング設定（catch-all の general-purpose を除く 28 エージェント分）
+# エージェントルーティング設定（catch-all の general-purpose を除く 29 エージェント分）
 AGENT_TRIGGERS: dict[str, dict[str, list[str]]] = {
     # Planning & Research
     "planner": {
@@ -106,6 +106,10 @@ AGENT_TRIGGERS: dict[str, dict[str, list[str]]] = {
     "adversarial-reviewer": {
         "ja": ["敵対的検証", "敵対的レビュー", "堅牢性レビュー", "壊れる入力"],
         "en": ["adversarial review", "adversarial verification", "robustness review"],
+    },
+    "finding-verifier": {
+        "ja": ["指摘検証", "反証", "ファインディング検証"],
+        "en": ["finding verification", "verify findings", "refute finding"],
     },
     "code-reviewer": {
         "ja": ["コードレビュー", "レビュー"],

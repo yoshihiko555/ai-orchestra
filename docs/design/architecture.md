@@ -213,7 +213,7 @@ git-workflow (v0.1.0)         ← 依存なし（独立）
 
 ### 4.4 agent-routing パッケージ — ルーティング
 
-**29 エージェント定義**（日英バイリンガルトリガー付き）:
+**30 エージェント定義**（日英バイリンガルトリガー付き）:
 
 | カテゴリ       | エージェント                                                                                              |
 | -------------- | --------------------------------------------------------------------------------------------------------- |
@@ -222,7 +222,7 @@ git-workflow (v0.1.0)         ← 依存なし（独立）
 | Implementation | frontend-dev, backend-python-dev, backend-go-dev                                                          |
 | AI/ML          | ai-architect, ai-dev, prompt-engineer, rag-engineer                                                       |
 | Test/Debug     | debugger, tester                                                                                          |
-| Review         | code-reviewer, security-reviewer, performance-reviewer, adversarial-reviewer, spec-reviewer, architecture-reviewer, ux-reviewer |
+| Review         | code-reviewer, security-reviewer, performance-reviewer, adversarial-reviewer, finding-verifier, spec-reviewer, architecture-reviewer, ux-reviewer |
 | Docs           | docs-writer                                                                                               |
 | Utility        | general-purpose, specialized-mcp-builder, support-executive-summary-generator, testing-reality-checker    |
 
@@ -378,7 +378,7 @@ templates/project/CLAUDE.md  (生成物・直接編集禁止)
 
 | ファイル                   | パッケージ    | 内容                                                                    |
 | -------------------------- | ------------- | ----------------------------------------------------------------------- |
-| `cli-tools.yaml`           | agent-routing | Codex/Antigravity モデル名、sandbox 設定、29 エージェントの tool 割り当て    |
+| `cli-tools.yaml`           | agent-routing | Codex/Antigravity モデル名、sandbox 設定、30 エージェントの tool 割り当て    |
 | `cocoindex.yaml`           | cocoindex     | MCP サーバー設定、proxy 設定                                            |
 | `task-memory.yaml`         | core          | Plans.md パス、タスクマーカー定義                                       |
 | `audit-flags.json`         | audit         | 機能フラグ（route_audit, quality_gate, kpi_scorecard, context_optimization） |
@@ -450,7 +450,7 @@ agents:
 │   ├── settings.local.json         # hook 登録（自動管理）
 │   ├── Plans.md                    # タスク管理（SSOT）
 │   ├── Plans.archive.md            # 完了プロジェクトアーカイブ
-│   ├── agents/*.md                 # エージェント定義（29ファイル）
+│   ├── agents/*.md                 # エージェント定義（30ファイル）
 │   ├── skills/*/SKILL.md           # スキル定義（14ディレクトリ）
 │   ├── rules/*.md                  # ルール定義（12ファイル）
 │   ├── config/{package}/*.yaml     # ベース設定 + ローカル上書き

@@ -152,13 +152,17 @@ review:
 
   # true の場合、Critical 指摘を自動修正して再レビューする
   auto_fix: true
+
+  # true の場合、Phase 3.5 で finding-verifier が Critical/High 指摘を反証検証する
+  verify_findings: true
 ```
 
-| キー             | 型     | デフォルト      | 説明                                  |
-| ---------------- | ------ | --------------- | ------------------------------------- |
-| `max_loops`      | int    | `3`             | 自動修正ループの上限回数              |
-| `pass_threshold` | string | `critical_zero` | `/review` の通過基準                  |
-| `auto_fix`       | bool   | `true`          | Critical 指摘の自動修正ループを有効化 |
+| キー              | 型     | デフォルト      | 説明                                                                       |
+| ----------------- | ------ | --------------- | --------------------------------------------------------------------------- |
+| `max_loops`       | int    | `3`             | 自動修正ループの上限回数                                                  |
+| `pass_threshold`  | string | `critical_zero` | `/review` の通過基準                                                       |
+| `auto_fix`        | bool   | `true`          | Critical 指摘の自動修正ループを有効化                                     |
+| `verify_findings` | bool   | `true`          | `finding-verifier` による指摘検証（Phase 3.5）を有効化。`false` で従来動作（検証なし） |
 
 ### agents セクション
 

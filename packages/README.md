@@ -44,7 +44,7 @@ AI Orchestra のパッケージ一覧と詳細。`packages/*/agents` と `packag
 
 ### agent-routing
 
-`cli-tools.yaml` に基づいてエージェントをルーティング提案する。29 エージェントの定義と使い方ルールを管理し、`.claude/agents/` に同期される配布元でもある。
+`cli-tools.yaml` に基づいてエージェントをルーティング提案する。30 エージェントの定義と使い方ルールを管理し、`.claude/agents/` に同期される配布元でもある。
 
 - **バージョン**: 0.1.0
 - **依存**: core
@@ -52,7 +52,7 @@ AI Orchestra のパッケージ一覧と詳細。`packages/*/agents` と `packag
 **提供するもの:**
 
 - hooks: `agent-router.py`（UserPromptSubmit で自動提案）
-- agents: 29 エージェント定義（planner, architect, code-reviewer, general-purpose 等）
+- agents: 30 エージェント定義（planner, architect, code-reviewer, general-purpose 等）
 - rules (facet build): `orchestra-usage`, `agent-routing-policy`
 - config: `cli-tools.yaml`（モデル名・サンドボックス・フラグの一元管理）
 
