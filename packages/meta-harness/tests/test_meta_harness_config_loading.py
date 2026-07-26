@@ -12,6 +12,8 @@ import sys
 import types
 from pathlib import Path
 
+import yaml
+
 from tests.module_loader import load_module
 
 mh = load_module(
@@ -26,6 +28,21 @@ def test_repository_synced_config_matches_package_default() -> None:
     synced_config = repository_root / ".claude/config/meta-harness/meta-harness.yaml"
 
     assert synced_config.read_bytes() == package_config.read_bytes()
+
+
+def test_yaml_docker_image_defaults_match_python_single_source_constants() -> None:
+    """Issue #307 review: guards `mh.DEFAULT_SCENARIO_IMAGE`/`DEFAULT_BROKER_IMAGE`/
+    `DEFAULT_CLAUDE_VERSION_PIN` (the Python-side single source of truth, re-exported by
+    scenario_docker_cli.py/scenario_docker_image.py) against silent drift from the
+    config-data source of truth (config/meta-harness.yaml)."""
+    repository_root = Path(__file__).resolve().parents[3]
+    package_config = repository_root / "packages/meta-harness/config/meta-harness.yaml"
+    config = yaml.safe_load(package_config.read_text(encoding="utf-8"))
+
+    isolation = config["evaluate"]["isolation"]
+    assert isolation["image"] == mh.DEFAULT_SCENARIO_IMAGE
+    assert isolation["image_pin"] == mh.DEFAULT_CLAUDE_VERSION_PIN
+    assert isolation["broker"]["image"] == mh.DEFAULT_BROKER_IMAGE
 
 
 class TestConfigLocalOverride:

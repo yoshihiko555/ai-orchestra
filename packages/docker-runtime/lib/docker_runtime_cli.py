@@ -20,7 +20,7 @@ from pathlib import Path
 SubprocessRunner = Callable[..., subprocess.CompletedProcess]
 
 CHECKED_COMMAND_TIMEOUT_SECONDS = 120
-_DIGEST_IMAGE_RE = re.compile(r"@sha256:([0-9a-f]{64})$")
+_DIGEST_IMAGE_RE = re.compile(r"@sha256:([0-9a-f]{64})\Z")
 SEMVER_PIN_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$")
 
 
@@ -121,7 +121,23 @@ def image_id(
     return image_identifier
 
 
+_CONTEXT_HASH_CACHE: dict[Path, str] = {}
+
+
 def context_hash(context_dir: Path) -> str:
+    """Hash every tracked file under `context_dir`.
+
+    Memoized per resolved path within this process (Issue #250 review): a
+    single `_start_broker` call previously re-walked and re-hashed the same
+    build context multiple times (once via `recipe_hash` inside
+    `ensure_recipe_image`, again for diagnostic session fields). Callers that
+    mutate a context directory's contents mid-process (tests only) must call
+    `clear_context_hash_cache()` between the mutation and the next call.
+    """
+    resolved = context_dir.resolve()
+    cached = _CONTEXT_HASH_CACHE.get(resolved)
+    if cached is not None:
+        return cached
     digest = hashlib.sha256()
     for path in sorted(context_dir.rglob("*")):
         if (
@@ -135,7 +151,17 @@ def context_hash(context_dir: Path) -> str:
         digest.update(b"\0")
         digest.update(path.read_bytes())
         digest.update(b"\0")
-    return digest.hexdigest()
+    result = digest.hexdigest()
+    _CONTEXT_HASH_CACHE[resolved] = result
+    return result
+
+
+def clear_context_hash_cache() -> None:
+    """Test-only hook: clear the process-local `context_hash` memoization
+    cache so tests that mutate context directories (or run in the same
+    process across cases sharing a context path) don't observe stale hashes.
+    """
+    _CONTEXT_HASH_CACHE.clear()
 
 
 def base_image_reference(context_dir: Path, *, kind: str) -> str:
@@ -291,11 +317,16 @@ def _trust_immutable_image(
 ) -> None:
     if _DIGEST_IMAGE_RE.search(image) is None:
         raise DockerCliError(
-            "prebuilt Docker images must use an immutable @sha256 digest: " + image
+            "prebuilt Docker images must use an immutable @sha256 digest: "
+            + image
+            + " (get one with: docker inspect --format '{{index .RepoDigests 0}}' <image>:<tag>)"
         )
     image_identifier = _inspect_image_id(image, runner=runner)
     if image_identifier is None:
-        raise DockerCliError(f"required immutable Docker image is missing: {image}")
+        raise DockerCliError(
+            f"required immutable Docker image is missing: {image} "
+            f"(pull it first with: docker pull {image})"
+        )
     cache.trusted_image_ids[image] = image_identifier
 
 

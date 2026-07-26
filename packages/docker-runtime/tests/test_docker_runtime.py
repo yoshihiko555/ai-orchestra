@@ -83,6 +83,23 @@ def test_prebuilt_image_requires_immutable_digest(tmp_path: Path) -> None:
         )
 
 
+def test_prebuilt_image_rejects_digest_with_trailing_newline(tmp_path: Path) -> None:
+    """`$` matches just before a trailing newline, so a naive regex would
+    accept `...@sha256:<64hex>\\n` as a valid immutable digest. Anchoring to
+    `\\Z` closes that gap (Issue #307)."""
+    digest = "runtime@sha256:" + "a" * 64
+    with pytest.raises(cli.DockerCliError, match="immutable"):
+        cli.ensure_image(
+            digest + "\n",
+            tmp_path,
+            context_hash_label="ai.orchestra.test.context-sha256",
+            auto_build=False,
+            build_args=[],
+            runner=lambda *_args, **_kwargs: _completed(),
+            cache=cli.ImageCache(),
+        )
+
+
 def test_resource_removal_only_accepts_explicit_missing_response() -> None:
     responses = iter(
         [

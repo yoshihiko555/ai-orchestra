@@ -57,7 +57,7 @@ def _prepare_git_snapshot(**kwargs):
     return siso._prepare_isolated_git(**kwargs)
 
 
-def _broker(tmp_path: Path):
+def _broker(tmp_path: Path, *, scenario_claude_version: str | None = None):
     return docker.DockerBrokerSession(
         container_name="mh-run-test-broker",
         internal_network="mh-run-test-internal",
@@ -79,6 +79,7 @@ def _broker(tmp_path: Path):
             docker.CREATED_AT_LABEL: str(int(time.time())),
         },
         runner=lambda *_args, **_kwargs: _completed(),
+        scenario_claude_version=scenario_claude_version,
     )
 
 
@@ -334,9 +335,13 @@ def test_broker_token_is_injected_via_stdin_not_argv_or_env(tmp_path: Path, monk
         return _completed(stdout="ok")
 
     monkeypatch.setattr(
-        docker, "ensure_images", lambda *_args, **_kwargs: ("scenario:test", "broker:test")
+        docker,
+        "ensure_images",
+        lambda *_args, **_kwargs: (
+            docker.dcli.simg.EnsuredImage("sha256:scenario:test", "scenario:test", "hash", False),
+            docker.dcli.simg.EnsuredImage("sha256:broker:test", "broker:test", "hash", False),
+        ),
     )
-    monkeypatch.setattr(docker, "_image_id", lambda image, **_kwargs: f"sha256:{image}")
     monkeypatch.setattr(
         docker, "_image_claude_version", lambda *_args, **_kwargs: "2.1.207 (Claude Code)"
     )
@@ -459,6 +464,38 @@ def test_bare_semver_image_pin_passes_capability_check(tmp_path: Path, monkeypat
     result = docker.check_docker_capabilities(config, main_root=tmp_path, runner=session.runner)
 
     assert result.ok is True
+    assert result.version_pin_match is True
+
+
+def test_capability_check_reuses_ensure_resolved_version_without_extra_container(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Issue #307 review: when `ensure_images` already resolved and
+    pin-verified a version (surfaced via `DockerBrokerSession.
+    scenario_claude_version`), `check_docker_capabilities` must reuse it
+    instead of launching a second container just to look it up again."""
+    session = _broker(tmp_path, scenario_claude_version="2.1.207 (Claude Code)")
+    session.cleaned = True
+    monkeypatch.setattr(docker.dcli, "docker_daemon_available", lambda **_kwargs: True)
+    monkeypatch.setattr(docker, "sweep_stale_resources", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        docker, "docker_broker_session", lambda *_args, **_kwargs: docker._BrokerContext(session)
+    )
+    monkeypatch.setattr(
+        docker,
+        "_image_claude_version",
+        lambda *_args, **_kwargs: pytest.fail(
+            "must reuse DockerBrokerSession.scenario_claude_version, not re-launch a container"
+        ),
+    )
+    monkeypatch.setattr(docker, "_run_smoke_container", _run_smoke_stub)
+
+    result = docker.check_docker_capabilities(
+        copy.deepcopy(mh.DEFAULTS), main_root=tmp_path, runner=session.runner
+    )
+
+    assert result.ok is True
+    assert result.claude_version == "2.1.207 (Claude Code)"
     assert result.version_pin_match is True
 
 
@@ -904,9 +941,13 @@ def test_capability_smoke_uses_configured_max_output_tokens(
 def test_broker_startup_cleanup_failure_is_reported(tmp_path: Path, monkeypatch) -> None:
     del tmp_path
     monkeypatch.setattr(
-        docker, "ensure_images", lambda *_args, **_kwargs: ("scenario:test", "broker:test")
+        docker,
+        "ensure_images",
+        lambda *_args, **_kwargs: (
+            docker.dcli.simg.EnsuredImage("sha256:scenario:test", "scenario:test", "hash", False),
+            docker.dcli.simg.EnsuredImage("sha256:broker:test", "broker:test", "hash", False),
+        ),
     )
-    monkeypatch.setattr(docker, "_image_id", lambda image, **_kwargs: f"sha256:{image}")
     monkeypatch.setattr(
         docker, "_image_claude_version", lambda *_args, **_kwargs: "2.1.207 (Claude Code)"
     )
@@ -1030,9 +1071,13 @@ def test_preparation_uses_named_bounded_no_network_container(tmp_path: Path, mon
     captured: dict = {}
     docker_commands: list[list[str]] = []
     monkeypatch.setattr(
-        docker, "ensure_images", lambda *_args, **_kwargs: ("scenario:test", "broker:test")
+        docker,
+        "ensure_images",
+        lambda *_args, **_kwargs: (
+            docker.dcli.simg.EnsuredImage("sha256:scenario", "scenario:test", "hash", False),
+            docker.dcli.simg.EnsuredImage("sha256:broker", "broker:test", "hash", False),
+        ),
     )
-    monkeypatch.setattr(docker, "_image_id", lambda *_args, **_kwargs: "sha256:scenario")
     monkeypatch.setattr(
         docker, "_image_claude_version", lambda *_args, **_kwargs: "2.1.207 (Claude Code)"
     )
@@ -1093,9 +1138,13 @@ def test_preparation_preserves_primary_error_when_cleanup_also_fails(
     worktree = tmp_path / "worktree"
     worktree.mkdir()
     monkeypatch.setattr(
-        docker, "ensure_images", lambda *_args, **_kwargs: ("scenario:test", "broker:test")
+        docker,
+        "ensure_images",
+        lambda *_args, **_kwargs: (
+            docker.dcli.simg.EnsuredImage("sha256:scenario", "scenario:test", "hash", False),
+            docker.dcli.simg.EnsuredImage("sha256:broker", "broker:test", "hash", False),
+        ),
     )
-    monkeypatch.setattr(docker, "_image_id", lambda *_args, **_kwargs: "sha256:scenario")
     monkeypatch.setattr(
         docker, "_image_claude_version", lambda *_args, **_kwargs: "2.1.207 (Claude Code)"
     )
@@ -1392,7 +1441,7 @@ def test_prebuilt_images_require_digest_and_accept_multiarch_reference(
         main_root=tmp_path,
     )
 
-    assert images[0].endswith("1" * 64)
+    assert images[0].tag.endswith("1" * 64)
     config["evaluate"]["isolation"]["image"] = "scenario:mutable"
     with pytest.raises(docker.dcli.DockerCliError, match="immutable"):
         docker.dcli.ensure_images(

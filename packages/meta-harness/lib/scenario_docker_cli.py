@@ -22,15 +22,17 @@ import scenario_docker_image as simg
 SubprocessRunner = runtime.SubprocessRunner
 
 DOCKER_LABEL = "ai.orchestra.meta-harness"
-DEFAULT_SCENARIO_IMAGE = "ai-orchestra/meta-harness-scenario:2.1.207"
-DEFAULT_BROKER_IMAGE = "ai-orchestra/meta-harness-broker:0.1.0"
-DEFAULT_CLAUDE_VERSION_PIN = "2.1.207 (Claude Code)"
+# Re-exported from meta_harness_common (Issue #307 review): single Python-side
+# source of truth, previously duplicated as identical literals here, in
+# scenario_docker_image.py, and in meta_harness_common.DEFAULTS.
+DEFAULT_SCENARIO_IMAGE = mh.DEFAULT_SCENARIO_IMAGE
+DEFAULT_BROKER_IMAGE = mh.DEFAULT_BROKER_IMAGE
+DEFAULT_CLAUDE_VERSION_PIN = mh.DEFAULT_CLAUDE_VERSION_PIN
 CHECKED_COMMAND_TIMEOUT_SECONDS = runtime.CHECKED_COMMAND_TIMEOUT_SECONDS
 DockerCliError = runtime.DockerCliError
 
 _IMAGE_CACHE = runtime.ImageCache()
 _TRUSTED_IMAGE_IDS = _IMAGE_CACHE.trusted_image_ids
-_BUILT_CONTEXTS = _IMAGE_CACHE.built_contexts
 
 
 def ensure_images(
@@ -38,14 +40,14 @@ def ensure_images(
     *,
     runner: SubprocessRunner = subprocess.run,
     main_root: Path | None = None,
-) -> tuple[str, str]:
+) -> tuple[simg.EnsuredImage, simg.EnsuredImage]:
     try:
         root = main_root if main_root is not None else mh.resolve_main_root(Path.cwd(), config)
         scenario = simg.ensure_scenario_image(config, root, runner=runner)
         broker = simg.ensure_broker_image(config, root, runner=runner)
     except (simg.DockerImageError, mh.MetaHarnessRootError) as exc:
         raise DockerCliError(str(exc)) from exc
-    return scenario.tag, broker.tag
+    return scenario, broker
 
 
 def docker_daemon_available(*, runner: SubprocessRunner) -> bool:
