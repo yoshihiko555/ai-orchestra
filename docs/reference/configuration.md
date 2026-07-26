@@ -65,8 +65,8 @@ codex:
   # codex exec に常に付与するフラグ
   flags: --full-auto
 
-  # sandbox 内で実行可能か（enableWeakerNetworkIsolation: true が前提）
-  requires_sandbox_disable: false
+  # sandbox 外での実行が必要か（codex 0.145 系は sandbox 内で app-server 初期化に失敗する。Issue #85）
+  requires_sandbox_disable: true
 ```
 
 | キー                       | 型     | デフォルト        | 説明                              |
@@ -76,7 +76,7 @@ codex:
 | `sandbox.analysis`         | string | `read-only`       | 分析用サンドボックスモード        |
 | `sandbox.implementation`   | string | `workspace-write` | 実装用サンドボックスモード        |
 | `flags`                    | string | `--full-auto`     | Codex CLI に常時付与するフラグ    |
-| `requires_sandbox_disable` | bool   | `false`           | sandbox 外での実行が必要か        |
+| `requires_sandbox_disable` | bool   | `true`            | sandbox 外での実行が必要か        |
 
 ### antigravity セクション
 

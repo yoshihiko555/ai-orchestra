@@ -49,7 +49,11 @@ CLI ツールの利用可否と設定は `cli-tools.yaml` で一元管理する�
 
 ## サンドボックス実行
 
-外部 CLI（Codex / Antigravity）は sandbox 内で直接実行する。
+Antigravity CLI（`agy`）は sandbox 内で直接実行する。
+Codex CLI は sandbox 内で動作しないため、base + `.local.yaml` マージ後の実効値で
+`codex.requires_sandbox_disable` が `true`（既定値）の場合に限り、呼び出し側で sandbox を
+無効化して実行する。`false` に上書きされた環境では sandbox 内で実行する
+（安全条件の詳細は `codex-delegation.md` 参照）。
 エラー時は `claude-direct` にフォールバックする。
 
 ---
@@ -92,11 +96,15 @@ Task tool parameters:
     Resolve target agent/tool from cli-tools.yaml first.
     If tool resolves to codex, run:
 
-    sandbox 内で codex を実行する。エラー時は claude-direct にフォールバック。
+    実効値（base + .local.yaml マージ後）で codex.requires_sandbox_disable が true の場合は
+    sandbox を無効化して codex を実行する（codex-delegation.md の Bash サンドボックス制約に従う）。
+    エラー時は claude-direct にフォールバック。
 
-    codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "
+    PROMPT_FILE=$(mktemp)
+    cat > "$PROMPT_FILE" <<'PROMPT'
     {question}
-    " < /dev/null 2>/dev/null
+    PROMPT
+    codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "$(cat "$PROMPT_FILE")" < /dev/null 2>/dev/null
 
     Return CONCISE summary (recommendation + rationale).
 ```
@@ -112,7 +120,12 @@ codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags
 ### Implementation Task (when route == codex)
 
 ```bash
-codex exec --model <codex.model> --sandbox <codex.sandbox.implementation> <codex.flags> "{implementation task}" < /dev/null 2>/dev/null
+# タスク本文は一時ファイル経由で渡す（シェル文字列への直接埋め込み禁止）
+PROMPT_FILE=$(mktemp)
+cat > "$PROMPT_FILE" <<'PROMPT'
+{implementation task}
+PROMPT
+codex exec --model <codex.model> --sandbox <codex.sandbox.implementation> <codex.flags> "$(cat "$PROMPT_FILE")" < /dev/null 2>/dev/null
 ```
 
 ### Sandbox Modes

@@ -37,8 +37,29 @@
 ## 呼び出し方法
 
 > **Bash サンドボックス制約**
-> Codex CLI は OAuth 認証 + macOS システム API を使用するため、sandbox 内では動作しない場合がある。
-> ただし `sandbox.excludedCommands` に `codex` が設定済みなら sandbox 内でも実行可能。
+> Codex CLI（0.145 系以降）は起動時の in-process app-server 初期化が sandbox の OS 制限で
+> 失敗するため、sandbox 内では動作しない。`sandbox.excludedCommands` の `codex` 除外も
+> 現行の Claude Code では効かない。
+>
+> sandbox 無効化（`dangerouslyDisableSandbox: true`）は、以下を全て満たす場合のみ行う
+> （満たさない場合は無効化せず、実行失敗時は `claude-direct` にフォールバックする）:
+>
+> 1. **実効値の確認**: base + `.local.yaml` マージ後の `codex.requires_sandbox_disable` が
+>    `true` であること（`.local.yaml` で `false` に上書きされた環境では sandbox 内で実行する）
+> 2. **内側 sandbox の検証（fail-closed）**: `codex.sandbox.*` にエージェント別上書き
+>    （`agents.<name>.sandbox`）まで適用した**最終解決値**が `read-only` / `workspace-write`
+>    のいずれかであり、`codex.flags` に `--dangerously-bypass-approvals-and-sandbox` 等の
+>    bypass 系フラグが含まれないこと（グローバル値の検証だけでは不足。内外両方の
+>    ファイルシステム境界を同時に失わないため）
+> 3. **単体コマンド限定**: `codex exec ...` 単体のコマンドにのみ適用し、他のシェルコマンドと
+>    `&&` / `;` / `|` 等で連結しない（インジェクション発生時の被害拡大を防ぐため）
+> 4. **prompt の shell-safe 渡し**: Issue 本文・README・ログ等の信頼できない文字列を prompt に
+>    含める場合は、シェル文字列へ直接埋め込まず一時ファイルへ書き出して
+>    `"$(cat "$PROMPT_FILE")"` として渡す（`$(...)` やバッククォートがホスト側シェルで
+>    評価されるのを防ぐ。コマンド置換の結果は再評価されない）
+>
+> 条件を満たして sandbox を無効化した場合も、`--sandbox read-only` / `workspace-write` による
+> codex 側の保護は維持される。
 
 ### サブエージェント経由（推奨）
 
@@ -46,8 +67,14 @@
 Task(subagent_type="general-purpose", prompt="""
 Resolve target agent/tool from cli-tools.yaml first.
 
-If route resolves to codex:
-codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "{question}" < /dev/null 2>/dev/null
+If route resolves to codex, write the question to a temp file first and pass it
+via command substitution (never interpolate untrusted text into the shell string):
+
+PROMPT_FILE=$(mktemp)
+cat > "$PROMPT_FILE" <<'PROMPT'
+{question}
+PROMPT
+codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "$(cat "$PROMPT_FILE")" < /dev/null 2>/dev/null
 
 Return concise summary (recommendation + rationale).
 """)
@@ -56,11 +83,17 @@ Return concise summary (recommendation + rationale).
 ### 直接呼び出し（短い質問）
 
 ```bash
+# prompt は一時ファイルへ書き出してから渡す（シェル文字列への直接埋め込み禁止）
+PROMPT_FILE=$(mktemp)
+cat > "$PROMPT_FILE" <<'PROMPT'
+{question または task}
+PROMPT
+
 # analysis
-codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "{question}" < /dev/null 2>/dev/null
+codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "$(cat "$PROMPT_FILE")" < /dev/null 2>/dev/null
 
 # implementation
-codex exec --model <codex.model> --sandbox <codex.sandbox.implementation> <codex.flags> "{task}" < /dev/null 2>/dev/null
+codex exec --model <codex.model> --sandbox <codex.sandbox.implementation> <codex.flags> "$(cat "$PROMPT_FILE")" < /dev/null 2>/dev/null
 ```
 
 ## Non-Interactive 実行（MUST）
@@ -85,6 +118,10 @@ Codex CLI はサブプロセスとして実行されるため、対話的な入�
    - 無効なモデル名（例: アカウントで未サポート）は **400 エラーをリトライし続けて無限ハングに見える**
 3. `codex.model` の値が現在のアカウントで有効か、最小コマンドで疎通確認する:
    `codex exec --sandbox read-only "Reply with OK only" < /dev/null`
+4. stderr に `failed to initialize in-process app-server client: Operation not permitted` が
+   出る場合は sandbox 起因の起動失敗（ハングではなく即時 exit 1）。Claude Code の sandbox 内で
+   実行していないか確認し、sandbox を無効化して再実行する（`sandbox.excludedCommands` の
+   `codex` 除外は現行 Claude Code では効かない。上記「Bash サンドボックス制約」参照）
 
 ## Sandbox モード
 
