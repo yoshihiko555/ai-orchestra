@@ -100,6 +100,49 @@ def test_prebuilt_image_rejects_digest_with_trailing_newline(tmp_path: Path) -> 
         )
 
 
+def test_context_hash_detects_content_changes_within_same_process(tmp_path: Path) -> None:
+    """The memoized `context_hash` (Issue #250) must not return a stale
+    digest once a context file's content changes mid-process, even without an
+    explicit `clear_context_hash_cache()` call (Issue #307 review). The
+    content change here also changes file size, so the cache's stat
+    signature invalidates deterministically regardless of filesystem mtime
+    resolution."""
+    context = tmp_path / "scenario"
+    context.mkdir()
+    dockerfile = context / "Dockerfile"
+    dockerfile.write_text("FROM example@sha256:" + "b" * 64, encoding="utf-8")
+
+    first = cli.context_hash(context)
+    dockerfile.write_text(
+        "FROM example@sha256:" + "b" * 64 + "\nRUN echo changed", encoding="utf-8"
+    )
+    second = cli.context_hash(context)
+
+    assert first != second
+
+
+def test_context_hash_detects_added_and_removed_files_within_same_process(
+    tmp_path: Path,
+) -> None:
+    """Adding or removing a file under `context_dir` changes the number of
+    hashed files, so the cache's stat signature must invalidate even when
+    every pre-existing file is byte-for-byte unchanged (Issue #307
+    review)."""
+    context = tmp_path / "scenario"
+    context.mkdir()
+    (context / "Dockerfile").write_text("FROM example@sha256:" + "b" * 64, encoding="utf-8")
+
+    baseline = cli.context_hash(context)
+    added_file = context / "extra.txt"
+    added_file.write_text("extra", encoding="utf-8")
+    after_add = cli.context_hash(context)
+    added_file.unlink()
+    after_remove = cli.context_hash(context)
+
+    assert baseline != after_add
+    assert after_remove == baseline
+
+
 def test_resource_removal_only_accepts_explicit_missing_response() -> None:
     responses = iter(
         [

@@ -40,7 +40,29 @@ def ensure_images(
     *,
     runner: SubprocessRunner = subprocess.run,
     main_root: Path | None = None,
+) -> tuple[str, str]:
+    """Ensure the scenario and broker images, returning their tags only.
+
+    Back-compat wrapper (Issue #307 review): this is the public contract
+    every existing caller relies on (a plain `(scenario_tag, broker_tag)`
+    pair passed straight into Docker argv). Use `ensure_images_detailed()`
+    when the richer `EnsuredImage` metadata (image_id / claude_version) is
+    needed.
+    """
+    scenario, broker = ensure_images_detailed(config, runner=runner, main_root=main_root)
+    return scenario.tag, broker.tag
+
+
+def ensure_images_detailed(
+    config: dict,
+    *,
+    runner: SubprocessRunner = subprocess.run,
+    main_root: Path | None = None,
 ) -> tuple[simg.EnsuredImage, simg.EnsuredImage]:
+    """Ensure the scenario and broker images, returning full `EnsuredImage`
+    metadata (image_id / recipe_hash / claude_version) for callers that need
+    to avoid a redundant `docker image inspect` or container launch
+    (Issue #307)."""
     try:
         root = main_root if main_root is not None else mh.resolve_main_root(Path.cwd(), config)
         scenario = simg.ensure_scenario_image(config, root, runner=runner)

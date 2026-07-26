@@ -121,7 +121,39 @@ def image_id(
     return image_identifier
 
 
-_CONTEXT_HASH_CACHE: dict[Path, str] = {}
+_ContextStatSignature = tuple[tuple[str, int, int], ...]
+_CONTEXT_HASH_CACHE: dict[Path, tuple[_ContextStatSignature, str]] = {}
+
+
+def _hashed_context_files(context_dir: Path) -> list[Path]:
+    """Return the sorted, filtered file list that `context_hash` hashes.
+
+    Shared between the hash computation below and the stat-based
+    cache-invalidation signature in `_context_stat_signature` so the two
+    file sets never drift apart.
+    """
+    return [
+        path
+        for path in sorted(context_dir.rglob("*"))
+        if not path.is_symlink()
+        and path.is_file()
+        and "__pycache__" not in path.parts
+        and path.suffix != ".pyc"
+    ]
+
+
+def _context_stat_signature(context_dir: Path, files: list[Path]) -> _ContextStatSignature:
+    """Cheap per-file (relative path, mtime_ns, size) signature used to detect
+    whether a context directory's contents changed since the last
+    `context_hash` call (Issue #307 review). Stat'ing every file is far
+    cheaper than reading and re-hashing their bytes, so this preserves the
+    memoization's performance goal (avoiding repeated full SHA-256 passes
+    over an unchanged context) while still invalidating on any real change.
+    """
+    return tuple(
+        (path.relative_to(context_dir).as_posix(), path.stat().st_mtime_ns, path.stat().st_size)
+        for path in files
+    )
 
 
 def context_hash(context_dir: Path) -> str:
@@ -130,29 +162,29 @@ def context_hash(context_dir: Path) -> str:
     Memoized per resolved path within this process (Issue #250 review): a
     single `_start_broker` call previously re-walked and re-hashed the same
     build context multiple times (once via `recipe_hash` inside
-    `ensure_recipe_image`, again for diagnostic session fields). Callers that
-    mutate a context directory's contents mid-process (tests only) must call
-    `clear_context_hash_cache()` between the mutation and the next call.
+    `ensure_recipe_image`, again for diagnostic session fields). The cache
+    entry also stores a cheap stat signature (relative path, mtime_ns, size)
+    of every hashed file; if a context directory's contents change
+    mid-process (e.g. a long-lived harness process, or tests that edit fixture
+    files), the signature mismatch automatically invalidates the cache and
+    recomputes the digest instead of returning a stale value (Issue #307
+    review). `clear_context_hash_cache()` remains available for tests that
+    want to force a full recompute unconditionally.
     """
     resolved = context_dir.resolve()
+    files = _hashed_context_files(context_dir)
+    signature = _context_stat_signature(context_dir, files)
     cached = _CONTEXT_HASH_CACHE.get(resolved)
-    if cached is not None:
-        return cached
+    if cached is not None and cached[0] == signature:
+        return cached[1]
     digest = hashlib.sha256()
-    for path in sorted(context_dir.rglob("*")):
-        if (
-            path.is_symlink()
-            or not path.is_file()
-            or "__pycache__" in path.parts
-            or path.suffix == ".pyc"
-        ):
-            continue
+    for path in files:
         digest.update(path.relative_to(context_dir).as_posix().encode())
         digest.update(b"\0")
         digest.update(path.read_bytes())
         digest.update(b"\0")
     result = digest.hexdigest()
-    _CONTEXT_HASH_CACHE[resolved] = result
+    _CONTEXT_HASH_CACHE[resolved] = (signature, result)
     return result
 
 
@@ -160,6 +192,11 @@ def clear_context_hash_cache() -> None:
     """Test-only hook: clear the process-local `context_hash` memoization
     cache so tests that mutate context directories (or run in the same
     process across cases sharing a context path) don't observe stale hashes.
+
+    Not required for correctness anymore -- `context_hash` now detects stale
+    entries itself via a stat signature -- but kept so existing tests that
+    call it between mutation and the next `context_hash` call keep working
+    unchanged.
     """
     _CONTEXT_HASH_CACHE.clear()
 

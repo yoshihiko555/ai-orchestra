@@ -570,7 +570,9 @@ def run_preparation_command(
     # has already called `ensure_images` (and thus after this same
     # fail-closed check has already passed), as an additional diagnostic
     # surfaced in `DockerCapabilityResult`.
-    scenario_ensured, _broker_ensured = ensure_images(config, runner=runner, main_root=main_root)
+    scenario_ensured, _broker_ensured = ensure_images_detailed(
+        config, runner=runner, main_root=main_root
+    )
     image_id = scenario_ensured.image_id
     container_name = f"{NAME_PREFIX}prepare-{secrets.token_hex(4)}"
     worktree = _regular_directory(worktree_dir, "scenario worktree")
@@ -851,7 +853,9 @@ def _start_broker(
     runner: SubprocessRunner,
     main_root: Path | None = None,
 ) -> DockerBrokerSession:
-    scenario_ensured, broker_ensured = ensure_images(config, runner=runner, main_root=main_root)
+    scenario_ensured, broker_ensured = ensure_images_detailed(
+        config, runner=runner, main_root=main_root
+    )
     scenario_image, broker_image = scenario_ensured.tag, broker_ensured.tag
     scenario_image_id, broker_image_id = scenario_ensured.image_id, broker_ensured.image_id
     isolation = _isolation_config(config)
@@ -968,9 +972,27 @@ def ensure_images(
     *,
     runner: SubprocessRunner = subprocess.run,
     main_root: Path | None = None,
-) -> tuple[dcli.simg.EnsuredImage, dcli.simg.EnsuredImage]:
+) -> tuple[str, str]:
+    """Ensure the scenario and broker images, returning their tags only.
+
+    Back-compat wrapper (Issue #307 review): restores the pre-Issue-#307
+    `tuple[str, str]` contract for existing callers. Use
+    `ensure_images_detailed()` for the richer `EnsuredImage` metadata.
+    """
     try:
         return dcli.ensure_images(config, runner=runner, main_root=main_root)
+    except dcli.DockerCliError as exc:
+        raise DockerScenarioError(str(exc)) from exc
+
+
+def ensure_images_detailed(
+    config: dict,
+    *,
+    runner: SubprocessRunner = subprocess.run,
+    main_root: Path | None = None,
+) -> tuple[dcli.simg.EnsuredImage, dcli.simg.EnsuredImage]:
+    try:
+        return dcli.ensure_images_detailed(config, runner=runner, main_root=main_root)
     except dcli.DockerCliError as exc:
         raise DockerScenarioError(str(exc)) from exc
 

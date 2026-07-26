@@ -336,7 +336,7 @@ def test_broker_token_is_injected_via_stdin_not_argv_or_env(tmp_path: Path, monk
 
     monkeypatch.setattr(
         docker,
-        "ensure_images",
+        "ensure_images_detailed",
         lambda *_args, **_kwargs: (
             docker.dcli.simg.EnsuredImage("sha256:scenario:test", "scenario:test", "hash", False),
             docker.dcli.simg.EnsuredImage("sha256:broker:test", "broker:test", "hash", False),
@@ -942,7 +942,7 @@ def test_broker_startup_cleanup_failure_is_reported(tmp_path: Path, monkeypatch)
     del tmp_path
     monkeypatch.setattr(
         docker,
-        "ensure_images",
+        "ensure_images_detailed",
         lambda *_args, **_kwargs: (
             docker.dcli.simg.EnsuredImage("sha256:scenario:test", "scenario:test", "hash", False),
             docker.dcli.simg.EnsuredImage("sha256:broker:test", "broker:test", "hash", False),
@@ -1072,7 +1072,7 @@ def test_preparation_uses_named_bounded_no_network_container(tmp_path: Path, mon
     docker_commands: list[list[str]] = []
     monkeypatch.setattr(
         docker,
-        "ensure_images",
+        "ensure_images_detailed",
         lambda *_args, **_kwargs: (
             docker.dcli.simg.EnsuredImage("sha256:scenario", "scenario:test", "hash", False),
             docker.dcli.simg.EnsuredImage("sha256:broker", "broker:test", "hash", False),
@@ -1139,7 +1139,7 @@ def test_preparation_preserves_primary_error_when_cleanup_also_fails(
     worktree.mkdir()
     monkeypatch.setattr(
         docker,
-        "ensure_images",
+        "ensure_images_detailed",
         lambda *_args, **_kwargs: (
             docker.dcli.simg.EnsuredImage("sha256:scenario", "scenario:test", "hash", False),
             docker.dcli.simg.EnsuredImage("sha256:broker", "broker:test", "hash", False),
@@ -1435,7 +1435,7 @@ def test_prebuilt_images_require_digest_and_accept_multiarch_reference(
     # fake runner's synthetic `claude --version` stdout doesn't interfere.
     config["evaluate"]["isolation"]["image_pin"] = None
 
-    images = docker.dcli.ensure_images(
+    images = docker.dcli.ensure_images_detailed(
         config,
         runner=lambda *_args, **_kwargs: _completed(stdout="sha256:" + "3" * 64),
         main_root=tmp_path,
@@ -1449,6 +1449,37 @@ def test_prebuilt_images_require_digest_and_accept_multiarch_reference(
             runner=lambda *_args, **_kwargs: _completed(),
             main_root=tmp_path,
         )
+
+
+def test_ensure_images_compat_wrapper_still_returns_plain_tags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`scenario_docker_cli.ensure_images()` (and its `scenario_docker.py`
+    re-export) must keep returning `tuple[str, str]` (plain tags), not the
+    richer `EnsuredImage` pair, so existing callers that pass the result
+    straight into Docker argv keep working (Issue #307 review: a same-issue
+    commit changed the return type in place and silently broke this
+    contract). `ensure_images_detailed()` is the opt-in for the richer
+    metadata."""
+    config = copy.deepcopy(mh.DEFAULTS)
+
+    def fake_ensure_scenario_image(_config, _root, *, runner):
+        del runner
+        return docker.dcli.simg.EnsuredImage("sha256:" + "1" * 64, "scenario:test", "hash", False)
+
+    def fake_ensure_broker_image(_config, _root, *, runner):
+        del runner
+        return docker.dcli.simg.EnsuredImage("sha256:" + "2" * 64, "broker:test", "hash", False)
+
+    monkeypatch.setattr(docker.dcli.simg, "ensure_scenario_image", fake_ensure_scenario_image)
+    monkeypatch.setattr(docker.dcli.simg, "ensure_broker_image", fake_ensure_broker_image)
+
+    cli_result = docker.dcli.ensure_images(config, main_root=tmp_path)
+    module_result = docker.ensure_images(config, main_root=tmp_path)
+
+    assert cli_result == ("scenario:test", "broker:test")
+    assert module_result == ("scenario:test", "broker:test")
+    assert all(isinstance(tag, str) for tag in (*cli_result, *module_result))
 
 
 def test_ensure_images_normalizes_main_root_resolution_error() -> None:

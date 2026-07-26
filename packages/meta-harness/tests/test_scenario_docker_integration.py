@@ -45,7 +45,7 @@ def _require_docker() -> None:
 @pytest.fixture(scope="module")
 def images() -> tuple[str, str]:
     _require_docker()
-    scenario, broker = docker.ensure_images(copy.deepcopy(mh.DEFAULTS))
+    scenario, broker = docker.ensure_images_detailed(copy.deepcopy(mh.DEFAULTS))
     return scenario.tag, broker.tag
 
 
