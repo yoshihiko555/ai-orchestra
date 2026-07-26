@@ -14,6 +14,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`git-workflow`: `/issue-create` が受け入れ条件の明記を必須化**: bug / feature / task の全種別で受け入れ条件をヒアリングし、`- [ ] 条件 — verify: \`コマンド\``（機械検証）/ `— judge: 判定基準`（主観）形式で Issue 本文に記載するようになった。受け入れ条件が 0 件、またはプレースホルダが残っている場合は Issue を作成せずヒアリングに戻る。
 - **`git-workflow`: `/issue-fix` が受け入れ条件の verify コマンドを実行して完了確認するように変更**: Issue 本文の `— verify:` 付き条件は、実際にコマンドを実行して pass を確認してから完了扱いにする。
 
+### Fixed
+
+- **CI の ruff バージョンを 0.15 系列に pin** — 未 pin の最新版導入により ruff 0.16.0 の Markdown コードブロック整形検査で format ジョブが全 PR で失敗していた問題を修正 (#319)
+
 ## [0.3.1] - 2026-07-23
 
 ### Added
