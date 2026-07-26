@@ -576,12 +576,29 @@ meta-harness・loop-harness の双方が利用する形を設計目標とする�
   そのものに限定し（run 全体をロックしない）、ビルド不要な場合（キャッシュヒット）はロック取得後
   即座に解放される。
 
-### 5.3 meta-harness への波及（本 PR のスコープ外・フォローアップ）
+### 5.3 meta-harness への波及（Issue #250 で実施済み）
 
-上記の共有モジュール抽出が実現すれば、meta-harness 側の `scenario_docker_cli.py` も同じ修正の
-恩恵を受けられる。本設計書は loop-harness の隔離設計を確定するものであり、meta-harness 側の
-移行は**別 Issue（フォローアップ）として提案する**（本 ADR・本設計のスコープには含めない。
-10 節「オープン事項」参照）。
+上記の共有モジュール抽出は Issue #250（PR #306）で実施され、meta-harness 側の
+`scenario_docker_cli.py` も `packages/docker-runtime/lib/docker_runtime_image.py::ensure_recipe_image()`
+を経由する永続イメージライフサイクルへ移行済みである（`docs/evaluation/meta-harness.md` EV-94〜97）。
+本節は初版執筆時点（loop-harness の隔離設計を確定する時点）ではフォローアップ扱いだったが、
+現在は完了している。
+
+### 5.4 異常系 stale cleanup と loop-harness への適用範囲（Issue #231 追補、ADR-20260726-045）
+
+Issue #231 の本文は「loop-harness は Docker build を実行しない」としているが、この記述は
+**現在不正確**である。`packages/loop-harness/lib/loop_docker_image.py`
+（`DOCKER_LABEL = "ai.orchestra.loop-harness"`、専用 buildx builder `loop-harness-builder`）は
+5.2 節・6 節で述べた共有モジュール（`packages/docker-runtime/lib/docker_runtime_image.py`）を
+meta-harness と同様に呼び出しており、独立した Docker label・manifest/lock パス・builder 名の
+namespace を持つ点で meta-harness と衝突しないが、**build ロジック自体は共通基盤に委譲している**。
+
+Issue #231 の残ギャップだった 2 つの異常系（ビルド `--load` 成功後・manifest 書き込み前のプロセス
+クラッシュによるタグのリーク、同一タグへの再ビルドで生じる dangling image の未回収）は、
+共有モジュール側に pending journal ベースの opportunistic stale cleanup として実装された
+（ADR-20260726-045）。この cleanup は `ensure_recipe_image()` の呼び出し経路に組み込まれているため、
+**loop-harness にも meta-harness と同じ stale cleanup が自動的に適用される**。loop-harness 側に
+追加の実装・設定は不要である。
 
 ---
 
@@ -729,7 +746,9 @@ config で切替可能な追加バックエンドとして導入する（確定�
 ## 10. オープン事項（実装フェーズで確定）
 
 - 共有モジュール（`packages/docker-runtime` 案。6 節）の具体的な API 境界とパッケージ分割方法
-- meta-harness 側 `scenario_docker_cli.py` へのイメージライフサイクル修正（5.3 節）のフォローアップ Issue 起票
+- ~~meta-harness 側 `scenario_docker_cli.py` へのイメージライフサイクル修正（5.3 節）のフォローアップ
+  Issue 起票~~ → Issue #250（PR #306）で実施済み。異常系 stale cleanup の残ギャップは Issue #231 /
+  ADR-20260726-045 で解消済み（5.4 節）
 - loop-harness 専用 Dockerfile の具体的なベースイメージ選定（Claude CLI バージョン pin の運用は
   meta-harness の `image_pin` 方式を踏襲する想定）
 - ~~ephemeral GIT_DIR の一時 ref fetch・`merge-base --is-ancestor` 失敗・CAS `update-ref` 失敗時

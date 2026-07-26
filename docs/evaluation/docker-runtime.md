@@ -4,7 +4,7 @@
 **類型**: CLI ツール型（内部ライブラリ）
 **作成日**: 2026-07-15
 **最終レビュー日**: 未レビュー
-**情報源**: `docs/design/loop-harness-isolation.md` §5.2・§6・§8、`docs/adr/ADR-20260712-035.md`、`docs/adr/ADR-20260715-039.md`、`docs/adr/ADR-20260720-044.md`
+**情報源**: `docs/design/loop-harness-isolation.md` §5.2・§5.4・§6・§8、`docs/adr/ADR-20260712-035.md`、`docs/adr/ADR-20260715-039.md`、`docs/adr/ADR-20260720-044.md`、`docs/adr/ADR-20260726-045.md`
 
 ## 1. 責務定義
 
@@ -57,6 +57,12 @@ namespace・image・config を引数として受け取り、meta-harness と loo
 - [ ] EV-29（異常 / must）[2026-07-22 追加（Issue #250）]: manifest への書き込み（build 完了後の記録）は、build 開始前に読み込んだ古いスナップショットではなく、書き込み直前にディスクから再読込した内容へ自 family のエントリをマージしてから行う。これにより、別 family が build 中に書き込んだ manifest エントリを、後から書き込む family が消失させない（lost update 防止） — 根拠: Issue #250 review（lock 直列化解消）
 - [ ] EV-30（境界 / must）[2026-07-22 追加（Issue #250）]: manifest 読み込み時の `docker image inspect` による実在検証は、今回 `ensure_recipe_image` が要求している digest のエントリ 1 件だけに限定する。他のスキーマ上有効なエントリは inspect せずそのまま保持する（EV-15 の drift 検出は要求 digest について維持される） — 根拠: Issue #250 review（cache hit 時の全件 inspect 解消）
 - [ ] EV-31（異常 / must）[2026-07-22 追加（Issue #250）]: `exclusive_file_lock` はロック対象パスがシンボリックリンクに差し替えられている場合（TOCTOU）、`O_NOFOLLOW` により追跡せず fail-closed でエラーにする。シンボリックリンク先のファイルを誤って `chmod`/ロックしない — 根拠: Issue #250 review（flock パスの TOCTOU 対策）
+- [ ] EV-32（異常 / must）[2026-07-26 追加（Issue #231）]: `ensure_recipe_image` は build 開始前（per-family build lock 保持下）に、manifest とは別ファイルの pending journal（`<manifest_stem>.pending.json`）へタグを in-flight として記録し、build 成功・manifest 書き込み直後に消し込む。`--load` 成功後・manifest 書き込み前にプロセスがクラッシュして journal にだけ記録が残った場合、次回以降の `ensure_recipe_image` 呼び出し（キャッシュヒットの再利用パスを含む）が opportunistic cleanup でそのタグを回収する — 根拠: `packages/docker-runtime/lib/docker_runtime_image.py`（`_record_pending_build`/`_clear_pending_entry`/`_cleanup_stale_owned_images`）, 対応テスト: `test_cleanup_reclaims_orphaned_tag_left_by_a_pending_build`
+- [ ] EV-33（正常 / must）[2026-07-26 追加（Issue #231）]: opportunistic cleanup は owner label 付きの dangling（`<none>:<none>`）image を pending journal の記録有無に関わらず無条件で回収する。同一タグへの再ビルドでタグを失った旧世代 image は `_prune_image_family` のタグ限定走査では検出されないため、この経路で GC される — 根拠: `docker_runtime_image._dangling_image_ids`/`_cleanup_stale_owned_images`, 対応テスト: `test_cleanup_removes_dangling_owner_labelled_image`
+- [ ] EV-34（境界 / must）[2026-07-26 追加（Issue #231）]: opportunistic cleanup は、自 label が付いていない image、または label は一致するが pending journal に記録のないタグ付き image（他プロジェクトが同じ repository/label を共有してビルドした image 等）を削除対象にしない。所有証明は「pending journal の記録」と「owner label」の両方に基づく — 根拠: `docker_runtime_image._cleanup_stale_owned_images`/`_partition_pending`, 対応テスト: `test_cleanup_leaves_other_projects_tagged_image_alone`
+- [ ] EV-35（異常 / must）[2026-07-26 追加（Issue #231）]: build 失敗時（`_build_image` 呼び出し以降で例外が送出された場合）、`ensure_recipe_image` は pending journal のエントリと当該タグを best-effort で回収してから元の例外をそのまま re-raise する。cleanup 自体の失敗は元の build 失敗のエラーを上書きしない — 根拠: `docker_runtime_image._best_effort_remove_pending_tag`, 対応テスト: `test_build_failure_triggers_best_effort_pending_tag_cleanup`
+- [ ] EV-36（境界 / must）[2026-07-26 追加（Issue #231）]: label スコープの pending journal が空の場合、opportunistic cleanup は `CLEANUP_TTL_SECONDS`（既定 6h）未満の間隔では抑制され、`docker image ls`/`buildx du` を毎呼び出しでは実行しない。pending journal に記録が残っている場合は TTL を無視して必ず実行する — 根拠: `docker_runtime_image._cleanup_due`, 対応テスト: `test_cleanup_is_suppressed_within_ttl_when_nothing_pending`
+- [ ] EV-37（異常 / must）[2026-07-26 追加（Issue #231）]: opportunistic cleanup 内の `docker image rm` 失敗は warning に留めて best-effort で次回呼び出しに持ち越し、`ensure_recipe_image` 呼び出し全体を失敗させない — 根拠: `docker_runtime_image._remove_image_best_effort`, 対応テスト: `test_cleanup_rm_failure_does_not_fail_ensure_recipe_image`
 
 ## 4. 類型別観点
 

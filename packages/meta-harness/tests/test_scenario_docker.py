@@ -1461,6 +1461,38 @@ def test_image_pin_semver_versions_produce_validated_build_args(
     ]
 
 
+def test_ensure_images_propagates_verified_image_id_to_downstream_image_id_lookups(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #231: `ensure_images()` must trust the `image_id` that
+    `ensure_recipe_image` already verified for each tag, so downstream
+    `image_id()`/`_image_id()` lookups (container start, image_pin checks)
+    reuse it instead of racing a second `docker image inspect` against a
+    shared tag that another process could have retagged in the meantime."""
+    config = copy.deepcopy(mh.DEFAULTS)
+    config["evaluate"]["isolation"]["image_pin"] = None
+    scenario_image_id = "sha256:" + "1" * 64
+    broker_image_id = "sha256:" + "2" * 64
+
+    def fake_ensure_recipe_image(recipe, policy, **_kwargs):
+        image_id = scenario_image_id if recipe.family == "scenario" else broker_image_id
+        return docker.dcli.simg.runtime_image.EnsuredImage(
+            image_id, f"{recipe.repository}:sha-pin-test", "c" * 64, True
+        )
+
+    monkeypatch.setattr(
+        docker.dcli.simg.runtime_image, "ensure_recipe_image", fake_ensure_recipe_image
+    )
+
+    def runner_raises(*_args, **_kwargs):
+        raise AssertionError("a second `docker image inspect` must not run for a trusted tag")
+
+    scenario_tag, broker_tag = docker.dcli.ensure_images(config, main_root=tmp_path)
+
+    assert docker.dcli.image_id(scenario_tag, runner=runner_raises) == scenario_image_id
+    assert docker.dcli.image_id(broker_tag, runner=runner_raises) == broker_image_id
+
+
 def test_image_pin_rejects_invalid_versions_before_build(tmp_path: Path) -> None:
     config = copy.deepcopy(mh.DEFAULTS)
     runner_calls = []

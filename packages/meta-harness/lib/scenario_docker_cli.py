@@ -45,6 +45,13 @@ def ensure_images(
         broker = simg.ensure_broker_image(config, root, runner=runner)
     except (simg.DockerImageError, mh.MetaHarnessRootError) as exc:
         raise DockerCliError(str(exc)) from exc
+    # Trust the image IDs `ensure_recipe_image` already verified for these
+    # tags, so downstream `image_id()`/`_image_id()` calls (container start,
+    # image_pin checks) reuse them instead of re-inspecting the tag -- which
+    # could race a concurrent retag of the same shared tag and resolve to a
+    # different, unverified image (Issue #231).
+    _TRUSTED_IMAGE_IDS[scenario.tag] = scenario.image_id
+    _TRUSTED_IMAGE_IDS[broker.tag] = broker.image_id
     return scenario.tag, broker.tag
 
 

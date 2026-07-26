@@ -248,3 +248,87 @@
     only token/cost upper-bound admission rejections increment the counter;
     success, authentication, and request-validation paths keep it at zero,
     and their reasons stay aligned with the evaluator budget-latch contract.
+
+- ev_id: EV-32
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/docker-runtime/tests/test_docker_runtime_image.py::test_cleanup_reclaims_orphaned_tag_left_by_a_pending_build
+  covered_by:
+    - packages/docker-runtime/tests/test_docker_runtime_image.py::test_cleanup_reclaims_orphaned_tag_left_by_a_pending_build
+  notes: >-
+    a tag recorded in the pending journal but never registered in the
+    manifest (simulating a crash between a successful `--load` and the
+    manifest write, Issue #231 scenario 2) is reclaimed on a later
+    `ensure_recipe_image` call, including a cache-hit reuse call.
+
+- ev_id: EV-33
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/docker-runtime/tests/test_docker_runtime_image.py::test_cleanup_removes_dangling_owner_labelled_image
+  covered_by:
+    - packages/docker-runtime/tests/test_docker_runtime_image.py::test_cleanup_removes_dangling_owner_labelled_image
+  notes: >-
+    an owner-labelled dangling (`<none>:<none>`) image left behind by a
+    same-tag rebuild (Issue #231 scenario 3) is removed unconditionally,
+    independent of the pending journal.
+
+- ev_id: EV-34
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/docker-runtime/tests/test_docker_runtime_image.py::test_cleanup_leaves_other_projects_tagged_image_alone
+  covered_by:
+    - packages/docker-runtime/tests/test_docker_runtime_image.py::test_cleanup_leaves_other_projects_tagged_image_alone
+  notes: >-
+    a tagged image sharing the owner label but absent from this manifest and
+    pending journal (another project's build) is never removed by the
+    opportunistic cleanup.
+
+- ev_id: EV-35
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/docker-runtime/tests/test_docker_runtime_image.py::test_build_failure_triggers_best_effort_pending_tag_cleanup
+  covered_by:
+    - packages/docker-runtime/tests/test_docker_runtime_image.py::test_build_failure_triggers_best_effort_pending_tag_cleanup
+  notes: >-
+    a build failure reclaims the pending-journal entry and tag best-effort
+    before re-raising the original build error unchanged.
+
+- ev_id: EV-36
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/docker-runtime/tests/test_docker_runtime_image.py::test_cleanup_is_suppressed_within_ttl_when_nothing_pending
+  covered_by:
+    - packages/docker-runtime/tests/test_docker_runtime_image.py::test_cleanup_is_suppressed_within_ttl_when_nothing_pending
+  notes: >-
+    with an empty label-scoped pending journal, cleanup is throttled to once
+    per CLEANUP_TTL_SECONDS; a non-empty pending journal always runs
+    regardless of TTL.
+
+- ev_id: EV-37
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/docker-runtime/tests/test_docker_runtime_image.py::test_cleanup_rm_failure_does_not_fail_ensure_recipe_image
+  covered_by:
+    - packages/docker-runtime/tests/test_docker_runtime_image.py::test_cleanup_rm_failure_does_not_fail_ensure_recipe_image
+  notes: >-
+    a failing `docker image rm` inside opportunistic cleanup is logged as a
+    warning and left for a later attempt; it never fails the
+    `ensure_recipe_image` call it is piggybacking on.

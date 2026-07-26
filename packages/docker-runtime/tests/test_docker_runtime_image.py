@@ -46,6 +46,7 @@ class FakeDocker:
         self.image_ls_output: str | None = None
         self.create_should_fail_once = False
         self.rm_should_fail: set[str] = set()
+        self.rm_missing: set[str] = set()
 
     def __call__(self, command: list[str], **_kwargs) -> subprocess.CompletedProcess:
         self.commands.append(command)
@@ -79,9 +80,21 @@ class FakeDocker:
             self.images[command[3]] = self.images[command[2]]
             return _completed()
         if command[:3] == ["docker", "image", "ls"]:
-            return _completed(stdout=self.image_ls_output or self._image_list())
+            output = self.image_ls_output or self._image_list()
+            if "--all" not in command:
+                # Real `docker image ls` excludes dangling (`<none>:<none>`)
+                # images unless `--all`/`-a` is passed. Modeling that here
+                # turns "someone dropped `--all` from the real command" into
+                # a failing assertion instead of a silent no-op (Issue #231
+                # E2E finding).
+                output = self._strip_dangling(output)
+            return _completed(stdout=output)
         if command[:3] == ["docker", "image", "rm"]:
             image_ref = command[-1]
+            if image_ref in self.rm_missing:
+                return _completed(
+                    1, stderr=f"Error response from daemon: No such image: {image_ref}"
+                )
             if image_ref in self.rm_should_fail:
                 return _completed(
                     1, stderr=f"image is being used by a running container: {image_ref}"
@@ -93,6 +106,17 @@ class FakeDocker:
         if command[:3] == ["docker", "buildx", "du"]:
             return _completed(stdout=f"Reclaimable: 0B\nTotal: {self.du_total}\n")
         raise AssertionError(f"unexpected Docker command: {command}")
+
+    def _strip_dangling(self, output: str) -> str:
+        lines = []
+        for line in output.splitlines():
+            if not line.strip():
+                continue
+            value = json.loads(line)
+            if value.get("Repository") == "<none>" and value.get("Tag") == "<none>":
+                continue
+            lines.append(line)
+        return "\n".join(lines)
 
     def _image_list(self) -> str:
         lines = []
@@ -673,3 +697,377 @@ def test_exclusive_file_lock_rejects_symlinked_lock_path(tmp_path: Path) -> None
             pass
 
     assert target.read_text(encoding="utf-8") == "do-not-touch"
+
+
+def _journal_path(policy: object) -> Path:
+    return image._pending_journal_path(policy.manifest_path)
+
+
+def _seed_pending_entry(
+    policy: object,
+    *,
+    tag: str,
+    digest: str,
+    recipe: object,
+    last_cleanup_at: str | None = None,
+    started_at: str = "2026-07-16T00:00:00+00:00",
+    family: str | None = None,
+) -> None:
+    journal = {
+        "entries": {
+            tag: {
+                "digest": digest,
+                "family": family if family is not None else recipe.family,
+                "repository": recipe.repository,
+                "docker_label": recipe.docker_label,
+                "started_at": started_at,
+            }
+        },
+        "last_cleanup_at": last_cleanup_at,
+    }
+    image._write_pending_journal(_journal_path(policy), journal)
+
+
+def test_cleanup_reclaims_orphaned_tag_left_by_a_pending_build(
+    tmp_path: Path,
+    context: Path,
+) -> None:
+    """Issue #231 scenario 2: a `--load` that succeeded but whose manifest
+    write never happened (e.g. the process died in between) leaves a pending
+    journal record. The next `ensure_recipe_image` call for the same
+    docker_label must reclaim the orphaned tag even though it is absent from
+    the manifest."""
+    policy = _policy(tmp_path)
+    recipe = _recipe(context)
+    orphan_digest = "e" * 64
+    orphan_tag = image.recipe_tag(recipe, orphan_digest)
+    fake = FakeDocker()
+    fake.images[orphan_tag] = IMAGE_ID
+    _seed_pending_entry(policy, tag=orphan_tag, digest=orphan_digest, recipe=recipe)
+
+    ensured = image.ensure_recipe_image(recipe, policy, runner=fake)
+
+    assert ensured.built is True
+    removed = [command for command in fake.commands if command[:3] == ["docker", "image", "rm"]]
+    assert [orphan_tag] == [command[-1] for command in removed if command[-1] == orphan_tag]
+    assert orphan_tag not in fake.images
+    journal = image._load_pending_journal(_journal_path(policy))
+    assert orphan_tag not in journal["entries"]
+
+
+def test_cleanup_removes_dangling_owner_labelled_image(
+    tmp_path: Path,
+    context: Path,
+) -> None:
+    """Issue #231 scenario 3: a same-tag rebuild makes the previous image
+    dangling (`Repository`/`Tag` become `<none>`), which `_family_candidates`
+    never revisits. Opportunistic cleanup must remove it unconditionally
+    since a dangling, label-owned image cannot be referenced by any tag."""
+    policy = _policy(tmp_path)
+    recipe = _recipe(context)
+    dangling_id = "sha256:" + "d" * 64
+    fake = FakeDocker()
+    fake.image_ls_output = json.dumps({"Repository": "<none>", "Tag": "<none>", "ID": dangling_id})
+
+    image.ensure_recipe_image(recipe, policy, runner=fake)
+
+    removed = [command[-1] for command in fake.commands if command[:3] == ["docker", "image", "rm"]]
+    assert dangling_id in removed
+    # Real `docker image ls` hides dangling images unless `--all`/`-a` is
+    # passed; FakeDocker mirrors that (see `_strip_dangling`), so this
+    # assertion fails if `--all` is ever dropped from the real command
+    # (Issue #231 E2E finding: without it, dangling recovery is a silent
+    # no-op against a real daemon).
+    image_ls = next(
+        command for command in fake.commands if command[:3] == ["docker", "image", "ls"]
+    )
+    assert "--all" in image_ls
+
+
+def test_cleanup_leaves_other_projects_tagged_image_alone(
+    tmp_path: Path,
+    context: Path,
+) -> None:
+    """A tagged image sharing the owner label but unknown to both the
+    pending journal and the manifest (e.g. another project's build sharing
+    the same label) must never be removed by opportunistic cleanup."""
+    policy = _policy(tmp_path)
+    recipe = _recipe(context)
+    other_reference = "someone-else/other-repo:sha-000000000000"
+    fake = FakeDocker()
+    fake.image_ls_output = json.dumps(
+        {
+            "Repository": "someone-else/other-repo",
+            "Tag": "sha-000000000000",
+            "ID": "sha256:" + "9" * 64,
+        }
+    )
+
+    image.ensure_recipe_image(recipe, policy, runner=fake)
+
+    removed = [command[-1] for command in fake.commands if command[:3] == ["docker", "image", "rm"]]
+    assert other_reference not in removed
+    assert ("sha256:" + "9" * 64) not in removed
+
+
+def test_build_failure_triggers_best_effort_pending_tag_cleanup(
+    tmp_path: Path,
+    context: Path,
+) -> None:
+    """Issue #231: if `_build_image` itself fails, the pending record it just
+    registered must be reclaimed best-effort, and the original
+    `DockerImageError` must propagate unchanged (not replaced by a cleanup
+    error)."""
+    policy = _policy(tmp_path)
+    recipe = _recipe(context)
+    digest = image.recipe_hash(recipe)
+    expected_tag = image.recipe_tag(recipe, digest)
+
+    class FailingBuildDocker(FakeDocker):
+        def __call__(self, command: list[str], **kwargs) -> subprocess.CompletedProcess:
+            if command[:3] == ["docker", "buildx", "build"]:
+                self.commands.append(command)
+                self.build_count += 1
+                return _completed(1, stderr="buildx: build failed")
+            return super().__call__(command, **kwargs)
+
+    fake = FailingBuildDocker()
+
+    with pytest.raises(image.DockerImageError, match="could not build required Docker image"):
+        image.ensure_recipe_image(recipe, policy, runner=fake)
+
+    removed = [command[-1] for command in fake.commands if command[:3] == ["docker", "image", "rm"]]
+    assert expected_tag in removed
+    journal = image._load_pending_journal(_journal_path(policy))
+    assert expected_tag not in journal["entries"]
+
+
+def test_cleanup_is_suppressed_within_ttl_when_nothing_pending(
+    tmp_path: Path,
+    context: Path,
+) -> None:
+    """Issue #231: with no pending records and a recent `last_cleanup_at`,
+    the reuse-path fast check must not pay for a `docker image ls`/`docker
+    image rm` cleanup sweep on every call."""
+    policy = _policy(tmp_path)
+    recipe = _recipe(context)
+    fake = FakeDocker()
+    first_time = datetime(2026, 7, 16, 0, 0, tzinfo=UTC)
+    second_time = datetime(2026, 7, 16, 0, 30, tzinfo=UTC)
+    image.ensure_recipe_image(recipe, policy, runner=fake, clock=lambda: first_time)
+    image._write_pending_journal(
+        _journal_path(policy),
+        {"entries": {}, "last_cleanup_at": first_time.isoformat()},
+    )
+    fake.commands = []
+
+    ensured = image.ensure_recipe_image(recipe, policy, runner=fake, clock=lambda: second_time)
+
+    assert ensured.built is False
+    ls_or_rm = [
+        command
+        for command in fake.commands
+        if command[:3] in (["docker", "image", "ls"], ["docker", "image", "rm"])
+    ]
+    assert ls_or_rm == []
+
+
+def test_cleanup_skips_pending_entry_while_family_build_lock_is_held(
+    tmp_path: Path,
+    context: Path,
+) -> None:
+    """Issue #231 review (Critical): a pending record whose `family` build
+    lock is currently held by another process must never be treated as
+    stale, even though it is old enough (`started_at`) to otherwise pass the
+    grace-period check -- the family lock is the authoritative liveness
+    signal since `ensure_recipe_image` holds it for the entire build."""
+    policy = _policy(tmp_path)
+    scenario_recipe = _recipe(context)
+    orphan_digest = "e" * 64
+    orphan_tag = image.recipe_tag(scenario_recipe, orphan_digest)
+    fake = FakeDocker()
+    fake.images[orphan_tag] = IMAGE_ID
+    _seed_pending_entry(
+        policy,
+        tag=orphan_tag,
+        digest=orphan_digest,
+        recipe=scenario_recipe,
+        family="scenario",
+    )
+    scenario_lock = image._family_lock_path(policy.lock_path, "scenario")
+    scenario_lock.parent.mkdir(parents=True, exist_ok=True)
+    held_fd = os.open(scenario_lock, os.O_CREAT | os.O_RDWR, 0o600)
+    fcntl.flock(held_fd, fcntl.LOCK_EX)
+    try:
+        # A different family (broker) sharing the same docker_label/manifest
+        # so the cleanup its `ensure_recipe_image` call triggers considers
+        # the held-open scenario entry, without this call itself ever
+        # needing the (already externally held) scenario family lock.
+        broker_recipe = _recipe(
+            context, family="broker", repository="ai-orchestra/loop-harness-broker"
+        )
+        ensured = image.ensure_recipe_image(broker_recipe, policy, runner=fake)
+    finally:
+        fcntl.flock(held_fd, fcntl.LOCK_UN)
+        os.close(held_fd)
+
+    assert ensured.built is True
+    removed = [command[-1] for command in fake.commands if command[:3] == ["docker", "image", "rm"]]
+    assert orphan_tag not in removed
+    assert orphan_tag in fake.images
+    journal = image._load_pending_journal(_journal_path(policy))
+    assert orphan_tag in journal["entries"]
+
+
+def test_cleanup_skips_recently_started_pending_entry_even_without_a_lock_holder(
+    tmp_path: Path,
+    context: Path,
+) -> None:
+    """Issue #231 review (Critical, defense in depth): a pending record
+    whose `started_at` is still within `BUILD_TIMEOUT_SECONDS +
+    PENDING_LIVENESS_GRACE_SECONDS` must be left alone even when its
+    family's build lock happens to be free (e.g. the probe raced a build
+    that had not yet acquired the lock, or clock skew)."""
+    policy = _policy(tmp_path)
+    recipe = _recipe(context)
+    orphan_digest = "e" * 64
+    orphan_tag = image.recipe_tag(recipe, orphan_digest)
+    now = datetime(2026, 7, 16, 0, 0, tzinfo=UTC)
+    fake = FakeDocker()
+    fake.images[orphan_tag] = IMAGE_ID
+    _seed_pending_entry(
+        policy,
+        tag=orphan_tag,
+        digest=orphan_digest,
+        recipe=recipe,
+        started_at=now.isoformat(),
+    )
+
+    ensured = image.ensure_recipe_image(recipe, policy, runner=fake, clock=lambda: now)
+
+    assert ensured.built is True
+    removed = [command[-1] for command in fake.commands if command[:3] == ["docker", "image", "rm"]]
+    assert orphan_tag not in removed
+    assert orphan_tag in fake.images
+    journal = image._load_pending_journal(_journal_path(policy))
+    assert orphan_tag in journal["entries"]
+
+
+def test_cleanup_issues_no_docker_commands_when_pending_entry_is_live_within_ttl(
+    tmp_path: Path,
+    context: Path,
+) -> None:
+    """Issue #231 review (High): a pending entry alone must not force a full
+    `docker image ls`/`buildx du` sweep. Once it is classified as `live`
+    (recent `started_at`), the presence of *some* pending record must not
+    bypass the TTL the way it used to -- only a genuine stale candidate, or
+    the TTL itself elapsing, may trigger one."""
+    policy = _policy(tmp_path)
+    recipe = _recipe(context)
+    live_digest = "e" * 64
+    live_tag = image.recipe_tag(recipe, live_digest)
+    first_time = datetime(2026, 7, 16, 0, 0, tzinfo=UTC)
+    second_time = datetime(2026, 7, 16, 0, 5, tzinfo=UTC)
+    fake = FakeDocker()
+    fake.images[live_tag] = IMAGE_ID
+    # Warm the cache first (also records `last_cleanup_at`), so the second
+    # call below is a reuse-path hit and never touches `_prune_image_family`
+    # (whose own `docker image ls` would otherwise contaminate the
+    # assertion below).
+    image.ensure_recipe_image(recipe, policy, runner=fake, clock=lambda: first_time)
+    _seed_pending_entry(
+        policy,
+        tag=live_tag,
+        digest=live_digest,
+        recipe=recipe,
+        started_at=second_time.isoformat(),
+        last_cleanup_at=first_time.isoformat(),
+    )
+    fake.commands = []
+
+    ensured = image.ensure_recipe_image(recipe, policy, runner=fake, clock=lambda: second_time)
+
+    assert ensured.built is False
+    ls_or_rm = [
+        command
+        for command in fake.commands
+        if command[:3] in (["docker", "image", "ls"], ["docker", "image", "rm"])
+    ]
+    assert ls_or_rm == []
+    journal = image._load_pending_journal(_journal_path(policy))
+    assert live_tag in journal["entries"]
+
+
+def test_cleanup_drops_malformed_pending_tag_without_touching_docker(
+    tmp_path: Path,
+    context: Path,
+) -> None:
+    """A pending-journal tag that does not match `recipe_tag()`'s exact
+    shape (e.g. a corrupted or adversarial entry) must never reach `docker
+    image rm`; it is dropped from the journal instead."""
+    policy = _policy(tmp_path)
+    recipe = _recipe(context)
+    malformed_tag = "not a valid reference; rm -rf /"
+    fake = FakeDocker()
+    _seed_pending_entry(policy, tag=malformed_tag, digest="e" * 64, recipe=recipe)
+
+    ensured = image.ensure_recipe_image(recipe, policy, runner=fake)
+
+    assert ensured.built is True
+    removed = [command[-1] for command in fake.commands if command[:3] == ["docker", "image", "rm"]]
+    assert malformed_tag not in removed
+    journal = image._load_pending_journal(_journal_path(policy))
+    assert malformed_tag not in journal["entries"]
+
+
+def test_cleanup_consumes_pending_entry_when_image_was_never_created(
+    tmp_path: Path,
+    context: Path,
+) -> None:
+    """Issue #231 E2E finding: if the build process died before `--load`
+    ever ran, the pending tag was never actually created in the daemon.
+    `docker image rm` then fails with "No such image", which must be
+    treated the same as a successful removal -- otherwise the journal entry
+    (and its accompanying warning) would persist forever."""
+    policy = _policy(tmp_path)
+    recipe = _recipe(context)
+    missing_digest = "e" * 64
+    missing_tag = image.recipe_tag(recipe, missing_digest)
+    fake = FakeDocker()
+    fake.rm_missing.add(missing_tag)
+    _seed_pending_entry(policy, tag=missing_tag, digest=missing_digest, recipe=recipe)
+
+    ensured = image.ensure_recipe_image(recipe, policy, runner=fake)
+
+    assert ensured.built is True
+    removed = [command[-1] for command in fake.commands if command[:3] == ["docker", "image", "rm"]]
+    assert missing_tag in removed
+    journal = image._load_pending_journal(_journal_path(policy))
+    assert missing_tag not in journal["entries"]
+
+
+def test_cleanup_rm_failure_does_not_fail_ensure_recipe_image(
+    tmp_path: Path,
+    context: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A `docker image rm` failure during opportunistic cleanup is
+    best-effort: it must be logged and left for a later attempt, never fail
+    the overall `ensure_recipe_image` call."""
+    policy = _policy(tmp_path)
+    recipe = _recipe(context)
+    orphan_digest = "b" * 64
+    orphan_tag = image.recipe_tag(recipe, orphan_digest)
+    fake = FakeDocker()
+    fake.images[orphan_tag] = IMAGE_ID
+    fake.rm_should_fail.add(orphan_tag)
+    _seed_pending_entry(policy, tag=orphan_tag, digest=orphan_digest, recipe=recipe)
+
+    with caplog.at_level("WARNING"):
+        ensured = image.ensure_recipe_image(recipe, policy, runner=fake)
+
+    assert ensured.built is True
+    assert orphan_tag in fake.images
+    journal = image._load_pending_journal(_journal_path(policy))
+    assert orphan_tag in journal["entries"]
+    assert any("could not prune stale Docker image" in record.message for record in caplog.records)

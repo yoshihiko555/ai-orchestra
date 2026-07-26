@@ -14,6 +14,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`git-workflow`: `/issue-create` が受け入れ条件の明記を必須化**: bug / feature / task の全種別で受け入れ条件をヒアリングし、`- [ ] 条件 — verify: \`コマンド\``（機械検証）/ `— judge: 判定基準`（主観）形式で Issue 本文に記載するようになった。受け入れ条件が 0 件、またはプレースホルダが残っている場合は Issue を作成せずヒアリングに戻る。
 - **`git-workflow`: `/issue-fix` が受け入れ条件の verify コマンドを実行して完了確認するように変更**: Issue 本文の `— verify:` 付き条件は、実際にコマンドを実行して pass を確認してから完了扱いにする。
 
+### Fixed
+
+- **`meta-harness` / `loop-harness`: 中断・失敗した Docker build で残る image を自動回収するように修正（Issue #231）**: build が途中でクラッシュした場合の未登録タグや、再ビルドで生じた dangling image が、次回実行時に自動的に削除されるようになった。meta-harness と loop-harness は共通の Docker image 管理基盤を使うため、両方に適用される。反復実行時のディスク肥大化が起きなくなった。
+
 ## [0.3.1] - 2026-07-23
 
 ### Added
