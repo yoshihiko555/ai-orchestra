@@ -13,7 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- **`agent-routing`: `codex.requires_sandbox_disable` のデフォルトを `true` に変更**: Codex CLI 0.145 系は起動時の in-process app-server 初期化が Claude Code sandbox の OS 制限で失敗し、`sandbox.excludedCommands` による除外も現行環境では効かないため、codex 呼び出しは sandbox 無効での実行が必要になった。`codex-delegation` ルールのハング調査プロトコルにも本ケース（即時 exit 1 の起動失敗）の切り分け手順を追記した。
+- **`agent-routing`: `codex.requires_sandbox_disable` のデフォルトを `true` に変更**: Codex CLI 0.145 系が Claude Code sandbox 内で起動不能（app-server 初期化失敗）のため、codex 呼び出しは sandbox 無効での実行が必要になった。`codex-delegation` ルール・配布エージェントの Sandbox Policy・Codex 向け生成物（`.agents/skills`）を同方針（実効値確認・fail-closed 検証・単体コマンド限定・prompt のファイル渡し）に更新した。
 - **`git-workflow`: `/issue-create` が受け入れ条件の明記を必須化**: bug / feature / task の全種別で受け入れ条件をヒアリングし、`- [ ] 条件 — verify: \`コマンド\``（機械検証）/ `— judge: 判定基準`（主観）形式で Issue 本文に記載するようになった。受け入れ条件が 0 件、またはプレースホルダが残っている場合は Issue を作成せずヒアリングに戻る。
 - **`git-workflow`: `/issue-fix` が受け入れ条件の verify コマンドを実行して完了確認するように変更**: Issue 本文の `— verify:` 付き条件は、実際にコマンドを実行して pass を確認してから完了扱いにする。
 

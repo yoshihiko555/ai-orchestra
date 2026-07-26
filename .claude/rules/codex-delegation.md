@@ -38,12 +38,27 @@
 
 > **Bash サンドボックス制約**
 > Codex CLI（0.145 系以降）は起動時の in-process app-server 初期化が sandbox の OS 制限で
-> 失敗するため、sandbox 内では動作しない（`requires_sandbox_disable: true`）。
-> `sandbox.excludedCommands` の `codex` 除外も現行の Claude Code では効かないため、
-> 呼び出し側で sandbox を無効化（`dangerouslyDisableSandbox: true`）して実行する。
-> sandbox 無効化は `codex exec ...` 単体のコマンドにのみ適用し、他のシェルコマンドと
-> `&&` / `;` / `|` 等で連結しない（インジェクション発生時の被害拡大を防ぐため）。
-> sandbox 無効時も `--sandbox read-only` / `workspace-write` による codex 側の保護は維持される。
+> 失敗するため、sandbox 内では動作しない。`sandbox.excludedCommands` の `codex` 除外も
+> 現行の Claude Code では効かない。
+>
+> sandbox 無効化（`dangerouslyDisableSandbox: true`）は、以下を全て満たす場合のみ行う
+> （満たさない場合は無効化せず、実行失敗時は `claude-direct` にフォールバックする）:
+>
+> 1. **実効値の確認**: base + `.local.yaml` マージ後の `codex.requires_sandbox_disable` が
+>    `true` であること（`.local.yaml` で `false` に上書きされた環境では sandbox 内で実行する）
+> 2. **内側 sandbox の検証（fail-closed）**: 実効の `codex.sandbox.*` が `read-only` /
+>    `workspace-write` のいずれかであり、`codex.flags` に
+>    `--dangerously-bypass-approvals-and-sandbox` 等の bypass 系フラグが含まれないこと
+>    （内外両方のファイルシステム境界を同時に失わないため）
+> 3. **単体コマンド限定**: `codex exec ...` 単体のコマンドにのみ適用し、他のシェルコマンドと
+>    `&&` / `;` / `|` 等で連結しない（インジェクション発生時の被害拡大を防ぐため）
+> 4. **prompt の shell-safe 渡し**: Issue 本文・README・ログ等の信頼できない文字列を prompt に
+>    含める場合は、シェル文字列へ直接埋め込まず一時ファイルへ書き出して
+>    `"$(cat "$PROMPT_FILE")"` として渡す（`$(...)` やバッククォートがホスト側シェルで
+>    評価されるのを防ぐ。コマンド置換の結果は再評価されない）
+>
+> 条件を満たして sandbox を無効化した場合も、`--sandbox read-only` / `workspace-write` による
+> codex 側の保護は維持される。
 
 ### サブエージェント経由（推奨）
 
