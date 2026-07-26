@@ -40,21 +40,29 @@ CLEANUP_TTL_SECONDS = 6 * 60 * 60
 # tag`/manifest write) (Issue #231 review, defense in depth alongside the
 # family-lock liveness probe in `_family_build_in_progress`).
 PENDING_LIVENESS_GRACE_SECONDS = 5 * 60
-# Sidecar journal recording in-flight builds, kept next to `manifest_path`
-# (e.g. `docker-image-cache.json` -> `docker-image-cache.pending.json`) so a
-# crash between a successful `--load` and the manifest write still leaves
-# proof of ownership behind (Issue #231 scenario 2).
-PENDING_JOURNAL_SUFFIX = ".pending.json"
-# Sidecar ledger recording a short-lived "pin lease" for every `image_id`
-# `ensure_recipe_image()` hands back to a caller (e.g.
-# `docker-image-cache.json` -> `docker-image-cache.pins.json`). A same-tag
-# rebuild by a concurrent `ensure_recipe_image()` caller can make *this*
-# image_id dangling in the window between a caller resolving it and actually
-# starting a container from it (meta-harness: `image_id` is captured up
-# front, containers are started later). While an image_id's lease is
-# unexpired, opportunistic dangling cleanup must never remove it (Issue #231
-# review, PR #320).
-PIN_LEDGER_SUFFIX = ".pins.json"
+# Sidecar directory holding the pending-build journal and pin-lease ledger,
+# kept next to `manifest_path` (e.g. `docker-image-cache.json` ->
+# `docker-image-cache.json.sidecars/`). Namespaced as a *subdirectory* of the
+# full manifest filename -- not a sibling file sharing its stem -- because a
+# sibling-file scheme (the original `<stem>.pending.json`/`<stem>.pins.json`)
+# can collide with a *different* policy's own configured `manifest_path` or
+# `lock_path` in the same directory (e.g. policy A's manifest literally named
+# `cache.pending.json` while policy B's manifest is `cache.json` in the same
+# directory): a collision `_validate_distinct_cache_paths` cannot see, since
+# it only ever compares paths within a single policy (PR #320 review, third
+# round, P1). A `.sidecars/pending.json` *directory* path is not something
+# any policy would plausibly configure as its own `manifest_path`/`lock_path`
+# (a file), closing that gap structurally rather than by chance.
+_SIDECAR_DIR_SUFFIX = ".sidecars"
+_PENDING_JOURNAL_FILENAME = "pending.json"
+_PIN_LEDGER_FILENAME = "pins.json"
+# TTL for the pin lease recorded for every `image_id` `ensure_recipe_image()`
+# hands back to a caller. A same-tag rebuild by a concurrent
+# `ensure_recipe_image()` caller can make *this* image_id dangling in the
+# window between a caller resolving it and actually starting a container
+# from it (meta-harness: `image_id` is captured up front, containers are
+# started later). While an image_id's lease is unexpired, opportunistic
+# dangling cleanup must never remove it (Issue #231 review, PR #320).
 IMAGE_ID_LEASE_TTL_SECONDS = 6 * 60 * 60
 _DANGLING_MARKER = "<none>"
 _DIGEST_IMAGE_RE = re.compile(r"@sha256:[0-9a-f]{64}\Z")
@@ -66,15 +74,29 @@ _SIZE_RE = re.compile(r"^([0-9]+(?:\.[0-9]+)?)\s*([A-Za-z]+)$")
 # namespace components, plus an optional leading `registry-host[:port]/`
 # prefix (the only place a `:` is ever valid outside the tag separator --
 # e.g. `registry.example:5000/team/scenario`, already supported by the
-# loop-harness `image` config; Issue #231 review). The registry host may
-# also be a bracketed IPv6 literal (`[2001:db8::1]:5000`), which Docker's
-# own reference grammar accepts (PR #320 review). Matches every shape
-# `recipe_tag()`/`image_repository` can ever legitimately produce; used to
-# reject a corrupted or adversarial pending-journal tag before it is ever
-# passed to `docker image rm` (Issue #231 review).
+# loop-harness `image` config; Issue #231 review). The registry host
+# component (only) also allows uppercase letters (PR #320 review, fourth
+# round, Codex P2-11): Docker's own reference grammar permits mixed-case
+# hostnames (DNS names are case-insensitive), unlike path components, which
+# stay lowercase-only. The registry host may also be a bracketed IPv6
+# literal (`[2001:db8::1]:5000`), which Docker's own reference grammar
+# accepts (PR #320 review). Matches every shape `recipe_tag()`/
+# `image_repository` can ever legitimately produce; used to reject a
+# corrupted or adversarial pending-journal tag before it is ever passed to
+# `docker image rm` (Issue #231 review).
 _REPOSITORY_COMPONENT_RE = r"[a-z0-9]+(?:(?:\.|_{1,2}|-+)[a-z0-9]+)*"
+# The host branch only ever activates for something *recognizably* a host
+# (PR #320 review, fourth round, Codex P2-11 follow-up): a bracketed IPv6
+# literal, a multi-label dotted name, or a single label immediately
+# followed by `:<port>`. A bare single label with neither a dot nor a port
+# (e.g. `Ai-Orchestra`) is deliberately *not* eligible here, so it can only
+# ever satisfy the (still lowercase-only) `_REPOSITORY_COMPONENT_RE` path
+# branch instead -- keeping uppercase acceptance scoped to genuine registry
+# hosts, never to plain path components.
 _REGISTRY_HOST_RE = (
-    r"(?:\[[0-9a-fA-F:]+\]|[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*)"
+    r"(?:\[[0-9a-fA-F:]+\]"
+    r"|[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+"
+    r"|[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?=:))"
     r"(?::[0-9]+)?"
 )
 _REPOSITORY_RE = re.compile(
@@ -232,7 +254,11 @@ def ensure_recipe_image(
         # build time can all elapse before a return statement is reached,
         # and a lease computed from a stale timestamp could already be
         # expired by the time it's written.
-        _lease_image_id(policy, image_id, _now(clock))
+        # Best-effort, not fail-closed (PR #320 review, fifth round): `image_id`
+        # here is an already-verified, currently-tagged reuse hit -- a lease
+        # write failure must not fail an otherwise-successful ensure. See
+        # `_lease_image_id_best_effort`'s docstring for the full rationale.
+        _lease_image_id_best_effort(policy, image_id, _now(clock))
         return EnsuredImage(image_id, tag, digest, built=False)
 
     with exclusive_file_lock(_family_lock_path(policy.lock_path, recipe.family)):
@@ -240,7 +266,9 @@ def ensure_recipe_image(
         # this recipe while this process waited for the family build lock.
         image_id = _reuse_cached_image(recipe, policy, digest, tag, now, runner=runner)
         if image_id is not None:
-            _lease_image_id(policy, image_id, _now(clock))
+            # Best-effort, not fail-closed -- see the fast reuse path above
+            # and `_lease_image_id_best_effort`'s docstring.
+            _lease_image_id_best_effort(policy, image_id, _now(clock))
             return EnsuredImage(image_id, tag, digest, built=False)
 
         _ensure_builder(policy.builder_name, runner=runner)
@@ -248,7 +276,11 @@ def ensure_recipe_image(
         # between a successful `--load` and the manifest write (Issue #231
         # scenario 2) still leaves proof of ownership behind for the next
         # `ensure_recipe_image` call's opportunistic cleanup to reclaim.
-        _record_pending_build(policy, recipe, tag, digest, now)
+        # The previously-recorded entry for this exact tag (if any) is kept
+        # around so a failed retry can restore it (PR #320 review, third
+        # round) instead of destroying an earlier attempt's still-valid
+        # ownership proof.
+        previous_pending_entry = _record_pending_build(policy, recipe, tag, digest, now)
         # Capture whatever `tag` already resolves to *before* attempting the
         # build (PR #320 review): the same content-addressed tag can already
         # exist in the shared Docker daemon (e.g. built by a different
@@ -256,8 +288,13 @@ def ensure_recipe_image(
         # manifest. If the build then fails, this lets the failure handler
         # tell "we just created/replaced this tag" apart from "this tag
         # already belonged to someone else and our failed build never
-        # touched it" -- only the former may ever be deleted.
-        pre_build_image_id = _inspect_image_id(tag, runner=runner)
+        # touched it" -- only the former may ever be deleted. Distinguishing
+        # a confirmed miss from an indeterminate inspect (PR #320 review,
+        # third round) matters here too: an inspect that merely *failed*
+        # must never be treated the same as "confirmed absent."
+        pre_build_image_id, pre_build_indeterminate = _inspect_image_id_with_confidence(
+            tag, runner=runner
+        )
         try:
             _build_image(recipe, policy, digest, tag, runner=runner)
             image_id = _inspect_image_id(tag, runner=runner)
@@ -266,7 +303,17 @@ def ensure_recipe_image(
             _tag_latest(tag, recipe.repository, runner=runner)
         except Exception:
             # Never mask the original failure with a cleanup error.
-            _best_effort_remove_pending_tag(policy, tag, pre_build_image_id, runner=runner)
+            _best_effort_remove_pending_tag(
+                policy,
+                recipe,
+                tag,
+                digest,
+                pre_build_image_id,
+                pre_build_indeterminate,
+                previous_pending_entry,
+                _now(clock),
+                runner=runner,
+            )
             raise
         with exclusive_file_lock(policy.lock_path):
             # Re-read from disk (rather than reusing an earlier in-memory
@@ -274,11 +321,17 @@ def ensure_recipe_image(
             # merged into, not clobbered by, this write.
             manifest = _load_valid_manifest(policy.manifest_path, runner=runner)
             manifest[digest] = ManifestEntry(image_id, now, now)
-            manifest = _prune_image_family(recipe, policy, manifest, runner=runner)
+            manifest = _prune_image_family(recipe, policy, manifest, _now(clock), runner=runner)
             _write_manifest(policy.manifest_path, manifest)
             _clear_pending_entry(policy, tag)
         _prune_buildkit_cache(policy, runner=runner)
-        _lease_image_id(policy, image_id, _now(clock))
+        # Best-effort, not fail-closed (PR #320 review, fifth round): the
+        # build already succeeded and `image_id` is already durably recorded
+        # in the manifest above -- a lease-write failure here (disk
+        # pressure, a sidecar permission problem) must not fail this
+        # otherwise-successful build. See `_lease_image_id_best_effort`'s
+        # docstring for the full rationale.
+        _lease_image_id_best_effort(policy, image_id, _now(clock))
         return EnsuredImage(image_id, tag, digest, built=True)
 
 
@@ -510,8 +563,8 @@ def _validate_policy(policy: ImageCachePolicy) -> None:
 
 def _validate_distinct_cache_paths(policy: ImageCachePolicy) -> None:
     """Reject a `policy` whose `manifest_path`/`lock_path` config override
-    collides with either sidecar file `_pending_journal_path`/
-    `_pin_ledger_path` derive from `manifest_path`'s stem (PR #320 review).
+    collides with either sidecar path `_pending_journal_path`/
+    `_pin_ledger_path` derive from `manifest_path` (PR #320 review).
 
     `_atomic_write_json` publishes sidecar writes via a temp-file-then-
     `os.replace` swap. If `lock_path` happened to equal one of those sidecar
@@ -520,6 +573,20 @@ def _validate_distinct_cache_paths(policy: ImageCachePolicy) -> None:
     then lock the *new* inode `os.replace` just swapped in, and mutual
     exclusion between the two processes would be lost without either side
     ever observing an error. Fail closed instead.
+
+    This only ever catches a collision *within* this one policy (e.g.
+    `lock_path` literally pointing at this policy's own sidecar
+    directory). It cannot see a collision with an *unrelated* policy's
+    configured `manifest_path`/`lock_path` -- the sidecar namespace itself
+    (`_sidecar_dir`, a `.sidecars/` subdirectory of the full manifest
+    filename) is what structurally prevents that class of collision
+    instead, backstopped by `_reject_path_inside_sidecar_namespace` below
+    (PR #320 review, fourth round, Codex P1-7): a pathological config where
+    *this* policy's own `manifest_path`/`lock_path` is placed *inside*
+    (any) sidecar directory -- e.g. `<other-manifest>.sidecars/pending.json`
+    -- would otherwise pass this intra-policy check while still writing
+    into a sidecar namespace some policy's `_atomic_write_json` calls treat
+    as exclusively its own.
     """
     journal_path = _pending_journal_path(policy.manifest_path)
     pin_ledger_path = _pin_ledger_path(policy.manifest_path)
@@ -536,6 +603,28 @@ def _validate_distinct_cache_paths(policy: ImageCachePolicy) -> None:
                 f"image cache path conflict: {seen[path]} and {label} both resolve to {path}"
             )
         seen[path] = label
+    _reject_path_inside_sidecar_namespace(policy.manifest_path, label="manifest_path")
+    _reject_path_inside_sidecar_namespace(policy.lock_path, label="lock_path")
+
+
+def _reject_path_inside_sidecar_namespace(path: Path, *, label: str) -> None:
+    """Reject `path` if any ancestor directory name ends in
+    `_SIDECAR_DIR_SUFFIX` (PR #320 review, fourth round, Codex P1-7).
+
+    A different policy's `manifest_path`/`lock_path` config could point
+    inside *this* (or any) policy's `.sidecars/` directory (e.g. policy B's
+    manifest configured as `<policy A's manifest>.sidecars/pending.json`).
+    `_validate_distinct_cache_paths` alone cannot catch that, since it only
+    ever compares paths within a single policy; this closes the gap
+    structurally by refusing to let any policy's own manifest/lock live
+    inside a sidecar directory at all, regardless of whose it is.
+    """
+    for parent in path.parents:
+        if parent.name.endswith(_SIDECAR_DIR_SUFFIX):
+            raise DockerImageError(
+                f"{label} must not reside inside a Docker image cache sidecar "
+                f"directory ({parent}): {path}"
+            )
 
 
 def _ensure_immutable_image(
@@ -573,11 +662,20 @@ def _load_valid_manifest(
     independently cross-checks manifest tags against `docker image ls`, and
     drift on any individual recipe is still caught the next time that
     recipe's digest is passed here as `verify_digest`.
+
+    Existence is checked by attempting the read and catching
+    `FileNotFoundError` specifically (PR #320 review, fourth round, Codex
+    P1-5), not via a separate `Path.exists()` call: on some platforms/
+    versions `Path.exists()` swallows *any* `OSError` from the underlying
+    `stat()` (e.g. `EIO` from a failing disk/mount) and reports `False`,
+    which would make a genuinely inaccessible-but-present manifest look
+    identical to "never created yet" -- silently discarding whatever it
+    recorded instead of surfacing the I/O error.
     """
-    if not path.exists():
-        return {}
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         raise DockerImageError(f"could not read Docker image cache manifest: {path}") from exc
     if not isinstance(value, dict):
@@ -637,14 +735,22 @@ def _atomic_write_json(path: Path, payload: object, *, error_message: str) -> No
         raise DockerImageError(error_message) from exc
 
 
+def _sidecar_dir(manifest_path: Path) -> Path:
+    """Directory holding `manifest_path`'s pending-journal and pin-ledger
+    sidecars (PR #320 review, third round): see `_SIDECAR_DIR_SUFFIX` for why
+    this is a dedicated subdirectory rather than a sibling file sharing
+    `manifest_path`'s stem."""
+    return manifest_path.parent / f"{manifest_path.name}{_SIDECAR_DIR_SUFFIX}"
+
+
 def _pending_journal_path(manifest_path: Path) -> Path:
     """Sidecar journal path for `manifest_path` (Issue #231).
 
     Kept separate from the manifest file itself so the manifest's on-disk
     schema never has to change: `docker-image-cache.json` gets a
-    `docker-image-cache.pending.json` sibling.
+    `docker-image-cache.json.sidecars/pending.json` sidecar.
     """
-    return manifest_path.with_name(f"{manifest_path.stem}{PENDING_JOURNAL_SUFFIX}")
+    return _sidecar_dir(manifest_path) / _PENDING_JOURNAL_FILENAME
 
 
 def _load_pending_journal(path: Path) -> dict[str, Any]:
@@ -654,15 +760,34 @@ def _load_pending_journal(path: Path) -> dict[str, Any]:
     corrupt manifest could otherwise hide a stale cache hit), the journal is
     purely an optimization for reclaiming leaked images; a corrupt or
     missing journal simply means "nothing known to be pending".
+
+    Existence is checked by attempting the read and catching
+    `FileNotFoundError` specifically, not a separate `Path.exists()` call
+    (PR #320 review, fourth round, Codex P1-5 -- see `_load_valid_manifest`
+    for why).
+
+    An existing-but-unparseable file is quarantined (renamed aside) rather
+    than silently treated as empty in place (PR #320 review, fourth round,
+    Codex P2-9): the very next operation on this journal is typically a
+    read-modify-write (`_record_pending_build`/cleanup), and if the file on
+    disk still held *other* families' valid entries that this call's parse
+    merely failed to recover, writing a fresh journal derived from `empty`
+    back over it would permanently destroy them. Quarantining preserves the
+    original bytes for manual recovery while still letting this call (and
+    the write that follows it) proceed with an empty in-memory journal.
     """
     empty: dict[str, Any] = {"entries": {}, "last_cleanup_at": None}
-    if not path.exists():
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except (OSError, ValueError):
         return empty
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, json.JSONDecodeError):
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        _quarantine_corrupt_sidecar(path)
         return empty
     if not isinstance(value, dict):
+        _quarantine_corrupt_sidecar(path)
         return empty
     entries = value.get("entries")
     if not isinstance(entries, dict):
@@ -685,22 +810,52 @@ def _write_pending_journal(path: Path, journal: Mapping[str, Any]) -> None:
     )
 
 
+def _quarantine_corrupt_sidecar(path: Path) -> None:
+    """Best-effort: rename an unparseable sidecar file aside instead of
+    silently discarding it in place (PR #320 review, fourth round, Codex
+    P2-9). Preserves the original bytes for manual inspection/recovery
+    (e.g. another family's still-valid entries this parse failed to
+    recover) while letting the caller proceed with a fresh, empty journal.
+    Failure to rename (e.g. permissions) is itself best-effort: logged and
+    otherwise ignored, since the caller already falls back to an empty
+    in-memory journal regardless.
+    """
+    quarantine_path = path.with_name(
+        f"{path.name}.corrupt-{_utc_now().strftime('%Y%m%dT%H%M%S%fZ')}"
+    )
+    try:
+        os.replace(path, quarantine_path)
+    except OSError as exc:
+        _LOGGER.warning("could not quarantine corrupt Docker image sidecar %s: %s", path, exc)
+        return
+    _LOGGER.warning("quarantined corrupt Docker image sidecar %s -> %s", path, quarantine_path)
+
+
 def _record_pending_build(
     policy: ImageCachePolicy,
     recipe: ImageRecipe,
     tag: str,
     digest: str,
     now: str,
-) -> None:
+) -> Mapping[str, Any] | None:
     """Record `tag` as an in-flight build (Issue #231 scenario 2).
 
     Must be called *before* `_build_image`, while only the per-family build
     lock is held; this self-acquires the (short-lived) manifest lock to keep
     journal writes serialized the same way manifest writes are.
+
+    Returns whatever pending entry already existed for `tag` before this
+    call overwrote it, or `None` (PR #320 review, third round): a retry of
+    the same recipe within the liveness window of a *previous* attempt's
+    crash-residue entry would otherwise silently destroy that entry's
+    ownership proof for a tag the new attempt never even touches. The
+    caller passes this through to `_best_effort_remove_pending_tag` so it
+    can be restored if this attempt fails without mutating `tag`.
     """
     path = _pending_journal_path(policy.manifest_path)
     with exclusive_file_lock(policy.lock_path):
         journal = _load_pending_journal(path)
+        previous_entry = journal["entries"].get(tag)
         journal["entries"][tag] = {
             "digest": digest,
             "family": recipe.family,
@@ -709,6 +864,7 @@ def _record_pending_build(
             "started_at": now,
         }
         _write_pending_journal(path, journal)
+        return previous_entry
 
 
 def _clear_pending_entry(policy: ImageCachePolicy, tag: str) -> None:
@@ -727,8 +883,13 @@ def _clear_pending_entry(policy: ImageCachePolicy, tag: str) -> None:
 
 def _best_effort_remove_pending_tag(
     policy: ImageCachePolicy,
+    recipe: ImageRecipe,
     tag: str,
+    digest: str,
     pre_build_image_id: str | None,
+    pre_build_indeterminate: bool,
+    previous_pending_entry: Mapping[str, Any] | None,
+    now: datetime,
     *,
     runner: SubprocessRunner,
 ) -> None:
@@ -739,36 +900,91 @@ def _best_effort_remove_pending_tag(
     Never raises: the caller always re-raises the original build failure
     unchanged, and a cleanup problem here must not replace it.
 
-    `tag` is only ever removed if this failed build attempt actually
-    mutated it -- i.e. `tag` now resolves to a *different* image than
-    `pre_build_image_id` (captured immediately before `_build_image` ran).
-    The same content-addressed tag can already exist in the shared Docker
-    daemon before this attempt even starts (e.g. built by a different
-    checkout sharing the same repository), invisible to this checkout's
-    local manifest; if this build failed without ever touching that
-    pre-existing tag, deleting it would destroy someone else's valid cache
-    (PR #320 review). The pending journal entry -- this process's own
-    bookkeeping for an attempt that is now over either way -- is always
-    dropped best-effort, but only once the Docker-image side is resolved:
-    if removal was warranted and `_remove_image_best_effort` fails for a
-    reason other than "already gone" (daemon hiccup, in-use), the pending
-    record is kept so a later opportunistic cleanup can retry it -- dropping
-    it unconditionally would otherwise permanently orphan a tagged,
-    manifest-unregistered image with no other reclaim path (Issue #231
-    review, PR #320).
+    `tag` is only ever a removal *candidate* if this failed build attempt
+    actually mutated it -- i.e. `tag` now resolves to a *different* image
+    than `pre_build_image_id` (captured immediately before `_build_image`
+    ran). The same content-addressed tag can already exist in the shared
+    Docker daemon before this attempt even starts (e.g. built by a
+    different checkout sharing the same repository), invisible to this
+    checkout's local manifest; if this build failed without ever touching
+    that pre-existing tag, deleting it would destroy someone else's valid
+    cache (PR #320 review).
+
+    If either inspect involved -- the pre-build one (`pre_build_indeterminate`)
+    or the one right here -- was itself indeterminate (a transient daemon
+    error/timeout, not a confirmed answer either way -- PR #320 review,
+    third round), this attempt can never *prove* it mutated `tag`, so
+    removal is always skipped and the journal is left untouched entirely --
+    neither cleared nor restored -- for a later cleanup to re-evaluate once
+    inspects are working again. This matters even when `tag` was never
+    recorded as pending before this attempt (PR #320 review, fourth round,
+    Codex P2-8): a pre-build inspect that merely failed to answer, followed
+    by a build that actually succeeded (`--load` ran, only a later step
+    like `_tag_latest` failed) and a *recovered* post-failure inspect, must
+    not be mistaken for proof that nothing needs protecting -- doing so
+    would pop this attempt's own just-recorded pending entry and
+    permanently orphan the tagged, manifest-unregistered image it just
+    created.
+
+    Once a removal is warranted, it goes through the same cross-checkout
+    protections cleanup's own stale-tag removal applies (PR #320 review,
+    fourth round, adversarial High + Codex P1-6): "this attempt's build
+    touched the tag" alone does not rule out a *different* checkout having
+    concurrently rebuilt/`--load`ed the exact same content-addressed tag in
+    the same narrow window between the pre-build inspect and this handler
+    running -- `_image_recently_created` (liveness window) and
+    `_image_owner_label_matches` (owner label + this recipe's digest label)
+    must both clear before `_remove_image_best_effort` is ever called.
+
+    Finally, the pending journal entry is updated to match what actually
+    happened: if this attempt mutated `tag` and removal succeeded (or the
+    tag was already gone), its own record is dropped. If this attempt never
+    touched `tag` (or a cross-checkout protection blocked removal), whatever
+    record already existed before `_record_pending_build` overwrote it
+    (`previous_pending_entry`) is restored instead of just being dropped
+    (PR #320 review, third round): a retry of the same recipe within the
+    liveness window must not silently destroy an *earlier* attempt's
+    still-valid ownership proof for a tag it left orphaned. If removal was
+    warranted but `_remove_image_best_effort` fails for a reason other than
+    "already gone" (daemon hiccup, in-use), the journal is left as-is so a
+    later opportunistic cleanup can retry it.
+
+    A *confirmed* owner-label mismatch (PR #320 review, fifth round,
+    Medium) is treated differently from an indeterminate one: `tag`
+    demonstrably belongs to a different checkout now, so it is never
+    removed, but this attempt's own now-meaningless journal record for it
+    is still dropped (falls through to the same pop as a successful
+    removal) rather than left to linger forever -- this checkout has no
+    further claim on `tag` to protect. If this attempt's own build residue
+    is sitting elsewhere as a dangling image, the label-scoped dangling
+    sweep independently reclaims it.
     """
-    current_image_id = _inspect_image_id(tag, runner=runner)
+    current_image_id, current_indeterminate = _inspect_image_id_with_confidence(tag, runner=runner)
+    if current_indeterminate or pre_build_indeterminate:
+        return
     tag_was_mutated_by_this_attempt = (
         current_image_id is not None and current_image_id != pre_build_image_id
     )
-    if tag_was_mutated_by_this_attempt and not _remove_image_best_effort(tag, runner=runner):
-        return
+    if tag_was_mutated_by_this_attempt:
+        if _image_recently_created(tag, now, runner=runner):
+            return
+        label_match = _image_owner_label_matches(tag, recipe.docker_label, digest, runner=runner)
+        if label_match is None:
+            return
+        if label_match:
+            if not _remove_image_best_effort(tag, runner=runner):
+                return
+        # else: a *confirmed* mismatch -- do not remove, but still fall
+        # through to the journal-entry pop below (see docstring above).
     path = _pending_journal_path(policy.manifest_path)
     try:
         with exclusive_file_lock(policy.lock_path):
             journal = _load_pending_journal(path)
-            if journal["entries"].pop(tag, None) is not None:
-                _write_pending_journal(path, journal)
+            if tag_was_mutated_by_this_attempt or previous_pending_entry is None:
+                journal["entries"].pop(tag, None)
+            else:
+                journal["entries"][tag] = dict(previous_pending_entry)
+            _write_pending_journal(path, journal)
     except DockerImageError as exc:
         _LOGGER.warning("could not update pending-build journal for %s: %s", tag, exc)
 
@@ -777,25 +993,48 @@ def _pin_ledger_path(manifest_path: Path) -> Path:
     """Sidecar pin-lease ledger path for `manifest_path` (Issue #231, PR
     #320). Kept separate from both the manifest and the pending journal so
     neither's on-disk schema has to change."""
-    return manifest_path.with_name(f"{manifest_path.stem}{PIN_LEDGER_SUFFIX}")
+    return _sidecar_dir(manifest_path) / _PIN_LEDGER_FILENAME
 
 
 def _load_pin_ledger(path: Path) -> dict[str, Any]:
-    """Load the pin-lease ledger, tolerating a missing or corrupt file (same
-    defensive stance as `_load_pending_journal`: this is purely a cleanup
-    safety net, never a correctness-critical source of truth)."""
+    """Load the pin-lease ledger.
+
+    Deliberately *not* as tolerant of corruption as `_load_pending_journal`
+    (PR #320 review, third round): a missing pending-journal entry only
+    ever leads to *doing less* (a leaked image simply waits for the next
+    cleanup, never something being wrongly removed), so treating an
+    unreadable journal as empty is safe. The pin ledger is the other way
+    around -- treating an unreadable ledger as empty means "no active
+    leases," which lets opportunistic dangling cleanup proceed to *delete*
+    an image that a still-valid, merely-unreadable lease was protecting.
+    A missing file is a normal, empty state (no leases recorded yet); an
+    *existing* file that cannot be read or parsed is not, and must fail
+    closed instead by raising `DockerImageError` -- which
+    `_cleanup_stale_owned_images`'s caller treats as "abort this
+    opportunistic cleanup round entirely" rather than proceeding without
+    lease protection.
+
+    Existence is checked by attempting the read and catching
+    `FileNotFoundError` specifically, not a separate `Path.exists()` call
+    (PR #320 review, fourth round, Codex P1-5): `Path.exists()` swallowing
+    a non-`ENOENT` `OSError` (e.g. `EIO`) and reporting `False` would make
+    a genuinely inaccessible-but-present ledger look identical to "no
+    leases recorded yet" -- silently defeating the fail-closed behavior
+    this function exists to provide, exactly the failure mode it is meant
+    to close.
+    """
     empty: dict[str, Any] = {"leases": {}}
-    if not path.exists():
-        return empty
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, json.JSONDecodeError):
+    except FileNotFoundError:
         return empty
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise DockerImageError(f"could not read Docker image pin ledger: {path}") from exc
     if not isinstance(value, dict):
-        return empty
+        raise DockerImageError(f"invalid Docker image pin ledger: {path}")
     leases = value.get("leases")
     if not isinstance(leases, dict):
-        leases = {}
+        raise DockerImageError(f"invalid Docker image pin ledger: {path}")
     cleaned = {
         image_id: expires_at
         for image_id, expires_at in leases.items()
@@ -815,36 +1054,91 @@ def _lease_image_id(policy: ImageCachePolicy, image_id: str, now: datetime) -> N
     (Issue #231 review, PR #320).
 
     Called right before `ensure_recipe_image()` hands `image_id` back to its
-    caller, at every return point. Self-acquires the (short-lived) manifest
-    lock; safe to call while holding at most the per-family build lock (see
-    call sites in `ensure_recipe_image`), matching the same family-then-
-    manifest ordering used elsewhere in this module. Best-effort: a failure
-    to record the lease is logged and does not fail `ensure_recipe_image`
-    (the caller still gets its `EnsuredImage` either way; a missed lease
-    only means one fewer opportunistic-cleanup guard, not incorrect
-    behavior).
+    caller, at every return point, via `_lease_image_id_best_effort` (never
+    called directly from `ensure_recipe_image` -- see that wrapper for why).
+    Self-acquires the (short-lived) manifest lock; safe to call while
+    holding at most the per-family build lock (see call sites in
+    `ensure_recipe_image`), matching the same family-then-manifest ordering
+    used elsewhere in this module.
+
+    Raises `DockerImageError` on any write failure -- deliberately *not*
+    swallowed at this layer, so a caller that genuinely needs fail-closed
+    behavior (e.g. a future caller other than `ensure_recipe_image`) still
+    gets one. `ensure_recipe_image` itself downgrades this to best-effort;
+    see `_lease_image_id_best_effort`.
     """
     path = _pin_ledger_path(policy.manifest_path)
     expires_at = (now + timedelta(seconds=IMAGE_ID_LEASE_TTL_SECONDS)).isoformat()
+    with exclusive_file_lock(policy.lock_path):
+        ledger = _load_pin_ledger(path)
+        ledger["leases"][image_id] = expires_at
+        _write_pin_ledger(path, ledger)
+
+
+def _lease_image_id_best_effort(policy: ImageCachePolicy, image_id: str, now: datetime) -> None:
+    """Best-effort wrapper around `_lease_image_id` for all three
+    `ensure_recipe_image()` return points (PR #320 review, fifth round,
+    reverting the fourth round's fail-closed decision -- Codex P1-4
+    revisited): a lease-write failure (disk pressure, a sidecar permission
+    problem) must never fail an `ensure_recipe_image()` call whose build
+    already succeeded and whose manifest entry is already durably written.
+
+    Design rationale (recorded here to preempt re-flagging): the pin lease
+    is only a protection layer against this *same checkout* later making
+    `image_id` dangling via a same-tag rebuild and opportunistically
+    sweeping it before the caller gets to use it -- at the point this is
+    called, `image_id` is already a real, currently-tagged image, not
+    something whose only proof of existence was this lease. Making
+    `ensure_recipe_image()` fail outright here would mean a persistent
+    sidecar write problem (e.g. a `.sidecars/` directory the process lost
+    write access to) permanently bricks *every* future call for this
+    policy, even though the underlying image is completely healthy and
+    reusable. The pin ledger's *read* side stays fail-closed (an unreadable
+    ledger still aborts opportunistic cleanup rather than proceeding with
+    "no active leases" -- see `_load_pin_ledger`), so the residual risk from
+    this write-side relaxation is narrow and self-healing: only if this
+    exact tag is rebuilt again within the *same* checkout during this
+    lease's `IMAGE_ID_LEASE_TTL_SECONDS` window would the now-dangling
+    predecessor go unprotected by a lease -- and even then, `_image_recently_created`
+    and `_image_owner_label_matches` still bound how a *different* checkout's
+    stale-tag removal could touch it.
+    """
     try:
-        with exclusive_file_lock(policy.lock_path):
-            ledger = _load_pin_ledger(path)
-            ledger["leases"][image_id] = expires_at
-            _write_pin_ledger(path, ledger)
+        _lease_image_id(policy, image_id, now)
     except DockerImageError as exc:
-        _LOGGER.warning("could not record pin lease for %s: %s", image_id, exc)
+        _LOGGER.warning(
+            "could not record Docker image pin lease for %s (continuing without lease "
+            "protection for this same-checkout rebuild window): %s",
+            image_id,
+            exc,
+        )
 
 
 def _purge_expired_pin_leases(path: Path, now: datetime) -> set[str]:
     """Return the set of image IDs with a still-active pin lease, purging
-    any expired entries from the ledger on disk (Issue #231 review, PR
-    #320). Caller must already hold `policy.lock_path`."""
+    any *confirmed*-expired entries from the ledger on disk (Issue #231
+    review, PR #320). Caller must already hold `policy.lock_path`.
+
+    A lease with a malformed or unparsable `expires_at` (PR #320 review,
+    fourth round, Codex P2-10 + adversarial Medium) is treated as still
+    active/protected, not expired: fail-safe here must point toward *not*
+    deleting a possibly-real image, not toward silently discarding
+    protection for one just because its expiry can't be confirmed. Only a
+    lease with a parseable, definitively-past `expires_at` is ever purged.
+    """
     ledger = _load_pin_ledger(path)
-    active = {
-        image_id: expires_at
-        for image_id, expires_at in ledger["leases"].items()
-        if _is_timezone_aware_iso_timestamp(expires_at) and datetime.fromisoformat(expires_at) > now
-    }
+    active: dict[str, str] = {}
+    for image_id, expires_at in ledger["leases"].items():
+        if not _is_timezone_aware_iso_timestamp(expires_at):
+            _LOGGER.warning(
+                "Docker image pin lease for %s has a malformed expiry (%r); treating as still active",
+                image_id,
+                expires_at,
+            )
+            active[image_id] = expires_at
+            continue
+        if datetime.fromisoformat(expires_at) > now:
+            active[image_id] = expires_at
     if active != ledger["leases"]:
         _write_pin_ledger(path, {"leases": active})
     return set(active)
@@ -858,15 +1152,40 @@ def _ensure_private_directory(path: Path) -> None:
 
 
 def _inspect_image_id(image: str, *, runner: SubprocessRunner) -> str | None:
+    image_id, _indeterminate = _inspect_image_id_with_confidence(image, runner=runner)
+    return image_id
+
+
+def _inspect_image_id_with_confidence(
+    image: str, *, runner: SubprocessRunner
+) -> tuple[str | None, bool]:
+    """Like `_inspect_image_id`, but distinguishes a *confirmed* absence
+    (`(None, False)`) from an inspect that failed for some other reason --
+    a transient daemon error, a timeout, unparsable output (`(None, True)`)
+    (PR #320 review, third round).
+
+    `_inspect_image_id` alone conflates the two into a single `None`, which
+    is safe for callers that only ever do something *conservative* on a
+    miss (e.g. `_reuse_cached_image` falling back to a rebuild). It is
+    unsafe for callers about to take a *destructive* action contingent on
+    "this specific thing doesn't exist" (e.g. "the tag didn't exist before
+    this build, so it's safe to delete since our build must have created
+    it") -- those must use this function and treat `indeterminate=True` as
+    "we don't know," never as "confirmed missing."
+    """
     completed = cli.run(
         ["docker", "image", "inspect", "--format", "{{.Id}}", image],
         runner=runner,
         timeout=20,
     )
-    image_id = completed.stdout.strip()
-    if completed.returncode != 0 or re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is None:
-        return None
-    return image_id
+    if completed.returncode == 0:
+        image_id = completed.stdout.strip()
+        if re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is not None:
+            return image_id, False
+        return None, True  # malformed output -- not a confirmed miss
+    if cli.reports_missing_resource(completed, kind="image"):
+        return None, False
+    return None, True
 
 
 def _tag_latest(tag: str, repository: str, *, runner: SubprocessRunner) -> None:
@@ -956,9 +1275,23 @@ def _prune_image_family(
     recipe: ImageRecipe,
     policy: ImageCachePolicy,
     manifest: dict[str, ManifestEntry],
+    now: datetime,
     *,
     runner: SubprocessRunner,
 ) -> dict[str, ManifestEntry]:
+    """Delete generations of `recipe`'s image beyond `policy.keep_generations`.
+
+    Called while holding `policy.lock_path` (Issue #250), so
+    `_purge_expired_pin_leases` may be called directly here too.
+
+    A candidate whose manifest-recorded `image_id` has an unexpired pin
+    lease is skipped even if it is otherwise beyond the retained-generation
+    cutoff (PR #320 review, fourth round, Codex P1-1): generation pruning
+    previously never consulted the pin ledger at all, so it could delete
+    the *only* hash tag pointing at an image a concurrent
+    `ensure_recipe_image()` caller had just resolved and leased, between
+    that caller resolving it and actually starting a container from it.
+    """
     completed = cli.run(
         [
             "docker",
@@ -978,6 +1311,7 @@ def _prune_image_family(
     tracked = [candidate for candidate in candidates if candidate[1] is not None]
     retained = sorted(tracked, key=lambda item: item[2], reverse=True)[: policy.keep_generations]
     retained_refs = {item[0] for item in retained}
+    active_pin_ids = _purge_expired_pin_leases(_pin_ledger_path(policy.manifest_path), now)
     updated = dict(manifest)
     for image_ref, digest, _last_used in candidates:
         if digest is None:
@@ -985,6 +1319,14 @@ def _prune_image_family(
             # sharing the same repository/label). Never delete tags we don't own.
             continue
         if image_ref in retained_refs:
+            continue
+        manifest_entry = manifest.get(digest)
+        if manifest_entry is not None and manifest_entry.image_id in active_pin_ids:
+            _LOGGER.warning(
+                "skipping generation prune for leased Docker image %s (%s)",
+                image_ref,
+                manifest_entry.image_id,
+            )
             continue
         removed = cli.run(["docker", "image", "rm", image_ref], runner=runner, timeout=60)
         if removed.returncode != 0:
@@ -1145,8 +1487,10 @@ def _cleanup_stale_owned_images(
     removed_stale_tags: list[str] = []
     removed_count = 0
     for tag in stale_tags:
-        family = pending.get(tag, {}).get("family")
-        if not isinstance(family, str):
+        entry = pending.get(tag, {})
+        family = entry.get("family")
+        digest = entry.get("digest")
+        if not isinstance(family, str) or not isinstance(digest, str):
             continue
         # Acquire (and, crucially, *hold*) the family build lock for the
         # duration of the ownership check and the removal itself (Issue
@@ -1169,10 +1513,51 @@ def _cleanup_stale_owned_images(
             # candidate.
             if _image_recently_created(tag, now, runner=runner):
                 continue
+            # Verify the *actual* image `tag` currently resolves to still
+            # carries our owner label and this recipe's digest label
+            # (Issue #231 review, PR #320 third round): the journal only
+            # ever self-reports `docker_label`/`digest`, so if `tag` was
+            # retagged to an unrelated, unlabeled (or differently labeled)
+            # image after the crash, the CreatedAt check above would not
+            # catch it -- only inspecting the real image's own labels does.
+            # Matches EV-34's "ownership proof is pending record AND owner
+            # label" contract at the point of deletion, not just at
+            # candidate-selection time.
+            label_match = _image_owner_label_matches(
+                tag, recipe.docker_label, digest, runner=runner
+            )
+            if label_match is None:
+                # Indeterminate: leave both the image and the journal entry
+                # untouched for a later retry.
+                continue
+            if not label_match:
+                # Confirmed mismatch (PR #320 review, fifth round, Medium):
+                # `tag` demonstrably belongs to a different checkout now, so
+                # it is never touched, but our own stale journal record for
+                # it is meaningless and safe to drop -- reuse the same
+                # snapshot-checked pop below (no `docker image rm`, so
+                # `removed_count` is not incremented). If this checkout's own
+                # crash residue ended up dangling elsewhere, the dangling
+                # sweep above independently reclaims it.
+                removed_stale_tags.append(tag)
+                continue
             if _remove_image_best_effort(tag, runner=runner):
                 removed_stale_tags.append(tag)
                 removed_count += 1
     for image_id in dangling_ids:
+        # Re-read the pin ledger fresh, immediately before *this* removal
+        # (PR #320 review, fourth round, Codex P1-2), rather than trusting
+        # the `active_pin_ids` snapshot taken once at the top under the
+        # manifest lock: a new lease for this exact `image_id` could have
+        # been recorded by a concurrent `ensure_recipe_image()` call in the
+        # window between that snapshot and this specific `docker image rm`.
+        # Narrowing the check to right before each removal (rather than
+        # once for the whole dangling batch) keeps that window as small as
+        # the single lock round-trip below.
+        with exclusive_file_lock(policy.lock_path):
+            still_active = _purge_expired_pin_leases(pin_ledger_path, now)
+        if image_id in still_active:
+            continue
         if _remove_image_best_effort(image_id, runner=runner):
             removed_count += 1
 
@@ -1250,7 +1635,14 @@ def _partition_pending(
         if not _is_removable_tag_reference(tag):
             malformed.append(tag)
             continue
-        if _pending_entry_is_resolved(tag, entry, manifest, runner=runner):
+        resolution = _pending_entry_resolution(tag, entry, manifest, runner=runner)
+        if resolution is None:
+            # Indeterminate ownership inspect (PR #320 review, third
+            # round): leave the entry untouched this round rather than let
+            # an inspect failure push a genuinely-resolved entry toward the
+            # stale-removal path below.
+            continue
+        if resolution:
             resolved.append(tag)
             continue
         if _pending_entry_is_recent(entry, now):
@@ -1262,18 +1654,18 @@ def _partition_pending(
     return stale, resolved, malformed
 
 
-def _pending_entry_is_resolved(
+def _pending_entry_resolution(
     tag: str,
     entry: Mapping[str, Any],
     manifest: Mapping[str, ManifestEntry],
     *,
     runner: SubprocessRunner,
-) -> bool:
-    """A pending record is only genuinely `resolved` -- safe to drop from
-    the journal without ever touching Docker -- once the manifest entry it
-    references demonstrably corresponds to *this* build, not merely to some
-    other (possibly stale) entry that happens to share the same digest key
-    (Issue #231 review, PR #320 second round).
+) -> bool | None:
+    """A pending record is only genuinely resolved (`True`) -- safe to drop
+    from the journal without ever touching Docker -- once the manifest
+    entry it references demonstrably corresponds to *this* build, not
+    merely to some other (possibly stale) entry that happens to share the
+    same digest key (Issue #231 review, PR #320 second round).
 
     Content-addressing means the manifest can still hold an older image A
     under a digest while a *newer* build of the identical recipe produces
@@ -1285,6 +1677,21 @@ def _pending_entry_is_resolved(
     recorded `image_id` to match what `tag` *currently* resolves to closes
     that gap: it only holds when the manifest genuinely describes the image
     the tag points to right now.
+
+    Returns `None` (indeterminate) rather than `False` when the ownership
+    inspect itself failed for a reason other than a confirmed answer (PR
+    #320 review, third round): a transient daemon error/timeout must never
+    be treated the same as "confirmed not resolved," since that would push
+    a pending record straight toward the stale-removal liveness checks
+    based on nothing but an inspect hiccup.
+
+    Not subject to `CLEANUP_TTL_SECONDS` (PR #320 review, fourth round,
+    code-reviewer Medium, EV-36 notes): `_partition_pending` calls this for
+    every label-scoped pending-journal entry unconditionally, before the TTL
+    check that gates the *separate* `docker image ls`/`buildx du` dangling
+    sweep further down in `_cleanup_stale_owned_images`. A pending entry
+    always gets a fresh ownership inspect on every `ensure_recipe_image`
+    call, regardless of how recently the dangling sweep last ran.
     """
     digest = entry.get("digest")
     if not isinstance(digest, str):
@@ -1292,7 +1699,10 @@ def _pending_entry_is_resolved(
     manifest_entry = manifest.get(digest)
     if manifest_entry is None:
         return False
-    return _inspect_image_id(tag, runner=runner) == manifest_entry.image_id
+    current_image_id, indeterminate = _inspect_image_id_with_confidence(tag, runner=runner)
+    if indeterminate:
+        return None
+    return current_image_id == manifest_entry.image_id
 
 
 def _pending_entry_matches(
@@ -1351,6 +1761,16 @@ def _family_build_in_progress(policy: ImageCachePolicy, family: str) -> bool:
     except (DockerImageError, OSError):
         return True
     try:
+        # Match `exclusive_file_lock`'s explicit chmod (PR #320 review,
+        # fourth round, code-reviewer Low): `os.open`'s mode argument is
+        # only applied on *creation* (and is still subject to umask even
+        # then), so an existing lock file created with different
+        # permissions would otherwise keep them.
+        os.chmod(lock_path, FILE_MODE)
+    except OSError:
+        os.close(fd)
+        return True
+    try:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
@@ -1385,6 +1805,14 @@ def _hold_family_lock_if_free(policy: ImageCachePolicy, family: str) -> Iterator
         _ensure_private_directory(lock_path.parent)
         fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, FILE_MODE)
     except (DockerImageError, OSError):
+        yield False
+        return
+    try:
+        # Match `exclusive_file_lock`'s explicit chmod (PR #320 review,
+        # fourth round, code-reviewer Low) -- see `_family_build_in_progress`.
+        os.chmod(lock_path, FILE_MODE)
+    except OSError:
+        os.close(fd)
         yield False
         return
     try:
@@ -1530,6 +1958,69 @@ def _parse_docker_created_at(value: str) -> datetime | None:
     except ValueError:
         return None
     return parsed if parsed.tzinfo is not None else None
+
+
+def _image_owner_label_matches(
+    reference: str, docker_label: str, digest: str, *, runner: SubprocessRunner
+) -> bool | None:
+    """Verify the *actual* image `reference` currently resolves to carries
+    both labels `_build_image()` stamps on its own output (Issue #231
+    review, PR #320 third round): `<docker_label>=image` and
+    `<docker_label>.recipe-sha256=<digest>`.
+
+    A stale pending record only ever self-reports its own `docker_label`/
+    `digest`; if `reference` was retagged to an unrelated image between the
+    crash and this cleanup run, the self-reported values would still
+    "match" even though the real image carries no such labels (or belongs
+    to a different recipe). Inspecting the real image's own labels right
+    before deletion closes that gap, matching EV-34's "ownership proof is
+    the pending record *and* the owner label" contract at the point of
+    deletion rather than only at candidate-selection time.
+
+    Three-valued (PR #320 review, fifth round, Medium): callers must be able
+    to tell a *confirmed* mismatch apart from an inspect that simply could
+    not answer.
+
+    - `True`: labels match, or the image is *confirmed-missing* (Issue #231
+      scenario 2: the build died before `--load` ever ran, so `reference`
+      was never actually created -- nothing to protect, so the caller
+      proceeds to `_remove_image_best_effort`, whose own "already gone"
+      handling is what actually consumes the journal entry in that case;
+      blocking on the label check here would otherwise leave that entry
+      stuck forever).
+    - `False`: the inspect *succeeded* and returned a well-formed labels
+      object that definitively does not carry this recipe's owner/digest
+      labels -- `reference` demonstrably belongs to someone else now. The
+      caller must not delete it, but *may* safely drop its own now-stale
+      journal entry (this checkout no longer owns this tag, full stop; if
+      this checkout's own crash residue is sitting elsewhere as a dangling
+      image, the label-scoped dangling sweep independently reclaims it).
+    - `None`: indeterminate -- the inspect call itself failed for a reason
+      other than a confirmed miss (daemon hiccup, timeout), or it succeeded
+      but returned output that could not be parsed as a labels object.
+      Unlike a confirmed mismatch, this must never be treated as "safe to
+      resolve one way or the other": the caller must leave both the image
+      and the journal entry untouched for a later retry.
+    """
+    completed = cli.run(
+        ["docker", "image", "inspect", "--format", "{{json .Config.Labels}}", reference],
+        runner=runner,
+        timeout=20,
+    )
+    if completed.returncode != 0:
+        if cli.reports_missing_resource(completed, kind="image"):
+            return True
+        return None
+    try:
+        labels = json.loads(completed.stdout.strip())
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(labels, dict):
+        return None
+    return (
+        labels.get(docker_label) == "image"
+        and labels.get(f"{docker_label}.recipe-sha256") == digest
+    )
 
 
 def _log_cleanup_usage(policy: ImageCachePolicy, *, runner: SubprocessRunner) -> None:
