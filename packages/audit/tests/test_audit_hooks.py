@@ -264,6 +264,44 @@ class TestExtractCodexPrompt:
         )
         assert audit_cli.extract_codex_prompt(cmd) == "Investigate the flaky test."
 
+    def test_prompt_file_heredoc_indented_delimiter_with_actual_tabs(self) -> None:
+        """`<<-` で本文・終端行が実際にタブでインデントされていても抽出できることを
+        確認する（bash の `<<-` は本文・終端行の先頭タブを許容し、シェル側が展開時に
+        除去する。抽出結果は展開後の内容と一致すべきタブ除去済み文字列となる）。
+        """
+        cmd = (
+            "PROMPT_FILE=$(mktemp)\n"
+            "cat > \"$PROMPT_FILE\" <<-'PROMPT'\n"
+            "\tInvestigate the flaky test.\n"
+            "\tCheck retry logic.\n"
+            "\tPROMPT\n"
+            "codex exec --model gpt-5.3-codex --sandbox read-only "
+            '"$(cat "$PROMPT_FILE")" < /dev/null 2>/dev/null'
+        )
+        assert (
+            audit_cli.extract_codex_prompt(cmd) == "Investigate the flaky test.\nCheck retry logic."
+        )
+
+    def test_prompt_file_heredoc_body_line_starting_with_delimiter_word_is_not_terminator(
+        self,
+    ) -> None:
+        """本文中にデリミタ単語で始まる行（完全一致ではない）があっても、そこで
+        本文抽出が途切れずに正しい終端行まで抽出できることを確認する。
+        """
+        cmd = (
+            "PROMPT_FILE=$(mktemp)\n"
+            "cat > \"$PROMPT_FILE\" <<'PROMPT'\n"
+            "PROMPT_INJECTION is a security concern to keep in mind.\n"
+            "Design a REST API with that in mind.\n"
+            "PROMPT\n"
+            "codex exec --model gpt-5.3-codex --sandbox read-only "
+            '"$(cat "$PROMPT_FILE")" < /dev/null 2>/dev/null'
+        )
+        assert audit_cli.extract_codex_prompt(cmd) == (
+            "PROMPT_INJECTION is a security concern to keep in mind.\n"
+            "Design a REST API with that in mind."
+        )
+
     def test_prompt_file_variable_name_variant(self) -> None:
         """変数名が `PROMPT_FILE` 以外（例: `TASK_FILE`）でも抽出できることを確認する。"""
         cmd = (
@@ -314,6 +352,69 @@ class TestCodexExecDetectionPromptFile:
             '"$(cat "$PROMPT_FILE")" < /dev/null 2>/dev/null'
         )
         assert audit_cli.CODEX_EXEC_RE.search(cmd) is not None
+
+
+class TestMaskHeredocBodies:
+    """`_mask_heredoc_bodies` / heredoc 本文誤検知防止のテスト。"""
+
+    def test_codex_exec_inside_unrelated_heredoc_body_is_not_detected_as_invocation(
+        self,
+    ) -> None:
+        """heredoc 本文（ドキュメント生成コマンド等）に `codex exec` の例文が含まれても、
+        実際の呼び出しとして誤検知しないことを確認する
+        （マスクなしの生 command に対しては誤検知することを対比として確認する）。
+        """
+        cmd = (
+            "cat > codex-delegation.md <<'DOC'\n"
+            "Example:\n"
+            "codex exec --model gpt-5.3-codex --sandbox read-only "
+            '"question" < /dev/null 2>/dev/null\n'
+            "DOC\n"
+            "git add codex-delegation.md"
+        )
+        # 対比: マスクしない生の command には誤って複数行マッチしてしまう
+        assert audit_cli.CODEX_EXEC_RE.search(cmd) is not None
+        # 本修正: heredoc 本文をマスクした文字列では検出されない
+        masked = audit_cli._mask_heredoc_bodies(cmd)
+        assert audit_cli.CODEX_EXEC_RE.search(masked) is None
+
+    def test_main_does_not_record_cli_call_for_doc_writing_command(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ドキュメント生成コマンド（heredoc 本文に codex exec の例文を含む）を
+        `main()` に通しても、無関係な `cli_call` イベントが記録されないことを確認する。
+        """
+        project_dir = tmp_path
+        (project_dir / ".claude").mkdir()
+
+        command = (
+            "cat > codex-delegation.md <<'DOC'\n"
+            "Example:\n"
+            "codex exec --model gpt-5.3-codex --sandbox read-only "
+            '"question" < /dev/null 2>/dev/null\n'
+            "DOC\n"
+            "git add codex-delegation.md"
+        )
+        data = {
+            "session_id": "s1",
+            "cwd": str(project_dir),
+            "tool_name": "Bash",
+            "tool_input": {"command": command},
+            "tool_response": {"stdout": "ok", "exit_code": 0, "duration_ms": 100},
+        }
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(data)))
+
+        captured: dict = {}
+
+        def fake_emit_event(event_type: str, payload: dict, **kwargs: object) -> dict:
+            captured["called"] = True
+            return payload
+
+        monkeypatch.setattr(audit_cli, "emit_event", fake_emit_event)
+
+        audit_cli.main()
+
+        assert "called" not in captured
 
 
 class TestExtractGeminiPrompt:

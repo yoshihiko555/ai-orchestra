@@ -38,7 +38,19 @@ CODEX_EXEC_RE = re.compile(
     r"(?:\w+=\S+\s+)*codex\s+exec\b",
     # re.MULTILINE: PROMPT_FILE 形式（heredoc でファイル書き込み後、改行を挟んで
     # `codex exec ...` を呼び出す）でも `^` が各行頭にマッチするようにする。
+    # 注意: heredoc 本文中に偶然 "codex exec" 等の文字列が含まれる誤検知を防ぐため、
+    # 呼び出し検出には _mask_heredoc_bodies() でマスクした文字列を使うこと
+    # （prompt/model 抽出には元の command を使う。詳細は _mask_heredoc_bodies の docstring）。
     re.IGNORECASE | re.MULTILINE,
+)
+
+# heredoc ブロック全体（`<<[-]DELIM` から終端行まで）を検出する汎用パターン。
+# 終端行は「行頭（任意のタブ/スペースの後）にデリミタのみ」であることを要求する
+# （`$` を re.MULTILINE と組み合わせ、本文中にデリミタで始まる行があっても
+# 途中で途切れないようにする）。
+HEREDOC_BLOCK_RE = re.compile(
+    r"<<(-)?\s*['\"]?(\w+)['\"]?\s*\n(.*?)\n[ \t]*\2[ \t]*$",
+    re.DOTALL | re.MULTILINE,
 )
 
 # codex exec 呼び出しが PROMPT_FILE 経由（`"$(cat "$VAR")"`）で prompt を渡す形式
@@ -96,6 +108,14 @@ def _extract_heredoc_content(command: str, var_name: str) -> str | None:
     （呼び出し時点でファイルが既に削除・変更されていても安定して抽出できるため、
     かつ任意パス読み取りのリスクを避けるため）。
 
+    `<<-` 形式（インデント除去付き heredoc）では、本文・終端行がタブでインデント
+    されていても対応する。bash の `<<-` 仕様に合わせ、本文各行の先頭タブのみを
+    除去する（スペースは除去しない）。
+
+    終端行は「行頭（任意のタブ/スペースの後）にデリミタのみ」であることを要求する
+    （`$` を re.MULTILINE と組み合わせ、本文中にデリミタで始まる行があっても
+    そこで本文抽出が途切れないようにする）。
+
     Args:
         command: Bash コマンド文字列。
         var_name: PROMPT_FILE 相当の変数名（`$` や `{}` を除いた素の名前）。
@@ -106,14 +126,45 @@ def _extract_heredoc_content(command: str, var_name: str) -> str | None:
     pattern = re.compile(
         r">\s*\"?\$\{?"
         + re.escape(var_name)
-        + r"\}?\"?\s*<<-?\s*['\"]?(\w+)['\"]?\s*\n(.*?)\n\1\b",
-        re.DOTALL,
+        + r"\}?\"?\s*<<(-)?\s*['\"]?(\w+)['\"]?\s*\n(.*?)\n[ \t]*\2[ \t]*$",
+        re.DOTALL | re.MULTILINE,
     )
     match = pattern.search(command)
     if not match:
         return None
-    content = match.group(2).strip()
+    strip_leading_tabs = bool(match.group(1))
+    body = match.group(3)
+    if strip_leading_tabs:
+        body = "\n".join(line.lstrip("\t") for line in body.split("\n"))
+    content = body.strip()
     return content or None
+
+
+def _mask_heredoc_bodies(command: str) -> str:
+    """CLI 呼び出し検出専用に heredoc 本文をマスクした文字列を返す。
+
+    heredoc は PROMPT_FILE への書き込みだけでなく、無関係なファイル
+    （例: ドキュメント生成コマンドが `codex-delegation.md` の例文を書き込む場合）
+    にも使われる。その本文中に偶然 `codex exec` のような呼び出し例が含まれると、
+    `CODEX_EXEC_RE` 等の行頭アンカー検出が誤って実行呼び出しと判定してしまう。
+
+    本文だけを空にして呼び出し検出に使うことで、この誤検知を防ぐ
+    （prompt 抽出には本関数の戻り値ではなく元の command を使うこと。
+    heredoc 本文そのものが抽出対象になるケースがあるため）。
+
+    Args:
+        command: Bash コマンド文字列。
+
+    Returns:
+        heredoc 本文を除去した文字列（CLI 呼び出し検出専用）。
+    """
+
+    def _blank_body(match: re.Match[str]) -> str:
+        dash = match.group(1) or ""
+        delimiter = match.group(2)
+        return f"<<{dash}{delimiter}\n{delimiter}"
+
+    return HEREDOC_BLOCK_RE.sub(_blank_body, command)
 
 
 def extract_codex_prompt(command: str) -> str | None:
@@ -256,10 +307,15 @@ def main() -> None:
     command = tool_input.get("command", "")
     output = tool_response.get("stdout", "") or tool_response.get("content", "")
 
-    is_codex = bool(CODEX_EXEC_RE.search(command))
-    is_antigravity = bool(ANTIGRAVITY_EXEC_RE.search(command)) and not is_codex
+    # 呼び出し検出は heredoc 本文をマスクした文字列で行う（本文中の
+    # "codex exec" 等の例文を実行呼び出しと誤検知しないため）。
+    # prompt/model 抽出は元の command を使う（heredoc 本文が抽出対象のため）。
+    detection_command = _mask_heredoc_bodies(command)
+
+    is_codex = bool(CODEX_EXEC_RE.search(detection_command))
+    is_antigravity = bool(ANTIGRAVITY_EXEC_RE.search(detection_command)) and not is_codex
     # gemini は移行期間中のレガシー検知（古いコマンド例・手動実行向け）
-    is_gemini = bool(GEMINI_EXEC_RE.search(command)) and not (is_codex or is_antigravity)
+    is_gemini = bool(GEMINI_EXEC_RE.search(detection_command)) and not (is_codex or is_antigravity)
 
     if not (is_codex or is_antigravity or is_gemini):
         return
