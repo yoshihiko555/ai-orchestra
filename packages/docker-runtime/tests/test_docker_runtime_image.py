@@ -6,7 +6,7 @@ import fcntl
 import json
 import os
 import subprocess
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -22,6 +22,11 @@ image = load_module(
 IMAGE_ID = "sha256:" + "a" * 64
 OTHER_IMAGE_ID = "sha256:" + "c" * 64
 DOCKER_LABEL = "ai.orchestra.loop-harness"
+# Default `docker image inspect --format {{.Created}}` response for any
+# tracked image that a test hasn't given an explicit `image_created_at`
+# entry -- far enough in the past that the cross-checkout liveness guard
+# (`_image_recently_created`) never blocks removal unless a test opts in.
+DEFAULT_CREATED_AT = "2000-01-01T00:00:00.000000000Z"
 
 
 def _completed(
@@ -47,11 +52,15 @@ class FakeDocker:
         self.create_should_fail_once = False
         self.rm_should_fail: set[str] = set()
         self.rm_missing: set[str] = set()
+        self.image_created_at: dict[str, str] = {}
 
     def __call__(self, command: list[str], **_kwargs) -> subprocess.CompletedProcess:
         self.commands.append(command)
         if command[:4] == ["docker", "image", "inspect", "--format"]:
             image_ref = command[-1]
+            format_arg = command[4] if len(command) > 4 else ""
+            if format_arg == "{{.Created}}":
+                return self._inspect_created_at(image_ref)
             image_id = self.images.get(image_ref)
             return _completed(stdout=f"{image_id}\n") if image_id else _completed(1)
         if command[:3] == ["docker", "buildx", "inspect"]:
@@ -106,6 +115,13 @@ class FakeDocker:
         if command[:3] == ["docker", "buildx", "du"]:
             return _completed(stdout=f"Reclaimable: 0B\nTotal: {self.du_total}\n")
         raise AssertionError(f"unexpected Docker command: {command}")
+
+    def _inspect_created_at(self, image_ref: str) -> subprocess.CompletedProcess:
+        if image_ref in self.image_created_at:
+            return _completed(stdout=f"{self.image_created_at[image_ref]}\n")
+        if image_ref in self.images:
+            return _completed(stdout=f"{DEFAULT_CREATED_AT}\n")
+        return _completed(1, stderr=f"Error response from daemon: No such image: {image_ref}")
 
     def _strip_dangling(self, output: str) -> str:
         lines = []
@@ -1138,3 +1154,259 @@ def test_cleanup_rm_failure_does_not_fail_ensure_recipe_image(
     journal = image._load_pending_journal(_journal_path(policy))
     assert orphan_tag in journal["entries"]
     assert any("could not prune stale Docker image" in record.message for record in caplog.records)
+
+
+def test_cleanup_rechecks_family_lock_immediately_before_removing_stale_tag(
+    tmp_path: Path,
+    context: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PR #320 review (CodeRabbit): the liveness judgment runs under the
+    manifest lock, but `docker image rm` itself runs after releasing it,
+    leaving a TOCTOU window in which a build for the same family could
+    start. The rm loop must re-probe `_family_build_in_progress`
+    immediately before each removal and skip if a build has since begun."""
+    policy = _policy(tmp_path)
+    recipe = _recipe(context)
+    now = datetime(2026, 7, 16, 1, 0, tzinfo=UTC)
+    orphan_digest = "e" * 64
+    orphan_tag = image.recipe_tag(recipe, orphan_digest)
+    fake = FakeDocker()
+    fake.images[orphan_tag] = IMAGE_ID
+    _seed_pending_entry(
+        policy,
+        tag=orphan_tag,
+        digest=orphan_digest,
+        recipe=recipe,
+        started_at=(now - timedelta(hours=2)).isoformat(),
+    )
+    real_probe = image._family_build_in_progress
+    probe_calls: list[str] = []
+
+    def racing_probe(policy_arg: object, family: str) -> bool:
+        probe_calls.append(family)
+        if len(probe_calls) == 1:
+            return real_probe(policy_arg, family)  # first probe (under lock): free
+        return True  # second probe (rm loop, TOCTOU window): now in-flight
+
+    monkeypatch.setattr(image, "_family_build_in_progress", racing_probe)
+
+    ensured = image.ensure_recipe_image(recipe, policy, runner=fake, clock=lambda: now)
+
+    assert ensured.built is True
+    assert len(probe_calls) >= 2
+    removed = [command[-1] for command in fake.commands if command[:3] == ["docker", "image", "rm"]]
+    assert orphan_tag not in removed
+    assert orphan_tag in fake.images
+    journal = image._load_pending_journal(_journal_path(policy))
+    assert orphan_tag in journal["entries"]
+
+
+def test_cleanup_skips_stale_tag_created_within_liveness_window(
+    tmp_path: Path,
+    context: Path,
+) -> None:
+    """PR #320 review (P1, chatgpt-codex-connector, partial mitigation): a
+    stale-looking pending entry's tag might actually be a *different*
+    checkout's very recent rebuild of the same shared repository/tag --
+    that checkout's family lock lives under its own `lock_path` and is
+    invisible here. Cross-checking the tag's `CreatedAt` against the same
+    liveness window used for pending records protects that case."""
+    policy = _policy(tmp_path)
+    recipe = _recipe(context)
+    now = datetime(2026, 7, 16, 1, 0, tzinfo=UTC)
+    orphan_digest = "e" * 64
+    orphan_tag = image.recipe_tag(recipe, orphan_digest)
+    fake = FakeDocker()
+    fake.images[orphan_tag] = IMAGE_ID
+    fake.image_created_at[orphan_tag] = (now - timedelta(minutes=5)).strftime(
+        "%Y-%m-%dT%H:%M:%S.000000000Z"
+    )
+    _seed_pending_entry(
+        policy,
+        tag=orphan_tag,
+        digest=orphan_digest,
+        recipe=recipe,
+        started_at=(now - timedelta(hours=2)).isoformat(),
+    )
+
+    ensured = image.ensure_recipe_image(recipe, policy, runner=fake, clock=lambda: now)
+
+    assert ensured.built is True
+    removed = [command[-1] for command in fake.commands if command[:3] == ["docker", "image", "rm"]]
+    assert orphan_tag not in removed
+    assert orphan_tag in fake.images
+
+
+def test_repository_validation_accepts_registry_host_with_port() -> None:
+    """PR #320 review (P2, chatgpt-codex-connector): a repository with a
+    registry host and port (`registry.example:5000/team/scenario`, already
+    supported by loop-harness `image` configs -- see
+    packages/loop-harness/tests/test_loop_docker_image.py) must not be
+    rejected as malformed, or a crash-orphaned pending entry for it becomes
+    permanently unrecoverable."""
+    tag = "registry.example:5000/team/scenario:sha-" + "a" * 12
+    assert image._is_removable_tag_reference(tag) is True
+    assert image._is_removable_tag_reference("localhost:5000/foo:sha-" + "a" * 12) is True
+    # Still rejects an actually malformed/adversarial reference.
+    assert image._is_removable_tag_reference("not a valid reference; rm -rf /") is False
+    assert image._is_removable_tag_reference("repo:with:extra:colons:sha-" + "a" * 12) is False
+
+
+def test_cleanup_reclaims_orphaned_tag_with_registry_port_repository(
+    tmp_path: Path,
+    context: Path,
+) -> None:
+    """PR #320 review (P2): a registry-with-port repository's pending entry
+    must be treated as a normal stale candidate, not dropped as malformed
+    (which would make the corresponding tag permanently unrecoverable)."""
+    policy = _policy(tmp_path)
+    recipe = _recipe(context, repository="registry.example:5000/team/scenario")
+    orphan_digest = "e" * 64
+    orphan_tag = image.recipe_tag(recipe, orphan_digest)
+    fake = FakeDocker()
+    fake.images[orphan_tag] = IMAGE_ID
+    _seed_pending_entry(policy, tag=orphan_tag, digest=orphan_digest, recipe=recipe)
+
+    ensured = image.ensure_recipe_image(recipe, policy, runner=fake)
+
+    assert ensured.built is True
+    removed = [command[-1] for command in fake.commands if command[:3] == ["docker", "image", "rm"]]
+    assert orphan_tag in removed
+    journal = image._load_pending_journal(_journal_path(policy))
+    assert orphan_tag not in journal["entries"]
+
+
+def test_build_failure_keeps_pending_entry_when_removal_also_fails(
+    tmp_path: Path,
+    context: Path,
+) -> None:
+    """PR #320 review (P2, chatgpt-codex-connector): if the build fails and
+    the best-effort cleanup's `docker image rm` also fails for a reason
+    other than "already gone" (e.g. a transient daemon error or in-use
+    conflict), the pending journal entry must be kept for a later retry.
+    Clearing it unconditionally would permanently orphan a tagged,
+    manifest-unregistered image with no other reclaim path (dangling
+    cleanup only ever looks at *untagged* images, and generation pruning
+    only looks at manifest-registered ones)."""
+    policy = _policy(tmp_path)
+    recipe = _recipe(context)
+    digest = image.recipe_hash(recipe)
+    expected_tag = image.recipe_tag(recipe, digest)
+
+    class FailingBuildDocker(FakeDocker):
+        def __call__(self, command: list[str], **kwargs) -> subprocess.CompletedProcess:
+            if command[:3] == ["docker", "buildx", "build"]:
+                self.commands.append(command)
+                self.build_count += 1
+                return _completed(1, stderr="buildx: build failed")
+            return super().__call__(command, **kwargs)
+
+    fake = FailingBuildDocker()
+    fake.rm_should_fail.add(expected_tag)
+
+    with pytest.raises(image.DockerImageError, match="could not build required Docker image"):
+        image.ensure_recipe_image(recipe, policy, runner=fake)
+
+    journal = image._load_pending_journal(_journal_path(policy))
+    assert expected_tag in journal["entries"]
+
+
+def test_cleanup_does_not_advance_ttl_when_image_scan_fails(
+    tmp_path: Path,
+    context: Path,
+) -> None:
+    """PR #320 review (P2, chatgpt-codex-connector): if `docker image ls`
+    fails (daemon hiccup), `last_cleanup_at` must not advance -- otherwise
+    the next dangling-image sweep stays suppressed for up to
+    CLEANUP_TTL_SECONDS even after the daemon has recovered, even though
+    cached-image inspects (and thus normal `ensure_recipe_image` calls)
+    keep succeeding throughout."""
+    policy = _policy(tmp_path)
+    recipe = _recipe(context)
+    now = datetime(2026, 7, 16, 0, 0, tzinfo=UTC)
+
+    class FailOnceLsDocker(FakeDocker):
+        def __call__(self, command: list[str], **kwargs) -> subprocess.CompletedProcess:
+            if command[:3] == ["docker", "image", "ls"] and self.ls_fail_once:
+                self.ls_fail_once = False
+                self.commands.append(command)
+                return _completed(1, stderr="Cannot connect to the Docker daemon")
+            return super().__call__(command, **kwargs)
+
+    fake = FailOnceLsDocker()
+    fake.ls_fail_once = True
+
+    ensured = image.ensure_recipe_image(recipe, policy, runner=fake, clock=lambda: now)
+
+    assert ensured.built is True
+    journal = image._load_pending_journal(_journal_path(policy))
+    assert journal["last_cleanup_at"] is None
+
+
+def test_cleanup_protects_dangling_image_with_active_pin_lease(
+    tmp_path: Path,
+    context: Path,
+) -> None:
+    """PR #320 review (P1, chatgpt-codex-connector): a same-tag rebuild can
+    make an `ensure_recipe_image()`-returned image_id dangling before the
+    session that already resolved it gets around to starting a container
+    from it. While that image_id's pin lease is unexpired, opportunistic
+    dangling cleanup must never remove it."""
+    policy = _policy(tmp_path)
+    recipe = _recipe(context)
+    now = datetime(2026, 7, 16, 0, 0, tzinfo=UTC)
+    pinned_id = "sha256:" + "f" * 64
+    fake = FakeDocker()
+    fake.image_ls_output = json.dumps({"Repository": "<none>", "Tag": "<none>", "ID": pinned_id})
+    image._lease_image_id(policy, pinned_id, now)
+
+    image.ensure_recipe_image(recipe, policy, runner=fake, clock=lambda: now)
+
+    removed = [command[-1] for command in fake.commands if command[:3] == ["docker", "image", "rm"]]
+    assert pinned_id not in removed
+    ledger = image._load_pin_ledger(image._pin_ledger_path(policy.manifest_path))
+    assert pinned_id in ledger["leases"]
+
+
+def test_cleanup_removes_dangling_image_after_pin_lease_expires(
+    tmp_path: Path,
+    context: Path,
+) -> None:
+    """The pin-lease protection in `test_cleanup_protects_dangling_image_with_active_pin_lease`
+    is time-bounded: once `IMAGE_ID_LEASE_TTL_SECONDS` has elapsed, the
+    lease is purged and the dangling image becomes a normal cleanup
+    candidate again."""
+    policy = _policy(tmp_path)
+    recipe = _recipe(context)
+    leased_at = datetime(2026, 7, 16, 0, 0, tzinfo=UTC)
+    later = leased_at + timedelta(seconds=image.IMAGE_ID_LEASE_TTL_SECONDS + 1)
+    pinned_id = "sha256:" + "f" * 64
+    fake = FakeDocker()
+    fake.image_ls_output = json.dumps({"Repository": "<none>", "Tag": "<none>", "ID": pinned_id})
+    image._lease_image_id(policy, pinned_id, leased_at)
+
+    image.ensure_recipe_image(recipe, policy, runner=fake, clock=lambda: later)
+
+    removed = [command[-1] for command in fake.commands if command[:3] == ["docker", "image", "rm"]]
+    assert pinned_id in removed
+    ledger = image._load_pin_ledger(image._pin_ledger_path(policy.manifest_path))
+    assert pinned_id not in ledger["leases"]
+
+
+def test_ensure_recipe_image_leases_the_returned_image_id(
+    tmp_path: Path,
+    context: Path,
+) -> None:
+    """`ensure_recipe_image()` must record a pin lease for the `image_id` it
+    returns (PR #320 review) so a same-tag rebuild's opportunistic dangling
+    cleanup never removes an image a caller is actively holding onto."""
+    policy = _policy(tmp_path)
+    recipe = _recipe(context)
+    now = datetime(2026, 7, 16, 0, 0, tzinfo=UTC)
+    fake = FakeDocker()
+
+    ensured = image.ensure_recipe_image(recipe, policy, runner=fake, clock=lambda: now)
+
+    ledger = image._load_pin_ledger(image._pin_ledger_path(policy.manifest_path))
+    assert ensured.image_id in ledger["leases"]

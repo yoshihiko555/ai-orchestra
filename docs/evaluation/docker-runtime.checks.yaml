@@ -312,12 +312,17 @@
   command: >-
     AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
     packages/docker-runtime/tests/test_docker_runtime_image.py::test_cleanup_is_suppressed_within_ttl_when_nothing_pending
+    packages/docker-runtime/tests/test_docker_runtime_image.py::test_cleanup_issues_no_docker_commands_when_pending_entry_is_live_within_ttl
   covered_by:
     - packages/docker-runtime/tests/test_docker_runtime_image.py::test_cleanup_is_suppressed_within_ttl_when_nothing_pending
+    - packages/docker-runtime/tests/test_docker_runtime_image.py::test_cleanup_issues_no_docker_commands_when_pending_entry_is_live_within_ttl
   notes: >-
-    with an empty label-scoped pending journal, cleanup is throttled to once
-    per CLEANUP_TTL_SECONDS; a non-empty pending journal always runs
-    regardless of TTL.
+    cleanup's docker image ls/buildx du sweep is throttled to once per
+    CLEANUP_TTL_SECONDS whenever there are no genuine *stale* candidates
+    (past the family-lock and grace-period liveness checks) in the
+    label-scoped pending journal -- this holds whether the journal is empty
+    or only holds live (possibly in-flight) entries. A non-empty journal
+    with at least one stale candidate always runs regardless of TTL.
 
 - ev_id: EV-37
   phase: 1
