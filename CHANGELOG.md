@@ -15,7 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **`git-workflow`: `/issue-create` が受け入れ条件の明記を必須化**: bug / feature / task の全種別で受け入れ条件をヒアリングし、`- [ ] 条件 — verify: \`コマンド\``（機械検証）/ `— judge: 判定基準`（主観）形式で Issue 本文に記載するようになった。受け入れ条件が 0 件、またはプレースホルダが残っている場合は Issue を作成せずヒアリングに戻る。
 - **`git-workflow`: `/issue-fix` が受け入れ条件の verify コマンドを実行して完了確認するように変更**: Issue 本文の `— verify:` 付き条件は、実際にコマンドを実行して pass を確認してから完了扱いにする。
-- **`core`: `/task-state` が Acceptance Criteria（AC）に対応**: `add-phase` 実行時に AC が決まっていれば `#### Acceptance Criteria` セクション（verify/judge 記法）をタスクグループより前に追記するようになった。`orchex init` の Plans.md テンプレートにも AC セクション例を追加した。
+- **`core`: `/task-state` が Acceptance Criteria（AC）に対応**: `add-phase` 実行時に AC が決まっていれば `#### Acceptance Criteria` セクション（verify/judge 記法）をタスクグループより前に追記するようになった。`orchex init` の Plans.md テンプレートにも AC の書き方をコメントで案内する（プレースホルダーを実際の未チェック AC として誤検出しないよう配慮）。
 
 ### Fixed
 

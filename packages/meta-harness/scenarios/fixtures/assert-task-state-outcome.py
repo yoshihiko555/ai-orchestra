@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """Assert task-state Plans.md outcomes by diffing the whole document against the canonical fixture.
 
-Both task-state scenarios seed a fixed ``.claude/Plans.md`` fixture (see
+All four task-state scenarios seed a fixed ``.claude/Plans.md`` fixture (see
 ``scenarios/skill/task-state/*.yaml``) and ask Claude to apply exactly one edit (a task status
-change, or a new Decisions entry). Rather than checking sections/lines piecemeal (which could
-miss e.g. a deleted heading or an extra blank line falling outside any single checked region),
-this fixture compares the *entire* document, line by line, against a hardcoded canonical
-constant and asserts the diff is exactly the one expected edit -- nothing else may differ
-(PR #266 review round 4, point 1; supersedes the section-scoped checks from round 1 points 2-5,
-round 2 points 1/3/6, round 3 points 3/5/6, which are now subsumed by this whole-document diff).
+change, a new Decisions entry, or a new phase inserted before the existing project separator).
+Rather than checking sections/lines piecemeal (which could miss e.g. a deleted heading or an
+extra blank line falling outside any single checked region), this fixture compares the *entire*
+document, line by line, against a hardcoded canonical constant and asserts the diff is exactly
+the one expected edit -- nothing else may differ (PR #266 review round 4, point 1; supersedes the
+section-scoped checks from round 1 points 2-5, round 2 points 1/3/6, round 3 points 3/5/6, which
+are now subsumed by this whole-document diff).
 
 Everything the candidate could have rewritten during the run -- including a prior design's
 ``.meta-harness/plans-baseline.md`` "baseline copy" -- lives inside the same writable workspace
@@ -21,6 +22,13 @@ The new Decisions line in ``record-decision`` mode is matched *exactly* (date pr
 by substring containment: a substring check would also accept a negated or otherwise materially
 different decision text as long as it happened to contain the same keywords (PR #266 review
 round 5, point 1).
+
+The ``add-phase-with-ac`` / ``add-phase-no-ac`` modes (Issue #297 / PR #326 review round 1)
+lock down the `add-phase` behavior contract documented in `facets/instructions/task-state.md`:
+a new phase inserted right before the existing separator must carry exactly the given
+Acceptance Criteria items (verify/judge, both unchecked) when they were already agreed upon, and
+must carry *no* Acceptance Criteria section at all -- rather than a fabricated one -- when the
+call did not come with agreed criteria.
 """
 
 from __future__ import annotations
@@ -73,6 +81,17 @@ _CANONICAL_LINES = _CANONICAL_PLANS_FIXTURE.split("\n")
 
 _TASK_LINE_PATTERN = re.compile(r"^- `cc:[A-Za-z]+` (.+)$")
 _DECISION_LINE_PATTERN = re.compile(r"^- (\d{4}-\d{2}-\d{2}): ")
+
+# `add-phase` heading / Acceptance Criteria patterns (Issue #297). The heading capture excludes
+# the trailing `` `cc:<marker>` `` status marker so callers can compare just the phase title, and
+# the marker itself is captured separately so callers can assert it is freshly-added `TODO`.
+_PHASE_HEADING_PATTERN = re.compile(r"^### (.+) `cc:([A-Za-z]+)`$")
+# Matches `task-memory-usage.md`'s AC heading exactly (same constant `ac_parser.AC_SECTION_HEADING`
+# in `packages/core/hooks/ac_parser.py` uses, duplicated here rather than imported since this
+# fixture has no dependency on the `packages/core/hooks` sys.path setup).
+_AC_SECTION_HEADING = "#### Acceptance Criteria"
+_AC_ITEM_VERIFY_PATTERN = re.compile(r"^- \[ \] (.+) — verify: `(.+)`$")
+_AC_ITEM_JUDGE_PATTERN = re.compile(r"^- \[ \] (.+) — judge: (.+)$")
 
 # Day-boundary tolerance: the scenario run and this oracle's separate container can be up to
 # `timeout_ms` (5 min) apart, so a run started just before local midnight and checked just after
@@ -171,6 +190,171 @@ def assert_decision_recorded(plans_path: Path, *, expected_decision: str) -> Non
     assert new_line == expected_line, (
         "new Decisions entry does not exactly match the expected decision text:\n"
         f"expected={expected_line!r}\nactual={new_line!r}"
+    )
+
+
+def _extract_inserted_phase_block(plans_path: Path) -> list[str]:
+    """Return the lines `add-phase` inserted, asserting everything else in the document --
+    earlier phases, the project separator, Decisions, Notes, and the CODD frontmatter -- stayed
+    byte-identical to the canonical fixture.
+
+    `add-phase` only ever inserts a brand-new phase block right before the existing project
+    separator (`---` immediately preceding `## Decisions`; see the worked example in
+    `facets/instructions/task-state.md`); it never edits or removes any existing line. This
+    mirrors `assert_mark_task_done` / `assert_decision_recorded`'s whole-document-diff approach,
+    generalized from a fixed-size edit to an open-ended insertion: everything strictly before the
+    separator's canonical index must match the canonical prefix, and everything from that same
+    separator onward (by canonical suffix length, counted from the end of the actual document)
+    must match the canonical suffix.
+
+    The canonical fixture's frontmatter also opens and closes with a bare `---` line, so the
+    project separator cannot be located by `line == "---"` alone (that matches 3 lines, not 1) --
+    it is instead identified as the `---` line immediately preceding the unique `## Decisions`
+    line.
+    """
+    text = plans_path.read_text(encoding="utf-8")
+    actual_lines = text.split("\n")
+
+    decisions_heading_index = _find_unique_line_index(
+        _CANONICAL_LINES, lambda line: line == "## Decisions"
+    )
+    separator_index = next(
+        idx for idx in range(decisions_heading_index - 1, -1, -1) if _CANONICAL_LINES[idx] == "---"
+    )
+    prefix_expected = _CANONICAL_LINES[:separator_index]
+    suffix_expected = _CANONICAL_LINES[separator_index:]
+
+    assert len(actual_lines) >= len(_CANONICAL_LINES), (
+        "add-phase must only ever insert new lines, never remove any: expected at least "
+        f"{len(_CANONICAL_LINES)} lines, got {len(actual_lines)}"
+    )
+
+    prefix_actual = actual_lines[: len(prefix_expected)]
+    assert prefix_actual == prefix_expected, (
+        "content before the new phase's insertion point must be byte-identical to the seeded "
+        f"fixture (earlier phases must not be touched):\nexpected={prefix_expected!r}\n"
+        f"actual={prefix_actual!r}"
+    )
+
+    suffix_actual = actual_lines[len(actual_lines) - len(suffix_expected) :]
+    assert suffix_actual == suffix_expected, (
+        "content from the project separator onward (separator, Decisions, Notes) must be "
+        f"byte-identical to the seeded fixture:\nexpected={suffix_expected!r}\n"
+        f"actual={suffix_actual!r}"
+    )
+
+    return actual_lines[len(prefix_expected) : len(actual_lines) - len(suffix_expected)]
+
+
+def _assert_new_phase_heading_and_tasks(
+    inserted_block: list[str], *, phase_name: str, tasks: list[str]
+) -> int:
+    """Assert `inserted_block` starts with a fresh `cc:TODO` heading for `phase_name` and ends
+    with exactly `tasks` (in order, all `cc:TODO`), returning the heading's index within
+    `inserted_block` so callers can locate an Acceptance Criteria section relative to it."""
+    heading_index = _find_unique_line_index(
+        inserted_block,
+        lambda line: (
+            (match := _PHASE_HEADING_PATTERN.match(line)) is not None
+            and match.group(1) == phase_name
+        ),
+    )
+    heading_match = _PHASE_HEADING_PATTERN.match(inserted_block[heading_index])
+    assert heading_match is not None and heading_match.group(2) == "TODO", (
+        f"a newly added phase must start as `cc:TODO`, got: {inserted_block[heading_index]!r}"
+    )
+
+    task_matches = [
+        match for line in inserted_block if (match := _TASK_LINE_PATTERN.match(line)) is not None
+    ]
+    actual_tasks = [match.group(1) for match in task_matches]
+    assert actual_tasks == tasks, (
+        f"new phase tasks do not match: expected {tasks!r}, got {actual_tasks!r}"
+    )
+    assert all(match.group(0).startswith("- `cc:TODO`") for match in task_matches), (
+        "all tasks in a newly added phase must start as `cc:TODO`, got: "
+        f"{[match.group(0) for match in task_matches]!r}"
+    )
+    return heading_index
+
+
+def assert_add_phase_with_ac(
+    plans_path: Path,
+    *,
+    phase_name: str,
+    tasks: list[str],
+    verify_text: str,
+    verify_command: str,
+    judge_text: str,
+    judge_criteria: str,
+) -> None:
+    """Assert a new phase was inserted with exactly one unchecked `verify` and one unchecked
+    `judge` Acceptance Criteria item (matching the given text/command/criteria) placed between
+    the phase heading and its tasks, and that the rest of the document is untouched (see
+    `_extract_inserted_phase_block`)."""
+    inserted_block = _extract_inserted_phase_block(plans_path)
+    heading_index = _assert_new_phase_heading_and_tasks(
+        inserted_block, phase_name=phase_name, tasks=tasks
+    )
+
+    ac_heading_index = _find_unique_line_index(
+        inserted_block, lambda line: line == _AC_SECTION_HEADING
+    )
+    assert ac_heading_index > heading_index, (
+        "the Acceptance Criteria section must come after the phase heading: heading at "
+        f"{heading_index}, Acceptance Criteria heading at {ac_heading_index}"
+    )
+
+    verify_matches = [
+        match
+        for line in inserted_block
+        if (match := _AC_ITEM_VERIFY_PATTERN.match(line)) is not None
+    ]
+    judge_matches = [
+        match
+        for line in inserted_block
+        if (match := _AC_ITEM_JUDGE_PATTERN.match(line)) is not None
+    ]
+    assert len(verify_matches) == 1, (
+        f"expected exactly one unchecked verify Acceptance Criteria item, found "
+        f"{len(verify_matches)}: {[m.group(0) for m in verify_matches]!r}"
+    )
+    assert len(judge_matches) == 1, (
+        f"expected exactly one unchecked judge Acceptance Criteria item, found "
+        f"{len(judge_matches)}: {[m.group(0) for m in judge_matches]!r}"
+    )
+    assert verify_matches[0].groups() == (verify_text, verify_command), (
+        f"verify Acceptance Criteria item does not match: expected "
+        f"{(verify_text, verify_command)!r}, got {verify_matches[0].groups()!r}"
+    )
+    assert judge_matches[0].groups() == (judge_text, judge_criteria), (
+        f"judge Acceptance Criteria item does not match: expected "
+        f"{(judge_text, judge_criteria)!r}, got {judge_matches[0].groups()!r}"
+    )
+
+
+def assert_add_phase_no_ac(plans_path: Path, *, phase_name: str, tasks: list[str]) -> None:
+    """Assert a new phase (with exactly `tasks`) was inserted *without* any Acceptance Criteria
+    section -- neither the `#### Acceptance Criteria` heading nor any unchecked verify/judge item
+    may appear anywhere in the inserted block. This locks the `add-phase` behavior contract for a
+    direct (non-`/preflight`) call with no agreed-upon Acceptance Criteria: the skill must not
+    silently fabricate one (Issue #297 / PR #326 review round 1)."""
+    inserted_block = _extract_inserted_phase_block(plans_path)
+    _assert_new_phase_heading_and_tasks(inserted_block, phase_name=phase_name, tasks=tasks)
+
+    assert not any(line == _AC_SECTION_HEADING for line in inserted_block), (
+        "a direct add-phase call with no agreed Acceptance Criteria must not add an "
+        f"'{_AC_SECTION_HEADING}' section, but one was found in: {inserted_block!r}"
+    )
+    fabricated_items = [
+        line
+        for line in inserted_block
+        if _AC_ITEM_VERIFY_PATTERN.match(line) is not None
+        or _AC_ITEM_JUDGE_PATTERN.match(line) is not None
+    ]
+    assert not fabricated_items, (
+        "a direct add-phase call with no agreed Acceptance Criteria must not fabricate any "
+        f"verify/judge item, but found: {fabricated_items!r}"
     )
 
 
@@ -374,6 +558,20 @@ def main(argv: list[str] | None = None) -> None:
     record_decision.add_argument("--plans", type=Path, required=True)
     record_decision.add_argument("--expected-decision", required=True)
 
+    add_phase_with_ac = subparsers.add_parser("add-phase-with-ac")
+    add_phase_with_ac.add_argument("--plans", type=Path, required=True)
+    add_phase_with_ac.add_argument("--phase-name", required=True)
+    add_phase_with_ac.add_argument("--tasks", nargs="+", required=True)
+    add_phase_with_ac.add_argument("--verify-text", required=True)
+    add_phase_with_ac.add_argument("--verify-command", required=True)
+    add_phase_with_ac.add_argument("--judge-text", required=True)
+    add_phase_with_ac.add_argument("--judge-criteria", required=True)
+
+    add_phase_no_ac = subparsers.add_parser("add-phase-no-ac")
+    add_phase_no_ac.add_argument("--plans", type=Path, required=True)
+    add_phase_no_ac.add_argument("--phase-name", required=True)
+    add_phase_no_ac.add_argument("--tasks", nargs="+", required=True)
+
     collateral_scope = subparsers.add_parser("collateral-scope")
     collateral_scope.add_argument(
         "--allow",
@@ -408,8 +606,20 @@ def main(argv: list[str] | None = None) -> None:
         assert_mark_task_done(
             plans_path, target_task=args.target_task, target_status=args.target_status
         )
-    else:
+    elif args.mode == "record-decision":
         assert_decision_recorded(plans_path, expected_decision=args.expected_decision)
+    elif args.mode == "add-phase-with-ac":
+        assert_add_phase_with_ac(
+            plans_path,
+            phase_name=args.phase_name,
+            tasks=args.tasks,
+            verify_text=args.verify_text,
+            verify_command=args.verify_command,
+            judge_text=args.judge_text,
+            judge_criteria=args.judge_criteria,
+        )
+    else:
+        assert_add_phase_no_ac(plans_path, phase_name=args.phase_name, tasks=args.tasks)
 
 
 if __name__ == "__main__":

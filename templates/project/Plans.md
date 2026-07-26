@@ -4,10 +4,11 @@
 
 ### Phase 1: Setup `cc:TODO`
 
-#### Acceptance Criteria
-
-- [ ] {機械検証可能な条件} — verify: `{検証コマンド}`
-- [ ] {主観的な条件} — judge: {判定基準}
+<!-- Optional: once this phase's Acceptance Criteria are agreed, add a
+     `#### Acceptance Criteria` section here with `- [ ] {condition} — verify: \`{command}\`` /
+     `— judge: {criteria}` lines (see `.claude/rules/task-memory-usage.md`). Leaving this
+     commented out (rather than literal checkbox lines) avoids `orchex init` scaffolding a
+     placeholder that load-task-state.py's AC parser would treat as a real unchecked condition. -->
 
 #### Tasks
 
