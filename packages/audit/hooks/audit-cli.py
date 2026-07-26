@@ -36,8 +36,21 @@ CODEX_EXEC_RE = re.compile(
     r"(?:^|&&|\|\||;|\|)\s*"
     r"(?:timeout\s+\d+\s+)?"
     r"(?:\w+=\S+\s+)*codex\s+exec\b",
-    re.IGNORECASE,
+    # re.MULTILINE: PROMPT_FILE 形式（heredoc でファイル書き込み後、改行を挟んで
+    # `codex exec ...` を呼び出す）でも `^` が各行頭にマッチするようにする。
+    re.IGNORECASE | re.MULTILINE,
 )
+
+# codex exec 呼び出しが PROMPT_FILE 経由（`"$(cat "$VAR")"`）で prompt を渡す形式
+# （シェルインジェクション対策。詳細は `.claude/rules/codex-delegation.md` 参照）
+CODEX_PROMPT_FILE_ARG_RE = re.compile(
+    r'codex\s+exec\b.*?"\$\(cat\s+"\$\{?(\w+)\}?"\)"',
+    re.DOTALL | re.IGNORECASE,
+)
+
+# テレメトリ用の prompt 上限文字数（暴走・巨大 heredoc 本文からの防御。KPI/調査用途では
+# 全文である必要はなく、上限超過分は切り詰める）
+MAX_PROMPT_CHARS = 20000
 
 GEMINI_EXEC_RE = re.compile(
     r"(?:^|&&|\|\||;|\|)\s*"
@@ -61,8 +74,54 @@ ANTIGRAVITY_EXEC_RE = re.compile(
 # ---------------------------------------------------------------------------
 
 
+def _truncate_prompt(prompt: str) -> str:
+    """テレメトリ記録用に prompt を上限文字数へ切り詰める。
+
+    Args:
+        prompt: 抽出済みの prompt 文字列。
+
+    Returns:
+        上限以内の prompt 文字列。上限超過時は末尾に truncation マーカーを付与する。
+    """
+    if len(prompt) <= MAX_PROMPT_CHARS:
+        return prompt
+    return prompt[:MAX_PROMPT_CHARS] + "...[truncated]"
+
+
+def _extract_heredoc_content(command: str, var_name: str) -> str | None:
+    """PROMPT_FILE 形式の heredoc 書き込みから本文を抽出する。
+
+    `cat > "$VAR" <<'DELIM' ... DELIM` 形式のブロックを同一コマンド文字列内から
+    探し、本文を返す。ファイルシステムへのアクセスは行わない
+    （呼び出し時点でファイルが既に削除・変更されていても安定して抽出できるため、
+    かつ任意パス読み取りのリスクを避けるため）。
+
+    Args:
+        command: Bash コマンド文字列。
+        var_name: PROMPT_FILE 相当の変数名（`$` や `{}` を除いた素の名前）。
+
+    Returns:
+        heredoc 本文。検出できなければ None。
+    """
+    pattern = re.compile(
+        r">\s*\"?\$\{?"
+        + re.escape(var_name)
+        + r"\}?\"?\s*<<-?\s*['\"]?(\w+)['\"]?\s*\n(.*?)\n\1\b",
+        re.DOTALL,
+    )
+    match = pattern.search(command)
+    if not match:
+        return None
+    content = match.group(2).strip()
+    return content or None
+
+
 def extract_codex_prompt(command: str) -> str | None:
     """codex exec コマンドからプロンプトを抽出する。
+
+    直接埋め込み形式（`codex exec ... "prompt"`）と、PROMPT_FILE 形式
+    （`PROMPT_FILE=$(mktemp); cat > "$PROMPT_FILE" <<'X' ... X; codex exec ... "$(cat "$PROMPT_FILE")"`）
+    の両方に対応する。
 
     Args:
         command: Bash コマンド文字列。
@@ -70,6 +129,15 @@ def extract_codex_prompt(command: str) -> str | None:
     Returns:
         プロンプト文字列。検出できなければ None。
     """
+    prompt_file_match = CODEX_PROMPT_FILE_ARG_RE.search(command)
+    if prompt_file_match:
+        # PROMPT_FILE 形式と判定した場合、legacy の引用符ベース抽出には委ねない。
+        # `"$(cat "$VAR")"` は入れ子の引用符を含むため、legacy パターンに通すと
+        # `$(cat` や `)` のような無意味な断片を誤抽出してしまう
+        # （このメソッドが解決しようとしている元の不具合そのもの）。
+        content = _extract_heredoc_content(command, prompt_file_match.group(1))
+        return _truncate_prompt(content) if content else None
+
     patterns = [
         r'codex\s+exec\s+.*?--full-auto\s+"([^"]+)"',
         r"codex\s+exec\s+.*?--full-auto\s+'([^']+)'",
@@ -79,7 +147,7 @@ def extract_codex_prompt(command: str) -> str | None:
     for pattern in patterns:
         match = re.search(pattern, command, re.DOTALL)
         if match:
-            return match.group(1).strip()
+            return _truncate_prompt(match.group(1).strip())
     return None
 
 

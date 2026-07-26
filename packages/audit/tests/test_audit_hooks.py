@@ -224,6 +224,97 @@ class TestExtractCodexPrompt:
         cmd = "codex exec --sandbox read-only 'Review this' </dev/null 2>/dev/null"
         assert audit_cli.extract_codex_prompt(cmd) == "Review this"
 
+    def test_prompt_file_heredoc_single_quote_delimiter(self) -> None:
+        """PROMPT_FILE 形式（`<<'DELIM'`）から heredoc 本文を抽出できることを確認する。"""
+        cmd = (
+            "PROMPT_FILE=$(mktemp)\n"
+            "cat > \"$PROMPT_FILE\" <<'PROMPT'\n"
+            "Design a REST API for user management.\n"
+            "It should support CRUD operations.\n"
+            "PROMPT\n"
+            "codex exec --model gpt-5.3-codex --sandbox read-only --full-auto "
+            '"$(cat "$PROMPT_FILE")" < /dev/null 2>/dev/null'
+        )
+        assert (
+            audit_cli.extract_codex_prompt(cmd)
+            == "Design a REST API for user management.\nIt should support CRUD operations."
+        )
+
+    def test_prompt_file_heredoc_double_quote_delimiter(self) -> None:
+        """heredoc デリミタがダブルクォートの場合も抽出できることを確認する。"""
+        cmd = (
+            "PROMPT_FILE=$(mktemp)\n"
+            'cat > "$PROMPT_FILE" <<"TASK"\n'
+            "Refactor the auth module.\n"
+            "TASK\n"
+            "codex exec --model gpt-5.3-codex --sandbox workspace-write "
+            '"$(cat "$PROMPT_FILE")" < /dev/null 2>/dev/null'
+        )
+        assert audit_cli.extract_codex_prompt(cmd) == "Refactor the auth module."
+
+    def test_prompt_file_heredoc_indented_delimiter(self) -> None:
+        """`<<-` （インデント除去付き heredoc）でも抽出できることを確認する。"""
+        cmd = (
+            "PROMPT_FILE=$(mktemp)\n"
+            "cat > \"$PROMPT_FILE\" <<-'PROMPT'\n"
+            "Investigate the flaky test.\n"
+            "PROMPT\n"
+            "codex exec --model gpt-5.3-codex --sandbox read-only "
+            '"$(cat "$PROMPT_FILE")" < /dev/null 2>/dev/null'
+        )
+        assert audit_cli.extract_codex_prompt(cmd) == "Investigate the flaky test."
+
+    def test_prompt_file_variable_name_variant(self) -> None:
+        """変数名が `PROMPT_FILE` 以外（例: `TASK_FILE`）でも抽出できることを確認する。"""
+        cmd = (
+            "TASK_FILE=$(mktemp)\n"
+            "cat > \"$TASK_FILE\" <<'EOF'\n"
+            "Implement pagination.\n"
+            "EOF\n"
+            "codex exec --model gpt-5.3-codex --sandbox workspace-write "
+            '"$(cat "$TASK_FILE")" < /dev/null 2>/dev/null'
+        )
+        assert audit_cli.extract_codex_prompt(cmd) == "Implement pagination."
+
+    def test_prompt_file_content_is_truncated_beyond_max_chars(self) -> None:
+        """heredoc 本文が上限文字数を超える場合、切り詰められることを確認する。"""
+        long_body = "A" * (audit_cli.MAX_PROMPT_CHARS + 500)
+        cmd = (
+            "PROMPT_FILE=$(mktemp)\n"
+            "cat > \"$PROMPT_FILE\" <<'PROMPT'\n"
+            f"{long_body}\n"
+            "PROMPT\n"
+            "codex exec --model gpt-5.3-codex --sandbox read-only "
+            '"$(cat "$PROMPT_FILE")" < /dev/null 2>/dev/null'
+        )
+        result = audit_cli.extract_codex_prompt(cmd)
+        assert result is not None
+        assert len(result) == audit_cli.MAX_PROMPT_CHARS + len("...[truncated]")
+        assert result.endswith("...[truncated]")
+
+    def test_prompt_file_no_heredoc_falls_back_to_none(self) -> None:
+        """PROMPT_FILE 参照はあるが heredoc 本文が見つからない場合 None を返すことを確認する
+        （直接埋め込みパターンにもマッチしないケース）。
+        """
+        cmd = 'codex exec --model gpt-5.3-codex "$(cat "$PROMPT_FILE")" < /dev/null 2>/dev/null'
+        assert audit_cli.extract_codex_prompt(cmd) is None
+
+
+class TestCodexExecDetectionPromptFile:
+    """PROMPT_FILE 形式（改行を挟んだ複数行コマンド）での `codex exec` 検出テスト。"""
+
+    def test_codex_exec_re_matches_after_heredoc(self) -> None:
+        """heredoc ブロックの後、改行を挟んだ `codex exec` 呼び出しも検出できることを確認する。"""
+        cmd = (
+            "PROMPT_FILE=$(mktemp)\n"
+            "cat > \"$PROMPT_FILE\" <<'PROMPT'\n"
+            "Design a REST API\n"
+            "PROMPT\n"
+            "codex exec --model gpt-5.3-codex --sandbox read-only --full-auto "
+            '"$(cat "$PROMPT_FILE")" < /dev/null 2>/dev/null'
+        )
+        assert audit_cli.CODEX_EXEC_RE.search(cmd) is not None
+
 
 class TestExtractGeminiPrompt:
     """`extract_gemini_prompt` のテスト。"""
@@ -409,3 +500,59 @@ class TestMainAliasUnion:
         # union されていれば task:code-reviewer 経由でマッチする
         assert captured["payload"]["matched"] is True
         assert captured["payload"]["actual"] == {"tool": "task", "detail": "code-reviewer"}
+
+
+# ---------------------------------------------------------------------------
+# main (from audit-cli.py) — PROMPT_FILE 形式の cli_call 記録統合テスト
+# ---------------------------------------------------------------------------
+
+
+class TestMainCliCallPromptFile:
+    """`audit_cli.main()` を通した PROMPT_FILE 形式の `cli_call` 記録テスト。"""
+
+    def test_prompt_file_command_records_real_prompt_and_masks_secrets(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """PROMPT_FILE 形式の codex exec 呼び出しで、`cli_call.prompt` に heredoc 本文
+        （機密情報はマスク済み）が記録されることを確認する
+        （`$(cat` 等の断片が記録される旧不具合の回帰確認）。
+        """
+        project_dir = tmp_path
+        (project_dir / ".claude").mkdir()
+
+        command = (
+            "PROMPT_FILE=$(mktemp)\n"
+            "cat > \"$PROMPT_FILE\" <<'PROMPT'\n"
+            "Design a REST API. Use api_key=sk-abcdefghijklmnopqrstuvwx for testing.\n"
+            "PROMPT\n"
+            "codex exec --model gpt-5.3-codex --sandbox read-only --full-auto "
+            '"$(cat "$PROMPT_FILE")" < /dev/null 2>/dev/null'
+        )
+        data = {
+            "session_id": "s1",
+            "cwd": str(project_dir),
+            "tool_name": "Bash",
+            "tool_input": {"command": command},
+            "tool_response": {"stdout": "ok", "exit_code": 0, "duration_ms": 1200},
+        }
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(data)))
+
+        captured: dict = {}
+
+        def fake_emit_event(event_type: str, payload: dict, **kwargs: object) -> dict:
+            captured["type"] = event_type
+            captured["payload"] = payload
+            return payload
+
+        monkeypatch.setattr(audit_cli, "emit_event", fake_emit_event)
+
+        audit_cli.main()
+
+        assert captured["type"] == "cli_call"
+        prompt = captured["payload"]["prompt"]
+        assert prompt.startswith("Design a REST API.")
+        assert "sk-abcdefghijklmnopqrstuvwx" not in prompt
+        assert "[REDACTED]" in prompt
+        assert "$(cat" not in prompt
+        assert captured["payload"]["tool"] == "codex"
+        assert captured["payload"]["model"] == "gpt-5.3-codex"
