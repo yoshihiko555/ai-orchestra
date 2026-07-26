@@ -189,6 +189,12 @@ Task(subagent_type="finding-verifier", run_in_background=true, prompt="""
 - `effective_severity` が報告された場合、Phase 4 の集約では格下げ後の severity を採用し、検証結果として明示する
 - `finding-verifier` を呼ばなかった Medium/Low、および `verify_findings: false` 時の全指摘は検証結果欄なしでそのまま扱う
 
+**検証基盤の失敗時ハンドリング（fail-closed）**:
+
+- `finding-verifier` の Task がタイムアウト・例外・空出力を返した場合、または出力に未知の verdict 値や検証対象 finding_id の欠落が含まれる場合、影響を受けた各 finding は **元の（検証前の）severity のまま `uncertain` として扱い、集約から脱落させない**
+- この検証基盤の失敗は Phase 4 の Review Summary に明示する（例:「検証失敗: {N} 件は verifier 失敗により uncertain 扱い」）
+- 扱いは既存の verdict 表の `uncertain` 行（集約対象に残す、Phase 5 で Critical は Fail 扱い）および Phase 6 の `uncertain` Critical 除外規則（要人手確認）とそのまま整合する。検証基盤の失敗は特別扱いせず、既存の `uncertain` 処理経路にそのまま合流させる
+
 ### Phase 4: 集約・報告（Tiered Output）
 
 全レビュアーの結果を重要度別に集約して報告する。
@@ -332,7 +338,7 @@ while loop_count < max_loops:
     Phase 5: 判定
     if passed:
         Final Report を出力して終了
-    Phase 6: Auto-Fix（confirmed Critical のみ）
+    Phase 6: Auto-Fix（verify_findings: true → confirmed Critical のみ / false → 全 Critical）
     loop_count += 1
 
 # ループ上限到達

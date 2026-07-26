@@ -107,13 +107,13 @@ AGENT_TRIGGERS: dict[str, dict[str, list[str]]] = {
         "ja": ["敵対的検証", "敵対的レビュー", "堅牢性レビュー", "壊れる入力"],
         "en": ["adversarial review", "adversarial verification", "robustness review"],
     },
-    "finding-verifier": {
-        "ja": ["指摘検証", "指摘の反証", "レビュー指摘の検証", "ファインディング検証"],
-        "en": ["finding verification", "verify findings", "refute finding"],
-    },
     "code-reviewer": {
         "ja": ["コードレビュー", "レビュー"],
         "en": ["code review", "review code"],
+    },
+    "finding-verifier": {
+        "ja": ["指摘検証", "指摘の反証", "レビュー指摘の検証", "ファインディング検証"],
+        "en": ["finding verification", "verify findings", "refute finding"],
     },
     "security-reviewer": {
         "ja": ["セキュリティレビュー", "脆弱性", "セキュリティチェック"],
