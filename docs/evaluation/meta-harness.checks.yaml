@@ -1249,11 +1249,13 @@
   oracle: command_exit
   command: >-
     AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
-    packages/meta-harness/tests/test_scenario_docker.py::test_ensure_images_propagates_verified_image_id_to_downstream_image_id_lookups
+    packages/meta-harness/tests/test_scenario_docker.py::test_ensure_images_detailed_propagates_verified_image_id
   covered_by:
-    - packages/meta-harness/tests/test_scenario_docker.py::test_ensure_images_propagates_verified_image_id_to_downstream_image_id_lookups
+    - packages/meta-harness/tests/test_scenario_docker.py::test_ensure_images_detailed_propagates_verified_image_id
   notes: >-
-    ensure_images() registers the ensure-verified image_id into ImageCache.trusted_image_ids so
-    downstream image_id()/_image_id() lookups (container start, image_pin checks) reuse the
-    verified ID instead of re-inspecting the shared tag, closing a TOCTOU on concurrent retags
-    (ADR-20260726-045).
+    ensure_images_detailed() hands back the exact image_id ensure_recipe_image already verified
+    as part of the returned EnsuredImage, so downstream consumers (run_preparation_command,
+    _start_broker) use it directly instead of re-inspecting the shared tag, closing a TOCTOU on
+    concurrent retags (ADR-20260726-045). The prior ImageCache.trusted_image_ids side cache this
+    EV originally described was removed once #317 made every live caller consume .image_id
+    straight from ensure_images_detailed()'s return value (PR #320 review).
