@@ -113,7 +113,7 @@ jobs:
           cache: "pip"
 
       - name: Install ruff
-        run: pip install ruff
+        run: pip install 'ruff>=0.15,<0.16'
 
       - name: Run ruff check
         run: ruff check .
@@ -130,7 +130,7 @@ jobs:
           cache: "pip"
 
       - name: Install ruff
-        run: pip install ruff
+        run: pip install 'ruff>=0.15,<0.16'
 
       - name: Check formatting
         run: ruff format --check .
