@@ -56,6 +56,16 @@ CONFIG_PATCH_TOOL_VALUES = frozenset({"codex", "antigravity", "claude-direct", "
 CONFIG_PATCH_MODEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 CONFIG_PATCH_DANGEROUS_SEGMENTS = frozenset({"__proto__", "constructor"})
 
+# Single Python-side source of truth for the Docker image defaults (Issue #307
+# review): previously duplicated as identical literals in this DEFAULTS dict,
+# scenario_docker_cli.py, and scenario_docker_image.py. Those two modules now
+# re-export these constants instead of repeating the literal strings. The
+# yaml config (config/meta-harness.yaml) is the config-data source of truth
+# and keeps its own copy of these values; parity is enforced by a test.
+DEFAULT_SCENARIO_IMAGE = "ai-orchestra/meta-harness-scenario:2.1.207"
+DEFAULT_BROKER_IMAGE = "ai-orchestra/meta-harness-broker:0.1.0"
+DEFAULT_CLAUDE_VERSION_PIN = "2.1.207 (Claude Code)"
+
 # config が読めない場合のフォールバック既定値（正本は config/meta-harness.yaml、Sec5）。
 DEFAULTS: dict[str, Any] = {
     "storage": {"root": None, "dir": ".claude/meta-harness"},
@@ -81,8 +91,8 @@ DEFAULTS: dict[str, Any] = {
         "isolation": {
             "backend": "docker",
             "execution_backend": "docker",
-            "image": "ai-orchestra/meta-harness-scenario:2.1.207",
-            "image_pin": "2.1.207 (Claude Code)",
+            "image": DEFAULT_SCENARIO_IMAGE,
+            "image_pin": DEFAULT_CLAUDE_VERSION_PIN,
             "auto_build_images": True,
             "image_cache": {
                 "manifest_path": ".claude/meta-harness/docker-image-cache.json",
@@ -100,7 +110,7 @@ DEFAULTS: dict[str, Any] = {
                 "workspace_max_files": 10000,
             },
             "broker": {
-                "image": "ai-orchestra/meta-harness-broker:0.1.0",
+                "image": DEFAULT_BROKER_IMAGE,
                 "port_range": [8790, 8990],
                 "idle_timeout_sec": 300,
                 "startup_timeout_sec": 30,

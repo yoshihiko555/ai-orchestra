@@ -147,6 +147,12 @@ class DockerBrokerSession:
     idle_timeout_seconds: int = 300
     metrics: dict[str, Any] = field(default_factory=dict)
     cleaned: bool = False
+    # `claude --version` output already verified by `ensure_scenario_image`
+    # when `image_pin` was configured; `None` when no pin was configured (the
+    # ensure step then has no reason to have checked it). Lets
+    # `check_docker_capabilities` avoid a second container launch to re-fetch
+    # the same value (Issue #307 review).
+    scenario_claude_version: str | None = None
     _keepalive_stop: threading.Event = field(
         default_factory=threading.Event, init=False, repr=False
     )
@@ -254,7 +260,20 @@ def check_docker_capabilities(
         ) as broker:
             checks["scenario_image"] = True
             checks["broker_image"] = True
-            version = _image_claude_version(broker.image_id, runner=runner)
+            # `ensure_images` (called earlier, inside `docker_broker_session` /
+            # `_start_broker`) already resolved and pin-verified this version
+            # when a pin was configured -- reuse it instead of launching a
+            # second container to recompute the same `claude --version`
+            # output. Only fall back to a fresh lookup when no pin was
+            # configured, since `ensure_scenario_image` had no reason to have
+            # checked the version in that case (Issue #307 review). The
+            # comparison/early-return below is unchanged and still guards
+            # independently of whether this value came from `ensure` or a
+            # fresh lookup here (defense-in-depth; see the comments in
+            # `_start_broker` and `run_preparation_command` above).
+            version = broker.scenario_claude_version
+            if version is None:
+                version = _image_claude_version(broker.image_id, runner=runner)
             version_match = (
                 None if version_pin is None else _version_matches(version, str(version_pin))
             )
@@ -551,8 +570,10 @@ def run_preparation_command(
     # has already called `ensure_images` (and thus after this same
     # fail-closed check has already passed), as an additional diagnostic
     # surfaced in `DockerCapabilityResult`.
-    scenario_image, _broker_image = ensure_images(config, runner=runner, main_root=main_root)
-    image_id = _image_id(scenario_image, runner=runner)
+    scenario_ensured, _broker_ensured = ensure_images_detailed(
+        config, runner=runner, main_root=main_root
+    )
+    image_id = scenario_ensured.image_id
     container_name = f"{NAME_PREFIX}prepare-{secrets.token_hex(4)}"
     worktree = _regular_directory(worktree_dir, "scenario worktree")
     runtime = Path(tempfile.mkdtemp(prefix="mh-prepare-docker-"))
@@ -832,9 +853,11 @@ def _start_broker(
     runner: SubprocessRunner,
     main_root: Path | None = None,
 ) -> DockerBrokerSession:
-    scenario_image, broker_image = ensure_images(config, runner=runner, main_root=main_root)
-    scenario_image_id = _image_id(scenario_image, runner=runner)
-    broker_image_id = _image_id(broker_image, runner=runner)
+    scenario_ensured, broker_ensured = ensure_images_detailed(
+        config, runner=runner, main_root=main_root
+    )
+    scenario_image, broker_image = scenario_ensured.tag, broker_ensured.tag
+    scenario_image_id, broker_image_id = scenario_ensured.image_id, broker_ensured.image_id
     isolation = _isolation_config(config)
     broker_cfg = isolation.get("broker") or {}
     port_range = broker_cfg.get("port_range", [8790, 8990])
@@ -864,10 +887,13 @@ def _start_broker(
     # against the already-ensured `scenario_image_id` would be unreachable
     # dead code (Issue #250 review). This is the primary fail-closed line
     # for `image_pin`; `check_docker_capabilities`'s own pin comparison is
-    # not a separate pre-Docker gate -- it runs *after* `docker_broker_session`
-    # has already called `ensure_images` (and thus after this same
-    # fail-closed check has already passed), as an additional diagnostic
-    # surfaced in `DockerCapabilityResult`.
+    # a defense-in-depth re-check, not a separate pre-Docker gate -- it runs
+    # *after* `docker_broker_session` has already called `ensure_images`
+    # (and thus after this same fail-closed check has already passed), and
+    # it reuses `scenario_ensured.claude_version` (threaded through
+    # `DockerBrokerSession.scenario_claude_version` below) instead of paying
+    # for a second container launch when this check already resolved it
+    # (Issue #307 review).
     effective_broker_env = profile.broker_env(config, "hash-placeholder", 1)
     settings_hash = _sha256_json(
         {
@@ -916,6 +942,7 @@ def _start_broker(
             owner_labels=owner_labels,
             runner=runner,
             idle_timeout_seconds=int(broker_cfg.get("idle_timeout_sec", 300)),
+            scenario_claude_version=scenario_ensured.claude_version,
         )
 
     return lifecycle.start_broker_container(
@@ -946,8 +973,26 @@ def ensure_images(
     runner: SubprocessRunner = subprocess.run,
     main_root: Path | None = None,
 ) -> tuple[str, str]:
+    """Ensure the scenario and broker images, returning their tags only.
+
+    Back-compat wrapper (Issue #307 review): restores the pre-Issue-#307
+    `tuple[str, str]` contract for existing callers. Use
+    `ensure_images_detailed()` for the richer `EnsuredImage` metadata.
+    """
     try:
         return dcli.ensure_images(config, runner=runner, main_root=main_root)
+    except dcli.DockerCliError as exc:
+        raise DockerScenarioError(str(exc)) from exc
+
+
+def ensure_images_detailed(
+    config: dict,
+    *,
+    runner: SubprocessRunner = subprocess.run,
+    main_root: Path | None = None,
+) -> tuple[dcli.simg.EnsuredImage, dcli.simg.EnsuredImage]:
+    try:
+        return dcli.ensure_images_detailed(config, runner=runner, main_root=main_root)
     except dcli.DockerCliError as exc:
         raise DockerScenarioError(str(exc)) from exc
 
@@ -1090,7 +1135,9 @@ def _isolation_config(config: dict) -> dict:
 # Compatibility alias: image_pin semver matching now lives in the shared
 # docker_runtime_cli module (Issue #250 review; see also scenario_docker_image.py
 # and packages/loop-harness/lib/loop_docker_image.py, which delegate the same
-# way). Kept as a module-level name because tests exercise it directly.
+# way). Kept as a module-level name: used directly by `check_docker_capabilities`
+# in production (Issue #307 review) and exercised directly by tests (e.g.
+# `test_version_matches_uses_token_compare_only_for_bare_pins`).
 _version_matches = runtime_cli.version_matches
 
 

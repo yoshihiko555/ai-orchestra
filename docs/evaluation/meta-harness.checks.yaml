@@ -646,7 +646,8 @@
     - packages/meta-harness/tests/test_scenario_docker_image.py::TestConfigOverridesAndBackwardCompatibleDefaults::test_image_cache_overrides_are_reflected_in_policy
     - packages/meta-harness/tests/test_scenario_docker_image.py::TestConfigOverridesAndBackwardCompatibleDefaults::test_missing_image_cache_config_falls_back_to_defaults
     - packages/meta-harness/tests/test_scenario_docker_image.py::TestConfigOverridesAndBackwardCompatibleDefaults::test_non_positive_keep_generations_falls_back_to_default
-    - packages/docker-runtime/tests/test_docker_runtime_image.py
+    - packages/docker-runtime/tests/test_docker_runtime_image.py::test_recipe_hash_covers_normalized_args_platform_and_target
+    - packages/docker-runtime/tests/test_docker_runtime_image.py::test_manifest_reuses_image_across_calls_while_build_lock_is_held
   notes: >-
     the meta-harness adapter builds the ImageRecipe/ImageCachePolicy handed to the shared
     docker-runtime ensure_recipe_image (manifest-based cross-process reuse, recipe-hash-keyed

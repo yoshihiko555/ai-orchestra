@@ -17,21 +17,24 @@ for _path in (_LIB_DIR, _DOCKER_RUNTIME_LIB):
 
 import docker_runtime_cli as runtime_cli
 import docker_runtime_image as runtime_image
+import meta_harness_common as mh
 
 SubprocessRunner = runtime_cli.SubprocessRunner
 EnsuredImage = runtime_image.EnsuredImage
 DockerImageError = runtime_image.DockerImageError
 
 DOCKER_LABEL = "ai.orchestra.meta-harness"
-DEFAULT_SCENARIO_IMAGE = "ai-orchestra/meta-harness-scenario:2.1.207"
-DEFAULT_BROKER_IMAGE = "ai-orchestra/meta-harness-broker:0.1.0"
+# Re-exported from meta_harness_common (Issue #307 review): single Python-side
+# source of truth for these three literals; see meta_harness_common.py.
+DEFAULT_SCENARIO_IMAGE = mh.DEFAULT_SCENARIO_IMAGE
+DEFAULT_BROKER_IMAGE = mh.DEFAULT_BROKER_IMAGE
+DEFAULT_CLAUDE_VERSION_PIN = mh.DEFAULT_CLAUDE_VERSION_PIN
 DEFAULT_MANIFEST_PATH = ".claude/meta-harness/docker-image-cache.json"
 DEFAULT_LOCK_PATH = ".claude/meta-harness/docker-image-build.lock"
 DEFAULT_BUILDER_NAME = "meta-harness-builder"
 DEFAULT_BUILDKIT_CACHE_MAX_AGE = "168h"
 DEFAULT_BUILDKIT_CACHE_MAX_SIZE = "10g"
 DEFAULT_KEEP_GENERATIONS = 3
-DEFAULT_CLAUDE_VERSION_PIN = "2.1.207 (Claude Code)"
 
 
 def ensure_scenario_image(
@@ -79,6 +82,16 @@ def ensure_scenario_image(
         actual = runtime_cli.image_claude_version(ensured.image_id, runner=runner)
         if not runtime_cli.version_matches(actual, str(image_pin)):
             raise DockerImageError(f"image_pin mismatch: expected {image_pin!r}, got {actual!r}")
+        # Surface the version already verified here so callers (e.g.
+        # `check_docker_capabilities`) can reuse it instead of launching
+        # another container just to look it up again (Issue #307 review).
+        ensured = runtime_image.EnsuredImage(
+            image_id=ensured.image_id,
+            tag=ensured.tag,
+            recipe_hash=ensured.recipe_hash,
+            built=ensured.built,
+            claude_version=actual,
+        )
     return ensured
 
 

@@ -22,15 +22,16 @@ import scenario_docker_image as simg
 SubprocessRunner = runtime.SubprocessRunner
 
 DOCKER_LABEL = "ai.orchestra.meta-harness"
-DEFAULT_SCENARIO_IMAGE = "ai-orchestra/meta-harness-scenario:2.1.207"
-DEFAULT_BROKER_IMAGE = "ai-orchestra/meta-harness-broker:0.1.0"
-DEFAULT_CLAUDE_VERSION_PIN = "2.1.207 (Claude Code)"
+# Re-exported from meta_harness_common (Issue #307 review): single Python-side
+# source of truth, previously duplicated as identical literals here, in
+# scenario_docker_image.py, and in meta_harness_common.DEFAULTS.
+DEFAULT_SCENARIO_IMAGE = mh.DEFAULT_SCENARIO_IMAGE
+DEFAULT_BROKER_IMAGE = mh.DEFAULT_BROKER_IMAGE
+DEFAULT_CLAUDE_VERSION_PIN = mh.DEFAULT_CLAUDE_VERSION_PIN
 CHECKED_COMMAND_TIMEOUT_SECONDS = runtime.CHECKED_COMMAND_TIMEOUT_SECONDS
 DockerCliError = runtime.DockerCliError
 
 _IMAGE_CACHE = runtime.ImageCache()
-_TRUSTED_IMAGE_IDS = _IMAGE_CACHE.trusted_image_ids
-_BUILT_CONTEXTS = _IMAGE_CACHE.built_contexts
 
 
 def ensure_images(
@@ -39,20 +40,35 @@ def ensure_images(
     runner: SubprocessRunner = subprocess.run,
     main_root: Path | None = None,
 ) -> tuple[str, str]:
+    """Ensure the scenario and broker images, returning their tags only.
+
+    Back-compat wrapper (Issue #307 review): this is the public contract
+    every existing caller relies on (a plain `(scenario_tag, broker_tag)`
+    pair passed straight into Docker argv). Use `ensure_images_detailed()`
+    when the richer `EnsuredImage` metadata (image_id / claude_version) is
+    needed.
+    """
+    scenario, broker = ensure_images_detailed(config, runner=runner, main_root=main_root)
+    return scenario.tag, broker.tag
+
+
+def ensure_images_detailed(
+    config: dict,
+    *,
+    runner: SubprocessRunner = subprocess.run,
+    main_root: Path | None = None,
+) -> tuple[simg.EnsuredImage, simg.EnsuredImage]:
+    """Ensure the scenario and broker images, returning full `EnsuredImage`
+    metadata (image_id / recipe_hash / claude_version) for callers that need
+    to avoid a redundant `docker image inspect` or container launch
+    (Issue #307)."""
     try:
         root = main_root if main_root is not None else mh.resolve_main_root(Path.cwd(), config)
         scenario = simg.ensure_scenario_image(config, root, runner=runner)
         broker = simg.ensure_broker_image(config, root, runner=runner)
     except (simg.DockerImageError, mh.MetaHarnessRootError) as exc:
         raise DockerCliError(str(exc)) from exc
-    # Trust the image IDs `ensure_recipe_image` already verified for these
-    # tags, so downstream `image_id()`/`_image_id()` calls (container start,
-    # image_pin checks) reuse them instead of re-inspecting the tag -- which
-    # could race a concurrent retag of the same shared tag and resolve to a
-    # different, unverified image (Issue #231).
-    _TRUSTED_IMAGE_IDS[scenario.tag] = scenario.image_id
-    _TRUSTED_IMAGE_IDS[broker.tag] = broker.image_id
-    return scenario.tag, broker.tag
+    return scenario, broker
 
 
 def docker_daemon_available(*, runner: SubprocessRunner) -> bool:
