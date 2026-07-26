@@ -37,8 +37,13 @@
 ## 呼び出し方法
 
 > **Bash サンドボックス制約**
-> Codex CLI は OAuth 認証 + macOS システム API を使用するため、sandbox 内では動作しない場合がある。
-> ただし `sandbox.excludedCommands` に `codex` が設定済みなら sandbox 内でも実行可能。
+> Codex CLI（0.145 系以降）は起動時の in-process app-server 初期化が sandbox の OS 制限で
+> 失敗するため、sandbox 内では動作しない（`requires_sandbox_disable: true`）。
+> `sandbox.excludedCommands` の `codex` 除外も現行の Claude Code では効かないため、
+> 呼び出し側で sandbox を無効化（`dangerouslyDisableSandbox: true`）して実行する。
+> sandbox 無効化は `codex exec ...` 単体のコマンドにのみ適用し、他のシェルコマンドと
+> `&&` / `;` / `|` 等で連結しない（インジェクション発生時の被害拡大を防ぐため）。
+> sandbox 無効時も `--sandbox read-only` / `workspace-write` による codex 側の保護は維持される。
 
 ### サブエージェント経由（推奨）
 
@@ -85,6 +90,10 @@ Codex CLI はサブプロセスとして実行されるため、対話的な入�
    - 無効なモデル名（例: アカウントで未サポート）は **400 エラーをリトライし続けて無限ハングに見える**
 3. `codex.model` の値が現在のアカウントで有効か、最小コマンドで疎通確認する:
    `codex exec --sandbox read-only "Reply with OK only" < /dev/null`
+4. stderr に `failed to initialize in-process app-server client: Operation not permitted` が
+   出る場合は sandbox 起因の起動失敗（ハングではなく即時 exit 1）。Claude Code の sandbox 内で
+   実行していないか確認し、sandbox を無効化して再実行する（`sandbox.excludedCommands` の
+   `codex` 除外は現行 Claude Code では効かない。上記「Bash サンドボックス制約」参照）
 
 ## Sandbox モード
 

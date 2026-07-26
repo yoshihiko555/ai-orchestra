@@ -27,8 +27,10 @@ codex:
   # codex exec に常に付与するフラグ
   # --full-auto: 確認プロンプトなしで自動実行
   flags: --full-auto
-  # sandbox 内で実行可能（enableWeakerNetworkIsolation: true が前提）
-  requires_sandbox_disable: false
+  # sandbox 内では実行不可: codex 0.145 系は起動時の in-process app-server 初期化が
+  # sandbox の OS 制限（EPERM）で失敗する。sandbox.excludedCommands の codex 除外も
+  # 現行 Claude Code では効かないため、呼び出し側で sandbox を無効化して実行する（Issue #85）
+  requires_sandbox_disable: true
 
 # Google Antigravity CLI (https://antigravity.google) — Gemini CLI の後継
 # リサーチ・ドキュメント分析・コードベース理解・マルチモーダル処理で使用
