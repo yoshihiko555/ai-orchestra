@@ -356,3 +356,72 @@ def test_extract_ignores_ordinary_comment_not_prefixed_with_codd() -> None:
     node, errors = cx.extract_code_node("src/main.go", text, INLINE_CONFIDENCE)
     assert node is not None
     assert errors == []
+
+
+# ---------------------------------------------------------------------------
+# tokenize 早期打ち切り（レビュー対応: codd_code.py:156 / codd_code.py:159）
+# ---------------------------------------------------------------------------
+
+
+def test_extract_python_docstring_survives_later_token_error() -> None:
+    # 先頭の文（docstring）の終端が判明した時点で tokenize を打ち切るため、
+    # 後方の未閉じ文字列リテラル由来の TokenError に巻き込まれず、有効な
+    # 先頭注釈を取り出せる（レビュー対応: codd_code.py:156）。
+    text = (
+        '"""\ncodd:implements design:codd-coherence-layer\n"""\n\n'
+        'def broken():\n    s = "unterminated\n'
+    )
+    node, errors = cx.extract_code_node("src/mod.py", text, INLINE_CONFIDENCE)
+    assert node is not None
+    assert errors == []
+    assert node.depends_on[0].id == "design:codd-coherence-layer"
+
+
+def test_extract_python_module_leading_indent_is_not_docstring() -> None:
+    # モジュール先頭からインデントされた不正な Python（`ast.parse` なら
+    # `IndentationError` になるケース）は docstring として誤って取り込まない
+    # （レビュー対応: codd_code.py:159）。
+    text = '    """\ncodd:implements design:x\n"""\n'
+    node, errors = cx.extract_code_node("src/mod.py", text, INLINE_CONFIDENCE)
+    assert node is None
+    assert errors == []
+
+
+# ---------------------------------------------------------------------------
+# 予約 key の重複検出（レビュー対応: codd_code.py:242）
+# ---------------------------------------------------------------------------
+
+
+def test_extract_reports_malformed_annotation_duplicate_node_id() -> None:
+    # `codd:node_id` が複数回指定された場合、採用されるのは最初の値のみだが、
+    # 重複自体を malformed_annotation として報告する（黙って握りつぶさない）。
+    text = '"""\ncodd:node_id code:first\ncodd:node_id code:second\ncodd:implements design:x\n"""\n'
+    node, errors = cx.extract_code_node("src/mod.py", text, INLINE_CONFIDENCE)
+    assert node is not None
+    assert node.node_id == "code:first"  # 最初の値のみ採用
+    assert any("codd:node_id" in e and "2 回" in e for e in errors)
+
+
+def test_extract_reports_malformed_annotation_duplicate_kind() -> None:
+    # 正しい `codd:kind code` の後に禁止された `codd:kind requirement` が
+    # 続いても、従来は最初の truthy 値だけを見て検証をすり抜けていた。
+    # 重複自体をエラーとして報告する。
+    text = '"""\ncodd:kind code\ncodd:kind requirement\ncodd:implements design:x\n"""\n'
+    node, errors = cx.extract_code_node("src/mod.py", text, INLINE_CONFIDENCE)
+    assert node is not None
+    assert node.kind == "code"  # 最初の値のみ採用
+    assert any("codd:kind" in e and "2 回" in e for e in errors)
+
+
+def test_extract_reports_malformed_annotation_duplicate_status_and_owner() -> None:
+    text = (
+        '"""\ncodd:status active\ncodd:status draft\n'
+        "codd:owner team-a\ncodd:owner team-b\n"
+        'codd:implements design:x\n"""\n'
+    )
+    node, errors = cx.extract_code_node("src/mod.py", text, INLINE_CONFIDENCE)
+    assert node is not None
+    assert node.status == "active"
+    assert node.owner == "team-a"
+    assert any("codd:status" in e and "2 回" in e for e in errors)
+    assert any("codd:owner" in e and "2 回" in e for e in errors)

@@ -656,6 +656,11 @@ def _as_glob_list(value: Any, field_name: str) -> list[str]:
     素朴に空文字列へも適用すると ``[""]`` になり、後続の ``Path.glob("")`` が
     ``ValueError: Unacceptable pattern: ''`` を送出して `main()` の設定ロード用
     ハンドラより後（走査時）に CLI がトレースバックで終了してしまう。
+
+    リスト内の要素すべてが文字列であればこのチェックは通過するため、
+    ``code_scope.include: [""]`` のようにリスト**内**の空文字列要素も同じ
+    ``Path.glob("")`` の ``ValueError`` を引き起こしうる。単独の空文字列と同様
+    「対象なし」として扱い、空文字列要素は結果から除去する（Issue #98 レビュー対応）。
     """
     if value is None or value == "":
         return []
@@ -664,7 +669,7 @@ def _as_glob_list(value: Any, field_name: str) -> list[str]:
     if isinstance(value, list):
         if not all(isinstance(item, str) for item in value):
             raise ValueError(f"{field_name} の要素は全て文字列である必要があります: {value!r}")
-        return list(value)
+        return [item for item in value if item != ""]
     raise ValueError(f"{field_name} は文字列またはリストである必要があります: {value!r}")
 
 

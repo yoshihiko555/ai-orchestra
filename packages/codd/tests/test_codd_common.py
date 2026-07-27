@@ -501,6 +501,28 @@ def test_load_config_code_scope_include_empty_string_means_no_targets(tmp_path) 
     assert config.code_exclude == []
 
 
+def test_load_config_code_scope_include_list_with_empty_string_element_is_dropped(
+    tmp_path,
+) -> None:
+    # `code_scope.include: ["", "src/**/*.py"]` のようにリスト**内**の空文字列要素も
+    # 単独の空文字列と同じ「対象なし」の意味で扱い、除去する。除去せず `[""]` の
+    # まま `Path.glob("")` に渡すと `ValueError: Unacceptable pattern: ''` になる
+    # （Issue #98 レビュー対応: codd_common.py:665）。
+    cfg_path = tmp_path / "codd.yaml"
+    _write(cfg_path, "code_scope:\n  include:\n    - ''\n    - 'src/**/*.py'\n")
+    config = codd.load_config(cfg_path)
+    assert config.code_include == ["src/**/*.py"]
+
+
+def test_load_config_scope_exclude_list_with_only_empty_string_element_is_empty(
+    tmp_path,
+) -> None:
+    cfg_path = tmp_path / "codd.yaml"
+    _write(cfg_path, "scope:\n  include: 'docs/**/*.md'\n  exclude:\n    - ''\n")
+    config = codd.load_config(cfg_path)
+    assert config.exclude == []
+
+
 def test_load_config_code_scope_include_absent_defaults_to_empty_list(tmp_path) -> None:
     cfg_path = tmp_path / "codd.yaml"
     _write(cfg_path, "enabled: true\n")

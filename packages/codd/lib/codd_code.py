@@ -151,46 +151,53 @@ def _python_leading_text(text: str) -> str:
       誤抽出防止）。
     - 文字列以外（bytes リテラル・f-string 等）が最初の文だった場合も docstring
       扱いしない（AST ベースと同じ挙動）。
+
+    トークン化は先頭の文の終端が判明した時点で打ち切る（`tokens = [...]` で
+    全 token をリスト化すると、大規模ファイルほど不要な CPU/メモリを消費し、
+    docstring より後方の未閉じ文字列等による `TokenError` で有効な先頭注釈まで
+    黙って失ってしまうため。レビュー対応: codd_code.py:156）。`tokenize.INDENT`
+    は本文中の通常のブロックでは正当だが、**先頭の**有意トークンとして現れた
+    場合（例: ``    \"\"\"...\"\"\"`` のようにモジュール先頭からインデントされた
+    不正な Python）は `ast.parse` が `IndentationError` になるケースであり、
+    docstring として誤って取り込まない（レビュー対応: codd_code.py:159）。
     """
     try:
-        tokens = [
+        significant_tokens = (
             tok
             for tok in tokenize.generate_tokens(io.StringIO(text).readline)
-            if tok.type not in (tokenize.COMMENT, tokenize.NL, tokenize.ENCODING, tokenize.INDENT)
-        ]
+            if tok.type not in (tokenize.COMMENT, tokenize.NL, tokenize.ENCODING)
+        )
 
-        index = 0
+        current = next(significant_tokens, None)
+        if current is not None and current.type == tokenize.INDENT:
+            return ""
+
         paren_depth = 0
-        while (
-            index < len(tokens)
-            and tokens[index].type == tokenize.OP
-            and tokens[index].string == "("
-        ):
+        while current is not None and current.type == tokenize.OP and current.string == "(":
             paren_depth += 1
-            index += 1
+            current = next(significant_tokens, None)
 
         string_tokens: list[str] = []
-        while index < len(tokens) and tokens[index].type == tokenize.STRING:
-            string_tokens.append(tokens[index].string)
-            index += 1
+        while current is not None and current.type == tokenize.STRING:
+            string_tokens.append(current.string)
+            current = next(significant_tokens, None)
         if not string_tokens:
             return ""
 
         while (
             paren_depth > 0
-            and index < len(tokens)
-            and tokens[index].type == tokenize.OP
-            and tokens[index].string == ")"
+            and current is not None
+            and current.type == tokenize.OP
+            and current.string == ")"
         ):
             paren_depth -= 1
-            index += 1
+            current = next(significant_tokens, None)
         if paren_depth != 0:
             return ""
 
-        if index < len(tokens):
-            trailing = tokens[index]
-            is_statement_end = trailing.type in (tokenize.NEWLINE, tokenize.ENDMARKER) or (
-                trailing.type == tokenize.OP and trailing.string == ";"
+        if current is not None:
+            is_statement_end = current.type in (tokenize.NEWLINE, tokenize.ENDMARKER) or (
+                current.type == tokenize.OP and current.string == ";"
             )
             if not is_statement_end:
                 return ""
@@ -223,6 +230,29 @@ def _comment_leading_text(text: str, marker: str = "//") -> str:
     return "\n".join(collected)
 
 
+def _duplicate_reserved_key_errors(entries: list[tuple[str, str | None]], rel: str) -> list[str]:
+    """予約 scalar key（node_id/kind/status/owner）の重複出現を検証する。
+
+    後続の `next((v for k, v in entries if k == "kind" and v), None)` 等は最初の
+    truthy 値だけを採用し、後続の値を検証せず黙って無視する。そのため、正しい
+    `codd:kind code` の後に禁止された `codd:kind requirement` を置いても、また
+    競合する `codd:node_id` や 2 番目に不正な `codd:status` を置いても、検証を
+    すり抜けて正常なノードが生成されてしまう。重複はすべて malformed_annotation
+    として報告する（採用される値は引き続き最初の 1 件。レビュー対応: codd_code.py:242）。
+    """
+    errors: list[str] = []
+    for key in sorted(_RESERVED_KEYS):
+        values = [value for entry_key, value in entries if entry_key == key]
+        if len(values) <= 1:
+            continue
+        shown = ", ".join(v if v else "<値なし>" for v in values)
+        errors.append(
+            f"{rel}: 予約された注釈 'codd:{key}' が {len(values)} 回指定されています "
+            f"({shown})。重複は許可されません（最初の値のみ採用）"
+        )
+    return errors
+
+
 def _entries_to_node(
     entries: list[tuple[str, str | None]], rel: str, inline_confidence: float
 ) -> tuple[cc.CoddNode | None, list[str]]:
@@ -239,6 +269,7 @@ def _entries_to_node(
         for key, value in entries
         if key not in _RESERVED_KEYS and not value
     ]
+    errors.extend(_duplicate_reserved_key_errors(entries, rel))
     kind_value = next((v for k, v in entries if k == "kind" and v), None)
     if kind_value is not None and kind_value not in _VALID_SOURCE_KINDS:
         # ソース注釈は code/test 語彙に限定する（Issue #98 レビュー対応）。

@@ -37,6 +37,11 @@ BASE_CONFIG = {
     },
 }
 
+# `path_in_scope()` / `path_in_code_scope()` は削除済みファイル向けの純粋パス判定
+# であり、実ファイルアクセスをしない（レキシカルな正規化のみ）。tmp_path を使わない
+# テストでは、この固定ダミー root を使う（Issue #98 レビュー対応: codd.py:880）。
+_ROOT = Path("/repo")
+
 
 def _config(**overrides) -> object:
     data = {**BASE_CONFIG, **overrides}
@@ -408,6 +413,75 @@ def test_batch_commit_times_handles_non_ascii_paths(tmp_path) -> None:
     assert batched["docs/日本語.md"] != clean.stat().st_mtime
 
 
+def test_git_output_bytes_keep_partial_on_error_returns_partial_stdout(
+    monkeypatch, tmp_path
+) -> None:
+    # 部分履歴 clone（shallow clone 等）では、対象パスの無制限 `git log` が最新
+    # timestamp を stdout に出力した後、古い履歴（欠けた tree）の走査中に nonzero
+    # で終了することがある。`keep_partial_on_error=True` は stdout が空でなければ
+    # nonzero 終了でも取得できた分を返す。既定（False）は従来どおり破棄する
+    # （レビュー対応: codd.py:394）。
+    def _fake_run(args, cwd, capture_output, check):
+        return subprocess.CompletedProcess(
+            args, returncode=128, stdout=b"partial-bytes", stderr=b"fatal: bad object deadbeef"
+        )
+
+    monkeypatch.setattr(cli.subprocess, "run", _fake_run)
+
+    assert cli._git_output_bytes(tmp_path, ["log"], keep_partial_on_error=True) == b"partial-bytes"
+    assert cli._git_output_bytes(tmp_path, ["log"]) is None
+
+
+def test_log_commit_times_uses_partial_output_on_nonzero_git_log_exit(
+    monkeypatch, tmp_path
+) -> None:
+    # `_log_commit_times()` は `keep_partial_on_error=True` で `git log` を呼ぶため、
+    # 部分履歴 clone で nonzero 終了しても、取得できた分の timestamp を使う（0 件
+    # 扱いで mtime へ全面フォールバックしない。レビュー対応: codd.py:394）。
+    _init_repo(tmp_path)
+    _write(tmp_path, "docs/a.md", "# a\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "init")
+
+    real_run = subprocess.run
+
+    def _fake_run(args, cwd, capture_output, check):
+        # 実際の git 出力はそのまま使い、returncode だけ shallow clone 相当に壊す。
+        completed = real_run(args, cwd=cwd, capture_output=capture_output, check=False)
+        return subprocess.CompletedProcess(
+            args, returncode=128, stdout=completed.stdout, stderr=b"fatal: bad object deadbeef"
+        )
+
+    monkeypatch.setattr(cli.subprocess, "run", _fake_run)
+
+    times = cli._log_commit_times(tmp_path, ["docs/a.md"])
+
+    assert "docs/a.md" in times
+    assert times["docs/a.md"] > 0
+
+
+def test_batch_commit_times_excludes_dirty_paths_outside_root_prefix(tmp_path) -> None:
+    # `--root` がサブディレクトリを指す場合、`_dirty_paths()` はリポジトリ全体の
+    # dirty パスを返す。prefix（`sub/`）配下に無いパス（例: リポジトリ直下の
+    # `docs/clean.md`）が prefix 除去前のまま素通りすると、prefix 除去後に偶然
+    # root 内ノードと同じ相対名になり、clean な `sub/docs/clean.md` まで誤って
+    # dirty 扱いされてしまっていた（レビュー対応: codd.py:442）。
+    repo_root = tmp_path
+    _init_repo(repo_root)
+    sub_root = repo_root / "sub"
+    clean = _write(repo_root, "sub/docs/clean.md", "# clean (sub)\n")
+    _write(repo_root, "docs/clean.md", "# clean (top-level, will be dirty)\n")
+    _git(repo_root, "add", "-A")
+    _git(repo_root, "commit", "-m", "init")
+    # root 外（prefix 外）の同名相対パスだけを dirty にする。sub 側は commit のまま。
+    (repo_root / "docs/clean.md").write_text("# edited\n", encoding="utf-8")
+
+    batched = cli.batch_commit_times(sub_root, ["docs/clean.md"])
+
+    # sub/docs/clean.md 自体は clean なのでコミット時刻が返るべき（mtime ではない）。
+    assert batched["docs/clean.md"] != clean.stat().st_mtime
+
+
 def test_batch_commit_times_normalizes_paths_when_root_is_not_git_root(tmp_path) -> None:
     # `--root` が git リポジトリルート以外（サブディレクトリ）を指す場合も、
     # `_dirty_paths()` / `_log_commit_times()` が返すリポジトリルート相対のパスを
@@ -742,18 +816,18 @@ def test_deleted_upstream_excludes_out_of_scope_md(tmp_path) -> None:
 
 def test_path_in_scope() -> None:
     config = _config(scope={"include": ["docs/**/*.md"], "exclude": ["docs/adr/_template.md"]})
-    assert cli.path_in_scope("docs/x.md", config) is True
-    assert cli.path_in_scope("docs/sub/y.md", config) is True
-    assert cli.path_in_scope("README.md", config) is False  # スコープ外
-    assert cli.path_in_scope("docs/x.txt", config) is False  # 拡張子不一致
-    assert cli.path_in_scope("docs/adr/_template.md", config) is False  # exclude
+    assert cli.path_in_scope(_ROOT, "docs/x.md", config) is True
+    assert cli.path_in_scope(_ROOT, "docs/sub/y.md", config) is True
+    assert cli.path_in_scope(_ROOT, "README.md", config) is False  # スコープ外
+    assert cli.path_in_scope(_ROOT, "docs/x.txt", config) is False  # 拡張子不一致
+    assert cli.path_in_scope(_ROOT, "docs/adr/_template.md", config) is False  # exclude
 
 
 def test_path_in_scope_single_star_is_segment_aware() -> None:
     # 単層 glob (dir/*.md) は 1 セグメントのみ。サブディレクトリを跨いではならない。
     config = _config(scope={"include": [".claude/rules/*.md"], "exclude": []})
-    assert cli.path_in_scope(".claude/rules/foo.md", config) is True
-    assert cli.path_in_scope(".claude/rules/sub/deep.md", config) is False  # 単層を跨がない
+    assert cli.path_in_scope(_ROOT, ".claude/rules/foo.md", config) is True
+    assert cli.path_in_scope(_ROOT, ".claude/rules/sub/deep.md", config) is False  # 単層を跨がない
 
 
 def test_path_in_scope_character_class_matches_like_path_glob() -> None:
@@ -762,21 +836,21 @@ def test_path_in_scope_character_class_matches_like_path_glob() -> None:
     # （Issue #98 レビュー対応）。以前は `[` `]` をリテラルエスケープしており、
     # `docs/[ab].md` が `a.md` / `b.md` にマッチしなかった。
     config = _config(scope={"include": ["docs/[ab].md"], "exclude": []})
-    assert cli.path_in_scope("docs/a.md", config) is True
-    assert cli.path_in_scope("docs/b.md", config) is True
-    assert cli.path_in_scope("docs/c.md", config) is False
+    assert cli.path_in_scope(_ROOT, "docs/a.md", config) is True
+    assert cli.path_in_scope(_ROOT, "docs/b.md", config) is True
+    assert cli.path_in_scope(_ROOT, "docs/c.md", config) is False
 
 
 def test_path_in_scope_character_class_negation() -> None:
     config = _config(scope={"include": ["docs/[!ab].md"], "exclude": []})
-    assert cli.path_in_scope("docs/c.md", config) is True
-    assert cli.path_in_scope("docs/a.md", config) is False
+    assert cli.path_in_scope(_ROOT, "docs/c.md", config) is True
+    assert cli.path_in_scope(_ROOT, "docs/a.md", config) is False
 
 
 def test_path_in_scope_character_class_range() -> None:
     config = _config(scope={"include": ["docs/[a-c].md"], "exclude": []})
-    assert cli.path_in_scope("docs/b.md", config) is True
-    assert cli.path_in_scope("docs/d.md", config) is False
+    assert cli.path_in_scope(_ROOT, "docs/b.md", config) is True
+    assert cli.path_in_scope(_ROOT, "docs/d.md", config) is False
 
 
 def test_scope_pattern_unterminated_bracket_is_literal() -> None:
@@ -798,7 +872,9 @@ def test_scope_pattern_invalid_char_range_is_safe_non_match() -> None:
     assert regex.fullmatch("docs/a.md") is None
     assert regex.fullmatch("docs/z.md") is None
     assert (
-        cli.path_in_scope("docs/a.md", _config(scope={"include": ["docs/[z-a].md"], "exclude": []}))
+        cli.path_in_scope(
+            _ROOT, "docs/a.md", _config(scope={"include": ["docs/[z-a].md"], "exclude": []})
+        )
         is False
     )
 
@@ -827,8 +903,8 @@ def test_path_in_scope_character_class_matches_path_glob_behavior(tmp_path) -> N
     collected = {p.relative_to(tmp_path).as_posix() for p in cli.collect_files(tmp_path, config)}
 
     assert collected == {"docs/a.md"}
-    assert cli.path_in_scope("docs/a.md", config) is True
-    assert cli.path_in_scope("docs/c.md", config) is False
+    assert cli.path_in_scope(tmp_path, "docs/a.md", config) is True
+    assert cli.path_in_scope(tmp_path, "docs/c.md", config) is False
 
 
 def test_impact_config_rejects_invalid_values() -> None:
@@ -1301,6 +1377,58 @@ def test_collect_files_rejects_symlink_resolving_outside_root(tmp_path) -> None:
     files = {p.relative_to(root).as_posix() for p in cli.collect_files(root, config)}
 
     assert files == set()
+
+
+def test_compute_impact_result_detects_change_via_symlink_target(tmp_path) -> None:
+    # scan は symlink（working tree の node.path）を dereference してリンク先の
+    # 内容を注釈として読むため、リンク先だけを変更した場合も `git diff` はリンク先
+    # のパスを返す。node.path（symlink 自身）しか見ないと変更が検出されない
+    # （レビュー対応: codd.py:84 scenario 1: リンク先だけを変更）。
+    _init_repo(tmp_path)
+    _write(tmp_path, "shared/actual.md", _doc("design:d", "design"))
+    (tmp_path / "docs").mkdir()
+    # 相対 symlink（portable な書き方）。git はこの相対パス文字列をそのまま
+    # symlink blob として保存するため、ref 側の dereference（
+    # `_resolve_ref_symlink_target`）はこの表現を前提にしている。
+    (tmp_path / "docs" / "link.md").symlink_to(Path("../shared/actual.md"))
+    _write(
+        tmp_path,
+        "docs/downstream.md",
+        _doc("design:down", "design", deps=[("design:d", "derives_from")]),
+    )
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "init")
+    # symlink 自体は変更せず、リンク先（root 外の shared/actual.md）だけを編集する。
+    (tmp_path / "shared" / "actual.md").write_text(
+        _doc("design:d", "design") + "\n変更\n", encoding="utf-8"
+    )
+
+    result = cli.compute_impact_result(tmp_path, _config(), "HEAD")
+
+    assert "design:d" in result.changed_ids
+    impacted = _by_id(result.impacted)
+    assert impacted["design:down"].band == cc.BAND_GREEN
+
+
+def test_compute_impact_result_recovers_symlink_node_id_after_deletion(tmp_path) -> None:
+    # ref 側の rel が symlink の場合、`git show <ref>:<rel>` は symlink blob の中身
+    # （リンク先パス文字列）をそのまま返す。dereference せず frontmatter として解析
+    # すると旧 node_id を復元できず、symlink 削除による dangling 化を見逃していた
+    # （レビュー対応: codd.py:84 scenario 2: alias 削除時の旧 node_id 復元）。
+    _init_repo(tmp_path)
+    _write(tmp_path, "shared/actual.md", _doc("design:d", "design"))
+    (tmp_path / "docs").mkdir()
+    # 相対 symlink（portable な書き方）。git はこの相対パス文字列をそのまま
+    # symlink blob として保存するため、ref 側の dereference（
+    # `_resolve_ref_symlink_target`）はこの表現を前提にしている。
+    (tmp_path / "docs" / "link.md").symlink_to(Path("../shared/actual.md"))
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "init")
+    (tmp_path / "docs" / "link.md").unlink()  # symlink 自体を削除（ターゲットは残す）
+
+    result = cli.compute_impact_result(tmp_path, _config(), "HEAD")
+
+    assert "docs/link.md" in result.deleted_upstream
 
 
 def test_compute_impact_result_reports_deleted_code_upstream_with_pep263_encoding(

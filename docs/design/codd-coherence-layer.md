@@ -189,7 +189,10 @@ depends_on を宣言できるようにする。doc frontmatter との違いは�
    実質無効になるため。既定 exclude 3 件はいずれも `/**/*` 形式）。`include` / `exclude`
    は文字列またはリストで書ける（単一文字列は単要素リスト扱い。YAML でリスト記法
    `- ` を書き忘れて文字イテレートされる誤動作を防ぐ。`scope.include` / `scope.exclude`
-   にも同じ正規化を適用し、doc scope とコード scope の扱いを一貫させる）。`../*.py` の
+   にも同じ正規化を適用し、doc scope とコード scope の扱いを一貫させる）。空文字列
+   （`""`）は「対象なし」を表す既存設定との後方互換のため空リストとして扱うが、
+   リスト**内**の空文字列要素（例: `["", "src/**/*.py"]`）も同様に除去する
+   （除去しないと `[""]` のまま `Path.glob("")` に渡り `ValueError` になる）。`../*.py` の
    ような相対パスでプロジェクトルート外に解決される glob マッチは黙って除外する
    （`Path.glob` はルート外のパスもそのまま解決してしまうため）。root 内へ戻ってくる
    相対 glob（`../proj/src/**/*.py`、root == proj）は `os.path.normpath` によるドット
@@ -214,7 +217,11 @@ depends_on を宣言できるようにする。doc frontmatter との違いは�
    `codd:<key>` / `codd:<key> <value>` の文法に一致しない行（`codd:node-id`
    のようなハイフン混じりの key、`codd:node_id=value` のような `=` 区切り等の
    タイプミス）も同様に `malformed_annotation` として報告する（`codd:` で始まらない
-   通常のコメント行は従来通り無視する）。抽出前に先頭 BOM（U+FEFF）を取り除く
+   通常のコメント行は従来通り無視する）。予約語（`node_id` / `kind` / `status` /
+   `owner`）が同一ファイル内で複数回指定された場合、採用値は最初の 1 件のみだが、
+   重複自体も `malformed_annotation` として報告する（例: 正しい `codd:kind code` の
+   後に禁止された `codd:kind requirement` が続いても、最初の truthy 値だけを見る
+   構築ロジックでは検証をすり抜けてしまうため）。抽出前に先頭 BOM（U+FEFF）を取り除く
    （BOM が残ると Python は `ast.parse` が構文エラーになり、`//` 系言語は先頭行の
    コメント判定に失敗し、注釈が無言でスキップされるため）。
    言語別の抽出領域:
@@ -223,7 +230,13 @@ depends_on を宣言できるようにする。doc frontmatter との違いは�
      代わりに `tokenize` で先頭トークンのみ読む軽量版だが、結果は
      `ast.get_docstring(clean=False)` と一致させる（`("""...""")` のような丸括弧付き
      docstring も認識し、`"""..."""  + "suffix"` のような文字列連結式は docstring
-     として誤抽出しない）。ファイル読み込みは
+     として誤抽出しない）。先頭の文（docstring）の終端が判明した時点で `tokenize` を
+     打ち切り、以降のトークンは読まない（全トークンを事前にリスト化すると、大規模
+     ファイルほど不要な CPU/メモリを消費するうえ、docstring より後方にある未閉じ
+     文字列等の構文エラーが `TokenError` として伝播し、有効な先頭注釈まで失って
+     しまうため）。モジュール先頭からインデントされた不正な Python（`ast.parse`
+     なら `IndentationError` になるケース）は、最初の有意トークンが `INDENT` に
+     なることで判定し、docstring として誤って取り込まない。ファイル読み込みは
      PEP 263 の宣言済みエンコーディング（先頭2行の coding cookie / BOM）を
      `tokenize.detect_encoding` で尊重する（固定 UTF-8 だと Latin-1 等の有効な
      Python ファイルが `UnicodeDecodeError` になるため）。`impact` の削除上流検出で
@@ -298,6 +311,14 @@ dangling / duplicate / cycle / unknown / orphan / drift の各検査を特別扱
   `--root` が git リポジトリルート以外（サブディレクトリ）を指す場合は、
   `git rev-parse --show-prefix` で得た prefix を使って `git status` / `git log` が
   返すリポジトリルート相対パスを `--root` 相対へ正規化してから突き合わせる。
+  `git status` はリポジトリ全体（`--root` の外を含む）の dirty パスを返すため、
+  prefix 配下に無いパスは正規化せず破棄する（破棄せず素通りさせると、prefix 外の
+  dirty ファイルが `--root` 内ノードと偶然同じ相対名を持った場合に、clean な
+  ノードまで誤って dirty 扱いされてしまう）。部分履歴 clone（shallow clone 等）
+  では、対象パスの無制限 `git log` が最新 timestamp を出力した後、古い履歴
+  （欠けた tree）の走査中に nonzero で終了することがある。`_log_commit_times()`
+  は stdout が空でなければ nonzero 終了でも取得できた分の timestamp を使う
+  （0 件扱いで mtime へ全面フォールバックしない）。
 - **missing_frontmatter** は Phase 1 では warning。将来 essential 運用が定着したら error 昇格を検討。
 - drift は「上流を変えたのに下流が追従していないかもしれない」という**素朴な Amber 相当**。
   信頼度スコアによる本格的な impact 分析は Phase 2。
@@ -343,6 +364,20 @@ codd impact --diff <ref> [--json]   # 既定 ref = HEAD
   判定とで glob 解釈が食い違わないようにする）、閉じ `]` が無い場合は fnmatch と
   同様リテラル `[` として扱う。`[z-a]` のような不正な文字範囲も `Path.glob`
   （fnmatch）と同様「常に非マッチ」として安全に扱い、`re.error` で落ちない。
+  `../proj/src/**/*.py`（root == proj）のように root 外へ出て同じ root 内へ戻る
+  パターンも、通常走査側（`_glob_relpaths()`）と同じレキシカルな正規化
+  （`os.path.normpath`、ファイルシステムへはアクセスしない）を適用してから
+  判定する。正規化しないと削除済みパスの判定で通常パターンと別名扱いになり、
+  scan と impact 判定の解釈が食い違う。
+- symlink はスコープ内の走査（scan、working tree）でも、ref 側の旧内容取得
+  （`git show <ref>:<path>`）でも一貫して dereference する。scan は working tree の
+  symlink をリンク先の内容ごと登録するため、リンク先だけを変更した場合も
+  `git diff` はリンク先のパスを返す。node.path（symlink 自身）しか見ないと変更が
+  検出されないため、リンク先の root 相対パスも `changed_paths` の突合対象に加える。
+  一方 `git show <ref>:<path>` は symlink blob の中身（リンク先パス文字列）を
+  そのまま返してしまうため、`git ls-tree` でモード（`120000` = symlink）を判定
+  しながらリンク先を辿ってから内容を取得する（辿らないと、削除された symlink
+  ノードの旧 node_id を frontmatter として復元できず、dangling 化を見逃す）。
 - code_scope 内のコードファイルは、削除だけでなく **ファイルが残ったまま**
   `codd:` 注釈の削除や node_id 変更で旧コードノードが消失するケースも dangling
   注意として同じ集合に含める。`changed_paths`（削除されていない変更ファイル）の

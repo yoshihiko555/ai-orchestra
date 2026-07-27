@@ -12,6 +12,7 @@ import argparse
 import io
 import json
 import os
+import posixpath
 import re
 import subprocess
 import sys
@@ -268,7 +269,9 @@ def _git_output(root: Path, args: list[str]) -> str | None:
     return completed.stdout
 
 
-def _git_output_bytes(root: Path, args: list[str]) -> bytes | None:
+def _git_output_bytes(
+    root: Path, args: list[str], *, keep_partial_on_error: bool = False
+) -> bytes | None:
     """git コマンドを実行し stdout を生バイト列で返す。失敗時は None。
 
     ``git show <ref>:<rel>`` でコミット時点の Python ソースを取得する際に使う
@@ -276,6 +279,13 @@ def _git_output_bytes(root: Path, args: list[str]) -> bytes | None:
     `_read_source_text` と同じく PEP 263 宣言済みエンコーディングを尊重するには、
     先に UTF-8 固定でデコードしない生バイト列が必要なため、`_git_output` とは別に
     エンコーディング指定なしで実行する。
+
+    ``keep_partial_on_error``: 部分履歴 clone（shallow clone 等）では、対象パスの
+    無制限 `git log` が最新 timestamp を stdout に出力した後、古い履歴（欠けた
+    tree）の走査中に nonzero で終了することがある。既定（False）では従来どおり
+    nonzero 終了時に stdout を丸ごと捨てて None を返すが、`_log_commit_times()`
+    のように「取得できた分だけでも使いたい」呼び出しでは True を指定し、stdout が
+    空でなければ nonzero 終了でもそれを返す（レビュー対応: codd.py:394）。
     """
     try:
         completed = subprocess.run(
@@ -287,6 +297,8 @@ def _git_output_bytes(root: Path, args: list[str]) -> bytes | None:
     except OSError:
         return None
     if completed.returncode != 0:
+        if keep_partial_on_error and completed.stdout:
+            return completed.stdout
         return None
     return completed.stdout
 
@@ -364,11 +376,21 @@ def _repo_root_prefix(root: Path) -> str:
     return out.strip()
 
 
-def _strip_repo_prefix(path: str, prefix: str) -> str:
-    """リポジトリルート相対の path から prefix を取り除き、root 相対に正規化する。"""
-    if prefix and path.startswith(prefix):
-        return path[len(prefix) :]
-    return path
+def _strip_repo_prefix(path: str, prefix: str) -> str | None:
+    """リポジトリルート相対の path から prefix を取り除き、root 相対に正規化する。
+
+    ``git status --porcelain`` はリポジトリ全体の dirty パスを返すため、``--root``
+    が git リポジトリのサブディレクトリを指す場合、prefix 配下に無いパスが混ざる。
+    以前は prefix 外のパスもそのまま素通ししていたため、root 外の dirty ファイルが
+    偶然 root 内ノードと同じ相対名を持つと、clean なノードまで dirty と誤認されて
+    commit time ではなく mtime が使われてしまっていた（レビュー対応: codd.py:442）。
+    prefix 配下に無い path は None を返し、呼び出し側で除外させる。
+    """
+    if not prefix:
+        return path
+    if not path.startswith(prefix):
+        return None
+    return path[len(prefix) :]
 
 
 def _log_commit_times(root: Path, rel_paths: list[str]) -> dict[str, float]:
@@ -391,7 +413,9 @@ def _log_commit_times(root: Path, rel_paths: list[str]) -> dict[str, float]:
     if not rel_paths:
         return {}
     out = _git_output_bytes(
-        root, ["log", "-z", "--name-only", "--format=%x00%ct", "--", *rel_paths]
+        root,
+        ["log", "-z", "--name-only", "--format=%x00%ct", "--", *rel_paths],
+        keep_partial_on_error=True,
     )
     if not out:
         return {}
@@ -433,17 +457,27 @@ def batch_commit_times(root: Path, rel_paths: list[str]) -> dict[str, float]:
     ままなので、`--root` が git リポジトリルートでない場合は `_repo_root_prefix()`
     で求めた prefix を使って `rel_paths`（`--root` 相対）へ正規化してから
     突き合わせる（レビュー対応）。
+
+    `_dirty_paths()` はリポジトリ全体（root 外を含む）の dirty パスを返すため、
+    prefix 配下に無いパスは正規化せず破棄する（`_strip_repo_prefix()` が None を
+    返す）。破棄せずそのまま残すと、root 外の dirty ファイルが root 内ノードと
+    偶然同じ相対名を持った場合に、clean なノードまで dirty と誤認してしまう
+    （レビュー対応: codd.py:442）。
     """
     if not rel_paths:
         return {}
     prefix = _repo_root_prefix(root)
     dirty = _dirty_paths(root)
     if dirty is not None and prefix:
-        dirty = {_strip_repo_prefix(p, prefix) for p in dirty}
+        dirty = {stripped for p in dirty if (stripped := _strip_repo_prefix(p, prefix)) is not None}
     clean_paths = [p for p in rel_paths if dirty is not None and p not in dirty]
     commit_times = _log_commit_times(root, clean_paths)
     if prefix:
-        commit_times = {_strip_repo_prefix(p, prefix): t for p, t in commit_times.items()}
+        commit_times = {
+            stripped: t
+            for p, t in commit_times.items()
+            if (stripped := _strip_repo_prefix(p, prefix)) is not None
+        }
     result: dict[str, float] = {}
     for rel in rel_paths:
         commit_ct = commit_times.get(rel)
@@ -857,19 +891,49 @@ def _char_class_to_regex(stuff: str) -> str:
     return f"[{stuff}]"
 
 
-def _matches_scope_pattern(rel: str, pattern: str) -> bool:
+def _normalize_scope_pattern(root: Path, pattern: str) -> str | None:
+    """scope glob パターンを root 相対の正規化形へレキシカルに畳み込む。
+
+    ``../proj/src/**/*.py``（root の basename が ``proj``）のように、一度 root の
+    外へ出て同じ root 内へ戻ってくるパターンは、通常走査（``_glob_relpaths()``）側
+    では ``root.glob(pattern)`` の実ファイル解決 + ``os.path.normpath`` によって
+    ``src/**/*.py`` に畳み込まれ、scan 対象になる。一方こちらの純粋パス判定
+    （削除済みファイル向けの ``_matches_scope_pattern``）はパターン文字列を素朴に
+    regex 化するだけだったため、`` ../proj/src/mod.py`` という別名の非マッチ扱いに
+    なり、scan と impact 判定の間で解釈が食い違っていた（レビュー対応: codd.py:880）。
+
+    ``root / pattern`` を ``os.path.normpath`` でレキシカルに畳み込み（ファイル
+    システムへはアクセスしない。削除済みファイルは実体が無いため）、root 配下に
+    収まっていれば root 相対の正規化パターンを返す。root の外（または root 自体）
+    を指す場合は None（マッチ対象なし。``_glob_relpaths()`` が root 外を黙って
+    除外するのと同じ扱い）。
+    """
+    combined = os.path.normpath(str(root / pattern))
+    root_str = os.path.normpath(str(root))
+    if combined == root_str:
+        return None
+    prefix = root_str + os.sep
+    if not combined.startswith(prefix):
+        return None
+    return combined[len(prefix) :].replace(os.sep, "/")
+
+
+def _matches_scope_pattern(root: Path, rel: str, pattern: str) -> bool:
     """rel が scope glob にマッチするか（削除済みファイル向けの純粋パス判定）。"""
-    return _scope_pattern_to_regex(pattern).fullmatch(rel) is not None
-
-
-def path_in_scope(rel: str, config: cc.CoddConfig) -> bool:
-    """rel が codd scope（include − exclude）に属するか判定する。"""
-    if not any(_matches_scope_pattern(rel, pat) for pat in config.include):
+    normalized = _normalize_scope_pattern(root, pattern)
+    if normalized is None:
         return False
-    return not any(_matches_scope_pattern(rel, pat) for pat in config.exclude)
+    return _scope_pattern_to_regex(normalized).fullmatch(rel) is not None
 
 
-def path_in_code_scope(rel: str, config: cc.CoddConfig) -> bool:
+def path_in_scope(root: Path, rel: str, config: cc.CoddConfig) -> bool:
+    """rel が codd scope（include − exclude）に属するか判定する。"""
+    if not any(_matches_scope_pattern(root, rel, pat) for pat in config.include):
+        return False
+    return not any(_matches_scope_pattern(root, rel, pat) for pat in config.exclude)
+
+
+def path_in_code_scope(root: Path, rel: str, config: cc.CoddConfig) -> bool:
     """rel が codd code_scope（include − exclude, Issue #98）に属するか判定する。
 
     ``config.code_include`` の既定は空リストのため、未設定プロジェクトでは常に False
@@ -877,9 +941,9 @@ def path_in_code_scope(rel: str, config: cc.CoddConfig) -> bool:
     """
     if not config.code_include:
         return False
-    if not any(_matches_scope_pattern(rel, pat) for pat in config.code_include):
+    if not any(_matches_scope_pattern(root, rel, pat) for pat in config.code_include):
         return False
-    return not any(_matches_scope_pattern(rel, pat) for pat in config.code_exclude)
+    return not any(_matches_scope_pattern(root, rel, pat) for pat in config.code_exclude)
 
 
 def _warn_if_not_git_root(root: Path) -> None:
@@ -917,19 +981,107 @@ def _decode_ref_source(rel: str, data: bytes) -> str | None:
         return None
 
 
+# scan は working tree の symlink を dereference して注釈を読む（`Path.open()` が
+# 自動的にリンク先の内容を読み込む）。ref 時点の内容取得（`git show`）・working tree
+# の変更検出（`compute_impact_result`）でも同じモデルに揃えないと、走査結果と impact
+# 判定が食い違う（レビュー対応: codd.py:84）。
+# - working tree: symlink 経由で登録されたノードの変更検出は、リンク先の相対パスも
+#   `changed_paths` の突合対象に含める（`_symlink_target_relpath` / scenario 1: リンク先
+#   だけを変更）。
+# - ref 側: symlink を辿らず `git show ref:<path>` を素朴に呼ぶと symlink blob の中身
+#   （リンク先パス文字列）が返ってしまい、注釈ではなくパス文字列を Python として構文解析
+#   しようとして失敗する。`git ls-tree` でモード（120000 = symlink）を判定し、symlink
+#   ならリンク先へ辿ってから内容を取得する（`_git_show_bytes_dereferencing_symlink` /
+#   scenario 2: alias 削除時の旧 node_id 復元）。
+_MAX_SYMLINK_HOPS = 8
+
+
+def _symlink_target_relpath(root: Path, rel: str) -> str | None:
+    """rel（working tree, root 相対）が symlink なら解決先の root 相対パスを返す。
+
+    symlink でない、または解決先が root の外（`_glob_relpaths` と同じ安全策）の
+    場合は None。
+    """
+    path = root / rel
+    if not path.is_symlink():
+        return None
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return None
+    resolved_root = root.resolve()
+    if not resolved.is_relative_to(resolved_root):
+        return None
+    return resolved.relative_to(resolved_root).as_posix()
+
+
+def _ref_blob_mode(root: Path, ref: str, rel: str) -> str | None:
+    """ref 時点での rel の git tree エントリのモードを返す（例: ``120000`` = symlink）。
+
+    `git show` はファイル内容しか返さず symlink かどうかを区別できないため、
+    `git ls-tree` でモードを判定する。取得できない場合（存在しない等）は None。
+    """
+    out = _git_output(root, ["ls-tree", ref, "--", rel])
+    if not out or not out.strip():
+        return None
+    first_line = out.splitlines()[0]
+    parts = first_line.split(maxsplit=1)
+    return parts[0] if parts else None
+
+
+def _resolve_ref_symlink_target(rel: str, link_text: str) -> str | None:
+    """ref 時点の symlink（rel）が指す先を、rel と同じ root からの相対パスへ解決する。
+
+    root の外へ解決される場合は None（`_glob_relpaths` の root 外除外と同じ安全策）。
+    """
+    combined = posixpath.normpath(posixpath.join(posixpath.dirname(rel), link_text.strip()))
+    if combined == os.pardir or combined.startswith(f"{os.pardir}/"):
+        return None
+    return combined
+
+
+def _git_show_bytes_dereferencing_symlink(root: Path, ref: str, rel: str) -> bytes | None:
+    """ref 時点の rel の内容を、working tree の scan と同じく symlink をたどって取得する。
+
+    working tree 側（`_read_source_text` 経由の scan）は `Path.open()` が symlink を
+    自動的に dereference するのに対し、`git show <ref>:<rel>` は symlink blob の中身
+    （リンク先パス文字列）をそのまま返してしまう。`git ls-tree` のモードで symlink を
+    判定しながらリンク先を辿ることで、working tree と同じ内容を取得する
+    （レビュー対応: codd.py:84）。循環 symlink 対策として最大 hop 数で打ち切る。
+    """
+    current_rel = rel
+    for _ in range(_MAX_SYMLINK_HOPS):
+        mode = _ref_blob_mode(root, ref, current_rel)
+        if mode is None:
+            return None  # ref 側に存在しない
+        if mode != "120000":
+            return _git_output_bytes(root, ["show", f"{ref}:{current_rel}"])
+        link_bytes = _git_output_bytes(root, ["show", f"{ref}:{current_rel}"])
+        if link_bytes is None:
+            return None
+        link_text = link_bytes.decode("utf-8", errors="surrogateescape")
+        target = _resolve_ref_symlink_target(current_rel, link_text)
+        if target is None:
+            return None
+        current_rel = target
+    return None  # symlink チェーンが深すぎる（循環の可能性）→ 安全側で諦める
+
+
 def _old_node_id_at_ref(
     root: Path, ref: str, rel: str, config: cc.CoddConfig, *, is_code: bool
 ) -> str | None:
     """ref 時点の rel の内容から旧 node_id を回収する（doc frontmatter / コード注釈の両対応）。
 
-    ref 側に存在しない、または CODD ノードでなかった場合は None。
+    ref 側に存在しない、または CODD ノードでなかった場合は None。symlink（rel 自体、
+    または途中の中継先）は working tree の scan と同じく dereference して内容を読む
+    （`_git_show_bytes_dereferencing_symlink` / レビュー対応: codd.py:84）。
     """
     if is_code:
         # working tree 側（scan_code_nodes）と同様、未対応拡張子（画像等）は
         # `git show` で読み込む前に除外する（Issue #98 レビュー対応）。
         if not cx.is_supported_suffix(rel):
             return None
-        data = _git_output_bytes(root, ["show", f"{ref}:{rel}"])
+        data = _git_show_bytes_dereferencing_symlink(root, ref, rel)
         if data is None:
             return None  # ref 側に存在しない（新規追加→削除等）→ dangling 化しない
         text = _decode_ref_source(rel, data)
@@ -937,9 +1089,13 @@ def _old_node_id_at_ref(
             return None
         node, _errors = cx.extract_code_node(rel, text, config.inline_confidence)
         return node.node_id if node is not None else None
-    out = _git_output(root, ["show", f"{ref}:{rel}"])
-    if out is None:
+    data = _git_show_bytes_dereferencing_symlink(root, ref, rel)
+    if data is None:
         return None  # ref 側に存在しない（新規追加→削除等）→ dangling 化しない
+    try:
+        out = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
     codd = cc.parse_codd_frontmatter(out)
     old_id = str((codd or {}).get("node_id") or "").strip()
     return old_id or None
@@ -969,6 +1125,16 @@ def compute_impact_result(root: Path, config: cc.CoddConfig, ref: str) -> Impact
 
     path_to_id = {node.path: node.node_id for node in result.nodes}
     changed_ids = {path_to_id[p] for p in changed_paths if p in path_to_id}
+    # scan は symlink（working tree の node.path）を dereference してリンク先の内容を
+    # 注釈として読むため、リンク先だけを変更した場合も `git diff` はリンク先のパスを
+    # 返す。node.path（symlink 自身）しか見ないと変更が検出されないため、リンク先の
+    # root 相対パスも突合対象に加える（レビュー対応: codd.py:84）。
+    symlink_target_to_id = {
+        target: node.node_id
+        for node in result.nodes
+        if (target := _symlink_target_relpath(root, node.path)) is not None
+    }
+    changed_ids |= {symlink_target_to_id[p] for p in changed_paths if p in symlink_target_to_id}
 
     # 削除された scope 内ドキュメント / code_scope 内コード（Issue #98 レビュー対応。
     # 注釈付きコードファイル削除も下流の dangling 化を検出対象にする）。
@@ -978,11 +1144,11 @@ def compute_impact_result(root: Path, config: cc.CoddConfig, ref: str) -> Impact
         p
         for p in deleted_paths
         if (
-            path_in_scope(p, config)
+            path_in_scope(root, p, config)
             and _is_dangling_deletion(root, ref, p, result.graph, config, is_code=False)
         )
         or (
-            path_in_code_scope(p, config)
+            path_in_code_scope(root, p, config)
             and _is_dangling_deletion(root, ref, p, result.graph, config, is_code=True)
         )
     }
@@ -993,7 +1159,7 @@ def compute_impact_result(root: Path, config: cc.CoddConfig, ref: str) -> Impact
     deleted_upstream_candidates |= {
         p
         for p in changed_paths
-        if path_in_code_scope(p, config)
+        if path_in_code_scope(root, p, config)
         and _is_dangling_deletion(root, ref, p, result.graph, config, is_code=True)
     }
     deleted_upstream = sorted(deleted_upstream_candidates)
