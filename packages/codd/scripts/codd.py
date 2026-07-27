@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
 import re
@@ -49,12 +50,21 @@ class ScanResult:
 
 
 def _glob_relpaths(root: Path, patterns: list[str]) -> set[str]:
-    """patterns（glob）にマッチするファイルの相対 posix パス集合を返す。"""
+    """patterns（glob）にマッチするファイルの相対 posix パス集合を返す。
+
+    ``../*.py`` のようなパターンは ``Path.glob`` がそのまま解決してしまい、
+    プロジェクトルート外のファイルを走査対象に含めてしまう（Issue #98 レビュー対応）。
+    解決後のパスが root 配下かを検証し、root 外へ解決されたものは黙って除外する。
+    """
     matched: set[str] = set()
+    resolved_root = root.resolve()
     for pattern in patterns:
         for path in root.glob(pattern):
-            if path.is_file():
-                matched.add(path.relative_to(root).as_posix())
+            if not path.is_file():
+                continue
+            if not path.resolve().is_relative_to(resolved_root):
+                continue
+            matched.add(path.relative_to(root).as_posix())
     return matched
 
 
@@ -107,6 +117,11 @@ def scan_code_nodes(root: Path, config: cc.CoddConfig) -> tuple[list[cc.CoddNode
     errors: list[str] = []
     for path in collect_code_files(root, config):
         rel = path.relative_to(root).as_posix()
+        # 未対応拡張子（画像等）は読み込み前に除外する。混在ディレクトリを指す
+        # code_scope glob（例: `src/**/*`）でも対応外ファイルを UTF-8 テキストとして
+        # 復号しようとしない（Issue #98 レビュー対応）。
+        if not cx.is_supported_suffix(rel):
+            continue
         text = _read_source_text(path)
         node, node_errors = cx.extract_code_node(rel, text, config.inline_confidence)
         if node is not None:
@@ -214,6 +229,29 @@ def _git_output(root: Path, args: list[str]) -> str | None:
             capture_output=True,
             text=True,
             encoding="utf-8",
+            check=False,
+        )
+    except OSError:
+        return None
+    if completed.returncode != 0:
+        return None
+    return completed.stdout
+
+
+def _git_output_bytes(root: Path, args: list[str]) -> bytes | None:
+    """git コマンドを実行し stdout を生バイト列で返す。失敗時は None。
+
+    ``git show <ref>:<rel>`` でコミット時点の Python ソースを取得する際に使う
+    （`_old_node_id_at_ref` / Issue #98 レビュー対応）。working tree 側の
+    `_read_source_text` と同じく PEP 263 宣言済みエンコーディングを尊重するには、
+    先に UTF-8 固定でデコードしない生バイト列が必要なため、`_git_output` とは別に
+    エンコーディング指定なしで実行する。
+    """
+    try:
+        completed = subprocess.run(
+            ["git", *args],
+            cwd=root,
+            capture_output=True,
             check=False,
         )
     except OSError:
@@ -627,6 +665,27 @@ def _warn_if_not_git_root(root: Path) -> None:
         )
 
 
+def _decode_ref_source(rel: str, data: bytes) -> str | None:
+    """ref 時点のソースの生バイト列を復号する（working tree と同じ PEP 263 規約）。
+
+    working tree 側の `_read_source_text` と同様、Python（``.py``）は宣言済み
+    エンコーディング（coding cookie / BOM）を尊重する。固定 UTF-8 のままだと、
+    Latin-1 等で書かれた削除済み Python ファイルの impact 判定が
+    `UnicodeDecodeError` で落ちてしまう（Issue #98 レビュー対応）。復号に失敗した
+    場合は None（呼び出し側は CODD ノードでなかった扱いにする）。
+    """
+    if not rel.endswith(".py"):
+        try:
+            return data.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+    try:
+        encoding, _ = tokenize.detect_encoding(io.BytesIO(data).readline)
+        return data.decode(encoding)
+    except (SyntaxError, LookupError, UnicodeDecodeError):
+        return None
+
+
 def _old_node_id_at_ref(
     root: Path, ref: str, rel: str, config: cc.CoddConfig, *, is_code: bool
 ) -> str | None:
@@ -634,12 +693,18 @@ def _old_node_id_at_ref(
 
     ref 側に存在しない、または CODD ノードでなかった場合は None。
     """
+    if is_code:
+        data = _git_output_bytes(root, ["show", f"{ref}:{rel}"])
+        if data is None:
+            return None  # ref 側に存在しない（新規追加→削除等）→ dangling 化しない
+        text = _decode_ref_source(rel, data)
+        if text is None:
+            return None
+        node, _errors = cx.extract_code_node(rel, text, config.inline_confidence)
+        return node.node_id if node is not None else None
     out = _git_output(root, ["show", f"{ref}:{rel}"])
     if out is None:
         return None  # ref 側に存在しない（新規追加→削除等）→ dangling 化しない
-    if is_code:
-        node, _errors = cx.extract_code_node(rel, out, config.inline_confidence)
-        return node.node_id if node is not None else None
     codd = cc.parse_codd_frontmatter(out)
     old_id = str((codd or {}).get("node_id") or "").strip()
     return old_id or None

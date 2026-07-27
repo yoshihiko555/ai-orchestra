@@ -186,23 +186,42 @@ depends_on を宣言できるようにする。doc frontmatter との違いは�
    `code_scope.exclude` も `include` と同じ `Path.glob()` で解決するが、末尾を `/**`
    ではなく `/**/*` にする（`Path.glob("**/.venv/**")` は Python 3.12 ではディレクトリの
    みを返し、実装の `_glob_relpaths()` にある `is_file()` フィルタで除外候補として拾えず
-   実質無効になるため。既定 exclude 3 件はいずれも `/**/*` 形式）。
+   実質無効になるため。既定 exclude 3 件はいずれも `/**/*` 形式）。`include` / `exclude`
+   は文字列またはリストで書ける（単一文字列は単要素リスト扱い。YAML でリスト記法
+   `- ` を書き忘れて文字イテレートされる誤動作を防ぐ。`scope.include` / `scope.exclude`
+   にも同じ正規化を適用し、doc scope とコード scope の扱いを一貫させる）。`../*.py` の
+   ような相対パスでプロジェクトルート外に解決される glob マッチは黙って除外する
+   （`Path.glob` はルート外のパスもそのまま解決してしまうため）。走査対象言語（Python /
+   `//` 系）に対応しない拡張子のファイルは、読み込み前に除外する（画像等が混在ディレクトリ
+   glob にマッチしても UTF-8 テキストとして復号しようとしない）。
 2. **1行の軽量注釈**: doc の YAML frontmatter 全体を書く代わりに、`codd:<key> <value>` の
    1行注釈を並べる。`key` は予約語（`node_id` / `kind` / `status` / `owner`）または
    relation 名（`implements` 等）で、value は対象 node_id。`node_id` を省略すると
    `<kind>:<file-stem>` から自動導出し、`kind` を省略するとパス規約
    （`tests/` 配下や `test_*` / `*_test` ファイル名）から `test` / `code` を推定する。
-   relation 名の注釈（例: `codd:implements`）に参照先 value が無い場合は依存として黙って
-   除外せず、`malformed_annotation` 検査（既定 error、4.5 参照）として報告する
-   （予約語のみは value 省略を許容する。owner を書かない等）。
+   `codd:kind` を明示する場合、ソース注釈では `code` / `test` のみ有効（requirement /
+   design 等のドキュメント語彙は使えない。誤った値は `malformed_annotation` として
+   報告したうえで推定 kind へフォールバックする）。relation 名の注釈（例:
+   `codd:implements`）に参照先 value が無い場合は依存として黙って除外せず、
+   `malformed_annotation` 検査（既定 error、4.5 参照）として報告する（予約語のみは
+   value 省略を許容する。owner を書かない等）。`codd:` で始まりながら
+   `codd:<key>` / `codd:<key> <value>` の文法に一致しない行（`codd:node-id`
+   のようなハイフン混じりの key、`codd:node_id=value` のような `=` 区切り等の
+   タイプミス）も同様に `malformed_annotation` として報告する（`codd:` で始まらない
+   通常のコメント行は従来通り無視する）。抽出前に先頭 BOM（U+FEFF）を取り除く
+   （BOM が残ると Python は `ast.parse` が構文エラーになり、`//` 系言語は先頭行の
+   コメント判定に失敗し、注釈が無言でスキップされるため）。
    言語別の抽出領域:
    - Python: `ast.parse` + `ast.get_docstring` でモジュール docstring のみを対象にする
      （本文コード中の文字列リテラルを誤って注釈と解釈しない）。ファイル読み込みは
      PEP 263 の宣言済みエンコーディング（先頭2行の coding cookie / BOM）を
      `tokenize.detect_encoding` で尊重する（固定 UTF-8 だと Latin-1 等の有効な
-     Python ファイルが `UnicodeDecodeError` になるため）。
-   - `//` 系言語（TS/JS/Go/Java/Rust/C 系。`.mjs` / `.cjs` を含む）: ファイル先頭から
-     連続する行コメントのみを対象にする（shebang 行はスキップ）。
+     Python ファイルが `UnicodeDecodeError` になるため）。`impact` の削除上流検出で
+     `git show <ref>:<path>` から旧内容を取得する際も、working tree と同じ PEP 263
+     規約でコミット時点のバイト列を復号する（旧内容を固定 UTF-8 でしか読まないと、
+     Latin-1 等を宣言していた Python ファイルの削除が誤検出/例外になるため）。
+   - `//` 系言語（TS/JS/Go/Java/Rust/C 系。`.mjs` / `.cjs` / `.mts` / `.cts` を含む）:
+     ファイル先頭から連続する行コメントのみを対象にする（shebang 行はスキップ）。
 3. **信頼度（confidence）**: doc frontmatter 由来の depends_on は既定 confidence 1.0（人手
    レビュー済みの確定宣言）。コード注釈由来の depends_on は `codd.yaml` の `inline_confidence`
    （既定 0.7）を使う。`impact` のエッジ重みは `relation 重み × confidence`（4.5.1 参照）になり、
@@ -239,7 +258,7 @@ dangling / duplicate / cycle / unknown / orphan / drift の各検査を特別扱
 | **duplicate**              | 同一 node_id が複数ドキュメントに存在                | error      |
 | **cycle**（循環依存）      | depends_on を辿ると循環する                          | error      |
 | **unknown**                | 未定義の kind / relation / status を使用             | error      |
-| **malformed_annotation**（Issue #98） | code_scope の relation 注釈に参照先 value が無い（例: `codd:implements` のみ） | error      |
+| **malformed_annotation**（Issue #98） | code_scope の注釈が不正（relation 注釈の参照先 value 欠落、`codd:kind` にソース非対応の値、`codd:<key>` 文法違反等） | error      |
 | **missing_frontmatter**    | scope 内なのに `codd:` ブロックが無い（H-5）         | warning    |
 | **orphan**（孤立）         | 被参照ゼロ かつ 参照ゼロ（`roots` 指定 kind は除外） | warning    |
 | **drift**（ドリフト疑い）  | 上流ノードの最終コミット時刻が下流より新しい         | warning    |

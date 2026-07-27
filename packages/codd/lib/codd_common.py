@@ -572,6 +572,25 @@ def normalize_check_level(value: Any) -> str:
     return level
 
 
+def _as_glob_list(value: Any, field_name: str) -> list[str]:
+    """scope/code_scope の include・exclude を glob 文字列のリストへ正規化する。
+
+    YAML でリスト記法を忘れて単一文字列（例: ``code_scope.include: "src/**/*.py"``）を
+    書くと、素朴な ``list(value)`` では文字列が 1 文字ずつイテレートされ、無意味な
+    glob（`s`, `r`, `c`, ...）として扱われてしまう（Issue #98 レビュー対応）。単一文字列は
+    単要素リストとして扱い、リスト以外の型（数値・dict 等）は設定エラーとして拒否する。
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        if not all(isinstance(item, str) for item in value):
+            raise ValueError(f"{field_name} の要素は全て文字列である必要があります: {value!r}")
+        return list(value)
+    raise ValueError(f"{field_name} は文字列またはリストである必要があります: {value!r}")
+
+
 def _load_inline_confidence(data: dict[str, Any]) -> float:
     """codd.yaml の `inline_confidence` を有限な [0, 1] へ正規化する（Issue #98 レビュー対応）。
 
@@ -616,8 +635,8 @@ class CoddConfig:
         code_scope = data.get("code_scope") or {}
         return cls(
             enabled=bool(data.get("enabled", True)),
-            include=list(scope.get("include") or []),
-            exclude=list(scope.get("exclude") or []),
+            include=_as_glob_list(scope.get("include"), "scope.include"),
+            exclude=_as_glob_list(scope.get("exclude"), "scope.exclude"),
             kinds=list(data.get("kinds") or []),
             relations=list(data.get("relations") or []),
             roots=list(data.get("roots") or []),
@@ -628,8 +647,8 @@ class CoddConfig:
                 for name, level in (data.get("checks") or {}).items()
             },
             impact=ImpactConfig.from_dict(data.get("impact") or {}),
-            code_include=list(code_scope.get("include") or []),
-            code_exclude=list(code_scope.get("exclude") or []),
+            code_include=_as_glob_list(code_scope.get("include"), "code_scope.include"),
+            code_exclude=_as_glob_list(code_scope.get("exclude"), "code_scope.exclude"),
             inline_confidence=_load_inline_confidence(data),
             raw=data,
         )

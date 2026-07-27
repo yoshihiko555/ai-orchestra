@@ -185,3 +185,107 @@ def test_extract_line_comment_supports_mjs_and_cjs_extensions() -> None:
     assert errors_cjs == []
     assert node_mjs.node_id == "code:main"
     assert node_cjs.node_id == "code:main"
+
+
+def test_extract_line_comment_supports_mts_and_cts_extensions() -> None:
+    # TypeScript の .mts/.cts も抽出対象（Issue #98 レビュー対応）。
+    text = "// codd:implements design:codd-coherence-layer\n"
+    node_mts, errors_mts = cx.extract_code_node("src/main.mts", text, INLINE_CONFIDENCE)
+    node_cts, errors_cts = cx.extract_code_node("src/main.cts", text, INLINE_CONFIDENCE)
+    assert node_mts is not None
+    assert node_cts is not None
+    assert errors_mts == []
+    assert errors_cts == []
+    assert node_mts.node_id == "code:main"
+    assert node_cts.node_id == "code:main"
+
+
+def test_is_supported_suffix_reflects_extract_code_node_coverage() -> None:
+    # codd.py 側の事前フィルタ（issue #1）が抽出可否と食い違わないことを保証する。
+    assert cx.is_supported_suffix("src/main.py") is True
+    assert cx.is_supported_suffix("src/main.ts") is True
+    assert cx.is_supported_suffix("src/main.mts") is True
+    assert cx.is_supported_suffix("src/main.cts") is True
+    assert cx.is_supported_suffix("assets/logo.png") is False
+    assert cx.is_supported_suffix("docs/notes.txt") is False
+
+
+# ---------------------------------------------------------------------------
+# BOM 除去（Issue #98 レビュー対応）
+# ---------------------------------------------------------------------------
+
+
+def test_extract_line_comment_strips_leading_bom() -> None:
+    # BOM 付き JS/TS は先頭行が `﻿//` になり、BOM を除去しないと
+    # 行コメント判定（startswith("//")）に失敗して注釈が無言でスキップされる。
+    text = "﻿// codd:implements design:codd-coherence-layer\n"
+    node, errors = cx.extract_code_node("src/main.ts", text, INLINE_CONFIDENCE)
+    assert node is not None
+    assert errors == []
+    assert node.depends_on[0].id == "design:codd-coherence-layer"
+
+
+def test_extract_python_strips_leading_bom() -> None:
+    # BOM 付き Python は `ast.parse` が構文エラーになるため、docstring 抽出前に除去する。
+    text = '﻿"""\ncodd:implements design:codd-coherence-layer\n"""\n'
+    node, errors = cx.extract_code_node("src/main.py", text, INLINE_CONFIDENCE)
+    assert node is not None
+    assert errors == []
+    assert node.depends_on[0].id == "design:codd-coherence-layer"
+
+
+# ---------------------------------------------------------------------------
+# ソース注釈の kind 語彙制限（Issue #98 レビュー対応）
+# ---------------------------------------------------------------------------
+
+
+def test_extract_rejects_non_code_test_kind_and_falls_back_to_inferred() -> None:
+    # ソースファイルで `codd:kind requirement` のようなドキュメント語彙を許すと
+    # kind 体系が崩れるため、code/test 以外はエラー報告のうえ infer_kind() へ
+    # フォールバックする。
+    text = '"""\ncodd:kind requirement\ncodd:implements design:x\n"""\n'
+    node, errors = cx.extract_code_node("src/mod.py", text, INLINE_CONFIDENCE)
+    assert node is not None
+    assert node.kind == "code"  # infer_kind() へフォールバック
+    assert len(errors) == 1
+    assert "codd:kind requirement" in errors[0]
+
+
+def test_extract_accepts_test_kind_for_source_annotation() -> None:
+    text = '"""\ncodd:kind test\ncodd:implements design:x\n"""\n'
+    node, errors = cx.extract_code_node("src/mod.py", text, INLINE_CONFIDENCE)
+    assert node is not None
+    assert node.kind == "test"
+    assert errors == []
+
+
+# ---------------------------------------------------------------------------
+# 不正な注釈構文の検出（Issue #98 レビュー対応）
+# ---------------------------------------------------------------------------
+
+
+def test_extract_reports_malformed_annotation_hyphenated_key() -> None:
+    # `codd:node-id`（ハイフン）はタイプミスの可能性が高いが、既存の正規表現には
+    # マッチせず黙って無視されていた。malformed_annotation として報告する。
+    text = '"""\ncodd:node-id code:custom\ncodd:implements design:x\n"""\n'
+    node, errors = cx.extract_code_node("src/mod.py", text, INLINE_CONFIDENCE)
+    assert node is not None  # 他の正しい注釈（implements）からノードは構築される
+    assert any("codd:node-id" in e for e in errors)
+
+
+def test_extract_reports_malformed_annotation_equals_syntax() -> None:
+    # `codd:node_id=value`（`=` 区切り）も文法違反として報告する。
+    text = '"""\ncodd:node_id=code:custom\ncodd:implements design:x\n"""\n'
+    node, errors = cx.extract_code_node("src/mod.py", text, INLINE_CONFIDENCE)
+    assert node is not None
+    assert any("codd:node_id=code:custom" in e for e in errors)
+    # 不正構文はパースされないため node_id は自動生成のまま。
+    assert node.node_id == "code:mod"
+
+
+def test_extract_ignores_ordinary_comment_not_prefixed_with_codd() -> None:
+    # `codd:` で始まらない通常のコメントは従来通り無視される（誤検出しない）。
+    text = "// この関数は codd の実装例です\n// codd:implements design:x\n"
+    node, errors = cx.extract_code_node("src/main.go", text, INLINE_CONFIDENCE)
+    assert node is not None
+    assert errors == []

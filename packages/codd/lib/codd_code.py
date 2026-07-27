@@ -28,7 +28,21 @@ import codd_common as cc
 # depends_on エントリの relation 名として扱う（value が対象 node_id）。
 _ANNOTATION_LINE = re.compile(r"^codd:(?P<key>[a-z_]+)(?:\s+(?P<value>\S.*))?$")
 
+# `codd:` で始まるが `_ANNOTATION_LINE` にマッチしない行を検出する（Issue #98 レビュー
+# 対応）。ハイフン混じりの key（`codd:node-id`）や `=` 区切り（`codd:node_id=value`）等の
+# 明らかなタイプミスを、黙って無視せず malformed_annotation として報告するため。
+_ANNOTATION_PREFIX = re.compile(r"^codd:")
+
 _RESERVED_KEYS = frozenset({"node_id", "kind", "status", "owner"})
+
+# ソースファイル注釈の `codd:kind` に許される値（Issue #98 レビュー対応）。
+# requirement/design 等のドキュメント語彙をソース注釈に書けてしまうと語彙が崩れるため、
+# ソース由来ノードは code/test の 2 値のみを許可する。
+_VALID_SOURCE_KINDS = frozenset({"code", "test"})
+
+# 先頭 BOM（U+FEFF）。行コメント判定・Python の ast.parse は BOM 付きだと先頭行の
+# 一致判定や構文解析に失敗するため、抽出前に取り除く（Issue #98 レビュー対応）。
+_BOM = "﻿"
 
 # `//` 行コメントで軽量注釈を書ける言語群（拡張子ベース）。
 _LINE_COMMENT_SUFFIXES = frozenset(
@@ -39,6 +53,8 @@ _LINE_COMMENT_SUFFIXES = frozenset(
         ".jsx",
         ".mjs",
         ".cjs",
+        ".mts",
+        ".cts",
         ".go",
         ".java",
         ".rs",
@@ -51,6 +67,10 @@ _LINE_COMMENT_SUFFIXES = frozenset(
         ".swift",
     }
 )
+
+# extract_code_node が対応する全拡張子（Python + `//` 系言語）。codd.py 側で読み込み
+# 前に未対応拡張子を除外するために公開する（Issue #98 レビュー対応）。
+SUPPORTED_SUFFIXES = _LINE_COMMENT_SUFFIXES | {".py"}
 
 _TEST_DIR_NAMES = frozenset({"test", "tests", "__tests__"})
 _TEST_NAME_PREFIXES = ("test_",)
@@ -73,16 +93,32 @@ def _slug_from_path(rel: str) -> str:
     return PurePosixPath(rel).stem
 
 
-def _parse_annotation_lines(block_text: str) -> list[tuple[str, str | None]]:
-    """行ごとに `codd:<key> <value>` 注釈を抽出する（マッチしない行は無視）。"""
+def _parse_annotation_lines(
+    block_text: str, rel: str
+) -> tuple[list[tuple[str, str | None]], list[str]]:
+    """行ごとに `codd:<key> <value>` 注釈を抽出する。
+
+    `codd:` で始まりながら文法（`codd:<key>` / `codd:<key> <value>`）に一致しない行
+    （例: `codd:node-id`、`codd:node_id=value`）は、単なる無関係なコメント行と区別が
+    付かず黙って無視すると誤記に気付けないため、malformed_annotation エラーとして
+    報告する（Issue #98 レビュー対応）。`codd:` で始まらない通常のコメント行は
+    従来通り無視する。
+    """
     entries: list[tuple[str, str | None]] = []
+    errors: list[str] = []
     for raw_line in block_text.splitlines():
-        match = _ANNOTATION_LINE.match(raw_line.strip())
-        if match is None:
+        stripped = raw_line.strip()
+        match = _ANNOTATION_LINE.match(stripped)
+        if match is not None:
+            value = match.group("value")
+            entries.append((match.group("key"), value.strip() if value else None))
             continue
-        value = match.group("value")
-        entries.append((match.group("key"), value.strip() if value else None))
-    return entries
+        if _ANNOTATION_PREFIX.match(stripped):
+            errors.append(
+                f"{rel}: 不正な codd 注釈構文 '{stripped}'"
+                "（'codd:<key>' または 'codd:<key> <value>' 形式で書く）"
+            )
+    return entries, errors
 
 
 def _python_leading_text(text: str) -> str:
@@ -136,7 +172,16 @@ def _entries_to_node(
         for key, value in entries
         if key not in _RESERVED_KEYS and not value
     ]
-    kind = next((v for k, v in entries if k == "kind" and v), None) or infer_kind(rel)
+    kind_value = next((v for k, v in entries if k == "kind" and v), None)
+    if kind_value is not None and kind_value not in _VALID_SOURCE_KINDS:
+        # ソース注釈は code/test 語彙に限定する（Issue #98 レビュー対応）。
+        # requirement/design 等のドキュメント kind を許すと語彙が崩れるため、
+        # 不正値は無視して infer_kind() へフォールバックしつつエラー報告する。
+        errors.append(
+            f"{rel}: 注釈 'codd:kind {kind_value}' はソースファイルでは 'code' か 'test' のみ有効"
+        )
+        kind_value = None
+    kind = kind_value or infer_kind(rel)
     node_id = (
         next((v for k, v in entries if k == "node_id" and v), None)
         or f"{kind}:{_slug_from_path(rel)}"
@@ -154,21 +199,38 @@ def _entries_to_node(
     return node, errors
 
 
+def is_supported_suffix(rel: str) -> bool:
+    """rel の拡張子が抽出対応言語（Python / `//` 系）か判定する。
+
+    codd.py 側で読み込み前にこれを使い、code_scope の混在 glob（例: 画像とソースが
+    同じディレクトリに置かれている場合）にマッチした対応外ファイルを UTF-8 テキスト
+    として読み込まないようにする（Issue #98 レビュー対応）。
+    """
+    return PurePosixPath(rel).suffix in SUPPORTED_SUFFIXES
+
+
 def extract_code_node(
     rel: str, text: str, inline_confidence: float
 ) -> tuple[cc.CoddNode | None, list[str]]:
     """拡張子から言語別 extractor を選び、`codd:` 注釈があれば CoddNode を返す。
 
     未対応拡張子、または注釈が見つからない場合は (None, [])（呼び出し側は黙ってスキップ
-    する）。2 つ目の戻り値は、値の無い依存注釈（`codd:implements` のみ等）を示す
-    エラーメッセージ一覧（validate 側で `malformed_annotation` 検査として報告する）。
+    する）。2 つ目の戻り値は、値の無い依存注釈（`codd:implements` のみ等）や不正な注釈
+    構文を示すエラーメッセージ一覧（validate 側で `malformed_annotation` 検査として
+    報告する）。
+
+    先頭 BOM（U+FEFF）は抽出前に取り除く。BOM 付きのまま Python は ``ast.parse`` が
+    構文エラーになり、`//` 系言語は先頭行のコメント判定（`startswith("//")`）に失敗する
+    ため、注釈が無言でスキップされてしまう（Issue #98 レビュー対応）。
     """
     suffix = PurePosixPath(rel).suffix
+    text = text.lstrip(_BOM)
     if suffix == ".py":
         leading = _python_leading_text(text)
     elif suffix in _LINE_COMMENT_SUFFIXES:
         leading = _comment_leading_text(text)
     else:
         return None, []
-    entries = _parse_annotation_lines(leading)
-    return _entries_to_node(entries, rel, inline_confidence)
+    entries, syntax_errors = _parse_annotation_lines(leading, rel)
+    node, entry_errors = _entries_to_node(entries, rel, inline_confidence)
+    return node, syntax_errors + entry_errors

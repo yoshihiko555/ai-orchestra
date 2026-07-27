@@ -364,6 +364,50 @@ def test_load_config_inline_confidence_falls_back_on_non_numeric(tmp_path) -> No
     assert config.inline_confidence == codd.DEFAULT_INLINE_CONFIDENCE
 
 
+# ---------------------------------------------------------------------------
+# scope/code_scope の glob リスト正規化（Issue #98 レビュー対応）
+# ---------------------------------------------------------------------------
+
+
+def test_load_config_code_scope_include_accepts_single_string_as_list(tmp_path) -> None:
+    # YAML でリスト記法（`- `）を忘れて単一文字列を書いた場合、素朴な list(str) だと
+    # 1 文字ずつイテレートされ glob として無意味になる。単要素リストとして扱う。
+    cfg_path = tmp_path / "codd.yaml"
+    _write(cfg_path, "code_scope:\n  include: 'src/**/*.py'\n  exclude: []\n")
+    config = codd.load_config(cfg_path)
+    assert config.code_include == ["src/**/*.py"]
+
+
+def test_load_config_scope_include_accepts_single_string_as_list(tmp_path) -> None:
+    # doc scope（`scope.include`）でも同じ正規化を適用し、コード側と扱いを一貫させる。
+    cfg_path = tmp_path / "codd.yaml"
+    _write(cfg_path, "scope:\n  include: 'docs/**/*.md'\n  exclude: []\n")
+    config = codd.load_config(cfg_path)
+    assert config.include == ["docs/**/*.md"]
+
+
+def test_load_config_code_scope_include_rejects_non_string_non_list(tmp_path) -> None:
+    cfg_path = tmp_path / "codd.yaml"
+    _write(cfg_path, "code_scope:\n  include: 42\n")
+    with pytest.raises(ValueError, match="code_scope.include"):
+        codd.load_config(cfg_path)
+
+
+def test_load_config_code_scope_include_rejects_list_with_non_string_items(tmp_path) -> None:
+    cfg_path = tmp_path / "codd.yaml"
+    _write(cfg_path, "code_scope:\n  include:\n    - 'src/**/*.py'\n    - 3\n")
+    with pytest.raises(ValueError, match="code_scope.include"):
+        codd.load_config(cfg_path)
+
+
+def test_load_config_code_scope_include_absent_defaults_to_empty_list(tmp_path) -> None:
+    cfg_path = tmp_path / "codd.yaml"
+    _write(cfg_path, "enabled: true\n")
+    config = codd.load_config(cfg_path)
+    assert config.code_include == []
+    assert config.code_exclude == []
+
+
 def test_build_node_clamps_out_of_range_confidence() -> None:
     block = {
         "node_id": "design:x",

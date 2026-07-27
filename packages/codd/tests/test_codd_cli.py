@@ -893,6 +893,56 @@ def test_impact_weighs_code_link_by_confidence(tmp_path) -> None:
     assert entry.band == cc.BAND_AMBER  # 0.7 は green_threshold(0.8) 未満
 
 
+def test_scan_code_nodes_skips_unsupported_extension_without_reading(tmp_path) -> None:
+    # code_scope の混在 glob（例: `assets/**/*`）が画像等の対応外ファイルにマッチしても、
+    # UTF-8 テキストとして読み込もうとしない（不正バイト列で UnicodeDecodeError に
+    # なる／文字化けするのを防ぐ。Issue #98 レビュー対応）。
+    _write(tmp_path, "assets/logo.png", "placeholder")
+    (tmp_path / "assets/logo.png").write_bytes(b"\xff\xd8\xff\xe0\x00\x10not-utf8\xff\xfe")
+    _write(tmp_path, "assets/mod.py", _py(["codd:implements design:d"]))
+    config = _config(code_scope={"include": ["assets/**/*"], "exclude": []})
+
+    nodes, errors = cli.scan_code_nodes(tmp_path, config)
+
+    assert errors == []
+    assert [n.node_id for n in nodes] == ["code:mod"]
+
+
+def test_collect_code_files_excludes_paths_resolving_outside_root(tmp_path) -> None:
+    # `../*.py` のような glob はプロジェクトルート外のファイルを解決してしまう
+    # ため、root 配下に収まらないパスは除外する（Issue #98 レビュー対応）。
+    root = tmp_path / "proj"
+    root.mkdir()
+    _write(tmp_path, "outside.py", _py(["codd:implements design:x"]))
+    _write(root, "src/mod.py", _py(["codd:implements design:y"]))
+    config = _config(code_scope={"include": ["../*.py", "src/**/*.py"], "exclude": []})
+
+    files = {p.relative_to(root).as_posix() for p in cli.collect_code_files(root, config)}
+
+    assert files == {"src/mod.py"}
+
+
+def test_compute_impact_result_reports_deleted_code_upstream_with_pep263_encoding(
+    tmp_path,
+) -> None:
+    # 削除された Python ファイルが Latin-1 の coding cookie を宣言していても、
+    # ref 側の内容を UTF-8 固定で復号せず PEP 263 に従う（working tree 側の
+    # `_read_source_text` と同じ規約。Issue #98 レビュー対応）。
+    _init_repo(tmp_path)
+    path = tmp_path / "src" / "legacy.py"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    content = '# -*- coding: latin-1 -*-\n"""\ncodd:node_id code:legacy\nnote: café\n"""\n'
+    path.write_bytes(content.encode("latin-1"))
+    config = _config(code_scope={"include": ["src/**/*.py"], "exclude": []})
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "init")
+    path.unlink()
+
+    result = cli.compute_impact_result(tmp_path, config, "HEAD")
+
+    assert "src/legacy.py" in result.deleted_upstream
+
+
 # ---------------------------------------------------------------------------
 # diff_changed_paths（非 ASCII パス / quotePath 対応）
 # ---------------------------------------------------------------------------
