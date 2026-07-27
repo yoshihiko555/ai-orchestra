@@ -98,11 +98,54 @@ _AC_ITEM_JUDGE_PATTERN = re.compile(r"^- \[ \] (.+) — judge: (.+)$")
 # previously still passed since only `ac_heading_index > heading_index` was checked).
 _SUBHEADING_PATTERN = re.compile(r"^#### (.+)$")
 
+
+def _normalized_heading(line: str) -> str:
+    """Collapse internal/leading/trailing whitespace so heading comparisons are robust to
+    incidental formatting differences."""
+    return " ".join(line.split())
+
+
+_AC_SECTION_HEADING_NORMALIZED = _normalized_heading(_AC_SECTION_HEADING)
+
+
+def _is_ac_section_heading(line: str) -> bool:
+    """Whitespace-tolerant match for the Acceptance Criteria heading.
+
+    A byte-exact `line == _AC_SECTION_HEADING` check lets a candidate add
+    `"#### Acceptance Criteria "` (trailing whitespace) or similar variants: this slips past the
+    exact-match AC-detection checks (so a direct add-phase call's "must not fabricate an AC
+    section" assertion never fires), and the same line is then absorbed by
+    `_extract_task_group_heading_index` as if it were an ordinary, unrelated task-group heading
+    (its own `line != _AC_SECTION_HEADING` exact-match exclusion also misses it) -- letting a
+    Markdown-visible Acceptance Criteria-shaped heading slip through both no-AC and with-AC
+    critical oracles undetected (PR #326 review round 4, Codex P2). Normalizing whitespace before
+    comparing closes both gaps.
+    """
+    return _normalized_heading(line) == _AC_SECTION_HEADING_NORMALIZED
+
+
 # Day-boundary tolerance: the scenario run and this oracle's separate container can be up to
 # `timeout_ms` (5 min) apart, so a run started just before local midnight and checked just after
 # (or vice versa, depending on container timezone) must not flake (PR #266 review round 2, point
 # 3).
 _DATE_TOLERANCE_DAYS = 1
+
+
+def _read_plans_text_preserving_line_endings(plans_path: Path) -> str:
+    """Read `plans_path` without `Path.read_text()`'s universal-newline translation.
+
+    `Path.read_text()` opens the file in text mode, which silently normalizes `\\r\\n` to `\\n`
+    (Python's universal newlines). A candidate that rewrites the *entire* seeded Plans.md to
+    CRLF line endings while otherwise inserting exactly the expected content would therefore
+    still compare byte-for-byte equal against the canonical fixture's LF-only lines, defeating
+    every "rest of the document is byte-identical" assertion in this module -- and since
+    `.claude/Plans.md` is gitignored, the `collateral-scope` oracle cannot catch this rewrite
+    either (PR #326 review round 4, Codex P2). Decoding raw bytes instead preserves any `\\r`
+    immediately before each `\\n`, so `.split("\\n")` yields lines still carrying a trailing
+    `\\r` that will not match the canonical (LF-only) lines, causing the affected assertions to
+    fail as intended.
+    """
+    return plans_path.read_bytes().decode("utf-8")
 
 
 def _find_unique_line_index(
@@ -125,7 +168,7 @@ def assert_mark_task_done(plans_path: Path, *, target_task: str, target_status: 
     task's marker line changed to `target_status` -- no other line may differ (added, removed,
     reordered, or edited), which inherently covers frontmatter/headings/Decisions/Notes/every
     other task without needing separate section-scoped checks."""
-    text = plans_path.read_text(encoding="utf-8")
+    text = _read_plans_text_preserving_line_endings(plans_path)
     actual_lines = text.split("\n")
 
     assert len(actual_lines) == len(_CANONICAL_LINES), (
@@ -159,7 +202,7 @@ def assert_mark_task_done(plans_path: Path, *, target_task: str, target_status: 
 def assert_decision_recorded(plans_path: Path, *, expected_decision: str) -> None:
     """Assert the whole document is identical to the canonical fixture except for exactly one
     new line inserted right after the last seeded Decisions bullet -- no other line may differ."""
-    text = plans_path.read_text(encoding="utf-8")
+    text = _read_plans_text_preserving_line_endings(plans_path)
     actual_lines = text.split("\n")
 
     assert len(actual_lines) == len(_CANONICAL_LINES) + 1, (
@@ -226,7 +269,7 @@ def _extract_inserted_phase_block(plans_path: Path) -> list[str]:
     it is instead identified as the `---` line immediately preceding the unique `## Decisions`
     line.
     """
-    text = plans_path.read_text(encoding="utf-8")
+    text = _read_plans_text_preserving_line_endings(plans_path)
     actual_lines = text.split("\n")
 
     decisions_heading_index = _find_unique_line_index(
@@ -305,7 +348,7 @@ def _extract_task_group_heading_index(inserted_block: list[str]) -> int:
     subheading_indices = [
         idx
         for idx, line in enumerate(inserted_block)
-        if _SUBHEADING_PATTERN.match(line) is not None and line != _AC_SECTION_HEADING
+        if _SUBHEADING_PATTERN.match(line) is not None and not _is_ac_section_heading(line)
     ]
     assert len(subheading_indices) == 1, (
         "expected exactly one task-group heading (`#### ...`, other than the Acceptance "
@@ -362,7 +405,7 @@ def assert_add_phase_with_ac(
 
     ac_heading_index = _find_unique_line_index(
         inserted_block,
-        lambda line: line == _AC_SECTION_HEADING,
+        _is_ac_section_heading,
         not_found_message=(
             "Acceptance Criteria セクションが欠落している: expected an "
             f"{_AC_SECTION_HEADING!r} heading in the newly inserted phase block, but none was "
@@ -440,9 +483,10 @@ def assert_add_phase_no_ac(plans_path: Path, *, phase_name: str, tasks: list[str
         inserted_block, phase_name=phase_name, tasks=tasks
     )
 
-    assert not any(line == _AC_SECTION_HEADING for line in inserted_block), (
+    assert not any(_is_ac_section_heading(line) for line in inserted_block), (
         "a direct add-phase call with no agreed Acceptance Criteria must not add an "
-        f"'{_AC_SECTION_HEADING}' section, but one was found in: {inserted_block!r}"
+        f"'{_AC_SECTION_HEADING}' section (or a whitespace variant of it), but one was found "
+        f"in: {inserted_block!r}"
     )
     fabricated_items = [
         line

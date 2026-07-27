@@ -2034,6 +2034,59 @@ def test_task_state_add_phase_no_ac_oracle_rejects_unconsumed_content(tmp_path: 
         )
 
 
+_ADD_PHASE_NO_AC_TRAILING_WHITESPACE_HEADING_BLOCK = (
+    "### Phase 3: リリース準備 `cc:TODO`\n"
+    "\n"
+    "#### Acceptance Criteria \n"
+    "\n"
+    "#### Tasks\n"
+    "\n"
+    "- `cc:TODO` デプロイ手順書作成\n"
+    "- `cc:TODO` リリースノート作成\n"
+    "\n"
+)
+
+
+def test_task_state_add_phase_no_ac_oracle_rejects_trailing_whitespace_ac_heading(
+    tmp_path: Path,
+) -> None:
+    """Codex bot レビュー round 4 (P2): 末尾空白付きの `#### Acceptance Criteria ` は byte-exact
+    比較をすり抜け、後続の task-group heading 検証では唯一の task-group heading として消費されて
+    しまっていた。見出しの空白を正規化して比較することで、この AC 類似見出しも確実に拒否する。"""
+    fixture = _task_state_outcome_fixture()
+    plans_path = tmp_path / "Plans.md"
+    plans_path.write_text(
+        _insert_before_separator(_ADD_PHASE_NO_AC_TRAILING_WHITESPACE_HEADING_BLOCK),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AssertionError, match="must not add an"):
+        fixture.assert_add_phase_no_ac(
+            plans_path,
+            phase_name="Phase 3: リリース準備",
+            tasks=["デプロイ手順書作成", "リリースノート作成"],
+        )
+
+
+def test_task_state_add_phase_no_ac_oracle_rejects_crlf_rewrite_of_existing_content(
+    tmp_path: Path,
+) -> None:
+    """Codex bot レビュー round 4 (P2): `Path.read_text()` の universal-newline 変換で CRLF が
+    LF に正規化されるため、候補が既存 Plans.md 全体を CRLF 化しても全文一致検査をすり抜けて
+    いた。改行コードを保持したまま比較することで、この全面書き換えも検出する。"""
+    fixture = _task_state_outcome_fixture()
+    plans_path = tmp_path / "Plans.md"
+    crlf_text = _insert_before_separator(_ADD_PHASE_NO_AC_BLOCK).replace("\n", "\r\n")
+    plans_path.write_bytes(crlf_text.encode("utf-8"))
+
+    with pytest.raises(AssertionError):
+        fixture.assert_add_phase_no_ac(
+            plans_path,
+            phase_name="Phase 3: リリース準備",
+            tasks=["デプロイ手順書作成", "リリースノート作成"],
+        )
+
+
 def _init_git_repo_with_tracked_file(repo_dir: Path, relative_path: str, content: str) -> None:
     tracked_path = repo_dir / relative_path
     tracked_path.parent.mkdir(parents=True, exist_ok=True)
