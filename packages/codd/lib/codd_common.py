@@ -27,6 +27,9 @@ STATUS_BY_KIND: dict[str, list[str]] = {
     "plan": DEFAULT_STATUSES,
     "rule": DEFAULT_STATUSES,
     "instruction": DEFAULT_STATUSES,
+    # Issue #98: コード⇔ドキュメントのトレーサビリティ（code/test ノード）。
+    "code": DEFAULT_STATUSES,
+    "test": DEFAULT_STATUSES,
 }
 
 
@@ -44,6 +47,9 @@ NODE_ID_PREFIX_BY_KIND: dict[str, str] = {
     "plan": "plan",
     "rule": "rule",
     "instruction": "instruction",
+    # Issue #98: コード⇔ドキュメントのトレーサビリティ（code/test ノード）。
+    "code": "code",
+    "test": "test",
 }
 
 
@@ -112,10 +118,16 @@ def parse_codd_frontmatter(text: str) -> dict[str, Any] | None:
 
 @dataclass(frozen=True)
 class Dependency:
-    """depends_on の 1 エントリ（参照先 node_id + 関係種別）。"""
+    """depends_on の 1 エントリ（参照先 node_id + 関係種別）。
+
+    confidence はリンクの信頼度（Issue #98）。doc frontmatter で宣言された既存の
+    リンクは人手レビュー済みの確定宣言として既定値 1.0。コード注釈から抽出された
+    リンクは `codd_code` 側でより低い値（config の `inline_confidence`）を設定する。
+    """
 
     id: str
     relation: str
+    confidence: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -138,6 +150,16 @@ def _as_text(value: Any) -> str:
     return "" if value is None else str(value)
 
 
+def _as_confidence(value: Any) -> float:
+    """depends_on エントリの confidence を正規化する（未指定 / 不正値は既定 1.0）。"""
+    if value is None:
+        return 1.0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 1.0
+
+
 def build_node(codd: dict[str, Any], path: str) -> CoddNode:
     """`codd:` ブロック dict から CoddNode を構築する。
 
@@ -153,6 +175,7 @@ def build_node(codd: dict[str, Any], path: str) -> CoddNode:
                     Dependency(
                         id=_as_text(entry.get("id")),
                         relation=_as_text(entry.get("relation")),
+                        confidence=_as_confidence(entry.get("confidence")),
                     )
                 )
     owner = codd.get("owner")
@@ -375,9 +398,11 @@ class ImpactedNode:
 def build_edge_weights(graph: CoddGraph, config: ImpactConfig) -> dict[tuple[str, str], float]:
     """``(target_id, source_id) -> 重み`` のエッジ重みキャッシュを構築する。
 
-    エッジ ``source depends_on target`` の relation 重み。source が target を複数 relation で
-    参照する場合は最大重み（最良証拠）を採る。グラフ構築後は不変なので traversal 前に一度だけ
-    計算し、hot path での depends_on 線形走査を避ける。
+    エッジ ``source depends_on target`` の重みは ``relation 重み × confidence``（Issue #98）。
+    doc frontmatter 由来のリンクは confidence 既定 1.0 のため従来と同じ重みになる。コード注釈
+    由来の低信頼リンクは、この掛け算で impact 分析への影響が比例して弱まる。source が target を
+    複数 relation で参照する場合は最大重み（最良証拠）を採る。グラフ構築後は不変なので
+    traversal 前に一度だけ計算し、hot path での depends_on 線形走査を避ける。
     """
     cache: dict[tuple[str, str], float] = {}
     for source_id, node in graph.nodes.items():
@@ -385,7 +410,8 @@ def build_edge_weights(graph: CoddGraph, config: ImpactConfig) -> dict[tuple[str
             if dep.id == source_id:
                 continue
             key = (dep.id, source_id)
-            cache[key] = max(cache.get(key, 0.0), config.weight_of(dep.relation))
+            weight = config.weight_of(dep.relation) * dep.confidence
+            cache[key] = max(cache.get(key, 0.0), weight)
     return cache
 
 
@@ -505,6 +531,9 @@ def _finalize(
 
 DEFAULT_GRAPH_FORMAT = "jsonl"
 DEFAULT_GRAPH_PATH = ".claude/codd/graph.jsonl"
+# code/test 注釈（Issue #98）の既定信頼度。doc frontmatter（1.0）より低く、
+# 1 行注釈という軽量な記法ゆえの不確実性を反映する。
+DEFAULT_INLINE_CONFIDENCE = 0.7
 
 # 検査レベルの正準値。
 LEVEL_ERROR = "error"
@@ -544,12 +573,17 @@ class CoddConfig:
     graph_path: str
     checks: dict[str, str]
     impact: ImpactConfig
+    # Issue #98: コード⇔ドキュメントのトレーサビリティ（opt-in・既定は空 = 挙動変化なし）。
+    code_include: list[str]
+    code_exclude: list[str]
+    inline_confidence: float
     raw: dict[str, Any]
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> CoddConfig:
         scope = data.get("scope") or {}
         graph_store = data.get("graph_store") or {}
+        code_scope = data.get("code_scope") or {}
         return cls(
             enabled=bool(data.get("enabled", True)),
             include=list(scope.get("include") or []),
@@ -564,6 +598,9 @@ class CoddConfig:
                 for name, level in (data.get("checks") or {}).items()
             },
             impact=ImpactConfig.from_dict(data.get("impact") or {}),
+            code_include=list(code_scope.get("include") or []),
+            code_exclude=list(code_scope.get("exclude") or []),
+            inline_confidence=float(data.get("inline_confidence", DEFAULT_INLINE_CONFIDENCE)),
             raw=data,
         )
 

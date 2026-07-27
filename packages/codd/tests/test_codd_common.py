@@ -212,6 +212,7 @@ def test_node_id_prefix_still_accepts_valid_ids() -> None:
 
 def test_node_id_prefix_by_kind_matches_design_table() -> None:
     # 設計 4.3 の表: requirement のみ "req" に略記、他は kind 名と同一。
+    # code/test は Issue #98（コード⇔ドキュメントのトレーサビリティ）で追加された kind。
     assert codd.NODE_ID_PREFIX_BY_KIND == {
         "requirement": "req",
         "design": "design",
@@ -219,6 +220,8 @@ def test_node_id_prefix_by_kind_matches_design_table() -> None:
         "plan": "plan",
         "rule": "rule",
         "instruction": "instruction",
+        "code": "code",
+        "test": "test",
     }
 
 

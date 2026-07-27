@@ -1,0 +1,137 @@
+"""codd_code（コード⇔ドキュメントのトレーサビリティ抽出、Issue #98）の unit test。"""
+
+from __future__ import annotations
+
+from tests.module_loader import load_module
+
+cc = load_module("codd_common", "packages/codd/lib/codd_common.py")
+cx = load_module("codd_code", "packages/codd/lib/codd_code.py")
+
+INLINE_CONFIDENCE = 0.7
+
+
+# ---------------------------------------------------------------------------
+# kind 推定（パス規約）
+# ---------------------------------------------------------------------------
+
+
+def test_infer_kind_detects_test_directory() -> None:
+    assert cx.infer_kind("packages/codd/tests/test_codd_cli.py") == "test"
+
+
+def test_infer_kind_detects_test_name_prefix() -> None:
+    assert cx.infer_kind("src/test_helpers.py") == "test"
+
+
+def test_infer_kind_detects_test_name_suffix() -> None:
+    assert cx.infer_kind("src/helpers_test.go") == "test"
+
+
+def test_infer_kind_defaults_to_code() -> None:
+    assert cx.infer_kind("packages/codd/lib/codd_common.py") == "code"
+
+
+# ---------------------------------------------------------------------------
+# Python 抽出（AST ベース / module docstring）
+# ---------------------------------------------------------------------------
+
+
+def test_extract_python_reads_module_docstring_annotation() -> None:
+    text = (
+        '"""\ncodd:implements design:codd-coherence-layer\n"""\n\ndef hello() -> None:\n    pass\n'
+    )
+    node = cx.extract_code_node("packages/codd/scripts/example.py", text, INLINE_CONFIDENCE)
+    assert node is not None
+    assert node.node_id == "code:example"
+    assert node.kind == "code"
+    assert node.status == "active"
+    assert node.depends_on == (
+        cc.Dependency(
+            id="design:codd-coherence-layer", relation="implements", confidence=INLINE_CONFIDENCE
+        ),
+    )
+
+
+def test_extract_python_ignores_annotation_outside_docstring() -> None:
+    # 本文コード中の文字列リテラルに `codd:` 風の文字列があっても誤検出しない（AST 制約）。
+    text = (
+        '"""通常の docstring。"""\n\nMESSAGE = "codd:implements design:should-not-be-picked-up"\n'
+    )
+    node = cx.extract_code_node("packages/codd/scripts/example.py", text, INLINE_CONFIDENCE)
+    assert node is None
+
+
+def test_extract_python_returns_none_on_syntax_error() -> None:
+    node = cx.extract_code_node("broken.py", "def (:\n", INLINE_CONFIDENCE)
+    assert node is None
+
+
+def test_extract_python_returns_none_without_annotation() -> None:
+    text = '"""通常の docstring。codd と無関係。"""\n'
+    node = cx.extract_code_node("packages/codd/lib/plain.py", text, INLINE_CONFIDENCE)
+    assert node is None
+
+
+def test_extract_python_supports_explicit_node_id_and_kind() -> None:
+    text = (
+        '"""\n'
+        "codd:node_id code:custom-slug\n"
+        "codd:kind test\n"
+        "codd:owner ai-orchestra\n"
+        "codd:references adr:ADR-20260624-026\n"
+        '"""\n'
+    )
+    node = cx.extract_code_node("packages/codd/lib/anything.py", text, INLINE_CONFIDENCE)
+    assert node is not None
+    assert node.node_id == "code:custom-slug"
+    assert node.kind == "test"
+    assert node.owner == "ai-orchestra"
+    assert node.depends_on == (
+        cc.Dependency(
+            id="adr:ADR-20260624-026", relation="references", confidence=INLINE_CONFIDENCE
+        ),
+    )
+
+
+def test_extract_python_supports_multiple_dependencies() -> None:
+    text = (
+        '"""\n'
+        "codd:implements design:codd-coherence-layer\n"
+        "codd:references adr:ADR-20260624-026\n"
+        '"""\n'
+    )
+    node = cx.extract_code_node("packages/codd/scripts/codd.py", text, INLINE_CONFIDENCE)
+    assert node is not None
+    assert len(node.depends_on) == 2
+
+
+# ---------------------------------------------------------------------------
+# `//` 系言語抽出（先頭コメントブロック）
+# ---------------------------------------------------------------------------
+
+
+def test_extract_line_comment_reads_leading_block() -> None:
+    text = "// codd:implements design:codd-coherence-layer\n// 通常のコメント\n\nfunc main() {}\n"
+    node = cx.extract_code_node("src/main.go", text, INLINE_CONFIDENCE)
+    assert node is not None
+    assert node.node_id == "code:main"
+    assert node.depends_on[0].relation == "implements"
+    assert node.depends_on[0].confidence == INLINE_CONFIDENCE
+
+
+def test_extract_line_comment_skips_shebang() -> None:
+    text = "#!/usr/bin/env node\n// codd:implements design:codd-coherence-layer\n"
+    node = cx.extract_code_node("scripts/run.js", text, INLINE_CONFIDENCE)
+    assert node is not None
+    assert node.node_id == "code:run"
+
+
+def test_extract_line_comment_stops_at_non_comment_line() -> None:
+    text = "console.log('start')\n// codd:implements design:should-not-be-picked-up\n"
+    node = cx.extract_code_node("scripts/run.js", text, INLINE_CONFIDENCE)
+    assert node is None
+
+
+def test_extract_returns_none_for_unsupported_extension() -> None:
+    node = cx.extract_code_node("docs/notes.txt", "codd:implements design:x", INLINE_CONFIDENCE)
+    assert node is None

@@ -20,7 +20,9 @@ cli = load_module("codd_cli", "packages/codd/scripts/codd.py")
 BASE_CONFIG = {
     "enabled": True,
     "scope": {"include": ["docs/**/*.md"], "exclude": []},
-    "kinds": ["requirement", "design", "adr", "plan", "rule", "instruction"],
+    # code/test は Issue #98（コード⇔ドキュメントのトレーサビリティ）で追加された kind。
+    # code_scope 自体は既定で空（opt-in）のため、この語彙追加だけでは既存テストに影響しない。
+    "kinds": ["requirement", "design", "adr", "plan", "rule", "instruction", "code", "test"],
     "relations": ["derives_from", "refines", "implements", "references", "supersedes"],
     "roots": ["requirement", "instruction"],
     "graph_store": {"format": "jsonl", "path": ".claude/codd/graph.jsonl"},
@@ -725,6 +727,112 @@ def test_cmd_impact_returns_nonzero_on_invalid_ref(tmp_path, capsys) -> None:
 
     assert cli.cmd_impact(tmp_path, _config(), "no-such-ref", as_json=False) == 2
     assert "ERROR" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# code_scope（コード⇔ドキュメントのトレーサビリティ、Issue #98）
+# ---------------------------------------------------------------------------
+
+
+def _py(annotation_lines: list[str], body: str = "pass\n") -> str:
+    """コード注釈付き Python ソース断片を組み立てる（module docstring 形式）。"""
+    lines = ['"""'] + annotation_lines + ['"""', "", body]
+    return "\n".join(lines)
+
+
+def test_collect_code_files_empty_by_default(tmp_path) -> None:
+    # code_scope 未設定（既定）ではソースファイルが存在しても走査対象ゼロ（opt-in）。
+    _write(tmp_path, "src/mod.py", _py(["codd:implements design:x"]))
+    assert cli.collect_code_files(tmp_path, _config()) == []
+
+
+def test_scan_code_nodes_skips_files_without_annotation(tmp_path) -> None:
+    _write(tmp_path, "src/plain.py", "def f():\n    pass\n")
+    config = _config(code_scope={"include": ["src/**/*.py"], "exclude": []})
+    nodes = cli.scan_code_nodes(tmp_path, config)
+    assert nodes == []
+
+
+def test_scan_project_merges_code_nodes_into_doc_graph(tmp_path) -> None:
+    _write(tmp_path, "docs/design.md", _doc("design:d", "design"))
+    _write(
+        tmp_path,
+        "src/mod.py",
+        _py(["codd:implements design:d"]),
+    )
+    config = _config(code_scope={"include": ["src/**/*.py"], "exclude": []})
+    result = cli.scan_project(tmp_path, config)
+    ids = {n.node_id for n in result.nodes}
+    assert ids == {"design:d", "code:mod"}
+    assert result.graph.incoming_count("design:d") == 1
+    # code_scope はコードファイル未走査の doc missing_frontmatter とは独立（無関係の doc に影響しない）。
+    assert result.missing_frontmatter == []
+
+
+def test_scan_code_node_dangling_dependency_is_validated(tmp_path) -> None:
+    # code ノードも既存の dangling 検査にそのまま乗る（特別扱い不要）。
+    _write(tmp_path, "src/mod.py", _py(["codd:implements design:missing"]))
+    config = _config(code_scope={"include": ["src/**/*.py"], "exclude": []})
+    result = cli.scan_project(tmp_path, config)
+    grouped = _checks(result, config, tmp_path)
+    assert len(grouped["dangling"]) == 1
+    assert "src/mod.py" in grouped["dangling"][0].message
+
+
+def test_scan_code_node_confidence_defaults_to_config_value(tmp_path) -> None:
+    _write(tmp_path, "src/mod.py", _py(["codd:implements design:d"]))
+    config = _config(code_scope={"include": ["src/**/*.py"], "exclude": []})
+    result = cli.scan_project(tmp_path, config)
+    node = next(n for n in result.nodes if n.node_id == "code:mod")
+    assert node.depends_on[0].confidence == cc.DEFAULT_INLINE_CONFIDENCE
+
+
+def test_scan_code_node_confidence_configurable(tmp_path) -> None:
+    _write(tmp_path, "src/mod.py", _py(["codd:implements design:d"]))
+    config = _config(code_scope={"include": ["src/**/*.py"], "exclude": []}, inline_confidence=0.3)
+    result = cli.scan_project(tmp_path, config)
+    node = next(n for n in result.nodes if n.node_id == "code:mod")
+    assert node.depends_on[0].confidence == 0.3
+
+
+def test_write_graph_jsonl_omits_default_confidence(tmp_path) -> None:
+    _write(
+        tmp_path,
+        "docs/design.md",
+        _doc("design:d", "design", deps=[("req:r", "derives_from")]),
+    )
+    result = cli.scan_project(tmp_path, _config())
+    out = tmp_path / ".claude/codd/graph.jsonl"
+    cli.write_graph_jsonl(result, out)
+    records = [json.loads(line) for line in out.read_text().splitlines() if line.strip()]
+    assert records[0]["depends_on"] == [{"id": "req:r", "relation": "derives_from"}]
+
+
+def test_write_graph_jsonl_includes_non_default_confidence(tmp_path) -> None:
+    _write(tmp_path, "src/mod.py", _py(["codd:implements design:d"]))
+    config = _config(code_scope={"include": ["src/**/*.py"], "exclude": []})
+    result = cli.scan_project(tmp_path, config)
+    out = tmp_path / ".claude/codd/graph.jsonl"
+    cli.write_graph_jsonl(result, out)
+    records = {r["node_id"]: r for r in (json.loads(line) for line in out.read_text().splitlines())}
+    dep = records["code:mod"]["depends_on"][0]
+    assert dep["confidence"] == cc.DEFAULT_INLINE_CONFIDENCE
+
+
+def test_impact_weighs_code_link_by_confidence(tmp_path) -> None:
+    # code ノードの低信頼リンクは、同じ relation の doc リンクより impact スコアが低くなる。
+    _init_repo(tmp_path)
+    _write(tmp_path, "docs/design.md", _doc("design:d", "design"))
+    _write(tmp_path, "src/mod.py", _py(["codd:implements design:d"]))
+    config = _config(code_scope={"include": ["src/**/*.py"], "exclude": []})
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "init")
+    _write(tmp_path, "docs/design.md", _doc("design:d", "design") + "\nx\n")
+
+    result = cli.compute_impact_result(tmp_path, config, "HEAD")
+    entry = next(n for n in result.impacted if n.node_id == "code:mod")
+    assert entry.score == pytest.approx(cc.DEFAULT_INLINE_CONFIDENCE)
+    assert entry.band == cc.BAND_AMBER  # 0.7 は green_threshold(0.8) 未満
 
 
 # ---------------------------------------------------------------------------

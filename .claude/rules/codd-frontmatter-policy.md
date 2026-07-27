@@ -30,20 +30,25 @@ codd:
 `node_id` は `<kind>:<file-slug>`（file-slug = 拡張子を除いたファイル名 or 安定スラッグ）。
 
 | kind        | node_id 例                  | 由来                     |
-| ----------- | --------------------------- | ------------------------ |
+| ----------- | ---------------------------- | ------------------------ |
 | requirement | `req:feature-list`          | `docs/requirements/*.md` |
 | design      | `design:architecture`       | `docs/architecture/*.md` |
 | adr         | `adr:ADR-20260624-010`      | `docs/adr/ADR-*.md`      |
 | plan        | `plan:codd-coherence-layer` | `.claude/Plans.md`       |
 | rule        | `rule:config-loading`       | `.claude/rules/*.md`     |
 | instruction | `instruction:claude-md`     | `templates/context/*.md` |
+| code        | `code:codd-scan`            | `code_scope.include` 内のソースファイル（opt-in、Issue #98） |
+| test        | `test:test-codd-cli`        | `code_scope.include` 内のテストファイル（opt-in、Issue #98） |
+
+> `code` / `test` は 1行の軽量注釈（`codd:<key> <value>`）で宣言する。詳細は
+> `docs/design/codd-coherence-layer.md` §4.3.1 を参照。
 
 ## status 語彙（kind 依存）
 
-| kind                                             | status 語彙                                                        |
-| ------------------------------------------------ | ------------------------------------------------------------------ |
-| adr                                              | `proposed` / `accepted` / `rejected` / `superseded` / `deprecated` |
-| requirement / design / plan / rule / instruction | `draft` / `active` / `deprecated`                                  |
+| kind                                                    | status 語彙                                                        |
+| -------------------------------------------------------- | ------------------------------------------------------------------ |
+| adr                                                       | `proposed` / `accepted` / `rejected` / `superseded` / `deprecated` |
+| requirement / design / plan / rule / instruction / code / test | `draft` / `active` / `deprecated`                                  |
 
 ## relation（関係種別）
 

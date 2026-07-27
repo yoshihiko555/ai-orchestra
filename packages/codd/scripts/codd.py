@@ -24,6 +24,7 @@ _LIB_DIR = Path(__file__).resolve().parent.parent / "lib"
 if str(_LIB_DIR) not in sys.path:
     sys.path.insert(0, str(_LIB_DIR))
 
+import codd_code as cx  # noqa: E402
 import codd_common as cc  # noqa: E402
 
 DEFAULT_CONFIG_PATH = Path(".claude/config/codd/codd.yaml")
@@ -64,8 +65,37 @@ def collect_files(root: Path, config: cc.CoddConfig) -> list[Path]:
     return [root / rel for rel in sorted(included - excluded)]
 
 
+def collect_code_files(root: Path, config: cc.CoddConfig) -> list[Path]:
+    """``code_scope.include``（Issue #98 / opt-in）内のソースファイル一覧を返す。
+
+    既定は空リストのため、未設定プロジェクトでは常に空（既存挙動への影響ゼロ）。
+    """
+    if not config.code_include:
+        return []
+    included = _glob_relpaths(root, config.code_include)
+    excluded = _glob_relpaths(root, config.code_exclude)
+    return [root / rel for rel in sorted(included - excluded)]
+
+
+def scan_code_nodes(root: Path, config: cc.CoddConfig) -> list[cc.CoddNode]:
+    """``code_scope`` 内から code/test ノードを抽出する（Issue #98）。
+
+    doc scope と異なり、`codd:` 注釈が無いファイルは missing_frontmatter として
+    扱わず黙ってスキップする（コードベース全体へのフロントマター強制はしない、
+    opt-in の軽量記法のため）。
+    """
+    nodes: list[cc.CoddNode] = []
+    for path in collect_code_files(root, config):
+        rel = path.relative_to(root).as_posix()
+        text = path.read_text(encoding="utf-8")
+        node = cx.extract_code_node(rel, text, config.inline_confidence)
+        if node is not None:
+            nodes.append(node)
+    return nodes
+
+
 def scan_project(root: Path, config: cc.CoddConfig) -> ScanResult:
-    """scope を走査してグラフを構築する。"""
+    """scope（doc）+ code_scope（Issue #98 / opt-in）を走査してグラフを構築する。"""
     nodes: list[cc.CoddNode] = []
     missing: list[str] = []
     for path in collect_files(root, config):
@@ -76,6 +106,7 @@ def scan_project(root: Path, config: cc.CoddConfig) -> ScanResult:
             missing.append(rel)
             continue
         nodes.append(cc.build_node(codd_block, rel))
+    nodes.extend(scan_code_nodes(root, config))
     graph = cc.build_graph(nodes)
     return ScanResult(graph=graph, nodes=nodes, missing_frontmatter=missing)
 
@@ -83,6 +114,19 @@ def scan_project(root: Path, config: cc.CoddConfig) -> ScanResult:
 # ---------------------------------------------------------------------------
 # グラフの JSONL 永続化
 # ---------------------------------------------------------------------------
+
+
+def _dependency_to_record(dep: cc.Dependency) -> dict[str, Any]:
+    """Dependency を JSONL の depends_on エントリへ変換する。
+
+    confidence は既定値 1.0（doc frontmatter 由来）のときは省略し、既存の
+    JSONL 出力（doc のみのグラフ）をバイト互換に保つ。1.0 未満（コード注釈
+    由来。Issue #98）の場合のみ明示する。
+    """
+    record: dict[str, Any] = {"id": dep.id, "relation": dep.relation}
+    if dep.confidence != 1.0:
+        record["confidence"] = dep.confidence
+    return record
 
 
 def node_to_record(node: cc.CoddNode) -> dict[str, Any]:
@@ -93,7 +137,7 @@ def node_to_record(node: cc.CoddNode) -> dict[str, Any]:
         "status": node.status,
         "owner": node.owner,
         "path": node.path,
-        "depends_on": [{"id": dep.id, "relation": dep.relation} for dep in node.depends_on],
+        "depends_on": [_dependency_to_record(dep) for dep in node.depends_on],
     }
 
 

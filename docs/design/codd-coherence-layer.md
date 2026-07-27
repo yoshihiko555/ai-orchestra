@@ -66,11 +66,11 @@ skill / hook）で独自実装する。
 
 | 項目                                                                                           | 理由                                       | 移管先                          |
 | ---------------------------------------------------------------------------------------------- | ------------------------------------------ | ------------------------------- |
-| ~~impact 分析（Green/Amber/Gray 信頼度スコア）~~ → **Phase 2 で実装済み（Issue #94 / 4.5.1）** | —                                          | 完了                            |
-| hook 自動配線（PostToolUse scan / pre-commit validate）の導入先展開                            | Phase 1 は手動 `/codd-validate` で価値検証 | Issue: codd-hook-distribution   |
-| CI（PR に verdict 投稿）                                                                       | impact 分析に依存                          | Issue: codd-ci-guardrail        |
-| コード ⇔ ドキュメントのトレーサビリティ                                                        | 静的解析が必要で重い                       | Issue: codd-code-doc-trace      |
-| ノードのサブ粒度化（1ファイル内 FT-xxx 単位のノード）                                          | parser/validate が複雑化                   | Issue: codd-subnode-granularity |
+| ~~impact 分析（Green/Amber/Gray 信頼度スコア）~~ → **Phase 2 で実装済み（Issue #94 / 4.5.1）**             | —                                           | 完了                             |
+| hook 自動配線（PostToolUse scan / pre-commit validate）の導入先展開                                        | Phase 1 は手動 `/codd-validate` で価値検証  | Issue: codd-hook-distribution    |
+| CI（PR に verdict 投稿）                                                                                   | impact 分析に依存                           | Issue: codd-ci-guardrail         |
+| ~~コード ⇔ ドキュメントのトレーサビリティ~~ → **Phase 3 で opt-in 実装済み（Issue #98 / 4.3.1）** | —                                            | 完了                             |
+| ノードのサブ粒度化（1ファイル内 FT-xxx 単位のノード）                                                      | parser/validate が複雑化                    | Issue: codd-subnode-granularity  |
 
 ---
 
@@ -175,6 +175,33 @@ codd:
 | instruction | `instruction:claude-md`                  | `templates/context/*.md`                                                   |
 
 > ファイル内の FT-001 等の細粒度 ID は Phase 1 ではノード化しない（別Issue: codd-subnode-granularity）。
+
+### 4.3.1 code / test ノード（コード⇔ドキュメントのトレーサビリティ / Issue #98）
+
+`code` / `test` kind をノード語彙へ追加し、ソースファイルからも `implements` / `references` 等の
+depends_on を宣言できるようにする。doc frontmatter との違いは次の3点。
+
+1. **opt-in スコープ**: `codd.yaml` の新設 `code_scope.include`（既定: 空リスト）に glob を
+   追加したファイルのみが走査対象になる。未設定プロジェクトは挙動が変わらない。
+2. **1行の軽量注釈**: doc の YAML frontmatter 全体を書く代わりに、`codd:<key> <value>` の
+   1行注釈を並べる。`key` は予約語（`node_id` / `kind` / `status` / `owner`）または
+   relation 名（`implements` 等）で、value は対象 node_id。`node_id` を省略すると
+   `<kind>:<file-stem>` から自動導出し、`kind` を省略するとパス規約
+   （`tests/` 配下や `test_*` / `*_test` ファイル名）から `test` / `code` を推定する。
+   言語別の抽出領域:
+   - Python: `ast.parse` + `ast.get_docstring` でモジュール docstring のみを対象にする
+     （本文コード中の文字列リテラルを誤って注釈と解釈しない）。
+   - `//` 系言語（TS/JS/Go/Java/Rust/C 系）: ファイル先頭から連続する行コメントのみを対象にする
+     （shebang 行はスキップ）。
+3. **信頼度（confidence）**: doc frontmatter 由来の depends_on は既定 confidence 1.0（人手
+   レビュー済みの確定宣言）。コード注釈由来の depends_on は `codd.yaml` の `inline_confidence`
+   （既定 0.7）を使う。`impact` のエッジ重みは `relation 重み × confidence`（4.5.1 参照）になり、
+   低信頼リンクは下流影響の判定に比例して弱く反映される。
+
+注釈が無いコードファイルは doc scope の `missing_frontmatter`（warning）とは異なり黙って
+スキップする。コードベース全体への注釈強制はせず、追跡したいファイルにだけ opt-in で
+付与する運用を想定するため。code/test ノードは他の kind と同じグラフに統合され、
+dangling / duplicate / cycle / unknown / orphan / drift の各検査を特別扱いなしで受ける。
 
 ### 4.4 relation（関係種別）
 
@@ -319,7 +346,7 @@ AI Orchestra 自身の `.claude/orchestra.json` に `codd` を追加し、最初
 
 - **Phase 1**: フロントマター規約 + `packages/codd`（scan/validate）+ essential 化 + skill 改修 + ドッグフード
 - **Phase 2**: impact 分析（Green/Amber/Gray）**実装済み（Issue #94）** + hook 配線の導入先展開（別Issue）
-- **Phase 3**: CI verdict + コード⇔ドキュメントトレース（別Issue）
+- **Phase 3**: コード⇔ドキュメントトレース（opt-in・**実装済み（Issue #98 / 4.3.1）**）+ CI verdict（別Issue）
 
 ---
 
@@ -345,6 +372,10 @@ AI Orchestra 自身の `.claude/orchestra.json` に `codd` を追加し、最初
 - **D6**: codd を essential プリセットに追加し常時有効とする（C-1 解決。facet 条件付きオーバーレイは作らない）。
 - **D7**: 1ファイル=1ノード。集約ファイル内の FT-xxx 等の細粒度ノード化は別Issue（C-2 解決）。
 - **D8**: graph 保存形式は JSONL（`.claude/codd/graph.jsonl`）。規模拡大時に SQLite を検討（L-3）。
+- **D9**（Issue #98）: コード⇔ドキュメントのトレーサビリティは、doc frontmatter と同じ 1行注釈
+  ではなく `codd:<key> <value>` の軽量記法を採用し、`code_scope.include`（既定空）による opt-in
+  スコープとする。全コードへのフロントマター強制は行わず、注釈の有無で confidence
+  （既定 1.0 vs 0.7）を差別化することで、doc の確定宣言とコードの軽量宣言を区別する。
 
 ---
 
