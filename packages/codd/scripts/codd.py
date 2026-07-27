@@ -71,19 +71,21 @@ def _glob_relpaths(root: Path, patterns: list[str]) -> set[str]:
     返すリンク自体のパスと `path_to_id` が一致しなくなる）。
 
     ``src/**.py`` のような不正な再帰 glob（``**`` がパスセグメント全体を占めていない）
-    は Python 3.12+ の ``Path.glob()`` が ``ValueError`` を送出する。この呼び出しは
-    `main()` の設定読み込み用例外ハンドラより後（scan/validate/impact の走査時）に
-    実行されるため、そのまま伝播させるとトレースバックで CLI が終了してしまう。
-    ここで捕捉し、パターンを含む分かりやすい ``ValueError`` に変換して再送出することで、
-    `main()` 側の設定エラーハンドラ（scan/validate/impact 呼び出し全体を包む try/except）
-    が整形済みメッセージとして表示できるようにする（Issue #98 レビュー対応: 8巡目）。
+    は Python 3.12+ の ``Path.glob()`` が ``ValueError`` を送出する。``/workspace/...``
+    のような絶対パスの glob パターンは ``NotImplementedError``（"Non-relative patterns
+    are unsupported"）を送出する（Python 3.13+）。どちらもこの呼び出しは `main()` の
+    設定読み込み用例外ハンドラより後（scan/validate/impact の走査時）に実行されるため、
+    そのまま伝播させるとトレースバックで CLI が終了してしまう。ここで捕捉し、パターンを
+    含む分かりやすい ``ValueError`` に変換して再送出することで、`main()` 側の設定エラー
+    ハンドラ（scan/validate/impact 呼び出し全体を包む try/except）が整形済みメッセージ
+    として表示できるようにする（Issue #98 レビュー対応: 8巡目・11巡目）。
     """
     matched: set[str] = set()
     resolved_root = root.resolve()
     for pattern in patterns:
         try:
             candidates = list(root.glob(pattern))
-        except ValueError as exc:
+        except (ValueError, NotImplementedError) as exc:
             msg = f"scope の glob パターンが不正です: {pattern!r} ({exc})"
             raise ValueError(msg) from exc
         for path in candidates:
@@ -406,8 +408,50 @@ def _strip_repo_prefix(path: str, prefix: str) -> str | None:
     return path[len(prefix) :]
 
 
-def _log_commit_times(root: Path, rel_paths: list[str]) -> dict[str, float]:
-    """rel_paths の最終コミット時刻を 1 回の `git log` でまとめて取得する。
+# 1 回の `git log` 呼び出しに渡す pathspec 引数の安全上限（Issue #98 レビュー対応:
+# 11巡目 codd.py:440）。OS の ARG_MAX は環境依存（Linux は通常 2MB 前後、macOS は
+# 256KB 前後）だが、環境変数や他の argv 要素の分も考慮し、いずれの環境でも安全に
+# 収まる保守的な値を採用する。件数上限も別途設けるのは、1 件あたりの pathspec が
+# 短い場合でも `execve()` の引数個数自体に上限があるため（Linux は既定
+# `_POSIX_ARG_MAX` に加え `MAX_ARG_STRLEN` 等の制約もあるが、実務上は数万件規模でも
+# 安全なマージンを確保する目的で件数も制限する）。
+_GIT_ARG_BATCH_MAX_BYTES = 100_000
+_GIT_ARG_BATCH_MAX_COUNT = 4000
+
+
+def _batch_pathspecs(pathspecs: list[str]) -> list[list[str]]:
+    """pathspecs を `_GIT_ARG_BATCH_MAX_BYTES` / `_GIT_ARG_BATCH_MAX_COUNT` を超えない
+    複数バッチへ分割する（Issue #98 レビュー対応: 11巡目 codd.py:440）。
+
+    数万ノード規模の code_scope では、全パスを 1 回の `git log` の argv に展開すると
+    OS の ARG_MAX を超えて `subprocess.run()` が `OSError` になる。`_git_output_bytes`
+    はその失敗を None に変換するため、`_log_commit_times` は空 dict を返し、
+    `batch_commit_times()` は全 clean node が working-tree mtime へ黙ってフォールバック
+    してしまう（checkout 時刻ベースの誤った drift 判定を招く）。
+    """
+    if not pathspecs:
+        return []
+    batches: list[list[str]] = []
+    current: list[str] = []
+    current_bytes = 0
+    for spec in pathspecs:
+        spec_bytes = len(spec.encode("utf-8")) + 1  # NUL 終端分の概算込み
+        if current and (
+            current_bytes + spec_bytes > _GIT_ARG_BATCH_MAX_BYTES
+            or len(current) >= _GIT_ARG_BATCH_MAX_COUNT
+        ):
+            batches.append(current)
+            current = []
+            current_bytes = 0
+        current.append(spec)
+        current_bytes += spec_bytes
+    if current:
+        batches.append(current)
+    return batches
+
+
+def _parse_log_commit_times_bytes(out: bytes) -> dict[str, float]:
+    """`git log -z --name-only --format=%x00%ct` の生バイト列出力をパースする。
 
     ``-z`` を付けずに ``--name-only`` を使うと、`core.quotePath`（既定 true）に
     より非 ASCII パスが 8 進エスケープ付きで引用されて出力され、`rel_paths` の
@@ -423,24 +467,6 @@ def _log_commit_times(root: Path, rel_paths: list[str]) -> dict[str, float]:
     結果。rename の追跡先切替は `--follow` 非使用のため元の `commit_time()` と
     同じく行わない。Issue #98 レビュー対応）。
     """
-    if not rel_paths:
-        return {}
-    # ``:(literal)`` を各パスへ前置し、pathspec magic として解釈させない。前置しないと
-    # ``:(bad.md`` のような（先頭が ``:(`` から始まる）正当なファイル名 1 件だけで
-    # `git log` が `fatal: Invalid pathspec magic` を送出し一括呼び出し全体が失敗する。
-    # `_log_commit_times` が呼び出し元（`batch_commit_times`）へ空 dict を返すため、
-    # 該当ファイルだけでなく同じバッチ内の全 clean node が commit time ではなく
-    # working-tree mtime で比較されてしまう（drift 判定が不安定になる。Issue #98
-    # レビュー対応: 8巡目）。``:(literal)`` は先頭の magic 指定子だけを解釈し、以降の
-    # 文字列（``:(bad.md`` 自体を含む）を常にリテラルとして扱う。
-    literal_pathspecs = [f":(literal){p}" for p in rel_paths]
-    out = _git_output_bytes(
-        root,
-        ["log", "-z", "--name-only", "--format=%x00%ct", "--", *literal_pathspecs],
-        keep_partial_on_error=True,
-    )
-    if not out:
-        return {}
     tokens = out.decode("utf-8", errors="surrogateescape").split("\0")
     times: dict[str, float] = {}
     current_time: float | None = None
@@ -463,6 +489,38 @@ def _log_commit_times(root: Path, rel_paths: list[str]) -> dict[str, float]:
         if not path or current_time is None or path in times:
             continue
         times[path] = current_time
+    return times
+
+
+def _log_commit_times(root: Path, rel_paths: list[str]) -> dict[str, float]:
+    """rel_paths の最終コミット時刻を複数回の `git log`（バッチ分割）でまとめて取得する。
+
+    全 pathspec を 1 回の `git log` に渡すと ARG_MAX を超えうるため、
+    `_batch_pathspecs()` で安全なサイズへ分割し、バッチごとに `git log` を実行して
+    結果を統合する（Issue #98 レビュー対応: 11巡目 codd.py:440）。各バッチは disjoint
+    な pathspec の集合なので、結果の統合はキー衝突を気にせず単純にマージできる。
+
+    ``:(literal)`` を各パスへ前置し、pathspec magic として解釈させない。前置しないと
+    ``:(bad.md`` のような（先頭が ``:(`` から始まる）正当なファイル名 1 件だけで
+    `git log` が `fatal: Invalid pathspec magic` を送出し、そのバッチ内の全 clean
+    node が commit time ではなく working-tree mtime で比較されてしまう（drift 判定が
+    不安定になる。Issue #98 レビュー対応: 8巡目）。``:(literal)`` は先頭の magic
+    指定子だけを解釈し、以降の文字列（``:(bad.md`` 自体を含む）を常にリテラルとして
+    扱う。
+    """
+    if not rel_paths:
+        return {}
+    literal_pathspecs = [f":(literal){p}" for p in rel_paths]
+    times: dict[str, float] = {}
+    for batch in _batch_pathspecs(literal_pathspecs):
+        out = _git_output_bytes(
+            root,
+            ["log", "-z", "--name-only", "--format=%x00%ct", "--", *batch],
+            keep_partial_on_error=True,
+        )
+        if not out:
+            continue
+        times.update(_parse_log_commit_times_bytes(out))
     return times
 
 
@@ -663,21 +721,26 @@ def _check_drift(result: ScanResult, root: Path) -> list[Finding]:
     ノード数に比例して起動してしまい著しく遅い（Issue #98 レビュー対応）。
 
     symlink ノード（`code_scope` の alias 等）は、alias 自体ではなくリンクチェーンの
-    実体（最終ターゲット）の更新時刻を使う。scan はリンク先の内容を dereference して
-    注釈を読むため、drift 判定も同じ実体を見る必要がある。alias 自体の最終コミット
-    時刻は「リンクを張った/張り替えた時刻」であり、リンク先の内容だけが後続コミットで
-    更新されても変わらないため、alias の古い時刻のまま比較すると drift の誤検知
-    （false positive）が起きる（Issue #98 レビュー対応: 10巡目 codd.py:666）。
+    実体（最終ターゲット）の更新時刻も考慮する。scan はリンク先の内容を dereference
+    して注釈を読むため、drift 判定も同じ実体を見る必要がある。ただし最終ターゲットの
+    時刻だけを使うと、alias を既存の古いターゲットへ張り替えた（= alias 自体は
+    新しいコミットで変更されたが、ターゲットの内容自体は変わっていない）直後に
+    誤って drift warning になる（alias 自体の更新は「追従済み」の意思表示だが、
+    ターゲットの古い時刻だけで比較すると見えない。Issue #98 レビュー対応: 11巡目
+    codd.py:675）。そのため alias 自身の更新時刻とチェーン上の全 hop の更新時刻の
+    うち、最も新しいものをノードの実効更新時刻として扱う（片方だけを見ると、alias
+    再結線・ターゲット内容更新のどちらのシナリオでも取りこぼしうるため）。
     """
     findings: list[Finding] = []
-    effective_path = {
-        node.path: (chain[-1] if (chain := _symlink_chain_relpaths(root, node.path)) else node.path)
-        for node in result.nodes
+    effective_paths = {
+        node.path: [node.path, *_symlink_chain_relpaths(root, node.path)] for node in result.nodes
     }
-    time_cache = batch_commit_times(root, sorted(set(effective_path.values())))
+    all_relevant_paths = {p for paths in effective_paths.values() for p in paths}
+    time_cache = batch_commit_times(root, sorted(all_relevant_paths))
 
     def time_of(rel: str) -> float:
-        return time_cache.get(effective_path.get(rel, rel), 0.0)
+        paths = effective_paths.get(rel, [rel])
+        return max((time_cache.get(p, 0.0) for p in paths), default=0.0)
 
     for node in result.nodes:
         downstream_time = time_of(node.path)
@@ -1071,6 +1134,29 @@ def _decode_ref_source(rel: str, data: bytes) -> str | None:
 _MAX_SYMLINK_HOPS = 8
 
 
+def _root_relative_if_within_root(root: Path, abs_link_text: str) -> str | None:
+    """絶対パス文字列 abs_link_text が root 配下なら root 相対パスへ変換して返す。
+
+    symlink のリンク先が ``/project/shared/mod.py`` のような root 内の絶対パスを
+    指す場合、scan 側（`_glob_relpaths`）は `Path.resolve()` による containment
+    検査を通してこの alias をノードとして登録するが、リンク先解決側
+    （`_symlink_target_relpath` / `_resolve_ref_symlink_target`）が絶対パスを
+    一律 None にすると、リンク先だけを変更してもチェーン追跡（drift 判定・
+    `changed_ids` 突合）に反映されない（Issue #98 レビュー対応: 11巡目 codd.py:1103）。
+
+    ここではレキシカル正規化（``posixpath.normpath``）のみを行い、途中の
+    シンボリックリンクをさらに解決することはしない（次 hop はチェーン走査側
+    ``_symlink_chain_relpaths`` が改めて辿る）。root 自体、または root 外を
+    指す場合は None（`_glob_relpaths` の root 外除外と同じ安全策）。
+    """
+    resolved_root = root.resolve().as_posix()
+    normalized_target = posixpath.normpath(abs_link_text)
+    prefix = resolved_root.rstrip("/") + "/"
+    if normalized_target == resolved_root or not normalized_target.startswith(prefix):
+        return None
+    return normalized_target[len(prefix) :]
+
+
 def _symlink_target_relpath(root: Path, rel: str) -> str | None:
     """rel（working tree, root 相対）が symlink なら、直接のリンク先（1 hop 先）の
     root 相対パスを返す。
@@ -1097,10 +1183,12 @@ def _symlink_target_relpath(root: Path, rel: str) -> str | None:
     if posixpath.isabs(link_text):
         # link_text が絶対パス（例: `/etc/hosts`）だと posixpath.join がそれを
         # そのまま返し、`..` 始まりチェックをすり抜けて root 外を指してしまう
-        # （9巡目レビュー対応: codd.py:1089）。ref 側 `_resolve_ref_symlink_target`
-        # にも同一規約を適用すること（片方だけの修正は alias 削除時の旧 node_id
-        # 復元シナリオとの整合が崩れる）。
-        return None
+        # （9巡目レビュー対応: codd.py:1089）。root 内の絶対パス（例:
+        # `/project/shared/mod.py`）は root 相対へ変換して追跡し、root 外のみ
+        # None にする（11巡目レビュー対応: codd.py:1103）。ref 側
+        # `_resolve_ref_symlink_target` にも同一規約を適用すること（片方だけの
+        # 修正は alias 削除時の旧 node_id 復元シナリオとの整合が崩れる）。
+        return _root_relative_if_within_root(root, link_text)
     combined = posixpath.normpath(posixpath.join(posixpath.dirname(rel), link_text))
     if combined == os.pardir or combined.startswith(f"{os.pardir}/"):
         return None
@@ -1131,8 +1219,16 @@ def _ref_blob_mode(root: Path, ref: str, rel: str) -> str | None:
 
     `git show` はファイル内容しか返さず symlink かどうかを区別できないため、
     `git ls-tree` でモードを判定する。取得できない場合（存在しない等）は None。
+
+    ``rel`` には ``:(literal)`` を前置し、pathspec magic として解釈させない
+    （`_log_commit_times` と同じ理由）。前置しないと ``:(bad.py`` のような
+    （先頭が ``:(`` から始まる）正当なファイル名を渡した際に `git ls-tree` が
+    `fatal: Invalid pathspec magic` を送出し、`_ref_blob_mode` は「存在しない」
+    扱いで None を返してしまう。その結果 `_old_node_id_at_ref` が ref 側の旧内容を
+    復元できず、削除/リネーム時に `deleted_upstream` へ検出漏れが生じる
+    （Issue #98 レビュー対応: 11巡目 codd.py:1135）。
     """
-    out = _git_output(root, ["ls-tree", ref, "--", rel])
+    out = _git_output(root, ["ls-tree", ref, "--", f":(literal){rel}"])
     if not out or not out.strip():
         return None
     first_line = out.splitlines()[0]
@@ -1140,7 +1236,7 @@ def _ref_blob_mode(root: Path, ref: str, rel: str) -> str | None:
     return parts[0] if parts else None
 
 
-def _resolve_ref_symlink_target(rel: str, link_text: str) -> str | None:
+def _resolve_ref_symlink_target(root: Path, rel: str, link_text: str) -> str | None:
     """ref 時点の symlink（rel）が指す先を、rel と同じ root からの相対パスへ解決する。
 
     root の外へ解決される場合は None（`_glob_relpaths` の root 外除外と同じ安全策）。
@@ -1152,11 +1248,13 @@ def _resolve_ref_symlink_target(rel: str, link_text: str) -> str | None:
     （レビュー対応: 8巡目 codd.py:1037）。
 
     ``link_text`` が絶対パス（例: ``/etc/hosts``）の場合は working tree 側
-    `_symlink_target_relpath` と同じ規約で早期 None を返す（9巡目レビュー対応:
-    codd.py:1089）。
+    `_symlink_target_relpath` と同じ規約を適用する。root 内の絶対パスは root 相対へ
+    変換して追跡し、root 外のみ None にする（9巡目レビュー対応: codd.py:1089、
+    11巡目レビュー対応: codd.py:1103。working tree 側と食い違うと alias 削除時の
+    旧 node_id 復元シナリオの整合が崩れるため、片方だけの修正は許されない）。
     """
     if posixpath.isabs(link_text):
-        return None
+        return _root_relative_if_within_root(root, link_text)
     combined = posixpath.normpath(posixpath.join(posixpath.dirname(rel), link_text))
     if combined == os.pardir or combined.startswith(f"{os.pardir}/"):
         return None
@@ -1183,7 +1281,7 @@ def _git_show_bytes_dereferencing_symlink(root: Path, ref: str, rel: str) -> byt
         if link_bytes is None:
             return None
         link_text = link_bytes.decode("utf-8", errors="surrogateescape")
-        target = _resolve_ref_symlink_target(current_rel, link_text)
+        target = _resolve_ref_symlink_target(root, current_rel, link_text)
         if target is None:
             return None
         current_rel = target

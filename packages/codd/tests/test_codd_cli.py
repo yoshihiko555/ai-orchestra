@@ -465,6 +465,73 @@ def test_batch_commit_times_survives_pathspec_magic_like_filename(tmp_path) -> N
     assert batched["docs/normal.md"] == cli.commit_time(tmp_path, "docs/normal.md")
 
 
+def test_log_commit_times_splits_pathspecs_across_multiple_git_log_batches(
+    tmp_path, monkeypatch
+) -> None:
+    # 数万ノード規模の code_scope では、全パスを 1 回の `git log` の argv に展開すると
+    # OS の ARG_MAX を超えて `subprocess.run()` が `OSError` になり、
+    # `_git_output_bytes` がそれを None に変換するため、`_log_commit_times()` は
+    # 空 dict を返してしまう（`batch_commit_times()` は全 clean node を working-tree
+    # mtime へ黙ってフォールバックし、checkout 時刻ベースの誤った drift 判定を招く）。
+    # pathspec を安全なサイズで複数バッチに分割し、各バッチの時刻を統合する必要が
+    # ある（Issue #98 レビュー対応: 11巡目 codd.py:440）。実際に ARG_MAX を超えさせず
+    # に検証するため、1 バッチあたりの許容パス件数を 1 へ下げ、`git log` が複数回
+    # 呼ばれ、かつ両方のファイルの commit time が正しく取得できることを確認する。
+    monkeypatch.setattr(cli, "_GIT_ARG_BATCH_MAX_COUNT", 1)
+    monkeypatch.setattr(cli, "_GIT_ARG_BATCH_MAX_BYTES", 100_000)
+
+    _init_repo(tmp_path)
+    a = _write(tmp_path, "docs/a.md", "# a\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "add a")
+    b = _write(tmp_path, "docs/b.md", "# b\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "add b")
+
+    log_call_count = 0
+    real_run = subprocess.run
+
+    def _counting_run(args, **kwargs):
+        nonlocal log_call_count
+        if args[0] == "git" and args[1] == "log":
+            log_call_count += 1
+        return real_run(args, **kwargs)
+
+    monkeypatch.setattr(cli.subprocess, "run", _counting_run)
+
+    result = cli.batch_commit_times(tmp_path, ["docs/a.md", "docs/b.md"])
+
+    assert log_call_count == 2  # 1 パスずつ、2 回の `git log` に分割された
+    assert result["docs/a.md"] != a.stat().st_mtime
+    assert result["docs/b.md"] != b.stat().st_mtime
+
+
+def test_batch_pathspecs_splits_on_byte_and_count_limits(monkeypatch) -> None:
+    # `_batch_pathspecs()` はバイトサイズ上限・件数上限のいずれかを超える手前で
+    # 新しいバッチを開始する（Issue #98 レビュー対応: 11巡目 codd.py:440）。
+    monkeypatch.setattr(cli, "_GIT_ARG_BATCH_MAX_BYTES", 10)
+    monkeypatch.setattr(cli, "_GIT_ARG_BATCH_MAX_COUNT", 4000)
+
+    batches = cli._batch_pathspecs(["aaaa", "bbbb", "cccc"])  # 各 5 バイト（NUL 込み）
+
+    assert batches == [["aaaa", "bbbb"], ["cccc"]]
+
+
+def test_ref_blob_mode_handles_pathspec_magic_like_filename(tmp_path) -> None:
+    # `git ls-tree` にファイル名を素朴な `--` pathspec として渡すと、`:(bad.md` の
+    # ような先頭が `:(` のファイル名（正当なファイル名だが pathspec magic 構文と
+    # 衝突する）で `fatal: Invalid pathspec magic` になり、`_ref_blob_mode()` は
+    # 「存在しない」扱いで None を返してしまう（`_log_commit_times` と同種の問題。
+    # Issue #98 レビュー対応: 11巡目 codd.py:1135）。`:(literal)` を前置し、
+    # pathspec magic として解釈させないことで回避する。
+    _init_repo(tmp_path)
+    _write(tmp_path, ":(bad.md", "# bad\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "init")
+
+    assert cli._ref_blob_mode(tmp_path, "HEAD", ":(bad.md") == "100644"
+
+
 def test_git_output_bytes_keep_partial_on_error_returns_partial_stdout(
     monkeypatch, tmp_path
 ) -> None:
@@ -628,6 +695,42 @@ def test_validate_drift_uses_symlink_target_commit_time_not_alias(tmp_path) -> N
     # alias はリンク先の実体経由で上流より新しく更新済みなので drift は検出されない
     # はず。alias 自体のコミット時刻（init 時点）を使う旧実装では誤って drift が
     # 報告されていた。
+    assert drift == []
+
+
+def test_validate_drift_uses_alias_relink_time_not_only_target(tmp_path) -> None:
+    # `_check_drift` は最終ターゲットの時刻だけでなく alias 自体の更新時刻も考慮する
+    # 必要がある。alias を上流変更後に既存の古いターゲットへ張り替えた場合、
+    # ターゲット自体の内容は変わっていなくても、alias の再結線コミットは「upstream
+    # の変更を踏まえて張り替えた（＝追従済み）」ことを意味する。最終ターゲットの
+    # 古いコミット時刻だけで比較すると誤って drift warning になる
+    # （Issue #98 レビュー対応: 11巡目 codd.py:675）。
+    _init_repo(tmp_path)
+    _write(tmp_path, "docs/req.md", _doc("req:r", "requirement"))
+    _write(tmp_path, "shared/mod.py", _py(["codd:implements req:r"]))
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "init req+target")
+
+    # 上流 (req) を更新する。ターゲット（shared/mod.py）はこの時点でまだ古いまま。
+    _write(tmp_path, "docs/req.md", _doc("req:r", "requirement") + "\nupdated\n")
+    _git(tmp_path, "add", "-A")
+    _commit_at(tmp_path, "update req", "@4102444800 +0000")  # 2100-01-01
+
+    # 上流変更を確認した上で、alias を（内容更新済みの）既存ターゲットへ張る。
+    # alias 自体の作成コミットは上流更新より後だが、ターゲット（shared/mod.py）の
+    # 最終コミット時刻は init 時点のまま（上流更新より前）。
+    (tmp_path / "aliases").mkdir()
+    (tmp_path / "aliases" / "mod.py").symlink_to(Path("../shared/mod.py"))
+    config = _config(code_scope={"include": ["aliases/*.py"], "exclude": []})
+    _git(tmp_path, "add", "-A")
+    _commit_at(tmp_path, "point alias at existing target", "@4102531200 +0000")  # 2100-01-02
+
+    result = cli.scan_project(tmp_path, config)
+    findings = cli.run_checks(result, config, tmp_path)
+    drift = [f for f in findings if f.check == "drift"]
+
+    # alias 自体の張り替えコミットが上流更新より新しいので drift は検出されない
+    # はず。最終ターゲットの時刻のみを使う旧実装では誤って drift が報告されていた。
     assert drift == []
 
 
@@ -885,6 +988,24 @@ def test_compute_impact_result_reports_deleted_upstream(tmp_path) -> None:
     assert "docs/req.md" in result.deleted_upstream
     assert result.changed_ids == []  # 削除されたファイルはノードに残らない
     assert result.impacted == []  # 削除は deleted_upstream に分離され impacted には出ない
+
+
+def test_compute_impact_result_reports_deleted_upstream_with_pathspec_magic_like_filename(
+    tmp_path,
+) -> None:
+    # 削除された CODD ノードのファイル名が `:(bad.md` のような pathspec magic
+    # 接頭辞と衝突する場合でも `deleted_upstream` を検出できる必要がある。
+    # `_ref_blob_mode()`（`_old_node_id_at_ref` が使う `git ls-tree`）が
+    # `:(literal)` 化されていないと `Invalid pathspec magic` で失敗し、旧 node_id
+    # を復元できず検出漏れになる（Issue #98 レビュー対応: 11巡目 codd.py:1135）。
+    _init_repo(tmp_path)
+    _write(tmp_path, "docs/:(bad.md", _doc("design:bad", "design"))
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "init")
+    (tmp_path / "docs/:(bad.md").unlink()  # 上流削除（未コミット）
+
+    result = cli.compute_impact_result(tmp_path, _config(), "HEAD")
+    assert "docs/:(bad.md" in result.deleted_upstream
 
 
 def test_deleted_upstream_excludes_out_of_scope_md(tmp_path) -> None:
@@ -1311,6 +1432,57 @@ def test_glob_relpaths_converts_glob_value_error_to_descriptive_message(
         cli._glob_relpaths(tmp_path, ["src/**.py"])
 
 
+def test_glob_relpaths_converts_absolute_pattern_not_implemented_error_to_descriptive_message(
+    tmp_path, monkeypatch
+) -> None:
+    # `/workspace/project/src/**/*.py` のような絶対パスの glob パターンは
+    # Python 3.13+ の `Path.glob()` が `NotImplementedError`（"Non-relative patterns
+    # are unsupported"）を送出する。`ValueError` しか捕捉していないと、この呼び出しは
+    # `main()` の設定読み込み用例外ハンドラより後（scan/validate/impact の走査時）に
+    # 実行されるためトレースバックで CLI が終了してしまう。`_glob_relpaths()` が
+    # `NotImplementedError` も捕捉してパターンを含む分かりやすい `ValueError` に
+    # 変換する必要がある（Issue #98 レビュー対応: 11巡目 codd.py:88）。実行中の
+    # Python バージョンによっては当該パターンで例外が出ないことがあるため、
+    # `Path.glob` を差し替えて確実に再現する。
+    real_glob = Path.glob
+
+    def _fake_glob(self, pattern, *args, **kwargs):
+        if pattern == "/workspace/project/src/**/*.py":
+            raise NotImplementedError("Non-relative patterns are unsupported")
+        return real_glob(self, pattern, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "glob", _fake_glob)
+
+    with pytest.raises(ValueError, match=r"/workspace/project/src/\*\*/\*\.py"):
+        cli._glob_relpaths(tmp_path, ["/workspace/project/src/**/*.py"])
+
+
+def test_main_reports_config_error_for_absolute_glob_pattern(tmp_path, monkeypatch, capsys) -> None:
+    # `_glob_relpaths()` が変換した `NotImplementedError` 由来の `ValueError` を、
+    # scan 実行時（load_config 完了後）でも main() がトレースバックではなく
+    # `[codd] ERROR:` として整形して終了することを確認する（Issue #98 レビュー対応:
+    # 11巡目 codd.py:88）。
+    real_glob = Path.glob
+
+    def _fake_glob(self, pattern, *args, **kwargs):
+        if pattern == "/workspace/project/src/**/*.py":
+            raise NotImplementedError("Non-relative patterns are unsupported")
+        return real_glob(self, pattern, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "glob", _fake_glob)
+
+    config_path = tmp_path / ".claude/config/codd/codd.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        'scope:\n  include: ["/workspace/project/src/**/*.py"]\n  exclude: []\n', encoding="utf-8"
+    )
+
+    exit_code = cli.main(["--root", str(tmp_path), "--config", str(config_path), "scan"])
+
+    assert exit_code == 2
+    assert "[codd] ERROR:" in capsys.readouterr().err
+
+
 def test_main_reports_config_error_for_invalid_recursive_glob(
     tmp_path, monkeypatch, capsys
 ) -> None:
@@ -1639,6 +1811,33 @@ def test_compute_impact_result_detects_change_via_symlink_target(tmp_path) -> No
     assert impacted["design:down"].band == cc.BAND_GREEN
 
 
+def test_compute_impact_result_detects_change_via_root_internal_absolute_symlink_target(
+    tmp_path,
+) -> None:
+    # symlink のリンク先が root 内の絶対パス（例: `<root>/shared/mod.py`）の場合、
+    # scan 側の containment 検査（`_glob_relpaths`）はこの alias をノードとして
+    # 登録するのに対し、リンク先解決側（`_symlink_target_relpath`）が絶対パスを
+    # 一律 None にすると、リンク先だけを変更しても alias の node_id が
+    # `changed_ids` に入らず `codd impact` が下流影響を取りこぼす
+    # （Issue #98 レビュー対応: 11巡目 codd.py:1103）。
+    _init_repo(tmp_path)
+    _write(tmp_path, "docs/req.md", _doc("req:r", "requirement"))
+    _write(tmp_path, "shared/mod.py", _py(["codd:implements req:r"]))
+    (tmp_path / "aliases").mkdir()
+    (tmp_path / "aliases" / "mod.py").symlink_to(tmp_path / "shared" / "mod.py")
+    config = _config(code_scope={"include": ["aliases/*.py"], "exclude": []})
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "init")
+    # alias 自体は変更せず、リンク先（root 内の絶対パス経由）だけを編集する。
+    (tmp_path / "shared" / "mod.py").write_text(
+        _py(["codd:implements req:r"], body="print('v2')\n"), encoding="utf-8"
+    )
+
+    result = cli.compute_impact_result(tmp_path, config, "HEAD")
+
+    assert "code:mod" in result.changed_ids
+
+
 def test_compute_impact_result_handles_multiple_symlinks_to_same_target(
     tmp_path, monkeypatch
 ) -> None:
@@ -1775,19 +1974,73 @@ def test_symlink_target_relpath_rejects_absolute_link_text(tmp_path) -> None:
     assert cli._symlink_target_relpath(root, "docs/link.md") is None
 
 
-def test_resolve_ref_symlink_target_rejects_absolute_link_text() -> None:
+def test_symlink_target_relpath_tracks_root_internal_absolute_link_text(tmp_path) -> None:
+    # symlink のリンク先が root 内の絶対パス（例: `/project/shared/mod.py`）の場合、
+    # scan 側の containment 検査（`_glob_relpaths`）はこの alias をノードとして登録
+    # するのに対し、リンク先解決側が絶対パスを一律 None にすると、リンク先だけを
+    # 変更してもチェーン追跡（drift 判定・impact 分析）に反映されない
+    # （11巡目レビュー対応: codd.py:1103）。root 内の絶対パスは root 相対へ変換して
+    # 追跡する必要がある。
+    root = tmp_path
+    (root / "aliases").mkdir()
+    (root / "shared").mkdir()
+    (root / "aliases" / "mod.py").symlink_to(root / "shared" / "mod.py")
+
+    assert cli._symlink_target_relpath(root, "aliases/mod.py") == "shared/mod.py"
+
+
+def test_resolve_ref_symlink_target_rejects_absolute_link_text(tmp_path) -> None:
     # ref 側（git symlink blob の内容）が絶対パスの場合も working tree 側と
-    # 同一規約で早期 None を返す必要がある（9巡目レビュー対応: codd.py:1089）。
-    # 片方だけの修正は許されない（working tree 側の判定と食い違うと、alias
-    # 削除時の旧 node_id 復元シナリオの整合が崩れる）。
-    assert cli._resolve_ref_symlink_target("docs/link.md", "/etc/hosts") is None
+    # 同一規約を適用する必要がある（9巡目レビュー対応: codd.py:1089）。root 外の
+    # 絶対パス（例: `/etc/hosts`）は引き続き None（片方だけの修正は許されない。
+    # working tree 側の判定と食い違うと、alias 削除時の旧 node_id 復元シナリオの
+    # 整合が崩れる）。
+    assert cli._resolve_ref_symlink_target(tmp_path, "docs/link.md", "/etc/hosts") is None
+
+
+def test_resolve_ref_symlink_target_tracks_root_internal_absolute_link_text(tmp_path) -> None:
+    # root 内の絶対パス（例: `<root>/shared/mod.py`）を指す ref 側 symlink は、
+    # working tree 側 `_symlink_target_relpath` と同様に root 相対へ変換して
+    # 追跡する必要がある（11巡目レビュー対応: codd.py:1103）。
+    abs_target = str(tmp_path / "shared" / "mod.py")
+
+    assert (
+        cli._resolve_ref_symlink_target(tmp_path, "aliases/mod.py", abs_target) == "shared/mod.py"
+    )
 
 
 def test_compute_impact_result_ignores_absolute_ref_symlink_target(tmp_path) -> None:
-    # ref 側の symlink が絶対パスを指す場合、root 外ファイルの内容を旧 node_id
-    # として誤って復元・dangling 判定に取り込んではいけない（9巡目レビュー対応:
-    # codd.py:1089）。修正前は `combined` が絶対パスのまま `..` 始まりでない
+    # ref 側の symlink が root 外の絶対パスを指す場合、root 外ファイルの内容を旧
+    # node_id として誤って復元・dangling 判定に取り込んではいけない（9巡目レビュー
+    # 対応: codd.py:1089）。修正前は `combined` が絶対パスのまま `..` 始まりでない
     # ため root 外判定をすり抜け、そのパスで `git show` を試みてしまっていた。
+    # root 内の絶対パスは 11巡目レビュー対応（codd.py:1103）で正しく root 相対へ
+    # 変換して追跡されるようになったため、この検証には genuinely root 外となる
+    # パス（root = tmp_path のサブディレクトリ、ターゲットは兄弟ディレクトリ）を
+    # 使う必要がある。
+    root = tmp_path / "proj"
+    root.mkdir()
+    _write(tmp_path, "outside/actual.md", _doc("design:d", "design"))
+    (root / "docs").mkdir()
+    (root / "docs" / "link.md").symlink_to(tmp_path / "outside" / "actual.md")
+    _init_repo(root)
+    _git(root, "add", "-A")
+    _git(root, "commit", "-m", "init")
+    (root / "docs" / "link.md").unlink()  # symlink 自体を削除（ターゲットは残す）
+
+    result = cli.compute_impact_result(root, _config(), "HEAD")
+
+    assert "docs/link.md" not in result.deleted_upstream
+
+
+def test_compute_impact_result_recovers_dangling_design_via_root_internal_absolute_ref_symlink(
+    tmp_path,
+) -> None:
+    # ref 側の symlink が root 内の絶対パスを指す場合は、working tree 側
+    # `_symlink_target_relpath` と同じ規約で root 相対へ変換して追跡し、旧 node_id
+    # を正しく復元できる必要がある（11巡目レビュー対応: codd.py:1103）。ターゲット
+    # 自身は scope 外（docs/**/*.md に含まれない）のため、alias（docs/link.md）を
+    # 削除すると design:d はグラフから完全に失われ、dangling として検出されるべき。
     _init_repo(tmp_path)
     _write(tmp_path, "shared/actual.md", _doc("design:d", "design"))
     (tmp_path / "docs").mkdir()
@@ -1798,7 +2051,7 @@ def test_compute_impact_result_ignores_absolute_ref_symlink_target(tmp_path) -> 
 
     result = cli.compute_impact_result(tmp_path, _config(), "HEAD")
 
-    assert "docs/link.md" not in result.deleted_upstream
+    assert "docs/link.md" in result.deleted_upstream
 
 
 def test_compute_impact_result_reports_deleted_code_upstream_with_pep263_encoding(
