@@ -222,6 +222,13 @@ depends_on を宣言できるようにする。doc frontmatter との違いは�
      Latin-1 等を宣言していた Python ファイルの削除が誤検出/例外になるため）。
    - `//` 系言語（TS/JS/Go/Java/Rust/C 系。`.mjs` / `.cjs` / `.mts` / `.cts` を含む）:
      ファイル先頭から連続する行コメントのみを対象にする（shebang 行はスキップ）。
+   - **復号失敗のスキップ**: `//` 系ファイルが UTF-16 保存等で UTF-8 として復号できない、
+     または Python ファイルの coding cookie が不正で `tokenize.detect_encoding` が
+     `SyntaxError` / `LookupError` を投げる場合、working tree 側の読み込み
+     （`_read_source_text`）は削除上流検出の `_decode_ref_source` と同じ規約で `None` を
+     返し、`scan_code_nodes` は当該ファイルを注釈が無いものとして黙ってスキップする
+     （復号不能ファイル1件で `scan`/`validate`/`impact` 全体がトレースバックで落ちるのを
+     防ぐ）。
 3. **信頼度（confidence）**: doc frontmatter 由来の depends_on は既定 confidence 1.0（人手
    レビュー済みの確定宣言）。コード注釈由来の depends_on は `codd.yaml` の `inline_confidence`
    （既定 0.7）を使う。`impact` のエッジ重みは `relation 重み × confidence`（4.5.1 参照）になり、
@@ -230,6 +237,11 @@ depends_on を宣言できるようにする。doc frontmatter との違いは�
    非有限値は既定値（0.7）へフォールバックする（範囲外/非有限値がそのままエッジ重みに
    流れ込むと、負値やNaNで誤って Gray 判定になったり `graph.jsonl` の JSON 出力が壊れたり
    するため）。doc frontmatter 側の `depends_on[].confidence` も同じ正規化を受ける。
+   `bool` は `int` のサブクラスで `float(False) == 0.0` / `float(True) == 1.0` が例外なく
+   通ってしまうため、数値設定として明示的に拒否する（`inline_confidence: false` が
+   全エッジ重みゼロの一斉 Gray 化に化けるのを防ぐ）。`inline_confidence` / doc の
+   `confidence` はいずれも bool を不正値として既定値へフォールバックし、`impact.*`
+   （decay・thresholds・weights 等）は bool 混入を config エラー（4.6 参照）として拒否する。
 
 注釈が無いコードファイルは doc scope の `missing_frontmatter`（warning）とは異なり黙って
 スキップする。コードベース全体への注釈強制はせず、追跡したいファイルにだけ opt-in で
@@ -304,7 +316,12 @@ codd impact --diff <ref> [--json]   # 既定 ref = HEAD
   「裏付け起点 ≥ `corroboration_min_origins`（2）」のみ許す。多段単一経路（推論的）は Amber 上限。
 - **co_changed cap**: 下流ノード自身が同一 diff で変更済みなら Amber 上限にフラグ表示する
   （スコアは下げず、破壊的変更を Gray に隠さない）。
-- 削除された上流ファイルは dangling 注意として別建てで報告する。
+- 削除された上流ファイルは dangling 注意として別建てで報告する。削除済みパスは
+  `Path.glob` が使えないため、scope glob を segment-aware な正規表現へ変換した
+  `_scope_pattern_to_regex` で判定する。`*`/`**`/`?` に加えて文字クラス（`[seq]` /
+  `[!seq]`）も `Path.glob` と同じ意味に解釈し（通常走査の `collect_files` と削除後
+  判定とで glob 解釈が食い違わないようにする）、閉じ `]` が無い場合は fnmatch と
+  同様リテラル `[` として扱う。
 
 **設計判断（codd-dev 比較 / ADR-026 D3）:** CODD は依存宣言を frontmatter に限定するため、証拠源は
 relation 種別とグラフ距離のみ。codd-dev の Noisy-OR・エビデンス種別分類（static/inferred/human 等）は
@@ -350,6 +367,11 @@ checks:
 ```
 
 導入先固有の上書きは `codd.local.yaml`（`config-loading` ルール準拠、同期対象外）。
+
+`scope.include` / `code_scope.include` の型不正（数値・非文字列要素混入）や `impact.*` への
+bool 混入は config ロード時に `ValueError` / `TypeError` になる。CLI エントリポイント
+（`main()`）はこれをトレースバックとして漏らさず捕捉し、`[codd] ERROR: ...` を stderr へ出力して
+非ゼロ終了する（scan/graph/validate/impact 全コマンド共通）。
 
 ### 4.7 既存スキルとの統合
 

@@ -3,7 +3,7 @@
 **パッケージ**: `packages/codd`
 **類型**: CLI ツール型
 **作成日**: 2026-07-03
-**最終レビュー日**: 評価保留（2026-07-04）— パッケージ実装が未完了のため、実装完了後に改めて人間レビューを行う。それまで本評価セットの観点は暫定（ドラフト）扱いとし、テスト改修時の突合基準としては未確定とする。EV-26〜EV-41（Issue #98 / コード⇔ドキュメントのトレーサビリティ）は 2026-07-27 追加、同様に人間レビュー保留。
+**最終レビュー日**: 評価保留（2026-07-04）— パッケージ実装が未完了のため、実装完了後に改めて人間レビューを行う。それまで本評価セットの観点は暫定（ドラフト）扱いとし、テスト改修時の突合基準としては未確定とする。EV-26〜EV-49（Issue #98 / コード⇔ドキュメントのトレーサビリティ）は 2026-07-27 追加、同様に人間レビュー保留。
 **情報源**: docs/design/codd-coherence-layer.md, docs/requirements/coherence-guardrail.md, .claude/rules/codd-frontmatter-policy.md（補助: packages/codd/manifest.json — 構成要素の列挙のみ）
 
 ## 1. 責務定義
@@ -58,7 +58,7 @@ codd は AI Orchestra 自身および導入先プロジェクトが生成する�
 <!-- docs/evaluation/README.md の CLI ツール型チェックリストを具体化。ID は EV-NN の連番を継続する -->
 
 - [ ] EV-21（正常 / must）: コマンド契約 — `scan` / `validate` / `impact` は `orchex run codd codd -- <subcommand>` として後方互換に呼び出せる — 根拠: docs/design/codd-coherence-layer.md §4.8
-- [ ] EV-22（異常 / should）: 入力バリデーション — 壊れた frontmatter（YAML パース不能）や存在しない scope パスに対して、CLI はクラッシュせず適切なエラーメッセージを返す — 根拠: 実装挙動（設計書・要件書に明示なし）
+- [ ] EV-22（異常 / should）: 入力バリデーション — 壊れた frontmatter（YAML パース不能）や存在しない scope パスに対して、CLI はクラッシュせず適切なエラーメッセージを返す。`scope.include` / `code_scope.include` の型不正や `impact.*` への bool 混入（`_as_glob_list` / `_reject_bool_as_number` が投げる `ValueError` / `TypeError`）も `main()` が捕捉し、トレースバックではなく `[codd] ERROR: ...`（非ゼロ終了）として整形する — 根拠: 実装挙動（設計書・要件書に明示なし）、packages/codd/scripts/codd.py（`main`）
 - [ ] EV-23（境界 / should）: 破壊的操作の安全策 — `scan` による `graph.jsonl` の再構築時、書き込み失敗（中断等）が既存グラフを破損させない — 根拠: 実装挙動（設計書に上書き/追記方針の明記なし。仕様確定・文書化はパッケージ別ギャップ Issue で追跡）
 - [ ] EV-24（正常 / should）: 出力の安定性 — `impact --json` は機械可読 JSON を返す（フラグの存在は設計書に明記。フィールド構成は実装挙動） — 根拠: docs/design/codd-coherence-layer.md §4.5.1（フラグ存在）、実装挙動（スキーマ詳細）
 - [ ] EV-25（境界 / must）: 設定レイヤリング — `codd.yaml` の `checks` レベルは `codd.local.yaml` で上書き可能（`config-loading` ルール準拠、同期対象外で sync により消えない）。検査レベルに `off` を指定する場合、YAML 1.1 では bare `off` が boolean `False` と解釈されるが、`normalize_check_level`（`packages/codd/lib/codd_common.py`）が `False` を `LEVEL_OFF` へ正規化するため、bare `off` と引用符付き `"off"` はどちらも同じ扱いになる — 根拠: packages/codd/lib/codd_common.py（`normalize_check_level`）, .claude/rules/codd-frontmatter-policy.md, .claude/rules/config-loading.md
@@ -75,7 +75,7 @@ codd は AI Orchestra 自身および導入先プロジェクトが生成する�
 - [ ] EV-33（境界 / must）: `impact` のエッジ重みは `relation 重み × confidence` で計算され、低信頼なコード由来リンクは下流影響スコアに比例して弱く反映される — 根拠: docs/design/codd-coherence-layer.md §4.3.1, §4.5.1
 - [ ] EV-34（正常 / should）: `graph.jsonl` の depends_on エントリは confidence が既定値 1.0 のとき `confidence` キーを省略し、doc のみのグラフでは既存の JSONL 出力と互換を保つ — 根拠: packages/codd/scripts/codd.py（`_dependency_to_record`）
 - [ ] EV-35（正常 / should）: code/test ノードは既存の dangling / duplicate / cycle / unknown / orphan / drift 検査を特別扱いなしで受ける（validate 側の分岐追加なし） — 根拠: docs/design/codd-coherence-layer.md §4.3.1
-- [ ] EV-36（異常 / must）: `inline_confidence`（config）および depends_on の `confidence`（doc frontmatter）は有限な `[0, 1]` へ正規化される。範囲外の有限値（例: `-0.1` / `1.5`）は境界へクランプし、NaN/Inf のような非有限値（YAML の `.nan` 等）は既定値へフォールバックする — 根拠: docs/design/codd-coherence-layer.md §4.3.1, packages/codd/lib/codd_common.py（`_clamp_unit_float` / `_load_inline_confidence` / `_as_confidence`）
+- [ ] EV-36（異常 / must）: `inline_confidence`（config）および depends_on の `confidence`（doc frontmatter）は有限な `[0, 1]` へ正規化される。範囲外の有限値（例: `-0.1` / `1.5`）は境界へクランプし、NaN/Inf のような非有限値（YAML の `.nan` 等）は既定値へフォールバックする。`bool` は `int` のサブクラスで `float(False) == 0.0` が例外なく通ってしまうため明示的に不正値扱いとし（`inline_confidence: false` は全エッジ重みゼロの一斉 Gray 化を招くため）、`inline_confidence` / `confidence` / `impact.*`（decay・thresholds・weights 等）のいずれも bool を既定値へフォールバック（`impact.*` は数値以外と同様 config エラーとして拒否）する — 根拠: docs/design/codd-coherence-layer.md §4.3.1, packages/codd/lib/codd_common.py（`_clamp_unit_float` / `_load_inline_confidence` / `_as_confidence` / `_reject_bool_as_number` / `ImpactConfig.from_dict`）
 - [ ] EV-37（異常 / must）: code_scope の relation 注釈（予約語以外の key）に参照先 value が無い場合（例: `codd:implements` のみ）、依存として黙って除外せず `malformed_annotation` として error 判定する。予約語（node_id/kind/status/owner）の value 省略はエラーにしない — 根拠: docs/design/codd-coherence-layer.md §4.3.1, §4.5, packages/codd/lib/codd_code.py（`_entries_to_node`）
 - [ ] EV-38（正常 / must）: `.mjs` / `.cjs` / `.mts` / `.cts` 拡張子のファイルも `//` 系言語として行コメント抽出の対象になる — 根拠: docs/design/codd-coherence-layer.md §4.3.1, packages/codd/lib/codd_code.py（`_LINE_COMMENT_SUFFIXES`）
 - [ ] EV-39（境界 / should）: Python ファイルの読み込みは PEP 263 の宣言済みエンコーディング（coding cookie / BOM）を `tokenize.detect_encoding` で尊重し、UTF-8 以外（例: Latin-1）でも `UnicodeDecodeError` にならない — 根拠: docs/design/codd-coherence-layer.md §4.3.1, packages/codd/scripts/codd.py（`_read_source_text`）
@@ -87,6 +87,8 @@ codd は AI Orchestra 自身および導入先プロジェクトが生成する�
 - [ ] EV-45（異常 / must）: ソースファイルの `codd:kind` 注釈は `code` / `test` のみ有効。それ以外の値（`requirement` 等のドキュメント語彙）は `malformed_annotation` として error 判定したうえで、パス規約による推定 kind へフォールバックする — 根拠: docs/design/codd-coherence-layer.md §4.3.1, packages/codd/lib/codd_code.py（`_entries_to_node`）
 - [ ] EV-46（異常 / must）: `codd:` で始まりながら `codd:<key>` / `codd:<key> <value>` の文法に一致しない行（例: `codd:node-id`、`codd:node_id=value`）は、無関係なコメント行として黙って無視せず `malformed_annotation` として error 判定する。`codd:` で始まらない通常のコメント行は従来通り無視する — 根拠: docs/design/codd-coherence-layer.md §4.3.1, packages/codd/lib/codd_code.py（`_parse_annotation_lines`）
 - [ ] EV-47（境界 / must）: `code_scope.include` / `scope.include` に `../*.py` のような相対パスを含む glob を指定しても、プロジェクトルート外に解決されるファイルは走査対象から除外される — 根拠: docs/design/codd-coherence-layer.md §4.3.1, packages/codd/scripts/codd.py（`_glob_relpaths`）
+- [ ] EV-48（境界 / must）: working tree 側のソース読み込み（`_read_source_text`）が UTF-16 保存の `//` 系ファイルや不正な coding cookie を持つ Python ファイルの復号に失敗した場合、`_decode_ref_source`（削除済みファイルの ref 側読み込み）と同じ規約で `None` を返し、`scan_code_nodes` は当該ファイルを注釈なしとして黙ってスキップする（`UnicodeDecodeError` / `SyntaxError` / `LookupError` で scan/validate/impact 全体を落とさない） — 根拠: docs/design/codd-coherence-layer.md §4.3.1, packages/codd/scripts/codd.py（`_read_source_text` / `scan_code_nodes`）
+- [ ] EV-49（境界 / must）: `scope.include` / `scope.exclude` / `code_scope.include` / `code_scope.exclude` の glob に含まれる文字クラス（`[seq]` / `[!seq]`）は、通常走査（`collect_files` / `collect_code_files` の `Path.glob`）と削除済みパスの判定（`_scope_pattern_to_regex` による impact の dangling / 削除上流検出）とで同じ意味に解釈される。閉じ `]` が無い場合は fnmatch と同様リテラル `[` として扱う — 根拠: docs/design/codd-coherence-layer.md §4.5.1, packages/codd/scripts/codd.py（`_scope_pattern_to_regex` / `collect_files`）
 
 ## 5. テストレビュー判断基準（パッケージ固有）
 

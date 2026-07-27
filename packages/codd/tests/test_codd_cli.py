@@ -653,6 +653,50 @@ def test_path_in_scope_single_star_is_segment_aware() -> None:
     assert cli.path_in_scope(".claude/rules/sub/deep.md", config) is False  # 単層を跨がない
 
 
+def test_path_in_scope_character_class_matches_like_path_glob() -> None:
+    # `[ab]` のような glob 文字クラスは、通常走査（collect_files の Path.glob）と
+    # 削除後 impact 判定（_scope_pattern_to_regex）とで解釈が一致しなければならない
+    # （Issue #98 レビュー対応）。以前は `[` `]` をリテラルエスケープしており、
+    # `docs/[ab].md` が `a.md` / `b.md` にマッチしなかった。
+    config = _config(scope={"include": ["docs/[ab].md"], "exclude": []})
+    assert cli.path_in_scope("docs/a.md", config) is True
+    assert cli.path_in_scope("docs/b.md", config) is True
+    assert cli.path_in_scope("docs/c.md", config) is False
+
+
+def test_path_in_scope_character_class_negation() -> None:
+    config = _config(scope={"include": ["docs/[!ab].md"], "exclude": []})
+    assert cli.path_in_scope("docs/c.md", config) is True
+    assert cli.path_in_scope("docs/a.md", config) is False
+
+
+def test_path_in_scope_character_class_range() -> None:
+    config = _config(scope={"include": ["docs/[a-c].md"], "exclude": []})
+    assert cli.path_in_scope("docs/b.md", config) is True
+    assert cli.path_in_scope("docs/d.md", config) is False
+
+
+def test_scope_pattern_unterminated_bracket_is_literal() -> None:
+    # 閉じ ] が無い場合は fnmatch と同様リテラル [ として扱う（クラッシュしない）。
+    regex = cli._scope_pattern_to_regex("docs/[abc.md")
+    assert regex.fullmatch("docs/[abc.md") is not None
+    assert regex.fullmatch("docs/a.md") is None
+
+
+def test_path_in_scope_character_class_matches_path_glob_behavior(tmp_path) -> None:
+    # 通常走査（Path.glob 経由の collect_files）と削除後判定（_matches_scope_pattern）
+    # の解釈が一致することを実ファイルで確認する。
+    _write(tmp_path, "docs/a.md", "# a\n")
+    _write(tmp_path, "docs/c.md", "# c\n")
+    config = _config(scope={"include": ["docs/[ab].md"], "exclude": []})
+
+    collected = {p.relative_to(tmp_path).as_posix() for p in cli.collect_files(tmp_path, config)}
+
+    assert collected == {"docs/a.md"}
+    assert cli.path_in_scope("docs/a.md", config) is True
+    assert cli.path_in_scope("docs/c.md", config) is False
+
+
 def test_impact_config_rejects_invalid_values() -> None:
     with pytest.raises(ValueError):
         cc.ImpactConfig.from_dict({"decay": 2.0})  # (0, 1] 外
@@ -743,6 +787,33 @@ def test_cmd_impact_returns_nonzero_on_invalid_ref(tmp_path, capsys) -> None:
     assert "ERROR" in capsys.readouterr().err
 
 
+def test_main_reports_config_error_instead_of_traceback(tmp_path, capsys) -> None:
+    # scope.include に非文字列（数値）を書いた不正設定は CoddConfig.from_dict の
+    # _as_glob_list() で ValueError になる。main() はこれをトレースバックではなく
+    # `[codd] ERROR:` として整形すべき（Issue #98 レビュー対応）。
+    config_path = tmp_path / ".claude/config/codd/codd.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text("scope:\n  include: 42\n", encoding="utf-8")
+
+    exit_code = cli.main(["--root", str(tmp_path), "--config", str(config_path), "scan"])
+
+    assert exit_code == 2
+    assert "[codd] ERROR:" in capsys.readouterr().err
+
+
+def test_main_reports_config_error_for_bool_impact_field(tmp_path, capsys) -> None:
+    # impact.* に bool を渡すと _reject_bool_as_number が TypeError で拒否する。
+    # main() はこれも ValueError と同様に設定エラーとして扱う。
+    config_path = tmp_path / ".claude/config/codd/codd.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text("impact:\n  decay: true\n", encoding="utf-8")
+
+    exit_code = cli.main(["--root", str(tmp_path), "--config", str(config_path), "scan"])
+
+    assert exit_code == 2
+    assert "[codd] ERROR:" in capsys.readouterr().err
+
+
 # ---------------------------------------------------------------------------
 # code_scope（コード⇔ドキュメントのトレーサビリティ、Issue #98）
 # ---------------------------------------------------------------------------
@@ -809,6 +880,52 @@ def test_scan_code_nodes_supports_pep263_coding_cookie(tmp_path) -> None:
     assert errors == []
     assert len(nodes) == 1
     assert nodes[0].depends_on[0].id == "design:d"
+
+
+def test_read_source_text_returns_none_for_undecodable_ts_file(tmp_path) -> None:
+    # UTF-16 で保存された .ts 等は working tree 側の _read_source_text が無防備だと
+    # UnicodeDecodeError で scan 全体を落としてしまう。復号失敗は None を返し、
+    # 呼び出し側で黙ってスキップする（_decode_ref_source と同じ規約。Issue #98 レビュー対応）。
+    path = tmp_path / "src" / "legacy.ts"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes("codd:implements design:d".encode("utf-16"))
+    assert cli._read_source_text(path) is None
+
+
+def test_read_source_text_returns_none_for_bogus_coding_cookie(tmp_path) -> None:
+    # 不正な coding cookie は tokenize.detect_encoding が SyntaxError/LookupError を
+    # 投げる。working tree 側でもこれを握りつぶし None を返す。
+    path = tmp_path / "src" / "bogus.py"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"# -*- coding: bogus-encoding-name -*-\npass\n")
+    assert cli._read_source_text(path) is None
+
+
+def test_scan_code_nodes_skips_undecodable_ts_file_without_crashing(tmp_path) -> None:
+    # scan_code_nodes（scan/validate/impact の共通経路）は復号不能ファイルを
+    # スキップし、他の正常ファイルは通常どおり抽出する。
+    path = tmp_path / "src" / "legacy.ts"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes("// codd:implements design:d".encode("utf-16"))
+    _write(tmp_path, "src/mod.ts", "// codd:implements design:d\n")
+    config = _config(code_scope={"include": ["src/**/*.ts"], "exclude": []})
+
+    nodes, errors = cli.scan_code_nodes(tmp_path, config)
+
+    assert errors == []
+    assert [n.node_id for n in nodes] == ["code:mod"]
+
+
+def test_scan_code_nodes_skips_python_file_with_bogus_coding_cookie(tmp_path) -> None:
+    path = tmp_path / "src" / "bogus.py"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"# -*- coding: bogus-encoding-name -*-\npass\n")
+    config = _config(code_scope={"include": ["src/**/*.py"], "exclude": []})
+
+    nodes, errors = cli.scan_code_nodes(tmp_path, config)
+
+    assert nodes == []
+    assert errors == []
 
 
 def test_scan_project_merges_code_nodes_into_doc_graph(tmp_path) -> None:

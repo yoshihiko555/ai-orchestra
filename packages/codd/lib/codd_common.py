@@ -162,12 +162,30 @@ def _clamp_unit_float(value: float, default: float) -> float:
     return min(1.0, max(0.0, value))
 
 
+def _reject_bool_as_number(value: Any) -> Any:
+    """YAML の bool を数値設定として受理しない（Issue #98 レビュー対応）。
+
+    Python の `bool` は `int` のサブクラスのため、`float(False) == 0.0` /
+    `float(True) == 1.0` が例外を投げずに黙って通ってしまう。
+    `inline_confidence: false` のような設定ミスがそのまま confidence=0.0（全エッジ
+    重みゼロで一斉 Gray 化）になるのを防ぐため、bool は明示的に拒否し、呼び出し側の
+    `except (TypeError, ValueError)` でフォールバックさせる。
+    """
+    if isinstance(value, bool):
+        raise TypeError(f"bool は数値設定として使用できません: {value!r}")
+    return value
+
+
 def _as_confidence(value: Any) -> float:
-    """depends_on エントリの confidence を正規化する（未指定 / 不正値は既定 1.0）。"""
+    """depends_on エントリの confidence を正規化する（未指定 / 不正値は既定 1.0）。
+
+    bool（`confidence: false` 等）も不正値として扱い、既定 1.0 にフォールバックする
+    （`_reject_bool_as_number` 参照）。
+    """
     if value is None:
         return 1.0
     try:
-        parsed = float(value)
+        parsed = float(_reject_bool_as_number(value))
     except (TypeError, ValueError):
         return 1.0
     return _clamp_unit_float(parsed, 1.0)
@@ -374,20 +392,33 @@ class ImpactConfig:
         weights = dict(DEFAULT_RELATION_WEIGHTS)
         for name, value in (data.get("relation_weights") or {}).items():
             try:
-                weights[str(name)] = float(value)
+                weights[str(name)] = float(_reject_bool_as_number(value))
             except (TypeError, ValueError):
                 continue
+        # bool は int のサブクラスのため int()/float() が黙って通ってしまう
+        # （例: `max_hops: true` -> `1`）。`_reject_bool_as_number` で明示的に拒否する
+        # （Issue #98 レビュー対応）。範囲外の値は __post_init__ の検証に委ねる。
         return cls(
             relation_weights=weights,
-            decay=float(data.get("decay", DEFAULT_DECAY)),
-            max_hops=int(data.get("max_hops", DEFAULT_MAX_HOPS)),
-            green_threshold=float(data.get("green_threshold", DEFAULT_GREEN_THRESHOLD)),
-            amber_threshold=float(data.get("amber_threshold", DEFAULT_AMBER_THRESHOLD)),
-            strong_relation_min=float(data.get("strong_relation_min", DEFAULT_STRONG_RELATION_MIN)),
-            corroboration_min_origins=int(
-                data.get("corroboration_min_origins", DEFAULT_CORROBORATION_MIN_ORIGINS)
+            decay=float(_reject_bool_as_number(data.get("decay", DEFAULT_DECAY))),
+            max_hops=int(_reject_bool_as_number(data.get("max_hops", DEFAULT_MAX_HOPS))),
+            green_threshold=float(
+                _reject_bool_as_number(data.get("green_threshold", DEFAULT_GREEN_THRESHOLD))
             ),
-            evidence_bonus=float(data.get("evidence_bonus", DEFAULT_EVIDENCE_BONUS)),
+            amber_threshold=float(
+                _reject_bool_as_number(data.get("amber_threshold", DEFAULT_AMBER_THRESHOLD))
+            ),
+            strong_relation_min=float(
+                _reject_bool_as_number(data.get("strong_relation_min", DEFAULT_STRONG_RELATION_MIN))
+            ),
+            corroboration_min_origins=int(
+                _reject_bool_as_number(
+                    data.get("corroboration_min_origins", DEFAULT_CORROBORATION_MIN_ORIGINS)
+                )
+            ),
+            evidence_bonus=float(
+                _reject_bool_as_number(data.get("evidence_bonus", DEFAULT_EVIDENCE_BONUS))
+            ),
         )
 
     def weight_of(self, relation: str) -> float:
@@ -597,12 +628,12 @@ def _load_inline_confidence(data: dict[str, Any]) -> float:
     `-0.1` のような範囲外の値や YAML の `.nan` がそのまま depends_on の confidence へ
     流れ込むと、impact のエッジ重み（relation 重み × confidence）が負値/NaN になり、
     誤って Gray 判定になったり JSONL の書き出しが壊れたりする（`json.dumps` は既定で
-    NaN を非標準の `NaN` リテラルとして出力してしまうため）。未指定 / 不正値は
-    `DEFAULT_INLINE_CONFIDENCE` にフォールバックする。
+    NaN を非標準の `NaN` リテラルとして出力してしまうため）。未指定 / 不正値（bool を含む。
+    `_reject_bool_as_number` 参照）は `DEFAULT_INLINE_CONFIDENCE` にフォールバックする。
     """
     raw = data.get("inline_confidence", DEFAULT_INLINE_CONFIDENCE)
     try:
-        parsed = float(raw)
+        parsed = float(_reject_bool_as_number(raw))
     except (TypeError, ValueError):
         return DEFAULT_INLINE_CONFIDENCE
     return _clamp_unit_float(parsed, DEFAULT_INLINE_CONFIDENCE)

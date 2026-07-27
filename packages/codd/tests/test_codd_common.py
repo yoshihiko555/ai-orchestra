@@ -364,6 +364,52 @@ def test_load_config_inline_confidence_falls_back_on_non_numeric(tmp_path) -> No
     assert config.inline_confidence == codd.DEFAULT_INLINE_CONFIDENCE
 
 
+def test_load_config_inline_confidence_falls_back_on_bool(tmp_path) -> None:
+    # bool は int のサブクラスのため float(False) == 0.0 が例外なく通ってしまい、
+    # `inline_confidence: false` が全エッジ重みゼロ（一斉 Gray 化）に化ける
+    # 危険がある。bool は不正値として既定値へフォールバックする（Issue #98 レビュー対応）。
+    cfg_path = tmp_path / "codd.yaml"
+    _write(cfg_path, "inline_confidence: false\n")
+    config = codd.load_config(cfg_path)
+    assert config.inline_confidence == codd.DEFAULT_INLINE_CONFIDENCE
+
+
+def test_load_config_inline_confidence_true_falls_back_to_default(tmp_path) -> None:
+    cfg_path = tmp_path / "codd.yaml"
+    _write(cfg_path, "inline_confidence: true\n")
+    config = codd.load_config(cfg_path)
+    assert config.inline_confidence == codd.DEFAULT_INLINE_CONFIDENCE
+
+
+def test_as_confidence_rejects_bool() -> None:
+    # depends_on.confidence も同じ bool 混入リスクがあるため、既定 1.0 へフォールバックする。
+    assert codd._as_confidence(False) == 1.0
+    assert codd._as_confidence(True) == 1.0
+
+
+def test_impact_config_from_dict_rejects_bool_numeric_fields() -> None:
+    # ImpactConfig.from_dict の数値フィールドに bool を渡すと TypeError で拒否する
+    # （int()/float() が bool を黙って受理するのを防ぐ。Issue #98 レビュー対応）。
+    for field in (
+        "decay",
+        "max_hops",
+        "green_threshold",
+        "amber_threshold",
+        "strong_relation_min",
+        "corroboration_min_origins",
+        "evidence_bonus",
+    ):
+        with pytest.raises(TypeError):
+            codd.ImpactConfig.from_dict({field: True})
+
+
+def test_impact_config_from_dict_relation_weights_bool_falls_back_to_default() -> None:
+    # relation_weights は既存の try/except で不正値を無視する設計のため、bool は
+    # 該当 relation の既定重みを維持する（クラッシュではなくフォールバック）。
+    config = codd.ImpactConfig.from_dict({"relation_weights": {"references": False}})
+    assert config.relation_weights["references"] == codd.DEFAULT_RELATION_WEIGHTS["references"]
+
+
 # ---------------------------------------------------------------------------
 # scope/code_scope の glob リスト正規化（Issue #98 レビュー対応）
 # ---------------------------------------------------------------------------

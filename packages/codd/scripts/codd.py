@@ -91,19 +91,30 @@ def collect_code_files(root: Path, config: cc.CoddConfig) -> list[Path]:
     return [root / rel for rel in sorted(included - excluded)]
 
 
-def _read_source_text(path: Path) -> str:
+def _read_source_text(path: Path) -> str | None:
     """ソースファイルをテキストとして読む。
 
     Python ファイル（``.py``）は PEP 263 の宣言済みエンコーディング（先頭2行の
     ``# -*- coding: ... -*-`` cookie または BOM）を尊重する（`tokenize.detect_encoding`）。
     固定 UTF-8 のままだと、Latin-1 等の coding cookie を持つ有効な Python ファイルが
     `UnicodeDecodeError` になってしまう。それ以外の対応言語（TS/JS/Go 等）は UTF-8 固定。
+
+    復号に失敗した場合は None を返し、呼び出し側は注釈なしとして黙ってスキップする
+    （UTF-16 で保存された TS や不正な coding cookie を持つ Python ファイルで
+    scan/validate/impact 全体を落とさない。`_decode_ref_source` と同じ規約。
+    Issue #98 レビュー対応）。
     """
     if path.suffix != ".py":
-        return path.read_text(encoding="utf-8")
-    with path.open("rb") as fh:
-        encoding, _ = tokenize.detect_encoding(fh.readline)
-    return path.read_text(encoding=encoding)
+        try:
+            return path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return None
+    try:
+        with path.open("rb") as fh:
+            encoding, _ = tokenize.detect_encoding(fh.readline)
+        return path.read_text(encoding=encoding)
+    except (OSError, SyntaxError, LookupError, UnicodeDecodeError):
+        return None
 
 
 def scan_code_nodes(root: Path, config: cc.CoddConfig) -> tuple[list[cc.CoddNode], list[str]]:
@@ -123,6 +134,8 @@ def scan_code_nodes(root: Path, config: cc.CoddConfig) -> tuple[list[cc.CoddNode
         if not cx.is_supported_suffix(rel):
             continue
         text = _read_source_text(path)
+        if text is None:
+            continue  # 復号失敗（UTF-16 等）は注釈なしとして黙ってスキップする
         node, node_errors = cx.extract_code_node(rel, text, config.inline_confidence)
         if node is not None:
             nodes.append(node)
@@ -597,10 +610,14 @@ def _scope_pattern_to_regex(pattern: str) -> re.Pattern[str]:
 
     - ``*`` / ``?`` は 1 セグメント内（``/`` を跨がない）でマッチする
     - ``**`` は 0 個以上のディレクトリセグメントにマッチする（例: ``docs/**/*.md``）
+    - ``[seq]`` / ``[!seq]`` は文字クラスとして解釈する（``Path.glob`` と同じ fnmatch 規約。
+      閉じ ``]`` が無い場合はリテラル ``[`` として扱う。Issue #98 レビュー対応）
     - メタ文字を含まないパターンは完全一致
 
     ``Path.glob`` はファイルシステムを走査するため削除済みパスには使えない。
-    純粋なパス文字列の判定として正規表現に落とす。
+    純粋なパス文字列の判定として正規表現に落とす。文字クラスをここでもリテラル
+    エスケープしてしまうと、通常走査（``collect_files`` の ``Path.glob``）と
+    削除後 impact 判定（本関数）とで同じ glob の解釈が食い違ってしまう。
     """
     out: list[str] = []
     index, length = 0, len(pattern)
@@ -620,10 +637,50 @@ def _scope_pattern_to_regex(pattern: str) -> re.Pattern[str]:
         elif char == "?":
             out.append("[^/]")
             index += 1
+        elif char == "[":
+            end = _find_char_class_end(pattern, index)
+            if end is None:
+                out.append(re.escape(char))  # 閉じ ] が無い → リテラル [
+                index += 1
+            else:
+                out.append(_char_class_to_regex(pattern[index + 1 : end]))
+                index = end + 1
         else:
             out.append(re.escape(char))
             index += 1
     return re.compile("".join(out))
+
+
+def _find_char_class_end(pattern: str, start: int) -> int | None:
+    """``pattern[start]`` が ``[`` の文字クラスの閉じ ``]`` の index を返す。
+
+    fnmatch と同じ規約: ``[!...`` の直後、または ``[...`` の直後に来る最初の
+    ``]`` はクラスの終端ではなくリテラル文字として扱う（例: ``[]]`` は ``]`` 1文字）。
+    閉じ ``]`` が見つからない場合は None（呼び出し側でリテラル ``[`` として扱う）。
+    """
+    j = start + 1
+    length = len(pattern)
+    if j < length and pattern[j] == "!":
+        j += 1
+    if j < length and pattern[j] == "]":
+        j += 1
+    while j < length and pattern[j] != "]":
+        j += 1
+    return j if j < length else None
+
+
+def _char_class_to_regex(stuff: str) -> str:
+    """glob の文字クラス中身（``[`` と ``]`` の間）を regex 文字クラスへ変換する。
+
+    ``!`` 先頭の否定を regex の ``^`` に変換し、regex 側で特別な意味を持つ
+    先頭 ``^`` / バックスラッシュはリテラルとしてエスケープする。
+    """
+    stuff = stuff.replace("\\", "\\\\")
+    if stuff.startswith("!"):
+        stuff = "^" + stuff[1:]
+    elif stuff.startswith("^"):
+        stuff = "\\" + stuff
+    return f"[{stuff}]"
 
 
 def _matches_scope_pattern(rel: str, pattern: str) -> bool:
@@ -871,7 +928,15 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     root = args.root.resolve()
-    config = cc.load_config(root / args.config)
+    try:
+        config = cc.load_config(root / args.config)
+    except (TypeError, ValueError) as exc:
+        # scope.include / code_scope.include 等の設定検証エラー（ValueError）や、
+        # impact.* に bool を渡した際の型エラー（TypeError。`_reject_bool_as_number`
+        # 参照）を、トレースバックではなく CLI の設定エラーとして整形する
+        # （Issue #98 レビュー対応）。
+        print(f"[codd] ERROR: {exc}", file=sys.stderr)
+        return 2
     if not config.enabled:
         print("[codd] disabled（config の enabled: false）")
         return 0
