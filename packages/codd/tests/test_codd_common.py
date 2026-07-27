@@ -570,3 +570,28 @@ def test_build_node_clamps_out_of_range_confidence() -> None:
     node = codd.build_node(block, "docs/x.md")
     assert node.depends_on[0].confidence == 0.0
     assert node.depends_on[1].confidence == 1.0
+
+
+def test_codd_config_accepts_legacy_constructor_without_code_scope_fields() -> None:
+    # Issue #98 で `code_include` / `code_exclude` / `inline_confidence` を追加した際、
+    # デフォルト値なしの必須引数として追加すると、コード追跡機能を使わない既存の
+    # 直接コンストラクタ呼び出し（`CoddConfig(...)` を共有 config ライブラリとして
+    # 直接使う連携）が `TypeError` になり後方互換を破壊していた（レビュー対応: 8巡目）。
+    # 0.2.0 時点の全フィールド（新フィールドを含まない）だけで構築できることを確認する。
+    config = codd.CoddConfig(
+        enabled=True,
+        include=["docs/**/*.md"],
+        exclude=[],
+        kinds=["design"],
+        relations=["derives_from"],
+        roots=["requirement"],
+        graph_format="jsonl",
+        graph_path=".claude/codd/graph.jsonl",
+        checks={"dangling": "error"},
+        impact=codd.ImpactConfig.from_dict({}),
+        raw={},
+    )
+
+    assert config.code_include == []
+    assert config.code_exclude == []
+    assert config.inline_confidence == codd.DEFAULT_INLINE_CONFIDENCE

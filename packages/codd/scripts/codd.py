@@ -69,11 +69,24 @@ def _glob_relpaths(root: Path, patterns: list[str]) -> set[str]:
     root 配下か否かの安全性チェックのみに使い、実際に登録する相対パスの計算には
     使わない（レビュー対応: symlink の解決先パスを登録すると、`git diff` が
     返すリンク自体のパスと `path_to_id` が一致しなくなる）。
+
+    ``src/**.py`` のような不正な再帰 glob（``**`` がパスセグメント全体を占めていない）
+    は Python 3.12+ の ``Path.glob()`` が ``ValueError`` を送出する。この呼び出しは
+    `main()` の設定読み込み用例外ハンドラより後（scan/validate/impact の走査時）に
+    実行されるため、そのまま伝播させるとトレースバックで CLI が終了してしまう。
+    ここで捕捉し、パターンを含む分かりやすい ``ValueError`` に変換して再送出することで、
+    `main()` 側の設定エラーハンドラ（scan/validate/impact 呼び出し全体を包む try/except）
+    が整形済みメッセージとして表示できるようにする（Issue #98 レビュー対応: 8巡目）。
     """
     matched: set[str] = set()
     resolved_root = root.resolve()
     for pattern in patterns:
-        for path in root.glob(pattern):
+        try:
+            candidates = list(root.glob(pattern))
+        except ValueError as exc:
+            msg = f"scope の glob パターンが不正です: {pattern!r} ({exc})"
+            raise ValueError(msg) from exc
+        for path in candidates:
             if not path.is_file():
                 continue
             resolved_path = path.resolve()
@@ -412,9 +425,18 @@ def _log_commit_times(root: Path, rel_paths: list[str]) -> dict[str, float]:
     """
     if not rel_paths:
         return {}
+    # ``:(literal)`` を各パスへ前置し、pathspec magic として解釈させない。前置しないと
+    # ``:(bad.md`` のような（先頭が ``:(`` から始まる）正当なファイル名 1 件だけで
+    # `git log` が `fatal: Invalid pathspec magic` を送出し一括呼び出し全体が失敗する。
+    # `_log_commit_times` が呼び出し元（`batch_commit_times`）へ空 dict を返すため、
+    # 該当ファイルだけでなく同じバッチ内の全 clean node が commit time ではなく
+    # working-tree mtime で比較されてしまう（drift 判定が不安定になる。Issue #98
+    # レビュー対応: 8巡目）。``:(literal)`` は先頭の magic 指定子だけを解釈し、以降の
+    # 文字列（``:(bad.md`` 自体を含む）を常にリテラルとして扱う。
+    literal_pathspecs = [f":(literal){p}" for p in rel_paths]
     out = _git_output_bytes(
         root,
-        ["log", "-z", "--name-only", "--format=%x00%ct", "--", *rel_paths],
+        ["log", "-z", "--name-only", "--format=%x00%ct", "--", *literal_pathspecs],
         keep_partial_on_error=True,
     )
     if not out:
@@ -848,14 +870,11 @@ def _scope_pattern_to_regex(pattern: str) -> re.Pattern[str]:
     try:
         return re.compile("".join(out))
     except re.error:
-        # `[z-a]` のような不正な文字範囲は、現行 CPython（3.12+）の
-        # `fnmatch.translate()` 自体が常に非マッチのパターンへ変換するため、
-        # `Path.glob()`（collect_files）側では例外にならず非マッチになる
-        # （実測確認済み。fnmatch の内部実装に依存する挙動のため、将来の
-        # CPython バージョンで変わった場合の保険も兼ね、ここでもクラッシュ
-        # ではなく「常に非マッチ」として安全に扱う。Issue #98 レビュー対応。
-        # collect_files との整合は
-        # test_collect_files_invalid_char_range_pattern_is_safe_non_match で検証）。
+        # `_char_class_to_regex()` が fnmatch と同じ正規化（不正範囲の除去）を
+        # 行うようになったため、文字クラス起因の re.error は通常発生しない
+        # （Issue #98 レビュー対応: 8巡目 P3）。ここに到達するのは文字クラス以外の
+        # 未知の要因によるものだけのはずだが、クラッシュではなく「常に非マッチ」
+        # として安全に扱う防御的フォールバックとして残す。
         return re.compile(r"(?!)")
 
 
@@ -877,18 +896,63 @@ def _find_char_class_end(pattern: str, start: int) -> int | None:
     return j if j < length else None
 
 
+_RE_SETOPS_SUB = re.compile(r"([&~|])").sub
+
+
 def _char_class_to_regex(stuff: str) -> str:
     """glob の文字クラス中身（``[`` と ``]`` の間）を regex 文字クラスへ変換する。
 
     ``!`` 先頭の否定を regex の ``^`` に変換し、regex 側で特別な意味を持つ
-    先頭 ``^`` / バックスラッシュはリテラルとしてエスケープする。
+    先頭 ``^`` / バックスラッシュ / 集合演算子（``&`` ``~`` ``|``）はリテラルとして
+    エスケープする。
+
+    不正な文字範囲（``lo > hi``。例: ``[ab-a]`` の ``b-a``）は CPython
+    ``fnmatch.translate()`` と同一のアルゴリズムで、範囲部分だけを除去し他の
+    リテラル文字は保持する（``[ab-a]`` → リテラル ``a`` にマッチ）。以前は
+    `_scope_pattern_to_regex()` 側で `re.compile` が `re.error` を送出した際、
+    パターン全体を常時非マッチ（``(?!)``）にフォールバックしていたため、
+    `collect_files`（`Path.glob` ベース、fnmatch 相当）とここ（削除済みファイル向け
+    純粋パス判定）とで有効/無効ファイルの扱いが食い違い、ファイル削除後の
+    `path_in_scope()` 判定で消失した上流ノードの警告を取りこぼしていた
+    （Issue #98 レビュー対応: 8巡目 P3）。クラス全体が空になった場合（例: 単体の
+    ``[z-a]``）のみ ``(?!)``（常時非マッチ）、``[!z-a]`` のように否定の空範囲は
+    ``.``（任意の1文字にマッチ）にする（いずれも fnmatch と同じ規約）。
     """
-    stuff = stuff.replace("\\", "\\\\")
-    if stuff.startswith("!"):
-        stuff = "^" + stuff[1:]
-    elif stuff.startswith("^"):
-        stuff = "\\" + stuff
-    return f"[{stuff}]"
+    if "-" not in stuff:
+        body = stuff.replace("\\", "\\\\")
+    else:
+        chunks: list[str] = []
+        i = 0
+        length = len(stuff)
+        k = 2 if stuff.startswith("!") else 1
+        while True:
+            k = stuff.find("-", k, length)
+            if k < 0:
+                break
+            chunks.append(stuff[i:k])
+            i = k + 1
+            k = k + 3
+        chunk = stuff[i:length]
+        if chunk:
+            chunks.append(chunk)
+        else:
+            chunks[-1] += "-"
+        # 不正な範囲（lo > hi）を除去する（fnmatch.translate と同じ規約）。
+        for idx in range(len(chunks) - 1, 0, -1):
+            if chunks[idx - 1][-1] > chunks[idx][0]:
+                chunks[idx - 1] = chunks[idx - 1][:-1] + chunks[idx][1:]
+                del chunks[idx]
+        body = "-".join(c.replace("\\", "\\\\").replace("-", "\\-") for c in chunks)
+    if not body:
+        return "(?!)"  # 空クラス（範囲除去の結果、有効な文字が残らない）は常時非マッチ
+    if body == "!":
+        return "."  # 否定の空クラス（`[!lo-hi]` で lo > hi）は任意の1文字にマッチ
+    body = _RE_SETOPS_SUB(r"\\\1", body)
+    if body[0] == "!":
+        body = "^" + body[1:]
+    elif body[0] in ("^", "["):
+        body = "\\" + body
+    return f"[{body}]"
 
 
 def _normalize_scope_pattern(root: Path, pattern: str) -> str | None:
@@ -997,7 +1061,17 @@ _MAX_SYMLINK_HOPS = 8
 
 
 def _symlink_target_relpath(root: Path, rel: str) -> str | None:
-    """rel（working tree, root 相対）が symlink なら解決先の root 相対パスを返す。
+    """rel（working tree, root 相対）が symlink なら、直接のリンク先（1 hop 先）の
+    root 相対パスを返す。
+
+    `Path.resolve()` のようにチェーン全体を一気に最終ターゲットへ解決するのではなく、
+    `os.readlink` でこの symlink 自身が指す先だけを読む。``api/alias.py ->
+    ../links/current.py -> ../v1.py`` のような中継 symlink チェーンで中間リンク
+    （``links/current.py``）だけが変更された場合、`git diff` は中間リンクのパスを
+    返すため、最終ターゲット（``v1.py``）だけを追跡すると変更を検出できない
+    （レビュー対応: 8巡目 codd.py:1009）。呼び出し側（`compute_impact_result`）が
+    この関数を繰り返し呼んで各 hop を辿ることで、チェーン上の全パスを変更検出
+    対象に含められる。
 
     symlink でない、または解決先が root の外（`_glob_relpaths` と同じ安全策）の
     場合は None。
@@ -1006,13 +1080,32 @@ def _symlink_target_relpath(root: Path, rel: str) -> str | None:
     if not path.is_symlink():
         return None
     try:
-        resolved = path.resolve()
+        link_text = os.readlink(path)
     except OSError:
         return None
-    resolved_root = root.resolve()
-    if not resolved.is_relative_to(resolved_root):
+    combined = posixpath.normpath(posixpath.join(posixpath.dirname(rel), link_text))
+    if combined == os.pardir or combined.startswith(f"{os.pardir}/"):
         return None
-    return resolved.relative_to(resolved_root).as_posix()
+    return combined
+
+
+def _symlink_chain_relpaths(root: Path, rel: str) -> list[str]:
+    """rel（working tree, root 相対）が symlink チェーンの起点なら、辿れる各 hop の
+    root 相対パスを順に返す（Issue #98 レビュー対応: 8巡目）。
+
+    ``alias.py -> links/current.py -> v1.py`` の場合、
+    ``["links/current.py", "v1.py"]`` を返す。symlink でない場合は空リスト。
+    循環 symlink 対策として `_MAX_SYMLINK_HOPS` で打ち切る。
+    """
+    hops: list[str] = []
+    current = rel
+    for _ in range(_MAX_SYMLINK_HOPS):
+        target = _symlink_target_relpath(root, current)
+        if target is None:
+            break
+        hops.append(target)
+        current = target
+    return hops
 
 
 def _ref_blob_mode(root: Path, ref: str, rel: str) -> str | None:
@@ -1033,8 +1126,14 @@ def _resolve_ref_symlink_target(rel: str, link_text: str) -> str | None:
     """ref 時点の symlink（rel）が指す先を、rel と同じ root からの相対パスへ解決する。
 
     root の外へ解決される場合は None（`_glob_relpaths` の root 外除外と同じ安全策）。
+
+    ``link_text`` は git blob の内容をそのまま渡すこと（``strip()`` しない）。
+    先頭/末尾に有意な空白を含むファイル名（例: ``" target.py"``）を指す symlink は
+    strip すると working tree（`os.readlink` で空白を保持する `_symlink_target_relpath`）
+    とは別のパスに解決されてしまい、alias 削除時に旧 node_id を復元できなくなる
+    （レビュー対応: 8巡目 codd.py:1037）。
     """
-    combined = posixpath.normpath(posixpath.join(posixpath.dirname(rel), link_text.strip()))
+    combined = posixpath.normpath(posixpath.join(posixpath.dirname(rel), link_text))
     if combined == os.pardir or combined.startswith(f"{os.pardir}/"):
         return None
     return combined
@@ -1117,6 +1216,38 @@ def _is_dangling_deletion(
     return not graph.has(old_id)
 
 
+def _broken_code_symlink_relpaths(root: Path, config: cc.CoddConfig) -> set[str]:
+    """code_scope 内で壊れた symlink（ターゲット不在）の root 相対パス集合を返す。
+
+    ``aliases/core.py -> ../shared/core.py`` のような symlink で、リンク先の
+    ``shared/core.py`` だけが削除されると、alias 自体は git 上変更されていないため
+    `git diff` の changed/deleted どちらにも現れない。一方 `collect_code_files`
+    （通常走査）は `is_file()` で判定するため、破損した alias は走査対象から静かに
+    落ち、alias が保持していた旧コードノードの消失が `deleted_upstream` に警告されない
+    （Issue #98 レビュー対応: 8巡目）。ここでは `is_file()` の代わりに「symlink かつ
+    存在しない（broken）」を条件に候補を集め、`path_in_code_scope()` で scope
+    membership（exclude 込み）を確認する。
+
+    `config.code_include` が空（未設定）の場合は空集合（既存挙動への影響ゼロ）。
+    """
+    if not config.code_include:
+        return set()
+    resolved_root = root.resolve()
+    candidates: set[str] = set()
+    for pattern in config.code_include:
+        for path in root.glob(pattern):
+            if not path.is_symlink() or path.exists():
+                continue  # symlink でない、またはリンク切れでない（正常）
+            resolved_path = path.resolve()
+            if not resolved_path.is_relative_to(resolved_root):
+                continue
+            normalized_path = Path(os.path.normpath(path))
+            if not normalized_path.is_relative_to(root):
+                continue
+            candidates.add(normalized_path.relative_to(root).as_posix())
+    return {rel for rel in candidates if path_in_code_scope(root, rel, config)}
+
+
 def compute_impact_result(root: Path, config: cc.CoddConfig, ref: str) -> ImpactResult:
     """scan → diff 突合 → 影響分析までを行い ImpactResult を返す。"""
     _warn_if_not_git_root(root)
@@ -1132,12 +1263,15 @@ def compute_impact_result(root: Path, config: cc.CoddConfig, ref: str) -> Impact
     # 複数の symlink ノードが同一ターゲットを指すことがあるため target -> node_id は
     # 多対一（list）で保持する。1対1 dict だと後勝ちで一部の symlink ノードが
     # changed_ids から漏れ、リンク先変更時の影響分析から欠落する（レビュー対応: 7巡目）。
+    # ``alias.py -> links/current.py -> v1.py`` のような中継 symlink チェーンでは、
+    # 最終ターゲット（v1.py）だけでなくチェーン上の全 hop（links/current.py も）を
+    # 変更検出対象に含める。中間リンクだけが変更された場合 `git diff` は中間リンクの
+    # パスを返すため、最終ターゲットしか見ないと変更が検出できない
+    # （レビュー対応: 8巡目 codd.py:1009）。
     symlink_target_to_ids: dict[str, list[str]] = {}
     for node in result.nodes:
-        target = _symlink_target_relpath(root, node.path)
-        if target is None:
-            continue
-        symlink_target_to_ids.setdefault(target, []).append(node.node_id)
+        for hop in _symlink_chain_relpaths(root, node.path):
+            symlink_target_to_ids.setdefault(hop, []).append(node.node_id)
     changed_ids |= {node_id for p in changed_paths for node_id in symlink_target_to_ids.get(p, [])}
 
     # 削除された scope 内ドキュメント / code_scope 内コード（Issue #98 レビュー対応。
@@ -1165,6 +1299,15 @@ def compute_impact_result(root: Path, config: cc.CoddConfig, ref: str) -> Impact
         for p in changed_paths
         if path_in_code_scope(root, p, config)
         and _is_dangling_deletion(root, ref, p, result.graph, config, is_code=True)
+    }
+    # code_scope 内の symlink alias 自体は変更されていなくても、リンク先だけが
+    # 削除されると working tree 上で壊れた symlink になり、`git diff` の
+    # changed/deleted どちらにも現れないまま旧コードノードが消失しうる
+    # （Issue #98 レビュー対応: 8巡目 codd.py:77）。
+    deleted_upstream_candidates |= {
+        p
+        for p in _broken_code_symlink_relpaths(root, config)
+        if _is_dangling_deletion(root, ref, p, result.graph, config, is_code=True)
     }
     deleted_upstream = sorted(deleted_upstream_candidates)
 
@@ -1291,22 +1434,25 @@ def main(argv: list[str] | None = None) -> int:
     root = args.root.resolve()
     try:
         config = cc.load_config(root / args.config)
+        if not config.enabled:
+            print("[codd] disabled（config の enabled: false）")
+            return 0
+
+        if args.command == "impact":
+            return cmd_impact(root, config, args.diff, args.json)
+
+        handlers = {"scan": cmd_scan, "graph": cmd_graph, "validate": cmd_validate}
+        return handlers[args.command](root, config)
     except (TypeError, ValueError) as exc:
         # scope.include / code_scope.include 等の設定検証エラー（ValueError）や、
         # impact.* に bool を渡した際の型エラー（TypeError。`_reject_bool_as_number`
         # 参照）を、トレースバックではなく CLI の設定エラーとして整形する
-        # （Issue #98 レビュー対応）。
+        # （Issue #98 レビュー対応）。`src/**.py` のような不正な再帰 glob は
+        # `cc.load_config` 完了後（scan/validate/impact の走査時）に `_glob_relpaths`
+        # から ValueError が送出されるため、コマンド実行全体を同じ try に含めて
+        # 捕捉する（Issue #98 レビュー対応: 8巡目）。
         print(f"[codd] ERROR: {exc}", file=sys.stderr)
         return 2
-    if not config.enabled:
-        print("[codd] disabled（config の enabled: false）")
-        return 0
-
-    if args.command == "impact":
-        return cmd_impact(root, config, args.diff, args.json)
-
-    handlers = {"scan": cmd_scan, "graph": cmd_graph, "validate": cmd_validate}
-    return handlers[args.command](root, config)
 
 
 if __name__ == "__main__":

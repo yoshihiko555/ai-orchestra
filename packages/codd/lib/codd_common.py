@@ -692,7 +692,16 @@ def _load_inline_confidence(data: dict[str, Any]) -> float:
 
 @dataclass
 class CoddConfig:
-    """codd.yaml（+ local 上書き）の実効設定。"""
+    """codd.yaml（+ local 上書き）の実効設定。
+
+    Issue #98 で `code_include` / `code_exclude` / `inline_confidence` を追加した際、
+    デフォルト値なしの必須引数として `raw` より前に挿入すると、コード追跡機能を
+    使わない既存の直接コンストラクタ呼び出し（例: `CoddConfig(enabled=..., ...,
+    raw={})` のようなキーワード引数一式）が `TypeError` になり後方互換を破壊する。
+    `raw` を新フィールドより前（元の最終フィールドの位置）に据え置き、新フィールドに
+    既定値を与えることで、コード追跡機能 opt-in 前の呼び出しを引き続き受理する
+    （レビュー対応: 8巡目）。
+    """
 
     enabled: bool
     include: list[str]
@@ -704,11 +713,13 @@ class CoddConfig:
     graph_path: str
     checks: dict[str, str]
     impact: ImpactConfig
-    # Issue #98: コード⇔ドキュメントのトレーサビリティ（opt-in・既定は空 = 挙動変化なし）。
-    code_include: list[str]
-    code_exclude: list[str]
-    inline_confidence: float
     raw: dict[str, Any]
+    # Issue #98: コード⇔ドキュメントのトレーサビリティ（opt-in）。既定値は「未設定」
+    # 相当（空リスト / DEFAULT_INLINE_CONFIDENCE）で、旧コンストラクタ呼び出しでは
+    # これらを省略しても既存挙動（機能無効）のまま構築できる。
+    code_include: list[str] = field(default_factory=list)
+    code_exclude: list[str] = field(default_factory=list)
+    inline_confidence: float = DEFAULT_INLINE_CONFIDENCE
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> CoddConfig:

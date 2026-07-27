@@ -265,6 +265,10 @@ depends_on を宣言できるようにする。doc frontmatter との違いは�
    全エッジ重みゼロの一斉 Gray 化に化けるのを防ぐ）。`inline_confidence` / doc の
    `confidence` はいずれも bool を不正値として既定値へフォールバックし、`impact.*`
    （decay・thresholds・weights 等）は bool 混入を config エラー（4.6 参照）として拒否する。
+   `CoddConfig`（`codd_common.py`）はこの3フィールド（`code_include` / `code_exclude` /
+   `inline_confidence`）に既定値（空リスト / `DEFAULT_INLINE_CONFIDENCE`）を持たせ、
+   Issue #98 追加前の全フィールドだけでも直接コンストラクタ呼び出しで構築できる
+   （`codd_common.py` を共有ライブラリとして直接使う既存連携の後方互換を壊さないため）。
 
 注釈が無いコードファイルは doc scope の `missing_frontmatter`（warning）とは異なり黙って
 スキップする。コードベース全体への注釈強制はせず、追跡したいファイルにだけ opt-in で
@@ -362,27 +366,52 @@ codd impact --diff <ref> [--json]   # 既定 ref = HEAD
   `_scope_pattern_to_regex` で判定する。`*`/`**`/`?` に加えて文字クラス（`[seq]` /
   `[!seq]`）も `Path.glob` と同じ意味に解釈し（通常走査の `collect_files` と削除後
   判定とで glob 解釈が食い違わないようにする）、閉じ `]` が無い場合は fnmatch と
-  同様リテラル `[` として扱う。`[z-a]` のような不正な文字範囲も `Path.glob`
-  （fnmatch）と同様「常に非マッチ」として安全に扱い、`re.error` で落ちない。
-  `../proj/src/**/*.py`（root == proj）のように root 外へ出て同じ root 内へ戻る
-  パターンも、通常走査側（`_glob_relpaths()`）と同じレキシカルな正規化
-  （`os.path.normpath`、ファイルシステムへはアクセスしない）を適用してから
-  判定する。正規化しないと削除済みパスの判定で通常パターンと別名扱いになり、
-  scan と impact 判定の解釈が食い違う。
+  同様リテラル `[` として扱う。不正な文字範囲（`lo > hi`。例: `[z-a]`、`[ab-a]`）は
+  `_char_class_to_regex` が CPython `fnmatch.translate()` と同一のアルゴリズムで
+  正規化し、範囲部分だけを除去して他の有効なリテラル文字は保持する（`[ab-a]` は
+  リテラル `a` にマッチし、クラス全体が空になる `[z-a]` のみ「常に非マッチ」）。
+  文字クラス以外の未知の要因による `re.error` はクラッシュせず「常に非マッチ」の
+  防御的フォールバックへ倒す。`../proj/src/**/*.py`（root == proj）のように root 外へ
+  出て同じ root 内へ戻るパターンも、通常走査側（`_glob_relpaths()`）と同じ
+  レキシカルな正規化（`os.path.normpath`、ファイルシステムへはアクセスしない）を
+  適用してから判定する。正規化しないと削除済みパスの判定で通常パターンと別名扱い
+  になり、scan と impact 判定の解釈が食い違う。`src/**.py` のような不正な再帰
+  glob（`**` がパスセグメント全体を占めていない）による `Path.glob()` の
+  `ValueError` は `_glob_relpaths()` が捕捉し、パターンを含む分かりやすい
+  `ValueError` へ変換して再送出する。`main()` は config 読み込みだけでなく
+  scan/validate/impact のコマンド実行全体を同じ try/except で包むため、この
+  ValueError も `[codd] ERROR: ...`（非ゼロ終了）として整形される。
 - symlink はスコープ内の走査（scan、working tree）でも、ref 側の旧内容取得
   （`git show <ref>:<path>`）でも一貫して dereference する。scan は working tree の
   symlink をリンク先の内容ごと登録するため、リンク先だけを変更した場合も
   `git diff` はリンク先のパスを返す。node.path（symlink 自身）しか見ないと変更が
   検出されないため、リンク先の root 相対パスも `changed_paths` の突合対象に加える。
+  `alias.py -> links/current.py -> v1.py` のような中継 symlink チェーンでは、
+  `_symlink_target_relpath()` が 1 hop 先のみを `os.readlink` で解決し、
+  `_symlink_chain_relpaths()` がそれを繰り返し呼んでチェーン上の全 hop
+  （`links/current.py` も）を突合対象へ加える（`Path.resolve()` で最終ターゲット
+  だけを一気に解決すると、中間リンクだけの retarget を見逃す）。
   一方 `git show <ref>:<path>` は symlink blob の中身（リンク先パス文字列）を
   そのまま返してしまうため、`git ls-tree` でモード（`120000` = symlink）を判定
   しながらリンク先を辿ってから内容を取得する（辿らないと、削除された symlink
-  ノードの旧 node_id を frontmatter として復元できず、dangling 化を見逃す）。
+  ノードの旧 node_id を frontmatter として復元できず、dangling 化を見逃す）。ref
+  側のリンク先文字列は `strip()` せずそのまま解決する（先頭/末尾に有意な空白を
+  含むファイル名を指す symlink でも working tree と同じパスに解決するため）。
+  code_scope 内の symlink で、alias 自体は変更されずリンク先だけが削除されて
+  壊れた symlink になった場合（`git diff` の changed/deleted どちらにも alias
+  自身は現れない）は `_broken_code_symlink_relpaths()` が検出し、ref 側の旧内容
+  から node_id を回収して deleted_upstream の検出対象に含める。
 - code_scope 内のコードファイルは、削除だけでなく **ファイルが残ったまま**
   `codd:` 注釈の削除や node_id 変更で旧コードノードが消失するケースも dangling
   注意として同じ集合に含める。`changed_paths`（削除されていない変更ファイル）の
   code_scope 該当分についても ref 時点の内容から旧注釈を再抽出し、現グラフから
   消えていれば報告する（`compute_impact_result`）。
+- drift 検査（`batch_commit_times` / `_log_commit_times`）の一括 `git log` は
+  各ノードパスを `:(literal)` を前置した pathspec として渡す。前置しないと、
+  `:(bad.md` のような git pathspec magic 構文と衝突する正当なファイル名が1つ
+  あるだけで `fatal: Invalid pathspec magic` により一括呼び出し全体が失敗し、
+  同じバッチ内の他の clean node まで commit time ではなく working-tree mtime で
+  比較されてしまう（drift 判定が不安定になる）。
 
 **設計判断（codd-dev 比較 / ADR-026 D3）:** CODD は依存宣言を frontmatter に限定するため、証拠源は
 relation 種別とグラフ距離のみ。codd-dev の Noisy-OR・エビデンス種別分類（static/inferred/human 等）は

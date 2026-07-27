@@ -40,7 +40,8 @@ orchex run codd codd -- impact --diff HEAD
 orchex run codd codd -- impact --diff origin/main
 ```
 
-- `git diff --name-status <ref>` で変更ファイルを取得し、frontmatter の `node_id` にマップする
+- `git diff --name-status <ref>` で変更ファイルを取得し、doc frontmatter の `node_id` および
+  `code_scope`（Issue #98 opt-in）のコード注釈 `node_id` の両方にマップする
 - `depends_on` の逆引きで下流ノードを辿り、各ノードを信頼度帯域へ分類する
 - 削除された上流ファイルは「dangling 注意」として別建てで報告する
 
@@ -52,7 +53,12 @@ orchex run codd codd -- impact --diff origin/main
 | **Amber** | 要確認     | 多段・中強度依存。人間が追従要否を確認       |
 | **Gray**  | 参考       | 弱依存（references）や遠い距離。情報提供のみ |
 
-- `score` は `min(経路上の relation 重み) × decay^(hops-1)`。
+- `score` は `min(経路上の relation 重み × confidence) × decay^(hops-1)`。
+  - doc frontmatter 由来のリンクは confidence 既定 1.0（人手レビュー済み）。
+  - **code_scope のコード注釈由来のリンクは confidence 既定 0.7**（`codd.yaml` の
+    `inline_confidence`）。そのため直接の 1 hop `implements` エッジでも
+    `1.0 × 0.7 = 0.7` となり、`green_threshold`（既定 0.8）を下回って **Green ではなく
+    Amber** に分類されうる。「直接依存 = 常に Green」ではない点に注意する。
 - `co_changed` フラグは「下流ノード自身も同じ diff で変更済み」を示す（Amber 上限）。
 - `via` は影響の起点になった変更ノード（裏付け起点）。
 

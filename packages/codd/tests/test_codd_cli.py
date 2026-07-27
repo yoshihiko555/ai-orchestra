@@ -413,6 +413,43 @@ def test_batch_commit_times_handles_non_ascii_paths(tmp_path) -> None:
     assert batched["docs/日本語.md"] != clean.stat().st_mtime
 
 
+def test_log_commit_times_handles_pathspec_magic_like_filename(tmp_path) -> None:
+    # git にノードパスを素朴な `--` pathspec として渡すと、`:(bad.md` のような
+    # 先頭が `:(` のファイル名（正当なファイル名だが pathspec magic 構文と衝突する）
+    # 1件だけで `fatal: Invalid pathspec magic` になり、`_git_output_bytes` が None を
+    # 返して呼び出し全体が空 dict にフォールバックしていた。`:(literal)` を各パスへ
+    # 前置し、pathspec magic として解釈させないことで回避する
+    # （レビュー対応: 8巡目 codd.py:418）。
+    _init_repo(tmp_path)
+    _write(tmp_path, "docs/normal.md", "# normal\n")
+    _write(tmp_path, ":(bad.md", "# bad\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "init")
+
+    times = cli._log_commit_times(tmp_path, ["docs/normal.md", ":(bad.md"])
+
+    assert "docs/normal.md" in times
+    assert ":(bad.md" in times
+
+
+def test_batch_commit_times_survives_pathspec_magic_like_filename(tmp_path) -> None:
+    # `_log_commit_times()` が literal pathspec 化されていないと、`:(bad.md` の
+    # ような1ファイルの存在だけで一括 `git log` 全体が失敗し、同じバッチ内の
+    # 他の clean node（docs/normal.md）まで commit time ではなく working-tree
+    # mtime で比較されてしまう（drift 判定が不安定になる。レビュー対応: 8巡目
+    # codd.py:418）。
+    _init_repo(tmp_path)
+    normal = _write(tmp_path, "docs/normal.md", "# normal\n")
+    _write(tmp_path, ":(bad.md", "# bad\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "init")
+
+    batched = cli.batch_commit_times(tmp_path, ["docs/normal.md", ":(bad.md"])
+
+    assert batched["docs/normal.md"] != normal.stat().st_mtime
+    assert batched["docs/normal.md"] == cli.commit_time(tmp_path, "docs/normal.md")
+
+
 def test_git_output_bytes_keep_partial_on_error_returns_partial_stdout(
     monkeypatch, tmp_path
 ) -> None:
@@ -893,6 +930,40 @@ def test_collect_files_invalid_char_range_pattern_is_safe_non_match(tmp_path) ->
     assert collected == set()
 
 
+def test_scope_pattern_partial_invalid_char_range_keeps_valid_literal() -> None:
+    # `[ab-a]` は `b-a` という逆順の不正範囲を含む一方、リテラル `a` も含む。
+    # CPython 3.12+ の `fnmatch.translate()`（Path.glob の内部実装）はこの不正範囲
+    # だけを除去し、残った有効なリテラル文字（`a`）は保持する。以前は
+    # `_scope_pattern_to_regex()` の `re.compile` が `re.error` を送出した際、
+    # パターン全体を常時非マッチへフォールバックしていたため、ファイルが存在する
+    # 間は（Path.glob 経由で）scan 対象になる一方、削除後の `path_in_scope()` では
+    # 対象外となり、消失した上流ノードの警告を取りこぼしていた
+    # （レビュー対応: 8巡目 codd.py:859 P3）。
+    regex = cli._scope_pattern_to_regex("docs/[ab-a].md")
+    assert regex.fullmatch("docs/a.md") is not None
+    assert regex.fullmatch("docs/b.md") is None
+    assert (
+        cli.path_in_scope(
+            _ROOT, "docs/a.md", _config(scope={"include": ["docs/[ab-a].md"], "exclude": []})
+        )
+        is True
+    )
+
+
+def test_collect_files_partial_invalid_char_range_matches_valid_literal(tmp_path) -> None:
+    # 実ファイルでも Path.glob（collect_files）と path_in_scope（削除後判定）の
+    # 解釈が一致することを確認する（fnmatch と同じ「不正範囲だけ除去」規約）。
+    _write(tmp_path, "docs/a.md", "# a\n")
+    _write(tmp_path, "docs/b.md", "# b\n")
+    config = _config(scope={"include": ["docs/[ab-a].md"], "exclude": []})
+
+    collected = {p.relative_to(tmp_path).as_posix() for p in cli.collect_files(tmp_path, config)}
+
+    assert collected == {"docs/a.md"}
+    assert cli.path_in_scope(tmp_path, "docs/a.md", config) is True
+    assert cli.path_in_scope(tmp_path, "docs/b.md", config) is False
+
+
 def test_path_in_scope_character_class_matches_path_glob_behavior(tmp_path) -> None:
     # 通常走査（Path.glob 経由の collect_files）と削除後判定（_matches_scope_pattern）
     # の解釈が一致することを実ファイルで確認する。
@@ -955,6 +1026,39 @@ def test_compute_impact_result_reports_deleted_code_upstream(tmp_path) -> None:
 
     result = cli.compute_impact_result(tmp_path, config, "HEAD")
     assert "src/mod.py" in result.deleted_upstream
+
+
+def test_compute_impact_result_recovers_upstream_when_code_symlink_target_deleted(
+    tmp_path,
+) -> None:
+    # `aliases/core.py -> ../shared/core.py` のような symlink で、リンク先
+    # （shared/core.py。scope 外）だけが削除されると alias 自体は git 上
+    # 変更されないため `git diff` の changed/deleted どちらにも現れない。alias は
+    # 破損 symlink になり通常走査（is_file() 判定）から静かに落ちるため、alias が
+    # 保持していた旧コードノードの消失が deleted_upstream に警告されていなかった
+    # （レビュー対応: 8巡目 codd.py:77）。
+    _init_repo(tmp_path)
+    _write(tmp_path, "shared/core.py", _py(["codd:node_id code:core"]))
+    (tmp_path / "aliases").mkdir()
+    (tmp_path / "aliases" / "core.py").symlink_to(Path("../shared/core.py"))
+    config = _config(code_scope={"include": ["aliases/*.py"], "exclude": []})
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "init")
+
+    (tmp_path / "shared" / "core.py").unlink()  # ターゲットのみ削除（alias 自体は未変更）
+
+    result = cli.compute_impact_result(tmp_path, config, "HEAD")
+
+    assert "aliases/core.py" in result.deleted_upstream
+
+
+def test_broken_code_symlink_relpaths_empty_when_code_scope_unset(tmp_path) -> None:
+    # code_scope.include が空（既定）なら、壊れた symlink があっても検出しない
+    # （opt-in・既存挙動への影響ゼロ）。
+    (tmp_path / "aliases").mkdir()
+    (tmp_path / "aliases" / "broken.py").symlink_to(Path("../missing.py"))
+
+    assert cli._broken_code_symlink_relpaths(tmp_path, _config()) == set()
 
 
 def test_old_node_id_at_ref_skips_git_show_for_unsupported_extension(tmp_path, monkeypatch) -> None:
@@ -1100,6 +1204,54 @@ def test_main_reports_config_error_for_non_mapping_code_scope(tmp_path, capsys) 
     config_path = tmp_path / ".claude/config/codd/codd.yaml"
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text("code_scope: oops\n", encoding="utf-8")
+
+    exit_code = cli.main(["--root", str(tmp_path), "--config", str(config_path), "scan"])
+
+    assert exit_code == 2
+    assert "[codd] ERROR:" in capsys.readouterr().err
+
+
+def test_glob_relpaths_converts_glob_value_error_to_descriptive_message(
+    tmp_path, monkeypatch
+) -> None:
+    # `src/**.py` のような不正な再帰 glob（`**` がパスセグメント全体を占めていない）は
+    # Python 3.12+ の `Path.glob()` が `ValueError` を送出する。この呼び出しは
+    # `main()` の設定読み込み用例外ハンドラより後（scan/validate/impact の走査時）に
+    # 実行されるため、`_glob_relpaths()` が捕捉してパターンを含む分かりやすい
+    # `ValueError` に変換する（Issue #98 レビュー対応: 8巡目）。実行中の Python
+    # バージョンによっては当該パターンで例外が出ないことがあるため、`Path.glob` を
+    # 差し替えて確実に再現する。
+    real_glob = Path.glob
+
+    def _fake_glob(self, pattern, *args, **kwargs):
+        if pattern == "src/**.py":
+            raise ValueError("Invalid pattern: '**' can only be an entire path component")
+        return real_glob(self, pattern, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "glob", _fake_glob)
+
+    with pytest.raises(ValueError, match=r"src/\*\*\.py"):
+        cli._glob_relpaths(tmp_path, ["src/**.py"])
+
+
+def test_main_reports_config_error_for_invalid_recursive_glob(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    # `_glob_relpaths()` が変換した ValueError を、scan 実行時（load_config 完了後）
+    # でも main() がトレースバックではなく `[codd] ERROR:` として整形して終了する
+    # ことを確認する（Issue #98 レビュー対応: 8巡目）。
+    real_glob = Path.glob
+
+    def _fake_glob(self, pattern, *args, **kwargs):
+        if pattern == "src/**.py":
+            raise ValueError("Invalid pattern: '**' can only be an entire path component")
+        return real_glob(self, pattern, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "glob", _fake_glob)
+
+    config_path = tmp_path / ".claude/config/codd/codd.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text('scope:\n  include: ["src/**.py"]\n  exclude: []\n', encoding="utf-8")
 
     exit_code = cli.main(["--root", str(tmp_path), "--config", str(config_path), "scan"])
 
@@ -1480,6 +1632,57 @@ def test_compute_impact_result_recovers_symlink_node_id_after_deletion(tmp_path)
     result = cli.compute_impact_result(tmp_path, _config(), "HEAD")
 
     assert "docs/link.md" in result.deleted_upstream
+
+
+def test_compute_impact_result_recovers_symlink_node_id_with_whitespace_target(
+    tmp_path,
+) -> None:
+    # symlink ターゲット文字列の先頭/末尾の空白は、意味を持つファイル名の一部
+    # （例: 末尾に空白のあるファイル名）でありうる。ref 側の dereference
+    # （`_resolve_ref_symlink_target`）が `strip()` すると working tree
+    # （`os.readlink` ベースの `_symlink_target_relpath` は空白を保持する）とは
+    # 別パスに解決されてしまい、alias 削除時に旧 node_id を復元できなくなる
+    # （レビュー対応: 8巡目 codd.py:1037）。
+    _init_repo(tmp_path)
+    _write(tmp_path, "shared/actual.md ", _doc("design:d", "design"))  # ファイル名末尾に空白
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "link.md").symlink_to(Path("../shared/actual.md "))
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "init")
+    (tmp_path / "docs" / "link.md").unlink()  # symlink 自体を削除（ターゲットは残す）
+
+    result = cli.compute_impact_result(tmp_path, _config(), "HEAD")
+
+    assert "docs/link.md" in result.deleted_upstream
+
+
+def test_compute_impact_result_detects_change_via_intermediate_symlink_hop(
+    tmp_path,
+) -> None:
+    # `api/alias.py -> ../links/current.py -> ../v1.py` のような中継 symlink チェーンで
+    # 中間リンク（links/current.py）だけを別ターゲットへ retarget した場合、`git diff`
+    # は中間リンクのパスを返す。最終ターゲットだけを追跡すると alias（api/alias.py）の
+    # 変更が検出できない（レビュー対応: 8巡目 codd.py:1009）。
+    _init_repo(tmp_path)
+    _write(tmp_path, "v1.py", _py(["codd:node_id code:v1"]))
+    _write(tmp_path, "v2.py", _py(["codd:node_id code:v2"]))
+    (tmp_path / "links").mkdir()
+    (tmp_path / "links" / "current.py").symlink_to(Path("../v1.py"))
+    (tmp_path / "api").mkdir()
+    (tmp_path / "api" / "alias.py").symlink_to(Path("../links/current.py"))
+    # alias.py だけを code_scope に含める（links/current.py・v1.py・v2.py は scope 外
+    # のままにし、alias.py 1 ノードのみを走査してテストを単純化する）。
+    config = _config(code_scope={"include": ["api/*.py"], "exclude": []})
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "init")
+
+    # alias.py 自体は変更せず、中間リンク（links/current.py）だけを retarget する。
+    (tmp_path / "links" / "current.py").unlink()
+    (tmp_path / "links" / "current.py").symlink_to(Path("../v2.py"))
+
+    result = cli.compute_impact_result(tmp_path, config, "HEAD")
+
+    assert "code:v2" in result.changed_ids
 
 
 def test_compute_impact_result_reports_deleted_code_upstream_with_pep263_encoding(
