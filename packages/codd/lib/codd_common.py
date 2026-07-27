@@ -176,6 +176,24 @@ def _reject_bool_as_number(value: Any) -> Any:
     return value
 
 
+def _as_finite_int(value: Any, field_name: str) -> int:
+    """impact 設定の整数値（`max_hops` / `corroboration_min_origins`）を検証する。
+
+    YAML の `.inf`（`float("inf")`）のような非有限値をそのまま `int()` に渡すと
+    `OverflowError`（`ValueError` のサブクラスではない）を送出し、`main()` の
+    `except (TypeError, ValueError)` を素通りして未整形のトレースバックになる
+    （P1 レビュー対応）。ここで非有限値を明示的に拒否し、万一 `int()` が
+    `OverflowError` を送出した場合も `ValueError` へ正規化する。
+    """
+    checked = _reject_bool_as_number(value)
+    if isinstance(checked, float) and not math.isfinite(checked):
+        raise ValueError(f"{field_name} は有限の数値である必要があります（got {checked!r}）")
+    try:
+        return int(checked)
+    except OverflowError as exc:
+        raise ValueError(f"{field_name} を整数に変換できません（got {checked!r}）") from exc
+
+
 def _as_confidence(value: Any) -> float:
     """depends_on エントリの confidence を正規化する（未指定 / 不正値は既定 1.0）。
 
@@ -390,7 +408,13 @@ class ImpactConfig:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ImpactConfig:
         weights = dict(DEFAULT_RELATION_WEIGHTS)
-        for name, value in (data.get("relation_weights") or {}).items():
+        # `relation_weights: []` のようなマッピング以外の値は `.items()` で
+        # `AttributeError` になり、`main()` の `(TypeError, ValueError)` ハンドラを
+        # 素通りして未整形のトレースバックになる（P1 レビュー対応）。`_as_mapping()`
+        # で先に検証し、設定エラーとして整形させる。
+        for name, value in _as_mapping(
+            data.get("relation_weights"), "impact.relation_weights"
+        ).items():
             try:
                 weights[str(name)] = float(_reject_bool_as_number(value))
             except (TypeError, ValueError):
@@ -401,7 +425,7 @@ class ImpactConfig:
         return cls(
             relation_weights=weights,
             decay=float(_reject_bool_as_number(data.get("decay", DEFAULT_DECAY))),
-            max_hops=int(_reject_bool_as_number(data.get("max_hops", DEFAULT_MAX_HOPS))),
+            max_hops=_as_finite_int(data.get("max_hops", DEFAULT_MAX_HOPS), "impact.max_hops"),
             green_threshold=float(
                 _reject_bool_as_number(data.get("green_threshold", DEFAULT_GREEN_THRESHOLD))
             ),
@@ -411,10 +435,9 @@ class ImpactConfig:
             strong_relation_min=float(
                 _reject_bool_as_number(data.get("strong_relation_min", DEFAULT_STRONG_RELATION_MIN))
             ),
-            corroboration_min_origins=int(
-                _reject_bool_as_number(
-                    data.get("corroboration_min_origins", DEFAULT_CORROBORATION_MIN_ORIGINS)
-                )
+            corroboration_min_origins=_as_finite_int(
+                data.get("corroboration_min_origins", DEFAULT_CORROBORATION_MIN_ORIGINS),
+                "impact.corroboration_min_origins",
             ),
             evidence_bonus=float(
                 _reject_bool_as_number(data.get("evidence_bonus", DEFAULT_EVIDENCE_BONUS))
@@ -626,8 +649,15 @@ def _as_glob_list(value: Any, field_name: str) -> list[str]:
     書くと、素朴な ``list(value)`` では文字列が 1 文字ずつイテレートされ、無意味な
     glob（`s`, `r`, `c`, ...）として扱われてしまう（Issue #98 レビュー対応）。単一文字列は
     単要素リストとして扱い、リスト以外の型（数値・dict 等）は設定エラーとして拒否する。
+
+    空文字列（``scope.include: ""``）は「対象なし」を表す既存設定との後方互換のため
+    空リストとして扱う（P1 レビュー対応）。旧実装 ``list(value or [])`` では空文字列が
+    偽値として ``[]`` になっていたが、単一文字列を単要素リスト化する本関数の変換を
+    素朴に空文字列へも適用すると ``[""]`` になり、後続の ``Path.glob("")`` が
+    ``ValueError: Unacceptable pattern: ''`` を送出して `main()` の設定ロード用
+    ハンドラより後（走査時）に CLI がトレースバックで終了してしまう。
     """
-    if value is None:
+    if value is None or value == "":
         return []
     if isinstance(value, str):
         return [value]
@@ -689,11 +719,15 @@ class CoddConfig:
             roots=list(data.get("roots") or []),
             graph_format=str(graph_store.get("format", DEFAULT_GRAPH_FORMAT)),
             graph_path=str(graph_store.get("path", DEFAULT_GRAPH_PATH)),
+            # `checks: []` / `impact: []` のようなマッピング以外の値は `.items()` /
+            # `.get()` で `AttributeError` になり、`main()` の
+            # `(TypeError, ValueError)` ハンドラを素通りして未整形のトレースバックに
+            # なる（P1 レビュー対応）。`_as_mapping()` で先に検証する。
             checks={
                 str(name): normalize_check_level(level)
-                for name, level in (data.get("checks") or {}).items()
+                for name, level in _as_mapping(data.get("checks"), "checks").items()
             },
-            impact=ImpactConfig.from_dict(data.get("impact") or {}),
+            impact=ImpactConfig.from_dict(_as_mapping(data.get("impact"), "impact")),
             code_include=_as_glob_list(code_scope.get("include"), "code_scope.include"),
             code_exclude=_as_glob_list(code_scope.get("exclude"), "code_scope.exclude"),
             inline_confidence=_load_inline_confidence(data),

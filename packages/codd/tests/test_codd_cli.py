@@ -391,6 +391,45 @@ def test_batch_commit_times_empty_input_returns_empty_dict(tmp_path) -> None:
     assert cli.batch_commit_times(tmp_path, []) == {}
 
 
+def test_batch_commit_times_handles_non_ascii_paths(tmp_path) -> None:
+    # `core.quotePath`（既定 true）の下で `git log --name-only` を素朴にパースすると
+    # 非 ASCII パスが 8 進エスケープ付きで引用され、`rel_paths` のキーと一致せず
+    # 常に mtime フォールバックへ落ちる（P1 レビュー対応: codd.py:350）。
+    _init_repo(tmp_path)
+    clean = _write(tmp_path, "docs/日本語.md", "# clean\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "init")
+
+    rel_paths = ["docs/日本語.md"]
+    batched = cli.batch_commit_times(tmp_path, rel_paths)
+
+    assert batched == {rel: cli.commit_time(tmp_path, rel) for rel in rel_paths}
+    # クリーンな追跡ファイルはコミット時刻が返り、mtime フォールバックにはならない。
+    assert batched["docs/日本語.md"] != clean.stat().st_mtime
+
+
+def test_batch_commit_times_normalizes_paths_when_root_is_not_git_root(tmp_path) -> None:
+    # `--root` が git リポジトリルート以外（サブディレクトリ）を指す場合も、
+    # `_dirty_paths()` / `_log_commit_times()` が返すリポジトリルート相対のパスを
+    # `--root` 相対へ正規化してからキャッシュに載せる必要がある。正規化しないと
+    # クリーンな追跡ファイルでもキャッシュが常にミスし、mtime フォールバックへ
+    # 落ちてしまう（Minor レビュー対応: codd.py:393）。
+    repo_root = tmp_path
+    _init_repo(repo_root)
+    sub_root = repo_root / "sub"
+    clean = _write(repo_root, "sub/docs/clean.md", "# clean\n")
+    _write(repo_root, "sub/docs/dirty.md", "# dirty\n")
+    _git(repo_root, "add", "-A")
+    _git(repo_root, "commit", "-m", "init")
+    (repo_root / "sub/docs/dirty.md").write_text("# dirty edited\n", encoding="utf-8")
+
+    rel_paths = ["docs/clean.md", "docs/dirty.md"]
+    batched = cli.batch_commit_times(sub_root, rel_paths)
+
+    assert batched["docs/clean.md"] != clean.stat().st_mtime  # クリーンはコミット時刻
+    assert batched["docs/dirty.md"] == (repo_root / "sub/docs/dirty.md").stat().st_mtime
+
+
 def test_validate_drift_warning_via_git_commit_times(tmp_path) -> None:
     # `_check_drift` は `batch_commit_times()` 経由で一括取得したコミット時刻を使う
     # （ノードごとの個別 git 呼び出しを廃止。Issue #98 レビュー対応）。
@@ -748,9 +787,13 @@ def test_scope_pattern_unterminated_bracket_is_literal() -> None:
 
 
 def test_scope_pattern_invalid_char_range_is_safe_non_match() -> None:
-    # `[z-a]` は逆順の不正な範囲。re.compile が re.error で落ちるため、Path.glob
-    # （fnmatch）と同様「常に非マッチ」として安全に扱う（クラッシュしない。
-    # Issue #98 レビュー対応）。
+    # `[z-a]` は逆順の不正な範囲。`_scope_pattern_to_regex()` は re.compile が
+    # re.error を送出した場合に備え、常に非マッチの正規表現へフォールバックする
+    # （クラッシュしない。Issue #98 レビュー対応）。現行 CPython（3.12+）の
+    # `fnmatch.translate()` 自体もこの種の不正な範囲を検出して常に非マッチの
+    # パターンへ変換するため、Path.glob 経由の collect_files() 側でも同様に
+    # クラッシュせず非マッチになる（下記
+    # test_collect_files_invalid_char_range_pattern_is_safe_non_match で検証）。
     regex = cli._scope_pattern_to_regex("docs/[z-a].md")
     assert regex.fullmatch("docs/a.md") is None
     assert regex.fullmatch("docs/z.md") is None
@@ -758,6 +801,20 @@ def test_scope_pattern_invalid_char_range_is_safe_non_match() -> None:
         cli.path_in_scope("docs/a.md", _config(scope={"include": ["docs/[z-a].md"], "exclude": []}))
         is False
     )
+
+
+def test_collect_files_invalid_char_range_pattern_is_safe_non_match(tmp_path) -> None:
+    # `_scope_pattern_to_regex()`（削除後 impact 判定側）だけでなく、通常走査
+    # （collect_files の Path.glob 経由）でも `[z-a]` のような不正な文字範囲が
+    # クラッシュせず非マッチになることを実ファイルで検証する（レビュー対応:
+    # 「Path.glob と同様非マッチ」という前提が両実装で整合しているかの確認）。
+    _write(tmp_path, "docs/a.md", "# a\n")
+    _write(tmp_path, "docs/z.md", "# z\n")
+    config = _config(scope={"include": ["docs/[z-a].md"], "exclude": []})
+
+    collected = {p.relative_to(tmp_path).as_posix() for p in cli.collect_files(tmp_path, config)}
+
+    assert collected == set()
 
 
 def test_path_in_scope_character_class_matches_path_glob_behavior(tmp_path) -> None:
@@ -1212,6 +1269,38 @@ def test_collect_code_files_normalizes_glob_paths_that_return_into_root(tmp_path
     files = {p.relative_to(root).as_posix() for p in cli.collect_code_files(root, config)}
 
     assert files == {"src/mod.py"}
+
+
+def test_collect_files_preserves_symlink_logical_path(tmp_path) -> None:
+    # scope.include が root 内部の symlink にマッチした場合、解決先のパスではなく
+    # symlink 自体の論理パスを登録する必要がある。解決先を登録すると `git diff` が
+    # 返す symlink 自体のパスと `path_to_id` が一致せず、リンクの変更が impact 分析
+    # から欠落する（P2 レビュー対応: codd.py:74）。root 外への解決を拒否する
+    # 安全性チェックはこれまでどおり維持する。
+    root = tmp_path
+    _write(root, "shared/actual.md", "# actual\n")
+    (root / "docs").mkdir()
+    (root / "docs" / "link.md").symlink_to(root / "shared" / "actual.md")
+    config = _config(scope={"include": ["docs/*.md"], "exclude": []})
+
+    files = {p.relative_to(root).as_posix() for p in cli.collect_files(root, config)}
+
+    assert files == {"docs/link.md"}
+
+
+def test_collect_files_rejects_symlink_resolving_outside_root(tmp_path) -> None:
+    # symlink のターゲットが root 外へ解決される場合は、論理パス保持の対象にせず
+    # 従来どおり安全に除外する。
+    root = tmp_path / "proj"
+    root.mkdir()
+    _write(tmp_path, "outside/actual.md", "# outside\n")
+    (root / "docs").mkdir()
+    (root / "docs" / "link.md").symlink_to(tmp_path / "outside" / "actual.md")
+    config = _config(scope={"include": ["docs/*.md"], "exclude": []})
+
+    files = {p.relative_to(root).as_posix() for p in cli.collect_files(root, config)}
+
+    assert files == set()
 
 
 def test_compute_impact_result_reports_deleted_code_upstream_with_pep263_encoding(

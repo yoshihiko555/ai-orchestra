@@ -410,6 +410,42 @@ def test_impact_config_from_dict_relation_weights_bool_falls_back_to_default() -
     assert config.relation_weights["references"] == codd.DEFAULT_RELATION_WEIGHTS["references"]
 
 
+def test_impact_config_from_dict_rejects_non_finite_int_fields_as_value_error() -> None:
+    # `impact.max_hops: .inf`（YAML の `float("inf")`）を素朴に `int()` へ渡すと
+    # `OverflowError`（ValueError のサブクラスではない）を送出し、`main()` の
+    # `except (TypeError, ValueError)` を素通りして未整形のトレースバックになる
+    # （P1 レビュー対応: codd_common.py:420）。ValueError として整形された
+    # 設定エラーになるべき。
+    for field in ("max_hops", "corroboration_min_origins"):
+        with pytest.raises(ValueError):
+            codd.ImpactConfig.from_dict({field: float("inf")})
+        with pytest.raises(ValueError):
+            codd.ImpactConfig.from_dict({field: float("nan")})
+
+
+def test_impact_config_from_dict_rejects_non_mapping_relation_weights() -> None:
+    # `impact.relation_weights: []`（マッピング以外）は `.items()` で
+    # `AttributeError` になり未整形のトレースバックになっていた
+    # （P1 レビュー対応: codd_common.py:420）。ValueError として整形される。
+    with pytest.raises(ValueError, match="relation_weights"):
+        codd.ImpactConfig.from_dict({"relation_weights": ["references"]})
+
+
+def test_load_config_rejects_non_mapping_impact_and_checks(tmp_path) -> None:
+    # `impact: []` / `checks: []`（マッピング以外）は `.get()` / `.items()` で
+    # `AttributeError` になり未整形のトレースバックになっていた
+    # （P1 レビュー対応: codd_common.py:420）。ValueError として整形される。
+    cfg_path = tmp_path / "codd.yaml"
+    _write(cfg_path, "impact:\n  - a\n  - b\n")
+    with pytest.raises(ValueError, match="impact"):
+        codd.load_config(cfg_path)
+
+    cfg_path2 = tmp_path / "codd2.yaml"
+    _write(cfg_path2, "checks:\n  - a\n  - b\n")
+    with pytest.raises(ValueError, match="checks"):
+        codd.load_config(cfg_path2)
+
+
 # ---------------------------------------------------------------------------
 # scope/code_scope の glob リスト正規化（Issue #98 レビュー対応）
 # ---------------------------------------------------------------------------
@@ -444,6 +480,25 @@ def test_load_config_code_scope_include_rejects_list_with_non_string_items(tmp_p
     _write(cfg_path, "code_scope:\n  include:\n    - 'src/**/*.py'\n    - 3\n")
     with pytest.raises(ValueError, match="code_scope.include"):
         codd.load_config(cfg_path)
+
+
+def test_load_config_scope_include_empty_string_means_no_targets(tmp_path) -> None:
+    # `scope.include: ""` で「対象なし」を表す既存設定との後方互換（P1 レビュー対応）。
+    # 単一文字列を単要素リスト化する変換を空文字列にも適用すると `[""]` になり、
+    # 後続の `Path.glob("")` が ValueError で CLI をトレースバック終了させてしまう。
+    cfg_path = tmp_path / "codd.yaml"
+    _write(cfg_path, "scope:\n  include: ''\n  exclude: ''\n")
+    config = codd.load_config(cfg_path)
+    assert config.include == []
+    assert config.exclude == []
+
+
+def test_load_config_code_scope_include_empty_string_means_no_targets(tmp_path) -> None:
+    cfg_path = tmp_path / "codd.yaml"
+    _write(cfg_path, "code_scope:\n  include: ''\n  exclude: ''\n")
+    config = codd.load_config(cfg_path)
+    assert config.code_include == []
+    assert config.code_exclude == []
 
 
 def test_load_config_code_scope_include_absent_defaults_to_empty_list(tmp_path) -> None:

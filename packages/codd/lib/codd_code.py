@@ -133,27 +133,68 @@ def _python_leading_text(text: str) -> str:
 
     `ast.parse` はファイル全体を構文解析するため、大規模コードベースでは
     CPU コストが無視できない（Issue #98 レビュー対応）。module docstring は
-    「モジュール先頭の最初の文が単独の文字列リテラルであること」で決まるため、
-    `tokenize` で先頭のコメント/空行トークンだけ読み飛ばし、最初の意味のある
-    トークンが STRING かどうかだけを見れば十分（本文コードは走査しない。
-    最初の STRING 以外のトークンに達し次第ループを抜けるため、`tokenize` の
-    内部 readline も本文全体までは進まない）。抽出結果は
-    `ast.get_docstring(tree, clean=False)` と同一になるよう、暗黙の文字列連結
-    （``"a" "b"``）も STRING トークンが連続する間は結合し、実際の値は
-    `ast.literal_eval` でデコードする。文字列以外（bytes リテラル・f-string 等）
-    が最初の文だった場合は docstring 扱いしない（AST ベースと同じ挙動）。
+    「モジュール先頭の最初の文が単独の文字列リテラル式であること」で決まるため、
+    `tokenize` で先頭のコメント/空行トークンだけ読み飛ばし、以降を軽量に走査する
+    （本文コードは走査しない。最初の文が終わり次第走査を打ち切るため、`tokenize`
+    の内部 readline も本文全体までは進まない）。抽出結果は
+    `ast.get_docstring(tree, clean=False)` と同一になるよう、以下を判定する:
+
+    - 先頭の丸括弧（トリプルクォート文字列を丸括弧で囲む書き方）は式の意味を
+      変えないため、開き括弧の数を数えて読み飛ばし、対応する閉じ括弧も同様に
+      読み飛ばす（レビュー対応: 括弧付き docstring の見落とし）。
+    - 暗黙の文字列連結（隣接する 2 つの文字列リテラル、例えば "a" と "b" を
+      並べる書き方）は STRING トークンが連続する間だけ結合し、実際の値は
+      `ast.literal_eval` でデコードする。
+    - 文字列トークン（+ 対応する閉じ括弧）の直後が文の終端（NEWLINE / `;` /
+      ENDMARKER）でない場合、文字列リテラルを `+` 演算子で連結する式であり
+      単独の文字列定数ではないため docstring 扱いしない（レビュー対応: 連結式の
+      誤抽出防止）。
+    - 文字列以外（bytes リテラル・f-string 等）が最初の文だった場合も docstring
+      扱いしない（AST ベースと同じ挙動）。
     """
     try:
+        tokens = [
+            tok
+            for tok in tokenize.generate_tokens(io.StringIO(text).readline)
+            if tok.type not in (tokenize.COMMENT, tokenize.NL, tokenize.ENCODING, tokenize.INDENT)
+        ]
+
+        index = 0
+        paren_depth = 0
+        while (
+            index < len(tokens)
+            and tokens[index].type == tokenize.OP
+            and tokens[index].string == "("
+        ):
+            paren_depth += 1
+            index += 1
+
         string_tokens: list[str] = []
-        for tok in tokenize.generate_tokens(io.StringIO(text).readline):
-            if tok.type in (tokenize.COMMENT, tokenize.NL, tokenize.ENCODING, tokenize.INDENT):
-                continue
-            if tok.type == tokenize.STRING:
-                string_tokens.append(tok.string)
-                continue
-            break
+        while index < len(tokens) and tokens[index].type == tokenize.STRING:
+            string_tokens.append(tokens[index].string)
+            index += 1
         if not string_tokens:
             return ""
+
+        while (
+            paren_depth > 0
+            and index < len(tokens)
+            and tokens[index].type == tokenize.OP
+            and tokens[index].string == ")"
+        ):
+            paren_depth -= 1
+            index += 1
+        if paren_depth != 0:
+            return ""
+
+        if index < len(tokens):
+            trailing = tokens[index]
+            is_statement_end = trailing.type in (tokenize.NEWLINE, tokenize.ENDMARKER) or (
+                trailing.type == tokenize.OP and trailing.string == ";"
+            )
+            if not is_statement_end:
+                return ""
+
         value = ast.literal_eval(" ".join(string_tokens))
     except (tokenize.TokenError, IndentationError, SyntaxError, ValueError, TypeError):
         return ""

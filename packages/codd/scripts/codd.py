@@ -56,11 +56,18 @@ def _glob_relpaths(root: Path, patterns: list[str]) -> set[str]:
     プロジェクトルート外のファイルを走査対象に含めてしまう（Issue #98 レビュー対応）。
     解決後のパスが root 配下かを検証し、root 外へ解決されたものは黙って除外する。
 
-    格納する相対パスは resolve 後の実パスから root への相対で正規化する。
+    格納する相対パスは、シンボリックリンクをたどらないレキシカル正規化
+    （``os.path.normpath``）で ``..`` セグメントだけを畳み込んで求める。
     ``../proj/src/foo.py``（root == proj）のように root 内へ戻ってくるパターンは
     containment 判定こそ通るが、素朴に ``path.relative_to(root)`` すると
     ``".."`` を含む別名の文字列として集合に入り、通常パターン（``src/foo.py``）
     で見つかる同一ファイルと重複ノード化してしまう（Issue #98 レビュー対応）。
+
+    root 内部のシンボリックリンクにマッチした場合は、リンクの解決先ではなく
+    論理パス（リンク自体のパス）をそのまま保持する。``Path.resolve()`` は
+    root 配下か否かの安全性チェックのみに使い、実際に登録する相対パスの計算には
+    使わない（レビュー対応: symlink の解決先パスを登録すると、`git diff` が
+    返すリンク自体のパスと `path_to_id` が一致しなくなる）。
     """
     matched: set[str] = set()
     resolved_root = root.resolve()
@@ -71,7 +78,10 @@ def _glob_relpaths(root: Path, patterns: list[str]) -> set[str]:
             resolved_path = path.resolve()
             if not resolved_path.is_relative_to(resolved_root):
                 continue
-            matched.add(resolved_path.relative_to(resolved_root).as_posix())
+            normalized_path = Path(os.path.normpath(path))
+            if not normalized_path.is_relative_to(root):
+                continue
+            matched.add(normalized_path.relative_to(root).as_posix())
     return matched
 
 
@@ -336,30 +346,74 @@ def _dirty_paths(root: Path) -> set[str] | None:
     return dirty
 
 
+def _repo_root_prefix(root: Path) -> str:
+    """root からリポジトリルートまでの相対パス prefix を返す（末尾 `/` 付き、または空文字）。
+
+    `git status --porcelain` / `git log --name-only` が返すパス表記は常に
+    リポジトリルート相対だが、`batch_commit_times()` に渡される `rel_paths` は
+    `--root` 相対である。root が git リポジトリルートでない場合、両者のキーが
+    一致せず時刻キャッシュが常にミスし、クリーンな追跡ファイルでも mtime
+    フォールバックに落ちて drift 検出が変わってしまう（レビュー対応: `--root` が
+    git リポジトリルート以外を指すケース）。`git rev-parse --show-prefix` の
+    取得に失敗した場合は空文字（prefix なし = 従来どおり root == repo root を
+    前提にした挙動）を返す。
+    """
+    out = _git_output(root, ["rev-parse", "--show-prefix"])
+    if out is None:
+        return ""
+    return out.strip()
+
+
+def _strip_repo_prefix(path: str, prefix: str) -> str:
+    """リポジトリルート相対の path から prefix を取り除き、root 相対に正規化する。"""
+    if prefix and path.startswith(prefix):
+        return path[len(prefix) :]
+    return path
+
+
 def _log_commit_times(root: Path, rel_paths: list[str]) -> dict[str, float]:
     """rel_paths の最終コミット時刻を 1 回の `git log` でまとめて取得する。
 
-    ``git log --name-only --format=%x00%ct -- <path1> <path2> ...`` は新しい
+    ``-z`` を付けずに ``--name-only`` を使うと、`core.quotePath`（既定 true）に
+    より非 ASCII パスが 8 進エスケープ付きで引用されて出力され、`rel_paths` の
+    キーと一致しなくなる（P1 レビュー対応: 非 ASCII パスで `batch_commit_times()`
+    が常に mtime フォールバックへ落ちる）。``-z`` はコミットごとの区切りと
+    パス区切りの両方を NUL にし、パスの引用も無効化するため、生バイト列を NUL で
+    分割して構造的にパースする: 各コミットのレコードは
+    ``\\0<ct>\\0\\n<path1>\\0<path2>\\0...`` という形式になり、空文字列トークンが
+    次コミットの開始（=次のタイムスタンプトークン）を示す（レビュー対応: 素朴な
+    行分割だとコミットヘッダ行をパスとして誤取得しうる問題も併せて解消）。新しい
     コミットから走査するため、各パスについて最初に出現した時刻が最終コミット
     時刻になる（パスごとに `git log -1 --format=%ct -- <path>` を呼ぶのと同じ
-    結果。Issue #98 レビュー対応。rename の追跡先切替は `--follow` 非使用のため
-    元の `commit_time()` と同じく行わない）。
+    結果。rename の追跡先切替は `--follow` 非使用のため元の `commit_time()` と
+    同じく行わない。Issue #98 レビュー対応）。
     """
     if not rel_paths:
         return {}
-    out = _git_output(root, ["log", "--name-only", "--format=%x00%ct", "--", *rel_paths])
+    out = _git_output_bytes(
+        root, ["log", "-z", "--name-only", "--format=%x00%ct", "--", *rel_paths]
+    )
     if not out:
         return {}
+    tokens = out.decode("utf-8", errors="surrogateescape").split("\0")
     times: dict[str, float] = {}
     current_time: float | None = None
-    for line in out.splitlines():
-        if line.startswith("\0"):
+    awaiting_timestamp = False
+    first_path_in_record = False
+    for token in tokens:
+        if token == "":
+            awaiting_timestamp = True
+            continue
+        if awaiting_timestamp:
             try:
-                current_time = float(line[1:])
+                current_time = float(token)
             except ValueError:
                 current_time = None
+            awaiting_timestamp = False
+            first_path_in_record = True
             continue
-        path = line.strip()
+        path = token[1:] if first_path_in_record and token.startswith("\n") else token
+        first_path_in_record = False
         if not path or current_time is None or path in times:
             continue
         times[path] = current_time
@@ -374,12 +428,22 @@ def batch_commit_times(root: Path, rel_paths: list[str]) -> dict[str, float]:
     Issue #98 レビュー対応）。dirty 判定を 1 回の `git status`、コミット時刻を
     1 回の `git log` にまとめ、各パスの判定規約（dirty/未追跡/履歴なしは mtime、
     クリーンな追跡ファイルは最終コミット時刻）は `commit_time()` と同一に保つ。
+
+    `_dirty_paths()` / `_log_commit_times()` が返すパスはリポジトリルート相対の
+    ままなので、`--root` が git リポジトリルートでない場合は `_repo_root_prefix()`
+    で求めた prefix を使って `rel_paths`（`--root` 相対）へ正規化してから
+    突き合わせる（レビュー対応）。
     """
     if not rel_paths:
         return {}
+    prefix = _repo_root_prefix(root)
     dirty = _dirty_paths(root)
+    if dirty is not None and prefix:
+        dirty = {_strip_repo_prefix(p, prefix) for p in dirty}
     clean_paths = [p for p in rel_paths if dirty is not None and p not in dirty]
     commit_times = _log_commit_times(root, clean_paths)
+    if prefix:
+        commit_times = {_strip_repo_prefix(p, prefix): t for p, t in commit_times.items()}
     result: dict[str, float] = {}
     for rel in rel_paths:
         commit_ct = commit_times.get(rel)
@@ -750,8 +814,14 @@ def _scope_pattern_to_regex(pattern: str) -> re.Pattern[str]:
     try:
         return re.compile("".join(out))
     except re.error:
-        # `[z-a]` のような不正な文字範囲は Path.glob（fnmatch）と同様、
-        # クラッシュではなく「常に非マッチ」として安全に扱う（Issue #98 レビュー対応）。
+        # `[z-a]` のような不正な文字範囲は、現行 CPython（3.12+）の
+        # `fnmatch.translate()` 自体が常に非マッチのパターンへ変換するため、
+        # `Path.glob()`（collect_files）側では例外にならず非マッチになる
+        # （実測確認済み。fnmatch の内部実装に依存する挙動のため、将来の
+        # CPython バージョンで変わった場合の保険も兼ね、ここでもクラッシュ
+        # ではなく「常に非マッチ」として安全に扱う。Issue #98 レビュー対応。
+        # collect_files との整合は
+        # test_collect_files_invalid_char_range_pattern_is_safe_non_match で検証）。
         return re.compile(r"(?!)")
 
 

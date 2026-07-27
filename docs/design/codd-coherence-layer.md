@@ -191,7 +191,13 @@ depends_on を宣言できるようにする。doc frontmatter との違いは�
    `- ` を書き忘れて文字イテレートされる誤動作を防ぐ。`scope.include` / `scope.exclude`
    にも同じ正規化を適用し、doc scope とコード scope の扱いを一貫させる）。`../*.py` の
    ような相対パスでプロジェクトルート外に解決される glob マッチは黙って除外する
-   （`Path.glob` はルート外のパスもそのまま解決してしまうため）。走査対象言語（Python /
+   （`Path.glob` はルート外のパスもそのまま解決してしまうため）。root 内へ戻ってくる
+   相対 glob（`../proj/src/**/*.py`、root == proj）は `os.path.normpath` によるドット
+   記法のレキシカルな畳み込みだけで root 相対へ正規化し、通常パターンで見つかる同一
+   ファイルとの重複登録を防ぐ。root 内部のシンボリックリンクにマッチした場合は、
+   解決先パスではなくリンク自体の論理パスを登録する（`git diff` が返すパスと
+   `path_to_id` を一致させるため。シンボリックリンクの解決先が root 外の場合のみ
+   従来どおり除外する）。走査対象言語（Python /
    `//` 系）に対応しない拡張子のファイルは、読み込み前に除外する（画像等が混在ディレクトリ
    glob にマッチしても UTF-8 テキストとして復号しようとしない）。
 2. **1行の軽量注釈**: doc の YAML frontmatter 全体を書く代わりに、`codd:<key> <value>` の
@@ -213,7 +219,11 @@ depends_on を宣言できるようにする。doc frontmatter との違いは�
    コメント判定に失敗し、注釈が無言でスキップされるため）。
    言語別の抽出領域:
    - Python: `ast.parse` + `ast.get_docstring` でモジュール docstring のみを対象にする
-     （本文コード中の文字列リテラルを誤って注釈と解釈しない）。ファイル読み込みは
+     （本文コード中の文字列リテラルを誤って注釈と解釈しない）。実装は `ast.parse` の
+     代わりに `tokenize` で先頭トークンのみ読む軽量版だが、結果は
+     `ast.get_docstring(clean=False)` と一致させる（`("""...""")` のような丸括弧付き
+     docstring も認識し、`"""..."""  + "suffix"` のような文字列連結式は docstring
+     として誤抽出しない）。ファイル読み込みは
      PEP 263 の宣言済みエンコーディング（先頭2行の coding cookie / BOM）を
      `tokenize.detect_encoding` で尊重する（固定 UTF-8 だと Latin-1 等の有効な
      Python ファイルが `UnicodeDecodeError` になるため）。`impact` の削除上流検出で
@@ -280,8 +290,14 @@ dangling / duplicate / cycle / unknown / orphan / drift の各検査を特別扱
   git はファイル mtime を履歴保持しないため、必ずコミット時刻 or 内容で判定する。
   ノードごとに `git status` / `git log` を個別起動すると 1,000 ノード規模で著しく
   遅いため、`batch_commit_times()` が `git status --porcelain -z`（dirty 判定）と
-  `git log --name-only`（コミット時刻）をそれぞれ 1 回にまとめて実行する
-  （判定規約は単発の `commit_time()` と同一。Issue #98 レビュー対応）。
+  `git log -z --name-only`（コミット時刻）をそれぞれ 1 回にまとめて実行する
+  （判定規約は単発の `commit_time()` と同一。Issue #98 レビュー対応）。`git log` は
+  `-z` で NUL 区切り取得することで `core.quotePath`（既定 true）による非 ASCII
+  パスの引用（8 進エスケープ）を回避する（引用されたままだと `rel_paths` の
+  キーと一致せず、クリーンな追跡ファイルでも常に mtime フォールバックへ落ちる）。
+  `--root` が git リポジトリルート以外（サブディレクトリ）を指す場合は、
+  `git rev-parse --show-prefix` で得た prefix を使って `git status` / `git log` が
+  返すリポジトリルート相対パスを `--root` 相対へ正規化してから突き合わせる。
 - **missing_frontmatter** は Phase 1 では warning。将来 essential 運用が定着したら error 昇格を検討。
 - drift は「上流を変えたのに下流が追従していないかもしれない」という**素朴な Amber 相当**。
   信頼度スコアによる本格的な impact 分析は Phase 2。
@@ -379,9 +395,16 @@ checks:
 導入先固有の上書きは `codd.local.yaml`（`config-loading` ルール準拠、同期対象外）。
 
 `scope.include` / `code_scope.include` の型不正（数値・非文字列要素混入）や `impact.*` への
-bool 混入は config ロード時に `ValueError` / `TypeError` になる。CLI エントリポイント
-（`main()`）はこれをトレースバックとして漏らさず捕捉し、`[codd] ERROR: ...` を stderr へ出力して
-非ゼロ終了する（scan/graph/validate/impact 全コマンド共通）。
+bool 混入は config ロード時に `ValueError` / `TypeError` になる。`scope` / `code_scope` /
+`graph_store` / `impact` / `checks` / `impact.relation_weights` に mapping 以外（文字列・
+リスト等）を書いた場合も同様に `ValueError` になる（`.get()` / `.items()` の `AttributeError`
+を素通りさせない）。`impact.max_hops` / `impact.corroboration_min_origins` に `.inf` /
+`.nan` のような非有限値を書いた場合も `int()` の `OverflowError`（`ValueError` のサブクラス
+ではない）を素通りさせず `ValueError` にする。`scope.include` 等に空文字列（`""`）を書いた
+場合は「対象なし」を表す既存設定との後方互換のため空リストとして扱う（`[""]` にはしない。
+`Path.glob("")` の `ValueError` を招くため）。CLI エントリポイント（`main()`）はこれらを
+トレースバックとして漏らさず捕捉し、`[codd] ERROR: ...` を stderr へ出力して非ゼロ終了する
+（scan/graph/validate/impact 全コマンド共通）。
 
 ### 4.7 既存スキルとの統合
 

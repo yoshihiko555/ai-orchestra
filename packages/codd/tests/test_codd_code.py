@@ -79,6 +79,30 @@ def test_extract_python_supports_implicit_string_concatenation_docstring() -> No
     assert node.depends_on[0].id == "design:codd-coherence-layer"
 
 
+def test_extract_python_supports_parenthesized_docstring() -> None:
+    # `("""...""")` のように docstring を丸括弧で囲む書き方も、`ast.get_docstring()`
+    # は同じ module docstring として認識する。先頭トークンが `(` だと即座に走査を
+    # 打ち切る旧実装では黙って見落としていた（レビュー対応: codd_code.py:160）。
+    text = '("""codd:implements design:codd-coherence-layer""")\n'
+    node, errors = cx.extract_code_node("packages/codd/scripts/paren.py", text, INLINE_CONFIDENCE)
+    assert node is not None
+    assert errors == []
+    assert node.depends_on[0].id == "design:codd-coherence-layer"
+
+
+def test_extract_python_ignores_string_concatenation_expression() -> None:
+    # `"""..."""  + "suffix"` は BinOp（二項演算式）であり、`ast.get_docstring()` は
+    # Constant ではないため docstring と認識しない。先頭 STRING トークンだけを
+    # 値化する旧実装は、この場合も docstring として誤抽出していた
+    # （レビュー対応: codd_code.py:160）。
+    text = '"""codd:implements design:should-not-be-picked-up""" + "suffix"\n'
+    node, errors = cx.extract_code_node(
+        "packages/codd/scripts/concat_expr.py", text, INLINE_CONFIDENCE
+    )
+    assert node is None
+    assert errors == []
+
+
 def test_extract_python_ignores_bytes_literal_as_first_statement() -> None:
     # bytes リテラル（b"..."）は str ではないため docstring として扱われない
     # （ast.get_docstring と同じ挙動）。
