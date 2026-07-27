@@ -15,6 +15,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import tokenize
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -37,11 +38,14 @@ DEFAULT_CONFIG_PATH = Path(".claude/config/codd/codd.yaml")
 
 @dataclass
 class ScanResult:
-    """走査結果。グラフ・収集ノード・frontmatter 欠落ファイルを保持する。"""
+    """走査結果。グラフ・収集ノード・frontmatter 欠落ファイル・注釈エラーを保持する。"""
 
     graph: cc.CoddGraph
     nodes: list[cc.CoddNode]
     missing_frontmatter: list[str]
+    # Issue #98 レビュー対応: 値の無いコード注釈（例: `codd:implements` のみ）を
+    # 黙って依存から除外せず、validate 側の malformed_annotation 検査として報告する。
+    malformed_annotations: list[str]
 
 
 def _glob_relpaths(root: Path, patterns: list[str]) -> set[str]:
@@ -77,21 +81,38 @@ def collect_code_files(root: Path, config: cc.CoddConfig) -> list[Path]:
     return [root / rel for rel in sorted(included - excluded)]
 
 
-def scan_code_nodes(root: Path, config: cc.CoddConfig) -> list[cc.CoddNode]:
+def _read_source_text(path: Path) -> str:
+    """ソースファイルをテキストとして読む。
+
+    Python ファイル（``.py``）は PEP 263 の宣言済みエンコーディング（先頭2行の
+    ``# -*- coding: ... -*-`` cookie または BOM）を尊重する（`tokenize.detect_encoding`）。
+    固定 UTF-8 のままだと、Latin-1 等の coding cookie を持つ有効な Python ファイルが
+    `UnicodeDecodeError` になってしまう。それ以外の対応言語（TS/JS/Go 等）は UTF-8 固定。
+    """
+    if path.suffix != ".py":
+        return path.read_text(encoding="utf-8")
+    with path.open("rb") as fh:
+        encoding, _ = tokenize.detect_encoding(fh.readline)
+    return path.read_text(encoding=encoding)
+
+
+def scan_code_nodes(root: Path, config: cc.CoddConfig) -> tuple[list[cc.CoddNode], list[str]]:
     """``code_scope`` 内から code/test ノードを抽出する（Issue #98）。
 
     doc scope と異なり、`codd:` 注釈が無いファイルは missing_frontmatter として
     扱わず黙ってスキップする（コードベース全体へのフロントマター強制はしない、
-    opt-in の軽量記法のため）。
+    opt-in の軽量記法のため）。2 つ目の戻り値は値の無い依存注釈のエラー一覧。
     """
     nodes: list[cc.CoddNode] = []
+    errors: list[str] = []
     for path in collect_code_files(root, config):
         rel = path.relative_to(root).as_posix()
-        text = path.read_text(encoding="utf-8")
-        node = cx.extract_code_node(rel, text, config.inline_confidence)
+        text = _read_source_text(path)
+        node, node_errors = cx.extract_code_node(rel, text, config.inline_confidence)
         if node is not None:
             nodes.append(node)
-    return nodes
+        errors.extend(node_errors)
+    return nodes, errors
 
 
 def scan_project(root: Path, config: cc.CoddConfig) -> ScanResult:
@@ -106,9 +127,15 @@ def scan_project(root: Path, config: cc.CoddConfig) -> ScanResult:
             missing.append(rel)
             continue
         nodes.append(cc.build_node(codd_block, rel))
-    nodes.extend(scan_code_nodes(root, config))
+    code_nodes, malformed_annotations = scan_code_nodes(root, config)
+    nodes.extend(code_nodes)
     graph = cc.build_graph(nodes)
-    return ScanResult(graph=graph, nodes=nodes, missing_frontmatter=missing)
+    return ScanResult(
+        graph=graph,
+        nodes=nodes,
+        missing_frontmatter=missing,
+        malformed_annotations=malformed_annotations,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -334,6 +361,20 @@ def _check_missing_frontmatter(result: ScanResult) -> list[Finding]:
     ]
 
 
+def _check_malformed_annotation(result: ScanResult) -> list[Finding]:
+    """値の無いコード注釈（Issue #98 レビュー対応）。
+
+    `codd:implements` のように relation 名だけで参照先 value が無い注釈は、
+    `codd_code._entries_to_node` が依存として黙って除外せずエラーメッセージ化する。
+    ここではそれを error 相当の Finding として報告する（unknown/dangling 検査と
+    同様、依存宣言の書き漏れを検出可能にする）。
+    """
+    return [
+        Finding("malformed_annotation", cc.LEVEL_ERROR, message)
+        for message in result.malformed_annotations
+    ]
+
+
 def _check_orphan(result: ScanResult, config: cc.CoddConfig) -> list[Finding]:
     findings: list[Finding] = []
     for node in result.nodes:
@@ -382,6 +423,7 @@ def run_checks(result: ScanResult, config: cc.CoddConfig, root: Path) -> list[Fi
     raw.extend(_check_cycle(result))
     raw.extend(_check_unknown(result, config))
     raw.extend(_check_missing_frontmatter(result))
+    raw.extend(_check_malformed_annotation(result))
     raw.extend(_check_orphan(result, config))
     # drift は git/stat 呼び出しを伴うため、off のときは実行自体をスキップする。
     if config.checks.get("drift", cc.LEVEL_WARNING) != cc.LEVEL_OFF:
@@ -558,6 +600,19 @@ def path_in_scope(rel: str, config: cc.CoddConfig) -> bool:
     return not any(_matches_scope_pattern(rel, pat) for pat in config.exclude)
 
 
+def path_in_code_scope(rel: str, config: cc.CoddConfig) -> bool:
+    """rel が codd code_scope（include − exclude, Issue #98）に属するか判定する。
+
+    ``config.code_include`` の既定は空リストのため、未設定プロジェクトでは常に False
+    （既存挙動への影響ゼロ）。
+    """
+    if not config.code_include:
+        return False
+    if not any(_matches_scope_pattern(rel, pat) for pat in config.code_include):
+        return False
+    return not any(_matches_scope_pattern(rel, pat) for pat in config.code_exclude)
+
+
 def _warn_if_not_git_root(root: Path) -> None:
     """root が git のトップレベルと異なる場合、無音の空結果を避けるため警告する。"""
     out = _git_output(root, ["rev-parse", "--show-toplevel"])
@@ -572,18 +627,35 @@ def _warn_if_not_git_root(root: Path) -> None:
         )
 
 
-def _is_dangling_deletion(root: Path, ref: str, rel: str, graph: cc.CoddGraph) -> bool:
-    """rel の削除/改名で旧 node_id が現グラフから消えたか（dangling 化の可能性）。
+def _old_node_id_at_ref(
+    root: Path, ref: str, rel: str, config: cc.CoddConfig, *, is_code: bool
+) -> str | None:
+    """ref 時点の rel の内容から旧 node_id を回収する（doc frontmatter / コード注釈の両対応）。
 
-    rename（``R old new``）では old を deleted として受け取るが、node_id が新パスへ
-    引き継がれていれば現グラフに残るため dangling ではない。ref 側の旧 frontmatter から
-    node_id を回収し、現グラフに存在しない場合のみ dangling 候補とする。
+    ref 側に存在しない、または CODD ノードでなかった場合は None。
     """
     out = _git_output(root, ["show", f"{ref}:{rel}"])
     if out is None:
-        return False  # ref 側に存在しない（新規追加→削除等）→ dangling 化しない
+        return None  # ref 側に存在しない（新規追加→削除等）→ dangling 化しない
+    if is_code:
+        node, _errors = cx.extract_code_node(rel, out, config.inline_confidence)
+        return node.node_id if node is not None else None
     codd = cc.parse_codd_frontmatter(out)
     old_id = str((codd or {}).get("node_id") or "").strip()
+    return old_id or None
+
+
+def _is_dangling_deletion(
+    root: Path, ref: str, rel: str, graph: cc.CoddGraph, config: cc.CoddConfig, *, is_code: bool
+) -> bool:
+    """rel の削除/改名で旧 node_id が現グラフから消えたか（dangling 化の可能性）。
+
+    rename（``R old new``）では old を deleted として受け取るが、node_id が新パスへ
+    引き継がれていれば現グラフに残るため dangling ではない。ref 側の旧内容（doc
+    frontmatter または Issue #98 のコード注釈）から node_id を回収し、現グラフに
+    存在しない場合のみ dangling 候補とする。
+    """
+    old_id = _old_node_id_at_ref(root, ref, rel, config, is_code=is_code)
     if not old_id:
         return False  # CODD ノードでなかった → 依存元にならず dangling 化しない
     return not graph.has(old_id)
@@ -598,13 +670,21 @@ def compute_impact_result(root: Path, config: cc.CoddConfig, ref: str) -> Impact
     path_to_id = {node.path: node.node_id for node in result.nodes}
     changed_ids = {path_to_id[p] for p in changed_paths if p in path_to_id}
 
-    # 削除された scope 内ドキュメント（下流が dangling 化する可能性）。
+    # 削除された scope 内ドキュメント / code_scope 内コード（Issue #98 レビュー対応。
+    # 注釈付きコードファイル削除も下流の dangling 化を検出対象にする）。
     # 削除済みファイルは working tree に無いため、純粋パス判定でスコープ membership を見る。
     # rename は old を deleted に含むが、node_id が現グラフに残るものは除外する（誤警告防止）。
     deleted_upstream = sorted(
         p
         for p in deleted_paths
-        if path_in_scope(p, config) and _is_dangling_deletion(root, ref, p, result.graph)
+        if (
+            path_in_scope(p, config)
+            and _is_dangling_deletion(root, ref, p, result.graph, config, is_code=False)
+        )
+        or (
+            path_in_code_scope(p, config)
+            and _is_dangling_deletion(root, ref, p, result.graph, config, is_code=True)
+        )
     )
 
     impacted = cc.compute_impact(result.graph, changed_ids, config.impact)

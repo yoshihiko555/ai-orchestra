@@ -183,25 +183,41 @@ depends_on を宣言できるようにする。doc frontmatter との違いは�
 
 1. **opt-in スコープ**: `codd.yaml` の新設 `code_scope.include`（既定: 空リスト）に glob を
    追加したファイルのみが走査対象になる。未設定プロジェクトは挙動が変わらない。
+   `code_scope.exclude` も `include` と同じ `Path.glob()` で解決するが、末尾を `/**`
+   ではなく `/**/*` にする（`Path.glob("**/.venv/**")` は Python 3.12 ではディレクトリの
+   みを返し、実装の `_glob_relpaths()` にある `is_file()` フィルタで除外候補として拾えず
+   実質無効になるため。既定 exclude 3 件はいずれも `/**/*` 形式）。
 2. **1行の軽量注釈**: doc の YAML frontmatter 全体を書く代わりに、`codd:<key> <value>` の
    1行注釈を並べる。`key` は予約語（`node_id` / `kind` / `status` / `owner`）または
    relation 名（`implements` 等）で、value は対象 node_id。`node_id` を省略すると
    `<kind>:<file-stem>` から自動導出し、`kind` を省略するとパス規約
    （`tests/` 配下や `test_*` / `*_test` ファイル名）から `test` / `code` を推定する。
+   relation 名の注釈（例: `codd:implements`）に参照先 value が無い場合は依存として黙って
+   除外せず、`malformed_annotation` 検査（既定 error、4.5 参照）として報告する
+   （予約語のみは value 省略を許容する。owner を書かない等）。
    言語別の抽出領域:
    - Python: `ast.parse` + `ast.get_docstring` でモジュール docstring のみを対象にする
-     （本文コード中の文字列リテラルを誤って注釈と解釈しない）。
-   - `//` 系言語（TS/JS/Go/Java/Rust/C 系）: ファイル先頭から連続する行コメントのみを対象にする
-     （shebang 行はスキップ）。
+     （本文コード中の文字列リテラルを誤って注釈と解釈しない）。ファイル読み込みは
+     PEP 263 の宣言済みエンコーディング（先頭2行の coding cookie / BOM）を
+     `tokenize.detect_encoding` で尊重する（固定 UTF-8 だと Latin-1 等の有効な
+     Python ファイルが `UnicodeDecodeError` になるため）。
+   - `//` 系言語（TS/JS/Go/Java/Rust/C 系。`.mjs` / `.cjs` を含む）: ファイル先頭から
+     連続する行コメントのみを対象にする（shebang 行はスキップ）。
 3. **信頼度（confidence）**: doc frontmatter 由来の depends_on は既定 confidence 1.0（人手
    レビュー済みの確定宣言）。コード注釈由来の depends_on は `codd.yaml` の `inline_confidence`
    （既定 0.7）を使う。`impact` のエッジ重みは `relation 重み × confidence`（4.5.1 参照）になり、
-   低信頼リンクは下流影響の判定に比例して弱く反映される。
+   低信頼リンクは下流影響の判定に比例して弱く反映される。`inline_confidence` は有限な
+   `[0, 1]` へ正規化され、範囲外の有限値（例: `-0.1`）は境界にクランプ、NaN/Inf のような
+   非有限値は既定値（0.7）へフォールバックする（範囲外/非有限値がそのままエッジ重みに
+   流れ込むと、負値やNaNで誤って Gray 判定になったり `graph.jsonl` の JSON 出力が壊れたり
+   するため）。doc frontmatter 側の `depends_on[].confidence` も同じ正規化を受ける。
 
 注釈が無いコードファイルは doc scope の `missing_frontmatter`（warning）とは異なり黙って
 スキップする。コードベース全体への注釈強制はせず、追跡したいファイルにだけ opt-in で
 付与する運用を想定するため。code/test ノードは他の kind と同じグラフに統合され、
 dangling / duplicate / cycle / unknown / orphan / drift の各検査を特別扱いなしで受ける。
+`impact` の削除上流検出（4.5.1）も doc scope 同様に code_scope 内の注釈付きファイル削除を
+対象にする（旧内容からコード注釈を再抽出し、現グラフに node_id が残っているかで判定）。
 
 ### 4.4 relation（関係種別）
 
@@ -223,6 +239,7 @@ dangling / duplicate / cycle / unknown / orphan / drift の各検査を特別扱
 | **duplicate**              | 同一 node_id が複数ドキュメントに存在                | error      |
 | **cycle**（循環依存）      | depends_on を辿ると循環する                          | error      |
 | **unknown**                | 未定義の kind / relation / status を使用             | error      |
+| **malformed_annotation**（Issue #98） | code_scope の relation 注釈に参照先 value が無い（例: `codd:implements` のみ） | error      |
 | **missing_frontmatter**    | scope 内なのに `codd:` ブロックが無い（H-5）         | warning    |
 | **orphan**（孤立）         | 被参照ゼロ かつ 参照ゼロ（`roots` 指定 kind は除外） | warning    |
 | **drift**（ドリフト疑い）  | 上流ノードの最終コミット時刻が下流より新しい         | warning    |
@@ -288,7 +305,15 @@ scope:
   exclude:
     - "docs/adr/_template.md"
     - "docs/adr/DECISIONS.md"
-kinds: [requirement, design, adr, plan, rule, instruction] # scope と整合（H-4）
+# code_scope は opt-in（既定 include: []）。追加すると code/test ノードを抽出する（4.3.1）。
+code_scope:
+  include: []
+  exclude:
+    - "**/__pycache__/**/*" # 末尾は /**/* にする（Python 3.12 の Path.glob 対策、4.3.1）
+    - "**/node_modules/**/*"
+    - "**/.venv/**/*"
+inline_confidence: 0.7 # code_scope 由来 depends_on の既定信頼度（4.3.1）
+kinds: [requirement, design, adr, plan, rule, instruction, code, test] # scope と整合（H-4）
 relations: [derives_from, refines, implements, references, supersedes]
 roots: [requirement, instruction] # 被参照ゼロを許容する最上流 kind
 graph_store:
@@ -299,6 +324,7 @@ checks:
   duplicate: error
   cycle: error
   unknown: error
+  malformed_annotation: error # code_scope の値無し依存注釈（4.3.1 / 4.5）
   missing_frontmatter: warning
   orphan: warning
   drift: warning

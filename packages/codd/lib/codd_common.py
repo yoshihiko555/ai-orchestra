@@ -6,6 +6,7 @@ hook ではなく純粋なライブラリ（CLI `scripts/codd.py` から import 
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -150,14 +151,26 @@ def _as_text(value: Any) -> str:
     return "" if value is None else str(value)
 
 
+def _clamp_unit_float(value: float, default: float) -> float:
+    """confidence 値を有限な [0, 1] にクランプする（Issue #98 レビュー対応）。
+
+    NaN/Inf のような非有限値は範囲判定・重み計算が破綻するため既定値へフォールバックする。
+    範囲外の有限値（負値・1超）は境界へクランプする（例: -0.1 -> 0.0）。
+    """
+    if not math.isfinite(value):
+        return default
+    return min(1.0, max(0.0, value))
+
+
 def _as_confidence(value: Any) -> float:
     """depends_on エントリの confidence を正規化する（未指定 / 不正値は既定 1.0）。"""
     if value is None:
         return 1.0
     try:
-        return float(value)
+        parsed = float(value)
     except (TypeError, ValueError):
         return 1.0
+    return _clamp_unit_float(parsed, 1.0)
 
 
 def build_node(codd: dict[str, Any], path: str) -> CoddNode:
@@ -559,6 +572,23 @@ def normalize_check_level(value: Any) -> str:
     return level
 
 
+def _load_inline_confidence(data: dict[str, Any]) -> float:
+    """codd.yaml の `inline_confidence` を有限な [0, 1] へ正規化する（Issue #98 レビュー対応）。
+
+    `-0.1` のような範囲外の値や YAML の `.nan` がそのまま depends_on の confidence へ
+    流れ込むと、impact のエッジ重み（relation 重み × confidence）が負値/NaN になり、
+    誤って Gray 判定になったり JSONL の書き出しが壊れたりする（`json.dumps` は既定で
+    NaN を非標準の `NaN` リテラルとして出力してしまうため）。未指定 / 不正値は
+    `DEFAULT_INLINE_CONFIDENCE` にフォールバックする。
+    """
+    raw = data.get("inline_confidence", DEFAULT_INLINE_CONFIDENCE)
+    try:
+        parsed = float(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_INLINE_CONFIDENCE
+    return _clamp_unit_float(parsed, DEFAULT_INLINE_CONFIDENCE)
+
+
 @dataclass
 class CoddConfig:
     """codd.yaml（+ local 上書き）の実効設定。"""
@@ -600,7 +630,7 @@ class CoddConfig:
             impact=ImpactConfig.from_dict(data.get("impact") or {}),
             code_include=list(code_scope.get("include") or []),
             code_exclude=list(code_scope.get("exclude") or []),
-            inline_confidence=float(data.get("inline_confidence", DEFAULT_INLINE_CONFIDENCE)),
+            inline_confidence=_load_inline_confidence(data),
             raw=data,
         )
 

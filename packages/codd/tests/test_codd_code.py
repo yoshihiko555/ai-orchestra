@@ -40,8 +40,9 @@ def test_extract_python_reads_module_docstring_annotation() -> None:
     text = (
         '"""\ncodd:implements design:codd-coherence-layer\n"""\n\ndef hello() -> None:\n    pass\n'
     )
-    node = cx.extract_code_node("packages/codd/scripts/example.py", text, INLINE_CONFIDENCE)
+    node, errors = cx.extract_code_node("packages/codd/scripts/example.py", text, INLINE_CONFIDENCE)
     assert node is not None
+    assert errors == []
     assert node.node_id == "code:example"
     assert node.kind == "code"
     assert node.status == "active"
@@ -57,19 +58,22 @@ def test_extract_python_ignores_annotation_outside_docstring() -> None:
     text = (
         '"""通常の docstring。"""\n\nMESSAGE = "codd:implements design:should-not-be-picked-up"\n'
     )
-    node = cx.extract_code_node("packages/codd/scripts/example.py", text, INLINE_CONFIDENCE)
+    node, errors = cx.extract_code_node("packages/codd/scripts/example.py", text, INLINE_CONFIDENCE)
     assert node is None
+    assert errors == []
 
 
 def test_extract_python_returns_none_on_syntax_error() -> None:
-    node = cx.extract_code_node("broken.py", "def (:\n", INLINE_CONFIDENCE)
+    node, errors = cx.extract_code_node("broken.py", "def (:\n", INLINE_CONFIDENCE)
     assert node is None
+    assert errors == []
 
 
 def test_extract_python_returns_none_without_annotation() -> None:
     text = '"""通常の docstring。codd と無関係。"""\n'
-    node = cx.extract_code_node("packages/codd/lib/plain.py", text, INLINE_CONFIDENCE)
+    node, errors = cx.extract_code_node("packages/codd/lib/plain.py", text, INLINE_CONFIDENCE)
     assert node is None
+    assert errors == []
 
 
 def test_extract_python_supports_explicit_node_id_and_kind() -> None:
@@ -81,8 +85,9 @@ def test_extract_python_supports_explicit_node_id_and_kind() -> None:
         "codd:references adr:ADR-20260624-026\n"
         '"""\n'
     )
-    node = cx.extract_code_node("packages/codd/lib/anything.py", text, INLINE_CONFIDENCE)
+    node, errors = cx.extract_code_node("packages/codd/lib/anything.py", text, INLINE_CONFIDENCE)
     assert node is not None
+    assert errors == []
     assert node.node_id == "code:custom-slug"
     assert node.kind == "test"
     assert node.owner == "ai-orchestra"
@@ -100,9 +105,35 @@ def test_extract_python_supports_multiple_dependencies() -> None:
         "codd:references adr:ADR-20260624-026\n"
         '"""\n'
     )
-    node = cx.extract_code_node("packages/codd/scripts/codd.py", text, INLINE_CONFIDENCE)
+    node, errors = cx.extract_code_node("packages/codd/scripts/codd.py", text, INLINE_CONFIDENCE)
     assert node is not None
+    assert errors == []
     assert len(node.depends_on) == 2
+
+
+def test_extract_python_reports_error_for_relation_without_value() -> None:
+    # `codd:implements` のみで参照先 value が無い注釈は、依存から黙って除外せず
+    # エラーメッセージとして返す（Issue #98 レビュー対応）。
+    text = '"""\ncodd:implements\n"""\n'
+    node, errors = cx.extract_code_node(
+        "packages/codd/lib/broken_annotation.py", text, INLINE_CONFIDENCE
+    )
+    assert node is not None
+    assert node.depends_on == ()
+    assert len(errors) == 1
+    assert "codd:implements" in errors[0]
+    assert "broken_annotation.py" in errors[0]
+
+
+def test_extract_python_reserved_key_without_value_is_not_an_error() -> None:
+    # 予約語（owner 等）は value 省略が許容される（依存宣言ではないため）。
+    text = '"""\ncodd:owner\ncodd:implements design:codd-coherence-layer\n"""\n'
+    node, errors = cx.extract_code_node(
+        "packages/codd/lib/optional_owner.py", text, INLINE_CONFIDENCE
+    )
+    assert node is not None
+    assert errors == []
+    assert node.owner is None
 
 
 # ---------------------------------------------------------------------------
@@ -112,8 +143,9 @@ def test_extract_python_supports_multiple_dependencies() -> None:
 
 def test_extract_line_comment_reads_leading_block() -> None:
     text = "// codd:implements design:codd-coherence-layer\n// 通常のコメント\n\nfunc main() {}\n"
-    node = cx.extract_code_node("src/main.go", text, INLINE_CONFIDENCE)
+    node, errors = cx.extract_code_node("src/main.go", text, INLINE_CONFIDENCE)
     assert node is not None
+    assert errors == []
     assert node.node_id == "code:main"
     assert node.depends_on[0].relation == "implements"
     assert node.depends_on[0].confidence == INLINE_CONFIDENCE
@@ -121,17 +153,35 @@ def test_extract_line_comment_reads_leading_block() -> None:
 
 def test_extract_line_comment_skips_shebang() -> None:
     text = "#!/usr/bin/env node\n// codd:implements design:codd-coherence-layer\n"
-    node = cx.extract_code_node("scripts/run.js", text, INLINE_CONFIDENCE)
+    node, errors = cx.extract_code_node("scripts/run.js", text, INLINE_CONFIDENCE)
     assert node is not None
+    assert errors == []
     assert node.node_id == "code:run"
 
 
 def test_extract_line_comment_stops_at_non_comment_line() -> None:
     text = "console.log('start')\n// codd:implements design:should-not-be-picked-up\n"
-    node = cx.extract_code_node("scripts/run.js", text, INLINE_CONFIDENCE)
+    node, errors = cx.extract_code_node("scripts/run.js", text, INLINE_CONFIDENCE)
     assert node is None
+    assert errors == []
 
 
 def test_extract_returns_none_for_unsupported_extension() -> None:
-    node = cx.extract_code_node("docs/notes.txt", "codd:implements design:x", INLINE_CONFIDENCE)
+    node, errors = cx.extract_code_node(
+        "docs/notes.txt", "codd:implements design:x", INLINE_CONFIDENCE
+    )
     assert node is None
+    assert errors == []
+
+
+def test_extract_line_comment_supports_mjs_and_cjs_extensions() -> None:
+    # .mjs/.cjs も code_scope に含めれば言語判定される（Issue #98 レビュー対応）。
+    text = "// codd:implements design:codd-coherence-layer\n"
+    node_mjs, errors_mjs = cx.extract_code_node("src/main.mjs", text, INLINE_CONFIDENCE)
+    node_cjs, errors_cjs = cx.extract_code_node("src/main.cjs", text, INLINE_CONFIDENCE)
+    assert node_mjs is not None
+    assert node_cjs is not None
+    assert errors_mjs == []
+    assert errors_cjs == []
+    assert node_mjs.node_id == "code:main"
+    assert node_cjs.node_id == "code:main"

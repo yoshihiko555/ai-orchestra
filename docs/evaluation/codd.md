@@ -3,7 +3,7 @@
 **パッケージ**: `packages/codd`
 **類型**: CLI ツール型
 **作成日**: 2026-07-03
-**最終レビュー日**: 評価保留（2026-07-04）— パッケージ実装が未完了のため、実装完了後に改めて人間レビューを行う。それまで本評価セットの観点は暫定（ドラフト）扱いとし、テスト改修時の突合基準としては未確定とする。EV-26〜EV-35（Issue #98 / コード⇔ドキュメントのトレーサビリティ）は 2026-07-27 追加、同様に人間レビュー保留。
+**最終レビュー日**: 評価保留（2026-07-04）— パッケージ実装が未完了のため、実装完了後に改めて人間レビューを行う。それまで本評価セットの観点は暫定（ドラフト）扱いとし、テスト改修時の突合基準としては未確定とする。EV-26〜EV-41（Issue #98 / コード⇔ドキュメントのトレーサビリティ）は 2026-07-27 追加、同様に人間レビュー保留。
 **情報源**: docs/design/codd-coherence-layer.md, docs/requirements/coherence-guardrail.md, .claude/rules/codd-frontmatter-policy.md（補助: packages/codd/manifest.json — 構成要素の列挙のみ）
 
 ## 1. 責務定義
@@ -75,6 +75,12 @@ codd は AI Orchestra 自身および導入先プロジェクトが生成する�
 - [ ] EV-33（境界 / must）: `impact` のエッジ重みは `relation 重み × confidence` で計算され、低信頼なコード由来リンクは下流影響スコアに比例して弱く反映される — 根拠: docs/design/codd-coherence-layer.md §4.3.1, §4.5.1
 - [ ] EV-34（正常 / should）: `graph.jsonl` の depends_on エントリは confidence が既定値 1.0 のとき `confidence` キーを省略し、doc のみのグラフでは既存の JSONL 出力と互換を保つ — 根拠: packages/codd/scripts/codd.py（`_dependency_to_record`）
 - [ ] EV-35（正常 / should）: code/test ノードは既存の dangling / duplicate / cycle / unknown / orphan / drift 検査を特別扱いなしで受ける（validate 側の分岐追加なし） — 根拠: docs/design/codd-coherence-layer.md §4.3.1
+- [ ] EV-36（異常 / must）: `inline_confidence`（config）および depends_on の `confidence`（doc frontmatter）は有限な `[0, 1]` へ正規化される。範囲外の有限値（例: `-0.1` / `1.5`）は境界へクランプし、NaN/Inf のような非有限値（YAML の `.nan` 等）は既定値へフォールバックする — 根拠: docs/design/codd-coherence-layer.md §4.3.1, packages/codd/lib/codd_common.py（`_clamp_unit_float` / `_load_inline_confidence` / `_as_confidence`）
+- [ ] EV-37（異常 / must）: code_scope の relation 注釈（予約語以外の key）に参照先 value が無い場合（例: `codd:implements` のみ）、依存として黙って除外せず `malformed_annotation` として error 判定する。予約語（node_id/kind/status/owner）の value 省略はエラーにしない — 根拠: docs/design/codd-coherence-layer.md §4.3.1, §4.5, packages/codd/lib/codd_code.py（`_entries_to_node`）
+- [ ] EV-38（正常 / must）: `.mjs` / `.cjs` 拡張子のファイルも `//` 系言語として行コメント抽出の対象になる — 根拠: docs/design/codd-coherence-layer.md §4.3.1, packages/codd/lib/codd_code.py（`_LINE_COMMENT_SUFFIXES`）
+- [ ] EV-39（境界 / should）: Python ファイルの読み込みは PEP 263 の宣言済みエンコーディング（coding cookie / BOM）を `tokenize.detect_encoding` で尊重し、UTF-8 以外（例: Latin-1）でも `UnicodeDecodeError` にならない — 根拠: docs/design/codd-coherence-layer.md §4.3.1, packages/codd/scripts/codd.py（`_read_source_text`）
+- [ ] EV-40（境界 / must）: `code_scope.exclude` の既定 3 パターン（`__pycache__` / `node_modules` / `.venv`）は、末尾を `/**/*` にすることで配下ファイルを正しく除外する（`Path.glob` の `/**` 末尾はディレクトリのみ返す環境があるため） — 根拠: docs/design/codd-coherence-layer.md §4.3.1, packages/codd/config/codd.yaml
+- [ ] EV-41（境界 / should）: `impact` の削除上流検出は doc scope だけでなく code_scope 内の注釈付きコードファイル削除も対象にし、ref 時点の内容からコード注釈を再抽出して旧 node_id を回収する — 根拠: docs/design/codd-coherence-layer.md §4.3.1, §4.5.1, packages/codd/scripts/codd.py（`_old_node_id_at_ref` / `path_in_code_scope`）
 
 ## 5. テストレビュー判断基準（パッケージ固有）
 

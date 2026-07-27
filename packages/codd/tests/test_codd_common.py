@@ -319,3 +319,61 @@ def test_load_config_accepts_all_known_check_levels(tmp_path) -> None:
     assert config.checks["orphan"] == codd.LEVEL_OFF
     # bare `off`（YAML 1.1 boolean False）も同様に off へ揃う
     assert config.checks["cycle"] == codd.LEVEL_OFF
+
+
+# ---------------------------------------------------------------------------
+# inline_confidence の正規化（Issue #98 レビュー対応）
+# ---------------------------------------------------------------------------
+
+
+def test_load_config_inline_confidence_defaults_when_absent(tmp_path) -> None:
+    cfg_path = tmp_path / "codd.yaml"
+    _write(cfg_path, "enabled: true\n")
+    config = codd.load_config(cfg_path)
+    assert config.inline_confidence == codd.DEFAULT_INLINE_CONFIDENCE
+
+
+def test_load_config_inline_confidence_clamps_negative_value(tmp_path) -> None:
+    cfg_path = tmp_path / "codd.yaml"
+    _write(cfg_path, "inline_confidence: -0.1\n")
+    config = codd.load_config(cfg_path)
+    assert config.inline_confidence == 0.0
+
+
+def test_load_config_inline_confidence_clamps_value_above_one(tmp_path) -> None:
+    cfg_path = tmp_path / "codd.yaml"
+    _write(cfg_path, "inline_confidence: 1.5\n")
+    config = codd.load_config(cfg_path)
+    assert config.inline_confidence == 1.0
+
+
+def test_load_config_inline_confidence_falls_back_on_nan(tmp_path) -> None:
+    # YAML の `.nan` は非有限値。エッジ重み計算（relation 重み × confidence）が
+    # NaN で壊れ、JSONL 出力（json.dumps の非標準 NaN リテラル）も壊すため、
+    # 既定値へフォールバックする。
+    cfg_path = tmp_path / "codd.yaml"
+    _write(cfg_path, "inline_confidence: .nan\n")
+    config = codd.load_config(cfg_path)
+    assert config.inline_confidence == codd.DEFAULT_INLINE_CONFIDENCE
+
+
+def test_load_config_inline_confidence_falls_back_on_non_numeric(tmp_path) -> None:
+    cfg_path = tmp_path / "codd.yaml"
+    _write(cfg_path, "inline_confidence: not-a-number\n")
+    config = codd.load_config(cfg_path)
+    assert config.inline_confidence == codd.DEFAULT_INLINE_CONFIDENCE
+
+
+def test_build_node_clamps_out_of_range_confidence() -> None:
+    block = {
+        "node_id": "design:x",
+        "kind": "design",
+        "status": "draft",
+        "depends_on": [
+            {"id": "req:a", "relation": "derives_from", "confidence": -0.1},
+            {"id": "req:b", "relation": "derives_from", "confidence": 2.0},
+        ],
+    }
+    node = codd.build_node(block, "docs/x.md")
+    assert node.depends_on[0].confidence == 0.0
+    assert node.depends_on[1].confidence == 1.0

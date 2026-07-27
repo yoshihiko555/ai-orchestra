@@ -19,6 +19,33 @@ scope:
     # 評価セットは CODD 統合まで対象外（ADR-20260703-029: kind 語彙に eval がないため）
     - "docs/evaluation/**/*.md"
 
+# scan が走査するソースファイル（Issue #98 / opt-in）。既定は空 = 何も走査しない
+# （既存プロジェクトへの挙動変化ゼロ）。code/test ノードで追跡したいディレクトリのみ
+# include に追加する（例: "packages/core/**/*.py"）。
+# コード注釈は 1 行形式（`codd:<key> <value>`）を Python は module docstring、
+# `//` 系言語（TS/JS/Go/Java/Rust/C 系）は先頭の行コメントブロックに書く。
+# 例:
+#   """
+#   codd:implements design:codd-coherence-layer
+#   codd:node_id code:my-module
+#   """
+# 注釈が無いファイルは missing_frontmatter を出さず黙ってスキップする（doc scope と異なる）。
+code_scope:
+  include: []
+  # exclude は `Path.glob()` で解決するため、末尾を `/**` ではなく `/**/*` にする
+  # （`Path.glob("**/.venv/**")` は Python 3.12 ではディレクトリのみを返し、
+  # `_glob_relpaths()` の `is_file()` フィルタで捨てられて実質無効になるため）。
+  exclude:
+    - "**/__pycache__/**/*"
+    - "**/node_modules/**/*"
+    - "**/.venv/**/*"
+
+# code_scope から抽出した depends_on リンクの既定信頼度（Issue #98）。
+# doc frontmatter 由来のリンクは常に 1.0（人手レビュー済みの確定宣言）。
+# コード注釈は 1 行形式で書ける分レビューが軽いため、既定でこれより低く設定する。
+# impact 分析では relation 重み × confidence がエッジ重みになる（4.5.1 参照）。
+inline_confidence: 0.7
+
 # 許可する kind 語彙（scope と整合させる）。
 kinds:
   - requirement
@@ -27,6 +54,9 @@ kinds:
   - plan
   - rule
   - instruction
+  # Issue #98: code_scope で抽出されるコード/テストノード。
+  - code
+  - test
 
 # 許可する relation 語彙。
 relations:
@@ -52,6 +82,8 @@ checks:
   duplicate: error
   cycle: error
   unknown: error
+  # Issue #98: 値の無いコード注釈（例: `codd:implements` のみで参照先が無い）を検出する。
+  malformed_annotation: error
   missing_frontmatter: warning
   orphan: warning
   drift: warning

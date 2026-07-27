@@ -689,6 +689,20 @@ def test_cmd_impact_json_output(tmp_path, capsys) -> None:
     assert entry["origins"] == ["req:r"]
 
 
+def test_compute_impact_result_reports_deleted_code_upstream(tmp_path) -> None:
+    # 注釈付きコードファイルの削除も dangling 化の可能性として deleted_upstream に
+    # 検出される（Issue #98 レビュー対応。以前は doc scope のみ対象だった）。
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/mod.py", _py(["codd:node_id code:mod"]))
+    config = _config(code_scope={"include": ["src/**/*.py"], "exclude": []})
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "init")
+    (tmp_path / "src/mod.py").unlink()  # コード側の上流削除（未コミット）
+
+    result = cli.compute_impact_result(tmp_path, config, "HEAD")
+    assert "src/mod.py" in result.deleted_upstream
+
+
 def test_rename_keeps_node_out_of_deleted_upstream(tmp_path) -> None:
     # rename で node_id が新パスに引き継がれた上流は dangling 警告に出さない。
     _init_repo(tmp_path)
@@ -746,11 +760,55 @@ def test_collect_code_files_empty_by_default(tmp_path) -> None:
     assert cli.collect_code_files(tmp_path, _config()) == []
 
 
+def test_collect_code_files_default_exclude_globs_match_nested_files(tmp_path) -> None:
+    # `**/.venv/**` の末尾を `/**/*` にしないと、Python 3.12 の Path.glob() では
+    # ディレクトリのみが返り、`_glob_relpaths` の is_file() フィルタで実質無効になる
+    # （Issue #98 レビュー対応）。既定 exclude と同じパターンで検証する。
+    _write(tmp_path, "src/mod.py", _py(["codd:implements design:x"]))
+    _write(tmp_path, "src/.venv/lib/pkg.py", _py(["codd:implements design:y"]))
+    _write(tmp_path, "src/__pycache__/mod.cpython-312.pyc", "binary")
+    config = _config(
+        code_scope={
+            "include": ["src/**/*.py", "src/**/*.pyc"],
+            "exclude": ["**/__pycache__/**/*", "**/.venv/**/*"],
+        }
+    )
+    files = {p.relative_to(tmp_path).as_posix() for p in cli.collect_code_files(tmp_path, config)}
+    assert files == {"src/mod.py"}
+
+
 def test_scan_code_nodes_skips_files_without_annotation(tmp_path) -> None:
     _write(tmp_path, "src/plain.py", "def f():\n    pass\n")
     config = _config(code_scope={"include": ["src/**/*.py"], "exclude": []})
-    nodes = cli.scan_code_nodes(tmp_path, config)
+    nodes, errors = cli.scan_code_nodes(tmp_path, config)
     assert nodes == []
+    assert errors == []
+
+
+def test_scan_code_node_malformed_annotation_reports_error(tmp_path) -> None:
+    # 値の無い依存注釈（`codd:implements` のみ）は依存から黙って除外せず、
+    # malformed_annotation として validate のエラーに乗る（Issue #98 レビュー対応）。
+    _write(tmp_path, "src/mod.py", _py(["codd:implements"]))
+    config = _config(code_scope={"include": ["src/**/*.py"], "exclude": []})
+    result = cli.scan_project(tmp_path, config)
+    assert result.malformed_annotations != []
+    grouped = _checks(result, config, tmp_path)
+    assert len(grouped["malformed_annotation"]) == 1
+    assert "src/mod.py" in grouped["malformed_annotation"][0].message
+
+
+def test_scan_code_nodes_supports_pep263_coding_cookie(tmp_path) -> None:
+    # PEP 263 の coding cookie 付き Python ファイルは宣言エンコーディングで読む
+    # （固定 UTF-8 のままだと Latin-1 等で UnicodeDecodeError になる）。
+    path = tmp_path / "src" / "legacy.py"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    content = '# -*- coding: latin-1 -*-\n"""\ncodd:implements design:d\nnote: café\n"""\n'
+    path.write_bytes(content.encode("latin-1"))
+    config = _config(code_scope={"include": ["src/**/*.py"], "exclude": []})
+    nodes, errors = cli.scan_code_nodes(tmp_path, config)
+    assert errors == []
+    assert len(nodes) == 1
+    assert nodes[0].depends_on[0].id == "design:d"
 
 
 def test_scan_project_merges_code_nodes_into_doc_graph(tmp_path) -> None:

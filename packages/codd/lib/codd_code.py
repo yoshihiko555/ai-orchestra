@@ -37,6 +37,8 @@ _LINE_COMMENT_SUFFIXES = frozenset(
         ".tsx",
         ".js",
         ".jsx",
+        ".mjs",
+        ".cjs",
         ".go",
         ".java",
         ".rs",
@@ -120,10 +122,20 @@ def _comment_leading_text(text: str, marker: str = "//") -> str:
 
 def _entries_to_node(
     entries: list[tuple[str, str | None]], rel: str, inline_confidence: float
-) -> cc.CoddNode | None:
-    """注釈行の集合から CoddNode を組み立てる。注釈が 1 件も無ければ None。"""
+) -> tuple[cc.CoddNode | None, list[str]]:
+    """注釈行の集合から CoddNode を組み立てる。注釈が 1 件も無ければ (None, [])。
+
+    relation 名（予約語以外の key）に value（参照先 node_id）が無い注釈は、依存として
+    黙って除外せずエラーメッセージとして返す（例: `codd:implements` のみで参照先が
+    無いのは書き漏れの可能性が高く、unknown/dangling 検査で誤記を検出できないため）。
+    """
     if not entries:
-        return None
+        return None, []
+    errors = [
+        f"{rel}: 注釈 'codd:{key}' に参照先 value が無い（depends_on として無効）"
+        for key, value in entries
+        if key not in _RESERVED_KEYS and not value
+    ]
     kind = next((v for k, v in entries if k == "kind" and v), None) or infer_kind(rel)
     node_id = (
         next((v for k, v in entries if k == "node_id" and v), None)
@@ -136,15 +148,20 @@ def _entries_to_node(
         for key, value in entries
         if key not in _RESERVED_KEYS and value
     )
-    return cc.CoddNode(
+    node = cc.CoddNode(
         node_id=node_id, kind=kind, status=status, depends_on=deps, owner=owner, path=rel
     )
+    return node, errors
 
 
-def extract_code_node(rel: str, text: str, inline_confidence: float) -> cc.CoddNode | None:
+def extract_code_node(
+    rel: str, text: str, inline_confidence: float
+) -> tuple[cc.CoddNode | None, list[str]]:
     """拡張子から言語別 extractor を選び、`codd:` 注釈があれば CoddNode を返す。
 
-    未対応拡張子、または注釈が見つからない場合は None（呼び出し側は黙ってスキップする）。
+    未対応拡張子、または注釈が見つからない場合は (None, [])（呼び出し側は黙ってスキップ
+    する）。2 つ目の戻り値は、値の無い依存注釈（`codd:implements` のみ等）を示す
+    エラーメッセージ一覧（validate 側で `malformed_annotation` 検査として報告する）。
     """
     suffix = PurePosixPath(rel).suffix
     if suffix == ".py":
@@ -152,6 +169,6 @@ def extract_code_node(rel: str, text: str, inline_confidence: float) -> cc.CoddN
     elif suffix in _LINE_COMMENT_SUFFIXES:
         leading = _comment_leading_text(text)
     else:
-        return None
+        return None, []
     entries = _parse_annotation_lines(leading)
     return _entries_to_node(entries, rel, inline_confidence)
