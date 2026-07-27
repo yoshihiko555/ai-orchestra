@@ -1963,6 +1963,77 @@ def test_task_state_add_phase_no_ac_oracle_rejects_deleted_task(tmp_path: Path) 
         )
 
 
+_ADD_PHASE_WITH_AC_UNCONSUMED_CONTENT_BLOCK = (
+    "### Phase 3: リリース準備 `cc:TODO`\n"
+    "\n"
+    "#### Acceptance Criteria\n"
+    "\n"
+    "- [ ] 主要エンドポイントが 200ms 以内に応答する — verify: `pytest tests/perf/test_latency.py`\n"
+    "- [ ] リリースノートの記載内容が十分にユーザーへ伝わる — judge: 変更点・影響範囲・移行手順が明記されている\n"
+    "- [ ] 未合意の追加チェック項目\n"
+    "\n"
+    "#### Tasks\n"
+    "\n"
+    "- `cc:TODO` デプロイ手順書作成\n"
+    "- `cc:TODO` リリースノート作成\n"
+    "\n"
+    "候補が挿入した無関係な自由記述テキスト\n"
+    "\n"
+)
+
+
+def test_task_state_add_phase_with_ac_oracle_rejects_unconsumed_content(tmp_path: Path) -> None:
+    """PR #326 レビュー2巡目指摘 (Codex P1): 従来は挿入領域から期待形式のタスク・AC を抽出して
+    照合するだけで、期待される構造以外の行（未合意のチェックボックスや自由記述テキスト）が
+    混入していても検出できなかった。"""
+    fixture = _task_state_outcome_fixture()
+    plans_path = tmp_path / "Plans.md"
+    plans_path.write_text(
+        _insert_before_separator(_ADD_PHASE_WITH_AC_UNCONSUMED_CONTENT_BLOCK), encoding="utf-8"
+    )
+
+    with pytest.raises(AssertionError, match="unexpected content"):
+        fixture.assert_add_phase_with_ac(
+            plans_path,
+            phase_name="Phase 3: リリース準備",
+            tasks=["デプロイ手順書作成", "リリースノート作成"],
+            verify_text="主要エンドポイントが 200ms 以内に応答する",
+            verify_command="pytest tests/perf/test_latency.py",
+            judge_text="リリースノートの記載内容が十分にユーザーへ伝わる",
+            judge_criteria="変更点・影響範囲・移行手順が明記されている",
+        )
+
+
+_ADD_PHASE_NO_AC_UNCONSUMED_CONTENT_BLOCK = (
+    "### Phase 3: リリース準備 `cc:TODO`\n"
+    "\n"
+    "#### Tasks\n"
+    "\n"
+    "- `cc:TODO` デプロイ手順書作成\n"
+    "- `cc:TODO` リリースノート作成\n"
+    "\n"
+    "候補が挿入した無関係な自由記述テキスト\n"
+    "\n"
+)
+
+
+def test_task_state_add_phase_no_ac_oracle_rejects_unconsumed_content(tmp_path: Path) -> None:
+    """PR #326 レビュー2巡目指摘 (Codex P1): AC を伴わない挿入でも、期待される見出し・タスク行
+    以外の自由記述テキストが混入していれば拒否しなければならない。"""
+    fixture = _task_state_outcome_fixture()
+    plans_path = tmp_path / "Plans.md"
+    plans_path.write_text(
+        _insert_before_separator(_ADD_PHASE_NO_AC_UNCONSUMED_CONTENT_BLOCK), encoding="utf-8"
+    )
+
+    with pytest.raises(AssertionError, match="unexpected content"):
+        fixture.assert_add_phase_no_ac(
+            plans_path,
+            phase_name="Phase 3: リリース準備",
+            tasks=["デプロイ手順書作成", "リリースノート作成"],
+        )
+
+
 def _init_git_repo_with_tracked_file(repo_dir: Path, relative_path: str, content: str) -> None:
     tracked_path = repo_dir / relative_path
     tracked_path.parent.mkdir(parents=True, exist_ok=True)

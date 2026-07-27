@@ -262,10 +262,12 @@ def _extract_inserted_phase_block(plans_path: Path) -> list[str]:
 
 def _assert_new_phase_heading_and_tasks(
     inserted_block: list[str], *, phase_name: str, tasks: list[str]
-) -> int:
-    """Assert `inserted_block` starts with a fresh `cc:TODO` heading for `phase_name` and ends
-    with exactly `tasks` (in order, all `cc:TODO`), returning the heading's index within
-    `inserted_block` so callers can locate an Acceptance Criteria section relative to it."""
+) -> tuple[int, list[int]]:
+    """Assert `inserted_block` contains a fresh `cc:TODO` heading for `phase_name` and exactly
+    `tasks` (in order, all `cc:TODO`), returning the heading's index and the indices of the
+    matched task lines within `inserted_block` so callers can both locate an Acceptance Criteria
+    section relative to it and fold every recognized line into the "nothing else may appear"
+    check (`_assert_no_unexpected_content`)."""
     heading_index = _find_unique_line_index(
         inserted_block,
         lambda line: (
@@ -278,18 +280,64 @@ def _assert_new_phase_heading_and_tasks(
         f"a newly added phase must start as `cc:TODO`, got: {inserted_block[heading_index]!r}"
     )
 
-    task_matches = [
-        match for line in inserted_block if (match := _TASK_LINE_PATTERN.match(line)) is not None
+    task_line_indices = [
+        idx for idx, line in enumerate(inserted_block) if _TASK_LINE_PATTERN.match(line) is not None
     ]
-    actual_tasks = [match.group(1) for match in task_matches]
+    actual_tasks = [
+        _TASK_LINE_PATTERN.match(inserted_block[idx]).group(1) for idx in task_line_indices
+    ]
     assert actual_tasks == tasks, (
         f"new phase tasks do not match: expected {tasks!r}, got {actual_tasks!r}"
     )
-    assert all(match.group(0).startswith("- `cc:TODO`") for match in task_matches), (
+    assert all(inserted_block[idx].startswith("- `cc:TODO`") for idx in task_line_indices), (
         "all tasks in a newly added phase must start as `cc:TODO`, got: "
-        f"{[match.group(0) for match in task_matches]!r}"
+        f"{[inserted_block[idx] for idx in task_line_indices]!r}"
     )
-    return heading_index
+    return heading_index, task_line_indices
+
+
+def _extract_task_group_heading_index(inserted_block: list[str]) -> int:
+    """Return the index of the sole task-group sub-heading (a `#### ...` line other than the
+    Acceptance Criteria heading), asserting there is exactly one. The task-group heading's own
+    text is not constrained by any scenario argument, but its *count* is: a second, unrelated
+    `####` heading smuggled into the insertion region must not silently pass (PR #326 review
+    round 2, Codex P1)."""
+    subheading_indices = [
+        idx
+        for idx, line in enumerate(inserted_block)
+        if _SUBHEADING_PATTERN.match(line) is not None and line != _AC_SECTION_HEADING
+    ]
+    assert len(subheading_indices) == 1, (
+        "expected exactly one task-group heading (`#### ...`, other than the Acceptance "
+        f"Criteria heading) in the newly inserted phase block, found {len(subheading_indices)}: "
+        f"{[inserted_block[idx] for idx in subheading_indices]!r}"
+    )
+    return subheading_indices[0]
+
+
+def _assert_no_unexpected_content(inserted_block: list[str], consumed_indices: set[int]) -> None:
+    """Assert every line of `inserted_block` is either already accounted for in
+    `consumed_indices` (the phase heading, Acceptance Criteria heading/items, task-group heading,
+    and task lines already validated by the caller) or blank.
+
+    The prior implementation only *extracted* expected-shape lines from the insertion region and
+    compared those extracted values; it never asserted the region contained *nothing else*. A
+    candidate could therefore smuggle an arbitrary extra heading, an unagreed checkbox, or free
+    text into the same insertion block and still pass, violating the "no unrelated diff" critical
+    condition every task-state scenario relies on (PR #326 review round 2, Codex P1). Blank lines
+    are the one exception, matching this fixture's canonical formatting convention (a blank line
+    separates the phase heading, each `####` section, and the following bullet list; see
+    `_CANONICAL_PLANS_FIXTURE`).
+    """
+    unexpected = [
+        (idx, line)
+        for idx, line in enumerate(inserted_block)
+        if idx not in consumed_indices and line != ""
+    ]
+    assert not unexpected, (
+        "the newly inserted phase block contains unexpected content beyond the expected "
+        f"heading/Acceptance Criteria/task-group/tasks structure: {unexpected!r}"
+    )
 
 
 def assert_add_phase_with_ac(
@@ -304,10 +352,11 @@ def assert_add_phase_with_ac(
 ) -> None:
     """Assert a new phase was inserted with exactly one unchecked `verify` and one unchecked
     `judge` Acceptance Criteria item (matching the given text/command/criteria) placed between
-    the phase heading and its tasks, and that the rest of the document is untouched (see
-    `_extract_inserted_phase_block`)."""
+    the phase heading and its tasks, that the rest of the document is untouched (see
+    `_extract_inserted_phase_block`), and that the insertion region contains nothing beyond that
+    expected structure (`_assert_no_unexpected_content`)."""
     inserted_block = _extract_inserted_phase_block(plans_path)
-    heading_index = _assert_new_phase_heading_and_tasks(
+    heading_index, task_line_indices = _assert_new_phase_heading_and_tasks(
         inserted_block, phase_name=phase_name, tasks=tasks
     )
 
@@ -325,59 +374,71 @@ def assert_add_phase_with_ac(
         f"{heading_index}, Acceptance Criteria heading at {ac_heading_index}"
     )
 
-    task_group_marker_indices = [
-        idx
-        for idx, line in enumerate(inserted_block)
-        if _TASK_LINE_PATTERN.match(line) is not None
-        or (_SUBHEADING_PATTERN.match(line) is not None and line != _AC_SECTION_HEADING)
-    ]
-    assert task_group_marker_indices, (
-        "expected at least one task-group heading or task line in the newly inserted phase "
-        f"block: {inserted_block!r}"
-    )
-    first_task_group_index = min(task_group_marker_indices)
-    assert ac_heading_index < first_task_group_index, (
+    task_group_heading_index = _extract_task_group_heading_index(inserted_block)
+    assert ac_heading_index < task_group_heading_index, (
         "the Acceptance Criteria section must come before the task group "
         "(task-memory-usage.md: AC is placed 'タスクグループより前'): Acceptance Criteria "
-        f"heading at {ac_heading_index}, first task-group marker at {first_task_group_index}"
+        f"heading at {ac_heading_index}, task-group heading at {task_group_heading_index}"
+    )
+    assert task_group_heading_index < min(task_line_indices), (
+        "the task-group heading must come before its own task lines: task-group heading at "
+        f"{task_group_heading_index}, earliest task line at {min(task_line_indices)}"
     )
 
-    verify_matches = [
-        match
-        for line in inserted_block
-        if (match := _AC_ITEM_VERIFY_PATTERN.match(line)) is not None
+    verify_indices = [
+        idx for idx, line in enumerate(inserted_block) if _AC_ITEM_VERIFY_PATTERN.match(line)
     ]
-    judge_matches = [
-        match
-        for line in inserted_block
-        if (match := _AC_ITEM_JUDGE_PATTERN.match(line)) is not None
+    judge_indices = [
+        idx for idx, line in enumerate(inserted_block) if _AC_ITEM_JUDGE_PATTERN.match(line)
     ]
-    assert len(verify_matches) == 1, (
+    assert len(verify_indices) == 1, (
         f"expected exactly one unchecked verify Acceptance Criteria item, found "
-        f"{len(verify_matches)}: {[m.group(0) for m in verify_matches]!r}"
+        f"{len(verify_indices)}: {[inserted_block[idx] for idx in verify_indices]!r}"
     )
-    assert len(judge_matches) == 1, (
+    assert len(judge_indices) == 1, (
         f"expected exactly one unchecked judge Acceptance Criteria item, found "
-        f"{len(judge_matches)}: {[m.group(0) for m in judge_matches]!r}"
+        f"{len(judge_indices)}: {[inserted_block[idx] for idx in judge_indices]!r}"
     )
-    assert verify_matches[0].groups() == (verify_text, verify_command), (
+    verify_index, judge_index = verify_indices[0], judge_indices[0]
+    assert ac_heading_index < verify_index and ac_heading_index < judge_index, (
+        "verify/judge Acceptance Criteria items must come after the Acceptance Criteria "
+        f"heading: heading at {ac_heading_index}, verify at {verify_index}, judge at {judge_index}"
+    )
+    assert verify_index < task_group_heading_index and judge_index < task_group_heading_index, (
+        "verify/judge Acceptance Criteria items must come before the task-group heading: "
+        f"verify at {verify_index}, judge at {judge_index}, task-group heading at "
+        f"{task_group_heading_index}"
+    )
+    verify_match = _AC_ITEM_VERIFY_PATTERN.match(inserted_block[verify_index])
+    judge_match = _AC_ITEM_JUDGE_PATTERN.match(inserted_block[judge_index])
+    assert verify_match.groups() == (verify_text, verify_command), (
         f"verify Acceptance Criteria item does not match: expected "
-        f"{(verify_text, verify_command)!r}, got {verify_matches[0].groups()!r}"
+        f"{(verify_text, verify_command)!r}, got {verify_match.groups()!r}"
     )
-    assert judge_matches[0].groups() == (judge_text, judge_criteria), (
+    assert judge_match.groups() == (judge_text, judge_criteria), (
         f"judge Acceptance Criteria item does not match: expected "
-        f"{(judge_text, judge_criteria)!r}, got {judge_matches[0].groups()!r}"
+        f"{(judge_text, judge_criteria)!r}, got {judge_match.groups()!r}"
     )
+
+    consumed_indices = {heading_index, ac_heading_index, task_group_heading_index}
+    consumed_indices.update(task_line_indices)
+    consumed_indices.add(verify_index)
+    consumed_indices.add(judge_index)
+    _assert_no_unexpected_content(inserted_block, consumed_indices)
 
 
 def assert_add_phase_no_ac(plans_path: Path, *, phase_name: str, tasks: list[str]) -> None:
     """Assert a new phase (with exactly `tasks`) was inserted *without* any Acceptance Criteria
     section -- neither the `#### Acceptance Criteria` heading nor any unchecked verify/judge item
-    may appear anywhere in the inserted block. This locks the `add-phase` behavior contract for a
-    direct (non-`/preflight`) call with no agreed-upon Acceptance Criteria: the skill must not
-    silently fabricate one (Issue #297 / PR #326 review round 1)."""
+    may appear anywhere in the inserted block -- and that the insertion region contains nothing
+    beyond the phase heading, its single task-group heading, and its tasks
+    (`_assert_no_unexpected_content`). This locks the `add-phase` behavior contract for a direct
+    (non-`/preflight`) call with no agreed-upon Acceptance Criteria: the skill must not silently
+    fabricate one, nor smuggle in unrelated content (Issue #297 / PR #326 review rounds 1-2)."""
     inserted_block = _extract_inserted_phase_block(plans_path)
-    _assert_new_phase_heading_and_tasks(inserted_block, phase_name=phase_name, tasks=tasks)
+    heading_index, task_line_indices = _assert_new_phase_heading_and_tasks(
+        inserted_block, phase_name=phase_name, tasks=tasks
+    )
 
     assert not any(line == _AC_SECTION_HEADING for line in inserted_block), (
         "a direct add-phase call with no agreed Acceptance Criteria must not add an "
@@ -393,6 +454,20 @@ def assert_add_phase_no_ac(plans_path: Path, *, phase_name: str, tasks: list[str
         "a direct add-phase call with no agreed Acceptance Criteria must not fabricate any "
         f"verify/judge item, but found: {fabricated_items!r}"
     )
+
+    task_group_heading_index = _extract_task_group_heading_index(inserted_block)
+    assert task_group_heading_index > heading_index, (
+        "the task-group heading must come after the phase heading: phase heading at "
+        f"{heading_index}, task-group heading at {task_group_heading_index}"
+    )
+    assert task_group_heading_index < min(task_line_indices), (
+        "the task-group heading must come before its own task lines: task-group heading at "
+        f"{task_group_heading_index}, earliest task line at {min(task_line_indices)}"
+    )
+
+    consumed_indices = {heading_index, task_group_heading_index}
+    consumed_indices.update(task_line_indices)
+    _assert_no_unexpected_content(inserted_block, consumed_indices)
 
 
 def _run_git_z(args: list[str], *, cwd: Path | None) -> list[str]:

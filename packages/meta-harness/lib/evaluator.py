@@ -1528,28 +1528,58 @@ def _extract_assistant_text(events_path: Path) -> str:
     return "\n".join(chunks)
 
 
+def _extract_last_assistant_text(events_path: Path) -> str:
+    """`events.jsonl` の最後の assistant turn（イベント）のテキストのみを返す。
+
+    `_extract_assistant_text` は全 assistant turn を連結するため、中間ターンで触れて
+    最終応答では省略・撤回した内容（例: AC 確認への言及）まで拾ってしまい、oracle が
+    誤って通過し得る（PR #326 レビュー指摘）。最終報告として妥当性を検証する用途では、
+    最後の assistant イベントのテキストだけを対象にする必要がある。
+    """
+    last_text = ""
+    for event in _iter_jsonl(events_path):
+        if event.get("type") != "assistant":
+            continue
+        content = (event.get("message") or {}).get("content") or []
+        chunks = [
+            str(item.get("text") or "")
+            for item in content
+            if isinstance(item, dict) and item.get("type") == "text"
+        ]
+        last_text = "\n".join(chunks)
+    return last_text
+
+
 def _write_candidate_final_report_artifact(worktree_dir: Path, events_path: Path) -> None:
     """候補の最終応答テキストを `CANDIDATE_FINAL_REPORT_RELATIVE_PATH` へ書き出す。
 
     critical/checks オラクル（command_exit / rubric_judge）は worktree_dir 上のファイルしか
     参照できず、rubric がファイル名を明示しない限り候補の自然文応答（最終レポート）を採点でき
     ない（Issue #297 / PR #326 レビュー指摘）。events.jsonl（staging_dir、worktree の外）から
-    抽出したテキストを、この gitignore 済みパスへ redaction 済みで橋渡しする。
+    抽出した最後の assistant 応答テキストを、この gitignore 済みパスへ redaction 済みで橋渡し
+    する。
 
-    fail-open: events.jsonl が存在しない・読めない・抽出に失敗した場合は何もしない
-    （既存シナリオの oracle 実行を新規コードのバグで止めないため）。
+    書き込み先は `_atomic_write_worktree_file` を経由する。候補が `.claude/meta-harness-oracle`
+    （またはその親 `.claude`）を worktree 外への symlink に差し替えていた場合、評価プロセス権限
+    での任意ファイル書き換えを防ぐため symlink を拒否する必要がある（CodeRabbit レビュー指摘）。
+
+    fail-open: events.jsonl が存在しない・読めない・抽出に失敗した場合、および書き込み先が
+    symlink 等で拒否された場合は警告ログを出して何もしない（既存シナリオの oracle 実行を
+    新規コードのバグや候補の不正な symlink で止めないため）。
     """
     if not events_path.exists():
         return
     try:
-        text = _extract_assistant_text(events_path)
+        text = _extract_last_assistant_text(events_path)
     except (OSError, UnicodeDecodeError):
         return
     destination = worktree_dir / CANDIDATE_FINAL_REPORT_RELATIVE_PATH
     try:
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text(redaction.redact_secrets(text), encoding="utf-8")
-    except OSError:
+        _atomic_write_worktree_file(
+            destination, redaction.redact_secrets(text), worktree_root=worktree_dir
+        )
+    except (OSError, EvaluatorStageError) as exc:
+        _LOGGER.warning("candidate final report artifact write skipped (fail-open): %s", exc)
         return
 
 

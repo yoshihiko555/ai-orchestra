@@ -25,6 +25,15 @@ def _write_assistant_text(path: Path, text: str) -> None:
     path.write_text(json.dumps(event) + "\n", encoding="utf-8")
 
 
+def _write_assistant_turns(path: Path, texts: list[str]) -> None:
+    """複数の assistant turn（events.jsonl の複数イベント）を順番に書き出す。"""
+    events = [
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}}
+        for text in texts
+    ]
+    path.write_text("\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8")
+
+
 class TestParseSelfReportFound:
     def test_parses_valid_block(self, tmp_path: Path) -> None:
         events_path = tmp_path / "events.jsonl"
@@ -166,3 +175,71 @@ class TestWriteCandidateFinalReportArtifact:
         ev._write_candidate_final_report_artifact(worktree_dir, tmp_path / "does-not-exist.jsonl")
 
         assert not (worktree_dir / ev.CANDIDATE_FINAL_REPORT_RELATIVE_PATH).exists()
+
+    def test_only_last_assistant_turn_is_written_when_multiple_turns_present(
+        self, tmp_path: Path
+    ) -> None:
+        """PR #326 レビュー2巡目指摘 (Codex P1): `events.jsonl` に複数の assistant turn がある
+        場合、全 turn を連結した `_extract_assistant_text` ではなく最後の turn だけを書き出す
+        必要がある。中間ターンで AC 確認に触れても最終応答で撤回した候補は、最終応答のみを見た
+        場合に不合格となるべきであり、この artifact にも最終応答だけが残っていなければならない。
+        """
+        worktree_dir = tmp_path / "worktree"
+        worktree_dir.mkdir()
+        events_path = tmp_path / "events.jsonl"
+        _write_assistant_turns(
+            events_path,
+            [
+                "AC はまだ合意されていません。定義しますか?",
+                "作業が完了しました。Phase 3 を追加しました。",
+            ],
+        )
+
+        ev._write_candidate_final_report_artifact(worktree_dir, events_path)
+
+        destination = worktree_dir / ev.CANDIDATE_FINAL_REPORT_RELATIVE_PATH
+        content = destination.read_text(encoding="utf-8")
+        assert "作業が完了しました" in content
+        assert "AC はまだ合意されていません" not in content
+
+    def test_oracle_dir_symlinked_outside_worktree_is_rejected_and_target_untouched(
+        self, tmp_path: Path
+    ) -> None:
+        """CodeRabbit レビュー指摘 (High): 候補が `.claude/meta-harness-oracle` を worktree 外
+        への symlink に差し替えても、評価プロセス権限で外部ターゲットへ書き込んではならない
+        （fail-open: 書込みスキップのみで例外は外へ伝播しない）。"""
+        worktree_dir = tmp_path / "worktree"
+        worktree_dir.mkdir()
+        (worktree_dir / ".claude").mkdir()
+        external_target = tmp_path / "external"
+        external_target.mkdir()
+        (worktree_dir / ".claude" / "meta-harness-oracle").symlink_to(
+            external_target, target_is_directory=True
+        )
+
+        events_path = tmp_path / "events.jsonl"
+        _write_assistant_text(events_path, "AC はまだ合意されていません。定義しますか?")
+
+        ev._write_candidate_final_report_artifact(worktree_dir, events_path)
+
+        assert list(external_target.iterdir()) == []
+
+    def test_final_report_symlinked_to_existing_file_is_rejected_and_target_untouched(
+        self, tmp_path: Path
+    ) -> None:
+        """`final-report.md` 自体が（worktree 内外いずれかの）既存ファイルへの symlink に
+        差し替えられていても、そのファイルへ透過的に書き込んではならない。"""
+        worktree_dir = tmp_path / "worktree"
+        worktree_dir.mkdir()
+        oracle_dir = worktree_dir / ".claude" / "meta-harness-oracle"
+        oracle_dir.mkdir(parents=True)
+        victim = worktree_dir / "victim.md"
+        victim.write_text("do not touch", encoding="utf-8")
+        (oracle_dir / "final-report.md").symlink_to(victim)
+
+        events_path = tmp_path / "events.jsonl"
+        _write_assistant_text(events_path, "AC はまだ合意されていません。定義しますか?")
+
+        ev._write_candidate_final_report_artifact(worktree_dir, events_path)
+
+        assert victim.read_text(encoding="utf-8") == "do not touch"

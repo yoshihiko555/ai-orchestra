@@ -87,7 +87,18 @@ checks:
   - id: add-phase-summary-quality
     text: "追加内容がユーザー報告で正確に説明される"
     oracle: rubric_judge
-    rubric: "The final Japanese report must state that a new phase was added with an Acceptance Criteria section (one verify item and one judge item) and two TODO tasks, and it must not claim to have modified Phase 2, the CODD frontmatter, or the Decisions/Notes sections."
+    # PR #326 レビュー2巡目指摘 (Codex P2): rubric_judge は worktree_dir 上のファイルしか参照
+    # できず、`_collect_judge_artifact_excerpts()`（evaluator.py）は rubric に明記されたファイル
+    # 名だけを収集する。ここでファイル名を明示しないと judge に候補応答が一切渡らず、check の
+    # 合否が実質無意味になる（holdout 側 add-phase-direct-call-confirms-ac-holdout.yaml の
+    # ac-confirmation-asked と同じ橋渡し方式に合わせる）。
+    rubric: >-
+      Read the candidate's final response text captured at
+      `.claude/meta-harness-oracle/final-report.md`. The final Japanese report must state that a
+      new phase was added with an Acceptance Criteria section (one verify item and one judge
+      item) and two TODO tasks, and it must not claim to have modified Phase 2, the CODD
+      frontmatter, or the Decisions/Notes sections. If the file is missing or empty, treat this
+      as a failure (the candidate produced no reviewable final response).
 holdout: false
 timeout_ms: 300000
 budget:
