@@ -6,7 +6,10 @@ skill-evolution の `[skill-self-report]` パーサロジックを流用した�
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
+
+import pytest
 
 from tests.module_loader import load_module
 
@@ -223,6 +226,37 @@ class TestWriteCandidateFinalReportArtifact:
         ev._write_candidate_final_report_artifact(worktree_dir, events_path)
 
         assert list(external_target.iterdir()) == []
+
+    def test_trailing_malformed_line_skips_write_and_does_not_use_stale_response(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """CodeRabbit レビュー指摘 (High): `_iter_jsonl` は `JSONDecodeError` の行を黙って破棄
+        するため、`events.jsonl` の末尾が途中書き込みで壊れていると、直前の（古い）assistant
+        turn が「最終応答」として拾われてしまう。末尾の非空行が壊れている場合は final-report を
+        書かず、fail-open で警告ログのみ残す。"""
+        worktree_dir = tmp_path / "worktree"
+        worktree_dir.mkdir()
+        events_path = tmp_path / "events.jsonl"
+        stale_event = json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {"type": "text", "text": "AC はまだ合意されていません。定義しますか?"}
+                    ]
+                },
+            }
+        )
+        events_path.write_text(
+            stale_event + "\n" + '{"type": "assistant", "message": {"content": [{"type": "text"',
+            encoding="utf-8",
+        )
+
+        with caplog.at_level(logging.WARNING):
+            ev._write_candidate_final_report_artifact(worktree_dir, events_path)
+
+        assert not (worktree_dir / ev.CANDIDATE_FINAL_REPORT_RELATIVE_PATH).exists()
+        assert any("fail-open" in record.message for record in caplog.records)
 
     def test_final_report_symlinked_to_existing_file_is_rejected_and_target_untouched(
         self, tmp_path: Path

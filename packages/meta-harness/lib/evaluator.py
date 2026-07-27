@@ -1528,6 +1528,30 @@ def _extract_assistant_text(events_path: Path) -> str:
     return "\n".join(chunks)
 
 
+def _assert_trailing_line_is_parseable(events_path: Path) -> None:
+    """`events_path` の末尾の非空行が JSON として parse できることを検証する。
+
+    `_iter_jsonl` は `JSONDecodeError` の行を黙って破棄する（他の呼び出し元では望ましい
+    fail-soft な挙動だが）、`events.jsonl` の末尾が途中書き込み（プロセスのクラッシュ等）で
+    壊れている場合、最終応答抽出だけはそれを見逃してはならない: 末尾行を無視すると、直前の
+    （古い）assistant turn が「最終応答」として扱われてしまう（PR #326 レビュー round 3、
+    CodeRabbit High）。末尾の非空行が壊れていれば `ValueError` を送出し、呼び出し元に抽出
+    失敗として扱わせる。
+    """
+    last_nonblank = ""
+    with events_path.open("r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            stripped = line.strip()
+            if stripped:
+                last_nonblank = stripped
+    if not last_nonblank:
+        return
+    try:
+        json.loads(last_nonblank)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"trailing events.jsonl line is not valid JSON: {exc}") from exc
+
+
 def _extract_last_assistant_text(events_path: Path) -> str:
     """`events.jsonl` の最後の assistant turn（イベント）のテキストのみを返す。
 
@@ -1535,7 +1559,11 @@ def _extract_last_assistant_text(events_path: Path) -> str:
     最終応答では省略・撤回した内容（例: AC 確認への言及）まで拾ってしまい、oracle が
     誤って通過し得る（PR #326 レビュー指摘）。最終報告として妥当性を検証する用途では、
     最後の assistant イベントのテキストだけを対象にする必要がある。
+
+    末尾の非空行が壊れている場合は `_assert_trailing_line_is_parseable` が `ValueError` を
+    送出し、直前の古い応答へフォールバックしない（呼び出し元は抽出失敗として fail-open する）。
     """
+    _assert_trailing_line_is_parseable(events_path)
     last_text = ""
     for event in _iter_jsonl(events_path):
         if event.get("type") != "assistant":
@@ -1568,10 +1596,20 @@ def _write_candidate_final_report_artifact(worktree_dir: Path, events_path: Path
     新規コードのバグや候補の不正な symlink で止めないため）。
     """
     if not events_path.exists():
+        _LOGGER.warning(
+            "candidate final report artifact skipped (fail-open): events.jsonl not found: %s",
+            events_path,
+        )
         return
     try:
         text = _extract_last_assistant_text(events_path)
-    except (OSError, UnicodeDecodeError):
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        _LOGGER.warning(
+            "candidate final report artifact extraction skipped (fail-open) for %s: %s: %s",
+            events_path,
+            type(exc).__name__,
+            exc,
+        )
         return
     destination = worktree_dir / CANDIDATE_FINAL_REPORT_RELATIVE_PATH
     try:
