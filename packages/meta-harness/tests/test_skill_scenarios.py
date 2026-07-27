@@ -1811,7 +1811,7 @@ def test_task_state_add_phase_with_ac_oracle_rejects_missing_ac_section(tmp_path
     plans_path = tmp_path / "Plans.md"
     plans_path.write_text(_insert_before_separator(_ADD_PHASE_NO_AC_BLOCK), encoding="utf-8")
 
-    with pytest.raises(AssertionError, match="expected exactly one matching canonical line"):
+    with pytest.raises(AssertionError, match="Acceptance Criteria セクションが欠落している"):
         fixture.assert_add_phase_with_ac(
             plans_path,
             phase_name="Phase 3: リリース準備",

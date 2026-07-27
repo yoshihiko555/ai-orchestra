@@ -100,8 +100,17 @@ _AC_ITEM_JUDGE_PATTERN = re.compile(r"^- \[ \] (.+) — judge: (.+)$")
 _DATE_TOLERANCE_DAYS = 1
 
 
-def _find_unique_line_index(lines: list[str], predicate) -> int:
+def _find_unique_line_index(
+    lines: list[str], predicate, *, not_found_message: str | None = None
+) -> int:
+    """Find the index of the single line matching `predicate`.
+
+    `not_found_message`, when given, replaces the generic assertion message for the
+    zero-matches case only (ambiguous multi-match still uses the generic message), so callers
+    can surface a specific diagnosis instead of a vague "found 0" (Issue #297 review round 2)."""
     matches = [idx for idx, line in enumerate(lines) if predicate(line)]
+    if not matches and not_found_message is not None:
+        raise AssertionError(not_found_message)
     assert len(matches) == 1, f"expected exactly one matching canonical line, found {len(matches)}"
     return matches[0]
 
@@ -298,7 +307,13 @@ def assert_add_phase_with_ac(
     )
 
     ac_heading_index = _find_unique_line_index(
-        inserted_block, lambda line: line == _AC_SECTION_HEADING
+        inserted_block,
+        lambda line: line == _AC_SECTION_HEADING,
+        not_found_message=(
+            "Acceptance Criteria セクションが欠落している: expected an "
+            f"{_AC_SECTION_HEADING!r} heading in the newly inserted phase block, but none was "
+            f"found: {inserted_block!r}"
+        ),
     )
     assert ac_heading_index > heading_index, (
         "the Acceptance Criteria section must come after the phase heading: heading at "

@@ -7,13 +7,10 @@ prompt: |
 
   This call comes directly from a developer, not via `/preflight`, and no Acceptance Criteria
   has been discussed for this phase yet. This is an offline evaluation harness with no
-  interactive follow-up, so you cannot literally block on a live reply -- but per the
-  `add-phase` behavior contract (`facets/instructions/task-state.md`), a direct call like this
-  must confirm Acceptance Criteria status with the user rather than silently inventing
-  verify/judge conditions on its own. Add the new phase and its two tasks to `.claude/Plans.md`
-  without adding any `#### Acceptance Criteria` section, and make sure your final report
-  explicitly asks the user whether Acceptance Criteria should be defined for this phase. Do not
-  modify Phase 2, the CODD frontmatter, or the Decisions/Notes sections.
+  interactive follow-up, so if you would normally wait for a live reply, just note that
+  limitation in your final report instead of blocking. Add the new phase and its two tasks to
+  `.claude/Plans.md`. Do not modify Phase 2, the CODD frontmatter, or the Decisions/Notes
+  sections.
 setup:
   - |
     mkdir -p .claude
