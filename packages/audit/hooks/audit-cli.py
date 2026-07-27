@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import re
 import sys
@@ -39,23 +40,19 @@ CODEX_EXEC_RE = re.compile(
     # re.MULTILINE: PROMPT_FILE 形式（heredoc でファイル書き込み後、改行を挟んで
     # `codex exec ...` を呼び出す）でも `^` が各行頭にマッチするようにする。
     # 注意: heredoc 本文中に偶然 "codex exec" 等の文字列が含まれる誤検知を防ぐため、
-    # 呼び出し検出には _mask_heredoc_bodies() でマスクした文字列を使うこと
-    # （prompt/model 抽出には元の command を使う。詳細は _mask_heredoc_bodies の docstring）。
+    # 呼び出し検出には _detection_command() でマスクした文字列を使うこと
+    # （prompt/model 抽出には元の command を使う。詳細は _detection_command の docstring）。
     re.IGNORECASE | re.MULTILINE,
 )
 
-# heredoc ブロック全体（`<<[-]DELIM` から終端行まで）を検出する汎用パターン。
-# 終端行の行頭インデント許容は heredoc 演算子の dash フラグ（group 1）で分岐する:
-# - `<<-`（dash あり）: bash 仕様に合わせタブインデントを許容する
-# - `<<`（dash なし。plain heredoc）: 行頭にインデントがあってはならない
-#   （bash は終端行が行頭から完全一致するデリミタでない限り本文とみなす）。
-#   dash なしで任意の空白を許容すると、本文中に偶然インデント済みのデリミタ単独行が
-#   あった場合に本物の終端行より前で誤終端してしまう。
-# `(?(1)...)` は Python re の条件付きパターン（group 1 の有無で分岐）。
-HEREDOC_BLOCK_RE = re.compile(
-    r"<<(-)?\s*['\"]?(\w+)['\"]?\s*\n(.*?)\n(?(1)[\t]*|)\2[ \t]*$",
-    re.DOTALL | re.MULTILINE,
-)
+# heredoc の開始演算子（`<<[-]DELIM`）を検出するパターン。デリミタはクォート
+# あり（任意の記号を含む。issue: 記号入り delimiter 対応）とクォートなし
+# （シェルの区切り文字・括弧類を除く）の両方に対応する。
+_HEREDOC_OPEN_RE = re.compile(r"<<(-)?\s*(?:'([^'\n]*)'|\"([^\"\n]*)\"|([^\s'\"<>|&;()]+))")
+
+# コマンド区切り文字（改行 / `;` / `|` / `&`）。`&&` / `||` もこの集合に含まれる
+# 文字の並びとして扱われるため、区切り検出には十分。
+_COMMAND_SEPARATOR_CHARS = frozenset("\n;|&")
 
 # codex exec 呼び出しが PROMPT_FILE 経由（`"$(cat "$VAR")"`）で prompt を渡す形式
 # （シェルインジェクション対策。詳細は `.claude/rules/codex-delegation.md` 参照）
@@ -86,6 +83,257 @@ ANTIGRAVITY_EXEC_RE = re.compile(
 
 
 # ---------------------------------------------------------------------------
+# heredoc scanning（行単位の単一パス scanner）
+# ---------------------------------------------------------------------------
+
+
+@dataclasses.dataclass(frozen=True)
+class _HeredocBlock:
+    """heredoc ブロック 1 個分の走査結果。"""
+
+    start_line: int
+    end_line: int
+    opener_line: str
+    dash: bool
+    delimiter: str
+    body_lines: tuple[str, ...]
+    terminated: bool
+
+
+def _find_heredoc_terminator(
+    lines: list[str], start: int, delimiter: str, dash: bool
+) -> int | None:
+    """heredoc 本文の終端行を探す。
+
+    bash 仕様では、plain heredoc（dash なし）の終端行は行全体が delimiter と
+    完全一致する場合のみ認められる（末尾に空白があれば本文として扱われ、
+    そこで終端しない）。`<<-` の場合のみ、先頭タブを除去した上で比較する
+    （dash 形式でも末尾の空白は許容しない）。
+
+    Args:
+        lines: コマンドを改行分割した行リスト。
+        start: 探索を開始する行インデックス（heredoc 本文の先頭行）。
+        delimiter: 終端デリミタ文字列。
+        dash: `<<-` 形式か否か。
+
+    Returns:
+        終端行のインデックス。見つからなければ None。
+    """
+    for index in range(start, len(lines)):
+        candidate = lines[index].lstrip("\t") if dash else lines[index]
+        if candidate == delimiter:
+            return index
+    return None
+
+
+def _scan_heredocs(command: str) -> list[_HeredocBlock]:
+    """command 中の heredoc ブロックを行単位の単一パスで走査する。
+
+    正規表現の遅延 DOTALL マッチによる二次時間の悪化（終端のない heredoc
+    opener が多数連結された入力で、各 opener から残り全体を再走査してしまう
+    問題）を避けるため、行を 1 回だけ順に走査する。あるブロックの本文を
+    消費したら、次のブロック探索はその直後の行から再開するため、同じ行を
+    複数回スキャンしない（全体で O(行数) に収まる）。
+
+    Args:
+        command: Bash コマンド文字列。
+
+    Returns:
+        検出した heredoc ブロックのリスト（出現順）。
+    """
+    lines = command.split("\n")
+    total_lines = len(lines)
+    blocks: list[_HeredocBlock] = []
+    index = 0
+    while index < total_lines:
+        open_match = _HEREDOC_OPEN_RE.search(lines[index])
+        if open_match is None:
+            index += 1
+            continue
+        dash = bool(open_match.group(1))
+        delimiter = open_match.group(2) or open_match.group(3) or open_match.group(4) or ""
+        body_start = index + 1
+        terminator_index = _find_heredoc_terminator(lines, body_start, delimiter, dash)
+        terminated = terminator_index is not None
+        body_end = terminator_index if terminated else total_lines
+        blocks.append(
+            _HeredocBlock(
+                start_line=index,
+                end_line=body_end if terminated else total_lines - 1,
+                opener_line=lines[index],
+                dash=dash,
+                delimiter=delimiter,
+                body_lines=tuple(lines[body_start:body_end]),
+                terminated=terminated,
+            )
+        )
+        index = (terminator_index + 1) if terminated else total_lines
+    return blocks
+
+
+_HEREDOC_MASK_CHAR = "#"
+
+
+def _mask_heredoc_bodies(command: str) -> str:
+    """CLI 呼び出し検出専用に heredoc 本文をマスクした文字列を返す。
+
+    heredoc は PROMPT_FILE への書き込みだけでなく、無関係なファイル
+    （例: ドキュメント生成コマンドが `codex-delegation.md` の例文を書き込む場合）
+    にも使われる。その本文中に偶然 `codex exec` のような呼び出し例が含まれると、
+    `CODEX_EXEC_RE` 等の行頭アンカー検出が誤って実行呼び出しと判定してしまう。
+
+    本文の各行を同じ長さの placeholder 文字に置換して呼び出し検出に使うことで、
+    この誤検知を防ぐ（prompt 抽出には本関数の戻り値ではなく元の command を
+    使うこと。heredoc 本文そのものが抽出対象になるケースがあるため）。
+
+    行数・各行の文字数を変更しないため、戻り値中の文字位置は元の command と
+    完全に一致する（`_exec_command_segment` が検出位置をそのまま command へ
+    適用できる前提になっている）。
+
+    Args:
+        command: Bash コマンド文字列。
+
+    Returns:
+        heredoc 本文をマスクした文字列（CLI 呼び出し検出専用）。
+    """
+    blocks = _scan_heredocs(command)
+    if not blocks:
+        return command
+    lines = command.split("\n")
+    for block in blocks:
+        body_start = block.start_line + 1
+        body_end = block.end_line if block.terminated else len(lines)
+        for line_index in range(body_start, body_end):
+            lines[line_index] = _HEREDOC_MASK_CHAR * len(lines[line_index])
+    return "\n".join(lines)
+
+
+def _mask_quoted_newlines(command: str) -> str:
+    """引用符（`'` / `"`）内部の実改行文字を空白に置換した文字列を返す。
+
+    `CODEX_EXEC_RE` 等は `re.MULTILINE` で `^` を使うため、引用符内に実際の
+    改行が含まれていると、shell の実コマンド境界ではないのに `^` が誤って
+    一致してしまう（例: `printf` に渡す複数行の quoted string の内部に、
+    偶然 `codex exec ...` のような文字列が含まれる場合）。引用符内の改行だけを
+    空白に置き換えることで、この誤検知を防ぐ（他の文字は変更しないため、
+    文字数・文字位置は変化しない）。
+
+    Args:
+        command: Bash コマンド文字列（通常は `_mask_heredoc_bodies` 適用後）。
+
+    Returns:
+        引用符内の改行を空白に置換した文字列（元の文字列と同じ長さ）。
+    """
+    result_chars: list[str] = []
+    quote_char: str | None = None
+    escaped = False
+    for char in command:
+        if quote_char == "'":
+            if char == "'":
+                quote_char = None
+            result_chars.append(" " if char == "\n" else char)
+            continue
+        if quote_char == '"':
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                quote_char = None
+            result_chars.append(" " if char == "\n" else char)
+            continue
+        if char in ("'", '"'):
+            quote_char = char
+        result_chars.append(char)
+    return "".join(result_chars)
+
+
+def _detection_command(command: str) -> str:
+    """CLI 呼び出し検出専用の文字列を返す。
+
+    heredoc 本文のマスク（`_mask_heredoc_bodies`）と引用符内改行のマスク
+    （`_mask_quoted_newlines`）を順に適用する。どちらも元の文字列と同じ
+    長さ・行構造を保つため、戻り値中でマッチした位置は元の `command` に
+    そのまま適用できる（`_exec_command_segment` が利用する）。
+
+    Args:
+        command: 元の Bash コマンド文字列。
+
+    Returns:
+        検出専用にマスクした文字列。
+    """
+    return _mask_quoted_newlines(_mask_heredoc_bodies(command))
+
+
+def _find_segment_end(text: str, start: int) -> int:
+    """start 以降で、引用符外にある最初のコマンド区切り文字の位置を返す。
+
+    区切り文字（改行 / `;` / `|` / `&`）が引用符（`'` / `"`）の外側に現れた
+    位置を返す。引用符の中にある区切り文字はコマンド境界とみなさない
+    （prompt 文字列に `;` 等が含まれるケースを誤って区間の終端としないため）。
+    見つからなければ `len(text)`（文字列末尾）を返す。
+
+    Args:
+        text: 走査対象の文字列（通常は元の Bash コマンド文字列）。
+        start: 走査を開始する文字位置。
+
+    Returns:
+        区切り文字の位置、またはコマンド末尾（`len(text)`）。
+    """
+    quote_char: str | None = None
+    escaped = False
+    index = start
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if quote_char == "'":
+            if char == "'":
+                quote_char = None
+        elif quote_char == '"':
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                quote_char = None
+        elif char in ("'", '"'):
+            quote_char = char
+        elif char in _COMMAND_SEPARATOR_CHARS:
+            return index
+        index += 1
+    return length
+
+
+def _exec_command_segment(command: str, exec_re: re.Pattern[str]) -> str | None:
+    """検出済み CLI 呼び出しのコマンド区間を返す。
+
+    `exec_re`（例: `CODEX_EXEC_RE`）でマッチした呼び出しの開始位置から、
+    引用符外にある最初のコマンド区切り（改行 / `;` / `|` / `&`）までを区間
+    として切り出す。区切りが見つからなければコマンド末尾までを区間とする。
+
+    prompt/model 抽出はこの区間内に限定して行うこと。区間外にある無関係な
+    後続コマンド（例: 別の quoted な値や、後で実行される別コマンド）を
+    実呼び出しの引数として誤抽出することを防ぐ。
+
+    `_detection_command` は元の command と文字位置が完全一致するため、
+    そこでマッチした位置をそのまま command 側の区間切り出しに使える。
+
+    Args:
+        command: 元の Bash コマンド文字列。
+        exec_re: 検出用正規表現。
+
+    Returns:
+        コマンド区間の文字列。呼び出しが検出できなければ None。
+    """
+    detection_command = _detection_command(command)
+    match = exec_re.search(detection_command)
+    if match is None:
+        return None
+    segment_end = _find_segment_end(command, match.end())
+    return command[match.start() : segment_end]
+
+
+# ---------------------------------------------------------------------------
 # Prompt / model extraction
 # ---------------------------------------------------------------------------
 
@@ -112,30 +360,27 @@ def _truncate_prompt(prompt: str) -> str:
 def _extract_heredoc_content(command: str, var_name: str) -> str | None:
     """PROMPT_FILE 形式の heredoc 書き込みから本文を抽出する。
 
-    `cat > "$VAR" <<'DELIM' ... DELIM` 形式のブロックを同一コマンド文字列内から
-    探し、本文を返す。ファイルシステムへのアクセスは行わない
-    （呼び出し時点でファイルが既に削除・変更されていても安定して抽出できるため、
-    かつ任意パス読み取りのリスクを避けるため）。
+    `cat > "$VAR" <<'DELIM' ... DELIM`（および `cat <<'DELIM' > "$VAR"` の
+    ようにリダイレクトと heredoc 演算子の順序が逆のケースも含む）形式の
+    ブロックを同一コマンド文字列内から探し、本文を返す。ファイルシステムへの
+    アクセスは行わない（呼び出し時点でファイルが既に削除・変更されていても
+    安定して抽出できるため、かつ任意パス読み取りのリスクを避けるため）。
 
-    `<<-` 形式（インデント除去付き heredoc）では、本文・終端行がタブでインデント
+    `<<-` 形式（インデント除去付き heredoc）では、本文がタブでインデント
     されていても対応する。bash の `<<-` 仕様に合わせ、本文各行の先頭タブのみを
     除去する（スペースは除去しない）。
 
-    終端行のインデント許容は heredoc 演算子の dash フラグ（group 1）で分岐する:
-    plain heredoc（`<<`）は行頭に完全一致するデリミタのみを終端行とみなし、
-    `<<-` の場合のみタブインデントを許容する（詳細は `HEREDOC_BLOCK_RE` docstring
-    参照）。これにより、本文中に偶然インデント済みのデリミタ単独行があっても、
-    plain heredoc では誤って途中で本文抽出が途切れない。
+    末尾の改行のみを除去する（`$(cat ...)` によるコマンド置換が末尾改行だけを
+    取り除く挙動に合わせるため）。本文中の先頭・末尾の水平空白（スペース）は
+    意味のある prompt の一部として保持する。
 
-    トップレベル heredoc ブロックのみを対象にする（`HEREDOC_BLOCK_RE.finditer` は
-    非重複マッチのため、あるブロックの本文内に別の heredoc らしき文字列が含まれて
-    いても、それは外側ブロックの本文としてまとめて消費され、独立したマッチには
-    ならない）。これにより、ドキュメント生成用 heredoc の本文中に同じ変数名の
-    PROMPT_FILE 形式の例文が含まれていても、その例文側を実呼び出しの heredoc と
-    誤認しない（`>\\s*"?\\$\\{?VAR\\}?"?\\s*` が heredoc マーカー直前に一致する
-    トップレベルブロックだけを対象にするため）。単純に `pattern.search(command)`
-    で raw command 全体へ leftmost search を行うと、例文側の heredoc がコマンド
-    文字列中でより手前に出現する場合に誤抽出する。
+    `_scan_heredocs` はトップレベル heredoc ブロックのみを検出する（あるブロック
+    の本文内に別の heredoc らしき文字列が含まれていても、それは外側ブロックの
+    本文としてまとめて消費され、独立したブロックにはならない）。これにより、
+    ドキュメント生成用 heredoc の本文中に同じ変数名の PROMPT_FILE 形式の例文が
+    含まれていても、その例文側を実呼び出しの heredoc と誤認しない
+    （opener 行に `>\\s*"?\\$\\{?VAR\\}?"?` が一致するブロックだけを対象にする
+    ため）。
 
     Args:
         command: Bash コマンド文字列。
@@ -144,45 +389,16 @@ def _extract_heredoc_content(command: str, var_name: str) -> str | None:
     Returns:
         heredoc 本文。検出できなければ None。
     """
-    assignment_re = re.compile(r">\s*\"?\$\{?" + re.escape(var_name) + r"\}?\"?\s*$")
-    for match in HEREDOC_BLOCK_RE.finditer(command):
-        preceding = command[: match.start()]
-        if not assignment_re.search(preceding):
+    assignment_re = re.compile(r'>\s*"?\$\{?' + re.escape(var_name) + r'\}?"?')
+    for block in _scan_heredocs(command):
+        if not assignment_re.search(block.opener_line):
             continue
-        strip_leading_tabs = bool(match.group(1))
-        body = match.group(3)
-        if strip_leading_tabs:
-            body = "\n".join(line.lstrip("\t") for line in body.split("\n"))
-        content = body.strip()
+        body_lines = block.body_lines
+        if block.dash:
+            body_lines = tuple(line.lstrip("\t") for line in body_lines)
+        content = "\n".join(body_lines).rstrip("\n")
         return content or None
     return None
-
-
-def _mask_heredoc_bodies(command: str) -> str:
-    """CLI 呼び出し検出専用に heredoc 本文をマスクした文字列を返す。
-
-    heredoc は PROMPT_FILE への書き込みだけでなく、無関係なファイル
-    （例: ドキュメント生成コマンドが `codex-delegation.md` の例文を書き込む場合）
-    にも使われる。その本文中に偶然 `codex exec` のような呼び出し例が含まれると、
-    `CODEX_EXEC_RE` 等の行頭アンカー検出が誤って実行呼び出しと判定してしまう。
-
-    本文だけを空にして呼び出し検出に使うことで、この誤検知を防ぐ
-    （prompt 抽出には本関数の戻り値ではなく元の command を使うこと。
-    heredoc 本文そのものが抽出対象になるケースがあるため）。
-
-    Args:
-        command: Bash コマンド文字列。
-
-    Returns:
-        heredoc 本文を除去した文字列（CLI 呼び出し検出専用）。
-    """
-
-    def _blank_body(match: re.Match[str]) -> str:
-        dash = match.group(1) or ""
-        delimiter = match.group(2)
-        return f"<<{dash}{delimiter}\n{delimiter}"
-
-    return HEREDOC_BLOCK_RE.sub(_blank_body, command)
 
 
 def extract_codex_prompt(command: str) -> str | None:
@@ -192,12 +408,14 @@ def extract_codex_prompt(command: str) -> str | None:
     （`PROMPT_FILE=$(mktemp); cat > "$PROMPT_FILE" <<'X' ... X; codex exec ... "$(cat "$PROMPT_FILE")"`）
     の両方に対応する。
 
-    PROMPT_FILE 形式の変数名特定は、`is_codex` 判定や `extract_model` と同様に
-    heredoc 本文マスク済み文字列（`_mask_heredoc_bodies` の戻り値）に対して行う。
-    生の command に対して行うと、実呼び出しより前に無関係なドキュメント生成用
-    heredoc（同一変数名の PROMPT_FILE 形式の例文を含むもの）があった場合、その
-    例文側を実呼び出しと誤認する（例文の heredoc 本文はマスクされて検索対象から
-    除外されるため、マスク済み文字列であれば実呼び出しの変数名のみが残る）。
+    検出済み `codex exec` 呼び出しのコマンド区間（`_exec_command_segment`）に
+    限定して抽出を行う。区間を限定しない場合、同一 Bash 呼び出し内に後続の
+    無関係なコマンド・quoted な値（例: 別の `"$(cat "$VAR")"`）があると、
+    そちらを誤って実際のプロンプトとして抽出してしまう。
+
+    PROMPT_FILE 形式の変数名特定はコマンド区間に対して行うが、heredoc 本文
+    自体の抽出（`_extract_heredoc_content`）は元の command 全体に対して行う
+    （heredoc は codex exec 呼び出しより前の行にあるため）。
 
     Args:
         command: Bash コマンド文字列。
@@ -207,16 +425,16 @@ def extract_codex_prompt(command: str) -> str | None:
         呼び出し側で `_mask_secrets` 適用後に `_truncate_prompt` で切り詰めること
         （マスク前の切り詰めはシークレットパターンの境界またぎ検知漏れを起こすため）。
     """
-    detection_command = _mask_heredoc_bodies(command)
-    prompt_file_match = CODEX_PROMPT_FILE_ARG_RE.search(detection_command)
+    segment = _exec_command_segment(command, CODEX_EXEC_RE)
+    if segment is None:
+        return None
+
+    prompt_file_match = CODEX_PROMPT_FILE_ARG_RE.search(segment)
     if prompt_file_match:
         # PROMPT_FILE 形式と判定した場合、legacy の引用符ベース抽出には委ねない。
         # `"$(cat "$VAR")"` は入れ子の引用符を含むため、legacy パターンに通すと
         # `$(cat` や `)` のような無意味な断片を誤抽出してしまう
         # （このメソッドが解決しようとしている元の不具合そのもの）。
-        # 本文抽出自体は heredoc 本文が対象のため、マスク前の生 command に対して
-        # 行う（`_extract_heredoc_content` はトップレベル heredoc ブロックのみを
-        # 対象にするため、ドキュメント例文側を誤って選ばない）。
         return _extract_heredoc_content(command, prompt_file_match.group(1))
 
     patterns = [
@@ -226,7 +444,7 @@ def extract_codex_prompt(command: str) -> str | None:
         r"codex\s+exec\s+.*?'([^']+)'\s*(?:<\s*/dev/null\s*)?2>/dev/null",
     ]
     for pattern in patterns:
-        match = re.search(pattern, command, re.DOTALL)
+        match = re.search(pattern, segment, re.DOTALL)
         if match:
             return match.group(1).strip()
     return None
@@ -275,24 +493,33 @@ def extract_antigravity_prompt(command: str) -> str | None:
 def extract_model(command: str, tool: str = "codex") -> str | None:
     """コマンドからモデル名を抽出する。
 
-    呼び出し側は heredoc 本文をマスクした文字列（`_mask_heredoc_bodies` の戻り値）
-    を渡すこと。生の command を渡すと、無関係な heredoc 本文（ドキュメント生成の
-    例文等）に含まれる `--model` フラグを実際のモデルとして誤抽出する
-    （実際の codex exec 呼び出し自体は heredoc の外側にあるため、マスクしても
-    抽出結果に影響しない）。
+    codex / antigravity では、検出済み CLI 呼び出しのコマンド区間
+    （`_exec_command_segment`）に限定して `--model` フラグを検索する。区間を
+    限定しない場合、無関係な heredoc 本文（ドキュメント生成の例文等）や、
+    同一 Bash 呼び出し内の別コマンドに含まれる `--model` フラグを実際の
+    モデルとして誤抽出してしまう。
+
+    gemini では、heredoc 本文・引用符内改行をマスクした文字列
+    （`_detection_command`）に対して検索する（gemini の抽出パターンは
+    `.` が改行を跨がないため、同一行に限定される）。
 
     Args:
-        command: heredoc 本文マスク済みの Bash コマンド文字列。
+        command: 元の Bash コマンド文字列。
         tool: ツール種別（"codex" / "antigravity" / "gemini"）。
 
     Returns:
         モデル名。検出できなければ None。
     """
     if tool == "gemini":
-        match = re.search(r"(?:^|[\s;|&])gemini\s+.*?-m\s+(\S+)", command)
+        detection_command = _detection_command(command)
+        match = re.search(r"(?:^|[\s;|&])gemini\s+.*?-m\s+(\S+)", detection_command)
         return match.group(1) if match else None
-    # codex / antigravity は --model フラグを使う
-    match = re.search(r"--model\s+(\S+)", command)
+
+    exec_re = ANTIGRAVITY_EXEC_RE if tool == "antigravity" else CODEX_EXEC_RE
+    segment = _exec_command_segment(command, exec_re)
+    if segment is None:
+        return None
+    match = re.search(r"--model\s+(\S+)", segment)
     return match.group(1) if match else None
 
 
@@ -343,10 +570,10 @@ def main() -> None:
     command = tool_input.get("command", "")
     output = tool_response.get("stdout", "") or tool_response.get("content", "")
 
-    # 呼び出し検出は heredoc 本文をマスクした文字列で行う（本文中の
-    # "codex exec" 等の例文を実行呼び出しと誤検知しないため）。
-    # prompt/model 抽出は元の command を使う（heredoc 本文が抽出対象のため）。
-    detection_command = _mask_heredoc_bodies(command)
+    # 呼び出し検出は heredoc 本文・引用符内改行をマスクした文字列で行う
+    # （本文中の "codex exec" 等の例文や、quoted string 内の実改行に続く
+    # 文字列を実行呼び出しと誤検知しないため）。
+    detection_command = _detection_command(command)
 
     is_codex = bool(CODEX_EXEC_RE.search(detection_command))
     is_antigravity = bool(ANTIGRAVITY_EXEC_RE.search(detection_command)) and not is_codex
@@ -356,20 +583,20 @@ def main() -> None:
     if not (is_codex or is_antigravity or is_gemini):
         return
 
-    # model 抽出も heredoc マスク済み文字列で行う（本文中に無関係な例文の
-    # --model フラグが含まれていても、実際の呼び出しの model と誤認しないため）。
+    # prompt/model 抽出は元の command を渡す（各関数が内部で検出済み呼び出しの
+    # コマンド区間に限定して抽出するため。詳細は各関数の docstring 参照）。
     if is_codex:
         tool = "codex"
         prompt = extract_codex_prompt(command)
-        model = extract_model(detection_command) or ""
+        model = extract_model(command) or ""
     elif is_antigravity:
         tool = "antigravity"
         prompt = extract_antigravity_prompt(command)
-        model = extract_model(detection_command, tool="antigravity") or ""
+        model = extract_model(command, tool="antigravity") or ""
     else:
         tool = "gemini"
         prompt = extract_gemini_prompt(command)
-        model = extract_model(detection_command, tool="gemini") or ""
+        model = extract_model(command, tool="gemini") or ""
 
     if not prompt:
         return

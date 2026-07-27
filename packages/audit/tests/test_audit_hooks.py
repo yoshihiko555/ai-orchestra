@@ -6,6 +6,7 @@ import io
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -427,6 +428,23 @@ class TestMaskHeredocBodies:
         # 対比: マスクしない生の command には誤って複数行マッチしてしまう
         assert audit_cli.CODEX_EXEC_RE.search(cmd) is not None
         # 本修正: heredoc 本文をマスクした文字列では検出されない
+        masked = audit_cli._mask_heredoc_bodies(cmd)
+        assert audit_cli.CODEX_EXEC_RE.search(masked) is None
+
+    def test_symbol_delimiter_heredoc_body_is_masked(self) -> None:
+        """記号を含む heredoc delimiter（例: `DOC-EXAMPLE`）でも本文が正しく
+        マスクされることを確認する（delimiter を `\\w+` に限定していたための
+        マスク失敗の回帰）。
+        """
+        cmd = (
+            "cat > codex-delegation.md <<'DOC-EXAMPLE'\n"
+            "Example:\n"
+            "codex exec --model gpt-5.3-codex --sandbox read-only "
+            '"question" < /dev/null 2>/dev/null\n'
+            "DOC-EXAMPLE\n"
+            "git add codex-delegation.md"
+        )
+        assert audit_cli.CODEX_EXEC_RE.search(cmd) is not None
         masked = audit_cli._mask_heredoc_bodies(cmd)
         assert audit_cli.CODEX_EXEC_RE.search(masked) is None
 
@@ -914,3 +932,176 @@ class TestMainCliCallPromptFile:
         prompt = captured["payload"]["prompt"]
         assert len(prompt) == audit_cli.MAX_PROMPT_CHARS + len("...[truncated]")
         assert prompt.endswith("...[truncated]")
+
+
+# ---------------------------------------------------------------------------
+# PR #325 レビュー指摘の回帰テスト
+# ---------------------------------------------------------------------------
+
+
+class TestExtractCodexPromptCommandSegmentRestriction:
+    """`extract_codex_prompt` の抽出範囲をコマンド区間に限定するテスト。"""
+
+    def test_prompt_file_arg_search_is_restricted_to_detected_codex_exec_segment(
+        self,
+    ) -> None:
+        """検出済み codex exec 呼び出しの後に続く、無関係な後続コマンドの
+        quoted な `$(cat "$VAR")` を実際の prompt として誤抽出しないことを
+        確認する（実際には Codex へ送っていない内容を監査ログへ永続化する
+        回帰）。
+        """
+        cmd = (
+            'codex exec --model gpt-5.3-codex --full-auto "safe prompt" '
+            "< /dev/null 2>/dev/null\n"
+            'echo leftover "$(cat "$PRIVATE_FILE")"'
+        )
+        assert audit_cli.extract_codex_prompt(cmd) == "safe prompt"
+
+    def test_symbol_heredoc_delimiter_is_supported(self) -> None:
+        """記号を含む有効な heredoc delimiter（例: `PROMPT-END`）でも本文抽出
+        できることを確認する（delimiter を `\\w+` に限定していたための抽出
+        失敗の回帰）。
+        """
+        cmd = (
+            "PROMPT_FILE=$(mktemp)\n"
+            "cat > \"$PROMPT_FILE\" <<'PROMPT-END'\n"
+            "Refactor the module.\n"
+            "PROMPT-END\n"
+            "codex exec --model gpt-5.3-codex --sandbox read-only "
+            '"$(cat "$PROMPT_FILE")" < /dev/null 2>/dev/null'
+        )
+        assert audit_cli.extract_codex_prompt(cmd) == "Refactor the module."
+
+    def test_heredoc_operator_before_redirect_target_is_supported(self) -> None:
+        """`cat <<'DELIM' > "$VAR"` のようにリダイレクトが heredoc 演算子より
+        後にある順序でも本文抽出できることを確認する（リダイレクトが `<<` の
+        前にある順序しか認識していなかったための抽出失敗の回帰）。
+        """
+        cmd = (
+            "PROMPT_FILE=$(mktemp)\n"
+            "cat <<'PROMPT' > \"$PROMPT_FILE\"\n"
+            "Design a REST API.\n"
+            "PROMPT\n"
+            "codex exec --model gpt-5.3-codex --sandbox read-only "
+            '"$(cat "$PROMPT_FILE")" < /dev/null 2>/dev/null'
+        )
+        assert audit_cli.extract_codex_prompt(cmd) == "Design a REST API."
+
+    def test_heredoc_body_leading_and_trailing_horizontal_whitespace_is_preserved(
+        self,
+    ) -> None:
+        """heredoc 本文の先頭・末尾の水平空白（スペース）が保持されることを
+        確認する（`$(cat ...)` は末尾改行のみを除去するため、`.strip()` で
+        意味のある空白まで削除していた回帰）。
+        """
+        cmd = (
+            "PROMPT_FILE=$(mktemp)\n"
+            "cat > \"$PROMPT_FILE\" <<'PROMPT'\n"
+            "  Keep leading spaces  \n"
+            "PROMPT\n"
+            "codex exec --model gpt-5.3-codex --sandbox read-only "
+            '"$(cat "$PROMPT_FILE")" < /dev/null 2>/dev/null'
+        )
+        assert audit_cli.extract_codex_prompt(cmd) == "  Keep leading spaces  "
+
+    def test_trailing_whitespace_after_delimiter_does_not_end_heredoc_early(
+        self,
+    ) -> None:
+        """本文中に `PROMPT `（delimiter + 末尾空白）の行があっても、そこで
+        本文抽出が終端しないことを確認する（bash の plain heredoc 終端は
+        delimiter 行の完全一致のみで、末尾空白を許容しない）。
+        """
+        cmd = (
+            "PROMPT_FILE=$(mktemp)\n"
+            'cat > "$PROMPT_FILE" <<PROMPT\n'
+            "PROMPT \n"
+            "second line\n"
+            "PROMPT\n"
+            "codex exec --model gpt-5.3-codex --sandbox read-only "
+            '"$(cat "$PROMPT_FILE")" < /dev/null 2>/dev/null'
+        )
+        assert audit_cli.extract_codex_prompt(cmd) == "PROMPT \nsecond line"
+
+
+class TestExtractModelCommandSegmentRestriction:
+    """`extract_model` の抽出範囲をコマンド区間に限定するテスト。"""
+
+    def test_model_extraction_ignores_earlier_unrelated_model_flag(self) -> None:
+        """検出済み codex exec より前の行にある無関係な `--model` フラグを
+        誤って抽出しないことを確認する（command 全体で最初の `--model` を
+        拾ってしまう回帰）。
+        """
+        cmd = (
+            "echo --model setup-value\n"
+            'codex exec --model real --full-auto "prompt" < /dev/null 2>/dev/null'
+        )
+        assert audit_cli.extract_model(cmd) == "real"
+
+
+class TestMaskQuotedNewlines:
+    """引用符内の実改行マスク（`_mask_quoted_newlines`）のテスト。"""
+
+    def test_multiline_quoted_string_is_not_detected_as_codex_invocation(self) -> None:
+        """複数行にまたがる quoted string（例: `printf` に渡す引数）の内部に
+        偶然 `codex exec` の文字列が含まれても、実行呼び出しとして誤検知
+        しないことを確認する（`re.MULTILINE` の `^` が quoted string 内の
+        実改行の直後に誤って一致する回帰）。
+        """
+        cmd = (
+            "printf '%s\\n' 'Example:\ncodex exec --full-auto \"not run\" < /dev/null 2>/dev/null'"
+        )
+        # 対比: マスクしない生の command には誤って複数行マッチしてしまう
+        assert audit_cli.CODEX_EXEC_RE.search(cmd) is not None
+        masked = audit_cli._detection_command(cmd)
+        assert audit_cli.CODEX_EXEC_RE.search(masked) is None
+
+    def test_main_does_not_record_cli_call_for_multiline_quoted_string(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """上記シナリオを `main()` レベルでも確認する（無関係な `cli_call` が
+        記録されないこと）。
+        """
+        project_dir = tmp_path
+        (project_dir / ".claude").mkdir()
+
+        command = (
+            "printf '%s\\n' 'Example:\ncodex exec --full-auto \"not run\" < /dev/null 2>/dev/null'"
+        )
+        data = {
+            "session_id": "s1",
+            "cwd": str(project_dir),
+            "tool_name": "Bash",
+            "tool_input": {"command": command},
+            "tool_response": {"stdout": "ok", "exit_code": 0, "duration_ms": 100},
+        }
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(data)))
+
+        captured: dict = {}
+
+        def fake_emit_event(event_type: str, payload: dict, **kwargs: object) -> dict:
+            captured["called"] = True
+            return payload
+
+        monkeypatch.setattr(audit_cli, "emit_event", fake_emit_event)
+
+        audit_cli.main()
+
+        assert "called" not in captured
+
+
+class TestMaskHeredocBodiesPerformance:
+    """`_mask_heredoc_bodies` の計算量に関する回帰テスト。"""
+
+    def test_many_unterminated_heredoc_openers_does_not_cause_quadratic_slowdown(
+        self,
+    ) -> None:
+        """終端のない heredoc opener を多数連結した入力でも、二次時間化せず
+        短時間で完了することを確認する（遅延 DOTALL 正規表現による O(n^2) 化の
+        回帰。旧実装では約45KBの入力で約0.84秒かかっていた）。
+        """
+        chunk = "cat <<'EOF'\nx\n"
+        command = chunk * 8000  # 約 112KB。終端されないため実質 1 ブロックとして消費される
+        start = time.monotonic()
+        audit_cli._mask_heredoc_bodies(command)
+        elapsed = time.monotonic() - start
+        assert elapsed < 1.0
