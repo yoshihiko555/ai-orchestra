@@ -6,8 +6,10 @@ CoddNode を構築する。markdown frontmatter（`codd_common.parse_codd_frontm
 （`codd:<key> <value>`）を採用する。
 
 言語別抽出方式:
-- Python: `ast` でモジュール docstring のみを対象にする（本文コード中の文字列リテラルを
-  誤って `codd:` 注釈と解釈しないため、正規表現の全文検索ではなく AST を使う）。
+- Python: `tokenize` で先頭の module docstring のみを軽量抽出する（本文コード中の
+  文字列リテラルを誤って `codd:` 注釈と解釈しないため、正規表現の全文検索ではなく
+  構文的に判定する。`ast.parse` によるファイル全体の構文解析は大規模コードベースで
+  CPU コストが無視できないため使わない）。
 - `//` 系言語（TS/JS/Go/Java/Rust/C 系等）: ファイル先頭から連続する行コメントのみを
   対象にする（shebang 行はスキップ）。
 
@@ -18,7 +20,9 @@ doc scope の `missing_frontmatter` 検査と異なり、注釈が無いコー�
 from __future__ import annotations
 
 import ast
+import io
 import re
+import tokenize
 from pathlib import PurePosixPath
 
 import codd_common as cc
@@ -122,16 +126,38 @@ def _parse_annotation_lines(
 
 
 def _python_leading_text(text: str) -> str:
-    """Python: モジュール docstring のみを対象領域として返す（AST ベース）。
+    """Python: モジュール docstring のみを対象領域として返す（tokenize ベース）。
 
     本文コード中の文字列リテラルに `codd:` らしき行があっても、docstring
     以外は見ないため誤検出しない。構文エラーの場合は空文字（注釈なし扱い）。
+
+    `ast.parse` はファイル全体を構文解析するため、大規模コードベースでは
+    CPU コストが無視できない（Issue #98 レビュー対応）。module docstring は
+    「モジュール先頭の最初の文が単独の文字列リテラルであること」で決まるため、
+    `tokenize` で先頭のコメント/空行トークンだけ読み飛ばし、最初の意味のある
+    トークンが STRING かどうかだけを見れば十分（本文コードは走査しない。
+    最初の STRING 以外のトークンに達し次第ループを抜けるため、`tokenize` の
+    内部 readline も本文全体までは進まない）。抽出結果は
+    `ast.get_docstring(tree, clean=False)` と同一になるよう、暗黙の文字列連結
+    （``"a" "b"``）も STRING トークンが連続する間は結合し、実際の値は
+    `ast.literal_eval` でデコードする。文字列以外（bytes リテラル・f-string 等）
+    が最初の文だった場合は docstring 扱いしない（AST ベースと同じ挙動）。
     """
     try:
-        tree = ast.parse(text)
-    except SyntaxError:
+        string_tokens: list[str] = []
+        for tok in tokenize.generate_tokens(io.StringIO(text).readline):
+            if tok.type in (tokenize.COMMENT, tokenize.NL, tokenize.ENCODING, tokenize.INDENT):
+                continue
+            if tok.type == tokenize.STRING:
+                string_tokens.append(tok.string)
+                continue
+            break
+        if not string_tokens:
+            return ""
+        value = ast.literal_eval(" ".join(string_tokens))
+    except (tokenize.TokenError, IndentationError, SyntaxError, ValueError, TypeError):
         return ""
-    return ast.get_docstring(tree, clean=False) or ""
+    return value if isinstance(value, str) else ""
 
 
 def _comment_leading_text(text: str, marker: str = "//") -> str:

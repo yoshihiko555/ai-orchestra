@@ -69,6 +69,49 @@ def test_extract_python_returns_none_on_syntax_error() -> None:
     assert errors == []
 
 
+def test_extract_python_supports_implicit_string_concatenation_docstring() -> None:
+    # tokenize ベースの軽量抽出でも、暗黙の文字列連結（"a" "b"）による docstring は
+    # ast.get_docstring と同じ結果になるべき（Issue #98 レビュー対応: codd_code.py:131）。
+    text = '"codd:implements " "design:codd-coherence-layer"\n'
+    node, errors = cx.extract_code_node("packages/codd/scripts/concat.py", text, INLINE_CONFIDENCE)
+    assert node is not None
+    assert errors == []
+    assert node.depends_on[0].id == "design:codd-coherence-layer"
+
+
+def test_extract_python_ignores_bytes_literal_as_first_statement() -> None:
+    # bytes リテラル（b"..."）は str ではないため docstring として扱われない
+    # （ast.get_docstring と同じ挙動）。
+    text = 'b"""codd:implements design:should-not-be-picked-up"""\n'
+    node, errors = cx.extract_code_node(
+        "packages/codd/scripts/bytes_first.py", text, INLINE_CONFIDENCE
+    )
+    assert node is None
+    assert errors == []
+
+
+def test_extract_python_ignores_fstring_as_first_statement() -> None:
+    # f-string は AST 上 Constant ではなく JoinedStr のため docstring 扱いされない
+    # （ast.get_docstring と同じ挙動）。
+    text = 'f"codd:implements design:should-not-be-picked-up {1}"\n'
+    node, errors = cx.extract_code_node(
+        "packages/codd/scripts/fstring_first.py", text, INLINE_CONFIDENCE
+    )
+    assert node is None
+    assert errors == []
+
+
+def test_extract_python_ignores_docstring_after_leading_statement() -> None:
+    # docstring はモジュール先頭の最初の文である必要がある。先に他の文があれば
+    # 以降の文字列リテラルは docstring として扱われない（ast.get_docstring と同じ）。
+    text = 'from __future__ import annotations\n"""codd:implements design:x"""\n'
+    node, errors = cx.extract_code_node(
+        "packages/codd/scripts/after_stmt.py", text, INLINE_CONFIDENCE
+    )
+    assert node is None
+    assert errors == []
+
+
 def test_extract_python_returns_none_without_annotation() -> None:
     text = '"""通常の docstring。codd と無関係。"""\n'
     node, errors = cx.extract_code_node("packages/codd/lib/plain.py", text, INLINE_CONFIDENCE)

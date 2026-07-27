@@ -278,6 +278,10 @@ dangling / duplicate / cycle / unknown / orphan / drift の各検査を特別扱
 - **drift の時刻ソース**（H-3）: `git log -1 --format=%ct -- <path>`（最終コミット時刻）を用いる。
   未コミット（ワーキングツリーのみ）の場合はファイルシステム mtime にフォールバックする。
   git はファイル mtime を履歴保持しないため、必ずコミット時刻 or 内容で判定する。
+  ノードごとに `git status` / `git log` を個別起動すると 1,000 ノード規模で著しく
+  遅いため、`batch_commit_times()` が `git status --porcelain -z`（dirty 判定）と
+  `git log --name-only`（コミット時刻）をそれぞれ 1 回にまとめて実行する
+  （判定規約は単発の `commit_time()` と同一。Issue #98 レビュー対応）。
 - **missing_frontmatter** は Phase 1 では warning。将来 essential 運用が定着したら error 昇格を検討。
 - drift は「上流を変えたのに下流が追従していないかもしれない」という**素朴な Amber 相当**。
   信頼度スコアによる本格的な impact 分析は Phase 2。
@@ -321,7 +325,13 @@ codd impact --diff <ref> [--json]   # 既定 ref = HEAD
   `_scope_pattern_to_regex` で判定する。`*`/`**`/`?` に加えて文字クラス（`[seq]` /
   `[!seq]`）も `Path.glob` と同じ意味に解釈し（通常走査の `collect_files` と削除後
   判定とで glob 解釈が食い違わないようにする）、閉じ `]` が無い場合は fnmatch と
-  同様リテラル `[` として扱う。
+  同様リテラル `[` として扱う。`[z-a]` のような不正な文字範囲も `Path.glob`
+  （fnmatch）と同様「常に非マッチ」として安全に扱い、`re.error` で落ちない。
+- code_scope 内のコードファイルは、削除だけでなく **ファイルが残ったまま**
+  `codd:` 注釈の削除や node_id 変更で旧コードノードが消失するケースも dangling
+  注意として同じ集合に含める。`changed_paths`（削除されていない変更ファイル）の
+  code_scope 該当分についても ref 時点の内容から旧注釈を再抽出し、現グラフから
+  消えていれば報告する（`compute_impact_result`）。
 
 **設計判断（codd-dev 比較 / ADR-026 D3）:** CODD は依存宣言を frontmatter に限定するため、証拠源は
 relation 種別とグラフ距離のみ。codd-dev の Noisy-OR・エビデンス種別分類（static/inferred/human 等）は

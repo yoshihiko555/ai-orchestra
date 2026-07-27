@@ -365,6 +365,70 @@ def test_commit_time_clean_uses_git_dirty_uses_mtime(tmp_path) -> None:
     assert cli.commit_time(tmp_path, "docs/x.md") == future
 
 
+def test_batch_commit_times_matches_commit_time_for_clean_dirty_and_untracked(tmp_path) -> None:
+    # 一括版（`batch_commit_times`）はノードごとに `commit_time()` を呼ぶのと同じ
+    # 判定規約（クリーンな追跡ファイルはコミット時刻、dirty・未追跡は mtime）を
+    # 維持する必要がある。1,000 ノード規模の git プロセス起動数を削減する最適化
+    # のためのバッチ化であり、結果が変わってはならない（Issue #98 レビュー対応）。
+    _init_repo(tmp_path)
+    clean = _write(tmp_path, "docs/clean.md", "# clean\n")
+    dirty = _write(tmp_path, "docs/dirty.md", "# dirty\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "init")
+    dirty.write_text("# dirty edited\n", encoding="utf-8")
+    _write(tmp_path, "docs/untracked.md", "# untracked\n")
+
+    rel_paths = ["docs/clean.md", "docs/dirty.md", "docs/untracked.md"]
+    batched = cli.batch_commit_times(tmp_path, rel_paths)
+    expected = {rel: cli.commit_time(tmp_path, rel) for rel in rel_paths}
+
+    assert batched == expected
+    assert batched["docs/clean.md"] != clean.stat().st_mtime  # クリーンはコミット時刻
+    assert batched["docs/dirty.md"] == dirty.stat().st_mtime  # dirty は mtime
+
+
+def test_batch_commit_times_empty_input_returns_empty_dict(tmp_path) -> None:
+    assert cli.batch_commit_times(tmp_path, []) == {}
+
+
+def test_validate_drift_warning_via_git_commit_times(tmp_path) -> None:
+    # `_check_drift` は `batch_commit_times()` 経由で一括取得したコミット時刻を使う
+    # （ノードごとの個別 git 呼び出しを廃止。Issue #98 レビュー対応）。
+    _init_repo(tmp_path)
+    _write(tmp_path, "docs/req.md", _doc("req:r", "requirement"))
+    _write(
+        tmp_path,
+        "docs/design.md",
+        _doc("design:d", "design", deps=[("req:r", "derives_from")]),
+    )
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "init design+req")
+    # 上流 (req) だけを新しいコミットで更新 → コミット時刻ベースで drift 検出。
+    # git のコミット時刻は秒単位のため、同一テスト内の連続コミットが同じ %ct に
+    # なりうる。committer date を明示的に未来へずらして確実に区別する。
+    _write(tmp_path, "docs/req.md", _doc("req:r", "requirement") + "\nupdated\n")
+    _git(tmp_path, "add", "-A")
+    future_date = "@4102444800 +0000"  # 2100-01-01（epoch 秒 + タイムゾーン表記）
+    subprocess.run(
+        ["git", "commit", "-m", "update req"],
+        cwd=tmp_path,
+        capture_output=True,
+        check=True,
+        env={
+            **os.environ,
+            "GIT_AUTHOR_DATE": future_date,
+            "GIT_COMMITTER_DATE": future_date,
+        },
+    )
+
+    result = cli.scan_project(tmp_path, _config())
+    findings = cli.run_checks(result, _config(), tmp_path)
+    drift = [f for f in findings if f.check == "drift"]
+
+    assert len(drift) == 1
+    assert drift[0].level == cc.LEVEL_WARNING
+
+
 def test_checks_off_level_suppresses(tmp_path) -> None:
     _write(
         tmp_path,
@@ -683,6 +747,19 @@ def test_scope_pattern_unterminated_bracket_is_literal() -> None:
     assert regex.fullmatch("docs/a.md") is None
 
 
+def test_scope_pattern_invalid_char_range_is_safe_non_match() -> None:
+    # `[z-a]` は逆順の不正な範囲。re.compile が re.error で落ちるため、Path.glob
+    # （fnmatch）と同様「常に非マッチ」として安全に扱う（クラッシュしない。
+    # Issue #98 レビュー対応）。
+    regex = cli._scope_pattern_to_regex("docs/[z-a].md")
+    assert regex.fullmatch("docs/a.md") is None
+    assert regex.fullmatch("docs/z.md") is None
+    assert (
+        cli.path_in_scope("docs/a.md", _config(scope={"include": ["docs/[z-a].md"], "exclude": []}))
+        is False
+    )
+
+
 def test_path_in_scope_character_class_matches_path_glob_behavior(tmp_path) -> None:
     # 通常走査（Path.glob 経由の collect_files）と削除後判定（_matches_scope_pattern）
     # の解釈が一致することを実ファイルで確認する。
@@ -747,6 +824,76 @@ def test_compute_impact_result_reports_deleted_code_upstream(tmp_path) -> None:
     assert "src/mod.py" in result.deleted_upstream
 
 
+def test_old_node_id_at_ref_skips_git_show_for_unsupported_extension(tmp_path, monkeypatch) -> None:
+    # working tree 側の scan_code_nodes と同様、削除済み blob も `git show` で読む前に
+    # 拡張子チェックする（未対応拡張子の blob を無駄に読み込まない。Issue #98 レビュー対応）。
+    _init_repo(tmp_path)
+    (tmp_path / "assets").mkdir()
+    (tmp_path / "assets" / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    config = _config(code_scope={"include": ["assets/**/*"], "exclude": []})
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "init")
+
+    calls: list[list[str]] = []
+    original = cli._git_output_bytes
+
+    def _spy(root: Path, args: list[str]) -> bytes | None:
+        calls.append(args)
+        return original(root, args)
+
+    monkeypatch.setattr(cli, "_git_output_bytes", _spy)
+
+    old_node_id = cli._old_node_id_at_ref(tmp_path, "HEAD", "assets/logo.png", config, is_code=True)
+
+    assert old_node_id is None
+    assert calls == []  # `git show` は呼ばれない（拡張子チェックで先に弾く）
+
+
+def test_compute_impact_result_detects_dangling_when_code_annotation_removed(tmp_path) -> None:
+    # ファイルは残ったまま `codd:` 注釈を削除した場合も、旧コードノードの消失を
+    # 検出できるべき（削除ではなく変更のため、以前は deleted_paths のみ見ていて
+    # 検出されなかった。Issue #98 レビュー対応）。
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/mod.py", _py(["codd:node_id code:mod"]))
+    config = _config(code_scope={"include": ["src/**/*.py"], "exclude": []})
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "init")
+    _write(tmp_path, "src/mod.py", "pass\n")  # 注釈を削除（ファイル自体は残す）
+
+    result = cli.compute_impact_result(tmp_path, config, "HEAD")
+
+    assert "src/mod.py" in result.deleted_upstream
+
+
+def test_compute_impact_result_detects_dangling_when_code_node_id_changed(tmp_path) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/mod.py", _py(["codd:node_id code:old-slug"]))
+    config = _config(code_scope={"include": ["src/**/*.py"], "exclude": []})
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "init")
+    _write(tmp_path, "src/mod.py", _py(["codd:node_id code:new-slug"]))
+
+    result = cli.compute_impact_result(tmp_path, config, "HEAD")
+
+    assert "src/mod.py" in result.deleted_upstream
+    assert "code:new-slug" in result.changed_ids
+
+
+def test_compute_impact_result_excludes_changed_code_file_when_node_id_unchanged(tmp_path) -> None:
+    # node_id が変わらない通常の変更は dangling ではない（誤検出しない）。
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/mod.py", _py(["codd:node_id code:mod"]))
+    config = _config(code_scope={"include": ["src/**/*.py"], "exclude": []})
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "init")
+    _write(tmp_path, "src/mod.py", _py(["codd:node_id code:mod", "codd:owner ai-orchestra"]))
+
+    result = cli.compute_impact_result(tmp_path, config, "HEAD")
+
+    assert "src/mod.py" not in result.deleted_upstream
+    assert "code:mod" in result.changed_ids
+
+
 def test_rename_keeps_node_out_of_deleted_upstream(tmp_path) -> None:
     # rename で node_id が新パスに引き継がれた上流は dangling 警告に出さない。
     _init_repo(tmp_path)
@@ -807,6 +954,19 @@ def test_main_reports_config_error_for_bool_impact_field(tmp_path, capsys) -> No
     config_path = tmp_path / ".claude/config/codd/codd.yaml"
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text("impact:\n  decay: true\n", encoding="utf-8")
+
+    exit_code = cli.main(["--root", str(tmp_path), "--config", str(config_path), "scan"])
+
+    assert exit_code == 2
+    assert "[codd] ERROR:" in capsys.readouterr().err
+
+
+def test_main_reports_config_error_for_non_mapping_code_scope(tmp_path, capsys) -> None:
+    # `code_scope: oops`（文字列）は `.get()` で AttributeError になり main() の
+    # (TypeError, ValueError) ハンドラを素通りしていた（Issue #98 レビュー対応）。
+    config_path = tmp_path / ".claude/config/codd/codd.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text("code_scope: oops\n", encoding="utf-8")
 
     exit_code = cli.main(["--root", str(tmp_path), "--config", str(config_path), "scan"])
 
@@ -1033,6 +1193,21 @@ def test_collect_code_files_excludes_paths_resolving_outside_root(tmp_path) -> N
     _write(tmp_path, "outside.py", _py(["codd:implements design:x"]))
     _write(root, "src/mod.py", _py(["codd:implements design:y"]))
     config = _config(code_scope={"include": ["../*.py", "src/**/*.py"], "exclude": []})
+
+    files = {p.relative_to(root).as_posix() for p in cli.collect_code_files(root, config)}
+
+    assert files == {"src/mod.py"}
+
+
+def test_collect_code_files_normalizes_glob_paths_that_return_into_root(tmp_path) -> None:
+    # `../proj/src/**/*.py`（root == proj）は containment 判定こそ通るが、正規化せず
+    # `path.relative_to(root)` すると "../proj/..." という別名の文字列で集合に入り、
+    # 通常パターン（`src/**/*.py`）で見つかる同一ファイルと重複ノード化してしまう
+    # （Issue #98 レビュー対応）。root からの相対に正規化して単一エントリになるべき。
+    root = tmp_path / "proj"
+    root.mkdir()
+    _write(root, "src/mod.py", _py(["codd:implements design:y"]))
+    config = _config(code_scope={"include": ["../proj/src/**/*.py", "src/**/*.py"], "exclude": []})
 
     files = {p.relative_to(root).as_posix() for p in cli.collect_code_files(root, config)}
 

@@ -603,6 +603,22 @@ def normalize_check_level(value: Any) -> str:
     return level
 
 
+def _as_mapping(value: Any, field_name: str) -> dict[str, Any]:
+    """``scope`` / ``code_scope`` / ``graph_store`` 等のサブセクションを検証する。
+
+    YAML で ``scope: oops``（文字列）や ``scope: [a, b]``（リスト）のように mapping
+    以外を書くと、後続の ``.get()`` 呼び出しが ``AttributeError`` になり、
+    ``main()`` の ``(TypeError, ValueError)`` ハンドラを素通りして未整形の
+    トレースバックが出てしまう（Issue #98 レビュー対応）。mapping 以外は
+    ``ValueError`` にして設定エラーとして整形させる。
+    """
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    raise ValueError(f"{field_name} はマッピングである必要があります: {value!r}")
+
+
 def _as_glob_list(value: Any, field_name: str) -> list[str]:
     """scope/code_scope の include・exclude を glob 文字列のリストへ正規化する。
 
@@ -661,9 +677,9 @@ class CoddConfig:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> CoddConfig:
-        scope = data.get("scope") or {}
-        graph_store = data.get("graph_store") or {}
-        code_scope = data.get("code_scope") or {}
+        scope = _as_mapping(data.get("scope"), "scope")
+        graph_store = _as_mapping(data.get("graph_store"), "graph_store")
+        code_scope = _as_mapping(data.get("code_scope"), "code_scope")
         return cls(
             enabled=bool(data.get("enabled", True)),
             include=_as_glob_list(scope.get("include"), "scope.include"),

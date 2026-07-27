@@ -454,6 +454,32 @@ def test_load_config_code_scope_include_absent_defaults_to_empty_list(tmp_path) 
     assert config.code_exclude == []
 
 
+def test_load_config_rejects_non_mapping_code_scope(tmp_path) -> None:
+    # `code_scope: oops`（文字列）は `code_scope.get("include")` で AttributeError に
+    # なり main() の (TypeError, ValueError) ハンドラを素通りしていた。mapping 以外は
+    # ValueError として整形すべき（Issue #98 レビュー対応）。
+    cfg_path = tmp_path / "codd.yaml"
+    _write(cfg_path, "code_scope: oops\n")
+    with pytest.raises(ValueError, match="code_scope"):
+        codd.load_config(cfg_path)
+
+
+def test_load_config_rejects_non_mapping_scope(tmp_path) -> None:
+    # doc scope（`scope`）でも同種問題が起きうるため同じ検証を適用する
+    # （Issue #98 レビュー対応）。
+    cfg_path = tmp_path / "codd.yaml"
+    _write(cfg_path, "scope:\n  - a\n  - b\n")
+    with pytest.raises(ValueError, match="scope"):
+        codd.load_config(cfg_path)
+
+
+def test_load_config_rejects_non_mapping_graph_store(tmp_path) -> None:
+    cfg_path = tmp_path / "codd.yaml"
+    _write(cfg_path, "graph_store: oops\n")
+    with pytest.raises(ValueError, match="graph_store"):
+        codd.load_config(cfg_path)
+
+
 def test_build_node_clamps_out_of_range_confidence() -> None:
     block = {
         "node_id": "design:x",

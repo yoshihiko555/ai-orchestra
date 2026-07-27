@@ -55,6 +55,12 @@ def _glob_relpaths(root: Path, patterns: list[str]) -> set[str]:
     ``../*.py`` のようなパターンは ``Path.glob`` がそのまま解決してしまい、
     プロジェクトルート外のファイルを走査対象に含めてしまう（Issue #98 レビュー対応）。
     解決後のパスが root 配下かを検証し、root 外へ解決されたものは黙って除外する。
+
+    格納する相対パスは resolve 後の実パスから root への相対で正規化する。
+    ``../proj/src/foo.py``（root == proj）のように root 内へ戻ってくるパターンは
+    containment 判定こそ通るが、素朴に ``path.relative_to(root)`` すると
+    ``".."`` を含む別名の文字列として集合に入り、通常パターン（``src/foo.py``）
+    で見つかる同一ファイルと重複ノード化してしまう（Issue #98 レビュー対応）。
     """
     matched: set[str] = set()
     resolved_root = root.resolve()
@@ -62,9 +68,10 @@ def _glob_relpaths(root: Path, patterns: list[str]) -> set[str]:
         for path in root.glob(pattern):
             if not path.is_file():
                 continue
-            if not path.resolve().is_relative_to(resolved_root):
+            resolved_path = path.resolve()
+            if not resolved_path.is_relative_to(resolved_root):
                 continue
-            matched.add(path.relative_to(root).as_posix())
+            matched.add(resolved_path.relative_to(resolved_root).as_posix())
     return matched
 
 
@@ -297,6 +304,95 @@ def commit_time(root: Path, rel_path: str) -> float:
         return 0.0  # 取得不能なら最古扱い（drift の誤検知を防ぐ）
 
 
+def _dirty_paths(root: Path) -> set[str] | None:
+    """``git status --porcelain -z`` からリポジトリ全体の dirty パス集合を返す。
+
+    未追跡・未コミット編集のパス（rename の旧パス・新パス両方を含む）を 1 回の
+    プロセス起動でまとめて取得する。`commit_time()` をノードごとに個別実行すると
+    パスごとに `git status` を起動してしまい、ノード数に比例して遅くなる
+    （1,000 ノード規模で顕著。Issue #98 レビュー対応）。
+    失敗時（git 実行エラー等）は None（呼び出し側は全パスを dirty 扱いにする）。
+    """
+    out = _git_output_bytes(root, ["status", "--porcelain", "-z"])
+    if out is None:
+        return None
+    dirty: set[str] = set()
+    tokens = out.decode("utf-8", errors="surrogateescape").split("\0")
+    index = 0
+    while index < len(tokens):
+        record = tokens[index]
+        index += 1
+        if not record:
+            continue
+        # `XY PATH`。X/Y いずれかが R（rename）/ C（copy）なら、次トークンが
+        # rename/copy 元パス（NUL 区切りで追加）になる（`git status --porcelain -z` 規約）。
+        status_code, path = record[:2], record[3:]
+        dirty.add(path)
+        if status_code[0] in ("R", "C") or status_code[1:2] in ("R", "C"):
+            if index >= len(tokens):
+                break
+            dirty.add(tokens[index])
+            index += 1
+    return dirty
+
+
+def _log_commit_times(root: Path, rel_paths: list[str]) -> dict[str, float]:
+    """rel_paths の最終コミット時刻を 1 回の `git log` でまとめて取得する。
+
+    ``git log --name-only --format=%x00%ct -- <path1> <path2> ...`` は新しい
+    コミットから走査するため、各パスについて最初に出現した時刻が最終コミット
+    時刻になる（パスごとに `git log -1 --format=%ct -- <path>` を呼ぶのと同じ
+    結果。Issue #98 レビュー対応。rename の追跡先切替は `--follow` 非使用のため
+    元の `commit_time()` と同じく行わない）。
+    """
+    if not rel_paths:
+        return {}
+    out = _git_output(root, ["log", "--name-only", "--format=%x00%ct", "--", *rel_paths])
+    if not out:
+        return {}
+    times: dict[str, float] = {}
+    current_time: float | None = None
+    for line in out.splitlines():
+        if line.startswith("\0"):
+            try:
+                current_time = float(line[1:])
+            except ValueError:
+                current_time = None
+            continue
+        path = line.strip()
+        if not path or current_time is None or path in times:
+            continue
+        times[path] = current_time
+    return times
+
+
+def batch_commit_times(root: Path, rel_paths: list[str]) -> dict[str, float]:
+    """rel_paths の最終更新時刻（epoch 秒）を一括取得する（`commit_time()` のバッチ版）。
+
+    validate の drift 検査はノードごとに `commit_time()` を呼んでいたため、git
+    プロセスをノード数に比例して起動していた（1,000 ノード規模で著しく遅い。
+    Issue #98 レビュー対応）。dirty 判定を 1 回の `git status`、コミット時刻を
+    1 回の `git log` にまとめ、各パスの判定規約（dirty/未追跡/履歴なしは mtime、
+    クリーンな追跡ファイルは最終コミット時刻）は `commit_time()` と同一に保つ。
+    """
+    if not rel_paths:
+        return {}
+    dirty = _dirty_paths(root)
+    clean_paths = [p for p in rel_paths if dirty is not None and p not in dirty]
+    commit_times = _log_commit_times(root, clean_paths)
+    result: dict[str, float] = {}
+    for rel in rel_paths:
+        commit_ct = commit_times.get(rel)
+        if commit_ct is not None:
+            result[rel] = commit_ct
+            continue
+        try:
+            result[rel] = (root / rel).stat().st_mtime
+        except OSError:
+            result[rel] = 0.0  # 取得不能なら最古扱い（drift の誤検知を防ぐ）
+    return result
+
+
 # ---------------------------------------------------------------------------
 # validate（設計 4.5）
 # ---------------------------------------------------------------------------
@@ -441,13 +537,16 @@ def _check_orphan(result: ScanResult, config: cc.CoddConfig) -> list[Finding]:
 
 
 def _check_drift(result: ScanResult, root: Path) -> list[Finding]:
+    """drift 検査。ノードの最終更新時刻は `batch_commit_times()` で一括取得する。
+
+    ノードごとに `commit_time()` を呼ぶと、1,000 ノード規模で git プロセスを
+    ノード数に比例して起動してしまい著しく遅い（Issue #98 レビュー対応）。
+    """
     findings: list[Finding] = []
-    time_cache: dict[str, float] = {}
+    time_cache = batch_commit_times(root, [node.path for node in result.nodes])
 
     def time_of(rel: str) -> float:
-        if rel not in time_cache:
-            time_cache[rel] = commit_time(root, rel)
-        return time_cache[rel]
+        return time_cache.get(rel, 0.0)
 
     for node in result.nodes:
         downstream_time = time_of(node.path)
@@ -648,7 +747,12 @@ def _scope_pattern_to_regex(pattern: str) -> re.Pattern[str]:
         else:
             out.append(re.escape(char))
             index += 1
-    return re.compile("".join(out))
+    try:
+        return re.compile("".join(out))
+    except re.error:
+        # `[z-a]` のような不正な文字範囲は Path.glob（fnmatch）と同様、
+        # クラッシュではなく「常に非マッチ」として安全に扱う（Issue #98 レビュー対応）。
+        return re.compile(r"(?!)")
 
 
 def _find_char_class_end(pattern: str, start: int) -> int | None:
@@ -751,6 +855,10 @@ def _old_node_id_at_ref(
     ref 側に存在しない、または CODD ノードでなかった場合は None。
     """
     if is_code:
+        # working tree 側（scan_code_nodes）と同様、未対応拡張子（画像等）は
+        # `git show` で読み込む前に除外する（Issue #98 レビュー対応）。
+        if not cx.is_supported_suffix(rel):
+            return None
         data = _git_output_bytes(root, ["show", f"{ref}:{rel}"])
         if data is None:
             return None  # ref 側に存在しない（新規追加→削除等）→ dangling 化しない
@@ -796,7 +904,7 @@ def compute_impact_result(root: Path, config: cc.CoddConfig, ref: str) -> Impact
     # 注釈付きコードファイル削除も下流の dangling 化を検出対象にする）。
     # 削除済みファイルは working tree に無いため、純粋パス判定でスコープ membership を見る。
     # rename は old を deleted に含むが、node_id が現グラフに残るものは除外する（誤警告防止）。
-    deleted_upstream = sorted(
+    deleted_upstream_candidates = {
         p
         for p in deleted_paths
         if (
@@ -807,7 +915,18 @@ def compute_impact_result(root: Path, config: cc.CoddConfig, ref: str) -> Impact
             path_in_code_scope(p, config)
             and _is_dangling_deletion(root, ref, p, result.graph, config, is_code=True)
         )
-    )
+    }
+    # ファイル自体は残っていても `codd:` 注釈の削除や node_id 変更で旧コード
+    # ノードが消失するケースも同様に dangling 化しうる（Issue #98 レビュー対応）。
+    # changed_paths（削除されていない）の code_scope ファイルについても ref 側の
+    # 旧注釈を読み戻し、現グラフから消えていれば同じ集合に加える。
+    deleted_upstream_candidates |= {
+        p
+        for p in changed_paths
+        if path_in_code_scope(p, config)
+        and _is_dangling_deletion(root, ref, p, result.graph, config, is_code=True)
+    }
+    deleted_upstream = sorted(deleted_upstream_candidates)
 
     impacted = cc.compute_impact(result.graph, changed_ids, config.impact)
     impacted.sort(key=lambda n: (_BAND_ORDER.get(n.band, 9), -n.score, n.node_id))
@@ -870,7 +989,9 @@ def print_impact_text(result: ImpactResult) -> None:
                 f"hops={node.min_hops}  via {origins}{flag}"
             )
     if result.deleted_upstream:
-        print(f"\n## 削除された上流（dangling 注意, {len(result.deleted_upstream)}）")
+        # ファイル削除だけでなく、ファイルは残っていても `codd:` 注釈の削除・
+        # node_id 変更で旧コードノードが消失したケースも含む（Issue #98 レビュー対応）。
+        print(f"\n## 消失した上流ノード（dangling 注意, {len(result.deleted_upstream)}）")
         for path in result.deleted_upstream:
             print(f"- {path}  — `/codd-validate` で dangling を確認")
 
