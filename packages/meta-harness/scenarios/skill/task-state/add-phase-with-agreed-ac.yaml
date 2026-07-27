@@ -66,6 +66,13 @@ allowed_tools:
 # collateral damage を含む differ を fail 化）+ collateral-scope oracle（bypass で書込み可能に
 # なった .claude/ 配下の Plans.md 以外の tracked file が一切変更されていないことを git diff で
 # 検証）+ Phase A の human merge review。
+# PR #326 レビュー round 4 (Codex P1): 以下の command_exit oracle が実行する
+# `assert-task-state-outcome.py` は候補と同じ worktree に存在し、`bypassPermissions` +
+# `Write` を持つ候補が理論上これを書き換えられる（同スクリプトは add-phase-with-ac と
+# collateral-scope の両 subcommand を実装しているため、改ざんは両方の critical check を同時に
+# 無力化しうる）。evaluator.py の `_materialize_current_oracle_fixtures` が候補のエージェント
+# 実行完了直後・oracle 実行の直前に、このディレクトリを現在の信頼済みハーネスの内容へ強制的に
+# 復元するため、候補による改ざんは oracle 判定へ一切影響しない（YAML 側での変更は不要）。
 permission_mode: bypassPermissions
 command_timeout_ms: 60000
 critical:
@@ -81,8 +88,14 @@ critical:
     # tracked diff 検査に対しては実質 no-op（gitignore 済みパスは git status/diff に一切現れない）。
     # Plans.md の内容保証は上の phase-with-ac-inserted-without-collateral-damage（全文一致 oracle）
     # が担う。ここでの --allow は「万一将来 gitignore が外れた場合の安全弁」として残す。
+    # `--ignored-scan-prefix .claude`: plain `git status` は gitignore 対象パスを一切報告しない
+    # ため、これが無いと bypassPermissions 下の候補が root .gitignore 済みの `.claude/meta-harness/`
+    # 配下へ任意ファイルを作成しても検出できない（PR #326 レビュー round 5, Codex P1）。同フラグは
+    # `.claude` 配下の全 ignored ファイルを --allow/--allow-new-prefix と同じ許可判定に載せるため、
+    # 評価者自身が書く bridge artifact（CANDIDATE_FINAL_REPORT_RELATIVE_PATH、下の
+    # add-phase-summary-quality rubric が参照する final-report.md）も明示的に --allow へ加える。
     command: >-
-      python3 packages/meta-harness/scenarios/fixtures/assert-task-state-outcome.py collateral-scope --allow .claude/Plans.md
+      python3 packages/meta-harness/scenarios/fixtures/assert-task-state-outcome.py collateral-scope --allow .claude/Plans.md --allow .claude/meta-harness-oracle/final-report.md --ignored-scan-prefix .claude
 checks:
   - id: add-phase-summary-quality
     text: "追加内容がユーザー報告で正確に説明される"

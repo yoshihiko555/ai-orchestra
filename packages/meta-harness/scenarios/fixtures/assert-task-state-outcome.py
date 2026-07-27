@@ -108,8 +108,9 @@ def _normalized_heading(line: str) -> str:
 _AC_SECTION_HEADING_NORMALIZED = _normalized_heading(_AC_SECTION_HEADING)
 
 
-def _is_ac_section_heading(line: str) -> bool:
-    """Whitespace-tolerant match for the Acceptance Criteria heading.
+def _is_ac_section_heading_like(line: str) -> bool:
+    """Whitespace-tolerant (internal *and* outer whitespace) match for anything that looks like
+    an Acceptance Criteria heading.
 
     A byte-exact `line == _AC_SECTION_HEADING` check lets a candidate add
     `"#### Acceptance Criteria "` (trailing whitespace) or similar variants: this slips past the
@@ -119,9 +120,28 @@ def _is_ac_section_heading(line: str) -> bool:
     (its own `line != _AC_SECTION_HEADING` exact-match exclusion also misses it) -- letting a
     Markdown-visible Acceptance Criteria-shaped heading slip through both no-AC and with-AC
     critical oracles undetected (PR #326 review round 4, Codex P2). Normalizing whitespace before
-    comparing closes both gaps.
+    comparing closes both gaps. Used only where the goal is "reject/exclude anything
+    AC-heading-*shaped*", never to accept a with-AC candidate's heading as functionally correct
+    (see `_is_ac_section_heading_effective` for that).
     """
     return _normalized_heading(line) == _AC_SECTION_HEADING_NORMALIZED
+
+
+def _is_ac_section_heading_effective(line: str) -> bool:
+    """Match the Acceptance Criteria heading exactly as the production parser does.
+
+    `packages/core/hooks/ac_parser.py`'s `ac_section_ranges()` locates AC sections with
+    `lines[i].strip() != AC_SECTION_HEADING` -- an *outer*-whitespace-only comparison, not the
+    internal-whitespace-collapsing `_is_ac_section_heading_like()` above. A with-AC candidate
+    that writes `"#### Acceptance  Criteria"` (extra internal whitespace) would pass this
+    fixture's earlier, looser check while `ac_section_ranges()` fails to recognize the heading in
+    real Plans.md automation (completion gating, auto-archival): the seeded verify/judge items
+    would never actually gate anything, silently defeating the whole point of Acceptance Criteria
+    (PR #326 review round 5, Codex P2). `assert_add_phase_with_ac()` must therefore require the
+    candidate's heading to match exactly what the production parser will recognize, not merely
+    "close enough" to a human reader.
+    """
+    return line.strip() == _AC_SECTION_HEADING
 
 
 # Day-boundary tolerance: the scenario run and this oracle's separate container can be up to
@@ -348,7 +368,7 @@ def _extract_task_group_heading_index(inserted_block: list[str]) -> int:
     subheading_indices = [
         idx
         for idx, line in enumerate(inserted_block)
-        if _SUBHEADING_PATTERN.match(line) is not None and not _is_ac_section_heading(line)
+        if _SUBHEADING_PATTERN.match(line) is not None and not _is_ac_section_heading_like(line)
     ]
     assert len(subheading_indices) == 1, (
         "expected exactly one task-group heading (`#### ...`, other than the Acceptance "
@@ -405,11 +425,12 @@ def assert_add_phase_with_ac(
 
     ac_heading_index = _find_unique_line_index(
         inserted_block,
-        _is_ac_section_heading,
+        _is_ac_section_heading_effective,
         not_found_message=(
-            "Acceptance Criteria セクションが欠落している: expected an "
-            f"{_AC_SECTION_HEADING!r} heading in the newly inserted phase block, but none was "
-            f"found: {inserted_block!r}"
+            "Acceptance Criteria セクションが欠落している（または production の ac_parser.py "
+            "が認識しない空白違いになっている）: expected an "
+            f"{_AC_SECTION_HEADING!r} heading (outer whitespace only) in the newly inserted "
+            f"phase block, but none was found: {inserted_block!r}"
         ),
     )
     assert ac_heading_index > heading_index, (
@@ -483,7 +504,7 @@ def assert_add_phase_no_ac(plans_path: Path, *, phase_name: str, tasks: list[str
         inserted_block, phase_name=phase_name, tasks=tasks
     )
 
-    assert not any(_is_ac_section_heading(line) for line in inserted_block), (
+    assert not any(_is_ac_section_heading_like(line) for line in inserted_block), (
         "a direct add-phase call with no agreed Acceptance Criteria must not add an "
         f"'{_AC_SECTION_HEADING}' section (or a whitespace variant of it), but one was found "
         f"in: {inserted_block!r}"
@@ -572,27 +593,39 @@ def _parse_diff_name_status(name_status_z_tokens: list[str]) -> list[tuple[str, 
     return entries
 
 
-def _parse_untracked_paths(porcelain_z_tokens: list[str]) -> list[str]:
-    """Extract `??` (untracked) paths from `git status --porcelain -z` tokens.
+def _parse_status_code_paths(porcelain_z_tokens: list[str], status_code: str) -> list[str]:
+    """Extract paths whose 2-char porcelain status code equals `status_code` (e.g. `??` for
+    untracked, `!!` for git-ignored) from `git status --porcelain -z` tokens.
 
     Rename/copy entries (`status[0]` or `status[1]` in `RC`) consume *two* consecutive NUL
     tokens -- the new path, then the old path -- with no `XY ` prefix on the second one. We
     must skip that second token rather than misinterpret it as its own entry (its first two
-    characters are arbitrary path bytes, not a status code), even though untracked entries
-    themselves (`??`) can never be renames/copies.
+    characters are arbitrary path bytes, not a status code), even though `??`/`!!` entries
+    themselves can never be renames/copies.
     """
-    untracked: list[str] = []
+    matched: list[str] = []
     index = 0
     while index < len(porcelain_z_tokens):
         entry = porcelain_z_tokens[index]
         status, path = entry[:2], entry[3:]
-        if status == "??":
-            untracked.append(path)
+        if status == status_code:
+            matched.append(path)
         if status[0] in "RC" or status[1] in "RC":
             index += 2
         else:
             index += 1
-    return untracked
+    return matched
+
+
+def _parse_untracked_paths(porcelain_z_tokens: list[str]) -> list[str]:
+    """Extract `??` (untracked) paths. See `_parse_status_code_paths`."""
+    return _parse_status_code_paths(porcelain_z_tokens, "??")
+
+
+def _parse_ignored_paths(porcelain_z_tokens: list[str]) -> list[str]:
+    """Extract `!!` (git-ignored) paths from `git status --porcelain -z --ignored=matching`
+    tokens. See `_parse_status_code_paths`."""
+    return _parse_status_code_paths(porcelain_z_tokens, "!!")
 
 
 def _is_symlink(cwd: Path | None, relative_path: str) -> bool:
@@ -616,6 +649,7 @@ def assert_tracked_changes_limited_to(
     allowed_paths: set[str],
     *,
     allowed_new_prefixes: tuple[str, ...] = (),
+    ignored_scan_prefixes: tuple[str, ...] = (),
     cwd: Path | None = None,
 ) -> None:
     """Assert no tracked file outside `allowed_paths` differs from the pre-run baseline commit,
@@ -659,6 +693,23 @@ def assert_tracked_changes_limited_to(
     allowed prefix, and a downstream oracle that does `.read_text()` on it would transparently
     follow the link and read whatever pre-existing file it points at. See `_is_symlink`.
 
+    Ignored-path check (opt-in via `ignored_scan_prefixes`, PR #326 review round 5, Codex P1):
+    `git status` (with or without `--untracked-files=all`) never reports files matched by
+    `.gitignore` at all -- not even as `!!` -- unless `--ignored` is passed explicitly. A
+    `bypassPermissions` candidate with `Write` can therefore create arbitrary files under any
+    already-gitignored directory (e.g. root `.gitignore`'s `.claude/meta-harness/`) completely
+    invisible to both the tracked-diff and untracked-file checks above, defeating this whole
+    "no unrelated changes" guard for any scenario relying solely on it as a compensating control.
+    When `ignored_scan_prefixes` is given, this additionally runs `git status --ignored=matching`
+    and applies the *same* `allowed_paths`/`allowed_new_prefixes` allowlist (plus the same
+    symlink rejection) to every ignored file whose path starts with one of the given prefixes.
+    Scanning is prefix-scoped (not repo-wide) so genuinely expected, harmless ignored content
+    elsewhere in the repo (e.g. scattered `__pycache__/`) never has to be allow-listed; callers
+    opt in only for the specific protected-path root(s) their `bypassPermissions` scenario
+    actually unlocks (e.g. `.claude`), and must include any of the evaluator's own legitimate
+    ignored writes under that root (e.g. `CANDIDATE_FINAL_REPORT_RELATIVE_PATH`) in
+    `allowed_paths`.
+
     `cwd` defaults to the process's own working directory (the production oracle container
     sets `--workdir /workspace` and relies on the process cwd); tests pass an explicit
     temporary git repo instead.
@@ -698,6 +749,31 @@ def assert_tracked_changes_limited_to(
         f"new untracked files outside the allowed scope ({sorted(allowed_paths)}) and allowed "
         f"prefixes {sorted(allowed_new_prefixes)} (or are symlinks, which are never allowed): "
         f"{sorted(disallowed_new)}"
+    )
+
+    if not ignored_scan_prefixes:
+        return
+    ignored_status_tokens = _run_git_z(
+        ["git", "status", "--porcelain", "-z", "--ignored=matching", "--untracked-files=all"],
+        cwd=cwd,
+    )
+    ignored_in_scope = [
+        path
+        for path in _parse_ignored_paths(ignored_status_tokens)
+        if path.startswith(ignored_scan_prefixes)
+    ]
+    disallowed_ignored = [
+        path
+        for path in ignored_in_scope
+        if _is_symlink(cwd, path)
+        or (path not in allowed_paths and not path.startswith(allowed_new_prefixes))
+    ]
+    assert not disallowed_ignored, (
+        f"new git-ignored files under {sorted(ignored_scan_prefixes)} outside the allowed scope "
+        f"({sorted(allowed_paths)}) and allowed prefixes {sorted(allowed_new_prefixes)} (or are "
+        f"symlinks, which are never allowed): {sorted(disallowed_ignored)}. These paths are "
+        "git-ignored, so a bypassPermissions candidate could otherwise create them completely "
+        "undetected by the tracked-diff and untracked-file checks above."
     )
 
 
@@ -746,12 +822,26 @@ def main(argv: list[str] | None = None) -> None:
             "permitted at all, except paths that exactly match --allow"
         ),
     )
+    collateral_scope.add_argument(
+        "--ignored-scan-prefix",
+        action="append",
+        default=[],
+        help=(
+            "prefix under which git-ignored files are also scanned and subjected to the same "
+            "--allow/--allow-new-prefix allowlist (repeatable). Plain `git status` never "
+            "reports gitignored paths at all, so without this a bypassPermissions candidate "
+            "could create arbitrary files under any already-ignored directory (e.g. "
+            "`.claude/meta-harness/`) completely undetected (PR #326 review round 5, Codex P1)"
+        ),
+    )
 
     args = parser.parse_args(argv)
 
     if args.mode == "collateral-scope":
         assert_tracked_changes_limited_to(
-            set(args.allow), allowed_new_prefixes=tuple(args.allow_new_prefix)
+            set(args.allow),
+            allowed_new_prefixes=tuple(args.allow_new_prefix),
+            ignored_scan_prefixes=tuple(args.ignored_scan_prefix),
         )
         return
 

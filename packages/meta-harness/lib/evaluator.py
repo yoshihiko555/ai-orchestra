@@ -1626,28 +1626,31 @@ def _extract_assistant_text(events_path: Path) -> str:
     return "\n".join(chunks)
 
 
-def _assert_trailing_line_is_parseable(events_path: Path) -> None:
-    """`events_path` の末尾の非空行が JSON として parse できることを検証する。
+def _assert_events_jsonl_has_no_malformed_lines(events_path: Path) -> None:
+    """`events_path` の全ての非空行が JSON として parse できることを検証する。
 
-    `_iter_jsonl` は `JSONDecodeError` の行を黙って破棄する（他の呼び出し元では望ましい
-    fail-soft な挙動だが）、`events.jsonl` の末尾が途中書き込み（プロセスのクラッシュ等）で
-    壊れている場合、最終応答抽出だけはそれを見逃してはならない: 末尾行を無視すると、直前の
-    （古い）assistant turn が「最終応答」として扱われてしまう（PR #326 レビュー round 3、
-    CodeRabbit High）。末尾の非空行が壊れていれば `ValueError` を送出し、呼び出し元に抽出
-    失敗として扱わせる。
+    通常の stream-json は最終 assistant イベントの後に有効な `result` 行で終わる。以前は
+    「末尾の非空行だけ」を検証していたが、その検査だと「有効な以前の assistant → 壊れた
+    最終 assistant → 有効な result」という順序を見逃す: 末尾行（result）は正しく parse
+    できてしまうため検証を素通りし、その後 `_iter_jsonl` が壊れた最終 assistant 行を黙って
+    破棄することで、さらに前の（stale な）assistant 応答が「最終応答」として採用されてしまう
+    （PR #326 レビュー round 5, Codex P2 x2）。`_iter_jsonl` 自身が `JSONDecodeError` の行を
+    黙って捨てる挙動は他の呼び出し元（cost 抽出等）にとっては望ましい fail-soft さだが、
+    最終応答抽出だけはそれに引きずられて「どの行が本来の最終応答だったか分からない」まま
+    stale な応答を採用してはならない。そのためファイル内のどの行が壊れていても抽出全体を
+    失敗させる（`ValueError` を送出し、呼び出し元に抽出失敗として fail-open させる）。
     """
-    last_nonblank = ""
     with events_path.open("r", encoding="utf-8", errors="replace") as f:
-        for line in f:
+        for line_number, line in enumerate(f, start=1):
             stripped = line.strip()
-            if stripped:
-                last_nonblank = stripped
-    if not last_nonblank:
-        return
-    try:
-        json.loads(last_nonblank)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"trailing events.jsonl line is not valid JSON: {exc}") from exc
+            if not stripped:
+                continue
+            try:
+                json.loads(stripped)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"events.jsonl line {line_number} is not valid JSON: {exc}"
+                ) from exc
 
 
 def _extract_last_assistant_text(events_path: Path) -> str:
@@ -1658,10 +1661,11 @@ def _extract_last_assistant_text(events_path: Path) -> str:
     誤って通過し得る（PR #326 レビュー指摘）。最終報告として妥当性を検証する用途では、
     最後の assistant イベントのテキストだけを対象にする必要がある。
 
-    末尾の非空行が壊れている場合は `_assert_trailing_line_is_parseable` が `ValueError` を
-    送出し、直前の古い応答へフォールバックしない（呼び出し元は抽出失敗として fail-open する）。
+    ファイル中のいずれかの行が壊れている場合は `_assert_events_jsonl_has_no_malformed_lines`
+    が `ValueError` を送出し、直前の古い応答へフォールバックしない（呼び出し元は抽出失敗として
+    fail-open する）。
     """
-    _assert_trailing_line_is_parseable(events_path)
+    _assert_events_jsonl_has_no_malformed_lines(events_path)
     last_text = ""
     for event in _iter_jsonl(events_path):
         if event.get("type") != "assistant":
@@ -1689,9 +1693,18 @@ def _write_candidate_final_report_artifact(worktree_dir: Path, events_path: Path
     （またはその親 `.claude`）を worktree 外への symlink に差し替えていた場合、評価プロセス権限
     での任意ファイル書き換えを防ぐため symlink を拒否する必要がある（CodeRabbit レビュー指摘）。
 
-    fail-open: events.jsonl が存在しない・読めない・抽出に失敗した場合、および書き込み先が
-    symlink 等で拒否された場合は警告ログを出して何もしない（既存シナリオの oracle 実行を
-    新規コードのバグや候補の不正な symlink で止めないため）。
+    fail-open: events.jsonl が存在しない・読めない・抽出に失敗した場合は警告ログを出して何も
+    しない（既存シナリオの oracle 実行を新規コードのバグで止めないため）。
+
+    fail-closed（予約パスの改ざんのみ）: `CANDIDATE_FINAL_REPORT_RELATIVE_PATH` は
+    `_ensure_bridge_artifact_ignored` により実行時に .gitignore へ加えられ、この1パスだけが
+    `collateral-scope` オラクルの git ベース検査から意図的に不可視になる。候補（特に
+    `Bash(python3 *)` を公開する handoff シナリオ）がこの盲点を悪用して、予約パス自体を
+    symlink やディレクトリへ差し替え、任意の subtree をここへ作成しても、以前は書込み失敗を
+    fail-open で握り潰すだけで検出も記録もしていなかった（PR #326 レビュー round 4, Codex
+    P2）。`_reject_tampered_final_report_destination` が Git に頼らずこのパス自体を明示検査し、
+    通常ファイルとして書ける状態でなければ run error（`EvaluatorStageError`、fail-closed）に
+    する。
     """
     if not events_path.exists():
         _LOGGER.warning(
@@ -1710,13 +1723,39 @@ def _write_candidate_final_report_artifact(worktree_dir: Path, events_path: Path
         )
         return
     destination = worktree_dir / CANDIDATE_FINAL_REPORT_RELATIVE_PATH
+    # fail-closed: 予約パス自体の改ざん（symlink/ディレクトリ化）は run error にする。この
+    # チェックは意図的に下の try/except の外側に置き、fail-open させない（EvaluatorStageError
+    # を呼び出し元へ伝播させる）。
+    _reject_tampered_final_report_destination(destination)
     try:
         _atomic_write_worktree_file(
             destination, redaction.redact_secrets(text), worktree_root=worktree_dir
         )
     except (OSError, EvaluatorStageError) as exc:
+        # ここに到達する時点で destination は「存在しない」か「通常ファイル」のいずれかに
+        # 限定されている（上の事前検査済み）。残る失敗要因は disk full 等の一過性 I/O 障害や
+        # worktree 逸脱チェックのような内部バグ検知であり、候補による改ざんの証拠ではないため
+        # fail-open のままにする。
         _LOGGER.warning("candidate final report artifact write skipped (fail-open): %s", exc)
         return
+
+
+def _reject_tampered_final_report_destination(destination: Path) -> None:
+    """予約された bridge artifact パスが symlink やディレクトリへ差し替えられていないことを
+    Git 追跡に頼らず明示的に検査する（fail-closed。詳細は `_write_candidate_final_report_artifact`
+    の docstring 参照）。"""
+    if destination.is_symlink():
+        raise EvaluatorStageError(
+            "oracle",
+            "oracle_error",
+            f"reserved candidate final report path was replaced with a symlink: {destination}",
+        )
+    if destination.exists() and not destination.is_file():
+        raise EvaluatorStageError(
+            "oracle",
+            "oracle_error",
+            f"reserved candidate final report path is not a regular file: {destination}",
+        )
 
 
 def parse_self_report(events_path: Path) -> dict | None:
@@ -1936,7 +1975,28 @@ def _judge_delimiters() -> tuple[str, str]:
 
 
 _JUDGE_ARTIFACT_EXCERPT_MAX_CHARS = 4000
+_JUDGE_ARTIFACT_HEAD_CHARS = _JUDGE_ARTIFACT_EXCERPT_MAX_CHARS // 2
+_JUDGE_ARTIFACT_TAIL_CHARS = _JUDGE_ARTIFACT_EXCERPT_MAX_CHARS - _JUDGE_ARTIFACT_HEAD_CHARS
 _JUDGE_ARTIFACT_FILENAME_RE = re.compile(r"[\w.\-/]+\.(?:md|txt|json|ya?ml|py|log)\b")
+
+
+def _bounded_artifact_excerpt(content: str) -> str:
+    """`content` を judge プロンプトへ渡す際のサイズ上限付き抜粋にする。
+
+    以前は先頭 `_JUDGE_ARTIFACT_EXCERPT_MAX_CHARS` 文字だけを切り詰めて渡していた。
+    `budget.max_output_tokens` が小さい scenario でも候補の最終応答（`final-report.md` 経由で
+    ほぼそのまま judge プロンプトへ展開される）はこの上限を上回り得るため、先頭だけを見せると
+    候補が可視範囲の先頭で rubric の要件（例: AC を尋ねる）を満たしたふりをした後、末尾（従来は
+    切り詰められていた領域）で矛盾する記述（例: 「実は AC は合意済み」）をしても judge が矛盾に
+    一切気付けない（PR #326 レビュー round 5, Codex P2）。先頭と末尾の両方を残すことで、
+    「可視範囲の外側でだけ本音を書く」という迂回を塞ぐ。
+    """
+    if len(content) <= _JUDGE_ARTIFACT_EXCERPT_MAX_CHARS:
+        return content
+    head = content[:_JUDGE_ARTIFACT_HEAD_CHARS]
+    tail = content[-_JUDGE_ARTIFACT_TAIL_CHARS:]
+    omitted = len(content) - _JUDGE_ARTIFACT_HEAD_CHARS - _JUDGE_ARTIFACT_TAIL_CHARS
+    return f"{head}\n...({omitted} chars omitted)...\n{tail}"
 
 
 def _collect_judge_artifact_excerpts(rubric: str, worktree_dir: Path) -> str:
@@ -1959,9 +2019,8 @@ def _collect_judge_artifact_excerpts(rubric: str, worktree_dir: Path) -> str:
             content = artifact.data.decode("utf-8", errors="replace")
         except UnicodeDecodeError:
             continue
-        truncated = content[:_JUDGE_ARTIFACT_EXCERPT_MAX_CHARS]
-        suffix = "\n...(truncated)" if len(content) > _JUDGE_ARTIFACT_EXCERPT_MAX_CHARS else ""
-        chunks.append(f"--- {rel} ---\n{truncated}{suffix}")
+        excerpt = _bounded_artifact_excerpt(content)
+        chunks.append(f"--- {rel} ---\n{excerpt}")
     return "\n\n".join(chunks)
 
 
@@ -2199,8 +2258,36 @@ def compute_suite_hash(scenario_paths: list[Path]) -> str:
     return hashlib.sha256(concatenated.encode("utf-8")).hexdigest()
 
 
+def _hash_directory_tree(directory: Path) -> str:
+    """Deterministically hash a directory tree's `(relative path, content)` pairs.
+
+    Used to fold the materialize-time trusted oracle fixture content into the evaluator hash
+    (`_materialize_current_oracle_fixtures` copies `scenarios/fixtures/` into every evaluation
+    worktree, making it part of the effective oracle) so that a fixture-only change -- e.g.
+    tightening `assert-task-state-outcome.py`'s validation -- correctly invalidates prior
+    ledger `pass` verdicts computed under the old, looser logic instead of `promoter`/`frontier`
+    treating them as still-current (PR #326 レビュー round 5, Codex P1/P2).
+    """
+    if not directory.is_dir():
+        return hashlib.sha256(b"missing").hexdigest()
+    hasher = hashlib.sha256()
+    paths = sorted(
+        path for path in directory.rglob("*") if path.is_file() and "__pycache__" not in path.parts
+    )
+    for path in paths:
+        rel = path.relative_to(directory).as_posix()
+        hasher.update(rel.encode("utf-8"))
+        hasher.update(b"\0")
+        hasher.update(path.read_bytes())
+        hasher.update(b"\0")
+    return hasher.hexdigest()
+
+
 def _compute_evaluator_hash(
-    source_files: tuple[tuple[str, Path], ...], scoring_config: dict
+    source_files: tuple[tuple[str, Path], ...],
+    scoring_config: dict,
+    *,
+    oracle_fixtures_hash: str = "",
 ) -> str:
     hasher = hashlib.sha256()
     for label, source in source_files:
@@ -2208,6 +2295,9 @@ def _compute_evaluator_hash(
         hasher.update(b"\0")
         hasher.update(source.read_bytes())
         hasher.update(b"\0")
+    hasher.update(b"oracle_fixtures.*\0")
+    hasher.update(oracle_fixtures_hash.encode("utf-8"))
+    hasher.update(b"\0")
     scoring_snapshot = json.dumps(scoring_config, sort_keys=True, ensure_ascii=False)
     hasher.update(b"scoring.*\0")
     hasher.update(scoring_snapshot.encode("utf-8"))
@@ -2217,12 +2307,16 @@ def _compute_evaluator_hash(
 def compute_evaluator_hash(
     scoring_config: dict, execution_config: dict[str, Any] | None = None
 ) -> str:
-    """Evaluator sources plus scoring and global scenario fallback settings sha256."""
+    """Evaluator sources plus scoring, global scenario fallback settings, and the materialized
+    oracle fixture tree (`_materialize_current_oracle_fixtures`) sha256."""
     snapshot = {
         "scoring": scoring_config,
         "execution": execution_config or {},
     }
-    return _compute_evaluator_hash(_EVALUATOR_SOURCE_FILES, snapshot)
+    oracle_fixtures_hash = _hash_directory_tree(_PACKAGE_DIR / _ORACLE_FIXTURES_RELATIVE_DIR)
+    return _compute_evaluator_hash(
+        _EVALUATOR_SOURCE_FILES, snapshot, oracle_fixtures_hash=oracle_fixtures_hash
+    )
 
 
 def evaluator_execution_snapshot(config: dict) -> dict[str, Any]:
@@ -2906,10 +3000,11 @@ def _run_attempt_lifecycle(
             main_root, root, run_id, manifest["source_commit"], runner=runner
         )
         # 既存候補の再評価では worktree が古い source_commit から checkout されるため、
-        # bridge artifact の除外ルールと oracle fixture を、候補のエージェント実行より前に
-        # 現在の信頼済みハーネスの内容で実行時に補う（PR #326 レビュー round 4, Codex P1）。
+        # bridge artifact の除外ルールを候補のエージェント実行より前に補う（PR #326 レビュー
+        # round 4, Codex P1）。この ignore 行を候補が消してもバイアスは評価者に不利にしか
+        # 働かない（final-report.md が collateral-scope に検出される側に倒れるだけ）ため、
+        # 候補実行より前で問題ない。
         _ensure_bridge_artifact_ignored(worktree_dir)
-        _materialize_current_oracle_fixtures(worktree_dir, package_dir)
         apply_registered_candidate_overlay(
             main_root=main_root,
             config=config,
@@ -2947,6 +3042,15 @@ def _run_attempt_lifecycle(
         if isinstance(scenario_result.isolation_launch, siso.ScenarioIsolationLaunch):
             _persist_refreshed_isolation_metadata(scenario_result.isolation_launch, staging_dir)
         _write_candidate_final_report_artifact(worktree_dir, staging_dir / "events.jsonl")
+        # 候補は bypassPermissions 下で worktree 全体に Write 可能であり、`command_exit` oracle
+        # （collateral-scope の実装自体を含む）は候補と同じ worktree にある
+        # `scenarios/fixtures/*.py` を実行する。候補がこのファイルを「常に成功」する内容へ
+        # 書き換えれば、outcome チェックと collateral-scope チェックの両方（同一スクリプトが
+        # 両方の subcommand を実装しているため）を自分自身の改変ごと隠して通過できてしまう
+        # （PR #326 レビュー round 4, Codex P1）。候補の実行が完全に終わった直後・oracle 実行の
+        # 直前に信頼済みハーネスの内容へ復元することで、候補による改変が oracle 判定へ一切
+        # 影響しないようにする。
+        _materialize_current_oracle_fixtures(worktree_dir, package_dir)
         scenario_command_timeout_ms = scenario.get("command_timeout_ms", DEFAULT_COMMAND_TIMEOUT_MS)
         checks = [
             run_oracle(

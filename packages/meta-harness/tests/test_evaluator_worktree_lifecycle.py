@@ -192,6 +192,56 @@ class TestMaterializeCurrentOracleFixtures:
             ev._materialize_current_oracle_fixtures(worktree_dir, package_dir)
 
 
+class TestOracleFixtureMaterializationTiming:
+    """PR #326 レビュー round 4/5 (Codex P1): `scenarios/fixtures/` の materialize は候補の
+    エージェント実行の直後・oracle 実行の直前に行われなければならない。候補実行前だけに
+    materialize すると、bypassPermissions 下の候補がその後に fixture スクリプトを改ざんしても
+    上書きされず、outcome/collateral 両チェック（同一スクリプトが両方の subcommand を実装して
+    いる）を自分の改変ごと隠して通過できてしまう。"""
+
+    def test_materialize_runs_after_headless_scenario_completes(
+        self, git_project: Path, monkeypatch
+    ) -> None:
+        call_order: list[str] = []
+
+        monkeypatch.setattr(ev, "apply_overlay", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(ev, "build_facet_and_context", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(ev, "run_setup_commands", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(ev.siso, "cleanup_scenario_isolation", lambda *_args, **_kwargs: None)
+
+        def fake_run_headless_scenario(*_args, **_kwargs):
+            call_order.append("run_headless_scenario")
+            return SimpleNamespace(isolation_launch=object())
+
+        def fake_materialize(_worktree_dir, _package_dir):
+            call_order.append("materialize_fixtures")
+
+        monkeypatch.setattr(ev, "run_headless_scenario", fake_run_headless_scenario)
+        monkeypatch.setattr(ev, "_materialize_current_oracle_fixtures", fake_materialize)
+
+        _checks, _checks_nc, hard_failure, errors = ev._run_attempt_lifecycle(
+            main_root=git_project,
+            config={"evaluate": {"worktree_root": ".worktrees/meta"}},
+            schema_dir=_SCHEMA_DIR,
+            package_dir=Path("packages/meta-harness").resolve(),
+            cand_dir=git_project,
+            manifest={"source_commit": _git("rev-parse", "HEAD", cwd=git_project).stdout.strip()},
+            scenario={
+                "id": "s-materialize-order",
+                "prompt": "irrelevant",
+                "setup": [],
+                "critical": [],
+                "checks": [],
+            },
+            run_id="run-test-materialize-order",
+            staging_dir=git_project / "staging-materialize-order",
+            runner=subprocess.run,
+        )
+
+        assert hard_failure is False, errors
+        assert call_order == ["run_headless_scenario", "materialize_fixtures"]
+
+
 class TestFinallyRemovalOnLifecycleFailure:
     """EV-14: worktree は評価の成功・失敗に関わらず finally で確実に除去される。"""
 

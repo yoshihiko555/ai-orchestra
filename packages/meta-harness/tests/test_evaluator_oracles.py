@@ -348,7 +348,26 @@ class TestRubricJudgeCodexBackend:
     def test_prompt_truncates_oversized_artifact_excerpt(self, tmp_path: Path) -> None:
         (tmp_path / "summary.md").write_text("x" * (ev._JUDGE_ARTIFACT_EXCERPT_MAX_CHARS + 500))
         prompt = ev._build_judge_prompt("check summary.md", tmp_path)
-        assert "...(truncated)" in prompt
+        assert "chars omitted" in prompt
+
+    def test_prompt_includes_both_head_and_tail_of_oversized_artifact(self, tmp_path: Path) -> None:
+        """PR #326 レビュー round 5 (Codex P2): 先頭だけを切り詰めて渡すと、候補が可視範囲の
+        先頭で rubric の要件を満たしたふりをした後、末尾（従来は切り詰められていた領域）で
+        矛盾する記述をしても judge が気付けない。先頭・末尾の両方が渡ることを確認する。"""
+        head_marker = "HEAD-MARKER-この応答は最初に AC を尋ねています"
+        tail_marker = "TAIL-MARKER-実は AC はもう合意済みです"
+        padding = "x" * ev._JUDGE_ARTIFACT_EXCERPT_MAX_CHARS
+        content = f"{head_marker}\n{padding}\n{tail_marker}"
+        (tmp_path / "summary.md").write_text(content, encoding="utf-8")
+
+        prompt = ev._build_judge_prompt("check summary.md", tmp_path)
+
+        assert head_marker in prompt
+        assert tail_marker in prompt
+
+    def test_bounded_artifact_excerpt_passes_through_content_within_limit(self) -> None:
+        content = "short content well within the limit"
+        assert ev._bounded_artifact_excerpt(content) == content
 
     def test_prompt_does_not_follow_symlinked_artifact(self, tmp_path: Path) -> None:
         outside = tmp_path.parent / "outside-rubric.md"

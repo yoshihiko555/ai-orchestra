@@ -1837,6 +1837,50 @@ def test_task_state_add_phase_with_ac_oracle_rejects_missing_ac_section(tmp_path
         )
 
 
+_ADD_PHASE_WITH_AC_INTERNAL_WHITESPACE_HEADING_BLOCK = (
+    "### Phase 3: リリース準備 `cc:TODO`\n"
+    "\n"
+    "#### Acceptance  Criteria\n"
+    "\n"
+    "- [ ] 主要エンドポイントが 200ms 以内に応答する — verify: `pytest tests/perf/test_latency.py`\n"
+    "- [ ] リリースノートの記載内容が十分にユーザーへ伝わる — judge: 変更点・影響範囲・移行手順が明記されている\n"
+    "\n"
+    "#### Tasks\n"
+    "\n"
+    "- `cc:TODO` デプロイ手順書作成\n"
+    "- `cc:TODO` リリースノート作成\n"
+    "\n"
+)
+
+
+def test_task_state_add_phase_with_ac_oracle_rejects_internal_whitespace_ac_heading(
+    tmp_path: Path,
+) -> None:
+    """Codex bot レビュー round 5 (P2): `packages/core/hooks/ac_parser.py` の
+    `ac_section_ranges()` は見出しを外側の空白だけ許容する完全一致（`.strip() != heading`）で
+    判定するため、内部の空白が増えた `#### Acceptance  Criteria` は本番では AC セクションとして
+    一切認識されず、そこに書いた verify/judge は完了判定・自動アーカイブを何も止めない。この
+    fixture が内部空白まで正規化して受理してしまうと、実際には機能しない Plans.md を合格させて
+    しまうため、production パーサーと同じ外側空白のみ許容の判定へ揃える。"""
+    fixture = _task_state_outcome_fixture()
+    plans_path = tmp_path / "Plans.md"
+    plans_path.write_text(
+        _insert_before_separator(_ADD_PHASE_WITH_AC_INTERNAL_WHITESPACE_HEADING_BLOCK),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AssertionError, match="Acceptance Criteria セクションが欠落している"):
+        fixture.assert_add_phase_with_ac(
+            plans_path,
+            phase_name="Phase 3: リリース準備",
+            tasks=["デプロイ手順書作成", "リリースノート作成"],
+            verify_text="主要エンドポイントが 200ms 以内に応答する",
+            verify_command="pytest tests/perf/test_latency.py",
+            judge_text="リリースノートの記載内容が十分にユーザーへ伝わる",
+            judge_criteria="変更点・影響範囲・移行手順が明記されている",
+        )
+
+
 _ADD_PHASE_AC_AFTER_TASKS_BLOCK = (
     "### Phase 3: リリース準備 `cc:TODO`\n"
     "\n"
@@ -2193,6 +2237,71 @@ class TestCollateralScopeOracle:
         (pycache_dir / "module.cpython-314.pyc").write_bytes(b"\x00")
 
         fixture.assert_tracked_changes_limited_to({".claude/Plans.md"}, cwd=tmp_path)
+
+    def test_ignored_scan_prefixes_defaults_to_off_and_misses_ignored_directory_payload(
+        self, tmp_path: Path
+    ) -> None:
+        """PR #326 レビュー round 5 (Codex P1): `ignored_scan_prefixes` を渡さない従来どおりの
+        呼び出しでは、root `.gitignore` が ignore する `.claude/meta-harness/` 配下に候補が
+        任意ファイルを作成しても検出されない（後方互換の確認。この盲点を実際に塞ぐのが次の
+        テスト）。"""
+        fixture = _task_state_outcome_fixture()
+        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        (tmp_path / ".gitignore").write_text(".claude/meta-harness/\n", encoding="utf-8")
+        subprocess.run(["git", "add", ".gitignore"], cwd=tmp_path, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "add gitignore"], cwd=tmp_path, check=True)
+
+        payload_dir = tmp_path / ".claude" / "meta-harness"
+        payload_dir.mkdir(parents=True)
+        (payload_dir / "payload").write_text("candidate-controlled content", encoding="utf-8")
+
+        fixture.assert_tracked_changes_limited_to({".claude/Plans.md"}, cwd=tmp_path)
+
+    def test_ignored_scan_prefixes_rejects_new_file_under_gitignored_directory(
+        self, tmp_path: Path
+    ) -> None:
+        """PR #326 レビュー round 5 (Codex P1): 同じシナリオで `ignored_scan_prefixes=(".claude",)`
+        を渡すと、`.claude/meta-harness/` のような gitignore 済みディレクトリへの新規ファイル
+        作成も、untracked ファイルと同じ allowlist で検出・拒否されるようになる。"""
+        fixture = _task_state_outcome_fixture()
+        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        (tmp_path / ".gitignore").write_text(".claude/meta-harness/\n", encoding="utf-8")
+        subprocess.run(["git", "add", ".gitignore"], cwd=tmp_path, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "add gitignore"], cwd=tmp_path, check=True)
+
+        payload_dir = tmp_path / ".claude" / "meta-harness"
+        payload_dir.mkdir(parents=True)
+        (payload_dir / "payload").write_text("candidate-controlled content", encoding="utf-8")
+
+        with pytest.raises(AssertionError, match=r"new git-ignored files under \['\.claude'\]"):
+            fixture.assert_tracked_changes_limited_to(
+                {".claude/Plans.md"}, ignored_scan_prefixes=(".claude",), cwd=tmp_path
+            )
+
+    def test_ignored_scan_prefixes_still_allows_explicitly_allowed_ignored_file(
+        self, tmp_path: Path
+    ) -> None:
+        """The evaluator's own bridge artifact (`CANDIDATE_FINAL_REPORT_RELATIVE_PATH`) is
+        itself a git-ignored file under `.claude`; enabling `ignored_scan_prefixes` must not
+        flag it as long as it is also passed via `allowed_paths` (mirrors how the task-state /
+        handoff scenario yamls now call this subcommand)."""
+        fixture = _task_state_outcome_fixture()
+        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        (tmp_path / ".gitignore").write_text(
+            ".claude/meta-harness-oracle/final-report.md\n", encoding="utf-8"
+        )
+        subprocess.run(["git", "add", ".gitignore"], cwd=tmp_path, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "add gitignore"], cwd=tmp_path, check=True)
+
+        oracle_dir = tmp_path / ".claude" / "meta-harness-oracle"
+        oracle_dir.mkdir(parents=True)
+        (oracle_dir / "final-report.md").write_text("candidate final response", encoding="utf-8")
+
+        fixture.assert_tracked_changes_limited_to(
+            {".claude/Plans.md", ".claude/meta-harness-oracle/final-report.md"},
+            ignored_scan_prefixes=(".claude",),
+            cwd=tmp_path,
+        )
 
     def test_default_rejects_new_untracked_file_without_allow_list(self, tmp_path: Path) -> None:
         """PR #273 bot review round 3 (Codex P2): a bypass-mode candidate creating an

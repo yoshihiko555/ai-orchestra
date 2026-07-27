@@ -258,11 +258,51 @@ class TestWriteCandidateFinalReportArtifact:
         assert not (worktree_dir / ev.CANDIDATE_FINAL_REPORT_RELATIVE_PATH).exists()
         assert any("fail-open" in record.message for record in caplog.records)
 
-    def test_final_report_symlinked_to_existing_file_is_rejected_and_target_untouched(
+    def test_malformed_assistant_line_before_trailing_valid_result_skips_write(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """PR #326 レビュー round 5 (Codex P2 x2): 通常の stream-json は最終 assistant イベント
+        の後に有効な `result` 行で終わる。「有効な以前の assistant → 壊れた最終 assistant →
+        有効な result」という順序では、末尾行（result）だけを検証してもすり抜け、
+        `_iter_jsonl` が壊れた assistant 行を黙って破棄することで、さらに前の（stale な）
+        assistant 応答が最終応答として採用されてしまっていた。ファイル中のどの行が壊れていても
+        抽出全体を fail-open にする。"""
+        worktree_dir = tmp_path / "worktree"
+        worktree_dir.mkdir()
+        events_path = tmp_path / "events.jsonl"
+        stale_event = json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {"type": "text", "text": "AC はまだ合意されていません。定義しますか?"}
+                    ]
+                },
+            }
+        )
+        malformed_final_assistant_line = (
+            '{"type": "assistant", "message": {"content": [{"type": "text"'
+        )
+        valid_trailing_result = json.dumps({"type": "result", "subtype": "success"})
+        events_path.write_text(
+            "\n".join([stale_event, malformed_final_assistant_line, valid_trailing_result]),
+            encoding="utf-8",
+        )
+
+        with caplog.at_level(logging.WARNING):
+            ev._write_candidate_final_report_artifact(worktree_dir, events_path)
+
+        assert not (worktree_dir / ev.CANDIDATE_FINAL_REPORT_RELATIVE_PATH).exists()
+        assert any("fail-open" in record.message for record in caplog.records)
+
+    def test_final_report_symlinked_to_existing_file_is_rejected_fail_closed(
         self, tmp_path: Path
     ) -> None:
-        """`final-report.md` 自体が（worktree 内外いずれかの）既存ファイルへの symlink に
-        差し替えられていても、そのファイルへ透過的に書き込んではならない。"""
+        """PR #326 レビュー round 5 (Codex P2): `final-report.md` 自体が（worktree 内外いずれかの）
+        既存ファイルへの symlink に差し替えられていても、そのファイルへ透過的に書き込んでは
+        ならない。この予約パスの改ざんは fail-open ではなく fail-closed（run error）に扱う:
+        この正確なパスは `_ensure_bridge_artifact_ignored` により Git から不可視であり、
+        silently skip すると候補がこの盲点を悪用しても一切記録されずに評価が続行してしまう。"""
         worktree_dir = tmp_path / "worktree"
         worktree_dir.mkdir()
         oracle_dir = worktree_dir / ".claude" / "meta-harness-oracle"
@@ -274,6 +314,32 @@ class TestWriteCandidateFinalReportArtifact:
         events_path = tmp_path / "events.jsonl"
         _write_assistant_text(events_path, "AC はまだ合意されていません。定義しますか?")
 
-        ev._write_candidate_final_report_artifact(worktree_dir, events_path)
+        with pytest.raises(ev.EvaluatorStageError, match="symlink"):
+            ev._write_candidate_final_report_artifact(worktree_dir, events_path)
 
         assert victim.read_text(encoding="utf-8") == "do not touch"
+
+    def test_final_report_path_replaced_with_a_directory_is_rejected_fail_closed(
+        self, tmp_path: Path
+    ) -> None:
+        """PR #326 レビュー round 5 (Codex P2): `Bash(python3 *)` を公開する handoff シナリオ等
+        では、候補が予約パス自体を（symlink ではなく）通常のディレクトリに差し替え、その配下へ
+        任意の subtree を作成できる。このパスは Git から不可視なため collateral-scope は一切
+        検出できない -- fail-open で握り潰さず run error にすることで、候補が書込み失敗を
+        「何も起きなかった」ことにできないようにする。"""
+        worktree_dir = tmp_path / "worktree"
+        worktree_dir.mkdir()
+        oracle_dir = worktree_dir / ".claude" / "meta-harness-oracle"
+        final_report_as_dir = oracle_dir / "final-report.md"
+        final_report_as_dir.mkdir(parents=True)
+        (final_report_as_dir / "payload.txt").write_text("attacker subtree", encoding="utf-8")
+
+        events_path = tmp_path / "events.jsonl"
+        _write_assistant_text(events_path, "AC はまだ合意されていません。定義しますか?")
+
+        with pytest.raises(ev.EvaluatorStageError, match="not a regular file"):
+            ev._write_candidate_final_report_artifact(worktree_dir, events_path)
+
+        assert (final_report_as_dir / "payload.txt").read_text(encoding="utf-8") == (
+            "attacker subtree"
+        )
