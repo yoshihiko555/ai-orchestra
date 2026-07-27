@@ -1410,6 +1410,57 @@ def test_compute_impact_result_detects_change_via_symlink_target(tmp_path) -> No
     assert impacted["design:down"].band == cc.BAND_GREEN
 
 
+def test_compute_impact_result_handles_multiple_symlinks_to_same_target(
+    tmp_path, monkeypatch
+) -> None:
+    # symlink_target_to_id が `target -> node_id` の 1 対 1 dict だと、docs/a.md と
+    # docs/b.md が同じリンク先を指す場合に後勝ちで片方の node_id しか changed_ids に
+    # 載らず、リンク先変更時に他方のノードが影響分析（impacted）から漏れる
+    # （レビュー対応: 7巡目 codd.py:1137）。target -> node_id は多対一（list）で
+    # 保持すべきことを、両ノードの node_id が異なるケースで検証する。
+    #
+    # 実ファイルの symlink は dereference した内容から node_id を読むため、同一
+    # ターゲットを指す 2つの symlink は必ず同じ node_id になり、1対1 dict でも
+    # 情報は失われない（バグを再現できない）。そのため `_symlink_target_relpath`
+    # を差し替え、docs/a.md と docs/b.md が異なる node_id を持ったまま同一
+    # ターゲット（shared/actual.md）を指す状況を作る。
+    _init_repo(tmp_path)
+    _write(tmp_path, "docs/a.md", _doc("design:a", "design"))
+    _write(tmp_path, "docs/b.md", _doc("design:b", "design"))
+    _write(
+        tmp_path,
+        "docs/down_a.md",
+        _doc("design:down-a", "design", deps=[("design:a", "derives_from")]),
+    )
+    _write(
+        tmp_path,
+        "docs/down_b.md",
+        _doc("design:down-b", "design", deps=[("design:b", "derives_from")]),
+    )
+    _write(tmp_path, "shared/actual.md", "# actual\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "init")
+    (tmp_path / "shared" / "actual.md").write_text("# actual\n変更\n", encoding="utf-8")
+
+    shared_target = {"docs/a.md", "docs/b.md"}
+    real_symlink_target_relpath = cli._symlink_target_relpath
+
+    def _fake_symlink_target_relpath(root: Path, rel: str) -> str | None:
+        if rel in shared_target:
+            return "shared/actual.md"
+        return real_symlink_target_relpath(root, rel)
+
+    monkeypatch.setattr(cli, "_symlink_target_relpath", _fake_symlink_target_relpath)
+
+    result = cli.compute_impact_result(tmp_path, _config(), "HEAD")
+
+    assert "design:a" in result.changed_ids
+    assert "design:b" in result.changed_ids
+    impacted = _by_id(result.impacted)
+    assert impacted["design:down-a"].band == cc.BAND_GREEN
+    assert impacted["design:down-b"].band == cc.BAND_GREEN
+
+
 def test_compute_impact_result_recovers_symlink_node_id_after_deletion(tmp_path) -> None:
     # ref 側の rel が symlink の場合、`git show <ref>:<rel>` は symlink blob の中身
     # （リンク先パス文字列）をそのまま返す。dereference せず frontmatter として解析

@@ -1129,12 +1129,16 @@ def compute_impact_result(root: Path, config: cc.CoddConfig, ref: str) -> Impact
     # 注釈として読むため、リンク先だけを変更した場合も `git diff` はリンク先のパスを
     # 返す。node.path（symlink 自身）しか見ないと変更が検出されないため、リンク先の
     # root 相対パスも突合対象に加える（レビュー対応: codd.py:84）。
-    symlink_target_to_id = {
-        target: node.node_id
-        for node in result.nodes
-        if (target := _symlink_target_relpath(root, node.path)) is not None
-    }
-    changed_ids |= {symlink_target_to_id[p] for p in changed_paths if p in symlink_target_to_id}
+    # 複数の symlink ノードが同一ターゲットを指すことがあるため target -> node_id は
+    # 多対一（list）で保持する。1対1 dict だと後勝ちで一部の symlink ノードが
+    # changed_ids から漏れ、リンク先変更時の影響分析から欠落する（レビュー対応: 7巡目）。
+    symlink_target_to_ids: dict[str, list[str]] = {}
+    for node in result.nodes:
+        target = _symlink_target_relpath(root, node.path)
+        if target is None:
+            continue
+        symlink_target_to_ids.setdefault(target, []).append(node.node_id)
+    changed_ids |= {node_id for p in changed_paths for node_id in symlink_target_to_ids.get(p, [])}
 
     # 削除された scope 内ドキュメント / code_scope 内コード（Issue #98 レビュー対応。
     # 注釈付きコードファイル削除も下流の dangling 化を検出対象にする）。
