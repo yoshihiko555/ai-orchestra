@@ -350,6 +350,21 @@ def _git(root: Path, *args: str) -> None:
     subprocess.run(["git", *args], cwd=root, capture_output=True, check=True)
 
 
+def _commit_at(root: Path, message: str, date: str) -> None:
+    """author/committer date を明示指定してコミットする。
+
+    git のコミット時刻は秒単位のため、同一テスト内の連続コミットが同じ %ct に
+    なりうる。drift 判定のテストで確実に前後関係を区別するために使う。
+    """
+    subprocess.run(
+        ["git", "commit", "-m", message],
+        cwd=root,
+        capture_output=True,
+        check=True,
+        env={**os.environ, "GIT_AUTHOR_DATE": date, "GIT_COMMITTER_DATE": date},
+    )
+
+
 def test_commit_time_clean_uses_git_dirty_uses_mtime(tmp_path) -> None:
     # クリーン追跡ファイルは git コミット時刻、未コミット編集のあるファイルは mtime。
     _git(tmp_path, "init")
@@ -577,6 +592,43 @@ def test_validate_drift_warning_via_git_commit_times(tmp_path) -> None:
 
     assert len(drift) == 1
     assert drift[0].level == cc.LEVEL_WARNING
+
+
+def test_validate_drift_uses_symlink_target_commit_time_not_alias(tmp_path) -> None:
+    # `_check_drift` は symlink alias ノードの更新時刻に alias 自体の最終コミット
+    # 時刻ではなく、リンクチェーンの実体（最終ターゲット）の最終コミット時刻を使う
+    # 必要がある。scan はリンク先の内容を dereference して注釈を読むため、alias 自体
+    # は git 上変更されなくても、リンク先の内容だけが後続コミットで更新されることが
+    # ある。alias の古い時刻のまま比較すると drift の誤検知（false positive）が起きる
+    # （Issue #98 レビュー対応: 10巡目 codd.py:666）。
+    _init_repo(tmp_path)
+    _write(tmp_path, "docs/req.md", _doc("req:r", "requirement"))
+    _write(tmp_path, "shared/mod.py", _py(["codd:implements req:r"]))
+    (tmp_path / "aliases").mkdir()
+    (tmp_path / "aliases" / "mod.py").symlink_to(Path("../shared/mod.py"))
+    config = _config(code_scope={"include": ["aliases/*.py"], "exclude": []})
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "init")
+
+    # 上流 (req) を先に更新する。
+    _write(tmp_path, "docs/req.md", _doc("req:r", "requirement") + "\nupdated\n")
+    _git(tmp_path, "add", "-A")
+    _commit_at(tmp_path, "update req", "@4102444800 +0000")  # 2100-01-01
+
+    # alias（aliases/mod.py）自体は変更せず、リンク先（shared/mod.py）の内容だけを
+    # 上流より後のコミットで追従更新する。
+    _write(tmp_path, "shared/mod.py", _py(["codd:implements req:r"], body="print('v2')\n"))
+    _git(tmp_path, "add", "-A")
+    _commit_at(tmp_path, "catch up alias target", "@4102531200 +0000")  # 2100-01-02
+
+    result = cli.scan_project(tmp_path, config)
+    findings = cli.run_checks(result, config, tmp_path)
+    drift = [f for f in findings if f.check == "drift"]
+
+    # alias はリンク先の実体経由で上流より新しく更新済みなので drift は検出されない
+    # はず。alias 自体のコミット時刻（init 時点）を使う旧実装では誤って drift が
+    # 報告されていた。
+    assert drift == []
 
 
 def test_checks_off_level_suppresses(tmp_path) -> None:
@@ -1046,6 +1098,31 @@ def test_compute_impact_result_recovers_upstream_when_code_symlink_target_delete
     _git(tmp_path, "commit", "-m", "init")
 
     (tmp_path / "shared" / "core.py").unlink()  # ターゲットのみ削除（alias 自体は未変更）
+
+    result = cli.compute_impact_result(tmp_path, config, "HEAD")
+
+    assert "aliases/core.py" in result.deleted_upstream
+
+
+def test_compute_impact_result_recovers_upstream_when_code_symlink_target_node_id_changes(
+    tmp_path,
+) -> None:
+    # `aliases/core.py -> ../shared/core.py` のような symlink で、code_scope には
+    # alias（aliases/core.py）だけが含まれ、リンク先（shared/core.py）自体は scope 外
+    # というケース。リンク先の node_id を変更（または注釈を削除）しても、alias 自体の
+    # パスは git 上変更されないため `git diff` には現れず、リンク先パスは
+    # path_in_code_scope() で scope 外と判定されて素通りしてしまい、旧 node_id の消失が
+    # deleted_upstream に検出されなかった（Issue #98 レビュー対応: 10巡目 codd.py:1285）。
+    _init_repo(tmp_path)
+    _write(tmp_path, "shared/core.py", _py(["codd:node_id code:core"]))
+    (tmp_path / "aliases").mkdir()
+    (tmp_path / "aliases" / "core.py").symlink_to(Path("../shared/core.py"))
+    config = _config(code_scope={"include": ["aliases/*.py"], "exclude": []})
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "init")
+
+    # ターゲットは削除せず node_id だけ差し替える（alias 自体は未変更のまま）。
+    _write(tmp_path, "shared/core.py", _py(["codd:node_id code:core-v2"]))
 
     result = cli.compute_impact_result(tmp_path, config, "HEAD")
 

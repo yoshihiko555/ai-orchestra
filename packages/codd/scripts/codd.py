@@ -661,12 +661,23 @@ def _check_drift(result: ScanResult, root: Path) -> list[Finding]:
 
     ノードごとに `commit_time()` を呼ぶと、1,000 ノード規模で git プロセスを
     ノード数に比例して起動してしまい著しく遅い（Issue #98 レビュー対応）。
+
+    symlink ノード（`code_scope` の alias 等）は、alias 自体ではなくリンクチェーンの
+    実体（最終ターゲット）の更新時刻を使う。scan はリンク先の内容を dereference して
+    注釈を読むため、drift 判定も同じ実体を見る必要がある。alias 自体の最終コミット
+    時刻は「リンクを張った/張り替えた時刻」であり、リンク先の内容だけが後続コミットで
+    更新されても変わらないため、alias の古い時刻のまま比較すると drift の誤検知
+    （false positive）が起きる（Issue #98 レビュー対応: 10巡目 codd.py:666）。
     """
     findings: list[Finding] = []
-    time_cache = batch_commit_times(root, [node.path for node in result.nodes])
+    effective_path = {
+        node.path: (chain[-1] if (chain := _symlink_chain_relpaths(root, node.path)) else node.path)
+        for node in result.nodes
+    }
+    time_cache = batch_commit_times(root, sorted(set(effective_path.values())))
 
     def time_of(rel: str) -> float:
-        return time_cache.get(rel, 0.0)
+        return time_cache.get(effective_path.get(rel, rel), 0.0)
 
     for node in result.nodes:
         downstream_time = time_of(node.path)
@@ -1281,10 +1292,16 @@ def compute_impact_result(root: Path, config: cc.CoddConfig, ref: str) -> Impact
     # 変更検出対象に含める。中間リンクだけが変更された場合 `git diff` は中間リンクの
     # パスを返すため、最終ターゲットしか見ないと変更が検出できない
     # （レビュー対応: 8巡目 codd.py:1009）。
+    # alias 側の rel パスも hop ごとに集めておく（`node_id` はターゲット内容から
+    # 決まるため同一ターゲットを指す複数 alias で衝突しうるが、rel パスは衝突しない。
+    # deleted_upstream 判定（下記）で node_id からの逆引きではなく alias の rel
+    # パスそのものが必要になるため、この 1 パスで併せて収集する）。
     symlink_target_to_ids: dict[str, list[str]] = {}
+    symlink_alias_rels_by_hop: dict[str, list[str]] = {}
     for node in result.nodes:
         for hop in _symlink_chain_relpaths(root, node.path):
             symlink_target_to_ids.setdefault(hop, []).append(node.node_id)
+            symlink_alias_rels_by_hop.setdefault(hop, []).append(node.path)
     changed_ids |= {node_id for p in changed_paths for node_id in symlink_target_to_ids.get(p, [])}
 
     # 削除された scope 内ドキュメント / code_scope 内コード（Issue #98 レビュー対応。
@@ -1321,6 +1338,22 @@ def compute_impact_result(root: Path, config: cc.CoddConfig, ref: str) -> Impact
         p
         for p in _broken_code_symlink_relpaths(root, config)
         if _is_dangling_deletion(root, ref, p, result.graph, config, is_code=True)
+    }
+    # code_scope が alias のみを含み、リンク先自体は scope 外というケースでは、
+    # リンク先の変更（削除ではなく node_id の変更・注釈削除）は alias 自体のパスとして
+    # git 上に現れないため、直前の changed_paths 突合（path_in_code_scope(root, p, ...)
+    # で p 自体の scope membership を見る）はリンク先を素通りしてしまい、旧 node_id の
+    # 消失を検出できない（Issue #98 レビュー対応: 10巡目 codd.py:1285）。alias が保持
+    # する node_id は working tree で dereference した現在のリンク先内容から決まるため、
+    # alias 自体の rel パスで ref 側の旧内容（リンクチェーンを辿った先）を読み戻し、
+    # 現グラフから消えていないか確認する。
+    changed_symlink_alias_rels = {
+        alias_rel for hop in changed_paths for alias_rel in symlink_alias_rels_by_hop.get(hop, [])
+    }
+    deleted_upstream_candidates |= {
+        alias_rel
+        for alias_rel in changed_symlink_alias_rels
+        if _is_dangling_deletion(root, ref, alias_rel, result.graph, config, is_code=True)
     }
     deleted_upstream = sorted(deleted_upstream_candidates)
 
