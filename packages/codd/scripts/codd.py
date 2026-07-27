@@ -1083,6 +1083,13 @@ def _symlink_target_relpath(root: Path, rel: str) -> str | None:
         link_text = os.readlink(path)
     except OSError:
         return None
+    if posixpath.isabs(link_text):
+        # link_text が絶対パス（例: `/etc/hosts`）だと posixpath.join がそれを
+        # そのまま返し、`..` 始まりチェックをすり抜けて root 外を指してしまう
+        # （9巡目レビュー対応: codd.py:1089）。ref 側 `_resolve_ref_symlink_target`
+        # にも同一規約を適用すること（片方だけの修正は alias 削除時の旧 node_id
+        # 復元シナリオとの整合が崩れる）。
+        return None
     combined = posixpath.normpath(posixpath.join(posixpath.dirname(rel), link_text))
     if combined == os.pardir or combined.startswith(f"{os.pardir}/"):
         return None
@@ -1132,7 +1139,13 @@ def _resolve_ref_symlink_target(rel: str, link_text: str) -> str | None:
     strip すると working tree（`os.readlink` で空白を保持する `_symlink_target_relpath`）
     とは別のパスに解決されてしまい、alias 削除時に旧 node_id を復元できなくなる
     （レビュー対応: 8巡目 codd.py:1037）。
+
+    ``link_text`` が絶対パス（例: ``/etc/hosts``）の場合は working tree 側
+    `_symlink_target_relpath` と同じ規約で早期 None を返す（9巡目レビュー対応:
+    codd.py:1089）。
     """
+    if posixpath.isabs(link_text):
+        return None
     combined = posixpath.normpath(posixpath.join(posixpath.dirname(rel), link_text))
     if combined == os.pardir or combined.startswith(f"{os.pardir}/"):
         return None

@@ -1685,6 +1685,45 @@ def test_compute_impact_result_detects_change_via_intermediate_symlink_hop(
     assert "code:v2" in result.changed_ids
 
 
+def test_symlink_target_relpath_rejects_absolute_link_text(tmp_path) -> None:
+    # symlink のリンク先が絶対パス（例: `docs/link.md -> /etc/hosts`）だと
+    # `posixpath.join(dirname, link_text)` は join 元を無視して絶対パスを
+    # そのまま返すため、`..` 始まりチェックだけでは root 外判定をすり抜けて
+    # しまう（9巡目レビュー対応: codd.py:1089）。working tree 側
+    # `_symlink_target_relpath` は絶対パスを早期 None で拒否する必要がある。
+    root = tmp_path
+    (root / "docs").mkdir()
+    (root / "docs" / "link.md").symlink_to("/etc/hosts")
+
+    assert cli._symlink_target_relpath(root, "docs/link.md") is None
+
+
+def test_resolve_ref_symlink_target_rejects_absolute_link_text() -> None:
+    # ref 側（git symlink blob の内容）が絶対パスの場合も working tree 側と
+    # 同一規約で早期 None を返す必要がある（9巡目レビュー対応: codd.py:1089）。
+    # 片方だけの修正は許されない（working tree 側の判定と食い違うと、alias
+    # 削除時の旧 node_id 復元シナリオの整合が崩れる）。
+    assert cli._resolve_ref_symlink_target("docs/link.md", "/etc/hosts") is None
+
+
+def test_compute_impact_result_ignores_absolute_ref_symlink_target(tmp_path) -> None:
+    # ref 側の symlink が絶対パスを指す場合、root 外ファイルの内容を旧 node_id
+    # として誤って復元・dangling 判定に取り込んではいけない（9巡目レビュー対応:
+    # codd.py:1089）。修正前は `combined` が絶対パスのまま `..` 始まりでない
+    # ため root 外判定をすり抜け、そのパスで `git show` を試みてしまっていた。
+    _init_repo(tmp_path)
+    _write(tmp_path, "shared/actual.md", _doc("design:d", "design"))
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "link.md").symlink_to(tmp_path / "shared" / "actual.md")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "init")
+    (tmp_path / "docs" / "link.md").unlink()  # symlink 自体を削除（ターゲットは残す）
+
+    result = cli.compute_impact_result(tmp_path, _config(), "HEAD")
+
+    assert "docs/link.md" not in result.deleted_upstream
+
+
 def test_compute_impact_result_reports_deleted_code_upstream_with_pep263_encoding(
     tmp_path,
 ) -> None:
