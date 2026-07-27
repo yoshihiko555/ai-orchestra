@@ -1010,10 +1010,13 @@ class TestExtractCodexPromptCommandSegmentRestriction:
         """本文中に `PROMPT `（delimiter + 末尾空白）の行があっても、そこで
         本文抽出が終端しないことを確認する（bash の plain heredoc 終端は
         delimiter 行の完全一致のみで、末尾空白を許容しない）。
+
+        delimiter は quoted（`<<'PROMPT'`）を使う。unquoted delimiter は
+        本文抽出の対象外になったため（`TestUnquotedHeredocDelimiter` 参照）。
         """
         cmd = (
             "PROMPT_FILE=$(mktemp)\n"
-            'cat > "$PROMPT_FILE" <<PROMPT\n'
+            "cat > \"$PROMPT_FILE\" <<'PROMPT'\n"
             "PROMPT \n"
             "second line\n"
             "PROMPT\n"
@@ -1021,6 +1024,130 @@ class TestExtractCodexPromptCommandSegmentRestriction:
             '"$(cat "$PROMPT_FILE")" < /dev/null 2>/dev/null'
         )
         assert audit_cli.extract_codex_prompt(cmd) == "PROMPT \nsecond line"
+
+
+class TestUnquotedHeredocDelimiter:
+    """unquoted heredoc delimiter（`<<DELIM`）からの本文抽出拒否のテスト。
+
+    bash は unquoted delimiter の場合、変数展開・command substitution を
+    ファイル書き込み前に実行する。生の本文を記録すると実際に送信された
+    内容と監査ログが乖離するため、抽出自体を拒否し安全側（`None`）へ倒す。
+    """
+
+    def test_unquoted_delimiter_prompt_is_not_extracted(self) -> None:
+        """delimiter が unquoted（`<<PROMPT`）の場合、prompt を抽出しないことを
+        確認する（展開後の内容を安全に再現できないための回帰）。
+        """
+        cmd = (
+            "PROMPT_FILE=$(mktemp)\n"
+            'cat > "$PROMPT_FILE" <<PROMPT\n'
+            "Hello $NAME\n"
+            "PROMPT\n"
+            "codex exec --model gpt-5.3-codex --sandbox read-only "
+            '"$(cat "$PROMPT_FILE")" < /dev/null 2>/dev/null'
+        )
+        assert audit_cli.extract_codex_prompt(cmd) is None
+
+    def test_double_quoted_delimiter_is_still_extracted(self) -> None:
+        """delimiter が quoted（`<<"DELIM"`）であれば従来どおり抽出されることを
+        確認する（unquoted のみを拒否対象とし、quoted は退行させない）。
+        """
+        cmd = (
+            "PROMPT_FILE=$(mktemp)\n"
+            'cat > "$PROMPT_FILE" <<"PROMPT"\n'
+            "Hello world\n"
+            "PROMPT\n"
+            "codex exec --model gpt-5.3-codex --sandbox read-only "
+            '"$(cat "$PROMPT_FILE")" < /dev/null 2>/dev/null'
+        )
+        assert audit_cli.extract_codex_prompt(cmd) == "Hello world"
+
+
+class TestHeredocOpenerTrailingShellSyntax:
+    """heredoc opener 行に後続シェル構文（コメント・リスト演算子）がある場合の
+    回帰テスト。
+    """
+
+    def test_trailing_comment_after_opener_is_recognized(self) -> None:
+        """`cat > "$PROMPT_FILE" <<'EOF' # comment` でもブロックを認識し、
+        prompt を抽出できることを確認する。
+        """
+        cmd = (
+            "PROMPT_FILE=$(mktemp)\n"
+            "cat > \"$PROMPT_FILE\" <<'EOF' # comment\n"
+            "Hello world\n"
+            "EOF\n"
+            "codex exec --model gpt-5.3-codex --sandbox read-only "
+            '"$(cat "$PROMPT_FILE")" < /dev/null 2>/dev/null'
+        )
+        assert audit_cli.extract_codex_prompt(cmd) == "Hello world"
+
+    def test_trailing_or_exit_after_opener_is_recognized(self) -> None:
+        """`cat > "$PROMPT_FILE" <<'EOF' || exit 1` でもブロックを認識し、
+        prompt を抽出できることを確認する。
+        """
+        cmd = (
+            "PROMPT_FILE=$(mktemp)\n"
+            "cat > \"$PROMPT_FILE\" <<'EOF' || exit 1\n"
+            "Hello world\n"
+            "EOF\n"
+            "codex exec --model gpt-5.3-codex --sandbox read-only "
+            '"$(cat "$PROMPT_FILE")" < /dev/null 2>/dev/null'
+        )
+        assert audit_cli.extract_codex_prompt(cmd) == "Hello world"
+
+
+class TestHereStringNotMaskedAsHeredoc:
+    """here-string（`<<<word`）を heredoc として誤マスクしないことのテスト。"""
+
+    def test_here_string_opener_is_not_detected_as_heredoc(self) -> None:
+        """`<<<word` の 2 文字目以降が `<<word` として誤マッチしないことを
+        確認する（`_HEREDOC_OPEN_RE` の直接ユニットテスト）。
+        """
+        assert audit_cli._HEREDOC_OPEN_RE.search("cat <<<true") is None
+
+    def test_here_string_does_not_mask_subsequent_codex_exec_call(self) -> None:
+        """`cat <<<true` の後に実際の `codex exec` 呼び出し、さらに同じ単語
+        （`true`）の単独行が続いても、その範囲が heredoc 本文として誤って
+        マスクされず、`codex exec` 呼び出しが検出・記録されることを確認する。
+        """
+        cmd = 'cat <<<true\ncodex exec --full-auto "real prompt" < /dev/null 2>/dev/null\ntrue'
+        detection_command = audit_cli._detection_command(cmd)
+        assert audit_cli.CODEX_EXEC_RE.search(detection_command) is not None
+        assert audit_cli.extract_codex_prompt(cmd) == "real prompt"
+
+
+class TestHeredocProducerMustBeCat:
+    """heredoc producer が `cat` であることを要求するテスト。"""
+
+    def test_non_cat_producer_prompt_is_not_extracted(self) -> None:
+        """producer が `sed` 等の変換コマンドの場合、heredoc ソースの本文を
+        prompt として抽出しないことを確認する（Codex へ実際に渡るのは変換後の
+        内容であり、heredoc ソースとは異なるため）。
+        """
+        cmd = (
+            "PROMPT_FILE=$(mktemp)\n"
+            "sed 's/unsafe/safe/g' > \"$PROMPT_FILE\" <<'EOF'\n"
+            "unsafe prompt\n"
+            "EOF\n"
+            "codex exec --model gpt-5.3-codex --sandbox read-only "
+            '"$(cat "$PROMPT_FILE")" < /dev/null 2>/dev/null'
+        )
+        assert audit_cli.extract_codex_prompt(cmd) is None
+
+    def test_cat_producer_with_reversed_operator_order_is_still_extracted(self) -> None:
+        """producer が `cat` であれば、heredoc 演算子とリダイレクトの語順が
+        逆（`cat <<'EOF' > "$VAR"`）でも従来どおり抽出できることを確認する。
+        """
+        cmd = (
+            "PROMPT_FILE=$(mktemp)\n"
+            "cat <<'EOF' > \"$PROMPT_FILE\"\n"
+            "safe prompt\n"
+            "EOF\n"
+            "codex exec --model gpt-5.3-codex --sandbox read-only "
+            '"$(cat "$PROMPT_FILE")" < /dev/null 2>/dev/null'
+        )
+        assert audit_cli.extract_codex_prompt(cmd) == "safe prompt"
 
 
 class TestExtractModelCommandSegmentRestriction:

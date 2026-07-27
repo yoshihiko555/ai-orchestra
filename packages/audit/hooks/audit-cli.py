@@ -48,7 +48,12 @@ CODEX_EXEC_RE = re.compile(
 # heredoc の開始演算子（`<<[-]DELIM`）を検出するパターン。デリミタはクォート
 # あり（任意の記号を含む。issue: 記号入り delimiter 対応）とクォートなし
 # （シェルの区切り文字・括弧類を除く）の両方に対応する。
-_HEREDOC_OPEN_RE = re.compile(r"<<(-)?\s*(?:'([^'\n]*)'|\"([^\"\n]*)\"|([^\s'\"<>|&;()]+))")
+# `(?<!<)` / `(?!<)` は here-string（`<<<word`）を heredoc として誤認しない
+# ためのガード（`<<` の直前・直後が `<` の場合は here-string の一部とみなし
+# マッチさせない。issue: here-string 誤マスク対応）。
+_HEREDOC_OPEN_RE = re.compile(
+    r"(?<!<)<<(?!<)(-)?\s*(?:'([^'\n]*)'|\"([^\"\n]*)\"|([^\s'\"<>|&;()]+))"
+)
 
 # コマンド区切り文字（改行 / `;` / `|` / `&`）。`&&` / `||` もこの集合に含まれる
 # 文字の並びとして扱われるため、区切り検出には十分。
@@ -96,6 +101,7 @@ class _HeredocBlock:
     opener_line: str
     dash: bool
     delimiter: str
+    quoted: bool
     body_lines: tuple[str, ...]
     terminated: bool
 
@@ -151,6 +157,12 @@ def _scan_heredocs(command: str) -> list[_HeredocBlock]:
             index += 1
             continue
         dash = bool(open_match.group(1))
+        # クォート済みデリミタ（`'...'` / `"..."`）か否か。unquoted delimiter
+        # では bash が変数展開・command substitution を実行してから書き込む
+        # ため、生の本文と実際の展開後の内容が一致しない
+        # （`_extract_heredoc_content` はこのフラグを見て unquoted の場合は
+        # 本文抽出を拒否し、安全側（prompt None 扱い）へ倒す）。
+        quoted = open_match.group(2) is not None or open_match.group(3) is not None
         delimiter = open_match.group(2) or open_match.group(3) or open_match.group(4) or ""
         body_start = index + 1
         terminator_index = _find_heredoc_terminator(lines, body_start, delimiter, dash)
@@ -163,6 +175,7 @@ def _scan_heredocs(command: str) -> list[_HeredocBlock]:
                 opener_line=lines[index],
                 dash=dash,
                 delimiter=delimiter,
+                quoted=quoted,
                 body_lines=tuple(lines[body_start:body_end]),
                 terminated=terminated,
             )
@@ -304,6 +317,69 @@ def _find_segment_end(text: str, start: int) -> int:
     return length
 
 
+def _last_separator_before(text: str, end: int) -> int:
+    """`end` より前にある、引用符外の最後のコマンド区切り文字の直後位置を返す。
+
+    `_find_segment_end` と逆方向（前方から `end` まで走査し、見つかった区切り
+    位置を随時更新する）で同じ引用符追跡ロジックを使う。区切り文字が見つから
+    なければ `0`（文字列先頭）を返す。
+
+    Args:
+        text: 走査対象の文字列（heredoc opener 行など、1行分の文字列を想定）。
+        end: 走査を終了する文字位置（この位置自身は含まない）。
+
+    Returns:
+        最後に見つかった区切り文字の直後の位置。見つからなければ `0`。
+    """
+    quote_char: str | None = None
+    escaped = False
+    index = 0
+    last_boundary = 0
+    while index < end:
+        char = text[index]
+        if quote_char == "'":
+            if char == "'":
+                quote_char = None
+        elif quote_char == '"':
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                quote_char = None
+        elif char in ("'", '"'):
+            quote_char = char
+        elif char in _COMMAND_SEPARATOR_CHARS:
+            last_boundary = index + 1
+        index += 1
+    return last_boundary
+
+
+def _heredoc_producer_is_cat(opener_line: str, assignment_match: re.Match[str]) -> bool:
+    """heredoc opener 行の producer コマンドが bare `cat` であるかを検証する。
+
+    `cat > "$VAR" <<DELIM`（redirect が先）と `cat <<DELIM > "$VAR"`
+    （heredoc 演算子が先）の両語順に対応する。producer が `sed` 等の変換
+    コマンドの場合、実際に対象変数へ書き込まれる内容は変換後であり heredoc
+    ソースの本文とは異なるため、`cat`（引数なし、標準出力をそのまま対象変数へ
+    書き込む形）以外は本文抽出の対象にしない。
+
+    Args:
+        opener_line: heredoc opener 行の文字列。
+        assignment_match: `>` リダイレクト（対象変数への書き込み）のマッチ。
+
+    Returns:
+        producer が引数なしの `cat` であれば True。
+    """
+    heredoc_match = _HEREDOC_OPEN_RE.search(opener_line)
+    if heredoc_match is None:
+        return False
+    operator_start = min(assignment_match.start(), heredoc_match.start())
+    command_start = _last_separator_before(opener_line, operator_start)
+    producer = opener_line[command_start:operator_start].strip()
+    return producer == "cat"
+
+
 def _exec_command_segment(command: str, exec_re: re.Pattern[str]) -> str | None:
     """検出済み CLI 呼び出しのコマンド区間を返す。
 
@@ -382,17 +458,35 @@ def _extract_heredoc_content(command: str, var_name: str) -> str | None:
     （opener 行に `>\\s*"?\\$\\{?VAR\\}?"?` が一致するブロックだけを対象にする
     ため）。
 
+    対象変数への書き込みに一致した最初のブロックが見つかった時点で、以下の
+    2条件のいずれかを満たさない場合は安全側へ倒し `None` を返す（それ以上
+    後続ブロックを探索しない。別の無関係なブロックを誤って採用するリスクを
+    避けるため）:
+
+    - `quoted`: delimiter が quoted（`<<'DELIM'` / `<<"DELIM"`）であること。
+      unquoted delimiter（`<<DELIM`）は bash が変数展開・command substitution
+      を書き込み前に実行するため、生の本文を記録すると実際に送信された内容と
+      監査ログが乖離する（安全に展開結果を再現できないため記録自体を諦める）。
+    - producer が bare `cat`（`_heredoc_producer_is_cat`）であること。`sed` 等の
+      変換コマンドが producer の場合、対象変数へ実際に書き込まれる内容は
+      heredoc ソースとは異なる（変換後の内容が実際に送信される）。
+
     Args:
         command: Bash コマンド文字列。
         var_name: PROMPT_FILE 相当の変数名（`$` や `{}` を除いた素の名前）。
 
     Returns:
-        heredoc 本文。検出できなければ None。
+        heredoc 本文。検出できない、または上記条件を満たさない場合は None。
     """
     assignment_re = re.compile(r'>\s*"?\$\{?' + re.escape(var_name) + r'\}?"?')
     for block in _scan_heredocs(command):
-        if not assignment_re.search(block.opener_line):
+        assignment_match = assignment_re.search(block.opener_line)
+        if assignment_match is None:
             continue
+        if not block.quoted:
+            return None
+        if not _heredoc_producer_is_cat(block.opener_line, assignment_match):
+            return None
         body_lines = block.body_lines
         if block.dash:
             body_lines = tuple(line.lstrip("\t") for line in body_lines)
