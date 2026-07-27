@@ -92,6 +92,11 @@ _PHASE_HEADING_PATTERN = re.compile(r"^### (.+) `cc:([A-Za-z]+)`$")
 _AC_SECTION_HEADING = "#### Acceptance Criteria"
 _AC_ITEM_VERIFY_PATTERN = re.compile(r"^- \[ \] (.+) — verify: `(.+)`$")
 _AC_ITEM_JUDGE_PATTERN = re.compile(r"^- \[ \] (.+) — judge: (.+)$")
+# Any `####` sub-heading other than the AC heading itself is a task-group heading (e.g.
+# `#### API`); used to assert the AC section precedes the task group, not merely the phase
+# heading (PR #326 review round 2: an AC section placed *after* `#### Tasks` and its task lines
+# previously still passed since only `ac_heading_index > heading_index` was checked).
+_SUBHEADING_PATTERN = re.compile(r"^#### (.+)$")
 
 # Day-boundary tolerance: the scenario run and this oracle's separate container can be up to
 # `timeout_ms` (5 min) apart, so a run started just before local midnight and checked just after
@@ -318,6 +323,23 @@ def assert_add_phase_with_ac(
     assert ac_heading_index > heading_index, (
         "the Acceptance Criteria section must come after the phase heading: heading at "
         f"{heading_index}, Acceptance Criteria heading at {ac_heading_index}"
+    )
+
+    task_group_marker_indices = [
+        idx
+        for idx, line in enumerate(inserted_block)
+        if _TASK_LINE_PATTERN.match(line) is not None
+        or (_SUBHEADING_PATTERN.match(line) is not None and line != _AC_SECTION_HEADING)
+    ]
+    assert task_group_marker_indices, (
+        "expected at least one task-group heading or task line in the newly inserted phase "
+        f"block: {inserted_block!r}"
+    )
+    first_task_group_index = min(task_group_marker_indices)
+    assert ac_heading_index < first_task_group_index, (
+        "the Acceptance Criteria section must come before the task group "
+        "(task-memory-usage.md: AC is placed 'タスクグループより前'): Acceptance Criteria "
+        f"heading at {ac_heading_index}, first task-group marker at {first_task_group_index}"
     )
 
     verify_matches = [

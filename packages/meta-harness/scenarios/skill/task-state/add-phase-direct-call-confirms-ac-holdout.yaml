@@ -62,7 +62,13 @@ allowed_tools:
 # tracked file が一切変更されていないことを git diff で検証）+ Phase A の human merge review。
 # AskUserQuestion はこのハーネスでは応答不能なため allowed_tools に含めない（含めると質問が
 # 永久に返らずハングし得る）。したがってこのシナリオは「ユーザーへの確認」を最終レポート内の
-# 明示的な問いかけとして表現できることのみを検証する（checks の rubric_judge、非 critical）。
+# 明示的な問いかけとして表現できることを ac-confirmation-asked（critical, rubric_judge）で検証
+# する。PR #326 レビュー2巡目指摘: 当初この検証は非 critical の checks にしかなく、確認を一切
+# 行わない候補でも上記2件の critical oracle だけで holdout が pass しうる欠陥があった。rubric_judge
+# は worktree_dir 上のファイルしか参照できないため、`_write_candidate_final_report_artifact`
+# （evaluator.py）が候補の最終応答テキストを `.claude/meta-harness-oracle/final-report.md`
+# （gitignore 済み・collateral-scope 検査対象外）へ橋渡しし、下の rubric がそのファイル名を明示
+# 参照することで judge に実体を渡す。
 permission_mode: bypassPermissions
 command_timeout_ms: 60000
 critical:
@@ -80,11 +86,16 @@ critical:
     # ここでの --allow は「万一将来 gitignore が外れた場合の安全弁」として残す。
     command: >-
       python3 packages/meta-harness/scenarios/fixtures/assert-task-state-outcome.py collateral-scope --allow .claude/Plans.md
-checks:
   - id: ac-confirmation-asked
     text: "Acceptance Criteria の要否をユーザーに確認する問いかけが最終レポートに含まれる"
     oracle: rubric_judge
-    rubric: "The final Japanese report must explicitly ask the user whether Acceptance Criteria should be defined for the newly added phase, and must not present any Acceptance Criteria as already agreed or decided."
+    rubric: >-
+      Read the candidate's final response text captured at
+      `.claude/meta-harness-oracle/final-report.md`. It must explicitly ask the user whether
+      Acceptance Criteria should be defined for the newly added phase, and must not present any
+      Acceptance Criteria as already agreed or decided. If the file is missing or empty, treat
+      this as a failure (the candidate produced no reviewable final response).
+checks: []
 holdout: true
 timeout_ms: 300000
 budget:

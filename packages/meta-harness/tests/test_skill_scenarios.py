@@ -76,13 +76,27 @@ def test_task_state_suite_covers_add_phase_ac_behavior() -> None:
     assert by_id["add-phase-with-agreed-ac"]["holdout"] is False
     assert by_id["add-phase-direct-call-confirms-ac-holdout"]["holdout"] is True
 
-    with_ac_commands = [item["command"] for item in by_id["add-phase-with-agreed-ac"]["critical"]]
+    with_ac_commands = [
+        item["command"]
+        for item in by_id["add-phase-with-agreed-ac"]["critical"]
+        if item["oracle"] == "command_exit"
+    ]
     assert any("add-phase-with-ac" in command for command in with_ac_commands)
 
+    no_ac_critical = by_id["add-phase-direct-call-confirms-ac-holdout"]["critical"]
     no_ac_commands = [
-        item["command"] for item in by_id["add-phase-direct-call-confirms-ac-holdout"]["critical"]
+        item["command"] for item in no_ac_critical if item["oracle"] == "command_exit"
     ]
     assert any("add-phase-no-ac" in command for command in no_ac_commands)
+
+    # PR #326 レビュー2巡目指摘: 「AC の要否をユーザーに確認したか」の検証が非 critical の
+    # checks にしかなく、候補が確認を一切行わなくても2つの critical oracle だけで holdout が
+    # pass しうる欠陥があった。この検証が critical へ昇格され、checks からは除去されたことを
+    # 固定する。
+    no_ac_critical_by_id = {item["id"]: item for item in no_ac_critical}
+    assert "ac-confirmation-asked" in no_ac_critical_by_id
+    assert no_ac_critical_by_id["ac-confirmation-asked"]["oracle"] == "rubric_judge"
+    assert by_id["add-phase-direct-call-confirms-ac-holdout"]["checks"] == []
 
 
 def test_skill_scenarios_pin_minimal_output_envelope() -> None:
@@ -1812,6 +1826,48 @@ def test_task_state_add_phase_with_ac_oracle_rejects_missing_ac_section(tmp_path
     plans_path.write_text(_insert_before_separator(_ADD_PHASE_NO_AC_BLOCK), encoding="utf-8")
 
     with pytest.raises(AssertionError, match="Acceptance Criteria セクションが欠落している"):
+        fixture.assert_add_phase_with_ac(
+            plans_path,
+            phase_name="Phase 3: リリース準備",
+            tasks=["デプロイ手順書作成", "リリースノート作成"],
+            verify_text="主要エンドポイントが 200ms 以内に応答する",
+            verify_command="pytest tests/perf/test_latency.py",
+            judge_text="リリースノートの記載内容が十分にユーザーへ伝わる",
+            judge_criteria="変更点・影響範囲・移行手順が明記されている",
+        )
+
+
+_ADD_PHASE_AC_AFTER_TASKS_BLOCK = (
+    "### Phase 3: リリース準備 `cc:TODO`\n"
+    "\n"
+    "#### Tasks\n"
+    "\n"
+    "- `cc:TODO` デプロイ手順書作成\n"
+    "- `cc:TODO` リリースノート作成\n"
+    "\n"
+    "#### Acceptance Criteria\n"
+    "\n"
+    "- [ ] 主要エンドポイントが 200ms 以内に応答する — verify: `pytest tests/perf/test_latency.py`\n"
+    "- [ ] リリースノートの記載内容が十分にユーザーへ伝わる — judge: 変更点・影響範囲・移行手順が明記されている\n"
+    "\n"
+)
+
+
+def test_task_state_add_phase_with_ac_oracle_rejects_ac_placed_after_task_group(
+    tmp_path: Path,
+) -> None:
+    """PR #326 レビュー2巡目指摘: AC 見出しが Phase 見出しより後にあるだけでは不十分で、タスク
+    グループ見出し・タスク行より前にあることまで検証しないと `#### Tasks` の後に AC を置く出力
+    でも critical check が通ってしまう（task-memory-usage.md: AC は「タスクグループより前」）。"""
+    fixture = _task_state_outcome_fixture()
+    plans_path = tmp_path / "Plans.md"
+    plans_path.write_text(
+        _insert_before_separator(_ADD_PHASE_AC_AFTER_TASKS_BLOCK), encoding="utf-8"
+    )
+
+    with pytest.raises(
+        AssertionError, match="Acceptance Criteria section must come before the task group"
+    ):
         fixture.assert_add_phase_with_ac(
             plans_path,
             phase_name="Phase 3: リリース準備",

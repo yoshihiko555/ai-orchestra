@@ -51,6 +51,7 @@ generated-images/
 .claude/skill-evolution/metrics/
 .claude/skill-evolution/pending/
 .claude/meta-harness/
+.claude/meta-harness-oracle/
 .claude/loop/
 .claude/.cache/
 .codex/.cache/

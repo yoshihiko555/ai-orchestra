@@ -1472,8 +1472,10 @@ cd <worktree> && CLAUDE_CODE_MAX_OUTPUT_TOKENS=<budget.max_output_tokens> \
   存在しない場合は config `evaluate.permission_mode`（既定 `acceptEdits`）へ fallback する。値は
   schema で `acceptEdits` / `bypassPermissions` の enum に限定する。`bypassPermissions` は、
   `.claude/` 等の Claude Code protected path への書込みが必要で、かつ allow ルール（`--allowedTools`
-  への path 指定）では解除できないシナリオ（task-state 2 本・handoff 2 本のみ、ADR-20260714-038
-  の「再検討記録（bypassPermissions 例外）」参照）が明示 opt-in する場合のみ使用する。実効値と
+  への path 指定）では解除できないシナリオ（task-state 4 本・handoff 2 本の計 6 本のみ、
+  ADR-20260714-038 の「再検討記録（bypassPermissions 例外）」および「再検討記録（Issue #297 /
+  PR #326 — bypassPermissions 対象を 4→6 シナリオへ拡張）」参照）が明示 opt-in する場合のみ
+  使用する。実効値と
   決定根拠（`scenario`/`global`）は `allowed_tools_source` と同様に run metadata
   （`permission_mode` / `permission_mode_source`）へ監査痕跡として永続化する（§4）。
 - `CLAUDE_CODE_MAX_OUTPUT_TOKENS` は scenario の `budget.max_output_tokens` があればその値、なければ

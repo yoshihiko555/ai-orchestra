@@ -129,3 +129,40 @@ class TestQualityScoreMissingReportPenaltyZeroesOutTerm:
         honest_zero_penalty = mh.quality_score(1.0, 0.0, config)
         missing_report_penalty = mh.quality_score(1.0, 6.0, config)
         assert honest_zero_penalty > missing_report_penalty
+
+
+class TestWriteCandidateFinalReportArtifact:
+    """Issue #297 / PR #326 レビュー2巡目指摘: critical/checks オラクルが候補の最終応答テキストを
+    worktree_dir 経由で参照できるようにするブリッジ（`CANDIDATE_FINAL_REPORT_RELATIVE_PATH`）。"""
+
+    def test_writes_extracted_assistant_text_to_relative_path(self, tmp_path: Path) -> None:
+        worktree_dir = tmp_path / "worktree"
+        worktree_dir.mkdir()
+        events_path = tmp_path / "events.jsonl"
+        _write_assistant_text(events_path, "AC はまだ合意されていません。定義しますか?")
+
+        ev._write_candidate_final_report_artifact(worktree_dir, events_path)
+
+        destination = worktree_dir / ev.CANDIDATE_FINAL_REPORT_RELATIVE_PATH
+        assert destination.is_file()
+        assert "AC はまだ合意されていません" in destination.read_text(encoding="utf-8")
+
+    def test_redacts_secrets_before_writing(self, tmp_path: Path) -> None:
+        worktree_dir = tmp_path / "worktree"
+        worktree_dir.mkdir()
+        events_path = tmp_path / "events.jsonl"
+        secret = "sk-" + "a" * 40
+        _write_assistant_text(events_path, f"token: {secret}")
+
+        ev._write_candidate_final_report_artifact(worktree_dir, events_path)
+
+        destination = worktree_dir / ev.CANDIDATE_FINAL_REPORT_RELATIVE_PATH
+        assert secret not in destination.read_text(encoding="utf-8")
+
+    def test_missing_events_file_is_a_silent_no_op(self, tmp_path: Path) -> None:
+        worktree_dir = tmp_path / "worktree"
+        worktree_dir.mkdir()
+
+        ev._write_candidate_final_report_artifact(worktree_dir, tmp_path / "does-not-exist.jsonl")
+
+        assert not (worktree_dir / ev.CANDIDATE_FINAL_REPORT_RELATIVE_PATH).exists()

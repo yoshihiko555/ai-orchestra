@@ -132,7 +132,22 @@
 - [ ] EV-90（正常 / must）: routing-config suite は mechanical scenario を維持した上で behavioral train / holdout を各 1 本以上持ち、materialized routing 値の変更が deterministic oracle outcome を反転させる。scenario container 内で codex/agy を起動せず、internal network + Anthropic broker 制約を守る — 根拠: proposer routing unlock 設計 C-8、詳細設計 §4-3
 - [ ] EV-91（異常 / must）: judge invariance は ceiling 全 entry が `agent-routing/cli-tools.yaml` のみに属して `meta-harness.yaml#judge.*` と交差しないこと、routing-config suite に `rubric_judge` が無いこと、judge config resolution が agent-routing config を読まないことを保証する — 根拠: proposer routing unlock 設計 C-4、詳細設計 §3-3
 - [ ] EV-92（異常 / must）: adversarial dry-run で equal quality + lower cost の「全 agent を最安 tool へ切替」候補は baseline を支配せず、behavioral quality drop 時は frontier から除外される。mixed-kind patch と proposer `codex.model` patch は register 時点で拒否する — 根拠: proposer routing unlock 設計 Phase A entry criteria、詳細設計 §1-8、§3-5
-- [ ] EV-93（異常 / must）: `permission_mode: bypassPermissions` を持つ scenario（task-state 2 本・handoff 2 本）は、collateral-scope oracle（`assert-task-state-outcome.py collateral-scope`）を最低 1 件の critical check として必ず併設する（全 scenario yaml の機械的走査で強制）。この oracle は (a) tracked file の変更・追加・削除・rename/copy を `git diff --name-status -z` で検出し、`allowed_paths` に無いもの、または staged 追加（status `A`）以外で `allowed_new_prefixes` に一致しないものを fail にする、(b) untracked file の生成を `git status --porcelain -z --untracked-files=all` で検出し、`allowed_paths`/`allowed_new_prefixes` の scope 外を fail にする（scope 外の untracked を無視する早期 return は存在しない — 常時実行）、(c) 検出した全パス（tracked・untracked 双方）について symlink（`Path.is_symlink()`、追跡しない）を無条件で unexpected 扱いにし、許可 path/prefix に一致していても fail にする（`ln -s <既存ファイル> <許可 prefix 配下>` によるパスのみ許可・内容偽装の迂回を防止）。tracked/untracked いずれのパース（`-z` 出力）も空白・引用符付きパスと rename/copy の複数トークン record を正しく扱う — 根拠: 詳細設計 §2-2、§4、ADR-20260714-038「再検討記録（bypassPermissions 例外）」、PR #273 全レビューラウンド
+- [ ] EV-93（異常 / must）: `permission_mode: bypassPermissions` を持つ scenario（task-state 4 本
+  ［`mark-task-done` / `record-architecture-decision-holdout` / `add-phase-with-agreed-ac` /
+  `add-phase-direct-call-confirms-ac-holdout`］・handoff 2 本の計 6 本）は、collateral-scope
+  oracle（`assert-task-state-outcome.py collateral-scope`）を最低 1 件の critical check として
+  必ず併設する（全 scenario yaml の機械的走査で強制）。この oracle は (a) tracked file の変更・
+  追加・削除・rename/copy を `git diff --name-status -z` で検出し、`allowed_paths` に無いもの、
+  または staged 追加（status `A`）以外で `allowed_new_prefixes` に一致しないものを fail にする、
+  (b) untracked file の生成を `git status --porcelain -z --untracked-files=all` で検出し、
+  `allowed_paths`/`allowed_new_prefixes` の scope 外を fail にする（scope 外の untracked を
+  無視する早期 return は存在しない — 常時実行）、(c) 検出した全パス（tracked・untracked 双方）
+  について symlink（`Path.is_symlink()`、追跡しない）を無条件で unexpected 扱いにし、許可
+  path/prefix に一致していても fail にする（`ln -s <既存ファイル> <許可 prefix 配下>` による
+  パスのみ許可・内容偽装の迂回を防止）。tracked/untracked いずれのパース（`-z` 出力）も空白・
+  引用符付きパスと rename/copy の複数トークン record を正しく扱う — 根拠: 詳細設計 §2-2、§4、
+  ADR-20260714-038「再検討記録（bypassPermissions 例外）」「再検討記録（Issue #297 / PR #326
+  — bypassPermissions 対象を 4→6 シナリオへ拡張）」、PR #273 全レビューラウンド
 - [ ] EV-94（正常 / must）: 永続イメージ manifest 経由の image 再利用 — `ensure_scenario_image` / `ensure_broker_image` は `ImageRecipe`（context hash・build_args・docker_label・platform/target）から導出した recipe hash が manifest 記録済みで、かつ manifest 記録の `image_id` が現在 Docker に存在する image と一致する限り再ビルドを行わず、`last_used_at` のみを更新して同じ tag を返す。recipe が変化した場合、または manifest 記録と実際の Docker image が乖離（drift）している場合は再ビルドする — 根拠: `docker_runtime_image.ensure_recipe_image`（`packages/docker-runtime/lib/docker_runtime_image.py`）への委譲、`docs/design/loop-harness-isolation.md` §8 Phase 0
 - [ ] EV-95（境界 / must）: namespace 分離 — meta-harness の scenario/broker image は Docker label `ai.orchestra.meta-harness`、manifest/lock パス `.claude/meta-harness/docker-image-cache.json` / `.claude/meta-harness/docker-image-build.lock`、専用 buildx builder `meta-harness-builder` を既定として使用し、loop-harness（`ai.orchestra.loop-harness` / `.claude/loop/*` / `loop-harness-builder`）と独立した名前空間を形成する。世代 prune は同一 family（Docker label + repository）の image だけを対象とし、他プロジェクトが所有する image を削除しない — 根拠: `scenario_docker_image.py`（`DOCKER_LABEL` / `DEFAULT_MANIFEST_PATH` / `DEFAULT_LOCK_PATH` / `DEFAULT_BUILDER_NAME`）、`docs/design/loop-harness-isolation.md` §8
 - [ ] EV-96（異常 / must）: `auto_build_images: false` の fail-closed は永続イメージライフサイクル経由でも維持される — immutable な `@sha256:` digest 参照でない image 設定（タグのみ・digest 欠落等）は、共有 `ensure_recipe_image` の immutable-image 経路で拒否され、ビルドへフォールバックしない — 根拠: EV-27 の拡張、`docker_runtime_image._ensure_immutable_image`

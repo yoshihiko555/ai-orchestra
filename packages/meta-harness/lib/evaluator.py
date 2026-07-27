@@ -106,6 +106,12 @@ MAX_ORACLE_ARTIFACT_BYTES = 5_000_000
 RUN_ID_NONCE_BYTES = 4
 EVALUATION_ID_NONCE_BYTES = 4
 ROUTING_CONFIG_SSOT_RELATIVE = Path("packages/agent-routing/config/cli-tools.yaml")
+# 候補の最終応答テキストを critical/checks オラクル（rubric_judge 等）が worktree_dir 経由で
+# 検証できるようにするブリッジ先（Issue #297 / PR #326 レビュー指摘: rubric_judge は worktree_dir
+# 上のファイルしか参照できず、rubric がファイル名を明示しない限り候補の自然文応答を採点できな
+# かった）。`.claude/meta-harness-oracle/` は root .gitignore で除外済みのため、collateral-scope
+# oracle の git diff ベース検査には一切現れない（`.claude/Plans.md` と同様の扱い）。
+CANDIDATE_FINAL_REPORT_RELATIVE_PATH = Path(".claude/meta-harness-oracle/final-report.md")
 
 ZERO_COST: dict[str, Any] = {
     "input_tokens": 0,
@@ -1522,6 +1528,31 @@ def _extract_assistant_text(events_path: Path) -> str:
     return "\n".join(chunks)
 
 
+def _write_candidate_final_report_artifact(worktree_dir: Path, events_path: Path) -> None:
+    """候補の最終応答テキストを `CANDIDATE_FINAL_REPORT_RELATIVE_PATH` へ書き出す。
+
+    critical/checks オラクル（command_exit / rubric_judge）は worktree_dir 上のファイルしか
+    参照できず、rubric がファイル名を明示しない限り候補の自然文応答（最終レポート）を採点でき
+    ない（Issue #297 / PR #326 レビュー指摘）。events.jsonl（staging_dir、worktree の外）から
+    抽出したテキストを、この gitignore 済みパスへ redaction 済みで橋渡しする。
+
+    fail-open: events.jsonl が存在しない・読めない・抽出に失敗した場合は何もしない
+    （既存シナリオの oracle 実行を新規コードのバグで止めないため）。
+    """
+    if not events_path.exists():
+        return
+    try:
+        text = _extract_assistant_text(events_path)
+    except (OSError, UnicodeDecodeError):
+        return
+    destination = worktree_dir / CANDIDATE_FINAL_REPORT_RELATIVE_PATH
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(redaction.redact_secrets(text), encoding="utf-8")
+    except OSError:
+        return
+
+
 def parse_self_report(events_path: Path) -> dict | None:
     """events.jsonl の最終 assistant メッセージから self-report ブロックをパースする（Sec3-1）。"""
     text = _extract_assistant_text(events_path)
@@ -2724,6 +2755,7 @@ def _run_attempt_lifecycle(
         )
         if isinstance(scenario_result.isolation_launch, siso.ScenarioIsolationLaunch):
             _persist_refreshed_isolation_metadata(scenario_result.isolation_launch, staging_dir)
+        _write_candidate_final_report_artifact(worktree_dir, staging_dir / "events.jsonl")
         scenario_command_timeout_ms = scenario.get("command_timeout_ms", DEFAULT_COMMAND_TIMEOUT_MS)
         checks = [
             run_oracle(
