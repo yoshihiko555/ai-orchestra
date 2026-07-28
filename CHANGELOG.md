@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-07-28
+
 ### Added
 
 - **`codd`: コード⇔ドキュメントのトレーサビリティ（Issue #98）**: `codd.yaml` に新設した `code_scope.include`（既定は空、opt-in）でソースファイルを指定すると、`codd:<key> <value>` 形式の 1行注釈（Python はモジュール docstring、`//` 系言語は先頭コメントブロック）から `code` / `test` ノードを抽出し、既存の依存グラフへ統合する。注釈が無いファイルは黙ってスキップされる（doc の `missing_frontmatter` 警告は出ない）。抽出したリンクには `inline_confidence`（既定 0.7）が付与され、`impact` 分析のスコア計算にも反映される（`relation 重み × confidence`）。
