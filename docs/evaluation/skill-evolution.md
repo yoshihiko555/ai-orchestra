@@ -3,8 +3,8 @@
 **パッケージ**: `packages/skill-evolution`
 **類型**: hook 型（主: オンライン収集）+ CLI ツール型（副: オフライン反復ループ）
 **作成日**: 2026-07-03
-**最終レビュー日**: 評価保留（2026-07-04）— パッケージ実装が未完了のため、実装完了後に改めて人間レビューを行う。それまで本評価セットの観点は暫定（ドラフト）扱いとし、テスト改修時の突合基準としては未確定とする。
-**情報源**: `docs/requirements/skill-evolution.md`（FT-01〜FT-12, NF-01〜NF-05, 受け入れ基準）, `docs/design/skill-evolution.md`（アーキテクチャ・データスキーマ・停止条件）。
+**最終レビュー日**: 2026-07-28（EV-37 を新設。ADR-20260728-046 の蓄積データ配置・root worktree 解決パターンを追加。パッケージ全体の実装は引き続き未完了のため、他の観点は評価保留（2026-07-04 時点のドラフト扱いを維持）。実装完了後に改めて人間レビューを行う）
+**情報源**: `docs/requirements/skill-evolution.md`（FT-01〜FT-12, NF-01〜NF-05, 受け入れ基準）, `docs/design/skill-evolution.md`（アーキテクチャ・データスキーマ・停止条件）, `docs/adr/ADR-20260728-046.md`（蓄積データの配置規約、EV-37）。
 補助参照（構成要素の列挙のみ）: `packages/skill-evolution/manifest.json`, `packages/skill-evolution/{hooks,scripts,lib,config}` のファイル名レベル構成。
 
 ## 1. 責務定義
@@ -74,6 +74,7 @@ skill-evolution は、スキル実行のたびに二軸テレメトリ（自己�
 - [ ] EV-25（正常 / must）: `config/skill-evolution.yaml` の `enabled: false` 時、hook はテレメトリ収集・lessons 注入を行わない（no-op）。`skill-evolution.local.yaml` による上書きは `config-loading` ルール通りベースより優先される（hook 型・CLI 型の設定レイヤリングを兼ねる） — 根拠: `.claude/rules/config-loading.md`
 - [ ] EV-26（境界 / should）: `metrics`/`lessons` に記録される自己申告・機械計測データにシークレット相当の文字列が含まれる場合、マスキングされた状態で保存される — 根拠: `.claude/rules/coding-principles.md`（セキュリティ）; 実装挙動
 - [ ] EV-27（境界 / should）: PreToolUse/PostToolUse の同期 hook 処理は、スキル実行のレイテンシ・コンテキストを著しく増やさない（軽量・非同期追記中心） — 根拠: NF-01
+- [ ] EV-37（正常 / must）: 蓄積データの配置と root 解決 — metrics / pending / locks は `.claude/logs/skill-evolution/` 配下に root worktree 解決で書かれ、旧パス（`.claude/skill-evolution/`）に実体があり新パスに無い場合のみ one-shot migration（失敗時 fail-open）が行われる。lessons/*.md は対象外で従来パス・git 管理のまま — 根拠: docs/adr/ADR-20260728-046.md（※ ADR-20260728-046 決定済み・実装は後続 PR）
 
 ### CLI ツール型（副: オフライン反復ループ）
 
