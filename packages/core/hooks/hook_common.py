@@ -318,7 +318,11 @@ def resolve_path_within(project_dir: str, relative: str, filename: str) -> str |
     return None
 
 
-def resolve_root_worktree(project_dir: str | None = None) -> str | None:
+def resolve_root_worktree(
+    project_dir: str | None = None,
+    *,
+    timeout: float = GIT_COMMAND_TIMEOUT_SECONDS,
+) -> str | None:
     """Git の root worktree パスを解決する。
 
     worktree 環境では main worktree のパスを返す。通常リポジトリでは
@@ -330,6 +334,7 @@ def resolve_root_worktree(project_dir: str | None = None) -> str | None:
 
     Args:
         project_dir: git を実行する作業ディレクトリ。省略時は CWD。
+        timeout: git コマンドのタイムアウト秒数。
     """
     try:
         result = subprocess.run(
@@ -337,7 +342,7 @@ def resolve_root_worktree(project_dir: str | None = None) -> str | None:
             capture_output=True,
             env=sanitized_git_env(),
             text=True,
-            timeout=GIT_COMMAND_TIMEOUT_SECONDS,
+            timeout=timeout,
             cwd=project_dir or None,
         )
         if result.returncode == 0:
@@ -352,7 +357,11 @@ def resolve_root_worktree(project_dir: str | None = None) -> str | None:
     return None
 
 
-def resolve_log_root(project_dir: str) -> str:
+def resolve_log_root(
+    project_dir: str,
+    *,
+    timeout: float = GIT_COMMAND_TIMEOUT_SECONDS,
+) -> str:
     """蓄積型ログの保存先ルートを解決する。
 
     worktree 環境では root worktree の .claude/ が存在する場合に限り、その
@@ -362,8 +371,9 @@ def resolve_log_root(project_dir: str) -> str:
     Args:
         project_dir: 呼び出し元が解決済みのプロジェクトディレクトリ
             （フォールバック先）。
+        timeout: root worktree 解決に使う git コマンドのタイムアウト秒数。
     """
-    root = resolve_root_worktree(project_dir)
+    root = resolve_root_worktree(project_dir, timeout=timeout)
     if root and os.path.isdir(os.path.join(root, ".claude")):
         return root
     return project_dir

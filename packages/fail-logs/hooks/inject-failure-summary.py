@@ -327,22 +327,28 @@ def main() -> None:
     if not summary_cfg["enabled"]:
         return
 
-    # log_root の解決（git サブプロセス起動）は enabled / summary.enabled 判定の
-    # 後まで遅延させる。無効化時に git を起動しない一貫性のため
-    # （capture-failures.py と同じ方針）。
-    log_root = resolve_log_root(project_dir)
-    migrate_legacy_worktree_log(
-        project_dir,
-        log_root,
-        DEFAULT_LOGS_DIR,
-        LOG_FILE_NAME,
-    )
-
     logs_dir_value = config.get("logs_dir")
     logs_dir = (
         logs_dir_value if isinstance(logs_dir_value, str) and logs_dir_value else DEFAULT_LOGS_DIR
     )
-    log_path = _resolve_log_path(log_root, logs_dir)
+
+    # log_root の解決（git サブプロセス起動）は enabled / summary.enabled 判定の
+    # 後まで遅延させる。無効化時に git を起動しない一貫性のため
+    # （capture-failures.py と同じ方針）。
+    log_root = resolve_log_root(project_dir)
+    effective_logs_dir = (
+        logs_dir
+        if resolve_path_within(log_root, logs_dir, LOG_FILE_NAME) is not None
+        else DEFAULT_LOGS_DIR
+    )
+    migrate_legacy_worktree_log(
+        project_dir,
+        log_root,
+        effective_logs_dir,
+        LOG_FILE_NAME,
+    )
+
+    log_path = _resolve_log_path(log_root, effective_logs_dir)
     if log_path is None or not os.path.isfile(log_path):
         return
 

@@ -41,7 +41,7 @@ def _patch_root_worktree(monkeypatch, root_dir: Path | None) -> None:
     monkeypatch.setitem(
         capture.resolve_log_root.__globals__,
         "resolve_root_worktree",
-        lambda _project_dir: resolved,
+        lambda _project_dir, **_kwargs: resolved,
     )
 
 
@@ -380,10 +380,48 @@ def test_legacy_worktree_log_is_migrated_once(monkeypatch, tmp_path) -> None:
     assert migrated_path.read_text(encoding="utf-8") == legacy_content
 
 
+def test_custom_logs_dir_migrates_legacy_worktree_log(monkeypatch, tmp_path) -> None:
+    worktree = _make_project(tmp_path / "worktree")
+    root = _make_project(tmp_path / "root")
+    config_dir = worktree / ".claude" / "config" / "fail-logs"
+    config_dir.mkdir(parents=True)
+    (config_dir / "fail-logs.local.yaml").write_text("logs_dir: custom/failure-logs\n")
+
+    legacy_path = worktree / "custom" / "failure-logs" / "failures.jsonl"
+    legacy_path.parent.mkdir(parents=True)
+    legacy_content = json.dumps({"legacy": "custom"}) + "\n"
+    legacy_path.write_text(legacy_content, encoding="utf-8")
+    _patch_root_worktree(monkeypatch, root)
+
+    _run_hook(
+        monkeypatch,
+        worktree,
+        {
+            "cwd": str(worktree),
+            "session_id": "sess-custom-migration",
+            "tool_name": "Bash",
+            "tool_input": {"command": "false"},
+            "tool_response": {"exit_code": 1, "stdout": "failed"},
+        },
+    )
+
+    root_log = root / "custom" / "failure-logs" / "failures.jsonl"
+    root_records = [json.loads(line) for line in root_log.read_text(encoding="utf-8").splitlines()]
+    assert len(root_records) == 2
+    assert root_records[0] == {"legacy": "custom"}
+    assert not legacy_path.exists()
+    assert legacy_path.with_name(f"{legacy_path.name}.migrated").exists()
+    assert not (root / ".claude" / "logs" / "fail-logs" / "failures.jsonl").exists()
+
+
 # EV-17: failure record は発生元ブランチを含み、git 障害でも記録を継続する。
 def test_record_includes_originating_branch(monkeypatch, tmp_path, capsys) -> None:
     project = _make_project(tmp_path)
-    monkeypatch.setattr(capture, "_resolve_branch", lambda _project_dir: "feat/example")
+    monkeypatch.setattr(
+        capture,
+        "_resolve_branch",
+        lambda _project_dir, _timeout: "feat/example",
+    )
 
     _run_hook(
         monkeypatch,
@@ -408,7 +446,7 @@ def test_unborn_head_returns_branch_name(tmp_path) -> None:
     project = _make_project(tmp_path)
     _run_git(project, "init")
 
-    assert capture._resolve_branch(str(project))
+    assert capture._resolve_branch(str(project), 1.0)
 
 
 def test_masks_secrets_in_branch(monkeypatch, tmp_path) -> None:
@@ -417,7 +455,7 @@ def test_masks_secrets_in_branch(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
         capture,
         "_resolve_branch",
-        lambda _project_dir: f"feature/api_key={raw_secret}",
+        lambda _project_dir, _timeout: f"feature/api_key={raw_secret}",
     )
 
     _run_hook(
@@ -470,4 +508,36 @@ def test_unicode_decode_error_returns_empty_branch(monkeypatch, tmp_path) -> Non
 
     monkeypatch.setattr(capture.subprocess, "run", _raise_unicode_decode_error)
 
-    assert capture._resolve_branch(str(tmp_path)) == ""
+    assert capture._resolve_branch(str(tmp_path), 1.0) == ""
+
+
+def test_exhausted_git_budget_skips_branch_resolution(monkeypatch, tmp_path) -> None:
+    project = _make_project(tmp_path)
+    monotonic_values = iter((0.0, 1.0, 4.0))
+    monkeypatch.setattr(capture.time, "monotonic", lambda: next(monotonic_values))
+    monkeypatch.setattr(
+        capture,
+        "resolve_log_root",
+        lambda _project_dir, **_kwargs: str(project),
+    )
+
+    def _git_should_not_be_called(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("git should not be called")
+
+    monkeypatch.setattr(capture.subprocess, "run", _git_should_not_be_called)
+
+    _run_hook(
+        monkeypatch,
+        project,
+        {
+            "cwd": str(project),
+            "session_id": "sess-budget-exhausted",
+            "tool_name": "Bash",
+            "tool_input": {"command": "false"},
+            "tool_response": {"exit_code": 1, "stdout": "failed"},
+        },
+    )
+
+    records = _read_log(project)
+    assert len(records) == 1
+    assert records[0]["data"]["branch"] == ""

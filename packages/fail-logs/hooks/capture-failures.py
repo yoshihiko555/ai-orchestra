@@ -16,6 +16,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import uuid
 from datetime import UTC, datetime
 
@@ -53,6 +54,8 @@ DEFAULT_LOGS_DIR = os.path.join(".claude", "logs", "fail-logs")
 DEFAULT_MAX_EXCERPT_CHARS = 500
 LOG_FILE_NAME = "failures.jsonl"
 GIT_COMMAND_TIMEOUT_SECONDS = 5
+GIT_BUDGET_SECONDS = 3.5
+GIT_STEP_TIMEOUT_SECONDS = 1.0
 
 # 機密情報マスクパターン（audit-cli.py と同等。core 依存のみのため自前で保持）
 SECRET_PATTERNS = [
@@ -97,8 +100,11 @@ def _resolve_project_dir(data: dict) -> str:
     return os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
 
 
-def _resolve_branch(project_dir: str) -> str:
+def _resolve_branch(project_dir: str, timeout: float) -> str:
     """記録時点の Git ブランチ名を解決する。取得失敗時は空文字列を返す(fail-safe)。"""
+    if timeout <= 0:
+        return ""
+
     git_env = sanitized_git_env()
     commands = (
         ["git", "symbolic-ref", "--short", "HEAD"],
@@ -111,7 +117,7 @@ def _resolve_branch(project_dir: str) -> str:
                 capture_output=True,
                 env=git_env,
                 text=True,
-                timeout=GIT_COMMAND_TIMEOUT_SECONDS,
+                timeout=timeout,
                 cwd=project_dir,
             )
         except (FileNotFoundError, subprocess.TimeoutExpired, OSError, UnicodeError):
@@ -157,6 +163,7 @@ def _extract_excerpt(tool_name: str, tool_response: dict, max_chars: int) -> str
 def main() -> None:
     """PostToolUse hook のエントリポイント。失敗時のみレコードを追記する。"""
     data = read_hook_input()
+    deadline = time.monotonic() + GIT_BUDGET_SECONDS
     if not data:
         return
 
@@ -192,6 +199,31 @@ def main() -> None:
     if tool_name == "Bash":
         command = _mask_secrets(str(tool_input.get("command", ""))[:max_chars])
 
+    # log_root の解決（git サブプロセス起動）はここまで遅延させる。実際に書き込みが
+    # 確定した後（enabled → analyze → targets 判定を通過した後）でのみ実行することで、
+    # fail-logs 無効時・成功ツール呼び出し時（大多数）のホットパスを保つ。
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        log_root = project_dir
+    else:
+        log_root = resolve_log_root(
+            project_dir,
+            timeout=min(GIT_STEP_TIMEOUT_SECONDS, remaining),
+        )
+
+    log_path = resolve_path_within(log_root, logs_dir, LOG_FILE_NAME)
+    effective_logs_dir = logs_dir
+    if log_path is None:
+        effective_logs_dir = DEFAULT_LOGS_DIR
+        log_path = resolve_path_within(log_root, DEFAULT_LOGS_DIR, LOG_FILE_NAME)
+
+    remaining = deadline - time.monotonic()
+    branch = (
+        ""
+        if remaining <= 0
+        else _resolve_branch(project_dir, min(GIT_STEP_TIMEOUT_SECONDS, remaining))
+    )
+
     record = {
         "v": SCHEMA_VERSION,
         "ts": datetime.now(UTC).isoformat(),
@@ -208,26 +240,19 @@ def main() -> None:
             "error_excerpt": _extract_excerpt(tool_name, tool_response, max_chars),
             "exit_code": tool_response.get("exit_code"),
             "cwd": str(data.get("cwd") or ""),
-            "branch": _mask_secrets(_resolve_branch(project_dir)),
+            "branch": _mask_secrets(branch),
         },
     }
 
-    # log_root の解決（git サブプロセス起動）はここまで遅延させる。実際に書き込みが
-    # 確定した後（enabled → analyze → targets 判定を通過した後）でのみ実行することで、
-    # fail-logs 無効時・成功ツール呼び出し時（大多数）のホットパスを保つ。
-    log_root = resolve_log_root(project_dir)
     migrate_legacy_worktree_log(
         project_dir,
         log_root,
-        DEFAULT_LOGS_DIR,
+        effective_logs_dir,
         LOG_FILE_NAME,
     )
 
     # logs_dir が log_root 外を指す場合（設定経由のパストラバーサル）は
     # 書き込みを黙って捨てず、安全なデフォルトへフォールバックする。
-    log_path = resolve_path_within(log_root, logs_dir, LOG_FILE_NAME) or resolve_path_within(
-        log_root, DEFAULT_LOGS_DIR, LOG_FILE_NAME
-    )
     if log_path is None:
         return
     _append_secure_jsonl(log_path, record)

@@ -327,6 +327,34 @@ def _run_git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
 
 
 class TestResolveRootWorktree:
+    def test_forwards_explicit_timeout(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        received: dict[str, object] = {}
+
+        def _run(*_args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+            received.update(kwargs)
+            return subprocess.CompletedProcess([], 1, stdout="", stderr="")
+
+        monkeypatch.setattr(hook_common.subprocess, "run", _run)
+
+        assert hook_common.resolve_root_worktree(str(tmp_path), timeout=0.25) is None
+        assert received["timeout"] == 0.25
+
+    def test_omitted_timeout_uses_existing_default(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        received: dict[str, object] = {}
+
+        def _run(*_args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+            received.update(kwargs)
+            return subprocess.CompletedProcess([], 1, stdout="", stderr="")
+
+        monkeypatch.setattr(hook_common.subprocess, "run", _run)
+
+        assert hook_common.resolve_root_worktree(str(tmp_path)) is None
+        assert received["timeout"] == hook_common.GIT_COMMAND_TIMEOUT_SECONDS
+
     def test_linked_worktree_returns_original_repo_root(self, tmp_path: Path) -> None:
         _require_git()
         root_repo = tmp_path / "root-repo"
@@ -422,7 +450,9 @@ class TestResolveLogRoot:
         project_dir.mkdir()
         (root_dir / ".claude").mkdir(parents=True)
         monkeypatch.setattr(
-            hook_common, "resolve_root_worktree", lambda _project_dir: str(root_dir)
+            hook_common,
+            "resolve_root_worktree",
+            lambda _project_dir, **_kwargs: str(root_dir),
         )
 
         assert hook_common.resolve_log_root(str(project_dir)) == str(root_dir)
@@ -435,7 +465,9 @@ class TestResolveLogRoot:
         project_dir.mkdir()
         root_dir.mkdir()
         monkeypatch.setattr(
-            hook_common, "resolve_root_worktree", lambda _project_dir: str(root_dir)
+            hook_common,
+            "resolve_root_worktree",
+            lambda _project_dir, **_kwargs: str(root_dir),
         )
 
         assert hook_common.resolve_log_root(str(project_dir)) == str(project_dir)
@@ -445,9 +477,32 @@ class TestResolveLogRoot:
     ) -> None:
         project_dir = tmp_path / "project"
         project_dir.mkdir()
-        monkeypatch.setattr(hook_common, "resolve_root_worktree", lambda _project_dir: None)
+        monkeypatch.setattr(
+            hook_common,
+            "resolve_root_worktree",
+            lambda _project_dir, **_kwargs: None,
+        )
 
         assert hook_common.resolve_log_root(str(project_dir)) == str(project_dir)
+
+    def test_forwards_timeout_to_root_resolution(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project_dir = tmp_path / "project"
+        root_dir = tmp_path / "root"
+        project_dir.mkdir()
+        (root_dir / ".claude").mkdir(parents=True)
+        received: dict[str, object] = {}
+
+        def _resolve_root(project: str, *, timeout: float) -> str:
+            received["project_dir"] = project
+            received["timeout"] = timeout
+            return str(root_dir)
+
+        monkeypatch.setattr(hook_common, "resolve_root_worktree", _resolve_root)
+
+        assert hook_common.resolve_log_root(str(project_dir), timeout=0.75) == str(root_dir)
+        assert received == {"project_dir": str(project_dir), "timeout": 0.75}
 
 
 # =========================================================================

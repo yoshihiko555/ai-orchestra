@@ -68,7 +68,7 @@ def _patch_root_worktree(monkeypatch, root_dir: Path | None) -> None:
     monkeypatch.setitem(
         inject.resolve_log_root.__globals__,
         "resolve_root_worktree",
-        lambda _project_dir: resolved,
+        lambda _project_dir, **_kwargs: resolved,
     )
 
 
@@ -454,3 +454,31 @@ def test_summary_reads_migrated_legacy_worktree_log(monkeypatch, tmp_path, capsy
     assert not legacy_path.exists()
     assert migrated_path.exists()
     assert len((root / LOG_REL).read_text(encoding="utf-8").splitlines()) == 2
+
+
+def test_custom_logs_dir_migrates_legacy_worktree_log(monkeypatch, tmp_path, capsys) -> None:
+    worktree = _make_project(tmp_path / "worktree")
+    root = _make_project(tmp_path / "root")
+    config_dir = worktree / ".claude" / "config" / "fail-logs"
+    config_dir.mkdir(parents=True)
+    (config_dir / "fail-logs.local.yaml").write_text("logs_dir: custom/failure-logs\n")
+
+    legacy_path = worktree / "custom" / "failure-logs" / "failures.jsonl"
+    legacy_path.parent.mkdir(parents=True)
+    legacy_path.write_text(
+        "\n".join(
+            json.dumps(_record(command_kind="test", command="pytest custom")) for _ in range(2)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    _patch_root_worktree(monkeypatch, root)
+
+    _run(monkeypatch, worktree)
+
+    root_log = root / "custom" / "failure-logs" / "failures.jsonl"
+    assert "×2" in capsys.readouterr().out
+    assert not legacy_path.exists()
+    assert legacy_path.with_name(f"{legacy_path.name}.migrated").exists()
+    assert len(root_log.read_text(encoding="utf-8").splitlines()) == 2
+    assert not (root / LOG_REL).exists()
