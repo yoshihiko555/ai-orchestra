@@ -105,19 +105,23 @@ def _resolve_branch(project_dir: str, timeout: float) -> str:
     if timeout <= 0:
         return ""
 
+    deadline = time.monotonic() + timeout
     git_env = sanitized_git_env()
     commands = (
         ["git", "symbolic-ref", "--short", "HEAD"],
         ["git", "rev-parse", "--abbrev-ref", "HEAD"],
     )
     for command in commands:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
         try:
             result = subprocess.run(
                 command,
                 capture_output=True,
                 env=git_env,
                 text=True,
-                timeout=timeout,
+                timeout=remaining,
                 cwd=project_dir,
             )
         except (FileNotFoundError, subprocess.TimeoutExpired, OSError, UnicodeError):

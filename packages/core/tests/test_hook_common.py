@@ -327,33 +327,42 @@ def _run_git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
 
 
 class TestResolveRootWorktree:
+    def test_empty_project_dir_returns_none(self) -> None:
+        assert hook_common.resolve_root_worktree("") is None
+
     def test_forwards_explicit_timeout(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        received: dict[str, object] = {}
+        # resolve_root_worktree は最大 2 段の subprocess 呼び出しを行う（own
+        # worktree 判定 → worktree list フォールバック）。1 段目には常に
+        # 呼び出し元が指定した timeout がそのまま渡ることを検証する
+        # （2 段目は残り予算で呼ばれるため厳密に同値にはならない）。
+        calls: list[dict[str, object]] = []
 
         def _run(*_args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
-            received.update(kwargs)
+            calls.append(dict(kwargs))
             return subprocess.CompletedProcess([], 1, stdout="", stderr="")
 
         monkeypatch.setattr(hook_common.subprocess, "run", _run)
 
         assert hook_common.resolve_root_worktree(str(tmp_path), timeout=0.25) is None
-        assert received["timeout"] == 0.25
+        assert calls
+        assert calls[0]["timeout"] == 0.25
 
     def test_omitted_timeout_uses_existing_default(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        received: dict[str, object] = {}
+        calls: list[dict[str, object]] = []
 
         def _run(*_args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
-            received.update(kwargs)
+            calls.append(dict(kwargs))
             return subprocess.CompletedProcess([], 1, stdout="", stderr="")
 
         monkeypatch.setattr(hook_common.subprocess, "run", _run)
 
         assert hook_common.resolve_root_worktree(str(tmp_path)) is None
-        assert received["timeout"] == hook_common.GIT_COMMAND_TIMEOUT_SECONDS
+        assert calls
+        assert calls[0]["timeout"] == hook_common.GIT_COMMAND_TIMEOUT_SECONDS
 
     def test_linked_worktree_returns_original_repo_root(self, tmp_path: Path) -> None:
         _require_git()
@@ -387,14 +396,52 @@ class TestResolveRootWorktree:
         assert result is not None
         assert Path(result).resolve() == repo.resolve()
 
-    def test_separate_git_dir_returns_none(self, tmp_path: Path) -> None:
+    def test_separate_git_dir_resolves_primary_worktree(self, tmp_path: Path) -> None:
+        """separate-git-dir の物理配置を root worktree と誤認しない回帰ガード。"""
         _require_git()
         repo = tmp_path / "separate-git-dir-repo"
         external_git_dir = tmp_path / "external.git"
         repo.mkdir()
         _run_git(repo, "init", f"--separate-git-dir={external_git_dir}")
 
-        assert hook_common.resolve_root_worktree(str(repo)) is None
+        result = hook_common.resolve_root_worktree(str(repo))
+
+        assert result is not None
+        assert Path(result).resolve() == repo.resolve()
+
+    def test_separate_git_dir_repo_own_linked_worktree_fails_safe_to_none(
+        self, tmp_path: Path
+    ) -> None:
+        """separate-git-dir な main worktree を持つ linked worktree からの解決は
+
+        安全に None へフォールバックする（誤ったパスを返さない）。
+
+        Git 自身が main worktree の実体パスをどこにも保持していないため、
+        ``git worktree list --porcelain`` の先頭エントリは main worktree の
+        git dir 自身（common dir）を worktree として報告する。この関数は
+        先頭エントリが common dir と一致するケースを検出して None を返し、
+        誤った（かつ resolve_log_root の .claude チェックをすり抜けうる）
+        root を返さないようにする。これは Git 自体の制約に対する既知の
+        残存ギャップであり、完全な解決は本関数の範囲外（Git がこの情報を
+        提供しない限り原理的に不可能）。
+        """
+        _require_git()
+        repo = tmp_path / "separate-git-dir-repo"
+        external_git_dir = tmp_path / "external.git"
+        linked_worktree = tmp_path / "linked-of-separate-repo"
+        repo.mkdir()
+        _run_git(repo, "init", f"--separate-git-dir={external_git_dir}")
+        _run_git(repo, "config", "user.email", "test@example.com")
+        _run_git(repo, "config", "user.name", "Test User")
+        _run_git(repo, "config", "commit.gpgsign", "false")
+        (repo / "tracked.txt").write_text("initial\n", encoding="utf-8")
+        _run_git(repo, "add", "tracked.txt")
+        _run_git(repo, "commit", "-m", "initial")
+        _run_git(repo, "worktree", "add", "-b", "test-linked", str(linked_worktree))
+
+        result = hook_common.resolve_root_worktree(str(linked_worktree))
+
+        assert result is None
 
     def test_ambient_git_dir_does_not_override_cwd(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

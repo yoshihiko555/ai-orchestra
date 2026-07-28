@@ -363,10 +363,11 @@ def test_legacy_worktree_log_is_migrated_once(monkeypatch, tmp_path) -> None:
 
     _run_hook(monkeypatch, worktree, payload)
 
-    migrated_path = legacy_path.with_name(f"{legacy_path.name}.migrated")
+    migrated_matches = list(legacy_path.parent.glob(f"{legacy_path.name}.migrated.*"))
     assert len(_read_log(root)) == 2
     assert not legacy_path.exists()
-    assert migrated_path.read_text(encoding="utf-8") == legacy_content
+    assert len(migrated_matches) == 1
+    assert migrated_matches[0].read_text(encoding="utf-8") == legacy_content
 
     _run_hook(
         monkeypatch,
@@ -377,7 +378,7 @@ def test_legacy_worktree_log_is_migrated_once(monkeypatch, tmp_path) -> None:
     root_records = _read_log(root)
     assert len(root_records) == 3
     assert sum(record.get("legacy") is True for record in root_records) == 1
-    assert migrated_path.read_text(encoding="utf-8") == legacy_content
+    assert migrated_matches[0].read_text(encoding="utf-8") == legacy_content
 
 
 def test_custom_logs_dir_migrates_legacy_worktree_log(monkeypatch, tmp_path) -> None:
@@ -410,7 +411,8 @@ def test_custom_logs_dir_migrates_legacy_worktree_log(monkeypatch, tmp_path) -> 
     assert len(root_records) == 2
     assert root_records[0] == {"legacy": "custom"}
     assert not legacy_path.exists()
-    assert legacy_path.with_name(f"{legacy_path.name}.migrated").exists()
+    migrated_matches = list(legacy_path.parent.glob(f"{legacy_path.name}.migrated.*"))
+    assert len(migrated_matches) == 1
     assert not (root / ".claude" / "logs" / "fail-logs" / "failures.jsonl").exists()
 
 

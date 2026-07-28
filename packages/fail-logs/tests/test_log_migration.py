@@ -13,6 +13,7 @@ log_migration = load_module(
 
 LOG_RELATIVE_DIR = ".claude/logs/fail-logs"
 LOG_FILE_NAME = "failures.jsonl"
+MIGRATION_MAX_BYTES = log_migration.MIGRATION_MAX_BYTES
 
 
 def _log_path(base: Path) -> Path:
@@ -40,30 +41,36 @@ def test_migrates_once_and_preserves_original_bytes(tmp_path: Path) -> None:
 
     _migrate(project, root)
 
-    migrated_path = legacy_path.with_name(f"{legacy_path.name}.migrated")
+    migrated_matches = list(legacy_path.parent.glob(f"{legacy_path.name}.migrated.*"))
     assert not legacy_path.exists()
-    assert migrated_path.read_bytes() == legacy_bytes
+    assert len(migrated_matches) == 1
+    assert migrated_matches[0].read_bytes() == legacy_bytes
     assert _log_path(root).read_bytes() == legacy_bytes
 
 
-def test_already_claimed_source_is_a_noop(tmp_path: Path) -> None:
+def test_stale_claim_is_untouched_when_new_migration_succeeds(tmp_path: Path) -> None:
     project = tmp_path / "project"
     root = tmp_path / "root"
     project.mkdir()
     root.mkdir()
-    migrating_path = _log_path(project).with_name(f"{LOG_FILE_NAME}.migrating")
-    migrating_path.parent.mkdir(parents=True)
-    migrating_path.write_bytes(b"claimed\n")
+    legacy_path = _log_path(project)
+    stale_claim = legacy_path.with_name(f"{LOG_FILE_NAME}.migrating.99999-123")
+    stale_claim.parent.mkdir(parents=True)
+    stale_claim.write_bytes(b"stale claim\n")
+    legacy_path.write_bytes(b"fresh legacy\n")
 
     _migrate(project, root)
 
-    assert migrating_path.read_bytes() == b"claimed\n"
-    assert not _log_path(root).exists()
+    migrating_matches = list(legacy_path.parent.glob(f"{legacy_path.name}.migrating.*"))
+    migrated_matches = list(legacy_path.parent.glob(f"{legacy_path.name}.migrated.*"))
+    assert migrating_matches == [stale_claim]
+    assert stale_claim.read_bytes() == b"stale claim\n"
+    assert len(migrated_matches) == 1
+    assert migrated_matches[0].read_bytes() == b"fresh legacy\n"
+    assert _log_path(root).read_bytes() == b"fresh legacy\n"
 
 
-def test_failed_copy_leaves_stuck_claim_and_second_call_is_noop(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_failed_copy_leaves_unique_stuck_claim(tmp_path: Path, monkeypatch) -> None:
     project = tmp_path / "project"
     root = tmp_path / "root"
     project.mkdir()
@@ -78,17 +85,45 @@ def test_failed_copy_leaves_stuck_claim_and_second_call_is_noop(
     monkeypatch.setattr(log_migration.shutil, "copyfileobj", _raise_copy_error)
     _migrate(project, root)
 
-    migrating_path = legacy_path.with_name(f"{legacy_path.name}.migrating")
+    migrating_matches = list(legacy_path.parent.glob(f"{legacy_path.name}.migrating.*"))
+    migrated_matches = list(legacy_path.parent.glob(f"{legacy_path.name}.migrated.*"))
     destination_path = _log_path(root)
     assert not legacy_path.exists()
-    assert migrating_path.read_bytes() == b"stuck\n"
-    destination_before = destination_path.read_bytes()
+    assert len(migrating_matches) == 1
+    assert migrating_matches[0].read_bytes() == b"stuck\n"
+    assert migrated_matches == []
+    assert destination_path.read_bytes() == b""
+
+
+def test_migration_keeps_newest_bytes_on_complete_line_boundaries(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    root = tmp_path / "root"
+    project.mkdir()
+    root.mkdir()
+    legacy_path = _log_path(project)
+    legacy_path.parent.mkdir(parents=True)
+    excess_bytes = 4096
+    original_lines: list[bytes] = []
+    total_bytes = 0
+    line_number = 0
+    while total_bytes <= MIGRATION_MAX_BYTES + excess_bytes:
+        line = f'{{"n":"{line_number:08d}"}}\n'.encode()
+        original_lines.append(line)
+        total_bytes += len(line)
+        line_number += 1
+    legacy_path.write_bytes(b"".join(original_lines))
 
     _migrate(project, root)
 
-    assert migrating_path.read_bytes() == b"stuck\n"
-    assert destination_path.read_bytes() == destination_before
-    assert not legacy_path.with_name(f"{legacy_path.name}.migrated").exists()
+    destination_bytes = _log_path(root).read_bytes()
+    destination_lines = destination_bytes.splitlines(keepends=True)
+    original_line_set = set(original_lines)
+    assert len(destination_bytes) <= MIGRATION_MAX_BYTES
+    assert destination_bytes.endswith(b"\n")
+    assert destination_lines
+    assert all(line in original_line_set for line in destination_lines)
+    assert destination_lines[0] in original_line_set
+    assert destination_lines[-1] == original_lines[-1]
 
 
 def test_source_symlink_escape_is_rejected(tmp_path: Path) -> None:
@@ -140,7 +175,7 @@ def test_same_log_root_is_a_noop(tmp_path: Path) -> None:
     _migrate(project, project)
 
     assert legacy_path.read_bytes() == b"legacy\n"
-    assert not legacy_path.with_name(f"{legacy_path.name}.migrated").exists()
+    assert list(legacy_path.parent.glob(f"{legacy_path.name}.migrated.*")) == []
 
 
 def test_missing_legacy_file_is_a_noop(tmp_path: Path) -> None:
@@ -171,4 +206,4 @@ def test_destination_equal_to_source_realpath_is_a_noop(tmp_path: Path) -> None:
     )
 
     assert legacy_path.read_bytes() == b"same\n"
-    assert not legacy_path.with_name(f"{legacy_path.name}.migrated").exists()
+    assert list(legacy_path.parent.glob(f"{legacy_path.name}.migrated.*")) == []

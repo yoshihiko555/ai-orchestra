@@ -52,7 +52,7 @@ PostToolUse hook が以下の失敗を検知し、`.claude/logs/fail-logs/failur
 
 ## 保存先
 
-Git の root worktree を解決でき、そこに `.claude/` がある場合、各 linked worktree のログは root worktree の `.claude/logs/fail-logs/` に集約する。root の解決に失敗した場合、root に `.claude/` がない場合、または `git init --separate-git-dir` のように安全に root を特定できない構成では `project_dir` へフォールバックする。アップグレード前の worktree-local ログは、初回実行時に root 側へ一度だけ追記し、旧ファイルを `failures.jsonl.migrated` に変更して二重移行を防ぐ。
+Git の root worktree を解決でき、そこに `.claude/` がある場合、各 linked worktree のログは root worktree の `.claude/logs/fail-logs/` に集約する。root worktree 自身から実行している場合は `git init --separate-git-dir` 構成でも常に正しく解決する。linked worktree から main worktree（root）を辿る場合、main worktree 自体が `--separate-git-dir` で作られていると Git 自身が実体パスを保持していないため理論上解決できないことがあり、その場合は安全側で解決失敗として扱う。root の解決に失敗した場合、または root に `.claude/` がない場合は `project_dir` へフォールバックする。アップグレード前の worktree-local ログは、初回実行時に新しい方から最大 1 MiB だけを root 側へ追記し、旧ファイルを `failures.jsonl.migrated.<pid>-<seq>` に変更して二重移行を防ぐ。古い履歴は破棄されるが、サマリーはログ末尾だけを使うため実用上の影響はない。試行中の claim 名も pid と monotonic suffix を持つ `failures.jsonl.migrating.*` とし、クラッシュした試行の stale claim は上書きせず手動復旧用に残す。
 
 ## 設定
 

@@ -83,8 +83,10 @@ audit ログ基盤と互換な形にすることで、将来の分析ツール�
 
 inject-failure-summary.py（SessionStart hook）は以下の契約で動く。
 
-1. ログ末尾から最大 `max_records`（既定 200）行を読み、`ts` が直近 `window_days`（既定 7 日、
-   0 で無期限）以内のレコードのみを対象にする。
+1. ログの物理末尾から最大 `TAIL_READ_MULTIPLIER × max_records`（現在 3 倍）行を読み、`ts` の降順で
+   `max_records`（既定 200）件へ絞る。その後、`ts` が直近 `window_days`（既定 7 日、0 で無期限）
+   以内のレコードのみを対象にする。移行や複数 worktree の `O_APPEND` で物理順が前後しても、
+   広めの読み取り窓で吸収する。
 2. **再発シグネチャ中心の集計**を行う（ADR-20260630-027 の設計判断を正本とする）。
    シグネチャキーは以下のいずれか:
    - `command` がある場合: `(command_kind, コマンド先頭トークン)`。**`failure_type` は含めない**
@@ -99,8 +101,9 @@ inject-failure-summary.py（SessionStart hook）は以下の契約で動く。
 fail-logs のログはセッションをまたいで無期限に増え続けうるが、**注入量とセッション開始時の I/O は
 ログの蓄積量に依存しない定数上限で頭打ちになる**ことを仕様として保証する。根拠:
 
-- 末尾シーク読み（`_read_tail_lines`）により、ログが何万行あっても走査するのは末尾 `max_records`
-  行相当のみで、全走査はしない。
+- 末尾シーク読み（`_read_tail_lines`）により、ログが何万行あっても走査するのは末尾
+  `TAIL_READ_MULTIPLIER × max_records`（現在 3 倍）行相当のみである。`ts` で並べ替えて
+  `max_records` 件へ戻すため、全走査はせず、上限は総ログ量に依存しない定数のまま保たれる。
 - 注入に含める代表コマンドは 120 字、エラー抜粋は 100 字を上限に切り詰める。
 - 注入するシグネチャ数は `top_signatures` 件が上限。
 
