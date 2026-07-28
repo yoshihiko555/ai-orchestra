@@ -83,6 +83,165 @@ class TestRemoveWorktreeIsBestEffort:
         assert str(worktree_dir) not in listing
 
 
+class TestEnsureBridgeArtifactIgnored:
+    """PR #326 レビュー round 4 (Codex P1): 既存候補を再評価する worktree は候補登録時点の古い
+    source_commit から checkout されるため、bridge artifact 専用の `.gitignore` 除外行が
+    存在しない可能性がある。source_commit の年代に依存させず、worktree 作成直後にこの1行だけを
+    実行時に追記する（`git_project` の `.gitignore` は `.claude/meta-harness/` のみで、
+    このレビュー対応前の履歴的な source_commit を模している）。"""
+
+    def test_appends_single_file_ignore_line_when_missing(self, git_project: Path) -> None:
+        root = git_project / ".worktrees" / "meta"
+        head = _git("rev-parse", "HEAD", cwd=git_project).stdout.strip()
+        worktree_dir = ev.create_worktree(git_project, root, "run-bridge-ignore", head)
+        try:
+            gitignore_path = worktree_dir / ".gitignore"
+            before_lines = gitignore_path.read_text(encoding="utf-8").splitlines()
+            assert "meta-harness-oracle" not in "\n".join(before_lines)
+
+            ev._ensure_bridge_artifact_ignored(worktree_dir)
+
+            after_lines = gitignore_path.read_text(encoding="utf-8").splitlines()
+            expected_line = f"/{ev.CANDIDATE_FINAL_REPORT_RELATIVE_PATH.as_posix()}"
+            assert expected_line in after_lines
+            # ディレクトリ全体ではなく単一ファイルだけを ignore 対象にする（候補が
+            # bypassPermissions で同じディレクトリ配下に書いた他のファイルは
+            # collateral-scope の untracked-file 検査で引き続き捕捉されるべきなので）。
+            assert ".claude/meta-harness-oracle/" not in after_lines
+        finally:
+            ev.remove_worktree(git_project, worktree_dir)
+
+    def test_is_idempotent_across_repeated_calls(self, git_project: Path) -> None:
+        root = git_project / ".worktrees" / "meta"
+        head = _git("rev-parse", "HEAD", cwd=git_project).stdout.strip()
+        worktree_dir = ev.create_worktree(git_project, root, "run-bridge-ignore-idem", head)
+        try:
+            ev._ensure_bridge_artifact_ignored(worktree_dir)
+            ev._ensure_bridge_artifact_ignored(worktree_dir)
+
+            lines = (worktree_dir / ".gitignore").read_text(encoding="utf-8").splitlines()
+            expected_line = f"/{ev.CANDIDATE_FINAL_REPORT_RELATIVE_PATH.as_posix()}"
+            assert lines.count(expected_line) == 1
+        finally:
+            ev.remove_worktree(git_project, worktree_dir)
+
+    def test_rejects_symlinked_gitignore(self, tmp_path: Path) -> None:
+        worktree_dir = tmp_path / "worktree"
+        worktree_dir.mkdir()
+        outside = tmp_path / "outside.gitignore"
+        outside.write_text("", encoding="utf-8")
+        (worktree_dir / ".gitignore").symlink_to(outside)
+
+        with pytest.raises(ev.EvaluatorStageError):
+            ev._ensure_bridge_artifact_ignored(worktree_dir)
+
+
+class TestMaterializeCurrentOracleFixtures:
+    """PR #326 レビュー round 4 (Codex P1): 既存候補を再評価する worktree の
+    `scenarios/fixtures/` は候補登録時点の古い source_commit のものになり、新しい
+    サブコマンド（例: add-phase-with-ac）を持たず argparse の exit 2 で落ちる。現在の
+    信頼済みハーネス（`package_dir`）の内容で worktree 側を上書き materialize する。"""
+
+    def test_overwrites_stale_fixture_with_current_content(self, tmp_path: Path) -> None:
+        package_dir = tmp_path / "package"
+        (package_dir / "scenarios" / "fixtures").mkdir(parents=True)
+        (package_dir / "scenarios" / "fixtures" / "assert-task-state-outcome.py").write_text(
+            "# current trusted fixture\n", encoding="utf-8"
+        )
+
+        worktree_dir = tmp_path / "worktree"
+        stale_fixture_dir = worktree_dir / "packages" / "meta-harness" / "scenarios" / "fixtures"
+        stale_fixture_dir.mkdir(parents=True)
+        (stale_fixture_dir / "assert-task-state-outcome.py").write_text(
+            "# stale fixture without add-phase-with-ac\n", encoding="utf-8"
+        )
+        (stale_fixture_dir / "stale-only-file.py").write_text(
+            "# should be removed by materialization\n", encoding="utf-8"
+        )
+
+        ev._materialize_current_oracle_fixtures(worktree_dir, package_dir)
+
+        materialized = stale_fixture_dir / "assert-task-state-outcome.py"
+        assert materialized.read_text(encoding="utf-8") == "# current trusted fixture\n"
+        assert not (stale_fixture_dir / "stale-only-file.py").exists()
+
+    def test_missing_source_directory_is_a_silent_no_op(self, tmp_path: Path) -> None:
+        package_dir = tmp_path / "package-without-fixtures"
+        package_dir.mkdir()
+        worktree_dir = tmp_path / "worktree"
+        worktree_dir.mkdir()
+
+        ev._materialize_current_oracle_fixtures(worktree_dir, package_dir)
+
+        assert not (worktree_dir / "packages").exists()
+
+    def test_rejects_symlinked_destination(self, tmp_path: Path) -> None:
+        package_dir = tmp_path / "package"
+        (package_dir / "scenarios" / "fixtures").mkdir(parents=True)
+        (package_dir / "scenarios" / "fixtures" / "f.py").write_text("x", encoding="utf-8")
+
+        worktree_dir = tmp_path / "worktree"
+        (worktree_dir / "packages" / "meta-harness" / "scenarios").mkdir(parents=True)
+        outside = tmp_path / "outside-fixtures"
+        outside.mkdir()
+        (worktree_dir / "packages" / "meta-harness" / "scenarios" / "fixtures").symlink_to(
+            outside, target_is_directory=True
+        )
+
+        with pytest.raises(ev.EvaluatorStageError):
+            ev._materialize_current_oracle_fixtures(worktree_dir, package_dir)
+
+
+class TestOracleFixtureMaterializationTiming:
+    """PR #326 レビュー round 4/5 (Codex P1): `scenarios/fixtures/` の materialize は候補の
+    エージェント実行の直後・oracle 実行の直前に行われなければならない。候補実行前だけに
+    materialize すると、bypassPermissions 下の候補がその後に fixture スクリプトを改ざんしても
+    上書きされず、outcome/collateral 両チェック（同一スクリプトが両方の subcommand を実装して
+    いる）を自分の改変ごと隠して通過できてしまう。"""
+
+    def test_materialize_runs_after_headless_scenario_completes(
+        self, git_project: Path, monkeypatch
+    ) -> None:
+        call_order: list[str] = []
+
+        monkeypatch.setattr(ev, "apply_overlay", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(ev, "build_facet_and_context", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(ev, "run_setup_commands", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(ev.siso, "cleanup_scenario_isolation", lambda *_args, **_kwargs: None)
+
+        def fake_run_headless_scenario(*_args, **_kwargs):
+            call_order.append("run_headless_scenario")
+            return SimpleNamespace(isolation_launch=object())
+
+        def fake_materialize(_worktree_dir, _package_dir):
+            call_order.append("materialize_fixtures")
+
+        monkeypatch.setattr(ev, "run_headless_scenario", fake_run_headless_scenario)
+        monkeypatch.setattr(ev, "_materialize_current_oracle_fixtures", fake_materialize)
+
+        _checks, _checks_nc, hard_failure, errors = ev._run_attempt_lifecycle(
+            main_root=git_project,
+            config={"evaluate": {"worktree_root": ".worktrees/meta"}},
+            schema_dir=_SCHEMA_DIR,
+            package_dir=Path("packages/meta-harness").resolve(),
+            cand_dir=git_project,
+            manifest={"source_commit": _git("rev-parse", "HEAD", cwd=git_project).stdout.strip()},
+            scenario={
+                "id": "s-materialize-order",
+                "prompt": "irrelevant",
+                "setup": [],
+                "critical": [],
+                "checks": [],
+            },
+            run_id="run-test-materialize-order",
+            staging_dir=git_project / "staging-materialize-order",
+            runner=subprocess.run,
+        )
+
+        assert hard_failure is False, errors
+        assert call_order == ["run_headless_scenario", "materialize_fixtures"]
+
+
 class TestFinallyRemovalOnLifecycleFailure:
     """EV-14: worktree は評価の成功・失敗に関わらず finally で確実に除去される。"""
 

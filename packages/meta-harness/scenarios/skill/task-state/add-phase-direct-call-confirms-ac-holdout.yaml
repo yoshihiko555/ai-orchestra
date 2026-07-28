@@ -1,0 +1,111 @@
+schema_version: "1.0"
+id: add-phase-direct-call-confirms-ac-holdout
+target: skill:task-state
+description: Holdout - a direct (non-/preflight) add-phase call with no Acceptance Criteria agreed yet must not fabricate one and must flag the open question to the user.
+prompt: |
+  /task-state add-phase "Phase 3: リリース準備" --tasks "デプロイ手順書作成" "リリースノート作成"
+
+  This call comes directly from a developer, not via `/preflight`, and no Acceptance Criteria
+  has been discussed for this phase yet. This is an offline evaluation harness with no
+  interactive follow-up, so if you would normally wait for a live reply, just note that
+  limitation in your final report instead of blocking. Add the new phase and its two tasks to
+  `.claude/Plans.md`. Do not modify Phase 2, the CODD frontmatter, or the Decisions/Notes
+  sections.
+setup:
+  - |
+    mkdir -p .claude
+    cat > .claude/Plans.md <<'PLANSEOF'
+    ---
+    codd:
+      node_id: "plan:meta-harness-eval-fixture"
+      kind: plan
+      status: active
+      depends_on:
+        - id: "design:meta-harness"
+          relation: implements
+    ---
+
+    # Plans
+
+    ## Project: meta-harness-eval-fixture
+
+    ### Phase 2: 実装 `cc:WIP`
+
+    #### API
+
+    - `cc:done` ユーザー認証API
+    - `cc:WIP` 商品一覧API
+    - `cc:TODO` 注文API
+
+    ---
+
+    ## Decisions
+
+    - 2026-01-01: 初期設計方針を確定
+
+    ## Notes
+
+    - 評価用フィクスチャ
+    PLANSEOF
+allowed_tools:
+  - "Read"
+  - "Edit"
+  - "Write"
+# Issue #297 / PR #326 review round 1: add-phase-with-agreed-ac と同型（同一 .claude/Plans.md
+# 対象）。`.claude/` は protected path のため allow ルール（`Edit(path)` / `Write(path)`）では
+# 書込みを事前承認できない（公式 docs: code.claude.com/docs/en/permission-modes.md
+# "Protected paths"）。非対話で解除する唯一の手段が --permission-mode bypassPermissions のため、
+# このシナリオに限定して明示 opt-in する。防衛線: コンテナ隔離（ADR-20260712-035）+ --tools による
+# tool 集合最小化（Read/Edit/Write のみ、Bash 等は非公開）+ oracle の Plans.md 全文一致 assert
+# （挿入されたフェーズブロック以外の collateral damage および捏造 AC を含む differ を fail 化）+
+# collateral-scope oracle（bypass で書込み可能になった .claude/ 配下の Plans.md 以外の
+# tracked file が一切変更されていないことを git diff で検証）+ Phase A の human merge review。
+# AskUserQuestion はこのハーネスでは応答不能なため allowed_tools に含めない（含めると質問が
+# 永久に返らずハングし得る）。したがってこのシナリオは「ユーザーへの確認」を最終レポート内の
+# 明示的な問いかけとして表現できることを ac-confirmation-asked（critical, rubric_judge）で検証
+# する。PR #326 レビュー2巡目指摘: 当初この検証は非 critical の checks にしかなく、確認を一切
+# 行わない候補でも上記2件の critical oracle だけで holdout が pass しうる欠陥があった。rubric_judge
+# は worktree_dir 上のファイルしか参照できないため、`_write_candidate_final_report_artifact`
+# （evaluator.py）が候補の最終応答テキストを `.claude/meta-harness-oracle/final-report.md`
+# （gitignore 済み・collateral-scope 検査対象外）へ橋渡しし、下の rubric がそのファイル名を明示
+# 参照することで judge に実体を渡す。
+permission_mode: bypassPermissions
+command_timeout_ms: 60000
+critical:
+  - id: phase-without-fabricated-ac-inserted
+    text: "Plans.md 全体を canonical fixture と突合し、新規 Phase 3 見出しと 2 タスクの挿入以外の差分が一切ないこと（Acceptance Criteria セクションや verify/judge 項目が一切捏造されていないこと含む）を検証する"
+    oracle: command_exit
+    command: >-
+      python3 packages/meta-harness/scenarios/fixtures/assert-task-state-outcome.py add-phase-no-ac --plans .claude/Plans.md --phase-name "Phase 3: リリース準備" --tasks "デプロイ手順書作成" "リリースノート作成"
+  - id: no-collateral-damage-outside-plans-md
+    text: "bypassPermissions で書込み可能になった .claude/ 配下で、tracked file の変更・新規 untracked file の生成がいずれも .claude/Plans.md 以外に一切ないこと、および symlink が一切生成されていないことを検証する"
+    oracle: command_exit
+    # 注: `--allow .claude/Plans.md` は .claude/Plans.md 自体が repo .gitignore 対象のため、
+    # tracked diff 検査に対しては実質 no-op（gitignore 済みパスは git status/diff に一切現れない）。
+    # Plans.md の内容保証は上の phase-without-fabricated-ac-inserted（全文一致 oracle）が担う。
+    # ここでの --allow は「万一将来 gitignore が外れた場合の安全弁」として残す。
+    # `--ignored-scan-prefix .claude`: plain `git status` は gitignore 対象パスを一切報告しない
+    # ため、これが無いと bypassPermissions 下の候補が root .gitignore 済みの `.claude/meta-harness/`
+    # 配下へ任意ファイルを作成しても検出できない（PR #326 レビュー round 5, Codex P1）。同フラグは
+    # `.claude` 配下の全 ignored ファイルを --allow/--allow-new-prefix と同じ許可判定に載せるため、
+    # 評価者自身が書く bridge artifact（CANDIDATE_FINAL_REPORT_RELATIVE_PATH、下の
+    # ac-confirmation-asked rubric が参照する final-report.md）も明示的に --allow へ加える。
+    command: >-
+      python3 packages/meta-harness/scenarios/fixtures/assert-task-state-outcome.py collateral-scope --allow .claude/Plans.md --allow .claude/meta-harness-oracle/final-report.md --ignored-scan-prefix .claude
+  - id: ac-confirmation-asked
+    text: "Acceptance Criteria の要否をユーザーに確認する問いかけが最終レポートに含まれる"
+    oracle: rubric_judge
+    rubric: >-
+      Read the candidate's final response text captured at
+      `.claude/meta-harness-oracle/final-report.md`. It must explicitly ask the user whether
+      Acceptance Criteria should be defined for the newly added phase, and must not present any
+      Acceptance Criteria as already agreed or decided. If the file is missing or empty, treat
+      this as a failure (the candidate produced no reviewable final response).
+checks: []
+holdout: true
+timeout_ms: 300000
+budget:
+  max_turns: 8
+  max_budget_usd: 3.0
+  max_output_tokens: 1024
+repeat: 1

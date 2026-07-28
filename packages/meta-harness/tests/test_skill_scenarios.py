@@ -30,13 +30,18 @@ SCHEMA_DIR = PACKAGE_DIR / "schemas"
 
 
 def test_skill_suites_have_one_train_and_one_holdout() -> None:
+    # `skill:task-state` is excluded here: like `routing-config` (see
+    # `test_task_state_suite_covers_add_phase_ac_behavior` and
+    # `test_routing_config_suite_uses_deterministic_critical_oracles` below), it carries 2 train +
+    # 2 holdout scenarios rather than the 1+1 baseline (Issue #297 / PR #326 review round 1: the
+    # extra pair locks down `add-phase`'s Acceptance Criteria behavior specifically, alongside the
+    # original mark-task-done/record-decision pair).
     for target in (
         "skill:handoff",
         "skill:issue-create",
         "skill:codex-system",
         "skill:antigravity-system",
         "skill:issue-fix",
-        "skill:task-state",
     ):
         paths = ev.validate_target_suite(PACKAGE_DIR, SCHEMA_DIR, target)
         scenarios = [ev.load_scenario(path, SCHEMA_DIR) for path in paths]
@@ -45,6 +50,53 @@ def test_skill_suites_have_one_train_and_one_holdout() -> None:
         assert sum(not scenario["holdout"] for scenario in scenarios) == 1
         assert sum(scenario["holdout"] for scenario in scenarios) == 1
         assert {scenario["target"] for scenario in scenarios} == {target}
+
+
+def test_task_state_suite_covers_add_phase_ac_behavior() -> None:
+    """Issue #297 / PR #326 review round 1: the `add-phase` Acceptance Criteria behavior contract
+    (agreed-upon AC reflected verbatim; a direct call with no agreed AC must not fabricate one and
+    must ask the user instead) needs its own dedicated scenario pair, so `skill:task-state` grows
+    from the 1 train + 1 holdout baseline to 2 + 2 (mirroring how `routing-config` already carries
+    more than the baseline pair; see `test_routing_config_suite_uses_deterministic_critical_oracles`)."""
+    paths = ev.validate_target_suite(PACKAGE_DIR, SCHEMA_DIR, "skill:task-state")
+    scenarios = [ev.load_scenario(path, SCHEMA_DIR) for path in paths]
+
+    assert len(scenarios) == 4
+    assert sum(not scenario["holdout"] for scenario in scenarios) == 2
+    assert sum(scenario["holdout"] for scenario in scenarios) == 2
+    assert {scenario["target"] for scenario in scenarios} == {"skill:task-state"}
+
+    by_id = {scenario["id"]: scenario for scenario in scenarios}
+    assert by_id.keys() == {
+        "mark-task-done",
+        "record-architecture-decision-holdout",
+        "add-phase-with-agreed-ac",
+        "add-phase-direct-call-confirms-ac-holdout",
+    }
+    assert by_id["add-phase-with-agreed-ac"]["holdout"] is False
+    assert by_id["add-phase-direct-call-confirms-ac-holdout"]["holdout"] is True
+
+    with_ac_commands = [
+        item["command"]
+        for item in by_id["add-phase-with-agreed-ac"]["critical"]
+        if item["oracle"] == "command_exit"
+    ]
+    assert any("add-phase-with-ac" in command for command in with_ac_commands)
+
+    no_ac_critical = by_id["add-phase-direct-call-confirms-ac-holdout"]["critical"]
+    no_ac_commands = [
+        item["command"] for item in no_ac_critical if item["oracle"] == "command_exit"
+    ]
+    assert any("add-phase-no-ac" in command for command in no_ac_commands)
+
+    # PR #326 レビュー2巡目指摘: 「AC の要否をユーザーに確認したか」の検証が非 critical の
+    # checks にしかなく、候補が確認を一切行わなくても2つの critical oracle だけで holdout が
+    # pass しうる欠陥があった。この検証が critical へ昇格され、checks からは除去されたことを
+    # 固定する。
+    no_ac_critical_by_id = {item["id"]: item for item in no_ac_critical}
+    assert "ac-confirmation-asked" in no_ac_critical_by_id
+    assert no_ac_critical_by_id["ac-confirmation-asked"]["oracle"] == "rubric_judge"
+    assert by_id["add-phase-direct-call-confirms-ac-holdout"]["checks"] == []
 
 
 def test_skill_scenarios_pin_minimal_output_envelope() -> None:
@@ -1466,7 +1518,12 @@ def _real_plans_seed_bytes(scenario_filename: str) -> bytes:
 
 
 def test_task_state_canonical_fixture_matches_real_scenario_setup() -> None:
-    for scenario_filename in ("mark-task-done.yaml", "record-architecture-decision-holdout.yaml"):
+    for scenario_filename in (
+        "mark-task-done.yaml",
+        "record-architecture-decision-holdout.yaml",
+        "add-phase-with-agreed-ac.yaml",
+        "add-phase-direct-call-confirms-ac-holdout.yaml",
+    ):
         assert _real_plans_seed_bytes(scenario_filename) == _CANONICAL_PLANS_TEXT.encode("utf-8")
 
 
@@ -1714,6 +1771,366 @@ def test_task_state_record_decision_oracle_rejects_modified_frontmatter(tmp_path
         )
 
 
+_ADD_PHASE_WITH_AC_BLOCK = (
+    "### Phase 3: リリース準備 `cc:TODO`\n"
+    "\n"
+    "#### Acceptance Criteria\n"
+    "\n"
+    "- [ ] 主要エンドポイントが 200ms 以内に応答する — verify: `pytest tests/perf/test_latency.py`\n"
+    "- [ ] リリースノートの記載内容が十分にユーザーへ伝わる — judge: 変更点・影響範囲・移行手順が明記されている\n"
+    "\n"
+    "#### Tasks\n"
+    "\n"
+    "- `cc:TODO` デプロイ手順書作成\n"
+    "- `cc:TODO` リリースノート作成\n"
+    "\n"
+)
+
+_ADD_PHASE_NO_AC_BLOCK = (
+    "### Phase 3: リリース準備 `cc:TODO`\n"
+    "\n"
+    "#### Tasks\n"
+    "\n"
+    "- `cc:TODO` デプロイ手順書作成\n"
+    "- `cc:TODO` リリースノート作成\n"
+    "\n"
+)
+
+
+def _insert_before_separator(block: str) -> str:
+    """Insert `block` right before the canonical fixture's project separator (the `---`
+    immediately preceding `## Decisions`), matching where `add-phase` is expected to write."""
+    return _CANONICAL_PLANS_TEXT.replace("\n---\n\n## Decisions", f"\n{block}---\n\n## Decisions")
+
+
+def test_task_state_add_phase_with_ac_oracle_passes_on_correct_insertion(tmp_path: Path) -> None:
+    fixture = _task_state_outcome_fixture()
+    plans_path = tmp_path / "Plans.md"
+    plans_path.write_text(_insert_before_separator(_ADD_PHASE_WITH_AC_BLOCK), encoding="utf-8")
+
+    fixture.assert_add_phase_with_ac(
+        plans_path,
+        phase_name="Phase 3: リリース準備",
+        tasks=["デプロイ手順書作成", "リリースノート作成"],
+        verify_text="主要エンドポイントが 200ms 以内に応答する",
+        verify_command="pytest tests/perf/test_latency.py",
+        judge_text="リリースノートの記載内容が十分にユーザーへ伝わる",
+        judge_criteria="変更点・影響範囲・移行手順が明記されている",
+    )
+
+
+def test_task_state_add_phase_with_ac_oracle_rejects_missing_ac_section(tmp_path: Path) -> None:
+    """A direct add-phase call that silently dropped the agreed Acceptance Criteria must fail."""
+    fixture = _task_state_outcome_fixture()
+    plans_path = tmp_path / "Plans.md"
+    plans_path.write_text(_insert_before_separator(_ADD_PHASE_NO_AC_BLOCK), encoding="utf-8")
+
+    with pytest.raises(AssertionError, match="Acceptance Criteria セクションが欠落している"):
+        fixture.assert_add_phase_with_ac(
+            plans_path,
+            phase_name="Phase 3: リリース準備",
+            tasks=["デプロイ手順書作成", "リリースノート作成"],
+            verify_text="主要エンドポイントが 200ms 以内に応答する",
+            verify_command="pytest tests/perf/test_latency.py",
+            judge_text="リリースノートの記載内容が十分にユーザーへ伝わる",
+            judge_criteria="変更点・影響範囲・移行手順が明記されている",
+        )
+
+
+_ADD_PHASE_WITH_AC_INTERNAL_WHITESPACE_HEADING_BLOCK = (
+    "### Phase 3: リリース準備 `cc:TODO`\n"
+    "\n"
+    "#### Acceptance  Criteria\n"
+    "\n"
+    "- [ ] 主要エンドポイントが 200ms 以内に応答する — verify: `pytest tests/perf/test_latency.py`\n"
+    "- [ ] リリースノートの記載内容が十分にユーザーへ伝わる — judge: 変更点・影響範囲・移行手順が明記されている\n"
+    "\n"
+    "#### Tasks\n"
+    "\n"
+    "- `cc:TODO` デプロイ手順書作成\n"
+    "- `cc:TODO` リリースノート作成\n"
+    "\n"
+)
+
+
+def test_task_state_add_phase_with_ac_oracle_rejects_internal_whitespace_ac_heading(
+    tmp_path: Path,
+) -> None:
+    """Codex bot レビュー round 5 (P2): `packages/core/hooks/ac_parser.py` の
+    `ac_section_ranges()` は見出しを外側の空白だけ許容する完全一致（`.strip() != heading`）で
+    判定するため、内部の空白が増えた `#### Acceptance  Criteria` は本番では AC セクションとして
+    一切認識されず、そこに書いた verify/judge は完了判定・自動アーカイブを何も止めない。この
+    fixture が内部空白まで正規化して受理してしまうと、実際には機能しない Plans.md を合格させて
+    しまうため、production パーサーと同じ外側空白のみ許容の判定へ揃える。"""
+    fixture = _task_state_outcome_fixture()
+    plans_path = tmp_path / "Plans.md"
+    plans_path.write_text(
+        _insert_before_separator(_ADD_PHASE_WITH_AC_INTERNAL_WHITESPACE_HEADING_BLOCK),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AssertionError, match="Acceptance Criteria セクションが欠落している"):
+        fixture.assert_add_phase_with_ac(
+            plans_path,
+            phase_name="Phase 3: リリース準備",
+            tasks=["デプロイ手順書作成", "リリースノート作成"],
+            verify_text="主要エンドポイントが 200ms 以内に応答する",
+            verify_command="pytest tests/perf/test_latency.py",
+            judge_text="リリースノートの記載内容が十分にユーザーへ伝わる",
+            judge_criteria="変更点・影響範囲・移行手順が明記されている",
+        )
+
+
+_ADD_PHASE_AC_AFTER_TASKS_BLOCK = (
+    "### Phase 3: リリース準備 `cc:TODO`\n"
+    "\n"
+    "#### Tasks\n"
+    "\n"
+    "- `cc:TODO` デプロイ手順書作成\n"
+    "- `cc:TODO` リリースノート作成\n"
+    "\n"
+    "#### Acceptance Criteria\n"
+    "\n"
+    "- [ ] 主要エンドポイントが 200ms 以内に応答する — verify: `pytest tests/perf/test_latency.py`\n"
+    "- [ ] リリースノートの記載内容が十分にユーザーへ伝わる — judge: 変更点・影響範囲・移行手順が明記されている\n"
+    "\n"
+)
+
+
+def test_task_state_add_phase_with_ac_oracle_rejects_ac_placed_after_task_group(
+    tmp_path: Path,
+) -> None:
+    """PR #326 レビュー2巡目指摘: AC 見出しが Phase 見出しより後にあるだけでは不十分で、タスク
+    グループ見出し・タスク行より前にあることまで検証しないと `#### Tasks` の後に AC を置く出力
+    でも critical check が通ってしまう（task-memory-usage.md: AC は「タスクグループより前」）。"""
+    fixture = _task_state_outcome_fixture()
+    plans_path = tmp_path / "Plans.md"
+    plans_path.write_text(
+        _insert_before_separator(_ADD_PHASE_AC_AFTER_TASKS_BLOCK), encoding="utf-8"
+    )
+
+    with pytest.raises(
+        AssertionError, match="Acceptance Criteria section must come before the task group"
+    ):
+        fixture.assert_add_phase_with_ac(
+            plans_path,
+            phase_name="Phase 3: リリース準備",
+            tasks=["デプロイ手順書作成", "リリースノート作成"],
+            verify_text="主要エンドポイントが 200ms 以内に応答する",
+            verify_command="pytest tests/perf/test_latency.py",
+            judge_text="リリースノートの記載内容が十分にユーザーへ伝わる",
+            judge_criteria="変更点・影響範囲・移行手順が明記されている",
+        )
+
+
+def test_task_state_add_phase_with_ac_oracle_rejects_mismatched_verify_command(
+    tmp_path: Path,
+) -> None:
+    fixture = _task_state_outcome_fixture()
+    tampered_block = _ADD_PHASE_WITH_AC_BLOCK.replace(
+        "pytest tests/perf/test_latency.py", "pytest tests/perf/test_other.py"
+    )
+    plans_path = tmp_path / "Plans.md"
+    plans_path.write_text(_insert_before_separator(tampered_block), encoding="utf-8")
+
+    with pytest.raises(AssertionError, match="verify Acceptance Criteria item does not match"):
+        fixture.assert_add_phase_with_ac(
+            plans_path,
+            phase_name="Phase 3: リリース準備",
+            tasks=["デプロイ手順書作成", "リリースノート作成"],
+            verify_text="主要エンドポイントが 200ms 以内に応答する",
+            verify_command="pytest tests/perf/test_latency.py",
+            judge_text="リリースノートの記載内容が十分にユーザーへ伝わる",
+            judge_criteria="変更点・影響範囲・移行手順が明記されている",
+        )
+
+
+def test_task_state_add_phase_with_ac_oracle_rejects_collateral_edit_to_existing_phase(
+    tmp_path: Path,
+) -> None:
+    fixture = _task_state_outcome_fixture()
+    text = _insert_before_separator(_ADD_PHASE_WITH_AC_BLOCK).replace(
+        "`cc:WIP` 商品一覧API", "`cc:done` 商品一覧API"
+    )
+    plans_path = tmp_path / "Plans.md"
+    plans_path.write_text(text, encoding="utf-8")
+
+    with pytest.raises(AssertionError, match="content before the new phase's insertion point"):
+        fixture.assert_add_phase_with_ac(
+            plans_path,
+            phase_name="Phase 3: リリース準備",
+            tasks=["デプロイ手順書作成", "リリースノート作成"],
+            verify_text="主要エンドポイントが 200ms 以内に応答する",
+            verify_command="pytest tests/perf/test_latency.py",
+            judge_text="リリースノートの記載内容が十分にユーザーへ伝わる",
+            judge_criteria="変更点・影響範囲・移行手順が明記されている",
+        )
+
+
+def test_task_state_add_phase_no_ac_oracle_passes_on_correct_insertion(tmp_path: Path) -> None:
+    fixture = _task_state_outcome_fixture()
+    plans_path = tmp_path / "Plans.md"
+    plans_path.write_text(_insert_before_separator(_ADD_PHASE_NO_AC_BLOCK), encoding="utf-8")
+
+    fixture.assert_add_phase_no_ac(
+        plans_path,
+        phase_name="Phase 3: リリース準備",
+        tasks=["デプロイ手順書作成", "リリースノート作成"],
+    )
+
+
+def test_task_state_add_phase_no_ac_oracle_rejects_fabricated_ac_section(tmp_path: Path) -> None:
+    """A direct add-phase call must not invent an Acceptance Criteria section on its own."""
+    fixture = _task_state_outcome_fixture()
+    plans_path = tmp_path / "Plans.md"
+    plans_path.write_text(_insert_before_separator(_ADD_PHASE_WITH_AC_BLOCK), encoding="utf-8")
+
+    with pytest.raises(AssertionError, match="must not add an"):
+        fixture.assert_add_phase_no_ac(
+            plans_path,
+            phase_name="Phase 3: リリース準備",
+            tasks=["デプロイ手順書作成", "リリースノート作成"],
+        )
+
+
+def test_task_state_add_phase_no_ac_oracle_rejects_deleted_task(tmp_path: Path) -> None:
+    fixture = _task_state_outcome_fixture()
+    tampered_block = _ADD_PHASE_NO_AC_BLOCK.replace("- `cc:TODO` リリースノート作成\n", "")
+    plans_path = tmp_path / "Plans.md"
+    plans_path.write_text(_insert_before_separator(tampered_block), encoding="utf-8")
+
+    with pytest.raises(AssertionError, match="new phase tasks do not match"):
+        fixture.assert_add_phase_no_ac(
+            plans_path,
+            phase_name="Phase 3: リリース準備",
+            tasks=["デプロイ手順書作成", "リリースノート作成"],
+        )
+
+
+_ADD_PHASE_WITH_AC_UNCONSUMED_CONTENT_BLOCK = (
+    "### Phase 3: リリース準備 `cc:TODO`\n"
+    "\n"
+    "#### Acceptance Criteria\n"
+    "\n"
+    "- [ ] 主要エンドポイントが 200ms 以内に応答する — verify: `pytest tests/perf/test_latency.py`\n"
+    "- [ ] リリースノートの記載内容が十分にユーザーへ伝わる — judge: 変更点・影響範囲・移行手順が明記されている\n"
+    "- [ ] 未合意の追加チェック項目\n"
+    "\n"
+    "#### Tasks\n"
+    "\n"
+    "- `cc:TODO` デプロイ手順書作成\n"
+    "- `cc:TODO` リリースノート作成\n"
+    "\n"
+    "候補が挿入した無関係な自由記述テキスト\n"
+    "\n"
+)
+
+
+def test_task_state_add_phase_with_ac_oracle_rejects_unconsumed_content(tmp_path: Path) -> None:
+    """PR #326 レビュー2巡目指摘 (Codex P1): 従来は挿入領域から期待形式のタスク・AC を抽出して
+    照合するだけで、期待される構造以外の行（未合意のチェックボックスや自由記述テキスト）が
+    混入していても検出できなかった。"""
+    fixture = _task_state_outcome_fixture()
+    plans_path = tmp_path / "Plans.md"
+    plans_path.write_text(
+        _insert_before_separator(_ADD_PHASE_WITH_AC_UNCONSUMED_CONTENT_BLOCK), encoding="utf-8"
+    )
+
+    with pytest.raises(AssertionError, match="unexpected content"):
+        fixture.assert_add_phase_with_ac(
+            plans_path,
+            phase_name="Phase 3: リリース準備",
+            tasks=["デプロイ手順書作成", "リリースノート作成"],
+            verify_text="主要エンドポイントが 200ms 以内に応答する",
+            verify_command="pytest tests/perf/test_latency.py",
+            judge_text="リリースノートの記載内容が十分にユーザーへ伝わる",
+            judge_criteria="変更点・影響範囲・移行手順が明記されている",
+        )
+
+
+_ADD_PHASE_NO_AC_UNCONSUMED_CONTENT_BLOCK = (
+    "### Phase 3: リリース準備 `cc:TODO`\n"
+    "\n"
+    "#### Tasks\n"
+    "\n"
+    "- `cc:TODO` デプロイ手順書作成\n"
+    "- `cc:TODO` リリースノート作成\n"
+    "\n"
+    "候補が挿入した無関係な自由記述テキスト\n"
+    "\n"
+)
+
+
+def test_task_state_add_phase_no_ac_oracle_rejects_unconsumed_content(tmp_path: Path) -> None:
+    """PR #326 レビュー2巡目指摘 (Codex P1): AC を伴わない挿入でも、期待される見出し・タスク行
+    以外の自由記述テキストが混入していれば拒否しなければならない。"""
+    fixture = _task_state_outcome_fixture()
+    plans_path = tmp_path / "Plans.md"
+    plans_path.write_text(
+        _insert_before_separator(_ADD_PHASE_NO_AC_UNCONSUMED_CONTENT_BLOCK), encoding="utf-8"
+    )
+
+    with pytest.raises(AssertionError, match="unexpected content"):
+        fixture.assert_add_phase_no_ac(
+            plans_path,
+            phase_name="Phase 3: リリース準備",
+            tasks=["デプロイ手順書作成", "リリースノート作成"],
+        )
+
+
+_ADD_PHASE_NO_AC_TRAILING_WHITESPACE_HEADING_BLOCK = (
+    "### Phase 3: リリース準備 `cc:TODO`\n"
+    "\n"
+    "#### Acceptance Criteria \n"
+    "\n"
+    "#### Tasks\n"
+    "\n"
+    "- `cc:TODO` デプロイ手順書作成\n"
+    "- `cc:TODO` リリースノート作成\n"
+    "\n"
+)
+
+
+def test_task_state_add_phase_no_ac_oracle_rejects_trailing_whitespace_ac_heading(
+    tmp_path: Path,
+) -> None:
+    """Codex bot レビュー round 4 (P2): 末尾空白付きの `#### Acceptance Criteria ` は byte-exact
+    比較をすり抜け、後続の task-group heading 検証では唯一の task-group heading として消費されて
+    しまっていた。見出しの空白を正規化して比較することで、この AC 類似見出しも確実に拒否する。"""
+    fixture = _task_state_outcome_fixture()
+    plans_path = tmp_path / "Plans.md"
+    plans_path.write_text(
+        _insert_before_separator(_ADD_PHASE_NO_AC_TRAILING_WHITESPACE_HEADING_BLOCK),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AssertionError, match="must not add an"):
+        fixture.assert_add_phase_no_ac(
+            plans_path,
+            phase_name="Phase 3: リリース準備",
+            tasks=["デプロイ手順書作成", "リリースノート作成"],
+        )
+
+
+def test_task_state_add_phase_no_ac_oracle_rejects_crlf_rewrite_of_existing_content(
+    tmp_path: Path,
+) -> None:
+    """Codex bot レビュー round 4 (P2): `Path.read_text()` の universal-newline 変換で CRLF が
+    LF に正規化されるため、候補が既存 Plans.md 全体を CRLF 化しても全文一致検査をすり抜けて
+    いた。改行コードを保持したまま比較することで、この全面書き換えも検出する。"""
+    fixture = _task_state_outcome_fixture()
+    plans_path = tmp_path / "Plans.md"
+    crlf_text = _insert_before_separator(_ADD_PHASE_NO_AC_BLOCK).replace("\n", "\r\n")
+    plans_path.write_bytes(crlf_text.encode("utf-8"))
+
+    with pytest.raises(AssertionError):
+        fixture.assert_add_phase_no_ac(
+            plans_path,
+            phase_name="Phase 3: リリース準備",
+            tasks=["デプロイ手順書作成", "リリースノート作成"],
+        )
+
+
 def _init_git_repo_with_tracked_file(repo_dir: Path, relative_path: str, content: str) -> None:
     tracked_path = repo_dir / relative_path
     tracked_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1730,7 +2147,7 @@ def test_every_bypass_permissions_scenario_has_a_collateral_scope_critical_check
     `permission_mode: bypassPermissions` unlocks the entire `.claude/` tree for a scenario, so
     every scenario that opts into it must carry a `collateral-scope` critical check as a
     compensating control (ADR-20260714-038 "bypassPermissions 例外" addendum). This scans all
-    registered scenario yaml files rather than hardcoding the current 4 bypass scenarios, so a
+    registered scenario yaml files rather than hardcoding the current 6 bypass scenarios, so a
     future scenario adding bypass without the paired oracle fails this test immediately."""
     scenario_paths = sorted((PACKAGE_DIR / "scenarios").rglob("*.yaml"))
     assert scenario_paths, "expected to find at least one scenario yaml file"
@@ -1820,6 +2237,71 @@ class TestCollateralScopeOracle:
         (pycache_dir / "module.cpython-314.pyc").write_bytes(b"\x00")
 
         fixture.assert_tracked_changes_limited_to({".claude/Plans.md"}, cwd=tmp_path)
+
+    def test_ignored_scan_prefixes_defaults_to_off_and_misses_ignored_directory_payload(
+        self, tmp_path: Path
+    ) -> None:
+        """PR #326 レビュー round 5 (Codex P1): `ignored_scan_prefixes` を渡さない従来どおりの
+        呼び出しでは、root `.gitignore` が ignore する `.claude/meta-harness/` 配下に候補が
+        任意ファイルを作成しても検出されない（後方互換の確認。この盲点を実際に塞ぐのが次の
+        テスト）。"""
+        fixture = _task_state_outcome_fixture()
+        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        (tmp_path / ".gitignore").write_text(".claude/meta-harness/\n", encoding="utf-8")
+        subprocess.run(["git", "add", ".gitignore"], cwd=tmp_path, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "add gitignore"], cwd=tmp_path, check=True)
+
+        payload_dir = tmp_path / ".claude" / "meta-harness"
+        payload_dir.mkdir(parents=True)
+        (payload_dir / "payload").write_text("candidate-controlled content", encoding="utf-8")
+
+        fixture.assert_tracked_changes_limited_to({".claude/Plans.md"}, cwd=tmp_path)
+
+    def test_ignored_scan_prefixes_rejects_new_file_under_gitignored_directory(
+        self, tmp_path: Path
+    ) -> None:
+        """PR #326 レビュー round 5 (Codex P1): 同じシナリオで `ignored_scan_prefixes=(".claude",)`
+        を渡すと、`.claude/meta-harness/` のような gitignore 済みディレクトリへの新規ファイル
+        作成も、untracked ファイルと同じ allowlist で検出・拒否されるようになる。"""
+        fixture = _task_state_outcome_fixture()
+        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        (tmp_path / ".gitignore").write_text(".claude/meta-harness/\n", encoding="utf-8")
+        subprocess.run(["git", "add", ".gitignore"], cwd=tmp_path, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "add gitignore"], cwd=tmp_path, check=True)
+
+        payload_dir = tmp_path / ".claude" / "meta-harness"
+        payload_dir.mkdir(parents=True)
+        (payload_dir / "payload").write_text("candidate-controlled content", encoding="utf-8")
+
+        with pytest.raises(AssertionError, match=r"new git-ignored files under \['\.claude'\]"):
+            fixture.assert_tracked_changes_limited_to(
+                {".claude/Plans.md"}, ignored_scan_prefixes=(".claude",), cwd=tmp_path
+            )
+
+    def test_ignored_scan_prefixes_still_allows_explicitly_allowed_ignored_file(
+        self, tmp_path: Path
+    ) -> None:
+        """The evaluator's own bridge artifact (`CANDIDATE_FINAL_REPORT_RELATIVE_PATH`) is
+        itself a git-ignored file under `.claude`; enabling `ignored_scan_prefixes` must not
+        flag it as long as it is also passed via `allowed_paths` (mirrors how the task-state /
+        handoff scenario yamls now call this subcommand)."""
+        fixture = _task_state_outcome_fixture()
+        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        (tmp_path / ".gitignore").write_text(
+            ".claude/meta-harness-oracle/final-report.md\n", encoding="utf-8"
+        )
+        subprocess.run(["git", "add", ".gitignore"], cwd=tmp_path, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "add gitignore"], cwd=tmp_path, check=True)
+
+        oracle_dir = tmp_path / ".claude" / "meta-harness-oracle"
+        oracle_dir.mkdir(parents=True)
+        (oracle_dir / "final-report.md").write_text("candidate final response", encoding="utf-8")
+
+        fixture.assert_tracked_changes_limited_to(
+            {".claude/Plans.md", ".claude/meta-harness-oracle/final-report.md"},
+            ignored_scan_prefixes=(".claude",),
+            cwd=tmp_path,
+        )
 
     def test_default_rejects_new_untracked_file_without_allow_list(self, tmp_path: Path) -> None:
         """PR #273 bot review round 3 (Codex P2): a bypass-mode candidate creating an

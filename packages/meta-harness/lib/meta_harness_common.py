@@ -158,8 +158,11 @@ DEFAULTS: dict[str, Any] = {
         # train +12, create-bug-issue-holdout +27, fix-greet-none-bug train +6,
         # fix-formal-greeting-feature-holdout +18; total +63). Cut off the $3 -> $6 -> $9
         # incremental chase and set all 4 scenarios to $15.00 as a definitive value.
+        # Issue #297: bumped 174.0 -> 186.0 after registering 2 task-state scenarios
+        # (add-phase-with-agreed-ac train + add-phase-direct-call-confirms-ac-holdout
+        # holdout, max_budget_usd 3.0 each; +12.0 across the default/frontier phases).
         "max_affected_suites": 7,
-        "max_budget_usd": 174.0,
+        "max_budget_usd": 186.0,
     },
     "overlay": {
         "allowed_prefixes": ["facets/"],

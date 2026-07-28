@@ -6,7 +6,10 @@ skill-evolution の `[skill-self-report]` パーサロジックを流用した�
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
+
+import pytest
 
 from tests.module_loader import load_module
 
@@ -23,6 +26,15 @@ mh = load_module(
 def _write_assistant_text(path: Path, text: str) -> None:
     event = {"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}}
     path.write_text(json.dumps(event) + "\n", encoding="utf-8")
+
+
+def _write_assistant_turns(path: Path, texts: list[str]) -> None:
+    """複数の assistant turn（events.jsonl の複数イベント）を順番に書き出す。"""
+    events = [
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}}
+        for text in texts
+    ]
+    path.write_text("\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8")
 
 
 class TestParseSelfReportFound:
@@ -129,3 +141,205 @@ class TestQualityScoreMissingReportPenaltyZeroesOutTerm:
         honest_zero_penalty = mh.quality_score(1.0, 0.0, config)
         missing_report_penalty = mh.quality_score(1.0, 6.0, config)
         assert honest_zero_penalty > missing_report_penalty
+
+
+class TestWriteCandidateFinalReportArtifact:
+    """Issue #297 / PR #326 レビュー2巡目指摘: critical/checks オラクルが候補の最終応答テキストを
+    worktree_dir 経由で参照できるようにするブリッジ（`CANDIDATE_FINAL_REPORT_RELATIVE_PATH`）。"""
+
+    def test_writes_extracted_assistant_text_to_relative_path(self, tmp_path: Path) -> None:
+        worktree_dir = tmp_path / "worktree"
+        worktree_dir.mkdir()
+        events_path = tmp_path / "events.jsonl"
+        _write_assistant_text(events_path, "AC はまだ合意されていません。定義しますか?")
+
+        ev._write_candidate_final_report_artifact(worktree_dir, events_path)
+
+        destination = worktree_dir / ev.CANDIDATE_FINAL_REPORT_RELATIVE_PATH
+        assert destination.is_file()
+        assert "AC はまだ合意されていません" in destination.read_text(encoding="utf-8")
+
+    def test_redacts_secrets_before_writing(self, tmp_path: Path) -> None:
+        worktree_dir = tmp_path / "worktree"
+        worktree_dir.mkdir()
+        events_path = tmp_path / "events.jsonl"
+        secret = "sk-" + "a" * 40
+        _write_assistant_text(events_path, f"token: {secret}")
+
+        ev._write_candidate_final_report_artifact(worktree_dir, events_path)
+
+        destination = worktree_dir / ev.CANDIDATE_FINAL_REPORT_RELATIVE_PATH
+        assert secret not in destination.read_text(encoding="utf-8")
+
+    def test_missing_events_file_is_a_silent_no_op(self, tmp_path: Path) -> None:
+        worktree_dir = tmp_path / "worktree"
+        worktree_dir.mkdir()
+
+        ev._write_candidate_final_report_artifact(worktree_dir, tmp_path / "does-not-exist.jsonl")
+
+        assert not (worktree_dir / ev.CANDIDATE_FINAL_REPORT_RELATIVE_PATH).exists()
+
+    def test_only_last_assistant_turn_is_written_when_multiple_turns_present(
+        self, tmp_path: Path
+    ) -> None:
+        """PR #326 レビュー2巡目指摘 (Codex P1): `events.jsonl` に複数の assistant turn がある
+        場合、全 turn を連結した `_extract_assistant_text` ではなく最後の turn だけを書き出す
+        必要がある。中間ターンで AC 確認に触れても最終応答で撤回した候補は、最終応答のみを見た
+        場合に不合格となるべきであり、この artifact にも最終応答だけが残っていなければならない。
+        """
+        worktree_dir = tmp_path / "worktree"
+        worktree_dir.mkdir()
+        events_path = tmp_path / "events.jsonl"
+        _write_assistant_turns(
+            events_path,
+            [
+                "AC はまだ合意されていません。定義しますか?",
+                "作業が完了しました。Phase 3 を追加しました。",
+            ],
+        )
+
+        ev._write_candidate_final_report_artifact(worktree_dir, events_path)
+
+        destination = worktree_dir / ev.CANDIDATE_FINAL_REPORT_RELATIVE_PATH
+        content = destination.read_text(encoding="utf-8")
+        assert "作業が完了しました" in content
+        assert "AC はまだ合意されていません" not in content
+
+    def test_oracle_dir_symlinked_outside_worktree_is_rejected_and_target_untouched(
+        self, tmp_path: Path
+    ) -> None:
+        """CodeRabbit レビュー指摘 (High): 候補が `.claude/meta-harness-oracle` を worktree 外
+        への symlink に差し替えても、評価プロセス権限で外部ターゲットへ書き込んではならない
+        （fail-open: 書込みスキップのみで例外は外へ伝播しない）。"""
+        worktree_dir = tmp_path / "worktree"
+        worktree_dir.mkdir()
+        (worktree_dir / ".claude").mkdir()
+        external_target = tmp_path / "external"
+        external_target.mkdir()
+        (worktree_dir / ".claude" / "meta-harness-oracle").symlink_to(
+            external_target, target_is_directory=True
+        )
+
+        events_path = tmp_path / "events.jsonl"
+        _write_assistant_text(events_path, "AC はまだ合意されていません。定義しますか?")
+
+        ev._write_candidate_final_report_artifact(worktree_dir, events_path)
+
+        assert list(external_target.iterdir()) == []
+
+    def test_trailing_malformed_line_skips_write_and_does_not_use_stale_response(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """CodeRabbit レビュー指摘 (High): `_iter_jsonl` は `JSONDecodeError` の行を黙って破棄
+        するため、`events.jsonl` の末尾が途中書き込みで壊れていると、直前の（古い）assistant
+        turn が「最終応答」として拾われてしまう。末尾の非空行が壊れている場合は final-report を
+        書かず、fail-open で警告ログのみ残す。"""
+        worktree_dir = tmp_path / "worktree"
+        worktree_dir.mkdir()
+        events_path = tmp_path / "events.jsonl"
+        stale_event = json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {"type": "text", "text": "AC はまだ合意されていません。定義しますか?"}
+                    ]
+                },
+            }
+        )
+        events_path.write_text(
+            stale_event + "\n" + '{"type": "assistant", "message": {"content": [{"type": "text"',
+            encoding="utf-8",
+        )
+
+        with caplog.at_level(logging.WARNING):
+            ev._write_candidate_final_report_artifact(worktree_dir, events_path)
+
+        assert not (worktree_dir / ev.CANDIDATE_FINAL_REPORT_RELATIVE_PATH).exists()
+        assert any("fail-open" in record.message for record in caplog.records)
+
+    def test_malformed_assistant_line_before_trailing_valid_result_skips_write(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """PR #326 レビュー round 5 (Codex P2 x2): 通常の stream-json は最終 assistant イベント
+        の後に有効な `result` 行で終わる。「有効な以前の assistant → 壊れた最終 assistant →
+        有効な result」という順序では、末尾行（result）だけを検証してもすり抜け、
+        `_iter_jsonl` が壊れた assistant 行を黙って破棄することで、さらに前の（stale な）
+        assistant 応答が最終応答として採用されてしまっていた。ファイル中のどの行が壊れていても
+        抽出全体を fail-open にする。"""
+        worktree_dir = tmp_path / "worktree"
+        worktree_dir.mkdir()
+        events_path = tmp_path / "events.jsonl"
+        stale_event = json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {"type": "text", "text": "AC はまだ合意されていません。定義しますか?"}
+                    ]
+                },
+            }
+        )
+        malformed_final_assistant_line = (
+            '{"type": "assistant", "message": {"content": [{"type": "text"'
+        )
+        valid_trailing_result = json.dumps({"type": "result", "subtype": "success"})
+        events_path.write_text(
+            "\n".join([stale_event, malformed_final_assistant_line, valid_trailing_result]),
+            encoding="utf-8",
+        )
+
+        with caplog.at_level(logging.WARNING):
+            ev._write_candidate_final_report_artifact(worktree_dir, events_path)
+
+        assert not (worktree_dir / ev.CANDIDATE_FINAL_REPORT_RELATIVE_PATH).exists()
+        assert any("fail-open" in record.message for record in caplog.records)
+
+    def test_final_report_symlinked_to_existing_file_is_rejected_fail_closed(
+        self, tmp_path: Path
+    ) -> None:
+        """PR #326 レビュー round 5 (Codex P2): `final-report.md` 自体が（worktree 内外いずれかの）
+        既存ファイルへの symlink に差し替えられていても、そのファイルへ透過的に書き込んでは
+        ならない。この予約パスの改ざんは fail-open ではなく fail-closed（run error）に扱う:
+        この正確なパスは `_ensure_bridge_artifact_ignored` により Git から不可視であり、
+        silently skip すると候補がこの盲点を悪用しても一切記録されずに評価が続行してしまう。"""
+        worktree_dir = tmp_path / "worktree"
+        worktree_dir.mkdir()
+        oracle_dir = worktree_dir / ".claude" / "meta-harness-oracle"
+        oracle_dir.mkdir(parents=True)
+        victim = worktree_dir / "victim.md"
+        victim.write_text("do not touch", encoding="utf-8")
+        (oracle_dir / "final-report.md").symlink_to(victim)
+
+        events_path = tmp_path / "events.jsonl"
+        _write_assistant_text(events_path, "AC はまだ合意されていません。定義しますか?")
+
+        with pytest.raises(ev.EvaluatorStageError, match="symlink"):
+            ev._write_candidate_final_report_artifact(worktree_dir, events_path)
+
+        assert victim.read_text(encoding="utf-8") == "do not touch"
+
+    def test_final_report_path_replaced_with_a_directory_is_rejected_fail_closed(
+        self, tmp_path: Path
+    ) -> None:
+        """PR #326 レビュー round 5 (Codex P2): `Bash(python3 *)` を公開する handoff シナリオ等
+        では、候補が予約パス自体を（symlink ではなく）通常のディレクトリに差し替え、その配下へ
+        任意の subtree を作成できる。このパスは Git から不可視なため collateral-scope は一切
+        検出できない -- fail-open で握り潰さず run error にすることで、候補が書込み失敗を
+        「何も起きなかった」ことにできないようにする。"""
+        worktree_dir = tmp_path / "worktree"
+        worktree_dir.mkdir()
+        oracle_dir = worktree_dir / ".claude" / "meta-harness-oracle"
+        final_report_as_dir = oracle_dir / "final-report.md"
+        final_report_as_dir.mkdir(parents=True)
+        (final_report_as_dir / "payload.txt").write_text("attacker subtree", encoding="utf-8")
+
+        events_path = tmp_path / "events.jsonl"
+        _write_assistant_text(events_path, "AC はまだ合意されていません。定義しますか?")
+
+        with pytest.raises(ev.EvaluatorStageError, match="not a regular file"):
+            ev._write_candidate_final_report_artifact(worktree_dir, events_path)
+
+        assert (final_report_as_dir / "payload.txt").read_text(encoding="utf-8") == (
+            "attacker subtree"
+        )
