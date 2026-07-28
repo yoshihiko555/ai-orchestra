@@ -3,8 +3,8 @@
 **パッケージ**: `packages/core`
 **類型**: 主: hook 型、副: 共通ライブラリ
 **作成日**: 2026-07-03
-**最終レビュー日**: 2026-07-04（precompact-dump / log_common / handoff の未文書化を「文書化すべき」と裁定し Issue #130 へ。Non-Goals の failure_detector 責務境界は今回対象外・現配置のまま）
-**情報源**: docs/reference/packages.md（core セクション）, docs/design/architecture.md（4.3 / 5 / 9 章）, .claude/rules/task-memory-usage.md, .claude/rules/context-sharing.md
+**最終レビュー日**: 2026-07-28（EV-26 を新設。ADR-20260728-046 の root worktree 解決パターンを共通観点として追加。前回レビュー 2026-07-04: precompact-dump / log_common / handoff の未文書化を「文書化すべき」と裁定し Issue #130 へ。Non-Goals の failure_detector 責務境界は今回対象外・現配置のまま）
+**情報源**: docs/reference/packages.md（core セクション）, docs/design/architecture.md（4.3 / 5 / 9 章）, .claude/rules/task-memory-usage.md, .claude/rules/context-sharing.md, docs/adr/ADR-20260728-046.md（root worktree 解決パターン、EV-26）
 **補助参照（構成要素の列挙のみ）**: packages/core/manifest.json, packages/core/hooks/ 配下のファイル名・docstring 冒頭
 
 ## 1. 責務定義
@@ -71,6 +71,7 @@ core は全パッケージが依存する共通基盤であり、(1) `Plans.md` 
 - [ ] EV-23（正常 / should）: タスク全て `cc:done` かつ AC 全て `[x]` のプロジェクトはアーカイブされる — 根拠: task-memory-usage.md
 - [ ] EV-24（境界 / should）: AC チェックリスト行（`- [ ]` / `- [x]`）はタスクサマリー注入の対象にならない（`cc:` マーカー行のみ注入） — 根拠: task-memory-usage.md
 - [ ] EV-25（正常 / must）: `#### Acceptance Criteria` セクションを持つフェーズは、フェーズ見出しが `cc:done` でも配下に `cc:done` 以外のマーカーを持つタスク行が残っていればアーカイブされない（AC なしフェーズは従来通り見出しマーカーで判定＝後方互換） — 根拠: task-memory-usage.md
+- [ ] EV-26（正常 / must）: root worktree 解決の共通関数 — git worktree 環境では root worktree の絶対パスを返し、通常リポジトリではリポジトリルートを返し、git 実行不能・結果不正時は None を返して呼び出し側フォールバックを可能にする（audit の event_logger.py 実装パターンを共通化したもの） — 根拠: docs/adr/ADR-20260728-046.md（※ ADR-20260728-046 決定済み・実装は後続 PR。実装 PR でテストを追加するまで covered 対象外）
 - N/A: 秘匿情報（マスキング） — core が扱う注入対象（ファイルパス・タスクサマリー・エントリー summary）に対する秘密情報マスキング処理は情報源に記載がなく、該当する取り扱い自体が定義されていないため対象外
 - N/A: 性能 — 同期 hook（特に SessionStart の `load-task-state.py`）がセッション開始を遅延させないための定量的な性能要件が packages.md / architecture.md / task-memory-usage.md / context-sharing.md のいずれにも記載がないため、本評価セットでは具体化しない
 
