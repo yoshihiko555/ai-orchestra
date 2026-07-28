@@ -430,3 +430,27 @@ def test_worktree_summary_reads_root_log(monkeypatch, tmp_path, capsys) -> None:
     out = capsys.readouterr().out
     assert "×2" in out
     assert "pytest" in out
+
+
+def test_summary_reads_migrated_legacy_worktree_log(monkeypatch, tmp_path, capsys) -> None:
+    worktree = _make_project(tmp_path / "worktree")
+    root = _make_project(tmp_path / "root")
+    _write_log(
+        worktree,
+        [
+            _record(command_kind="test", command="pytest legacy/a"),
+            _record(command_kind="test", command="pytest legacy/b"),
+        ],
+    )
+    _patch_root_worktree(monkeypatch, root)
+
+    _run(monkeypatch, worktree)
+
+    out = capsys.readouterr().out
+    legacy_path = worktree / LOG_REL
+    migrated_path = legacy_path.with_name(f"{legacy_path.name}.migrated")
+    assert "×2" in out
+    assert "pytest" in out
+    assert not legacy_path.exists()
+    assert migrated_path.exists()
+    assert len((root / LOG_REL).read_text(encoding="utf-8").splitlines()) == 2

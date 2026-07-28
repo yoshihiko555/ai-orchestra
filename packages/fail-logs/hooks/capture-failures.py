@@ -40,14 +40,19 @@ from hook_common import (  # noqa: E402
     resolve_log_root,
     resolve_path_within,
     safe_hook_execution,
+    sanitized_git_env,
+)
+from log_migration import (  # noqa: E402
+    LOG_DIR_MODE,
+    LOG_FILE_MODE,
+    migrate_legacy_worktree_log,
 )
 
 SCHEMA_VERSION = 1
 DEFAULT_LOGS_DIR = os.path.join(".claude", "logs", "fail-logs")
 DEFAULT_MAX_EXCERPT_CHARS = 500
 LOG_FILE_NAME = "failures.jsonl"
-LOG_DIR_MODE = 0o700
-LOG_FILE_MODE = 0o600
+GIT_COMMAND_TIMEOUT_SECONDS = 5
 
 # 機密情報マスクパターン（audit-cli.py と同等。core 依存のみのため自前で保持）
 SECRET_PATTERNS = [
@@ -94,18 +99,25 @@ def _resolve_project_dir(data: dict) -> str:
 
 def _resolve_branch(project_dir: str) -> str:
     """記録時点の Git ブランチ名を解決する。取得失敗時は空文字列を返す(fail-safe)。"""
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            cwd=project_dir,
-        )
+    git_env = sanitized_git_env()
+    commands = (
+        ["git", "symbolic-ref", "--short", "HEAD"],
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+    )
+    for command in commands:
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                env=git_env,
+                text=True,
+                timeout=GIT_COMMAND_TIMEOUT_SECONDS,
+                cwd=project_dir,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError, UnicodeError):
+            continue
         if result.returncode == 0:
             return result.stdout.strip()
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        pass
     return ""
 
 
@@ -196,7 +208,7 @@ def main() -> None:
             "error_excerpt": _extract_excerpt(tool_name, tool_response, max_chars),
             "exit_code": tool_response.get("exit_code"),
             "cwd": str(data.get("cwd") or ""),
-            "branch": _resolve_branch(project_dir),
+            "branch": _mask_secrets(_resolve_branch(project_dir)),
         },
     }
 
@@ -204,6 +216,12 @@ def main() -> None:
     # 確定した後（enabled → analyze → targets 判定を通過した後）でのみ実行することで、
     # fail-logs 無効時・成功ツール呼び出し時（大多数）のホットパスを保つ。
     log_root = resolve_log_root(project_dir)
+    migrate_legacy_worktree_log(
+        project_dir,
+        log_root,
+        DEFAULT_LOGS_DIR,
+        LOG_FILE_NAME,
+    )
 
     # logs_dir が log_root 外を指す場合（設定経由のパストラバーサル）は
     # 書き込みを黙って捨てず、安全なデフォルトへフォールバックする。

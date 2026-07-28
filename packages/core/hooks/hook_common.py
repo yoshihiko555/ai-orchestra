@@ -13,6 +13,17 @@ import sys
 from collections.abc import Callable
 from typing import Any, Literal
 
+_AMBIENT_GIT_ENV_VARS = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_PREFIX",
+)
+GIT_COMMAND_TIMEOUT_SECONDS = 5
+
 # CLI ツール設定（cli-tools.yaml）が読めない場合のフォールバック既定値（SSOT）。
 #
 # 正本は常に cli-tools.yaml。これらは config が「読めない／キーが無い」障害時のみ
@@ -283,6 +294,16 @@ def read_hook_input() -> dict:
     return result if isinstance(result, dict) else {}
 
 
+def sanitized_git_env() -> dict[str, str]:
+    """os.environ から repository-local な GIT_* 環境変数を除いた env を返す。
+
+    ambient な GIT_DIR / GIT_WORK_TREE 等が cwd より優先されて別リポジトリを
+    解決してしまう事故を防ぐため、git を subprocess 起動する箇所は本関数の
+    戻り値を env= に渡すこと。
+    """
+    return {key: value for key, value in os.environ.items() if key not in _AMBIENT_GIT_ENV_VARS}
+
+
 def resolve_path_within(project_dir: str, relative: str, filename: str) -> str | None:
     """relative + filename を project_dir 配下に解決する。
 
@@ -301,7 +322,10 @@ def resolve_root_worktree(project_dir: str | None = None) -> str | None:
     """Git の root worktree パスを解決する。
 
     worktree 環境では main worktree のパスを返す。通常リポジトリでは
-    リポジトリルートを返す。git が使えない・結果が不正な場合は None を返す
+    リポジトリルートを返す。common dir の basename が ``.git`` の場合だけ
+    その親を root として採用する。``--separate-git-dir`` 等で common dir が
+    ``.git`` 以外の名前になる構成は、安全のため解決対象外として None を返す。
+    git が使えない・結果が不正な場合も None を返す
     (呼び出し側は project_dir へのフォールバックに使うこと)。
 
     Args:
@@ -311,18 +335,19 @@ def resolve_root_worktree(project_dir: str | None = None) -> str | None:
         result = subprocess.run(
             ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
             capture_output=True,
+            env=sanitized_git_env(),
             text=True,
-            timeout=5,
+            timeout=GIT_COMMAND_TIMEOUT_SECONDS,
             cwd=project_dir or None,
         )
         if result.returncode == 0:
             git_common_dir = result.stdout.strip()
-            if not git_common_dir:
+            if not git_common_dir or os.path.basename(git_common_dir) != ".git":
                 return None
             root = os.path.dirname(git_common_dir)
             if os.path.isabs(root) and os.path.isdir(root):
                 return root
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError, UnicodeError):
         pass
     return None
 

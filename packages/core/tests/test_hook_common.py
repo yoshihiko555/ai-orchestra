@@ -359,6 +359,32 @@ class TestResolveRootWorktree:
         assert result is not None
         assert Path(result).resolve() == repo.resolve()
 
+    def test_separate_git_dir_returns_none(self, tmp_path: Path) -> None:
+        _require_git()
+        repo = tmp_path / "separate-git-dir-repo"
+        external_git_dir = tmp_path / "external.git"
+        repo.mkdir()
+        _run_git(repo, "init", f"--separate-git-dir={external_git_dir}")
+
+        assert hook_common.resolve_root_worktree(str(repo)) is None
+
+    def test_ambient_git_dir_does_not_override_cwd(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _require_git()
+        unrelated_repo = tmp_path / "unrelated-repo"
+        cwd_repo = tmp_path / "cwd-repo"
+        unrelated_repo.mkdir()
+        cwd_repo.mkdir()
+        _run_git(unrelated_repo, "init")
+        _run_git(cwd_repo, "init")
+        monkeypatch.setenv("GIT_DIR", str(unrelated_repo / ".git"))
+
+        result = hook_common.resolve_root_worktree(str(cwd_repo))
+
+        assert result is not None
+        assert Path(result).resolve() == cwd_repo.resolve()
+
     def test_non_git_directory_returns_none(self, tmp_path: Path) -> None:
         _require_git()
         plain_dir = tmp_path / "plain"
@@ -373,6 +399,16 @@ class TestResolveRootWorktree:
             raise FileNotFoundError
 
         monkeypatch.setattr(hook_common.subprocess, "run", _raise_file_not_found)
+
+        assert hook_common.resolve_root_worktree(str(tmp_path)) is None
+
+    def test_unicode_decode_error_returns_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _raise_unicode_decode_error(*_args: object, **_kwargs: object) -> None:
+            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid")
+
+        monkeypatch.setattr(hook_common.subprocess, "run", _raise_unicode_decode_error)
 
         assert hook_common.resolve_root_worktree(str(tmp_path)) is None
 

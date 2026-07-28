@@ -41,6 +41,7 @@ from hook_common import (  # noqa: E402
     resolve_path_within,
     safe_hook_execution,
 )
+from log_migration import migrate_legacy_worktree_log  # noqa: E402
 
 DEFAULT_LOGS_DIR = os.path.join(".claude", "logs", "fail-logs")
 LOG_FILE_NAME = "failures.jsonl"
@@ -330,6 +331,12 @@ def main() -> None:
     # 後まで遅延させる。無効化時に git を起動しない一貫性のため
     # （capture-failures.py と同じ方針）。
     log_root = resolve_log_root(project_dir)
+    migrate_legacy_worktree_log(
+        project_dir,
+        log_root,
+        DEFAULT_LOGS_DIR,
+        LOG_FILE_NAME,
+    )
 
     logs_dir_value = config.get("logs_dir")
     logs_dir = (

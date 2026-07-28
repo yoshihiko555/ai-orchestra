@@ -40,7 +40,8 @@ PostToolUse hook が以下の失敗を検知し、`.claude/logs/fail-logs/failur
     "command": "pytest ...",
     "error_excerpt": "FAILED ...",
     "exit_code": 0,
-    "cwd": "/path"
+    "cwd": "/path",
+    "branch": "main"
   }
 }
 ```
@@ -48,6 +49,10 @@ PostToolUse hook が以下の失敗を検知し、`.claude/logs/fail-logs/failur
 - ログファイルは所有者限定パーミッション（`0600`）。
 - 機密情報（API キー・トークン等）は記録前に `[REDACTED]` へマスクする。
 - `.claude/logs/` は gitignore 済み（ローカル蓄積）。
+
+## 保存先
+
+Git の root worktree を解決でき、そこに `.claude/` がある場合、各 linked worktree のログは root worktree の `.claude/logs/fail-logs/` に集約する。root の解決に失敗した場合、root に `.claude/` がない場合、または `git init --separate-git-dir` のように安全に root を特定できない構成では `project_dir` へフォールバックする。アップグレード前の worktree-local ログは、初回実行時に root 側へ一度だけ追記し、旧ファイルを `failures.jsonl.migrated` に変更して二重移行を防ぐ。
 
 ## 設定
 
