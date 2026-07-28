@@ -6,6 +6,7 @@ hook ではなく純粋なライブラリ（CLI `scripts/codd.py` から import 
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,9 @@ STATUS_BY_KIND: dict[str, list[str]] = {
     "plan": DEFAULT_STATUSES,
     "rule": DEFAULT_STATUSES,
     "instruction": DEFAULT_STATUSES,
+    # Issue #98: コード⇔ドキュメントのトレーサビリティ（code/test ノード）。
+    "code": DEFAULT_STATUSES,
+    "test": DEFAULT_STATUSES,
 }
 
 
@@ -44,6 +48,9 @@ NODE_ID_PREFIX_BY_KIND: dict[str, str] = {
     "plan": "plan",
     "rule": "rule",
     "instruction": "instruction",
+    # Issue #98: コード⇔ドキュメントのトレーサビリティ（code/test ノード）。
+    "code": "code",
+    "test": "test",
 }
 
 
@@ -112,10 +119,16 @@ def parse_codd_frontmatter(text: str) -> dict[str, Any] | None:
 
 @dataclass(frozen=True)
 class Dependency:
-    """depends_on の 1 エントリ（参照先 node_id + 関係種別）。"""
+    """depends_on の 1 エントリ（参照先 node_id + 関係種別）。
+
+    confidence はリンクの信頼度（Issue #98）。doc frontmatter で宣言された既存の
+    リンクは人手レビュー済みの確定宣言として既定値 1.0。コード注釈から抽出された
+    リンクは `codd_code` 側でより低い値（config の `inline_confidence`）を設定する。
+    """
 
     id: str
     relation: str
+    confidence: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -138,6 +151,64 @@ def _as_text(value: Any) -> str:
     return "" if value is None else str(value)
 
 
+def _clamp_unit_float(value: float, default: float) -> float:
+    """confidence 値を有限な [0, 1] にクランプする（Issue #98 レビュー対応）。
+
+    NaN/Inf のような非有限値は範囲判定・重み計算が破綻するため既定値へフォールバックする。
+    範囲外の有限値（負値・1超）は境界へクランプする（例: -0.1 -> 0.0）。
+    """
+    if not math.isfinite(value):
+        return default
+    return min(1.0, max(0.0, value))
+
+
+def _reject_bool_as_number(value: Any) -> Any:
+    """YAML の bool を数値設定として受理しない（Issue #98 レビュー対応）。
+
+    Python の `bool` は `int` のサブクラスのため、`float(False) == 0.0` /
+    `float(True) == 1.0` が例外を投げずに黙って通ってしまう。
+    `inline_confidence: false` のような設定ミスがそのまま confidence=0.0（全エッジ
+    重みゼロで一斉 Gray 化）になるのを防ぐため、bool は明示的に拒否し、呼び出し側の
+    `except (TypeError, ValueError)` でフォールバックさせる。
+    """
+    if isinstance(value, bool):
+        raise TypeError(f"bool は数値設定として使用できません: {value!r}")
+    return value
+
+
+def _as_finite_int(value: Any, field_name: str) -> int:
+    """impact 設定の整数値（`max_hops` / `corroboration_min_origins`）を検証する。
+
+    YAML の `.inf`（`float("inf")`）のような非有限値をそのまま `int()` に渡すと
+    `OverflowError`（`ValueError` のサブクラスではない）を送出し、`main()` の
+    `except (TypeError, ValueError)` を素通りして未整形のトレースバックになる
+    （P1 レビュー対応）。ここで非有限値を明示的に拒否し、万一 `int()` が
+    `OverflowError` を送出した場合も `ValueError` へ正規化する。
+    """
+    checked = _reject_bool_as_number(value)
+    if isinstance(checked, float) and not math.isfinite(checked):
+        raise ValueError(f"{field_name} は有限の数値である必要があります（got {checked!r}）")
+    try:
+        return int(checked)
+    except OverflowError as exc:
+        raise ValueError(f"{field_name} を整数に変換できません（got {checked!r}）") from exc
+
+
+def _as_confidence(value: Any) -> float:
+    """depends_on エントリの confidence を正規化する（未指定 / 不正値は既定 1.0）。
+
+    bool（`confidence: false` 等）も不正値として扱い、既定 1.0 にフォールバックする
+    （`_reject_bool_as_number` 参照）。
+    """
+    if value is None:
+        return 1.0
+    try:
+        parsed = float(_reject_bool_as_number(value))
+    except (TypeError, ValueError):
+        return 1.0
+    return _clamp_unit_float(parsed, 1.0)
+
+
 def build_node(codd: dict[str, Any], path: str) -> CoddNode:
     """`codd:` ブロック dict から CoddNode を構築する。
 
@@ -153,6 +224,7 @@ def build_node(codd: dict[str, Any], path: str) -> CoddNode:
                     Dependency(
                         id=_as_text(entry.get("id")),
                         relation=_as_text(entry.get("relation")),
+                        confidence=_as_confidence(entry.get("confidence")),
                     )
                 )
     owner = codd.get("owner")
@@ -336,22 +408,40 @@ class ImpactConfig:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ImpactConfig:
         weights = dict(DEFAULT_RELATION_WEIGHTS)
-        for name, value in (data.get("relation_weights") or {}).items():
+        # `relation_weights: []` のようなマッピング以外の値は `.items()` で
+        # `AttributeError` になり、`main()` の `(TypeError, ValueError)` ハンドラを
+        # 素通りして未整形のトレースバックになる（P1 レビュー対応）。`_as_mapping()`
+        # で先に検証し、設定エラーとして整形させる。
+        for name, value in _as_mapping(
+            data.get("relation_weights"), "impact.relation_weights"
+        ).items():
             try:
-                weights[str(name)] = float(value)
+                weights[str(name)] = float(_reject_bool_as_number(value))
             except (TypeError, ValueError):
                 continue
+        # bool は int のサブクラスのため int()/float() が黙って通ってしまう
+        # （例: `max_hops: true` -> `1`）。`_reject_bool_as_number` で明示的に拒否する
+        # （Issue #98 レビュー対応）。範囲外の値は __post_init__ の検証に委ねる。
         return cls(
             relation_weights=weights,
-            decay=float(data.get("decay", DEFAULT_DECAY)),
-            max_hops=int(data.get("max_hops", DEFAULT_MAX_HOPS)),
-            green_threshold=float(data.get("green_threshold", DEFAULT_GREEN_THRESHOLD)),
-            amber_threshold=float(data.get("amber_threshold", DEFAULT_AMBER_THRESHOLD)),
-            strong_relation_min=float(data.get("strong_relation_min", DEFAULT_STRONG_RELATION_MIN)),
-            corroboration_min_origins=int(
-                data.get("corroboration_min_origins", DEFAULT_CORROBORATION_MIN_ORIGINS)
+            decay=float(_reject_bool_as_number(data.get("decay", DEFAULT_DECAY))),
+            max_hops=_as_finite_int(data.get("max_hops", DEFAULT_MAX_HOPS), "impact.max_hops"),
+            green_threshold=float(
+                _reject_bool_as_number(data.get("green_threshold", DEFAULT_GREEN_THRESHOLD))
             ),
-            evidence_bonus=float(data.get("evidence_bonus", DEFAULT_EVIDENCE_BONUS)),
+            amber_threshold=float(
+                _reject_bool_as_number(data.get("amber_threshold", DEFAULT_AMBER_THRESHOLD))
+            ),
+            strong_relation_min=float(
+                _reject_bool_as_number(data.get("strong_relation_min", DEFAULT_STRONG_RELATION_MIN))
+            ),
+            corroboration_min_origins=_as_finite_int(
+                data.get("corroboration_min_origins", DEFAULT_CORROBORATION_MIN_ORIGINS),
+                "impact.corroboration_min_origins",
+            ),
+            evidence_bonus=float(
+                _reject_bool_as_number(data.get("evidence_bonus", DEFAULT_EVIDENCE_BONUS))
+            ),
         )
 
     def weight_of(self, relation: str) -> float:
@@ -375,9 +465,11 @@ class ImpactedNode:
 def build_edge_weights(graph: CoddGraph, config: ImpactConfig) -> dict[tuple[str, str], float]:
     """``(target_id, source_id) -> 重み`` のエッジ重みキャッシュを構築する。
 
-    エッジ ``source depends_on target`` の relation 重み。source が target を複数 relation で
-    参照する場合は最大重み（最良証拠）を採る。グラフ構築後は不変なので traversal 前に一度だけ
-    計算し、hot path での depends_on 線形走査を避ける。
+    エッジ ``source depends_on target`` の重みは ``relation 重み × confidence``（Issue #98）。
+    doc frontmatter 由来のリンクは confidence 既定 1.0 のため従来と同じ重みになる。コード注釈
+    由来の低信頼リンクは、この掛け算で impact 分析への影響が比例して弱まる。source が target を
+    複数 relation で参照する場合は最大重み（最良証拠）を採る。グラフ構築後は不変なので
+    traversal 前に一度だけ計算し、hot path での depends_on 線形走査を避ける。
     """
     cache: dict[tuple[str, str], float] = {}
     for source_id, node in graph.nodes.items():
@@ -385,7 +477,8 @@ def build_edge_weights(graph: CoddGraph, config: ImpactConfig) -> dict[tuple[str
             if dep.id == source_id:
                 continue
             key = (dep.id, source_id)
-            cache[key] = max(cache.get(key, 0.0), config.weight_of(dep.relation))
+            weight = config.weight_of(dep.relation) * dep.confidence
+            cache[key] = max(cache.get(key, 0.0), weight)
     return cache
 
 
@@ -505,6 +598,9 @@ def _finalize(
 
 DEFAULT_GRAPH_FORMAT = "jsonl"
 DEFAULT_GRAPH_PATH = ".claude/codd/graph.jsonl"
+# code/test 注釈（Issue #98）の既定信頼度。doc frontmatter（1.0）より低く、
+# 1 行注釈という軽量な記法ゆえの不確実性を反映する。
+DEFAULT_INLINE_CONFIDENCE = 0.7
 
 # 検査レベルの正準値。
 LEVEL_ERROR = "error"
@@ -530,9 +626,82 @@ def normalize_check_level(value: Any) -> str:
     return level
 
 
+def _as_mapping(value: Any, field_name: str) -> dict[str, Any]:
+    """``scope`` / ``code_scope`` / ``graph_store`` 等のサブセクションを検証する。
+
+    YAML で ``scope: oops``（文字列）や ``scope: [a, b]``（リスト）のように mapping
+    以外を書くと、後続の ``.get()`` 呼び出しが ``AttributeError`` になり、
+    ``main()`` の ``(TypeError, ValueError)`` ハンドラを素通りして未整形の
+    トレースバックが出てしまう（Issue #98 レビュー対応）。mapping 以外は
+    ``ValueError`` にして設定エラーとして整形させる。
+    """
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    raise ValueError(f"{field_name} はマッピングである必要があります: {value!r}")
+
+
+def _as_glob_list(value: Any, field_name: str) -> list[str]:
+    """scope/code_scope の include・exclude を glob 文字列のリストへ正規化する。
+
+    YAML でリスト記法を忘れて単一文字列（例: ``code_scope.include: "src/**/*.py"``）を
+    書くと、素朴な ``list(value)`` では文字列が 1 文字ずつイテレートされ、無意味な
+    glob（`s`, `r`, `c`, ...）として扱われてしまう（Issue #98 レビュー対応）。単一文字列は
+    単要素リストとして扱い、リスト以外の型（数値・dict 等）は設定エラーとして拒否する。
+
+    空文字列（``scope.include: ""``）は「対象なし」を表す既存設定との後方互換のため
+    空リストとして扱う（P1 レビュー対応）。旧実装 ``list(value or [])`` では空文字列が
+    偽値として ``[]`` になっていたが、単一文字列を単要素リスト化する本関数の変換を
+    素朴に空文字列へも適用すると ``[""]`` になり、後続の ``Path.glob("")`` が
+    ``ValueError: Unacceptable pattern: ''`` を送出して `main()` の設定ロード用
+    ハンドラより後（走査時）に CLI がトレースバックで終了してしまう。
+
+    リスト内の要素すべてが文字列であればこのチェックは通過するため、
+    ``code_scope.include: [""]`` のようにリスト**内**の空文字列要素も同じ
+    ``Path.glob("")`` の ``ValueError`` を引き起こしうる。単独の空文字列と同様
+    「対象なし」として扱い、空文字列要素は結果から除去する（Issue #98 レビュー対応）。
+    """
+    if value is None or value == "":
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        if not all(isinstance(item, str) for item in value):
+            raise ValueError(f"{field_name} の要素は全て文字列である必要があります: {value!r}")
+        return [item for item in value if item != ""]
+    raise ValueError(f"{field_name} は文字列またはリストである必要があります: {value!r}")
+
+
+def _load_inline_confidence(data: dict[str, Any]) -> float:
+    """codd.yaml の `inline_confidence` を有限な [0, 1] へ正規化する（Issue #98 レビュー対応）。
+
+    `-0.1` のような範囲外の値や YAML の `.nan` がそのまま depends_on の confidence へ
+    流れ込むと、impact のエッジ重み（relation 重み × confidence）が負値/NaN になり、
+    誤って Gray 判定になったり JSONL の書き出しが壊れたりする（`json.dumps` は既定で
+    NaN を非標準の `NaN` リテラルとして出力してしまうため）。未指定 / 不正値（bool を含む。
+    `_reject_bool_as_number` 参照）は `DEFAULT_INLINE_CONFIDENCE` にフォールバックする。
+    """
+    raw = data.get("inline_confidence", DEFAULT_INLINE_CONFIDENCE)
+    try:
+        parsed = float(_reject_bool_as_number(raw))
+    except (TypeError, ValueError):
+        return DEFAULT_INLINE_CONFIDENCE
+    return _clamp_unit_float(parsed, DEFAULT_INLINE_CONFIDENCE)
+
+
 @dataclass
 class CoddConfig:
-    """codd.yaml（+ local 上書き）の実効設定。"""
+    """codd.yaml（+ local 上書き）の実効設定。
+
+    Issue #98 で `code_include` / `code_exclude` / `inline_confidence` を追加した際、
+    デフォルト値なしの必須引数として `raw` より前に挿入すると、コード追跡機能を
+    使わない既存の直接コンストラクタ呼び出し（例: `CoddConfig(enabled=..., ...,
+    raw={})` のようなキーワード引数一式）が `TypeError` になり後方互換を破壊する。
+    `raw` を新フィールドより前（元の最終フィールドの位置）に据え置き、新フィールドに
+    既定値を与えることで、コード追跡機能 opt-in 前の呼び出しを引き続き受理する
+    （レビュー対応: 8巡目）。
+    """
 
     enabled: bool
     include: list[str]
@@ -545,25 +714,39 @@ class CoddConfig:
     checks: dict[str, str]
     impact: ImpactConfig
     raw: dict[str, Any]
+    # Issue #98: コード⇔ドキュメントのトレーサビリティ（opt-in）。既定値は「未設定」
+    # 相当（空リスト / DEFAULT_INLINE_CONFIDENCE）で、旧コンストラクタ呼び出しでは
+    # これらを省略しても既存挙動（機能無効）のまま構築できる。
+    code_include: list[str] = field(default_factory=list)
+    code_exclude: list[str] = field(default_factory=list)
+    inline_confidence: float = DEFAULT_INLINE_CONFIDENCE
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> CoddConfig:
-        scope = data.get("scope") or {}
-        graph_store = data.get("graph_store") or {}
+        scope = _as_mapping(data.get("scope"), "scope")
+        graph_store = _as_mapping(data.get("graph_store"), "graph_store")
+        code_scope = _as_mapping(data.get("code_scope"), "code_scope")
         return cls(
             enabled=bool(data.get("enabled", True)),
-            include=list(scope.get("include") or []),
-            exclude=list(scope.get("exclude") or []),
+            include=_as_glob_list(scope.get("include"), "scope.include"),
+            exclude=_as_glob_list(scope.get("exclude"), "scope.exclude"),
             kinds=list(data.get("kinds") or []),
             relations=list(data.get("relations") or []),
             roots=list(data.get("roots") or []),
             graph_format=str(graph_store.get("format", DEFAULT_GRAPH_FORMAT)),
             graph_path=str(graph_store.get("path", DEFAULT_GRAPH_PATH)),
+            # `checks: []` / `impact: []` のようなマッピング以外の値は `.items()` /
+            # `.get()` で `AttributeError` になり、`main()` の
+            # `(TypeError, ValueError)` ハンドラを素通りして未整形のトレースバックに
+            # なる（P1 レビュー対応）。`_as_mapping()` で先に検証する。
             checks={
                 str(name): normalize_check_level(level)
-                for name, level in (data.get("checks") or {}).items()
+                for name, level in _as_mapping(data.get("checks"), "checks").items()
             },
-            impact=ImpactConfig.from_dict(data.get("impact") or {}),
+            impact=ImpactConfig.from_dict(_as_mapping(data.get("impact"), "impact")),
+            code_include=_as_glob_list(code_scope.get("include"), "code_scope.include"),
+            code_exclude=_as_glob_list(code_scope.get("exclude"), "code_scope.exclude"),
+            inline_confidence=_load_inline_confidence(data),
             raw=data,
         )
 

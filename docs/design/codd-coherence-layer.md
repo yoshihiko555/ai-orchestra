@@ -66,11 +66,11 @@ skill / hook）で独自実装する。
 
 | 項目                                                                                           | 理由                                       | 移管先                          |
 | ---------------------------------------------------------------------------------------------- | ------------------------------------------ | ------------------------------- |
-| ~~impact 分析（Green/Amber/Gray 信頼度スコア）~~ → **Phase 2 で実装済み（Issue #94 / 4.5.1）** | —                                          | 完了                            |
-| hook 自動配線（PostToolUse scan / pre-commit validate）の導入先展開                            | Phase 1 は手動 `/codd-validate` で価値検証 | Issue: codd-hook-distribution   |
-| CI（PR に verdict 投稿）                                                                       | impact 分析に依存                          | Issue: codd-ci-guardrail        |
-| コード ⇔ ドキュメントのトレーサビリティ                                                        | 静的解析が必要で重い                       | Issue: codd-code-doc-trace      |
-| ノードのサブ粒度化（1ファイル内 FT-xxx 単位のノード）                                          | parser/validate が複雑化                   | Issue: codd-subnode-granularity |
+| ~~impact 分析（Green/Amber/Gray 信頼度スコア）~~ → **Phase 2 で実装済み（Issue #94 / 4.5.1）**             | —                                           | 完了                             |
+| hook 自動配線（PostToolUse scan / pre-commit validate）の導入先展開                                        | Phase 1 は手動 `/codd-validate` で価値検証  | Issue: codd-hook-distribution    |
+| CI（PR に verdict 投稿）                                                                                   | impact 分析に依存                           | Issue: codd-ci-guardrail         |
+| ~~コード ⇔ ドキュメントのトレーサビリティ~~ → **Phase 3 で opt-in 実装済み（Issue #98 / 4.3.1）** | —                                            | 完了                             |
+| ノードのサブ粒度化（1ファイル内 FT-xxx 単位のノード）                                                      | parser/validate が複雑化                    | Issue: codd-subnode-granularity  |
 
 ---
 
@@ -176,6 +176,107 @@ codd:
 
 > ファイル内の FT-001 等の細粒度 ID は Phase 1 ではノード化しない（別Issue: codd-subnode-granularity）。
 
+### 4.3.1 code / test ノード（コード⇔ドキュメントのトレーサビリティ / Issue #98）
+
+`code` / `test` kind をノード語彙へ追加し、ソースファイルからも `implements` / `references` 等の
+depends_on を宣言できるようにする。doc frontmatter との違いは次の3点。
+
+1. **opt-in スコープ**: `codd.yaml` の新設 `code_scope.include`（既定: 空リスト）に glob を
+   追加したファイルのみが走査対象になる。未設定プロジェクトは挙動が変わらない。
+   `code_scope.exclude` も `include` と同じ `Path.glob()` で解決するが、末尾を `/**`
+   ではなく `/**/*` にする（`Path.glob("**/.venv/**")` は Python 3.12 ではディレクトリの
+   みを返し、実装の `_glob_relpaths()` にある `is_file()` フィルタで除外候補として拾えず
+   実質無効になるため。既定 exclude 3 件はいずれも `/**/*` 形式）。`include` / `exclude`
+   は文字列またはリストで書ける（単一文字列は単要素リスト扱い。YAML でリスト記法
+   `- ` を書き忘れて文字イテレートされる誤動作を防ぐ。`scope.include` / `scope.exclude`
+   にも同じ正規化を適用し、doc scope とコード scope の扱いを一貫させる）。空文字列
+   （`""`）は「対象なし」を表す既存設定との後方互換のため空リストとして扱うが、
+   リスト**内**の空文字列要素（例: `["", "src/**/*.py"]`）も同様に除去する
+   （除去しないと `[""]` のまま `Path.glob("")` に渡り `ValueError` になる）。`../*.py` の
+   ような相対パスでプロジェクトルート外に解決される glob マッチは黙って除外する
+   （`Path.glob` はルート外のパスもそのまま解決してしまうため）。root 内へ戻ってくる
+   相対 glob（`../proj/src/**/*.py`、root == proj）は `os.path.normpath` によるドット
+   記法のレキシカルな畳み込みだけで root 相対へ正規化し、通常パターンで見つかる同一
+   ファイルとの重複登録を防ぐ。root 内部のシンボリックリンクにマッチした場合は、
+   解決先パスではなくリンク自体の論理パスを登録する（`git diff` が返すパスと
+   `path_to_id` を一致させるため。シンボリックリンクの解決先が root 外の場合のみ
+   従来どおり除外する）。走査対象言語（Python /
+   `//` 系）に対応しない拡張子のファイルは、読み込み前に除外する（画像等が混在ディレクトリ
+   glob にマッチしても UTF-8 テキストとして復号しようとしない）。
+2. **1行の軽量注釈**: doc の YAML frontmatter 全体を書く代わりに、`codd:<key> <value>` の
+   1行注釈を並べる。`key` は予約語（`node_id` / `kind` / `status` / `owner`）または
+   relation 名（`implements` 等）で、value は対象 node_id。`node_id` を省略すると
+   `<kind>:<file-stem>` から自動導出し、`kind` を省略するとパス規約
+   （`tests/` 配下や `test_*` / `*_test` ファイル名）から `test` / `code` を推定する。
+   `codd:kind` を明示する場合、ソース注釈では `code` / `test` のみ有効（requirement /
+   design 等のドキュメント語彙は使えない。誤った値は `malformed_annotation` として
+   報告したうえで推定 kind へフォールバックする）。relation 名の注釈（例:
+   `codd:implements`）に参照先 value が無い場合は依存として黙って除外せず、
+   `malformed_annotation` 検査（既定 error、4.5 参照）として報告する（予約語のみは
+   value 省略を許容する。owner を書かない等）。`codd:` で始まりながら
+   `codd:<key>` / `codd:<key> <value>` の文法に一致しない行（`codd:node-id`
+   のようなハイフン混じりの key、`codd:node_id=value` のような `=` 区切り等の
+   タイプミス）も同様に `malformed_annotation` として報告する（`codd:` で始まらない
+   通常のコメント行は従来通り無視する）。予約語（`node_id` / `kind` / `status` /
+   `owner`）が同一ファイル内で複数回指定された場合、採用値は最初の 1 件のみだが、
+   重複自体も `malformed_annotation` として報告する（例: 正しい `codd:kind code` の
+   後に禁止された `codd:kind requirement` が続いても、最初の truthy 値だけを見る
+   構築ロジックでは検証をすり抜けてしまうため）。抽出前に先頭 BOM（U+FEFF）を取り除く
+   （BOM が残ると Python は `ast.parse` が構文エラーになり、`//` 系言語は先頭行の
+   コメント判定に失敗し、注釈が無言でスキップされるため）。
+   言語別の抽出領域:
+   - Python: `ast.parse` + `ast.get_docstring` でモジュール docstring のみを対象にする
+     （本文コード中の文字列リテラルを誤って注釈と解釈しない）。実装は `ast.parse` の
+     代わりに `tokenize` で先頭トークンのみ読む軽量版だが、結果は
+     `ast.get_docstring(clean=False)` と一致させる（`("""...""")` のような丸括弧付き
+     docstring も認識し、`"""..."""  + "suffix"` のような文字列連結式は docstring
+     として誤抽出しない）。先頭の文（docstring）の終端が判明した時点で `tokenize` を
+     打ち切り、以降のトークンは読まない（全トークンを事前にリスト化すると、大規模
+     ファイルほど不要な CPU/メモリを消費するうえ、docstring より後方にある未閉じ
+     文字列等の構文エラーが `TokenError` として伝播し、有効な先頭注釈まで失って
+     しまうため）。モジュール先頭からインデントされた不正な Python（`ast.parse`
+     なら `IndentationError` になるケース）は、最初の有意トークンが `INDENT` に
+     なることで判定し、docstring として誤って取り込まない。ファイル読み込みは
+     PEP 263 の宣言済みエンコーディング（先頭2行の coding cookie / BOM）を
+     `tokenize.detect_encoding` で尊重する（固定 UTF-8 だと Latin-1 等の有効な
+     Python ファイルが `UnicodeDecodeError` になるため）。`impact` の削除上流検出で
+     `git show <ref>:<path>` から旧内容を取得する際も、working tree と同じ PEP 263
+     規約でコミット時点のバイト列を復号する（旧内容を固定 UTF-8 でしか読まないと、
+     Latin-1 等を宣言していた Python ファイルの削除が誤検出/例外になるため）。
+   - `//` 系言語（TS/JS/Go/Java/Rust/C 系。`.mjs` / `.cjs` / `.mts` / `.cts` を含む）:
+     ファイル先頭から連続する行コメントのみを対象にする（shebang 行はスキップ）。
+   - **復号失敗のスキップ**: `//` 系ファイルが UTF-16 保存等で UTF-8 として復号できない、
+     または Python ファイルの coding cookie が不正で `tokenize.detect_encoding` が
+     `SyntaxError` / `LookupError` を投げる場合、working tree 側の読み込み
+     （`_read_source_text`）は削除上流検出の `_decode_ref_source` と同じ規約で `None` を
+     返し、`scan_code_nodes` は当該ファイルを注釈が無いものとして黙ってスキップする
+     （復号不能ファイル1件で `scan`/`validate`/`impact` 全体がトレースバックで落ちるのを
+     防ぐ）。
+3. **信頼度（confidence）**: doc frontmatter 由来の depends_on は既定 confidence 1.0（人手
+   レビュー済みの確定宣言）。コード注釈由来の depends_on は `codd.yaml` の `inline_confidence`
+   （既定 0.7）を使う。`impact` のエッジ重みは `relation 重み × confidence`（4.5.1 参照）になり、
+   低信頼リンクは下流影響の判定に比例して弱く反映される。`inline_confidence` は有限な
+   `[0, 1]` へ正規化され、範囲外の有限値（例: `-0.1`）は境界にクランプ、NaN/Inf のような
+   非有限値は既定値（0.7）へフォールバックする（範囲外/非有限値がそのままエッジ重みに
+   流れ込むと、負値やNaNで誤って Gray 判定になったり `graph.jsonl` の JSON 出力が壊れたり
+   するため）。doc frontmatter 側の `depends_on[].confidence` も同じ正規化を受ける。
+   `bool` は `int` のサブクラスで `float(False) == 0.0` / `float(True) == 1.0` が例外なく
+   通ってしまうため、数値設定として明示的に拒否する（`inline_confidence: false` が
+   全エッジ重みゼロの一斉 Gray 化に化けるのを防ぐ）。`inline_confidence` / doc の
+   `confidence` はいずれも bool を不正値として既定値へフォールバックし、`impact.*`
+   （decay・thresholds・weights 等）は bool 混入を config エラー（4.6 参照）として拒否する。
+   `CoddConfig`（`codd_common.py`）はこの3フィールド（`code_include` / `code_exclude` /
+   `inline_confidence`）に既定値（空リスト / `DEFAULT_INLINE_CONFIDENCE`）を持たせ、
+   Issue #98 追加前の全フィールドだけでも直接コンストラクタ呼び出しで構築できる
+   （`codd_common.py` を共有ライブラリとして直接使う既存連携の後方互換を壊さないため）。
+
+注釈が無いコードファイルは doc scope の `missing_frontmatter`（warning）とは異なり黙って
+スキップする。コードベース全体への注釈強制はせず、追跡したいファイルにだけ opt-in で
+付与する運用を想定するため。code/test ノードは他の kind と同じグラフに統合され、
+dangling / duplicate / cycle / unknown / orphan / drift の各検査を特別扱いなしで受ける。
+`impact` の削除上流検出（4.5.1）も doc scope 同様に code_scope 内の注釈付きファイル削除を
+対象にする（旧内容からコード注釈を再抽出し、現グラフに node_id が残っているかで判定）。
+
 ### 4.4 relation（関係種別）
 
 | relation       | 意味                 | 典型的な向き         |
@@ -196,6 +297,7 @@ codd:
 | **duplicate**              | 同一 node_id が複数ドキュメントに存在                | error      |
 | **cycle**（循環依存）      | depends_on を辿ると循環する                          | error      |
 | **unknown**                | 未定義の kind / relation / status を使用             | error      |
+| **malformed_annotation**（Issue #98） | code_scope の注釈が不正（relation 注釈の参照先 value 欠落、`codd:kind` にソース非対応の値、`codd:<key>` 文法違反等） | error      |
 | **missing_frontmatter**    | scope 内なのに `codd:` ブロックが無い（H-5）         | warning    |
 | **orphan**（孤立）         | 被参照ゼロ かつ 参照ゼロ（`roots` 指定 kind は除外） | warning    |
 | **drift**（ドリフト疑い）  | 上流ノードの最終コミット時刻が下流より新しい         | warning    |
@@ -203,6 +305,24 @@ codd:
 - **drift の時刻ソース**（H-3）: `git log -1 --format=%ct -- <path>`（最終コミット時刻）を用いる。
   未コミット（ワーキングツリーのみ）の場合はファイルシステム mtime にフォールバックする。
   git はファイル mtime を履歴保持しないため、必ずコミット時刻 or 内容で判定する。
+  ノードごとに `git status` / `git log` を個別起動すると 1,000 ノード規模で著しく
+  遅いため、`batch_commit_times()` が `git status --porcelain -z`（dirty 判定）と
+  `git log -z --name-only`（コミット時刻）をそれぞれ 1 回にまとめて実行する
+  （判定規約は単発の `commit_time()` と同一。Issue #98 レビュー対応）。`git log` は
+  `-z` で NUL 区切り取得することで `core.quotePath`（既定 true）による非 ASCII
+  パスの引用（8 進エスケープ）を回避する（引用されたままだと `rel_paths` の
+  キーと一致せず、クリーンな追跡ファイルでも常に mtime フォールバックへ落ちる）。
+  `--root` が git リポジトリルート以外（サブディレクトリ）を指す場合は、
+  `git rev-parse --show-prefix` で得た prefix を使って `git status` / `git log` が
+  返すリポジトリルート相対パスを `--root` 相対へ正規化してから突き合わせる。
+  `git status` はリポジトリ全体（`--root` の外を含む）の dirty パスを返すため、
+  prefix 配下に無いパスは正規化せず破棄する（破棄せず素通りさせると、prefix 外の
+  dirty ファイルが `--root` 内ノードと偶然同じ相対名を持った場合に、clean な
+  ノードまで誤って dirty 扱いされてしまう）。部分履歴 clone（shallow clone 等）
+  では、対象パスの無制限 `git log` が最新 timestamp を出力した後、古い履歴
+  （欠けた tree）の走査中に nonzero で終了することがある。`_log_commit_times()`
+  は stdout が空でなければ nonzero 終了でも取得できた分の timestamp を使う
+  （0 件扱いで mtime へ全面フォールバックしない）。
 - **missing_frontmatter** は Phase 1 では warning。将来 essential 運用が定着したら error 昇格を検討。
 - drift は「上流を変えたのに下流が追従していないかもしれない」という**素朴な Amber 相当**。
   信頼度スコアによる本格的な impact 分析は Phase 2。
@@ -241,7 +361,57 @@ codd impact --diff <ref> [--json]   # 既定 ref = HEAD
   「裏付け起点 ≥ `corroboration_min_origins`（2）」のみ許す。多段単一経路（推論的）は Amber 上限。
 - **co_changed cap**: 下流ノード自身が同一 diff で変更済みなら Amber 上限にフラグ表示する
   （スコアは下げず、破壊的変更を Gray に隠さない）。
-- 削除された上流ファイルは dangling 注意として別建てで報告する。
+- 削除された上流ファイルは dangling 注意として別建てで報告する。削除済みパスは
+  `Path.glob` が使えないため、scope glob を segment-aware な正規表現へ変換した
+  `_scope_pattern_to_regex` で判定する。`*`/`**`/`?` に加えて文字クラス（`[seq]` /
+  `[!seq]`）も `Path.glob` と同じ意味に解釈し（通常走査の `collect_files` と削除後
+  判定とで glob 解釈が食い違わないようにする）、閉じ `]` が無い場合は fnmatch と
+  同様リテラル `[` として扱う。不正な文字範囲（`lo > hi`。例: `[z-a]`、`[ab-a]`）は
+  `_char_class_to_regex` が CPython `fnmatch.translate()` と同一のアルゴリズムで
+  正規化し、範囲部分だけを除去して他の有効なリテラル文字は保持する（`[ab-a]` は
+  リテラル `a` にマッチし、クラス全体が空になる `[z-a]` のみ「常に非マッチ」）。
+  文字クラス以外の未知の要因による `re.error` はクラッシュせず「常に非マッチ」の
+  防御的フォールバックへ倒す。`../proj/src/**/*.py`（root == proj）のように root 外へ
+  出て同じ root 内へ戻るパターンも、通常走査側（`_glob_relpaths()`）と同じ
+  レキシカルな正規化（`os.path.normpath`、ファイルシステムへはアクセスしない）を
+  適用してから判定する。正規化しないと削除済みパスの判定で通常パターンと別名扱い
+  になり、scan と impact 判定の解釈が食い違う。`src/**.py` のような不正な再帰
+  glob（`**` がパスセグメント全体を占めていない）による `Path.glob()` の
+  `ValueError` は `_glob_relpaths()` が捕捉し、パターンを含む分かりやすい
+  `ValueError` へ変換して再送出する。`main()` は config 読み込みだけでなく
+  scan/validate/impact のコマンド実行全体を同じ try/except で包むため、この
+  ValueError も `[codd] ERROR: ...`（非ゼロ終了）として整形される。
+- symlink はスコープ内の走査（scan、working tree）でも、ref 側の旧内容取得
+  （`git show <ref>:<path>`）でも一貫して dereference する。scan は working tree の
+  symlink をリンク先の内容ごと登録するため、リンク先だけを変更した場合も
+  `git diff` はリンク先のパスを返す。node.path（symlink 自身）しか見ないと変更が
+  検出されないため、リンク先の root 相対パスも `changed_paths` の突合対象に加える。
+  `alias.py -> links/current.py -> v1.py` のような中継 symlink チェーンでは、
+  `_symlink_target_relpath()` が 1 hop 先のみを `os.readlink` で解決し、
+  `_symlink_chain_relpaths()` がそれを繰り返し呼んでチェーン上の全 hop
+  （`links/current.py` も）を突合対象へ加える（`Path.resolve()` で最終ターゲット
+  だけを一気に解決すると、中間リンクだけの retarget を見逃す）。
+  一方 `git show <ref>:<path>` は symlink blob の中身（リンク先パス文字列）を
+  そのまま返してしまうため、`git ls-tree` でモード（`120000` = symlink）を判定
+  しながらリンク先を辿ってから内容を取得する（辿らないと、削除された symlink
+  ノードの旧 node_id を frontmatter として復元できず、dangling 化を見逃す）。ref
+  側のリンク先文字列は `strip()` せずそのまま解決する（先頭/末尾に有意な空白を
+  含むファイル名を指す symlink でも working tree と同じパスに解決するため）。
+  code_scope 内の symlink で、alias 自体は変更されずリンク先だけが削除されて
+  壊れた symlink になった場合（`git diff` の changed/deleted どちらにも alias
+  自身は現れない）は `_broken_code_symlink_relpaths()` が検出し、ref 側の旧内容
+  から node_id を回収して deleted_upstream の検出対象に含める。
+- code_scope 内のコードファイルは、削除だけでなく **ファイルが残ったまま**
+  `codd:` 注釈の削除や node_id 変更で旧コードノードが消失するケースも dangling
+  注意として同じ集合に含める。`changed_paths`（削除されていない変更ファイル）の
+  code_scope 該当分についても ref 時点の内容から旧注釈を再抽出し、現グラフから
+  消えていれば報告する（`compute_impact_result`）。
+- drift 検査（`batch_commit_times` / `_log_commit_times`）の一括 `git log` は
+  各ノードパスを `:(literal)` を前置した pathspec として渡す。前置しないと、
+  `:(bad.md` のような git pathspec magic 構文と衝突する正当なファイル名が1つ
+  あるだけで `fatal: Invalid pathspec magic` により一括呼び出し全体が失敗し、
+  同じバッチ内の他の clean node まで commit time ではなく working-tree mtime で
+  比較されてしまう（drift 判定が不安定になる）。
 
 **設計判断（codd-dev 比較 / ADR-026 D3）:** CODD は依存宣言を frontmatter に限定するため、証拠源は
 relation 種別とグラフ距離のみ。codd-dev の Noisy-OR・エビデンス種別分類（static/inferred/human 等）は
@@ -261,7 +431,15 @@ scope:
   exclude:
     - "docs/adr/_template.md"
     - "docs/adr/DECISIONS.md"
-kinds: [requirement, design, adr, plan, rule, instruction] # scope と整合（H-4）
+# code_scope は opt-in（既定 include: []）。追加すると code/test ノードを抽出する（4.3.1）。
+code_scope:
+  include: []
+  exclude:
+    - "**/__pycache__/**/*" # 末尾は /**/* にする（Python 3.12 の Path.glob 対策、4.3.1）
+    - "**/node_modules/**/*"
+    - "**/.venv/**/*"
+inline_confidence: 0.7 # code_scope 由来 depends_on の既定信頼度（4.3.1）
+kinds: [requirement, design, adr, plan, rule, instruction, code, test] # scope と整合（H-4）
 relations: [derives_from, refines, implements, references, supersedes]
 roots: [requirement, instruction] # 被参照ゼロを許容する最上流 kind
 graph_store:
@@ -272,12 +450,25 @@ checks:
   duplicate: error
   cycle: error
   unknown: error
+  malformed_annotation: error # code_scope の値無し依存注釈（4.3.1 / 4.5）
   missing_frontmatter: warning
   orphan: warning
   drift: warning
 ```
 
 導入先固有の上書きは `codd.local.yaml`（`config-loading` ルール準拠、同期対象外）。
+
+`scope.include` / `code_scope.include` の型不正（数値・非文字列要素混入）や `impact.*` への
+bool 混入は config ロード時に `ValueError` / `TypeError` になる。`scope` / `code_scope` /
+`graph_store` / `impact` / `checks` / `impact.relation_weights` に mapping 以外（文字列・
+リスト等）を書いた場合も同様に `ValueError` になる（`.get()` / `.items()` の `AttributeError`
+を素通りさせない）。`impact.max_hops` / `impact.corroboration_min_origins` に `.inf` /
+`.nan` のような非有限値を書いた場合も `int()` の `OverflowError`（`ValueError` のサブクラス
+ではない）を素通りさせず `ValueError` にする。`scope.include` 等に空文字列（`""`）を書いた
+場合は「対象なし」を表す既存設定との後方互換のため空リストとして扱う（`[""]` にはしない。
+`Path.glob("")` の `ValueError` を招くため）。CLI エントリポイント（`main()`）はこれらを
+トレースバックとして漏らさず捕捉し、`[codd] ERROR: ...` を stderr へ出力して非ゼロ終了する
+（scan/graph/validate/impact 全コマンド共通）。
 
 ### 4.7 既存スキルとの統合
 
@@ -319,7 +510,7 @@ AI Orchestra 自身の `.claude/orchestra.json` に `codd` を追加し、最初
 
 - **Phase 1**: フロントマター規約 + `packages/codd`（scan/validate）+ essential 化 + skill 改修 + ドッグフード
 - **Phase 2**: impact 分析（Green/Amber/Gray）**実装済み（Issue #94）** + hook 配線の導入先展開（別Issue）
-- **Phase 3**: CI verdict + コード⇔ドキュメントトレース（別Issue）
+- **Phase 3**: コード⇔ドキュメントトレース（opt-in・**実装済み（Issue #98 / 4.3.1）**）+ CI verdict（別Issue）
 
 ---
 
@@ -345,6 +536,10 @@ AI Orchestra 自身の `.claude/orchestra.json` に `codd` を追加し、最初
 - **D6**: codd を essential プリセットに追加し常時有効とする（C-1 解決。facet 条件付きオーバーレイは作らない）。
 - **D7**: 1ファイル=1ノード。集約ファイル内の FT-xxx 等の細粒度ノード化は別Issue（C-2 解決）。
 - **D8**: graph 保存形式は JSONL（`.claude/codd/graph.jsonl`）。規模拡大時に SQLite を検討（L-3）。
+- **D9**（Issue #98）: コード⇔ドキュメントのトレーサビリティは、doc frontmatter と同じ 1行注釈
+  ではなく `codd:<key> <value>` の軽量記法を採用し、`code_scope.include`（既定空）による opt-in
+  スコープとする。全コードへのフロントマター強制は行わず、注釈の有無で confidence
+  （既定 1.0 vs 0.7）を差別化することで、doc の確定宣言とコードの軽量宣言を区別する。
 
 ---
 

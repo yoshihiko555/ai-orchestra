@@ -323,9 +323,9 @@ Issue 起点の反復ループを、永続 state / journal、lease fencing、two
 
 ## codd
 
-ドキュメント間の依存関係をフロントマター（`codd:` ブロック）で宣言し、`scan` で依存グラフを構築、`validate` で整合性（リンク切れ・重複・循環・孤立・ドリフト・欠落）を検証、`impact` で変更影響を分類する整合性レイヤー。`essential` プリセットに含まれ常時有効。
+ドキュメント間の依存関係をフロントマター（`codd:` ブロック）で宣言し、`scan` で依存グラフを構築、`validate` で整合性（リンク切れ・重複・循環・孤立・ドリフト・欠落・不正なコード注釈）を検証、`impact` で変更影響を分類する整合性レイヤー。`code_scope`（opt-in）でコード⇔ドキュメントのトレーサビリティにも対応する。`essential` プリセットに含まれ常時有効。
 
-- **バージョン**: 0.2.0
+- **バージョン**: 0.3.0
 - **依存**: core
 
 ### コンポーネント
@@ -333,10 +333,11 @@ Issue 起点の反復ループを、永続 state / journal、lease fencing、two
 | 種別  | 名前                  | 説明                                                              |
 | ----- | --------------------- | ------------------------------------------------------------------ |
 | lib   | `codd_common.py`      | フロントマター parser・グラフモデル・config ローダー               |
+| lib   | `codd_code.py`        | `code_scope` のコード注釈（1行形式 `codd:<key> <value>`）から code/test ノードを抽出 |
 | script | `codd.py`             | `scan` / `validate` / `graph`（可視化）/ `impact`（変更影響分類）  |
 | skill | `codd-scan`, `codd-validate`, `codd-impact` | scan / validate / impact のスキル化                |
 | rule  | `codd-frontmatter-policy` | `codd:` フロントマター記法ポリシー                              |
-| config | `codd.yaml`           | scope glob・kind/relation 語彙・検査レベル・グラフ保存先           |
+| config | `codd.yaml`           | scope / `code_scope` glob・`inline_confidence`（コード注釈由来リンクの既定信頼度）・kind/relation 語彙・検査レベル（`malformed_annotation` 含む）・グラフ保存先 |
 
 ---
 

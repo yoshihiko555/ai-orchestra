@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`codd`: コード⇔ドキュメントのトレーサビリティ（Issue #98）**: `codd.yaml` に新設した `code_scope.include`（既定は空、opt-in）でソースファイルを指定すると、`codd:<key> <value>` 形式の 1行注釈（Python はモジュール docstring、`//` 系言語は先頭コメントブロック）から `code` / `test` ノードを抽出し、既存の依存グラフへ統合する。注釈が無いファイルは黙ってスキップされる（doc の `missing_frontmatter` 警告は出ない）。抽出したリンクには `inline_confidence`（既定 0.7）が付与され、`impact` 分析のスコア計算にも反映される（`relation 重み × confidence`）。
 - **`agent-routing` / `review`: 敵対的検証レビュアー `adversarial-reviewer` を追加**: 堅牢性（境界値・異常入力・エラー経路・競合/並行・リソース枯渇・API 誤用）に特化した敵対的検証エージェントを新設し、`/review` のベースラインに組み込んだ。デフォルト `/review` は「code + adversarial + 専門枠最大 2」の最大 4 名構成になり、`/review adversarial`（単体）が追加、`/review impl` は 4 名、`/review all` は全 7 レビュアーになる。Critical/High 指摘には具体的失敗シナリオの明記が必須（書けない指摘は Medium 以下）で、auto-fix の誤発動を抑止する。
 - **`agent-routing` / `review`: `/review` に指摘検証フェーズ（Phase 3.5）と `finding-verifier` エージェントを追加**: 並列レビュー後、新設の懐疑者エージェント `finding-verifier` が Critical/High 指摘への反証を試み、confirmed / refuted / uncertain の 3 値で判定する。refuted は集約から除外し Review Summary に理由付きで「Refuted Findings」として表示、severity 過大な指摘は格下げする。auto-fix（Phase 6）は confirmed Critical のみが対象で、uncertain Critical は Fail 扱いのまま人手確認に回る。`review.verify_findings: false` で従来動作（検証なし）に戻せる。
 

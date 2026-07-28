@@ -212,6 +212,7 @@ def test_node_id_prefix_still_accepts_valid_ids() -> None:
 
 def test_node_id_prefix_by_kind_matches_design_table() -> None:
     # 設計 4.3 の表: requirement のみ "req" に略記、他は kind 名と同一。
+    # code/test は Issue #98（コード⇔ドキュメントのトレーサビリティ）で追加された kind。
     assert codd.NODE_ID_PREFIX_BY_KIND == {
         "requirement": "req",
         "design": "design",
@@ -219,6 +220,8 @@ def test_node_id_prefix_by_kind_matches_design_table() -> None:
         "plan": "plan",
         "rule": "rule",
         "instruction": "instruction",
+        "code": "code",
+        "test": "test",
     }
 
 
@@ -316,3 +319,279 @@ def test_load_config_accepts_all_known_check_levels(tmp_path) -> None:
     assert config.checks["orphan"] == codd.LEVEL_OFF
     # bare `off`（YAML 1.1 boolean False）も同様に off へ揃う
     assert config.checks["cycle"] == codd.LEVEL_OFF
+
+
+# ---------------------------------------------------------------------------
+# inline_confidence の正規化（Issue #98 レビュー対応）
+# ---------------------------------------------------------------------------
+
+
+def test_load_config_inline_confidence_defaults_when_absent(tmp_path) -> None:
+    cfg_path = tmp_path / "codd.yaml"
+    _write(cfg_path, "enabled: true\n")
+    config = codd.load_config(cfg_path)
+    assert config.inline_confidence == codd.DEFAULT_INLINE_CONFIDENCE
+
+
+def test_load_config_inline_confidence_clamps_negative_value(tmp_path) -> None:
+    cfg_path = tmp_path / "codd.yaml"
+    _write(cfg_path, "inline_confidence: -0.1\n")
+    config = codd.load_config(cfg_path)
+    assert config.inline_confidence == 0.0
+
+
+def test_load_config_inline_confidence_clamps_value_above_one(tmp_path) -> None:
+    cfg_path = tmp_path / "codd.yaml"
+    _write(cfg_path, "inline_confidence: 1.5\n")
+    config = codd.load_config(cfg_path)
+    assert config.inline_confidence == 1.0
+
+
+def test_load_config_inline_confidence_falls_back_on_nan(tmp_path) -> None:
+    # YAML の `.nan` は非有限値。エッジ重み計算（relation 重み × confidence）が
+    # NaN で壊れ、JSONL 出力（json.dumps の非標準 NaN リテラル）も壊すため、
+    # 既定値へフォールバックする。
+    cfg_path = tmp_path / "codd.yaml"
+    _write(cfg_path, "inline_confidence: .nan\n")
+    config = codd.load_config(cfg_path)
+    assert config.inline_confidence == codd.DEFAULT_INLINE_CONFIDENCE
+
+
+def test_load_config_inline_confidence_falls_back_on_non_numeric(tmp_path) -> None:
+    cfg_path = tmp_path / "codd.yaml"
+    _write(cfg_path, "inline_confidence: not-a-number\n")
+    config = codd.load_config(cfg_path)
+    assert config.inline_confidence == codd.DEFAULT_INLINE_CONFIDENCE
+
+
+def test_load_config_inline_confidence_falls_back_on_bool(tmp_path) -> None:
+    # bool は int のサブクラスのため float(False) == 0.0 が例外なく通ってしまい、
+    # `inline_confidence: false` が全エッジ重みゼロ（一斉 Gray 化）に化ける
+    # 危険がある。bool は不正値として既定値へフォールバックする（Issue #98 レビュー対応）。
+    cfg_path = tmp_path / "codd.yaml"
+    _write(cfg_path, "inline_confidence: false\n")
+    config = codd.load_config(cfg_path)
+    assert config.inline_confidence == codd.DEFAULT_INLINE_CONFIDENCE
+
+
+def test_load_config_inline_confidence_true_falls_back_to_default(tmp_path) -> None:
+    cfg_path = tmp_path / "codd.yaml"
+    _write(cfg_path, "inline_confidence: true\n")
+    config = codd.load_config(cfg_path)
+    assert config.inline_confidence == codd.DEFAULT_INLINE_CONFIDENCE
+
+
+def test_as_confidence_rejects_bool() -> None:
+    # depends_on.confidence も同じ bool 混入リスクがあるため、既定 1.0 へフォールバックする。
+    assert codd._as_confidence(False) == 1.0
+    assert codd._as_confidence(True) == 1.0
+
+
+def test_impact_config_from_dict_rejects_bool_numeric_fields() -> None:
+    # ImpactConfig.from_dict の数値フィールドに bool を渡すと TypeError で拒否する
+    # （int()/float() が bool を黙って受理するのを防ぐ。Issue #98 レビュー対応）。
+    for field in (
+        "decay",
+        "max_hops",
+        "green_threshold",
+        "amber_threshold",
+        "strong_relation_min",
+        "corroboration_min_origins",
+        "evidence_bonus",
+    ):
+        with pytest.raises(TypeError):
+            codd.ImpactConfig.from_dict({field: True})
+
+
+def test_impact_config_from_dict_relation_weights_bool_falls_back_to_default() -> None:
+    # relation_weights は既存の try/except で不正値を無視する設計のため、bool は
+    # 該当 relation の既定重みを維持する（クラッシュではなくフォールバック）。
+    config = codd.ImpactConfig.from_dict({"relation_weights": {"references": False}})
+    assert config.relation_weights["references"] == codd.DEFAULT_RELATION_WEIGHTS["references"]
+
+
+def test_impact_config_from_dict_rejects_non_finite_int_fields_as_value_error() -> None:
+    # `impact.max_hops: .inf`（YAML の `float("inf")`）を素朴に `int()` へ渡すと
+    # `OverflowError`（ValueError のサブクラスではない）を送出し、`main()` の
+    # `except (TypeError, ValueError)` を素通りして未整形のトレースバックになる
+    # （P1 レビュー対応: codd_common.py:420）。ValueError として整形された
+    # 設定エラーになるべき。
+    for field in ("max_hops", "corroboration_min_origins"):
+        with pytest.raises(ValueError):
+            codd.ImpactConfig.from_dict({field: float("inf")})
+        with pytest.raises(ValueError):
+            codd.ImpactConfig.from_dict({field: float("nan")})
+
+
+def test_impact_config_from_dict_rejects_non_mapping_relation_weights() -> None:
+    # `impact.relation_weights: []`（マッピング以外）は `.items()` で
+    # `AttributeError` になり未整形のトレースバックになっていた
+    # （P1 レビュー対応: codd_common.py:420）。ValueError として整形される。
+    with pytest.raises(ValueError, match="relation_weights"):
+        codd.ImpactConfig.from_dict({"relation_weights": ["references"]})
+
+
+def test_load_config_rejects_non_mapping_impact_and_checks(tmp_path) -> None:
+    # `impact: []` / `checks: []`（マッピング以外）は `.get()` / `.items()` で
+    # `AttributeError` になり未整形のトレースバックになっていた
+    # （P1 レビュー対応: codd_common.py:420）。ValueError として整形される。
+    cfg_path = tmp_path / "codd.yaml"
+    _write(cfg_path, "impact:\n  - a\n  - b\n")
+    with pytest.raises(ValueError, match="impact"):
+        codd.load_config(cfg_path)
+
+    cfg_path2 = tmp_path / "codd2.yaml"
+    _write(cfg_path2, "checks:\n  - a\n  - b\n")
+    with pytest.raises(ValueError, match="checks"):
+        codd.load_config(cfg_path2)
+
+
+# ---------------------------------------------------------------------------
+# scope/code_scope の glob リスト正規化（Issue #98 レビュー対応）
+# ---------------------------------------------------------------------------
+
+
+def test_load_config_code_scope_include_accepts_single_string_as_list(tmp_path) -> None:
+    # YAML でリスト記法（`- `）を忘れて単一文字列を書いた場合、素朴な list(str) だと
+    # 1 文字ずつイテレートされ glob として無意味になる。単要素リストとして扱う。
+    cfg_path = tmp_path / "codd.yaml"
+    _write(cfg_path, "code_scope:\n  include: 'src/**/*.py'\n  exclude: []\n")
+    config = codd.load_config(cfg_path)
+    assert config.code_include == ["src/**/*.py"]
+
+
+def test_load_config_scope_include_accepts_single_string_as_list(tmp_path) -> None:
+    # doc scope（`scope.include`）でも同じ正規化を適用し、コード側と扱いを一貫させる。
+    cfg_path = tmp_path / "codd.yaml"
+    _write(cfg_path, "scope:\n  include: 'docs/**/*.md'\n  exclude: []\n")
+    config = codd.load_config(cfg_path)
+    assert config.include == ["docs/**/*.md"]
+
+
+def test_load_config_code_scope_include_rejects_non_string_non_list(tmp_path) -> None:
+    cfg_path = tmp_path / "codd.yaml"
+    _write(cfg_path, "code_scope:\n  include: 42\n")
+    with pytest.raises(ValueError, match="code_scope.include"):
+        codd.load_config(cfg_path)
+
+
+def test_load_config_code_scope_include_rejects_list_with_non_string_items(tmp_path) -> None:
+    cfg_path = tmp_path / "codd.yaml"
+    _write(cfg_path, "code_scope:\n  include:\n    - 'src/**/*.py'\n    - 3\n")
+    with pytest.raises(ValueError, match="code_scope.include"):
+        codd.load_config(cfg_path)
+
+
+def test_load_config_scope_include_empty_string_means_no_targets(tmp_path) -> None:
+    # `scope.include: ""` で「対象なし」を表す既存設定との後方互換（P1 レビュー対応）。
+    # 単一文字列を単要素リスト化する変換を空文字列にも適用すると `[""]` になり、
+    # 後続の `Path.glob("")` が ValueError で CLI をトレースバック終了させてしまう。
+    cfg_path = tmp_path / "codd.yaml"
+    _write(cfg_path, "scope:\n  include: ''\n  exclude: ''\n")
+    config = codd.load_config(cfg_path)
+    assert config.include == []
+    assert config.exclude == []
+
+
+def test_load_config_code_scope_include_empty_string_means_no_targets(tmp_path) -> None:
+    cfg_path = tmp_path / "codd.yaml"
+    _write(cfg_path, "code_scope:\n  include: ''\n  exclude: ''\n")
+    config = codd.load_config(cfg_path)
+    assert config.code_include == []
+    assert config.code_exclude == []
+
+
+def test_load_config_code_scope_include_list_with_empty_string_element_is_dropped(
+    tmp_path,
+) -> None:
+    # `code_scope.include: ["", "src/**/*.py"]` のようにリスト**内**の空文字列要素も
+    # 単独の空文字列と同じ「対象なし」の意味で扱い、除去する。除去せず `[""]` の
+    # まま `Path.glob("")` に渡すと `ValueError: Unacceptable pattern: ''` になる
+    # （Issue #98 レビュー対応: codd_common.py:665）。
+    cfg_path = tmp_path / "codd.yaml"
+    _write(cfg_path, "code_scope:\n  include:\n    - ''\n    - 'src/**/*.py'\n")
+    config = codd.load_config(cfg_path)
+    assert config.code_include == ["src/**/*.py"]
+
+
+def test_load_config_scope_exclude_list_with_only_empty_string_element_is_empty(
+    tmp_path,
+) -> None:
+    cfg_path = tmp_path / "codd.yaml"
+    _write(cfg_path, "scope:\n  include: 'docs/**/*.md'\n  exclude:\n    - ''\n")
+    config = codd.load_config(cfg_path)
+    assert config.exclude == []
+
+
+def test_load_config_code_scope_include_absent_defaults_to_empty_list(tmp_path) -> None:
+    cfg_path = tmp_path / "codd.yaml"
+    _write(cfg_path, "enabled: true\n")
+    config = codd.load_config(cfg_path)
+    assert config.code_include == []
+    assert config.code_exclude == []
+
+
+def test_load_config_rejects_non_mapping_code_scope(tmp_path) -> None:
+    # `code_scope: oops`（文字列）は `code_scope.get("include")` で AttributeError に
+    # なり main() の (TypeError, ValueError) ハンドラを素通りしていた。mapping 以外は
+    # ValueError として整形すべき（Issue #98 レビュー対応）。
+    cfg_path = tmp_path / "codd.yaml"
+    _write(cfg_path, "code_scope: oops\n")
+    with pytest.raises(ValueError, match="code_scope"):
+        codd.load_config(cfg_path)
+
+
+def test_load_config_rejects_non_mapping_scope(tmp_path) -> None:
+    # doc scope（`scope`）でも同種問題が起きうるため同じ検証を適用する
+    # （Issue #98 レビュー対応）。
+    cfg_path = tmp_path / "codd.yaml"
+    _write(cfg_path, "scope:\n  - a\n  - b\n")
+    with pytest.raises(ValueError, match="scope"):
+        codd.load_config(cfg_path)
+
+
+def test_load_config_rejects_non_mapping_graph_store(tmp_path) -> None:
+    cfg_path = tmp_path / "codd.yaml"
+    _write(cfg_path, "graph_store: oops\n")
+    with pytest.raises(ValueError, match="graph_store"):
+        codd.load_config(cfg_path)
+
+
+def test_build_node_clamps_out_of_range_confidence() -> None:
+    block = {
+        "node_id": "design:x",
+        "kind": "design",
+        "status": "draft",
+        "depends_on": [
+            {"id": "req:a", "relation": "derives_from", "confidence": -0.1},
+            {"id": "req:b", "relation": "derives_from", "confidence": 2.0},
+        ],
+    }
+    node = codd.build_node(block, "docs/x.md")
+    assert node.depends_on[0].confidence == 0.0
+    assert node.depends_on[1].confidence == 1.0
+
+
+def test_codd_config_accepts_legacy_constructor_without_code_scope_fields() -> None:
+    # Issue #98 で `code_include` / `code_exclude` / `inline_confidence` を追加した際、
+    # デフォルト値なしの必須引数として追加すると、コード追跡機能を使わない既存の
+    # 直接コンストラクタ呼び出し（`CoddConfig(...)` を共有 config ライブラリとして
+    # 直接使う連携）が `TypeError` になり後方互換を破壊していた（レビュー対応: 8巡目）。
+    # 0.2.0 時点の全フィールド（新フィールドを含まない）だけで構築できることを確認する。
+    config = codd.CoddConfig(
+        enabled=True,
+        include=["docs/**/*.md"],
+        exclude=[],
+        kinds=["design"],
+        relations=["derives_from"],
+        roots=["requirement"],
+        graph_format="jsonl",
+        graph_path=".claude/codd/graph.jsonl",
+        checks={"dangling": "error"},
+        impact=codd.ImpactConfig.from_dict({}),
+        raw={},
+    )
+
+    assert config.code_include == []
+    assert config.code_exclude == []
+    assert config.inline_confidence == codd.DEFAULT_INLINE_CONFIDENCE

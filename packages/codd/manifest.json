@@ -1,7 +1,7 @@
 {
   "name": "codd",
-  "version": "0.2.0",
-  "description": "CODD 整合性レイヤー（ドキュメント依存グラフの scan / validate / impact。core 依存）",
+  "version": "0.3.0",
+  "description": "CODD 整合性レイヤー（ドキュメント依存グラフの scan / validate / impact + コード⇔ドキュメントのトレーサビリティ。core 依存）",
   "depends": ["core"],
   "hooks": {},
   "files": [],

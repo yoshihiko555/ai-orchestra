@@ -23,6 +23,26 @@ CoDD の中核は次の 3 点:
 
 > 本節は [CoDD の提唱記事](https://zenn.dev/shio_shoppaize/articles/shogun-codd-coherence) の概念を、AI Orchestra の用語（facet / hook / `packages/codd`・scan/validate）に合わせて再構成したもので、原文の転載ではない。実装の詳細は [整合性レイヤー設計](docs/design/codd-coherence-layer.md) と [要件: 整合性ガードレール](docs/requirements/coherence-guardrail.md) を参照。
 
+#### コード⇔ドキュメントのトレーサビリティ（opt-in）
+
+既定では `scan` の対象はドキュメントのみだが、`.claude/config/codd/codd.yaml` の `code_scope.include`（既定: 空 = 無効）にソースファイルの glob を追加すると、ファイル先頭の 1 行注釈からも依存を宣言できる。
+
+```yaml
+# .claude/config/codd/codd.yaml
+code_scope:
+  include:
+    - "packages/core/**/*.py"
+```
+
+```python
+"""
+codd:implements design:codd-coherence-layer
+codd:node_id code:my-module
+"""
+```
+
+`//` 系言語（TS/JS/Go/Java/Rust/C 系。`.mjs` / `.cjs` を含む）はファイル先頭の連続する行コメントに同じ記法で書ける。コード注釈由来のリンクは既定 `inline_confidence: 0.7`（doc frontmatter の既定 1.0 より低い信頼度）として扱われ、`codd impact` の下流影響スコアに比例して弱く反映される。詳細は [整合性レイヤー設計 §4.3.1](docs/design/codd-coherence-layer.md) を参照。
+
 ## アーキテクチャ
 
 ![アーキテクチャ図](docs/assets/architecture.png)
