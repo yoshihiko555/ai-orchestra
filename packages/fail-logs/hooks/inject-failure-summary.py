@@ -37,6 +37,7 @@ for _candidate in [
 from hook_common import (  # noqa: E402
     load_package_config,
     read_hook_input,
+    resolve_log_root,
     resolve_path_within,
     safe_hook_execution,
 )
@@ -325,11 +326,16 @@ def main() -> None:
     if not summary_cfg["enabled"]:
         return
 
+    # log_root の解決（git サブプロセス起動）は enabled / summary.enabled 判定の
+    # 後まで遅延させる。無効化時に git を起動しない一貫性のため
+    # （capture-failures.py と同じ方針）。
+    log_root = resolve_log_root(project_dir)
+
     logs_dir_value = config.get("logs_dir")
     logs_dir = (
         logs_dir_value if isinstance(logs_dir_value, str) and logs_dir_value else DEFAULT_LOGS_DIR
     )
-    log_path = _resolve_log_path(project_dir, logs_dir)
+    log_path = _resolve_log_path(log_root, logs_dir)
     if log_path is None or not os.path.isfile(log_path):
         return
 

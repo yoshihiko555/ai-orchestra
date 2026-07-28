@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **`fail-logs`: git worktree 間で失敗ログを集約**: worktree 環境では `.claude/logs/fail-logs/failures.jsonl` を root worktree に集約し、git 解決不能時は従来のプロジェクト別保存先へフォールバックする。各失敗レコードには発生元ブランチを示す `branch` フィールドも記録する。
+
 ## [0.3.2] - 2026-07-28
 
 ### Added

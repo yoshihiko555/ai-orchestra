@@ -8,6 +8,7 @@ import json
 import os
 import re
 import stat
+import subprocess
 import sys
 from collections.abc import Callable
 from typing import Any, Literal
@@ -294,6 +295,53 @@ def resolve_path_within(project_dir: str, relative: str, filename: str) -> str |
     if candidate == project_root or candidate.startswith(project_root + os.sep):
         return candidate
     return None
+
+
+def resolve_root_worktree(project_dir: str | None = None) -> str | None:
+    """Git の root worktree パスを解決する。
+
+    worktree 環境では main worktree のパスを返す。通常リポジトリでは
+    リポジトリルートを返す。git が使えない・結果が不正な場合は None を返す
+    (呼び出し側は project_dir へのフォールバックに使うこと)。
+
+    Args:
+        project_dir: git を実行する作業ディレクトリ。省略時は CWD。
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=project_dir or None,
+        )
+        if result.returncode == 0:
+            git_common_dir = result.stdout.strip()
+            if not git_common_dir:
+                return None
+            root = os.path.dirname(git_common_dir)
+            if os.path.isabs(root) and os.path.isdir(root):
+                return root
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        pass
+    return None
+
+
+def resolve_log_root(project_dir: str) -> str:
+    """蓄積型ログの保存先ルートを解決する。
+
+    worktree 環境では root worktree の .claude/ が存在する場合に限り、その
+    root worktree のパスを返す（root への集約）。root が解決できない、または
+    root に .claude/ が無い場合は project_dir をそのまま返す（fail-safe）。
+
+    Args:
+        project_dir: 呼び出し元が解決済みのプロジェクトディレクトリ
+            （フォールバック先）。
+    """
+    root = resolve_root_worktree(project_dir)
+    if root and os.path.isdir(os.path.join(root, ".claude")):
+        return root
+    return project_dir
 
 
 def get_field(data: dict, key: str) -> str:

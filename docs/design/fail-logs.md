@@ -133,8 +133,9 @@ fail-logs のログはセッションをまたいで無期限に増え続けう�
 
 ## 6. 保存先と root worktree 解決
 
-> **実装状況**: 本節の root worktree 解決は ADR-20260728-046 で決定済み・実装は後続 PR。現状の実装は
-> project_dir（worktree 実行時は worktree 内）直下に書く。
+> **実装状況**: 本節の root worktree 解決は ADR-20260728-046 で決定され、fail-logs では実装済み
+> （core の `resolve_root_worktree` / `resolve_log_root` を利用）。audit の共通関数への載せ替えは
+> 別 Issue で実施予定。
 
 保存先は `.claude/logs/fail-logs/failures.jsonl`（`.gitignore` 済み、所有者限定パーミッション）。
 

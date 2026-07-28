@@ -49,7 +49,7 @@ codd:
 | `audit`（`audit-bootstrap.py`, `audit-prompt.py`） | `.claude/state/audit-trace.json` | JSON | ignore（`.claude/state/`） | 対象外（project_dir ローカル） | トレース ID / expected route の受け渡し |
 | `audit`（`audit-subagent-start.py`） | `.claude/state/audit-subagent-<agent_id>.json` | JSON | ignore | 対象外（project_dir ローカル） | サブエージェント固有のトレース状態 |
 | `quality-gates`（`post-test-analysis.py`、audit の sessions ログへ相乗り） | `.claude/logs/audit/sessions/<session_id>.jsonl`（`type: quality_gate`） | JSONL | ignore | **実装済み**（audit 経由） | テストコマンド実行結果の記録 |
-| `fail-logs`（`capture-failures.py`） | `.claude/logs/fail-logs/failures.jsonl` | JSONL | ignore（`.claude/logs/`） | **決定済み・実装予定**（現状 project_dir 直下） | ツール実行失敗イベントの記録 |
+| `fail-logs`（`capture-failures.py`） | `.claude/logs/fail-logs/failures.jsonl` | JSONL | ignore（`.claude/logs/`） | **実装済み** | ツール実行失敗イベントの記録 |
 | `skill-evolution`（`skill_evolution_common.py: metrics_path`） | 現状 `.claude/skill-evolution/metrics/<skill>.jsonl` → 決定後 `.claude/logs/skill-evolution/metrics/<skill>.jsonl` | JSONL | ignore（`metrics/` 個別指定） | **決定済み・実装予定**（one-shot migration 付き） | スキル実行のオフライン評価メトリクス |
 | `skill-evolution`（`skill_evolution_common.py: pending_path`） | 現状 `.claude/skill-evolution/pending/<run_id>.json` → 決定後 `.claude/logs/skill-evolution/pending/<run_id>.json` | JSON | ignore（`pending/` 個別指定） | **決定済み・実装予定**（one-shot migration 付き） | フォーク中サブエージェント実行の一時状態（Stop hook が回収） |
 | `skill-evolution`（`skill_evolution_common.py: lock_path`） | 現状 `.claude/skill-evolution/locks/<skill>.lock` → 決定後 `.claude/logs/skill-evolution/locks/<skill>.lock` | lockfile | 現状 `.gitignore` 未列挙（移設後は `.claude/logs/` の一括 ignore で解消） | **決定済み・実装予定**（one-shot migration 付き） | スキル単位の並行実行排他制御 |
@@ -103,4 +103,4 @@ skill-evolution の metrics/pending/locks 移設は、以下の fail-safe な on
 
 - 旧 `route-audit` / `cli-logging` 系の個別 JSONL は現行実装では使っていません。
 - audit ログの正本は `audit` パッケージのセッション単位 JSONL です。fail-logs / skill-evolution はそれぞれ独立したログ系統であり、ADR-20260612-025 の重複許容方針を踏襲した ADR-20260728-046 の裁定により統合しません（目的・スキーマが異なるため）。
-- root worktree 解決の実装パターン（`_resolve_root_worktree` / `_resolve_log_root`）は現状 `packages/audit/hooks/event_logger.py` にのみ存在します。ADR-20260728-046 により `packages/core/hooks/hook_common.py` へ共通関数として抽出し、fail-logs / skill-evolution から利用する計画です（audit 本体の共通関数への載せ替えは挙動同一のリファクタとして別 Issue の後続作業）。
+- root worktree 解決の実装パターンは ADR-20260728-046 により `packages/core/hooks/hook_common.py` に共通関数（`resolve_root_worktree` / `resolve_log_root`）として抽出され、fail-logs（`capture-failures.py` / `inject-failure-summary.py`）はこれを利用しています。audit（`packages/audit/hooks/event_logger.py`）は現状も自前実装（`_resolve_root_worktree` / `_resolve_log_root`）のままで、共通関数への載せ替えは挙動同一のリファクタとして別 Issue の後続作業です。

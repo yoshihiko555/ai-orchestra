@@ -62,6 +62,16 @@ def _run(monkeypatch, project: Path) -> None:
     inject.main()
 
 
+def _patch_root_worktree(monkeypatch, root_dir: Path | None) -> None:
+    """resolve_log_root が参照する共通 root 解決結果を差し替える。"""
+    resolved = str(root_dir) if root_dir is not None else None
+    monkeypatch.setitem(
+        inject.resolve_log_root.__globals__,
+        "resolve_root_worktree",
+        lambda _project_dir: resolved,
+    )
+
+
 def test_recurring_signature_is_injected(monkeypatch, tmp_path, capsys) -> None:
     project = _make_project(tmp_path)
     _write_log(
@@ -400,3 +410,23 @@ def test_valid_custom_logs_dir_is_read_without_fallback(monkeypatch, tmp_path, c
     out = capsys.readouterr().out
     assert "×2" in out
     assert "pytest custom" in out
+
+
+# EV-21: worktree の SessionStart は root worktree 側の蓄積ログを読む。
+def test_worktree_summary_reads_root_log(monkeypatch, tmp_path, capsys) -> None:
+    worktree = _make_project(tmp_path / "worktree")
+    root = _make_project(tmp_path / "root")
+    _write_log(
+        root,
+        [
+            _record(command_kind="test", command="pytest tests/a"),
+            _record(command_kind="test", command="pytest tests/b"),
+        ],
+    )
+    _patch_root_worktree(monkeypatch, root)
+
+    _run(monkeypatch, worktree)
+
+    out = capsys.readouterr().out
+    assert "×2" in out
+    assert "pytest" in out

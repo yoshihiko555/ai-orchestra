@@ -48,11 +48,11 @@ fail-logs は AI エージェント（Claude Code 等）のツール実行失敗
 - 秘匿情報: EV-06 で担保（機密パターンのマスキング）
 - config 駆動: EV-07（enabled 全体無効化）・EV-08（targets 個別無効化）で担保
 - [ ] EV-16（境界 / should）: 冪等性 — 同一失敗イベントが再入力されても重複排除は行わず、重複記録を許容する（`_append_secure_jsonl` は `O_APPEND` の純追記）。再発した失敗はそれ自体が「解決すべき重要な失敗」のシグナルであり、蓄積を許容して inject-failure-summary の再発集計で重要度として扱う — 根拠: 2026-07-03 人間レビュー裁定（現実装が重複排除しないことを確認済み。実装ギャップなし）
-- [ ] EV-17（正常 / must）: capture の記録契約 — stdout 無出力・検知有無に関わらず常に exit 0、audit v1 互換スキーマ + data.branch フィールド（ADR-20260728-046 決定済み・実装は後続 PR）を含む記録が追記される — 根拠: docs/design/fail-logs.md §3
+- [ ] EV-17（正常 / must）: capture の記録契約 — stdout 無出力・検知有無に関わらず常に exit 0、audit v1 互換スキーマ + data.branch フィールド（ADR-20260728-046）を含む記録が追記される — 根拠: docs/design/fail-logs.md §3
 - [ ] EV-18（正常 / must）: 集計・注入の機能回帰 — 正常な失敗ログ（再発 min_occurrences 以上を含む）から、再発シグネチャ中心の期待どおりのサマリーが生成・注入される（シグネチャは command 先頭トークン + command_kind、非 Bash は failure_type + tool フォールバック） — 根拠: docs/design/fail-logs.md §4
 - [ ] EV-19（境界 / must）: 注入の有界性 — ログが max_records を大きく超えて肥大しても、読み出しは末尾 max_records 件・注入は top_signatures 件・コマンド 120 字/抜粋 100 字上限で頭打ちになる — 根拠: docs/design/fail-logs.md §4
 - [ ] EV-20（異常 / must）: 注入テキストの無害化 — ログ由来テキスト内の山括弧（</fail-logs-summary> 等の境界フレーム偽造を含む）が ‹ › へ中和され、境界フレームと [log] プレフィックスが維持される — 根拠: docs/design/fail-logs.md §5
-- [ ] EV-21（正常 / must）: root worktree 解決 — worktree セッションからの書き込み・読み出しが root worktree の .claude/logs/fail-logs/ に集約され、git 解決不能時は project_dir へフォールバックする — 根拠: docs/adr/ADR-20260728-046.md / docs/design/fail-logs.md §6（※ ADR-20260728-046 決定済み・実装は後続 PR。実装 PR でテストを追加するまで covered 対象外）
+- [ ] EV-21（正常 / must）: root worktree 解決 — worktree セッションからの書き込み・読み出しが root worktree の .claude/logs/fail-logs/ に集約され、git 解決不能時は project_dir へフォールバックする — 根拠: docs/adr/ADR-20260728-046.md / docs/design/fail-logs.md §6
 
 > **fail-logs の価値フロー再設計（EV-09・EV-10・EV-15 欠番, 2026-07-03）**: 本パッケージの「記録 → 集計 → 再発サマリー注入」という価値フローと注入テキストの無害化要件は、現状「根拠: 実装挙動」に留まり「あるべき仕様」が未確定。(1) capture の記録契約、(2) inject の集計軸・注入内容・活用フロー、(3) 注入テキストの無害化（脅威モデルと保証範囲）を設計として明文化し、確定後に新 ID で観点を追加する（Issue #131）。再設計が決まるまで、現状実装を「正」とする回帰テストは追加しない。
 >

@@ -14,6 +14,7 @@ import fcntl
 import json
 import os
 import re
+import subprocess
 import sys
 import uuid
 from datetime import UTC, datetime
@@ -36,6 +37,7 @@ import failure_detector as fd  # noqa: E402
 from hook_common import (  # noqa: E402
     load_package_config,
     read_hook_input,
+    resolve_log_root,
     resolve_path_within,
     safe_hook_execution,
 )
@@ -88,6 +90,23 @@ def _resolve_project_dir(data: dict) -> str:
     if cwd and os.path.isdir(os.path.join(cwd, ".claude")):
         return cwd
     return os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+
+
+def _resolve_branch(project_dir: str) -> str:
+    """記録時点の Git ブランチ名を解決する。取得失敗時は空文字列を返す(fail-safe)。"""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=project_dir,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        pass
+    return ""
 
 
 def _append_secure_jsonl(path: str, record: dict) -> None:
@@ -177,13 +196,19 @@ def main() -> None:
             "error_excerpt": _extract_excerpt(tool_name, tool_response, max_chars),
             "exit_code": tool_response.get("exit_code"),
             "cwd": str(data.get("cwd") or ""),
+            "branch": _resolve_branch(project_dir),
         },
     }
 
-    # logs_dir が project_dir 外を指す場合（設定経由のパストラバーサル）は
+    # log_root の解決（git サブプロセス起動）はここまで遅延させる。実際に書き込みが
+    # 確定した後（enabled → analyze → targets 判定を通過した後）でのみ実行することで、
+    # fail-logs 無効時・成功ツール呼び出し時（大多数）のホットパスを保つ。
+    log_root = resolve_log_root(project_dir)
+
+    # logs_dir が log_root 外を指す場合（設定経由のパストラバーサル）は
     # 書き込みを黙って捨てず、安全なデフォルトへフォールバックする。
-    log_path = resolve_path_within(project_dir, logs_dir, LOG_FILE_NAME) or resolve_path_within(
-        project_dir, DEFAULT_LOGS_DIR, LOG_FILE_NAME
+    log_path = resolve_path_within(log_root, logs_dir, LOG_FILE_NAME) or resolve_path_within(
+        log_root, DEFAULT_LOGS_DIR, LOG_FILE_NAME
     )
     if log_path is None:
         return

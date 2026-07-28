@@ -1,6 +1,8 @@
 import io
 import json
 import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -301,6 +303,115 @@ class TestIsCliEnabled:
             hook_common.is_cli_enabled("codex", {"codex": {"model": "gpt-5.5"}}, default=False)
             is False
         )
+
+
+# =========================================================================
+# resolve_root_worktree / resolve_log_root (EV-26)
+# =========================================================================
+
+
+def _require_git() -> None:
+    if shutil.which("git") is None:
+        pytest.skip("git is not available on PATH")
+
+
+def _run_git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *args],
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=True,
+    )
+
+
+class TestResolveRootWorktree:
+    def test_linked_worktree_returns_original_repo_root(self, tmp_path: Path) -> None:
+        _require_git()
+        root_repo = tmp_path / "root-repo"
+        linked_worktree = tmp_path / "linked-worktree"
+        root_repo.mkdir()
+
+        _run_git(root_repo, "init")
+        _run_git(root_repo, "config", "user.email", "test@example.com")
+        _run_git(root_repo, "config", "user.name", "Test User")
+        _run_git(root_repo, "config", "commit.gpgsign", "false")
+        (root_repo / "tracked.txt").write_text("initial\n", encoding="utf-8")
+        _run_git(root_repo, "add", "tracked.txt")
+        _run_git(root_repo, "commit", "-m", "initial")
+        _run_git(root_repo, "worktree", "add", "-b", "test-linked", str(linked_worktree))
+
+        result = hook_common.resolve_root_worktree(str(linked_worktree))
+
+        assert result is not None
+        assert Path(result).resolve() == root_repo.resolve()
+        assert Path(result).resolve() != linked_worktree.resolve()
+
+    def test_ordinary_repo_returns_repo_root(self, tmp_path: Path) -> None:
+        _require_git()
+        repo = tmp_path / "ordinary-repo"
+        repo.mkdir()
+        _run_git(repo, "init")
+
+        result = hook_common.resolve_root_worktree(str(repo))
+
+        assert result is not None
+        assert Path(result).resolve() == repo.resolve()
+
+    def test_non_git_directory_returns_none(self, tmp_path: Path) -> None:
+        _require_git()
+        plain_dir = tmp_path / "plain"
+        plain_dir.mkdir()
+
+        assert hook_common.resolve_root_worktree(str(plain_dir)) is None
+
+    def test_missing_git_returns_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _raise_file_not_found(*_args: object, **_kwargs: object) -> None:
+            raise FileNotFoundError
+
+        monkeypatch.setattr(hook_common.subprocess, "run", _raise_file_not_found)
+
+        assert hook_common.resolve_root_worktree(str(tmp_path)) is None
+
+
+class TestResolveLogRoot:
+    def test_returns_root_when_root_has_claude_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project_dir = tmp_path / "project"
+        root_dir = tmp_path / "root"
+        project_dir.mkdir()
+        (root_dir / ".claude").mkdir(parents=True)
+        monkeypatch.setattr(
+            hook_common, "resolve_root_worktree", lambda _project_dir: str(root_dir)
+        )
+
+        assert hook_common.resolve_log_root(str(project_dir)) == str(root_dir)
+
+    def test_falls_back_when_root_has_no_claude_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project_dir = tmp_path / "project"
+        root_dir = tmp_path / "root"
+        project_dir.mkdir()
+        root_dir.mkdir()
+        monkeypatch.setattr(
+            hook_common, "resolve_root_worktree", lambda _project_dir: str(root_dir)
+        )
+
+        assert hook_common.resolve_log_root(str(project_dir)) == str(project_dir)
+
+    def test_falls_back_when_root_cannot_be_resolved(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        monkeypatch.setattr(hook_common, "resolve_root_worktree", lambda _project_dir: None)
+
+        assert hook_common.resolve_log_root(str(project_dir)) == str(project_dir)
 
 
 # =========================================================================

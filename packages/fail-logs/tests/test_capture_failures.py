@@ -31,6 +31,16 @@ def _read_log(project_dir: Path) -> list[dict]:
     return [json.loads(line) for line in log_path.read_text().splitlines() if line.strip()]
 
 
+def _patch_root_worktree(monkeypatch, root_dir: Path | None) -> None:
+    """resolve_log_root が参照する共通 root 解決結果を差し替える。"""
+    resolved = str(root_dir) if root_dir is not None else None
+    monkeypatch.setitem(
+        capture.resolve_log_root.__globals__,
+        "resolve_root_worktree",
+        lambda _project_dir: resolved,
+    )
+
+
 def test_records_bash_nonzero_failure(monkeypatch, tmp_path) -> None:
     project = _make_project(tmp_path)
     _run_hook(
@@ -272,3 +282,93 @@ def test_traversal_logs_dir_falls_back_to_default(monkeypatch, tmp_path) -> None
         if f == "failures.jsonl"
     ]
     assert jsonl_files == [default_log_path]
+
+
+# EV-21: worktree からの記録を root worktree に集約し、解決不能時は従来位置へ戻す。
+def test_worktree_failure_is_written_to_root_log(monkeypatch, tmp_path) -> None:
+    worktree = _make_project(tmp_path / "worktree")
+    root = _make_project(tmp_path / "root")
+    _patch_root_worktree(monkeypatch, root)
+
+    _run_hook(
+        monkeypatch,
+        worktree,
+        {
+            "cwd": str(worktree),
+            "session_id": "sess-root",
+            "tool_name": "Bash",
+            "tool_input": {"command": "false"},
+            "tool_response": {"exit_code": 1, "stdout": "failed"},
+        },
+    )
+
+    assert len(_read_log(root)) == 1
+    assert _read_log(worktree) == []
+
+
+def test_root_resolution_failure_writes_to_project_log(monkeypatch, tmp_path) -> None:
+    project = _make_project(tmp_path / "project")
+    _patch_root_worktree(monkeypatch, None)
+
+    _run_hook(
+        monkeypatch,
+        project,
+        {
+            "cwd": str(project),
+            "session_id": "sess-fallback",
+            "tool_name": "Bash",
+            "tool_input": {"command": "false"},
+            "tool_response": {"exit_code": 1, "stdout": "failed"},
+        },
+    )
+
+    assert len(_read_log(project)) == 1
+
+
+# EV-17: failure record は発生元ブランチを含み、git 障害でも記録を継続する。
+def test_record_includes_originating_branch(monkeypatch, tmp_path, capsys) -> None:
+    project = _make_project(tmp_path)
+    monkeypatch.setattr(capture, "_resolve_branch", lambda _project_dir: "feat/example")
+
+    _run_hook(
+        monkeypatch,
+        project,
+        {
+            "cwd": str(project),
+            "session_id": "sess-branch",
+            "tool_name": "Bash",
+            "tool_input": {"command": "false"},
+            "tool_response": {"exit_code": 1, "stdout": "failed"},
+        },
+    )
+
+    records = _read_log(project)
+    assert len(records) == 1
+    assert records[0]["data"]["branch"] == "feat/example"
+    assert capsys.readouterr().out == ""
+
+
+def test_missing_git_records_empty_branch(monkeypatch, tmp_path, capsys) -> None:
+    project = _make_project(tmp_path)
+
+    def _raise_file_not_found(*_args: object, **_kwargs: object) -> None:
+        raise FileNotFoundError
+
+    monkeypatch.setattr(capture.subprocess, "run", _raise_file_not_found)
+
+    _run_hook(
+        monkeypatch,
+        project,
+        {
+            "cwd": str(project),
+            "session_id": "sess-no-git",
+            "tool_name": "Bash",
+            "tool_input": {"command": "false"},
+            "tool_response": {"exit_code": 1, "stdout": "failed"},
+        },
+    )
+
+    records = _read_log(project)
+    assert len(records) == 1
+    assert records[0]["data"]["branch"] == ""
+    assert capsys.readouterr().out == ""
