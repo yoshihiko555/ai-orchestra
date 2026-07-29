@@ -123,6 +123,36 @@ def test_build_metric_record_without_self_report() -> None:
     assert rec["machine"]["critical_pass_rate"] == 0.0
 
 
+# EV-30: metrics 1 行の既存スキーマと型を後方互換契約として固定する。
+def test_build_metric_record_schema_is_backward_compatible() -> None:
+    rec = se.build_metric_record(
+        "issue-fix",
+        "run-1",
+        {
+            "ambiguities": 1,
+            "discretion_fills": 2,
+            "retries": 3,
+            "critical": {"done": True},
+        },
+        duration_ms=1200,
+        tool_uses=7,
+    )
+
+    assert set(rec) == {"ts", "skill", "run_id", "self_report", "machine", "success"}
+    assert isinstance(rec["ts"], str)
+    assert isinstance(rec["skill"], str)
+    assert isinstance(rec["run_id"], str)
+    assert isinstance(rec["self_report"], dict)
+    assert set(rec["self_report"]) == {"ambiguities", "discretion_fills", "retries"}
+    assert all(isinstance(value, int) for value in rec["self_report"].values())
+    assert isinstance(rec["machine"], dict)
+    assert set(rec["machine"]) == {"tool_uses", "duration_ms", "critical_pass_rate"}
+    assert isinstance(rec["machine"]["tool_uses"], int)
+    assert isinstance(rec["machine"]["duration_ms"], int)
+    assert isinstance(rec["machine"]["critical_pass_rate"], float)
+    assert isinstance(rec["success"], bool)
+
+
 # ---------------------------------------------------------------------------
 # スコアリング
 # ---------------------------------------------------------------------------
@@ -273,7 +303,7 @@ def test_list_pending_recovers_skill_from_run_id_when_missing(tmp_path) -> None:
 def test_list_pending_skips_broken_files(tmp_path) -> None:
     p = str(tmp_path)
     se.write_pending(p, "s-20260101T000000-aaaa", skill="s")
-    pending_dir = os.path.join(se.data_dir(p), "pending")
+    pending_dir = os.path.join(se.logs_dir(p), "pending")
     with open(os.path.join(pending_dir, "broken.json"), "w", encoding="utf-8") as f:
         f.write("not json")
     entries = se.list_pending(p)
