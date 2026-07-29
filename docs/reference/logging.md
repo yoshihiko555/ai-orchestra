@@ -50,14 +50,14 @@ codd:
 | `quality-gates`（`post-test-analysis.py`、audit の sessions ログへ相乗り） | `.claude/logs/audit/sessions/<session_id>.jsonl`（`type: quality_gate`） | JSONL | ignore | **実装済み**（audit 経由） | テストコマンド実行結果の記録 |
 | `fail-logs`（`capture-failures.py`） | `.claude/logs/fail-logs/failures.jsonl` | JSONL | ignore（`.claude/logs/`） | **実装済み** | ツール実行失敗イベントの記録 |
 | `skill-evolution`（`skill_evolution_common.py: metrics_path`） | `.claude/logs/skill-evolution/metrics/<skill>.jsonl` | JSONL | ignore（`.claude/logs/`） | **実装済み**（one-shot migration 付き） | スキル実行のオフライン評価メトリクス |
-| `skill-evolution`（`skill_evolution_common.py: pending_path`） | `.claude/logs/skill-evolution/pending/<run_id>.json` | JSON | ignore（`.claude/logs/`） | **実装済み** | フォーク中サブエージェント実行の一時状態（Stop hook が回収） |
-| `skill-evolution`（`skill_evolution_common.py: lock_path`） | `.claude/logs/skill-evolution/locks/<skill>.lock` | lockfile | ignore（`.claude/logs/`） | **実装済み** | スキル単位の並行実行排他制御 |
+| `skill-evolution`（`skill_evolution_common.py: pending_path`） | `.claude/logs/skill-evolution/pending/<run_id>.json` | JSON | ignore（`.claude/logs/`） | 対象外（project_dir ローカル） | フォーク中サブエージェント実行の一時状態（Stop hook が回収） |
+| `skill-evolution`（`skill_evolution_common.py: lock_path`） | `.claude/logs/skill-evolution/locks/<skill>.lock` | lockfile | ignore（`.claude/logs/`） | 対象外（project_dir ローカル） | スキル単位の並行実行排他制御 |
 | `skill-evolution`（`skill_evolution_common.py: lessons_path` / `lessons_archive_path`） | `.claude/skill-evolution/lessons/<skill>.md`（+ `.archive.md`） | Markdown | git 管理下（`.gitignore` 対象外） | **対象外**（ADR-20260728-046 決定4。git 管理のため worktree 削除で消失しない） | 学び（教訓）の蓄積。SessionStart/発火前注入の入力 |
 | （予約領域・現状書き込み元なし） | `.claude/logs/orchestration/`（`scripts/lib/scaffold.py` が新規プロジェクトに `.gitkeep` 付きで作成） | — | ignore（`.claude/logs/`） | 対象外（未使用） | 将来のオーケストレーションログ用に予約されたディレクトリ。現時点で書き込む hook / スクリプトは存在しない |
 
 ### one-shot migration の挙動（実装済み）
 
-skill-evolution の旧 metrics は、以下の fail-safe な one-shot migration で新配置へ移行します（ADR-20260728-046 決定3）。pending/locks はセッション単位の一時データなので移行せず、新配置で fresh start します。
+skill-evolution の旧 metrics は、以下の fail-safe な one-shot migration で新配置へ移行します（ADR-20260728-046 決定3）。metrics の読み書き時に legacy ファイルが残っていれば、移行先に metrics が既に存在していても新パスへ merge 追記します。同一 legacy ファイルは rename claim により一回だけ移行され、段階移行で複数 worktree の legacy が同一 run_id を含む場合の重複は許容します。pending/locks はセッション単位の一時データなので移行せず、新配置で fresh start します。
 
 - metrics の読み書き前に、旧 `metrics/*.jsonl` を一意な `.migrating.*` 名で claim し、新パスへ追記してから `.migrated.*` 名で保存する。
 - 移行量は各ファイル末尾 1 MiB までに制限し、先頭の部分行は捨てる。stale な `.migrating.*` は自動変更せず、手動復旧用に残す。

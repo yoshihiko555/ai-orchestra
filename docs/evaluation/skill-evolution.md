@@ -74,7 +74,7 @@ skill-evolution は、スキル実行のたびに二軸テレメトリ（自己�
 - [ ] EV-25（正常 / must）: `config/skill-evolution.yaml` の `enabled: false` 時、hook はテレメトリ収集・lessons 注入を行わない（no-op）。`skill-evolution.local.yaml` による上書きは `config-loading` ルール通りベースより優先される（hook 型・CLI 型の設定レイヤリングを兼ねる） — 根拠: `.claude/rules/config-loading.md`
 - [ ] EV-26（境界 / should）: `metrics`/`lessons` に記録される自己申告・機械計測データにシークレット相当の文字列が含まれる場合、マスキングされた状態で保存される — 根拠: `.claude/rules/coding-principles.md`（セキュリティ）; 実装挙動
 - [ ] EV-27（境界 / should）: PreToolUse/PostToolUse の同期 hook 処理は、スキル実行のレイテンシ・コンテキストを著しく増やさない（軽量・非同期追記中心） — 根拠: NF-01
-- [ ] EV-37（正常 / must）: 蓄積データの配置と root 解決 — metrics / pending / locks は `.claude/logs/skill-evolution/` 配下に root worktree 解決で書かれ、旧パス（`.claude/skill-evolution/`）に実体があり新パスに無い場合のみ one-shot migration（失敗時 fail-open）が行われる。lessons/*.md は対象外で従来パス・git 管理のまま — 根拠: docs/adr/ADR-20260728-046.md
+- [ ] EV-37（正常 / must）: 蓄積データの配置と root 解決 — metrics は `.claude/logs/skill-evolution/` 配下に root worktree 解決で書かれる。旧パス（`.claude/skill-evolution/`）に metrics の実体があれば、初回アクセス時に legacy ファイルを新パスへ merge 追記する one-shot migration が行われる（同一 legacy ファイルの移行は rename claim により一回のみ。段階移行で複数 worktree の legacy が同一 run_id を含む場合の重複は許容し、read 側の集計はその前提で扱う。移行失敗時は fail-open）。pending / locks はセッション単位の一時状態のため root 解決の対象外とし、常に project_dir ローカルで解決される（他 worktree の実行中 pending を誤って stale 回収しないため）。lessons/*.md は対象外で従来パス・git 管理のまま — 根拠: docs/adr/ADR-20260728-046.md
 
 ### CLI ツール型（副: オフライン反復ループ）
 

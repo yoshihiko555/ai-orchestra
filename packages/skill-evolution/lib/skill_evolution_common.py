@@ -21,7 +21,6 @@ import json
 import os
 import random
 import re
-import shutil
 import sys
 import time
 from dataclasses import dataclass, field
@@ -48,7 +47,7 @@ DEFAULTS: dict[str, Any] = {
     "enabled": True,
     "storage": {
         "dir": ".claude/skill-evolution",  # lessons 専用。root worktree 解決しない
-        "logs_dir": ".claude/logs/skill-evolution",  # metrics/pending/locks は root 集約
+        "logs_dir": ".claude/logs/skill-evolution",  # metrics は root、pending/locks は local
     },
     "lessons": {"max_lines": 40, "inject_max_chars": 4000},
     "pending": {"stale_after_seconds": 600},
@@ -154,19 +153,44 @@ def _resolve_log_root_cached(project_dir: str) -> str:
         return fallback
 
 
-def logs_dir(project_dir: str, config: dict | None = None) -> str:
-    """metrics/pending/locks 用の root worktree 解決済みルートを返す。
+def _resolve_logs_subdir(base: str, config: dict | None) -> str:
+    """base 配下に storage.logs_dir を安全に解決する。
 
-    config の storage.logs_dir が解決済み root の外を指す場合は既定値に戻す。
-    root 解決または hook_common import に失敗した場合は project_dir へ戻る。
+    symlink 経由で base の外を指す設定も realpath 解決で検出し、既定値へ
+    フォールバックする（字句比較の abspath/commonpath では symlink 経由の脱出を
+    検出できないため）。
     """
     cfg = config or {}
     rel = (cfg.get("storage") or {}).get("logs_dir") or DEFAULTS["storage"]["logs_dir"]
-    base = _resolve_log_root_cached(os.path.abspath(project_dir))
+    real_base = os.path.realpath(base)
     candidate = os.path.abspath(os.path.join(base, rel))
-    if os.path.commonpath([base, candidate]) != base:
+    real_candidate = os.path.realpath(candidate)
+    if real_candidate != real_base and not real_candidate.startswith(real_base + os.sep):
         candidate = os.path.abspath(os.path.join(base, DEFAULTS["storage"]["logs_dir"]))
     return candidate
+
+
+def logs_dir(project_dir: str, config: dict | None = None) -> str:
+    """metrics 用の root worktree 解決済みルートを返す。
+
+    config の storage.logs_dir が解決済み root の外（symlink 経由含む）を指す場合は
+    既定値に戻す。root 解決または hook_common import に失敗した場合は project_dir へ戻る。
+    """
+    base = _resolve_log_root_cached(os.path.abspath(project_dir))
+    return _resolve_logs_subdir(base, config)
+
+
+def _local_logs_dir(project_dir: str, config: dict | None = None) -> str:
+    """pending/locks 用の project_dir ローカル（root 解決なし）ルートを返す。
+
+    pending/locks はセッション単位の一時状態であり、複数 worktree 間で共有すると
+    他 worktree の Stop hook が実行中の pending を stale と誤判定して回収し、偽の
+    失敗メトリクス確定と完了時の二重記録を招く（Issue: PR#331 レビュー指摘）。
+    そのため蓄積データである metrics のみを root 集約し、pending/locks は
+    project_dir ローカルに留める（ADR-20260728-046 決定3の対象は metrics のみ）。
+    """
+    base = os.path.abspath(project_dir)
+    return _resolve_logs_subdir(base, config)
 
 
 def _slug(skill: str) -> str:
@@ -197,12 +221,12 @@ def lessons_archive_path(project_dir: str, skill: str, config: dict | None = Non
 
 def pending_path(project_dir: str, run_id: str, config: dict | None = None) -> str:
     """発火→完了の突合用 pending 記録のパスを返す（run_id キー・並行実行安全）。"""
-    return os.path.join(logs_dir(project_dir, config), "pending", f"{_slug(run_id)}.json")
+    return os.path.join(_local_logs_dir(project_dir, config), "pending", f"{_slug(run_id)}.json")
 
 
 def lock_path(project_dir: str, skill: str, config: dict | None = None) -> str:
     """スキル単位ロックファイルのパスを返す。"""
-    return os.path.join(logs_dir(project_dir, config), "locks", f"{_slug(skill)}.lock")
+    return os.path.join(_local_logs_dir(project_dir, config), "locks", f"{_slug(skill)}.lock")
 
 
 def _ensure_parent(path: str) -> None:
@@ -216,7 +240,15 @@ def _ensure_parent(path: str) -> None:
 
 
 def _migrate_metric_file(legacy_path: str, destination_path: str) -> None:
-    """旧 metrics 1 ファイルを claim して root 側へ有界追記する。"""
+    """旧 metrics 1 ファイルを claim して root 側へ有界追記する。
+
+    destination への書き込みは append_metric() と同じ「O_APPEND オープン + 単発
+    write() の atomicity」のみに依拠する。移行対象は MIGRATION_MAX_BYTES（1 MiB）
+    で有界なので、コピー範囲を丸ごとメモリに読み、単一の write() 呼び出しで
+    追記する。複数回 write（旧: shutil.copyfileobj）にすると、ロックを取らない
+    append_metric() の書き込みが途中に割り込み JSONL レコードが壊れ得るため、
+    flock は使わず「全 writer が単発 write のみ」に統一して整合性を担保する。
+    """
     try:
         if os.path.realpath(destination_path) == os.path.realpath(legacy_path):
             return
@@ -232,27 +264,29 @@ def _migrate_metric_file(legacy_path: str, destination_path: str) -> None:
         with open(migrating_path, "rb") as source:
             file_size = os.fstat(source.fileno()).st_size
             if file_size > MIGRATION_MAX_BYTES:
-                source.seek(file_size - MIGRATION_MAX_BYTES)
-                source.readline()
+                cut = file_size - MIGRATION_MAX_BYTES
+                source.seek(cut - 1)
+                boundary_byte = source.read(1)
+                # cut がちょうど改行直後（完全レコードの先頭）なら readline() は不要。
+                # 直前バイトが改行でなければ途中行なので readline() で部分行を読み捨てる。
+                if boundary_byte != b"\n":
+                    source.readline()
+            payload = source.read()
 
-            destination_fd = os.open(
-                destination_path,
-                os.O_WRONLY | os.O_CREAT | os.O_APPEND,
-                LOG_FILE_MODE,
-            )
+        destination_fd = os.open(
+            destination_path,
+            os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+            LOG_FILE_MODE,
+        )
+        try:
             try:
                 os.fchmod(destination_fd, LOG_FILE_MODE)
             except OSError:
                 pass
-            with os.fdopen(destination_fd, "ab") as destination:
-                if fcntl is not None:
-                    fcntl.flock(destination.fileno(), fcntl.LOCK_EX)
-                try:
-                    shutil.copyfileobj(source, destination)
-                    destination.flush()
-                finally:
-                    if fcntl is not None:
-                        fcntl.flock(destination.fileno(), fcntl.LOCK_UN)
+            if payload:
+                os.write(destination_fd, payload)
+        finally:
+            os.close(destination_fd)
 
         os.rename(migrating_path, f"{legacy_path}.migrated.{claim_suffix}")
     except Exception:
@@ -386,7 +420,7 @@ def list_pending(project_dir: str, config: dict | None = None) -> list[dict]:
 
     壊れた/不完全なファイルはスキップする。Stop hook の縮退記録が走査対象を得るための一覧化。
     """
-    pending_dir = os.path.join(logs_dir(project_dir, config), "pending")
+    pending_dir = os.path.join(_local_logs_dir(project_dir, config), "pending")
     if not os.path.isdir(pending_dir):
         return []
     entries: list[dict] = []
@@ -430,7 +464,7 @@ def consume_pending(
         if os.path.isfile(cand):
             path = cand
     if not path and skill:
-        pending_dir = os.path.join(logs_dir(project_dir, config), "pending")
+        pending_dir = os.path.join(_local_logs_dir(project_dir, config), "pending")
         matches = sorted(glob.glob(os.path.join(pending_dir, f"{_slug(skill)}-*.json")))
         if matches:
             path = matches[-1]

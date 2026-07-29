@@ -76,8 +76,10 @@ def test_lessons_remain_worktree_local(monkeypatch, tmp_path) -> None:
     assert not (root / ".claude" / "skill-evolution" / "lessons").exists()
 
 
-# EV-37: pending と locks も metrics と同じ root worktree 配置を使う。
-def test_pending_and_locks_resolve_to_root(monkeypatch, tmp_path) -> None:
+# PR331 レビュー対応: pending と locks は project_dir ローカル解決（root 集約しない）。
+# 複数 worktree 間で共有すると、他 worktree の実行中セッションを stale と誤判定して
+# 回収してしまうため（metrics のみ root 集約する）。
+def test_pending_and_locks_resolve_to_project_local(monkeypatch, tmp_path) -> None:
     worktree = _make_project(tmp_path / "worktree")
     root = _make_project(tmp_path / "root")
     _patch_root_worktree(monkeypatch, root)
@@ -86,13 +88,18 @@ def test_pending_and_locks_resolve_to_root(monkeypatch, tmp_path) -> None:
     se.write_pending(str(worktree), run_id, skill="issue-fix")
     assert se.acquire_lock(str(worktree), "issue-fix") is True
 
-    expected_pending = root / ".claude" / "logs" / "skill-evolution" / "pending" / f"{run_id}.json"
-    expected_lock = root / ".claude" / "logs" / "skill-evolution" / "locks" / "issue-fix.lock"
+    expected_pending = (
+        worktree / ".claude" / "logs" / "skill-evolution" / "pending" / f"{run_id}.json"
+    )
+    expected_lock = worktree / ".claude" / "logs" / "skill-evolution" / "locks" / "issue-fix.lock"
     assert se.pending_path(str(worktree), run_id) == str(expected_pending)
     assert se.lock_path(str(worktree), "issue-fix") == str(expected_lock)
     assert expected_pending.is_file()
     assert expected_lock.is_file()
     assert se.list_pending(str(worktree))[0]["run_id"] == run_id
+    # root 側には作成されないこと
+    assert not (root / ".claude" / "logs" / "skill-evolution" / "pending").exists()
+    assert not (root / ".claude" / "logs" / "skill-evolution" / "locks").exists()
 
 
 # EV-37: legacy metrics は一度だけ移行し、stale claim はそのまま残す。
@@ -132,6 +139,27 @@ def test_legacy_metrics_are_migrated_once_and_stale_claim_is_untouched(
     assert [record["run_id"] for record in second] == ["legacy-1", "legacy-2"]
     assert destination.read_bytes() == legacy_bytes
     assert stale_claim.read_bytes() == stale_bytes
+
+
+# EV-37: 移行先に既存レコードがあっても legacy は merge 追記される（意図的な挙動）。
+def test_migration_merges_into_existing_destination(monkeypatch, tmp_path) -> None:
+    worktree = _make_project(tmp_path / "worktree")
+    root = _make_project(tmp_path / "root")
+    _patch_root_worktree(monkeypatch, root)
+
+    destination = root / ".claude" / "logs" / "skill-evolution" / "metrics" / "issue-fix.jsonl"
+    destination.parent.mkdir(parents=True)
+    destination.write_bytes(json.dumps({"run_id": "existing-1", "success": True}).encode() + b"\n")
+
+    legacy_dir = Path(se.data_dir(str(worktree))) / "metrics"
+    legacy_dir.mkdir(parents=True)
+    (legacy_dir / "issue-fix.jsonl").write_bytes(
+        json.dumps({"run_id": "legacy-1", "success": True}).encode() + b"\n"
+    )
+
+    records = se.read_metrics(str(worktree), "issue-fix")
+
+    assert sorted(record["run_id"] for record in records) == ["existing-1", "legacy-1"]
 
 
 # PR3 回帰: 非 worktree（resolve_root_worktree が project_dir 自身を返す）環境でも
@@ -211,6 +239,27 @@ def test_metrics_migration_caps_tail_at_line_boundary(monkeypatch, tmp_path) -> 
     assert migrated[0].read_bytes() == original
 
 
+# EV-37 / High: cut 位置がちょうど改行直後（完全レコード先頭）なら読み捨てない。
+def test_metrics_migration_keeps_record_starting_exactly_at_cut(monkeypatch, tmp_path) -> None:
+    worktree = _make_project(tmp_path / "worktree")
+    root = _make_project(tmp_path / "root")
+    _patch_root_worktree(monkeypatch, root)
+
+    dropped_line = b'{"run_id":"dropped"}\n'
+    kept_line_1 = b'{"run_id":"kept-1"}\n'
+    kept_line_2 = b'{"run_id":"kept-2"}\n'
+    tail = kept_line_1 + kept_line_2
+    monkeypatch.setattr(se, "MIGRATION_MAX_BYTES", len(tail))
+
+    legacy_path = Path(se.data_dir(str(worktree))) / "metrics" / "boundary.jsonl"
+    legacy_path.parent.mkdir(parents=True)
+    legacy_path.write_bytes(dropped_line + tail)
+
+    records = se.read_metrics(str(worktree), "boundary")
+
+    assert [record["run_id"] for record in records] == ["kept-1", "kept-2"]
+
+
 # EV-37: 複数 helper 呼び出しでも root 解決の git コストは project ごとに 1 回だけ。
 def test_root_resolution_is_cached_per_project(monkeypatch, tmp_path) -> None:
     project = _make_project(tmp_path / "project")
@@ -245,3 +294,24 @@ def test_logs_dir_rejects_traversal(monkeypatch, tmp_path) -> None:
 
     assert resolved == str(root / ".claude" / "logs" / "skill-evolution")
     assert os.path.commonpath([str(root), resolved]) == str(root)
+
+
+# EV-37 / Critical: symlink 経由で root の外を指す設定は realpath ベースで検出し拒否する。
+def test_logs_dir_rejects_traversal_via_symlink(monkeypatch, tmp_path) -> None:
+    worktree = _make_project(tmp_path / "worktree")
+    root = _make_project(tmp_path / "root")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    _patch_root_worktree(monkeypatch, root)
+
+    # root 配下に外部を指す symlink を作る
+    escape_link = root / "escape"
+    os.symlink(outside, escape_link)
+
+    resolved = se.logs_dir(
+        str(worktree),
+        {"storage": {"logs_dir": "escape/skill-evolution"}},
+    )
+
+    assert resolved == str(root / ".claude" / "logs" / "skill-evolution")
+    assert not str(Path(resolved).resolve()).startswith(str(outside.resolve()))
