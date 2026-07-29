@@ -101,8 +101,10 @@ AI Orchestra の既存配布レール（packages / facets / hooks）に載せ、
 **保存先の分離（重要）**: `context-sharing` から流用するのは **inject 前後のロジックパターンのみ**。
 保存先は `context-sharing` のセッション領域（`session/` / `working-context.json`）を**使わない**。
 これらは `cleanup-session-context.py` が SessionEnd で削除するため、lessons を置くと毎セッション消える。
-lessons / metrics は **`.claude/skill-evolution/` 配下の独立した永続ストレージ**（正本は config `skill-evolution.yaml` の `storage.dir`）に保持し、
-context-sharing の cleanup ロジックには一切触れない。
+lessons / metrics は **独立した永続ストレージ**に保持し、context-sharing の cleanup ロジックには一切触れない。
+lessons は `.claude/skill-evolution/` 配下（正本は config `skill-evolution.yaml` の `storage.dir`。git 管理下・worktree ローカル）、
+metrics は `.claude/logs/skill-evolution/` 配下（正本は `storage.logs_dir`。gitignore・root worktree 解決で集約）に分離する
+（ADR-20260728-046。pending/locks はセッション単位の一時状態のため root 解決の対象外で project_dir ローカルに留める）。
 
 ### 3.3 オフライン層（mizchi 型反復）
 

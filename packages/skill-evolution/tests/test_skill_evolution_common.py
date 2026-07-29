@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 
 from tests.module_loader import load_module
@@ -242,6 +243,20 @@ def test_recent_run_ids_keeps_current_run_before_migration_sized_append(tmp_path
     prefix = b'{"run_id":"legacy","payload":"'
     suffix = b'"}\n'
     filler = prefix + b"x" * (se.MIGRATION_MAX_BYTES - len(prefix) - len(suffix)) + suffix
+    with open(path, "ab") as metrics:
+        metrics.write(filler)
+
+    assert current_run_id in se.recent_run_ids(p, "s")
+
+
+def test_recent_run_ids_checks_all_lines_in_byte_window(tmp_path) -> None:
+    p = str(tmp_path)
+    current_run_id = "current-run"
+    se.append_metric(p, "s", {"run_id": current_run_id, "success": True})
+    path = se.metrics_path(p, "s")
+    filler_lines = [json.dumps({"run_id": f"filler-{i}"}) for i in range(600)]
+    filler = ("\n".join(filler_lines) + "\n").encode()
+    assert len(filler) < se.RECENT_RUN_IDS_TAIL_BYTES
     with open(path, "ab") as metrics:
         metrics.write(filler)
 

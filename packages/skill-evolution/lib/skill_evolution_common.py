@@ -165,6 +165,21 @@ def _is_path_within_real_base(real_base: str, candidate: str) -> bool:
     return real_candidate == real_base or real_candidate.startswith(real_base + os.sep)
 
 
+def _resolve_path_within_local(base_dir: str, relative: str, filename: str) -> str | None:
+    """hook_common.resolve_path_within の非依存版（フォールバック専用）。
+
+    `AI_ORCHESTRA_DIR` 未設定の直接実行（例: `skill_evolution.py status` を単体で
+    叩く場合）では `_load_hook_common()` が None を返し得る。その場合でも
+    project-local な移行は必ず実行できるよう、境界検証ロジックのみを複製する
+    （hook_common 側と挙動を同一に保つため実装は意図的に重複させている）。
+    """
+    real_base = os.path.realpath(base_dir)
+    candidate = os.path.realpath(os.path.join(base_dir, relative, filename))
+    if candidate == real_base or candidate.startswith(real_base + os.sep):
+        return candidate
+    return None
+
+
 def _resolve_logs_subdir(base: str, config: dict | None) -> str:
     """base 配下に storage.logs_dir を安全に解決する。
 
@@ -267,7 +282,10 @@ def _migrate_metric_file(legacy_path: str, destination_path: str) -> None:
 
     OS が短い write を返す稀な異常時だけ残りを追加 write し、payload 全体の完了を
     確認できた場合に限って ``.migrated.*`` へ rename する。例外または進捗のない
-    write が起きた場合は ``.migrating.*`` claim を手動復旧用に残す。
+    write が起きた場合は ``.migrating.*`` claim を手動復旧用に残す。途中まで
+    書き込んだ断片には best-effort で改行を追記し、後続レコードまで連結破損する
+    ことを防ぐ。復旧 write 自体は full disk 等で失敗し得て、その場合は末尾が
+    未終端のまま残るが、一般的な途中 write 例外は失われる 1 行だけに封じ込める。
     """
     try:
         if os.path.realpath(destination_path) == os.path.realpath(legacy_path):
@@ -292,6 +310,8 @@ def _migrate_metric_file(legacy_path: str, destination_path: str) -> None:
                 if boundary_byte != b"\n":
                     source.readline()
             payload = source.read()
+        if payload and not payload.endswith(b"\n"):
+            payload += b"\n"
 
         destination_fd = os.open(
             destination_path,
@@ -304,11 +324,18 @@ def _migrate_metric_file(legacy_path: str, destination_path: str) -> None:
             except OSError:
                 pass
             written_bytes = 0
-            while written_bytes < len(payload):
-                bytes_written = os.write(destination_fd, payload[written_bytes:])
-                if bytes_written == 0:
-                    raise OSError("legacy metrics migration write made no progress")
-                written_bytes += bytes_written
+            try:
+                while written_bytes < len(payload):
+                    bytes_written = os.write(destination_fd, payload[written_bytes:])
+                    if bytes_written == 0:
+                        raise OSError("legacy metrics migration write made no progress")
+                    written_bytes += bytes_written
+            except Exception:
+                try:
+                    os.write(destination_fd, b"\n")
+                except OSError:
+                    pass
+                raise
         finally:
             os.close(destination_fd)
 
@@ -318,69 +345,72 @@ def _migrate_metric_file(legacy_path: str, destination_path: str) -> None:
 
 
 def migrate_legacy_metrics(project_dir: str, config: dict | None = None) -> None:
-    """旧 worktree-local metrics を root worktree へ一回限り移行する。
+    """旧 worktree/root-local metrics を root worktree へ一回限り移行する。
 
     ADR-20260728-046 決定3に基づき、蓄積データである metrics のみを移行する。
     pending/locks はセッション単位の一時データなので移行せず、新配置で開始する。
     stale な ``.migrating.*`` は手動復旧用に残し、例外はすべて fail-open とする。
 
-    1 プロセスの移行 I/O は MIGRATION_TOTAL_BUDGET_BYTES 以内に制限し、超過する
-    ファイル以降は旧パスに残して次回へ繰り越す。プロセス内では
+    linked worktree では worktree と root checkout の両方の旧配置を走査する。
+    1 プロセスの移行 I/O は両方を合わせて MIGRATION_TOTAL_BUDGET_BYTES 以内に
+    制限し、超過するファイル以降は旧パスに残して次回へ繰り越す。プロセス内では
     ``_MIGRATION_ATTEMPTED_PROJECT_DIRS`` により一度だけ試行するが、次の hook
     プロセスでは再試行され、rename 済みでないファイルから自然に移行を継続する。
     """
     try:
         project_root = os.path.abspath(project_dir)
         log_root = _resolve_log_root_cached(project_root)
-
-        legacy_metrics_dir = os.path.join(data_dir(project_root, config), "metrics")
-        if not os.path.isdir(legacy_metrics_dir):
-            return
-
         destination_metrics_dir = os.path.join(logs_dir(project_root, config), "metrics")
-        # legacy と destination が実体として同一パスなら移行不要（worktree か
-        # 非 worktree かに関わらず、ディレクトリの実体比較で判定する）。
-        if os.path.realpath(legacy_metrics_dir) == os.path.realpath(destination_metrics_dir):
-            return
-
         hook_common = _load_hook_common()
-        if hook_common is None:
-            return
-
-        legacy_relative = os.path.relpath(legacy_metrics_dir, project_root)
+        resolve_within = (
+            hook_common.resolve_path_within
+            if hook_common is not None
+            else _resolve_path_within_local
+        )
         destination_relative = os.path.relpath(destination_metrics_dir, log_root)
+        legacy_roots = [project_root]
+        if os.path.realpath(log_root) != os.path.realpath(project_root):
+            legacy_roots.append(log_root)
+
         processed_bytes = 0
-        for name in sorted(os.listdir(legacy_metrics_dir)):
-            if not name.endswith(".jsonl"):
+        for legacy_root in legacy_roots:
+            legacy_metrics_dir = os.path.join(data_dir(legacy_root, config), "metrics")
+            if not os.path.isdir(legacy_metrics_dir):
                 continue
-            legacy_path = os.path.abspath(os.path.join(legacy_metrics_dir, name))
-            if os.path.islink(legacy_path):
+            if os.path.realpath(legacy_metrics_dir) == os.path.realpath(destination_metrics_dir):
                 continue
-            try:
-                legacy_stat = os.lstat(legacy_path)
-            except OSError:
-                continue
-            if not stat.S_ISREG(legacy_stat.st_mode):
-                continue
-            resolved_legacy_path = hook_common.resolve_path_within(
-                project_root,
-                legacy_relative,
-                name,
-            )
-            destination_path = hook_common.resolve_path_within(
-                log_root,
-                destination_relative,
-                name,
-            )
-            if resolved_legacy_path is None or destination_path is None:
-                continue
-            if not os.path.isfile(legacy_path):
-                continue
-            file_cost = min(legacy_stat.st_size, MIGRATION_MAX_BYTES)
-            if processed_bytes + file_cost > MIGRATION_TOTAL_BUDGET_BYTES:
-                break
-            processed_bytes += file_cost
-            _migrate_metric_file(legacy_path, destination_path)
+            legacy_relative = os.path.relpath(legacy_metrics_dir, legacy_root)
+            for name in sorted(os.listdir(legacy_metrics_dir)):
+                if not name.endswith(".jsonl"):
+                    continue
+                legacy_path = os.path.abspath(os.path.join(legacy_metrics_dir, name))
+                if os.path.islink(legacy_path):
+                    continue
+                try:
+                    legacy_stat = os.lstat(legacy_path)
+                except OSError:
+                    continue
+                if not stat.S_ISREG(legacy_stat.st_mode):
+                    continue
+                resolved_legacy_path = resolve_within(
+                    legacy_root,
+                    legacy_relative,
+                    name,
+                )
+                destination_path = resolve_within(
+                    log_root,
+                    destination_relative,
+                    name,
+                )
+                if resolved_legacy_path is None or destination_path is None:
+                    continue
+                if not os.path.isfile(legacy_path):
+                    continue
+                file_cost = min(legacy_stat.st_size, MIGRATION_MAX_BYTES)
+                if processed_bytes + file_cost > MIGRATION_TOTAL_BUDGET_BYTES:
+                    return
+                processed_bytes += file_cost
+                _migrate_metric_file(legacy_path, destination_path)
     except Exception:
         pass
 
@@ -579,6 +609,9 @@ def recent_run_ids(
 
     既存の末尾 128 KiB に migration 1 回分の上限を加えた範囲のみ読むため、
     migration 直前に記録された run_id を保持しつつ、肥大化しても I/O が一定。
+    byte window 内の全行を検査し、migration や短いレコードの集中追記で現在の
+    run_id が行数上限から押し出されることを防ぐ。``limit`` は後方互換のため
+    受理するが、I/O/メモリは byte window で既に有界なので機能上は使用しない。
     """
     _migrate_legacy_metrics_once(project_dir, config)
     path = metrics_path(project_dir, skill, config)
@@ -594,7 +627,7 @@ def recent_run_ids(
     lines = chunk.splitlines()
     if size > RECENT_RUN_IDS_TAIL_BYTES and lines:
         lines = lines[1:]
-    for line in lines[-limit:]:
+    for line in lines:
         line = line.strip()
         if not line:
             continue

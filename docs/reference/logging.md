@@ -27,10 +27,11 @@ codd:
 蓄積ログの配置・root 解決方針の決定は **ADR-20260728-046** を正本とします。要点は以下の3点です。
 
 1. **機械が書く蓄積ログ**は `.claude/logs/<pkg>/` 配下に配置する（例: `.claude/logs/audit/`, `.claude/logs/fail-logs/`, `.claude/logs/skill-evolution/`）。
-2. **蓄積型 gitignore ログ**（`.claude/logs/` 配下および移設後の skill-evolution metrics/pending/locks）は **root worktree 解決**で書く。
+2. **蓄積型 gitignore ログ**（`.claude/logs/` 配下のうち fail-logs `failures.jsonl` と skill-evolution の metrics）は **root worktree 解決**で書く。
    - `git rev-parse --path-format=absolute --git-common-dir` の親ディレクトリを root worktree として使用し、そこに集約する。
    - git コマンドが失敗する場合（非リポジトリ・タイムアウト等）は `project_dir` へフォールバックする（fail-safe。破壊的動作へは進まない）。
    - root 解決は hook 内部の git 呼び出しに限定し、config 経由で `project_dir` 外パスを指定させない（既存のパストラバーサルガードは維持）。
+   - **pending / locks は対象外**（ADR-20260728-046 Amendment）。セッション単位の一時状態であり、複数 worktree 間で共有すると他 worktree の実行中セッションを stale と誤判定して回収してしまうため、常に `project_dir` ローカルの `.claude/logs/skill-evolution/` 配下で解決する。
 3. **人が読む git 管理下の知識ファイル**（skill-evolution の `lessons/*.md` 等）は root 解決の**対象外**。コミット → PR マージが生存経路であり、worktree 削除で消失する問題自体が発生しないため。
 
 > 詳細な検討経緯・却下した代替案は `docs/adr/ADR-20260728-046.md` を参照してください。

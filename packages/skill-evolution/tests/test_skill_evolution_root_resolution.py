@@ -143,6 +143,47 @@ def test_legacy_metrics_are_migrated_once_and_stale_claim_is_untouched(
     assert stale_claim.read_bytes() == stale_bytes
 
 
+# PR331 round 3: hook_common がなくても project-local の legacy metrics は移行する。
+def test_legacy_metrics_migrate_without_hook_common(monkeypatch, tmp_path) -> None:
+    project = _make_project(tmp_path / "project")
+    legacy_dir = Path(se.data_dir(str(project))) / "metrics"
+    legacy_dir.mkdir(parents=True)
+    legacy_path = legacy_dir / "issue-fix.jsonl"
+    legacy_bytes = json.dumps({"run_id": "legacy-local", "success": True}).encode() + b"\n"
+    legacy_path.write_bytes(legacy_bytes)
+    se._resolve_log_root_cached.cache_clear()
+    monkeypatch.setattr(se, "_load_hook_common", lambda: None)
+
+    records = se.read_metrics(str(project), "issue-fix")
+
+    destination = project / ".claude" / "logs" / "skill-evolution" / "metrics" / "issue-fix.jsonl"
+    assert [record["run_id"] for record in records] == ["legacy-local"]
+    assert destination.read_bytes() == legacy_bytes
+    assert not legacy_path.exists()
+    assert len(list(legacy_dir.glob("issue-fix.jsonl.migrated.*"))) == 1
+
+
+# PR331 round 3: linked worktree から root checkout 自身の legacy metrics も移行する。
+def test_root_legacy_metrics_are_migrated_from_linked_worktree(monkeypatch, tmp_path) -> None:
+    worktree = _make_project(tmp_path / "worktree")
+    root = _make_project(tmp_path / "root")
+    _patch_root_worktree(monkeypatch, root)
+    root_legacy_dir = Path(se.data_dir(str(root))) / "metrics"
+    root_legacy_dir.mkdir(parents=True)
+    root_legacy_path = root_legacy_dir / "issue-fix.jsonl"
+    legacy_bytes = json.dumps({"run_id": "legacy-root", "success": True}).encode() + b"\n"
+    root_legacy_path.write_bytes(legacy_bytes)
+
+    records = se.read_metrics(str(worktree), "issue-fix")
+
+    destination = root / ".claude" / "logs" / "skill-evolution" / "metrics" / "issue-fix.jsonl"
+    assert [record["run_id"] for record in records] == ["legacy-root"]
+    assert destination.read_bytes() == legacy_bytes
+    assert not root_legacy_path.exists()
+    assert len(list(root_legacy_dir.glob("issue-fix.jsonl.migrated.*"))) == 1
+    assert not (Path(se.data_dir(str(worktree))) / "metrics").exists()
+
+
 # PR331 round 2: 短い write の残りを追記し、全 payload 完了後だけ移行済みにする。
 def test_metric_migration_retries_short_write(monkeypatch, tmp_path) -> None:
     legacy_path = tmp_path / "legacy.jsonl"
@@ -168,6 +209,66 @@ def test_metric_migration_retries_short_write(monkeypatch, tmp_path) -> None:
     assert destination_path.read_bytes() == payload
     assert len(list(tmp_path.glob("legacy.jsonl.migrated.*"))) == 1
     assert list(tmp_path.glob("legacy.jsonl.migrating.*")) == []
+
+
+# PR331 round 3: 旧ファイルの未終端行は destination で改行終端する。
+def test_metric_migration_adds_missing_trailing_newline(tmp_path) -> None:
+    legacy_path = tmp_path / "legacy.jsonl"
+    destination_path = tmp_path / "destination" / "legacy.jsonl"
+    payload = b'{"run_id":"legacy"}'
+    legacy_path.write_bytes(payload)
+
+    se._migrate_metric_file(str(legacy_path), str(destination_path))
+
+    assert destination_path.read_bytes() == payload + b"\n"
+    assert len(list(tmp_path.glob("legacy.jsonl.migrated.*"))) == 1
+    assert list(tmp_path.glob("legacy.jsonl.migrating.*")) == []
+
+
+# PR331 round 3: 途中 write 失敗時は断片の末尾を改行で区切る。
+def test_metric_migration_bounds_partial_write_failure_to_one_line(monkeypatch, tmp_path) -> None:
+    legacy_path = tmp_path / "legacy.jsonl"
+    destination_path = tmp_path / "destination" / "legacy.jsonl"
+    payload = b'{"run_id":"legacy"}\n'
+    legacy_path.write_bytes(payload)
+    original_write = os.write
+    write_calls = 0
+
+    def _fail_after_short_write(fd: int, remaining: bytes) -> int:
+        nonlocal write_calls
+        write_calls += 1
+        if write_calls == 1:
+            short_length = len(remaining) // 2
+            return original_write(fd, remaining[:short_length])
+        if write_calls == 2:
+            raise OSError("simulated migration write failure")
+        return original_write(fd, remaining)
+
+    monkeypatch.setattr(se.os, "write", _fail_after_short_write)
+
+    se._migrate_metric_file(str(legacy_path), str(destination_path))
+
+    migrating = list(tmp_path.glob("legacy.jsonl.migrating.*"))
+    assert write_calls == 3
+    assert len(migrating) == 1
+    assert migrating[0].read_bytes() == payload
+    assert list(tmp_path.glob("legacy.jsonl.migrated.*")) == []
+    assert destination_path.read_bytes().endswith(b"\n")
+
+    new_record = {"run_id": "new", "success": True}
+    with open(destination_path, "a", encoding="utf-8") as destination:
+        destination.write(json.dumps(new_record) + "\n")
+
+    parsed_records = []
+    with open(destination_path, encoding="utf-8") as destination:
+        for line in destination:
+            if not line.strip():
+                continue
+            try:
+                parsed_records.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    assert parsed_records == [new_record]
 
 
 # PR331 round 2: write が進捗しなければ claim を手動復旧用に残す。
@@ -339,6 +440,31 @@ def test_legacy_metrics_migration_defers_files_over_total_budget(monkeypatch, tm
         assert untouched.read_bytes() == payload
         assert list(legacy_dir.glob(f"{name}.migrating.*")) == []
         assert list(legacy_dir.glob(f"{name}.migrated.*")) == []
+
+
+# PR331 round 3: worktree/root の旧配置は 1 プロセスの移行予算を共有する。
+def test_legacy_metrics_migration_shares_budget_across_sources(monkeypatch, tmp_path) -> None:
+    worktree = _make_project(tmp_path / "worktree")
+    root = _make_project(tmp_path / "root")
+    _patch_root_worktree(monkeypatch, root)
+    payload = b'{"run_id":"legacy"}\n'
+    worktree_legacy_dir = Path(se.data_dir(str(worktree))) / "metrics"
+    root_legacy_dir = Path(se.data_dir(str(root))) / "metrics"
+    worktree_legacy_dir.mkdir(parents=True)
+    root_legacy_dir.mkdir(parents=True)
+    (worktree_legacy_dir / "a.jsonl").write_bytes(payload)
+    root_legacy_path = root_legacy_dir / "b.jsonl"
+    root_legacy_path.write_bytes(payload)
+    monkeypatch.setattr(se, "MIGRATION_TOTAL_BUDGET_BYTES", len(payload))
+
+    se.migrate_legacy_metrics(str(worktree))
+
+    destination_dir = root / ".claude" / "logs" / "skill-evolution" / "metrics"
+    assert (destination_dir / "a.jsonl").read_bytes() == payload
+    assert len(list(worktree_legacy_dir.glob("a.jsonl.migrated.*"))) == 1
+    assert root_legacy_path.read_bytes() == payload
+    assert list(root_legacy_dir.glob("b.jsonl.migrating.*")) == []
+    assert list(root_legacy_dir.glob("b.jsonl.migrated.*")) == []
 
 
 # EV-37 / High: cut 位置がちょうど改行直後（完全レコード先頭）なら読み捨てない。
