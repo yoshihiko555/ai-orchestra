@@ -6,6 +6,8 @@ import json
 import os
 from pathlib import Path
 
+import pytest
+
 from tests.module_loader import load_module
 
 se = load_module(
@@ -141,6 +143,49 @@ def test_legacy_metrics_are_migrated_once_and_stale_claim_is_untouched(
     assert stale_claim.read_bytes() == stale_bytes
 
 
+# PR331 round 2: 短い write の残りを追記し、全 payload 完了後だけ移行済みにする。
+def test_metric_migration_retries_short_write(monkeypatch, tmp_path) -> None:
+    legacy_path = tmp_path / "legacy.jsonl"
+    destination_path = tmp_path / "destination" / "legacy.jsonl"
+    payload = b'{"run_id":"first"}\n{"run_id":"second"}\n'
+    legacy_path.write_bytes(payload)
+    original_write = os.write
+    write_calls = 0
+
+    def _short_write(fd: int, remaining: bytes) -> int:
+        nonlocal write_calls
+        write_calls += 1
+        if write_calls == 1:
+            short_length = len(remaining) // 2
+            return original_write(fd, remaining[:short_length])
+        return original_write(fd, remaining)
+
+    monkeypatch.setattr(se.os, "write", _short_write)
+
+    se._migrate_metric_file(str(legacy_path), str(destination_path))
+
+    assert write_calls == 2
+    assert destination_path.read_bytes() == payload
+    assert len(list(tmp_path.glob("legacy.jsonl.migrated.*"))) == 1
+    assert list(tmp_path.glob("legacy.jsonl.migrating.*")) == []
+
+
+# PR331 round 2: write が進捗しなければ claim を手動復旧用に残す。
+def test_metric_migration_keeps_claim_when_write_makes_no_progress(monkeypatch, tmp_path) -> None:
+    legacy_path = tmp_path / "legacy.jsonl"
+    destination_path = tmp_path / "destination" / "legacy.jsonl"
+    payload = b'{"run_id":"legacy"}\n'
+    legacy_path.write_bytes(payload)
+    monkeypatch.setattr(se.os, "write", lambda _fd, _payload: 0)
+
+    se._migrate_metric_file(str(legacy_path), str(destination_path))
+
+    migrating = list(tmp_path.glob("legacy.jsonl.migrating.*"))
+    assert len(migrating) == 1
+    assert migrating[0].read_bytes() == payload
+    assert list(tmp_path.glob("legacy.jsonl.migrated.*")) == []
+
+
 # EV-37: 移行先に既存レコードがあっても legacy は merge 追記される（意図的な挙動）。
 def test_migration_merges_into_existing_destination(monkeypatch, tmp_path) -> None:
     worktree = _make_project(tmp_path / "worktree")
@@ -239,6 +284,63 @@ def test_metrics_migration_caps_tail_at_line_boundary(monkeypatch, tmp_path) -> 
     assert migrated[0].read_bytes() == original
 
 
+# EV-37 / Critical: legacy metrics の symlink は移行対象にせず、参照先も変更しない。
+def test_legacy_metrics_symlink_is_left_untouched(monkeypatch, tmp_path) -> None:
+    worktree = _make_project(tmp_path / "worktree")
+    root = _make_project(tmp_path / "root")
+    _patch_root_worktree(monkeypatch, root)
+    legacy_dir = Path(se.data_dir(str(worktree))) / "metrics"
+    legacy_dir.mkdir(parents=True)
+
+    real_path = legacy_dir / "real.jsonl"
+    real_payload = b'{"run_id":"real"}\n'
+    real_path.write_bytes(real_payload)
+    sentinel_path = worktree / "sentinel.jsonl"
+    sentinel_payload = b'{"run_id":"sentinel"}\n'
+    sentinel_path.write_bytes(sentinel_payload)
+    symlink_path = legacy_dir / "linked.jsonl"
+    os.symlink(sentinel_path, symlink_path)
+
+    real_records = se.read_metrics(str(worktree), "real")
+    linked_records = se.read_metrics(str(worktree), "linked")
+
+    destination = root / ".claude" / "logs" / "skill-evolution" / "metrics" / "real.jsonl"
+    assert [record["run_id"] for record in real_records] == ["real"]
+    assert destination.read_bytes() == real_payload
+    assert len(list(legacy_dir.glob("real.jsonl.migrated.*"))) == 1
+    assert symlink_path.is_symlink()
+    assert symlink_path.resolve() == sentinel_path.resolve()
+    assert sentinel_path.is_file()
+    assert sentinel_path.read_bytes() == sentinel_payload
+    assert linked_records == []
+    assert list(legacy_dir.glob("linked.jsonl.migrating.*")) == []
+    assert list(legacy_dir.glob("linked.jsonl.migrated.*")) == []
+
+
+# EV-37 / Performance: 1 プロセスの移行予算を超える legacy は次回へ繰り越す。
+def test_legacy_metrics_migration_defers_files_over_total_budget(monkeypatch, tmp_path) -> None:
+    worktree = _make_project(tmp_path / "worktree")
+    root = _make_project(tmp_path / "root")
+    _patch_root_worktree(monkeypatch, root)
+    legacy_dir = Path(se.data_dir(str(worktree))) / "metrics"
+    legacy_dir.mkdir(parents=True)
+    payload = b'{"run_id":"legacy"}\n'
+    for name in ("a.jsonl", "b.jsonl", "c.jsonl"):
+        (legacy_dir / name).write_bytes(payload)
+    monkeypatch.setattr(se, "MIGRATION_TOTAL_BUDGET_BYTES", len(payload) + 1)
+
+    se.migrate_legacy_metrics(str(worktree))
+
+    destination_dir = root / ".claude" / "logs" / "skill-evolution" / "metrics"
+    assert (destination_dir / "a.jsonl").read_bytes() == payload
+    assert len(list(legacy_dir.glob("a.jsonl.migrated.*"))) == 1
+    for name in ("b.jsonl", "c.jsonl"):
+        untouched = legacy_dir / name
+        assert untouched.read_bytes() == payload
+        assert list(legacy_dir.glob(f"{name}.migrating.*")) == []
+        assert list(legacy_dir.glob(f"{name}.migrated.*")) == []
+
+
 # EV-37 / High: cut 位置がちょうど改行直後（完全レコード先頭）なら読み捨てない。
 def test_metrics_migration_keeps_record_starting_exactly_at_cut(monkeypatch, tmp_path) -> None:
     worktree = _make_project(tmp_path / "worktree")
@@ -315,3 +417,16 @@ def test_logs_dir_rejects_traversal_via_symlink(monkeypatch, tmp_path) -> None:
 
     assert resolved == str(root / ".claude" / "logs" / "skill-evolution")
     assert not str(Path(resolved).resolve()).startswith(str(outside.resolve()))
+
+
+# EV-37 / Critical: 既定配置も symlink 脱出する場合は安全な fallback がないため失敗する。
+def test_logs_dir_raises_when_default_path_escapes_via_symlink(tmp_path) -> None:
+    base = tmp_path / "project"
+    outside = tmp_path / "outside"
+    base.mkdir()
+    outside.mkdir()
+    os.symlink(outside, base / ".claude")
+    config = {"storage": {"logs_dir": se.DEFAULTS["storage"]["logs_dir"]}}
+
+    with pytest.raises(ValueError, match="安全な保存先"):
+        se._resolve_logs_subdir(str(base), config)

@@ -9,7 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - **`fail-logs`: git worktree 間で失敗ログを集約**: worktree 環境では `.claude/logs/fail-logs/failures.jsonl` を root worktree に集約し、git 解決不能時は従来のプロジェクト別保存先へフォールバックする。各失敗レコードには発生元ブランチを示す `branch` フィールドも記録する。
-- **`skill-evolution`: 蓄積データを git worktree 間で集約**: metrics / pending / locks を root worktree の `.claude/logs/skill-evolution/` に集約する。旧 metrics は初回利用時に fail-open な one-shot migration で引き継ぐ。`storage.dir` を `.local.yaml` で上書きしていた場合、metrics/pending/locks の配置は新キー `storage.logs_dir` で制御される（`storage.dir` は lessons 専用になる）。
+- **`skill-evolution`: metrics を git worktree 間で集約**: metrics のみ root worktree の `.claude/logs/skill-evolution/` に集約し、pending / locks は誤った stale 回収を避けるため worktree ごとの project-local に保つ。旧 metrics は初回利用時に fail-open な one-shot migration で引き継ぎ、metrics/pending/locks の配置は新キー `storage.logs_dir` で制御する（`storage.dir` は lessons 専用）。
 
 ## [0.3.2] - 2026-07-28
 

@@ -36,7 +36,7 @@
     - packages/skill-evolution/tests/test_skill_evolution_root_resolution.py::test_worktree_metrics_are_written_to_root_log
     - packages/skill-evolution/tests/test_skill_evolution_root_resolution.py::test_root_resolution_failure_writes_metrics_to_project
     - packages/skill-evolution/tests/test_skill_evolution_root_resolution.py::test_lessons_remain_worktree_local
-    - packages/skill-evolution/tests/test_skill_evolution_root_resolution.py::test_pending_and_locks_resolve_to_root
+    - packages/skill-evolution/tests/test_skill_evolution_root_resolution.py::test_pending_and_locks_resolve_to_project_local
     - packages/skill-evolution/tests/test_skill_evolution_root_resolution.py::test_legacy_metrics_are_migrated_once_and_stale_claim_is_untouched
     - packages/skill-evolution/tests/test_skill_evolution_root_resolution.py::test_migration_leaves_transient_state_and_lessons_at_legacy_path
     - packages/skill-evolution/tests/test_skill_evolution_root_resolution.py::test_metrics_migration_caps_tail_at_line_boundary

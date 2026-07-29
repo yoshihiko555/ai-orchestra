@@ -234,6 +234,20 @@ def test_recent_run_ids(tmp_path) -> None:
     assert se.recent_run_ids(p, "missing") == set()
 
 
+def test_recent_run_ids_keeps_current_run_before_migration_sized_append(tmp_path) -> None:
+    p = str(tmp_path)
+    current_run_id = "current-run"
+    se.append_metric(p, "s", {"run_id": current_run_id, "success": True})
+    path = se.metrics_path(p, "s")
+    prefix = b'{"run_id":"legacy","payload":"'
+    suffix = b'"}\n'
+    filler = prefix + b"x" * (se.MIGRATION_MAX_BYTES - len(prefix) - len(suffix)) + suffix
+    with open(path, "ab") as metrics:
+        metrics.write(filler)
+
+    assert current_run_id in se.recent_run_ids(p, "s")
+
+
 # ---------------------------------------------------------------------------
 # レビュー反映（PR #105）
 # ---------------------------------------------------------------------------

@@ -21,6 +21,7 @@ import json
 import os
 import random
 import re
+import stat
 import sys
 import time
 from dataclasses import dataclass, field
@@ -41,6 +42,11 @@ LOG_ROOT_RESOLUTION_TIMEOUT_SECONDS = 3.5
 LOG_DIR_MODE = 0o700
 LOG_FILE_MODE = 0o600
 MIGRATION_MAX_BYTES = 1024 * 1024
+MIGRATION_TOTAL_BUDGET_BYTES = 4 * 1024 * 1024
+RECENT_RUN_IDS_BASE_TAIL_BYTES = 128 * 1024
+# 1 回の migration 追記で直前の run_id が重複確認窓から押し出されないよう、
+# migration の最大追記量を既存の末尾読み込み幅へ加える。
+RECENT_RUN_IDS_TAIL_BYTES = RECENT_RUN_IDS_BASE_TAIL_BYTES + MIGRATION_MAX_BYTES
 
 # config が読めない場合のフォールバック既定値（正本は skill-evolution.yaml）。
 DEFAULTS: dict[str, Any] = {
@@ -153,20 +159,30 @@ def _resolve_log_root_cached(project_dir: str) -> str:
         return fallback
 
 
+def _is_path_within_real_base(real_base: str, candidate: str) -> bool:
+    """candidate の実体が real_base 配下に収まるかを返す。"""
+    real_candidate = os.path.realpath(candidate)
+    return real_candidate == real_base or real_candidate.startswith(real_base + os.sep)
+
+
 def _resolve_logs_subdir(base: str, config: dict | None) -> str:
     """base 配下に storage.logs_dir を安全に解決する。
 
     symlink 経由で base の外を指す設定も realpath 解決で検出し、既定値へ
     フォールバックする（字句比較の abspath/commonpath では symlink 経由の脱出を
-    検出できないため）。
+    検出できないため）。既定値も base 外へ解決される場合は、安全な保存先がないため
+    ValueError を送出する。hook 呼び出しでは hook レベルの `_safe()` が例外を捕捉して
+    そのターンの書き込みだけを fail-open でスキップし、同じ保護がない CLI 呼び出し
+    では安全でない保存先へ黙って書かず、明示的なエラーとして表面化する。
     """
     cfg = config or {}
     rel = (cfg.get("storage") or {}).get("logs_dir") or DEFAULTS["storage"]["logs_dir"]
     real_base = os.path.realpath(base)
     candidate = os.path.abspath(os.path.join(base, rel))
-    real_candidate = os.path.realpath(candidate)
-    if real_candidate != real_base and not real_candidate.startswith(real_base + os.sep):
+    if not _is_path_within_real_base(real_base, candidate):
         candidate = os.path.abspath(os.path.join(base, DEFAULTS["storage"]["logs_dir"]))
+        if not _is_path_within_real_base(real_base, candidate):
+            raise ValueError("storage.logs_dir の安全な保存先を base 配下に解決できません")
     return candidate
 
 
@@ -248,6 +264,10 @@ def _migrate_metric_file(legacy_path: str, destination_path: str) -> None:
     追記する。複数回 write（旧: shutil.copyfileobj）にすると、ロックを取らない
     append_metric() の書き込みが途中に割り込み JSONL レコードが壊れ得るため、
     flock は使わず「全 writer が単発 write のみ」に統一して整合性を担保する。
+
+    OS が短い write を返す稀な異常時だけ残りを追加 write し、payload 全体の完了を
+    確認できた場合に限って ``.migrated.*`` へ rename する。例外または進捗のない
+    write が起きた場合は ``.migrating.*`` claim を手動復旧用に残す。
     """
     try:
         if os.path.realpath(destination_path) == os.path.realpath(legacy_path):
@@ -283,8 +303,12 @@ def _migrate_metric_file(legacy_path: str, destination_path: str) -> None:
                 os.fchmod(destination_fd, LOG_FILE_MODE)
             except OSError:
                 pass
-            if payload:
-                os.write(destination_fd, payload)
+            written_bytes = 0
+            while written_bytes < len(payload):
+                bytes_written = os.write(destination_fd, payload[written_bytes:])
+                if bytes_written == 0:
+                    raise OSError("legacy metrics migration write made no progress")
+                written_bytes += bytes_written
         finally:
             os.close(destination_fd)
 
@@ -299,6 +323,11 @@ def migrate_legacy_metrics(project_dir: str, config: dict | None = None) -> None
     ADR-20260728-046 決定3に基づき、蓄積データである metrics のみを移行する。
     pending/locks はセッション単位の一時データなので移行せず、新配置で開始する。
     stale な ``.migrating.*`` は手動復旧用に残し、例外はすべて fail-open とする。
+
+    1 プロセスの移行 I/O は MIGRATION_TOTAL_BUDGET_BYTES 以内に制限し、超過する
+    ファイル以降は旧パスに残して次回へ繰り越す。プロセス内では
+    ``_MIGRATION_ATTEMPTED_PROJECT_DIRS`` により一度だけ試行するが、次の hook
+    プロセスでは再試行され、rename 済みでないファイルから自然に移行を継続する。
     """
     try:
         project_root = os.path.abspath(project_dir)
@@ -320,19 +349,37 @@ def migrate_legacy_metrics(project_dir: str, config: dict | None = None) -> None
 
         legacy_relative = os.path.relpath(legacy_metrics_dir, project_root)
         destination_relative = os.path.relpath(destination_metrics_dir, log_root)
+        processed_bytes = 0
         for name in sorted(os.listdir(legacy_metrics_dir)):
             if not name.endswith(".jsonl"):
                 continue
-            legacy_path = hook_common.resolve_path_within(project_root, legacy_relative, name)
+            legacy_path = os.path.abspath(os.path.join(legacy_metrics_dir, name))
+            if os.path.islink(legacy_path):
+                continue
+            try:
+                legacy_stat = os.lstat(legacy_path)
+            except OSError:
+                continue
+            if not stat.S_ISREG(legacy_stat.st_mode):
+                continue
+            resolved_legacy_path = hook_common.resolve_path_within(
+                project_root,
+                legacy_relative,
+                name,
+            )
             destination_path = hook_common.resolve_path_within(
                 log_root,
                 destination_relative,
                 name,
             )
-            if legacy_path is None or destination_path is None:
+            if resolved_legacy_path is None or destination_path is None:
                 continue
             if not os.path.isfile(legacy_path):
                 continue
+            file_cost = min(legacy_stat.st_size, MIGRATION_MAX_BYTES)
+            if processed_bytes + file_cost > MIGRATION_TOTAL_BUDGET_BYTES:
+                break
+            processed_bytes += file_cost
             _migrate_metric_file(legacy_path, destination_path)
     except Exception:
         pass
@@ -530,22 +577,22 @@ def recent_run_ids(
 ) -> set[str]:
     """metrics の末尾から run_id 集合を返す（重複記録チェック用の有界読み込み）。
 
-    ファイル全体ではなく末尾 ~128KB のみ読むため、肥大化しても I/O が一定。
+    既存の末尾 128 KiB に migration 1 回分の上限を加えた範囲のみ読むため、
+    migration 直前に記録された run_id を保持しつつ、肥大化しても I/O が一定。
     """
     _migrate_legacy_metrics_once(project_dir, config)
     path = metrics_path(project_dir, skill, config)
     if not os.path.isfile(path):
         return set()
-    tail_bytes = 128 * 1024
     with open(path, "rb") as f:
         f.seek(0, os.SEEK_END)
         size = f.tell()
-        f.seek(max(0, size - tail_bytes))
+        f.seek(max(0, size - RECENT_RUN_IDS_TAIL_BYTES))
         chunk = f.read().decode("utf-8", "replace")
     ids: set[str] = set()
     # 先頭は途中行の可能性があるため 1 行目を捨てる（size>tail のときのみ）
     lines = chunk.splitlines()
-    if size > tail_bytes and lines:
+    if size > RECENT_RUN_IDS_TAIL_BYTES and lines:
         lines = lines[1:]
     for line in lines[-limit:]:
         line = line.strip()
