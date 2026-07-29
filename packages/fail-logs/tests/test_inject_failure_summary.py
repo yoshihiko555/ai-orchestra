@@ -62,6 +62,16 @@ def _run(monkeypatch, project: Path) -> None:
     inject.main()
 
 
+def _patch_root_worktree(monkeypatch, root_dir: Path | None) -> None:
+    """resolve_log_root が参照する共通 root 解決結果を差し替える。"""
+    resolved = str(root_dir) if root_dir is not None else None
+    monkeypatch.setitem(
+        inject.resolve_log_root.__globals__,
+        "resolve_root_worktree",
+        lambda _project_dir, **_kwargs: resolved,
+    )
+
+
 def test_recurring_signature_is_injected(monkeypatch, tmp_path, capsys) -> None:
     project = _make_project(tmp_path)
     _write_log(
@@ -304,26 +314,53 @@ def test_boundary_tokens_in_command_are_neutralized(monkeypatch, tmp_path, capsy
     assert out.count("</fail-logs-summary>") == 1
 
 
-def test_max_records_caps_tail_window(monkeypatch, tmp_path, capsys) -> None:
-    # 末尾シーク読み出しで、走査対象が末尾 max_records 行に制限されること。
+def test_max_records_caps_selected_records(monkeypatch, tmp_path, capsys) -> None:
+    # 物理末尾を広めに読み出しても、集計対象が新しい max_records 件に制限されること。
     project = _make_project(tmp_path)
     config_dir = project / ".claude" / "config" / "fail-logs"
     config_dir.mkdir(parents=True)
     (config_dir / "fail-logs.local.yaml").write_text("summary:\n  max_records: 2\n")
-    # 先頭に古い再発（ruff ×3）、末尾に新しい再発（pytest ×2）。max_records=2 なら
-    # 末尾 2 行（pytest 2 件）だけが対象になり、ruff は走査されない。
+    # 先頭に古い再発（ruff ×3）、末尾に新しい再発（pytest ×2）。時刻順で新しい
+    # 2 件（pytest）だけが集計対象になり、ruff は選ばれない。
     _write_log(
         project,
         [
-            _record(command_kind="lint", command="ruff a"),
-            _record(command_kind="lint", command="ruff b"),
-            _record(command_kind="lint", command="ruff c"),
+            _record(command_kind="lint", command="ruff a", days_ago=1),
+            _record(command_kind="lint", command="ruff b", days_ago=1),
+            _record(command_kind="lint", command="ruff c", days_ago=1),
             _record(command_kind="test", command="pytest x"),
             _record(command_kind="test", command="pytest y"),
         ],
     )
     _run(monkeypatch, project)
     out = capsys.readouterr().out
+    assert "pytest" in out
+    assert "ruff" not in out
+
+
+def test_out_of_order_tail_selects_newest_records_by_timestamp(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    project = _make_project(tmp_path)
+    config_dir = project / ".claude" / "config" / "fail-logs"
+    config_dir.mkdir(parents=True)
+    (config_dir / "fail-logs.local.yaml").write_text("summary:\n  max_records: 2\n")
+    # 新しい pytest 記録の後ろへ、移行由来の古い ruff 記録が追記された状態。
+    # 物理末尾だけなら ruff を選ぶが、ts 順では pytest が最新 2 件になる。
+    _write_log(
+        project,
+        [
+            _record(command_kind="test", command="pytest new/a"),
+            _record(command_kind="test", command="pytest new/b"),
+            _record(command_kind="lint", command="ruff old/a", days_ago=1),
+            _record(command_kind="lint", command="ruff old/b", days_ago=1),
+        ],
+    )
+
+    _run(monkeypatch, project)
+
+    out = capsys.readouterr().out
+    assert "×2" in out
     assert "pytest" in out
     assert "ruff" not in out
 
@@ -400,3 +437,76 @@ def test_valid_custom_logs_dir_is_read_without_fallback(monkeypatch, tmp_path, c
     out = capsys.readouterr().out
     assert "×2" in out
     assert "pytest custom" in out
+
+
+# EV-21: worktree の SessionStart は root worktree 側の蓄積ログを読む。
+def test_worktree_summary_reads_root_log(monkeypatch, tmp_path, capsys) -> None:
+    worktree = _make_project(tmp_path / "worktree")
+    root = _make_project(tmp_path / "root")
+    _write_log(
+        root,
+        [
+            _record(command_kind="test", command="pytest tests/a"),
+            _record(command_kind="test", command="pytest tests/b"),
+        ],
+    )
+    _patch_root_worktree(monkeypatch, root)
+
+    _run(monkeypatch, worktree)
+
+    out = capsys.readouterr().out
+    assert "×2" in out
+    assert "pytest" in out
+
+
+def test_summary_reads_migrated_legacy_worktree_log(monkeypatch, tmp_path, capsys) -> None:
+    worktree = _make_project(tmp_path / "worktree")
+    root = _make_project(tmp_path / "root")
+    _write_log(
+        worktree,
+        [
+            _record(command_kind="test", command="pytest legacy/a"),
+            _record(command_kind="test", command="pytest legacy/b"),
+        ],
+    )
+    _patch_root_worktree(monkeypatch, root)
+
+    _run(monkeypatch, worktree)
+
+    out = capsys.readouterr().out
+    legacy_path = worktree / LOG_REL
+    migrated_matches = list(legacy_path.parent.glob(f"{legacy_path.name}.migrated.*"))
+    assert "×2" in out
+    assert "pytest" in out
+    assert not legacy_path.exists()
+    assert len(migrated_matches) == 1
+    assert len((root / LOG_REL).read_text(encoding="utf-8").splitlines()) == 2
+
+
+def test_custom_logs_dir_migrates_legacy_worktree_log(monkeypatch, tmp_path, capsys) -> None:
+    worktree = _make_project(tmp_path / "worktree")
+    root = _make_project(tmp_path / "root")
+    config_dir = worktree / ".claude" / "config" / "fail-logs"
+    config_dir.mkdir(parents=True)
+    (config_dir / "fail-logs.local.yaml").write_text("logs_dir: custom/failure-logs\n")
+
+    legacy_path = worktree / "custom" / "failure-logs" / "failures.jsonl"
+    legacy_path.parent.mkdir(parents=True)
+    legacy_path.write_text(
+        "\n".join(
+            json.dumps(_record(command_kind="test", command="pytest custom")) for _ in range(2)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    _patch_root_worktree(monkeypatch, root)
+
+    _run(monkeypatch, worktree)
+
+    root_log = root / "custom" / "failure-logs" / "failures.jsonl"
+    assert "×2" in capsys.readouterr().out
+    assert not legacy_path.exists()
+    migrated_matches = list(legacy_path.parent.glob(f"{legacy_path.name}.migrated.*"))
+    assert len(migrated_matches) == 1
+    assert len(root_log.read_text(encoding="utf-8").splitlines()) == 2
+    assert not (root / LOG_REL).exists()

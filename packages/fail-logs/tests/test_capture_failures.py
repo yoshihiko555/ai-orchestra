@@ -5,7 +5,11 @@ from __future__ import annotations
 import io
 import json
 import os
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 from tests.module_loader import load_module
 
@@ -29,6 +33,32 @@ def _read_log(project_dir: Path) -> list[dict]:
     if not log_path.exists():
         return []
     return [json.loads(line) for line in log_path.read_text().splitlines() if line.strip()]
+
+
+def _patch_root_worktree(monkeypatch, root_dir: Path | None) -> None:
+    """resolve_log_root が参照する共通 root 解決結果を差し替える。"""
+    resolved = str(root_dir) if root_dir is not None else None
+    monkeypatch.setitem(
+        capture.resolve_log_root.__globals__,
+        "resolve_root_worktree",
+        lambda _project_dir, **_kwargs: resolved,
+    )
+
+
+def _require_git() -> None:
+    if shutil.which("git") is None:
+        pytest.skip("git is not available on PATH")
+
+
+def _run_git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *args],
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=True,
+    )
 
 
 def test_records_bash_nonzero_failure(monkeypatch, tmp_path) -> None:
@@ -272,3 +302,244 @@ def test_traversal_logs_dir_falls_back_to_default(monkeypatch, tmp_path) -> None
         if f == "failures.jsonl"
     ]
     assert jsonl_files == [default_log_path]
+
+
+# EV-21: worktree からの記録を root worktree に集約し、解決不能時は従来位置へ戻す。
+def test_worktree_failure_is_written_to_root_log(monkeypatch, tmp_path) -> None:
+    worktree = _make_project(tmp_path / "worktree")
+    root = _make_project(tmp_path / "root")
+    _patch_root_worktree(monkeypatch, root)
+
+    _run_hook(
+        monkeypatch,
+        worktree,
+        {
+            "cwd": str(worktree),
+            "session_id": "sess-root",
+            "tool_name": "Bash",
+            "tool_input": {"command": "false"},
+            "tool_response": {"exit_code": 1, "stdout": "failed"},
+        },
+    )
+
+    assert len(_read_log(root)) == 1
+    assert _read_log(worktree) == []
+
+
+def test_root_resolution_failure_writes_to_project_log(monkeypatch, tmp_path) -> None:
+    project = _make_project(tmp_path / "project")
+    _patch_root_worktree(monkeypatch, None)
+
+    _run_hook(
+        monkeypatch,
+        project,
+        {
+            "cwd": str(project),
+            "session_id": "sess-fallback",
+            "tool_name": "Bash",
+            "tool_input": {"command": "false"},
+            "tool_response": {"exit_code": 1, "stdout": "failed"},
+        },
+    )
+
+    assert len(_read_log(project)) == 1
+
+
+def test_legacy_worktree_log_is_migrated_once(monkeypatch, tmp_path) -> None:
+    worktree = _make_project(tmp_path / "worktree")
+    root = _make_project(tmp_path / "root")
+    legacy_path = worktree / ".claude" / "logs" / "fail-logs" / "failures.jsonl"
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_content = json.dumps({"legacy": True}) + "\n"
+    legacy_path.write_text(legacy_content, encoding="utf-8")
+    _patch_root_worktree(monkeypatch, root)
+    payload = {
+        "cwd": str(worktree),
+        "session_id": "sess-migrate-1",
+        "tool_name": "Bash",
+        "tool_input": {"command": "false"},
+        "tool_response": {"exit_code": 1, "stdout": "failed"},
+    }
+
+    _run_hook(monkeypatch, worktree, payload)
+
+    migrated_matches = list(legacy_path.parent.glob(f"{legacy_path.name}.migrated.*"))
+    assert len(_read_log(root)) == 2
+    assert not legacy_path.exists()
+    assert len(migrated_matches) == 1
+    assert migrated_matches[0].read_text(encoding="utf-8") == legacy_content
+
+    _run_hook(
+        monkeypatch,
+        worktree,
+        {**payload, "session_id": "sess-migrate-2"},
+    )
+
+    root_records = _read_log(root)
+    assert len(root_records) == 3
+    assert sum(record.get("legacy") is True for record in root_records) == 1
+    assert migrated_matches[0].read_text(encoding="utf-8") == legacy_content
+
+
+def test_custom_logs_dir_migrates_legacy_worktree_log(monkeypatch, tmp_path) -> None:
+    worktree = _make_project(tmp_path / "worktree")
+    root = _make_project(tmp_path / "root")
+    config_dir = worktree / ".claude" / "config" / "fail-logs"
+    config_dir.mkdir(parents=True)
+    (config_dir / "fail-logs.local.yaml").write_text("logs_dir: custom/failure-logs\n")
+
+    legacy_path = worktree / "custom" / "failure-logs" / "failures.jsonl"
+    legacy_path.parent.mkdir(parents=True)
+    legacy_content = json.dumps({"legacy": "custom"}) + "\n"
+    legacy_path.write_text(legacy_content, encoding="utf-8")
+    _patch_root_worktree(monkeypatch, root)
+
+    _run_hook(
+        monkeypatch,
+        worktree,
+        {
+            "cwd": str(worktree),
+            "session_id": "sess-custom-migration",
+            "tool_name": "Bash",
+            "tool_input": {"command": "false"},
+            "tool_response": {"exit_code": 1, "stdout": "failed"},
+        },
+    )
+
+    root_log = root / "custom" / "failure-logs" / "failures.jsonl"
+    root_records = [json.loads(line) for line in root_log.read_text(encoding="utf-8").splitlines()]
+    assert len(root_records) == 2
+    assert root_records[0] == {"legacy": "custom"}
+    assert not legacy_path.exists()
+    migrated_matches = list(legacy_path.parent.glob(f"{legacy_path.name}.migrated.*"))
+    assert len(migrated_matches) == 1
+    assert not (root / ".claude" / "logs" / "fail-logs" / "failures.jsonl").exists()
+
+
+# EV-17: failure record は発生元ブランチを含み、git 障害でも記録を継続する。
+def test_record_includes_originating_branch(monkeypatch, tmp_path, capsys) -> None:
+    project = _make_project(tmp_path)
+    monkeypatch.setattr(
+        capture,
+        "_resolve_branch",
+        lambda _project_dir, _timeout: "feat/example",
+    )
+
+    _run_hook(
+        monkeypatch,
+        project,
+        {
+            "cwd": str(project),
+            "session_id": "sess-branch",
+            "tool_name": "Bash",
+            "tool_input": {"command": "false"},
+            "tool_response": {"exit_code": 1, "stdout": "failed"},
+        },
+    )
+
+    records = _read_log(project)
+    assert len(records) == 1
+    assert records[0]["data"]["branch"] == "feat/example"
+    assert capsys.readouterr().out == ""
+
+
+def test_unborn_head_returns_branch_name(tmp_path) -> None:
+    _require_git()
+    project = _make_project(tmp_path)
+    _run_git(project, "init")
+
+    assert capture._resolve_branch(str(project), 1.0)
+
+
+def test_masks_secrets_in_branch(monkeypatch, tmp_path) -> None:
+    project = _make_project(tmp_path)
+    raw_secret = "secret123456789012345"
+    monkeypatch.setattr(
+        capture,
+        "_resolve_branch",
+        lambda _project_dir, _timeout: f"feature/api_key={raw_secret}",
+    )
+
+    _run_hook(
+        monkeypatch,
+        project,
+        {
+            "cwd": str(project),
+            "session_id": "sess-secret-branch",
+            "tool_name": "Bash",
+            "tool_input": {"command": "false"},
+            "tool_response": {"exit_code": 1, "stdout": "failed"},
+        },
+    )
+
+    records = _read_log(project)
+    assert len(records) == 1
+    assert "[REDACTED]" in records[0]["data"]["branch"]
+    assert raw_secret not in json.dumps(records[0])
+
+
+def test_missing_git_records_empty_branch(monkeypatch, tmp_path, capsys) -> None:
+    project = _make_project(tmp_path)
+
+    def _raise_file_not_found(*_args: object, **_kwargs: object) -> None:
+        raise FileNotFoundError
+
+    monkeypatch.setattr(capture.subprocess, "run", _raise_file_not_found)
+
+    _run_hook(
+        monkeypatch,
+        project,
+        {
+            "cwd": str(project),
+            "session_id": "sess-no-git",
+            "tool_name": "Bash",
+            "tool_input": {"command": "false"},
+            "tool_response": {"exit_code": 1, "stdout": "failed"},
+        },
+    )
+
+    records = _read_log(project)
+    assert len(records) == 1
+    assert records[0]["data"]["branch"] == ""
+    assert capsys.readouterr().out == ""
+
+
+def test_unicode_decode_error_returns_empty_branch(monkeypatch, tmp_path) -> None:
+    def _raise_unicode_decode_error(*_args: object, **_kwargs: object) -> None:
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid")
+
+    monkeypatch.setattr(capture.subprocess, "run", _raise_unicode_decode_error)
+
+    assert capture._resolve_branch(str(tmp_path), 1.0) == ""
+
+
+def test_exhausted_git_budget_skips_branch_resolution(monkeypatch, tmp_path) -> None:
+    project = _make_project(tmp_path)
+    monotonic_values = iter((0.0, 1.0, 4.0))
+    monkeypatch.setattr(capture.time, "monotonic", lambda: next(monotonic_values))
+    monkeypatch.setattr(
+        capture,
+        "resolve_log_root",
+        lambda _project_dir, **_kwargs: str(project),
+    )
+
+    def _git_should_not_be_called(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("git should not be called")
+
+    monkeypatch.setattr(capture.subprocess, "run", _git_should_not_be_called)
+
+    _run_hook(
+        monkeypatch,
+        project,
+        {
+            "cwd": str(project),
+            "session_id": "sess-budget-exhausted",
+            "tool_name": "Bash",
+            "tool_input": {"command": "false"},
+            "tool_response": {"exit_code": 1, "stdout": "failed"},
+        },
+    )
+
+    records = _read_log(project)
+    assert len(records) == 1
+    assert records[0]["data"]["branch"] == ""

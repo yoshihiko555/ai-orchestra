@@ -8,9 +8,22 @@ import json
 import os
 import re
 import stat
+import subprocess
 import sys
+import time
 from collections.abc import Callable
 from typing import Any, Literal
+
+_AMBIENT_GIT_ENV_VARS = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_PREFIX",
+)
+GIT_COMMAND_TIMEOUT_SECONDS = 5
 
 # CLI ツール設定（cli-tools.yaml）が読めない場合のフォールバック既定値（SSOT）。
 #
@@ -282,6 +295,16 @@ def read_hook_input() -> dict:
     return result if isinstance(result, dict) else {}
 
 
+def sanitized_git_env() -> dict[str, str]:
+    """os.environ から repository-local な GIT_* 環境変数を除いた env を返す。
+
+    ambient な GIT_DIR / GIT_WORK_TREE 等が cwd より優先されて別リポジトリを
+    解決してしまう事故を防ぐため、git を subprocess 起動する箇所は本関数の
+    戻り値を env= に渡すこと。
+    """
+    return {key: value for key, value in os.environ.items() if key not in _AMBIENT_GIT_ENV_VARS}
+
+
 def resolve_path_within(project_dir: str, relative: str, filename: str) -> str | None:
     """relative + filename を project_dir 配下に解決する。
 
@@ -294,6 +317,160 @@ def resolve_path_within(project_dir: str, relative: str, filename: str) -> str |
     if candidate == project_root or candidate.startswith(project_root + os.sep):
         return candidate
     return None
+
+
+def resolve_root_worktree(
+    project_dir: str | None = None,
+    *,
+    timeout: float = GIT_COMMAND_TIMEOUT_SECONDS,
+) -> str | None:
+    """Git の root worktree パスを解決する。
+
+    2 段構えで解決する:
+
+    1. まず project_dir 自身が main worktree かどうかを ``--git-dir`` と
+       ``--git-common-dir`` の一致で判定する。一致すれば project_dir 自身が
+       main worktree であり、``--show-toplevel`` は ``git init
+       --separate-git-dir`` 構成でも常に正確なので、これをそのまま採用する。
+       旧実装は common dir の basename が ``.git`` かどうかで判定しており、
+       ``git init --separate-git-dir=/other/.git`` のように分離先の basename
+       が偶然 ``.git`` だと物理 git dir の親（``/other``）を誤って root と
+       返していた。この経路はその誤検出を解消する。
+    2. project_dir が linked worktree の場合（git-dir != common-dir）は、
+       ``git worktree list --porcelain`` の先頭 ``worktree <path>``
+       エントリ（= Git 自身が記録する primary worktree）を採用する。通常の
+       worktree 構成（main worktree が標準レイアウト）では正確。ただし
+       main worktree 自体が ``--separate-git-dir`` で作られ、かつ別の
+       worktree から解決しようとする場合、Git 自身も main worktree の実体
+       パスをどこにも保持していないため理論上解決不能（``git worktree
+       list`` の先頭エントリも誤ったパスを報告しうる。Git 自体の制約であり
+       本関数では原理的に修正できない）。この経路では、先頭エントリが
+       common dir 自身と一致する（= git 格納場所を worktree と誤報告して
+       いる、basename が ``.git`` 以外の separate-git-dir で観測される）
+       場合に限り検出して None を返す。basename が偶然 ``.git`` になる
+       ケースは common dir の親が正規レイアウトと区別不能なため検出でき
+       ず、誤ったパスを返す可能性が残る。この残存リスクは呼び出し側
+       ``resolve_log_root`` の「root に .claude/ が無ければ project_dir に
+       フォールバック」という安全策で実務上緩和される（偶然の git dir
+       配置先に .claude/ が存在する可能性は極めて低い）。
+    3. bare repo（porcelain の ``bare`` マーカー）、project_dir が空、git が
+       使えない、または結果が不正な場合は None を返す（呼び出し側は
+       project_dir へのフォールバックに使うこと）。
+
+    Args:
+        project_dir: git を実行する作業ディレクトリ。None / 空文字は無効。
+        timeout: git コマンドのタイムアウト秒数。2 段の subprocess 呼び出し
+            全体に対する予算として扱い、1 段目で使った時間を差し引いた
+            残り時間を 2 段目のタイムアウトに使う。
+    """
+    if not project_dir:
+        return None
+
+    env = sanitized_git_env()
+    deadline = time.monotonic() + timeout
+
+    try:
+        own = subprocess.run(
+            [
+                "git",
+                "rev-parse",
+                "--path-format=absolute",
+                "--show-toplevel",
+                "--git-dir",
+                "--git-common-dir",
+            ],
+            capture_output=True,
+            env=env,
+            text=True,
+            timeout=timeout,
+            cwd=project_dir,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError, UnicodeError):
+        return None
+
+    common_dir = ""
+    if own.returncode == 0 and isinstance(own.stdout, str):
+        own_lines = own.stdout.splitlines()
+        if len(own_lines) == 3:
+            toplevel, git_dir, common_dir = own_lines
+            if toplevel and git_dir and common_dir and git_dir == common_dir:
+                if os.path.isabs(toplevel) and os.path.isdir(toplevel):
+                    return toplevel
+                return None
+
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return None
+
+    try:
+        result = subprocess.run(
+            ["git", "worktree", "list", "--porcelain"],
+            capture_output=True,
+            env=env,
+            text=True,
+            timeout=remaining,
+            cwd=project_dir,
+        )
+        if (
+            result.returncode != 0
+            or not isinstance(result.stdout, str)
+            or not result.stdout.strip()
+        ):
+            return None
+
+        lines = result.stdout.splitlines()
+        first_worktree_index = next(
+            (index for index, line in enumerate(lines) if line.startswith("worktree ")),
+            None,
+        )
+        if first_worktree_index is None:
+            return None
+
+        root = lines[first_worktree_index][len("worktree ") :]
+        if not root:
+            return None
+
+        # worktree list の先頭エントリが git dir 自身（common dir）と同じ
+        # パスを指す場合、それは実体のある working tree ではなく git 格納
+        # 場所そのものを worktree と誤って報告しているケース（basename が
+        # ``.git`` 以外の --separate-git-dir で観測される Git 自体の癖）。
+        # 明らかに不正な root なので安全側で None を返す。
+        if common_dir and os.path.normpath(root) == os.path.normpath(common_dir):
+            return None
+
+        for line in lines[first_worktree_index + 1 :]:
+            if not line or line.startswith("worktree "):
+                break
+            if line == "bare":
+                return None
+
+        if os.path.isabs(root) and os.path.isdir(root):
+            return root
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError, UnicodeError):
+        pass
+    return None
+
+
+def resolve_log_root(
+    project_dir: str,
+    *,
+    timeout: float = GIT_COMMAND_TIMEOUT_SECONDS,
+) -> str:
+    """蓄積型ログの保存先ルートを解決する。
+
+    worktree 環境では root worktree の .claude/ が存在する場合に限り、その
+    root worktree のパスを返す（root への集約）。root が解決できない、または
+    root に .claude/ が無い場合は project_dir をそのまま返す（fail-safe）。
+
+    Args:
+        project_dir: 呼び出し元が解決済みのプロジェクトディレクトリ
+            （フォールバック先）。
+        timeout: root worktree 解決に使う git コマンドのタイムアウト秒数。
+    """
+    root = resolve_root_worktree(project_dir, timeout=timeout)
+    if root and os.path.isdir(os.path.join(root, ".claude")):
+        return root
+    return project_dir
 
 
 def get_field(data: dict, key: str) -> str:

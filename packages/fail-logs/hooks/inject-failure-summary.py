@@ -37,12 +37,15 @@ for _candidate in [
 from hook_common import (  # noqa: E402
     load_package_config,
     read_hook_input,
+    resolve_log_root,
     resolve_path_within,
     safe_hook_execution,
 )
+from log_migration import migrate_legacy_worktree_log  # noqa: E402
 
 DEFAULT_LOGS_DIR = os.path.join(".claude", "logs", "fail-logs")
 LOG_FILE_NAME = "failures.jsonl"
+GIT_BUDGET_SECONDS = 3.5
 
 # summary 設定のデフォルト（ADR-20260630-027）
 DEFAULT_SUMMARY = {
@@ -60,6 +63,10 @@ MAX_EXCERPT_DISPLAY_CHARS = 100
 
 # 末尾シーク読み出しのチャンクサイズ（バイト）
 TAIL_CHUNK_BYTES = 64 * 1024
+
+# migration と複数 worktree の O_APPEND による物理順のずれを吸収するため、
+# max_records より広い末尾を読み、ts で並べ直してから件数を絞る。全ログは読まない。
+TAIL_READ_MULTIPLIER = 3
 
 
 def _coerce_int(value: object, default: int, *, minimum: int = 0) -> int:
@@ -157,6 +164,18 @@ def _tail_records(log_path: str, max_records: int) -> list[dict]:
         if isinstance(obj, dict):
             records.append(obj)
     return records
+
+
+def _sort_key_for_recency(record: dict) -> str:
+    """最新レコード選別用のキー。欠落・パース不能な ts は最古として扱う。"""
+    ts = record.get("ts")
+    if not isinstance(ts, str) or not ts:
+        return ""
+    try:
+        datetime.fromisoformat(ts)
+    except ValueError:
+        return ""
+    return ts
 
 
 def _within_window(record: dict, cutoff: datetime | None) -> bool:
@@ -329,13 +348,38 @@ def main() -> None:
     logs_dir = (
         logs_dir_value if isinstance(logs_dir_value, str) and logs_dir_value else DEFAULT_LOGS_DIR
     )
-    log_path = _resolve_log_path(project_dir, logs_dir)
+
+    # log_root の解決（git サブプロセス起動）は enabled / summary.enabled 判定の
+    # 後まで遅延させる。無効化時に git を起動しない一貫性のため
+    # （capture-failures.py と同じ方針）。
+    # SessionStart が git 待ちで停滞しないよう、capture 側と同じ予算で上限を設ける。
+    log_root = resolve_log_root(project_dir, timeout=GIT_BUDGET_SECONDS)
+    effective_logs_dir = (
+        logs_dir
+        if resolve_path_within(log_root, logs_dir, LOG_FILE_NAME) is not None
+        else DEFAULT_LOGS_DIR
+    )
+    migrate_legacy_worktree_log(
+        project_dir,
+        log_root,
+        effective_logs_dir,
+        LOG_FILE_NAME,
+    )
+
+    log_path = _resolve_log_path(log_root, effective_logs_dir)
     if log_path is None or not os.path.isfile(log_path):
         return
 
-    records = _tail_records(log_path, summary_cfg["max_records"])
+    # O_APPEND writer 間で物理順と時系列がずれても、広めの tail から新しい記録を選ぶ。
+    records = _tail_records(
+        log_path,
+        summary_cfg["max_records"] * TAIL_READ_MULTIPLIER,
+    )
     if not records:
         return
+    records = sorted(records, key=_sort_key_for_recency, reverse=True)[: summary_cfg["max_records"]]
+    # aggregate は後勝ちで代表レコードを選ぶため、選別後は古い順へ戻す。
+    records.reverse()
 
     window_days = summary_cfg["window_days"]
     cutoff = datetime.now(UTC) - timedelta(days=window_days) if window_days > 0 else None
