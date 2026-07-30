@@ -5,15 +5,20 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
+import sys
+from datetime import datetime
 from pathlib import Path
 
 import pytest
 
-from tests.module_loader import load_module
+from tests.module_loader import REPO_ROOT, load_module
 
 capture = load_module("capture_failures", "packages/fail-logs/hooks/capture-failures.py")
+
+CAPTURE_SCRIPT = REPO_ROOT / "packages" / "fail-logs" / "hooks" / "capture-failures.py"
 
 
 def _make_project(tmp_path: Path) -> Path:
@@ -33,6 +38,19 @@ def _read_log(project_dir: Path) -> list[dict]:
     if not log_path.exists():
         return []
     return [json.loads(line) for line in log_path.read_text().splitlines() if line.strip()]
+
+
+def _run_capture_subprocess(project_dir: Path, payload: dict) -> subprocess.CompletedProcess[str]:
+    """capture-failures.py を実プロセスとして起動し、実際の exit code を得る。"""
+    return subprocess.run(
+        [sys.executable, str(CAPTURE_SCRIPT)],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        timeout=10,
+        cwd=str(project_dir),
+        check=False,
+    )
 
 
 def _patch_root_worktree(monkeypatch, root_dir: Path | None) -> None:
@@ -83,6 +101,47 @@ def test_records_bash_nonzero_failure(monkeypatch, tmp_path) -> None:
     assert rec["data"]["failure_type"] == "tool_error"
     assert rec["data"]["detected_by"] == "exit_code"
     assert rec["data"]["tool"] == "Bash"
+
+
+# EV-04: failure record が branch を含む audit v1 互換スキーマに従うことを検証する。
+def test_record_matches_audit_v1_schema(monkeypatch, tmp_path) -> None:
+    project = _make_project(tmp_path)
+    _run_hook(
+        monkeypatch,
+        project,
+        {
+            "cwd": str(project),
+            "session_id": "sess-schema",
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls /schema-check"},
+            "tool_response": {"exit_code": 7, "stdout": "no such file"},
+        },
+    )
+
+    records = _read_log(project)
+    assert len(records) == 1
+    rec = records[0]
+    assert set(rec.keys()) == {"v", "ts", "sid", "eid", "type", "data"}
+    assert rec["v"] == 1
+    assert rec["sid"] == "sess-schema"
+    assert rec["type"] == "failure"
+    assert re.fullmatch(r"[0-9a-f]{12}", rec["eid"])
+    datetime.fromisoformat(rec["ts"])
+    assert set(rec["data"].keys()) == {
+        "failure_type",
+        "error_type",
+        "detected_by",
+        "command_kind",
+        "tool",
+        "command",
+        "error_excerpt",
+        "exit_code",
+        "cwd",
+        "branch",
+    }
+    assert rec["data"]["cwd"] == str(project)
+    assert rec["data"]["exit_code"] == 7
+    assert rec["data"]["command"] == "ls /schema-check"
 
 
 def test_records_pipe_masked_test_failure(monkeypatch, tmp_path) -> None:
@@ -158,6 +217,137 @@ def test_target_toggle_skips_test_failure(monkeypatch, tmp_path) -> None:
         },
     )
     assert _read_log(project) == []
+
+    # 同じ部分設定のまま別の有効な失敗種別も入力し、「1つでも false なら
+    # 全種別停止」への退行を検出する（EV-08）。
+    _run_hook(
+        monkeypatch,
+        project,
+        {
+            "cwd": str(project),
+            "session_id": "sess-5",
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls /nope"},
+            "tool_response": {"exit_code": 2, "stdout": "no such file"},
+        },
+    )
+    records = _read_log(project)
+    assert len(records) == 1
+    assert records[0]["data"]["failure_type"] == "tool_error"
+
+
+# EV-08: targets.tool_error=false で非 Bash ツールエラーの記録を無効化できる。
+def test_target_toggle_skips_tool_error(monkeypatch, tmp_path) -> None:
+    project = _make_project(tmp_path)
+    config_dir = project / ".claude" / "config" / "fail-logs"
+    config_dir.mkdir(parents=True)
+    (config_dir / "fail-logs.local.yaml").write_text("targets:\n  tool_error: false\n")
+
+    _run_hook(
+        monkeypatch,
+        project,
+        {
+            "cwd": str(project),
+            "session_id": "sess-tool-toggle",
+            "tool_name": "Edit",
+            "tool_input": {"file_path": "x.py"},
+            "tool_response": {"error": "String to replace not found"},
+        },
+    )
+    assert _read_log(project) == []
+
+    # 同じ部分設定のまま別の有効な失敗種別も入力し、「1つでも false なら
+    # 全種別停止」への退行を検出する（EV-08）。
+    _run_hook(
+        monkeypatch,
+        project,
+        {
+            "cwd": str(project),
+            "session_id": "sess-tool-toggle",
+            "tool_name": "Bash",
+            "tool_input": {"command": "ruff check ."},
+            "tool_response": {"exit_code": 1, "stdout": "1 error"},
+        },
+    )
+    records = _read_log(project)
+    assert len(records) == 1
+    assert records[0]["data"]["failure_type"] == "lint_failure"
+
+
+# EV-08: targets.lint_failure=false で lint 失敗の記録を無効化できる。
+def test_target_toggle_skips_lint_failure(monkeypatch, tmp_path) -> None:
+    project = _make_project(tmp_path)
+    config_dir = project / ".claude" / "config" / "fail-logs"
+    config_dir.mkdir(parents=True)
+    (config_dir / "fail-logs.local.yaml").write_text("targets:\n  lint_failure: false\n")
+
+    _run_hook(
+        monkeypatch,
+        project,
+        {
+            "cwd": str(project),
+            "session_id": "sess-lint-toggle",
+            "tool_name": "Bash",
+            "tool_input": {"command": "ruff check ."},
+            "tool_response": {"exit_code": 1, "stdout": "1 error"},
+        },
+    )
+    assert _read_log(project) == []
+
+    # 同じ部分設定のまま別の有効な失敗種別も入力し、「1つでも false なら
+    # 全種別停止」への退行を検出する（EV-08）。
+    _run_hook(
+        monkeypatch,
+        project,
+        {
+            "cwd": str(project),
+            "session_id": "sess-lint-toggle",
+            "tool_name": "Edit",
+            "tool_input": {"file_path": "x.py"},
+            "tool_response": {"error": "String to replace not found"},
+        },
+    )
+    records = _read_log(project)
+    assert len(records) == 1
+    assert records[0]["data"]["failure_type"] == "tool_error"
+
+
+# EV-08: targets.cli_failure=false で外部 CLI 失敗の記録を無効化できる。
+def test_target_toggle_skips_cli_failure(monkeypatch, tmp_path) -> None:
+    project = _make_project(tmp_path)
+    config_dir = project / ".claude" / "config" / "fail-logs"
+    config_dir.mkdir(parents=True)
+    (config_dir / "fail-logs.local.yaml").write_text("targets:\n  cli_failure: false\n")
+
+    _run_hook(
+        monkeypatch,
+        project,
+        {
+            "cwd": str(project),
+            "session_id": "sess-cli-toggle",
+            "tool_name": "Bash",
+            "tool_input": {"command": "codex exec 'do something'"},
+            "tool_response": {"exit_code": 1, "stdout": "codex exec failed"},
+        },
+    )
+    assert _read_log(project) == []
+
+    # 同じ部分設定のまま別の有効な失敗種別も入力し、「1つでも false なら
+    # 全種別停止」への退行を検出する（EV-08）。
+    _run_hook(
+        monkeypatch,
+        project,
+        {
+            "cwd": str(project),
+            "session_id": "sess-cli-toggle",
+            "tool_name": "Bash",
+            "tool_input": {"command": "pytest"},
+            "tool_response": {"exit_code": 1, "stdout": "1 failed"},
+        },
+    )
+    records = _read_log(project)
+    assert len(records) == 1
+    assert records[0]["data"]["failure_type"] == "test_failure"
 
 
 def test_masks_secrets_in_excerpt(monkeypatch, tmp_path) -> None:
@@ -302,6 +492,113 @@ def test_traversal_logs_dir_falls_back_to_default(monkeypatch, tmp_path) -> None
         if f == "failures.jsonl"
     ]
     assert jsonl_files == [default_log_path]
+
+
+# EV-11: 失敗未検知の成功経路でも実プロセスが exit 0 になることを検証する。
+def test_exit_is_always_zero_when_no_failure_detected(tmp_path) -> None:
+    project = _make_project(tmp_path)
+    result = _run_capture_subprocess(
+        project,
+        {
+            "cwd": str(project),
+            "session_id": "sess-exit-success",
+            "tool_name": "Bash",
+            "tool_input": {"command": "pytest"},
+            "tool_response": {"exit_code": 0, "stdout": "4 passed"},
+        },
+    )
+
+    assert result.returncode == 0
+    assert _read_log(project) == []
+
+
+# EV-11: 設定で記録をスキップした経路でも実プロセスが exit 0 になることを検証する。
+def test_exit_is_always_zero_when_recording_is_skipped(tmp_path) -> None:
+    project = _make_project(tmp_path)
+    config_dir = project / ".claude" / "config" / "fail-logs"
+    config_dir.mkdir(parents=True)
+    (config_dir / "fail-logs.local.yaml").write_text("enabled: false\n")
+    result = _run_capture_subprocess(
+        project,
+        {
+            "cwd": str(project),
+            "session_id": "sess-exit-skipped",
+            "tool_name": "Bash",
+            "tool_input": {"command": "false"},
+            "tool_response": {"exit_code": 2, "stdout": "failed"},
+        },
+    )
+
+    assert result.returncode == 0
+    assert _read_log(project) == []
+
+
+# EV-11: 失敗記録に成功した経路でも実プロセスが exit 0 になることを検証する。
+def test_exit_is_always_zero_when_recording_succeeds(tmp_path) -> None:
+    project = _make_project(tmp_path)
+    result = _run_capture_subprocess(
+        project,
+        {
+            "cwd": str(project),
+            "session_id": "sess-exit-recorded",
+            "tool_name": "Bash",
+            "tool_input": {"command": "false"},
+            "tool_response": {"exit_code": 2, "stdout": "failed"},
+        },
+    )
+
+    assert result.returncode == 0
+    assert len(_read_log(project)) == 1
+
+
+# EV-12: 内部例外を safe_hook_execution が捕捉し exit 0 に変換することを検証する。
+def test_internal_exception_still_exits_zero(monkeypatch, tmp_path) -> None:
+    project = _make_project(tmp_path)
+
+    def _raise_internal_error(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("boom: unexpected internal failure")
+
+    monkeypatch.setattr(capture.fd, "analyze", _raise_internal_error)
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        io.StringIO(
+            json.dumps(
+                {
+                    "cwd": str(project),
+                    "session_id": "sess-internal-error",
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "false"},
+                    "tool_response": {"exit_code": 1, "stdout": "failed"},
+                }
+            )
+        ),
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        capture.main()
+
+    assert exc_info.value.code == 0
+    assert _read_log(project) == []
+
+
+# EV-16: 同一失敗イベントも重複排除せず、新しい eid で毎回追記する。
+def test_duplicate_event_is_appended_twice(monkeypatch, tmp_path) -> None:
+    project = _make_project(tmp_path)
+    payload = {
+        "cwd": str(project),
+        "session_id": "sess-duplicate",
+        "tool_name": "Bash",
+        "tool_input": {"command": "pytest duplicate"},
+        "tool_response": {"exit_code": 1, "stdout": "1 failed"},
+    }
+
+    _run_hook(monkeypatch, project, payload)
+    _run_hook(monkeypatch, project, payload)
+
+    records = _read_log(project)
+    assert len(records) == 2
+    assert records[0]["eid"] != records[1]["eid"]
 
 
 # EV-21: worktree からの記録を root worktree に集約し、解決不能時は従来位置へ戻す。
