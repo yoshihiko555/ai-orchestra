@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **`quality-gates`: README.md を追加**: パッケージの責務・hook 一覧・設定キー（`quality_gate.*`）を、独自 README を持つ他パッケージと同様の形式でまとめた。
 
+### Fixed
+
+- **`audit`: worktree セッションのログ集約先解決を堅牢化**: audit ログの root worktree 解決が core 共通関数への委譲になり、separate-git-dir 構成や `GIT_DIR` 等の環境変数が汚染された環境でも `.claude/logs/audit/` の集約先を誤解決しなくなった。
+
 ### Changed
 
 - **BREAKING** **`quality-gates` / `audit`: `quality_gate.block_on_failed_test` の既定を `true` に変更**: `post-test-analysis.py` はテスト失敗時に既定で exit code 2 のブロックを行う（opt-out 方式）。従来の非ブロック動作に戻すには `.claude/config/audit/audit-flags.local.json` で `block_on_failed_test: false` を明示する。
