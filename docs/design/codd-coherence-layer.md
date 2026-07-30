@@ -67,7 +67,8 @@ skill / hook）で独自実装する。
 | 項目                                                                                           | 理由                                       | 移管先                          |
 | ---------------------------------------------------------------------------------------------- | ------------------------------------------ | ------------------------------- |
 | ~~impact 分析（Green/Amber/Gray 信頼度スコア）~~ → **Phase 2 で実装済み（Issue #94 / 4.5.1）**             | —                                           | 完了                             |
-| hook 自動配線（PostToolUse scan / pre-commit validate）の導入先展開                                        | Phase 1 は手動 `/codd-validate` で価値検証  | Issue: codd-hook-distribution    |
+| ~~hook 自動配線（PostToolUse scan / pre-commit validate）の導入先展開~~ → **Issue #95 で実装済み（4.8.1）** | —                                           | 完了                             |
+| 実 git pre-commit hook（PreToolUse 代替ではない本物の git hook）の配布                                     | 既存 pre-commit 環境との衝突・uninstall 時の原状回復を避けるため、Issue #95 では PreToolUse (Bash) の `git commit` 検出方式で代替した | Issue: codd-real-git-hook-distribution |
 | CI（PR に verdict 投稿）                                                                                   | impact 分析に依存                           | Issue: codd-ci-guardrail         |
 | ~~コード ⇔ ドキュメントのトレーサビリティ~~ → **Phase 3 で opt-in 実装済み（Issue #98 / 4.3.1）** | —                                            | 完了                             |
 | ノードのサブ粒度化（1ファイル内 FT-xxx 単位のノード）                                                      | parser/validate が複雑化                    | Issue: codd-subnode-granularity  |
@@ -492,10 +493,51 @@ codd は essential（常時有効）のため、**条件分岐は不要**で常�
 1. `config/codd.yaml` → `.claude/config/codd/codd.yaml`（SessionStart sync）
 2. skill/rule → facet build で `.claude/skills/codd-*/`・`.agents/skills/`・`.claude/rules/`
 3. scripts → `orchex run codd codd -- scan|validate` で実行可能
-4. （Phase 2）manifest hooks → `.claude/settings.local.json` に PostToolUse/pre-commit 自動登録
+4. manifest hooks → `.claude/settings.local.json` に PostToolUse/PreToolUse 自動登録（**実装済み・
+   Issue #95**。詳細は 4.8.1）
 
 → **導入先プロジェクトは essential セットアップだけで、`/design` 等が生成する
 ドキュメントが CODD 管理下に入り、`/codd-validate` で整合性を検証できる。**
+
+### 4.8.1 hook 自動配線（Issue #95）
+
+`packages/codd/manifest.json` に以下の hooks を宣言し、既存の同期レール（sync_hooks）経由で
+導入先 `.claude/settings.local.json` へ自動登録する（essential プリセットのため全導入先が対象）。
+
+| hook スクリプト                | イベント    | matcher   | 役割                                       |
+| ------------------------------ | ----------- | --------- | ------------------------------------------ |
+| `codd-scan-postedit.py`        | PostToolUse | `Edit\|Write` | scope 内ファイル編集時に `scan` を実行し、graph を再構築する（常に非ブロック） |
+| `codd-validate-precommit.py`   | PreToolUse  | `Bash`    | `git commit` を検出したら `validate` を実行し、警告またはブロックする |
+
+**pre-commit の代替方式**: 実 git hook（`.git/hooks/pre-commit`）を配布するのではなく、
+PreToolUse (Bash) で `git commit` コマンドを検出するアプローチを採る。理由は次の3点。
+
+1. 導入先が既に pre-commit framework 等を運用している場合との衝突を避ける
+2. codd の uninstall 時に `.git/hooks/` を書き換えたままにしない（原状回復が容易）
+3. 「導入先の commit フローを侵さない」という opt-in 方針と整合する
+
+**既知の制限**: この方式がガードするのは **Claude Code セッション経由の `git commit`** のみ。
+手動シェル操作・GUI Git クライアント・CI からの commit は対象外になる。これは上記「導入先の
+commit フローを侵さない」という要件の裏返しであり、意図した制限として明記する。実 git hook の
+配布機構が必要な場合は Out of Scope（2章）に切り出した別Issue（`codd-real-git-hook-distribution`）
+で扱う。
+
+**二段構えの opt-in**: hook の「登録」は essential プリセットで全導入先に自動展開されるが、
+「実動作」は `codd.yaml` の `hooks:` セクションで制御する（config キーは 4.6 の `checks` 等と同じ
+`.claude/config/codd/codd.yaml` 配下）。
+
+| キー                       | 型                            | 既定値  | 意味                                                                 |
+| -------------------------- | ------------------------------ | ------- | ---------------------------------------------------------------------- |
+| `hooks.scan_on_edit`       | bool                            | `false` | scope 内ファイル編集時に `scan` で graph を再構築するか。常に非ブロック |
+| `hooks.validate_on_commit` | `"off"` / `warn` / `block`      | `warn`  | `warn` は additionalContext で警告表示のみ。`block` は validate error 検出時に commit を止める（exit 2） |
+
+`hooks.validate_on_commit` の bare `off` は YAML 1.1 仕様上 boolean `False` としてパースされるが、
+`normalize_check_level`（`codd-frontmatter-policy.md` と同じ正規化関数）により大文字小文字違いも
+含めて `"off"` へ正規化される（`checks.*` の検査レベルと同じ扱い）。
+
+**fail-safe**: codd 未初期化（`codd.yaml` が存在しない）または `enabled: false` のプロジェクトでは、
+両 hook とも即座に no-op として終了する。実行時例外が発生した場合も exit 0 でフェイルセーフに倒し、
+hook 導入がホスト側の commit/edit フローをブロックしないことを優先する。
 
 ### 4.9 ドッグフーディング
 
@@ -509,7 +551,8 @@ AI Orchestra 自身の `.claude/orchestra.json` に `codd` を追加し、最初
 詳細タスクは `.claude/Plans.md` を SSOT とする。
 
 - **Phase 1**: フロントマター規約 + `packages/codd`（scan/validate）+ essential 化 + skill 改修 + ドッグフード
-- **Phase 2**: impact 分析（Green/Amber/Gray）**実装済み（Issue #94）** + hook 配線の導入先展開（別Issue）
+- **Phase 2**: impact 分析（Green/Amber/Gray）**実装済み（Issue #94）** + hook 自動配線（PostToolUse scan /
+  pre-commit validate 代替）**実装済み（Issue #95 / 4.8.1）**
 - **Phase 3**: コード⇔ドキュメントトレース（opt-in・**実装済み（Issue #98 / 4.3.1）**）+ CI verdict（別Issue）
 
 ---
@@ -521,7 +564,7 @@ AI Orchestra 自身の `.claude/orchestra.json` に `codd` を追加し、最初
 | フロントマターのプロパティ不足                   | 5プロパティで全検査が成立することを 4.5 で確認済み。不足時は後方互換で追加  |
 | 既存ドキュメントへのフロントマター一括付与コスト | Phase 1 は対象を docs/・.claude/rules/・Plans.md・templates/context/ に限定 |
 | drift 検査の誤検知                               | warning 止まり。コミット時刻ベースと明示し、本格判定は Phase 2              |
-| essential 化による全導入先への影響               | Phase 1 は手動 `/codd-validate`。hook 強制は Phase 2 で opt-in              |
+| essential 化による全導入先への影響               | hook の**登録**は essential で自動展開されるが、**実動作**は `codd.yaml` の `hooks.scan_on_edit`（既定 false）/ `hooks.validate_on_commit`（既定 warn）による二段構え opt-in で制御（Issue #95 / 4.8.1） |
 | frontmatter parser の誤検出                      | 先頭ブロックのみ読む実装に限定（M-1）                                       |
 
 ---

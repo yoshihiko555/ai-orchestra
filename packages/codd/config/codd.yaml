@@ -112,3 +112,13 @@ impact:
   corroboration_min_origins: 2
   # 複数の強起点が裏付ける場合の 1 起点あたり加点（弱リンク水増し防止）。
   evidence_bonus: 0.05
+
+# hook 配線（Issue #95）
+# hook の「登録」は manifest 経由で全導入先に自動展開されるが、
+# 「実動作」は以下のキーで opt-in 制御する（二段構え）
+hooks:
+  # PostToolUse (Edit|Write): scope 内ファイル編集時に codd scan で graph を再構築する
+  scan_on_edit: false
+  # PreToolUse (Bash): git commit 検出時に codd validate を実行する
+  # "off" = 無効 / warn = 指摘を警告表示のみ / block = error 検出時に commit をブロック
+  validate_on_commit: warn

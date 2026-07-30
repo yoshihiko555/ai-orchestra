@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`codd`: scan/validate の hook 自動配線（Issue #95）**: manifest の hooks 宣言により、導入先の `.claude/settings.local.json` へ PostToolUse（編集後 scan）と PreToolUse（`git commit` 検出時 validate）が自動登録されるようになった。実動作は `codd.yaml` の新キー `hooks.scan_on_edit`（既定 `false`）/ `hooks.validate_on_commit`（`off` / `warn` / `block`、既定 `warn`）で制御し、codd 未初期化のプロジェクトでは no-op。**既定値 `warn` のため、codd 導入済みプロジェクトは次回 sync 以降、Claude Code 経由の `git commit` ごとに `codd validate` が自動実行され、error があれば警告が表示される（ブロックはしない。`validate_on_commit: off` で無効化可）。** ガード対象は Claude Code 経由の commit のみ（実 git pre-commit hook の配布は行わない）。
+
 ### Changed
 
 - **`fail-logs`: git worktree 間で失敗ログを集約**: worktree 環境では `.claude/logs/fail-logs/failures.jsonl` を root worktree に集約し、git 解決不能時は従来のプロジェクト別保存先へフォールバックする。各失敗レコードには発生元ブランチを示す `branch` フィールドも記録する。

@@ -270,6 +270,39 @@ class TestHookSync:
         assert "manual-hook-test" in json.dumps(updated.get("hooks", {}))
 
 
+class TestCoddHookSync:
+    """Issue #95: codd hooks（scan-postedit / validate-precommit）の同期。"""
+
+    def test_codd_hooks_registered_after_essential_setup(self, e2e_project: Path) -> None:
+        """EV-59: essential 導入で codd の 2 hooks が settings.local.json へ登録される"""
+        _setup_essential(e2e_project)
+        settings = json.loads(
+            (e2e_project / ".claude" / "settings.local.json").read_text(encoding="utf-8")
+        )
+        hooks = settings.get("hooks", {})
+        post = hooks.get("PostToolUse", [])
+        pre = hooks.get("PreToolUse", [])
+        assert any(
+            "codd-scan-postedit.py" in json.dumps(entry) and entry.get("matcher") == "Edit|Write"
+            for entry in post
+        )
+        assert any(
+            "codd-validate-precommit.py" in json.dumps(entry) and entry.get("matcher") == "Bash"
+            for entry in pre
+        )
+
+    def test_codd_hooks_removed_on_uninstall(self, e2e_project: Path) -> None:
+        """EV-59: codd uninstall で 2 hooks が除去される"""
+        _setup_essential(e2e_project)
+        run_orchex("uninstall", "codd", project=e2e_project)
+        settings = json.loads(
+            (e2e_project / ".claude" / "settings.local.json").read_text(encoding="utf-8")
+        )
+        hooks_json = json.dumps(settings.get("hooks", {}))
+        assert "codd-scan-postedit.py" not in hooks_json
+        assert "codd-validate-precommit.py" not in hooks_json
+
+
 class TestAgentModelPatching:
     """3.4 Agent model patching"""
 
