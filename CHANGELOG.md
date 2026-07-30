@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`audit`: worktree セッションのログ集約先解決を堅牢化**: audit ログの root worktree 解決が core 共通関数への委譲になり、separate-git-dir 構成や `GIT_DIR` 等の環境変数が汚染された環境でも `.claude/logs/audit/` の集約先を誤解決しなくなった。
+
 ### Changed
 
 - **`fail-logs`: git worktree 間で失敗ログを集約**: worktree 環境では `.claude/logs/fail-logs/failures.jsonl` を root worktree に集約し、git 解決不能時は従来のプロジェクト別保存先へフォールバックする。各失敗レコードには発生元ブランチを示す `branch` フィールドも記録する。

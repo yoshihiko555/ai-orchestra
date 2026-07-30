@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """fail-logs の旧 worktree-local ログを root worktree へ有界に移行する。
 
-移行 claim/completion 名は試行ごとに一意にし、クラッシュで残った
-``.migrating.*`` は上書き・削除せず、手動での確認と復旧対象として残す。
+有界移行の共通部分（claim・行境界決定・確定 rename・stale claim 非破壊）は
+core の ``file_migration.migrate_bounded_file`` に委譲する。ここでは境界検証
+（``resolve_path_within``）・log_root==project_dir の no-op 判定・実際の書き込み
+方式（flock 排他下でのストリームコピー）・fail-open の維持だけを担う。
 """
 
 from __future__ import annotations
@@ -11,7 +13,7 @@ import fcntl
 import os
 import shutil
 import sys
-import time
+from typing import BinaryIO
 
 # --- sys.path 設定（core/hooks を解決してから import する）---------------------
 _hook_dir = os.path.dirname(os.path.abspath(__file__))
@@ -20,13 +22,19 @@ if _hook_dir not in sys.path:
 
 _orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
 _repo_core_hooks = os.path.abspath(os.path.join(_hook_dir, "..", "..", "core", "hooks"))
-for _candidate in [
-    os.path.join(_orchestra_dir, "packages", "core", "hooks") if _orchestra_dir else "",
-    _repo_core_hooks,
-]:
+# 優先度順（AI_ORCHESTRA_DIR 側が最優先）を維持するため、逆順で insert(0, ...) する。
+# 順方向ループで insert(0) すると、後に処理される __file__ 相対フォールバックが
+# 先頭に来てしまい優先順位が逆転する。
+for _candidate in reversed(
+    [
+        os.path.join(_orchestra_dir, "packages", "core", "hooks") if _orchestra_dir else "",
+        _repo_core_hooks,
+    ]
+):
     if _candidate and os.path.isdir(_candidate) and _candidate not in sys.path:
         sys.path.insert(0, _candidate)
 
+from file_migration import migrate_bounded_file  # noqa: E402
 from hook_common import resolve_path_within  # noqa: E402
 
 LOG_DIR_MODE = 0o700
@@ -36,6 +44,30 @@ LOG_FILE_MODE = 0o600
 # consume a bounded tail for recurrence summaries, so older history has no
 # practical effect there; this prevents SessionStart from stalling on huge logs.
 MIGRATION_MAX_BYTES = 1024 * 1024
+
+
+def _copy_stream_writer(source: BinaryIO, destination_path: str) -> None:
+    """flock 排他下で source の残りを destination_path へストリームコピーする。
+
+    複数回の write を許容する代わりに flock で排他制御する方式。skill-evolution の
+    単発 write writer とは前提が異なるため、両者は意図的に非同期・非共有。
+    """
+    destination_fd = os.open(
+        destination_path,
+        os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+        LOG_FILE_MODE,
+    )
+    try:
+        os.fchmod(destination_fd, LOG_FILE_MODE)
+    except OSError:
+        pass
+    with os.fdopen(destination_fd, "ab") as destination:
+        fcntl.flock(destination.fileno(), fcntl.LOCK_EX)
+        try:
+            shutil.copyfileobj(source, destination)
+            destination.flush()
+        finally:
+            fcntl.flock(destination.fileno(), fcntl.LOCK_UN)
 
 
 def migrate_legacy_worktree_log(
@@ -64,41 +96,11 @@ def migrate_legacy_worktree_log(
         if not os.path.isfile(legacy_path):
             return
 
-        if os.path.realpath(destination_path) == os.path.realpath(legacy_path):
-            return
-
-        claim_suffix = f"{os.getpid()}-{time.monotonic_ns()}"
-        migrating_path = f"{legacy_path}.migrating.{claim_suffix}"
-        # rename は source を原子的に消すため、競合した別 process は
-        # FileNotFoundError となり外側の fail-safe で安全に no-op になる。
-        os.rename(legacy_path, migrating_path)
-
-        os.makedirs(os.path.dirname(destination_path), mode=LOG_DIR_MODE, exist_ok=True)
-        with open(migrating_path, "rb") as source:
-            file_size = os.fstat(source.fileno()).st_size
-            if file_size > MIGRATION_MAX_BYTES:
-                source.seek(file_size - MIGRATION_MAX_BYTES)
-                # 途中行を捨て、次の完全な行から移行する。改行が無ければ EOF に
-                # 到達し、後続 copy は空になる（巨大な単一行の決定的な縮退動作）。
-                source.readline()
-
-            destination_fd = os.open(
-                destination_path,
-                os.O_WRONLY | os.O_CREAT | os.O_APPEND,
-                LOG_FILE_MODE,
-            )
-            try:
-                os.fchmod(destination_fd, LOG_FILE_MODE)
-            except OSError:
-                pass
-            with os.fdopen(destination_fd, "ab") as destination:
-                fcntl.flock(destination.fileno(), fcntl.LOCK_EX)
-                try:
-                    shutil.copyfileobj(source, destination)
-                    destination.flush()
-                finally:
-                    fcntl.flock(destination.fileno(), fcntl.LOCK_UN)
-
-        os.rename(migrating_path, f"{legacy_path}.migrated.{claim_suffix}")
+        migrate_bounded_file(
+            legacy_path,
+            destination_path,
+            max_bytes=MIGRATION_MAX_BYTES,
+            writer=_copy_stream_writer,
+        )
     except Exception:
         pass
