@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 
 from tests.module_loader import load_module
@@ -12,6 +13,12 @@ se = load_module("skill_evolution_common", "packages/skill-evolution/lib/skill_e
 # ---------------------------------------------------------------------------
 # config
 # ---------------------------------------------------------------------------
+
+
+def test_load_hook_common_uses_file_relative_fallback(monkeypatch) -> None:
+    monkeypatch.delenv("AI_ORCHESTRA_DIR", raising=False)
+
+    assert se._load_hook_common() is not None
 
 
 def test_load_config_merges_defaults(tmp_path) -> None:
@@ -123,6 +130,36 @@ def test_build_metric_record_without_self_report() -> None:
     assert rec["machine"]["critical_pass_rate"] == 0.0
 
 
+# EV-30: metrics 1 行の既存スキーマと型を後方互換契約として固定する。
+def test_build_metric_record_schema_is_backward_compatible() -> None:
+    rec = se.build_metric_record(
+        "issue-fix",
+        "run-1",
+        {
+            "ambiguities": 1,
+            "discretion_fills": 2,
+            "retries": 3,
+            "critical": {"done": True},
+        },
+        duration_ms=1200,
+        tool_uses=7,
+    )
+
+    assert {"ts", "skill", "run_id", "self_report", "machine", "success"} <= set(rec)
+    assert isinstance(rec["ts"], str)
+    assert isinstance(rec["skill"], str)
+    assert isinstance(rec["run_id"], str)
+    assert isinstance(rec["self_report"], dict)
+    assert {"ambiguities", "discretion_fills", "retries"} <= set(rec["self_report"])
+    assert all(isinstance(value, int) for value in rec["self_report"].values())
+    assert isinstance(rec["machine"], dict)
+    assert {"tool_uses", "duration_ms", "critical_pass_rate"} <= set(rec["machine"])
+    assert isinstance(rec["machine"]["tool_uses"], int)
+    assert isinstance(rec["machine"]["duration_ms"], int)
+    assert isinstance(rec["machine"]["critical_pass_rate"], float)
+    assert isinstance(rec["success"], bool)
+
+
 # ---------------------------------------------------------------------------
 # スコアリング
 # ---------------------------------------------------------------------------
@@ -204,6 +241,34 @@ def test_recent_run_ids(tmp_path) -> None:
     assert se.recent_run_ids(p, "missing") == set()
 
 
+def test_recent_run_ids_keeps_current_run_before_migration_sized_append(tmp_path) -> None:
+    p = str(tmp_path)
+    current_run_id = "current-run"
+    se.append_metric(p, "s", {"run_id": current_run_id, "success": True})
+    path = se.metrics_path(p, "s")
+    prefix = b'{"run_id":"legacy","payload":"'
+    suffix = b'"}\n'
+    filler = prefix + b"x" * (se.MIGRATION_MAX_BYTES - len(prefix) - len(suffix)) + suffix
+    with open(path, "ab") as metrics:
+        metrics.write(filler)
+
+    assert current_run_id in se.recent_run_ids(p, "s")
+
+
+def test_recent_run_ids_checks_all_lines_in_byte_window(tmp_path) -> None:
+    p = str(tmp_path)
+    current_run_id = "current-run"
+    se.append_metric(p, "s", {"run_id": current_run_id, "success": True})
+    path = se.metrics_path(p, "s")
+    filler_lines = [json.dumps({"run_id": f"filler-{i}"}) for i in range(600)]
+    filler = ("\n".join(filler_lines) + "\n").encode()
+    assert len(filler) < se.RECENT_RUN_IDS_TAIL_BYTES
+    with open(path, "ab") as metrics:
+        metrics.write(filler)
+
+    assert current_run_id in se.recent_run_ids(p, "s")
+
+
 # ---------------------------------------------------------------------------
 # レビュー反映（PR #105）
 # ---------------------------------------------------------------------------
@@ -273,7 +338,7 @@ def test_list_pending_recovers_skill_from_run_id_when_missing(tmp_path) -> None:
 def test_list_pending_skips_broken_files(tmp_path) -> None:
     p = str(tmp_path)
     se.write_pending(p, "s-20260101T000000-aaaa", skill="s")
-    pending_dir = os.path.join(se.data_dir(p), "pending")
+    pending_dir = os.path.join(se.logs_dir(p), "pending")
     with open(os.path.join(pending_dir, "broken.json"), "w", encoding="utf-8") as f:
         f.write("not json")
     entries = se.list_pending(p)

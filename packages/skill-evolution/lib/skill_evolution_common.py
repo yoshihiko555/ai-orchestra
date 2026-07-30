@@ -2,7 +2,7 @@
 """skill-evolution の共通ライブラリ（決定論ロジック。hook ではない）。
 
 責務:
-- データ保存先（`.claude/skill-evolution/`）の解決と metrics/lessons I/O
+- lessons と蓄積データ（metrics/pending/locks）の保存先解決・I/O
 - lessons の追記と肥大化管理（行数上限＋archive 退避）
 - `[critical]` チェックリスト解析と success 判定
 - 二軸スコアリング（judge 総合スコア）と履歴サマリ
@@ -15,11 +15,13 @@ LLM を要する処理（シナリオ実行・改善案生成）は本 lib の�
 
 from __future__ import annotations
 
+import functools
 import glob
 import json
 import os
 import random
 import re
+import stat
 import sys
 import time
 from dataclasses import dataclass, field
@@ -33,11 +35,27 @@ except ImportError:  # 非 Unix 環境ではロックなしにフォールバッ
 
 PACKAGE_NAME = "skill-evolution"
 CONFIG_FILENAME = "skill-evolution.yaml"
+# fail-logs の GIT_BUDGET_SECONDS（capture-failures.py）と同じ、hook 全体の予算値。
+# resolve_log_root 内部ではこの予算がさらに複数ステップへ deadline 分割される
+# （1 ステップ全体の上限ではない）。
+LOG_ROOT_RESOLUTION_TIMEOUT_SECONDS = 3.5
+LOG_DIR_MODE = 0o700
+LOG_FILE_MODE = 0o600
+MIGRATION_MAX_BYTES = 1024 * 1024
+MIGRATION_TOTAL_BUDGET_BYTES = 4 * 1024 * 1024
+MIGRATION_MAX_FILES_PER_RUN = 32
+RECENT_RUN_IDS_BASE_TAIL_BYTES = 128 * 1024
+# 1 回の migration 追記で直前の run_id が重複確認窓から押し出されないよう、
+# migration の最大追記量を既存の末尾読み込み幅へ加える。
+RECENT_RUN_IDS_TAIL_BYTES = RECENT_RUN_IDS_BASE_TAIL_BYTES + MIGRATION_MAX_BYTES
 
 # config が読めない場合のフォールバック既定値（正本は skill-evolution.yaml）。
 DEFAULTS: dict[str, Any] = {
     "enabled": True,
-    "storage": {"dir": ".claude/skill-evolution"},
+    "storage": {
+        "dir": ".claude/skill-evolution",  # lessons 専用。root worktree 解決しない
+        "logs_dir": ".claude/logs/skill-evolution",  # metrics は root、pending/locks は local
+    },
     "lessons": {"max_lines": 40, "inject_max_chars": 4000},
     "pending": {"stale_after_seconds": 600},
     "offline": {
@@ -67,24 +85,52 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return result
 
 
+def _load_hook_common() -> Any | None:
+    """core の hook_common を遅延 import する。解決不能時は None。"""
+    try:
+        orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
+        candidates = []
+        if orchestra_dir:
+            candidates.append(os.path.join(orchestra_dir, "packages", "core", "hooks"))
+        candidates.append(
+            os.path.normpath(
+                os.path.join(
+                    os.path.dirname(os.path.abspath(__file__)),
+                    "..",
+                    "..",
+                    "core",
+                    "hooks",
+                )
+            )
+        )
+        for core_hooks in candidates:
+            # 絶対パスかつ実在する場合のみ sys.path を汚染する（cwd 相対の残留を防ぐ）。
+            if not os.path.isabs(core_hooks) or not os.path.isdir(core_hooks):
+                continue
+            if core_hooks not in sys.path:
+                sys.path.insert(0, core_hooks)
+            try:
+                import hook_common
+            except Exception:
+                continue
+            return hook_common
+    except Exception:
+        return None
+    return None
+
+
 def load_config(project_dir: str) -> dict:
     """skill-evolution.yaml を読み込み DEFAULTS にマージする。
 
     hook_common.load_package_config が使える場合はそれを使い、無ければ DEFAULTS を返す。
     """
     try:
-        orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
-        _core_hooks = os.path.join(orchestra_dir, "packages", "core", "hooks")
-        # 絶対パスかつ実在する場合のみ sys.path を汚染する（cwd 相対の残留を防ぐ）。
-        if (
-            os.path.isabs(_core_hooks)
-            and os.path.isdir(_core_hooks)
-            and _core_hooks not in sys.path
-        ):
-            sys.path.insert(0, _core_hooks)
-        from hook_common import load_package_config
-
-        loaded = load_package_config(PACKAGE_NAME, CONFIG_FILENAME, project_dir)
+        hook_common = _load_hook_common()
+        loaded = (
+            hook_common.load_package_config(PACKAGE_NAME, CONFIG_FILENAME, project_dir)
+            if hook_common is not None
+            else {}
+        )
     except Exception:
         loaded = {}
     return _deep_merge(DEFAULTS, loaded or {})
@@ -96,10 +142,11 @@ def load_config(project_dir: str) -> dict:
 
 
 def data_dir(project_dir: str, config: dict | None = None) -> str:
-    """データルート（`.claude/skill-evolution`）の絶対パスを返す。
+    """lessons 専用ルート（`.claude/skill-evolution`）の絶対パスを返す。
 
     config の storage.dir が project_dir の外を指す場合（`../` 等）は既定値に戻す
     （設定経由のパストラバーサル防止）。
+    ADR-20260728-046 決定4により、意図的に root worktree 解決を行わない。
     """
     cfg = config or {}
     rel = (cfg.get("storage") or {}).get("dir") or DEFAULTS["storage"]["dir"]
@@ -108,6 +155,102 @@ def data_dir(project_dir: str, config: dict | None = None) -> str:
     if os.path.commonpath([base, candidate]) != base:
         candidate = os.path.abspath(os.path.join(base, DEFAULTS["storage"]["dir"]))
     return candidate
+
+
+@functools.cache
+def _resolve_log_root_cached(project_dir: str) -> str:
+    """蓄積データ用 root worktree をプロセス中 1 回だけ解決する。
+
+    単一 project_dir・短命プロセス（1 hook 呼び出し = 1 プロセス）前提のキャッシュ。
+    長寿命プロセスから複数 project を切り替えて処理する用途では、キャッシュが
+    古い project_dir の解決結果を返し続け陳腐化するため使用しないこと。
+    """
+    fallback = os.path.abspath(project_dir)
+    try:
+        hook_common = _load_hook_common()
+        if hook_common is None:
+            return fallback
+        resolved = hook_common.resolve_log_root(
+            fallback,
+            timeout=LOG_ROOT_RESOLUTION_TIMEOUT_SECONDS,
+        )
+        return os.path.abspath(resolved) if resolved else fallback
+    except Exception:
+        return fallback
+
+
+def _is_path_within_real_base(real_base: str, candidate: str) -> bool:
+    """candidate の実体が real_base 配下に収まるかを返す。"""
+    real_candidate = os.path.realpath(candidate)
+    return real_candidate == real_base or real_candidate.startswith(real_base + os.sep)
+
+
+def _resolve_path_within_local(base_dir: str, relative: str, filename: str) -> str | None:
+    """hook_common.resolve_path_within の非依存版（フォールバック専用）。
+
+    `AI_ORCHESTRA_DIR` 未設定の直接実行（例: `skill_evolution.py status` を単体で
+    叩く場合）では `_load_hook_common()` が None を返し得る。その場合でも
+    project-local な移行は必ず実行できるよう、境界検証ロジックのみを複製する
+    （hook_common 側と挙動を同一に保つため実装は意図的に重複させている）。
+    """
+    real_base = os.path.realpath(base_dir)
+    candidate = os.path.realpath(os.path.join(base_dir, relative, filename))
+    if candidate == real_base or candidate.startswith(real_base + os.sep):
+        return candidate
+    return None
+
+
+def _resolve_logs_subdir(base: str, config: dict | None) -> str:
+    """base 配下に storage.logs_dir を安全に解決する。
+
+    symlink 経由で base の外を指す設定も realpath 解決で検出し、既定値へ
+    フォールバックする（字句比較の abspath/commonpath では symlink 経由の脱出を
+    検出できないため）。既定値も base 外へ解決される場合は、安全な保存先がないため
+    ValueError を送出する。hook 呼び出しでは hook レベルの `_safe()` が例外を捕捉して
+    そのターンの書き込みだけを fail-open でスキップし、同じ保護がない CLI 呼び出し
+    では安全でない保存先へ黙って書かず、明示的なエラーとして表面化する。
+    """
+    cfg = config or {}
+    rel = (cfg.get("storage") or {}).get("logs_dir") or DEFAULTS["storage"]["logs_dir"]
+    real_base = os.path.realpath(base)
+    candidate = os.path.abspath(os.path.join(base, rel))
+    if not _is_path_within_real_base(real_base, candidate):
+        candidate = os.path.abspath(os.path.join(base, DEFAULTS["storage"]["logs_dir"]))
+        if not _is_path_within_real_base(real_base, candidate):
+            raise ValueError("storage.logs_dir の安全な保存先を base 配下に解決できません")
+    return candidate
+
+
+def logs_dir(project_dir: str, config: dict | None = None) -> str:
+    """metrics 用の root worktree 解決済みルートを返す。
+
+    config の storage.logs_dir が解決済み root の外（symlink 経由含む）を指す場合は
+    既定値に戻す。root 解決または hook_common import に失敗した場合は project_dir へ戻る。
+    """
+    base = _resolve_log_root_cached(os.path.abspath(project_dir))
+    return _resolve_logs_subdir(base, config)
+
+
+def _local_logs_dir(project_dir: str, config: dict | None = None) -> str:
+    """pending/locks 用の project_dir ローカル（root 解決なし）ルートを返す。
+
+    pending/locks はセッション単位の一時状態であり、複数 worktree 間で共有すると
+    他 worktree の Stop hook が実行中の pending を stale と誤判定して回収し、偽の
+    失敗メトリクス確定と完了時の二重記録を招く（Issue: PR#331 レビュー指摘）。
+    そのため蓄積データである metrics のみを root 集約し、pending/locks は
+    project_dir ローカルに留める（ADR-20260728-046 決定3の対象は metrics のみ）。
+    """
+    base = os.path.abspath(project_dir)
+    return _resolve_logs_subdir(base, config)
+
+
+def _resolve_metrics_dir_within(base: str) -> str | None:
+    """metrics ディレクトリの実体が logs_dir 配下に収まる場合だけパスを返す。"""
+    metrics_dir = os.path.join(base, "metrics")
+    if not os.path.lexists(metrics_dir):
+        return metrics_dir
+    real_base = os.path.realpath(base)
+    return metrics_dir if _is_path_within_real_base(real_base, metrics_dir) else None
 
 
 def _slug(skill: str) -> str:
@@ -123,7 +266,7 @@ def _slug(skill: str) -> str:
 
 def metrics_path(project_dir: str, skill: str, config: dict | None = None) -> str:
     """metrics/<skill>.jsonl の絶対パスを返す。"""
-    return os.path.join(data_dir(project_dir, config), "metrics", f"{_slug(skill)}.jsonl")
+    return os.path.join(logs_dir(project_dir, config), "metrics", f"{_slug(skill)}.jsonl")
 
 
 def lessons_path(project_dir: str, skill: str, config: dict | None = None) -> str:
@@ -138,17 +281,199 @@ def lessons_archive_path(project_dir: str, skill: str, config: dict | None = Non
 
 def pending_path(project_dir: str, run_id: str, config: dict | None = None) -> str:
     """発火→完了の突合用 pending 記録のパスを返す（run_id キー・並行実行安全）。"""
-    return os.path.join(data_dir(project_dir, config), "pending", f"{_slug(run_id)}.json")
+    return os.path.join(_local_logs_dir(project_dir, config), "pending", f"{_slug(run_id)}.json")
 
 
 def lock_path(project_dir: str, skill: str, config: dict | None = None) -> str:
     """スキル単位ロックファイルのパスを返す。"""
-    return os.path.join(data_dir(project_dir, config), "locks", f"{_slug(skill)}.lock")
+    return os.path.join(_local_logs_dir(project_dir, config), "locks", f"{_slug(skill)}.lock")
 
 
 def _ensure_parent(path: str) -> None:
     """親ディレクトリを作成する。"""
     os.makedirs(os.path.dirname(path), exist_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# metrics one-shot migration
+# ---------------------------------------------------------------------------
+
+
+def _migrate_metric_file(legacy_path: str, destination_path: str) -> None:
+    """旧 metrics 1 ファイルを claim して root 側へ有界追記する。
+
+    destination への書き込みは append_metric() と同じ「O_APPEND オープン + 単発
+    write() の atomicity」のみに依拠する。移行対象は MIGRATION_MAX_BYTES（1 MiB）
+    で有界なので、コピー範囲を丸ごとメモリに読み、単一の write() 呼び出しで
+    追記する。複数回 write（旧: shutil.copyfileobj）にすると、ロックを取らない
+    append_metric() の書き込みが途中に割り込み JSONL レコードが壊れ得るため、
+    flock は使わず「全 writer が単発 write のみ」に統一して整合性を担保する。
+
+    payload の write は一度だけ実行し、短い write は再試行せずそのファイルの移行を
+    中止する。これにより append_metric() と migration の各 writer が payload を
+    最大 1 回しか write せず、別 writer が途中に割り込む窓を閉じる。例外または
+    短い write が起きた場合は ``.migrating.*`` claim を手動復旧用に残す。途中まで
+    書き込んだ断片には best-effort で改行を追記し、後続レコードまで連結破損する
+    ことを防ぐ。復旧 write 自体は full disk 等で失敗し得て、その場合は末尾が
+    未終端のまま残るが、一般的な途中 write 例外は失われる 1 行だけに封じ込める。
+    """
+    try:
+        if os.path.realpath(destination_path) == os.path.realpath(legacy_path):
+            return
+
+        claim_suffix = f"{os.getpid()}-{time.monotonic_ns()}"
+        migrating_path = f"{legacy_path}.migrating.{claim_suffix}"
+        try:
+            os.rename(legacy_path, migrating_path)
+        except OSError:
+            return
+
+        os.makedirs(os.path.dirname(destination_path), mode=LOG_DIR_MODE, exist_ok=True)
+        with open(migrating_path, "rb") as source:
+            file_size = os.fstat(source.fileno()).st_size
+            if file_size > MIGRATION_MAX_BYTES:
+                cut = file_size - MIGRATION_MAX_BYTES
+                source.seek(cut - 1)
+                boundary_byte = source.read(1)
+                # cut がちょうど改行直後（完全レコードの先頭）なら readline() は不要。
+                # 直前バイトが改行でなければ途中行なので readline() で部分行を読み捨てる。
+                if boundary_byte != b"\n":
+                    source.readline()
+            payload = source.read()
+        if payload and not payload.endswith(b"\n"):
+            payload += b"\n"
+
+        destination_fd = os.open(
+            destination_path,
+            os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+            LOG_FILE_MODE,
+        )
+        try:
+            if hasattr(os, "fchmod"):
+                try:
+                    os.fchmod(destination_fd, LOG_FILE_MODE)
+                except OSError:
+                    pass
+            try:
+                bytes_written = os.write(destination_fd, payload)
+            except Exception:
+                try:
+                    os.write(destination_fd, b"\n")
+                except OSError:
+                    pass
+                raise
+            if bytes_written < len(payload):
+                try:
+                    os.write(destination_fd, b"\n")
+                except OSError:
+                    pass
+                raise OSError("legacy metrics migration short write; aborting without retry")
+        finally:
+            os.close(destination_fd)
+
+        os.rename(migrating_path, f"{legacy_path}.migrated.{claim_suffix}")
+    except Exception:
+        pass
+
+
+def migrate_legacy_metrics(project_dir: str, config: dict | None = None) -> None:
+    """旧 worktree/root-local metrics を root worktree へ一回限り移行する。
+
+    ADR-20260728-046 決定3に基づき、蓄積データである metrics のみを移行する。
+    pending/locks はセッション単位の一時データなので移行せず、新配置で開始する。
+    stale な ``.migrating.*`` は手動復旧用に残し、例外はすべて fail-open とする。
+
+    linked worktree では worktree と root checkout の旧配置に加え、一時的な root
+    解決失敗で worktree の新配置へ残った metrics も走査する。1 プロセスの移行
+    I/O とファイル数は全 source を合わせて MIGRATION_TOTAL_BUDGET_BYTES および
+    MIGRATION_MAX_FILES_PER_RUN 以内に制限し、超過分は旧パスに残して次回へ
+    繰り越す。プロセス内では ``_MIGRATION_ATTEMPTED_PROJECT_DIRS`` により一度だけ
+    試行するが、次の hook プロセスでは再試行され、rename 済みでないファイルから
+    自然に移行を継続する。
+    """
+    try:
+        project_root = os.path.abspath(project_dir)
+        log_root = _resolve_log_root_cached(project_root)
+        destination_logs_dir = logs_dir(project_root, config)
+        destination_metrics_dir = _resolve_metrics_dir_within(destination_logs_dir)
+        if destination_metrics_dir is None:
+            return
+        hook_common = _load_hook_common()
+        resolve_within = (
+            hook_common.resolve_path_within
+            if hook_common is not None
+            else _resolve_path_within_local
+        )
+        destination_relative = os.path.relpath(destination_metrics_dir, log_root)
+        legacy_sources = [(project_root, os.path.join(data_dir(project_root, config), "metrics"))]
+        if os.path.realpath(log_root) != os.path.realpath(project_root):
+            legacy_sources.append((log_root, os.path.join(data_dir(log_root, config), "metrics")))
+            legacy_sources.append(
+                (
+                    project_root,
+                    os.path.join(_local_logs_dir(project_root, config), "metrics"),
+                )
+            )
+
+        processed_bytes = 0
+        processed_files = 0
+        for legacy_root, legacy_metrics_dir in legacy_sources:
+            if not os.path.isdir(legacy_metrics_dir):
+                continue
+            if os.path.realpath(legacy_metrics_dir) == os.path.realpath(destination_metrics_dir):
+                continue
+            legacy_relative = os.path.relpath(legacy_metrics_dir, legacy_root)
+            for name in sorted(os.listdir(legacy_metrics_dir)):
+                if not name.endswith(".jsonl"):
+                    continue
+                if processed_files >= MIGRATION_MAX_FILES_PER_RUN:
+                    return
+                legacy_path = os.path.abspath(os.path.join(legacy_metrics_dir, name))
+                if os.path.islink(legacy_path):
+                    continue
+                try:
+                    legacy_stat = os.lstat(legacy_path)
+                except OSError:
+                    continue
+                if not stat.S_ISREG(legacy_stat.st_mode):
+                    continue
+                resolved_legacy_path = resolve_within(
+                    legacy_root,
+                    legacy_relative,
+                    name,
+                )
+                destination_path = resolve_within(
+                    log_root,
+                    destination_relative,
+                    name,
+                )
+                if resolved_legacy_path is None or destination_path is None:
+                    continue
+                if not os.path.isfile(legacy_path):
+                    continue
+                file_cost = min(legacy_stat.st_size, MIGRATION_MAX_BYTES)
+                if processed_bytes + file_cost > MIGRATION_TOTAL_BUDGET_BYTES:
+                    return
+                processed_bytes += file_cost
+                processed_files += 1
+                _migrate_metric_file(legacy_path, destination_path)
+    except Exception:
+        pass
+
+
+# 単一 project_dir・短命プロセス前提のグローバル状態（_resolve_log_root_cached と同様）。
+# 長寿命プロセスから複数 project を処理する用途では陳腐化しない一方、プロセスを
+# 使い回す限り集合が無制限に増え続けるため、そのような用途には適さない。
+_MIGRATION_ATTEMPTED_PROJECT_DIRS: set[str] = set()
+
+
+def _migrate_legacy_metrics_once(project_dir: str, config: dict | None = None) -> None:
+    """project_dir ごとに metrics migration をプロセス中 1 回だけ試行する。"""
+    key = os.path.abspath(project_dir)
+    if key in _MIGRATION_ATTEMPTED_PROJECT_DIRS:
+        return
+    _MIGRATION_ATTEMPTED_PROJECT_DIRS.add(key)
+    migrate_legacy_metrics(project_dir, config)
 
 
 # ---------------------------------------------------------------------------
@@ -218,7 +543,7 @@ def list_pending(project_dir: str, config: dict | None = None) -> list[dict]:
 
     壊れた/不完全なファイルはスキップする。Stop hook の縮退記録が走査対象を得るための一覧化。
     """
-    pending_dir = os.path.join(data_dir(project_dir, config), "pending")
+    pending_dir = os.path.join(_local_logs_dir(project_dir, config), "pending")
     if not os.path.isdir(pending_dir):
         return []
     entries: list[dict] = []
@@ -262,7 +587,7 @@ def consume_pending(
         if os.path.isfile(cand):
             path = cand
     if not path and skill:
-        pending_dir = os.path.join(data_dir(project_dir, config), "pending")
+        pending_dir = os.path.join(_local_logs_dir(project_dir, config), "pending")
         matches = sorted(glob.glob(os.path.join(pending_dir, f"{_slug(skill)}-*.json")))
         if matches:
             path = matches[-1]
@@ -294,7 +619,12 @@ def consume_pending(
 
 def append_metric(project_dir: str, skill: str, record: dict, config: dict | None = None) -> None:
     """metrics/<skill>.jsonl に 1 行追記する（所有者のみ読み書き 0o600）。"""
-    path = metrics_path(project_dir, skill, config)
+    _migrate_legacy_metrics_once(project_dir, config)
+    base = logs_dir(project_dir, config)
+    metrics_dir = _resolve_metrics_dir_within(base)
+    if metrics_dir is None:
+        return
+    path = os.path.join(metrics_dir, f"{_slug(skill)}.jsonl")
     _ensure_parent(path)
     fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
     with os.fdopen(fd, "a", encoding="utf-8") as f:
@@ -303,7 +633,12 @@ def append_metric(project_dir: str, skill: str, record: dict, config: dict | Non
 
 def read_metrics(project_dir: str, skill: str, config: dict | None = None) -> list[dict]:
     """metrics/<skill>.jsonl を読み、dict のリストを返す。壊れた行はスキップする。"""
-    path = metrics_path(project_dir, skill, config)
+    _migrate_legacy_metrics_once(project_dir, config)
+    base = logs_dir(project_dir, config)
+    metrics_dir = _resolve_metrics_dir_within(base)
+    if metrics_dir is None:
+        return []
+    path = os.path.join(metrics_dir, f"{_slug(skill)}.jsonl")
     if not os.path.isfile(path):
         return []
     records: list[dict] = []
@@ -326,23 +661,31 @@ def recent_run_ids(
 ) -> set[str]:
     """metrics の末尾から run_id 集合を返す（重複記録チェック用の有界読み込み）。
 
-    ファイル全体ではなく末尾 ~128KB のみ読むため、肥大化しても I/O が一定。
+    既存の末尾 128 KiB に migration 1 回分の上限を加えた範囲のみ読むため、
+    migration 直前に記録された run_id を保持しつつ、肥大化しても I/O が一定。
+    byte window 内の全行を検査し、migration や短いレコードの集中追記で現在の
+    run_id が行数上限から押し出されることを防ぐ。``limit`` は後方互換のため
+    受理するが、I/O/メモリは byte window で既に有界なので機能上は使用しない。
     """
-    path = metrics_path(project_dir, skill, config)
+    _migrate_legacy_metrics_once(project_dir, config)
+    base = logs_dir(project_dir, config)
+    metrics_dir = _resolve_metrics_dir_within(base)
+    if metrics_dir is None:
+        return set()
+    path = os.path.join(metrics_dir, f"{_slug(skill)}.jsonl")
     if not os.path.isfile(path):
         return set()
-    tail_bytes = 128 * 1024
     with open(path, "rb") as f:
         f.seek(0, os.SEEK_END)
         size = f.tell()
-        f.seek(max(0, size - tail_bytes))
+        f.seek(max(0, size - RECENT_RUN_IDS_TAIL_BYTES))
         chunk = f.read().decode("utf-8", "replace")
     ids: set[str] = set()
     # 先頭は途中行の可能性があるため 1 行目を捨てる（size>tail のときのみ）
     lines = chunk.splitlines()
-    if size > tail_bytes and lines:
+    if size > RECENT_RUN_IDS_TAIL_BYTES and lines:
         lines = lines[1:]
-    for line in lines[-limit:]:
+    for line in lines:
         line = line.strip()
         if not line:
             continue

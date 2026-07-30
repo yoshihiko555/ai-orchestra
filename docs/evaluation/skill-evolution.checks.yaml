@@ -24,3 +24,22 @@
   covered_by:
     - packages/skill-evolution/tests/test_skill_evolution_cli.py::test_check_trigger_skips_command_for_invalid_target_slug
   notes: invalid target slugs preserve trigger and exit semantics while returning a machine-readable skip reason.
+
+- ev_id: EV-37
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/skill-evolution/tests/test_skill_evolution_root_resolution.py
+  covered_by:
+    - packages/skill-evolution/tests/test_skill_evolution_root_resolution.py::test_worktree_metrics_are_written_to_root_log
+    - packages/skill-evolution/tests/test_skill_evolution_root_resolution.py::test_root_resolution_failure_writes_metrics_to_project
+    - packages/skill-evolution/tests/test_skill_evolution_root_resolution.py::test_lessons_remain_worktree_local
+    - packages/skill-evolution/tests/test_skill_evolution_root_resolution.py::test_pending_and_locks_resolve_to_project_local
+    - packages/skill-evolution/tests/test_skill_evolution_root_resolution.py::test_legacy_metrics_are_migrated_once_and_stale_claim_is_untouched
+    - packages/skill-evolution/tests/test_skill_evolution_root_resolution.py::test_migration_leaves_transient_state_and_lessons_at_legacy_path
+    - packages/skill-evolution/tests/test_skill_evolution_root_resolution.py::test_metrics_migration_caps_tail_at_line_boundary
+    - packages/skill-evolution/tests/test_skill_evolution_root_resolution.py::test_root_resolution_is_cached_per_project
+    - packages/skill-evolution/tests/test_skill_evolution_root_resolution.py::test_logs_dir_rejects_traversal
+  notes: metrics alone use the root worktree; pending and locks resolve project-local (not root-aggregated); lessons also stay project-local; only legacy metrics receive fail-open one-shot migration.
