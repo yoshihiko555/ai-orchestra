@@ -6,9 +6,10 @@
 # 機能全体の有効/無効。
 enabled: true
 
-# データ保存先（プロジェクトローカル）。metrics/ と lessons/ をこの下に置く。
+# データ保存先。metrics のみ root worktree に集約し、lessons/pending/locks は worktree ローカルに保つ。
 storage:
-  dir: ".claude/skill-evolution"
+  dir: ".claude/skill-evolution" # lessons 専用。root worktree 解決しない
+  logs_dir: ".claude/logs/skill-evolution" # metrics は root、pending/locks は project ローカルで同じ相対パスを使う
 
 # lessons/<skill>.md の肥大化管理（NF-01: 注入コンテキストを膨らませない）。
 lessons:
