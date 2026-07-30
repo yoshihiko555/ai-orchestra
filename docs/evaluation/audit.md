@@ -68,10 +68,14 @@ audit パッケージは、Claude Code セッション中のルーティング�
 - N/A: CLI ツール型 - 破壊的操作の安全策 — audit のスクリプトはログ読み取り専用の分析・レポート生成ツールであり、JSONL ソースデータを変更・削除する操作を持たない（`-o` 指定時の出力ファイル上書きのみで、ログ自体への影響はない） — 根拠: packages/audit/README.md（各スクリプトの説明はすべて「表示」「生成」で、削除・変更系コマンドの記載がない）
 - [ ] EV-20（境界 / should）: CLI ツール型 - 出力の安定性: JSONL の `type` フィールドは `session_start` / `session_end` / `prompt` / `route_decision` / `cli_call` / `subagent_start` / `subagent_end` のいずれかで安定しており、`log-viewer --raw` や機械可読出力はこの語彙に依存する — 根拠: packages/audit/README.md（フック一覧の「記録内容」列）
 - 設定レイヤリング: EV-11 / EV-12 参照（スクリプトのデフォルト値も `audit-flags.json` + `*.local.json` の階層に従う）
+- [ ] EV-21（正常 / must）: ログ出力先の root worktree 集約とフォールバック — worktree セッションから書き込まれるイベントログ（`session_start` 等）は `_resolve_log_root`（core `hook_common.resolve_log_root` への委譲）により root worktree の `.claude/logs/audit/` に集約される。root worktree が解決できない場合、または root に `.claude/` が存在しない場合は、`_resolve_project_dir`（`.claude/` を持つ親の遡り探索）で解決した project_dir へフォールバックする — 根拠: docs/adr/ADR-20260728-046.md
+- [ ] EV-22（異常 / must）: root 解決の堅牢性の core 委譲 — `_resolve_root_worktree` / `_resolve_log_root` は audit 固有の git 解決ロジックを持たず core（`hook_common.resolve_root_worktree` / `resolve_log_root`）へ委譲するため、`git init --separate-git-dir` 構成の誤検出、ambient な `GIT_DIR`/`GIT_WORK_TREE` 環境変数汚染、非 UTF-8 パスでの `UnicodeDecodeError` があっても誤ったログ出力先を解決しない（core 側の防御をそのまま享受する） — 根拠: docs/adr/ADR-20260728-046.md + 実装挙動（event_logger.py が hook_common から import）
+- [ ] EV-23（境界 / should）: sys.path bootstrap フォールバック — `event_logger.py` は `AI_ORCHESTRA_DIR` 環境変数が未設定でも `__file__` 相対の `../../core/hooks` を候補として core の `hook_common` を解決でき、`packages/audit/scripts/` 配下のスクリプトが `event_logger` を単体 import しても解決に失敗しない — 根拠: 実装挙動
 
 ## 5. テストレビュー判断基準（パッケージ固有）
 
 - EV-14（秘密情報マスキング）を検証するテストは、`sk-` 形式トークン・`Bearer` ヘッダー・AWS/Google 系キー・PEM 秘密鍵ブロックなど、パターンごとに独立したケースを持つこと。1 パターンの通過を全パターン担保の代わりにしない。
 - EV-09（quality_gate イベントの記録元が audit ではない）を検証する際、audit 側のテストは「audit hook が quality_gate イベントを発生させないこと」の確認に留め、quality-gates 側の記録内容の正しさまでは audit の評価セットの範囲外とする。
 - EV-06（トレース連鎖）のテストは、`subagent_start` の `ptid` が親イベントのトレース ID と一致することを、単一イベントの存在確認ではなく親子関係の突合で検証すること。
+- EV-21/EV-22（root worktree 集約）のテストは、`hook_common.resolve_root_worktree` / `resolve_log_root` 側の既存テストが通ることのみで代替せず、audit の `_resolve_log_root` / `_resolve_project_dir` が委譲後も正しい解決先（root の `.claude/logs/audit/` またはフォールバック先の project_dir）へたどり着くことを audit 自身のテストとして検証しているか確認する。
 - それ以外は README.md「テストレビュー判断基準（共通）」のみを適用する。
