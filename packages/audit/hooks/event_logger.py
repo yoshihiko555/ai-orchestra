@@ -12,14 +12,38 @@ import fcntl
 import json
 import os
 import re
-import subprocess
+import sys
 import tempfile
 import uuid
 from typing import Any
 
+# --- sys.path 設定（core/hooks を解決してから import する）---------------------
+# 他の audit hook（audit-bootstrap.py 等）は AI_ORCHESTRA_DIR 分岐のみを持つが、
+# event_logger は packages/audit/scripts/ から単体 import されることがあるため、
+# __file__ 相対フォールバックを追加で持つ（意図的な差異）。
+_hook_dir = os.path.dirname(os.path.abspath(__file__))
+if _hook_dir not in sys.path:
+    sys.path.insert(0, _hook_dir)
+
+_orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
+_repo_core_hooks = os.path.abspath(os.path.join(_hook_dir, "..", "..", "core", "hooks"))
+# 優先度順（AI_ORCHESTRA_DIR 側が最優先）を維持するため、逆順で insert(0, ...) する。
+# 順方向ループで insert(0) すると、後に処理される __file__ 相対フォールバックが
+# 先頭に来てしまい優先順位が逆転する。
+for _candidate in reversed(
+    [
+        os.path.join(_orchestra_dir, "packages", "core", "hooks") if _orchestra_dir else "",
+        _repo_core_hooks,
+    ]
+):
+    if _candidate and os.path.isdir(_candidate) and _candidate not in sys.path:
+        sys.path.insert(0, _candidate)
+
+from hook_common import resolve_log_root, resolve_root_worktree  # noqa: E402
+
 
 def _resolve_root_worktree(project_dir: str | None = None) -> str | None:
-    """Git の root worktree パスを解決する。
+    """Git の root worktree パスを解決する（core 共通実装への委譲）。
 
     worktree 環境では main worktree のパスを返す。
     通常リポジトリではリポジトリルートを返す(動作変更なし)。
@@ -28,37 +52,17 @@ def _resolve_root_worktree(project_dir: str | None = None) -> str | None:
     Args:
         project_dir: git を実行する作業ディレクトリ。省略時は CWD。
     """
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            cwd=project_dir or None,
-        )
-        if result.returncode == 0:
-            git_common_dir = result.stdout.strip()
-            if not git_common_dir:
-                return None
-            root = os.path.dirname(git_common_dir)
-            if os.path.isabs(root) and os.path.isdir(root):
-                return root
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        pass
-    return None
+    return resolve_root_worktree(project_dir)
 
 
 def _resolve_log_root(project_dir: str | None = None) -> str:
-    """ログ保存先のルートを解決する。
+    """ログ保存先のルートを解決する（core 共通実装への委譲）。
 
     worktree 環境では root worktree に集約する。
     通常環境では _resolve_project_dir と同じ。
     """
     resolved = _resolve_project_dir(project_dir)
-    root = _resolve_root_worktree(resolved)
-    if root and os.path.isdir(os.path.join(root, ".claude")):
-        return root
-    return resolved
+    return resolve_log_root(resolved)
 
 
 # ---------------------------------------------------------------------------

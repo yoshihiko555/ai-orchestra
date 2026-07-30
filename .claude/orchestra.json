@@ -66,7 +66,7 @@
     "config/quality-gates/evaluation-set-mapping.yaml",
     "config/skill-evolution/skill-evolution.yaml"
   ],
-  "last_sync": "2026-07-30T11:22:24.404731+00:00",
+  "last_sync": "2026-07-30T09:49:53.596546+00:00",
   "file_hashes": {
     "core": {
       "config/core/task-memory.yaml": "081c101ad10526344e4fe7831babbe6ef661d0a4ae7e49fad4eb3967c030b7d8"
