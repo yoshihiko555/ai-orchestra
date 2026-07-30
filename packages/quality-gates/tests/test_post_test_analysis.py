@@ -518,7 +518,15 @@ def test_main_blocks_by_default_when_config_lacks_block_key(
 def test_main_no_op_when_quality_gate_disabled(
     monkeypatch: pytest.MonkeyPatch, tmp_path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """quality_gate.enabled=false のときは Codex 提案 additionalContext も出さない。"""
+    """quality_gate.enabled=false のときは Codex 提案 additionalContext も出さない。
+
+    EV-21 は「提案・警告・ブロック・audit イベント記録を含む全動作を行わない」
+    ことを求めているため、stdout/exit code だけでなく、record_test_result が
+    書き込む共有状態ファイル（.claude/state/test-gate-checker.json）が一切
+    生成されないことも検証する（実装ギャップ: record_test_result が
+    quality_gate.enabled チェックより前に呼ばれ、無効時でも状態書き込みが
+    発生していた）。
+    """
     monkeypatch.setattr(
         post_test_analysis,
         "load_package_config",
@@ -534,10 +542,14 @@ def test_main_no_op_when_quality_gate_disabled(
         },
     )
 
+    state_file = tmp_path / ".claude" / "state" / "test-gate-checker.json"
+    assert not state_file.exists()
+
     with pytest.raises(SystemExit, match="0"):
         post_test_analysis.main()
 
     assert capsys.readouterr().out == ""
+    assert not state_file.exists()
 
 
 def test_main_masks_secrets_in_debug_suggestion(

@@ -284,6 +284,15 @@ def main():
         # architecture-reviewer).
         config = load_package_config("audit", "audit-flags.json", project_dir)
 
+        # EV-21: quality_gate.enabled=false のときは提案・警告・ブロック・audit
+        # イベント記録だけでなく、record_test_result による状態書き込みも含め
+        # 全動作を行わない（完全 no-op）。record_test_result より前にこの
+        # チェックを行う必要がある（以前は record_test_result が先に実行され、
+        # quality_gate.enabled=false でも状態ファイルへ書き込んでいた）。
+        quality_gate = load_quality_gate_config(project_dir, config=config)
+        if not resolve_quality_gate_enabled(quality_gate):
+            sys.exit(0)
+
         # Record test result to shared state (success resets counters)
         record_test_result(command, gate_passed, project_dir, config=config)
 
@@ -318,14 +327,10 @@ def main():
         if not analysis_failed:
             sys.exit(0)
 
-        # EV-21: quality_gate.enabled=false のときはブロック/audit記録だけで
-        # なく、この Codex 提案（additionalContext）も出さない（全動作停止）。
-        # `emit_quality_gate_event` は内部で自身の quality_gate 設定を再取得
-        # するため、ここでも同じ config を再利用して load_package_config の
-        # 重複読み込みを避ける。
-        quality_gate = load_quality_gate_config(project_dir, config=config)
-        if not resolve_quality_gate_enabled(quality_gate):
-            sys.exit(0)
+        # EV-21: quality_gate.enabled=false のときは、この Codex 提案
+        # （additionalContext）も含め全動作を行わない。このチェックは
+        # 関数冒頭（record_test_result より前）で既に行っているため
+        # ここでは再実施しない（disabled ならここに到達する前に return 済み）。
 
         # EV-22: additionalContext に埋め込む前に秘匿情報をマスクする。
         failure_summary = mask_secrets(extract_failure_summary(output))
