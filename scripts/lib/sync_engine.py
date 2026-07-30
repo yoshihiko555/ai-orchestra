@@ -673,8 +673,12 @@ def sync_hooks(
 ) -> int:
     """manifest.json の hooks と settings.local.json を比較し差分を同期する。
 
+    未登録の hook は追加し、登録済みでも manifest 側の timeout と食い違う場合は
+    settings.local.json 側を manifest の値に更新する（内部制限とホスト側の
+    kill タイムアウトが乖離したまま放置されないようにするため）。
+
     Returns:
-        変更があった hook 数（追加 + 削除）
+        変更があった hook 数（追加 + timeout 更新 + 削除）
     """
     settings_path = project_dir / ".claude" / "settings.local.json"
     if not settings_path.exists():
@@ -690,7 +694,8 @@ def sync_hooks(
 
     sync_hook_command = 'python3 "$AI_ORCHESTRA_DIR/scripts/sync-orchestra.py"'
 
-    expected_hooks: set[tuple[str, str, str | None]] = set()
+    # (event, command, matcher) -> manifest 側で期待される timeout
+    expected_hooks: dict[tuple[str, str, str | None], int] = {}
     installed_set = set(installed_packages)
 
     for pkg_name in installed_packages:
@@ -705,17 +710,20 @@ def sync_hooks(
 
         for event, entries in manifest.get("hooks", {}).items():
             for raw_entry in entries:
-                filename, matcher = parse_hook_entry(raw_entry)
+                filename, matcher, timeout = parse_hook_entry(raw_entry)
                 if not filename:
                     continue
                 command = get_hook_command(pkg_name, filename)
-                expected_hooks.add((event, command, matcher))
+                expected_hooks[(event, command, matcher)] = timeout
 
     added = 0
-    for event, command, matcher in expected_hooks:
+    updated = 0
+    for (event, command, matcher), timeout in expected_hooks.items():
         if not find_hook_in_settings(settings_hooks, event, command, matcher):
-            add_hook_to_settings(settings_hooks, event, command, matcher)
+            add_hook_to_settings(settings_hooks, event, command, matcher, timeout)
             added += 1
+        elif add_hook_to_settings(settings_hooks, event, command, matcher, timeout):
+            updated += 1
 
     removed = 0
     for event, entries in list(settings_hooks.items()):
@@ -736,7 +744,7 @@ def sync_hooks(
                     remove_hook_from_settings(settings_hooks, event, command, matcher)
                     removed += 1
 
-    changes = added + removed
+    changes = added + updated + removed
     if changes > 0:
         settings["hooks"] = settings_hooks
         try:

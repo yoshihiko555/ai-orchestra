@@ -332,12 +332,27 @@ Issue 起点の反復ループを、永続 state / journal、lease fencing、two
 
 | 種別  | 名前                  | 説明                                                              |
 | ----- | --------------------- | ------------------------------------------------------------------ |
+| hook  | `codd-scan-postedit.py` | PostToolUse(Edit/Write): scope 内編集時に `scan` を実行し graph を再構築（opt-in、`hooks.scan_on_edit` 既定 `false`）。timeout 90 秒 |
+| hook  | `codd-validate-precommit.py` | PreToolUse(Bash): `git commit` 検出時に `validate` を実行し warn/block（opt-in、`hooks.validate_on_commit` 既定 `warn`）。timeout 90 秒 |
 | lib   | `codd_common.py`      | フロントマター parser・グラフモデル・config ローダー               |
 | lib   | `codd_code.py`        | `code_scope` のコード注釈（1行形式 `codd:<key> <value>`）から code/test ノードを抽出 |
 | script | `codd.py`             | `scan` / `validate` / `graph`（可視化）/ `impact`（変更影響分類）  |
 | skill | `codd-scan`, `codd-validate`, `codd-impact` | scan / validate / impact のスキル化                |
 | rule  | `codd-frontmatter-policy` | `codd:` フロントマター記法ポリシー                              |
-| config | `codd.yaml`           | scope / `code_scope` glob・`inline_confidence`（コード注釈由来リンクの既定信頼度）・kind/relation 語彙・検査レベル（`malformed_annotation` 含む）・グラフ保存先 |
+| config | `codd.yaml`           | scope / `code_scope` glob・`inline_confidence`（コード注釈由来リンクの既定信頼度）・kind/relation 語彙・検査レベル（`malformed_annotation` 含む）・グラフ保存先・`hooks.scan_on_edit` / `hooks.validate_on_commit`（下記） |
+
+### hook の実動作（opt-in）
+
+hook の**登録**は essential プリセットで自動展開されるが、**実動作**は `codd.yaml`（または
+`.local.yaml`）の以下のキーで制御する。
+
+| キー                       | 型                     | 既定値  | 説明                                                                 |
+| -------------------------- | ---------------------- | ------- | ---------------------------------------------------------------------- |
+| `hooks.scan_on_edit`       | bool                   | `false` | `true` で scope 内ファイル編集時に `scan` を自動実行（常に非ブロック） |
+| `hooks.validate_on_commit` | `off` / `warn` / `block` | `warn`  | `git commit` 検出時の `validate` 動作。`off` で無効化、`block` は error 検出時に commit をブロック（exit 2） |
+
+hook 自体の登録解除は `orchex disable codd --project .` で行う。実動作のみを止めたい場合は
+上記キーで制御する（登録は残したまま無害化できる）。
 
 ---
 

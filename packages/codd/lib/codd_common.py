@@ -6,7 +6,10 @@ hook ではなく純粋なライブラリ（CLI `scripts/codd.py` から import 
 
 from __future__ import annotations
 
+import functools
 import math
+import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -626,6 +629,78 @@ def normalize_check_level(value: Any) -> str:
     return level
 
 
+# hook 実動作の opt-in 設定（Issue #95）。
+DEFAULT_SCAN_ON_EDIT = False
+VALIDATE_ON_COMMIT_OFF = "off"
+VALIDATE_ON_COMMIT_WARN = "warn"
+VALIDATE_ON_COMMIT_BLOCK = "block"
+DEFAULT_VALIDATE_ON_COMMIT = VALIDATE_ON_COMMIT_WARN
+ALLOWED_VALIDATE_ON_COMMIT = {
+    VALIDATE_ON_COMMIT_OFF,
+    VALIDATE_ON_COMMIT_WARN,
+    VALIDATE_ON_COMMIT_BLOCK,
+}
+
+
+def _as_strict_bool(value: Any, field_name: str) -> bool:
+    """真正な YAML bool のみを受理する（T6: Issue #95 bot レビュー対応）。
+
+    Python の `bool(...)` 変換は非空文字列（``"false"`` を含む）・非空 dict/list を
+    無条件で ``True`` にしてしまうため、``scan_on_edit: "false"``（引用符付き文字列の
+    設定ミス）がそのまま有効化として通ってしまう。他の codd 設定検証
+    （`normalize_check_level` 等）と同様、想定外の型は ``ValueError`` にして
+    `main()` の設定エラーハンドラで整形させる（hook 経路では `safe_hook_execution`
+    により fail-safe exit 0 に収束する）。
+    """
+    if isinstance(value, bool):
+        return value
+    raise ValueError(f"{field_name} は真偽値（true / false）である必要があります: {value!r}")
+
+
+def normalize_validate_on_commit(value: Any) -> str:
+    """``hooks.validate_on_commit`` を正準文字列に正規化する。
+
+    YAML 1.1 は bare ``off`` を boolean False として読むため、``normalize_check_level``
+    と同様に False / "off"（大文字小文字無視）を等しく ``off`` に揃える。
+    ``off`` / ``warn`` / ``block`` 以外の値（typo 等）は、hook が意図せず無効化されたり
+    誤動作したりするのを防ぐため、ここで ValueError にする。
+    """
+    if value is False:
+        return VALIDATE_ON_COMMIT_OFF
+    mode = str(value).strip().lower()
+    if mode not in ALLOWED_VALIDATE_ON_COMMIT:
+        raise ValueError(
+            f"Invalid hooks.validate_on_commit: {value!r} (allowed: off / warn / block)"
+        )
+    return mode
+
+
+@dataclass(frozen=True)
+class HooksConfig:
+    """hook 実動作の設定（codd.yaml の ``hooks:`` ブロック、Issue #95）。
+
+    hook の「登録」は manifest 経由で全導入先に自動展開されるが、「実動作」の既定は
+    キーごとに異なる: ``scan_on_edit`` は既定 ``false``（明示的に opt-in しない限り
+    `codd scan` は実行されない）だが、``validate_on_commit`` は既定 ``warn``（opt-in
+    不要で `git commit` のたびに `codd validate` が実行される。非ブロックの警告表示のみ。
+    完全に無効化するには ``off`` を指定する）。
+    """
+
+    scan_on_edit: bool
+    validate_on_commit: str
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> HooksConfig:
+        return cls(
+            scan_on_edit=_as_strict_bool(
+                data.get("scan_on_edit", DEFAULT_SCAN_ON_EDIT), "hooks.scan_on_edit"
+            ),
+            validate_on_commit=normalize_validate_on_commit(
+                data.get("validate_on_commit", DEFAULT_VALIDATE_ON_COMMIT)
+            ),
+        )
+
+
 def _as_mapping(value: Any, field_name: str) -> dict[str, Any]:
     """``scope`` / ``code_scope`` / ``graph_store`` 等のサブセクションを検証する。
 
@@ -720,6 +795,15 @@ class CoddConfig:
     code_include: list[str] = field(default_factory=list)
     code_exclude: list[str] = field(default_factory=list)
     inline_confidence: float = DEFAULT_INLINE_CONFIDENCE
+    # Issue #95: hook 実動作の opt-in 設定。既定値は「未設定」相当（scan_on_edit=False /
+    # validate_on_commit="warn"）で、旧コンストラクタ呼び出しでも省略可能にする
+    # （code_include 等と同じ後方互換パターン）。
+    hooks: HooksConfig = field(
+        default_factory=lambda: HooksConfig(
+            scan_on_edit=DEFAULT_SCAN_ON_EDIT,
+            validate_on_commit=DEFAULT_VALIDATE_ON_COMMIT,
+        )
+    )
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> CoddConfig:
@@ -747,8 +831,232 @@ class CoddConfig:
             code_include=_as_glob_list(code_scope.get("include"), "code_scope.include"),
             code_exclude=_as_glob_list(code_scope.get("exclude"), "code_scope.exclude"),
             inline_confidence=_load_inline_confidence(data),
+            hooks=HooksConfig.from_dict(_as_mapping(data.get("hooks"), "hooks")),
             raw=data,
         )
+
+
+# ---------------------------------------------------------------------------
+# 単一パスの scope マッチング（Issue #95）
+#
+# `scripts/codd.py` の `_glob_relpaths()` / `collect_files()` はディレクトリ全体を
+# 列挙してから対象を絞り込む「列挙型」の実装であり、PostToolUse hook のように
+# 1 ファイルの適合可否だけを毎回問い合わせる用途には向かない（リポジトリ全体の
+# glob を都度発生させてしまう）。ここでは `_glob_relpaths()` と同じ glob 解釈
+# （`**` はパスセグメント単位で 0 個以上の階層にマッチ、`*`/`?`/`[seq]` は
+# セグメント内のみで解釈）を、ディレクトリ走査なしで単一パスに適用する。
+#
+# 文字クラス（``[seq]`` / ``[!seq]``）の変換は `scripts/codd.py` の
+# `_scope_pattern_to_regex()`（EV-49 で仕様化済み: `[!seq]` の否定・閉じ `]`
+# 無しのリテラル `[`・不正範囲 `[z-a]` の fnmatch.translate 相当の正規化）と
+# 完全に同一のロジックを共有する（`_find_char_class_end` / `_char_class_to_regex`）。
+# 以前はここに素朴な `f"[{...}]"` 転写の独自実装があり、`[!seq]`（否定）を regex に
+# そのまま持ち込むと非否定として解釈されてしまう意味反転バグがあった
+# （codd-review High-1: `Path.glob("docs/[!_]*.md")` は `_draft.md` を除外するが、
+# 旧実装の `glob_pattern_to_regex()` は `docs/_draft.md` にマッチしてしまっていた）。
+# 二重実装の齟齬を無くすため、ここへ一本化して `scripts/codd.py` から import する。
+# ---------------------------------------------------------------------------
+
+_RE_SETOPS_SUB = re.compile(r"([&~|])").sub
+
+
+def _find_char_class_end(pattern: str, start: int) -> int | None:
+    """``pattern[start]`` が ``[`` の文字クラスの閉じ ``]`` の index を返す。
+
+    fnmatch と同じ規約: ``[!...`` の直後、または ``[...`` の直後に来る最初の
+    ``]`` はクラスの終端ではなくリテラル文字として扱う（例: ``[]]`` は ``]`` 1文字）。
+    閉じ ``]`` が見つからない場合は None（呼び出し側でリテラル ``[`` として扱う）。
+    """
+    j = start + 1
+    length = len(pattern)
+    if j < length and pattern[j] == "!":
+        j += 1
+    if j < length and pattern[j] == "]":
+        j += 1
+    while j < length and pattern[j] != "]":
+        j += 1
+    return j if j < length else None
+
+
+def _char_class_to_regex(stuff: str) -> str:
+    """glob の文字クラス中身（``[`` と ``]`` の間）を regex 文字クラスへ変換する。
+
+    ``!`` 先頭の否定を regex の ``^`` に変換し、regex 側で特別な意味を持つ
+    先頭 ``^`` / バックスラッシュ / 集合演算子（``&`` ``~`` ``|``）はリテラルとして
+    エスケープする。
+
+    不正な文字範囲（``lo > hi``。例: ``[ab-a]`` の ``b-a``）は CPython
+    ``fnmatch.translate()`` と同一のアルゴリズムで、範囲部分だけを除去し他の
+    リテラル文字は保持する（``[ab-a]`` → リテラル ``a`` にマッチ）。クラス全体が
+    空になった場合（例: 単体の ``[z-a]``）のみ ``(?!)``（常時非マッチ）、
+    ``[!z-a]`` のように否定の空範囲は ``.``（任意の1文字にマッチ）にする
+    （いずれも fnmatch と同じ規約）。
+    """
+    if "-" not in stuff:
+        body = stuff.replace("\\", "\\\\")
+    else:
+        chunks: list[str] = []
+        i = 0
+        length = len(stuff)
+        k = 2 if stuff.startswith("!") else 1
+        while True:
+            k = stuff.find("-", k, length)
+            if k < 0:
+                break
+            chunks.append(stuff[i:k])
+            i = k + 1
+            k = k + 3
+        chunk = stuff[i:length]
+        if chunk:
+            chunks.append(chunk)
+        else:
+            chunks[-1] += "-"
+        # 不正な範囲（lo > hi）を除去する（fnmatch.translate と同じ規約）。
+        for idx in range(len(chunks) - 1, 0, -1):
+            if chunks[idx - 1][-1] > chunks[idx][0]:
+                chunks[idx - 1] = chunks[idx - 1][:-1] + chunks[idx][1:]
+                del chunks[idx]
+        body = "-".join(c.replace("\\", "\\\\").replace("-", "\\-") for c in chunks)
+    if not body:
+        return "(?!)"  # 空クラス（範囲除去の結果、有効な文字が残らない）は常時非マッチ
+    if body == "!":
+        return "."  # 否定の空クラス（`[!lo-hi]` で lo > hi）は任意の1文字にマッチ
+    body = _RE_SETOPS_SUB(r"\\\1", body)
+    if body[0] == "!":
+        body = "^" + body[1:]
+    elif body[0] in ("^", "["):
+        body = "\\" + body
+    return f"[{body}]"
+
+
+def _glob_segment_to_regex(segment: str) -> str:
+    """glob パターンの 1 セグメント（``/`` を含まない）を正規表現断片へ変換する。"""
+    parts: list[str] = []
+    index = 0
+    while index < len(segment):
+        char = segment[index]
+        if char == "*":
+            parts.append("[^/]*")
+        elif char == "?":
+            parts.append("[^/]")
+        elif char == "[":
+            close = _find_char_class_end(segment, index)
+            if close is None:
+                parts.append(re.escape(char))
+            else:
+                parts.append(_char_class_to_regex(segment[index + 1 : close]))
+                index = close
+        else:
+            parts.append(re.escape(char))
+        index += 1
+    return "".join(parts)
+
+
+# glob パターンは同一プロセス内（走査 1 回）で複数パスに繰り返し適用されるため、
+# 正規表現コンパイルをキャッシュする（Medium-2: codd-review）。パターン種類数は
+# codd.yaml の scope/code_scope 設定に比例し実運用で数百を大きく超えないため、
+# 定数上限で十分（無制限キャッシュによるメモリ増大を避ける）。
+_GLOB_REGEX_CACHE_MAXSIZE = 512
+
+
+@functools.lru_cache(maxsize=_GLOB_REGEX_CACHE_MAXSIZE)
+def glob_pattern_to_regex(pattern: str) -> re.Pattern[str]:
+    """glob パターンを posix 相対パス全体マッチ用の正規表現へ変換する。
+
+    ``Path.glob()`` と同じ意味論: パスセグメントとして単独で書かれた ``**`` のみ
+    0 個以上のディレクトリ階層にマッチし（例: ``docs/**/*.md`` は ``docs/x.md`` にも
+    マッチする）、それ以外の ``*`` / ``?`` / ``[seq]`` は 1 セグメント内で解釈される。
+
+    戻り値の ``re.Pattern`` は呼び出し元が変更しない前提でキャッシュする
+    （`functools.lru_cache`）。
+    """
+    segments = pattern.split("/")
+    regex = "^"
+    for index, segment in enumerate(segments):
+        is_last = index == len(segments) - 1
+        if segment == "**":
+            regex += ".*" if is_last else "(?:.*/)?"
+            continue
+        regex += _glob_segment_to_regex(segment)
+        if not is_last:
+            regex += "/"
+    regex += "$"
+    return re.compile(regex)
+
+
+def _normalize_scope_pattern(root: Path, pattern: str) -> str | None:
+    """scope glob パターンを root 相対の正規化形へレキシカルに畳み込む（T2: Issue #95）。
+
+    ``./docs/**/*.md`` や ``../<root名>/docs/**/*.md`` のように、一度 root の外へ
+    出て同じ root 内へ戻ってくる（あるいは単に ``./`` を冠する）パターンは、通常
+    走査（``_glob_relpaths()`` / ``Path.glob``）側では実ファイル解決 +
+    ``os.path.normpath`` によって ``docs/**/*.md`` に畳み込まれ scan 対象になる。
+    一方、単一パス判定（`path_matches_glob_scope` / `path_in_scan_scope`）がパターン
+    文字列を未正規化のまま regex 化すると、``./docs/x.md`` という別名表記のまま
+    比較してしまい常に非該当になる（scan 本体との解釈の食い違い）。
+
+    ``root / pattern`` を ``os.path.normpath`` でレキシカルに畳み込み（ファイル
+    システムへはアクセスしない）、root 配下に収まっていれば root 相対の正規化
+    パターンを返す。root の外（または root 自体）を指す場合は None（マッチ対象
+    なし。``_glob_relpaths()`` が root 外を黙って除外するのと同じ扱い）。
+
+    `scripts/codd.py` の削除済みファイル向け判定（``_matches_scope_pattern``）と
+    完全に同一のロジックを共有する（EV-56 で仕様化済み。二重実装の齟齬を無くすため
+    ここへ一本化し、`scripts/codd.py` 側は import して使う）。
+    """
+    combined = os.path.normpath(str(root / pattern))
+    root_str = os.path.normpath(str(root))
+    if combined == root_str:
+        return None
+    prefix = root_str + os.sep
+    if not combined.startswith(prefix):
+        return None
+    return combined[len(prefix) :].replace(os.sep, "/")
+
+
+def path_matches_glob_scope(
+    root: Path, target: Path, include: list[str], exclude: list[str]
+) -> bool:
+    """target が include にマッチしかつ exclude にマッチしないかを判定する。
+
+    root 外へ解決される path（symlink 経由・``..`` セグメント）や、存在しない
+    ファイルは対象外（False）。root 内シンボリックリンクの相対パス表現は、
+    リンクの解決先ではなくリンク自体の論理パスを使う（``_glob_relpaths()`` と
+    同じ安全策・同じパス表現）。
+
+    include/exclude の各パターンは比較前に `_normalize_scope_pattern()` で root
+    相対のレキシカル正規化形へ畳み込む（T2: ``./docs/**/*.md`` のような表記でも
+    scan 本体（`Path.glob`）と同じ対象を判定できるようにするため）。
+    """
+    if not target.is_file():
+        return False
+    resolved_root = root.resolve()
+    resolved_target = target.resolve()
+    if not resolved_target.is_relative_to(resolved_root):
+        return False
+    normalized_target = Path(os.path.normpath(target))
+    if not normalized_target.is_relative_to(root):
+        return False
+    relpath = normalized_target.relative_to(root).as_posix()
+
+    def _matches(pattern: str) -> bool:
+        normalized_pattern = _normalize_scope_pattern(root, pattern)
+        if normalized_pattern is None:
+            return False
+        return glob_pattern_to_regex(normalized_pattern).match(relpath) is not None
+
+    if not any(_matches(pattern) for pattern in include):
+        return False
+    return not any(_matches(pattern) for pattern in exclude)
+
+
+def path_in_scan_scope(root: Path, target: Path, config: CoddConfig) -> bool:
+    """target が scan 対象スコープ（``scope`` + ``code_scope`` の合成）に含まれるかを判定する。"""
+    if path_matches_glob_scope(root, target, config.include, config.exclude):
+        return True
+    if not config.code_include:
+        return False
+    return path_matches_glob_scope(root, target, config.code_include, config.code_exclude)
 
 
 def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
