@@ -218,6 +218,23 @@ def test_target_toggle_skips_test_failure(monkeypatch, tmp_path) -> None:
     )
     assert _read_log(project) == []
 
+    # 同じ部分設定のまま別の有効な失敗種別も入力し、「1つでも false なら
+    # 全種別停止」への退行を検出する（EV-08）。
+    _run_hook(
+        monkeypatch,
+        project,
+        {
+            "cwd": str(project),
+            "session_id": "sess-5",
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls /nope"},
+            "tool_response": {"exit_code": 2, "stdout": "no such file"},
+        },
+    )
+    records = _read_log(project)
+    assert len(records) == 1
+    assert records[0]["data"]["failure_type"] == "tool_error"
+
 
 # EV-08: targets.tool_error=false で非 Bash ツールエラーの記録を無効化できる。
 def test_target_toggle_skips_tool_error(monkeypatch, tmp_path) -> None:
@@ -238,6 +255,23 @@ def test_target_toggle_skips_tool_error(monkeypatch, tmp_path) -> None:
         },
     )
     assert _read_log(project) == []
+
+    # 同じ部分設定のまま別の有効な失敗種別も入力し、「1つでも false なら
+    # 全種別停止」への退行を検出する（EV-08）。
+    _run_hook(
+        monkeypatch,
+        project,
+        {
+            "cwd": str(project),
+            "session_id": "sess-tool-toggle",
+            "tool_name": "Bash",
+            "tool_input": {"command": "ruff check ."},
+            "tool_response": {"exit_code": 1, "stdout": "1 error"},
+        },
+    )
+    records = _read_log(project)
+    assert len(records) == 1
+    assert records[0]["data"]["failure_type"] == "lint_failure"
 
 
 # EV-08: targets.lint_failure=false で lint 失敗の記録を無効化できる。
@@ -260,6 +294,23 @@ def test_target_toggle_skips_lint_failure(monkeypatch, tmp_path) -> None:
     )
     assert _read_log(project) == []
 
+    # 同じ部分設定のまま別の有効な失敗種別も入力し、「1つでも false なら
+    # 全種別停止」への退行を検出する（EV-08）。
+    _run_hook(
+        monkeypatch,
+        project,
+        {
+            "cwd": str(project),
+            "session_id": "sess-lint-toggle",
+            "tool_name": "Edit",
+            "tool_input": {"file_path": "x.py"},
+            "tool_response": {"error": "String to replace not found"},
+        },
+    )
+    records = _read_log(project)
+    assert len(records) == 1
+    assert records[0]["data"]["failure_type"] == "tool_error"
+
 
 # EV-08: targets.cli_failure=false で外部 CLI 失敗の記録を無効化できる。
 def test_target_toggle_skips_cli_failure(monkeypatch, tmp_path) -> None:
@@ -280,6 +331,23 @@ def test_target_toggle_skips_cli_failure(monkeypatch, tmp_path) -> None:
         },
     )
     assert _read_log(project) == []
+
+    # 同じ部分設定のまま別の有効な失敗種別も入力し、「1つでも false なら
+    # 全種別停止」への退行を検出する（EV-08）。
+    _run_hook(
+        monkeypatch,
+        project,
+        {
+            "cwd": str(project),
+            "session_id": "sess-cli-toggle",
+            "tool_name": "Bash",
+            "tool_input": {"command": "pytest"},
+            "tool_response": {"exit_code": 1, "stdout": "1 failed"},
+        },
+    )
+    records = _read_log(project)
+    assert len(records) == 1
+    assert records[0]["data"]["failure_type"] == "test_failure"
 
 
 def test_masks_secrets_in_excerpt(monkeypatch, tmp_path) -> None:

@@ -411,10 +411,29 @@ def test_command_and_excerpt_are_truncated_to_display_limits(monkeypatch, tmp_pa
     _run(monkeypatch, project)
 
     out = capsys.readouterr().out
+    lines = out.splitlines()
     assert "…" in out
     assert "x" * 200 not in out
     assert long_excerpt.strip() not in out
-    assert all(len(line) < 200 for line in out.splitlines())
+    assert all(len(line) < 200 for line in lines)
+
+    # 表示上限は実装モジュールの定数を正本にし、上限がちょうど適用されることを
+    # 直接検証する（緩和 regress を検出するため）。
+    command_line = next(line for line in lines if line.strip().startswith("- ×"))
+    excerpt_line = next(line for line in lines if "↳ [log]" in line)
+
+    command_prefix = "    - ×2 [test] "
+    excerpt_prefix = "        ↳ [log] "
+    assert command_line.startswith(command_prefix)
+    assert excerpt_line.startswith(excerpt_prefix)
+
+    command_display = command_line[len(command_prefix) :]
+    excerpt_display = excerpt_line[len(excerpt_prefix) :]
+
+    assert command_display.endswith("…")
+    assert len(command_display) == inject.MAX_COMMAND_DISPLAY_CHARS
+    assert excerpt_display.endswith("…")
+    assert len(excerpt_display) == inject.MAX_EXCERPT_DISPLAY_CHARS
 
 
 # EV-19: main() 統合レベルで TAIL_READ_MULTIPLIER の上限付き末尾読みを検証する。
@@ -430,11 +449,28 @@ def test_max_records_multiplier_caps_far_exceeding_log(monkeypatch, tmp_path, ca
     ]
     _write_log(project, noise + recent)
 
+    # _read_tail_lines をスパイで包み、実際に要求された読み出し件数が
+    # max_records * TAIL_READ_MULTIPLIER を超えないことを直接観測する
+    # （_tail_records が全件読みへ退行しても最終サマリーだけでは検出できないため）。
+    requested_counts: list[int] = []
+    original_read_tail_lines = inject._read_tail_lines
+
+    def _spy_read_tail_lines(log_path: str, max_records: int) -> list[str]:
+        requested_counts.append(max_records)
+        return original_read_tail_lines(log_path, max_records)
+
+    monkeypatch.setattr(inject, "_read_tail_lines", _spy_read_tail_lines)
+
     _run(monkeypatch, project)
 
     out = capsys.readouterr().out
     assert "×2" in out
     assert "pytest" in out
+
+    expected_max_records = 2 * inject.TAIL_READ_MULTIPLIER
+    assert requested_counts, "expected _read_tail_lines to be invoked"
+    assert all(count <= expected_max_records for count in requested_counts)
+    assert max(requested_counts) == expected_max_records
 
 
 def test_tail_reads_last_lines_only(tmp_path) -> None:
