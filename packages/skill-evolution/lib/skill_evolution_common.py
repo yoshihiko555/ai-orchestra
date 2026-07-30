@@ -85,8 +85,14 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return result
 
 
-def _load_hook_common() -> Any | None:
-    """core の hook_common を遅延 import する。解決不能時は None。"""
+def _load_core_module(module_name: str) -> Any | None:
+    """core/hooks 配下のモジュールを遅延 import する。解決不能時は None。
+
+    探索順（優先度順）: AI_ORCHESTRA_DIR 由来パス → __file__ 相対フォールバック。
+    絶対パスかつ実在する候補のみ sys.path を汚染する（cwd 相対の残留を防ぐ）。
+    import に失敗した候補は次の候補にフォールバックし、全滅すれば None を返す
+    （呼び出し側で fail-safe に扱う）。
+    """
     try:
         orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
         candidates = []
@@ -110,13 +116,32 @@ def _load_hook_common() -> Any | None:
             if core_hooks not in sys.path:
                 sys.path.insert(0, core_hooks)
             try:
-                import hook_common
+                return __import__(module_name)
             except Exception:
                 continue
-            return hook_common
     except Exception:
         return None
     return None
+
+
+def _load_hook_common() -> Any | None:
+    """core の hook_common を遅延 import する。解決不能時は None。
+
+    実体は _load_core_module() への薄いラッパー（テスト・呼び出し側の patch シームとして維持）。
+    """
+    return _load_core_module("hook_common")
+
+
+def _load_file_migration() -> Any | None:
+    """core の file_migration を遅延 import する。解決不能時は None。
+
+    実体は _load_core_module() への薄いラッパー（テスト・呼び出し側の patch シームとして維持）。
+    _load_hook_common() と同じ探索・fail-safe パターン（AI_ORCHESTRA_DIR 優先、
+    相対パスへフォールバック、絶対パス＋実在確認のみ sys.path を汚染）を踏襲する。
+    core が見つからない場合は _load_hook_common() 失敗時と同様に扱い、呼び出し側で
+    移行をスキップする（fail-safe）。
+    """
+    return _load_core_module("file_migration")
 
 
 def load_config(project_dir: str) -> dict:
@@ -299,79 +324,81 @@ def _ensure_parent(path: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _migrate_metric_file(legacy_path: str, destination_path: str) -> None:
-    """旧 metrics 1 ファイルを claim して root 側へ有界追記する。
+def _write_metric_payload(source: Any, destination_path: str) -> None:
+    """有界化済み source の残りを読み、destination へ単発 write で追記する。
 
     destination への書き込みは append_metric() と同じ「O_APPEND オープン + 単発
-    write() の atomicity」のみに依拠する。移行対象は MIGRATION_MAX_BYTES（1 MiB）
-    で有界なので、コピー範囲を丸ごとメモリに読み、単一の write() 呼び出しで
-    追記する。複数回 write（旧: shutil.copyfileobj）にすると、ロックを取らない
+    write() の atomicity」のみに依拠する。移行対象は core 側で MIGRATION_MAX_BYTES
+    に有界化済みなので、残りを丸ごとメモリに読み、単一の write() 呼び出しで追記
+    する。複数回 write（例: shutil.copyfileobj）にすると、ロックを取らない
     append_metric() の書き込みが途中に割り込み JSONL レコードが壊れ得るため、
     flock は使わず「全 writer が単発 write のみ」に統一して整合性を担保する。
 
     payload の write は一度だけ実行し、短い write は再試行せずそのファイルの移行を
-    中止する。これにより append_metric() と migration の各 writer が payload を
-    最大 1 回しか write せず、別 writer が途中に割り込む窓を閉じる。例外または
-    短い write が起きた場合は ``.migrating.*`` claim を手動復旧用に残す。途中まで
+    中止する（例外を呼び出し元へ伝播させ、core 側で claim を ``.migrating.*`` の
+    まま残す）。これにより append_metric() と migration の各 writer が payload を
+    最大 1 回しか write せず、別 writer が途中に割り込む窓を閉じる。途中まで
     書き込んだ断片には best-effort で改行を追記し、後続レコードまで連結破損する
     ことを防ぐ。復旧 write 自体は full disk 等で失敗し得て、その場合は末尾が
     未終端のまま残るが、一般的な途中 write 例外は失われる 1 行だけに封じ込める。
+
+    short write 発生時は destination に部分ペイロードが残ったまま claim が
+    ``.migrating.*`` に残留する。手動復旧する際は、destination 末尾の部分行と
+    claim ファイル内容が重複し得る点に注意すること（claim を戻す前に両者を
+    突き合わせて重複行を除去する）。
+    """
+    payload = source.read()
+    if payload and not payload.endswith(b"\n"):
+        payload += b"\n"
+
+    destination_fd = os.open(
+        destination_path,
+        os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+        LOG_FILE_MODE,
+    )
+    try:
+        if hasattr(os, "fchmod"):
+            try:
+                os.fchmod(destination_fd, LOG_FILE_MODE)
+            except OSError:
+                pass
+        try:
+            bytes_written = os.write(destination_fd, payload)
+        except Exception:
+            try:
+                os.write(destination_fd, b"\n")
+            except OSError:
+                pass
+            raise
+        if bytes_written < len(payload):
+            try:
+                os.write(destination_fd, b"\n")
+            except OSError:
+                pass
+            raise OSError("legacy metrics migration short write; aborting without retry")
+    finally:
+        os.close(destination_fd)
+
+
+def _migrate_metric_file(legacy_path: str, destination_path: str) -> None:
+    """旧 metrics 1 ファイルを claim して root 側へ有界追記する。
+
+    claim・行境界を保った有界 tail の決定・確定 rename・stale claim 非破壊は
+    core の file_migration.migrate_bounded_file に委譲する。実際の書き込み方式
+    （単発 write + short-write リカバリ）は _write_metric_payload が担う。
+    core が解決できない場合（_load_hook_common() 失敗時と同様の fail-safe）は
+    移行をスキップする。
     """
     try:
-        if os.path.realpath(destination_path) == os.path.realpath(legacy_path):
+        file_migration = _load_file_migration()
+        if file_migration is None:
             return
-
-        claim_suffix = f"{os.getpid()}-{time.monotonic_ns()}"
-        migrating_path = f"{legacy_path}.migrating.{claim_suffix}"
-        try:
-            os.rename(legacy_path, migrating_path)
-        except OSError:
-            return
-
-        os.makedirs(os.path.dirname(destination_path), mode=LOG_DIR_MODE, exist_ok=True)
-        with open(migrating_path, "rb") as source:
-            file_size = os.fstat(source.fileno()).st_size
-            if file_size > MIGRATION_MAX_BYTES:
-                cut = file_size - MIGRATION_MAX_BYTES
-                source.seek(cut - 1)
-                boundary_byte = source.read(1)
-                # cut がちょうど改行直後（完全レコードの先頭）なら readline() は不要。
-                # 直前バイトが改行でなければ途中行なので readline() で部分行を読み捨てる。
-                if boundary_byte != b"\n":
-                    source.readline()
-            payload = source.read()
-        if payload and not payload.endswith(b"\n"):
-            payload += b"\n"
-
-        destination_fd = os.open(
+        file_migration.migrate_bounded_file(
+            legacy_path,
             destination_path,
-            os.O_WRONLY | os.O_CREAT | os.O_APPEND,
-            LOG_FILE_MODE,
+            max_bytes=MIGRATION_MAX_BYTES,
+            writer=_write_metric_payload,
         )
-        try:
-            if hasattr(os, "fchmod"):
-                try:
-                    os.fchmod(destination_fd, LOG_FILE_MODE)
-                except OSError:
-                    pass
-            try:
-                bytes_written = os.write(destination_fd, payload)
-            except Exception:
-                try:
-                    os.write(destination_fd, b"\n")
-                except OSError:
-                    pass
-                raise
-            if bytes_written < len(payload):
-                try:
-                    os.write(destination_fd, b"\n")
-                except OSError:
-                    pass
-                raise OSError("legacy metrics migration short write; aborting without retry")
-        finally:
-            os.close(destination_fd)
-
-        os.rename(migrating_path, f"{legacy_path}.migrated.{claim_suffix}")
     except Exception:
         pass
 
