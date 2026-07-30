@@ -44,6 +44,14 @@ def test_post_test_analysis_uses_exit_code_2() -> None:
         "exit(2) の呼び出しが見つかりませんでした"
     )
 
+    unexpected_non_zero_exits = [
+        line for line in _non_zero_exit_lines(source) if not exit_code_2_pattern.match(line)
+    ]
+    assert not unexpected_non_zero_exits, (
+        f"{_BLOCKING_HOOK} の非ゼロ exit は 2 のみのはずですが、"
+        f"他の exit code を検出しました: {unexpected_non_zero_exits}"
+    )
+
 
 def test_other_hooks_never_use_non_zero_exit_code() -> None:
     for hook_name in _ALL_HOOKS:
