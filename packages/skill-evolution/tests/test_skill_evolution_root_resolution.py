@@ -184,19 +184,38 @@ def test_root_legacy_metrics_are_migrated_from_linked_worktree(monkeypatch, tmp_
     assert not (Path(se.data_dir(str(worktree))) / "metrics").exists()
 
 
-# PR331 round 2: 短い write の残りを追記し、全 payload 完了後だけ移行済みにする。
-def test_metric_migration_retries_short_write(monkeypatch, tmp_path) -> None:
+# PR331 round 4: root 解決失敗中に worktree の新配置へ残った metrics も root へ集約する。
+def test_project_local_new_layout_metrics_are_reaggregated(monkeypatch, tmp_path) -> None:
+    worktree = _make_project(tmp_path / "worktree")
+    root = _make_project(tmp_path / "root")
+    _patch_root_worktree(monkeypatch, root)
+    stranded_dir = Path(se._local_logs_dir(str(worktree))) / "metrics"
+    stranded_dir.mkdir(parents=True)
+    stranded_path = stranded_dir / "issue-fix.jsonl"
+    stranded_bytes = json.dumps({"run_id": "stranded-1", "success": True}).encode() + b"\n"
+    stranded_path.write_bytes(stranded_bytes)
+
+    records = se.read_metrics(str(worktree), "issue-fix")
+
+    destination = root / ".claude" / "logs" / "skill-evolution" / "metrics" / "issue-fix.jsonl"
+    assert [record["run_id"] for record in records] == ["stranded-1"]
+    assert destination.read_bytes() == stranded_bytes
+    assert not stranded_path.exists()
+    assert len(list(stranded_dir.glob("issue-fix.jsonl.migrated.*"))) == 1
+
+
+# PR331 round 4: 短い write は残りを再試行せず、claim を手動復旧用に残す。
+def test_metric_migration_aborts_on_short_write(monkeypatch, tmp_path) -> None:
     legacy_path = tmp_path / "legacy.jsonl"
     destination_path = tmp_path / "destination" / "legacy.jsonl"
     payload = b'{"run_id":"first"}\n{"run_id":"second"}\n'
     legacy_path.write_bytes(payload)
     original_write = os.write
-    write_calls = 0
+    write_calls: list[bytes] = []
 
     def _short_write(fd: int, remaining: bytes) -> int:
-        nonlocal write_calls
-        write_calls += 1
-        if write_calls == 1:
+        write_calls.append(remaining)
+        if len(write_calls) == 1:
             short_length = len(remaining) // 2
             return original_write(fd, remaining[:short_length])
         return original_write(fd, remaining)
@@ -205,10 +224,12 @@ def test_metric_migration_retries_short_write(monkeypatch, tmp_path) -> None:
 
     se._migrate_metric_file(str(legacy_path), str(destination_path))
 
-    assert write_calls == 2
-    assert destination_path.read_bytes() == payload
-    assert len(list(tmp_path.glob("legacy.jsonl.migrated.*"))) == 1
-    assert list(tmp_path.glob("legacy.jsonl.migrating.*")) == []
+    migrating = list(tmp_path.glob("legacy.jsonl.migrating.*"))
+    assert write_calls == [payload, b"\n"]
+    assert destination_path.read_bytes() == payload[: len(payload) // 2] + b"\n"
+    assert len(migrating) == 1
+    assert migrating[0].read_bytes() == payload
+    assert list(tmp_path.glob("legacy.jsonl.migrated.*")) == []
 
 
 # PR331 round 3: 旧ファイルの未終端行は destination で改行終端する。
@@ -225,50 +246,31 @@ def test_metric_migration_adds_missing_trailing_newline(tmp_path) -> None:
     assert list(tmp_path.glob("legacy.jsonl.migrating.*")) == []
 
 
-# PR331 round 3: 途中 write 失敗時は断片の末尾を改行で区切る。
-def test_metric_migration_bounds_partial_write_failure_to_one_line(monkeypatch, tmp_path) -> None:
+# PR331 round 4: payload write の例外時も改行だけ best-effort で追記して claim を残す。
+def test_metric_migration_keeps_claim_when_payload_write_raises(monkeypatch, tmp_path) -> None:
     legacy_path = tmp_path / "legacy.jsonl"
     destination_path = tmp_path / "destination" / "legacy.jsonl"
     payload = b'{"run_id":"legacy"}\n'
     legacy_path.write_bytes(payload)
     original_write = os.write
-    write_calls = 0
+    write_calls: list[bytes] = []
 
-    def _fail_after_short_write(fd: int, remaining: bytes) -> int:
-        nonlocal write_calls
-        write_calls += 1
-        if write_calls == 1:
-            short_length = len(remaining) // 2
-            return original_write(fd, remaining[:short_length])
-        if write_calls == 2:
+    def _raise_then_repair(fd: int, remaining: bytes) -> int:
+        write_calls.append(remaining)
+        if len(write_calls) == 1:
             raise OSError("simulated migration write failure")
         return original_write(fd, remaining)
 
-    monkeypatch.setattr(se.os, "write", _fail_after_short_write)
+    monkeypatch.setattr(se.os, "write", _raise_then_repair)
 
     se._migrate_metric_file(str(legacy_path), str(destination_path))
 
     migrating = list(tmp_path.glob("legacy.jsonl.migrating.*"))
-    assert write_calls == 3
+    assert write_calls == [payload, b"\n"]
     assert len(migrating) == 1
     assert migrating[0].read_bytes() == payload
     assert list(tmp_path.glob("legacy.jsonl.migrated.*")) == []
-    assert destination_path.read_bytes().endswith(b"\n")
-
-    new_record = {"run_id": "new", "success": True}
-    with open(destination_path, "a", encoding="utf-8") as destination:
-        destination.write(json.dumps(new_record) + "\n")
-
-    parsed_records = []
-    with open(destination_path, encoding="utf-8") as destination:
-        for line in destination:
-            if not line.strip():
-                continue
-            try:
-                parsed_records.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-    assert parsed_records == [new_record]
+    assert destination_path.read_bytes() == b"\n"
 
 
 # PR331 round 2: write が進捗しなければ claim を手動復旧用に残す。
@@ -285,6 +287,21 @@ def test_metric_migration_keeps_claim_when_write_makes_no_progress(monkeypatch, 
     assert len(migrating) == 1
     assert migrating[0].read_bytes() == payload
     assert list(tmp_path.glob("legacy.jsonl.migrated.*")) == []
+
+
+# PR331 round 4: os.fchmod がない環境でも migration は完了する。
+def test_metric_migration_succeeds_without_fchmod(monkeypatch, tmp_path) -> None:
+    legacy_path = tmp_path / "legacy.jsonl"
+    destination_path = tmp_path / "destination" / "legacy.jsonl"
+    payload = b'{"run_id":"legacy"}\n'
+    legacy_path.write_bytes(payload)
+    monkeypatch.delattr(se.os, "fchmod", raising=False)
+
+    se._migrate_metric_file(str(legacy_path), str(destination_path))
+
+    assert destination_path.read_bytes() == payload
+    assert len(list(tmp_path.glob("legacy.jsonl.migrated.*"))) == 1
+    assert list(tmp_path.glob("legacy.jsonl.migrating.*")) == []
 
 
 # EV-37: 移行先に既存レコードがあっても legacy は merge 追記される（意図的な挙動）。
@@ -442,6 +459,25 @@ def test_legacy_metrics_migration_defers_files_over_total_budget(monkeypatch, tm
         assert list(legacy_dir.glob(f"{name}.migrated.*")) == []
 
 
+# EV-37 / Performance: 空ファイルでも 1 回の migration 対象数を上限内に抑える。
+def test_legacy_metrics_migration_caps_files_per_run(monkeypatch, tmp_path) -> None:
+    worktree = _make_project(tmp_path / "worktree")
+    root = _make_project(tmp_path / "root")
+    _patch_root_worktree(monkeypatch, root)
+    legacy_dir = Path(se.data_dir(str(worktree))) / "metrics"
+    legacy_dir.mkdir(parents=True)
+    names = [f"{index}.jsonl" for index in range(5)]
+    for name in names:
+        (legacy_dir / name).write_bytes(b"")
+    monkeypatch.setattr(se, "MIGRATION_MAX_FILES_PER_RUN", 3)
+
+    se.migrate_legacy_metrics(str(worktree))
+
+    assert len(list(legacy_dir.glob("*.jsonl.migrated.*"))) == 3
+    assert sum((legacy_dir / name).is_file() for name in names) == 2
+    assert list(legacy_dir.glob("*.jsonl.migrating.*")) == []
+
+
 # PR331 round 3: worktree/root の旧配置は 1 プロセスの移行予算を共有する。
 def test_legacy_metrics_migration_shares_budget_across_sources(monkeypatch, tmp_path) -> None:
     worktree = _make_project(tmp_path / "worktree")
@@ -556,3 +592,20 @@ def test_logs_dir_raises_when_default_path_escapes_via_symlink(tmp_path) -> None
 
     with pytest.raises(ValueError, match="安全な保存先"):
         se._resolve_logs_subdir(str(base), config)
+
+
+# EV-37 / Critical: metrics 自体が外部 symlink なら I/O を fail-open で拒否する。
+def test_metrics_directory_symlink_escape_skips_write_and_read(monkeypatch, tmp_path) -> None:
+    worktree = _make_project(tmp_path / "worktree")
+    root = _make_project(tmp_path / "root")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    _patch_root_worktree(monkeypatch, root)
+    logs_base = root / ".claude" / "logs" / "skill-evolution"
+    logs_base.mkdir(parents=True)
+    os.symlink(outside, logs_base / "metrics")
+
+    se.append_metric(str(worktree), "issue-fix", {"run_id": "blocked"})
+
+    assert list(outside.iterdir()) == []
+    assert se.read_metrics(str(worktree), "issue-fix") == []

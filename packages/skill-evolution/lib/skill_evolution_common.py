@@ -43,6 +43,7 @@ LOG_DIR_MODE = 0o700
 LOG_FILE_MODE = 0o600
 MIGRATION_MAX_BYTES = 1024 * 1024
 MIGRATION_TOTAL_BUDGET_BYTES = 4 * 1024 * 1024
+MIGRATION_MAX_FILES_PER_RUN = 32
 RECENT_RUN_IDS_BASE_TAIL_BYTES = 128 * 1024
 # 1 回の migration 追記で直前の run_id が重複確認窓から押し出されないよう、
 # migration の最大追記量を既存の末尾読み込み幅へ加える。
@@ -88,15 +89,34 @@ def _load_hook_common() -> Any | None:
     """core の hook_common を遅延 import する。解決不能時は None。"""
     try:
         orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
-        core_hooks = os.path.join(orchestra_dir, "packages", "core", "hooks")
-        # 絶対パスかつ実在する場合のみ sys.path を汚染する（cwd 相対の残留を防ぐ）。
-        if os.path.isabs(core_hooks) and os.path.isdir(core_hooks) and core_hooks not in sys.path:
-            sys.path.insert(0, core_hooks)
-        import hook_common
-
-        return hook_common
+        candidates = []
+        if orchestra_dir:
+            candidates.append(os.path.join(orchestra_dir, "packages", "core", "hooks"))
+        candidates.append(
+            os.path.normpath(
+                os.path.join(
+                    os.path.dirname(os.path.abspath(__file__)),
+                    "..",
+                    "..",
+                    "core",
+                    "hooks",
+                )
+            )
+        )
+        for core_hooks in candidates:
+            # 絶対パスかつ実在する場合のみ sys.path を汚染する（cwd 相対の残留を防ぐ）。
+            if not os.path.isabs(core_hooks) or not os.path.isdir(core_hooks):
+                continue
+            if core_hooks not in sys.path:
+                sys.path.insert(0, core_hooks)
+            try:
+                import hook_common
+            except Exception:
+                continue
+            return hook_common
     except Exception:
         return None
+    return None
 
 
 def load_config(project_dir: str) -> dict:
@@ -224,6 +244,15 @@ def _local_logs_dir(project_dir: str, config: dict | None = None) -> str:
     return _resolve_logs_subdir(base, config)
 
 
+def _resolve_metrics_dir_within(base: str) -> str | None:
+    """metrics ディレクトリの実体が logs_dir 配下に収まる場合だけパスを返す。"""
+    metrics_dir = os.path.join(base, "metrics")
+    if not os.path.lexists(metrics_dir):
+        return metrics_dir
+    real_base = os.path.realpath(base)
+    return metrics_dir if _is_path_within_real_base(real_base, metrics_dir) else None
+
+
 def _slug(skill: str) -> str:
     """スキル名をファイル名に使える slug に正規化する。
 
@@ -280,9 +309,10 @@ def _migrate_metric_file(legacy_path: str, destination_path: str) -> None:
     append_metric() の書き込みが途中に割り込み JSONL レコードが壊れ得るため、
     flock は使わず「全 writer が単発 write のみ」に統一して整合性を担保する。
 
-    OS が短い write を返す稀な異常時だけ残りを追加 write し、payload 全体の完了を
-    確認できた場合に限って ``.migrated.*`` へ rename する。例外または進捗のない
-    write が起きた場合は ``.migrating.*`` claim を手動復旧用に残す。途中まで
+    payload の write は一度だけ実行し、短い write は再試行せずそのファイルの移行を
+    中止する。これにより append_metric() と migration の各 writer が payload を
+    最大 1 回しか write せず、別 writer が途中に割り込む窓を閉じる。例外または
+    短い write が起きた場合は ``.migrating.*`` claim を手動復旧用に残す。途中まで
     書き込んだ断片には best-effort で改行を追記し、後続レコードまで連結破損する
     ことを防ぐ。復旧 write 自体は full disk 等で失敗し得て、その場合は末尾が
     未終端のまま残るが、一般的な途中 write 例外は失われる 1 行だけに封じ込める。
@@ -319,23 +349,25 @@ def _migrate_metric_file(legacy_path: str, destination_path: str) -> None:
             LOG_FILE_MODE,
         )
         try:
+            if hasattr(os, "fchmod"):
+                try:
+                    os.fchmod(destination_fd, LOG_FILE_MODE)
+                except OSError:
+                    pass
             try:
-                os.fchmod(destination_fd, LOG_FILE_MODE)
-            except OSError:
-                pass
-            written_bytes = 0
-            try:
-                while written_bytes < len(payload):
-                    bytes_written = os.write(destination_fd, payload[written_bytes:])
-                    if bytes_written == 0:
-                        raise OSError("legacy metrics migration write made no progress")
-                    written_bytes += bytes_written
+                bytes_written = os.write(destination_fd, payload)
             except Exception:
                 try:
                     os.write(destination_fd, b"\n")
                 except OSError:
                     pass
                 raise
+            if bytes_written < len(payload):
+                try:
+                    os.write(destination_fd, b"\n")
+                except OSError:
+                    pass
+                raise OSError("legacy metrics migration short write; aborting without retry")
         finally:
             os.close(destination_fd)
 
@@ -351,16 +383,21 @@ def migrate_legacy_metrics(project_dir: str, config: dict | None = None) -> None
     pending/locks はセッション単位の一時データなので移行せず、新配置で開始する。
     stale な ``.migrating.*`` は手動復旧用に残し、例外はすべて fail-open とする。
 
-    linked worktree では worktree と root checkout の両方の旧配置を走査する。
-    1 プロセスの移行 I/O は両方を合わせて MIGRATION_TOTAL_BUDGET_BYTES 以内に
-    制限し、超過するファイル以降は旧パスに残して次回へ繰り越す。プロセス内では
-    ``_MIGRATION_ATTEMPTED_PROJECT_DIRS`` により一度だけ試行するが、次の hook
-    プロセスでは再試行され、rename 済みでないファイルから自然に移行を継続する。
+    linked worktree では worktree と root checkout の旧配置に加え、一時的な root
+    解決失敗で worktree の新配置へ残った metrics も走査する。1 プロセスの移行
+    I/O とファイル数は全 source を合わせて MIGRATION_TOTAL_BUDGET_BYTES および
+    MIGRATION_MAX_FILES_PER_RUN 以内に制限し、超過分は旧パスに残して次回へ
+    繰り越す。プロセス内では ``_MIGRATION_ATTEMPTED_PROJECT_DIRS`` により一度だけ
+    試行するが、次の hook プロセスでは再試行され、rename 済みでないファイルから
+    自然に移行を継続する。
     """
     try:
         project_root = os.path.abspath(project_dir)
         log_root = _resolve_log_root_cached(project_root)
-        destination_metrics_dir = os.path.join(logs_dir(project_root, config), "metrics")
+        destination_logs_dir = logs_dir(project_root, config)
+        destination_metrics_dir = _resolve_metrics_dir_within(destination_logs_dir)
+        if destination_metrics_dir is None:
+            return
         hook_common = _load_hook_common()
         resolve_within = (
             hook_common.resolve_path_within
@@ -368,13 +405,19 @@ def migrate_legacy_metrics(project_dir: str, config: dict | None = None) -> None
             else _resolve_path_within_local
         )
         destination_relative = os.path.relpath(destination_metrics_dir, log_root)
-        legacy_roots = [project_root]
+        legacy_sources = [(project_root, os.path.join(data_dir(project_root, config), "metrics"))]
         if os.path.realpath(log_root) != os.path.realpath(project_root):
-            legacy_roots.append(log_root)
+            legacy_sources.append((log_root, os.path.join(data_dir(log_root, config), "metrics")))
+            legacy_sources.append(
+                (
+                    project_root,
+                    os.path.join(_local_logs_dir(project_root, config), "metrics"),
+                )
+            )
 
         processed_bytes = 0
-        for legacy_root in legacy_roots:
-            legacy_metrics_dir = os.path.join(data_dir(legacy_root, config), "metrics")
+        processed_files = 0
+        for legacy_root, legacy_metrics_dir in legacy_sources:
             if not os.path.isdir(legacy_metrics_dir):
                 continue
             if os.path.realpath(legacy_metrics_dir) == os.path.realpath(destination_metrics_dir):
@@ -383,6 +426,8 @@ def migrate_legacy_metrics(project_dir: str, config: dict | None = None) -> None
             for name in sorted(os.listdir(legacy_metrics_dir)):
                 if not name.endswith(".jsonl"):
                     continue
+                if processed_files >= MIGRATION_MAX_FILES_PER_RUN:
+                    return
                 legacy_path = os.path.abspath(os.path.join(legacy_metrics_dir, name))
                 if os.path.islink(legacy_path):
                     continue
@@ -410,6 +455,7 @@ def migrate_legacy_metrics(project_dir: str, config: dict | None = None) -> None
                 if processed_bytes + file_cost > MIGRATION_TOTAL_BUDGET_BYTES:
                     return
                 processed_bytes += file_cost
+                processed_files += 1
                 _migrate_metric_file(legacy_path, destination_path)
     except Exception:
         pass
@@ -574,7 +620,11 @@ def consume_pending(
 def append_metric(project_dir: str, skill: str, record: dict, config: dict | None = None) -> None:
     """metrics/<skill>.jsonl に 1 行追記する（所有者のみ読み書き 0o600）。"""
     _migrate_legacy_metrics_once(project_dir, config)
-    path = metrics_path(project_dir, skill, config)
+    base = logs_dir(project_dir, config)
+    metrics_dir = _resolve_metrics_dir_within(base)
+    if metrics_dir is None:
+        return
+    path = os.path.join(metrics_dir, f"{_slug(skill)}.jsonl")
     _ensure_parent(path)
     fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
     with os.fdopen(fd, "a", encoding="utf-8") as f:
@@ -584,7 +634,11 @@ def append_metric(project_dir: str, skill: str, record: dict, config: dict | Non
 def read_metrics(project_dir: str, skill: str, config: dict | None = None) -> list[dict]:
     """metrics/<skill>.jsonl を読み、dict のリストを返す。壊れた行はスキップする。"""
     _migrate_legacy_metrics_once(project_dir, config)
-    path = metrics_path(project_dir, skill, config)
+    base = logs_dir(project_dir, config)
+    metrics_dir = _resolve_metrics_dir_within(base)
+    if metrics_dir is None:
+        return []
+    path = os.path.join(metrics_dir, f"{_slug(skill)}.jsonl")
     if not os.path.isfile(path):
         return []
     records: list[dict] = []
@@ -614,7 +668,11 @@ def recent_run_ids(
     受理するが、I/O/メモリは byte window で既に有界なので機能上は使用しない。
     """
     _migrate_legacy_metrics_once(project_dir, config)
-    path = metrics_path(project_dir, skill, config)
+    base = logs_dir(project_dir, config)
+    metrics_dir = _resolve_metrics_dir_within(base)
+    if metrics_dir is None:
+        return set()
+    path = os.path.join(metrics_dir, f"{_slug(skill)}.jsonl")
     if not os.path.isfile(path):
         return set()
     with open(path, "rb") as f:

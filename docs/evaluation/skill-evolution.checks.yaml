@@ -42,4 +42,4 @@
     - packages/skill-evolution/tests/test_skill_evolution_root_resolution.py::test_metrics_migration_caps_tail_at_line_boundary
     - packages/skill-evolution/tests/test_skill_evolution_root_resolution.py::test_root_resolution_is_cached_per_project
     - packages/skill-evolution/tests/test_skill_evolution_root_resolution.py::test_logs_dir_rejects_traversal
-  notes: metrics/pending/locks use the root worktree, lessons stay local, and only legacy metrics receive fail-open one-shot migration.
+  notes: metrics alone use the root worktree; pending and locks resolve project-local (not root-aggregated); lessons also stay project-local; only legacy metrics receive fail-open one-shot migration.

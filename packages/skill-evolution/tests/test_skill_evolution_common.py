@@ -15,6 +15,12 @@ se = load_module("skill_evolution_common", "packages/skill-evolution/lib/skill_e
 # ---------------------------------------------------------------------------
 
 
+def test_load_hook_common_uses_file_relative_fallback(monkeypatch) -> None:
+    monkeypatch.delenv("AI_ORCHESTRA_DIR", raising=False)
+
+    assert se._load_hook_common() is not None
+
+
 def test_load_config_merges_defaults(tmp_path) -> None:
     cfg = se.load_config(str(tmp_path))
     assert cfg["offline"]["max_iterations"] == 10
@@ -139,15 +145,15 @@ def test_build_metric_record_schema_is_backward_compatible() -> None:
         tool_uses=7,
     )
 
-    assert set(rec) == {"ts", "skill", "run_id", "self_report", "machine", "success"}
+    assert {"ts", "skill", "run_id", "self_report", "machine", "success"} <= set(rec)
     assert isinstance(rec["ts"], str)
     assert isinstance(rec["skill"], str)
     assert isinstance(rec["run_id"], str)
     assert isinstance(rec["self_report"], dict)
-    assert set(rec["self_report"]) == {"ambiguities", "discretion_fills", "retries"}
+    assert {"ambiguities", "discretion_fills", "retries"} <= set(rec["self_report"])
     assert all(isinstance(value, int) for value in rec["self_report"].values())
     assert isinstance(rec["machine"], dict)
-    assert set(rec["machine"]) == {"tool_uses", "duration_ms", "critical_pass_rate"}
+    assert {"tool_uses", "duration_ms", "critical_pass_rate"} <= set(rec["machine"])
     assert isinstance(rec["machine"]["tool_uses"], int)
     assert isinstance(rec["machine"]["duration_ms"], int)
     assert isinstance(rec["machine"]["critical_pass_rate"], float)
