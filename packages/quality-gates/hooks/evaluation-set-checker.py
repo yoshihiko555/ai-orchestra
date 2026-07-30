@@ -47,6 +47,7 @@ from hook_common import (  # noqa: E402
     safe_hook_execution,
     write_json,
 )
+from log_common import find_project_root  # noqa: E402
 
 # resolve_state_path() is the single canonical implementation shared across
 # the quality-gates package (Issue #154 review: a local duplicate with a
@@ -370,9 +371,12 @@ def main() -> None:
         tool_input = {}
     file_path = str(tool_input.get("file_path") or "")
 
-    project_dir = str(data.get("cwd") or os.environ.get("CLAUDE_PROJECT_DIR", "") or "")
-    if not project_dir:
+    raw_project_dir = str(data.get("cwd") or os.environ.get("CLAUDE_PROJECT_DIR", "") or "")
+    if not raw_project_dir:
         sys.exit(0)
+    # Issue #134 レビュー指摘: relative path・package 識別・config・state の
+    # 起点を、subdirectory cwd ではなく .claude/ を持つ project root に揃える。
+    project_dir = find_project_root(raw_project_dir)
 
     session_id = str(data.get("session_id") or "")
 

@@ -66,6 +66,19 @@ def test_readme_clarifies_threshold_scope() -> None:
     LINE_THRESHOLD）を使っており、この設定値では変更できない。
     """
     content = _README_PATH.read_text(encoding="utf-8")
-    assert "test-gate-checker.py" in content
-    assert "FILE_THRESHOLD" in content
-    assert "LINE_THRESHOLD" in content
+    rows = content.splitlines()
+
+    for config_key, constant_name in (
+        ("quality_gate.test_file_threshold", "FILE_THRESHOLD"),
+        ("quality_gate.test_line_threshold", "LINE_THRESHOLD"),
+    ):
+        matching_rows = [row for row in rows if f"`{config_key}`" in row]
+        assert len(matching_rows) == 1, (
+            f"{config_key} の Markdown table row が一意に見つかりません: {matching_rows}"
+        )
+
+        row = matching_rows[0]
+        assert "`test-gate-checker.py`" in row
+        assert "`post-implementation-review.py`" in row
+        assert "適用されず" in row
+        assert f"`{constant_name}`" in row

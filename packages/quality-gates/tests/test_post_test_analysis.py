@@ -620,6 +620,62 @@ def test_main_no_op_when_quality_gate_disabled(
     assert not state_file.exists()
 
 
+def test_main_normalizes_subdirectory_before_disabled_config_lookup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """subdirectory cwd でも root の disabled 設定を使い、共有 state を変更しない。"""
+    repo_root = tmp_path / "repo"
+    (repo_root / ".claude").mkdir(parents=True)
+    subdirectory = repo_root / "packages" / "sub"
+    subdirectory.mkdir(parents=True)
+    config_calls = []
+
+    def _load_config(package_name: str, filename: str, project_dir: str) -> dict:
+        config_calls.append((package_name, filename, project_dir))
+        return {"features": {"quality_gate": {"enabled": False}}}
+
+    monkeypatch.setattr(post_test_analysis, "load_package_config", _load_config)
+    _make_stdin(
+        monkeypatch,
+        {
+            "tool_name": "Bash",
+            "cwd": str(subdirectory),
+            "tool_input": {"command": "pytest -q"},
+            "tool_response": {"exit_code": 1, "stdout": "FAILED test_example.py::test_case"},
+        },
+    )
+
+    with pytest.raises(SystemExit, match="0"):
+        post_test_analysis.main()
+
+    assert config_calls == [("audit", "audit-flags.json", str(repo_root))]
+    assert capsys.readouterr().out == ""
+    state_file = repo_root / ".claude" / "state" / post_test_analysis.STATE_FILENAME
+    assert not state_file.exists()
+
+
+def test_build_codex_command_normalizes_subdirectory_before_config_lookup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Codex 提案用 cli-tools.yaml も project root から読み込む。"""
+    repo_root = tmp_path / "repo"
+    (repo_root / ".claude").mkdir(parents=True)
+    subdirectory = repo_root / "packages" / "sub"
+    subdirectory.mkdir(parents=True)
+    config_calls = []
+
+    def _load_config(package_name: str, filename: str, project_dir: str) -> dict:
+        config_calls.append((package_name, filename, project_dir))
+        return {"codex": {"model": "gpt-test", "sandbox": {"analysis": "read-only"}}}
+
+    monkeypatch.setattr(post_test_analysis, "load_package_config", _load_config)
+
+    command = post_test_analysis._build_codex_command({"cwd": str(subdirectory)})
+
+    assert config_calls == [("agent-routing", "cli-tools.yaml", str(repo_root))]
+    assert "--model gpt-test" in command
+
+
 def test_main_masks_secrets_in_debug_suggestion(
     monkeypatch: pytest.MonkeyPatch, tmp_path, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -309,6 +309,39 @@ def test_main_no_op_when_quality_gate_disabled(
     assert state == post_implementation_review._DEFAULT_IMPL_REVIEW_STATE
 
 
+def test_main_normalizes_subdirectory_before_disabled_config_lookup(
+    tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """subdirectory cwd でも root の disabled 設定を使い、状態を変更しない。"""
+    repo_root = tmp_path / "repo"
+    (repo_root / ".claude").mkdir(parents=True)
+    subdirectory = repo_root / "packages" / "sub"
+    subdirectory.mkdir(parents=True)
+    config_calls = []
+
+    def _load_config(package_name: str, filename: str, project_dir: str) -> dict:
+        config_calls.append((package_name, filename, project_dir))
+        return {"features": {"quality_gate": {"enabled": False}}}
+
+    def _fail_if_state_updated(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        pytest.fail("state must not be updated when quality_gate is disabled")
+
+    monkeypatch.setattr(post_implementation_review, "load_package_config", _load_config)
+    monkeypatch.setattr(
+        post_implementation_review, "update_project_scoped_state", _fail_if_state_updated
+    )
+    _write_payload(monkeypatch, "src/module.py", "line\n", str(subdirectory))
+
+    with pytest.raises(SystemExit) as exc_info:
+        post_implementation_review.main()
+
+    assert exc_info.value.code == 0
+    assert config_calls == [("audit", "audit-flags.json", str(repo_root))]
+    assert capsys.readouterr().out == ""
+    state_file = repo_root / ".claude" / "state" / post_implementation_review.STATE_FILENAME
+    assert not state_file.exists()
+
+
 # ---------------------------------------------------------------------------
 # EV-10: main() の fail-open（例外捕捉 → stderr ログ + exit 0）
 # ---------------------------------------------------------------------------

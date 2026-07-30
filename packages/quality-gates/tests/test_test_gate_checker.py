@@ -314,6 +314,42 @@ def test_enabled_defaults_to_true_when_key_missing(tmp_path) -> None:
     assert test_gate_checker.is_quality_gate_enabled(str(tmp_path))
 
 
+def test_main_normalizes_subdirectory_before_disabled_config_lookup(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    """subdirectory cwd でも root の disabled 設定を使い、状態を変更しない。"""
+    repo_root = tmp_path / "repo"
+    (repo_root / ".claude").mkdir(parents=True)
+    subdirectory = repo_root / "packages" / "sub"
+    subdirectory.mkdir(parents=True)
+    config_calls = []
+
+    def _load_config(package_name: str, filename: str, project_dir: str) -> dict:
+        config_calls.append((package_name, filename, project_dir))
+        return {"features": {"quality_gate": {"enabled": False}}}
+
+    def _fail_if_state_loaded(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        pytest.fail("state must not be loaded when quality_gate is disabled")
+
+    payload = {
+        "tool_name": "Write",
+        "cwd": str(subdirectory),
+        "tool_input": {"file_path": "src/main.py", "content": "print(1)\n"},
+    }
+    monkeypatch.setattr(sys, "stdin", StringIO(json.dumps(payload)))
+    monkeypatch.setattr(test_gate_checker, "load_package_config", _load_config)
+    monkeypatch.setattr(test_gate_checker, "load_test_gate_state", _fail_if_state_loaded)
+
+    with pytest.raises(SystemExit) as exc_info:
+        test_gate_checker.main()
+
+    assert exc_info.value.code == 0
+    assert config_calls == [("audit", "audit-flags.json", str(repo_root))]
+    assert capsys.readouterr().out == ""
+    state_file = repo_root / ".claude" / "state" / test_gate_checker.STATE_FILENAME
+    assert not state_file.exists()
+
+
 # ---------------------------------------------------------------------------
 # Issue #134 レビュー指摘: AI_ORCHESTRA_DIR 未設定時の hook_common フォールバック
 # ---------------------------------------------------------------------------

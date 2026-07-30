@@ -51,6 +51,7 @@ from hook_common import (  # noqa: E402
     read_hook_input,
     safe_hook_execution,
 )
+from log_common import find_project_root  # noqa: E402
 from quality_gate_config import (  # noqa: E402
     resolve_quality_gate_enabled,
     resolve_state_path,
@@ -480,7 +481,10 @@ def collect_tampering_findings(data: dict) -> list[dict[str, str]]:
     if not isinstance(tool_input, dict):
         tool_input = {}
 
-    project_dir = str(data.get("cwd") or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+    raw_project_dir = str(data.get("cwd") or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+    # Issue #134 レビュー指摘: config・git diff・dedup state の起点を
+    # subdirectory cwd ではなく .claude/ を持つ project root に揃える。
+    project_dir = find_project_root(raw_project_dir)
 
     # EV-21: quality_gate.enabled=false のときは検知・状態記録を含む全動作を
     # 行わない（test-gate-checker.py と同じ no-op パターン）。

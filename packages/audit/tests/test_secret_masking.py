@@ -83,6 +83,22 @@ class TestMaskSecrets:
         assert "my very long api token value" not in result
         assert "trailing" in result
 
+    def test_masks_double_quoted_value_with_escaped_quote(self) -> None:
+        text = 'password="first\\" second"'
+        result = secret_masking.mask_secrets(text)
+        assert "first" not in result
+        assert "second" not in result
+        assert '\\"' not in result
+        assert "[REDACTED]" in result
+
+    def test_masks_single_quoted_value_with_escaped_quote(self) -> None:
+        text = "token='first\\' second'"
+        result = secret_masking.mask_secrets(text)
+        assert "first" not in result
+        assert "second" not in result
+        assert "\\'" not in result
+        assert "[REDACTED]" in result
+
     def test_masks_unquoted_value_until_comma(self) -> None:
         """クォートなしの値もカンマ/セミコロン/改行まで丸ごとマスクされることを確認する。"""
         text = "secret=abc def ghi, next_field=1"

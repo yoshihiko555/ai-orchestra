@@ -357,6 +357,46 @@ def test_main_no_op_when_quality_gate_disabled(
     assert capsys.readouterr().out == ""
 
 
+def test_main_normalizes_subdirectory_before_config_lookups(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """両方の feature 設定を subdirectory ではなく project root から読む。"""
+    repo_root = tmp_path / "repo"
+    (repo_root / ".claude").mkdir(parents=True)
+    subdirectory = repo_root / "packages" / "sub"
+    subdirectory.mkdir(parents=True)
+    config_calls = []
+
+    def _load_config(package_name: str, filename: str, project_dir: str) -> dict:
+        config_calls.append((package_name, filename, project_dir))
+        return {
+            "features": {
+                "quality_gate": {"enabled": True},
+                "context_optimization": {"enabled": False},
+            }
+        }
+
+    monkeypatch.setattr(check_context_optimization, "load_package_config", _load_config)
+    _make_stdin(
+        {
+            "cwd": str(subdirectory),
+            "tool_name": "Bash",
+            "tool_input": {"command": "cat src/main.py"},
+        },
+        monkeypatch,
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        check_context_optimization.main()
+
+    assert exc_info.value.code == 0
+    assert config_calls == [
+        ("audit", "audit-flags.json", str(repo_root)),
+        ("audit", "audit-flags.json", str(repo_root)),
+    ]
+    assert capsys.readouterr().out == ""
+
+
 def test_main_ignores_invalid_json(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sys, "stdin", StringIO("{not valid json"))
 

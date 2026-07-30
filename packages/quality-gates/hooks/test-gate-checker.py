@@ -40,6 +40,7 @@ else:
         sys.path.insert(0, str(_fallback_core_hooks))
 
 from hook_common import load_package_config  # noqa: E402
+from log_common import find_project_root  # noqa: E402
 from quality_gate_config import (  # noqa: E402
     DEFAULT_TEST_GATE_STATE,
     get_project_state_key,
@@ -137,7 +138,10 @@ def main() -> None:
         if not is_code_file(file_path):
             sys.exit(0)
 
-        project_dir = data.get("cwd", "") or os.environ.get("CLAUDE_PROJECT_DIR", "")
+        # Issue #134 レビュー指摘: subdirectory cwd でも project root の
+        # .claude/config と共有 state を一貫して参照する。
+        raw_project_dir = data.get("cwd", "") or os.environ.get("CLAUDE_PROJECT_DIR", "")
+        project_dir = find_project_root(raw_project_dir) if raw_project_dir else find_project_root()
 
         # Read audit-flags.json once and reuse it for the enabled check, the
         # threshold lookup, and resolve_state_path()'s paths.state_dir lookup

@@ -41,6 +41,7 @@ if _hook_dir not in sys.path:
     sys.path.insert(0, _hook_dir)
 
 from hook_common import load_package_config  # noqa: E402
+from log_common import find_project_root  # noqa: E402
 from quality_gate_config import resolve_quality_gate_enabled  # noqa: E402
 
 DEFAULT_READ_LINE_THRESHOLD = 200
@@ -222,7 +223,10 @@ def main() -> None:
         if not isinstance(data, dict):
             sys.exit(0)
 
-        project_dir = data.get("cwd", "") or os.environ.get("CLAUDE_PROJECT_DIR", "")
+        # Issue #134 レビュー指摘: subdirectory cwd でも project root の
+        # .claude/config を一貫して参照する。
+        raw_project_dir = data.get("cwd", "") or os.environ.get("CLAUDE_PROJECT_DIR", "")
+        project_dir = find_project_root(raw_project_dir) if raw_project_dir else find_project_root()
 
         # EV-21: quality_gate.enabled=false のときは提案を含む全動作を
         # 行わない（context_optimization.enabled との AND 条件）。
