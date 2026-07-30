@@ -445,6 +445,132 @@ class TestSyncPackages:
         assert count == 2
 
 
+class TestSyncHooks:
+    """sync_hooks のテスト（Issue #95 T3: 配布 hook の timeout 同期）。"""
+
+    def _write_manifest(self, orchestra_path: Path, pkg_name: str, hooks: dict) -> None:
+        pkg_dir = orchestra_path / "packages" / pkg_name
+        pkg_dir.mkdir(parents=True, exist_ok=True)
+        manifest = {"name": pkg_name, "hooks": hooks}
+        (pkg_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    def _write_settings(self, project_dir: Path, hooks: dict) -> Path:
+        claude_dir = project_dir / ".claude"
+        claude_dir.mkdir(parents=True, exist_ok=True)
+        settings_path = claude_dir / "settings.local.json"
+        settings_path.write_text(json.dumps({"hooks": hooks}), encoding="utf-8")
+        return settings_path
+
+    def test_new_hook_registered_with_manifest_timeout(self, tmp_path):
+        """manifest に timeout 指定がある新規 hook は、その値で settings に登録される。"""
+        orchestra_path = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        self._write_manifest(
+            orchestra_path,
+            "codd",
+            {
+                "PostToolUse": [
+                    {"file": "codd-scan-postedit.py", "matcher": "Edit|Write", "timeout": 90}
+                ]
+            },
+        )
+        settings_path = self._write_settings(project_dir, {})
+
+        changes = sync_engine.sync_hooks(project_dir, orchestra_path, ["codd"])
+
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        hook = settings["hooks"]["PostToolUse"][0]["hooks"][0]
+        assert changes == 1
+        assert hook["timeout"] == 90
+
+    def test_new_hook_without_manifest_timeout_defaults_to_five(self, tmp_path):
+        """timeout 未指定の既存パッケージは従来通り既定値 5 で登録される（後方互換）。"""
+        orchestra_path = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        self._write_manifest(
+            orchestra_path,
+            "core",
+            {"SessionStart": [{"file": "check-plan-gate.py"}]},
+        )
+        settings_path = self._write_settings(project_dir, {})
+
+        changes = sync_engine.sync_hooks(project_dir, orchestra_path, ["core"])
+
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        hook = settings["hooks"]["SessionStart"][0]["hooks"][0]
+        assert changes == 1
+        assert hook["timeout"] == 5
+
+    def test_existing_hook_with_stale_timeout_is_updated(self, tmp_path):
+        """既に登録済みの hook の timeout が manifest 側と乖離している場合は更新する。
+
+        導入済みプロジェクトが古い timeout（既定 5 秒）で settings.local.json に
+        登録済みのまま、ai-orchestra 側の manifest だけが timeout 90 に更新された
+        ケースを再現する。
+        """
+        orchestra_path = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        self._write_manifest(
+            orchestra_path,
+            "codd",
+            {
+                "PostToolUse": [
+                    {"file": "codd-scan-postedit.py", "matcher": "Edit|Write", "timeout": 90}
+                ]
+            },
+        )
+        command = 'python3 "$AI_ORCHESTRA_DIR/packages/codd/hooks/codd-scan-postedit.py"'
+        settings_path = self._write_settings(
+            project_dir,
+            {
+                "PostToolUse": [
+                    {
+                        "matcher": "Edit|Write",
+                        "hooks": [{"type": "command", "command": command, "timeout": 5}],
+                    }
+                ]
+            },
+        )
+
+        changes = sync_engine.sync_hooks(project_dir, orchestra_path, ["codd"])
+
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        hook = settings["hooks"]["PostToolUse"][0]["hooks"][0]
+        assert changes == 1
+        assert hook["timeout"] == 90
+        assert hook["command"] == command
+
+    def test_existing_hook_with_matching_timeout_is_noop(self, tmp_path):
+        """既に manifest と同じ timeout で登録済みの場合は変更なしとして扱う。"""
+        orchestra_path = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        self._write_manifest(
+            orchestra_path,
+            "codd",
+            {
+                "PostToolUse": [
+                    {"file": "codd-scan-postedit.py", "matcher": "Edit|Write", "timeout": 90}
+                ]
+            },
+        )
+        command = 'python3 "$AI_ORCHESTRA_DIR/packages/codd/hooks/codd-scan-postedit.py"'
+        self._write_settings(
+            project_dir,
+            {
+                "PostToolUse": [
+                    {
+                        "matcher": "Edit|Write",
+                        "hooks": [{"type": "command", "command": command, "timeout": 90}],
+                    }
+                ]
+            },
+        )
+
+        changes = sync_engine.sync_hooks(project_dir, orchestra_path, ["codd"])
+
+        assert changes == 0
+
+
 class TestSyncPackagesAgentsHashGuard:
     """sync_packages() の agents ハッシュガードのテスト（Issue #241）。"""
 

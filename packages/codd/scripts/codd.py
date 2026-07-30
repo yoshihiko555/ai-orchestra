@@ -911,6 +911,11 @@ def _scope_pattern_to_regex(pattern: str) -> re.Pattern[str]:
     純粋なパス文字列の判定として正規表現に落とす。文字クラスをここでもリテラル
     エスケープしてしまうと、通常走査（``collect_files`` の ``Path.glob``）と
     削除後 impact 判定（本関数）とで同じ glob の解釈が食い違ってしまう。
+
+    文字クラスの変換（``_find_char_class_end`` / `_char_class_to_regex`）は
+    `codd_common.py` の単一パス scope マッチング（`glob_pattern_to_regex()`）と
+    共有実装を使う（codd-review High-1: 二重実装の齟齬による `[!seq]` 意味反転
+    バグの再発防止）。
     """
     out: list[str] = []
     index, length = 0, len(pattern)
@@ -931,12 +936,12 @@ def _scope_pattern_to_regex(pattern: str) -> re.Pattern[str]:
             out.append("[^/]")
             index += 1
         elif char == "[":
-            end = _find_char_class_end(pattern, index)
+            end = cc._find_char_class_end(pattern, index)
             if end is None:
                 out.append(re.escape(char))  # 閉じ ] が無い → リテラル [
                 index += 1
             else:
-                out.append(_char_class_to_regex(pattern[index + 1 : end]))
+                out.append(cc._char_class_to_regex(pattern[index + 1 : end]))
                 index = end + 1
         else:
             out.append(re.escape(char))
@@ -952,113 +957,16 @@ def _scope_pattern_to_regex(pattern: str) -> re.Pattern[str]:
         return re.compile(r"(?!)")
 
 
-def _find_char_class_end(pattern: str, start: int) -> int | None:
-    """``pattern[start]`` が ``[`` の文字クラスの閉じ ``]`` の index を返す。
-
-    fnmatch と同じ規約: ``[!...`` の直後、または ``[...`` の直後に来る最初の
-    ``]`` はクラスの終端ではなくリテラル文字として扱う（例: ``[]]`` は ``]`` 1文字）。
-    閉じ ``]`` が見つからない場合は None（呼び出し側でリテラル ``[`` として扱う）。
-    """
-    j = start + 1
-    length = len(pattern)
-    if j < length and pattern[j] == "!":
-        j += 1
-    if j < length and pattern[j] == "]":
-        j += 1
-    while j < length and pattern[j] != "]":
-        j += 1
-    return j if j < length else None
-
-
-_RE_SETOPS_SUB = re.compile(r"([&~|])").sub
-
-
-def _char_class_to_regex(stuff: str) -> str:
-    """glob の文字クラス中身（``[`` と ``]`` の間）を regex 文字クラスへ変換する。
-
-    ``!`` 先頭の否定を regex の ``^`` に変換し、regex 側で特別な意味を持つ
-    先頭 ``^`` / バックスラッシュ / 集合演算子（``&`` ``~`` ``|``）はリテラルとして
-    エスケープする。
-
-    不正な文字範囲（``lo > hi``。例: ``[ab-a]`` の ``b-a``）は CPython
-    ``fnmatch.translate()`` と同一のアルゴリズムで、範囲部分だけを除去し他の
-    リテラル文字は保持する（``[ab-a]`` → リテラル ``a`` にマッチ）。以前は
-    `_scope_pattern_to_regex()` 側で `re.compile` が `re.error` を送出した際、
-    パターン全体を常時非マッチ（``(?!)``）にフォールバックしていたため、
-    `collect_files`（`Path.glob` ベース、fnmatch 相当）とここ（削除済みファイル向け
-    純粋パス判定）とで有効/無効ファイルの扱いが食い違い、ファイル削除後の
-    `path_in_scope()` 判定で消失した上流ノードの警告を取りこぼしていた
-    （Issue #98 レビュー対応: 8巡目 P3）。クラス全体が空になった場合（例: 単体の
-    ``[z-a]``）のみ ``(?!)``（常時非マッチ）、``[!z-a]`` のように否定の空範囲は
-    ``.``（任意の1文字にマッチ）にする（いずれも fnmatch と同じ規約）。
-    """
-    if "-" not in stuff:
-        body = stuff.replace("\\", "\\\\")
-    else:
-        chunks: list[str] = []
-        i = 0
-        length = len(stuff)
-        k = 2 if stuff.startswith("!") else 1
-        while True:
-            k = stuff.find("-", k, length)
-            if k < 0:
-                break
-            chunks.append(stuff[i:k])
-            i = k + 1
-            k = k + 3
-        chunk = stuff[i:length]
-        if chunk:
-            chunks.append(chunk)
-        else:
-            chunks[-1] += "-"
-        # 不正な範囲（lo > hi）を除去する（fnmatch.translate と同じ規約）。
-        for idx in range(len(chunks) - 1, 0, -1):
-            if chunks[idx - 1][-1] > chunks[idx][0]:
-                chunks[idx - 1] = chunks[idx - 1][:-1] + chunks[idx][1:]
-                del chunks[idx]
-        body = "-".join(c.replace("\\", "\\\\").replace("-", "\\-") for c in chunks)
-    if not body:
-        return "(?!)"  # 空クラス（範囲除去の結果、有効な文字が残らない）は常時非マッチ
-    if body == "!":
-        return "."  # 否定の空クラス（`[!lo-hi]` で lo > hi）は任意の1文字にマッチ
-    body = _RE_SETOPS_SUB(r"\\\1", body)
-    if body[0] == "!":
-        body = "^" + body[1:]
-    elif body[0] in ("^", "["):
-        body = "\\" + body
-    return f"[{body}]"
-
-
-def _normalize_scope_pattern(root: Path, pattern: str) -> str | None:
-    """scope glob パターンを root 相対の正規化形へレキシカルに畳み込む。
-
-    ``../proj/src/**/*.py``（root の basename が ``proj``）のように、一度 root の
-    外へ出て同じ root 内へ戻ってくるパターンは、通常走査（``_glob_relpaths()``）側
-    では ``root.glob(pattern)`` の実ファイル解決 + ``os.path.normpath`` によって
-    ``src/**/*.py`` に畳み込まれ、scan 対象になる。一方こちらの純粋パス判定
-    （削除済みファイル向けの ``_matches_scope_pattern``）はパターン文字列を素朴に
-    regex 化するだけだったため、`` ../proj/src/mod.py`` という別名の非マッチ扱いに
-    なり、scan と impact 判定の間で解釈が食い違っていた（レビュー対応: codd.py:880）。
-
-    ``root / pattern`` を ``os.path.normpath`` でレキシカルに畳み込み（ファイル
-    システムへはアクセスしない。削除済みファイルは実体が無いため）、root 配下に
-    収まっていれば root 相対の正規化パターンを返す。root の外（または root 自体）
-    を指す場合は None（マッチ対象なし。``_glob_relpaths()`` が root 外を黙って
-    除外するのと同じ扱い）。
-    """
-    combined = os.path.normpath(str(root / pattern))
-    root_str = os.path.normpath(str(root))
-    if combined == root_str:
-        return None
-    prefix = root_str + os.sep
-    if not combined.startswith(prefix):
-        return None
-    return combined[len(prefix) :].replace(os.sep, "/")
-
-
 def _matches_scope_pattern(root: Path, rel: str, pattern: str) -> bool:
-    """rel が scope glob にマッチするか（削除済みファイル向けの純粋パス判定）。"""
-    normalized = _normalize_scope_pattern(root, pattern)
+    """rel が scope glob にマッチするか（削除済みファイル向けの純粋パス判定）。
+
+    パターンの root 相対正規化（``./docs/**/*.md`` や ``../<root名>/...`` のような
+    表記の畳み込み）は `codd_common._normalize_scope_pattern()` と共有する
+    （T2: Issue #95 レビュー対応。EV-56 で仕様化済みのロジックを
+    `codd_common.py` へ一本化し、単一パス scope 判定（`path_matches_glob_scope`）
+    とここで同じ実装を使う）。
+    """
+    normalized = cc._normalize_scope_pattern(root, pattern)
     if normalized is None:
         return False
     return _scope_pattern_to_regex(normalized).fullmatch(rel) is not None

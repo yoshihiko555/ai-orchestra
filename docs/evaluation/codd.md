@@ -3,16 +3,16 @@
 **パッケージ**: `packages/codd`
 **類型**: CLI ツール型
 **作成日**: 2026-07-03
-**最終レビュー日**: 評価保留（2026-07-04）— パッケージ実装が未完了のため、実装完了後に改めて人間レビューを行う。それまで本評価セットの観点は暫定（ドラフト）扱いとし、テスト改修時の突合基準としては未確定とする。EV-26〜EV-53（Issue #98 / コード⇔ドキュメントのトレーサビリティ）は 2026-07-27 追加、EV-46b・EV-54〜EV-57（PR #327 6巡目レビュー指摘対応）は 2026-07-27 追加、同様に人間レビュー保留。
+**最終レビュー日**: 評価保留（2026-07-04）— パッケージ実装が未完了のため、実装完了後に改めて人間レビューを行う。それまで本評価セットの観点は暫定（ドラフト）扱いとし、テスト改修時の突合基準としては未確定とする。EV-26〜EV-53（Issue #98 / コード⇔ドキュメントのトレーサビリティ）は 2026-07-27 追加、EV-46b・EV-54〜EV-57（PR #327 6巡目レビュー指摘対応）は 2026-07-27 追加、EV-59〜EV-67（Issue #95 / hook 自動配線。EV-66〜67 は bot レビュー対応で追加）は 2026-07-30 追加、同様に人間レビュー保留。
 **情報源**: docs/design/codd-coherence-layer.md, docs/requirements/coherence-guardrail.md, .claude/rules/codd-frontmatter-policy.md（補助: packages/codd/manifest.json — 構成要素の列挙のみ）
 
 ## 1. 責務定義
 
-codd は AI Orchestra 自身および導入先プロジェクトが生成するドキュメント群（要件・設計・ADR・計画・ルール・指示書）の依存関係を、各ドキュメント先頭の `codd:` フロントマターブロックで宣言させ、`scan` によって依存グラフを構築する。`validate` はそのグラフを検査し、リンク切れ・重複・循環・未定義語彙をエラーとして、孤立・ドリフト・フロントマター欠落を警告として検出する。`impact` は diff から下流ドキュメントへの影響を Green/Amber/Gray の信頼度帯域で分類する。essential プリセットとして全導入先へ配布され、`/codd-scan` `/codd-validate` `/codd-impact` スキル経由でも利用できる。加えて `code_scope.include`（opt-in・既定空、Issue #98）でソースファイルを指定すると、1行の軽量注釈（`codd:<key> <value>`）から `code` / `test` ノードを抽出し、同じグラフへ低信頼度（既定 `inline_confidence: 0.7`）のリンクとして統合する。
+codd は AI Orchestra 自身および導入先プロジェクトが生成するドキュメント群（要件・設計・ADR・計画・ルール・指示書）の依存関係を、各ドキュメント先頭の `codd:` フロントマターブロックで宣言させ、`scan` によって依存グラフを構築する。`validate` はそのグラフを検査し、リンク切れ・重複・循環・未定義語彙をエラーとして、孤立・ドリフト・フロントマター欠落を警告として検出する。`impact` は diff から下流ドキュメントへの影響を Green/Amber/Gray の信頼度帯域で分類する。essential プリセットとして全導入先へ配布され、`/codd-scan` `/codd-validate` `/codd-impact` スキル経由でも利用できる。加えて `code_scope.include`（opt-in・既定空、Issue #98）でソースファイルを指定すると、1行の軽量注釈（`codd:<key> <value>`）から `code` / `test` ノードを抽出し、同じグラフへ低信頼度（既定 `inline_confidence: 0.7`）のリンクとして統合する。さらに manifest の hooks 宣言（Issue #95）により、導入先の `.claude/settings.local.json` へ PostToolUse（編集後 scan）と PreToolUse（`git commit` 検出時 validate）が自動登録される。hook の実動作は `codd.yaml` の `hooks.scan_on_edit`（既定 `false`）/ `hooks.validate_on_commit`（`off` / `warn` / `block`、既定 `warn`）で opt-in 制御し、ガード対象は Claude Code 経由の commit のみとする。
 
 ### Non-Goals
 
-- hook 自動配線（PostToolUse scan / pre-commit validate）の導入先展開 — Phase 2 以降、別Issue（codd-hook-distribution）
+- 実 git pre-commit hook（`.git/hooks/pre-commit`）の配布 — PreToolUse (Bash) の `git commit` 検出による代替のみ提供（Issue #95 の設計判断）。手動シェル・GUI・CI からの commit はガード対象外 — 別Issue（codd-real-git-hook-distribution）
 - CI（PR への verdict 投稿） — 別Issue（codd-ci-guardrail）
 - ノードのサブ粒度化（1ファイル内 FT-xxx 等の細粒度ノード化） — 別Issue（codd-subnode-granularity、D7）
 - コード全体へのフロントマター強制（code_scope は opt-in。未注釈ファイルは missing_frontmatter を出さず黙ってスキップする） — Issue #98 の設計判断（4.3.1）
@@ -29,6 +29,8 @@ codd は AI Orchestra 自身および導入先プロジェクトが生成する�
 | `/codd-validate` スキル        | ユーザー起動                                                        | `validate` 結果の要約報告                                              | なし                                                                                                                                |
 | `/codd-impact` スキル          | ユーザー起動 + diff 対象                                            | `impact` 分類結果の要約報告                                            | なし                                                                                                                                |
 | `codd:` フロントマターブロック | ドキュメント作成/編集者による記述                                   | node_id/kind/status/depends_on/owner の宣言                            | なし（宣言のみ）                                                                                                                    |
+| `codd-scan-postedit.py` hook   | PostToolUse（Edit\|Write）の stdin JSON（`tool_input.file_path`）   | 無出力（常に exit 0、非ブロック）                                      | scope 内編集時のみ `codd scan` 実行 → `graph.jsonl` 再構築                                                                          |
+| `codd-validate-precommit.py` hook | PreToolUse（Bash）の stdin JSON（`tool_input.command`）          | warn: additionalContext JSON + exit 0 / block: stderr + exit 2 / off・非該当: 無出力 exit 0 | なし（validate は読み取りのみ）                                                                                |
 
 ## 3. 評価観点
 
@@ -101,10 +103,23 @@ codd は AI Orchestra 自身および導入先プロジェクトが生成する�
 
 - [ ] EV-58（境界 / should）: `CoddConfig`（`codd_common.py`）はコード⇔ドキュメントのトレーサビリティ（Issue #98）追加前の全フィールド（`code_include` / `code_exclude` / `inline_confidence` を含まない）だけでも直接コンストラクタ呼び出しで構築できる。3 フィールドは既定値（空リスト / `DEFAULT_INLINE_CONFIDENCE`）を持つため、`codd_common.py` を共有ライブラリとして直接利用する既存連携の後方互換を壊さない — 根拠: docs/design/codd-coherence-layer.md §4.3.1 (D9)、packages/codd/lib/codd_common.py（`CoddConfig`）
 
+### 4.2 hook 自動配線（Issue #95）
+
+- [ ] EV-59（正常 / must）: `packages/codd/manifest.json` の hooks 宣言（PostToolUse: `codd-scan-postedit.py` matcher `Edit|Write` / PreToolUse: `codd-validate-precommit.py` matcher `Bash`）が既存同期レール（`sync_hooks`）で導入先 `.claude/settings.local.json` へ自動登録され、uninstall / disable で除去される。両 hook とも manifest 上で `"timeout": 90` を宣言し、同期レールが `.claude/settings.local.json` への登録時にこの値を反映する（内部サブプロセス実行上限 60 秒 + 余裕） — 根拠: docs/design/codd-coherence-layer.md §4.8.1
+- [ ] EV-60（正常 / must）: 二段構え opt-in — hook の登録は自動だが実動作は `hooks.scan_on_edit`（既定 `false`）/ `hooks.validate_on_commit`（既定 `warn`）で制御される。`codd.yaml` に `hooks:` セクションが無い既存設定でもデフォルト値で後方互換に動作する — 根拠: docs/design/codd-coherence-layer.md §4.8.1
+- [ ] EV-61（境界 / must）: fail-safe no-op — codd 未初期化（`.claude/config/codd/codd.yaml` 不在）・`enabled: false`・hook 実行時の例外のいずれでも hook は exit 0 で無害に終了し、ツール実行をブロックしない — 根拠: docs/design/codd-coherence-layer.md §4.8.1
+- [ ] EV-62（正常 / must）: scan hook は編集ファイルが scope（`scope.include` + `code_scope.include`、exclude 考慮）に入る場合のみ `codd scan` を実行し、scope 外編集は fast-exit する。scope 判定は scan 本体と同じパターン解釈を用いる。scan 失敗・タイムアウトを含めいかなる場合も exit 0（非ブロック） — 根拠: docs/design/codd-coherence-layer.md §4.8.1
+- [ ] EV-63（正常 / must）: validate hook は Bash コマンド中の `git commit` 呼び出し（`git -C path commit` 等のグローバルオプション経由を含む）を検出した場合のみ `codd validate` を実行する。`codd validate` の終了コードが **1** の場合のみ整合性エラーとして扱い、`warn` は additionalContext JSON + exit 0、`block` は stderr 説明 + exit 2 で commit をブロック、`off` は no-op。exit 1 以外の非ゼロ終了（設定エラー等の exit 2）は実行失敗とみなし非ブロックで通過する。error なし・非該当コマンドは無出力 exit 0。`git -C <path> commit` が現在の検証 root 以外を指す場合はガード対象外（skip）。`cd <path> && git commit` 等の複合コマンドは root を実行時の cwd で近似判定する（既知の制限） — 根拠: docs/design/codd-coherence-layer.md §4.8.1
+- [ ] EV-64（境界 / must）: `validate_on_commit` の bare `off`（YAML 1.1 で boolean `False` にパースされる）は `"off"` へ正規化され、引用符付き `"off"` と同じ扱いになる（EV-25 の `normalize_check_level` と同じ規約）。許容値（off/warn/block）以外は `ValueError` となり、CLI 経路では設定エラー整形（exit 2）、hook 経路では fail-safe（exit 0）に倒れる — 根拠: docs/design/codd-coherence-layer.md §4.8.1, packages/codd/lib/codd_common.py
+- [ ] EV-65（境界 / should）: 非該当ケース（scope 外編集・`git commit` を含まない Bash・codd 未初期化）の hook 実行コストは fast-exit により体感無視できる（目安 100ms 未満）。重い処理（codd lib import・YAML ロード・subprocess）は安価な前提チェックの後段に置かれる — 根拠: docs/design/codd-coherence-layer.md §4.8.1, Issue #95 受け入れ条件
+- [ ] EV-66（異常 / must）: `hooks.scan_on_edit` は厳密な bool 値のみ受理する。非 bool（例: 文字列 `"false"`）が設定された場合は `ValueError` となり、CLI 経路（設定エラー整形）では exit 2、hook 経路では fail-safe により exit 0 に倒れる — 根拠: docs/design/codd-coherence-layer.md §4.8.1, packages/codd/lib/codd_common.py
+- [ ] EV-67（境界 / should）: `./docs/**/*.md` のような正規化を要するスコープパターンも、単一パス判定（scan hook の fast-exit 判定）と `scan` 本体側で同一の解釈になる。両者とも `_normalize_scope_pattern` を経由してから照合するため、記法差によるスコープ判定の食い違いが生じない — 根拠: docs/design/codd-coherence-layer.md §4.8.1, packages/codd/lib/codd_common.py（`_normalize_scope_pattern`）
+
 ## 5. テストレビュー判断基準（パッケージ固有）
 
 - frontmatter parser のテストは、本文中のコードブロック内 YAML 例を誤って依存として拾わないことを、正常系とは独立したケースで検証しているか（EV-02, M-1）。
 - `impact` のスコア計算テストは、設計書の数値例（green_threshold=0.8, amber_threshold=0.4, decay=0.5, corroboration_min_origins=2）から期待値を導出しているか。CLI の現状出力をそのままコピーした期待値になっていないか（EV-15〜17）。
 - `checks` レベルの `off` 正規化の挙動は、bare `off`（YAML の boolean `False` と誤読される値）が `normalize_check_level` によって `LEVEL_OFF` へ正規化され、引用符付き `"off"` と同じ結果になることを比較テストで検証しているか（EV-25）。
 - status/kind/relation の許容語彙テストは、境界値（未定義語彙・kind 依存の語彙違反）を正常系のついでではなく独立したケースで検証しているか（EV-07, EV-11, EV-18）。
+- hook スクリプトのテストは subprocess 実行で returncode / stdout / stderr を検証しているか（import ベースのみで exit code 検証を省略していないか）。warn / block / off の 3 モードと fail-safe（codd 未初期化・例外時 exit 0）を独立ケースで検証しているか（EV-61, EV-63）。scope 判定は scan 本体と同じ解釈であることを、scope 内/外の対で検証しているか（EV-62）。
 - コード注釈抽出のテストは、Python の「docstring 内は拾う／本文中の文字列リテラルは拾わない」を同一ファイル種別内で対で検証しているか（EV-29）。confidence がコード由来リンクにのみ既定値未満で付与され、doc 由来リンクの confidence（1.0）や JSONL 出力（confidence キー省略）を変えていないことを、既存の doc-only テストと並べて確認しているか（EV-32, EV-34）。

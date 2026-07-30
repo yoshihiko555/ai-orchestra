@@ -109,7 +109,7 @@
       "config/audit/audit-flags.json": "dc32d6157cd9cfeacf0d92634e5e7866ab32dea12dee61135c5ca234de25c4ab"
     },
     "codd": {
-      "config/codd/codd.yaml": "605b3cfee1be41ccd0f915d2519e0c137d9dfda341e1ed62cc2a9dc1d7885801"
+      "config/codd/codd.yaml": "e4b986436334828293a1920903c57f86c8964accda55a5f6b491e4078d12f49f"
     },
     "git-workflow": {
       "config/git-workflow/sandbox-requirements.json": "4b2f9366201ed8f90d3f2f5e418502f75d977b4ca659f8dfc91b8369e5971e5e"
