@@ -55,15 +55,16 @@ fail-open 設計を採用する（内部エラーでセッションを止めな�
 | ----------------------------------- | ---------- | ----------------------------------------------------------------------------- |
 | `quality_gate.enabled`              | `true`     | quality-gates の hook（`evaluation-set-checker.py` を除く）の有効/無効        |
 | `quality_gate.block_on_failed_test` | `true`     | `post-test-analysis.py` がテスト失敗時に exit code 2 でブロックするか（opt-out 方式。`false` を明示設定した場合のみ提案に留める） |
-| `quality_gate.test_file_threshold`  | `3`        | レビュー/テスト実行を促す変更ファイル数の閾値                                 |
-| `quality_gate.test_line_threshold`  | `100`      | レビュー/テスト実行を促す変更行数の閾値                                       |
+| `quality_gate.test_file_threshold`  | `3`        | `test-gate-checker.py` がテスト実行を促す変更ファイル数の閾値（`post-implementation-review.py` のレビュー提案には適用されず、`FILE_THRESHOLD`（定数値 3）が使われる） |
+| `quality_gate.test_line_threshold`  | `100`      | `test-gate-checker.py` がテスト実行を促す変更行数の閾値（`post-implementation-review.py` のレビュー提案には適用されず、`LINE_THRESHOLD`（定数値 100）が使われる） |
 | `features.evaluation_set_check.enabled` | `true` | `evaluation-set-checker.py` 専用の独立フラグ（`quality_gate.enabled` とは別枠） |
 
 `quality_gate.enabled=false` の場合、対象 hook は提案・警告・ブロック・audit イベント記録を
 含む全動作を行わない。
 
+`.claude/config/audit/audit-flags.local.json`:
+
 ```json
-// .claude/config/audit/audit-flags.local.json
 {
   "features": {
     "quality_gate": {

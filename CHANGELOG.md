@@ -13,6 +13,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - **`audit`: worktree セッションのログ集約先解決を堅牢化**: audit ログの root worktree 解決が core 共通関数への委譲になり、separate-git-dir 構成や `GIT_DIR` 等の環境変数が汚染された環境でも `.claude/logs/audit/` の集約先を誤解決しなくなった。
+- **`quality-gates`: `post-test-analysis.py` の監査ログ書き込み失敗時に品質ゲートが解除される問題を修正**: 監査イベントの記録に失敗しても、テスト失敗時のブロック判定（exit code 2）は維持されるようになった。
+- **`quality-gates`: `lint-on-save.py` がリポジトリのサブディレクトリから起動された場合でも `.claude/config` を正しく解決するように修正**: `quality_gate.enabled` やプロジェクト固有の上書き設定が、サブディレクトリ起動時にも適用されるようになった。
+- **`quality-gates`: `AI_ORCHESTRA_DIR` 未設定環境で一部 hook がクラッシュする問題を修正**: `post-implementation-review.py` / `test-gate-checker.py` / `check-context-optimization.py` が、環境変数未設定時でもリポジトリ内の `core/hooks` へフォールバックして正常に動作するようになった。
+- **`quality-gates`: README の設定例・閾値説明の誤りを修正**: opt-out 設定例が有効な JSON になるよう修正し、`test_file_threshold` / `test_line_threshold` が `test-gate-checker.py` 専用（`post-implementation-review.py` のレビュー提案には適用されない）であることを明記した。
+- **`audit`: 秘匿情報マスキングの誤検知を抑制**: `max_tokens=4096` や `token_count=123`、`passwordless=true` のような非機密の数値/真偽値設定が誤ってマスクされなくなった。あわせて JSON 形式のクォート付きキー（`"api_key": "..."`）もマスク対象に含まれるようになった。
 
 ### Changed
 

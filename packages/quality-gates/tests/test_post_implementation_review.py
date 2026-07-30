@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
 import time
 from io import StringIO
+from pathlib import Path
 
 import pytest
 
-from tests.module_loader import load_module
+from tests.module_loader import REPO_ROOT, load_module
 
 post_implementation_review = load_module(
     "post_implementation_review", "packages/quality-gates/hooks/post-implementation-review.py"
 )
+
+_HOOK_PATH = REPO_ROOT / "packages" / "quality-gates" / "hooks" / "post-implementation-review.py"
 
 
 @pytest.fixture()
@@ -328,3 +333,34 @@ def test_main_fails_open_on_unexpected_exception(
     assert captured.out == ""
     assert "Hook error" in captured.err
     assert "boom" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# Issue #134 レビュー指摘: AI_ORCHESTRA_DIR 未設定時の hook_common フォールバック
+# ---------------------------------------------------------------------------
+
+
+def test_hook_runs_without_ai_orchestra_dir_env_var(tmp_path: Path) -> None:
+    """AI_ORCHESTRA_DIR 未設定の開発・検証環境で hook を絶対パスから直接実行
+    しても、hook_common の import に失敗せず fail-open（exit 0）で終わることを
+    確認する（従来はフォールバック欠落により ModuleNotFoundError で exit 1 に
+    なっていた）。"""
+    payload = {
+        "tool_name": "Write",
+        "cwd": str(tmp_path),
+        "tool_input": {"file_path": "src/module.py", "content": "line\n"},
+    }
+    env = {k: v for k, v in os.environ.items() if k != "AI_ORCHESTRA_DIR"}
+
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, str(_HOOK_PATH)],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        cwd=str(tmp_path),
+        env=env,
+        timeout=30,
+    )
+
+    assert result.returncode == 0
+    assert "ModuleNotFoundError" not in result.stderr

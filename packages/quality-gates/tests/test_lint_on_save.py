@@ -192,6 +192,35 @@ def test_main_no_op_when_quality_gate_disabled(
     assert capsys.readouterr().out == ""
 
 
+def test_main_normalizes_subdirectory_cwd_before_loading_config(monkeypatch) -> None:
+    """Claude Code がリポジトリのサブディレクトリ（例: packages/foo）から
+    起動された場合でも、project_dir を .claude/ を持つ最寄りの親へ正規化
+    してから audit-flags.json を読み込むことを確認する（Issue #134 レビュー
+    指摘: 従来は data.cwd がそのまま渡され、プロジェクト固有の設定・
+    ローカル上書きが見つからなくなっていた）。"""
+    payload = {
+        "tool_name": "Write",
+        "cwd": "/repo/packages/foo",
+        "tool_input": {"file_path": "packages/quality-gates/hooks/lint-on-save.py"},
+    }
+    monkeypatch.setattr(sys, "stdin", StringIO(json.dumps(payload)))
+    monkeypatch.setattr(lint_on_save, "find_project_root", lambda start_dir: "/repo")
+
+    captured: dict[str, str] = {}
+
+    def _fake_load_package_config(_package, _filename, project_dir):  # type: ignore[no-untyped-def]
+        captured["project_dir"] = project_dir
+        return {"features": {"quality_gate": {"enabled": False}}}
+
+    monkeypatch.setattr(lint_on_save, "load_package_config", _fake_load_package_config)
+
+    with pytest.raises(SystemExit) as exc_info:
+        lint_on_save.main()
+
+    assert exc_info.value.code == 0
+    assert captured["project_dir"] == "/repo"
+
+
 # ---------------------------------------------------------------------------
 # EV-22: additionalContext の秘匿情報マスキング
 # ---------------------------------------------------------------------------

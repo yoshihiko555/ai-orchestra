@@ -1,14 +1,18 @@
 import json
+import os
+import subprocess
 import sys
 from io import StringIO
 
 import pytest
 
-from tests.module_loader import load_module
+from tests.module_loader import REPO_ROOT, load_module
 
 test_gate_checker = load_module(
     "test_gate_checker", "packages/quality-gates/hooks/test-gate-checker.py"
 )
+
+_HOOK_PATH = REPO_ROOT / "packages" / "quality-gates" / "hooks" / "test-gate-checker.py"
 
 # test_gate_checker's `from quality_gate_config import ...` (triggered by load_module
 # above) registers the real shared module under its natural name "quality_gate_config"
@@ -308,3 +312,33 @@ def test_enabled_defaults_to_true_when_key_missing(tmp_path) -> None:
         json.dump(config, f)
 
     assert test_gate_checker.is_quality_gate_enabled(str(tmp_path))
+
+
+# ---------------------------------------------------------------------------
+# Issue #134 レビュー指摘: AI_ORCHESTRA_DIR 未設定時の hook_common フォールバック
+# ---------------------------------------------------------------------------
+
+
+def test_hook_runs_without_ai_orchestra_dir_env_var(tmp_path) -> None:
+    """post-implementation-review.py と同じフォールバック欠落があったため、
+    同じ回帰テストを適用する。AI_ORCHESTRA_DIR 未設定でも hook_common の
+    import に失敗せず fail-open（exit 0）で終わることを確認する。"""
+    payload = {
+        "tool_name": "Write",
+        "cwd": str(tmp_path),
+        "tool_input": {"file_path": "src/module.py", "content": "line\n"},
+    }
+    env = {k: v for k, v in os.environ.items() if k != "AI_ORCHESTRA_DIR"}
+
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, str(_HOOK_PATH)],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        cwd=str(tmp_path),
+        env=env,
+        timeout=30,
+    )
+
+    assert result.returncode == 0
+    assert "ModuleNotFoundError" not in result.stderr

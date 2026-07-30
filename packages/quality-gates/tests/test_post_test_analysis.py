@@ -276,6 +276,44 @@ def test_emit_quality_gate_event_returns_blocking_when_configured(
     assert blocking is True
 
 
+def test_emit_quality_gate_event_still_blocks_when_audit_log_write_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Issue #134 レビュー指摘: audit イベント記録（emit_event）が例外を送出
+    しても、`blocking` の判定は audit ログの成否に依存せず必ず返されることを
+    確認する。修正前は emit_event の例外が main() の外側 except まで伝播し、
+    gate_passed=False でも exit code 0（fail-open）に変換されて品質ゲートが
+    解除されていた。"""
+    monkeypatch.setattr(
+        post_test_analysis, "resolve_project_root_from_hook_data", lambda data: data["cwd"]
+    )
+    monkeypatch.setattr(
+        post_test_analysis,
+        "load_quality_gate_config",
+        lambda _project_dir, config=None: {"enabled": True, "block_on_failed_test": True},
+    )
+    monkeypatch.setattr(
+        post_test_analysis, "load_trace_state", lambda **_kwargs: {"tid": "tid-123"}
+    )
+
+    def _raise_on_emit(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise OSError("disk full")
+
+    monkeypatch.setattr(post_test_analysis, "emit_event", _raise_on_emit)
+
+    blocking = post_test_analysis.emit_quality_gate_event(
+        {"session_id": "sid-1", "cwd": "/project"},
+        command="pytest -q",
+        exit_code=1,
+        gate_passed=False,
+        output="FAILED",
+    )
+
+    assert blocking is True
+    assert "audit event write failed" in capsys.readouterr().err
+
+
 def test_emit_quality_gate_event_records_failure_when_exit_code_masked(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -501,6 +539,36 @@ def test_main_blocks_by_default_when_config_lacks_block_key(
         "load_package_config",
         lambda *_args: {"features": {"quality_gate": {"enabled": True}}},
     )
+    _make_stdin(
+        monkeypatch,
+        {
+            "tool_name": "Bash",
+            "cwd": str(tmp_path),
+            "tool_input": {"command": "pytest -q"},
+            "tool_response": {"exit_code": 1, "stdout": "FAILED test_example.py::test_case"},
+        },
+    )
+
+    with pytest.raises(SystemExit, match="2"):
+        post_test_analysis.main()
+
+
+def test_main_still_blocks_when_audit_log_write_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Issue #134 レビュー指摘: audit イベント書き込み失敗時に main() が
+    ゲート判定を fail-open（exit 0）で握り潰さず、exit code 2 のブロックを
+    維持することを end-to-end で確認する。"""
+    monkeypatch.setattr(
+        post_test_analysis,
+        "load_package_config",
+        lambda *_args: {"features": {"quality_gate": {"enabled": True}}},
+    )
+
+    def _raise_on_emit(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise OSError("disk full")
+
+    monkeypatch.setattr(post_test_analysis, "emit_event", _raise_on_emit)
     _make_stdin(
         monkeypatch,
         {

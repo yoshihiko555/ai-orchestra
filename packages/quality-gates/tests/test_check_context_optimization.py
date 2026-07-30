@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 from io import StringIO
 from pathlib import Path
@@ -390,3 +391,40 @@ def test_main_fails_open_on_unexpected_exception(
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "boom" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# Issue #134 レビュー指摘: AI_ORCHESTRA_DIR 未設定時の hook_common フォールバック
+# ---------------------------------------------------------------------------
+
+
+def test_hook_runs_without_ai_orchestra_dir_env_var(tmp_path: Path) -> None:
+    """post-implementation-review.py と同じフォールバック欠落があったため、
+    同じ回帰テストを適用する。AI_ORCHESTRA_DIR 未設定でも hook_common の
+    import に失敗せず fail-open（exit 0）で終わることを確認する。"""
+    hook_path = (
+        Path(__file__).resolve().parents[3]
+        / "packages"
+        / "quality-gates"
+        / "hooks"
+        / "check-context-optimization.py"
+    )
+    payload = {
+        "tool_name": "Read",
+        "cwd": str(tmp_path),
+        "tool_input": {"file_path": str(tmp_path / "x.txt")},
+    }
+    env = {k: v for k, v in os.environ.items() if k != "AI_ORCHESTRA_DIR"}
+
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, str(hook_path)],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        cwd=str(tmp_path),
+        env=env,
+        timeout=30,
+    )
+
+    assert result.returncode == 0
+    assert "ModuleNotFoundError" not in result.stderr

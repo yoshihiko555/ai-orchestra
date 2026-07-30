@@ -31,6 +31,7 @@ for _candidate in [
         sys.path.insert(0, _candidate)
 
 from hook_common import load_package_config  # noqa: E402
+from log_common import find_project_root  # noqa: E402
 from quality_gate_config import resolve_quality_gate_enabled  # noqa: E402
 from secret_masking import mask_secrets  # noqa: E402
 
@@ -236,7 +237,15 @@ def main() -> None:
 
         # EV-21: quality_gate.enabled=false のときは formatter/linter 実行を
         # 含む全動作を行わない。
-        project_dir = data.get("cwd", "") or os.environ.get("CLAUDE_PROJECT_DIR", "")
+        # Issue #134 レビュー指摘: Claude Code がリポジトリのサブディレクトリ
+        # （例: packages/foo）から起動されると payload の cwd もそのサブ
+        # ディレクトリになり、project_dir 直下に .claude/config が無いため
+        # config が見つからず既定値へフォールバックしてしまう。
+        # find_project_root で .claude/ を持つ最寄りの親ディレクトリへ
+        # 正規化してから config を読み込む
+        # （quality_gate_config.resolve_state_path と同じ正規化方式）。
+        raw_project_dir = data.get("cwd", "") or os.environ.get("CLAUDE_PROJECT_DIR", "")
+        project_dir = find_project_root(raw_project_dir) if raw_project_dir else find_project_root()
         config = load_package_config("audit", "audit-flags.json", project_dir)
         quality_gate = config.get("features", {}).get("quality_gate", {})
         if not resolve_quality_gate_enabled(quality_gate):

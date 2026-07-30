@@ -24,12 +24,20 @@ _hook_dir = os.path.dirname(os.path.abspath(__file__))
 if _hook_dir not in sys.path:
     sys.path.insert(0, _hook_dir)
 
-# hook_common を $AI_ORCHESTRA_DIR/packages/core/hooks/ から読み込む
+# hook_common を $AI_ORCHESTRA_DIR/packages/core/hooks/ から読み込む。
+# AI_ORCHESTRA_DIR 未設定の開発・検証環境向けに、リポジトリ内の
+# core/hooks へのフォールバックも用意する（Issue #134 レビュー指摘:
+# post-implementation-review.py と同じフォールバック欠落。
+# quality_gate_config.py と同じフォールバック方式）。
 _orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
 if _orchestra_dir:
     _core_hooks = os.path.join(_orchestra_dir, "packages", "core", "hooks")
     if _core_hooks not in sys.path:
         sys.path.insert(0, _core_hooks)
+else:
+    _fallback_core_hooks = Path(__file__).resolve().parents[2] / "core" / "hooks"
+    if str(_fallback_core_hooks) not in sys.path:
+        sys.path.insert(0, str(_fallback_core_hooks))
 
 from hook_common import load_package_config  # noqa: E402
 from quality_gate_config import (  # noqa: E402

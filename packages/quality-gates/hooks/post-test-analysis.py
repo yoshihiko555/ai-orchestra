@@ -223,13 +223,22 @@ def emit_quality_gate_event(
     if detected_by is not None:
         payload["detected_by"] = detected_by
 
-    emit_event(
-        "quality_gate",
-        payload,
-        session_id=str(data.get("session_id") or ""),
-        tid=trace.get("tid", ""),
-        project_dir=project_dir,
-    )
+    # Issue #134 レビュー指摘: emit_event の書き込み失敗（ディスク容量不足・
+    # 権限エラー等）で例外が送出されると、ここで未捕捉のまま main() の
+    # 外側 except に伝播し、gate_passed=False でも blocking を返さずに
+    # exit code 0（fail-open）へ変換されてしまい、品質ゲートが解除される。
+    # 監査ログの記録はベストエフォートとし、失敗しても `blocking` の判定
+    # 自体は必ず呼び出し元へ返す（ゲート判定を audit ログの成否に依存させない）。
+    try:
+        emit_event(
+            "quality_gate",
+            payload,
+            session_id=str(data.get("session_id") or ""),
+            tid=trace.get("tid", ""),
+            project_dir=project_dir,
+        )
+    except Exception as e:
+        print(f"[quality-gates] audit event write failed: {e}", file=sys.stderr)
     return blocking
 
 
