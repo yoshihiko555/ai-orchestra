@@ -120,6 +120,13 @@ Hook は Claude Code のライフサイクルイベントに応じて自動実�
 | `tmux-subagent-start.py` | SubagentStart | — | サブエージェント起動表示 |
 | `tmux-subagent-stop.py` | SubagentStop | — | サブエージェント停止表示 |
 
+### codd
+
+| フック | イベント | 対象 | 説明 |
+|-------|---------|------|------|
+| `codd-scan-postedit.py` | PostToolUse | Edit/Write | scope 内ファイル編集時に `codd scan` を実行し graph を再構築（常に非ブロック、`hooks.scan_on_edit` opt-in・既定 `false`） |
+| `codd-validate-precommit.py` | PreToolUse | Bash | `git commit` 検出時に `codd validate` を実行し warn/block（`hooks.validate_on_commit` opt-in・既定 `warn`） |
+
 ---
 
 ## 詳細
@@ -291,11 +298,12 @@ if __name__ == "__main__":
 - `Edit/Write`: `check-codex-before-write.py`
 - `Read/Grep/Bash`: `check-context-optimization.py`
 - `WebSearch/WebFetch`: `suggest-antigravity-research.py`
+- `Bash`: `codd-validate-precommit.py`（opt-in、`hooks.validate_on_commit` 既定 `warn`）
 
 ### PostToolUse
 
 - `Agent/Task`: `set-plan-gate.py`, `capture-task-result.py`, `check-codex-after-plan.py`
-- `Edit/Write`: `post-implementation-review.py`, `lint-on-save.py`, `test-tampering-detector.py`, `test-gate-checker.py`, `update-working-context.py`
+- `Edit/Write`: `post-implementation-review.py`, `lint-on-save.py`, `test-tampering-detector.py`, `test-gate-checker.py`, `update-working-context.py`, `codd-scan-postedit.py`（opt-in、`hooks.scan_on_edit` 既定 `false`）
 - `Bash`: `post-test-analysis.py`, `test-tampering-detector.py`, `audit-cli.py`
 - `全 PostToolUse`: `audit-route.py`
 

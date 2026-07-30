@@ -3,7 +3,7 @@
 **パッケージ**: `packages/codd`
 **類型**: CLI ツール型
 **作成日**: 2026-07-03
-**最終レビュー日**: 評価保留（2026-07-04）— パッケージ実装が未完了のため、実装完了後に改めて人間レビューを行う。それまで本評価セットの観点は暫定（ドラフト）扱いとし、テスト改修時の突合基準としては未確定とする。EV-26〜EV-53（Issue #98 / コード⇔ドキュメントのトレーサビリティ）は 2026-07-27 追加、EV-46b・EV-54〜EV-57（PR #327 6巡目レビュー指摘対応）は 2026-07-27 追加、EV-59〜EV-65（Issue #95 / hook 自動配線）は 2026-07-30 追加、同様に人間レビュー保留。
+**最終レビュー日**: 評価保留（2026-07-04）— パッケージ実装が未完了のため、実装完了後に改めて人間レビューを行う。それまで本評価セットの観点は暫定（ドラフト）扱いとし、テスト改修時の突合基準としては未確定とする。EV-26〜EV-53（Issue #98 / コード⇔ドキュメントのトレーサビリティ）は 2026-07-27 追加、EV-46b・EV-54〜EV-57（PR #327 6巡目レビュー指摘対応）は 2026-07-27 追加、EV-59〜EV-67（Issue #95 / hook 自動配線。EV-66〜67 は bot レビュー対応で追加）は 2026-07-30 追加、同様に人間レビュー保留。
 **情報源**: docs/design/codd-coherence-layer.md, docs/requirements/coherence-guardrail.md, .claude/rules/codd-frontmatter-policy.md（補助: packages/codd/manifest.json — 構成要素の列挙のみ）
 
 ## 1. 責務定義
@@ -105,13 +105,15 @@ codd は AI Orchestra 自身および導入先プロジェクトが生成する�
 
 ### 4.2 hook 自動配線（Issue #95）
 
-- [ ] EV-59（正常 / must）: `packages/codd/manifest.json` の hooks 宣言（PostToolUse: `codd-scan-postedit.py` matcher `Edit|Write` / PreToolUse: `codd-validate-precommit.py` matcher `Bash`）が既存同期レール（`sync_hooks`）で導入先 `.claude/settings.local.json` へ自動登録され、uninstall / disable で除去される — 根拠: docs/design/codd-coherence-layer.md §4.8.1
+- [ ] EV-59（正常 / must）: `packages/codd/manifest.json` の hooks 宣言（PostToolUse: `codd-scan-postedit.py` matcher `Edit|Write` / PreToolUse: `codd-validate-precommit.py` matcher `Bash`）が既存同期レール（`sync_hooks`）で導入先 `.claude/settings.local.json` へ自動登録され、uninstall / disable で除去される。両 hook とも manifest 上で `"timeout": 90` を宣言し、同期レールが `.claude/settings.local.json` への登録時にこの値を反映する（内部サブプロセス実行上限 60 秒 + 余裕） — 根拠: docs/design/codd-coherence-layer.md §4.8.1
 - [ ] EV-60（正常 / must）: 二段構え opt-in — hook の登録は自動だが実動作は `hooks.scan_on_edit`（既定 `false`）/ `hooks.validate_on_commit`（既定 `warn`）で制御される。`codd.yaml` に `hooks:` セクションが無い既存設定でもデフォルト値で後方互換に動作する — 根拠: docs/design/codd-coherence-layer.md §4.8.1
 - [ ] EV-61（境界 / must）: fail-safe no-op — codd 未初期化（`.claude/config/codd/codd.yaml` 不在）・`enabled: false`・hook 実行時の例外のいずれでも hook は exit 0 で無害に終了し、ツール実行をブロックしない — 根拠: docs/design/codd-coherence-layer.md §4.8.1
 - [ ] EV-62（正常 / must）: scan hook は編集ファイルが scope（`scope.include` + `code_scope.include`、exclude 考慮）に入る場合のみ `codd scan` を実行し、scope 外編集は fast-exit する。scope 判定は scan 本体と同じパターン解釈を用いる。scan 失敗・タイムアウトを含めいかなる場合も exit 0（非ブロック） — 根拠: docs/design/codd-coherence-layer.md §4.8.1
-- [ ] EV-63（正常 / must）: validate hook は Bash コマンド中の `git commit` 呼び出し（`git -C path commit` 等のグローバルオプション経由を含む）を検出した場合のみ `codd validate` を実行する。error 検出時、`warn` は additionalContext JSON + exit 0、`block` は stderr 説明 + exit 2 で commit をブロック、`off` は no-op。error なし・非該当コマンドは無出力 exit 0 — 根拠: docs/design/codd-coherence-layer.md §4.8.1
+- [ ] EV-63（正常 / must）: validate hook は Bash コマンド中の `git commit` 呼び出し（`git -C path commit` 等のグローバルオプション経由を含む）を検出した場合のみ `codd validate` を実行する。`codd validate` の終了コードが **1** の場合のみ整合性エラーとして扱い、`warn` は additionalContext JSON + exit 0、`block` は stderr 説明 + exit 2 で commit をブロック、`off` は no-op。exit 1 以外の非ゼロ終了（設定エラー等の exit 2）は実行失敗とみなし非ブロックで通過する。error なし・非該当コマンドは無出力 exit 0。`git -C <path> commit` が現在の検証 root 以外を指す場合はガード対象外（skip）。`cd <path> && git commit` 等の複合コマンドは root を実行時の cwd で近似判定する（既知の制限） — 根拠: docs/design/codd-coherence-layer.md §4.8.1
 - [ ] EV-64（境界 / must）: `validate_on_commit` の bare `off`（YAML 1.1 で boolean `False` にパースされる）は `"off"` へ正規化され、引用符付き `"off"` と同じ扱いになる（EV-25 の `normalize_check_level` と同じ規約）。許容値（off/warn/block）以外は `ValueError` となり、CLI 経路では設定エラー整形（exit 2）、hook 経路では fail-safe（exit 0）に倒れる — 根拠: docs/design/codd-coherence-layer.md §4.8.1, packages/codd/lib/codd_common.py
 - [ ] EV-65（境界 / should）: 非該当ケース（scope 外編集・`git commit` を含まない Bash・codd 未初期化）の hook 実行コストは fast-exit により体感無視できる（目安 100ms 未満）。重い処理（codd lib import・YAML ロード・subprocess）は安価な前提チェックの後段に置かれる — 根拠: docs/design/codd-coherence-layer.md §4.8.1, Issue #95 受け入れ条件
+- [ ] EV-66（異常 / must）: `hooks.scan_on_edit` は厳密な bool 値のみ受理する。非 bool（例: 文字列 `"false"`）が設定された場合は `ValueError` となり、CLI 経路（設定エラー整形）では exit 2、hook 経路では fail-safe により exit 0 に倒れる — 根拠: docs/design/codd-coherence-layer.md §4.8.1, packages/codd/lib/codd_common.py
+- [ ] EV-67（境界 / should）: `./docs/**/*.md` のような正規化を要するスコープパターンも、単一パス判定（scan hook の fast-exit 判定）と `scan` 本体側で同一の解釈になる。両者とも `_normalize_scope_pattern` を経由してから照合するため、記法差によるスコープ判定の食い違いが生じない — 根拠: docs/design/codd-coherence-layer.md §4.8.1, packages/codd/lib/codd_common.py（`_normalize_scope_pattern`）
 
 ## 5. テストレビュー判断基準（パッケージ固有）
 

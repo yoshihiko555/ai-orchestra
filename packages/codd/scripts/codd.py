@@ -957,36 +957,16 @@ def _scope_pattern_to_regex(pattern: str) -> re.Pattern[str]:
         return re.compile(r"(?!)")
 
 
-def _normalize_scope_pattern(root: Path, pattern: str) -> str | None:
-    """scope glob パターンを root 相対の正規化形へレキシカルに畳み込む。
-
-    ``../proj/src/**/*.py``（root の basename が ``proj``）のように、一度 root の
-    外へ出て同じ root 内へ戻ってくるパターンは、通常走査（``_glob_relpaths()``）側
-    では ``root.glob(pattern)`` の実ファイル解決 + ``os.path.normpath`` によって
-    ``src/**/*.py`` に畳み込まれ、scan 対象になる。一方こちらの純粋パス判定
-    （削除済みファイル向けの ``_matches_scope_pattern``）はパターン文字列を素朴に
-    regex 化するだけだったため、`` ../proj/src/mod.py`` という別名の非マッチ扱いに
-    なり、scan と impact 判定の間で解釈が食い違っていた（レビュー対応: codd.py:880）。
-
-    ``root / pattern`` を ``os.path.normpath`` でレキシカルに畳み込み（ファイル
-    システムへはアクセスしない。削除済みファイルは実体が無いため）、root 配下に
-    収まっていれば root 相対の正規化パターンを返す。root の外（または root 自体）
-    を指す場合は None（マッチ対象なし。``_glob_relpaths()`` が root 外を黙って
-    除外するのと同じ扱い）。
-    """
-    combined = os.path.normpath(str(root / pattern))
-    root_str = os.path.normpath(str(root))
-    if combined == root_str:
-        return None
-    prefix = root_str + os.sep
-    if not combined.startswith(prefix):
-        return None
-    return combined[len(prefix) :].replace(os.sep, "/")
-
-
 def _matches_scope_pattern(root: Path, rel: str, pattern: str) -> bool:
-    """rel が scope glob にマッチするか（削除済みファイル向けの純粋パス判定）。"""
-    normalized = _normalize_scope_pattern(root, pattern)
+    """rel が scope glob にマッチするか（削除済みファイル向けの純粋パス判定）。
+
+    パターンの root 相対正規化（``./docs/**/*.md`` や ``../<root名>/...`` のような
+    表記の畳み込み）は `codd_common._normalize_scope_pattern()` と共有する
+    （T2: Issue #95 レビュー対応。EV-56 で仕様化済みのロジックを
+    `codd_common.py` へ一本化し、単一パス scope 判定（`path_matches_glob_scope`）
+    とここで同じ実装を使う）。
+    """
+    normalized = cc._normalize_scope_pattern(root, pattern)
     if normalized is None:
         return False
     return _scope_pattern_to_regex(normalized).fullmatch(rel) is not None

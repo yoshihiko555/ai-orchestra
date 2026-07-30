@@ -274,7 +274,7 @@ class TestCoddHookSync:
     """Issue #95: codd hooks（scan-postedit / validate-precommit）の同期。"""
 
     def test_codd_hooks_registered_after_essential_setup(self, e2e_project: Path) -> None:
-        """EV-59: essential 導入で codd の 2 hooks が settings.local.json へ登録される"""
+        """EV-59: essential 導入で codd の 2 hooks が timeout 90 で settings.local.json へ登録される"""
         _setup_essential(e2e_project)
         settings = json.loads(
             (e2e_project / ".claude" / "settings.local.json").read_text(encoding="utf-8")
@@ -282,14 +282,23 @@ class TestCoddHookSync:
         hooks = settings.get("hooks", {})
         post = hooks.get("PostToolUse", [])
         pre = hooks.get("PreToolUse", [])
-        assert any(
-            "codd-scan-postedit.py" in json.dumps(entry) and entry.get("matcher") == "Edit|Write"
-            for entry in post
-        )
-        assert any(
-            "codd-validate-precommit.py" in json.dumps(entry) and entry.get("matcher") == "Bash"
-            for entry in pre
-        )
+
+        def _find_hook(entries: list, filename: str, matcher: str) -> dict | None:
+            for entry in entries:
+                if entry.get("matcher") != matcher:
+                    continue
+                for hook in entry.get("hooks", []):
+                    if filename in hook.get("command", ""):
+                        return hook
+            return None
+
+        scan_hook = _find_hook(post, "codd-scan-postedit.py", "Edit|Write")
+        validate_hook = _find_hook(pre, "codd-validate-precommit.py", "Bash")
+        assert scan_hook is not None
+        assert validate_hook is not None
+        # T3: 内部サブプロセス（scan/validate 最大60秒）を kill しないよう timeout を揃える
+        assert scan_hook["timeout"] == 90
+        assert validate_hook["timeout"] == 90
 
     def test_codd_hooks_removed_on_uninstall(self, e2e_project: Path) -> None:
         """EV-59: codd uninstall で 2 hooks が除去される"""
@@ -301,6 +310,51 @@ class TestCoddHookSync:
         hooks_json = json.dumps(settings.get("hooks", {}))
         assert "codd-scan-postedit.py" not in hooks_json
         assert "codd-validate-precommit.py" not in hooks_json
+
+    def test_stale_codd_hook_timeout_corrected_by_session_start_sync(
+        self, e2e_project: Path
+    ) -> None:
+        """T3: 旧 timeout（5秒）で登録済みの codd hook は SessionStart 同期で 90 に補正される。
+
+        既に codd を導入済みのプロジェクトが本修正以前の状態（timeout 未指定 = 5秒）で
+        settings.local.json を持っているケースを再現する。
+        """
+        _setup_essential(e2e_project)
+        settings_path = e2e_project / ".claude" / "settings.local.json"
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+
+        # 既存登録の timeout を意図的に古い既定値（5）へ書き換える
+        for entry in settings["hooks"].get("PostToolUse", []):
+            for hook in entry.get("hooks", []):
+                if "codd-scan-postedit.py" in hook.get("command", ""):
+                    hook["timeout"] = 5
+        for entry in settings["hooks"].get("PreToolUse", []):
+            for hook in entry.get("hooks", []):
+                if "codd-validate-precommit.py" in hook.get("command", ""):
+                    hook["timeout"] = 5
+        settings_path.write_text(
+            json.dumps(settings, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+
+        run_session_start(e2e_project, "s95-t3")
+
+        updated = json.loads(settings_path.read_text(encoding="utf-8"))
+        post = updated["hooks"].get("PostToolUse", [])
+        pre = updated["hooks"].get("PreToolUse", [])
+        scan_timeout = next(
+            hook["timeout"]
+            for entry in post
+            for hook in entry.get("hooks", [])
+            if "codd-scan-postedit.py" in hook.get("command", "")
+        )
+        validate_timeout = next(
+            hook["timeout"]
+            for entry in pre
+            for hook in entry.get("hooks", [])
+            if "codd-validate-precommit.py" in hook.get("command", "")
+        )
+        assert scan_timeout == 90
+        assert validate_timeout == 90
 
 
 class TestAgentModelPatching:

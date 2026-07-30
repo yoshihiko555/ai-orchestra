@@ -509,6 +509,10 @@ codd は essential（常時有効）のため、**条件分岐は不要**で常�
 | `codd-scan-postedit.py`        | PostToolUse | `Edit\|Write` | scope 内ファイル編集時に `scan` を実行し、graph を再構築する（常に非ブロック） |
 | `codd-validate-precommit.py`   | PreToolUse  | `Bash`    | `git commit` を検出したら `validate` を実行し、警告またはブロックする |
 
+両 hook とも manifest 上で `"timeout": 90`（秒）を宣言し、同期レール（`sync_hooks`）が
+導入先 `.claude/settings.local.json` へ登録する際にこの値を反映する。内部のサブプロセス
+実行上限（60秒）に余裕を持たせた値。
+
 **pre-commit の代替方式**: 実 git hook（`.git/hooks/pre-commit`）を配布するのではなく、
 PreToolUse (Bash) で `git commit` コマンドを検出するアプローチを採る。理由は次の3点。
 
@@ -521,6 +525,21 @@ PreToolUse (Bash) で `git commit` コマンドを検出するアプローチを
 commit フローを侵さない」という要件の裏返しであり、意図した制限として明記する。実 git hook の
 配布機構が必要な場合は Out of Scope（2章）に切り出した別Issue（`codd-real-git-hook-distribution`）
 で扱う。
+
+**validate hook の判定基準**: `codd validate` の終了コードが **1** の場合のみ整合性エラー
+として `warn`/`block` の分岐に流す。それ以外の非ゼロ終了（例: 設定エラーの exit 2）は
+実行失敗とみなし、非ブロックで通過させる（hook が誤って commit を止めないようにするため）。
+
+**対象 root の限定**: Bash コマンド中の `git -C <path> commit` が、現在の検証 root
+（プロジェクトルート）以外を指す場合はガード対象外とする（skip）。`cd <path> && git commit`
+のような複合コマンドは、root を実行時の cwd で近似判定する（既知の制限。`-C` のような
+明示的な path 引数を持たないため厳密な root 解決はできない）。
+
+**working tree 検証の近似**: hook が実行する `validate` は working tree（実ファイル内容）
+を対象とし、git の index（ステージング内容）は見ない。部分的な `git add` や
+`X && git add && git commit` のような複合コマンドでは、実際に commit される index の内容
+と hook が検証した内容が乖離しうる。この解消（index スナップショットに対する検証）は
+Issue #338 に切り出し済み。
 
 **二段構えの opt-in**: hook の「登録」は essential プリセットで全導入先に自動展開されるが、
 「実動作」は `codd.yaml` の `hooks:` セクションで制御する（config キーは 4.6 の `checks` 等と同じ

@@ -642,6 +642,21 @@ ALLOWED_VALIDATE_ON_COMMIT = {
 }
 
 
+def _as_strict_bool(value: Any, field_name: str) -> bool:
+    """真正な YAML bool のみを受理する（T6: Issue #95 bot レビュー対応）。
+
+    Python の `bool(...)` 変換は非空文字列（``"false"`` を含む）・非空 dict/list を
+    無条件で ``True`` にしてしまうため、``scan_on_edit: "false"``（引用符付き文字列の
+    設定ミス）がそのまま有効化として通ってしまう。他の codd 設定検証
+    （`normalize_check_level` 等）と同様、想定外の型は ``ValueError`` にして
+    `main()` の設定エラーハンドラで整形させる（hook 経路では `safe_hook_execution`
+    により fail-safe exit 0 に収束する）。
+    """
+    if isinstance(value, bool):
+        return value
+    raise ValueError(f"{field_name} は真偽値（true / false）である必要があります: {value!r}")
+
+
 def normalize_validate_on_commit(value: Any) -> str:
     """``hooks.validate_on_commit`` を正準文字列に正規化する。
 
@@ -677,7 +692,9 @@ class HooksConfig:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> HooksConfig:
         return cls(
-            scan_on_edit=bool(data.get("scan_on_edit", DEFAULT_SCAN_ON_EDIT)),
+            scan_on_edit=_as_strict_bool(
+                data.get("scan_on_edit", DEFAULT_SCAN_ON_EDIT), "hooks.scan_on_edit"
+            ),
             validate_on_commit=normalize_validate_on_commit(
                 data.get("validate_on_commit", DEFAULT_VALIDATE_ON_COMMIT)
             ),
@@ -967,6 +984,36 @@ def glob_pattern_to_regex(pattern: str) -> re.Pattern[str]:
     return re.compile(regex)
 
 
+def _normalize_scope_pattern(root: Path, pattern: str) -> str | None:
+    """scope glob パターンを root 相対の正規化形へレキシカルに畳み込む（T2: Issue #95）。
+
+    ``./docs/**/*.md`` や ``../<root名>/docs/**/*.md`` のように、一度 root の外へ
+    出て同じ root 内へ戻ってくる（あるいは単に ``./`` を冠する）パターンは、通常
+    走査（``_glob_relpaths()`` / ``Path.glob``）側では実ファイル解決 +
+    ``os.path.normpath`` によって ``docs/**/*.md`` に畳み込まれ scan 対象になる。
+    一方、単一パス判定（`path_matches_glob_scope` / `path_in_scan_scope`）がパターン
+    文字列を未正規化のまま regex 化すると、``./docs/x.md`` という別名表記のまま
+    比較してしまい常に非該当になる（scan 本体との解釈の食い違い）。
+
+    ``root / pattern`` を ``os.path.normpath`` でレキシカルに畳み込み（ファイル
+    システムへはアクセスしない）、root 配下に収まっていれば root 相対の正規化
+    パターンを返す。root の外（または root 自体）を指す場合は None（マッチ対象
+    なし。``_glob_relpaths()`` が root 外を黙って除外するのと同じ扱い）。
+
+    `scripts/codd.py` の削除済みファイル向け判定（``_matches_scope_pattern``）と
+    完全に同一のロジックを共有する（EV-56 で仕様化済み。二重実装の齟齬を無くすため
+    ここへ一本化し、`scripts/codd.py` 側は import して使う）。
+    """
+    combined = os.path.normpath(str(root / pattern))
+    root_str = os.path.normpath(str(root))
+    if combined == root_str:
+        return None
+    prefix = root_str + os.sep
+    if not combined.startswith(prefix):
+        return None
+    return combined[len(prefix) :].replace(os.sep, "/")
+
+
 def path_matches_glob_scope(
     root: Path, target: Path, include: list[str], exclude: list[str]
 ) -> bool:
@@ -976,6 +1023,10 @@ def path_matches_glob_scope(
     ファイルは対象外（False）。root 内シンボリックリンクの相対パス表現は、
     リンクの解決先ではなくリンク自体の論理パスを使う（``_glob_relpaths()`` と
     同じ安全策・同じパス表現）。
+
+    include/exclude の各パターンは比較前に `_normalize_scope_pattern()` で root
+    相対のレキシカル正規化形へ畳み込む（T2: ``./docs/**/*.md`` のような表記でも
+    scan 本体（`Path.glob`）と同じ対象を判定できるようにするため）。
     """
     if not target.is_file():
         return False
@@ -987,9 +1038,16 @@ def path_matches_glob_scope(
     if not normalized_target.is_relative_to(root):
         return False
     relpath = normalized_target.relative_to(root).as_posix()
-    if not any(glob_pattern_to_regex(pattern).match(relpath) for pattern in include):
+
+    def _matches(pattern: str) -> bool:
+        normalized_pattern = _normalize_scope_pattern(root, pattern)
+        if normalized_pattern is None:
+            return False
+        return glob_pattern_to_regex(normalized_pattern).match(relpath) is not None
+
+    if not any(_matches(pattern) for pattern in include):
         return False
-    return not any(glob_pattern_to_regex(pattern).match(relpath) for pattern in exclude)
+    return not any(_matches(pattern) for pattern in exclude)
 
 
 def path_in_scan_scope(root: Path, target: Path, config: CoddConfig) -> bool:

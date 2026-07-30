@@ -598,3 +598,268 @@ class TestHookPerformance:
         elapsed = time.monotonic() - start
         assert result.returncode == 0
         assert elapsed < 3.0
+
+
+# ---------------------------------------------------------------------------
+# T1: validate hook の exit code 区別（bot レビュー対応, Issue #95 PR #337）
+#
+# `codd validate` の非ゼロ終了コードは 2 通り異なる意味を持つ:
+#   - 1: 整合性エラーを検出（正常な validate 結果）→ warn/block 分岐へ
+#   - 1 以外（例: 2 = 設定エラー）: validate 実行自体の失敗 → 常に非ブロック
+# ---------------------------------------------------------------------------
+
+
+class TestValidateHookExecutionFailureIsNonBlocking:
+    def test_config_error_does_not_block_commit_even_in_block_mode(self, tmp_path: Path) -> None:
+        """T1: `codd validate` の設定エラー（exit 2）は block モードでも commit をブロックしない。
+
+        `/nonexistent/*.py`（絶対パスパターン）は `collect_files` の `Path.glob` 呼び出しで
+        `NotImplementedError`（"Non-relative patterns are unsupported"）を捕捉した
+        `ValueError` により `codd validate` サブプロセスが exit 2 で終了する
+        （`TestScanHookSubprocessFailureNotification` と同じ原理の設定エラー）。
+        """
+        _write(tmp_path, "docs/x.md", _CLEAN_DOC)
+        config_data = _codd_config_dict(
+            scope_include=["docs/**/*.md", "/nonexistent/*.py"], validate_on_commit="block"
+        )
+        _write_codd_config(tmp_path, config_data)
+        payload = {
+            "cwd": str(tmp_path),
+            "tool_name": "Bash",
+            "tool_input": {"command": 'git commit -m "msg"'},
+        }
+        result = _run_hook("codd-validate-precommit.py", payload, tmp_path)
+        assert result.returncode == 0
+        assert result.stdout == ""
+        assert "[codd] validate の実行に失敗しました" in result.stderr
+
+    def test_config_error_notifies_in_warn_mode_too(self, tmp_path: Path) -> None:
+        """T1: warn モードでも実行失敗（exit 2）は additionalContext ではなく通知のみ。"""
+        _write(tmp_path, "docs/x.md", _CLEAN_DOC)
+        config_data = _codd_config_dict(
+            scope_include=["docs/**/*.md", "/nonexistent/*.py"], validate_on_commit="warn"
+        )
+        _write_codd_config(tmp_path, config_data)
+        payload = {
+            "cwd": str(tmp_path),
+            "tool_name": "Bash",
+            "tool_input": {"command": 'git commit -m "msg"'},
+        }
+        result = _run_hook("codd-validate-precommit.py", payload, tmp_path)
+        assert result.returncode == 0
+        assert result.stdout == ""
+        assert "[codd] validate の実行に失敗しました" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# T5: `git -C path` の検証 root 整合（bot レビュー対応, Issue #95 PR #337）
+# ---------------------------------------------------------------------------
+
+
+class TestValidateHookDashCExtraction:
+    """`_extract_dash_c_paths` / `_is_guard_target_root` の直接 import 単体テスト。"""
+
+    def test_extracts_single_dash_c_path(self) -> None:
+        assert validate_hook._extract_dash_c_paths("git -C /repo commit -m msg") == ["/repo"]
+
+    def test_extracts_multiple_dash_c_paths_in_order(self) -> None:
+        assert validate_hook._extract_dash_c_paths("git -C /a -C b commit -m msg") == ["/a", "b"]
+
+    def test_no_dash_c_returns_empty_list(self) -> None:
+        assert validate_hook._extract_dash_c_paths('git commit -m "msg"') == []
+
+    def test_guard_target_root_true_when_no_dash_c(self) -> None:
+        assert validate_hook._is_guard_target_root("/proj", 'git commit -m "msg"') is True
+
+    def test_guard_target_root_false_when_dash_c_points_elsewhere(self) -> None:
+        assert validate_hook._is_guard_target_root("/proj", "git -C /elsewhere commit") is False
+
+    def test_guard_target_root_true_when_dash_c_is_dot(self) -> None:
+        assert validate_hook._is_guard_target_root("/proj", "git -C . commit") is True
+
+    def test_guard_target_root_true_when_dash_c_is_root_absolute_path(self) -> None:
+        assert validate_hook._is_guard_target_root("/proj", "git -C /proj commit") is True
+
+
+class TestValidateHookDashCGuardTargetRoot:
+    """hook サブプロセス経由での `-C` ガード対象整合の end-to-end テスト。"""
+
+    def test_dash_c_pointing_elsewhere_skips_guard(self, tmp_path: Path) -> None:
+        """T5: `-C` が hook root 以外を指す場合はガード対象外として exit 0 skip する。"""
+        _write(tmp_path, "docs/d.md", _DANGLING_DOC)
+        _write_codd_config(tmp_path, _codd_config_dict(validate_on_commit="block"))
+        payload = {
+            "cwd": str(tmp_path),
+            "tool_name": "Bash",
+            "tool_input": {"command": "git -C /elsewhere commit -m msg"},
+        }
+        result = _run_hook("codd-validate-precommit.py", payload, tmp_path)
+        assert result.returncode == 0
+        assert result.stdout == ""
+
+    def test_dash_c_dot_still_guards_and_blocks(self, tmp_path: Path) -> None:
+        """`-C .` は root 自身を指すため従来通りガード対象のまま（block される）。"""
+        _write(tmp_path, "docs/d.md", _DANGLING_DOC)
+        _write_codd_config(tmp_path, _codd_config_dict(validate_on_commit="block"))
+        payload = {
+            "cwd": str(tmp_path),
+            "tool_name": "Bash",
+            "tool_input": {"command": "git -C . commit -m msg"},
+        }
+        result = _run_hook("codd-validate-precommit.py", payload, tmp_path)
+        assert result.returncode == 2
+
+    def test_dash_c_absolute_root_still_guards_and_blocks(self, tmp_path: Path) -> None:
+        """`-C <root の絶対パス>` は root 自身を指すため従来通りガード対象のまま。"""
+        _write(tmp_path, "docs/d.md", _DANGLING_DOC)
+        _write_codd_config(tmp_path, _codd_config_dict(validate_on_commit="block"))
+        payload = {
+            "cwd": str(tmp_path),
+            "tool_name": "Bash",
+            "tool_input": {"command": f"git -C {tmp_path} commit -m msg"},
+        }
+        result = _run_hook("codd-validate-precommit.py", payload, tmp_path)
+        assert result.returncode == 2
+
+    def test_without_dash_c_still_guards_as_before(self, tmp_path: Path) -> None:
+        """`-C` を含まない従来どおりのコマンドは引き続きガード対象（回帰確認）。"""
+        _write(tmp_path, "docs/d.md", _DANGLING_DOC)
+        _write_codd_config(tmp_path, _codd_config_dict(validate_on_commit="block"))
+        payload = {
+            "cwd": str(tmp_path),
+            "tool_name": "Bash",
+            "tool_input": {"command": 'git commit -m "msg"'},
+        }
+        result = _run_hook("codd-validate-precommit.py", payload, tmp_path)
+        assert result.returncode == 2
+
+
+# ---------------------------------------------------------------------------
+# T6: scan_on_edit の厳密 bool 検証（bot レビュー対応, Issue #95 PR #337）
+# ---------------------------------------------------------------------------
+
+
+class TestScanOnEditStrictBool:
+    def test_string_false_raises_value_error(self) -> None:
+        """CLI/hook 共通ロード経路: `scan_on_edit: "false"`（文字列）は ValueError。"""
+        try:
+            cc.HooksConfig.from_dict({"scan_on_edit": "false"})
+        except ValueError:
+            return
+        raise AssertionError("expected ValueError for string scan_on_edit")
+
+    def test_mapping_value_raises_value_error(self) -> None:
+        try:
+            cc.HooksConfig.from_dict({"scan_on_edit": {"enabled": True}})
+        except ValueError:
+            return
+        raise AssertionError("expected ValueError for mapping scan_on_edit")
+
+    def test_true_bool_passes_through(self) -> None:
+        assert cc.HooksConfig.from_dict({"scan_on_edit": True}).scan_on_edit is True
+
+    def test_false_bool_passes_through(self) -> None:
+        assert cc.HooksConfig.from_dict({"scan_on_edit": False}).scan_on_edit is False
+
+    def test_missing_key_defaults_to_false(self) -> None:
+        assert cc.HooksConfig.from_dict({}).scan_on_edit is False
+
+    def test_cli_validate_exits_two_for_string_scan_on_edit(self, tmp_path: Path) -> None:
+        """T6: CLI 経路（`codd validate` サブプロセス）は ValueError を exit 2 に整形する。"""
+        _write(tmp_path, "docs/x.md", _CLEAN_DOC)
+        _write_raw_codd_config(
+            tmp_path,
+            "enabled: true\n"
+            "scope:\n"
+            '  include: ["docs/**/*.md"]\n'
+            "  exclude: []\n"
+            "hooks:\n"
+            '  scan_on_edit: "false"\n'
+            "  validate_on_commit: warn\n",
+        )
+        codd_cli = REPO_ROOT / "packages" / "codd" / "scripts" / "codd.py"
+        result = subprocess.run(
+            [sys.executable, str(codd_cli), "validate"],
+            cwd=str(tmp_path),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 2
+
+    def test_hook_fail_safe_exits_zero_for_string_scan_on_edit(self, tmp_path: Path) -> None:
+        """T6: hook 経路は `safe_hook_execution` により ValueError を exit 0 に収束する。"""
+        _write(tmp_path, "docs/x.md", _CLEAN_DOC)
+        _write_raw_codd_config(
+            tmp_path,
+            "enabled: true\n"
+            "scope:\n"
+            '  include: ["docs/**/*.md"]\n'
+            "  exclude: []\n"
+            "hooks:\n"
+            '  scan_on_edit: "false"\n'
+            "  validate_on_commit: warn\n",
+        )
+        payload = {
+            "cwd": str(tmp_path),
+            "tool_name": "Edit",
+            "tool_input": {"file_path": str(tmp_path / "docs" / "x.md")},
+        }
+        result = _run_hook("codd-scan-postedit.py", payload, tmp_path)
+        assert result.returncode == 0
+        assert "Hook error" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# T2: scope glob の root 相対正規化（bot レビュー対応, Issue #95 PR #337）
+#
+# `./docs/**/*.md` や `../<root名>/docs/**/*.md` のような正規化可能パターンは、
+# scan 本体（`Path.glob` 経由の `collect_files`）は対象を収集するが、以前の単一
+# パス判定（`path_matches_glob_scope` / `path_in_scan_scope`）は未正規化のまま
+# regex 比較していたため常に非該当だった。`codd_common._normalize_scope_pattern()`
+# へ一本化した後は両者が一致することを確認する。
+# ---------------------------------------------------------------------------
+
+
+class TestScopePatternRootRelativeNormalizationParity:
+    def test_dot_slash_prefixed_pattern_matches_scan_scope(self, tmp_path: Path) -> None:
+        """`./docs/**/*.md` は hook 側単一パス判定と scan 本体で一致する。"""
+        _write(tmp_path, "docs/x.md", _CLEAN_DOC)
+        config = cc.CoddConfig.from_dict(
+            _codd_config_dict(scope_include=["./docs/**/*.md"], scope_exclude=[])
+        )
+        target = tmp_path / "docs" / "x.md"
+
+        assert cc.path_in_scan_scope(tmp_path, target, config) is True
+        collected = set(cli.collect_files(tmp_path, config))
+        assert target in collected
+
+    def test_dot_slash_prefixed_exclude_pattern_matches_scan_scope(self, tmp_path: Path) -> None:
+        """`./docs/skip.md`（正規化可能な exclude パターン）も同様に一致する。"""
+        _write(tmp_path, "docs/keep.md", _CLEAN_DOC)
+        _write(tmp_path, "docs/skip.md", "excluded via ./ prefixed exclude")
+        config = cc.CoddConfig.from_dict(
+            _codd_config_dict(scope_include=["docs/*.md"], scope_exclude=["./docs/skip.md"])
+        )
+        keep = tmp_path / "docs" / "keep.md"
+        skip = tmp_path / "docs" / "skip.md"
+
+        assert cc.path_in_scan_scope(tmp_path, keep, config) is True
+        assert cc.path_in_scan_scope(tmp_path, skip, config) is False
+        collected = set(cli.collect_files(tmp_path, config))
+        assert keep in collected
+        assert skip not in collected
+
+    def test_parent_relative_pattern_folding_back_into_root_matches(self, tmp_path: Path) -> None:
+        """`../<root名>/docs/**/*.md` のように root 外へ出て戻るパターンも一致する。"""
+        root = tmp_path / "proj"
+        root.mkdir()
+        _write(root, "docs/x.md", _CLEAN_DOC)
+        config = cc.CoddConfig.from_dict(
+            _codd_config_dict(scope_include=["../proj/docs/**/*.md"], scope_exclude=[])
+        )
+        target = root / "docs" / "x.md"
+
+        assert cc.path_in_scan_scope(root, target, config) is True
+        collected = set(cli.collect_files(root, config))
+        assert target in collected

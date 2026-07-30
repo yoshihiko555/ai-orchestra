@@ -4,8 +4,12 @@
   "description": "CODD 整合性レイヤー（ドキュメント依存グラフの scan / validate / impact + コード⇔ドキュメントのトレーサビリティ。core 依存）",
   "depends": ["core"],
   "hooks": {
-    "PreToolUse": [{ "file": "codd-validate-precommit.py", "matcher": "Bash" }],
-    "PostToolUse": [{ "file": "codd-scan-postedit.py", "matcher": "Edit|Write" }]
+    "PreToolUse": [
+      { "file": "codd-validate-precommit.py", "matcher": "Bash", "timeout": 90 }
+    ],
+    "PostToolUse": [
+      { "file": "codd-scan-postedit.py", "matcher": "Edit|Write", "timeout": 90 }
+    ]
   },
   "files": ["hooks/codd-scan-postedit.py", "hooks/codd-validate-precommit.py"],
   "skills": ["codd-scan", "codd-validate", "codd-impact"],
