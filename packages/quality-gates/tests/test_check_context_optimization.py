@@ -320,6 +320,42 @@ def test_main_no_op_when_context_optimization_disabled(
     assert capsys.readouterr().out == ""
 
 
+def test_main_no_op_when_quality_gate_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """EV-21: quality_gate.enabled=false のときは context_optimization.enabled
+    に関わらず提案を含む全動作を行わないことを確認する。"""
+    target = tmp_path / "large.txt"
+    target.write_text("\n".join(str(i) for i in range(500)))
+    monkeypatch.setattr(
+        check_context_optimization,
+        "_load_quality_gate_settings",
+        lambda _project_dir: {"enabled": False},
+    )
+    called = {"ran": False}
+
+    def _fail_if_called(_project_dir):  # type: ignore[no-untyped-def]
+        called["ran"] = True
+        return {"enabled": True}
+
+    monkeypatch.setattr(check_context_optimization, "_load_settings", _fail_if_called)
+    _make_stdin(
+        {
+            "cwd": str(tmp_path),
+            "tool_name": "Read",
+            "tool_input": {"file_path": str(target)},
+        },
+        monkeypatch,
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        check_context_optimization.main()
+
+    assert exc_info.value.code == 0
+    assert called["ran"] is False
+    assert capsys.readouterr().out == ""
+
+
 def test_main_ignores_invalid_json(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sys, "stdin", StringIO("{not valid json"))
 

@@ -5,6 +5,10 @@ PreToolUse hook: Suggest context-saving alternatives for Read / Grep / Bash.
 非効率なツール使用 (Read 全文読み・Grep content モード乱用・Bash の cat/grep 等)
 を検出し、エスカレーション戦略への切り替えを提案する。
 
+EV-21: `quality_gate.enabled=false` のときは提案を含む全動作を行わない
+（`context_optimization.enabled` との AND 条件。既存の
+`context_optimization.enabled` 単独での無効化は維持する）。
+
 参照: .claude/rules/escalation-strategy.md
 """
 
@@ -23,7 +27,12 @@ if _orchestra_dir:
     if _core_hooks not in sys.path:
         sys.path.insert(0, _core_hooks)
 
+_hook_dir = os.path.dirname(os.path.abspath(__file__))
+if _hook_dir not in sys.path:
+    sys.path.insert(0, _hook_dir)
+
 from hook_common import load_package_config  # noqa: E402
+from quality_gate_config import resolve_quality_gate_enabled  # noqa: E402
 
 DEFAULT_READ_LINE_THRESHOLD = 200
 DEFAULT_MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB
@@ -67,6 +76,12 @@ def _load_settings(project_dir: str) -> dict:
     """audit-flags.json から context_optimization 設定を取り出す。"""
     config = load_package_config("audit", "audit-flags.json", project_dir)
     return config.get("features", {}).get("context_optimization", {}) or {}
+
+
+def _load_quality_gate_settings(project_dir: str) -> dict:
+    """audit-flags.json から quality_gate 設定を取り出す。"""
+    config = load_package_config("audit", "audit-flags.json", project_dir)
+    return config.get("features", {}).get("quality_gate", {}) or {}
 
 
 def is_enabled(settings: dict) -> bool:
@@ -199,6 +214,13 @@ def main() -> None:
             sys.exit(0)
 
         project_dir = data.get("cwd", "") or os.environ.get("CLAUDE_PROJECT_DIR", "")
+
+        # EV-21: quality_gate.enabled=false のときは提案を含む全動作を
+        # 行わない（context_optimization.enabled との AND 条件）。
+        quality_gate = _load_quality_gate_settings(project_dir)
+        if not resolve_quality_gate_enabled(quality_gate):
+            sys.exit(0)
+
         settings = _load_settings(project_dir)
         if not is_enabled(settings):
             sys.exit(0)

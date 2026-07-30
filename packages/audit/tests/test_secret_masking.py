@@ -69,6 +69,48 @@ class TestMaskSecrets:
         text = "hello world, this has no secrets"
         assert secret_masking.mask_secrets(text) == text
 
+    def test_masks_quoted_multi_word_value(self) -> None:
+        """クォート付き・空白を含む複数語の値が最初の空白で途切れず全体マスクされることを確認する。"""
+        text = 'password: "correct horse battery staple" end'
+        result = secret_masking.mask_secrets(text)
+        assert "correct horse battery staple" not in result
+        assert "[REDACTED]" in result
+        assert "end" in result
+
+    def test_masks_single_quoted_multi_word_value(self) -> None:
+        text = "token='my very long api token value' trailing"
+        result = secret_masking.mask_secrets(text)
+        assert "my very long api token value" not in result
+        assert "trailing" in result
+
+    def test_masks_unquoted_value_until_comma(self) -> None:
+        """クォートなしの値もカンマ/セミコロン/改行まで丸ごとマスクされることを確認する。"""
+        text = "secret=abc def ghi, next_field=1"
+        result = secret_masking.mask_secrets(text)
+        assert "abc def ghi" not in result
+        assert "next_field=1" in result
+
+    def test_masks_connection_string(self) -> None:
+        """`scheme://user:pass@host` 形式の接続文字列がマスクされることを確認する。"""
+        text = "DATABASE_URL=postgres://dbuser:sup3rSecr3t@db.example.com:5432/prod"
+        result = secret_masking.mask_secrets(text)
+        assert "dbuser" not in result
+        assert "sup3rSecr3t" not in result
+        assert "[REDACTED]" in result
+
+    def test_does_not_mask_plain_url_without_credentials(self) -> None:
+        """認証情報を含まない通常の URL はマスク対象外であることを確認する。"""
+        text = "See https://example.com/docs for details"
+        assert secret_masking.mask_secrets(text) == text
+
+    def test_masks_compound_token_env_var(self) -> None:
+        """`AWS_SECRET_ACCESS_KEY` のようにトリガー語が識別子に埋め込まれた
+        複合トークンの env var もマスクされることを確認する。"""
+        text = "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        result = secret_masking.mask_secrets(text)
+        assert "wJalrXUtnFEMI" not in result
+        assert "[REDACTED]" in result
+
 
 class TestHooksUseSharedModule:
     """各 hook が共通モジュールの `mask_secrets` を利用していることを確認する。"""

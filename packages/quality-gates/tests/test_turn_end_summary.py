@@ -158,6 +158,40 @@ class TestMain:
         # Stop hook は decision を一切返さない
         assert "decision" not in parsed
 
+    def test_no_op_when_quality_gate_disabled(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        tmp_path: Path,
+    ) -> None:
+        """EV-21: quality_gate.enabled=false のときは systemMessage 出力・audit
+        イベント記録を含む全動作を行わないことを確認する。"""
+        claude_dir = tmp_path / ".claude"
+        (claude_dir / "context" / "shared").mkdir(parents=True)
+        (claude_dir / "context" / "shared" / "working-context.json").write_text(
+            json.dumps({"modified_files": ["main.py", "server.ts"]})
+        )
+        (claude_dir / "Plans.md").write_text("# Plans\n- `cc:WIP` A task\n")
+
+        monkeypatch.setattr(
+            turn_end,
+            "load_package_config",
+            lambda *_args: {"features": {"quality_gate": {"enabled": False}}},
+        )
+
+        emitted = {"called": False}
+
+        def _fail_if_emitted(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+            emitted["called"] = True
+
+        monkeypatch.setattr(turn_end, "_emit_turn_end", _fail_if_emitted)
+
+        payload = {"session_id": "s1", "cwd": str(tmp_path)}
+        output = self._invoke(payload, monkeypatch, capsys)
+
+        assert output == ""
+        assert emitted["called"] is False
+
     def test_main_fails_open_on_unexpected_exception(
         self,
         monkeypatch: pytest.MonkeyPatch,
