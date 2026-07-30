@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
+import sys
+from io import StringIO
 from pathlib import Path
 
 import pytest
@@ -234,3 +237,120 @@ def test_check_grep_sanitizes_pattern_with_newline() -> None:
     pattern_line_count = sum(1 for line in msg.split("\n") if "pattern:" in line)
     assert pattern_line_count == 1
     assert "foo bar" in msg or "'foo bar'" in msg
+
+
+# ---------------------------------------------------------------------------
+# main(): EV-17 (stdin/stdout contract), EV-10 (fail-open)
+# ---------------------------------------------------------------------------
+
+
+def _make_stdin(payload: dict, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "stdin", StringIO(json.dumps(payload)))
+
+
+def test_main_outputs_suggestion_for_large_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """EV-17: 提案があるときのみ additionalContext を出力する。"""
+    target = tmp_path / "large.txt"
+    target.write_text("\n".join(str(i) for i in range(500)))
+    _make_stdin(
+        {
+            "cwd": str(tmp_path),
+            "tool_name": "Read",
+            "tool_input": {"file_path": str(target)},
+        },
+        monkeypatch,
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        check_context_optimization.main()
+
+    assert exc_info.value.code == 0
+    output = json.loads(capsys.readouterr().out)
+    context = output["hookSpecificOutput"]["additionalContext"]
+    assert "[Context Optimization]" in context
+
+
+def test_main_outputs_nothing_when_no_suggestion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """EV-17: 提案が無い場合は標準出力しない。"""
+    target = tmp_path / "small.txt"
+    target.write_text("\n".join(str(i) for i in range(10)))
+    _make_stdin(
+        {
+            "cwd": str(tmp_path),
+            "tool_name": "Read",
+            "tool_input": {"file_path": str(target)},
+        },
+        monkeypatch,
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        check_context_optimization.main()
+
+    assert exc_info.value.code == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_main_no_op_when_context_optimization_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    target = tmp_path / "large.txt"
+    target.write_text("\n".join(str(i) for i in range(500)))
+    monkeypatch.setattr(
+        check_context_optimization,
+        "_load_settings",
+        lambda _project_dir: {"enabled": False},
+    )
+    _make_stdin(
+        {
+            "cwd": str(tmp_path),
+            "tool_name": "Read",
+            "tool_input": {"file_path": str(target)},
+        },
+        monkeypatch,
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        check_context_optimization.main()
+
+    assert exc_info.value.code == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_main_ignores_invalid_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "stdin", StringIO("{not valid json"))
+
+    with pytest.raises(SystemExit) as exc_info:
+        check_context_optimization.main()
+
+    assert exc_info.value.code == 0
+
+
+def test_main_fails_open_on_unexpected_exception(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """EV-10: main() 全体を囲む例外捕捉が stderr ログ + exit 0 で fail-open する。"""
+    _make_stdin(
+        {
+            "cwd": str(tmp_path),
+            "tool_name": "Read",
+            "tool_input": {"file_path": str(tmp_path / "x.txt")},
+        },
+        monkeypatch,
+    )
+
+    def _raise(_project_dir: str) -> dict:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(check_context_optimization, "_load_settings", _raise)
+
+    with pytest.raises(SystemExit) as exc_info:
+        check_context_optimization.main()
+
+    assert exc_info.value.code == 0
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "boom" in captured.err

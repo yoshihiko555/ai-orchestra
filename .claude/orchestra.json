@@ -106,7 +106,7 @@
     },
     "audit": {
       "config/audit/delegation-policy.json": "b092b5385d3ec51252c5781cdbafa2d2e55d075d9cb74d25e89b71e95279d231",
-      "config/audit/audit-flags.json": "8c0059f9a982219e070ce8d5f61c2ea01d907a3be9c030721fd658924f97e519"
+      "config/audit/audit-flags.json": "dc32d6157cd9cfeacf0d92634e5e7866ab32dea12dee61135c5ca234de25c4ab"
     },
     "codd": {
       "config/codd/codd.yaml": "605b3cfee1be41ccd0f915d2519e0c137d9dfda341e1ed62cc2a9dc1d7885801"

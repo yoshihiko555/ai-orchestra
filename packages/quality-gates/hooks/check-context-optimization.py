@@ -187,41 +187,44 @@ CHECKERS = {
 
 
 def main() -> None:
+    """PreToolUse hook のエントリポイント。
+
+    EV-10: 他の quality-gates hook と同様、main() 全体を単一の
+    try/except Exception で囲み、想定外の例外（設定読み込み失敗等）でも
+    stderr にログを出して exit 0 で終わる fail-open を保証する。
+    """
     try:
         data = json.load(sys.stdin)
-    except (json.JSONDecodeError, ValueError):
-        sys.exit(0)
-    if not isinstance(data, dict):
-        sys.exit(0)
+        if not isinstance(data, dict):
+            sys.exit(0)
 
-    project_dir = data.get("cwd", "") or os.environ.get("CLAUDE_PROJECT_DIR", "")
-    settings = _load_settings(project_dir)
-    if not is_enabled(settings):
-        sys.exit(0)
+        project_dir = data.get("cwd", "") or os.environ.get("CLAUDE_PROJECT_DIR", "")
+        settings = _load_settings(project_dir)
+        if not is_enabled(settings):
+            sys.exit(0)
 
-    tool_name = data.get("tool_name", "")
-    checker = CHECKERS.get(tool_name)
-    if checker is None:
-        sys.exit(0)
+        tool_name = data.get("tool_name", "")
+        checker = CHECKERS.get(tool_name)
+        if checker is None:
+            sys.exit(0)
 
-    tool_input = data.get("tool_input", {}) or {}
-    try:
+        tool_input = data.get("tool_input", {}) or {}
         message = checker(tool_input, settings)
+
+        if not message:
+            sys.exit(0)
+
+        output = {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "additionalContext": message,
+            }
+        }
+        print(json.dumps(output))
+        sys.exit(0)
     except Exception as exc:
         print(f"check-context-optimization error: {exc}", file=sys.stderr)
         sys.exit(0)
-
-    if not message:
-        sys.exit(0)
-
-    output = {
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "additionalContext": message,
-        }
-    }
-    print(json.dumps(output))
-    sys.exit(0)
 
 
 if __name__ == "__main__":

@@ -61,6 +61,12 @@ from quality_gate_config import (  # noqa: E402
     resolve_state_path,
     save_project_scoped_state,
 )
+from secret_masking import mask_secrets  # noqa: E402
+
+# quality_gate.block_on_failed_test の既定値。2026-07-03 人間レビュー裁定
+# (docs/evaluation/quality-gates.md EV-11/12/19) により、明示的な opt-out
+# (`false`) が無い限りテスト失敗時は既定でブロックする。
+BLOCK_ON_FAILED_TEST_DEFAULT = True
 
 # Test command patterns
 TEST_COMMAND_PATTERNS = [
@@ -199,13 +205,19 @@ def emit_quality_gate_event(
         return False
 
     trace = load_trace_state(project_dir=project_dir)
-    blocking = bool(quality_gate.get("block_on_failed_test", False)) and not gate_passed
+    blocking = (
+        bool(quality_gate.get("block_on_failed_test", BLOCK_ON_FAILED_TEST_DEFAULT))
+        and not gate_passed
+    )
 
+    # EV-22: 秘匿情報パターン（API キー・トークン・秘密鍵等）をマスクしてから
+    # 記録する。200 文字切り詰めはマスキングの代替にならないため、切り詰めの
+    # 前にマスクを適用する（切り詰め後の残骸でパターンが壊れるのを防ぐ）。
     payload = {
-        "command": command[:200],
+        "command": mask_secrets(command)[:200],
         "exit_code": exit_code,
         "passed": gate_passed,
-        "output_excerpt": output[:200] if output else "",
+        "output_excerpt": mask_secrets(output)[:200] if output else "",
         "blocking": blocking,
     }
     if detected_by is not None:
@@ -306,7 +318,17 @@ def main():
         if not analysis_failed:
             sys.exit(0)
 
-        failure_summary = extract_failure_summary(output)
+        # EV-21: quality_gate.enabled=false のときはブロック/audit記録だけで
+        # なく、この Codex 提案（additionalContext）も出さない（全動作停止）。
+        # `emit_quality_gate_event` は内部で自身の quality_gate 設定を再取得
+        # するため、ここでも同じ config を再利用して load_package_config の
+        # 重複読み込みを避ける。
+        quality_gate = load_quality_gate_config(project_dir, config=config)
+        if not resolve_quality_gate_enabled(quality_gate):
+            sys.exit(0)
+
+        # EV-22: additionalContext に埋め込む前に秘匿情報をマスクする。
+        failure_summary = mask_secrets(extract_failure_summary(output))
         codex_cmd = _build_codex_command(data)
 
         output_data = {

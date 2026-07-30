@@ -232,7 +232,8 @@ class TestRealConfigFiles:
         assert isinstance(flags["features"]["route_audit"].get("enabled"), bool)
         # Contract: 具体的なデフォルト値の検証
         assert flags["features"]["route_audit"]["max_excerpt_chars"] == 160
-        assert flags["features"]["quality_gate"]["block_on_failed_test"] is False
+        # 2026-07-03 人間レビュー裁定（EV-11/12/19）: opt-out 方式へ変更し既定 True
+        assert flags["features"]["quality_gate"]["block_on_failed_test"] is True
         assert flags["paths"]["state_dir"] == ".claude/state"
         assert flags["paths"]["logs_dir"] == ".claude/logs/audit"
 

@@ -25,9 +25,18 @@ _hook_dir = os.path.dirname(os.path.abspath(__file__))
 if _hook_dir not in sys.path:
     sys.path.insert(0, _hook_dir)
 
+# hook_common を $AI_ORCHESTRA_DIR/packages/core/hooks/ から読み込む
+_orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
+if _orchestra_dir:
+    _core_hooks = os.path.join(_orchestra_dir, "packages", "core", "hooks")
+    if _core_hooks not in sys.path:
+        sys.path.insert(0, _core_hooks)
+
+from hook_common import load_package_config  # noqa: E402
 from quality_gate_config import (  # noqa: E402
     get_project_state_key,
     load_project_scoped_state,
+    resolve_quality_gate_enabled,
     resolve_state_path,
     save_project_scoped_state,
     update_project_scoped_state,
@@ -107,6 +116,14 @@ def main():
         if not any(file_path.endswith(ext) for ext in code_extensions):
             sys.exit(0)
 
+        # EV-21: quality_gate.enabled=false のときは提案・状態記録を含む
+        # 全動作を行わない（test-gate-checker.py と同じ no-op パターン）。
+        project_dir = data.get("cwd", "") or os.environ.get("CLAUDE_PROJECT_DIR", "")
+        config = load_package_config("audit", "audit-flags.json", project_dir)
+        quality_gate = config.get("features", {}).get("quality_gate", {})
+        if not resolve_quality_gate_enabled(quality_gate):
+            sys.exit(0)
+
         # Calculate lines changed
         content = tool_input.get("content", "") or tool_input.get("new_string", "")
         lines_changed = count_lines(content)
@@ -115,7 +132,6 @@ def main():
         # section covers both the counter accumulation and the
         # should_suggest_review decision, so two near-simultaneous hook
         # invocations (e.g. concurrent Edit calls) cannot race each other.
-        project_dir = data.get("cwd", "") or os.environ.get("CLAUDE_PROJECT_DIR", "")
         project_key = get_project_state_key(project_dir)
         suggestion: dict = {"triggered": False, "file_count": 0, "total_lines": 0}
 

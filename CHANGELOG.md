@@ -6,8 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`quality-gates`: README.md を追加**: パッケージの責務・hook 一覧・設定キー（`quality_gate.*`）を、独自 README を持つ他パッケージと同様の形式でまとめた。
+
 ### Changed
 
+- **BREAKING** **`quality-gates` / `audit`: `quality_gate.block_on_failed_test` の既定を `true` に変更**: `post-test-analysis.py` はテスト失敗時に既定で exit code 2 のブロックを行う（opt-out 方式）。従来の非ブロック動作に戻すには `.claude/config/audit/audit-flags.local.json` で `block_on_failed_test: false` を明示する。
+- **`quality-gates`: 全 hook が `quality_gate.enabled` を一貫して尊重するように統一**: `post-implementation-review.py` / `lint-on-save.py` / `test-tampering-detector.py` / `post-test-analysis.py`（Codex 提案部分）が、無効化設定時に完全に no-op になった。
+- **`quality-gates`: `additionalContext` 出力に秘匿情報マスキングを追加**: テスト失敗出力・lint/formatter 出力・追加行スニペットに含まれる API キー・トークン・秘密鍵等を `[REDACTED]` へマスクしてから出力する。
 - **`fail-logs`: git worktree 間で失敗ログを集約**: worktree 環境では `.claude/logs/fail-logs/failures.jsonl` を root worktree に集約し、git 解決不能時は従来のプロジェクト別保存先へフォールバックする。各失敗レコードには発生元ブランチを示す `branch` フィールドも記録する。
 - **`skill-evolution`: metrics を git worktree 間で集約**: metrics のみ root worktree の `.claude/logs/skill-evolution/` に集約し、pending / locks は誤った stale 回収を避けるため worktree ごとの project-local に保つ。旧 metrics は初回利用時に fail-open な one-shot migration で引き継ぎ、metrics/pending/locks の配置は新キー `storage.logs_dir` で制御する（`storage.dir` は lessons 専用）。
 

@@ -1,4 +1,6 @@
+import json
 import sys
+from io import StringIO
 
 import pytest
 
@@ -208,7 +210,10 @@ def test_emit_quality_gate_event_records_audit_event(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(
         post_test_analysis,
         "load_quality_gate_config",
-        lambda _project_dir, config=None: {"enabled": True},
+        # block_on_failed_test を明示的に無効化し、このテストの焦点である audit
+        # イベント記録（payload の内容）と block_on_failed_test の既定値検証
+        # （EV-11/12/19 は専用テストで別途検証する）を分離する。
+        lambda _project_dir, config=None: {"enabled": True, "block_on_failed_test": False},
     )
     monkeypatch.setattr(
         post_test_analysis, "load_trace_state", lambda **_kwargs: {"tid": "tid-123"}
@@ -376,7 +381,9 @@ def test_emit_quality_gate_event_treats_missing_enabled_key_as_enabled(
 
     # enabled キー欠落時はデフォルト True として扱われ、イベントが記録される
     # （enabled=False によるショートサーキットで記録がスキップされない）。
-    assert blocking is False
+    # block_on_failed_test も同様にキー欠落時は既定 True（2026-07-03 裁定、
+    # EV-11/12/19）のためブロックする。
+    assert blocking is True
     assert captured["type"] == "quality_gate"
     assert captured["payload"]["passed"] is False
 
@@ -417,3 +424,181 @@ def test_test_gate_checker_and_post_test_analysis_interoperate_on_shared_state(
     assert reloaded["lines_modified_since_test"] == 0
     assert reloaded["warned"] is False
     assert reloaded["last_test_result"]["passed"] is True
+
+
+# ---------------------------------------------------------------------------
+# EV-11/12/19: block_on_failed_test の既定値（opt-out 方式）
+# ---------------------------------------------------------------------------
+
+
+def test_emit_quality_gate_event_blocks_by_default_when_key_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """block_on_failed_test キーが無い config では既定でブロックする（2026-07-03 裁定）。"""
+    monkeypatch.setattr(
+        post_test_analysis, "resolve_project_root_from_hook_data", lambda data: data["cwd"]
+    )
+    monkeypatch.setattr(
+        post_test_analysis,
+        "load_quality_gate_config",
+        lambda _project_dir, config=None: {"enabled": True},  # block_on_failed_test 未設定
+    )
+    monkeypatch.setattr(post_test_analysis, "load_trace_state", lambda **_kwargs: {"tid": "tid-1"})
+    monkeypatch.setattr(post_test_analysis, "emit_event", lambda *_args, **_kwargs: None)
+
+    blocking = post_test_analysis.emit_quality_gate_event(
+        {"session_id": "sid-1", "cwd": "/project"},
+        command="pytest -q",
+        exit_code=1,
+        gate_passed=False,
+        output="FAILED test_example.py::test_case",
+    )
+
+    assert blocking is True
+
+
+def test_emit_quality_gate_event_opt_out_disables_blocking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """block_on_failed_test=false を明示した場合のみブロックを解除する（opt-out）。"""
+    monkeypatch.setattr(
+        post_test_analysis, "resolve_project_root_from_hook_data", lambda data: data["cwd"]
+    )
+    monkeypatch.setattr(
+        post_test_analysis,
+        "load_quality_gate_config",
+        lambda _project_dir, config=None: {"enabled": True, "block_on_failed_test": False},
+    )
+    monkeypatch.setattr(post_test_analysis, "load_trace_state", lambda **_kwargs: {"tid": "tid-1"})
+    monkeypatch.setattr(post_test_analysis, "emit_event", lambda *_args, **_kwargs: None)
+
+    blocking = post_test_analysis.emit_quality_gate_event(
+        {"session_id": "sid-1", "cwd": "/project"},
+        command="pytest -q",
+        exit_code=1,
+        gate_passed=False,
+        output="FAILED test_example.py::test_case",
+    )
+
+    assert blocking is False
+
+
+# ---------------------------------------------------------------------------
+# main() end-to-end: EV-17 (stdin/stdout contract), EV-21 (enabled), EV-22 (masking)
+# ---------------------------------------------------------------------------
+
+
+def _make_stdin(monkeypatch: pytest.MonkeyPatch, payload: dict) -> None:
+    monkeypatch.setattr(sys, "stdin", StringIO(json.dumps(payload)))
+
+
+def test_main_blocks_by_default_when_config_lacks_block_key(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """config に block_on_failed_test キーが無い実運用相当でも既定でブロックする。"""
+    monkeypatch.setattr(
+        post_test_analysis,
+        "load_package_config",
+        lambda *_args: {"features": {"quality_gate": {"enabled": True}}},
+    )
+    _make_stdin(
+        monkeypatch,
+        {
+            "tool_name": "Bash",
+            "cwd": str(tmp_path),
+            "tool_input": {"command": "pytest -q"},
+            "tool_response": {"exit_code": 1, "stdout": "FAILED test_example.py::test_case"},
+        },
+    )
+
+    with pytest.raises(SystemExit, match="2"):
+        post_test_analysis.main()
+
+
+def test_main_no_op_when_quality_gate_disabled(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """quality_gate.enabled=false のときは Codex 提案 additionalContext も出さない。"""
+    monkeypatch.setattr(
+        post_test_analysis,
+        "load_package_config",
+        lambda *_args: {"features": {"quality_gate": {"enabled": False}}},
+    )
+    _make_stdin(
+        monkeypatch,
+        {
+            "tool_name": "Bash",
+            "cwd": str(tmp_path),
+            "tool_input": {"command": "pytest -q"},
+            "tool_response": {"exit_code": 1, "stdout": "FAILED test_example.py::test_case"},
+        },
+    )
+
+    with pytest.raises(SystemExit, match="0"):
+        post_test_analysis.main()
+
+    assert capsys.readouterr().out == ""
+
+
+def test_main_masks_secrets_in_debug_suggestion(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """additionalContext の Codex 提案は失敗出力中の秘匿情報をマスクしてから出す。"""
+    monkeypatch.setattr(
+        post_test_analysis,
+        "load_package_config",
+        lambda *args: (
+            {"features": {"quality_gate": {"enabled": True, "block_on_failed_test": False}}}
+            if args[0] == "audit"
+            else {"codex": {"model": "gpt-test", "sandbox": {"analysis": "read-only"}}}
+        ),
+    )
+    secret_line = "FAILED test_example.py::test_case api_key=sk-1234567890abcdefghijklmno"
+    _make_stdin(
+        monkeypatch,
+        {
+            "tool_name": "Bash",
+            "cwd": str(tmp_path),
+            "tool_input": {"command": "pytest -q"},
+            "tool_response": {"exit_code": 1, "stdout": secret_line},
+        },
+    )
+
+    with pytest.raises(SystemExit, match="0"):
+        post_test_analysis.main()
+
+    output = json.loads(capsys.readouterr().out)
+    context = output["hookSpecificOutput"]["additionalContext"]
+    assert "sk-1234567890abcdefghijklmno" not in context
+    assert "[REDACTED]" in context
+
+
+# ---------------------------------------------------------------------------
+# EV-10: main() の fail-open（例外捕捉 → stderr ログ + exit 0）
+# ---------------------------------------------------------------------------
+
+
+def test_main_fails_open_on_unexpected_exception(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def _raise(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(post_test_analysis, "analyze", _raise)
+    _make_stdin(
+        monkeypatch,
+        {
+            "tool_name": "Bash",
+            "cwd": str(tmp_path),
+            "tool_input": {"command": "pytest -q"},
+            "tool_response": {"exit_code": 1, "stdout": "FAILED test_example.py::test_case"},
+        },
+    )
+
+    with pytest.raises(SystemExit, match="0"):
+        post_test_analysis.main()
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Hook error" in captured.err
+    assert "boom" in captured.err

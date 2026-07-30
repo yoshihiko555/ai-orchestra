@@ -273,3 +273,58 @@ def test_main_keeps_project_isolation_through_atomic_update(
 
     state_a = post_implementation_review.load_state(project_a)
     assert state_a["files"] == ["src/module.py"]
+
+
+# ---------------------------------------------------------------------------
+# EV-21: quality_gate.enabled 遵守
+# ---------------------------------------------------------------------------
+
+
+def test_main_no_op_when_quality_gate_disabled(
+    _clean_state, monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """quality_gate.enabled=false のときは状態記録・提案を含む全動作を行わない。"""
+    project_a, _project_b = _clean_state
+    monkeypatch.setattr(
+        post_implementation_review,
+        "load_package_config",
+        lambda *_args: {"features": {"quality_gate": {"enabled": False}}},
+    )
+
+    big_content = "\n".join(f"line {i}" for i in range(150))
+    _write_payload(monkeypatch, "src/big_module.py", big_content, project_a)
+
+    with pytest.raises(SystemExit) as exc_info:
+        post_implementation_review.main()
+
+    assert exc_info.value.code == 0
+    assert capsys.readouterr().out == ""
+    # State must remain untouched (no accumulation happened).
+    state = post_implementation_review.load_state(project_a)
+    assert state == post_implementation_review._DEFAULT_IMPL_REVIEW_STATE
+
+
+# ---------------------------------------------------------------------------
+# EV-10: main() の fail-open（例外捕捉 → stderr ログ + exit 0）
+# ---------------------------------------------------------------------------
+
+
+def test_main_fails_open_on_unexpected_exception(
+    _clean_state, monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project_a, _project_b = _clean_state
+
+    def _raise(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(post_implementation_review, "load_package_config", _raise)
+    _write_payload(monkeypatch, "src/module.py", "line\n", project_a)
+
+    with pytest.raises(SystemExit) as exc_info:
+        post_implementation_review.main()
+
+    assert exc_info.value.code == 0
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Hook error" in captured.err
+    assert "boom" in captured.err

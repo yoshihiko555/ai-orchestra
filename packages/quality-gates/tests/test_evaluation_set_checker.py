@@ -601,3 +601,26 @@ def test_mapping_config_files_each_read_once_per_invocation(monkeypatch, capsys,
 
     assert output != ""
     assert call_count["n"] == 2  # base + local (local file need not exist)
+
+
+# ---------------------------------------------------------------------------
+# EV-10: main() の fail-open（例外捕捉 → stderr ログ + exit 0）
+# ---------------------------------------------------------------------------
+
+
+def test_main_fails_open_on_unexpected_exception(monkeypatch, capsys, tmp_path) -> None:
+    payload = _build_payload("packages/quality-gates/tests/test_foo.py", tmp_path)
+    monkeypatch.setattr(sys, "stdin", StringIO(json.dumps(payload)))
+
+    def _raise(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(evaluation_set_checker, "identify_package", _raise)
+
+    with pytest.raises(SystemExit) as exc_info:
+        evaluation_set_checker.main()
+
+    assert exc_info.value.code == 0
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "boom" in captured.err

@@ -157,3 +157,28 @@ class TestMain:
         assert "TODO 1" in text
         # Stop hook は decision を一切返さない
         assert "decision" not in parsed
+
+    def test_main_fails_open_on_unexpected_exception(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        tmp_path: Path,
+    ) -> None:
+        """EV-10: 内部エラーでも @safe_hook_execution が stderr ログ + exit 0 に丸め込む。"""
+        (tmp_path / ".claude").mkdir()
+        payload = {"session_id": "s1", "cwd": str(tmp_path)}
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
+
+        def _raise(_project_dir: str) -> dict:
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(turn_end, "read_working_context", _raise)
+
+        with pytest.raises(SystemExit) as exc_info:
+            turn_end.main()
+
+        assert exc_info.value.code == 0
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "Hook error" in captured.err
+        assert "boom" in captured.err

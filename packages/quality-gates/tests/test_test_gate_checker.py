@@ -1,5 +1,6 @@
 import json
 import sys
+from io import StringIO
 
 import pytest
 
@@ -256,6 +257,35 @@ def test_enabled_when_flag_true(tmp_path) -> None:
         json.dump(config, f)
 
     assert test_gate_checker.is_quality_gate_enabled(str(tmp_path))
+
+
+# ---------------------------------------------------------------------------
+# EV-10: main() の fail-open（例外捕捉 → stderr ログ + exit 0）
+# ---------------------------------------------------------------------------
+
+
+def test_main_fails_open_on_unexpected_exception(monkeypatch, tmp_path, capsys) -> None:
+
+    payload = {
+        "tool_name": "Write",
+        "cwd": str(tmp_path),
+        "tool_input": {"file_path": "src/main.py", "content": "print(1)\n"},
+    }
+    monkeypatch.setattr(sys, "stdin", StringIO(json.dumps(payload)))
+
+    def _raise(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(test_gate_checker, "load_package_config", _raise)
+
+    with pytest.raises(SystemExit) as exc_info:
+        test_gate_checker.main()
+
+    assert exc_info.value.code == 0
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Hook error" in captured.err
+    assert "boom" in captured.err
 
 
 def test_enabled_defaults_to_true_when_key_missing(tmp_path) -> None:
