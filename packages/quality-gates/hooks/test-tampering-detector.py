@@ -34,16 +34,30 @@ if _orchestra_dir:
     _core_hooks = os.path.join(_orchestra_dir, "packages", "core", "hooks")
     if _core_hooks not in sys.path:
         sys.path.insert(0, _core_hooks)
+    _audit_hooks = os.path.join(_orchestra_dir, "packages", "audit", "hooks")
+    if _audit_hooks not in sys.path:
+        sys.path.insert(0, _audit_hooks)
 else:
     _fallback_core_hooks = Path(__file__).resolve().parents[2] / "core" / "hooks"
     if str(_fallback_core_hooks) not in sys.path:
         sys.path.insert(0, str(_fallback_core_hooks))
+    _fallback_audit_hooks = Path(__file__).resolve().parents[2] / "audit" / "hooks"
+    if str(_fallback_audit_hooks) not in sys.path:
+        sys.path.insert(0, str(_fallback_audit_hooks))
 
-from hook_common import is_test_path, read_hook_input, safe_hook_execution  # noqa: E402
+from hook_common import (  # noqa: E402
+    is_test_path,
+    load_package_config,
+    read_hook_input,
+    safe_hook_execution,
+)
+from log_common import find_project_root  # noqa: E402
 from quality_gate_config import (  # noqa: E402
+    resolve_quality_gate_enabled,
     resolve_state_path,
     update_locked_json_state,
 )
+from secret_masking import mask_secrets  # noqa: E402
 
 SKIP_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
@@ -467,7 +481,18 @@ def collect_tampering_findings(data: dict) -> list[dict[str, str]]:
     if not isinstance(tool_input, dict):
         tool_input = {}
 
-    project_dir = str(data.get("cwd") or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+    raw_project_dir = str(data.get("cwd") or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+    # Issue #134 レビュー指摘: config・git diff・dedup state の起点を
+    # subdirectory cwd ではなく .claude/ を持つ project root に揃える。
+    project_dir = find_project_root(raw_project_dir)
+
+    # EV-21: quality_gate.enabled=false のときは検知・状態記録を含む全動作を
+    # 行わない（test-gate-checker.py と同じ no-op パターン）。
+    config = load_package_config("audit", "audit-flags.json", project_dir)
+    quality_gate = config.get("features", {}).get("quality_gate", {})
+    if not resolve_quality_gate_enabled(quality_gate):
+        return []
+
     findings: list[dict[str, str]] = []
 
     if tool_name in {"Edit", "Write", "MultiEdit"}:
@@ -492,14 +517,19 @@ def collect_tampering_findings(data: dict) -> list[dict[str, str]]:
 
 
 def build_warning_message(findings: list[dict[str, str]]) -> str:
-    """Build the warning message shown in hook output."""
+    """Build the warning message shown in hook output.
+
+    EV-22: 追加行のスニペットは利用者コードそのものであり秘匿情報を含みうる
+    ため、additionalContext に埋め込む前にマスクする。
+    """
     lines = ["[Warning] Potential test tampering detected:"]
     for finding in findings:
         if finding["type"] == "deleted_test_file":
             lines.append(f"- `{finding['file_path']}`: deleted test file")
             continue
+        masked_snippet = mask_secrets(finding["snippet"])
         lines.append(
-            f"- `{finding['file_path']}`: added `{finding['label']}` -> `{finding['snippet']}`"
+            f"- `{finding['file_path']}`: added `{finding['label']}` -> `{masked_snippet}`"
         )
 
     lines.extend(

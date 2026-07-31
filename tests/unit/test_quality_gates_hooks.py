@@ -217,7 +217,10 @@ class TestPostTestAnalysis:
         monkeypatch.setattr(
             post_test_analysis,
             "load_quality_gate_config",
-            lambda _project_dir, config=None: {"enabled": True},
+            # block_on_failed_test を明示的に無効化し、このテストの焦点である
+            # audit イベント記録と block_on_failed_test の既定値（EV-11/12/19、
+            # 2026-07-03 裁定で opt-out 方式・既定 True）検証を分離する。
+            lambda _project_dir, config=None: {"enabled": True, "block_on_failed_test": False},
         )
         monkeypatch.setattr(
             post_test_analysis, "load_trace_state", lambda **_kwargs: {"tid": "tid-1"}

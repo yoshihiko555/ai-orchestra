@@ -5,6 +5,10 @@ PreToolUse hook: Suggest context-saving alternatives for Read / Grep / Bash.
 非効率なツール使用 (Read 全文読み・Grep content モード乱用・Bash の cat/grep 等)
 を検出し、エスカレーション戦略への切り替えを提案する。
 
+EV-21: `quality_gate.enabled=false` のときは提案を含む全動作を行わない
+（`context_optimization.enabled` との AND 条件。既存の
+`context_optimization.enabled` 単独での無効化は維持する）。
+
 参照: .claude/rules/escalation-strategy.md
 """
 
@@ -15,15 +19,30 @@ import os
 import shlex
 import stat
 import sys
+from pathlib import Path
 
-# hook_common を $AI_ORCHESTRA_DIR/packages/core/hooks/ から読み込む
+# hook_common を $AI_ORCHESTRA_DIR/packages/core/hooks/ から読み込む。
+# AI_ORCHESTRA_DIR 未設定の開発・検証環境向けに、リポジトリ内の
+# core/hooks へのフォールバックも用意する（Issue #134 レビュー指摘:
+# post-implementation-review.py と同じフォールバック欠落。
+# quality_gate_config.py と同じフォールバック方式）。
 _orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
 if _orchestra_dir:
     _core_hooks = os.path.join(_orchestra_dir, "packages", "core", "hooks")
     if _core_hooks not in sys.path:
         sys.path.insert(0, _core_hooks)
+else:
+    _fallback_core_hooks = Path(__file__).resolve().parents[2] / "core" / "hooks"
+    if str(_fallback_core_hooks) not in sys.path:
+        sys.path.insert(0, str(_fallback_core_hooks))
+
+_hook_dir = os.path.dirname(os.path.abspath(__file__))
+if _hook_dir not in sys.path:
+    sys.path.insert(0, _hook_dir)
 
 from hook_common import load_package_config  # noqa: E402
+from log_common import find_project_root  # noqa: E402
+from quality_gate_config import resolve_quality_gate_enabled  # noqa: E402
 
 DEFAULT_READ_LINE_THRESHOLD = 200
 DEFAULT_MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB
@@ -67,6 +86,12 @@ def _load_settings(project_dir: str) -> dict:
     """audit-flags.json から context_optimization 設定を取り出す。"""
     config = load_package_config("audit", "audit-flags.json", project_dir)
     return config.get("features", {}).get("context_optimization", {}) or {}
+
+
+def _load_quality_gate_settings(project_dir: str) -> dict:
+    """audit-flags.json から quality_gate 設定を取り出す。"""
+    config = load_package_config("audit", "audit-flags.json", project_dir)
+    return config.get("features", {}).get("quality_gate", {}) or {}
 
 
 def is_enabled(settings: dict) -> bool:
@@ -187,41 +212,54 @@ CHECKERS = {
 
 
 def main() -> None:
+    """PreToolUse hook のエントリポイント。
+
+    EV-10: 他の quality-gates hook と同様、main() 全体を単一の
+    try/except Exception で囲み、想定外の例外（設定読み込み失敗等）でも
+    stderr にログを出して exit 0 で終わる fail-open を保証する。
+    """
     try:
         data = json.load(sys.stdin)
-    except (json.JSONDecodeError, ValueError):
-        sys.exit(0)
-    if not isinstance(data, dict):
-        sys.exit(0)
+        if not isinstance(data, dict):
+            sys.exit(0)
 
-    project_dir = data.get("cwd", "") or os.environ.get("CLAUDE_PROJECT_DIR", "")
-    settings = _load_settings(project_dir)
-    if not is_enabled(settings):
-        sys.exit(0)
+        # Issue #134 レビュー指摘: subdirectory cwd でも project root の
+        # .claude/config を一貫して参照する。
+        raw_project_dir = data.get("cwd", "") or os.environ.get("CLAUDE_PROJECT_DIR", "")
+        project_dir = find_project_root(raw_project_dir) if raw_project_dir else find_project_root()
 
-    tool_name = data.get("tool_name", "")
-    checker = CHECKERS.get(tool_name)
-    if checker is None:
-        sys.exit(0)
+        # EV-21: quality_gate.enabled=false のときは提案を含む全動作を
+        # 行わない（context_optimization.enabled との AND 条件）。
+        quality_gate = _load_quality_gate_settings(project_dir)
+        if not resolve_quality_gate_enabled(quality_gate):
+            sys.exit(0)
 
-    tool_input = data.get("tool_input", {}) or {}
-    try:
+        settings = _load_settings(project_dir)
+        if not is_enabled(settings):
+            sys.exit(0)
+
+        tool_name = data.get("tool_name", "")
+        checker = CHECKERS.get(tool_name)
+        if checker is None:
+            sys.exit(0)
+
+        tool_input = data.get("tool_input", {}) or {}
         message = checker(tool_input, settings)
+
+        if not message:
+            sys.exit(0)
+
+        output = {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "additionalContext": message,
+            }
+        }
+        print(json.dumps(output))
+        sys.exit(0)
     except Exception as exc:
         print(f"check-context-optimization error: {exc}", file=sys.stderr)
         sys.exit(0)
-
-    if not message:
-        sys.exit(0)
-
-    output = {
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "additionalContext": message,
-        }
-    }
-    print(json.dumps(output))
-    sys.exit(0)
 
 
 if __name__ == "__main__":

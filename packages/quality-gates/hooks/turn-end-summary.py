@@ -10,6 +10,9 @@
 - `decision: block` は一切使わない（UX 安全）
 - `stop_hook_active=true` の時は一切処理しない（再入ループ防止）
 - transcript_path は読まない（コスト削減）
+- EV-21: `quality_gate.enabled=false` のときは audit イベント記録・
+  systemMessage 出力を含む全動作を行わない（他の quality-gates hook と
+  同じ no-op パターン）
 """
 
 from __future__ import annotations
@@ -34,7 +37,7 @@ if _orchestra_dir:
         sys.path.insert(0, _audit_hooks)
 
 try:
-    from hook_common import read_hook_input, safe_hook_execution
+    from hook_common import load_package_config, read_hook_input, safe_hook_execution
 except ImportError:  # pragma: no cover - core 未導入時のフォールバック
     import functools
 
@@ -43,6 +46,11 @@ except ImportError:  # pragma: no cover - core 未導入時のフォールバッ
             return json.loads(sys.stdin.read())
         except (json.JSONDecodeError, ValueError):
             return {}
+
+    def load_package_config(  # type: ignore[misc]
+        _package_name: str, _filename: str, _project_dir: str
+    ) -> dict:
+        return {}
 
     def safe_hook_execution(func: Callable[[], None]) -> Callable[[], None]:  # type: ignore[misc]
         @functools.wraps(func)
@@ -55,6 +63,8 @@ except ImportError:  # pragma: no cover - core 未導入時のフォールバッ
 
         return wrapper
 
+
+from quality_gate_config import resolve_quality_gate_enabled  # noqa: E402
 
 try:
     from context_store import get_project_dir, read_working_context
@@ -234,6 +244,15 @@ def main() -> None:
         return
 
     project_dir = get_project_dir(data)
+
+    # EV-21: quality_gate.enabled=false のときは audit イベント記録・
+    # systemMessage 出力を含む全動作を行わない（他の quality-gates hook と
+    # 同じ no-op パターン）。
+    config = load_package_config("audit", "audit-flags.json", project_dir)
+    quality_gate = config.get("features", {}).get("quality_gate", {})
+    if not resolve_quality_gate_enabled(quality_gate):
+        return
+
     session_id = str(data.get("session_id") or "")
 
     working_ctx = read_working_context(project_dir)

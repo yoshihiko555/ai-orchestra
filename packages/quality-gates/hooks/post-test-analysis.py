@@ -53,6 +53,7 @@ from hook_common import (  # noqa: E402
     DEFAULT_CODEX_SANDBOX_ANALYSIS,
     load_package_config,
 )
+from log_common import find_project_root  # noqa: E402
 from quality_gate_config import (  # noqa: E402
     DEFAULT_TEST_GATE_STATE,
     get_project_state_key,
@@ -61,6 +62,12 @@ from quality_gate_config import (  # noqa: E402
     resolve_state_path,
     save_project_scoped_state,
 )
+from secret_masking import mask_secrets  # noqa: E402
+
+# quality_gate.block_on_failed_test の既定値。2026-07-03 人間レビュー裁定
+# (docs/evaluation/quality-gates.md EV-11/12/19) により、明示的な opt-out
+# (`false`) が無い限りテスト失敗時は既定でブロックする。
+BLOCK_ON_FAILED_TEST_DEFAULT = True
 
 # Test command patterns
 TEST_COMMAND_PATTERNS = [
@@ -199,31 +206,47 @@ def emit_quality_gate_event(
         return False
 
     trace = load_trace_state(project_dir=project_dir)
-    blocking = bool(quality_gate.get("block_on_failed_test", False)) and not gate_passed
+    blocking = (
+        bool(quality_gate.get("block_on_failed_test", BLOCK_ON_FAILED_TEST_DEFAULT))
+        and not gate_passed
+    )
 
+    # EV-22: 秘匿情報パターン（API キー・トークン・秘密鍵等）をマスクしてから
+    # 記録する。200 文字切り詰めはマスキングの代替にならないため、切り詰めの
+    # 前にマスクを適用する（切り詰め後の残骸でパターンが壊れるのを防ぐ）。
     payload = {
-        "command": command[:200],
+        "command": mask_secrets(command)[:200],
         "exit_code": exit_code,
         "passed": gate_passed,
-        "output_excerpt": output[:200] if output else "",
+        "output_excerpt": mask_secrets(output)[:200] if output else "",
         "blocking": blocking,
     }
     if detected_by is not None:
         payload["detected_by"] = detected_by
 
-    emit_event(
-        "quality_gate",
-        payload,
-        session_id=str(data.get("session_id") or ""),
-        tid=trace.get("tid", ""),
-        project_dir=project_dir,
-    )
+    # Issue #134 レビュー指摘: emit_event の書き込み失敗（ディスク容量不足・
+    # 権限エラー等）で例外が送出されると、ここで未捕捉のまま main() の
+    # 外側 except に伝播し、gate_passed=False でも blocking を返さずに
+    # exit code 0（fail-open）へ変換されてしまい、品質ゲートが解除される。
+    # 監査ログの記録はベストエフォートとし、失敗しても `blocking` の判定
+    # 自体は必ず呼び出し元へ返す（ゲート判定を audit ログの成否に依存させない）。
+    try:
+        emit_event(
+            "quality_gate",
+            payload,
+            session_id=str(data.get("session_id") or ""),
+            tid=trace.get("tid", ""),
+            project_dir=project_dir,
+        )
+    except Exception as e:
+        print(f"[quality-gates] audit event write failed: {e}", file=sys.stderr)
     return blocking
 
 
 def _build_codex_command(data: dict) -> str:
     """cli-tools.yaml から Codex コマンド文字列を構築する。"""
-    project_dir = data.get("cwd", "") or os.environ.get("CLAUDE_PROJECT_DIR", "")
+    raw_project_dir = data.get("cwd", "") or os.environ.get("CLAUDE_PROJECT_DIR", "")
+    project_dir = find_project_root(raw_project_dir) if raw_project_dir else find_project_root()
     config = load_package_config("agent-routing", "cli-tools.yaml", project_dir)
     codex = config.get("codex", {})
     model = codex.get("model", DEFAULT_CODEX_MODEL)
@@ -236,11 +259,12 @@ def main():
     try:
         data = json.load(sys.stdin)
         tool_name = data.get("tool_name", "")
-        # test-gate-checker.py と同じ project_dir 解決方法に揃える。
-        # resolve_project_root_from_hook_data は cwd に .claude が無い場合に
-        # 別のパスへフォールバックするため、ここで使うと共有状態のキーが
-        # test-gate-checker.py 側とずれてしまう。
-        project_dir = data.get("cwd", "") or os.environ.get("CLAUDE_PROJECT_DIR", "")
+        # Issue #134 レビュー指摘: test-gate-checker.py と同じ
+        # find_project_root 正規化に揃える。resolve_project_root_from_hook_data
+        # は親の .claude/ を探索しないためここでは使わず、subdirectory cwd
+        # でも config と共有 state の root・key を両 hook で一致させる。
+        raw_project_dir = data.get("cwd", "") or os.environ.get("CLAUDE_PROJECT_DIR", "")
+        project_dir = find_project_root(raw_project_dir) if raw_project_dir else find_project_root()
 
         # Only process Bash tool calls
         if tool_name != "Bash":
@@ -271,6 +295,15 @@ def main():
         # it independently up to 3x per invocation (Issue #154 review:
         # architecture-reviewer).
         config = load_package_config("audit", "audit-flags.json", project_dir)
+
+        # EV-21: quality_gate.enabled=false のときは提案・警告・ブロック・audit
+        # イベント記録だけでなく、record_test_result による状態書き込みも含め
+        # 全動作を行わない（完全 no-op）。record_test_result より前にこの
+        # チェックを行う必要がある（以前は record_test_result が先に実行され、
+        # quality_gate.enabled=false でも状態ファイルへ書き込んでいた）。
+        quality_gate = load_quality_gate_config(project_dir, config=config)
+        if not resolve_quality_gate_enabled(quality_gate):
+            sys.exit(0)
 
         # Record test result to shared state (success resets counters)
         record_test_result(command, gate_passed, project_dir, config=config)
@@ -306,7 +339,13 @@ def main():
         if not analysis_failed:
             sys.exit(0)
 
-        failure_summary = extract_failure_summary(output)
+        # EV-21: quality_gate.enabled=false のときは、この Codex 提案
+        # （additionalContext）も含め全動作を行わない。このチェックは
+        # 関数冒頭（record_test_result より前）で既に行っているため
+        # ここでは再実施しない（disabled ならここに到達する前に return 済み）。
+
+        # EV-22: additionalContext に埋め込む前に秘匿情報をマスクする。
+        failure_summary = mask_secrets(extract_failure_summary(output))
         codex_cmd = _build_codex_command(data)
 
         output_data = {

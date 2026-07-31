@@ -4,7 +4,7 @@
 **類型**: hook 型
 **作成日**: 2026-07-03
 **最終レビュー日**: 2026-07-03（EV-11/12/19/21/22/24 は同日の裁定で仕様確定）
-**情報源**: docs/reference/packages.md（quality-gates セクション）, .claude/rules/skill-review-policy.md, .claude/config/audit/audit-flags.json, packages/quality-gates/manifest.json, packages/quality-gates/hooks/\*.py（docstring・実装。`packages/quality-gates/README.md` は存在しないため未参照）, 実装 `packages/quality-gates/hooks/evaluation-set-checker.py` および `packages/quality-gates/tests/test_evaluation_set_checker.py`（Issue #123: hook 実体はコードベースに着地済み）
+**情報源**: docs/reference/packages.md（quality-gates セクション）, .claude/rules/skill-review-policy.md, .claude/config/audit/audit-flags.json, packages/quality-gates/manifest.json, packages/quality-gates/hooks/\*.py（docstring・実装）, `packages/quality-gates/README.md`（Issue #134 で新規作成。EV-24 参照）, 実装 `packages/quality-gates/hooks/evaluation-set-checker.py` および `packages/quality-gates/tests/test_evaluation_set_checker.py`（Issue #123: hook 実体はコードベースに着地済み）
 
 ## 1. 責務定義
 
@@ -77,4 +77,4 @@ quality-gates は実装後の品質チェックを自動化する hook 群と、
 - fail-safe 観点のテストは本書の裁定を正とする: config 未定義時のデフォルト値は `quality_gate.enabled=true` かつ `block_on_failed_test=true`（ブロック既定有効）。hook 内部エラーの fail-open（EV-10）と品質ゲートの既定ブロック（EV-11/12/19）を混同しない
 - 状態ファイル（`.claude/state/*.json`。Issue #154 で /tmp から移行し worktree = project_dir 配下に閉じ込めた）を扱うテストは、project_dir を実在する書き込み可能ディレクトリにし、`project_key`（git-common-dir）によるプロジェクト間分離が機能していることを確認する
 - `lint-on-save.py` 等の外部コマンド実行系テストは、実ツール未導入環境でも `is_missing_tool_output` によるフォールバックが機能することを確認する（CI 環境依存で不安定化させない）
-- EV-11/12/19/21/22/24 は 2026-07-03 の人間レビューで仕様確定済み。現実装はこの裁定と差分がある（既定 false・enabled 不均一・マスキング未実装・README 不在）ため、テストは現実装ではなく本書を正として書き、実装側の追従は Issue #134 で行う
+- EV-11/12/19/21/22/24 は 2026-07-03 の人間レビューで仕様確定済み。Issue #134 で実装（既定 true 化・enabled 統一・マスキング実装・README 追加）とテストを本書へ追従済み

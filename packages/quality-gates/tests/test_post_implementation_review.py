@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
 import time
 from io import StringIO
+from pathlib import Path
 
 import pytest
 
-from tests.module_loader import load_module
+from tests.module_loader import REPO_ROOT, load_module
 
 post_implementation_review = load_module(
     "post_implementation_review", "packages/quality-gates/hooks/post-implementation-review.py"
 )
+
+_HOOK_PATH = REPO_ROOT / "packages" / "quality-gates" / "hooks" / "post-implementation-review.py"
 
 
 @pytest.fixture()
@@ -273,3 +278,122 @@ def test_main_keeps_project_isolation_through_atomic_update(
 
     state_a = post_implementation_review.load_state(project_a)
     assert state_a["files"] == ["src/module.py"]
+
+
+# ---------------------------------------------------------------------------
+# EV-21: quality_gate.enabled 遵守
+# ---------------------------------------------------------------------------
+
+
+def test_main_no_op_when_quality_gate_disabled(
+    _clean_state, monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """quality_gate.enabled=false のときは状態記録・提案を含む全動作を行わない。"""
+    project_a, _project_b = _clean_state
+    monkeypatch.setattr(
+        post_implementation_review,
+        "load_package_config",
+        lambda *_args: {"features": {"quality_gate": {"enabled": False}}},
+    )
+
+    big_content = "\n".join(f"line {i}" for i in range(150))
+    _write_payload(monkeypatch, "src/big_module.py", big_content, project_a)
+
+    with pytest.raises(SystemExit) as exc_info:
+        post_implementation_review.main()
+
+    assert exc_info.value.code == 0
+    assert capsys.readouterr().out == ""
+    # State must remain untouched (no accumulation happened).
+    state = post_implementation_review.load_state(project_a)
+    assert state == post_implementation_review._DEFAULT_IMPL_REVIEW_STATE
+
+
+def test_main_normalizes_subdirectory_before_disabled_config_lookup(
+    tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """subdirectory cwd でも root の disabled 設定を使い、状態を変更しない。"""
+    repo_root = tmp_path / "repo"
+    (repo_root / ".claude").mkdir(parents=True)
+    subdirectory = repo_root / "packages" / "sub"
+    subdirectory.mkdir(parents=True)
+    config_calls = []
+
+    def _load_config(package_name: str, filename: str, project_dir: str) -> dict:
+        config_calls.append((package_name, filename, project_dir))
+        return {"features": {"quality_gate": {"enabled": False}}}
+
+    def _fail_if_state_updated(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        pytest.fail("state must not be updated when quality_gate is disabled")
+
+    monkeypatch.setattr(post_implementation_review, "load_package_config", _load_config)
+    monkeypatch.setattr(
+        post_implementation_review, "update_project_scoped_state", _fail_if_state_updated
+    )
+    _write_payload(monkeypatch, "src/module.py", "line\n", str(subdirectory))
+
+    with pytest.raises(SystemExit) as exc_info:
+        post_implementation_review.main()
+
+    assert exc_info.value.code == 0
+    assert config_calls == [("audit", "audit-flags.json", str(repo_root))]
+    assert capsys.readouterr().out == ""
+    state_file = repo_root / ".claude" / "state" / post_implementation_review.STATE_FILENAME
+    assert not state_file.exists()
+
+
+# ---------------------------------------------------------------------------
+# EV-10: main() の fail-open（例外捕捉 → stderr ログ + exit 0）
+# ---------------------------------------------------------------------------
+
+
+def test_main_fails_open_on_unexpected_exception(
+    _clean_state, monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project_a, _project_b = _clean_state
+
+    def _raise(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(post_implementation_review, "load_package_config", _raise)
+    _write_payload(monkeypatch, "src/module.py", "line\n", project_a)
+
+    with pytest.raises(SystemExit) as exc_info:
+        post_implementation_review.main()
+
+    assert exc_info.value.code == 0
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Hook error" in captured.err
+    assert "boom" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# Issue #134 レビュー指摘: AI_ORCHESTRA_DIR 未設定時の hook_common フォールバック
+# ---------------------------------------------------------------------------
+
+
+def test_hook_runs_without_ai_orchestra_dir_env_var(tmp_path: Path) -> None:
+    """AI_ORCHESTRA_DIR 未設定の開発・検証環境で hook を絶対パスから直接実行
+    しても、hook_common の import に失敗せず fail-open（exit 0）で終わることを
+    確認する（従来はフォールバック欠落により ModuleNotFoundError で exit 1 に
+    なっていた）。"""
+    payload = {
+        "tool_name": "Write",
+        "cwd": str(tmp_path),
+        "tool_input": {"file_path": "src/module.py", "content": "line\n"},
+    }
+    env = {k: v for k, v in os.environ.items() if k != "AI_ORCHESTRA_DIR"}
+
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, str(_HOOK_PATH)],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        cwd=str(tmp_path),
+        env=env,
+        timeout=30,
+    )
+
+    assert result.returncode == 0
+    assert "ModuleNotFoundError" not in result.stderr

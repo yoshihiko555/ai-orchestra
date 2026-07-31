@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import json
 import os
+import subprocess
+import sys
+from io import StringIO
 from pathlib import Path
 
 import pytest
@@ -234,3 +238,233 @@ def test_check_grep_sanitizes_pattern_with_newline() -> None:
     pattern_line_count = sum(1 for line in msg.split("\n") if "pattern:" in line)
     assert pattern_line_count == 1
     assert "foo bar" in msg or "'foo bar'" in msg
+
+
+# ---------------------------------------------------------------------------
+# main(): EV-17 (stdin/stdout contract), EV-10 (fail-open)
+# ---------------------------------------------------------------------------
+
+
+def _make_stdin(payload: dict, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "stdin", StringIO(json.dumps(payload)))
+
+
+def test_main_outputs_suggestion_for_large_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """EV-17: 提案があるときのみ additionalContext を出力する。"""
+    target = tmp_path / "large.txt"
+    target.write_text("\n".join(str(i) for i in range(500)))
+    _make_stdin(
+        {
+            "cwd": str(tmp_path),
+            "tool_name": "Read",
+            "tool_input": {"file_path": str(target)},
+        },
+        monkeypatch,
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        check_context_optimization.main()
+
+    assert exc_info.value.code == 0
+    output = json.loads(capsys.readouterr().out)
+    context = output["hookSpecificOutput"]["additionalContext"]
+    assert "[Context Optimization]" in context
+
+
+def test_main_outputs_nothing_when_no_suggestion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """EV-17: 提案が無い場合は標準出力しない。"""
+    target = tmp_path / "small.txt"
+    target.write_text("\n".join(str(i) for i in range(10)))
+    _make_stdin(
+        {
+            "cwd": str(tmp_path),
+            "tool_name": "Read",
+            "tool_input": {"file_path": str(target)},
+        },
+        monkeypatch,
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        check_context_optimization.main()
+
+    assert exc_info.value.code == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_main_no_op_when_context_optimization_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    target = tmp_path / "large.txt"
+    target.write_text("\n".join(str(i) for i in range(500)))
+    monkeypatch.setattr(
+        check_context_optimization,
+        "_load_settings",
+        lambda _project_dir: {"enabled": False},
+    )
+    _make_stdin(
+        {
+            "cwd": str(tmp_path),
+            "tool_name": "Read",
+            "tool_input": {"file_path": str(target)},
+        },
+        monkeypatch,
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        check_context_optimization.main()
+
+    assert exc_info.value.code == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_main_no_op_when_quality_gate_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """EV-21: quality_gate.enabled=false のときは context_optimization.enabled
+    に関わらず提案を含む全動作を行わないことを確認する。"""
+    target = tmp_path / "large.txt"
+    target.write_text("\n".join(str(i) for i in range(500)))
+    monkeypatch.setattr(
+        check_context_optimization,
+        "_load_quality_gate_settings",
+        lambda _project_dir: {"enabled": False},
+    )
+    called = {"ran": False}
+
+    def _fail_if_called(_project_dir):  # type: ignore[no-untyped-def]
+        called["ran"] = True
+        return {"enabled": True}
+
+    monkeypatch.setattr(check_context_optimization, "_load_settings", _fail_if_called)
+    _make_stdin(
+        {
+            "cwd": str(tmp_path),
+            "tool_name": "Read",
+            "tool_input": {"file_path": str(target)},
+        },
+        monkeypatch,
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        check_context_optimization.main()
+
+    assert exc_info.value.code == 0
+    assert called["ran"] is False
+    assert capsys.readouterr().out == ""
+
+
+def test_main_normalizes_subdirectory_before_config_lookups(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """両方の feature 設定を subdirectory ではなく project root から読む。"""
+    repo_root = tmp_path / "repo"
+    (repo_root / ".claude").mkdir(parents=True)
+    subdirectory = repo_root / "packages" / "sub"
+    subdirectory.mkdir(parents=True)
+    config_calls = []
+
+    def _load_config(package_name: str, filename: str, project_dir: str) -> dict:
+        config_calls.append((package_name, filename, project_dir))
+        return {
+            "features": {
+                "quality_gate": {"enabled": True},
+                "context_optimization": {"enabled": False},
+            }
+        }
+
+    monkeypatch.setattr(check_context_optimization, "load_package_config", _load_config)
+    _make_stdin(
+        {
+            "cwd": str(subdirectory),
+            "tool_name": "Bash",
+            "tool_input": {"command": "cat src/main.py"},
+        },
+        monkeypatch,
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        check_context_optimization.main()
+
+    assert exc_info.value.code == 0
+    assert config_calls == [
+        ("audit", "audit-flags.json", str(repo_root)),
+        ("audit", "audit-flags.json", str(repo_root)),
+    ]
+    assert capsys.readouterr().out == ""
+
+
+def test_main_ignores_invalid_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "stdin", StringIO("{not valid json"))
+
+    with pytest.raises(SystemExit) as exc_info:
+        check_context_optimization.main()
+
+    assert exc_info.value.code == 0
+
+
+def test_main_fails_open_on_unexpected_exception(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """EV-10: main() 全体を囲む例外捕捉が stderr ログ + exit 0 で fail-open する。"""
+    _make_stdin(
+        {
+            "cwd": str(tmp_path),
+            "tool_name": "Read",
+            "tool_input": {"file_path": str(tmp_path / "x.txt")},
+        },
+        monkeypatch,
+    )
+
+    def _raise(_project_dir: str) -> dict:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(check_context_optimization, "_load_settings", _raise)
+
+    with pytest.raises(SystemExit) as exc_info:
+        check_context_optimization.main()
+
+    assert exc_info.value.code == 0
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "boom" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# Issue #134 レビュー指摘: AI_ORCHESTRA_DIR 未設定時の hook_common フォールバック
+# ---------------------------------------------------------------------------
+
+
+def test_hook_runs_without_ai_orchestra_dir_env_var(tmp_path: Path) -> None:
+    """post-implementation-review.py と同じフォールバック欠落があったため、
+    同じ回帰テストを適用する。AI_ORCHESTRA_DIR 未設定でも hook_common の
+    import に失敗せず fail-open（exit 0）で終わることを確認する。"""
+    hook_path = (
+        Path(__file__).resolve().parents[3]
+        / "packages"
+        / "quality-gates"
+        / "hooks"
+        / "check-context-optimization.py"
+    )
+    payload = {
+        "tool_name": "Read",
+        "cwd": str(tmp_path),
+        "tool_input": {"file_path": str(tmp_path / "x.txt")},
+    }
+    env = {k: v for k, v in os.environ.items() if k != "AI_ORCHESTRA_DIR"}
+
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, str(hook_path)],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        cwd=str(tmp_path),
+        env=env,
+        timeout=30,
+    )
+
+    assert result.returncode == 0
+    assert "ModuleNotFoundError" not in result.stderr

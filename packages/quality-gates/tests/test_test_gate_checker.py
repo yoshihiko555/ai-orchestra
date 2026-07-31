@@ -1,13 +1,18 @@
 import json
+import os
+import subprocess
 import sys
+from io import StringIO
 
 import pytest
 
-from tests.module_loader import load_module
+from tests.module_loader import REPO_ROOT, load_module
 
 test_gate_checker = load_module(
     "test_gate_checker", "packages/quality-gates/hooks/test-gate-checker.py"
 )
+
+_HOOK_PATH = REPO_ROOT / "packages" / "quality-gates" / "hooks" / "test-gate-checker.py"
 
 # test_gate_checker's `from quality_gate_config import ...` (triggered by load_module
 # above) registers the real shared module under its natural name "quality_gate_config"
@@ -258,6 +263,35 @@ def test_enabled_when_flag_true(tmp_path) -> None:
     assert test_gate_checker.is_quality_gate_enabled(str(tmp_path))
 
 
+# ---------------------------------------------------------------------------
+# EV-10: main() の fail-open（例外捕捉 → stderr ログ + exit 0）
+# ---------------------------------------------------------------------------
+
+
+def test_main_fails_open_on_unexpected_exception(monkeypatch, tmp_path, capsys) -> None:
+
+    payload = {
+        "tool_name": "Write",
+        "cwd": str(tmp_path),
+        "tool_input": {"file_path": "src/main.py", "content": "print(1)\n"},
+    }
+    monkeypatch.setattr(sys, "stdin", StringIO(json.dumps(payload)))
+
+    def _raise(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(test_gate_checker, "load_package_config", _raise)
+
+    with pytest.raises(SystemExit) as exc_info:
+        test_gate_checker.main()
+
+    assert exc_info.value.code == 0
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Hook error" in captured.err
+    assert "boom" in captured.err
+
+
 def test_enabled_defaults_to_true_when_key_missing(tmp_path) -> None:
     """When quality_gate config exists but lacks an `enabled` key, default to True.
 
@@ -278,3 +312,69 @@ def test_enabled_defaults_to_true_when_key_missing(tmp_path) -> None:
         json.dump(config, f)
 
     assert test_gate_checker.is_quality_gate_enabled(str(tmp_path))
+
+
+def test_main_normalizes_subdirectory_before_disabled_config_lookup(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    """subdirectory cwd でも root の disabled 設定を使い、状態を変更しない。"""
+    repo_root = tmp_path / "repo"
+    (repo_root / ".claude").mkdir(parents=True)
+    subdirectory = repo_root / "packages" / "sub"
+    subdirectory.mkdir(parents=True)
+    config_calls = []
+
+    def _load_config(package_name: str, filename: str, project_dir: str) -> dict:
+        config_calls.append((package_name, filename, project_dir))
+        return {"features": {"quality_gate": {"enabled": False}}}
+
+    def _fail_if_state_loaded(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        pytest.fail("state must not be loaded when quality_gate is disabled")
+
+    payload = {
+        "tool_name": "Write",
+        "cwd": str(subdirectory),
+        "tool_input": {"file_path": "src/main.py", "content": "print(1)\n"},
+    }
+    monkeypatch.setattr(sys, "stdin", StringIO(json.dumps(payload)))
+    monkeypatch.setattr(test_gate_checker, "load_package_config", _load_config)
+    monkeypatch.setattr(test_gate_checker, "load_test_gate_state", _fail_if_state_loaded)
+
+    with pytest.raises(SystemExit) as exc_info:
+        test_gate_checker.main()
+
+    assert exc_info.value.code == 0
+    assert config_calls == [("audit", "audit-flags.json", str(repo_root))]
+    assert capsys.readouterr().out == ""
+    state_file = repo_root / ".claude" / "state" / test_gate_checker.STATE_FILENAME
+    assert not state_file.exists()
+
+
+# ---------------------------------------------------------------------------
+# Issue #134 レビュー指摘: AI_ORCHESTRA_DIR 未設定時の hook_common フォールバック
+# ---------------------------------------------------------------------------
+
+
+def test_hook_runs_without_ai_orchestra_dir_env_var(tmp_path) -> None:
+    """post-implementation-review.py と同じフォールバック欠落があったため、
+    同じ回帰テストを適用する。AI_ORCHESTRA_DIR 未設定でも hook_common の
+    import に失敗せず fail-open（exit 0）で終わることを確認する。"""
+    payload = {
+        "tool_name": "Write",
+        "cwd": str(tmp_path),
+        "tool_input": {"file_path": "src/module.py", "content": "line\n"},
+    }
+    env = {k: v for k, v in os.environ.items() if k != "AI_ORCHESTRA_DIR"}
+
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, str(_HOOK_PATH)],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        cwd=str(tmp_path),
+        env=env,
+        timeout=30,
+    )
+
+    assert result.returncode == 0
+    assert "ModuleNotFoundError" not in result.stderr

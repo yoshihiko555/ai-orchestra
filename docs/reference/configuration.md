@@ -273,7 +273,7 @@ agents:
     },
     "quality_gate": {
       "enabled": true,
-      "block_on_failed_test": false,
+      "block_on_failed_test": true,
       "test_file_threshold": 3,
       "test_line_threshold": 100
     },

@@ -357,3 +357,86 @@ def test_main_fails_open_when_state_persistence_raises(
 
     assert exc_info.value.code == 0
     assert "Hook error" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# EV-21: quality_gate.enabled 遵守
+# ---------------------------------------------------------------------------
+
+
+def test_collect_tampering_findings_no_op_when_quality_gate_disabled(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """quality_gate.enabled=false のときは検知・状態記録を含む全動作を行わない。"""
+    monkeypatch.setattr(
+        test_tampering_detector,
+        "load_package_config",
+        lambda *_args: {"features": {"quality_gate": {"enabled": False}}},
+    )
+
+    def _fail_if_state_persisted(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        pytest.fail("update_locked_json_state must not be called when quality_gate is disabled")
+
+    monkeypatch.setattr(
+        test_tampering_detector, "update_locked_json_state", _fail_if_state_persisted
+    )
+
+    payload = {
+        "tool_name": "Write",
+        "cwd": str(tmp_path),
+        "tool_input": {"file_path": "tests/test_auth.py", "content": "it.skip('x')\n"},
+    }
+
+    findings = test_tampering_detector.collect_tampering_findings(payload)
+
+    assert findings == []
+
+
+def test_collect_tampering_findings_normalizes_subdirectory_before_config_lookup(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """subdirectory cwd でも project root の disabled 設定を参照する。"""
+    repo_root = tmp_path / "repo"
+    (repo_root / ".claude").mkdir(parents=True)
+    subdirectory = repo_root / "packages" / "sub"
+    subdirectory.mkdir(parents=True)
+    config_calls = []
+
+    def _load_config(package_name: str, filename: str, project_dir: str) -> dict:
+        config_calls.append((package_name, filename, project_dir))
+        return {"features": {"quality_gate": {"enabled": False}}}
+
+    monkeypatch.setattr(test_tampering_detector, "load_package_config", _load_config)
+    payload = {
+        "tool_name": "Write",
+        "cwd": str(subdirectory),
+        "tool_input": {"file_path": "tests/test_auth.py", "content": "it.skip('x')\n"},
+    }
+
+    findings = test_tampering_detector.collect_tampering_findings(payload)
+
+    assert findings == []
+    assert config_calls == [("audit", "audit-flags.json", str(repo_root))]
+    state_file = repo_root / ".claude" / "state" / test_tampering_detector.STATE_FILENAME
+    assert not state_file.exists()
+
+
+# ---------------------------------------------------------------------------
+# EV-22: additionalContext の秘匿情報マスキング
+# ---------------------------------------------------------------------------
+
+
+def test_build_warning_message_masks_secrets_in_snippet() -> None:
+    findings = [
+        {
+            "type": "pattern",
+            "file_path": "tests/test_auth.py",
+            "label": "noqa",
+            "snippet": 'api_key = "sk-1234567890abcdefghijklmno"  # noqa',
+        }
+    ]
+
+    message = test_tampering_detector.build_warning_message(findings)
+
+    assert "sk-1234567890abcdefghijklmno" not in message
+    assert "[REDACTED]" in message

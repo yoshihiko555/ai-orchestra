@@ -7,9 +7,33 @@ PostToolUse hook: 対応ファイルの編集後に formatter / linter を実行
 """
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
+
+_hook_dir = os.path.dirname(os.path.abspath(__file__))
+if _hook_dir not in sys.path:
+    sys.path.insert(0, _hook_dir)
+
+# hook_common / secret_masking を $AI_ORCHESTRA_DIR 配下から読み込む
+_orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
+_repo_core_hooks = os.path.abspath(os.path.join(_hook_dir, "..", "..", "core", "hooks"))
+_repo_audit_hooks = os.path.abspath(os.path.join(_hook_dir, "..", "..", "audit", "hooks"))
+
+for _candidate in [
+    os.path.join(_orchestra_dir, "packages", "core", "hooks") if _orchestra_dir else "",
+    os.path.join(_orchestra_dir, "packages", "audit", "hooks") if _orchestra_dir else "",
+    _repo_core_hooks,
+    _repo_audit_hooks,
+]:
+    if _candidate and os.path.isdir(_candidate) and _candidate not in sys.path:
+        sys.path.insert(0, _candidate)
+
+from hook_common import load_package_config  # noqa: E402
+from log_common import find_project_root  # noqa: E402
+from quality_gate_config import resolve_quality_gate_enabled  # noqa: E402
+from secret_masking import mask_secrets  # noqa: E402
 
 PYTHON_EXTENSIONS = {".py"}
 JS_TS_EXTENSIONS = {".cjs", ".cts", ".js", ".jsx", ".mjs", ".mts", ".ts", ".tsx"}
@@ -211,20 +235,37 @@ def main() -> None:
         if not build_lint_steps(file_path):
             sys.exit(0)
 
+        # EV-21: quality_gate.enabled=false のときは formatter/linter 実行を
+        # 含む全動作を行わない。
+        # Issue #134 レビュー指摘: Claude Code がリポジトリのサブディレクトリ
+        # （例: packages/foo）から起動されると payload の cwd もそのサブ
+        # ディレクトリになり、project_dir 直下に .claude/config が無いため
+        # config が見つからず既定値へフォールバックしてしまう。
+        # find_project_root で .claude/ を持つ最寄りの親ディレクトリへ
+        # 正規化してから config を読み込む
+        # （quality_gate_config.resolve_state_path と同じ正規化方式）。
+        raw_project_dir = data.get("cwd", "") or os.environ.get("CLAUDE_PROJECT_DIR", "")
+        project_dir = find_project_root(raw_project_dir) if raw_project_dir else find_project_root()
+        config = load_package_config("audit", "audit-flags.json", project_dir)
+        quality_gate = config.get("features", {}).get("quality_gate", {})
+        if not resolve_quality_gate_enabled(quality_gate):
+            sys.exit(0)
+
         results = run_lint_commands(file_path)
         if not results:
             sys.exit(0)
 
-        # 実際に動いたツールだけをユーザーへ通知する。
+        # 実際に動いたツールだけをユーザーへ通知する。EV-22: formatter/linter
+        # の出力に秘匿情報が含まれる場合に備えマスクしてから通知する。
         messages = []
         has_issues = False
         for result in results:
             if result["success"]:
                 if result["output"]:
-                    messages.append(f"✓ {result['name']}: {result['output']}")
+                    messages.append(f"✓ {result['name']}: {mask_secrets(result['output'])}")
             else:
                 has_issues = True
-                messages.append(f"✗ {result['name']}: {result['output']}")
+                messages.append(f"✗ {result['name']}: {mask_secrets(result['output'])}")
 
         if messages:
             status = "Issues found" if has_issues else "OK"

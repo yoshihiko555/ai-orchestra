@@ -87,6 +87,39 @@ def test_run_step_skips_missing_tool_errors(monkeypatch) -> None:
     assert len(calls) == 2
 
 
+def test_run_step_falls_back_on_timeout(monkeypatch) -> None:
+    """EV-14: 15秒タイムアウト（subprocess.TimeoutExpired）でも次候補にフォールバックする。"""
+    calls: list[list[str]] = []
+
+    class Result:
+        def __init__(self, returncode: int, stdout: str = "", stderr: str = "") -> None:
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+
+    def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append(cmd)
+        if cmd[0] == "pnpm":
+            raise lint_on_save.subprocess.TimeoutExpired(cmd=cmd, timeout=15)
+        return Result(0, stdout="formatted")
+
+    monkeypatch.setattr(lint_on_save.subprocess, "run", fake_run)
+
+    result = lint_on_save.run_step(
+        {
+            "name": "prettier",
+            "commands": [
+                ["pnpm", "exec", "prettier", "--write", "file.ts"],
+                ["npm", "exec", "--", "prettier", "--write", "file.ts"],
+            ],
+        },
+        ".",
+    )
+
+    assert result == {"name": "prettier", "success": True, "output": "formatted"}
+    assert len(calls) == 2
+
+
 def test_main_skips_unsupported_files(monkeypatch, capsys: pytest.CaptureFixture[str]) -> None:
     payload = {
         "tool_name": "Edit",
@@ -121,3 +154,137 @@ def test_main_reports_lint_result(monkeypatch, capsys: pytest.CaptureFixture[str
     context = output["hookSpecificOutput"]["additionalContext"]
     assert "[Lint OK]" in context
     assert "ruff format: 1 file reformatted" in context
+
+
+# ---------------------------------------------------------------------------
+# EV-21: quality_gate.enabled 遵守
+# ---------------------------------------------------------------------------
+
+
+def test_main_no_op_when_quality_gate_disabled(
+    monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """quality_gate.enabled=false のときは formatter/linter 実行を含む全動作を行わない。"""
+    payload = {
+        "tool_name": "Write",
+        "cwd": "/project",
+        "tool_input": {"file_path": "packages/quality-gates/hooks/lint-on-save.py"},
+    }
+    monkeypatch.setattr(sys, "stdin", StringIO(json.dumps(payload)))
+    monkeypatch.setattr(
+        lint_on_save,
+        "load_package_config",
+        lambda *_args: {"features": {"quality_gate": {"enabled": False}}},
+    )
+    called = {"ran": False}
+
+    def _fail_if_called(_file_path):  # type: ignore[no-untyped-def]
+        called["ran"] = True
+        return []
+
+    monkeypatch.setattr(lint_on_save, "run_lint_commands", _fail_if_called)
+
+    with pytest.raises(SystemExit) as exc_info:
+        lint_on_save.main()
+
+    assert exc_info.value.code == 0
+    assert called["ran"] is False
+    assert capsys.readouterr().out == ""
+
+
+def test_main_normalizes_subdirectory_cwd_before_loading_config(monkeypatch) -> None:
+    """Claude Code がリポジトリのサブディレクトリ（例: packages/foo）から
+    起動された場合でも、project_dir を .claude/ を持つ最寄りの親へ正規化
+    してから audit-flags.json を読み込むことを確認する（Issue #134 レビュー
+    指摘: 従来は data.cwd がそのまま渡され、プロジェクト固有の設定・
+    ローカル上書きが見つからなくなっていた）。"""
+    payload = {
+        "tool_name": "Write",
+        "cwd": "/repo/packages/foo",
+        "tool_input": {"file_path": "packages/quality-gates/hooks/lint-on-save.py"},
+    }
+    monkeypatch.setattr(sys, "stdin", StringIO(json.dumps(payload)))
+    monkeypatch.setattr(lint_on_save, "find_project_root", lambda start_dir: "/repo")
+
+    captured: dict[str, str] = {}
+
+    def _fake_load_package_config(_package, _filename, project_dir):  # type: ignore[no-untyped-def]
+        captured["project_dir"] = project_dir
+        return {"features": {"quality_gate": {"enabled": False}}}
+
+    monkeypatch.setattr(lint_on_save, "load_package_config", _fake_load_package_config)
+
+    with pytest.raises(SystemExit) as exc_info:
+        lint_on_save.main()
+
+    assert exc_info.value.code == 0
+    assert captured["project_dir"] == "/repo"
+
+
+# ---------------------------------------------------------------------------
+# EV-22: additionalContext の秘匿情報マスキング
+# ---------------------------------------------------------------------------
+
+
+def test_main_masks_secrets_in_lint_output(monkeypatch, capsys: pytest.CaptureFixture[str]) -> None:
+    payload = {
+        "tool_name": "Write",
+        "cwd": "/project",
+        "tool_input": {"file_path": "packages/quality-gates/hooks/lint-on-save.py"},
+    }
+    monkeypatch.setattr(sys, "stdin", StringIO(json.dumps(payload)))
+    monkeypatch.setattr(
+        lint_on_save,
+        "load_package_config",
+        lambda *_args: {"features": {"quality_gate": {"enabled": True}}},
+    )
+    monkeypatch.setattr(
+        lint_on_save,
+        "run_lint_commands",
+        lambda _: [
+            {
+                "name": "ruff check",
+                "success": False,
+                "output": "config error: api_key=sk-1234567890abcdefghijklmno",
+            }
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        lint_on_save.main()
+
+    assert exc_info.value.code == 0
+    output = json.loads(capsys.readouterr().out)
+    context = output["hookSpecificOutput"]["additionalContext"]
+    assert "sk-1234567890abcdefghijklmno" not in context
+    assert "[REDACTED]" in context
+
+
+# ---------------------------------------------------------------------------
+# EV-10: main() の fail-open（例外捕捉 → stderr ログ + exit 0）
+# ---------------------------------------------------------------------------
+
+
+def test_main_fails_open_on_unexpected_exception(
+    monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    payload = {
+        "tool_name": "Write",
+        "cwd": "/project",
+        "tool_input": {"file_path": "packages/quality-gates/hooks/lint-on-save.py"},
+    }
+    monkeypatch.setattr(sys, "stdin", StringIO(json.dumps(payload)))
+
+    def _raise(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(lint_on_save, "load_package_config", _raise)
+
+    with pytest.raises(SystemExit) as exc_info:
+        lint_on_save.main()
+
+    assert exc_info.value.code == 0
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Hook error" in captured.err
+    assert "boom" in captured.err

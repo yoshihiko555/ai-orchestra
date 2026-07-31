@@ -24,14 +24,23 @@ _hook_dir = os.path.dirname(os.path.abspath(__file__))
 if _hook_dir not in sys.path:
     sys.path.insert(0, _hook_dir)
 
-# hook_common を $AI_ORCHESTRA_DIR/packages/core/hooks/ から読み込む
+# hook_common を $AI_ORCHESTRA_DIR/packages/core/hooks/ から読み込む。
+# AI_ORCHESTRA_DIR 未設定の開発・検証環境向けに、リポジトリ内の
+# core/hooks へのフォールバックも用意する（Issue #134 レビュー指摘:
+# post-implementation-review.py と同じフォールバック欠落。
+# quality_gate_config.py と同じフォールバック方式）。
 _orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
 if _orchestra_dir:
     _core_hooks = os.path.join(_orchestra_dir, "packages", "core", "hooks")
     if _core_hooks not in sys.path:
         sys.path.insert(0, _core_hooks)
+else:
+    _fallback_core_hooks = Path(__file__).resolve().parents[2] / "core" / "hooks"
+    if str(_fallback_core_hooks) not in sys.path:
+        sys.path.insert(0, str(_fallback_core_hooks))
 
 from hook_common import load_package_config  # noqa: E402
+from log_common import find_project_root  # noqa: E402
 from quality_gate_config import (  # noqa: E402
     DEFAULT_TEST_GATE_STATE,
     get_project_state_key,
@@ -129,7 +138,10 @@ def main() -> None:
         if not is_code_file(file_path):
             sys.exit(0)
 
-        project_dir = data.get("cwd", "") or os.environ.get("CLAUDE_PROJECT_DIR", "")
+        # Issue #134 レビュー指摘: subdirectory cwd でも project root の
+        # .claude/config と共有 state を一貫して参照する。
+        raw_project_dir = data.get("cwd", "") or os.environ.get("CLAUDE_PROJECT_DIR", "")
+        project_dir = find_project_root(raw_project_dir) if raw_project_dir else find_project_root()
 
         # Read audit-flags.json once and reuse it for the enabled check, the
         # threshold lookup, and resolve_state_path()'s paths.state_dir lookup

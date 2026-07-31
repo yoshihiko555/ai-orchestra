@@ -157,6 +157,32 @@ def test_disabled_feature_flag_produces_no_output(monkeypatch, capsys, tmp_path)
     assert output == ""
 
 
+def test_main_normalizes_subdirectory_before_disabled_config_lookup(
+    monkeypatch, capsys, tmp_path
+) -> None:
+    """subdirectory cwd でも project root の feature flag を参照する。"""
+    repo_root = tmp_path / "repo"
+    (repo_root / ".claude").mkdir(parents=True)
+    subdirectory = repo_root / "packages" / "quality-gates"
+    subdirectory.mkdir(parents=True)
+    test_file = subdirectory / "tests" / "test_foo.py"
+    config_calls = []
+
+    def _load_config(package_name: str, filename: str, project_dir: str) -> dict:
+        config_calls.append((package_name, filename, project_dir))
+        return {"features": {"evaluation_set_check": {"enabled": False}}}
+
+    monkeypatch.setattr(evaluation_set_checker, "load_package_config", _load_config)
+    payload = _build_payload(str(test_file), subdirectory)
+
+    output = _run_main(monkeypatch, capsys, payload)
+
+    assert output == ""
+    assert config_calls == [("audit", "audit-flags.json", str(repo_root))]
+    state_file = repo_root / ".claude" / "state" / evaluation_set_checker.STATE_FILENAME
+    assert not state_file.exists()
+
+
 def test_dedup_within_same_session_and_renotify_on_new_session(
     monkeypatch, capsys, tmp_path
 ) -> None:
@@ -601,3 +627,26 @@ def test_mapping_config_files_each_read_once_per_invocation(monkeypatch, capsys,
 
     assert output != ""
     assert call_count["n"] == 2  # base + local (local file need not exist)
+
+
+# ---------------------------------------------------------------------------
+# EV-10: main() の fail-open（例外捕捉 → stderr ログ + exit 0）
+# ---------------------------------------------------------------------------
+
+
+def test_main_fails_open_on_unexpected_exception(monkeypatch, capsys, tmp_path) -> None:
+    payload = _build_payload("packages/quality-gates/tests/test_foo.py", tmp_path)
+    monkeypatch.setattr(sys, "stdin", StringIO(json.dumps(payload)))
+
+    def _raise(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(evaluation_set_checker, "identify_package", _raise)
+
+    with pytest.raises(SystemExit) as exc_info:
+        evaluation_set_checker.main()
+
+    assert exc_info.value.code == 0
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "boom" in captured.err
