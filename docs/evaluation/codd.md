@@ -3,7 +3,7 @@
 **パッケージ**: `packages/codd`
 **類型**: CLI ツール型
 **作成日**: 2026-07-03
-**最終レビュー日**: 評価保留（2026-07-04）— パッケージ実装が未完了のため、実装完了後に改めて人間レビューを行う。それまで本評価セットの観点は暫定（ドラフト）扱いとし、テスト改修時の突合基準としては未確定とする。EV-26〜EV-53（Issue #98 / コード⇔ドキュメントのトレーサビリティ）は 2026-07-27 追加、EV-46b・EV-54〜EV-57（PR #327 6巡目レビュー指摘対応）は 2026-07-27 追加、EV-59〜EV-67（Issue #95 / hook 自動配線。EV-66〜67 は bot レビュー対応で追加）は 2026-07-30 追加、同様に人間レビュー保留。
+**最終レビュー日**: 評価保留（2026-07-04）— パッケージ実装が未完了のため、実装完了後に改めて人間レビューを行う。それまで本評価セットの観点は暫定（ドラフト）扱いとし、テスト改修時の突合基準としては未確定とする。EV-26〜EV-53（Issue #98 / コード⇔ドキュメントのトレーサビリティ）は 2026-07-27 追加、EV-46b・EV-54〜EV-57（PR #327 6巡目レビュー指摘対応）は 2026-07-27 追加、EV-59〜EV-67（Issue #95 / hook 自動配線。EV-66〜67 は bot レビュー対応で追加）は 2026-07-30 追加、EV-68〜EV-69（Issue #338 / validate hook の index スナップショット検証・複合コマンドの既知の制限注記）は 2026-08-01 追加、同様に人間レビュー保留。
 **情報源**: docs/design/codd-coherence-layer.md, docs/requirements/coherence-guardrail.md, .claude/rules/codd-frontmatter-policy.md（補助: packages/codd/manifest.json — 構成要素の列挙のみ）
 
 ## 1. 責務定義
@@ -114,6 +114,8 @@ codd は AI Orchestra 自身および導入先プロジェクトが生成する�
 - [ ] EV-65（境界 / should）: 非該当ケース（scope 外編集・`git commit` を含まない Bash・codd 未初期化）の hook 実行コストは fast-exit により体感無視できる（目安 100ms 未満）。重い処理（codd lib import・YAML ロード・subprocess）は安価な前提チェックの後段に置かれる — 根拠: docs/design/codd-coherence-layer.md §4.8.1, Issue #95 受け入れ条件
 - [ ] EV-66（異常 / must）: `hooks.scan_on_edit` は厳密な bool 値のみ受理する。非 bool（例: 文字列 `"false"`）が設定された場合は `ValueError` となり、CLI 経路（設定エラー整形）では exit 2、hook 経路では fail-safe により exit 0 に倒れる — 根拠: docs/design/codd-coherence-layer.md §4.8.1, packages/codd/lib/codd_common.py
 - [ ] EV-67（境界 / should）: `./docs/**/*.md` のような正規化を要するスコープパターンも、単一パス判定（scan hook の fast-exit 判定）と `scan` 本体側で同一の解釈になる。両者とも `_normalize_scope_pattern` を経由してから照合するため、記法差によるスコープ判定の食い違いが生じない — 根拠: docs/design/codd-coherence-layer.md §4.8.1, packages/codd/lib/codd_common.py（`_normalize_scope_pattern`）
+- [ ] EV-68（正常・異常 / must）: validate hook は working tree ではなく **git index** のスナップショット（`git write-tree` + `git --work-tree=<tmp> checkout-index -a -f` で構築した一時ディレクトリ）に対して `codd validate` を実行する。壊れた依存を `git add` した後に working tree だけ修正しても、index の内容（壊れたまま）で `warn`/`block` 判定される。逆に index がクリーンなら working tree だけの未ステージ変更（エラー含む）は判定に影響しない。index スナップショットを構築できない場合（root が git working tree でない、index に unmerged エントリがある、subprocess timeout/OSError）は validate 実行失敗と同様に fail-safe で commit をブロックしない。実体の working tree・index は一切変更しない — 根拠: docs/design/codd-coherence-layer.md §4.8.1（Issue #338）
+- [ ] EV-69（境界 / should）: `git ... commit` 呼び出しの直前に shell 連結演算子（`&&` / `;` / `||` / `|`）を検出した場合（例: `git add docs && git commit`）、warn/block メッセージに複合コマンドの既知の制限（hook はコマンド実行前の index を検証するため、同一コマンド内の先行ステップの結果は反映されない）を注記する。単純な `git commit` や `git commit ... && git push` のように commit の後ろに連結される場合は注記しない。この注記はブロック判定そのものには影響しない（あくまで情報提供） — 根拠: docs/design/codd-coherence-layer.md §4.8.1（Issue #338）
 
 ## 5. テストレビュー判断基準（パッケージ固有）
 

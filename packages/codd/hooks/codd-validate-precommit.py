@@ -27,6 +27,22 @@ bot レビュー対応）。`-C` 解決後のディレクトリが hook の root
 ガード対象外として exit 0（安全側 skip）にする。`cd <path> && git commit` のような
 複合コマンドでの `cd` 解析は行わない（root は hook 入力の cwd 固定という既知の
 近似のまま）。
+
+**index スナップショット検証（Issue #338）**: `git commit` が実際にコミットするのは
+working tree ではなく **git index** の内容である。この hook は `git ... checkout-index`
+で index の内容を一時ディレクトリへ展開し、その一時ディレクトリに対して `codd validate`
+を実行する（実体の working tree・index は一切変更しない）。これにより「壊れた依存を
+`git add` した後、同じファイルを未ステージで修正する」ケースでも、実際にコミットされる
+内容（index）を正しく検証できる。index スナップショットを構築できない場合（対象が git
+working tree でない、index に unmerged エントリがある等）は、validate 実行自体の失敗と
+同様に fail-safe で commit をブロックしない。
+
+**複合コマンドの既知の制限（Issue #338）**: PreToolUse hook は Bash コマンドが実行される
+**前**に動作するため、`generate-docs && git add docs && git commit` のような複合コマンドで
+は、hook 実行時点の index に同一コマンド内の先行ステップ（`git add` 等）の結果はまだ
+反映されていない。`git ... commit` 呼び出しの直前に shell 連結演算子（`&&` / `;` / `||` /
+`|`）を検出した場合は、warn/block メッセージにこの制限を注記する（ブロックはしない。
+あくまで検証対象が「hook 実行時点の index」であることの明示）。
 """
 
 from __future__ import annotations
@@ -34,8 +50,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 # hook_common を $AI_ORCHESTRA_DIR/packages/core/hooks/ から読み込む
@@ -48,6 +66,8 @@ if _orchestra_dir:
 from hook_common import ensure_package_path, read_hook_input, safe_hook_execution  # noqa: E402
 
 VALIDATE_TIMEOUT_SECONDS = 60
+# `git write-tree` / `git checkout-index` の subprocess timeout（Issue #338）。
+INDEX_SNAPSHOT_TIMEOUT_SECONDS = 30
 
 # `git` の後に `-C <path>` / `-c <key>=<value>` 等のグローバルオプションを挟む場合も
 # 許容しつつ `commit` サブコマンドを検出する。素朴な `"git commit" in command` より
@@ -59,6 +79,17 @@ _GIT_COMMIT_PATTERN = re.compile(rf"\bgit(?:{_GIT_OPTION})*\s+commit(?=\s|$)")
 # `-C <path>` / `-C=<path>` の値を抽出する（`git` 直後〜`commit` 直前のグローバル
 # オプション区間のみに適用する。T5: Issue #95 bot レビュー対応）。
 _DASH_C_PATTERN = re.compile(r"-C(?:=(\S+)|\s+(\S+))")
+
+# `git ... commit` 呼び出しの直前が shell 連結演算子で終わっているかを検出する
+# （複合コマンドの既知の制限を注記するため。Issue #338）。
+_SHELL_CHAIN_OPERATOR_SUFFIX = re.compile(r"(?:&&|\|\||;|\|)\s*$")
+
+_COMPOUND_COMMAND_NOTE = (
+    "[codd] 注記: このコマンドは複合コマンド（`&&` 等）の一部として検出されました。"
+    "validate は hook 実行時点（コマンド実行前）の git index を検証しており、"
+    "同じコマンド内の `git add` 等それより前のステップの結果は反映されていません"
+    "（PreToolUse hook はツール実行前に動作するため。既知の制限。設計書 §4.8.1 参照）。"
+)
 
 
 def _looks_like_git_commit(command: str) -> bool:
@@ -104,6 +135,23 @@ def _is_guard_target_root(root: str, command: str) -> bool:
     return os.path.normpath(_resolve_dash_c_target(root, command)) == os.path.normpath(root)
 
 
+def _has_preceding_command_segment(command: str) -> bool:
+    """`git ... commit` 呼び出しの直前に、別コマンドセグメントが連結されているかを判定する。
+
+    `generate-docs && git add docs && git commit` のような複合コマンドでは、hook 実行時点
+    （`git commit` 自体がまだ実行される前）の index には、同じコマンド内の先行ステップ
+    （`git add` 等）の結果は反映されていない。PreToolUse hook はツール実行前に動作するため、
+    この乖離を hook 側で解消することはできない（既知の制限。Issue #338）。マッチした
+    `git ... commit` 区間の直前に shell 連結演算子（`&&` / `;` / `||` / `|`）があれば
+    True を返す。
+    """
+    match = _GIT_COMMIT_PATTERN.search(command)
+    if not match:
+        return False
+    prefix = command[: match.start()]
+    return bool(_SHELL_CHAIN_OPERATOR_SUFFIX.search(prefix))
+
+
 def _resolve_project_root(data: dict) -> str:
     """プロジェクトルートを解決する（無ければ空文字）。"""
     return data.get("cwd", "") or os.environ.get("CLAUDE_PROJECT_DIR", "")
@@ -114,13 +162,75 @@ def _codd_config_path(root: str) -> Path:
     return Path(root) / ".claude" / "config" / "codd" / "codd.yaml"
 
 
+def _build_index_snapshot(root: str) -> tuple[str | None, str]:
+    """git index の内容を一時ディレクトリへ展開する（working tree 近似の解消。Issue #338）。
+
+    `git commit` が実際にコミットするのは working tree ではなく index の内容である。
+    `git write-tree` で index の妥当性を確認したうえで、`git --work-tree=<tmp>
+    checkout-index -a -f` により index の内容だけを別ディレクトリへ書き出す。実体の
+    working tree・index には一切変更を加えない。
+
+    戻り値は ``(snapshot_dir, diagnostic)`` のタプル。構築に成功した場合は
+    ``(snapshot_dir, "")``、失敗した場合は ``(None, 診断メッセージ)`` を返す。
+    失敗するのは主に次のケース: `root` が git working tree でない、index に
+    unmerged（未解決コンフリクト）のエントリがある、subprocess の timeout / OSError。
+    呼び出し元は成功時の一時ディレクトリを使用後に削除すること。
+    """
+    try:
+        write_tree = subprocess.run(
+            ["git", "write-tree"],
+            cwd=root,
+            timeout=INDEX_SNAPSHOT_TIMEOUT_SECONDS,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return None, f"git write-tree failed: {exc}"
+    if write_tree.returncode != 0:
+        reason = write_tree.stderr.strip().splitlines()[0] if write_tree.stderr.strip() else ""
+        return None, f"git write-tree failed (code={write_tree.returncode}): {reason}"
+
+    snapshot_dir = tempfile.mkdtemp(prefix="codd-index-snapshot-")
+    try:
+        checkout = subprocess.run(
+            ["git", f"--work-tree={snapshot_dir}", "checkout-index", "-a", "-f"],
+            cwd=root,
+            timeout=INDEX_SNAPSHOT_TIMEOUT_SECONDS,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        shutil.rmtree(snapshot_dir, ignore_errors=True)
+        return None, f"git checkout-index failed: {exc}"
+    if checkout.returncode != 0:
+        shutil.rmtree(snapshot_dir, ignore_errors=True)
+        reason = checkout.stderr.strip().splitlines()[0] if checkout.stderr.strip() else ""
+        return None, f"git checkout-index failed (code={checkout.returncode}): {reason}"
+    return snapshot_dir, ""
+
+
 def _run_validate(root: str) -> tuple[int, str, str] | None:
-    """`codd validate` を実行し (exit_code, stdout, stderr) を返す。失敗・timeout 時は None。"""
+    """index スナップショットに対して `codd validate` を実行する。失敗・timeout 時は None。
+
+    (exit_code, stdout, stderr) を返す。index スナップショットが構築できない場合、
+    または `codd validate` サブプロセス自体が timeout / OSError で失敗した場合は None
+    （fail-safe。呼び出し元は commit をブロックしない）。
+    """
+    snapshot_dir, diagnostic = _build_index_snapshot(root)
+    if snapshot_dir is None:
+        print(
+            f"[codd] validate skipped: index スナップショットを構築できません（{diagnostic}）",
+            file=sys.stderr,
+        )
+        return None
+
     codd_cli = os.path.join(_orchestra_dir, "packages", "codd", "scripts", "codd.py")
     try:
         result = subprocess.run(
             ["python3", codd_cli, "validate"],
-            cwd=root,
+            cwd=snapshot_dir,
             timeout=VALIDATE_TIMEOUT_SECONDS,
             capture_output=True,
             text=True,
@@ -129,6 +239,8 @@ def _run_validate(root: str) -> tuple[int, str, str] | None:
     except (subprocess.TimeoutExpired, OSError) as exc:
         print(f"[codd] validate failed: {exc}", file=sys.stderr)
         return None
+    finally:
+        shutil.rmtree(snapshot_dir, ignore_errors=True)
     return result.returncode, result.stdout, result.stderr
 
 
@@ -140,12 +252,17 @@ def _extract_summary_line(stdout: str) -> str:
     return "[codd validate] サマリー行を取得できませんでした"
 
 
-def _emit_warn(summary: str) -> None:
-    """warn モード: commit を通しつつ additionalContext で警告する。"""
+def _emit_warn(summary: str, note: str = "") -> None:
+    """warn モード: commit を通しつつ additionalContext で警告する。
+
+    `note`（空でなければ）は複合コマンドの既知の制限注記（Issue #338）を追記する。
+    """
     context = (
         f"[codd] validate でエラーを検出しました。\n{summary}\n"
         "詳細は `orchex run codd codd -- validate` で確認してください。"
     )
+    if note:
+        context += f"\n{note}"
     output = {
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
@@ -155,14 +272,19 @@ def _emit_warn(summary: str) -> None:
     print(json.dumps(output))
 
 
-def _emit_block(summary: str) -> None:
-    """block モード: commit をブロックする（exit 2）。"""
+def _emit_block(summary: str, note: str = "") -> None:
+    """block モード: commit をブロックする（exit 2）。
+
+    `note`（空でなければ）は複合コマンドの既知の制限注記（Issue #338）を追記する。
+    """
     message = (
         f"[codd] validate でエラーを検出したため commit をブロックしました。\n{summary}\n"
         "詳細は `orchex run codd codd -- validate` で確認してください。\n"
         "この検証を緩和するには `hooks.validate_on_commit` を "
         "`warn` または `off` に変更してください（config-loading ルール参照）。"
     )
+    if note:
+        message += f"\n{note}"
     print(message, file=sys.stderr)
     sys.exit(2)
 
@@ -231,10 +353,11 @@ def main() -> None:
         sys.exit(0)
 
     summary = _extract_summary_line(stdout)
+    note = _COMPOUND_COMMAND_NOTE if _has_preceding_command_segment(command) else ""
     if config.hooks.validate_on_commit == cc.VALIDATE_ON_COMMIT_BLOCK:
-        _emit_block(summary)
+        _emit_block(summary, note)
     else:
-        _emit_warn(summary)
+        _emit_warn(summary, note)
     sys.exit(0)
 
 

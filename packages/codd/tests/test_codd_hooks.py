@@ -123,6 +123,21 @@ def _write(project_dir: Path, rel: str, content: str) -> Path:
     return path
 
 
+def _git_init(project_dir: Path) -> None:
+    """`project_dir` を git working tree として初期化する（index スナップショット検証用、Issue #338）。
+
+    validate-precommit hook は `git commit` 実行前に **index** の内容を検証するため
+    （working tree ではない）、validate hook の e2e テストは実 git リポジトリを必要とする。
+    実 commit は行わない（`write-tree` / `checkout-index` は index のみを参照するため不要）。
+    """
+    subprocess.run(["git", "init", "-q"], cwd=project_dir, check=True, capture_output=True)
+
+
+def _git_add_all(project_dir: Path) -> None:
+    """`project_dir` 配下の全ファイルを index にステージする（実 commit はしない、Issue #338）。"""
+    subprocess.run(["git", "add", "-A"], cwd=project_dir, check=True, capture_output=True)
+
+
 def _doc(node_id: str, kind: str = "design", deps: list[tuple[str, str]] | None = None) -> str:
     lines = ["---", "codd:", f"  node_id: {node_id}", f"  kind: {kind}", "  status: draft"]
     if deps:
@@ -476,8 +491,10 @@ class TestValidateHookFailSafe:
 
 class TestValidateHookModes:
     def test_warn_mode_emits_additional_context_and_exits_zero(self, tmp_path: Path) -> None:
+        _git_init(tmp_path)
         _write(tmp_path, "docs/d.md", _DANGLING_DOC)
         _write_codd_config(tmp_path, _codd_config_dict(validate_on_commit="warn"))
+        _git_add_all(tmp_path)
         payload = {
             "cwd": str(tmp_path),
             "tool_name": "Bash",
@@ -491,8 +508,10 @@ class TestValidateHookModes:
         assert "errors=1" in context
 
     def test_block_mode_blocks_commit_and_exits_two(self, tmp_path: Path) -> None:
+        _git_init(tmp_path)
         _write(tmp_path, "docs/d.md", _DANGLING_DOC)
         _write_codd_config(tmp_path, _codd_config_dict(validate_on_commit="block"))
+        _git_add_all(tmp_path)
         payload = {
             "cwd": str(tmp_path),
             "tool_name": "Bash",
@@ -538,8 +557,10 @@ class TestValidateHookModes:
         assert result.stdout == ""
 
     def test_no_output_when_no_errors(self, tmp_path: Path) -> None:
+        _git_init(tmp_path)
         _write(tmp_path, "docs/clean.md", _CLEAN_DOC)
         _write_codd_config(tmp_path, _codd_config_dict(validate_on_commit="warn"))
+        _git_add_all(tmp_path)
         payload = {
             "cwd": str(tmp_path),
             "tool_name": "Bash",
@@ -548,6 +569,142 @@ class TestValidateHookModes:
         result = _run_hook("codd-validate-precommit.py", payload, tmp_path)
         assert result.returncode == 0
         assert result.stdout == ""
+
+
+# ---------------------------------------------------------------------------
+# validate hook: index スナップショット検証（Issue #338）
+#
+# `git commit` が実際にコミットするのは working tree ではなく git index の内容。
+# hook は index のスナップショットに対して validate を実行するため、working tree
+# だけの差分（未ステージの変更）は判定に影響しない。
+# ---------------------------------------------------------------------------
+
+
+class TestValidateHookIndexSnapshot:
+    def test_block_mode_uses_staged_content_not_working_tree(self, tmp_path: Path) -> None:
+        """壊れた依存を `git add` した後、working tree だけ修正しても index の内容で判定する。"""
+        _git_init(tmp_path)
+        _write(tmp_path, "docs/d.md", _DANGLING_DOC)
+        _write_codd_config(tmp_path, _codd_config_dict(validate_on_commit="block"))
+        _git_add_all(tmp_path)
+        # working tree だけ正常なドキュメントへ書き換える（index はまだ壊れた内容のまま）
+        _write(tmp_path, "docs/d.md", _CLEAN_DOC)
+        payload = {
+            "cwd": str(tmp_path),
+            "tool_name": "Bash",
+            "tool_input": {"command": 'git commit -m "msg"'},
+        }
+        result = _run_hook("codd-validate-precommit.py", payload, tmp_path)
+        assert result.returncode == 2  # index の壊れた内容で block される
+        assert "ブロック" in result.stderr
+
+    def test_warn_mode_ignores_unstaged_working_tree_errors(self, tmp_path: Path) -> None:
+        """index がクリーンなら、working tree だけの未ステージ変更（エラー含む）は無視する。"""
+        _git_init(tmp_path)
+        _write(tmp_path, "docs/clean.md", _CLEAN_DOC)
+        _write_codd_config(tmp_path, _codd_config_dict(validate_on_commit="block"))
+        _git_add_all(tmp_path)
+        # working tree だけ壊れた内容に書き換える（index はクリーンなまま）
+        _write(tmp_path, "docs/clean.md", _DANGLING_DOC)
+        payload = {
+            "cwd": str(tmp_path),
+            "tool_name": "Bash",
+            "tool_input": {"command": 'git commit -m "msg"'},
+        }
+        result = _run_hook("codd-validate-precommit.py", payload, tmp_path)
+        assert result.returncode == 0
+        assert result.stdout == ""
+
+    def test_noop_fail_safe_when_root_is_not_a_git_repository(self, tmp_path: Path) -> None:
+        """git 管理下でない root では index スナップショットを構築できず fail-safe で通す。"""
+        _write(tmp_path, "docs/d.md", _DANGLING_DOC)
+        _write_codd_config(tmp_path, _codd_config_dict(validate_on_commit="block"))
+        payload = {
+            "cwd": str(tmp_path),
+            "tool_name": "Bash",
+            "tool_input": {"command": 'git commit -m "msg"'},
+        }
+        result = _run_hook("codd-validate-precommit.py", payload, tmp_path)
+        assert result.returncode == 0
+        assert result.stdout == ""
+        assert "index スナップショット" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# validate hook: 複合コマンドの既知の制限注記（Issue #338）
+# ---------------------------------------------------------------------------
+
+
+class TestValidateHookCompoundCommandDetection:
+    """`_has_preceding_command_segment` の直接 import 単体テスト。"""
+
+    def test_detects_preceding_double_ampersand_segment(self) -> None:
+        assert (
+            validate_hook._has_preceding_command_segment('git add docs && git commit -m "m"')
+            is True
+        )
+
+    def test_detects_preceding_semicolon_segment(self) -> None:
+        assert (
+            validate_hook._has_preceding_command_segment('git add docs; git commit -m "m"') is True
+        )
+
+    def test_no_preceding_segment_for_plain_commit(self) -> None:
+        assert validate_hook._has_preceding_command_segment('git commit -m "msg"') is False
+
+    def test_trailing_segment_after_commit_is_not_detected(self) -> None:
+        """`git commit ... && git push` のような後続連結は検証対象外（False）。"""
+        assert (
+            validate_hook._has_preceding_command_segment('git commit -m "m" && git push') is False
+        )
+
+
+class TestValidateHookCompoundCommandNote:
+    """複合コマンド検出時の warn/block メッセージへの注記 end-to-end テスト。"""
+
+    def test_block_message_includes_compound_command_note(self, tmp_path: Path) -> None:
+        _git_init(tmp_path)
+        _write(tmp_path, "docs/d.md", _DANGLING_DOC)
+        _write_codd_config(tmp_path, _codd_config_dict(validate_on_commit="block"))
+        _git_add_all(tmp_path)
+        payload = {
+            "cwd": str(tmp_path),
+            "tool_name": "Bash",
+            "tool_input": {"command": 'git add docs && git commit -m "msg"'},
+        }
+        result = _run_hook("codd-validate-precommit.py", payload, tmp_path)
+        assert result.returncode == 2
+        assert "複合コマンド" in result.stderr
+
+    def test_warn_message_includes_compound_command_note(self, tmp_path: Path) -> None:
+        _git_init(tmp_path)
+        _write(tmp_path, "docs/d.md", _DANGLING_DOC)
+        _write_codd_config(tmp_path, _codd_config_dict(validate_on_commit="warn"))
+        _git_add_all(tmp_path)
+        payload = {
+            "cwd": str(tmp_path),
+            "tool_name": "Bash",
+            "tool_input": {"command": 'git add docs && git commit -m "msg"'},
+        }
+        result = _run_hook("codd-validate-precommit.py", payload, tmp_path)
+        assert result.returncode == 0
+        output = json.loads(result.stdout)
+        context = output["hookSpecificOutput"]["additionalContext"]
+        assert "複合コマンド" in context
+
+    def test_plain_commit_message_has_no_compound_command_note(self, tmp_path: Path) -> None:
+        _git_init(tmp_path)
+        _write(tmp_path, "docs/d.md", _DANGLING_DOC)
+        _write_codd_config(tmp_path, _codd_config_dict(validate_on_commit="block"))
+        _git_add_all(tmp_path)
+        payload = {
+            "cwd": str(tmp_path),
+            "tool_name": "Bash",
+            "tool_input": {"command": 'git commit -m "msg"'},
+        }
+        result = _run_hook("codd-validate-precommit.py", payload, tmp_path)
+        assert result.returncode == 2
+        assert "複合コマンド" not in result.stderr
 
 
 # ---------------------------------------------------------------------------
@@ -618,11 +775,13 @@ class TestValidateHookExecutionFailureIsNonBlocking:
         `ValueError` により `codd validate` サブプロセスが exit 2 で終了する
         （`TestScanHookSubprocessFailureNotification` と同じ原理の設定エラー）。
         """
+        _git_init(tmp_path)
         _write(tmp_path, "docs/x.md", _CLEAN_DOC)
         config_data = _codd_config_dict(
             scope_include=["docs/**/*.md", "/nonexistent/*.py"], validate_on_commit="block"
         )
         _write_codd_config(tmp_path, config_data)
+        _git_add_all(tmp_path)
         payload = {
             "cwd": str(tmp_path),
             "tool_name": "Bash",
@@ -635,11 +794,13 @@ class TestValidateHookExecutionFailureIsNonBlocking:
 
     def test_config_error_notifies_in_warn_mode_too(self, tmp_path: Path) -> None:
         """T1: warn モードでも実行失敗（exit 2）は additionalContext ではなく通知のみ。"""
+        _git_init(tmp_path)
         _write(tmp_path, "docs/x.md", _CLEAN_DOC)
         config_data = _codd_config_dict(
             scope_include=["docs/**/*.md", "/nonexistent/*.py"], validate_on_commit="warn"
         )
         _write_codd_config(tmp_path, config_data)
+        _git_add_all(tmp_path)
         payload = {
             "cwd": str(tmp_path),
             "tool_name": "Bash",
@@ -699,8 +860,10 @@ class TestValidateHookDashCGuardTargetRoot:
 
     def test_dash_c_dot_still_guards_and_blocks(self, tmp_path: Path) -> None:
         """`-C .` は root 自身を指すため従来通りガード対象のまま（block される）。"""
+        _git_init(tmp_path)
         _write(tmp_path, "docs/d.md", _DANGLING_DOC)
         _write_codd_config(tmp_path, _codd_config_dict(validate_on_commit="block"))
+        _git_add_all(tmp_path)
         payload = {
             "cwd": str(tmp_path),
             "tool_name": "Bash",
@@ -711,8 +874,10 @@ class TestValidateHookDashCGuardTargetRoot:
 
     def test_dash_c_absolute_root_still_guards_and_blocks(self, tmp_path: Path) -> None:
         """`-C <root の絶対パス>` は root 自身を指すため従来通りガード対象のまま。"""
+        _git_init(tmp_path)
         _write(tmp_path, "docs/d.md", _DANGLING_DOC)
         _write_codd_config(tmp_path, _codd_config_dict(validate_on_commit="block"))
+        _git_add_all(tmp_path)
         payload = {
             "cwd": str(tmp_path),
             "tool_name": "Bash",
@@ -723,8 +888,10 @@ class TestValidateHookDashCGuardTargetRoot:
 
     def test_without_dash_c_still_guards_as_before(self, tmp_path: Path) -> None:
         """`-C` を含まない従来どおりのコマンドは引き続きガード対象（回帰確認）。"""
+        _git_init(tmp_path)
         _write(tmp_path, "docs/d.md", _DANGLING_DOC)
         _write_codd_config(tmp_path, _codd_config_dict(validate_on_commit="block"))
+        _git_add_all(tmp_path)
         payload = {
             "cwd": str(tmp_path),
             "tool_name": "Bash",

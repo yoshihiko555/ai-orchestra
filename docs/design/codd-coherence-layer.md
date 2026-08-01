@@ -535,11 +535,26 @@ commit フローを侵さない」という要件の裏返しであり、意図�
 のような複合コマンドは、root を実行時の cwd で近似判定する（既知の制限。`-C` のような
 明示的な path 引数を持たないため厳密な root 解決はできない）。
 
-**working tree 検証の近似**: hook が実行する `validate` は working tree（実ファイル内容）
-を対象とし、git の index（ステージング内容）は見ない。部分的な `git add` や
-`X && git add && git commit` のような複合コマンドでは、実際に commit される index の内容
-と hook が検証した内容が乖離しうる。この解消（index スナップショットに対する検証）は
-Issue #338 に切り出し済み。
+**index スナップショット検証（Issue #338）**: `git commit` が実際にコミットするのは
+working tree ではなく **git index** の内容である。hook は `git write-tree` で index の
+妥当性を確認したうえで `git --work-tree=<tmp> checkout-index -a -f` により index の内容を
+一時ディレクトリへ展開し、その一時ディレクトリに対して `codd validate` を実行する（実体の
+working tree・index は一切変更しない）。これにより「壊れた依存を `git add` した後、同じ
+ファイルを未ステージで修正する」ケースでも、実際にコミットされる内容（index）を正しく
+検証できる。index スナップショットを構築できない場合（対象が git working tree でない、
+index に unmerged エントリがある、subprocess の timeout/OSError 等）は、validate 実行自体の
+失敗と同様に fail-safe で commit をブロックしない。
+
+**複合コマンドの既知の制限（Issue #338）**: PreToolUse hook は Bash コマンドが実行される
+**前**に動作するため、`generate-docs && git add docs && git commit` のような複合コマンドで
+は、hook 実行時点の index に同一コマンド内の先行ステップ（`git add` 等）の結果はまだ
+反映されていない。これは index スナップショット化によっても解消できない、PreToolUse
+アーキテクチャそのものに起因する制限である。hook は `git ... commit` 呼び出しの直前に
+shell 連結演算子（`&&` / `;` / `||` / `|`）を検出した場合、warn/block メッセージに
+この制限を注記する（ブロックはしない。検証対象が「hook 実行時点の index」であることの
+明示に留める）。この制限を本質的に解消するには、実 git hook（`.git/hooks/pre-commit`）の
+配布機構が必要であり、それは 4.8.1 冒頭で述べた通り Out of Scope
+（`codd-real-git-hook-distribution`）とする。
 
 **二段構えの opt-in**: hook の「登録」は essential プリセットで全導入先に自動展開されるが、
 「実動作」は `codd.yaml` の `hooks:` セクションで制御する（config キーは 4.6 の `checks` 等と同じ
