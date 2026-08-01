@@ -137,17 +137,23 @@ class TestEnsureBridgeArtifactIgnored:
 
 
 class TestMaterializeCurrentOracleFixtures:
-    """PR #326 レビュー round 4 (Codex P1): 既存候補を再評価する worktree の
-    `scenarios/fixtures/` は候補登録時点の古い source_commit のものになり、新しい
-    サブコマンド（例: add-phase-with-ac）を持たず argparse の exit 2 で落ちる。現在の
-    信頼済みハーネス（`package_dir`）の内容で worktree 側を上書き materialize する。"""
+    """PR #326 レビュー round 4 (Codex P1) + Issue #340 Codex 設計レビュー: 既存候補を再評価する
+    worktree の `scenarios/fixtures/` は候補登録時点の古い source_commit のものになり、新しい
+    サブコマンド（例: add-phase-with-ac）を持たず argparse の exit 2 で落ちる。attempt 開始時に
+    `_snapshot_trusted_oracle_fixtures` で固定した信頼済み immutable copy の内容で worktree 側を
+    上書き materialize する。source 欠落は silent no-op ではなく fail-closed（改ざん対策の復元が
+    黙って無効化されるのを防ぐ）。"""
 
-    def test_overwrites_stale_fixture_with_current_content(self, tmp_path: Path) -> None:
+    def _make_package_dir(self, tmp_path: Path) -> Path:
         package_dir = tmp_path / "package"
         (package_dir / "scenarios" / "fixtures").mkdir(parents=True)
         (package_dir / "scenarios" / "fixtures" / "assert-task-state-outcome.py").write_text(
             "# current trusted fixture\n", encoding="utf-8"
         )
+        return package_dir
+
+    def test_overwrites_stale_fixture_with_current_content(self, tmp_path: Path) -> None:
+        package_dir = self._make_package_dir(tmp_path)
 
         worktree_dir = tmp_path / "worktree"
         stale_fixture_dir = worktree_dir / "packages" / "meta-harness" / "scenarios" / "fixtures"
@@ -159,21 +165,45 @@ class TestMaterializeCurrentOracleFixtures:
             "# should be removed by materialization\n", encoding="utf-8"
         )
 
-        ev._materialize_current_oracle_fixtures(worktree_dir, package_dir)
+        trusted = ev._snapshot_trusted_oracle_fixtures(package_dir, tmp_path / "staging")
+        ev._materialize_current_oracle_fixtures(worktree_dir, trusted)
 
         materialized = stale_fixture_dir / "assert-task-state-outcome.py"
         assert materialized.read_text(encoding="utf-8") == "# current trusted fixture\n"
         assert not (stale_fixture_dir / "stale-only-file.py").exists()
 
-    def test_missing_source_directory_is_a_silent_no_op(self, tmp_path: Path) -> None:
+    def test_snapshot_fails_closed_when_trusted_source_missing(self, tmp_path: Path) -> None:
+        """Issue #340 Codex 設計レビュー: source 欠落の silent no-op は post-run の改ざん対策
+        復元を黙って無効化するため、EvaluatorStageError（verdict=error 経路）で fail-closed
+        する。"""
         package_dir = tmp_path / "package-without-fixtures"
         package_dir.mkdir()
+
+        with pytest.raises(ev.EvaluatorStageError) as excinfo:
+            ev._snapshot_trusted_oracle_fixtures(package_dir, tmp_path / "staging")
+        assert "trusted oracle fixtures source missing" in excinfo.value.message
+
+    def test_materialize_fails_closed_when_trusted_copy_missing(self, tmp_path: Path) -> None:
         worktree_dir = tmp_path / "worktree"
         worktree_dir.mkdir()
 
-        ev._materialize_current_oracle_fixtures(worktree_dir, package_dir)
-
+        with pytest.raises(ev.EvaluatorStageError) as excinfo:
+            ev._materialize_current_oracle_fixtures(worktree_dir, tmp_path / "no-such-copy")
+        assert "trusted oracle fixtures copy missing" in excinfo.value.message
         assert not (worktree_dir / "packages").exists()
+
+    def test_snapshot_copy_is_immutable_against_later_source_updates(self, tmp_path: Path) -> None:
+        """TOCTOU 対策: snapshot 後に信頼済み source 側が外部更新されても、固定済み copy の
+        内容は変化しない。"""
+        package_dir = self._make_package_dir(tmp_path)
+
+        trusted = ev._snapshot_trusted_oracle_fixtures(package_dir, tmp_path / "staging")
+        (package_dir / "scenarios" / "fixtures" / "assert-task-state-outcome.py").write_text(
+            "# updated after snapshot\n", encoding="utf-8"
+        )
+
+        frozen = trusted / "assert-task-state-outcome.py"
+        assert frozen.read_text(encoding="utf-8") == "# current trusted fixture\n"
 
     def test_rejects_symlinked_destination(self, tmp_path: Path) -> None:
         package_dir = tmp_path / "package"
@@ -188,8 +218,9 @@ class TestMaterializeCurrentOracleFixtures:
             outside, target_is_directory=True
         )
 
+        trusted = ev._snapshot_trusted_oracle_fixtures(package_dir, tmp_path / "staging")
         with pytest.raises(ev.EvaluatorStageError):
-            ev._materialize_current_oracle_fixtures(worktree_dir, package_dir)
+            ev._materialize_current_oracle_fixtures(worktree_dir, trusted)
 
 
 class TestOracleFixtureMaterializationTiming:
@@ -207,6 +238,8 @@ class TestOracleFixtureMaterializationTiming:
        いる）を自分の改変ごと隠して通過できてしまう。
     """
 
+    _TRUSTED_COPY_SENTINEL = Path("/sentinel/trusted-oracle-fixtures")
+
     def _run_lifecycle_with_tracked_calls(
         self, git_project: Path, monkeypatch
     ) -> tuple[list[str], list[tuple], bool, list[dict]]:
@@ -223,11 +256,16 @@ class TestOracleFixtureMaterializationTiming:
             call_order.append("run_headless_scenario")
             return SimpleNamespace(isolation_launch=object())
 
-        def fake_materialize(worktree_dir, package_dir):
+        def fake_snapshot(_package_dir, _staging_dir):
+            call_order.append("snapshot_trusted_fixtures")
+            return self._TRUSTED_COPY_SENTINEL
+
+        def fake_materialize(worktree_dir, trusted_fixtures_dir):
             call_order.append("materialize_fixtures")
-            materialize_args.append((worktree_dir, package_dir))
+            materialize_args.append((worktree_dir, trusted_fixtures_dir))
 
         monkeypatch.setattr(ev, "run_headless_scenario", fake_run_headless_scenario)
+        monkeypatch.setattr(ev, "_snapshot_trusted_oracle_fixtures", fake_snapshot)
         monkeypatch.setattr(ev, "_materialize_current_oracle_fixtures", fake_materialize)
 
         _checks, _checks_nc, hard_failure, errors = ev._run_attempt_lifecycle(
@@ -265,6 +303,7 @@ class TestOracleFixtureMaterializationTiming:
 
         assert hard_failure is False, errors
         assert call_order == [
+            "snapshot_trusted_fixtures",
             "materialize_fixtures",
             "run_headless_scenario",
             "materialize_fixtures",
@@ -283,8 +322,12 @@ class TestOracleFixtureMaterializationTiming:
         assert hard_failure is False, errors
         scenario_index = call_order.index("run_headless_scenario")
         assert "materialize_fixtures" in call_order[scenario_index + 1 :]
-        package_dir = Path("packages/meta-harness").resolve()
-        assert [args[1] for args in materialize_args] == [package_dir, package_dir]
+        # 両 materialize とも attempt 開始時に固定した同一の immutable copy を source に取る
+        # （TOCTOU 対策。信頼済み package_dir を都度読まない）。
+        assert [args[1] for args in materialize_args] == [
+            self._TRUSTED_COPY_SENTINEL,
+            self._TRUSTED_COPY_SENTINEL,
+        ]
 
 
 class TestPreSnapshotMaterializeBaselineIntegration:
@@ -331,14 +374,18 @@ class TestPreSnapshotMaterializeBaselineIntegration:
     def _tracked_diff_names(self, worktree_dir: Path) -> str:
         return _git("diff", "--name-status", "HEAD", cwd=worktree_dir).stdout.strip()
 
+    def _freeze_trusted(self, package_dir: Path, tmp_path: Path) -> Path:
+        return ev._snapshot_trusted_oracle_fixtures(package_dir, tmp_path / "staging")
+
     def test_collateral_diff_stays_empty_for_noop_candidate(self, tmp_path: Path) -> None:
         package_dir = self._make_trusted_package_dir(tmp_path)
         worktree_dir, fixture_dir = self._make_stale_worktree(tmp_path)
 
-        ev._materialize_current_oracle_fixtures(worktree_dir, package_dir)  # snapshot 前
+        trusted = self._freeze_trusted(package_dir, tmp_path)
+        ev._materialize_current_oracle_fixtures(worktree_dir, trusted)  # snapshot 前
         self._snapshot_baseline(worktree_dir)
         # noop 候補（何も変更しない）
-        ev._materialize_current_oracle_fixtures(worktree_dir, package_dir)  # oracle 直前の復元
+        ev._materialize_current_oracle_fixtures(worktree_dir, trusted)  # oracle 直前の復元
 
         assert self._tracked_diff_names(worktree_dir) == ""
         materialized = fixture_dir / "assert-task-state-outcome.py"
@@ -353,7 +400,8 @@ class TestPreSnapshotMaterializeBaselineIntegration:
         worktree_dir, _fixture_dir = self._make_stale_worktree(tmp_path)
 
         self._snapshot_baseline(worktree_dir)  # 旧 fixture のままベースライン確定
-        ev._materialize_current_oracle_fixtures(worktree_dir, package_dir)
+        trusted = self._freeze_trusted(package_dir, tmp_path)
+        ev._materialize_current_oracle_fixtures(worktree_dir, trusted)
 
         diff_names = self._tracked_diff_names(worktree_dir)
         assert "assert-task-state-outcome.py" in diff_names
@@ -371,7 +419,8 @@ class TestPreSnapshotMaterializeBaselineIntegration:
         _git("add", "--all", cwd=worktree_dir)
         _git("commit", "-m", "add tracked file outside fixtures", cwd=worktree_dir)
 
-        ev._materialize_current_oracle_fixtures(worktree_dir, package_dir)
+        trusted = self._freeze_trusted(package_dir, tmp_path)
+        ev._materialize_current_oracle_fixtures(worktree_dir, trusted)
         self._snapshot_baseline(worktree_dir)
         # 候補による改ざん（fixture の書き換え + 追加）と fixture 外の正当な collateral 変更
         (fixture_dir / "assert-task-state-outcome.py").write_text(
@@ -379,12 +428,34 @@ class TestPreSnapshotMaterializeBaselineIntegration:
         )
         (fixture_dir / "planted-by-candidate.py").write_text("# planted\n", encoding="utf-8")
         tracked_outside.write_text("modified by candidate\n", encoding="utf-8")
-        ev._materialize_current_oracle_fixtures(worktree_dir, package_dir)
+        ev._materialize_current_oracle_fixtures(worktree_dir, trusted)
 
         diff_names = self._tracked_diff_names(worktree_dir)
         assert "assert-task-state-outcome.py" not in diff_names
         assert "planted-by-candidate.py" not in diff_names
         assert "README.md" in diff_names
+        materialized = fixture_dir / "assert-task-state-outcome.py"
+        assert materialized.read_text(encoding="utf-8") == self._CURRENT_FIXTURE
+
+    def test_trusted_source_update_between_materializes_does_not_leak_into_diff(
+        self, tmp_path: Path
+    ) -> None:
+        """TOCTOU 対策の統合検証: 2 回の materialize の間に信頼済み source（package_dir）が
+        外部更新されても、両者は attempt 開始時の immutable copy を参照するため、noop 候補の
+        collateral diff は空のまま変わらないこと。"""
+        package_dir = self._make_trusted_package_dir(tmp_path)
+        worktree_dir, fixture_dir = self._make_stale_worktree(tmp_path)
+
+        trusted = self._freeze_trusted(package_dir, tmp_path)
+        ev._materialize_current_oracle_fixtures(worktree_dir, trusted)
+        self._snapshot_baseline(worktree_dir)
+        # attempt 実行中の外部更新（fixture 改修コミット等）を模す
+        (package_dir / "scenarios" / "fixtures" / "assert-task-state-outcome.py").write_text(
+            "# updated while attempt is running\n", encoding="utf-8"
+        )
+        ev._materialize_current_oracle_fixtures(worktree_dir, trusted)
+
+        assert self._tracked_diff_names(worktree_dir) == ""
         materialized = fixture_dir / "assert-task-state-outcome.py"
         assert materialized.read_text(encoding="utf-8") == self._CURRENT_FIXTURE
 
