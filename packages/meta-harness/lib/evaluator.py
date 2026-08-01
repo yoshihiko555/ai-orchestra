@@ -515,11 +515,51 @@ def _ensure_bridge_artifact_ignored(worktree_dir: Path) -> None:
 
 
 _ORACLE_FIXTURES_RELATIVE_DIR = Path("scenarios") / "fixtures"
+_TRUSTED_ORACLE_FIXTURES_STAGING_DIRNAME = "trusted-oracle-fixtures"
 
 
-def _materialize_current_oracle_fixtures(worktree_dir: Path, package_dir: Path) -> None:
-    """`command_exit` oracle が参照する `scenarios/fixtures/` を、現在の信頼済みハーネス
-    （`package_dir`）の内容で worktree 側へ上書き materialize する。
+def _snapshot_trusted_oracle_fixtures(package_dir: Path, staging_dir: Path) -> Path:
+    """信頼済み oracle fixture（`package_dir/scenarios/fixtures`）の attempt スコープの
+    immutable copy を `staging_dir` 配下へ作成し、そのパスを返す。
+
+    snapshot 前と oracle 直前の 2 回の materialize（`_materialize_current_oracle_fixtures`）が
+    別々のタイミングで `package_dir` を直接読むと、その間に信頼済み fixture 側が外部更新された
+    場合にベースラインと復元内容が食い違い、collateral-scope oracle が候補由来でない差分を
+    誤検出しうる（TOCTOU、Issue #340 の Codex 設計レビュー指摘）。attempt 開始時に 1 回だけ
+    コピーを固定し、両 materialize はこのコピーだけを source にする。staging_dir は attempt
+    終了時に rmtree され、run 成果物（`_finalize_artifacts` は個別ファイルのみ持ち出す）には
+    含まれない。
+
+    fail-closed: source が存在しない場合は EvaluatorStageError を送出する。silent no-op に
+    すると oracle 直前の復元（改ざん対策）が黙って無効化され、候補が改ざんした fixture の
+    まま oracle 判定が走りうるため（同レビュー指摘）。
+    """
+    source_dir = package_dir / _ORACLE_FIXTURES_RELATIVE_DIR
+    if not source_dir.is_dir():
+        raise EvaluatorStageError(
+            "overlay_apply",
+            "overlay_error",
+            f"trusted oracle fixtures source missing: {source_dir}",
+        )
+    destination_dir = staging_dir / _TRUSTED_ORACLE_FIXTURES_STAGING_DIRNAME
+    try:
+        staging_dir.mkdir(parents=True, exist_ok=True)
+        if destination_dir.exists():
+            shutil.rmtree(destination_dir)
+        shutil.copytree(source_dir, destination_dir, ignore=shutil.ignore_patterns("__pycache__"))
+    except OSError as exc:
+        raise EvaluatorStageError(
+            "overlay_apply",
+            "overlay_error",
+            f"could not snapshot trusted oracle fixtures: {exc}",
+        ) from exc
+    return destination_dir
+
+
+def _materialize_current_oracle_fixtures(worktree_dir: Path, trusted_fixtures_dir: Path) -> None:
+    """`command_exit` oracle が参照する `scenarios/fixtures/` を、attempt 開始時に固定した
+    信頼済み immutable copy（`_snapshot_trusted_oracle_fixtures` の戻り値）の内容で worktree
+    側へ上書き materialize する。
 
     シナリオ定義（YAML）自体は `evaluate_candidate` が現在の信頼済み suite（`package_dir`）から
     読み込むが、`critical`/`checks` の `command_exit` oracle が実行する `command:` は
@@ -528,13 +568,18 @@ def _materialize_current_oracle_fixtures(worktree_dir: Path, package_dir: Path) 
     ため、この fixture も当時のものになり、新しいサブコマンド（例: `add-phase-with-ac`）を
     持たず argparse の exit 2 で落ちる（PR #326 レビュー round 4, Codex P1）。oracle 実行の
     サンドボックスは読み取り許可を `worktree_dir` に限定しており `package_dir`/`main_root` を
-    直接参照できないため（`forbidden_read_paths`）、候補のエージェント実行より前（worktree
-    作成直後）に現在の fixture ディレクトリを worktree 側へコピーして上書きする。`package_dir`
-    自体は変更しない。
+    直接参照できないため（`forbidden_read_paths`）、信頼済み copy を worktree 側へコピーして
+    上書きする。copy 元自体は変更しない。
+
+    fail-closed: `trusted_fixtures_dir` が存在しない場合は EvaluatorStageError を送出する
+    （silent no-op にすると改ざん対策の復元が黙って無効化されるため）。
     """
-    source_dir = package_dir / _ORACLE_FIXTURES_RELATIVE_DIR
-    if not source_dir.is_dir():
-        return
+    if not trusted_fixtures_dir.is_dir():
+        raise EvaluatorStageError(
+            "overlay_apply",
+            "overlay_error",
+            f"trusted oracle fixtures copy missing: {trusted_fixtures_dir}",
+        )
     destination_dir = worktree_dir / "packages" / "meta-harness" / _ORACLE_FIXTURES_RELATIVE_DIR
     resolved_root = worktree_dir.resolve()
     resolved_destination = destination_dir.resolve(strict=False)
@@ -554,7 +599,9 @@ def _materialize_current_oracle_fixtures(worktree_dir: Path, package_dir: Path) 
         destination_dir.parent.mkdir(parents=True, exist_ok=True)
         if destination_dir.exists():
             shutil.rmtree(destination_dir)
-        shutil.copytree(source_dir, destination_dir, ignore=shutil.ignore_patterns("__pycache__"))
+        shutil.copytree(
+            trusted_fixtures_dir, destination_dir, ignore=shutil.ignore_patterns("__pycache__")
+        )
     except OSError as exc:
         raise EvaluatorStageError(
             "overlay_apply", "overlay_error", f"could not materialize oracle fixtures: {exc}"
@@ -3005,6 +3052,18 @@ def _run_attempt_lifecycle(
         # 働かない（final-report.md が collateral-scope に検出される側に倒れるだけ）ため、
         # 候補実行より前で問題ない。
         _ensure_bridge_artifact_ignored(worktree_dir)
+        # 既存候補の再評価では oracle fixture（`scenarios/fixtures/`）も古い source_commit の
+        # 内容で checkout される。isolated git snapshot のベースラインコミット
+        # （`scenario_isolation._prepare_isolated_git`）より前に現行の信頼済み fixture を
+        # materialize してベースラインへ含めておかないと、oracle 直前の再 materialize（下記）に
+        # よる差分が「候補による想定外の tracked 変更」として collateral-scope oracle に検出され、
+        # fixture 改修後の再評価が決定論的に失敗する（Issue #340）。この先行 materialize は
+        # ベースライン整合のためのもので、候補による改ざんへの防御としては候補実行後・oracle
+        # 直前の再 materialize を引き続き正とする。2 回の materialize は attempt 開始時に固定
+        # した immutable copy を共通の source とし、途中で信頼済み fixture 側が外部更新されても
+        # ベースラインと復元内容が食い違わないようにする（TOCTOU 対策）。
+        trusted_fixtures_dir = _snapshot_trusted_oracle_fixtures(package_dir, staging_dir)
+        _materialize_current_oracle_fixtures(worktree_dir, trusted_fixtures_dir)
         apply_registered_candidate_overlay(
             main_root=main_root,
             config=config,
@@ -3048,9 +3107,9 @@ def _run_attempt_lifecycle(
         # 書き換えれば、outcome チェックと collateral-scope チェックの両方（同一スクリプトが
         # 両方の subcommand を実装しているため）を自分自身の改変ごと隠して通過できてしまう
         # （PR #326 レビュー round 4, Codex P1）。候補の実行が完全に終わった直後・oracle 実行の
-        # 直前に信頼済みハーネスの内容へ復元することで、候補による改変が oracle 判定へ一切
-        # 影響しないようにする。
-        _materialize_current_oracle_fixtures(worktree_dir, package_dir)
+        # 直前に信頼済みハーネスの内容（attempt 開始時に固定した immutable copy）へ復元する
+        # ことで、候補による改変が oracle 判定へ一切影響しないようにする。
+        _materialize_current_oracle_fixtures(worktree_dir, trusted_fixtures_dir)
         scenario_command_timeout_ms = scenario.get("command_timeout_ms", DEFAULT_COMMAND_TIMEOUT_MS)
         checks = [
             run_oracle(
