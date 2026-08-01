@@ -510,8 +510,11 @@ codd は essential（常時有効）のため、**条件分岐は不要**で常�
 | `codd-validate-precommit.py`   | PreToolUse  | `Bash`    | `git commit` を検出したら `validate` を実行し、警告またはブロックする |
 
 両 hook とも manifest 上で `"timeout": 90`（秒）を宣言し、同期レール（`sync_hooks`）が
-導入先 `.claude/settings.local.json` へ登録する際にこの値を反映する。内部のサブプロセス
-実行上限（60秒）に余裕を持たせた値。
+導入先 `.claude/settings.local.json` へ登録する際にこの値を反映する。`codd-validate-precommit.py`
+は write-tree / rev-parse / checkout-index / 一時 index 構築 / `codd validate` の全 subprocess で
+`HOOK_TIMEOUT_BUDGET_SECONDS`（75秒）の単一 deadline を共有する（Issue #338 反復3。詳細は
+本節後半「共有 timeout budget」参照）。manifest 値より小さく取り、hook 自身の import 等の
+オーバーヘッドとランナー側の余裕を確保する。
 
 **pre-commit の代替方式**: 実 git hook（`.git/hooks/pre-commit`）を配布するのではなく、
 PreToolUse (Bash) で `git commit` コマンドを検出するアプローチを採る。理由は次の3点。
@@ -595,6 +598,58 @@ shell 連結演算子（`&&` / `;` / `||` / `|`）を検出した場合、warn/b
 明示に留める）。この制限を本質的に解消するには、実 git hook（`.git/hooks/pre-commit`）の
 配布機構が必要であり、それは 4.8.1 冒頭で述べた通り Out of Scope
 （`codd-real-git-hook-distribution`）とする。
+
+**実効設定の materialize（Issue #338 反復3、bot レビュー P1 対応）**: `codd.local.yaml` は
+`config-loading` ルールにより同期対象外の未追跡ファイルとして置かれる運用が通常であり、
+`git checkout-index` は未追跡ファイルを展開しない。そのため index スナップショット上で
+起動される `codd validate` は base 設定（`codd.yaml`）だけを再ロードしてしまい、外側の
+`main()` が実 working tree の local override から読んだ block/off モードと、実際の検査に
+使われる `scope`/`checks.*` が食い違う（正当な commit の誤ブロック、または必要な error の
+見逃し）。これを避けるため、`_run_validate` は実 root の `.claude/config/codd/codd.yaml` と
+（存在すれば）`codd.local.yaml` を snapshot 側の対応するパスへ明示的にコピーしてから
+`codd validate` を実行する。
+
+**モノレポ（サブディレクトリ project root）対応（Issue #338 反復3、bot レビュー P1 対応）**:
+`checkout-index -a` は index 全体（= リポジトリ全体）を snapshot_dir へ書き出すため、
+project root がリポジトリ直下でない構成（例: `/repo/apps/foo`）では `snapshot_dir` 直下では
+なく `snapshot_dir/<prefix>` に project が存在する。`git rev-parse --show-prefix` で
+prefix を解決し、`codd validate` の cwd をそこに合わせる（`GIT_WORK_TREE` は snapshot_dir の
+ままでよい。checkout 先のパスは常に repo root 基準のため）。prefix を解決できない場合は
+スナップショット構築自体の失敗として扱い、fail-safe で commit をブロックしない。
+
+**`git commit -a/--all` の候補ツリー再現（Issue #338 反復3、bot レビュー P1 対応）**:
+`-a`/`--all` は hook 実行後に working tree の追跡ファイル変更を index へ取り込んでから
+commit するため、現在の index をそのまま検証するだけでは実際の commit tree と一致しない
+（`git commit -am` で壊れた文書がすり抜ける）。`-a`/`--all` を検出した場合は、実 index を
+コピーした一時 index に対して `git add -u`（追跡済みファイルの変更・削除を全てステージ。
+`git commit -a` と同じ意味論）を適用し、その候補 index を検証する（実 index・実 working
+tree は一切変更しない）。`--include`/`--only`/`-p`/`--patch`/`-i`/`--interactive`/pathspec
+指定は正確な再現が困難なため候補ツリー再現を行わず、既存の複合コマンド注記と同じ枠組みで
+「この形式では hook 実行時点の index を検証しており、実際の commit tree と異なる可能性が
+あります」旨を warn/block メッセージに注記する（ブロック判定自体は変えない）。
+
+**共有 timeout budget（Issue #338 反復3、bot レビュー P2 対応）**: write-tree / rev-parse /
+checkout-index / 一時 index 構築 / `codd validate` の全 subprocess をそれぞれ独立した
+timeout（旧: 30秒 / 60秒）で管理していたため、合計上限（150秒）が manifest.json の
+PreToolUse timeout（90秒）を上回っていた。外側の runner が hook 全体を先に打ち切ると、
+意図した `TimeoutExpired` の fail-safe や `finally` の一時ディレクトリ削除に到達しない
+おそれがある。これを解消するため、全 subprocess で単一の `_Deadline`
+（`HOOK_TIMEOUT_BUDGET_SECONDS = 75`秒）を共有し、manifest timeout 内に収める。
+
+**`GIT_OPTIONAL_LOCKS=0`（Issue #338 反復3、bot レビュー P2 対応）**: 実 `GIT_DIR` と一時
+`GIT_WORK_TREE` の組み合わせで `codd validate` サブプロセス内の drift 検査（`git status` /
+`git log`）が走ると、Git が実 index の stat cache を refresh して書き戻すことがある（実
+working tree・index は一切変更しない設計方針に反し、`index.lock` 競合も起こしうる）。これを
+防ぐため `codd validate` サブプロセスの env に `GIT_OPTIONAL_LOCKS=0` を渡す。
+
+**既知の制限（Issue #338 反復3、非採用）**: 以下は本反復では実装しない（別 Issue で扱う）。
+
+- root 内の絶対パス symlink を snapshot 側で再配置すること（checkout-index は symlink の
+  ターゲットパスをそのまま書き出すため、絶対パスの symlink は snapshot 内で正しく解決
+  できない場合がある）
+- `git commit` が明示的に `GIT_INDEX_FILE` で alternate index を指定するケースへの対応
+- scope 外ファイルの checkout filter 失敗による検証全体の無効化への対応（`checkout-index`
+  が一部ファイルの書き出しに失敗しても、hook は現状それを検知しない）
 
 **二段構えの opt-in**: hook の「登録」は essential プリセットで全導入先に自動展開されるが、
 「実動作」は `codd.yaml` の `hooks:` セクションで制御する（config キーは 4.6 の `checks` 等と同じ
