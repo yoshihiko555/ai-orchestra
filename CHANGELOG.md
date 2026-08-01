@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - **`codd`: validate-precommit hook が working tree ではなく git index を検証するように修正（Issue #338）**: `git add` した内容が壊れていても working tree だけ後から修正すると warn/block をすり抜けていた問題を解消。hook は commit 対象（index）のスナップショットに対して `codd validate` を実行するようになった。`git add ... && git commit` のような複合コマンドでは、hook 実行時点（コマンド実行前）の index しか検証できない旨を warn/block メッセージに注記するようになった（既知の制限）。index スナップショットには実リポジトリの commit 履歴（`GIT_DIR`/`GIT_WORK_TREE`）を伝播するようになり、`checks.drift: error` 昇格構成でも drift 検査（上流が下流より新しい、の検出）が checkout 時刻ではなく実際の commit 履歴で正しく判定されるようになった。
+- **`codd`: hook の `codd` 実行が `PATH` 上の `python3` に依存しなくなった**: `PATH` の `python3` が Claude Code の実行インタプリタと異なる環境（バージョンマネージャ未適用のログインシェル等）で、scan / validate hook が黙って失敗し「検査したが指摘ゼロ」と表示されていた問題を解消。
 - **`audit`: worktree セッションのログ集約先解決を堅牢化**: audit ログの root worktree 解決が core 共通関数への委譲になり、separate-git-dir 構成や `GIT_DIR` 等の環境変数が汚染された環境でも `.claude/logs/audit/` の集約先を誤解決しなくなった。
 - **`quality-gates`: `post-test-analysis.py` の監査ログ書き込み失敗時に品質ゲートが解除される問題を修正**: 監査イベントの記録に失敗しても、テスト失敗時のブロック判定（exit code 2）は維持されるようになった。
 - **`quality-gates`: `lint-on-save.py` がリポジトリのサブディレクトリから起動された場合でも `.claude/config` を正しく解決するように修正**: `quality_gate.enabled` やプロジェクト固有の上書き設定が、サブディレクトリ起動時にも適用されるようになった。

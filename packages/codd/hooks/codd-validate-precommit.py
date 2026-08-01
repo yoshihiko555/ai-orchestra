@@ -302,7 +302,7 @@ def _run_validate(root: str) -> tuple[int, str, str] | None:
     validate_env = {**git_env, "GIT_DIR": git_dir, "GIT_WORK_TREE": snapshot_dir}
     try:
         result = subprocess.run(
-            ["python3", codd_cli, "validate"],
+            [sys.executable, codd_cli, "validate"],
             cwd=snapshot_dir,
             env=validate_env,
             timeout=VALIDATE_TIMEOUT_SECONDS,

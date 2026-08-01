@@ -52,7 +52,7 @@ def _run_scan(root: str) -> None:
     codd_cli = os.path.join(_orchestra_dir, "packages", "codd", "scripts", "codd.py")
     try:
         result = subprocess.run(
-            ["python3", codd_cli, "scan"],
+            [sys.executable, codd_cli, "scan"],
             cwd=root,
             timeout=SCAN_TIMEOUT_SECONDS,
             capture_output=True,

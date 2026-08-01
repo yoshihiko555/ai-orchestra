@@ -53,6 +53,39 @@ def _run_hook(
     )
 
 
+def _run_hook_with_path_prefix(
+    script_name: str, payload: dict[str, Any], project_dir: Path, path_prefix: Path
+) -> subprocess.CompletedProcess[str]:
+    """`PATH` の先頭に `path_prefix` を差し込んで hook を実行する（Issue #338）。
+
+    hook が起動する `codd` サブプロセスのインタプリタが、`PATH` 上の `python3` ではなく
+    hook 自身のインタプリタ（`sys.executable`）で解決されることを検証するために使う。
+    """
+    os_module = __import__("os")
+    env = {
+        **os_module.environ,
+        "AI_ORCHESTRA_DIR": str(REPO_ROOT),
+        "PATH": f"{path_prefix}{os_module.pathsep}{os_module.environ['PATH']}",
+    }
+    return subprocess.run(
+        [sys.executable, str(HOOKS_DIR / script_name)],
+        input=json.dumps(payload),
+        text=True,
+        capture_output=True,
+        env=env,
+        cwd=str(project_dir),
+        check=False,
+    )
+
+
+def _write_failing_python3_shim(bin_dir: Path) -> None:
+    """常に失敗する `python3` を `bin_dir` に配置する（PATH 汚染の再現用）。"""
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    shim = bin_dir / "python3"
+    shim.write_text("#!/bin/sh\nexit 97\n", encoding="utf-8")
+    shim.chmod(0o755)
+
+
 def _run_hook_raw_stdin(
     script_name: str, raw_input: str, project_dir: Path
 ) -> subprocess.CompletedProcess[str]:
@@ -690,6 +723,49 @@ class TestValidateHookIndexSnapshot:
         assert "index スナップショット" in result.stderr
 
 
+class TestHookInterpreterResolution:
+    """EV-71: hook が起動する `codd` は `PATH` ではなく hook 自身の interpreter で走る。
+
+    loop-harness の Checker は機械検証コマンドを `bash -lc`（ログインシェル）で実行するため、
+    `PATH` 上の `python3` が hook を起動したインタプリタと別物になる環境がありうる
+    （例: mise の python が使われずシステム python が先に解決される）。その場合に
+    `codd` サブプロセスを `PATH` 経由の `python3` で起動すると、依存モジュール不足等で
+    黙って失敗し、hook が「検査できたが指摘ゼロ」と誤認する。
+    """
+
+    def test_validate_hook_ignores_broken_python3_on_path(self, tmp_path: Path) -> None:
+        _git_init(tmp_path)
+        _write(tmp_path, "docs/d.md", _DANGLING_DOC)
+        _write_codd_config(tmp_path, _codd_config_dict(validate_on_commit="block"))
+        _git_add_all(tmp_path)
+        bin_dir = tmp_path / "fakebin"
+        _write_failing_python3_shim(bin_dir)
+        payload = {
+            "cwd": str(tmp_path),
+            "tool_name": "Bash",
+            "tool_input": {"command": 'git commit -m "msg"'},
+        }
+        result = _run_hook_with_path_prefix(
+            "codd-validate-precommit.py", payload, tmp_path, bin_dir
+        )
+        assert result.returncode == 2  # 壊れた依存を検出して block できている
+        assert "ブロック" in result.stderr
+
+    def test_scan_hook_ignores_broken_python3_on_path(self, tmp_path: Path) -> None:
+        _write(tmp_path, "docs/x.md", _CLEAN_DOC)
+        _write_codd_config(tmp_path, _codd_config_dict(scan_on_edit=True))
+        bin_dir = tmp_path / "fakebin"
+        _write_failing_python3_shim(bin_dir)
+        payload = {
+            "cwd": str(tmp_path),
+            "tool_name": "Edit",
+            "tool_input": {"file_path": str(tmp_path / "docs" / "x.md")},
+        }
+        result = _run_hook_with_path_prefix("codd-scan-postedit.py", payload, tmp_path, bin_dir)
+        assert result.returncode == 0
+        assert _read_graph_node_ids(tmp_path) == {"design:clean"}
+
+
 class TestValidateHookIndexSnapshotDriftGitContext:
     """反復2（Issue #338 レビュー High 対応）: スナップショットへ実 git 履歴を伝播する。
 
@@ -698,6 +774,12 @@ class TestValidateHookIndexSnapshotDriftGitContext:
     commit 履歴で「上流が下流より新しい」を判定できる。既定の drift level は warning
     （commit をブロックしない）なので、`checks.drift: error` 昇格構成でも正しく機能する
     ことを block モードで確認する。
+
+    **ファイル名の順序が本質**: `git checkout-index -a -f` は index 順（= パスの辞書順）に
+    書き出すため、mtime フォールバックでの新旧は「辞書順で後のファイルほど新しい」に
+    なる。上流を辞書順で**先**（= mtime が古い側）に置くことで、mtime フォールバックでは
+    drift を検出できない状況を作る。この配置にしないと、`GIT_DIR`/`GIT_WORK_TREE` の
+    伝播を無効化してもテストが pass してしまい、修正の有無を判別できない。
     """
 
     def test_drift_detected_via_actual_commit_history_not_checkout_mtime(
@@ -705,10 +787,11 @@ class TestValidateHookIndexSnapshotDriftGitContext:
     ) -> None:
         _git_init(tmp_path)
         _git_config_identity(tmp_path)
-        _write(tmp_path, "docs/req.md", _doc("req:r", "requirement"))
+        # 上流 `a-req.md` を辞書順で下流 `z-design.md` より前に置く（クラス docstring 参照）
+        _write(tmp_path, "docs/a-req.md", _doc("req:r", "requirement"))
         _write(
             tmp_path,
-            "docs/design.md",
+            "docs/z-design.md",
             _doc("design:d", "design", deps=[("req:r", "derives_from")]),
         )
         config_data = _codd_config_dict(scope_include=["docs/**/*.md"], validate_on_commit="block")
@@ -716,11 +799,10 @@ class TestValidateHookIndexSnapshotDriftGitContext:
         _write_codd_config(tmp_path, config_data)
         _git_add_all(tmp_path)
         _git_commit_at(tmp_path, "init design+req")
-        # 上流 (req) だけを未来日時の commit で更新する。index snapshot 経由の
-        # checkout-index はどちらのファイルもほぼ同時に書き出すため、checkout 時刻
-        # ベースの比較では前後関係が失われる（反復1 の既知の欠陥）。実 git 履歴を
-        # 見れば req の方が新しいと判定できるはず。
-        _write(tmp_path, "docs/req.md", _doc("req:r", "requirement") + "\nupdated\n")
+        # 上流 (a-req) だけを未来日時の commit で更新する。checkout-index は上流を先に
+        # 書き出すため、mtime ベースの比較では上流が「古い」ままとなり drift を検出
+        # できない（反復1 の既知の欠陥）。実 git 履歴を見れば上流の方が新しいと判定できる。
+        _write(tmp_path, "docs/a-req.md", _doc("req:r", "requirement") + "\nupdated\n")
         _git_add_all(tmp_path)
         future_date = "@4102444800 +0000"  # 2100-01-01
         _git_commit_at(tmp_path, "update req", date=future_date)
@@ -819,7 +901,7 @@ class TestValidateHookIndexSnapshotFailSafeBranches:
         real_run = validate_hook.subprocess.run
 
         def fake_run(cmd, *args, **kwargs):
-            if cmd[0] == "python3" and str(cmd[1]).endswith("codd.py"):
+            if len(cmd) > 1 and str(cmd[1]).endswith("codd.py"):
                 raise validate_hook.subprocess.TimeoutExpired(cmd=cmd, timeout=1)
             return real_run(cmd, *args, **kwargs)
 
