@@ -651,6 +651,57 @@ working tree・index は一切変更しない設計方針に反し、`index.lock
 - scope 外ファイルの checkout filter 失敗による検証全体の無効化への対応（`checkout-index`
   が一部ファイルの書き出しに失敗しても、hook は現状それを検知しない）
 
+**反復4（PR #339 2巡目 bot レビュー対応）**: 以下を修正した。
+
+- **config materialize の symlink 非追従化**: index 側の config が
+  `checkout-index` 展開後に snapshot 外への symlink（working tree 側は通常ファイルへ
+  戻っているケース等）である場合、`shutil.copy2` はこの symlink を辿ってリンク先の
+  任意の書き込み可能ファイルを上書きしてしまう。`_materialize_config` はコピー先を
+  必ず一度削除してから新規ファイルとして作成し（`O_CREAT | O_EXCL | O_NOFOLLOW`）、
+  symlink 追従を物理的に不可能にする。あわせて書き込み先が snapshot 境界内に留まる
+  ことも検証する。
+- **候補 index の permission と不変性**: 一時 index は `shutil.copyfile`
+  （メタデータを複製しない）＋明示 `chmod(0o600)` で作成し、実 index の 0644
+  permission を引き継がない。また `git write-tree` は実 index に直接実行すると
+  cache-tree extension が実 index へ書き戻されうるため、実 index・`-a/--all` 候補
+  index いずれの場合も専用のコピー（候補 index）に対して `write-tree` /
+  `checkout-index` を実行する。`git add -u` / `write-tree` は内部で index を
+  tmp ファイル作成 + rename により書き直すため、その都度 chmod を再適用して
+  0600 を維持する。
+- **候補 index の validate への伝播**: 上記の候補 index は `codd validate`
+  サブプロセスにも `GIT_INDEX_FILE` として渡し、validate 完了後に削除する。
+  渡さないと drift 検査の `git status` が候補 snapshot を stale な実 index と
+  比較してしまい、`git commit -a` で「upstream を stage 後に working tree だけ
+  HEAD 内容へ戻す」ような、実質的に変更なしの commit を誤って drift block しうる。
+- **checkout 順に依存しない drift 判定**: `checkout-index` はパス辞書順に書き出す
+  ため、同一変更で複数ノードを同時に stage すると、drift 検査の mtime フォール
+  バックが書き込み順を「新旧」として誤解釈しうる。checkout 直後に snapshot 内の
+  全ファイルへ共通の prospective timestamp を与え、この artifact を解消する。
+- **repo prefix の空白保持**: `_resolve_repo_prefix` は `git rev-parse
+  --show-prefix` の出力から末尾改行のみを除去する（`.strip()` は project root
+  ディレクトリ名の有効な先頭空白まで削ってしまう）。
+- **snapshot cleanup の確実化**: `_materialize_config` 呼び出しから `codd
+  validate` 実行までを単一の `finally` で包み、途中で例外（ENOSPC / permission /
+  I/O error 等）が発生しても snapshot・候補 index が `/tmp` に残留しないようにする。
+- **skip-worktree エントリの展開**: `checkout-index` に
+  `--ignore-skip-worktree-bits` を付け、sparse checkout で skip-worktree bit が
+  付いたエントリも実際の commit tree 通りに snapshot へ展開する。
+- **commit 引数分類の精度向上**: `_classify_commit_invocation` は、値を取る
+  短縮オプション（`-m`/`-F`/`-c`/`-C`/`-t` は次トークンも値として消費しうる、
+  `-u` は attached value のみ）に到達した時点で結合形の走査を打ち切り、以降を
+  attached value として扱う（`-amfix` の value 部分 `"fix"` に含まれる `i` を
+  `-i`(interactive) と誤認しない、`-ma`（`-m` の attached value `"a"`）を
+  `--all` と誤認しない）。`--pathspec-from-file` は候補ツリー再現が困難なモード
+  として分類する。
+
+**既知の制限（Issue #338、追跡中）**: hook プロセス自身の起動コマンド
+（`scripts/lib/hook_utils.py` が生成する `python3 "$AI_ORCHESTRA_DIR/..."`）は
+`PATH` 上の `python3` に依存している。4.8.1 前半で述べた「`codd` サブプロセスは
+`sys.executable` で起動する」対応（Issue #338、EV-71）は hook プロセスが起動
+できた**後**にのみ効果があり、`PATH` 上の `python3` が壊れている環境では hook
+本体自体が起動できず、この対応の効果に到達しない。hook 起動コマンド自体を
+`PATH` 非依存にする対応は本設計の対象外とし、**Issue #343** で別途追跡する。
+
 **二段構えの opt-in**: hook の「登録」は essential プリセットで全導入先に自動展開されるが、
 「実動作」は `codd.yaml` の `hooks:` セクションで制御する（config キーは 4.6 の `checks` 等と同じ
 `.claude/config/codd/codd.yaml` 配下）。

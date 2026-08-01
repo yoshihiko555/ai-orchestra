@@ -8,10 +8,12 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 
 from tests.module_loader import REPO_ROOT, load_module
@@ -691,8 +693,16 @@ class TestValidateHookIndexSnapshot:
         assert result.returncode == 2  # index の壊れた内容で block される
         assert "ブロック" in result.stderr
 
-    def test_warn_mode_ignores_unstaged_working_tree_errors(self, tmp_path: Path) -> None:
-        """index がクリーンなら、working tree だけの未ステージ変更（エラー含む）は無視する。"""
+    def test_block_mode_ignores_unstaged_working_tree_errors_when_index_is_clean(
+        self, tmp_path: Path
+    ) -> None:
+        """index がクリーンなら、working tree だけの未ステージ変更（エラー含む）は無視する。
+
+        E-4: Issue #338 反復4 bot レビュー対応。設定は `validate_on_commit="block"`
+        であり、warn モードの挙動ではなく「block モードでも index がクリーンなら通す」
+        ことを検証している（旧テスト名 `test_warn_mode_ignores_...` は実際の検証内容と
+        不一致だった）。
+        """
         _git_init(tmp_path)
         _write(tmp_path, "docs/clean.md", _CLEAN_DOC)
         _write_codd_config(tmp_path, _codd_config_dict(validate_on_commit="block"))
@@ -854,12 +864,15 @@ class TestValidateHookIndexSnapshotFailSafeBranches:
 
         monkeypatch.setattr(validate_hook.subprocess, "run", fake_run)
         deadline = validate_hook._Deadline(validate_hook.HOOK_TIMEOUT_BUDGET_SECONDS)
-        snapshot_dir, git_dir, prefix, diagnostic = validate_hook._build_index_snapshot(
-            str(tmp_path), validate_hook.sanitized_git_env(), deadline
+        snapshot_dir, git_dir, prefix, candidate_index_path, diagnostic = (
+            validate_hook._build_index_snapshot(
+                str(tmp_path), validate_hook.sanitized_git_env(), deadline
+            )
         )
         assert snapshot_dir is None
         assert git_dir is None
         assert prefix is None
+        assert candidate_index_path is None
         assert "git write-tree failed" in diagnostic
 
     def test_checkout_index_oserror_is_fail_safe(self, tmp_path: Path, monkeypatch) -> None:
@@ -874,12 +887,15 @@ class TestValidateHookIndexSnapshotFailSafeBranches:
 
         monkeypatch.setattr(validate_hook.subprocess, "run", fake_run)
         deadline = validate_hook._Deadline(validate_hook.HOOK_TIMEOUT_BUDGET_SECONDS)
-        snapshot_dir, git_dir, prefix, diagnostic = validate_hook._build_index_snapshot(
-            str(tmp_path), validate_hook.sanitized_git_env(), deadline
+        snapshot_dir, git_dir, prefix, candidate_index_path, diagnostic = (
+            validate_hook._build_index_snapshot(
+                str(tmp_path), validate_hook.sanitized_git_env(), deadline
+            )
         )
         assert snapshot_dir is None
         assert git_dir is None
         assert prefix is None
+        assert candidate_index_path is None
         assert "git checkout-index failed" in diagnostic
 
     def test_resolve_git_dir_failure_is_fail_safe(self, tmp_path: Path, monkeypatch) -> None:
@@ -889,12 +905,15 @@ class TestValidateHookIndexSnapshotFailSafeBranches:
             validate_hook, "_resolve_absolute_git_dir", lambda root, env, deadline: None
         )
         deadline = validate_hook._Deadline(validate_hook.HOOK_TIMEOUT_BUDGET_SECONDS)
-        snapshot_dir, git_dir, prefix, diagnostic = validate_hook._build_index_snapshot(
-            str(tmp_path), validate_hook.sanitized_git_env(), deadline
+        snapshot_dir, git_dir, prefix, candidate_index_path, diagnostic = (
+            validate_hook._build_index_snapshot(
+                str(tmp_path), validate_hook.sanitized_git_env(), deadline
+            )
         )
         assert snapshot_dir is None
         assert git_dir is None
         assert prefix is None
+        assert candidate_index_path is None
         assert diagnostic == "git rev-parse --git-dir failed"
 
     def test_resolve_prefix_failure_is_fail_safe(self, tmp_path: Path, monkeypatch) -> None:
@@ -902,12 +921,15 @@ class TestValidateHookIndexSnapshotFailSafeBranches:
         _git_init(tmp_path)
         monkeypatch.setattr(validate_hook, "_resolve_repo_prefix", lambda root, env, deadline: None)
         deadline = validate_hook._Deadline(validate_hook.HOOK_TIMEOUT_BUDGET_SECONDS)
-        snapshot_dir, git_dir, prefix, diagnostic = validate_hook._build_index_snapshot(
-            str(tmp_path), validate_hook.sanitized_git_env(), deadline
+        snapshot_dir, git_dir, prefix, candidate_index_path, diagnostic = (
+            validate_hook._build_index_snapshot(
+                str(tmp_path), validate_hook.sanitized_git_env(), deadline
+            )
         )
         assert snapshot_dir is None
         assert git_dir is None
         assert prefix is None
+        assert candidate_index_path is None
         assert diagnostic == "git rev-parse --show-prefix failed"
 
     def test_run_validate_subprocess_timeout_is_fail_safe(
@@ -993,6 +1015,347 @@ class TestValidateHookMonorepoPrefixAndConfigMaterialization:
 
 
 # ---------------------------------------------------------------------------
+# validate hook: config materialize の symlink 非追従化 / permission（Issue #338 反復4）
+# ---------------------------------------------------------------------------
+
+
+class TestValidateHookConfigMaterializeSymlinkSafety:
+    """A-1: bot レビュー Critical 対応。
+
+    index 側の config が snapshot 外への symlink（`checkout-index` 展開後の実体）である
+    場合でも、materialize がそのリンク先を上書きしてはならない。
+    """
+
+    def test_materialize_does_not_follow_symlink_to_write_outside_snapshot(
+        self, tmp_path: Path
+    ) -> None:
+        """index 側の codd.yaml が snapshot 外（victim）への symlink でも、victim の内容は
+        上書きされない。working tree 側は通常ファイルのまま（`main()` の早期 exit を回避
+        するため）にしておく。
+        """
+        _git_init(tmp_path)
+        _write(tmp_path, "docs/x.md", _CLEAN_DOC)
+        _write_codd_config(tmp_path, _codd_config_dict())
+        _git_add_all(tmp_path)
+
+        victim = tmp_path.parent / f"codd-victim-{tmp_path.name}.txt"
+        victim.write_text("untouched\n", encoding="utf-8")
+
+        # index 側の config path を、victim への symlink blob（mode 120000）に差し替える。
+        # working tree 側の実ファイルは変更しないため、`main()` の
+        # `config_path.is_file()` ゲートは通常ファイルとして通過する。
+        rel_config = ".claude/config/codd/codd.yaml"
+        hashed = subprocess.run(
+            ["git", "hash-object", "-w", "--stdin"],
+            cwd=tmp_path,
+            input=str(victim),
+            text=True,
+            check=True,
+            capture_output=True,
+        )
+        blob = hashed.stdout.strip()
+        subprocess.run(
+            ["git", "update-index", "--cacheinfo", f"120000,{blob},{rel_config}"],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+        )
+
+        payload = {
+            "cwd": str(tmp_path),
+            "tool_name": "Bash",
+            "tool_input": {"command": 'git commit -m "msg"'},
+        }
+        result = _run_hook("codd-validate-precommit.py", payload, tmp_path)
+        assert result.returncode == 0
+        assert victim.read_text(encoding="utf-8") == "untouched\n"
+
+    def test_safe_copy_config_helper_rejects_symlink_at_destination(self, tmp_path: Path) -> None:
+        """`_safe_copy_config` 単体でも、dest が symlink なら追従せず安全に置き換える。"""
+        snapshot_dir = tmp_path / "snapshot"
+        snapshot_dir.mkdir()
+        victim = tmp_path / "victim.txt"
+        victim.write_text("keep\n", encoding="utf-8")
+        dest = snapshot_dir / "codd.yaml"
+        dest.symlink_to(victim)
+        src = tmp_path / "source-codd.yaml"
+        src.write_text("enabled: true\n", encoding="utf-8")
+
+        validate_hook._safe_copy_config(src, dest, snapshot_dir)
+
+        assert victim.read_text(encoding="utf-8") == "keep\n"
+        assert not dest.is_symlink()
+        assert dest.read_text(encoding="utf-8") == "enabled: true\n"
+
+
+class TestValidateHookCandidateIndexPermissions:
+    """A-2: bot レビュー Critical 対応。候補 index の一時ファイルは実 index の 0644
+    permission を引き継がず 0600 を維持する。
+    """
+
+    def test_commit_all_candidate_index_file_keeps_owner_only_permissions(
+        self, tmp_path: Path
+    ) -> None:
+        _git_init(tmp_path)
+        _git_config_identity(tmp_path)
+        _write(tmp_path, "docs/x.md", _CLEAN_DOC)
+        _git_add_all(tmp_path)
+        _git_commit_at(tmp_path, "init")
+        git_dir_out = subprocess.run(
+            ["git", "rev-parse", "--git-dir"],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        real_index = tmp_path / git_dir_out / "index"
+        real_index.chmod(0o644)  # 実 index の典型的な permission を明示的に再現する
+
+        deadline = validate_hook._Deadline(validate_hook.HOOK_TIMEOUT_BUDGET_SECONDS)
+        tmp_index_path, diagnostic = validate_hook._build_commit_all_index_file(
+            str(tmp_path), validate_hook.sanitized_git_env(), deadline
+        )
+        assert tmp_index_path is not None, diagnostic
+        mode = Path(tmp_index_path).stat().st_mode & 0o777
+        Path(tmp_index_path).unlink(missing_ok=True)
+        assert mode == 0o600
+
+    def test_candidate_index_file_keeps_owner_only_permissions(self, tmp_path: Path) -> None:
+        _git_init(tmp_path)
+        _git_config_identity(tmp_path)
+        _write(tmp_path, "docs/x.md", _CLEAN_DOC)
+        _git_add_all(tmp_path)
+        _git_commit_at(tmp_path, "init")
+        git_dir_out = subprocess.run(
+            ["git", "rev-parse", "--git-dir"],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        real_index = tmp_path / git_dir_out / "index"
+        real_index.chmod(0o644)
+
+        deadline = validate_hook._Deadline(validate_hook.HOOK_TIMEOUT_BUDGET_SECONDS)
+        candidate_path, diagnostic = validate_hook._prepare_candidate_index(
+            str((tmp_path / git_dir_out).resolve()), None, deadline
+        )
+        assert candidate_path is not None, diagnostic
+        mode = Path(candidate_path).stat().st_mode & 0o777
+        Path(candidate_path).unlink(missing_ok=True)
+        assert mode == 0o600
+
+
+# ---------------------------------------------------------------------------
+# validate hook: 実 index 不変・候補 index の validate 伝播（Issue #338 反復4）
+# ---------------------------------------------------------------------------
+
+
+class TestValidateHookRealIndexImmutability:
+    """C-1: bot レビュー Critical 対応。`write-tree` は候補 index のコピーに対して
+    実行され、実 index のバイト列は一切変化しない。
+    """
+
+    def test_real_index_bytes_are_unchanged_after_run_validate(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        _git_init(tmp_path)
+        _git_config_identity(tmp_path)
+        _write(tmp_path, "docs/x.md", _CLEAN_DOC)
+        _write_codd_config(tmp_path, _codd_config_dict())
+        _git_add_all(tmp_path)
+        _git_commit_at(tmp_path, "init")
+        monkeypatch.setattr(validate_hook, "_orchestra_dir", str(REPO_ROOT))
+
+        # commit 直後の index は cache-tree が有効なままのことが多く、これだと
+        # `write-tree` を実 index に直接実行しても再計算が走らず判別できない。
+        # 内容変更なしの再 `git add` で cache-tree エントリを invalidate してから
+        # 「before」を記録する（`write-tree` が実 index へ書き戻す動作を確実に再現する）。
+        _git_add_all(tmp_path)
+
+        git_dir_out = subprocess.run(
+            ["git", "rev-parse", "--git-dir"],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        real_index_path = tmp_path / git_dir_out / "index"
+        before = real_index_path.read_bytes()
+
+        outcome = validate_hook._run_validate(str(tmp_path))
+        assert outcome is not None
+
+        after = real_index_path.read_bytes()
+        assert after == before  # write-tree は候補コピーに対してのみ実行される（C-1）
+
+
+class TestValidateHookCandidateIndexPropagatedToValidate:
+    """D-1: bot レビュー Critical 対応。`-a/--all` 候補 index が validate の
+    `GIT_INDEX_FILE` として渡らないと、drift の `git status` が候補 snapshot を
+    stale な実 index と比較し、実質的に変更なしの commit を誤って drift block する。
+    """
+
+    def test_dash_a_reverted_upstream_edit_is_not_false_positive_drift_blocked(
+        self, tmp_path: Path
+    ) -> None:
+        _git_init(tmp_path)
+        _git_config_identity(tmp_path)
+        _write(tmp_path, "docs/a-upstream.md", _doc("req:r", "requirement"))
+        _write(
+            tmp_path,
+            "docs/z-downstream.md",
+            _doc("design:d", "design", deps=[("req:r", "derives_from")]),
+        )
+        config_data = _codd_config_dict(scope_include=["docs/**/*.md"], validate_on_commit="block")
+        config_data["checks"] = {"drift": "error"}
+        _write_codd_config(tmp_path, config_data)
+        _git_add_all(tmp_path)
+        _git_commit_at(tmp_path, "init")
+
+        # upstream を stage（変更）した後、working tree だけ HEAD 内容へ戻す
+        # （index には古い stage 済み変更が残ったまま。実 working tree は HEAD と一致）。
+        # `git checkout HEAD -- <path>` は index も一緒に戻してしまう（`MM` を再現できない）
+        # ため、working tree だけをファイル書き込みで直接 HEAD 内容へ戻す。
+        _write(tmp_path, "docs/a-upstream.md", _doc("req:r", "requirement") + "\ntemp edit\n")
+        _git_add_all(tmp_path)
+        _write(tmp_path, "docs/a-upstream.md", _doc("req:r", "requirement"))
+        payload = {
+            "cwd": str(tmp_path),
+            "tool_name": "Bash",
+            "tool_input": {"command": 'git commit -am "msg"'},
+        }
+        result = _run_hook("codd-validate-precommit.py", payload, tmp_path)
+        # `-a` 候補 index（working tree 内容へ戻された upstream）が正しく validate へ
+        # 伝播されれば、実質的に変更なしの commit であり drift は検出されない。
+        assert result.returncode == 0
+        assert result.stdout == ""
+
+
+class TestValidateHookDriftIndependentOfCheckoutOrder:
+    """D-2: bot レビュー High 対応。同一 commit で同時に stage された依存ノード間の
+    drift 判定は、`checkout-index` の書き込み順（パス辞書順）に依存してはならない。
+    """
+
+    def test_simultaneously_staged_dependents_do_not_false_positive_from_checkout_order(
+        self, tmp_path: Path
+    ) -> None:
+        _git_init(tmp_path)
+        _git_config_identity(tmp_path)
+        # 下流（design）が辞書順で上流（requirement）より前に来るよう配置する。
+        # 正規化しなければ checkout-index は a-design.md を先に書き出す（古い mtime）ため、
+        # 後に書き出される z-req.md（新しい mtime）が「上流の方が新しい」偽 drift を生む。
+        _write(
+            tmp_path,
+            "docs/a-design.md",
+            _doc("design:d", "design", deps=[("req:r", "derives_from")]),
+        )
+        _write(tmp_path, "docs/z-req.md", _doc("req:r", "requirement"))
+        config_data = _codd_config_dict(scope_include=["docs/**/*.md"], validate_on_commit="block")
+        config_data["checks"] = {"drift": "error"}
+        _write_codd_config(tmp_path, config_data)
+        _git_add_all(tmp_path)
+        _git_commit_at(tmp_path, "init")
+
+        # 両ノードを同一の変更として stage する（実 commit しない）。
+        _write(
+            tmp_path,
+            "docs/a-design.md",
+            _doc("design:d", "design", deps=[("req:r", "derives_from")]) + "\nupdated together\n",
+        )
+        _write(
+            tmp_path,
+            "docs/z-req.md",
+            _doc("req:r", "requirement") + "\nupdated together\n",
+        )
+        _git_add_all(tmp_path)
+        payload = {
+            "cwd": str(tmp_path),
+            "tool_name": "Bash",
+            "tool_input": {"command": 'git commit -m "msg"'},
+        }
+        result = _run_hook("codd-validate-precommit.py", payload, tmp_path)
+        assert result.returncode == 0  # 同時 stage は checkout 順由来の偽 drift を生まない
+        assert result.stdout == ""
+
+
+class TestValidateHookSnapshotCleanupOnMaterializeFailure:
+    """E-2: bot レビュー High 対応。config materialize から validate 実行までの経路で
+    例外が発生しても、snapshot / 候補 index が `/tmp` に残留しない。
+    """
+
+    def test_snapshot_and_candidate_index_are_cleaned_up_when_materialize_raises(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        _git_init(tmp_path)
+        _git_config_identity(tmp_path)
+        _write(tmp_path, "docs/x.md", _CLEAN_DOC)
+        _write_codd_config(tmp_path, _codd_config_dict())
+        _git_add_all(tmp_path)
+        _git_commit_at(tmp_path, "init")
+        monkeypatch.setattr(validate_hook, "_orchestra_dir", str(REPO_ROOT))
+
+        def boom(root: str, project_dir: str, snapshot_dir: str) -> None:
+            raise OSError("boom: simulated ENOSPC")
+
+        monkeypatch.setattr(validate_hook, "_materialize_config", boom)
+
+        tmp_root = Path(tempfile.gettempdir())
+        before = set(tmp_root.glob("codd-index-snapshot-*")) | set(
+            tmp_root.glob("codd-candidate-index-*")
+        )
+        with pytest.raises(OSError):
+            validate_hook._run_validate(str(tmp_path))
+        after = set(tmp_root.glob("codd-index-snapshot-*")) | set(
+            tmp_root.glob("codd-candidate-index-*")
+        )
+        assert after == before  # 例外発生時も finally で snapshot・候補 index を cleanup する
+
+
+class TestValidateHookSkipWorktreeEntriesExpanded:
+    """E-3: bot レビュー対応。sparse checkout で skip-worktree bit が付いたエントリも
+    実際の commit tree 通りに snapshot へ展開される（`--ignore-skip-worktree-bits`）。
+    """
+
+    def test_skip_worktree_entry_is_still_expanded_into_snapshot(self, tmp_path: Path) -> None:
+        _git_init(tmp_path)
+        _git_config_identity(tmp_path)
+        _write(tmp_path, "docs/a-req.md", _doc("req:r", "requirement"))
+        _write(
+            tmp_path,
+            "docs/z-design.md",
+            _doc("design:d", "design", deps=[("req:r", "derives_from")]),
+        )
+        _write_codd_config(tmp_path, _codd_config_dict(validate_on_commit="block"))
+        _git_add_all(tmp_path)
+        _git_commit_at(tmp_path, "init")
+        # sparse checkout を模倣し、上流（依存先）に skip-worktree bit を立てる。
+        subprocess.run(
+            ["git", "update-index", "--skip-worktree", "docs/a-req.md"],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+        )
+        # 下流を新しい変更で stage する（内容自体は妥当）。
+        _write(
+            tmp_path,
+            "docs/z-design.md",
+            _doc("design:d", "design", deps=[("req:r", "derives_from")]) + "\nupdated\n",
+        )
+        _git_add_all(tmp_path)
+        payload = {
+            "cwd": str(tmp_path),
+            "tool_name": "Bash",
+            "tool_input": {"command": 'git commit -m "msg"'},
+        }
+        result = _run_hook("codd-validate-precommit.py", payload, tmp_path)
+        # skip-worktree の a-req.md が snapshot から欠落すると、z-design.md の依存先
+        # `req:r` が dangling として誤って block される。展開されていれば通る。
+        assert result.returncode == 0
+        assert result.stdout == ""
+
+
+# ---------------------------------------------------------------------------
 # validate hook: 共有 timeout budget / GIT_OPTIONAL_LOCKS（Issue #338 反復3）
 # ---------------------------------------------------------------------------
 
@@ -1014,12 +1377,15 @@ class TestValidateHookSharedTimeoutBudget:
         _git_init(tmp_path)
         deadline = validate_hook._Deadline(0.0)
         time.sleep(0.01)
-        snapshot_dir, git_dir, prefix, diagnostic = validate_hook._build_index_snapshot(
-            str(tmp_path), validate_hook.sanitized_git_env(), deadline
+        snapshot_dir, git_dir, prefix, candidate_index_path, diagnostic = (
+            validate_hook._build_index_snapshot(
+                str(tmp_path), validate_hook.sanitized_git_env(), deadline
+            )
         )
         assert snapshot_dir is None
         assert git_dir is None
         assert prefix is None
+        assert candidate_index_path is None
         assert "timeout budget" in diagnostic
 
     def test_run_validate_fails_safe_when_shared_budget_is_too_small(
@@ -1190,6 +1556,52 @@ class TestValidateHookCommitAllClassification:
             False,
             True,
         )
+
+    def test_dash_amfix_attached_message_value_is_not_misread_as_interactive(self) -> None:
+        """`-amfix` は `-a` + `-m` の attached value `"fix"` であり、値中の `i` を
+        `-i`（interactive）と誤認してはならない（B-1: bot レビュー Critical 対応）。"""
+        assert validate_hook._classify_commit_invocation("git commit -amfix") == (True, False)
+
+    def test_dash_ma_attached_value_is_not_misread_as_dash_a(self) -> None:
+        """`-ma` は `-m` の attached value `"a"` であり、`--all` 相当ではない（B-1）。"""
+        assert validate_hook._classify_commit_invocation("git commit -ma") == (False, False)
+
+    def test_dash_u_bare_does_not_consume_following_dash_m_value(self) -> None:
+        """`-u`（`--untracked-files`）は attached optional value のみを取り、次トークン
+        （`-m` のフラグ自体）を値として飲み込んではならない（B-1 の回帰防止）。"""
+        assert validate_hook._classify_commit_invocation('git commit -u -m "msg"') == (
+            False,
+            False,
+        )
+
+    def test_pathspec_from_file_with_equals_is_unsupported(self) -> None:
+        """`--pathspec-from-file=<file>` は再現困難モードとして分類する（B-2）。"""
+        assert validate_hook._classify_commit_invocation(
+            'git commit -m "msg" --pathspec-from-file=/tmp/x.txt'
+        ) == (False, True)
+
+    def test_pathspec_from_file_separate_token_is_unsupported(self) -> None:
+        """`--pathspec-from-file <file>`（値が別トークン）も再現困難モードとして分類する（B-2）。"""
+        assert validate_hook._classify_commit_invocation(
+            'git commit -m "msg" --pathspec-from-file /tmp/x.txt'
+        ) == (False, True)
+
+
+class TestValidateHookRepoPrefixLeadingWhitespace:
+    """`_resolve_repo_prefix` は末尾の改行のみを取り除き、有効な先頭空白を保持する
+    （E-1: Issue #338 反復4 bot レビュー対応）。
+    """
+
+    def test_leading_space_in_project_root_dirname_is_preserved(self, tmp_path: Path) -> None:
+        repo_root = tmp_path
+        project_dir = repo_root / " apps" / "foo"
+        _git_init(repo_root)
+        _write(project_dir, "docs/x.md", _CLEAN_DOC)
+        deadline = validate_hook._Deadline(validate_hook.HOOK_TIMEOUT_BUDGET_SECONDS)
+        prefix = validate_hook._resolve_repo_prefix(
+            str(project_dir), validate_hook.sanitized_git_env(), deadline
+        )
+        assert prefix == " apps/foo/"
 
 
 class TestValidateHookCommitAllReconstruction:

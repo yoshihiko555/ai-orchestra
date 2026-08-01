@@ -106,6 +106,38 @@ tree・index は一切変更しない設計方針に反し、`index.lock` 競合
 - root 内の絶対パス symlink を snapshot 側で再配置すること
 - `git commit` が明示的に `GIT_INDEX_FILE` で alternate index を指定するケースへの対応
 - scope 外ファイルの checkout filter 失敗による検証全体の無効化への対応
+
+**反復4（Issue #338、PR #339 2巡目 bot レビュー対応）**: 以下を修正する。
+
+- **config materialize の symlink 非追従化**: index 側の config が snapshot 外への
+  symlink（`checkout-index` が展開した実体）である場合、`shutil.copy2` はこれを辿って
+  リンク先を上書きしてしまう（任意ファイル上書き）。`_safe_copy_config` は書き込み先を
+  必ず一度削除してから新規ファイルとして作成し、symlink 追従を物理的に不可能にする。
+  あわせて書き込み先が snapshot 境界内に留まることも確認する。
+- **一時 index の permission**: `mkstemp` が作る 0600 を、`shutil.copy2` による実 index
+  （通常 0644）のメタデータ複製で緩めない。`shutil.copyfile`（メタデータ非複製）を使う。
+- **候補 index はコピー上に構築**: `git write-tree` を実 index に対して直接実行すると、
+  cache-tree extension が実 index へ書き戻されうる（実 index 不変の設計方針に反する）。
+  常に実 index（または `-a/--all` 再現用 index）をコピーした専用の候補 index
+  （`_prepare_candidate_index`）に対して `write-tree` / `checkout-index` を実行する。
+  この候補 index は `codd validate` サブプロセスにも `GIT_INDEX_FILE` として渡し、
+  drift 検査の `git status` が stale な実 index ではなく候補内容と正しく突き合わせる
+  ようにしてから、validate 完了後に削除する。
+- **checkout 順に依存しない drift 判定**: `checkout-index` はパス辞書順に書き出すため、
+  同一変更で複数ノードを同時に stage すると、書き込み順が「新旧」として誤解釈される
+  （drift 検査の mtime フォールバック）。checkout 直後に snapshot 内の全ファイルへ共通の
+  prospective timestamp を与え、この artifact を解消する。
+- **repo prefix の空白保持**: `_resolve_repo_prefix` は末尾改行のみを除去し、
+  project root ディレクトリ名の有効な先頭空白を誤って削らない。
+- **snapshot cleanup の確実化**: `_materialize_config` 呼び出しから `codd validate`
+  実行までを単一の `finally` で包み、materialize 失敗時も snapshot が `/tmp` に残らない
+  ようにする。
+- **skip-worktree エントリの展開**: `checkout-index` に `--ignore-skip-worktree-bits`
+  を付け、sparse checkout で skip-worktree bit が付いたエントリも snapshot へ展開する。
+- **commit 引数分類の精度向上**: 値を取る短縮オプション（`-m`/`-F`/`-c`/`-C`/`-t`/`-u`）
+  に到達したら、それ以降を値（attached value）として扱い走査を打ち切る（`-amfix` の
+  `i` を `-i` と誤認しない、`-ma` を誤って `--all` と解釈しない）。`--pathspec-from-file`
+  を再現困難モードとして分類する。
 """
 
 from __future__ import annotations
@@ -204,10 +236,28 @@ _COMMIT_VALUE_LONG_FLAGS = {
     "--squash",
     "--cleanup",
 }
-# 再現困難と明示する long option（`-p`/`-i`/`-o` の long form）。
-_COMMIT_UNSUPPORTED_LONG_FLAGS = {"--patch", "--interactive", "--include", "--only"}
-# 値を取る短縮オプション文字（結合形の末尾に来る前提。例: `-am` の `m`）。
-_COMMIT_VALUE_SHORT_CHARS = "cCFmt"
+# 再現困難と明示する long option（`-p`/`-i`/`-o` の long form、および
+# `--pathspec-from-file`。B-2: Issue #338 反復4 bot レビュー対応）。
+_COMMIT_UNSUPPORTED_LONG_FLAGS = {
+    "--patch",
+    "--interactive",
+    "--include",
+    "--only",
+    "--pathspec-from-file",
+}
+# 再現困難な long option のうち、値を取るもの（"=value" 形式でなければ次トークンを
+# 値として読み飛ばす。B-2）。
+_COMMIT_UNSUPPORTED_VALUE_LONG_FLAGS = {"--pathspec-from-file"}
+# 値を取る短縮オプション文字（結合形の途中に現れたら、以降を attached value として
+# 走査を打ち切る。`git commit -h` の値付きオプション: -c/-C/-F/-m/-t（必須値）/-u
+# （`-u[<mode>]` の attached optional value のみ。次トークンは値として消費しない）。
+# B-1: Issue #338 反復4 bot レビュー Critical 対応）。
+_COMMIT_VALUE_SHORT_CHARS = "cCFmtu"
+# 上記のうち、attached value が無い（トークン末尾がそのオプション文字）場合に
+# 次トークンを値として読み飛ばす対象（必須値オプションのみ。`-u` は optional attached
+# value のみなので対象外 ── 次トークンを誤って消費すると `-u -m msg` の `-m` を
+# 飲み込んでしまう）。
+_COMMIT_NEXT_TOKEN_VALUE_SHORT_CHARS = "cCFmt"
 # `-a`（`--all`）に相当する短縮オプション文字。
 _COMMIT_ALL_SHORT_CHAR = "a"
 # 再現困難と明示する短縮オプション文字（patch / interactive / only）。
@@ -217,14 +267,22 @@ _SHELL_CHAIN_TOKENS = {"&&", "||", ";", "|"}
 
 def _classify_commit_invocation(command: str) -> tuple[bool, bool]:
     """`git ... commit` 呼び出しが `-a`/`--all`、および候補ツリー再現が困難なモード
-    （`-p`/`--patch`/`-i`/`--interactive`/`--include`/`--only`/pathspec 指定）を
-    含むかを判定する（Issue #338 反復3: bot レビュー P1 対応）。
+    （`-p`/`--patch`/`-i`/`--interactive`/`--include`/`--only`/`--pathspec-from-file`/
+    pathspec 指定）を含むかを判定する（Issue #338 反復3: bot レビュー P1 対応）。
 
     戻り値は ``(has_all, has_unsupported_reconstruction)``。`has_all` が True かつ
     `has_unsupported_reconstruction` が False のときのみ、呼び出し元は `-a`/`--all`
     候補ツリーの再現（`_build_commit_all_index_file`）を試みる。パース不能（引用符の
     不整合等）な場合は安全側で `(False, False)` を返す（再現は試みず、注記も付けない。
     既存の単純な index 検証にフォールバックする）。
+
+    結合形の短縮オプション（例: `-amfix`、`-ma`）は、値を取る短縮オプション文字
+    （`_COMMIT_VALUE_SHORT_CHARS`）に到達した時点でそれ以降を attached value として
+    扱い、フラグとしての走査を打ち切る（B-1: Issue #338 反復4 bot レビュー Critical
+    対応）。これを行わないと、`-amfix` の value 部分 `"fix"` に含まれる `i` を
+    `-i`（interactive）と誤認して `simulate_commit_all` を無効化したり、`-ma`
+    （`-m` の attached value `"a"`）を独立した `-a` フラグと誤認して未ステージ変更を
+    候補ツリーへ誤って含めてしまう（false positive）。
     """
     match = _GIT_COMMIT_PATTERN.search(command)
     if not match:
@@ -257,22 +315,27 @@ def _classify_commit_invocation(command: str) -> tuple[bool, bool]:
         if token == "--all":
             has_all = True
             continue
-        if token in _COMMIT_UNSUPPORTED_LONG_FLAGS:
-            has_unsupported = True
-            continue
         if token.startswith("--"):
             name = token.split("=", 1)[0]
+            if name in _COMMIT_UNSUPPORTED_LONG_FLAGS:
+                has_unsupported = True
+                if name in _COMMIT_UNSUPPORTED_VALUE_LONG_FLAGS and "=" not in token:
+                    skip_next_value = True
+                continue
             if name in _COMMIT_VALUE_LONG_FLAGS and "=" not in token:
                 skip_next_value = True
             continue
         if token.startswith("-") and len(token) > 1:
-            for ch in token[1:]:
+            for idx, ch in enumerate(token[1:], start=1):
                 if ch == _COMMIT_ALL_SHORT_CHAR:
                     has_all = True
                 elif ch in _COMMIT_UNSUPPORTED_SHORT_CHARS:
                     has_unsupported = True
-            if token[-1] in _COMMIT_VALUE_SHORT_CHARS:
-                skip_next_value = True
+                if ch in _COMMIT_VALUE_SHORT_CHARS:
+                    remainder = token[idx + 1 :]
+                    if not remainder and ch in _COMMIT_NEXT_TOKEN_VALUE_SHORT_CHARS:
+                        skip_next_value = True
+                    break  # 以降は attached value。フラグとしては走査しない（B-1）。
             continue
         # commit 直後の非オプション引数 = pathspec 指定
         has_unsupported = True
@@ -378,6 +441,75 @@ def _resolve_absolute_git_dir(root: str, env: dict[str, str], deadline: _Deadlin
     return git_dir or None
 
 
+def _resolve_within(base: Path, target: Path) -> Path | None:
+    """`target` の実体パスが `base` 配下に収まっているかを確認する（A-1: Issue #338 反復4）。
+
+    symlink（`target` 自身または祖先ディレクトリ）で `base` 外へ脱出していないかを
+    `Path.resolve()` で実体パスへ変換したうえで判定する。`base` が存在しない、または
+    脱出している場合は None を返す。収まっている場合は実体パス（`target.resolve()`）を
+    返す。
+    """
+    try:
+        base_real = base.resolve(strict=True)
+        target_real = target.resolve(strict=False)
+    except OSError:
+        return None
+    try:
+        target_real.relative_to(base_real)
+    except ValueError:
+        return None
+    return target_real
+
+
+def _copy_no_follow(src: Path, dest: Path) -> bool:
+    """`dest` が symlink でも辿らず、内容を `src` で安全に置き換える（A-1: Issue #338 反復4）。
+
+    `checkout-index` が展開した `dest` が snapshot 外への symlink である可能性があり
+    （index 側だけ symlink・working tree 側は通常ファイルに戻っているケース等）、
+    `shutil.copy2` はこの symlink を辿ってリンク先を上書きしてしまう。`dest` を必ず
+    先に削除してから `O_CREAT | O_EXCL | O_NOFOLLOW` で新規ファイルとして作成することで、
+    symlink 追従を物理的に不可能にする。成功時 True、失敗時 False を返す（呼び出し元は
+    fail-safe として警告を出し materialize をスキップする）。
+    """
+    try:
+        if dest.is_symlink() or dest.exists():
+            dest.unlink()
+    except OSError:
+        return False
+    try:
+        fd = os.open(str(dest), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    except OSError:
+        return False
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(src.read_bytes())
+    except OSError:
+        return False
+    return True
+
+
+def _safe_copy_config(src: Path, dest: Path, snapshot_root: Path) -> None:
+    """`_materialize_config` から使う、symlink 非追従・境界検証つきの config コピー
+    （A-1: Issue #338 反復4）。
+
+    `dest.parent` の実体パスが `snapshot_root` 配下に収まっていることを確認したうえで
+    `_copy_no_follow` を呼ぶ。境界外（symlink でディレクトリ階層自体が snapshot 外へ
+    脱出している）または書き込みに失敗した場合は、fail-safe として stderr に警告を
+    出すのみで例外は送出しない（呼び出し元の validate 自体は継続する）。
+    """
+    if _resolve_within(snapshot_root, dest.parent) is None:
+        print(
+            f"[codd] validate warning: {dest} は snapshot 境界外を指すため config を"
+            " 書き込みません",
+            file=sys.stderr,
+        )
+        return
+    if not _copy_no_follow(src, dest):
+        print(
+            f"[codd] validate warning: {dest} への config 書き込みに失敗しました", file=sys.stderr
+        )
+
+
 def _resolve_repo_prefix(root: str, env: dict[str, str], deadline: _Deadline) -> str | None:
     """repo root から見た `root` の prefix を解決する（モノレポ対応。Issue #338 反復3）。
 
@@ -389,6 +521,11 @@ def _resolve_repo_prefix(root: str, env: dict[str, str], deadline: _Deadline) ->
     （git working tree でない、subprocess の timeout / OSError 等、または `deadline`
     予算切れ）は None を返す（呼び出し元は fail-safe としてスナップショット構築自体を
     失敗として扱う）。
+
+    戻り値は末尾の改行のみを取り除く（E-1: Issue #338 反復4 bot レビュー対応）。
+    project root が先頭空白を含むディレクトリ（例: `" apps/foo"`）にある場合、
+    `.strip()` は prefix の有効な先頭空白まで削ってしまい、snapshot 内の別ディレクトリを
+    cwd にしてしまう。
     """
     if deadline.expired():
         return None
@@ -406,10 +543,10 @@ def _resolve_repo_prefix(root: str, env: dict[str, str], deadline: _Deadline) ->
         return None
     if result.returncode != 0:
         return None
-    return result.stdout.strip()
+    return result.stdout.rstrip("\r\n")
 
 
-def _materialize_config(root: str, project_dir: str) -> None:
+def _materialize_config(root: str, project_dir: str, snapshot_dir: str) -> None:
     """実 root の codd 実効設定（base + local）を snapshot 側の `project_dir` へコピーする。
 
     `codd.local.yaml` は `config-loading` ルールにより同期対象外の未追跡ファイルとして
@@ -422,20 +559,26 @@ def _materialize_config(root: str, project_dir: str) -> None:
     ようにする。`codd.yaml` が実 root に存在しない場合は何もしない（`main()` は既に
     exit 済みのはずだが、`_run_validate` を単体で呼ぶテストからも安全に呼べるよう
     防御的に扱う）。
+
+    コピー先（snapshot 側）が `checkout-index` によって snapshot 外への symlink として
+    展開されている可能性があるため、書き込みは `_safe_copy_config`（symlink 非追従・
+    `snapshot_dir` 境界検証つき）で行う（A-1: Issue #338 反復4 bot レビュー Critical
+    対応）。
     """
     config_path = _codd_config_path(root)
     if not config_path.is_file():
         return
+    snapshot_root = Path(snapshot_dir)
     dest_config_path = Path(project_dir) / ".claude" / "config" / "codd" / config_path.name
     dest_config_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(config_path, dest_config_path)
+    _safe_copy_config(config_path, dest_config_path, snapshot_root)
 
     local_path = config_path.with_name(f"{config_path.stem}.local{config_path.suffix}")
     if local_path.is_file():
         dest_local_path = dest_config_path.with_name(
             f"{dest_config_path.stem}.local{dest_config_path.suffix}"
         )
-        shutil.copy2(local_path, dest_local_path)
+        _safe_copy_config(local_path, dest_local_path, snapshot_root)
 
 
 def _build_commit_all_index_file(
@@ -449,6 +592,11 @@ def _build_commit_all_index_file(
     index ファイルへ `GIT_INDEX_FILE` で切り替え、`git add -u`（追跡済みファイルの変更・
     削除を全てステージ。`git commit -a` と同じ意味論）を実行する。実 index・実 working
     tree は一切変更しない。
+
+    実 index のコピーは `shutil.copyfile`（メタデータを複製しない）＋明示 `chmod(0o600)`
+    で行い、`mkstemp` が作る 0600 permission を実 index の 0644 で緩めない
+    （A-2: Issue #338 反復4 bot レビュー Critical 対応。multi-user host での index 内容
+    ─ staged path・blob ID 等 ─ の他ユーザーからの可読を防ぐ）。
 
     戻り値は ``(一時 index ファイルパス, diagnostic)``。失敗時は ``(None, diagnostic)``。
     呼び出し元は成功時の一時ファイルを使用後に削除すること。
@@ -464,7 +612,8 @@ def _build_commit_all_index_file(
     tmp_fd, tmp_index_path = tempfile.mkstemp(prefix="codd-commit-a-index-")
     os.close(tmp_fd)
     if real_index.is_file():
-        shutil.copy2(real_index, tmp_index_path)
+        shutil.copyfile(real_index, tmp_index_path)
+        os.chmod(tmp_index_path, 0o600)
     else:
         Path(tmp_index_path).unlink(missing_ok=True)  # 空 index: add -u が新規作成する
 
@@ -486,7 +635,73 @@ def _build_commit_all_index_file(
         Path(tmp_index_path).unlink(missing_ok=True)
         reason = add_result.stderr.strip().splitlines()[0] if add_result.stderr.strip() else ""
         return None, f"git add -u failed (code={add_result.returncode}): {reason}"
+    # `git add -u` はインデックスを内部で tmp ファイル作成 + rename により書き直すため、
+    # コピー直後に設定した chmod(0o600) が umask 既定の permission（通常 0644）へ
+    # リセットされる。返却直前に再度 chmod することで 0600 を保証する（A-2）。
+    try:
+        os.chmod(tmp_index_path, 0o600)
+    except OSError as exc:
+        Path(tmp_index_path).unlink(missing_ok=True)
+        return None, f"candidate index chmod failed: {exc}"
     return tmp_index_path, ""
+
+
+def _prepare_candidate_index(
+    git_dir: str, index_file: str | None, deadline: _Deadline
+) -> tuple[str | None, str]:
+    """`write-tree` / `checkout-index` に使う候補 index を、独立した一時ファイルへ
+    コピーする（C-1 + A-2: Issue #338 反復4 bot レビュー Critical 対応）。
+
+    実 index（`<git_dir>/index`）に対して直接 `git write-tree` を実行すると、
+    cache-tree extension が実 index へ書き戻されうる（この hook は実 index・実
+    working tree を一切変更しない設計方針であり、`index.lock` 競合の原因にもなる）。
+    `index_file`（`-a/--all` 候補 index）が指定されていればそれを、未指定なら実 index を
+    コピー元として使い、専用の一時ファイルへ複製したうえで以降の git 操作をそちらに
+    向ける。コピーは `shutil.copyfile`（メタデータ非複製）＋明示 `chmod(0o600)` とし、
+    実 index の permission bits（通常 0644）を引き継がない（A-2）。
+
+    戻り値は ``(候補 index パス, diagnostic)``。失敗時は ``(None, diagnostic)``。
+    呼び出し元は使用後に候補ファイルを削除すること（`codd validate` サブプロセスへも
+    `GIT_INDEX_FILE` として渡してから削除する。D-1 参照）。
+    """
+    if deadline.expired():
+        return None, "hook timeout budget exceeded"
+    source = Path(index_file) if index_file is not None else Path(git_dir) / "index"
+    tmp_fd, tmp_path = tempfile.mkstemp(prefix="codd-candidate-index-")
+    os.close(tmp_fd)
+    try:
+        if source.is_file():
+            shutil.copyfile(source, tmp_path)
+            os.chmod(tmp_path, 0o600)
+        else:
+            Path(tmp_path).unlink(missing_ok=True)  # 空 index: write-tree が空木として扱う
+    except OSError as exc:
+        Path(tmp_path).unlink(missing_ok=True)
+        return None, f"candidate index copy failed: {exc}"
+    return tmp_path, ""
+
+
+def _normalize_snapshot_mtimes(snapshot_dir: str) -> None:
+    """snapshot 内の全ファイルへ共通の prospective timestamp を与える（D-2: Issue #338
+    反復4 bot レビュー High 対応）。
+
+    `git checkout-index -a -f` はパスの辞書順に書き出すため、drift 検査の mtime
+    フォールバック（`codd_common.commit_time` の dirty 判定分岐）は checkout の書き込み
+    順をそのまま「新旧」として解釈してしまう。同一の変更で複数の依存ノードを同時に
+    stage した場合、実際の編集順とは無関係な偽 drift（または見逃し）を生みうる。
+    checkout 完了直後に全ファイル（symlink 含む、ディレクトリは除く）へ単一の
+    timestamp を設定することで、この checkout 順 artifact を解消する。書き込み権限が
+    無い等で `os.utime` が失敗したパスは無視する（fail-safe。mtime 正規化の失敗で
+    validate 自体を止めない）。
+    """
+    common_time = time.time()
+    for path in Path(snapshot_dir).rglob("*"):
+        if path.is_dir() and not path.is_symlink():
+            continue
+        try:
+            os.utime(path, (common_time, common_time), follow_symlinks=False)
+        except OSError:
+            continue
 
 
 def _build_index_snapshot(
@@ -495,40 +710,65 @@ def _build_index_snapshot(
     deadline: _Deadline,
     *,
     index_file: str | None = None,
-) -> tuple[str | None, str | None, str | None, str]:
+) -> tuple[str | None, str | None, str | None, str | None, str]:
     """git index の内容を一時ディレクトリへ展開する（working tree 近似の解消。Issue #338）。
 
     `git commit` が実際にコミットするのは working tree ではなく index の内容である。
     `git write-tree` で index の妥当性を確認したうえで、`git --work-tree=<tmp>
-    checkout-index -a -f` により index の内容だけを別ディレクトリへ書き出す。実体の
-    working tree・index には一切変更を加えない。あわせて `root` の絶対 git-dir、および
-    repo root から見た `root` の prefix（モノレポ対応。反復3）も解決する（呼び出し元が
-    `codd validate` サブプロセスへ `GIT_DIR`/`GIT_WORK_TREE` として渡し、drift 検査に
-    実際の commit 履歴を使わせるため。反復2）。
+    checkout-index -a -f --ignore-skip-worktree-bits` により index の内容だけを別
+    ディレクトリへ書き出す。実体の working tree・index には一切変更を加えない。
+    `--ignore-skip-worktree-bits` は sparse checkout で skip-worktree bit が付いた
+    エントリも展開する（E-3: Issue #338 反復4 bot レビュー対応。付けないと実際の
+    commit tree に含まれるファイルが snapshot に欠落し、false dangling や検査対象の
+    見逃しを起こす）。あわせて `root` の絶対 git-dir、および repo root から見た `root`
+    の prefix（モノレポ対応。反復3）も解決する（呼び出し元が `codd validate` サブ
+    プロセスへ `GIT_DIR`/`GIT_WORK_TREE` として渡し、drift 検査に実際の commit 履歴を
+    使わせるため。反復2）。
+
+    `write-tree`/`checkout-index` は実 index を直接使わず、`_prepare_candidate_index`
+    が作った専用コピー（`GIT_INDEX_FILE`）に対して実行する（C-1: Issue #338 反復4
+    bot レビュー Critical 対応。実 index への cache-tree 書き戻しを防ぐ）。この候補
+    index パスは戻り値として呼び出し元へ返し、`codd validate` サブプロセスへも
+    `GIT_INDEX_FILE` として渡す（D-1）。
 
     `index_file` を指定すると、実 index の代わりにそのパスの index ファイルを
-    `GIT_INDEX_FILE` として使う（`git commit -a/--all` 候補 index の再現用。反復3。
-    `_build_commit_all_index_file` 参照）。未指定時は ambient な実 index をそのまま使う。
+    候補 index のコピー元として使う（`git commit -a/--all` 候補 index の再現用。
+    反復3。`_build_commit_all_index_file` 参照）。未指定時は ambient な実 index を
+    コピー元として使う。
 
     `env` は ambient な `GIT_DIR`/`GIT_WORK_TREE` 等を除いた環境変数
     （`hook_common.sanitized_git_env()`）。これを使わずに `os.environ` をそのまま渡すと、
     外側の実行環境（例: loop-harness の ephemeral git isolation）が設定した `GIT_DIR` が
     cwd より優先され、`root` とは無関係なリポジトリを誤って参照してしまう。
 
-    戻り値は ``(snapshot_dir, git_dir, prefix, diagnostic)`` のタプル。構築に成功した
-    場合は ``(snapshot_dir, git_dir, prefix, "")``、失敗した場合は
-    ``(None, None, None, 診断メッセージ)`` を返す。失敗するのは主に次のケース: `root`
-    が git working tree でない、index に unmerged（未解決コンフリクト）のエントリが
-    ある、絶対 git-dir / prefix を解決できない、subprocess の timeout / OSError、
-    共有 `deadline` の予算切れ。呼び出し元は成功時の一時ディレクトリを使用後に削除
-    すること。
+    checkout 成功後、`_normalize_snapshot_mtimes` で snapshot 内の全ファイルへ共通の
+    timestamp を与える（D-2。checkout 順に由来する偽 drift の防止）。
+
+    戻り値は ``(snapshot_dir, git_dir, prefix, candidate_index_path, diagnostic)`` の
+    タプル。構築に成功した場合は ``(snapshot_dir, git_dir, prefix,
+    candidate_index_path, "")``、失敗した場合は ``(None, None, None, None,
+    診断メッセージ)`` を返す。失敗するのは主に次のケース: `root` が git working tree
+    でない、index に unmerged（未解決コンフリクト）のエントリがある、絶対 git-dir /
+    prefix を解決できない、候補 index の構築に失敗、subprocess の timeout / OSError、
+    共有 `deadline` の予算切れ。呼び出し元は成功時の一時ディレクトリ・候補 index を
+    使用後に削除すること。
     """
     if deadline.expired():
-        return None, None, None, "hook timeout budget exceeded"
+        return None, None, None, None, "hook timeout budget exceeded"
 
-    run_env = dict(env)
-    if index_file is not None:
-        run_env["GIT_INDEX_FILE"] = index_file
+    git_dir = _resolve_absolute_git_dir(root, env, deadline)
+    if git_dir is None:
+        return None, None, None, None, "git rev-parse --git-dir failed"
+
+    prefix = _resolve_repo_prefix(root, env, deadline)
+    if prefix is None:
+        return None, None, None, None, "git rev-parse --show-prefix failed"
+
+    candidate_index_path, diagnostic = _prepare_candidate_index(git_dir, index_file, deadline)
+    if candidate_index_path is None:
+        return None, None, None, None, diagnostic
+
+    run_env = {**env, "GIT_INDEX_FILE": candidate_index_path}
 
     try:
         write_tree = subprocess.run(
@@ -541,23 +781,39 @@ def _build_index_snapshot(
             check=False,
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
-        return None, None, None, f"git write-tree failed: {exc}"
+        Path(candidate_index_path).unlink(missing_ok=True)
+        return None, None, None, None, f"git write-tree failed: {exc}"
     if write_tree.returncode != 0:
+        Path(candidate_index_path).unlink(missing_ok=True)
         reason = write_tree.stderr.strip().splitlines()[0] if write_tree.stderr.strip() else ""
-        return None, None, None, f"git write-tree failed (code={write_tree.returncode}): {reason}"
-
-    git_dir = _resolve_absolute_git_dir(root, env, deadline)
-    if git_dir is None:
-        return None, None, None, "git rev-parse --git-dir failed"
-
-    prefix = _resolve_repo_prefix(root, env, deadline)
-    if prefix is None:
-        return None, None, None, "git rev-parse --show-prefix failed"
+        return (
+            None,
+            None,
+            None,
+            None,
+            f"git write-tree failed (code={write_tree.returncode}): {reason}",
+        )
+    # `git write-tree` は cache-tree extension を候補 index へ書き戻す際、内部で
+    # tmp ファイル作成 + rename により index を書き直すことがあり、`_prepare_candidate_index`
+    # で設定した chmod(0o600) が umask 既定の permission へリセットされうる。
+    # 以降の subprocess（checkout-index / codd validate）に渡す前に再度 chmod する（A-2）。
+    try:
+        os.chmod(candidate_index_path, 0o600)
+    except OSError as exc:
+        Path(candidate_index_path).unlink(missing_ok=True)
+        return None, None, None, None, f"candidate index chmod failed: {exc}"
 
     snapshot_dir = tempfile.mkdtemp(prefix="codd-index-snapshot-")
     try:
         checkout = subprocess.run(
-            ["git", f"--work-tree={snapshot_dir}", "checkout-index", "-a", "-f"],
+            [
+                "git",
+                f"--work-tree={snapshot_dir}",
+                "checkout-index",
+                "-a",
+                "-f",
+                "--ignore-skip-worktree-bits",
+            ],
             cwd=root,
             env=run_env,
             timeout=deadline.remaining_seconds(),
@@ -567,12 +823,21 @@ def _build_index_snapshot(
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
         shutil.rmtree(snapshot_dir, ignore_errors=True)
-        return None, None, None, f"git checkout-index failed: {exc}"
+        Path(candidate_index_path).unlink(missing_ok=True)
+        return None, None, None, None, f"git checkout-index failed: {exc}"
     if checkout.returncode != 0:
         shutil.rmtree(snapshot_dir, ignore_errors=True)
+        Path(candidate_index_path).unlink(missing_ok=True)
         reason = checkout.stderr.strip().splitlines()[0] if checkout.stderr.strip() else ""
-        return None, None, None, f"git checkout-index failed (code={checkout.returncode}): {reason}"
-    return snapshot_dir, git_dir, prefix, ""
+        return (
+            None,
+            None,
+            None,
+            None,
+            f"git checkout-index failed (code={checkout.returncode}): {reason}",
+        )
+    _normalize_snapshot_mtimes(snapshot_dir)
+    return snapshot_dir, git_dir, prefix, candidate_index_path, ""
 
 
 def _run_validate(root: str, *, simulate_commit_all: bool = False) -> tuple[int, str, str] | None:
@@ -585,16 +850,23 @@ def _run_validate(root: str, *, simulate_commit_all: bool = False) -> tuple[int,
     `simulate_commit_all=True`（`git commit -a/--all` 検出時。反復3）の場合は、実 index
     ではなく `_build_commit_all_index_file` が構築した候補 index を検証する。
 
-    `codd validate` サブプロセスには `GIT_DIR`/`GIT_WORK_TREE` を明示的に渡す
-    （反復2: Issue #338）。これにより codd 内部の `git status` / `git log`
-    （drift 検査）は「一時ディレクトリ（index からの checkout 結果）」を working tree
-    として扱いつつ、実リポジトリの commit 履歴を参照できる。あわせて
-    `GIT_OPTIONAL_LOCKS=0` を渡し、drift 検査が実 GIT_DIR の index stat cache を
-    refresh・書き戻すのを防ぐ（反復3: bot レビュー P2 対応）。
+    `codd validate` サブプロセスには `GIT_DIR`/`GIT_WORK_TREE`/`GIT_INDEX_FILE` を
+    明示的に渡す（反復2: Issue #338、D-1: 反復4）。これにより codd 内部の `git status`
+    / `git log`（drift 検査）は「一時ディレクトリ（index からの checkout 結果）」を
+    working tree として、`_build_index_snapshot` が構築した候補 index を index として
+    扱いつつ、実リポジトリの commit 履歴を参照できる。`GIT_INDEX_FILE` を渡さないと、
+    drift の `git status` が ambient な実 index（stale な可能性がある）と候補 snapshot
+    を比較してしまい、正当な commit を誤って drift block しうる（D-1: bot レビュー
+    Critical 対応）。あわせて `GIT_OPTIONAL_LOCKS=0` を渡し、drift 検査が実 GIT_DIR の
+    index stat cache を refresh・書き戻すのを防ぐ（反復3: bot レビュー P2 対応）。
 
     write-tree / rev-parse / checkout-index / 一時 index 構築 / この validate 自体の
     全 subprocess は単一の `_Deadline`（`HOOK_TIMEOUT_BUDGET_SECONDS`）を共有する
     （反復3: bot レビュー P2 対応。manifest.json の PreToolUse timeout 内に収めるため）。
+
+    snapshot 構築が成功した後は、config materialize から validate 実行までを単一の
+    `finally` で包み、途中で例外（ENOSPC / permission / I/O error 等）が発生しても
+    snapshot・候補 index が `/tmp` に残留しないようにする（E-2: bot レビュー High 対応）。
     """
     deadline = _Deadline(HOOK_TIMEOUT_BUDGET_SECONDS)
     git_env = sanitized_git_env()
@@ -610,54 +882,56 @@ def _run_validate(root: str, *, simulate_commit_all: bool = False) -> tuple[int,
             return None
 
     try:
-        snapshot_dir, git_dir, prefix, diagnostic = _build_index_snapshot(
+        snapshot_dir, git_dir, prefix, candidate_index_path, diagnostic = _build_index_snapshot(
             root, git_env, deadline, index_file=commit_all_index_path
         )
     finally:
         if commit_all_index_path is not None:
             Path(commit_all_index_path).unlink(missing_ok=True)
 
-    if snapshot_dir is None or git_dir is None:
+    if snapshot_dir is None or git_dir is None or candidate_index_path is None:
         print(
             f"[codd] validate skipped: index スナップショットを構築できません（{diagnostic}）",
             file=sys.stderr,
         )
         return None
 
-    project_dir = os.path.join(snapshot_dir, prefix) if prefix else snapshot_dir
-    _materialize_config(root, project_dir)
-
-    if deadline.expired():
-        print(
-            "[codd] validate skipped: hook タイムアウト予算を超過しました",
-            file=sys.stderr,
-        )
-        shutil.rmtree(snapshot_dir, ignore_errors=True)
-        return None
-
-    codd_cli = os.path.join(_orchestra_dir, "packages", "codd", "scripts", "codd.py")
-    validate_env = {
-        **git_env,
-        "GIT_DIR": git_dir,
-        "GIT_WORK_TREE": snapshot_dir,
-        "GIT_OPTIONAL_LOCKS": "0",
-    }
     try:
-        result = subprocess.run(
-            [sys.executable, codd_cli, "validate"],
-            cwd=project_dir,
-            env=validate_env,
-            timeout=deadline.remaining_seconds(),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except (subprocess.TimeoutExpired, OSError) as exc:
-        print(f"[codd] validate failed: {exc}", file=sys.stderr)
-        return None
+        project_dir = os.path.join(snapshot_dir, prefix) if prefix else snapshot_dir
+        _materialize_config(root, project_dir, snapshot_dir)
+
+        if deadline.expired():
+            print(
+                "[codd] validate skipped: hook タイムアウト予算を超過しました",
+                file=sys.stderr,
+            )
+            return None
+
+        codd_cli = os.path.join(_orchestra_dir, "packages", "codd", "scripts", "codd.py")
+        validate_env = {
+            **git_env,
+            "GIT_DIR": git_dir,
+            "GIT_WORK_TREE": snapshot_dir,
+            "GIT_INDEX_FILE": candidate_index_path,
+            "GIT_OPTIONAL_LOCKS": "0",
+        }
+        try:
+            result = subprocess.run(
+                [sys.executable, codd_cli, "validate"],
+                cwd=project_dir,
+                env=validate_env,
+                timeout=deadline.remaining_seconds(),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            print(f"[codd] validate failed: {exc}", file=sys.stderr)
+            return None
+        return result.returncode, result.stdout, result.stderr
     finally:
         shutil.rmtree(snapshot_dir, ignore_errors=True)
-    return result.returncode, result.stdout, result.stderr
+        Path(candidate_index_path).unlink(missing_ok=True)
 
 
 def _extract_summary_line(stdout: str) -> str:
