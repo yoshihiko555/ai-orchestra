@@ -34,8 +34,29 @@ working tree ではなく **git index** の内容である。この hook は `gi
 を実行する（実体の working tree・index は一切変更しない）。これにより「壊れた依存を
 `git add` した後、同じファイルを未ステージで修正する」ケースでも、実際にコミットされる
 内容（index）を正しく検証できる。index スナップショットを構築できない場合（対象が git
-working tree でない、index に unmerged エントリがある等）は、validate 実行自体の失敗と
-同様に fail-safe で commit をブロックしない。
+working tree でない、index に unmerged エントリがある、subprocess の timeout/OSError 等）は、
+validate 実行自体の失敗と同様に fail-safe で commit をブロックしない。
+
+**スナップショットへの git コンテキスト伝播（Issue #338 反復2）**: 一時ディレクトリは
+`.git` を持たないため、素朴に `codd validate` を実行すると codd の drift 検査
+（`_check_drift` / `batch_commit_times`）内の `git status` / `git log` が全て失敗し、
+本来の commit 履歴ではなく checkout-index 実行時の mtime（ほぼ同時・パス順で書き込まれる
+ため実際の履歴と無関係）へ黙ってフォールバックしてしまう。これにより「上流が下流より
+新しい」drift を見逃す（false negative）副作用があった。これを解消するため、`codd
+validate` サブプロセスには実リポジトリの絶対 git-dir（`git rev-parse --path-format=absolute
+--git-dir` で解決）を `GIT_DIR`、一時ディレクトリを `GIT_WORK_TREE` として環境変数で渡す。
+git はこれらの環境変数を優先するため、`codd validate` 内部の `git status` / `git log` は
+「実リポジトリの履歴」を「index から checkout したスナップショットの内容」と突き合わせて
+判定するようになり、drift 検査は working tree 直接検証時と同等の精度を保つ（設計判断は
+`docs/design/codd-coherence-layer.md` §4.8.1 参照）。git-dir を解決できない場合はスナップ
+ショット構築自体の失敗として扱い、fail-safe で commit をブロックしない。
+
+**ambient GIT_* 環境変数のサニタイズ**: この hook が起動する git / `codd validate`
+サブプロセスは、`hook_common.sanitized_git_env()` で ambient な `GIT_DIR` /
+`GIT_WORK_TREE` 等を除去した環境変数を使う。loop-harness 等の外側の実行環境で
+`GIT_DIR`/`GIT_WORK_TREE` が既に設定されているケース（ephemeral git isolation）でこれらを
+継承すると、`write-tree` / `checkout-index` が `root`（検証対象のプロジェクト）とは無関係な
+リポジトリを誤って参照してしまう（cwd より環境変数が優先されるため）。
 
 **複合コマンドの既知の制限（Issue #338）**: PreToolUse hook は Bash コマンドが実行される
 **前**に動作するため、`generate-docs && git add docs && git commit` のような複合コマンドで
@@ -63,7 +84,12 @@ if _orchestra_dir:
     if _core_hooks not in sys.path:
         sys.path.insert(0, _core_hooks)
 
-from hook_common import ensure_package_path, read_hook_input, safe_hook_execution  # noqa: E402
+from hook_common import (  # noqa: E402
+    ensure_package_path,
+    read_hook_input,
+    safe_hook_execution,
+    sanitized_git_env,
+)
 
 VALIDATE_TIMEOUT_SECONDS = 60
 # `git write-tree` / `git checkout-index` の subprocess timeout（Issue #338）。
@@ -162,40 +188,80 @@ def _codd_config_path(root: str) -> Path:
     return Path(root) / ".claude" / "config" / "codd" / "codd.yaml"
 
 
-def _build_index_snapshot(root: str) -> tuple[str | None, str]:
+def _resolve_absolute_git_dir(root: str, env: dict[str, str]) -> str | None:
+    """`root` の絶対 git-dir パスを解決する（Issue #338 反復2: drift 検査への git 履歴伝播用）。
+
+    `git rev-parse --path-format=absolute --git-dir` は worktree 構成（`git init
+    --separate-git-dir` や `git worktree add` 等）でも常に絶対パスの git-dir を返す
+    （`resolve_root_worktree` と同じ resolver パターン）。解決できない場合
+    （git working tree でない、subprocess の timeout / OSError 等）は None を返す。
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-dir"],
+            cwd=root,
+            env=env,
+            timeout=INDEX_SNAPSHOT_TIMEOUT_SECONDS,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    git_dir = result.stdout.strip()
+    return git_dir or None
+
+
+def _build_index_snapshot(root: str, env: dict[str, str]) -> tuple[str | None, str | None, str]:
     """git index の内容を一時ディレクトリへ展開する（working tree 近似の解消。Issue #338）。
 
     `git commit` が実際にコミットするのは working tree ではなく index の内容である。
     `git write-tree` で index の妥当性を確認したうえで、`git --work-tree=<tmp>
     checkout-index -a -f` により index の内容だけを別ディレクトリへ書き出す。実体の
-    working tree・index には一切変更を加えない。
+    working tree・index には一切変更を加えない。あわせて `root` の絶対 git-dir も解決する
+    （呼び出し元が `codd validate` サブプロセスへ `GIT_DIR`/`GIT_WORK_TREE` として渡し、
+    drift 検査に実際の commit 履歴を使わせるため。反復2）。
 
-    戻り値は ``(snapshot_dir, diagnostic)`` のタプル。構築に成功した場合は
-    ``(snapshot_dir, "")``、失敗した場合は ``(None, 診断メッセージ)`` を返す。
-    失敗するのは主に次のケース: `root` が git working tree でない、index に
-    unmerged（未解決コンフリクト）のエントリがある、subprocess の timeout / OSError。
-    呼び出し元は成功時の一時ディレクトリを使用後に削除すること。
+    `env` は ambient な `GIT_DIR`/`GIT_WORK_TREE` 等を除いた環境変数
+    （`hook_common.sanitized_git_env()`）。これを使わずに `os.environ` をそのまま渡すと、
+    外側の実行環境（例: loop-harness の ephemeral git isolation）が設定した `GIT_DIR` が
+    cwd より優先され、`root` とは無関係なリポジトリを誤って参照してしまう。
+
+    戻り値は ``(snapshot_dir, git_dir, diagnostic)`` のタプル。構築に成功した場合は
+    ``(snapshot_dir, git_dir, "")``、失敗した場合は ``(None, None, 診断メッセージ)`` を
+    返す。失敗するのは主に次のケース: `root` が git working tree でない、index に
+    unmerged（未解決コンフリクト）のエントリがある、絶対 git-dir を解決できない、
+    subprocess の timeout / OSError。呼び出し元は成功時の一時ディレクトリを使用後に
+    削除すること。
     """
     try:
         write_tree = subprocess.run(
             ["git", "write-tree"],
             cwd=root,
+            env=env,
             timeout=INDEX_SNAPSHOT_TIMEOUT_SECONDS,
             capture_output=True,
             text=True,
             check=False,
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
-        return None, f"git write-tree failed: {exc}"
+        return None, None, f"git write-tree failed: {exc}"
     if write_tree.returncode != 0:
         reason = write_tree.stderr.strip().splitlines()[0] if write_tree.stderr.strip() else ""
-        return None, f"git write-tree failed (code={write_tree.returncode}): {reason}"
+        return None, None, f"git write-tree failed (code={write_tree.returncode}): {reason}"
+
+    git_dir = _resolve_absolute_git_dir(root, env)
+    if git_dir is None:
+        return None, None, "git rev-parse --git-dir failed"
 
     snapshot_dir = tempfile.mkdtemp(prefix="codd-index-snapshot-")
     try:
         checkout = subprocess.run(
             ["git", f"--work-tree={snapshot_dir}", "checkout-index", "-a", "-f"],
             cwd=root,
+            env=env,
             timeout=INDEX_SNAPSHOT_TIMEOUT_SECONDS,
             capture_output=True,
             text=True,
@@ -203,12 +269,12 @@ def _build_index_snapshot(root: str) -> tuple[str | None, str]:
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
         shutil.rmtree(snapshot_dir, ignore_errors=True)
-        return None, f"git checkout-index failed: {exc}"
+        return None, None, f"git checkout-index failed: {exc}"
     if checkout.returncode != 0:
         shutil.rmtree(snapshot_dir, ignore_errors=True)
         reason = checkout.stderr.strip().splitlines()[0] if checkout.stderr.strip() else ""
-        return None, f"git checkout-index failed (code={checkout.returncode}): {reason}"
-    return snapshot_dir, ""
+        return None, None, f"git checkout-index failed (code={checkout.returncode}): {reason}"
+    return snapshot_dir, git_dir, ""
 
 
 def _run_validate(root: str) -> tuple[int, str, str] | None:
@@ -217,9 +283,15 @@ def _run_validate(root: str) -> tuple[int, str, str] | None:
     (exit_code, stdout, stderr) を返す。index スナップショットが構築できない場合、
     または `codd validate` サブプロセス自体が timeout / OSError で失敗した場合は None
     （fail-safe。呼び出し元は commit をブロックしない）。
+
+    `codd validate` サブプロセスには `GIT_DIR`/`GIT_WORK_TREE` を明示的に渡す
+    （反復2: Issue #338）。これにより codd 内部の `git status` / `git log`
+    （drift 検査）は「一時ディレクトリ（index からの checkout 結果）」を working tree
+    として扱いつつ、実リポジトリの commit 履歴を参照できる。
     """
-    snapshot_dir, diagnostic = _build_index_snapshot(root)
-    if snapshot_dir is None:
+    git_env = sanitized_git_env()
+    snapshot_dir, git_dir, diagnostic = _build_index_snapshot(root, git_env)
+    if snapshot_dir is None or git_dir is None:
         print(
             f"[codd] validate skipped: index スナップショットを構築できません（{diagnostic}）",
             file=sys.stderr,
@@ -227,10 +299,12 @@ def _run_validate(root: str) -> tuple[int, str, str] | None:
         return None
 
     codd_cli = os.path.join(_orchestra_dir, "packages", "codd", "scripts", "codd.py")
+    validate_env = {**git_env, "GIT_DIR": git_dir, "GIT_WORK_TREE": snapshot_dir}
     try:
         result = subprocess.run(
             ["python3", codd_cli, "validate"],
             cwd=snapshot_dir,
+            env=validate_env,
             timeout=VALIDATE_TIMEOUT_SECONDS,
             capture_output=True,
             text=True,

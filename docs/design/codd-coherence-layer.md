@@ -545,6 +545,46 @@ working tree・index は一切変更しない）。これにより「壊れた�
 index に unmerged エントリがある、subprocess の timeout/OSError 等）は、validate 実行自体の
 失敗と同様に fail-safe で commit をブロックしない。
 
+**スナップショットへの git コンテキスト伝播（Issue #338 反復2、レビュー High 対応）**:
+一時ディレクトリは `.git` を持たないため、素朴に checkout-index するだけでは codd の
+drift 検査（`_check_drift` / `batch_commit_times`）内の `git status` / `git log` が全て
+失敗し、本来の commit 履歴ではなく checkout-index 実行時の mtime（ほぼ同時・パス順で
+書き込まれるため実際の履歴と無関係）へ黙ってフォールバックしてしまう。これにより
+「上流が下流より新しい」drift を見逃す（false negative）副作用があった。既定の drift
+level は warning のため通常は commit をブロックしないが、`checks.drift: error` に昇格した
+導入先では判定が不安定になりうる。
+
+対応方針として、次の2案を比較検討した:
+
+1. **（採用）実リポジトリの git コンテキストをスナップショットへ伝播する**: `git rev-parse
+   --path-format=absolute --git-dir` で解決した絶対 git-dir を `GIT_DIR`、一時ディレクトリを
+   `GIT_WORK_TREE` として `codd validate` サブプロセスの環境変数に渡す。checkout-index の
+   内容は index そのもののコピーなので、この状態で `git status` を実行すると
+   worktree（スナップショット）と index の差分は常にクリーンになり、index と HEAD の差分
+   （= まだ commit されていない staged 変更）だけが dirty として残る。結果として、
+   drift 検査は「clean な（= 既に commit 済みの）ノードは実際の commit 履歴」「staged
+   変更のあるノードは checkout 時刻（≒ now、これから commit される内容の意味論として妥当）」
+   という working tree 直接検証時と同等の判定基準を維持できる。git-dir を解決できない場合は
+   スナップショット構築自体の失敗として扱い、fail-safe で commit をブロックしない。
+2. **（不採用）スナップショット検証時は drift 検査を無効化する**: 実装は単純だが、
+   `checks.drift` を `error` に昇格した導入先で drift 検査が index スナップショット化
+   （Issue #338）の副作用として黙って無効化されるのは、ユーザーの明示的な設定意図に反する。
+   drift 以外の検査（dangling / cycle 等）は index の内容だけで完結するため、drift だけを
+   特別扱いで無効化する非対称性も複雑さを増す。
+
+案1を採用した理由は、実装コストが小さい（`codd_common.py` / `codd.py` 側の変更は不要。
+環境変数の伝播だけで完結する）ことに加え、drift 検査の精度を working tree 直接検証と
+同等に保てるため。
+
+**ambient GIT\_\* 環境変数のサニタイズ**: hook が起動する git / `codd validate`
+サブプロセスは `hook_common.sanitized_git_env()` で ambient な `GIT_DIR`/`GIT_WORK_TREE`
+等を除去した環境変数を使う。外側の実行環境（例: loop-harness の ephemeral git isolation）が
+既に `GIT_DIR`/`GIT_WORK_TREE` を設定しているケースでこれを継承すると、`write-tree` /
+`checkout-index` が検証対象のプロジェクトとは無関係なリポジトリを誤って参照してしまう
+（cwd より環境変数が優先されるため）。この関数は Issue #95 由来の共通ユーティリティで、
+`fail-logs` パッケージの `capture-failures.py` でも同じ目的に使われている（既存の確立された
+パターンへの追従）。
+
 **複合コマンドの既知の制限（Issue #338）**: PreToolUse hook は Bash コマンドが実行される
 **前**に動作するため、`generate-docs && git add docs && git commit` のような複合コマンドで
 は、hook 実行時点の index に同一コマンド内の先行ステップ（`git add` 等）の結果はまだ

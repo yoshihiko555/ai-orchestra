@@ -138,6 +138,66 @@ def _git_add_all(project_dir: Path) -> None:
     subprocess.run(["git", "add", "-A"], cwd=project_dir, check=True, capture_output=True)
 
 
+def _git_config_identity(project_dir: Path) -> None:
+    """テスト用の commit identity を設定する（反復2: 実 commit を伴うテストで必要）。"""
+    subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=project_dir, check=True)
+    subprocess.run(["git", "config", "user.name", "tester"], cwd=project_dir, check=True)
+
+
+def _git_commit_at(project_dir: Path, message: str, date: str | None = None) -> None:
+    """実際に commit する（反復2: index スナップショット経由の drift 検査を実 git 履歴で
+    検証するために使う。Issue #338 レビュー High 対応）。
+
+    `date`（指定時）は author/committer date を明示指定する。git のコミット時刻は
+    秒単位のため、同一テスト内の連続コミットが同じ `%ct` になりうる。drift 判定の
+    前後関係を確実に区別するため、上流を意図的に未来日時でコミットする用途で使う
+    （`test_codd_cli.py::_commit_at` と同じ発想）。
+    """
+    env = {**__import__("os").environ}
+    if date is not None:
+        env["GIT_AUTHOR_DATE"] = date
+        env["GIT_COMMITTER_DATE"] = date
+    subprocess.run(
+        ["git", "commit", "-m", message],
+        cwd=project_dir,
+        check=True,
+        capture_output=True,
+        env=env,
+    )
+
+
+def _git_stage_unmerged_conflict(project_dir: Path, rel_path: str) -> None:
+    """`rel_path` に unmerged（未解決コンフリクト）エントリを index へ直接注入する（反復2）。
+
+    実際の merge conflict を起こさずとも、`git update-index --index-info` で stage
+    1/2/3 のエントリを直接構築すれば同じ状態（stage 0 が存在しない unmerged path）を
+    再現できる。`git write-tree` はこの状態で必ず失敗する
+    （`error: <path>: unmerged (<stage>)` → `fatal: git-write-tree: error building trees`）。
+    """
+    blobs = {}
+    for stage, content in (("1", "base\n"), ("2", "ours\n"), ("3", "theirs\n")):
+        hashed = subprocess.run(
+            ["git", "hash-object", "-w", "--stdin"],
+            cwd=project_dir,
+            input=content,
+            text=True,
+            check=True,
+            capture_output=True,
+        )
+        blobs[stage] = hashed.stdout.strip()
+    index_info = "\n".join(
+        f"100644 {blobs[stage]} {stage}\t{rel_path}" for stage in ("1", "2", "3")
+    )
+    subprocess.run(
+        ["git", "update-index", "--index-info"],
+        cwd=project_dir,
+        input=index_info,
+        text=True,
+        check=True,
+        capture_output=True,
+    )
+
+
 def _doc(node_id: str, kind: str = "design", deps: list[tuple[str, str]] | None = None) -> str:
     lines = ["---", "codd:", f"  node_id: {node_id}", f"  kind: {kind}", "  status: draft"]
     if deps:
@@ -628,6 +688,144 @@ class TestValidateHookIndexSnapshot:
         assert result.returncode == 0
         assert result.stdout == ""
         assert "index スナップショット" in result.stderr
+
+
+class TestValidateHookIndexSnapshotDriftGitContext:
+    """反復2（Issue #338 レビュー High 対応）: スナップショットへ実 git 履歴を伝播する。
+
+    `codd validate` サブプロセスには `GIT_DIR`/`GIT_WORK_TREE` を渡すため、drift 検査
+    （`_check_drift` / `batch_commit_times`）は checkout-index 時の mtime ではなく実際の
+    commit 履歴で「上流が下流より新しい」を判定できる。既定の drift level は warning
+    （commit をブロックしない）なので、`checks.drift: error` 昇格構成でも正しく機能する
+    ことを block モードで確認する。
+    """
+
+    def test_drift_detected_via_actual_commit_history_not_checkout_mtime(
+        self, tmp_path: Path
+    ) -> None:
+        _git_init(tmp_path)
+        _git_config_identity(tmp_path)
+        _write(tmp_path, "docs/req.md", _doc("req:r", "requirement"))
+        _write(
+            tmp_path,
+            "docs/design.md",
+            _doc("design:d", "design", deps=[("req:r", "derives_from")]),
+        )
+        config_data = _codd_config_dict(scope_include=["docs/**/*.md"], validate_on_commit="block")
+        config_data["checks"] = {"drift": "error"}
+        _write_codd_config(tmp_path, config_data)
+        _git_add_all(tmp_path)
+        _git_commit_at(tmp_path, "init design+req")
+        # 上流 (req) だけを未来日時の commit で更新する。index snapshot 経由の
+        # checkout-index はどちらのファイルもほぼ同時に書き出すため、checkout 時刻
+        # ベースの比較では前後関係が失われる（反復1 の既知の欠陥）。実 git 履歴を
+        # 見れば req の方が新しいと判定できるはず。
+        _write(tmp_path, "docs/req.md", _doc("req:r", "requirement") + "\nupdated\n")
+        _git_add_all(tmp_path)
+        future_date = "@4102444800 +0000"  # 2100-01-01
+        _git_commit_at(tmp_path, "update req", date=future_date)
+        payload = {
+            "cwd": str(tmp_path),
+            "tool_name": "Bash",
+            "tool_input": {"command": 'git commit -m "msg"'},
+        }
+        result = _run_hook("codd-validate-precommit.py", payload, tmp_path)
+        assert result.returncode == 2  # drift が error 昇格されているため block される
+        assert "ブロック" in result.stderr
+
+
+class TestValidateHookIndexSnapshotFailSafeBranches:
+    """反復2（Issue #338 レビュー Medium 対応）: 未テストだった fail-safe 分岐。
+
+    index の unmerged エントリ、および `_build_index_snapshot` 内の subprocess
+    timeout / OSError を個別に検証する。
+    """
+
+    def test_unmerged_index_entries_fail_write_tree_fail_safe(self, tmp_path: Path) -> None:
+        """index に unmerged エントリがあると write-tree が失敗し fail-safe で通す（e2e）。"""
+        _git_init(tmp_path)
+        _git_config_identity(tmp_path)
+        _write(tmp_path, "docs/d.md", _DANGLING_DOC)
+        _write_codd_config(tmp_path, _codd_config_dict(validate_on_commit="block"))
+        _git_add_all(tmp_path)
+        _git_commit_at(tmp_path, "init")
+        _git_stage_unmerged_conflict(tmp_path, "docs/conflict.md")
+        payload = {
+            "cwd": str(tmp_path),
+            "tool_name": "Bash",
+            "tool_input": {"command": 'git commit -m "msg"'},
+        }
+        result = _run_hook("codd-validate-precommit.py", payload, tmp_path)
+        assert result.returncode == 0
+        assert result.stdout == ""
+        assert "index スナップショット" in result.stderr
+
+    def test_write_tree_timeout_is_fail_safe(self, tmp_path: Path, monkeypatch) -> None:
+        """`git write-tree` の TimeoutExpired は fail-safe で `(None, None, diagnostic)`。"""
+        _git_init(tmp_path)
+        real_run = validate_hook.subprocess.run
+
+        def fake_run(cmd, *args, **kwargs):
+            if cmd[:2] == ["git", "write-tree"]:
+                raise validate_hook.subprocess.TimeoutExpired(cmd=cmd, timeout=1)
+            return real_run(cmd, *args, **kwargs)
+
+        monkeypatch.setattr(validate_hook.subprocess, "run", fake_run)
+        snapshot_dir, git_dir, diagnostic = validate_hook._build_index_snapshot(
+            str(tmp_path), validate_hook.sanitized_git_env()
+        )
+        assert snapshot_dir is None
+        assert git_dir is None
+        assert "git write-tree failed" in diagnostic
+
+    def test_checkout_index_oserror_is_fail_safe(self, tmp_path: Path, monkeypatch) -> None:
+        """`git checkout-index` の OSError は fail-safe で `(None, None, diagnostic)`。"""
+        _git_init(tmp_path)
+        real_run = validate_hook.subprocess.run
+
+        def fake_run(cmd, *args, **kwargs):
+            if "checkout-index" in cmd:
+                raise OSError("boom")
+            return real_run(cmd, *args, **kwargs)
+
+        monkeypatch.setattr(validate_hook.subprocess, "run", fake_run)
+        snapshot_dir, git_dir, diagnostic = validate_hook._build_index_snapshot(
+            str(tmp_path), validate_hook.sanitized_git_env()
+        )
+        assert snapshot_dir is None
+        assert git_dir is None
+        assert "git checkout-index failed" in diagnostic
+
+    def test_resolve_git_dir_failure_is_fail_safe(self, tmp_path: Path, monkeypatch) -> None:
+        """絶対 git-dir を解決できない場合も snapshot 構築失敗として fail-safe になる。"""
+        _git_init(tmp_path)
+        monkeypatch.setattr(validate_hook, "_resolve_absolute_git_dir", lambda root, env: None)
+        snapshot_dir, git_dir, diagnostic = validate_hook._build_index_snapshot(
+            str(tmp_path), validate_hook.sanitized_git_env()
+        )
+        assert snapshot_dir is None
+        assert git_dir is None
+        assert diagnostic == "git rev-parse --git-dir failed"
+
+    def test_run_validate_subprocess_timeout_is_fail_safe(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """`codd validate` サブプロセス自体の TimeoutExpired も fail-safe（`_run_validate`）。"""
+        _git_init(tmp_path)
+        _write(tmp_path, "docs/x.md", _CLEAN_DOC)
+        _write_codd_config(tmp_path, _codd_config_dict())
+        _git_add_all(tmp_path)
+        monkeypatch.setattr(validate_hook, "_orchestra_dir", str(REPO_ROOT))
+        real_run = validate_hook.subprocess.run
+
+        def fake_run(cmd, *args, **kwargs):
+            if cmd[0] == "python3" and str(cmd[1]).endswith("codd.py"):
+                raise validate_hook.subprocess.TimeoutExpired(cmd=cmd, timeout=1)
+            return real_run(cmd, *args, **kwargs)
+
+        monkeypatch.setattr(validate_hook.subprocess, "run", fake_run)
+        outcome = validate_hook._run_validate(str(tmp_path))
+        assert outcome is None
 
 
 # ---------------------------------------------------------------------------
