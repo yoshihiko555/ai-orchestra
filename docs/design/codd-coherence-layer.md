@@ -694,6 +694,20 @@ working tree・index は一切変更しない設計方針に反し、`index.lock
   `--all` と誤認しない）。`--pathspec-from-file` は候補ツリー再現が困難なモード
   として分類する。
 
+**反復5（Issue #338、PR #339 3巡目 bot レビュー対応）**: 以下を修正した。
+
+- **config 親ディレクトリ作成の境界検証**: 反復4の境界検証は config ファイルの
+  書き込み時には機能していたが、その前の `Path.mkdir(parents=True)` は祖先 symlink を
+  辿り、snapshot 外へ `config/codd` を作成しえた。`_safe_mkdir_within` は snapshot root
+  から各 component を `Path.is_symlink()` で検査し、一段ずつ作成してから
+  `_safe_copy_config` によるファイル書き込みへ進む。
+- **snapshot 一時ディレクトリ作成失敗時の cleanup**: `_build_index_snapshot` は
+  `tempfile.mkdtemp` の `OSError` を fail-safe の失敗結果へ収束させ、先に作成済みの
+  候補 index を削除する。
+- **mtime 正規化の deadline 適用**: `_normalize_snapshot_mtimes` も subprocess 群と同じ
+  `_Deadline` を共有し、予算切れ時は stderr に警告して残りの正規化を打ち切る。
+  これにより外側の hook timeout 前に snapshot・候補 index の cleanup へ進める。
+
 **既知の制限（Issue #338、追跡中）**: hook プロセス自身の起動コマンド
 （`scripts/lib/hook_utils.py` が生成する `python3 "$AI_ORCHESTRA_DIR/..."`）は
 `PATH` 上の `python3` に依存している。4.8.1 前半で述べた「`codd` サブプロセスは

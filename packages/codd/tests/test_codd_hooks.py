@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -1070,6 +1071,50 @@ class TestValidateHookConfigMaterializeSymlinkSafety:
         assert result.returncode == 0
         assert victim.read_text(encoding="utf-8") == "untouched\n"
 
+    def test_materialize_does_not_create_directories_through_ancestor_symlink(
+        self, tmp_path: Path
+    ) -> None:
+        """index 側の `.claude` が snapshot 外への symlink でも、リンク先へ config 用の
+        ディレクトリを作成しない。working tree 側の config は通常ファイルのままにする。
+        """
+        _git_init(tmp_path)
+        _write(tmp_path, "docs/x.md", _CLEAN_DOC)
+        _write_codd_config(tmp_path, _codd_config_dict())
+        _git_add_all(tmp_path)
+
+        outside_target = tmp_path.parent / f"codd-outside-{tmp_path.name}"
+        outside_target.mkdir()
+        subprocess.run(
+            ["git", "rm", "-r", "--cached", ".claude"],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+        )
+        hashed = subprocess.run(
+            ["git", "hash-object", "-w", "--stdin"],
+            cwd=tmp_path,
+            input=str(outside_target),
+            text=True,
+            check=True,
+            capture_output=True,
+        )
+        blob = hashed.stdout.strip()
+        subprocess.run(
+            ["git", "update-index", "--add", "--cacheinfo", f"120000,{blob},.claude"],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+        )
+
+        payload = {
+            "cwd": str(tmp_path),
+            "tool_name": "Bash",
+            "tool_input": {"command": 'git commit -m "msg"'},
+        }
+        result = _run_hook("codd-validate-precommit.py", payload, tmp_path)
+        assert result.returncode == 0
+        assert not (outside_target / "config" / "codd").exists()
+
     def test_safe_copy_config_helper_rejects_symlink_at_destination(self, tmp_path: Path) -> None:
         """`_safe_copy_config` 単体でも、dest が symlink なら追従せず安全に置き換える。"""
         snapshot_dir = tmp_path / "snapshot"
@@ -1277,6 +1322,77 @@ class TestValidateHookDriftIndependentOfCheckoutOrder:
         result = _run_hook("codd-validate-precommit.py", payload, tmp_path)
         assert result.returncode == 0  # 同時 stage は checkout 順由来の偽 drift を生まない
         assert result.stdout == ""
+
+
+class TestValidateHookNormalizeMtimesDeadline:
+    """Issue #338 反復5: mtime 正規化も hook の共有 deadline 内に収める。"""
+
+    def test_expired_deadline_leaves_all_file_mtimes_unchanged(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        snapshot_dir = tmp_path / "snapshot"
+        snapshot_dir.mkdir()
+        files = [snapshot_dir / name for name in ("a.md", "b.md", "c.md")]
+        old_timestamp = 946684800.0
+        for path in files:
+            path.write_text(path.name, encoding="utf-8")
+            os.utime(path, (old_timestamp, old_timestamp))
+        before = {path: path.stat().st_mtime_ns for path in files}
+
+        validate_hook._normalize_snapshot_mtimes(str(snapshot_dir), validate_hook._Deadline(-1.0))
+
+        after = {path: path.stat().st_mtime_ns for path in files}
+        assert after == before
+        assert "mtime 正規化" in capsys.readouterr().err
+
+
+class TestValidateHookMkdtempFailure:
+    """Issue #338 反復5: snapshot directory 作成失敗を fail-safe に cleanup する。"""
+
+    def test_mkdtemp_failure_returns_diagnostic_and_cleans_candidate_index(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        _git_init(tmp_path)
+        _git_config_identity(tmp_path)
+        _write(tmp_path, "docs/x.md", _CLEAN_DOC)
+        _write_codd_config(tmp_path, _codd_config_dict())
+        _git_add_all(tmp_path)
+        _git_commit_at(tmp_path, "init")
+
+        tmp_root = Path(tempfile.gettempdir())
+        before = set(tmp_root.glob("codd-candidate-index-*"))
+        candidate_paths: list[Path] = []
+        original_prepare = validate_hook._prepare_candidate_index
+
+        def capture_candidate_index(
+            git_dir: str, index_file: str | None, deadline: Any
+        ) -> tuple[str | None, str]:
+            candidate_path, diagnostic = original_prepare(git_dir, index_file, deadline)
+            if candidate_path is not None:
+                candidate_paths.append(Path(candidate_path))
+            return candidate_path, diagnostic
+
+        def fail_mkdtemp(*, prefix: str) -> str:
+            assert prefix == "codd-index-snapshot-"
+            raise OSError("simulated mkdtemp failure")
+
+        monkeypatch.setattr(validate_hook, "_prepare_candidate_index", capture_candidate_index)
+        monkeypatch.setattr(validate_hook.tempfile, "mkdtemp", fail_mkdtemp)
+        try:
+            result = validate_hook._build_index_snapshot(
+                str(tmp_path),
+                validate_hook.sanitized_git_env(),
+                validate_hook._Deadline(validate_hook.HOOK_TIMEOUT_BUDGET_SECONDS),
+            )
+        finally:
+            after = set(tmp_root.glob("codd-candidate-index-*"))
+            for candidate_path in candidate_paths:
+                if candidate_path in after - before:
+                    candidate_path.unlink(missing_ok=True)
+
+        assert result[:4] == (None, None, None, None)
+        assert "mkdtemp" in result[4]
+        assert after == before
 
 
 class TestValidateHookSnapshotCleanupOnMaterializeFailure:

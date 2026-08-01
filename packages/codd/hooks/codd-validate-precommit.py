@@ -113,7 +113,7 @@ tree・index は一切変更しない設計方針に反し、`index.lock` 競合
   symlink（`checkout-index` が展開した実体）である場合、`shutil.copy2` はこれを辿って
   リンク先を上書きしてしまう（任意ファイル上書き）。`_safe_copy_config` は書き込み先を
   必ず一度削除してから新規ファイルとして作成し、symlink 追従を物理的に不可能にする。
-  あわせて書き込み先が snapshot 境界内に留まることも確認する。
+  あわせて config ファイルの書き込み先が snapshot 境界内に留まることも確認する。
 - **一時 index の permission**: `mkstemp` が作る 0600 を、`shutil.copy2` による実 index
   （通常 0644）のメタデータ複製で緩めない。`shutil.copyfile`（メタデータ非複製）を使う。
 - **候補 index はコピー上に構築**: `git write-tree` を実 index に対して直接実行すると、
@@ -138,6 +138,17 @@ tree・index は一切変更しない設計方針に反し、`index.lock` 競合
   に到達したら、それ以降を値（attached value）として扱い走査を打ち切る（`-amfix` の
   `i` を `-i` と誤認しない、`-ma` を誤って `--all` と解釈しない）。`--pathspec-from-file`
   を再現困難モードとして分類する。
+
+**反復5（Issue #338、PR #339 3巡目 bot レビュー対応）**: 以下を修正する。
+
+- **config 親ディレクトリ作成の境界検証**: `_safe_copy_config` より前の
+  `Path.mkdir(parents=True)` が祖先 symlink を辿り、snapshot 外へディレクトリを作成しうる。
+  `_safe_mkdir_within` で snapshot root から一段ずつ symlink 非追従で作成してから、
+  `_safe_copy_config` でファイルを書き込む。
+- **snapshot 一時ディレクトリ作成失敗時の cleanup**: `tempfile.mkdtemp` の `OSError` を
+  fail-safe の失敗タプルへ収束させ、作成済みの候補 index を削除する。
+- **mtime 正規化の deadline 適用**: `_normalize_snapshot_mtimes` も共有 `_Deadline` を確認し、
+  予算切れ時は残りの正規化を打ち切って cleanup へ進めるようにする。
 """
 
 from __future__ import annotations
@@ -510,6 +521,42 @@ def _safe_copy_config(src: Path, dest: Path, snapshot_root: Path) -> None:
         )
 
 
+def _safe_mkdir_within(dest_dir: Path, snapshot_root: Path) -> bool:
+    """snapshot 境界内で symlink を辿らずに `dest_dir` を一段ずつ作成する。
+
+    `Path.mkdir(parents=True)` は既存の祖先 symlink を暗黙に辿るため、`checkout-index` が
+    `.claude` 等を snapshot 外への symlink として展開した場合、config の書き込み前に
+    攻撃者指定の場所へディレクトリを作成しうる（Issue #338 反復5）。literal な相対パスを
+    `snapshot_root` から順にたどり、各 component が symlink でないことを lstat 相当の
+    `Path.is_symlink()` で確認してから、欠けている directory だけを作成する。
+
+    境界違反、snapshot root の不在、既存の非 directory component、または `mkdir` の
+    `OSError` は False に収束させる。途中まで安全に作成した directory は削除しない。
+    """
+    try:
+        rel_parts = dest_dir.relative_to(snapshot_root).parts
+        if snapshot_root.is_symlink() or any(part in {".", ".."} for part in rel_parts):
+            return False
+        current = snapshot_root.resolve(strict=True)
+    except (OSError, ValueError):
+        return False
+    if not current.is_dir():
+        return False
+    for part in rel_parts:
+        current = current / part
+        if current.is_symlink():
+            return False
+        if current.is_dir():
+            continue
+        if current.exists():
+            return False
+        try:
+            current.mkdir()
+        except OSError:
+            return False
+    return True
+
+
 def _resolve_repo_prefix(root: str, env: dict[str, str], deadline: _Deadline) -> str | None:
     """repo root から見た `root` の prefix を解決する（モノレポ対応。Issue #338 反復3）。
 
@@ -561,16 +608,23 @@ def _materialize_config(root: str, project_dir: str, snapshot_dir: str) -> None:
     防御的に扱う）。
 
     コピー先（snapshot 側）が `checkout-index` によって snapshot 外への symlink として
-    展開されている可能性があるため、書き込みは `_safe_copy_config`（symlink 非追従・
-    `snapshot_dir` 境界検証つき）で行う（A-1: Issue #338 反復4 bot レビュー Critical
-    対応）。
+    展開されている可能性があるため、親ディレクトリは `_safe_mkdir_within` で symlink を
+    一段ずつ検査しながら snapshot 境界内に作成し、ファイル内容は `_safe_copy_config` で
+    symlink 非追従かつ境界検証つきで書き込む（Issue #338 反復4・反復5 bot レビュー
+    Critical 対応）。
     """
     config_path = _codd_config_path(root)
     if not config_path.is_file():
         return
     snapshot_root = Path(snapshot_dir)
     dest_config_path = Path(project_dir) / ".claude" / "config" / "codd" / config_path.name
-    dest_config_path.parent.mkdir(parents=True, exist_ok=True)
+    if not _safe_mkdir_within(dest_config_path.parent, snapshot_root):
+        print(
+            f"[codd] validate warning: {dest_config_path.parent} を snapshot 境界内に"
+            " 作成できないため config を書き込みません",
+            file=sys.stderr,
+        )
+        return
     _safe_copy_config(config_path, dest_config_path, snapshot_root)
 
     local_path = config_path.with_name(f"{config_path.stem}.local{config_path.suffix}")
@@ -681,7 +735,7 @@ def _prepare_candidate_index(
     return tmp_path, ""
 
 
-def _normalize_snapshot_mtimes(snapshot_dir: str) -> None:
+def _normalize_snapshot_mtimes(snapshot_dir: str, deadline: _Deadline) -> None:
     """snapshot 内の全ファイルへ共通の prospective timestamp を与える（D-2: Issue #338
     反復4 bot レビュー High 対応）。
 
@@ -692,10 +746,18 @@ def _normalize_snapshot_mtimes(snapshot_dir: str) -> None:
     checkout 完了直後に全ファイル（symlink 含む、ディレクトリは除く）へ単一の
     timestamp を設定することで、この checkout 順 artifact を解消する。書き込み権限が
     無い等で `os.utime` が失敗したパスは無視する（fail-safe。mtime 正規化の失敗で
-    validate 自体を止めない）。
+    validate 自体を止めない）。共有 `deadline` の予算切れ時は残りの正規化を打ち切り、
+    hook runner の timeout 前に cleanup へ進めるようにする（Issue #338 反復5）。
     """
     common_time = time.time()
     for path in Path(snapshot_dir).rglob("*"):
+        if deadline.expired():
+            print(
+                "[codd] validate warning: hook タイムアウト予算切れのため mtime 正規化を"
+                " 途中で打ち切りました",
+                file=sys.stderr,
+            )
+            break
         if path.is_dir() and not path.is_symlink():
             continue
         try:
@@ -742,7 +804,8 @@ def _build_index_snapshot(
     cwd より優先され、`root` とは無関係なリポジトリを誤って参照してしまう。
 
     checkout 成功後、`_normalize_snapshot_mtimes` で snapshot 内の全ファイルへ共通の
-    timestamp を与える（D-2。checkout 順に由来する偽 drift の防止）。
+    timestamp を与える（D-2。checkout 順に由来する偽 drift の防止）。この best-effort
+    ループも共有 `deadline` を尊重し、予算切れ時は残りを打ち切る（反復5）。
 
     戻り値は ``(snapshot_dir, git_dir, prefix, candidate_index_path, diagnostic)`` の
     タプル。構築に成功した場合は ``(snapshot_dir, git_dir, prefix,
@@ -750,8 +813,8 @@ def _build_index_snapshot(
     診断メッセージ)`` を返す。失敗するのは主に次のケース: `root` が git working tree
     でない、index に unmerged（未解決コンフリクト）のエントリがある、絶対 git-dir /
     prefix を解決できない、候補 index の構築に失敗、subprocess の timeout / OSError、
-    共有 `deadline` の予算切れ。呼び出し元は成功時の一時ディレクトリ・候補 index を
-    使用後に削除すること。
+    `tempfile.mkdtemp` の OSError、共有 `deadline` の予算切れ。呼び出し元は成功時の一時
+    ディレクトリ・候補 index を使用後に削除すること。
     """
     if deadline.expired():
         return None, None, None, None, "hook timeout budget exceeded"
@@ -803,7 +866,11 @@ def _build_index_snapshot(
         Path(candidate_index_path).unlink(missing_ok=True)
         return None, None, None, None, f"candidate index chmod failed: {exc}"
 
-    snapshot_dir = tempfile.mkdtemp(prefix="codd-index-snapshot-")
+    try:
+        snapshot_dir = tempfile.mkdtemp(prefix="codd-index-snapshot-")
+    except OSError as exc:
+        Path(candidate_index_path).unlink(missing_ok=True)
+        return None, None, None, None, f"tempfile.mkdtemp failed: {exc}"
     try:
         checkout = subprocess.run(
             [
@@ -836,7 +903,7 @@ def _build_index_snapshot(
             None,
             f"git checkout-index failed (code={checkout.returncode}): {reason}",
         )
-    _normalize_snapshot_mtimes(snapshot_dir)
+    _normalize_snapshot_mtimes(snapshot_dir, deadline)
     return snapshot_dir, git_dir, prefix, candidate_index_path, ""
 
 
