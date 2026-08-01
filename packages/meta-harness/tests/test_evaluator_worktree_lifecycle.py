@@ -193,16 +193,26 @@ class TestMaterializeCurrentOracleFixtures:
 
 
 class TestOracleFixtureMaterializationTiming:
-    """PR #326 レビュー round 4/5 (Codex P1): `scenarios/fixtures/` の materialize は候補の
-    エージェント実行の直後・oracle 実行の直前に行われなければならない。候補実行前だけに
-    materialize すると、bypassPermissions 下の候補がその後に fixture スクリプトを改ざんしても
-    上書きされず、outcome/collateral 両チェック（同一スクリプトが両方の subcommand を実装して
-    いる）を自分の改変ごと隠して通過できてしまう。"""
+    """PR #326 レビュー round 4/5 (Codex P1) + Issue #340: `scenarios/fixtures/` の materialize
+    は次の2回行われなければならない。
 
-    def test_materialize_runs_after_headless_scenario_completes(
+    1. **snapshot 前**（worktree 作成直後・`run_headless_scenario` より前）: isolated git
+       snapshot のベースラインコミットへ現行の信頼済み fixture を含める。これが無いと、
+       fixture 改修後に古い source_commit の候補を再評価した際、oracle 直前の再 materialize に
+       よる差分が「候補による tracked 変更」として collateral-scope oracle に検出され、
+       noop 候補ですら決定論的に fail する（Issue #340）。
+    2. **候補実行後・oracle 実行前**: bypassPermissions 下の候補が fixture スクリプトを
+       改ざんしても、oracle 判定前に信頼済み内容へ復元する。候補実行前だけに materialize
+       すると、outcome/collateral 両チェック（同一スクリプトが両方の subcommand を実装して
+       いる）を自分の改変ごと隠して通過できてしまう。
+    """
+
+    def _run_lifecycle_with_tracked_calls(
         self, git_project: Path, monkeypatch
-    ) -> None:
+    ) -> tuple[list[str], list[tuple], bool, list[dict]]:
         call_order: list[str] = []
+        materialize_args: list[tuple] = []
+        package_dir = Path("packages/meta-harness").resolve()
 
         monkeypatch.setattr(ev, "apply_overlay", lambda *_args, **_kwargs: None)
         monkeypatch.setattr(ev, "build_facet_and_context", lambda *_args, **_kwargs: None)
@@ -213,8 +223,9 @@ class TestOracleFixtureMaterializationTiming:
             call_order.append("run_headless_scenario")
             return SimpleNamespace(isolation_launch=object())
 
-        def fake_materialize(_worktree_dir, _package_dir):
+        def fake_materialize(worktree_dir, package_dir):
             call_order.append("materialize_fixtures")
+            materialize_args.append((worktree_dir, package_dir))
 
         monkeypatch.setattr(ev, "run_headless_scenario", fake_run_headless_scenario)
         monkeypatch.setattr(ev, "_materialize_current_oracle_fixtures", fake_materialize)
@@ -223,7 +234,7 @@ class TestOracleFixtureMaterializationTiming:
             main_root=git_project,
             config={"evaluate": {"worktree_root": ".worktrees/meta"}},
             schema_dir=_SCHEMA_DIR,
-            package_dir=Path("packages/meta-harness").resolve(),
+            package_dir=package_dir,
             cand_dir=git_project,
             manifest={"source_commit": _git("rev-parse", "HEAD", cwd=git_project).stdout.strip()},
             scenario={
@@ -237,9 +248,145 @@ class TestOracleFixtureMaterializationTiming:
             staging_dir=git_project / "staging-materialize-order",
             runner=subprocess.run,
         )
+        return call_order, materialize_args, hard_failure, errors
+
+    def test_materialize_runs_before_snapshot_and_again_after_candidate(
+        self, git_project: Path, monkeypatch
+    ) -> None:
+        """Issue #340: snapshot 前 materialize → 候補実行 → 再 materialize の順序を検証する。
+
+        1回目（ベースライン整合）は `run_headless_scenario`（内部で isolated git snapshot の
+        ベースラインコミットを作成する）より前、2回目（改ざん対策の復元）は候補実行の後で
+        なければならない。
+        """
+        call_order, _materialize_args, hard_failure, errors = (
+            self._run_lifecycle_with_tracked_calls(git_project, monkeypatch)
+        )
 
         assert hard_failure is False, errors
-        assert call_order == ["run_headless_scenario", "materialize_fixtures"]
+        assert call_order == [
+            "materialize_fixtures",
+            "run_headless_scenario",
+            "materialize_fixtures",
+        ]
+
+    def test_tamper_restore_materialize_still_runs_after_headless_scenario(
+        self, git_project: Path, monkeypatch
+    ) -> None:
+        """改ざん対策（PR #326 round 4/5）の維持: snapshot 前 materialize を追加しても、
+        候補実行後・oracle 実行前の再 materialize が引き続き存在すること。両呼び出しとも
+        信頼済みハーネスの `package_dir` を source に取ること。"""
+        call_order, materialize_args, hard_failure, errors = self._run_lifecycle_with_tracked_calls(
+            git_project, monkeypatch
+        )
+
+        assert hard_failure is False, errors
+        scenario_index = call_order.index("run_headless_scenario")
+        assert "materialize_fixtures" in call_order[scenario_index + 1 :]
+        package_dir = Path("packages/meta-harness").resolve()
+        assert [args[1] for args in materialize_args] == [package_dir, package_dir]
+
+
+class TestPreSnapshotMaterializeBaselineIntegration:
+    """Issue #340 の実 git 統合回帰テスト: 「snapshot 前 materialize → ベースラインコミット →
+    noop 候補 → 再 materialize」の後、collateral-scope oracle が見る `git diff HEAD` に
+    fixture 差分が現れないこと。旧 source_commit の checkout を「stale fixture が tracked な
+    git repo」で模し、ベースラインコミットは `scenario_isolation._prepare_isolated_git` と
+    同じ `git add --all` + commit で模す。"""
+
+    _STALE_FIXTURE = "# stale fixture without add-phase-with-ac\n"
+    _CURRENT_FIXTURE = "# current trusted fixture\n"
+
+    def _make_trusted_package_dir(self, tmp_path: Path) -> Path:
+        package_dir = tmp_path / "package"
+        (package_dir / "scenarios" / "fixtures").mkdir(parents=True)
+        (package_dir / "scenarios" / "fixtures" / "assert-task-state-outcome.py").write_text(
+            self._CURRENT_FIXTURE, encoding="utf-8"
+        )
+        return package_dir
+
+    def _make_stale_worktree(self, tmp_path: Path) -> tuple[Path, Path]:
+        """stale fixture（変更 + 現行に無いファイル）が tracked な git repo を作る。"""
+        worktree_dir = tmp_path / "worktree"
+        fixture_dir = worktree_dir / "packages" / "meta-harness" / "scenarios" / "fixtures"
+        fixture_dir.mkdir(parents=True)
+        (fixture_dir / "assert-task-state-outcome.py").write_text(
+            self._STALE_FIXTURE, encoding="utf-8"
+        )
+        (fixture_dir / "removed-in-current.py").write_text(
+            "# stale-only file removed in current harness\n", encoding="utf-8"
+        )
+        _git("init", cwd=worktree_dir)
+        _git("config", "user.email", "test@example.com", cwd=worktree_dir)
+        _git("config", "user.name", "test", cwd=worktree_dir)
+        _git("add", "--all", cwd=worktree_dir)
+        _git("commit", "-m", "source_commit checkout (stale fixtures)", cwd=worktree_dir)
+        return worktree_dir, fixture_dir
+
+    def _snapshot_baseline(self, worktree_dir: Path) -> None:
+        """`_prepare_isolated_git` のベースライン確定（`git add --all` + commit）を模す。"""
+        _git("add", "--all", cwd=worktree_dir)
+        _git("commit", "--allow-empty", "-m", "scenario baseline", cwd=worktree_dir)
+
+    def _tracked_diff_names(self, worktree_dir: Path) -> str:
+        return _git("diff", "--name-status", "HEAD", cwd=worktree_dir).stdout.strip()
+
+    def test_collateral_diff_stays_empty_for_noop_candidate(self, tmp_path: Path) -> None:
+        package_dir = self._make_trusted_package_dir(tmp_path)
+        worktree_dir, fixture_dir = self._make_stale_worktree(tmp_path)
+
+        ev._materialize_current_oracle_fixtures(worktree_dir, package_dir)  # snapshot 前
+        self._snapshot_baseline(worktree_dir)
+        # noop 候補（何も変更しない）
+        ev._materialize_current_oracle_fixtures(worktree_dir, package_dir)  # oracle 直前の復元
+
+        assert self._tracked_diff_names(worktree_dir) == ""
+        materialized = fixture_dir / "assert-task-state-outcome.py"
+        assert materialized.read_text(encoding="utf-8") == self._CURRENT_FIXTURE
+
+    def test_without_pre_snapshot_materialize_diff_reproduces_issue_340(
+        self, tmp_path: Path
+    ) -> None:
+        """counterfactual: snapshot 前 materialize を省くと、oracle 直前の復元自体が
+        tracked 差分になり noop 候補でも collateral 検出される（Issue #340 の再現）。"""
+        package_dir = self._make_trusted_package_dir(tmp_path)
+        worktree_dir, _fixture_dir = self._make_stale_worktree(tmp_path)
+
+        self._snapshot_baseline(worktree_dir)  # 旧 fixture のままベースライン確定
+        ev._materialize_current_oracle_fixtures(worktree_dir, package_dir)
+
+        diff_names = self._tracked_diff_names(worktree_dir)
+        assert "assert-task-state-outcome.py" in diff_names
+        assert "removed-in-current.py" in diff_names
+
+    def test_candidate_tamper_is_restored_but_collateral_change_stays_visible(
+        self, tmp_path: Path
+    ) -> None:
+        """候補が fixture を改ざん（変更/追加）しても oracle 判定前に信頼済み内容へ復元されて
+        diff に現れず、fixture 外への変更は引き続き tracked 差分として検出されること。"""
+        package_dir = self._make_trusted_package_dir(tmp_path)
+        worktree_dir, fixture_dir = self._make_stale_worktree(tmp_path)
+        tracked_outside = worktree_dir / "README.md"
+        tracked_outside.write_text("original\n", encoding="utf-8")
+        _git("add", "--all", cwd=worktree_dir)
+        _git("commit", "-m", "add tracked file outside fixtures", cwd=worktree_dir)
+
+        ev._materialize_current_oracle_fixtures(worktree_dir, package_dir)
+        self._snapshot_baseline(worktree_dir)
+        # 候補による改ざん（fixture の書き換え + 追加）と fixture 外の正当な collateral 変更
+        (fixture_dir / "assert-task-state-outcome.py").write_text(
+            "# tampered: always exit 0\n", encoding="utf-8"
+        )
+        (fixture_dir / "planted-by-candidate.py").write_text("# planted\n", encoding="utf-8")
+        tracked_outside.write_text("modified by candidate\n", encoding="utf-8")
+        ev._materialize_current_oracle_fixtures(worktree_dir, package_dir)
+
+        diff_names = self._tracked_diff_names(worktree_dir)
+        assert "assert-task-state-outcome.py" not in diff_names
+        assert "planted-by-candidate.py" not in diff_names
+        assert "README.md" in diff_names
+        materialized = fixture_dir / "assert-task-state-outcome.py"
+        assert materialized.read_text(encoding="utf-8") == self._CURRENT_FIXTURE
 
 
 class TestFinallyRemovalOnLifecycleFailure:

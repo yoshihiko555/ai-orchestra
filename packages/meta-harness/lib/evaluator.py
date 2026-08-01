@@ -3005,6 +3005,15 @@ def _run_attempt_lifecycle(
         # 働かない（final-report.md が collateral-scope に検出される側に倒れるだけ）ため、
         # 候補実行より前で問題ない。
         _ensure_bridge_artifact_ignored(worktree_dir)
+        # 既存候補の再評価では oracle fixture（`scenarios/fixtures/`）も古い source_commit の
+        # 内容で checkout される。isolated git snapshot のベースラインコミット
+        # （`scenario_isolation._prepare_isolated_git`）より前に現行の信頼済み fixture を
+        # materialize してベースラインへ含めておかないと、oracle 直前の再 materialize（下記）に
+        # よる差分が「候補による想定外の tracked 変更」として collateral-scope oracle に検出され、
+        # fixture 改修後の再評価が決定論的に失敗する（Issue #340）。この先行 materialize は
+        # ベースライン整合のためのもので、候補による改ざんへの防御としては候補実行後・oracle
+        # 直前の再 materialize を引き続き正とする。
+        _materialize_current_oracle_fixtures(worktree_dir, package_dir)
         apply_registered_candidate_overlay(
             main_root=main_root,
             config=config,
