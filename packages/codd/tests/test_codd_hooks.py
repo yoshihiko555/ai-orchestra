@@ -1191,6 +1191,37 @@ class TestValidateHookCandidateIndexPermissions:
         assert mode == 0o600
 
 
+class TestValidateHookCommitAllCopyFailureCleanup:
+    """`_build_commit_all_index_file` は `mkstemp` 成功後のコピー失敗でも一時ファイルを
+    残留させない（Issue #338 反復6: bot レビュー P2 対応）。
+    """
+
+    def test_copyfile_failure_does_not_leave_stray_temp_index_file(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        _git_init(tmp_path)
+        _git_config_identity(tmp_path)
+        _write(tmp_path, "docs/x.md", _CLEAN_DOC)
+        _git_add_all(tmp_path)
+        _git_commit_at(tmp_path, "init")
+
+        def _raise_copyfile(*_args: object, **_kwargs: object) -> None:
+            raise OSError("simulated ENOSPC")
+
+        monkeypatch.setattr(validate_hook.shutil, "copyfile", _raise_copyfile)
+
+        before = set(Path(tempfile.gettempdir()).glob("codd-commit-a-index-*"))
+        deadline = validate_hook._Deadline(validate_hook.HOOK_TIMEOUT_BUDGET_SECONDS)
+        tmp_index_path, diagnostic = validate_hook._build_commit_all_index_file(
+            str(tmp_path), validate_hook.sanitized_git_env(), deadline
+        )
+        after = set(Path(tempfile.gettempdir()).glob("codd-commit-a-index-*"))
+
+        assert tmp_index_path is None
+        assert diagnostic
+        assert after == before
+
+
 # ---------------------------------------------------------------------------
 # validate hook: 実 index 不変・候補 index の validate 伝播（Issue #338 反復4）
 # ---------------------------------------------------------------------------
@@ -1701,6 +1732,29 @@ class TestValidateHookCommitAllClassification:
         assert validate_hook._classify_commit_invocation(
             'git commit -m "msg" --pathspec-from-file /tmp/x.txt'
         ) == (False, True)
+
+    def test_trailer_value_is_not_misread_as_pathspec(self) -> None:
+        """`--trailer <value>` の値はパススペックと誤認されず、`-a` 候補ツリー再現が
+        有効なままになる（Issue #338 反復6: bot レビュー P1 対応）。"""
+        assert validate_hook._classify_commit_invocation(
+            'git commit -a --trailer "Acked-by: dev" -m x'
+        ) == (True, False)
+
+    def test_no_all_after_dash_a_clears_all_flag(self) -> None:
+        """`-a --no-all` は git の `-a, --[no-]all` 仕様どおり、後置の否定形が勝つため
+        all 扱いにならない（Issue #338 反復6: bot レビュー P2 対応）。"""
+        assert validate_hook._classify_commit_invocation("git commit -a --no-all -m x") == (
+            False,
+            False,
+        )
+
+    def test_no_all_before_dash_a_still_yields_all(self) -> None:
+        """`--no-all -a`（順序が逆）では最後に現れた `-a` が勝ち、all 扱いになる
+        （Issue #338 反復6: bot レビュー P2 対応の回帰防止）。"""
+        assert validate_hook._classify_commit_invocation("git commit --no-all -a -m x") == (
+            True,
+            False,
+        )
 
 
 class TestValidateHookRepoPrefixLeadingWhitespace:

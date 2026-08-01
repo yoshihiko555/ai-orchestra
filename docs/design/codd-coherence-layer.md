@@ -650,6 +650,10 @@ working tree・index は一切変更しない設計方針に反し、`index.lock
 - `git commit` が明示的に `GIT_INDEX_FILE` で alternate index を指定するケースへの対応
 - scope 外ファイルの checkout filter 失敗による検証全体の無効化への対応（`checkout-index`
   が一部ファイルの書き出しに失敗しても、hook は現状それを検知しない）
+- index の gitlink（submodule）は `checkout-index -a` で参照先 commit の内容が展開されず
+  空ディレクトリになるため、submodule 配下の CoDD ノードは検証対象から消える。
+  superproject から submodule ノードへの依存は false dangling になり、submodule 内だけの
+  不整合は見逃す（Issue #342 で追跡）
 
 **反復4（PR #339 2巡目 bot レビュー対応）**: 以下を修正した。
 
@@ -707,6 +711,25 @@ working tree・index は一切変更しない設計方針に反し、`index.lock
 - **mtime 正規化の deadline 適用**: `_normalize_snapshot_mtimes` も subprocess 群と同じ
   `_Deadline` を共有し、予算切れ時は stderr に警告して残りの正規化を打ち切る。
   これにより外側の hook timeout 前に snapshot・候補 index の cleanup へ進める。
+
+**反復6（Issue #338、PR #339 3巡目 bot レビュー追加指摘対応）**: 以下を修正した。
+
+- **`--trailer` の値を pathspec と誤認しない**: `_classify_commit_invocation` の値を取る
+  long option テーブルに `--trailer` を追加した。未対応のままだと `git commit -a --trailer
+  "Acked-by: dev" -m x` の値がパススペック指定と誤認され、`has_unsupported=True` となって
+  `-a` 候補ツリー再現（`simulate_commit_all`）が無効化され、実際には `-a` で取り込まれる
+  未ステージの追跡済み文書が古い index だけで検査されてしまっていた（block モードでも
+  不整合を含む commit が通りうる）。
+- **後置 `--no-all` で all 判定を正しく解除**: `git commit -h` の `-a, --[no-]all` の
+  仕様どおり、後に現れたオプションが有効になるよう `--no-all` トークンで `has_all` を
+  `False` へ戻すようにした。未対応のままだと `git commit -a --no-all` のように working
+  tree の変更を commit 対象から除外する呼び出しでも `-a` 候補ツリーが構築され、実際には
+  commit されない未ステージ文書まで検証対象に含めて正当な commit を誤って block しうる。
+- **`_build_commit_all_index_file` の copy 失敗時の cleanup**: `mkstemp` 成功後の
+  `shutil.copyfile` / `chmod` を try/except で囲み、ENOSPC・quota・権限エラー等での失敗時も
+  `_prepare_candidate_index` と同じ fail-safe 方針で診断を返しつつ一時ファイルを削除する
+  ようにした（直前の反復5で塞いだのは `tempfile.mkdtemp` 経路のみで、この copy 経路は
+  未対応のまま `/tmp/codd-commit-a-index-*` が残留しえた）。
 
 **既知の制限（Issue #338、追跡中）**: hook プロセス自身の起動コマンド
 （`scripts/lib/hook_utils.py` が生成する `python3 "$AI_ORCHESTRA_DIR/..."`）は

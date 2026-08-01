@@ -149,6 +149,16 @@ tree・index は一切変更しない設計方針に反し、`index.lock` 競合
   fail-safe の失敗タプルへ収束させ、作成済みの候補 index を削除する。
 - **mtime 正規化の deadline 適用**: `_normalize_snapshot_mtimes` も共有 `_Deadline` を確認し、
   予算切れ時は残りの正規化を打ち切って cleanup へ進めるようにする。
+
+**反復6（Issue #338、PR #339 3巡目 bot レビュー追加指摘対応）**: 以下を修正する。
+
+- **`--trailer` を値取得 long option として分類**: `_classify_commit_invocation` が
+  `--trailer` の値をパススペックと誤認し、`-a`/`--all` 候補ツリー再現を無効化していた
+  問題を修正する。
+- **後置 `--no-all` で all 判定を解除**: `--all`/`-a` の後に `--no-all` が現れた場合、
+  `has_all` を `False` へ戻すようにする（git の `-a, --[no-]all` 仕様準拠）。
+- **`_build_commit_all_index_file` の copy 失敗時 cleanup**: `mkstemp` 成功後の
+  `shutil.copyfile`/`chmod` 失敗時も一時ファイルを削除するようにする。
 """
 
 from __future__ import annotations
@@ -246,6 +256,7 @@ _COMMIT_VALUE_LONG_FLAGS = {
     "--fixup",
     "--squash",
     "--cleanup",
+    "--trailer",
 }
 # 再現困難と明示する long option（`-p`/`-i`/`-o` の long form、および
 # `--pathspec-from-file`。B-2: Issue #338 反復4 bot レビュー対応）。
@@ -325,6 +336,9 @@ def _classify_commit_invocation(command: str) -> tuple[bool, bool]:
             continue
         if token == "--all":
             has_all = True
+            continue
+        if token == "--no-all":
+            has_all = False
             continue
         if token.startswith("--"):
             name = token.split("=", 1)[0]
@@ -665,11 +679,15 @@ def _build_commit_all_index_file(
     real_index = Path(git_dir) / "index"
     tmp_fd, tmp_index_path = tempfile.mkstemp(prefix="codd-commit-a-index-")
     os.close(tmp_fd)
-    if real_index.is_file():
-        shutil.copyfile(real_index, tmp_index_path)
-        os.chmod(tmp_index_path, 0o600)
-    else:
-        Path(tmp_index_path).unlink(missing_ok=True)  # 空 index: add -u が新規作成する
+    try:
+        if real_index.is_file():
+            shutil.copyfile(real_index, tmp_index_path)
+            os.chmod(tmp_index_path, 0o600)
+        else:
+            Path(tmp_index_path).unlink(missing_ok=True)  # 空 index: add -u が新規作成する
+    except OSError as exc:
+        Path(tmp_index_path).unlink(missing_ok=True)
+        return None, f"candidate index copy failed: {exc}"
 
     add_env = {**env, "GIT_INDEX_FILE": tmp_index_path}
     try:
