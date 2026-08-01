@@ -731,6 +731,25 @@ working tree・index は一切変更しない設計方針に反し、`index.lock
   ようにした（直前の反復5で塞いだのは `tempfile.mkdtemp` 経路のみで、この copy 経路は
   未対応のまま `/tmp/codd-commit-a-index-*` が残留しえた）。
 
+**反復7（Issue #338、PR #339 4巡目 bot レビュー対応）**: 以下を修正した。
+
+- **`-S<keyid>` の attached value を `-a`/`--all` と誤認しない**: `_classify_commit_invocation`
+  の値を取る短縮オプション文字（`_COMMIT_VALUE_SHORT_CHARS`）に `-S`（`--gpg-sign`）を
+  追加した。未対応のままだと `git commit -Sabc1234 -m msg` の GPG keyid（16 進表記が一般的で
+  `a` を含みやすい）中の `a` を独立した `-a` フラグと誤認し、`simulate_commit_all=True` として
+  未ステージの追跡ファイル変更まで候補ツリーへ誤って含め、実際には commit されない変更で
+  block してしまっていた（`-amfix`/`-ma` で修正済みの欠陥と同じクラス）。`-S` は
+  `-u` と同様 attached optional value のみを取るため、`_COMMIT_NEXT_TOKEN_VALUE_SHORT_CHARS`
+  には追加しない（`git commit -S abc` の `abc` は keyid ではなく pathspec 扱いになるのが
+  git の挙動のため、次トークンを keyid として消費してはならない）。
+- **config コピー書き込み失敗時の空ファイル残留防止**: `_copy_no_follow` は
+  `os.open(O_CREAT | O_EXCL | O_NOFOLLOW)` 成功後の書き込み（`src.read_bytes()` または
+  `dest` への write）が失敗した場合、作成済みの 0 バイト `dest` を削除してから `False` を
+  返すようにした。未対応のままだと、呼び出し元の `_safe_copy_config` は警告のみで継続する
+  ため、snapshot 上に空の `codd.yaml`（または `codd.local.yaml`）が残り、`codd validate`
+  がその空設定を実 root の設定とは異なる「設定あり」として読み込み、判定がずれる可能性が
+  あった。削除後は snapshot 側にファイルが存在しない状態になり「設定不在」として扱われる。
+
 **既知の制限（Issue #338、追跡中）**: hook プロセス自身の起動コマンド
 （`scripts/lib/hook_utils.py` が生成する `python3 "$AI_ORCHESTRA_DIR/..."`）は
 `PATH` 上の `python3` に依存している。4.8.1 前半で述べた「`codd` サブプロセスは

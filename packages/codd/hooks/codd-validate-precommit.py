@@ -271,14 +271,17 @@ _COMMIT_UNSUPPORTED_LONG_FLAGS = {
 # 値として読み飛ばす。B-2）。
 _COMMIT_UNSUPPORTED_VALUE_LONG_FLAGS = {"--pathspec-from-file"}
 # 値を取る短縮オプション文字（結合形の途中に現れたら、以降を attached value として
-# 走査を打ち切る。`git commit -h` の値付きオプション: -c/-C/-F/-m/-t（必須値）/-u
-# （`-u[<mode>]` の attached optional value のみ。次トークンは値として消費しない）。
-# B-1: Issue #338 反復4 bot レビュー Critical 対応）。
-_COMMIT_VALUE_SHORT_CHARS = "cCFmtu"
+# 走査を打ち切る。`git commit -h` の値付きオプション: -c/-C/-F/-m/-t（必須値）/-u/-S
+# （`-u[<mode>]` および `-S[<keyid>]` は attached optional value のみ。次トークンは
+# 値として消費しない）。B-1: Issue #338 反復4 bot レビュー Critical 対応。`-S` は
+# 反復7 bot レビュー対応で追加（`-Sabc1234` の keyid 中の `a` を `-a`/`--all` と
+# 誤認しないようにするため）。
+_COMMIT_VALUE_SHORT_CHARS = "cCFmtuS"
 # 上記のうち、attached value が無い（トークン末尾がそのオプション文字）場合に
-# 次トークンを値として読み飛ばす対象（必須値オプションのみ。`-u` は optional attached
-# value のみなので対象外 ── 次トークンを誤って消費すると `-u -m msg` の `-m` を
-# 飲み込んでしまう）。
+# 次トークンを値として読み飛ばす対象（必須値オプションのみ。`-u`/`-S` は optional
+# attached value のみなので対象外 ── 次トークンを誤って消費すると `-u -m msg` の
+# `-m` や `-S -m msg` の `-m` を飲み込んでしまう。`git commit -S abc` の `abc` は
+# keyid ではなく pathspec 扱いになるのが git の挙動）。
 _COMMIT_NEXT_TOKEN_VALUE_SHORT_CHARS = "cCFmt"
 # `-a`（`--all`）に相当する短縮オプション文字。
 _COMMIT_ALL_SHORT_CHAR = "a"
@@ -495,6 +498,13 @@ def _copy_no_follow(src: Path, dest: Path) -> bool:
     先に削除してから `O_CREAT | O_EXCL | O_NOFOLLOW` で新規ファイルとして作成することで、
     symlink 追従を物理的に不可能にする。成功時 True、失敗時 False を返す（呼び出し元は
     fail-safe として警告を出し materialize をスキップする）。
+
+    書き込み（`src.read_bytes()` または `dest` への write）が失敗した場合、`os.open`
+    が作成済みの 0 バイト `dest` を削除してから False を返す。削除しないと、呼び出し元
+    （`_safe_copy_config`）は警告のみで継続するため、snapshot 上に空の `codd.yaml` が
+    残ってしまい、`codd validate` がその空設定を実 root とは異なる「設定あり」として
+    読み込んでしまう（Issue #338 反復7 bot レビュー対応。削除後は snapshot 側に
+    ファイルが存在しない状態になり「設定不在」として扱われる）。
     """
     try:
         if dest.is_symlink() or dest.exists():
@@ -509,6 +519,10 @@ def _copy_no_follow(src: Path, dest: Path) -> bool:
         with os.fdopen(fd, "wb") as f:
             f.write(src.read_bytes())
     except OSError:
+        try:
+            dest.unlink()
+        except OSError:
+            pass
         return False
     return True
 
@@ -520,7 +534,9 @@ def _safe_copy_config(src: Path, dest: Path, snapshot_root: Path) -> None:
     `dest.parent` の実体パスが `snapshot_root` 配下に収まっていることを確認したうえで
     `_copy_no_follow` を呼ぶ。境界外（symlink でディレクトリ階層自体が snapshot 外へ
     脱出している）または書き込みに失敗した場合は、fail-safe として stderr に警告を
-    出すのみで例外は送出しない（呼び出し元の validate 自体は継続する）。
+    出すのみで例外は送出しない（呼び出し元の validate 自体は継続する）。書き込み失敗時、
+    `_copy_no_follow` は作成済みの空 `dest` を自ら削除するため、ここで残った不完全な
+    config ファイルを気にする必要はない（Issue #338 反復7 bot レビュー対応）。
     """
     if _resolve_within(snapshot_root, dest.parent) is None:
         print(

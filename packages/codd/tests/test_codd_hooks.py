@@ -1132,6 +1132,23 @@ class TestValidateHookConfigMaterializeSymlinkSafety:
         assert not dest.is_symlink()
         assert dest.read_text(encoding="utf-8") == "enabled: true\n"
 
+    def test_copy_no_follow_removes_empty_dest_on_write_failure(self, tmp_path: Path) -> None:
+        """`os.open` 後に書き込みが失敗した場合、`_copy_no_follow` は作成済みの 0 バイト
+        `dest` を削除してから False を返す（Issue #338 反復7 bot レビュー対応）。削除
+        しないと `_safe_copy_config` は警告のみで継続するため、snapshot 上に空の
+        `codd.yaml` が残り、`codd validate` が実 root とは異なる「設定あり」判定を
+        してしまう。`src` をディレクトリにすることで `src.read_bytes()` に
+        `IsADirectoryError`（`OSError` のサブクラス）を送出させ、書き込み失敗を再現する。
+        """
+        dest = tmp_path / "codd.yaml"
+        src_dir = tmp_path / "not-a-file"
+        src_dir.mkdir()
+
+        result = validate_hook._copy_no_follow(src_dir, dest)
+
+        assert result is False
+        assert not dest.exists()
+
 
 class TestValidateHookCandidateIndexPermissions:
     """A-2: bot レビュー Critical 対応。候補 index の一時ファイルは実 index の 0644
@@ -1719,6 +1736,25 @@ class TestValidateHookCommitAllClassification:
         assert validate_hook._classify_commit_invocation('git commit -u -m "msg"') == (
             False,
             False,
+        )
+
+    def test_dash_s_keyid_with_letter_a_is_not_misread_as_dash_a(self) -> None:
+        """`-Sabc1234` は `-S`（`--gpg-sign`）の attached value であり、`--all` 相当では
+        ない（Issue #338 反復7 bot レビュー対応。keyid は 16 進表記が一般的で
+        `a` は頻出するため、`S` を `_COMMIT_VALUE_SHORT_CHARS` から外すと value 中の
+        `a` を `-a`/`--all` と誤認し、未ステージ変更を候補ツリーへ誤って含めてしまう）。
+        """
+        assert validate_hook._classify_commit_invocation("git commit -Sabc1234 -m x") == (
+            False,
+            False,
+        )
+
+    def test_dash_s_with_separate_token_is_not_consumed_as_keyid(self) -> None:
+        """`-S abc`（値が別トークン）は git の挙動どおり `abc` を keyid として消費せず、
+        pathspec 指定として扱う（`-S` は attached optional value のみを取るため）。"""
+        assert validate_hook._classify_commit_invocation("git commit -S abc -m x") == (
+            False,
+            True,
         )
 
     def test_pathspec_from_file_with_equals_is_unsupported(self) -> None:
