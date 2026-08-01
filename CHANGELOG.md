@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`meta-harness`: 既存候補の再評価が collateral-scope oracle で必ず fail する問題を修正（Issue #340）**: oracle fixture の信頼済み復元を isolated git snapshot のベースライン作成前にも実行するようにし、fixture 改修後に旧 `source_commit` 候補を `orchex meta evaluate` で再評価しても誤検出で fail しなくなった。あわせて fixture は attempt 開始時に固定した immutable copy を参照し、欠落時は silent no-op ではなく verdict=error で fail-closed になる。
 - **`audit`: worktree セッションのログ集約先解決を堅牢化**: audit ログの root worktree 解決が core 共通関数への委譲になり、separate-git-dir 構成や `GIT_DIR` 等の環境変数が汚染された環境でも `.claude/logs/audit/` の集約先を誤解決しなくなった。
 - **`quality-gates`: `post-test-analysis.py` の監査ログ書き込み失敗時に品質ゲートが解除される問題を修正**: 監査イベントの記録に失敗しても、テスト失敗時のブロック判定（exit code 2）は維持されるようになった。
 - **`quality-gates`: `lint-on-save.py` がリポジトリのサブディレクトリから起動された場合でも `.claude/config` を正しく解決するように修正**: `quality_gate.enabled` やプロジェクト固有の上書き設定が、サブディレクトリ起動時にも適用されるようになった。
