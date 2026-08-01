@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,8 +27,27 @@ hook_common = load_module(
 _SCHEMA_DIR = Path("packages/meta-harness/schemas").resolve()
 
 
+_GIT_ENV = {
+    "GIT_AUTHOR_NAME": "test",
+    "GIT_COMMITTER_NAME": "test",
+    "GIT_AUTHOR_EMAIL": "test@test",
+    "GIT_COMMITTER_EMAIL": "test@test",
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_SYSTEM": os.devnull,
+}
+
+
 def _git(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=True)
+    """決定論的 identity と global/system config 隔離を注入して git を実行する。
+
+    conftest.py の `_git`（PR #162）と同趣旨。`_make_stale_worktree` のように
+    このモジュール内で新規 repo を init/commit するテストが、実行者の global
+    identity・init.templateDir・hooks・commit.gpgsign に依存しないようにする。
+    """
+    env = {**os.environ, **_GIT_ENV}
+    return subprocess.run(
+        ["git", *args], cwd=cwd, capture_output=True, text=True, check=True, env=env
+    )
 
 
 class TestCreateWorktreeSuccess:
@@ -314,7 +334,8 @@ class TestOracleFixtureMaterializationTiming:
     ) -> None:
         """改ざん対策（PR #326 round 4/5）の維持: snapshot 前 materialize を追加しても、
         候補実行後・oracle 実行前の再 materialize が引き続き存在すること。両呼び出しとも
-        信頼済みハーネスの `package_dir` を source に取ること。"""
+        attempt 開始時に固定した同一の immutable copy（`_snapshot_trusted_oracle_fixtures` の
+        戻り値）を source に取ること。"""
         call_order, materialize_args, hard_failure, errors = self._run_lifecycle_with_tracked_calls(
             git_project, monkeypatch
         )
@@ -359,9 +380,7 @@ class TestPreSnapshotMaterializeBaselineIntegration:
         (fixture_dir / "removed-in-current.py").write_text(
             "# stale-only file removed in current harness\n", encoding="utf-8"
         )
-        _git("init", cwd=worktree_dir)
-        _git("config", "user.email", "test@example.com", cwd=worktree_dir)
-        _git("config", "user.name", "test", cwd=worktree_dir)
+        _git("init", "-q", "--template=", cwd=worktree_dir)
         _git("add", "--all", cwd=worktree_dir)
         _git("commit", "-m", "source_commit checkout (stale fixtures)", cwd=worktree_dir)
         return worktree_dir, fixture_dir
