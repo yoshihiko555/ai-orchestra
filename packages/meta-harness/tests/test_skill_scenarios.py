@@ -2400,6 +2400,28 @@ class TestCollateralScopeOracle:
                 cwd=tmp_path,
             )
 
+    def test_ignored_baseline_file_explicitly_named_but_missing_raises_loud_error(
+        self, tmp_path: Path
+    ) -> None:
+        """PR #351 bot review follow-up: an *omitted* `ignored_baseline_file` (the previous
+        test) preserves the strict fail-closed default, but a caller-supplied path that does
+        not exist on disk signals a broken wiring (missing bind mount, a
+        `_prepare_isolated_git` write failure, ...) rather than an intentional opt-out. It must
+        raise loud -- silently degrading to the same empty-baseline behavior would reproduce
+        Issue #350's original symptom (every scenario failing) with no diagnostic pointing at
+        the real cause."""
+        fixture = _task_state_outcome_fixture()
+        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        missing_baseline_path = tmp_path.parent / "does-not-exist-ignored-baseline.json"
+
+        with pytest.raises(ValueError, match=r"ignored baseline file not found"):
+            fixture.assert_tracked_changes_limited_to(
+                {".claude/Plans.md"},
+                ignored_scan_prefixes=(".claude",),
+                ignored_baseline_file=missing_baseline_path,
+                cwd=tmp_path,
+            )
+
     def test_ignored_baseline_file_does_not_excuse_symlink_even_when_path_is_in_baseline(
         self, tmp_path: Path
     ) -> None:

@@ -647,9 +647,21 @@ def _is_symlink(cwd: Path | None, relative_path: str) -> bool:
 
 
 def _load_ignored_baseline(path: Path | None) -> frozenset[str]:
-    """Load the ignored-path baseline, failing closed when it is absent."""
-    if path is None or not path.exists():
+    """Load the ignored-path baseline.
+
+    `path is None` (the flag was simply not passed) preserves today's strict, fail-closed
+    behavior: an empty baseline, so every in-scope ignored path is a flagging candidate. An
+    *explicitly* named path that does not exist on disk is a different situation entirely --
+    it signals a broken wiring (a missing bind mount, a `_prepare_isolated_git` write failure,
+    ...) rather than an intentional opt-out, so it must fail loud with `ValueError` instead of
+    silently falling back to the same empty-baseline behavior, which would otherwise reproduce
+    Issue #350's original symptom (every scenario failing) with no diagnostic signal pointing
+    at the real cause.
+    """
+    if path is None:
         return frozenset()
+    if not path.exists():
+        raise ValueError(f"ignored baseline file not found: {path}")
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
@@ -789,8 +801,11 @@ def assert_tracked_changes_limited_to(
     `scenario_isolation._prepare_isolated_git`, pre-existing ignored paths recorded there are
     excluded from this scan. Collapsed ignored directories are expanded when the baseline can
     excuse one of their files, so a new sibling remains detectable. Symlinks are still rejected
-    unconditionally, including when their exact path appears in the baseline. A missing or
-    omitted baseline fails closed and preserves the prior allowlist-only behavior.
+    unconditionally, including when their exact path appears in the baseline. An *omitted*
+    `ignored_baseline_file` (left `None`) fails closed and preserves the prior allowlist-only
+    behavior; an *explicitly named but missing* baseline file is instead a wiring failure and
+    raises `ValueError` rather than silently degrading to the same fail-closed behavior (see
+    `_load_ignored_baseline`).
 
     `cwd` defaults to the process's own working directory (the production oracle container
     sets `--workdir /workspace` and relies on the process cwd); tests pass an explicit
@@ -939,7 +954,9 @@ def main(argv: list[str] | None = None) -> None:
             "JSON file written by scenario_isolation._prepare_isolated_git with pre-existing "
             "ignored paths. Paths recorded there are excluded from the ignored-file scan "
             "(Issue #350 baseline-diff fix); ignored paths absent from it are still flagged "
-            "by the existing allowlist rules"
+            "by the existing allowlist rules. Omit this flag entirely to keep the strict, "
+            "baseline-free behavior; if given, the file must exist -- a missing file raises "
+            "an error rather than silently degrading to that same strict behavior"
         ),
     )
 

@@ -480,10 +480,20 @@ def _prepare_isolated_git(
         worktree=worktree,
         git_env=git_env,
     )
-    (runtime_state / _IGNORED_BASELINE_FILENAME).write_text(
+    ignored_baseline_path = runtime_state / _IGNORED_BASELINE_FILENAME
+    ignored_baseline_path.write_text(
         json.dumps({"ignored_paths": ignored_paths}, indent=2) + "\n",
         encoding="utf-8",
     )
+    # `write_text` leaves the mode at whatever the host umask dictates. The oracle container
+    # bind-mounts this file read-only and runs as a non-root `--user {uid}:{gid}` (see
+    # `scenario_docker_profile.build_oracle_command`); a host umask of e.g. 077 would leave
+    # this world/group-unreadable (0o600, owned by the host user), so that non-root container
+    # user could not read it at all -- `_load_ignored_baseline` would then see an `OSError` and
+    # every collateral-scope scenario would fail closed with a misleading "invalid ignored
+    # baseline file" error instead of the intended ignored-path diffing. Pin the mode
+    # explicitly, mirroring `wrapper_path`'s existing container_paths-conditional chmod below.
+    ignored_baseline_path.chmod(0o644 if container_paths else 0o600)
     wrapper_path = wrapper_dir / "git"
     # The container path is supplied by docker/scenario/Dockerfile, which installs git.
     wrapper_git = "/usr/bin/git" if container_paths else git_path

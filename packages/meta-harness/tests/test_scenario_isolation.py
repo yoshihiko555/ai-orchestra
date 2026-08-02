@@ -231,6 +231,10 @@ def test_container_git_wrapper_uses_fixed_image_git_not_itself(
     assert "exec /usr/bin/git --git-dir=/runtime/git-snapshot" in wrapper
     assert "--work-tree=/workspace" in wrapper
     assert wrapper_dir.stat().st_mode & 0o777 == 0o711
+    # Issue #350 PR follow-up (bot review): the oracle container bind-mounts this file
+    # read-only and reads it as a non-root `--user {uid}:{gid}`, so `container_paths=True`
+    # must pin a group/other-readable mode regardless of the host umask.
+    assert (runtime / "ignored-baseline.json").stat().st_mode & 0o777 == 0o644
 
 
 def test_prepare_isolated_git_records_tracked_but_ignored_file_in_baseline(
@@ -282,6 +286,9 @@ def test_prepare_isolated_git_records_tracked_but_ignored_file_in_baseline(
     assert baseline_path.is_file()
     baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
     assert ".claude/docs/plan.md" in baseline["ignored_paths"]
+    # Default (non-container) invocation must pin owner-only 0o600, matching this file's own
+    # runtime-state confidentiality posture, regardless of host umask.
+    assert baseline_path.stat().st_mode & 0o777 == 0o600
 
 
 def test_prepare_isolated_git_records_symlinked_ignored_directory_without_descending_into_it(
@@ -346,6 +353,55 @@ def test_prepare_isolated_git_records_symlinked_ignored_directory_without_descen
     ignored_paths = baseline["ignored_paths"]
     assert ".claude/docs/evil-link" in ignored_paths
     assert not any(path.startswith(".claude/docs/evil-link/") for path in ignored_paths)
+
+
+def test_prepare_isolated_git_expands_wholly_collapsed_ignored_directory_symlink(
+    git_project: Path, tmp_path: Path
+) -> None:
+    """PR #351 bot review follow-up: the sibling test above (`..._without_descending_into_it`)
+    force-tracks a file (`plan.md`) inside the same ignored directory as the symlink, which
+    makes Git report the directory's contents as individual `!!` entries rather than a single
+    collapsed `<dir>/` entry -- so `evil-link` there is recorded via the flat, non-directory
+    branch in `_collect_ignored_baseline_paths`, never actually exercising
+    `_walk_ignored_directory_files`'s dirnames-symlink handling. This test instead keeps the
+    ignored directory *entirely* untracked (no file placed inside it at all -- the fixture's
+    own tracked `README.md` lives under a different, unrelated prefix), so Git collapses it to
+    a single `.claude/meta-harness/` `!!` entry and the walk-based expansion path is the only
+    way `evil-link` can be discovered and recorded at all."""
+    gitignore = git_project / ".gitignore"
+    gitignore.write_text(
+        gitignore.read_text(encoding="utf-8") + ".claude/meta-harness/\n",
+        encoding="utf-8",
+    )
+    source_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=git_project,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    link_target = tmp_path / "outside-target-wholly-collapsed"
+    link_target.mkdir()
+    (link_target / "leak-marker.txt").write_text("should never be walked into\n", encoding="utf-8")
+    ignored_dir = git_project / ".claude" / "meta-harness"
+    ignored_dir.mkdir(parents=True)
+    (ignored_dir / "evil-link").symlink_to(link_target, target_is_directory=True)
+    runtime = tmp_path / "ignored-collapsed-symlink-runtime"
+    runtime.mkdir()
+
+    siso._prepare_isolated_git(
+        worktree_dir=git_project,
+        runtime_state_dir=runtime,
+        source_commit=source_commit,
+        runner=subprocess.run,
+    )
+
+    baseline = json.loads((runtime / "ignored-baseline.json").read_text(encoding="utf-8"))
+    ignored_paths = baseline["ignored_paths"]
+    assert ".claude/meta-harness/evil-link" in ignored_paths
+    assert not any(path.startswith(".claude/meta-harness/evil-link/") for path in ignored_paths)
+    # The collapsed directory string itself must never survive as an opaque, unexpanded entry.
+    assert ".claude/meta-harness/" not in ignored_paths
 
 
 def test_real_scenario_srt_blocks_store_path(git_project: Path, tmp_path: Path) -> None:
