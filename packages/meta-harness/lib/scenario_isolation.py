@@ -33,6 +33,7 @@ _RUNTIME_CONFIG_DIR = "." + "claude"
 _SOURCE_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 _GIT_SNAPSHOT_DIR = "git-snapshot"
 _GIT_WRAPPER_DIR = "bin"
+_IGNORED_BASELINE_FILENAME = "ignored-baseline.json"
 _IMPLEMENTED_EXECUTION_BACKENDS: frozenset[str] = frozenset({"docker"})
 _SYSTEM_TOOL_SEARCH_PATH = "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"
 _SYSTEM_READ_ROOTS = (
@@ -472,6 +473,27 @@ def _prepare_isolated_git(
                 "could not create isolated Git snapshot: "
                 f"{(completed.stderr or completed.stdout).strip()[:500]}"
             )
+    ignored_paths = _collect_ignored_baseline_paths(
+        runner=runner,
+        git_path=git_path,
+        snapshot_dir=snapshot_dir,
+        worktree=worktree,
+        git_env=git_env,
+    )
+    ignored_baseline_path = runtime_state / _IGNORED_BASELINE_FILENAME
+    ignored_baseline_path.write_text(
+        json.dumps({"ignored_paths": ignored_paths}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    # `write_text` leaves the mode at whatever the host umask dictates. The oracle container
+    # bind-mounts this file read-only and runs as a non-root `--user {uid}:{gid}` (see
+    # `scenario_docker_profile.build_oracle_command`); a host umask of e.g. 077 would leave
+    # this world/group-unreadable (0o600, owned by the host user), so that non-root container
+    # user could not read it at all -- `_load_ignored_baseline` would then see an `OSError` and
+    # every collateral-scope scenario would fail closed with a misleading "invalid ignored
+    # baseline file" error instead of the intended ignored-path diffing. Pin the mode
+    # explicitly, mirroring `wrapper_path`'s existing container_paths-conditional chmod below.
+    ignored_baseline_path.chmod(0o644 if container_paths else 0o600)
     wrapper_path = wrapper_dir / "git"
     # The container path is supplied by docker/scenario/Dockerfile, which installs git.
     wrapper_git = "/usr/bin/git" if container_paths else git_path
@@ -492,6 +514,90 @@ def _prepare_isolated_git(
     )
     wrapper_path.chmod(0o755 if container_paths else 0o700)
     return wrapper_dir.resolve()
+
+
+def _collect_ignored_baseline_paths(
+    *,
+    runner: SubprocessRunner,
+    git_path: str,
+    snapshot_dir: Path,
+    worktree: Path,
+    git_env: dict[str, str],
+) -> list[str]:
+    """Record ignored paths hidden when the fresh snapshot applies gitignore rules."""
+    command = [
+        git_path,
+        f"--git-dir={snapshot_dir}",
+        f"--work-tree={worktree}",
+        "status",
+        "--porcelain",
+        "-z",
+        "--ignored=matching",
+        "--untracked-files=all",
+    ]
+    try:
+        completed = runner(
+            command,
+            cwd=worktree,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=git_env,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ScenarioIsolationError(f"could not collect ignored Git baseline: {exc}") from exc
+    if completed.returncode != 0:
+        raise ScenarioIsolationError(
+            "could not collect ignored Git baseline: "
+            f"{(completed.stderr or completed.stdout).strip()[:500]}"
+        )
+
+    tokens = (completed.stdout or "").split("\0")
+    if tokens and not tokens[-1]:
+        tokens.pop()
+    ignored_paths: set[str] = set()
+    for token in tokens:
+        if token[:2] != "!!":
+            continue
+        entry = token[3:]
+        if entry.endswith("/"):
+            ignored_paths.update(_walk_ignored_directory_files(worktree, entry))
+        else:
+            ignored_paths.add(entry)
+    return sorted(ignored_paths)
+
+
+def _walk_ignored_directory_files(worktree: Path, relative_directory: str) -> list[str]:
+    """Expand a collapsed ignored directory without following symlinked subdirectories.
+
+    `os.walk(..., followlinks=False)` never recurses into a symlinked subdirectory, but it
+    still reports that subdirectory's name in `dirnames` -- it does *not* silently drop it.
+    The original implementation only inspected `filenames`, so a candidate-created symlink
+    pointing at a directory (e.g. `ln -s / .claude/meta-harness/evil-link`) never appeared in
+    the returned paths at all, letting it slip past the unconditional symlink rejection in
+    every caller. Each symlinked subdirectory name must therefore be recorded here as its own
+    path (its target is irrelevant -- only that a symlink exists at that path matters to
+    callers), and then pruned from `dirnames` in place so the walk still does not descend into
+    it (topdown `os.walk` respects in-place mutation of the `dirnames` list it yields).
+    """
+    paths: list[str] = []
+    for directory, subdirectories, filenames in os.walk(
+        worktree / relative_directory, followlinks=False
+    ):
+        symlinked_subdirectories = [
+            name for name in subdirectories if (Path(directory) / name).is_symlink()
+        ]
+        for name in symlinked_subdirectories:
+            paths.append((Path(directory) / name).relative_to(worktree).as_posix())
+        subdirectories[:] = [
+            name for name in subdirectories if name not in symlinked_subdirectories
+        ]
+        for filename in filenames:
+            path = Path(directory) / filename
+            if not path.is_file() and not path.is_symlink():
+                continue
+            paths.append(path.relative_to(worktree).as_posix())
+    return paths
 
 
 def _under_real_home(path: Path) -> bool:

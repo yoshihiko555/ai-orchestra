@@ -65,7 +65,7 @@ critical:
     # 評価者自身が書く bridge artifact（CANDIDATE_FINAL_REPORT_RELATIVE_PATH）も明示的に --allow
     # へ加える。
     command: >-
-      python3 packages/meta-harness/scenarios/fixtures/assert-task-state-outcome.py collateral-scope --allow .claude/Plans.md --allow .claude/meta-harness-oracle/final-report.md --allow-new-prefix .claude/handoffs/ --ignored-scan-prefix .claude
+      python3 packages/meta-harness/scenarios/fixtures/assert-task-state-outcome.py collateral-scope --allow .claude/Plans.md --allow .claude/meta-harness-oracle/final-report.md --allow-new-prefix .claude/handoffs/ --ignored-scan-prefix .claude --ignored-baseline-file /runtime/ignored-baseline.json
   - id: plans-md-input-unchanged
     text: "handoff.py の入力である .claude/Plans.md が seed 内容から改変されていないことを検証する（.claude/Plans.md は repo .gitignore 対象のため collateral-scope の diff/untracked 検査の死角になる。PR #273 bot レビュー4巡目対応）"
     oracle: command_exit

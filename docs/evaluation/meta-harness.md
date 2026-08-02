@@ -145,9 +145,32 @@
   について symlink（`Path.is_symlink()`、追跡しない）を無条件で unexpected 扱いにし、許可
   path/prefix に一致していても fail にする（`ln -s <既存ファイル> <許可 prefix 配下>` による
   パスのみ許可・内容偽装の迂回を防止）。tracked/untracked いずれのパース（`-z` 出力）も空白・
-  引用符付きパスと rename/copy の複数トークン record を正しく扱う — 根拠: 詳細設計 §2-2、§4、
-  ADR-20260714-038「再検討記録（bypassPermissions 例外）」「再検討記録（Issue #297 / PR #326
-  — bypassPermissions 対象を 4→6 シナリオへ拡張）」、PR #273 全レビューラウンド
+  引用符付きパスと rename/copy の複数トークン record を正しく扱う。(d) opt-in の
+  `--ignored-scan-prefix`（fixture 引数 `ignored_scan_prefixes`）を指定した場合、git-ignored
+  file の新規出現もスキャン対象に加え、baseline snapshot 作成時（`_prepare_isolated_git`）に
+  記録した ignored file 一覧（`runtime_state_dir/ignored-baseline.json` を oracle コンテナへ
+  `/runtime/ignored-baseline.json` として read-only マウントし、`--ignored-baseline-file` で
+  渡す）との差分で判定するベースライン差分方式を取る — baseline 記録済みの既存 ignored file
+  （実リポジトリの tracked-but-ignored 由来等）は容認し、baseline 以降に新規出現した ignored
+  file のみ fail にする（collapsed directory は baseline にその配下のパスがある場合のみ個別
+  ファイルへ展開して差分判定するため、既存 ignored dir 配下への新規ファイル追加も検出される）。
+  `--ignored-baseline-file` が未指定（省略）の場合は空集合扱いとして全 ignored file を fail に
+  する従来の厳格判定へ fail-closed で戻る。一方、`--ignored-baseline-file` を明示指定した
+  にもかかわらずそのファイルが不在の場合は同じ空集合フォールバックには落とさず、配線破損
+  （bind mount 欠落・`_prepare_isolated_git` 書き出し失敗等）のシグナルとして明示的に
+  `ValueError` で fail-loud にする（JSON 不正時の明示エラーと同系統。PR #351 bot レビュー
+  指摘対応）。baseline JSON を書き出す `_prepare_isolated_git` 自身も、oracle コンテナが
+  非 root `--user {uid}:{gid}` で read-only mount するファイルを読めるよう、書き込み直後に
+  `ignored-baseline.json` のパーミッションを明示 chmod する（`container_paths` に応じ
+  0o644/0o600 固定。同 PR #351 レビュー指摘、host umask 依存の読み取り不能を防止）。
+  baseline 記録の有無に関わらず (c) の symlink 無条件拒否は優先されたまま変わらない —
+  ディレクトリを指す symlink が丸ごと ignore された collapsed ディレクトリ配下にある場合も、
+  ベースライン記録側・オラクル走査側いずれの collapsed directory 展開ヘルパーも symlink な
+  サブディレクトリ自身のパスを記録し、リンク先へは決して降下しない
+  — 根拠: 詳細設計 §2-2、§4、ADR-20260714-038「再検討記録（bypassPermissions 例外）」
+  「再検討記録（Issue #297 / PR #326 — bypassPermissions 対象を 4→6 シナリオへ拡張）」、
+  PR #273 全レビューラウンド、Issue #350「再検討記録（ベースライン差分方式への変更）」、
+  PR #351 bot レビュー指摘対応
 - [ ] EV-94（正常 / must）: 永続イメージ manifest 経由の image 再利用 — `ensure_scenario_image` / `ensure_broker_image` は `ImageRecipe`（context hash・build_args・docker_label・platform/target）から導出した recipe hash が manifest 記録済みで、かつ manifest 記録の `image_id` が現在 Docker に存在する image と一致する限り再ビルドを行わず、`last_used_at` のみを更新して同じ tag を返す。recipe が変化した場合、または manifest 記録と実際の Docker image が乖離（drift）している場合は再ビルドする — 根拠: `docker_runtime_image.ensure_recipe_image`（`packages/docker-runtime/lib/docker_runtime_image.py`）への委譲、`docs/design/loop-harness-isolation.md` §8 Phase 0
 - [ ] EV-95（境界 / must）: namespace 分離 — meta-harness の scenario/broker image は Docker label `ai.orchestra.meta-harness`、manifest/lock パス `.claude/meta-harness/docker-image-cache.json` / `.claude/meta-harness/docker-image-build.lock`、専用 buildx builder `meta-harness-builder` を既定として使用し、loop-harness（`ai.orchestra.loop-harness` / `.claude/loop/*` / `loop-harness-builder`）と独立した名前空間を形成する。世代 prune は同一 family（Docker label + repository）の image だけを対象とし、他プロジェクトが所有する image を削除しない — 根拠: `scenario_docker_image.py`（`DOCKER_LABEL` / `DEFAULT_MANIFEST_PATH` / `DEFAULT_LOCK_PATH` / `DEFAULT_BUILDER_NAME`）、`docs/design/loop-harness-isolation.md` §8
 - [ ] EV-96（異常 / must）: `auto_build_images: false` の fail-closed は永続イメージライフサイクル経由でも維持される — immutable な `@sha256:` digest 参照でない image 設定（タグのみ・digest 欠落等）は、共有 `ensure_recipe_image` の immutable-image 経路で拒否され、ビルドへフォールバックしない — 根拠: EV-27 の拡張、`docker_runtime_image._ensure_immutable_image`

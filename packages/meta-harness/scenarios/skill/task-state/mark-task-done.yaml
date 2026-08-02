@@ -81,7 +81,7 @@ critical:
     # 評価者自身が書く bridge artifact（CANDIDATE_FINAL_REPORT_RELATIVE_PATH）も明示的に --allow
     # へ加える。
     command: >-
-      python3 packages/meta-harness/scenarios/fixtures/assert-task-state-outcome.py collateral-scope --allow .claude/Plans.md --allow .claude/meta-harness-oracle/final-report.md --ignored-scan-prefix .claude
+      python3 packages/meta-harness/scenarios/fixtures/assert-task-state-outcome.py collateral-scope --allow .claude/Plans.md --allow .claude/meta-harness-oracle/final-report.md --ignored-scan-prefix .claude --ignored-baseline-file /runtime/ignored-baseline.json
 checks:
   - id: update-summary-quality
     text: "更新内容がユーザー報告で正確に説明される"

@@ -91,7 +91,7 @@ critical:
     # 評価者自身が書く bridge artifact（CANDIDATE_FINAL_REPORT_RELATIVE_PATH、下の
     # ac-confirmation-asked rubric が参照する final-report.md）も明示的に --allow へ加える。
     command: >-
-      python3 packages/meta-harness/scenarios/fixtures/assert-task-state-outcome.py collateral-scope --allow .claude/Plans.md --allow .claude/meta-harness-oracle/final-report.md --ignored-scan-prefix .claude
+      python3 packages/meta-harness/scenarios/fixtures/assert-task-state-outcome.py collateral-scope --allow .claude/Plans.md --allow .claude/meta-harness-oracle/final-report.md --ignored-scan-prefix .claude --ignored-baseline-file /runtime/ignored-baseline.json
   - id: ac-confirmation-asked
     text: "Acceptance Criteria の要否をユーザーに確認する問いかけが最終レポートに含まれる"
     oracle: rubric_judge

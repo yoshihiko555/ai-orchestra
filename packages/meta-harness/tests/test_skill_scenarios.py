@@ -2142,6 +2142,17 @@ def _init_git_repo_with_tracked_file(repo_dir: Path, relative_path: str, content
     subprocess.run(["git", "commit", "-q", "-m", "baseline"], cwd=repo_dir, check=True)
 
 
+def _write_ignored_baseline_file(repo_dir: Path, ignored_paths: list[str]) -> Path:
+    runtime_dir = repo_dir.parent / f"{repo_dir.name}-runtime"
+    runtime_dir.mkdir()
+    baseline_path = runtime_dir / "ignored-baseline.json"
+    baseline_path.write_text(
+        json.dumps({"ignored_paths": ignored_paths}),
+        encoding="utf-8",
+    )
+    return baseline_path
+
+
 def test_every_bypass_permissions_scenario_has_a_collateral_scope_critical_check() -> None:
     """PR #273 final review (Medium, security+spec reviewers independently flagged this):
     `permission_mode: bypassPermissions` unlocks the entire `.claude/` tree for a scenario, so
@@ -2302,6 +2313,168 @@ class TestCollateralScopeOracle:
             ignored_scan_prefixes=(".claude",),
             cwd=tmp_path,
         )
+
+    def test_ignored_baseline_file_excuses_preexisting_ignored_file_when_candidate_makes_no_change(
+        self, tmp_path: Path
+    ) -> None:
+        fixture = _task_state_outcome_fixture()
+        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        (tmp_path / ".gitignore").write_text(".claude/meta-harness/\n", encoding="utf-8")
+        subprocess.run(["git", "add", ".gitignore"], cwd=tmp_path, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "add gitignore"], cwd=tmp_path, check=True)
+        ignored_file = tmp_path / ".claude" / "meta-harness" / "preexisting.md"
+        ignored_file.parent.mkdir(parents=True)
+        ignored_file.write_text("pre-existing\n", encoding="utf-8")
+        baseline_path = _write_ignored_baseline_file(
+            tmp_path, [".claude/meta-harness/preexisting.md"]
+        )
+
+        fixture.assert_tracked_changes_limited_to(
+            {".claude/Plans.md"},
+            ignored_scan_prefixes=(".claude",),
+            ignored_baseline_file=baseline_path,
+            cwd=tmp_path,
+        )
+
+    def test_ignored_baseline_file_still_rejects_new_file_not_in_baseline(
+        self, tmp_path: Path
+    ) -> None:
+        fixture = _task_state_outcome_fixture()
+        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        (tmp_path / ".gitignore").write_text(".claude/meta-harness/\n", encoding="utf-8")
+        subprocess.run(["git", "add", ".gitignore"], cwd=tmp_path, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "add gitignore"], cwd=tmp_path, check=True)
+        ignored_file = tmp_path / ".claude" / "meta-harness" / "new.md"
+        ignored_file.parent.mkdir(parents=True)
+        ignored_file.write_text("new\n", encoding="utf-8")
+        baseline_path = _write_ignored_baseline_file(tmp_path, [])
+
+        with pytest.raises(AssertionError, match=r"new git-ignored files under"):
+            fixture.assert_tracked_changes_limited_to(
+                {".claude/Plans.md"},
+                ignored_scan_prefixes=(".claude",),
+                ignored_baseline_file=baseline_path,
+                cwd=tmp_path,
+            )
+
+    def test_ignored_baseline_file_collapsed_directory_expansion_still_rejects_new_sibling_file(
+        self, tmp_path: Path
+    ) -> None:
+        fixture = _task_state_outcome_fixture()
+        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        (tmp_path / ".gitignore").write_text(".claude/meta-harness/\n", encoding="utf-8")
+        subprocess.run(["git", "add", ".gitignore"], cwd=tmp_path, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "add gitignore"], cwd=tmp_path, check=True)
+        ignored_dir = tmp_path / ".claude" / "meta-harness"
+        ignored_dir.mkdir(parents=True)
+        (ignored_dir / "preexisting.md").write_text("pre-existing\n", encoding="utf-8")
+        baseline_path = _write_ignored_baseline_file(
+            tmp_path, [".claude/meta-harness/preexisting.md"]
+        )
+        (ignored_dir / "new-sibling.md").write_text("new\n", encoding="utf-8")
+
+        with pytest.raises(AssertionError, match=r"new git-ignored files under"):
+            fixture.assert_tracked_changes_limited_to(
+                {".claude/Plans.md"},
+                ignored_scan_prefixes=(".claude",),
+                ignored_baseline_file=baseline_path,
+                cwd=tmp_path,
+            )
+
+    def test_ignored_baseline_file_defaults_to_none_and_still_rejects_ignored_files(
+        self, tmp_path: Path
+    ) -> None:
+        fixture = _task_state_outcome_fixture()
+        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        (tmp_path / ".gitignore").write_text(".claude/meta-harness/\n", encoding="utf-8")
+        subprocess.run(["git", "add", ".gitignore"], cwd=tmp_path, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "add gitignore"], cwd=tmp_path, check=True)
+        ignored_file = tmp_path / ".claude" / "meta-harness" / "new.md"
+        ignored_file.parent.mkdir(parents=True)
+        ignored_file.write_text("new\n", encoding="utf-8")
+
+        with pytest.raises(AssertionError, match=r"new git-ignored files under"):
+            fixture.assert_tracked_changes_limited_to(
+                {".claude/Plans.md"},
+                ignored_scan_prefixes=(".claude",),
+                cwd=tmp_path,
+            )
+
+    def test_ignored_baseline_file_explicitly_named_but_missing_raises_loud_error(
+        self, tmp_path: Path
+    ) -> None:
+        """PR #351 bot review follow-up: an *omitted* `ignored_baseline_file` (the previous
+        test) preserves the strict fail-closed default, but a caller-supplied path that does
+        not exist on disk signals a broken wiring (missing bind mount, a
+        `_prepare_isolated_git` write failure, ...) rather than an intentional opt-out. It must
+        raise loud -- silently degrading to the same empty-baseline behavior would reproduce
+        Issue #350's original symptom (every scenario failing) with no diagnostic pointing at
+        the real cause."""
+        fixture = _task_state_outcome_fixture()
+        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        missing_baseline_path = tmp_path.parent / "does-not-exist-ignored-baseline.json"
+
+        with pytest.raises(ValueError, match=r"ignored baseline file not found"):
+            fixture.assert_tracked_changes_limited_to(
+                {".claude/Plans.md"},
+                ignored_scan_prefixes=(".claude",),
+                ignored_baseline_file=missing_baseline_path,
+                cwd=tmp_path,
+            )
+
+    def test_ignored_baseline_file_does_not_excuse_symlink_even_when_path_is_in_baseline(
+        self, tmp_path: Path
+    ) -> None:
+        fixture = _task_state_outcome_fixture()
+        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        (tmp_path / ".gitignore").write_text(".claude/meta-harness/\n", encoding="utf-8")
+        subprocess.run(["git", "add", ".gitignore"], cwd=tmp_path, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "add gitignore"], cwd=tmp_path, check=True)
+        ignored_link = tmp_path / ".claude" / "meta-harness" / "linked-plan.md"
+        ignored_link.parent.mkdir(parents=True)
+        ignored_link.symlink_to(tmp_path / ".claude" / "Plans.md")
+        baseline_path = _write_ignored_baseline_file(
+            tmp_path, [".claude/meta-harness/linked-plan.md"]
+        )
+
+        with pytest.raises(AssertionError, match=r"new git-ignored files under"):
+            fixture.assert_tracked_changes_limited_to(
+                {".claude/Plans.md"},
+                ignored_scan_prefixes=(".claude",),
+                ignored_baseline_file=baseline_path,
+                cwd=tmp_path,
+            )
+
+    def test_ignored_baseline_file_still_rejects_symlinked_directory_inside_collapsed_ignored_dir(
+        self, tmp_path: Path
+    ) -> None:
+        """Code-reviewer / security-reviewer Critical: `_walk_ignored_directory_files` used to
+        only inspect `os.walk`'s `filenames`, so a symlink pointing at a *directory* (reported by
+        `os.walk` in `dirnames`, not `filenames`) never appeared in the expanded paths at all and
+        silently bypassed the unconditional symlink rejection below. This pins the fix: a
+        directory-collapsed ignored entry that contains both a baseline-recorded file (so it gets
+        expanded at all) and a symlinked subdirectory must still fail on the symlink."""
+        fixture = _task_state_outcome_fixture()
+        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        (tmp_path / ".gitignore").write_text(".claude/meta-harness/\n", encoding="utf-8")
+        subprocess.run(["git", "add", ".gitignore"], cwd=tmp_path, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "add gitignore"], cwd=tmp_path, check=True)
+        ignored_dir = tmp_path / ".claude" / "meta-harness"
+        ignored_dir.mkdir(parents=True)
+        (ignored_dir / "preexisting.md").write_text("pre-existing\n", encoding="utf-8")
+        baseline_path = _write_ignored_baseline_file(
+            tmp_path, [".claude/meta-harness/preexisting.md"]
+        )
+        (ignored_dir / "evil-link").symlink_to(tmp_path, target_is_directory=True)
+
+        with pytest.raises(AssertionError, match=r"new git-ignored files under") as exc_info:
+            fixture.assert_tracked_changes_limited_to(
+                {".claude/Plans.md"},
+                ignored_scan_prefixes=(".claude",),
+                ignored_baseline_file=baseline_path,
+                cwd=tmp_path,
+            )
+        assert ".claude/meta-harness/evil-link" in str(exc_info.value)
 
     def test_default_rejects_new_untracked_file_without_allow_list(self, tmp_path: Path) -> None:
         """PR #273 bot review round 3 (Codex P2): a bypass-mode candidate creating an
